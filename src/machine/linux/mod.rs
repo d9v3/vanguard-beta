@@ -1377,21 +1377,16 @@ fn comptes() -> Constat {
     }
 }
 
-/// Wi-Fi : protection du réseau connecté, et un éventuel jumeau maléfique parmi les réseaux visibles. Lus d'abord
-/// par nl80211, comme l'audit du réseau (sous iwd, sans NetworkManager, nmcli ne voyait rien) ; nmcli en secours.
-/// Jamais muet : sans aucune des deux lectures, `wifi_sans_nmcli` dit « sans objet » (pas de carte) ou « non
+/// Wi-Fi : protection du réseau connecté, et un éventuel jumeau maléfique parmi les réseaux visibles. Lus par
+/// NetworkManager sur le bus (la liste qu'il tient à jour, sans balayer), sinon par le noyau (nl80211, sous iwd ou
+/// systemd-networkd). Jamais muet : sans lecture, `wifi_sans_lecture` dit « sans objet » (pas de carte) ou « non
 /// vérifié » ; lu mais sans réseau connecté, « sans objet ».
 fn wifi(passerelle: Option<String>) -> Vec<Constat> {
-    let natifs = super::wifi::nl80211::lire().ok().map(|l| super::wifi::visibles_de(&l));
-    let visibles = match natifs {
-        Some(n) if n.iter().any(|v| v.actif) => n,
-        natifs => match (wifi_nmcli(), natifs) {
-            (Some(v), _) => v,
-            (None, Some(n)) => n,
-            (None, None) => return vec![wifi_sans_nmcli(cartes_wifi(Path::new("/sys/class/net")))],
-        },
+    let l = match super::wifi::lecture_linux() {
+        Ok(l) => l,
+        Err(pourquoi) => return vec![wifi_sans_lecture(cartes_wifi(Path::new("/sys/class/net")), pourquoi)],
     };
-    let Some(actif) = visibles.iter().find(|v| v.actif) else {
+    if l.connexion.is_none() {
         return vec![super::sans_objet(
             "Wi-Fi",
             crate::modele::Absence::Inactif,
@@ -1400,40 +1395,14 @@ fn wifi(passerelle: Option<String>) -> Vec<Constat> {
                 "No Wi-Fi network connected: nothing to judge."
             ),
         )];
-    };
+    }
     let admin = format!(
         "xdg-open https://{}",
         passerelle.unwrap_or_else(|| "192.168.1.1".into())
     );
-    let mut constats = vec![super::wifi::securite(&actif.ssid, &actif.securite, &[&admin])];
-    constats.extend(super::wifi::jumeau(&visibles));
+    let mut constats = super::wifi::bilan(&l, &[&admin]);
     constats.extend(wifi_ouverts_automatiques());
     constats
-}
-
-/// Les réseaux visibles selon NetworkManager, quand nl80211 ne les donne pas ; `None` : nmcli absent ou en échec.
-fn wifi_nmcli() -> Option<Vec<super::wifi::Visible>> {
-    // « --rescan no » : la liste que NetworkManager tient à jour de lui-même. Sans cela, une liste de plus de 30 s
-    // faisait attendre un nouveau balayage, 7 s sur les 8 du bilan.
-    // SSID en dernier et sans échappement : un nom de réseau contenant « : » reste intact. En anglais : nmcli
-    // traduit la colonne ACTIVE (« oui » en français), et le réseau connecté n'était plus trouvé.
-    crate::commande::lancer_en_anglais(
-        Command::new("nmcli").args([
-            "-t",
-            "-e",
-            "no",
-            "-f",
-            "ACTIVE,SECURITY,SSID",
-            "dev",
-            "wifi",
-            "list",
-            "--rescan",
-            "no",
-        ]),
-        30,
-    )
-    .filter(|r| r.code == Some(0))
-    .map(|r| super::wifi::lire_nmcli(&r.sortie))
 }
 
 /// Combien de cartes Wi-Fi le noyau connaît : une interface réseau qui a un dossier « wireless » ou « phy80211 »
@@ -1447,19 +1416,19 @@ fn cartes_wifi(sys_net: &Path) -> std::io::Result<usize> {
     })
 }
 
-/// nmcli absent ou en échec (NetworkManager arrêté, ou un autre gestionnaire comme iwd ou systemd-networkd, celui
-/// d'Omarchy) : sans carte Wi-Fi, rien à juger ; avec, le bilan ne voit pas le réseau, et le dit. Les cartes pas
-/// comptées (sysfs illisible) : non vérifié aussi, jamais « pas de carte ».
-fn wifi_sans_nmcli(cartes: std::io::Result<usize>) -> Constat {
+/// Ni NetworkManager ni le noyau ne disent le Wi-Fi : sans carte Wi-Fi, rien à juger ; avec, le bilan ne voit pas
+/// le réseau, et le dit. Les cartes pas comptées (sysfs illisible) : non vérifié aussi, jamais « pas de carte ».
+/// `pourquoi` : la raison du noyau.
+fn wifi_sans_lecture(cartes: std::io::Result<usize>, pourquoi: &str) -> Constat {
     let cartes = match cartes {
         Ok(n) => n,
-        Err(pourquoi) => {
+        Err(e) => {
             return super::impossible_par(
                 "Wi-Fi",
-                crate::modele::Raison::Illisible(pourquoi.to_string()),
-                tr!(
-                    "Impossible de vérifier le Wi-Fi : NetworkManager (nmcli) est absent ou arrêté, et la liste des cartes réseau (/sys/class/net) ne se lit pas.",
-                    "Could not check Wi-Fi: NetworkManager (nmcli) is missing or stopped, and the network card list (/sys/class/net) cannot be read."
+                crate::modele::Raison::Illisible(e.to_string()),
+                trf!(
+                    "Impossible de vérifier le Wi-Fi : ni NetworkManager ni le noyau ne le disent ({pourquoi}), et la liste des cartes réseau (/sys/class/net) ne se lit pas.",
+                    "Could not check Wi-Fi: neither NetworkManager nor the kernel tells it ({pourquoi}), and the network card list (/sys/class/net) cannot be read."
                 ),
             );
         }
@@ -1476,10 +1445,10 @@ fn wifi_sans_nmcli(cartes: std::io::Result<usize>) -> Constat {
     }
     super::impossible_par(
         "Wi-Fi",
-        crate::modele::Raison::Absente("nmcli".into()),
-        tr!(
-            "Impossible de vérifier le Wi-Fi : NetworkManager (nmcli) est absent ou arrêté, le Wi-Fi est géré par un autre outil (iwd, systemd-networkd). L'audit du réseau le lit, lui.",
-            "Could not check Wi-Fi: NetworkManager (nmcli) is missing or stopped, Wi-Fi is managed by another tool (iwd, systemd-networkd). The network audit reads it."
+        crate::modele::Raison::Illisible(pourquoi.to_string()),
+        trf!(
+            "Impossible de vérifier le Wi-Fi : ni NetworkManager ni le noyau (nl80211) ne le disent ({pourquoi}). L'audit du réseau le lit aussi par le noyau.",
+            "Could not check Wi-Fi: neither NetworkManager nor the kernel (nl80211) tells it ({pourquoi}). The network audit reads it from the kernel too."
         ),
     )
 }
@@ -1938,28 +1907,31 @@ pub fn auditer() -> Audit {
 mod tests {
     use super::*;
 
-    /// Sans nmcli (iwd, systemd-networkd, celui d'Omarchy), la règle du Wi-Fi ne disparaît plus : sans carte, rien à
-    /// juger ; avec une carte, non vérifié, jamais un silence.
+    /// Sans lecture du Wi-Fi, la règle ne disparaît pas : sans carte, rien à juger ; avec une carte, non vérifié,
+    /// jamais un silence.
     #[test]
-    fn wifi_sans_nmcli_jamais_muet() {
+    fn wifi_sans_lecture_jamais_muet() {
         use crate::modele::{Absence, Etat, Raison};
         let d = std::env::temp_dir().join(format!("vanguard-sys-net-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(d.join("lo")).unwrap();
         std::fs::create_dir_all(d.join("enp3s0")).unwrap();
         assert_eq!(cartes_wifi(&d).ok(), Some(0));
-        assert_eq!(wifi_sans_nmcli(Ok(0)).etat(), Etat::SansObjet(Absence::Materiel));
+        assert_eq!(wifi_sans_lecture(Ok(0), "x").etat(), Etat::SansObjet(Absence::Materiel));
         std::fs::create_dir_all(d.join("wlan0/wireless")).unwrap();
         std::fs::create_dir_all(d.join("wlp2s0/phy80211")).unwrap();
         assert_eq!(cartes_wifi(&d).ok(), Some(2));
-        let c = wifi_sans_nmcli(Ok(2));
-        assert_eq!(c.etat(), Etat::NonVerifie(Raison::Absente("nmcli".into())));
+        let c = wifi_sans_lecture(Ok(2), "le noyau refuse netlink");
+        assert_eq!(
+            c.etat(),
+            Etat::NonVerifie(Raison::Illisible("le noyau refuse netlink".into()))
+        );
         assert_eq!(c.categorie, "Wi-Fi");
         // sysfs illisible : non vérifié, jamais « pas de carte ».
         let illisible = cartes_wifi(&d.join("absent"));
         assert!(illisible.is_err());
         assert!(matches!(
-            wifi_sans_nmcli(illisible).etat(),
+            wifi_sans_lecture(illisible, "x").etat(),
             Etat::NonVerifie(Raison::Illisible(_))
         ));
         let _ = std::fs::remove_dir_all(&d);

@@ -417,7 +417,13 @@ pub(super) fn internet() {
 /// Internet lent, depuis le parcours « L'ordinateur est lent » : la connexion marche-t-elle, puis où mesurer.
 pub(super) fn internet_lent() {
     let e = essais();
-    let s = signal();
+    let s = match signal() {
+        Ok(s) => s,
+        Err(r) => {
+            Etat::Info.dire(&signal_non_verifie(r));
+            None
+        }
+    };
     if let Some(s) = &s {
         afficher_signal(s);
     }
@@ -452,45 +458,6 @@ pub(super) struct Signal {
     pub bande: Option<Bande>,
     /// Économie d'énergie de la carte Wi-Fi ; `None` : inconnue.
     pub economie: Option<bool>,
-}
-
-/// `nmcli -t -f IN-USE,SIGNAL,FREQ,CHAN dev wifi list --rescan no` : « *:72:5180 MHz:36 », la ligne du réseau en
-/// cours commence par « * ».
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn signal_nmcli(texte: &str) -> Option<Signal> {
-    let ligne = texte.lines().find(|l| l.starts_with("*:"))?;
-    let mut c = ligne.split(':').skip(1);
-    let qualite = c.next()?.trim().parse().ok()?;
-    let mhz = c.next().and_then(|f| f.split_whitespace().next()?.parse().ok());
-    Some(Signal {
-        qualite,
-        bande: mhz.and_then(Bande::de_frequence),
-        canal: c.next().and_then(|v| v.trim().parse().ok()),
-        economie: None,
-    })
-}
-
-/// `netsh wlan show interfaces`, en anglais ou en français : « Signal : 72% », « Channel : 36 » ou « Canal : 36 »,
-/// « Band : 6 GHz » ou « Bande » (Windows 11 ; sans elle, la bande se déduit du canal). Sans ligne « Signal », la carte
-/// n'est pas connectée.
-#[cfg_attr(not(windows), allow(dead_code))]
-fn signal_netsh(texte: &str) -> Option<Signal> {
-    let brute = |cles: &[&str]| {
-        texte.lines().find_map(|l| {
-            let (cle, valeur) = l.split_once(':')?;
-            cles.contains(&cle.trim()).then(|| valeur.trim().to_string())
-        })
-    };
-    let chiffres = |cles: &[&str]| brute(cles).map(|v| v.chars().filter(char::is_ascii_digit).collect::<String>());
-    let canal: Option<u32> = chiffres(&["Channel", "Canal"]).and_then(|c| c.parse().ok());
-    Some(Signal {
-        qualite: chiffres(&["Signal"])?.parse().ok()?,
-        bande: brute(&["Band", "Bande"])
-            .and_then(|b| Bande::de_texte(&b))
-            .or_else(|| canal.and_then(|c| u16::try_from(c).ok()).and_then(Bande::de_canal)),
-        canal,
-        economie: None,
-    })
 }
 
 /// `system_profiler SPAirPortDataType` (macOS) : « Signal / Noise: -58 dBm / -94 dBm » et « Channel: 36 (5GHz,
@@ -621,56 +588,68 @@ fn signal_natif() -> Option<(String, Signal)> {
     Some((carte, signal))
 }
 
-fn signal() -> Option<Signal> {
+/// Le Wi-Fi de la connexion en cours. `Ok(None)` : pas connecté ; `Err` : le système ne se laisse pas lire (pas
+/// connecté n'est alors pas prouvé). Seul Windows peut refuser (sans la localisation) ; Linux et macOS se taisent.
+#[cfg_attr(not(windows), allow(clippy::unnecessary_wraps))]
+fn signal() -> Result<Option<Signal>, &'static str> {
     #[cfg(target_os = "linux")]
     {
-        use std::process::Command;
-        let sortie = |cmd: &str, args: &[&str]| {
-            crate::commande::lancer(Command::new(cmd).args(args).env("LC_ALL", "C"), 15)
-                .filter(|r| r.code == Some(0))
-                .map(|r| r.sortie)
-                .unwrap_or_default()
-        };
         let natif = signal_natif();
-        // nmcli seulement en secours : carte absente de /proc/net/wireless (autre espace réseau, pilote sans
+        // NetworkManager seulement en secours : carte absente de /proc/net/wireless (autre espace réseau, pilote sans
         // WEXT) ou fréquence inconnue, sans quoi le conseil sur la bande disparaîtrait.
-        let mut s = match natif.as_ref().filter(|(_, s)| s.canal.is_some()) {
-            Some((_, s)) => s.clone(),
-            None => signal_nmcli(&sortie(
-                "nmcli",
-                &"-t -f IN-USE,SIGNAL,FREQ,CHAN dev wifi list --rescan no"
-                    .split(' ')
-                    .collect::<Vec<_>>(),
-            ))
-            .or_else(|| natif.as_ref().map(|(_, s)| s.clone()))?,
+        let s = match natif.as_ref().filter(|(_, s)| s.canal.is_some()) {
+            Some((_, s)) => Some(s.clone()),
+            None => signal_networkmanager().or_else(|| natif.as_ref().map(|(_, s)| s.clone())),
         };
-        // La carte connectée, sinon la première ; puis « Power save: on » d'iw, que seul nl80211 dirait.
+        let Some(mut s) = s else {
+            return Ok(None);
+        };
+        // La carte connectée, sinon la première ; son économie d'énergie, demandée au noyau comme iw le fait.
         let carte = natif
             .map(|(c, _)| c)
             .or_else(|| cartes_wifi(std::path::Path::new("/sys/class/net")).into_iter().next());
-        s.economie = carte.and_then(|i| {
-            let etat = sortie("iw", &["dev", &i, "get", "power_save"]);
-            let v = etat.split(':').nth(1)?.trim().to_string();
-            Some(v == "on")
-        });
-        Some(s)
+        s.economie = carte.and_then(|c| crate::machine::wifi::nl80211::economie_d_energie(&c));
+        Ok(Some(s))
     }
     #[cfg(windows)]
     {
-        crate::commande::lancer(
-            crate::commande::systeme("netsh").args(["wlan", "show", "interfaces"]),
-            15,
-        )
-        .and_then(|r| signal_netsh(&r.sortie))
+        Ok(crate::machine::wifi::wlanapi::connexion()?.and_then(|c| signal_de_connexion(&c)))
     }
     #[cfg(target_os = "macos")]
     {
-        crate::commande::lancer(
+        Ok(crate::commande::lancer(
             std::process::Command::new("system_profiler").arg("SPAirPortDataType"),
             30,
         )
-        .and_then(|r| signal_airport(&r.sortie))
+        .and_then(|r| signal_airport(&r.sortie)))
     }
+}
+
+/// Le signal d'une connexion lue nativement (Windows, NetworkManager) : sa qualité (sans elle, rien à montrer), son
+/// canal et sa bande.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn signal_de_connexion(c: &crate::machine::wifi::Connexion) -> Option<Signal> {
+    Some(Signal {
+        qualite: c.qualite?,
+        canal: c.canal.map(u32::from),
+        bande: c.bande.or_else(|| c.canal.and_then(Bande::de_canal)),
+        economie: None,
+    })
+}
+
+/// NetworkManager, sur le bus : la force de la borne connectée, le pourcentage même que montrait nmcli, d'où les
+/// mêmes seuils (40 %, 60 %).
+#[cfg(target_os = "linux")]
+fn signal_networkmanager() -> Option<Signal> {
+    let l = crate::machine::wifi::networkmanager::lire().ok()??;
+    signal_de_connexion(l.connexion.as_ref()?)
+}
+
+fn signal_non_verifie(raison: &str) -> String {
+    trf!(
+        "Signal Wi-Fi non vérifié : {raison}.",
+        "Wi-Fi signal not verified: {raison}."
+    )
 }
 
 fn afficher_signal(s: &Signal) {
@@ -763,14 +742,24 @@ pub(super) fn wifi() {
         "  {DISCRET}Lecture du Wi-Fi et essais (quelques secondes)…{RESET}",
         "  {DISCRET}Reading Wi-Fi and testing (a few seconds)…{RESET}"
     );
-    let s = signal();
-    match &s {
-        Some(s) => afficher_signal(s),
-        None => Etat::Mauvais.dire(tr!(
-            "Cet ordinateur n'est connecté à aucun Wi-Fi en ce moment.",
-            "This computer is not connected to any Wi-Fi right now."
-        )),
-    }
+    let s = match signal() {
+        Ok(Some(s)) => {
+            afficher_signal(&s);
+            Some(s)
+        }
+        Ok(None) => {
+            Etat::Mauvais.dire(tr!(
+                "Cet ordinateur n'est connecté à aucun Wi-Fi en ce moment.",
+                "This computer is not connected to any Wi-Fi right now."
+            ));
+            None
+        }
+        // Illisible n'est pas « pas connecté » : dit tel quel, sans conclure.
+        Err(r) => {
+            Etat::Info.dire(&signal_non_verifie(r));
+            None
+        }
+    };
     let e = lire_etat();
     afficher_etat(&e);
     section(tr!("CE QUE ÇA VEUT DIRE", "WHAT IT MEANS"));
@@ -850,9 +839,16 @@ mod tests {
 
     #[test]
     fn signal_lu_partout() {
-        let nmcli = "  :45:2437 MHz:6\n*:72:5180 MHz:36\n  :30:2412 MHz:1\n";
+        use crate::machine::wifi::Connexion;
+        // Windows et NetworkManager : la connexion lue nativement ; sans qualité, rien à montrer.
+        let c = Connexion {
+            ssid: "Salon".into(),
+            qualite: Some(72),
+            canal: Some(36),
+            ..Connexion::default()
+        };
         assert_eq!(
-            signal_nmcli(nmcli),
+            signal_de_connexion(&c),
             Some(Signal {
                 qualite: 72,
                 canal: Some(36),
@@ -860,36 +856,33 @@ mod tests {
                 economie: None
             })
         );
-        assert_eq!(signal_nmcli("  :45:2437 MHz:6\n"), None);
-        let netsh_fr = "    Nom                    : Wi-Fi\n    État                   : connecté\n    SSID                   : Salon\n    Canal                  : 6\n    Signal                 : 58 %\n";
         assert_eq!(
-            signal_netsh(netsh_fr).map(|s| (s.qualite, s.canal)),
-            Some((58, Some(6)))
+            signal_de_connexion(&Connexion {
+                qualite: None,
+                ..c.clone()
+            }),
+            None
         );
-        let netsh_en = "    State                  : connected\n    Channel                : 149\n    Signal                 : 91%\n";
-        assert_eq!(
-            signal_netsh(netsh_en).map(|s| (s.qualite, s.canal)),
-            Some((91, Some(149)))
-        );
-        assert_eq!(signal_netsh("    State : disconnected\n"), None);
         let airport = "Wi-Fi:\n  Interfaces:\n    en0:\n      Current Network Information:\n        Salon:\n          Channel: 36 (5GHz, 80MHz)\n          Signal / Noise: -58 dBm / -94 dBm\n      Other Local Wi-Fi Networks:\n          Signal / Noise: -80 dBm / -94 dBm\n";
         assert_eq!(
             signal_airport(airport).map(|s| (s.qualite, s.canal)),
             Some((84, Some(36)))
         );
-        assert_eq!(signal_netsh(netsh_fr).and_then(|s| s.bande), Some(Bande::G24));
-        assert_eq!(signal_netsh(netsh_en).and_then(|s| s.bande), Some(Bande::G5));
         assert_eq!(signal_airport(airport).and_then(|s| s.bande), Some(Bande::G5));
+        assert!(signal_non_verifie("x").contains('x'));
     }
 
     /// En 6 GHz (Wi-Fi 6E et 7), les canaux reprennent les petits numéros : le canal 5 n'est pas du 2,4 GHz. La bande
-    /// vient de la fréquence (Linux), de la ligne « Band » (Windows 11) ou du texte du canal (macOS).
+    /// vient de la fréquence ou de la borne (Linux, Windows), sinon du texte du canal (macOS).
     #[test]
     fn six_ghz_pas_pris_pour_du_2_4() {
-        assert_eq!(signal_nmcli("*:80:5975 MHz:5\n").and_then(|s| s.bande), Some(Bande::G6));
-        let netsh =
-            "    Band                   : 6 GHz\n    Channel                : 5\n    Signal                 : 80%\n";
-        assert_eq!(signal_netsh(netsh).and_then(|s| s.bande), Some(Bande::G6));
+        let c = crate::machine::wifi::Connexion {
+            qualite: Some(80),
+            canal: Some(5),
+            bande: Some(Bande::G6),
+            ..crate::machine::wifi::Connexion::default()
+        };
+        assert_eq!(signal_de_connexion(&c).and_then(|s| s.bande), Some(Bande::G6));
         let airport = "      Current Network Information:\n        Salon:\n          Channel: 37 (6GHz, 160MHz)\n          Signal / Noise: -50 dBm / -94 dBm\n";
         assert_eq!(signal_airport(airport).and_then(|s| s.bande), Some(Bande::G6));
     }
@@ -999,32 +992,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// Sur cet ordinateur, connecté en Wi-Fi, la lecture directe donne le canal et la bande de nmcli, et une
-    /// qualité proche : nmcli prend le niveau du dernier balayage, /proc celui du lien à l'instant.
+    /// Sur cet ordinateur, connecté en Wi-Fi, la lecture directe donne le canal et la bande de NetworkManager, et une
+    /// qualité proche : NetworkManager prend le niveau du dernier balayage, /proc celui du lien à l'instant. Sauté
+    /// sans l'un ou l'autre.
     #[cfg(target_os = "linux")]
     #[test]
-    fn signal_comme_nmcli() {
-        let Some(r) = crate::commande::lancer_en_anglais(
-            std::process::Command::new("nmcli").args([
-                "-t",
-                "-f",
-                "IN-USE,SIGNAL,FREQ,CHAN",
-                "dev",
-                "wifi",
-                "list",
-                "--rescan",
-                "no",
-            ]),
-            15,
-        )
-        .filter(|r| r.code == Some(0)) else {
-            return crate::essais::saute("nmcli absent");
+    fn signal_comme_networkmanager() {
+        let (Some(nm), Some((_, natif))) = (signal_networkmanager(), signal_natif()) else {
+            return crate::essais::saute("signal Wi-Fi illisible (NetworkManager ou natif)");
         };
-        let (Some(nm), Some((_, natif))) = (signal_nmcli(&r.sortie), signal_natif()) else {
-            return crate::essais::saute("signal Wi-Fi illisible (nmcli ou natif)");
-        };
-        assert_eq!((natif.canal, natif.bande), (nm.canal, nm.bande), "{}", r.sortie);
-        assert!(natif.qualite.abs_diff(nm.qualite) <= 20, "{natif:?} / {nm:?}");
+        assert_eq!((natif.canal, natif.bande), (nm.canal, nm.bande));
+        assert!(
+            natif.qualite.abs_diff(nm.qualite) <= 20,
+            "{} / {}",
+            natif.qualite,
+            nm.qualite
+        );
     }
 
     /// Le ping de Windows rend 0 quand cet ordinateur répond lui-même « hôte inaccessible » : seule une réponse avec
@@ -1066,8 +1049,7 @@ mod proprietes {
 
         #[test]
         fn lectures_sans_plantage(t in sortie()) {
-            // nmcli et netsh disent un pourcentage : il est rendu tel quel ; system_profiler, des dBm, ramenés à 0-100.
-            let _ = (signal_nmcli(&t), signal_netsh(&t));
+            // system_profiler dit des dBm, ramenés à 0-100.
             if let Some(s) = signal_airport(&t) {
                 prop_assert!(s.qualite <= 100);
             }

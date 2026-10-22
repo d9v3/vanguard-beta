@@ -241,24 +241,11 @@ pub(crate) mod lecture {
         Some((carte, uuid, nom))
     }
 
-    /// La protection du réseau connecté, telle que nmcli la nomme (« WPA2 », « » pour ouvert).
+    /// La protection du réseau connecté, lue par NetworkManager sur le bus ou par le noyau, au nom que
+    /// `wifi::force` juge ; `None` : pas connecté, ou elle ne se lit pas.
     pub(crate) fn securite() -> Option<String> {
-        let s = nmcli(&[
-            "-t",
-            "-e",
-            "no",
-            "-f",
-            "ACTIVE,SECURITY,SSID",
-            "dev",
-            "wifi",
-            "list",
-            "--rescan",
-            "no",
-        ])?;
-        crate::machine::wifi::lire_nmcli(&s)
-            .into_iter()
-            .find(|v| v.actif)
-            .map(|v| v.securite)
+        let l = crate::machine::wifi::lecture_linux().ok()?;
+        crate::machine::wifi::protection_connectee(&l, &crate::machine::wifi::visibles_de(&l))
     }
 
     /// L'avis de NetworkManager sur la connexion, d'après son propre test (rien n'est envoyé ici) : « portal »,
