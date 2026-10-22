@@ -10,6 +10,11 @@ use crate::ui::*;
 /// Une étape du déploiement.
 #[derive(clap::Subcommand)]
 pub(crate) enum Etape {
+    /// Mettre à jour les archives de tldr-pages de la clé (anglais, français), vérifiées comme zipfile.testzip.
+    Tldr {
+        /// Le dossier tldr de la clé.
+        dossier: PathBuf,
+    },
     /// Vérifier que vanguard.exe ne charge ses DLL importées que depuis System32 (DependentLoadFlags).
     #[command(name = "verifier-pe")]
     VerifierPe {
@@ -21,6 +26,7 @@ pub(crate) enum Etape {
 /// 0 : l'étape a réussi ; 1 : elle a échoué, et l'a dit.
 pub(crate) fn executer(etape: Etape) -> i32 {
     let reussi = match etape {
+        Etape::Tldr { dossier } => crate::guide::tldr_sur_la_cle(&dossier),
         Etape::VerifierPe { fichier } => verifier_pe(&fichier),
     };
     i32::from(!reussi)

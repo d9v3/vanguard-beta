@@ -17,6 +17,8 @@ mod tldr;
 mod tous;
 mod windows;
 
+pub(crate) use tldr::cle::sur_la_cle as tldr_sur_la_cle;
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;

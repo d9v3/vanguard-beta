@@ -424,10 +424,11 @@ cp -f outils/cle/autorun.inf outils/cle/autorun.sh "outils/cle/Lancer Vanguard.b
 # exFAT ne garde ni droits ni liens : -rt suffit, --modify-window tolère sa précision de 2 s. Les copies de travail
 # des sessions Claude (.claude/worktrees, avec leurs propres compilations) restent sur l'ordinateur.
 rsync -rt --delete --modify-window=2 --exclude /target/ --exclude /.claude/worktrees/ ./ "$CLE/source/"
-# Exemples de tldr-pages sur la clé (src/guide/tldr.rs) : lancé depuis la clé, le guide les a tout de suite, même sur
-# un ordinateur sans Internet. Une fois par jour au plus ; sans Internet, la clé garde les siens. Avant le manifeste :
-# une archive remplacée sur la clé par quelqu'un d'autre se verra au retour.
-outils/tldr-cle.sh "$CLE/tldr" || echo "Exemples de tldr-pages non mis à jour sur la clé."
+# Exemples de tldr-pages sur la clé (src/guide/tldr/cle.rs) : lancé depuis la clé, le guide les a tout de suite, même
+# sur un ordinateur sans Internet. Une fois par jour au plus ; sans Internet, la clé garde les siens. Avant le
+# manifeste : une archive remplacée sur la clé par quelqu'un d'autre se verra au retour. Un programme d'avant
+# « deploiement » échoue sur l'usage : le message le dit, et la clé garde ses archives.
+./"$LINUX" deploiement tldr "$CLE/tldr" || echo "Exemples de tldr-pages non mis à jour sur la clé."
 # Manifeste de la clé (src/protection/manifeste.rs) : l'empreinte de chaque fichier (vanguard.jeton compris), gardée
 # sur cet ordinateur et jamais sur la clé ; le bilan la compare quand la clé revient de chez quelqu'un. La même
 # commande note la clé parmi celles que cet ordinateur connaît, avec l'état de son carnet. Un programme d'avant la

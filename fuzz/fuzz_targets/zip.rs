@@ -1,5 +1,5 @@
-//! Les archives zip téléchargées (tldr-pages) : répertoire central qui ment sur les tailles et les positions, noms
-//! démesurés, flux deflate abîmés, entrées en nombre.
+//! Les archives zip téléchargées (tldr-pages), lues ou contrôlées entières : répertoire central qui ment sur les
+//! tailles et les positions, noms démesurés, flux deflate abîmés, CRC faux, entrées en nombre.
 #![no_main]
 
 /// Les bornes du lecteur (`archives::Bornes`), à la place où il les attend.
@@ -9,6 +9,9 @@ pub struct Bornes {
     pub fichier: usize,
     pub total: usize,
 }
+
+#[path = "../../src/archives/crc32.rs"]
+mod crc32;
 
 #[allow(dead_code)]
 #[path = "../../src/archives/zip.rs"]
@@ -25,4 +28,10 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
     assert!(lus.len() <= BORNES.entrees);
     assert!(lus.iter().map(|(_, c)| c.len()).sum::<usize>() <= BORNES.total);
     assert!(lus.iter().all(|(_, c)| c.len() <= BORNES.fichier));
+    // Le contrôle entier (archives de tldr-pages de la clé) : une archive acceptée a des noms lisibles par `lire`
+    // aussi, entrée pour entrée.
+    if let Ok(noms) = zip::controler(octets, &BORNES) {
+        assert!(noms.len() <= BORNES.entrees);
+        assert_eq!(noms.len(), lus.len());
+    }
 });

@@ -16,6 +16,16 @@ use crate::ui::*;
 /// lancé en root avec le dossier d'un compte (sudo -E), un nom déductible du numéro de processus laissait ce compte
 /// poser d'avance un lien vers un fichier du système, que root aurait tronqué en écrivant à travers.
 pub(crate) fn ecrire_atomique(chemin: &std::path::Path, contenu: impl AsRef<[u8]>) -> std::io::Result<()> {
+    ecrire_atomique_date(chemin, contenu.as_ref(), None)
+}
+
+/// `ecrire_atomique`, avec la date de modification `date` donnée au fichier avant qu'il prenne sa place : une copie
+/// garde ainsi l'âge de son original (archives de tldr-pages de la clé), sans instant où elle paraîtrait neuve.
+pub(crate) fn ecrire_atomique_date(
+    chemin: &std::path::Path,
+    contenu: &[u8],
+    date: Option<std::time::SystemTime>,
+) -> std::io::Result<()> {
     use std::io::Write;
     // Un nom par écriture, pas seulement par processus : deux fils qui écrivent le même fichier en même temps se
     // volaient leur fichier temporaire, et le second renommage échouait (vu dans les tests sous Wine).
@@ -42,7 +52,10 @@ pub(crate) fn ecrire_atomique(chemin: &std::path::Path, contenu: impl AsRef<[u8]
     // Pas créé (un lien ou un fichier déjà là sous ce nom) : rien à retirer, ce n'est pas le nôtre.
     let mut f = options.open(&temporaire)?;
     let resultat = (|| {
-        f.write_all(contenu.as_ref())?;
+        f.write_all(contenu)?;
+        if let Some(date) = date {
+            f.set_modified(date)?;
+        }
         f.sync_all()?;
         remplacer(&temporaire, chemin)
     })();
