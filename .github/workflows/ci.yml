@@ -282,7 +282,7 @@ jobs:
       # asInvoker ; puis les failles connues des deux programmes, lues dans la liste qu'ils portent.
       - name: Le .exe porte ses gardes, failles connues des programmes
         run: |
-          python3 outils/verifier-pe.py target/x86_64-pc-windows-gnu/release/vanguard.exe
+          target/x86_64-unknown-linux-musl/release/vanguard deploiement verifier-pe target/x86_64-pc-windows-gnu/release/vanguard.exe
           bash outils/failles-programmes.sh target/x86_64-unknown-linux-musl/release/vanguard \
             target/x86_64-pc-windows-gnu/release/vanguard.exe
       - uses: actions/upload-artifact@v7

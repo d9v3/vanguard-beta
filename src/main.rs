@@ -17,6 +17,7 @@ mod commande;
 mod copier;
 mod corriger;
 mod depanner;
+mod deploiement;
 mod desinstaller;
 mod diagnostic;
 mod dns_rapide;
@@ -696,6 +697,13 @@ enum Commande {
         /// Une image copiée et vérifiée par outils/images-cle.sh (son nom dans ISO/), avec --images.
         #[arg(long, requires = "images")]
         image: Vec<String>,
+    },
+    /// Étapes de outils/deployer.sh confiées au programme : archives tldr de la clé, vérification du programme
+    /// Windows, témoins de la clé.
+    #[command(hide = true)]
+    Deploiement {
+        #[command(subcommand)]
+        etape: deploiement::Etape,
     },
     /// Plugins : des programmes à vous ajoutés à Vanguard sans changer son code (essais, outils expérimentaux), chacun
     /// dans un dossier avec un plugin.toml. « ajouter <dossier> » le copie et l'approuve (empreintes SHA-256),
@@ -3392,6 +3400,12 @@ async fn main() {
             image,
         }) => {
             protection::manifeste::commande(ecrire.as_deref(), accepter, images.as_deref().map(|d| (d, &image[..])));
+        }
+        Some(Commande::Deploiement { etape }) => {
+            let code = deploiement::executer(etape);
+            if code != 0 {
+                std::process::exit(code);
+            }
         }
         Some(Commande::Lien {
             adresse, json: false, ..

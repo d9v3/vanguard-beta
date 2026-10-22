@@ -28,6 +28,7 @@ pub(crate) mod mots_de_passe;
 mod navigateur;
 mod navigation_detournee;
 mod partages;
+pub(crate) mod pe;
 mod post_quantique;
 pub(crate) mod regles;
 mod regles_communes;
