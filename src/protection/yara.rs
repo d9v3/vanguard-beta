@@ -504,6 +504,20 @@ mod tests {
         assert!(regles().is_ok(), "{:?}", regles().err());
     }
 
+    /// Le fichier d'origine de ReversingLabs, tel qu'outils/maj-yara.sh le pose, sans l'allègement de build.rs, se
+    /// compile aussi avec YARA-X, le moteur du programme, et donne autant de règles que la version allégée. Il remplace
+    /// l'étape de la CI qui le passait à libyara (yara-python, installé par pip sans version épinglée) : un autre moteur
+    /// pouvait accepter une règle que YARA-X refuse, ou l'inverse.
+    #[test]
+    fn les_regles_d_origine_se_compilent_avec_yara_x() {
+        let mut compilateur = yara_x::Compiler::new();
+        if let Err(e) = compilateur.add_source(ORIGINE) {
+            panic!("règles d'origine refusées par YARA-X : {e}");
+        }
+        let origine = compilateur.build();
+        assert_eq!(origine.iter().count(), regles().unwrap().iter().count());
+    }
+
     /// Un dossier d'essai : un faux programme qui remplit une règle d'essai de même forme que celles de ReversingLabs
     /// (en-tête « MZ » et textes), un fichier ordinaire, un lien et un fichier creux trop gros, sautés.
     #[test]
