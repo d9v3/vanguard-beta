@@ -10,6 +10,10 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 ## Prochaine version
 
 - **Fenêtre du menu.** Sous Linux (Hyprland), le cadre garde une hauteur fixe d'un menu à l'autre : chaque changement de taille s'animait, et la transition se voyait. Sous Windows, la fenêtre suit encore la hauteur de chaque menu, mais reste là où elle a été mise (ramenée dans l'écran seulement si elle en sort).
+- **Logiciels proposés.** Bitwarden s'installe par Flathub sous Arch (le paquet de la distribution est resté en
+  2026.3.1) ; Flathub n'y distribue plus que sa version commerciale, qui se dit donc « pas libre »,
+  alors que winget et Homebrew installent la version GPL-3.0. VeraCrypt sert aux clés USB, disques externes et coffres,
+  le disque système allant à BitLocker ou LUKS. Rôles au vouvoiement.
 
 ## 23 octobre 2026 : version 0.86
 

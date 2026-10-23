@@ -10,6 +10,10 @@ delivered just before it. Only the latest version has its download page; every v
 ## Next version
 
 - **Menu window.** On Linux (Hyprland), the frame keeps a fixed height from one menu to the next: every size change was animated, and the transition showed. On Windows, the window still follows each menu's height but stays where it was put (brought back on screen only if it goes off).
+- **Offered software.** Bitwarden installs from Flathub on Arch (the distribution package stayed at 2026.3.1) ; Flathub
+  now only ships its commercial build, which is therefore shown as not open source, while winget and Homebrew install
+  the GPL-3.0 build. VeraCrypt is for USB sticks, external drives and vaults, the system drive going to BitLocker or
+  LUKS.
 
 ## October 23, 2026: version 0.86
 

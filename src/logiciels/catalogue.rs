@@ -73,6 +73,10 @@ pub struct Logiciel {
 
 const AUCUN: [&[&str]; 4] = [&[], &[], &[], &[]];
 
+/// Applications Flathub qui ne sont pas la version libre du logiciel (l'éditeur y publie sa version commerciale) :
+/// installé par là, le logiciel se dit « pas libre », quelle que soit sa licence ailleurs.
+pub const FLATHUB_PAS_LIBRE: &[&str] = &["com.bitwarden.desktop"];
+
 pub const CATALOGUE: &[Logiciel] = &[
     // ── Navigateurs et courriel ──
     Logiciel {
@@ -136,7 +140,7 @@ pub const CATALOGUE: &[Logiciel] = &[
         nom: "Thunderbird",
         categorie: Categorie::Internet,
         role: (
-            "Courriel, agenda et contacts, pour tous tes comptes.",
+            "Courriel, agenda et contacts, pour tous vos comptes.",
             "Email, calendar and contacts, for all your accounts.",
         ),
         licence: Some("MPL-2.0"),
@@ -157,7 +161,7 @@ pub const CATALOGUE: &[Logiciel] = &[
         nom: "Signal",
         categorie: Categorie::Echanges,
         role: (
-            "Messagerie chiffrée de bout en bout (se relie à ton téléphone).",
+            "Messagerie chiffrée de bout en bout (se relie à votre téléphone).",
             "End-to-end encrypted messaging (links to your phone).",
         ),
         licence: Some("AGPL-3.0"),
@@ -187,8 +191,8 @@ pub const CATALOGUE: &[Logiciel] = &[
         nom: "LocalSend",
         categorie: Categorie::Echanges,
         role: (
-            "Envoie fichiers et photos aux appareils de la maison, sans Internet ni compte.",
-            "Sends files and photos to devices at home, no Internet or account needed.",
+            "Envoie fichiers et photos aux appareils du réseau local, sans Internet ni compte.",
+            "Sends files and photos to devices on the local network, no Internet or account needed.",
         ),
         licence: Some("Apache-2.0"),
         recommande: false,
@@ -221,9 +225,13 @@ pub const CATALOGUE: &[Logiciel] = &[
             "Gestionnaire de mots de passe synchronisé : un mot de passe différent par site.",
             "Synced password manager: a different password for each site.",
         ),
+        // winget et Homebrew installent encore la version GPL-3.0, Flathub la version commerciale (voir
+        // FLATHUB_PAS_LIBRE) : Bitwarden a annoncé le 9 octobre 2026 une licence commerciale pour ses applications
+        // distribuées. À revérifier à chaque version.
         licence: Some("GPL-3.0"),
         recommande: true,
-        paquets: [&["bitwarden"], &[], &[], &[]],
+        // Pas le paquet d'Arch : extra/bitwarden est resté en 2026.3.1, marqué périmé depuis juin 2026.
+        paquets: AUCUN,
         flatpak: Some("com.bitwarden.desktop"),
         commandes: &["bitwarden", "bitwarden-desktop"],
         winget: Some(("Bitwarden.Bitwarden", "Bitwarden")),
@@ -233,7 +241,7 @@ pub const CATALOGUE: &[Logiciel] = &[
         nom: "KeePassXC",
         categorie: Categorie::Securite,
         role: (
-            "Coffre de mots de passe hors ligne, dans un fichier chiffré qui reste à toi.",
+            "Coffre de mots de passe hors ligne, dans un fichier chiffré qui vous appartient.",
             "Offline password vault, in an encrypted file that stays yours.",
         ),
         licence: Some("GPL-3.0"),
@@ -249,9 +257,11 @@ pub const CATALOGUE: &[Logiciel] = &[
         nom: "VeraCrypt",
         categorie: Categorie::Securite,
         role: (
-            "Chiffre un disque, une clé USB ou un dossier coffre-fort.",
-            "Encrypts a drive, a USB stick or a vault folder.",
+            "Chiffre une clé USB, un disque externe ou un coffre. Disque système : BitLocker ou LUKS.",
+            "Encrypts a USB stick, an external drive or a vault. System drive: BitLocker or LUKS.",
         ),
+        // VeraCrypt ne chiffre pas le disque système de Linux, et sous Windows BitLocker suit tout seul les
+        // changements du démarrage sécurisé : le disque système se chiffre avec l'outil du système.
         licence: Some("Apache-2.0 + TrueCrypt-3.0"),
         recommande: false,
         // Un Flatpak ne peut pas monter de volume chiffré : seulement le paquet de la distribution.
@@ -265,7 +275,7 @@ pub const CATALOGUE: &[Logiciel] = &[
         nom: "Cryptomator",
         categorie: Categorie::Securite,
         role: (
-            "Chiffre tes fichiers avant qu'ils partent dans le nuage (Drive, Dropbox, OneDrive…).",
+            "Chiffre vos fichiers avant qu'ils partent dans le nuage (Drive, Dropbox, OneDrive…).",
             "Encrypts your files before they go to the cloud (Drive, Dropbox, OneDrive…).",
         ),
         licence: Some("GPL-3.0"),
@@ -403,7 +413,7 @@ pub const CATALOGUE: &[Logiciel] = &[
         nom: "Joplin",
         categorie: Categorie::Bureautique,
         role: (
-            "Notes et listes synchronisées, chiffrées de bout en bout si tu le veux.",
+            "Notes et listes synchronisées, chiffrées de bout en bout si vous le voulez.",
             "Synced notes and to-do lists, end-to-end encrypted if you wish.",
         ),
         licence: Some("AGPL-3.0-or-later"),

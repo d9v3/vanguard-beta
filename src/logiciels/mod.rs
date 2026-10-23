@@ -5,7 +5,7 @@
 
 mod catalogue;
 
-use catalogue::{CATALOGUE, Categorie, Logiciel};
+use catalogue::{CATALOGUE, Categorie, FLATHUB_PAS_LIBRE, Logiciel};
 
 use crate::selection::{Case, Ligne, choisir, cocher};
 use crate::ui::*;
@@ -243,8 +243,14 @@ fn role(l: &Logiciel) -> &'static str {
     if crate::langue::anglais() { l.role.1 } else { l.role.0 }
 }
 
-fn licence(l: &Logiciel) -> String {
-    match l.licence {
+/// La licence de ce qui s'installe par cette source : la version d'un éditeur sur Flathub peut ne pas être libre.
+fn licence_installee(o: &Offre) -> Option<&'static str> {
+    let commerciale = o.flatpak && o.logiciel.flatpak.is_some_and(|id| FLATHUB_PAS_LIBRE.contains(&id));
+    if commerciale { None } else { o.logiciel.licence }
+}
+
+fn licence(o: &Offre) -> String {
+    match licence_installee(o) {
         Some(nom) => trf!("Logiciel libre ({nom}).", "Free and open source ({nom})."),
         None => tr!("Gratuit, mais pas libre.", "Free of charge, but not open source.").into(),
     }
@@ -256,7 +262,7 @@ fn detail(o: &Offre) -> String {
         "{} {} Source : {}.",
         "{} {} Source: {}.",
         role(o.logiciel),
-        licence(o.logiciel),
+        licence(o),
         o.source
     )
 }
@@ -265,8 +271,7 @@ fn precision(o: &Offre) -> String {
     if o.installe {
         tr!("installé", "installed").into()
     } else {
-        o.logiciel
-            .licence
+        licence_installee(o)
             .unwrap_or(tr!("gratuit, pas libre", "free, not open source"))
             .into()
     }
@@ -653,6 +658,26 @@ mod tests {
     fn messages_dans_la_largeur() {
         let larges = crate::ui::textes_trop_larges(include_str!("mod.rs"));
         assert_eq!(larges, Vec::<String>::new());
+    }
+
+    #[test]
+    fn bitwarden_de_flathub_n_est_pas_dit_libre() {
+        let l = CATALOGUE.iter().find(|l| l.nom == "Bitwarden").unwrap();
+        let offre = |flatpak| Offre {
+            logiciel: l,
+            installe: false,
+            commandes: Vec::new(),
+            source: String::new(),
+            flatpak,
+        };
+        assert_eq!(licence_installee(&offre(true)), None);
+        assert_eq!(licence_installee(&offre(false)), Some("GPL-3.0"));
+        for id in FLATHUB_PAS_LIBRE {
+            assert!(
+                CATALOGUE.iter().any(|l| l.flatpak == Some(*id)),
+                "{id} : absent du catalogue"
+            );
+        }
     }
 
     #[test]
