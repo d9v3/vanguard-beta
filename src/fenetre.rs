@@ -1,5 +1,7 @@
 //! La fenêtre épouse le menu : large de `LARGEUR` + 2 colonnes, assez haute pour toutes ses lignes sans dépasser
-//! l'écran, et au milieu de l'écran, à l'ouverture comme à chaque menu d'une autre hauteur.
+//! l'écran. Sous Hyprland, une hauteur fixe posée une fois (`RANGEES_FIXES`), au milieu de l'écran : chaque
+//! changement de taille s'anime, et la transition se voyait d'un menu à l'autre. Sous Windows, la hauteur suit
+//! chaque menu, mais la fenêtre reste là où la personne l'a mise (ramenée dans l'écran seulement si elle en sort).
 //!
 //! Seulement une fenêtre ouverte pour Vanguard : sous Hyprland, la fenêtre flottante du terminal qui l'a lancé
 //! lui-même (le raccourci du menu des applications) ; sous Windows, une console où Vanguard est seul (double-clic),
@@ -25,6 +27,14 @@ const COLONNES: u16 = LARGEUR as u16 + 2;
 
 /// Jamais moins : sous un petit menu, les pauses et les questions des outils ont besoin de place.
 const RANGEES_MINIMUM: u16 = 12;
+
+/// Sous Hyprland, la hauteur du cadre, la même pour tous les menus : assez pour le plus haut (bornée à l'écran par
+/// `placement`). Un menu plus haut encore la fait grandir une fois, jamais rapetisser.
+#[cfg(target_os = "linux")]
+const RANGEES_FIXES: u16 = 40;
+
+/// Recentrer la fenêtre : sous Hyprland seulement, avec sa taille fixe ; sous Windows, la place choisie est gardée.
+const CENTRER: bool = cfg!(target_os = "linux");
 
 /// Le numéro de la dernière demande : un fil plus ancien s'arrête dès qu'une autre a suivi.
 static DEMANDE: AtomicU64 = AtomicU64::new(0);
@@ -58,11 +68,14 @@ type Place = (i32, i32, i32, i32);
 /// Demande une fenêtre de `rangees` lignes (le menu, son aide et la saisie), sans attendre qu'elle soit faite.
 pub fn epouser(rangees: usize) {
     let rangees = u16::try_from(rangees).unwrap_or(u16::MAX).max(RANGEES_MINIMUM);
+    #[cfg(target_os = "linux")]
+    let rangees = rangees.max(RANGEES_FIXES);
     {
         let Ok(mut derniere) = DERNIERE.lock() else {
             return;
         };
-        if *derniere == Some(rangees) {
+        // Sous Hyprland, la taille ne fait que grandir : la même, ou plus petite, ne redemande rien.
+        if *derniere == Some(rangees) || (CENTRER && derniere.is_some_and(|d| d >= rangees)) {
             return;
         }
         *derniere = Some(rangees);
@@ -85,8 +98,8 @@ fn ajuster(demande: u64, colonnes: u16, rangees: u16) {
         let Some((m, zone)) = fenetre.mesurer() else {
             return;
         };
-        let place = placement(m, avant, colonnes, rangees, zone);
-        // La bonne grille, ou la plus grande que l'écran permet : reste à centrer.
+        let place = placement(m, avant, colonnes, rangees, zone, CENTRER);
+        // La bonne grille, ou la plus grande que l'écran permet : reste à la mettre à sa place.
         if atteinte(&m, colonnes, rangees) || (place.2, place.3) == (m.l, m.h) {
             if !centree(&m, place) {
                 fenetre.placer((place.0, place.1, m.l, m.h), &m);
@@ -105,16 +118,23 @@ fn atteinte(m: &Mesure, colonnes: u16, rangees: u16) -> bool {
         && (rangees..=rangees.saturating_add(1)).contains(&m.rangees)
 }
 
-/// La fenêtre est-elle déjà au milieu ? Quelques pixels d'écart (bordures, arrondis du bureau) ne comptent pas.
+/// La fenêtre est-elle déjà à sa place ? Quelques pixels d'écart (bordures, arrondis du bureau) ne comptent pas.
 fn centree(m: &Mesure, place: Place) -> bool {
     (m.x - place.0).abs() <= 4 && (m.y - place.1).abs() <= 4
 }
 
-/// La place de la fenêtre pour `colonnes` × `rangees` cases : bornée à la zone, au milieu de la zone.
-fn placement(m: Mesure, avant: Option<Mesure>, colonnes: u16, rangees: u16, zone: Zone) -> Place {
+/// La place de la fenêtre pour `colonnes` × `rangees` cases : bornée à la zone ; au milieu de la zone avec `centrer`,
+/// sinon là où elle est, ramenée dans la zone si elle en dépasse.
+fn placement(m: Mesure, avant: Option<Mesure>, colonnes: u16, rangees: u16, zone: Zone, centrer: bool) -> Place {
     let l = pixels(m.l, m.colonnes, colonnes, avant.map(|a| (a.l, a.colonnes))).clamp(1, zone.l.max(1));
     let h = pixels(m.h, m.rangees, rangees, avant.map(|a| (a.h, a.rangees))).clamp(1, zone.h.max(1));
-    (zone.x + (zone.l - l) / 2, zone.y + (zone.h - h) / 2, l, h)
+    if centrer {
+        (zone.x + (zone.l - l) / 2, zone.y + (zone.h - h) / 2, l, h)
+    } else {
+        let gauche = m.x.clamp(zone.x, (zone.x + zone.l - l).max(zone.x));
+        let haut = m.y.clamp(zone.y, (zone.y + zone.h - h).max(zone.y));
+        (gauche, haut, l, h)
+    }
 }
 
 /// Les pixels d'une fenêtre de `cible` cases, quand `px` pixels en montrent `n`. La case se mesure entre deux tailles
@@ -498,15 +518,36 @@ mod tests {
 
     #[test]
     fn la_fenetre_reste_dans_l_ecran_et_au_milieu() {
-        let (x, y, l, h) = placement(m(800, 630, 100, 30), None, 78, 200, ZONE);
+        let (x, y, l, h) = placement(m(800, 630, 100, 30), None, 78, 200, ZONE, true);
         assert_eq!((l, h), (632, 874), "trop haute : bornée à l'écran");
         assert_eq!((x, y), ((1600 - 632) / 2, 26));
-        let (x, y, l, h) = placement(m(800, 630, 100, 30), None, 78, 20, ZONE);
+        let (x, y, l, h) = placement(m(800, 630, 100, 30), None, 78, 20, ZONE, true);
         // Au milieu de la zone, au pixel près (un écart impair se partage en deux).
         assert!(
             (x + l / 2 - 800).abs() <= 1 && (y + h / 2 - (26 + 874 / 2)).abs() <= 1,
             "{x} {y} {l} {h}"
         );
+    }
+
+    /// Sous Windows : la fenêtre garde sa place ; trop basse ou trop à droite pour sa nouvelle taille, elle est
+    /// seulement ramenée dans l'écran.
+    #[test]
+    fn sans_centrer_la_fenetre_garde_sa_place() {
+        let ici = Mesure {
+            x: 300,
+            y: 120,
+            ..m(800, 630, 100, 30)
+        };
+        let (x, y, ..) = placement(ici, None, 78, 20, ZONE, false);
+        assert_eq!((x, y), (300, 120));
+        let au_bord = Mesure {
+            x: 1400,
+            y: 700,
+            ..m(800, 630, 100, 30)
+        };
+        let (x, y, l, h) = placement(au_bord, None, 78, 30, ZONE, false);
+        assert!(x + l <= ZONE.x + ZONE.l && y + h <= ZONE.y + ZONE.h, "{x} {y} {l} {h}");
+        assert!(x >= ZONE.x && y >= ZONE.y);
     }
 
     #[test]
