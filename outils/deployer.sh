@@ -25,8 +25,23 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 LINUX=target/x86_64-unknown-linux-musl/release/vanguard
 WINDOWS=target/x86_64-pc-windows-gnu/release/vanguard.exe
-# Commit dont viennent les binaires compilés : on ne recompile pas une version déjà compilée.
-COMMIT_COMPILE=target/.commit-compile
+# Le repère de la compilation (outils/compiler-version.sh) : le commit compilé, l'arbre propre ou non, l'empreinte
+# des deux programmes. Rien ne part (clé, VM, GitHub) dont les octets ne sont pas ceux qu'il a relevés.
+REPERE_COMPILATION=target/.compilation
+commit_compile() { sed -n 's/^commit //p' "$REPERE_COMPILATION" 2>/dev/null | head -1; }
+# Le code a-t-il changé depuis le commit compilé ? Les commits qui ne touchent que ce que le programme n'intègre pas
+# (captures, page des fonctions, documentation : .github/hors-code.txt) n'obligent pas à recompiler : le programme
+# de ce commit-là est le même, et sa date gravée reste celle du commit compilé (celui que la page de la version
+# étiquette, outils/publier-version.sh).
+code_change_depuis() { # commit compilé
+  local hors
+  [[ -n $1 && -f $LINUX ]] || return 0
+  [[ $1 != "$(git rev-parse HEAD)" ]] || return 1
+  git merge-base --is-ancestor "$1" HEAD 2>/dev/null || return 0
+  hors=$(grep -v '^#' .github/hors-code.txt 2>/dev/null | head -n 1)
+  [[ -n $hors ]] || return 0
+  git diff --name-only "$1" HEAD | grep -vqE "$hors"
+}
 MODE=${1:-}
 if [[ $MODE == --publier ]]; then
   MODE=""
@@ -116,6 +131,15 @@ refuser() {
 }
 
 compiler() {
+  # Un programme qui part sur GitHub doit être celui de son commit : rien de compilé d'un arbre où le code a changé
+  # sans être commité (une autre session, un essai en cours), qui partirait signé puis disparaîtrait. Seul un
+  # déploiement local (--local) le permet, et son repère le dit (outils/publier-version.sh refuse alors de publier).
+  if [[ -z $LOCAL && -n $(git status --porcelain -- src build.rs assets Cargo.toml Cargo.lock .cargo \
+    rust-toolchain.toml) ]]; then
+    echo "✖ Compilation refusée : le code a des changements non commités (git status) ; un programme publié est"
+    echo "  celui de son commit. Les committer, ou outils/deployer.sh --local pour cet ordinateur seulement."
+    exit 1
+  fi
   # Chaque programme porte la liste de ses dépendances, versions comprises (cargo auditable, section .dep-v0), que
   # cargo audit bin relit plus bas, et chez quiconque l'a téléchargé. Sans ces outils, rien n'est compilé : jamais de
   # programme publié sans sa liste. cargo-auditable dans la version de la CI (.github/workflows/ci.yml) : une autre
@@ -150,7 +174,6 @@ compiler() {
   # (outils/compiler-version.sh : chaîne épinglée, Cargo.lock tel quel, chemins de la compilation retirés).
   local debut=$SECONDS
   outils/compiler-version.sh
-  git rev-parse HEAD >"$COMMIT_COMPILE"
   duree compilation "$debut"
 }
 
@@ -191,7 +214,7 @@ if [[ $MODE == --branchement ]]; then
   else
     echo "GitHub injoignable : copie de la version locale."
   fi
-  if [[ ! -f $LINUX || $(cat "$COMMIT_COMPILE" 2>/dev/null) != $(git rev-parse HEAD) ]]; then
+  if code_change_depuis "$(commit_compile)"; then
     compiler
   fi
 elif [[ $MODE != --sans-compiler ]]; then
@@ -206,6 +229,29 @@ if [[ -f $WINDOWS ]]; then
     echo "✖ vanguard.exe non vérifié (DLL depuis System32, manifeste) : rien ne part. Un programme Linux d'avant « deploiement » ne sait pas le vérifier : recompiler."
     exit 1
   }
+fi
+# Les octets qui vont partir sont-ils ceux que outils/compiler-version.sh a relevés à la compilation ? Le dossier de
+# compilation est partagé avec les worktrees, et une compilation ordinaire (cargo build) y remplace les programmes sans
+# toucher le repère : ceux-là ne partent nulle part.
+octets_compiles() {
+  local sorte fichier attendu
+  for sorte in linux-x86_64 windows-x86_64; do
+    fichier=$LINUX
+    [[ $sorte == linux-x86_64 ]] || fichier=$WINDOWS
+    [[ -f $fichier ]] || continue
+    attendu=$(sed -n "s/^$sorte //p" "$REPERE_COMPILATION" 2>/dev/null | head -1)
+    [[ -n $attendu && $attendu == "$(sha256sum "$fichier" | cut -d' ' -f1)" ]] || return 1
+  done
+}
+if ! octets_compiles; then
+  if [[ $MODE == --sans-compiler && -z $ACCEPTER ]]; then
+    echo "Programmes de target/ pas ceux de outils/compiler-version.sh (compilation ordinaire, autre dossier) : rien"
+    echo "n'est copié."
+    exit 0
+  fi
+  echo "✖ Programmes remplacés depuis leur compilation (empreintes ≠ $REPERE_COMPILATION) : rien ne part. Relancer"
+  echo "  outils/deployer.sh (il recompile)."
+  exit 1
 fi
 # Aucun mot d'attaque que Vanguard cherche en clair dans les programmes qui partent : Defender a supprimé une
 # version pour la seule présence de « sekurlsa:: » (outils/verifier-masque.sh, sur les programmes livrés tels quels).
@@ -237,10 +283,10 @@ if [[ -z $MODE ]]; then
   if [[ -n $A_PUBLIER && $(cat assets/captures/VERSION 2>/dev/null) != "$VERSION" ]]; then
     if command -v uv >/dev/null && timeout 900 uv run -q --no-project --with pyte python outils/captures.py "$LINUX"; then
       git add assets/captures assets/partage.png
-      # Les captures ne sont pas dans le programme : celui qui vient d'être compilé reste celui de ce commit, que
-      # outils/publier-version.sh publiera.
+      # Les captures ne sont pas dans le programme (.github/hors-code.txt) : celui qui vient d'être compilé reste
+      # celui du commit compilé, que outils/publier-version.sh étiquette et publie.
       git commit -q -m "Captures d'écran : v$VERSION" -- assets/captures assets/partage.png &&
-        echo "Captures d'écran refaites (v$VERSION)." && git rev-parse HEAD >"$COMMIT_COMPILE"
+        echo "Captures d'écran refaites (v$VERSION)."
     else
       echo "Captures d'écran non refaites : le README garde celles d'avant."
     fi
@@ -255,7 +301,7 @@ if [[ -z $MODE ]]; then
       if git diff --quiet --cached -- docs/index.html; then
         echo "Page des fonctions déjà à jour."
       elif git commit -q -m "Page des fonctions : v$VERSION" -- docs/index.html; then
-        echo "Page des fonctions refaite (v$VERSION) : docs/index.html." && git rev-parse HEAD >"$COMMIT_COMPILE"
+        echo "Page des fonctions refaite (v$VERSION) : docs/index.html."
       fi
     else
       echo "Page des fonctions non refaite : GitHub Pages garde celle d'avant."

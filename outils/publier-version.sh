@@ -77,16 +77,48 @@ if [[ ${1:-} == --notes ]]; then
   exit 0
 fi
 
-# Les programmes publiés doivent être ceux de ce commit, et ce commit celui de GitHub : la page de la version y
-# renvoie, et le Mac de GitHub compile la tête de master.
+# Les programmes publiés doivent être, octet pour octet, ceux que outils/compiler-version.sh a compilés d'un arbre
+# propre (son repère, target/.compilation : commit, arbre propre, empreintes) ; ce commit-là, ou un d'avant dont le
+# programme est le même (seuls des captures, la page des fonctions, la documentation ont changé depuis :
+# .github/hors-code.txt), et HEAD celui de GitHub : la page de la version y renvoie, et le Mac de GitHub compile la
+# tête de master. L'étiquette se pose sur le commit compilé : qui la recompile retrouve sa date gravée.
 if [[ -n $(git status --porcelain --untracked-files=no) ]]; then
   echo "Des changements ne sont pas committés : rien de publié."
   exit 1
 fi
-if [[ $(cat target/.commit-compile 2>/dev/null) != "$COMMIT" || ! -f $LINUX || ! -f $WINDOWS ]]; then
-  echo "Les programmes compilés ne viennent pas de ce commit : lancer d'abord outils/deployer.sh."
-  exit 1
-fi
+REPERE=target/.compilation
+repere() { sed -n "s/^$1 //p" "$REPERE" 2>/dev/null | head -1; }
+HORS_CODE=$(grep -v '^#' .github/hors-code.txt | head -n 1)
+# Le commit compilé sur la sortie si les programmes sont bien les siens ; sinon la raison, et code 1. Lue telle quelle
+# par outils/essais-signature.sh.
+verifier_compilation() {
+  local compile sorte fichier gravee
+  compile=$(repere commit)
+  [[ -f $LINUX && -f $WINDOWS && -n $compile ]] ||
+    { echo "Pas de programmes compilés par outils/compiler-version.sh ($REPERE) : lancer d'abord outils/deployer.sh."; return 1; }
+  [[ $(repere propre) == oui ]] ||
+    { echo "Programmes compilés d'un arbre aux changements non commités ($REPERE) : rien de publié (outils/deployer.sh)."; return 1; }
+  for sorte in linux-x86_64 windows-x86_64; do
+    fichier=$LINUX
+    [[ $sorte == linux-x86_64 ]] || fichier=$WINDOWS
+    [[ $(repere "$sorte") == "$(sha256sum "$fichier" | cut -d' ' -f1)" ]] || {
+      echo "$fichier n'est plus celui de sa compilation (empreinte ≠ $REPERE : compilation ordinaire, autre worktree) :"
+      echo "rien de publié. Relancer outils/deployer.sh."
+      return 1
+    }
+  done
+  if [[ $compile != "$COMMIT" ]] && ! { git merge-base --is-ancestor "$compile" "$COMMIT" 2>/dev/null &&
+    [[ -n $HORS_CODE ]] && ! git diff --name-only "$compile" "$COMMIT" | grep -vqE "$HORS_CODE"; }; then
+    echo "Les programmes compilés viennent de ${compile:0:12}, et le code a changé depuis : lancer d'abord outils/deployer.sh."
+    return 1
+  fi
+  # La date gravée avec la version (VANGUARD-VERSION:x.y.z+N, build.rs) est celle du commit compilé.
+  gravee=$(grep -aoE 'VANGUARD-VERSION:[0-9]+\.[0-9]+\.[0-9]+\+[0-9]+;' "$LINUX" | head -1 | sed 's/.*+//; s/;$//')
+  [[ $gravee == "$(git log -1 --format=%ct "$compile")" ]] ||
+    { echo "Date gravée dans le programme (${gravee:-absente}) ≠ celle du commit compilé : rien de publié."; return 1; }
+  echo "$compile"
+}
+COMPILE=$(verifier_compilation) || { echo "$COMPILE"; exit 1; }
 git fetch -q --tags origin
 if [[ $(git rev-parse origin/master) != "$COMMIT" ]]; then
   echo "Ce commit n'est pas la tête de master sur GitHub : lancer d'abord outils/deployer.sh."
@@ -105,6 +137,10 @@ DOSSIER=$(mktemp -d)
 trap 'rm -rf "$DOSSIER"' EXIT
 cp "$LINUX" "$DOSSIER/vanguard-linux-x86_64"
 cp "$WINDOWS" "$DOSSIER/vanguard-windows-x86_64.exe"
+# Les copies qui partent, relues : celles-là, et pas un fichier remplacé entre la vérification et la copie.
+[[ $(sha256sum "$DOSSIER/vanguard-linux-x86_64" | cut -d' ' -f1) == "$(repere linux-x86_64)" &&
+  $(sha256sum "$DOSSIER/vanguard-windows-x86_64.exe" | cut -d' ' -f1) == "$(repere windows-x86_64)" ]] ||
+  { echo "Copie des programmes différente de leur compilation : rien de publié."; exit 1; }
 # Les failles connues, revérifiées sur les fichiers mêmes qui partent (outils/failles-programmes.sh, comme dans
 # deployer.sh) : depuis, une compilation ordinaire a pu remplacer ceux de target/ par d'autres, sans leur liste, sans
 # toucher .commit-compile, et une faille paraître. Avant d'attendre le Mac ; la version macOS l'est une fois récupérée.
@@ -119,7 +155,6 @@ outils/failles-programmes.sh "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard
 # tourne avec le macos.yml de cette branche et le cache qu'elle a pu préparer, et un compte GitHub pris ferait ainsi
 # signer par la clé de l'auteur un programme compilé ailleurs. master compile sans cache (macos.yml). Le passage
 # de la branche sur le Mac, avant la fusion, reste un essai : il ne sert plus à la page.
-HORS_CODE=$(grep -v '^#' .github/hors-code.txt | head -n 1)
 avec_programme() {
   local id sha
   while read -r id sha; do
@@ -246,7 +281,7 @@ else
     { echo "✖ Signature refusée (voir ci-dessus) : rien de publié, ni page ni mise à jour."; exit 1; }
   SIGNEE=1
 fi
-gh release create "$TAG" --target "$COMMIT" --title "$NOM $VERSION" --notes "$NOTES" \
+gh release create "$TAG" --target "$COMPILE" --title "$NOM $VERSION" --notes "$NOTES" \
   "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-macos" "$DOSSIER/SHA256SUMS.txt"
 echo "Version $TAG publiée : $(gh release view "$TAG" --json url -q .url)"
 PUBLIEE_SIGNEE=""

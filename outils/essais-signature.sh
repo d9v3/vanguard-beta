@@ -17,6 +17,10 @@
 #      pas un bloc que la principale, peut-être volée, a ajouté après lui ; sans point sûr, elle refuse un historique
 #      signé par la principale ; la principale refuse un historique tronqué ou à une version inconnue d'ici ; avec un
 #      point sûr, ni repli sur derniere.txt ni --premier. Jamais le vrai point sûr : VANGUARD_HISTORIQUE_PUBLIE.
+#   8. Les programmes publiés sont les octets que outils/compiler-version.sh a relevés pour leur commit
+#      (publier-version.sh, verifier_compilation, dans un dépôt git jetable) : remplacés, compilés d'un arbre modifié,
+#      d'un commit au code changé depuis, ou à la date gravée d'un autre commit, ils sont refusés ; un commit qui ne
+#      touche que .github/hors-code.txt (captures, documentation) les laisse valoir.
 #   6. Le programme Mac que la clé signe vient d'une exécution de master : publier-version.sh (sa fonction
 #      avec_programme, face à un faux gh) écarte celle d'une autre branche, même plus récente et du même commit ; et
 #      macos.yml ne reprend aucun cache sur master. Sans jq, cet essai est sauté et dit.
@@ -301,6 +305,52 @@ fi
 awk '/uses: Swatinem\/rust-cache/ { getline; exit !($0 ~ /if: github.ref_name != .master.$/) }' \
   "$DEPOT/.github/workflows/macos.yml" && ok "macos.yml : aucun cache repris sur master (branche ou étiquette)" ||
   ko "macos.yml reprend un cache sur master ou une étiquette « master » (le programme signé en sortirait)"
+
+# 8. Les octets publiés, ceux de la compilation de leur commit.
+G=$T/depot-compilation
+mkdir -p "$G/src" "$G/docs" "$G/.github" "$G/target/x86_64-unknown-linux-musl/release" "$G/target/x86_64-pc-windows-gnu/release"
+grep -v '^#' "$DEPOT/.github/hors-code.txt" >"$G/.github/hors-code.txt"
+echo 'fn main() {}' >"$G/src/main.rs"
+echo doc >"$G/docs/index.md"
+git -C "$G" init -q && git -C "$G" add -A && git -C "$G" -c user.name=essai -c user.email=essai@exemple.invalid \
+  commit -qm compile
+C1=$(git -C "$G" rev-parse HEAD)
+programmes_g() { # date gravée
+  printf 'ELF VANGUARD-VERSION:0.88.0+%s;' "$1" >"$G/target/x86_64-unknown-linux-musl/release/vanguard"
+  printf 'MZ windows' >"$G/target/x86_64-pc-windows-gnu/release/vanguard.exe"
+  printf 'commit %s\npropre %s\nlinux-x86_64 %s\nwindows-x86_64 %s\n' "$C1" "${2:-oui}" \
+    "$(sha256sum "$G/target/x86_64-unknown-linux-musl/release/vanguard" | cut -d' ' -f1)" \
+    "$(sha256sum "$G/target/x86_64-pc-windows-gnu/release/vanguard.exe" | cut -d' ' -f1)" >"$G/target/.compilation"
+}
+{ grep '^repere() {' "$DEPOT/outils/publier-version.sh"
+  awk '/^verifier_compilation\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh"; } >"$T/verifier_compilation.sh"
+compilation() { # commit visé (HEAD par défaut) : la sortie de verifier_compilation, son code
+  (cd "$G" && COMMIT=${1:-$(git rev-parse HEAD)} LINUX=target/x86_64-unknown-linux-musl/release/vanguard \
+    WINDOWS=target/x86_64-pc-windows-gnu/release/vanguard.exe REPERE=target/.compilation \
+    HORS_CODE=$(cat .github/hors-code.txt) bash -c "source '$T/verifier_compilation.sh'; verifier_compilation")
+}
+DATE1=$(git -C "$G" log -1 --format=%ct)
+programmes_g "$DATE1"
+[[ $(compilation) == "$C1" ]] && ok "publier : les octets de la compilation de ce commit valent" ||
+  ko "publier, compilation juste refusée : $(compilation)"
+echo autre >>"$G/docs/index.md"
+git -C "$G" -c user.name=essai -c user.email=essai@exemple.invalid commit -qam captures
+[[ $(compilation) == "$C1" ]] && ok "publier : un commit hors du programme (documentation) ne les change pas" ||
+  ko "publier après un commit de documentation : $(compilation)"
+printf 'MZ autre' >"$G/target/x86_64-pc-windows-gnu/release/vanguard.exe"
+compilation >/dev/null && ko "publier : un programme remplacé depuis sa compilation est accepté" ||
+  ok "publier : un programme remplacé depuis sa compilation (autre worktree, cargo build) est refusé"
+programmes_g "$DATE1" non
+compilation >/dev/null && ko "publier : une compilation d'un arbre modifié est acceptée" ||
+  ok "publier : une compilation d'un arbre aux changements non commités est refusée"
+programmes_g 1700000000
+compilation >/dev/null && ko "publier : une date gravée d'un autre commit est acceptée" ||
+  ok "publier : une date gravée qui n'est pas celle du commit compilé est refusée"
+programmes_g "$DATE1"
+echo 'fn main() { piege() }' >"$G/src/main.rs"
+git -C "$G" -c user.name=essai -c user.email=essai@exemple.invalid commit -qam code
+compilation >/dev/null && ko "publier : un code changé depuis la compilation est accepté" ||
+  ok "publier : le code a changé depuis la compilation : refusé"
 
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }
 echo "Signature des versions : tout est juste."

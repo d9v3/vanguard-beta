@@ -1103,6 +1103,9 @@ esac
 exit 0
 FIN
 chmod +x "$DD/target/x86_64-unknown-linux-musl/release/vanguard"
+# Le repère de outils/compiler-version.sh : ces octets-là, et pas d'autres, partent.
+printf 'commit 0000000000000000000000000000000000000000\npropre oui\nlinux-x86_64 %s\n' \
+  "$(sha256sum "$DD/target/x86_64-unknown-linux-musl/release/vanguard" | cut -d' ' -f1)" >"$DD/target/.compilation"
 deployer() { # arguments… : sortie dans $BANC/sortie, code de sortie rendu
   rm -f "$BANC/notifications.log" "$BANC/vanguard.log"
   touch "$BANC/run/vanguard-deployer-local"
@@ -1154,6 +1157,23 @@ code=$?
 voir "--accepter-cle DOSSIER : le volume adopté (programme copié, référence forcée)" \
   eval '((code == 0)) && [[ -f $K/Linux/vanguard ]] && dit "$BANC/vanguard.log" "manifeste --ecrire $K --forcer"' ||
   montrer "$BANC/sortie"
+rm -rf /run/media/alice
+# Le programme remplacé depuis sa compilation (une compilation ordinaire, un autre worktree) : rien n'est copié.
+mkdir -p "$K"
+echo temoin >"$K/vanguard.cle"
+echo "$J" >"$K/vanguard.jeton"
+(cd "$K" && find . -type f -print0 | sort -z | xargs -0 sha256sum) >"$BANC/reference"
+cp "$DD/target/.compilation" "$BANC/compilation"
+sed -i 's/^linux-x86_64 .*/linux-x86_64 0000/' "$DD/target/.compilation"
+deployer --sans-compiler
+code=$?
+voir "programmes pas ceux de compiler-version.sh : rien n'est copié sur la clé" \
+  eval '((code == 0)) && [[ ! -e $K/Linux ]] && dit "$BANC/sortie" "pas ceux de outils/compiler-version.sh"' ||
+  montrer "$BANC/sortie"
+deployer --accepter-cle
+code=$?
+voir "… et --accepter-cle refuse (code 1)" eval '((code == 1)) && [[ ! -e $K/Linux ]]' || montrer "$BANC/sortie"
+cp "$BANC/compilation" "$DD/target/.compilation"
 rm -rf /run/media/alice
 # Un journal au-delà de la borne de src/journal.rs (4 Mio) : mis de côté, rien n'en part vers GitHub.
 mkdir -p "$BANC/donnees/vanguard"
