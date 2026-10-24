@@ -1,6 +1,10 @@
 //! Scan YARA de la mémoire des processus en marche : les 308 règles de `yara` appliquées aux régions privées ou
 //! exécutables de chaque programme, là où vit un logiciel malveillant « sans fichier » (chargeur réfléchi, shellcode,
-//! programme effacé du disque mais encore en marche, exécutable déballé que son emballage cachait sur le disque).
+//! programme effacé du disque mais encore en marche, exécutable déballé que son emballage cachait sur le disque), et
+//! aux images chargées (programmes, bibliothèques) que leur fichier ne suffit plus à juger : fichier effacé ou sur un
+//! système de fichiers en mémoire (tmpfs), pages de code modifiées en mémoire (une DLL réécrite après son
+//! chargement). Une image ou une allocation se lit d'un seul tenant, ses régions recollées à leur place : les règles
+//! voient son en-tête et son code ensemble (`Bloc`). Ce qui n'a pas pu être jugé est compté, jamais sain.
 //! Lecture seule, à la demande seulement, jamais en fond : aucun processus n'est touché. Sous Windows, LSASS, les
 //! processus protégés et les processus critiques ne sont jamais lus (lire LSASS est le geste d'un voleur de mots de
 //! passe, que Defender bloque) ; un nom ne suffit pas à écarter un processus : seul le programme de System32 qui le
@@ -24,6 +28,8 @@ const PAR_PROCESSUS_MAX: u64 = 512 << 20;
 const TOTAL_MAX: u64 = 4 << 30;
 const DUREE_MAX: Duration = Duration::from_secs(300);
 const DELAI_PAR_REGION: Duration = Duration::from_secs(10);
+/// Les processus lus en partie nommés à l'écran ; les autres sont comptés.
+const NOMS_MAX: usize = 5;
 
 /// Les processus critiques de Windows, jamais lus : LSASS et son isolat (les mots de passe), le noyau et ses
 /// processus critiques (en tuer un arrête Windows ; les lire ne sert à rien). Seconde barrière derrière le niveau de
@@ -54,6 +60,72 @@ struct Processus {
 pub(crate) struct Region {
     pub debut: u64,
     pub taille: u64,
+}
+
+/// Des régions lues ensemble dans un seul tampon, chacune à sa place : les régions d'une même image ou d'une même
+/// allocation. Lues une à une, l'en-tête (« MZ », ELF) et le code d'une image ne se voyaient jamais ensemble, et 286
+/// des 308 règles exigent l'en-tête. Les trous entre elles se lisent comme des zéros.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Bloc {
+    /// (région, position dans le tampon), par position croissante.
+    pub morceaux: Vec<(Region, u64)>,
+    /// La taille du tampon : jusqu'à la fin du morceau qui finit le plus loin.
+    pub taille: u64,
+    /// Disposition chargée (Windows : positions comptées depuis la base de l'allocation) : pe.entry_point y est une
+    /// RVA, comme pour libyara en mémoire. Sinon (Linux : positions dans le fichier), une position de fichier.
+    pub chargee: bool,
+}
+
+impl Bloc {
+    pub(crate) fn seule(region: Region, chargee: bool) -> Bloc {
+        Bloc {
+            morceaux: vec![(region, 0)],
+            taille: region.taille,
+            chargee,
+        }
+    }
+
+    /// Les octets à lire : la somme des morceaux, sans les trous.
+    fn a_lire(&self) -> u64 {
+        self.morceaux.iter().map(|(r, _)| r.taille).sum()
+    }
+
+    /// La place à montrer : l'adresse du premier morceau, sur la taille du tampon.
+    fn region(&self) -> Region {
+        Region {
+            debut: self.morceaux.first().map_or(0, |(r, _)| r.debut),
+            taille: self.taille,
+        }
+    }
+}
+
+/// Les morceaux d'une même image ou allocation, (région, position), en un bloc s'il tient dans le tampon et n'est pas
+/// fait surtout de trous (une réservation de tas de 60 Mio dont 1 Mio est validé ne se lit pas comme 60 Mio de
+/// zéros) ; sinon chacun seul, comme avant.
+pub(crate) fn regrouper(mut morceaux: Vec<(Region, u64)>, chargee: bool) -> Vec<Bloc> {
+    morceaux.sort_by_key(|&(_, position)| position);
+    let fin = morceaux
+        .iter()
+        .map(|(r, p)| p.saturating_add(r.taille))
+        .max()
+        .unwrap_or(0);
+    let somme: u64 = morceaux.iter().map(|(r, _)| r.taille).sum();
+    if morceaux.len() > 1 && fin <= TAILLE_REGION_MAX as u64 && fin <= somme.saturating_mul(4) + (1 << 20) {
+        return vec![Bloc {
+            morceaux,
+            taille: fin,
+            chargee,
+        }];
+    }
+    morceaux.into_iter().map(|(r, _)| Bloc::seule(r, chargee)).collect()
+}
+
+/// Ce que le relevé des régions d'un processus a retenu : les blocs à lire, et les images chargées qui n'ont pas pu
+/// être jugées (fichier ou pages modifiées illisibles) : ni lues ni écartées, elles empêchent le ✔.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Releve {
+    pub blocs: Vec<Bloc>,
+    pub images_non_verifiees: usize,
 }
 
 /// Le nom d'un processus critique de Windows, quelle que soit sa casse.
@@ -119,48 +191,180 @@ fn trier(pid: u32, nom: &str, moi: u32, windows: Option<&Lieux>) -> Tri {
 
 /// Une région de Windows à lire (VirtualQueryEx : état, protection, type) : validée (MEM_COMMIT), lisible (ni
 /// PAGE_NOACCESS ni PAGE_GUARD, qui ferait une exception dans le programme lu), et privée (MEM_PRIVATE : tas, piles,
-/// VirtualAlloc, là où un chargeur pose son code) ou mappée exécutable. Une image (MEM_IMAGE) est un fichier mappé,
-/// déjà le domaine du scan de fichiers.
+/// VirtualAlloc, là où un chargeur pose son code) ou mappée exécutable. Une image (MEM_IMAGE) se juge à part
+/// (`image_windows`).
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn region_windows(etat: u32, protection: u32, sorte: u32) -> bool {
-    const MEM_COMMIT: u32 = 0x1000;
-    const PAGE_NOACCESS: u32 = 0x01;
-    const PAGE_GUARD: u32 = 0x100;
-    const EXECUTABLES: u32 = 0xF0;
     const MEM_PRIVATE: u32 = 0x2_0000;
     const MEM_MAPPED: u32 = 0x4_0000;
-    let acces = protection & 0xFF;
-    etat == MEM_COMMIT
-        && acces != 0
-        && acces != PAGE_NOACCESS
-        && protection & PAGE_GUARD == 0
+    const EXECUTABLES: u32 = 0xF0;
+    lisible_windows(etat, protection)
         && (sorte == MEM_PRIVATE || (sorte == MEM_MAPPED && protection & EXECUTABLES != 0))
 }
 
-/// Une ligne de /proc/<pid>/maps, retenue si la région est lisible et anonyme (tas, piles, VirtualAlloc de Linux :
-/// mmap sans fichier) ou si son fichier a été effacé (« (deleted) », memfd : le programme qui tourne n'existe plus
-/// sur le disque). Un fichier mappé encore présent est le domaine du scan de fichiers ; vdso, vvar et vsyscall sont au
-/// noyau.
+/// Validée et lisible sans exception dans le programme lu.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn lisible_windows(etat: u32, protection: u32) -> bool {
+    const MEM_COMMIT: u32 = 0x1000;
+    const PAGE_NOACCESS: u32 = 0x01;
+    const PAGE_GUARD: u32 = 0x100;
+    let acces = protection & 0xFF;
+    etat == MEM_COMMIT && acces != 0 && acces != PAGE_NOACCESS && protection & PAGE_GUARD == 0
+}
+
+/// Une image chargée de Windows (MEM_IMAGE) : `Some(true)` à lire en entier, `Some(false)` laissée au scan de
+/// fichiers, `None` non vérifiée. Écartée seulement si son fichier est là ET qu'aucune de ses pages de code n'est
+/// privée : la réécriture d'une DLL chargée (pages copiées à l'écriture, devenues privées) et les processus
+/// « fantômes » (image d'un fichier effacé) vivent en MEM_IMAGE, sur un fichier sain ou absent, que ni le scan de
+/// fichiers ni celui des régions privées ne voyaient. Une page de code en lecture-écriture-exécution
+/// (PAGE_EXECUTE_READWRITE) n'est pas celle d'une image intacte : lue aussi.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn image_windows(fichier_present: Option<bool>, pages_privees: Option<bool>, rwx: bool) -> Option<bool> {
+    if fichier_present == Some(false) || pages_privees == Some(true) || rwx {
+        return Some(true);
+    }
+    (fichier_present == Some(true) && pages_privees == Some(false)).then_some(false)
+}
+
+/// Une entrée de /proc/<pid>/smaps : l'en-tête (celui de maps) et le champ « Anonymous » (pages privées, copiées à
+/// l'écriture ou jamais adossées à un fichier).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(crate) fn region_linux(ligne: &str) -> Option<Region> {
+#[derive(Debug, Clone, PartialEq)]
+struct Mappage {
+    region: Region,
+    lisible: bool,
+    executable: bool,
+    decalage: u64,
+    peripherique: (u32, u32),
+    inode: u64,
+    chemin: String,
+    anonyme_ko: u64,
+}
+
+/// L'en-tête d'une entrée de smaps (« debut-fin droits décalage majeur:mineur inode chemin »), nombres en hexadécimal
+/// sauf l'inode ; `None` pour une ligne de champ (« Rss: 4 kB »).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn entete_linux(ligne: &str) -> Option<Mappage> {
     let mut champs = ligne.splitn(6, ' ');
-    let (adresses, droits) = (champs.next()?, champs.next()?);
-    let chemin = champs.nth(3).map(str::trim).unwrap_or_default();
-    if !droits.starts_with('r') {
-        return None;
-    }
-    let anonyme =
-        chemin.is_empty() || chemin == "[heap]" || chemin.starts_with("[stack") || chemin.starts_with("[anon");
-    let efface = chemin.ends_with(" (deleted)") || chemin.starts_with("/memfd:");
-    if !(anonyme || efface) {
-        return None;
-    }
+    let (adresses, droits, decalage, peripherique, inode) = (
+        champs.next()?,
+        champs.next()?,
+        champs.next()?,
+        champs.next()?,
+        champs.next()?,
+    );
+    let chemin = champs.next().map(str::trim).unwrap_or_default().to_string();
     let (debut, fin) = adresses.split_once('-')?;
     let (debut, fin) = (u64::from_str_radix(debut, 16).ok()?, u64::from_str_radix(fin, 16).ok()?);
-    (fin > debut).then(|| Region {
-        debut,
-        taille: fin - debut,
+    let (majeur, mineur) = peripherique.split_once(':')?;
+    let droits = droits.as_bytes();
+    if droits.len() != 4 || fin <= debut {
+        return None;
+    }
+    Some(Mappage {
+        region: Region {
+            debut,
+            taille: fin - debut,
+        },
+        lisible: droits[0] == b'r',
+        executable: droits[2] == b'x',
+        decalage: u64::from_str_radix(decalage, 16).ok()?,
+        peripherique: (
+            u32::from_str_radix(majeur, 16).ok()?,
+            u32::from_str_radix(mineur, 16).ok()?,
+        ),
+        inode: inode.parse().ok()?,
+        chemin,
+        anonyme_ko: 0,
     })
+}
+
+/// Les systèmes de fichiers en mémoire (tmpfs, ramfs) de /proc/<pid>/mountinfo, par numéro de périphérique : un
+/// fichier qui y est mappé n'est sur aucun disque, et le scan de fichiers ne couvre ni /dev/shm, ni /tmp, ni
+/// /run/user.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn en_memoire_linux(mountinfo: &str) -> Vec<(u32, u32)> {
+    mountinfo
+        .lines()
+        .filter_map(|ligne| {
+            let (avant, apres) = ligne.split_once(" - ")?;
+            let genre = apres.split(' ').next()?;
+            if !matches!(genre, "tmpfs" | "ramfs") {
+                return None;
+            }
+            let (majeur, mineur) = avant.split(' ').nth(2)?.split_once(':')?;
+            Some((majeur.parse().ok()?, mineur.parse().ok()?))
+        })
+        .collect()
+}
+
+/// Les blocs à lire d'après /proc/<pid>/smaps. Retenus : les régions anonymes (tas, piles, mmap sans fichier) ; une
+/// région de fichier dont des pages sont privées (« Anonymous » non nul : modifiée en mémoire, même si le fichier
+/// sur le disque est sain) ; et, lues en entier, recollées à leur position dans le fichier, les images d'un fichier
+/// effacé (« (deleted) », memfd), posé sur un système de fichiers en mémoire (`en_memoire`), ou dont une région
+/// exécutable a des pages privées (code réécrit). Vdso, vvar et vsyscall sont au noyau. `en_memoire` : `None` si
+/// mountinfo ne s'est pas lu, et une image de fichier qui n'est pas retenue pour une autre raison est alors non
+/// vérifiée, jamais écartée.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn releve_linux(smaps: &str, en_memoire: Option<&[(u32, u32)]>) -> Releve {
+    let mut mappages: Vec<Mappage> = Vec::new();
+    for ligne in smaps.lines() {
+        if let Some(m) = entete_linux(ligne) {
+            mappages.push(m);
+        } else if let (Some(m), Some(valeur)) = (mappages.last_mut(), ligne.strip_prefix("Anonymous:")) {
+            m.anonyme_ko = valeur.trim().trim_end_matches("kB").trim().parse().unwrap_or(0);
+        }
+    }
+    let mut releve = Releve::default();
+    let mut groupe: Vec<Mappage> = Vec::new();
+    let vider = |groupe: &mut Vec<Mappage>, releve: &mut Releve| {
+        let Some(premier) = groupe.first() else {
+            return;
+        };
+        let efface = premier.chemin.ends_with(" (deleted)") || premier.chemin.starts_with("/memfd:");
+        let tmpfs = en_memoire.map(|e| e.contains(&premier.peripherique));
+        let reecrit = groupe.iter().any(|m| m.executable && m.anonyme_ko > 0);
+        if efface || reecrit || tmpfs == Some(true) {
+            let morceaux = groupe.iter().map(|m| (m.region, m.decalage)).collect();
+            releve.blocs.extend(regrouper(morceaux, false));
+        } else {
+            releve.blocs.extend(
+                groupe
+                    .iter()
+                    .filter(|m| m.anonyme_ko > 0)
+                    .map(|m| Bloc::seule(m.region, false)),
+            );
+            if tmpfs.is_none() {
+                releve.images_non_verifiees += 1;
+            }
+        }
+        groupe.clear();
+    };
+    for m in mappages {
+        // Une région illisible (garde, réservation) n'est ni lue ni une coupure : les segments d'une bibliothèque
+        // sont souvent séparés par une telle région.
+        if !m.lisible {
+            continue;
+        }
+        let anonyme = m.chemin.is_empty()
+            || m.chemin == "[heap]"
+            || m.chemin.starts_with("[stack")
+            || m.chemin.starts_with("[anon");
+        let fichier = !anonyme && !m.chemin.starts_with('[');
+        let meme = groupe
+            .first()
+            .is_some_and(|g| g.chemin == m.chemin && g.inode == m.inode && g.peripherique == m.peripherique);
+        if !(fichier && meme) {
+            vider(&mut groupe, &mut releve);
+        }
+        if fichier {
+            groupe.push(m);
+        } else if anonyme {
+            releve.blocs.push(Bloc::seule(m.region, false));
+        }
+    }
+    vider(&mut groupe, &mut releve);
+    releve
 }
 
 /// Ce que les bornes décident pour une région.
@@ -175,12 +379,13 @@ enum Decision {
     Arret,
 }
 
-fn decider(taille: u64, lu_processus: u64, lu_total: u64, ecoule: Duration) -> Decision {
+/// `taille` : celle du tampon (régions et trous) ; `a_lire` : les octets à lire, comptés dans les bornes de lecture.
+fn decider(taille: u64, a_lire: u64, lu_processus: u64, lu_total: u64, ecoule: Duration) -> Decision {
     if ecoule >= DUREE_MAX || lu_total >= TOTAL_MAX {
         Decision::Arret
     } else if taille > TAILLE_REGION_MAX as u64 {
         Decision::Sauter
-    } else if lu_processus + taille > PAR_PROCESSUS_MAX {
+    } else if lu_processus + a_lire > PAR_PROCESSUS_MAX {
         Decision::ProcessusPlein
     } else {
         Decision::Lire
@@ -188,13 +393,15 @@ fn decider(taille: u64, lu_processus: u64, lu_total: u64, ecoule: Duration) -> D
 }
 
 /// Ce qu'a donné la lecture d'un processus : les règles trouvées avec leur région, les octets lus, les régions
-/// sautées ou illisibles, celles lues seulement jusqu'à un trou (une partie libérée entre la liste des régions et leur
-/// lecture : le reste n'est pas lu), et si une borne générale a tout arrêté.
+/// sautées ou illisibles (dont celles trop grosses pour le tampon), celles lues seulement jusqu'à un trou (une partie
+/// libérée entre la liste des régions et leur lecture : le reste n'est pas lu), et si une borne générale a tout
+/// arrêté.
 #[derive(Debug, Default, PartialEq)]
 struct Lecture {
     trouves: Vec<(String, Region)>,
     octets: u64,
     sautees: usize,
+    trop_grosses: usize,
     partielles: usize,
     arret: bool,
 }
@@ -238,59 +445,91 @@ fn effacer(octets: &mut [u8]) {
     std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
 }
 
-/// Lit les régions par `lire`, chacune dans le début de `tampon` (jamais agrandi : une région plus grande est sautée),
-/// et leur applique les règles, dans les bornes, chaque région comme un fichier à part (une chaîne à cheval sur deux
-/// régions n'est pas vue, comme avec YARA-X). `lire` rend le nombre d'octets lus (0 : rien). `lu_total` et `debut` :
-/// ce qui a déjà été lu dans les processus d'avant, et le départ de l'analyse. Une région que le moteur n'a pas pu
-/// finir (délai, ou panique sur un contenu piégé) est comptée sautée : jamais lue en entier pour rien.
+/// Lit les blocs par `lire`, région par région, chacune à sa place dans le début de `tampon` (jamais agrandi : un
+/// bloc plus grand est sauté), et leur applique les règles, dans les bornes, chaque bloc comme un fichier à part (une
+/// chaîne à cheval sur deux blocs n'est pas vue, comme avec YARA-X). `lire` rend le nombre d'octets lus (0 : rien).
+/// `lu_total` et `debut` : ce qui a déjà été lu dans les processus d'avant, et le départ de l'analyse. Un bloc que le
+/// moteur n'a pas pu finir (délai, ou panique sur un contenu piégé) est compté sauté : jamais lu en entier pour rien.
 fn analyser_regions(
     regles: &Regles,
-    regions: &[Region],
+    blocs: &[Bloc],
     tampon: &mut [u8],
     mut lire: impl FnMut(&Region, &mut [u8]) -> usize,
     lu_total: u64,
     debut: Instant,
 ) -> Lecture {
     let mut lecture = Lecture::default();
-    for (i, region) in regions.iter().enumerate() {
+    for (i, bloc) in blocs.iter().enumerate() {
         match decider(
-            region.taille,
+            bloc.taille,
+            bloc.a_lire(),
             lecture.octets,
             lu_total + lecture.octets,
             debut.elapsed(),
         ) {
             Decision::Arret => {
                 lecture.arret = true;
-                lecture.sautees += regions.len() - i;
+                lecture.sautees += blocs.len() - i;
                 break;
             }
             Decision::ProcessusPlein => {
-                lecture.sautees += regions.len() - i;
+                lecture.sautees += blocs.len() - i;
                 break;
             }
-            Decision::Sauter => lecture.sautees += 1,
+            Decision::Sauter => {
+                lecture.sautees += 1;
+                lecture.trop_grosses += 1;
+            }
             Decision::Lire => {
-                let Some(zone) = usize::try_from(region.taille).ok().and_then(|t| tampon.get_mut(..t)) else {
+                let Some(zone) = usize::try_from(bloc.taille).ok().and_then(|t| tampon.get_mut(..t)) else {
                     lecture.sautees += 1;
                     continue;
                 };
-                let lus = lire(region, zone).min(zone.len());
+                let recolle = bloc.morceaux.len() > 1;
+                // Les trous d'un bloc recollé se lisent comme des zéros, jamais comme le reste d'une région d'avant.
+                if recolle {
+                    zone.fill(0);
+                }
+                let (mut lus, mut entier, mut fin) = (0usize, true, 0usize);
+                for (region, position) in &bloc.morceaux {
+                    let place = usize::try_from(*position)
+                        .ok()
+                        .zip(usize::try_from(region.taille).ok())
+                        .and_then(|(p, t)| Some(p..p.checked_add(t)?));
+                    let Some(dest) = place.clone().and_then(|p| zone.get_mut(p)) else {
+                        entier = false;
+                        continue;
+                    };
+                    let n = lire(region, dest).min(dest.len());
+                    if n < dest.len() {
+                        entier = false;
+                        if recolle {
+                            dest[n..].fill(0);
+                        }
+                    }
+                    lus += n;
+                    fin = fin.max(place.map_or(0, |p| p.start + n));
+                }
                 if lus == 0 {
                     lecture.sautees += 1;
                     continue;
                 }
-                if lus < zone.len() {
+                if !entier {
                     lecture.partielles += 1;
                 }
                 lecture.octets += lus as u64;
                 let echeance = Instant::now() + DELAI_PAR_REGION;
-                let zone = &zone[..lus];
+                let zone = if recolle { &zone[..] } else { &zone[..fin] };
                 match crate::journal::rattraper(std::panic::AssertUnwindSafe(|| {
-                    regles.analyser_tampon(zone, Some(echeance))
+                    if bloc.chargee {
+                        regles.analyser_image(zone, Some(echeance))
+                    } else {
+                        regles.analyser_tampon(zone, Some(echeance))
+                    }
                 })) {
                     Ok(Ok(trouvees)) => lecture
                         .trouves
-                        .extend(trouvees.into_iter().map(|k| (regles.nom(k).to_string(), *region))),
+                        .extend(trouvees.into_iter().map(|k| (regles.nom(k).to_string(), bloc.region()))),
                     _ => lecture.sautees += 1,
                 }
             }
@@ -315,7 +554,7 @@ mod plateforme {
     use std::fs::File;
     use std::os::unix::fs::FileExt;
 
-    use super::{Acces, Processus, Region, region_linux};
+    use super::{Acces, Processus, Region, Releve, en_memoire_linux, releve_linux};
 
     /// Les processus de /proc, nom d'après `comm` (choisi par le programme : rendu inoffensif).
     pub(super) fn processus() -> Vec<Processus> {
@@ -329,16 +568,30 @@ mod plateforme {
             .collect()
     }
 
-    /// /proc/<pid>/maps pour les régions, /proc/<pid>/mem pour les lire : le noyau refuse l'ouverture de `mem` sans
-    /// le droit de tracer le processus (autre compte, ou Yama ptrace_scope ≥ 1 hors de ses descendants).
+    /// Un fichier de /proc, borné (smaps d'un navigateur : quelques Mio).
+    fn lire_proc(chemin: &str) -> Option<String> {
+        use std::io::Read;
+        let mut texte = String::new();
+        File::open(chemin)
+            .ok()?
+            .take(256 << 20)
+            .read_to_string(&mut texte)
+            .ok()?;
+        Some(texte)
+    }
+
+    /// /proc/<pid>/smaps pour les régions (et leurs pages privées), mountinfo pour les systèmes de fichiers en
+    /// mémoire, /proc/<pid>/mem pour les lire : le noyau refuse l'ouverture de `mem` et de `smaps` sans le droit de
+    /// tracer le processus (autre compte, ou Yama ptrace_scope ≥ 1 hors de ses descendants).
     pub(super) fn ouvrir(pid: u32) -> Acces {
-        let Ok(cartes) = std::fs::read_to_string(format!("/proc/{pid}/maps")) else {
+        let Some(cartes) = lire_proc(&format!("/proc/{pid}/smaps")) else {
             return Acces::Refuse;
         };
+        let en_memoire = lire_proc(&format!("/proc/{pid}/mountinfo")).map(|m| en_memoire_linux(&m));
         match File::open(format!("/proc/{pid}/mem")) {
             Ok(fichier) => Acces::Ouvert(Lecteur {
                 fichier,
-                regions: cartes.lines().filter_map(region_linux).collect(),
+                releve: releve_linux(&cartes, en_memoire.as_deref()),
             }),
             Err(_) => Acces::Refuse,
         }
@@ -351,12 +604,15 @@ mod plateforme {
 
     pub(super) struct Lecteur {
         fichier: File,
-        regions: Vec<Region>,
+        releve: Releve,
     }
 
     impl Lecteur {
-        pub(super) fn regions(&self) -> Vec<Region> {
-            self.regions.clone()
+        pub(super) fn regions(&self) -> Releve {
+            Releve {
+                blocs: self.releve.blocs.clone(),
+                images_non_verifiees: self.releve.images_non_verifiees,
+            }
         }
 
         /// Lit le début d'une région dans `zone` (de sa taille) et rend le nombre d'octets lus : 0 si rien n'a pu
@@ -467,7 +723,7 @@ mod plateforme {
     pub(super) struct Lecteur(std::convert::Infallible);
 
     impl Lecteur {
-        pub(super) fn regions(&self) -> Vec<Region> {
+        pub(super) fn regions(&self) -> super::Releve {
             match self.0 {}
         }
 
@@ -494,8 +750,8 @@ struct Masque {
     chemin: String,
 }
 
-/// Le bilan de l'analyse : combien de processus lus, non lus (droits), exclus par choix, lus en partie, si une
-/// borne a tout arrêté, les règles que le moteur a refusées (non vérifiées), les correspondances et les masquages.
+/// Le bilan de l'analyse : combien de processus lus, non lus (droits), exclus par choix, lus en partie (et lesquels),
+/// les régions trop grosses et les images non jugées, si une borne a tout arrêté, les règles que le moteur a refusées (non vérifiées), les correspondances et les masquages.
 #[derive(Debug, Default, PartialEq)]
 struct Bilan {
     regles_refusees: usize,
@@ -503,6 +759,12 @@ struct Bilan {
     non_lus: usize,
     exclus: usize,
     incomplets: usize,
+    /// Les processus lus en partie (ou dont une image n'a pas été jugée), nommés : les premiers seulement.
+    noms_incomplets: Vec<String>,
+    /// Les régions plus grosses que le tampon, jamais lues.
+    trop_grosses: usize,
+    /// Les images chargées qui n'ont pas pu être jugées (`Releve`).
+    images_non_verifiees: usize,
     arrete: bool,
     trouves: Vec<Trouve>,
     masques: Vec<Masque>,
@@ -521,7 +783,13 @@ enum Verdict {
 fn verdict(bilan: &Bilan) -> Verdict {
     if !bilan.trouves.is_empty() || !bilan.masques.is_empty() {
         Verdict::Trouve
-    } else if bilan.lus == 0 || bilan.non_lus > 0 || bilan.incomplets > 0 || bilan.arrete || bilan.regles_refusees > 0 {
+    } else if bilan.lus == 0
+        || bilan.non_lus > 0
+        || bilan.incomplets > 0
+        || bilan.images_non_verifiees > 0
+        || bilan.arrete
+        || bilan.regles_refusees > 0
+    {
         Verdict::Incomplet
     } else {
         Verdict::Sain
@@ -576,10 +844,10 @@ fn parcourir(regles: &Regles) -> Bilan {
             Acces::Protege => bilan.exclus += 1,
             Acces::Refuse => bilan.non_lus += 1,
             Acces::Ouvert(lecteur) => {
-                let regions = lecteur.regions();
+                let releve = lecteur.regions();
                 let lecture = analyser_regions(
                     regles,
-                    &regions,
+                    &releve.blocs,
                     &mut tampon.0,
                     |r, z| lecteur.lire(r, z),
                     lu_total,
@@ -587,8 +855,13 @@ fn parcourir(regles: &Regles) -> Bilan {
                 );
                 lu_total += lecture.octets;
                 bilan.lus += 1;
+                bilan.trop_grosses += lecture.trop_grosses;
+                bilan.images_non_verifiees += releve.images_non_verifiees;
                 if lecture.incomplete() {
                     bilan.incomplets += 1;
+                }
+                if (lecture.incomplete() || releve.images_non_verifiees > 0) && bilan.noms_incomplets.len() < NOMS_MAX {
+                    bilan.noms_incomplets.push(p.nom.clone());
                 }
                 bilan
                     .trouves
@@ -659,13 +932,32 @@ fn afficher(bilan: &Bilan, regles: &Regles) {
         };
         avertir(&texte);
     }
+    let mut noms = bilan.noms_incomplets.join(", ");
+    if bilan.noms_incomplets.len() >= NOMS_MAX {
+        noms.push('…');
+    }
     if bilan.incomplets > 0 {
         avertir(&trf!(
-            "{} processus lus en partie : régions de plus de {} Mio, au-delà de {} Mio par processus, ou disparues entre-temps, en tout ou en partie.",
-            "{} processes partly read: regions over {} MiB, beyond {} MiB per process, or gone in the meantime, wholly or in part.",
+            "{} processus lus en partie ({noms}) : régions de plus de {} Mio, au-delà de {} Mio par processus, ou disparues entre-temps, en tout ou en partie.",
+            "{} processes partly read ({noms}): regions over {} MiB, beyond {} MiB per process, or gone in the meantime, wholly or in part.",
             bilan.incomplets,
             TAILLE_REGION_MAX >> 20,
             PAR_PROCESSUS_MAX >> 20
+        ));
+    }
+    if bilan.trop_grosses > 0 {
+        avertir(&trf!(
+            "{} régions de plus de {} Mio jamais lues : une charge cachée dans l'une d'elles n'est pas vue.",
+            "{} regions over {} MiB never read: a payload hidden in one of them is not seen.",
+            bilan.trop_grosses,
+            TAILLE_REGION_MAX >> 20
+        ));
+    }
+    if bilan.images_non_verifiees > 0 {
+        avertir(&trf!(
+            "{} images chargées (programmes, bibliothèques) n'ont pas pu être jugées : ni leur fichier ni leurs pages modifiées en mémoire ne se lisent. Rien n'est conclu pour elles.",
+            "{} loaded images (programs, libraries) could not be judged: neither their file nor their pages modified in memory can be read. Nothing is concluded for them.",
+            bilan.images_non_verifiees
         ));
     }
     if bilan.arrete {
@@ -908,62 +1200,340 @@ mod tests {
         assert!(!region_windows(COMMIT, 0, PRIVEE));
     }
 
+    /// Une entrée de smaps : l'en-tête de maps, puis les champs (seul « Anonymous » compte ici).
+    fn smaps(entete: &str, anonyme_ko: u64) -> String {
+        format!("{entete}\nSize:  64 kB\nRss:  4 kB\nAnonymous:  {anonyme_ko} kB\nVmFlags: rd mr\n")
+    }
+
     #[test]
-    fn regions_de_linux() {
-        let heap = region_linux("55d4c0a00000-55d4c0a21000 rw-p 00000000 00:00 0                          [heap]");
+    fn regions_anonymes_de_linux() {
+        let texte = [
+            smaps(
+                "55d4c0a00000-55d4c0a21000 rw-p 00000000 00:00 0                          [heap]",
+                132,
+            ),
+            smaps("7f3a00000000-7f3a00021000 rw-p 00000000 00:00 0 ", 0),
+            smaps(
+                "7f3b00000000-7f3b00021000 rwxp 00000000 00:00 0                          [stack]",
+                4,
+            ),
+            smaps(
+                "7f3c00000000-7f3c00021000 rw-p 00000000 00:00 0                          [anon:scudo]",
+                0,
+            ),
+            // Le noyau, une région illisible, une ligne abîmée : rien.
+            smaps(
+                "7fff00000000-7fff00002000 r-xp 00000000 00:00 0                          [vdso]",
+                0,
+            ),
+            smaps(
+                "7fff10000000-7fff10002000 r--p 00000000 00:00 0                          [vvar]",
+                0,
+            ),
+            smaps("7f3d00000000-7f3d00021000 ---p 00000000 00:00 0 ", 0),
+            smaps("7f3e00021000-7f3e00000000 rw-p 00000000 00:00 0 ", 0),
+        ]
+        .concat();
+        let releve = releve_linux(&texte, Some(&[]));
+        let debuts: Vec<u64> = releve.blocs.iter().map(|b| b.morceaux[0].0.debut).collect();
         assert_eq!(
-            heap,
-            Some(Region {
-                debut: 0x55d4_c0a0_0000,
-                taille: 0x21000
-            })
+            debuts,
+            [0x55d4_c0a0_0000, 0x7f3a_0000_0000, 0x7f3b_0000_0000, 0x7f3c_0000_0000]
         );
-        assert!(region_linux("7f3a00000000-7f3a00021000 rw-p 00000000 00:00 0 ").is_some());
-        assert!(
-            region_linux("7f3a00000000-7f3a00021000 rwxp 00000000 00:00 0                          [stack]").is_some()
+        assert_eq!(
+            releve.blocs[0],
+            Bloc::seule(
+                Region {
+                    debut: 0x55d4_c0a0_0000,
+                    taille: 0x21000
+                },
+                false
+            )
         );
-        assert!(
-            region_linux("7f3a00000000-7f3a00021000 rw-p 00000000 00:00 0                          [anon:scudo]")
-                .is_some()
+        assert_eq!(releve.images_non_verifiees, 0);
+    }
+
+    /// Les mappages de fichiers : laissés au scan de fichiers seulement quand rien ne les distingue de leur fichier
+    /// sur le disque. Une page de code privée (réécrite en mémoire), un fichier effacé, un memfd ou un tmpfs : toute
+    /// l'image se lit, recollée à ses positions dans le fichier ; une page de données privée seule se lit seule.
+    #[test]
+    fn images_de_linux() {
+        let libc = [
+            smaps(
+                "7f0000000000-7f0000028000 r--p 00000000 103:02 1234      /usr/lib/libc.so.6",
+                0,
+            ),
+            smaps(
+                "7f0000028000-7f00001b0000 r-xp 00028000 103:02 1234      /usr/lib/libc.so.6",
+                0,
+            ),
+            smaps(
+                "7f00001b0000-7f00001b1000 ---p 001b0000 103:02 1234      /usr/lib/libc.so.6",
+                0,
+            ),
+            smaps(
+                "7f00001b1000-7f00001b5000 r--p 001b0000 103:02 1234      /usr/lib/libc.so.6",
+                16,
+            ),
+            smaps(
+                "7f00001b5000-7f00001b7000 rw-p 001b4000 103:02 1234      /usr/lib/libc.so.6",
+                8,
+            ),
+        ]
+        .concat();
+        // Intacte, sauf ses données relogées (privées) : celles-ci seules, chacune à part.
+        let releve = releve_linux(&libc, Some(&[]));
+        let seules: Vec<u64> = releve.blocs.iter().map(|b| b.morceaux[0].0.debut).collect();
+        assert_eq!(seules, [0x7f00_001b_1000, 0x7f00_001b_5000]);
+        assert!(releve.blocs.iter().all(|b| b.morceaux.len() == 1));
+        // Le code réécrit (page privée dans r-xp) : l'image entière, recollée par décalage dans le fichier.
+        let reecrite = libc.replace(
+            "r-xp 00028000 103:02 1234      /usr/lib/libc.so.6\nSize:  64 kB\nRss:  4 kB\nAnonymous:  0 kB",
+            "r-xp 00028000 103:02 1234      /usr/lib/libc.so.6\nSize:  64 kB\nRss:  4 kB\nAnonymous:  4 kB",
         );
-        // Un programme effacé qui tourne encore, un memfd : exactement ce qu'on cherche.
-        assert!(region_linux("5600000000-5600021000 r-xp 00000000 103:02 1234      /tmp/.x/agent (deleted)").is_some());
-        assert!(region_linux("7f3a00000000-7f3a00021000 r-xp 00000000 00:05 77   /memfd:a (deleted)").is_some());
-        // Un fichier mappé encore présent (scan de fichiers), le noyau, une région illisible : non.
-        assert!(region_linux("7f3a00000000-7f3a00021000 r-xp 00000000 103:02 1234      /usr/lib/libc.so.6").is_none());
-        assert!(
-            region_linux("7fff00000000-7fff00002000 r-xp 00000000 00:00 0                          [vdso]").is_none()
+        let releve = releve_linux(&reecrite, Some(&[]));
+        assert_eq!(releve.blocs.len(), 1, "{:x?}", releve.blocs);
+        let positions: Vec<u64> = releve.blocs[0].morceaux.iter().map(|(_, p)| *p).collect();
+        assert_eq!(positions, [0, 0x28000, 0x1b_0000, 0x1b_4000]);
+        assert_eq!(releve.blocs[0].taille, 0x1b_6000);
+        assert!(!releve.blocs[0].chargee);
+        // Effacé, memfd : lus en entier aussi.
+        for chemin in ["/tmp/.x/agent (deleted)", "/memfd:a (deleted)"] {
+            let texte = [
+                smaps(&format!("5600000000-5600001000 r--p 00000000 00:05 77   {chemin}"), 0),
+                smaps(&format!("5600001000-5600003000 r-xp 00001000 00:05 77   {chemin}"), 0),
+            ]
+            .concat();
+            let releve = releve_linux(&texte, Some(&[]));
+            assert_eq!(releve.blocs.len(), 1, "{chemin}");
+            assert_eq!(releve.blocs[0].morceaux.len(), 2, "{chemin}");
+        }
+        // Sur un tmpfs (périphérique 0:38 dans mountinfo), même intact.
+        let tmpfs = smaps("5600000000-5600001000 r-xp 00000000 00:26 9   /dev/shm/x", 0);
+        let mountinfo =
+            "30 1 0:38 / /dev/shm rw,nosuid shared:5 - tmpfs tmpfs rw\n31 1 103:2 / / rw - ext4 /dev/x rw\n";
+        let en_memoire = en_memoire_linux(mountinfo);
+        assert_eq!(en_memoire, [(0, 38)]);
+        assert_eq!(releve_linux(&tmpfs, Some(&en_memoire)).blocs.len(), 1);
+        assert_eq!(releve_linux(&tmpfs, Some(&[])).blocs.len(), 0);
+        // mountinfo illisible : une image qui n'est retenue pour rien d'autre est non vérifiée, jamais écartée.
+        let releve = releve_linux(&tmpfs, None);
+        assert_eq!((releve.blocs.len(), releve.images_non_verifiees), (0, 1));
+        // Deux fichiers qui se suivent : deux images.
+        let deux = [
+            smaps("5600000000-5600001000 r-xp 00000000 00:05 77   /a (deleted)", 0),
+            smaps("5600001000-5600002000 r-xp 00000000 00:05 78   /b (deleted)", 0),
+        ]
+        .concat();
+        assert_eq!(releve_linux(&deux, Some(&[])).blocs.len(), 2);
+    }
+
+    /// Un regroupement qui tiendrait mal (trop grand, ou fait surtout de trous) se lit région par région.
+    #[test]
+    fn regroupements() {
+        let r = |debut: u64, taille: u64| Region { debut, taille };
+        let deux = regrouper(vec![(r(0x2000, 0x1000), 0x1000), (r(0x1000, 0x1000), 0)], true);
+        assert_eq!(deux.len(), 1);
+        assert_eq!(deux[0].morceaux[0].1, 0);
+        assert_eq!((deux[0].taille, deux[0].chargee), (0x2000, true));
+        let troue = regrouper(vec![(r(0, 0x1000), 0), (r(0x300_0000, 0x1000), 0x300_0000)], true);
+        assert_eq!(troue.len(), 2);
+        let max = TAILLE_REGION_MAX as u64;
+        let enorme = regrouper(vec![(r(0, max), 0), (r(max, 0x1000), max)], false);
+        assert_eq!(enorme.len(), 2);
+    }
+
+    /// Windows : une image chargée n'est laissée au scan de fichiers que si son fichier est là et qu'aucune page de
+    /// code n'est privée ; ce qui ne se sait pas est non vérifié.
+    #[test]
+    fn images_de_windows() {
+        assert_eq!(image_windows(Some(true), Some(false), false), Some(false));
+        assert_eq!(image_windows(Some(true), Some(true), false), Some(true));
+        assert_eq!(image_windows(Some(false), Some(false), false), Some(true));
+        assert_eq!(image_windows(Some(false), None, false), Some(true));
+        assert_eq!(image_windows(Some(true), None, false), None);
+        assert_eq!(image_windows(None, Some(false), false), None);
+        assert_eq!(image_windows(None, None, true), Some(true));
+        assert_eq!(image_windows(Some(true), Some(false), true), Some(true));
+    }
+
+    /// La preuve de la campagne d'attaque n° 3, refaite avec des données fabriquées : un ELF dont l'en-tête et le code
+    /// sont dans deux régions. Lues une à une, la règle (en-tête ELF ET marque dans le code) ne correspond jamais ;
+    /// recollées, si. Les trous se lisent comme des zéros, pas comme un reste du tampon.
+    #[test]
+    fn regions_recollees() {
+        let essai = regles(
+            r#"rule elf_et_code { strings: $a = "MARQUE-CODE" condition: uint32(0) == 0x464C457F and $a }
+               rule reste { strings: $r = "RESTE" condition: $r }"#,
         );
-        assert!(
-            region_linux("7fff00000000-7fff00002000 r--p 00000000 00:00 0                          [vvar]").is_none()
+        let entete = Region {
+            debut: 0x5000_0000,
+            taille: 0x1000,
+        };
+        let code = Region {
+            debut: 0x5000_2000,
+            taille: 0x1000,
+        };
+        let remplir = |r: &Region, z: &mut [u8]| {
+            z.fill(0x90);
+            if r.debut == entete.debut {
+                z[..4].copy_from_slice(b"\x7fELF");
+            } else {
+                z[16..27].copy_from_slice(b"MARQUE-CODE");
+            }
+            z.len()
+        };
+        let mut tampon = Tampon::nouveau(0x4000);
+        tampon.0.fill(b'R');
+        tampon.0[0x1800..0x1805].copy_from_slice(b"RESTE");
+        let une_a_une = [Bloc::seule(entete, false), Bloc::seule(code, false)];
+        let lecture = analyser_regions(&essai, &une_a_une, &mut tampon.0, remplir, 0, Instant::now());
+        assert_eq!(lecture.trouves, []);
+        tampon.0[0x1800..0x1805].copy_from_slice(b"RESTE");
+        let recolle = regrouper(vec![(entete, 0), (code, 0x2000)], false);
+        let lecture = analyser_regions(&essai, &recolle, &mut tampon.0, remplir, 0, Instant::now());
+        assert_eq!(
+            lecture.trouves,
+            [(
+                "elf_et_code".to_string(),
+                Region {
+                    debut: entete.debut,
+                    taille: 0x3000
+                }
+            )]
         );
-        assert!(region_linux("7f3a00000000-7f3a00021000 ---p 00000000 00:00 0 ").is_none());
-        assert!(region_linux("7f3a00021000-7f3a00000000 rw-p 00000000 00:00 0 ").is_none());
-        assert!(region_linux("").is_none());
+        assert_eq!((lecture.octets, lecture.sautees, lecture.partielles), (0x2000, 0, 0));
+    }
+
+    /// De vraies régions de ce processus de test : un fichier fabriqué (en-tête ELF, marque dans sa seconde page),
+    /// mappé en deux régions puis effacé, comme un programme qui s'efface après s'être lancé. Le relevé de smaps le
+    /// retient en entier, recollé, et la règle (en-tête ET marque) le retrouve ; une page de données d'un fichier
+    /// présent, modifiée en mémoire (copiée à l'écriture), est retenue aussi, alors que le fichier est sain.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn image_effacee_et_page_modifiee_de_ce_processus() {
+        use std::os::fd::AsRawFd;
+        const PAGE: usize = 4096;
+        let dossier = crate::protection::isoler::dossier_jetable().unwrap();
+        let marque = ["vanguard", "image", "effacee", "41c7"].join("-");
+        let mut contenu = vec![0u8; 2 * PAGE];
+        contenu[..4].copy_from_slice(b"\x7fELF");
+        contenu[PAGE + 64..PAGE + 64 + marque.len()].copy_from_slice(marque.as_bytes());
+        let chemin = dossier.join("essai-image");
+        std::fs::write(&chemin, &contenu).unwrap();
+        let fichier = std::fs::File::open(&chemin).unwrap();
+        // SAFETY : mmap d'un fichier à nous, en lecture seule et privé, sans adresse imposée ; les deux régions sont
+        // retirées par munmap avant la fin du test, et rien ne les lit par un pointeur Rust.
+        let (premiere, seconde) = unsafe {
+            let premiere = libc::mmap(
+                std::ptr::null_mut(),
+                2 * PAGE,
+                libc::PROT_READ,
+                libc::MAP_PRIVATE,
+                fichier.as_raw_fd(),
+                0,
+            );
+            assert_ne!(premiere, libc::MAP_FAILED);
+            // La seconde page remappée seule à sa place, d'autres droits (sinon le noyau fusionne les deux) : deux
+            // régions du même fichier, comme les segments d'un ELF.
+            let seconde = libc::mmap(
+                premiere.cast::<u8>().add(PAGE).cast(),
+                PAGE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_FIXED,
+                fichier.as_raw_fd(),
+                libc::off_t::try_from(PAGE).unwrap(),
+            );
+            assert_ne!(seconde, libc::MAP_FAILED);
+            (premiere, seconde)
+        };
+        drop(fichier);
+        std::fs::remove_file(&chemin).unwrap();
+        // Une page de données d'un fichier toujours là, modifiée en mémoire.
+        let sain = dossier.join("essai-sain");
+        std::fs::write(&sain, vec![0u8; PAGE]).unwrap();
+        let f = std::fs::OpenOptions::new().read(true).open(&sain).unwrap();
+        // SAFETY : comme plus haut, une page privée, écrite par son pointeur dans ses limites, puis retirée.
+        let donnees = unsafe {
+            let p = libc::mmap(
+                std::ptr::null_mut(),
+                PAGE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE,
+                f.as_raw_fd(),
+                0,
+            );
+            assert_ne!(p, libc::MAP_FAILED);
+            p.cast::<u8>().write_volatile(1);
+            p
+        };
+        let essai = regles(&format!(
+            r#"rule image_effacee {{ strings: $a = "{marque}" condition: uint32(0) == 0x464C457F and $a }}"#
+        ));
+        let Acces::Ouvert(lecteur) = plateforme::ouvrir(std::process::id()) else {
+            panic!("/proc/self doit s'ouvrir");
+        };
+        let releve = lecteur.regions();
+        let image: Vec<Bloc> = releve
+            .blocs
+            .iter()
+            .filter(|b| b.morceaux.iter().any(|(r, _)| r.debut == premiere as u64))
+            .cloned()
+            .collect();
+        assert_eq!(image.len(), 1, "{:x?}", releve.blocs);
+        assert_eq!(image[0].morceaux.len(), 2);
+        assert!(releve.blocs.iter().any(|b| b.morceaux[0].0.debut == donnees as u64));
+        let mut tampon = Tampon::nouveau(2 * PAGE);
+        let lecture = analyser_regions(
+            &essai,
+            &image,
+            &mut tampon.0,
+            |r, z| lecteur.lire(r, z),
+            0,
+            Instant::now(),
+        );
+        assert_eq!(lecture.trouves.len(), 1, "{lecture:?}");
+        // SAFETY : les régions mappées plus haut, de leurs tailles, retirées une seule fois.
+        unsafe {
+            libc::munmap(premiere, PAGE);
+            libc::munmap(seconde, PAGE);
+            libc::munmap(donnees, PAGE);
+        }
+        let _ = std::fs::remove_dir_all(&dossier);
     }
 
     #[test]
     fn bornes() {
         let rien = Duration::ZERO;
-        assert_eq!(decider(4096, 0, 0, rien), Decision::Lire);
-        assert_eq!(decider(TAILLE_REGION_MAX as u64, 0, 0, rien), Decision::Lire);
-        assert_eq!(decider(TAILLE_REGION_MAX as u64 + 1, 0, 0, rien), Decision::Sauter);
+        assert_eq!(decider(4096, 4096, 0, 0, rien), Decision::Lire);
+        let max = TAILLE_REGION_MAX as u64;
+        assert_eq!(decider(max, max, 0, 0, rien), Decision::Lire);
+        assert_eq!(decider(max + 1, max + 1, 0, 0, rien), Decision::Sauter);
         assert_eq!(
-            decider(4096, PAR_PROCESSUS_MAX - 4095, 0, rien),
+            decider(4096, 4096, PAR_PROCESSUS_MAX - 4095, 0, rien),
             Decision::ProcessusPlein
         );
-        assert_eq!(decider(4096, 0, TOTAL_MAX, rien), Decision::Arret);
-        assert_eq!(decider(4096, 0, 0, DUREE_MAX), Decision::Arret);
+        // Un bloc recollé compte ce qu'il lit, pas ses trous.
+        assert_eq!(decider(max, 4096, PAR_PROCESSUS_MAX - 4096, 0, rien), Decision::Lire);
+        assert_eq!(decider(4096, 4096, 0, TOTAL_MAX, rien), Decision::Arret);
+        assert_eq!(decider(4096, 4096, 0, 0, DUREE_MAX), Decision::Arret);
         // Les bornes à l'œuvre : une région trop grosse sautée, puis la part du processus atteinte (le reste sauté
         // sans être lu) ; et un arrêt général, sans rien lire.
-        let max = TAILLE_REGION_MAX as u64;
-        let mut regions = vec![Region {
-            debut: 0,
-            taille: max + 1,
-        }];
-        regions.extend((0..9).map(|i| Region {
-            debut: i * max,
-            taille: max,
+        let mut regions = vec![Bloc::seule(
+            Region {
+                debut: 0,
+                taille: max + 1,
+            },
+            false,
+        )];
+        regions.extend((0..9).map(|i| {
+            Bloc::seule(
+                Region {
+                    debut: i * max,
+                    taille: max,
+                },
+                false,
+            )
         }));
         let vides = regles("rule Rien { condition: false }");
         let mut tampon = Tampon::nouveau(TAILLE_REGION_MAX);
@@ -975,6 +1545,7 @@ mod tests {
                 trouves: vec![],
                 octets: PAR_PROCESSUS_MAX,
                 sautees: 2,
+                trop_grosses: 1,
                 partielles: 0,
                 arret: false
             }
@@ -989,7 +1560,10 @@ mod tests {
         );
         assert!(lecture.arret && lecture.sautees == 10);
         // Une région illisible est sautée, dite ; une lue sans correspondance compte ses octets.
-        let petites = [Region { debut: 0, taille: 8 }, Region { debut: 8, taille: 8 }];
+        let petites = [
+            Bloc::seule(Region { debut: 0, taille: 8 }, false),
+            Bloc::seule(Region { debut: 8, taille: 8 }, false),
+        ];
         let mut tour = 0;
         let lecture = analyser_regions(
             &vides,
@@ -1009,6 +1583,7 @@ mod tests {
                 trouves: vec![],
                 octets: 8,
                 sautees: 1,
+                trop_grosses: 0,
                 partielles: 0,
                 arret: false
             }
@@ -1028,9 +1603,9 @@ mod tests {
         let essai = regles(r#"rule Ancien { strings: $a = "ancien" condition: $a }"#);
         let mut tampon = Tampon::nouveau(100);
         let regions = [
-            Region { debut: 0, taille: 64 },
-            Region { debut: 64, taille: 16 },
-            Region { debut: 80, taille: 101 },
+            Bloc::seule(Region { debut: 0, taille: 64 }, false),
+            Bloc::seule(Region { debut: 64, taille: 16 }, false),
+            Bloc::seule(Region { debut: 80, taille: 101 }, false),
         ];
         let mut tour = 0;
         let lecture = analyser_regions(
@@ -1058,7 +1633,7 @@ mod tests {
         // La seconde n'a rendu que 4 octets sur 16 : lue en partie, et le processus avec elle.
         assert_eq!(lecture.partielles, 1);
         assert!(lecture.incomplete());
-        assert_eq!(lecture.trouves, [("Ancien".to_string(), regions[0])]);
+        assert_eq!(lecture.trouves, [("Ancien".to_string(), regions[0].region())]);
         assert_eq!(tampon.0.len(), 100);
         effacer(&mut tampon.0);
         assert!(tampon.0.iter().all(|&o| o == 0));
@@ -1154,7 +1729,12 @@ mod tests {
         };
         #[cfg(windows)]
         let lecteur = plateforme::Lecteur::ouvrir(moi).expect("son propre processus doit s'ouvrir");
-        let regions = lecteur.regions();
+        let regions: Vec<Region> = lecteur
+            .regions()
+            .blocs
+            .iter()
+            .flat_map(|b| b.morceaux.iter().map(|(r, _)| *r))
+            .collect();
         let contenante = regions
             .iter()
             .find(|r| r.debut <= adresse && adresse + longueur <= r.debut + r.taille)
@@ -1163,11 +1743,12 @@ mod tests {
         let fin = (adresse + longueur)
             .next_multiple_of(PAGE)
             .min(contenante.debut + contenante.taille);
-        let pages = [Region {
+        let page = Region {
             debut,
             taille: fin - debut,
-        }];
-        let mut tampon = Tampon::nouveau(usize::try_from(pages[0].taille).unwrap());
+        };
+        let pages = [Bloc::seule(page, cfg!(windows))];
+        let mut tampon = Tampon::nouveau(usize::try_from(page.taille).unwrap());
         let lecture = analyser_regions(
             &essai,
             &pages,
@@ -1179,9 +1760,10 @@ mod tests {
         assert_eq!(
             lecture,
             Lecture {
-                trouves: vec![("Essai_Memoire".into(), pages[0])],
-                octets: pages[0].taille,
+                trouves: vec![("Essai_Memoire".into(), page)],
+                octets: page.taille,
                 sautees: 0,
+                trop_grosses: 0,
                 partielles: 0,
                 arret: false
             },
