@@ -108,7 +108,8 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     local(crate::modele::journal::DOSSIER, "modele::journal"),
     local("evenements.verrou", "modele::journal"),
     local(crate::modele::resultat::EXAMENS, "modele::resultat"),
-    local("parametres.json", "parametres"),
+    // Le travail sans Internet, l'autodiagnostic et les versions des logiciels s'y coupent.
+    scelle(crate::parametres::PARAMETRES, "parametres"),
     local("passage-restes", "passage"),
     local("reprise-version-d-avant", "passage"),
     local("bin", "mise_a_jour"),
@@ -138,7 +139,8 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     // Réglages du veilleur anti-rançongiciel (dossiers en plus, exclusions), scellés ; écrit par le palier 1 Linux.
     scelle("rancongiciel-reglages.json", "protection::rancongiciel"),
     // Protection.
-    local("blocage.json", "protection::blocage"),
+    // Une catégorie désactivée ne bloque plus rien.
+    scelle(crate::protection::blocage::parametres::BLOCAGE, "protection::blocage"),
     local("blocage", "protection::blocage::gestes"),
     local("quarantaine", "protection::quarantaine"),
     local("pieges.json", "protection::pieges"),

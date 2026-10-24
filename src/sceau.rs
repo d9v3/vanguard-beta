@@ -118,6 +118,8 @@ const TARDIFS: &[&str] = &[
     crate::modele::resultat::FICHIERS[2],
     // Écrits sans sceau jusqu'à la 0.86.
     crate::changements::RELEVE,
+    crate::parametres::PARAMETRES,
+    crate::protection::blocage::parametres::BLOCAGE,
 ];
 
 const REGISTRE: &str = "sceaux.json";
@@ -265,6 +267,11 @@ fn deja_scelle(dossier: &Path) -> bool {
 /// se disait refaite, en alerte élevée, et l'annonce des versions se taisait). Et effacer avec les sceaux
 /// l'historique et ces fichiers ne fait plus passer pour un premier usage : le verrou, lui, est resté.
 fn adopter(dossier: &Path, deja_scelle: bool) -> Registre {
+    adopter_si(dossier, deja_scelle, true)
+}
+
+/// `adopter`, et seulement s'il le faut (`ecrire`), noté dans les sceaux.
+fn adopter_si(dossier: &Path, deja_scelle: bool, ecrire: bool) -> Registre {
     let refaits = deja_scelle;
     let mut r = Registre {
         depuis: chrono::Local::now().format("%Y-%m-%d").to_string(),
@@ -284,13 +291,20 @@ fn adopter(dossier: &Path, deja_scelle: bool) -> Registre {
         }
     }
     r.vus = TARDIFS.iter().map(|n| (*n).to_string()).collect();
-    let _ = enregistrer_registre(dossier, &r);
+    if ecrire {
+        let _ = enregistrer_registre(dossier, &r);
+    }
     r
 }
 
 /// Des sceaux d'une version qui ne protégeait pas encore les fichiers `TARDIFS` : celui qui est déjà là, sans sceau,
 /// est adopté tel quel (il vient de cette version), une fois pour toutes.
-fn rattraper(dossier: &Path, mut r: Registre) -> Registre {
+fn rattraper(dossier: &Path, r: Registre) -> Registre {
+    rattraper_si(dossier, r, true)
+}
+
+/// `rattraper`, et seulement s'il le faut (`ecrire`), noté dans les sceaux.
+fn rattraper_si(dossier: &Path, mut r: Registre, ecrire: bool) -> Registre {
     let mut change = false;
     for nom in TARDIFS.iter().copied() {
         if r.vus.contains(nom) {
@@ -305,7 +319,7 @@ fn rattraper(dossier: &Path, mut r: Registre) -> Registre {
         r.vus.insert(nom.to_string());
         change = true;
     }
-    if change {
+    if change && ecrire {
         let _ = enregistrer_registre(dossier, &r);
     }
     r
@@ -343,6 +357,21 @@ pub(crate) fn lire_dans(dossier: &Path, nom: &str) -> Lecture {
     let sceaux = match registre(dossier) {
         Ok(Some(r)) => Some(rattraper(dossier, r)),
         Ok(None) => Some(adopter(dossier, deja)),
+        Err(()) => None,
+    };
+    juger(nom, contenu(&dossier.join(nom)), sceaux.as_ref())
+}
+
+/// `lire_dans` sans rien écrire ni créer : ce que lisent les réglages du lancement, avant que le passage d'une version
+/// d'avant ait repris son dossier (des sceaux posés là d'abord feraient passer les fichiers repris pour falsifiés), et
+/// le processus élevé. Le même jugement : un premier usage ou un fichier protégé tard s'y lit `Adopte`, sans être noté.
+/// Le verrou n'est pris que s'il existe déjà.
+pub(crate) fn lire_sans_ecrire(dossier: &Path, nom: &str) -> Lecture {
+    let deja = deja_scelle(dossier);
+    let _verrou = if deja { verrou(dossier) } else { None };
+    let sceaux = match registre(dossier) {
+        Ok(Some(r)) => Some(rattraper_si(dossier, r, false)),
+        Ok(None) => Some(adopter_si(dossier, deja, false)),
         Err(()) => None,
     };
     juger(nom, contenu(&dossier.join(nom)), sceaux.as_ref())
@@ -554,8 +583,23 @@ fn juger_adoptes(adoptes: &[&str], depuis: &str) -> Option<Constat> {
     )
 }
 
+/// Réécrit, scellé, un fichier accepté tel quel au premier usage dont le contenu ne fait rien taire ni couper
+/// (`sans_risque`) : sans cela, chaque version d'avant mise à jour garderait l'alerte « accepté tel quel » jusqu'à ce
+/// qu'on change un réglage. Ce qui coupait une défense reste adopté, et dit.
+pub(crate) fn resceller_si(nom: &str, sans_risque: impl Fn(&[u8]) -> bool) {
+    if let Lecture::Adopte(o) = lire(nom)
+        && sans_risque(&o)
+    {
+        let _ = ecrire(nom, &o);
+    }
+}
+
 /// Au bilan : rien tant que l'état de Vanguard est tel qu'il l'a écrit.
 pub(crate) fn constat() -> Vec<Constat> {
+    // Les fichiers protégés à la 0.87 et repris d'une version d'avant : rescellés s'ils ne coupent rien.
+    crate::parametres::resceller_d_avant();
+    crate::protection::blocage::parametres::resceller_d_avant();
+    crate::changements::resceller_d_avant();
     let r = falsifies_dans(&dossier());
     let mut constats: Vec<Constat> = if r.refaits {
         juger_refaits(&r.adoptes, &r.depuis, chrono::Local::now().date_naive())

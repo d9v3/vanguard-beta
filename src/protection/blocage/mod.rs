@@ -16,7 +16,7 @@ mod gardes;
 pub(crate) mod gestes;
 mod menaces;
 pub(crate) mod ordres;
-mod parametres;
+pub(crate) mod parametres;
 pub(crate) mod pare_feu;
 
 use std::collections::BTreeSet;
@@ -34,6 +34,17 @@ use crate::ui::*;
 
 /// Les réglages ; illisibles, ceux par défaut (un clic, rien d'automatique), et c'est dit.
 fn parametres() -> Parametres {
+    if let Some(raison) = parametres::ignores() {
+        afficher_aligne(
+            &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Eleve)),
+            &trf!(
+                "blocage.json {raison} : les catégories qu'il désactivait restent sur « un clic ». Réglez-les de nouveau ici si c'est bien votre choix.",
+                "blocage.json {raison}: the categories it turned off stay on “one click”. Set them again here if that really is your choice."
+            ),
+            4,
+            "",
+        );
+    }
     parametres::charger().unwrap_or_else(|e| {
         trp!(
             "  {}⚠{RESET} Réglages du blocage illisibles ({e}) : un clic partout, rien d'automatique.",
@@ -47,12 +58,13 @@ fn parametres() -> Parametres {
 /// Enregistre les réglages. Un fichier illisible n'est pas écrasé en silence : il est d'abord mis de côté, intact.
 fn enregistrer(p: &Parametres) -> bool {
     if parametres::charger().is_err() {
-        let f = crate::socle::dossier_local().join("blocage.json");
+        let f = crate::socle::dossier_local().join(parametres::BLOCAGE);
         let copie = f.with_extension(format!(
             "illisible-{}.json",
             chrono::Local::now().format("%Y%m%d-%H%M%S")
         ));
-        if std::fs::copy(&f, &copie).is_ok() {
+        // Seulement un simple fichier, borné : un tube ou un lien vers /dev/zero à sa place ne se recopie pas.
+        if crate::socle::lire_ordinaire(&f, 1 << 20).is_ok_and(|o| crate::socle::ecrire_atomique(&copie, o).is_ok()) {
             trp!(
                 "  {GRIS}Ancien fichier illisible gardé : {}{RESET}",
                 "  {GRIS}Unreadable old file kept: {}{RESET}",

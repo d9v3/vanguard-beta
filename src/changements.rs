@@ -436,6 +436,16 @@ fn lire_de(chemin: &std::path::Path) -> Vec<Changement> {
     tous
 }
 
+/// Le relevé d'une version d'avant, accepté tel quel : réécrit et scellé, chaque ligne gardant sa marque `Avant`
+/// (ce qu'elle permet de rejouer ne change pas).
+pub(crate) fn resceller_d_avant() {
+    if crate::sceau::adopte(RELEVE) {
+        let chemin = fichier();
+        let tous = lire_de(&chemin);
+        ecrire(&chemin, tous);
+    }
+}
+
 /// Pourquoi ce blocage ne se défait pas tout seul d'après sa note, ou `None`.
 ///
 /// Une ligne trouvée dans un relevé changé hors de Vanguard n'est jamais rejouée. Une ligne d'une version d'avant le
