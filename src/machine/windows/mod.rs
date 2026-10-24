@@ -12,7 +12,7 @@ use crate::ui::{resume, tr, trf, trp};
 mod ancrages;
 pub(crate) mod cartes;
 mod chargement;
-mod comptes;
+pub(crate) mod comptes;
 pub(crate) mod connexions;
 pub(crate) mod correctifs;
 pub(crate) mod corrections;

@@ -616,9 +616,22 @@ const SCRIPT_COMPTES: &str = "function D($t) { if ($t) { $t.ToString('yyyy-MM-dd
 pub(super) fn comptes(dossier: &Path) -> Partie {
     let mut p = Partie::new(Bi::new("Comptes", "Accounts"));
     let mut f = Feuille::new(&p.titre);
-    let sortie = crate::machine::windows::ps(&format!("{N}{SCRIPT_COMPTES}"));
-    let utilisateurs = section(sortie.as_deref(), "USR");
-    f.section("Get-LocalUser");
+    // L'API réseau d'abord (NetUserEnum, NetLocalGroupGetMembers), sans PowerShell ; le script seulement pour ce
+    // qu'elle n'a pas lu.
+    let comptes_natifs = crate::machine::windows::comptes::comptes_des_traces(SEP);
+    let admins_natifs = crate::machine::windows::comptes::administrateurs_des_traces(SEP);
+    let sortie = (comptes_natifs.is_none() || admins_natifs.is_none())
+        .then(|| crate::machine::windows::ps(&format!("{N}{SCRIPT_COMPTES}")))
+        .flatten();
+    let utilisateurs: Option<Vec<&str>> = match &comptes_natifs {
+        Some(c) => Some(c.iter().map(String::as_str).collect()),
+        None => section(sortie.as_deref(), "USR"),
+    };
+    f.section(if comptes_natifs.is_some() {
+        "NetUserEnum + NetUserGetInfo (USER_INFO_4)"
+    } else {
+        "Get-LocalUser"
+    });
     if let Some(u) = &utilisateurs {
         f.lues += 1;
         p.evenements = chronologie::comptes_windows(u, SEP, &chrono::Local);
@@ -634,8 +647,16 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
         f.ajouter("(PowerShell)");
         f.commande(&mut console("net user"), 15, true);
     }
-    f.section("Get-LocalGroupMember -SID S-1-5-32-544");
-    if let Some(a) = section(sortie.as_deref(), "ADM") {
+    let administrateurs: Option<Vec<&str>> = match &admins_natifs {
+        Some(a) => Some(a.iter().map(String::as_str).collect()),
+        None => section(sortie.as_deref(), "ADM"),
+    };
+    f.section(if admins_natifs.is_some() {
+        "NetLocalGroupGetMembers S-1-5-32-544"
+    } else {
+        "Get-LocalGroupMember -SID S-1-5-32-544"
+    });
+    if let Some(a) = administrateurs {
         f.lues += 1;
         for l in a {
             let champs: Vec<String> = l.split(SEP).map(super::champ).collect();

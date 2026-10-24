@@ -197,15 +197,16 @@ unsafe extern "system" {
     ) -> i32;
 }
 
-/// USER_INFO_4 de lmaccess.h, champ par champ : seuls le nom, les drapeaux, la dernière connexion et le SID servent.
+/// USER_INFO_4 de lmaccess.h, champ par champ (192 octets en 64 bits) : le nom, l'âge du mot de passe, la
+/// description, les drapeaux, la dernière connexion et le SID servent.
 #[repr(C)]
 struct Utilisateur4 {
     nom: *const u16,
     _mot_de_passe: *const u16,
-    _age_mot_de_passe: u32,
+    age_mot_de_passe: u32,
     _privilege: u32,
     _dossier: *const u16,
-    _commentaire: *const u16,
+    commentaire: *const u16,
     drapeaux: u32,
     _script: *const u16,
     _droits: u32,
@@ -270,6 +271,7 @@ unsafe fn sid_texte(sid: *mut std::ffi::c_void) -> Option<String> {
 }
 
 /// Un compte local, tel que la lecture des comptes le décrit.
+#[cfg_attr(test, derive(Clone))]
 struct Compte {
     nom: String,
     actif: bool,
@@ -277,6 +279,10 @@ struct Compte {
     sid: String,
     /// Secondes depuis 1970 ; 0 : jamais connecté.
     derniere_connexion: u32,
+    /// Secondes depuis le dernier changement du mot de passe.
+    age_mot_de_passe: u32,
+    /// La description du compte (usri4_comment), celle de Get-LocalUser.
+    description: String,
 }
 
 /// Les comptes locaux ordinaires (NetUserEnum, puis NetUserGetInfo niveau 4 pour le SID) ; `None` si Windows refuse
@@ -341,6 +347,8 @@ fn comptes_natifs() -> Option<Vec<Compte>> {
                 mot_de_passe_exige: u.drapeaux & SANS_MOT_DE_PASSE == 0,
                 sid,
                 derniere_connexion: u.derniere_connexion,
+                age_mot_de_passe: u.age_mot_de_passe,
+                description: texte_large(u.commentaire, 1024),
             });
             NetApiBufferFree(info.cast());
             compte
@@ -352,15 +360,14 @@ fn comptes_natifs() -> Option<Vec<Compte>> {
     (!comptes.is_empty()).then_some(comptes)
 }
 
-/// Les membres du groupe des administrateurs, « ORDINATEUR\nom » comme Get-LocalGroupMember : le groupe est trouvé
-/// par son SID (S-1-5-32-544), son nom changeant avec la langue de Windows.
-fn administrateurs_natifs() -> Option<Vec<String>> {
+/// Le nom du groupe des administrateurs dans la langue de Windows, trouvé par son SID (S-1-5-32-544).
+fn nom_du_groupe_des_administrateurs() -> Option<String> {
     let mut sid: *mut std::ffi::c_void = std::ptr::null_mut();
     let (mut nom, mut domaine) = (vec![0u16; 256], vec![0u16; 256]);
     let (mut taille_nom, mut taille_domaine, mut genre) = (256u32, 256u32, 0u32);
     // SAFETY : ConvertStringSidToSidW alloue le SID (rendu par LocalFree) ; LookupAccountSidW écrit au plus les tailles
     // données dans les deux tampons, qui les ont.
-    let groupe = unsafe {
+    unsafe {
         if ConvertStringSidToSidW(large("S-1-5-32-544").as_ptr(), &raw mut sid) == 0 || sid.is_null() {
             return None;
         }
@@ -374,11 +381,14 @@ fn administrateurs_natifs() -> Option<Vec<String>> {
             &raw mut genre,
         ) != 0;
         LocalFree(sid);
-        if !trouve {
-            return None;
-        }
-        texte_large(nom.as_ptr(), 256)
-    };
+        trouve.then(|| texte_large(nom.as_ptr(), 256))
+    }
+}
+
+/// Les membres du groupe des administrateurs, « ORDINATEUR\nom » comme Get-LocalGroupMember : le groupe est trouvé
+/// par son SID (S-1-5-32-544), son nom changeant avec la langue de Windows.
+fn administrateurs_natifs() -> Option<Vec<String>> {
+    let groupe = nom_du_groupe_des_administrateurs()?;
     let mut tampon: *mut std::ffi::c_void = std::ptr::null_mut();
     let (mut lus, mut total, mut reprise) = (0u32, 0u32, 0usize);
     // SAFETY : niveau 3 : un tableau de `lus` pointeurs vers « domaine\nom » (LOCALGROUP_MEMBERS_INFO_3), alloué par
@@ -402,6 +412,139 @@ fn administrateurs_natifs() -> Option<Vec<String>> {
         }
         let membres = (0..lus as usize)
             .map(|i| texte_large(tampon.cast::<*const u16>().add(i).read_unaligned(), 512))
+            .collect();
+        NetApiBufferFree(tampon.cast());
+        Some(membres)
+    }
+}
+
+/// Un champ des traces sur une ligne : ni saut de ligne ni séparateur, comme `N` le fait dans les scripts.
+fn champ_de_trace(texte: &str, separateur: char) -> String {
+    texte
+        .replace(['\r', '\n', separateur], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Une date en secondes depuis 1970, à l'heure locale « yyyy-MM-dd HH:mm », comme les scripts des traces l'écrivent ;
+/// vide pour 0 (jamais).
+fn date_et_heure_locales(secondes: i64) -> String {
+    use chrono::TimeZone;
+    if secondes <= 0 {
+        return String::new();
+    }
+    chrono::Local
+        .timestamp_opt(secondes, 0)
+        .single()
+        .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_default()
+}
+
+/// Les lignes des comptes pour les traces, dans l'ordre de Get-LocalUser : nom, activé, dernière connexion, mot de
+/// passe changé (maintenant moins son âge), SID, description, séparés par `separateur`. `maintenant` : secondes
+/// depuis 1970.
+fn lignes_des_comptes(comptes: &[Compte], separateur: char, maintenant: i64) -> Vec<String> {
+    let vrai = |b: bool| if b { "True" } else { "False" };
+    comptes
+        .iter()
+        .map(|c| {
+            [
+                champ_de_trace(&c.nom, separateur),
+                vrai(c.actif).to_string(),
+                date_et_heure_locales(i64::from(c.derniere_connexion)),
+                date_et_heure_locales(maintenant - i64::from(c.age_mot_de_passe)),
+                c.sid.clone(),
+                champ_de_trace(&c.description, separateur),
+            ]
+            .join(&separateur.to_string())
+        })
+        .collect()
+}
+
+/// Les comptes locaux pour les traces (NetUserEnum puis NetUserGetInfo niveau 4), sans PowerShell ; `None` comme
+/// pour le bilan : l'appelant demande alors à Get-LocalUser.
+pub(crate) fn comptes_des_traces(separateur: char) -> Option<Vec<String>> {
+    let maintenant = chrono::Utc::now().timestamp();
+    Some(lignes_des_comptes(&comptes_natifs()?, separateur, maintenant))
+}
+
+/// LOCALGROUP_MEMBERS_INFO_2 de lmaccess.h (24 octets en 64 bits) : le SID, son genre, « domaine\nom ».
+#[repr(C)]
+struct Membre2 {
+    _sid: *mut std::ffi::c_void,
+    genre: u32,
+    nom: *const u16,
+}
+
+/// La classe d'un membre comme Get-LocalGroupMember la nomme, d'après SID_NAME_USE : un compte (SidTypeUser), sinon
+/// un groupe (groupe, alias, groupe connu) ; un SID d'un compte supprimé ou inconnu le dit.
+fn classe_du_membre(genre: u32) -> &'static str {
+    match genre {
+        1 => "User",
+        2 | 4 | 5 => "Group",
+        6 => "DeletedAccount",
+        _ => "Unknown",
+    }
+}
+
+/// D'où vient un membre, déduit de son domaine, faute de PrincipalSource dans l'API réseau : « AzureAD\… » et
+/// « MicrosoftAccount\… » se nomment ainsi, le nom de cet ordinateur, « NT AUTHORITY » et « BUILTIN » sont locaux,
+/// tout autre domaine est celui d'Active Directory. Dit « déduit » dans les traces.
+fn source_du_membre(nom: &str, ordinateur: &str) -> &'static str {
+    let domaine = nom.split_once('\\').map_or("", |(d, _)| d);
+    if domaine.eq_ignore_ascii_case("AzureAD") {
+        "AzureAD"
+    } else if domaine.eq_ignore_ascii_case("MicrosoftAccount") {
+        "MicrosoftAccount"
+    } else if domaine.is_empty()
+        || domaine.eq_ignore_ascii_case(ordinateur)
+        || domaine.eq_ignore_ascii_case("NT AUTHORITY")
+        || domaine.eq_ignore_ascii_case("BUILTIN")
+    {
+        "Local"
+    } else {
+        "ActiveDirectory"
+    }
+}
+
+/// Les membres du groupe des administrateurs pour les traces : « domaine\nom », classe et source (déduite), comme
+/// Get-LocalGroupMember -SID S-1-5-32-544 ; `None` : Windows refuse, l'appelant demande alors à PowerShell.
+pub(crate) fn administrateurs_des_traces(separateur: char) -> Option<Vec<String>> {
+    let groupe = nom_du_groupe_des_administrateurs()?;
+    let ordinateur = std::env::var("COMPUTERNAME").unwrap_or_default();
+    let mut tampon: *mut std::ffi::c_void = std::ptr::null_mut();
+    let (mut lus, mut total, mut reprise) = (0u32, 0u32, 0usize);
+    // SAFETY : niveau 2 : un tableau de `lus` LOCALGROUP_MEMBERS_INFO_2 (`Membre2`), alloué par Windows, lu tant qu'il
+    // vit puis rendu une seule fois ; chaque nom pointe dans le même bloc.
+    unsafe {
+        let code = NetLocalGroupGetMembers(
+            std::ptr::null(),
+            large(&groupe).as_ptr(),
+            2,
+            &raw mut tampon,
+            u32::MAX,
+            &raw mut lus,
+            &raw mut total,
+            &raw mut reprise,
+        );
+        if code != 0 || tampon.is_null() {
+            if !tampon.is_null() {
+                NetApiBufferFree(tampon.cast());
+            }
+            return None;
+        }
+        let membres = (0..lus as usize)
+            .map(|i| {
+                let m = tampon.cast::<Membre2>().add(i).read_unaligned();
+                let nom = texte_large(m.nom, 512);
+                [
+                    champ_de_trace(&nom, separateur),
+                    classe_du_membre(m.genre).to_string(),
+                    format!("{} (déduit/inferred)", source_du_membre(&nom, &ordinateur)),
+                ]
+                .join(&separateur.to_string())
+            })
             .collect();
         NetApiBufferFree(tampon.cast());
         Some(membres)
@@ -578,6 +721,8 @@ mod tests {
             mot_de_passe_exige: exige,
             sid: format!("S-1-5-21-1-1-1-{rid}"),
             derniere_connexion: connexion,
+            age_mot_de_passe: 0,
+            description: String::new(),
         };
         let comptes = [
             compte("alice", true, true, 1001, 1_792_000_000),
@@ -595,6 +740,73 @@ mod tests {
         assert_eq!(usr.len(), 3);
         // Le compte sans mot de passe exigé est vu par le jugement d'avant.
         assert!(!juger_comptes(&usr, Some("S-1-5-21-1-1-1-1001"), Some(1)).is_empty());
+    }
+
+    /// Les lignes des comptes pour les traces, comme celles de Get-LocalUser : la chronologie y lit la dernière
+    /// connexion et le mot de passe changé ; un nom ou une description piégés ne coupent pas la ligne.
+    #[test]
+    fn lignes_des_comptes_comme_get_localuser() {
+        let c = Compte {
+            nom: "alice".into(),
+            actif: true,
+            mot_de_passe_exige: true,
+            sid: "S-1-5-21-1-1-1-1001".into(),
+            derniere_connexion: 1_792_000_000,
+            age_mot_de_passe: 3600,
+            description: "Compte\r\nde\u{1f}test".into(),
+        };
+        let jamais = Compte {
+            nom: "bob".into(),
+            derniere_connexion: 0,
+            description: String::new(),
+            ..c.clone()
+        };
+        let sep = '\u{1f}';
+        let l = lignes_des_comptes(&[c, jamais], sep, 1_792_003_600);
+        let champs: Vec<&str> = l[0].split(sep).collect();
+        assert_eq!(champs.len(), 6);
+        assert_eq!(
+            (champs[0], champs[1], champs[4], champs[5]),
+            ("alice", "True", "S-1-5-21-1-1-1-1001", "Compte de test")
+        );
+        // Le mot de passe changé une heure avant « maintenant », soit à la dernière connexion.
+        assert_eq!(champs[2], champs[3]);
+        // Les dates à la forme que la chronologie des traces lit ; bob, jamais connecté, n'a pas de dernière
+        // connexion.
+        assert!(chrono::NaiveDateTime::parse_from_str(champs[2], "%Y-%m-%d %H:%M").is_ok());
+        let bob: Vec<&str> = l[1].split(sep).collect();
+        assert_eq!(bob[2], "");
+        assert!(chrono::NaiveDateTime::parse_from_str(bob[3], "%Y-%m-%d %H:%M").is_ok());
+    }
+
+    #[test]
+    fn membres_des_administrateurs() {
+        assert_eq!(classe_du_membre(1), "User");
+        assert_eq!(classe_du_membre(4), "Group");
+        assert_eq!(classe_du_membre(8), "Unknown");
+        assert_eq!(source_du_membre(r"SALON-PC\alice", "SALON-PC"), "Local");
+        assert_eq!(source_du_membre(r"salon-pc\alice", "SALON-PC"), "Local");
+        assert_eq!(source_du_membre(r"NT AUTHORITY\SYSTEM", "SALON-PC"), "Local");
+        assert_eq!(source_du_membre(r"AzureAD\AliceMartin", "SALON-PC"), "AzureAD");
+        assert_eq!(
+            source_du_membre(r"MicrosoftAccount\alice@exemple.org", "SALON-PC"),
+            "MicrosoftAccount"
+        );
+        assert_eq!(source_du_membre(r"BUREAU\alice", "SALON-PC"), "ActiveDirectory");
+        assert_eq!(std::mem::size_of::<Membre2>(), 24);
+        assert_eq!(std::mem::offset_of!(Membre2, nom), 16);
+    }
+
+    /// USER_INFO_4 comme lmaccess.h le range (vérifié contre les en-têtes de MinGW).
+    #[test]
+    fn utilisateur4_a_sa_forme() {
+        use std::mem::offset_of;
+        assert_eq!(std::mem::size_of::<Utilisateur4>(), 192);
+        assert_eq!(offset_of!(Utilisateur4, age_mot_de_passe), 16);
+        assert_eq!(offset_of!(Utilisateur4, commentaire), 32);
+        assert_eq!(offset_of!(Utilisateur4, drapeaux), 40);
+        assert_eq!(offset_of!(Utilisateur4, derniere_connexion), 96);
+        assert_eq!(offset_of!(Utilisateur4, sid), 152);
     }
 
     /// Sous Wine, les vraies fonctions de Windows répondent ou refusent sans planter ; ce qu'elles rendent se relit.
