@@ -158,6 +158,7 @@ fn hors_comparaison(relatif: &str) -> bool {
         .iter()
         .any(|h| relatif == *h || premier == *h || relatif.starts_with(&format!("{h}/")))
         || relatif.ends_with(".verrou")
+        || std::path::Path::new(relatif).extension().is_some_and(|e| e == "lock")
         || relatif.contains(".tmp-")
 }
 

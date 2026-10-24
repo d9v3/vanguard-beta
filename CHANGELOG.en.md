@@ -218,7 +218,11 @@ delivered just before it. Only the latest version has its download page; every v
   A port closed by ufw without a read-back is said “not verified”, not “blocked”. The event log is written in two
   steps: lines added without its head read as tampered, then as a break reported at the check-up, never taken in as
   Vanguard's own. Deleting the seals with their lock no longer brings back the first use, and a month placed “in 2099”
-  no longer links an action to a false cause.
+  no longer links an action to a false cause. The log, the seals and the device database are never written without
+  their lock any more (a system lock, released as soon as a Vanguard stops, which respects an earlier version's): two
+  Vanguard writing at once on a slow Windows no longer make the log look tampered. An event that waits too long is
+  put off until the next write or the end of the program, the rest refused, and the error log says so, never half
+  written; a lock held without end is reported at the check-up.
 
 ## October 23, 2026: version 0.86
 

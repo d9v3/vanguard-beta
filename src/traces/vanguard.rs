@@ -328,6 +328,9 @@ fn partie_de(dossier: &Path, donnees: &Path, appelant: bool) -> Partie {
             gestes.len()
         ));
     }
+    // La tête du journal, ses sceaux et ses segments, recopiés d'un même instant : pris entre deux étapes d'une
+    // écriture, ils se reliraient falsifiés.
+    let _journal = crate::modele::journal::tenir_pour_copie(donnees);
     for nom in ETATS {
         recopier(&mut p, dossier, donnees, nom);
     }

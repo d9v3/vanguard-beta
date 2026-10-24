@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use crate::{tr, tre, trf};
+use crate::{tr, trf};
 
 /// Écrit d'abord un fichier temporaire, le force sur le disque, puis le renomme à la place de l'ancien :
 /// une coupure, un Ctrl-C ou une clé arrachée laissent soit l'ancienne base, soit la nouvelle, jamais une
@@ -172,57 +172,210 @@ fn remplacer(de: &std::path::Path, vers: &std::path::Path) -> std::io::Result<()
     }
 }
 
-/// Verrou entre processus Vanguard (fichier créé de façon exclusive, retiré à la fin).
-pub(crate) struct Verrou(PathBuf);
+/// Verrou entre processus (et entre fils) Vanguard : un verrou du système posé sur un fichier qui reste en place.
+/// L'ancien verrou (un fichier créé de façon exclusive, retiré à la fin) laissait écrire sans lui après 10 s
+/// d'attente : deux écrivains du journal scellé pouvaient alors écrire en même temps, la tête ne retrouvait plus la fin
+/// annoncée et une rupture était notée, dite au bilan pendant un mois comme un journal changé hors de Vanguard. Il ne
+/// savait pas non plus qui le tenait : celui d'un Vanguard tué bloquait deux minutes, puis tout verrou de plus de deux
+/// minutes était repris, même à un Vanguard vivant mais lent. Le système, lui, libère le verrou d'un processus mort à
+/// l'instant de sa fin (pas de numéro de processus réutilisé à deviner) et jamais celui d'un vivant.
+pub(crate) struct Verrou {
+    fichier: std::fs::File,
+    /// Le fichier de l'ancien protocole, créé sous le verrou du système (`prendre_nomme`), retiré à la fin.
+    ancien: Option<PathBuf>,
+}
+
+/// Pourquoi le verrou n'est pas tenu.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SansVerrou {
+    /// Tenu par un autre Vanguard (ou un autre fil) au-delà du délai.
+    Occupe,
+    /// Le fichier du verrou ne s'ouvre pas, ou n'est pas un simple fichier (dossier, tube ou lien posé à sa place) :
+    /// personne ne peut le tenir.
+    Impossible(String),
+}
+
+impl SansVerrou {
+    /// L'erreur que rend une écriture refusée faute de verrou.
+    pub(crate) fn erreur(&self, nom: &str) -> std::io::Error {
+        match self {
+            SansVerrou::Occupe => std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                trf!(
+                    "« {} » tenu par un autre Vanguard : rien n'est écrit sans lui",
+                    "“{}” held by another Vanguard: nothing is written without it",
+                    nom
+                ),
+            ),
+            SansVerrou::Impossible(r) => std::io::Error::other(trf!(
+                "« {} » inutilisable ({}) : rien n'est écrit sans lui",
+                "“{}” unusable ({}): nothing is written without it",
+                nom,
+                r
+            )),
+        }
+    }
+}
+
+/// L'attente d'un écrivain. Le verrou se tient le temps d'une écriture (relire le mois en cours, deux sceaux et un
+/// ajout, chacun vidé sur le disque) : bien moins d'une seconde d'ordinaire, quelques secondes sur un Windows lent ou
+/// dont l'antivirus analyse chaque fichier écrit. Trente secondes couvrent largement deux ou trois Vanguard qui se
+/// suivent ; au-delà, mieux vaut ne pas écrire (et le dire) que figer qui note une alerte. Les essais mettent des
+/// dizaines de fils sur un même verrou, sous Wine chargé : une minute.
+pub(crate) const ATTENTE_ECRITURE: std::time::Duration = if cfg!(test) {
+    std::time::Duration::from_secs(60)
+} else {
+    std::time::Duration::from_secs(30)
+};
+
+/// L'attente d'un lecteur : moins, il ne fait qu'attendre la fin d'une écriture en cours.
+pub(crate) const ATTENTE_LECTURE: std::time::Duration = if cfg!(test) {
+    std::time::Duration::from_secs(60)
+} else {
+    std::time::Duration::from_secs(10)
+};
+
+/// Ce qu'écrit cette version dans le fichier de l'ancien protocole : trouvé là par qui tient le verrou du système, il
+/// vient d'un Vanguard de cette version mort avant de le retirer (vivant, il tiendrait encore le verrou du système).
+const MARQUE_ANCIEN: &[u8] = b"vanguard: verrou du systeme / system lock\n";
+
+/// Au-delà, un fichier de l'ancien protocole sans marque est tenu pour abandonné : la règle des versions d'avant.
+const ANCIEN_ABANDONNE: std::time::Duration = std::time::Duration::from_secs(120);
 
 impl Verrou {
-    /// Le verrou `nom` dans `dossier` (un par fichier à protéger : le journal des alertes a le sien, pris pendant
-    /// qu'un autre tient celui de la base). Attend au plus 10 s. Un verrou de plus de 2 minutes vient d'un Vanguard
-    /// interrompu : on le reprend.
+    /// Le verrou exclusif `nom` (« evenements.verrou ») dans `dossier`, attendu au plus `ATTENTE_ECRITURE`. `None` :
+    /// pas tenu, et l'appelant n'écrit pas. Voir `prendre_compatible`.
     pub(crate) fn prendre_nomme(dossier: &std::path::Path, nom: &str) -> Option<Verrou> {
-        let _ = std::fs::create_dir_all(dossier);
+        Self::prendre_compatible(dossier, nom, false, ATTENTE_ECRITURE).ok()
+    }
+
+    /// Le verrou `nom` des versions d'avant (0.86 et plus tôt : la clé portable peut en être une, à côté de la
+    /// surveillance installée), tenu par les deux protocoles à la fois. Le verrou du système se pose sur un fichier à
+    /// lui, `<nom sans .verrou>.lock`, qu'aucune version d'avant ne connaît ni n'efface : sur `nom` même, une version
+    /// d'avant l'effaçait au bout de deux minutes et en créait un autre, que le Vanguard suivant verrouillait de son
+    /// côté (deux tenants). Tenu exclusif, il crée aussi `nom` comme le faisaient les versions d'avant, qui attendent
+    /// donc, et attend celui qu'une version d'avant tient. Un lecteur (`partage`) attend seulement qu'aucune version
+    /// d'avant n'écrive.
+    pub(crate) fn prendre_compatible(
+        dossier: &std::path::Path,
+        nom: &str,
+        partage: bool,
+        attente: std::time::Duration,
+    ) -> Result<Verrou, SansVerrou> {
+        let debut = std::time::Instant::now();
+        let systeme = format!("{}.lock", nom.strip_suffix(".verrou").unwrap_or(nom));
+        let mut v = Self::prendre(dossier, &systeme, partage, attente)?;
         let chemin = dossier.join(nom);
-        let fin = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let fin = debut + attente;
         loop {
-            match std::fs::OpenOptions::new().write(true).create_new(true).open(&chemin) {
-                Ok(_) => return Some(Verrou(chemin)),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    // Le verrou lui-même, jamais la cible d'un lien. Un dossier, un tube ou un lien posé à sa place
-                    // ne se retire pas comme un verrou d'un Vanguard interrompu : sans cela, la boucle reprenait sans
-                    // fin (un dossier ne s'efface pas par remove_file), et tout ce qui note au journal se figeait.
-                    let meta = std::fs::symlink_metadata(&chemin).ok();
-                    if meta.as_ref().is_some_and(|m| !m.file_type().is_file()) {
-                        tre!(
-                            "Attention : « {nom} » n'est pas un simple fichier (posé hors de Vanguard ?), écriture sans verrou.",
-                            "Warning: “{nom}” is not a plain file (placed outside Vanguard?), writing without a lock."
-                        );
-                        return None;
+            if !partage {
+                match std::fs::OpenOptions::new().write(true).create_new(true).open(&chemin) {
+                    Ok(mut f) => {
+                        use std::io::Write as _;
+                        let _ = f.write_all(MARQUE_ANCIEN);
+                        v.ancien = Some(chemin);
+                        return Ok(v);
                     }
-                    let ancien = meta
-                        .and_then(|m| m.modified().ok())
-                        .and_then(|t| t.elapsed().ok())
-                        .is_some_and(|age| age > std::time::Duration::from_secs(120));
-                    if ancien && std::fs::remove_file(&chemin).is_ok() {
+                    Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => {
+                        return Err(SansVerrou::Impossible(e.to_string()));
+                    }
+                    Err(_) => {}
+                }
+            }
+            match std::fs::symlink_metadata(&chemin) {
+                Err(_) if partage => return Ok(v),
+                Err(_) => {}
+                // Un dossier, un tube ou un lien posé à sa place ne se retire pas comme un verrou abandonné.
+                Ok(m) if !m.file_type().is_file() => {
+                    return Err(SansVerrou::Impossible(
+                        tr!("pas un simple fichier", "not a plain file").to_string(),
+                    ));
+                }
+                Ok(m) => {
+                    let marque = lire_ordinaire(&chemin, 256).is_ok_and(|o| o == MARQUE_ANCIEN);
+                    let abandonne = marque
+                        || m.modified()
+                            .ok()
+                            .and_then(|t| t.elapsed().ok())
+                            .is_some_and(|a| a > ANCIEN_ABANDONNE);
+                    if abandonne {
+                        if partage {
+                            return Ok(v);
+                        }
+                        let _ = std::fs::remove_file(&chemin);
                         continue;
                     }
-                    if std::time::Instant::now() > fin {
-                        tre!(
-                            "Attention : « {nom} » occupé par un autre Vanguard, écriture sans verrou.",
-                            "Warning: “{nom}” locked by another Vanguard, writing without a lock."
-                        );
-                        return None;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(200));
                 }
-                Err(_) => return None,
+            }
+            if std::time::Instant::now() >= fin {
+                return Err(SansVerrou::Occupe);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    /// Le verrou du système sur le fichier `nom` de `dossier`, exclusif ou partagé (`partage` : des lecteurs
+    /// ensemble, jamais pendant un écrivain), attendu au plus `attente`. Un lecteur ne crée le fichier que là où
+    /// Vanguard peut écrire (`ecriture_sure`) : en administrateur dans le dossier d'un compte, il prend celui qui est
+    /// déjà là, sinon rien.
+    pub(crate) fn prendre(
+        dossier: &std::path::Path,
+        nom: &str,
+        partage: bool,
+        attente: std::time::Duration,
+    ) -> Result<Verrou, SansVerrou> {
+        let creer = !partage || ecriture_sure(dossier);
+        if creer {
+            let _ = std::fs::create_dir_all(dossier);
+        }
+        let chemin = dossier.join(nom);
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(creer).create(creer).truncate(false);
+        // Ni lien suivi, ni tube attendu : un tube posé à sa place figeait open() pour toujours.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        // FILE_FLAG_OPEN_REPARSE_POINT : un lien symbolique ou une jonction s'ouvre lui-même, sans être suivi.
+        #[cfg(windows)]
+        std::os::windows::fs::OpenOptionsExt::custom_flags(&mut options, 0x0020_0000);
+        let f = options
+            .open(&chemin)
+            .map_err(|e| SansVerrou::Impossible(e.to_string()))?;
+        if !f.metadata().is_ok_and(|m| m.file_type().is_file()) {
+            return Err(SansVerrou::Impossible(
+                tr!("pas un simple fichier", "not a plain file").to_string(),
+            ));
+        }
+        let fin = std::time::Instant::now() + attente;
+        loop {
+            let essai = if partage { f.try_lock_shared() } else { f.try_lock() };
+            match essai {
+                Ok(()) => break,
+                Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < fin => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(std::fs::TryLockError::WouldBlock) => return Err(SansVerrou::Occupe),
+                Err(std::fs::TryLockError::Error(e)) => return Err(SansVerrou::Impossible(e.to_string())),
             }
         }
+        Ok(Verrou {
+            fichier: f,
+            ancien: None,
+        })
     }
 }
 
 impl Drop for Verrou {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        // L'ancien d'abord, encore sous le verrou du système : personne d'autre ne l'a créé entre-temps.
+        if let Some(ancien) = &self.ancien {
+            let _ = std::fs::remove_file(ancien);
+        }
+        // Rendu tout de suite, sans attendre que le système le fasse à la fermeture (sous Windows, « selon les
+        // ressources disponibles »).
+        let _ = self.fichier.unlock();
     }
 }
 
@@ -313,18 +466,29 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&fichier).unwrap(), "{\"reseaux\":{\"box\":{}}}");
         // Aucun fichier temporaire ne traîne.
         assert_eq!(std::fs::read_dir(&dossier).unwrap().count(), 1);
-        // Le verrou est exclusif tant qu'il est gardé, et libéré à la fin.
-        let v = Verrou::prendre_nomme(&dossier, "appareils.verrou").unwrap();
-        assert!(
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&v.0)
-                .is_err()
+        // Le verrou est exclusif tant qu'il est gardé : ni un écrivain ni un lecteur ne le prennent ; il est rendu à
+        // la fin, et son fichier reste.
+        let court = std::time::Duration::from_millis(300);
+        let v = Verrou::prendre(&dossier, "appareils.verrou", false, court).unwrap();
+        assert_eq!(
+            Verrou::prendre(&dossier, "appareils.verrou", false, court).err(),
+            Some(SansVerrou::Occupe)
         );
-        let chemin = v.0.clone();
+        assert_eq!(
+            Verrou::prendre(&dossier, "appareils.verrou", true, court).err(),
+            Some(SansVerrou::Occupe)
+        );
         drop(v);
-        assert!(!chemin.exists());
+        assert!(dossier.join("appareils.verrou").is_file());
+        // Des lecteurs ensemble, jamais avec un écrivain.
+        let l1 = Verrou::prendre(&dossier, "appareils.verrou", true, court).unwrap();
+        let l2 = Verrou::prendre(&dossier, "appareils.verrou", true, court).unwrap();
+        assert_eq!(
+            Verrou::prendre(&dossier, "appareils.verrou", false, court).err(),
+            Some(SansVerrou::Occupe)
+        );
+        drop((l1, l2));
+        assert!(Verrou::prendre(&dossier, "appareils.verrou", false, court).is_ok());
         std::fs::remove_dir_all(&dossier).unwrap();
     }
 
@@ -405,8 +569,8 @@ mod tests {
         std::fs::remove_dir_all(&d).unwrap();
     }
 
-    /// Un dossier (ancien) ou un tube posé à la place d'un verrou : jamais une boucle sans fin ni dix secondes
-    /// d'attente à chaque écriture ; l'écriture se fait sans verrou, et c'est dit.
+    /// Un dossier (ancien) ou un tube posé à la place d'un verrou : jamais une boucle sans fin ni une attente à
+    /// chaque écriture ; le verrou est dit impossible, et l'appelant n'écrit pas.
     #[cfg(unix)]
     #[test]
     fn verrou_qui_n_est_pas_un_fichier_ne_fige_rien() {
@@ -423,13 +587,64 @@ mod tests {
         // SAFETY : mkfifo reçoit un chemin terminé par zéro, qui vit le temps de l'appel.
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
         let debut = std::time::Instant::now();
-        assert!(Verrou::prendre_nomme(&dossier, "evenements.verrou").is_none());
-        assert!(Verrou::prendre_nomme(&dossier, "alertes.verrou").is_none());
+        for nom in ["evenements.verrou", "alertes.verrou"] {
+            for partage in [false, true] {
+                assert!(matches!(
+                    Verrou::prendre(&dossier, nom, partage, ATTENTE_ECRITURE),
+                    Err(SansVerrou::Impossible(_))
+                ));
+            }
+        }
         assert!(
             debut.elapsed() < std::time::Duration::from_secs(2),
             "{:?}",
             debut.elapsed()
         );
+        std::fs::remove_dir_all(&dossier).unwrap();
+    }
+
+    /// Avec une version d'avant (0.86, fichier créé de façon exclusive, retiré à la fin) : son verrou en cours se
+    /// respecte, dans les deux sens ; abandonné (plus de deux minutes) ou laissé par un Vanguard de cette version mort
+    /// avant de le retirer (marqué), il se reprend ; jamais celui d'un vivant de cette version, tenu par le système.
+    #[test]
+    fn verrou_compatible_avec_une_version_d_avant() {
+        let dossier = std::env::temp_dir().join(format!("vanguard-verrou-ancien-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dossier);
+        std::fs::create_dir_all(&dossier).unwrap();
+        let ancien = dossier.join("evenements.verrou");
+        let court = std::time::Duration::from_millis(300);
+        let prendre = |partage| Verrou::prendre_compatible(&dossier, "evenements.verrou", partage, court);
+        // Une 0.86 écrit en ce moment : ni écrivain ni lecteur n'avancent.
+        std::fs::write(&ancien, b"").unwrap();
+        assert_eq!(prendre(false).err(), Some(SansVerrou::Occupe));
+        assert_eq!(prendre(true).err(), Some(SansVerrou::Occupe));
+        assert!(ancien.exists(), "le verrou d'une 0.86 vivante est retiré");
+        // Abandonné : repris, et retiré à la fin.
+        let vieux = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
+        std::fs::File::options()
+            .write(true)
+            .open(&ancien)
+            .unwrap()
+            .set_modified(vieux)
+            .unwrap();
+        let v = prendre(false).unwrap();
+        // Tenu : une 0.86 le voit (création exclusive refusée), un autre de cette version attend.
+        assert!(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&ancien)
+                .is_err()
+        );
+        assert_eq!(prendre(false).err(), Some(SansVerrou::Occupe));
+        assert_eq!(prendre(true).err(), Some(SansVerrou::Occupe));
+        drop(v);
+        assert!(!ancien.exists());
+        assert!(dossier.join("evenements.lock").is_file());
+        // Laissé par un Vanguard de cette version tué avant de le retirer : repris tout de suite.
+        std::fs::write(&ancien, MARQUE_ANCIEN).unwrap();
+        assert!(prendre(true).is_ok());
+        assert!(prendre(false).is_ok());
         std::fs::remove_dir_all(&dossier).unwrap();
     }
 

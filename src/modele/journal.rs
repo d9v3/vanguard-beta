@@ -396,12 +396,12 @@ fn ajouter(chemin: &Path, octets: &[u8]) -> std::io::Result<()> {
     if !f.metadata()?.file_type().is_file() {
         return Err(std::io::Error::other("pas un simple fichier / not a plain file"));
     }
-    // Un seul write : deux écrivains sous le verrou ne s'entrelacent pas, et sans verrou (pris ailleurs depuis plus
-    // de 10 s) une ligne reste entière.
+    // Un seul write : deux écrivains ne s'entrelacent pas, même une version d'avant qui écrivait sans le verrou.
     f.write_all(octets)?;
     f.sync_data()
 }
 
+#[cfg(test)]
 /// Note un événement dans le journal de `dossier`, daté par lui-même ; `maintenant` choisit le segment. Rend son
 /// identifiant. Une fin qui n'est pas celle que la tête attendait est d'abord notée (`Rupture`), une autre version
 /// que la dernière aussi (`Version`).
@@ -411,8 +411,11 @@ pub(crate) fn noter_dans(
     maintenant: chrono::DateTime<chrono::Utc>,
 ) -> std::io::Result<String> {
     let id = ev.id.clone();
-    ecrire_dans(dossier, Some(ev), maintenant).map(|()| id)
+    ecrire_dans(dossier, vec![ev], maintenant, crate::socle::ATTENTE_ECRITURE).map(|()| id)
 }
+
+#[cfg(test)]
+const RALENTIR: &str = "essai-ralentir";
 
 // Les essais arrêtent l'écriture juste après l'ajout, comme un arrêt net du programme (`arret_entre_ajout_…`).
 #[cfg(test)]
@@ -420,11 +423,16 @@ thread_local! {
     static ARRET_APRES_AJOUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// L'écriture elle-même ; sans événement, seuls une rupture et un passage de version s'écrivent, s'il y en a.
+/// L'écriture elle-même, des événements `evs` dans l'ordre ; sans événement, seuls une rupture et un passage de
+/// version s'écrivent, s'il y en a. Jamais sans le verrou, attendu au plus `attente` : sans lui, un autre écrivain
+/// peut ajouter entre la tête annoncée et la nôtre, et la fin qu'elle annonçait n'est plus celle du disque (une
+/// rupture, dite au bilan un mois comme un journal changé hors de Vanguard). Rien n'est alors écrit, ni tête ni
+/// ligne : l'erreur (`WouldBlock` s'il est tenu ailleurs) le dit.
 fn ecrire_dans(
     dossier: &Path,
-    ev: Option<Evenement>,
+    evs: Vec<Evenement>,
     maintenant: chrono::DateTime<chrono::Utc>,
+    attente: std::time::Duration,
 ) -> std::io::Result<()> {
     if !crate::socle::ecriture_sure(dossier) {
         return Err(std::io::Error::new(
@@ -433,10 +441,11 @@ fn ecrire_dans(
         ));
     }
     // Pendant un autotest, seul son propre événement d'essai s'écrit (`autotest::lecture_seule`).
-    if crate::autotest::lecture_seule::active() && ev.as_ref().is_none_or(|e| !e.essai) {
+    if crate::autotest::lecture_seule::active() && (evs.is_empty() || evs.iter().any(|e| !e.essai)) {
         return Err(crate::autotest::lecture_seule::refus());
     }
-    let _verrou = crate::socle::Verrou::prendre_nomme(dossier, VERROU);
+    let _verrou =
+        crate::socle::Verrou::prendre_compatible(dossier, VERROU, false, attente).map_err(|e| e.erreur(VERROU))?;
     let rep = dossier.join(DOSSIER);
     std::fs::create_dir_all(&rep)?;
     let lue = tete_lue(dossier);
@@ -563,7 +572,7 @@ fn ecrire_dans(
             },
         ));
     }
-    a_ecrire.extend(ev);
+    a_ecrire.extend(evs);
     if a_ecrire.is_empty() {
         return Ok(());
     }
@@ -630,6 +639,12 @@ fn ecrire_dans(
     if ARRET_APRES_AJOUT.with(std::cell::Cell::get) {
         return Ok(());
     }
+    // Les essais d'écrivains concurrents élargissent la fenêtre entre l'ajout et la tête qui le suit, où un lecteur
+    // sans verrou verrait une fin écrite sans sa tête (un fichier témoin, vu aussi des processus enfants).
+    #[cfg(test)]
+    if dossier.join(RALENTIR).exists() {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     tete.annonce = None;
     if let Some((m, c)) = clos_ici {
         tete.clos.insert(m, c);
@@ -639,11 +654,34 @@ fn ecrire_dans(
     tete.lignes = n_courant;
     tete.derniere = precedent;
     garder(&rep, &mois, &maintenant.format("%Y-%m").to_string(), &mut tete);
+    // L'ajout est fait : un échec ici (les sceaux tenus ailleurs) laisse la fin annoncée, reprise sans rupture à
+    // l'écriture suivante. Jamais rendu comme un verrou occupé : rien de ce qui est écrit ne doit être remis.
     crate::sceau::ecrire_dans(
         dossier,
         TETE,
         &serde_json::to_vec(&tete).map_err(std::io::Error::other)?,
     )
+    .map_err(|e| std::io::Error::other(ApresAjout(e)))
+}
+
+/// Un échec après l'ajout : les lignes sont écrites, seule la tête n'a pas suivi.
+#[derive(Debug)]
+struct ApresAjout(std::io::Error);
+
+impl std::fmt::Display for ApresAjout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ajout fait, tête pas suivie (reprise à la prochaine écriture) / appended, head not updated (resumed at the next write) : {}",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for ApresAjout {}
+
+fn apres_ajout(e: &std::io::Error) -> bool {
+    matches!(e.get_ref(), Some(i) if i.is::<ApresAjout>())
 }
 
 /// Retire les mois de plus de 13 mois, puis les plus vieux tant que le tout dépasse 20 Mo (jamais le mois en cours),
@@ -696,7 +734,32 @@ fn garder(rep: &Path, mois: &str, courant: &str, tete: &mut Tete) {
 
 /// Relit le journal de `dossier` et juge sa chaîne, sa tête et ses mois clos.
 pub(crate) fn lire_dans(dossier: &Path) -> Lu {
-    lire_borne(dossier, BORNES)
+    lire_tenu(dossier, crate::socle::ATTENTE_LECTURE)
+}
+
+/// Le début de la raison d'un journal lu sans son verrou, tenu ailleurs (`lire_tenu`).
+const PAS_JUGE: &str = "pas jugé : ";
+
+/// La lecture se fait sous le verrou, partagé : entre les étapes d'une écriture (tête annoncée, ajout, tête finale,
+/// mois élagués), le disque montre un état que la lecture prendrait pour une fin écrite sans sa tête, voire pour des
+/// lignes ajoutées ou un mois retiré, donc falsifié. Tenu au-delà de `attente` (un Vanguard figé au milieu d'une
+/// écriture), le verrou manque : la lecture se fait quand même, mais un journal qui y paraît changé n'est pas jugé
+/// (« incomplet », rien de vérifié) plutôt que dit falsifié à tort, et cela se dit au bilan : un programme qui
+/// garderait le verrou pour taire une falsification se voit. Un verrou qui ne s'ouvre pas (dossier posé à
+/// sa place, ou absent là où le lecteur n'écrit pas) n'est tenu par aucun écrivain : la lecture juge.
+fn lire_tenu(dossier: &Path, attente: std::time::Duration) -> Lu {
+    let tenu = crate::socle::Verrou::prendre_compatible(dossier, VERROU, true, attente);
+    let mut lu = lire_borne(dossier, BORNES);
+    if matches!(tenu, Err(crate::socle::SansVerrou::Occupe))
+        && matches!(lu.lecture, Lecture::Falsifie(_) | Lecture::Incomplet(_))
+    {
+        let s = attente.as_secs();
+        lu.lecture = Lecture::Incomplet(format!(
+            "{PAS_JUGE}une écriture d'un autre Vanguard dure depuis plus de {s} s / not judged: another Vanguard's write has lasted over {s} s"
+        ));
+        lu.verifies_des = lu.evenements.len();
+    }
+    lu
 }
 
 fn lire_borne(dossier: &Path, bornes: Bornes) -> Lu {
@@ -898,6 +961,12 @@ fn lire_sans_juger_borne(dossier: &Path, bornes: Bornes) -> (Vec<Evenement>, Vec
     (evenements.into(), manques)
 }
 
+/// Le verrou partagé du journal de `dossier`, tenu le temps de recopier ses fichiers tels quels (les traces) ; sans
+/// rien créer dans le dossier d'un autre compte. `None` : copiés sans lui.
+pub(crate) fn tenir_pour_copie(dossier: &Path) -> Option<crate::socle::Verrou> {
+    crate::socle::Verrou::prendre_compatible(dossier, VERROU, true, crate::socle::ATTENTE_LECTURE).ok()
+}
+
 /// Les fichiers du journal sous le dossier de données (« evenements/2026-10.jsonl », la tête), pour les recopier
 /// tels quels.
 pub(crate) fn fichiers(dossier: &Path) -> Vec<String> {
@@ -942,13 +1011,122 @@ pub(crate) fn noter(ev: Evenement) -> Option<String> {
     if !crate::socle::ecriture_sure(&dossier) {
         return None;
     }
-    match noter_dans(&dossier, ev, chrono::Utc::now()) {
-        Ok(id) => Some(id),
-        Err(e) => {
+    let id = ev.id.clone();
+    // Pendant un autotest, seul son événement d'essai s'écrit : les différés attendent la fin.
+    let mut evs = if crate::autotest::lecture_seule::active() {
+        Vec::new()
+    } else {
+        differes(&dossier)
+    };
+    let avant = evs.len();
+    evs.push(ev);
+    match ecrire_dans(&dossier, evs.clone(), chrono::Utc::now(), attente_noter()) {
+        Ok(()) => Some(id),
+        // Écrit, mais la tête n'a pas suivi : repris sans rupture à l'écriture suivante, rien à remettre.
+        Err(e) if apres_ajout(&e) => {
             super::Echec::io("evenements/noter", &e).journaliser();
+            Some(id)
+        }
+        // Tenu par un autre Vanguard au-delà de l'attente : gardé pour la prochaine écriture de ce processus (ou sa
+        // fin, `ecrire_differes`), sans rien écrire ni réessayer en boucle. Le journal des erreurs, lui, ne passe pas
+        // par ce verrou.
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            let perdus = differer(&dossier, evs);
+            super::Echec::echoue("evenements/noter", remis(&e, perdus)).journaliser();
+            Some(id)
+        }
+        // Rien d'écrit, pour une raison qui tient à cet événement ou au journal (mois plein, autotest, verrou
+        // inutilisable) : les différés d'avant lui sont gardés, lui non.
+        Err(e) => {
+            evs.truncate(avant);
+            let perdus = differer(&dossier, evs);
+            let mut echec = super::Echec::io("evenements/noter", &e);
+            if perdus > 0 {
+                echec = echec.detail(trf!(
+                    "{} plus ancien(s) différé(s) abandonné(s)",
+                    "{} older put-off one(s) dropped",
+                    perdus
+                ));
+            }
+            echec.journaliser();
             None
         }
     }
+}
+
+/// Ce que dit le journal des erreurs d'un événement remis à plus tard.
+fn remis(e: &std::io::Error, perdus: usize) -> String {
+    if perdus == 0 {
+        trf!(
+            "{} ; remis à la prochaine écriture de ce Vanguard, perdu s'il s'arrête avant de pouvoir l'écrire",
+            "{}; put off until this Vanguard's next write, lost if it stops before it can write it",
+            e
+        )
+    } else {
+        trf!(
+            "{} ; remis à la prochaine écriture de ce Vanguard, {} plus ancien(s) abandonné(s)",
+            "{}; put off until this Vanguard's next write, {} older one(s) dropped",
+            e,
+            perdus
+        )
+    }
+}
+
+/// Écrit les événements différés faute de verrou, avant que le processus ne se termine (`machine::quitter`, fin de
+/// `main`) : une commande lancée à la main n'écrit souvent qu'une fois, et ses différés partaient avec elle.
+pub(crate) fn ecrire_differes() {
+    let dossier = dossier_du_journal();
+    let evs = differes(&dossier);
+    if evs.is_empty() || crate::autotest::lecture_seule::active() {
+        differer(&dossier, evs);
+        return;
+    }
+    let n = evs.len();
+    if let Err(e) = ecrire_dans(&dossier, evs, chrono::Utc::now(), attente_noter())
+        && !apres_ajout(&e)
+    {
+        super::Echec::io("evenements/noter", &e)
+            .detail(trf!("{} différé(s) perdu(s)", "{} put-off one(s) lost", n))
+            .journaliser();
+    }
+}
+
+// Les essais attendent moins le verrou que le programme (`noter_differe_…`).
+#[cfg(test)]
+thread_local! {
+    static ATTENTE_NOTER: std::cell::Cell<Option<std::time::Duration>> = const { std::cell::Cell::new(None) };
+}
+
+fn attente_noter() -> std::time::Duration {
+    #[cfg(test)]
+    if let Some(a) = ATTENTE_NOTER.with(std::cell::Cell::get) {
+        return a;
+    }
+    crate::socle::ATTENTE_ECRITURE
+}
+
+/// Les événements qu'une écriture n'a pas pu noter faute de verrou, gardés en mémoire (au plus `DIFFERES_MAX`) et
+/// écrits devant le suivant, dans leur ordre et avec leur date, ou à la fin du processus (`ecrire_differes`). Un
+/// processus qui s'arrête autrement (tué, ou sorti sans passer par là) les perd : c'est dit au journal des erreurs.
+static DIFFERES: std::sync::Mutex<Vec<(PathBuf, Evenement)>> = std::sync::Mutex::new(Vec::new());
+const DIFFERES_MAX: usize = 64;
+
+/// Retire et rend les événements différés de `dossier`.
+fn differes(dossier: &Path) -> Vec<Evenement> {
+    let mut d = DIFFERES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (siens, autres): (Vec<_>, Vec<_>) = std::mem::take(&mut *d).into_iter().partition(|(p, _)| p == dossier);
+    *d = autres;
+    siens.into_iter().map(|(_, e)| e).collect()
+}
+
+/// Garde `evs` pour la prochaine écriture dans `dossier` ; rend le nombre des plus anciens abandonnés au-delà de
+/// `DIFFERES_MAX`.
+fn differer(dossier: &Path, evs: Vec<Evenement>) -> usize {
+    let mut d = DIFFERES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    d.extend(evs.into_iter().map(|e| (dossier.to_path_buf(), e)));
+    let trop = d.len().saturating_sub(DIFFERES_MAX);
+    d.drain(..trop);
+    trop
 }
 
 /// Ce que le bilan dit du journal (règle COM-ETA-001) : la tête scellée peut être intacte alors qu'une ligne a été
@@ -998,6 +1176,27 @@ fn constat_de_rupture(
 }
 
 fn constat_de(l: &Lecture) -> Option<crate::machine::Constat> {
+    if let Lecture::Incomplet(r) = l
+        && r.starts_with(PAS_JUGE)
+    {
+        return Some(
+            crate::machine::alerte(
+                crate::sceau::CAT,
+                Niveau::Moyen,
+                tr!(
+                    "Le journal des événements n'a pas pu être vérifié : son verrou est tenu depuis trop longtemps (un Vanguard figé, ou un autre programme qui le garde). Ses alertes ne sont pas tenues pour vérifiées, et ce qui s'y note attend.",
+                    "The event log could not be verified: its lock has been held too long (a frozen Vanguard, or another program keeping it). Its alerts are not taken as verified, and what is noted in it waits."
+                ),
+            )
+            .manuel(
+                tr!(
+                    "Fermez les autres Vanguard ouverts, puis relancez le bilan ; si cela reste, regardez ce qui tourne sous votre compte",
+                    "Close the other open Vanguard windows, then run the check-up again; if it stays, look at what runs under your account"
+                ),
+                &[],
+            ),
+        );
+    }
     let Lecture::Falsifie(r) = l else { return None };
     Some(
         crate::machine::alerte(
@@ -1036,7 +1235,7 @@ pub(crate) fn noter_version() {
     {
         return;
     }
-    if let Err(e) = ecrire_dans(&dossier, None, chrono::Utc::now()) {
+    if let Err(e) = ecrire_dans(&dossier, Vec::new(), chrono::Utc::now(), crate::socle::ATTENTE_ECRITURE) {
         super::Echec::io("evenements/version", &e).journaliser();
     }
 }
@@ -1543,6 +1742,164 @@ mod tests {
             assert_eq!(lu.verifies().len(), lu.evenements.len());
             let _ = std::fs::remove_dir_all(&d);
         }
+    }
+
+    /// Des écrivains en même temps sur un journal (la surveillance horaire, une commande lancée à la main) : jamais
+    /// une rupture, rien de perdu, et un lecteur qui passe pendant les écritures ne voit jamais d'état transitoire
+    /// (fin écrite sans sa tête, lignes en plus de la tête) : il lit sous le verrou partagé.
+    #[test]
+    fn ecrivains_et_lecteur_en_meme_temps_sans_rupture() {
+        const FILS: usize = 6;
+        const PAR_FIL: usize = 15;
+        let d = dossier("concurrents");
+        std::fs::write(d.join(RALENTIR), b"").unwrap();
+        let q = "2026-10-23T10:00:00Z";
+        let fini = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let lecteur = {
+            let (d, fini) = (d.clone(), fini.clone());
+            std::thread::spawn(move || {
+                let mut lectures = 0;
+                while !fini.load(std::sync::atomic::Ordering::Relaxed) {
+                    let l = lire_dans(&d).lecture;
+                    assert!(
+                        matches!(l, Lecture::Vide | Lecture::Intact),
+                        "lecture {lectures} : {l:?}"
+                    );
+                    lectures += 1;
+                    // Sans file d'attente, un lecteur qui relit sans pause pourrait affamer les écrivains.
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                lectures
+            })
+        };
+        let ecrivains: Vec<_> = (0..FILS)
+            .map(|f| {
+                let d = d.clone();
+                std::thread::spawn(move || {
+                    for i in 0..PAR_FIL {
+                        noter_dans(&d, alerte(f * 100 + i, q), le(q)).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for e in ecrivains {
+            e.join().unwrap();
+        }
+        fini.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(lecteur.join().unwrap() > 0);
+        let lu = lire_dans(&d);
+        assert_eq!(lu.lecture, Lecture::Intact);
+        assert!(!lu.evenements.iter().any(|e| matches!(e.quoi, Genre::Rupture { .. })));
+        assert_eq!(alertes(&lu.evenements).count(), FILS * PAR_FIL);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Le corps des processus écrivains de `deux_processus_sans_rupture` : sans `VANGUARD_ESSAI_ECRIVAIN`, rien.
+    #[test]
+    #[ignore = "lancé par deux_processus_sans_rupture, dans un processus à lui"]
+    fn ecrivain_enfant() {
+        let Some(d) = std::env::var_os("VANGUARD_ESSAI_ECRIVAIN") else {
+            return;
+        };
+        let n: usize = std::env::var("VANGUARD_ESSAI_NUMERO").unwrap().parse().unwrap();
+        let q = "2026-10-23T10:00:00Z";
+        for i in 0..20 {
+            noter_dans(Path::new(&d), alerte(n * 100 + i, q), le(q)).unwrap();
+        }
+    }
+
+    /// Deux vrais processus (le verrou du système, pas seulement entre fils) écrivent le même journal pendant qu'un
+    /// troisième le lit : jamais de rupture, jamais « falsifié ».
+    #[test]
+    fn deux_processus_sans_rupture() {
+        let d = dossier("processus");
+        std::fs::write(d.join(RALENTIR), b"").unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let enfants: Vec<_> = (0..2)
+            .map(|n| {
+                std::process::Command::new(&exe)
+                    .args([
+                        "--exact",
+                        "modele::journal::tests::ecrivain_enfant",
+                        "--ignored",
+                        "--quiet",
+                    ])
+                    .env("VANGUARD_ESSAI_ECRIVAIN", &d)
+                    .env("VANGUARD_ESSAI_NUMERO", n.to_string())
+                    .stdout(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap()
+            })
+            .collect();
+        let mut enfants: Vec<_> = enfants.into_iter().map(Some).collect();
+        let fin = std::time::Instant::now() + std::time::Duration::from_secs(300);
+        while enfants.iter().any(Option::is_some) {
+            assert!(std::time::Instant::now() < fin, "un écrivain ne finit pas");
+            let l = lire_dans(&d).lecture;
+            assert!(matches!(l, Lecture::Vide | Lecture::Intact), "{l:?}");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            for e in &mut enfants {
+                if let Some(c) = e
+                    && let Some(fin) = c.try_wait().unwrap()
+                {
+                    assert!(fin.success(), "{fin:?}");
+                    *e = None;
+                }
+            }
+        }
+        let lu = lire_dans(&d);
+        assert_eq!(lu.lecture, Lecture::Intact);
+        assert!(!lu.evenements.iter().any(|e| matches!(e.quoi, Genre::Rupture { .. })));
+        assert_eq!(alertes(&lu.evenements).count(), 40);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Le verrou tenu au-delà de l'attente : rien n'est écrit (ni tête, ni ligne, ni sceau), l'échec le dit ; un
+    /// lecteur qui ne l'obtient pas ne dit pas falsifié ce qu'il voit, et le dit dès qu'il l'obtient.
+    #[test]
+    fn verrou_tenu_rien_n_est_ecrit_ni_conclu() {
+        let d = dossier("tenu");
+        let q = "2026-10-23T10:00:00Z";
+        remplir(&d, 2, q);
+        let etat = || [segment(&d, "2026-10"), d.join(TETE), d.join("sceaux.json")].map(|f| std::fs::read(f).unwrap());
+        let avant = etat();
+        let court = std::time::Duration::from_millis(300);
+        let tenu = crate::socle::Verrou::prendre_nomme(&d, VERROU).unwrap();
+        let e = ecrire_dans(&d, vec![alerte(9, q)], le(q), court).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::WouldBlock, "{e}");
+        assert_eq!(etat(), avant, "écrit sans le verrou");
+        // Des lignes ajoutées hors de Vanguard : sans le verrou, pas de conclusion.
+        ajouter(&segment(&d, "2026-10"), b"{\"ajout\":1}\n").unwrap();
+        let lu = lire_tenu(&d, court);
+        assert!(
+            matches!(&lu.lecture, Lecture::Incomplet(r) if r.starts_with(PAS_JUGE)),
+            "{:?}",
+            lu.lecture
+        );
+        // Pas falsifié, mais jamais tu : un verrou gardé exprès ne fait pas taire le bilan.
+        assert_eq!(constat_de(&lu.lecture).and_then(|c| c.probleme), Some(Niveau::Moyen));
+        assert_eq!(lu.verifies(), []);
+        drop(tenu);
+        assert!(matches!(lire_dans(&d).lecture, Lecture::Falsifie(_)));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// `noter` sans le verrou : l'événement est gardé, puis écrit devant le suivant, dans l'ordre, sans rupture.
+    #[test]
+    fn noter_differe_puis_ecrit_dans_l_ordre() {
+        let d = dossier_du_journal();
+        ATTENTE_NOTER.with(|a| a.set(Some(std::time::Duration::from_millis(300))));
+        let q = "2026-10-23T10:00:00Z";
+        let tenu = crate::socle::Verrou::prendre_nomme(&d, VERROU).unwrap();
+        assert!(noter(alerte(1, q)).is_some());
+        drop(tenu);
+        assert_eq!(lire_dans(&d).lecture, Lecture::Vide);
+        noter(alerte(2, q)).unwrap();
+        ATTENTE_NOTER.with(|a| a.set(None));
+        let lu = lire_dans(&d);
+        assert_eq!(lu.lecture, Lecture::Intact);
+        let titres: Vec<&str> = alertes(&lu.evenements).map(|(_, _, titre, _)| titre).collect();
+        assert_eq!(titres, ["alerte 1", "alerte 2"]);
     }
 
     /// Une ligne coupée par un arrêt : elle reste dans la chaîne, illisible ; la ligne suivante commence sur une

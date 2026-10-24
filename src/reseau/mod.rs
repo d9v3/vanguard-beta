@@ -347,7 +347,23 @@ impl Base {
     /// Le verrou rendu doit être gardé jusqu'à `enregistrer` : la surveillance horaire et un scan manuel
     /// ne doivent pas lire et réécrire la base en même temps (l'une effacerait les ajouts de l'autre).
     fn charger() -> (Base, [PathBuf; 2], Option<Verrou>) {
-        let verrou = Verrou::prendre_nomme(&dossier_local(), "appareils.verrou");
+        Self::charger_tenu(Verrou::prendre_nomme(&dossier_local(), "appareils.verrou"))
+    }
+
+    /// La base pour la lire seulement : sous le verrou partagé, le temps de la charger (plusieurs lecteurs ensemble,
+    /// jamais pendant qu'un scan l'écrit), puis rendu ; un menu qui montre les appareils n'attend pas tout un scan.
+    fn charger_pour_lire() -> Base {
+        let verrou = Verrou::prendre_compatible(
+            &dossier_local(),
+            "appareils.verrou",
+            true,
+            crate::socle::ATTENTE_LECTURE,
+        )
+        .ok();
+        Self::charger_tenu(verrou).0
+    }
+
+    fn charger_tenu(verrou: Option<Verrou>) -> (Base, [PathBuf; 2], Option<Verrou>) {
         let cle = cle_usb().map(|c| {
             let modifiable = modifiable(&c);
             (c, modifiable)
@@ -424,6 +440,25 @@ impl Base {
         }
     }
 
+    /// `enregistrer`, seulement sous le verrou de `charger` : sans lui, un autre Vanguard a pu lire la base avant nous
+    /// et la réécrire après, et l'un des deux perdait les ajouts de l'autre (le carnet de la clé, différent de sa
+    /// référence, se serait dit changé hors de Vanguard). Rend si la base est écrite ; sinon, c'est dit.
+    fn enregistrer_sous(&self, chemins: &[PathBuf; 2], verrou: Option<&Verrou>) -> bool {
+        if verrou.is_none() {
+            crate::modele::Echec::echoue(
+                "reseau/appareils",
+                tr!(
+                    "base des appareils non enregistrée : « appareils.verrou » tenu par un autre Vanguard ou inutilisable",
+                    "device database not saved: “appareils.verrou” held by another Vanguard or unusable"
+                ),
+            )
+            .journaliser();
+            return false;
+        }
+        self.enregistrer(chemins);
+        true
+    }
+
     /// On écrit la base sur la clé ET en local : la copie locale sert quand la clé est absente.
     fn enregistrer(&self, chemins: &[PathBuf; 2]) {
         let json = serde_json::to_string_pretty(self).unwrap_or_default();
@@ -463,7 +498,7 @@ pub(crate) fn carnet_du_reseau() -> Option<(Option<String>, Vec<objets::Appareil
         .and_then(|g| scan::table_arp().get(&g).cloned())
         .or_else(|| local.as_ref().map(|(cible, _)| trf!("plage {cible}", "range {cible}")))?;
     let moi = local.map(|(_, ip)| ip);
-    let (base, _, _verrou) = Base::charger();
+    let base = Base::charger_pour_lire();
     let reseau = base.reseaux.get(&id).filter(|r| !r.appareils.is_empty())?;
     let appareils = reseau
         .appareils
@@ -487,7 +522,7 @@ pub(crate) fn carnet_du_reseau() -> Option<(Option<String>, Vec<objets::Appareil
 /// carnet), le nom du Wi-Fi et l'adresse de la box. Les carnets reconnus à leur plage d'adresses, sans MAC, n'y sont
 /// pas. Lecture seule.
 pub(crate) fn resumes_des_carnets() -> Vec<(String, Option<String>, Option<Ipv4Addr>)> {
-    let (base, _, _verrou) = Base::charger();
+    let base = Base::charger_pour_lire();
     base.reseaux
         .iter()
         .filter(|(id, _)| id.contains(':'))
@@ -539,7 +574,7 @@ impl Base {
 
 /// La base des appareils (clé et copie locale fusionnées), pour une sauvegarde.
 pub fn base_pour_sauvegarde() -> (serde_json::Value, Contenu) {
-    let (base, _, _verrou) = Base::charger();
+    let base = Base::charger_pour_lire();
     (serde_json::to_value(&base).unwrap_or_default(), base.contenu())
 }
 
@@ -549,9 +584,15 @@ pub fn restaurer_base(sauvegarde: serde_json::Value) -> Result<Contenu, String> 
     let autre: Base = serde_json::from_value(sauvegarde)
         .map_err(|e| trf!("base des appareils illisible ({e})", "device database unreadable ({e})"))?;
     let contenu = autre.contenu();
-    let (mut base, chemins, _verrou) = Base::charger();
+    let (mut base, chemins, verrou) = Base::charger();
     base.absorber(autre);
-    base.enregistrer(&chemins);
+    if !base.enregistrer_sous(&chemins, verrou.as_ref()) {
+        return Err(tr!(
+            "base des appareils tenue par un autre Vanguard ou verrou inutilisable : rien n'est restauré, réessayez",
+            "device database held by another Vanguard or lock unusable: nothing restored, try again"
+        )
+        .to_string());
+    }
     Ok(contenu)
 }
 
@@ -573,7 +614,7 @@ pub struct FicheAppareil {
 
 /// Les appareils de la base (clé et copie locale fusionnées), en lecture seule : rien n'est réécrit.
 pub fn appareils_connus() -> Vec<FicheAppareil> {
-    let (base, _, _verrou) = Base::charger();
+    let base = Base::charger_pour_lire();
     base.fiches_montrees()
 }
 
@@ -610,7 +651,7 @@ impl Base {
 
 /// Donne (ou retire, avec `None`) un surnom à un appareil, désigné par son IP ou son adresse MAC.
 pub fn nommer(qui: &str, surnom: Option<&str>) -> Result<String, String> {
-    let (mut base, chemins, _verrou) = Base::charger();
+    let (mut base, chemins, verrou) = Base::charger();
     let mut trouve = None;
     let maintenant = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     // Par IP, seulement dans le réseau où l'on se trouve (la même IP existe chez chacun) ; par MAC, partout.
@@ -644,7 +685,13 @@ pub fn nommer(qui: &str, surnom: Option<&str>) -> Result<String, String> {
             "no device “{qui}” in the database: first run a network scan (vanguard devices)"
         ));
     };
-    base.enregistrer(&chemins);
+    if !base.enregistrer_sous(&chemins, verrou.as_ref()) {
+        return Err(tr!(
+            "base des appareils tenue par un autre Vanguard ou verrou inutilisable : surnom pas enregistré, réessayez",
+            "device database held by another Vanguard or lock unusable: nickname not saved, try again"
+        )
+        .to_string());
+    }
     Ok(decrit)
 }
 
@@ -1294,7 +1341,7 @@ pub async fn executer(o: Options) -> Result<Rapport, String> {
     );
     let arp = scan::table_arp();
 
-    let (mut base, chemins, _verrou) = Base::charger();
+    let (mut base, chemins, verrou) = Base::charger();
     // Le carnet de ce réseau : reconnu à la MAC de la box, sinon à la plage d'adresses.
     let id_reseau = gw
         .and_then(|g| arp.get(&g).cloned())
@@ -1474,8 +1521,10 @@ pub async fn executer(o: Options) -> Result<Rapport, String> {
             histo.nom.clone_from(&nom_reseau);
         }
         histo.udp |= avec_udp;
-        base.enregistrer(&chemins);
+        base.enregistrer_sous(&chemins, verrou.as_ref());
     }
+    // Écrite : la base n'est plus tenue pendant ce qui suit (UPnP, empoisonnement, affichage).
+    drop(verrou);
 
     let score_global = hotes.iter().map(|h| h.score).min().unwrap_or(100);
     let rapport = Rapport {

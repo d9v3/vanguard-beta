@@ -229,7 +229,12 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   SSH ni le Bureau à distance rouverts). Un port fermé par ufw sans relecture se dit « non vérifié », pas « bloqué ».
   Le journal des événements s'écrit en deux temps : des lignes ajoutées sans sa tête se lisent falsifiées, puis
   comme une rupture dite au bilan, jamais reprises comme celles de Vanguard. Effacer les sceaux avec leur verrou ne
-  ramène plus au premier usage, et un mois posé « en 2099 » ne relie plus un geste à une fausse cause.
+  ramène plus au premier usage, et un mois posé « en 2099 » ne relie plus un geste à une fausse cause. Le journal,
+  les sceaux et la base des appareils ne s'écrivent plus jamais sans leur verrou (un verrou du système, rendu dès
+  qu'un Vanguard s'arrête, qui respecte celui d'une version d'avant) : deux Vanguard qui écrivent en même temps sur un
+  Windows lent ne font plus croire à un journal falsifié. Un événement qui attend trop est remis à la prochaine
+  écriture ou à la fin du programme, le reste refusé, et c'est dit au journal des erreurs, jamais écrit à moitié ; un
+  verrou tenu sans fin se dit au bilan.
 
 ## 23 octobre 2026 : version 0.86
 

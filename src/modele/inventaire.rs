@@ -109,6 +109,8 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     scelle(crate::changements::LIGNES, "changements"),
     local(crate::modele::journal::DOSSIER, "modele::journal"),
     local("evenements.verrou", "modele::journal"),
+    // Le verrou du système du journal (`socle::Verrou::prendre_compatible`), à côté de celui des versions d'avant.
+    local("evenements.lock", "modele::journal"),
     local(crate::modele::resultat::EXAMENS, "modele::resultat"),
     // Le travail sans Internet, l'autodiagnostic et les versions des logiciels s'y coupent.
     scelle(crate::parametres::PARAMETRES, "parametres"),
@@ -164,6 +166,7 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     local("appareils.json", "reseau"),
     local("appareils.json.vanguard", "chiffrement"),
     local("appareils.verrou", "reseau"),
+    local("appareils.lock", "reseau"),
     local("alertes.verrou", "reseau::tableau"),
     local("connexion.json", "reseau::connexion"),
     local("surveillance-voulue", "reseau::surveillance"),
@@ -267,8 +270,8 @@ mod tests {
 
     /// T12 : chaque nom que le code joint au dossier de données figure dans l'inventaire, par lui-même ou par son
     /// premier dossier. Ce que la lecture voit : `dossier_local().join(…)` (en clair ou par une constante du fichier),
-    /// le lieu d'une liste téléchargée, le nom d'un verrou (`prendre_nomme(dossier, "…")`), et `.join("…")` sur une
-    /// variable `local`, `nouveau` ou `donnees` (le nom que le code donne au dossier de données, en variable ou en
+    /// le lieu d'une liste téléchargée, le nom d'un verrou (`prendre_nomme(dossier, "…")`, `Verrou::prendre(…)`), et
+    /// `.join("…")` sur une variable `local`, `nouveau` ou `donnees` (le nom que le code donne au dossier de données, en variable ou en
     /// paramètre), sauf celles de `HORS_DU_DOSSIER`. Pas ce qui passe par un autre nom de variable, ni les copies
     /// datées « <nom>.illisible-<date>.json » (rangées sous leur fichier d'origine).
     #[test]
@@ -322,8 +325,12 @@ mod tests {
                     }
                 }
             }
-            for (i, _) in code.match_indices("prendre_nomme(") {
-                let args = &code[i + "prendre_nomme(".len()..];
+            for (i, appel) in code
+                .match_indices("prendre_nomme(")
+                .chain(code.match_indices("Verrou::prendre("))
+                .chain(code.match_indices("Verrou::prendre_compatible("))
+            {
+                let args = &code[i + appel.len()..];
                 if let Some(virgule) = args.find(',')
                     && let Some(n) = litteral(&args[virgule + 1..])
                 {

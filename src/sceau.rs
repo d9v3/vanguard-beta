@@ -28,7 +28,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -191,39 +190,33 @@ fn empreinte(nom: &str, octets: &[u8]) -> String {
 
 /// Le verrou des sceaux : la surveillance horaire, le veilleur et le menu écrivent chacun leurs fichiers, et un
 /// lecteur qui passerait entre l'écriture d'un fichier et celle de son sceau le croirait falsifié. Tenu quelques
-/// millisecondes ; au-delà de deux secondes (un processus figé), on avance sans lui plutôt que de tout bloquer.
-fn verrou(dossier: &Path) -> Option<std::fs::File> {
-    if !crate::socle::ecriture_sure(dossier) {
-        return None;
-    }
-    std::fs::create_dir_all(dossier).ok()?;
-    let mut options = std::fs::OpenOptions::new();
-    options.create(true).truncate(false).write(true);
-    // Ni lien suivi, ni tube nommé attendu : un tube posé à sa place figeait open() pour toujours.
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    let f = options.open(dossier.join(VERROU)).ok()?;
-    if !f.metadata().ok()?.file_type().is_file() {
-        return None;
-    }
-    // Deux secondes pour le programme : deux Vanguard ne se disputent les sceaux que le temps d'une écriture. Les
-    // essais écrivent chaque fichier scellé vingt fois à la fois, chaque écriture vidée sur le disque (sync_all) : sous
-    // Wine, chargé, deux secondes ne suffisaient pas, et sur le Windows de la CI, un fil pouvait attendre plus de dix
-    // secondes son tour (sans file d'attente, un autre le prend avant lui) puis avancer sans le verrou.
-    let delai = if cfg!(test) {
-        Duration::from_secs(60)
-    } else {
-        Duration::from_secs(2)
-    };
-    let fin = Instant::now() + delai;
-    loop {
-        match f.try_lock() {
-            Ok(()) => return Some(f),
-            Err(std::fs::TryLockError::WouldBlock) if Instant::now() < fin => {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            Err(_) => return None,
-        }
+/// millisecondes d'ordinaire.
+///
+/// Un écrivain n'avance jamais sans lui (`ecrire_dans`, `effacer_dans`) : deux Vanguard qui réécrivent le registre
+/// en même temps, l'un efface le sceau que l'autre vient de poser, et ce fichier (la tête du journal des événements
+/// comprise) se lisait ensuite falsifié. Il attendait deux secondes puis passait ; un Windows lent, ou dont
+/// l'antivirus analyse chaque fichier écrit, tient le verrou plus longtemps que cela le temps de deux écritures vidées
+/// sur le disque. Le refus va au journal des erreurs (qui ne passe pas par ce verrou) : bien des appelants
+/// n'attendent rien de l'écriture.
+fn verrou_ecriture(dossier: &Path, nom: &str) -> std::io::Result<crate::socle::Verrou> {
+    std::fs::create_dir_all(dossier)?;
+    crate::socle::Verrou::prendre(dossier, VERROU, false, crate::socle::ATTENTE_ECRITURE).map_err(|e| {
+        let e = e.erreur(VERROU);
+        crate::modele::Echec::echoue("sceau/ecrire", format!("{nom} : {e}")).journaliser();
+        e
+    })
+}
+
+/// Le verrou d'un lecteur. Exclusif là où il peut écrire : au premier usage ou pour un fichier protégé tard, la lecture
+/// note ce qu'elle adopte dans le registre (`ecrire`). Ailleurs (le dossier d'un autre compte, un autotest, le
+/// processus élevé) partagé, sans rien créer. Sans verrou, rien n'est noté, et la lecture juge quand même : un
+/// verrou qui ne s'ouvre pas n'est tenu par aucun écrivain, et tenu au-delà de l'attente, c'est un Vanguard figé ;
+/// dire « pas jugé » laisserait sinon n'importe quel programme qui le garde faire taire les falsifications.
+fn verrou_lecture(dossier: &Path, ecrire: bool) -> (Option<crate::socle::Verrou>, bool) {
+    let ecrire = ecrire && crate::socle::ecriture_sure(dossier);
+    match crate::socle::Verrou::prendre(dossier, VERROU, !ecrire, crate::socle::ATTENTE_LECTURE) {
+        Ok(v) => (Some(v), ecrire),
+        Err(_) => (None, false),
     }
 }
 
@@ -373,10 +366,10 @@ fn juger(nom: &str, lu: Result<Option<Vec<u8>>, String>, sceaux: Option<&Registr
 /// Un fichier d'état de `dossier`, jugé d'après ses sceaux.
 pub(crate) fn lire_dans(dossier: &Path, nom: &str) -> Lecture {
     let deja = deja_scelle(dossier);
-    let _verrou = verrou(dossier);
+    let (_verrou, ecrire) = verrou_lecture(dossier, true);
     let sceaux = match registre(dossier) {
-        Ok(Some(r)) => Some(rattraper(dossier, r)),
-        Ok(None) => Some(adopter(dossier, deja)),
+        Ok(Some(r)) => Some(rattraper_si(dossier, r, ecrire)),
+        Ok(None) => Some(adopter_si(dossier, deja, ecrire)),
         Err(()) => None,
     };
     juger(nom, contenu(&dossier.join(nom)), sceaux.as_ref())
@@ -388,7 +381,7 @@ pub(crate) fn lire_dans(dossier: &Path, nom: &str) -> Lecture {
 /// Le verrou n'est pris que s'il existe déjà.
 pub(crate) fn lire_sans_ecrire(dossier: &Path, nom: &str) -> Lecture {
     let deja = deja_scelle(dossier);
-    let _verrou = if deja { verrou(dossier) } else { None };
+    let _verrou = if deja { verrou_lecture(dossier, false).0 } else { None };
     let sceaux = match registre(dossier) {
         Ok(Some(r)) => Some(rattraper_si(dossier, r, false)),
         Ok(None) => Some(adopter_si(dossier, deja, false)),
@@ -404,7 +397,7 @@ pub(crate) fn ecrire_dans(dossier: &Path, nom: &str, octets: &[u8]) -> std::io::
         return Err(dossier_d_un_autre());
     }
     let deja = deja_scelle(dossier);
-    let _verrou = verrou(dossier);
+    let _verrou = verrou_ecriture(dossier, nom)?;
     let mut sceaux = match registre(dossier) {
         Ok(Some(r)) => rattraper(dossier, r),
         Ok(None) => adopter(dossier, deja),
@@ -433,7 +426,7 @@ pub(crate) fn effacer_dans(dossier: &Path, nom: &str) -> std::io::Result<()> {
     if !crate::socle::ecriture_sure(dossier) {
         return Err(dossier_d_un_autre());
     }
-    let _verrou = verrou(dossier);
+    let _verrou = verrou_ecriture(dossier, nom)?;
     match std::fs::remove_file(dossier.join(nom)) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
         _ => {}
@@ -910,7 +903,7 @@ mod tests {
             // SAFETY : mkfifo reçoit un chemin terminé par zéro, qui vit le temps de l'appel.
             assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
         };
-        let debut = Instant::now();
+        let debut = std::time::Instant::now();
         tube(&d.join(APPRIS));
         assert!(matches!(lire_dans(&d, APPRIS), Lecture::Illisible(_)));
         std::fs::remove_file(d.join(APPRIS)).unwrap();
@@ -920,7 +913,26 @@ mod tests {
         tube(&d.join(REGISTRE));
         assert!(matches!(lire_dans(&d, APPRIS), Lecture::Illisible(_)));
         assert_eq!(lire_dans(&d, MACHINE), Lecture::Inconnu);
-        assert!(debut.elapsed() < Duration::from_secs(10), "{:?}", debut.elapsed());
+        assert!(
+            debut.elapsed() < std::time::Duration::from_secs(10),
+            "{:?}",
+            debut.elapsed()
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Un dossier posé à la place du verrou : plus aucun écrivain ne peut le tenir, et rien ne s'écrit sans lui (deux
+    /// écrivains effaceraient l'un le sceau de l'autre) ; la lecture, elle, juge toujours.
+    #[test]
+    fn sans_verrou_rien_ne_s_ecrit() {
+        let d = jetable("sans-verrou");
+        ecrire_dans(&d, APPRIS, b"{}").unwrap();
+        std::fs::remove_file(d.join(VERROU)).unwrap();
+        std::fs::create_dir(d.join(VERROU)).unwrap();
+        assert!(ecrire_dans(&d, APPRIS, b"{\"x\":1}").is_err());
+        assert!(effacer_dans(&d, APPRIS).is_err());
+        assert_eq!(std::fs::read(d.join(APPRIS)).unwrap(), b"{}");
+        assert!(matches!(lire_dans(&d, APPRIS), Lecture::Intact(_)));
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -1234,6 +1234,7 @@ pub fn attendre_ouvertures() {
 /// `std::process::exit` les couperait.
 pub fn quitter(code: i32) -> ! {
     attendre_ouvertures();
+    crate::modele::journal::ecrire_differes();
     std::process::exit(code)
 }
 

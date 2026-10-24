@@ -3667,6 +3667,8 @@ async fn main() {
     // Une page ouverte juste avant la fin (« vanguard rapport », le tableau de bord) : son ouverture aboutit avant
     // que le processus ne parte.
     machine::attendre_ouvertures();
+    // Les événements remis faute de verrou du journal, écrits avant que la commande ne parte avec eux.
+    modele::journal::ecrire_differes();
 }
 
 #[cfg(test)]

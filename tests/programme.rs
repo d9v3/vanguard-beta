@@ -1954,7 +1954,8 @@ fn contenus(dossier: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
             .iter()
             .any(|x| relatif == *x || relatif.starts_with(&format!("{x}/")))
                 || relatif == "journal-erreurs.txt"
-                || relatif.ends_with(".verrou");
+                || relatif.ends_with(".verrou")
+                || std::path::Path::new(&relatif).extension().is_some_and(|e| e == "lock");
             if propre {
                 continue;
             }
