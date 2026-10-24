@@ -718,10 +718,13 @@ mod systeme {
         dernier_ecran_bleu: String,
         arrets_brutaux: u32,
         plantages: Vec<String>,
-        /// Les points dont le journal a refusé la lecture directe (droits, délai) : « aucun » y serait faux. Le
-        /// script de secours ne le dit pas (-ErrorAction SilentlyContinue) : vide.
+        /// Les points dont le journal a refusé la lecture (droits, délai, journal absent) : « aucun » y serait faux.
         #[serde(skip)]
         illisibles: Vec<&'static str>,
+        /// Les mêmes, tels que le script de secours les rend : « ecrans-bleus,plantages » (une chaîne, que
+        /// ConvertTo-Json ne change pas en valeur seule quand il n'y en a qu'un).
+        #[serde(rename = "illisibles")]
+        illisibles_ps: String,
     }
 
     #[derive(Default, Deserialize)]
@@ -857,6 +860,7 @@ mod systeme {
                 .map(|l| l.split_once('|').map_or("", |(_, p)| p).to_string())
                 .collect(),
             illisibles,
+            illisibles_ps: String::new(),
         })
     }
 
@@ -901,11 +905,21 @@ mod systeme {
         assert!(e.dernier_ecran_bleu.is_empty() || e.dernier_ecran_bleu.len() == 10);
     }
 
+    /// Le script de secours. Get-WinEvent dit « aucun événement » par une erreur (NoMatchingEventsFound) : avec
+    /// -ErrorAction SilentlyContinue, un journal refusé (droits, absent) se lisait « aucun » lui aussi. Chaque lecture
+    /// rattrape donc son erreur : « aucun » pour celle-là seule, le point illisible pour toute autre.
     fn lire_powershell() -> Option<Etat> {
         let json = crate::machine::windows::ps(
             r#"$os = Get-CimInstance Win32_OperatingSystem; $cs = Get-CimInstance Win32_ComputerSystem
                $cpu = @(Get-CimInstance Win32_Processor)[0]; $mois = (Get-Date).AddDays(-30); $semaine = (Get-Date).AddDays(-7)
-               $bleus = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = 1001; ProviderName = 'Microsoft-Windows-WER-SystemErrorReporting'; StartTime = $mois } -ErrorAction SilentlyContinue)
+               $illisibles = [System.Collections.Generic.List[string]]::new()
+               function Lire-Evenements([string]$point, [hashtable]$filtre) {
+                 try { @(Get-WinEvent -FilterHashtable $filtre -ErrorAction Stop) }
+                 catch { if ("$($_.FullyQualifiedErrorId)" -notlike 'NoMatchingEventsFound*') { [void]$illisibles.Add($point) } }
+               }
+               $bleus = @(Lire-Evenements 'ecrans-bleus' @{ LogName = 'System'; Id = 1001; ProviderName = 'Microsoft-Windows-WER-SystemErrorReporting'; StartTime = $mois })
+               $arrets = @(Lire-Evenements 'arrets-brutaux' @{ LogName = 'System'; Id = 41; StartTime = $mois })
+               $plantages = @(Lire-Evenements 'plantages' @{ LogName = 'Application'; Id = 1000; StartTime = $semaine })
                [pscustomobject]@{
                  systeme = $os.Caption; version = "$($os.Version)"; nom = $env:COMPUTERNAME
                  modele = "$($cs.Manufacturer) $($cs.Model)"; bios = "$((Get-CimInstance Win32_BIOS).SMBIOSBIOSVersion)"
@@ -916,11 +930,35 @@ mod systeme {
                  disques = @(try { Get-PhysicalDisk | ForEach-Object { @{ nom = "$($_.FriendlyName)"; taille = [uint64]$_.Size; sorte = "$($_.MediaType)" } } } catch { })
                  ecrans_bleus = $bleus.Count
                  dernier_ecran_bleu = if ($bleus.Count) { $bleus[0].TimeCreated.ToString('yyyy-MM-dd') } else { '' }
-                 arrets_brutaux = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = 41; StartTime = $mois } -ErrorAction SilentlyContinue).Count
-                 plantages = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = 1000; StartTime = $semaine } -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Properties[0].Value)" })
+                 arrets_brutaux = $arrets.Count
+                 plantages = @($plantages | ForEach-Object { "$($_.Properties[0].Value)" })
+                 illisibles = $illisibles -join ','
                } | ConvertTo-Json -Compress -Depth 3"#,
         )?;
-        serde_json::from_str(&json).ok()
+        depuis_powershell(&json)
+    }
+
+    /// L'état rendu par le script de secours, ses points illisibles compris.
+    fn depuis_powershell(json: &str) -> Option<Etat> {
+        let mut e: Etat = serde_json::from_str(json).ok()?;
+        e.illisibles = super::points_illisibles(&e.illisibles_ps);
+        Some(e)
+    }
+
+    /// Un journal refusé par le script de secours n'est pas « aucun » : le point est illisible, et sa ligne non
+    /// vérifiée.
+    #[cfg(test)]
+    #[test]
+    fn secours_refuse_non_verifie() {
+        let e = depuis_powershell(
+            r#"{"ecrans_bleus":0,"arrets_brutaux":0,"plantages":["firefox.exe"],"illisibles":"arrets-brutaux"}"#,
+        )
+        .unwrap();
+        assert_eq!(e.illisibles, ["arrets-brutaux"]);
+        assert_eq!(
+            depuis_powershell(r#"{"illisibles":""}"#).unwrap().illisibles,
+            Vec::<&str>::new()
+        );
     }
 
     pub fn sections() -> Vec<Section> {
@@ -1016,6 +1054,20 @@ mod systeme {
     }
 }
 
+/// Les points que le script de secours de Windows n'a pas pu lire (« ecrans-bleus,plantages ») ; un nom inconnu est
+/// laissé de côté.
+#[cfg(any(windows, test))]
+fn points_illisibles(texte: &str) -> Vec<&'static str> {
+    texte
+        .split(',')
+        .filter_map(|p| {
+            ["ecrans-bleus", "arrets-brutaux", "plantages"]
+                .into_iter()
+                .find(|c| *c == p.trim())
+        })
+        .collect()
+}
+
 /// Texte simple du diagnostic (sans couleur), pour le fichier enregistré.
 fn en_texte(sections: &[Section]) -> String {
     let mut t = String::new();
@@ -1043,8 +1095,10 @@ fn en_texte(sections: &[Section]) -> String {
 fn a_l_ecran(l: &Ligne) -> Vec<String> {
     // « ● », le libellé et leurs espaces : la valeur commence à la 28e colonne.
     const RETRAIT: usize = 27;
+    // Une vérification qui n'a pas pu se faire n'est jamais en vert : « ? » gris, comme ailleurs.
     let (marque, couleur_valeur) = match l.niveau {
         Some(n) => (format!("{}●{RESET}", couleur(n)), couleur(n)),
+        None if !l.verifie => (format!("{GRIS}?{RESET}"), GRIS),
         None => (format!("{VERT}●{RESET}"), ""),
     };
     let debut = format!("  {marque} {GRAS}{}{RESET} ", ajuster(&l.libelle, 22));
@@ -1149,6 +1203,21 @@ mod tests {
     /// `LARGEUR` colonnes, la suite alignée sous elle ; une valeur vide garde sa ligne.
     #[test]
     fn lignes_du_diagnostic_dans_la_largeur() {
+        // Une ligne non vérifiée n'a pas le point vert de ce qui va bien.
+        let illisible = a_l_ecran(&non_verifie(
+            "Erreurs du journal",
+            "journal illisible",
+            "erreurs-journal",
+        ));
+        assert!(
+            !illisible[0].contains(VERT) && illisible[0].contains('?'),
+            "{illisible:?}"
+        );
+        assert!(a_l_ecran(&ligne("Nom", "portable"))[0].contains(VERT));
+        assert_eq!(
+            points_illisibles("ecrans-bleus, plantages,inconnu,"),
+            ["ecrans-bleus", "plantages"]
+        );
         let longue = alerte(
             "Erreurs du journal",
             "311 depuis le démarrage : kernel (200), NetworkManager (50), bluetoothd (30), \

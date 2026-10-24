@@ -10,6 +10,7 @@ use super::Section;
 use crate::machine::{Constat, alerte, impossible_par, ok};
 use crate::modele::resultat::{Couverture, Resultat};
 use crate::modele::{Objet, Raison};
+use crate::risk::Niveau;
 use crate::trf;
 
 /// L'identifiant de l'outil (`modele::registre::OUTILS`).
@@ -29,8 +30,11 @@ fn categorie(point: &str) -> &'static str {
 }
 
 /// Le résultat des sections d'un diagnostic commencé à `debut` : un constat par ligne qui vérifie quelque chose, et
-/// le nombre de ces vérifications faites.
+/// le nombre de ces vérifications faites. Une ligne seulement informative (quelques erreurs ordinaires du journal,
+/// niveau Info) est un fait, pas un problème : sinon presque chaque ordinateur sortait « probleme ». L'écran, lui,
+/// la garde en couleur.
 pub(super) fn resultat(sections: &[Section], debut: Debut) -> Resultat {
+    let grave = |l: &super::Ligne| l.niveau.filter(|n| *n > Niveau::Info);
     let mut constats: Vec<Constat> = Vec::new();
     let mut verifies = 0u32;
     let mut non_verifies = Vec::new();
@@ -38,7 +42,7 @@ pub(super) fn resultat(sections: &[Section], debut: Debut) -> Resultat {
         let message = trf!("{} : {}", "{}: {}", l.libelle, l.valeur);
         let Some(point) = l.point else {
             // Une information qui signalerait pourtant un problème reste un problème, sans objet.
-            if let Some(n) = l.niveau {
+            if let Some(n) = grave(l) {
                 constats.push(alerte("Santé", n, message));
             }
             continue;
@@ -46,7 +50,7 @@ pub(super) fn resultat(sections: &[Section], debut: Debut) -> Resultat {
         let cat = categorie(point);
         let c = if l.verifie {
             verifies += 1;
-            match l.niveau {
+            match grave(l) {
                 Some(n) => alerte(cat, n, message),
                 None => ok(cat, message),
             }
@@ -63,7 +67,6 @@ pub(super) fn resultat(sections: &[Section], debut: Debut) -> Resultat {
 mod tests {
     use super::super::{alerte, ligne, non_verifie, programmes_plantes};
     use super::*;
-    use crate::risk::Niveau;
 
     fn debut() -> Debut {
         (chrono::Utc::now(), std::time::Instant::now())
@@ -108,5 +111,28 @@ mod tests {
         assert_eq!(r.couverture.verifies, 2);
         let sain: Vec<Section> = vec![("PROBLÈMES RÉCENTS".into(), vec![programmes_plantes(&[])])];
         assert_eq!(resultat(&sain, debut()).verdict(), "sain");
+    }
+
+    /// Quelques erreurs ordinaires du journal (niveau Info) : un fait, son message gardé, pas un problème ; au-dessus
+    /// d'Info, un problème.
+    #[test]
+    fn information_jamais_un_probleme() {
+        let erreurs = |n| alerte("Erreurs du journal", "5 depuis le démarrage : kernel (5)", n).juge("erreurs-journal");
+        let r = resultat(&[("PROBLÈMES RÉCENTS".into(), vec![erreurs(Niveau::Info)])], debut());
+        assert_eq!(r.verdict(), "sain");
+        assert_eq!(r.constats[0].etat, "sain");
+        assert!(
+            r.constats[0].message.contains("kernel (5)"),
+            "{}",
+            r.constats[0].message
+        );
+        let r = resultat(&[("PROBLÈMES RÉCENTS".into(), vec![erreurs(Niveau::Moyen)])], debut());
+        assert_eq!(r.verdict(), "probleme");
+        // Une information sans point ne fait pas un constat, ni un problème.
+        let r = resultat(
+            &[("SYSTÈME".into(), vec![alerte("Note", "rien de grave", Niveau::Info)])],
+            debut(),
+        );
+        assert_eq!(r.constats, Vec::new());
     }
 }
