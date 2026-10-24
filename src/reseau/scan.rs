@@ -169,7 +169,11 @@ pub fn passerelle() -> Option<Ipv4Addr> {
             .min()
             .map(|(_, ip)| ip)
     }
-    // macOS : « gateway: 10.0.0.1 » dans `route -n get default`.
+    // macOS : la table de routage du noyau (sysctl) ; « gateway: 10.0.0.1 » de `route -n get default` en secours.
+    #[cfg(target_os = "macos")]
+    if let Some(p) = super::routes_macos::passerelle() {
+        return Some(p);
+    }
     #[cfg(target_os = "macos")]
     {
         commande("route", &["-n", "get", "default"])
@@ -231,16 +235,20 @@ pub fn table_arp() -> HashMap<Ipv4Addr, String> {
                 .flatten()
         })
         .collect();
-    // macOS : « ? (10.0.0.1) at f8:79:a:d:3:a2 on en0 ifscope [ethernet] » ; « (incomplete) » sans réponse.
+    // macOS : la table ARP du noyau (sysctl, RTF_LLINFO) ; `arp -an` en secours (« ? (10.0.0.1) at f8:79:a:d:3:a2 on
+    // en0 ifscope [ethernet] », « (incomplete) » sans réponse).
     #[cfg(target_os = "macos")]
-    let entrees: Vec<(String, String)> = commande("arp", &["-an"])
-        .lines()
-        .filter_map(|l| {
-            let ip = l.split_once('(')?.1.split_once(')')?.0;
-            let mac = l.split_once(" at ")?.1.split_whitespace().next()?;
-            Some((ip.to_string(), mac.to_string()))
-        })
-        .collect();
+    let entrees: Vec<(String, String)> = match super::routes_macos::voisins() {
+        Some(v) => v.into_iter().map(|(ip, mac)| (ip.to_string(), mac)).collect(),
+        None => commande("arp", &["-an"])
+            .lines()
+            .filter_map(|l| {
+                let ip = l.split_once('(')?.1.split_once(')')?.0;
+                let mac = l.split_once(" at ")?.1.split_whitespace().next()?;
+                Some((ip.to_string(), mac.to_string()))
+            })
+            .collect(),
+    };
     // Windows : la table des voisins (GetIpNetTable2) ; `arp -a` (« 10.0.0.1   f8-79-0a-0d-03-a2   dynamique »)
     // seulement si Windows la refuse.
     #[cfg(windows)]
