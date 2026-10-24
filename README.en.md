@@ -44,7 +44,8 @@
   GitHub advisory, CERT…), sorted first and stripped of anything personal, which the user reviews and sends
   personally: Vanguard sends nothing.
 
-**Where Vanguard is going.** In progress: everything an AI agent can run; Windows event logs analyzed with Hayabusa;
+**Where Vanguard is going.** In progress: everything an AI agent can run; Windows event logs analyzed by Vanguard itself
+(home-made .evtx reader, then its rules); a home-made antivirus;
 every fix made by Vanguard itself, in Rust, without scripts; a test bench on the USB key, started with a double-click
 on a real Windows; a study of a graphical interface. Releases signed twice (Ed25519 and ML-DSA, post-quantum) await a
 decision. Next: live observation on Linux with eBPF; known vulnerabilities of the other Linux distributions. Always

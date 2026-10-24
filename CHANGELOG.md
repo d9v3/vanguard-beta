@@ -139,6 +139,13 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   prochain ; le diagnostic lit le modèle, la carte graphique et les disques même sur un Mac en français ; les traces
   d'incident placent la lecture de Vanguard à côté de la sortie des outils, pour qu'un outil remplacé se voie ;
   « logiciels-espions » vérifie maintenant les connexions sous macOS.
+- **Journaux de Windows lus par Vanguard lui-même (première partie).** Un lecteur maison des fichiers .evtx, écrit
+  d'après la spécification de Microsoft, borné contre les fichiers piégés et passé au fuzzing, lit les journaux sous
+  Linux, macOS et Windows ; une seule forme d'événement sert aux fichiers comme au Windows en marche, avec le refus dit
+  (journal de sécurité sans droits d'administrateur, journal absent ou illisible) au lieu d'un silence. Les numéros des
+  événements révèlent ceux qu'on a retirés (effacement partiel), sans prendre pour un effacement un journal qui
+  tourne, un morceau abîmé ou une copie faite pendant l'écriture ; un morceau abîmé est relu, ses événements marqués
+  non vérifiés. Les règles qui jugent ces événements suivent (remplacent l'idée d'Hayabusa, programme externe).
 
 ## 23 octobre 2026 : version 0.86
 

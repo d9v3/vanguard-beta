@@ -48,7 +48,7 @@
   lui-même : Vanguard n'envoie rien.
 
 **Où va Vanguard.** En cours : tout ce qu'un agent d'IA peut exécuter ; les journaux de Windows analysés par
-Hayabusa ; toutes les corrections faites par Vanguard lui-même, en Rust, sans script ; un banc d'essai sur la clé,
+Vanguard lui-même (lecteur maison des .evtx, puis ses règles) ; un antivirus maison ; toutes les corrections faites par Vanguard lui-même, en Rust, sans script ; un banc d'essai sur la clé,
 lancé d'un double-clic sur un vrai Windows ; l'étude d'une interface graphique. Les versions signées deux fois (Ed25519
 et ML-DSA, post-quantique) attendent une décision. Ensuite : l'observation en direct sous Linux par eBPF ; les failles
 connues des autres distributions Linux. Toujours défensif : Vanguard n'attaque aucun appareil.

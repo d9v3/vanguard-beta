@@ -133,6 +133,12 @@ delivered just before it. Only the latest version has its download page; every v
   is reported as reduced; startup options are judged for the current startup and the next one; the diagnosis reads
   the model, graphics card and disks even on a Mac set to French; incident traces put Vanguard's own reading next to
   the tools' output, so a replaced tool shows; `logiciels-espions` now checks connections on macOS.
+- **Windows event logs read by Vanguard itself (first part).** A home-made .evtx reader, written from Microsoft's
+  specification, bounded against booby-trapped files and fuzzed, reads the logs on Linux, macOS and Windows; one event
+  shape serves both files and the running Windows, with refusals stated (security log without administrator rights,
+  missing or unreadable log) instead of silence. Event numbers reveal removed events (partial wipe), without taking a
+  rotating log, a damaged chunk or a copy made while writing for a wipe; a damaged chunk is read anyway, its events
+  marked unverified. The rules that judge these events come next (in place of Hayabusa, an external program).
 
 ## October 23, 2026: version 0.86
 
