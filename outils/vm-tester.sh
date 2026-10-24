@@ -446,7 +446,7 @@ EOF
     mkdir -p "$dir"
     cible=$( (sleep "$5" >/dev/null 2>&1 & echo $!))
     env VG_FAUX_BRANCHER="$3" VG_FAUX_LIRE="$4" "$PWSH" -NoProfile -NonInteractive -File "$T/essais-console-factice.ps1" -Etape pilote \
-      -Cible "$cible" -Fenetre 1 -Hote "$2" -Langue fr -Sortie "$dir" -RectInitial 1,1,1,1 >"$dir/sortie" 2>&1
+      -Cible "$cible" -Fenetre 1 -Hote "$2" -Langue fr -Sortie "$dir" -RectInitial r1,1,1,1 >"$dir/sortie" 2>&1
     kill "$cible" 2>/dev/null
     tr -d '\r' <"$dir/pilote-$2-fr.txt" 2>/dev/null >"$dir/lignes"
   }
@@ -469,6 +469,8 @@ public static class PiloteConsoleVg {
   public static long Racine(long f) { return f; }
   public static bool Existe(long f) { return false; }
   public static bool Fermer(long f) { return true; }
+  public static bool Placer(long f, int x, int y) { return true; }
+  public static string Tampon() { return "78x9001"; }
   public static int ProcessusDe(long f) { return 0; }
   public static long[] Fenetres(string c) { return new long[0]; }
 }
