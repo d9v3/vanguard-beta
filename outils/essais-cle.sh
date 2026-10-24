@@ -594,18 +594,24 @@ images0 --cle "$BANC/cle0"
 c2=$?
 images0 --toutes "$BANC/cle0"
 c3=$?
-images0 --importer "$IMAGE0"
+VANGUARD_IMAGES=$BANC/cache0 bash outils/images-cle.sh --importer "$IMAGE0" >"$BANC/sortie0-import" 2>&1
 c4=$?
 images0 --menu "$BANC/cle0"
 c5=$?
-images0 --verifier
+VANGUARD_IMAGES=$BANC/cache0 bash outils/images-cle.sh --verifier >"$BANC/sortie0-verifier" 2>&1
 c6=$?
 voir "sans réglage : rien cherché ni copié ni importé, ni menu de Ventoy (0 pour les services, 1 à la main)" \
   eval '((c1 == 0 && c2 == 0 && c3 == 1 && c4 == 1 && c5 == 1 && c6 == 0)) && [[ ! -e $BANC/derniere0 ]] &&
     [[ ! -s $BANC/aria2c.log && ! -e $BANC/cle0/ISO/${IMAGE0##*/} && ! -e $BANC/cle0/ventoy ]] &&
     [[ -f $BANC/cle0/ISO/systemrescue-12.02-amd64.iso && ! -s $BANC/notifications.log ]] &&
-    dit "$BANC/sortie0" "Clé de secours pas demandée sur cet ordinateur" && dit "$BANC/sortie0" "CLE_SECOURS=oui dans"' ||
-  { echo "      codes $c1 $c2 $c3 $c4 $c5 $c6"; montrer "$BANC/sortie0"; }
+    dit "$BANC/sortie0" "pas demandée sur cet ordinateur : aucune image n'"'"'est cherchée" &&
+    dit "$BANC/sortie0" "pas demandée sur cet ordinateur : aucune image n'"'"'est copiée" &&
+    dit "$BANC/sortie0" "pas demandée sur cet ordinateur : le menu de Ventoy n'"'"'est pas écrit" &&
+    dit "$BANC/sortie0-import" "pas demandée sur cet ordinateur : rien n'"'"'est importé." &&
+    dit "$BANC/sortie0-verifier" "pas demandée sur cet ordinateur : aucune image à vérifier." &&
+    dit "$BANC/sortie0" "CLE_SECOURS=oui dans"' ||
+  { echo "      codes $c1 $c2 $c3 $c4 $c5 $c6"; montrer "$BANC/sortie0"; montrer "$BANC/sortie0-import"
+    montrer "$BANC/sortie0-verifier"; }
 : >"$BANC/sortie0"
 for c in "--plan /dev/sdz" "--telecharger $BANC/dossier0" "--ecrire /dev/sdz $BANC/dossier0" \
   "--windows /dev/sdz $BANC/dossier0" "--verifier $BANC/dossier0" --essai --ventoy-maj --installer-racine; do
@@ -619,6 +625,20 @@ voir "sans réglage : cle-secours.sh refuse tout (images, Ventoy, WIN11, MACOS) 
     [[ $(grep -c "clé de secours pas demandée sur cet ordinateur : rien n" "$BANC/sortie0") == 8 ]] &&
     dit "$BANC/sortie0" "ni Ventoy ni Windows 11 à tenir à jour" && [[ ! -e $BANC/dossier0 ]] &&
     [[ ! -s $BANC/pkexec.log && ! -s $BANC/notifications.log ]]' || montrer "$BANC/sortie0"
+# images-cle.sh en panne (ni « oui » ni « non ») : pas pris pour un réglage qui dit non.
+P=$BANC/depot-panne
+mkdir -p "$P/outils"
+cp outils/cle-secours.sh outils/ventoy-racine.sh "$P/outils/"
+printf '#!/bin/sh\nexit 2\n' >"$P/outils/images-cle.sh"
+chmod +x "$P/outils/images-cle.sh"
+bash "$P/outils/cle-secours.sh" --a-jour "$BANC/cle0" >"$BANC/sortie0" 2>&1
+c1=$?
+voir "images-cle.sh en panne : --a-jour le dit, code 1 (pas « pas demandée »)" \
+  eval '((c1 == 1)) && dit "$BANC/sortie0" "ne répond pas" && pas_dit "$BANC/sortie0" "pas demandée"' ||
+  montrer "$BANC/sortie0"
+printf 'CLE_SECOURS=oui\r\nIMAGES="arch debian"\r\nIMAGES_EN_PLUS="kali"\r\n' >"$REGLAGE"
+voir "réglage aux fins de ligne de Windows : lu comme les autres" \
+  eval '[[ $(sortes) == "arch debian kali" && ! -s $BANC/sortie-erreurs ]]' || montrer "$BANC/sortie-erreurs"
 reglage 'IMAGES="arch debian"' 'IMAGES_EN_PLUS="kali"'
 voir "des images demandées sans CLE_SECOURS=oui : ignorées, et dit" \
   eval '[[ -z $(sortes) ]] && dit "$BANC/sortie-erreurs" "sans CLE_SECOURS=oui, ignorées"' ||

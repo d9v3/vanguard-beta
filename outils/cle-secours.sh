@@ -4,7 +4,8 @@
 # programme (outils/preparer-cle.sh : VANGUARD et VANGUARDLOG, ni images, ni Ventoy, ni WIN11, ni MACOS). Le réglage
 # local, hors du dépôt : une ligne CLE_SECOURS=oui dans ~/.config/vanguard/images-cle.conf (le détail : en-tête de
 # outils/images-cle.sh). Sans lui, chaque commande ci-dessous refuse en le disant, sauf --a-jour (appelée au
-# branchement et chaque jour), qui ne fait rien.
+# branchement et chaque jour), qui ne fait rien, et --ventoy-publie, qui ne fait que lire GitHub (--racine, la partie
+# root, ne part que de --ecrire).
 #   1 VANGUARD     partition de Ventoy, exFAT : Vanguard comme avant (témoin vanguard.cle), et ses images dans ISO/ :
 #                 Omarchy (installateur complet), Arch Linux, Debian et Fedora en installateurs par Internet, SystemRescue
 #                 (réparer, sauver des fichiers, tester la mémoire), puis, s'il reste la place, Windows 11 en
@@ -1107,15 +1108,25 @@ a_jour() { # point de la clé (facultatif)
 # images-cle.sh, le seul à lire ce fichier) : sans lui, une clé ne porte que le programme. La partie root (--racine)
 # n'est pas gardée ici : pkexec la lance avec le dossier de root, sans ce réglage, et seulement depuis --ecrire, qui
 # l'a été ; --ventoy-publie ne fait que lire GitHub.
+# images-cle.sh en panne (ni « oui » ni « non ») n'est pas un réglage qui dit non : c'est dit, code 1, même pour --a-jour.
+secours_ici() {
+  local r
+  r=$(outils/images-cle.sh --secours 2>/dev/null) || true
+  case $r in
+    oui) return 0 ;;
+    non) return 1 ;;
+    *) erreur "outils/images-cle.sh --secours ne répond pas (« $r ») : clé de secours non vérifiée, rien n'est fait." ;;
+  esac
+}
 case ${1:-} in
   --plan | --essai | --telecharger | --verifier | --ecrire | --windows | --ventoy-maj | --installer-racine)
-    outils/images-cle.sh --secours >/dev/null 2>&1 ||
+    secours_ici ||
       erreur "clé de secours pas demandée sur cet ordinateur : rien n'est préparé (ni images, ni Ventoy, ni WIN11, \
 ni MACOS) ; la clé ne porte que le programme (outils/preparer-cle.sh). Pour la faire ici : une ligne CLE_SECOURS=oui \
 dans ${XDG_CONFIG_HOME:-$HOME/.config}/vanguard/images-cle.conf (le détail : en-tête de outils/images-cle.sh)."
     ;;
   --a-jour)
-    if ! outils/images-cle.sh --secours >/dev/null 2>&1; then
+    if ! secours_ici; then
       echo "· Clé de secours pas demandée sur cet ordinateur : ni Ventoy ni Windows 11 à tenir à jour."
       exit 0
     fi

@@ -52,11 +52,14 @@ if ! etape "programme" outils/deployer.sh --branchement; then
   fi
 fi
 TENU="programme, images et démarrage"
-if outils/images-cle.sh --secours >/dev/null 2>&1; then
+# « non » seulement : images-cle.sh en panne n'est pas un réglage qui dit non, la clé de secours n'en serait plus
+# tenue à jour en silence.
+SECOURS=$(outils/images-cle.sh --secours 2>/dev/null) || true
+if [[ $SECOURS == non ]]; then
+  TENU="programme (clé de secours pas demandée sur cet ordinateur : ni images ni démarrage)"
+else
   etape "images" outils/images-cle.sh --cle || RATEES+=(images)
   etape "démarrage" outils/cle-secours.sh --a-jour || RATEES+=("démarrage")
-else
-  TENU="programme (clé de secours pas demandée sur cet ordinateur : ni images ni démarrage)"
 fi
 if ((${#RATEES[@]})); then
   avertir "Clé VANGUARD : mise à jour du jour incomplète" "Raté : ${RATEES[*]}${DEJA_DITES[*]:+ ; déjà dit : \

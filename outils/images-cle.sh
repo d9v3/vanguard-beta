@@ -63,7 +63,8 @@ outils/images-cle.sh)."
 # Les lignes « NOM=… » du réglage, sans commentaire ni guillemets ; rien si le nom n'y est pas.
 reglage() { # nom
   [[ -r $REGLAGE ]] || return 0
-  sed -n "s/#.*//; s/^[[:space:]]*$1[[:space:]]*=//p" "$REGLAGE" | tr -d "\"'" | tr ',' ' '
+  # Fins de ligne de Windows (un fichier écrit là-bas, ou recopié de la clé) : le « \r » collerait au dernier nom.
+  sed -n "s/\r//g; s/#.*//; s/^[[:space:]]*$1[[:space:]]*=//p" "$REGLAGE" | tr -d "\"'" | tr ',' ' '
 }
 SECOURS=""
 SORTES=()
@@ -72,7 +73,7 @@ if [[ $(reglage CLE_SECOURS | tail -1 | tr -d '[:space:]') == oui ]]; then
   voulues=$PAR_DEFAUT
   # La ligne IMAGES présente, même vide : elle seule dit les images (vide : aucune image Linux, WIN11 et MACOS
   # restent).
-  [[ -z $(sed -n 's/#.*//; /^[[:space:]]*IMAGES[[:space:]]*=/p' "$REGLAGE") ]] || voulues=$(reglage IMAGES | tail -1)
+  [[ -z $(sed -n 's/\r//g; s/#.*//; /^[[:space:]]*IMAGES[[:space:]]*=/p' "$REGLAGE") ]] || voulues=$(reglage IMAGES | tail -1)
   voulues+=" $(reglage IMAGES_EN_PLUS | tail -1)"
   # Lus par read, pas développés par le shell : un « * » du réglage reste un mot inconnu.
   read -ra liste <<<"$voulues"
