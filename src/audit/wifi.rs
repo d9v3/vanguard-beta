@@ -386,10 +386,49 @@ fn emetteurs(e: &Entree) -> Constat {
         Err(k) => return *k,
     };
     let nom = nom_du_reseau(c);
-    let mut adresses: Vec<&str> = bornes
+    // Une adresse d'émetteur (BSSID) est celle d'une radio : la même entendue sur deux canaux, ou annonçant deux
+    // protections, est la forme classique du jumeau malveillant, qui recopie l'adresse de la box. Compter les
+    // adresses seules la faisait passer pour « un seul émetteur : votre routeur ».
+    let adresse = |b: &Balise| b.borne.bssid.to_ascii_lowercase();
+    let jumeau = bornes.iter().find_map(|a| {
+        let autre = bornes.iter().find(|b| {
+            !a.borne.bssid.is_empty()
+                && adresse(a) == adresse(b)
+                && (a.borne.canal != b.borne.canal || a.protection != b.protection)
+        })?;
+        Some((*a, *autre))
+    });
+    if let Some((a, b)) = jumeau {
+        // Le suspect : celui qui n'est pas la connexion, ou le moins protégé.
+        let (vrai, copie) = if b.borne.actif || (!a.borne.actif && a.protection.force() < b.protection.force()) {
+            (b, a)
+        } else {
+            (a, b)
+        };
+        let bssid = affichable(&copie.borne.bssid);
+        let (canal_vrai, canal_copie) = (vrai.borne.canal, copie.borne.canal);
+        return alerte(
+            CATEGORIE,
+            Niveau::Moyen,
+            trf!(
+                "La même adresse d'émetteur ({bssid}) diffuse « {nom} » deux fois : canal {canal_vrai} ({}) et canal {canal_copie} ({}). Une radio n'a qu'une adresse : possible faux point d'accès qui copie l'adresse de votre box, sauf si elle vient de changer de canal.",
+                "The same transmitter address ({bssid}) broadcasts “{nom}” twice: channel {canal_vrai} ({}) and channel {canal_copie} ({}). A radio has a single address: possibly a fake access point copying your router's address, unless it just changed channel.",
+                vrai.protection.libelle(),
+                copie.protection.libelle()
+            ),
+        )
+        .manuel(
+            tr!(
+                "Relancez l'analyse dans quelques minutes : si les deux restent, changez le mot de passe du Wi-Fi, ne vous connectez pas à ce nom quand le Wi-Fi propose un réseau ouvert, et prévenez vos proches",
+                "Run the scan again in a few minutes: if both remain, change the Wi-Fi password, do not connect to this name when Wi-Fi offers an open network, and tell your family"
+            ),
+            &[],
+        );
+    }
+    let mut adresses: Vec<(String, u16)> = bornes
         .iter()
-        .map(|b| b.borne.bssid.as_str())
-        .filter(|a| !a.is_empty())
+        .filter(|b| !b.borne.bssid.is_empty())
+        .map(|b| (adresse(b), b.borne.canal))
         .collect();
     adresses.sort_unstable();
     adresses.dedup();
@@ -424,7 +463,7 @@ fn emetteurs(e: &Entree) -> Constat {
     let (reference, de_la_box) = match e.mac_box.as_deref().filter(|m| !m.is_empty()) {
         Some(m) => (m, true),
         None if !c.bssid.is_empty() => (c.bssid.as_str(), false),
-        None => (adresses[0], false),
+        None => (adresses[0].0.as_str(), false),
     };
     let marque_reference = marque(reference);
     let force_connectee = principale(&bornes).protection.force();
@@ -854,6 +893,43 @@ mod tests {
         assert_eq!(c.probleme, Some(Niveau::Info));
         assert!(c.message.contains("nom par défaut"));
         assert!(nom_par_defaut(" NETGEAR ") && !nom_par_defaut("NETGEAR42"));
+    }
+
+    /// La preuve de la campagne d'attaque n° 3 : un jumeau qui recopie l'adresse de la box sur un autre canal, sans
+    /// chiffrement. Les adresses dédoublonnées seules en faisaient « un seul émetteur : votre routeur ».
+    #[test]
+    fn jumeau_qui_copie_l_adresse_de_la_box() {
+        let mut e = salon();
+        e.mac_box = Some("00:11:22:aa:bb:00".into());
+        e.bornes = Ok(vec![
+            balise("Salon", "00:11:22:aa:bb:01", 36, true, wpa2(), None),
+            balise("Salon", "00:11:22:AA:BB:01", 6, false, Protection::default(), None),
+        ]);
+        let c = &constats(&e)[2];
+        assert_eq!(c.probleme, Some(Niveau::Moyen), "{}", c.message);
+        assert!(
+            c.message.contains("canal 6") && c.message.contains("copie l'adresse"),
+            "{}",
+            c.message
+        );
+        assert!(c.correctif.as_ref().is_some_and(|k| !k.automatique));
+        // Même canal, deux protections : aussi.
+        e.bornes = Ok(vec![
+            balise("Salon", "00:11:22:aa:bb:01", 36, true, wpa2(), None),
+            balise("Salon", "00:11:22:aa:bb:01", 36, false, Protection::default(), None),
+        ]);
+        assert_eq!(constats(&e)[2].probleme, Some(Niveau::Moyen));
+        // La même borne entendue deux fois à l'identique : un seul émetteur.
+        e.bornes = Ok(vec![
+            balise("Salon", "00:11:22:aa:bb:01", 36, true, wpa2(), None),
+            balise("Salon", "00:11:22:aa:bb:01", 36, false, wpa2(), None),
+        ]);
+        let c = &constats(&e)[2];
+        assert!(
+            c.probleme.is_none() && c.message.contains("Un seul émetteur"),
+            "{}",
+            c.message
+        );
     }
 
     #[test]
