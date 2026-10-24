@@ -485,12 +485,15 @@ copier "$LINUX" "$CLE/Linux/vanguard"
 MAC=target/macos
 if [[ -z $LOCAL ]] && command -v gh >/dev/null; then
   # La dernière compilation réussie qui a vraiment produit le programme : une exécution de nuit sautée (code
-  # inchangé) réussit aussi, sans rien produire. Toutes branches confondues (le passage d'une branche sur le Mac,
-  # avant sa fusion, est souvent la dernière), mais seulement un commit déjà dans celui-ci : jamais celui d'une
-  # branche pas encore fusionnée.
+  # inchangé) réussit aussi, sans rien produire. Comme pour la page de la version (outils/publier-version.sh) :
+  # seulement une exécution de master, lancée par la nuit ou à la main (celle d'une autre branche tourne avec son
+  # macos.yml et le cache qu'elle a pu préparer), d'un commit déjà dans celui-ci ; puis son commit.txt et l'empreinte
+  # que son journal annonce, relus sur ce qui est téléchargé (campagne d'attaque n° 3).
   RUN=""
-  for execution in $(timeout 20 gh run list --workflow macos.yml --status success --limit 20 \
-    --json databaseId,headSha -q '.[] | "\(.databaseId):\(.headSha)"' 2>/dev/null || true); do
+  for execution in $(timeout 20 gh run list --workflow macos.yml --branch master --status success --limit 20 \
+    --json databaseId,headSha,headBranch,event \
+    -q '.[] | select(.headBranch == "master" and (.event == "schedule" or .event == "workflow_dispatch"))
+      | "\(.databaseId):\(.headSha)"' 2>/dev/null || true); do
     git merge-base --is-ancestor "${execution#*:}" HEAD 2>/dev/null || continue
     if [[ -n $(timeout 20 gh api "repos/{owner}/{repo}/actions/runs/${execution%%:*}/artifacts" \
       -q '.artifacts[] | select(.name == "vanguard-macos" and (.expired | not)) | .name' 2>/dev/null) ]]; then
@@ -505,7 +508,15 @@ if [[ -z $LOCAL ]] && command -v gh >/dev/null; then
     ! { [[ -n $ACTUEL ]] && git merge-base --is-ancestor "${RUN#* }" "$ACTUEL" 2>/dev/null; }; then
     rm -rf "$MAC.nouveau"
     if timeout 120 gh run download "${RUN%% *}" -n vanguard-macos -D "$MAC.nouveau" >/dev/null 2>&1; then
-      rm -rf "$MAC" && mv "$MAC.nouveau" "$MAC" && echo "Version macOS récupérée de GitHub (commit ${RUN#* })."
+      ANNONCEE=$(timeout 60 gh run view "${RUN%% *}" --log 2>/dev/null | grep -oE 'EMPREINTE-VANGUARD-MACOS [0-9a-f]{64}' |
+        tail -1 | cut -d' ' -f2 || true)
+      if [[ $(tr -d '[:space:]' <"$MAC.nouveau/commit.txt" 2>/dev/null) != "${RUN#* }" || -z $ANNONCEE ||
+        $ANNONCEE != "$(sha256sum "$MAC.nouveau/vanguard" 2>/dev/null | cut -d' ' -f1)" ]]; then
+        echo "Version macOS de GitHub écartée : commit.txt ou empreinte différents de son exécution (${RUN%% *})."
+        rm -rf "$MAC.nouveau"
+      else
+        rm -rf "$MAC" && mv "$MAC.nouveau" "$MAC" && echo "Version macOS récupérée de GitHub (commit ${RUN#* })."
+      fi
     fi
   fi
 fi

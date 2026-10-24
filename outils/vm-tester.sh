@@ -254,6 +254,13 @@ deposer() {
   p=$FILE/$ID.partiel
   mkdir "$p" || exit 1
   copier "$EXE" "$p/vanguard.exe"
+  # verifier-pe sur la copie qui part, pas sur la source : une compilation dans le même dossier cible a pu remplacer
+  # le programme entre les deux (son empreinte, dans travail.txt, est aussi celle de la copie).
+  "$DEPOT/target/x86_64-unknown-linux-musl/debug/vanguard" deploiement verifier-pe "$p/vanguard.exe" >/dev/null || {
+    echo "Copie déposée refusée par « vanguard deploiement verifier-pe » : rien déposé." >&2
+    rm -rf "$p"
+    exit 1
+  }
   local fichiers=(vanguard.exe)
   if [[ $TEST == oui ]]; then
     copier "$src/test.ps1" "$p/test.ps1"

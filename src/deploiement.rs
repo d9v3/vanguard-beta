@@ -195,13 +195,51 @@ fn relire_image(racine: &Path, empreintes: &[String]) -> i32 {
     }
 }
 
-/// Les deux réglages du manifeste (build.rs), cherchés tels que build.rs les écrit, dans la ressource que Windows lit
-/// en lançant le programme : la page de code UTF-8 (sans elle, accents et chemins sont cassés dans la console et les
-/// fichiers) et asInvoker (Vanguard démarre sans droits d'administrateur).
-const MANIFESTE: [&[u8]; 2] = [
-    b"<requestedExecutionLevel level=\"asInvoker\"",
-    b">UTF-8</activeCodePage>",
-];
+/// Ce que demande le manifeste du programme (ressource RT_MANIFEST n° 1, celle que Windows lit en le lançant), lu
+/// comme du XML (quick-xml) et non cherché comme du texte : un « asInvoker » dans un commentaire, à côté d'un
+/// requestedExecutionLevel à requireAdministrator, ne passe plus (campagne d'attaque n° 3). Les niveaux demandés
+/// (attribut level de chaque requestedExecutionLevel) et les pages de code (texte de chaque activeCodePage), quel
+/// que soit le préfixe d'espace de noms ; `None` si le XML est malformé ou démesuré.
+fn lire_manifeste(octets: &[u8]) -> Option<(Vec<String>, Vec<String>)> {
+    use quick_xml::events::Event;
+    let texte = std::str::from_utf8(octets.strip_prefix(b"\xef\xbb\xbf").unwrap_or(octets)).ok()?;
+    let mut lecteur = quick_xml::Reader::from_str(texte);
+    let (mut niveaux, mut pages) = (Vec::new(), Vec::new());
+    let mut page: Option<String> = None;
+    // Les éléments ouverts : un manifeste tronqué (racine jamais fermée) est malformé.
+    let mut ouverts = 0usize;
+    for _ in 0..100_000 {
+        let evenement = lecteur.read_event().ok()?;
+        match &evenement {
+            Event::Start(_) => ouverts += 1,
+            Event::End(_) => ouverts = ouverts.checked_sub(1)?,
+            _ => {}
+        }
+        match evenement {
+            Event::Eof => return (page.is_none() && ouverts == 0).then_some((niveaux, pages)),
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == "requestedExecutionLevel" => {
+                let mut level = String::new();
+                for a in e.attributes() {
+                    let a = a.ok()?;
+                    if a.key.local_name().as_ref() == "level" {
+                        level = a.value.to_string();
+                    }
+                }
+                niveaux.push(level);
+            }
+            Event::Start(e) if e.local_name().as_ref() == "activeCodePage" => page = Some(String::new()),
+            Event::Empty(e) if e.local_name().as_ref() == "activeCodePage" => pages.push(String::new()),
+            Event::Text(t) => {
+                if let Some(p) = page.as_mut() {
+                    p.push_str(&t.xml10_content());
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == "activeCodePage" => pages.push(page.take()?.trim().to_string()),
+            _ => {}
+        }
+    }
+    None
+}
 
 /// Le programme Windows porte-t-il ses gardes ? DependentLoadFlags (`machine::windows::chargement`), qui ferme le
 /// chargement d'une DLL posée à côté de lui, et son manifeste. Lu, jamais lancé (`crate::pe`). Un fichier absent,
@@ -248,16 +286,27 @@ fn verifier_pe(fichier: &Path) -> bool {
         );
         return false;
     }
-    let manquants: Vec<String> = MANIFESTE
-        .iter()
-        .filter(|m| {
-            !gardes
-                .manifeste
-                .as_deref()
-                .is_some_and(|t| t.windows(m.len()).any(|f| f == **m))
-        })
-        .map(|m| String::from_utf8_lossy(m).into_owned())
-        .collect();
+    // Un seul niveau demandé, asInvoker (Vanguard démarre sans droits d'administrateur), et la page de code UTF-8
+    // (sans elle, accents et chemins sont cassés dans la console et les fichiers), rien d'autre.
+    let lu = gardes.manifeste.as_deref().and_then(lire_manifeste);
+    let mut manquants = Vec::new();
+    match &lu {
+        None => manquants.push(tr!("manifeste absent ou malformé", "manifest missing or malformed").to_string()),
+        Some((niveaux, pages)) => {
+            if niveaux.len() != 1 || niveaux[0] != "asInvoker" {
+                manquants.push(trf!(
+                    "requestedExecutionLevel : {niveaux:?} au lieu d'un seul asInvoker",
+                    "requestedExecutionLevel: {niveaux:?} instead of a single asInvoker"
+                ));
+            }
+            if pages.is_empty() || pages.iter().any(|p| p != "UTF-8") {
+                manquants.push(trf!(
+                    "activeCodePage : {pages:?} au lieu de UTF-8",
+                    "activeCodePage: {pages:?} instead of UTF-8"
+                ));
+            }
+        }
+    }
     if !manquants.is_empty() {
         let manquants = manquants.join(", ");
         eprintln!(
@@ -424,6 +473,43 @@ mod tests {
         assert!(!essai(
             "autre-numero.exe",
             gardes_d_essai(Some((148, 148, 0x800)), Some(MANIFESTE_D_ESSAI), 2)
+        ));
+        // Campagne 3 : un asInvoker en commentaire à côté d'un requireAdministrator, deux niveaux, UTF-8 en
+        // commentaire seulement, du XML malformé : refusés (la recherche de texte les laissait passer).
+        let piege = String::from_utf8_lossy(MANIFESTE_D_ESSAI).replace(
+            r#"<requestedExecutionLevel level="asInvoker" uiAccess="false"/>"#,
+            r#"<!-- <requestedExecutionLevel level="asInvoker" --><requestedExecutionLevel level="requireAdministrator"/>"#,
+        );
+        assert!(!essai(
+            "commentaire.exe",
+            gardes_d_essai(Some((148, 148, 0x800)), Some(piege.as_bytes()), 1)
+        ));
+        let deux = String::from_utf8_lossy(MANIFESTE_D_ESSAI).replace(
+            "</requestedPrivileges>",
+            r#"<requestedExecutionLevel level="requireAdministrator"/></requestedPrivileges>"#,
+        );
+        assert!(!essai(
+            "deux-niveaux.exe",
+            gardes_d_essai(Some((148, 148, 0x800)), Some(deux.as_bytes()), 1)
+        ));
+        let page_en_commentaire = String::from_utf8_lossy(MANIFESTE_D_ESSAI).replace(
+            "<activeCodePage>UTF-8</activeCodePage>",
+            "<!-- >UTF-8</activeCodePage> -->",
+        );
+        assert!(!essai(
+            "page-commentee.exe",
+            gardes_d_essai(Some((148, 148, 0x800)), Some(page_en_commentaire.as_bytes()), 1)
+        ));
+        let malforme = String::from_utf8_lossy(MANIFESTE_D_ESSAI).replace("</assembly>", "");
+        assert!(!essai(
+            "malforme.exe",
+            gardes_d_essai(Some((148, 148, 0x800)), Some(malforme.as_bytes()), 1)
+        ));
+        // Avec espaces de noms (préfixes), comme le vrai : accepté.
+        let prefixe = br#"<v1:assembly xmlns:v1="urn:a"><v1:security><v1:requestedExecutionLevel level="asInvoker"/></v1:security><v3:windowsSettings xmlns:v3="urn:b"><activeCodePage xmlns="urn:c">UTF-8</activeCodePage></v3:windowsSettings></v1:assembly>"#;
+        assert!(essai(
+            "prefixes.exe",
+            gardes_d_essai(Some((148, 148, 0x800)), Some(prefixe), 1)
         ));
         // Les deux textes ailleurs que dans le manifeste (une chaîne du programme) : pas un manifeste.
         let mut ailleurs = gardes_d_essai(Some((148, 148, 0x800)), None, 1);

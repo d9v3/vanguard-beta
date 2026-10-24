@@ -299,6 +299,11 @@ GH
     ko "publier-version.sh a pris la compilation Mac « ${choisi:-aucune} » (attendu : 1, celle de master)"
   grep -q 'BRANCHE_RUN != "master schedule"' "$DEPOT/outils/publier-version.sh" &&
     ok "publier-version.sh relit la branche de l'exécution qu'il signe" || ko "branche de l'exécution signée non relue"
+  # La version macOS mise sur la clé : de master aussi (campagne d'attaque n° 3), commit et empreinte relus.
+  awk '/gh run list --workflow macos.yml --branch master/ { b = 1 } /select\(.headBranch == "master"/ { s = 1 }
+    /EMPREINTE-VANGUARD-MACOS/ { e = 1 } END { exit !(b && s && e) }' "$DEPOT/outils/deployer.sh" &&
+    ok "deployer.sh ne met sur la clé que la compilation macOS de master, commit et empreinte relus" ||
+    ko "deployer.sh prend la compilation macOS de n'importe quelle branche"
 else
   echo "  (sauté : jq absent, pas de faux gh pour essayer publier-version.sh)"
 fi
