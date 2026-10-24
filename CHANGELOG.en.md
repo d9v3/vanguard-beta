@@ -127,6 +127,12 @@ delivered just before it. Only the latest version has its download page; every v
   with a ping that no longer mistakes a "host unreachable" for a reply; accounts in the traces and log export without
   PowerShell or wevtutil; links and files opened without cmd; startup programs in the antivirus menu read without
   PowerShell, and an unreadable source is no longer shown as empty.
+- **macOS without go-between tools.** Processes, network sockets, the routing table, swap, SIP, startup options,
+  mounted volumes, DNS, proxy and network services are read straight from the kernel and configd; ps, lsof, scutil,
+  networksetup, csrutil and nvram are only fallbacks, and tests compare both on a real Mac. A custom SIP configuration
+  is reported as reduced; startup options are judged for the current startup and the next one; the diagnosis reads
+  the model, graphics card and disks even on a Mac set to French; incident traces put Vanguard's own reading next to
+  the tools' output, so a replaced tool shows; `logiciels-espions` now checks connections on macOS.
 
 ## October 23, 2026: version 0.86
 

@@ -132,6 +132,13 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   prend plus un « hôte inaccessible » pour une réponse ; comptes des traces et export des journaux sans PowerShell ni
   wevtutil ; liens et fichiers ouverts sans cmd ; programmes de démarrage du menu antivirus lus sans PowerShell, et une
   source illisible n'y passe plus pour vide.
+- **macOS sans outils intermédiaires.** Processus, prises réseau, table de routage, échange, SIP, options de démarrage,
+  volumes montés, DNS, proxy et services réseau se lisent directement auprès du noyau et de configd ; ps, lsof, scutil,
+  networksetup, csrutil et nvram ne servent plus qu'en secours, et des tests les comparent sur un vrai Mac. SIP réglé à
+  la carte est signalé comme réduit ; les options de démarrage sont jugées pour le démarrage en cours et pour le
+  prochain ; le diagnostic lit le modèle, la carte graphique et les disques même sur un Mac en français ; les traces
+  d'incident placent la lecture de Vanguard à côté de la sortie des outils, pour qu'un outil remplacé se voie ;
+  « logiciels-espions » vérifie maintenant les connexions sous macOS.
 
 ## 23 octobre 2026 : version 0.86
 
