@@ -89,6 +89,15 @@ pub(crate) const LOGICIELS: &str = "logiciels-vus.json";
 /// La clé principale des versions révoquée par la clé de secours (`mise_a_jour::github`).
 pub(crate) const REVOCATION: &str = "versions/principale-revoquee.txt";
 
+/// Les comptes administrateurs déjà vus (`machine::administrateurs`) : effacés, ou un compte inscrit d'avance, et
+/// « Nouveau compte administrateur cette semaine » se taisait.
+pub(crate) const ADMINISTRATEURS: &str = "administrateurs.json";
+/// Les appareils Bluetooth déjà vus (`machine::bluetooth`).
+pub(crate) const BLUETOOTH: &str = "bluetooth.json";
+/// Les clés VANGUARD que cet ordinateur reconnaît (`protection::cles_connues`) : un jeton inscrit d'avance faisait
+/// d'une clé piégée une clé connue.
+pub(crate) const CLES_CONNUES: &str = "cles-connues.json";
+
 /// Au-delà, ce n'est pas un fichier d'état de Vanguard (le plus gros fait quelques dizaines de Kio) : il n'est pas
 /// chargé.
 const TAILLE_MAX: u64 = 4 << 20;
@@ -117,6 +126,9 @@ const TARDIFS: &[&str] = &[
     crate::modele::resultat::FICHIERS[1],
     crate::modele::resultat::FICHIERS[2],
     // Écrits sans sceau jusqu'à la 0.86.
+    ADMINISTRATEURS,
+    BLUETOOTH,
+    CLES_CONNUES,
     crate::changements::RELEVE,
     crate::parametres::PARAMETRES,
     crate::protection::blocage::parametres::BLOCAGE,
@@ -255,9 +267,17 @@ fn contenu(chemin: &Path) -> Result<Option<Vec<u8>>, String> {
 }
 
 /// Une version qui scelle a déjà servi ici : seule elle crée `sceaux.verrou` (`verrou`), et rien ne l'efface. Relu
-/// avant que `verrou` ne le crée.
+/// avant que `verrou` ne le crée. Le verrou vit pourtant dans le même dossier, écrit par le même compte : effacé
+/// avec les sceaux et les fichiers qu'ils protégeaient, il ramenait au premier usage, où la surveillance mémorise
+/// sans rien dire. D'autres témoins, que seule une version qui scelle laisse, comptent donc autant : la tête du
+/// journal des événements (écrite par le sceau même) et ses segments. Tout effacer d'un coup, journal compris, reste
+/// possible : c'est alors le journal vide d'un ordinateur où Vanguard a servi qui le montre.
 fn deja_scelle(dossier: &Path) -> bool {
-    std::fs::symlink_metadata(dossier.join(VERROU)).is_ok()
+    let present = |p: PathBuf| std::fs::symlink_metadata(p).is_ok();
+    present(dossier.join(VERROU))
+        || present(dossier.join(crate::modele::journal::TETE))
+        || std::fs::read_dir(dossier.join(crate::modele::journal::DOSSIER))
+            .is_ok_and(|mut d| d.any(|e| e.is_ok_and(|e| e.file_name().to_string_lossy().ends_with(".jsonl"))))
 }
 
 /// Premier passage d'une version qui scelle : les fichiers déjà là sont scellés tels quels, et ce départ est daté.
@@ -594,12 +614,36 @@ pub(crate) fn resceller_si(nom: &str, sans_risque: impl Fn(&[u8]) -> bool) {
     }
 }
 
+/// Un « déjà vu » scellé (comptes administrateurs, appareils Bluetooth) : `Ok(Some)` tel que Vanguard l'a écrit (ou
+/// accepté au premier usage, ce que le bilan dit), `Ok(None)` jamais écrit (un premier passage, muet), `Err(())`
+/// effacé, changé hors de Vanguard ou illisible : rien n'y est tenu pour déjà vu, tout est redit. L'effacer, ou s'y
+/// inscrire d'avance, taisait sinon « Nouveau compte administrateur cette semaine ».
+pub(crate) fn deja_vus(nom: &str) -> Result<Option<Vec<u8>>, ()> {
+    match lire(nom) {
+        Lecture::Intact(o) | Lecture::Adopte(o) => Ok(Some(o)),
+        Lecture::Absent => Ok(None),
+        Lecture::Falsifie(_) | Lecture::Inconnu | Lecture::Illisible(_) => Err(()),
+    }
+}
+
+/// Ce que dit une alerte dont le « déjà vu » ne pouvait pas être cru (`deja_vus`).
+pub(crate) fn redit() -> &'static str {
+    tr!(
+        " La liste de ce que Vanguard avait déjà vu a été effacée ou changée hors de Vanguard : tout ce qui est là est redit.",
+        " The list of what Vanguard had already seen was deleted or changed outside Vanguard: everything there is reported again."
+    )
+}
+
 /// Au bilan : rien tant que l'état de Vanguard est tel qu'il l'a écrit.
 pub(crate) fn constat() -> Vec<Constat> {
     // Les fichiers protégés à la 0.87 et repris d'une version d'avant : rescellés s'ils ne coupent rien.
     crate::parametres::resceller_d_avant();
     crate::protection::blocage::parametres::resceller_d_avant();
     crate::changements::resceller_d_avant();
+    // Les déjà vus et les clés connues : un fichier accepté y vaut déjà comme écrit par Vanguard.
+    for nom in [ADMINISTRATEURS, BLUETOOTH, CLES_CONNUES] {
+        resceller_si(nom, |_| true);
+    }
     let r = falsifies_dans(&dossier());
     let mut constats: Vec<Constat> = if r.refaits {
         juger_refaits(&r.adoptes, &r.depuis, chrono::Local::now().date_naive())
@@ -811,6 +855,25 @@ mod tests {
         assert_eq!(lire_dans(&d, VERSIONS), Lecture::Inconnu);
         assert!(falsifies_dans(&d).refaits);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Les sceaux, leur verrou et l'état de la machine effacés d'un coup : la tête du journal (ou un de ses segments),
+    /// que seule une version qui scelle écrit, dit encore que Vanguard a servi ici. Ce n'est pas un premier passage.
+    #[test]
+    fn verrou_efface_avec_les_sceaux_n_est_pas_un_premier_usage() {
+        for temoin in [crate::modele::journal::TETE, "evenements/2026-10.jsonl"] {
+            let d = jetable("verrou-efface");
+            ecrire_dans(&d, MACHINE, br#"{"alertes":[]}"#).unwrap();
+            let t = d.join(temoin);
+            std::fs::create_dir_all(t.parent().unwrap()).unwrap();
+            std::fs::write(&t, b"{}").unwrap();
+            for f in [REGISTRE, VERROU, MACHINE] {
+                std::fs::remove_file(d.join(f)).unwrap();
+            }
+            assert_eq!(lire_dans(&d, MACHINE), Lecture::Inconnu, "{temoin}");
+            assert!(falsifies_dans(&d).refaits, "{temoin}");
+            let _ = std::fs::remove_dir_all(&d);
+        }
     }
 
     /// Un tube nommé ou un fichier énorme à la place d'un fichier d'état ou des sceaux : illisible tout de suite,

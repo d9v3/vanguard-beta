@@ -1008,7 +1008,9 @@ pub(crate) fn noter_version() {
 }
 
 /// Le plus récent événement de moins de `fenetre` qui répond à `filtre` : la cause d'un geste (l'alerte qui parle
-/// du même objet), l'Action d'une alerte de blocage. Seulement le mois en cours et le précédent.
+/// du même objet), l'Action d'une alerte de blocage. Seulement le mois en cours et le précédent, jamais un mois
+/// d'après celui de l'horloge ni un événement daté après maintenant : un segment posé au nom de 2099 reliait sinon un
+/// geste à une fausse cause, et la vraie n'était plus trouvée.
 pub(crate) fn dernier(filtre: impl Fn(&Evenement) -> bool, fenetre: chrono::Duration) -> Option<String> {
     dernier_dans(&crate::socle::dossier_local(), filtre, fenetre, chrono::Utc::now())
 }
@@ -1020,17 +1022,25 @@ fn dernier_dans(
     maintenant: chrono::DateTime<chrono::Utc>,
 ) -> Option<String> {
     let limite = (maintenant - fenetre).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let apres = maintenant.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let plafond = mois_de(maintenant);
     let presents = segments(&dossier.join(DOSSIER));
-    presents.iter().rev().take(2).find_map(|(_, chemin)| {
-        let o = crate::socle::lire_ordinaire(chemin, SEGMENT_MAX).ok()?;
-        lignes(&o)
-            .into_iter()
-            .rev()
-            .filter_map(|l| serde_json::from_slice::<Evenement>(l).ok())
-            .take_while(|e| e.quand >= limite)
-            .find(|e| !e.essai && filtre(e))
-            .map(|e| e.id)
-    })
+    presents
+        .iter()
+        .rev()
+        .filter(|(mois, _)| *mois <= plafond)
+        .take(2)
+        .find_map(|(_, chemin)| {
+            let o = crate::socle::lire_ordinaire(chemin, SEGMENT_MAX).ok()?;
+            lignes(&o)
+                .into_iter()
+                .rev()
+                .filter_map(|l| serde_json::from_slice::<Evenement>(l).ok())
+                .filter(|e| e.quand <= apres)
+                .take_while(|e| e.quand >= limite)
+                .find(|e| !e.essai && filtre(e))
+                .map(|e| e.id)
+        })
 }
 
 /// Le fil d'un incident : l'événement `id`, ce qui l'a causé en remontant, et ce qu'il a causé, dans l'ordre du
@@ -1603,6 +1613,35 @@ mod tests {
             le("2026-10-23T12:00:00Z"),
         );
         assert_eq!(trop_tard, None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Des segments posés aux noms de 2099 et 2098, avec une fausse cause datée de l'avenir : `dernier` ne les lit
+    /// pas, et retrouve toujours la vraie cause, du mois de l'horloge.
+    #[test]
+    fn dernier_ignore_les_mois_d_apres_l_horloge() {
+        let d = dossier("dernier-futur");
+        let vraie = noter_dans(&d, alerte(1, "2026-10-23T10:00:00Z"), le("2026-10-23T10:00:00Z")).unwrap();
+        for mois in ["2098-01", "2099-12"] {
+            let mut f = alerte(1, "2099-12-31T10:00:00Z");
+            f.id = format!("forge-{mois}");
+            let mut l = serde_json::to_vec(&f).unwrap();
+            l.push(b'\n');
+            ajouter(&segment(&d, mois), &l).unwrap();
+        }
+        // Une ligne datée de l'avenir dans le vrai mois, aussi.
+        let mut f = alerte(1, "2026-10-30T10:00:00Z");
+        f.id = "forge-avenir".into();
+        let mut l = serde_json::to_vec(&f).unwrap();
+        l.push(b'\n');
+        ajouter(&segment(&d, "2026-10"), &l).unwrap();
+        let trouve = dernier_dans(
+            &d,
+            |e| e.cle.as_deref() == Some("port|1"),
+            chrono::Duration::hours(1),
+            le("2026-10-23T10:30:00Z"),
+        );
+        assert_eq!(trouve.as_deref(), Some(vraie.as_str()));
         let _ = std::fs::remove_dir_all(&d);
     }
 

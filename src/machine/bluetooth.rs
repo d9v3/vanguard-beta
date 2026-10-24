@@ -51,9 +51,8 @@ struct Vus {
     vus: BTreeMap<String, String>,
 }
 
-fn fichier() -> std::path::PathBuf {
-    crate::socle::dossier_local().join("bluetooth.json")
-}
+/// Les appareils déjà vus, scellés (`sceau::deja_vus`).
+const VUS: &str = crate::sceau::BLUETOOTH;
 
 /// « aa-bb-cc-dd-ee-ff », « aabbccddeeff » → « AA:BB:CC:DD:EE:FF » ; `None` si ce n'est pas une adresse.
 fn adresse(texte: &str) -> Option<String> {
@@ -76,16 +75,27 @@ pub fn constats() -> Vec<Constat> {
         Some(Ok(e)) => e,
         Some(Err(raison)) => return vec![super::impossible(CAT, &raison)],
     };
-    let avant: Option<Vus> = std::fs::read_to_string(fichier())
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok());
+    // Effacés, changés hors de Vanguard ou illisibles : une liste vide (chacun est redit), jamais un premier passage.
+    let (avant, douteux): (Option<Vus>, bool) = match crate::sceau::deja_vus(VUS) {
+        Ok(None) => (None, false),
+        Ok(Some(o)) => serde_json::from_slice(&o).map_or((Some(Vus::default()), true), |v| (Some(v), false)),
+        Err(()) => (Some(Vus::default()), true),
+    };
     let aujourd_hui = chrono::Local::now().date_naive();
-    let (constats, apres) = juger(&etat, avant.as_ref(), aujourd_hui);
+    let (mut constats, apres) = juger(&etat, avant.as_ref(), aujourd_hui);
+    if douteux {
+        // Les alertes d'appareils « appairés depuis peu », reconnues à leur adresse.
+        for c in constats
+            .iter_mut()
+            .filter(|c| c.probleme.is_some() && etat.appareils.iter().any(|a| c.message.contains(&a.adresse)))
+        {
+            c.message += crate::sceau::redit();
+        }
+    }
     if avant.as_ref() != Some(&apres)
         && let Ok(texte) = serde_json::to_string_pretty(&apres)
     {
-        let _ = std::fs::create_dir_all(crate::socle::dossier_local());
-        let _ = crate::socle::ecrire_atomique(&fichier(), texte);
+        let _ = crate::sceau::ecrire(VUS, texte);
     }
     constats
 }

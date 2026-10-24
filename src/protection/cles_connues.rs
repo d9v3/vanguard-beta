@@ -26,7 +26,7 @@ use crate::ui::*;
 
 /// Le jeton d'identité, à la racine de la clé et de sa partition des journaux.
 pub const JETON: &str = "vanguard.jeton";
-const FICHIER: &str = "cles-connues.json";
+const FICHIER: &str = crate::sceau::CLES_CONNUES;
 const FORMAT: &str = "vanguard-cles-connues";
 const CAT: &str = "Clé USB";
 
@@ -78,19 +78,9 @@ impl Refus {
 pub(crate) fn jeton_de(racine: &Path) -> Option<String> {
     // Lu sur un volume qui n'est peut-être pas une clé : seulement un fichier ordinaire, et 64 octets au plus (un
     // fichier spécial bloquerait le menu à chaque affichage, un fichier démesuré remplirait la mémoire).
-    use std::io::Read;
-    let chemin = racine.join(JETON);
-    let meta = std::fs::metadata(&chemin).ok()?;
-    if !meta.is_file() || meta.len() > 64 {
-        return None;
-    }
-    let mut texte = String::new();
-    std::fs::File::open(&chemin)
-        .ok()?
-        .take(64)
-        .read_to_string(&mut texte)
-        .ok()?;
-    jeton_valide(&texte)
+    // Ouvert sans suivre de lien et sans attendre, jugé sur ce qui est ouvert (`socle::lire_ordinaire`).
+    let octets = crate::socle::lire_ordinaire(&racine.join(JETON), 64).ok()?;
+    jeton_valide(std::str::from_utf8(&octets).ok()?)
 }
 
 fn jeton_valide(texte: &str) -> Option<String> {
@@ -117,14 +107,24 @@ fn lire_verrouille(base: &Path) -> BTreeMap<String, CleConnue> {
     lire_dans(base)
 }
 
-/// Un fichier illisible est mis de côté, jamais écrasé en silence : il nommait les clés de la personne.
+/// Relu sous son sceau : changé hors de Vanguard (un jeton inscrit d'avance ferait d'une clé piégée une clé
+/// connue), effacé ou illisible, aucune clé n'y est connue (tout est redit, rien n'est lu ni écrit sur un volume) et
+/// le bilan le dit ; la personne qui relance depuis sa clé la fait reconnaître de nouveau. Un fichier qui ne se lit
+/// pas, ou changé, est mis de côté, jamais écrasé en silence : il nommait les clés de la personne.
 fn lire_dans(base: &Path) -> BTreeMap<String, CleConnue> {
+    use crate::sceau::Lecture;
     let fichier = chemin(base);
-    let Ok(texte) = std::fs::read_to_string(&fichier) else {
-        return BTreeMap::new();
+    let octets = match crate::sceau::lire_dans(base, FICHIER) {
+        Lecture::Intact(o) | Lecture::Adopte(o) => Some(o),
+        Lecture::Falsifie(Some(_)) => None,
+        Lecture::Absent | Lecture::Inconnu | Lecture::Falsifie(None) | Lecture::Illisible(_) => {
+            return BTreeMap::new();
+        }
     };
-    match serde_json::from_str::<Fichier>(texte.trim_start_matches('\u{feff}')) {
-        Ok(f) if f.format == FORMAT => f.cles,
+    let lu = octets
+        .and_then(|o| serde_json::from_str::<Fichier>(String::from_utf8_lossy(&o).trim_start_matches('\u{feff}')).ok());
+    match lu {
+        Some(f) if f.format == FORMAT => f.cles,
         _ => {
             let copie = fichier.with_extension(format!(
                 "illisible-{}.json",
@@ -142,7 +142,7 @@ fn ecrire_dans(base: &Path, cles: &BTreeMap<String, CleConnue>) -> std::io::Resu
         cles: cles.clone(),
     };
     let texte = serde_json::to_string_pretty(&f).map_err(std::io::Error::other)?;
-    crate::socle::ecrire_atomique(&chemin(base), texte)
+    crate::sceau::ecrire_dans(base, FICHIER, texte.as_bytes())
 }
 
 /// Les jetons que cet ordinateur reconnaît.
@@ -155,6 +155,9 @@ pub(crate) fn connue(racine: &Path, jetons: &BTreeSet<String>) -> bool {
     jeton_de(racine).is_some_and(|j| jetons.contains(&j))
 }
 
+/// Au-delà, ce n'est pas un carnet des appareils.
+const CARNET_MAX: u64 = 256 << 20;
+
 /// L'empreinte du carnet que Vanguard lirait : le chiffré quand l'enveloppe est là, sinon le clair.
 fn empreinte_du_carnet(donnees: &Path) -> Option<String> {
     let fichier = if crate::chiffrement::protegee(donnees) {
@@ -162,7 +165,8 @@ fn empreinte_du_carnet(donnees: &Path) -> Option<String> {
     } else {
         "appareils.json"
     };
-    let octets = std::fs::read(donnees.join(fichier)).ok()?;
+    // Un simple fichier, borné : un tube ou un lien vers /dev/zero posé sur la clé ne fige ni ne remplit rien.
+    let octets = crate::socle::lire_ordinaire(&donnees.join(fichier), CARNET_MAX).ok()?;
     Some(blake3::hash(&octets).to_hex().to_string())
 }
 
@@ -437,6 +441,28 @@ mod tests {
             assert!(jeton_de(&racine).is_none(), "une file nommée ne bloque pas");
         }
         let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// Un programme du compte inscrit d'avance le jeton d'une clé piégée dans cles-connues.json : le fichier n'est
+    /// plus scellé, aucune clé n'y est connue (le jeton forgé non plus), et il est mis de côté.
+    #[test]
+    fn jeton_inscrit_d_avance_jamais_connu() {
+        let base = jetable("forge");
+        let a = fausse_cle("forge-a", Some(JETON_A));
+        assert!(reconnaitre_dans(&base, &a));
+        let mut texte = std::fs::read_to_string(chemin(&base)).unwrap();
+        texte = texte.replacen(
+            "\"cles\": {",
+            &format!("\"cles\": {{\n    \"{JETON_B}\": {{\"depuis\": \"2026-01-01 10:00\"}},"),
+            1,
+        );
+        std::fs::write(chemin(&base), texte).unwrap();
+        let cles = lire_verrouille(&base);
+        assert!(!cles.contains_key(JETON_B), "{cles:?}");
+        assert!(cles.is_empty());
+        for d in [base, a] {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 
     #[test]
