@@ -61,7 +61,8 @@ pub(crate) enum Refus {
 
 /// Copie les événements du canal `journal` qui répondent à la requête XPath `requete` dans `fichier` (chemin
 /// absolu, qui ne doit pas exister), comme `wevtutil epl`. L'appel, sans délai à lui, tourne dans un fil, attendu au
-/// plus `delai`.
+/// plus `delai` : un export qui finit après le délai écrit quand même son fichier, que l'appelant place hors du
+/// dossier où il le compte.
 pub(crate) fn exporter(journal: &str, requete: &str, fichier: &Path, delai: Duration) -> Result<(), Refus> {
     // ERROR_INVALID_PARAMETER : un texte qui contient un zéro n'est pas envoyé à Windows.
     const PARAMETRE_REFUSE: u32 = 87;

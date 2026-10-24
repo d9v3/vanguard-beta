@@ -154,38 +154,43 @@ fn qualite(signal: u8) -> &'static str {
 /// NetworkManager en lecture seule, sinon le dernier balayage gardé par le noyau ; jamais une recherche lancée
 /// d'ici (elle demande des droits, ou un appel qui agit). Une liste trop vieille est dite, plutôt qu'un canal libre.
 #[cfg(target_os = "linux")]
-fn lire() -> Result<Lecture, String> {
+fn lire() -> Result<Lecture, crate::modele::raison::Echec> {
     match wifi::lecture_linux() {
         Ok(l) => Ok(depuis_lecture(&l)),
-        Err(r) => Err(trf!(
-            "Réseaux Wi-Fi illisibles : {r}.",
-            "Wi-Fi networks unreadable: {r}."
+        Err(r) => Err(crate::modele::raison::Echec::echoue(
+            "canaux/lire",
+            trf!("Réseaux Wi-Fi illisibles : {r}.", "Wi-Fi networks unreadable: {r}."),
         )),
     }
 }
 
 #[cfg(windows)]
-fn lire() -> Result<Lecture, String> {
+fn lire() -> Result<Lecture, crate::modele::raison::Echec> {
     match wifi::wlanapi::lire() {
         Ok(l) => Ok(depuis_lecture(&l)),
-        Err(r) => Err(trf!(
-            "Réseaux Wi-Fi illisibles : {r}.",
-            "Wi-Fi networks unreadable: {r}."
+        Err(r) => Err(crate::modele::raison::Echec::echoue(
+            "canaux/lire",
+            trf!("Réseaux Wi-Fi illisibles : {r}.", "Wi-Fi networks unreadable: {r}."),
         )),
     }
 }
 
 #[cfg(target_os = "macos")]
-fn lire() -> Result<Lecture, String> {
+fn lire() -> Result<Lecture, crate::modele::raison::Echec> {
     let Some(r) = lancer(Command::new("system_profiler").arg("SPAirPortDataType"), 40) else {
-        return Err(tr!("Réseaux Wi-Fi illisibles.", "Wi-Fi networks unreadable.").to_string());
+        return Err(crate::modele::raison::Echec::echoue(
+            "canaux/lire",
+            tr!("Réseaux Wi-Fi illisibles.", "Wi-Fi networks unreadable."),
+        ));
     };
     match wifi::bornes_system_profiler(&r.sortie) {
-        b if b.is_empty() => Err(tr!(
-            "Pas de Wi-Fi sur ce Mac, ou il est éteint.",
-            "No Wi-Fi on this Mac, or it is turned off."
-        )
-        .to_string()),
+        b if b.is_empty() => Err(crate::modele::raison::Echec::echoue(
+            "canaux/lire",
+            tr!(
+                "Pas de Wi-Fi sur ce Mac, ou il est éteint.",
+                "No Wi-Fi on this Mac, or it is turned off."
+            ),
+        )),
         bornes => Ok(Lecture {
             bornes,
             note: None,
@@ -208,7 +213,7 @@ pub fn analyser() {
         Ok(lecture) => afficher(&lecture),
         Err(raison) => {
             println!();
-            afficher_aligne("  ✖ ", &raison, 4, "");
+            afficher_aligne("  ✖ ", &raison.to_string(), 4, "");
         }
     }
 }

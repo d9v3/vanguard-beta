@@ -1048,7 +1048,8 @@ pub(crate) fn nom_d_unite(nom: &str) -> String {
 /// is-active` l'écrit : GetUnit, qui trouve aussi une unité chargée sous un autre de ses noms (sshd.service, alias
 /// de ssh.service), puis sa propriété ActiveState. `Ok(None)` : aucune unité chargée de ce nom, donc inactive, et
 /// c'est vérifié.
-pub(crate) fn etat_d_activite(bus: &mut Bus, nom: &str) -> Result<Option<String>, String> {
+pub(crate) fn etat_d_activite(bus: &mut Bus, nom: &str) -> Result<Option<String>, crate::modele::raison::Echec> {
+    let echec = |e: String| crate::modele::raison::Echec::echoue("dbus/etat_d_activite", e);
     let unite = nom_d_unite(nom);
     let corps = match bus.appeler(
         SYSTEMD,
@@ -1060,17 +1061,17 @@ pub(crate) fn etat_d_activite(bus: &mut Bus, nom: &str) -> Result<Option<String>
     ) {
         Ok(c) => c,
         Err(e) if e.starts_with("org.freedesktop.systemd1.NoSuchUnit ") => return Ok(None),
-        Err(e) => return Err(e),
+        Err(e) => return Err(echec(e)),
     };
     let chemin = corps
         .first()
         .and_then(Valeur::texte)
-        .ok_or_else(|| mal_forme("GetUnit sans chemin"))?
+        .ok_or_else(|| echec(mal_forme("GetUnit sans chemin")))?
         .to_string();
-    let etat = bus.propriete(SYSTEMD, &chemin, UNITE, "ActiveState")?;
+    let etat = bus.propriete(SYSTEMD, &chemin, UNITE, "ActiveState").map_err(echec)?;
     etat.texte()
         .map(|t| Some(t.to_string()))
-        .ok_or_else(|| mal_forme("ActiveState"))
+        .ok_or_else(|| echec(mal_forme("ActiveState")))
 }
 
 /// Les noms d'une liste d'unités `a(ssssssouso)` (nom, description, chargement, activité, sous-état, suivie…), triés ;

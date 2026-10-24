@@ -30,12 +30,13 @@ const SEC_SUITE_B: u64 = 0x2000;
 
 /// Ce que NetworkManager sait du Wi-Fi. `Ok(None)` : il n'est pas sur le bus, ou ne gère aucune carte Wi-Fi ;
 /// `Err` : le bus refuse ou répond mal.
-pub(crate) fn lire() -> Result<Option<Lecture>, String> {
-    let mut bus = Bus::systeme()?;
+pub(crate) fn lire() -> Result<Option<Lecture>, crate::modele::raison::Echec> {
+    use crate::modele::raison::Echec;
+    let mut bus = Bus::systeme().map_err(|e| Echec::echoue("wifi/networkmanager", e))?;
     let objets = match bus.objets(NM, "/org/freedesktop") {
         Ok(o) => o,
         Err(e) if service_absent(&e) => return Ok(None),
-        Err(e) => return Err(e),
+        Err(e) => return Err(Echec::echoue("wifi/networkmanager", e)),
     };
     Ok(maintenant_ms().and_then(|t| lecture_des_objets(&objets, t)))
 }

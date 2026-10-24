@@ -775,7 +775,30 @@ pub(super) fn journaux(dossier: &Path) -> Partie {
         // L'API des journaux d'abord (EvtExportLog, le fichier que wevtutil epl écrit) ; wevtutil seulement si elle
         // échoue pour une autre raison qu'un refus ou un canal absent, qu'il dirait pareil.
         let requete = SEPT_JOURS.trim_start_matches("/q:");
-        match export_journaux::exporter(journal, requete, &destination, std::time::Duration::from_secs(120)) {
+        // Écrit d'abord dans le dossier temporaire, déplacé à sa place une fois fini : un export qui aboutirait après
+        // le délai ne laisse rien dans le dossier des traces.
+        let provisoire = std::env::temp_dir().join(format!("vanguard-{}-{nom}", std::process::id()));
+        let _ = std::fs::remove_file(&provisoire);
+        let exporte = export_journaux::exporter(journal, requete, &provisoire, std::time::Duration::from_secs(120));
+        let exporte = match exporte {
+            Ok(()) if provisoire.is_file() => {
+                let place = std::fs::rename(&provisoire, &destination)
+                    .or_else(|_| std::fs::copy(&provisoire, &destination).map(|_| ()));
+                let _ = std::fs::remove_file(&provisoire);
+                if place.is_ok() {
+                    Ok(())
+                } else {
+                    Err(export_journaux::Refus::Code(0))
+                }
+            }
+            Ok(()) => Err(export_journaux::Refus::Code(0)),
+            Err(export_journaux::Refus::Delai) => Err(export_journaux::Refus::Delai),
+            Err(e) => {
+                let _ = std::fs::remove_file(&provisoire);
+                Err(e)
+            }
+        };
+        match exporte {
             Ok(()) if destination.is_file() => {
                 total += std::fs::metadata(&destination).map_or(0, |m| m.len());
                 lus.push((fr, en));
