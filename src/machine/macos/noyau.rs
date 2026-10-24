@@ -809,12 +809,17 @@ mod oracles {
                 .and_then(|g| g.trim().parse::<Ipv4Addr>().ok())
         });
         assert_eq!(passerelle(), attendue, "{route:?}");
-        let voisins = voisins().expect("table ARP native");
-        for l in outil("arp", &["-an"])
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| !l.contains("incomplete"))
-        {
+        let arp = outil("arp", &["-an"]).unwrap_or_default();
+        let complets = || arp.lines().filter(|l| !l.contains("incomplete"));
+        // Une table vide se lit aussi « rien » (None) : un Mac sans aucun voisin n'a rien à comparer.
+        let Some(voisins) = voisins() else {
+            if complets().next().is_none() {
+                crate::essais::saute("aucun voisin dans la table ARP de ce Mac");
+                return;
+            }
+            panic!("table ARP native illisible, alors qu'arp -an en voit : {arp}");
+        };
+        for l in complets() {
             // « ? (192.168.64.1) at 1a:2b:3c:4d:5e:6f on en0 ifscope [ethernet] »
             let Some(ip) = l
                 .split_once('(')
