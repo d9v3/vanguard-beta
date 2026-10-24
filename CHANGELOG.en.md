@@ -28,6 +28,16 @@ delivered just before it. Only the latest version has its download page; every v
   check-up record the generation of their texts: the first run after the update compares findings without their
   wording, by what names their object (addresses, ports, CVEs), with no false alert. Alerts marked normal, matched by their text when they have no key, may come
   back once in French.
+- **Booby-trapped data.** A crafted tldr-pages archive (empty deflate blocks, entries sharing their data) no longer
+  freezes the command guide: it is refused for its shape, and reading stops after 5 s; a "fresh" archive on the key is
+  checked like the others, refused if damaged or dated in the future. Program memory: a library rewritten in memory,
+  a program deleted or placed on tmpfs is read in full, its regions stitched back together (header and code together,
+  the entry point where it belongs); what cannot be judged is said unchecked, never ✔. A fake access point copying
+  the router's address on another channel is reported. Never again "nothing found" for a file to check that is a link
+  or a pipe, for a Windows log present but empty, or for a list cut at its limit (Wi-Fi profiles, sessions,
+  accounts); a fake GameMode no longer postpones the weekly self-test forever. File analysis, not wired in yet, sees
+  archives appended to an image, macros where only the compiled code counts, procedures hidden by a line
+  continuation and OOXML relationships hidden by an XML detail.
 
 - **New menu.** Defense first: under "Security check" (1 to 3, unchanged), the **Cyber defense** part (4 This computer,
   5 Network and Internet, 6 Viruses and spyware, 7 Scams and privacy, 8 Block and respond), then **Also included**
