@@ -217,12 +217,14 @@ pub(crate) fn compter_lignes(octets: &[u8], table: &str) -> Option<usize> {
 
 // ───────────────────────────── Lire des colonnes ─────────────────────────────
 
+#[cfg(target_os = "linux")]
+pub(crate) use colonnes::Valeur;
 /// La lecture des colonnes ne sert qu'à macOS (TCC.db) ; ailleurs, seulement aux essais et au banc de fuzzing
 /// (fuzz/, où cargo-fuzz pose `--cfg fuzzing`).
 #[cfg(any(target_os = "macos", test, fuzzing))]
 pub(crate) use colonnes::compteur;
 #[cfg(any(target_os = "macos", target_os = "linux", test, fuzzing))]
-pub(crate) use colonnes::{Valeur, lignes};
+pub(crate) use colonnes::lignes;
 
 #[cfg(any(target_os = "macos", target_os = "linux", test, fuzzing))]
 mod colonnes {

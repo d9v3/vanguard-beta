@@ -422,6 +422,10 @@ fn comparer_fichiers_d_unites(f: &mut Feuille, natifs: Option<&[String]>, outil:
         return;
     };
     let vus: std::collections::HashSet<&str> = outil.lines().filter_map(|l| l.split_whitespace().next()).collect();
+    // systemctl qui n'a rien listé (refusé, gestionnaire injoignable) : pas un témoin, rien à comparer.
+    if !natifs.iter().any(|n| vus.contains(n.as_str())) {
+        return;
+    }
     let mut caches: Vec<&String> = natifs.iter().filter(|n| !vus.contains(n.as_str())).collect();
     caches.dedup();
     if !caches.is_empty() {
