@@ -1250,10 +1250,33 @@ fn programmes_en_marche() -> Option<(Vec<EnMarche>, Option<&'static str>)> {
     Some((liste, None))
 }
 
-/// Les programmes en marche d'après ps (le chemin du programme, puis la ligne de commande), comme les traces les
-/// lisent.
+/// Les programmes en marche, demandés au noyau (libproc : le chemin du programme pour tous les comptes, la ligne de
+/// commande pour ceux du compte, la naissance) ; ps en secours tant que le test d'oracle de macos.yml n'a pas prouvé
+/// la lecture native, ou quand elle ne répond pas.
 #[cfg(target_os = "macos")]
 fn programmes_en_marche() -> Option<(Vec<EnMarche>, Option<&'static str>)> {
+    if let Some(liste) = super::macos::noyau::processus(true) {
+        let liste = liste
+            .into_iter()
+            .map(|p| EnMarche {
+                pid: p.pid,
+                parent: Some(p.ppid),
+                nom: p.nom(),
+                sans_fichier: p.chemin.as_deref().is_some_and(|c| !std::path::Path::new(c).exists()),
+                ligne: p.ligne(),
+                ne: p.ne(),
+                chemin: p.chemin,
+            })
+            .collect();
+        return Some((liste, None));
+    }
+    programmes_ps()
+}
+
+/// Les programmes en marche d'après ps (le chemin du programme, puis la ligne de commande), comme les traces les
+/// lisent : le secours de la lecture native.
+#[cfg(target_os = "macos")]
+fn programmes_ps() -> Option<(Vec<EnMarche>, Option<&'static str>)> {
     use std::process::Command;
     let ps = |format: &str| {
         crate::commande::lancer(Command::new("ps").args(["-axww", "-o", format]).env("LC_ALL", "C"), 20)

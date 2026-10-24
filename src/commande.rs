@@ -481,7 +481,8 @@ fn processus_et_parents(racine: u32) -> Vec<(u32, u32)> {
             .map(|p| (p.pid, p.parent))
             .collect()
     }
-    // macOS : pas de /proc ; pgrep -P, de proche en proche.
+    // macOS : pas de /proc ; les enfants demandés au noyau (proc_listchildpids), de proche en proche ; pgrep -P en
+    // secours pour un processus dont le noyau ne répond pas, tant que l'oracle de macos.yml ne l'a pas remplacé.
     #[cfg(target_os = "macos")]
     {
         let mut liste = Vec::new();
@@ -489,14 +490,21 @@ fn processus_et_parents(racine: u32) -> Vec<(u32, u32)> {
         while let Some(pid) = a_voir.pop()
             && liste.len() < 1000
         {
-            if let Ok(o) = Command::new("pgrep").args(["-P", &pid.to_string()]).output() {
-                for enfant in String::from_utf8_lossy(&o.stdout)
-                    .split_whitespace()
-                    .filter_map(|p| p.parse::<u32>().ok())
-                {
-                    liste.push((enfant, pid));
-                    a_voir.push(enfant);
-                }
+            let enfants = crate::machine::macos::noyau::enfants(pid).unwrap_or_else(|| {
+                Command::new("pgrep")
+                    .args(["-P", &pid.to_string()])
+                    .output()
+                    .map(|o| {
+                        String::from_utf8_lossy(&o.stdout)
+                            .split_whitespace()
+                            .filter_map(|p| p.parse::<u32>().ok())
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            });
+            for enfant in enfants {
+                liste.push((enfant, pid));
+                a_voir.push(enfant);
             }
         }
         liste

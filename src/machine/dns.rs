@@ -254,7 +254,10 @@ fn serveurs() -> Option<Serveurs> {
     if liste.iter().any(IpAddr::is_loopback)
         && let Some((_, nom, chiffrant)) = RESOLVEURS
             .iter()
-            .find(|(p, _, _)| super::sortie("pgrep", &["-x", p]).is_some())
+            // Demandé au noyau ; pgrep -x en secours quand la liste des processus ne se lit pas.
+            .find(|(p, _, _)| {
+                super::macos::noyau::en_marche(p).unwrap_or_else(|| super::sortie("pgrep", &["-x", p]).is_some())
+            })
     {
         resolveur_local = Some(*nom);
         if *chiffrant {

@@ -416,9 +416,18 @@ mod plateforme {
 mod plateforme {
     use super::{Acces, Processus, Region};
 
-    /// La liste par `ps`, pour dire combien de processus ne sont pas lus : task_for_pid demande root et un droit
-    /// spécial que Vanguard n'a pas ; rien n'est lu, rien n'est conclu.
+    /// La liste des processus, pour dire combien ne sont pas lus : task_for_pid demande root et un droit spécial que
+    /// Vanguard n'a pas ; rien n'est lu, rien n'est conclu. Demandée au noyau, `ps` en secours.
     pub(super) fn processus() -> Vec<Processus> {
+        if let Some(liste) = crate::machine::macos::noyau::processus(false) {
+            return liste
+                .iter()
+                .map(|p| Processus {
+                    pid: p.pid,
+                    nom: crate::ui::affichable(&p.nom()),
+                })
+                .collect();
+        }
         let mut ps = std::process::Command::new("ps");
         ps.args(["-axo", "pid=,comm="]);
         let Some(resultat) = crate::commande::lancer(&mut ps, 10) else {
