@@ -504,9 +504,40 @@ fn peut_deplacer(chemin: &Path) -> bool {
     }
 }
 
-/// Fait le geste préparé, puis le note avec de quoi l'annuler. `Ok` : ce qui a été fait ; `Err` : ce qui a échoué
-/// (noté aussi).
-pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<String, Echec> {
+/// Un geste fait : ce qui a été fait, et s'il a pu être vérifié après coup. Un port fermé par ufw dont le refus ne se
+/// relit pas avant toute autorisation (ou dont l'état ne se relit pas) est posé, annulable, mais pas une réussite
+/// franche : il se dit « non vérifié », jamais « bloqué ».
+#[derive(Debug)]
+pub(crate) struct Fait {
+    pub quoi: String,
+    pub verifie: bool,
+}
+
+impl std::fmt::Display for Fait {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.quoi)
+    }
+}
+
+/// Le port fermé par ufw est-il vérifié fermé ? Seulement si ufw refuse avant toute autorisation (relu par celui qui a
+/// posé la règle, ou ici) ; sinon, la précision à ajouter à ce qui a été fait.
+fn port_ferme_verifie(en_premier: Option<bool>) -> Result<(), &'static str> {
+    match en_premier {
+        Some(true) => Ok(()),
+        Some(false) => Err(tr!(
+            " (règle posée, mais pas vue avant les autorisations d'ufw : non vérifié, le port n'est pas compté comme fermé)",
+            " (rule added, but not seen before ufw's allow rules: not verified, the port is not counted as closed)"
+        )),
+        None => Err(tr!(
+            " (règle posée ; l'état d'ufw ne s'est pas relu : non vérifié, le port n'est pas compté comme fermé)",
+            " (rule added; ufw's state could not be read back: not verified, the port is not counted as closed)"
+        )),
+    }
+}
+
+/// Fait le geste préparé, puis le note avec de quoi l'annuler. `Ok` : ce qui a été fait (vérifié ou non) ; `Err` : ce
+/// qui a échoué (noté aussi).
+pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<Fait, Echec> {
     const OU: &str = "blocage/faire";
     // La preuve d'abord, avant tout geste : ce que l'arrêt et la quarantaine vont effacer. Ce qui ne se lit pas y
     // est dit « impossible », et le geste se fait quand même (défensif d'abord).
@@ -534,6 +565,7 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<String,
             let (reussi, lancees) = crate::machine::appliquer_sans_noter(&groupe);
             let precise = |note: &str| lancees.iter().any(|l| l.contains(&format!("({note}")));
             let mut fait = m.quoi.clone();
+            let mut verifie = true;
             if reussi && precise(super::ordres::note_non_coupee()) {
                 fait += tr!(
                     " (règle posée ; la connexion déjà ouverte n'a pas pu être coupée : voir le message ci-dessus)",
@@ -550,25 +582,17 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<String,
                 } else {
                     pare_feu::ufw_refuse_en_premier(port)
                 };
-                match en_premier {
-                    Some(true) => crate::machine::retenir_port(&format!("{port}/tcp")),
-                    Some(false) => {
-                        fait += tr!(
-                            " (règle posée, mais pas vue avant les autorisations d'ufw : le port n'est pas compté comme fermé)",
-                            " (rule added, but not seen before ufw's allow rules: the port is not counted as closed)"
-                        );
-                    }
-                    None => {
-                        fait += tr!(
-                            " (règle posée ; l'état d'ufw ne s'est pas relu : le port n'est pas compté comme fermé)",
-                            " (rule added; ufw's state could not be read back: the port is not counted as closed)"
-                        );
+                match port_ferme_verifie(en_premier) {
+                    Ok(()) => crate::machine::retenir_port(&format!("{port}/tcp")),
+                    Err(precision) => {
+                        fait += precision;
+                        verifie = false;
                     }
                 }
             }
             changements::noter_blocage(lancees, reussi, note(Some(annulation)), preuve);
             if reussi {
-                Ok(fait)
+                Ok(Fait { quoi: fait, verifie })
             } else {
                 Err(Echec::echoue(
                     OU,
@@ -643,7 +667,10 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<String,
             }
             let Some((chemin, detection)) = &quarantaine else {
                 changements::noter_blocage(lancees, true, note(None), preuve);
-                return Ok(fait);
+                return Ok(Fait {
+                    quoi: fait,
+                    verifie: true,
+                });
             };
             // Le seul chemin vers la quarantaine : il note le geste, la preuve et de quoi l'annuler.
             let demande = crate::protection::quarantaine::Demande {
@@ -654,7 +681,10 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<String,
                 preuve,
             };
             match crate::protection::quarantaine::isoler(chemin, detection, demande) {
-                Ok(_) => Ok(fait),
+                Ok(_) => Ok(Fait {
+                    quoi: fait,
+                    verifie: true,
+                }),
                 Err(e) => Err(Echec::echoue(
                     OU,
                     trf!(
@@ -672,7 +702,10 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<String,
                     note(Some(Annulation::Demarrage { id })),
                     preuve,
                 );
-                Ok(m.quoi.clone())
+                Ok(Fait {
+                    quoi: m.quoi.clone(),
+                    verifie: true,
+                })
             }
             Some(false) => Err(Echec::echoue(
                 OU,
@@ -713,7 +746,12 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<String,
                 empreinte: empreinte_texte(nouveau.as_bytes()),
             };
             changements::noter_blocage(lancees, ecrit.is_ok(), note(Some(annulation)), preuve);
-            ecrit.map(|()| m.quoi.clone()).map_err(|e| Echec::ecriture(OU, &e))
+            ecrit
+                .map(|()| Fait {
+                    quoi: m.quoi.clone(),
+                    verifie: true,
+                })
+                .map_err(|e| Echec::ecriture(OU, &e))
         }
     }
 }
@@ -1351,7 +1389,10 @@ mod tests {
         crate::commande::arreter(&mut enfant);
         let _ = enfant.wait();
         let fait = faire(&m, pret(pid), false).unwrap();
-        assert!(fait.contains("déjà fini") || fait.contains("already ended"), "{fait}");
+        assert!(
+            fait.quoi.contains("déjà fini") || fait.quoi.contains("already ended"),
+            "{fait}"
+        );
     }
 
     fn contexte(interactif: bool, admin: bool) -> Contexte {
@@ -1384,6 +1425,27 @@ mod tests {
     /// Un programme du compte forge dans le relevé un blocage « en place » dont l'annulation est une commande sudo à
     /// lui : elle n'est jamais lancée. L'annulation se refait depuis les champs typés, ou depuis une note d'avant
     /// qui est exactement ce que Vanguard écrivait ; tout le reste est refusé.
+    /// Un port fermé par ufw n'est une réussite franche que si ufw refuse avant toute autorisation : une autorisation
+    /// qui passe avant, ou un état illisible, se disent « non vérifié », et la précision de l'ordre le dit aussi.
+    #[test]
+    fn port_ufw_non_relu_jamais_dit_bloque() {
+        assert_eq!(port_ferme_verifie(Some(true)), Ok(()));
+        for en_premier in [Some(false), None] {
+            let p = port_ferme_verifie(en_premier).unwrap_err();
+            assert!(p.contains("non vérifié") || p.contains("not verified"), "{p}");
+            let n = super::super::ordres::note_ufw(en_premier);
+            assert!(n.contains("non vérifié") || n.contains("not verified"), "{n}");
+        }
+        // Les trois précisions restent distinctes : `faire` les reconnaît dans ce que l'ordre a rendu.
+        let notes = [Some(true), Some(false), None].map(super::super::ordres::note_ufw);
+        assert!(
+            notes
+                .iter()
+                .all(|a| notes.iter().filter(|b| b.contains(*a)).count() == 1),
+            "{notes:?}"
+        );
+    }
+
     /// Une note « d'avant » forgée, mot pour mot ce que Vanguard écrivait, qui viserait le refus que la personne a
     /// posé sur SSH ou le Bureau à distance (ufw ne distingue pas ses règles) : refusée comme `rouvrir-port 22`, jamais
     /// rejouée par bash ; de même une adresse locale ou un DNS public, que le blocage ne pose jamais.

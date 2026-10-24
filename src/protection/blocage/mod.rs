@@ -150,7 +150,7 @@ pub(crate) fn arreter_programme_automatique(
     };
     let ctx = Contexte::lire(intouchables.clone(), false);
     let pret = gestes::preparer(&menace, &ctx, true)?;
-    gestes::faire(&menace, pret, true)
+    gestes::faire(&menace, pret, true).map(|f| f.quoi)
 }
 
 /// Ce que la protection active devient en administrateur, dit là où elle tournerait.
@@ -598,16 +598,33 @@ fn bloquer_tout_seul(m: &Menace, ctx: &Contexte, signalees: Option<(&BTreeSet<St
         gestes::faire(m, pret, true)
     });
     match resultat {
-        Ok(quoi) => {
+        Ok(fait) => {
+            let quoi = &fait.quoi;
             if ctx.interactif {
-                trp!(
-                    "  {VERT}✔{RESET} Bloqué tout seul (protection active).",
-                    "  {VERT}✔{RESET} Blocked by itself (active protection)."
-                );
+                if fait.verifie {
+                    trp!(
+                        "  {VERT}✔{RESET} Bloqué tout seul (protection active).",
+                        "  {VERT}✔{RESET} Blocked by itself (active protection)."
+                    );
+                } else {
+                    let c = couleur(crate::risk::Niveau::Moyen);
+                    trp!(
+                        "  {c}⚠{RESET} Règle posée toute seule (protection active), non vérifiée : {quoi}.",
+                        "  {c}⚠{RESET} Rule added by itself (active protection), not verified: {quoi}."
+                    );
+                }
             }
+            let titre = if fait.verifie {
+                tr!("Vanguard a bloqué une menace", "Vanguard blocked a threat")
+            } else {
+                tr!(
+                    "Vanguard a posé une règle sans pouvoir la vérifier",
+                    "Vanguard added a rule without being able to verify it"
+                )
+            };
             alerter_blocage(
                 m,
-                tr!("Vanguard a bloqué une menace", "Vanguard blocked a threat"),
+                titre,
                 &trf!(
                     "{quoi}. Pour annuler : vanguard blocage annuler.",
                     "{quoi}. To undo: vanguard blocking undo."
@@ -855,9 +872,18 @@ fn proposer(menaces: Vec<Menace>, ctx: &Contexte) {
             continue;
         }
         match gestes::faire(&m, pret, false) {
-            Ok(_) => trp!(
+            Ok(f) if f.verifie => trp!(
                 "  {VERT}✔{RESET} Bloqué. Pour annuler : vanguard blocage annuler.",
                 "  {VERT}✔{RESET} Blocked. To undo: vanguard blocking undo."
+            ),
+            Ok(f) => afficher_aligne(
+                &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Moyen)),
+                &trf!(
+                    "Non vérifié : {f}. Pour retirer la règle : vanguard blocage annuler.",
+                    "Not verified: {f}. To remove the rule: vanguard blocking undo."
+                ),
+                4,
+                "",
             ),
             Err(e) => trp!("  ✖ {e}", "  ✖ {e}"),
         }
