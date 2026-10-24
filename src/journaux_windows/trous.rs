@@ -210,31 +210,59 @@ fn etendues(presents: &[Present], morceaux: &[RecapMorceau]) -> Vec<Option<(u64,
     sortie
 }
 
-/// Ce qu'un morceau non vérifié couvre : sa plage annoncée (quand son en-tête est juste) et l'étendue de ses
-/// enregistrements relus. Un numéro manquant qui y tombe est peut-être un de ses enregistrements illisibles :
-/// `Illisible`, comme dans un morceau écarté.
+/// Ce qu'un morceau non vérifié couvre : sa plage annoncée quand son en-tête est juste (bornée à ce qu'un morceau
+/// peut porter) ; sinon, les séries de ses numéros relus dont les écarts tiennent dans ce qu'il a perdu (ses
+/// passages abîmés, `RecapMorceau::non_rendus`), jamais de son plus petit à son plus grand numéro : deux numéros
+/// lointains d'un faux morceau ne couvrent pas tout ce qui les sépare. Un numéro manquant qui y tombe est peut-être
+/// un de ses enregistrements illisibles : `Illisible`, comme dans un morceau écarté.
 fn zones_non_verifiees(presents: &[Present], morceaux: &[RecapMorceau]) -> Vec<(u64, u64)> {
-    let mut zones: HashMap<u64, (u64, u64)> = HashMap::new();
+    let mut sortie: Vec<(u64, u64)> = Vec::new();
+    let mut sans_annonce: HashMap<u64, (u64, Vec<u64>)> = HashMap::new();
     for m in morceaux.iter().filter(|m| m.etat == EtatMorceau::NonVerifie) {
-        if let Some(a) = m.annonce {
-            zones.entry(m.rang).or_insert(a);
+        match m.annonce {
+            Some(a) => sortie.push(a),
+            None => {
+                sans_annonce.entry(m.rang).or_insert((m.non_rendus, Vec::new()));
+            }
         }
     }
-    let rangs: BTreeSet<u64> = morceaux
-        .iter()
-        .filter(|m| m.etat == EtatMorceau::NonVerifie)
-        .map(|m| m.rang)
-        .collect();
     for p in presents.iter().filter(|p| !p.verifie) {
-        let Some(r) = p.morceau.filter(|r| rangs.contains(r)) else {
-            continue;
-        };
-        let z = zones.entry(r).or_insert((p.numero, p.numero));
-        *z = (z.0.min(p.numero), z.1.max(p.numero));
+        if let Some((_, v)) = p.morceau.and_then(|r| sans_annonce.get_mut(&r)) {
+            v.push(p.numero);
+        }
     }
-    let mut sortie: Vec<(u64, u64)> = zones.into_values().collect();
+    for (perdus, mut numeros) in sans_annonce.into_values() {
+        numeros.sort_unstable();
+        let mut serie: Option<(u64, u64)> = None;
+        for n in numeros {
+            serie = match serie {
+                Some((a, b)) if n == b || n - b - 1 <= perdus => Some((a, n)),
+                Some(z) => {
+                    sortie.push(z);
+                    Some((n, n))
+                }
+                None => Some((n, n)),
+            };
+        }
+        sortie.extend(serie);
+    }
     sortie.sort_unstable();
     sortie
+}
+
+/// Le début de la suite reculé d'une zone non vérifiée à l'autre tant que chacune rejoint le début courant. Les
+/// zones prises de la fin la plus haute à la plus basse : une zone qui ne rejoint pas le début n'est rejointe par
+/// aucune des suivantes, qui finissent plus bas.
+fn debut_rejoint(mut lo: u64, zones: &[(u64, u64)]) -> u64 {
+    let mut par_fin: Vec<(u64, u64)> = zones.to_vec();
+    par_fin.sort_unstable_by_key(|z| std::cmp::Reverse(z.1));
+    for (a, b) in par_fin {
+        if b.saturating_add(1) < lo {
+            break;
+        }
+        lo = lo.min(a);
+    }
+    lo
 }
 
 /// Des paliers : chaque palier vaut de son début jusqu'au début du suivant ; avant le premier, rien ne réclame.
@@ -354,6 +382,19 @@ pub(crate) fn juger(
         i > 0 && fusionnees[i - 1].1 >= n
     };
     presents.retain(|p| p.verifie || !reclame(p.numero));
+    // Un enregistrement non vérifié plus ancien que tout ce qui est vérifié ne fait reculer le début de la suite que
+    // si ce qu'il couvre rejoint ce début (le plus ancien morceau, déchiré) : un vieux reste isolé d'un tour précédent
+    // ne fait pas de ce qui a été écrasé un trou.
+    let plus_ancien_verifie = presents
+        .iter()
+        .filter(|p| p.verifie)
+        .map(|p| p.numero)
+        .chain(etendues.iter().flatten().map(|e| e.0))
+        .min();
+    if let Some(mut lo) = plus_ancien_verifie {
+        lo = debut_rejoint(lo, &zones_nv);
+        presents.retain(|p| p.verifie || p.numero >= lo);
+    }
     let non_verifies = presents.iter().filter(|p| !p.verifie).count() as u64;
     let mut premier = presents
         .first()

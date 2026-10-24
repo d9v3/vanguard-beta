@@ -517,7 +517,15 @@ fn lire_morceau(
     // si son en-tête est juste.
     let (libre, verifie, en_tete_juste) = match verifier_morceau(morceau) {
         Etat::Lisible(libre) => (libre, true, true),
-        Etat::NonVerifie { en_tete_juste, libre } => (libre.unwrap_or(MORCEAU), false, en_tete_juste),
+        // En-tête faux : sa place libre n'est pas crue, tout le morceau est relu (jusqu'aux zéros).
+        Etat::NonVerifie { en_tete_juste, libre } => {
+            let libre = if en_tete_juste {
+                libre.unwrap_or(MORCEAU)
+            } else {
+                MORCEAU
+            };
+            (libre, false, en_tete_juste)
+        }
         Etat::Vide(libre) => {
             bilan.morceaux_vides += 1;
             bilan.enregistrements_apres_place_libre += libre.map_or(0, |l| apres_place_libre(morceau, l));
@@ -550,6 +558,10 @@ fn lire_morceau(
         bilan.enregistrements_apres_place_libre += apres_place_libre(morceau, libre);
     } else {
         bilan.morceaux_non_verifies += 1;
+        // Ce qui suit la place libre d'un en-tête juste, au CRC des données faux : compté, comme pour un morceau lu.
+        if libre < MORCEAU {
+            bilan.enregistrements_apres_place_libre += apres_place_libre(morceau, libre);
+        }
     }
     let mut lecteur = binxml::Morceau::new(morceau, bornes);
     let avant = bilan.enregistrements_lus + bilan.enregistrements_illisibles + bilan.enregistrements_hors_borne;

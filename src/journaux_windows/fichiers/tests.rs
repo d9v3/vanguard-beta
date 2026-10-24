@@ -594,3 +594,58 @@ fn un_morceau_non_verifie_ne_comble_pas_un_retrait() {
     assert_eq!(b.suites[0].non_verifies, 30);
     assert!(!b.complet());
 }
+
+/// Deux numéros lointains d'un faux morceau au CRC faux ne couvrent pas ce qui les sépare : un grand trou reste un
+/// constat, un même faux morceau n'en blanchit pas plusieurs.
+#[test]
+fn un_faux_morceau_non_verifie_ne_blanchit_pas_un_grand_trou() {
+    let faux = morceau_aux_numeros(&[31, 10_030], |n| n);
+    let mut f = fichier(&[morceau(1, 30, &[]), morceau(10_031, 10_060, &[]), faux]);
+    f[4096 + 2 * 65_536 + 100] ^= 1;
+    let (b, _) = lire(&f, "nv-zone");
+    assert_eq!(b.lecture.as_ref().unwrap().morceaux[2].etat, EtatMorceau::NonVerifie);
+    assert_eq!(b.suites[0].non_verifies, 2);
+    assert_eq!(trous_du_journal(&b), [(32, 10_029, Nature::Absents)]);
+    let faux = morceau_aux_numeros(&[31, 1_000_030], |n| n);
+    let mut f = fichier(&[
+        morceau(1, 30, &[]),
+        morceau(500_031, 500_060, &[]),
+        morceau(1_000_031, 1_000_060, &[]),
+        faux,
+    ]);
+    f[4096 + 3 * 65_536 + 100] ^= 1;
+    let (b, _) = lire(&f, "nv-plusieurs");
+    assert!(
+        trous_du_journal(&b).iter().all(|t| t.2 == Nature::Absents),
+        "{:?}",
+        trous_du_journal(&b)
+    );
+}
+
+/// Un vieil enregistrement non vérifié (reste d'un tour plus ancien dans un morceau déchiré) ne fait pas reculer le
+/// début de la suite : ce qui précède le plus ancien vérifié n'est pas un trou.
+#[test]
+fn un_vieil_enregistrement_non_verifie_ne_fait_pas_de_trou() {
+    let dechire = morceau_aux_numeros(&[1_061, 1_062, 5], |n| n);
+    let mut f = fichier(&[morceau(1_001, 1_030, &[]), morceau(1_031, 1_060, &[]), dechire]);
+    f[4096 + 2 * 65_536 + 100] ^= 1;
+    let (b, _) = lire(&f, "nv-vieux");
+    assert_eq!(b.suites[0].premier, Some(1_001));
+    assert_eq!(trous_du_journal(&b), []);
+    assert_eq!(b.suites[0].non_verifies, 2);
+}
+
+/// L'en-tête d'un morceau au CRC faux n'est pas cru, sa place libre non plus : tout le morceau est relu.
+#[test]
+fn la_place_libre_d_un_en_tete_faux_n_est_pas_crue() {
+    let m = morceau(1, 30, &[]);
+    let pos: Vec<usize> = (512..65_532).filter(|&i| m[i..i + 4] == *b"**\0\0").collect();
+    assert_eq!(pos.len(), 30);
+    let mut f = fichier(&[m, morceau(31, 60, &[])]);
+    f[4096 + 48..4096 + 52].copy_from_slice(&u32::try_from(pos[20]).unwrap().to_le_bytes());
+    let (b, vus) = lire(&f, "nv-libre");
+    assert_eq!(b.lecture.as_ref().unwrap().morceaux[0].etat, EtatMorceau::NonVerifie);
+    assert_eq!(vus.len(), 60);
+    assert_eq!(trous_du_journal(&b), []);
+    assert_eq!(b.suites[0].non_verifies, 30);
+}

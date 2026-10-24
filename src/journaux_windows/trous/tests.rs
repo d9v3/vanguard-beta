@@ -301,26 +301,49 @@ fn modele(cas: &Cas, entre: Nature) -> (Vec<(u64, Nature)>, u64) {
     let etendues: Vec<(usize, (u64, u64))> = premiers.iter().filter_map(|&i| Some((i, etendue(i)?))).collect();
     // Ce que couvre chaque morceau non vérifié : son annonce et ses enregistrements relus (tous, même ceux qu'un
     // morceau lu réclame).
-    let zones_nv: Vec<(u64, u64)> = cas
-        .morceaux
-        .iter()
-        .filter(|m| m.etat == EtatMorceau::NonVerifie)
-        .filter_map(|m| {
-            let siens = cas
-                .presents
-                .iter()
-                .filter(|p| !p.verifie && p.morceau == Some(m.rang))
-                .map(|p| p.numero);
-            let bornes = m.annonce.into_iter().flat_map(|(a, b)| [a, b]).chain(siens);
-            let lo = bornes.clone().min()?;
-            Some((lo, bornes.max()?))
-        })
-        .collect();
+    // Avec une annonce juste, elle ; sinon les séries de numéros relus aux écarts couverts par ses pertes.
+    let mut zones_nv: Vec<(u64, u64)> = Vec::new();
+    for m in cas.morceaux.iter().filter(|m| m.etat == EtatMorceau::NonVerifie) {
+        if let Some(a) = m.annonce {
+            zones_nv.push(a);
+            continue;
+        }
+        let siens: BTreeSet<u64> = cas
+            .presents
+            .iter()
+            .filter(|p| !p.verifie && p.morceau == Some(m.rang))
+            .map(|p| p.numero)
+            .collect();
+        let mut serie: Option<(u64, u64)> = None;
+        for n in siens {
+            match serie {
+                Some((a, b)) if n - b - 1 <= m.non_rendus => serie = Some((a, n)),
+                Some(z) => {
+                    zones_nv.push(z);
+                    serie = Some((n, n));
+                }
+                None => serie = Some((n, n)),
+            }
+        }
+        zones_nv.extend(serie);
+    }
     let dans_un_lu = |n: u64| etendues.iter().any(|(_, (a, b))| *a <= n && n <= *b);
+    // Le plus ancien numéro vérifié (ou réclamé) : un non vérifié plus ancien ne compte pas.
+    let plus_ancien = verifies
+        .iter()
+        .map(|p| p.numero)
+        .chain(etendues.iter().map(|e| e.1.0))
+        .min()
+        .map(|mut lo| {
+            while let Some(a) = zones_nv.iter().filter(|z| z.0 < lo && z.1 + 1 >= lo).map(|z| z.0).min() {
+                lo = a;
+            }
+            lo
+        });
     let numeros: BTreeSet<u64> = cas
         .presents
         .iter()
-        .filter(|p| p.verifie || !dans_un_lu(p.numero))
+        .filter(|p| p.verifie || (!dans_un_lu(p.numero) && plus_ancien.is_none_or(|lo| p.numero >= lo)))
         .map(|p| p.numero)
         .collect();
     let numeros_verifies: BTreeSet<u64> = verifies.iter().map(|p| p.numero).collect();

@@ -382,11 +382,15 @@ fn lire_fichier_borne(
         Ok(lu) => {
             // Les enregistrements entiers non rendus existent : leur numéro n'est pas un trou.
             // Un enregistrement non rendu d'un morceau non vérifié ne prouve pas plus que ceux qui s'y rendent.
-            let non_verifie = |rang: u64| {
-                lu.morceaux
-                    .iter()
-                    .any(|m| m.rang == rang && m.etat == EtatMorceau::NonVerifie)
-            };
+            let rangs_non_verifies: std::collections::HashSet<u64> = lu
+                .morceaux
+                .iter()
+                .filter(|m| m.etat == EtatMorceau::NonVerifie)
+                .map(|m| m.rang)
+                .collect();
+            // Un morceau sans récapitulatif (au-delà de MAX_RECAPS) n'est pas su vérifié : ses non-rendus non plus.
+            let dernier_recap = lu.morceaux.last().map(|m| m.rang);
+            let non_verifie = |rang: u64| rangs_non_verifies.contains(&rang) || dernier_recap.is_none_or(|d| rang > d);
             presents.extend(lu.numeros_non_rendus.iter().map(|&(numero, rang)| Present {
                 numero,
                 date: None,
