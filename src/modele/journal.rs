@@ -911,10 +911,32 @@ pub(crate) fn fichiers(dossier: &Path) -> Vec<String> {
     f
 }
 
+/// Le dossier qui porte le journal de cet ordinateur : le dossier de données.
+#[cfg(not(test))]
+fn dossier_du_journal() -> PathBuf {
+    crate::socle::dossier_local()
+}
+
+/// Sous `cfg(test)`, chaque fil d'essai (un par test, que cargo test lui donne) a son journal, dans un sous-dossier
+/// neuf du dossier jetable. Un seul journal pour tout le processus mêlait les écritures de dizaines d'essais : sous
+/// Wine, l'un d'eux attendait le verrou plus de 10 s et écrivait sans lui, la tête suivante ne retrouvait plus sa
+/// fin, une rupture était notée, et l'essai qui relisait le journal entre deux appels (`alertes_notees_une_fois`)
+/// perdait ce que la lecture garantit d'avant elle. Jamais un nom repris : sous Wine, un dossier effacé alors qu'il
+/// est ouvert ailleurs reste là, illisible (voir `tests::dossier`).
+#[cfg(test)]
+fn dossier_du_journal() -> PathBuf {
+    static FILS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    thread_local! {
+        static DU_FIL: PathBuf = crate::socle::dossier_local()
+            .join(format!("journal-du-fil-{}", FILS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    }
+    DU_FIL.with(Clone::clone)
+}
+
 /// Note un événement dans le journal de cet ordinateur. Un échec ne retient jamais ce qui l'a causé (l'alerte est
 /// notifiée, le geste fait) : il va au journal des erreurs. Rend l'identifiant noté.
 pub(crate) fn noter(ev: Evenement) -> Option<String> {
-    let dossier = crate::socle::dossier_local();
+    let dossier = dossier_du_journal();
     // En administrateur dans le dossier d'un compte (sudo -E), rien n'est écrit, exprès (comme les sceaux) : ce
     // n'est pas une panne à rapporter.
     if !crate::socle::ecriture_sure(&dossier) {
@@ -999,13 +1021,13 @@ fn constat_de(l: &Lecture) -> Option<crate::machine::Constat> {
 
 /// Le journal de cet ordinateur, jugé.
 pub(crate) fn lire() -> Lu {
-    lire_dans(&crate::socle::dossier_local())
+    lire_dans(&dossier_du_journal())
 }
 
 /// Note le passage de version s'il y en a un, sans autre événement : appelé au début de chaque passe de la
 /// surveillance, pour qu'une mise à jour se lise à son heure et non à la prochaine alerte.
 pub(crate) fn noter_version() {
-    let dossier = crate::socle::dossier_local();
+    let dossier = dossier_du_journal();
     if !crate::socle::ecriture_sure(&dossier) {
         return;
     }
@@ -1024,7 +1046,7 @@ pub(crate) fn noter_version() {
 /// d'après celui de l'horloge ni un événement daté après maintenant : un segment posé au nom de 2099 reliait sinon un
 /// geste à une fausse cause, et la vraie n'était plus trouvée.
 pub(crate) fn dernier(filtre: impl Fn(&Evenement) -> bool, fenetre: chrono::Duration) -> Option<String> {
-    dernier_dans(&crate::socle::dossier_local(), filtre, fenetre, chrono::Utc::now())
+    dernier_dans(&dossier_du_journal(), filtre, fenetre, chrono::Utc::now())
 }
 
 fn dernier_dans(
