@@ -130,7 +130,7 @@ mod tests {
         assert_eq!(r.verdict(), "probleme");
         // Une information sans point ne fait pas un constat, ni un problème.
         let r = resultat(
-            &[("SYSTÈME".into(), vec![alerte("Note", "rien de grave", Niveau::Info)])],
+            &[("SYSTÈME".into(), vec![alerte("Erreurs du journal", "3", Niveau::Info)])],
             debut(),
         );
         assert_eq!(r.constats, Vec::new());
