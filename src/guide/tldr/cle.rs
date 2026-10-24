@@ -32,34 +32,47 @@ fn minimum(langue: &str) -> usize {
     if langue == "en" { 5000 } else { 500 }
 }
 
-/// L'archive est-elle intacte (`archives::zip::controler`), avec au moins `minimum` pages ? Le nombre de pages, ou
-/// pourquoi elle est refusée. Une page : un nom en « .md » rangé dans un dossier (« pages/linux/ls.md »), comme le
-/// comptait le script d'avant.
-pub(super) fn intacte(octets: &[u8], minimum: usize) -> Result<usize, String> {
-    let refus = |quoi: String| trf!("archive refusée : {quoi}", "archive refused: {quoi}");
-    let noms = zip::controler(octets, &BORNES).map_err(|d| {
-        refus(match d {
-            Defaut::PasUnZip => tr!("pas un zip", "not a zip").to_string(),
-            Defaut::NonPrise => tr!("zip64 ou sur plusieurs disques", "zip64 or multi-disk").to_string(),
-            Defaut::Demesuree => tr!("entrée démesurée", "oversized entry").to_string(),
-            Defaut::Illisible(n) => trf!("entrée {n} illisible", "entry {n} unreadable"),
-            Defaut::Methode(n) => trf!(
+/// Pourquoi une archive ne part pas sur la clé.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Refus {
+    /// Pas intacte (`archives::zip::controler`).
+    Abimee(Defaut),
+    /// Intacte, mais avec trop peu de pages : (pages, minimum).
+    TropPeu(usize, usize),
+}
+
+impl Refus {
+    fn texte(self) -> String {
+        match self {
+            Refus::Abimee(Defaut::PasUnZip) => tr!("pas un zip", "not a zip").to_string(),
+            Refus::Abimee(Defaut::NonPrise) => tr!("zip64 ou sur plusieurs disques", "zip64 or multi-disk").to_string(),
+            Refus::Abimee(Defaut::Demesuree) => tr!("entrée démesurée", "oversized entry").to_string(),
+            Refus::Abimee(Defaut::Illisible(n)) => trf!("entrée {n} illisible", "entry {n} unreadable"),
+            Refus::Abimee(Defaut::Methode(n)) => trf!(
                 "entrée {n} chiffrée ou d'une méthode inconnue",
                 "entry {n} encrypted or of an unknown method"
             ),
-            Defaut::Crc(n) => trf!("CRC faux à l'entrée {n}", "wrong CRC at entry {n}"),
-        })
-    })?;
+            Refus::Abimee(Defaut::Crc(n)) => trf!("CRC faux à l'entrée {n}", "wrong CRC at entry {n}"),
+            Refus::TropPeu(pages, minimum) => trf!(
+                "{pages} pages, moins de {minimum}",
+                "{pages} pages, fewer than {minimum}"
+            ),
+        }
+    }
+}
+
+/// L'archive est-elle intacte (`archives::zip::controler`), avec au moins `minimum` pages ? Le nombre de pages, ou
+/// pourquoi elle est refusée. Une page : un nom en « .md » rangé dans un dossier (« pages/linux/ls.md »), comme le
+/// comptait le script d'avant.
+pub(super) fn intacte(octets: &[u8], minimum: usize) -> Result<usize, Refus> {
+    let noms = zip::controler(octets, &BORNES).map_err(Refus::Abimee)?;
     // Sensible à la casse, comme endswith(".md") de Python.
     let pages = noms
         .iter()
         .filter(|n| n.as_bytes().ends_with(b".md") && n.contains('/'))
         .count();
     if pages < minimum {
-        return Err(refus(trf!(
-            "{pages} pages, moins de {minimum}",
-            "{pages} pages, fewer than {minimum}"
-        )));
+        return Err(Refus::TropPeu(pages, minimum));
     }
     Ok(pages)
 }
@@ -130,7 +143,21 @@ fn mettre_a_jour(
             continue;
         }
         let minimum = minimum(langue);
-        let recue = telecharger(langue).filter(|o| intacte(o, minimum).is_ok());
+        // Une archive reçue mais refusée le dit : le script d'avant la taisait.
+        let recue = telecharger(langue).filter(|o| match intacte(o, minimum) {
+            Ok(_) => true,
+            Err(r) => {
+                eprintln!(
+                    "{}",
+                    trf!(
+                        "tldr-pages ({langue}) : archive téléchargée refusée ({}).",
+                        "tldr-pages ({langue}): downloaded archive refused ({}).",
+                        r.texte()
+                    )
+                );
+                false
+            }
+        });
         let source = recue.map(|o| (o, None)).or_else(|| {
             let chemin = locale(langue);
             let date = date_de(&chemin).filter(|d| sur_la_cle.is_none_or(|c| d > &c))?;

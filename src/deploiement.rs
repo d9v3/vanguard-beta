@@ -141,31 +141,20 @@ fn verifier_pe(fichier: &Path) -> bool {
 /// l'écriture ne garde pas un témoin à moitié écrit, qui la ferait prendre pour une autre. Sans empreinte lisible,
 /// rien n'est écrit : un témoin faux remonterait la clé en lecture seule chez son propriétaire. `Ok(true)` : un jeton
 /// a été tiré.
-fn temoins(racine: &Path, empreinte: Option<String>) -> Result<bool, String> {
-    let Some(empreinte) = empreinte else {
-        return Err(tr!(
-            "✖ Empreinte de cet ordinateur illisible : témoins de la clé non écrits",
-            "✖ This computer's fingerprint is unreadable: key markers not written"
-        )
-        .into());
-    };
-    let non_ecrit = |nom: &str, e: std::io::Error| {
-        trf!(
-            "✖ {nom} non écrit sur la clé : {e}",
-            "✖ {nom} not written to the key: {e}"
-        )
-    };
+fn temoins(racine: &Path, empreinte: Option<String>) -> Result<bool, PasEcrit> {
+    let empreinte = empreinte.ok_or(PasEcrit::SansEmpreinte)?;
     let jeton = crate::protection::cles_connues::JETON;
     let tire = crate::protection::cles_connues::jeton_de(racine).is_none();
     if tire {
         let mut octets = [0u8; 16];
-        getrandom::fill(&mut octets).map_err(|e| non_ecrit(jeton, std::io::Error::other(e.to_string())))?;
+        getrandom::fill(&mut octets).map_err(|e| PasEcrit::Fichier(jeton, std::io::Error::other(e.to_string())))?;
         let mut texte = String::with_capacity(33);
         for o in octets {
             let _ = write!(texte, "{o:02x}");
         }
         texte.push('\n');
-        crate::socle::ecrire_atomique(&racine.join(jeton), texte.as_bytes()).map_err(|e| non_ecrit(jeton, e))?;
+        crate::socle::ecrire_atomique(&racine.join(jeton), texte.as_bytes())
+            .map_err(|e| PasEcrit::Fichier(jeton, e))?;
         // Le jeton lui-même n'est pas affiché : il identifie la clé, et la sortie du déploiement se garde.
         println!(
             "{}",
@@ -180,9 +169,33 @@ fn temoins(racine: &Path, empreinte: Option<String>) -> Result<bool, String> {
     let attendu = format!("{empreinte}\n");
     if crate::socle::lire_ordinaire(&temoin, 256).ok().as_deref() != Some(attendu.as_bytes()) {
         crate::socle::ecrire_atomique(&temoin, attendu.as_bytes())
-            .map_err(|e| non_ecrit(crate::reseau::TEMOIN_CLE, e))?;
+            .map_err(|e| PasEcrit::Fichier(crate::reseau::TEMOIN_CLE, e))?;
     }
     Ok(tire)
+}
+
+/// Pourquoi les témoins ne sont pas écrits.
+#[derive(Debug)]
+enum PasEcrit {
+    /// L'empreinte de cet ordinateur ne se lit pas : rien n'est écrit.
+    SansEmpreinte,
+    /// Ce témoin n'a pas pu s'écrire sur la clé.
+    Fichier(&'static str, std::io::Error),
+}
+
+impl std::fmt::Display for PasEcrit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PasEcrit::SansEmpreinte => f.write_str(tr!(
+                "✖ Empreinte de cet ordinateur illisible : témoins de la clé non écrits",
+                "✖ This computer's fingerprint is unreadable: key markers not written"
+            )),
+            PasEcrit::Fichier(nom, e) => f.write_str(&trf!(
+                "✖ {nom} non écrit sur la clé : {e}",
+                "✖ {nom} not written to the key: {e}"
+            )),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -287,7 +300,7 @@ mod tests {
         let d = dossier();
         let empreinte = || crate::machine::empreinte_d_identifiant("0123456789abcdef0123456789abcdef");
         // Absent : tiré, 32 caractères hexadécimaux minuscules et un saut de ligne, relisible par le programme.
-        assert_eq!(temoins(&d, empreinte()), Ok(true));
+        assert!(matches!(temoins(&d, empreinte()), Ok(true)));
         let texte = std::fs::read_to_string(d.join("vanguard.jeton")).unwrap();
         assert_eq!(texte.len(), 33);
         assert!(texte.ends_with('\n'));
@@ -301,18 +314,18 @@ mod tests {
             format!("{SHA1_DE_L_ESSAI}\n")
         );
         // Déjà là : gardé.
-        assert_eq!(temoins(&d, empreinte()), Ok(false));
+        assert!(matches!(temoins(&d, empreinte()), Ok(false)));
         assert_eq!(std::fs::read_to_string(d.join("vanguard.jeton")).unwrap(), texte);
         // Valide en majuscules : gardé tel quel.
         std::fs::write(d.join("vanguard.jeton"), "0123456789ABCDEF0123456789ABCDEF\n").unwrap();
-        assert_eq!(temoins(&d, empreinte()), Ok(false));
+        assert!(matches!(temoins(&d, empreinte()), Ok(false)));
         assert_eq!(
             std::fs::read_to_string(d.join("vanguard.jeton")).unwrap(),
             "0123456789ABCDEF0123456789ABCDEF\n"
         );
         // Invalide : retiré au profit d'un nouveau.
         std::fs::write(d.join("vanguard.jeton"), "pas un jeton\n").unwrap();
-        assert_eq!(temoins(&d, empreinte()), Ok(true));
+        assert!(matches!(temoins(&d, empreinte()), Ok(true)));
         assert!(crate::protection::cles_connues::jeton_de(&d).is_some());
         // Aucun temporaire de l'écriture atomique ne reste sur la clé.
         let restes: Vec<_> = std::fs::read_dir(&d)
