@@ -17,7 +17,7 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   comment l'allumer, et les minuteries de recopie ne copient rien. La page du projet gagne sa section « Télécharger,
   vérifier, installer » : le programme de votre système, son empreinte vérifiée par `SHA256SUMS.txt`, puis
   `vanguard raccourci` et `vanguard se-mettre-a-jour` ; la clé USB en option, pour dépanner.
-- **Fenêtre du menu.** Sous Linux (Hyprland), le cadre garde une hauteur fixe d'un menu à l'autre : chaque changement de taille s'animait, et la transition se voyait. Sous Windows, la fenêtre suit encore la hauteur de chaque menu, mais reste là où elle a été mise (ramenée dans l'écran seulement si elle en sort).
+- **Fenêtre du menu.** Sous Linux (Hyprland), le cadre garde une hauteur fixe d'un menu à l'autre : chaque changement de taille s'animait, et la transition se voyait. Sous Windows, la fenêtre suit encore la hauteur de chaque menu, mais reste là où elle a été mise (ramenée dans l'écran seulement si elle en sort). Près du bas de l'écran, elle ne remonte que de ce qu'il faut ; dans la vieille console, qui ne signale pas qu'elle change de taille, le menu se redessine quand même.
 - **Logiciels proposés.** Bitwarden s'installe par Flathub sous Arch (le paquet de la distribution est resté en
   2026.3.1) ; Flathub n'y distribue plus que sa version commerciale, qui se dit donc « pas libre »,
   alors que winget et Homebrew installent la version GPL-3.0. VeraCrypt sert aux clés USB, disques externes et coffres,

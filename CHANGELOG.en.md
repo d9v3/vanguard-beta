@@ -17,7 +17,7 @@ delivered just before it. Only the latest version has its download page; every v
   copy timers copy nothing. The project page gets its “Download, check, install” section: the program for your
   system, its checksum checked against `SHA256SUMS.txt`, then `vanguard shortcut` and `vanguard self-update`; the USB
   key as an option, for troubleshooting.
-- **Menu window.** On Linux (Hyprland), the frame keeps a fixed height from one menu to the next: every size change was animated, and the transition showed. On Windows, the window still follows each menu's height but stays where it was put (brought back on screen only if it goes off).
+- **Menu window.** On Linux (Hyprland), the frame keeps a fixed height from one menu to the next: every size change was animated, and the transition showed. On Windows, the window still follows each menu's height but stays where it was put (brought back on screen only if it goes off). Near the bottom of the screen, it moves up only as much as needed; in the legacy console (conhost), which does not report its size changes, the menu redraws anyway.
 - **Offered software.** Bitwarden installs from Flathub on Arch (the distribution package stayed at 2026.3.1) ; Flathub
   now only ships its commercial build, which is therefore shown as not open source, while winget and Homebrew install
   the GPL-3.0 build. VeraCrypt is for USB sticks, external drives and vaults, the system drive going to BitLocker or
