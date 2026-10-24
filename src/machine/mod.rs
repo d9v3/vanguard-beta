@@ -1045,7 +1045,10 @@ fn lancer_chacune(correctifs: &[Vec<String>]) -> (Vec<bool>, Vec<Vec<String>>) {
         // Rien que des corrections natives ou des ordres du blocage, et une vraie élévation possible (pas sous Wine) :
         // par Vanguard lui-même, relancé en administrateur ; une liste mêlée de PowerShell passe aussi par lui, en
         // une seule demande (`admin_mele`) ; sinon par le script PowerShell, comme avant.
-        if !windows::corrections::toutes_natives(correctifs)
+        // Mêlée seulement : une liste toute en PowerShell (sans geste natif) garde la fenêtre PowerShell d'avant.
+        let une_native = correctifs.iter().flatten().any(|l| windows::corrections::native(l));
+        if une_native
+            && !windows::corrections::toutes_natives(correctifs)
             && !crate::journal::sous_wine()
             && let Some(fait) = windows::admin_mele(correctifs)
         {

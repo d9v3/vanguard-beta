@@ -3253,6 +3253,17 @@ async fn main() {
     // Le processus élevé ne fait que sa liste : rien d'autre ne doit tourner avec le jeton administrateur (journal,
     // passage, reconnaissance de la clé écrivent dans des dossiers que le compte contrôle).
     if std::env::args_os().nth(1).is_some_and(|a| a == "appliquer-eleve") {
+        // La langue du Vanguard qui demande, avant le premier texte (l'aide de clap en est un) : pkexec et run0
+        // donnent au fils un environnement neuf, sans LANG.
+        #[cfg(unix)]
+        {
+            let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+            if let Some(i) = args.iter().position(|a| a == "--langue")
+                && let Some(l) = args.get(i + 1)
+            {
+                langue::forcer(l == "en");
+            }
+        }
         let code = match Args::from_arg_matches(&ligne_de_commande().get_matches()) {
             #[cfg(windows)]
             Ok(Args {

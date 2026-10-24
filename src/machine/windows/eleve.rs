@@ -1012,6 +1012,61 @@ fn poser_le_point() -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// La liste du fils : corrections, ordres du blocage permis sous Windows et scripts à empreinte, sous leur seule
+    /// forme ; tout le reste refusé en entier.
+    #[test]
+    fn la_liste_mele_corrections_ordres_et_script() {
+        let empreinte = "A".repeat(64);
+        let script = ligne_script(
+            &empreinte,
+            r"C:\Users\alice\AppData\Local\Vanguard\corrections\correction-1.ps1",
+        );
+        let bonne = vec![
+            corrections::POINT.to_string(),
+            "vanguard:bloquer-sortie windows 203.0.113.7".to_string(),
+            "vanguard:arreter-processus 4242 433a5c782e657865".to_string(),
+            script.clone(),
+        ];
+        let v = valider(&bonne).unwrap();
+        assert!(matches!(v[0], Element::Correction(_)));
+        assert!(matches!(&v[1], Element::Ordre(Ordre::BloquerSortie { .. })));
+        assert!(matches!(&v[3], Element::Script { chemin, .. } if chemin.ends_with("correction-1.ps1")));
+        for hostile in [
+            // Un ordre d'un autre système, un script à empreinte en minuscules, un chemin relatif ou sans .ps1, des
+            // octets du chemin en majuscules, une ligne en double.
+            vec!["vanguard:bloquer-sortie nftables 203.0.113.7".to_string()],
+            vec![ligne_script(&"a".repeat(64), r"C:\x.ps1")],
+            vec![ligne_script(&empreinte, r"x.ps1")],
+            vec![ligne_script(&empreinte, r"C:\x.exe")],
+            vec![script.to_uppercase()],
+            vec![script.clone(), script.clone()],
+            vec![format!("{script} ")],
+        ] {
+            assert!(valider(&hostile).is_none(), "{hostile:?}");
+        }
+    }
+
+    /// Un script dont les octets ne sont plus ceux de l'empreinte n'est jamais lancé (PowerShell n'est pas appelé).
+    #[test]
+    fn un_script_change_n_est_pas_lance() {
+        let d = std::env::temp_dir().join(format!("vanguard-script-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let chemin = d.join("correction-essai.ps1");
+        std::fs::write(&chemin, b"Write-Host 'change'").unwrap();
+        let attendue = super::super::sha256_hex(b"Write-Host 'ecrit'");
+        let r = lancer_script(&chemin.display().to_string(), &attendue);
+        assert!(
+            !r.reussi && r.raison.starts_with(&format!("code={}", super::super::SCRIPT_MODIFIE)),
+            "{}",
+            r.raison
+        );
+        assert_eq!(
+            lire_reponse(&ligne_resultat(&r)).code,
+            Some(super::super::SCRIPT_MODIFIE)
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn l_accord_avant_d_appliquer() {
         for oui in ["", "  \n", "o", "oui", "O", "y", "yes", "Yes\r\n"] {

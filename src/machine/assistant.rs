@@ -285,7 +285,12 @@ pub(crate) fn appliquer(groupes: &[Vec<Ordre>]) -> Vec<Vec<Resultat>> {
     // SAFETY : geteuid ne prend aucun argument et ne touche aucune mémoire.
     if unsafe { libc::geteuid() } == 0 {
         let juge = ordres::Juge::lire(None);
-        return ordres::executer_groupes(groupes, &juge, &mut |t| println!("    {GRIS}{t}{RESET}"));
+        // Les gestes viennent d'être montrés (`machine::lancer_les_ordres`) : seulement leur issue.
+        return ordres::executer_groupes(groupes, &juge, &mut |t| {
+            if !t.starts_with("> ") {
+                println!("    {GRIS}{t}{RESET}");
+            }
+        });
     }
     // Les essais ne lancent jamais pkexec, run0 ni sudo pour de vrai.
     if cfg!(test) {
