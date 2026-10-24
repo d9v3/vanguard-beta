@@ -147,6 +147,13 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   prochain ; le diagnostic lit le modèle, la carte graphique et les disques même sur un Mac en français ; les traces
   d'incident placent la lecture de Vanguard à côté de la sortie des outils, pour qu'un outil remplacé se voie ;
   « logiciels-espions » vérifie maintenant les connexions sous macOS.
+- **Linux lu par Vanguard lui-même.** Bluetooth, DNS sur TLS, fwupd, NetworkManager, systemd (unités, minuteries,
+  sauvegardes), sessions et dernières connexions (utmp, wtmp, lastlog2, wtmpdb, logind), journal de systemd,
+  plantages, réseau des traces, cache de pacman, dpkg --verify, Docker et snapd se lisent par D-Bus, netlink et leurs
+  fichiers, plus par des outils qu'un rootkit peut remplacer ; ce qui ne se lit pas est dit impossible, jamais sain.
+  Dans les traces, la sortie des outils reste à côté en témoin, et un écart entre les deux est signalé. Activations
+  d'unités, notifications et réglages de Déjà Dup passent par une liste fermée d'actions D-Bus, sur le bus de la
+  session seulement.
 - **Journaux de Windows lus par Vanguard lui-même (première partie).** Un lecteur maison des fichiers .evtx, écrit
   d'après la spécification de Microsoft, borné contre les fichiers piégés et passé au fuzzing, lit les journaux sous
   Linux, macOS et Windows ; une seule forme d'événement sert aux fichiers comme au Windows en marche, avec le refus dit

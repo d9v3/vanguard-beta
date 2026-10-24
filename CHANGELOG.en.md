@@ -141,6 +141,12 @@ delivered just before it. Only the latest version has its download page; every v
   is reported as reduced; startup options are judged for the current startup and the next one; the diagnosis reads
   the model, graphics card and disks even on a Mac set to French; incident traces put Vanguard's own reading next to
   the tools' output, so a replaced tool shows; `logiciels-espions` now checks connections on macOS.
+- **Linux read by Vanguard itself.** Bluetooth, DNS over TLS, fwupd, NetworkManager, systemd (units, timers,
+  backups), sessions and last logins (utmp, wtmp, lastlog2, wtmpdb, logind), the systemd journal, crashes, the network
+  part of the traces, the pacman cache, dpkg --verify, Docker and snapd are read through D-Bus, netlink and their
+  files, no longer through tools a rootkit can replace; what cannot be read is reported as impossible, never healthy.
+  In the traces, the tools' output stays alongside as a witness, and a discrepancy between the two is flagged. Unit
+  activations, notifications and Déjà Dup settings go through a closed list of D-Bus actions, on the session bus only.
 - **Windows event logs read by Vanguard itself (first part).** A home-made .evtx reader, written from Microsoft's
   specification, bounded against booby-trapped files and fuzzed, reads the logs on Linux, macOS and Windows; one event
   shape serves both files and the running Windows, with refusals stated (security log without administrator rights,
