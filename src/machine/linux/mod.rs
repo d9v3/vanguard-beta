@@ -24,6 +24,7 @@ pub(crate) mod gvdb;
 pub(crate) mod journal_systemd;
 mod maj;
 pub(crate) mod natif;
+pub(crate) mod networkmanager;
 pub(crate) mod paquets;
 mod persistance;
 mod plateforme;
@@ -1509,10 +1510,28 @@ fn wifi_ouvert(details: &str) -> bool {
 }
 
 /// Réseaux ouverts enregistrés (sans gestion de clé) qui se reconnectent seuls : les profils lus nativement, comme
-/// l'audit du réseau (NetworkManager et iwd, en administrateur) ; sinon nmcli, 40 connexions regardées au plus.
+/// l'audit du réseau (NetworkManager et iwd, en administrateur) ; sinon NetworkManager par D-Bus ; sinon nmcli, 40
+/// connexions regardées au plus.
 fn wifi_ouverts_automatiques() -> Option<Constat> {
     if let Ok(profils) = super::wifi::profils::lire_linux() {
         return super::wifi::ouverts_des_profils(&profils);
+    }
+    // Sans droits : NetworkManager par D-Bus (GetSettings, sans les secrets), nmcli en secours.
+    if let Ok(profils) = dbus::Bus::systeme().and_then(|mut b| networkmanager::profils(&mut b)) {
+        let (mut noms, mut commandes) = (Vec::new(), Vec::new());
+        for p in &profils {
+            let Some(uuid) = p
+                .uuid()
+                .filter(|u| u.len() == 36 && u.chars().all(|c| c.is_ascii_hexdigit() || c == '-'))
+            else {
+                continue;
+            };
+            if p.genre() == "802-11-wireless" && p.automatique() && p.ouvert() {
+                commandes.push(format!("nmcli connection modify {uuid} connection.autoconnect no"));
+                noms.push(p.nom().to_string());
+            }
+        }
+        return super::wifi::ouverts_automatiques(&noms, &commandes);
     }
     let liste = crate::commande::lancer_en_anglais(
         Command::new("nmcli").args([
