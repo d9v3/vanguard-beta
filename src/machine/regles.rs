@@ -165,6 +165,11 @@ pub(crate) fn tous_les_identifiants() -> Vec<(&'static str, (&'static str, &'sta
         .chain(crate::audit::fiches::FICHES.iter().map(|f| (f.id, f.sujet)))
         .chain(crate::modele::registre::OUTILS.iter().map(|o| (o.id, o.sujet)))
         .chain(
+            crate::journaux_windows::regles::jeu::REGLES
+                .iter()
+                .map(|r| (r.id, r.sujet)),
+        )
+        .chain(
             crate::autotest::croisees::croisees()
                 .into_iter()
                 .map(|c| (c.id, c.sujet)),
@@ -431,7 +436,7 @@ mod tests {
         // Les lectures croisées de l'autotest portent le système après « AUT- » : celles des autres ne sont pas
         // compilées ici.
         id.starts_with(Os::actuel().prefixe())
-            || ["COM", "PRO", "SUR", "VEI", "AUT-VAN"]
+            || ["COM", "PRO", "SUR", "VEI", "EVT", "AUT-VAN"]
                 .iter()
                 .any(|p| id.starts_with(p))
             || id
