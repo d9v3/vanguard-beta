@@ -4,55 +4,70 @@
 
 use super::Bornes;
 
-/// Les fichiers (nom, contenu). Une entrée illisible, hors des bornes ou dont le contenu n'a pas la taille annoncée
-/// est sautée ; une archive illisible donne une liste vide. Au plus `entrees` entrées parcourues, `fichier` octets
-/// par fichier, `total` en tout.
+/// Le temps de `lire` pour une archive entière. Une vraie archive de tldr-pages (quelques Mio) se lit en bien moins
+/// d'une seconde ; une archive fabriquée de blocs deflate vides coûte ≈ 1,2 s de processeur par Mio compressé, et
+/// figeait le guide des commandes (90 s pour 2 Mio).
+const DELAI_LECTURE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Le temps de `controler` (déploiement de la clé, sans personne qui attend un écran) : plus large, même raison.
+const DELAI_CONTROLE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Les fichiers (nom, contenu). L'archive doit avoir la forme que `controler` exige (répertoire central entier, sans
+/// entrée cachée, entrées qui ne se chevauchent pas, octets compressés plausibles pour leur taille), sinon la liste
+/// est vide : chaque octet compressé n'est ainsi décompressé qu'une fois. Une entrée hors des bornes (au plus
+/// `fichier` octets annoncés par entrée, `total` en tout), ou dont le contenu ne se lit pas à la taille annoncée, est
+/// sautée ; le CRC n'est pas recalculé. Plus de `DELAI_LECTURE` en
+/// tout : liste vide, l'archive est jugée illisible.
 pub(crate) fn lire(octets: &[u8], bornes: &Bornes) -> Vec<(String, Vec<u8>)> {
-    // La fin du répertoire central, cherchée depuis la fin (un commentaire peut la suivre).
-    let Some(fin) = (0..octets.len().saturating_sub(21))
-        .rev()
-        .take(65_557)
-        .find(|&i| u32_a(octets, i) == Some(0x0605_4b50))
-    else {
+    lire_avant(octets, bornes, std::time::Instant::now() + DELAI_LECTURE)
+}
+
+/// `lire`, avec son échéance.
+pub(crate) fn lire_avant(octets: &[u8], bornes: &Bornes, echeance: std::time::Instant) -> Vec<(String, Vec<u8>)> {
+    let Ok(entrees) = forme(octets, bornes, false) else {
         return Vec::new();
     };
-    let (Some(nombre), Some(debut)) = (u16_a(octets, fin + 10), u32_a(octets, fin + 16)) else {
-        return Vec::new();
-    };
-    let mut fichiers = Vec::new();
-    let mut total = 0;
-    let mut i = debut as usize;
-    for _ in 0..usize::from(nombre).min(bornes.entrees) {
-        if u32_a(octets, i) != Some(0x0201_4b50) {
-            break;
+    let mut fichiers = Vec::with_capacity(entrees.len());
+    for (n, e) in entrees.iter().enumerate() {
+        // Entre deux entrées aussi : mille petites entrées d'une tranche chacune ne regardent jamais l'échéance dans
+        // le décodeur.
+        if n > 0 && std::time::Instant::now() >= echeance {
+            return Vec::new();
         }
-        let Some((methode, compresse, taille, longueur_nom, autres, local)) = entree_centrale(octets, i) else {
-            break;
-        };
-        let nom = octets
-            .get(i + 46..i + 46 + longueur_nom)
-            .map(|n| String::from_utf8_lossy(n).into_owned());
-        i += 46 + longueur_nom + autres;
-        let Some(nom) = nom else { break };
-        if taille > bornes.fichier || total + taille > bornes.total {
+        if e.hors_bornes {
             continue;
         }
-        let donnees = donnees_locales(octets, local, compresse);
-        // La taille rendue doit être celle annoncée, qui a passé les bornes : une entrée qui ment (annoncée minuscule,
-        // décompressée bien plus grande) ferait sinon dépasser la borne du total.
-        let contenu = match (methode, donnees) {
-            (0, Some(d)) if d.len() == taille => Some(d.to_vec()),
-            (8, Some(d)) => miniz_oxide::inflate::decompress_to_vec_with_limit(d, taille)
-                .ok()
-                .filter(|c| c.len() == taille),
-            _ => None,
-        };
-        if let Some(contenu) = contenu {
-            total += contenu.len();
-            fichiers.push((nom, contenu));
+        match contenu(octets, e, echeance) {
+            Ok(c) => fichiers.push((String::from_utf8_lossy(e.nom).into_owned(), c)),
+            Err(Echec::Delai) => return Vec::new(),
+            Err(Echec::Illisible) => {}
         }
     }
     fichiers
+}
+
+/// Pourquoi le contenu d'une entrée n'est pas rendu.
+enum Echec {
+    Illisible,
+    Delai,
+}
+
+/// Le contenu d'une entrée dont la forme a été contrôlée, à sa taille annoncée exactement (un octet de marge à la
+/// décompression : un contenu plus long se voit à sa longueur).
+fn contenu(octets: &[u8], e: &Entree, echeance: std::time::Instant) -> Result<Vec<u8>, Echec> {
+    use super::deflate::Fin;
+    let donnees = &octets[e.donnees.clone()];
+    if e.methode == 0 {
+        return (donnees.len() == e.taille)
+            .then(|| donnees.to_vec())
+            .ok_or(Echec::Illisible);
+    }
+    let lu = super::deflate::inflater_avant(donnees, e.taille.saturating_add(1), Some(echeance));
+    match lu.fin {
+        Fin::Complet if lu.contenu.len() == e.taille => Ok(lu.contenu),
+        Fin::Delai => Err(Echec::Delai),
+        _ => Err(Echec::Illisible),
+    }
 }
 
 /// Pourquoi une archive n'est pas intacte (`controler`) ; le numéro est celui de l'entrée dans le répertoire central.
@@ -70,9 +85,11 @@ pub(crate) enum Defaut {
     Methode(usize),
     /// Lue, mais son CRC-32 n'est pas celui annoncé.
     Crc(usize),
+    /// Pas lue entière dans le temps donné : des blocs deflate vides en nombre, qui ne produisent rien.
+    Delai,
 }
 
-/// Une entrée relue par `controler`, avant d'être décompressée.
+/// Une entrée relue par `forme` (pour `lire` et `controler`), avant d'être décompressée.
 struct Entree<'a> {
     nom: &'a [u8],
     methode: u16,
@@ -80,6 +97,8 @@ struct Entree<'a> {
     taille: usize,
     local: usize,
     donnees: std::ops::Range<usize>,
+    /// Plus grande que les bornes (`lire` seulement, qui la saute).
+    hors_bornes: bool,
 }
 
 /// Le contrôle entier d'une archive, comme `zipfile.testzip()` de Python : chaque entrée du répertoire central relue
@@ -92,6 +111,29 @@ struct Entree<'a> {
 /// octet compressé n'est donc décompressé qu'une fois, et une archive où mille entrées désignent les mêmes 36 Mo ne
 /// coûte pas mille décompressions.
 pub(crate) fn controler(octets: &[u8], bornes: &Bornes) -> Result<Vec<String>, Defaut> {
+    let echeance = std::time::Instant::now() + DELAI_CONTROLE;
+    let entrees = forme(octets, bornes, true)?;
+    // Seconde passe : le contenu, à sa taille et à son CRC.
+    let mut noms = Vec::with_capacity(entrees.len());
+    for (n, e) in entrees.iter().enumerate() {
+        if n > 0 && std::time::Instant::now() >= echeance {
+            return Err(Defaut::Delai);
+        }
+        let contenu = contenu(octets, e, echeance).map_err(|x| match x {
+            Echec::Delai => Defaut::Delai,
+            Echec::Illisible => Defaut::Illisible(n),
+        })?;
+        if super::crc32::crc32(&contenu) != e.crc {
+            return Err(Defaut::Crc(n));
+        }
+        noms.push(String::from_utf8_lossy(e.nom).into_owned());
+    }
+    Ok(noms)
+}
+
+/// La première passe, commune à `lire` et `controler` : la forme de chaque entrée, sans rien décompresser. `stricte`
+/// (`controler`) : une entrée hors des bornes refuse l'archive entière.
+fn forme<'a>(octets: &'a [u8], bornes: &Bornes, stricte: bool) -> Result<Vec<Entree<'a>>, Defaut> {
     let fin = (0..octets.len().saturating_sub(21))
         .rev()
         .take(65_557)
@@ -136,8 +178,19 @@ pub(crate) fn controler(octets: &[u8], bornes: &Bornes) -> Result<Vec<String>, D
         if drapeaux & 0x41 != 0 || !matches!(methode, 0 | 8) {
             return Err(Defaut::Methode(n));
         }
-        total = total.saturating_add(taille);
-        if taille > bornes.fichier || total > bornes.total {
+        // Hors des bornes : refusée par `controler` ; `lire` la saute sans la décompresser, et elle ne compte pas
+        // dans le total de ce qui est rendu.
+        let hors_bornes = taille > bornes.fichier || total.saturating_add(taille) > bornes.total;
+        if hors_bornes && stricte {
+            return Err(Defaut::Demesuree);
+        }
+        if !hors_bornes {
+            total += taille;
+        }
+        // Deflate n'agrandit jamais beaucoup : au pire des symboles de 9 bits pour 8 (bloc fixe), plus les en-têtes
+        // de blocs. Des octets compressés bien plus nombreux que leur contenu ne sont que des blocs vides, coûteux à
+        // décoder et qui ne produisent rien.
+        if !hors_bornes && methode == 8 && compresse > taille + taille / 8 + 4096 {
             return Err(Defaut::Demesuree);
         }
         // Le nom de l'en-tête local doit être celui du répertoire central, comme le veut zipfile.
@@ -154,6 +207,7 @@ pub(crate) fn controler(octets: &[u8], bornes: &Bornes) -> Result<Vec<String>, D
             taille,
             local,
             donnees: depart..depart + compresse,
+            hors_bornes,
         });
     }
     if i != fin {
@@ -169,24 +223,7 @@ pub(crate) fn controler(octets: &[u8], bornes: &Bornes) -> Result<Vec<String>, D
             return Err(Defaut::Illisible(k));
         }
     }
-    // Seconde passe : le contenu, à sa taille et à son CRC.
-    let mut noms = Vec::with_capacity(entrees.len());
-    for (n, e) in entrees.iter().enumerate() {
-        let donnees = &octets[e.donnees.clone()];
-        let contenu = match e.methode {
-            0 => (donnees.len() == e.taille).then(|| donnees.to_vec()),
-            // Un octet de marge : un contenu plus long que la taille annoncée se voit à sa longueur.
-            _ => miniz_oxide::inflate::decompress_to_vec_with_limit(donnees, e.taille.saturating_add(1))
-                .ok()
-                .filter(|c| c.len() == e.taille),
-        }
-        .ok_or(Defaut::Illisible(n))?;
-        if super::crc32::crc32(&contenu) != e.crc {
-            return Err(Defaut::Crc(n));
-        }
-        noms.push(String::from_utf8_lossy(e.nom).into_owned());
-    }
-    Ok(noms)
+    Ok(entrees)
 }
 
 fn u16_a(octets: &[u8], i: usize) -> Option<u16> {
@@ -919,6 +956,102 @@ mod tests {
         let central = ment.windows(4).position(|f| f == 0x0201_4b50u32.to_le_bytes()).unwrap();
         ment[central + 24..central + 28].copy_from_slice(&1u32.to_le_bytes());
         assert_eq!(controler(&ment, &BORNES_CONTROLE), Err(Defaut::Illisible(0)));
+    }
+
+    /// L'archive tldr piégée de la campagne d'attaque n° 3, refaite ici : une entrée locale de blocs deflate vides
+    /// (qui ne produisent rien et coûtent chacun une table à reconstruire), que mille entrées centrales désignent.
+    /// `lire` la décompressait mille fois (le guide figé 90 s pour 2 Mio) ; elle est refusée à sa forme, sans rien
+    /// décompresser.
+    #[test]
+    fn lire_refuse_les_entrees_qui_partagent_leurs_donnees() {
+        let donnees = crate::archives::deflate::tests::blocs_vides(64 << 10);
+        let crc = super::super::crc32::crc32(b"x");
+        let nom = b"pages/linux/a.md";
+        let mut zip = Vec::new();
+        zip.extend(0x0403_4b50u32.to_le_bytes());
+        zip.extend([20, 0, 0, 0, 8, 0, 0, 0, 0, 0]);
+        zip.extend(crc.to_le_bytes());
+        zip.extend(u32::try_from(donnees.len()).unwrap().to_le_bytes());
+        zip.extend(1u32.to_le_bytes());
+        zip.extend(u16::try_from(nom.len()).unwrap().to_le_bytes());
+        zip.extend([0, 0]);
+        zip.extend(nom);
+        zip.extend(&donnees);
+        let debut = u32::try_from(zip.len()).unwrap();
+        let mut central = Vec::new();
+        for _ in 0..1000 {
+            central.extend(0x0201_4b50u32.to_le_bytes());
+            central.extend([20, 0, 20, 0, 0, 0, 8, 0, 0, 0, 0, 0]);
+            central.extend(crc.to_le_bytes());
+            central.extend(u32::try_from(donnees.len()).unwrap().to_le_bytes());
+            central.extend(1u32.to_le_bytes());
+            central.extend(u16::try_from(nom.len()).unwrap().to_le_bytes());
+            central.extend([0u8; 16]);
+            central.extend(nom);
+        }
+        let taille_centrale = u32::try_from(central.len()).unwrap();
+        zip.extend(central);
+        zip.extend(0x0605_4b50u32.to_le_bytes());
+        zip.extend([0, 0, 0, 0, 0xE8, 0x03, 0xE8, 0x03]);
+        zip.extend(taille_centrale.to_le_bytes());
+        zip.extend(debut.to_le_bytes());
+        zip.extend([0, 0]);
+        let bornes = Bornes {
+            entrees: 50_000,
+            fichier: 256 << 10,
+            total: 64 << 20,
+        };
+        let debut = std::time::Instant::now();
+        assert_eq!(lire(&zip, &bornes), []);
+        assert!(controler(&zip, &bornes).is_err());
+        assert!(
+            debut.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            debut.elapsed()
+        );
+    }
+
+    /// Des octets compressés bien plus nombreux que le contenu qu'ils annoncent : des blocs vides, refusés à la
+    /// forme. Une vraie entrée deflate, même de données qui ne se compressent pas, passe.
+    #[test]
+    fn octets_compresses_plausibles() {
+        let bornes = Bornes {
+            entrees: 10,
+            fichier: 1 << 20,
+            total: 1 << 20,
+        };
+        let vides = crate::archives::deflate::tests::blocs_vides(64 << 10);
+        let piegee = archive(&[("pages/linux/a.md", vides, 8, 1)]);
+        assert_eq!(lire(&piegee, &bornes), []);
+        assert_eq!(controler(&piegee, &bornes), Err(Defaut::Demesuree));
+        let mut graine = 7u32;
+        let hasard: Vec<u8> = (0..100_000)
+            .map(|_| {
+                graine = graine.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                graine.to_le_bytes()[2]
+            })
+            .collect();
+        let vraie = archive_controlee(&[("pages/linux/b.md", 8, &hasard)]);
+        assert_eq!(lire(&vraie, &bornes).len(), 1);
+        assert!(controler(&vraie, &bornes).is_ok());
+    }
+
+    /// Des entrées distinctes, chacune de blocs vides dans la limite plausible : la forme passe, mais leur somme
+    /// coûte cher. L'échéance arrête la lecture, qui rend une liste vide (archive illisible), jamais une liste
+    /// partielle prise pour l'archive entière ; sans échéance proche, la même archive se lit.
+    #[test]
+    fn lire_s_arrete_a_l_echeance() {
+        let noms: Vec<String> = (0..64).map(|n| format!("pages/linux/{n}.md")).collect();
+        let vides = crate::archives::deflate::tests::blocs_vides(4000);
+        let entrees: Vec<(&str, Vec<u8>, u16, u32)> = noms.iter().map(|n| (n.as_str(), vides.clone(), 8, 1)).collect();
+        let zip = archive(&entrees);
+        let bornes = Bornes {
+            entrees: 100,
+            fichier: 1 << 16,
+            total: 1 << 20,
+        };
+        assert_eq!(lire(&zip, &bornes).len(), 64);
+        assert_eq!(lire_avant(&zip, &bornes, std::time::Instant::now()), []);
     }
 
     proptest::proptest! {

@@ -641,6 +641,7 @@ impl Etat<'_> {
                         deflate::Fin::Limite => manques.push(self.raison_de_limite(limite)),
                         deflate::Fin::Coupe => manques.push(Raison::Tronque),
                         deflate::Fin::Abime => manques.push(Raison::Illisible("flux deflate")),
+                        deflate::Fin::Delai => manques.push(Raison::Delai),
                     }
                     if x.crc_juste == Some(false) {
                         faits.push(Fait::CrcFaux);
@@ -769,6 +770,10 @@ impl Etat<'_> {
                 }
                 deflate::Fin::Abime => {
                     manques.push(Raison::Illisible("flux deflate"));
+                    break;
+                }
+                deflate::Fin::Delai => {
+                    manques.push(Raison::Delai);
                     break;
                 }
             }
