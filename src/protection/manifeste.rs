@@ -440,8 +440,9 @@ fn enregistrer(reference: &Path, manifeste: &Manifeste) -> std::io::Result<()> {
 }
 
 /// Redit à la référence les images et le menu qu'outils/images-cle.sh vient de poser sur la clé, après avoir vérifié
-/// leur signature (`nouvelles` : les noms des images copiées). Le menu ventoy/ est repris tel qu'il est (images-cle.sh
-/// vient de le réécrire d'après ISO/) ; dans ISO/, une image déjà relevée et de même taille reste, une image copiée
+/// leur signature (`nouvelles` : les noms des images copiées). Le menu ventoy/ventoy.json est repris tel qu'il est
+/// (images-cle.sh vient de le réécrire d'après ISO/), tout autre fichier de ventoy/ seulement s'il n'a pas changé ;
+/// dans ISO/, une image déjà relevée et de même taille reste, une image copiée
 /// entre, une image retirée sort, et toute autre reste hors de la référence : le bilan la dira nouvelle. Rend le
 /// nombre d'images relevées.
 fn rafraichir_images_dans(
@@ -473,8 +474,17 @@ fn rafraichir_images_dans(
                 relue: sha256.as_ref().map(|_| maintenant()),
                 ..entree(racine, chemin, taille, gros)
             }
-        } else if chemin.starts_with("ventoy/") {
+        } else if chemin == "ventoy/ventoy.json" {
+            // Le menu qu'images-cle.sh vient d'écrire d'après ISO/ : repris tel qu'il est.
             entree(racine, chemin, taille, gros)
+        } else if chemin.starts_with("ventoy/") {
+            // Tout autre fichier de ventoy/ (ventoy_grub.cfg, un menu de démarrage à soi ; un thème) n'est pas de lui :
+            // gardé s'il est celui de la référence, sinon laissé dehors, et le bilan le dit (campagne d'attaque n° 3).
+            let e = entree(racine, chemin, taille, gros);
+            if !avant.contains(&e) {
+                continue;
+            }
+            e
         } else if let Some(e) = avant.iter().find(|e| e.chemin == chemin && e.taille == taille) {
             e.clone()
         } else {
@@ -1207,10 +1217,15 @@ mod tests {
         std::fs::write(racine.join("ISO/archlinux-2026.11.01-x86_64.iso"), b"0123456789abcdefg").unwrap();
         std::fs::write(racine.join("ISO/archlinux-2026.11.02-x86_64.iso"), b"piege").unwrap();
         std::fs::write(racine.join("ventoy/ventoy.json"), b"{2}").unwrap();
+        // Un menu de démarrage à soi glissé dans ventoy/ : jamais repris avec le menu d'images-cle.sh.
+        std::fs::write(racine.join("ventoy/ventoy_grub.cfg"), b"menuentry piege").unwrap();
         let copiee = vec![("archlinux-2026.11.01-x86_64.iso".to_string(), None)];
         assert_eq!(rafraichir_images_dans(&racine, &reference, &copiee, 10).unwrap(), 1);
         let ecart = comparer_avec(&racine, &lire(&reference).unwrap(), 10);
-        assert_eq!(ecart.nouveaux, ["ISO/archlinux-2026.11.02-x86_64.iso"]);
+        assert_eq!(
+            ecart.nouveaux,
+            ["ISO/archlinux-2026.11.02-x86_64.iso", "ventoy/ventoy_grub.cfg"]
+        );
         assert!(ecart.modifies.is_empty() && ecart.disparus.is_empty(), "{ecart:?}");
         // Une référence d'avant les images : refusé (le déploiement la refait).
         let mut m = lire(&reference).unwrap();
