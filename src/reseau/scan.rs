@@ -241,11 +241,18 @@ pub fn table_arp() -> HashMap<Ipv4Addr, String> {
                 .flatten()
         })
         .collect();
-    // macOS : la table ARP du noyau (sysctl, RTF_LLINFO) ; `arp -an` en secours (« ? (10.0.0.1) at f8:79:a:d:3:a2 on
+    // macOS : la table ARP du noyau (sysctl, RTF_LLINFO), par la même lecture des messages de route que la passerelle
+    // (`machine::darwin`) ; `arp -an` en secours (« ? (10.0.0.1) at f8:79:a:d:3:a2 on
     // en0 ifscope [ethernet] », « (incomplete) » sans réponse).
     #[cfg(target_os = "macos")]
-    let entrees: Vec<(String, String)> = match super::routes_macos::voisins() {
-        Some(v) => v.into_iter().map(|(ip, mac)| (ip.to_string(), mac)).collect(),
+    let entrees: Vec<(String, String)> = match crate::machine::macos::noyau::voisins() {
+        Some(v) => v
+            .into_iter()
+            .map(|v| {
+                let mac: Vec<String> = v.mac.iter().map(|o| format!("{o:02x}")).collect();
+                (v.ip.to_string(), mac.join(":"))
+            })
+            .collect(),
         None => commande("arp", &["-an"])
             .lines()
             .filter_map(|l| {

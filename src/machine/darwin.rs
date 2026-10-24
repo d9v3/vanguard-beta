@@ -1021,8 +1021,6 @@ mod tests {
         );
     }
 
-    /// Des octets hostiles : longueur nulle ou trop grande, adresses annoncées absentes, autre version. Jamais de
-    /// panique, jamais une route inventée.
     /// Un masque tel que le noyau l'écrit (famille 0xff, tronqué après son dernier octet non nul) : lu avec la
     /// famille de la destination. Une route 0.0.0.0/1 (VPN) n'est pas la route par défaut.
     #[test]
@@ -1065,6 +1063,85 @@ mod tests {
         assert_eq!(p.distante, "fe80::1".parse::<IpAddr>().unwrap());
     }
 
+    /// La passerelle principale parmi plusieurs routes : une route par défaut éteinte ou limitée à une interface ne
+    /// l'est pas, et sans route principale il n'y en a pas (plutôt que celle d'une seule carte). Un masque nul écrit
+    /// sur toute sa longueur, famille à 0, vaut un masque vide.
+    #[test]
+    fn route_principale_seulement() {
+        let defaut = |drapeaux, passerelle, masque: Vec<u8>| {
+            message(
+                drapeaux,
+                4,
+                &[
+                    (RTAX_DST, sin([0; 4])),
+                    (RTAX_GATEWAY, sin(passerelle)),
+                    (RTAX_NETMASK, masque),
+                ],
+            )
+        };
+        let reseau = message(
+            RTF_UP,
+            4,
+            &[
+                (RTAX_DST, sin([192, 168, 1, 0])),
+                (RTAX_GATEWAY, sdl(4, b"en0", &[])),
+                (RTAX_NETMASK, vec![7, 0xff, 0, 0, 255, 255, 255]),
+            ],
+        );
+        let t = [
+            reseau,
+            defaut(RTF_GATEWAY, [192, 168, 1, 254], Vec::new()),
+            defaut(RTF_UP | RTF_GATEWAY | RTF_IFSCOPE, [10, 0, 0, 1], Vec::new()),
+            defaut(RTF_UP | RTF_GATEWAY, [192, 168, 1, 1], vec![8, 0, 0, 0, 0, 0, 0, 0]),
+        ]
+        .concat();
+        let routes = lire_routes(&t);
+        assert_eq!(routes[0].masque, Some(IpAddr::V4(Ipv4Addr::new(255, 255, 255, 0))));
+        assert_eq!(passerelle_par_defaut(&routes), Some(Ipv4Addr::new(192, 168, 1, 1)));
+        assert_eq!(
+            passerelle_par_defaut(&lire_routes(&defaut(
+                RTF_UP | RTF_GATEWAY | RTF_IFSCOPE,
+                [10, 0, 0, 1],
+                Vec::new()
+            ))),
+            None
+        );
+        // Coupée n'importe où : jamais de panique, et jamais une autre passerelle que la vraie.
+        for n in 0..t.len() {
+            let p = passerelle_par_defaut(&lire_routes(&t[..n]));
+            assert!(p.is_none() || p == Some(Ipv4Addr::new(192, 168, 1, 1)), "{n} : {p:?}");
+        }
+    }
+
+    /// Plusieurs voisins, dans l'ordre de la table ; un message qui annonce plus d'octets qu'il n'en reste arrête la
+    /// lecture sans rien inventer.
+    #[test]
+    fn voisins_dans_l_ordre_et_troncature() {
+        let voisin = |ip, mac: &[u8]| {
+            message(
+                RTF_UP | RTF_LLINFO,
+                4,
+                &[(RTAX_DST, sin(ip)), (RTAX_GATEWAY, sdl(4, b"en0", mac))],
+            )
+        };
+        let t = [
+            voisin([192, 168, 1, 1], &[0x00, 0x11, 0x22, 0xaa, 0xbb, 0x01]),
+            voisin([192, 168, 1, 30], &[]),
+            voisin([192, 168, 1, 20], &[0x00, 0x11, 0x22, 0xaa, 0xbb, 0x02]),
+        ]
+        .concat();
+        let ips: Vec<Ipv4Addr> = voisins(&lire_routes(&t)).iter().map(|v| v.ip).collect();
+        assert_eq!(ips, [Ipv4Addr::new(192, 168, 1, 1), Ipv4Addr::new(192, 168, 1, 20)]);
+        for n in 0..t.len() {
+            assert!(voisins(&lire_routes(&t[..n])).len() <= 2);
+        }
+        let mut abime = t.clone();
+        abime[0..2].copy_from_slice(&[0xff, 0xff]);
+        assert_eq!(voisins(&lire_routes(&abime)), Vec::new());
+    }
+
+    /// Des octets hostiles : longueur nulle ou trop grande, adresses annoncées absentes, autre version. Jamais de
+    /// panique, jamais une route inventée.
     #[test]
     fn table_de_routage_hostile() {
         assert_eq!(lire_routes(&[]), Vec::new());
