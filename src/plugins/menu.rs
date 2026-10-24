@@ -80,7 +80,7 @@ pub(super) fn lignes_extensions(plugins: usize, scripts: usize, sans: bool) -> V
         l.push(Ligne::Texte(format!("     {GRIS}{ligne}{RESET}")));
     }
     l.push(Ligne::Texte(String::new()));
-    l.push(Ligne::choix("0", tr!("Revenir", "Back"), ""));
+    l.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
     l.push(Ligne::Texte(String::new()));
     l
 }
@@ -161,7 +161,7 @@ pub(super) fn lignes_plugins(plugins: &[Plugin], reglages: &super::reglages::Reg
             tr!("couper ou remettre", "turn off or back on"),
         ));
     }
-    l.push(Ligne::choix("0", tr!("Revenir", "Back"), ""));
+    l.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
     l.push(Ligne::Texte(String::new()));
     l
 }
@@ -229,7 +229,7 @@ pub(super) fn lignes_labo(
             tr!("restrictions coupées ou remises", "restrictions off or back on"),
         ));
     }
-    l.push(Ligne::choix("0", tr!("Revenir", "Back"), ""));
+    l.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
     l.push(Ligne::Texte(String::new()));
     l
 }

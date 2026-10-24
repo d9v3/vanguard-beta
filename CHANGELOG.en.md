@@ -59,6 +59,11 @@ delivered just before it. Only the latest version has its download page; every v
 | 5.12 Hidden cameras | 5.5 | | 9.9 Update Vanguard | 13.3 | | 9.10 Check my backup | 9.3.1 |
 | 5.13 Box and connected devices | 5.4 | | 9.11 Remove Vanguard | 13.11 | | 12 Extensions | 13.10 |
 
+- **Small keyboard lists.** The letter questions (quarantine: restore or delete; dangerous sites: block or remove;
+  who talks to the Internet: the abuse.ch key; protecting the key's data; my computers) become small lists drawn
+  under the result, without erasing it: ↑ ↓ and Enter, the letter still a shortcut (it moves the marker, Enter
+  confirms). Extensions: "↵ Back" like everywhere, instead of "0".
+
 - **Command guide.** A new page at the end, 10.10 "Vanguard commands": every command, sorted like the menu, with
   what it does and its place in the menu, generated from the program (never copied by hand). The cursor opens on the
   computer's system. Each program and command page ends with its path and command ("Path: 10.6.7.2 · vanguard guide 6.7.2").

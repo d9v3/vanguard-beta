@@ -62,6 +62,11 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 | 5.12 Caméras cachées | 5.5 | | 9.9 Mettre Vanguard à jour | 13.3 | | 9.10 Vérifier ma sauvegarde | 9.3.1 |
 | 5.13 Box et objets connectés | 5.4 | | 9.11 Retirer Vanguard | 13.11 | | 12 Extensions | 13.10 |
 
+- **Petites listes au clavier.** Les questions à lettres (quarantaine : remettre ou supprimer ; sites dangereux :
+  bloquer ou retirer ; qui parle à Internet : la clé abuse.ch ; protection des données de la clé ; mes ordinateurs)
+  deviennent de petites listes dessinées sous le résultat, sans l'effacer : ↑ ↓ et Entrée, la lettre restant un
+  raccourci (elle pose la marque, Entrée confirme). Extensions : « ↵ Revenir » comme partout, au lieu de « 0 ».
+
 - **Guide des commandes.** Une nouvelle page en fin, 10.10 « Commandes de Vanguard » : chaque commande, rangée comme
   le menu, avec ce qu'elle fait et sa place au menu, générée depuis le programme (jamais à recopier). Le curseur
   s'ouvre sur le système de l'ordinateur. Chaque page de programme et de commande finit par son chemin et sa commande (« Chemin : 10.6.7.2 ·

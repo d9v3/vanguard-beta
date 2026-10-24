@@ -287,13 +287,22 @@ pub fn commande(etat: Option<&str>) {
 /// Depuis le menu : l'état, puis bloquer (ou rafraîchir), retirer, ou rien.
 pub fn menu() {
     commande(None);
-    let choix = demander(tr!(
-        "\n  B : bloquer ou rafraîchir · R : retirer · Entrée : rien. Choix : ",
-        "\n  B: block or refresh · R: remove · Enter: nothing. Choice: "
-    ));
-    match choix.to_lowercase().as_str() {
-        "b" => commande(Some("on")),
-        "r" => commande(Some("off")),
+    let choix = crate::selection::choisir_en_ligne(
+        &[
+            (
+                "b",
+                tr!("Bloquer, ou rafraîchir la liste", "Block, or refresh the list"),
+            ),
+            ("r", tr!("Retirer le blocage", "Remove the block")),
+        ],
+        tr!(
+            "\n  B : bloquer ou rafraîchir · R : retirer · Entrée : rien. Choix : ",
+            "\n  B: block or refresh · R: remove · Enter: nothing. Choice: "
+        ),
+    );
+    match choix.as_deref() {
+        Some("b") => commande(Some("on")),
+        Some("r") => commande(Some("off")),
         _ => {}
     }
 }

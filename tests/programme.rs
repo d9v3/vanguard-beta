@@ -1677,6 +1677,43 @@ mod menus_dans_un_terminal {
     }
 
     #[test]
+    fn petite_liste_en_ligne_sans_rien_effacer() {
+        // 8.2 Bloquer les sites dangereux : l'état, puis une petite liste dessinée dessous (B, R, rien). La lettre
+        // pose la marque sans rien lancer ; Échap revient sans rien changer.
+        let maison = maison_jetable();
+        let (mut enfant, mut t, lecteur) = lancer(&maison, &[]);
+        t.attendre("q quitter", 60);
+        t.taper("8.2");
+        t.taper(ENTREE);
+        let ecran = t.attendre("Retirer le blocage", 60);
+        assert!(
+            ecran.contains("dangereux"),
+            "l'état reste au-dessus de la liste : {ecran}"
+        );
+        assert!(
+            ecran.contains("Bloquer, ou rafraîchir la liste") && ecran.contains("Rien"),
+            "{ecran}"
+        );
+        // La lettre redessine la liste, sans rien lancer (Retirer demanderait les droits d'administrateur).
+        t.taper("r");
+        t.attendre("Retirer le blocage", 30);
+        t.taper(ECHAP);
+        t.attendre("Entrée pour revenir au menu", 30);
+        t.taper(ENTREE);
+        t.attendre("q quitter", 30);
+        t.taper("q");
+        t.taper(ENTREE);
+        let fin = Instant::now() + Duration::from_secs(30);
+        while enfant.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < fin, "« q » n'a pas fermé Vanguard");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        drop(t);
+        let _ = lecteur.join();
+        let _ = std::fs::remove_dir_all(&maison);
+    }
+
+    #[test]
     fn fleches_entree_echap_puis_quitter() {
         let maison = maison_jetable();
         let (mut enfant, mut t, lecteur) = lancer(&maison, &[]);

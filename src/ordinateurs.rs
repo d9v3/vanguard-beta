@@ -346,11 +346,19 @@ pub fn menu() {
         for l in detail(o) {
             afficher_aligne("  ", &l, 4, "");
         }
-        let reponse = crate::selection::demander_ou_revenir(tr!(
-            "\n  [r]enommer, [o]ublier, Entrée pour revenir : ",
-            "\n  [r]ename, [f]orget, Enter to go back: "
-        ));
-        match reponse.trim().to_lowercase().as_str() {
+        let oublier = tr!("o", "f");
+        let reponse = crate::selection::choisir_en_ligne(
+            &[
+                ("r", tr!("Renommer", "Rename")),
+                (oublier, tr!("Oublier cet ordinateur", "Forget this computer")),
+            ],
+            &trf!(
+                "\n  r : renommer · {oublier} : oublier · Entrée pour revenir : ",
+                "\n  r: rename · {oublier}: forget · Enter to go back: "
+            ),
+        )
+        .unwrap_or_default();
+        match reponse.as_str() {
             "r" => {
                 let nom = demander(tr!("  Nouveau surnom : ", "  New nickname: "));
                 let nom: String = affichable(nom.trim()).chars().take(40).collect();

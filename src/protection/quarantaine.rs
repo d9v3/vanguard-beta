@@ -453,15 +453,30 @@ pub fn menu() {
             return;
         };
         let montre = affichable(&e.origine);
-        let action = demander(&trf!(
-            "  « {montre} » : [r]emettre à sa place (faux positif) / [s]upprimer pour de bon / Entrée : rien : ",
-            "  “{montre}”: [r]estore to its place (false positive) / [d]elete for good / Enter: nothing: "
-        ))
-        .to_lowercase();
-        let resultat = match action.trim() {
-            "r" => remettre_dans(e, &dossier),
-            "s" | "d" => supprimer_dans(e, &dossier),
-            _ => continue,
+        println!("\n  « {montre} »");
+        let supprimer = tr!("s", "d");
+        let Some(action) = crate::selection::choisir_en_ligne(
+            &[
+                (
+                    "r",
+                    tr!(
+                        "Remettre à sa place (faux positif)",
+                        "Restore to its place (false positive)"
+                    ),
+                ),
+                (supprimer, tr!("Supprimer pour de bon", "Delete for good")),
+            ],
+            &trf!(
+                "  r : remettre à sa place · {supprimer} : supprimer pour de bon · Entrée : rien : ",
+                "  r: restore to its place · {supprimer}: delete for good · Enter: nothing: "
+            ),
+        ) else {
+            continue;
+        };
+        let resultat = if action == "r" {
+            remettre_dans(e, &dossier)
+        } else {
+            supprimer_dans(e, &dossier)
         };
         match resultat {
             Ok(()) => {

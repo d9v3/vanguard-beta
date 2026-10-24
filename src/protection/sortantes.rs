@@ -1338,25 +1338,38 @@ pub fn menu() {
                 "C to give your abuse.ch key (free)"
             )
         };
-        // Un serveur de commande trouvé : le parcours qui dit quoi faire passe en premier, en tenant sur une ligne.
-        let reponse = if botnet {
-            demander(&trf!(
+        // Un serveur de commande trouvé : le parcours qui dit quoi faire passe en premier.
+        let cle_ligne = if cle {
+            tr!("Retirer votre clé abuse.ch", "Remove your abuse.ch key")
+        } else {
+            tr!("Donner votre clé abuse.ch (gratuite)", "Give your abuse.ch key (free)")
+        };
+        let mut options = Vec::new();
+        if botnet {
+            options.push((
+                "i",
+                tr!("Après une infection, pas à pas", "After an infection, step by step"),
+            ));
+        }
+        options.push(("c", cle_ligne));
+        let invite = if botnet {
+            trf!(
                 "\n{GRIS}I : « Après une infection » · Entrée : revenir · C : clé abuse.ch…{RESET} ",
                 "\n{GRIS}I: “After an infection” · Enter: go back · C: abuse.ch key…{RESET} "
-            ))
+            )
         } else {
-            demander(&trf!(
+            trf!(
                 "\n{GRIS}Entrée pour revenir au menu, {cle_texte}…{RESET} ",
                 "\n{GRIS}Enter to go back to the menu, {cle_texte}…{RESET} "
-            ))
+            )
         };
-        match reponse.to_lowercase().as_str() {
-            "i" if botnet => {
+        match crate::selection::choisir_en_ligne(&options, &invite).as_deref() {
+            Some("i") => {
                 crate::depanner::infection::infection();
                 return;
             }
-            "c" if cle => abuse_ch::retirer(),
-            "c" => {
+            Some("c") if cle => abuse_ch::retirer(),
+            Some("c") => {
                 abuse_ch::donner();
             }
             _ => return,

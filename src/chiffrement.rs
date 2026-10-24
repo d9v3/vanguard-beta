@@ -460,11 +460,18 @@ pub fn menu() {
             );
             return;
         };
-        let reponse = crate::selection::demander_ou_revenir(tr!(
-            "\n  [n]ouvelle phrase, [r]etirer la protection, Entrée pour revenir : ",
-            "\n  [n]ew passphrase, [r]emove protection, Enter to go back: "
-        ));
-        match reponse.trim().to_lowercase().as_str() {
+        let reponse = crate::selection::choisir_en_ligne(
+            &[
+                ("n", tr!("Nouvelle phrase", "New passphrase")),
+                ("r", tr!("Retirer la protection", "Remove the protection")),
+            ],
+            tr!(
+                "\n  n : nouvelle phrase · r : retirer la protection · Entrée pour revenir : ",
+                "\n  n: new passphrase · r: remove the protection · Enter to go back: "
+            ),
+        )
+        .unwrap_or_default();
+        match reponse.as_str() {
             "n" => {
                 if let Some(phrase) = demander_phrase() {
                     match nouvelle_phrase_dans(&donnees, &cle, &phrase, PARAMETRES) {

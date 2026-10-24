@@ -837,6 +837,66 @@ pub fn attendre_retour_avant(question: &str, fin: Option<std::time::Instant>) ->
     }
 }
 
+/// Une petite liste au clavier à la place d'une question à lettres, dessinée sous ce qui est déjà à l'écran (rien
+/// n'est effacé : le résultat qu'elle suit reste lisible). ↑ ↓ choisissent, la lettre d'une option y pose la marque,
+/// Entrée la confirme ; Échap, ← ou la dernière ligne (« ↵ ») : rien. Une lettre seule ne lance rien : « supprimer
+/// pour de bon » demande Entrée. Sans terminal, la ligne est lue comme avant (`invite`). `options` : (lettre, texte).
+pub fn choisir_en_ligne(options: &[(&str, &str)], invite: &str) -> Option<String> {
+    let clavier = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let mut sortie = std::io::stdout();
+    let Some(_mode) = clavier.then(ModeClavier::activer).flatten() else {
+        let r = demander(invite).trim().to_lowercase();
+        return options.iter().any(|(t, _)| *t == r).then_some(r);
+    };
+    let rien = tr!("Rien", "Nothing");
+    let toutes: Vec<(&str, &str)> = options.iter().copied().chain(std::iter::once(("↵", rien))).collect();
+    let colonne = toutes.iter().map(|(t, _)| largeur_affichee(t)).max().unwrap_or(1) + 4;
+    let mut en_cours = 0;
+    let dessiner = |sortie: &mut std::io::Stdout, en_cours: usize, redessiner: bool| {
+        if redessiner {
+            let _ = write!(sortie, "\x1b[{}A", toutes.len());
+        }
+        for (i, (t, texte)) in toutes.iter().enumerate() {
+            let _ = write!(sortie, "\r\x1b[K{}\r\n", rendu(t, texte, "", colonne, i == en_cours));
+        }
+        let _ = sortie.flush();
+    };
+    let _ = sortie.write_all(b"\r\n");
+    dessiner(&mut sortie, en_cours, false);
+    loop {
+        let Ok(Event::Key(k)) = event::read() else {
+            continue;
+        };
+        if k.kind == KeyEventKind::Release {
+            continue;
+        }
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && matches!(k.code, KeyCode::Char('c' | 'd')) {
+            let _ = terminal::disable_raw_mode();
+            println!();
+            std::process::exit(if k.code == KeyCode::Char('c') { 130 } else { 0 });
+        }
+        match k.code {
+            KeyCode::Up => en_cours = en_cours.checked_sub(1).unwrap_or(toutes.len() - 1),
+            KeyCode::Down | KeyCode::Tab => en_cours = (en_cours + 1) % toutes.len(),
+            KeyCode::Enter => {
+                let (t, _) = toutes[en_cours];
+                return (t != "↵").then(|| t.to_string());
+            }
+            KeyCode::Esc | KeyCode::Left => return None,
+            KeyCode::Char(c) if !ctrl => {
+                let c = c.to_lowercase().to_string();
+                match toutes.iter().position(|(t, _)| *t == c) {
+                    Some(i) => en_cours = i,
+                    None => continue,
+                }
+            }
+            _ => continue,
+        }
+        dessiner(&mut sortie, en_cours, true);
+    }
+}
+
 /// Une question dont la réponse vide revient en arrière (« Choix (Entrée pour revenir) : ») : ← ou Échap, sur une
 /// ligne encore vide, reviennent d'un seul appui, comme Entrée. Le reste se tape comme avant (numéro, lettre, chemin),
 /// corrigé par Retour arrière. Hors d'un terminal, la ligne est lue comme avant.
