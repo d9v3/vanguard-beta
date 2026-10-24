@@ -3589,6 +3589,9 @@ async fn main() {
             }
         },
     }
+    // Une page ouverte juste avant la fin (« vanguard rapport », le tableau de bord) : son ouverture aboutit avant
+    // que le processus ne parte.
+    machine::attendre_ouvertures();
 }
 
 #[cfg(test)]

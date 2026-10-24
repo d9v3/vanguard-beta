@@ -967,7 +967,7 @@ fn mettre_en_place() -> Option<MiseEnPlace> {
     ))
     .oui()
     {
-        crate::machine::ouvrir("control.exe /name Microsoft.FileHistory");
+        crate::machine::ouvrir_avec("control.exe", "/name Microsoft.FileHistory");
     }
     None
 }

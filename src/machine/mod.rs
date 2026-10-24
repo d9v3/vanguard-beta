@@ -1094,22 +1094,25 @@ pub fn programmes_en_ecoute() -> std::collections::HashMap<u16, String> {
 pub fn ouvrir(cible: &str) {
     #[cfg(target_os = "linux")]
     let _ = Command::new("xdg-open").arg(cible).spawn();
+    // ShellExecuteW dans un fil à part, sans cmd : ni « & » ni « %VAR% » d'un lien ou d'un dossier n'y sont lus.
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        // Sans la variable de commande::cmd : elle passerait au navigateur ou à l'éditeur ouvert.
-        let _ = crate::commande::systeme("cmd").raw_arg(ligne_ouvrir(cible)).spawn();
-    }
+    windows::ouvrir::ouvrir(cible, None);
     #[cfg(target_os = "macos")]
     let _ = Command::new("open").arg(cible).spawn();
 }
 
-/// Ligne de cmd qui ouvre `cible`, toujours entre guillemets : « & », « | » ou « ^ » d'un lien ou d'un dossier
-/// (Windows permet « & » dans un nom de compte) y restent du texte. Sans guillemets, cmd coupait la ligne au « & »
-/// et lançait la suite comme une commande.
-#[cfg(any(windows, test))]
-fn ligne_ouvrir(cible: &str) -> String {
-    format!("/C start \"\" \"{}\"", cible.replace('"', ""))
+/// Ouvre un programme du système avec ses paramètres (« control.exe », « /name Microsoft.FileHistory »), que
+/// ShellExecuteW veut séparés : un seul texte serait cherché comme un fichier de ce nom.
+#[cfg(windows)]
+pub fn ouvrir_avec(programme: &str, parametres: &str) {
+    windows::ouvrir::ouvrir(programme, Some(parametres));
+}
+
+/// À la fin du programme, laisse aux ouvertures en cours le temps d'aboutir (Windows : chacune a son fil, qui
+/// disparaîtrait avec le processus). Ailleurs, le programme ouvert est un processus à part : rien à attendre.
+pub fn attendre_ouvertures() {
+    #[cfg(windows)]
+    windows::ouvrir::attendre(std::time::Duration::from_secs(10));
 }
 
 pub fn auditer(bavard: bool) -> Audit {
@@ -1264,19 +1267,6 @@ mod tests {
                 ("::1", 1234, "LM Studio")
             ]
         );
-    }
-
-    #[test]
-    fn lien_ouvert_d_un_seul_morceau() {
-        assert_eq!(
-            ligne_ouvrir(r"C:\Users\A&B\AppData\Local\vanguard\rapport.html"),
-            r#"/C start "" "C:\Users\A&B\AppData\Local\vanguard\rapport.html""#
-        );
-        assert_eq!(
-            ligne_ouvrir("https://exemple.org/page?a=1&b=2|c"),
-            r#"/C start "" "https://exemple.org/page?a=1&b=2|c""#
-        );
-        assert_eq!(ligne_ouvrir(r#"a"b"#), r#"/C start "" "ab""#);
     }
 
     fn audit(etats: &[(&'static str, Option<Niveau>, &str)]) -> Audit {

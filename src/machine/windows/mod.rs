@@ -31,6 +31,7 @@ pub(crate) mod lecteurs;
 pub(crate) mod magasins;
 mod maj;
 pub(crate) mod memoire;
+pub(crate) mod ouvrir;
 pub(crate) mod partages;
 pub(crate) mod peripheriques;
 pub(crate) mod persistance;
