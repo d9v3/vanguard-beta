@@ -75,6 +75,11 @@ libc = "0.2.191"
 # Surveillance des fichiers en direct (intégrité) : FSEvents sous macOS.
 [target."cfg(target_os = \"macos\")".dependencies]
 notify = { version = "8.2.0", default-features = false, features = ["macos_fsevent"] }
+# DNS, proxy et services réseau en vigueur (SCDynamicStore, SCPreferences), au lieu de scutil et networksetup. Déjà
+# dans l'arbre par hyper-util (le proxy système de reqwest), même version : aucun code nouveau compilé. Ses fonctions
+# sûres ne sont pas toutes prises : `SCNetworkService::enabled` rend l'inverse de SCNetworkServiceGetEnabled (0.7.0),
+# et plusieurs constructeurs paniquent sur un pointeur nul ; machine/macos/config_reseau.rs passe par -sys.
+system-configuration = "0.7.0"
 
 [profile.release]
 strip = true

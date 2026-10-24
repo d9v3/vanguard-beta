@@ -11,8 +11,10 @@ use crate::plist::Valeur;
 use crate::risk::{Niveau, info_port};
 use crate::{tr, trf};
 
+pub(crate) mod config_reseau;
 mod durcissement;
 mod maj;
+pub(crate) mod noyau;
 mod parite;
 mod persistance;
 mod privileges;
@@ -225,7 +227,8 @@ fn partage(port: u16) -> Option<&'static str> {
     })
 }
 
-/// Serveur SSH (Remote Login) : jugé seulement s'il écoute le réseau sur le port 22.
+/// Serveur SSH (Remote Login) : jugé seulement s'il écoute le réseau sur le port 22. netstat fait foi pour les prises
+/// de tous les comptes (sshd tourne en root) : leurs structures dans le noyau (xinpcb_n) sont privées.
 fn ssh_serveur() -> Constat {
     let Some(netstat) = sortie("netstat", &["-an", "-p", "tcp"]) else {
         return impossible("SSH", tr!("netstat indisponible", "netstat unavailable"));
@@ -260,6 +263,8 @@ fn ssh_serveur() -> Constat {
     })
 }
 
+/// Les ports ouverts au réseau : netstat pour ceux de tous les comptes (il fait foi : xinpcb_n est privé), les noms
+/// des programmes du compte lus au noyau (lsof en secours).
 fn ports_ecoute(pare_feu_actif: bool) -> Vec<Constat> {
     let programmes = super::programmes_en_ecoute();
     let mut constats = Vec::new();
@@ -286,7 +291,7 @@ fn ports_ecoute(pare_feu_actif: bool) -> Vec<Constat> {
                 .get(&port)
                 .map_or(tr!("programme du système", "system program"), String::as_str);
             let (_, constat) = super::port_expose(port, proto, &i, programme, pare_feu_actif);
-            // Le nom lu par lsof, jamais « programme du système » traduit : la clé ne dépend pas de la langue.
+            // Le nom lu (noyau ou lsof), jamais « programme du système » traduit : la clé ne dépend pas de la langue.
             let constat = constat.avec_objet(crate::modele::Objet::port(
                 port,
                 proto,
@@ -501,6 +506,11 @@ fn ouverture_de_session() -> Vec<Constat> {
 
 /// Une valeur de sysctl en octets, par sysctlbyname : le même appel au noyau que la commande `sysctl`, sans la lancer.
 fn sysctl(nom: &str) -> Option<Vec<u8>> {
+    sysctl_ou_vide(nom).filter(|o| !o.is_empty())
+}
+
+/// Comme `sysctl`, mais une valeur vide (kern.bootargs sans option) est une réponse : `Some` d'un tableau vide.
+fn sysctl_ou_vide(nom: &str) -> Option<Vec<u8>> {
     let nom = std::ffi::CString::new(nom).ok()?;
     let mut taille: libc::size_t = 0;
     // SAFETY : nom est une chaîne C terminée par un nul ; sans tampon (pointeur nul), sysctlbyname n'écrit que la
@@ -514,8 +524,11 @@ fn sysctl(nom: &str) -> Option<Vec<u8>> {
             0,
         )
     };
-    if code != 0 || taille == 0 || taille > 1024 * 1024 {
+    if code != 0 || taille > 1024 * 1024 {
         return None;
+    }
+    if taille == 0 {
+        return Some(Vec::new());
     }
     let mut tampon = vec![0u8; taille];
     // SAFETY : tampon de `taille` octets, vivant pendant l'appel ; le noyau n'écrit pas au-delà et redit dans
