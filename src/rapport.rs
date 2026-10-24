@@ -713,6 +713,11 @@ fn complements_scan_html(h: &mut String, r: &Rapport) {
 /// Les derniers examens des outils de protection (`modele::resultat`), relus de leur JSON : la date, le verdict et
 /// les problèmes. Un examen qui n'a pas tout vérifié le dit, jamais en vert.
 fn examens_html(h: &mut String, examens: &[crate::modele::resultat::Resultat]) {
+    // Les journaux de Windows ont leur section (`journaux_windows_html`) : pas deux fois les mêmes alertes.
+    let examens: Vec<&crate::modele::resultat::Resultat> = examens
+        .iter()
+        .filter(|r| r.outil != crate::journaux_windows::regles::resultat::ID)
+        .collect();
     if examens.is_empty() {
         return;
     }
@@ -753,6 +758,120 @@ fn examens_html(h: &mut String, examens: &[crate::modele::resultat::Resultat]) {
             let _ = write!(h, "<div class=meta>? {}</div>", esc(n));
         }
         h.push_str("</div></div>");
+    }
+    h.push_str("</div>");
+}
+
+/// Les alertes des journaux de Windows montrées au plus dans la chronologie du rapport : les plus récentes.
+const ALERTES_JOURNAUX: usize = 25;
+
+/// « Journaux de Windows », quand un examen PRO-EVT-001 a été versé (`vanguard journaux-windows`) : le verdict de
+/// chaque règle, puis les alertes dans l'ordre du temps, à l'heure de cet ordinateur. Tout texte est échappé : les
+/// messages reprennent des champs des journaux (comptes, chemins), déjà nettoyés des caractères piégés.
+fn journaux_windows_html(h: &mut String, examens: &[crate::modele::resultat::Resultat]) {
+    let Some(r) = examens
+        .iter()
+        .find(|r| r.outil == crate::journaux_windows::regles::resultat::ID)
+    else {
+        return;
+    };
+    let locale = |d: &str| {
+        chrono::DateTime::parse_from_rfc3339(d)
+            .map(|d| {
+                d.with_timezone(&chrono::Local)
+                    .format(tr!("%d/%m/%Y %H:%M", "%Y-%m-%d %H:%M"))
+                    .to_string()
+            })
+            .unwrap_or_default()
+    };
+    let fuseau = chrono::Local::now().format("UTC%:z").to_string();
+    let (badge_verdict, phrase) = match r.verdict() {
+        "probleme" => (badge(r.pire()), tr!("alerte(s) trouvée(s)", "alert(s) found")),
+        "sain" => (
+            badge(None),
+            tr!("rien trouvé dans ce qui a été lu", "nothing found in what was read"),
+        ),
+        _ => (badge_non_verifie(), tr!("pas tout vérifié", "not everything checked")),
+    };
+    let _ = trw!(
+        h,
+        "<h2>Journaux de Windows</h2><div class=carte><div class=ligne>{badge_verdict}<div>{phrase} <span class=meta>examen du {} (vanguard journaux-windows)</span></div></div>",
+        "<h2>Windows logs</h2><div class=carte><div class=ligne>{badge_verdict}<div>{phrase} <span class=meta>examination of {} (vanguard windows-logs)</span></div></div>",
+        esc(&locale(&r.debut))
+    );
+    // Le verdict de chaque règle : son constat de couverture (sain, non vérifié et pourquoi, sans objet), et le
+    // nombre de ses alertes.
+    let mut regles: Vec<&str> = Vec::new();
+    for c in &r.constats {
+        if !c.regle.is_empty() && !regles.contains(&c.regle.as_str()) {
+            regles.push(&c.regle);
+        }
+    }
+    for regle in regles {
+        let siens: Vec<_> = r.constats.iter().filter(|c| c.regle == regle).collect();
+        let alertes = siens.iter().filter(|c| c.etat == "probleme").count();
+        let pire = siens
+            .iter()
+            .filter(|c| c.etat == "probleme")
+            .filter_map(|c| c.niveau)
+            .max();
+        let couverture = siens.iter().find(|c| c.etat != "probleme");
+        let marque = match (pire, couverture.map(|c| c.etat.as_str())) {
+            (Some(n), _) => badge(Some(n)),
+            (None, Some("sain")) => badge(None),
+            _ => badge_non_verifie(),
+        };
+        let compte = if alertes > 0 {
+            trf!("{alertes} alerte(s). ", "{alertes} alert(s). ")
+        } else {
+            String::new()
+        };
+        let _ = write!(
+            h,
+            "<div class=ligne>{marque}<div><span class=cat>{}</span> {}{}</div></div>",
+            esc(regle),
+            esc(&compte),
+            esc(couverture.map_or("", |c| c.message.as_str()))
+        );
+    }
+    // Ce qui ne tient à aucune règle (fichiers au-delà des bornes, résultat changé hors de Vanguard) ; le reste est
+    // dans le verdict de sa règle.
+    for n in r.couverture.non_verifies.iter().filter(|n| !n.starts_with("EVT-")) {
+        let _ = write!(h, "<div class=meta>? {}</div>", esc(n));
+    }
+    let mut alertes: Vec<_> = r.constats.iter().filter(|c| c.etat == "probleme").collect();
+    // Dans l'ordre du temps (les dates sont en UTC, au même format : l'ordre des textes est celui du temps), les
+    // alertes sans date à la fin.
+    alertes.sort_by(|a, b| (a.date.is_none(), &a.date).cmp(&(b.date.is_none(), &b.date)));
+    if !alertes.is_empty() {
+        let _ = trw!(
+            h,
+            "<h3>Chronologie (heures de cet ordinateur, {fuseau})</h3>",
+            "<h3>Timeline (this computer's times, {fuseau})</h3>"
+        );
+        let datees = alertes.iter().filter(|c| c.date.is_some()).count();
+        let coupees = datees.saturating_sub(ALERTES_JOURNAUX);
+        if coupees > 0 {
+            let _ = trw!(
+                h,
+                "<div class=meta>{coupees} alerte(s) plus ancienne(s) non montrée(s) : vanguard journaux-windows --json les donne toutes.</div>",
+                "<div class=meta>{coupees} older alert(s) not shown: vanguard windows-logs --json gives them all.</div>"
+            );
+        }
+        for c in alertes.iter().skip(coupees).take(ALERTES_JOURNAUX + 10) {
+            let quand = c
+                .date
+                .as_deref()
+                .map_or_else(|| tr!("sans date", "no date").to_string(), locale);
+            let _ = write!(
+                h,
+                "<div class=ligne>{}<div><span class=meta>{}</span> <span class=cat>{}</span> {}</div></div>",
+                badge(c.niveau),
+                esc(&quand),
+                esc(&c.regle),
+                esc(&c.message)
+            );
+        }
     }
     h.push_str("</div>");
 }
@@ -823,7 +942,9 @@ fn html(audit: Option<&Audit>, reseau: Option<&Rapport>, audit_reseau: Option<&A
         );
     }
 
-    examens_html(&mut h, &crate::modele::resultat::derniers());
+    let examens = crate::modele::resultat::derniers();
+    examens_html(&mut h, &examens);
+    journaux_windows_html(&mut h, &examens);
     h += &connexions(&crate::reseau::connexion::historique());
 
     if let Some(a) = audit {
@@ -1009,6 +1130,46 @@ mod tests {
         );
         let mut vide = String::new();
         examens_html(&mut vide, &[]);
+        assert_eq!(vide, "");
+    }
+
+    /// L'examen des journaux de Windows a sa section, et seulement elle : le verdict de chaque règle, puis les
+    /// alertes dans l'ordre du temps, échappées.
+    #[test]
+    fn journaux_de_windows_au_rapport() {
+        use crate::modele::resultat::{Couverture, Resultat};
+        let debut = (chrono::Utc::now(), std::time::Instant::now());
+        let mut tard = crate::machine::alerte("Journaux d'événements", Niveau::Eleve, "service <script>x</script>");
+        tard.regle = "EVT-SRV-001";
+        let mut tot = crate::machine::alerte("Journaux d'événements", Niveau::Critique, "journal effacé");
+        tot.regle = "EVT-EFF-001";
+        let mut nv = crate::machine::impossible("Journaux d'événements", "comptes : non vérifié — Security absent");
+        nv.regle = "EVT-ADM-001";
+        let mut r = Resultat::nouveau(
+            crate::journaux_windows::regles::resultat::ID,
+            debut,
+            &[tard, tot, nv],
+            Couverture {
+                verifies: 2,
+                non_verifies: vec!["EVT-ADM-001 : Security absent".into(), "3 fichiers au-delà".into()],
+            },
+        );
+        r.constats[0].date = Some("2026-10-20T12:00:00Z".into());
+        r.constats[1].date = Some("2026-10-19T08:00:00Z".into());
+        let mut h = String::new();
+        examens_html(&mut h, std::slice::from_ref(&r));
+        assert_eq!(h, "", "pas deux fois");
+        journaux_windows_html(&mut h, std::slice::from_ref(&r));
+        assert!(h.contains("<h2>Journaux de Windows</h2>"), "{h}");
+        assert!(h.contains("&lt;script&gt;") && !h.contains("<script>"), "{h}");
+        let (eff, srv) = (
+            h.rfind("journal effacé").unwrap(),
+            h.rfind("service &lt;script").unwrap(),
+        );
+        assert!(eff < srv, "le plus ancien d'abord : {h}");
+        assert!(h.contains("Security absent") && h.contains("3 fichiers au-delà"), "{h}");
+        let mut vide = String::new();
+        journaux_windows_html(&mut vide, &[]);
         assert_eq!(vide, "");
     }
 
