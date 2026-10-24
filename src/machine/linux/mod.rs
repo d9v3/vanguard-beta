@@ -31,6 +31,7 @@ mod persistance;
 mod plateforme;
 mod privileges;
 mod regles;
+pub(crate) mod reseau_natif;
 pub(crate) mod unites;
 pub(crate) mod veilleur;
 pub(crate) mod zstd;

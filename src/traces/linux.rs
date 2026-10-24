@@ -186,24 +186,80 @@ pub(super) fn processus(dossier: &Path) -> Partie {
     super::partie_processus(dossier, liste, manques)
 }
 
-/// Connexions et ports à l'écoute avec leur programme, voisins (ARP), adresses, routes, DNS et fichier hosts.
+/// Une liste relevée par Vanguard écrite dans la feuille sous son titre ; `None` : le noyau ou le service n'a pas
+/// répondu, et c'est écrit.
+fn releve(f: &mut Feuille, titre: &str, lignes: Option<Vec<String>>) -> bool {
+    f.section(&format!("{titre} (lu par Vanguard / read by Vanguard)"));
+    if let Some(l) = lignes {
+        f.ajouter(&l.join("\n"));
+        f.lues += 1;
+        true
+    } else {
+        f.ajouter(&Raison::Erreur("pas de réponse / no answer".into()).note());
+        false
+    }
+}
+
+/// Connexions et ports à l'écoute avec leur programme, voisins (ARP), adresses, routes, DNS et fichier hosts : lus
+/// par Vanguard (netlink, D-Bus) d'abord, la sortie de ss, ip et resolvectl à côté en témoin. Un port à l'écoute vu
+/// par le noyau et absent de ss est signalé.
 pub(super) fn reseau(dossier: &Path) -> Partie {
+    use crate::machine::linux::reseau_natif;
     let mut p = Partie::new(Bi::new("Réseau", "Network"));
     let mut f = Feuille::new(&p.titre);
-    let ss = f.commande(Command::new("ss").args(["-tunap"]), 15, true);
-    f.commande(Command::new("ip").args(["neigh", "show"]), 10, true);
-    f.commande(Command::new("ip").args(["address", "show"]), 10, true);
+    let prises = reseau_natif::prises();
+    releve(
+        &mut f,
+        "sock_diag : prises TCP et UDP, tous états / TCP and UDP sockets, all states",
+        prises
+            .as_ref()
+            .map(|v| v.iter().map(reseau_natif::Prise::ligne).collect()),
+    );
+    let ss = f.commande(Command::new("ss").args(["-tunap"]), 15, prises.is_none());
+    if let (Some(natives), Some(ss)) = (&prises, &ss) {
+        let outil = reseau_natif::ecoutes_de_ss(ss);
+        let mut caches: Vec<String> = natives
+            .iter()
+            .filter(|p| p.a_l_ecoute() && !outil.contains(&(p.udp, p.port_local)))
+            .map(|p| format!("{} {}", if p.udp { "udp" } else { "tcp" }, p.port_local))
+            .collect();
+        caches.sort();
+        caches.dedup();
+        if !caches.is_empty() {
+            let liste = caches.join(", ");
+            ecart(
+                &mut f,
+                "ss",
+                bi!(
+                    "ports à l'écoute vus par le noyau, absents de ss : {liste}",
+                    "listening ports seen by the kernel, missing from ss: {liste}"
+                ),
+            );
+        }
+    }
+    releve(&mut f, "RTM_GETNEIGH : voisins / neighbours", reseau_natif::voisins());
+    f.commande(Command::new("ip").args(["neigh", "show"]), 10, false);
+    releve(&mut f, "RTM_GETADDR : adresses / addresses", reseau_natif::adresses());
+    f.commande(Command::new("ip").args(["address", "show"]), 10, false);
+    releve(
+        &mut f,
+        "RTM_GETROUTE : routes, toutes les tables / all tables",
+        reseau_natif::routes(),
+    );
     f.commande(Command::new("ip").args(["route", "show", "table", "all"]), 10, false);
     for chemin in ["/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf"] {
         f.fichier(Path::new(chemin), true);
     }
+    releve(&mut f, "resolve1 : systemd-resolved", reseau_natif::resolved().ok());
     f.commande(Command::new("resolvectl").arg("status"), 10, false);
-    let connexions = ss.as_ref().map(|s| {
-        s.lines()
-            .filter(|l| !l.trim().is_empty() && !l.starts_with("Netid"))
-            .count()
+    let connexions = prises.as_ref().map(Vec::len).or_else(|| {
+        ss.as_ref().map(|s| {
+            s.lines()
+                .filter(|l| !l.trim().is_empty() && !l.starts_with("Netid"))
+                .count()
+        })
     });
-    if ss.is_some() && !super::privilegie() {
+    if connexions.is_some() && !super::privilegie() {
         f.manques.push(super::Manque {
             quoi: Bi::new(
                 "Programme des connexions des autres comptes",
@@ -218,8 +274,8 @@ pub(super) fn reseau(dossier: &Path) -> Partie {
         "02-reseau.txt",
         &f.texte,
         Bi::new(
-            "connexions et ports à l'écoute avec leur programme (ss -tunap), voisins du réseau local (table ARP), adresses, routes, DNS configuré et fichier hosts",
-            "connections and listening ports with their program (ss -tunap), local network neighbours (ARP table), addresses, routes, configured DNS and hosts file",
+            "connexions et ports à l'écoute avec leur programme, voisins du réseau local (table ARP), adresses, routes et DNS lus par Vanguard (netlink, D-Bus), avec la sortie de ss, ip et resolvectl à côté en témoin, et le fichier hosts",
+            "connections and listening ports with their program, local network neighbours (ARP table), addresses, routes and DNS read by Vanguard (netlink, D-Bus), with the output of ss, ip and resolvectl alongside as a witness, and the hosts file",
         ),
     ) {
         p.compte = Some(match connexions {
@@ -1577,6 +1633,23 @@ mod tests {
         assert!(ecarts.is_empty(), "{ecarts:?}");
         let texte = std::fs::read_to_string(dossier.join(JOURNAL_ECRIT)).unwrap();
         assert!(texte.contains("lu par Vanguard"));
+    }
+
+    /// L'oracle du réseau : sur cet ordinateur, aucun port à l'écoute vu par le noyau ne manque à ss ; le relevé et
+    /// son témoin sont écrits.
+    #[test]
+    fn reseau_de_cette_machine() {
+        let dossier = crate::socle::dossier_local().join("traces-reseau");
+        std::fs::create_dir_all(&dossier).unwrap();
+        let p = reseau(&dossier);
+        let ecarts: Vec<_> = p
+            .manques
+            .iter()
+            .filter(|m| matches!(m.raison, Raison::Ecart(_)))
+            .collect();
+        assert!(ecarts.is_empty(), "{ecarts:?}");
+        let texte = std::fs::read_to_string(dossier.join("02-reseau.txt")).unwrap();
+        assert!(texte.contains("sock_diag") && texte.contains("RTM_GETROUTE"));
     }
 
     #[test]
