@@ -250,7 +250,7 @@ fn tentatives_lues() -> Option<Result<Lues, Constat>> {
 #[cfg(windows)]
 #[allow(clippy::unnecessary_wraps)] // même signature que sous Linux, où il peut n'y avoir aucun serveur SSH
 fn tentatives_lues() -> Option<Result<Lues, Constat>> {
-    Some(super::windows::evenements::tentatives_lues().map_err(|raison| impossible("Comptes", raison)))
+    Some(super::windows::evenements::tentatives_lues().map_err(|refus| *refus))
 }
 
 /// Sous macOS : sshd écrit dans le journal unifié, qui ne se lit qu'en lançant « log show » (des minutes, pour une

@@ -728,6 +728,26 @@ fn refus_de_securite(admin: Option<bool>) -> &'static str {
     }
 }
 
+/// La raison typée du refus du journal Security : réservé à l'administrateur quand Vanguard ne l'est pas, illisible
+/// sinon.
+fn raison_de_securite(admin: Option<bool>) -> crate::modele::Raison {
+    if admin == Some(false) {
+        crate::modele::Raison::Droits
+    } else {
+        crate::modele::Raison::Illisible(refus_de_securite(admin).to_string())
+    }
+}
+
+/// « Impossible de vérifier (…) », avec sa raison typée : l'autotest compte sinon le constat parmi les « non
+/// vérifiés » sans raison.
+pub(crate) fn impossible_type(categorie: &'static str, quoi: &str, raison: crate::modele::Raison) -> Constat {
+    crate::machine::impossible_par(
+        categorie,
+        raison,
+        trf!("Impossible de vérifier ({quoi}).", "Could not check ({quoi})."),
+    )
+}
+
 fn juger_evenements(sortie: Option<&str>) -> Vec<Constat> {
     let Some(sortie) = sortie else {
         return vec![illisible("Journaux")];
@@ -739,14 +759,21 @@ fn juger_evenements(sortie: Option<&str>) -> Vec<Constat> {
         constats.extend(juger_securite(&securite));
     } else {
         let admin = s("ADM").and_then(|l| l.first().map(|v| v.trim().eq_ignore_ascii_case("true")));
-        constats.push(impossible("Journaux", refus_de_securite(admin)));
-    }
-    match s("SRV") {
-        Some(services) => constats.extend(juger_services(&services)),
-        None => constats.push(impossible(
+        constats.push(impossible_type(
             "Journaux",
-            tr!("journal Système illisible", "System log unreadable"),
-        )),
+            refus_de_securite(admin),
+            raison_de_securite(admin),
+        ));
+    }
+    if let Some(services) = s("SRV") {
+        constats.extend(juger_services(&services));
+    } else {
+        let quoi = tr!("journal Système illisible", "System log unreadable");
+        constats.push(impossible_type(
+            "Journaux",
+            quoi,
+            crate::modele::Raison::Illisible(quoi.to_string()),
+        ));
     }
     constats
 }
@@ -1040,12 +1067,23 @@ fn echecs_et_reussites_ssh(lignes: &[String]) -> (Vec<Echec>, Vec<Echec>) {
 /// une borne est atteinte ou que le journal d'OpenSSH ne se lit pas, ce que la lecture n'a pas vu. `Err` : pourquoi le
 /// journal Security refuse (sans droits d'administrateur, souvent), ou que la lecture des échecs a dépassé son délai ;
 /// passé pendant les réussites, le délai garde celles déjà lues et rend la lecture partielle.
-pub(crate) fn tentatives_lues() -> Result<(Vec<crate::machine::chasse::Tentative>, Option<String>), &'static str> {
+pub(crate) fn tentatives_lues() -> Result<(Vec<crate::machine::chasse::Tentative>, Option<String>), Box<Constat>> {
     let fin = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let refus = || refus_de_securite(Some(super::processus::eleve()));
+    let refus = || {
+        let admin = Some(super::processus::eleve());
+        Box::new(impossible_type(
+            "Comptes",
+            refus_de_securite(admin),
+            raison_de_securite(admin),
+        ))
+    };
     let Some(lignes) = lire(&LECTURES[0], fin) else {
         return Err(if std::time::Instant::now() >= fin {
-            trop_long()
+            Box::new(impossible_type(
+                "Comptes",
+                trop_long(),
+                crate::modele::Raison::Echoue(trop_long().to_string()),
+            ))
         } else {
             refus()
         });
@@ -1270,8 +1308,12 @@ mod tests {
         assert!(texte.starts_with("ADM|"), "{texte}");
         let _ = juger_evenements(Some(&texte));
         // Lu, ou refusé avec sa raison (Wine, sans droits d'administrateur).
-        if let Err(raison) = tentatives_lues() {
-            assert_ne!(raison, "");
+        if let Err(refus) = tentatives_lues() {
+            assert!(!refus.verifie);
+            assert!(!matches!(
+                refus.etat(),
+                crate::modele::Etat::NonVerifie(crate::modele::Raison::NonPrecisee)
+            ));
         }
     }
 
@@ -1525,9 +1567,19 @@ mod tests {
         let c = juger_evenements(Some(sans_droits));
         assert_eq!(c.len(), 2);
         assert!(!c[0].verifie && c[0].message.contains(tr!("administrateur", "administrator")));
+        assert_eq!(
+            c[0].etat(),
+            crate::modele::Etat::NonVerifie(crate::modele::Raison::Droits)
+        );
         assert_eq!(c[1].probleme, Some(Niveau::Eleve));
         assert!(!juger_evenements(None)[0].verifie);
-        assert!(juger_evenements(Some("ADM|True\nADM_FIN")).iter().all(|c| !c.verifie));
+        let illisibles = juger_evenements(Some("ADM|True\nADM_FIN"));
+        assert!(illisibles.iter().all(|c| !c.verifie));
+        // Administrateur et pourtant refusé, journal Système illisible : chacun avec sa raison.
+        assert!(illisibles.iter().all(|c| matches!(
+            c.etat(),
+            crate::modele::Etat::NonVerifie(crate::modele::Raison::Illisible(_))
+        )));
     }
 }
 

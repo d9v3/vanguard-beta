@@ -291,6 +291,7 @@ mod tests {
         let options = Options {
             depuis: Some(t0() - Duration::days(7)),
             defender_antivirus: Some(true),
+            installation: None,
         };
         let mut m = Moteur::nouveau(REGLES, options, BornesMoteur::default());
         for e in evs {
@@ -491,6 +492,7 @@ mod tests {
                 fichier: None,
             }],
             reserves: std::collections::BTreeSet::new(),
+            mise_en_route: None,
         });
         j.au_dela = 12;
         j.au_dela_pire = Some(Gravite::Critique);

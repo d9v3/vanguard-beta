@@ -1002,6 +1002,7 @@ fn alertes_des_journaux() -> Apport {
     let options = Options {
         depuis: Some(debut.0 - chrono::Duration::days(chronologie::JOURS)),
         defender_antivirus: None,
+        installation: None,
     };
     let a = resultat::analyser_vivant(&options, debut.1 + std::time::Duration::from_secs(60));
     let est_normale = |cle: &str| crate::protection::normales::est_normale(cle);

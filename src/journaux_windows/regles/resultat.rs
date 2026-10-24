@@ -302,6 +302,20 @@ fn partiel_vivant(b: &crate::journaux_windows::vivant::BilanVivant) -> Vec<Strin
     v
 }
 
+/// La date d'installation de Windows (InstallDate, secondes depuis 1970, en UTC ; celle que donne aussi
+/// Win32_OperatingSystem), lisible sans droits d'administrateur. Une mise à jour de fonctionnalités la récrit : c'est
+/// alors la date de cette mise à jour, qui ne crée aucun compte. Rien : illisible, ou nulle.
+#[cfg(windows)]
+fn date_d_installation() -> Option<DateTime<Utc>> {
+    let cle = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
+        .open_subkey(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion")
+        .ok()?;
+    let secondes: u32 = cle.get_value("InstallDate").ok()?;
+    (secondes > 0)
+        .then(|| DateTime::from_timestamp(i64::from(secondes), 0))
+        .flatten()
+}
+
 /// Analyse les journaux de cet ordinateur, jusqu'à `fin`. Sans droits d'administrateur, le journal de sécurité est
 /// refusé : ses règles sont non vérifiées, et le disent.
 #[cfg(windows)]
@@ -310,6 +324,9 @@ pub(crate) fn analyser_vivant(options: &Options, fin: std::time::Instant) -> Ana
     let mut options = options.clone();
     if options.defender_antivirus.is_none() {
         options.defender_antivirus = crate::machine::windows::defender_est_l_antivirus();
+    }
+    if options.installation.is_none() {
+        options.installation = date_d_installation();
     }
     let mut moteur = Moteur::nouveau(REGLES, options.clone(), BornesMoteur::default());
     let mut etats = Vec::new();
@@ -542,6 +559,10 @@ pub(crate) fn reserve(r: Reserve) -> &'static str {
         Reserve::ArretInattendu => crate::tr!(
             "un arrêt inattendu au même moment l'explique",
             "an unexpected shutdown at the same time explains it"
+        ),
+        Reserve::MiseEnRoutePossible => crate::tr!(
+            "fait par le compte de l'ordinateur, comme le fait la mise en route de Windows à l'installation ; la date d'installation n'est pas connue ici : si c'était à l'installation, rien d'anormal",
+            "done by the computer account, as Windows setup does at installation; the installation date is not known here: if it was at installation, nothing is wrong"
         ),
     }
 }
