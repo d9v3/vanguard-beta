@@ -4,6 +4,9 @@
 #                 en lecture seule, la clé ne peut pas être modifiée sur l'ordinateur d'un autre. Linux ignore cet
 #                 attribut : sur ce PC, elle reste modifiable et deployer.sh la met à jour comme avant.
 #   VANGUARDLOG   64 Mio, modifiable partout : journal-erreurs.txt (voir src/journal.rs), rapatrié par deployer.sh.
+# C'est la clé par défaut : le programme seul (Vanguard, sa base, ses rapports, le journal), ni images ni démarrage.
+# La clé de secours, qui démarre aussi les ordinateurs, ne se fait que sur un ordinateur dont le réglage local la
+# demande (outils/cle-secours.sh, outils/images-cle.sh).
 # Sans sudo : udisks autorise l'utilisateur connecté à modifier une clé amovible.
 #   outils/preparer-cle.sh /dev/sdX
 # Le contenu actuel de la clé est d'abord sauvegardé dans ~/.local/share/vanguard/sauvegarde-cle-<date>/,

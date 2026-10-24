@@ -6,6 +6,8 @@
 #   2. les images : images-cle.sh --cle (celles du cache, vérifiées, à la place des anciennes de la clé) ;
 #   3. le démarrage : cle-secours.sh --a-jour (Ventoy plus ancien que celui épinglé : sa mise à jour, qui n'efface
 #      rien, est proposée par une notification, et faite sur accord).
+# Les étapes 2 et 3 seulement sur un ordinateur dont le réglage local demande la clé de secours (CLE_SECOURS=oui,
+# voir images-cle.sh) : sans lui, la clé ne porte que le programme.
 # deployer.sh et images-cle.sh prennent le même verrou : jamais deux écritures de la clé à la fois, même avec un
 # déploiement lancé à la main ou un branchement en même temps. Une étape ratée n'empêche pas la suivante ; la
 # notification dit laquelle (sauf des programmes refusés, que deployer.sh a déjà dits), et le code de sortie aussi.
@@ -49,8 +51,16 @@ if ! etape "programme" outils/deployer.sh --branchement; then
     RATEES+=(programme)
   fi
 fi
-etape "images" outils/images-cle.sh --cle || RATEES+=(images)
-etape "démarrage" outils/cle-secours.sh --a-jour || RATEES+=("démarrage")
+TENU="programme, images et démarrage"
+# « non » seulement : images-cle.sh en panne n'est pas un réglage qui dit non, la clé de secours n'en serait plus
+# tenue à jour en silence.
+SECOURS=$(outils/images-cle.sh --secours 2>/dev/null) || true
+if [[ $SECOURS == non ]]; then
+  TENU="programme (clé de secours pas demandée sur cet ordinateur : ni images ni démarrage)"
+else
+  etape "images" outils/images-cle.sh --cle || RATEES+=(images)
+  etape "démarrage" outils/cle-secours.sh --a-jour || RATEES+=("démarrage")
+fi
 if ((${#RATEES[@]})); then
   avertir "Clé VANGUARD : mise à jour du jour incomplète" "Raté : ${RATEES[*]}${DEJA_DITES[*]:+ ; déjà dit : \
 ${DEJA_DITES[*]}}. Le détail : journalctl --user -u vanguard-cle-maj"
@@ -60,4 +70,4 @@ if ((${#DEJA_DITES[@]})); then
   echo "Clé VANGUARD pas tout à fait à jour : ${DEJA_DITES[*]}, déjà dit par sa notification."
   exit 1
 fi
-echo "Clé VANGUARD à jour : programme, images et démarrage."
+echo "Clé VANGUARD à jour : $TENU."

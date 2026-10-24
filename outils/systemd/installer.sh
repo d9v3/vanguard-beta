@@ -3,7 +3,8 @@
 # jour : vanguard-compilation.path (après chaque compilation) lance vanguard-copie.service, et vanguard-cle.service part
 # au branchement de la clé. Les images Linux de la clé (outils/images-cle.sh) : vanguard-images.timer les cherche le
 # 1er et le 15 du mois (et les copie aussitôt si la clé est branchée), vanguard-images-cle.service les copie au
-# branchement.
+# branchement ; seulement sur un ordinateur dont le réglage local demande la clé de secours (CLE_SECOURS=oui, voir
+# images-cle.sh) : sans lui, ces unités ne copient rien.
 # vanguard-cle-maj.timer remet chaque jour la clé restée branchée à jour (outils/maj-cle.sh : programme et images).
 # vanguard-menage.timer fait chaque semaine le ménage des fichiers de développement devenus inutiles
 # (outils/menage-dev.sh).

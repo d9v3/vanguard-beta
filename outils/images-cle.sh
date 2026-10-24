@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Images Linux de la clé de secours, tenues à jour toutes seules : Omarchy (son installateur complet, sans Internet),
 # Arch Linux, Debian et Fedora en installateurs par Internet, SystemRescue (réparer, sauver des fichiers, tester la
-# mémoire). En option, coupée par défaut : Kali Linux en live complète (ses outils de sécurité, sans rien installer ;
-# publiée en torrent seulement : aria2c la télécharge, puis elle est vérifiée comme les autres par la liste signée du
-# projet). Seul un réglage local de l'ordinateur l'allume, hors du dépôt : IMAGES_EN_PLUS="kali" dans
-# ~/.config/vanguard/images-cle.conf.
+# mémoire) ; en option, Kali Linux en live complète (ses outils de sécurité, sans rien installer ; publiée en torrent
+# seulement : aria2c la télécharge, puis elle est vérifiée comme les autres par la liste signée du projet).
+# PAR DÉFAUT, AUCUNE : une clé préparée par les outils du dépôt ne porte que le programme. Seul le réglage local de
+# l'ordinateur, hors du dépôt, fait la clé de secours : CLE_SECOURS=oui dans ~/.config/vanguard/images-cle.conf, et
+# au besoin IMAGES="…" et IMAGES_EN_PLUS="kali" (le détail plus bas, à TENUES).
 #   outils/images-cle.sh --chercher     dernières versions téléchargées dans le cache et vérifiées (minuterie
 #                                       vanguard-images.timer, le 1er et le 15 du mois, qui les copie ensuite sur la
 #                                       clé si elle est branchée) ; une image mal signée est effacée
@@ -18,7 +19,9 @@
 #                                       une image en option ajoutée à une clé qui ne l'a pas encore)
 #   outils/images-cle.sh --menu POINT   réécrit ventoy/ventoy.json d'après les images de ISO/
 #   outils/images-cle.sh --etat         ce qui est dans le cache et sur la clé
-#   outils/images-cle.sh --sortes       les sortes d'images tenues sur cet ordinateur (lu par cle-secours.sh)
+#   outils/images-cle.sh --sortes       les sortes d'images tenues sur cet ordinateur (lu par cle-secours.sh) ; rien
+#                                       sans le réglage de la clé de secours
+#   outils/images-cle.sh --secours      « oui » (code 0) si le réglage local demande la clé de secours, « non » (1)
 # Le cache peut être un lien vers un autre disque : disque absent, rien n'est fait ni recréé ailleurs, et une
 # notification le dit.
 # Chaque image est vérifiée par la signature de son projet, avec une clé fixée ici (outils/cles-images/ et les
@@ -39,28 +42,59 @@ CLES=$PWD/outils/cles-images
 MIO=$((1024 * 1024))
 # Place gardée sur la clé pour Vanguard, sa base et ses rapports.
 MARGE_MIO=512
-# Ordre de copie quand la place manque : la plus utile d'abord.
-SORTES=(systemrescue arch omarchy debian fedora)
-# En option, coupées par défaut : ni téléchargées, ni copiées, ni proposées, sauf sur un ordinateur dont le réglage
-# local les demande : Kali Linux (16 Gio) n'est voulue que sur certains ordinateurs. Le réglage, hors du dépôt : une
-# ligne IMAGES_EN_PLUS="kali" dans ~/.config/vanguard/images-cle.conf. Lu, jamais sourcé : rien de ce fichier ne
-# s'exécute. Allumée, Kali va en dernier : sur la clé seulement s'il reste la place après les autres, et retirée de
-# la clé quand une nouvelle version d'une autre image n'y tient plus (copier_sur_cle).
+# La clé de secours (ces images, Ventoy pour les démarrer, les partitions WIN11 et MACOS de cle-secours.sh) ne se fait
+# que sur un ordinateur dont le réglage local la demande. Sans lui, une clé préparée par les outils du dépôt ne porte
+# que le programme (Vanguard, sa base, ses rapports, VANGUARDLOG) : rien n'est cherché, copié, importé ni proposé, les
+# commandes qui poseraient une image refusent en disant comment l'allumer, et les minuteries de recopie ne font rien.
+# Le réglage, hors du dépôt, dans ~/.config/vanguard/images-cle.conf, une ligne par valeur (la dernière compte) :
+#   CLE_SECOURS=oui                                        la clé de secours sur cet ordinateur (seul « oui » l'allume)
+#   IMAGES="systemrescue arch omarchy debian fedora"        les images Linux tenues ; sans cette ligne, ces cinq-là
+#   IMAGES_EN_PLUS="kali"                                   des images en plus de celles d'IMAGES (Kali Linux, 16 Gio)
+# Espaces ou virgules entre les noms ; « # » commence un commentaire. Lu, jamais sourcé : rien de ce fichier ne
+# s'exécute. Quel que soit l'ordre écrit, les images vont sur la clé dans l'ordre de TENUES (la plus utile d'abord) ;
+# Kali, en option, en dernier : sur la clé seulement s'il reste la place après les autres, et retirée de la clé quand
+# une nouvelle version d'une autre image n'y tient plus (copier_sur_cle).
+TENUES=(systemrescue arch omarchy debian fedora kali)
+PAR_DEFAUT="systemrescue arch omarchy debian fedora"
 EN_OPTION="kali"
 REGLAGE=${XDG_CONFIG_HOME:-$HOME/.config}/vanguard/images-cle.conf
-en_plus_demandees() {
+ALLUMER="Pour la faire sur cet ordinateur : une ligne CLE_SECOURS=oui dans $REGLAGE (le détail : en-tête de \
+outils/images-cle.sh)."
+# Les lignes « NOM=… » du réglage, sans commentaire ni guillemets ; rien si le nom n'y est pas.
+reglage() { # nom
   [[ -r $REGLAGE ]] || return 0
-  sed -n 's/#.*//; s/^[[:space:]]*IMAGES_EN_PLUS[[:space:]]*=//p' "$REGLAGE" | tail -1 | tr -d "\"'" | tr ',' ' '
+  # Fins de ligne de Windows (un fichier écrit là-bas, ou recopié de la clé) : le « \r » collerait au dernier nom.
+  sed -n "s/\r//g; s/#.*//; s/^[[:space:]]*$1[[:space:]]*=//p" "$REGLAGE" | tr -d "\"'" | tr ',' ' '
 }
-read -ra demandees <<<"$(en_plus_demandees)"
-for s in "${demandees[@]}"; do
-  if [[ " $EN_OPTION " != *" $s "* ]]; then
-    echo "· $REGLAGE : « $s » n'est pas une image en option (en option : $EN_OPTION), ignorée." >&2
-  elif [[ " ${SORTES[*]} " != *" $s "* ]]; then
+SECOURS=""
+SORTES=()
+if [[ $(reglage CLE_SECOURS | tail -1 | tr -d '[:space:]') == oui ]]; then
+  SECOURS=oui
+  voulues=$PAR_DEFAUT
+  # La ligne IMAGES présente, même vide : elle seule dit les images (vide : aucune image Linux, WIN11 et MACOS
+  # restent).
+  [[ -z $(sed -n 's/\r//g; s/#.*//; /^[[:space:]]*IMAGES[[:space:]]*=/p' "$REGLAGE") ]] || voulues=$(reglage IMAGES | tail -1)
+  voulues+=" $(reglage IMAGES_EN_PLUS | tail -1)"
+  # Lus par read, pas développés par le shell : un « * » du réglage reste un mot inconnu.
+  read -ra liste <<<"$voulues"
+  voulues=" ${liste[*]} "
+  for s in "${liste[@]}"; do
     # Écrite deux fois (« kali,kali ») : comptée une fois, sans rien dire, ce n'est pas une erreur.
-    SORTES+=("$s")
-  fi
-done
+    [[ " ${TENUES[*]} " == *" $s "* ]] ||
+      echo "· $REGLAGE : « $s » n'est pas une image que la clé sait tenir (${TENUES[*]}), ignorée." >&2
+  done
+  for s in "${TENUES[@]}"; do
+    [[ $voulues != *" $s "* ]] || SORTES+=("$s")
+  done
+elif [[ -n $(reglage IMAGES)$(reglage IMAGES_EN_PLUS) ]]; then
+  echo "· $REGLAGE : des images demandées sans CLE_SECOURS=oui, ignorées (la clé ne porte que le programme)." >&2
+fi
+# La clé de secours n'est pas demandée : dit, et code 1 (les fonctions qui poseraient une image s'arrêtent là).
+secours_demandee() { # ce qui n'est pas fait
+  [[ -z $SECOURS ]] || return 0
+  echo "· Clé de secours pas demandée sur cet ordinateur : $1 La clé ne porte que le programme. $ALLUMER"
+  return 1
+}
 # Facultatives : leur absence du cache n'empêche pas de faire une clé (cle-secours.sh --ecrire vérifie le cache).
 FACULTATIVES=" $EN_OPTION "
 
@@ -487,6 +521,7 @@ prendre() { # sorte nom url
 }
 
 chercher() {
+  secours_demandee "aucune image n'est cherchée ni téléchargée." || return 0
   cache_present "Rien n'est cherché ni téléchargé." || return 0
   mkdir -p "$CACHE"
   local sorte ligne nom url neuves=() echecs=() replis=() prets=() perdus=() code
@@ -585,6 +620,7 @@ joindre() { # nom…
 # partager). Sur le même disque, la copie ne prend pas de place (reflink) ; sinon, elle en prend autant que l'image.
 importer() { # fichier
   local fichier=$1 nom sorte="" s prete url trouve="" d f ok r
+  secours_demandee "rien n'est importé." >&2 || exit 1
   [[ -f $fichier ]] || erreur "$fichier : pas un fichier."
   cache_present "Rien n'est importé." || exit 1
   nom=${fichier##*/}
@@ -640,6 +676,7 @@ en a déjà une version (sinon : outils/images-cle.sh --toutes POINT)."
 # compter comme une erreur.
 verifier_cache() {
   local sorte image tout=0 lien
+  secours_demandee "aucune image à vérifier." || return 0
   if lien=$(lien_mort "$CACHE"); then
     echo "  ✖ Images Linux : cache introuvable ($lien mène à $(readlink "$lien"), absent : disque débranché ?)"
     return 1
@@ -695,6 +732,12 @@ taille_mio() { echo $((($(stat -c %s "$1") + MIO - 1) / MIO)); }
 # une image tenue par défaut, plus utile en secours. Le même verrou que deployer.sh : les deux partent au branchement.
 copier_sur_cle() { # point (facultatif), toutes (facultatif : aussi les sortes absentes de la clé)
   local point=${1:-} toutes=${2:-}
+  # Au branchement et chaque jour (les services), rien à faire n'est pas une erreur ; demandé à la main (--toutes),
+  # c'est un refus.
+  if ! secours_demandee "aucune image n'est copiée sur la clé."; then
+    [[ -z $toutes ]] || return 1
+    return 0
+  fi
   [[ -n $point ]] || point=$(point_cle)
   [[ -n $point && -d $point ]] || { echo "Clé VANGUARD non branchée : rien à copier."; return 0; }
   # Au branchement, un cache absent n'est pas une erreur de la clé : dit, puis arrêt sans rien toucher. Demandé à la
@@ -821,6 +864,7 @@ redire_au_manifeste() { # point, images copiées…
 # change (chaque écriture use un peu la clé, et la mise à jour du jour repasse sur une clé restée branchée).
 menu() { # point
   local point=$1
+  secours_demandee "le menu de Ventoy n'est pas écrit." || return 1
   mkdir -p "$point/ventoy"
   find "$point/ISO" -maxdepth 1 -type f -iname '*.iso' -printf '%f\n' 2>/dev/null | sort | python3 -I -c '
 import fnmatch, json, sys
@@ -851,6 +895,7 @@ print(json.dumps({"control": [{"VTOY_DEFAULT_SEARCH_ROOT": "/ISO"}, {"VTOY_MENU_
 
 etat() {
   local sorte image point lien
+  secours_demandee "aucune image n'est tenue." || true
   echo "Cache ($CACHE) :"
   if lien=$(lien_mort "$CACHE"); then
     echo "  ✖ introuvable : $lien mène à $(readlink "$lien"), absent (disque débranché ?)"
@@ -869,6 +914,7 @@ etat() {
   for f in "$point"/ISO/*.iso; do
     [[ -f $f ]] || continue
     local statut="" s
+    [[ -n $SECOURS ]] || statut="(pas tenue sur cet ordinateur)"
     for s in "${SORTES[@]}"; do
       # shellcheck disable=SC2053 # motif voulu
       if [[ ${f##*/} == ${MOTIFS[$s]} ]]; then
@@ -893,5 +939,6 @@ case ${1:-} in
   --menu) menu "${2:?point de montage de la clé}" && redire_au_manifeste "$2" ;;
   --etat) etat ;;
   --sortes) echo "${SORTES[*]}" ;;
-  *) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  --secours) if [[ -n $SECOURS ]]; then echo oui; else echo non; exit 1; fi ;;
+  *) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

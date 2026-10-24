@@ -5,6 +5,8 @@ Description=Vanguard : télécharger et vérifier les nouvelles images Linux de 
 # (un lien vers un autre disque, au besoin : disque absent, rien n'est fait ni recréé ailleurs) ; puis copiée aussitôt
 # sur la clé si elle est branchée (sinon à son prochain branchement, vanguard-images-cle.service). Une image refusée
 # ne bloque pas la copie des autres : images-cle.sh la signale lui-même par une notification.
+# Sans le réglage local de la clé de secours (CLE_SECOURS=oui, voir images-cle.sh), rien n'est cherché ni copié :
+# la clé ne porte que le programme.
 After=network-online.target
 
 [Service]
