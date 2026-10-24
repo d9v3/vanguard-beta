@@ -58,7 +58,8 @@ A security flaw? No public issue or pull request: report it privately, see [SECU
 | `src/risk.rs` | knowledge base of ports and risk levels |
 | `src/reseau/connexion.rs` | connection test for gaming |
 | `src/protection/antivirus.rs` | ClamAV / Defender, quarantine |
-| `src/protection/yara.rs`, `src/protection/pieges.rs` | YARA scan (bundled rules, YARA-X compiled into the program); decoy files against ransomware |
+| `src/protection/yara.rs`, `src/protection/pieges.rs` | YARA scan (bundled rules, applied by Vanguard's own engine); decoy files against ransomware |
+| `src/protection/regles_yara.rs`, `moteur_yara.rs`, `motifs.rs`, `oracle_yara.rs` | home-made YARA engine: reader for the subset of the language the rules use (anything else refused, named, “not checked”), conditions and the pe and elf modules (`moteur_yara.rs`, pe fields in `src/pe.rs`), multi-pattern search after Aho-Corasick, over a buffer or a bounded stream (`motifs.rs`, shared with the future ClamAV signatures); YARA-X only as the tests' oracle (`oracle_yara.rs`) |
 | `src/protection/rancongiciel/` | ransomware watcher: live watching of personal folders (`notify`, already present), rule-based score per process group over a 10 s window (burst, encrypted content, names, ransom note, decoy touched, backups deleted), attribution by write counters and descriptors (`/proc/<pid>/io` and `fd`, without root or a new crate); with active protection and an almost-certain case, freeze of the lineage, evidence, stop and quarantine; decisions as pure functions (tested on Linux and Wine) |
 | `src/protection/memoire.rs`, `src/machine/windows/memoire.rs` | program memory (`vanguard memory`, on demand): the YARA rules on the private or executable regions of running processes, bounded (64 MiB per region, 512 MiB per process, 4 GiB and 5 minutes in all); /proc/<pid>/maps and mem on Linux, VirtualQueryEx and ReadProcessMemory on Windows (LSASS, protected and critical processes never read); macOS not checked; nothing read is kept |
 | `src/protection/empreintes.rs` | MalwareBazaar SHA-256 fingerprints (abuse.ch, with the key): full list every week (zip archive), recent ones every day, kept in Vanguard's folder and sorted; the YARA scan looks up every file it reads |
@@ -184,7 +185,7 @@ The judgment is written separately (`juger_…`, reading nothing from the system
 ## Build, test, deploy
 
 Requirements: `rustup target add x86_64-unknown-linux-musl x86_64-pc-windows-gnu`, `musl` (musl-gcc), `mingw-w64-gcc`
-and `clang`: YARA-X compiles a little C for each target (clang for clippy on the Mac targets, see
+and `clang`: ring (TLS) compiles a little C for each target, and so does YARA-X, the tests' oracle (clang for clippy on the Mac targets, see
 `outils/verifier.sh`). To deploy, also `cargo install cargo-auditable --locked --version 0.7.7` and
 `cargo install cargo-audit --locked --version 0.22.2`, the versions of the CI (`.github/workflows/ci.yml`):
 `deployer.sh` embeds in each program the list of its dependencies, versions included (`cargo auditable build`), then
@@ -253,7 +254,7 @@ cargo-auditable version, the commit date (never the build time), and the build p
 of this computer gives two identical programs, Linux and Windows alike; before, home folder paths stayed in the .exe
 (`~/Projects/vanguard/target/…`), and two folders gave two programs. What can still differ from one computer to
 another: the versions of musl-gcc and MinGW (gcc, binutils, startup libraries), which compile the C of ring and
-YARA-X and link the programs. CI writes the fingerprint of its builds in its log (`EMPREINTE-VANGUARD-LINUX`,
+link the programs. CI writes the fingerprint of its builds in its log (`EMPREINTE-VANGUARD-LINUX`,
 `-WINDOWS`), to compare with `SHA256SUMS.txt`; they are not yet the same as the author's computer's while these tools
 differ (Arch versus Ubuntu).
 

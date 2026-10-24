@@ -462,6 +462,162 @@ fn info_fixe(donnees: &[u8]) -> Option<([u16; 4], [u16; 4])> {
     ))
 }
 
+// --- Les champs du module « pe » des règles YARA (protection/moteur_yara.rs) ---
+//
+// Ils ne suivent pas la lecture stricte d'au-dessus : une règle doit trouver ce que trouve YARA-X, l'oracle du moteur,
+// même sur un exécutable abîmé (un logiciel malveillant l'est souvent exprès). Ce qui suit a été établi en boîte
+// noire, en comparant à YARA-X des milliers de PE fabriqués exprès et les PE réels de ce PC, puis il est gardé par les
+// tests de l'oracle (moteur_yara, en développement seulement). Rien n'y vient de son code.
+
+/// Ce que le module « pe » donne d'un fichier, pour les règles qui s'en servent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ChampsYara {
+    /// pe.entry_point : la position du point d'entrée dans le fichier, `None` quand il ne s'y ramène pas (indéfini).
+    pub point_d_entree: Option<u64>,
+    /// Le répertoire de sécurité (n° 4) : sa position dans le fichier et sa taille annoncée.
+    pub securite: Option<(u64, u64)>,
+}
+
+/// Le répertoire de données n° 4 : les signatures Authenticode, désignées par une position dans le fichier (pas une
+/// RVA).
+const REPERTOIRE_SECURITE: u64 = 4;
+/// Les sections lues, au plus : au-delà, YARA-X les ignore.
+const SECTIONS_YARA: u16 = 96;
+
+/// Lit `n` octets à `position`, s'ils sont tous avant `taille`.
+fn morceau<R: Read + Seek>(source: &mut R, taille: u64, position: u64, n: usize) -> Option<Vec<u8>> {
+    if position.checked_add(n as u64)? > taille {
+        return None;
+    }
+    source.seek(SeekFrom::Start(position)).ok()?;
+    let mut tampon = vec![0u8; n];
+    source.read_exact(&mut tampon).ok()?;
+    Some(tampon)
+}
+
+/// Les champs YARA d'un fichier de `taille` octets ; `None` si ce n'est pas un PE pour YARA (pe.is_pe faux : tout le
+/// module est alors indéfini). Un PE : « MZ », un en-tête DOS entier (64 octets), et « PE\0\0 » suivi de l'en-tête
+/// COFF (24 octets en tout) là où pointe e_lfanew. Un en-tête facultatif plus court que sa forme fixe (96 octets en
+/// PE32, 112 en PE32+, quelle que soit la taille qu'il annonce) compte comme rempli de zéros.
+pub(crate) fn champs_yara<R: Read + Seek>(source: &mut R, taille: u64) -> Option<ChampsYara> {
+    let dos = morceau(source, taille, 0, 0x40)?;
+    if &dos[..2] != b"MZ" {
+        return None;
+    }
+    let pe = u64::from(u32::from_le_bytes([dos[0x3C], dos[0x3D], dos[0x3E], dos[0x3F]]));
+    let coff = morceau(source, taille, pe, 24)?;
+    if &coff[..4] != b"PE\0\0" {
+        return None;
+    }
+    let mot16 = |o: &[u8], a: usize| u16::from_le_bytes([o[a], o[a + 1]]);
+    let mot32 = |o: &[u8], a: usize| u32::from_le_bytes([o[a], o[a + 1], o[a + 2], o[a + 3]]);
+    let nombre_sections = mot16(&coff, 6);
+    let taille_facultatif = u64::from(mot16(&coff, 20));
+    let facultatif = pe + 24;
+    let pe32_plus = morceau(source, taille, facultatif, 2).is_some_and(|m| mot16(&m, 0) == 0x20B);
+    let forme = if pe32_plus { 112 } else { 96 };
+    let (rva, alignement_sections, alignement_fichier) = match morceau(source, taille, facultatif, forme) {
+        Some(f) => (mot32(&f, 16), mot32(&f, 32), mot32(&f, 36)),
+        None => (0, 0, 0),
+    };
+    let securite = morceau(source, taille, facultatif + forme as u64 + 8 * REPERTOIRE_SECURITE, 8)
+        .map(|r| (u64::from(mot32(&r, 0)), u64::from(mot32(&r, 4))));
+    // La table des sections suit l'en-tête facultatif de la taille qu'il annonce ; elle s'arrête à la première entrée
+    // qui sort du fichier.
+    let table = facultatif + taille_facultatif;
+    let mut sections = Vec::new();
+    for i in 0..u64::from(nombre_sections.min(SECTIONS_YARA)) {
+        let Some(s) = morceau(source, taille, table + i * 40, 40) else {
+            break;
+        };
+        sections.push(Section {
+            taille_virtuelle: mot32(&s, 8),
+            adresse: mot32(&s, 12),
+            taille_brute: mot32(&s, 16),
+            position: mot32(&s, 20),
+        });
+    }
+    Some(ChampsYara {
+        point_d_entree: position_yara(&sections, rva, alignement_sections, alignement_fichier),
+        securite,
+    })
+}
+
+/// La position dans le fichier de l'adresse `rva`, comme YARA-X la calcule : la section qui la contient (de son
+/// adresse jusqu'à la plus grande de ses deux tailles) et dont l'adresse est la plus haute, la dernière à égalité ;
+/// la position de ses données arrondie à l'alignement des fichiers (512 au plus), puis à 512 si les sections sont
+/// alignées sur une page ou plus. Hors des données brutes de cette section, ou dans aucune section : indéfini, sauf
+/// sous la plus basse des sections, dans les en-têtes, où la RVA est sa propre position. Sans section : indéfini. Une
+/// position au-delà de 32 bits est ramenée à 0xFFFFFFFF.
+fn position_yara(sections: &[Section], rva: u32, alignement_sections: u32, alignement_fichier: u32) -> Option<u64> {
+    let mut choisie: Option<&Section> = None;
+    for s in sections {
+        let contient = rva >= s.adresse && rva - s.adresse < s.taille_virtuelle.max(s.taille_brute);
+        if contient && choisie.is_none_or(|c| s.adresse >= c.adresse) {
+            choisie = Some(s);
+        }
+    }
+    let Some(s) = choisie else {
+        let plus_basse = sections.iter().map(|s| s.adresse).min()?;
+        return (rva < plus_basse).then_some(u64::from(rva));
+    };
+    let decalage = rva - s.adresse;
+    if decalage >= s.taille_brute {
+        return None;
+    }
+    let mut position = u64::from(s.position);
+    if alignement_fichier != 0 {
+        let a = u64::from(alignement_fichier.min(0x200));
+        position = position / a * a;
+    }
+    if alignement_sections >= 0x1000 {
+        position = position / 0x200 * 0x200;
+    }
+    // Une somme qui dépasse 32 bits s'arrête à 0xFFFFFFFF, comme dans YARA-X.
+    Some((position + u64::from(decalage)).min(u64::from(u32::MAX)))
+}
+
+/// L'identifiant d'objet signedData (1.2.840.113549.1.7.2), tel qu'il s'écrit en DER (et en BER : un OID est toujours
+/// primitif) au début de toute signature Authenticode.
+const OID_SIGNED_DATA: [u8; 11] = [0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x07, 0x02];
+
+/// pe.number_of_signatures > 0, en plus large : le répertoire de sécurité (borné au fichier) contient-il une
+/// structure signedData ? YARA-X ne compte une signature que s'il la lit entière (structure PKCS#7 complète, un seul
+/// signataire, contenu Authenticode…), ce que Vanguard ne refait pas : toute signature que YARA-X compte contient cet
+/// identifiant dans ce répertoire, si bien qu'une règle qui exige une signature trouve au moins tout ce que trouve
+/// YARA-X (et, en plus, un fichier dont la signature est abîmée). Sur les PE de ce PC, les deux disent la même chose
+/// (test de l'oracle).
+pub(crate) fn signature_presente<R: Read + Seek>(source: &mut R, taille: u64, champs: &ChampsYara) -> bool {
+    let Some((debut, longueur)) = champs.securite else {
+        return false;
+    };
+    let fin = debut.saturating_add(longueur).min(taille);
+    if debut >= fin || source.seek(SeekFrom::Start(debut)).is_err() {
+        return false;
+    }
+    // Par blocs, chacun gardant la fin du précédent : un identifiant à cheval est vu.
+    let mut tampon = vec![0u8; (64 << 10) + OID_SIGNED_DATA.len()];
+    let mut garde = 0usize;
+    let mut position = debut;
+    while position < fin {
+        let voulu = usize::try_from(fin - position).unwrap_or(usize::MAX).min(64 << 10);
+        if source.read_exact(&mut tampon[garde..garde + voulu]).is_err() {
+            return false;
+        }
+        let plein = garde + voulu;
+        if tampon[..plein]
+            .windows(OID_SIGNED_DATA.len())
+            .any(|w| w == OID_SIGNED_DATA)
+        {
+            return true;
+        }
+        garde = (OID_SIGNED_DATA.len() - 1).min(plein);
+        tampon.copy_within(plein - garde..plein, 0);
+        position += voulu as u64;
+    }
+    false
+}
+
 #[cfg(test)]
 pub(crate) mod essais {
     //! Un PE minimal fabriqué en Rust, pour les tests d'ici et de l'inventaire : aucun .exe tiers dans le dépôt.

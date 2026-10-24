@@ -27,12 +27,17 @@ pub mod lien;
 pub mod manifeste;
 pub mod memoire;
 pub(crate) mod memoire_dns;
+pub(crate) mod moteur_yara;
+pub(crate) mod motifs;
 pub(crate) mod normales;
+#[cfg(test)]
+mod oracle_yara;
 pub(crate) mod outil;
 pub mod perimes;
 pub mod pieges;
 pub(crate) mod preuve;
 pub mod quarantaine;
+pub(crate) mod regles_yara;
 pub mod secrets_git;
 pub mod sites_bloques;
 pub mod sortantes;

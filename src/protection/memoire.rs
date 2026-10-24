@@ -12,6 +12,7 @@
 
 use std::time::{Duration, Instant};
 
+use crate::protection::moteur_yara::Regles;
 use crate::protection::yara;
 use crate::ui::*;
 
@@ -238,10 +239,12 @@ fn effacer(octets: &mut [u8]) {
 }
 
 /// Lit les régions par `lire`, chacune dans le début de `tampon` (jamais agrandi : une région plus grande est sautée),
-/// et leur applique les règles, dans les bornes. `lire` rend le nombre d'octets lus (0 : rien). `lu_total` et
-/// `debut` : ce qui a déjà été lu dans les processus d'avant, et le départ de l'analyse.
+/// et leur applique les règles, dans les bornes, chaque région comme un fichier à part (une chaîne à cheval sur deux
+/// régions n'est pas vue, comme avec YARA-X). `lire` rend le nombre d'octets lus (0 : rien). `lu_total` et `debut` :
+/// ce qui a déjà été lu dans les processus d'avant, et le départ de l'analyse. Une région que le moteur n'a pas pu
+/// finir (délai, ou panique sur un contenu piégé) est comptée sautée : jamais lue en entier pour rien.
 fn analyser_regions(
-    analyseur: &mut yara_x::Scanner,
+    regles: &Regles,
     regions: &[Region],
     tampon: &mut [u8],
     mut lire: impl FnMut(&Region, &mut [u8]) -> usize,
@@ -280,11 +283,15 @@ fn analyser_regions(
                     lecture.partielles += 1;
                 }
                 lecture.octets += lus as u64;
-                match analyseur.scan(&zone[..lus]) {
-                    Ok(resultat) => lecture
+                let echeance = Instant::now() + DELAI_PAR_REGION;
+                let zone = &zone[..lus];
+                match crate::journal::rattraper(std::panic::AssertUnwindSafe(|| {
+                    regles.analyser_tampon(zone, Some(echeance))
+                })) {
+                    Ok(Ok(trouvees)) => lecture
                         .trouves
-                        .extend(resultat.matching_rules().map(|m| (m.identifier().to_string(), *region))),
-                    Err(_) => lecture.sautees += 1,
+                        .extend(trouvees.into_iter().map(|k| (regles.nom(k).to_string(), *region))),
+                    _ => lecture.sautees += 1,
                 }
             }
         }
@@ -488,9 +495,10 @@ struct Masque {
 }
 
 /// Le bilan de l'analyse : combien de processus lus, non lus (droits), exclus par choix, lus en partie, si une
-/// borne a tout arrêté, les correspondances et les masquages.
+/// borne a tout arrêté, les règles que le moteur a refusées (non vérifiées), les correspondances et les masquages.
 #[derive(Debug, Default, PartialEq)]
 struct Bilan {
+    regles_refusees: usize,
     lus: usize,
     non_lus: usize,
     exclus: usize,
@@ -513,7 +521,7 @@ enum Verdict {
 fn verdict(bilan: &Bilan) -> Verdict {
     if !bilan.trouves.is_empty() || !bilan.masques.is_empty() {
         Verdict::Trouve
-    } else if bilan.lus == 0 || bilan.non_lus > 0 || bilan.incomplets > 0 || bilan.arrete {
+    } else if bilan.lus == 0 || bilan.non_lus > 0 || bilan.incomplets > 0 || bilan.arrete || bilan.regles_refusees > 0 {
         Verdict::Incomplet
     } else {
         Verdict::Sain
@@ -522,12 +530,13 @@ fn verdict(bilan: &Bilan) -> Verdict {
 
 /// Tous les processus, un seul fil : la lecture de la mémoire d'autrui ne se parallélise pas (pression sur le
 /// système, ordre lisible). Après un arrêt sur une borne, les processus restants sont comptés non lus.
-fn parcourir(regles: &yara_x::Rules) -> Bilan {
+fn parcourir(regles: &Regles) -> Bilan {
     let moi = std::process::id();
     let debut = Instant::now();
-    let mut analyseur = yara_x::Scanner::new(regles);
-    analyseur.set_timeout(DELAI_PAR_REGION);
-    let mut bilan = Bilan::default();
+    let mut bilan = Bilan {
+        regles_refusees: regles.refus().len(),
+        ..Bilan::default()
+    };
     let mut lu_total = 0u64;
     let mut tampon = Tampon::nouveau(TAILLE_REGION_MAX);
     let liste = plateforme::processus();
@@ -569,7 +578,7 @@ fn parcourir(regles: &yara_x::Rules) -> Bilan {
             Acces::Ouvert(lecteur) => {
                 let regions = lecteur.regions();
                 let lecture = analyser_regions(
-                    &mut analyseur,
+                    regles,
                     &regions,
                     &mut tampon.0,
                     |r, z| lecteur.lire(r, z),
@@ -606,8 +615,14 @@ fn avertir(texte: &str) {
     }
 }
 
-fn afficher(bilan: &Bilan) {
+fn afficher(bilan: &Bilan, regles: &Regles) {
     println!();
+    if let Some(texte) = yara::non_verifiees(regles) {
+        avertir(&trf!(
+            "{texte}. Rien n'est conclu pour elles.",
+            "{texte}. Nothing is concluded for them."
+        ));
+    }
     if bilan.exclus > 0 {
         let texte = if cfg!(windows) {
             trf!(
@@ -747,7 +762,7 @@ pub fn analyser() {
             return;
         }
     };
-    afficher(&parcourir(regles));
+    afficher(&parcourir(regles), regles);
 }
 
 #[cfg(test)]
@@ -951,10 +966,9 @@ mod tests {
             taille: max,
         }));
         let vides = regles("rule Rien { condition: false }");
-        let mut analyseur = yara_x::Scanner::new(&vides);
         let mut tampon = Tampon::nouveau(TAILLE_REGION_MAX);
         let remplir = |_: &Region, z: &mut [u8]| z.len();
-        let lecture = analyser_regions(&mut analyseur, &regions, &mut tampon.0, remplir, 0, Instant::now());
+        let lecture = analyser_regions(&vides, &regions, &mut tampon.0, remplir, 0, Instant::now());
         assert_eq!(
             lecture,
             Lecture {
@@ -966,7 +980,7 @@ mod tests {
             }
         );
         let lecture = analyser_regions(
-            &mut analyseur,
+            &vides,
             &regions,
             &mut tampon.0,
             |_, _| panic!(),
@@ -978,7 +992,7 @@ mod tests {
         let petites = [Region { debut: 0, taille: 8 }, Region { debut: 8, taille: 8 }];
         let mut tour = 0;
         let lecture = analyser_regions(
-            &mut analyseur,
+            &vides,
             &petites,
             &mut tampon.0,
             |_, z| {
@@ -1001,10 +1015,10 @@ mod tests {
         );
     }
 
-    fn regles(source: &str) -> yara_x::Rules {
-        let mut compilateur = yara_x::Compiler::new();
-        compilateur.add_source(source).unwrap();
-        compilateur.build()
+    fn regles(source: &str) -> Regles {
+        let r = Regles::compiler(source);
+        assert_eq!(r.refus(), [], "{source}");
+        r
     }
 
     /// Le tampon garde sa taille : une région plus grande que lui est sautée, jamais lue dans un tampon agrandi ; ce
@@ -1012,7 +1026,6 @@ mod tests {
     #[test]
     fn tampon_fixe_puis_efface() {
         let essai = regles(r#"rule Ancien { strings: $a = "ancien" condition: $a }"#);
-        let mut analyseur = yara_x::Scanner::new(&essai);
         let mut tampon = Tampon::nouveau(100);
         let regions = [
             Region { debut: 0, taille: 64 },
@@ -1021,7 +1034,7 @@ mod tests {
         ];
         let mut tour = 0;
         let lecture = analyser_regions(
-            &mut analyseur,
+            &essai,
             &regions,
             &mut tampon.0,
             |_, z| {
@@ -1074,6 +1087,12 @@ mod tests {
         bilan.arrete = false;
         bilan.lus = 0;
         assert_eq!(verdict(&bilan), Verdict::Incomplet);
+        // Une règle refusée par le moteur n'a rien vérifié : pas de ✔.
+        bilan.lus = 3;
+        bilan.regles_refusees = 1;
+        assert_eq!(verdict(&bilan), Verdict::Incomplet);
+        bilan.regles_refusees = 0;
+        bilan.lus = 0;
         // Un masquage seul suffit à l'alerte, même sans règle trouvée.
         bilan.masques.push(Masque {
             pid: 2,
@@ -1128,7 +1147,6 @@ mod tests {
         let essai = regles(&format!(
             r#"rule Essai_Memoire {{ strings: $a = "{marque}" condition: $a }}"#
         ));
-        let mut analyseur = yara_x::Scanner::new(&essai);
         let moi = std::process::id();
         #[cfg(target_os = "linux")]
         let Acces::Ouvert(lecteur) = plateforme::ouvrir(moi) else {
@@ -1151,7 +1169,7 @@ mod tests {
         }];
         let mut tampon = Tampon::nouveau(usize::try_from(pages[0].taille).unwrap());
         let lecture = analyser_regions(
-            &mut analyseur,
+            &essai,
             &pages,
             &mut tampon.0,
             |r, z| lecteur.lire(r, z),
