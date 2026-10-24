@@ -888,6 +888,13 @@ pub fn empreinte_machine() -> Option<String> {
         .open_subkey(r"SOFTWARE\Microsoft\Cryptography")
         .and_then(|k| k.get_value("MachineGuid"))
         .ok()?;
+    empreinte_d_identifiant(&id)
+}
+
+/// L'empreinte d'un identifiant d'ordinateur, tel qu'il est lu : espaces et sauts de ligne autour retirés, puis
+/// SHA-1 en hexadécimal. Le témoin `vanguard.cle` du déploiement est fait par elle : la clé et le programme ne peuvent
+/// pas diverger, et une empreinte qui changerait remonterait la clé en lecture seule chez son propriétaire.
+pub(crate) fn empreinte_d_identifiant(id: &str) -> Option<String> {
     let id = id.trim();
     (!id.is_empty()).then(|| crate::socle::hachage::sha1_hexa(id.as_bytes()))
 }

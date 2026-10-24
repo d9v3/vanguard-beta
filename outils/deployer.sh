@@ -325,12 +325,21 @@ if [[ -z $CLE ]]; then
 fi
 T_CLE=$SECONDS
 
-# Jeton d'identité de la clé (src/protection/cles_connues.rs) : 32 caractères hexadécimaux tirés une fois et gardés
-# ensuite ; cet ordinateur le note (vanguard manifeste --ecrire, plus bas) et, depuis sa copie locale, ne reconnaît
-# plus un volume au seul témoin vanguard.cle. La partition des journaux reçoit le même jeton.
-if ! grep -qxE '[0-9a-fA-F]{32}' "$CLE/vanguard.jeton" 2>/dev/null; then
-  head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$CLE/vanguard.jeton"
-  echo >>"$CLE/vanguard.jeton"
+# Témoins de la clé, écrits par le programme (src/deploiement.rs) : le jeton d'identité (src/protection/cles_connues.rs),
+# 32 caractères hexadécimaux tirés une fois et gardés ensuite ; cet ordinateur le note (vanguard manifeste --ecrire,
+# plus bas) et, depuis sa copie locale, ne reconnaît plus un volume au seul témoin vanguard.cle. La partition des
+# journaux reçoit le même jeton. Puis l'empreinte de cet ordinateur (SHA-1 de /etc/machine-id) dans vanguard.cle :
+# partout ailleurs, Vanguard remonte la clé en lecture seule sous Linux (src/protection/cle.rs). Avant la copie vers
+# la partition des journaux et avant le manifeste. Un programme d'avant « deploiement » (--sans-compiler) : le bash
+# d'avant, pour que la clé garde ses témoins.
+if ./"$LINUX" deploiement temoins --help >/dev/null 2>&1; then
+  ./"$LINUX" deploiement temoins "$CLE" || { echo "✖ Témoins de la clé non écrits : clé pas mise à jour."; exit 1; }
+else
+  if ! grep -qxE '[0-9a-fA-F]{32}' "$CLE/vanguard.jeton" 2>/dev/null; then
+    head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$CLE/vanguard.jeton"
+    echo >>"$CLE/vanguard.jeton"
+  fi
+  printf '%s' "$(cat /etc/machine-id)" | sha1sum | cut -d' ' -f1 >"$CLE/vanguard.cle"
 fi
 
 # Partition VANGUARDLOG (la seule modifiable sur les autres ordinateurs) : elle se monte en même temps que VANGUARD,
@@ -349,9 +358,6 @@ if [[ -n $JOURNAL ]]; then
 fi
 
 mkdir -p "$CLE"/{Linux,Windows,donnees,source}
-# Empreinte de cet ordinateur (SHA-1 de /etc/machine-id) : partout ailleurs, Vanguard remonte la clé en lecture seule
-# sous Linux (src/protection/cle.rs).
-printf '%s' "$(cat /etc/machine-id)" | sha1sum | cut -d' ' -f1 >"$CLE/vanguard.cle"
 copier "$LINUX" "$CLE/Linux/vanguard"
 [[ -f $WINDOWS ]] && copier "$WINDOWS" "$CLE/Windows/vanguard.exe"
 # Version macOS : compilée sur un Mac de GitHub (.github/workflows/macos.yml, chaque nuit si le code a changé),
