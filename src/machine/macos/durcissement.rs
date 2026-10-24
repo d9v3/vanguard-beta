@@ -36,17 +36,20 @@ fn options_prochain_demarrage() -> Option<String> {
     match super::noyau::options_prochain_demarrage() {
         Some(OptionsNvram::Absentes) => Some(String::new()),
         Some(OptionsNvram::Posees(t)) => Some(t),
-        // nvram répond en erreur quand boot-args n'existe pas : c'est le cas normal, pas une lecture ratée.
-        None => crate::commande::lancer(Command::new("nvram").arg("boot-args"), 10).map(|r| {
+        // nvram répond en erreur « data was not found » quand boot-args n'existe pas : le cas normal. Toute autre
+        // erreur (NVRAM non prise en charge, refus) est une lecture ratée, jamais « aucune option ».
+        None => crate::commande::lancer(Command::new("nvram").arg("boot-args"), 10).and_then(|r| {
             if r.code == Some(0) {
-                r.sortie
-                    .trim()
-                    .strip_prefix("boot-args")
-                    .unwrap_or(&r.sortie)
-                    .trim()
-                    .to_string()
+                Some(
+                    r.sortie
+                        .trim()
+                        .strip_prefix("boot-args")
+                        .unwrap_or(&r.sortie)
+                        .trim()
+                        .to_string(),
+                )
             } else {
-                String::new()
+                r.erreurs.contains("not found").then(String::new)
             }
         }),
     }
@@ -76,14 +79,25 @@ fn juger_options_demarrage(en_cours: Option<&str>, prochain: Option<&str>) -> Co
                 dangers_prochain.join(" ")
             ),
         };
-        return alerte(
+        let constat = alerte(
             "Protection système",
             Niveau::Eleve,
             trf!(
                 "Une option de démarrage coupe la vérification des signatures du code ({quand}) : n'importe quel programme peut s'exécuter, même modifié.",
                 "A startup option turns code signature checks off ({quand}): any program can run, even modified."
             ),
-        )
+        );
+        // Plus dans la NVRAM (lue) : un redémarrage suffit.
+        if dangers_prochain.is_empty() && prochain.is_some() {
+            return constat.manuel(
+                tr!(
+                    "L'option n'est plus dans la NVRAM : redémarrer ce Mac suffit à remettre la vérification des signatures",
+                    "The option is no longer in NVRAM: restarting this Mac is enough to turn signature checks back on"
+                ),
+                &[],
+            );
+        }
+        return constat
         .manuel(
             tr!(
                 "Retirer les options de démarrage : sudo nvram -d boot-args (sur Apple Silicon, depuis le Terminal du mode de secours), puis redémarrer",

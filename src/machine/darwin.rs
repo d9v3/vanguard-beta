@@ -303,6 +303,13 @@ fn adresse_insi(o: &[u8], debut: usize, vflag: u8) -> Option<IpAddr> {
     if vflag & INI_IPV4 != 0 {
         Some(IpAddr::V4(Ipv4Addr::new(a[12], a[13], a[14], a[15])))
     } else if vflag & INI_IPV6 != 0 {
+        let mut a = a;
+        // XNU garde la zone d'une adresse de lien local (fe80::/10) ou multicast de lien (ff01::, ff02::) dans ses
+        // octets 2 et 3 (in6_embedded_scope) : retirée, comme le font netstat et lsof.
+        if (a[0] == 0xfe && a[1] & 0xc0 == 0x80) || (a[0] == 0xff && matches!(a[1] & 0x0f, 1 | 2)) {
+            a[2] = 0;
+            a[3] = 0;
+        }
         Some(IpAddr::V6(Ipv6Addr::from(a)))
     } else {
         None
@@ -361,7 +368,8 @@ pub(crate) struct Court {
     /// Le compte effectif (`pbsi_uid`) et le compte réel (`pbsi_ruid`, celui qui a lancé le programme).
     pub uid: u32,
     pub ruid: u32,
-    /// Le nom court du noyau (p_comm, 16 octets au plus), choisi par le programme : à rendre inoffensif.
+    /// Le nom court du noyau (p_comm, coupé à 15 caractères par proc_pidshortbsdinfo), choisi par le programme : à
+    /// rendre inoffensif.
     pub comm: String,
 }
 
@@ -499,10 +507,11 @@ pub(crate) struct Route {
     pub masque: Option<IpAddr>,
 }
 
-/// Une `sockaddr` d'un message de routage : AF_INET, AF_INET6, AF_LINK ; sinon `Autre`. `famille_dst` sert au masque,
-/// dont le noyau ne remplit pas toujours la famille.
+/// Une `sockaddr` d'un message de routage : AF_INET, AF_INET6, AF_LINK ; sinon `Autre`. `famille_dst` : pour un masque,
+/// la famille de la destination, toujours prise. Le noyau ne remplit pas celle du masque : rn_addmask (radix.c) met
+/// ses octets 1 à 3 à 0xff, et rtm_scrub (route.c) prend lui aussi la famille de la destination.
 fn adresse_route(sa: &[u8], famille_dst: Option<u8>) -> AdresseRoute {
-    let famille = sa.get(1).copied().filter(|&f| f != 0).or(famille_dst);
+    let famille = famille_dst.or_else(|| sa.get(1).copied().filter(|&f| f != 0));
     // Les octets à partir de `debut`, complétés de zéros jusqu'à `n` (masque tronqué).
     let complet = |debut: usize, n: usize| -> Vec<u8> {
         let mut v: Vec<u8> = sa.get(debut..).unwrap_or_default().iter().copied().take(n).collect();
@@ -584,10 +593,13 @@ pub(crate) fn lire_routes(o: &[u8]) -> Vec<Route> {
             drapeaux,
             index,
             destination: adresses[RTAX_DST].map(|sa| adresse_route(sa, None)),
+            // Sans destination, le masque n'a pas de famille sûre : non lu.
             passerelle: adresses[RTAX_GATEWAY].map(|sa| adresse_route(sa, None)),
-            masque: adresses[RTAX_NETMASK].and_then(|sa| match adresse_route(sa, famille_dst) {
-                AdresseRoute::Ip(ip) => Some(ip),
-                _ => None,
+            masque: adresses[RTAX_NETMASK].filter(|_| famille_dst.is_some()).and_then(|sa| {
+                match adresse_route(sa, famille_dst) {
+                    AdresseRoute::Ip(ip) => Some(ip),
+                    _ => None,
+                }
             }),
         });
     }
@@ -865,7 +877,7 @@ mod tests {
         // Un autre processus que celui demandé, ou une autre taille : refusé.
         assert_eq!(lire_shortbsdinfo(&o, 4243), None);
         assert_eq!(lire_shortbsdinfo(&o[..63], 4242), None);
-        // 16 caractères sans nul : tout le tableau, pas au-delà.
+        // Un tableau sans nul (réponse hostile) : tout le tableau, pas au-delà.
         o[16..32].copy_from_slice(b"AppleFileServerX");
         assert_eq!(lire_shortbsdinfo(&o, 4242).unwrap().comm, "AppleFileServerX");
     }
@@ -1011,6 +1023,48 @@ mod tests {
 
     /// Des octets hostiles : longueur nulle ou trop grande, adresses annoncées absentes, autre version. Jamais de
     /// panique, jamais une route inventée.
+    /// Un masque tel que le noyau l'écrit (famille 0xff, tronqué après son dernier octet non nul) : lu avec la
+    /// famille de la destination. Une route 0.0.0.0/1 (VPN) n'est pas la route par défaut.
+    #[test]
+    fn masque_ecrit_par_le_noyau() {
+        let masque = vec![5, 0xff, 0xff, 0xff, 128];
+        let o = message(
+            RTF_UP | RTF_GATEWAY,
+            4,
+            &[
+                (RTAX_DST, sin([0; 4])),
+                (RTAX_GATEWAY, sin([10, 8, 0, 1])),
+                (RTAX_NETMASK, masque),
+            ],
+        );
+        let r = lire_routes(&o);
+        assert_eq!(r[0].masque, Some(IpAddr::V4(Ipv4Addr::new(128, 0, 0, 0))));
+        assert_eq!(passerelle_par_defaut(&r), None);
+        let o = message(
+            RTF_UP | RTF_GATEWAY,
+            4,
+            &[
+                (RTAX_DST, sin([0; 4])),
+                (RTAX_GATEWAY, sin([10, 8, 0, 1])),
+                (RTAX_NETMASK, vec![0, 0xff, 0xff, 0xff]),
+            ],
+        );
+        assert_eq!(
+            passerelle_par_defaut(&lire_routes(&o)),
+            Some(Ipv4Addr::new(10, 8, 0, 1))
+        );
+    }
+
+    /// La zone gardée par XNU dans une adresse de lien local est retirée.
+    #[test]
+    fn zone_ipv6_retiree() {
+        let mut o = prise(AF_INET6, IPPROTO_TCP, SOCKINFO_TCP, INI_IPV6, TSI_S_ESTABLISHED);
+        let ini = 264;
+        o[ini + 32..ini + 48].copy_from_slice(&"fe80:4::1".parse::<Ipv6Addr>().unwrap().octets());
+        let p = lire_socket_fdinfo(&o).unwrap();
+        assert_eq!(p.distante, "fe80::1".parse::<IpAddr>().unwrap());
+    }
+
     #[test]
     fn table_de_routage_hostile() {
         assert_eq!(lire_routes(&[]), Vec::new());

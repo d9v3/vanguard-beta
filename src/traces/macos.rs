@@ -239,6 +239,13 @@ fn reseau_natif(f: &mut Feuille) {
                     if p.tcp { nom_etat_tcp(p.etat) } else { "" }
                 );
             }
+            if l.illisibles > 0 {
+                let _ = writeln!(
+                    t,
+                    "({} prises de forme inattendue, non lues : à comparer à lsof / {} sockets of unexpected shape, not read: compare with lsof)",
+                    l.illisibles, l.illisibles
+                );
+            }
             if l.refuses > 0 {
                 let _ = writeln!(
                     t,

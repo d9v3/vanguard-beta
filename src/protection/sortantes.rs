@@ -471,10 +471,11 @@ fn connexions() -> Option<Vec<Connexion>> {
     for c in &mut liste {
         c.chemin = c.pid.and_then(|p| chemins.get(&p).cloned());
     }
-    if let Some(n) = crate::commande::lancer(Command::new("netstat").args(["-anp", "tcp"]), 15) {
-        let autres = invisibles(&n.sortie, &liste);
-        liste.extend(autres);
-    }
+    // Sans netstat, les connexions des autres comptes manquent : la liste n'est pas entière, donc illisible (une liste
+    // du seul compte dirait à tort « aucune connexion suspecte »).
+    let n = crate::commande::lancer(Command::new("netstat").args(["-anp", "tcp"]), 15).filter(|r| r.code == Some(0))?;
+    let autres = invisibles(&n.sortie, &liste);
+    liste.extend(autres);
     Some(liste)
 }
 

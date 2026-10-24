@@ -498,6 +498,17 @@ mod xml {
     }
 }
 
+/// Une date de plist (secondes depuis 2001) en secondes depuis 1970 ; `None` pour une valeur qu'aucune date ne
+/// porte (infinie, hors des bornes) : une plist fabriquée ne doit pas faire déborder le calcul.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+pub fn date_unix(secondes: f64) -> Option<i64> {
+    if !secondes.is_finite() || secondes.abs() > 1e15 {
+        return None;
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    (secondes as i64).checked_add(ORIGINE_APPLE)
+}
+
 /// Une plist écrite lisiblement, à la façon de `plutil -p` : une clé par ligne (« "Label" => "com.exemple" »), les
 /// tableaux par rang, l'imbrication par l'indentation ; les données par leur taille, les dates en UTC. Pour les
 /// traces d'incident, à côté de la sortie de plutil.
@@ -514,9 +525,8 @@ pub fn afficher(v: &Valeur) -> String {
             Valeur::Reel(r) => {
                 let _ = write!(t, "{r}");
             }
-            #[allow(clippy::cast_possible_truncation)]
             Valeur::Date(s) => {
-                let d = chrono::DateTime::from_timestamp(ORIGINE_APPLE + *s as i64, 0);
+                let d = date_unix(*s).and_then(|u| chrono::DateTime::from_timestamp(u, 0));
                 let _ = write!(
                     t,
                     "{}",
@@ -560,6 +570,15 @@ pub fn afficher(v: &Valeur) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dates_hostiles() {
+        assert_eq!(date_unix(0.0), Some(ORIGINE_APPLE));
+        assert_eq!(date_unix(f64::MAX), None);
+        assert_eq!(date_unix(f64::NAN), None);
+        assert_eq!(date_unix(-1e300), None);
+        let _ = afficher(&Valeur::Date(f64::MAX));
+    }
 
     #[test]
     fn plist_affichee_comme_plutil() {

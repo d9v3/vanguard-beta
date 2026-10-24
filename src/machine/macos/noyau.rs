@@ -13,9 +13,10 @@ use std::net::Ipv4Addr;
 
 use crate::machine::darwin::{self, Court, PriseNoyau, Route, Voisin};
 
-/// Un sysctl par son MIB (tableau d'entiers), avec la taille demandée d'abord au noyau (bornée à 64 Mo). `None` :
-/// refusé, absent, ou vide.
-pub(crate) fn sysctl_mib(mib: &mut [c_int], taille_max: usize) -> Option<Vec<u8>> {
+/// Un sysctl par son MIB (tableau d'entiers), avec la taille demandée d'abord au noyau, bornée à `taille_max`.
+/// `marge` : un huitième de plus pour une table qui peut grandir entre les deux appels (routes, processus) ; sans
+/// marge pour KERN_PROCARGS2, que le noyau refuse au-delà de ARG_MAX. `None` : refusé, absent, ou vide.
+pub(crate) fn sysctl_mib(mib: &mut [c_int], taille_max: usize, marge: bool) -> Option<Vec<u8>> {
     let n = libc::c_uint::try_from(mib.len()).ok()?;
     let mut taille: libc::size_t = 0;
     // SAFETY : mib vit pendant l'appel et compte `n` entiers ; sans tampon (pointeur nul), sysctl n'écrit que la
@@ -33,8 +34,9 @@ pub(crate) fn sysctl_mib(mib: &mut [c_int], taille_max: usize) -> Option<Vec<u8>
     if code != 0 || taille == 0 || taille > taille_max {
         return None;
     }
-    // La table peut grandir entre les deux appels : un peu de marge.
-    taille = taille.saturating_add(taille / 8).min(taille_max);
+    if marge {
+        taille = taille.saturating_add(taille / 8).min(taille_max);
+    }
     let mut tampon = vec![0u8; taille];
     // SAFETY : tampon de `taille` octets, vivant pendant l'appel ; le noyau n'écrit pas au-delà et redit dans
     // `taille` ce qu'il a écrit.
@@ -105,14 +107,15 @@ pub(crate) fn debut(pid: u32) -> Option<(i64, u32)> {
         libc::KERN_PROC_PID,
         c_int::try_from(pid).ok()?,
     ];
-    darwin::debut_kinfo(&sysctl_mib(&mut mib, 4096)?, pid)
+    darwin::debut_kinfo(&sysctl_mib(&mut mib, 4096, true)?, pid)
 }
 
-/// Les arguments du processus (KERN_PROCARGS2) ; le noyau ne les donne que pour les processus du compte (tous en
-/// root), comme à `ps`. `None` : refusé, parti, ou illisible.
-pub(crate) fn arguments(pid: u32) -> Option<Vec<String>> {
+/// Le chemin du programme lancé et les arguments (KERN_PROCARGS2), que le noyau ne donne que pour les processus du
+/// compte (tous en root), comme à `ps` ; `None` : refusé, parti, ou illisible. Le chemin sert quand proc_pidpath ne le donne plus
+/// (programme effacé du disque).
+fn chemin_et_arguments(pid: u32) -> Option<(String, Vec<String>)> {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, c_int::try_from(pid).ok()?];
-    darwin::lire_procargs2(&sysctl_mib(&mut mib, 4 << 20)?).map(|(_, args)| args)
+    darwin::lire_procargs2(&sysctl_mib(&mut mib, 4 << 20, false)?)
 }
 
 /// Le chemin du programme du processus (proc_pidpath, lisible pour tous les comptes).
@@ -123,6 +126,9 @@ pub(crate) fn chemin(pid: u32) -> Option<String> {
 /// Les enfants directs d'un processus (proc_listchildpids). `None` : l'appel a échoué (pas « aucun enfant »).
 pub(crate) fn enfants(pid: u32) -> Option<Vec<u32>> {
     let parent = libc::pid_t::try_from(pid).ok()?;
+    // proc_listchildpids rend 0 aussi bien pour « aucun enfant » que pour un échec (libproc.c) : le processus doit
+    // d'abord se lire, sinon c'est un échec, à confier à pgrep.
+    court(pid)?;
     let mut place = 64usize;
     for _ in 0..6 {
         let mut pids: Vec<c_int> = vec![0; place];
@@ -278,26 +284,29 @@ pub(crate) fn processus(avec_arguments: bool) -> Option<Vec<Processus>> {
         .into_iter()
         .filter_map(|pid| {
             let c = court(pid)?;
+            let lance = if avec_arguments { chemin_et_arguments(pid) } else { None };
+            // proc_pidpath ne donne plus le chemin d'un programme effacé : celui qu'a noté exec, quand il se lit.
+            let chemin = chemin(pid).or_else(|| lance.as_ref().map(|(c, _)| c.clone()).filter(|c| c.starts_with('/')));
             Some(Processus {
                 pid,
                 ppid: c.ppid,
                 uid: c.uid,
                 comm: c.comm,
-                chemin: chemin(pid),
+                chemin,
                 debut: debut(pid),
-                arguments: if avec_arguments { arguments(pid) } else { None },
+                arguments: lance.map(|(_, a)| a),
             })
         })
         .collect();
     liste.iter().any(|p| p.pid == moi).then_some(liste)
 }
 
-/// Un programme de ce nom court du noyau (p_comm, 16 caractères au plus, ce que compare `pgrep -x`) tourne-t-il ?
-/// `None` : la liste ne se lit pas (on ne sait pas, à demander à pgrep).
+/// Un programme de ce nom court du noyau (p_comm, ce que compare `pgrep -x`) tourne-t-il ? `None` : la liste ne se
+/// lit pas (on ne sait pas, à demander à pgrep). Les appelants cherchent des noms de 15 caractères au plus.
 pub(crate) fn en_marche(nom: &str) -> Option<bool> {
     let pids = pids()?;
-    // Un nom de plus de 16 caractères est tronqué par le noyau.
-    let court_cherche: String = nom.chars().take(16).collect();
+    // proc_pidshortbsdinfo coupe le nom à 15 caractères (le 16e octet est le nul).
+    let court_cherche: String = nom.chars().take(15).collect();
     Some(
         pids.into_iter()
             .any(|pid| court(pid).is_some_and(|c| c.comm == court_cherche)),
@@ -310,9 +319,12 @@ pub(crate) fn en_marche(nom: &str) -> Option<bool> {
 /// liste des descripteurs (ceux des autres comptes, sans droits d'administrateur) ; leurs prises manquent, comme à
 /// lsof.
 #[derive(Debug, Default)]
+#[allow(clippy::struct_field_names)] // « prises » : ce qu'elles sont, à côté de leurs refus
 pub(crate) struct Prises {
     pub prises: Vec<(u32, String, PriseNoyau)>,
     pub refuses: usize,
+    /// Les prises dont la réponse n'a pas la taille de `socket_fdinfo` : une structure qui aurait changé avec macOS.
+    pub illisibles: usize,
 }
 
 /// Les descripteurs ouverts d'un processus (PROC_PIDLISTFDS), en (numéro, sorte). `None` : refusé ou parti.
@@ -350,10 +362,11 @@ fn descripteurs(pid: c_int) -> Option<Vec<(c_int, u32)>> {
     )
 }
 
-/// La prise IP d'un descripteur (PROC_PIDFDSOCKETINFO) ; `None` : pas une prise IP, ou réponse d'une autre taille.
-fn prise(pid: c_int, fd: c_int) -> Option<PriseNoyau> {
+/// La prise IP d'un descripteur (PROC_PIDFDSOCKETINFO) : `Ok(None)` pour une prise qui n'est pas IP ou un descripteur
+/// fermé entre-temps, `Err` pour une réponse d'une autre taille que `socket_fdinfo`.
+fn prise(pid: c_int, fd: c_int) -> Result<Option<PriseNoyau>, ()> {
     let mut tampon = vec![0u8; size_of::<darwin::SocketFdinfo>()];
-    let taille = c_int::try_from(tampon.len()).ok()?;
+    let taille = c_int::try_from(tampon.len()).map_err(|_| ())?;
     // SAFETY : proc_pidfdinfo écrit au plus `taille` octets dans `tampon` et rend leur nombre (0 : refus).
     let lus = unsafe {
         libc::proc_pidfdinfo(
@@ -364,12 +377,16 @@ fn prise(pid: c_int, fd: c_int) -> Option<PriseNoyau> {
             taille,
         )
     };
-    darwin::lire_socket_fdinfo(tampon.get(..usize::try_from(lus).ok()?)?)
+    match usize::try_from(lus) {
+        Ok(0) => Ok(None),
+        Ok(n) if n == tampon.len() => Ok(darwin::lire_socket_fdinfo(&tampon)),
+        _ => Err(()),
+    }
 }
 
-/// Les prises réseau de tous les processus lisibles. `None` : la liste des processus ne se lit pas, ou les
-/// descripteurs de Vanguard lui-même ne se lisent pas (le noyau refuse alors tout : la lecture native est muette, et
-/// l'appelant passe à lsof).
+/// Les prises réseau de tous les processus lisibles. `None` : la liste des processus ne se lit pas, les descripteurs
+/// de Vanguard lui-même ne se lisent pas (le noyau refuse alors tout), ou des prises ont répondu sous une autre forme
+/// sans qu'aucune ne se lise : la lecture native est muette, et l'appelant passe à lsof.
 pub(crate) fn prises() -> Option<Prises> {
     let moi = c_int::try_from(std::process::id()).ok()?;
     descripteurs(moi)?;
@@ -383,22 +400,28 @@ pub(crate) fn prises() -> Option<Prises> {
         let socket = u32::try_from(libc::PROX_FDTYPE_SOCKET).unwrap_or(2);
         let mut nom = None;
         for (fd, _) in liste.into_iter().filter(|(_, sorte)| *sorte == socket) {
-            if let Some(x) = prise(p, fd) {
-                let nom = nom
-                    .get_or_insert_with(|| {
-                        let comm = court(pid).map(|c| c.comm).unwrap_or_default();
-                        chemin(pid)
-                            .as_deref()
-                            .and_then(|c| c.rsplit('/').next())
-                            .filter(|n| !n.is_empty())
-                            .map_or(comm, str::to_string)
-                    })
-                    .clone();
-                lues.prises.push((pid, nom, x));
-            }
+            let x = match prise(p, fd) {
+                Ok(Some(x)) => x,
+                Ok(None) => continue,
+                Err(()) => {
+                    lues.illisibles += 1;
+                    continue;
+                }
+            };
+            let nom = nom
+                .get_or_insert_with(|| {
+                    let comm = court(pid).map(|c| c.comm).unwrap_or_default();
+                    chemin(pid)
+                        .as_deref()
+                        .and_then(|c| c.rsplit('/').next())
+                        .filter(|n| !n.is_empty())
+                        .map_or(comm, str::to_string)
+                })
+                .clone();
+            lues.prises.push((pid, nom, x));
         }
     }
-    Some(lues)
+    (lues.illisibles == 0 || !lues.prises.is_empty()).then_some(lues)
 }
 
 // ───────────────────────────── Routes et voisins ─────────────────────────────
@@ -418,7 +441,7 @@ fn routes_ipv4(drapeau: Option<c_int>) -> Option<Vec<Route>> {
         drapeau.unwrap_or(0),
     ];
     // Une table vide est une réponse : sysctl rend alors 0 octet, que sysctl_mib dit `None`.
-    Some(darwin::lire_routes(&sysctl_mib(&mut mib, 64 << 20)?))
+    Some(darwin::lire_routes(&sysctl_mib(&mut mib, 64 << 20, true)?))
 }
 
 /// La passerelle par défaut en IPv4, celle de `route -n get default`. `None` : table illisible, ou aucune route par
@@ -521,6 +544,10 @@ pub(crate) fn options_prochain_demarrage() -> Option<OptionsNvram> {
         return Some(OptionsNvram::Posees(t.to_string()));
     }
     let d = valeur.downcast::<CFData>()?;
+    // Vide : CFDataGetBytePtr peut rendre un pointeur nul, que bytes() prendrait pour une tranche.
+    if d.is_empty() {
+        return Some(OptionsNvram::Posees(String::new()));
+    }
     let octets = d.bytes();
     let fin = octets.iter().position(|&o| o == 0).unwrap_or(octets.len());
     Some(OptionsNvram::Posees(
@@ -556,6 +583,10 @@ pub(crate) struct Montage {
 /// Les volumes montés (getmntinfo, MNT_NOWAIT : sans réveiller un volume réseau qui ne répond plus), ce que liste
 /// `mount`. `None` : illisible.
 pub(crate) fn montages() -> Option<Vec<Montage>> {
+    // getmntinfo rend un tableau qu'il garde dans la bibliothèque et réécrit au prochain appel : un seul fil à la
+    // fois, de l'appel à la fin de la copie.
+    static VERROU: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _garde = VERROU.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut tableau: *mut libc::statfs = std::ptr::null_mut();
     // SAFETY : getmntinfo fait pointer `tableau` sur un tableau qu'il garde lui-même (à ne pas libérer) et rend son
     // nombre d'éléments (0 : échec).
@@ -564,8 +595,8 @@ pub(crate) fn montages() -> Option<Vec<Montage>> {
     if tableau.is_null() {
         return None;
     }
-    // SAFETY : `n` éléments valides à partir de `tableau`, d'après getmntinfo, lus avant tout autre appel qui le
-    // réécrirait.
+    // SAFETY : `n` éléments valides à partir de `tableau`, d'après getmntinfo, lus et copiés sous le verrou, avant
+    // tout autre appel de ce module qui le réécrirait.
     let liste = unsafe { std::slice::from_raw_parts(tableau, n) };
     let texte = |c: &[c_char]| {
         // SAFETY : un c_char a la taille et l'alignement d'un octet.
@@ -683,16 +714,26 @@ mod oracles {
         );
     }
 
-    /// Une prise ouverte par ce test : la lecture native la voit, en écoute puis établie, avec ce processus, comme
-    /// lsof ; netstat voit les mêmes ports.
+    /// Des prises ouvertes par ce test (TCP IPv4 en écoute et établie, TCP IPv6 en écoute sur ::1 et sur toutes les
+    /// adresses, UDP IPv4 et IPv6) : la lecture native les voit toutes, avec ce processus, comme lsof ; netstat voit
+    /// les mêmes ports. Puis chaque prise IP que lsof donne pour ce processus est dans la lecture native (les autres
+    /// tests du même processus en ouvrent et en ferment : seules celles encore là après coup comptent).
     #[test]
     fn prises_contre_lsof_et_netstat() {
-        let serveur = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        use std::net::{TcpListener, TcpStream, UdpSocket};
+        let serveur = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = serveur.local_addr().unwrap().port();
-        let client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let client = TcpStream::connect(("127.0.0.1", port)).unwrap();
         let (_accepte, _) = serveur.accept().unwrap();
         let local = client.local_addr().unwrap().port();
+        let boucle6 = TcpListener::bind("[::1]:0").unwrap();
+        let tout6 = TcpListener::bind("[::]:0").unwrap();
+        let udp4 = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let udp6 = UdpSocket::bind("[::1]:0").unwrap();
+        let (p6, pt6) = (boucle6.local_addr().unwrap().port(), tout6.local_addr().unwrap().port());
+        let (pu4, pu6) = (udp4.local_addr().unwrap().port(), udp6.local_addr().unwrap().port());
         let lues = prises().expect("prises natives");
+        assert_eq!(lues.illisibles, 0, "réponses d'une autre taille que socket_fdinfo");
         let moi = std::process::id();
         let a_moi: Vec<&PriseNoyau> = lues
             .prises
@@ -700,10 +741,18 @@ mod oracles {
             .filter(|(p, ..)| *p == moi)
             .map(|(_, _, x)| x)
             .collect();
+        let ecoute = |port: u16, ip: &str| {
+            a_moi
+                .iter()
+                .any(|x| x.tcp && x.etat == darwin::TSI_S_LISTEN && x.port_local == port && x.locale.to_string() == ip)
+        };
+        assert!(ecoute(port, "127.0.0.1"), "{a_moi:?}");
+        assert!(ecoute(p6, "::1"), "{a_moi:?}");
         assert!(
             a_moi
                 .iter()
-                .any(|x| x.tcp && x.etat == darwin::TSI_S_LISTEN && x.port_local == port)
+                .any(|x| x.tcp && x.port_local == pt6 && x.locale.is_unspecified()),
+            "{a_moi:?}"
         );
         assert!(
             a_moi.iter().any(|x| x.tcp
@@ -711,12 +760,41 @@ mod oracles {
                 && x.port_local == local
                 && x.port_distant == port)
         );
-        let lsof = outil("lsof", &["-nP", "-a", "-p", &moi.to_string(), "-iTCP"]).expect("lsof");
+        assert!(
+            a_moi
+                .iter()
+                .any(|x| !x.tcp && x.port_local == pu4 && x.locale.to_string() == "127.0.0.1")
+        );
+        assert!(
+            a_moi
+                .iter()
+                .any(|x| !x.tcp && x.port_local == pu6 && x.locale.to_string() == "::1")
+        );
+        let lsof = outil("lsof", &["-nP", "-a", "-p", &moi.to_string(), "-i"]).expect("lsof");
         assert!(lsof.contains(&format!("127.0.0.1:{port} (LISTEN)")), "{lsof}");
         assert!(
             lsof.contains(&format!("127.0.0.1:{local}->127.0.0.1:{port} (ESTABLISHED)")),
             "{lsof}"
         );
+        assert!(lsof.contains(&format!("[::1]:{p6} (LISTEN)")), "{lsof}");
+        // Chaque prise de lsof (« TCP 127.0.0.1:5000 (LISTEN) », « UDP [::1]:5353 ») : son port local est vu par le
+        // noyau, si elle existe encore après la lecture native.
+        let apres = prises().unwrap();
+        let ports_natifs: Vec<u16> = a_moi.iter().map(|x| x.port_local).collect();
+        for l in lsof.lines().skip(1) {
+            let Some(nom) = l.split_whitespace().rev().find(|m| m.contains(':')) else {
+                continue;
+            };
+            let locale = nom.split("->").next().unwrap_or_default();
+            let Some(p) = locale.rsplit_once(':').and_then(|(_, p)| p.parse::<u16>().ok()) else {
+                continue;
+            };
+            let encore = apres.prises.iter().any(|(q, _, x)| *q == moi && x.port_local == p);
+            assert!(
+                !encore || ports_natifs.contains(&p),
+                "{l} : absente de la lecture native"
+            );
+        }
         let netstat = outil("netstat", &["-an", "-p", "tcp"]).unwrap();
         assert!(netstat.contains(&format!("127.0.0.1.{port}")), "{netstat}");
     }
@@ -776,7 +854,10 @@ mod oracles {
             return crate::essais::saute("NVRAM absente de ce Mac");
         };
         match natif {
-            OptionsNvram::Absentes => assert_ne!(nvram.code, Some(0), "{}", nvram.sortie),
+            OptionsNvram::Absentes => {
+                assert_ne!(nvram.code, Some(0), "{}", nvram.sortie);
+                assert!(nvram.erreurs.contains("not found"), "{}", nvram.erreurs);
+            }
             OptionsNvram::Posees(t) => {
                 assert_eq!(
                     nvram.sortie.trim().strip_prefix("boot-args").map(str::trim),
@@ -836,8 +917,10 @@ mod oracles {
     /// Les volumes montés : ceux de `mount`.
     #[test]
     fn montages_contre_mount() {
+        // mount d'abord : un volume monté entre les deux lectures (image de simulateur) est alors vu par le noyau.
+        let mount = outil("mount", &[]).unwrap();
         let natifs = montages().expect("getmntinfo");
-        for l in outil("mount", &[]).unwrap().lines() {
+        for l in mount.lines() {
             // « /dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled) »
             let Some((source, reste)) = l.split_once(" on ") else {
                 continue;
@@ -845,10 +928,10 @@ mod oracles {
             let Some((point, options)) = reste.rsplit_once(" (") else {
                 continue;
             };
-            let m = natifs
-                .iter()
-                .find(|m| m.point == point)
-                .unwrap_or_else(|| panic!("{point} absent"));
+            // Démonté entre les deux lectures : rien à comparer.
+            let Some(m) = natifs.iter().find(|m| m.point == point) else {
+                continue;
+            };
             assert_eq!(m.source, source);
             assert_eq!(m.lecture_seule, options.contains("read-only"), "{l}");
         }

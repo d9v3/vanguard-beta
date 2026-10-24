@@ -1461,7 +1461,9 @@ fn machine_et_compte() -> (String, String) {
     let machine = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default();
     // gethostname, ce qu'affiche `hostname`, sans le lancer.
     #[cfg(target_os = "macos")]
-    let machine = crate::machine::macos::nom_hote().unwrap_or_default();
+    let machine = crate::machine::macos::nom_hote()
+        .or_else(|| crate::commande::lancer(&mut Command::new("hostname"), 5).map(|r| r.sortie))
+        .unwrap_or_default();
     #[cfg(windows)]
     let machine = std::env::var("COMPUTERNAME").unwrap_or_default();
     let compte = ["USER", "LOGNAME", "USERNAME"]

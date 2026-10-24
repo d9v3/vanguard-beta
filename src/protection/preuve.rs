@@ -300,13 +300,6 @@ fn connexions_de(p: &mut Preuve, garder: impl Fn(&crate::protection::sortantes::
                 })
                 .collect();
         }
-        None if cfg!(target_os = "macos") => p.impossible(
-            quoi,
-            (
-                "pas encore lues par Vanguard sous macOS",
-                "not yet read by Vanguard on macOS",
-            ),
-        ),
         None => p.impossible(quoi, ("illisibles", "unreadable")),
     }
 }

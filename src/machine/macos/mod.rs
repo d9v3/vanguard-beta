@@ -881,9 +881,7 @@ fn derniere_sauvegarde(destinations: &[Valeur]) -> Option<chrono::NaiveDate> {
             _ => None,
         })
         .fold(None, |max: Option<f64>, s| Some(max.map_or(s, |m| m.max(s))))?;
-    // Les dates d'Apple partent du 1er janvier 2001.
-    #[allow(clippy::cast_possible_truncation)]
-    let d = chrono::DateTime::from_timestamp(978_307_200 + secondes as i64, 0)?;
+    let d = chrono::DateTime::from_timestamp(crate::plist::date_unix(secondes)?, 0)?;
     Some(d.with_timezone(&chrono::Local).date_naive())
 }
 

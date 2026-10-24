@@ -491,6 +491,7 @@ fn processus_et_parents(racine: u32) -> Vec<(u32, u32)> {
             && liste.len() < 1000
         {
             let enfants = crate::machine::macos::noyau::enfants(pid).unwrap_or_else(|| {
+                // Pas par `lancer` : son délai dépassé rappelle `arreter`, qui reviendrait ici.
                 Command::new("pgrep")
                     .args(["-P", &pid.to_string()])
                     .output()

@@ -105,7 +105,7 @@ const HISTORIQUE_MAC: &str = "/Library/Receipts/InstallHistory.plist";
 
 /// Les mises à jour d'Apple du journal des installations (InstallHistory.plist : une liste de { date, displayName,
 /// displayVersion, processName }), les plus récentes en premier : celles qu'a posées la mise à jour de logiciels
-/// (« softwareupdated », « Software Update »), comme `softwareupdate --history`. Les dates sont de vraies dates, pas
+/// (« softwareupdated », « softwareupdate » en ligne de commande, « Software Update »), comme `softwareupdate --history`. Les dates sont de vraies dates, pas
 /// un texte dans la langue du Mac.
 #[cfg(any(target_os = "macos", test))]
 fn lire_historique_mac(v: &crate::plist::Valeur) -> Vec<Maj> {
@@ -117,7 +117,7 @@ fn lire_historique_mac(v: &crate::plist::Valeur) -> Vec<Maj> {
         .filter(|e| {
             matches!(
                 e.cle("processName").and_then(Valeur::texte),
-                Some("softwareupdated" | "Software Update")
+                Some("softwareupdated" | "softwareupdate" | "Software Update")
             )
         })
         .filter_map(|e| {
@@ -130,8 +130,7 @@ fn lire_historique_mac(v: &crate::plist::Valeur) -> Vec<Maj> {
                 .and_then(Valeur::texte)
                 .unwrap_or_default()
                 .trim();
-            #[allow(clippy::cast_possible_truncation)]
-            let date = chrono::DateTime::from_timestamp(978_307_200 + *secondes as i64, 0)?
+            let date = chrono::DateTime::from_timestamp(crate::plist::date_unix(*secondes)?, 0)?
                 .with_timezone(&chrono::Local)
                 .format("%Y-%m-%d")
                 .to_string();
@@ -298,7 +297,11 @@ mod tests {
             .and_then(crate::plist::Lu::valeur)
             .map(|v| lire_historique_mac(&v))
             .unwrap_or_default();
-        for l in r.sortie.lines().skip(2).filter(|l| !l.trim().is_empty()) {
+        let lignes: Vec<&str> = r.sortie.lines().skip(2).filter(|l| !l.trim().is_empty()).collect();
+        if lignes.is_empty() {
+            return crate::essais::saute("softwareupdate --history vide sur ce Mac : rien à comparer");
+        }
+        for l in lignes {
             let nom = l.split("  ").next().unwrap_or_default().trim();
             assert!(
                 natif.iter().any(|m| m.quoi.starts_with(nom)),

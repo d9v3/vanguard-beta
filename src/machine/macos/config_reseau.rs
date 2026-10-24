@@ -43,10 +43,13 @@ unsafe extern "C" {
     static kSCNetworkProtocolTypeDNS: CFStringRef;
 }
 
-/// Une liste de propriétés de CoreFoundation en `Valeur`, bornée. `None` : type inconnu ou bornes dépassées.
-fn vers_valeur(t: &CFType, profondeur: usize, compte: &mut usize) -> Option<Valeur> {
+/// Une liste de propriétés de CoreFoundation en `Valeur`. `None` : un type que `Valeur` ne connaît pas (une date…),
+/// sauté par son contenant sans perdre le reste ; `hors_bornes` : trop profond ou trop de valeurs, et alors toute la
+/// lecture est refusée.
+fn vers_valeur(t: &CFType, profondeur: usize, compte: &mut usize, hors_bornes: &mut bool) -> Option<Valeur> {
     *compte += 1;
     if profondeur > PROFONDEUR_MAX || *compte > VALEURS_MAX {
+        *hors_bornes = true;
         return None;
     }
     // Un pointeur d'une liste ou d'un dictionnaire, en CFType retenu (« Get » : la liste garde le sien).
@@ -68,12 +71,22 @@ fn vers_valeur(t: &CFType, profondeur: usize, compte: &mut usize) -> Option<Vale
             .or_else(|| n.to_f64().map(Valeur::Reel));
     }
     if let Some(d) = t.downcast::<CFData>() {
-        return Some(Valeur::Donnees(d.bytes().to_vec()));
+        // Vide : CFDataGetBytePtr peut rendre un pointeur nul, que bytes() prendrait pour une tranche.
+        return Some(Valeur::Donnees(if d.is_empty() {
+            Vec::new()
+        } else {
+            d.bytes().to_vec()
+        }));
     }
     if let Some(a) = t.downcast::<CFArray>() {
         let mut v = Vec::new();
         for p in a.get_all_values() {
-            v.push(vers_valeur(&element(p)?, profondeur + 1, compte)?);
+            if let Some(e) = element(p).and_then(|e| vers_valeur(&e, profondeur + 1, compte, hors_bornes)) {
+                v.push(e);
+            }
+            if *hors_bornes {
+                return None;
+            }
         }
         return Some(Valeur::Tableau(v));
     }
@@ -81,10 +94,15 @@ fn vers_valeur(t: &CFType, profondeur: usize, compte: &mut usize) -> Option<Vale
         let (cles, valeurs) = d.get_keys_and_values();
         let mut paires = Vec::with_capacity(cles.len());
         for (k, v) in cles.into_iter().zip(valeurs) {
-            let Some(cle) = element(k)?.downcast::<CFString>() else {
+            let Some(cle) = element(k).and_then(|k| k.downcast::<CFString>()) else {
                 continue;
             };
-            paires.push((cle.to_string(), vers_valeur(&element(v)?, profondeur + 1, compte)?));
+            if let Some(e) = element(v).and_then(|e| vers_valeur(&e, profondeur + 1, compte, hors_bornes)) {
+                paires.push((cle.to_string(), e));
+            }
+            if *hors_bornes {
+                return None;
+            }
         }
         // CoreFoundation ne garde pas d'ordre : trié, pour une lecture stable.
         paires.sort_by(|a, b| a.0.cmp(&b.0));
@@ -94,7 +112,9 @@ fn vers_valeur(t: &CFType, profondeur: usize, compte: &mut usize) -> Option<Vale
 }
 
 fn valeur(t: &CFType) -> Option<Valeur> {
-    vers_valeur(t, 0, &mut 0)
+    let mut hors_bornes = false;
+    let v = vers_valeur(t, 0, &mut 0, &mut hors_bornes);
+    if hors_bornes { None } else { v }
 }
 
 /// Une session du magasin dynamique de configd. `None` : configd ne répond pas.
@@ -187,32 +207,38 @@ pub(crate) fn proxy_comme_scutil() -> Option<String> {
     Some(texte_scutil(&v))
 }
 
-/// Un dictionnaire écrit comme `scutil` : « <dictionary> { », « Clé : valeur » par ligne, « } ». Les listes
-/// (exceptions du proxy) sont écrites par rang.
+/// Un dictionnaire écrit comme `scutil` : « <dictionary> { », « Clé : valeur » par ligne, les dictionnaires imbriqués
+/// (« __SCOPED__ », le proxy de chaque carte) et les listes (exceptions) écrits à leur place et indentés, « } ».
 pub(crate) fn texte_scutil(v: &Valeur) -> String {
-    use std::fmt::Write;
-    let mut t = String::from("<dictionary> {\n");
-    if let Valeur::Dico(paires) = v {
-        for (cle, valeur) in paires {
-            match valeur {
-                Valeur::Tableau(liste) => {
-                    let _ = writeln!(t, "  {cle} : <array> {{");
-                    for (i, e) in liste.iter().enumerate() {
-                        if let Some(e) = e.comme_defaults() {
-                            let _ = writeln!(t, "    {i} : {e}");
-                        }
-                    }
-                    t.push_str("  }\n");
-                }
-                autre => {
-                    if let Some(e) = autre.comme_defaults() {
-                        let _ = writeln!(t, "  {cle} : {e}");
-                    }
-                }
+    fn ecrire(v: &Valeur, retrait: usize, t: &mut String) {
+        use std::fmt::Write;
+        let marge = "  ".repeat(retrait + 1);
+        let (ouverture, elements): (&str, Vec<(String, &Valeur)>) = match v {
+            Valeur::Dico(paires) => ("<dictionary> {", paires.iter().map(|(k, e)| (k.clone(), e)).collect()),
+            Valeur::Tableau(liste) => (
+                "<array> {",
+                liste.iter().enumerate().map(|(i, e)| (i.to_string(), e)).collect(),
+            ),
+            autre => {
+                t.push_str(&autre.comme_defaults().unwrap_or_default());
+                return;
+            }
+        };
+        t.push_str(ouverture);
+        t.push('\n');
+        for (cle, e) in elements {
+            if matches!(e, Valeur::Dico(_) | Valeur::Tableau(_)) || e.comme_defaults().is_some() {
+                let _ = write!(t, "{marge}{cle} : ");
+                ecrire(e, retrait + 1, t);
+                t.push('\n');
             }
         }
+        t.push_str(&"  ".repeat(retrait));
+        t.push('}');
     }
-    t.push_str("}\n");
+    let mut t = String::new();
+    ecrire(v, 0, &mut t);
+    t.push('\n');
     t
 }
 
@@ -338,9 +364,13 @@ pub(crate) fn services() -> Option<Vec<Service>> {
             )
         };
         let Some(id) = id else { continue };
+        // Un service sans nom ne peut pas être désigné à networksetup : non retenu.
+        let Some(nom) = nom.filter(|n| !n.is_empty()) else {
+            continue;
+        };
         services.push(Service {
             id,
-            nom: nom.unwrap_or_default(),
+            nom,
             actif,
             carte,
             dns: dns_du_service(s),
@@ -362,6 +392,26 @@ mod oracles {
             .map(|r| r.sortie)
     }
 
+    /// Le texte écrit comme scutil garde les blocs imbriqués.
+    #[test]
+    fn texte_scutil_imbrique() {
+        let v = Valeur::Dico(vec![
+            ("HTTPEnable".into(), Valeur::Entier(0)),
+            (
+                "__SCOPED__".into(),
+                Valeur::Dico(vec![(
+                    "en1".into(),
+                    Valeur::Dico(vec![("ProxyAutoDiscoveryEnable".into(), Valeur::Entier(1))]),
+                )]),
+            ),
+        ]);
+        let t = texte_scutil(&v);
+        assert!(
+            t.contains("    en1 : <dictionary> {\n      ProxyAutoDiscoveryEnable : 1\n"),
+            "{t}"
+        );
+    }
+
     /// Les serveurs DNS de `scutil --dns` sont tous dans la lecture native.
     #[test]
     fn dns_contre_scutil() {
@@ -375,19 +425,23 @@ mod oracles {
         }
     }
 
-    /// Le proxy : chaque « Clé : valeur » simple de `scutil --proxy` se retrouve dans le texte natif.
+    /// Le proxy : les lignes « Clé : valeur » de `scutil --proxy` et du texte natif, blocs imbriqués (__SCOPED__)
+    /// compris, sont les mêmes, comptées (pas une simple inclusion : une valeur répétée dans un bloc imbriqué compte).
     #[test]
     fn proxy_contre_scutil() {
+        let lignes = |t: &str| {
+            let mut v: Vec<String> = t
+                .lines()
+                .map(str::trim)
+                .filter(|l| l.contains(" : ") && !l.ends_with('{'))
+                .map(str::to_string)
+                .collect();
+            v.sort();
+            v
+        };
         let natif = proxy_comme_scutil().expect("SCDynamicStoreCopyProxies");
-        for l in outil("scutil", &["--proxy"]).unwrap().lines() {
-            let l = l.trim();
-            if let Some((cle, valeur)) = l.split_once(" : ")
-                && !valeur.starts_with('<')
-                && !cle.chars().all(|c| c.is_ascii_digit())
-            {
-                assert!(natif.contains(&format!("{cle} : {valeur}")), "{l} absent de {natif}");
-            }
-        }
+        let scutil = outil("scutil", &["--proxy"]).unwrap();
+        assert_eq!(lignes(&natif), lignes(&scutil), "{natif}\n---\n{scutil}");
     }
 
     /// Les services : mêmes noms, même ordre, mêmes actifs que networksetup ; même DNS réglé à la main.
