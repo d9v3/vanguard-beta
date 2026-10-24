@@ -478,6 +478,11 @@ mod tests {
     /// Un programme dans un dossier du compte n'est jamais relancé par son chemin ; un programme du système l'est.
     #[test]
     fn programme_relance_par_chemin_seulement_s_il_est_a_root() {
+        use std::os::unix::fs::MetadataExt;
+        // Dans un espace de noms utilisateur (unshare -rn), root n'est pas root : /usr/bin y appartient à « nobody ».
+        if std::fs::metadata("/usr/bin").map(|m| m.uid()).ok() != Some(0) {
+            return crate::essais::saute("/usr/bin n'appartient pas à root ici (espace de noms utilisateur)");
+        }
         assert!(chemin_sur(std::path::Path::new("/usr/bin")));
         assert!(!chemin_sur(&std::env::temp_dir().join("absent-vanguard")));
         let d = std::env::temp_dir().join(format!("vanguard-chemin-sur-{}", std::process::id()));
