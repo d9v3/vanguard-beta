@@ -1,0 +1,3 @@
+# Le code Rust en LF partout, Windows compris : des tests lisent les sources et y cherchent « #[cfg(test)]\nmod »
+# ou comptent des lignes ; avec core.autocrlf (défaut de Git pour Windows, et de la CI Windows), ils lisaient du CRLF.
+*.rs text eol=lf

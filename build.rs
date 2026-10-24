@@ -389,4 +389,12 @@ fn ressources_windows() {
         // d'intégration n'ont pas ce module.
         println!("cargo:rustc-link-arg-bins=-Wl,--require-defined=_load_config_used");
     }
+    // La pile du fil principal : 1 Mio d'origine avec MSVC, 2 avec MinGW. Le programme de mise au point (sans
+    // optimisation) dépassait 1 Mio dès la lecture des arguments (STATUS_STACK_OVERFLOW, tests d'intégration de la
+    // CI Windows, 24 oct.) ; 8 Mio, comme sous Linux, réservés et non engagés : la même marge partout.
+    match std::env::var("CARGO_CFG_TARGET_ENV").as_deref() {
+        Ok("msvc") => println!("cargo:rustc-link-arg-bins=/STACK:8388608"),
+        Ok("gnu") => println!("cargo:rustc-link-arg-bins=-Wl,--stack,8388608"),
+        _ => {}
+    }
 }

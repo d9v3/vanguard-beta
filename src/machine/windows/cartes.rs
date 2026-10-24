@@ -5,6 +5,16 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+/// IF_TYPE_IEEE80211 : une carte Wi-Fi.
+const SANS_FIL: u32 = 71;
+
+impl Carte {
+    /// Une carte Wi-Fi : sans aucune, un service WLAN arrêté veut dire « pas de Wi-Fi ».
+    pub(crate) fn sans_fil(&self) -> bool {
+        self.sorte == SANS_FIL
+    }
+}
+
 /// Une carte réseau.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Carte {
@@ -18,6 +28,8 @@ pub(crate) struct Carte {
     pub cachee: bool,
     /// IPv6 activé sur la carte.
     pub ipv6: bool,
+    /// La sorte de la carte (IfType : 6 Ethernet, 71 Wi-Fi, 24 boucle locale…).
+    pub sorte: u32,
     pub dns: Vec<IpAddr>,
 }
 
@@ -156,6 +168,7 @@ fn carte(octets: &[u8], base: usize, d: usize) -> Option<Carte> {
         active: u32_a(octets, d + ETAT)? == 1,
         cachee: matches!(sorte, BOUCLE | TUNNEL),
         ipv6: u32_a(octets, d + DRAPEAUX)? & IPV6_ACTIF != 0,
+        sorte,
         dns,
     })
 }

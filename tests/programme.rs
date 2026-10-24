@@ -1396,14 +1396,9 @@ fn protection_en_temps_reel_coupee_puis_remise() {
         assert_eq!(s.code, Some(0), "{args:?} : {}{}", s.texte, s.erreurs);
         sans_couleurs(&s.texte)
     };
-    // En administrateur (dans `unshare -rn`, verifier.sh, le compte devient root) : refusé sans question, rien
-    // d'écrit, comme les restrictions des extensions.
-    #[cfg(unix)]
-    if std::fs::metadata("/proc/self")
-        .map(|m| std::os::unix::fs::MetadataExt::uid(&m))
-        .ok()
-        == Some(0)
-    {
+    // En administrateur (dans `unshare -rn`, verifier.sh, le compte devient root ; les Windows de la CI sont élevés) :
+    // refusé sans question, rien d'écrit, comme les restrictions des extensions.
+    if en_root() || windows_eleve() {
         let t = lancer("fr", &["parametres", "temps-reel", "non", "--pendant", "1h"], "o\n");
         assert!(t.contains("tourne en administrateur") && !t.contains("[o/N]"), "{t}");
         assert!(!fichier.exists());
@@ -1837,6 +1832,23 @@ fn en_root() -> bool {
 }
 #[cfg(not(unix))]
 fn en_root() -> bool {
+    false
+}
+
+/// Sous Windows, le programme tourne-t-il élevé (administrateur) ? Comme `processus::eleve` (TokenElevation) : un
+/// jeton élevé porte le niveau d'intégrité haut, S-1-16-12288, que `whoami /groups` montre quelle que soit la langue
+/// (`net session` répondait aussi sous Wine, où Vanguard ne se voit pas élevé). Pas dans `en_root` : l'autotest, lui,
+/// ne refuse pas un Windows élevé.
+#[cfg(windows)]
+fn windows_eleve() -> bool {
+    let systeme = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+    std::process::Command::new(Path::new(&systeme).join("System32").join("whoami.exe"))
+        .arg("/groups")
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("S-1-16-12288"))
+}
+#[cfg(not(windows))]
+fn windows_eleve() -> bool {
     false
 }
 

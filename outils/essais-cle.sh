@@ -29,6 +29,11 @@ fi
 
 [[ $(awk 'NR == 1 {print ($1 == 0 && $2 != 0) ? "oui" : "non"}' /proc/self/uid_map) == oui ]] ||
   { echo "pas dans un espace de noms d'utilisateur à part : abandon"; exit 1; }
+# Sans /run/media (la CI de GitHub), impossible de le créer sous le /run du vrai root : un tmpfs sur /run entier, dans
+# cet espace de noms seulement, le permet (et cache /run/user avec lui).
+if [[ ! -d /run/media ]]; then
+  /usr/bin/mount -t tmpfs -o size=1M tmpfs /run && mkdir /run/media || { echo "/run pas caché : abandon"; exit 1; }
+fi
 for d in /run/media "/run/user/$ESSAIS_CLE_UID"; do
   [[ -d $d ]] || continue
   /usr/bin/mount -t tmpfs -o size=1M tmpfs "$d" || { echo "$d pas caché : abandon"; exit 1; }

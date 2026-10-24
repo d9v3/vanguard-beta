@@ -161,6 +161,9 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   événements révèlent ceux qu'on a retirés (effacement partiel), sans prendre pour un effacement un journal qui
   tourne, un morceau abîmé ou une copie faite pendant l'écriture ; un morceau abîmé est relu, ses événements marqués
   non vérifiés. Les règles qui jugent ces événements suivent (remplacent l'idée d'Hayabusa, programme externe).
+- **Windows, deux correctifs vus dans un vrai Windows.** Le Wi-Fi d'un ordinateur sans carte Wi-Fi (bureau, machine virtuelle) est « sans objet » au lieu de « non vérifié » quand le service WLAN est arrêté. La liste des programmes à mettre à jour repasse par PowerShell quand winget, lancé directement, répond par une erreur sans tableau : elle disait « non vérifié » dans une machine virtuelle.
+- **Sécurité des dépendances.** crypto-bigint 0.7.6 (avis RUSTSEC-2026-0387 : des calculs censés prendre toujours le même temps n'y arrivaient pas), amené par YARA-X.
+- **Vérification continue remise au vert.** Le programme Windows réserve 8 Mio de pile (1 Mio d'origine avec MSVC : la version de mise au point débordait dès le démarrage) ; les journaux des tickets ne passent plus par Claude dans GitHub ; le fuzzing de nuit tourne enfin (cargo-fuzz installé à part, empreinte vérifiée) ; la compilation reproductible vérifie la garde des DLL avec un éditeur de liens assez récent.
 
 ## 23 octobre 2026 : version 0.86
 

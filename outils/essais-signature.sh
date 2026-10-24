@@ -74,7 +74,10 @@ banc "$T/ancien" "$T/ancien.sh" 0.86.0
 banc "$T/nouveau" "$DEPOT/outils/signer-versions.sh" 0.86.0
 programmes "$T/v86-ancien" 0.86.0+1792600000
 cp -r "$T/v86-ancien" "$T/v86"
-signer "$T/ancien" "$T/v86-ancien" || { ko "script de master : $(tail -n 1 "$T/v86-ancien.log")"; }
+# Le script de master connaît --premier depuis qu'il tient l'historique (0.86) : sans rien d'avant, il l'exige.
+premier_ancien=()
+grep -q -- '--premier' "$T/ancien.sh" && premier_ancien=(--premier)
+signer "$T/ancien" "$T/v86-ancien" "${premier_ancien[@]}" || { ko "script de master : $(tail -n 1 "$T/v86-ancien.log")"; }
 if signer "$T/nouveau" "$T/v86" --premier; then
   if cmp -s "$T/v86/derniere.txt" "$T/v86-ancien/derniere.txt" &&
     cmp -s "$T/v86/derniere.txt.sig" "$T/v86-ancien/derniere.txt.sig"; then

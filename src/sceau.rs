@@ -190,9 +190,11 @@ fn verrou(dossier: &Path) -> Option<std::fs::File> {
         return None;
     }
     // Deux secondes pour le programme : deux Vanguard ne se disputent les sceaux que le temps d'une écriture. Les
-    // essais écrivent chaque fichier scellé vingt fois à la fois (sous Wine, chargé, deux secondes ne suffisaient pas).
+    // essais écrivent chaque fichier scellé vingt fois à la fois, chaque écriture vidée sur le disque (sync_all) : sous
+    // Wine, chargé, deux secondes ne suffisaient pas, et sur le Windows de la CI, un fil pouvait attendre plus de dix
+    // secondes son tour (sans file d'attente, un autre le prend avant lui) puis avancer sans le verrou.
     let delai = if cfg!(test) {
-        Duration::from_secs(10)
+        Duration::from_secs(60)
     } else {
         Duration::from_secs(2)
     };
@@ -833,7 +835,8 @@ mod tests {
                 std::thread::spawn(move || {
                     for i in 0..20 {
                         ecrire_dans(&d, nom, format!("{nom} {i}").as_bytes()).unwrap();
-                        assert!(matches!(lire_dans(&d, nom), Lecture::Intact(_)), "{nom}");
+                        let lu = lire_dans(&d, nom);
+                        assert!(matches!(lu, Lecture::Intact(_)), "{nom}, écriture {i} : {lu:?}");
                     }
                 })
             })

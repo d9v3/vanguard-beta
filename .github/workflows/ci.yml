@@ -70,8 +70,10 @@ jobs:
       # version). Les outils dans la version épinglée ici, tels que leurs auteurs les publient (empreintes vérifiées).
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
-          tool: cargo-audit@0.22.2,cargo-deny@0.20.2,cargo-fuzz@0.13.2
+          tool: cargo-audit@0.22.2,cargo-deny@0.20.2
           fallback: none
+      - name: cargo-fuzz
+        run: outils/installer-cargo-fuzz.sh
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # La vérification de l'ordinateur de l'auteur, sans Wine (pas de Wine ici ; le vrai Windows est plus bas).
       - name: outils/verifier.sh
@@ -170,10 +172,8 @@ jobs:
       - uses: actions/checkout@v7
       - name: Chaîne nightly
         run: rustup toolchain install nightly --profile minimal
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
-        with:
-          tool: cargo-fuzz@0.13.2
-          fallback: none
+      - name: cargo-fuzz
+        run: outils/installer-cargo-fuzz.sh
       - uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/fuzz/corpus
@@ -239,7 +239,9 @@ jobs:
   reproductible:
     needs: utile
     if: needs.utile.outputs.windows == 'oui' && github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    # 26.04 : son éditeur de liens MinGW (binutils 2.41 sur 24.04, trop vieux) remplit le répertoire « Load Config »
+    # depuis _load_config_used ; sans lui, le .exe n'a pas la garde des DLL et verifier-pe.py le refuse à raison.
+    runs-on: ubuntu-26.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7

@@ -519,6 +519,13 @@ fn programmes() -> Constat {
     if direct.is_none() && lance && debut.elapsed() >= std::time::Duration::from_secs(140) {
         return impossible("Programmes", tr!("winget ne répond pas", "winget is not responding"));
     }
+    // Démarré mais en erreur sans tableau lisible (vu dans une machine virtuelle : -2147024809, « paramètre
+    // incorrect », lancé hors de PowerShell) : PowerShell le relance par son nom, comme avant ; il ne cherche pas
+    // dans le dossier courant, un winget.exe posé à côté de Vanguard n'y est donc pas pris.
+    let direct = direct.filter(|s| {
+        let code = s.rsplit_once("CODE=").and_then(|(_, c)| c.trim().parse::<i64>().ok());
+        s.contains("WINGET_ABSENT") || lire_winget(s).is_some() || matches!(code, Some(0 | -1_978_335_212))
+    });
     let Some(sortie) = direct.or_else(|| {
         ps_delai(
             "if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { 'WINGET_ABSENT' } \

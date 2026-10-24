@@ -45,7 +45,10 @@ rustup toolchain list | grep -q '^nightly' ||
 # qui ne suit plus) s'arrête ici, avec l'erreur du compilateur, avant toute minute de fuzzing.
 mkdir -p "$FUZZ"
 COMPILATION=$FUZZ/compilation-$$.log
-if ! cargo +nightly fuzz build --fuzz-dir fuzz --target-dir "$FUZZ/cible" >"$COMPILATION" 2>&1; then
+# La cible de nightly, dite : sans elle, cargo-fuzz prend celle pour laquelle il a été compilé, musl pour le
+# programme que publient ses auteurs (la CI), où ni la bibliothèque standard de nightly ni AddressSanitizer ne sont.
+HOTE=$(rustc +nightly -vV | sed -n 's/^host: //p')
+if ! cargo +nightly fuzz build --target "$HOTE" --fuzz-dir fuzz --target-dir "$FUZZ/cible" >"$COMPILATION" 2>&1; then
   echo "✖ banc de fuzzing : compilation en échec (journal : $COMPILATION)"
   grep -E '^error|^ *--> ' "$COMPILATION" | head -n 12 | sed 's/^/      /'
   exit 1
@@ -61,7 +64,7 @@ for c in "${liste[@]}"; do
   echo "▶ $c, $DUREE s"
   # Le premier dossier reçoit ce que le fuzzer découvre ; les graines ne sont que lues. Compilé hors du dépôt, avec
   # les vérifications de débordement (comme la version publiée) et AddressSanitizer, par défaut chez cargo-fuzz.
-  if cargo +nightly fuzz run --fuzz-dir fuzz --target-dir "$FUZZ/cible" "$c" "$corpus" "fuzz/graines/$c" -- \
+  if cargo +nightly fuzz run --target "$HOTE" --fuzz-dir fuzz --target-dir "$FUZZ/cible" "$c" "$corpus" "fuzz/graines/$c" -- \
     -max_total_time="$DUREE" -artifact_prefix="$plantages/" -print_final_stats=1 >"$journal" 2>&1; then
     executions=$(grep -o 'stat::number_of_executed_units: *[0-9]*' "$journal" | grep -o '[0-9]*$')
     couverture=$(grep -o 'cov: [0-9]*' "$journal" | tail -n1 | grep -o '[0-9]*$')

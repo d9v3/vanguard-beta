@@ -1138,6 +1138,18 @@ fn wifi_sans_connexion() -> Constat {
                 "Could not check Wi-Fi: connected, but Windows shows the network only with location access (Settings > Privacy & security > Location)."
             ),
         ),
+        // Service WLAN arrêté ou API absente : sans aucune carte Wi-Fi parmi les cartes réseau, c'est simplement un
+        // ordinateur sans Wi-Fi (bureau, machine virtuelle), pas un point non vérifié.
+        Err(_) if cartes::cartes().is_some_and(|c| !c.is_empty() && !c.iter().any(cartes::Carte::sans_fil)) => {
+            super::sans_objet(
+                "Wi-Fi",
+                Absence::Materiel,
+                tr!(
+                    "Pas de carte Wi-Fi sur cet ordinateur.",
+                    "No Wi-Fi card on this computer."
+                ),
+            )
+        }
         Err(e) => super::impossible_par(
             "Wi-Fi",
             Raison::Illisible(e.to_string()),

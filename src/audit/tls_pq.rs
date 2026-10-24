@@ -350,30 +350,40 @@ mod tests {
             let ecoute = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let port = ecoute.local_addr().unwrap().port();
             drop(ecoute);
+            // L'adresse avec le port : un port seul, sous Windows, n'écoute qu'en IPv6 (::), où 127.0.0.1 ne répond pas.
+            // -www : s_server répond lui-même, sans lire son entrée ; sous Windows, la lecture d'un tube vide le
+            // figeait avant la poignée de main (« s_server n'a pas répondu », sans un mot de sa part).
             let mut serveur = Command::new("openssl")
-                .args(["s_server", "-quiet", "-tls1_3", "-groups", groupes, "-accept"])
-                .arg(port.to_string())
+                .args(["s_server", "-quiet", "-www", "-tls1_3", "-groups", groupes, "-accept"])
+                .arg(format!("127.0.0.1:{port}"))
                 .arg("-key")
                 .arg(&cle)
                 .arg("-cert")
                 .arg(&cert)
-                .stdin(Stdio::piped())
+                .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(Stdio::piped())
                 .spawn()
                 .unwrap();
             let adresse: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
-            let mut r = None;
+            let (mut r, mut derniere) = (None, None);
             for _ in 0..50 {
                 std::thread::sleep(Duration::from_millis(100));
-                if let Ok(x) = sonder(adresse, Some("example.com"), Duration::from_secs(5)) {
-                    r = Some(x);
-                    break;
+                match sonder(adresse, Some("example.com"), Duration::from_secs(5)) {
+                    Ok(x) => {
+                        r = Some(x);
+                        break;
+                    }
+                    Err(e) => derniere = Some(e),
                 }
             }
             let _ = serveur.kill();
-            let _ = serveur.wait();
-            let r = r.expect("s_server n'a pas répondu");
+            // Ce que s_server a dit (groupe inconnu, port pris…) : sans lui, un échec ne disait pas pourquoi.
+            let dit = serveur
+                .wait_with_output()
+                .map(|o| String::from_utf8_lossy(&o.stderr).into_owned());
+            let r =
+                r.unwrap_or_else(|| panic!("s_server n'a pas répondu ({groupes}) : {dit:?} ; sonde : {derniere:?}"));
             if attendu {
                 assert_eq!(r, ReponsePq::Accepte, "{groupes}");
             } else {

@@ -379,6 +379,18 @@ pub(super) fn serveurs_dns() -> Comparaison {
         }
     };
     let Some(conf) = conf else { return illisible() };
+    // resolvectl (systemd 255, Ubuntu 24.04) nomme les interfaces de son espace réseau : dans un espace à part
+    // (unshare -n, conteneur), il n'a que lo, et les serveurs des vraies interfaces lui manquent (vu sur la CI :
+    // celui d'eth0). Le fichier, lui, est celui de tout l'ordinateur : sans autre interface que lo, pas de verdict.
+    if !sortie.lines().any(|l| l.starts_with("Link ") && !l.contains("(lo)")) {
+        return Comparaison::Saute(Raison::Illisible(
+            tr!(
+                "resolvectl ne voit aucune interface réseau d'ici",
+                "resolvectl sees no network interface from here"
+            )
+            .into(),
+        ));
+    }
     // Même ensemble : resolved retire les doublons du fichier, et l'ordre des interfaces peut changer.
     croisees::comparer_noms(
         lire_resolv_conf(&conf).into_iter().map(|ip| ip.to_string()),
