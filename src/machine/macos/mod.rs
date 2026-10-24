@@ -867,29 +867,27 @@ fn sauvegarde_chiffree() -> Option<Constat> {
     })
 }
 
-fn sauvegardes() -> Constat {
-    let Some(destinations) = sortie("tmutil", &["destinationinfo"]) else {
-        return impossible("Sauvegardes", tr!("tmutil illisible", "tmutil unreadable"));
-    };
-    if destinations.contains("No destinations configured") || !destinations.contains("Name") {
-        return alerte(
-            "Sauvegardes",
-            Niveau::Moyen,
-            tr!(
-                "Aucune sauvegarde Time Machine configurée : un disque qui lâche, un vol ou un rançongiciel emportent tout.",
-                "No Time Machine backup set up: a failing disk, a theft or ransomware takes everything."
-            ),
-        )
-        .manuel(
-            tr!(
-                "Brancher un disque externe, puis Réglages Système > Général > Time Machine > Ajouter un disque de sauvegarde",
-                "Plug in an external disk, then System Settings > General > Time Machine > Add Backup Disk"
-            ),
-            &[],
-        );
-    }
-    // La date demande l'accès complet au disque ; sans lui, on sait seulement que Time Machine est réglé.
-    match sortie("tmutil", &["latestbackup"]).as_deref().and_then(date_sauvegarde) {
+/// La plus récente des sauvegardes notées dans les réglages de Time Machine (« SnapshotDates » de chaque destination),
+/// en date locale. `None` : aucune date notée (la clé manque selon les versions de macOS).
+fn derniere_sauvegarde(destinations: &[Valeur]) -> Option<chrono::NaiveDate> {
+    let secondes = destinations
+        .iter()
+        .filter_map(|d| d.cle("SnapshotDates")?.tableau())
+        .flatten()
+        .filter_map(|v| match v {
+            Valeur::Date(s) => Some(*s),
+            _ => None,
+        })
+        .fold(None, |max: Option<f64>, s| Some(max.map_or(s, |m| m.max(s))))?;
+    // Les dates d'Apple partent du 1er janvier 2001.
+    #[allow(clippy::cast_possible_truncation)]
+    let d = chrono::DateTime::from_timestamp(978_307_200 + secondes as i64, 0)?;
+    Some(d.with_timezone(&chrono::Local).date_naive())
+}
+
+/// Le constat d'une sauvegarde réglée, d'après la date de la dernière (`None` : inconnue).
+fn sauvegarde_datee(date: Option<chrono::NaiveDate>) -> Constat {
+    match date {
         Some(date) => {
             let jours = (chrono::Local::now().date_naive() - date).num_days();
             if jours > 14 {
@@ -916,6 +914,46 @@ fn sauvegardes() -> Constat {
             tr!("Time Machine est configuré.", "Time Machine is set up."),
         ),
     }
+}
+
+/// Time Machine : une destination notée dans ses réglages (com.apple.TimeMachine.plist) suffit à la dire réglée, avec
+/// la date de sa dernière sauvegarde ; tmutil dit le reste (aucune destination, date absente), tant que l'oracle de
+/// macos.yml n'a pas prouvé la lecture native : un réglage que macOS aurait déplacé ne doit pas passer pour « aucune
+/// sauvegarde ». Le Mac de GitHub n'a pas de Time Machine : cette lecture n'y est pas prouvée.
+fn sauvegardes() -> Constat {
+    const TIME_MACHINE: &str = "/Library/Preferences/com.apple.TimeMachine";
+    if let Reglages::Lus(r) = reglages(TIME_MACHINE)
+        && let Some(destinations) = r
+            .cle("Destinations")
+            .and_then(Valeur::tableau)
+            .filter(|d| !d.is_empty())
+    {
+        let date = derniere_sauvegarde(destinations)
+            .or_else(|| sortie("tmutil", &["latestbackup"]).as_deref().and_then(date_sauvegarde));
+        return sauvegarde_datee(date);
+    }
+    let Some(destinations) = sortie("tmutil", &["destinationinfo"]) else {
+        return impossible("Sauvegardes", tr!("tmutil illisible", "tmutil unreadable"));
+    };
+    if destinations.contains("No destinations configured") || !destinations.contains("Name") {
+        return alerte(
+            "Sauvegardes",
+            Niveau::Moyen,
+            tr!(
+                "Aucune sauvegarde Time Machine configurée : un disque qui lâche, un vol ou un rançongiciel emportent tout.",
+                "No Time Machine backup set up: a failing disk, a theft or ransomware takes everything."
+            ),
+        )
+        .manuel(
+            tr!(
+                "Brancher un disque externe, puis Réglages Système > Général > Time Machine > Ajouter un disque de sauvegarde",
+                "Plug in an external disk, then System Settings > General > Time Machine > Add Backup Disk"
+            ),
+            &[],
+        );
+    }
+    // La date demande l'accès complet au disque ; sans lui, on sait seulement que Time Machine est réglé.
+    sauvegarde_datee(sortie("tmutil", &["latestbackup"]).as_deref().and_then(date_sauvegarde))
 }
 
 /// Wi-Fi : protection du réseau connecté, et un éventuel jumeau maléfique parmi les réseaux visibles.
@@ -1027,6 +1065,15 @@ mod tests {
         assert_eq!(destinations_non_chiffrees(reglages), 1);
         assert_eq!(destinations_non_chiffrees("LastKnownEncryptionState = Encrypted;"), 0);
         assert_eq!(destinations_non_chiffrees(""), 0);
+    }
+
+    #[test]
+    fn derniere_sauvegarde_notee() {
+        let d = |s: f64| Valeur::Dico(vec![("SnapshotDates".into(), Valeur::Tableau(vec![Valeur::Date(s)]))]);
+        // 800 000 000 s après 2001 : 8 mai 2026 ; la plus récente des deux destinations l'emporte.
+        let lue = derniere_sauvegarde(&[d(700_000_000.0), d(800_000_000.0)]).unwrap();
+        assert_eq!(lue.format("%Y").to_string(), "2026");
+        assert_eq!(derniere_sauvegarde(&[Valeur::Dico(Vec::new())]), None);
     }
 
     #[test]

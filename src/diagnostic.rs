@@ -540,16 +540,6 @@ mod systeme {
         (r.code == Some(0)).then(|| r.sortie.trim().to_string())
     }
 
-    /// Valeur d'une ligne « Clé: valeur » (system_profiler, diskutil info), espaces de tête ignorés, prête à montrer
-    /// (un disque branché dit son nom lui-même), comme tout ce que ce diagnostic lit du système.
-    pub(super) fn valeur(texte: &str, cle: &str) -> Option<String> {
-        texte
-            .lines()
-            .find_map(|l| l.trim().strip_prefix(cle)?.trim().strip_prefix(':'))
-            .map(|v| affichable(v.trim()))
-            .filter(|v| !v.is_empty())
-    }
-
     /// Rapports de plantage récents (moins de `jours`) : nom du programme avant la date (« Safari-2024-05-01-… »).
     /// `None` : un dossier existe mais ne se lit pas, et rien n'a été trouvé ailleurs (« aucun » serait faux) ; un
     /// dossier absent n'a simplement aucun rapport.
@@ -599,10 +589,24 @@ mod systeme {
                 .map(|n| affichable(&n))
                 .unwrap_or_default(),
         ));
-        let materiel_txt = sortie("system_profiler", &["SPHardwareDataType"]).unwrap_or_default();
+        // La sortie -json de system_profiler : ses clés (« machine_name ») ne changent pas avec la langue du Mac, quand
+        // ses intitulés en texte (« Model Name ») se traduisent.
+        let profil: serde_json::Value = sortie(
+            "system_profiler",
+            &["-json", "SPHardwareDataType", "SPDisplaysDataType"],
+        )
+        .and_then(|j| serde_json::from_str(&j).ok())
+        .unwrap_or_default();
+        let champ = |objet: &serde_json::Value, cle: &str| {
+            objet[cle]
+                .as_str()
+                .map(|v| affichable(v.trim()))
+                .filter(|v| !v.is_empty())
+        };
+        let materiel_json = &profil["SPHardwareDataType"][0];
         let modele = [
-            valeur(&materiel_txt, "Model Name"),
-            valeur(&materiel_txt, "Model Identifier"),
+            champ(materiel_json, "machine_name"),
+            champ(materiel_json, "machine_model"),
         ]
         .into_iter()
         .flatten()
@@ -629,29 +633,29 @@ mod systeme {
         if let Some(total) = crate::machine::macos::sysctl_nombre("hw.memsize") {
             materiel.push(ligne(tr!("Mémoire", "Memory"), go(total)));
         }
-        let ecrans = sortie("system_profiler", &["SPDisplaysDataType"]).unwrap_or_default();
-        if let Some(puce) = valeur(&ecrans, "Chipset Model") {
+        if let Some(puce) = champ(&profil["SPDisplaysDataType"][0], "sppci_model") {
             materiel.push(ligne(tr!("Carte graphique", "Graphics card"), puce));
         }
-        for disque in sortie("diskutil", &["list", "internal", "physical"])
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|l| l.strip_prefix("/dev/")?.split_whitespace().next().map(str::to_string))
-        {
-            let info = sortie("diskutil", &["info", &disque]).unwrap_or_default();
-            let taille = valeur(&info, "Disk Size")
-                .map(|t| t.split(" (").next().unwrap_or(&t).to_string())
+        // diskutil en -plist, pour la même raison (« Solid State: Yes » se traduit).
+        let plist = |args: &[&str]| sortie("diskutil", args).and_then(|t| crate::plist::lire(t.as_bytes()));
+        let disques = plist(&["list", "-plist", "internal", "physical"])
+            .map(|l| crate::machine::darwin::disques_entiers(&l))
+            .unwrap_or_default();
+        for disque in disques {
+            let info = plist(&["info", "-plist", &disque])
+                .map(|i| crate::machine::darwin::info_disque(&i))
                 .unwrap_or_default();
-            let sorte = if valeur(&info, "Solid State").as_deref() == Some("Yes") {
-                "SSD"
-            } else {
-                tr!("disque dur", "hard drive")
+            let taille = info.taille.map(go).unwrap_or_default();
+            let sorte = match info.ssd {
+                Some(true) => "SSD",
+                Some(false) => tr!("disque dur", "hard drive"),
+                None => "?",
             };
             materiel.push(ligne(
                 tr!("Disque", "Disk"),
                 format!(
                     "{disque} · {taille} · {sorte} · {}",
-                    valeur(&info, "Device / Media Name").unwrap_or_default()
+                    info.modele.map(|m| affichable(&m)).unwrap_or_default()
                 ),
             ));
         }
@@ -1256,15 +1260,6 @@ mod tests {
             }
         }
         propre
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn lectures_macos() {
-        let profil =
-            "Hardware:\n\n    Hardware Overview:\n\n      Model Name: MacBook Air\n      Model Identifier: Mac14,2\n";
-        assert_eq!(systeme::valeur(profil, "Model Name").as_deref(), Some("MacBook Air"));
-        assert_eq!(systeme::valeur(profil, "Model Identifier").as_deref(), Some("Mac14,2"));
     }
 
     #[cfg(target_os = "linux")]

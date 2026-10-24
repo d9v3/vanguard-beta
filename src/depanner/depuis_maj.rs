@@ -99,9 +99,73 @@ fn recentes() -> Vec<Maj> {
     .unwrap_or_default()
 }
 
-/// macOS : `softwareupdate --history` (« Nom   Version   Date »), les plus récentes en premier.
+/// Le journal des installations de macOS, celui que `softwareupdate --history` relit.
+#[cfg(target_os = "macos")]
+const HISTORIQUE_MAC: &str = "/Library/Receipts/InstallHistory.plist";
+
+/// Les mises à jour d'Apple du journal des installations (InstallHistory.plist : une liste de { date, displayName,
+/// displayVersion, processName }), les plus récentes en premier : celles qu'a posées la mise à jour de logiciels
+/// (« softwareupdated », « Software Update »), comme `softwareupdate --history`. Les dates sont de vraies dates, pas
+/// un texte dans la langue du Mac.
+#[cfg(any(target_os = "macos", test))]
+fn lire_historique_mac(v: &crate::plist::Valeur) -> Vec<Maj> {
+    use crate::plist::Valeur;
+    let mut liste: Vec<(f64, Maj)> = v
+        .tableau()
+        .unwrap_or_default()
+        .iter()
+        .filter(|e| {
+            matches!(
+                e.cle("processName").and_then(Valeur::texte),
+                Some("softwareupdated" | "Software Update")
+            )
+        })
+        .filter_map(|e| {
+            let Some(Valeur::Date(secondes)) = e.cle("date") else {
+                return None;
+            };
+            let nom = e.cle("displayName").and_then(Valeur::texte)?.trim();
+            let version = e
+                .cle("displayVersion")
+                .and_then(Valeur::texte)
+                .unwrap_or_default()
+                .trim();
+            #[allow(clippy::cast_possible_truncation)]
+            let date = chrono::DateTime::from_timestamp(978_307_200 + *secondes as i64, 0)?
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d")
+                .to_string();
+            let quoi = if version.is_empty() {
+                nom.to_string()
+            } else {
+                format!("{nom} {version}")
+            };
+            Some((
+                *secondes,
+                Maj {
+                    date,
+                    quoi: affichable(&quoi),
+                },
+            ))
+        })
+        .collect();
+    liste.sort_by(|a, b| b.0.total_cmp(&a.0));
+    liste.into_iter().map(|(_, m)| m).collect()
+}
+
+/// macOS : le journal des installations lu directement ; `softwareupdate --history` (« Nom   Version   Date ») en
+/// secours, tant que l'oracle de macos.yml n'a pas prouvé la lecture native, ou quand le fichier ne se lit pas.
 #[cfg(target_os = "macos")]
 fn recentes() -> Vec<Maj> {
+    if let Some(v) = crate::plist::lire_fichier(std::path::Path::new(HISTORIQUE_MAC))
+        .ok()
+        .and_then(crate::plist::Lu::valeur)
+    {
+        let liste = lire_historique_mac(&v);
+        if !liste.is_empty() {
+            return liste.into_iter().take(8).collect();
+        }
+    }
     let Some(r) = crate::commande::lancer(std::process::Command::new("softwareupdate").arg("--history"), 30) else {
         return Vec::new();
     };
@@ -193,5 +257,53 @@ mod tests {
         assert_eq!(m[0].date, "2026-10-10");
         assert_eq!(m[0].quoi, "libc6:amd64 (2.39-1, 2.39-2)");
         assert_eq!(m[1].quoi, "firefox:amd64 (130.0, 131.0)");
+    }
+
+    /// Le journal des installations de macOS : les mises à jour d'Apple seulement, les plus récentes en premier.
+    #[test]
+    fn historique_des_installations_mac() {
+        use crate::plist::Valeur;
+        let entree = |date: f64, nom: &str, version: &str, processus: &str| {
+            Valeur::Dico(vec![
+                ("date".into(), Valeur::Date(date)),
+                ("displayName".into(), Valeur::Texte(nom.into())),
+                ("displayVersion".into(), Valeur::Texte(version.into())),
+                ("processName".into(), Valeur::Texte(processus.into())),
+            ])
+        };
+        let v = Valeur::Tableau(vec![
+            entree(800_000_000.0, "macOS Sequoia 15.6", "15.6", "softwareupdated"),
+            entree(810_000_000.0, "XProtectPlistConfigData", "5310", "softwareupdated"),
+            entree(805_000_000.0, "Pages", "14.4", "appstoreagent"),
+            entree(790_000_000.0, "Safari", "", "Software Update"),
+            Valeur::Texte("intrus".into()),
+        ]);
+        let m = lire_historique_mac(&v);
+        assert_eq!(m.len(), 3);
+        assert_eq!(m[0].quoi, "XProtectPlistConfigData 5310");
+        assert_eq!(m[2].quoi, "Safari");
+        assert_eq!(m[0].date.len(), 10);
+        assert_eq!(lire_historique_mac(&Valeur::Texte("x".into())), Vec::new());
+    }
+
+    /// Sur le Mac de GitHub : chaque mise à jour de `softwareupdate --history` est dans la lecture native.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn historique_contre_softwareupdate() {
+        let Some(r) = crate::commande::lancer(std::process::Command::new("softwareupdate").arg("--history"), 60) else {
+            return crate::essais::saute("softwareupdate sans réponse");
+        };
+        let natif = crate::plist::lire_fichier(std::path::Path::new(HISTORIQUE_MAC))
+            .ok()
+            .and_then(crate::plist::Lu::valeur)
+            .map(|v| lire_historique_mac(&v))
+            .unwrap_or_default();
+        for l in r.sortie.lines().skip(2).filter(|l| !l.trim().is_empty()) {
+            let nom = l.split("  ").next().unwrap_or_default().trim();
+            assert!(
+                natif.iter().any(|m| m.quoi.starts_with(nom)),
+                "{nom} absent de la lecture native"
+            );
+        }
     }
 }

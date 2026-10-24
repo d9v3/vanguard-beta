@@ -882,27 +882,19 @@ fn lire() -> Fiche {
         version("ProductVersion"),
         version("ProductBuildVersion")
     );
-    let valeur = |texte: &str, cle: &str| {
-        texte
-            .lines()
-            .find_map(|l| l.trim().strip_prefix(cle)?.trim().strip_prefix(':'))
-            .map(|v| v.trim().to_string())
-            .unwrap_or_default()
-    };
-    for disque in sortie("diskutil", &["list", "internal", "physical"])
-        .lines()
-        .filter_map(|l| l.strip_prefix("/dev/")?.split_whitespace().next().map(str::to_string))
-    {
-        let info = sortie("diskutil", &["info", &disque]);
-        let taille = valeur(&info, "Disk Size")
-            .split('(')
-            .nth(1)
-            .and_then(|o| o.split_whitespace().next()?.parse().ok())
-            .unwrap_or(0);
+    // diskutil en -plist : des clés qui ne changent pas avec la langue du Mac (« Solid State: Yes » se traduit).
+    let plist = |args: &[&str]| crate::plist::lire(sortie("diskutil", args).as_bytes());
+    let disques = plist(&["list", "-plist", "internal", "physical"])
+        .map(|l| crate::machine::darwin::disques_entiers(&l))
+        .unwrap_or_default();
+    for disque in disques {
+        let info = plist(&["info", "-plist", &disque])
+            .map(|i| crate::machine::darwin::info_disque(&i))
+            .unwrap_or_default();
         f.disques.push(Disque {
-            modele: valeur(&info, "Device / Media Name"),
-            taille,
-            sorte: sorte_disque("", valeur(&info, "Solid State") != "Yes"),
+            modele: info.modele.unwrap_or_default(),
+            taille: info.taille.unwrap_or(0),
+            sorte: sorte_disque("", info.ssd != Some(true)),
             nom: disque,
         });
     }

@@ -52,8 +52,19 @@ pub(crate) fn montage(dossier: &Path) -> Option<(String, bool)> {
 
 /// Périphérique et état du point de montage `dossier`, d'après `mount` :
 /// « /dev/disk4s1 on /Volumes/VANGUARD (exfat, local, nodev, nosuid, read-only, noowners) ».
+/// Demandé au noyau (getmntinfo) d'abord ; `mount` en secours tant que l'oracle de macos.yml n'a pas prouvé la
+/// lecture native, ou quand elle ne connaît pas ce point.
 #[cfg(target_os = "macos")]
 fn montage(dossier: &Path) -> Option<(String, bool)> {
+    let natif = crate::machine::macos::noyau::montages().and_then(|liste| {
+        liste
+            .into_iter()
+            .find(|m| Path::new(&m.point) == dossier)
+            .map(|m| (m.source, m.lecture_seule))
+    });
+    if natif.is_some() {
+        return natif;
+    }
     let r = crate::commande::lancer(&mut std::process::Command::new("mount"), 10)?;
     let marque = format!(" on {} (", dossier.display());
     r.sortie.lines().find_map(|l| {
