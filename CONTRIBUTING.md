@@ -335,7 +335,11 @@ La clé a deux partitions : `VANGUARD`, en lecture seule partout sauf sur l'ordi
 respecté par Windows ; sous Linux et macOS, Vanguard la remonte lui-même en lecture seule), et `VANGUARDLOG`, qui ne
 reçoit que le journal des erreurs, anonymisé. `outils/preparer-cle.sh` prépare une nouvelle clé.
 
-En préparation, une clé de secours qui démarre aussi les ordinateurs : `outils/cle-secours.sh`. Ventoy démarre
+En préparation, une clé de secours qui démarre aussi les ordinateurs : `outils/cle-secours.sh`, seulement sur un
+ordinateur dont le réglage local la demande (`CLE_SECOURS=oui` dans `~/.config/vanguard/images-cle.conf`, lu sans
+être exécuté ; le détail en tête de `outils/images-cle.sh`). Sans lui, la clé ne porte que le programme : ni images,
+ni Ventoy, ni `WIN11` ni `MACOS`, les commandes qui en poseraient refusent en le disant et les minuteries ne copient
+rien. Ventoy démarre
 l'installateur d'Omarchy, Arch, Debian et Fedora en installateurs par Internet, SystemRescue et Windows 11 en secours,
 tenus à jour par `outils/images-cle.sh` (signature de chaque projet vérifiée, minuterie du 1er et du 15 du mois qui
 copie aussitôt sur la clé branchée, copie au branchement, une notification au début de chaque téléchargement et quand

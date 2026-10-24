@@ -9,6 +9,14 @@ delivered just before it. Only the latest version has its download page; every v
 
 ## Next version
 
+- **USB key: the program alone by default.** A key prepared by the repository tools, on any computer, now only
+  carries Vanguard, its database, its reports and the VANGUARDLOG partition: no installation images, no Ventoy, no
+  WIN11 or MACOS partitions. The full rescue key is only made on a computer whose local setting asks for it
+  (`CLE_SECOURS=oui` in `~/.config/vanguard/images-cle.conf`, with `IMAGES="…"` and `IMAGES_EN_PLUS="kali"` if
+  needed; read, never run); without it, the commands that would add images refuse and say how to turn it on, and the
+  copy timers copy nothing. The project page gets its “Download, check, install” section: the program for your
+  system, its checksum checked against `SHA256SUMS.txt`, then `vanguard shortcut` and `vanguard self-update`; the USB
+  key as an option, for troubleshooting.
 - **Menu window.** On Linux (Hyprland), the frame keeps a fixed height from one menu to the next: every size change was animated, and the transition showed. On Windows, the window still follows each menu's height but stays where it was put (brought back on screen only if it goes off).
 - **Offered software.** Bitwarden installs from Flathub on Arch (the distribution package stayed at 2026.3.1) ; Flathub
   now only ships its commercial build, which is therefore shown as not open source, while winget and Homebrew install

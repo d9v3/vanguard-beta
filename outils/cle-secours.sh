@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # Clé de secours : la clé VANGUARD démarre aussi les ordinateurs, pour réparer ou réinstaller Linux, Windows et macOS.
+# SEULEMENT SUR UN ORDINATEUR QUI LA DEMANDE : par défaut, une clé préparée par les outils du dépôt ne porte que le
+# programme (outils/preparer-cle.sh : VANGUARD et VANGUARDLOG, ni images, ni Ventoy, ni WIN11, ni MACOS). Le réglage
+# local, hors du dépôt : une ligne CLE_SECOURS=oui dans ~/.config/vanguard/images-cle.conf (le détail : en-tête de
+# outils/images-cle.sh). Sans lui, chaque commande ci-dessous refuse en le disant, sauf --a-jour (appelée au
+# branchement et chaque jour), qui ne fait rien.
 #   1 VANGUARD     partition de Ventoy, exFAT : Vanguard comme avant (témoin vanguard.cle), et ses images dans ISO/ :
 #                 Omarchy (installateur complet), Arch Linux, Debian et Fedora en installateurs par Internet, SystemRescue
 #                 (réparer, sauver des fichiers, tester la mémoire), puis, s'il reste la place, Windows 11 en
@@ -1098,6 +1103,24 @@ a_jour() { # point de la clé (facultatif)
 
 # Lu par outils/essais-cle.sh (source) : les fonctions seulement, rien n'est lancé.
 [[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
+# La clé de secours ne se fait que sur un ordinateur dont le réglage local la demande (CLE_SECOURS=oui, lu par
+# images-cle.sh, le seul à lire ce fichier) : sans lui, une clé ne porte que le programme. La partie root (--racine)
+# n'est pas gardée ici : pkexec la lance avec le dossier de root, sans ce réglage, et seulement depuis --ecrire, qui
+# l'a été ; --ventoy-publie ne fait que lire GitHub.
+case ${1:-} in
+  --plan | --essai | --telecharger | --verifier | --ecrire | --windows | --ventoy-maj | --installer-racine)
+    outils/images-cle.sh --secours >/dev/null 2>&1 ||
+      erreur "clé de secours pas demandée sur cet ordinateur : rien n'est préparé (ni images, ni Ventoy, ni WIN11, \
+ni MACOS) ; la clé ne porte que le programme (outils/preparer-cle.sh). Pour la faire ici : une ligne CLE_SECOURS=oui \
+dans ${XDG_CONFIG_HOME:-$HOME/.config}/vanguard/images-cle.conf (le détail : en-tête de outils/images-cle.sh)."
+    ;;
+  --a-jour)
+    if ! outils/images-cle.sh --secours >/dev/null 2>&1; then
+      echo "· Clé de secours pas demandée sur cet ordinateur : ni Ventoy ni Windows 11 à tenir à jour."
+      exit 0
+    fi
+    ;;
+esac
 # Le dossier des images, s'il est donné : jamais recréé à la place d'un lien mort.
 case ${1:-} in
   --plan) [[ -z ${3:-} ]] || dossier_joignable "$3" ;;
@@ -1117,5 +1140,5 @@ case ${1:-} in
   --ventoy-maj) ventoy_maj "${2:-}" ;;
   --installer-racine) installer_racine ;;
   --ventoy-publie) ventoy_publie ;;
-  *) sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,47p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

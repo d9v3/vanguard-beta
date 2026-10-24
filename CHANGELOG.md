@@ -9,6 +9,14 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 
 ## Prochaine version
 
+- **Clé USB : le programme seul par défaut.** Une clé préparée par les outils du dépôt, sur n'importe quel ordinateur,
+  ne porte plus que Vanguard, sa base, ses rapports et la partition VANGUARDLOG : ni images d'installation, ni Ventoy,
+  ni partitions WIN11 et MACOS. La clé de secours complète ne se fait que sur un ordinateur dont le réglage local la
+  demande (`CLE_SECOURS=oui` dans `~/.config/vanguard/images-cle.conf`, avec au besoin `IMAGES="…"` et
+  `IMAGES_EN_PLUS="kali"` ; lu, jamais exécuté) ; sans lui, les commandes qui poseraient des images refusent en disant
+  comment l'allumer, et les minuteries de recopie ne copient rien. La page du projet gagne sa section « Télécharger,
+  vérifier, installer » : le programme de votre système, son empreinte vérifiée par `SHA256SUMS.txt`, puis
+  `vanguard raccourci` et `vanguard se-mettre-a-jour` ; la clé USB en option, pour dépanner.
 - **Fenêtre du menu.** Sous Linux (Hyprland), le cadre garde une hauteur fixe d'un menu à l'autre : chaque changement de taille s'animait, et la transition se voyait. Sous Windows, la fenêtre suit encore la hauteur de chaque menu, mais reste là où elle a été mise (ramenée dans l'écran seulement si elle en sort).
 - **Logiciels proposés.** Bitwarden s'installe par Flathub sous Arch (le paquet de la distribution est resté en
   2026.3.1) ; Flathub n'y distribue plus que sa version commerciale, qui se dit donc « pas libre »,

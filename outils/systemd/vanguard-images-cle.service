@@ -3,6 +3,8 @@ Description=Vanguard : mettre à jour les images Linux de la clé VANGUARD au br
 # Copie sur la clé les images neuves du cache (vanguard-images.service), seulement pour celles qu'elle a déjà ; après
 # vanguard-cle.service, qui met Vanguard à jour sur la même clé (les deux prennent le même verrou). Puis la version de
 # Ventoy sur la clé : plus ancienne que celle épinglée, sa mise à jour est proposée (cle-secours.sh --a-jour).
+# Sans le réglage local de la clé de secours (CLE_SECOURS=oui, voir images-cle.sh), rien n'est cherché ni copié :
+# la clé ne porte que le programme.
 After=run-media-%u-VANGUARD.mount vanguard-cle.service
 
 [Service]

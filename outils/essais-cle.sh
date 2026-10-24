@@ -150,6 +150,13 @@ printf '#!/bin/sh\nexit 0\n' >"$BANC/faux/udevadm"
 chmod +x "$BANC"/faux/*
 export PATH=$BANC/faux:$BANC/bin
 
+# Le réglage local de la clé de secours (lu par images-cle.sh, jamais sourcé) : allumé pour les essais de la clé de
+# secours, retiré pour ceux de la clé par défaut, qui ne porte que le programme.
+REGLAGE=$BANC/config/vanguard/images-cle.conf
+mkdir -p "${REGLAGE%/*}"
+reglage() { printf '%s\n' "$@" >"$REGLAGE"; } # lignes…
+reglage CLE_SECOURS=oui
+
 # Une fausse clé /dev/sdz, lue par source après le script essayé : USB amovible, VANGUARD (exFAT) et VTOYEFI (32 Mio) de
 # Ventoy ; son numéro de série, sa taille, ses attributs GPT et sa version de Ventoy dans $BANC/disque/. Les écritures
 # (sfdisk, Ventoy2Disk.sh -u) y sont notées, jamais faites.
@@ -497,7 +504,7 @@ F=$BANC/depot-racine
 racine_piegee() { # ESSAI_PIEGE : sortie dans $BANC/sortie, code de sortie de --installer-racine
   rm -rf "$F" "$BANC/libexec3"
   mkdir -p "$F/outils"
-  cp outils/cle-secours.sh outils/ventoy-racine.sh "$F/outils/"
+  cp outils/cle-secours.sh outils/ventoy-racine.sh outils/images-cle.sh "$F/outils/"
   install -D -m 0755 outils/ventoy-racine.sh "$BANC/libexec3/vanguard/ventoy-racine"
   sed -i 's/^VENTOY=.*/VENTOY=1.1.10/' "$BANC/libexec3/vanguard/ventoy-racine"
   rm -f "$BANC/pkexec.log"
@@ -559,12 +566,79 @@ code=$?
 voir "--etat sans /run/media/\$USER : « pas branchée », sans erreur" \
   eval '((code == 0)) && dit "$BANC/sortie" "pas branchée"' || montrer "$BANC/sortie"
 
-# Kali Linux, coupée par défaut : seul le réglage local de l'ordinateur l'allume, lu sans être exécuté.
-REGLAGE=$BANC/config/vanguard/images-cle.conf
-mkdir -p "${REGLAGE%/*}"
-rm -f "$REGLAGE"
 sortes() { bash outils/images-cle.sh --sortes 2>"$BANC/sortie-erreurs"; }
-voir "Kali coupée par défaut : ni cherchée, ni copiée, ni proposée" \
+# La clé par défaut, sans réglage local : le programme seul. Aucune image cherchée, copiée, importée ni proposée, ni
+# menu de Ventoy ; les commandes qui en poseraient refusent en disant comment allumer la clé de secours, et celles des
+# services (--chercher, --cle, --a-jour) ne font rien, sans erreur.
+rm -f "$REGLAGE"
+mkdir -p "$BANC/cache0" "$BANC/cle0/ISO"
+IMAGE0=$BANC/cache0/systemrescue-12.03-amd64.iso
+echo sr >"$IMAGE0"
+sha256sum "$IMAGE0" | cut -d' ' -f1 >"$IMAGE0.sha256"
+echo ancienne >"$BANC/cle0/ISO/systemrescue-12.02-amd64.iso"
+: >"$BANC/cle0/vanguard.cle"
+rm -f "$BANC/aria2c.log" "$BANC/notifications.log" "$BANC/pkexec.log"
+images0() { VANGUARD_IMAGES=$BANC/cache0 bash outils/images-cle.sh "$@" >>"$BANC/sortie0" 2>&1; }
+: >"$BANC/sortie0"
+voir "sans réglage : aucune sorte d'image tenue, « --secours » dit non" \
+  eval '[[ -z $(sortes) && $(bash outils/images-cle.sh --secours) == non ]] && ! bash outils/images-cle.sh --secours >/dev/null' ||
+  montrer "$BANC/sortie-erreurs"
+(
+  source outils/images-cle.sh
+  for s in arch debian fedora systemrescue omarchy kali; do eval "derniere_$s() { echo appel >>\"$BANC/derniere0\"; }"; done
+  lire() { echo "faux $1"; }
+  VANGUARD_IMAGES=$BANC/cache0 CACHE=$BANC/cache0 chercher
+) >>"$BANC/sortie0" 2>&1
+c1=$?
+images0 --cle "$BANC/cle0"
+c2=$?
+images0 --toutes "$BANC/cle0"
+c3=$?
+images0 --importer "$IMAGE0"
+c4=$?
+images0 --menu "$BANC/cle0"
+c5=$?
+images0 --verifier
+c6=$?
+voir "sans réglage : rien cherché ni copié ni importé, ni menu de Ventoy (0 pour les services, 1 à la main)" \
+  eval '((c1 == 0 && c2 == 0 && c3 == 1 && c4 == 1 && c5 == 1 && c6 == 0)) && [[ ! -e $BANC/derniere0 ]] &&
+    [[ ! -s $BANC/aria2c.log && ! -e $BANC/cle0/ISO/${IMAGE0##*/} && ! -e $BANC/cle0/ventoy ]] &&
+    [[ -f $BANC/cle0/ISO/systemrescue-12.02-amd64.iso && ! -s $BANC/notifications.log ]] &&
+    dit "$BANC/sortie0" "Clé de secours pas demandée sur cet ordinateur" && dit "$BANC/sortie0" "CLE_SECOURS=oui dans"' ||
+  { echo "      codes $c1 $c2 $c3 $c4 $c5 $c6"; montrer "$BANC/sortie0"; }
+: >"$BANC/sortie0"
+for c in "--plan /dev/sdz" "--telecharger $BANC/dossier0" "--ecrire /dev/sdz $BANC/dossier0" \
+  "--windows /dev/sdz $BANC/dossier0" "--verifier $BANC/dossier0" --essai --ventoy-maj --installer-racine; do
+  # shellcheck disable=SC2086 # la commande et ses arguments, voulus en mots
+  bash outils/cle-secours.sh $c >>"$BANC/sortie0" 2>&1 && echo "ACCEPTÉE : $c" >>"$BANC/sortie0"
+done
+bash outils/cle-secours.sh --a-jour "$BANC/cle0" >>"$BANC/sortie0" 2>&1
+c1=$?
+voir "sans réglage : cle-secours.sh refuse tout (images, Ventoy, WIN11, MACOS) et le dit ; --a-jour ne fait rien" \
+  eval '((c1 == 0)) && pas_dit "$BANC/sortie0" ACCEPTÉE &&
+    [[ $(grep -c "clé de secours pas demandée sur cet ordinateur : rien n" "$BANC/sortie0") == 8 ]] &&
+    dit "$BANC/sortie0" "ni Ventoy ni Windows 11 à tenir à jour" && [[ ! -e $BANC/dossier0 ]] &&
+    [[ ! -s $BANC/pkexec.log && ! -s $BANC/notifications.log ]]' || montrer "$BANC/sortie0"
+reglage 'IMAGES="arch debian"' 'IMAGES_EN_PLUS="kali"'
+voir "des images demandées sans CLE_SECOURS=oui : ignorées, et dit" \
+  eval '[[ -z $(sortes) ]] && dit "$BANC/sortie-erreurs" "sans CLE_SECOURS=oui, ignorées"' ||
+  montrer "$BANC/sortie-erreurs"
+reglage CLE_SECOURS=non 'IMAGES="arch"'
+voir "CLE_SECOURS autre que « oui » : clé de secours éteinte" eval '[[ -z $(sortes) ]]' || montrer "$BANC/sortie-erreurs"
+reglage CLE_SECOURS=oui 'IMAGES="fedora, arch"'
+voir "CLE_SECOURS=oui et IMAGES : seulement celles-là, dans l'ordre de copie (la plus utile d'abord)" \
+  eval '[[ $(sortes) == "arch fedora" && ! -s $BANC/sortie-erreurs ]]' || montrer "$BANC/sortie-erreurs"
+reglage CLE_SECOURS=oui 'IMAGES=""'
+voir "CLE_SECOURS=oui et IMAGES vide : aucune image Linux, la clé de secours quand même" \
+  eval '[[ -z $(sortes) && $(bash outils/images-cle.sh --secours) == oui ]]' || montrer "$BANC/sortie-erreurs"
+reglage CLE_SECOURS=oui 'IMAGES="arch *"'
+voir "un « * » dans IMAGES : un mot inconnu, pas les fichiers du dossier" \
+  eval '[[ $(sortes) == arch ]] && dit "$BANC/sortie-erreurs" "« * »"' || montrer "$BANC/sortie-erreurs"
+
+# Kali Linux, coupée par défaut sur une clé de secours : seul le réglage local de l'ordinateur l'allume, lu sans être
+# exécuté.
+reglage CLE_SECOURS=oui
+voir "clé de secours, Kali coupée par défaut : ni cherchée, ni copiée, ni proposée" \
   eval '[[ $(sortes) == "systemrescue arch omarchy debian fedora" ]]' || montrer "$BANC/sortie-erreurs"
 mkdir -p "$BANC/cache8" "$BANC/cle8/ISO" "$BANC/cle8/ventoy"
 IMAGE8=$BANC/cache8/kali-linux-2026.3-live-everything-amd64.iso
@@ -599,16 +673,16 @@ voir "Kali coupée : le menu de Ventoy garde son nom si l'image est déjà sur l
   dit "$BANC/cle8/ventoy/ventoy.json" '"alias": "Kali Linux' || montrer "$BANC/cle8/ventoy/ventoy.json"
 
 # Le réglage : une ligne, des guillemets ou non, un commentaire ; jamais exécuté (une commande dedans ne part pas).
-printf '# images en plus\nIMAGES_EN_PLUS="kali" # pour moi\n$(touch %s/execute)\n' "$BANC" >"$REGLAGE"
+printf 'CLE_SECOURS="oui"\n# images en plus\nIMAGES_EN_PLUS="kali" # pour moi\n$(touch %s/execute)\n' "$BANC" >"$REGLAGE"
 voir "réglage IMAGES_EN_PLUS=\"kali\" : Kali allumée, en dernier ; le fichier lu sans être exécuté" \
   eval '[[ $(sortes) == "systemrescue arch omarchy debian fedora kali" && ! -e $BANC/execute ]]' ||
   montrer "$BANC/sortie-erreurs"
-printf "IMAGES_EN_PLUS='kali,windows'\n" >"$REGLAGE"
+reglage CLE_SECOURS=oui "IMAGES_EN_PLUS='kali,windows'"
 voir "réglage avec une image inconnue : ignorée et dite, Kali allumée quand même" \
   eval '[[ $(sortes) == "systemrescue arch omarchy debian fedora kali" ]] &&
     dit "$BANC/sortie-erreurs" "« windows »"' ||
   montrer "$BANC/sortie-erreurs"
-printf 'IMAGES_EN_PLUS="kali,kali"\n' >"$REGLAGE"
+reglage CLE_SECOURS=oui 'IMAGES_EN_PLUS="kali,kali"'
 voir "réglage avec Kali en double : comptée une fois, sans message" \
   eval '[[ $(sortes) == "systemrescue arch omarchy debian fedora kali" && ! -s $BANC/sortie-erreurs ]]' ||
   montrer "$BANC/sortie-erreurs"
@@ -624,7 +698,7 @@ voir "Kali allumée : le plan de la clé la compte" dit "$BANC/sortie-place" "Ka
   montrer "$BANC/sortie-place"
 
 # Le cache, lien vers un autre disque débranché : jamais recréé, ni à sa place ni au bout du lien.
-rm -f "$REGLAGE"
+reglage CLE_SECOURS=oui
 mkdir -p "$BANC/cle9/ISO"
 ln -s "$BANC/disque2/vanguard-images" "$BANC/lien-images"
 ln -s "$BANC/disque2/cle-secours" "$BANC/lien-secours"
@@ -711,7 +785,7 @@ voir "début d'un torrent de Kali : sa taille lue dans le .torrent, et « repris
   { montrer "$BANC/notifications.log"; montrer "$BANC/sortie"; }
 
 # Les essais de Kali qui suivent : allumée par le réglage.
-echo 'IMAGES_EN_PLUS="kali"' >"$REGLAGE"
+reglage CLE_SECOURS=oui 'IMAGES_EN_PLUS="kali"'
 
 # Une fausse Kali de 8 Mio : avec les 512 Mio gardés, la nouvelle (520 Mio) ne tient sur la clé de 524 Mio que si
 # l'ancienne part d'abord, comme la vraie Kali sur la vraie clé.
@@ -766,10 +840,10 @@ voir "Kali allumée : retirée de la clé pour une nouvelle SystemRescue qui n'y
     [[ ! -e $BANC/cle11/ISO/${KALI11##*/} && ! -e $BANC/cle11/ISO/systemrescue-12.02-amd64.iso ]] &&
     dit "$BANC/notifications.log" "|Clé VANGUARD : image en option retirée|${KALI11##*/}, pour SystemRescue" &&
     pas_dit "$BANC/notifications.log" "pas la place"' || { montrer "$BANC/sortie"; montrer "$BANC/notifications.log"; }
-mv "$REGLAGE" "$REGLAGE.essai"
+reglage CLE_SECOURS=oui
 cle11
 code=$?
-mv "$REGLAGE.essai" "$REGLAGE"
+reglage CLE_SECOURS=oui 'IMAGES_EN_PLUS="kali"'
 voir "Kali coupée sur cet ordinateur : la Kali de la clé reste, la SystemRescue « pas la place »" \
   eval '((code == 0)) && [[ -e $BANC/cle11/ISO/${KALI11##*/} && ! -e $BANC/cle11/ISO/${SR11##*/} ]] &&
     dit "$BANC/notifications.log" "|Clé VANGUARD : pas la place|SystemRescue (il manque"' ||
@@ -835,6 +909,7 @@ cp outils/maj-cle.sh "$M/outils/"
 cat >"$M/outils/deployer.sh" <<'FIN'
 #!/usr/bin/env bash
 [[ ${ESSAI_DEPLOYER:-} == rate ]] && exit 1
+[[ ${ESSAI_DEPLOYER:-} == ok ]] && exit 0
 echo empreinte >"$XDG_RUNTIME_DIR/vanguard-refus.empreinte"
 notify-send -a Vanguard -i vanguard "Vanguard : programmes refusés" "Faille connue"
 exit 1
@@ -859,6 +934,17 @@ code=$?
 voir "programme raté pour une autre raison : la notification du jour le dit" \
   eval '((code == 1)) && dit "$BANC/notifications.log" "mise à jour du jour incomplète|Raté : programme."' ||
   { montrer "$BANC/sortie"; montrer "$BANC/notifications.log"; }
+# Sans le réglage de la clé de secours : le vrai images-cle.sh le dit, et ni les images ni le démarrage ne passent.
+cp outils/images-cle.sh "$M/outils/"
+printf '#!/bin/sh\necho "$*" >>"$BANC/maj0.log"\nexit 0\n' >"$M/outils/cle-secours.sh"
+rm -f "$REGLAGE" "$BANC/notifications.log" "$BANC/maj0.log"
+ESSAI_DEPLOYER=ok bash "$M/outils/maj-cle.sh" >"$BANC/sortie" 2>&1
+code=$?
+voir "mise à jour du jour sans clé de secours : le programme seul, ni images ni démarrage ; code 0" \
+  eval '((code == 0)) && [[ ! -e $BANC/maj0.log && ! -s $BANC/notifications.log ]] &&
+    pas_dit "$BANC/sortie" "== images" && dit "$BANC/sortie" "ni images ni démarrage"' ||
+  { montrer "$BANC/sortie"; montrer "$BANC/notifications.log"; }
+reglage CLE_SECOURS=oui
 rm -rf /run/media/alice
 
 # --- Ménage (menage-dev.sh) ------------------------------------------------------------------------------------------
