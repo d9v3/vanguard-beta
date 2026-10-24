@@ -380,6 +380,12 @@ elif [[ -d $HOME/Windows && -f $WINDOWS ]]; then
   else
     echo "VM Windows : version déposée dans $VM."
   fi
+  # La version qui aura sa page : aussi un essai signé de la file (test.ps1 en administrateur), dont le verdict signé
+  # par le surveillant est la porte de outils/publier-version.sh. Seulement la file réinstallée (secret ici).
+  if [[ -n $A_PUBLIER && -s ${XDG_CONFIG_HOME:-$HOME/.config}/vanguard/file-essais/secret ]]; then
+    bash outils/vm-tester.sh --exe "$WINDOWS" --sans-console --sans-attendre ||
+      echo "VM Windows : essai de la file pas déposé (voir ci-dessus) : sans son verdict signé, pas de page."
+  fi
 fi
 
 # Nouvelle version envoyée : sa page sur GitHub (Releases), en dernier, car la version macOS se compile sur un Mac de

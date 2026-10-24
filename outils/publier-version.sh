@@ -218,21 +218,32 @@ if [[ -z $ANNONCEE || $ANNONCEE != "$(sha256sum "$DOSSIER/vanguard-macos" | cut 
 fi
 outils/failles-programmes.sh "$DOSSIER/vanguard-macos" || { echo "Version macOS : rien de publié."; exit 1; }
 
-# Le programme Windows publié doit être celui qu'une passe réussie de la VM a fait tourner, octet pour octet
-# (outils/test-windows/test.ps1 note l'empreinte de ce qu'il lance, à la fin de sa ligne d'historique) : la CI teste
-# la cible MSVC sur Windows, Wine a ses faux verts, et seule la VM essaie ce .exe-là sur un vrai Windows. deployer.sh
-# vient de l'y déposer : sa passe automatique (choix 6 du menu des tests) prend six minutes environ, attendues ici
-# (VANGUARD_ATTENTE_VM, en minutes, 25 par défaut). Une passe en échec, ou aucune : rien de publié.
-# VANGUARD_PUBLIER_SANS_VM=1 publie quand même (VM en panne), et le dit.
+# Le programme Windows publié doit être celui qu'une passe réussie de la VM a fait tourner, octet pour octet : la CI
+# teste la cible MSVC sur Windows, Wine a ses faux verts, et seule la VM essaie ce .exe-là sur un vrai Windows. Une
+# porte de qualité, pas de sécurité. Sa preuve : le verdict OK, signé par le surveillant de la file d'essais (HMAC du
+# secret de la file), d'un travail signé qui a fait tourner ce .exe (outils/vm-tester.sh --verdict) ; deployer.sh
+# vient de l'y déposer. Tant que la file n'est pas réinstallée (pas de secret ici : code 3), la ligne de
+# resultats/historique.txt qu'écrit test.ps1 en sert encore, et c'est dit : n'importe quel programme qui écrit dans
+# le partage pourrait l'écrire (campagne d'attaque n° 3). Attendue VANGUARD_ATTENTE_VM minutes (40 par défaut). Une
+# passe en échec, ou aucune : rien de publié. VANGUARD_PUBLIER_SANS_VM=1 publie quand même (VM en panne), et le dit.
 VM_HISTORIQUE=$HOME/Windows/VANGUARD-TEST/resultats/historique.txt
 EXE_PUBLIE=$(sha256sum "$DOSSIER/vanguard-windows-x86_64.exe" | cut -d' ' -f1)
 # Les lignes de l'historique finissent par \r\n (écrites sous Windows).
-passe_de_la_vm() { tr -d '\r' <"$VM_HISTORIQUE" 2>/dev/null | grep -E " sha256 $EXE_PUBLIE\$" | tail -n 1; }
+passe_de_la_vm() {
+  local code=0 ligne
+  ligne=$(bash outils/vm-tester.sh --verdict "$EXE_PUBLIE" 2>/dev/null) || code=$?
+  if ((code == 0)); then
+    echo "OK, tout est passé (verdict signé de la file d'essais : $ligne)"
+  elif ((code == 3)); then
+    ligne=$(tr -d '\r' <"$VM_HISTORIQUE" 2>/dev/null | grep -E " sha256 $EXE_PUBLIE\$" | tail -n 1)
+    [[ -z $ligne ]] || echo "$ligne [NON AUTHENTIFIÉ : historique.txt, file d'essais pas réinstallée]"
+  fi
+}
 if [[ -n ${VANGUARD_PUBLIER_SANS_VM:-} ]]; then
   echo "⚠ Programme Windows publié sans passe de la VM sur ce .exe (VANGUARD_PUBLIER_SANS_VM)."
 else
-  fin=$((SECONDS + 60 * ${VANGUARD_ATTENTE_VM:-25}))
-  [[ -n $(passe_de_la_vm) ]] || echo "Programme Windows : attente de sa passe dans la VM (${VANGUARD_ATTENTE_VM:-25} min au plus)…"
+  fin=$((SECONDS + 60 * ${VANGUARD_ATTENTE_VM:-40}))
+  [[ -n $(passe_de_la_vm) ]] || echo "Programme Windows : attente de sa passe dans la VM (${VANGUARD_ATTENTE_VM:-40} min au plus)…"
   while [[ -z $(passe_de_la_vm) ]] && ((SECONDS < fin)); do
     sleep 20
   done
@@ -243,6 +254,7 @@ else
     echo "  (VANGUARD_PUBLIER_SANS_VM=1 outils/publier-version.sh pour publier sans elle.)"
     exit 1
   fi
+  [[ $PASSE != *"NON AUTHENTIFIÉ"* ]] || echo "⚠ Porte de la VM non authentifiée : réinstaller la file d'essais (outils/vm-tester.sh --installer)."
   echo "✔ Programme Windows essayé tel quel dans la VM : ${PASSE%% ->*}"
 fi
 (cd "$DOSSIER" && sha256sum vanguard-windows-x86_64.exe vanguard-linux-x86_64 vanguard-macos >SHA256SUMS.txt)

@@ -4,9 +4,13 @@
 # empreintes vérifiées sur une copie locale, test.ps1 -Auto -SansOuvrir, essais de console, puis fini.txt en dernier.
 #
 # SÉCURITÉ : ce qui est déposé dans file-essais s'exécute en administrateur DANS LA VM, sans clic. Le partage s'écrit
-# depuis Linux : tout programme du compte Linux peut donc devenir administrateur de la VM. À n'installer que dans la
-# VM de test : sans \\host.lan\Data, rien n'est jamais lancé. L'empreinte SHA-256 protège d'une copie partielle ou
-# d'un fichier remplacé en route ; ce n'est pas une signature. Seuls les fichiers nommés dans travail.txt (liste
+# depuis Linux, mais aussi depuis la VM elle-même, par n'importe quel compte (Samba range tout sous le compte Linux) :
+# un travail n'est donc fait que s'il porte la preuve de sa provenance, un HMAC-SHA256 de travail.txt (empreintes des
+# fichiers comprises) par le secret tiré à l'installation (secret.bin, que seuls les administrateurs lisent ; côté
+# Linux, ~/.config/vanguard/file-essais/secret, hors du partage). Sans secret, rien n'est lancé ; un id déjà fait ne
+# l'est pas deux fois. fini.txt porte à son tour le HMAC du surveillant : Linux ne croit que lui (campagne d'attaque
+# n° 3). Tout programme du compte Linux, qui lit ce secret, peut encore devenir administrateur de la VM. À n'installer
+# que dans la VM de test : sans \\host.lan\Data, rien n'est jamais lancé. Seuls les fichiers nommés dans travail.txt (liste
 # fermée) sont lus, sans suivre de lien Windows ; un lien symbolique de Linux, Samba le suit lui-même et il ne se voit
 # pas d'ici : outils/vm-tester.sh refuse d'en déposer. Ils sont copiés dans %ProgramData%\Vanguard-File-Essais\travaux,
 # que seuls les administrateurs modifient, et tout ce qui est lancé l'est de là (test.ps1 -SurPlace) : un programme
@@ -23,11 +27,14 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-$VersionSurveillant = 1
+$VersionSurveillant = 2
 $MotifId = '^\d{8}-\d{6}-[0-9a-f]{7,12}-[0-9a-z]{4}$'
 # Les seuls fichiers qu'un travail peut nommer : rien d'autre n'est copié ni lancé.
 $FichiersPermis = @('vanguard.exe', 'test.ps1', 'essais-console.ps1', 'Lancer Vanguard.bat')
-$ClesConnues = @('format', 'id', 'commit', 'branche', 'modifie', 'cree', 'test', 'console', 'langues', 'delai_minutes')
+$ClesConnues = @('format', 'id', 'commit', 'branche', 'modifie', 'cree', 'test', 'console', 'langues', 'delai_minutes', 'hmac')
+# Les domaines des HMAC : un travail signé ne vaut jamais pour un verdict, ni l'inverse (le même texte en vm-tester.sh).
+$DomaineTravail = 'vanguard-file-essais travail 1'
+$DomaineFini = 'vanguard-file-essais fini 1'
 $Utf8 = New-Object Text.UTF8Encoding $false
 
 if ($EssaiLocal) {
@@ -53,6 +60,8 @@ $Battement = Join-Path $File 'battement.txt'
 # Dans la VM, le dossier vient de l'installation, avec ses droits : jamais créé ici (voir Est-Protege).
 if ($EssaiLocal) { New-Item -ItemType Directory -Force -Path $Prive | Out-Null }
 $JournalGeneral = Join-Path $Prive 'journal.txt'
+$SecretChemin = Join-Path $Prive 'secret.bin'
+$IdsVus = Join-Path $Prive 'ids-vus.txt'
 $script:journalTravail = $null
 
 function Maintenant { Get-Date -Format 'yyyy-MM-ddTHH:mm:sszzz' }
@@ -69,13 +78,16 @@ function Journal([string]$t) {
 }
 
 # Les fichiers « cle=valeur » : UTF-8 sans BOM, CRLF (Linux retire les \r).
-function Ecrire-Cles([string]$chemin, $cles) {
-    $t = (($cles.GetEnumerator() | ForEach-Object { "$($_.Key)=$(([string]$_.Value) -replace '[\r\n]+', ' ')" }) -join "`r`n") + "`r`n"
-    [IO.File]::WriteAllText($chemin, $t, $Utf8)
+function Texte-Cles($cles) {
+    (($cles.GetEnumerator() | ForEach-Object { "$($_.Key)=$(([string]$_.Value) -replace '[\r\n]+', ' ')" }) -join "`r`n") + "`r`n"
 }
-function Lire-Cles([string]$chemin) {
+function Ecrire-Cles([string]$chemin, $cles) {
+    [IO.File]::WriteAllText($chemin, (Texte-Cles $cles), $Utf8)
+}
+function Lire-Cles([string]$chemin) { Lire-Cles-Texte ([IO.File]::ReadAllText($chemin, $Utf8)) }
+function Lire-Cles-Texte([string]$texte) {
     $cles = [ordered]@{}
-    $texte = [IO.File]::ReadAllText($chemin, $Utf8).TrimStart([char]0xFEFF)
+    $texte = $texte.TrimStart([char]0xFEFF)
     foreach ($l in ($texte -split "`r?`n")) {
         if (-not $l.Trim()) { continue }
         $i = $l.IndexOf('=')
@@ -85,6 +97,55 @@ function Lire-Cles([string]$chemin) {
         $cles[$k] = $v
     }
     $cles
+}
+
+# Le secret de la file : 32 octets tirés par l'installation, dans un fichier que seuls les administrateurs et SYSTEM
+# lisent (propriétaire Administrateurs, sans héritage). Absent ou mal protégé : $null, et aucun travail n'est fait.
+function Lire-Secret {
+    $item = Get-Item -LiteralPath $SecretChemin -Force -ErrorAction SilentlyContinue
+    if (-not $item -or $item.PSIsContainer -or (Est-Lien $item) -or $item.Length -ne 32) { return $null }
+    if (-not $EssaiLocal) {
+        $acl = Get-Acl -LiteralPath $SecretChemin
+        if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne 'S-1-5-32-544' -or -not $acl.AreAccessRulesProtected) { return $null }
+        foreach ($r in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+            if ($r.AccessControlType -eq 'Allow' -and $r.IdentityReference.Value -notin 'S-1-5-32-544', 'S-1-5-18') { return $null }
+        }
+    }
+    , [IO.File]::ReadAllBytes($SecretChemin)
+}
+
+# HMAC-SHA256 (System.Security.Cryptography) du domaine, d'un saut de ligne, puis des octets ; en hexadécimal.
+function Hmac([byte[]]$secret, [string]$domaine, [byte[]]$octets) {
+    $h = New-Object Security.Cryptography.HMACSHA256 (, $secret)
+    $d = $Utf8.GetBytes("$domaine`n")
+    $tout = New-Object byte[] ($d.Length + $octets.Length)
+    [Array]::Copy($d, $tout, $d.Length); [Array]::Copy($octets, 0, $tout, $d.Length, $octets.Length)
+    ([BitConverter]::ToString($h.ComputeHash($tout)) -replace '-', '').ToLower()
+}
+# Deux textes de même longueur comparés sans s'arrêter au premier écart.
+function Egaux-Constant([string]$a, [string]$b) {
+    if ($a.Length -ne $b.Length) { return $false }
+    $d = 0
+    for ($i = 0; $i -lt $a.Length; $i++) { $d = $d -bor ([int][char]$a[$i] -bxor [int][char]$b[$i]) }
+    $d -eq 0
+}
+# Le corps d'un fichier signé (tout jusqu'à sa dernière ligne, « hmac=<64 hexadécimaux> », CRLF compris) s'il porte
+# le bon HMAC ; sinon une exception « REFUS: … ». Lu une fois, en octets : ce qui est vérifié est ce qui est lu.
+function Corps-Signe([byte[]]$octets, [byte[]]$secret, [string]$domaine, [string]$quoi) {
+    $n = $octets.Length
+    if ($n -lt 72 -or $octets[$n - 1] -ne 10 -or $octets[$n - 2] -ne 13) { throw "REFUS: $quoi sans signature (hmac)" }
+    $i = $n - 3
+    while ($i -ge 0 -and $octets[$i] -ne 10) { $i-- }
+    $debut = $i + 1
+    $ligne = [Text.Encoding]::ASCII.GetString($octets, $debut, $n - 2 - $debut)
+    if ($ligne -notmatch '^hmac=([0-9a-f]{64})$') { throw "REFUS: $quoi sans signature (hmac)" }
+    $vu = $Matches[1]
+    $corps = New-Object byte[] $debut
+    [Array]::Copy($octets, $corps, $debut)
+    if (-not (Egaux-Constant (Hmac $secret $domaine $corps) $vu)) {
+        throw "REFUS: signature de $quoi fausse (déposé par un autre que Linux, ou secret changé : réinstaller)"
+    }
+    , $corps
 }
 
 function Ecrire-Battement([string]$etat) {
@@ -146,10 +207,15 @@ function Temoin-De-La-File([string]$id = '') {
     if ($id) { $c.StartsWith("file-essais $id ") } else { $c.StartsWith('file-essais ') }
 }
 
-# fini.txt en dernier, entier d'un coup : Linux n'en lit jamais une moitié.
+# fini.txt en dernier, entier d'un coup : Linux n'en lit jamais une moitié. Signé par le secret (HMAC, dernière
+# ligne) : un verdict écrit par un autre que le surveillant ne passe pas pour le sien. Sans secret, pas de signature
+# (Linux le dit « non authentifié », jamais vert).
 function Ecrire-Fini($dossier, $fini) {
     $tmp = Join-Path $dossier 'fini.txt.tmp'
-    Ecrire-Cles $tmp $fini
+    $octets = $Utf8.GetBytes((Texte-Cles $fini))
+    $secret = Lire-Secret
+    if ($secret) { $octets = $octets + $Utf8.GetBytes("hmac=$(Hmac $secret $DomaineFini $octets)`r`n") }
+    [IO.File]::WriteAllBytes($tmp, [byte[]]$octets)
     Move-Item -LiteralPath $tmp -Destination (Join-Path $dossier 'fini.txt') -Force
 }
 
@@ -201,14 +267,22 @@ function Bilan-Test([string]$localTravail) {
     $b
 }
 
-# Lit et vérifie travail.txt : format, clés connues, id = nom du dossier, liste fermée de fichiers.
+# Lit et vérifie travail.txt : sa signature d'abord (HMAC par le secret de la file : seul Linux le dépose), puis
+# format, clés connues, id = nom du dossier et pas déjà fait, liste fermée de fichiers.
 function Lire-Travail($dossier) {
-    $t = Lire-Cles (Join-Path $dossier.FullName 'travail.txt')
+    $secret = Lire-Secret
+    if (-not $secret) { throw 'REFUS: pas de secret de la file dans la VM (installation d''avant la signature, ou secret.bin mal protégé) : réinstaller (INSTALLER-ESSAIS-AUTO.bat)' }
+    $corps = Corps-Signe ([IO.File]::ReadAllBytes((Join-Path $dossier.FullName 'travail.txt'))) $secret $DomaineTravail 'travail.txt'
+    $t = Lire-Cles-Texte ($Utf8.GetString($corps))
     foreach ($k in $t.Keys) {
         if ($k -notin $ClesConnues -and $k -notlike 'sha256.*') { throw "REFUS: clé inconnue « $k »" }
     }
     if ($t['format'] -ne '1') { throw "REFUS: format « $($t['format']) » inconnu (1 attendu)" }
     if ($t['id'] -ne $dossier.Name) { throw "REFUS: l'id « $($t['id']) » n'est pas le nom du dossier" }
+    # Un travail signé rejoué (pris.txt et fini.txt retirés) : jamais deux fois.
+    if ((Test-Path -LiteralPath $IdsVus) -and ([IO.File]::ReadAllLines($IdsVus) -contains $t['id'])) { throw "REFUS: travail $($t['id']) déjà fait (rejoué)" }
+    $vus = @(if (Test-Path -LiteralPath $IdsVus) { [IO.File]::ReadAllLines($IdsVus) | Select-Object -Last 999 }) + $t['id']
+    [IO.File]::WriteAllLines($IdsVus, [string[]]$vus, $Utf8)
     if ($t['commit'] -notmatch '^([0-9a-f]{40}|inconnu)$') { throw 'REFUS: commit illisible' }
     foreach ($k in 'test', 'console') { if ($t[$k] -notin 'oui', 'non') { throw "REFUS: $k=oui ou non attendu" } }
     if ($t['test'] -eq 'non' -and $t['console'] -eq 'non') { throw 'REFUS: ni test ni console demandés' }

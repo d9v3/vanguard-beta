@@ -8,8 +8,16 @@
 #   outils/vm-tester.sh --exe chemin.exe      un programme déjà compilé (rien compilé ; passé à verifier-pe)
 #   options : --sans-console --sans-test --langues fr,en --delai MIN (60) --sans-attendre
 #   outils/vm-tester.sh --attendre <id>       attendre (de nouveau) un travail déjà déposé
-#   outils/vm-tester.sh --installer           pose INSTALLER-/DESINSTALLER-ESSAIS-AUTO.bat dans la VM
+#   outils/vm-tester.sh --installer           pose INSTALLER-/DESINSTALLER-ESSAIS-AUTO.bat dans la VM, et la clé de
+#                                             Linux qui recevra le secret de la file ; attend ce secret (--adopter)
+#   outils/vm-tester.sh --adopter             garde le secret que l'installation a déposé, chiffré, après accord sur
+#                                             son code de vérification (le même doit s'afficher dans la VM)
+#   outils/vm-tester.sh --verdict SHA256      un verdict OK signé par le surveillant pour ce vanguard.exe ? (code 0 ;
+#                                             1 : aucun ; 3 : pas de secret ici, file pas réinstallée)
 #   outils/vm-tester.sh --essai-local         essais de ce script et du surveillant, sans VM (pwsh)
+# Provenance (campagne d'attaque n° 3) : chaque travail.txt porte le HMAC-SHA256 du secret de la file, et chaque
+# fini.txt celui du surveillant ; le secret est tiré dans la VM par l'installation et gardé ici hors du partage
+# (~/.config/vanguard/file-essais/secret, 0600). Sans lui, rien n'est déposé ; un verdict non signé n'est jamais cru.
 # Code de sortie : 0 si tout est passé dans la VM, 1 sinon (problèmes, refus, délai, VM muette).
 # Jamais d'exécution du programme ici (binfmt le confierait à Wine) ; rien n'est touché à la VM elle-même : seulement
 # des fichiers dans le dossier partagé. Ce qui est déposé s'exécute en administrateur dans la VM (voir
@@ -36,9 +44,53 @@ if [[ -n ${VM_TESTER_SOURCES:-} && -n ${VANGUARD_VM_DOSSIER:-} && $VM != "$HOME/
 fi
 MOTIF_ID='^[0-9]{8}-[0-9]{6}-[0-9a-f]{7,12}-[0-9a-z]{4}$'
 
-usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; }
 
-BRANCHE_DEMANDEE= EXE= TEST=oui CONSOLE=oui LANGUES=fr,en DELAI=60 ATTENDRE=1 SUIVRE= MODE=essai
+# La clé de Linux (RSA 3072, qui reçoit le secret chiffré) et le secret de la file : hors du partage, au compte seul.
+# VM_TESTER_CLES en désigne un autre dossier, pour --essai-local seulement (comme les sources des scripts).
+CLES=${XDG_CONFIG_HOME:-$HOME/.config}/vanguard/file-essais
+[[ -n $SOURCES && -n ${VM_TESTER_CLES:-} ]] && CLES=$VM_TESTER_CLES
+CLE_LINUX=$CLES/linux.pem
+SECRET=$CLES/secret
+DOMAINE_TRAVAIL='vanguard-file-essais travail 1'
+DOMAINE_FINI='vanguard-file-essais fini 1'
+# HMAC-SHA256 (module hmac de Python, sans dépendance) du domaine, d'un saut de ligne et du fichier, par le secret lu
+# dans son fichier : jamais sur une ligne de commande, que ps montrerait (openssl le voudrait).
+hmac_de() { # domaine fichier : l'empreinte en hexadécimal
+  python3 -I -c 'import hashlib, hmac, sys
+cle = bytes.fromhex(open(sys.argv[1]).read().strip())
+assert len(cle) == 32
+print(hmac.new(cle, sys.argv[2].encode() + b"\n" + open(sys.argv[3], "rb").read(), hashlib.sha256).hexdigest())' \
+    "$SECRET" "$1" "$2"
+}
+# Le fichier signé par le secret ? Sa dernière ligne est « hmac=<64 hexadécimaux> » (CRLF), sur tout ce qui précède.
+signe_par_le_secret() { # domaine fichier
+  local f=$2 vu corps
+  [[ -f $f && ! -L $f && -s $SECRET ]] || return 1
+  # « \nhmac=<64>\r\n » : 72 octets, le saut de ligne de la ligne d'avant compris.
+  [[ $(tail -c 72 "$f" | head -c 6 | od -An -c | tr -d ' ') == '\nhmac=' ]] || return 1
+  vu=$(tail -c 71 "$f" | head -c 69 | sed -n 's/^hmac=\([0-9a-f]\{64\}\)$/\1/p')
+  [[ -n $vu && $(tail -c 2 "$f" | od -An -tx1 | tr -d ' ') == 0d0a ]] || return 1
+  corps=$(mktemp) || return 1
+  head -c $(($(stat -c %s "$f") - 71)) "$f" >"$corps"
+  [[ $(hmac_de "$1" "$corps") == "$vu" ]]
+  local code=$?
+  rm -f "$corps"
+  return "$code"
+}
+# De l'hexadécimal aux octets (coreutils).
+octets_de_l_hexa() { tr -d ' \n' | tr 'a-f' 'A-F' | basenc --base16 -d; }
+# La clé publique de Linux, sous la forme que lit .NET (RSAKeyValue), refaite de la clé privée : jamais relue du partage.
+xml_cle_linux() {
+  local module
+  module=$(openssl rsa -in "$CLE_LINUX" -noout -modulus 2>/dev/null | sed -n 's/^Modulus=//p')
+  [[ -n $module ]] || return 1
+  [[ $(openssl rsa -in "$CLE_LINUX" -noout -text 2>/dev/null | sed -n 's/^publicExponent: \([0-9]*\).*/\1/p') == 65537 ]] || return 1
+  printf '<RSAKeyValue><Modulus>%s</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>' \
+    "$(printf '%s' "$module" | octets_de_l_hexa | base64 -w0)"
+}
+
+BRANCHE_DEMANDEE= EXE= TEST=oui CONSOLE=oui LANGUES=fr,en DELAI=60 ATTENDRE=1 SUIVRE= MODE=essai VERDICT=
 while (($#)); do
   case $1 in
     --branche) BRANCHE_DEMANDEE=${2:?--branche B}; shift ;;
@@ -50,6 +102,8 @@ while (($#)); do
     --sans-attendre) ATTENDRE= ;;
     --attendre) SUIVRE=${2:?--attendre <id>}; MODE=suivre; shift ;;
     --installer) MODE=installer ;;
+    --adopter) MODE=adopter ;;
+    --verdict) VERDICT=${2:?--verdict SHA256}; MODE=verdict; shift ;;
     --essai-local) MODE=essai-local ;;
     -h | --help) usage; exit 0 ;;
     *) echo "Option inconnue : $1" >&2; usage >&2; exit 2 ;;
@@ -216,6 +270,9 @@ deposer() {
     printf 'test=%s\r\nconsole=%s\r\nlangues=%s\r\ndelai_minutes=%s\r\n' "$TEST" "$CONSOLE" "$LANGUES" "$DELAI"
     for f in "${fichiers[@]}"; do printf 'sha256.%s=%s\r\n' "$f" "$(sha256sum "$p/$f" | cut -d' ' -f1)"; done
   } >"$p/travail.txt.tmp"
+  # La preuve de provenance : seul qui a le secret de la file signe un travail que la VM fait en administrateur.
+  printf 'hmac=%s\r\n' "$(hmac_de "$DOMAINE_TRAVAIL" "$p/travail.txt.tmp")" >>"$p/travail.txt.tmp" ||
+    { echo "travail.txt pas signé : rien déposé." >&2; rm -rf "$p"; exit 1; }
   mv "$p/travail.txt.tmp" "$p/travail.txt"
   [[ -z $CROCHET ]] || eval "$CROCHET"
   # Un lien symbolique, Samba le suit lui-même : la VM verrait un fichier ordinaire, venu d'ailleurs. Jamais déposé.
@@ -229,9 +286,15 @@ deposer() {
   echo "Travail déposé : $ID ($BRANCHE, $([[ $COMMIT == inconnu ]] && echo "commit inconnu" || echo "${COMMIT:0:7}")$([[ $MODIFIE == oui ]] && echo ", arbre modifié"))"
 }
 
-# Le résumé d'un travail fini ; code 0 si tout est passé.
+# Le résumé d'un travail fini ; code 0 si tout est passé. Un fini.txt que le surveillant n'a pas signé (écrit par un
+# autre programme qui écrit dans le partage, ou par une file pas réinstallée) n'est pas un verdict : jamais vert.
 resumer() {
   local d=$FILE/$1 f=$FILE/$1/fini.txt t=$FILE/$1/travail.txt code etat duree c
+  if ! signe_par_le_secret "$DOMAINE_FINI" "$f"; then
+    echo "Essai $1 : fini.txt NON SIGNÉ par le surveillant (écrit par un autre programme, ou file d'essais à"
+    echo "  réinstaller) : verdict ignoré ($(cle "$f" etat || true) annoncé). Dossier : $d"
+    return 1
+  fi
   code=$(cle "$f" code) etat=$(cle "$f" etat) duree=$(cle "$f" duree_s)
   c=$(cle "$t" commit)
   echo "Essai $1 (${c:0:7}, $(cle "$t" branche)) : pris $(cle "$d/pris.txt" pris | cut -c12-16), fini $(cle "$f" fin | cut -c12-16) ($(((${duree:-0} + 30) / 60)) min), administrateur : $(cle "$f" admin)"
@@ -350,14 +413,82 @@ attendre() {
   resumer "$id"
 }
 
+# La clé de Linux, tirée une fois (RSA 3072, 0600 dans un dossier 0700) : elle reçoit le secret chiffré.
+cle_linux() {
+  [[ -s $CLE_LINUX ]] && return 0
+  (umask 077 && mkdir -p "$CLES" && openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$CLE_LINUX.nouvelle" \
+    2>/dev/null && mv "$CLE_LINUX.nouvelle" "$CLE_LINUX") || { echo "Clé de Linux pas tirée ($CLE_LINUX)." >&2; return 1; }
+  echo "Clé de Linux tirée : $CLE_LINUX"
+}
+
 installer() {
   [[ -d $VM ]] || { echo "Dossier partagé absent : $VM (la VM n'a jamais été lancée ?)" >&2; exit 1; }
-  mkdir -p "$VM/programme" || exit 1
-  local f
+  mkdir -p "$VM/programme" "$FILE" || exit 1
+  cle_linux || exit 1
+  local f xml
   for f in essais-auto-installation.ps1 surveillant-essais.ps1; do copier "outils/test-windows/$f" "$VM/programme/$f"; done
+  xml=$(xml_cle_linux) || { echo "Clé de Linux illisible ($CLE_LINUX)." >&2; exit 1; }
+  printf '%s' "$xml" >"$VM/programme/cle-linux.xml"
+  # Un secret chiffré d'une installation d'avant n'est pas celui qu'on attend.
+  rm -f "$FILE/secret-chiffre.bin"
   cp -f outils/test-windows/INSTALLER-ESSAIS-AUTO.bat outils/test-windows/DESINSTALLER-ESSAIS-AUTO.bat "$VM/"
-  echo "Posé dans $VM : dans la VM, double-clic une fois sur INSTALLER-ESSAIS-AUTO.bat (une fenêtre UAC)."
-  echo "Réinstaller met le surveillant à jour ; DESINSTALLER-ESSAIS-AUTO.bat le retire."
+  echo "Posé dans $VM : dans la VM, double-clic une fois sur INSTALLER-ESSAIS-AUTO.bat (une fenêtre UAC), « o »,"
+  echo "puis comparer son CODE DE VÉRIFICATION à celui qui s'affichera ici. Réinstaller met le surveillant à jour et"
+  echo "tire un nouveau secret ; DESINSTALLER-ESSAIS-AUTO.bat le retire."
+  [[ -t 0 ]] || { echo "Sans terminal ici : après l'installation, outils/vm-tester.sh --adopter."; return 0; }
+  echo "En attente du secret de l'installation (20 min au plus ; Ctrl-C puis --adopter plus tard)…"
+  for _ in $(seq 240); do
+    [[ -s $FILE/secret-chiffre.bin ]] && { sleep 2; adopter; return; }
+    sleep 5
+  done
+  echo "Pas de secret déposé en 20 min : après l'installation, outils/vm-tester.sh --adopter."
+}
+
+# Le secret que l'installation a déposé, chiffré pour la clé de Linux : déchiffré ici, son code de vérification
+# montré, et gardé seulement si l'auteur dit que la VM montre le même (une clé ou un secret substitués sur le partage
+# ne le donnent pas). Le fichier chiffré est retiré dans tous les cas.
+adopter() {
+  local blob=$FILE/secret-chiffre.bin hex xml empreinte code reponse
+  [[ -s $blob && ! -L $blob ]] || { echo "Pas de secret déposé ($blob) : lancer INSTALLER-ESSAIS-AUTO.bat dans la VM." >&2; return 1; }
+  [[ -s $CLE_LINUX ]] || { echo "Clé de Linux absente ($CLE_LINUX) : outils/vm-tester.sh --installer d'abord." >&2; return 1; }
+  hex=$(openssl pkeyutl -decrypt -inkey "$CLE_LINUX" -pkeyopt rsa_padding_mode:oaep -in "$blob" 2>/dev/null |
+    od -An -tx1 -v | tr -d ' \n')
+  rm -f "$blob"
+  [[ $hex =~ ^[0-9a-f]{64}$ ]] || { echo "Secret illisible (pas chiffré pour cette clé) : rien n'est gardé ; réinstaller." >&2; return 1; }
+  xml=$(xml_cle_linux) || return 1
+  empreinte=$(printf '%s' "$xml" | sha256sum | cut -d' ' -f1)
+  code=$(printf '%s' "$hex" | python3 -I -c 'import hashlib, hmac, sys
+c = hmac.new(bytes.fromhex(sys.stdin.read()), ("vanguard-file-essais code 1\n" + sys.argv[1]).encode(), hashlib.sha256).hexdigest()
+print(c[0:4] + "-" + c[4:8] + "-" + c[8:12])' "$empreinte")
+  echo "CODE DE VÉRIFICATION ici : $code"
+  read -rp "La VM affiche-t-elle exactement le même code ? [o/N] " reponse || reponse=
+  if [[ ! $reponse =~ ^(o|oui|y|yes)$ ]]; then
+    echo "Refusé : rien n'est gardé. Réinstaller dans la VM (INSTALLER-ESSAIS-AUTO.bat), puis --adopter de nouveau."
+    return 1
+  fi
+  (umask 077 && mkdir -p "$CLES" && printf '%s\n' "$hex" >"$SECRET.nouveau" && mv -f "$SECRET.nouveau" "$SECRET") ||
+    { echo "Secret pas gardé ($SECRET)." >&2; return 1; }
+  echo "Secret de la file gardé : $SECRET (0600). outils/vm-tester.sh peut déposer des essais signés."
+}
+
+# Un verdict OK, signé par le surveillant, d'un travail signé qui a fait tourner ce vanguard.exe-là (test.ps1 compris,
+# au moins une vérification réussie) : la porte de la VM pour outils/publier-version.sh. Code 0 (la ligne du verdict
+# sur la sortie), 1 aucun, 3 pas de secret ici.
+verdict() {
+  local d t f
+  [[ $VERDICT =~ ^[0-9a-f]{64}$ ]] || { echo "--verdict : une empreinte SHA-256 en hexadécimal" >&2; return 2; }
+  [[ -s $SECRET ]] || return 3
+  for d in "$FILE"/*/; do
+    d=${d%/}
+    [[ ${d##*/} =~ $MOTIF_ID && ! -L $d ]] || continue
+    t=$d/travail.txt f=$d/fini.txt
+    [[ $(cle "$t" sha256.vanguard.exe | tr 'A-F' 'a-f') == "$VERDICT" && $(cle "$t" test) == oui ]] || continue
+    signe_par_le_secret "$DOMAINE_TRAVAIL" "$t" && signe_par_le_secret "$DOMAINE_FINI" "$f" || continue
+    [[ $(cle "$f" id) == "${d##*/}" && $(cle "$f" etat) == ok && $(cle "$f" code) == 0 && $(cle "$f" test.ok) -gt 0 ]] || continue
+    echo "${d##*/} : $(cle "$f" test.ok) vérifications réussies, fini $(cle "$f" fin)"
+    return 0
+  done
+  return 1
 }
 
 # --- Essais sans VM ----------------------------------------------------------------------------------------------------
@@ -395,6 +526,15 @@ EOF2
   printf 'MZ programme abîmé pour les essais\n' >"$T/abime.exe"
   local avec_pwsh=1
   [[ -x $PWSH ]] || avec_pwsh=
+  # Le secret de la file d'essai, des deux côtés (jamais celui de ~/.config) : en hexadécimal pour Linux, en octets
+  # dans le dossier privé de chaque fausse VM (secret.bin).
+  local CLES_ESSAI=$T/cles SECRET=$T/cles/secret
+  mkdir -p "$CLES_ESSAI" && head -c 32 /dev/urandom | od -An -tx1 -v | tr -d ' \n' >"$SECRET" && echo >>"$SECRET"
+  # Un travail.txt modifié à la main, puis signé de nouveau (ce que pourrait le compte Linux, qui a le secret).
+  resigner() { # fichier
+    head -c $(($(stat -c %s "$1") - 71)) "$1" >"$1.corps" && printf 'hmac=%s\r\n' "$(hmac_de "$DOMAINE_TRAVAIL" "$1.corps")" >>"$1.corps" &&
+      mv "$1.corps" "$1"
+  }
 
   voir() { # libellé commande… : la commande doit réussir
     ESSAIS=$((ESSAIS + 1))
@@ -403,7 +543,10 @@ EOF2
   }
   sauter() { SAUTES=$((SAUTES + 1)); echo "  ↷ $1 : sauté (pwsh absent : $PWSH)"; }
   dit() { grep -qF -- "$1" "$T/sortie"; }
-  nouvelle_vm() { VMD=$T/vm$((++N))/VANGUARD-TEST; mkdir -p "$VMD/resultats" "$VMD/file-essais"; }
+  nouvelle_vm() {
+    VMD=$T/vm$((++N))/VANGUARD-TEST; mkdir -p "$VMD/resultats" "$VMD/file-essais" "$T/vm$N/prive-surveillant"
+    octets_de_l_hexa <"$SECRET" >"$T/vm$N/prive-surveillant/secret.bin"
+  }
   # Faux scripts d'essai : test.ps1 écrit bilan.txt et un rapport (ou ne finit jamais), laisse une trace s'il tourne ;
   # essais-console.ps1 écrit le résumé voulu.
   sources() { # bugs sautees attente(0/1) lignes-de-console…
@@ -428,7 +571,7 @@ EOF
   }
   tour() { "$PWSH" -NoProfile -NonInteractive -File "$DEPOT/outils/test-windows/surveillant-essais.ps1" -EssaiLocal -Racine "$VMD" -UnTour "$@" >>"$T/tours" 2>&1; }
   vmt() { # options de vm-tester.sh… : sortie dans $T/sortie, code dans $code
-    env VANGUARD_VM_DOSSIER="$VMD" VM_TESTER_SOURCES="$SRC" VM_TESTER_PAS=0.2 VM_TESTER_PRIS_S="${PRIS:-3}" \
+    env VANGUARD_VM_DOSSIER="$VMD" VM_TESTER_SOURCES="$SRC" VM_TESTER_CLES="${CLES_VMT:-$CLES_ESSAI}" VM_TESTER_PAS=0.2 VM_TESTER_PRIS_S="${PRIS:-3}" \
       VM_TESTER_MARGE_S=5 VM_TESTER_VIEUX_S="${VIEUX:-120}" VM_TESTER_CROCHET="${CROCHET_ESSAI:-}" bash "$DEPOT/outils/vm-tester.sh" --exe "$T/vanguard.exe" --delai 5 "$@" >"$T/sortie" 2>&1
     code=$?
     local n
@@ -530,13 +673,67 @@ EOF2
     # 4. Fichier hors de la liste permise ou « .. » : refusé ; fichier en plus non listé : ignoré, jamais copié.
     nouvelle_vm; sources 0 0 0 'OK x'
     vmt --sans-attendre; printf 'Write-Host x\n' >"$VMD/file-essais/$ID/evil.ps1"
-    printf 'sha256.evil.ps1=%s\r\n' "$(sha256sum "$VMD/file-essais/$ID/evil.ps1" | cut -d' ' -f1)" >>"$VMD/file-essais/$ID/travail.txt"
+    local tt=$VMD/file-essais/$ID/travail.txt
+    { head -c $(($(stat -c %s "$tt") - 71)) "$tt"; printf 'sha256.evil.ps1=%s\r\n' "$(sha256sum "$VMD/file-essais/$ID/evil.ps1" | cut -d' ' -f1)"
+      tail -c 71 "$tt"; } >"$tt.n" && mv "$tt.n" "$tt" && resigner "$tt"
     tour
     voir "nom hors liste : refusé, rien lancé" eval '[[ $(fini "$ID" code) == 2 && $(fini "$ID" raison) == *"hors de la liste"* && ! -e $TRACE ]]'
-    vmt --sans-attendre; printf 'sha256..=%064d\r\n' 0 >>"$VMD/file-essais/$ID/travail.txt"; tour
+    vmt --sans-attendre; tt=$VMD/file-essais/$ID/travail.txt
+    { head -c $(($(stat -c %s "$tt") - 71)) "$tt"; printf 'sha256..=%064d\r\n' 0; tail -c 71 "$tt"; } >"$tt.n" && mv "$tt.n" "$tt" && resigner "$tt"
+    tour
     voir "nom « .. » : refusé" eval '[[ $(fini "$ID" code) == 2 && ! -e $TRACE ]]'
     vmt --sans-attendre; printf 'Write-Host x\n' >"$VMD/file-essais/$ID/extra.ps1"; tour
     voir "fichier en plus non listé : ignoré (pas copié), travail fait" eval '[[ $(fini "$ID" code) == 0 ]] && grep -q "extra copié : False" "$TRACE"'
+
+    # 21. Provenance (campagne d'attaque n° 3) : un travail écrit par un autre que Linux (un programme sans droits de la
+    #     VM, qui écrit dans le partage) n'est jamais fait ; un verdict écrit par un autre que le surveillant n'est
+    #     jamais cru ; un travail signé rejoué n'est pas refait.
+    nouvelle_vm; sources 0 0 0 'OK x'
+    vmt --sans-attendre; tt=$VMD/file-essais/$ID/travail.txt
+    head -c $(($(stat -c %s "$tt") - 71)) "$tt" >"$tt.n" && mv "$tt.n" "$tt"; tour
+    voir "travail sans signature (déposé par un autre que Linux) : refusé, rien lancé" eval '[[ $(fini "$ID" code) == 2 && $(fini "$ID" raison) == *"sans signature"* && ! -e $TRACE ]]'
+    vmt --sans-attendre; tt=$VMD/file-essais/$ID/travail.txt
+    { head -c $(($(stat -c %s "$tt") - 71)) "$tt"; printf 'hmac=%064d\r\n' 0; } >"$tt.n" && mv "$tt.n" "$tt"; tour
+    voir "signature fausse (sans le secret) : refusé, rien lancé" eval '[[ $(fini "$ID" code) == 2 && $(fini "$ID" raison) == *"signature de travail.txt fausse"* && ! -e $TRACE ]]'
+    vmt --sans-attendre; tour
+    voir "travail signé : fait, verdict signé reconnu" eval '[[ $(fini "$ID" code) == 0 ]] && grep -q "^hmac=" "$VMD/file-essais/$ID/fini.txt"'
+    local sha_exe
+    sha_exe=$(sha256sum "$T/vanguard.exe" | cut -d' ' -f1)
+    vmt --verdict "$sha_exe"
+    voir "--verdict : le verdict OK signé de ce vanguard.exe trouvé (porte de publier-version.sh)" eval '((code == 0)) && dit "$ID"'
+    rm -f "$VMD/file-essais/$ID/pris.txt" "$VMD/file-essais/$ID/fini.txt" "$TRACE"; cp "$T/vanguard.exe" "$VMD/file-essais/$ID/"; tour
+    voir "travail signé rejoué (pris et fini retirés) : refusé, pas refait" eval '[[ $(fini "$ID" code) == 2 && $(fini "$ID" raison) == *"déjà fait"* && ! -e $TRACE ]]'
+    vmt --sans-attendre
+    printf 'format=1\r\nid=%s\r\ncode=0\r\netat=ok\r\ntest.ok=999\r\n' "$ID" >"$VMD/file-essais/$ID/fini.txt"
+    vmt --attendre "$ID"
+    voir "fini.txt forgé (sans la signature du surveillant) : verdict ignoré, code 1" eval '((code == 1)) && dit "NON SIGNÉ" && ! dit "999 OK"'
+    nouvelle_vm; sources 0 0 0 'OK x'
+    rm -f "${VMD%/*}/prive-surveillant/secret.bin"
+    vmt --sans-attendre; tour; vmt --attendre "$ID"
+    voir "VM sans secret (installation d'avant) : refusé, rien lancé ; verdict non signé, code 1" eval '[[ $(fini "$ID" code) == 2 && $(fini "$ID" raison) == *"pas de secret"* && ! -e $TRACE ]] && ((code == 1)) && dit "NON SIGNÉ"'
+    printf 'format=1\r\nid=%s\r\ncode=0\r\netat=ok\r\ntest.ok=999\r\n' "$ID" >"$VMD/file-essais/$ID/fini.txt"
+    vmt --verdict "$sha_exe"
+    voir "--verdict : un fini.txt forgé « ok » ne fait pas une porte (code 1)" eval '((code == 1))'
+    CLES_VMT=$T/sans-secret vmt --verdict "$sha_exe"
+    voir "--verdict sans secret ici : code 3 (publier-version.sh le dit)" eval '((code == 3))'
+
+    # 22. L'installation, de bout en bout : la clé de Linux posée par --installer, le secret tiré par le vrai
+    #     installateur (-EssaiSecret), adopté ici sur le même code ; refusé si l'auteur dit non.
+    nouvelle_vm; sources 0 0 0 'OK x'
+    CLES_VMT=$T/cles-installation vmt --installer </dev/null
+    "$PWSH" -NoProfile -NonInteractive -File "$DEPOT/outils/test-windows/essais-auto-installation.ps1" -EssaiSecret "$VMD/programme" >"$T/code-vm" 2>&1
+    mv "$VMD/programme/secret-chiffre.bin" "$VMD/file-essais/" 2>/dev/null
+    local code_vm
+    code_vm=$(sed -n 's/^code=//p' "$T/code-vm")
+    CLES_VMT=$T/cles-installation vmt --adopter <<<o
+    voir "installation : secret tiré dans la VM, gardé ici après le même code, 0600" eval '((code == 0)) && [[ -n $code_vm ]] && dit "ici : $code_vm" &&
+      [[ $(cat "$T/cles-installation/secret") == "$(od -An -tx1 -v "$VMD/programme/secret.bin" | tr -d " \n")" ]] &&
+      [[ $(stat -c %a "$T/cles-installation/secret") == 600 && ! -e $VMD/file-essais/secret-chiffre.bin ]]' || cp "$T/code-vm" "$T/sortie"
+    rm -f "$T/cles-installation/secret"
+    "$PWSH" -NoProfile -NonInteractive -File "$DEPOT/outils/test-windows/essais-auto-installation.ps1" -EssaiSecret "$VMD/programme" >/dev/null 2>&1
+    mv "$VMD/programme/secret-chiffre.bin" "$VMD/file-essais/" 2>/dev/null
+    CLES_VMT=$T/cles-installation vmt --adopter <<<n
+    voir "installation : l'auteur dit que les codes diffèrent : rien n'est gardé" eval '((code == 1)) && [[ ! -e $T/cles-installation/secret ]]'
 
     # 5. Un dossier .partiel n'est jamais pris.
     nouvelle_vm; sources 0 0 0 'OK x'
@@ -652,6 +849,15 @@ EOF2
   CROCHET_ESSAI='[[ -f $p/travail.txt ]] && ln -s /etc/hostname "$p/lien"' vmt --sans-attendre
   voir "lien symbolique : refusé, rien déposé, code 1" eval '((code == 1)) && dit "Lien symbolique" && [[ -z $ID ]] && [[ -z $(ls -A "$VMD/file-essais") ]]'
 
+  # 23. Sans le secret ici, ou face au surveillant d'avant la signature : rien déposé, la raison dite.
+  nouvelle_vm; sources 0 0 0 'OK x'
+  ID=
+  CLES_VMT=$T/sans-secret vmt --sans-attendre
+  voir "pas de secret ici : rien déposé, réinstallation demandée, code 1" eval '((code == 1)) && dit "Pas de secret de la file" && [[ -z $ID ]] && [[ -z $(ls -A "$VMD/file-essais") ]]'
+  printf 'format=1\r\netat=attente\r\nsurveillant=1\r\n' >"$VMD/file-essais/battement.txt"
+  vmt --sans-attendre
+  voir "surveillant d'avant la signature : rien déposé, code 1" eval '((code == 1)) && dit "avant la signature" && [[ -z $ID ]]'
+
   # 8. Pas de battement : tâche pas installée.
   nouvelle_vm; sources 0 0 0 'OK x'
   PRIS=1 vmt
@@ -694,7 +900,9 @@ EOF2
 
 case $MODE in
   essai-local) essai_local ;;
-  installer) installer; exit 0 ;;
+  installer) installer; exit $? ;;
+  adopter) adopter; exit $? ;;
+  verdict) verdict; exit $? ;;
   suivre)
     [[ $SUIVRE =~ $MOTIF_ID ]] || { echo "Id de travail illisible : $SUIVRE" >&2; exit 2; }
     attendre "$SUIVRE"
@@ -705,6 +913,19 @@ esac
 [[ -d $VM ]] || { echo "Dossier partagé absent : $VM (la VM n'a jamais été lancée ?)" >&2; exit 1; }
 if [[ $(cle "$FILE/battement.txt" etat) == desinstalle ]]; then
   echo "File d'essais désinstallée dans la VM : la réinstaller (INSTALLER-ESSAIS-AUTO.bat) ; rien déposé." >&2
+  exit 1
+fi
+# Sans le secret de la file, ou face au surveillant d'avant la signature, rien n'est déposé : un travail non signé
+# serait fait en administrateur par l'ancien, refusé par le nouveau.
+if [[ ! -s $SECRET ]]; then
+  echo "Pas de secret de la file d'essais ici ($SECRET) : la file doit être réinstallée, une fois." >&2
+  echo "  outils/vm-tester.sh --installer, puis dans la VM double-clic sur INSTALLER-ESSAIS-AUTO.bat (UAC), et ici" >&2
+  echo "  comparer le code de vérification. Rien déposé." >&2
+  exit 1
+fi
+if [[ $(cle "$FILE/battement.txt" surveillant) == 1 ]]; then
+  echo "Le surveillant de la VM est celui d'avant la signature des travaux : le réinstaller (outils/vm-tester.sh" >&2
+  echo "  --installer, puis INSTALLER-ESSAIS-AUTO.bat dans la VM). Rien déposé." >&2
   exit 1
 fi
 preparer_programme
