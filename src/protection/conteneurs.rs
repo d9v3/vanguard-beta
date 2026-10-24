@@ -68,6 +68,24 @@ pub(crate) fn lire_rapport(json: &str) -> Option<Vec<Faille>> {
 }
 
 /// Le moteur de conteneurs de cet ordinateur : Docker, sinon Podman.
+/// Les images de Docker par son API (/var/run/docker.sock), une par ligne comme la CLI les écrit ; `None` : Podman,
+/// un autre hôte ou contexte réglé, ou le démon injoignable (la CLI dira).
+#[cfg(target_os = "linux")]
+fn images_par_l_api(source: &str) -> Option<String> {
+    use crate::machine::linux::docker_api;
+    if source != "docker" || !docker_api::hote_par_defaut() {
+        return None;
+    }
+    docker_api::images_sur(Path::new(docker_api::PRISE))
+        .ok()
+        .map(|v| v.join("\n"))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn images_par_l_api(_: &str) -> Option<String> {
+    None
+}
+
 fn moteur() -> Option<(&'static str, PathBuf)> {
     ["docker", "podman"]
         .into_iter()
@@ -108,11 +126,17 @@ pub fn analyser() {
         );
         return;
     };
-    let liste = crate::commande::lancer(
-        Command::new(&moteur).args(["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"]),
-        30,
-    );
-    let Some(liste) = liste.filter(|r| r.code == Some(0)) else {
+    // Docker : son API locale d'abord (lecture seule), la CLI quand un autre hôte ou un contexte est réglé.
+    let par_l_api = images_par_l_api(source);
+    let liste = if par_l_api.is_some() {
+        None
+    } else {
+        crate::commande::lancer(
+            Command::new(&moteur).args(["image", "ls", "--format", "{{.Repository}}:{{.Tag}}"]),
+            30,
+        )
+    };
+    let Some(sortie) = par_l_api.or_else(|| liste.filter(|r| r.code == Some(0)).map(|r| r.sortie)) else {
         // Le plus souvent, le démon de Docker réservé à root et au groupe docker (qui vaut root : le bilan le dit).
         trp!(
             "  ✖ Liste des images illisible : Docker est peut-être réservé à root (sudo vanguard conteneurs), ou arrêté.",
@@ -120,7 +144,7 @@ pub fn analyser() {
         );
         return;
     };
-    let images = images(&liste.sortie);
+    let images = images(&sortie);
     if images.is_empty() {
         trp!("  Aucune image sur cet ordinateur.", "  No image on this computer.");
         return;

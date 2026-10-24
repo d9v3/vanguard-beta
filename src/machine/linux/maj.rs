@@ -72,7 +72,22 @@ pub(super) fn autres_mises_a_jour() -> Vec<Constat> {
                 )
             })
         });
-        let snap = present("snap").then(|| portee.spawn(|| sortie_delai("snap", &["refresh", "--list"], 30, &[0])));
+        // snapd par son API (/run/snapd.socket) ; la CLI si la prise ne répond pas. Un nombre de snaps à mettre à
+        // jour ; `None` : impossible à savoir.
+        let snap = present("snap").then(|| {
+            portee.spawn(|| {
+                match super::http_unix::snaps_a_mettre_a_jour(Path::new(super::http_unix::SNAPD)) {
+                    Ok(l) => return Some(l.len()),
+                    // snapd a répondu par une erreur (magasin injoignable…) : la CLI dirait la même chose.
+                    Err(e) if e.to_string().contains("snapd") || e.to_string().starts_with("HTTP ") => return None,
+                    Err(_) => {}
+                }
+                // « All snaps up to date » part sur la sortie d'erreur : sortie vide = à jour. Une ligne d'en-tête
+                // sinon.
+                sortie_delai("snap", &["refresh", "--list"], 30, &[0])
+                    .map(|l| l.lines().filter(|x| !x.trim().is_empty()).count().saturating_sub(1))
+            })
+        });
         // L'assistant AUR ne sert plus qu'à nommer la commande proposée : la liste vient de l'AUR lui-même.
         let aur = ["yay", "paru"]
             .into_iter()
@@ -121,18 +136,13 @@ pub(super) fn autres_mises_a_jour() -> Vec<Constat> {
             });
         }
         if let Some(t) = snap {
-            // « All snaps up to date » part sur la sortie d'erreur : sortie vide = à jour. Une ligne d'en-tête sinon.
             constats.push(match t.join().ok().flatten() {
                 None => impossible("Snap", tr!("snapd injoignable", "snapd unreachable")),
-                Some(l) if lignes(&l) <= 1 => ok("Snap", tr!("Paquets Snap à jour.", "Snap packages up to date.")),
-                Some(l) => alerte(
+                Some(0) => ok("Snap", tr!("Paquets Snap à jour.", "Snap packages up to date.")),
+                Some(n) => alerte(
                     "Snap",
                     Niveau::Moyen,
-                    trf!(
-                        "{} paquet(s) Snap à mettre à jour.",
-                        "{} Snap package(s) to update.",
-                        lignes(&l) - 1
-                    ),
+                    trf!("{n} paquet(s) Snap à mettre à jour.", "{n} Snap package(s) to update."),
                 )
                 .corriger(
                     tr!("Mettre à jour les paquets Snap", "Update the Snap packages"),
