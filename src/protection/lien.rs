@@ -14,6 +14,8 @@ use crate::reseau::listes_noires::resoudre;
 use crate::risk::Niveau;
 use crate::ui::*;
 
+mod resultat;
+
 /// Un lien découpé. L'hôte est en minuscules, tel qu'écrit (punycode compris).
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Lien {
@@ -1289,19 +1291,14 @@ fn verdict(pire: Option<Niveau>, en_ligne: &EnLigne) -> String {
     t
 }
 
-/// Les vérifications en ligne d'un lien, affichées : le pire de ce qu'elles disent (au-dessus d'une information), les
-/// listes qui n'ont pas pu répondre, et combien ont été tentées. Le site n'est jamais contacté.
-fn afficher_en_ligne(lien: &Lien, adresse: &str) -> (Option<Niveau>, Vec<String>, usize) {
-    let verifications = en_ligne(lien, adresse);
+/// Ce que disent les vérifications en ligne : le pire (au-dessus d'une information), et les listes qui n'ont pas pu
+/// répondre.
+fn juger_en_ligne(verifications: &[Verification]) -> (Option<Niveau>, Vec<String>) {
     let mut pire = None;
     let mut manquent = Vec::new();
-    for v in &verifications {
-        match &v.signe {
-            Some(s) => {
-                afficher_signe(s);
-                pire = pire.max(Some(s.niveau).filter(|n| *n > Niveau::Info));
-            }
-            None => afficher_reponse(&v.liste, &v.reponse, v.note.as_deref()),
+    for v in verifications {
+        if let Some(s) = &v.signe {
+            pire = pire.max(Some(s.niveau).filter(|n| *n > Niveau::Info));
         }
         match &v.reponse {
             Inscription::Inscrit(_, n) => pire = pire.max(Some(*n)),
@@ -1309,6 +1306,25 @@ fn afficher_en_ligne(lien: &Lien, adresse: &str) -> (Option<Niveau>, Vec<String>
             Inscription::Absent => {}
         }
     }
+    (pire, manquent)
+}
+
+/// Les vérifications en ligne, affichées une par ligne.
+fn afficher_verifications(verifications: &[Verification]) {
+    for v in verifications {
+        match &v.signe {
+            Some(s) => afficher_signe(s),
+            None => afficher_reponse(&v.liste, &v.reponse, v.note.as_deref()),
+        }
+    }
+}
+
+/// Les vérifications en ligne d'un lien, affichées : le pire de ce qu'elles disent (au-dessus d'une information), les
+/// listes qui n'ont pas pu répondre, et combien ont été tentées. Le site n'est jamais contacté.
+fn afficher_en_ligne(lien: &Lien, adresse: &str) -> (Option<Niveau>, Vec<String>, usize) {
+    let verifications = en_ligne(lien, adresse);
+    afficher_verifications(&verifications);
+    let (pire, manquent) = juger_en_ligne(&verifications);
     (pire, manquent, verifications.len())
 }
 
@@ -1450,12 +1466,14 @@ pub fn verifier(adresse: Option<&str>) {
             "\n  Link to check (paste it here): "
         )),
     };
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
     let propre = nettoyer(&saisie);
     let Some(lien) = decouper(&propre) else {
         trp!(
             "  ✖ Ce n'est pas un lien reconnu (il faut au moins un nom comme « exemple.com »).",
             "  ✖ This is not a recognized link (it needs at least a name like “example.com”)."
         );
+        crate::modele::resultat::verser(&resultat::refuse(debut));
         return;
     };
     println!();
@@ -1486,6 +1504,8 @@ pub fn verifier(adresse: Option<&str>) {
     }
     let mut pire = signes.iter().map(|s| s.niveau).filter(|n| *n > Niveau::Info).max();
     let mut fait_en_ligne = EnLigne::SansObjet;
+    let mut verifications = Vec::new();
+    let mut pas_faites = None;
     if !lien.hote.is_empty() {
         let domaine = site(&lien);
         println!();
@@ -1495,7 +1515,10 @@ pub fn verifier(adresse: Option<&str>) {
         ));
         if demander(tr!("  Continuer ? [o/N] : ", "  Continue? [y/N]: ")).oui() {
             println!();
-            let (pire_en_ligne, manquent, faites) = afficher_en_ligne(&lien, &propre);
+            verifications = en_ligne(&lien, &propre);
+            afficher_verifications(&verifications);
+            let (pire_en_ligne, manquent) = juger_en_ligne(&verifications);
+            let faites = verifications.len();
             pire = pire.max(pire_en_ligne);
             fait_en_ligne = if manquent.is_empty() {
                 EnLigne::Faites
@@ -1507,6 +1530,7 @@ pub fn verifier(adresse: Option<&str>) {
         } else {
             trp!("  Rien n'a été envoyé.", "  Nothing was sent.");
             fait_en_ligne = EnLigne::Aucune;
+            pas_faites = Some(tr!("refusées : rien n'a été envoyé", "declined: nothing was sent"));
         }
     }
     println!();
@@ -1519,6 +1543,49 @@ pub fn verifier(adresse: Option<&str>) {
     for ligne in envelopper(&verdict(pire, &fait_en_ligne), LARGEUR - 2) {
         println!("  {couleur_verdict}{ligne}{RESET}");
     }
+    let vu = match pas_faites {
+        _ if lien.hote.is_empty() => resultat::EnLigneVu::SansObjet,
+        Some(pourquoi) => resultat::EnLigneVu::PasFaites(pourquoi),
+        None => resultat::EnLigneVu::Faites(&verifications),
+    };
+    crate::modele::resultat::verser(&resultat::resultat(&lien, &signes, &vu, debut));
+}
+
+/// `vanguard lien <adresse> --json` : l'examen sur l'ordinateur, sans rien demander ; le lien n'est jamais ouvert.
+/// Sans `--internet`, rien ne sort : l'âge du domaine et les listes publiques sont dits non vérifiés. Avec, l'accord
+/// est donné d'avance, comme un « oui » à l'écran, sauf en mode hors ligne. Un texte qui n'est pas un lien rend un
+/// résultat non vérifié et le code 2, celui d'un argument refusé.
+pub fn json(adresse: &str, internet: bool) {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let propre = nettoyer(adresse);
+    let Some(lien) = decouper(&propre) else {
+        let r = resultat::refuse(debut);
+        crate::modele::resultat::verser(&r);
+        println!("{}", crate::modele::resultat::json(&r));
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        std::process::exit(2);
+    };
+    let signes = examiner(&lien);
+    let verifications;
+    let vu = if lien.hote.is_empty() {
+        resultat::EnLigneVu::SansObjet
+    } else if !internet {
+        resultat::EnLigneVu::PasFaites(tr!(
+            "pas demandées : relancez avec --internet",
+            "not asked: run again with --internet"
+        ))
+    } else if crate::parametres::hors_ligne() {
+        resultat::EnLigneVu::PasFaites(tr!(
+            "mode hors ligne : rien n'a été envoyé",
+            "offline mode: nothing was sent"
+        ))
+    } else {
+        verifications = en_ligne(&lien, &propre);
+        resultat::EnLigneVu::Faites(&verifications)
+    };
+    let r = resultat::resultat(&lien, &signes, &vu, debut);
+    crate::modele::resultat::verser(&r);
+    println!("{}", crate::modele::resultat::json(&r));
 }
 
 #[cfg(test)]
@@ -1847,16 +1914,4 @@ mod tests {
         let trop = age_des_listes(heures(8 * 24)).unwrap_err();
         assert!(trop.contains('8'), "{trop}");
     }
-}
-
-/// PROVISOIRE (lot H, à remplacer) : `--json` rend un résultat vide, donc « non vérifié ».
-pub fn json(_adresse: &str, _internet: bool) {
-    let debut = (chrono::Utc::now(), std::time::Instant::now());
-    let r = crate::modele::resultat::Resultat::nouveau(
-        "PRO-LIE-001",
-        debut,
-        &[],
-        crate::modele::resultat::Couverture::default(),
-    );
-    println!("{}", crate::modele::resultat::json(&r));
 }

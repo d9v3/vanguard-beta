@@ -1975,3 +1975,94 @@ fn chercher_en_ligne_de_commande() {
     assert_eq!(rien.code, Some(1));
     assert!(sans_couleurs(&rien.texte).contains("Aucun résultat"));
 }
+
+/// Le JSON d'un outil lancé avec `--json` (dossier personnel jetable, `env` en plus) : code 0, la sortie standard
+/// n'est que ce JSON (aucune question, aucun « Entrée pour continuer »), l'outil, le schéma et des constats.
+fn resultat_json(args: &[&str], env: &[(&str, &str)], outil: &str, code: i32) -> serde_json::Value {
+    let maison = maison_jetable();
+    let s = vanguard_dans_env(
+        Path::new(env!("CARGO_BIN_EXE_vanguard")),
+        &maison,
+        "fr",
+        args,
+        "o\n",
+        120,
+        env,
+    );
+    let _ = std::fs::remove_dir_all(&maison);
+    assert_eq!(s.code, Some(code), "{args:?} : {}", s.erreurs);
+    let t = s.texte.trim();
+    assert!(
+        t.starts_with('{') && t.ends_with('}'),
+        "{args:?} : autre chose que le JSON :\n{}",
+        s.texte
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(t).unwrap_or_else(|e| panic!("{args:?} : JSON illisible ({e}) :\n{t}"));
+    assert_eq!(v["outil"], outil, "{v}");
+    assert_eq!(v["schema"], 1, "{v}");
+    assert!(v["constats"].is_array(), "{v}");
+    assert!(v["couverture"]["verifies"].is_u64(), "{v}");
+    v
+}
+
+/// `bilan-confidentialite --json` : lecture seule, rien demandé ; ce qui n'a pas pu être lu est dit.
+#[test]
+fn bilan_confidentialite_en_json() {
+    let v = resultat_json(&["bilan-confidentialite", "--json"], &[], "PRO-ACC-001", 0);
+    let constats = v["constats"].as_array().unwrap();
+    assert!(!constats.is_empty(), "{v}");
+    // Jamais « sain » sans rien de lu : quatre permissions au plus, et un manque dit quand il en manque une.
+    let verifies = v["couverture"]["verifies"].as_u64().unwrap();
+    assert!(verifies <= 4, "{v}");
+    if verifies < 4 {
+        assert!(
+            v["couverture"]["non_verifies"]
+                .as_array()
+                .is_some_and(|n| !n.is_empty()),
+            "{v}"
+        );
+    }
+}
+
+/// `test-connexion --json` hors ligne : rien ne part, tout est non vérifié, jamais un « bon » qu'il n'a pas mesuré.
+#[test]
+fn test_connexion_en_json() {
+    let v = resultat_json(
+        &["test-connexion", "--json"],
+        &[("VANGUARD_HORS_LIGNE", "1")],
+        "PRO-CNX-001",
+        0,
+    );
+    assert_eq!(v["couverture"]["verifies"], 0, "{v}");
+    let constats = v["constats"].as_array().unwrap();
+    assert!(constats.iter().all(|c| c["etat"] != "sain"), "{v}");
+}
+
+/// `lien --json` : sans --internet, le lien piégé est jugé sur l'ordinateur seul, et l'âge du domaine et les listes
+/// sont dits non vérifiés ; avec --internet en mode hors ligne, rien ne part non plus. Un texte qui n'est pas un lien :
+/// code 2, un résultat non vérifié. Des noms réservés aux exemples (.example).
+#[test]
+fn lien_en_json() {
+    let hors_ligne = [("VANGUARD_HORS_LIGNE", "1")];
+    let piege = "https://paypal.com.compte-secure.example/login";
+    for args in [&["lien", piege, "--json"][..], &["lien", piege, "--json", "--internet"]] {
+        let v = resultat_json(args, &hors_ligne, "PRO-LIE-001", 0);
+        let constats = v["constats"].as_array().unwrap();
+        assert!(
+            constats
+                .iter()
+                .any(|c| c["etat"] == "probleme" && c["objet"] == "site:compte-secure.example"),
+            "{args:?} : {v}"
+        );
+        let manques = v["couverture"]["non_verifies"].as_array().expect("pas de non vérifié");
+        assert!(
+            manques
+                .iter()
+                .any(|m| m.as_str().is_some_and(|m| m.contains("listes publiques"))),
+            "{args:?} : {v}"
+        );
+    }
+    let v = resultat_json(&["lien", "bonjour", "--json"], &hors_ligne, "PRO-LIE-001", 2);
+    assert_eq!(v["constats"][0]["etat"], "non-verifie", "{v}");
+}

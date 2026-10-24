@@ -7,6 +7,8 @@
 
 use crate::ui::*;
 
+mod resultat;
+
 /// Les quatre permissions, dans l'ordre de l'écran.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Permission {
@@ -99,7 +101,9 @@ pub fn afficher_tout() {
         "Bilan de confidentialité : qui a accès à quoi ?",
         "Privacy check: which apps have access?"
     ));
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
     let bilan = lire();
+    crate::modele::resultat::verser(&resultat::resultat(&bilan, debut));
     for p in PERMISSIONS {
         afficher_permission(&bilan, p);
     }
@@ -914,6 +918,15 @@ mod macos {
     }
 }
 
+/// `vanguard bilan-confidentialite --json` : la même lecture que l'écran, jugée en résultat et versée comme lui.
+/// Lecture seule, aucune question.
+pub fn json() {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let r = resultat::resultat(&lire(), debut);
+    crate::modele::resultat::verser(&r);
+    println!("{}", crate::modele::resultat::json(&r));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1326,16 +1339,4 @@ mod tests {
         // Une base coupée ne se lit pas : jamais une liste vide à sa place.
         assert_eq!(lire_tcc(&base[..1000]), None);
     }
-}
-
-/// PROVISOIRE (lot H, à remplacer) : `--json` rend un résultat vide, donc « non vérifié ».
-pub fn json() {
-    let debut = (chrono::Utc::now(), std::time::Instant::now());
-    let r = crate::modele::resultat::Resultat::nouveau(
-        "PRO-ACC-001",
-        debut,
-        &[],
-        crate::modele::resultat::Couverture::default(),
-    );
-    println!("{}", crate::modele::resultat::json(&r));
 }
