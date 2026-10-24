@@ -127,6 +127,7 @@ pub(crate) fn isoler(chemin: &Path, detection: &str, d: Demande) -> std::io::Res
             supprime: false,
             preuve: None,
             evenement: None,
+            origine: None,
         },
         d.preuve,
     );
@@ -163,6 +164,7 @@ pub(crate) fn supprimer_apres_analyse(chemin: &Path, detection: &str) -> std::io
             supprime: false,
             preuve: None,
             evenement: None,
+            origine: None,
         },
         preuve,
     );

@@ -2,7 +2,8 @@
 //! alertes déclarées normales, la référence des fichiers critiques et les changements déjà signalés, les connexions
 //! à des botnets déjà signalées, la plus haute version signée déjà vue, l'état de la machine au dernier passage de
 //! la surveillance, les valeurs d'avant des réglages d'Optimiser, les alertes de la surveillance déclarées normales,
-//! l'heure du dernier regard sur les téléchargements, les menaces que le blocage n'a pas pu bloquer déjà signalées).
+//! l'heure du dernier regard sur les téléchargements, les menaces que le blocage n'a pas pu bloquer déjà signalées, le
+//! relevé des corrections et des blocages que « Tout remettre comme avant » rejoue).
 //! Un programme qui tourne sous le compte pouvait réécrire l'un d'eux pour faire
 //! taire sa propre alerte, sans que rien ne le dise. Chaque écriture de Vanguard note donc l'empreinte BLAKE3 du
 //! fichier dans `sceaux.json` ; une lecture qui ne la retrouve pas rend le fichier « falsifié », que chaque lecteur
@@ -101,7 +102,7 @@ fn proteges() -> impl Iterator<Item = &'static str> {
 /// Les fichiers protégés après le premier sceau : une version d'avant les écrivait déjà sans sceau, et des sceaux
 /// existants les feraient passer pour falsifiés à la mise à jour. La première fois que des sceaux les rencontrent,
 /// ils sont acceptés tels quels (« adoptés », dit au bilan comme tout premier usage), puis jugés comme les autres.
-const TARDIFS: [&str; 12] = [
+const TARDIFS: &[&str] = &[
     REGLAGES,
     NORMALES,
     TEMPS_REEL,
@@ -115,6 +116,8 @@ const TARDIFS: [&str; 12] = [
     crate::modele::resultat::FICHIERS[0],
     crate::modele::resultat::FICHIERS[1],
     crate::modele::resultat::FICHIERS[2],
+    // Écrits sans sceau jusqu'à la 0.86.
+    crate::changements::RELEVE,
 ];
 
 const REGISTRE: &str = "sceaux.json";
@@ -289,7 +292,7 @@ fn adopter(dossier: &Path, deja_scelle: bool) -> Registre {
 /// est adopté tel quel (il vient de cette version), une fois pour toutes.
 fn rattraper(dossier: &Path, mut r: Registre) -> Registre {
     let mut change = false;
-    for nom in TARDIFS {
+    for nom in TARDIFS.iter().copied() {
         if r.vus.contains(nom) {
             continue;
         }

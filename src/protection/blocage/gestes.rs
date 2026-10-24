@@ -556,6 +556,7 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<Fait, E
         supprime: false,
         preuve: None,
         evenement: None,
+        origine: None,
     };
     match pret.faire {
         Faire::Commandes { annulation, retenir } => {
@@ -857,6 +858,10 @@ pub(crate) fn defaire(b: &Blocage) -> Result<String, Echec> {
     let Some(annulation) = &b.annulation else {
         return Err(Echec::new(OU, Raison::Introuvable).detail(tr!("rien à défaire", "nothing to undo")));
     };
+    // Une note relue hors de son sceau ne se rejoue pas (ou seulement ce qui se rejuge sans elle).
+    if let Some(refus) = changements::refus_d_origine(b) {
+        return Err(Echec::refuse(OU, refus));
+    }
     let fait = match annulation {
         Annulation::Commandes {
             commandes,
@@ -1043,8 +1048,9 @@ pub(crate) fn remettre_copie(fichier: &Path, copie: &Path, empreinte: &str) -> R
 
 /// La note de copie a la forme que `Faire::Permissions` écrit : la copie, un fichier ordinaire (pas un lien), dans
 /// blocage/copies du dossier de Vanguard, nommée « <id>-<nom du fichier> » ; le fichier, un settings.json ou
-/// settings.local.json ordinaire d'un dossier .claude. changements.jsonl n'est pas scellé : sans cela, un programme du
-/// compte y noterait une « copie » à lui de /etc/passwd ou du fichier hosts, que Vanguard lancé en administrateur
+/// settings.local.json ordinaire d'un dossier .claude. changements.jsonl, même scellé, s'écrit depuis le compte (le
+/// sceau le dit après coup) : sans cela, un programme du compte y noterait une « copie » à lui de /etc/passwd ou du
+/// fichier hosts, que Vanguard lancé en administrateur
 /// (même dossier de données) ou par sudo -E remettrait.
 pub(crate) fn copie_admise(fichier: &Path, copie: &Path) -> bool {
     let copies = crate::socle::dossier_local().join("blocage").join("copies");
@@ -1242,7 +1248,7 @@ mod tests {
         let _ = std::fs::remove_file(&copie);
     }
 
-    /// Une note de copie forgée dans changements.jsonl (non scellé) : une cible hors d'un settings.json de .claude
+    /// Une note de copie forgée dans changements.jsonl : une cible hors d'un settings.json de .claude
     /// (/etc/hosts, ici une copie jetable) ou une copie hors de blocage/copies n'est jamais remise, et la cible reste
     /// telle quelle, même avec la bonne empreinte.
     #[test]

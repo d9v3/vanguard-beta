@@ -728,7 +728,7 @@ pub(crate) fn en_surveillance() {
 
 /// Une commande telle qu'elle est montrée : la phrase d'un ordre ou d'une correction native de Windows, la commande
 /// sinon.
-pub(super) fn commande_montree(c: &str) -> String {
+pub(crate) fn commande_montree(c: &str) -> String {
     #[cfg(windows)]
     {
         crate::machine::windows::corrections::affichable(c)
@@ -975,7 +975,9 @@ pub fn annuler() {
         };
         println!();
         afficher_aligne("  ", &affichable(&b.quoi), 2, GRAS);
-        if let Some(a) = &b.annulation {
+        if let Some(refus) = crate::changements::refus_d_origine(b) {
+            afficher_aligne("    → ", &refus, 6, "");
+        } else if let Some(a) = &b.annulation {
             afficher_aligne("    → ", &decrire_annulation(a), 6, "");
         }
         if !demander(tr!("\n  Annuler ce blocage ? [o/N] : ", "\n  Undo this block? [y/N]: ")).oui() {

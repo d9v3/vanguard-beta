@@ -103,7 +103,8 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
         schema: 2,
         ..local("historique.json", "historique")
     },
-    local("changements.jsonl", "changements"),
+    // Le relevé des corrections et des blocages : « Tout remettre comme avant » le rejoue en administrateur.
+    scelle(crate::changements::RELEVE, "changements"),
     local(crate::modele::journal::DOSSIER, "modele::journal"),
     local("evenements.verrou", "modele::journal"),
     local(crate::modele::resultat::EXAMENS, "modele::resultat"),

@@ -447,6 +447,7 @@ mod tests {
                     ..Default::default()
                 }),
                 evenement: None,
+                origine: None,
             },
         );
         // L'alerte du même geste, dans le journal des événements : elle rejoint le fil, et le journal est recopié.

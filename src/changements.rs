@@ -11,6 +11,20 @@ use crate::ui::*;
 
 /// Au-delà, les plus anciens partent : le fichier ne grossit pas sans fin.
 const GARDES: usize = 500;
+/// Et au-delà de cette taille aussi (les preuves des blocages pèsent) : le relevé scellé doit se relire en entier
+/// (`sceau`, 4 Mio au plus).
+const OCTETS_GARDES: usize = 3 << 20;
+
+/// D'où vient une ligne du relevé qui n'a pas été relue scellée telle que Vanguard l'a écrite. Notée dans la ligne
+/// même, puis scellée avec elle : réécrire le relevé ne la blanchit pas.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum Origine {
+    /// Écrite par une version d'avant le sceau du relevé (acceptée telle quelle au premier usage, ou sceaux refaits).
+    Avant,
+    /// Trouvée dans un relevé changé hors de Vanguard.
+    HorsVanguard,
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 struct Changement {
@@ -30,6 +44,9 @@ struct Changement {
     /// L'événement Action du journal commun (`modele::journal`) : l'annulation s'y relie.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     evenement: Option<String>,
+    /// `None` : écrite par Vanguard et relue sous son sceau.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origine: Option<Origine>,
 }
 
 /// Un blocage noté : de quoi le montrer, le reconnaître et l'annuler exactement.
@@ -62,6 +79,10 @@ pub(crate) struct Blocage {
     /// preuve et à l'alerte. Absent des blocages d'avant la 0.86.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evenement: Option<String>,
+    /// L'origine de sa ligne (`Changement::origine`), reprise à la lecture : ce qui décide s'il se défait tout seul
+    /// (`refus_d_origine`).
+    #[serde(skip)]
+    pub origine: Option<Origine>,
 }
 
 /// Ce qui défait un blocage, exactement.
@@ -155,6 +176,7 @@ fn noter_dans(chemin: &std::path::Path, correctifs: &[Vec<String>], resultats: &
             annulable,
             defaite: None,
             evenement: crate::modele::journal::noter(ev),
+            origine: None,
         });
     }
     ecrire(chemin, tous);
@@ -189,28 +211,34 @@ fn en_place(c: &Changement) -> bool {
         .is_some_and(|b| b.annule.is_none() && b.annulation.is_some())
 }
 
-/// Garde les `GARDES` derniers changements, plus tous les blocages en place, puis réécrit le fichier d'un coup.
+/// Garde les `GARDES` derniers changements (et `OCTETS_GARDES` au plus), plus tous les blocages en place, puis
+/// réécrit le fichier d'un coup, scellé (`sceau`).
 fn ecrire(chemin: &std::path::Path, tous: Vec<Changement>) {
-    let mut en_trop = tous.len().saturating_sub(GARDES);
-    let gardes: Vec<Changement> = tous
-        .into_iter()
-        .filter(|c| {
-            if en_trop > 0 && !en_place(c) {
-                en_trop -= 1;
-                return false;
-            }
-            true
-        })
-        .collect();
-    let texte: String = gardes
+    let mut lignes: Vec<(bool, String)> = tous
         .iter()
-        .filter_map(|c| serde_json::to_string(c).ok())
-        .map(|l| l + "\n")
+        .filter_map(|c| Some((en_place(c), serde_json::to_string(c).ok()? + "\n")))
         .collect();
-    if let Some(parent) = chemin.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = crate::socle::ecrire_atomique(chemin, texte);
+    let mut en_trop = lignes.len().saturating_sub(GARDES);
+    let mut taille: usize = lignes.iter().map(|(_, l)| l.len()).sum();
+    lignes.retain(|(garde, l)| {
+        if !garde && (en_trop > 0 || taille > OCTETS_GARDES) {
+            en_trop = en_trop.saturating_sub(1);
+            taille -= l.len();
+            return false;
+        }
+        true
+    });
+    let texte: String = lignes.into_iter().map(|(_, l)| l).collect();
+    let (dossier, nom) = lieu(chemin);
+    let _ = crate::sceau::ecrire_dans(dossier, nom, texte.as_bytes());
+}
+
+/// Le dossier et le nom du relevé, tels que les sceaux les connaissent.
+fn lieu(chemin: &std::path::Path) -> (&std::path::Path, &str) {
+    (
+        chemin.parent().unwrap_or_else(|| std::path::Path::new(".")),
+        chemin.file_name().and_then(|n| n.to_str()).unwrap_or(RELEVE),
+    )
 }
 
 /// L'annulation d'un geste ou d'une correction (`objet` : l'identifiant du blocage ou de la note), reliée à son
@@ -284,6 +312,7 @@ fn ecrire_blocage(chemin: &std::path::Path, commandes: Vec<String>, reussi: bool
         annulable: None,
         defaite: None,
         evenement: None,
+        origine: None,
     });
     ecrire(chemin, tous);
 }
@@ -385,8 +414,90 @@ fn lire() -> Vec<Changement> {
     lire_de(&fichier())
 }
 
+/// Relu sous son sceau. Écrit par Vanguard : tel quel. Accepté tel quel au premier usage du sceau (une version
+/// d'avant) : chaque ligne marquée `Avant`. Changé hors de Vanguard : chaque ligne marquée `HorsVanguard`, qu'aucune
+/// annulation ne rejoue. Supprimé, illisible (un tube, un lien, trop gros) : rien.
 fn lire_de(chemin: &std::path::Path) -> Vec<Changement> {
-    lire_texte(&std::fs::read_to_string(chemin).unwrap_or_default())
+    use crate::sceau::Lecture;
+    let (dossier, nom) = lieu(chemin);
+    let (octets, douteuse) = match crate::sceau::lire_dans(dossier, nom) {
+        Lecture::Intact(o) => (o, None),
+        Lecture::Adopte(o) => (o, Some(Origine::Avant)),
+        Lecture::Falsifie(Some(o)) => (o, Some(Origine::HorsVanguard)),
+        Lecture::Absent | Lecture::Inconnu | Lecture::Falsifie(None) | Lecture::Illisible(_) => return Vec::new(),
+    };
+    let mut tous = lire_texte(&String::from_utf8_lossy(&octets));
+    for c in &mut tous {
+        c.origine = c.origine.max(douteuse);
+        if let Some(b) = &mut c.blocage {
+            b.origine = c.origine;
+        }
+    }
+    tous
+}
+
+/// Pourquoi ce blocage ne se défait pas tout seul d'après sa note, ou `None`.
+///
+/// Une ligne trouvée dans un relevé changé hors de Vanguard n'est jamais rejouée. Une ligne d'une version d'avant le
+/// sceau (rien ne prouve qu'elle n'a pas été écrite par un autre programme avant la mise à jour) ne l'est que si ce
+/// qui la défait est rejugé sans elle : une règle de pare-feu retirée par les ordres typés (jamais un port de
+/// session, une adresse locale ou un DNS public, et rejugée par celui qui agit), ou un programme remis au démarrage
+/// depuis sa note d'Optimiser (scellée). Jamais, sur sa foi seule, la liste de blocage des pilotes vulnérables
+/// remise, un fichier sorti de la quarantaine ou une copie de réglages remise : ceux-là se font à la main.
+pub(crate) fn refus_d_origine(b: &Blocage) -> Option<String> {
+    use crate::protection::blocage::gestes;
+    let a_la_main = || {
+        b.annulation.as_ref().map_or_else(String::new, |a| match a {
+            Annulation::Commandes { commandes, .. } => trf!(
+                " ; à défaire à la main si ce blocage est bien le vôtre : {}",
+                "; undo it by hand if this block really is yours: {}",
+                commandes
+                    .iter()
+                    .map(|c| crate::protection::blocage::commande_montree(c))
+                    .collect::<Vec<_>>()
+                    .join(" ; ")
+            ),
+            _ => tr!(
+                " ; à défaire à la main si ce blocage est bien le vôtre",
+                "; undo it by hand if this block really is yours"
+            )
+            .to_string(),
+        })
+    };
+    match b.origine? {
+        Origine::HorsVanguard => Some(format!(
+            "{}{}",
+            tr!(
+                "noté dans un relevé changé hors de Vanguard (changements.jsonl) : rien n'est rejoué",
+                "noted in a record changed outside Vanguard (changements.jsonl): nothing is replayed"
+            ),
+            a_la_main()
+        )),
+        Origine::Avant => {
+            let rejuge = match &b.annulation {
+                Some(Annulation::Commandes {
+                    commandes,
+                    port,
+                    inverse,
+                }) => matches!(
+                    inverse.or_else(|| gestes::inverse_reconnue(commandes, port.as_deref())),
+                    Some(Inverse::Sortante { .. } | Inverse::Entrante { .. })
+                ),
+                Some(Annulation::Demarrage { .. }) => true,
+                _ => false,
+            };
+            (!rejuge).then(|| {
+                format!(
+                    "{}{}",
+                    tr!(
+                        "noté par une version d'avant le sceau du relevé : ce geste ne se refait pas sur la foi de la note seule",
+                        "noted by a version from before the record was sealed: this action is not redone on the strength of the note alone"
+                    ),
+                    a_la_main()
+                )
+            })
+        }
+    }
 }
 
 fn lire_texte(texte: &str) -> Vec<Changement> {
@@ -441,6 +552,11 @@ pub fn afficher() {
         } else {
             format!("{}✖{RESET}", couleur(crate::risk::Niveau::Eleve))
         };
+        let douteuse = match c.origine {
+            Some(Origine::HorsVanguard) => tr!(" (changé hors de Vanguard)", " (changed outside Vanguard)"),
+            Some(Origine::Avant) => tr!(" (noté avant le sceau)", " (noted before the seal)"),
+            None => "",
+        };
         if let Some(b) = &c.blocage {
             let etat = match (&b.annule, &b.annulation, b.automatique) {
                 (Some(le), _, _) if b.supprime => trf!(" (fichier supprimé le {le})", " (file deleted on {le})"),
@@ -451,7 +567,7 @@ pub fn afficher() {
             };
             afficher_aligne(
                 &format!("  {marque} {GRIS}{}{RESET}  ", c.date),
-                &format!("{}{etat}", affichable(&b.quoi)),
+                &format!("{}{etat}{douteuse}", affichable(&b.quoi)),
                 21,
                 "",
             );
@@ -481,7 +597,7 @@ pub fn afficher() {
         };
         afficher_aligne(
             &format!("  {marque} {GRIS}{}{RESET}  ", c.date),
-            &format!("{}{suite}{etat}", commande_affichable(premiere)),
+            &format!("{}{suite}{etat}{douteuse}", commande_affichable(premiere)),
             21,
             "",
         );
@@ -567,11 +683,18 @@ fn annuler_des_corrections() {
 mod tests {
     use super::*;
 
+    /// Le relevé d'un essai, dans son propre dossier jetable (ses sceaux à côté) : d'autres tests lancent des
+    /// corrections, notées dans le fichier habituel.
+    fn releve(nom: &str) -> std::path::PathBuf {
+        let d = crate::socle::dossier_local().join(format!("essai-changements-{nom}"));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d.join(RELEVE)
+    }
+
     #[test]
     fn notes_ecrites_relues_et_limitees() {
-        // Un fichier à ce test : d'autres tests lancent des corrections, notées dans le fichier habituel.
-        let f = std::env::temp_dir().join(format!("vanguard-changements-{}.jsonl", std::process::id()));
-        let _ = std::fs::remove_file(&f);
+        let f = releve("limites");
         noter_dans(
             &f,
             &[vec!["chmod 700 ~/.ssh".into()], vec!["false".into(), "true".into()]],
@@ -606,6 +729,7 @@ mod tests {
             annule: None,
             supprime: false,
             evenement: None,
+            origine: None,
             preuve: None,
         }
     }
@@ -614,8 +738,7 @@ mod tests {
     /// sort de la liste des blocages en place une fois annulé. Un échec n'a rien à annuler.
     #[test]
     fn blocages_notes_annulables_jamais_elagues() {
-        let f = std::env::temp_dir().join(format!("vanguard-blocages-{}.jsonl", std::process::id()));
-        let _ = std::fs::remove_file(&f);
+        let f = releve("blocages");
         let retirer = Annulation::Commandes {
             commandes: vec!["sudo ufw delete deny out to 203.0.113.7".into()],
             port: None,
@@ -663,8 +786,7 @@ mod tests {
     /// (comme s'il avait été remis) ; remis, il se lit « annulé ». Une ligne d'avant ce champ se relit.
     #[test]
     fn fichier_supprime_de_la_quarantaine_pas_annule() {
-        let f = std::env::temp_dir().join(format!("vanguard-blocages-supprime-{}.jsonl", std::process::id()));
-        let _ = std::fs::remove_file(&f);
+        let f = releve("supprime");
         for nom in ["x", "y"] {
             noter_blocage_dans(
                 &f,
@@ -692,5 +814,165 @@ mod tests {
         );
         assert_eq!(blocages_en_place_de(&f), Vec::new());
         let _ = std::fs::remove_file(&f);
+    }
+
+    fn regle(ip: &str) -> Annulation {
+        Annulation::Commandes {
+            commandes: vec![format!("sudo ufw delete deny out to {ip}")],
+            port: None,
+            inverse: Some(Inverse::Sortante {
+                pare_feu: crate::protection::blocage::pare_feu::PareFeu::Ufw,
+                adresse: ip.parse().unwrap(),
+            }),
+        }
+    }
+
+    /// Le relevé est scellé : une ligne ajoutée par un autre programme (des champs typés qui remettraient la liste de
+    /// blocage des pilotes vulnérables à 0) se lit « changée hors de Vanguard », jamais rejouée, et le reste
+    /// aussi tant que le relevé l'était. Réécrit par Vanguard, la marque reste : réécrire ne blanchit rien.
+    #[test]
+    fn releve_change_hors_de_vanguard_jamais_rejoue() {
+        let f = releve("forge");
+        noter_blocage_dans(&f, vec!["x".into()], true, blocage("vrai", Some(regle("203.0.113.7"))));
+        let en_place = blocages_en_place_de(&f);
+        assert_eq!(en_place.len(), 1);
+        assert_eq!(refus_d_origine(&en_place[0].1), None, "écrit et scellé par Vanguard");
+        // Un autre programme ajoute un blocage « en place » qui couperait la défense contre les pilotes vulnérables.
+        let forge = Changement {
+            date: "2026-10-24 03:00".into(),
+            commandes: vec!["x".into()],
+            reussi: true,
+            blocage: Some(blocage(
+                "forge",
+                Some(Annulation::Commandes {
+                    commandes: Vec::new(),
+                    port: None,
+                    inverse: Some(Inverse::Pilotes { avant: Some(0) }),
+                }),
+            )),
+            annulable: None,
+            defaite: None,
+            evenement: None,
+            origine: None,
+        };
+        let mut texte = std::fs::read_to_string(&f).unwrap();
+        texte += &(serde_json::to_string(&forge).unwrap() + "\n");
+        std::fs::write(&f, texte).unwrap();
+        let en_place = blocages_en_place_de(&f);
+        assert_eq!(en_place.len(), 2);
+        for (_, b) in &en_place {
+            let refus = refus_d_origine(b).unwrap_or_default();
+            assert!(
+                refus.contains("hors de Vanguard") || refus.contains("outside Vanguard"),
+                "{refus}"
+            );
+            assert!(crate::protection::blocage::gestes::defaire(b).is_err());
+        }
+        // Vanguard note autre chose : le relevé est réécrit et rescellé, les lignes trouvées changées le restent.
+        noter_dans(&f, &[vec!["echo apres".into()]], &[true], &[]);
+        assert!(matches!(
+            crate::sceau::lire_dans(f.parent().unwrap(), RELEVE),
+            crate::sceau::Lecture::Intact(_)
+        ));
+        let en_place = blocages_en_place_de(&f);
+        assert!(
+            en_place.iter().all(|(_, b)| refus_d_origine(b).is_some()),
+            "{en_place:?}"
+        );
+        assert_eq!(lire_de(&f).last().unwrap().origine, None);
+    }
+
+    /// Un relevé d'une version d'avant le sceau, accepté tel quel à la mise à jour : seules les annulations qui se
+    /// rejugent sans la note (règle de pare-feu par les ordres typés, programme remis au démarrage par sa note
+    /// scellée) se défont toutes seules ; la liste des pilotes, la quarantaine et une copie de réglages, à la main.
+    #[test]
+    fn releve_d_avant_le_sceau_rejoue_seulement_ce_qui_se_rejuge() {
+        let f = releve("avant");
+        let lignes: Vec<Changement> = [
+            ("regle", Some(regle("203.0.113.7"))),
+            (
+                "ancienne",
+                Some(Annulation::Commandes {
+                    commandes: crate::protection::blocage::pare_feu::ancien::entrante(
+                        crate::protection::blocage::pare_feu::PareFeu::Ufw,
+                        8188,
+                    )
+                    .unwrap()
+                    .retirer,
+                    port: Some("8188/tcp".into()),
+                    inverse: None,
+                }),
+            ),
+            (
+                "demarrage",
+                Some(Annulation::Demarrage {
+                    id: "demarrage:x".into(),
+                }),
+            ),
+            (
+                "pilotes",
+                Some(Annulation::Commandes {
+                    commandes: Vec::new(),
+                    port: None,
+                    inverse: Some(Inverse::Pilotes { avant: Some(0) }),
+                }),
+            ),
+            ("quarantaine", Some(Annulation::Quarantaine { nom: "x".into() })),
+        ]
+        .into_iter()
+        .map(|(id, a)| Changement {
+            date: "2026-10-20 10:00".into(),
+            commandes: vec!["x".into()],
+            reussi: true,
+            blocage: Some(blocage(id, a)),
+            annulable: None,
+            defaite: None,
+            evenement: None,
+            origine: None,
+        })
+        .collect();
+        let texte: String = lignes
+            .iter()
+            .map(|c| serde_json::to_string(c).unwrap() + "\n")
+            .collect();
+        // Écrit sans sceau, comme une 0.86 : adopté au premier regard.
+        std::fs::write(&f, texte).unwrap();
+        let refus: Vec<(String, bool)> = blocages_en_place_de(&f)
+            .into_iter()
+            .map(|(_, b)| (b.id.clone(), refus_d_origine(&b).is_some()))
+            .collect();
+        assert_eq!(
+            refus,
+            [
+                ("regle".to_string(), false),
+                ("ancienne".to_string(), false),
+                ("demarrage".to_string(), false),
+                ("pilotes".to_string(), true),
+                ("quarantaine".to_string(), true),
+            ]
+        );
+        // Réécrit par Vanguard : la marque « d'avant » reste avec chaque ligne.
+        noter_dans(&f, &[vec!["echo apres".into()]], &[true], &[]);
+        assert!(
+            blocages_en_place_de(&f)
+                .iter()
+                .all(|(_, b)| b.origine == Some(Origine::Avant))
+        );
+    }
+
+    /// Un tube nommé ou un lien vers /dev/zero à la place du relevé : rien ne fige, rien ne se charge sans fin.
+    #[cfg(unix)]
+    #[test]
+    fn releve_tube_ou_lien_ne_fige_rien() {
+        let f = releve("tube");
+        let c = std::ffi::CString::new(f.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY : mkfifo reçoit un chemin terminé par zéro, qui vit le temps de l'appel.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let debut = std::time::Instant::now();
+        assert!(blocages_en_place_de(&f).is_empty());
+        std::fs::remove_file(&f).unwrap();
+        std::os::unix::fs::symlink("/dev/zero", &f).unwrap();
+        assert!(blocages_en_place_de(&f).is_empty());
+        assert!(debut.elapsed() < std::time::Duration::from_secs(5));
     }
 }

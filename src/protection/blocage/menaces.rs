@@ -872,6 +872,7 @@ mod tests {
             annule: None,
             supprime: false,
             evenement: None,
+            origine: None,
             preuve: None,
         };
         let en_place = vec![
