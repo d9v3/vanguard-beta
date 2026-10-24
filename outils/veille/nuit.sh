@@ -173,8 +173,9 @@ if [[ -n $ARBRE_OK ]]; then
     etape fuzz "$TRAVAIL/fuzz.log" env VANGUARD_FUZZ="$FUZZ" outils/fuzz.sh tout "$FUZZ_SECONDES"
     # Le dimanche, le corpus de chaque cible est minimisé (cargo fuzz cmin) : il grandit sans s'alourdir.
     if [[ $(date -d "$JOUR" +%u) == 7 && -z $ESSAI ]]; then
-      for c in $(sed -n 's/^CIBLES=(\(.*\))/\1/p' "$ARBRE/outils/fuzz.sh"); do
-        (cd "$ARBRE" && cargo +nightly fuzz cmin --fuzz-dir fuzz --target-dir "$FUZZ/cible" "$c" "$FUZZ/corpus/$c") \
+      # Les cibles comme les lit fuzz.sh (chaque [[bin]] de fuzz/Cargo.toml), compilées dans le target/ de l'arbre.
+      for c in $(sed -n 's/^name = "\(.*\)"$/\1/p' "$ARBRE/fuzz/Cargo.toml" | tail -n +2); do
+        (cd "$ARBRE" && cargo +nightly fuzz cmin --fuzz-dir fuzz --target-dir "$ARBRE/target/fuzz" "$c" "$FUZZ/corpus/$c") \
           >>"$TRAVAIL/fuzz-cmin.log" 2>&1 || journal "cmin $c : échec (corpus gardé tel quel)"
       done
     fi
