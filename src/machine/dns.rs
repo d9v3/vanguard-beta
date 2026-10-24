@@ -168,7 +168,7 @@ fn serveurs() -> Option<Serveurs> {
         chiffre = match resolved_par_dbus() {
             Ok(r) => r.chiffre,
             // resolved arrêté : rien de su, comme avant.
-            Err(e) if crate::machine::linux::dbus::service_absent(&e) => None,
+            Err(e) if crate::machine::linux::dbus::service_absent(&e.to_string()) => None,
             Err(_) => super::sortie("resolvectl", &["status"]).map(|s| s.contains("+DNSOverTLS")),
         };
     }
@@ -276,13 +276,18 @@ fn chiffre_resolved(
 
 /// systemd-resolved lu par le client D-Bus maison (org.freedesktop.resolve1) au lieu de `resolvectl`.
 #[cfg(target_os = "linux")]
-fn resolved_par_dbus() -> Result<Resolved, String> {
+fn resolved_par_dbus() -> Result<Resolved, crate::modele::Echec> {
     use crate::machine::linux::dbus::Bus;
     const RESOLVE1: &str = "org.freedesktop.resolve1";
     const CHEMIN: &str = "/org/freedesktop/resolve1";
-    let mut bus = Bus::systeme()?;
-    let dns = bus.propriete(RESOLVE1, CHEMIN, "org.freedesktop.resolve1.Manager", "DNS")?;
-    let global = bus.propriete(RESOLVE1, CHEMIN, "org.freedesktop.resolve1.Manager", "DNSOverTLS")?;
+    let echec = |e: String| crate::modele::Echec::echoue("dns/resolved", e);
+    let mut bus = Bus::systeme().map_err(echec)?;
+    let dns = bus
+        .propriete(RESOLVE1, CHEMIN, "org.freedesktop.resolve1.Manager", "DNS")
+        .map_err(echec)?;
+    let global = bus
+        .propriete(RESOLVE1, CHEMIN, "org.freedesktop.resolve1.Manager", "DNSOverTLS")
+        .map_err(echec)?;
     let global = global.texte().unwrap_or_default().to_string();
     let serveurs = serveurs_resolved(&dns);
     // Le chemin d'un lien : son numéro, dont le premier chiffre est échappé (« 3 » → « _33 », sd_bus_path_encode).

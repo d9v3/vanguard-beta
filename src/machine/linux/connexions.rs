@@ -287,11 +287,11 @@ pub(crate) fn wtmpdb(octets: &[u8]) -> Option<Vec<Session>> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
 
     /// Un enregistrement utmp fabriqué (compte « alice », réseau de documentation 192.0.2.0/24).
-    pub(crate) fn enregistrement(genre: i16, compte: &str, ligne: &str, hote: &str, secondes: u32) -> Vec<u8> {
+    fn enregistrement(genre: i16, compte: &str, ligne: &str, hote: &str, secondes: u32) -> Vec<u8> {
         let mut b = vec![0u8; TAILLE_UTMP];
         b[0..2].copy_from_slice(&genre.to_le_bytes());
         b[4..8].copy_from_slice(&4242i32.to_le_bytes());
@@ -478,7 +478,7 @@ pub(crate) mod tests {
         Some(ValeurEssai::E(n))
     }
 
-    pub(crate) fn base_lastlog2() -> Vec<u8> {
+    fn base_lastlog2() -> Vec<u8> {
         base_sqlite(
             "CREATE TABLE Lastlog2(Name TEXT PRIMARY KEY, Time INTEGER, TTY TEXT, RemoteHost TEXT, Service TEXT)",
             "Lastlog2",

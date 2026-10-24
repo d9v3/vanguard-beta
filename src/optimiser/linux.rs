@@ -342,8 +342,7 @@ fn court(p: &Path) -> String {
 /// Une propriété d'une connexion de NetworkManager, sans échappement (les « : » des adresses IPv6 restent) : par
 /// D-Bus (GetSettings), au format de `nmcli -g` ; nmcli en secours si le bus ne répond pas.
 fn nm_valeur(connexion: &str, propriete: &str) -> Option<String> {
-    use crate::machine::linux::{dbus, networkmanager};
-    match dbus::Bus::systeme().and_then(|mut b| networkmanager::profil(&mut b, connexion)) {
+    match crate::machine::linux::networkmanager::profil(connexion) {
         Ok(Some(p)) => return p.propriete(propriete),
         // Profil inconnu de NetworkManager : rien à lire, comme nmcli qui répond par une erreur.
         Ok(None) => return None,
@@ -412,21 +411,19 @@ pub fn dns_principal(v4: &[&str], v6: &[&str]) -> Result<Changement, String> {
         .and_then(|t| carte_par_defaut(&t))
         .ok_or_else(|| tr!("Pas de connexion à Internet.", "No Internet connection.").to_string())?;
     // Les connexions actives par D-Bus ; nmcli en secours.
-    let actives = crate::machine::linux::dbus::Bus::systeme()
-        .and_then(|mut b| crate::machine::linux::networkmanager::actives(&mut b))
-        .unwrap_or_else(|_| {
-            sortie(
-                "nmcli",
-                &["-t", "-e", "no", "-f", "UUID,DEVICE", "connection", "show", "--active"],
-            )
-            .unwrap_or_default()
-            .lines()
-            .filter_map(|l| {
-                let (uuid, appareil) = l.split_once(':')?;
-                Some((uuid.to_string(), vec![appareil.to_string()]))
-            })
-            .collect()
-        });
+    let actives = crate::machine::linux::networkmanager::actives().unwrap_or_else(|_| {
+        sortie(
+            "nmcli",
+            &["-t", "-e", "no", "-f", "UUID,DEVICE", "connection", "show", "--active"],
+        )
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| {
+            let (uuid, appareil) = l.split_once(':')?;
+            Some((uuid.to_string(), vec![appareil.to_string()]))
+        })
+        .collect()
+    });
     let connexion = actives
         .into_iter()
         .find(|(uuid, cartes)| cartes.contains(&carte) && uuid_valide(uuid))

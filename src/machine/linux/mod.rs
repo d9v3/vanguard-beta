@@ -1518,7 +1518,7 @@ fn wifi_ouverts_automatiques() -> Option<Constat> {
         return super::wifi::ouverts_des_profils(&profils);
     }
     // Sans droits : NetworkManager par D-Bus (GetSettings, sans les secrets), nmcli en secours.
-    if let Ok(profils) = dbus::Bus::systeme().and_then(|mut b| networkmanager::profils(&mut b)) {
+    if let Ok(profils) = networkmanager::profils() {
         let (mut noms, mut commandes) = (Vec::new(), Vec::new());
         for p in &profils {
             let Some(uuid) = p

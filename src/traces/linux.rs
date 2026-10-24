@@ -457,8 +457,8 @@ fn releve_utmp(
 }
 
 /// Les sessions de systemd (logind) par le client D-Bus maison : ListSessions, puis les propriétés de chacune.
-/// Rend les identifiants lus ; `Err` : la raison.
-fn sessions_logind(f: &mut Feuille) -> Result<Vec<String>, String> {
+/// Rend les identifiants lus ; `None` : illisible, la raison écrite dans la feuille.
+fn sessions_logind(f: &mut Feuille) -> Option<Vec<String>> {
     use crate::machine::linux::dbus;
     const LOGIN1: &str = "org.freedesktop.login1";
     f.section("logind : ListSessions (lu par Vanguard / read by Vanguard)");
@@ -525,11 +525,11 @@ fn sessions_logind(f: &mut Feuille) -> Result<Vec<String>, String> {
         Ok((lignes, ids)) => {
             f.ajouter(&lignes.join("\n"));
             f.lues += 1;
-            Ok(ids)
+            Some(ids)
         }
         Err(e) => {
-            f.ajouter(&Raison::Erreur(e.clone()).note());
-            Err(e)
+            f.ajouter(&Raison::Erreur(e).note());
+            None
         }
     }
 }
@@ -590,7 +590,7 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
     }
 
     // Sessions de systemd : logind par D-Bus, puis loginctl en témoin.
-    let ids = sessions_logind(&mut f).ok();
+    let ids = sessions_logind(&mut f);
     let loginctl = f.commande(
         Command::new("loginctl").args(["list-sessions", "--no-pager", "--no-legend"]),
         10,

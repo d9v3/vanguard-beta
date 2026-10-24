@@ -9,6 +9,12 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use super::dbus::{Bus, Valeur};
+use crate::modele::Echec;
+
+/// Une erreur du client D-Bus dans le canal d'erreur commun (son texte reste celui du bus).
+fn echec(e: String) -> Echec {
+    Echec::echoue("networkmanager", e)
+}
 
 const NM: &str = "org.freedesktop.NetworkManager";
 const CHEMIN_NM: &str = "/org/freedesktop/NetworkManager";
@@ -116,15 +122,18 @@ impl Profil {
 }
 
 /// Tous les profils enregistrés (au plus `PROFILS_MAX`), sur le bus système.
-pub(crate) fn profils(bus: &mut Bus) -> Result<Vec<Profil>, String> {
-    let liste = bus.appeler(
-        NM,
-        CHEMIN_REGLAGES,
-        "org.freedesktop.NetworkManager.Settings",
-        "ListConnections",
-        "",
-        Vec::new(),
-    )?;
+pub(crate) fn profils() -> Result<Vec<Profil>, Echec> {
+    let mut bus = Bus::systeme().map_err(echec)?;
+    let liste = bus
+        .appeler(
+            NM,
+            CHEMIN_REGLAGES,
+            "org.freedesktop.NetworkManager.Settings",
+            "ListConnections",
+            "",
+            Vec::new(),
+        )
+        .map_err(echec)?;
     let chemins = liste.first().map(Valeur::textes).unwrap_or_default();
     let mut profils = Vec::new();
     for chemin in chemins.iter().take(PROFILS_MAX) {
@@ -142,20 +151,24 @@ pub(crate) fn profils(bus: &mut Bus) -> Result<Vec<Profil>, String> {
             Err(e)
                 if e.starts_with("org.freedesktop.DBus.Error.UnknownMethod ")
                     || e.starts_with("org.freedesktop.DBus.Error.UnknownObject ") => {}
-            Err(e) => return Err(e),
+            Err(e) => return Err(echec(e)),
         }
     }
     Ok(profils)
 }
 
 /// Le profil de cet UUID.
-pub(crate) fn profil(bus: &mut Bus, uuid: &str) -> Result<Option<Profil>, String> {
-    Ok(profils(bus)?.into_iter().find(|p| p.uuid() == Some(uuid)))
+pub(crate) fn profil(uuid: &str) -> Result<Option<Profil>, Echec> {
+    Ok(profils()?.into_iter().find(|p| p.uuid() == Some(uuid)))
 }
 
 /// Les connexions actives : (UUID, noms des cartes), comme `nmcli -t -f UUID,DEVICE connection show --active`.
-pub(crate) fn actives(bus: &mut Bus) -> Result<Vec<(String, Vec<String>)>, String> {
-    let chemins = bus.propriete(NM, CHEMIN_NM, NM, "ActiveConnections")?.textes();
+pub(crate) fn actives() -> Result<Vec<(String, Vec<String>)>, Echec> {
+    let mut bus = Bus::systeme().map_err(echec)?;
+    let chemins = bus
+        .propriete(NM, CHEMIN_NM, NM, "ActiveConnections")
+        .map_err(echec)?
+        .textes();
     let mut actives = Vec::new();
     for chemin in chemins.iter().take(PROFILS_MAX) {
         let Ok(p) = bus.proprietes(NM, chemin, "org.freedesktop.NetworkManager.Connection.Active") else {
@@ -179,7 +192,7 @@ pub(crate) fn actives(bus: &mut Bus) -> Result<Vec<(String, Vec<String>)>, Strin
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
 
     fn p(k: &str, v: Valeur) -> (Valeur, Valeur) {
@@ -191,7 +204,7 @@ pub(crate) mod tests {
     }
 
     /// Un profil Wi-Fi fabriqué (réseau « Salon »), `securite` : la gestion de clé, ou pas de section.
-    pub(crate) fn profil_wifi(uuid: &str, securite: Option<&str>, auto: Option<bool>) -> Profil {
+    fn profil_wifi(uuid: &str, securite: Option<&str>, auto: Option<bool>) -> Profil {
         let mut connexion = vec![
             p("id", Valeur::texte_de("Salon")),
             p("uuid", Valeur::texte_de(uuid)),
@@ -285,7 +298,7 @@ pub(crate) mod tests {
     /// L'oracle : les profils lus par D-Bus contre nmcli, sur cet ordinateur (des nombres seulement en cas d'écart).
     #[test]
     fn profils_comme_nmcli() {
-        let natifs = match Bus::systeme().and_then(|mut b| profils(&mut b)) {
+        let natifs = match profils() {
             Ok(p) => p,
             Err(e) => return crate::essais::saute(&format!("NetworkManager injoignable ({e})")),
         };
@@ -352,7 +365,7 @@ pub(crate) mod tests {
             }
         }
         // Les connexions actives et leurs cartes.
-        let actives = Bus::systeme().and_then(|mut b| actives(&mut b)).unwrap();
+        let actives = actives().unwrap();
         let r = crate::commande::lancer(
             std::process::Command::new("nmcli").args([
                 "-t",

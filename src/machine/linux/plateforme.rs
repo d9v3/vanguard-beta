@@ -289,16 +289,19 @@ pub(super) fn lire_attributs_dbus(liste: &dbus::Valeur) -> Vec<Attribut> {
 
 /// Les attributs lus par le client D-Bus maison (org.freedesktop.fwupd, GetHostSecurityAttrs), sans droits ni
 /// fenêtre polkit. `Err` : la raison (service absent compris, que l'appelant reconnaît par `service_absent`).
-fn attributs_par_dbus() -> Result<Vec<Attribut>, String> {
-    let mut bus = dbus::Bus::systeme()?;
-    let corps = bus.appeler(
-        "org.freedesktop.fwupd",
-        "/",
-        "org.freedesktop.fwupd",
-        "GetHostSecurityAttrs",
-        "",
-        Vec::new(),
-    )?;
+fn attributs_par_dbus() -> Result<Vec<Attribut>, crate::modele::Echec> {
+    let echec = |e: String| crate::modele::Echec::echoue("plateforme/fwupd", e);
+    let mut bus = dbus::Bus::systeme().map_err(echec)?;
+    let corps = bus
+        .appeler(
+            "org.freedesktop.fwupd",
+            "/",
+            "org.freedesktop.fwupd",
+            "GetHostSecurityAttrs",
+            "",
+            Vec::new(),
+        )
+        .map_err(echec)?;
     Ok(corps.first().map(lire_attributs_dbus).unwrap_or_default())
 }
 
@@ -312,7 +315,7 @@ pub(super) fn securite_plateforme() -> Constat {
     let outil = Path::new("/usr/bin/fwupdmgr").exists() || Path::new("/bin/fwupdmgr").exists();
     match attributs_par_dbus() {
         Ok(a) if !a.is_empty() => return juger_plateforme(Some(&a)),
-        Err(e) if dbus::service_absent(&e) && !outil => {
+        Err(e) if dbus::service_absent(&e.to_string()) && !outil => {
             return impossible(
                 "Plateforme",
                 tr!("fwupd absent : paquet fwupd", "fwupd missing: fwupd package"),

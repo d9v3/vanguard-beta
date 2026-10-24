@@ -84,7 +84,7 @@ pub(super) fn autres_mises_a_jour() -> Vec<Constat> {
                 match firmwares_par_dbus() {
                     Ok(v) => return Some(v),
                     // fwupd a répondu par une erreur (métadonnées absentes…) : fwupdmgr la tairait.
-                    Err(e) if e.starts_with("org.freedesktop.fwupd.") => return None,
+                    Err(e) if e.to_string().starts_with("org.freedesktop.fwupd.") => return None,
                     Err(_) => {}
                 }
                 sortie_delai(
@@ -228,7 +228,7 @@ fn appareils_a_jour(liste: &dbus::Valeur) -> Vec<(String, String)> {
 /// faire » (NothingToDo : aucune version plus récente, appareil qui ne se met pas à jour) ou pour un appareil parti
 /// entre la liste et la question (NotFound). NotSupported (« no components in silo » : métadonnées jamais
 /// téléchargées) et toute autre erreur restent des erreurs : fwupdmgr les taisait et disait « à jour ».
-fn reponse_upgrades(r: Result<Vec<dbus::Valeur>, String>) -> Result<bool, String> {
+fn reponse_upgrades(r: Result<Vec<dbus::Valeur>, String>) -> Result<bool, crate::modele::Echec> {
     match r {
         Ok(corps) => Ok(corps.first().is_some_and(|l| !l.elements().is_empty())),
         Err(e)
@@ -237,28 +237,35 @@ fn reponse_upgrades(r: Result<Vec<dbus::Valeur>, String>) -> Result<bool, String
         {
             Ok(false)
         }
-        Err(e) => Err(e),
+        Err(e) => Err(echec_fwupd(e)),
     }
+}
+
+/// Une erreur de fwupd ou du bus dans le canal d'erreur commun (son texte reste celui du bus).
+fn echec_fwupd(e: String) -> crate::modele::Echec {
+    crate::modele::Echec::echoue("maj/fwupd", e)
 }
 
 /// Les appareils à qui fwupd propose un nouveau firmware, lus par le client D-Bus maison (GetDevices puis GetUpgrades
 /// pour chacun) au lieu de `fwupdmgr get-updates`. Une réponse d'un autre genre que « rien à faire » rend toute la
 /// lecture impossible : jamais « à jour » sur une erreur.
-fn firmwares_par_dbus() -> Result<Vec<String>, String> {
+fn firmwares_par_dbus() -> Result<Vec<String>, crate::modele::Echec> {
     if std::fs::read_to_string("/proc/self/uid_map").is_ok_and(|m| !crate::machine::bluetooth::identite(&m)) {
-        return Err("espace de noms isolé".into());
+        return Err(echec_fwupd("espace de noms isolé".into()));
     }
-    let mut bus = dbus::Bus::systeme()?;
-    let corps = bus.appeler(
-        "org.freedesktop.fwupd",
-        "/",
-        "org.freedesktop.fwupd",
-        "GetDevices",
-        "",
-        Vec::new(),
-    )?;
+    let mut bus = dbus::Bus::systeme().map_err(echec_fwupd)?;
+    let corps = bus
+        .appeler(
+            "org.freedesktop.fwupd",
+            "/",
+            "org.freedesktop.fwupd",
+            "GetDevices",
+            "",
+            Vec::new(),
+        )
+        .map_err(echec_fwupd)?;
     let mut proposes = Vec::new();
-    for (id, nom) in appareils_a_jour(corps.first().ok_or_else(|| "réponse vide".to_string())?) {
+    for (id, nom) in appareils_a_jour(corps.first().ok_or_else(|| echec_fwupd("réponse vide".into()))?) {
         let r = bus.appeler(
             "org.freedesktop.fwupd",
             "/",
