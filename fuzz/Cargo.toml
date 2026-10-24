@@ -139,3 +139,17 @@ path = "fuzz_targets/reponse_tls_pq.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "evtx_fichier"
+path = "fuzz_targets/evtx_fichier.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "binxml"
+path = "fuzz_targets/binxml.rs"
+test = false
+doc = false
+bench = false
