@@ -467,6 +467,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// Une archive datée du futur sur la clé (plantée pour ne jamais être remplacée) : remplacée par la copie de cet
+    /// ordinateur, sans Internet, et le téléchargement est essayé.
+    #[test]
+    fn archive_datee_du_futur_remplacee() {
+        let d = dossier_d_essai();
+        let (cle, local) = (d.join("cle"), d.join("local"));
+        let futur = SystemTime::now() + Duration::from_hours(80 * 365 * 24);
+        for l in LANGUES {
+            ecrire_date(
+                &local.join(nom_d_archive(l)),
+                &archive_de(minimum(l), "locale"),
+                il_y_a(200),
+            );
+            ecrire_date(&cle.join(nom_d_archive(l)), b"plantee", futur);
+        }
+        let appels = Cell::new(0);
+        assert!(mettre_a_jour(
+            &cle,
+            |l| local.join(nom_d_archive(l)),
+            |_| {
+                appels.set(appels.get() + 1);
+                None
+            },
+            POSER
+        ));
+        assert_eq!(appels.get(), 2);
+        for l in LANGUES {
+            assert_ne!(std::fs::read(cle.join(nom_d_archive(l))).unwrap(), b"plantee");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn copie_locale_plus_ancienne_rien_ne_change() {
         let d = dossier_d_essai();

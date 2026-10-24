@@ -236,7 +236,7 @@ pub(super) fn dans_l_historique(sha256: &[u8; 32]) -> Result<Option<(Version, St
         .to_string()
     };
     if crate::parametres::hors_ligne() {
-        return Err(tr!("travail sans Internet demandé", "offline mode requested").into());
+        return Err(crate::parametres::raison_hors_ligne().into());
     }
     let historique = recevoir("historique.txt", HISTORIQUE_MAX, 30).ok_or_else(pas_de_reponse)?;
     let signature = recevoir("historique.txt.sig", 64, 20).ok_or_else(pas_de_reponse)?;
@@ -436,8 +436,10 @@ pub(super) fn derniere() -> Result<Publiee, String> {
         )
         .to_string()
     };
+    // Un réglage, pas l'absence d'Internet : le dire tel quel, sans quoi un programme qui l'a posé passerait pour une
+    // panne de réseau.
     if crate::parametres::hors_ligne() {
-        return Err(pas_de_reponse());
+        return Err(crate::parametres::raison_hors_ligne().into());
     }
     let manifeste = recevoir("derniere.txt", MANIFESTE_MAX, 20).ok_or_else(pas_de_reponse)?;
     let signature = recevoir("derniere.txt.sig", 64, 20).ok_or_else(pas_de_reponse)?;
@@ -492,11 +494,11 @@ pub(super) fn annonce() -> Option<Version> {
 /// La version vue sur GitHub il y a moins de 12 heures, sinon redemandée.
 fn derniere_vue() -> Option<Version> {
     let memoire = dossier().join("derniere-vue.txt");
-    let fraiche = std::fs::metadata(&memoire)
+    let fraiche = std::fs::symlink_metadata(&memoire)
         .and_then(|m| m.modified())
         .is_ok_and(|t| t.elapsed().unwrap_or_default() < FRAICHE);
     if fraiche
-        && let Some(v) = std::fs::read_to_string(&memoire)
+        && let Some(v) = crate::socle::lire_texte_ordinaire(&memoire, 4 << 10)
             .ok()
             .and_then(|t| lire_version(t.trim()))
     {

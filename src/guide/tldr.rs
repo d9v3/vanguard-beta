@@ -102,7 +102,10 @@ fn archives(langue: &str, dossiers: &[PathBuf]) -> Vec<Archive> {
         .iter()
         .map(|d| d.join(nom_d_archive(langue)))
         .filter_map(|chemin| {
-            let meta = std::fs::metadata(&chemin).ok()?;
+            // Le fichier lui-même, jamais la cible d'un lien ; un tube ou un périphérique n'est pas une archive.
+            let meta = std::fs::symlink_metadata(&chemin)
+                .ok()
+                .filter(std::fs::Metadata::is_file)?;
             let archive = Archive {
                 date: meta.modified().ok()?,
                 taille: meta.len(),
@@ -111,19 +114,18 @@ fn archives(langue: &str, dossiers: &[PathBuf]) -> Vec<Archive> {
             (archive.taille <= TAILLE_ARCHIVE && connue(&archive) != Some(false)).then_some(archive)
         })
         .collect();
-    archives.sort_by_key(|a| std::cmp::Reverse(a.date));
+    // La plus récente d'abord, une date dans le futur en dernier : sur une clé, elle ne prend pas la place de la
+    // copie de cet ordinateur (campagne d'attaque n° 3).
+    archives.sort_by_key(|a| (a.date.elapsed().is_err(), std::cmp::Reverse(a.date)));
     archives
 }
 
 /// Les fichiers d'une archive ; vide si elle ne se lit pas, ce qui est retenu. Jamais plus de `TAILLE_ARCHIVE` lus,
 /// même si le fichier a grossi depuis `archives` : un fichier démesuré ne remplit pas la mémoire.
 fn lire(archive: &Archive) -> Vec<(String, Vec<u8>)> {
-    use std::io::Read;
-    let mut octets = Vec::new();
-    let entiere = std::fs::File::open(&archive.chemin)
-        .and_then(|f| f.take(TAILLE_ARCHIVE + 1).read_to_end(&mut octets))
-        .is_ok_and(|n| u64::try_from(n).is_ok_and(|n| n <= TAILLE_ARCHIVE));
-    let fichiers = if entiere { lire_zip(&octets) } else { Vec::new() };
+    // Ouvert sans suivre de lien ni attendre (un tube posé entre-temps ne fige pas le guide), borné.
+    let fichiers =
+        crate::socle::lire_ordinaire(&archive.chemin, TAILLE_ARCHIVE).map_or_else(|_| Vec::new(), |o| lire_zip(&o));
     let mut connues = CONNUES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if !connues.iter().any(|(a, _)| a == archive) {
         connues.push((archive.clone(), !fichiers.is_empty()));

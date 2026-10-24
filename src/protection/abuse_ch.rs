@@ -151,7 +151,7 @@ fn fichier_cle() -> PathBuf {
 /// La clé gardée dans `chemin`, vérifiée de nouveau : `Ok(None)` absente ; `Err` : là mais illisible (un fichier
 /// modifié à la main n'ajoute rien à une demande).
 fn lire_de(chemin: &Path) -> Result<Option<String>, ()> {
-    let texte = match std::fs::read_to_string(chemin) {
+    let texte = match crate::socle::lire_texte_ordinaire(chemin, 4 << 10) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(()),

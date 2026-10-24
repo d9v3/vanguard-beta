@@ -669,6 +669,7 @@ fn json_selon_le_tri() {
         lecture: Lecture::Falsifie("x".into()),
         evenements: Vec::new(),
         illisibles: 0,
+        verifies_des: 0,
     };
     let bot = Evenement::alerte(Source::Surveillance, "botnet", "Serveur", "203.0.113.7:443");
     let v = en_json(&lu, &incident(vec![bot]), Some(Programme::Msrc), None);

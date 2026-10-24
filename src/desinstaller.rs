@@ -1629,7 +1629,8 @@ fn copier_releve(releve: &Path, dossier: &Path) -> Result<PathBuf, String> {
     if !dossier.is_absolute() {
         return Err(tr!("dossier inconnu", "unknown folder").to_string());
     }
-    let mut source = std::fs::File::open(releve).map_err(|e| e.to_string())?;
+    // Un simple fichier, borné : un lien vers /dev/zero à sa place ne remplit pas le disque de la copie.
+    let source = crate::socle::lire_ordinaire(releve, 64 << 20).map_err(|e| e.to_string())?;
     let date = chrono::Local::now().format("%Y-%m-%d");
     for n in 1..100 {
         let nom = if n == 1 {
@@ -1640,9 +1641,8 @@ fn copier_releve(releve: &Path, dossier: &Path) -> Result<PathBuf, String> {
         let copie = dossier.join(nom);
         match std::fs::OpenOptions::new().write(true).create_new(true).open(&copie) {
             Ok(mut f) => {
-                return std::io::copy(&mut source, &mut f)
-                    .map(|_| copie)
-                    .map_err(|e| e.to_string());
+                use std::io::Write as _;
+                return f.write_all(&source).map(|()| copie).map_err(|e| e.to_string());
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(e.to_string()),

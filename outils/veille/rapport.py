@@ -15,6 +15,7 @@ Lancé par python3 -I (nuit.sh, alerte.sh, hebdo.sh) :
     rapport.py hebdo-entree --veille V --jour J --commits FICHIER SORTIE.json
     rapport.py hebdo DOSSIER SORTIE.md
     rapport.py markdown RAPPORT.json
+    rapport.py structure COPIE SORTIE      la forme d'une source refusée par un canari, sans son texte
 """
 
 import argparse
@@ -606,7 +607,7 @@ def alerte(rapport, signature, sortie, donnees, evidente=None):
                    "rejouer": f"PROPTEST_RNG_SEED={graine} cargo test -q"}
     elif genre == "canari":
         source = sur("slug", al.get("source"))
-        entree |= {"source": source, "etat": "format", "copie": sur("chemin", f"{donnees}/copie-{source}"),
+        entree |= {"source": source, "etat": "format", "structure": sur("chemin", f"{donnees}/structure-{source}"),
                    "lecteur": "protection::perimes::sources::contenu, kev::analyser, echap, sortantes::feodo"}
     elif genre == "hebdo":
         entree |= {"sujet": sur("slug", al.get("sujet")), "fichier": sur("chemin", al.get("fichier")),
@@ -762,6 +763,68 @@ def hebdo(a):
     return 0
 
 
+def structure(copie, sortie):
+    """La forme d'une source qu'un canari a refusée, pour l'IA qui adapte son lecteur : jamais son texte (campagne
+    d'attaque n° 3 : la réponse brute d'un flux d'Internet était donnée à lire à l'IA). Taille, empreinte, format ;
+    pour du JSON, les chemins de ses clés et le type de leurs valeurs ; pour du texte, le nombre de lignes et de
+    champs, et la forme des premières lignes (lettres → a, chiffres → 9, le reste en classes). Tout nom gardé passe
+    par une liste blanche courte ([A-Za-z0-9_.-], 40 caractères) ; le reste devient « (retiré) »."""
+    octets = Path(copie).read_bytes()[:64 << 20]
+    # Les noms aussi en classes de caractères (lettres → a, chiffres → 9) : « IGNORE-PREVIOUS-INSTRUCTIONS » passe
+    # une liste blanche de caractères ; sa forme, « a-a-a », ne dit plus rien.
+    def sur_nom(k):
+        k = str(k)[:40]
+        return re.sub(r"[0-9]+", "9", re.sub(r"[A-Za-z]+", "a", k)) if re.fullmatch(r"[A-Za-z0-9_.-]{1,40}", k) else RETIRE
+    lignes = [f"taille {len(octets)} octets", f"sha256 {hashlib.sha256(octets).hexdigest()}"]
+    try:
+        valeur = json.loads(octets.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError):
+        valeur = None
+    if valeur is not None:
+        chemins = {}
+
+        def parcourir(v, chemin, profondeur):
+            if profondeur > 12 or len(chemins) >= 300:
+                return
+            if isinstance(v, dict):
+                chemins.setdefault(chemin or ".", "objet")
+                for k, x in list(v.items())[:200]:
+                    parcourir(x, f"{chemin}.{sur_nom(k)}", profondeur + 1)
+            elif isinstance(v, list):
+                chemins.setdefault(chemin or ".", f"liste de {len(v)}")
+                for x in v[:3]:
+                    parcourir(x, f"{chemin}[]", profondeur + 1)
+            else:
+                chemins.setdefault(chemin or ".", type(v).__name__)
+
+        parcourir(valeur, "", 0)
+        lignes.append("format JSON ; chemins des clés et type des valeurs :")
+        lignes += [f"  {c} : {t}" for c, t in chemins.items()]
+    else:
+        texte = octets.decode("utf-8", errors="replace")
+        tout = texte.splitlines()
+        lignes.append(f"format texte : {len(tout)} lignes")
+        if texte.lstrip().startswith("<"):
+            balises = {}
+            for b in re.findall(r"<([A-Za-z][A-Za-z0-9-]{0,20})", texte):
+                balises[b.lower()] = balises.get(b.lower(), 0) + 1
+            lignes.append("balises : " + ", ".join(f"{sur_nom(b)} {n}" for b, n in sorted(balises.items())[:40]))
+        for sep, mot in ((",", "virgules"), (";", "points-virgules"), ("\t", "tabulations")):
+            champs = sorted({l.count(sep) + 1 for l in tout[:200] if l.strip()})
+            if champs and champs != [1]:
+                lignes.append(f"champs séparés par des {mot} : {champs[:10]}")
+
+        def forme(l):
+            l = re.sub(r"[A-Za-zÀ-ÿ]+", "a", l[:160])
+            l = re.sub(r"[0-9]+", "9", l)
+            return "".join(c if c in "a9 ,;:|\t\"'{}[]()<>=/.-_#@" else "?" for c in l)
+
+        lignes.append("forme des premières lignes :")
+        lignes += [f"  {forme(l)}" for l in tout[:15]]
+    Path(sortie).write_text("\n".join(lignes) + "\n", encoding="utf-8")
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sous = p.add_subparsers(dest="cmd", required=True)
@@ -801,7 +864,12 @@ def main():
     h.add_argument("sortie")
     m = sous.add_parser("markdown")
     m.add_argument("rapport")
+    st = sous.add_parser("structure")
+    st.add_argument("copie")
+    st.add_argument("sortie")
     a = p.parse_args()
+    if a.cmd == "structure":
+        return structure(a.copie, a.sortie)
     if a.cmd == "fuzz-compter":
         Path(a.sortie).write_text("".join(f"{k}\t{v}\n" for k, v in compter_corpus(a.fuzz).items()), encoding="utf-8")
         return 0

@@ -812,7 +812,9 @@ pub fn erreur(contexte: &str, detail: &str) {
         return;
     };
     let chemin = dossier.join(FICHIER);
-    if std::fs::metadata(&chemin).is_ok_and(|m| m.len() > TAILLE_MAX) {
+    // Le fichier lui-même : jamais la cible d'un lien, jamais un tube (ouvert en écriture, il attendait un lecteur
+    // pour toujours, et chaque erreur notée figeait Vanguard).
+    if std::fs::symlink_metadata(&chemin).is_ok_and(|m| !m.file_type().is_file() || m.len() > TAILLE_MAX) {
         return;
     }
     let commande = commande_anonyme(&std::env::args().skip(1).collect::<Vec<_>>());
@@ -838,11 +840,16 @@ pub fn erreur(contexte: &str, detail: &str) {
         },
         detail.lines().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n")
     );
-    let _ = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&chemin)
-        .and_then(|mut f| f.write_all(entree.as_bytes()));
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    let _ = options.open(&chemin).and_then(|mut f| {
+        if !f.metadata()?.file_type().is_file() {
+            return Ok(());
+        }
+        f.write_all(entree.as_bytes())
+    });
 }
 
 /// Une sortie coupée par celui qui la lit (`vanguard regles | head`) : println! panique sur le tube fermé. Ce n'est pas

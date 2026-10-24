@@ -1457,10 +1457,12 @@ fn empreintes_du_dossier(d: &Path) -> Vec<(String, String)> {
     let mut v = Vec::new();
     for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
         let nom = e.file_name().to_string_lossy().into_owned();
-        if nom == "MANIFESTE.txt" || !e.path().is_file() {
+        // Le fichier lui-même, jamais la cible d'un lien ; ouvert sans attendre (un tube posé entre-temps ne fige
+        // pas la collecte).
+        if nom == "MANIFESTE.txt" || !std::fs::symlink_metadata(e.path()).is_ok_and(|m| m.file_type().is_file()) {
             continue;
         }
-        if let Ok(f) = std::fs::File::open(e.path())
+        if let Ok(f) = ouvrir_ordinaire(&e.path(), true)
             && let Ok(h) = sha256_de(f)
         {
             v.push((nom, h));

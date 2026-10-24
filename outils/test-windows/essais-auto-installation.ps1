@@ -1,10 +1,49 @@
 ﻿# Installe (ou retire, -Retirer) la file d'essais sans clic dans la machine virtuelle Windows de test : une tâche
 # planifiée « Vanguard-File-Essais » qui fait, en administrateur, chaque travail déposé depuis Linux par
 # outils/vm-tester.sh (surveillant-essais.ps1). Lancé par INSTALLER-ESSAIS-AUTO.bat ou DESINSTALLER-ESSAIS-AUTO.bat
-# (double-clic, une fenêtre UAC) ; rien d'autre à faire ensuite.
-param([switch]$Retirer, [switch]$Eleve)
+# (double-clic, une fenêtre UAC), puis un code à comparer sur Linux (outils/vm-tester.sh --installer l'attend).
+#
+# Le secret de la file (campagne d'attaque n° 3) : 32 octets tirés ici, gardés dans secret.bin, que seuls les
+# administrateurs et SYSTEM lisent ; le surveillant ne fait que les travaux signés par lui (HMAC-SHA256 de
+# travail.txt), et signe ses verdicts. Linux le reçoit chiffré pour sa seule clé (RSA-OAEP, cle-linux.xml, posée par
+# vm-tester.sh --installer) : jamais en clair sur le partage, que tout compte de la VM lit. Le code de vérification
+# (HMAC du secret et de l'empreinte de la clé de Linux utilisée) se compare sur Linux : une clé ou un secret
+# substitués en route par un programme de la VM ne donnent pas le même code.
+# -EssaiSecret DOSSIER (Linux, pwsh, outils/vm-tester.sh --essai-local) : le tirage seul, sur DOSSIER\cle-linux.xml.
+param([switch]$Retirer, [switch]$Eleve, [string]$EssaiSecret)
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
+$Utf8 = New-Object Text.UTF8Encoding $false
+
+# Le code à comparer sur Linux : 12 hexadécimaux du HMAC du secret sur l'empreinte de la clé de Linux utilisée.
+function Code-Verification([byte[]]$secret, [byte[]]$xml) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $empreinte = ([BitConverter]::ToString($sha.ComputeHash($xml)) -replace '-', '').ToLower()
+    $h = New-Object Security.Cryptography.HMACSHA256 (, $secret)
+    $c = ([BitConverter]::ToString($h.ComputeHash($Utf8.GetBytes("vanguard-file-essais code 1`n$empreinte"))) -replace '-', '').ToLower()
+    '{0}-{1}-{2}' -f $c.Substring(0, 4), $c.Substring(4, 4), $c.Substring(8, 4)
+}
+# Tire le secret, l'écrit par `ecrire` (secret.bin protégé), le chiffre pour la clé de Linux (cle-linux.xml, RSA de
+# 3072 bits au moins) dans `chiffre`, et rend le code de vérification.
+function Tirer-Secret([string]$xml, [scriptblock]$ecrire, [string]$chiffre) {
+    $octetsXml = [IO.File]::ReadAllBytes($xml)
+    if ($octetsXml.Length -gt 4096) { throw "$xml démesuré : pas une clé de Linux" }
+    $rsa = New-Object Security.Cryptography.RSACryptoServiceProvider
+    $rsa.FromXmlString($Utf8.GetString($octetsXml))
+    if ($rsa.KeySize -lt 3072) { throw "clé de Linux de $($rsa.KeySize) bits : 3072 au moins (outils/vm-tester.sh --installer)" }
+    $secret = New-Object byte[] 32
+    [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($secret)
+    & $ecrire $secret
+    [IO.File]::WriteAllBytes($chiffre, $rsa.Encrypt($secret, $true))
+    Code-Verification $secret $octetsXml
+}
+if ($EssaiSecret) {
+    if (-not $IsLinux) { Write-Error '-EssaiSecret ne sert que sous Linux (outils/vm-tester.sh --essai-local).'; exit 2 }
+    $code = Tirer-Secret (Join-Path $EssaiSecret 'cle-linux.xml') { param($o) [IO.File]::WriteAllBytes((Join-Path $EssaiSecret 'secret.bin'), $o) } `
+        (Join-Path $EssaiSecret 'secret-chiffre.bin')
+    "code=$code"
+    exit 0
+}
 $ici = $PSScriptRoot
 $tache = 'Vanguard-File-Essais'
 $partage = '\\host.lan\Data\VANGUARD-TEST'
@@ -14,7 +53,6 @@ $file = Join-Path $partage 'file-essais'
 $prive = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'Vanguard-File-Essais'
 $surveillant = Join-Path $prive 'surveillant-essais.ps1'
 $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
-$Utf8 = New-Object Text.UTF8Encoding $false
 # Le dossier du surveillant : à Administrateurs, sans héritage ; administrateurs et SYSTEM y écrivent, Utilisateurs
 # lisent (le même contrôle que Est-Protege dans surveillant-essais.ps1).
 $sddlPrive = 'O:BAG:BAD:PAI(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;0x1200a9;;;BU)'
@@ -141,7 +179,8 @@ Write-Host ''
 Write-Host '  Ce qui est déposé dans VANGUARD-TEST\file-essais (depuis Linux, outils/vm-tester.sh) sera lancé' -ForegroundColor Yellow
 Write-Host '  EN ADMINISTRATEUR dans ce Windows, sans clic. Le dossier partagé s''écrit depuis Linux : tout programme' -ForegroundColor Yellow
 Write-Host '  du compte Linux pourra devenir administrateur de cette VM. À n''installer que dans la VM de test.' -ForegroundColor Yellow
-Write-Host '  L''empreinte SHA-256 de chaque fichier est vérifiée ; ce n''est pas une signature.' -ForegroundColor Yellow
+Write-Host '  Chaque travail doit porter la signature (HMAC) du secret tiré ici, que Linux reçoit chiffré : un' -ForegroundColor Yellow
+Write-Host '  programme de cette VM sans droits ne peut plus en déposer un.' -ForegroundColor Yellow
 Write-Host '  Pendant un essai, des fenêtres de Vanguard s''ouvrent environ 1 min : ne pas taper dedans.' -ForegroundColor Yellow
 Write-Host ''
 if ((Read-Host '  Installer ? [o/N]') -notmatch '^(o|oui|y|yes)$') { Write-Host '  Rien n''est installé.'; Fin 1 }
@@ -160,6 +199,20 @@ try {
     [IO.File]::WriteAllBytes($surveillant, $octets)
     if ((Get-FileHash -LiteralPath $surveillant -Algorithm SHA256).Hash.ToLower() -ne $attendue) { throw 'copie du surveillant différente de l''original' }
     [IO.File]::WriteAllText((Join-Path $prive 'version.txt'), "installe=$(Get-Date -Format o)`r`nsha256=$attendue`r`n", $Utf8)
+    # Le secret de la file, neuf à chaque installation (les travaux signés de l'ancien ne passent plus), dans un
+    # fichier aux droits posés dès sa création : administrateurs et SYSTEM seulement, sans héritage.
+    $cleLinux = Join-Path $ici 'cle-linux.xml'
+    if (-not (Test-Path -LiteralPath $cleLinux -PathType Leaf)) { throw "$cleLinux absent : sur Linux, outils/vm-tester.sh --installer d'abord" }
+    $secretBin = Join-Path $prive 'secret.bin'
+    New-Item -ItemType Directory -Force -Path $file | Out-Null
+    Remove-Item -LiteralPath $secretBin, (Join-Path $prive 'ids-vus.txt') -Force -ErrorAction SilentlyContinue
+    $code = Tirer-Secret $cleLinux {
+        param($o)
+        $fs = New-Object Security.AccessControl.FileSecurity
+        $fs.SetSecurityDescriptorSddlForm('O:BAG:BAD:PAI(A;;FA;;;BA)(A;;FA;;;SY)')
+        $f = [IO.File]::Create($secretBin, 4096, [IO.FileOptions]::None, $fs)
+        try { $f.Write($o, 0, $o.Length) } finally { $f.Dispose() }
+    } (Join-Path $file 'secret-chiffre.bin')
 
     # Le compte par le jeton de ce processus, pas par %USERNAME% (réglable par l'utilisateur).
     $moi = [Security.Principal.WindowsIdentity]::GetCurrent().Name
@@ -184,8 +237,12 @@ try {
         if ($b -and $b.LastWriteTime -ge $depuis.AddSeconds(-2)) { $vu = $true; break }
         Start-Sleep -Seconds 1
     }
-    if ($vu) { Write-Host '  Installé : la tâche tourne (battement vu). Linux peut lancer outils/vm-tester.sh.' -ForegroundColor Green }
+    if ($vu) { Write-Host '  Installé : la tâche tourne (battement vu).' -ForegroundColor Green }
     else { Write-Host "  Installé, mais pas encore de battement dans $battement (voir $prive\journal.txt)." -ForegroundColor Yellow }
+    Write-Host ''
+    Write-Host "  CODE DE VÉRIFICATION : $code" -ForegroundColor Cyan
+    Write-Host '  Sur Linux, outils/vm-tester.sh --installer (ou --adopter) montre le sien : répondre « o » là-bas' -ForegroundColor Cyan
+    Write-Host '  SEULEMENT s''il est identique. Sinon, ne rien accepter et réinstaller.' -ForegroundColor Cyan
     Fin 0
 } catch {
     Write-Host "  Échec : $($_.Exception.Message)" -ForegroundColor Red

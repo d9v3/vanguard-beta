@@ -22,9 +22,8 @@ struct Vus {
     vus: BTreeMap<String, String>,
 }
 
-fn fichier() -> std::path::PathBuf {
-    crate::socle::dossier_local().join("administrateurs.json")
-}
+/// Les administrateurs déjà vus, scellés (`sceau::deja_vus`).
+const VUS: &str = crate::sceau::ADMINISTRATEURS;
 
 /// Les membres des groupes d'administration dans /etc/group (« wheel:x:998:alice,bob »).
 #[cfg(any(target_os = "linux", test))]
@@ -199,17 +198,27 @@ fn retrait() -> &'static str {
 
 pub fn constat() -> Option<Constat> {
     let admins = lire()?;
-    let avant: Option<Vus> = std::fs::read_to_string(fichier())
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok());
-    let (c, apres) = juger(&admins, avant.as_ref(), chrono::Local::now().date_naive());
+    let (avant, douteux) = avant_de(crate::sceau::deja_vus(VUS));
+    let (mut c, apres) = juger(&admins, avant.as_ref(), chrono::Local::now().date_naive());
+    if douteux && c.probleme.is_some() {
+        c.message += crate::sceau::redit();
+    }
     if avant.as_ref() != Some(&apres)
         && let Ok(texte) = serde_json::to_string_pretty(&apres)
     {
-        let _ = std::fs::create_dir_all(crate::socle::dossier_local());
-        let _ = crate::socle::ecrire_atomique(&fichier(), texte);
+        let _ = crate::sceau::ecrire(VUS, texte);
     }
     Some(c)
+}
+
+/// Les déjà vus relus sous leur sceau, et s'ils ne pouvaient pas être crus : effacés, changés hors de Vanguard ou
+/// illisibles, ils valent une liste vide (chacun est redit), jamais un premier passage muet.
+fn avant_de(lu: Result<Option<Vec<u8>>, ()>) -> (Option<Vus>, bool) {
+    match lu {
+        Ok(None) => (None, false),
+        Ok(Some(o)) => serde_json::from_slice(&o).map_or((Some(Vus::default()), true), |v| (Some(v), false)),
+        Err(()) => (Some(Vus::default()), true),
+    }
 }
 
 #[cfg(test)]
@@ -218,6 +227,23 @@ mod tests {
 
     fn jour(j: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 10, j).unwrap()
+    }
+
+    /// Des déjà vus effacés, changés hors de Vanguard ou illisibles ne font jamais un premier passage muet : chaque
+    /// administrateur est redit ; seul un fichier jamais écrit est un premier passage.
+    #[test]
+    fn deja_vus_effaces_ou_changes_tout_redit() {
+        let admins = vec!["alice".to_string(), "intrus".to_string()];
+        let (avant, douteux) = avant_de(Err(()));
+        assert!(douteux);
+        let (c, _) = juger(&admins, avant.as_ref(), jour(10));
+        assert!(c.probleme.is_some() && c.message.contains("intrus"), "{}", c.message);
+        let (avant, douteux) = avant_de(Ok(Some(b"pas du json".to_vec())));
+        assert!(douteux && avant.is_some());
+        let (avant, douteux) = avant_de(Ok(None));
+        assert!(!douteux && avant.is_none());
+        let (c, _) = juger(&admins, avant.as_ref(), jour(10));
+        assert!(c.probleme.is_none(), "{}", c.message);
     }
 
     #[test]

@@ -9,6 +9,18 @@ delivered just before it. Only the latest version has its download page; every v
 
 ## Next version
 
+- **USB key and release security** (third attack campaign). When the key is plugged in, it is compared with its
+  reference before anything is written: a file planted while it traveled (shortcut, image, Ventoy menu, tldr archive)
+  no longer becomes “the key has not changed”; nothing is written to it, a notification says so, and only
+  `outils/deployer.sh --accepter-cle` takes the key as it is. The tools only recognize the key by its token known to
+  this computer, like the program: a volume labeled VANGUARD no longer receives the program or the source code. ISO
+  images are tracked by their SHA-256 checksum, re-read one at a time, and copied again if they were replaced; the
+  VTOYEFI boot partition, by the checksum of its files. The key's error log makes at most 5 GitHub issues per run (10
+  a day), and nothing from a suspicious log without the author's consent. Release signing keeps a safe point the
+  backup key never goes past; published programs are, byte for byte, those built from their commit (the published
+  0.86.0 is indeed its commit's build: only the CI's C compilers differ). Claude on GitHub no longer acts on a pull
+  request from a fork. The VM test queue only runs signed jobs (HMAC with the secret drawn when it is installed, to be
+  redone once), and its verdicts are signed.
 - **USB key: the program alone by default.** A key prepared by the repository tools, on any computer, now only
   carries Vanguard, its database, its reports and the VANGUARDLOG partition: no installation images, no Ventoy, no
   WIN11 or MACOS partitions. The full rescue key is only made on a computer whose local setting asks for it
@@ -17,7 +29,7 @@ delivered just before it. Only the latest version has its download page; every v
   copy timers copy nothing. The project page gets its “Download, check, install” section: the program for your
   system, its checksum checked against `SHA256SUMS.txt`, then `vanguard shortcut` and `vanguard self-update`; the USB
   key as an option, for troubleshooting.
-- **Menu window.** On Linux (Hyprland), the frame keeps a fixed height from one menu to the next: every size change was animated, and the transition showed. On Windows, the window still follows each menu's height but stays where it was put (brought back on screen only if it goes off).
+- **Menu window.** On Linux (Hyprland), the frame keeps a fixed height from one menu to the next: every size change was animated, and the transition showed. On Windows, the window still follows each menu's height but stays where it was put (brought back on screen only if it goes off). Near the bottom of the screen, it moves up only as much as needed; in the legacy console (conhost), which does not report its size changes, the menu redraws anyway.
 - **Offered software.** Bitwarden installs from Flathub on Arch (the distribution package stayed at 2026.3.1) ; Flathub
   now only ships its commercial build, which is therefore shown as not open source, while winget and Homebrew install
   the GPL-3.0 build. VeraCrypt is for USB sticks, external drives and vaults, the system drive going to BitLocker or
@@ -190,6 +202,22 @@ delivered just before it. Only the latest version has its download page; every v
 - **Dependency security.** crypto-bigint 0.7.6 (advisory RUSTSEC-2026-0387: computations meant to always take the same time did not), brought in by YARA-X.
 - **Continuous checks back to green.** The Windows program reserves 8 MiB of stack (1 MiB by default with MSVC: the debug build overflowed at startup); journal issues no longer go through Claude on GitHub; nightly fuzzing finally runs (cargo-fuzz installed separately, checksum verified); the reproducible build checks the DLL guard with a recent enough linker.
 - **The attack words it searches for are no longer in the clear in the program.** The offensive-tool command names and AMSI bypasses Vanguard recognizes in scripts are scrambled in the binary (decoded in memory when needed), so an antivirus does not take Vanguard for the tool it hunts. Nothing is hidden: the source stays in the clear, and a guard inspects the binary so that none of these words comes back into it in the clear.
+- **State security.** What Vanguard keeps on the computer no longer turns against it. A named pipe or a link to
+  /dev/zero put in place of a state file no longer freezes Vanguard (even `--version`, monitoring, the watcher) nor
+  makes it load without end: every file read back is read as a plain file, bounded. The record of changes
+  (`changements.jsonl`), the settings that turn a defense off (`parametres.json`: offline work, self-test, software
+  versions; `blocage.json`: categories turned off), the administrator accounts and Bluetooth devices already seen, and
+  the known keys are sealed: changed outside Vanguard, nothing in them is replayed as administrator, nothing in them
+  turns anything off (an ignored setting is said in Settings, the blocking menu and the check-up, and can be set
+  again), and what was already seen is reported again. Files taken over from an earlier version at the update keep
+  their values; accepted after the seals were deleted, they turn nothing off and are not trusted. A block noted
+  before the seal is only undone by itself if it can be judged
+  again without its note (a firewall rule, a program put back at startup), the rest by hand. “Put everything back”
+  never replays an old note as it is: it goes through the order guards (SSH and Remote Desktop are never reopened).
+  A port closed by ufw without a read-back is said “not verified”, not “blocked”. The event log is written in two
+  steps: lines added without its head read as tampered, then as a break reported at the check-up, never taken in as
+  Vanguard's own. Deleting the seals with their lock no longer brings back the first use, and a month placed “in 2099”
+  no longer links an action to a false cause.
 
 ## October 23, 2026: version 0.86
 

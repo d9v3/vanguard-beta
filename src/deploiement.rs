@@ -27,6 +27,31 @@ pub(crate) enum Etape {
         /// La racine de la clé.
         racine: PathBuf,
     },
+    /// La racine de la clé VANGUARD de cet ordinateur : le volume monté au témoin vanguard.cle dont le jeton est connu
+    /// ici, comme le programme la reconnaît. Rien (code 0) sans volume au témoin ; code 3 quand des volumes portent le
+    /// témoin sans jeton connu (dits sur la sortie d'erreur) : rien ne doit y être écrit.
+    Cle,
+    /// Avant d'écrire sur la clé : elle doit être exactement sa référence (manifeste). Code 2 : elle a changé (l'écart
+    /// est dit) ; 3 : pas de référence pour elle ici.
+    #[command(name = "comparer-cle")]
+    ComparerCle {
+        /// La racine de la clé.
+        racine: PathBuf,
+        /// Le déploiement d'avant s'est arrêté en route (son repère est resté) : ses propres fichiers à moitié
+        /// écrits ne comptent pas, tout le reste si.
+        #[arg(long)]
+        reprise: bool,
+    },
+    /// Relire en entier une image de ISO/ (la moins récemment relue) et comparer son SHA-256 à la référence. Code 2 :
+    /// l'image a été remplacée (notée dans la référence : le bilan la dit modifiée).
+    #[command(name = "relire-image")]
+    RelireImage {
+        /// La racine de la clé.
+        racine: PathBuf,
+        /// « NOM=SHA256 » d'une image vérifiée du cache, pour une image que la référence a sans empreinte.
+        #[arg(long)]
+        empreinte: Vec<String>,
+    },
 }
 
 /// 0 : l'étape a réussi ; 1 : elle a échoué, et l'a dit.
@@ -41,17 +66,184 @@ pub(crate) fn executer(etape: Etape) -> i32 {
                 false
             }
         },
+        Etape::Cle => return cle(),
+        Etape::ComparerCle { racine, reprise } => return comparer_cle(&racine, reprise),
+        Etape::RelireImage { racine, empreinte } => return relire_image(&racine, &empreinte),
     };
     i32::from(!reussi)
 }
 
-/// Les deux réglages du manifeste (build.rs), cherchés tels que build.rs les écrit, dans la ressource que Windows lit
-/// en lançant le programme : la page de code UTF-8 (sans elle, accents et chemins sont cassés dans la console et les
-/// fichiers) et asInvoker (Vanguard démarre sans droits d'administrateur).
-const MANIFESTE: [&[u8]; 2] = [
-    b"<requestedExecutionLevel level=\"asInvoker\"",
-    b">UTF-8</activeCodePage>",
-];
+/// La clé connue parmi `volumes` (`Ok(Some)`), aucune (`Ok(None)` : aucun volume ne porte le témoin), ou les
+/// volumes au témoin sans jeton connu (`Err`). La règle du programme (`reseau::cle_usb`) : le témoin dit qu'un volume
+/// est fait comme une clé, pas que c'est la sienne.
+fn cle_parmi(
+    mut volumes: Vec<PathBuf>,
+    jetons: &std::collections::BTreeSet<String>,
+) -> Result<Option<PathBuf>, Vec<PathBuf>> {
+    volumes.retain(|d| d.join(crate::reseau::TEMOIN_CLE).is_file());
+    volumes.sort();
+    if let Some(c) = volumes
+        .iter()
+        .find(|d| crate::protection::cles_connues::connue(d, jetons))
+    {
+        return Ok(Some(c.clone()));
+    }
+    if volumes.is_empty() { Ok(None) } else { Err(volumes) }
+}
+
+fn cle() -> i32 {
+    match cle_parmi(
+        crate::reseau::volumes_montes(),
+        &crate::protection::cles_connues::jetons(),
+    ) {
+        Ok(Some(c)) => {
+            println!("{}", c.display());
+            0
+        }
+        Ok(None) => 0,
+        Err(inconnus) => {
+            for v in inconnus {
+                eprintln!(
+                    "{}",
+                    trf!(
+                        "Volume au témoin de la clé, sans jeton connu de cet ordinateur : {} (rien n'y est écrit)",
+                        "Volume with the key marker, without a token known to this computer: {} (nothing is written to it)",
+                        v.display()
+                    )
+                );
+            }
+            3
+        }
+    }
+}
+
+fn comparer_cle(racine: &Path, reprise: bool) -> i32 {
+    match crate::protection::manifeste::avant_deploiement(racine, reprise) {
+        Ok(n) => {
+            println!(
+                "{}",
+                trf!(
+                    "✔ Clé identique à sa référence ({n} fichiers vérifiés).",
+                    "✔ Key identical to its reference ({n} files checked)."
+                )
+            );
+            0
+        }
+        Err((code, pourquoi)) => {
+            eprintln!(
+                "{}",
+                trf!(
+                    "✖ Clé différente de sa référence : {pourquoi}",
+                    "✖ Key different from its reference: {pourquoi}"
+                )
+            );
+            code
+        }
+    }
+}
+
+fn relire_image(racine: &Path, empreintes: &[String]) -> i32 {
+    use crate::protection::manifeste::{Relecture, image_et_empreinte, relire_image};
+    let empreintes: Result<Vec<_>, crate::modele::Echec> = empreintes.iter().map(|e| image_et_empreinte(e)).collect();
+    let resultat = empreintes.and_then(|e| relire_image(racine, &e));
+    match resultat {
+        Ok(Relecture::Rien) => {
+            println!(
+                "{}",
+                tr!(
+                    "· Aucune image de la clé n'a d'empreinte à relire.",
+                    "· No image on the key has a checksum to re-read."
+                )
+            );
+            0
+        }
+        Ok(Relecture::Pareille(c)) => {
+            println!(
+                "{}",
+                trf!(
+                    "✔ {} relue en entier : l'image vérifiée, octet pour octet.",
+                    "✔ {} re-read in full: the verified image, byte for byte.",
+                    affichable(&c)
+                )
+            );
+            0
+        }
+        Ok(Relecture::Differente(c)) => {
+            // Le chemin sur la sortie : outils/images-cle.sh recopie l'image vérifiée.
+            println!("{c}");
+            eprintln!(
+                "{}",
+                trf!(
+                    "✖ {} : autres octets que l'image vérifiée (même taille) ; remplacée sur la clé. Le bilan la dit modifiée.",
+                    "✖ {}: different bytes from the verified image (same size); replaced on the key. The check-up reports it modified.",
+                    affichable(&c)
+                )
+            );
+            2
+        }
+        Ok(Relecture::Illisible(c)) => {
+            eprintln!(
+                "{}",
+                trf!(
+                    "· {} pas relue (illisible, clé retirée ?) : rien de conclu.",
+                    "· {} not re-read (unreadable, key removed?): nothing concluded.",
+                    affichable(&c)
+                )
+            );
+            1
+        }
+        Err(e) => {
+            eprintln!("{}", trf!("✖ Relecture impossible : {e}", "✖ Re-read impossible: {e}"));
+            1
+        }
+    }
+}
+
+/// Ce que demande le manifeste du programme (ressource RT_MANIFEST n° 1, celle que Windows lit en le lançant), lu
+/// comme du XML (quick-xml) et non cherché comme du texte : un « asInvoker » dans un commentaire, à côté d'un
+/// requestedExecutionLevel à requireAdministrator, ne passe plus (campagne d'attaque n° 3). Les niveaux demandés
+/// (attribut level de chaque requestedExecutionLevel) et les pages de code (texte de chaque activeCodePage), quel
+/// que soit le préfixe d'espace de noms ; `None` si le XML est malformé ou démesuré.
+fn lire_manifeste(octets: &[u8]) -> Option<(Vec<String>, Vec<String>)> {
+    use quick_xml::events::Event;
+    let texte = std::str::from_utf8(octets.strip_prefix(b"\xef\xbb\xbf").unwrap_or(octets)).ok()?;
+    let mut lecteur = quick_xml::Reader::from_str(texte);
+    let (mut niveaux, mut pages) = (Vec::new(), Vec::new());
+    let mut page: Option<String> = None;
+    // Les éléments ouverts : un manifeste tronqué (racine jamais fermée) est malformé.
+    let mut ouverts = 0usize;
+    for _ in 0..100_000 {
+        let evenement = lecteur.read_event().ok()?;
+        match &evenement {
+            Event::Start(_) => ouverts += 1,
+            Event::End(_) => ouverts = ouverts.checked_sub(1)?,
+            _ => {}
+        }
+        match evenement {
+            Event::Eof => return (page.is_none() && ouverts == 0).then_some((niveaux, pages)),
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == "requestedExecutionLevel" => {
+                let mut level = String::new();
+                for a in e.attributes() {
+                    let a = a.ok()?;
+                    if a.key.local_name().as_ref() == "level" {
+                        level = a.value.to_string();
+                    }
+                }
+                niveaux.push(level);
+            }
+            Event::Start(e) if e.local_name().as_ref() == "activeCodePage" => page = Some(String::new()),
+            Event::Empty(e) if e.local_name().as_ref() == "activeCodePage" => pages.push(String::new()),
+            Event::Text(t) => {
+                if let Some(p) = page.as_mut() {
+                    p.push_str(&t.xml10_content());
+                }
+            }
+            Event::End(e) if e.local_name().as_ref() == "activeCodePage" => pages.push(page.take()?.trim().to_string()),
+            _ => {}
+        }
+    }
+    None
+}
 
 /// Le programme Windows porte-t-il ses gardes ? DependentLoadFlags (`machine::windows::chargement`), qui ferme le
 /// chargement d'une DLL posée à côté de lui, et son manifeste. Lu, jamais lancé (`crate::pe`). Un fichier absent,
@@ -98,16 +290,27 @@ fn verifier_pe(fichier: &Path) -> bool {
         );
         return false;
     }
-    let manquants: Vec<String> = MANIFESTE
-        .iter()
-        .filter(|m| {
-            !gardes
-                .manifeste
-                .as_deref()
-                .is_some_and(|t| t.windows(m.len()).any(|f| f == **m))
-        })
-        .map(|m| String::from_utf8_lossy(m).into_owned())
-        .collect();
+    // Un seul niveau demandé, asInvoker (Vanguard démarre sans droits d'administrateur), et la page de code UTF-8
+    // (sans elle, accents et chemins sont cassés dans la console et les fichiers), rien d'autre.
+    let lu = gardes.manifeste.as_deref().and_then(lire_manifeste);
+    let mut manquants = Vec::new();
+    match &lu {
+        None => manquants.push(tr!("manifeste absent ou malformé", "manifest missing or malformed").to_string()),
+        Some((niveaux, pages)) => {
+            if niveaux.len() != 1 || niveaux[0] != "asInvoker" {
+                manquants.push(trf!(
+                    "requestedExecutionLevel : {niveaux:?} au lieu d'un seul asInvoker",
+                    "requestedExecutionLevel: {niveaux:?} instead of a single asInvoker"
+                ));
+            }
+            if pages.is_empty() || pages.iter().any(|p| p != "UTF-8") {
+                manquants.push(trf!(
+                    "activeCodePage : {pages:?} au lieu de UTF-8",
+                    "activeCodePage: {pages:?} instead of UTF-8"
+                ));
+            }
+        }
+    }
     if !manquants.is_empty() {
         let manquants = manquants.join(", ");
         eprintln!(
@@ -275,6 +478,43 @@ mod tests {
             "autre-numero.exe",
             gardes_d_essai(Some((148, 148, 0x800)), Some(MANIFESTE_D_ESSAI), 2)
         ));
+        // Campagne 3 : un asInvoker en commentaire à côté d'un requireAdministrator, deux niveaux, UTF-8 en
+        // commentaire seulement, du XML malformé : refusés (la recherche de texte les laissait passer).
+        let piege = String::from_utf8_lossy(MANIFESTE_D_ESSAI).replace(
+            r#"<requestedExecutionLevel level="asInvoker" uiAccess="false"/>"#,
+            r#"<!-- <requestedExecutionLevel level="asInvoker" --><requestedExecutionLevel level="requireAdministrator"/>"#,
+        );
+        assert!(!essai(
+            "commentaire.exe",
+            gardes_d_essai(Some((148, 148, 0x800)), Some(piege.as_bytes()), 1)
+        ));
+        let deux = String::from_utf8_lossy(MANIFESTE_D_ESSAI).replace(
+            "</requestedPrivileges>",
+            r#"<requestedExecutionLevel level="requireAdministrator"/></requestedPrivileges>"#,
+        );
+        assert!(!essai(
+            "deux-niveaux.exe",
+            gardes_d_essai(Some((148, 148, 0x800)), Some(deux.as_bytes()), 1)
+        ));
+        let page_en_commentaire = String::from_utf8_lossy(MANIFESTE_D_ESSAI).replace(
+            "<activeCodePage>UTF-8</activeCodePage>",
+            "<!-- >UTF-8</activeCodePage> -->",
+        );
+        assert!(!essai(
+            "page-commentee.exe",
+            gardes_d_essai(Some((148, 148, 0x800)), Some(page_en_commentaire.as_bytes()), 1)
+        ));
+        let malforme = String::from_utf8_lossy(MANIFESTE_D_ESSAI).replace("</assembly>", "");
+        assert!(!essai(
+            "malforme.exe",
+            gardes_d_essai(Some((148, 148, 0x800)), Some(malforme.as_bytes()), 1)
+        ));
+        // Avec espaces de noms (préfixes), comme le vrai : accepté.
+        let prefixe = br#"<v1:assembly xmlns:v1="urn:a"><v1:security><v1:requestedExecutionLevel level="asInvoker"/></v1:security><v3:windowsSettings xmlns:v3="urn:b"><activeCodePage xmlns="urn:c">UTF-8</activeCodePage></v3:windowsSettings></v1:assembly>"#;
+        assert!(essai(
+            "prefixes.exe",
+            gardes_d_essai(Some((148, 148, 0x800)), Some(prefixe), 1)
+        ));
         // Les deux textes ailleurs que dans le manifeste (une chaîne du programme) : pas un manifeste.
         let mut ailleurs = gardes_d_essai(Some((148, 148, 0x800)), None, 1);
         ailleurs.extend_from_slice(MANIFESTE_D_ESSAI);
@@ -352,6 +592,42 @@ mod tests {
             .filter(|n| n.contains(".tmp-"))
             .collect();
         assert!(restes.is_empty(), "{restes:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Campagne 3 : les scripts prenaient le premier volume au témoin vanguard.cle. Seul un volume au jeton connu est
+    /// la clé ; un volume étranger, même au témoin, est dit, et rien n'y est écrit.
+    #[test]
+    fn cle_au_jeton_connu_seulement() {
+        let d = dossier();
+        let jeton = "0123456789abcdef0123456789abcdef";
+        let volume = |nom: &str, jeton: Option<&str>| {
+            let v = d.join(nom);
+            std::fs::create_dir_all(&v).unwrap();
+            std::fs::write(v.join("vanguard.cle"), "x\n").unwrap();
+            if let Some(j) = jeton {
+                std::fs::write(v.join("vanguard.jeton"), format!("{j}\n")).unwrap();
+            }
+            v
+        };
+        let etrangere = volume("VANGUARD", None);
+        let autre_jeton = volume("VANGUARD1", Some("ffffffffffffffffffffffffffffffff"));
+        let sans_temoin = d.join("PHOTOS");
+        std::fs::create_dir_all(&sans_temoin).unwrap();
+        let connus: std::collections::BTreeSet<String> = [jeton.to_string()].into();
+        assert_eq!(cle_parmi(vec![sans_temoin.clone()], &connus), Ok(None));
+        assert_eq!(
+            cle_parmi(
+                vec![etrangere.clone(), autre_jeton.clone(), sans_temoin.clone()],
+                &connus
+            ),
+            Err(vec![etrangere.clone(), autre_jeton.clone()])
+        );
+        let la_mienne = volume("VANGUARD2", Some(&jeton.to_uppercase()));
+        assert_eq!(
+            cle_parmi(vec![etrangere, autre_jeton, la_mienne.clone(), sans_temoin], &connus),
+            Ok(Some(la_mienne))
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

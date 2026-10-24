@@ -156,6 +156,88 @@ fn version() {
     assert_eq!(s.texte.trim(), format!("vanguard {}", env!("CARGO_PKG_VERSION")));
 }
 
+/// Un tube nommé ou un lien vers /dev/zero posé à la place d'un fichier d'état (par n'importe quel programme du
+/// compte) ne fige jamais Vanguard ni ne lui fait charger sans fin : ni au lancement (`--version` lit les réglages et
+/// les clés connues), ni pour « Ce que Vanguard a changé », ni pour les Paramètres, qui lisent la plupart d'entre eux.
+#[cfg(unix)]
+#[test]
+fn fichiers_d_etat_piegees_ne_figent_rien() {
+    const ETAT: &[&str] = &[
+        "parametres.json",
+        "cles-connues.json",
+        "changements.jsonl",
+        "blocage.json",
+        "sceaux.json",
+        "sceaux.verrou",
+        "historique.json",
+        "reglages.json",
+        "appris.json",
+        "normales.json",
+        "temps-reel.json",
+        "administrateurs.json",
+        "bluetooth.json",
+        "ports-bloques.txt",
+        "entretien.json",
+        "connexion.json",
+        "surveillance-alertes.jsonl",
+        "surveillance-passe.txt",
+        "appareils.json",
+        "evenements.tete",
+        "jeux.json",
+        "sauvegarde.json",
+        "pieges.json",
+        "evenements.verrou",
+        "appareils.verrou",
+        "alertes.verrou",
+        "journal-erreurs.txt",
+    ];
+    for piege in ["tube", "zero"] {
+        let maison = maison_jetable();
+        let donnees = maison.join("donnees").join("vanguard");
+        std::fs::create_dir_all(&donnees).unwrap();
+        for nom in ETAT {
+            let chemin = donnees.join(nom);
+            if piege == "tube" {
+                let c = std::ffi::CString::new(chemin.as_os_str().as_encoded_bytes()).unwrap();
+                // SAFETY : mkfifo reçoit un chemin terminé par zéro, qui vit le temps de l'appel.
+                assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "{nom}");
+            } else {
+                std::os::unix::fs::symlink("/dev/zero", &chemin).unwrap();
+            }
+        }
+        let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+        for args in [&["--version"][..], &["changements"], &["parametres"]] {
+            let s = vanguard_dans_env(programme, &maison, "fr", args, "", 60, &[("VANGUARD_HORS_LIGNE", "1")]);
+            assert_eq!(s.code, Some(0), "{piege} {args:?} : {}", s.erreurs);
+        }
+        let _ = std::fs::remove_dir_all(&maison);
+    }
+}
+
+/// parametres.json changé hors de Vanguard (sans son sceau) : le lancement ne fige pas (la langue se lit dans ce
+/// fichier, et la raison n'est traduite qu'à l'affichage), la langue reste, le travail sans Internet qu'il demandait
+/// ne coupe rien, et les Paramètres le disent.
+#[cfg(unix)]
+#[test]
+fn parametres_changes_hors_de_vanguard_dits_sans_rien_couper() {
+    let maison = maison_jetable();
+    let donnees = maison.join("donnees").join("vanguard");
+    std::fs::create_dir_all(&donnees).unwrap();
+    std::fs::write(
+        donnees.join("sceaux.json"),
+        r#"{"depuis":"2026-10-01","fichiers":{},"vus":["parametres.json"]}"#,
+    )
+    .unwrap();
+    std::fs::write(donnees.join("parametres.json"), r#"{"langue":"en","hors_ligne":true}"#).unwrap();
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let s = vanguard_dans_env(programme, &maison, "en", &["--version"], "", 30, &[]);
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    let s = vanguard_dans_env(programme, &maison, "en", &["parametres"], "", 30, &[]);
+    let texte = sans_couleurs(&s.texte);
+    assert!(texte.contains("changed outside Vanguard"), "{texte}");
+    let _ = std::fs::remove_dir_all(&maison);
+}
+
 #[test]
 fn aide_dans_les_deux_langues() {
     let fr = vanguard("fr", &["--help"], "", 30);
@@ -2393,4 +2475,43 @@ fn journaux_windows_sur_les_echantillons() {
         serde_json::json!(11),
         "échantillons abîmés exprès : jamais tout vérifié"
     );
+}
+
+/// Campagne 3, la haute : au branchement, `manifeste --ecrire` réécrivait la référence d'après la clé telle qu'elle
+/// revenait, et ce qui avait été planté en voyage devenait « la clé n'a pas changé ». Le déploiement compare d'abord
+/// (`deploiement comparer-cle`) ; `--ecrire` refuse un écart hors de ce que le déploiement pose (code 2) ; seul
+/// `--forcer` (l'accord de l'auteur) l'accepte.
+#[test]
+fn manifeste_de_la_cle_jamais_reecrit_sur_un_ecart() {
+    let maison = maison_jetable();
+    let cle = maison.join("cle");
+    std::fs::create_dir_all(cle.join("Linux")).unwrap();
+    std::fs::write(cle.join("vanguard.cle"), "temoin\n").unwrap();
+    std::fs::write(cle.join("vanguard.jeton"), "0123456789abcdef0123456789abcdef\n").unwrap();
+    std::fs::write(cle.join("Linux/vanguard"), "programme").unwrap();
+    let cle_txt = cle.to_string_lossy().into_owned();
+    let lancer = |args: &[&str]| vanguard_dans(Path::new(env!("CARGO_BIN_EXE_vanguard")), &maison, "fr", args, "", 120);
+    let s = lancer(&["manifeste", "--ecrire", &cle_txt]);
+    assert_eq!(s.code, Some(0), "{}{}", s.texte, s.erreurs);
+    assert_eq!(lancer(&["deploiement", "comparer-cle", &cle_txt]).code, Some(0));
+    // Le voyage : un raccourci planté à la racine.
+    std::fs::write(cle.join("Photos.lnk"), "piege").unwrap();
+    let s = lancer(&["deploiement", "comparer-cle", &cle_txt]);
+    assert_eq!(s.code, Some(2), "{}{}", s.texte, s.erreurs);
+    assert!(s.erreurs.contains("Photos.lnk"), "{}", s.erreurs);
+    let s = lancer(&["manifeste", "--ecrire", &cle_txt]);
+    assert_eq!(s.code, Some(2), "réécrite malgré l'écart : {}{}", s.texte, s.erreurs);
+    assert_eq!(lancer(&["deploiement", "comparer-cle", &cle_txt]).code, Some(2));
+    // Le programme réécrit par le déploiement entre seul, une fois le plantage retiré.
+    std::fs::remove_file(cle.join("Photos.lnk")).unwrap();
+    std::fs::write(cle.join("Linux/vanguard"), "programme 2").unwrap();
+    assert_eq!(lancer(&["manifeste", "--ecrire", &cle_txt]).code, Some(0));
+    // L'accord explicite.
+    std::fs::write(cle.join("Photos.lnk"), "voulu").unwrap();
+    assert_eq!(lancer(&["manifeste", "--ecrire", &cle_txt, "--forcer"]).code, Some(0));
+    assert_eq!(lancer(&["deploiement", "comparer-cle", &cle_txt]).code, Some(0));
+    // Aucune clé montée pour ce compte d'essai : rien, sans erreur.
+    let s = lancer(&["deploiement", "cle"]);
+    assert_eq!((s.code, s.texte.trim()), (Some(0), ""), "{}", s.erreurs);
+    let _ = std::fs::remove_dir_all(&maison);
 }

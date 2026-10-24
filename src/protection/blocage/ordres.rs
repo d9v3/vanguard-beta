@@ -461,7 +461,9 @@ pub(crate) fn note_non_coupee() -> &'static str {
 }
 
 /// La précision d'un port fermé par ufw : la règle est-elle relue avant toute autorisation (`ufw status`, lu par
-/// celui qui agit, en root) ? `None` : l'état d'ufw ne s'est pas lu.
+/// celui qui agit, en root) ? `None` : l'état d'ufw ne s'est pas lu. La règle posée reste une réussite de l'ordre (elle
+/// est là, et notée pour s'annuler) ; sans cette relecture, la précision le dit « non vérifié », et le geste
+/// (`gestes::faire`) ne se dit pas « bloqué ».
 pub(crate) fn note_ufw(en_premier: Option<bool>) -> &'static str {
     match en_premier {
         Some(true) => tr!(
@@ -469,10 +471,13 @@ pub(crate) fn note_ufw(en_premier: Option<bool>) -> &'static str {
             "denied by ufw before any allow rule"
         ),
         Some(false) => tr!(
-            "pas vu avant les autorisations d'ufw",
-            "not seen before ufw's allow rules"
+            "non vérifié : pas vu avant les autorisations d'ufw",
+            "not verified: not seen before ufw's allow rules"
         ),
-        None => tr!("état d'ufw illisible", "ufw state unreadable"),
+        None => tr!(
+            "non vérifié : état d'ufw illisible",
+            "not verified: ufw state unreadable"
+        ),
     }
 }
 

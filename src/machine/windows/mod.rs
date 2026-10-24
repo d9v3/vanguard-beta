@@ -384,7 +384,7 @@ fn dire_code(code: Option<i32>) {
 /// dans son fichier de résultats (demande refusée, point de restauration refusé, fenêtre fermée en route : un
 /// correctif sans sa ligne « ok » n'a pas été fait, ou pas en entier).
 fn resultats_du_script(s: &Script, nombre: usize, reussi: bool) -> Vec<bool> {
-    let lus = std::fs::read_to_string(&s.resultats).unwrap_or_default();
+    let lus = crate::socle::lire_texte_ordinaire(&s.resultats, 1 << 20).unwrap_or_default();
     let _ = std::fs::remove_file(&s.resultats);
     if reussi {
         return vec![true; nombre];

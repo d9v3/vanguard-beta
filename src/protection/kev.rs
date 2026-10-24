@@ -54,10 +54,13 @@ pub(crate) fn catalogue_selon(coupure: Option<&str>) -> Result<Vec<Exploitee>, S
             })?,
         Some(pourquoi) => {
             let fichier = crate::socle::dossier_local().join(LIEU.0).join(LIEU.1);
-            let age = std::fs::metadata(&fichier)
+            let age = std::fs::symlink_metadata(&fichier)
                 .and_then(|m| m.modified())
                 .map(|t| t.elapsed().unwrap_or_default());
-            match (std::fs::read(&fichier), age) {
+            match (
+                crate::socle::lire_ordinaire(&fichier, crate::socle::cache::LISTE_MAX),
+                age,
+            ) {
                 (Ok(octets), Ok(age)) => (octets, age),
                 _ => return Err(pourquoi.to_string()),
             }

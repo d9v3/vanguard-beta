@@ -1375,7 +1375,8 @@ fn encore_geles(pids: Vec<u32>) -> Vec<u32> {
 }
 
 fn lire_etat() -> Option<Etat> {
-    let texte = std::fs::read_to_string(fichier_etat()).ok()?;
+    // Un simple fichier, borné : un tube à sa place figeait le démarrage du veilleur.
+    let texte = crate::socle::lire_texte_ordinaire(&fichier_etat(), 1 << 20).ok()?;
     serde_json::from_str(&texte).ok()
 }
 

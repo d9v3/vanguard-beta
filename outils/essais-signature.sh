@@ -13,6 +13,16 @@
 #      trois programmes, que le lecteur de la 0.85.0 (refait ici en awk, comme github.rs le recopie) trouve tous
 #      avant elle ; jamais dans l'historique ; refusée sans --secours. La phrase de la clé de secours d'essai
 #      (chiffrée, comme la vraie) passe par un pseudo-terminal (script) ; sans script, cet essai est sauté et dit.
+#   7. Le point sûr (le dernier historique publié d'ici, campagne d'attaque n° 3) : la clé de secours ne contresigne
+#      pas un bloc que la principale, peut-être volée, a ajouté après lui ; sans point sûr, elle refuse un historique
+#      signé par la principale ; la principale refuse un historique tronqué ou à une version inconnue d'ici ; avec un
+#      point sûr, ni repli sur derniere.txt ni --premier. Jamais le vrai point sûr : VANGUARD_HISTORIQUE_PUBLIE.
+#   8. Les programmes publiés sont les octets que outils/compiler-version.sh a relevés pour leur commit
+#      (publier-version.sh, verifier_compilation, dans un dépôt git jetable) : remplacés, compilés d'un arbre modifié,
+#      d'un commit au code changé depuis, ou à la date gravée d'un autre commit, ils sont refusés ; un commit qui ne
+#      touche que .github/hors-code.txt (captures, documentation) les laisse valoir.
+#   9. .github/workflows/claude.yml ne lance jamais Claude (cargo build et test, droit d'écrire, jeton de
+#      l'abonnement) sur une demande de fusion venue d'un fork : son garde, rejoué ici avec un faux gh.
 #   6. Le programme Mac que la clé signe vient d'une exécution de master : publier-version.sh (sa fonction
 #      avec_programme, face à un faux gh) écarte celle d'une autre branche, même plus récente et du même commit ; et
 #      macos.yml ne reprend aucun cache sur master. Sans jq, cet essai est sauté et dit.
@@ -28,6 +38,11 @@ mkdir -p "$HOME/.cache/vanguard-dev"
 T=$(mktemp -d "$HOME/.cache/vanguard-dev/essais-signature.XXXX")
 trap 'rm -rf "$T"' EXIT
 ECHECS=0
+# Le point sûr d'essai, absent sauf quand un essai le pose : jamais celui de cet ordinateur.
+export VANGUARD_HISTORIQUE_PUBLIE=$T/point-sur/historique-publie.txt
+mkdir -p "$T/point-sur"
+poser_point() { cp "$1" "$VANGUARD_HISTORIQUE_PUBLIE" && cp "$1.sig" "$VANGUARD_HISTORIQUE_PUBLIE.sig"; }
+retirer_point() { rm -f "$VANGUARD_HISTORIQUE_PUBLIE" "$VANGUARD_HISTORIQUE_PUBLIE.sig"; }
 ok() { echo "  ✔ $*"; }
 ko() { echo "  ✖ $*"; ECHECS=$((ECHECS + 1)); }
 
@@ -162,8 +177,11 @@ lu_par_la_0_85() { # $1 : manifeste, $2 : système ; affiche « empreinte taille
 if command -v script >/dev/null; then
   openssl pkcs8 -topk8 -v2 aes-256-cbc -in "$T/secours.pem" -out "$T/secours-chiffree.pem" -passout pass:essai \
     2>/dev/null
+  # Le point sûr : l'historique que la principale avait publié (v88), que la clé de secours reprend.
+  poser_point "$T/v88/historique.txt"
   printf 'essai\n' | VANGUARD_CLE_SECOURS=$T/secours-chiffree.pem script -qec \
     "bash '$T/nouveau88/outils/signer-versions.sh' --secours --revoquer '$T/v91'" /dev/null >"$T/v91.log" 2>&1
+  retirer_point
   if [[ -f $T/v91/derniere.txt.sig ]] && [[ $(tail -n 1 "$T/v91/derniere.txt") == "revoque principale" ]]; then
     ok "--secours --revoquer : « revoque principale » en dernière ligne"
     pareil=1
@@ -180,9 +198,71 @@ if command -v script >/dev/null; then
   else
     ko "--secours --revoquer : $(tail -n 2 "$T/v91.log")"
   fi
+  # 7. Le voleur de la principale ajoute au dépôt un bloc forgé (un programme Linux inventé), signé par elle.
+  secours_signe() { # dossier ; la sortie dans dossier.log
+    printf 'essai\n' | VANGUARD_CLE_SECOURS=$T/secours-chiffree.pem script -qec \
+      "bash '$T/nouveau88/outils/signer-versions.sh' --secours --revoquer '$1'" /dev/null >"$1.log" 2>&1
+  }
+  forger() { # dossier : avant/historique.txt = le bloc forgé puis l'historique v88, signé par la principale
+    mkdir -p "$1/avant"
+    { printf 'version 0.87.5+1792999999\nlinux-x86_64 %s 123\nwindows-x86_64 %s 1\nmacos %s 1\n' \
+      "$(printf 'f%.0s' {1..64})" "$(printf 'e%.0s' {1..64})" "$(printf 'd%.0s' {1..64})"
+      cat "$T/v88/historique.txt"; } >"$1/avant/historique.txt"
+    { printf '%s\n' 'vanguard-historique 1'; cat "$1/avant/historique.txt"; } >"$T/message"
+    openssl pkeyutl -sign -inkey "$T/principale.pem" -rawin -in "$T/message" -out "$1/avant/historique.txt.sig"
+  }
+  programmes "$T/v92" 0.88.0+1793200000
+  forger "$T/v92"
+  poser_point "$T/v88/historique.txt"
+  secours_signe "$T/v92"
+  if [[ -f $T/v92/historique.txt.sig ]] && ! grep -q 'version 0.87.5' "$T/v92/historique.txt" &&
+    grep -q "Écartées.*0.87.5" "$T/v92.log" && [[ $(grep -c '^version ' "$T/v92/historique.txt") == 3 ]]; then
+    ok "secours : le bloc que la principale a signé après le point sûr est écarté, et nommé"
+  else
+    ko "secours : bloc forgé repris ou historique faux ($(tail -n 2 "$T/v92.log"))"
+  fi
+  retirer_point
+  programmes "$T/v93" 0.88.0+1793300000
+  forger "$T/v93"
+  secours_signe "$T/v93"
+  if [[ ! -e $T/v93/historique.txt.sig ]] && grep -q "pas de point sûr" "$T/v93.log"; then
+    ok "secours sans point sûr : un historique signé par la principale est refusé, et dit"
+  else
+    ko "secours sans point sûr : $(tail -n 2 "$T/v93.log")"
+  fi
+  # Un historique d'avant signé par la clé de secours elle-même (v92) : repris.
+  programmes "$T/v94" 0.88.0+1793400000
+  mkdir -p "$T/v94/avant" && cp "$T/v92/historique.txt" "$T/v92/historique.txt.sig" "$T/v94/avant/"
+  secours_signe "$T/v94"
+  [[ -f $T/v94/historique.txt.sig && $(grep -c '^version ' "$T/v94/historique.txt") == 4 ]] &&
+    ok "secours : un historique d'avant signé par le secours est repris" || ko "secours repris : $(tail -n 2 "$T/v94.log")"
 else
   echo "  (sauté : script absent, pas de pseudo-terminal pour la phrase de la clé de secours d'essai)"
 fi
+# 7, la principale avec un point sûr : historique tronqué, version inconnue d'ici, repli, --premier.
+poser_point "$T/v88/historique.txt"
+programmes "$T/v95" 0.88.0+1793500000
+mkdir -p "$T/v95/avant" && cp "$T/v88/historique.txt" "$T/v88/historique.txt.sig" "$T/v95/avant/"
+signer "$T/nouveau88" "$T/v95" && ok "principale : l'historique d'avant est le point sûr, signé" ||
+  ko "principale avec point sûr : $(tail -n 2 "$T/v95.log")"
+refus() { # dossier, texte attendu, libellé
+  if signer "$T/nouveau88" "$1" "${@:4}"; then ko "$3 : signé"
+  elif grep -q -- "$2" "$1.log" && [[ ! -e $1/historique.txt.sig ]]; then ok "$3"
+  else ko "$3 : $(tail -n 1 "$1.log")"; fi
+}
+programmes "$T/v96" 0.88.0+1793600000
+mkdir -p "$T/v96/avant" && cp "$T/v86/historique.txt" "$T/v86/historique.txt.sig" "$T/v96/avant/"
+refus "$T/v96" "n'a plus des versions" "principale : un historique d'avant tronqué (moins que le point sûr) est refusé"
+programmes "$T/v97" 0.88.0+1793700000
+mkdir -p "$T/v97/avant" && cp "$T/v87/historique.txt" "$T/v87/historique.txt.sig" "$T/v97/avant/"
+poser_point "$T/v86/historique.txt"
+refus "$T/v97" "pas publiées" "principale : une version que cet ordinateur n'a pas publiée est refusée"
+programmes "$T/v98" 0.88.0+1793800000
+mkdir -p "$T/v98/avant" && cp "$T/v86/derniere.txt" "$T/v86/derniere.txt.sig" "$T/v98/avant/"
+refus "$T/v98" "retiré du" "avec un point sûr, l'historique publié disparu : pas de repli sur derniere.txt"
+programmes "$T/v99" 0.88.0+1793900000
+refus "$T/v99" "retiré du" "avec un point sûr : --premier refusé" --premier
+retirer_point
 
 # Le Mac signé : seulement une exécution de master. Un faux gh répond comme GitHub (jq applique les -q), avec deux
 # passages réussis du même commit : le plus récent sur une autre branche, l'autre sur master par la nuit.
@@ -219,6 +299,11 @@ GH
     ko "publier-version.sh a pris la compilation Mac « ${choisi:-aucune} » (attendu : 1, celle de master)"
   grep -q 'BRANCHE_RUN != "master schedule"' "$DEPOT/outils/publier-version.sh" &&
     ok "publier-version.sh relit la branche de l'exécution qu'il signe" || ko "branche de l'exécution signée non relue"
+  # La version macOS mise sur la clé : de master aussi (campagne d'attaque n° 3), commit et empreinte relus.
+  awk '/gh run list --workflow macos.yml --branch master/ { b = 1 } /select\(.headBranch == "master"/ { s = 1 }
+    /EMPREINTE-VANGUARD-MACOS/ { e = 1 } END { exit !(b && s && e) }' "$DEPOT/outils/deployer.sh" &&
+    ok "deployer.sh ne met sur la clé que la compilation macOS de master, commit et empreinte relus" ||
+    ko "deployer.sh prend la compilation macOS de n'importe quelle branche"
 else
   echo "  (sauté : jq absent, pas de faux gh pour essayer publier-version.sh)"
 fi
@@ -227,6 +312,85 @@ fi
 awk '/uses: Swatinem\/rust-cache/ { getline; exit !($0 ~ /if: github.ref_name != .master.$/) }' \
   "$DEPOT/.github/workflows/macos.yml" && ok "macos.yml : aucun cache repris sur master (branche ou étiquette)" ||
   ko "macos.yml reprend un cache sur master ou une étiquette « master » (le programme signé en sortirait)"
+
+# 8. Les octets publiés, ceux de la compilation de leur commit.
+G=$T/depot-compilation
+mkdir -p "$G/src" "$G/docs" "$G/.github" "$G/target/x86_64-unknown-linux-musl/release" "$G/target/x86_64-pc-windows-gnu/release"
+grep -v '^#' "$DEPOT/.github/hors-code.txt" >"$G/.github/hors-code.txt"
+mkdir -p "$G/outils" && cp "$DEPOT/outils/date-du-code.sh" "$G/outils/"
+echo 'fn main() {}' >"$G/src/main.rs"
+echo doc >"$G/docs/index.md"
+git -C "$G" init -q && git -C "$G" add -A && git -C "$G" -c user.name=essai -c user.email=essai@exemple.invalid \
+  commit -qm compile
+C1=$(git -C "$G" rev-parse HEAD)
+programmes_g() { # date gravée
+  printf 'ELF VANGUARD-VERSION:0.88.0+%s;' "$1" >"$G/target/x86_64-unknown-linux-musl/release/vanguard"
+  printf 'MZ windows' >"$G/target/x86_64-pc-windows-gnu/release/vanguard.exe"
+  printf 'commit %s\npropre %s\nlinux-x86_64 %s\nwindows-x86_64 %s\n' "$C1" "${2:-oui}" \
+    "$(sha256sum "$G/target/x86_64-unknown-linux-musl/release/vanguard" | cut -d' ' -f1)" \
+    "$(sha256sum "$G/target/x86_64-pc-windows-gnu/release/vanguard.exe" | cut -d' ' -f1)" >"$G/target/.compilation"
+}
+{ grep '^repere() {' "$DEPOT/outils/publier-version.sh"
+  awk '/^verifier_compilation\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh"; } >"$T/verifier_compilation.sh"
+compilation() { # commit visé (HEAD par défaut) : la sortie de verifier_compilation, son code
+  (cd "$G" && COMMIT=${1:-$(git rev-parse HEAD)} LINUX=target/x86_64-unknown-linux-musl/release/vanguard \
+    WINDOWS=target/x86_64-pc-windows-gnu/release/vanguard.exe REPERE=target/.compilation \
+    HORS_CODE=$(cat .github/hors-code.txt) bash -c "source '$T/verifier_compilation.sh'; verifier_compilation")
+}
+DATE1=$(git -C "$G" log -1 --format=%ct)
+programmes_g "$DATE1"
+[[ $(compilation) == "$C1" ]] && ok "publier : les octets de la compilation de ce commit valent" ||
+  ko "publier, compilation juste refusée : $(compilation)"
+echo autre >>"$G/docs/index.md"
+GIT_COMMITTER_DATE="@$((DATE1 + 100)) +0000" git -C "$G" -c user.name=essai -c user.email=essai@exemple.invalid \
+  commit -qam captures
+[[ $(compilation) == "$C1" ]] && ok "publier : un commit hors du programme (documentation) ne les change pas" ||
+  ko "publier après un commit de documentation : $(compilation)"
+[[ $(cd "$G" && bash outils/date-du-code.sh) == "$DATE1" ]] &&
+  ok "date du code : celle du dernier commit qui touche le programme (le Mac et Linux gravent la même)" ||
+  ko "date du code : $(cd "$G" && bash outils/date-du-code.sh) au lieu de $DATE1"
+programmes_g $((DATE1 + 100))
+compilation >/dev/null && ko "publier : la date d'un commit de documentation gravée est acceptée" ||
+  ok "publier : la date gravée doit être celle du code, pas d'un commit de documentation"
+programmes_g "$DATE1"
+printf 'MZ autre' >"$G/target/x86_64-pc-windows-gnu/release/vanguard.exe"
+compilation >/dev/null && ko "publier : un programme remplacé depuis sa compilation est accepté" ||
+  ok "publier : un programme remplacé depuis sa compilation (autre worktree, cargo build) est refusé"
+programmes_g "$DATE1" non
+compilation >/dev/null && ko "publier : une compilation d'un arbre modifié est acceptée" ||
+  ok "publier : une compilation d'un arbre aux changements non commités est refusée"
+programmes_g 1700000000
+compilation >/dev/null && ko "publier : une date gravée d'un autre commit est acceptée" ||
+  ok "publier : une date gravée qui n'est pas celle du commit compilé est refusée"
+programmes_g "$DATE1"
+echo 'fn main() { piege() }' >"$G/src/main.rs"
+git -C "$G" -c user.name=essai -c user.email=essai@exemple.invalid commit -qam code
+compilation >/dev/null && ko "publier : un code changé depuis la compilation est accepté" ||
+  ok "publier : le code a changé depuis la compilation : refusé"
+
+# 9. Le garde de claude.yml : le script de son étape, rejoué avec un faux gh qui dit d'où vient la demande.
+Y=$DEPOT/.github/workflows/claude.yml
+awk '/^  garde:/ { g = 1 } g && /^  claude:/ { exit } g && /^        run: \|/ { r = 1; next } r { sub(/^          /, ""); print }' \
+  "$Y" >"$T/garde.sh"
+mkdir -p "$T/faux-gh-garde"
+printf '#!/bin/sh\necho "$ESSAI_TETE"\n' >"$T/faux-gh-garde/gh"
+chmod +x "$T/faux-gh-garde/gh"
+garde() { # numéro de la demande, dépôt d'où elle vient : la sortie « permis=… » du garde
+  : >"$T/garde.sortie"
+  PATH="$T/faux-gh-garde:$PATH" GITHUB_OUTPUT=$T/garde.sortie GITHUB_REPOSITORY=d9v3/vanguard-beta DEMANDE=$1 \
+    ESSAI_TETE=$2 sh "$T/garde.sh" >/dev/null 2>&1
+  cat "$T/garde.sortie"
+}
+if [[ -s $T/garde.sh ]] && [[ $(garde 12 pirate/vanguard-beta) == permis=non ]] &&
+  [[ $(garde 12 d9v3/vanguard-beta) == permis=oui ]] && [[ $(garde "" "") == permis=oui ]]; then
+  ok "claude.yml : une demande venue d'un fork est refusée ; du dépôt, ou un ticket, permis"
+else
+  ko "claude.yml : garde absent ou qui laisse passer un fork ($(garde 12 pirate/vanguard-beta))"
+fi
+awk '/^  claude:/ { c = 1 } c && /needs: garde/ { n = 1 } c && /if: needs.garde.outputs.permis == .oui.$/ { i = 1 }
+  c && /persist-credentials: false/ { p = 1 } END { exit !(n && i && p) }' "$Y" &&
+  ok "claude.yml : Claude attend le garde, et le jeton de l'extraction n'est pas gardé" ||
+  ko "claude.yml : Claude ne dépend pas du garde, ou garde le jeton de l'extraction"
 
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }
 echo "Signature des versions : tout est juste."

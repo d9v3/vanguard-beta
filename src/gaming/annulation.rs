@@ -33,7 +33,8 @@ pub(crate) struct Avant {
 /// Les notes d'avant de ce dossier ; `None` sans fichier. Illisible : mis de côté, intact, et dit (jamais écrasé).
 pub(crate) fn lire(dossier: &Path) -> Option<Notes> {
     let chemin = dossier.join(FICHIER);
-    let texte = std::fs::read_to_string(&chemin).ok()?;
+    // Un simple fichier, borné : un tube ou un lien vers /dev/zero à sa place ne fige ni ne remplit rien.
+    let texte = crate::socle::lire_texte_ordinaire(&chemin, 16 << 20).ok()?;
     match serde_json::from_str(texte.trim_start_matches('\u{feff}')) {
         Ok(n) => Some(n),
         Err(e) => {
@@ -41,7 +42,7 @@ pub(crate) fn lire(dossier: &Path) -> Option<Notes> {
                 "illisible-{}.json",
                 chrono::Local::now().format("%Y%m%d-%H%M%S")
             ));
-            if std::fs::copy(&chemin, &copie).is_ok() {
+            if crate::socle::ecrire_atomique(&copie, &texte).is_ok() {
                 let _ = std::fs::remove_file(&chemin);
             }
             tre!(

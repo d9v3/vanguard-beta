@@ -8,7 +8,9 @@
 //! protection en temps réel (`protection::temps_reel` : coupée d'un coup pour un temps ou jusqu'à reprise, après
 //! accord, sans toucher aux réglages de chacun). Chaque changement est montré avec sa valeur d'avant, et s'annule en
 //! la remettant. Le téléchargement des versions des logiciels (`protection::perimes`) est gardé dans parametres.json
-//! aussi, mais lu à chaque usage : ce n'est pas un réglage du lancement.
+//! aussi, mais lu à chaque usage : ce n'est pas un réglage du lancement. parametres.json est scellé (`sceau`) : changé
+//! hors de Vanguard, ce qu'il coupait (travail sans Internet, autodiagnostic, versions des logiciels) reste en marche,
+//! et c'est dit.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -43,33 +45,137 @@ struct Fichier {
 /// Au-delà, ce n'est pas le fichier de Vanguard : il n'est pas lu (le processus élevé de Windows le lit aussi).
 const TAILLE_MAX: u64 = 64 << 10;
 
+/// Le nom du fichier, scellé (`sceau`) : trois de ses réglages coupent une défense.
+pub(crate) const PARAMETRES: &str = "parametres.json";
+
 fn fichier() -> PathBuf {
-    crate::socle::dossier_local().join("parametres.json")
+    crate::socle::dossier_local().join(PARAMETRES)
 }
 
 /// Le fichier ; absent : les défauts ; `Err` (la raison) s'il est là mais ne se lit pas.
-fn charger_de(chemin: &Path) -> Result<Fichier, String> {
-    match std::fs::metadata(chemin) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Fichier::default()),
-        Err(e) => return Err(e.to_string()),
-        Ok(m) if m.len() > TAILLE_MAX => {
-            return Err(trf!("plus de {} Kio", "over {} KiB", TAILLE_MAX >> 10));
-        }
-        Ok(_) => {}
+fn charger_de(chemin: &Path) -> Result<Fichier, crate::modele::Echec> {
+    charger_juge(chemin).map(|(f, _)| f)
+}
+
+/// Le fichier relu sous son sceau, et s'il n'est pas tel que Vanguard l'a écrit : la raison, quand des réglages qui
+/// coupent une défense (travail sans Internet, autodiagnostic de la semaine, versions des logiciels) y étaient et
+/// ont été ignorés. Un programme du compte qui écrivait `{"hors_ligne":true}` coupait les mises à jour, les listes
+/// de menaces et l'épreuve du DNS, sous un simple « pas d'Internet ». Changé hors de Vanguard, ou accepté tel quel
+/// après des sceaux refaits (rien ne prouve qui l'a écrit ; repris d'une version d'avant à la mise à jour, il vaut,
+/// lui) : ces réglages valent leur défaut, le plus protecteur,
+/// jusqu'à ce que la personne les règle de nouveau ici ; la langue et les emojis, eux, restent. Lu sans rien écrire
+/// (`sceau::lire_sans_ecrire`) : il l'est au lancement, avant la reprise des données d'une version d'avant.
+///
+/// La langue se lit dans ce fichier : pendant sa lecture au lancement, `tr!` répond en français sans la demander
+/// (`en_lecture`) ; les raisons gardées se traduisent à l'affichage (`Douteux::texte`).
+fn charger_juge(chemin: &Path) -> Result<(Fichier, Option<Douteux>), crate::modele::Echec> {
+    use crate::modele::{Echec, Raison};
+    use crate::sceau::Lecture;
+    const OU: &str = "parametres/lire";
+    let illisible = |e: String| Echec::new(OU, Raison::Illisible(e));
+    let dossier = chemin.parent().unwrap_or_else(|| Path::new("."));
+    let nom = chemin.file_name().and_then(|n| n.to_str()).unwrap_or(PARAMETRES);
+    let (octets, douteux) = match crate::sceau::lire_sans_ecrire(dossier, nom) {
+        Lecture::Absent | Lecture::Inconnu | Lecture::Falsifie(None) => return Ok((Fichier::default(), None)),
+        Lecture::Illisible(e) => return Err(illisible(e)),
+        Lecture::Intact(o) => (o, None),
+        // Accepté tel quel lors de la mise à jour d'une version d'avant le sceau : les réglages de la personne,
+        // gardés. Accepté parce que les sceaux ont été refaits : rien ne prouve qui l'a écrit.
+        Lecture::Adopte(o) if !crate::sceau::refaits_dans(dossier) => (o, None),
+        Lecture::Adopte(o) => (o, Some(Douteux::Adopte)),
+        Lecture::Falsifie(Some(o)) => (o, Some(Douteux::HorsVanguard)),
+    };
+    if octets.len() as u64 > TAILLE_MAX {
+        return Err(illisible(trf!("plus de {} Kio", "over {} KiB", TAILLE_MAX >> 10)));
     }
-    let texte = std::fs::read_to_string(chemin).map_err(|e| e.to_string())?;
-    serde_json::from_str(texte.trim_start_matches('\u{feff}')).map_err(|e| e.to_string())
+    let texte = String::from_utf8(octets).map_err(|e| illisible(e.to_string()))?;
+    let mut f: Fichier =
+        serde_json::from_str(texte.trim_start_matches('\u{feff}')).map_err(|e| illisible(e.to_string()))?;
+    let Some(raison) = douteux else {
+        return Ok((f, None));
+    };
+    let coupait = f.hors_ligne || f.sans_autotest || f.sans_versions;
+    f.hors_ligne = false;
+    f.sans_autotest = false;
+    f.sans_versions = false;
+    Ok((f, coupait.then_some(raison)))
+}
+
+/// parametres.json d'une version d'avant, accepté tel quel à la mise à jour : rescellé (`sceau::resceller_si`).
+pub(crate) fn resceller_d_avant() {
+    crate::sceau::resceller_si(PARAMETRES, |o| serde_json::from_slice::<Fichier>(o).is_ok());
+}
+
+/// Pourquoi des réglages qui coupaient une défense ont été ignorés.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Douteux {
+    /// Accepté tel quel au premier usage des sceaux.
+    Adopte,
+    /// Changé hors de Vanguard.
+    HorsVanguard,
+}
+
+impl Douteux {
+    fn texte(self) -> &'static str {
+        match self {
+            Douteux::Adopte => tr!(
+                "accepté tel quel après des sceaux refaits",
+                "accepted as it was after seals were remade"
+            ),
+            Douteux::HorsVanguard => tr!("changé hors de Vanguard", "changed outside Vanguard"),
+        }
+    }
 }
 
 fn enregistrer_dans(f: &Fichier, chemin: &Path) -> std::io::Result<()> {
     let texte = serde_json::to_string_pretty(f).map_err(std::io::Error::other)?;
-    crate::socle::ecrire_atomique(chemin, texte)
+    let dossier = chemin.parent().unwrap_or_else(|| Path::new("."));
+    let nom = chemin.file_name().and_then(|n| n.to_str()).unwrap_or(PARAMETRES);
+    crate::sceau::ecrire_dans(dossier, nom, texte.as_bytes())
 }
 
 /// Les réglages du lancement, lus une fois : un fichier abîmé vaut les défauts (le menu le dit).
 fn au_demarrage() -> &'static Fichier {
     static LUS: OnceLock<Fichier> = OnceLock::new();
-    LUS.get_or_init(|| charger_de(&fichier()).unwrap_or_default())
+    LUS.get_or_init(|| {
+        EN_LECTURE.with(|l| l.set(true));
+        let lus = charger_de(&fichier()).unwrap_or_default();
+        EN_LECTURE.with(|l| l.set(false));
+        lus
+    })
+}
+
+// Les réglages du lancement se lisent sur ce fil : la langue (`langue::anglais`), qui les attend, ne les redemande
+// pas pendant ce temps (elle attendrait sa propre réponse pour toujours, au premier `tr!` d'une lecture refusée).
+thread_local! {
+    static EN_LECTURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Les réglages du lancement sont-ils en cours de lecture sur ce fil ?
+pub(crate) fn en_lecture() -> bool {
+    EN_LECTURE.with(std::cell::Cell::get)
+}
+
+/// Pourquoi Vanguard ne va pas sur Internet, à dire là où il ne vérifie rien en ligne : un réglage (variable, fichier,
+/// ou la commande elle-même), jamais un simple « pas d'Internet », qui cacherait qu'il a été demandé.
+pub(crate) fn raison_hors_ligne() -> &'static str {
+    if HORS_LIGNE_FORCE.load(std::sync::atomic::Ordering::SeqCst) {
+        return tr!(
+            "travail sans Internet demandé pour cette commande",
+            "offline work requested for this command"
+        );
+    }
+    let variable = std::env::var_os("VANGUARD_HORS_LIGNE").map(|v| v.to_string_lossy().into_owned());
+    if hors_ligne_voulu(variable.as_deref(), false) {
+        return tr!(
+            "travail sans Internet demandé par VANGUARD_HORS_LIGNE",
+            "offline work requested by VANGUARD_HORS_LIGNE"
+        );
+    }
+    tr!(
+        "travail sans Internet réglé dans les Paramètres (« vanguard parametres sans-internet non » pour le couper)",
+        "offline work set in Settings (“vanguard settings offline no” to turn it off)"
+    )
 }
 
 /// À appeler au début du programme, avant tout affichage : les réglages du lancement sont lus là.
@@ -636,7 +742,12 @@ fn changer(r: Reglage, saisie: &str) -> bool {
                     "illisible-{}.json",
                     chrono::Local::now().format("%Y%m%d-%H%M%S")
                 ));
-                let _ = std::fs::copy(&chemin, &copie);
+                // Seulement un simple fichier, borné : un tube ou un lien vers /dev/zero à sa place ne se recopie pas.
+                if let Ok(o) = crate::socle::lire_ordinaire(&chemin, TAILLE_MAX)
+                    && chemin.parent().is_some_and(crate::socle::ecriture_sure)
+                {
+                    let _ = crate::socle::ecrire_atomique(&copie, o);
+                }
             }
             if let Err(e) = enregistrer_dans(&f, &chemin) {
                 trp!("  ✖ Non enregistré ({e}).", "  ✖ Not saved ({e}).");
@@ -723,12 +834,23 @@ fn changer(r: Reglage, saisie: &str) -> bool {
 /// L'état de tous les réglages.
 fn afficher() {
     titre(tr!("Paramètres", "Settings"));
-    if let Err(e) = charger_de(&fichier()) {
-        trp!(
+    match charger_juge(&fichier()) {
+        Err(e) => trp!(
             "  {}⚠{RESET} parametres.json illisible ({e}) : les valeurs par défaut servent.",
             "  {}⚠{RESET} parametres.json unreadable ({e}): the defaults are used.",
             couleur(crate::risk::Niveau::Moyen)
-        );
+        ),
+        Ok((_, Some(douteux))) => afficher_aligne(
+            &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Eleve)),
+            &trf!(
+                "parametres.json {} : le travail sans Internet, l'autodiagnostic et les versions des logiciels qu'il coupait restent en marche. Réglez-les de nouveau ici s'ils sont bien de vous.",
+                "parametres.json {}: offline work, the self-test and software versions it turned off stay on. Set them again here if they really are yours.",
+                douteux.texte()
+            ),
+            4,
+            "",
+        ),
+        Ok(_) => {}
     }
     for r in Reglage::TOUS {
         afficher_aligne(&format!("  {GRAS}{:<16}{RESET} ", r.mot()), &valeur(r), 19, "");
@@ -971,6 +1093,69 @@ mod tests {
         assert!(charger_de(&f).is_err());
         std::fs::write(&f, " ".repeat(usize::try_from(TAILLE_MAX).unwrap() + 1)).unwrap();
         assert!(charger_de(&f).is_err());
+        let _ = std::fs::remove_dir_all(f.parent().unwrap());
+    }
+
+    /// Un programme du compte écrit `{"hors_ligne":true}` (ou coupe l'autodiagnostic) dans parametres.json : le
+    /// fichier n'est plus scellé, ces réglages valent leur défaut (en marche), la langue reste, et la raison est
+    /// rendue pour être dite. Réglés de nouveau par Vanguard, ils valent.
+    #[test]
+    fn reglages_qui_coupent_une_defense_changes_hors_de_vanguard_ignores() {
+        let f = jetable("forge");
+        // Posé sans sceau à côté de sceaux existants : falsifié.
+        crate::sceau::ecrire_dans(f.parent().unwrap(), crate::sceau::APPRIS, b"{}").unwrap();
+        std::fs::write(
+            &f,
+            r#"{"langue":"en","hors_ligne":true,"sans_autotest":true,"sans_versions":true}"#,
+        )
+        .unwrap();
+        let (lu, raison) = charger_juge(&f).unwrap();
+        assert_eq!(raison, Some(Douteux::HorsVanguard));
+        assert!(!lu.hors_ligne && !lu.sans_autotest && !lu.sans_versions, "{lu:?}");
+        assert_eq!(lu.langue.as_deref(), Some("en"));
+        // La personne le règle elle-même : écrit et scellé par Vanguard, il vaut.
+        let voulu = Fichier { hors_ligne: true, ..lu };
+        enregistrer_dans(&voulu, &f).unwrap();
+        assert_eq!(charger_juge(&f).unwrap(), (voulu, None));
+        // Le message de mise à jour dit que c'est un réglage, jamais « pas d'Internet ».
+        let r = raison_hors_ligne();
+        assert!(!r.contains("pas d'Internet") && !r.contains("no Internet"), "{r}");
+        let _ = std::fs::remove_dir_all(f.parent().unwrap());
+    }
+
+    /// Repris d'une version d'avant le sceau à la mise à jour, parametres.json vaut tel quel (le choix de la
+    /// personne) ; accepté tel quel après des sceaux effacés (leur verrou resté), il ne coupe rien.
+    #[test]
+    fn mise_a_jour_gardee_sceaux_refaits_ignores() {
+        let f = jetable("adopte");
+        std::fs::write(&f, r#"{"hors_ligne":true}"#).unwrap();
+        let (lu, raison) = charger_juge(&f).unwrap();
+        assert!(lu.hors_ligne && raison.is_none(), "{lu:?} {raison:?}");
+        let d = f.parent().unwrap();
+        crate::sceau::ecrire_dans(d, crate::sceau::APPRIS, b"{}").unwrap();
+        enregistrer_dans(&lu, &f).unwrap();
+        std::fs::remove_file(d.join("sceaux.json")).unwrap();
+        let (lu, raison) = charger_juge(&f).unwrap();
+        assert_eq!(raison, Some(Douteux::Adopte));
+        assert!(!lu.hors_ligne);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// Un tube nommé ou un lien vers /dev/zero à la place de parametres.json : refusé tout de suite, jamais une
+    /// lecture qui fige le lancement ni qui charge sans fin.
+    #[cfg(unix)]
+    #[test]
+    fn parametres_tube_ou_lien_ne_fige_rien() {
+        let f = jetable("tube");
+        let c = std::ffi::CString::new(f.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY : mkfifo reçoit un chemin terminé par zéro, qui vit le temps de l'appel.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let debut = std::time::Instant::now();
+        assert!(charger_de(&f).is_err());
+        std::fs::remove_file(&f).unwrap();
+        std::os::unix::fs::symlink("/dev/zero", &f).unwrap();
+        assert!(charger_de(&f).is_err());
+        assert!(debut.elapsed() < std::time::Duration::from_secs(5));
         let _ = std::fs::remove_dir_all(f.parent().unwrap());
     }
 

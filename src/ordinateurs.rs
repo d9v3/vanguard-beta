@@ -58,7 +58,7 @@ fn fichier() -> Option<PathBuf> {
 
 /// Un tableau illisible (écrit à moitié, clé arrachée) repart de zéro : il ne contient rien qu'un bilan ne refasse.
 fn lire(chemin: &Path) -> Tableau {
-    std::fs::read_to_string(chemin)
+    crate::socle::lire_texte_ordinaire(chemin, 16 << 20)
         .ok()
         .and_then(|t| serde_json::from_str(t.trim_start_matches('\u{feff}')).ok())
         .unwrap_or_default()

@@ -711,10 +711,18 @@ verifier_cache() {
 
 # --- Clé ------------------------------------------------------------------------------------------------------------
 
-# La clé VANGUARD montée (témoin vanguard.cle), comme deployer.sh la cherche. Sans /run/media/$USER (rien de monté
-# depuis le démarrage), find échoue : c'est « pas de clé », pas une erreur qui arrêterait le script en silence.
+# La clé VANGUARD de cet ordinateur (témoin vanguard.cle et jeton connu ici, outils/cle-commun.sh), comme deployer.sh
+# la cherche : un volume étiqueté VANGUARD au jeton inconnu ne reçoit aucune image. Rien de monté, ou pas de programme
+# pour la reconnaître : « pas de clé », pas une erreur qui arrêterait le script en silence.
+# Sans lui (une copie partielle des outils), la clé n'est pas cherchée : rien n'y est écrit.
+if [[ -f $(dirname "${BASH_SOURCE[0]}")/cle-commun.sh ]]; then
+  # shellcheck source=outils/cle-commun.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/cle-commun.sh"
+else
+  cle_connue() { echo "· outils/cle-commun.sh absent : la clé VANGUARD n'est pas cherchée." >&2; return 2; }
+fi
 point_cle() {
-  find "/run/media/$USER" -maxdepth 2 -name vanguard.cle -printf '%h\n' 2>/dev/null | head -1 || true
+  cle_connue || true
 }
 
 # Empreinte d'un fichier de la clé lu sur la clé même, pas dans la mémoire où la copie vient de passer (O_DIRECT,
@@ -738,7 +746,8 @@ copier_sur_cle() { # point (facultatif), toutes (facultatif : aussi les sortes a
     [[ -z $toutes ]] || return 1
     return 0
   fi
-  [[ -n $point ]] || point=$(point_cle)
+  local auto=""
+  [[ -n $point ]] || { point=$(point_cle); auto=1; }
   [[ -n $point && -d $point ]] || { echo "Clé VANGUARD non branchée : rien à copier."; return 0; }
   # Au branchement, un cache absent n'est pas une erreur de la clé : dit, puis arrêt sans rien toucher. Demandé à la
   # main (--toutes, nouvelle clé), il en est une.
@@ -748,7 +757,20 @@ copier_sur_cle() { # point (facultatif), toutes (facultatif : aussi les sortes a
   fi
   exec 9>"${XDG_RUNTIME_DIR:-/tmp}/vanguard-deployer.lock"
   flock 9
-  local iso=$point/ISO sorte image nom copiees=() manque=() echecs=() cedees=() p interrompues=" "
+  # La clé trouvée toute seule (branchement, chaque jour) : rien n'y est écrit si elle a changé depuis sa référence,
+  # comme deployer.sh, qui l'a déjà dit. Désignée à la main (--toutes, --cle POINT), c'est le geste de l'auteur.
+  if [[ -n $auto ]]; then
+    local programme
+    programme=$(programme_cle)
+    if [[ -z $programme ]] || ! "$programme" deploiement comparer-cle "$point" >/dev/null 2>&1; then
+      echo "Clé VANGUARD différente de sa référence (ou pas vérifiable) : aucune image copiée (outils/deployer.sh le dit)."
+      return 0
+    fi
+  fi
+  local iso=$point/ISO sorte image nom copiees=() posees=() manque=() echecs=() cedees=() p interrompues=" " forcees
+  # Une image de la clé relue en entier à chaque passage, comparée à son empreinte vérifiée : remplacée par une autre
+  # de même taille, elle est recopiée tout de suite (la taille seule ne la voyait pas).
+  forcees=" $(relire_une_image "$point") "
   mkdir -p "$iso"
   # Copies interrompues (clé retirée en route, ordinateur éteint, relecture différente) : jamais montrées par Ventoy,
   # retirées ici. Leur sorte compte comme déjà sur la clé : faute de place, son ancienne version a pu partir avant la
@@ -765,7 +787,9 @@ copier_sur_cle() { # point (facultatif), toutes (facultatif : aussi les sortes a
   for sorte in "${SORTES[@]}"; do
     image=$(image_prete "$sorte") || continue
     nom=${image##*/}
-    if [[ -f $iso/$nom && $(stat -c %s "$iso/$nom") == "$(stat -c %s "$image")" ]]; then
+    local forcee=""
+    [[ $forcees != *" $nom "* ]] || forcee=1
+    if [[ -f $iso/$nom && $(stat -c %s "$iso/$nom") == "$(stat -c %s "$image")" && -z $forcee ]]; then
       continue
     fi
     local anciennes=() a anciennes_mio=0 besoin
@@ -777,6 +801,9 @@ copier_sur_cle() { # point (facultatif), toutes (facultatif : aussi les sortes a
     if [[ -z $toutes && ! -f $iso/$nom && $interrompues != *" $sorte "* ]] && ((${#anciennes[@]} == 0)); then
       continue
     fi
+    # L'image remplacée n'est pas celle qu'on a vérifiée : retirée tout de suite (sa place sert à la bonne), une clé
+    # sans elle vaut mieux qu'une clé qui la démarrerait.
+    [[ -z $forcee ]] || rm -f "$iso/$nom"
     besoin=$(($(taille_mio "$image") + MARGE_MIO))
     if (($(libre_mio "$point") < besoin)); then
       # Les images en option vont en dernier : une image tenue par défaut qui ne tient pas, même sans son ancienne
@@ -820,10 +847,12 @@ copier_sur_cle() { # point (facultatif), toutes (facultatif : aussi les sortes a
     mv -f "$part" "$iso/$nom"
     ((${#anciennes[@]})) && rm -f "${anciennes[@]}"
     copiees+=("$nom")
+    # Son empreinte, celle de l'image vérifiée que la relecture sur la clé vient de retrouver, entre dans la référence.
+    posees+=("$nom=$(cat "$image.sha256")")
   done
   menu "$point"
   sync -f "$point/ventoy/ventoy.json"
-  redire_au_manifeste "$point" "${copiees[@]}"
+  redire_au_manifeste "$point" "${posees[@]}"
   if ((${#copiees[@]})); then
     avertir "Clé VANGUARD : images à jour" "$(printf '%s\n' "${copiees[@]}")"
   fi
@@ -844,12 +873,11 @@ Les images en option passent après les autres. La remettre s'il reste la place 
 # ici lui est redit, seulement les images copiées et vérifiées à l'instant, et le menu qui vient d'être réécrit. Une
 # image que ce script n'a pas posée reste hors de la référence : le bilan la dit nouvelle. Sans vanguard, ou sans
 # référence pour cette clé (pas encore déployée, ou d'avant les images) : dit, le bilan les dira changées.
-redire_au_manifeste() { # point, images copiées…
+redire_au_manifeste() { # point, images copiées (« nom=sha256 »)…
   local point=$1 programme n args=()
   shift
-  programme=$(command -v vanguard || true)
-  # Hors des essais (outils/essais-cle.sh), la copie de cargo install, que le PATH des services n'a pas.
-  [[ -n $programme || -n ${VANGUARD_ESSAI:-} ]] || programme=$HOME/.cargo/bin/vanguard
+  # Celui que le dépôt a compilé, sinon la copie de cargo install, que le PATH des services n'a pas (cle-commun.sh).
+  programme=$(programme_cle)
   if [[ -z $programme || ! -x $programme ]]; then
     echo "· manifeste de la clé : vanguard introuvable, images non redites (le bilan les dira changées)"
     return 0
@@ -857,6 +885,32 @@ redire_au_manifeste() { # point, images copiées…
   for n in "$@"; do args+=(--image "$n"); done
   "$programme" manifeste --images "$point" "${args[@]}" ||
     echo "· manifeste de la clé : images non redites (le bilan les dira changées)"
+}
+
+# Relit en entier une image de la clé, la moins récemment relue (vanguard deploiement relire-image), et compare son
+# SHA-256 à celui de la référence, ou, pour une image que la référence a sans empreinte (posée avant la 0.87), à celui
+# de l'image vérifiée du cache. Une par passage d'images-cle.sh (au branchement et chaque jour) : une image de 1 à 7 Go
+# se relit en une demi-minute à quatre minutes, Kali (16 Gio) jusqu'à dix sur une clé lente ; toutes le sont en une à
+# deux semaines. Une image aux autres octets : notée dans la référence (le bilan la dit modifiée), une notification le
+# dit, et son nom sort ici pour qu'elle soit recopiée. Sans programme ni référence : rien, et c'est dit.
+relire_une_image() { # point : le nom d'une image remplacée sur la sortie, ou rien
+  local point=$1 programme sorte image args=() differente code=0
+  programme=$(programme_cle)
+  if [[ -z $programme || ! -x $programme ]]; then
+    echo "· relecture des images : vanguard introuvable, aucune relue (leur taille seule est comparée)" >&2
+    return 0
+  fi
+  for sorte in "${SORTES[@]}"; do
+    image=$(image_prete "$sorte") || continue
+    args+=(--empreinte "${image##*/}=$(cat "$image.sha256")")
+  done
+  differente=$("$programme" deploiement relire-image "$point" "${args[@]}") || code=$?
+  if ((code == 2)) && [[ -n $differente ]]; then
+    avertir "Clé VANGUARD : image remplacée" "${differente##*/} n'est plus l'image vérifiée (autres octets, même \
+taille) : elle est recopiée. Ne démarrez rien depuis la clé avant."
+    echo "${differente##*/}"
+  fi
+  return 0
 }
 
 # ventoy.json : Ventoy ne cherche que dans ISO/ (pas dans les dossiers de Vanguard), menu en français, un nom clair pour

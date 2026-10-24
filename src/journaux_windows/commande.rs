@@ -128,7 +128,9 @@ pub(crate) fn executer(dossier: Option<&Path>, jours: u32, json: bool) {
 fn noter_alertes(c: &Chronologie) {
     use crate::modele::evenement::{Evenement, Source};
     let lu = crate::modele::journal::lire();
-    let deja: std::collections::HashSet<(String, String)> = crate::modele::journal::alertes(&lu.evenements)
+    // Seulement ce que la lecture garantit de Vanguard : une ligne posée d'avance par un autre programme, avec la clé
+    // et la date d'une alerte à venir, en aurait sinon fait sauter la note. Au pire, une alerte est notée deux fois.
+    let deja: std::collections::HashSet<(String, String)> = crate::modele::journal::alertes(lu.verifies())
         .filter_map(|(e, _, _, texte)| Some((e.cle.clone()?, texte.get(..20)?.to_string())))
         .collect();
     let mut datees: Vec<(&AlerteDatee, DateTime<Utc>)> = c

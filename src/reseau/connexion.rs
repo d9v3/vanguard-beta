@@ -301,7 +301,7 @@ fn fichier() -> std::path::PathBuf {
 
 /// Tests précédents, du plus ancien au plus récent.
 pub fn historique() -> Vec<Resultat> {
-    std::fs::read_to_string(fichier())
+    crate::socle::lire_texte_ordinaire(&fichier(), 16 << 20)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default()

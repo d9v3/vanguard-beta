@@ -9,6 +9,19 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 
 ## Prochaine version
 
+- **Sécurité de la clé et de la publication** (campagne d'attaque n° 3). Au branchement, la clé est comparée à sa
+  référence avant toute écriture : un fichier planté en voyage (raccourci, image, menu de Ventoy, archive tldr) ne
+  devient plus « la clé n'a pas changé » ; rien n'y est écrit, une notification le dit, et seul
+  `outils/deployer.sh --accepter-cle` reprend la clé telle qu'elle est. Les outils ne reconnaissent la clé qu'à son
+  jeton connu de cet ordinateur, comme le programme : un volume étiqueté VANGUARD ne reçoit plus le programme ni le
+  code source. Les images ISO sont suivies par leur empreinte SHA-256, relues une à une, recopiées si elles ont été
+  remplacées ; la partition de démarrage VTOYEFI, par l'empreinte de ses fichiers. Le journal de la clé ne fait plus
+  que 5 tickets GitHub par passage (10 par jour), et rien d'un journal suspect sans l'accord de l'auteur. La
+  signature des versions garde un point sûr que la clé de secours ne dépasse pas ; les programmes publiés sont, octet
+  pour octet, ceux de la compilation de leur commit (la 0.86.0 publiée est bien celle de son commit : seuls les
+  compilateurs C de la CI diffèrent). Claude sur GitHub ne touche plus une demande de fusion venue d'un fork. La file
+  d'essais de la VM ne fait plus que des travaux signés (HMAC du secret tiré à son installation, à refaire une fois),
+  et ses verdicts sont signés.
 - **Clé USB : le programme seul par défaut.** Une clé préparée par les outils du dépôt, sur n'importe quel ordinateur,
   ne porte plus que Vanguard, sa base, ses rapports et la partition VANGUARDLOG : ni images d'installation, ni Ventoy,
   ni partitions WIN11 et MACOS. La clé de secours complète ne se fait que sur un ordinateur dont le réglage local la
@@ -17,7 +30,7 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   comment l'allumer, et les minuteries de recopie ne copient rien. La page du projet gagne sa section « Télécharger,
   vérifier, installer » : le programme de votre système, son empreinte vérifiée par `SHA256SUMS.txt`, puis
   `vanguard raccourci` et `vanguard se-mettre-a-jour` ; la clé USB en option, pour dépanner.
-- **Fenêtre du menu.** Sous Linux (Hyprland), le cadre garde une hauteur fixe d'un menu à l'autre : chaque changement de taille s'animait, et la transition se voyait. Sous Windows, la fenêtre suit encore la hauteur de chaque menu, mais reste là où elle a été mise (ramenée dans l'écran seulement si elle en sort).
+- **Fenêtre du menu.** Sous Linux (Hyprland), le cadre garde une hauteur fixe d'un menu à l'autre : chaque changement de taille s'animait, et la transition se voyait. Sous Windows, la fenêtre suit encore la hauteur de chaque menu, mais reste là où elle a été mise (ramenée dans l'écran seulement si elle en sort). Près du bas de l'écran, elle ne remonte que de ce qu'il faut ; dans la vieille console, qui ne signale pas qu'elle change de taille, le menu se redessine quand même.
 - **Logiciels proposés.** Bitwarden s'installe par Flathub sous Arch (le paquet de la distribution est resté en
   2026.3.1) ; Flathub n'y distribue plus que sa version commerciale, qui se dit donc « pas libre »,
   alors que winget et Homebrew installent la version GPL-3.0. VeraCrypt sert aux clés USB, disques externes et coffres,
@@ -200,6 +213,22 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 - **Sécurité des dépendances.** crypto-bigint 0.7.6 (avis RUSTSEC-2026-0387 : des calculs censés prendre toujours le même temps n'y arrivaient pas), amené par YARA-X.
 - **Vérification continue remise au vert.** Le programme Windows réserve 8 Mio de pile (1 Mio d'origine avec MSVC : la version de mise au point débordait dès le démarrage) ; les journaux des tickets ne passent plus par Claude dans GitHub ; le fuzzing de nuit tourne enfin (cargo-fuzz installé à part, empreinte vérifiée) ; la compilation reproductible vérifie la garde des DLL avec un éditeur de liens assez récent.
 - **Les mots d'attaque cherchés ne sont plus en clair dans le programme.** Les noms de commandes d'outils offensifs et de contournements d'AMSI que Vanguard reconnaît dans les scripts sont brouillés dans le binaire (décodés en mémoire au besoin), pour qu'un antivirus ne prenne pas Vanguard pour l'outil qu'il traque. Rien de caché : le code source reste en clair et un garde-fou inspecte le binaire pour qu'aucun de ces mots n'y revienne en clair.
+- **Sécurité de l'état.** Ce que Vanguard garde sur l'ordinateur ne se retourne plus contre lui. Un tube nommé ou un
+  lien vers /dev/zero posé à la place d'un fichier d'état ne fige plus Vanguard (même `--version`, la surveillance, le
+  veilleur) et ne lui fait plus charger sans fin : chaque fichier relu l'est en simple fichier, borné. Le relevé des
+  changements (`changements.jsonl`), les réglages qui coupent une défense (`parametres.json` : travail sans Internet,
+  autodiagnostic, versions des logiciels ; `blocage.json` : catégories désactivées), les comptes administrateurs et
+  appareils Bluetooth déjà vus et les clés connues sont scellés : changés hors de Vanguard, rien n'y est rejoué en
+  administrateur, rien ne s'y coupe (un réglage ignoré se dit dans les Paramètres, le menu du blocage et le bilan, et
+  se règle de nouveau), et ce qui était déjà vu est redit. Les fichiers repris d'une version d'avant à la mise à jour
+  gardent leurs valeurs ; acceptés après des sceaux effacés, ils ne coupent rien ni ne sont crus. Un blocage noté
+  avant le sceau ne se défait tout seul que s'il se rejuge
+  sans sa note (une règle de pare-feu, un programme remis au démarrage), le reste à la main. « Tout remettre comme
+  avant » ne rejoue plus jamais une ancienne note telle quelle : elle repasse par les garde-fous des ordres (jamais
+  SSH ni le Bureau à distance rouverts). Un port fermé par ufw sans relecture se dit « non vérifié », pas « bloqué ».
+  Le journal des événements s'écrit en deux temps : des lignes ajoutées sans sa tête se lisent falsifiées, puis
+  comme une rupture dite au bilan, jamais reprises comme celles de Vanguard. Effacer les sceaux avec leur verrou ne
+  ramène plus au premier usage, et un mois posé « en 2099 » ne relie plus un geste à une fausse cause.
 
 ## 23 octobre 2026 : version 0.86
 

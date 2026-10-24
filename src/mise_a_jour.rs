@@ -134,14 +134,19 @@ enum Lu {
 /// bloquerait, un fichier démesuré remplirait la mémoire).
 fn lire_octets(chemin: &Path, max: u64) -> Result<Vec<u8>, String> {
     use std::io::Read;
-    let meta = std::fs::metadata(chemin).map_err(|e| e.to_string())?;
-    if !meta.is_file() {
+    // Un lien est suivi (une copie posée par un lien vers le programme reste un programme), mais ce qui est ouvert
+    // est jugé sur la poignée, sans attendre : entre un regard au chemin et l'ouverture, un tube pouvait prendre sa
+    // place, et open() restait bloqué.
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
+    let f = options.open(chemin).map_err(|e| e.to_string())?;
+    if !f.metadata().map_err(|e| e.to_string())?.is_file() {
         return Err(tr!("pas un fichier ordinaire", "not a regular file").into());
     }
     let mut octets = Vec::new();
-    std::fs::File::open(chemin)
-        .and_then(|f| f.take(max + 1).read_to_end(&mut octets))
-        .map_err(|e| e.to_string())?;
+    f.take(max + 1).read_to_end(&mut octets).map_err(|e| e.to_string())?;
     if u64::try_from(octets.len()).unwrap_or(u64::MAX) > max {
         return Err(tr!("fichier démesuré", "oversized file").into());
     }
@@ -425,7 +430,7 @@ fn installer(octets: &[u8], cible: &Path, attendue: Version, essai: Essai) -> Re
                 .map_err(|e| e.to_string())?;
         }
         drop(f);
-        if std::fs::read(&provisoire).ok().as_deref() != Some(octets) {
+        if lire_octets(&provisoire, TAILLE_MAX).ok().as_deref() != Some(octets) {
             return Err(tr!("la copie relue ne correspond pas", "the copy read back does not match").into());
         }
         essai(&provisoire, attendue)?;
@@ -485,7 +490,9 @@ fn poser_copie_dans(source: &Path, cible: &Path, essai: Essai) -> Result<(), Str
     };
     match lire_programme(cible, TAILLE_MAX) {
         Lu::Version(v) if v > version => return Ok(()),
-        Lu::Version(v) if v == version && std::fs::read(cible).ok().as_deref() == Some(&octets[..]) => return Ok(()),
+        Lu::Version(v) if v == version && lire_octets(cible, TAILLE_MAX).ok().as_deref() == Some(&octets[..]) => {
+            return Ok(());
+        }
         _ => {}
     }
     if let Some(d) = cible.parent() {

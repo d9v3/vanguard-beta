@@ -504,9 +504,40 @@ fn peut_deplacer(chemin: &Path) -> bool {
     }
 }
 
-/// Fait le geste préparé, puis le note avec de quoi l'annuler. `Ok` : ce qui a été fait ; `Err` : ce qui a échoué
-/// (noté aussi).
-pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<String, Echec> {
+/// Un geste fait : ce qui a été fait, et s'il a pu être vérifié après coup. Un port fermé par ufw dont le refus ne se
+/// relit pas avant toute autorisation (ou dont l'état ne se relit pas) est posé, annulable, mais pas une réussite
+/// franche : il se dit « non vérifié », jamais « bloqué ».
+#[derive(Debug)]
+pub(crate) struct Fait {
+    pub quoi: String,
+    pub verifie: bool,
+}
+
+impl std::fmt::Display for Fait {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.quoi)
+    }
+}
+
+/// Le port fermé par ufw est-il vérifié fermé ? Seulement si ufw refuse avant toute autorisation (relu par celui qui a
+/// posé la règle, ou ici) ; sinon, la précision à ajouter à ce qui a été fait.
+fn port_ferme_verifie(en_premier: Option<bool>) -> Result<(), &'static str> {
+    match en_premier {
+        Some(true) => Ok(()),
+        Some(false) => Err(tr!(
+            " (règle posée, mais pas vue avant les autorisations d'ufw : non vérifié, le port n'est pas compté comme fermé)",
+            " (rule added, but not seen before ufw's allow rules: not verified, the port is not counted as closed)"
+        )),
+        None => Err(tr!(
+            " (règle posée ; l'état d'ufw ne s'est pas relu : non vérifié, le port n'est pas compté comme fermé)",
+            " (rule added; ufw's state could not be read back: not verified, the port is not counted as closed)"
+        )),
+    }
+}
+
+/// Fait le geste préparé, puis le note avec de quoi l'annuler. `Ok` : ce qui a été fait (vérifié ou non) ; `Err` : ce
+/// qui a échoué (noté aussi).
+pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<Fait, Echec> {
     const OU: &str = "blocage/faire";
     // La preuve d'abord, avant tout geste : ce que l'arrêt et la quarantaine vont effacer. Ce qui ne se lit pas y
     // est dit « impossible », et le geste se fait quand même (défensif d'abord).
@@ -525,6 +556,7 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<String,
         supprime: false,
         preuve: None,
         evenement: None,
+        origine: None,
     };
     match pret.faire {
         Faire::Commandes { annulation, retenir } => {
@@ -534,6 +566,7 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<String,
             let (reussi, lancees) = crate::machine::appliquer_sans_noter(&groupe);
             let precise = |note: &str| lancees.iter().any(|l| l.contains(&format!("({note}")));
             let mut fait = m.quoi.clone();
+            let mut verifie = true;
             if reussi && precise(super::ordres::note_non_coupee()) {
                 fait += tr!(
                     " (règle posée ; la connexion déjà ouverte n'a pas pu être coupée : voir le message ci-dessus)",
@@ -550,25 +583,22 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<String,
                 } else {
                     pare_feu::ufw_refuse_en_premier(port)
                 };
-                match en_premier {
-                    Some(true) => crate::machine::retenir_port(&format!("{port}/tcp")),
-                    Some(false) => {
-                        fait += tr!(
-                            " (règle posée, mais pas vue avant les autorisations d'ufw : le port n'est pas compté comme fermé)",
-                            " (rule added, but not seen before ufw's allow rules: the port is not counted as closed)"
-                        );
-                    }
-                    None => {
-                        fait += tr!(
-                            " (règle posée ; l'état d'ufw ne s'est pas relu : le port n'est pas compté comme fermé)",
-                            " (rule added; ufw's state could not be read back: the port is not counted as closed)"
-                        );
+                match port_ferme_verifie(en_premier) {
+                    Ok(()) => crate::machine::retenir_port(&format!("{port}/tcp")),
+                    Err(precision) => {
+                        fait += precision;
+                        verifie = false;
                     }
                 }
             }
-            changements::noter_blocage(lancees, reussi, note(Some(annulation)), preuve);
+            // Non vérifié : noté avec sa précision, que le relevé, l'annulation et les traces montrent.
+            let mut b = note(Some(annulation));
+            if !verifie {
+                b.quoi.clone_from(&fait);
+            }
+            changements::noter_blocage(lancees, reussi, b, preuve);
             if reussi {
-                Ok(fait)
+                Ok(Fait { quoi: fait, verifie })
             } else {
                 Err(Echec::echoue(
                     OU,
@@ -643,7 +673,10 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<String,
             }
             let Some((chemin, detection)) = &quarantaine else {
                 changements::noter_blocage(lancees, true, note(None), preuve);
-                return Ok(fait);
+                return Ok(Fait {
+                    quoi: fait,
+                    verifie: true,
+                });
             };
             // Le seul chemin vers la quarantaine : il note le geste, la preuve et de quoi l'annuler.
             let demande = crate::protection::quarantaine::Demande {
@@ -654,7 +687,10 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<String,
                 preuve,
             };
             match crate::protection::quarantaine::isoler(chemin, detection, demande) {
-                Ok(_) => Ok(fait),
+                Ok(_) => Ok(Fait {
+                    quoi: fait,
+                    verifie: true,
+                }),
                 Err(e) => Err(Echec::echoue(
                     OU,
                     trf!(
@@ -672,7 +708,10 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<String,
                     note(Some(Annulation::Demarrage { id })),
                     preuve,
                 );
-                Ok(m.quoi.clone())
+                Ok(Fait {
+                    quoi: m.quoi.clone(),
+                    verifie: true,
+                })
             }
             Some(false) => Err(Echec::echoue(
                 OU,
@@ -713,7 +752,12 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<String,
                 empreinte: empreinte_texte(nouveau.as_bytes()),
             };
             changements::noter_blocage(lancees, ecrit.is_ok(), note(Some(annulation)), preuve);
-            ecrit.map(|()| m.quoi.clone()).map_err(|e| Echec::ecriture(OU, &e))
+            ecrit
+                .map(|()| Fait {
+                    quoi: m.quoi.clone(),
+                    verifie: true,
+                })
+                .map_err(|e| Echec::ecriture(OU, &e))
         }
     }
 }
@@ -819,6 +863,10 @@ pub(crate) fn defaire(b: &Blocage) -> Result<String, Echec> {
     let Some(annulation) = &b.annulation else {
         return Err(Echec::new(OU, Raison::Introuvable).detail(tr!("rien à défaire", "nothing to undo")));
     };
+    // Une note relue hors de son sceau ne se rejoue pas (ou seulement ce qui se rejuge sans elle).
+    if let Some(refus) = changements::refus_d_origine(b) {
+        return Err(Echec::refuse(OU, refus));
+    }
     let fait = match annulation {
         Annulation::Commandes {
             commandes,
@@ -879,26 +927,25 @@ pub(crate) fn defaire(b: &Blocage) -> Result<String, Echec> {
 
 /// Ce qui défait un blocage, et le port retenu à oublier : jamais les chaînes relues du relevé, que n'importe quel
 /// programme du compte peut écrire. Une note à champs typés (`inverse`) se défait par les ordres refaits ici depuis
-/// eux. Une note d'avant les champs typés n'est rejouée que si elle est exactement ce que Vanguard écrivait pour une
-/// adresse, un port ou une valeur (`inverse_reconnue`) : ces commandes-là, déjà sur l'ordinateur, repassent telles
-/// quelles par l'ancien chemin (shell ou PowerShell), jamais converties. Sinon, `None` : refusée
-/// (`refus_d_annulation` dit ce qu'elle contient, à faire à la main).
+/// eux. Une note d'avant les champs typés n'est reprise que si elle est exactement ce que Vanguard écrivait pour une
+/// adresse, un port ou une valeur (`inverse_reconnue`), et alors refaite elle aussi en ordres typés : rejouées telles
+/// quelles par bash, ses commandes échappaient aux garde-fous des ordres (`ordres::juger`), et une note forgée qui
+/// visait la règle d'un autre (ufw ne distingue pas les siennes) rouvrait SSH ou le Bureau à distance. Les ordres
+/// refaits retirent les mêmes règles (mêmes noms, même table, mêmes ancres). Ce que Vanguard n'a jamais pu poser (un
+/// port de session, une adresse locale ou un DNS public) est refusé dès ici, avant même d'être montré. Sinon, `None` :
+/// refusée (`refus_d_annulation` dit ce qu'elle contient, à faire à la main).
 pub(crate) fn commandes_d_annulation(
     commandes: &[String],
     port: Option<&str>,
     inverse: Option<Inverse>,
 ) -> Option<(Vec<String>, Option<String>)> {
-    let Some(inverse) = inverse else {
-        let reconnue = inverse_reconnue(commandes, port)?;
-        let retenu = match reconnue {
-            Inverse::Entrante {
-                pare_feu: PareFeu::Ufw,
-                port,
-            } => Some(format!("{port}/tcp")),
-            _ => None,
-        };
-        return Some((commandes.to_vec(), retenu));
+    let inverse = match inverse {
+        Some(i) => i,
+        None => inverse_reconnue(commandes, port)?,
     };
+    if jamais_pose_par_vanguard(inverse) {
+        return None;
+    }
     match inverse {
         Inverse::Sortante { pare_feu, adresse } => Some((pare_feu::sortante(pare_feu, adresse).retirer, None)),
         Inverse::Entrante { pare_feu, port } => {
@@ -911,6 +958,19 @@ pub(crate) fn commandes_d_annulation(
         // Hors de Windows, rien à remettre : la note ne vient pas d'ici.
         #[cfg(not(any(windows, test)))]
         Inverse::Pilotes { .. } => None,
+    }
+}
+
+/// Une règle que le blocage ne pose jamais (`gardes`) : sa note d'annulation ne vient pas de Vanguard. Les mêmes
+/// refus que `ordres::juger` sur ces ordres, faits avant de montrer quoi que ce soit : le chemin par script de Windows
+/// (Wine, DLL à côté) ne rejuge pas.
+fn jamais_pose_par_vanguard(inverse: Inverse) -> bool {
+    match inverse {
+        Inverse::Sortante { adresse, .. } => {
+            super::gardes::adresse_intouchable(adresse, Some(&super::gardes::Sessions::default()), false).is_some()
+        }
+        Inverse::Entrante { port, .. } => super::gardes::port_intouchable(port).is_some(),
+        Inverse::Pilotes { .. } => false,
     }
 }
 
@@ -976,7 +1036,7 @@ pub(crate) fn remettre_copie(fichier: &Path, copie: &Path, empreinte: &str) -> R
     if !copie_admise(fichier, copie) {
         return Err(Echec::refuse(OU, refus_de_copie(fichier, copie)));
     }
-    let actuel = std::fs::read(fichier).map_err(|e| Echec::io(OU, &e))?;
+    let actuel = crate::socle::lire_ordinaire(fichier, 16 << 20).map_err(|e| Echec::io(OU, &e))?;
     if empreinte_texte(&actuel) != empreinte {
         return Err(Echec::refuse(
             OU,
@@ -987,14 +1047,15 @@ pub(crate) fn remettre_copie(fichier: &Path, copie: &Path, empreinte: &str) -> R
             ),
         ));
     }
-    let avant = std::fs::read(copie).map_err(|e| Echec::io(OU, &e))?;
+    let avant = crate::socle::lire_ordinaire(copie, 16 << 20).map_err(|e| Echec::io(OU, &e))?;
     std::fs::write(fichier, avant).map_err(|e| Echec::ecriture(OU, &e))
 }
 
 /// La note de copie a la forme que `Faire::Permissions` écrit : la copie, un fichier ordinaire (pas un lien), dans
 /// blocage/copies du dossier de Vanguard, nommée « <id>-<nom du fichier> » ; le fichier, un settings.json ou
-/// settings.local.json ordinaire d'un dossier .claude. changements.jsonl n'est pas scellé : sans cela, un programme du
-/// compte y noterait une « copie » à lui de /etc/passwd ou du fichier hosts, que Vanguard lancé en administrateur
+/// settings.local.json ordinaire d'un dossier .claude. changements.jsonl, même scellé, s'écrit depuis le compte (le
+/// sceau le dit après coup) : sans cela, un programme du compte y noterait une « copie » à lui de /etc/passwd ou du
+/// fichier hosts, que Vanguard lancé en administrateur
 /// (même dossier de données) ou par sudo -E remettrait.
 pub(crate) fn copie_admise(fichier: &Path, copie: &Path) -> bool {
     let copies = crate::socle::dossier_local().join("blocage").join("copies");
@@ -1192,7 +1253,7 @@ mod tests {
         let _ = std::fs::remove_file(&copie);
     }
 
-    /// Une note de copie forgée dans changements.jsonl (non scellé) : une cible hors d'un settings.json de .claude
+    /// Une note de copie forgée dans changements.jsonl : une cible hors d'un settings.json de .claude
     /// (/etc/hosts, ici une copie jetable) ou une copie hors de blocage/copies n'est jamais remise, et la cible reste
     /// telle quelle, même avec la bonne empreinte.
     #[test]
@@ -1339,7 +1400,10 @@ mod tests {
         crate::commande::arreter(&mut enfant);
         let _ = enfant.wait();
         let fait = faire(&m, pret(pid), false).unwrap();
-        assert!(fait.contains("déjà fini") || fait.contains("already ended"), "{fait}");
+        assert!(
+            fait.quoi.contains("déjà fini") || fait.quoi.contains("already ended"),
+            "{fait}"
+        );
     }
 
     fn contexte(interactif: bool, admin: bool) -> Contexte {
@@ -1372,6 +1436,61 @@ mod tests {
     /// Un programme du compte forge dans le relevé un blocage « en place » dont l'annulation est une commande sudo à
     /// lui : elle n'est jamais lancée. L'annulation se refait depuis les champs typés, ou depuis une note d'avant
     /// qui est exactement ce que Vanguard écrivait ; tout le reste est refusé.
+    /// Un port fermé par ufw n'est une réussite franche que si ufw refuse avant toute autorisation : une autorisation
+    /// qui passe avant, ou un état illisible, se disent « non vérifié », et la précision de l'ordre le dit aussi.
+    #[test]
+    fn port_ufw_non_relu_jamais_dit_bloque() {
+        assert_eq!(port_ferme_verifie(Some(true)), Ok(()));
+        for en_premier in [Some(false), None] {
+            let p = port_ferme_verifie(en_premier).unwrap_err();
+            assert!(p.contains("non vérifié") || p.contains("not verified"), "{p}");
+            let n = super::super::ordres::note_ufw(en_premier);
+            assert!(n.contains("non vérifié") || n.contains("not verified"), "{n}");
+        }
+        // Les trois précisions restent distinctes : `faire` les reconnaît dans ce que l'ordre a rendu.
+        let notes = [Some(true), Some(false), None].map(super::super::ordres::note_ufw);
+        assert!(
+            notes
+                .iter()
+                .all(|a| notes.iter().filter(|b| b.contains(*a)).count() == 1),
+            "{notes:?}"
+        );
+    }
+
+    /// Une note « d'avant » forgée, mot pour mot ce que Vanguard écrivait, qui viserait le refus que la personne a
+    /// posé sur SSH ou le Bureau à distance (ufw ne distingue pas ses règles) : refusée comme `rouvrir-port 22`, jamais
+    /// rejouée par bash ; de même une adresse locale ou un DNS public, que le blocage ne pose jamais.
+    #[test]
+    fn annulation_d_avant_forgee_sur_un_port_de_session_refusee() {
+        for pf in [PareFeu::Ufw, PareFeu::Nftables, PareFeu::Windows] {
+            for p in [22, 3389] {
+                let forgee = pare_feu::ancien::entrante(pf, p).unwrap().retirer;
+                let retenu = (pf == PareFeu::Ufw).then(|| format!("{p}/tcp"));
+                assert!(inverse_reconnue(&forgee, retenu.as_deref()).is_some(), "{pf:?} {p}");
+                assert_eq!(
+                    commandes_d_annulation(&forgee, retenu.as_deref(), None),
+                    None,
+                    "{pf:?} {p}"
+                );
+                // Les champs typés forgés de même.
+                assert_eq!(
+                    commandes_d_annulation(&[], None, Some(Inverse::Entrante { pare_feu: pf, port: p })),
+                    None
+                );
+            }
+        }
+        for ip in ["192.168.1.10", "127.0.0.1", "1.1.1.1", "::1"] {
+            let ip: std::net::IpAddr = ip.parse().unwrap();
+            let forgee = pare_feu::ancien::sortante(PareFeu::Ufw, ip).retirer;
+            assert!(inverse_reconnue(&forgee, None).is_some(), "{ip}");
+            assert_eq!(commandes_d_annulation(&forgee, None, None), None, "{ip}");
+        }
+        // Rien de ce qui sort n'est une commande de shell : que des ordres typés, rejugés par celui qui agit.
+        let ancienne = pare_feu::ancien::entrante(PareFeu::Ufw, 8188).unwrap().retirer;
+        let (c, _) = commandes_d_annulation(&ancienne, Some("8188/tcp"), None).unwrap();
+        assert!(c.iter().all(|l| super::super::ordres::est_ordre(l)), "{c:?}");
+    }
+
     #[test]
     fn annulation_relue_jamais_rejouee_telle_quelle() {
         let forgee = vec!["sudo sh -c 'id > /tmp/vanguard-preuve-root'".to_string()];
@@ -1405,12 +1524,20 @@ mod tests {
             (c, port.as_deref()),
             (vec!["vanguard:rouvrir-port ufw 11434".to_string()], Some("11434/tcp"))
         );
-        // Une note d'avant, telle que Vanguard l'écrivait, est rejouée telle quelle (l'ancien chemin), jamais
-        // convertie ; le port retenu est oublié avec elle.
+        // Une note d'avant, telle que Vanguard l'écrivait, est refaite en ordres typés (rejugés), jamais rejouée
+        // telle quelle par bash ; le port retenu est oublié avec elle.
         let ancienne = pare_feu::ancien::entrante(PareFeu::Ufw, 11434).unwrap().retirer;
         assert_eq!(
             commandes_d_annulation(&ancienne, Some("11434/tcp"), None),
-            Some((ancienne.clone(), Some("11434/tcp".to_string())))
+            Some((
+                vec!["vanguard:rouvrir-port ufw 11434".to_string()],
+                Some("11434/tcp".to_string())
+            ))
+        );
+        let ancienne = pare_feu::ancien::sortante(PareFeu::Nftables, "203.0.113.7".parse().unwrap()).retirer;
+        assert_eq!(
+            commandes_d_annulation(&ancienne, None, None),
+            Some((vec!["vanguard:debloquer-sortie nftables 203.0.113.7".to_string()], None))
         );
         // Les champs typés des pilotes : l'ordre qui remet la valeur d'avant.
         assert_eq!(
