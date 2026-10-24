@@ -865,7 +865,7 @@ if (Question 'Faire ce test (six fichiers posés puis retirés dans Documents, I
     if (Get-ChildItem $dossiersPieges -Filter '!Vanguard*' -ErrorAction SilentlyContinue) { Bug 'Fichiers-pièges ENCORE présents' } else { Ok 'Fichiers-pièges retirés' }
 } else { Sautee 'Sautée.' }
 
-Etape 'YARA : analyse d''un dossier par YARA-X, compilé dans Vanguard (rien à installer)'
+Etape 'YARA : analyse d''un dossier par le moteur de Vanguard (rien à installer)'
 # Depuis la 0.79, le moteur est dans le programme : aucune installation, aucune question, et rien de winget n'est cherché.
 $dossierYara = Join-Path $env:TEMP 'vanguard-dossier-yara'
 New-Item -ItemType Directory -Force $dossierYara | Out-Null
