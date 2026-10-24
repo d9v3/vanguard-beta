@@ -55,6 +55,8 @@ pub(crate) struct Bornes {
     pub seuil_taux: u64,
     /// Le temps d'une analyse.
     pub delai: Duration,
+    /// Les octets examinés en tout (empreinte, type, lecture de chaque partie, copiée ou non).
+    pub examines: u64,
     /// Les entrées parcourues dans une archive (zip, tar) ou un fichier composé.
     pub entrees: usize,
     /// Le texte décodé d'un script.
@@ -72,6 +74,7 @@ impl Default for Bornes {
             taux: 200,
             seuil_taux: 32 << 20,
             delai: Duration::from_secs(60),
+            examines: 1 << 30,
             entrees: 20_000,
             texte: 8 << 20,
         }
@@ -83,7 +86,7 @@ impl Default for Bornes {
 pub(crate) enum Type {
     Vide,
     Pe,
-    /// « MZ » sans en-tête PE : un programme DOS (ou un PE abîmé).
+    /// « MZ » sans en-tête PE : un programme DOS ou 16 bits (NE, comme les polices .fon), ou un PE abîmé ; non lu.
     ExecutableDos,
     Elf,
     MachO,
@@ -148,7 +151,10 @@ impl Type {
     pub(crate) fn non_lu(self) -> bool {
         matches!(
             self,
-            Type::SeptZip
+            Type::ExecutableDos
+                | Type::ClasseJava
+                | Type::PresentationPowerPoint
+                | Type::SeptZip
                 | Type::Rar
                 | Type::Cab
                 | Type::Iso
@@ -173,10 +179,11 @@ impl Type {
 
     /// Un exécutable ou ce qui en lance un (raccourci, script) : ce qu'une extension de document ne doit pas cacher.
     pub(crate) fn executable(self) -> bool {
+        // Les scripts n'en sont pas : leur langage n'est que deviné, et un texte s'ouvre dans un éditeur.
         matches!(
             self,
             Type::Pe | Type::ExecutableDos | Type::Elf | Type::MachO | Type::MachOUniversel | Type::Lnk | Type::Msi
-        ) || matches!(self, Type::Script(l) if !matches!(l, texte::Langage::Xml | texte::Langage::Html))
+        )
     }
 }
 
@@ -242,6 +249,11 @@ pub(crate) enum Raison {
     /// Un module VBA dont la source ne se lit pas (flux absent, compression abîmée) ou est vide alors que le
     /// module a du code compilé (« p-code », qui s'exécute quand même).
     SourceVbaIllisible,
+    /// Les octets examinés en tout ont atteint leur borne (tranches qui se chevauchent, overlays) : le reste n'est
+    /// pas lu.
+    Travail,
+    /// Des macros Excel 4.0 (XLM) d'un classeur 97-2003 : leurs formules, compilées, ne sont pas décodées.
+    MacrosXlmNonDecodees,
     /// Un exécutable compressé par un paqueteur connu (UPX) : son vrai code n'est pas lu.
     Paquete(&'static str),
 }
@@ -302,6 +314,13 @@ pub(crate) enum Fait {
     /// Un projet VBA : nombre de modules.
     MacrosVba(usize),
     ModuleVba(String),
+    /// Plus de faits que la borne : les suivants ne sont pas gardés.
+    FaitsLimites,
+    /// Des octets après la fin du flux compressé d'une entrée zip, dans sa place.
+    DonneesApresFlux(u64),
+    /// L'en-tête local d'une entrée zip ne dit pas la même chose que le répertoire central (méthode, chiffrement,
+    /// tailles) : les deux lectures sont faites.
+    EnTeteLocalDifferent,
     /// Une procédure qui se lance d'elle-même (AutoOpen, Document_Open, Workbook_Open…).
     ProcedureAutomatique(String),
     /// Une feuille de macros Excel 4.0 (XLM).

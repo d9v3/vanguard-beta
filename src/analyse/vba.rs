@@ -22,8 +22,10 @@ const ENREGISTREMENTS_MAX: usize = 200_000;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Module {
     pub nom: String,
-    /// Le nom du flux qui porte le module, dans le stockage « VBA ».
+    /// Le nom du flux qui porte le module, dans le stockage « VBA » (la forme Unicode quand elle est donnée).
     pub flux: String,
+    /// La forme sur un octet (MODULESTREAMNAME) du même nom, si elle diffère de `flux`.
+    pub flux_mbcs: Option<String>,
     /// Où commence la source compressée dans ce flux.
     pub decalage: u32,
     /// 0x0021 : module de code ; 0x0022 : document, feuille ou classe.
@@ -91,7 +93,10 @@ pub(crate) fn lire_dir(dir: &[u8]) -> Projet {
             }
             0x0032 => {
                 if let Some(m) = module.as_mut().filter(|_| !donnees.is_empty()) {
-                    m.flux = utf16le(donnees);
+                    let unicode = utf16le(donnees);
+                    if unicode != m.flux {
+                        m.flux_mbcs = Some(std::mem::replace(&mut m.flux, unicode));
+                    }
                 }
             }
             0x0031 => {
@@ -170,6 +175,8 @@ const SUFFIXES_DE_CONTROLE: &[&str] = &["_layout", "_painted", "_resize", "_gotf
 /// Avec `nom_module` : un module nommé comme une macro auto de Word avec une procédure Main.
 pub(crate) fn procedures_automatiques(source: &str, nom_module: &str) -> Vec<String> {
     let mut trouvees = Vec::new();
+    // Un témoin en minuscules : une source de cent mille procédures ne coûte pas leur carré.
+    let mut vues = std::collections::HashSet::new();
     let module_auto = AUTO_WORD.contains(&nom_module.to_ascii_lowercase().as_str());
     for ligne in source.lines() {
         let Some(nom) = procedure_declaree(ligne) else {
@@ -181,11 +188,31 @@ pub(crate) fn procedures_automatiques(source: &str, nom_module: &str) -> Vec<Str
                 .iter()
                 .any(|s| bas.len() > s.len() && bas.ends_with(s))
             || (module_auto && bas == "main");
-        if automatique && !trouvees.iter().any(|t: &String| t.eq_ignore_ascii_case(nom)) {
+        if automatique && vues.insert(bas) {
             trouvees.push(nom.to_string());
+            // Au-delà, savoir qu'il y en a suffit aux heuristiques : la source entière reste lue par les motifs.
+            if trouvees.len() >= PROCEDURES_MAX {
+                break;
+            }
         }
     }
     trouvees
+}
+
+const PROCEDURES_MAX: usize = 64;
+
+/// Une source sans code : rien que des lignes « Attribute … », des commentaires et des blancs (ce qui reste d'un
+/// module dont la source a été effacée, alors que son code compilé, le p-code, s'exécute quand même).
+pub(crate) fn source_sans_code(source: &str) -> bool {
+    source.lines().all(|l| {
+        let l = l.trim();
+        l.is_empty()
+            || l.starts_with('\'')
+            // En octets : une ligne qui commence par un caractère sur plusieurs octets ne se coupe pas au milieu.
+            || l.as_bytes().get(..4).is_some_and(|d| d.eq_ignore_ascii_case(b"rem "))
+            || l.eq_ignore_ascii_case("rem")
+            || l.as_bytes().get(..10).is_some_and(|d| d.eq_ignore_ascii_case(b"attribute "))
+    })
 }
 
 /// Le nom d'une procédure déclarée sur `ligne` (« [Public|Private|Friend] [Static] Sub|Function Nom(… »).
@@ -286,7 +313,8 @@ mod tests {
                 nom: "Module1".into(),
                 flux: "Module1".into(),
                 decalage: 0x2A0,
-                type_: Some(0x21)
+                type_: Some(0x21),
+                flux_mbcs: None,
             }
         );
         assert_eq!(p.modules[1].type_, Some(0x22));
@@ -309,6 +337,19 @@ mod tests {
             ["Document_Open", "AUTOOPEN", "InkPicture1_Painted"]
         );
         assert_eq!(procedures_automatiques("Sub Main()\nEnd Sub", "AutoOpen"), ["Main"]);
+        let beaucoup: String = (0..1000).fold(String::new(), |mut t, k| {
+            use std::fmt::Write;
+            let _ = writeln!(t, "Sub a{k}_Layout()");
+            t
+        });
+        assert_eq!(procedures_automatiques(&beaucoup, "M").len(), PROCEDURES_MAX);
+        assert!(!source_sans_code("éée\r\nééééé"));
+        assert!(source_sans_code(
+            "Attribute VB_Name = \"Module1\"\r\n' rien\r\nRem non plus\r\n\r\n"
+        ));
+        assert!(!source_sans_code(
+            "Attribute VB_Name = \"Module1\"\r\nSub A()\r\nEnd Sub\r\n"
+        ));
         assert_eq!(
             procedures_automatiques("Sub Main()\nEnd Sub", "Module1"),
             Vec::<String>::new()

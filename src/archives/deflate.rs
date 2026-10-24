@@ -33,7 +33,7 @@ pub(crate) fn inflater(flux: &[u8], limite: usize) -> Inflate {
     use miniz_oxide::inflate::TINFLStatus;
     use miniz_oxide::inflate::core::{DecompressorOxide, decompress, inflate_flags};
     let drapeaux = inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
-    let mut sortie = vec![0u8; flux.len().saturating_mul(2).clamp(64, 1 << 20).min(limite)];
+    let mut sortie = vec![0u8; flux.len().saturating_mul(2).clamp(64, 64 << 10).min(limite)];
     let mut decodeur = Box::<DecompressorOxide>::default();
     let (mut lus, mut ecrits) = (0usize, 0usize);
     loop {

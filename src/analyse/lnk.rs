@@ -25,6 +25,9 @@ const HAS_WORKING_DIR: u32 = 1 << 4;
 const HAS_ARGUMENTS: u32 = 1 << 5;
 const HAS_ICON_LOCATION: u32 = 1 << 6;
 const IS_UNICODE: u32 = 1 << 7;
+const FORCE_NO_LINK_INFO: u32 = 1 << 8;
+/// VistaAndAboveIDListDataBlock : une autre liste d'identifiants, que Windows prend à la place de la première.
+const BLOC_LISTE_IDS: u32 = 0xA000_000C;
 const BLOC_ENVIRONNEMENT: u32 = 0xA000_0001;
 const BLOCS_MAX: usize = 64;
 const CHEMIN_MAX: usize = 4096;
@@ -88,10 +91,12 @@ impl Lnk {
     /// sinon le chemin relatif. `None` : seule la liste d'identifiants la désigne.
     pub(crate) fn cible(&self) -> Option<String> {
         let suffixe = self.suffixe.clone().unwrap_or_default();
-        if let Some(local) = self.chemin_local.as_ref().filter(|c| !c.is_empty()) {
+        // ForceNoLinkInfo : Windows ignore LinkInfo ([MS-SHLLINK] 2.1.1), sa cible n'est pas celle qui s'ouvre.
+        let lien = self.drapeaux & FORCE_NO_LINK_INFO == 0;
+        if let Some(local) = self.chemin_local.as_ref().filter(|c| lien && !c.is_empty()) {
             return Some(format!("{local}{suffixe}"));
         }
-        if let Some(reseau) = self.chemin_reseau.as_ref().filter(|c| !c.is_empty()) {
+        if let Some(reseau) = self.chemin_reseau.as_ref().filter(|c| lien && !c.is_empty()) {
             return Some(if suffixe.is_empty() {
                 reseau.clone()
             } else {
@@ -102,6 +107,29 @@ impl Lnk {
             .clone()
             .filter(|c| !c.is_empty())
             .or_else(|| self.chemin_relatif.clone().filter(|c| !c.is_empty()))
+    }
+
+    /// La cible lue est-elle celle que Windows ouvrira ? Windows suit d'abord la liste d'identifiants (ou celle du bloc
+    /// 0xA000000C), qui n'est pas décodée ici : la cible lue n'est sûre que si cette liste n'existe pas, ou si ses
+    /// noms lisibles contiennent le dernier composant de la cible (un raccourci ordinaire). Sinon, une cible affichée
+    /// pourrait en cacher une autre.
+    pub(crate) fn cible_coherente(&self) -> bool {
+        if self.signatures_blocs.contains(&BLOC_LISTE_IDS) {
+            return false;
+        }
+        if self.liste_ids.is_none() {
+            return self.cible().is_some();
+        }
+        let (Some(cible), Some(approchee)) = (self.cible(), self.cible_approchee()) else {
+            return false;
+        };
+        let dernier = cible
+            .trim_end_matches(['\\', '/'])
+            .rsplit(['\\', '/'])
+            .next()
+            .unwrap_or("")
+            .to_lowercase();
+        !dernier.is_empty() && approchee.to_lowercase().contains(&dernier)
     }
 
     /// Les noms lisibles de la liste d'identifiants (ASCII et UTF-16 d'au moins 3 caractères), joints par « \ » :

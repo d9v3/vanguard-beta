@@ -264,6 +264,9 @@ pub(crate) struct Vue {
     pub donnees: Option<std::ops::Range<usize>>,
     pub taille_inconnue: bool,
     pub provenance: Provenance,
+    /// L'en-tête local ne dit pas la même chose que le répertoire central (méthode, chiffrement ou tailles) : un
+    /// extracteur qui lit en flux suit l'en-tête local. Cette lecture-là est ajoutée à part (`LocaleSeule`).
+    pub local_different: bool,
 }
 
 /// Ce que `parcourir` a vu de l'archive.
@@ -375,7 +378,13 @@ fn central(octets: &[u8], fin: usize, entrees_max: usize, p: &mut Parcours) {
             p.central_illisible = true;
             return;
         };
+        let autre_lecture = vue.local_different.then(|| entree_locale(octets, vue.local)).flatten();
         p.entrees.push(vue);
+        if let Some(locale) = autre_lecture
+            && p.entrees.len() < entrees_max
+        {
+            p.entrees.push(locale);
+        }
         i = suivante;
         n += 1;
     }
@@ -414,10 +423,23 @@ fn entree_vue(octets: &[u8], i: usize, decalage: usize, annoncee: bool) -> Optio
         .filter(|u| u.first() == Some(&1))
         .and_then(|u| u.get(5..))
         .map(<[u8]>::to_vec);
-    let local = usize::try_from(local).ok()?.checked_add(decalage)?;
+    // Une position hors du fichier (zip64 démesuré) : ramenée à sa fin, où aucun en-tête ne se lit.
+    let local = usize::try_from(local)
+        .ok()
+        .and_then(|l| l.checked_add(decalage))
+        .map_or(octets.len(), |l| l.min(octets.len()));
     let (nom_local, donnees) = match donnees_entree(octets, local, compresse) {
         Some((n, d)) => (Some(n), Some(d)),
         None => (None, None),
+    };
+    // Ce que dit l'en-tête local (sauf avec le bit 3 : ses tailles sont alors écrites après les données).
+    let local_different = nom_local.is_some() && {
+        let drapeaux_locaux = u16_a(octets, local + 6).unwrap_or(drapeaux);
+        let methode_locale = u16_a(octets, local + 8).unwrap_or(methode);
+        let compresse_local = u32_a(octets, local + 18).map_or(compresse, u64::from);
+        methode_locale != methode
+            || (drapeaux_locaux ^ drapeaux) & 0x41 != 0
+            || (drapeaux_locaux & 0x0008 == 0 && compresse_local != 0xFFFF_FFFF && compresse_local != compresse)
     };
     Some((
         Vue {
@@ -433,6 +455,7 @@ fn entree_vue(octets: &[u8], i: usize, decalage: usize, annoncee: bool) -> Optio
             local,
             donnees,
             taille_inconnue: false,
+            local_different,
             provenance: if annoncee {
                 Provenance::Centrale
             } else {
@@ -466,7 +489,7 @@ fn locales_seules(octets: &[u8], entrees_max: usize, p: &mut Parcours) {
         .iter()
         .map(|e| {
             let d = e.donnees.clone().unwrap_or(e.local..e.local);
-            (e.local.min(d.start), d.end.max(e.local + 1))
+            (e.local.min(d.start), d.end.max(e.local.saturating_add(1)))
         })
         .collect();
     places.sort_unstable();
@@ -543,6 +566,7 @@ fn entree_locale(octets: &[u8], local: usize) -> Option<Vue> {
         donnees,
         taille_inconnue,
         provenance: Provenance::LocaleSeule,
+        local_different: false,
     })
 }
 
@@ -564,6 +588,8 @@ pub(crate) struct Extrait {
     pub contenu: Vec<u8>,
     pub fin: super::deflate::Fin,
     pub crc_juste: Option<bool>,
+    /// Les octets compressés qui suivent la fin du flux deflate, dans la place de l'entrée (une cachette).
+    pub reste: std::ops::Range<usize>,
 }
 
 /// Le contenu de l'entrée `vue` de `octets`, au plus `limite` octets : stockée ou deflate seulement.
@@ -577,13 +603,20 @@ pub(crate) fn extraire(octets: &[u8], vue: &Vue, limite: usize) -> Result<Extrai
         .clone()
         .and_then(|d| octets.get(d))
         .ok_or(Refus::Illisible)?;
-    let (contenu, fin) = match vue.methode {
+    let debut = vue.donnees.as_ref().map_or(0, |d| d.start);
+    let (contenu, fin, reste) = match vue.methode {
         0 if vue.taille_inconnue => return Err(Refus::Illisible),
-        0 if donnees.len() > limite => (donnees[..limite].to_vec(), Fin::Limite),
-        0 => (donnees.to_vec(), Fin::Complet),
+        0 if donnees.len() > limite => (donnees[..limite].to_vec(), Fin::Limite, 0..0),
+        0 => (donnees.to_vec(), Fin::Complet, 0..0),
         8 => {
             let lu = super::deflate::inflater(donnees, limite);
-            (lu.contenu, lu.fin)
+            // Une entrée locale de taille inconnue court jusqu'à la fin du fichier : son « reste » est la suite.
+            let reste = if lu.fin == Fin::Complet && !vue.taille_inconnue && lu.lus < donnees.len() {
+                debut + lu.lus..debut + donnees.len()
+            } else {
+                0..0
+            };
+            (lu.contenu, lu.fin, reste)
         }
         autre => return Err(Refus::Methode(autre)),
     };
@@ -593,6 +626,7 @@ pub(crate) fn extraire(octets: &[u8], vue: &Vue, limite: usize) -> Result<Extrai
         contenu,
         fin,
         crc_juste,
+        reste,
     })
 }
 

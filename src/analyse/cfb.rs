@@ -22,7 +22,11 @@ const FREESECT: u32 = 0xFFFF_FFFF;
 const MAXREGSECT: u32 = 0xFFFF_FFFA;
 const NOSTREAM: u32 = 0xFFFF_FFFF;
 /// Au-delà, une entrée de répertoire n'est pas suivie : un document réel en a quelques centaines.
-const ENTREES_MAX: usize = 65_536;
+const ENTREES_MAX: usize = 16_384;
+/// Les stockages imbriqués suivis (un document réel en a trois ou quatre niveaux), et la longueur d'un chemin : sans
+/// elles, une chaîne de stockages coûterait le carré de sa longueur en chemins gardés.
+const PROFONDEUR_MAX: usize = 32;
+const CHEMIN_MAX: usize = 1024;
 const MINI_SECTEUR: usize = 64;
 const SEUIL_MINI: u64 = 4096;
 
@@ -65,6 +69,7 @@ pub(crate) struct Place {
 }
 
 /// Un fichier composé lu : ses tables et son répertoire.
+#[allow(clippy::struct_excessive_bools)] // des constats, chacun pour lui-même
 #[derive(Debug)]
 pub(crate) struct Cfb<'a> {
     octets: &'a [u8],
@@ -80,6 +85,10 @@ pub(crate) struct Cfb<'a> {
     pub orphelines: Vec<usize>,
     /// L'arbre revient sur une entrée déjà vue (boucle, ou deux chemins vers elle).
     pub arbre_boucle: bool,
+    /// Des entrées ne sont pas vues : répertoire plus long que la borne, ou stockages trop imbriqués.
+    pub limite_atteinte: bool,
+    /// Pour chaque stockage, les places qu'il contient directement.
+    enfants: std::collections::HashMap<usize, Vec<usize>>,
     /// Le mini-flux ou la mini-FAT ne se lisent pas : les petits flux non plus.
     pub mini_illisible: bool,
     /// La FAT ne se lit pas en entier (DIFAT coupée, secteur hors du fichier).
@@ -122,6 +131,8 @@ impl<'a> Cfb<'a> {
             places: Vec::new(),
             orphelines: Vec::new(),
             arbre_boucle: false,
+            limite_atteinte: false,
+            enfants: std::collections::HashMap::new(),
             mini_illisible: false,
             fat_incomplete: false,
         };
@@ -186,6 +197,7 @@ impl<'a> Cfb<'a> {
             };
             for e in donnees.as_chunks::<128>().0 {
                 if c.entrees.len() >= ENTREES_MAX {
+                    c.limite_atteinte = true;
                     break;
                 }
                 c.entrees.push(entree(e));
@@ -316,9 +328,9 @@ impl<'a> Cfb<'a> {
     fn parcourir_arbre(&mut self) {
         let mut vus = vec![false; self.entrees.len()];
         vus[0] = true;
-        // (entrée, chemin du stockage qui la contient, numéro de ce stockage)
-        let mut pile: Vec<(u32, String, usize)> = vec![(self.entrees[0].enfant, String::new(), 0)];
-        while let Some((id, dossier, parent)) = pile.pop() {
+        // (entrée, numéro du stockage qui la contient, sa place s'il en a une, profondeur)
+        let mut pile: Vec<(u32, usize, Option<usize>, usize)> = vec![(self.entrees[0].enfant, 0, None, 0)];
+        while let Some((id, parent, place_parent, profondeur)) = pile.pop() {
             if id == NOSTREAM {
                 continue;
             }
@@ -332,22 +344,35 @@ impl<'a> Cfb<'a> {
             }
             vus[i] = true;
             let e = &self.entrees[i];
-            let chemin = if dossier.is_empty() {
-                e.nom.clone()
-            } else {
-                format!("{dossier}/{}", e.nom)
+            let mut chemin = match place_parent {
+                Some(k) => format!("{}/{}", self.places[k].chemin, e.nom),
+                None => e.nom.clone(),
             };
-            pile.push((e.droite, dossier.clone(), parent));
-            pile.push((e.gauche, dossier, parent));
-            if e.type_ == 1 {
-                pile.push((e.enfant, chemin.clone(), i));
+            if chemin.len() > CHEMIN_MAX {
+                let mut fin = CHEMIN_MAX;
+                while !chemin.is_char_boundary(fin) {
+                    fin -= 1;
+                }
+                chemin.truncate(fin);
             }
-            if matches!(e.type_, 1 | 2) {
+            pile.push((e.droite, parent, place_parent, profondeur));
+            pile.push((e.gauche, parent, place_parent, profondeur));
+            let (type_, enfant) = (e.type_, e.enfant);
+            if matches!(type_, 1 | 2) {
                 self.places.push(Place {
                     entree: i,
                     chemin,
                     parent,
                 });
+                let k = self.places.len() - 1;
+                self.enfants.entry(parent).or_default().push(k);
+                if type_ == 1 {
+                    if profondeur + 1 < PROFONDEUR_MAX {
+                        pile.push((enfant, i, Some(k), profondeur + 1));
+                    } else if enfant != NOSTREAM {
+                        self.limite_atteinte = true;
+                    }
+                }
             }
         }
         self.orphelines = (1..self.entrees.len())
@@ -358,14 +383,11 @@ impl<'a> Cfb<'a> {
     /// Le flux nommé `nom` (sans tenir compte de la casse, comme le fichier composé compare ses noms) directement
     /// sous le stockage `stockage`.
     pub(crate) fn flux_nomme(&self, stockage: usize, nom: &str) -> Option<usize> {
-        self.places
+        self.enfants
+            .get(&stockage)?
             .iter()
-            .find(|p| {
-                p.parent == stockage
-                    && self.entrees[p.entree].type_ == 2
-                    && egaux_sans_casse(&self.entrees[p.entree].nom, nom)
-            })
-            .map(|p| p.entree)
+            .map(|&k| self.places[k].entree)
+            .find(|&e| self.entrees[e].type_ == 2 && egaux_sans_casse(&self.entrees[e].nom, nom))
     }
 }
 

@@ -97,24 +97,20 @@ pub(crate) fn deviner(octets: &[u8]) -> Type {
     if commence(b"BZh") && octets.get(3).is_some_and(|c| (b'1'..=b'9').contains(c)) {
         return Type::Bzip2;
     }
-    // ISO 9660 et UDF : le descripteur de volume au secteur 16 (« CD001 », « BEA01 »…), et ses copies.
-    if [0x8001usize, 0x8801, 0x9001]
-        .iter()
-        .any(|&p| a(p, b"CD001") || a(p, b"BEA01") || a(p, b"NSR02") || a(p, b"NSR03"))
-    {
+    if iso(octets) {
         return Type::Iso;
     }
     // Une image disque d'Apple ou un disque virtuel : la signature est dans les 512 derniers octets.
     if let Some(queue) = octets.len().checked_sub(512) {
-        if a(queue, b"koly") {
+        // « koly », version 4, taille de l'en-tête 512 (gros-boutistes) : « koly » seul est un mot tchèque.
+        if a(queue, b"koly\0\0\0\x04\0\0\x02\0") {
             return Type::Dmg;
         }
         if a(queue, b"conectix") {
             return Type::DisqueVirtuel;
         }
     }
-    // Un PDF : l'en-tête peut être n'importe où dans le premier Kio (les lecteurs le cherchent là).
-    if octets[..octets.len().min(1024)].windows(5).any(|f| f == b"%PDF-") {
+    if pdf_au_debut(octets) {
         return Type::Pdf;
     }
     let inertes: &[(&[u8], Type)] = &[
@@ -157,6 +153,41 @@ pub(crate) fn deviner(octets: &[u8]) -> Type {
         Some(t) if t.langage == texte::Langage::Texte => Type::Texte,
         Some(t) => Type::Script(t.langage),
         None => Type::Inconnu,
+    }
+}
+
+/// ISO 9660 et UDF : le descripteur de volume au secteur 16 (« CD001 », « BEA01 »…), et ses copies.
+pub(crate) fn iso(octets: &[u8]) -> bool {
+    let a = |position: usize, m: &[u8]| octets.get(position..position + m.len()) == Some(m);
+    [0x8001usize, 0x8801, 0x9001]
+        .iter()
+        .any(|&p| a(p, b"CD001") || a(p, b"BEA01") || a(p, b"NSR02") || a(p, b"NSR03"))
+}
+
+/// Un PDF : l'en-tête peut être n'importe où dans le premier Kio (les lecteurs le cherchent là).
+pub(crate) fn pdf_au_debut(octets: &[u8]) -> bool {
+    octets[..octets.len().min(1024)].windows(5).any(|f| f == b"%PDF-")
+}
+
+/// La fin d'un PNG : après son morceau IEND (chaque morceau : longueur sur 32 bits gros-boutiste, type, données,
+/// CRC). `None` : pas un PNG, ou pas de IEND dans le fichier.
+pub(crate) fn fin_png(octets: &[u8]) -> Option<usize> {
+    if !octets.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return None;
+    }
+    let o = super::lecture::Ordre { gros_boutiste: true };
+    let mut p = 8usize;
+    loop {
+        let n = usize::try_from(o.u32(octets, p)?).ok()?;
+        let type_ = octets.get(p + 4..p + 8)?;
+        let suivant = p.checked_add(12)?.checked_add(n)?;
+        if suivant > octets.len() {
+            return None;
+        }
+        if type_ == b"IEND" {
+            return Some(suivant);
+        }
+        p = suivant;
     }
 }
 

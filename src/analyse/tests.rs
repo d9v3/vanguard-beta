@@ -328,7 +328,8 @@ fn documents_chiffres_et_xlm() {
         nom: "Auto_Open".into(),
         tres: true
     }));
-    assert!(a.entierement_lue(), "{:?}", a.manques().collect::<Vec<_>>());
+    // Les formules XLM ne sont pas décodées : dit.
+    assert_eq!(a.parties[0].manques, [Raison::MacrosXlmNonDecodees]);
     let chiffre = cfb::essais::fichier(&[("Workbook", Some(&office::essais::classeur(true, &[])))]);
     assert!(analyse(&chiffre, "a.xls").parties[0].manques.contains(&Raison::Chiffre));
 }
@@ -418,6 +419,200 @@ fn fichier_trop_gros_et_non_ordinaire() {
     std::fs::remove_dir_all(&dossier).unwrap();
 }
 
+/// Les défauts trouvés par les relectures adverses du lot : chacun a son essai.
+#[test]
+fn relectures_donnees_hostiles() {
+    // Une entrée centrale zip64 dont l'en-tête local serait à 2⁶⁴ - 1 : ni débordement, ni lecture.
+    let mut z = zip_de(&[("a.txt", 0, b"abc")]);
+    let central = z.windows(4).position(|f| f == b"PK\x01\x02").unwrap();
+    z[central + 42..central + 46].copy_from_slice(&u32::MAX.to_le_bytes());
+    // Un champ zip64 (0x0001, 8 octets) à la place du nom : longueur des champs 12, nom vidé.
+    let fin = z.len() - 22;
+    let mut avec = z[..central + 46].to_vec();
+    avec[central + 28..central + 30].copy_from_slice(&0u16.to_le_bytes());
+    avec[central + 30..central + 32].copy_from_slice(&12u16.to_le_bytes());
+    avec.extend(1u16.to_le_bytes());
+    avec.extend(8u16.to_le_bytes());
+    avec.extend(u64::MAX.to_le_bytes());
+    let taille = u32::try_from(avec.len() - central).unwrap();
+    let mut eocd = z[fin..].to_vec();
+    eocd[12..16].copy_from_slice(&taille.to_le_bytes());
+    avec.extend(eocd);
+    let _ = analyse(&avec, "a.zip");
+    let mut image = b"\x89PNG\r\n\x1a\n".to_vec();
+    image.extend(&avec);
+    let _ = analyse(&image, "a.png");
+    // Une chaîne de 300 stockages imbriqués : la profondeur suivie est bornée, et dit.
+    let noms: Vec<String> = (0..300)
+        .map(|k| (0..=k).map(|j| format!("{:x}", j % 16)).collect::<Vec<_>>().join("/"))
+        .collect();
+    let elements: Vec<cfb::essais::Element<'_>> = noms.iter().map(|n| (n.as_str(), None)).collect();
+    let a = analyse(&cfb::essais::fichier(&elements), "profond.bin");
+    assert!(
+        a.parties[0].manques.contains(&Raison::EntreesLimitees),
+        "{:?}",
+        a.parties[0].manques
+    );
+    // Vingt projets VBA : au-delà de la borne, dit.
+    let dir = ovba::essais::compresser(&vba::essais::dir(&[]));
+    let stockages: Vec<String> = (0..20).map(|k| format!("S{k}")).collect();
+    let vbas: Vec<String> = stockages.iter().map(|s| format!("{s}/VBA")).collect();
+    let dirs: Vec<String> = vbas.iter().map(|v| format!("{v}/dir")).collect();
+    let mut elements: Vec<cfb::essais::Element<'_>> = Vec::new();
+    for k in 0..20 {
+        elements.push((&stockages[k], None));
+        elements.push((&vbas[k], None));
+        elements.push((&dirs[k], Some(&dir)));
+    }
+    let a = analyse(&cfb::essais::fichier(&elements), "a.doc");
+    assert!(a.parties[0].manques.contains(&Raison::EntreesLimitees));
+}
+
+#[test]
+fn relectures_faux_verts() {
+    // Un programme DOS ou NE (« MZ » sans PE), une classe Java : non lus, dits.
+    assert_eq!(
+        analyse(b"MZ\x90\0\x03\0\0\0", "a").parties[0].manques,
+        [Raison::FormatNonLu(Type::ExecutableDos)]
+    );
+    assert_eq!(
+        analyse(&[0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 52, 1, 2], "a").parties[0].manques,
+        [Raison::FormatNonLu(Type::ClasseJava)]
+    );
+    // Un fichier universel de 40 architectures n'est pas une classe Java.
+    assert_eq!(
+        nature::deviner(&[0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 40]),
+        Type::MachOUniversel
+    );
+    // Tar : un type inconnu (« Z ») avec un contenu est lu ; une archive mise bout à bout après la fin aussi.
+    let mut t = Vec::new();
+    let entree = |t: &mut Vec<u8>, nom: &str, type_: u8, contenu: &[u8]| {
+        let mut e = [0u8; 512];
+        e[..nom.len()].copy_from_slice(nom.as_bytes());
+        e[124..135].copy_from_slice(format!("{:011o}", contenu.len()).as_bytes());
+        e[156] = type_;
+        e[257..263].copy_from_slice(b"ustar\0");
+        t.extend(e);
+        t.extend(contenu);
+        t.resize(t.len().next_multiple_of(512), 0);
+    };
+    entree(
+        &mut t,
+        "cache.vbs",
+        b'Z',
+        b"Dim o\r\nSet o = CreateObject(\"WScript.Shell\")\r\n",
+    );
+    t.extend([0u8; 1024]);
+    entree(&mut t, "suite.sh", b'0', b"#!/bin/sh\nid\n");
+    t.extend([0u8; 1024]);
+    let a = analyse(&t, "a.tar");
+    assert!(
+        a.parties
+            .iter()
+            .any(|p| p.chemin == "cache.vbs" && p.type_ == Type::Script(texte::Langage::VbScript))
+    );
+    assert!(a.parties.iter().any(|p| p.chemin == "suite.sh"), "{:?}", types(&a));
+    // Zip : deux entrées sur le même en-tête local, l'une stockée vide, l'autre deflate : la seconde est lue.
+    let contenu = b"Write-Host x; Invoke-Expression y; $env:TEMP".repeat(10);
+    let mut z = zip_de(&[("vide.txt", 0, b""), ("vrai.ps1", 8, &contenu)]);
+    let premier = z.windows(4).position(|f| f == b"PK\x01\x02").unwrap();
+    let second = premier + 46 + "vide.txt".len();
+    let local_vrai = z[second + 42..second + 46].to_vec();
+    z[premier + 42..premier + 46].copy_from_slice(&local_vrai);
+    let a = analyse(&z, "a.zip");
+    assert!(
+        a.parties
+            .iter()
+            .any(|p| p.chemin == "vrai.ps1" && p.type_ == Type::Script(texte::Langage::PowerShell))
+    );
+    // Un zip collé derrière une image, avec une entrée centrale factice qui désigne la position 0.
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    png.extend([0x41u8; 64]);
+    let mut colle = zip_de(&[
+        ("factice", 0, b"x"),
+        ("charge.js", 0, b"var s = new ActiveXObject('x'); eval(s);"),
+    ]);
+    let premier = colle.windows(4).position(|f| f == b"PK\x01\x02").unwrap();
+    // Positions absolues dans le fichier entier (comme `zip -A`), sauf la factice, à 0.
+    let decalage = u32::try_from(png.len()).unwrap();
+    let second = premier + 46 + "factice".len();
+    let pos = u32::from_le_bytes(colle[second + 42..second + 46].try_into().unwrap()) + decalage;
+    colle[second + 42..second + 46].copy_from_slice(&pos.to_le_bytes());
+    colle[premier + 42..premier + 46].copy_from_slice(&0u32.to_le_bytes());
+    let fin = colle.len() - 22;
+    let debut = u32::from_le_bytes(colle[fin + 16..fin + 20].try_into().unwrap()) + decalage;
+    colle[fin + 16..fin + 20].copy_from_slice(&debut.to_le_bytes());
+    png.extend(&colle);
+    let a = analyse(&png, "chat.png");
+    assert!(a.parties.iter().any(|p| p.chemin == "charge.js"), "{:?}", types(&a));
+    // PNG suivi d'un programme : analysé à part.
+    let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\0IEND\xae\x42\x60\x82".to_vec();
+    png.extend(pe_wx(b""));
+    let a = analyse(&png, "chat.png");
+    assert_eq!(types(&a)[1], ("#apres-image".to_string(), Type::Pe));
+    // PowerPoint 97 : son flux principal n'est pas lu, dit.
+    let ppt = cfb::essais::fichier(&[
+        ("PowerPoint Document", Some(&[0u8; 64])),
+        ("Current User", Some(&[0u8; 16])),
+    ]);
+    let a = analyse(&ppt, "a.ppt");
+    assert_eq!(a.parties[0].type_, Type::PresentationPowerPoint);
+    assert!(
+        a.parties[0]
+            .manques
+            .contains(&Raison::FormatNonLu(Type::PresentationPowerPoint))
+    );
+    // Un raccourci dont la liste d'identifiants ne nomme pas la cible de LinkInfo : la cible lue n'est pas sûre.
+    let mut ids = 9u16.to_le_bytes().to_vec();
+    ids.extend(b"\x31\0calc\0\0\0");
+    let l = lnk::essais::raccourci(Some(&ids), Some("C:\\Windows\\notepad.exe"), None, b"");
+    assert!(
+        analyse(&l, "a.lnk").parties[0]
+            .manques
+            .contains(&Raison::CibleNonDecodee)
+    );
+    let mut ids = 15u16.to_le_bytes().to_vec();
+    ids.extend(b"\x31\0notepad.exe\0");
+    let l = lnk::essais::raccourci(Some(&ids), Some("C:\\Windows\\notepad.exe"), None, b"");
+    assert!(analyse(&l, "a.lnk").entierement_lue());
+    // ForceNoLinkInfo : Windows ignore LinkInfo.
+    let mut l = lnk::essais::raccourci(None, Some("C:\\Windows\\notepad.exe"), None, b"");
+    l[21] |= 1;
+    assert!(
+        analyse(&l, "a.lnk").parties[0]
+            .manques
+            .contains(&Raison::CibleNonDecodee)
+    );
+    // 64 Kio de texte puis du binaire : pas du texte.
+    let mut t = b"ligne de texte\n".repeat(5000);
+    t.extend([0u8, 1, 2, 3, 0, 0, 0xff]);
+    assert!(analyse(&t, "a.txt").parties[0].manques.contains(&Raison::FormatInconnu));
+    // Un tar dont le premier nom est « %PDF-1.7 » : lu comme tar, et le PDF dit non lu.
+    let mut t = Vec::new();
+    entree(&mut t, "%PDF-1.7", b'0', b"x");
+    t.extend([0u8; 1024]);
+    let a = analyse(&t, "a.tar");
+    assert_eq!(a.parties[0].type_, Type::Tar);
+    assert!(a.parties[0].manques.contains(&Raison::FormatNonLu(Type::Pdf)));
+    // Un module VBA dont la source n'a plus que ses lignes « Attribute » (p-code seul) : non vérifié.
+    let doc = document_vba("Macros", "Attribute VB_Name = \"Module1\"\r\n", true);
+    assert!(
+        analyse(&doc, "a.doc")
+            .manques()
+            .any(|(_, r)| *r == Raison::SourceVbaIllisible)
+    );
+}
+
+/// Les plantages trouvés par le fuzzing, gardés en graines : plus jamais.
+#[test]
+fn regressions_du_fuzzing() {
+    // Une source VBA dont une ligne commence par un caractère sur plusieurs octets (coupé au milieu).
+    let _ = analyse(
+        include_bytes!("../../fuzz/graines/analyse_fichier/regression-source-multioctet.bin"),
+        "f",
+    );
+}
+
 /// Les fichiers du socle d'analyse n'importent pas l'interface : aucun verdict ni affichage ici.
 #[test]
 fn sans_interface() {
@@ -445,6 +640,7 @@ fn passage_sur_des_fichiers_sains() {
     let mut pile: Vec<std::path::PathBuf> = std::env::split_paths(&dossiers).collect();
     let (mut fichiers, mut octets, mut parties, mut non_verifies) = (0u64, 0u64, 0u64, 0u64);
     let mut plus_lent = std::time::Duration::ZERO;
+    let mut lent = String::new();
     let mut par_raison: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
     let mut par_type: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
     let debut = std::time::Instant::now();
@@ -461,7 +657,15 @@ fn passage_sur_des_fichiers_sains() {
                 fichiers += 1;
                 octets += a.parties[0].taille;
                 parties += a.parties.len() as u64;
-                plus_lent = plus_lent.max(a.duree);
+                if a.duree > plus_lent {
+                    plus_lent = a.duree;
+                    lent = format!(
+                        "{:?}, {} Ko, {} parties",
+                        a.parties[0].type_,
+                        a.parties[0].taille >> 10,
+                        a.parties.len()
+                    );
+                }
                 *par_type.entry(format!("{:?}", a.parties[0].type_)).or_default() += 1;
                 if !a.entierement_lue() {
                     non_verifies += 1;
@@ -474,7 +678,7 @@ fn passage_sur_des_fichiers_sains() {
         }
     }
     eprintln!(
-        "{fichiers} fichiers, {} Mo, {parties} parties, {non_verifies} non vérifiés, {:.1} s en tout, le plus lent {:.2} s",
+        "{fichiers} fichiers, {} Mo, {parties} parties, {non_verifies} non vérifiés, {:.1} s en tout, le plus lent {:.2} s ({lent})",
         octets >> 20,
         debut.elapsed().as_secs_f64(),
         plus_lent.as_secs_f64()

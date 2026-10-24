@@ -188,12 +188,12 @@ fn utf16_sans_marque(octets: &[u8]) -> Option<bool> {
     }
 }
 
-/// Pas de nul, et au plus 1 % de caractères de contrôle (hors tabulation, retours, saut de page, échappement) dans
-/// l'échantillon.
+/// Pas de nul, et au plus 1 % de caractères de contrôle (hors tabulation, retours, saut de page, échappement).
 fn ressemble_a_du_texte(texte: &str) -> bool {
     let mut total = 0usize;
     let mut controles = 0usize;
-    for c in texte.chars().take(ECHANTILLON) {
+    // Tout le texte lu, pas un échantillon : du binaire après 64 Kio de texte n'en est pas.
+    for c in texte.chars() {
         total += 1;
         if c == '\0' {
             return false;

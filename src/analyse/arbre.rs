@@ -19,41 +19,33 @@ const FLUX_CONNUS: &[&str] = &[
     "WordDocument",
     "1Table",
     "0Table",
-    "Data",
     "Workbook",
     "Book",
     "PowerPoint Document",
     "Current User",
-    "Pictures",
     "\u{5}SummaryInformation",
     "\u{5}DocumentSummaryInformation",
     "\u{1}CompObj",
     "\u{1}Ole",
     "\u{3}ObjInfo",
-    "\u{3}EPRINT",
-    "_VBA_PROJECT",
-    "PROJECT",
-    "PROJECTwm",
-    "PROJECTlk",
-    "dir",
     "EncryptionInfo",
     "EncryptedPackage",
-    "\u{6}DataSpaces",
-    "Version",
-    "DataSpaceMap",
-    "StrongEncryptionDataSpace",
-    "\u{6}Primary",
-    "SummaryInformation",
-    "CONTENTS",
-    "CompObj",
-    "Ole",
 ];
+
+/// Les faits gardés pour une partie.
+const FAITS_MAX: usize = 1024;
+/// Les projets VBA lus dans un fichier composé (un document en a un).
+const PROJETS_VBA_MAX: usize = 16;
+/// Les membres d'un gzip lus à la suite.
+const MEMBRES_GZIP_MAX: usize = 4096;
 
 /// L'état d'une analyse.
 struct Etat<'v> {
     bornes: Bornes,
     debut: Instant,
     produits: u64,
+    /// Les octets examinés (empreinte, type, lecture) de toutes les parties, copiées ou non : le coût en temps.
+    examines: u64,
     taille_racine: u64,
     parties: Vec<Partie>,
     /// Les empreintes de la branche en cours (une partie qui en contient une est une quine).
@@ -68,6 +60,7 @@ pub(crate) fn analyser(octets: &[u8], nom: &str, bornes: &Bornes, visiteur: &mut
         bornes: *bornes,
         debut: Instant::now(),
         produits: 0,
+        examines: 0,
         taille_racine: octets.len() as u64,
         parties: Vec::new(),
         ancetres: Vec::new(),
@@ -121,6 +114,7 @@ pub(crate) fn analyser_fichier(
             bornes: *bornes,
             debut: Instant::now(),
             produits: 0,
+            examines: 0,
             taille_racine: meta.len(),
             parties: Vec::new(),
             ancetres: Vec::new(),
@@ -171,10 +165,16 @@ impl Etat<'_> {
     }
 
     fn fait(&mut self, i: usize, fait: Fait) {
+        // Une partie qui accumulerait des centaines de milliers de faits (flux orphelins, modules) coûterait leur
+        // carré à comparer : au-delà de la borne, un seul fait le dit.
         if let Some(p) = self.parties.get_mut(i)
             && !p.faits.contains(&fait)
         {
-            p.faits.push(fait);
+            if p.faits.len() < FAITS_MAX {
+                p.faits.push(fait);
+            } else if !p.faits.contains(&Fait::FaitsLimites) {
+                p.faits.push(Fait::FaitsLimites);
+            }
         }
     }
 
@@ -261,7 +261,14 @@ impl Etat<'_> {
                 self.manque(p, Raison::Delai);
                 return None;
             }
+            // Des tranches qui se chevauchent (architectures d'un Mach-O, overlays) ne sont pas copiées, donc pas
+            // comptées dans `produits` : leur lecture l'est ici.
+            if self.examines.saturating_add(octets.len() as u64) > self.bornes.examines {
+                self.manque(p, Raison::Travail);
+                return None;
+            }
         }
+        self.examines = self.examines.saturating_add(octets.len() as u64);
         let empreinte = sha256(octets);
         let type_ = nature::deviner(octets);
         faits.extend(nom::examiner(&chemin).into_iter().map(Fait::Nom));
@@ -313,37 +320,60 @@ impl Etat<'_> {
     }
 
     fn lire(&mut self, i: usize, octets: &[u8], type_: Type) {
+        // Le début de l'overlay déjà analysé à part (un zip qui y commence est déjà vu).
+        let mut overlay: Option<u64> = None;
         match type_ {
-            Type::Pe => self.pe(i, octets),
-            Type::Elf => self.elf(i, octets),
-            Type::MachO => self.macho(i, octets),
-            Type::MachOUniversel => self.universel(i, octets),
+            Type::Pe => overlay = self.pe(i, octets),
+            Type::Elf => overlay = self.elf(i, octets),
+            Type::MachO => overlay = self.macho(i, octets),
+            Type::MachOUniversel => overlay = self.universel(i, octets),
             Type::Zip => self.zip(i, octets),
             Type::Gzip => self.gzip(i, octets),
             Type::Tar => self.tar(i, octets),
             Type::Cfb => self.cfb(i, octets),
-            Type::Lnk => self.lnk(i, octets),
+            Type::Lnk => overlay = self.lnk(i, octets),
+            Type::Image => overlay = self.image(i, octets),
             Type::Script(_) | Type::Texte => self.texte(i, octets),
             Type::Inconnu => self.manque(i, Raison::FormatInconnu),
             t if t.non_lu() => self.manque(i, Raison::FormatNonLu(t)),
             _ => {}
         }
-        // Un zip collé à la fin d'un fichier d'une autre sorte (image, document…) : ce que lirait un extracteur, qui
-        // cherche la fin de l'archive depuis la fin du fichier. Les exécutables l'ont déjà dans leur overlay.
-        if !matches!(
-            type_,
-            Type::Zip | Type::Pe | Type::Elf | Type::MachO | Type::MachOUniversel | Type::Lnk | Type::Vide
-        ) {
-            self.zip_ajoute(i, octets);
+        // Les formats que leurs lecteurs cherchent ailleurs qu'au début (un fichier peut être les deux à la fois) :
+        // PDF dans le premier Kio, ISO 9660 au secteur 16.
+        if type_ != Type::Pdf && nature::pdf_au_debut(octets) {
+            self.manque(i, Raison::FormatNonLu(Type::Pdf));
         }
+        if type_ != Type::Iso && nature::iso(octets) {
+            self.manque(i, Raison::FormatNonLu(Type::Iso));
+        }
+        // Un zip collé à la fin, que lirait un extracteur qui cherche la fin de l'archive depuis la fin du fichier :
+        // derrière n'importe quel fichier, sauf ceux dont il est déjà la lecture (zip, OOXML…).
+        if !matches!(
+            self.parties[i].type_,
+            Type::Zip | Type::Ooxml | Type::OpenDocument | Type::Jar | Type::Apk | Type::Vide
+        ) {
+            self.zip_ajoute(i, octets, overlay);
+        }
+    }
+
+    /// Une image PNG : ses morceaux jusqu'à IEND ; ce qui suit est analysé à part.
+    fn image(&mut self, i: usize, octets: &[u8]) -> Option<u64> {
+        let fin = nature::fin_png(octets)?;
+        if fin >= octets.len() {
+            return None;
+        }
+        let r = fin as u64..octets.len() as u64;
+        self.fait(i, Fait::Overlay(r.end - r.start));
+        self.morceau(i, octets, r.clone(), "#apres-image", Origine::Overlay);
+        Some(r.start)
     }
 
     // --- Exécutables ---
 
-    fn pe(&mut self, i: usize, octets: &[u8]) {
+    fn pe(&mut self, i: usize, octets: &[u8]) -> Option<u64> {
         let Some(s) = crate::pe::structure(octets) else {
             self.manque(i, Raison::Illisible("en-têtes PE"));
-            return;
+            return None;
         };
         for section in &s.sections {
             if section.executable() && section.ecrivable() {
@@ -359,7 +389,11 @@ impl Etat<'_> {
                 );
             }
         }
-        if s.sections.iter().any(|x| x.nom.starts_with("UPX")) {
+        // UPX : ses sections (« UPX0 », « UPX1 ») ou sa marque « UPX! » dans les en-têtes, que renommer les sections
+        // ne retire pas.
+        if s.sections.iter().any(|x| x.nom.starts_with("UPX"))
+            || octets[..octets.len().min(4096)].windows(4).any(|f| f == b"UPX!")
+        {
             self.manque(i, Raison::Paquete("UPX"));
         }
         if !s.point_entree_dans_une_section() {
@@ -388,7 +422,9 @@ impl Etat<'_> {
             self.fait(i, Fait::Overlay(r.end - r.start));
             self.morceau(i, octets, r.clone(), &format!("#overlay@{}", r.start), Origine::Overlay);
         }
+        let debut_overlay = s.overlay.first().map(|r| r.start);
         self.parties[i].details = Details::Pe(Box::new(s));
+        debut_overlay
     }
 
     /// Les octets `r` de `octets`, analysés comme un enfant (sans copie).
@@ -401,10 +437,10 @@ impl Etat<'_> {
         }
     }
 
-    fn elf(&mut self, i: usize, octets: &[u8]) {
+    fn elf(&mut self, i: usize, octets: &[u8]) -> Option<u64> {
         let Some(e) = elf::lire(octets) else {
             self.manque(i, Raison::Illisible("en-tête ELF"));
-            return;
+            return None;
         };
         if e.segments
             .iter()
@@ -427,18 +463,21 @@ impl Etat<'_> {
         if e.segments_illisibles {
             self.manque(i, Raison::Illisible("table des segments ELF"));
         }
+        let mut debut_overlay = None;
         if e.fin_des_donnees < octets.len() as u64 {
             let r = e.fin_des_donnees..octets.len() as u64;
+            debut_overlay = Some(r.start);
             self.fait(i, Fait::Overlay(r.end - r.start));
             self.morceau(i, octets, r, "#overlay", Origine::Overlay);
         }
         self.parties[i].details = Details::Elf(Box::new(e));
+        debut_overlay
     }
 
-    fn macho(&mut self, i: usize, octets: &[u8]) {
+    fn macho(&mut self, i: usize, octets: &[u8]) -> Option<u64> {
         let Some(m) = macho::lire(octets) else {
             self.manque(i, Raison::Illisible("en-tête Mach-O"));
-            return;
+            return None;
         };
         for s in &m.segments {
             if s.ecrivable_executable() {
@@ -457,18 +496,21 @@ impl Etat<'_> {
         if m.commandes_illisibles {
             self.manque(i, Raison::Illisible("commandes de chargement Mach-O"));
         }
+        let mut debut_overlay = None;
         if m.fin_des_donnees < octets.len() as u64 && !m.commandes_illisibles {
             let r = m.fin_des_donnees..octets.len() as u64;
+            debut_overlay = Some(r.start);
             self.fait(i, Fait::Overlay(r.end - r.start));
             self.morceau(i, octets, r, "#overlay", Origine::Overlay);
         }
         self.parties[i].details = Details::MachO(Box::new(m));
+        debut_overlay
     }
 
-    fn universel(&mut self, i: usize, octets: &[u8]) {
+    fn universel(&mut self, i: usize, octets: &[u8]) -> Option<u64> {
         let Some(u) = macho::universel(octets) else {
             self.manque(i, Raison::Illisible("en-tête universel"));
-            return;
+            return None;
         };
         if u.tranches_hors_fichier > 0 {
             self.fait(i, Fait::TranchesHorsFichier(u.tranches_hors_fichier));
@@ -486,8 +528,10 @@ impl Etat<'_> {
         if u.fin_des_donnees < octets.len() as u64 {
             let r = u.fin_des_donnees..octets.len() as u64;
             self.fait(i, Fait::Overlay(r.end - r.start));
-            self.morceau(i, octets, r, "#overlay", Origine::Overlay);
+            self.morceau(i, octets, r.clone(), "#overlay", Origine::Overlay);
+            return Some(r.start);
         }
+        None
     }
 
     // --- Archives ---
@@ -528,7 +572,10 @@ impl Etat<'_> {
         for n in &noms {
             *vus_casse.entry(n.to_lowercase()).or_default() += 1;
         }
-        let mut locaux: std::collections::HashMap<usize, String> = std::collections::HashMap::new();
+        // Les données déjà lues : même en-tête local, même méthode, mêmes tailles et drapeaux de chiffrement (une
+        // entrée qui désigne le même en-tête avec une autre méthode ou une autre taille se lit autrement : relue).
+        let mut locaux: std::collections::HashMap<(usize, u16, u64, u64, u16), String> =
+            std::collections::HashMap::new();
         for (vue, nom) in p.entrees.iter().zip(noms) {
             if self.debut.elapsed() > self.bornes.delai {
                 self.manque(i, Raison::Delai);
@@ -540,6 +587,9 @@ impl Etat<'_> {
                 zip::Provenance::AuDelaDuNombre => Origine::EntreeZipCachee,
                 zip::Provenance::LocaleSeule => Origine::EntreeZipLocale,
             };
+            if vue.local_different {
+                faits.push(Fait::EnTeteLocalDifferent);
+            }
             if let Some(local) = vue.nom_local.as_ref().filter(|l| **l != vue.nom) {
                 faits.push(Fait::NomLocalDifferent(nom_zip(local, vue.utf8)));
             }
@@ -556,12 +606,13 @@ impl Etat<'_> {
             if nom.ends_with('/') && vue.taille == 0 && vue.compresse == 0 {
                 continue;
             }
-            if let Some(autre) = locaux.get(&vue.local) {
+            let cle = (vue.local, vue.methode, vue.compresse, vue.taille, vue.drapeaux & 0x41);
+            if let Some(autre) = locaux.get(&cle) {
                 faits.push(Fait::DonneesPartagees(autre.clone()));
                 self.non_lue(Some(i), nom, origine, vue.taille, faits, Vec::new());
                 continue;
             }
-            locaux.insert(vue.local, nom.clone());
+            locaux.insert(cle, nom.clone());
             if self.parties[i].profondeur + 1 > self.bornes.profondeur {
                 self.manque(i, Raison::Profondeur);
                 return;
@@ -601,6 +652,11 @@ impl Etat<'_> {
                         });
                     }
                     self.office_dans_zip(i, &nom, &x.contenu);
+                    if !x.reste.is_empty() {
+                        self.fait(i, Fait::DonneesApresFlux((x.reste.end - x.reste.start) as u64));
+                        let reste = x.reste.start as u64..x.reste.end as u64;
+                        self.morceau(i, octets, reste, &format!("{nom}#apres-flux"), Origine::Overlay);
+                    }
                     self.enfant(i, &x.contenu, nom, origine, faits, manques);
                 }
             }
@@ -627,22 +683,30 @@ impl Etat<'_> {
         }
     }
 
-    fn zip_ajoute(&mut self, i: usize, octets: &[u8]) {
-        // Une fin de répertoire central dans les 64 Kio de la fin, puis au moins une entrée centrale lue.
+    fn zip_ajoute(&mut self, i: usize, octets: &[u8], overlay: Option<u64>) {
+        // Une fin de répertoire central dans les 64 Kio de la fin, puis au moins une entrée dont l'en-tête local se
+        // lit : là commence l'archive (une entrée centrale qui désigne n'importe où ne compte pas).
         let queue = octets.len().saturating_sub(65_557 + 22);
         if !octets[queue..].windows(4).any(|f| f == b"PK\x05\x06") {
             return;
         }
         let p = zip::parcourir(octets, self.bornes.entrees);
-        let centrales = p
-            .entrees
-            .iter()
-            .filter(|e| e.provenance != zip::Provenance::LocaleSeule)
-            .count();
-        if !p.fin_trouvee || centrales == 0 || p.debut == 0 {
+        if !p.fin_trouvee {
             return;
         }
-        if let Some(archive) = octets.get(p.debut..) {
+        let debut = p.entrees.iter().filter(|e| e.donnees.is_some()).map(|e| e.local).min();
+        let Some(debut) = debut.filter(|&d| d > 0) else {
+            if p.entrees.iter().any(|e| e.provenance != zip::Provenance::LocaleSeule) {
+                // Un répertoire central dont aucune entrée ne se lit : ce qu'un extracteur ferait ne se sait pas.
+                self.manque(i, Raison::Illisible("zip collé à la fin"));
+            }
+            return;
+        };
+        // Déjà dans l'overlay, analysé à part.
+        if overlay.is_some_and(|o| debut as u64 >= o) {
+            return;
+        }
+        if let Some(archive) = octets.get(debut..) {
             self.enfant(
                 i,
                 archive,
@@ -667,16 +731,24 @@ impl Etat<'_> {
         let mut manques = Vec::new();
         let mut faits = Vec::new();
         let mut debut = 0usize;
-        // Chaque membre, à la suite (comme gzip -d) ; leur somme bornée.
-        loop {
+        let mut apres = None;
+        // Chaque membre, à la suite (comme gzip -d) ; leur somme bornée, leur nombre aussi.
+        for membre in 0.. {
+            if membre >= MEMBRES_GZIP_MAX {
+                manques.push(Raison::EntreesLimitees);
+                break;
+            }
+            if self.debut.elapsed() > self.bornes.delai {
+                manques.push(Raison::Delai);
+                break;
+            }
             let Some(flux) = crate::archives::gzip::debut_du_flux(octets, debut) else {
                 manques.push(Raison::Illisible("en-tête gzip"));
                 break;
             };
             let lu = deflate::inflater(&octets[flux..], limite - contenu.len());
-            let complet = lu.fin == deflate::Fin::Complet;
             let fin = flux + lu.lus;
-            if complet {
+            if lu.fin == deflate::Fin::Complet {
                 let crc = octets
                     .get(fin..fin + 4)
                     .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
@@ -709,23 +781,22 @@ impl Etat<'_> {
             }
             if !crate::archives::gzip::est_gzip(&octets[debut..]) {
                 // Autre chose après le dernier membre : analysé à part, comme un overlay.
-                let reste = octets[debut..].to_vec();
-                self.produit(contenu.len());
-                self.enfant(i, &contenu, nom, Origine::Gzip, faits, manques);
-                self.fait(i, Fait::Overlay(reste.len() as u64));
-                self.enfant(
-                    i,
-                    &reste,
-                    "#apres-gzip".to_string(),
-                    Origine::Overlay,
-                    Vec::new(),
-                    Vec::new(),
-                );
-                return;
+                apres = Some(debut);
+                break;
             }
         }
         self.produit(contenu.len());
         self.enfant(i, &contenu, nom, Origine::Gzip, faits, manques);
+        if let Some(debut) = apres {
+            self.fait(i, Fait::Overlay((octets.len() - debut) as u64));
+            self.morceau(
+                i,
+                octets,
+                debut as u64..octets.len() as u64,
+                "#apres-gzip",
+                Origine::Overlay,
+            );
+        }
     }
 
     fn tar(&mut self, i: usize, octets: &[u8]) {
@@ -741,19 +812,16 @@ impl Etat<'_> {
             tar::FinTar::Illisible => self.manque(i, Raison::Illisible("en-tête tar")),
             tar::FinTar::Limite => self.manque(i, Raison::EntreesLimitees),
         }
+        let mut fin_des_entrees = 0usize;
         for (nom, type_, position, taille) in entrees {
             if self.debut.elapsed() > self.bornes.delai {
                 self.manque(i, Raison::Delai);
                 return;
             }
+            let debut = position + 512;
+            fin_des_entrees = fin_des_entrees.max(debut + taille.div_ceil(512) * 512);
             match type_ {
-                // Fichier ordinaire (0, nul, ou 7 : contigu).
-                b'0' | 0 | b'7' => {
-                    let debut = position + 512;
-                    if let Some(contenu) = octets.get(debut..debut + taille) {
-                        self.enfant(i, contenu, nom, Origine::EntreeTar, Vec::new(), Vec::new());
-                    }
-                }
+                // Liens : sans contenu, jamais suivis.
                 b'1' | b'2' => {
                     let cible = octets
                         .get(position + 157..position + 257)
@@ -764,7 +832,41 @@ impl Etat<'_> {
                         .unwrap_or_default();
                     self.fait(i, Fait::Lien(format!("{nom} -> {cible}")));
                 }
+                // Tout le reste qui a un contenu : GNU tar et libarchive extraient un type inconnu comme un fichier
+                // ordinaire (0, nul, 7 contigu, mais aussi les lettres des éditeurs, un dossier qui aurait des
+                // données). Le fichier clairsemé de GNU (« S ») n'a que ses morceaux de données : dit non reconstitué.
+                _ if taille > 0 => {
+                    let manques = if type_ == b'S' {
+                        vec![Raison::Illisible("fichier clairsemé")]
+                    } else {
+                        Vec::new()
+                    };
+                    if let Some(contenu) = octets.get(debut..debut + taille) {
+                        self.enfant(i, contenu, nom, Origine::EntreeTar, Vec::new(), manques);
+                    }
+                }
                 _ => {}
+            }
+        }
+        // Après le bloc de fin : une autre archive mise bout à bout (`tar -i` la lit), ou autre chose.
+        if fin == tar::FinTar::Fin {
+            let mut reste = fin_des_entrees.min(octets.len());
+            while octets
+                .get(reste..reste + 512)
+                .is_some_and(|b| b.iter().all(|&o| o == 0))
+            {
+                reste += 512;
+            }
+            let queue = octets.get(reste..).unwrap_or(&[]);
+            if queue.iter().any(|&o| o != 0) {
+                self.fait(i, Fait::Overlay(queue.len() as u64));
+                self.morceau(
+                    i,
+                    octets,
+                    reste as u64..octets.len() as u64,
+                    "#apres-tar",
+                    Origine::Overlay,
+                );
             }
         }
     }
@@ -783,7 +885,7 @@ impl Etat<'_> {
         if ole.fat_incomplete || ole.mini_illisible {
             self.manque(i, Raison::Tronque);
         }
-        if ole.entrees.len() >= 65_536 {
+        if ole.limite_atteinte {
             self.manque(i, Raison::EntreesLimitees);
         }
         let a_la_racine = |n: &str| {
@@ -804,25 +906,52 @@ impl Etat<'_> {
         } else {
             Type::Cfb
         };
-        if self.parties[i].type_ == Type::OoxmlChiffre {
-            self.manque(i, Raison::Chiffre);
+        match self.parties[i].type_ {
+            Type::OoxmlChiffre => self.manque(i, Raison::Chiffre),
+            // Le flux « PowerPoint Document » ([MS-PPT]) porte, compressés, le projet VBA et les objets embarqués :
+            // il n'est pas lu.
+            Type::PresentationPowerPoint => self.manque(i, Raison::FormatNonLu(Type::PresentationPowerPoint)),
+            _ => {}
         }
-        // Les projets VBA : chaque stockage « VBA » qui a un flux « dir ».
-        let mut modules: std::collections::HashMap<usize, (String, u32)> = std::collections::HashMap::new();
+        // Les projets VBA : chaque stockage « VBA » qui a un flux « dir ». Pour chaque flux de module, le ou les
+        // modules qui le désignent (nom, début de la source).
+        let mut modules: std::collections::HashMap<usize, Vec<(String, u32)>> = std::collections::HashMap::new();
+        // Les flux que le projet désigne (dir, modules) : connus, sans être « inconnus ».
+        let mut flux_du_projet: std::collections::HashSet<usize> = std::collections::HashSet::new();
         let stockages_vba: Vec<(usize, String)> = ole
             .places
             .iter()
             .filter(|p| ole.entrees[p.entree].type_ == 1 && cfb::egaux_sans_casse(&ole.entrees[p.entree].nom, "VBA"))
             .map(|p| (p.entree, p.chemin.clone()))
             .collect();
+        let mut projets = 0usize;
         for (stockage, _) in &stockages_vba {
+            if self.debut.elapsed() > self.bornes.delai {
+                self.manque(i, Raison::Delai);
+                return;
+            }
             let Some(dir) = ole.flux_nomme(*stockage, "dir") else {
                 continue;
+            };
+            projets += 1;
+            if projets > PROJETS_VBA_MAX {
+                self.manque(i, Raison::EntreesLimitees);
+                break;
+            }
+            flux_du_projet.insert(dir);
+            let limite = match self.budget() {
+                Ok(l) => l,
+                Err(r) => {
+                    self.manque(i, r);
+                    continue;
+                }
             };
             let Ok(brut) = ole.flux(dir, limite) else {
                 self.manque(i, Raison::SourceVbaIllisible);
                 continue;
             };
+            // Le flux brut est une copie : compté, comme tout ce qui est produit.
+            self.produit(brut.len());
             let budget = match self.budget() {
                 Ok(b) => b,
                 Err(r) => {
@@ -839,22 +968,51 @@ impl Etat<'_> {
             self.fait(i, Fait::MacrosVba(projet.modules.len()));
             for m in &projet.modules {
                 self.fait(i, Fait::ModuleVba(m.nom.clone()));
-                match ole.flux_nomme(*stockage, &m.flux) {
-                    Some(f) => {
-                        modules.insert(f, (m.nom.clone(), m.decalage));
+                // Le nom Unicode et celui sur un octet, s'ils diffèrent : les deux flux sont lus comme sources.
+                let mut trouve = false;
+                for nom in std::iter::once(&m.flux).chain(m.flux_mbcs.iter()) {
+                    if let Some(f) = ole.flux_nomme(*stockage, nom) {
+                        trouve = true;
+                        flux_du_projet.insert(f);
+                        modules.entry(f).or_default().push((m.nom.clone(), m.decalage));
                     }
-                    None => self.manque(i, Raison::SourceVbaIllisible),
+                }
+                if !trouve {
+                    self.manque(i, Raison::SourceVbaIllisible);
                 }
             }
             self.parties[i].details = Details::Vba(Box::new(projet));
         }
-        // Chaque flux atteint par l'arbre, puis les orphelins.
-        let dans_vba = |p: &cfb::Place| stockages_vba.iter().any(|(s, _)| p.parent == *s);
+        // Chaque flux atteint par l'arbre, puis les orphelins. Dans un stockage VBA, sont connus les flux que
+        // le projet désigne et ceux que [MS-OVBA] 2.3.4 nomme (_VBA_PROJECT, PROJECT, PROJECTwm, PROJECTlk, __SRP_n).
+        let parents_vba: std::collections::HashSet<usize> = ole
+            .places
+            .iter()
+            .filter(|p| stockages_vba.iter().any(|(s, _)| *s == p.entree))
+            .map(|p| p.parent)
+            .collect();
+        let vba_nomme = |p: &cfb::Place| {
+            let nom = &ole.entrees[p.entree].nom;
+            (stockages_vba.iter().any(|(s, _)| p.parent == *s)
+                && (["_VBA_PROJECT", "dir"].iter().any(|n| cfb::egaux_sans_casse(n, nom))
+                    || nom.to_ascii_uppercase().starts_with("__SRP_")))
+                || (parents_vba.contains(&p.parent)
+                    && ["PROJECT", "PROJECTwm", "PROJECTlk"]
+                        .iter()
+                        .any(|n| cfb::egaux_sans_casse(n, nom)))
+        };
         let flux: Vec<(usize, String, bool, bool)> = ole
             .places
             .iter()
             .filter(|p| ole.entrees[p.entree].type_ == 2)
-            .map(|p| (p.entree, p.chemin.clone(), false, dans_vba(p)))
+            .map(|p| {
+                (
+                    p.entree,
+                    p.chemin.clone(),
+                    false,
+                    vba_nomme(p) || flux_du_projet.contains(&p.entree),
+                )
+            })
             .chain(
                 ole.orphelines
                     .iter()
@@ -916,7 +1074,7 @@ impl Etat<'_> {
                 self.parties[j].type_ = Type::FluxOle;
                 self.parties[j].manques.retain(|r| *r != Raison::FormatInconnu);
             }
-            if let Some((nom_module, decalage)) = modules.get(&k).cloned() {
+            for (nom_module, decalage) in modules.get(&k).cloned().unwrap_or_default() {
                 self.source_vba(j, &donnees, &nom_module, decalage, &chemin_affiche);
             }
         }
@@ -932,9 +1090,13 @@ impl Etat<'_> {
             if c.chiffre {
                 self.manque(i, Raison::Chiffre);
             }
+            if c.incomplet {
+                self.manque(i, Raison::Illisible("classeur"));
+            }
             for f in c.feuilles {
                 if f.sorte == 1 {
                     self.fait(i, Fait::MacrosXlm(f.nom.clone()));
+                    self.manque(i, Raison::MacrosXlmNonDecodees);
                 }
                 if f.masquage > 0 {
                     self.fait(
@@ -971,11 +1133,12 @@ impl Etat<'_> {
             Some(ovba::Defaut::Limite) => manques.push(self.raison_de_limite(budget)),
             Some(_) => manques.push(Raison::SourceVbaIllisible),
         }
-        // Une source vide derrière du code compilé (le flux en a avant `decalage`) : ce code s'exécute quand même.
-        if d.contenu.iter().all(u8::is_ascii_whitespace) && decalage > 0 {
+        let source = super::lecture::latin1_ou_utf8(&d.contenu);
+        // Une source sans code (rien que ses lignes « Attribute ») derrière du code compilé (le flux en a avant
+        // `decalage`) : ce code s'exécute quand même, et n'est pas décodé ici.
+        if decalage > 0 && vba::source_sans_code(&source) {
             manques.push(Raison::SourceVbaIllisible);
         }
-        let source = super::lecture::latin1_ou_utf8(&d.contenu);
         let faits: Vec<Fait> = vba::procedures_automatiques(&source, nom_module)
             .into_iter()
             .map(Fait::ProcedureAutomatique)
@@ -1001,23 +1164,22 @@ impl Etat<'_> {
 
     // --- Raccourcis et texte ---
 
-    fn lnk(&mut self, i: usize, octets: &[u8]) {
+    fn lnk(&mut self, i: usize, octets: &[u8]) -> Option<u64> {
         let Some(l) = lnk::lire(octets) else {
             self.manque(i, Raison::Illisible("raccourci"));
-            return;
+            return None;
         };
         if l.tronque {
             self.manque(i, Raison::Tronque);
         }
         if let Some(cible) = l.cible() {
             self.fait(i, Fait::CibleLnk(cible));
-        } else {
+        }
+        if !l.cible_coherente() {
             if let Some(approchee) = l.cible_approchee() {
                 self.fait(i, Fait::CibleApprochee(approchee));
             }
-            if l.liste_ids.is_some() {
-                self.manque(i, Raison::CibleNonDecodee);
-            }
+            self.manque(i, Raison::CibleNonDecodee);
         }
         if let Some(a) = &l.arguments {
             self.fait(i, Fait::ArgumentsLnk(a.clone()));
@@ -1034,12 +1196,15 @@ impl Etat<'_> {
         if l.arguments_rembourres() {
             self.fait(i, Fait::ArgumentsRembourres);
         }
+        let mut debut_overlay = None;
         if !l.tronque && l.fin < octets.len() {
             let r = l.fin as u64..octets.len() as u64;
+            debut_overlay = Some(r.start);
             self.fait(i, Fait::Overlay(r.end - r.start));
             self.morceau(i, octets, r, "#overlay", Origine::Overlay);
         }
         self.parties[i].details = Details::Lnk(Box::new(l));
+        debut_overlay
     }
 
     fn texte(&mut self, i: usize, octets: &[u8]) {
@@ -1060,13 +1225,13 @@ impl Etat<'_> {
             langage: t.langage,
             lignes: t.lignes,
         };
+        // Au-delà de la limite, rien ne dit que c'est encore du texte.
+        if t.tronque {
+            self.manque(i, Raison::TropGros);
+        }
         // L'UTF-16 décodé : ce que liront les motifs écrits en ASCII.
         if t.encodage.utf16() {
-            let manques = if t.tronque {
-                vec![self.raison_de_limite(limite)]
-            } else {
-                Vec::new()
-            };
+            let manques = if t.tronque { vec![Raison::TropGros] } else { Vec::new() };
             if self.budget().is_err() {
                 self.manque(i, Raison::Production);
                 return;

@@ -653,6 +653,10 @@ pub(crate) fn structure(octets: &[u8]) -> Option<StructurePe> {
     let sous_systeme = mot16_a(octets, facultatif + 68)?;
     let table = facultatif + taille_facultatif;
     let mut sections = Vec::with_capacity(e.sections.len());
+    // L'entropie se calcule une fois par plage, et sur deux fois le fichier au plus : 96 sections qui couvrent
+    // chacune tout le fichier ne coûtent pas 96 lectures (au-delà, l'entropie reste à 0, non calculée).
+    let mut deja: Vec<((u32, u32), u16)> = Vec::new();
+    let mut budget = octets.len().saturating_mul(2).saturating_add(1 << 20);
     for (i, s) in e.sections.iter().enumerate() {
         let entree = octets.get(table + i * 40..table + i * 40 + 40)?;
         let nom = &entree[..8];
@@ -666,7 +670,16 @@ pub(crate) fn structure(octets: &[u8]) -> Option<StructurePe> {
             position: s.position,
             taille_brute: s.taille_brute,
             caracteristiques: mot32_a(entree, 36)?,
-            entropie: entropie(brut),
+            entropie: match deja.iter().find(|(r, _)| *r == (s.position, s.taille_brute)) {
+                Some(&(_, h)) => h,
+                None if brut.len() <= budget => {
+                    budget -= brut.len();
+                    let h = entropie(brut);
+                    deja.push(((s.position, s.taille_brute), h));
+                    h
+                }
+                None => 0,
+            },
         });
     }
     let repertoire = |n: u32| -> Option<(u32, u32)> {

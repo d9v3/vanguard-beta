@@ -27,8 +27,8 @@ const LC_ENCRYPTION_INFO_64: u32 = 0x2c;
 pub(crate) const VM_PROT_WRITE: u32 = 0x2;
 pub(crate) const VM_PROT_EXECUTE: u32 = 0x4;
 /// Un fichier universel réel a deux ou trois architectures ; une classe Java commence aussi par 0xCAFEBABE, suivie
-/// de ses numéros de version (45 et plus) : au-delà de cette borne, ce n'est pas un fichier universel.
-pub(crate) const TRANCHES_MAX: u32 = 30;
+/// de ses numéros de version (mineure, puis majeure : 45 et plus) : en deçà de 45, c'est un fichier universel.
+pub(crate) const TRANCHES_MAX: u32 = 44;
 const COMMANDES_MAX: u32 = 4096;
 const NOM_MAX: usize = 1024;
 const BIBLIOTHEQUES_MAX: usize = 1024;
