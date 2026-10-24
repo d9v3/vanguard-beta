@@ -9,6 +9,7 @@
 //! démultiplier le travail (une même valeur BinXml substituée mille fois, et ainsi de suite à chaque niveau), d'où
 //! un budget de travail, de nœuds et de texte par enregistrement, en plus de la profondeur.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -33,6 +34,10 @@ pub(crate) enum ErreurBinxml {
     Texte,
     /// Une instance annonce plus de `Bornes::substitutions` valeurs.
     Substitutions,
+    /// La lecture du morceau a dépassé `Bornes::lecture_morceau`.
+    Lecture,
+    /// Un élément ne finit pas là où sa longueur (ElementByteLength) l'annonce.
+    Longueur,
     /// La définition d'un gabarit est illisible, ou se contient elle-même.
     Gabarit,
     /// Un nom illisible ou démesuré.
@@ -149,6 +154,9 @@ pub(crate) struct Morceau<'a> {
     gabarits: HashMap<usize, Option<Rc<Gabarit>>>,
     /// Les gabarits en cours de lecture : une définition qui se désignerait elle-même s'arrête là.
     en_cours: Vec<usize>,
+    /// Lectures d'octets faites dans ce morceau (`Bornes::lecture_morceau`). Une `Cell` : les lectures passent par
+    /// des méthodes qui n'empruntent le morceau qu'en lecture.
+    lectures: Cell<usize>,
     pub compteurs: Compteurs,
 }
 
@@ -160,6 +168,7 @@ impl<'a> Morceau<'a> {
             noms: HashMap::new(),
             gabarits: HashMap::new(),
             en_cours: Vec::new(),
+            lectures: Cell::new(0),
             compteurs: Compteurs::default(),
         }
     }
@@ -196,7 +205,18 @@ impl<'a> Morceau<'a> {
 
     // ---- Lecture des octets ----
 
+    /// Chaque lecture d'octets compte, pour tout le morceau.
+    fn compter_lecture(&self) -> R<()> {
+        let n = self.lectures.get() + 1;
+        self.lectures.set(n);
+        if n > self.bornes.lecture_morceau {
+            return Err(ErreurBinxml::Lecture);
+        }
+        Ok(())
+    }
+
     fn regarder(&self, c: &Curseur) -> R<u8> {
+        self.compter_lecture()?;
         if c.pos >= c.fin {
             return Err(ErreurBinxml::Tronque);
         }
@@ -204,6 +224,7 @@ impl<'a> Morceau<'a> {
     }
 
     fn prendre(&self, c: &mut Curseur, n: usize) -> R<&'a [u8]> {
+        self.compter_lecture()?;
         let fin = c.pos.checked_add(n).ok_or(ErreurBinxml::Tronque)?;
         if fin > c.fin {
             return Err(ErreurBinxml::Tronque);
@@ -329,8 +350,11 @@ impl<'a> Morceau<'a> {
         } else {
             None
         };
-        // ElementByteLength : la suite se lit jeton par jeton, la longueur ne sert pas.
-        self.double_mot(c)?;
+        // ElementByteLength : la suite se lit jeton par jeton, puis doit finir juste là. Le DependencyId est deviné
+        // (plus bas) : un mauvais choix qui donnerait par hasard un arbre valide mais faux se voit ici, et
+        // l'enregistrement est compté illisible au lieu d'être rendu de travers.
+        let longueur = usize::try_from(self.double_mot(c)?).map_err(|_| ErreurBinxml::Longueur)?;
+        let attendue = c.pos.checked_add(longueur).ok_or(ErreurBinxml::Longueur)?;
         let nom = self.nom(c)?;
         let mut attributs = Vec::new();
         if jeton & ENCORE != 0 {
@@ -361,6 +385,9 @@ impl<'a> Morceau<'a> {
                 }
             },
             j => return Err(ErreurBinxml::Jeton(j)),
+        }
+        if c.pos != attendue {
+            return Err(ErreurBinxml::Longueur);
         }
         Ok(Element {
             nom,

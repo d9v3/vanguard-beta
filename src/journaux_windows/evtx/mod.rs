@@ -77,6 +77,10 @@ pub(crate) struct Bornes {
     pub noeuds: usize,
     /// Pas de rendu pour un enregistrement (contenus, attributs) : le coût d'un gabarit démultiplié s'arrête là.
     pub travail: usize,
+    /// Lectures d'octets du BinXml pour tout un morceau, gabarits et noms désignés compris. Un vrai morceau en fait
+    /// quelques centaines de milliers (chaque octet lu une fois, chaque gabarit une fois) ; des gabarits désignés à
+    /// des positions qui se chevauchent feraient sinon relire le morceau presque autant de fois qu'il a d'octets.
+    pub lecture_morceau: usize,
 }
 
 impl Default for Bornes {
@@ -90,6 +94,7 @@ impl Default for Bornes {
             texte_enregistrement: 1 << 20,
             noeuds: 4096,
             travail: 200_000,
+            lecture_morceau: 1 << 21,
         }
     }
 }
@@ -171,6 +176,11 @@ pub(crate) struct Bilan {
     pub enregistrements_illisibles: u64,
     /// Enregistrements d'un morceau lu, laissés au-delà de `Bornes::enregistrements`.
     pub enregistrements_hors_borne: u64,
+    /// Enregistrements entiers (signature, taille et copie justes) trouvés après la place libre d'un morceau lu, donc
+    /// pas lus, comme Windows ne les lit pas : d'ordinaire d'anciennes versions d'enregistrements ([libyal]
+    /// « Recovery » ; 1 051 dans les 28 échantillons publics de la crate evtx), mais aussi ce qu'une place libre
+    /// reculée à la main cacherait. Dits, sans compter dans `complet` : ce n'est pas une perte de lecture.
+    pub enregistrements_apres_place_libre: u64,
     /// Enregistrements qu'un morceau lu annonce (premier et dernier numéros de son en-tête) et qui n'y ont pas été
     /// trouvés, même illisibles : une place libre avancée à la main ferait sinon taire la fin du morceau.
     pub enregistrements_absents: u64,
@@ -294,33 +304,61 @@ fn lire_au_plus<R: Read>(source: &mut R, tampon: &mut [u8]) -> std::io::Result<u
     Ok(lu)
 }
 
-/// La fin des enregistrements d'un morceau aux CRC justes, ou pourquoi il est écarté : `Err(true)` s'il n'y a rien à
-/// lire (morceau vide), `Err(false)` s'il est illisible.
-fn verifier_morceau(morceau: &[u8]) -> Result<usize, bool> {
+/// Ce qu'un morceau donne à lire.
+enum Etat {
+    /// Les deux CRC justes : les enregistrements vont jusqu'à cette place libre.
+    Lisible(usize),
+    /// Jamais écrit (tout à zéro), ou préparé sans aucun enregistrement (place libre au début, en-tête juste) : rien
+    /// de perdu ; la place libre, s'il y en a une, pour y chercher ce qui y resterait.
+    Vide(Option<usize>),
+    Illisible,
+}
+
+/// Le morceau vérifié : signature, CRC de l'en-tête, place libre plausible, CRC des enregistrements.
+fn verifier_morceau(morceau: &[u8]) -> Etat {
     if morceau.len() != MORCEAU {
-        return Err(false);
+        return Etat::Illisible;
     }
     if !morceau.starts_with(b"ElfChnk\0") {
-        // Vide (jamais écrit) : rien de perdu ; autre chose : illisible.
-        return Err(morceau.iter().all(|&b| b == 0));
+        return if morceau.iter().all(|&b| b == 0) {
+            Etat::Vide(None)
+        } else {
+            Etat::Illisible
+        };
     }
     let annonce = u32_a(morceau, 124);
     if annonce != Some(crc32(&[&morceau[..120], &morceau[128..EN_TETE_MORCEAU]])) {
-        return Err(false);
+        return Etat::Illisible;
     }
     let libre = u32_a(morceau, 48).and_then(|l| usize::try_from(l).ok());
     let Some(libre) = libre.filter(|l| (EN_TETE_MORCEAU..=MORCEAU).contains(l)) else {
-        return Err(false);
+        return Etat::Illisible;
     };
-    // Un morceau préparé sans aucun enregistrement : son CRC des enregistrements reste celui d'avant, mais il n'y a
-    // rien à lire, donc rien de perdu.
+    // Préparé sans aucun enregistrement : son CRC des enregistrements reste celui d'avant, mais il n'y a rien à lire.
     if libre == EN_TETE_MORCEAU {
-        return Err(true);
+        return Etat::Vide(Some(libre));
     }
     if u32_a(morceau, 52) != Some(crc32(&[&morceau[EN_TETE_MORCEAU..libre]])) {
-        return Err(false);
+        return Etat::Illisible;
     }
-    Ok(libre)
+    Etat::Lisible(libre)
+}
+
+/// Les enregistrements entiers rangés après la place libre, comptés sans être lus. La recherche avance toujours :
+/// d'un enregistrement entier à sa fin, sinon d'un octet.
+fn apres_place_libre(morceau: &[u8], libre: usize) -> u64 {
+    let mut n = 0;
+    let mut pos = libre;
+    while let Some(trouve) = chercher_signature(morceau, pos, MORCEAU) {
+        match taille_enregistrement(morceau, trouve, MORCEAU) {
+            Some(taille) => {
+                n += 1;
+                pos = trouve + taille;
+            }
+            None => pos = trouve + 1,
+        }
+    }
+    n
 }
 
 /// Les enregistrements d'un morceau de 64 Kio, après vérification de ses deux CRC.
@@ -332,17 +370,19 @@ fn lire_morceau(
     recevoir: &mut impl FnMut(Enregistrement),
 ) {
     let libre = match verifier_morceau(morceau) {
-        Ok(libre) => libre,
-        Err(true) => {
+        Etat::Lisible(libre) => libre,
+        Etat::Vide(libre) => {
             bilan.morceaux_vides += 1;
+            bilan.enregistrements_apres_place_libre += libre.map_or(0, |l| apres_place_libre(morceau, l));
             return;
         }
-        Err(false) => {
+        Etat::Illisible => {
             bilan.morceaux_illisibles += 1;
             return;
         }
     };
     bilan.morceaux_lus += 1;
+    bilan.enregistrements_apres_place_libre += apres_place_libre(morceau, libre);
     let mut lecteur = binxml::Morceau::new(morceau, bornes);
     let avant = bilan.enregistrements_lus + bilan.enregistrements_illisibles + bilan.enregistrements_hors_borne;
     let mut pos = EN_TETE_MORCEAU;

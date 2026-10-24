@@ -141,6 +141,8 @@ struct Ecrivain {
     noms: HashMap<&'static str, u32>,
     gabarits: HashMap<u32, u32>,
     enregistrements: Vec<(u64, usize)>,
+    /// La place de l'ElementByteLength de chaque élément écrit.
+    longueurs: Vec<usize>,
 }
 
 fn pos32(p: usize) -> u32 {
@@ -154,6 +156,7 @@ impl Ecrivain {
             noms: HashMap::new(),
             gabarits: HashMap::new(),
             enregistrements: Vec::new(),
+            longueurs: Vec::new(),
         }
     }
     fn pos(&self) -> usize {
@@ -227,6 +230,7 @@ impl Ecrivain {
                 self.u8(if attributs.is_empty() { 0x01 } else { 0x41 });
                 self.u16(0xFFFF);
                 let taille = self.pos();
+                self.longueurs.push(taille);
                 self.u32(0);
                 self.nom(nom);
                 if !attributs.is_empty() {
@@ -858,6 +862,80 @@ fn une_valeur_demultipliee_s_arrete_au_budget_de_travail() {
     );
 }
 
+#[test]
+fn une_place_libre_reculee_ne_cache_rien_sans_le_dire() {
+    // La place libre reculée jusqu'au troisième enregistrement, le dernier numéro et les CRC ajustés : un en-tête
+    // qui se tient, et le troisième n'est plus lu (Windows ne le lirait pas non plus), mais il est compté.
+    let mut f = fichier_type();
+    let troisieme = position_enregistrement(2) - EN_TETE;
+    f[EN_TETE + 48..EN_TETE + 52].copy_from_slice(&pos32(troisieme).to_le_bytes());
+    f[EN_TETE + 16..EN_TETE + 24].copy_from_slice(&2u64.to_le_bytes());
+    recalculer_crc(&mut f);
+    let lu = lire_type(&f);
+    assert_eq!(lu.enregistrements.len(), 2);
+    assert_eq!(
+        (
+            lu.bilan.enregistrements_apres_place_libre,
+            lu.bilan.enregistrements_absents
+        ),
+        (1, 0),
+        "{:?}",
+        lu.bilan
+    );
+    // Jusqu'au début : le morceau passe pour préparé sans enregistrement, les trois sont comptés quand même.
+    let mut f = fichier_type();
+    f[EN_TETE + 48..EN_TETE + 52].copy_from_slice(&pos32(EN_TETE_MORCEAU).to_le_bytes());
+    recalculer_crc(&mut f);
+    let lu = lire_type(&f);
+    assert_eq!((lu.enregistrements.len(), lu.bilan.morceaux_vides), (0, 1));
+    assert_eq!(lu.bilan.enregistrements_apres_place_libre, 3);
+}
+
+#[test]
+fn un_element_qui_ne_finit_pas_a_sa_longueur_est_illisible() {
+    let mut m = Ecrivain::new();
+    m.enregistrement(1, DATE, |m| m.instance(1, &s("Event", 0, 1), &[V::Chaine("x")]));
+    let longueur = m.longueurs[0];
+    let mut morceau = m.finir();
+    assert!(rendre_binxml(&morceau, EN_TETE_MORCEAU + 24, &Bornes::default()).is_ok());
+    morceau[longueur] += 1;
+    let f = fichier(&[morceau]);
+    let lu = lire_type(&f);
+    assert_eq!(
+        (lu.bilan.enregistrements_lus, lu.bilan.enregistrements_illisibles),
+        (0, 1)
+    );
+    assert_eq!(rendu_seul(&f), Err(ErreurBinxml::Gabarit));
+}
+
+#[test]
+fn la_lecture_d_un_morceau_a_son_budget() {
+    let bornes = Bornes {
+        lecture_morceau: 300,
+        ..Bornes::default()
+    };
+    let lu = lire_octets(&fichier_type(), &bornes).unwrap();
+    assert!(lu.bilan.enregistrements_illisibles > 0, "{:?}", lu.bilan);
+    // Le budget épuisé pendant la lecture du gabarit, puis avant même.
+    let morceau = &fichier_type()[EN_TETE..EN_TETE + MORCEAU];
+    let bornes = Bornes {
+        lecture_morceau: 100,
+        ..Bornes::default()
+    };
+    assert_eq!(
+        rendre_binxml(morceau, EN_TETE_MORCEAU + 24, &bornes),
+        Err(ErreurBinxml::Gabarit)
+    );
+    let bornes = Bornes {
+        lecture_morceau: 4,
+        ..Bornes::default()
+    };
+    assert_eq!(
+        rendre_binxml(morceau, EN_TETE_MORCEAU + 24, &bornes),
+        Err(ErreurBinxml::Lecture)
+    );
+}
+
 // ---- Octets au hasard ----
 
 /// Les bornes que tout résultat doit tenir, quoi que contienne le fichier.
@@ -1116,6 +1194,7 @@ struct Croisement {
     morceaux_illisibles: u64,
     enregistrements_illisibles: u64,
     enregistrements_absents: u64,
+    apres_place_libre: u64,
     ecarts: BTreeMap<&'static str, (usize, String)>,
 }
 
@@ -1127,6 +1206,7 @@ fn croiser(octets: &[u8]) -> Croisement {
         morceaux_illisibles: nous.bilan.morceaux_illisibles,
         enregistrements_illisibles: nous.bilan.enregistrements_illisibles,
         enregistrements_absents: nous.bilan.enregistrements_absents,
+        apres_place_libre: nous.bilan.enregistrements_apres_place_libre,
         ..Croisement::default()
     };
     let mut vus = BTreeMap::new();
@@ -1241,6 +1321,7 @@ fn lecture_croisee_des_echantillons() {
         total.morceaux_illisibles += c.morceaux_illisibles;
         total.enregistrements_illisibles += c.enregistrements_illisibles;
         total.enregistrements_absents += c.enregistrements_absents;
+        total.apres_place_libre += c.apres_place_libre;
         for (sorte, (n, d)) in c.ecarts {
             total.ecarts.entry(sorte).or_insert((0, d)).0 += n;
         }
