@@ -105,7 +105,9 @@ pub(crate) fn notifier(titre: &str, corps: &str) {
         Command::new("notify-send").args(["-a", "Vanguard", "-i", "vanguard", "-u", "critical", "--", titre, corps]),
         10,
     );
-    // macOS : notification du Centre de notifications, par AppleScript (texte entre guillemets échappés).
+    // macOS : notification du Centre de notifications, par AppleScript (texte entre guillemets échappés). osascript
+    // fait foi (outil gardé, §4) : UNUserNotificationCenter demande une application signée, ce que n'est pas un
+    // programme en ligne de commande. Lancé sans shell.
     #[cfg(target_os = "macos")]
     {
         let e = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");

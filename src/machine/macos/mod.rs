@@ -35,6 +35,8 @@ pub fn architecture() -> &'static str {
     }
 }
 
+/// socketfilterfw fait foi (outil gardé, §4) : com.apple.alf.plist n'est plus une source sûre depuis macOS 15, qui a
+/// déplacé ces réglages. Lancé sans shell pour la lecture ; ses corrections, montrées, passent par sudo.
 const PARE_FEU: &str = "/usr/libexec/ApplicationFirewall/socketfilterfw";
 
 /// Commande d'installation d'un outil (Homebrew, le gestionnaire de paquets des Mac).

@@ -132,6 +132,9 @@ pub(crate) fn sortante(pf: PareFeu, ip: IpAddr) -> Regle {
                 )),
             }
         }
+        // pfctl fait foi (outil gardé, §4) : pf n'a pas d'interface publique (ioctl sur /dev/pf, en-têtes privés). Le
+        // shell autour (grep, printf) est à retirer avec l'assistant élevé du lot du blocage (n°3) : arguments et
+        // entrée passés en Rust, résultat contrôlé en Rust.
         PareFeu::Pf => Regle {
             poser: vec![
                 // Les règles de l'ancre seulement si elles n'y sont pas : les recharger viderait la table.

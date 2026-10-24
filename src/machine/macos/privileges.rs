@@ -45,6 +45,8 @@ fn lire_root(sortie: &str, erreurs: &str) -> Option<bool> {
     }
 }
 
+/// dscl fait foi (outil gardé, §4) : getpwnam rend « ******** » pour le mot de passe, la fiche de root dans
+/// /var/db/dslocal ne se lit qu'en root, et OpenDirectory ne s'appelle qu'en Objective-C. Lancé sans shell.
 pub(super) fn compte_root() -> Option<Constat> {
     let r = crate::commande::lancer(
         Command::new("dscl").args([".", "-read", "/Users/root", "AuthenticationAuthority"]),
