@@ -70,14 +70,16 @@ for c in "${liste[@]}"; do
   # les vérifications de débordement (comme la version publiée) et AddressSanitizer, par défaut chez cargo-fuzz.
   if cargo +nightly fuzz run --target "$HOTE" --fuzz-dir fuzz --target-dir "$CIBLE_FUZZ" "$c" "$corpus" "fuzz/graines/$c" -- \
     -max_total_time="$DUREE" -artifact_prefix="$plantages/" -print_final_stats=1 >"$journal" 2>&1; then
-    executions=$(grep -o 'stat::number_of_executed_units: *[0-9]*' "$journal" | grep -o '[0-9]*$')
-    couverture=$(grep -o 'cov: [0-9]*' "$journal" | tail -n1 | grep -o '[0-9]*$')
+    # -a : le journal recopie parfois des octets d'une entrée ; grep le disait binaire (« Binary file matches »), et
+    # le nombre d'exécutions manquait (« ? »).
+    executions=$(grep -ao 'stat::number_of_executed_units: *[0-9]*' "$journal" | grep -o '[0-9]*$')
+    couverture=$(grep -ao 'cov: [0-9]*' "$journal" | tail -n1 | grep -o '[0-9]*$')
     printf '  ✔ %-12s %s exécutions, couverture %s, corpus de %s entrées\n' "$c" "${executions:-?}" \
       "${couverture:-?}" "$(find "$corpus" -type f | wc -l)"
   else
     ECHECS=$((ECHECS + 1))
     echo "  ✖ $c : plantage ou erreur de compilation (journal : $journal ; données : $plantages/)"
-    grep -E '^(thread .* panicked|==[0-9]+==ERROR|SUMMARY|error)' "$journal" | head -n 5 | sed 's/^/      /'
+    grep -aE '^(thread .* panicked|==[0-9]+==ERROR|SUMMARY|error)' "$journal" | head -n 5 | sed 's/^/      /'
   fi
 done
 ((ECHECS == 0)) || { echo "$ECHECS cible(s) en échec."; exit 1; }
