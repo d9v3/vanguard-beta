@@ -581,26 +581,69 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<String,
         }
         Faire::Programme { arret, quarantaine } => {
             let mut lancees = Vec::new();
+            let mut fait = m.quoi.clone();
             if let Some(a) = &arret {
                 // Relu juste avant : entre la question et la réponse, le processus a pu finir et son numéro être repris.
-                if chemin_du_processus(a.pid).is_some_and(|c| meme_chemin(&c, &a.chemin)) {
-                    let arrete = arreter(a, &pret.commandes, &mut lancees);
-                    if !arrete {
-                        changements::noter_blocage(lancees, false, note(None), preuve);
-                        return Err(Echec::echoue(
-                            OU,
-                            tr!(
-                                "l'arrêt du processus a échoué : rien d'autre n'a été fait",
-                                "stopping the process failed: nothing else was done"
-                            ),
-                        ));
+                // Seul un processus vraiment parti compte comme « plus rien à arrêter » ; un programme qui ne se lit
+                // plus alors que le processus est là n'est jamais pris pour un arrêt fait.
+                let echec = |raison: &str, lancees: Vec<String>, preuve| {
+                    changements::noter_blocage(lancees, false, note(None), preuve);
+                    Err(Echec::echoue(OU, raison.to_string()))
+                };
+                match chemin_du_processus(a.pid) {
+                    Some(c) if meme_chemin(&c, &a.chemin) => {
+                        if !arreter(a, &pret.commandes, &mut lancees) {
+                            return echec(
+                                tr!(
+                                    "l'arrêt du processus a échoué : rien d'autre n'a été fait",
+                                    "stopping the process failed: nothing else was done"
+                                ),
+                                lancees,
+                                preuve,
+                            );
+                        }
+                        if !attendre_la_fin(a) {
+                            return echec(
+                                tr!(
+                                    "le signal d'arrêt est parti, mais le processus tourne toujours : rien d'autre n'a été fait",
+                                    "the stop signal was sent, but the process is still running: nothing else was done"
+                                ),
+                                lancees,
+                                preuve,
+                            );
+                        }
                     }
-                    attendre_la_fin(a);
+                    // Toujours là, mais illisible ou faisant tourner un autre programme (numéro repris, ou le même
+                    // processus passé à un autre programme par exec) : rien n'est arrêté, et c'est un échec dit.
+                    lu if processus_present(a.pid) => {
+                        let raison = if lu.is_none() {
+                            tr!(
+                                "le programme du processus ne se lit plus : rien n'est arrêté à l'aveugle",
+                                "the process's program can no longer be read: nothing is stopped blindly"
+                            )
+                            .to_string()
+                        } else {
+                            trf!(
+                                "le PID {} fait maintenant tourner un autre programme : rien n'est arrêté",
+                                "PID {} now runs another program: nothing is stopped",
+                                a.pid
+                            )
+                        };
+                        return echec(&raison, lancees, preuve);
+                    }
+                    // Fini de lui-même : plus rien à arrêter, et c'est dit.
+                    _ => {
+                        lancees.push(format!("PID {} : déjà fini avant l'arrêt", a.pid));
+                        fait += tr!(
+                            " (le processus avait déjà fini : rien à arrêter)",
+                            " (the process had already ended: nothing to stop)"
+                        );
+                    }
                 }
             }
             let Some((chemin, detection)) = &quarantaine else {
                 changements::noter_blocage(lancees, true, note(None), preuve);
-                return Ok(m.quoi.clone());
+                return Ok(fait);
             };
             // Le seul chemin vers la quarantaine : il note le geste, la preuve et de quoi l'annuler.
             let demande = crate::protection::quarantaine::Demande {
@@ -611,7 +654,7 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<String,
                 preuve,
             };
             match crate::protection::quarantaine::isoler(chemin, detection, demande) {
-                Ok(_) => Ok(m.quoi.clone()),
+                Ok(_) => Ok(fait),
                 Err(e) => Err(Echec::echoue(
                     OU,
                     trf!(
@@ -729,12 +772,38 @@ fn arreter(a: &Arret, commandes: &[String], lancees: &mut Vec<String>) -> bool {
 }
 
 /// Attend que le processus arrêté soit bien fini (5 secondes au plus) : son fichier se libère pour la quarantaine.
-fn attendre_la_fin(a: &Arret) {
+/// `false` : il fait toujours tourner son programme.
+fn attendre_la_fin(a: &Arret) -> bool {
     for _ in 0..50 {
         if !chemin_du_processus(a.pid).is_some_and(|c| meme_chemin(&c, &a.chemin)) {
-            return;
+            return true;
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    false
+}
+
+/// Un processus vivant de ce numéro existe-t-il encore (même illisible, ou d'un autre compte) ? Un zombie (fini, pas
+/// encore ramassé par son parent) n'en est plus un.
+fn processus_present(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|s| crate::socle::processus::etat_du_stat(&s))
+            .is_some_and(|e| !matches!(e, 'Z' | 'X'))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let Ok(p) = libc::pid_t::try_from(pid) else {
+            return false;
+        };
+        // SAFETY : kill avec le signal 0 n'envoie rien, il dit seulement si le processus existe.
+        unsafe { libc::kill(p, 0) == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) }
+    }
+    #[cfg(windows)]
+    {
+        crate::machine::windows::processus::liste().iter().any(|p| p.pid == pid)
     }
 }
 
@@ -1210,6 +1279,14 @@ mod tests {
         std::fs::copy(sleep, &copie).unwrap();
         let mut enfant = std::process::Command::new(&copie).arg("30").spawn().unwrap();
         let pid = enfant.id();
+        // spawn peut rendre la main avant l'exec du fils (vu sous charge) : son programme est alors encore celui de
+        // l'essai. On attend qu'il soit le dormeur.
+        let attendu = copie.to_string_lossy().into_owned();
+        let debut = std::time::Instant::now();
+        while chemin_du_processus(pid).as_deref() != Some(attendu.as_str()) {
+            assert!(debut.elapsed().as_secs() < 10, "le fils ne fait pas tourner {attendu}");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         let chemin = chemin_du_processus(pid).unwrap();
         let m = menace(Geste::Programme {
             pid: Some(pid),
@@ -1223,9 +1300,46 @@ mod tests {
         let pret = preparer(&m, &ctx, false).unwrap();
         assert!(pret.commandes.is_empty(), "{:?}", pret.commandes);
         assert!(matches!(&pret.faire, Faire::Programme { arret: Some(a), .. } if a.ici));
-        faire(&m, pret, false).unwrap();
-        assert_eq!(enfant.wait().unwrap().signal(), Some(libc::SIGKILL));
+        let fait = faire(&m, pret, false).unwrap();
+        let statut = enfant.wait().unwrap();
+        assert_eq!(statut.signal(), Some(libc::SIGKILL), "{fait} {statut:?}");
         let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// Le numéro du processus fait maintenant tourner un autre programme (repris, ou passé à un autre par exec) :
+    /// rien n'est arrêté, et c'est un échec dit, jamais « bloqué ». Parti pour de bon : « déjà fini », dit.
+    #[cfg(unix)]
+    #[test]
+    fn arret_jamais_dit_fait_sans_l_avoir_fait() {
+        let mut enfant = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = enfant.id();
+        let m = menace(Geste::Programme {
+            pid: Some(pid),
+            nom: "outil".into(),
+            chemin: Some(PathBuf::from("/tmp/.x/outil")),
+            fichier: None,
+            detection: "essai".into(),
+        });
+        let pret = |pid| Pret {
+            etapes: Vec::new(),
+            commandes: Vec::new(),
+            apres: Vec::new(),
+            faire: Faire::Programme {
+                arret: Some(Arret {
+                    pid,
+                    chemin: "/tmp/.x/outil".into(),
+                    ici: true,
+                }),
+                quarantaine: None,
+            },
+        };
+        let e = faire(&m, pret(pid), false).unwrap_err().to_string();
+        assert!(e.contains("autre programme") || e.contains("another program"), "{e}");
+        assert!(enfant.try_wait().unwrap().is_none(), "jamais arrêté");
+        crate::commande::arreter(&mut enfant);
+        let _ = enfant.wait();
+        let fait = faire(&m, pret(pid), false).unwrap();
+        assert!(fait.contains("déjà fini") || fait.contains("already ended"), "{fait}");
     }
 
     fn contexte(interactif: bool, admin: bool) -> Contexte {

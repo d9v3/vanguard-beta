@@ -233,7 +233,16 @@ mod tests {
         use std::os::unix::process::ExitStatusExt;
         let mut enfant = std::process::Command::new("sleep").arg("30").spawn().unwrap();
         let pid = enfant.id();
-        let programme = crate::protection::blocage::chemin_du_processus(pid).unwrap();
+        // spawn peut rendre la main avant l'exec du fils : on attend qu'il fasse tourner sleep.
+        let moi = std::env::current_exe().unwrap().to_string_lossy().into_owned();
+        let debut = std::time::Instant::now();
+        let programme = loop {
+            match crate::protection::blocage::chemin_du_processus(pid) {
+                Some(p) if p != moi => break p,
+                _ => assert!(debut.elapsed().as_secs() < 10, "le fils ne passe pas à sleep"),
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
         assert!(arreter(pid, "/autre/programme").is_err());
         assert!(
             enfant.try_wait().unwrap().is_none(),
