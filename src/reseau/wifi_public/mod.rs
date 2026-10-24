@@ -495,13 +495,8 @@ fn relever() -> Result<Plan, String> {
         interface: index.to_string(),
         id: carte.clone(),
     });
-    let securite = crate::commande::lancer(
-        crate::commande::systeme("netsh").args(["wlan", "show", "interfaces"]),
-        15,
-    )
-    .and_then(|r| crate::machine::wifi::connexion_netsh(&r.sortie));
     plan.signaux = portail::Signaux {
-        force: securite.map(|v| crate::machine::wifi::force(&v.securite)),
+        force: force_windows(),
         deja_public: categorie == "Public",
         portail: None,
     };
@@ -1702,6 +1697,17 @@ fn menu() {
     }
 }
 
+/// La force de la protection négociée du réseau connecté, lue par l'API WLAN ; `None` : pas connecté, ou Windows ne
+/// la dit pas (sans la localisation, algorithme inconnu), jamais comptée comme ouverte.
+#[cfg(windows)]
+fn force_windows() -> Option<u8> {
+    crate::machine::wifi::wlanapi::connexion()
+        .ok()
+        .flatten()
+        .filter(|c| !c.securite.is_empty())
+        .map(|c| crate::machine::wifi::force(&c.securite))
+}
+
 /// La suggestion pour le réseau connecté maintenant, sans rien envoyer.
 fn suggestion_ici() -> Option<String> {
     #[cfg(target_os = "linux")]
@@ -1712,12 +1718,7 @@ fn suggestion_ici() -> Option<String> {
     };
     #[cfg(windows)]
     let s = portail::Signaux {
-        force: crate::commande::lancer(
-            crate::commande::systeme("netsh").args(["wlan", "show", "interfaces"]),
-            15,
-        )
-        .and_then(|r| crate::machine::wifi::connexion_netsh(&r.sortie))
-        .map(|v| crate::machine::wifi::force(&v.securite)),
+        force: force_windows(),
         deja_public: windows::lecture::lire().profil.is_some_and(|(_, c, _)| c == "Public"),
         portail: None,
     };

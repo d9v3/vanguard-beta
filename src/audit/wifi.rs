@@ -598,7 +598,7 @@ mod tests {
         Connexion {
             ssid: ssid.into(),
             bssid: bssid.into(),
-            securite: String::new(),
+            ..Connexion::default()
         }
     }
 

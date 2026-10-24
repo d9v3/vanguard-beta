@@ -12,7 +12,7 @@ use crate::ui::{resume, tr, trf, trp};
 mod ancrages;
 pub(crate) mod cartes;
 mod chargement;
-mod comptes;
+pub(crate) mod comptes;
 pub(crate) mod connexions;
 pub(crate) mod correctifs;
 pub(crate) mod corrections;
@@ -23,6 +23,7 @@ pub(crate) mod ecoute;
 pub(crate) mod eleve;
 pub(crate) mod evenements;
 mod exclusions;
+pub(crate) mod export_journaux;
 pub(crate) mod gestionnaire;
 pub(crate) mod hachage;
 pub(crate) mod impression;
@@ -31,6 +32,7 @@ pub(crate) mod lecteurs;
 pub(crate) mod magasins;
 mod maj;
 pub(crate) mod memoire;
+pub(crate) mod ouvrir;
 pub(crate) mod partages;
 pub(crate) mod peripheriques;
 pub(crate) mod persistance;
@@ -39,6 +41,7 @@ pub(crate) mod planificateur;
 mod portes;
 pub(crate) mod processus;
 mod regles;
+pub(crate) mod routes;
 pub(crate) mod securite;
 mod services;
 mod ssh;
@@ -945,7 +948,7 @@ fn juger_bitlocker(etat: Option<&str>) -> Constat {
 }
 
 /// Ports TCP en écoute (« adresse|port|programme », une ligne chacun) et ports bloqués par une règle de Vanguard, lus
-/// sans PowerShell (netstat, tasklist, registre). `None` si netstat ne répond pas.
+/// sans PowerShell (tables TCP de Windows, processus, registre). `None` si ni les tables ni netstat ne répondent.
 fn ports_tcp_directs(pare_feu_actif: bool) -> Option<(String, Vec<u16>)> {
     let ecoutes = ecoute::ecoutes()?;
     let liste = ecoutes
@@ -977,8 +980,8 @@ fn ports_bloques_powershell() -> Vec<u16> {
     .collect()
 }
 
-/// Les mêmes, par PowerShell, quand netstat ne répond pas : les noms des programmes lus une fois, puis les ports en
-/// écoute, puis les règles de blocage dans leur section (leur échec ne fait pas perdre les ports).
+/// Les mêmes, par PowerShell, quand ni les tables ni netstat ne répondent : les noms des programmes lus une fois,
+/// puis les ports en écoute, puis les règles de blocage dans leur section (leur échec ne fait pas perdre les ports).
 fn ports_tcp_powershell(pare_feu_actif: bool) -> Option<(String, Vec<u16>)> {
     let regles = if pare_feu_actif {
         format!(
@@ -1004,8 +1007,8 @@ fn ports_tcp_powershell(pare_feu_actif: bool) -> Option<(String, Vec<u16>)> {
     Some((liste, bloques))
 }
 
-/// Les ports TCP en écoute et le nom de leur programme, pour nommer les services au scan du réseau ; `None` si netstat
-/// ne répond pas.
+/// Les ports TCP en écoute et le nom de leur programme, pour nommer les services au scan du réseau ; `None` si ni les
+/// tables de Windows ni netstat ne répondent.
 pub(super) fn ports_tcp_et_noms() -> Option<Vec<(u16, String)>> {
     Some(
         ecoute::ecoutes()?
@@ -1018,7 +1021,7 @@ pub(super) fn ports_tcp_et_noms() -> Option<Vec<(u16, String)>> {
 
 fn ports_ecoute(pare_feu_actif: bool, ip_lan: Option<&str>) -> Vec<Constat> {
     // Le plus lent du bilan Windows par PowerShell (4 à 6 s dans la VM, une vingtaine de PowerShell démarrant
-    // ensemble) : netstat et tasklist d'abord, PowerShell seulement s'ils ne répondent pas. Les ports bloqués par une
+    // ensemble) : les tables de Windows et la liste des processus d'abord, PowerShell seulement s'ils ne répondent pas. Les ports bloqués par une
     // règle de Vanguard écoutent toujours mais ne sont plus joignables : sans cette lecture, l'alerte et la même
     // correction (une règle de plus à chaque fois) revenaient à chaque audit.
     let Some((liste, bloques)) = ports_tcp_directs(pare_feu_actif).or_else(|| ports_tcp_powershell(pare_feu_actif))
@@ -1095,48 +1098,19 @@ fn ports_ecoute(pare_feu_actif: bool, ip_lan: Option<&str>) -> Vec<Constat> {
     constats
 }
 
-/// Wi-Fi : protection du réseau connecté, et un éventuel jumeau maléfique parmi les réseaux visibles. Lus d'abord
-/// par wlanapi, comme l'audit du réseau ; netsh en secours, quand la lecture native ne voit pas le réseau connecté.
+/// Wi-Fi : protection du réseau connecté, et un éventuel jumeau maléfique parmi les réseaux visibles, lus par l'API
+/// WLAN, comme l'audit du réseau. Sans l'autorisation de localisation, la protection se lit encore sur la connexion,
+/// et le jumeau est dit non cherché.
 fn wifi() -> Vec<Constat> {
-    let natifs = super::wifi::wlanapi::lire()
-        .map(|l| super::wifi::visibles_de(&l))
-        .unwrap_or_default();
-    if let Some(actif) = natifs.iter().find(|v| v.actif) {
-        let mut constats = vec![super::wifi::securite(&actif.ssid, &actif.securite, &[])];
-        constats.extend(super::wifi::jumeau(&natifs));
-        return constats;
+    match super::wifi::wlanapi::lire() {
+        Ok(l) if l.connexion.is_some() => super::wifi::bilan(&l, &[]),
+        _ => vec![wifi_sans_connexion()],
     }
-    let Some(texte) = crate::commande::lancer(
-        crate::commande::systeme("netsh").args(["wlan", "show", "interfaces"]),
-        15,
-    )
-    .map(|r| r.sortie) else {
-        return vec![super::impossible_par(
-            "Wi-Fi",
-            crate::modele::Raison::Absente("netsh".into()),
-            tr!(
-                "Impossible de vérifier le Wi-Fi (netsh n'a pas répondu).",
-                "Could not check Wi-Fi (netsh did not answer)."
-            ),
-        )];
-    };
-    let Some(connexion) = super::wifi::connexion_netsh(&texte) else {
-        return vec![wifi_sans_connexion()];
-    };
-    let mut constats = vec![super::wifi::securite(&connexion.ssid, &connexion.securite, &[])];
-    // Windows 11 24H2 réserve la liste à l'autorisation de localisation : sans elle, netsh ne liste rien, et il n'y a
-    // simplement pas de jumeau à chercher.
-    if let Some(r) = crate::commande::lancer(crate::commande::systeme("netsh").args(["wlan", "show", "networks"]), 15) {
-        let mut visibles = super::wifi::lire_netsh(&r.sortie);
-        visibles.push(connexion);
-        constats.extend(super::wifi::jumeau(&visibles));
-    }
-    constats
 }
 
-/// Aucun réseau connecté selon netsh : sans objet seulement si l'API Wi-Fi le confirme (pas de carte, ou aucune
-/// connectée). Une carte connectée que netsh ne montre pas, c'est Windows 11 24H2 sans l'autorisation de
-/// localisation : non vérifié, jamais un silence.
+/// Aucun réseau connecté lu : sans objet seulement si l'API Wi-Fi le confirme (pas de carte, ou aucune connectée).
+/// Une carte connectée dont le réseau ne se lit pas, c'est Windows 11 24H2 sans l'autorisation de localisation : non
+/// vérifié, jamais un silence.
 fn wifi_sans_connexion() -> Constat {
     use crate::modele::{Absence, Raison};
     match super::wifi::wlanapi::cartes() {
@@ -1158,7 +1132,7 @@ fn wifi_sans_connexion() -> Constat {
         ),
         Ok(_) => super::impossible_par(
             "Wi-Fi",
-            Raison::Illisible("netsh".into()),
+            Raison::Illisible("wlanapi".into()),
             tr!(
                 "Impossible de vérifier le Wi-Fi : connecté, mais Windows ne montre le réseau qu'avec la localisation (Paramètres > Confidentialité et sécurité > Localisation).",
                 "Could not check Wi-Fi: connected, but Windows shows the network only with location access (Settings > Privacy & security > Location)."
@@ -1175,7 +1149,8 @@ fn wifi_sans_connexion() -> Constat {
 /// Ports UDP ouverts sur le réseau. Windows en ouvre beaucoup lui-même (découverte, heure, VPN) : on ne garde
 /// que les services à risque et ceux des programmes installés, hors ports éphémères (réponses de clients).
 fn ports_udp(pare_feu_actif: bool, ip_lan: Option<&str>) -> Vec<Constat> {
-    // Sans PowerShell d'abord : le réglage LLMNR dans le registre, les ports par netstat et tasklist.
+    // Sans PowerShell d'abord : le réglage LLMNR dans le registre, les ports par les tables de Windows et la liste
+    // des processus.
     if let Some(ecoutes) = ecoute::ecoutes() {
         let llmnr = registre::<u32>(
             winreg::enums::HKEY_LOCAL_MACHINE,

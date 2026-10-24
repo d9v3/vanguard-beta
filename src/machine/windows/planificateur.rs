@@ -4,8 +4,9 @@
 use windows::Win32::Foundation::VARIANT_BOOL;
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::Win32::System::TaskScheduler::{
-    IExecAction, IRegisteredTask, ITaskFolder, ITaskService, TASK_ACTION_EXEC, TASK_ACTION_TYPE, TASK_ENUM_HIDDEN,
-    TASK_STATE_DISABLED, TASK_TRIGGER_LOGON, TASK_TRIGGER_TYPE2, TaskScheduler,
+    IComHandlerAction, IExecAction, IRegisteredTask, ITaskFolder, ITaskService, TASK_ACTION_COM_HANDLER,
+    TASK_ACTION_EXEC, TASK_ACTION_TYPE, TASK_ENUM_HIDDEN, TASK_STATE_DISABLED, TASK_TRIGGER_LOGON, TASK_TRIGGER_TYPE2,
+    TaskScheduler,
 };
 use windows::Win32::System::Variant::VARIANT;
 use windows::core::{BSTR, Interface};
@@ -98,6 +99,55 @@ fn lire() -> windows::core::Result<Vec<String>> {
         return Err(windows::core::Error::empty());
     }
     Ok(lignes)
+}
+
+/// Ce que lance chaque tâche active hors \Microsoft\, pour la liste du menu antivirus : (nom, programme), ou
+/// (nom, « COM {CLSID} ») pour une action à gestionnaire COM, persistance connue sans programme à montrer. Une tâche
+/// sans action de ces deux genres (courriel, message, abandonnés depuis Windows 8) est montrée sans rien. `None` :
+/// comme `taches`.
+pub(crate) fn lancements() -> Option<Vec<(String, String)>> {
+    wmi::com("Tâches planifiées", "ITaskService", || {
+        let mut lignes = Vec::new();
+        parcourir(|tache| {
+            // SAFETY : tâche vivante rendue par le planificateur, le temps de cet appel ; ses actions sont indexées de
+            // 1 à Count, lu avant.
+            unsafe {
+                if tache.State()? == TASK_STATE_DISABLED {
+                    return Ok(());
+                }
+                let nom = tache.Name()?.to_string();
+                let actions = tache.Definition()?.Actions()?;
+                let mut nombre = 0;
+                actions.Count(&raw mut nombre)?;
+                let mut vues = 0;
+                for j in 1..=nombre {
+                    let action = actions.get_Item(j)?;
+                    let mut genre = TASK_ACTION_TYPE::default();
+                    action.Type(&raw mut genre)?;
+                    let quoi = if genre == TASK_ACTION_EXEC {
+                        let lancement: IExecAction = action.cast()?;
+                        let mut programme = BSTR::new();
+                        lancement.Path(&raw mut programme)?;
+                        programme.to_string()
+                    } else if genre == TASK_ACTION_COM_HANDLER {
+                        let gestionnaire: IComHandlerAction = action.cast()?;
+                        let mut classe = BSTR::new();
+                        gestionnaire.ClassId(&raw mut classe)?;
+                        format!("COM {classe}")
+                    } else {
+                        continue;
+                    };
+                    vues += 1;
+                    lignes.push((nom.clone(), quoi));
+                }
+                if vues == 0 {
+                    lignes.push((nom, String::new()));
+                }
+            }
+            Ok(())
+        })?;
+        Ok(lignes)
+    })
 }
 
 /// L'état des tâches nommées `noms`, où qu'elles soient hors \Microsoft\ (celles de Vanguard sont à la racine),

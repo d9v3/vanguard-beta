@@ -145,39 +145,6 @@ pub(crate) fn proprietaires() -> HashMap<u64, u32> {
     liste
 }
 
-/// La table des connexions TCP de Windows (GetExtendedTcpTable, classe « propriétaire, toutes ») : un compte, puis une
-/// ligne par connexion. IPv4 : état, adresse et port locaux, adresse et port distants, processus (6 × 4 octets). IPv6 :
-/// adresse locale (16), zone, port, adresse distante (16), zone, port, état, processus (56 octets). Adresses et ports
-/// sont dans l'ordre du réseau ; état et processus dans celui de la machine. État 5 : établie.
-/// → (distante, port, processus).
-#[cfg(any(windows, test))]
-fn lire_table_tcp(octets: &[u8], ipv6: bool) -> Vec<(IpAddr, u16, u32)> {
-    let mot = |o: &[u8], i: usize| o.get(i..i + 4).map(|m| u32::from_ne_bytes([m[0], m[1], m[2], m[3]]));
-    let (taille, adresse, port, etat, processus) = if ipv6 {
-        (56, 24, 44, 48, 52)
-    } else {
-        (24, 12, 16, 0, 20)
-    };
-    let Some(nombre) = mot(octets, 0) else {
-        return Vec::new();
-    };
-    octets
-        .get(4..)
-        .unwrap_or_default()
-        .chunks_exact(taille)
-        .take(usize::try_from(nombre).unwrap_or(usize::MAX))
-        .filter(|l| mot(l, etat) == Some(5))
-        .filter_map(|l| {
-            let distante = if ipv6 {
-                IpAddr::from(<[u8; 16]>::try_from(l.get(adresse..adresse + 16)?).ok()?)
-            } else {
-                IpAddr::from(<[u8; 4]>::try_from(l.get(adresse..adresse + 4)?).ok()?)
-            };
-            Some((distante, u16::from_be_bytes([l[port], l[port + 1]]), mot(l, processus)?))
-        })
-        .collect()
-}
-
 /// Sortie de `lsof -nP -iTCP -sTCP:ESTABLISHED -F pcn` : un champ par ligne, « p » (processus), « c » (nom),
 /// « n » (« locale->distante »).
 #[cfg(any(target_os = "macos", test))]
@@ -319,72 +286,15 @@ pub(crate) fn processus_connectes() -> Option<BTreeSet<u32>> {
     Some(pids)
 }
 
-#[cfg(windows)]
-mod windows {
-    use std::ffi::c_void;
-
-    #[link(name = "iphlpapi")]
-    unsafe extern "system" {
-        fn GetExtendedTcpTable(
-            table: *mut c_void,
-            taille: *mut u32,
-            trier: i32,
-            famille: u32,
-            classe: u32,
-            reserve: u32,
-        ) -> u32;
-    }
-
-    /// La table des connexions TCP d'une famille (2 : IPv4, 23 : IPv6), telle que `lire_table_tcp` la lit. Elle peut
-    /// grandir entre la demande de sa taille et sa lecture : quelques essais.
-    pub(super) fn table_tcp(famille: u32) -> Option<Vec<u8>> {
-        const PROPRIETAIRE_TOUTES: u32 = 5;
-        const TAMPON_TROP_PETIT: u32 = 122;
-        let mut taille = 0u32;
-        for _ in 0..5 {
-            // Des mots de 32 bits : la table en contient, alignés.
-            let mut tampon = vec![0u32; usize::try_from(taille.div_ceil(4)).ok()?];
-            let mut place = u32::try_from(tampon.len() * 4).ok()?;
-            // SAFETY : `tampon` fait `place` octets, alignés sur 4 ; Windows y écrit au plus `place` octets, ou rien
-            // en disant la taille qu'il faut (TAMPON_TROP_PETIT). Un tampon vide est passé comme un pointeur valable.
-            let code = unsafe {
-                GetExtendedTcpTable(
-                    tampon.as_mut_ptr().cast(),
-                    &raw mut place,
-                    0,
-                    famille,
-                    PROPRIETAIRE_TOUTES,
-                    0,
-                )
-            };
-            match code {
-                0 => {
-                    let octets = tampon.iter().flat_map(|m| m.to_ne_bytes());
-                    return Some(octets.take(usize::try_from(place).ok()?).collect());
-                }
-                TAMPON_TROP_PETIT => taille = place,
-                _ => return None,
-            }
-        }
-        None
-    }
-}
-
 /// Les processus qui ont une connexion TCP établie vers une autre machine (ni 127.0.0.1 ni ::1), lus par Windows sans
 /// PowerShell : pour « Mon ordinateur est-il contrôlé ? ». `None` : aucune des deux tables lisible.
 #[cfg(windows)]
 pub(crate) fn processus_connectes() -> Option<std::collections::BTreeSet<u32>> {
-    let v4 = windows::table_tcp(2).map(|t| lire_table_tcp(&t, false));
-    let v6 = windows::table_tcp(23).map(|t| lire_table_tcp(&t, true));
-    if v4.is_none() && v6.is_none() {
-        return None;
-    }
     Some(
-        v4.into_iter()
-            .chain(v6)
-            .flatten()
-            .filter(|(ip, _, _)| !ip.is_loopback())
-            .map(|(_, _, pid)| pid)
+        crate::machine::windows::connexions::tcp_etablies()?
+            .into_iter()
+            .filter(|s| s.distante.is_some_and(|(ip, _)| !ip.is_loopback()))
+            .map(|s| s.pid)
             .collect(),
     )
 }
@@ -393,19 +303,17 @@ pub(crate) fn processus_connectes() -> Option<std::collections::BTreeSet<u32>> {
 /// locaux des sessions à distance).
 #[cfg(windows)]
 pub(crate) fn table_tcp(famille: u32) -> Option<Vec<u8>> {
-    windows::table_tcp(famille)
+    crate::machine::windows::connexions::table_tcp(famille)
 }
 
 /// Lu par les fonctions de Windows, sans PowerShell : rien à lancer, et quelques millisecondes au lieu de secondes.
 /// `None` : aucune des deux tables lisible.
 #[cfg(windows)]
 fn connexions() -> Option<Vec<Connexion>> {
-    let v4 = windows::table_tcp(2).map(|t| lire_table_tcp(&t, false));
-    let v6 = windows::table_tcp(23).map(|t| lire_table_tcp(&t, true));
-    if v4.is_none() && v6.is_none() {
-        return None;
-    }
-    let lues: Vec<(IpAddr, u16, u32)> = v4.into_iter().chain(v6).flatten().collect();
+    let lues: Vec<(IpAddr, u16, u32)> = crate::machine::windows::connexions::tcp_etablies()?
+        .into_iter()
+        .filter_map(|s| s.distante.map(|(ip, port)| (ip, port, s.pid)))
+        .collect();
     if lues.is_empty() {
         return Some(Vec::new());
     }
@@ -2020,12 +1928,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn connexions_lues_par_windows() {
-        assert!(windows::table_tcp(2).is_some());
+        assert!(table_tcp(2).is_some());
         assert!(connexions().is_some());
-    }
-
-    fn ip6(t: &str) -> [u8; 16] {
-        t.parse::<std::net::Ipv6Addr>().unwrap().octets()
     }
 
     #[test]
@@ -2065,41 +1969,6 @@ mod tests {
 
     #[test]
     fn windows_et_macos() {
-        // Table inventée, à la forme de celle de GetExtendedTcpTable : 3 lignes IPv4, dont une en écoute (état 2).
-        let ligne4 = |etat: u32, distante: [u8; 4], port: u16, pid: u32| {
-            let mut l = Vec::new();
-            l.extend(etat.to_ne_bytes());
-            l.extend([192, 168, 1, 20, 0xA8, 0xAC, 0, 0]);
-            l.extend(distante);
-            l.extend(port.to_be_bytes());
-            l.extend([0, 0]);
-            l.extend(pid.to_ne_bytes());
-            l
-        };
-        let mut t4 = 3u32.to_ne_bytes().to_vec();
-        t4.extend(ligne4(5, [140, 82, 112, 4], 443, 4242));
-        t4.extend(ligne4(2, [0, 0, 0, 0], 0, 4));
-        t4.extend(ligne4(5, [203, 0, 113, 9], 4444, 5000));
-        assert_eq!(
-            lire_table_tcp(&t4, false),
-            [(ip("140.82.112.4"), 443, 4242), (ip("203.0.113.9"), 4444, 5000)]
-        );
-        // Une table qui annonce plus de lignes qu'elle n'en contient : lue jusqu'où elle va.
-        let mut tronquee = 9u32.to_ne_bytes().to_vec();
-        tronquee.extend(ligne4(5, [140, 82, 112, 4], 443, 4242));
-        tronquee.extend([1, 2, 3]);
-        assert_eq!(lire_table_tcp(&tronquee, false).len(), 1);
-        assert_eq!(lire_table_tcp(&[1, 0], false), Vec::new());
-        // IPv6.
-        let mut t6 = 1u32.to_ne_bytes().to_vec();
-        t6.extend([0; 24]);
-        t6.extend(ip6("2606:4700::1111"));
-        t6.extend([0; 4]);
-        t6.extend(443u16.to_be_bytes());
-        t6.extend([0, 0]);
-        t6.extend(5u32.to_ne_bytes());
-        t6.extend(777u32.to_ne_bytes());
-        assert_eq!(lire_table_tcp(&t6, true), [(ip("2606:4700::1111"), 443, 777)]);
         let lsof = "p501\ncGoogle Chrome\nf23\nn192.168.1.20:50000->142.250.1.1:443\np777\ncssh\nf3\nn[2a01:db8::2]:50001->[2001:db8::7]:22\n";
         let m = lire_lsof(lsof);
         assert_eq!(m.len(), 2);
@@ -2690,8 +2559,6 @@ mod proprietes {
         #[test]
         fn lectures_sans_plantage(t in sortie()) {
             let _ = lire_proc_net(&t);
-            let _ = lire_table_tcp(t.as_bytes(), false);
-            let _ = lire_table_tcp(t.as_bytes(), true);
             let connexions = lire_lsof(&t);
             let _ = invisibles(&t, &connexions);
             for c in &connexions {

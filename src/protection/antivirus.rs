@@ -260,8 +260,8 @@ fn sans_hex(t: &str) -> String {
 }
 
 /// Une taille écrite comme lsblk l'écrit : en puissances de 1024, une lettre (« 512B », « 47G », « 28,9G »), un
-/// chiffre après la virgule quand il n'est pas nul, arrondi comme util-linux le fait.
-#[cfg(any(target_os = "linux", test))]
+/// chiffre après la virgule quand il n'est pas nul, arrondi comme util-linux le fait. macOS l'écrit de même.
+#[cfg(any(unix, test))]
 fn taille_lsblk(octets: u64) -> String {
     const LETTRES: [&str; 6] = ["K", "M", "G", "T", "P", "E"];
     if octets < 1024 {
@@ -290,10 +290,11 @@ fn taille_lsblk(octets: u64) -> String {
 }
 
 /// Clés et disques externes montés sous macOS : tout ce qui est dans /Volumes, sauf le disque du système (un
-/// lien vers « / »). Description : nom et taille (df), prête à montrer (l'étiquette vient de qui a préparé la clé).
+/// lien vers « / »). Description : nom et taille (`tailles_des_volumes`), prête à montrer (l'étiquette vient de qui a préparé la clé).
 #[cfg(target_os = "macos")]
 fn volumes_amovibles() -> Vec<(PathBuf, String)> {
     let racine = std::fs::canonicalize("/").unwrap_or_default();
+    let tailles = tailles_des_volumes();
     std::fs::read_dir("/Volumes")
         .into_iter()
         .flatten()
@@ -301,20 +302,49 @@ fn volumes_amovibles() -> Vec<(PathBuf, String)> {
         .map(|d| d.path())
         .filter(|p| std::fs::canonicalize(p).is_ok_and(|r| r != racine))
         .map(|p| {
-            // Délai : un volume réseau qui ne répond plus ferait attendre df sans fin.
-            let taille = crate::commande::lancer(Command::new("df").args(["-h", "-P"]).arg(&p), 10)
-                .and_then(|o| {
-                    o.sortie
-                        .lines()
-                        .nth(1)
-                        .and_then(|l| l.split_whitespace().nth(1).map(str::to_string))
-                })
-                .unwrap_or_default();
+            let taille = tailles.get(&p).map(|&o| taille_lsblk(o)).unwrap_or_default();
             let nom = p
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
             (p, affichable(&format!("{nom} · {taille}")))
+        })
+        .collect()
+}
+
+/// La taille de chaque système de fichiers monté (point de montage → octets), lue par getfsstat avec MNT_NOWAIT :
+/// les valeurs que le noyau garde, sans interroger chaque volume, si bien qu'un volume réseau qui ne répond plus ne
+/// fait rien attendre (df, lancé avant, pouvait y rester bloqué jusqu'à son délai).
+#[cfg(target_os = "macos")]
+fn tailles_des_volumes() -> std::collections::HashMap<PathBuf, u64> {
+    use std::os::unix::ffi::OsStrExt;
+    // SAFETY : sans tampon, getfsstat rend seulement le nombre de systèmes de fichiers montés.
+    let n = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) };
+    let Ok(n) = usize::try_from(n) else {
+        return std::collections::HashMap::new();
+    };
+    // Quelques places de plus : un volume monté entre les deux appels n'est pas perdu.
+    // SAFETY : statfs n'est fait que d'entiers et de tableaux d'octets, pour qui zéro est une valeur permise.
+    let mut tampon: Vec<libc::statfs> = vec![unsafe { std::mem::zeroed() }; n + 8];
+    let Ok(taille) = libc::c_int::try_from(tampon.len() * std::mem::size_of::<libc::statfs>()) else {
+        return std::collections::HashMap::new();
+    };
+    // SAFETY : le tampon fait `taille` octets, à nous ; getfsstat y écrit au plus autant de structures et rend leur
+    // nombre.
+    let lus = unsafe { libc::getfsstat(tampon.as_mut_ptr(), taille, libc::MNT_NOWAIT) };
+    let lus = usize::try_from(lus).unwrap_or(0).min(tampon.len());
+    tampon[..lus]
+        .iter()
+        .map(|f| {
+            // f_mntonname : un nom C terminé par un zéro dans un tableau de 1024 octets.
+            let octets: Vec<u8> = f
+                .f_mntonname
+                .iter()
+                .take_while(|&&c| c != 0)
+                .map(|&c| c.cast_unsigned())
+                .collect();
+            let point = PathBuf::from(std::ffi::OsStr::from_bytes(&octets));
+            (point, f.f_blocks.saturating_mul(u64::from(f.f_bsize)))
         })
         .collect()
 }
@@ -657,14 +687,9 @@ fn preparer() -> bool {
     // Linux : le PATH parcouru sur le disque, sans lancer de shell.
     #[cfg(target_os = "linux")]
     let present = crate::machine::linux::natif::present(&outil_clamav("clamscan"));
+    // macOS aussi : le PATH parcouru sur le disque, sans bash (le chemin y était collé entre apostrophes).
     #[cfg(target_os = "macos")]
-    let present = crate::commande::lancer(
-        Command::new("bash")
-            .arg("-c")
-            .arg(format!("command -v '{}'", outil_clamav("clamscan"))),
-        5,
-    )
-    .is_some_and(|o| o.code == Some(0));
+    let present = crate::machine::unix::present(&outil_clamav("clamscan"));
     if !present {
         trp!(
             "  ClamAV (antivirus open source) n'est pas installé.",
@@ -1099,21 +1124,31 @@ fn demarrage() {
         }
     }
 
+    // Windows : clés Run et RunOnce (winreg), dossiers Démarrage, tâches planifiées hors \Microsoft\ (ITaskService),
+    // sans PowerShell ; Get-ScheduledTask seulement si le planificateur ne répond pas. Ce qui n'a pas été lu est dit.
     #[cfg(windows)]
-    {
-        use crate::machine::windows::ps;
-        let script = tr!(
-            "Get-CimInstance Win32_StartupCommand | ForEach-Object { \"$($_.Name) — $($_.Command)\" }; \
-                      Get-ScheduledTask | Where-Object { $_.TaskPath -notlike '\\Microsoft\\*' -and $_.State -ne 'Disabled' } | \
-                      ForEach-Object { \"tâche planifiée : $($_.TaskName) — $($_.Actions.Execute)\" }",
-            "Get-CimInstance Win32_StartupCommand | ForEach-Object { \"$($_.Name) — $($_.Command)\" }; \
-                      Get-ScheduledTask | Where-Object { $_.TaskPath -notlike '\\Microsoft\\*' -and $_.State -ne 'Disabled' } | \
-                      ForEach-Object { \"scheduled task: $($_.TaskName) — $($_.Actions.Execute)\" }"
-        );
-        entrees.extend(ps(script).unwrap_or_default().lines().map(affichable));
-    }
+    let non_lus = {
+        let (lignes, mut non_lus) = demarrage_windows();
+        entrees.extend(lignes);
+        std::mem::take(&mut non_lus)
+    };
+    #[cfg(not(windows))]
+    let non_lus: Vec<String> = Vec::new();
 
-    if entrees.is_empty() {
+    if !non_lus.is_empty() {
+        let liste = non_lus.join(", ");
+        afficher_aligne(
+            "  ",
+            &trf!(
+                "Non vérifié : {liste} (illisible d'ici) ; la liste ci-dessous peut être incomplète.",
+                "Not verified: {liste} (unreadable from here); the list below may be incomplete."
+            ),
+            2,
+            GRIS,
+        );
+    }
+    // « Rien de particulier » seulement quand tout a été lu : une source illisible ne passe pas pour vide.
+    if entrees.is_empty() && non_lus.is_empty() {
         trp!(
             "  {VERT}✔{RESET} Rien de particulier.",
             "  {VERT}✔{RESET} Nothing special."
@@ -1135,6 +1170,78 @@ fn demarrage() {
         2,
         GRIS,
     );
+}
+
+/// Ce qui se lance à l'ouverture de session sous Windows, lu sans PowerShell : (lignes à montrer, sources non lues).
+/// Win32_StartupCommand lisait les mêmes clés et dossiers (en administrateur, aussi les clés Run des autres comptes
+/// ouverts, qui manquent ici).
+#[cfg(windows)]
+fn demarrage_windows() -> (Vec<String>, Vec<String>) {
+    let mut lignes = Vec::new();
+    let (run, cles_non_lues) = crate::machine::windows::persistance::lignes_run();
+    let mut non_lus: Vec<String> = cles_non_lues.iter().map(|c| (*c).to_string()).collect();
+    for v in run {
+        let nom = if v.nom.is_empty() {
+            tr!("(par défaut)", "(default)").to_string()
+        } else {
+            affichable(&v.nom)
+        };
+        lignes.push(format!("{nom} — {}", affichable(&v.valeur)));
+    }
+    for (variable, sous_dossier) in [
+        ("APPDATA", r"Microsoft\Windows\Start Menu\Programs\Startup"),
+        ("ProgramData", r"Microsoft\Windows\Start Menu\Programs\StartUp"),
+    ] {
+        let Some(base) = std::env::var_os(variable) else {
+            non_lus.push(trf!(
+                "dossier Démarrage (%{variable}% inconnu)",
+                "Startup folder (%{variable}% unknown)"
+            ));
+            continue;
+        };
+        let dossier = std::path::PathBuf::from(base).join(sous_dossier);
+        match std::fs::read_dir(&dossier) {
+            Ok(fichiers) => {
+                for f in fichiers.flatten() {
+                    let nom = f.file_name().to_string_lossy().into_owned();
+                    // desktop.ini : la mise en forme du dossier par l'Explorateur, rien qui se lance.
+                    if !nom.eq_ignore_ascii_case("desktop.ini") {
+                        lignes.push(trf!(
+                            "{} (dossier Démarrage)",
+                            "{} (Startup folder)",
+                            chemin_affichable(&f.path())
+                        ));
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => non_lus.push(chemin_affichable(&dossier)),
+        }
+    }
+    // Chaque tâche active, à programme ou à gestionnaire COM (une persistance connue, que Get-ScheduledTask montrait
+    // aussi).
+    if let Some(taches) = crate::machine::windows::planificateur::lancements() {
+        for (nom, programme) in taches {
+            lignes.push(trf!(
+                "tâche planifiée : {} — {}",
+                "scheduled task: {} — {}",
+                affichable(&nom),
+                affichable(&programme)
+            ));
+        }
+    } else {
+        let script = tr!(
+            "Get-ScheduledTask | Where-Object { $_.TaskPath -notlike '\\Microsoft\\*' -and $_.State -ne 'Disabled' } | \
+             ForEach-Object { \"tâche planifiée : $($_.TaskName) — $($_.Actions.Execute)\" }",
+            "Get-ScheduledTask | Where-Object { $_.TaskPath -notlike '\\Microsoft\\*' -and $_.State -ne 'Disabled' } | \
+             ForEach-Object { \"scheduled task: $($_.TaskName) — $($_.Actions.Execute)\" }"
+        );
+        match crate::machine::windows::ps(script) {
+            Some(sortie) => lignes.extend(sortie.lines().filter(|l| !l.trim().is_empty()).map(affichable)),
+            None => non_lus.push(tr!("tâches planifiées", "scheduled tasks").to_string()),
+        }
+    }
+    (lignes, non_lus)
 }
 
 #[cfg(test)]

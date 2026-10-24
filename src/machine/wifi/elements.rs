@@ -297,7 +297,8 @@ pub(crate) fn mac_texte(octets: &[u8]) -> String {
 }
 
 /// Une adresse MAC écrite par un outil (« AA:BB:…», « aa-bb-… »), normalisée en minuscules avec des deux-points ;
-/// `None` si ce n'en est pas une.
+/// `None` si ce n'en est pas une. Sert à NetworkManager, qui l'écrit en majuscules.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn mac_normalisee(texte: &str) -> Option<String> {
     let parties: Vec<u8> = texte
         .trim()

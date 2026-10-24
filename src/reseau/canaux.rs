@@ -4,9 +4,10 @@
 //! 80 MHz en occupe quatre d'un coup : ils se comptent par blocs. Lecture seule : le canal se règle dans
 //! l'administration de la box.
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 use std::process::Command;
 
+#[cfg(target_os = "macos")]
 use crate::commande::lancer;
 use crate::machine::wifi::{self, Bande, Borne};
 use crate::ui::*;
@@ -27,6 +28,35 @@ const BLOCS_5: [Bloc; 6] = [
 struct Lecture {
     bornes: Vec<Borne>,
     note: Option<&'static str>,
+    /// Pourquoi la liste des voisins ne suffit pas à dire quel canal est libre (trop vieille, refusée) : les barres
+    /// restent montrées, le conseil est dit non vérifié.
+    reserve: Option<String>,
+}
+
+/// Les bornes d'une lecture native. Connecté sans que la borne de la connexion soit dans la liste (Windows sans la
+/// localisation), elle est refaite d'après la connexion, pour que le canal du routeur reste montré.
+#[cfg(any(windows, target_os = "linux", test))]
+fn depuis_lecture(l: &wifi::Lecture) -> Lecture {
+    let mut bornes: Vec<Borne> = l.balises.iter().map(|b| b.borne.clone()).collect();
+    if let Some(c) = &l.connexion
+        && !bornes.iter().any(|b| b.actif)
+        && let Some(canal) = c.canal
+        && let Some(bande) = c.bande.or_else(|| Bande::de_canal(canal))
+    {
+        bornes.push(Borne {
+            ssid: c.ssid.clone(),
+            bssid: c.bssid.clone(),
+            bande,
+            canal,
+            signal: c.qualite,
+            actif: true,
+        });
+    }
+    Lecture {
+        bornes,
+        note: l.note,
+        reserve: l.reserve_voisins(),
+    }
 }
 
 /// Poids d'une borne voisine : son signal, une borne lointaine gênant peu ; inconnu, la moitié.
@@ -121,88 +151,51 @@ fn qualite(signal: u8) -> &'static str {
     }
 }
 
+/// NetworkManager en lecture seule, sinon le dernier balayage gardé par le noyau ; jamais une recherche lancée
+/// d'ici (elle demande des droits, ou un appel qui agit). Une liste trop vieille est dite, plutôt qu'un canal libre.
 #[cfg(target_os = "linux")]
-fn lire() -> Result<Lecture, &'static str> {
-    let reussie = |c: &mut Command, delai| lancer(c, delai).filter(|r| r.code == Some(0)).map(|r| r.sortie);
-    // NetworkManager d'abord ; sans lui (iwd, systemd-networkd), le dernier balayage gardé par le noyau. En anglais :
-    // nmcli traduit la colonne ACTIVE (« oui » en français), et la borne de la connexion n'était plus reconnue.
-    let champs = "-t -e no -f ACTIVE,SIGNAL,FREQ,CHAN,SSID dev wifi list".split(' ');
-    let bornes = crate::commande::lancer_en_anglais(Command::new("nmcli").args(champs), 30)
-        .filter(|r| r.code == Some(0))
-        .map_or_else(Vec::new, |r| wifi::bornes_nmcli(&r.sortie));
-    if !bornes.is_empty() {
-        return Ok(Lecture { bornes, note: None });
+fn lire() -> Result<Lecture, crate::modele::raison::Echec> {
+    match wifi::lecture_linux() {
+        Ok(l) => Ok(depuis_lecture(&l)),
+        Err(r) => Err(crate::modele::raison::Echec::echoue(
+            "canaux/lire",
+            trf!("Réseaux Wi-Fi illisibles : {r}.", "Wi-Fi networks unreadable: {r}."),
+        )),
     }
-    let cartes: Vec<String> = std::fs::read_dir("/sys/class/net")
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().join("wireless").is_dir())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
-    if cartes.is_empty() {
-        return Err(tr!(
-            "Pas de carte Wi-Fi sur cet ordinateur.",
-            "No Wi-Fi card on this computer."
-        ));
-    }
-    let dump = |carte: &str| {
-        let iw = reussie(Command::new("iw").args(["dev", carte, "scan", "dump"]), 15);
-        iw.map_or_else(Vec::new, |s| wifi::bornes_iw(&s))
-    };
-    for carte in &cartes {
-        let mut bornes = dump(carte);
-        // Rien en mémoire : iwd sait balayer sans droits d'administrateur ; on lit le résultat quelques secondes après.
-        if bornes.is_empty() && reussie(Command::new("iwctl").args(["station", carte, "scan"]), 10).is_some() {
-            std::thread::sleep(std::time::Duration::from_secs(4));
-            bornes = dump(carte);
-        }
-        if !bornes.is_empty() {
-            return Ok(Lecture { bornes, note: None });
-        }
-    }
-    Err(tr!(
-        "Réseaux voisins illisibles : il faut NetworkManager (nmcli) ou l'outil iw.",
-        "Nearby networks unreadable: NetworkManager (nmcli) or the iw tool is needed."
-    ))
 }
 
 #[cfg(windows)]
-fn lire() -> Result<Lecture, &'static str> {
-    let netsh = |args: &[&str]| lancer(crate::commande::systeme("netsh").args(args), 20).map(|r| r.sortie);
-    let active = netsh(&["wlan", "show", "interfaces"]).and_then(|s| wifi::borne_active_netsh(&s));
-    let voisins = netsh(&["wlan", "show", "networks", "mode=bssid"]);
-    let mut bornes = voisins.map_or_else(Vec::new, |s| wifi::bornes_netsh(&s));
-    // Windows 11 24H2 ne liste les réseaux voisins qu'avec l'autorisation de localisation.
-    let note = (bornes.is_empty() && active.is_some()).then_some(tr!(
-        "Windows ne montre les réseaux voisins qu'avec la localisation : Paramètres > Confidentialité et sécurité > Localisation, autoriser les applications de bureau.",
-        "Windows shows nearby networks only with location access: Settings > Privacy & security > Location, allow desktop apps."
-    ));
-    if let Some(a) = active {
-        match bornes.iter_mut().find(|b| b.ssid == a.ssid && b.canal == a.canal) {
-            Some(b) => (b.actif, b.signal) = (true, b.signal.or(a.signal)),
-            None => bornes.push(a),
-        }
-    } else if bornes.is_empty() {
-        return Err(tr!(
-            "Pas de Wi-Fi sur cet ordinateur, ou le service WLAN est arrêté.",
-            "No Wi-Fi on this computer, or the WLAN service is stopped."
-        ));
+fn lire() -> Result<Lecture, crate::modele::raison::Echec> {
+    match wifi::wlanapi::lire() {
+        Ok(l) => Ok(depuis_lecture(&l)),
+        Err(r) => Err(crate::modele::raison::Echec::echoue(
+            "canaux/lire",
+            trf!("Réseaux Wi-Fi illisibles : {r}.", "Wi-Fi networks unreadable: {r}."),
+        )),
     }
-    Ok(Lecture { bornes, note })
 }
 
 #[cfg(target_os = "macos")]
-fn lire() -> Result<Lecture, &'static str> {
+fn lire() -> Result<Lecture, crate::modele::raison::Echec> {
     let Some(r) = lancer(Command::new("system_profiler").arg("SPAirPortDataType"), 40) else {
-        return Err(tr!("Réseaux Wi-Fi illisibles.", "Wi-Fi networks unreadable."));
+        return Err(crate::modele::raison::Echec::echoue(
+            "canaux/lire",
+            tr!("Réseaux Wi-Fi illisibles.", "Wi-Fi networks unreadable."),
+        ));
     };
     match wifi::bornes_system_profiler(&r.sortie) {
-        b if b.is_empty() => Err(tr!(
-            "Pas de Wi-Fi sur ce Mac, ou il est éteint.",
-            "No Wi-Fi on this Mac, or it is turned off."
+        b if b.is_empty() => Err(crate::modele::raison::Echec::echoue(
+            "canaux/lire",
+            tr!(
+                "Pas de Wi-Fi sur ce Mac, ou il est éteint.",
+                "No Wi-Fi on this Mac, or it is turned off."
+            ),
         )),
-        bornes => Ok(Lecture { bornes, note: None }),
+        bornes => Ok(Lecture {
+            bornes,
+            note: None,
+            reserve: None,
+        }),
     }
 }
 
@@ -220,7 +213,7 @@ pub fn analyser() {
         Ok(lecture) => afficher(&lecture),
         Err(raison) => {
             println!();
-            afficher_aligne("  ✖ ", raison, 4, "");
+            afficher_aligne("  ✖ ", &raison.to_string(), 4, "");
         }
     }
 }
@@ -256,8 +249,19 @@ fn afficher(lecture: &Lecture) {
         afficher_aligne("  ", ailleurs, 2, GRIS);
     }
     if let Some(n) = lecture.note {
-        afficher_aligne("  ", n, 2, DISCRET);
+        afficher_aligne("  ", &format!("{n}."), 2, DISCRET);
+    } else if let Some(r) = &lecture.reserve {
+        let ligne = trf!(
+            "Non vérifié : {r}. Ouvrez la liste des réseaux Wi-Fi de votre bureau (elle relance une recherche), puis revenez ici.",
+            "Not verified: {r}. Open your desktop's Wi-Fi network list (it starts a new search), then come back here."
+        );
+        afficher_aligne("  ", &ligne, 2, DISCRET);
     }
+    // Une liste de voisins douteuse ne désigne aucun canal : un canal « libre » n'y serait peut-être qu'oublié.
+    let non_verifie = tr!(
+        "Canal le plus libre : non vérifié, la liste des voisins n'est pas sûre.",
+        "Freest channel: not verified, the list of neighbors is not reliable."
+    );
     let autres = match voisines.len() {
         0 => tr!("Aucun autre réseau entendu d'ici.", "No other network heard from here.").to_string(),
         1 => tr!("Un autre réseau entendu d'ici.", "One other network heard from here.").to_string(),
@@ -284,6 +288,7 @@ fn afficher(lecture: &Lecture) {
     }
     let meilleur = meilleur_24(&voisines);
     let conseil_24 = match canal_24 {
+        _ if lecture.reserve.is_some() => non_verifie.to_string(),
         Some(c) if !CANAUX_24.contains(&c) => trf!(
             "Votre routeur est sur le canal {}, qui chevauche ses voisins des deux côtés : réglez-le sur le canal {meilleur}.",
             "Your router is on channel {}, which overlaps its neighbors on both sides: set it to channel {meilleur}.",
@@ -317,6 +322,7 @@ fn afficher(lecture: &Lecture) {
         }
         let ((debut, fin, _), libre) = meilleur_5(&voisines);
         let mut conseil = match canal_5 {
+            _ if lecture.reserve.is_some() => non_verifie.to_string(),
             Some(c) if (debut..=fin).contains(&c) => String::from(tr!(
                 "Votre routeur est déjà dans le bloc le plus libre sans radar.",
                 "Your router is already in the freest block without radar."
@@ -326,7 +332,7 @@ fn afficher(lecture: &Lecture) {
                 "The freest block without radar: channels {debut} to {fin} (channel {debut} in the router's admin page)."
             ),
         };
-        if let Some((d, f, _)) = libre {
+        if let Some((d, f, _)) = libre.filter(|_| lecture.reserve.is_none()) {
             conseil += &trf!(
                 " Les canaux {d} à {f} sont libres, mais le routeur doit y céder la place aux radars (coupures de quelques secondes).",
                 " Channels {d} to {f} are free, but the router must give way to radars there (drops of a few seconds)."
@@ -423,11 +429,62 @@ mod tests {
                 borne("Voisin", Bande::G6, 37, 20, false),
             ],
             note: None,
+            reserve: None,
         };
         afficher(&lecture);
         afficher(&Lecture {
             bornes: Vec::new(),
             note: Some("note"),
+            reserve: Some("note".into()),
         });
+        afficher(&Lecture {
+            reserve: Some("la liste des réseaux voisins date de 25 min".into()),
+            ..lecture
+        });
+    }
+
+    /// Une lecture native : ses bornes, la réserve sur les voisins, et la borne de la connexion refaite quand Windows
+    /// ne liste rien (localisation refusée).
+    #[test]
+    fn depuis_une_lecture_native() {
+        use crate::machine::wifi::{Balise, Connexion, Voisins, elements::Protection};
+        let connexion = Connexion {
+            ssid: "Salon".into(),
+            qualite: Some(64),
+            canal: Some(36),
+            ..Connexion::default()
+        };
+        let l = wifi::Lecture {
+            connexion: Some(connexion.clone()),
+            note: Some("localisation"),
+            ..wifi::Lecture::default()
+        };
+        let c = depuis_lecture(&l);
+        assert_eq!(c.bornes, [borne("Salon", Bande::G5, 36, 64, true)]);
+        assert_eq!(
+            (c.note, c.reserve.as_deref()),
+            (Some("localisation"), Some("localisation"))
+        );
+        let l = wifi::Lecture {
+            balises: vec![Balise {
+                borne: borne("Voisin", Bande::G24, 6, 30, false),
+                protection: Protection::default(),
+                wps: None,
+            }],
+            connexion: Some(connexion),
+            voisins: Voisins::Anciens { minutes: 25 },
+            ..wifi::Lecture::default()
+        };
+        let c = depuis_lecture(&l);
+        assert_eq!(c.bornes.len(), 2);
+        assert!(c.note.is_none() && c.reserve.is_some_and(|r| r.contains("25")));
+        // Sans canal connu, la connexion ne fait pas de borne.
+        let l = wifi::Lecture {
+            connexion: Some(Connexion::default()),
+            voisins: Voisins::Recents,
+            ..wifi::Lecture::default()
+        };
+        let c = depuis_lecture(&l);
+        assert!(c.bornes.is_empty() && c.reserve.is_none());
     }
 }

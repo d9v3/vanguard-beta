@@ -9,6 +9,9 @@ pub mod listes_noires;
 pub mod nat;
 pub mod nmap;
 pub mod objets;
+pub(crate) mod ping;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) mod routes_macos;
 pub mod scan;
 pub mod surveillance;
 pub mod tableau;

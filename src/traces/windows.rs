@@ -1,6 +1,7 @@
 //! Les traces sous Windows : processus par PowerShell (Win32_Process), connexions et ports par Get-NetTCPConnection,
 //! tâches planifiées, services, clés Run et abonnements WMI, comptes locaux, journaux d'événements exportés en .evtx
-//! par wevtutil (le format que lisent l'Observateur d'événements et les outils des spécialistes). Pour la chronologie,
+//! par l'API des journaux (EvtExportLog, wevtutil en secours : le format que lisent l'Observateur d'événements et les
+//! outils des spécialistes). Pour la chronologie,
 //! les événements qui racontent une intrusion sont lus en plus par les fonctions de Windows (wevtapi).
 
 use std::collections::HashMap;
@@ -11,6 +12,7 @@ use std::process::Command;
 use super::chronologie::{self, Apport};
 use super::{Bi, Empreinte, Feuille, Manque, Partie, Processus, Produit, Raison, bi};
 use crate::commande::section;
+use crate::machine::windows::export_journaux;
 
 /// Le séparateur des champs dans les sorties des scripts : une ligne de commande peut contenir « | » ou une
 /// tabulation, jamais ce caractère (retiré par N).
@@ -616,9 +618,22 @@ const SCRIPT_COMPTES: &str = "function D($t) { if ($t) { $t.ToString('yyyy-MM-dd
 pub(super) fn comptes(dossier: &Path) -> Partie {
     let mut p = Partie::new(Bi::new("Comptes", "Accounts"));
     let mut f = Feuille::new(&p.titre);
-    let sortie = crate::machine::windows::ps(&format!("{N}{SCRIPT_COMPTES}"));
-    let utilisateurs = section(sortie.as_deref(), "USR");
-    f.section("Get-LocalUser");
+    // L'API réseau d'abord (NetUserEnum, NetLocalGroupGetMembers), sans PowerShell ; le script seulement pour ce
+    // qu'elle n'a pas lu.
+    let comptes_natifs = crate::machine::windows::comptes::comptes_des_traces(SEP);
+    let admins_natifs = crate::machine::windows::comptes::administrateurs_des_traces(SEP);
+    let sortie = (comptes_natifs.is_none() || admins_natifs.is_none())
+        .then(|| crate::machine::windows::ps(&format!("{N}{SCRIPT_COMPTES}")))
+        .flatten();
+    let utilisateurs: Option<Vec<&str>> = match &comptes_natifs {
+        Some(c) => Some(c.iter().map(String::as_str).collect()),
+        None => section(sortie.as_deref(), "USR"),
+    };
+    f.section(if comptes_natifs.is_some() {
+        "NetUserEnum + NetUserGetInfo (USER_INFO_4)"
+    } else {
+        "Get-LocalUser"
+    });
     if let Some(u) = &utilisateurs {
         f.lues += 1;
         p.evenements = chronologie::comptes_windows(u, SEP, &chrono::Local);
@@ -634,8 +649,16 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
         f.ajouter("(PowerShell)");
         f.commande(&mut console("net user"), 15, true);
     }
-    f.section("Get-LocalGroupMember -SID S-1-5-32-544");
-    if let Some(a) = section(sortie.as_deref(), "ADM") {
+    let administrateurs: Option<Vec<&str>> = match &admins_natifs {
+        Some(a) => Some(a.iter().map(String::as_str).collect()),
+        None => section(sortie.as_deref(), "ADM"),
+    };
+    f.section(if admins_natifs.is_some() {
+        "NetLocalGroupGetMembers S-1-5-32-544"
+    } else {
+        "Get-LocalGroupMember -SID S-1-5-32-544"
+    });
+    if let Some(a) = administrateurs {
         f.lues += 1;
         for l in a {
             let champs: Vec<String> = l.split(SEP).map(super::champ).collect();
@@ -726,11 +749,35 @@ pub(crate) fn raison_wevtutil(erreurs: &str) -> Raison {
     }
 }
 
+/// Le fichier .evtx d'un journal, tel que les traces le décrivent.
+fn produit_du_journal(nom: &str, journal: &str, fr: &str, en: &str) -> Produit {
+    Produit {
+        nom: nom.into(),
+        contenu: bi!(
+            "{fr} ({journal}), les événements des 7 derniers jours, au format .evtx (Observateur d'événements)",
+            "{en} ({journal}), the events of the last 7 days, as .evtx (Event Viewer)"
+        ),
+    }
+}
+
 pub(super) fn journaux(dossier: &Path) -> Partie {
     let mut p = Partie::new(Bi::new("Journaux", "Logs"));
     let admin = administrateur();
     let mut lus = Vec::new();
     let mut total = 0;
+    // Les provisoires qu'un export d'avant, fini après son délai, aurait laissés dans le dossier temporaire : des
+    // copies de journaux, à ne pas laisser traîner.
+    for f in std::fs::read_dir(std::env::temp_dir()).into_iter().flatten().flatten() {
+        let n = f.file_name().to_string_lossy().into_owned();
+        if n.starts_with("vanguard-")
+            && n.contains("-05-")
+            && std::path::Path::new(&n)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("evtx"))
+        {
+            let _ = std::fs::remove_file(f.path());
+        }
+    }
     for (journal, nom, (fr, en), reserve) in JOURNAUX {
         let titre = Bi::new(fr, en);
         if reserve && !admin {
@@ -738,6 +785,57 @@ pub(super) fn journaux(dossier: &Path) -> Partie {
             continue;
         }
         let destination = dossier.join(nom);
+        // L'API des journaux d'abord (EvtExportLog, le fichier que wevtutil epl écrit) ; wevtutil seulement si elle
+        // échoue pour une autre raison qu'un refus ou un canal absent, qu'il dirait pareil.
+        let requete = SEPT_JOURS.trim_start_matches("/q:");
+        // Écrit d'abord dans le dossier temporaire, déplacé à sa place une fois fini : un export qui aboutirait après
+        // le délai ne laisse rien dans le dossier des traces.
+        let provisoire = std::env::temp_dir().join(format!("vanguard-{}-{nom}", std::process::id()));
+        let _ = std::fs::remove_file(&provisoire);
+        let exporte = export_journaux::exporter(journal, requete, &provisoire, std::time::Duration::from_secs(120));
+        let exporte = match exporte {
+            Ok(()) if provisoire.is_file() => {
+                let place = std::fs::rename(&provisoire, &destination)
+                    .or_else(|_| std::fs::copy(&provisoire, &destination).map(|_| ()));
+                let _ = std::fs::remove_file(&provisoire);
+                if place.is_ok() {
+                    Ok(())
+                } else {
+                    Err(export_journaux::Refus::Code(0))
+                }
+            }
+            Ok(()) => Err(export_journaux::Refus::Code(0)),
+            Err(export_journaux::Refus::Delai) => Err(export_journaux::Refus::Delai),
+            Err(e) => {
+                let _ = std::fs::remove_file(&provisoire);
+                Err(e)
+            }
+        };
+        match exporte {
+            Ok(()) if destination.is_file() => {
+                total += std::fs::metadata(&destination).map_or(0, |m| m.len());
+                lus.push((fr, en));
+                p.fichiers.push(produit_du_journal(nom, journal, fr, en));
+                continue;
+            }
+            Err(export_journaux::Refus::Code(5)) => {
+                p.manque(titre, Raison::Droits);
+                continue;
+            }
+            Err(export_journaux::Refus::Code(15007)) => {
+                p.manque(titre, Raison::Introuvable);
+                continue;
+            }
+            Err(export_journaux::Refus::Delai) => {
+                p.manque(titre, Raison::Delai(120));
+                continue;
+            }
+            // Une réussite sans fichier, ou une autre erreur : wevtutil essaie à son tour (un fichier à moitié écrit
+            // est d'abord retiré, wevtutil refusant d'écraser).
+            _ => {
+                let _ = std::fs::remove_file(&destination);
+            }
+        }
         let debut = std::time::Instant::now();
         let r = crate::commande::lancer(
             crate::commande::systeme("wevtutil")
@@ -764,13 +862,7 @@ pub(super) fn journaux(dossier: &Path) -> Partie {
             Some(_) => {
                 total += std::fs::metadata(&destination).map_or(0, |m| m.len());
                 lus.push((fr, en));
-                p.fichiers.push(Produit {
-                    nom: nom.into(),
-                    contenu: bi!(
-                        "{fr} ({journal}), les événements des 7 derniers jours, au format .evtx (Observateur d'événements)",
-                        "{en} ({journal}), the events of the last 7 days, as .evtx (Event Viewer)"
-                    ),
-                });
+                p.fichiers.push(produit_du_journal(nom, journal, fr, en));
             }
         }
     }
@@ -976,8 +1068,12 @@ pub(super) fn place_des_journaux() -> u64 {
     JOURNAUX
         .iter()
         .map(|(journal, ..)| {
-            crate::commande::lancer(crate::commande::systeme("wevtutil").args(["gli", journal]), 15)
-                .and_then(|r| taille_gli(&r.sortie))
+            // EvtGetLogInfo d'abord ; wevtutil gli s'il ne répond pas.
+            export_journaux::taille(journal)
+                .or_else(|| {
+                    crate::commande::lancer(crate::commande::systeme("wevtutil").args(["gli", journal]), 15)
+                        .and_then(|r| taille_gli(&r.sortie))
+                })
                 .unwrap_or(20 << 20)
         })
         .sum()

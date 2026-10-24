@@ -967,7 +967,12 @@ fn mettre_en_place() -> Option<MiseEnPlace> {
     ))
     .oui()
     {
-        crate::machine::ouvrir("control.exe /name Microsoft.FileHistory");
+        // Par son chemin entier dans System32 : un nom seul serait cherché d'abord dans le dossier courant, où un
+        // faux control.exe posé à côté de Vanguard (clé USB, Téléchargements) se lancerait.
+        crate::machine::ouvrir_avec(
+            &crate::commande::systeme32("control").to_string_lossy(),
+            "/name Microsoft.FileHistory",
+        );
     }
     None
 }

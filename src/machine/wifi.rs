@@ -2,12 +2,14 @@
 //! son nom. Un jumeau se montre souvent sans mot de passe, pour attirer les appareils et voir passer leur trafic :
 //! même nom que le vrai réseau, protection plus faible. Un répéteur protégé comme le réseau principal n'alerte pas.
 
-use super::{Constat, alerte, ok};
+use super::{Constat, alerte, impossible, ok};
 use crate::risk::Niveau;
 use crate::ui::affichable;
 use crate::{tr, trf};
 
 pub(crate) mod elements;
+#[cfg(target_os = "linux")]
+pub(crate) mod networkmanager;
 pub(crate) mod nl80211;
 pub(crate) mod profils;
 pub(crate) mod wlanapi;
@@ -227,66 +229,6 @@ pub(super) fn jumeau(visibles: &[Visible]) -> Option<Constat> {
     )
 }
 
-/// `nmcli -t -e no -f ACTIVE,SECURITY,SSID dev wifi` : « yes:WPA2:Maison ». Le nom vient en dernier, il peut
-/// contenir « : » ; un réseau caché (nom vide) est ignoré. Le nom, choisi par n'importe qui à portée, et la protection
-/// sont lus prêts à montrer (`affichable`), comme dans chaque lecture du Wi-Fi de ce fichier.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(crate) fn lire_nmcli(sortie: &str) -> Vec<Visible> {
-    sortie
-        .lines()
-        .filter_map(|l| {
-            let mut champs = l.splitn(3, ':');
-            let actif = champs.next()? == "yes";
-            let securite = affichable(champs.next()?);
-            let ssid = affichable(champs.next()?);
-            (!ssid.is_empty()).then_some(Visible { ssid, securite, actif })
-        })
-        .collect()
-}
-
-/// `netsh wlan show networks` : un bloc par réseau (« SSID 1 : Maison », puis « Authentication : WPA2-Personal »,
-/// « Authentification » en français). Le réseau connecté vient de `netsh wlan show interfaces`.
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(super) fn lire_netsh(sortie: &str) -> Vec<Visible> {
-    let mut reseaux: Vec<Visible> = Vec::new();
-    for l in sortie.lines().map(str::trim) {
-        if l.starts_with("SSID ")
-            && let Some((_, nom)) = l.split_once(':')
-        {
-            reseaux.push(Visible {
-                ssid: affichable(nom.trim()),
-                securite: String::new(),
-                actif: false,
-            });
-        } else if l.starts_with("Authenti")
-            && let Some((_, protection)) = l.split_once(':')
-            && let Some(r) = reseaux.last_mut()
-        {
-            r.securite = affichable(protection.trim());
-        }
-    }
-    reseaux.retain(|r| !r.ssid.is_empty());
-    reseaux
-}
-
-/// Le réseau connecté, dans `netsh wlan show interfaces` : « SSID : Salon » et « Authentication : WPA2-Personal »
-/// (« Authentification » en français). `None` sans les deux : la carte n'est connectée à aucun réseau.
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn connexion_netsh(sortie: &str) -> Option<Visible> {
-    let champ = |cle: &str| {
-        sortie
-            .lines()
-            .map(str::trim)
-            .find(|l| l.starts_with(cle) && !l.starts_with("BSSID"))
-            .and_then(|l| Some(affichable(l.split_once(':')?.1.trim())))
-    };
-    Some(Visible {
-        ssid: champ("SSID")?,
-        securite: champ("Authenti")?,
-        actif: true,
-    })
-}
-
 /// Un réseau de `system_profiler SPAirPortDataType` : son nom, s'il est le réseau connecté, ses lignes de détail.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 struct BlocMac<'a> {
@@ -450,14 +392,53 @@ pub(crate) struct Balise {
 }
 
 /// Le réseau où l'on est connecté, d'après le système.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct Connexion {
     pub ssid: String,
     /// L'émetteur de la connexion ; vide si le système ne le dit pas.
     pub bssid: String,
+    /// Qualité du signal de la connexion, de 0 à 100 %, quand le système la donne.
+    pub qualite: Option<u8>,
+    pub canal: Option<u16>,
+    pub bande: Option<Bande>,
     /// La protection négociée, nommée comme `Protection::libelle` ; vide si le système ne la dit pas (nl80211). Une
     /// borne WPA2/WPA3 annonce les deux, mais une carte sans WPA3 s'y connecte en WPA2 : c'est le lien qui compte.
     pub securite: String,
+}
+
+/// Au-delà, en secondes, la liste des voisins ne dit plus qui émet maintenant : un jumeau allumé depuis, ou un voisin
+/// qui a changé de canal, n'y serait pas.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) const VOISINS_RECENTS: u64 = 600;
+
+/// Ce que vaut la liste des bornes voisines d'une lecture : ce qui manque d'une liste vieille ou vide ne se compte
+/// pas comme absent (pas de jumeau, canal libre), il est dit non vérifié. Seul Linux dit l'âge de sa liste.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Voisins {
+    /// Le système ne dit pas l'âge de sa liste (Windows, qui la tient lui-même à jour) : prise telle quelle.
+    #[default]
+    NonJuges,
+    Recents,
+    Anciens {
+        minutes: u64,
+    },
+    /// Le noyau n'a plus aucune borne voisine : il les oublie 30 s après une recherche.
+    Oublies,
+    /// NetworkManager n'a encore fait aucune recherche depuis son démarrage.
+    JamaisCherches,
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+impl Voisins {
+    /// D'après l'âge de la dernière recherche, en secondes.
+    pub(crate) fn selon_age(secondes: u64) -> Voisins {
+        if secondes <= VOISINS_RECENTS {
+            Voisins::Recents
+        } else {
+            Voisins::Anciens { minutes: secondes / 60 }
+        }
+    }
 }
 
 /// Ce qu'une lecture native a vu : les bornes du dernier balayage, et la connexion en cours.
@@ -467,191 +448,152 @@ pub(crate) struct Lecture {
     pub connexion: Option<Connexion>,
     /// Une réserve du système sur la liste (Windows : l'autorisation de localisation).
     pub note: Option<&'static str>,
+    pub voisins: Voisins,
 }
 
-/// `nmcli -t -e no -f ACTIVE,SIGNAL,FREQ,CHAN,SSID dev wifi list` : « yes:72:5180 MHz:36:Salon ». Le nom vient en
-/// dernier, il peut contenir « : ».
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(crate) fn bornes_nmcli(sortie: &str) -> Vec<Borne> {
-    sortie
-        .lines()
-        .filter_map(|l| {
-            let mut champs = l.splitn(5, ':');
-            let actif = champs.next()? == "yes";
-            let signal = champs.next()?.trim().parse().ok();
-            let mhz: u32 = champs.next()?.split_whitespace().next()?.parse().ok()?;
-            let canal = champs.next()?.trim().parse().ok()?;
-            Some(Borne {
-                ssid: affichable(champs.next().unwrap_or("")),
-                bssid: String::new(),
-                bande: Bande::de_frequence(mhz)?,
-                canal,
-                signal,
-                actif,
+// macOS lit encore son Wi-Fi par system_profiler, sans lecture native : ni bilan ni réserve.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+impl Lecture {
+    /// Pourquoi la liste des voisins ne suffit pas à conclure (jumeau absent, canal libre) ; `None` : elle suffit.
+    pub(crate) fn reserve_voisins(&self) -> Option<String> {
+        if let Some(n) = self.note {
+            return Some(n.to_string());
+        }
+        match self.voisins {
+            Voisins::NonJuges | Voisins::Recents => None,
+            Voisins::Anciens { minutes } => Some(trf!(
+                "la liste des réseaux voisins date de {minutes} min",
+                "the list of nearby networks is {minutes} min old"
+            )),
+            Voisins::Oublies => Some(
+                tr!(
+                    "le système ne garde les réseaux voisins que 30 s après une recherche, et aucune n'est récente",
+                    "the system keeps nearby networks only 30 s after a search, and none is recent"
+                )
+                .to_string(),
+            ),
+            Voisins::JamaisCherches => Some(
+                tr!(
+                    "NetworkManager n'a encore cherché aucun réseau",
+                    "NetworkManager has not searched for networks yet"
+                )
+                .to_string(),
+            ),
+        }
+    }
+}
+
+/// Le Wi-Fi de Linux : NetworkManager d'abord, qui garde les bornes de ses dernières recherches ; sans lui (iwd,
+/// systemd-networkd), sans carte qu'il gère, sans connexion qu'il voie ou si le bus refuse, le dernier balayage
+/// gardé par le noyau.
+#[cfg(target_os = "linux")]
+pub(crate) fn lecture_linux() -> Result<Lecture, &'static str> {
+    match networkmanager::lire() {
+        Ok(Some(l)) if l.connexion.is_some() => Ok(l),
+        // NetworkManager ne voit aucune connexion : sa carte peut être « non gérée » (wpa_supplicant ou iwd lancés à
+        // part), et il la publie quand même, vide. Le noyau dit alors si elle est associée.
+        Ok(Some(l)) => match nl80211::lire() {
+            Ok(noyau) if noyau.connexion.is_some() => Ok(noyau),
+            _ => Ok(l),
+        },
+        Ok(None) | Err(_) => nl80211::lire(),
+    }
+}
+
+/// La protection du réseau connecté : celle que le système dit négociée (Windows), sinon celle de la borne qu'il dit
+/// active ou du BSSID de la connexion, enfin celle du réseau connecté selon `visibles_de` (une seule protection pour
+/// ce nom). `None` : la borne n'est pas dans la liste, ou plusieurs du même nom diffèrent (l'une peut être un jumeau).
+/// `visibles` : `visibles_de(l)`.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub(crate) fn protection_connectee(l: &Lecture, visibles: &[Visible]) -> Option<String> {
+    let c = l.connexion.as_ref()?;
+    if !c.securite.is_empty() {
+        return Some(c.securite.clone());
+    }
+    let active = l
+        .balises
+        .iter()
+        .find(|b| b.borne.actif || (!c.bssid.is_empty() && c.bssid.eq_ignore_ascii_case(&b.borne.bssid)));
+    if let Some(b) = active {
+        return Some(b.protection.libelle().to_string());
+    }
+    visibles
+        .iter()
+        .find(|v| v.actif && v.ssid == c.ssid)
+        .map(|v| v.securite.clone())
+}
+
+/// WIN-WIF-001 et LNX-WIF-001 : la protection du réseau connecté, puis un jumeau parmi les voisins. Sans connexion,
+/// rien à juger, sauf si le système a refusé de dire laquelle (la note). Une liste de voisins trop vieille ne prouve
+/// pas l'absence de jumeau : c'est dit non vérifié. La borne de la connexion n'est jamais devinée parmi plusieurs du
+/// même nom aux protections différentes (l'une peut être le jumeau) : la protection est alors dite non vérifiée.
+/// `admin` : commandes pour ouvrir l'administration de la box.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub(super) fn bilan(l: &Lecture, admin: &[&str]) -> Vec<Constat> {
+    let Some(c) = &l.connexion else {
+        return l
+            .note
+            .map(|n| {
+                vec![impossible(
+                    "Wi-Fi",
+                    &trf!("réseau connecté : {n}", "connected network: {n}"),
+                )]
             })
-        })
-        .collect()
-}
-
-/// `iw dev <carte> scan dump` : le dernier balayage gardé par le noyau, lisible sans droits d'administrateur (utile
-/// sans NetworkManager : iwd, systemd-networkd). Un bloc par borne, « BSS aa:bb:…(on wlan0) -- associated » pour
-/// celle de la connexion, puis « freq: 5180 », « signal: -45.00 dBm », « SSID: Salon ».
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(crate) fn bornes_iw(sortie: &str) -> Vec<Borne> {
-    struct EnCours {
-        actif: bool,
-        bssid: String,
-        mhz: Option<u32>,
-        dbm: Option<i32>,
-        ssid: String,
+            .unwrap_or_default();
+    };
+    let nom = if c.ssid.is_empty() {
+        tr!("réseau caché", "hidden network").to_string()
+    } else {
+        c.ssid.clone()
+    };
+    let mut visibles = visibles_de(l);
+    let libelle = protection_connectee(l, &visibles);
+    let Some(libelle) = libelle else {
+        let homonymes = !c.ssid.is_empty() && l.balises.iter().any(|b| b.borne.ssid == c.ssid);
+        return vec![impossible(
+            "Wi-Fi",
+            &if homonymes {
+                trf!(
+                    "protection du Wi-Fi « {nom} » : plusieurs bornes de ce nom n'ont pas la même protection, et le système ne dit pas laquelle est la vôtre (l'une peut être un faux réseau)",
+                    "protection of Wi-Fi “{nom}”: several access points with this name differ in protection, and the system does not say which one is yours (one may be a fake network)"
+                )
+            } else {
+                trf!(
+                    "protection du Wi-Fi « {nom} » : le dernier balayage ne montre pas sa borne",
+                    "protection of Wi-Fi “{nom}”: the last scan does not show its access point"
+                )
+            },
+        )];
+    };
+    let mut constats = vec![securite(&nom, &libelle, admin)];
+    // Un réseau caché n'a pas de nom à copier : aucun jumeau à chercher.
+    if c.ssid.is_empty() {
+        return constats;
     }
-    fn finir(b: EnCours) -> Option<Borne> {
-        let mhz = b.mhz?;
-        Some(Borne {
-            ssid: b.ssid,
-            bssid: b.bssid,
-            bande: Bande::de_frequence(mhz)?,
-            canal: canal_de_frequence(mhz)?,
-            signal: b.dbm.map(pourcentage),
-            actif: b.actif,
-        })
+    if let Some(r) = l.reserve_voisins() {
+        constats.push(impossible(
+            "Wi-Fi",
+            &trf!(
+                "faux réseau du même nom (jumeau) : non cherché, {r}",
+                "same-name fake network (evil twin): not looked for, {r}"
+            ),
+        ));
+        return constats;
     }
-    let mut bornes = Vec::new();
-    let mut courante: Option<EnCours> = None;
-    for ligne in sortie.lines() {
-        // Les éléments d'une borne sont en retrait (« \tBSS Load: ») : seul un « BSS » en début de ligne en ouvre une.
-        if let Some(reste) = ligne.strip_prefix("BSS ") {
-            bornes.extend(courante.take().and_then(finir));
-            courante = Some(EnCours {
-                actif: reste.contains("-- associated"),
-                bssid: reste
-                    .split('(')
-                    .next()
-                    .and_then(elements::mac_normalisee)
-                    .unwrap_or_default(),
-                mhz: None,
-                dbm: None,
-                ssid: String::new(),
-            });
-            continue;
-        }
-        let Some(b) = courante.as_mut() else {
-            continue;
-        };
-        let l = ligne.trim();
-        if let Some(f) = l.strip_prefix("freq:") {
-            // « 5180 » ou « 5180.0 » selon la version d'iw.
-            b.mhz = f.trim().split('.').next().and_then(|n| n.parse().ok());
-        } else if let Some(s) = l.strip_prefix("signal:") {
-            // « -45.00 dBm » : le degré près suffit.
-            b.dbm = s
-                .split_whitespace()
-                .next()
-                .and_then(|n| n.split('.').next()?.parse().ok());
-        } else if let Some(n) = l.strip_prefix("SSID:") {
-            b.ssid = affichable(n.trim());
-        }
+    // La borne de la connexion absente de la liste (Windows sans la localisation, borne pas encore balayée) : le
+    // réseau connecté, avec sa protection, sert de référence au jumeau.
+    if !visibles.iter().any(|v| v.actif) {
+        visibles.insert(
+            0,
+            Visible {
+                ssid: c.ssid.clone(),
+                securite: libelle,
+                actif: true,
+            },
+        );
     }
-    bornes.extend(courante.and_then(finir));
-    bornes
-}
-
-/// Une ligne « Clé : valeur » de netsh, la clé sans son numéro (« BSSID 1 » → « BSSID »). La valeur d'un BSSID
-/// contient elle-même des « : ».
-#[cfg_attr(not(windows), allow(dead_code))]
-fn champ_netsh(ligne: &str) -> Option<(&str, &str)> {
-    let (cle, valeur) = ligne.split_once(':')?;
-    let cle = cle.trim();
-    let cle = cle.trim_end_matches(|c: char| c.is_ascii_digit()).trim_end();
-    Some((cle, valeur.trim()))
-}
-
-/// Une borne lue dans netsh, en cours de lecture : la bande peut manquer (Windows 10).
-#[cfg_attr(not(windows), allow(dead_code))]
-#[derive(Default)]
-struct BorneNetsh {
-    ssid: String,
-    bssid: String,
-    bande: Option<Bande>,
-    canal: Option<u16>,
-    signal: Option<u8>,
-}
-
-#[cfg_attr(not(windows), allow(dead_code))]
-impl BorneNetsh {
-    /// Lit un champ de la borne ; faux si la ligne ne la concerne pas.
-    fn lire(&mut self, cle: &str, valeur: &str) -> bool {
-        match cle {
-            "Signal" => self.signal = valeur.trim_end_matches('%').trim().parse().ok(),
-            "Band" | "Bande" => self.bande = Bande::de_texte(valeur),
-            "Channel" | "Canal" => self.canal = valeur.parse().ok(),
-            _ => return false,
-        }
-        true
-    }
-
-    fn finir(self, actif: bool) -> Option<Borne> {
-        let canal = self.canal?;
-        Some(Borne {
-            ssid: self.ssid,
-            bssid: self.bssid,
-            bande: self.bande.or_else(|| Bande::de_canal(canal))?,
-            canal,
-            signal: self.signal,
-            actif,
-        })
-    }
-}
-
-/// `netsh wlan show networks mode=bssid` : sous « SSID 1 : Salon », un bloc par borne (« BSSID 1 : … ») avec
-/// « Signal : 80% », « Band : 5 GHz » (Windows 11) et « Channel : 36 » ; en français « Bande » et « Canal ».
-/// « Channel Utilization » (charge annoncée par la borne) n'est pas le canal.
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn bornes_netsh(sortie: &str) -> Vec<Borne> {
-    let mut bornes = Vec::new();
-    let mut ssid = String::new();
-    let mut courante: Option<BorneNetsh> = None;
-    for ligne in sortie.lines() {
-        let Some((cle, valeur)) = champ_netsh(ligne) else {
-            continue;
-        };
-        match cle {
-            "SSID" => {
-                bornes.extend(courante.take().and_then(|b| b.finir(false)));
-                ssid = affichable(valeur);
-            }
-            "BSSID" => {
-                bornes.extend(courante.take().and_then(|b| b.finir(false)));
-                courante = Some(BorneNetsh {
-                    ssid: ssid.clone(),
-                    bssid: elements::mac_normalisee(valeur).unwrap_or_default(),
-                    ..BorneNetsh::default()
-                });
-            }
-            _ => {
-                if let Some(b) = courante.as_mut() {
-                    b.lire(cle, valeur);
-                }
-            }
-        }
-    }
-    bornes.extend(courante.and_then(|b| b.finir(false)));
-    bornes
-}
-
-/// La borne de la connexion, dans `netsh wlan show interfaces` (« SSID : Salon », « Channel : 36 », « Signal : 80% »,
-/// « Band : 5 GHz »).
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn borne_active_netsh(sortie: &str) -> Option<Borne> {
-    let mut b = BorneNetsh::default();
-    for (cle, valeur) in sortie.lines().filter_map(champ_netsh) {
-        if cle == "SSID" {
-            b.ssid = affichable(valeur);
-        } else {
-            b.lire(cle, valeur);
-        }
-    }
-    b.finir(true)
+    constats.extend(jumeau(&visibles));
+    constats
 }
 
 /// `system_profiler SPAirPortDataType` : « Channel: 36 (5GHz, 80MHz) » et, pour le réseau connecté (et parfois les
@@ -723,9 +665,9 @@ mod tests {
             connexion: Some(Connexion {
                 ssid: "Salon".into(),
                 bssid: "00:11:22:AA:BB:01".into(),
-                securite: String::new(),
+                ..Connexion::default()
             }),
-            note: None,
+            ..Lecture::default()
         };
         let v = visibles_de(&l);
         assert_eq!(v.len(), 2, "le réseau caché est écarté");
@@ -744,8 +686,9 @@ mod tests {
                 ssid: "Salon".into(),
                 bssid: "00:11:22:aa:bb:01".into(),
                 securite: securite.into(),
+                ..Connexion::default()
             }),
-            note: None,
+            ..Lecture::default()
         };
         assert_eq!(force(&visibles_de(&negociee("")).swap_remove(0).securite), 3);
         let v = visibles_de(&negociee("WPA2"));
@@ -757,7 +700,7 @@ mod tests {
         l.connexion = Some(Connexion {
             ssid: "Salon".into(),
             bssid: String::new(),
-            securite: String::new(),
+            ..Connexion::default()
         });
         assert!(visibles_de(&l).iter().all(|v| !v.actif));
         // Une seule borne de ce nom, ou deux à la même protection (réseau maillé) : celle de la connexion.
@@ -852,40 +795,6 @@ mod tests {
     }
 
     #[test]
-    fn reseaux_de_nmcli() {
-        let sortie = "no:WPA2:Voisin\nyes:WPA2 WPA3:Salon\nno::\nno:--:Café:Wi-Fi\n";
-        assert_eq!(
-            lire_nmcli(sortie),
-            [
-                visible("Voisin", "WPA2", false),
-                visible("Salon", "WPA2 WPA3", true),
-                visible("Café:Wi-Fi", "--", false),
-            ]
-        );
-    }
-
-    #[test]
-    fn reseaux_de_netsh_en_deux_langues() {
-        let anglais = "Interface name : Wi-Fi\nThere are 2 networks currently visible.\n\nSSID 1 : Salon\n    Network type            : Infrastructure\n    Authentication          : WPA2-Personal\n    Encryption              : CCMP\n\nSSID 2 : Salon\n    Network type            : Infrastructure\n    Authentication          : Open\n    Encryption              : None\n";
-        assert_eq!(
-            lire_netsh(anglais),
-            [
-                visible("Salon", "WPA2-Personal", false),
-                visible("Salon", "Open", false)
-            ]
-        );
-        let francais = "SSID 1 : Salon\n    Type de réseau          : Infrastructure\n    Authentification        : Ouvert\n    Chiffrement             : Aucun\n";
-        assert_eq!(lire_netsh(francais), [visible("Salon", "Ouvert", false)]);
-        // Le réseau connecté (netsh wlan show interfaces) : le BSSID n'est pas le nom ; sans protection lue, rien.
-        let interface = "    Nom                    : Wi-Fi\n    SSID                   : Chez Max\n    BSSID                  : 02:00:00:aa:bb:01\n    Authentification       : WPA2 - Personnel\n";
-        assert_eq!(
-            connexion_netsh(interface),
-            Some(visible("Chez Max", "WPA2 - Personnel", true))
-        );
-        assert_eq!(connexion_netsh("    State : disconnected\n"), None);
-    }
-
-    #[test]
     fn reseaux_de_system_profiler() {
         let sortie = "Wi-Fi:
 
@@ -937,14 +846,6 @@ mod tests {
         }
     }
 
-    /// La même borne, avec l'adresse de son émetteur.
-    fn emetteur(bssid: &str, borne: Borne) -> Borne {
-        Borne {
-            bssid: bssid.into(),
-            ..borne
-        }
-    }
-
     #[test]
     fn bandes_canaux_et_signal() {
         for (mhz, canal) in [(2412, 1), (2437, 6), (2484, 14), (5180, 36), (5745, 149), (5955, 1)] {
@@ -971,75 +872,6 @@ mod tests {
         assert_eq!(pourcentage(i32::MIN), 0);
     }
 
-    #[test]
-    fn bornes_de_nmcli() {
-        let sortie = "no:40:2437 MHz:6:Voisin\nyes:72:5180 MHz:36:Salon\nno:15:2412 MHz:1:\nno:20:5955 MHz:1:Café:Wi-Fi\nligne abîmée\n";
-        assert_eq!(
-            bornes_nmcli(sortie),
-            [
-                borne("Voisin", Bande::G24, 6, Some(40), false),
-                borne("Salon", Bande::G5, 36, Some(72), true),
-                borne("", Bande::G24, 1, Some(15), false),
-                borne("Café:Wi-Fi", Bande::G6, 1, Some(20), false),
-            ]
-        );
-    }
-
-    #[test]
-    fn bornes_de_iw() {
-        let sortie = "BSS 02:00:00:aa:bb:01(on wlan0) -- associated\n\tlast seen: 120 ms ago\n\tfreq: 5180.0\n\
-                      \tsignal: -45.00 dBm\n\tSSID: Salon\n\tBSS Load:\n\t\t * station count: 3\n\
-                      BSS 02:00:00:aa:bb:02(on wlan0)\n\tfreq: 2437\n\tsignal: -81.00 dBm\n\tSSID: Voisin\n\
-                      BSS 02:00:00:aa:bb:03(on wlan0)\n\tsignal: -60.00 dBm\n";
-        assert_eq!(
-            bornes_iw(sortie),
-            [
-                emetteur("02:00:00:aa:bb:01", borne("Salon", Bande::G5, 36, Some(100), true)),
-                emetteur("02:00:00:aa:bb:02", borne("Voisin", Bande::G24, 6, Some(38), false)),
-            ]
-        );
-    }
-
-    #[test]
-    fn bornes_de_netsh_en_deux_langues() {
-        let anglais = "Interface name : Wi-Fi\nThere are 2 networks currently visible.\n\nSSID 1 : Salon\n\
-                       \x20   Network type            : Infrastructure\n    Authentication          : WPA2-Personal\n\
-                       \x20   BSSID 1                 : 02:00:00:aa:bb:01\n         Signal             : 80%\n\
-                       \x20        Radio type         : 802.11ax\n         Band               : 5 GHz\n\
-                       \x20        Channel            : 36\n         Channel Utilization: 21 (8 %)\n\
-                       \x20   BSSID 2                 : 02:00:00:aa:bb:02\n         Signal             : 60%\n\
-                       \x20        Band               : 2.4 GHz\n         Channel            : 6\n\nSSID 2 : \n\
-                       \x20   BSSID 1                 : 02:00:00:aa:bb:03\n         Signal             : 30%\n\
-                       \x20        Channel            : 11\n";
-        assert_eq!(
-            bornes_netsh(anglais),
-            [
-                emetteur("02:00:00:aa:bb:01", borne("Salon", Bande::G5, 36, Some(80), false)),
-                emetteur("02:00:00:aa:bb:02", borne("Salon", Bande::G24, 6, Some(60), false)),
-                emetteur("02:00:00:aa:bb:03", borne("", Bande::G24, 11, Some(30), false)),
-            ]
-        );
-        let francais = "SSID 1 : Salon\n    BSSID 1                 : 02:00:00:aa:bb:01\n         Signal             : 55%\n\
-                        \x20        Bande              : 2,4 GHz\n         Canal              : 1\n\
-                        \x20        Utilisation du canal : 10 (4 %)\n";
-        assert_eq!(
-            bornes_netsh(francais),
-            [emetteur(
-                "02:00:00:aa:bb:01",
-                borne("Salon", Bande::G24, 1, Some(55), false)
-            )]
-        );
-        let interfaces = "    Name                   : Wi-Fi\n    State                  : connected\n\
-                          \x20   SSID                   : Salon\n    BSSID                  : 02:00:00:aa:bb:01\n\
-                          \x20   Band                   : 5 GHz\n    Channel                : 36\n\
-                          \x20   Signal                 : 80%\n";
-        assert_eq!(
-            borne_active_netsh(interfaces),
-            Some(borne("Salon", Bande::G5, 36, Some(80), true))
-        );
-        assert_eq!(borne_active_netsh("    State : disconnected\n"), None);
-    }
-
     /// Un nom de réseau, choisi par n'importe qui à portée de Wi-Fi : séquence OSC 52 (presse-papier), effacement de la
     /// ligne, retour chariot, retournement bidi. Lu par chaque outil, il arrive inoffensif, « � » à la place de chaque
     /// caractère piégé ; la protection aussi.
@@ -1048,29 +880,165 @@ mod tests {
 
     #[test]
     fn noms_de_reseaux_pieges_rendus_inoffensifs() {
-        let v = lire_nmcli(&format!("yes:WPA2\x1b[8m:{PIEGE}\nno:--:{PIEGE}\n"));
-        assert_eq!(v, [visible(VU, "WPA2�[8m", true), visible(VU, "--", false)]);
-        assert!(jumeau(&v).is_some_and(|c| !crate::ui::contient_un_piege(&c.message)));
-        let netsh = format!("SSID 1 : {PIEGE}\n    Authentication          : WPA2\x1b[8m\n");
-        assert_eq!(lire_netsh(&netsh), [visible(VU, "WPA2�[8m", false)]);
         let profiler = format!(
             "Wi-Fi:\n      Interfaces:\n        en0:\n          Current Network Information:\n            \
-             {PIEGE}:\n              Channel: 36 (5GHz, 80MHz)\n              Security: WPA2\x1b[8m\n"
+             {PIEGE}:\n              Channel: 36 (5GHz, 80MHz)\n              Security: WPA2\x1b[8m\n\
+             \x20         Other Local Wi-Fi Networks:\n            {PIEGE}:\n              Security: None\n"
         );
-        assert_eq!(lire_system_profiler(&profiler), [visible(VU, "WPA2�[8m", true)]);
+        let v = lire_system_profiler(&profiler);
+        assert_eq!(v, [visible(VU, "WPA2�[8m", true), visible(VU, "None", false)]);
+        assert!(jumeau(&v).is_some_and(|c| !crate::ui::contient_un_piege(&c.message)));
         assert_eq!(bornes_system_profiler(&profiler)[0].ssid, VU);
-        assert_eq!(bornes_nmcli(&format!("yes:72:5180 MHz:36:{PIEGE}\n"))[0].ssid, VU);
-        let iw = format!("BSS 02:00:00:aa:bb:01(on wlan0) -- associated\n\tfreq: 5180\n\tSSID: {PIEGE}\n");
-        assert_eq!(bornes_iw(&iw)[0].ssid, VU);
-        let voisins = format!("SSID 1 : {PIEGE}\n    BSSID 1 : 02:00:00:aa:bb:01\n    Channel : 36\n");
-        assert_eq!(bornes_netsh(&voisins)[0].ssid, VU);
-        let interface = format!("    SSID : {PIEGE}\n    Channel : 36\n    Signal : 80%\n");
-        assert_eq!(borne_active_netsh(&interface).map(|b| b.ssid).as_deref(), Some(VU));
-        let audit = format!("    SSID : {PIEGE}\n    BSSID : 02:00:00:aa:bb:01\n    Authentication : WPA2\x1b[8m\n");
-        assert_eq!(connexion_netsh(&audit), Some(visible(VU, "WPA2�[8m", true)));
         // Les messages de l'audit Wi-Fi ne portent plus rien qui pilote le terminal.
         let c = securite(&v[0].ssid, &v[0].securite, &[]);
         assert!(!crate::ui::contient_un_piege(&c.message), "{}", c.message);
+    }
+
+    fn balise(ssid: &str, mac: u8, protection: elements::Protection, actif: bool) -> Balise {
+        Balise {
+            borne: Borne {
+                bssid: format!("02:00:00:aa:bb:{mac:02x}"),
+                ..borne(ssid, Bande::G5, 36, Some(70), actif)
+            },
+            protection,
+            wps: None,
+        }
+    }
+
+    fn wpa2() -> elements::Protection {
+        elements::Protection {
+            chiffree: true,
+            rsn: true,
+            aes: true,
+            psk: true,
+            ..elements::Protection::default()
+        }
+    }
+
+    fn connecte(ssid: &str) -> Connexion {
+        Connexion {
+            ssid: ssid.into(),
+            bssid: "02:00:00:aa:bb:01".into(),
+            ..Connexion::default()
+        }
+    }
+
+    /// Le bilan du Wi-Fi de la machine : la protection, puis le jumeau ; tout ce qui ne se conclut pas d'une liste
+    /// douteuse est dit non vérifié, jamais compté comme sain.
+    #[test]
+    fn bilan_du_wifi() {
+        let ouvert = elements::Protection::default();
+        let mut l = Lecture {
+            balises: vec![balise("Salon", 1, wpa2(), true), balise("Salon", 2, ouvert, false)],
+            connexion: Some(connecte("Salon")),
+            voisins: Voisins::Recents,
+            ..Lecture::default()
+        };
+        let c = bilan(&l, &[]);
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0].probleme, Some(Niveau::Info));
+        assert!(c[0].verifie && c[0].message.contains("WPA2"));
+        assert_eq!(c[1].probleme, Some(Niveau::Moyen));
+        assert!(c[1].message.contains("sans mot de passe") || c[1].message.contains("without a password"));
+        // Une liste de voisins trop vieille, oubliée ou jamais faite : la protection se juge, le jumeau est non
+        // cherché.
+        for voisins in [
+            Voisins::Anciens { minutes: 25 },
+            Voisins::Oublies,
+            Voisins::JamaisCherches,
+        ] {
+            l.voisins = voisins;
+            let c = bilan(&l, &[]);
+            assert_eq!(c.len(), 2, "{voisins:?}");
+            assert!(c[0].verifie);
+            assert!(!c[1].verifie && (c[1].message.contains("jumeau") || c[1].message.contains("evil twin")));
+        }
+        // La protection de l'association (Windows) l'emporte, même sans aucune borne lue (localisation refusée) ;
+        // le jumeau est alors non cherché, avec la raison de Windows.
+        let l = Lecture {
+            connexion: Some(Connexion {
+                securite: "WPA3".into(),
+                ..connecte("Salon")
+            }),
+            note: Some("localisation"),
+            ..Lecture::default()
+        };
+        let c = bilan(&l, &[]);
+        assert_eq!(c.len(), 2);
+        assert!(c[0].verifie && c[0].probleme.is_none());
+        assert!(!c[1].verifie && c[1].message.contains("localisation"));
+        // Pas de connexion, mais Windows refuse de dire laquelle : non vérifié ; sans raison, rien à dire.
+        let l = Lecture {
+            note: Some("localisation"),
+            ..Lecture::default()
+        };
+        let c = bilan(&l, &[]);
+        assert_eq!(c.len(), 1);
+        assert!(!c[0].verifie && c[0].message.contains("localisation"));
+        assert!(bilan(&Lecture::default(), &[]).is_empty());
+        // Connecté, mais la borne n'est pas dans le balayage : la protection n'est pas devinée.
+        let l = Lecture {
+            balises: vec![balise("Voisin", 3, wpa2(), false)],
+            connexion: Some(connecte("Salon")),
+            voisins: Voisins::Recents,
+            ..Lecture::default()
+        };
+        let c = bilan(&l, &[]);
+        assert!(!c[0].verifie && c[0].message.contains("Salon"));
+        assert_eq!(c.len(), 1);
+        // Un réseau caché : sa protection, la plus forte borne de la liste à défaut d'active, et aucun jumeau.
+        let l = Lecture {
+            balises: vec![balise("", 1, wpa2(), true), balise("", 2, ouvert, false)],
+            connexion: Some(connecte("")),
+            voisins: Voisins::Oublies,
+            ..Lecture::default()
+        };
+        let c = bilan(&l, &[]);
+        assert_eq!(c.len(), 1);
+        assert!(c[0].message.contains("réseau caché") || c[0].message.contains("hidden network"));
+        // Sans borne active ni BSSID, une seule borne de ce nom : la sienne.
+        let mut l = Lecture {
+            balises: vec![balise("Salon", 5, wpa2(), false)],
+            connexion: Some(Connexion {
+                bssid: String::new(),
+                ..connecte("Salon")
+            }),
+            voisins: Voisins::Recents,
+            ..Lecture::default()
+        };
+        let c = bilan(&l, &[]);
+        assert!(c[0].verifie && c[0].message.contains("WPA2"));
+        // Deux bornes de ce nom, l'une ouverte : laquelle est la vôtre n'est pas devinée (ni « ouvert », ni le jumeau
+        // pris pour le vrai réseau).
+        let mut faible = balise("Salon", 4, ouvert, false);
+        faible.borne.signal = Some(10);
+        l.balises.insert(0, faible);
+        let c = bilan(&l, &[]);
+        assert_eq!(c.len(), 1);
+        assert!(!c[0].verifie && c[0].probleme == Some(Niveau::Info), "{}", c[0].message);
+        // La borne du BSSID de la connexion, même sans drapeau « active » : elle seule donne la protection, et
+        // l'autre est le jumeau.
+        l.balises[1].borne.bssid = "02:00:00:AA:BB:01".into();
+        l.connexion = Some(connecte("Salon"));
+        let c = bilan(&l, &[]);
+        assert_eq!(c.len(), 2);
+        assert!(c[0].verifie && c[0].message.contains("WPA2"));
+        assert_eq!(c[1].probleme, Some(Niveau::Moyen));
+    }
+
+    #[test]
+    fn reserve_des_voisins() {
+        let mut l = Lecture::default();
+        assert_eq!(l.reserve_voisins(), None);
+        l.voisins = Voisins::Recents;
+        assert_eq!(l.reserve_voisins(), None);
+        l.voisins = Voisins::selon_age(VOISINS_RECENTS + 60);
+        assert_eq!(l.voisins, Voisins::Anciens { minutes: 11 });
+        assert!(l.reserve_voisins().is_some_and(|r| r.contains("11 min")));
+        assert_eq!(Voisins::selon_age(VOISINS_RECENTS), Voisins::Recents);
+        // La note du système passe avant.
+        l.note = Some("localisation");
+        assert_eq!(l.reserve_voisins().as_deref(), Some("localisation"));
     }
 
     #[test]
@@ -1126,60 +1094,21 @@ mod proprietes {
         .prop_map(|l| l.join("\n"))
     }
 
-    /// Un nom de réseau ordinaire : tout ce que nmcli rend tel quel, deux-points compris, sans caractère de commande.
-    fn nom() -> impl Strategy<Value = String> {
-        "[a-zA-Z0-9 éàçÉ'_.:-]{1,32}".prop_filter("nom non vide après les espaces", |n| !n.trim().is_empty())
-    }
-
     proptest! {
         #![proptest_config(ProptestConfig { cases: 256, failure_persistence: None, ..ProptestConfig::default() })]
 
         #[test]
         fn lectures_sans_plantage_ni_piege(t in sortie()) {
-            let visibles: Vec<Visible> =
-                [lire_nmcli(&t), lire_netsh(&t), lire_system_profiler(&t)].into_iter().flatten().collect();
-            let bornes = [bornes_nmcli(&t), bornes_iw(&t), bornes_netsh(&t), bornes_system_profiler(&t)].concat();
-            for v in visibles.iter().chain(connexion_netsh(&t).as_ref()) {
+            let visibles = lire_system_profiler(&t);
+            let bornes = bornes_system_profiler(&t);
+            for v in &visibles {
                 prop_assert!(!crate::ui::contient_un_piege(&v.ssid) && !crate::ui::contient_un_piege(&v.securite));
             }
-            for b in bornes.iter().chain(borne_active_netsh(&t).as_ref()) {
+            for b in &bornes {
                 prop_assert!(!crate::ui::contient_un_piege(&b.ssid));
                 prop_assert!(b.signal.is_none_or(|s| s <= 100));
             }
             let _ = jumeau(&visibles);
-        }
-
-        #[test]
-        fn nmcli_redonne_ses_valeurs(actif in any::<bool>(), securite in "[A-Z0-9 .-]{0,12}", ssid in nom()) {
-            let ligne = format!("{}:{securite}:{ssid}\n", if actif { "yes" } else { "no" });
-            let v = lire_nmcli(&ligne);
-            prop_assert_eq!(v.len(), 1);
-            prop_assert_eq!(&v[0].ssid, &ssid);
-            prop_assert_eq!(&v[0].securite, &securite);
-            prop_assert_eq!(v[0].actif, actif);
-        }
-
-        #[test]
-        fn bornes_nmcli_et_iw_redonnent_leurs_valeurs(canal in 1u16..=13, signal in 0u8..=100, ssid in nom()) {
-            let mhz = 2407 + 5 * u32::from(canal);
-            let b = bornes_nmcli(&format!("yes:{signal}:{mhz} MHz:{canal}:{ssid}\n"));
-            prop_assert_eq!(b.len(), 1);
-            prop_assert_eq!((b[0].canal, b[0].signal, b[0].bande, b[0].actif), (canal, Some(signal), Bande::G24, true));
-            prop_assert_eq!(&b[0].ssid, &ssid);
-            let iw = format!("BSS 02:00:00:aa:bb:01(on wlan0)\n\tfreq: {mhz}\n\tsignal: -61.00 dBm\n\tSSID: {ssid}\n");
-            let b = bornes_iw(&iw);
-            prop_assert_eq!(b.len(), 1);
-            prop_assert_eq!((b[0].canal, b[0].signal), (canal, Some(pourcentage(-61))));
-            prop_assert_eq!(b[0].bssid.as_str(), "02:00:00:aa:bb:01");
-            prop_assert_eq!(b[0].ssid.as_str(), ssid.trim());
-        }
-
-        #[test]
-        fn netsh_redonne_ses_valeurs(canal in prop_oneof![1u16..=13, 36u16..=165], signal in 0u8..=100, ssid in nom()) {
-            let texte = format!("    SSID                   : {ssid}\n    Channel                : {canal}\n    Signal                 : {signal}%\n");
-            let b = borne_active_netsh(&texte).unwrap();
-            prop_assert_eq!((b.canal, b.signal, b.bande), (canal, Some(signal), Bande::de_canal(canal).unwrap()));
-            prop_assert_eq!(b.ssid.as_str(), ssid.trim());
         }
 
         #[test]

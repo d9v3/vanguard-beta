@@ -173,15 +173,9 @@ fn serveurs() -> Option<Serveurs> {
         // nom hors du service (lancé à la main, conteneur, dnsmasq de libvirt) ne compte pas : il n'est pas le
         // DNS de la machine et ferait dire « chiffré » à tort. Le premier de la liste gagne, comme avant.
         let noms: Vec<&str> = RESOLVEURS.iter().map(|r| r.0).collect();
-        let actifs = crate::machine::linux::natif::services_actifs(&noms).unwrap_or_else(|| {
-            let mut args = vec!["is-active"];
-            args.extend(&noms);
-            // is-active répond une ligne par service, dans l'ordre ; son code de retour n'est 0 que si tous
-            // tournent.
-            crate::commande::lancer(std::process::Command::new("systemctl").args(&args), 10)
-                .map(|r| r.sortie.lines().map(|l| l.trim() == "active").collect())
-                .unwrap_or_default()
-        });
+        // En secours, l'état que systemd tient lui-même (par le bus, sinon systemctl), pour tous à la fois.
+        let actifs = crate::machine::linux::natif::services_actifs(&noms)
+            .unwrap_or_else(|| crate::machine::linux::services_systemd_actifs(&noms));
         if let Some((_, nom, chiffrant)) = RESOLVEURS.iter().zip(actifs).find(|(_, actif)| *actif).map(|(r, _)| *r) {
             resolveur_local = Some(nom);
             if chiffrant {

@@ -699,16 +699,6 @@ mod tests {
                 include_str!("machine/linux/mod.rs"),
                 "Command::new(\"dpkg\").args([\"-S\"",
             ),
-            (
-                "reseau/canaux.rs",
-                include_str!("reseau/canaux.rs"),
-                "Command::new(\"nmcli\")",
-            ),
-            (
-                "reseau/scan.rs",
-                include_str!("reseau/scan.rs"),
-                "Command::new(\"nmcli\")",
-            ),
         ]
         .into_iter()
         .filter(|(_, source, appel)| {

@@ -149,6 +149,12 @@ pub fn passerelle() -> Option<Ipv4Addr> {
         let table = std::fs::read_to_string("/proc/net/route").ok()?;
         passerelle_linux(&table)
     }
+    // La table des routes de Windows (GetIpForwardTable2), métriques de route et d'interface additionnées comme
+    // route print le fait ; route print seulement si Windows refuse la table.
+    #[cfg(windows)]
+    if let Some(p) = crate::machine::windows::routes::passerelle() {
+        return Some(p);
+    }
     #[cfg(windows)]
     {
         // Ligne « 0.0.0.0  0.0.0.0  <passerelle>  <interface>  <métrique> » ; la plus petite métrique gagne.
@@ -163,7 +169,11 @@ pub fn passerelle() -> Option<Ipv4Addr> {
             .min()
             .map(|(_, ip)| ip)
     }
-    // macOS : « gateway: 10.0.0.1 » dans `route -n get default`.
+    // macOS : la table de routage du noyau (sysctl) ; « gateway: 10.0.0.1 » de `route -n get default` en secours.
+    #[cfg(target_os = "macos")]
+    if let Some(p) = super::routes_macos::passerelle() {
+        return Some(p);
+    }
     #[cfg(target_os = "macos")]
     {
         commande("route", &["-n", "get", "default"])
@@ -225,25 +235,33 @@ pub fn table_arp() -> HashMap<Ipv4Addr, String> {
                 .flatten()
         })
         .collect();
-    // macOS : « ? (10.0.0.1) at f8:79:a:d:3:a2 on en0 ifscope [ethernet] » ; « (incomplete) » sans réponse.
+    // macOS : la table ARP du noyau (sysctl, RTF_LLINFO) ; `arp -an` en secours (« ? (10.0.0.1) at f8:79:a:d:3:a2 on
+    // en0 ifscope [ethernet] », « (incomplete) » sans réponse).
     #[cfg(target_os = "macos")]
-    let entrees: Vec<(String, String)> = commande("arp", &["-an"])
-        .lines()
-        .filter_map(|l| {
-            let ip = l.split_once('(')?.1.split_once(')')?.0;
-            let mac = l.split_once(" at ")?.1.split_whitespace().next()?;
-            Some((ip.to_string(), mac.to_string()))
-        })
-        .collect();
-    // Windows : « 10.0.0.1   f8-79-0a-0d-03-a2   dynamique »
+    let entrees: Vec<(String, String)> = match super::routes_macos::voisins() {
+        Some(v) => v.into_iter().map(|(ip, mac)| (ip.to_string(), mac)).collect(),
+        None => commande("arp", &["-an"])
+            .lines()
+            .filter_map(|l| {
+                let ip = l.split_once('(')?.1.split_once(')')?.0;
+                let mac = l.split_once(" at ")?.1.split_whitespace().next()?;
+                Some((ip.to_string(), mac.to_string()))
+            })
+            .collect(),
+    };
+    // Windows : la table des voisins (GetIpNetTable2) ; `arp -a` (« 10.0.0.1   f8-79-0a-0d-03-a2   dynamique »)
+    // seulement si Windows la refuse.
     #[cfg(windows)]
-    let entrees: Vec<(String, String)> = commande("arp", &["-a"])
-        .lines()
-        .filter_map(|l| {
-            let c: Vec<&str> = l.split_whitespace().collect();
-            Some((c.first()?.to_string(), c.get(1)?.to_string()))
-        })
-        .collect();
+    let entrees: Vec<(String, String)> = match crate::machine::windows::routes::voisins() {
+        Some(v) => v.into_iter().map(|(ip, mac)| (ip.to_string(), mac)).collect(),
+        None => commande("arp", &["-a"])
+            .lines()
+            .filter_map(|l| {
+                let c: Vec<&str> = l.split_whitespace().collect();
+                Some((c.first()?.to_string(), c.get(1)?.to_string()))
+            })
+            .collect(),
+    };
 
     entrees
         .into_iter()
@@ -775,29 +793,16 @@ pub fn fabricant_traduit(note: &str) -> &str {
 
 /// Nom du Wi-Fi auquel on est connecté, pour reconnaître le réseau dans la base (« Salon », « Chez Max »…).
 pub fn nom_wifi() -> Option<String> {
-    // En anglais : nmcli traduit la colonne ACTIVE (« oui: » en français), et le réseau n'était plus reconnu.
+    // Le nom que le noyau donne avec l'interface, sans balayage ; sinon la borne associée de son dernier balayage.
     #[cfg(target_os = "linux")]
-    let nom = nom_wifi_nmcli(
-        &crate::commande::lancer_en_anglais(
-            std::process::Command::new("nmcli").args([
-                "-t",
-                "-e",
-                "no",
-                "-f",
-                "ACTIVE,SSID",
-                "dev",
-                "wifi",
-                "list",
-                "--rescan",
-                "no",
-            ]),
-            10,
-        )
-        .map(|r| r.sortie)
-        .unwrap_or_default(),
-    );
+    let nom = crate::machine::wifi::nl80211::reseau_connecte()
+        .or_else(|| crate::machine::wifi::nl80211::lire().ok()?.connexion.map(|c| c.ssid));
+    // L'API WLAN, connexion seule : ni la liste des bornes, ni le texte traduit de netsh.
     #[cfg(windows)]
-    let nom = nom_wifi_netsh(&commande_sortie("netsh", &["wlan", "show", "interfaces"]));
+    let nom = crate::machine::wifi::wlanapi::connexion()
+        .ok()
+        .flatten()
+        .map(|c| c.ssid);
     // macOS : « SSID : Salon » dans le résumé de l'interface Wi-Fi (en0 en général). Depuis macOS 14, le nom peut
     // être masqué (« <redacted> ») faute d'autorisation de localisation : le réseau est alors reconnu par sa box.
     #[cfg(target_os = "macos")]
@@ -807,24 +812,9 @@ pub fn nom_wifi() -> Option<String> {
     nom.filter(|n| !n.is_empty())
 }
 
-/// Le réseau connecté dans `nmcli -t -e no -f ACTIVE,SSID dev wifi` (« yes:Salon »). Comme dans les deux lectures
-/// suivantes, le nom, que n'importe qui à portée peut choisir, est lu prêt à montrer (`affichable`).
-#[cfg(any(target_os = "linux", test))]
-fn nom_wifi_nmcli(sortie: &str) -> Option<String> {
-    sortie.lines().find_map(|l| l.strip_prefix("yes:")).map(affichable)
-}
-
-/// Le réseau connecté dans `netsh wlan show interfaces` (« SSID : Salon »).
-#[cfg(any(windows, test))]
-fn nom_wifi_netsh(sortie: &str) -> Option<String> {
-    sortie
-        .lines()
-        .map(str::trim)
-        .find(|l| l.starts_with("SSID") && !l.starts_with("BSSID"))
-        .and_then(|l| Some(affichable(l.split_once(':')?.1.trim())))
-}
-
 /// Le réseau connecté dans `ipconfig getsummary en0` (« SSID : Salon ») ; un nom masqué (« <redacted> ») ne dit rien.
+/// Le nom, que n'importe qui à portée peut choisir, est lu prêt à montrer (`affichable`), comme par les lectures
+/// natives de Linux et de Windows.
 #[cfg(any(target_os = "macos", test))]
 fn nom_wifi_ipconfig(sortie: &str) -> Option<String> {
     sortie
@@ -835,7 +825,7 @@ fn nom_wifi_ipconfig(sortie: &str) -> Option<String> {
         .map(affichable)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 fn commande_sortie(cmd: &str, args: &[&str]) -> String {
     crate::commande::lancer(crate::commande::systeme(cmd).args(args), 10)
         .map(|r| r.sortie)
@@ -1027,20 +1017,11 @@ mod tests {
     }
 
     /// Le nom du réseau connecté, gardé dans la base et montré en tête du scan : lu tel quel s'il est normal, rendu
-    /// inoffensif s'il est piégé, sur les trois systèmes.
+    /// inoffensif s'il est piégé (macOS ici ; Linux et Windows le lisent par nl80211 et wlanapi, testés là).
     #[test]
     fn nom_du_wifi_connecte() {
         const PIEGE: &str = "Salon\x1b]52;c;ZWNobyBQSVJBVEU=\x07\x1b[2K\rFaux\u{202e}";
         const VU: &str = "Salon�]52;c;ZWNobyBQSVJBVEU=��[2K�Faux�";
-        assert_eq!(nom_wifi_nmcli("no:Voisin\nyes:Chez Max\n").as_deref(), Some("Chez Max"));
-        assert_eq!(
-            nom_wifi_nmcli(&format!("no:Voisin\nyes:{PIEGE}\n")).as_deref(),
-            Some(VU)
-        );
-        assert_eq!(nom_wifi_nmcli("no:Voisin\n"), None);
-        let netsh = |ssid: &str| format!("    Name : Wi-Fi\n    SSID : {ssid}\n    BSSID : 02:00:00:aa:bb:01\n");
-        assert_eq!(nom_wifi_netsh(&netsh("Chez Max")).as_deref(), Some("Chez Max"));
-        assert_eq!(nom_wifi_netsh(&netsh(PIEGE)).as_deref(), Some(VU));
         assert_eq!(nom_wifi_ipconfig("  SSID : Chez Max\n").as_deref(), Some("Chez Max"));
         assert_eq!(nom_wifi_ipconfig(&format!("  SSID : {PIEGE}\n")).as_deref(), Some(VU));
         assert_eq!(nom_wifi_ipconfig("  SSID : <redacted>\n"), None);

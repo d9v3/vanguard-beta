@@ -9,6 +9,8 @@
 #[cfg(target_os = "linux")]
 use super::Lecture;
 #[cfg(any(target_os = "linux", test))]
+use super::Voisins;
+#[cfg(any(target_os = "linux", test))]
 use super::elements::{self, Wps, mac_texte};
 #[cfg(any(target_os = "linux", test))]
 use super::{Balise, Bande, Borne, Connexion, canal_de_frequence, pourcentage};
@@ -34,11 +36,14 @@ mod constantes {
     pub const NL80211_CMD_NEW_INTERFACE: u8 = 7;
     pub const NL80211_CMD_GET_SCAN: u8 = 32;
     pub const NL80211_CMD_NEW_SCAN_RESULTS: u8 = 34;
+    pub const NL80211_CMD_GET_POWER_SAVE: u8 = 62;
     pub const NL80211_ATTR_IFINDEX: u16 = 3;
     pub const NL80211_ATTR_IFNAME: u16 = 4;
     pub const NL80211_ATTR_IFTYPE: u16 = 5;
     pub const NL80211_ATTR_BSS: u16 = 47;
     pub const NL80211_ATTR_SSID: u16 = 52;
+    pub const NL80211_ATTR_PS_STATE: u16 = 93;
+    pub const NL80211_PS_ENABLED: u32 = 1;
     pub const NL80211_IFTYPE_STATION: u32 = 2;
     pub const NL80211_BSS_BSSID: u16 = 1;
     pub const NL80211_BSS_FREQUENCY: u16 = 2;
@@ -47,6 +52,7 @@ mod constantes {
     pub const NL80211_BSS_SIGNAL_MBM: u16 = 7;
     pub const NL80211_BSS_SIGNAL_UNSPEC: u16 = 8;
     pub const NL80211_BSS_STATUS: u16 = 9;
+    pub const NL80211_BSS_SEEN_MS_AGO: u16 = 10;
     pub const NL80211_BSS_BEACON_IES: u16 = 11;
     pub const NL80211_BSS_STATUS_ASSOCIATED: u32 = 1;
     /// Au-delà, ce n'est plus une liste de bornes.
@@ -224,9 +230,18 @@ fn balise(bss: &[u8]) -> Option<Balise> {
     })
 }
 
-/// Les bornes des messages NL80211_CMD_NEW_SCAN_RESULTS.
+/// Depuis combien de millisecondes le noyau a entendu la borne (NL80211_BSS_SEEN_MS_AGO), à côté de `balise`, qui
+/// rend la borne seule.
 #[cfg(any(target_os = "linux", test))]
-fn balises(reponse: &[u8], famille: u16) -> Vec<Balise> {
+fn vue_il_y_a(bss: &[u8]) -> Option<u32> {
+    attributs(bss)
+        .find(|(g, _)| *g == NL80211_BSS_SEEN_MS_AGO)
+        .and_then(|(_, c)| u32_ne(c))
+}
+
+/// Les bornes des messages NL80211_CMD_NEW_SCAN_RESULTS, avec l'âge de chacune.
+#[cfg(any(target_os = "linux", test))]
+fn balises_vues(reponse: &[u8], famille: u16) -> Vec<(Balise, Option<u32>)> {
     messages(reponse)
         .filter(|(genre, _, _)| *genre == famille)
         .filter_map(|(_, _, corps)| {
@@ -234,9 +249,46 @@ fn balises(reponse: &[u8], famille: u16) -> Vec<Balise> {
                 return None;
             }
             let bss = attributs(corps.get(4..)?).find(|(g, _)| *g == NL80211_ATTR_BSS)?.1;
-            balise(bss)
+            Some((balise(bss)?, vue_il_y_a(bss)))
         })
         .collect()
+}
+
+#[cfg(test)]
+fn balises(reponse: &[u8], famille: u16) -> Vec<Balise> {
+    balises_vues(reponse, famille).into_iter().map(|(b, _)| b).collect()
+}
+
+/// Ce que vaut la liste des voisins du noyau : il oublie une borne voisine environ 30 s après l'avoir entendue (la
+/// borne de la connexion, elle, reste). Sans voisine, rien ne dit qu'il n'y en a pas : oubliées. Un noyau qui ne dit
+/// pas l'âge (avant 3.x) garde de toute façon ce délai : récentes.
+#[cfg(any(target_os = "linux", test))]
+fn voisins_du_cache(vues: &[(Balise, Option<u32>)]) -> Voisins {
+    let voisines: Vec<Option<u32>> = vues
+        .iter()
+        .filter(|(b, _)| !b.borne.actif)
+        .map(|(_, age)| *age)
+        .collect();
+    if voisines.is_empty() {
+        return Voisins::Oublies;
+    }
+    match voisines.iter().flatten().min() {
+        Some(&ms) => Voisins::selon_age(u64::from(ms) / 1000),
+        None => Voisins::Recents,
+    }
+}
+
+/// L'état de l'économie d'énergie dans la réponse à NL80211_CMD_GET_POWER_SAVE.
+#[cfg(any(target_os = "linux", test))]
+fn etat_economie(reponse: &[u8], famille: u16) -> Option<bool> {
+    messages(reponse)
+        .filter(|(genre, _, _)| *genre == famille)
+        .find_map(|(_, _, corps)| {
+            attributs(corps.get(4..)?)
+                .find(|(g, _)| *g == NL80211_ATTR_PS_STATE)
+                .and_then(|(_, c)| u32_ne(c))
+        })
+        .map(|etat| etat == NL80211_PS_ENABLED)
 }
 
 /// Le morceau reçu finit-il la réponse ? `Some(true)` : fin de liste, ou réponse unique ; `Some(false)` : le noyau
@@ -321,10 +373,9 @@ fn echanger(demande: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-/// Ce que le noyau a entendu : les bornes du dernier balayage de chaque carte Wi-Fi cliente, et la connexion en
-/// cours. `Err` : pas de Wi-Fi ici, ou netlink refusé, avec la raison à montrer.
+/// Le numéro de la famille nl80211, demandé au contrôleur de netlink générique.
 #[cfg(target_os = "linux")]
-pub(crate) fn lire() -> Result<Lecture, &'static str> {
+fn famille() -> Result<u16, &'static str> {
     use crate::tr;
     let controleur = demande(
         GENL_ID_CTRL,
@@ -335,15 +386,31 @@ pub(crate) fn lire() -> Result<Lecture, &'static str> {
     let Some(reponse) = echanger(&controleur) else {
         return Err(tr!("le noyau refuse netlink", "the kernel refuses netlink"));
     };
-    let Some(famille) = identifiant_famille(&reponse) else {
-        return Err(tr!(
-            "pas de pile Wi-Fi dans le noyau (nl80211 absent)",
-            "no Wi-Fi stack in the kernel (nl80211 missing)"
-        ));
-    };
+    identifiant_famille(&reponse).ok_or(tr!(
+        "pas de pile Wi-Fi dans le noyau (nl80211 absent)",
+        "no Wi-Fi stack in the kernel (nl80211 missing)"
+    ))
+}
+
+/// Les cartes Wi-Fi clientes du noyau.
+#[cfg(target_os = "linux")]
+fn stations(famille: u16) -> Vec<Interface> {
     let liste = demande(famille, NLM_F_REQUEST | NLM_F_DUMP, NL80211_CMD_GET_INTERFACE, &[]);
-    let interfaces = echanger(&liste).map(|r| interfaces(&r, famille)).unwrap_or_default();
-    let stations: Vec<&Interface> = interfaces.iter().filter(|i| i.station).collect();
+    echanger(&liste)
+        .map(|r| interfaces(&r, famille))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|i| i.station)
+        .collect()
+}
+
+/// Ce que le noyau a entendu : les bornes du dernier balayage de chaque carte Wi-Fi cliente, et la connexion en
+/// cours. `Err` : pas de Wi-Fi ici, ou netlink refusé, avec la raison à montrer.
+#[cfg(target_os = "linux")]
+pub(crate) fn lire() -> Result<Lecture, &'static str> {
+    use crate::tr;
+    let famille = famille()?;
+    let stations = stations(famille);
     if stations.is_empty() {
         return Err(tr!(
             "pas de carte Wi-Fi sur cet ordinateur",
@@ -351,28 +418,57 @@ pub(crate) fn lire() -> Result<Lecture, &'static str> {
         ));
     }
     let mut lecture = Lecture::default();
-    for i in stations {
+    let mut vues: Vec<(Balise, Option<u32>)> = Vec::new();
+    for i in &stations {
         let scan = demande(
             famille,
             NLM_F_REQUEST | NLM_F_DUMP,
             NL80211_CMD_GET_SCAN,
             &[(NL80211_ATTR_IFINDEX, &i.index.to_ne_bytes())],
         );
-        let bornes = echanger(&scan).map(|r| balises(&r, famille)).unwrap_or_default();
+        let bornes = echanger(&scan).map(|r| balises_vues(&r, famille)).unwrap_or_default();
         if lecture.connexion.is_none() {
-            lecture.connexion = connexion(i, &bornes);
+            let seules: Vec<Balise> = bornes.iter().map(|(b, _)| b.clone()).collect();
+            lecture.connexion = connexion(i, &seules);
         }
-        for b in bornes {
-            if !lecture
-                .balises
+        for (b, age) in bornes {
+            if !vues
                 .iter()
-                .any(|d| d.borne.bssid == b.borne.bssid && d.borne.canal == b.borne.canal)
+                .any(|(d, _)| d.borne.bssid == b.borne.bssid && d.borne.canal == b.borne.canal)
             {
-                lecture.balises.push(b);
+                vues.push((b, age));
             }
         }
     }
+    lecture.voisins = voisins_du_cache(&vues);
+    lecture.balises = vues.into_iter().map(|(b, _)| b).collect();
     Ok(lecture)
+}
+
+/// Le nom du réseau connecté, que le noyau donne avec l'interface (GET_INTERFACE seul, sans le balayage).
+#[cfg(target_os = "linux")]
+pub(crate) fn reseau_connecte() -> Option<String> {
+    stations(famille().ok()?).into_iter().find_map(|i| i.ssid)
+}
+
+/// L'économie d'énergie de la carte `carte` (« wlan0 »), comme `iw dev wlan0 get power_save`, sans droits.
+/// `None` : carte inconnue, ou le pilote ne le dit pas.
+#[cfg(target_os = "linux")]
+pub(crate) fn economie_d_energie(carte: &str) -> Option<bool> {
+    let nom = std::ffi::CString::new(carte).ok()?;
+    // SAFETY : if_nametoindex lit un nom C terminé par un zéro, à nous et vivant pendant l'appel ; 0 dit l'échec.
+    let index = unsafe { libc::if_nametoindex(nom.as_ptr()) };
+    if index == 0 {
+        return None;
+    }
+    let famille = famille().ok()?;
+    let d = demande(
+        famille,
+        NLM_F_REQUEST,
+        NL80211_CMD_GET_POWER_SAVE,
+        &[(NL80211_ATTR_IFINDEX, &index.to_ne_bytes())],
+    );
+    etat_economie(&echanger(&d)?, famille)
 }
 
 /// La connexion d'une carte : la borne que le noyau dit associée (son nom, sinon celui que l'interface porte), ou le
@@ -388,13 +484,11 @@ fn connexion(interface: &Interface, bornes: &[Balise]) -> Option<Connexion> {
                 b.borne.ssid.clone()
             },
             bssid: b.borne.bssid.clone(),
-            // nl80211 ne dit pas la protection négociée : celle de la balise.
-            securite: String::new(),
+            ..Connexion::default()
         }),
         None if !nom_interface.is_empty() => Some(Connexion {
             ssid: nom_interface,
-            bssid: String::new(),
-            securite: String::new(),
+            ..Connexion::default()
         }),
         None => None,
     }
@@ -587,7 +681,7 @@ mod tests {
             Some(Connexion {
                 ssid: "Salon".into(),
                 bssid: "02:00:00:aa:bb:01".into(),
-                securite: String::new(),
+                ..Connexion::default()
             })
         );
         // Sans borne associée : le nom que l'interface porte, sinon rien.
@@ -631,6 +725,153 @@ mod tests {
         ]
         .concat();
         assert_eq!(balise(&bss).unwrap().borne.signal, Some(100));
+    }
+
+    #[test]
+    fn age_des_bornes_et_valeur_de_la_liste() {
+        let avec_age = |actif: bool, mac: u8, ms: Option<u32>| {
+            let mut bss = [
+                attribut(NL80211_BSS_BSSID, &[2, 0, 0, 0xAA, 0xBB, mac]),
+                attribut(NL80211_BSS_FREQUENCY, &2437u32.to_ne_bytes()),
+                attribut(NL80211_BSS_INFORMATION_ELEMENTS, &fabrique::ssid("Salon")),
+            ]
+            .concat();
+            if let Some(ms) = ms {
+                bss.extend(attribut(NL80211_BSS_SEEN_MS_AGO, &ms.to_ne_bytes()));
+            }
+            if actif {
+                bss.extend(attribut(
+                    NL80211_BSS_STATUS,
+                    &NL80211_BSS_STATUS_ASSOCIATED.to_ne_bytes(),
+                ));
+            }
+            message(
+                22,
+                NLM_F_MULTI,
+                NL80211_CMD_NEW_SCAN_RESULTS,
+                &[attribut(NL80211_ATTR_BSS | 0x8000, &bss)],
+            )
+        };
+        let reponse = [
+            avec_age(true, 1, Some(900_000)),
+            avec_age(false, 2, Some(12_000)),
+            avec_age(false, 3, Some(4_000)),
+            message_fin(),
+        ]
+        .concat();
+        let vues = balises_vues(&reponse, 22);
+        assert_eq!(
+            vues.iter().map(|(_, a)| *a).collect::<Vec<_>>(),
+            [Some(900_000), Some(12_000), Some(4_000)]
+        );
+        assert_eq!(voisins_du_cache(&vues), Voisins::Recents);
+        // Seule la borne de la connexion reste : les voisines sont oubliées, rien ne dit qu'il n'y en a pas.
+        assert_eq!(voisins_du_cache(&vues[..1]), Voisins::Oublies);
+        assert_eq!(voisins_du_cache(&[]), Voisins::Oublies);
+        // Une voisine entendue il y a longtemps ; une sans âge (vieux noyau).
+        let vieille = balises_vues(&[avec_age(false, 2, Some(1_500_000)), message_fin()].concat(), 22);
+        assert_eq!(voisins_du_cache(&vieille), Voisins::Anciens { minutes: 25 });
+        let sans_age = balises_vues(&[avec_age(false, 2, None), message_fin()].concat(), 22);
+        assert_eq!(voisins_du_cache(&sans_age), Voisins::Recents);
+    }
+
+    #[test]
+    fn economie_d_energie_lue() {
+        let reponse = |etat: u32| {
+            message(
+                22,
+                0,
+                NL80211_CMD_GET_POWER_SAVE,
+                &[attribut(NL80211_ATTR_PS_STATE, &etat.to_ne_bytes())],
+            )
+        };
+        assert_eq!(etat_economie(&reponse(1), 22), Some(true));
+        assert_eq!(etat_economie(&reponse(0), 22), Some(false));
+        assert_eq!(fin(&reponse(1)), Some(true));
+        // Une autre famille, ou sans l'attribut : rien.
+        assert_eq!(etat_economie(&reponse(1), 23), None);
+        assert_eq!(
+            etat_economie(&message(22, 0, NL80211_CMD_GET_POWER_SAVE, &[]), 22),
+            None
+        );
+        let r = reponse(1);
+        for n in 0..r.len() {
+            let _ = etat_economie(&r[..n], 22);
+        }
+        // La demande : la commande 62 et le numéro de l'interface.
+        let d = demande(
+            22,
+            NLM_F_REQUEST,
+            NL80211_CMD_GET_POWER_SAVE,
+            &[(NL80211_ATTR_IFINDEX, &3u32.to_ne_bytes())],
+        );
+        assert_eq!(d[16], 62);
+        assert_eq!(
+            attributs(&d[20..]).next(),
+            Some((NL80211_ATTR_IFINDEX, &3u32.to_ne_bytes()[..]))
+        );
+    }
+
+    /// Le vrai noyau contre iw : la même économie d'énergie pour chaque carte. Sauté sans iw ni carte ; rien de lu
+    /// n'est affiché.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn economie_comme_iw() {
+        let cartes: Vec<String> = std::fs::read_dir("/sys/class/net")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.path().join("wireless").is_dir())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect();
+        let mut comparees = 0;
+        for carte in cartes {
+            let Some(r) = crate::commande::lancer(
+                std::process::Command::new("iw")
+                    .args(["dev", &carte, "get", "power_save"])
+                    .env("LC_ALL", "C"),
+                10,
+            )
+            .filter(|r| r.code == Some(0)) else {
+                continue;
+            };
+            let iw = r.sortie.split(':').nth(1).map(|v| v.trim() == "on");
+            assert_eq!(economie_d_energie(&carte), iw);
+            comparees += 1;
+        }
+        if comparees == 0 {
+            crate::essais::saute("ni iw ni carte Wi-Fi");
+        }
+    }
+
+    /// Le réseau connecté selon le noyau, contre celui que nmcli dit actif ; comparés sans être montrés.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reseau_connecte_comme_nmcli() {
+        let Some(r) = crate::commande::lancer_en_anglais(
+            std::process::Command::new("nmcli").args([
+                "-t",
+                "-e",
+                "no",
+                "-f",
+                "ACTIVE,SSID",
+                "dev",
+                "wifi",
+                "list",
+                "--rescan",
+                "no",
+            ]),
+            20,
+        )
+        .filter(|r| r.code == Some(0)) else {
+            return crate::essais::saute("nmcli absent");
+        };
+        let nmcli = r.sortie.lines().find_map(|l| l.strip_prefix("yes:")).map(affichable);
+        // Le noyau ne donne le nom avec l'interface que depuis Linux 4.x ; sans lui, rien à comparer.
+        let Some(natif) = reseau_connecte() else {
+            return crate::essais::saute("le noyau ne dit pas le réseau connecté");
+        };
+        assert!(Some(natif) == nmcli, "réseau connecté différent de nmcli");
     }
 
     #[test]

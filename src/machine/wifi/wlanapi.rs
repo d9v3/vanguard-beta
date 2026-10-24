@@ -237,15 +237,23 @@ fn connexion_de(octets: &[u8]) -> Option<Connexion> {
     let association = offset_of!(WlanConnectionAttributes, association);
     let ssid = ssid_a(octets, association + offset_of!(WlanAssociationAttributes, ssid))?;
     let debut = association + offset_of!(WlanAssociationAttributes, bssid);
+    let qualite = u32_a(octets, association + offset_of!(WlanAssociationAttributes, qualite));
     let securite = offset_of!(WlanConnectionAttributes, securite);
+    let champ = |decalage| u32_a(octets, securite + decalage);
+    // Un bloc coupé avant la protection : rien de deviné, la balise la dira.
+    let negociee = match (
+        champ(offset_of!(WlanSecurityAttributes, authentification)),
+        champ(offset_of!(WlanSecurityAttributes, chiffrement)),
+    ) {
+        (Some(a), Some(c)) => protection_negociee(a, c),
+        _ => "",
+    };
     Some(Connexion {
         ssid,
         bssid: mac_texte(octets.get(debut..debut + 6)?),
-        securite: protection_negociee(
-            u32_a(octets, securite + offset_of!(WlanSecurityAttributes, authentification)).unwrap_or(0),
-            u32_a(octets, securite + offset_of!(WlanSecurityAttributes, chiffrement)).unwrap_or(0),
-        )
-        .to_string(),
+        qualite: qualite.and_then(|q| u8::try_from(q.min(100)).ok()),
+        securite: negociee.to_string(),
+        ..Connexion::default()
     })
 }
 
@@ -267,6 +275,15 @@ fn protection_negociee(authentification: u32, chiffrement: u32) -> &'static str 
         10 => "OWE",
         _ => "",
     }
+}
+
+/// La bande d'après le seul canal, quand il n'y en a qu'une possible : les canaux 1, 5, 9 et 13 sont aussi des canaux
+/// de 6 GHz, et Windows ne dit pas la fréquence de la connexion sans la liste des bornes.
+#[cfg(any(windows, test))]
+fn bande_sans_ambiguite(canal: u16) -> Option<Bande> {
+    (![1, 5, 9, 13].contains(&canal))
+        .then(|| Bande::de_canal(canal))
+        .flatten()
 }
 
 /// Les noms des profils d'un WLAN_PROFILE_INFO_LIST copié.
@@ -366,6 +383,8 @@ mod natif {
     const TAILLE_MAX: usize = 4 << 20;
     /// wlan_intf_opcode_current_connection.
     const CONNEXION_COURANTE: u32 = 7;
+    /// wlan_intf_opcode_channel_number.
+    const NUMERO_DE_CANAL: u32 = 8;
     /// dot11_BSS_type_any.
     const TOUT_GENRE_BSS: u32 = 3;
     const ERROR_ACCESS_DENIED: u32 = 5;
@@ -519,11 +538,13 @@ mod natif {
             }
         }
 
-        fn connexion(&self, guid: &[u8; 16]) -> Option<Connexion> {
+        /// Le réseau connecté d'une interface ; `Err` : le code de Windows (ERROR_ACCESS_DENIED sans l'autorisation
+        /// de localisation, depuis Windows 11 24H2).
+        fn connexion(&self, guid: &[u8; 16]) -> Result<Option<Connexion>, u32> {
             let (mut taille, mut donnees, mut genre) = (0u32, null_mut(), 0u32);
             // SAFETY : WlanQueryInterface écrit la taille et le bloc (vérifié non nul) ; copié sur `taille` octets,
             // au plus la structure attendue, puis libéré.
-            unsafe {
+            let connexion = unsafe {
                 let code = (self.api.interroger)(
                     self.poignee,
                     guid.as_ptr(),
@@ -534,12 +555,41 @@ mod natif {
                     &raw mut genre,
                 );
                 if code != 0 || donnees.is_null() {
-                    return None;
+                    return if code == 0 { Ok(None) } else { Err(code) };
                 }
                 let n = usize::try_from(taille)
                     .unwrap_or(0)
                     .min(std::mem::size_of::<super::WlanConnectionAttributes>());
                 connexion_de(&self.prendre(donnees, n))
+            };
+            Ok(connexion.map(|c| Connexion {
+                canal: self.canal(guid),
+                ..c
+            }))
+        }
+
+        /// Le canal de la connexion (wlan_intf_opcode_channel_number, un ULONG).
+        fn canal(&self, guid: &[u8; 16]) -> Option<u16> {
+            let (mut taille, mut donnees, mut genre) = (0u32, null_mut(), 0u32);
+            // SAFETY : comme `connexion` ; le bloc n'est lu que s'il couvre les 4 octets d'un ULONG.
+            unsafe {
+                let code = (self.api.interroger)(
+                    self.poignee,
+                    guid.as_ptr(),
+                    NUMERO_DE_CANAL,
+                    null_mut(),
+                    &raw mut taille,
+                    &raw mut donnees,
+                    &raw mut genre,
+                );
+                if code != 0 || donnees.is_null() {
+                    return None;
+                }
+                let n = usize::try_from(taille).unwrap_or(0).min(4);
+                let octets = self.prendre(donnees, n);
+                super::u32_a(&octets, 0)
+                    .and_then(|c| u16::try_from(c).ok())
+                    .filter(|&c| c > 0)
             }
         }
 
@@ -617,16 +667,17 @@ mod natif {
         let session = Session::ouvrir()?;
         let interfaces = session.interfaces();
         if interfaces.is_empty() {
-            return Err(tr!(
-                "pas de carte Wi-Fi sur cet ordinateur",
-                "no Wi-Fi card on this computer"
-            ));
+            return Err(pas_de_carte());
         }
         let mut lecture = Lecture::default();
         let mut refus = false;
         for i in &interfaces {
             if i.connectee && lecture.connexion.is_none() {
-                lecture.connexion = session.connexion(&i.guid);
+                match session.connexion(&i.guid) {
+                    Ok(c) => lecture.connexion = c,
+                    Err(ERROR_ACCESS_DENIED) => refus = true,
+                    Err(_) => {}
+                }
             }
             match session.balises(&i.guid) {
                 Ok(bornes) => {
@@ -644,10 +695,17 @@ mod natif {
                 Err(_) => {}
             }
         }
-        if let Some(c) = &lecture.connexion {
+        if let Some(c) = &mut lecture.connexion {
             for b in &mut lecture.balises {
                 b.borne.actif = !c.bssid.is_empty() && b.borne.bssid == c.bssid;
             }
+            // La bande de la borne de la connexion ; sans elle, d'après le canal, sauf un canal que le 6 GHz réutilise.
+            c.bande = lecture
+                .balises
+                .iter()
+                .find(|b| b.borne.actif)
+                .map(|b| b.borne.bande)
+                .or_else(|| c.canal.and_then(super::bande_sans_ambiguite));
         }
         // Windows 11 24H2 ne liste les réseaux qu'avec l'autorisation de localisation.
         if refus || (lecture.balises.is_empty() && interfaces.iter().any(|i| i.connectee)) {
@@ -666,6 +724,54 @@ mod natif {
         Ok(Session::ouvrir()?.interfaces().iter().map(|i| i.connectee).collect())
     }
 
+    fn pas_de_carte() -> &'static str {
+        tr!(
+            "pas de carte Wi-Fi sur cet ordinateur",
+            "no Wi-Fi card on this computer"
+        )
+    }
+
+    /// Le réseau connecté seul, sans la liste des bornes : son nom, sa qualité, son canal. `Ok(None)` : pas
+    /// connecté ; `Err` : pas de Wi-Fi, service arrêté, API absente, ou Windows refuse sans la localisation.
+    pub(crate) fn connexion() -> Result<Option<Connexion>, &'static str> {
+        let session = Session::ouvrir()?;
+        let interfaces = session.interfaces();
+        if interfaces.is_empty() {
+            return Err(pas_de_carte());
+        }
+        let mut erreur = None;
+        for i in interfaces.iter().filter(|i| i.connectee) {
+            match session.connexion(&i.guid) {
+                Ok(Some(c)) => {
+                    // La bande de la borne de la connexion dans la liste, quand Windows la donne ; sinon d'après le
+                    // canal, sauf s'il est aussi un canal de 6 GHz.
+                    let bande = session
+                        .balises(&i.guid)
+                        .ok()
+                        .and_then(|b| b.into_iter().find(|b| !c.bssid.is_empty() && b.borne.bssid == c.bssid))
+                        .map(|b| b.borne.bande)
+                        .or_else(|| c.canal.and_then(super::bande_sans_ambiguite));
+                    return Ok(Some(Connexion { bande, ..c }));
+                }
+                Err(ERROR_ACCESS_DENIED) => {
+                    return Err(tr!(
+                        "Windows ne dit le réseau connecté qu'avec la localisation",
+                        "Windows tells the connected network only with location access"
+                    ));
+                }
+                Ok(None) => {}
+                // Une carte connectée qui ne se lit pas : « pas connecté » ne serait pas prouvé.
+                Err(_) => {
+                    erreur.get_or_insert(tr!(
+                        "Windows ne dit pas le réseau connecté",
+                        "Windows does not tell the connected network"
+                    ));
+                }
+            }
+        }
+        erreur.map_or(Ok(None), Err)
+    }
+
     /// Les profils Wi-Fi enregistrés de toutes les cartes. `Err` : API absente ou service arrêté.
     pub(crate) fn profils() -> Result<Vec<ProfilEnregistre>, &'static str> {
         let session = Session::ouvrir()?;
@@ -682,7 +788,7 @@ mod natif {
 }
 
 #[cfg(windows)]
-pub(crate) use natif::{cartes, lire, profils};
+pub(crate) use natif::{cartes, connexion, lire, profils};
 
 #[cfg(test)]
 mod tests {
@@ -711,7 +817,24 @@ mod tests {
         assert_eq!(size_of::<WlanSecurityAttributes>(), 16);
         assert_eq!(size_of::<WlanConnectionAttributes>(), 604);
         assert_eq!(offset_of!(WlanConnectionAttributes, association), 520);
-        assert_eq!(offset_of!(WlanConnectionAttributes, securite), 588);
+        // La qualité et la protection de la connexion, lues à ces places dans le bloc copié.
+        let association = offset_of!(WlanConnectionAttributes, association);
+        assert_eq!(association + offset_of!(WlanAssociationAttributes, qualite), 576);
+        let securite = offset_of!(WlanConnectionAttributes, securite);
+        assert_eq!(securite + offset_of!(WlanSecurityAttributes, securise), 588);
+        assert_eq!(securite + offset_of!(WlanSecurityAttributes, authentification), 596);
+        assert_eq!(securite + offset_of!(WlanSecurityAttributes, chiffrement), 600);
+    }
+
+    /// Le canal seul ne donne une bande que s'il n'est pas aussi un canal de 6 GHz.
+    #[test]
+    fn bande_d_apres_le_canal() {
+        assert_eq!(bande_sans_ambiguite(6), Some(Bande::G24));
+        assert_eq!(bande_sans_ambiguite(36), Some(Bande::G5));
+        for canal in [1, 5, 9, 13] {
+            assert_eq!(bande_sans_ambiguite(canal), None, "{canal}");
+        }
+        assert_eq!(bande_sans_ambiguite(0), None);
     }
 
     fn liste(n: u32, elements: &[Vec<u8>]) -> Vec<u8> {
@@ -858,22 +981,29 @@ mod tests {
         c[0..4].copy_from_slice(&1u32.to_le_bytes());
         c[520..556].copy_from_slice(&dot11_ssid("Salon"));
         c[560..566].copy_from_slice(&[2, 0, 0, 0xAA, 0xBB, 1]);
+        c[576..580].copy_from_slice(&72u32.to_le_bytes());
+        c[588..592].copy_from_slice(&1u32.to_le_bytes());
+        c[596..600].copy_from_slice(&7u32.to_le_bytes());
+        c[600..604].copy_from_slice(&4u32.to_le_bytes());
         assert_eq!(
             connexion_de(&c),
             Some(Connexion {
                 ssid: "Salon".into(),
                 bssid: "02:00:00:aa:bb:01".into(),
-                securite: String::new(),
+                qualite: Some(72),
+                securite: "WPA2".into(),
+                ..Connexion::default()
             })
         );
         // Connectée en WPA2 (RSNA_PSK, CCMP) à une borne qui annonce aussi WPA3 : WPA2.
-        c[596..600].copy_from_slice(&7u32.to_le_bytes());
-        c[600..604].copy_from_slice(&4u32.to_le_bytes());
-        assert_eq!(connexion_de(&c).map(|c| c.securite), Some("WPA2".into()));
         assert_eq!(super::super::force(protection_negociee(9, 4)), 3);
         assert_eq!(protection_negociee(1, 0x101), "WEP");
         assert_eq!(super::super::force(protection_negociee(1, 0)), 0);
         assert_eq!(protection_negociee(5, 0), "");
+        // Une qualité démesurée est bornée ; un bloc coupé avant la protection garde le nom, sans protection.
+        c[576..580].copy_from_slice(&500u32.to_le_bytes());
+        assert_eq!(connexion_de(&c).and_then(|c| c.qualite), Some(100));
+        assert_eq!(connexion_de(&c[..598]).map(|c| c.securite), Some(String::new()));
         c[0..4].copy_from_slice(&4u32.to_le_bytes());
         assert_eq!(connexion_de(&c), None);
         assert_eq!(connexion_de(&c[..100]), None);
