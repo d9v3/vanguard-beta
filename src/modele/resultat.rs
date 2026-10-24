@@ -124,7 +124,9 @@ impl From<&Constat> for ConstatEcrit {
         };
         ConstatEcrit {
             regle: c.regle.to_string(),
-            objet: c.objet.texte().filter(|o| !o.is_empty()).map(str::to_string),
+            // Un objet reprend souvent un nom venu de l'extérieur (programme, domaine, application) : nettoyé comme
+            // le message, sur une ligne.
+            objet: c.objet.texte().filter(|o| !o.is_empty()).map(|o| sans_piege(o, false)),
             categorie: c.categorie.to_string(),
             etat: etat.code().to_string(),
             niveau,
@@ -332,6 +334,11 @@ mod tests {
             e.message
         );
         assert!(e.message.ends_with("\nsuite"), "{:?}", e.message);
+        // L'objet aussi : un nom de programme ou de domaine piégé n'y passe jamais tel quel.
+        let mut c = c;
+        c.objet = crate::modele::id::Objet::De("programme:facture\u{202e}fdp.exe\n".into());
+        let o = ConstatEcrit::from(&c).objet.unwrap();
+        assert!(!crate::ui::contient_un_piege(&o) && !o.contains('\n'), "{o:?}");
     }
 
     /// Jamais « sain » avec un manque, ni sans rien de vérifié ; le pire problème décide.
@@ -489,11 +496,20 @@ mod tests {
     /// T10 (minimal) : le jugement des outils migrés vit dans un fichier qui n'importe pas l'interface.
     #[test]
     fn jugement_sans_interface() {
-        let racine = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/protection");
+        let racine = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         for f in [
-            "espions/resultat.rs",
-            "perimes/resultat.rs",
-            "courriel_suspect/resultat.rs",
+            "protection/espions/resultat.rs",
+            "protection/perimes/resultat.rs",
+            "protection/courriel_suspect/resultat.rs",
+            "protection/acces/resultat.rs",
+            "protection/lien/resultat.rs",
+            "protection/sortantes/resultat.rs",
+            "protection/distance/resultat.rs",
+            "diagnostic/resultat.rs",
+            "lenteur/resultat.rs",
+            "reseau/objets/resultat.rs",
+            "reseau/connexion/resultat.rs",
+            "reseau/listes_noires/resultat.rs",
         ] {
             let texte = std::fs::read_to_string(racine.join(f)).unwrap();
             let code = texte.find("#[cfg(test)]\nmod ").map_or(texte.as_str(), |t| &texte[..t]);

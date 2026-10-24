@@ -184,6 +184,8 @@ fn categorie_en(nom: &str) -> Option<&'static str> {
         "Lien suspect" => "Suspicious link",
         "Confidentialité" => "Privacy",
         "Connexion" => "Connection",
+        "Connexions sortantes" => "Outbound connections",
+        "Listes noires" => "Blocklists",
         "Agents d'IA" => "AI agents",
         "Bureau à distance" => "Remote Desktop",
         "Carte graphique" => "Graphics card",

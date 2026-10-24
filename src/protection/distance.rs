@@ -19,6 +19,8 @@ use crate::machine::{Constat, alerte, impossible, ok};
 use crate::risk::Niveau;
 use crate::ui::*;
 
+mod resultat;
+
 const CAT: &str = "Accès à distance";
 /// Installé ou téléchargé depuis moins longtemps que ça : le scénario du faux technicien, qui agit tout de suite.
 const RECENT_JOURS: i64 = 30;
@@ -168,6 +170,48 @@ fn sans_doublons(mut t: Vec<Trouvaille>) -> Vec<Trouvaille> {
     t
 }
 
+/// Ce que le relevé a pu lire, pour chacune des quatre sortes de traces que l'écran annonce : une sorte qui n'a pas
+/// pu l'être est dite non vérifiée (`--json`, rapport), jamais comptée comme « rien trouvé ».
+// Quatre lectures indépendantes, pas des états d'une même chose.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct Lu {
+    installes: bool,
+    demarrage: bool,
+    en_cours: bool,
+    fichiers: bool,
+}
+
+/// Les trouvailles d'un relevé, et ce qu'il a pu lire.
+#[derive(Debug, Default)]
+struct Releve {
+    trouvailles: Vec<Trouvaille>,
+    lu: Lu,
+}
+
+/// Un dossier lu, ou absent (rien à y trouver) ; `false` : il existe sans se lire.
+#[cfg(unix)]
+fn lisible_ou_absent(dossier: &std::path::Path) -> bool {
+    match std::fs::read_dir(dossier) {
+        Ok(_) => true,
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    }
+}
+
+/// Pour le bilan et le parcours : les trouvailles. Sous Linux, sans les processus, « rien trouvé » ne se conclut pas :
+/// `None`, non vérifié ; ce qui a été trouvé reste dit.
+fn relever() -> Option<Vec<Trouvaille>> {
+    pour_le_bilan(relever_tout())
+}
+
+fn pour_le_bilan(r: Option<Releve>) -> Option<Vec<Trouvaille>> {
+    let r = r?;
+    if cfg!(target_os = "linux") && !r.lu.en_cours && r.trouvailles.is_empty() {
+        return None;
+    }
+    Some(r.trouvailles)
+}
+
 // ───────────────────────────── Jugement ─────────────────────────────
 
 /// Les constats du bilan : un par logiciel trouvé, ou un seul « rien trouvé ». Un logiciel fourni avec le système
@@ -309,9 +353,12 @@ fn sortie_de(cmd: &str, args: &[&str], secondes: u64) -> Option<String> {
 
 /// Les programmes et installateurs posés à la racine de ces dossiers (Téléchargements, Bureau, temporaires) : le faux
 /// technicien fait télécharger la version portable d'AnyDesk, qui ne s'installe nulle part.
+/// `false` : un de ces dossiers existe sans se lire (sous macOS, Téléchargements et Bureau sans l'autorisation).
 #[cfg(unix)]
-fn fichiers_poses(t: &mut Vec<Trouvaille>, dossiers: &[PathBuf]) {
+fn fichiers_poses(t: &mut Vec<Trouvaille>, dossiers: &[PathBuf]) -> bool {
+    let mut lus = true;
     for d in dossiers {
+        lus &= lisible_ou_absent(d);
         for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
             let nom = e.file_name().to_string_lossy().into_owned();
             let Some(i) = reconnu(&nom) else {
@@ -339,6 +386,7 @@ fn fichiers_poses(t: &mut Vec<Trouvaille>, dossiers: &[PathBuf]) {
             });
         }
     }
+    lus
 }
 
 /// Numéros des processus qui ont une connexion TCP établie hors de la machine, d'après `ss` (« pid=1234 » dans la
@@ -356,23 +404,25 @@ fn pids_dans_ss(sortie: &str) -> std::collections::BTreeSet<u32> {
         .collect()
 }
 
-// Même signature que sous Windows, où la lecture PowerShell peut échouer.
+// Même signature que sous Windows, où la lecture peut échouer.
 #[allow(clippy::unnecessary_wraps)]
 #[cfg(target_os = "linux")]
-fn relever() -> Option<Vec<Trouvaille>> {
+fn relever_tout() -> Option<Releve> {
     let maison = crate::socle::maison();
     let mut t = Vec::new();
-    paquets(&mut t);
+    // Flatpak, Snap et /opt ne s'y ajoutent que là où ils existent : les paquets de la distribution disent seuls si
+    // les programmes installés ont été lus.
+    let installes = paquets(&mut t);
     flatpaks(&mut t, &maison);
     snaps(&mut t);
     dossiers_opt(&mut t);
-    let processus_lus = processus(&mut t);
-    demarrage_linux(&mut t, &maison);
+    let en_cours = processus(&mut t);
+    let demarrage = demarrage_linux(&mut t, &maison);
     let declares = std::fs::read_to_string(maison.join(".config/user-dirs.dirs")).unwrap_or_default();
     let declare = |cle: &str, defaut: &str| {
         crate::protection::pieges::dossier_declare(&declares, cle, &maison).unwrap_or_else(|| maison.join(defaut))
     };
-    fichiers_poses(
+    let fichiers = fichiers_poses(
         &mut t,
         &[
             declare("XDG_DOWNLOAD_DIR", "Downloads"),
@@ -380,8 +430,15 @@ fn relever() -> Option<Vec<Trouvaille>> {
             PathBuf::from("/tmp"),
         ],
     );
-    // Sans les processus, « rien trouvé » ne se conclut pas : non vérifié ; ce qui a été trouvé reste dit.
-    (processus_lus || !t.is_empty()).then(|| sans_doublons(t))
+    Some(Releve {
+        trouvailles: sans_doublons(t),
+        lu: Lu {
+            installes,
+            demarrage,
+            en_cours,
+            fichiers,
+        },
+    })
 }
 
 /// Date de modification du premier fichier ou dossier de `dossier` dont le nom commence par `prefixe`.
@@ -402,11 +459,12 @@ fn date_dans(dossier: &str, prefixe: &str) -> Option<NaiveDate> {
 
 /// Paquets de la distribution dont le nom est celui d'un logiciel de prise de contrôle ; le retrait passe par
 /// l'outil de la distribution (Omarchy, rpm-ostree et transactional-update compris : `Paquets::retirer`).
+/// `false` : aucun gestionnaire de paquets connu, ou sa liste ne se lit pas.
 #[cfg(target_os = "linux")]
-fn paquets(t: &mut Vec<Trouvaille>) {
+fn paquets(t: &mut Vec<Trouvaille>) -> bool {
     use crate::machine::linux::Paquets;
     let Some(gestionnaire) = Paquets::detecter() else {
-        return;
+        return false;
     };
     // Les bases de pacman et de dpkg se lisent directement ; leur commande ne sert qu'en secours, quand la base ne
     // se lit pas. rpm garde la sienne : sa base est du SQLite.
@@ -427,7 +485,7 @@ fn paquets(t: &mut Vec<Trouvaille>) {
         (None, Paquets::Dnf | Paquets::Zypper) => sortie_de("rpm", &["-qa", "--qf", "%{NAME}\n"], 60),
     };
     let Some(liste) = liste else {
-        return;
+        return false;
     };
     for p in liste.lines().map(str::trim).filter(|p| !p.is_empty()) {
         let Some(i) = reconnu(p) else {
@@ -453,6 +511,7 @@ fn paquets(t: &mut Vec<Trouvaille>) {
             arret: Vec::new(),
         });
     }
+    true
 }
 
 #[cfg(target_os = "linux")]
@@ -593,12 +652,16 @@ fn processus(t: &mut Vec<Trouvaille>) -> bool {
 
 /// Lancements automatiques : fichiers .desktop d'autostart (nom ou ligne Exec), services systemd activés (système et
 /// session).
+/// `false` : un dossier d'autostart existe sans se lire, ou les services activés (système ou session) ne se lisent
+/// ni dans leurs dossiers ni par systemctl.
 #[cfg(target_os = "linux")]
-fn demarrage_linux(t: &mut Vec<Trouvaille>, maison: &std::path::Path) {
+fn demarrage_linux(t: &mut Vec<Trouvaille>, maison: &std::path::Path) -> bool {
+    let mut lus = true;
     for (dossier, sudo) in [
         (maison.join(".config/autostart"), ""),
         (PathBuf::from("/etc/xdg/autostart"), "sudo "),
     ] {
+        lus &= lisible_ou_absent(&dossier);
         for e in std::fs::read_dir(&dossier).into_iter().flatten().flatten() {
             let chemin = e.path();
             if chemin.extension().is_none_or(|x| x != "desktop") {
@@ -640,6 +703,7 @@ fn demarrage_linux(t: &mut Vec<Trouvaille>, maison: &std::path::Path) {
             l
         } else {
             let Some(sortie) = sortie_de("systemctl", args, 30) else {
+                lus = false;
                 continue;
             };
             sortie
@@ -661,6 +725,7 @@ fn demarrage_linux(t: &mut Vec<Trouvaille>, maison: &std::path::Path) {
             });
         }
     }
+    lus
 }
 
 /// Les unités activées, comme `systemctl [--user] list-unit-files --state=enabled`, lues dans les liens que
@@ -819,16 +884,22 @@ fn nom_active(lien: &str, chemin: &std::path::Path) -> String {
 
 // ───────────────────────────── Relevé : macOS ─────────────────────────────
 
-// Même signature que sous Windows, où la lecture PowerShell peut échouer.
+// Même signature que sous Windows, où la lecture peut échouer.
 #[allow(clippy::unnecessary_wraps)]
 #[cfg(target_os = "macos")]
-fn relever() -> Option<Vec<Trouvaille>> {
+fn relever_tout() -> Option<Releve> {
     let maison = crate::socle::maison();
     let mut t = Vec::new();
+    let mut lu = Lu {
+        installes: true,
+        demarrage: true,
+        ..Lu::default()
+    };
     for (dossier, sudo) in [
         (PathBuf::from("/Applications"), "sudo "),
         (maison.join("Applications"), ""),
     ] {
+        lu.installes &= lisible_ou_absent(&dossier);
         for e in std::fs::read_dir(&dossier).into_iter().flatten().flatten() {
             let nom = e.file_name().to_string_lossy().into_owned();
             if !nom.to_lowercase().ends_with(".app") {
@@ -853,6 +924,7 @@ fn relever() -> Option<Vec<Trouvaille>> {
         (PathBuf::from("/Library/LaunchDaemons"), "system", "sudo "),
         (maison.join("Library/LaunchAgents"), "gui/$(id -u)", ""),
     ] {
+        lu.demarrage &= lisible_ou_absent(&dossier);
         for e in std::fs::read_dir(&dossier).into_iter().flatten().flatten() {
             let nom = e.file_name().to_string_lossy().into_owned();
             let Some(i) = reconnu(&nom) else {
@@ -887,6 +959,7 @@ fn relever() -> Option<Vec<Trouvaille>> {
         }
     }
     if let Some(ps) = sortie_de("ps", &["-axo", "pid=,comm="], 15) {
+        lu.en_cours = true;
         for l in ps.lines() {
             let Some((pid, comm)) = l.trim().split_once(char::is_whitespace) else {
                 continue;
@@ -908,25 +981,39 @@ fn relever() -> Option<Vec<Trouvaille>> {
             });
         }
     }
-    fichiers_poses(&mut t, &[maison.join("Downloads"), maison.join("Desktop")]);
-    Some(sans_doublons(t))
+    lu.fichiers = fichiers_poses(&mut t, &[maison.join("Downloads"), maison.join("Desktop")]);
+    Some(Releve {
+        trouvailles: sans_doublons(t),
+        lu,
+    })
 }
 
 // ───────────────────────────── Relevé : Windows ─────────────────────────────
 
 #[cfg(windows)]
-fn relever() -> Option<Vec<Trouvaille>> {
+fn relever_tout() -> Option<Releve> {
     // Tout est lu par Vanguard lui-même, sans PowerShell (c'était la vérification la plus lente du bilan, plus de 3 s) :
     // programmes installés et clés Run dans le registre, processus et connexions par les fonctions de Windows,
     // fichiers posés par une lecture des dossiers. Le texte garde les sections du script d'avant (INS, PRC, CNX, RUN,
     // FIC, SVC), que `lire_windows` lit.
     let mut sortie = String::new();
-    installes_du_registre(&mut sortie);
-    processus_et_connexions(&mut sortie);
-    run_du_registre(&mut sortie);
-    fichiers_poses_windows(&mut sortie);
-    sortie.push_str(&services_du_registre());
-    lire_windows(&sortie).map(sans_doublons)
+    let installes = installes_du_registre(&mut sortie);
+    let en_cours = processus_et_connexions(&mut sortie);
+    let run = run_du_registre(&mut sortie);
+    let fichiers = fichiers_poses_windows(&mut sortie);
+    let services = services_du_registre();
+    // Clé des services illisible : section vide (voir là).
+    let demarrage = run && !services.is_empty();
+    sortie.push_str(&services);
+    lire_windows(&sortie).map(|t| Releve {
+        trouvailles: sans_doublons(t),
+        lu: Lu {
+            installes,
+            demarrage,
+            en_cours,
+            fichiers,
+        },
+    })
 }
 
 /// Une valeur sur une ligne de section : sans saut de ligne (qui ouvrirait une fausse ligne).
@@ -937,14 +1024,17 @@ fn sur_une_ligne(v: &str) -> String {
 
 /// Programmes et fonctionnalités (64 et 32 bits, et ceux du compte) : « INS|nom|date d'installation|date de la clé|
 /// désinstallation|désinstallation silencieuse ». La date de la clé seulement quand l'installateur n'en donne pas.
+/// `false` : aucune des clés ne s'ouvre.
 #[cfg(windows)]
-fn installes_du_registre(sortie: &mut String) {
+fn installes_du_registre(sortie: &mut String) -> bool {
     use std::fmt::Write;
     use winreg::RegKey;
+    let mut une_lue = false;
     for (racine, chemin) in crate::machine::windows::installes::CLES_UNINSTALL {
         let Ok(liste) = RegKey::predef(racine).open_subkey(chemin) else {
             continue;
         };
+        une_lue = true;
         for nom_de_cle in liste.enum_keys().flatten() {
             let Ok(cle) = liste.open_subkey(&nom_de_cle) else {
                 continue;
@@ -975,15 +1065,18 @@ fn installes_du_registre(sortie: &mut String) {
         }
     }
     sortie.push_str("INS_FIN\n");
+    une_lue
 }
 
 /// Processus (« PRC|numéro|nom|chemin », le chemin quand Windows le donne et que le logiciel est reconnu) et ceux qui parlent à une autre machine
-/// (« CNX|numéro »), lus par les fonctions de Windows.
+/// (« CNX|numéro »), lus par les fonctions de Windows. `false` : Windows n'a rendu aucun processus (refus).
 #[cfg(windows)]
-fn processus_et_connexions(sortie: &mut String) {
+fn processus_et_connexions(sortie: &mut String) -> bool {
     use crate::machine::windows::processus;
     use std::fmt::Write;
-    for p in processus::liste() {
+    let liste = processus::liste();
+    let lus = !liste.is_empty();
+    for p in liste {
         // Le nom (celui du fichier du programme) suffit à reconnaître un logiciel : le chemin, qui coûte une ouverture
         // du processus, seulement pour ceux-là, au lieu des deux ou trois cents d'un Windows.
         let chemin = if reconnu(&p.nom).is_some() {
@@ -1000,16 +1093,17 @@ fn processus_et_connexions(sortie: &mut String) {
         }
         sortie.push_str("CNX_FIN\n");
     }
+    lus
 }
 
 /// Les clés Run et RunOnce du compte et de la machine : « RUN|clé|nom|commande ». La clé est écrite comme
 /// PowerShell l'écrit (« HKCU:\… ») : c'est elle que la commande de retrait reprend. Lues par la lecture commune
-/// (`machine::windows::persistance::lignes_run`), qui garde les noms mal formés et lit aussi RunOnce. Une clé
-/// illisible n'a pas encore de place dans ce relevé, qui ne sait pas dire « non vérifié » pour une partie.
+/// (`machine::windows::persistance::lignes_run`), qui garde les noms mal formés et lit aussi RunOnce. `false` : une
+/// clé n'a pas pu être lue en entier (le démarrage est alors dit non vérifié).
 #[cfg(windows)]
-fn run_du_registre(sortie: &mut String) {
+fn run_du_registre(sortie: &mut String) -> bool {
     use std::fmt::Write;
-    let (valeurs, _illisibles) = crate::machine::windows::persistance::lignes_run();
+    let (valeurs, illisibles) = crate::machine::windows::persistance::lignes_run();
     for v in valeurs {
         let _ = writeln!(
             sortie,
@@ -1020,12 +1114,14 @@ fn run_du_registre(sortie: &mut String) {
         );
     }
     sortie.push_str("RUN_FIN\n");
+    illisibles.is_empty()
 }
 
 /// Les programmes, installateurs et archives posés dans Téléchargements, sur le Bureau, dans le dossier temporaire et
-/// dans les programmes du compte, sous-dossiers compris (un niveau) : « FIC|chemin|date ».
+/// dans les programmes du compte, sous-dossiers compris (un niveau) : « FIC|chemin|date ». `false` : un de ces
+/// dossiers existe sans se lire.
 #[cfg(windows)]
-fn fichiers_poses_windows(sortie: &mut String) {
+fn fichiers_poses_windows(sortie: &mut String) -> bool {
     use std::fmt::Write;
     use std::path::{Path, PathBuf};
     let profil = std::env::var_os("USERPROFILE").map(PathBuf::from);
@@ -1047,7 +1143,11 @@ fn fichiers_poses_windows(sortie: &mut String) {
             .and_then(|e| e.to_str())
             .is_some_and(|e| ["exe", "msi", "zip"].iter().any(|x| e.eq_ignore_ascii_case(x)))
     };
+    let mut lus = true;
     for dossier in dossiers.into_iter().flatten().filter(|d| d.is_absolute()) {
+        if let Err(e) = std::fs::read_dir(&dossier) {
+            lus &= e.kind() == std::io::ErrorKind::NotFound;
+        }
         let mut a_lire = vec![(dossier, 0)];
         while let Some((d, niveau)) = a_lire.pop() {
             for entree in std::fs::read_dir(&d).into_iter().flatten().flatten() {
@@ -1073,6 +1173,7 @@ fn fichiers_poses_windows(sortie: &mut String) {
         }
     }
     sortie.push_str("FIC_FIN\n");
+    lus
 }
 
 /// Les services, lus dans le registre, au format de la section SVC : « SVC|nom|nom affiché||chemin », puis SVC_FIN.
@@ -1316,14 +1417,17 @@ pub fn menu() {
         "The tech-support scam: a call (“your computer is infected”), a scary pop-up or an urgent email, then you are made to install a remote control program (AnyDesk, TeamViewer, RustDesk…). The person sees your screen, moves your mouse, and takes the opportunity to steal passwords or charge for a made-up repair. Vanguard looks for these programs here: installed, started at boot, running, or simply downloaded."
     ));
     println!();
-    let Some(trouvailles) = relever() else {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let releve = relever_tout();
+    let aujourd_hui = aujourd_hui();
+    crate::modele::resultat::verser(&resultat::resultat(releve.as_ref(), aujourd_hui, debut));
+    let Some(trouvailles) = pour_le_bilan(releve) else {
         trp!(
             "  ✖ Impossible de vérifier (PowerShell indisponible ou bloqué).",
             "  ✖ Could not check (PowerShell unavailable or blocked)."
         );
         return;
     };
-    let aujourd_hui = aujourd_hui();
     let visibles: Vec<&Trouvaille> = trouvailles
         .iter()
         .filter(|t| !LOGICIELS[t.logiciel].integre || matches!(t.trace, Trace::EnCours { .. }))
@@ -1458,6 +1562,15 @@ pub fn menu() {
         "Ensuite : changez vos mots de passe importants depuis un autre appareil, et refaites un bilan complet (menu principal, 1).",
         "Next: change your important passwords from another device, and run a full check again (main menu, 1)."
     ));
+}
+
+/// `vanguard acces-a-distance --json` : le même relevé que le parcours (installés, au démarrage, en cours,
+/// téléchargés), jugé en résultat et versé comme lui. Aucune question, rien n'est retiré ni proposé.
+pub fn json() {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let r = resultat::resultat(relever_tout().as_ref(), aujourd_hui(), debut);
+    crate::modele::resultat::verser(&r);
+    println!("{}", crate::modele::resultat::json(&r));
 }
 
 #[cfg(test)]
@@ -1907,16 +2020,4 @@ mod tests {
             ["COM-DIS-001|logiciel:AnyDesk", "COM-DIS-001|logiciel:Assistance rapide"]
         );
     }
-}
-
-/// PROVISOIRE (lot H, à remplacer) : `--json` rend un résultat vide, donc « non vérifié ».
-pub fn json() {
-    let debut = (chrono::Utc::now(), std::time::Instant::now());
-    let r = crate::modele::resultat::Resultat::nouveau(
-        "PRO-DIS-001",
-        debut,
-        &[],
-        crate::modele::resultat::Couverture::default(),
-    );
-    println!("{}", crate::modele::resultat::json(&r));
 }
