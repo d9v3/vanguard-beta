@@ -114,6 +114,10 @@ delivered just before it. Only the latest version has its download page; every v
   `--json`, nothing is asked or changed; `lien` and `listes-noires` go on the Internet only with `--internet`, consent
   given in advance. Each examination, on screen as in JSON, is kept for the report and the event log.
   `protection --json` gives each switch's state, without changing anything.
+- **Key tools in Rust.** At deployment, Vanguard itself checks the shipped vanguard.exe (DLLs loaded from System32,
+  manifest read where Windows reads it), writes the key's markers and puts fully checked tldr-pages archives on it
+  (CRC-32 of each entry, no overlap): no more Python at deployment. CI compiles the original YARA rules with the
+  program's own engine. The key launcher no longer mistakes a missing or blocked PowerShell for a Defender block.
 
 ## October 23, 2026: version 0.86
 

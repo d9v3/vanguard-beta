@@ -119,6 +119,11 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   défaut. Sous `--json`, rien n'est demandé ni changé ; `lien` et `listes-noires` ne vont sur Internet qu'avec
   `--internet`, l'accord donné d'avance. Chaque examen, à l'écran comme en JSON, est gardé pour le rapport et le
   journal des événements. `protection --json` donne l'état de chaque interrupteur, sans rien changer.
+- **Outils de la clé en Rust.** Au déploiement, Vanguard vérifie lui-même le vanguard.exe livré (DLL chargées depuis
+  System32, manifeste lu là où Windows le lit), écrit les témoins de la clé et y met les archives de tldr-pages
+  contrôlées entières (CRC-32 de chaque entrée, sans chevauchement) : plus de Python au déploiement. La CI compile les
+  règles YARA d'origine avec le moteur du programme. Le lanceur de la clé ne prend plus un PowerShell absent ou bloqué
+  pour un blocage de Defender.
 
 ## 23 octobre 2026 : version 0.86
 
