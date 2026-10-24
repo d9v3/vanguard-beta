@@ -14,6 +14,10 @@ pub struct Bornes {
 mod crc32;
 
 #[allow(dead_code)]
+#[path = "../../src/archives/deflate.rs"]
+mod deflate;
+
+#[allow(dead_code)]
 #[path = "../../src/archives/zip.rs"]
 mod zip;
 
@@ -24,6 +28,14 @@ const BORNES: Bornes = Bornes {
 };
 
 libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
+    // Le parcours entrée par entrée de l'analyse des fichiers, puis chaque entrée extraite, bornée.
+    let p = zip::parcourir(octets, BORNES.entrees);
+    assert!(p.entrees.len() <= BORNES.entrees);
+    for vue in &p.entrees {
+        if let Ok(x) = zip::extraire(octets, vue, BORNES.fichier) {
+            assert!(x.contenu.len() <= BORNES.fichier);
+        }
+    }
     let lus = zip::lire(octets, &BORNES);
     assert!(lus.len() <= BORNES.entrees);
     assert!(lus.iter().map(|(_, c)| c.len()).sum::<usize>() <= BORNES.total);

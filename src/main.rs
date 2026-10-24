@@ -4,6 +4,10 @@
 //! Lancé sans argument, affiche un menu.
 
 mod a_laisser;
+// Le socle d'analyse des fichiers (lot AV1 de l'antivirus maison) : ses lecteurs servent aux motifs, aux signatures
+// et aux heuristiques des lots suivants (AV2 à AV4), qui ne sont pas encore branchés.
+#[cfg_attr(not(test), allow(dead_code))]
+mod analyse;
 mod annulation;
 mod apprentissage;
 mod archives;
