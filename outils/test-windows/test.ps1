@@ -785,6 +785,10 @@ try {
     # 2 = « non vérifié » (règles hors ligne, mesures trop jeunes) : voulu, seulement si le JSON le dit lui-même.
     $codeAutotest = $script:etape.Commandes[-1].Code
     if ($a.verdict -eq 'non-verifie' -and $a.code -eq 2) { Code-Voulu 'autotest-json' 2 'verdict « non-verifie »' }
+    # Ce que ce 2 couvre aussi et qui serait une régression ici : toujours un problème, même code accepté.
+    if (@($a.regles.hors_delai).Count) { Bug "Autotest : règle(s) hors délai : $(@($a.regles.hors_delai) -join ', ')" }
+    if (@($a.regles.muettes).Count) { Bug "Autotest : règle(s) muette(s) : $(@($a.regles.muettes) -join ', ')" }
+    if (-not @($a.croisees).Count) { Bug 'Autotest : aucune lecture croisée' }
     if ($null -ne $a.code -and $a.code -ne $codeAutotest) { Bug "Autotest : code de sortie $codeAutotest, le rapport dit $($a.code)" }
     if ($a.outil -eq 'AUT-VAN-001') { Ok "Autotest : $($a.verdict), $($a.regles.ont_repondu)/$($a.regles.essayees) règles ont répondu" } else { Bug 'Autotest : rapport inattendu' }
     foreach ($c in @($a.croisees)) {

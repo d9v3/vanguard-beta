@@ -129,7 +129,8 @@ tests_wine() {
 # Chaque script analysé, puis une faute que l'analyse laisse passer : PowerShell ne distingue pas les majuscules des
 # variables, si bien qu'un `$langues = @(...)` écrit au niveau du script range le tableau dans le paramètre
 # `[string]$Langues`, converti en « fr en » (vu dans la VM : tous les essais de console fondus en un seul). Un nom
-# de paramètre réaffecté sous une autre casse est refusé ; même casse (`$Exe = (Resolve-Path ...).Path`) : voulu.
+# de paramètre réaffecté sous une autre casse est refusé, comme un tableau rangé dans un paramètre [string] ou [int] ;
+# le reste à même casse (`$Exe = (Resolve-Path ...).Path`) : voulu.
 scripts_powershell() {
   local erreurs=0 f verif
   [[ -n $PWSH ]] || { echo "pwsh absent (VANGUARD_PWSH pour le donner)"; return "$SAUTEE"; }
@@ -144,18 +145,28 @@ $params = @{}
 foreach ($p in $ast.ParamBlock.Parameters) { $params[$p.Name.VariablePath.UserPath.ToLowerInvariant()] = $p }
 $fautes = foreach ($a in $ast.FindAll({ param($x) $x -is [System.Management.Automation.Language.AssignmentStatementAst] -or $x -is [System.Management.Automation.Language.ForEachStatementAst] }, $true)) {
     $v = if ($a -is [System.Management.Automation.Language.ForEachStatementAst]) { $a.Variable } else { $a.Left }
-    while ($v -is [System.Management.Automation.Language.ConvertExpressionAst]) { $v = $v.Child }
+    while ($v -is [System.Management.Automation.Language.AttributedExpressionAst]) { $v = $v.Child }
     if ($v -isnot [System.Management.Automation.Language.VariableExpressionAst]) { continue }
     $chemin = $v.VariablePath
     if (-not ($chemin.IsUnqualified -or $chemin.IsScript)) { continue }
     $n = $chemin.UserPath -replace '^script:', ''
     $p = $params[$n.ToLowerInvariant()]
-    if (-not $p -or $n -ceq $p.Name.VariablePath.UserPath) { continue }
+    if (-not $p) { continue }
+    $pourquoi = 'PowerShell ne distingue pas les majuscules : à renommer'
+    if ($n -ceq $p.Name.VariablePath.UserPath) {
+        # Même casse : voulu, sauf un tableau rangé dans un paramètre d'un seul texte ou nombre (aplati pareil).
+        $droite = if ($a -is [System.Management.Automation.Language.AssignmentStatementAst] -and $a.Right -is [System.Management.Automation.Language.CommandExpressionAst]) { $a.Right.Expression } else { $null }
+        $type = $p.StaticType
+        $tableau = $droite -is [System.Management.Automation.Language.ArrayExpressionAst] -or $droite -is [System.Management.Automation.Language.ArrayLiteralAst]
+        $recoitTableau = $type -eq [object] -or ($type -ne [string] -and [Collections.IEnumerable].IsAssignableFrom($type))
+        if (-not $tableau -or $recoitTableau) { continue }
+        $pourquoi = 'un tableau y serait aplati : une autre variable'
+    }
     # Dans une fonction, une affectation sans portée crée une variable à elle : le paramètre du script n'y est pas touché.
     $dansFonction = $false
     for ($q = $a.Parent; $q; $q = $q.Parent) { if ($q -is [System.Management.Automation.Language.FunctionDefinitionAst]) { $dansFonction = $true; break } }
     if ($dansFonction -and -not $chemin.IsScript) { continue }
-    '{0}:{1} : ${2} est le paramètre [{3}]${4} (PowerShell ne distingue pas les majuscules) : à renommer' -f $nom, $v.Extent.StartLineNumber, $n, $p.StaticType.Name, $p.Name.VariablePath.UserPath
+    '{0}:{1} : ${2} est le paramètre [{3}]${4} ({5})' -f $nom, $v.Extent.StartLineNumber, $n, $p.StaticType.Name, $p.Name.VariablePath.UserPath, $pourquoi
 }
 if ($fautes) { $fautes; exit 1 }
 EOF
