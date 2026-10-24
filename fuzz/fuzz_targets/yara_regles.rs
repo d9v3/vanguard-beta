@@ -27,7 +27,13 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
         return;
     }
     let echeance = Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
+    let par_blocs = moteur_yara::Regles::compiler(&texte).avec_bloc(3);
     for donnees in [&b"MZ\x90\x00 vanguard"[..], b"\x7fELF\x02\x01\x01", octets] {
-        let _ = regles.analyser_tampon(donnees, echeance);
+        let tampon = regles.analyser_tampon(donnees, echeance);
+        let flux = par_blocs.analyser_flux(&mut std::io::Cursor::new(donnees), donnees.len() as u64, echeance);
+        // Le même résultat par les deux chemins, sauf si le délai a coupé l'un d'eux.
+        if let (Ok(a), Ok(b)) = (&tampon, &flux) {
+            assert_eq!(a, b);
+        }
     }
 });

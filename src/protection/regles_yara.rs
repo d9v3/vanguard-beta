@@ -14,8 +14,10 @@
 
 use super::motifs::Element;
 
-/// Le texte des règles, au plus.
-pub(crate) const SOURCE_MAX: usize = 32 << 20;
+/// Le texte des règles, au plus (celles de ReversingLabs : 2,7 Mo), et ses jetons : chacun pèse quelques dizaines
+/// d'octets, un texte fait de parenthèses en ferait sinon des centaines de Mo.
+pub(crate) const SOURCE_MAX: usize = 8 << 20;
+const JETONS_MAX: usize = 2_000_000;
 /// Règles, et chaînes par règle, au plus.
 pub(crate) const REGLES_MAX: usize = 100_000;
 pub(crate) const CHAINES_MAX: usize = 10_000;
@@ -163,6 +165,11 @@ fn jetons(source: &str) -> Vec<(J, usize)> {
     let mut ligne = 1;
     let apres_egal = |liste: &Vec<(J, usize)>| liste.last().is_some_and(|(j, _)| *j == J::Signe("="));
     while i < c.len() {
+        if liste.len() >= JETONS_MAX {
+            // La suite n'est pas lue : dit, à sa ligne.
+            liste.push((J::Illisible("trop de jetons"), ligne));
+            break;
+        }
         let x = c[i];
         if x == b'\n' {
             ligne += 1;
@@ -214,7 +221,11 @@ fn jetons(source: &str) -> Vec<(J, usize)> {
                             Some(b'n') => (Some(b'\n'), 2),
                             Some(b'r') => (Some(b'\r'), 2),
                             Some(b'x') => {
-                                let h = c.get(i + 2..i + 4).and_then(|h| std::str::from_utf8(h).ok());
+                                // Deux chiffres hexadécimaux, et rien d'autre (from_str_radix admettrait « +1 »).
+                                let h = c
+                                    .get(i + 2..i + 4)
+                                    .filter(|h| h.iter().all(u8::is_ascii_hexdigit))
+                                    .and_then(|h| std::str::from_utf8(h).ok());
                                 (h.and_then(|h| u8::from_str_radix(h, 16).ok()), 4)
                             }
                             _ => (None, 2),
@@ -230,6 +241,11 @@ fn jetons(source: &str) -> Vec<(J, usize)> {
                         i += 1;
                     }
                 }
+            }
+            // Plus long qu'aucun motif ne peut l'être : refusé dès ici, sans le développer en éléments.
+            if texte.len() > super::motifs::LONGUEUR_MAX as usize / 2 {
+                defaut = defaut.or(Some("texte trop long"));
+                texte = Vec::new();
             }
             liste.push((defaut.map_or(J::Texte(texte), J::Illisible), debut));
         } else if x == b'{' && apres_egal(&liste) {
@@ -771,7 +787,8 @@ impl Lecteur<'_> {
             return Ok((0..chaines.len()).collect());
         }
         self.attendre_signe("(")?;
-        let mut rangs = Vec::new();
+        // Marquées plutôt qu'empilées : un ensemble qui répète « $a* » des milliers de fois reste de la taille des chaînes.
+        let mut dedans = vec![false; chaines.len()];
         loop {
             let Some(J::Var(nom)) = self.voir() else {
                 return Err(self.inattendu("$"));
@@ -779,13 +796,18 @@ impl Lecteur<'_> {
             let nom = nom.clone();
             self.i += 1;
             if let Some(prefixe) = nom.strip_suffix('*') {
-                let avant = rangs.len();
-                rangs.extend((0..chaines.len()).filter(|&k| chaines[k].nom.starts_with(prefixe)));
-                if rangs.len() == avant {
+                let mut un = false;
+                for (k, c) in chaines.iter().enumerate() {
+                    if c.nom.starts_with(prefixe) {
+                        dedans[k] = true;
+                        un = true;
+                    }
+                }
+                if !un {
                     return Err(Raison::Nom(nom));
                 }
             } else {
-                rangs.push(Self::rang(chaines, &nom)?);
+                dedans[Self::rang(chaines, &nom)?] = true;
             }
             if self.signe(",") {
                 self.i += 1;
@@ -794,9 +816,7 @@ impl Lecteur<'_> {
             break;
         }
         self.attendre_signe(")")?;
-        rangs.sort_unstable();
-        rangs.dedup();
-        Ok(rangs)
+        Ok((0..chaines.len()).filter(|&k| dedans[k]).collect())
     }
 
     fn module(&mut self, module: &'static str) -> R<Entier> {
@@ -983,7 +1003,12 @@ impl Valeur {
 
 /// Le dedans d'une chaîne hexadécimale, en éléments.
 fn hexadecimal(texte: &str) -> R<Vec<Element>> {
-    let c: Vec<char> = texte.chars().filter(|x| !x.is_whitespace()).collect();
+    // Les blancs séparent : un octet ne s'écrit pas à cheval sur un blanc (« 4 1 » est refusé, comme par YARA-X).
+    let c: Vec<char> = texte.chars().map(|x| if x.is_whitespace() { ' ' } else { x }).collect();
+    // Chaque élément prend au moins un signe : au-delà, le motif serait refusé, autant ne pas le construire.
+    if c.len() > 4 * super::motifs::ELEMENTS_MAX {
+        return Err(Raison::Borne("chaîne hexadécimale"));
+    }
     let mut i = 0;
     let suite = suite_hex(&c, &mut i, 0)?;
     if i != c.len() {
@@ -1000,6 +1025,7 @@ fn suite_hex(c: &[char], i: &mut usize, profondeur: usize) -> R<Vec<Element>> {
     let mut elements = Vec::new();
     while *i < c.len() {
         match c[*i] {
+            ' ' => *i += 1,
             '|' | ')' => break,
             '(' => {
                 *i += 1;
@@ -1019,7 +1045,7 @@ fn suite_hex(c: &[char], i: &mut usize, profondeur: usize) -> R<Vec<Element>> {
             }
             '[' => {
                 let fin = c[*i..].iter().position(|x| *x == ']').ok_or(Raison::Syntaxe("]"))? + *i;
-                let dedans: String = c[*i + 1..fin].iter().collect();
+                let dedans: String = c[*i + 1..fin].iter().filter(|x| **x != ' ').collect();
                 *i = fin + 1;
                 let nombre = |s: &str| -> R<u32> {
                     if s.is_empty() || !s.bytes().all(|o| o.is_ascii_digit()) {
@@ -1047,6 +1073,9 @@ fn suite_hex(c: &[char], i: &mut usize, profondeur: usize) -> R<Vec<Element>> {
                 let (Some(&h), Some(&b)) = (c.get(*i), c.get(*i + 1)) else {
                     return Err(Raison::Syntaxe("octet"));
                 };
+                if b == ' ' {
+                    return Err(Raison::Syntaxe("octet"));
+                }
                 *i += 2;
                 let demi = |x: char| -> R<(u8, u8)> {
                     match x {
@@ -1085,8 +1114,12 @@ fn fin_de_regle(j: &[(J, usize)], debut: usize) -> Option<usize> {
                     return Some(k + 1);
                 }
             }
-            // Une règle suivante avant la fermeture : celle-ci est tronquée.
-            J::Mot(m) if profondeur == 0 && k > debut + 1 && (m == "rule" || m == "import") => return None,
+            // Une déclaration suivante avant la fermeture, à n'importe quelle profondeur (ces mots sont réservés : aucun
+            // corps de règle ne peut les contenir) : celle-ci est tronquée. S'arrêter là garde la lecture linéaire, même
+            // sur des milliers de règles jamais fermées.
+            J::Mot(m) if k > debut + 1 && matches!(m.as_str(), "rule" | "import" | "include") => {
+                return None;
+            }
             _ => {}
         }
     }
@@ -1314,6 +1347,15 @@ mod tests {
             raison_seule(r#"rule r { strings: $a = "\q" condition: $a }"#),
             Raison::Syntaxe(_)
         ));
+        // Relecture adverse : deux formes que YARA-X refuse.
+        assert!(matches!(
+            raison_seule(r#"rule r { strings: $a = "\x+1" condition: $a }"#),
+            Raison::Syntaxe(_)
+        ));
+        assert!(matches!(
+            raison_seule("rule r { strings: $a = { 4 1 } condition: $a }"),
+            Raison::Syntaxe(_)
+        ));
         assert!(matches!(
             raison_seule(r#"rule r { strings: $a = "x" wide wide condition: $a }"#),
             Raison::Syntaxe(_)
@@ -1448,6 +1490,24 @@ mod tests {
             let f = lire(&texte);
             assert!(f.regles.len() <= REGLES_MAX);
         }
+        // Des milliers de règles jamais fermées : lues en temps linéaire (avant, chacune relisait tout le reste).
+        let debut = std::time::Instant::now();
+        let f = lire(&"rule a {\n".repeat(80_000));
+        assert_eq!((f.regles.len(), f.refus.len()), (0, 80_000));
+        assert!(debut.elapsed().as_secs() < 10, "{:?}", debut.elapsed());
+        // « $a* » répété : l'ensemble garde la taille des chaînes.
+        let chaines = (0..50).fold(String::new(), |mut t, k| {
+            let _ = std::fmt::Write::write_fmt(&mut t, format_args!("$a{k} = \"x{k}\" "));
+            t
+        });
+        let f = lire(&format!(
+            "rule e {{ strings: {chaines} condition: any of ({}$a*) }}",
+            "$a*, ".repeat(20_000)
+        ));
+        assert!(matches!(&f.regles[0].condition, Expr::Ensemble(_, r) if r.len() == 50));
+        // Un texte plus long qu'aucun motif : refusé dès le découpage.
+        let long = format!("rule t {{ strings: $a = \"{}\" condition: $a }}", "x".repeat(1 << 20));
+        assert_eq!(raison_seule(&long), Raison::Syntaxe("texte trop long"));
         // Des parenthèses à n'en plus finir : refusées, sans déborder la pile.
         let profond = format!(
             "rule p {{ condition: {}true{} }}",

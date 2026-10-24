@@ -11,6 +11,11 @@
 //! - Au hasard (proptest) : motifs hexadécimaux et données tirés dans un petit alphabet, `$a` et `$a at k` pour
 //!   chaque position ; en-têtes PE et ELF abîmés de mille façons, champs comparés.
 //!
+//! Un écart connu, voulu : avec un saut de 256 octets ou plus après un morceau qui peut se placer de deux façons,
+//! YARA-X manque des correspondances réelles (trouvé par la relecture adverse, vérifié par une recherche exhaustive) ;
+//! Vanguard suit la documentation du langage et les trouve. Là, on exige seulement que Vanguard trouve tout ce que
+//! trouve YARA-X (`grands_sauts`).
+//!
 //! Rien de ce qui est lu sur ce PC n'est gardé ni montré, seulement le chemin d'un écart.
 
 // Des données fabriquées, de quelques Kio : les conversions de tailles et de positions y tiennent toujours.
@@ -375,6 +380,23 @@ fn corpus_fabrique_sans_ecart() {
     assert!(ecarts.is_empty(), "{} écart(s) :\n{}", ecarts.len(), ecarts.join("\n"));
 }
 
+/// Le cas de la relecture adverse : « AB » à 0, « A » à 202 et à 292, « BD » à 843, entre des « 0 ». La seule
+/// correspondance passe par le second « A » ; YARA-X 1.22 ne la voit pas, Vanguard si. Si YARA-X la voit un jour,
+/// le test tient encore : Vanguard doit seulement trouver tout ce qu'il trouve.
+#[test]
+fn grands_sauts() {
+    let source = "rule grand { strings: $a = { 41 42 [199-299] 41 [255-555] 42 44 } condition: $a }";
+    let mut d = vec![b'0'; 900];
+    d[..2].copy_from_slice(b"AB");
+    d[202] = b'A';
+    d[292] = b'A';
+    d[843..845].copy_from_slice(b"BD");
+    let oracle = par_yara_x(&yara_x_regles(source), &d);
+    let moteur = par_vanguard(&Regles::compiler(source), &d);
+    assert!(oracle.is_subset(&moteur), "{oracle:?} / {moteur:?}");
+    assert!(moteur.contains("grand"));
+}
+
 /// Les fichiers d'un dossier de ce PC, sans suivre les liens, jusqu'à `max` fichiers de `taille_max` octets au plus.
 fn fichiers_du_pc(dossiers: &[PathBuf], max: usize, taille_max: u64, garder: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
     let mut trouves = Vec::new();
@@ -627,7 +649,7 @@ mod hasard {
             entree in prop_oneof![Just(0u64), 0x40_0000u64..0x40_3000, any::<u64>()],
             nombres in (0u16..5, 0u16..5),
             tables in (prop_oneof![Just(0x40u64), 0u64..0x200, any::<u64>()], prop_oneof![Just(0x400u64), 0u64..0x800]),
-            entrees in proptest::collection::vec((any::<u32>(), prop_oneof![0x40_0000u64..0x40_3000, any::<u64>()], 0u64..0x3000, prop_oneof![0u64..0x3000, any::<u64>()]), 5),
+            entrees in proptest::collection::vec((any::<u32>(), prop_oneof![0x40_0000u64..0x40_3000, any::<u64>(), (u64::MAX - 0x4000)..=u64::MAX], 0u64..0x3000, prop_oneof![0u64..0x3000, any::<u64>()]), 5),
             taille in 0usize..0xC00,
         ) {
             let mut d = vec![0u8; 0xC00];

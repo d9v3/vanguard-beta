@@ -1,7 +1,8 @@
 //! Le moteur YARA de Vanguard : les règles lues par `regles_yara`, leurs chaînes cherchées toutes ensemble par `motifs`,
 //! leurs conditions évaluées comme YARA-X les évalue (valeurs indéfinies comprises), les modules `pe` (par `crate::pe`)
 //! et `elf` (ici). Il remplace YARA-X dans le programme ; YARA-X reste l'oracle des tests, en développement
-//! seulement : mêmes règles, mêmes fichiers, mêmes correspondances.
+//! seulement : mêmes règles, mêmes fichiers, mêmes correspondances (un seul écart connu, voulu : après un saut de 256
+//! octets ou plus, YARA-X manque des correspondances réelles que ce moteur trouve, voir oracle_yara.rs).
 //!
 //! Évaluation, d'après la documentation de YARA et de YARA-X (« Undefined values ») : une lecture hors des données
 //! (`uint16(1000)` sur un petit fichier), un champ de module absent (`pe.entry_point` d'un fichier qui n'est pas un PE)
@@ -586,7 +587,7 @@ const TABLE_PAR_LECTURE: u64 = 1024;
 /// mémoire la contient ; pour les autres types, par la table des sections : la première (ni SHT_NULL ni SHT_NOBITS)
 /// qui la contient. Les entrées sont lues à leur taille de la norme (32 ou 56 octets, 40 ou 64), quelle que soit
 /// celle qu'annonce l'en-tête, et la table doit tenir entière dans le fichier. Une adresse d'entrée nulle, ou contenue
-/// nulle part : indéfini.
+/// nulle part, un nombre de sections d'au moins 0xFF00, une entrée qui déborde 64 bits avant la bonne : indéfini.
 pub(crate) fn entree_elf<S: Read + Seek>(source: &mut S, taille: u64) -> Option<u64> {
     let ident = morceau(source, taille, 0, 16)?;
     if &ident[..4] != b"\x7fELF" {
@@ -620,6 +621,11 @@ pub(crate) fn entree_elf<S: Read + Seek>(source: &mut S, taille: u64) -> Option<
     let (table_segments, table_sections) = (lire(&entete, 24 + mot, mot), lire(&entete, 24 + 2 * mot, mot));
     let nombres = 24 + 3 * mot + 4 + 2;
     let (segments, sections) = (lire(&entete, nombres + 2, 2), lire(&entete, nombres + 6, 2));
+    // Un nombre de sections dans la plage réservée (SHN_LORESERVE, 0xFF00, et au-delà) : indéfini, quel que soit le type
+    // (vérifié en boîte noire contre YARA-X).
+    if sections >= 0xFF00 {
+        return None;
+    }
     // (position de la table, nombre, taille d'une entrée, et de chaque entrée : type, adresse, position, étendue)
     let par_segments = sorte == 2 || sorte == 3;
     let (debut, nombre, pas) = if par_segments {
@@ -644,6 +650,9 @@ pub(crate) fn entree_elf<S: Read + Seek>(source: &mut S, taille: u64) -> Option<
             if !par_segments && (genre == 0 || genre == 8) {
                 continue;
             }
+            // Une entrée dont la fin dépasse 64 bits rend le champ indéfini, comme dans
+            // YARA-X, si elle vient avant celle qui contient l'entrée (relecture adverse, vérifié en boîte noire).
+            adresse.checked_add(etendue)?;
             if adresse <= entree && entree - adresse < etendue {
                 return (entree - adresse).checked_add(position);
             }

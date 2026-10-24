@@ -26,6 +26,11 @@ pub(crate) const ATOME_MAX: usize = 4;
 /// (quelques milliers d'octets), assez bas pour qu'une vérification reste brève.
 pub(crate) const LONGUEUR_MAX: u32 = 1 << 16;
 pub(crate) const ELEMENTS_MAX: usize = 1 << 16;
+/// Le coût d'une vérification, au plus : éléments × positions suivies (la longueur du motif). Les règles réelles
+/// restent sous quelques millions ; au-delà, une seule vérification pourrait dépasser de loin le délai.
+pub(crate) const COUT_MAX: u64 = 1 << 24;
+/// Le travail de vérification (en unités de coût) entre deux lectures de l'horloge.
+const TRAVAIL_ENTRE_DELAIS: u64 = 1 << 20;
 /// Des choix dans des choix : au-delà, refusé.
 pub(crate) const PROFONDEUR_MAX: usize = 8;
 /// Les états de l'automate, au plus (chacun garde ses transitions). En table complète (256 transitions par état),
@@ -54,7 +59,7 @@ pub(crate) enum Refus {
     Vide,
     /// Un saut au début ou à la fin, ou un saut dont le minimum dépasse le maximum.
     Saut,
-    /// Plus long que `LONGUEUR_MAX`, ou plus de `ELEMENTS_MAX` éléments.
+    /// Plus long que `LONGUEUR_MAX`, plus de `ELEMENTS_MAX` éléments, ou une vérification plus chère que `COUT_MAX`.
     TropLong,
     /// Des choix imbriqués au-delà de `PROFONDEUR_MAX`, ou un choix sans suite, ou une suite vide.
     Choix,
@@ -75,6 +80,8 @@ pub(crate) struct Motif {
     avant_max: u32,
     apres_max: u32,
     longueur_max: u32,
+    /// Le coût d'une vérification, au plus (voir `COUT_MAX`).
+    cout: u64,
 }
 
 /// Longueurs la plus petite et la plus grande d'une suite d'éléments, saturées.
@@ -95,6 +102,31 @@ fn longueurs(elements: &[Element]) -> (u64, u64) {
         total = (total.0.saturating_add(a), total.1.saturating_add(b));
     }
     total
+}
+
+/// Le coût d'une vérification de `elements` depuis `largeur` positions (au plus) : chaque élément coûte autant que les
+/// positions suivies à son entrée ; un saut, ou des choix de longueurs différentes, en élargissent l'ensemble. Rend
+/// (coût, largeur à la sortie), saturés.
+fn cout(elements: &[Element], mut largeur: u64) -> (u64, u64) {
+    let mut total = 0u64;
+    for e in elements {
+        total = total.saturating_add(largeur);
+        match e {
+            Element::Octet { .. } => {}
+            // Les positions restent dans un intervalle : un saut l'élargit de sa marge.
+            Element::Saut { min, max } => largeur = largeur.saturating_add(u64::from(max - min)),
+            Element::Choix(suites) => {
+                let (court, long) = longueurs(std::slice::from_ref(e));
+                for s in suites {
+                    total = total.saturating_add(cout(s, largeur).0);
+                }
+                largeur = largeur.saturating_add(long - court);
+            }
+        }
+        // Les positions restent distinctes et dans la longueur du motif.
+        largeur = largeur.min(u64::from(LONGUEUR_MAX) + 1);
+    }
+    (total, largeur)
 }
 
 /// Contrôle la forme d'une suite (choix non vides, profondeur, sauts dans l'ordre) et compte ses éléments.
@@ -199,6 +231,10 @@ impl Motif {
         if max > u64::from(LONGUEUR_MAX) {
             return Err(Refus::TropLong);
         }
+        let cout = cout(&elements, 1).0;
+        if cout > COUT_MAX {
+            return Err(Refus::TropLong);
+        }
         let (debut, n) = choisir_atome(&elements).ok_or(Refus::SansAtome)?;
         let atome = elements[debut..debut + n]
             .iter()
@@ -221,6 +257,7 @@ impl Motif {
             avant_max,
             apres_max,
             longueur_max: borne(max),
+            cout,
         })
     }
 
@@ -438,6 +475,18 @@ impl Automate {
     }
 }
 
+/// Ajoute le coût d'une vérification au travail fait, et lit l'horloge chaque fois qu'il passe
+/// `TRAVAIL_ENTRE_DELAIS` : vrai si le délai est passé. Une vérification chère compte pour beaucoup, si bien que le
+/// délai est lu assez souvent quel que soit le coût des motifs.
+fn delai_passe(travail: &mut u64, cout: u64, echeance: Option<Instant>) -> bool {
+    *travail = travail.saturating_add(cout);
+    if *travail < TRAVAIL_ENTRE_DELAIS {
+        return false;
+    }
+    *travail = 0;
+    echeance.is_some_and(|e| Instant::now() >= e)
+}
+
 /// Un ensemble de motifs et leur automate : on y cherche lesquels se trouvent dans des données.
 pub(crate) struct Recherche {
     motifs: Vec<Motif>,
@@ -477,7 +526,7 @@ impl Recherche {
         echeance: Option<Instant>,
     ) -> Result<(), Echec> {
         let mut etat = 0;
-        let mut verifiees = 0usize;
+        let mut travail = 0u64;
         let mut depasse = false;
         for (k, morceau) in donnees.chunks(BLOC).enumerate() {
             if echeance.is_some_and(|e| Instant::now() >= e) {
@@ -489,8 +538,7 @@ impl Recherche {
                 if vus[m] || !utile[m] || depasse {
                     return;
                 }
-                verifiees += 1;
-                if verifiees.is_multiple_of(256) && echeance.is_some_and(|e| Instant::now() >= e) {
+                if delai_passe(&mut travail, self.motifs[m].cout, echeance) {
                     depasse = true;
                     return;
                 }
@@ -526,7 +574,8 @@ impl Recherche {
         let mut etat = 0;
         // (motif, position absolue du début de l'atome) : ce qui suit l'atome n'est pas encore lu.
         let mut attente: Vec<(u32, u64)> = Vec::new();
-        let mut verifiees = 0usize;
+        let mut travail = 0u64;
+        let mut depasse = false;
         loop {
             if echeance.is_some_and(|e| Instant::now() >= e) {
                 return Err(Echec::Delai);
@@ -547,14 +596,39 @@ impl Recherche {
             lus += n as u64;
             let fin = n < voulu || lus >= limite;
             let debut_neuf = base + ancien as u64;
+            let bout = base + fenetre.len() as u64;
+            // Ce qui précède l'atome est encore dans la fenêtre (voir la coupe plus bas) : avant son début, il n'y a que
+            // ce qui précéderait le début des données, qui n'existe pas. La position relative suffit.
+            let verifier = |m: u32, atome: u64, vus: &mut [bool], travail: &mut u64| -> bool {
+                let motif = &self.motifs[m as usize];
+                if delai_passe(travail, motif.cout, echeance) {
+                    return false;
+                }
+                debug_assert!(atome.saturating_sub(u64::from(motif.avant_max)) >= base || base == 0);
+                if usize::try_from(atome - base).is_ok_and(|relatif| motif.autour(&fenetre, relatif)) {
+                    vus[m as usize] = true;
+                }
+                true
+            };
+            // Un atome dont tout ce qui suit est déjà dans la fenêtre est vérifié tout de suite : seuls attendent ceux
+            // des derniers octets du bloc, si bien que l'attente reste bornée par la garde, quelles que soient les
+            // données (un atome que partagent des dizaines de motifs, répété sur tout un bloc).
             self.automate.avancer(&mut etat, &fenetre[ancien..], |i, m| {
                 let mi = m as usize;
-                if !vus[mi] && utile[mi] {
-                    let atome = debut_neuf + i as u64 + 1 - self.motifs[mi].atome.len() as u64;
+                if vus[mi] || !utile[mi] || depasse {
+                    return;
+                }
+                let motif = &self.motifs[mi];
+                let atome = debut_neuf + i as u64 + 1 - motif.atome.len() as u64;
+                if atome + motif.atome.len() as u64 + u64::from(motif.apres_max) > bout && !fin {
                     attente.push((m, atome));
+                } else if !verifier(m, atome, vus, &mut travail) {
+                    depasse = true;
                 }
             });
-            let bout = base + fenetre.len() as u64;
+            if depasse {
+                return Err(Echec::Delai);
+            }
             let mut restantes = Vec::new();
             for (m, atome) in attente.drain(..) {
                 let motif = &self.motifs[m as usize];
@@ -566,15 +640,8 @@ impl Recherche {
                     restantes.push((m, atome));
                     continue;
                 }
-                verifiees += 1;
-                if verifiees.is_multiple_of(256) && echeance.is_some_and(|e| Instant::now() >= e) {
+                if !verifier(m, atome, vus, &mut travail) {
                     return Err(Echec::Delai);
-                }
-                // Ce qui précède l'atome est encore dans la fenêtre (voir la coupe plus bas) : avant son début, il n'y a
-                // que ce qui précéderait le début des données, qui n'existe pas. La position relative suffit.
-                debug_assert!(atome.saturating_sub(u64::from(motif.avant_max)) >= base || base == 0);
-                if usize::try_from(atome - base).is_ok_and(|relatif| motif.autour(&fenetre, relatif)) {
-                    vus[m as usize] = true;
                 }
             }
             attente = restantes;

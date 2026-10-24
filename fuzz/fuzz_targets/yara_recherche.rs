@@ -51,5 +51,9 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
             .analyser_flux(&mut std::io::Cursor::new(&d[..]), d.len() as u64, None)
             .expect("flux");
         assert_eq!(a, b);
+        // Annoncé plus long qu'il n'est (un fichier raccourci pendant la lecture) : une erreur dès qu'il faut le lire en
+        // entier ; sans règle possible d'après son en-tête (seul lu), rien n'est trouvé, comme sur le fichier entier.
+        let plus = flux.analyser_flux(&mut std::io::Cursor::new(&d[..]), d.len() as u64 + 1, None);
+        assert!(plus.is_err() || plus == Ok(Vec::new()), "{plus:?}");
     }
 });
