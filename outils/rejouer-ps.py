@@ -116,7 +116,10 @@ def scripts():
     """(fichier:ligne, texte, modèle) pour chaque script PowerShell du programme."""
     for p in sorted((RACINE / "src").rglob("*.rs")):
         nom = p.relative_to(RACINE / "src").as_posix()
-        if nom.startswith("guide/"):
+        # Le guide est tapé par la personne ; un module de tests à part (« mod tests; » : tests.rs, ou un dossier
+        # tests/) est tout entier sous #[cfg(test)], ses textes sont des données d'essai (des scripts d'attaque
+        # que les règles des journaux doivent reconnaître), pas des scripts du programme.
+        if nom.startswith("guide/") or p.name == "tests.rs" or "/tests/" in f"/{nom}":
             continue
         src = p.read_text(encoding="utf-8")
         t = src.find("#[cfg(test)]\nmod ")
