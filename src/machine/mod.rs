@@ -44,6 +44,8 @@ use linux as os;
 pub mod windows;
 #[cfg(windows)]
 use windows as os;
+#[cfg(unix)]
+pub(crate) mod assistant;
 #[cfg(target_os = "macos")]
 pub mod macos;
 #[cfg(unix)]
@@ -961,6 +963,58 @@ pub(crate) fn appliquer_sans_noter(commandes: &[String]) -> (bool, Vec<String>) 
     (resultats == [true], notes.into_iter().next().unwrap_or_default())
 }
 
+/// La ligne notée d'une commande faite : la commande, et ce qu'il faut en garder (valeur d'avant, précision, raison
+/// de l'échec).
+#[cfg(unix)]
+fn note_d_ordre(ligne: &str, r: &crate::protection::blocage::ordres::Resultat) -> String {
+    match (&r.reussi, &r.note) {
+        (true, Some(n)) => format!("{ligne} ({n})"),
+        (true, None) => ligne.to_string(),
+        (false, _) => format!("{ligne} (échec : {})", r.raison),
+    }
+}
+
+/// Les ordres typés du blocage (`protection::blocage::ordres`), sous Linux et macOS : tous les groupes faits d'ordres
+/// passent ensemble par l'assistant élevé (une seule demande de droits), ou par Vanguard lui-même s'il est root ; un
+/// groupe qui mêle ordres et commandes n'est pas fait (une liste de Vanguard ne les mêle jamais).
+#[cfg(unix)]
+fn lancer_les_ordres(correctifs: &[Vec<String>], resultats: &mut [Option<bool>], notes: &mut [Vec<String>]) {
+    use crate::protection::blocage::ordres;
+    let mut indices = Vec::new();
+    let mut groupes = Vec::new();
+    for (i, c) in correctifs.iter().enumerate() {
+        let n = c.iter().filter(|l| ordres::est_ordre(l)).count();
+        if n == 0 {
+            continue;
+        }
+        if n != c.len() {
+            trp!(
+                "    ✖ Une liste mêle des gestes de Vanguard et des commandes : elle n'est pas faite.",
+                "    ✖ A list mixes Vanguard steps and commands: it is not done."
+            );
+            resultats[i] = Some(false);
+            continue;
+        }
+        indices.push(i);
+        groupes.push(c.iter().filter_map(|l| ordres::analyser(l)).collect::<Vec<_>>());
+    }
+    if groupes.is_empty() {
+        return;
+    }
+    for o in groupes.iter().flatten() {
+        println!("    {GRIS}> {}{RESET}", o.texte());
+    }
+    let reponses = assistant::appliquer(&groupes);
+    for ((i, groupe), reponse) in indices.into_iter().zip(&groupes).zip(reponses) {
+        resultats[i] = Some(reponse.len() == groupe.len() && reponse.iter().all(|r| r.reussi));
+        notes[i] = correctifs[i]
+            .iter()
+            .zip(reponse.iter().map(Some).chain(std::iter::repeat(None)))
+            .map(|(l, r)| r.map_or_else(|| l.clone(), |r| note_d_ordre(l, r)))
+            .collect();
+    }
+}
+
 /// Les résultats, et ce qu'il faut noter pour chaque correctif (ses commandes, enrichies de la valeur d'avant).
 fn lancer_chacune(correctifs: &[Vec<String>]) -> (Vec<bool>, Vec<Vec<String>>) {
     #[cfg(windows)]
@@ -968,8 +1022,18 @@ fn lancer_chacune(correctifs: &[Vec<String>]) -> (Vec<bool>, Vec<Vec<String>>) {
         for c in correctifs.iter().flatten() {
             println!("    {GRIS}> {}{RESET}", windows::corrections::affichable(c));
         }
-        // Rien que des corrections natives, et une vraie élévation possible (pas sous Wine) : par Vanguard lui-même,
-        // relancé en administrateur ; sinon par le script PowerShell, comme avant.
+        // Rien que des corrections natives ou des ordres du blocage, et une vraie élévation possible (pas sous Wine) :
+        // par Vanguard lui-même, relancé en administrateur ; une liste mêlée de PowerShell passe aussi par lui, en
+        // une seule demande (`admin_mele`) ; sinon par le script PowerShell, comme avant.
+        // Mêlée seulement : une liste toute en PowerShell (sans geste natif) garde la fenêtre PowerShell d'avant.
+        let une_native = correctifs.iter().flatten().any(|l| windows::corrections::native(l));
+        if une_native
+            && !windows::corrections::toutes_natives(correctifs)
+            && !crate::journal::sous_wine()
+            && let Some(fait) = windows::admin_mele(correctifs)
+        {
+            return fait;
+        }
         if windows::corrections::toutes_natives(correctifs) && !crate::journal::sous_wine() {
             let lignes: Vec<String> = correctifs.iter().flatten().cloned().collect();
             if let Some(reponses) = windows::eleve::appliquer(&lignes) {
@@ -1002,20 +1066,33 @@ fn lancer_chacune(correctifs: &[Vec<String>]) -> (Vec<bool>, Vec<Vec<String>>) {
     }
     #[cfg(not(windows))]
     {
+        let mut faits: Vec<Option<bool>> = vec![None; correctifs.len()];
+        let mut notes = correctifs.to_vec();
+        lancer_les_ordres(correctifs, &mut faits, &mut notes);
+        // Le reste : les commandes des corrections du bilan, et les annulations notées par une version d'avant
+        // (reconnues mot pour mot, rejouées telles quelles), par bash comme avant.
         let resultats = correctifs
             .iter()
-            .map(|commandes| {
-                commandes.iter().all(|c| {
-                    println!("    {GRIS}$ {}{RESET}", crate::ui::commande_affichable(c));
-                    Command::new("bash")
+            .zip(faits)
+            .map(|(commandes, fait)| {
+                fait.unwrap_or_else(|| {
+                    commandes.iter().all(|c| {
+                        println!("    {GRIS}$ {}{RESET}", crate::ui::commande_affichable(c));
+                        // bash par son chemin, jamais par le PATH du compte.
+                        Command::new(if std::path::Path::new("/usr/bin/bash").exists() {
+                            "/usr/bin/bash"
+                        } else {
+                            "/bin/bash"
+                        })
                         .arg("-c")
                         .arg(c)
                         .status()
                         .is_ok_and(|s| s.success())
+                    })
                 })
             })
             .collect();
-        (resultats, correctifs.to_vec())
+        (resultats, notes)
     }
 }
 

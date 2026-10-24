@@ -46,6 +46,13 @@ fn detecter() -> bool {
     forcee.or_else(langue_systeme).is_none_or(|c| c != "fr")
 }
 
+/// Fixe la langue avant tout affichage : l'assistant élevé reçoit celle du Vanguard qui l'a lancé (pkexec et run0
+/// lui donnent un environnement neuf, sans LANG). Sans effet si un texte a déjà été affiché.
+#[cfg(unix)]
+pub(crate) fn forcer(anglais: bool) {
+    let _ = ANGLAIS.set(anglais);
+}
+
 pub fn anglais() -> bool {
     #[cfg(test)]
     if let Some(forcee) = FORCEE.with(std::cell::Cell::get) {

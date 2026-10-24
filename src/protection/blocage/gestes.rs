@@ -52,8 +52,10 @@ impl Contexte {
 pub(crate) struct Pret {
     /// Une phrase par étape.
     pub etapes: Vec<String>,
-    /// Les commandes, montrées puis lancées par `machine::appliquer_sans_noter`.
+    /// Les ordres (`ordres`), montrés puis faits par `machine::appliquer_sans_noter`.
     pub commandes: Vec<String>,
+    /// Ce qui suit, sans faire échouer le geste s'il échoue : la coupure des connexions déjà ouvertes. Son échec est dit.
+    pub apres: Vec<String>,
     faire: Faire,
 }
 
@@ -83,8 +85,8 @@ struct Arret {
     pid: u32,
     /// Le programme qu'il faisait tourner à la détection : relu juste avant l'arrêt.
     chemin: String,
-    /// Sous Windows, un processus de ce compte s'arrête sans fenêtre d'administrateur (TerminateProcess).
-    #[cfg_attr(not(windows), allow(dead_code))]
+    /// Ce compte peut l'arrêter lui-même (un processus à lui, ou Vanguard administrateur) : Vanguard le fait dans son
+    /// propre processus (`arret`), sans demande de droits ni commande.
     ici: bool,
 }
 
@@ -120,9 +122,12 @@ pub(crate) fn preparer(m: &Menace, ctx: &Contexte, automatique: bool) -> Result<
             let pret = Pret {
                 etapes,
                 commandes: regle.poser,
+                apres: regle.apres,
                 faire: Faire::Commandes {
                     annulation: Annulation::Commandes {
-                        commandes: regle.retirer,
+                        // Ce que les versions d'avant écrivaient : seules elles lisent ce champ ; l'annulation se refait
+                        // depuis `inverse`.
+                        commandes: pare_feu::ancien::sortante(pf, *ip).retirer,
                         port: None,
                         inverse: Some(Inverse::Sortante {
                             pare_feu: pf,
@@ -141,6 +146,7 @@ pub(crate) fn preparer(m: &Menace, ctx: &Contexte, automatique: bool) -> Result<
                     "Remove “{nom}” from startup: it stays installed, and is put back exactly with “vanguard blocking undo”"
                 )],
                 commandes: Vec::new(),
+                apres: Vec::new(),
                 faire: Faire::Demarrage { id: id.clone() },
             };
             (pret, *machine)
@@ -161,6 +167,7 @@ pub(crate) fn preparer(m: &Menace, ctx: &Contexte, automatique: bool) -> Result<
                     .to_string(),
                 ],
                 commandes: vec![crate::machine::windows::corrections::id("pilotes-vulnerables-bloques")],
+                apres: Vec::new(),
                 faire: Faire::Commandes {
                     annulation: Annulation::Commandes {
                         commandes: annuler_pilotes(*avant),
@@ -177,7 +184,8 @@ pub(crate) fn preparer(m: &Menace, ctx: &Contexte, automatique: bool) -> Result<
                 return Err(Echec::refuse(OU, raison));
             }
             let pf = ctx.pare_feu.clone()?;
-            let Some(regle) = pare_feu::entrante(pf, *port) else {
+            let (Some(regle), Some(avant)) = (pare_feu::entrante(pf, *port), pare_feu::ancien::entrante(pf, *port))
+            else {
                 return Err(Echec::refuse(
                     OU,
                     trf!(
@@ -197,9 +205,10 @@ pub(crate) fn preparer(m: &Menace, ctx: &Contexte, automatique: bool) -> Result<
             let pret = Pret {
                 etapes,
                 commandes: regle.poser,
+                apres: regle.apres,
                 faire: Faire::Commandes {
                     annulation: Annulation::Commandes {
-                        commandes: regle.retirer,
+                        commandes: avant.retirer,
                         port: retenir.map(|p| format!("{p}/tcp")),
                         inverse: Some(Inverse::Entrante {
                             pare_feu: pf,
@@ -236,6 +245,7 @@ pub(crate) fn preparer(m: &Menace, ctx: &Contexte, automatique: bool) -> Result<
                     .to_string(),
                 ],
                 commandes: Vec::new(),
+                apres: Vec::new(),
                 faire: Faire::Permissions {
                     fichier: fichier.clone(),
                     nouveau,
@@ -251,7 +261,7 @@ pub(crate) fn preparer(m: &Menace, ctx: &Contexte, automatique: bool) -> Result<
 }
 
 /// Deux chemins de programme sont-ils le même ? Sans tenir compte de la casse sous Windows.
-fn meme_chemin(a: &str, b: &str) -> bool {
+pub(crate) fn meme_chemin(a: &str, b: &str) -> bool {
     if cfg!(windows) {
         a.eq_ignore_ascii_case(b)
     } else {
@@ -290,10 +300,15 @@ fn preparer_programme(
             }
             let ici = arret_sans_droits(pid);
             if !ici {
+                // Un processus d'un autre compte : l'ordre part vers celui qui a les droits, qui le rejuge.
                 droits = !ctx.admin;
-                commandes.push(commande_d_arret(pid, &actuel, !ctx.admin));
-            } else if cfg!(not(windows)) {
-                commandes.push(commande_d_arret(pid, &actuel, false));
+                commandes.push(
+                    super::ordres::Ordre::ArreterProcessus {
+                        pid,
+                        chemin: actuel.clone(),
+                    }
+                    .ligne(),
+                );
             }
             etapes.push(trf!(
                 "Arrêter « {nom} » (PID {pid}) tout de suite",
@@ -302,7 +317,7 @@ fn preparer_programme(
             Some(Arret {
                 pid,
                 chemin: actuel,
-                ici: ici && cfg!(windows),
+                ici,
             })
         }
         _ => None,
@@ -355,41 +370,11 @@ fn preparer_programme(
         Pret {
             etapes,
             commandes,
+            apres: Vec::new(),
             faire: Faire::Programme { arret, quarantaine },
         },
         droits,
     ))
-}
-
-/// Ce que le shell de l'arrêt lit du processus « $1 », à comparer au programme attendu « $2 ».
-#[cfg(not(target_os = "macos"))]
-const LIRE_PROGRAMME: &str = r#"e=$(readlink "/proc/$1/exe")"#;
-#[cfg(target_os = "macos")]
-const LIRE_PROGRAMME: &str = r#"e=$(ps -o comm= -p "$1")"#;
-
-/// La commande qui arrête un processus, l'identité vérifiée DANS la commande, au moment même de l'arrêt : entre le
-/// contrôle et l'arrêt, la demande de mot de passe ou de la fenêtre administrateur peut durer, et le numéro passer à
-/// un autre programme (un service, csrss). Linux et macOS : kill seulement si le programme du numéro est toujours
-/// celui attendu (« (deleted) » compris : effacé depuis) ; Windows : Stop-Process seulement si son chemin l'est.
-fn commande_d_arret(pid: u32, attendu: &str, sudo: bool) -> String {
-    if cfg!(windows) {
-        let attendu = crate::commande::ps_texte(attendu);
-        trf!(
-            "$p = Get-Process -Id {pid} -ErrorAction SilentlyContinue; if ($p -and $p.Path -eq '{attendu}') {{ Stop-Process -Id {pid} -Force }} else {{ throw 'PID {pid} réaffecté à un autre programme : rien n''est arrêté' }}",
-            "$p = Get-Process -Id {pid} -ErrorAction SilentlyContinue; if ($p -and $p.Path -eq '{attendu}') {{ Stop-Process -Id {pid} -Force }} else {{ throw 'PID {pid} reassigned to another program: nothing is stopped' }}"
-        )
-    } else {
-        let attendu = crate::commande::sh_chaine(attendu);
-        if sudo {
-            format!(
-                "sudo sh -c '{LIRE_PROGRAMME}; {{ [ \"$e\" = \"$2\" ] || [ \"$e\" = \"$2 (deleted)\" ]; }} && kill -KILL \"$1\"' sh {pid} {attendu}"
-            )
-        } else {
-            format!(
-                "sh -c '{LIRE_PROGRAMME}; {{ [ \"$e\" = \"$2\" ] || [ \"$e\" = \"$2 (deleted)\" ]; }} && kill -KILL \"$1\"' sh {pid} {attendu}"
-            )
-        }
-    }
 }
 
 /// Ce compte peut-il arrêter ce processus sans droits de plus ? Sous Linux et macOS : un processus de ce compte ;
@@ -403,35 +388,30 @@ fn arret_sans_droits(pid: u32) -> bool {
     {
         // SAFETY : geteuid ne prend aucun argument et ne touche aucune mémoire.
         let moi = unsafe { libc::geteuid() };
-        moi == 0 || proprietaire(pid) == Some(moi)
+        moi == 0 || comptes(pid).is_some_and(|(reel, sauve)| reel == moi || sauve == moi)
     }
 }
 
+/// Les comptes réel et sauvé d'un processus : la règle de kill(2) (le compte de l'envoyeur doit être l'un des deux).
 #[cfg(target_os = "linux")]
-fn proprietaire(pid: u32) -> Option<u32> {
+fn comptes(pid: u32) -> Option<(u32, u32)> {
     let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    proprietaire_status(&status)
+    comptes_status(&status)
 }
 
-/// Le compte réel d'un processus, d'après la ligne « Uid: réel effectif sauvé fs » de /proc/<pid>/status.
+/// D'après la ligne « Uid: réel effectif sauvé fs » de /proc/<pid>/status.
 #[cfg(any(target_os = "linux", test))]
-fn proprietaire_status(status: &str) -> Option<u32> {
-    status
-        .lines()
-        .find_map(|l| l.strip_prefix("Uid:"))?
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()
+fn comptes_status(status: &str) -> Option<(u32, u32)> {
+    let mut champs = status.lines().find_map(|l| l.strip_prefix("Uid:"))?.split_whitespace();
+    let reel = champs.next()?.parse().ok()?;
+    let sauve = champs.nth(1)?.parse().ok()?;
+    Some((reel, sauve))
 }
 
+/// macOS : proc_pidinfo (PROC_PIDTBSDINFO), sans lancer ps.
 #[cfg(target_os = "macos")]
-fn proprietaire(pid: u32) -> Option<u32> {
-    let r = crate::commande::lancer(
-        std::process::Command::new("ps").args(["-o", "uid=", "-p", &pid.to_string()]),
-        10,
-    )?;
-    r.sortie.trim().parse().ok()
+fn comptes(pid: u32) -> Option<(u32, u32)> {
+    super::arret::macos::infos(pid).map(|i| (i.pbi_ruid, i.pbi_svuid))
 }
 
 /// Le programme que fait tourner ce processus en ce moment, `None` s'il est fini (ou illisible).
@@ -548,17 +528,42 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<String,
     };
     match pret.faire {
         Faire::Commandes { annulation, retenir } => {
-            let (reussi, lancees) = crate::machine::appliquer_sans_noter(&pret.commandes);
+            // Le geste, puis ce qui suit (la coupure des connexions déjà ouvertes), dans le même groupe : la coupure ne
+            // part que si la règle est posée, et son échec est une précision dite, pas l'échec de la règle.
+            let groupe: Vec<String> = pret.commandes.iter().chain(&pret.apres).cloned().collect();
+            let (reussi, lancees) = crate::machine::appliquer_sans_noter(&groupe);
+            let precise = |note: &str| lancees.iter().any(|l| l.contains(&format!("({note}")));
             let mut fait = m.quoi.clone();
+            if reussi && precise(super::ordres::note_non_coupee()) {
+                fait += tr!(
+                    " (règle posée ; la connexion déjà ouverte n'a pas pu être coupée : voir le message ci-dessus)",
+                    " (rule added; the connection already open could not be cut: see the message above)"
+                );
+            }
             if reussi && let Some(port) = retenir {
-                // Le bilan dira le port fermé seulement si ufw le refuse vraiment avant toute autorisation.
-                if pare_feu::ufw_refuse_en_premier(port) == Some(true) {
-                    crate::machine::retenir_port(&format!("{port}/tcp"));
+                // Le bilan dira le port fermé seulement si ufw le refuse vraiment avant toute autorisation : relu par
+                // celui qui a posé la règle (en root), sinon ici.
+                let en_premier = if precise(super::ordres::note_ufw(Some(true))) {
+                    Some(true)
+                } else if precise(super::ordres::note_ufw(Some(false))) {
+                    Some(false)
                 } else {
-                    fait += tr!(
-                        " (règle posée, mais pas vue avant les autorisations d'ufw : le port n'est pas compté comme fermé)",
-                        " (rule added, but not seen before ufw's allow rules: the port is not counted as closed)"
-                    );
+                    pare_feu::ufw_refuse_en_premier(port)
+                };
+                match en_premier {
+                    Some(true) => crate::machine::retenir_port(&format!("{port}/tcp")),
+                    Some(false) => {
+                        fait += tr!(
+                            " (règle posée, mais pas vue avant les autorisations d'ufw : le port n'est pas compté comme fermé)",
+                            " (rule added, but not seen before ufw's allow rules: the port is not counted as closed)"
+                        );
+                    }
+                    None => {
+                        fait += tr!(
+                            " (règle posée ; l'état d'ufw ne s'est pas relu : le port n'est pas compté comme fermé)",
+                            " (rule added; ufw's state could not be read back: the port is not counted as closed)"
+                        );
+                    }
                 }
             }
             changements::noter_blocage(lancees, reussi, note(Some(annulation)), preuve);
@@ -705,15 +710,19 @@ fn releve<'a>(geste: &'a Geste, faire: &'a Faire) -> preuve::Releve<'a> {
     }
 }
 
-/// Arrête le processus : par Windows lui-même pour un processus de ce compte, sinon par sa commande.
+/// Arrête le processus : dans Vanguard même quand ce compte le peut (`arret`, sans course sur le numéro), sinon par
+/// l'ordre, fait par celui qui a les droits.
 fn arreter(a: &Arret, commandes: &[String], lancees: &mut Vec<String>) -> bool {
-    // Sous Windows, la poignée qui arrête est celle qui a lu le chemin : le numéro ne peut pas changer entre les deux.
-    #[cfg(windows)]
     if a.ici {
-        lancees.push(format!("TerminateProcess {}", a.pid));
-        return crate::machine::windows::processus::terminer_si(a.pid, &a.chemin);
+        lancees.push(format!("arrêt : PID {} ({})", a.pid, a.chemin));
+        return match super::arret::arreter(a.pid, &a.chemin) {
+            Ok(()) => true,
+            Err(e) => {
+                crate::ui::afficher_aligne("    ✖ ", &e.to_string(), 6, "");
+                false
+            }
+        };
     }
-    let _ = a;
     let (reussi, notes) = crate::machine::appliquer_sans_noter(commandes);
     lancees.extend(notes);
     reussi
@@ -799,18 +808,27 @@ pub(crate) fn defaire(b: &Blocage) -> Result<String, Echec> {
     })
 }
 
-/// Les commandes qui défont un blocage, refaites ici depuis ses champs typés, et le port retenu à oublier : jamais
-/// les chaînes relues du relevé, que n'importe quel programme du compte peut écrire. Une note d'avant les champs
-/// typés n'est rejouée que si elle est exactement ce que Vanguard aurait écrit pour une adresse, un port ou une valeur
-/// (`inverse_reconnue`) ; sinon, `None` : refusée (`refus_d_annulation` dit ce qu'elle contient, à faire à la main).
+/// Ce qui défait un blocage, et le port retenu à oublier : jamais les chaînes relues du relevé, que n'importe quel
+/// programme du compte peut écrire. Une note à champs typés (`inverse`) se défait par les ordres refaits ici depuis
+/// eux. Une note d'avant les champs typés n'est rejouée que si elle est exactement ce que Vanguard écrivait pour une
+/// adresse, un port ou une valeur (`inverse_reconnue`) : ces commandes-là, déjà sur l'ordinateur, repassent telles
+/// quelles par l'ancien chemin (shell ou PowerShell), jamais converties. Sinon, `None` : refusée
+/// (`refus_d_annulation` dit ce qu'elle contient, à faire à la main).
 pub(crate) fn commandes_d_annulation(
     commandes: &[String],
     port: Option<&str>,
     inverse: Option<Inverse>,
 ) -> Option<(Vec<String>, Option<String>)> {
-    let inverse = match inverse {
-        Some(i) => i,
-        None => inverse_reconnue(commandes, port)?,
+    let Some(inverse) = inverse else {
+        let reconnue = inverse_reconnue(commandes, port)?;
+        let retenu = match reconnue {
+            Inverse::Entrante {
+                pare_feu: PareFeu::Ufw,
+                port,
+            } => Some(format!("{port}/tcp")),
+            _ => None,
+        };
+        return Some((commandes.to_vec(), retenu));
     };
     match inverse {
         Inverse::Sortante { pare_feu, adresse } => Some((pare_feu::sortante(pare_feu, adresse).retirer, None)),
@@ -820,7 +838,7 @@ pub(crate) fn commandes_d_annulation(
             Some((regle.retirer, retenu))
         }
         #[cfg(any(windows, test))]
-        Inverse::Pilotes { avant } => Some((annuler_pilotes(avant), None)),
+        Inverse::Pilotes { avant } => Some((vec![super::ordres::Ordre::RemettrePilotes { avant }.ligne()], None)),
         // Hors de Windows, rien à remettre : la note ne vient pas d'ici.
         #[cfg(not(any(windows, test)))]
         Inverse::Pilotes { .. } => None,
@@ -852,7 +870,7 @@ pub(crate) fn inverse_reconnue(commandes: &[String], port: Option<&str>) -> Opti
         .collect();
     for ip in morceaux.iter().filter_map(|m| m.parse::<std::net::IpAddr>().ok()) {
         for pf in TOUS {
-            if pare_feu::sortante(pf, ip).retirer == commandes && port.is_none() {
+            if pare_feu::ancien::sortante(pf, ip).retirer == commandes && port.is_none() {
                 return Some(Inverse::Sortante {
                     pare_feu: pf,
                     adresse: ip.to_canonical(),
@@ -863,7 +881,7 @@ pub(crate) fn inverse_reconnue(commandes: &[String], port: Option<&str>) -> Opti
     for p in morceaux.iter().filter_map(|m| m.parse::<u16>().ok()) {
         for pf in TOUS {
             let retenu = (pf == PareFeu::Ufw).then(|| format!("{p}/tcp"));
-            if pare_feu::entrante(pf, p).is_some_and(|r| r.retirer == commandes)
+            if pare_feu::ancien::entrante(pf, p).is_some_and(|r| r.retirer == commandes)
                 && (port.is_none() || port == retenu.as_deref())
             {
                 return Some(Inverse::Entrante { pare_feu: pf, port: p });
@@ -1168,35 +1186,46 @@ mod tests {
     }
 
     #[test]
-    fn arret_d_un_processus() {
+    fn comptes_d_un_processus() {
         assert_eq!(
-            proprietaire_status("Name:\tx\nUid:\t1000\t1000\t1000\t1000\n"),
-            Some(1000)
+            comptes_status("Name:\tx\nUid:\t1000\t0\t1001\t1000\n"),
+            Some((1000, 1001))
         );
-        assert_eq!(proprietaire_status("Name:\tx\n"), None);
-        if cfg!(windows) {
-            let c = commande_d_arret(4242, r"C:\Users\alice\AppData\Local\Temp\l'outil.exe", true);
-            assert!(c.starts_with("$p = Get-Process -Id 4242 -ErrorAction SilentlyContinue; if ($p -and $p.Path -eq 'C:\\Users\\alice\\AppData\\Local\\Temp\\l''outil.exe') { Stop-Process -Id 4242 -Force } else { throw"), "{c}");
-        } else {
-            let c = commande_d_arret(4242, "/home/alice/.cache/x m'rig", true);
-            assert!(c.starts_with("sudo sh -c '"), "{c}");
-            assert!(
-                c.ends_with(" && kill -KILL \"$1\"' sh 4242 '/home/alice/.cache/x m'\\''rig'"),
-                "{c}"
-            );
-            assert!(!commande_d_arret(4242, "/x", false).starts_with("sudo"));
-        }
+        assert_eq!(comptes_status("Name:\tx\n"), None);
     }
 
-    /// Défaut de la relecture : le numéro peut passer à un autre programme pendant la demande de mot de passe. La
-    /// commande d'arrêt vérifie elle-même le programme du numéro au moment de l'arrêt : avec un autre programme
-    /// attendu, rien n'est arrêté (essayé sur ce processus de test, qui survit).
-    #[cfg(target_os = "linux")]
+    /// Un processus de ce compte s'arrête dans Vanguard même : aucune commande, aucune demande de droits.
+    #[cfg(unix)]
     #[test]
-    fn arret_refuse_si_le_numero_a_change() {
-        let c = commande_d_arret(std::process::id(), "/autre/programme", false);
-        let r = std::process::Command::new("bash").arg("-c").arg(&c).status().unwrap();
-        assert!(!r.success(), "{c}");
+    fn un_processus_du_compte_s_arrete_sans_commande() {
+        use std::os::unix::process::ExitStatusExt;
+        // Une copie de sleep hors des dossiers du système : un programme du système n'est jamais arrêté.
+        let dossier = std::env::temp_dir().join(format!("vanguard-arret-compte-{}", std::process::id()));
+        std::fs::create_dir_all(&dossier).unwrap();
+        let copie = dossier.join("dormeur");
+        let sleep = ["/usr/bin/sleep", "/bin/sleep"]
+            .into_iter()
+            .find(|c| Path::new(c).exists())
+            .unwrap();
+        std::fs::copy(sleep, &copie).unwrap();
+        let mut enfant = std::process::Command::new(&copie).arg("30").spawn().unwrap();
+        let pid = enfant.id();
+        let chemin = chemin_du_processus(pid).unwrap();
+        let m = menace(Geste::Programme {
+            pid: Some(pid),
+            nom: "dormeur".into(),
+            chemin: Some(PathBuf::from(&chemin)),
+            fichier: None,
+            detection: "essai".into(),
+        });
+        let mut ctx = contexte(true, false);
+        ctx.os = Os::actuel();
+        let pret = preparer(&m, &ctx, false).unwrap();
+        assert!(pret.commandes.is_empty(), "{:?}", pret.commandes);
+        assert!(matches!(&pret.faire, Faire::Programme { arret: Some(a), .. } if a.ici));
+        faire(&m, pret, false).unwrap();
+        assert_eq!(enfant.wait().unwrap().signal(), Some(libc::SIGKILL));
+        let _ = std::fs::remove_dir_all(&dossier);
     }
 
     fn contexte(interactif: bool, admin: bool) -> Contexte {
@@ -1236,7 +1265,7 @@ mod tests {
         let e = refus_d_annulation(&forgee);
         assert!(e.contains("à la main") || e.contains("by hand"), "{e}");
         // Une vraie commande d'avant, suivie d'une commande ajoutée : refusée aussi.
-        let mut ajoutee = pare_feu::sortante(PareFeu::Ufw, "203.0.113.7".parse().unwrap()).retirer;
+        let mut ajoutee = pare_feu::ancien::sortante(PareFeu::Ufw, "203.0.113.7".parse().unwrap()).retirer;
         ajoutee.push("sudo sh -c 'id'".into());
         assert_eq!(commandes_d_annulation(&ajoutee, None, None), None);
         // Les champs typés l'emportent sur les commandes relues, quelles qu'elles soient.
@@ -1247,7 +1276,7 @@ mod tests {
         let (c, port) = commandes_d_annulation(&forgee, Some("22/tcp"), Some(typee)).unwrap();
         assert_eq!(
             (c, port),
-            (vec!["sudo ufw delete deny out to '203.0.113.7'".to_string()], None)
+            (vec!["vanguard:debloquer-sortie ufw 203.0.113.7".to_string()], None)
         );
         let (c, port) = commandes_d_annulation(
             &[],
@@ -1260,13 +1289,25 @@ mod tests {
         .unwrap();
         assert_eq!(
             (c, port.as_deref()),
-            (vec!["sudo ufw delete deny '11434/tcp'".to_string()], Some("11434/tcp"))
+            (vec!["vanguard:rouvrir-port ufw 11434".to_string()], Some("11434/tcp"))
+        );
+        // Une note d'avant, telle que Vanguard l'écrivait, est rejouée telle quelle (l'ancien chemin), jamais
+        // convertie ; le port retenu est oublié avec elle.
+        let ancienne = pare_feu::ancien::entrante(PareFeu::Ufw, 11434).unwrap().retirer;
+        assert_eq!(
+            commandes_d_annulation(&ancienne, Some("11434/tcp"), None),
+            Some((ancienne.clone(), Some("11434/tcp".to_string())))
+        );
+        // Les champs typés des pilotes : l'ordre qui remet la valeur d'avant.
+        assert_eq!(
+            commandes_d_annulation(&[], None, Some(Inverse::Pilotes { avant: Some(0) })),
+            Some((vec!["vanguard:remettre-pilotes 0".to_string()], None))
         );
         // Les notes d'avant, telles que Vanguard les écrivait, se reconnaissent sur chaque pare-feu.
         for pf in [PareFeu::Ufw, PareFeu::Nftables, PareFeu::Windows, PareFeu::Pf] {
             for ip in ["203.0.113.7", "2001:db8::7"] {
                 let ip: std::net::IpAddr = ip.parse().unwrap();
-                let ancienne = pare_feu::sortante(pf, ip).retirer;
+                let ancienne = pare_feu::ancien::sortante(pf, ip).retirer;
                 assert_eq!(
                     inverse_reconnue(&ancienne, None),
                     Some(Inverse::Sortante {
@@ -1276,7 +1317,7 @@ mod tests {
                     "{pf:?} {ip}"
                 );
             }
-            if let Some(r) = pare_feu::entrante(pf, 11434) {
+            if let Some(r) = pare_feu::ancien::entrante(pf, 11434) {
                 let port = (pf == PareFeu::Ufw).then_some("11434/tcp");
                 assert_eq!(
                     inverse_reconnue(&r.retirer, port),
@@ -1318,7 +1359,9 @@ mod tests {
         assert!(preparer(&adresse("198.51.100.20"), &contexte(true, false), false).is_err());
         // Interactif : la règle se prépare, avec son inverse exact.
         let p = preparer(&adresse("203.0.113.7"), &contexte(true, false), false).unwrap();
-        assert_eq!(p.commandes[0], "sudo ufw prepend deny out to '203.0.113.7'");
+        assert_eq!(p.commandes, ["vanguard:bloquer-sortie ufw 203.0.113.7"]);
+        assert_eq!(p.apres, ["vanguard:couper-connexions 203.0.113.7"]);
+        // Le texte d'avant reste écrit dans la note, pour les versions d'avant qui ne lisent que lui.
         assert!(matches!(
             &p.faire,
             Faire::Commandes { annulation: Annulation::Commandes { commandes, port: None, inverse: Some(_) }, .. }
@@ -1352,7 +1395,7 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(ollama.commandes, ["sudo ufw prepend deny '11434/tcp'"]);
+        assert_eq!(ollama.commandes, ["vanguard:fermer-port ufw 11434"]);
         // Un programme dont le processus est fini et le fichier parti : rien à bloquer.
         let parti = menace(Geste::Programme {
             pid: None,

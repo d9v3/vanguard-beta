@@ -853,10 +853,15 @@ fn mettre_en_place() -> Option<MiseEnPlace> {
         ));
         return None;
     }
-    let active = crate::machine::appliquer(&[
-        "systemctl --user daemon-reload".to_string(),
-        format!("systemctl --user enable --now {TIMER}"),
-    ]);
+    // Par le gestionnaire de l'utilisateur lui-même (D-Bus : EnableUnitFiles, Reload, StartUnit), sans shell ;
+    // montré comme la commande qu'il remplace, et noté dans « Ce que Vanguard a changé ».
+    let geste = format!("systemctl --user enable --now {TIMER}");
+    println!("    {GRIS}$ {geste}{RESET}");
+    let active = crate::machine::linux::dbus::actions::utilisateur(
+        crate::machine::linux::dbus::actions::Geste::Activer { maintenant: true },
+        TIMER,
+    );
+    crate::changements::noter(&[vec![geste]], &[active]);
     let mise_en_place = MiseEnPlace::Systemd {
         date: aujourd_hui(),
         destination: destination.display().to_string(),
@@ -1015,7 +1020,13 @@ fn annuler_mise_en_place(m: &MiseEnPlace) -> (bool, Vec<PathBuf>) {
             #[cfg(target_os = "linux")]
             {
                 let dossier = dossier_unites();
-                let mut ok = crate::machine::appliquer(&[format!("systemctl --user disable --now {TIMER}")]);
+                let geste = format!("systemctl --user disable --now {TIMER}");
+                println!("    {GRIS}$ {geste}{RESET}");
+                let mut ok = crate::machine::linux::dbus::actions::utilisateur(
+                    crate::machine::linux::dbus::actions::Geste::Desactiver { maintenant: true },
+                    TIMER,
+                );
+                crate::changements::noter(&[vec![geste]], &[ok]);
                 let mut gardees = Vec::new();
                 for (nom, attendu) in [(TIMER, empreinte_timer), (SERVICE, empreinte_service)] {
                     let chemin = dossier.join(nom);

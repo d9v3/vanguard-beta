@@ -1,7 +1,7 @@
 //! Lancement des commandes système avec un délai maximal : un outil qui ne répond plus (systemctl, gsettings,
 //! PowerShell, gestionnaire de paquets hors ligne…) ne doit jamais figer Vanguard.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -32,12 +32,33 @@ fn lire_en_fond(mut flux: impl Read + Send + 'static) -> mpsc::Receiver<String> 
 /// Lance la commande et attend au plus `secondes`. `None` si elle ne démarre pas, dépasse le délai
 /// (elle est alors tuée) ou si ses sorties ne se terminent pas.
 pub fn lancer(commande: &mut Command, secondes: u64) -> Option<Resultat> {
+    lancer_entree(commande, None, secondes)
+}
+
+/// Comme `lancer`, avec `entree` écrite sur l'entrée du programme puis fermée (pfctl -f - y lit ses règles) : jamais
+/// un shell pour la lui passer.
+#[cfg(any(target_os = "macos", all(test, unix)))]
+pub(crate) fn lancer_avec_entree(commande: &mut Command, entree: &[u8], secondes: u64) -> Option<Resultat> {
+    lancer_entree(commande, Some(entree.to_vec()), secondes)
+}
+
+fn lancer_entree(commande: &mut Command, entree: Option<Vec<u8>>, secondes: u64) -> Option<Resultat> {
     let mut enfant = commande
-        .stdin(Stdio::null())
+        .stdin(if entree.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .ok()?;
+    if let (Some(entree), Some(mut flux)) = (entree, enfant.stdin.take()) {
+        // Écrite en fond : un programme qui ne lit pas son entrée ne bloque pas l'attente du délai.
+        std::thread::spawn(move || {
+            let _ = flux.write_all(&entree);
+        });
+    }
     let sortie = lire_en_fond(enfant.stdout.take()?);
     let erreurs = lire_en_fond(enfant.stderr.take()?);
     let limite = Instant::now() + Duration::from_secs(secondes);
@@ -674,6 +695,13 @@ mod tests_powershell {
 mod tests {
     use super::*;
 
+    /// L'entrée donnée arrive au programme, puis se ferme : il ne l'attend pas sans fin.
+    #[test]
+    fn l_entree_arrive_et_se_ferme() {
+        let r = lancer_avec_entree(&mut Command::new("cat"), b"table <vanguard> persist\n", 5).unwrap();
+        assert_eq!((r.code, r.sortie.as_str()), (Some(0), "table <vanguard> persist\n"));
+    }
+
     #[test]
     fn arbre_des_processus() {
         // 10 lance 11 et 12 ; 11 lance 13 ; 20 n'est pas de la famille ; 0 est son propre parent (Windows).
@@ -858,11 +886,6 @@ mod tests_sh_chaine {
             "optimiser/macos.rs",
             "serveurs",
             "adresses IP relues par IpAddr, ou « empty »",
-        ),
-        (
-            "protection/blocage/gestes.rs",
-            "pid",
-            "un numéro de processus (u32) : des chiffres seulement",
         ),
         (
             "protection/blocage/pare_feu.rs",

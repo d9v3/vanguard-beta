@@ -51,10 +51,11 @@ ed25519-dalek = { version = "3.0.0", default-features = false }
 [target."cfg(windows)".dependencies]
 winreg = "0.56.0"
 # WMI et COM sans PowerShell (Microsoft) : seulement les fonctions lues par Vanguard, jamais l'interface graphique
-# (Win32_UI_WindowsAndMessaging seulement pour la taille et la place de la fenêtre de la console, voir fenetre.rs) ; Win32_UI_Shell_PropertiesSystem n'en est pas : les propriétés d'un volume (BitLocker). Win32_Security : les SID et les droits des comptes ; TaskScheduler : les tâches planifiées ; UpdateAgent : Windows Update.
+# (Win32_UI_WindowsAndMessaging seulement pour la taille et la place de la fenêtre de la console, voir fenetre.rs) ; Win32_UI_Shell_PropertiesSystem n'en est pas : les propriétés d'un volume (BitLocker). Win32_Security : les SID et les droits des comptes ; TaskScheduler : les tâches planifiées ; UpdateAgent : Windows Update ; WindowsFirewall : les règles du blocage (INetFwPolicy2), dans le processus élevé.
 windows = { version = "0.62.2", default-features = false, features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_NetworkManagement_WindowsFirewall",
     "Win32_Security",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",

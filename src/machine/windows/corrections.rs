@@ -2,13 +2,19 @@
 //! le processus élevé (`eleve`), au lieu d'un script PowerShell. Une correction se désigne par `vanguard:<id>` :
 //! jamais du code ni une commande libre. C'est le processus élevé qui relit chaque ligne contre cette table : ce
 //! que le clic d'administrateur autorise, ce sont ces gestes-là, et rien d'autre. Chaque entrée garde son
-//! équivalent PowerShell, pour le chemin par script (liste mêlée à une commande PowerShell, Wine).
+//! équivalent PowerShell, pour le chemin par script (Wine, une DLL posée à côté de Vanguard).
+//!
+//! La règle d'origine, « un identifiant, jamais un paramètre », vaut pour cette table. Depuis le 22 octobre 2026, le
+//! processus élevé accepte aussi les ordres du blocage (`protection::blocage::ordres`), qui portent des paramètres
+//! TYPÉS (une adresse, un port, un numéro de processus et son programme, une valeur d'avant) : il les reparse, refuse
+//! toute autre forme, puis rejuge lui-même chaque geste (garde-fous du blocage). Toujours pas de texte libre.
 
 use crate::langue::anglais;
 
 /// Devant chaque identifiant, pour qu'aucune commande PowerShell ne soit prise pour une correction native.
 pub(crate) const PREFIXE: &str = "vanguard:";
 /// Au-delà, une liste n'est pas celle d'une session de Vanguard.
+#[cfg(test)]
 pub(crate) const LIGNES_MAX: usize = 64;
 /// Une ligne plus longue qu'un identifiant ne vient pas de Vanguard (le canal la refuse avant de l'analyser).
 pub(crate) const LIGNE_MAX: usize = 256;
@@ -270,18 +276,22 @@ pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
     }
 }
 
-/// Toutes les commandes de ces correctifs sont-elles des corrections natives ? Alors tout passe par le processus
-/// élevé en Rust ; une seule commande PowerShell, et tout passe par le script.
+/// La ligne est-elle faite par le processus élevé lui-même : une correction de la table, ou un ordre du blocage permis
+/// sous Windows ?
+pub(crate) fn native(ligne: &str) -> bool {
+    analyser(ligne).is_some() || crate::protection::blocage::ordres::analyser(ligne).is_some_and(|o| o.permis_ici())
+}
+
+/// Toutes les commandes de ces correctifs sont-elles natives (`native`) ? Alors tout passe par le processus élevé en
+/// Rust, sans PowerShell.
 pub(crate) fn toutes_natives(correctifs: &[Vec<String>]) -> bool {
-    !correctifs.is_empty()
-        && correctifs
-            .iter()
-            .all(|c| !c.is_empty() && c.iter().all(|l| analyser(l).is_some()))
+    !correctifs.is_empty() && correctifs.iter().all(|c| !c.is_empty() && c.iter().all(|l| native(l)))
 }
 
 /// La liste telle que le processus élevé la recevra, validée ligne à ligne, dans l'ordre ; `None` dès qu'une ligne
 /// n'est pas une correction de la table, qu'il y en a trop, ou qu'une revient deux fois (une liste de Vanguard
 /// n'applique jamais deux fois le même geste : une répétition est un signe de bricolage).
+#[cfg(test)]
 pub(crate) fn valider(lignes: &[String]) -> Option<Vec<&'static Correction>> {
     if lignes.is_empty() || lignes.len() > LIGNES_MAX {
         return None;
@@ -293,21 +303,80 @@ pub(crate) fn valider(lignes: &[String]) -> Option<Vec<&'static Correction>> {
         .collect()
 }
 
-/// Pour le chemin par script : chaque correction native remplacée par son équivalent PowerShell, le reste inchangé.
+/// Pour le chemin par script : chaque correction native, et chaque ordre du blocage, remplacé par son équivalent
+/// PowerShell, le reste inchangé.
 pub(crate) fn en_powershell(correctifs: &[Vec<String>]) -> Vec<Vec<String>> {
+    use crate::protection::blocage::ordres;
     correctifs
         .iter()
         .map(|c| {
             c.iter()
-                .map(|l| analyser(l).map_or_else(|| l.clone(), Correction::powershell))
+                .map(|l| match (analyser(l), ordres::analyser(l)) {
+                    (Some(c), _) => c.powershell(),
+                    // Un ordre sans équivalent (couper une connexion, qu'aucun Vanguard ne demande sous Windows) : une
+                    // erreur dite par la fenêtre, jamais un geste deviné.
+                    (None, Some(o)) => ordres::powershell(&o)
+                        .unwrap_or_else(|| "throw 'Vanguard : geste sans équivalent PowerShell'".to_string()),
+                    (None, None) => l.clone(),
+                })
                 .collect()
         })
         .collect()
 }
 
-/// Le texte à montrer pour une commande : la phrase d'une correction native, la commande elle-même sinon.
+/// Le texte à montrer pour une commande : la phrase d'une correction native ou d'un ordre, la commande elle-même sinon.
 pub(crate) fn affichable(commande: &str) -> String {
-    analyser(commande).map_or_else(|| crate::ui::commande_affichable(commande), |c| c.texte().to_string())
+    analyser(commande).map_or_else(
+        || crate::protection::blocage::ordres::affichable(commande),
+        |c| c.texte().to_string(),
+    )
+}
+
+/// La valeur actuelle de VulnerableDriverBlocklistEnable ; `None` : absente ou illisible.
+pub(crate) fn valeur_pilotes() -> Option<u32> {
+    let racine = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE);
+    racine
+        .open_subkey_with_flags(PILOTES_VULNERABLES, winreg::enums::KEY_READ)
+        .ok()?
+        .get_value::<u32, _>("VulnerableDriverBlocklistEnable")
+        .ok()
+}
+
+/// La liste de blocage des pilotes vulnérables remise à sa valeur d'avant (`None` : la valeur est retirée), puis
+/// relue : l'annulation exacte du geste « Pilotes » du blocage.
+pub(crate) fn remettre_pilotes(avant: Option<u32>) -> crate::protection::blocage::ordres::Resultat {
+    use crate::protection::blocage::ordres::Resultat;
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE};
+    const VALEUR: &str = "VulnerableDriverBlocklistEnable";
+    let racine = winreg::RegKey::predef(HKEY_LOCAL_MACHINE);
+    if let Some(v) = avant {
+        let ecrit = racine
+            .create_subkey_with_flags(PILOTES_VULNERABLES, KEY_READ | KEY_WRITE)
+            .and_then(|(k, _)| k.set_value(VALEUR, &v).map(|()| k))
+            .and_then(|k| k.get_value::<u32, _>(VALEUR));
+        return match ecrit {
+            Ok(relu) if relu == v => Resultat::ok(),
+            Ok(relu) => Resultat::echec(format!("relu {relu} au lieu de {v}")),
+            Err(e) => Resultat::echec(e.to_string()),
+        };
+    }
+    let cle = match racine.open_subkey_with_flags(PILOTES_VULNERABLES, KEY_READ | KEY_WRITE) {
+        Ok(k) => k,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Resultat::ok(),
+        Err(e) => return Resultat::echec(e.to_string()),
+    };
+    match cle.delete_value(VALEUR) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Resultat::echec(e.to_string()),
+    }
+    match cle.get_raw_value(VALEUR) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Resultat::ok(),
+        _ => Resultat::echec(crate::tr!(
+            "la valeur est toujours là après son retrait",
+            "the value is still there after its removal"
+        )),
+    }
 }
 
 /// Résultat d'une correction appliquée par le processus élevé : réussie ou non, et la valeur d'avant quand il y en
