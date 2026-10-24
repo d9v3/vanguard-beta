@@ -419,7 +419,9 @@ XCVE-2015-1111.</p>
         let c = &index.cves["CVE-2099-0001"];
         assert_eq!(c.firefox, vec![v("200.0.0")]);
         assert_eq!(c.esr.len(), ESR_PAR_CVE);
-        assert!(debut.elapsed() < std::time::Duration::from_secs(10));
+        // Une fusion quadratique prendrait des heures ; 60 s laisse de la marge à une machine chargée (verifier.sh lance
+        // ses étapes en parallèle, et d'autres compilations peuvent tourner), où 10 s faisait tomber le test pour rien.
+        assert!(debut.elapsed() < std::time::Duration::from_secs(60));
         // Le plus petit correctif gagne, quel que soit l'ordre des avis.
         let mut index = Index::default();
         for t in ["131.0.2", "130.0", "132.0"] {
