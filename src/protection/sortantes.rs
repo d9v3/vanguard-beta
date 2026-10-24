@@ -14,6 +14,8 @@ use crate::risk::Niveau;
 use crate::socle::adresses::sur_internet;
 use crate::ui::*;
 
+mod resultat;
+
 /// Une connexion établie vers un serveur.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Connexion {
@@ -1273,10 +1275,17 @@ fn deja_signalees() -> String {
 /// Les noms demandés par l'ordinateur qui sont des hôtes d'URLhaus, prêts à montrer. Le nom exact seulement : un
 /// sous-domaine malveillant ne rend pas suspect tout son domaine (hébergeurs, DNS dynamiques).
 fn sites_dangereux(noms: &[String], hotes: &std::collections::HashSet<String>) -> BTreeSet<String> {
+    sites_trouves(noms, hotes)
+        .into_iter()
+        .map(|n| format!("{} (URLhaus)", affichable(&n)))
+        .collect()
+}
+
+/// Les noms demandés qui sont des hôtes d'URLhaus, tels quels (en minuscules, sans le point final).
+fn sites_trouves(noms: &[String], hotes: &std::collections::HashSet<String>) -> BTreeSet<String> {
     noms.iter()
         .map(|n| n.trim_end_matches('.').to_lowercase())
         .filter(|n| hotes.contains(n))
-        .map(|n| format!("{} (URLhaus)", affichable(&n)))
         .collect()
 }
 
@@ -1512,6 +1521,134 @@ fn noms(adresses: &BTreeSet<IpAddr>) -> HashMap<IpAddr, String> {
     noms
 }
 
+// ───────────────────────────── Relevé ─────────────────────────────
+
+/// Les hôtes d'URLhaus, et une note sur leur âge ; `Err` : pourquoi la liste manque.
+type Urlhaus = Result<(std::collections::HashSet<String>, Option<String>), String>;
+
+/// Tout ce que l'écran et `--json` lisent, une fois, dans le même ordre : les listes des serveurs de commande, les
+/// connexions vers Internet et le nom de leurs serveurs, la mémoire DNS et la liste d'URLhaus.
+struct Releve {
+    botnets: Botnets,
+    /// Les listes qui n'ont pas pu être vérifiées : rien n'est conclu pour elles.
+    listes_absentes: Vec<String>,
+    /// Les connexions vers Internet ; `None` : elles ne se lisent pas.
+    connexions: Option<Vec<Connexion>>,
+    noms: HashMap<IpAddr, String>,
+    /// /proc/self/mounts (Linux), pour juger les dossiers de lancement.
+    montages: String,
+    /// Les noms demandés récemment, ou pourquoi ils ne se lisent pas.
+    memoire_dns: Result<Vec<String>, String>,
+    /// Demandée seulement quand la mémoire DNS se lit.
+    urlhaus: Option<Urlhaus>,
+}
+
+/// Le relevé. `annoncer_noms` est appelé avant de demander les noms des serveurs (l'écran dit d'attendre), avec leur
+/// nombre ; jamais quand il n'y a aucune connexion.
+fn relever(annoncer_noms: impl FnOnce(usize)) -> Releve {
+    // Les listes des serveurs de botnets, une fois pour tout l'écran. Une liste indisponible : on le dira, et rien ne
+    // sera dédouané pour autant.
+    let (botnets, listes_absentes) = botnets();
+    let connexions = connexions().map(|toutes| {
+        toutes
+            .into_iter()
+            .filter(|c| sur_internet(c.distante))
+            .collect::<Vec<_>>()
+    });
+    let adresses: BTreeSet<IpAddr> = connexions.iter().flatten().map(|c| c.distante).collect();
+    let noms = if adresses.is_empty() {
+        HashMap::new()
+    } else {
+        annoncer_noms(adresses.len());
+        noms(&adresses)
+    };
+    let montages = if cfg!(target_os = "linux") {
+        std::fs::read_to_string("/proc/self/mounts").unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let memoire_dns = crate::protection::memoire_dns::noms();
+    let urlhaus = memoire_dns
+        .as_ref()
+        .ok()
+        .map(|_| crate::protection::lien::hotes_urlhaus());
+    Releve {
+        botnets,
+        listes_absentes,
+        connexions,
+        noms,
+        montages,
+        memoire_dns,
+        urlhaus,
+    }
+}
+
+/// Les connexions jugées : programme par programme (le pire d'abord), celles des autres comptes à part, et les
+/// serveurs de commande de toutes (celles des autres comptes comprises : un programme du système détourné parle
+/// aussi).
+struct Analyse<'a> {
+    programmes: Vec<Programme>,
+    cachees: Vec<(&'a Connexion, Option<&'a String>)>,
+    vers_botnets: BTreeSet<String>,
+}
+
+fn analyser(r: &Releve) -> Analyse<'_> {
+    let connexions: &[Connexion] = r.connexions.as_deref().unwrap_or_default();
+    let vers_botnets: BTreeSet<String> = connexions.iter().filter_map(|c| r.botnets.serveur(c)).collect();
+
+    // Regroupées par programme ; celles des autres comptes à part.
+    let mut groupes: Vec<Groupe> = Vec::new();
+    let mut cachees: Vec<(&Connexion, Option<&String>)> = Vec::new();
+    for c in connexions {
+        let nom = r.noms.get(&c.distante);
+        if c.programme.is_none() {
+            cachees.push((c, nom));
+            continue;
+        }
+        match groupes
+            .iter_mut()
+            .find(|g| g.programme == c.programme && g.chemin == c.chemin)
+        {
+            Some(g) => g.liste.push((c, nom)),
+            None => groupes.push(Groupe {
+                programme: c.programme.clone(),
+                chemin: c.chemin.clone(),
+                liste: vec![(c, nom)],
+            }),
+        }
+    }
+    let montages = r.montages.as_str();
+    let mut programmes: Vec<Programme> = groupes
+        .iter()
+        .map(|g| {
+            // Une AppImage : son image, lue dans l'environnement de son processus (le sien, donc lisible).
+            let image = g
+                .chemin
+                .as_deref()
+                .filter(|c| cfg!(target_os = "linux") && appimage(c, montages))
+                .and_then(|_| g.liste.iter().find_map(|(c, _)| c.pid))
+                .and_then(|pid| std::fs::read(format!("/proc/{pid}/environ")).ok())
+                .and_then(|e| image_appimage(&e));
+            let signes = signes(g.chemin.as_deref(), &g.liste, montages, image.as_deref(), &r.botnets);
+            Programme {
+                pire: signes.iter().map(|(n, _)| *n).filter(|n| *n > Niveau::Info).max(),
+                nom: g.programme.clone().unwrap_or_default(),
+                // Jugé tel quel (plus haut) ; montré, le chemin est rendu inoffensif.
+                chemin: g.chemin.as_deref().map(affichable),
+                signes,
+                serveurs: serveurs(&g.liste),
+                connexions: g.liste.len(),
+            }
+        })
+        .collect();
+    programmes.sort_by(|a, b| b.pire.cmp(&a.pire).then(b.connexions.cmp(&a.connexions)));
+    Analyse {
+        programmes,
+        cachees,
+        vers_botnets,
+    }
+}
+
 // ───────────────────────────── Affichage ─────────────────────────────
 
 /// Les connexions d'un même programme.
@@ -1576,13 +1713,20 @@ fn afficher_et_juger() -> bool {
     }
     crate::protection::temps_reel::dire_si_coupee(crate::protection::temps_reel::Ou::Sortantes);
     println!();
-    // Les listes des serveurs de botnets, une fois pour tout l'écran. Une liste indisponible : on le dira plus bas, et
-    // rien ne sera dédouané pour autant.
-    let (botnets, listes_absentes) = botnets();
-    let mut trouves: Vec<String> = afficher_connexions(&botnets).into_iter().collect();
-    trouves.extend(afficher_memoire_dns(&botnets));
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let r = relever(|n| {
+        trp!(
+            "  {GRIS}Noms des {} serveur(s)…{RESET}",
+            "  {GRIS}Names of the {} server(s)…{RESET}",
+            n
+        );
+    });
+    let a = analyser(&r);
+    crate::modele::resultat::verser(&resultat::resultat(&r, &a, debut));
+    let mut trouves: Vec<String> = afficher_connexions(&r, &a).into_iter().collect();
+    trouves.extend(afficher_memoire_dns(&r));
     // Ce qui n'a pas pu être vérifié est dit, jamais compté comme sain.
-    for raison in &listes_absentes {
+    for raison in &r.listes_absentes {
         afficher_aligne(&format!("  {GRIS}ℹ{RESET} "), raison, 4, GRIS);
     }
     if !trouves.is_empty() {
@@ -1603,9 +1747,10 @@ fn afficher_et_juger() -> bool {
 
 /// La mémoire DNS comparée aux domaines des serveurs de commande : un programme qui a demandé le nom de son serveur il
 /// y a une heure se voit, même si la connexion est fermée. Rend les noms trouvés.
-fn afficher_memoire_dns(botnets: &Botnets) -> Vec<String> {
+fn afficher_memoire_dns(r: &Releve) -> Vec<String> {
+    let botnets = &r.botnets;
     println!();
-    match crate::protection::memoire_dns::noms() {
+    match &r.memoire_dns {
         Err(raison) => {
             afficher_aligne(
                 &format!("  {GRIS}ℹ{RESET} "),
@@ -1619,7 +1764,9 @@ fn afficher_memoire_dns(botnets: &Botnets) -> Vec<String> {
             Vec::new()
         }
         Ok(noms) => {
-            afficher_sites_dangereux(&noms);
+            if let Some(urlhaus) = &r.urlhaus {
+                afficher_sites_dangereux(noms, urlhaus);
+            }
             let trouves: Vec<String> = noms
                 .iter()
                 .filter_map(|n| botnets.domaine(n))
@@ -1645,8 +1792,8 @@ fn afficher_memoire_dns(botnets: &Botnets) -> Vec<String> {
 
 /// La mémoire DNS comparée aux hôtes d'URLhaus : un site qui distribue des logiciels malveillants, demandé récemment.
 /// Sans la liste, c'est dit ; rien n'est déclaré sain.
-fn afficher_sites_dangereux(noms: &[String]) {
-    let hotes = match crate::protection::lien::hotes_urlhaus() {
+fn afficher_sites_dangereux(noms: &[String], urlhaus: &Urlhaus) {
+    let hotes = match urlhaus {
         Ok((h, note)) => {
             if let Some(n) = note {
                 afficher_aligne(
@@ -1659,11 +1806,11 @@ fn afficher_sites_dangereux(noms: &[String]) {
             h
         }
         Err(raison) => {
-            afficher_aligne(&format!("  {GRIS}ℹ{RESET} "), &raison, 4, GRIS);
+            afficher_aligne(&format!("  {GRIS}ℹ{RESET} "), raison, 4, GRIS);
             return;
         }
     };
-    let trouves = sites_dangereux(noms, &hotes);
+    let trouves = sites_dangereux(noms, hotes);
     if trouves.is_empty() {
         trp!(
             "  {VERT}✔{RESET} Mémoire DNS : aucun des {} noms demandés récemment ne distribue de logiciels malveillants (URLhaus).",
@@ -1685,15 +1832,14 @@ fn afficher_sites_dangereux(noms: &[String]) {
 }
 
 /// Les connexions, programme par programme. Rend les serveurs de commande trouvés.
-fn afficher_connexions(botnets: &Botnets) -> BTreeSet<String> {
-    let Some(toutes) = connexions() else {
+fn afficher_connexions(r: &Releve, a: &Analyse) -> BTreeSet<String> {
+    let Some(connexions) = &r.connexions else {
         trp!(
             "  ✖ Impossible de lire les connexions de cet ordinateur.",
             "  ✖ Could not read this computer's connections."
         );
         return BTreeSet::new();
     };
-    let connexions: Vec<Connexion> = toutes.into_iter().filter(|c| sur_internet(c.distante)).collect();
     if connexions.is_empty() {
         trp!(
             "  {VERT}✔{RESET} Aucune connexion vers Internet en ce moment.",
@@ -1701,71 +1847,11 @@ fn afficher_connexions(botnets: &Botnets) -> BTreeSet<String> {
         );
         return BTreeSet::new();
     }
-    let adresses: BTreeSet<IpAddr> = connexions.iter().map(|c| c.distante).collect();
-    trp!(
-        "  {GRIS}Noms des {} serveur(s)…{RESET}",
-        "  {GRIS}Names of the {} server(s)…{RESET}",
-        adresses.len()
-    );
-    let noms = noms(&adresses);
-    let montages = if cfg!(target_os = "linux") {
-        std::fs::read_to_string("/proc/self/mounts").unwrap_or_default()
-    } else {
-        String::new()
-    };
-    // Toutes les connexions, celles des autres comptes comprises : un programme du système détourné parle aussi.
-    let vers_botnets: BTreeSet<String> = connexions.iter().filter_map(|c| botnets.serveur(c)).collect();
-
-    // Regroupées par programme ; celles des autres comptes à part.
-    let mut groupes: Vec<Groupe> = Vec::new();
-    let mut cachees: Vec<(&Connexion, Option<&String>)> = Vec::new();
-    for c in &connexions {
-        let nom = noms.get(&c.distante);
-        if c.programme.is_none() {
-            cachees.push((c, nom));
-            continue;
-        }
-        match groupes
-            .iter_mut()
-            .find(|g| g.programme == c.programme && g.chemin == c.chemin)
-        {
-            Some(g) => g.liste.push((c, nom)),
-            None => groupes.push(Groupe {
-                programme: c.programme.clone(),
-                chemin: c.chemin.clone(),
-                liste: vec![(c, nom)],
-            }),
-        }
-    }
-    let mut affiches: Vec<Programme> = groupes
-        .iter()
-        .map(|g| {
-            // Une AppImage : son image, lue dans l'environnement de son processus (le sien, donc lisible).
-            let image = g
-                .chemin
-                .as_deref()
-                .filter(|c| cfg!(target_os = "linux") && appimage(c, &montages))
-                .and_then(|_| g.liste.iter().find_map(|(c, _)| c.pid))
-                .and_then(|pid| std::fs::read(format!("/proc/{pid}/environ")).ok())
-                .and_then(|e| image_appimage(&e));
-            let signes = signes(g.chemin.as_deref(), &g.liste, &montages, image.as_deref(), botnets);
-            Programme {
-                pire: signes.iter().map(|(n, _)| *n).filter(|n| *n > Niveau::Info).max(),
-                nom: g.programme.clone().unwrap_or_default(),
-                // Jugé tel quel (plus haut) ; montré, le chemin est rendu inoffensif.
-                chemin: g.chemin.as_deref().map(affichable),
-                signes,
-                serveurs: serveurs(&g.liste),
-                connexions: g.liste.len(),
-            }
-        })
-        .collect();
-    affiches.sort_by(|a, b| b.pire.cmp(&a.pire).then(b.connexions.cmp(&a.connexions)));
-
+    let (affiches, cachees) = (&a.programmes, &a.cachees);
     println!();
     let mut a_regarder = Vec::new();
     let mut chemins_invisibles = 0;
-    for p in &affiches {
+    for p in affiches {
         let n = p.connexions;
         println!(
             "  {} {ACCENT}{}{RESET} {GRIS}· {}{RESET}",
@@ -1818,7 +1904,7 @@ fn afficher_connexions(botnets: &Botnets) -> BTreeSet<String> {
             6,
             GRIS,
         );
-        afficher_aligne("      → ", &serveurs(&cachees), 8, "");
+        afficher_aligne("      → ", &serveurs(cachees), 8, "");
     }
 
     println!();
@@ -1857,7 +1943,18 @@ fn afficher_connexions(botnets: &Botnets) -> BTreeSet<String> {
             "  {GRIS}To see everything: {comment}.{RESET}"
         );
     }
-    vers_botnets
+    a.vers_botnets.clone()
+}
+
+/// `vanguard connexions-sortantes --json` : le même relevé que l'écran, jugé en résultat et versé comme lui. Lecture
+/// seule, aucune question : rien n'est coupé ni bloqué.
+pub fn json() {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let r = relever(|_| {});
+    let a = analyser(&r);
+    let res = resultat::resultat(&r, &a, debut);
+    crate::modele::resultat::verser(&res);
+    println!("{}", crate::modele::resultat::json(&res));
 }
 
 #[cfg(test)]
@@ -2630,16 +2727,4 @@ mod proprietes {
             prop_assert_eq!(restantes.len(), autres.len());
         }
     }
-}
-
-/// PROVISOIRE (lot H, à remplacer) : `--json` rend un résultat vide, donc « non vérifié ».
-pub fn json() {
-    let debut = (chrono::Utc::now(), std::time::Instant::now());
-    let r = crate::modele::resultat::Resultat::nouveau(
-        "PRO-SOR-001",
-        debut,
-        &[],
-        crate::modele::resultat::Couverture::default(),
-    );
-    println!("{}", crate::modele::resultat::json(&r));
 }

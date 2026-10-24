@@ -1975,3 +1975,75 @@ fn chercher_en_ligne_de_commande() {
     assert_eq!(rien.code, Some(1));
     assert!(sans_couleurs(&rien.texte).contains("Aucun résultat"));
 }
+
+/// `--json` d'un outil de protection : code 0, rien d'autre que le JSON sur la sortie standard (il se lit en entier),
+/// l'identifiant de l'outil, le format 1 et des constats. Des réponses sont tapées d'avance : une question posée les
+/// lirait (et, pour les listes noires, enverrait l'adresse).
+fn resultat_json(args: &[&str], outil: &str, secondes: u64) -> serde_json::Value {
+    let maison = maison_jetable();
+    let s = vanguard_dans_env(
+        Path::new(env!("CARGO_BIN_EXE_vanguard")),
+        &maison,
+        "fr",
+        args,
+        "o\no\no\n",
+        secondes,
+        &[("VANGUARD_HORS_LIGNE", "1")],
+    );
+    let _ = std::fs::remove_dir_all(&maison);
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    assert!(s.texte.trim_start().starts_with('{'), "{}", s.texte);
+    let v: serde_json::Value =
+        serde_json::from_str(&s.texte).unwrap_or_else(|e| panic!("{args:?} : JSON illisible ({e}) : {}", s.texte));
+    assert_eq!(v["outil"], outil, "{v}");
+    assert_eq!(v["schema"], 1, "{v}");
+    assert!(v["constats"].is_array(), "{v}");
+    assert!(v["couverture"]["verifies"].is_u64(), "{v}");
+    v
+}
+
+#[test]
+fn connexions_sortantes_en_json() {
+    let v = resultat_json(&["connexions-sortantes", "--json"], "PRO-SOR-001", 120);
+    // Lecture seule : aucune correction proposée.
+    let constats = v["constats"].as_array().unwrap();
+    assert!(constats.iter().all(|c| c.get("corrigeable").is_none()), "{v}");
+}
+
+#[test]
+fn acces_a_distance_en_json() {
+    let v = resultat_json(&["acces-a-distance", "--json"], "PRO-DIS-001", 120);
+    // Toujours au moins un constat : un logiciel trouvé, ou ce qui a été cherché.
+    let constats = v["constats"].as_array().unwrap();
+    assert!(!constats.is_empty(), "{v}");
+    assert!(
+        constats
+            .iter()
+            .all(|c| ["sain", "probleme", "non-verifie"].contains(&c["etat"].as_str().unwrap_or_default())),
+        "{v}"
+    );
+}
+
+/// Sans --internet, rien ne part (ni la demande de l'adresse publique, ni les listes) malgré le « o » tapé d'avance :
+/// non vérifié, la raison dite, sans l'attente d'une demande en ligne. Avec --internet mais hors ligne, rien non plus.
+#[test]
+fn listes_noires_en_json_sans_rien_envoyer() {
+    let v = resultat_json(&["listes-noires", "--json"], "PRO-LNO-001", 60);
+    assert_eq!(v["couverture"]["verifies"], 0, "{v}");
+    let constats = v["constats"].as_array().unwrap();
+    assert!(
+        !constats.is_empty() && constats.iter().all(|c| c["etat"] == "non-verifie"),
+        "{v}"
+    );
+    assert!(
+        v["couverture"]["non_verifies"][0]
+            .as_str()
+            .unwrap_or_default()
+            .contains("--internet"),
+        "{v}"
+    );
+    assert!(v["duree_ms"].as_u64().is_some_and(|d| d < 2000), "{v}");
+    let hors_ligne = resultat_json(&["listes-noires", "--json", "--internet"], "PRO-LNO-001", 60);
+    assert_eq!(hors_ligne["couverture"]["verifies"], 0, "{hors_ligne}");
+    assert_eq!(hors_ligne["constats"][0]["raison"], "refuse", "{hors_ligne}");
+}

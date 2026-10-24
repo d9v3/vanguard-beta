@@ -11,6 +11,8 @@ use std::net::{Ipv4Addr, ToSocketAddrs};
 use crate::risk::Niveau;
 use crate::ui::*;
 
+mod resultat;
+
 struct Liste {
     nom: &'static str,
     zone: &'static str,
@@ -202,6 +204,50 @@ fn lire_trace(trace: &str) -> Option<Ipv4Addr> {
     trace.lines().find_map(|l| l.strip_prefix("ip=")?.trim().parse().ok())
 }
 
+/// Ce que la vérification a relevé. Rien ne part avant l'accord : sans lui (`SansAccord`), ni l'adresse publique ni
+/// les listes ne sont demandées.
+#[derive(Debug, PartialEq)]
+enum Releve {
+    /// Pas d'accord : rien n'a été envoyé.
+    SansAccord,
+    /// Accord donné, mais travail sans Internet demandé (VANGUARD_HORS_LIGNE, Paramètres) : rien n'a été envoyé.
+    HorsLigne,
+    /// L'adresse publique n'a pas pu être lue (pas d'Internet ?) : les listes n'ont rien reçu.
+    SansAdresse,
+    /// L'adresse publique, et la réponse de chaque liste, dans l'ordre de `LISTES`.
+    Repondu(Ipv4Addr, Vec<Verdict>),
+}
+
+/// Le relevé, le même pour l'écran et `--json` : avec `accord` seulement, l'adresse publique (`adresse`), puis les
+/// quatre listes en parallèle (`chercher`). Sans accord, ni l'une ni les autres ne sont appelées.
+fn relever(
+    accord: bool,
+    hors_ligne: bool,
+    adresse: impl FnOnce() -> Option<Ipv4Addr>,
+    chercher: impl Fn(Ipv4Addr, &str) -> Verdict + Sync,
+) -> Releve {
+    if !accord {
+        return Releve::SansAccord;
+    }
+    if hors_ligne {
+        return Releve::HorsLigne;
+    }
+    let Some(ip) = adresse() else {
+        return Releve::SansAdresse;
+    };
+    let chercher = &chercher;
+    let reponses: Vec<Verdict> = std::thread::scope(|s| {
+        let fils: Vec<_> = LISTES.iter().map(|l| s.spawn(move || chercher(ip, l.zone))).collect();
+        fils.into_iter()
+            .map(|f| {
+                f.join()
+                    .unwrap_or(Verdict::Impossible(tr!("erreur interne", "internal error").into()))
+            })
+            .collect()
+    });
+    Releve::Repondu(ip, reponses)
+}
+
 /// Menu Réseau et Internet › Liste noire : après accord, cherche l'adresse publique dans les quatre listes.
 pub fn verifier() {
     titre(tr!(
@@ -217,30 +263,28 @@ pub fn verifier() {
     ) {
         println!("  {ligne}");
     }
-    if !demander(tr!("\n  Continuer ? [o/N] : ", "\n  Continue? [y/N]: ")).oui() {
-        trp!("  Rien n'a été envoyé.", "  Nothing was sent.");
-        return;
-    }
-    let Some(ip) = adresse_publique() else {
-        trp!(
-            "  ✖ Adresse publique introuvable (pas d'Internet ?).",
-            "  ✖ Public address not found (no Internet?)."
-        );
-        return;
+    let accord = demander(tr!("\n  Continuer ? [o/N] : ", "\n  Continue? [y/N]: ")).oui();
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    // L'écran ne s'arrête pas au travail sans Internet : il essaie, et dit que l'adresse est introuvable.
+    let releve = relever(accord, false, adresse_publique, |ip, zone| {
+        chercher_avec(ip, zone, resoudre)
+    });
+    crate::modele::resultat::verser(&resultat::resultat(&releve, debut));
+    let (ip, reponses) = match releve {
+        Releve::SansAccord | Releve::HorsLigne => {
+            trp!("  Rien n'a été envoyé.", "  Nothing was sent.");
+            return;
+        }
+        Releve::SansAdresse => {
+            trp!(
+                "  ✖ Adresse publique introuvable (pas d'Internet ?).",
+                "  ✖ Public address not found (no Internet?)."
+            );
+            return;
+        }
+        Releve::Repondu(ip, reponses) => (ip, reponses),
     };
     trp!("\n  Adresse publique : {ip}\n", "\n  Public address: {ip}\n");
-    let reponses: Vec<Verdict> = std::thread::scope(|s| {
-        let fils: Vec<_> = LISTES
-            .iter()
-            .map(|l| s.spawn(move || chercher_avec(ip, l.zone, resoudre)))
-            .collect();
-        fils.into_iter()
-            .map(|f| {
-                f.join()
-                    .unwrap_or(Verdict::Impossible(tr!("erreur interne", "internal error").into()))
-            })
-            .collect()
-    });
     let mut pire: Option<Niveau> = None;
     let mut verifiees = 0;
     for (liste, reponse) in LISTES.iter().zip(&reponses) {
@@ -281,6 +325,22 @@ pub fn verifier() {
     for ligne in envelopper(conclusion, LARGEUR - 2) {
         println!("  {ligne}");
     }
+}
+
+/// `vanguard listes-noires --json` : sans question. Sans `--internet`, rien n'est envoyé (ni la demande de l'adresse
+/// publique, ni les listes) et l'adresse est dite non vérifiée ; avec, l'accord est donné d'avance, comme un « oui » à
+/// l'écran. Le travail sans Internet demandé (VANGUARD_HORS_LIGNE) l'emporte : rien n'est envoyé non plus.
+pub fn json(internet: bool) {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let releve = relever(
+        internet,
+        crate::parametres::hors_ligne(),
+        adresse_publique,
+        |ip, zone| chercher_avec(ip, zone, resoudre),
+    );
+    let r = resultat::resultat(&releve, debut);
+    crate::modele::resultat::verser(&r);
+    println!("{}", crate::modele::resultat::json(&r));
 }
 
 #[cfg(test)]
@@ -394,22 +454,40 @@ mod tests {
         assert_eq!(sens("bl.spamcop.net", &[ip("127.0.0.2")]).1, Some(Niveau::Moyen));
     }
 
+    /// Sans accord (`--json` sans `--internet`, « non » à l'écran) ou hors ligne, rien ne part : ni la demande de
+    /// l'adresse publique, ni les listes (chaque appel ferait échouer le test).
+    #[test]
+    fn sans_accord_rien_n_est_demande() {
+        let jamais_adresse = || -> Option<Ipv4Addr> { panic!("adresse publique demandée sans accord") };
+        let jamais_liste = |_: Ipv4Addr, _: &str| -> Verdict { panic!("liste interrogée sans accord") };
+        assert_eq!(relever(false, false, jamais_adresse, jamais_liste), Releve::SansAccord);
+        assert_eq!(relever(false, true, jamais_adresse, jamais_liste), Releve::SansAccord);
+        assert_eq!(relever(true, true, jamais_adresse, jamais_liste), Releve::HorsLigne);
+        assert_eq!(relever(true, false, || None, jamais_liste), Releve::SansAdresse);
+        // Avec l'accord : les quatre listes, dans leur ordre.
+        let r = relever(
+            true,
+            false,
+            || Some(ip("203.0.113.7")),
+            |_, zone| {
+                if zone.starts_with("dnsbl.") {
+                    Verdict::Listee(vec![ip("127.0.0.17")])
+                } else {
+                    Verdict::Absente
+                }
+            },
+        );
+        let Releve::Repondu(_, reponses) = r else {
+            panic!("{r:?}")
+        };
+        assert_eq!(reponses.len(), 4);
+        assert!(matches!(reponses[2], Verdict::Listee(_)));
+    }
+
     #[test]
     fn trace_de_cloudflare() {
         let trace = "fl=123\nh=1.1.1.1\nip=203.0.113.7\nts=1792300000\nvisit_scheme=https\n";
         assert_eq!(lire_trace(trace), Some(ip("203.0.113.7")));
         assert_eq!(lire_trace("ip=2001:db8::1\n"), None);
     }
-}
-
-/// PROVISOIRE (lot H, à remplacer) : `--json` rend un résultat vide, donc « non vérifié ».
-pub fn json(_internet: bool) {
-    let debut = (chrono::Utc::now(), std::time::Instant::now());
-    let r = crate::modele::resultat::Resultat::nouveau(
-        "PRO-LNO-001",
-        debut,
-        &[],
-        crate::modele::resultat::Couverture::default(),
-    );
-    println!("{}", crate::modele::resultat::json(&r));
 }
