@@ -1,0 +1,367 @@
+//! Les étapes de `outils/deployer.sh` confiées au programme (`vanguard deploiement …`, commande cachée) : elles
+//! étaient en bash et en Python, à côté d'un code Rust qui faisait la même chose et pouvait en diverger. Le programme
+//! n'écrit rien de lui-même : chaque étape n'est lancée que par le déploiement, sur l'ordinateur de l'auteur.
+
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+
+use crate::ui::*;
+
+/// Une étape du déploiement.
+#[derive(clap::Subcommand)]
+pub(crate) enum Etape {
+    /// Mettre à jour les archives de tldr-pages de la clé (anglais, français), vérifiées comme zipfile.testzip.
+    Tldr {
+        /// Le dossier tldr de la clé.
+        dossier: PathBuf,
+    },
+    /// Vérifier que vanguard.exe ne charge ses DLL importées que depuis System32 (DependentLoadFlags) et porte son
+    /// manifeste (UTF-8, asInvoker).
+    #[command(name = "verifier-pe")]
+    VerifierPe {
+        /// Le programme Windows compilé, lu sans être lancé.
+        fichier: PathBuf,
+    },
+    /// Écrire les témoins de la clé : son jeton d'identité (tiré une fois) et l'empreinte de cet ordinateur.
+    Temoins {
+        /// La racine de la clé.
+        racine: PathBuf,
+    },
+}
+
+/// 0 : l'étape a réussi ; 1 : elle a échoué, et l'a dit.
+pub(crate) fn executer(etape: Etape) -> i32 {
+    let reussi = match etape {
+        Etape::Tldr { dossier } => crate::guide::tldr_sur_la_cle(&dossier),
+        Etape::VerifierPe { fichier } => verifier_pe(&fichier),
+        Etape::Temoins { racine } => match temoins(&racine, crate::machine::empreinte_machine()) {
+            Ok(_) => true,
+            Err(e) => {
+                eprintln!("{e}");
+                false
+            }
+        },
+    };
+    i32::from(!reussi)
+}
+
+/// Les deux réglages du manifeste (build.rs), cherchés tels que build.rs les écrit, dans la ressource que Windows lit
+/// en lançant le programme : la page de code UTF-8 (sans elle, accents et chemins sont cassés dans la console et les
+/// fichiers) et asInvoker (Vanguard démarre sans droits d'administrateur).
+const MANIFESTE: [&[u8]; 2] = [
+    b"<requestedExecutionLevel level=\"asInvoker\"",
+    b">UTF-8</activeCodePage>",
+];
+
+/// Le programme Windows porte-t-il ses gardes ? DependentLoadFlags (`machine::windows::chargement`), qui ferme le
+/// chargement d'une DLL posée à côté de lui, et son manifeste. Lu, jamais lancé (`crate::pe`). Un fichier absent,
+/// illisible ou qui n'est pas un PE est refusé : ce qui n'est pas vérifié ne part pas.
+fn verifier_pe(fichier: &Path) -> bool {
+    let f = fichier.display();
+    let gardes = match crate::pe::gardes(fichier) {
+        Ok(g) => g,
+        Err(e) => {
+            let pourquoi = match e {
+                crate::pe::Echec::Ouverture(k) => std::io::Error::from(k).to_string(),
+                crate::pe::Echec::PasUnFichier => tr!("pas un fichier ordinaire", "not a regular file").to_string(),
+                crate::pe::Echec::Format => {
+                    tr!("pas un programme Windows lisible", "not a readable Windows program").to_string()
+                }
+            };
+            eprintln!(
+                "{}",
+                trf!(
+                    "✖ {f} illisible ({pourquoi}) : ne pas le livrer",
+                    "✖ {f} unreadable ({pourquoi}): do not ship it"
+                )
+            );
+            return false;
+        }
+    };
+    if !gardes.load_config.is_some_and(|c| c.system32_seulement()) {
+        let config = match gardes.load_config {
+            None => tr!("absent", "missing").to_string(),
+            Some(c) => trf!(
+                "tailles {} et {}, drapeaux 0x{:X}",
+                "sizes {} and {}, flags 0x{:X}",
+                c.taille_repertoire,
+                c.taille,
+                c.drapeaux
+            ),
+        };
+        eprintln!(
+            "{}",
+            trf!(
+                "✖ {f} : DLL importées pas limitées à System32 (Load Config : {config}) ; ne pas le livrer",
+                "✖ {f}: imported DLLs not limited to System32 (Load Config: {config}); do not ship it"
+            )
+        );
+        return false;
+    }
+    let manquants: Vec<String> = MANIFESTE
+        .iter()
+        .filter(|m| {
+            !gardes
+                .manifeste
+                .as_deref()
+                .is_some_and(|t| t.windows(m.len()).any(|f| f == **m))
+        })
+        .map(|m| String::from_utf8_lossy(m).into_owned())
+        .collect();
+    if !manquants.is_empty() {
+        let manquants = manquants.join(", ");
+        eprintln!(
+            "{}",
+            trf!(
+                "✖ {f} : manifeste absent ou incomplet ({manquants}) ; ne pas le livrer",
+                "✖ {f}: manifest missing or incomplete ({manquants}); do not ship it"
+            )
+        );
+        return false;
+    }
+    println!(
+        "{}",
+        trf!(
+            "✔ {f} : DLL importées depuis System32 seulement, manifeste UTF-8 et asInvoker",
+            "✔ {f}: imported DLLs from System32 only, UTF-8 and asInvoker manifest"
+        )
+    );
+    true
+}
+
+/// Les deux témoins de la clé, que le bash du déploiement écrivait à côté du code qui les relit :
+/// - `vanguard.jeton` (`protection::cles_connues`), tiré une seule fois : 16 octets du hasard du système en 32
+///   caractères hexadécimaux minuscules et un saut de ligne, comme `head -c 16 /dev/urandom | od`. Un jeton que le
+///   programme lit déjà (`cles_connues::jeton_de`) est gardé tel quel, même en majuscules : cet ordinateur et la
+///   partition des journaux le connaissent ainsi ;
+/// - `vanguard.cle`, l'empreinte de cet ordinateur (`machine::empreinte_d_identifiant`, celle que la clé compare),
+///   réécrit seulement s'il change (une écriture de moins sur la clé à chaque déploiement).
+///
+/// Chacun s'écrit à côté, sur le disque, puis prend sa place (`socle::ecrire_atomique`) : une clé retirée pendant
+/// l'écriture ne garde pas un témoin à moitié écrit, qui la ferait prendre pour une autre. Sans empreinte lisible,
+/// rien n'est écrit : un témoin faux remonterait la clé en lecture seule chez son propriétaire. `Ok(true)` : un jeton
+/// a été tiré.
+fn temoins(racine: &Path, empreinte: Option<String>) -> Result<bool, PasEcrit> {
+    let empreinte = empreinte.ok_or(PasEcrit::SansEmpreinte)?;
+    retirer_les_restes(racine);
+    let jeton = crate::protection::cles_connues::JETON;
+    let tire = crate::protection::cles_connues::jeton_de(racine).is_none();
+    if tire {
+        let mut octets = [0u8; 16];
+        getrandom::fill(&mut octets).map_err(|e| PasEcrit::Fichier(jeton, std::io::Error::other(e.to_string())))?;
+        let mut texte = String::with_capacity(33);
+        for o in octets {
+            let _ = write!(texte, "{o:02x}");
+        }
+        texte.push('\n');
+        crate::socle::ecrire_atomique(&racine.join(jeton), texte.as_bytes())
+            .map_err(|e| PasEcrit::Fichier(jeton, e))?;
+        // Le jeton lui-même n'est pas affiché : il identifie la clé, et la sortie du déploiement se garde.
+        println!(
+            "{}",
+            trf!(
+                "Jeton de la clé tiré : {}",
+                "Key token drawn: {}",
+                racine.join(jeton).display()
+            )
+        );
+    }
+    let temoin = racine.join(crate::reseau::TEMOIN_CLE);
+    let attendu = format!("{empreinte}\n");
+    if crate::socle::lire_ordinaire(&temoin, 256).ok().as_deref() != Some(attendu.as_bytes()) {
+        crate::socle::ecrire_atomique(&temoin, attendu.as_bytes())
+            .map_err(|e| PasEcrit::Fichier(crate::reseau::TEMOIN_CLE, e))?;
+    }
+    Ok(tire)
+}
+
+/// Les temporaires d'une écriture de témoin interrompue (clé retirée, déploiement arrêté) : `vanguard.tmp-…`, que le
+/// manifeste de la clé compterait sinon. Seulement des fichiers ordinaires de cette forme, à la racine.
+fn retirer_les_restes(racine: &Path) {
+    let Ok(fichiers) = std::fs::read_dir(racine) else {
+        return;
+    };
+    for f in fichiers.flatten() {
+        let nom = f.file_name().to_string_lossy().into_owned();
+        if nom.starts_with("vanguard.tmp-") && f.file_type().is_ok_and(|t| t.is_file()) {
+            let _ = std::fs::remove_file(f.path());
+        }
+    }
+}
+
+/// Pourquoi les témoins ne sont pas écrits.
+#[derive(Debug)]
+enum PasEcrit {
+    /// L'empreinte de cet ordinateur ne se lit pas : rien n'est écrit.
+    SansEmpreinte,
+    /// Ce témoin n'a pas pu s'écrire sur la clé.
+    Fichier(&'static str, std::io::Error),
+}
+
+impl std::fmt::Display for PasEcrit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PasEcrit::SansEmpreinte => f.write_str(tr!(
+                "✖ Empreinte de cet ordinateur illisible : témoins de la clé non écrits",
+                "✖ This computer's fingerprint is unreadable: key markers not written"
+            )),
+            PasEcrit::Fichier(nom, e) => f.write_str(&trf!(
+                "✖ {nom} non écrit sur la clé : {e}",
+                "✖ {nom} not written to the key: {e}"
+            )),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pe::essais::gardes_d_essai;
+
+    fn dossier() -> PathBuf {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    const MANIFESTE_D_ESSAI: &[u8] = br#"<assembly><security><requestedPrivileges><requestedExecutionLevel level="asInvoker" uiAccess="false"/></requestedPrivileges></security><windowsSettings><activeCodePage>UTF-8</activeCodePage></windowsSettings></assembly>"#;
+
+    #[test]
+    fn verifier_pe_accepte_et_refuse() {
+        let d = dossier();
+        let essai = |nom: &str, octets: Vec<u8>| {
+            let chemin = d.join(nom);
+            std::fs::write(&chemin, octets).unwrap();
+            verifier_pe(&chemin)
+        };
+        let bon = d.join("bon.exe");
+        std::fs::write(
+            &bon,
+            gardes_d_essai(Some((148, 148, 0x800)), Some(MANIFESTE_D_ESSAI), 1),
+        )
+        .unwrap();
+        assert!(verifier_pe(&bon));
+        assert_eq!(executer(Etape::VerifierPe { fichier: bon }), 0);
+        // DependentLoadFlags absent, autre, ou pas couvert par l'une des deux tailles.
+        assert!(!essai("sans.exe", gardes_d_essai(None, Some(MANIFESTE_D_ESSAI), 1)));
+        assert!(!essai(
+            "zero.exe",
+            gardes_d_essai(Some((148, 148, 0)), Some(MANIFESTE_D_ESSAI), 1)
+        ));
+        assert!(!essai(
+            "court.exe",
+            gardes_d_essai(Some((64, 148, 0x800)), Some(MANIFESTE_D_ESSAI), 1)
+        ));
+        assert!(!essai(
+            "repertoire.exe",
+            gardes_d_essai(Some((148, 64, 0x800)), Some(MANIFESTE_D_ESSAI), 1)
+        ));
+        // Manifeste absent, incomplet, ou sous un autre numéro que celui que Windows lit.
+        assert!(!essai(
+            "sans-manifeste.exe",
+            gardes_d_essai(Some((148, 148, 0x800)), None, 1)
+        ));
+        let sans_utf8 = String::from_utf8_lossy(MANIFESTE_D_ESSAI).replace("UTF-8", "Latin1");
+        assert!(!essai(
+            "latin1.exe",
+            gardes_d_essai(Some((148, 148, 0x800)), Some(sans_utf8.as_bytes()), 1)
+        ));
+        let administrateur = String::from_utf8_lossy(MANIFESTE_D_ESSAI).replace("asInvoker", "requireAdministrator");
+        assert!(!essai(
+            "admin.exe",
+            gardes_d_essai(Some((148, 148, 0x800)), Some(administrateur.as_bytes()), 1)
+        ));
+        assert!(!essai(
+            "autre-numero.exe",
+            gardes_d_essai(Some((148, 148, 0x800)), Some(MANIFESTE_D_ESSAI), 2)
+        ));
+        // Les deux textes ailleurs que dans le manifeste (une chaîne du programme) : pas un manifeste.
+        let mut ailleurs = gardes_d_essai(Some((148, 148, 0x800)), None, 1);
+        ailleurs.extend_from_slice(MANIFESTE_D_ESSAI);
+        assert!(!essai("ailleurs.exe", ailleurs));
+        // Pas un PE, absent, ou un dossier : refusé, jamais compté comme vérifié.
+        assert!(!essai("texte.exe", b"MZ pas un programme".to_vec()));
+        assert!(!verifier_pe(&d.join("absent.exe")));
+        assert!(!verifier_pe(&d));
+        assert_eq!(
+            executer(Etape::VerifierPe {
+                fichier: d.join("absent.exe")
+            }),
+            1
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// La valeur de `printf '%s' 0123456789abcdef0123456789abcdef | sha1sum`, calculée à côté : le témoin est le même
+    /// octet pour octet que celui de l'ancien bash, avec ou sans saut de ligne final dans /etc/machine-id.
+    const SHA1_DE_L_ESSAI: &str = "b1775a785f09a6ebaf2dc33d6eaeb98974d9cdb8";
+
+    #[test]
+    fn empreinte_comme_sha1sum() {
+        let id = "0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            crate::machine::empreinte_d_identifiant(id).as_deref(),
+            Some(SHA1_DE_L_ESSAI)
+        );
+        assert_eq!(
+            crate::machine::empreinte_d_identifiant(&format!("{id}\n")).as_deref(),
+            Some(SHA1_DE_L_ESSAI)
+        );
+        assert_eq!(crate::machine::empreinte_d_identifiant(" \n"), None);
+    }
+
+    #[test]
+    fn temoins_jeton_tire_ou_garde() {
+        let d = dossier();
+        let empreinte = || crate::machine::empreinte_d_identifiant("0123456789abcdef0123456789abcdef");
+        // Absent : tiré, 32 caractères hexadécimaux minuscules et un saut de ligne, relisible par le programme.
+        assert!(matches!(temoins(&d, empreinte()), Ok(true)));
+        let texte = std::fs::read_to_string(d.join("vanguard.jeton")).unwrap();
+        assert_eq!(texte.len(), 33);
+        assert!(texte.ends_with('\n'));
+        assert!(texte[..32].chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')));
+        assert_eq!(
+            crate::protection::cles_connues::jeton_de(&d).as_deref(),
+            Some(&texte[..32])
+        );
+        assert_eq!(
+            std::fs::read_to_string(d.join("vanguard.cle")).unwrap(),
+            format!("{SHA1_DE_L_ESSAI}\n")
+        );
+        // Déjà là : gardé.
+        assert!(matches!(temoins(&d, empreinte()), Ok(false)));
+        assert_eq!(std::fs::read_to_string(d.join("vanguard.jeton")).unwrap(), texte);
+        // Valide en majuscules : gardé tel quel.
+        std::fs::write(d.join("vanguard.jeton"), "0123456789ABCDEF0123456789ABCDEF\n").unwrap();
+        assert!(matches!(temoins(&d, empreinte()), Ok(false)));
+        assert_eq!(
+            std::fs::read_to_string(d.join("vanguard.jeton")).unwrap(),
+            "0123456789ABCDEF0123456789ABCDEF\n"
+        );
+        // Invalide : retiré au profit d'un nouveau.
+        std::fs::write(d.join("vanguard.jeton"), "pas un jeton\n").unwrap();
+        assert!(matches!(temoins(&d, empreinte()), Ok(true)));
+        assert!(crate::protection::cles_connues::jeton_de(&d).is_some());
+        // Le reste d'une écriture interrompue est retiré ; aucun temporaire ne reste sur la clé.
+        std::fs::write(d.join("vanguard.tmp-1-0-0123456789abcdef"), "tronq").unwrap();
+        assert!(matches!(temoins(&d, empreinte()), Ok(false)));
+        let restes: Vec<_> = std::fs::read_dir(&d)
+            .unwrap()
+            .flatten()
+            .map(|f| f.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp-"))
+            .collect();
+        assert!(restes.is_empty(), "{restes:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn temoins_sans_empreinte_rien_n_est_touche() {
+        let d = dossier();
+        std::fs::write(d.join("vanguard.cle"), "ancien\n").unwrap();
+        assert!(temoins(&d, None).is_err());
+        assert_eq!(std::fs::read_to_string(d.join("vanguard.cle")).unwrap(), "ancien\n");
+        assert!(!d.join("vanguard.jeton").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}

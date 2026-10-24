@@ -3,6 +3,9 @@
 //! bombes de décompression. La lecture des fichiers de cet ordinateur (`degzip`) passe aussi.
 #![no_main]
 
+#[path = "../../src/archives/crc32.rs"]
+mod crc32;
+
 #[allow(dead_code)]
 #[path = "../../src/archives/gzip.rs"]
 mod gzip;

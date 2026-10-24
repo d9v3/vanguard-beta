@@ -3,8 +3,9 @@
 //! français) au plus une fois par semaine, en arrière-plan quand le guide s'ouvre, ou pendant la surveillance et
 //! l'entretien du mois, et les lit sans rien exécuter : ces commandes se copient, elles ne se lancent jamais d'ici,
 //! Vanguard ne les ayant pas vérifiées (`Obstacle::NonVerifiee`). Tout texte de l'archive passe par `ui::affichable` :
-//! une page piégée ne pilote pas le terminal. Le déploiement en met aussi une copie sur la clé (`outils/tldr-cle.sh`) : lancé depuis la clé, Vanguard
-//! les a dès le premier lancement, même sur un ordinateur sans Internet. Des deux copies, la plus récente sert.
+//! une page piégée ne pilote pas le terminal. Le déploiement en met aussi une copie sur la clé (`vanguard deploiement
+//! tldr`, `cle`) : lancé depuis la clé, Vanguard les a dès le premier lancement, même sur un ordinateur sans Internet.
+//! Des deux copies, la plus récente sert.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -14,6 +15,8 @@ use std::time::{Duration, SystemTime};
 
 use super::{Commande, Obstacle, Programme, Systeme};
 use crate::ui::affichable;
+
+pub(crate) mod cle;
 
 /// Les archives de tldr-pages : le projet les refait chaque jour, sous une page de version au numéro inchangé.
 const ADRESSE: &str = "https://github.com/tldr-pages/tldr/releases/latest/download/";

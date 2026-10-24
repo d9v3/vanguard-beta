@@ -163,8 +163,10 @@ preparer_programme() {
   echo "Compilation de $BRANCHE ($(git -C "$ARBRE" rev-parse --short HEAD)) pour Windows…"
   (cd "$ARBRE" && cargo build -q --release --target x86_64-pc-windows-gnu) || { echo "Compilation en échec." >&2; exit 1; }
   EXE=$cible/x86_64-pc-windows-gnu/release/vanguard.exe
-  # Comme deployer.sh : un programme qui chargerait une DLL posée à côté de lui ne part pas.
-  python3 "$ARBRE/outils/verifier-pe.py" "$EXE" || exit 1
+  # Comme deployer.sh : un programme qui chargerait une DLL posée à côté de lui, ou sans son manifeste, ne part pas.
+  # Vérifié par le programme Linux de ce dépôt-ci (src/pe.rs), qui sait le faire même si la branche essayée est d'avant.
+  (cd "$DEPOT" && env -u CARGO_TARGET_DIR cargo run -q --target x86_64-unknown-linux-musl -- deploiement verifier-pe "$EXE") ||
+    exit 1
 }
 
 # Copie un fichier dans le travail ; un .ps1 reçoit le BOM qui lui manque (PowerShell 5.1 lirait sinon en ANSI).

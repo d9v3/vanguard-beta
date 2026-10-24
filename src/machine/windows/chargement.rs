@@ -7,7 +7,7 @@
 //!
 //! GNU ld n'a pas d'option pour ce champ, mais il remplit le répertoire « Load Config » du PE dès qu'un symbole
 //! `_load_config_used` existe, avec la taille lue dans son premier mot ; le CRT de MinGW n'en fournit pas. Un test lit
-//! le programme compilé pour vérifier que le champ y est bien.
+//! le programme compilé pour vérifier que le champ y est bien ; le déploiement le relit dans vanguard.exe (`crate::pe`).
 
 /// IMAGE_LOAD_CONFIG_DIRECTORY64 jusqu'à GuardFlags (148 octets, la forme de Windows 8.1) : tout à zéro (ni cookie,
 /// ni SafeSEH, ni CFG), sauf la taille et DependentLoadFlags.
@@ -28,8 +28,9 @@ pub(crate) struct ConfigurationDeChargement {
     drapeaux_de_garde: u32,
 }
 
-/// LOAD_LIBRARY_SEARCH_SYSTEM32.
-pub(crate) const SYSTEM32_SEULEMENT: u16 = 0x800;
+// La valeur vient du module commun, celui que le déploiement relit sous Linux : les deux ne peuvent pas diverger.
+use crate::pe::SYSTEM32_SEULEMENT;
+
 /// Taille annoncée : jusqu'à GuardFlags compris (sans le bourrage final de la structure Rust).
 pub(crate) const TAILLE: u32 = 148;
 
@@ -52,35 +53,6 @@ pub(crate) static _load_config_used: ConfigurationDeChargement = ConfigurationDe
 };
 
 #[cfg(test)]
-/// La taille annoncée et DependentLoadFlags du répertoire « Load Config » d'un PE 64 bits ; `None` s'il n'en a pas.
-pub(crate) fn lire(pe: &[u8]) -> Option<(u32, u16)> {
-    let u16_a = |i: usize| pe.get(i..i + 2).map(|o| u16::from_le_bytes([o[0], o[1]]));
-    let u32_a = |i: usize| pe.get(i..i + 4).map(|o| u32::from_le_bytes([o[0], o[1], o[2], o[3]]));
-    let entete = usize::try_from(u32_a(0x3C)?).ok()?;
-    if pe.get(entete..entete + 4)? != b"PE\0\0" {
-        return None;
-    }
-    let sections = usize::from(u16_a(entete + 6)?);
-    let facultatif = entete + 24;
-    if u16_a(facultatif)? != 0x20B {
-        return None;
-    }
-    // Répertoire n° 10 (Load Config), après les 112 premiers octets de l'en-tête facultatif PE32+.
-    let rva = u32_a(facultatif + 112 + 10 * 8)?;
-    if rva == 0 {
-        return None;
-    }
-    let premiere = facultatif + usize::from(u16_a(entete + 20)?);
-    (0..sections).find_map(|n| {
-        let s = premiere + n * 40;
-        let (taille, debut, brut) = (u32_a(s + 8)?, u32_a(s + 12)?, u32_a(s + 20)?);
-        let dedans = rva.checked_sub(debut).filter(|d| *d < taille)?;
-        let position = usize::try_from(brut.checked_add(dedans)?).ok()?;
-        Some((u32_a(position)?, u16_a(position + 78)?))
-    })
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -98,8 +70,16 @@ mod tests {
     /// côté de Vanguard serait chargée avant sa première ligne.
     #[test]
     fn le_programme_ne_charge_ses_dll_que_depuis_system32() {
-        let pe = std::fs::read(std::env::current_exe().unwrap()).unwrap();
-        assert_eq!(lire(&pe), Some((TAILLE, SYSTEM32_SEULEMENT)));
-        assert_eq!(lire(b"MZ"), None);
+        let exe = std::env::current_exe().unwrap();
+        let gardes = crate::pe::gardes(&exe).unwrap_or_else(|e| panic!("{}: {e:?}", exe.display()));
+        assert_eq!(
+            gardes.load_config,
+            Some(crate::pe::LoadConfig {
+                taille_repertoire: TAILLE,
+                taille: TAILLE,
+                drapeaux: SYSTEM32_SEULEMENT
+            })
+        );
+        assert!(gardes.load_config.is_some_and(|c| c.system32_seulement()));
     }
 }

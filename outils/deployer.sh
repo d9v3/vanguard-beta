@@ -169,9 +169,14 @@ elif [[ $MODE != --sans-compiler ]]; then
   compiler
 fi
 # Une DLL posée à côté de vanguard.exe ne doit jamais être chargée : le programme Windows qui n'en porte pas la
-# garde (chargement.rs) ne part nulle part. Vérifié après la compilation, sur le programme qui va être copié.
-if [[ -f $WINDOWS ]] && ! python3 outils/verifier-pe.py "$WINDOWS"; then
-  exit 1
+# garde (chargement.rs), ou pas son manifeste (UTF-8, asInvoker), ne part nulle part. Vérifié après la compilation,
+# sur le programme qui va être copié, par le programme Linux (src/pe.rs, src/deploiement.rs) ; sans repli : un .exe
+# non vérifié n'est jamais compté sain.
+if [[ -f $WINDOWS ]]; then
+  ./"$LINUX" deploiement verifier-pe "$WINDOWS" || {
+    echo "✖ vanguard.exe non vérifié (DLL depuis System32, manifeste) : rien ne part. Un programme Linux d'avant « deploiement » ne sait pas le vérifier : recompiler."
+    exit 1
+  }
 fi
 # Les failles connues de leurs dépendances, lues dans la liste que chaque programme porte (outils/failles-programmes.sh,
 # avis traités comme par cargo deny) : une seule, et rien ne part, ni sur la clé, ni dans la VM, ni sur GitHub
@@ -321,12 +326,22 @@ if [[ -z $CLE ]]; then
 fi
 T_CLE=$SECONDS
 
-# Jeton d'identité de la clé (src/protection/cles_connues.rs) : 32 caractères hexadécimaux tirés une fois et gardés
-# ensuite ; cet ordinateur le note (vanguard manifeste --ecrire, plus bas) et, depuis sa copie locale, ne reconnaît
-# plus un volume au seul témoin vanguard.cle. La partition des journaux reçoit le même jeton.
-if ! grep -qxE '[0-9a-fA-F]{32}' "$CLE/vanguard.jeton" 2>/dev/null; then
-  head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$CLE/vanguard.jeton"
-  echo >>"$CLE/vanguard.jeton"
+# Témoins de la clé, écrits par le programme (src/deploiement.rs) : le jeton d'identité (src/protection/cles_connues.rs),
+# 32 caractères hexadécimaux tirés une fois et gardés ensuite ; cet ordinateur le note (vanguard manifeste --ecrire,
+# plus bas) et, depuis sa copie locale, ne reconnaît plus un volume au seul témoin vanguard.cle. La partition des
+# journaux reçoit le même jeton. Puis l'empreinte de cet ordinateur (SHA-1 de /etc/machine-id) dans vanguard.cle :
+# partout ailleurs, Vanguard remonte la clé en lecture seule sous Linux (src/protection/cle.rs). Avant la copie vers
+# la partition des journaux et avant le manifeste. Un programme d'avant « deploiement » (--sans-compiler) : le bash
+# d'avant, pour que la clé garde ses témoins (seulement sans vanguard.exe : avec lui, verifier-pe, sans repli, a déjà
+# arrêté le déploiement).
+if ./"$LINUX" deploiement temoins --help >/dev/null 2>&1; then
+  ./"$LINUX" deploiement temoins "$CLE" || { echo "✖ Témoins de la clé non écrits : clé pas mise à jour."; exit 1; }
+else
+  if ! grep -qxE '[0-9a-fA-F]{32}' "$CLE/vanguard.jeton" 2>/dev/null; then
+    head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$CLE/vanguard.jeton"
+    echo >>"$CLE/vanguard.jeton"
+  fi
+  printf '%s' "$(cat /etc/machine-id)" | sha1sum | cut -d' ' -f1 >"$CLE/vanguard.cle"
 fi
 
 # Partition VANGUARDLOG (la seule modifiable sur les autres ordinateurs) : elle se monte en même temps que VANGUARD,
@@ -345,9 +360,6 @@ if [[ -n $JOURNAL ]]; then
 fi
 
 mkdir -p "$CLE"/{Linux,Windows,donnees,source}
-# Empreinte de cet ordinateur (SHA-1 de /etc/machine-id) : partout ailleurs, Vanguard remonte la clé en lecture seule
-# sous Linux (src/protection/cle.rs).
-printf '%s' "$(cat /etc/machine-id)" | sha1sum | cut -d' ' -f1 >"$CLE/vanguard.cle"
 copier "$LINUX" "$CLE/Linux/vanguard"
 [[ -f $WINDOWS ]] && copier "$WINDOWS" "$CLE/Windows/vanguard.exe"
 # Version macOS : compilée sur un Mac de GitHub (.github/workflows/macos.yml, chaque nuit si le code a changé),
@@ -420,10 +432,11 @@ cp -f outils/cle/autorun.inf outils/cle/autorun.sh "outils/cle/Lancer Vanguard.b
 # exFAT ne garde ni droits ni liens : -rt suffit, --modify-window tolère sa précision de 2 s. Les copies de travail
 # des sessions Claude (.claude/worktrees, avec leurs propres compilations) restent sur l'ordinateur.
 rsync -rt --delete --modify-window=2 --exclude /target/ --exclude /.claude/worktrees/ ./ "$CLE/source/"
-# Exemples de tldr-pages sur la clé (src/guide/tldr.rs) : lancé depuis la clé, le guide les a tout de suite, même sur
-# un ordinateur sans Internet. Une fois par jour au plus ; sans Internet, la clé garde les siens. Avant le manifeste :
-# une archive remplacée sur la clé par quelqu'un d'autre se verra au retour.
-outils/tldr-cle.sh "$CLE/tldr" || echo "Exemples de tldr-pages non mis à jour sur la clé."
+# Exemples de tldr-pages sur la clé (src/guide/tldr/cle.rs) : lancé depuis la clé, le guide les a tout de suite, même
+# sur un ordinateur sans Internet. Une fois par jour au plus ; sans Internet, la clé garde les siens. Avant le
+# manifeste : une archive remplacée sur la clé par quelqu'un d'autre se verra au retour. Un programme d'avant
+# « deploiement » échoue sur l'usage : le message le dit, et la clé garde ses archives.
+./"$LINUX" deploiement tldr "$CLE/tldr" || echo "Exemples de tldr-pages non mis à jour sur la clé."
 # Manifeste de la clé (src/protection/manifeste.rs) : l'empreinte de chaque fichier (vanguard.jeton compris), gardée
 # sur cet ordinateur et jamais sur la clé ; le bilan la compare quand la clé revient de chez quelqu'un. La même
 # commande note la clé parmi celles que cet ordinateur connaît, avec l'état de son carnet. Un programme d'avant la

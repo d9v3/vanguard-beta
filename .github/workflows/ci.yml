@@ -94,13 +94,6 @@ jobs:
           name: distributions
           path: distributions
           retention-days: 14
-      # Les règles YARA intégrées au programme, compilées par le moteur de VirusTotal (libyara dans yara-python) : une
-      # règle cassée par une mise à jour (outils/maj-yara.sh) se voit ici, pas chez quelqu'un.
-      - name: Règles YARA
-        run: |
-          python3 -m venv /tmp/yara
-          /tmp/yara/bin/pip install -q yara-python
-          /tmp/yara/bin/python -c "import yara; yara.compile(filepath='assets/yara/reversinglabs.yara'); print('règles YARA compilées')"
 
   # Garde-fou de confidentialité (outils/confidentialite.py) sur les commits de chaque envoi et de chaque demande de
   # fusion, second filet de celui qui tourne avant chaque commit et chaque envoi sur l'ordinateur de développement. Ici
@@ -289,7 +282,7 @@ jobs:
       # asInvoker ; puis les failles connues des deux programmes, lues dans la liste qu'ils portent.
       - name: Le .exe porte ses gardes, failles connues des programmes
         run: |
-          python3 outils/verifier-pe.py target/x86_64-pc-windows-gnu/release/vanguard.exe
+          target/x86_64-unknown-linux-musl/release/vanguard deploiement verifier-pe target/x86_64-pc-windows-gnu/release/vanguard.exe
           bash outils/failles-programmes.sh target/x86_64-unknown-linux-musl/release/vanguard \
             target/x86_64-pc-windows-gnu/release/vanguard.exe
       - uses: actions/upload-artifact@v7

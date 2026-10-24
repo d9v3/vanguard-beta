@@ -370,7 +370,7 @@ fn ressources_windows() {
     if let Err(e) = res.compile() {
         // Le programme livré doit porter son manifeste (page de code UTF-8, accents et chemins justes ; asInvoker) :
         // en version publiée, son absence arrête la compilation au lieu d'un avertissement que personne ne lit
-        // (outils/verifier-pe.py le revérifie sur le .exe, avant qu'il parte). Les tests, eux, s'en passent.
+        // (`vanguard deploiement verifier-pe` le revérifie sur le .exe, avant qu'il parte). Les tests, eux, s'en passent.
         assert!(
             std::env::var("PROFILE").as_deref() != Ok("release"),
             "ressources Windows non intégrées (manifeste UTF-8, asInvoker, icône) : {e}"

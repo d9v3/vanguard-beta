@@ -64,7 +64,7 @@ pub(crate) fn degzip_controle(octets: &[u8], limite: usize) -> Option<Vec<u8>> {
         let taille = u32::from_le_bytes(octets.get(fin + 4..fin + 8)?.try_into().ok()?);
         // La taille est écrite modulo 2³² (RFC 1952, ISIZE).
         #[allow(clippy::cast_possible_truncation)]
-        if crc != crc32(&membre) || taille != membre.len() as u32 {
+        if crc != super::crc32::crc32(&membre) || taille != membre.len() as u32 {
             return None;
         }
         contenu.extend_from_slice(&membre);
@@ -103,33 +103,9 @@ fn inflater(flux: &[u8], limite: usize) -> Option<(Vec<u8>, usize)> {
     }
 }
 
-#[cfg_attr(not(any(windows, target_os = "macos", test)), allow(dead_code))] // logiciels pas à jour
-/// La table du CRC-32 de gzip (polynôme 0xEDB88320, réfléchi), calculée à la compilation.
-const TABLE: [u32; 256] = {
-    let mut table = [0u32; 256];
-    let mut i = 0u32;
-    while i < 256 {
-        let mut c = i;
-        let mut k = 0;
-        while k < 8 {
-            c = if c & 1 == 1 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
-            k += 1;
-        }
-        table[i as usize] = c;
-        i += 1;
-    }
-    table
-};
-
-#[cfg_attr(not(any(windows, target_os = "macos", test)), allow(dead_code))] // logiciels pas à jour
-fn crc32(octets: &[u8]) -> u32 {
-    !octets
-        .iter()
-        .fold(!0u32, |c, &o| TABLE[((c ^ u32::from(o)) & 0xff) as usize] ^ (c >> 8))
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::crc32::crc32;
     use super::*;
 
     /// Un membre gzip fait à la main : en-tête de 10 octets (et ses champs facultatifs), flux deflate, CRC et taille.
@@ -142,13 +118,6 @@ mod tests {
     }
 
     const SIMPLE: [u8; 10] = [0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3];
-
-    #[test]
-    fn crc_de_reference() {
-        // La valeur de contrôle de tout CRC-32 de gzip (RFC 1952, « 123456789 »).
-        assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
-        assert_eq!(crc32(b""), 0);
-    }
 
     #[test]
     fn gzip_lu_sans_zcat() {
