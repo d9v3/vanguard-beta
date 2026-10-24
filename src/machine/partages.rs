@@ -537,9 +537,12 @@ mod systeme {
     pub fn relever() -> Option<Releve> {
         let sortie = super::super::sortie("sharing", &["-l"])?;
         // smbd et AppleFileServer ne tournent que si le partage de fichiers est activé.
+        // Demandé au noyau ; pgrep -x en secours quand la liste des processus ne se lit pas.
         let lance = ["smbd", "AppleFileServer"].iter().any(|p| {
-            crate::commande::lancer(std::process::Command::new("pgrep").args(["-x", p]), 10)
-                .is_some_and(|r| r.code == Some(0))
+            crate::machine::macos::noyau::en_marche(p).unwrap_or_else(|| {
+                crate::commande::lancer(std::process::Command::new("pgrep").args(["-x", p]), 10)
+                    .is_some_and(|r| r.code == Some(0))
+            })
         });
         let nuance = if lance { Nuance::Aucune } else { Nuance::ServiceArrete };
         let modifiable = |chemin: &str| {

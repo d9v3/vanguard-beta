@@ -11,8 +11,10 @@ use crate::plist::Valeur;
 use crate::risk::{Niveau, info_port};
 use crate::{tr, trf};
 
+pub(crate) mod config_reseau;
 mod durcissement;
 mod maj;
+pub(crate) mod noyau;
 mod parite;
 mod persistance;
 mod privileges;
@@ -33,6 +35,8 @@ pub fn architecture() -> &'static str {
     }
 }
 
+/// socketfilterfw fait foi (outil gardé, §4) : com.apple.alf.plist n'est plus une source sûre depuis macOS 15, qui a
+/// déplacé ces réglages. Lancé sans shell pour la lecture ; ses corrections, montrées, passent par sudo.
 const PARE_FEU: &str = "/usr/libexec/ApplicationFirewall/socketfilterfw";
 
 /// Commande d'installation d'un outil (Homebrew, le gestionnaire de paquets des Mac).
@@ -225,7 +229,8 @@ fn partage(port: u16) -> Option<&'static str> {
     })
 }
 
-/// Serveur SSH (Remote Login) : jugé seulement s'il écoute le réseau sur le port 22.
+/// Serveur SSH (Remote Login) : jugé seulement s'il écoute le réseau sur le port 22. netstat fait foi pour les prises
+/// de tous les comptes (sshd tourne en root) : leurs structures dans le noyau (xinpcb_n) sont privées.
 fn ssh_serveur() -> Constat {
     let Some(netstat) = sortie("netstat", &["-an", "-p", "tcp"]) else {
         return impossible("SSH", tr!("netstat indisponible", "netstat unavailable"));
@@ -260,6 +265,8 @@ fn ssh_serveur() -> Constat {
     })
 }
 
+/// Les ports ouverts au réseau : netstat pour ceux de tous les comptes (il fait foi : xinpcb_n est privé), les noms
+/// des programmes du compte lus au noyau (lsof en secours).
 fn ports_ecoute(pare_feu_actif: bool) -> Vec<Constat> {
     let programmes = super::programmes_en_ecoute();
     let mut constats = Vec::new();
@@ -286,7 +293,7 @@ fn ports_ecoute(pare_feu_actif: bool) -> Vec<Constat> {
                 .get(&port)
                 .map_or(tr!("programme du système", "system program"), String::as_str);
             let (_, constat) = super::port_expose(port, proto, &i, programme, pare_feu_actif);
-            // Le nom lu par lsof, jamais « programme du système » traduit : la clé ne dépend pas de la langue.
+            // Le nom lu (noyau ou lsof), jamais « programme du système » traduit : la clé ne dépend pas de la langue.
             let constat = constat.avec_objet(crate::modele::Objet::port(
                 port,
                 proto,
@@ -364,34 +371,61 @@ fn protection_systeme() -> Vec<Constat> {
         ),
         None => constats.push(impossible("Protection système", tr!("spctl illisible", "spctl unreadable"))),
     }
-    match sortie("csrutil", &["status"]) {
-        Some(s) if s.contains("status: enabled") => constats.push(ok(
+    constats.push(sip());
+    constats
+}
+
+/// SIP : demandé au noyau (csr_get_active_config, cherché par dlsym), `csrutil status` en secours et comme oracle
+/// (noyau.rs). Entier quand aucun drapeau n'est posé ; « enabled (Custom Configuration) » de csrutil, une exception
+/// faite par `csrutil enable --without …`, est un SIP réduit.
+fn sip() -> Constat {
+    let sain = || {
+        ok(
             "Protection système",
             tr!(
                 "Protection de l'intégrité du système (SIP) active.",
                 "System Integrity Protection (SIP) on."
             ),
-        )),
-        Some(_) => constats.push(
-            alerte(
-                "Protection système",
-                Niveau::Eleve,
+        )
+    };
+    let reduit = |drapeaux: &str| {
+        alerte(
+            "Protection système",
+            Niveau::Eleve,
+            if drapeaux.is_empty() {
                 tr!(
                     "La protection de l'intégrité du système (SIP) est désactivée ou réduite : un programme administrateur peut modifier macOS lui-même.",
                     "System Integrity Protection (SIP) is off or reduced: an administrator program can modify macOS itself."
-                ),
-            )
-            .manuel(
-                tr!(
-                    "Redémarrer en mode de secours (bouton d'alimentation maintenu sur Apple Silicon, Cmd-R sur Intel), Utilitaires > Terminal : csrutil enable, puis redémarrer",
-                    "Restart in Recovery (hold the power button on Apple Silicon, Cmd-R on Intel), Utilities > Terminal: csrutil enable, then restart"
-                ),
-                &[],
+                )
+                .to_string()
+            } else {
+                trf!(
+                    "La protection de l'intégrité du système (SIP) est désactivée ou réduite ({drapeaux}) : un programme administrateur peut modifier macOS lui-même.",
+                    "System Integrity Protection (SIP) is off or reduced ({drapeaux}): an administrator program can modify macOS itself."
+                )
+            },
+        )
+        .manuel(
+            tr!(
+                "Redémarrer en mode de secours (bouton d'alimentation maintenu sur Apple Silicon, Cmd-R sur Intel), Utilitaires > Terminal : csrutil enable, puis redémarrer",
+                "Restart in Recovery (hold the power button on Apple Silicon, Cmd-R on Intel), Utilities > Terminal: csrutil enable, then restart"
             ),
-        ),
-        None => constats.push(impossible("Protection système", tr!("csrutil illisible", "csrutil unreadable"))),
+            &[],
+        )
+    };
+    if let Some(config) = noyau::sip() {
+        let drapeaux = crate::machine::darwin::drapeaux_sip(config);
+        return if drapeaux.is_empty() {
+            sain()
+        } else {
+            reduit(&drapeaux.join(", "))
+        };
     }
-    constats
+    match sortie("csrutil", &["status"]) {
+        Some(s) if s.contains("status: enabled.") => sain(),
+        Some(_) => reduit(""),
+        None => impossible("Protection système", tr!("csrutil illisible", "csrutil unreadable")),
+    }
 }
 
 /// Mot de passe à la sortie de veille.
@@ -501,6 +535,11 @@ fn ouverture_de_session() -> Vec<Constat> {
 
 /// Une valeur de sysctl en octets, par sysctlbyname : le même appel au noyau que la commande `sysctl`, sans la lancer.
 fn sysctl(nom: &str) -> Option<Vec<u8>> {
+    sysctl_ou_vide(nom).filter(|o| !o.is_empty())
+}
+
+/// Comme `sysctl`, mais une valeur vide (kern.bootargs sans option) est une réponse : `Some` d'un tableau vide.
+fn sysctl_ou_vide(nom: &str) -> Option<Vec<u8>> {
     let nom = std::ffi::CString::new(nom).ok()?;
     let mut taille: libc::size_t = 0;
     // SAFETY : nom est une chaîne C terminée par un nul ; sans tampon (pointeur nul), sysctlbyname n'écrit que la
@@ -514,8 +553,11 @@ fn sysctl(nom: &str) -> Option<Vec<u8>> {
             0,
         )
     };
-    if code != 0 || taille == 0 || taille > 1024 * 1024 {
+    if code != 0 || taille > 1024 * 1024 {
         return None;
+    }
+    if taille == 0 {
+        return Some(Vec::new());
     }
     let mut tampon = vec![0u8; taille];
     // SAFETY : tampon de `taille` octets, vivant pendant l'appel ; le noyau n'écrit pas au-delà et redit dans
@@ -827,29 +869,25 @@ fn sauvegarde_chiffree() -> Option<Constat> {
     })
 }
 
-fn sauvegardes() -> Constat {
-    let Some(destinations) = sortie("tmutil", &["destinationinfo"]) else {
-        return impossible("Sauvegardes", tr!("tmutil illisible", "tmutil unreadable"));
-    };
-    if destinations.contains("No destinations configured") || !destinations.contains("Name") {
-        return alerte(
-            "Sauvegardes",
-            Niveau::Moyen,
-            tr!(
-                "Aucune sauvegarde Time Machine configurée : un disque qui lâche, un vol ou un rançongiciel emportent tout.",
-                "No Time Machine backup set up: a failing disk, a theft or ransomware takes everything."
-            ),
-        )
-        .manuel(
-            tr!(
-                "Brancher un disque externe, puis Réglages Système > Général > Time Machine > Ajouter un disque de sauvegarde",
-                "Plug in an external disk, then System Settings > General > Time Machine > Add Backup Disk"
-            ),
-            &[],
-        );
-    }
-    // La date demande l'accès complet au disque ; sans lui, on sait seulement que Time Machine est réglé.
-    match sortie("tmutil", &["latestbackup"]).as_deref().and_then(date_sauvegarde) {
+/// La plus récente des sauvegardes notées dans les réglages de Time Machine (« SnapshotDates » de chaque destination),
+/// en date locale. `None` : aucune date notée (la clé manque selon les versions de macOS).
+fn derniere_sauvegarde(destinations: &[Valeur]) -> Option<chrono::NaiveDate> {
+    let secondes = destinations
+        .iter()
+        .filter_map(|d| d.cle("SnapshotDates")?.tableau())
+        .flatten()
+        .filter_map(|v| match v {
+            Valeur::Date(s) => Some(*s),
+            _ => None,
+        })
+        .fold(None, |max: Option<f64>, s| Some(max.map_or(s, |m| m.max(s))))?;
+    let d = chrono::DateTime::from_timestamp(crate::plist::date_unix(secondes)?, 0)?;
+    Some(d.with_timezone(&chrono::Local).date_naive())
+}
+
+/// Le constat d'une sauvegarde réglée, d'après la date de la dernière (`None` : inconnue).
+fn sauvegarde_datee(date: Option<chrono::NaiveDate>) -> Constat {
+    match date {
         Some(date) => {
             let jours = (chrono::Local::now().date_naive() - date).num_days();
             if jours > 14 {
@@ -876,6 +914,46 @@ fn sauvegardes() -> Constat {
             tr!("Time Machine est configuré.", "Time Machine is set up."),
         ),
     }
+}
+
+/// Time Machine : une destination notée dans ses réglages (com.apple.TimeMachine.plist) suffit à la dire réglée, avec
+/// la date de sa dernière sauvegarde ; tmutil dit le reste (aucune destination, date absente), tant que l'oracle de
+/// macos.yml n'a pas prouvé la lecture native : un réglage que macOS aurait déplacé ne doit pas passer pour « aucune
+/// sauvegarde ». Le Mac de GitHub n'a pas de Time Machine : cette lecture n'y est pas prouvée.
+fn sauvegardes() -> Constat {
+    const TIME_MACHINE: &str = "/Library/Preferences/com.apple.TimeMachine";
+    if let Reglages::Lus(r) = reglages(TIME_MACHINE)
+        && let Some(destinations) = r
+            .cle("Destinations")
+            .and_then(Valeur::tableau)
+            .filter(|d| !d.is_empty())
+    {
+        let date = derniere_sauvegarde(destinations)
+            .or_else(|| sortie("tmutil", &["latestbackup"]).as_deref().and_then(date_sauvegarde));
+        return sauvegarde_datee(date);
+    }
+    let Some(destinations) = sortie("tmutil", &["destinationinfo"]) else {
+        return impossible("Sauvegardes", tr!("tmutil illisible", "tmutil unreadable"));
+    };
+    if destinations.contains("No destinations configured") || !destinations.contains("Name") {
+        return alerte(
+            "Sauvegardes",
+            Niveau::Moyen,
+            tr!(
+                "Aucune sauvegarde Time Machine configurée : un disque qui lâche, un vol ou un rançongiciel emportent tout.",
+                "No Time Machine backup set up: a failing disk, a theft or ransomware takes everything."
+            ),
+        )
+        .manuel(
+            tr!(
+                "Brancher un disque externe, puis Réglages Système > Général > Time Machine > Ajouter un disque de sauvegarde",
+                "Plug in an external disk, then System Settings > General > Time Machine > Add Backup Disk"
+            ),
+            &[],
+        );
+    }
+    // La date demande l'accès complet au disque ; sans lui, on sait seulement que Time Machine est réglé.
+    sauvegarde_datee(sortie("tmutil", &["latestbackup"]).as_deref().and_then(date_sauvegarde))
 }
 
 /// Wi-Fi : protection du réseau connecté, et un éventuel jumeau maléfique parmi les réseaux visibles.
@@ -987,6 +1065,15 @@ mod tests {
         assert_eq!(destinations_non_chiffrees(reglages), 1);
         assert_eq!(destinations_non_chiffrees("LastKnownEncryptionState = Encrypted;"), 0);
         assert_eq!(destinations_non_chiffrees(""), 0);
+    }
+
+    #[test]
+    fn derniere_sauvegarde_notee() {
+        let d = |s: f64| Valeur::Dico(vec![("SnapshotDates".into(), Valeur::Tableau(vec![Valeur::Date(s)]))]);
+        // 800 000 000 s après 2001 : 8 mai 2026 ; la plus récente des deux destinations l'emporte.
+        let lue = derniere_sauvegarde(&[d(700_000_000.0), d(800_000_000.0)]).unwrap();
+        assert_eq!(lue.format("%Y").to_string(), "2026");
+        assert_eq!(derniere_sauvegarde(&[Valeur::Dico(Vec::new())]), None);
     }
 
     #[test]

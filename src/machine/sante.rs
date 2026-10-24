@@ -481,24 +481,22 @@ mod systeme {
         }]
     }
 
-    /// Valeur texte d'une clé de la sortie de `diskutil info -plist` (« SMARTStatus » : « Verified »).
-    pub(super) fn valeur_plist(plist: &str, cle: &str) -> Option<String> {
-        crate::plist::lire(plist.as_bytes())?
-            .cle(cle)?
-            .texte()
-            .map(|t| t.trim().to_string())
-    }
-
-    /// Disques physiques internes et leur état SMART selon diskutil (« Verified », « Failing », « Not Supported »).
+    /// Disques physiques internes et leur état SMART selon diskutil (« Verified », « Failing », « Not Supported »),
+    /// lus dans ses sorties -plist : des clés qui ne changent pas avec la langue du Mac.
     pub fn disques() -> Vec<Disque> {
-        sortie("diskutil", &["list", "internal", "physical"])
-            .lines()
-            .filter_map(|l| l.strip_prefix("/dev/")?.split_whitespace().next().map(str::to_string))
+        let liste = crate::plist::lire(sortie("diskutil", &["list", "-plist", "internal", "physical"]).as_bytes());
+        liste
+            .as_ref()
+            .map(crate::machine::darwin::disques_entiers)
+            .unwrap_or_default()
+            .into_iter()
             .filter_map(|disque| {
-                let plist = sortie("diskutil", &["info", "-plist", &disque]);
-                let etat = valeur_plist(&plist, "SMARTStatus")?;
+                let info = crate::machine::darwin::info_disque(&crate::plist::lire(
+                    sortie("diskutil", &["info", "-plist", &disque]).as_bytes(),
+                )?);
+                let etat = info.smart?;
                 (etat != "Not Supported").then(|| Disque {
-                    modele: crate::ui::affichable(&valeur_plist(&plist, "MediaName").unwrap_or(disque)),
+                    modele: crate::ui::affichable(&info.modele.unwrap_or(disque)),
                     defaillant: etat == "Failing",
                     ..Disque::default()
                 })
@@ -506,19 +504,11 @@ mod systeme {
             .collect()
     }
 
-    /// Santé de la batterie en % : capacité maximale actuelle / capacité d'origine (« AppleRawMaxCapacity » sur
-    /// les Mac Apple Silicon, où « MaxCapacity » est déjà un pourcentage ; « MaxCapacity » en mAh sur les Intel).
+    /// Santé de la batterie en % : capacité maximale actuelle / capacité d'origine, d'après `ioreg -a` (sa sortie en
+    /// plist, lue par crate::plist).
     pub fn batterie() -> Option<u64> {
-        let ioreg = sortie("ioreg", &["-rn", "AppleSmartBattery"]);
-        let lire = |cle: &str| -> Option<u64> {
-            ioreg
-                .lines()
-                .find_map(|l| l.trim().strip_prefix(&format!("\"{cle}\" = ")))
-                .and_then(|v| v.trim().parse().ok())
-        };
-        let origine = lire("DesignCapacity").filter(|c| *c > 0)?;
-        let actuelle = lire("AppleRawMaxCapacity").or_else(|| lire("MaxCapacity").filter(|c| *c > 100))?;
-        Some((actuelle * 100 / origine).min(100))
+        let ioreg = sortie("ioreg", &["-a", "-rn", "AppleSmartBattery"]);
+        crate::machine::darwin::sante_batterie(&crate::plist::lire(ioreg.as_bytes())?)
     }
 
     /// Les capteurs de température demandent les droits root sous macOS (powermetrics) : rien sans eux.
@@ -783,12 +773,10 @@ mod tests {
     #[test]
     fn lecture_de_diskutil() {
         let plist = "<dict>\n\t<key>MediaName</key>\n\t<string>APPLE SSD AP0512Z</string>\n\t<key>SMARTStatus</key>\n\t<string>Verified</string>\n</dict>";
-        assert_eq!(systeme::valeur_plist(plist, "SMARTStatus").as_deref(), Some("Verified"));
-        assert_eq!(
-            systeme::valeur_plist(plist, "MediaName").as_deref(),
-            Some("APPLE SSD AP0512Z")
-        );
-        assert_eq!(systeme::valeur_plist(plist, "Absent"), None);
+        let info = crate::machine::darwin::info_disque(&crate::plist::lire(plist.as_bytes()).unwrap());
+        assert_eq!(info.smart.as_deref(), Some("Verified"));
+        assert_eq!(info.modele.as_deref(), Some("APPLE SSD AP0512Z"));
+        assert_eq!(info.taille, None);
     }
 
     #[test]

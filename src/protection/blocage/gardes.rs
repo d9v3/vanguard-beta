@@ -427,8 +427,14 @@ fn point_texte(t: &str, separateur: char) -> Option<(IpAddr, u16)> {
 /// Les connexions établies sous macOS : toutes d'après `netstat -anp tcp` (« tcp4 0 0 192.168.1.5.22
 /// 192.168.1.20.51234 ESTABLISHED »), et leur programme d'après `lsof -F pcn` (« p », « c », « n
 /// locale->distante »), qui ne voit que celles de ce compte : une connexion que lsof ne voit pas est d'un autre.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(test)]
 pub(crate) fn etablies_macos(netstat: &str, lsof: &str) -> Vec<Etablie> {
+    etablies_avec(netstat, &etablies_lsof(lsof))
+}
+
+/// Les connexions de ce compte d'après `lsof -F pcn` : (programme, port local, adresse distante, port distant).
+#[cfg(any(target_os = "macos", test))]
+fn etablies_lsof(lsof: &str) -> Vec<(String, u16, IpAddr, u16)> {
     let mut a_moi: Vec<(String, u16, IpAddr, u16)> = Vec::new();
     let mut programme = String::new();
     for l in lsof.lines() {
@@ -445,6 +451,13 @@ pub(crate) fn etablies_macos(netstat: &str, lsof: &str) -> Vec<Etablie> {
             _ => {}
         }
     }
+    a_moi
+}
+
+/// Toutes les connexions établies de `netstat -anp tcp`, chacune avec son programme quand elle est dans `a_moi` (les
+/// connexions lues de ce compte) ; les autres sont d'un autre compte.
+#[cfg(any(target_os = "macos", test))]
+fn etablies_avec(netstat: &str, a_moi: &[(String, u16, IpAddr, u16)]) -> Vec<Etablie> {
     netstat
         .lines()
         .filter(|l| l.contains("ESTABLISHED"))
@@ -527,18 +540,32 @@ fn lire_etablies() -> Option<Vec<Etablie>> {
     )
 }
 
+/// netstat fait foi pour les connexions de tous les comptes (xinpcb_n est privé) ; celles de ce compte se lisent au
+/// noyau (libproc), lsof en secours tant que l'oracle de macos.yml n'a pas prouvé la lecture native.
 #[cfg(target_os = "macos")]
 fn lire_etablies() -> Option<Vec<Etablie>> {
     use std::process::Command;
     let n = crate::commande::lancer(Command::new("netstat").args(["-anp", "tcp"]), 15).filter(|r| r.code == Some(0))?;
-    // lsof répond 1 quand il ne trouve rien : alors rien n'est à ce compte.
-    let lsof = crate::commande::lancer(
-        Command::new("lsof").args(["-nP", "-iTCP", "-sTCP:ESTABLISHED", "-F", "pcn"]),
-        20,
-    )
-    .map(|r| r.sortie)
-    .unwrap_or_default();
-    Some(etablies_macos(&n.sortie, &lsof))
+    let natives: Option<Vec<(String, u16, IpAddr, u16)>> = crate::machine::macos::noyau::prises()
+        .map(|lues| {
+            lues.prises
+                .into_iter()
+                .filter(|(_, _, p)| p.tcp && p.etat == crate::machine::darwin::TSI_S_ESTABLISHED)
+                .map(|(_, nom, p)| (nom, p.port_local, p.distante.to_canonical(), p.port_distant))
+                .collect()
+        })
+        .filter(|l: &Vec<_>| !l.is_empty());
+    let a_moi = natives.unwrap_or_else(|| {
+        // lsof répond 1 quand il ne trouve rien : alors rien n'est à ce compte.
+        let lsof = crate::commande::lancer(
+            Command::new("lsof").args(["-nP", "-iTCP", "-sTCP:ESTABLISHED", "-F", "pcn"]),
+            20,
+        )
+        .map(|r| r.sortie)
+        .unwrap_or_default();
+        etablies_lsof(&lsof)
+    });
+    Some(etablies_avec(&n.sortie, &a_moi))
 }
 
 #[cfg(test)]

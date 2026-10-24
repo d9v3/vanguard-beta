@@ -185,12 +185,14 @@ pub(crate) fn prises() -> Option<Vec<Prise>> {
     )
 }
 
-/// macOS : `netstat -an -p tcp`, lu comme pour le bilan des ports ; les noms viennent de lsof, qui sans droits admin ne
-/// nomme que les programmes du compte en cours (`Noms::CompteSeul`), et pas du tout s'il échoue (`Noms::Aucun`).
+/// macOS : `netstat -an -p tcp`, lu comme pour le bilan des ports (netstat fait foi pour les prises de tous les
+/// comptes : leurs structures du noyau, xinpcb_n, sont privées) ; les noms viennent du noyau (libproc, lsof en
+/// secours), qui sans droits admin ne nomme que les programmes du compte en cours (`Noms::CompteSeul`), et pas du tout
+/// s'il échoue (`Noms::Aucun`).
 #[cfg(target_os = "macos")]
 pub(crate) fn prises_et_noms() -> Option<(Vec<Prise>, Noms)> {
     let netstat = super::sortie("netstat", &["-an", "-p", "tcp"])?;
-    Some(match super::prises_lsof() {
+    Some(match super::prises_du_compte() {
         Some(lsof) => (prises_netstat(&netstat, &lsof), Noms::CompteSeul),
         None => (prises_netstat(&netstat, &[]), Noms::Aucun),
     })

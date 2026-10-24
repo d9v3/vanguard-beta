@@ -347,15 +347,20 @@ fn disques_de_mount(sortie: &str) -> Vec<(PathBuf, String)> {
         .filter_map(|l| {
             let (source, reste) = l.split_once(" on ")?;
             let point = reste.rsplit_once(" (")?.0;
-            let nom = source.strip_prefix("/dev/")?;
-            // « disk4s1 » → « disk4 » : le dernier « s » suivi de chiffres est la partition.
-            let disque = match nom.rfind('s') {
-                Some(i) if i > 4 && nom[i + 1..].chars().all(|c| c.is_ascii_digit()) && i + 1 < nom.len() => &nom[..i],
-                _ => nom,
-            };
-            Some((PathBuf::from(point), disque.to_string()))
+            Some((PathBuf::from(point), disque_de(source)?))
         })
         .collect()
+}
+
+/// « /dev/disk4s1 » → « disk4 » : le dernier « s » suivi de chiffres est la partition. `None` : pas un appareil.
+#[cfg(any(target_os = "macos", test))]
+fn disque_de(source: &str) -> Option<String> {
+    let nom = source.strip_prefix("/dev/")?;
+    let disque = match nom.rfind('s') {
+        Some(i) if i > 4 && nom[i + 1..].chars().all(|c| c.is_ascii_digit()) && i + 1 < nom.len() => &nom[..i],
+        _ => nom,
+    };
+    Some(disque.to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -363,8 +368,18 @@ pub(crate) fn disques() -> Vec<Disque> {
     use std::os::unix::fs::MetadataExt;
     let systeme = std::fs::metadata("/").ok().map(|m| m.dev());
     // Les autres partitions de la clé VANGUARD (MACOS…), sur le même support qu'elle : exclues aussi.
-    let montages = crate::commande::lancer(&mut std::process::Command::new("mount"), 10)
-        .map(|r| disques_de_mount(&r.sortie))
+    // Les montages demandés au noyau (getmntinfo) ; `mount` en secours tant que l'oracle de macos.yml n'a pas prouvé
+    // la lecture native.
+    let montages: Vec<(PathBuf, String)> = crate::machine::macos::noyau::montages()
+        .map(|liste| {
+            liste
+                .into_iter()
+                .filter_map(|m| Some((PathBuf::from(m.point), disque_de(&m.source)?)))
+                .collect()
+        })
+        .or_else(|| {
+            crate::commande::lancer(&mut std::process::Command::new("mount"), 10).map(|r| disques_de_mount(&r.sortie))
+        })
         .unwrap_or_default();
     let de_la_cle: Vec<&String> = montages
         .iter()

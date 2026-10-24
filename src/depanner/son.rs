@@ -254,6 +254,8 @@ mod systeme {
     use super::{Etat, fait};
     use crate::ui::*;
 
+    /// osascript fait foi (outil gardé, §4) : le volume de sortie n'a pas d'interface publique hors CoreAudio, en
+    /// Objective-C. Lancé sans shell.
     fn osascript(script: &str) -> Option<String> {
         let r = crate::commande::lancer(Command::new("osascript").args(["-e", script]), 10)?;
         (r.code == Some(0)).then(|| r.sortie.trim().to_string())

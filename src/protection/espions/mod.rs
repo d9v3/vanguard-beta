@@ -447,12 +447,6 @@ fn relever_ecran() -> (Releve, Option<Duration>) {
                 r.connexions_lues = true;
                 connexions_espions(&mut r, ind, &c);
             }
-            None if cfg!(target_os = "macos") => {
-                r.non_verifie(tr!(
-                    "connexions non vérifiées sous macOS",
-                    "connections not checked on macOS"
-                ));
-            }
             None => r.non_verifie(tr!("connexions illisibles", "connections unreadable")),
         }
         match crate::protection::memoire_dns::noms() {

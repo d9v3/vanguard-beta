@@ -29,6 +29,115 @@ fn options_dangereuses(boot_args: &str) -> Vec<&str> {
         .collect()
 }
 
+/// Les options du prochain démarrage (NVRAM « boot-args ») : lues dans l'IORegistry, `nvram boot-args` en secours
+/// tant que l'oracle de macos.yml n'a pas prouvé la lecture native. Vide : aucune option. `None` : illisibles.
+fn options_prochain_demarrage() -> Option<String> {
+    use super::noyau::OptionsNvram;
+    match super::noyau::options_prochain_demarrage() {
+        Some(OptionsNvram::Absentes) => Some(String::new()),
+        Some(OptionsNvram::Posees(t)) => Some(t),
+        // nvram répond en erreur « data was not found » quand boot-args n'existe pas : le cas normal. Toute autre
+        // erreur (NVRAM non prise en charge, refus) est une lecture ratée, jamais « aucune option ».
+        None => crate::commande::lancer(Command::new("nvram").arg("boot-args"), 10).and_then(|r| {
+            if r.code == Some(0) {
+                Some(
+                    r.sortie
+                        .trim()
+                        .strip_prefix("boot-args")
+                        .unwrap_or(&r.sortie)
+                        .trim()
+                        .to_string(),
+                )
+            } else {
+                r.erreurs.contains("not found").then(String::new)
+            }
+        }),
+    }
+}
+
+/// Les options qui coupent la signature du code, jugées au démarrage EN COURS (kern.bootargs : ce qui protège ce Mac
+/// maintenant) et au PROCHAIN (la NVRAM : ce qu'un programme y a posé en attendant un redémarrage). Le constat dit
+/// lequel ; une moitié illisible est dite, jamais comptée saine.
+fn juger_options_demarrage(en_cours: Option<&str>, prochain: Option<&str>) -> Constat {
+    let dangers_en_cours = en_cours.map(options_dangereuses).unwrap_or_default();
+    let dangers_prochain = prochain.map(options_dangereuses).unwrap_or_default();
+    if !dangers_en_cours.is_empty() || !dangers_prochain.is_empty() {
+        let quand = match (dangers_en_cours.is_empty(), dangers_prochain.is_empty()) {
+            (false, false) => trf!(
+                "au démarrage en cours et au prochain : {}",
+                "in the current startup and the next one: {}",
+                dangers_en_cours.join(" ")
+            ),
+            (false, true) => trf!(
+                "au démarrage en cours seulement : {}",
+                "in the current startup only: {}",
+                dangers_en_cours.join(" ")
+            ),
+            _ => trf!(
+                "au prochain démarrage : {}",
+                "at the next startup: {}",
+                dangers_prochain.join(" ")
+            ),
+        };
+        let constat = alerte(
+            "Protection système",
+            Niveau::Eleve,
+            trf!(
+                "Une option de démarrage coupe la vérification des signatures du code ({quand}) : n'importe quel programme peut s'exécuter, même modifié.",
+                "A startup option turns code signature checks off ({quand}): any program can run, even modified."
+            ),
+        );
+        // Plus dans la NVRAM (lue) : un redémarrage suffit.
+        if dangers_prochain.is_empty() && prochain.is_some() {
+            return constat.manuel(
+                tr!(
+                    "L'option n'est plus dans la NVRAM : redémarrer ce Mac suffit à remettre la vérification des signatures",
+                    "The option is no longer in NVRAM: restarting this Mac is enough to turn signature checks back on"
+                ),
+                &[],
+            );
+        }
+        return constat
+        .manuel(
+            tr!(
+                "Retirer les options de démarrage : sudo nvram -d boot-args (sur Apple Silicon, depuis le Terminal du mode de secours), puis redémarrer",
+                "Remove the startup options: sudo nvram -d boot-args (on Apple Silicon, from the Recovery Terminal), then restart"
+            ),
+            &["sudo nvram -d boot-args"],
+        );
+    }
+    match (en_cours, prochain) {
+        (Some(_), Some(_)) => ok(
+            "Protection système",
+            tr!(
+                "Signature du code imposée dès le démarrage (aucune option ne la coupe, ni au démarrage en cours ni au prochain).",
+                "Code signing enforced from startup (no option turns it off, in the current startup or the next one)."
+            ),
+        ),
+        (None, Some(_)) => impossible(
+            "Protection système",
+            tr!(
+                "options du démarrage en cours illisibles (kern.bootargs)",
+                "current startup options unreadable (kern.bootargs)"
+            ),
+        ),
+        (Some(_), None) => impossible(
+            "Protection système",
+            tr!(
+                "options du prochain démarrage illisibles (nvram)",
+                "next startup options unreadable (nvram)"
+            ),
+        ),
+        (None, None) => impossible(
+            "Protection système",
+            tr!(
+                "options de démarrage illisibles (kern.bootargs et nvram)",
+                "startup options unreadable (kern.bootargs and nvram)"
+            ),
+        ),
+    }
+}
+
 pub(super) fn systeme_signe() -> Vec<Constat> {
     let mut constats = Vec::new();
     match sortie("csrutil", &["authenticated-root", "status"])
@@ -67,45 +176,10 @@ pub(super) fn systeme_signe() -> Vec<Constat> {
             ),
         )),
     }
-    // nvram répond en erreur quand boot-args n'existe pas : c'est le cas normal, pas une lecture ratée.
-    match crate::commande::lancer(Command::new("nvram").arg("boot-args"), 10) {
-        Some(r) => {
-            let dangereuses = options_dangereuses(&r.sortie);
-            constats.push(if dangereuses.is_empty() {
-                ok(
-                    "Protection système",
-                    tr!(
-                        "Signature du code imposée dès le démarrage (aucune option ne la coupe).",
-                        "Code signing enforced from startup (no option turns it off)."
-                    ),
-                )
-            } else {
-                alerte(
-                    "Protection système",
-                    Niveau::Eleve,
-                    trf!(
-                        "Une option de démarrage coupe la vérification des signatures du code ({}) : n'importe quel programme peut s'exécuter, même modifié.",
-                        "A startup option turns code signature checks off ({}): any program can run, even modified.",
-                        dangereuses.join(" ")
-                    ),
-                )
-                .manuel(
-                    tr!(
-                        "Retirer les options de démarrage : sudo nvram -d boot-args (sur Apple Silicon, depuis le Terminal du mode de secours), puis redémarrer",
-                        "Remove the startup options: sudo nvram -d boot-args (on Apple Silicon, from the Recovery Terminal), then restart"
-                    ),
-                    &["sudo nvram -d boot-args"],
-                )
-            });
-        }
-        None => constats.push(impossible(
-            "Protection système",
-            tr!(
-                "options de démarrage illisibles (nvram)",
-                "startup options unreadable (nvram)"
-            ),
-        )),
-    }
+    constats.push(juger_options_demarrage(
+        super::noyau::options_demarrage_en_cours().as_deref(),
+        options_prochain_demarrage().as_deref(),
+    ));
     // Clé absente : la validation est active (réglage d'origine).
     let validation = preference(
         "/Library/Preferences/com.apple.security.libraryvalidation",
@@ -269,8 +343,11 @@ pub(super) fn juger_decouverte_proxy(scutil: &str) -> Option<Constat> {
     })
 }
 
+/// Le proxy en vigueur demandé à configd ; `scutil --proxy` en secours tant que l'oracle de macos.yml n'a pas prouvé
+/// la lecture native.
 pub(super) fn decouverte_proxy() -> Option<Constat> {
-    juger_decouverte_proxy(&sortie("scutil", &["--proxy"])?)
+    let texte = super::config_reseau::proxy_comme_scutil().or_else(|| sortie("scutil", &["--proxy"]))?;
+    juger_decouverte_proxy(&texte)
 }
 
 #[cfg(test)]
@@ -303,6 +380,31 @@ mod tests {
             ["amfi_get_out_of_my_way=1"]
         );
         assert_eq!(options_dangereuses("boot-args\t-v keepsyms=1"), Vec::<&str>::new());
+    }
+
+    /// Les deux démarrages jugés, et lequel est dit ; une moitié illisible n'est jamais saine.
+    #[test]
+    fn options_des_deux_demarrages() {
+        let dangereuse = "amfi_get_out_of_my_way=1";
+        let c = juger_options_demarrage(Some(""), Some(dangereuse));
+        assert!(
+            c.probleme.is_some() && c.message.contains(tr!("prochain", "next")),
+            "{}",
+            c.message
+        );
+        let c = juger_options_demarrage(Some(dangereuse), Some(""));
+        assert!(
+            c.probleme.is_some() && c.message.contains(tr!("en cours seulement", "current startup only")),
+            "{}",
+            c.message
+        );
+        let c = juger_options_demarrage(Some("-v"), Some(""));
+        assert!(c.verifie && c.probleme.is_none());
+        for (a, b) in [(None, Some("")), (Some(""), None), (None, None)] {
+            assert!(!juger_options_demarrage(a, b).verifie, "{a:?} {b:?}");
+        }
+        // Une option dangereuse se voit même si l'autre moitié est illisible.
+        assert!(juger_options_demarrage(None, Some(dangereuse)).probleme.is_some());
     }
 
     #[test]

@@ -307,10 +307,6 @@ pub(super) fn relever(r: &mut super::Releve, ind: Option<&Indicateurs>) {
             );
         }
     }
-    r.non_verifie(tr!(
-        "connexions non vérifiées sous macOS",
-        "connections not checked on macOS"
-    ));
 }
 
 /// Une base TCC lue deux fois si elle a changé pendant la lecture (compteur de changements), et si un journal WAL non

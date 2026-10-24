@@ -16,6 +16,8 @@ mod bluetooth;
 pub(crate) mod certificats;
 pub(crate) mod chasse;
 mod comptes_oublies;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) mod darwin;
 pub(crate) mod dns;
 pub(crate) mod extensions;
 pub(crate) mod fin_de_support;
@@ -1051,6 +1053,32 @@ pub(crate) fn prises_lsof() -> Option<Vec<(String, u16, String)>> {
     (r.code == Some(0) || vide).then(|| lire_lsof_prises(&r.sortie))
 }
 
+/// macOS : les prises TCP en écoute des programmes lisibles (ceux du compte sans droits admin, comme lsof), avec
+/// leur adresse (« * » pour toutes), leur port et le nom de leur programme. Lues au noyau (libproc) d'abord ; lsof
+/// reste en secours tant que le test d'oracle de macos.yml (machine/macos/noyau.rs) ne l'a pas remplacé, et prend le
+/// relais quand la lecture native est muette.
+#[cfg(target_os = "macos")]
+pub(crate) fn prises_du_compte() -> Option<Vec<(String, u16, String)>> {
+    macos::noyau::prises()
+        .map(|lues| {
+            lues.prises
+                .into_iter()
+                .filter(|(_, _, p)| p.tcp && p.etat == darwin::TSI_S_LISTEN)
+                .map(|(_, nom, p)| {
+                    let adresse = if p.locale.is_unspecified() {
+                        "*".to_string()
+                    } else {
+                        p.locale.to_string()
+                    };
+                    (adresse, p.port_local, affichable(&nom))
+                })
+                .collect::<Vec<_>>()
+        })
+        // Aucune prise en écoute lue : peut-être une lecture native qui ne comprend pas ce macOS ; lsof tranche.
+        .filter(|prises| !prises.is_empty())
+        .or_else(prises_lsof)
+}
+
 /// Programme qui écoute sur chaque port TCP de cette machine (port → nom du programme, que chaque programme choisit :
 /// prêt à montrer). Sans droits admin, les programmes de root/SYSTEM restent souvent anonymes.
 pub fn programmes_en_ecoute() -> std::collections::HashMap<u16, String> {
@@ -1067,11 +1095,11 @@ pub fn programmes_en_ecoute() -> std::collections::HashMap<u16, String> {
             map.insert(p.port, nom);
         }
     }
-    // Sans droits admin, lsof ne montre que les programmes de l'utilisateur. « +c 0 » : le nom entier, sans quoi lsof
-    // le coupe à 9 caractères (« llama-ser ») et un serveur d'IA ne se reconnaît plus.
+    // Sans droits admin, le noyau (comme lsof) ne montre que les programmes de l'utilisateur. Le nom est celui du
+    // fichier du programme, entier : un nom coupé (« llama-ser ») ne reconnaîtrait plus un serveur d'IA.
     #[cfg(target_os = "macos")]
     map.extend(
-        prises_lsof()
+        prises_du_compte()
             .unwrap_or_default()
             .into_iter()
             .map(|(_, port, nom)| (port, nom)),

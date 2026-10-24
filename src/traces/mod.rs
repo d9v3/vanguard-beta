@@ -1459,9 +1459,10 @@ fn empreintes_du_dossier(d: &Path) -> Vec<(String, String)> {
 fn machine_et_compte() -> (String, String) {
     #[cfg(target_os = "linux")]
     let machine = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default();
+    // gethostname, ce qu'affiche `hostname`, sans le lancer.
     #[cfg(target_os = "macos")]
-    let machine = crate::commande::lancer(&mut Command::new("hostname"), 5)
-        .map(|r| r.sortie)
+    let machine = crate::machine::macos::nom_hote()
+        .or_else(|| crate::commande::lancer(&mut Command::new("hostname"), 5).map(|r| r.sortie))
         .unwrap_or_default();
     #[cfg(windows)]
     let machine = std::env::var("COMPUTERNAME").unwrap_or_default();
@@ -1474,6 +1475,10 @@ fn machine_et_compte() -> (String, String) {
     let compte = compte.or_else(|| {
         // SAFETY : geteuid ne prend aucun argument et ne touche aucune mémoire.
         let uid = unsafe { libc::geteuid() };
+        // macOS : l'annuaire (getpwuid_r) ; /etc/passwd n'y liste pas les comptes des personnes.
+        #[cfg(target_os = "macos")]
+        let nom = crate::machine::macos::noyau::compte(uid);
+        #[cfg(not(target_os = "macos"))]
         let nom = std::fs::read_to_string("/etc/passwd").ok().and_then(|t| {
             t.lines().find_map(|l| {
                 let c: Vec<&str> = l.split(':').collect();

@@ -337,15 +337,34 @@ fn connexions() -> Option<Vec<Connexion>> {
     )
 }
 
+/// macOS : les connexions établies des programmes lisibles (ceux du compte sans droits admin), lues au noyau
+/// (libproc) ; lsof en secours tant que le test d'oracle de macos.yml n'a pas prouvé la lecture native, ou quand elle
+/// est muette. Puis netstat, qui fait foi pour celles de tous les comptes (xinpcb_n est privé) : ce qui reste après
+/// les programmes lus appartient à d'autres comptes.
 #[cfg(target_os = "macos")]
 fn connexions() -> Option<Vec<Connexion>> {
     use std::process::Command;
-    // lsof répond 1 quand il ne trouve rien : une liste vide, pas une panne.
-    let lsof = crate::commande::lancer(
-        Command::new("lsof").args(["-nP", "-iTCP", "-sTCP:ESTABLISHED", "-F", "pcn"]),
-        20,
-    )?;
-    let mut liste = lire_lsof(&lsof.sortie);
+    let natives = crate::machine::macos::noyau::prises().map(|lues| {
+        lues.prises
+            .into_iter()
+            .filter(|(_, _, p)| p.tcp && p.etat == crate::machine::darwin::TSI_S_ESTABLISHED)
+            .map(|(pid, nom, p)| Connexion {
+                pid: Some(pid),
+                programme: Some(affichable(&nom)),
+                ..Connexion::vers(p.distante, p.port_distant)
+            })
+            .collect::<Vec<_>>()
+    });
+    let mut liste = if let Some(l) = natives.filter(|l| !l.is_empty()) {
+        l
+    } else {
+        // lsof répond 1 quand il ne trouve rien : une liste vide, pas une panne.
+        let lsof = crate::commande::lancer(
+            Command::new("lsof").args(["-nP", "-iTCP", "-sTCP:ESTABLISHED", "-F", "pcn"]),
+            20,
+        )?;
+        lire_lsof(&lsof.sortie)
+    };
     let pids: BTreeSet<u32> = liste.iter().filter_map(|c| c.pid).collect();
     // Le chemin de chaque programme, demandé au noyau (proc_pidpath), sans lancer ps pour chacun.
     let chemins: HashMap<u32, String> = pids
@@ -360,16 +379,16 @@ fn connexions() -> Option<Vec<Connexion>> {
     for c in &mut liste {
         c.chemin = c.pid.and_then(|p| chemins.get(&p).cloned());
     }
-    if let Some(n) = crate::commande::lancer(Command::new("netstat").args(["-anp", "tcp"]), 15) {
-        let autres = invisibles(&n.sortie, &liste);
-        liste.extend(autres);
-    }
+    // Sans netstat, les connexions des autres comptes manquent : la liste n'est pas entière, donc illisible (une liste
+    // du seul compte dirait à tort « aucune connexion suspecte »).
+    let n = crate::commande::lancer(Command::new("netstat").args(["-anp", "tcp"]), 15).filter(|r| r.code == Some(0))?;
+    let autres = invisibles(&n.sortie, &liste);
+    liste.extend(autres);
     Some(liste)
 }
 
 /// Une connexion établie, telle que « Logiciels espions » la compare aux serveurs connus.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
 pub(crate) struct ConnexionVue {
     pub pid: Option<u32>,
     /// `None` : programme d'un autre compte, invisible sans droits d'administrateur.
@@ -379,8 +398,8 @@ pub(crate) struct ConnexionVue {
     pub port: u16,
 }
 
-/// Les connexions en cours, lues par Vanguard lui-même (Linux : /proc ; Windows : les fonctions de Windows).
-#[cfg(any(target_os = "linux", windows))]
+/// Les connexions en cours, lues par Vanguard lui-même (Linux : /proc ; Windows : les fonctions de Windows ; macOS :
+/// libproc pour le compte, lsof en secours, netstat pour les autres comptes).
 pub(crate) fn connexions_vues() -> Option<Vec<ConnexionVue>> {
     connexions().map(|liste| {
         liste
@@ -394,13 +413,6 @@ pub(crate) fn connexions_vues() -> Option<Vec<ConnexionVue>> {
             })
             .collect()
     })
-}
-
-/// Sous macOS, les connexions passent par lsof et netstat : pas ici (`None`, que l'appelant dit). Une lecture par
-/// libproc, en Rust, reste à écrire.
-#[cfg(not(any(target_os = "linux", windows)))]
-pub(crate) fn connexions_vues() -> Option<Vec<ConnexionVue>> {
-    None
 }
 
 // ───────────────────────────── Jugement ─────────────────────────────

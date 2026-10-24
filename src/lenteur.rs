@@ -1584,29 +1584,44 @@ mod systeme {
     }
 
     pub fn instantane() -> Instantane {
+        use crate::machine::macos::{demarrage, noyau, sysctl_nombre};
         let fils = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+        // top reste l'outil qui fait foi pour le processeur de chaque programme : le noyau ne donne le temps de
+        // processeur (PROC_PIDTASKINFO) que pour les processus du compte, et ceux de root disparaîtraient.
         let top = sortie("top -l 2 -s 2 -n 20 -o cpu -stats pid,command,cpu,mem");
         let (processeur, programmes) = lire_top(&top, fils);
-        let total: Option<u64> = sortie("sysctl -n hw.memsize").trim().parse().ok();
-        // « System-wide memory free percentage: 63% ».
-        let libre_pct: Option<u64> = sortie("memory_pressure")
-            .lines()
-            .find_map(|l| l.strip_prefix("System-wide memory free percentage:"))
-            .and_then(|v| v.trim().trim_end_matches('%').parse().ok());
-        // « total = 2048.00M  used = 1024.50M  free = 1023.50M  (encrypted) ».
-        let echange = sortie("sysctl -n vm.swapusage");
-        let valeur = |cle: &str| {
-            let mo = echange.split(cle).nth(1)?.split_whitespace().next()?;
-            mo.trim_end_matches('M').parse::<f64>().ok()
-        };
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let echange = valeur("total = ")
-            .zip(valeur("used = "))
-            .map(|(t, u)| ((t * 1_048_576.0) as u64, (u * 1_048_576.0) as u64));
+        // Mémoire, échange et démarrage demandés au noyau (sysctlbyname), les outils en secours tant que l'oracle
+        // de macos.yml n'a pas prouvé la lecture native.
+        let total: Option<u64> =
+            sysctl_nombre("hw.memsize").or_else(|| sortie("sysctl -n hw.memsize").trim().parse().ok());
+        // La mémoire libre en %, celle que `memory_pressure` affiche (« System-wide memory free percentage: 63% »).
+        let libre_pct: Option<u64> = sysctl_nombre("kern.memorystatus_level")
+            .filter(|p| *p <= 100)
+            .or_else(|| {
+                sortie("memory_pressure")
+                    .lines()
+                    .find_map(|l| l.strip_prefix("System-wide memory free percentage:"))
+                    .and_then(|v| v.trim().trim_end_matches('%').parse().ok())
+            });
+        let echange = noyau::echange().or_else(|| {
+            // « total = 2048.00M  used = 1024.50M  free = 1023.50M  (encrypted) ».
+            let echange = sortie("sysctl -n vm.swapusage");
+            let valeur = |cle: &str| {
+                let mo = echange.split(cle).nth(1)?.split_whitespace().next()?;
+                mo.trim_end_matches('M').parse::<f64>().ok()
+            };
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            valeur("total = ")
+                .zip(valeur("used = "))
+                .map(|(t, u)| ((t * 1_048_576.0) as u64, (u * 1_048_576.0) as u64))
+        });
         let maintenant = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        let allume_depuis = sortie("sysctl -n kern.boottime")
-            .split_once("sec = ")
-            .and_then(|(_, r)| r.split(',').next()?.trim().parse::<u64>().ok())
+        let allume_depuis = demarrage()
+            .or_else(|| {
+                sortie("sysctl -n kern.boottime")
+                    .split_once("sec = ")
+                    .and_then(|(_, r)| r.split(',').next()?.trim().parse::<u64>().ok())
+            })
             .and_then(|s| maintenant.checked_sub(s));
         let maison = crate::socle::maison();
         // Agents lancés à l'ouverture de session par des programmes installés (pas ceux d'Apple).
