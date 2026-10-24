@@ -385,7 +385,7 @@ fn journal_dit(source: &Source, journal: &str) -> String {
 }
 
 /// Un manque, dans la langue du moment, et sa raison typée.
-fn manque(source: &Source, m: &Manque) -> (String, Raison) {
+pub(crate) fn manque(source: &Source, m: &Manque) -> (String, Raison) {
     let ill = |t: &str| Raison::Illisible(t.to_string());
     match m {
         Manque::Absent(j) => (

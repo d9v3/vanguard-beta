@@ -2289,7 +2289,12 @@ fn journaux_windows_options_refusees() {
         30,
     );
     assert_eq!(s.code, Some(1), "{}", s.erreurs);
-    assert!(sans_couleurs(&s.erreurs).contains("ne se lit pas"), "{}", s.erreurs);
+    // Le message est mis en lignes à la largeur : un chemin long peut couper la phrase.
+    let erreurs = sans_couleurs(&s.erreurs)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(erreurs.contains("ne se lit pas"), "{}", s.erreurs);
 }
 
 /// Un dossier sans journal lisible (un faux .evtx) : jamais « rien trouvé » ; chaque règle non vérifiée, la période de

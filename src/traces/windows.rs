@@ -982,7 +982,8 @@ fn raison_evtquery(code: Option<i32>, delai: bool) -> Raison {
     }
 }
 
-/// Les événements des journaux de Windows pour la chronologie, lus par wevtapi sans PowerShell : 30 s en tout. Le
+/// Les événements des journaux de Windows pour la chronologie, lus par wevtapi sans PowerShell (30 s en tout), puis
+/// les alertes des règles EVT- (une minute de plus au plus). Le
 /// journal de sécurité ne se lit qu'en administrateur : sans, c'est dit une fois. Chaque journal qui refuse est dit.
 pub(super) fn evenements_des_journaux(_dossier: &Path) -> Apport {
     let mut apport = lire_journaux_chronologie(administrateur());
@@ -1005,7 +1006,7 @@ fn alertes_des_journaux() -> Apport {
     let a = resultat::analyser_vivant(&options, debut.1 + std::time::Duration::from_secs(60));
     let est_normale = |cle: &str| crate::protection::normales::est_normale(cle);
     crate::modele::resultat::verser(&resultat::resultat(&a, debut, &est_normale));
-    chronologie::alertes_des_journaux(&a, &est_normale)
+    super::journaux_windows::alertes_des_journaux(&a, &est_normale)
 }
 
 fn lire_journaux_chronologie(admin: bool) -> Apport {

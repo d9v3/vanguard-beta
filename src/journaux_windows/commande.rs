@@ -2,15 +2,16 @@
 //! d'un dossier de .evtx (sous tout système) ou de cet ordinateur (sous Windows), puis « Que s'est-il passé ? » :
 //! le verdict de chaque règle, les alertes datées dans l'ordre du temps, la période que chaque journal a vraiment
 //! couverte et ce qui est resté au-delà des bornes. Lecture seule : le résultat est versé (`examens/PRO-EVT-001.json`,
-//! repris par le rapport) et les alertes vont au journal des événements, d'où une alerte non critique peut être
-//! déclarée normale (« Ce que Vanguard a appris ») ; rien n'est demandé.
+//! repris par le rapport, qui dit le dossier quand ce n'est pas cet ordinateur) ; les alertes de cet ordinateur vont au
+//! journal des événements, d'où une alerte non critique peut être déclarée normale (« Ce que Vanguard a appris ») ;
+//! rien n'est demandé.
 
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 
 use super::chronologie::{self, AlerteDatee, Chronologie, EtatPeriode};
-use super::regles::moteur::Options;
+use super::regles::moteur::{Gravite, Options};
 use super::regles::resultat::{self, Analyse};
 use crate::modele::resultat::{ConstatEcrit, Resultat};
 use crate::risk::Niveau;
@@ -103,46 +104,56 @@ pub(crate) fn executer(dossier: Option<&Path>, jours: u32, json: bool) {
         Err(r) => refuser(&r),
     };
     let est_normale = |cle: &str| crate::protection::normales::est_normale(cle);
-    let r = resultat::resultat(&a, debut, &est_normale);
+    let mut r = resultat::resultat(&a, debut, &est_normale);
+    if let Some(d) = dossier {
+        r.dossier = Some(crate::modele::resultat::nom_sans_piege(&d.to_string_lossy(), 300));
+    }
     crate::modele::resultat::verser(&r);
     let c = chronologie::chronologie(&a, &est_normale);
-    noter_alertes(&c);
+    if dossier.is_none() {
+        noter_alertes(&c);
+    }
     if json {
         println!("{}", crate::modele::resultat::json(&r));
         return;
     }
-    afficher(&a, &r, &c);
+    afficher(&a, &r, &c, options(jours).depuis.unwrap_or(debut.0));
 }
 
-/// Les alertes au journal des événements, avec leur clé : « Ce que Vanguard a appris » les propose à déclarer
-/// normales (jamais une critique). Une alerte déjà notée telle quelle ne l'est pas deux fois.
+/// Les alertes de cet ordinateur au journal des événements, avec leur clé : « Ce que Vanguard a appris » les propose
+/// à déclarer normales (jamais une critique). Seulement les datées, d'alerte ou critiques (pas une simple
+/// information), les plus récentes. Le texte commence par la date UTC du premier événement : une alerte déjà notée
+/// pour la même clé et le même premier événement ne l'est pas deux fois, quelles que soient la langue, l'heure
+/// locale ou la période demandée. Celles d'un dossier ne sont jamais notées : elles ne parlent pas de cet ordinateur.
 fn noter_alertes(c: &Chronologie) {
     use crate::modele::evenement::{Evenement, Source};
     let lu = crate::modele::journal::lire();
-    let deja: std::collections::HashSet<(Option<&str>, &str)> = crate::modele::journal::alertes(&lu.evenements)
-        .map(|(e, _, _, texte)| (e.cle.as_deref(), texte))
+    let deja: std::collections::HashSet<(String, String)> = crate::modele::journal::alertes(&lu.evenements)
+        .filter_map(|(e, _, _, texte)| Some((e.cle.clone()?, texte.get(..20)?.to_string())))
         .collect();
-    let mut a_noter: Vec<(String, String, String, Niveau)> = Vec::new();
-    for x in c.alertes.iter().rev().take(NOTEES_MAX) {
-        let cle = x.cle.clone();
-        let titre = format!("{} : {}", x.regle, chronologie::gravite(x.gravite));
-        let texte = match x.date {
-            Some(d) => format!("{} — {}", resultat::date(d), x.texte),
-            None => x.texte.clone(),
-        };
-        if !deja.contains(&(Some(cle.as_str()), texte.as_str())) {
-            a_noter.push((cle, titre, texte, resultat::niveau(x.gravite)));
+    let mut datees: Vec<(&AlerteDatee, DateTime<Utc>)> = c
+        .alertes
+        .iter()
+        .filter(|x| x.gravite > Gravite::Info)
+        .filter_map(|x| Some((x, x.date?)))
+        .collect();
+    datees.sort_by_key(|(_, d)| *d);
+    let debut = datees.len().saturating_sub(NOTEES_MAX);
+    for (x, d) in &datees[debut..] {
+        let utc = d.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        if deja.contains(&(x.cle.clone(), utc.clone())) {
+            continue;
         }
-    }
-    for (cle, titre, texte, niveau) in a_noter.into_iter().rev() {
+        let titre = format!("{} : {}", x.regle, chronologie::gravite(x.gravite));
+        let texte = format!("{utc} — {}", x.texte);
         let ev = Evenement::alerte(
             Source::Outil,
             crate::reseau::tableau::FAMILLE_EVENEMENTS,
             &titre,
             &texte,
         )
-        .gravite(niveau)
-        .cle(Some(&cle));
+        .gravite(resultat::niveau(x.gravite))
+        .cle(Some(&x.cle));
         crate::modele::journal::noter(ev);
     }
 }
@@ -161,13 +172,20 @@ fn ecran(t: &str) -> String {
         if i > 0 {
             sortie.push(' ');
         }
+        // Coupé de préférence juste après un séparateur (« / », « \\ », « - »…), pour que chaque morceau se lise.
         let lettres: Vec<char> = mot.chars().collect();
-        for (j, morceau) in lettres.chunks(MOT_MAX).enumerate() {
-            if j > 0 {
-                sortie.push(' ');
-            }
-            sortie.extend(morceau);
+        let mut reste: &[char] = &lettres;
+        while reste.len() > MOT_MAX {
+            let coupe = reste[..MOT_MAX]
+                .iter()
+                .rposition(|c| matches!(c, '/' | '\\' | '-' | '_' | '%' | '.' | ','))
+                .filter(|i| *i >= MOT_MAX / 2)
+                .map_or(MOT_MAX, |i| i + 1);
+            sortie.extend(&reste[..coupe]);
+            sortie.push(' ');
+            reste = &reste[coupe..];
         }
+        sortie.extend(reste);
     }
     match sortie.char_indices().nth(TEXTE_ECRAN) {
         Some((i, _)) => format!("{}… {}", &sortie[..i], tr!("(la suite : --json)", "(the rest: --json)")),
@@ -175,7 +193,8 @@ fn ecran(t: &str) -> String {
     }
 }
 
-/// Le décalage de l'heure locale, dit avec chaque date montrée : les journaux sont en UTC.
+/// Le décalage de l'heure locale d'aujourd'hui, dit en tête : les journaux sont en UTC. Une date d'un autre
+/// décalage (l'heure d'hiver) porte le sien (`locale`).
 fn fuseau() -> String {
     chrono::Local::now().format("UTC%:z").to_string()
 }
@@ -195,8 +214,8 @@ fn entete(dossier: Option<&Path>, jours: u32) {
     afficher_aligne(
         "  ",
         &trf!(
-            "Période demandée : les {jours} derniers jours, depuis le {} (heures locales, {}).",
-            "Period asked: the last {jours} days, since {} (local times, {}).",
+            "Période demandée : les {jours} derniers jours, depuis le {} (heures de l'ordinateur qui lit, {} ; les journaux sont en UTC).",
+            "Period asked: the last {jours} days, since {} (times of the computer reading, {}; the logs are in UTC).",
             depuis.format("%Y-%m-%d %H:%M"),
             fuseau()
         ),
@@ -240,7 +259,7 @@ fn verdict_regle<'a>(r: &'a Resultat, regle: &str) -> (String, usize, Option<&'a
     (marque, alertes, couverture)
 }
 
-fn afficher(a: &Analyse, r: &Resultat, c: &Chronologie) {
+fn afficher(a: &Analyse, r: &Resultat, c: &Chronologie, depuis: DateTime<Utc>) {
     section(tr!("CE QUE DISENT LES RÈGLES", "WHAT THE RULES SAY"));
     for j in &a.jugements {
         let id = j.regle.id;
@@ -265,11 +284,11 @@ fn afficher(a: &Analyse, r: &Resultat, c: &Chronologie) {
     }
 
     section(&trf!(
-        "CHRONOLOGIE (heures locales, {})",
-        "TIMELINE (local times, {})",
+        "CHRONOLOGIE (heures d'ici, {})",
+        "TIMELINE (times here, {})",
         fuseau()
     ));
-    chronologie_ecran(c);
+    chronologie_ecran(c, depuis);
 
     section(tr!("PÉRIODE LUE PAR JOURNAL", "PERIOD READ PER LOG"));
     periodes_ecran(a);
@@ -352,17 +371,28 @@ fn afficher(a: &Analyse, r: &Resultat, c: &Chronologie) {
     );
 }
 
-/// Une date à l'heure de l'ordinateur qui lit.
+/// Une date à l'heure de l'ordinateur qui lit ; son décalage quand ce n'est pas celui d'aujourd'hui (dit en tête).
 fn locale(d: DateTime<Utc>) -> String {
-    d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string()
+    use chrono::Offset as _;
+    let l = d.with_timezone(&chrono::Local);
+    if l.offset().fix() == chrono::Local::now().offset().fix() {
+        l.format("%Y-%m-%d %H:%M").to_string()
+    } else {
+        l.format("%Y-%m-%d %H:%M (UTC%:z)").to_string()
+    }
 }
 
-fn ligne_alerte(x: &AlerteDatee) {
+fn ligne_alerte(x: &AlerteDatee, depuis: DateTime<Utc>) {
     let n = resultat::niveau(x.gravite);
     let quand = x.date.map_or_else(|| tr!("sans date", "no date").to_string(), locale);
+    let mut texte = format!("{} — {}", x.regle, x.texte);
+    // Une règle des trous juge toute la suite des numéros du fichier : son premier événement peut précéder la période.
+    if x.date.is_some_and(|d| d < depuis) {
+        texte.push_str(tr!(" (avant la période demandée)", " (before the period asked)"));
+    }
     afficher_aligne(
         &format!("  {} {GRAS}{quand}{RESET} ", icone(Some(n))),
-        &ecran(&format!("{} — {}", x.regle, x.texte)),
+        &ecran(&texte),
         4,
         "",
     );
@@ -378,7 +408,7 @@ fn ligne_alerte(x: &AlerteDatee) {
     }
 }
 
-fn chronologie_ecran(c: &Chronologie) {
+fn chronologie_ecran(c: &Chronologie, depuis: DateTime<Utc>) {
     if c.alertes.is_empty() {
         afficher_aligne(
             "  ",
@@ -399,15 +429,15 @@ fn chronologie_ecran(c: &Chronologie) {
         afficher_aligne(
             "  ",
             &trf!(
-                "{coupees} alerte(s) plus ancienne(s) non montrée(s) ici : --json ou le rapport les donnent toutes.",
-                "{coupees} older alert(s) not shown here: --json or the report give them all."
+                "{coupees} alerte(s) plus ancienne(s) non montrée(s) ici : --json les donne toutes.",
+                "{coupees} older alert(s) not shown here: --json gives them all."
             ),
             2,
             GRIS,
         );
     }
     for x in &datees[coupees..] {
-        ligne_alerte(x);
+        ligne_alerte(x, depuis);
     }
     if !sans.is_empty() {
         afficher_aligne(
@@ -421,7 +451,19 @@ fn chronologie_ecran(c: &Chronologie) {
             GRIS,
         );
         for x in sans.iter().take(MONTREES / 4) {
-            ligne_alerte(x);
+            ligne_alerte(x, depuis);
+        }
+        let reste = sans.len().saturating_sub(MONTREES / 4);
+        if reste > 0 {
+            afficher_aligne(
+                "  ",
+                &trf!(
+                    "{reste} de plus : --json les donne toutes.",
+                    "{reste} more: --json gives them all."
+                ),
+                2,
+                GRIS,
+            );
         }
     }
 }
@@ -469,7 +511,12 @@ fn periodes_ecran(a: &Analyse) {
                 if !manques.is_empty() {
                     t.push_str(&trf!(" — lu en partie : {}", " — partly read: {}", manques.join(" ; ")));
                 }
-                let m = if p.courte || !manques.is_empty() {
+                // Vide, muet, désactivé, trous non vérifiés : lu sans erreur, mais pas sain.
+                for r in &p.remarques {
+                    t.push_str(" — ");
+                    t.push_str(r);
+                }
+                let m = if p.courte || !manques.is_empty() || !p.remarques.is_empty() {
                     non_verifie()
                 } else {
                     icone(None)
@@ -502,6 +549,50 @@ mod tests {
     fn dossier_absent_refuse() {
         let d = std::env::temp_dir().join(format!("vanguard-jw-absent-{}", std::process::id()));
         assert!(matches!(analyser(Some(&d), 7), Err(Refus::Dossier(..))));
+    }
+
+    /// Les alertes notées au journal : une seule fois par clé et premier événement, quelle que soit la langue ; ni
+    /// une information ni une alerte sans date ; les plus récentes seulement.
+    #[test]
+    fn alertes_notees_une_fois() {
+        let marque = format!("essai-notees-{}", std::process::id());
+        let alerte = |i: i64, g: Gravite, date: bool| AlerteDatee {
+            date: date.then(|| DateTime::from_timestamp(1_760_000_000 + i * 60, 0).unwrap()),
+            dernier: None,
+            regle: "EVT-SRV-001",
+            technique: None,
+            gravite: g,
+            cle: format!("evenements|EVT-SRV-001|{marque}|{i}"),
+            texte: format!("texte {i}"),
+            contexte: String::new(),
+        };
+        let mut c = Chronologie::default();
+        for i in 0..40 {
+            c.alertes.push(alerte(i, Gravite::Alerte, true));
+        }
+        c.alertes.push(alerte(100, Gravite::Info, true));
+        c.alertes.push(alerte(101, Gravite::Critique, false));
+        let compter = || {
+            let lu = crate::modele::journal::lire();
+            crate::modele::journal::alertes(&lu.evenements)
+                .filter(|(e, ..)| e.cle.as_deref().is_some_and(|k| k.contains(&marque)))
+                .map(|(e, ..)| e.cle.clone().unwrap())
+                .collect::<Vec<_>>()
+        };
+        noter_alertes(&c);
+        let notees = compter();
+        assert_eq!(notees.len(), NOTEES_MAX, "{notees:?}");
+        assert!(
+            notees
+                .iter()
+                .all(|k| !k.ends_with("|100") && !k.ends_with("|101") && !k.ends_with("|0"))
+        );
+        // Une autre langue : d'autres textes, mêmes clés et premiers événements.
+        for a in &mut c.alertes {
+            a.texte = format!("text {}", a.cle);
+        }
+        noter_alertes(&c);
+        assert_eq!(compter().len(), NOTEES_MAX);
     }
 
     /// Un dossier vide n'est jamais sain : chaque règle dit son journal absent.

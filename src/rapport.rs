@@ -799,6 +799,17 @@ fn journaux_windows_html(h: &mut String, examens: &[crate::modele::resultat::Res
         "<h2>Windows logs</h2><div class=carte><div class=ligne>{badge_verdict}<div>{phrase} <span class=meta>examination of {} (vanguard windows-logs)</span></div></div>",
         esc(&locale(&r.debut))
     );
+    // L'analyse d'un dossier (journaux rapportés, disque d'un autre ordinateur) ne parle pas de cet ordinateur.
+    if let Some(d) = &r.dossier {
+        let _ = trw!(
+            h,
+            "<div class=meta>Journaux d'un dossier, pas de cet ordinateur : {}</div>",
+            "<div class=meta>Logs from a folder, not from this computer: {}</div>",
+            esc(d)
+        );
+    }
+    // Un résultat dont le sceau ne prouve rien (accepté tel quel, ou changé hors de Vanguard) n'a aucun vert.
+    let prouve = !r.couverture.non_verifies.iter().any(|n| !n.starts_with("EVT-"));
     // Le verdict de chaque règle : son constat de couverture (sain, non vérifié et pourquoi, sans objet), et le
     // nombre de ses alertes.
     let mut regles: Vec<&str> = Vec::new();
@@ -818,7 +829,8 @@ fn journaux_windows_html(h: &mut String, examens: &[crate::modele::resultat::Res
         let couverture = siens.iter().find(|c| c.etat != "probleme");
         let marque = match (pire, couverture.map(|c| c.etat.as_str())) {
             (Some(n), _) => badge(Some(n)),
-            (None, Some("sain")) => badge(None),
+            (None, Some("sain")) if prouve => badge(None),
+            (None, Some("sans-objet")) => "<span class=meta>–</span>".to_string(),
             _ => badge_non_verifie(),
         };
         let compte = if alertes > 0 {
@@ -858,7 +870,9 @@ fn journaux_windows_html(h: &mut String, examens: &[crate::modele::resultat::Res
                 "<div class=meta>{coupees} older alert(s) not shown: vanguard windows-logs --json gives them all.</div>"
             );
         }
-        for c in alertes.iter().skip(coupees).take(ALERTES_JOURNAUX + 10) {
+        let sans_date = alertes.len() - datees;
+        let montrees_sans_date = sans_date.min(10);
+        for c in alertes.iter().skip(coupees).take(ALERTES_JOURNAUX + montrees_sans_date) {
             let quand = c
                 .date
                 .as_deref()
@@ -870,6 +884,14 @@ fn journaux_windows_html(h: &mut String, examens: &[crate::modele::resultat::Res
                 esc(&quand),
                 esc(&c.regle),
                 esc(&c.message)
+            );
+        }
+        if sans_date > montrees_sans_date {
+            let _ = trw!(
+                h,
+                "<div class=meta>{} alerte(s) sans date de plus : vanguard journaux-windows --json les donne toutes.</div>",
+                "<div class=meta>{} more alert(s) without a date: vanguard windows-logs --json gives them all.</div>",
+                sans_date - montrees_sans_date
             );
         }
     }
@@ -1168,6 +1190,17 @@ mod tests {
         );
         assert!(eff < srv, "le plus ancien d'abord : {h}");
         assert!(h.contains("Security absent") && h.contains("3 fichiers au-delà"), "{h}");
+        // Un dossier analysé est dit ; un résultat accepté sans preuve n'a aucun vert.
+        let mut r2 = r.clone();
+        r2.dossier = Some("/mnt/<disque>".into());
+        r2.couverture
+            .non_verifies
+            .push("résultat accepté tel quel au premier sceau".into());
+        r2.constats[2].etat = "sain".into();
+        let mut h2 = String::new();
+        journaux_windows_html(&mut h2, &[r2]);
+        assert!(h2.contains("pas de cet ordinateur : /mnt/&lt;disque&gt;"), "{h2}");
+        assert!(!h2.contains(&badge(None)), "{h2}");
         let mut vide = String::new();
         journaux_windows_html(&mut vide, &[]);
         assert_eq!(vide, "");

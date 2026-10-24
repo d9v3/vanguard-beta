@@ -45,6 +45,32 @@ pub(crate) struct Periode {
     pub dernier: Option<DateTime<Utc>>,
     /// Le journal ne remonte pas au début de la période demandée (`Manque::PeriodeCourte`).
     pub courte: bool,
+    /// Ce que les règles ont relevé d'autre sur ce journal (vide, muet, désactivé, trous non vérifiés, audit réduit
+    /// ou sans preuve), dans la langue du moment, sans doublon : un journal lu sans erreur n'est pas pour autant
+    /// sain.
+    pub remarques: Vec<String>,
+}
+
+/// Le journal dont parle un manque, pour ceux que la lecture elle-même ne dit pas (`Periode::etat`).
+fn journal_du_manque(m: &Manque) -> Option<&str> {
+    match m {
+        Manque::Vide(j) | Manque::Desactive(j) => Some(j),
+        Manque::Muet { journal, .. }
+        | Manque::AuditReduit { journal }
+        | Manque::NonVerifies { journal, .. }
+        | Manque::NonAudite { journal, .. }
+        | Manque::TrousIllisibles { journal, .. }
+        | Manque::SuiteNonProuvee { journal, .. }
+        | Manque::TrousAuDela { journal, .. } => Some(journal),
+        Manque::Absent(_)
+        | Manque::Refuse(_)
+        | Manque::Illisible(..)
+        | Manque::Partiel(..)
+        | Manque::PeriodeCourte { .. }
+        | Manque::Bornes(_)
+        | Manque::SansDate(_)
+        | Manque::DefenderInconnu => None,
+    }
 }
 
 /// Ce que la source a pu faire d'un journal.
@@ -196,6 +222,15 @@ pub(crate) fn periodes(a: &Analyse) -> Vec<Periode> {
             } else {
                 EtatPeriode::Absent
             };
+            let mut remarques: Vec<String> = Vec::new();
+            for m in a.jugements.iter().flat_map(|j| &j.manques) {
+                if journal_du_manque(m).is_some_and(|x| x.eq_ignore_ascii_case(journal)) {
+                    let t = nom_sans_piege(&resultat::manque(&a.source, m).0, 300);
+                    if !remarques.contains(&t) {
+                        remarques.push(t);
+                    }
+                }
+            }
             let stat = a.journaux.iter().find(|s| s.nom.eq_ignore_ascii_case(journal));
             Periode {
                 journal,
@@ -204,6 +239,7 @@ pub(crate) fn periodes(a: &Analyse) -> Vec<Periode> {
                 premier: stat.and_then(|s| s.premier),
                 dernier: stat.and_then(|s| s.dernier),
                 courte: courte(journal),
+                remarques,
             }
         })
         .collect()
@@ -423,6 +459,11 @@ mod tests {
         assert_eq!(sys.premier, Some(t0() + Duration::seconds(3600)));
         // Demandé depuis sept jours avant t0 : System ne remonte qu'à t0 + 1 h.
         assert!(sys.courte, "{sys:?}");
+        // Lu sans erreur mais vide : dit, jamais muet.
+        let vide = analyse(&[ev("System", SCM, 7036, 0, 2, &[("param1", "x")])], &[]);
+        let sec = periodes(&vide).into_iter().find(|x| x.journal == "Security").unwrap();
+        assert_eq!(sec.etat, EtatPeriode::Lu(Vec::new()));
+        assert!(sec.remarques.iter().any(|r| r.contains("vide")), "{sec:?}");
     }
 
     /// Une trouvaille sans date reste montrée, après les datées.

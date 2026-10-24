@@ -12,6 +12,9 @@
 //! serveurs.
 
 mod chronologie;
+// Lu par la chronologie sous Windows ; ses essais tournent partout.
+#[cfg_attr(not(windows), allow(dead_code))]
+mod journaux_windows;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]

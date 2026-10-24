@@ -294,6 +294,7 @@ proptest! {
         ];
         let examen = Sujet::Examen(Box::new(Resultat {
             outil: "PRO-ESP-001".into(),
+            dossier: None,
             schema: 1,
             debut: "2026-10-23T10:00:00Z".into(),
             duree_ms: 1,
@@ -396,6 +397,7 @@ fn honnetete_sur_l_etat_du_journal() {
     assert!(markdown(&sujet, &reponses(), Some(Lecture::Intact), Programme::Ghsa).contains("Event log: intact"));
     let falsifie = Resultat {
         outil: "PRO-ESP-001".into(),
+        dossier: None,
         schema: 1,
         debut: "2026-10-23T10:00:00Z".into(),
         duree_ms: 0,
@@ -719,6 +721,7 @@ fn examen_des_perimes_sans_inventaire() {
     use crate::risk::Niveau;
     let r = Resultat {
         outil: "PRO-PER-001".into(),
+        dossier: None,
         schema: 1,
         debut: "2026-10-23T10:00:00Z".into(),
         duree_ms: 1,
@@ -757,6 +760,7 @@ fn diagnostic_et_sortantes_sans_inventaire() {
     use crate::risk::Niveau;
     let examen = |outil: &str, constats: Vec<ConstatEcrit>| Resultat {
         outil: outil.into(),
+        dossier: None,
         schema: 1,
         debut: "2026-10-23T10:00:00Z".into(),
         duree_ms: 1,
