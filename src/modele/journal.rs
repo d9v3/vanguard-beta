@@ -79,6 +79,51 @@ struct Tete {
     ancre: String,
     #[serde(default)]
     clos: BTreeMap<String, Clos>,
+    /// Ce qu'une écriture va ajouter, scellé AVANT l'ajout : un arrêt entre l'ajout et la tête qui le suit laisse une
+    /// fin que seule cette annonce couvre. Sans elle, une fin en plus de la tête n'est pas de Vanguard : un programme
+    /// du compte qui ajoutait ses lignes sans toucher la tête les voyait reprises comme les nôtres à l'écriture
+    /// suivante, puis lues « intactes ».
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    annonce: Option<Annonce>,
+}
+
+/// La fin qu'une écriture annonce avant d'ajouter ses lignes : le segment, son nombre de lignes et l'empreinte de sa
+/// dernière ligne une fois l'ajout fait, et le mois que l'écriture clôt (changement de mois) tel qu'il était.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+struct Annonce {
+    segment: String,
+    lignes: u64,
+    derniere: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    clos: Option<(String, Clos)>,
+}
+
+/// La fin trouvée sur le disque, d'après la tête : la sienne, celle qu'elle annonçait (arrêt entre l'ajout et la
+/// tête), ou une autre.
+#[derive(Debug, PartialEq, Eq)]
+enum Fin {
+    DeLaTete,
+    Annoncee,
+    Autre,
+}
+
+/// Juge la fin du dernier segment (`dernier`, ses lignes, l'empreinte de la dernière) d'après la tête. Égalité
+/// exacte, nombre de lignes compris : une ligne de plus que la tête, même chaînée sur sa dernière, est une autre fin.
+fn fin_trouvee(t: &Tete, dernier: Option<&str>, lignes: usize, derniere: Option<&str>) -> Fin {
+    let pareil = |segment: &str, n: u64, fin: &str| {
+        dernier.unwrap_or_default() == segment && lignes as u64 == n && derniere.unwrap_or_default() == fin
+    };
+    if pareil(&t.segment, t.lignes, &t.derniere) {
+        Fin::DeLaTete
+    } else if t
+        .annonce
+        .as_ref()
+        .is_some_and(|a| pareil(&a.segment, a.lignes, &a.derniere))
+    {
+        Fin::Annoncee
+    } else {
+        Fin::Autre
+    }
 }
 
 /// Ce que vaut le journal relu.
@@ -128,6 +173,18 @@ pub(crate) struct Lu {
     pub lecture: Lecture,
     pub evenements: Vec<Evenement>,
     pub illisibles: usize,
+    /// Les événements à partir de ce rang sont tenus pour vérifiés (`verifies`) : écrits sous une tête crue, après la
+    /// dernière rupture notée.
+    pub verifies_des: usize,
+}
+
+impl Lu {
+    /// Ce que la lecture garantit écrit par Vanguard : tout, d'un journal intact ; ce qui suit la dernière rupture,
+    /// d'un journal rompu puis repris ; rien, d'un journal falsifié ou dont la tête n'est pas crue. Ce qui décide de
+    /// taire quelque chose (une alerte déjà notée) ne se fonde que là-dessus.
+    pub(crate) fn verifies(&self) -> &[Evenement] {
+        self.evenements.get(self.verifies_des..).unwrap_or_default()
+    }
 }
 
 /// L'empreinte des octets exacts d'une ligne, sans son retour à la ligne.
@@ -380,7 +437,10 @@ fn ecrire_dans(
     // Les mois après celui de l'horloge (ou de la tête, si une horloge sautée en avant y a écrit) ne sont pas
     // suivis : un fichier posé au nom de 2099 ferait écrire là, et partir les vrais mois de la lecture bornée.
     let plafond = match &lue {
-        TeteLue::Lue(t, _) => t.segment.clone().max(mois_de(maintenant)),
+        TeteLue::Lue(t, _) => {
+            let annonce = t.annonce.as_ref().map(|a| a.segment.clone()).unwrap_or_default();
+            t.segment.clone().max(annonce).max(mois_de(maintenant))
+        }
         _ => mois_de(maintenant),
     };
     let presents: Vec<(String, PathBuf)> = segments(&rep).into_iter().filter(|(m, _)| *m <= plafond).collect();
@@ -398,23 +458,51 @@ fn ecrire_dans(
 
     let mut rupture = None;
     let mut tete = match lue {
-        TeteLue::Lue(t, _) => {
-            let n = usize::try_from(t.lignes).unwrap_or(usize::MAX);
-            let d_accord = dernier.as_deref() == Some(t.segment.as_str())
-                && (fin_reelle.as_deref() == Some(t.derniere.as_str())
-                    // La tête en retard d'un arrêt pendant l'écriture : les lignes d'après sont les nôtres.
-                    || (n >= 1 && n < reelles.len() && empreinte_ligne(reelles[n - 1]) == t.derniere));
-            if !d_accord {
-                rupture = Some((
-                    format!("{} #{} {}", t.segment, t.lignes, t.derniere),
-                    format!(
-                        "{} #{} {}",
-                        dernier.as_deref().unwrap_or("-"),
-                        reelles.len(),
-                        fin_reelle.as_deref().unwrap_or("-")
-                    ),
-                ));
+        TeteLue::Lue(mut t, _) => {
+            // Ce qui est là est jugé avant d'écrire : seule la fin de la tête, ou celle qu'elle annonçait, est de
+            // Vanguard. Toute autre (des lignes ajoutées sans toucher la tête, une fin retirée) est une rupture
+            // notée, et la tête repart du disque sans rien adopter en silence.
+            match fin_trouvee(&t, dernier.as_deref(), reelles.len(), fin_reelle.as_deref()) {
+                Fin::DeLaTete => {}
+                Fin::Annoncee => {
+                    // Un arrêt entre l'ajout et la tête : l'ajout annoncé est le nôtre, la tête le rattrape (et le
+                    // mois qu'il closait, s'il est bien tel qu'annoncé).
+                    let a = t
+                        .annonce
+                        .clone()
+                        .unwrap_or_else(|| unreachable!("fin annoncée sans annonce"));
+                    if let Some((m, c)) = a.clos {
+                        let pareil = presents.iter().find(|(p, _)| *p == m).is_some_and(|(_, chemin)| {
+                            crate::socle::lire_ordinaire(chemin, SEGMENT_MAX).is_ok_and(|o| {
+                                empreinte_segment(&o) == c.empreinte && lignes(&o).len() as u64 == c.lignes
+                            })
+                        });
+                        if pareil {
+                            t.clos.insert(m, c);
+                        } else {
+                            rupture = Some((
+                                format!("{m} : mois clos annoncé / announced closed month"),
+                                format!("{} segment(s)", presents.len()),
+                            ));
+                        }
+                    }
+                    t.segment = a.segment;
+                    t.lignes = a.lignes;
+                    t.derniere = a.derniere;
+                }
+                Fin::Autre => {
+                    rupture = Some((
+                        format!("{} #{} {}", t.segment, t.lignes, t.derniere),
+                        format!(
+                            "{} #{} {}",
+                            dernier.as_deref().unwrap_or("-"),
+                            reelles.len(),
+                            fin_reelle.as_deref().unwrap_or("-")
+                        ),
+                    ));
+                }
             }
+            t.annonce = None;
             t
         }
         TeteLue::Absente if presents.is_empty() => Tete::default(),
@@ -474,19 +562,25 @@ fn ecrire_dans(
         return Ok(());
     }
 
+    // La tête telle que le disque est avant l'ajout (après une rupture, celle refaite du disque) : c'est elle qui
+    // porte l'annonce.
+    tete.segment = dernier.clone().unwrap_or_default();
+    tete.lignes = reelles.len() as u64;
+    tete.derniere = fin_reelle.clone().unwrap_or_default();
     // Rotation : le mois d'avant est clos, et sa dernière empreinte devient l'ancre du nouveau.
     let mut n_courant = reelles.len() as u64;
     let mut prefixe_retour = !octets.is_empty() && !octets.ends_with(b"\n");
+    let mut clos_ici = None;
     if let Some(d) = &dernier
         && *d != mois
     {
-        tete.clos.insert(
+        clos_ici = Some((
             d.clone(),
             Clos {
                 lignes: reelles.len() as u64,
                 empreinte: empreinte_segment(&octets),
             },
-        );
+        ));
         n_courant = 0;
         prefixe_retour = false;
     }
@@ -513,7 +607,23 @@ fn ecrire_dans(
             "journal du mois plein / month's log full",
         ));
     }
+    // En deux temps : la fin à venir d'abord, scellée dans la tête, puis l'ajout, puis la tête qui le couvre.
+    tete.annonce = Some(Annonce {
+        segment: mois.clone(),
+        lignes: n_courant,
+        derniere: precedent.clone(),
+        clos: clos_ici.clone(),
+    });
+    crate::sceau::ecrire_dans(
+        dossier,
+        TETE,
+        &serde_json::to_vec(&tete).map_err(std::io::Error::other)?,
+    )?;
     ajouter(&rep.join(format!("{mois}.jsonl")), &a_ajouter)?;
+    tete.annonce = None;
+    if let Some((m, c)) = clos_ici {
+        tete.clos.insert(m, c);
+    }
     tete.version = version.to_string();
     tete.segment.clone_from(&mois);
     tete.lignes = n_courant;
@@ -581,12 +691,15 @@ pub(crate) fn lire_dans(dossier: &Path) -> Lu {
 
 fn lire_borne(dossier: &Path, bornes: Bornes) -> Lu {
     let presents = segments(&dossier.join(DOSSIER));
-    let (mut lecture, tete) = match tete_lue(dossier) {
+    let lue = tete_lue(dossier);
+    let tete_crue = matches!(lue, TeteLue::Lue(_, false));
+    let (mut lecture, tete) = match lue {
         TeteLue::Absente if presents.is_empty() => {
             return Lu {
                 lecture: Lecture::Vide,
                 evenements: Vec::new(),
                 illisibles: 0,
+                verifies_des: 0,
             };
         }
         TeteLue::Absente => (Lecture::Falsifie("tête absente / head missing".into()), None),
@@ -596,8 +709,12 @@ fn lire_borne(dossier: &Path, bornes: Bornes) -> Lu {
         TeteLue::Lue(t, false) => (Lecture::Intact, Some(t)),
     };
     // Avec une tête crue, rien ne s'écrit après son mois : ce qui y est posé n'est pas de Vanguard.
+    // Le mois qu'elle annonçait aussi (un arrêt entre l'ajout et la tête, au changement de mois).
     let plafond = match &tete {
-        Some(t) if !t.segment.is_empty() => t.segment.clone(),
+        Some(t) if !t.segment.is_empty() => t
+            .annonce
+            .as_ref()
+            .map_or_else(|| t.segment.clone(), |a| a.segment.clone().max(t.segment.clone())),
         _ => mois_de(chrono::Utc::now()),
     };
     let (presents, ecartes, posterieurs) = segments_bornes(presents, bornes, &plafond);
@@ -618,16 +735,23 @@ fn lire_borne(dossier: &Path, bornes: Bornes) -> Lu {
             "{illisibles} ligne(s) illisible(s) / unreadable line(s)"
         )));
     }
-    if let Some(r) = evenements.iter().find(|e| matches!(e.quoi, Genre::Rupture { .. })) {
+    let derniere_rupture = evenements.iter().rposition(|e| matches!(e.quoi, Genre::Rupture { .. }));
+    if let Some(r) = derniere_rupture.map(|i| &evenements[i]) {
         lecture = lecture.pire(Lecture::Incomplet(format!(
             "rupture notée le / break recorded on {}",
             r.date_locale().unwrap_or_default()
         )));
     }
+    let verifies_des = if tete_crue && !matches!(lecture, Lecture::Falsifie(_)) {
+        derniere_rupture.map_or(0, |i| i + 1)
+    } else {
+        evenements.len()
+    };
     Lu {
         lecture,
         evenements,
         illisibles,
+        verifies_des,
     }
 }
 
@@ -685,8 +809,15 @@ fn relire(
             precedente = Some(empreinte_ligne(l));
         }
         let Some(t) = tete else { continue };
+        // Le mois qu'une écriture annoncée closait (arrêt entre l'ajout et la tête) : retenu tel qu'annoncé.
+        let clos_annonce = t
+            .annonce
+            .as_ref()
+            .and_then(|a| a.clos.as_ref())
+            .filter(|(m, _)| m == mois)
+            .map(|(_, c)| c);
         if i < dernier {
-            match t.clos.get(mois) {
+            match t.clos.get(mois).or(clos_annonce) {
                 Some(c) if c.empreinte == empreinte_segment(&octets) && c.lignes == ls.len() as u64 => {}
                 Some(_) => {
                     lecture = lecture.pire(Lecture::Falsifie(format!(
@@ -700,21 +831,27 @@ fn relire(
                 }
             }
         } else {
-            let n = usize::try_from(t.lignes).unwrap_or(usize::MAX);
             let fin = ls.last().map(|l| empreinte_ligne(l));
-            if *mois != t.segment {
-                lecture = lecture.pire(Lecture::Falsifie(format!(
-                    "{mois} : pas le mois de la tête / not the head's month"
-                )));
-            } else if ls.len() == n && fin.as_deref() == Some(t.derniere.as_str()) {
-            } else if n >= 1 && n < ls.len() && empreinte_ligne(ls[n - 1]) == t.derniere {
-                lecture = lecture.pire(Lecture::Incomplet(
-                    "fin écrite sans sa tête (arrêt pendant l'écriture ?) / end written without its head".into(),
-                ));
-            } else {
-                lecture = lecture.pire(Lecture::Falsifie(format!(
-                    "{mois} : fin différente de la tête (lignes retirées ou changées) / end differs from the head"
-                )));
+            match fin_trouvee(t, Some(mois), ls.len(), fin.as_deref()) {
+                Fin::DeLaTete => {}
+                // Annoncée et scellée avant l'ajout : de Vanguard, mais sa tête n'a pas suivi.
+                Fin::Annoncee => {
+                    lecture = lecture.pire(Lecture::Incomplet(
+                        "fin écrite sans sa tête (arrêt pendant l'écriture ?) / end written without its head".into(),
+                    ));
+                }
+                Fin::Autre if *mois != t.segment && t.annonce.as_ref().is_none_or(|a| a.segment != *mois) => {
+                    lecture = lecture.pire(Lecture::Falsifie(format!(
+                        "{mois} : pas le mois de la tête / not the head's month"
+                    )));
+                }
+                // Des lignes en plus de la tête, même chaînées sur sa dernière : jamais annoncées, donc pas de
+                // Vanguard ; une fin retirée ou changée aussi.
+                Fin::Autre => {
+                    lecture = lecture.pire(Lecture::Falsifie(format!(
+                        "{mois} : fin différente de la tête (lignes ajoutées, retirées ou changées) / end differs from the head (lines added, removed or changed)"
+                    )));
+                }
             }
         }
     }
@@ -786,7 +923,44 @@ pub(crate) fn noter(ev: Evenement) -> Option<String> {
 /// retirée au milieu ; seul le journal relu le voit, et le tableau, lui, montre les alertes qui restent sans rien
 /// dire.
 pub(crate) fn constat() -> Option<crate::machine::Constat> {
-    constat_de(&lire().lecture)
+    let lu = lire();
+    constat_de(&lu.lecture).or_else(|| constat_de_rupture(&lu.evenements, chrono::Utc::now()))
+}
+
+/// Une rupture se dit au bilan un mois : la tête est repartie du disque, et ce qui la précède (des lignes ajoutées,
+/// retirées ou changées hors de Vanguard, ou une écriture coupée net) n'est pas vérifié. Sans cela, le « falsifié »
+/// d'avant la rupture devenait un simple « incomplet » dès l'écriture suivante, sans plus rien dire.
+const RUPTURE_DITE_JOURS: i64 = 30;
+
+fn constat_de_rupture(
+    evenements: &[Evenement],
+    maintenant: chrono::DateTime<chrono::Utc>,
+) -> Option<crate::machine::Constat> {
+    let limite = (maintenant - chrono::Duration::days(RUPTURE_DITE_JOURS))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    let r = evenements
+        .iter()
+        .rev()
+        .find(|e| matches!(e.quoi, Genre::Rupture { .. }) && e.quand >= limite)?;
+    let quand = r.date_locale().unwrap_or_default();
+    Some(
+        crate::machine::alerte(
+            crate::sceau::CAT,
+            Niveau::Eleve,
+            trf!(
+                "Le journal des événements a été rompu le {quand} : sa fin n'était pas celle que Vanguard avait écrite (lignes ajoutées, retirées ou changées hors de Vanguard, ou écriture coupée net). Ce qui précède la rupture n'est pas tenu pour vérifié.",
+                "The event log was broken on {quand}: its end was not the one Vanguard had written (lines added, removed or changed outside Vanguard, or a write cut short). What comes before the break is not taken as verified."
+            ),
+        )
+        .manuel(
+            tr!(
+                "« vanguard evenements » montre la rupture ; regardez ce qui tourne sous votre compte (Protection › Qui parle à Internet ?)",
+                "“vanguard events” shows the break; look at what runs under your account (Protection › Who talks to the Internet?)"
+            ),
+            &[],
+        ),
+    )
 }
 
 fn constat_de(l: &Lecture) -> Option<crate::machine::Constat> {
@@ -1245,8 +1419,97 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// Des lignes ajoutées à la fin par un autre programme, chaînées sur la vraie dernière, sans toucher la tête ni
+    /// les sceaux : falsifié tout de suite (jamais « incomplet » sans alerte), puis, à l'écriture suivante, une rupture
+    /// notée et dite au bilan, jamais une reprise en silence qui se relirait « intacte ». La déduplication ne s'y fie
+    /// pas : la ligne forgée n'est pas parmi les événements vérifiés.
+    #[test]
+    fn lignes_ajoutees_a_la_fin_jamais_adoptees() {
+        let d = dossier("ajout-fin");
+        remplir(&d, 2, "2026-10-23T10:00:00Z");
+        let s = segment(&d, "2026-10");
+        let o = std::fs::read(&s).unwrap();
+        let mut forgee = alerte(99, "2026-10-23T10:30:00Z");
+        forgee.precedent = empreinte_ligne(lignes(&o).last().unwrap());
+        let mut ligne = serde_json::to_vec(&forgee).unwrap();
+        ligne.push(b'\n');
+        ajouter(&s, &ligne).unwrap();
+        let lu = lire_dans(&d);
+        assert!(matches!(lu.lecture, Lecture::Falsifie(_)), "{:?}", lu.lecture);
+        assert!(constat_de(&lu.lecture).is_some());
+        assert!(lu.verifies().is_empty());
+        // Une écriture ordinaire : la rupture est notée, rien n'est repris comme de Vanguard.
+        remplir(&d, 1, "2026-10-23T11:00:00Z");
+        let lu = lire_dans(&d);
+        assert_ne!(lu.lecture, Lecture::Intact, "{:?}", lu.lecture);
+        assert!(lu.evenements.iter().any(|e| matches!(e.quoi, Genre::Rupture { .. })));
+        assert!(constat_de_rupture(&lu.evenements, le("2026-10-24T00:00:00Z")).is_some());
+        assert!(constat_de_rupture(&lu.evenements, le("2026-12-24T00:00:00Z")).is_none());
+        assert!(
+            !alertes(lu.verifies()).any(|(e, ..)| e.cle.as_deref() == Some("port|99")),
+            "la ligne forgée passe pour vérifiée"
+        );
+        assert_eq!(
+            alertes(lu.verifies()).count(),
+            1,
+            "l'alerte d'après la rupture est vérifiée"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Un arrêt entre l'ajout et la tête qui le suit : la fin est celle que la tête annonçait, scellée avant l'ajout.
+    /// Elle est de Vanguard : lue « incomplète » sans alerte, reprise sans rupture à l'écriture suivante, y compris
+    /// quand cette écriture ouvrait un nouveau mois.
+    #[test]
+    fn arret_entre_ajout_et_tete_repris_sans_rupture() {
+        for (avant, apres) in [
+            ("2026-10-23T10:00:00Z", "2026-10-23T11:00:00Z"),
+            ("2026-09-30T10:00:00Z", "2026-10-01T10:00:00Z"),
+        ] {
+            let d = dossier("annonce");
+            remplir(&d, 2, avant);
+            // L'écriture annoncée, scellée, puis l'ajout ; la tête finale manque (arrêt).
+            let tete_avant = crate::sceau::lire_dans(&d, TETE);
+            noter_dans(&d, alerte(7, apres), le(apres)).unwrap();
+            let mois = &apres[..7];
+            let o = std::fs::read(segment(&d, mois)).unwrap();
+            let mut t: Tete = match tete_avant {
+                crate::sceau::Lecture::Intact(o) => serde_json::from_slice(&o).unwrap(),
+                autre => panic!("{autre:?}"),
+            };
+            t.annonce = Some(Annonce {
+                segment: mois.to_string(),
+                lignes: lignes(&o).len() as u64,
+                derniere: empreinte_ligne(lignes(&o).last().unwrap()),
+                clos: (avant[..7] != *mois).then(|| {
+                    let c = std::fs::read(segment(&d, &avant[..7])).unwrap();
+                    (
+                        avant[..7].to_string(),
+                        Clos {
+                            lignes: lignes(&c).len() as u64,
+                            empreinte: empreinte_segment(&c),
+                        },
+                    )
+                }),
+            });
+            crate::sceau::ecrire_dans(&d, TETE, &serde_json::to_vec(&t).unwrap()).unwrap();
+            let lu = lire_dans(&d);
+            assert!(
+                matches!(&lu.lecture, Lecture::Incomplet(r) if r.contains("sans sa tête")),
+                "{avant} : {:?}",
+                lu.lecture
+            );
+            assert!(constat_de(&lu.lecture).is_none());
+            remplir(&d, 1, apres);
+            let lu = lire_dans(&d);
+            assert_eq!(lu.lecture, Lecture::Intact, "{avant} : {:?}", lu.evenements);
+            assert_eq!(lu.verifies().len(), lu.evenements.len());
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
     /// Une ligne coupée par un arrêt : elle reste dans la chaîne, illisible ; la ligne suivante commence sur une
-    /// nouvelle ligne.
+    /// nouvelle ligne. Rien ne l'annonçait telle quelle : c'est une rupture, notée.
     #[test]
     fn ligne_coupee_reste_dans_la_chaine() {
         let d = dossier("coupee");
