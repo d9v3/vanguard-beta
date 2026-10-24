@@ -24,12 +24,24 @@ struct Appareil {
     nom: String,
 }
 
+/// Un adaptateur allumé et visible sans limite de temps (Linux) : son objet chez BlueZ (« /org/bluez/hci0 ») et le
+/// nom à montrer (« hci0 (salon) »).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Visible {
+    chemin: String,
+    nom: String,
+}
+
 /// Ce que le système dit de son Bluetooth.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Etat {
+    /// Au moins un adaptateur est allumé.
     allume: bool,
-    /// Visible sans limite de temps (Linux) ; Windows et macOS ne le sont que réglages ouverts.
-    visible_toujours: bool,
+    /// Les adaptateurs allumés et visibles sans limite de temps (Linux) ; Windows et macOS ne le sont que réglages
+    /// ouverts.
+    visibles: Vec<Visible>,
+    /// Les adaptateurs vus en tout : avec un seul, c'est celui que `bluetoothctl` règle sans qu'on le nomme.
+    adaptateurs: usize,
     appareils: Vec<Appareil>,
 }
 
@@ -59,8 +71,10 @@ fn adresse(texte: &str) -> Option<String> {
 }
 
 pub fn constats() -> Vec<Constat> {
-    let Some(etat) = lire() else {
-        return Vec::new();
+    let etat = match lire_etat() {
+        None => return Vec::new(),
+        Some(Ok(e)) => e,
+        Some(Err(raison)) => return vec![super::impossible(CAT, &raison)],
     };
     let avant: Option<Vus> = std::fs::read_to_string(fichier())
         .ok()
@@ -98,14 +112,32 @@ fn juger(etat: &Etat, avant: Option<&Vus>, aujourd_hui: NaiveDate) -> (Vec<Const
         })
         .collect();
     let mut constats = Vec::new();
-    if etat.allume && etat.visible_toujours {
+    if !etat.visibles.is_empty() {
+        let noms: Vec<String> = etat.visibles.iter().map(|v| affichable(&v.nom)).collect();
+        let noms = noms.join(", ");
+        // Un seul adaptateur : celui que bluetoothctl règle. Plusieurs : chacun par son objet chez BlueZ, que
+        // `lire_objets` n'a gardé que de la forme /org/bluez/hciN (rien d'autre ne se glisse dans la commande).
+        let commandes: Vec<String> = if etat.adaptateurs <= 1 {
+            vec!["bluetoothctl discoverable off".into()]
+        } else {
+            etat.visibles
+                .iter()
+                .filter(|v| !v.chemin.is_empty())
+                .map(|v| {
+                    format!(
+                        "busctl set-property org.bluez {} org.bluez.Adapter1 Discoverable b false",
+                        v.chemin
+                    )
+                })
+                .collect()
+        };
         constats.push(
             alerte(
                 CAT,
                 Niveau::Moyen,
-                tr!(
-                    "L'ordinateur est visible en Bluetooth en permanence : tout appareil à portée le voit et peut demander à s'appairer.",
-                    "The computer is visible over Bluetooth all the time: any device in range sees it and can ask to pair."
+                trf!(
+                    "L'ordinateur est visible en Bluetooth en permanence ({noms}) : tout appareil à portée le voit et peut demander à s'appairer.",
+                    "The computer is visible over Bluetooth all the time ({noms}): any device in range sees it and can ask to pair."
                 ),
             )
             .corriger(
@@ -113,7 +145,7 @@ fn juger(etat: &Etat, avant: Option<&Vus>, aujourd_hui: NaiveDate) -> (Vec<Const
                     "Le rendre invisible (il le redevient le temps d'un appairage, depuis les réglages Bluetooth)",
                     "Make it invisible (it becomes visible again while pairing, from the Bluetooth settings)"
                 ),
-                &["bluetoothctl discoverable off"],
+                &commandes,
             ),
         );
     }
@@ -183,9 +215,17 @@ fn retrait() -> &'static str {
 
 // ───────────────────────────── Lectures ─────────────────────────────
 
+/// L'état lu ; `None` : rien à dire (pas d'adaptateur, service Bluetooth arrêté) ; `Err` : la lecture a échoué, ce
+/// qui se dit « impossible à vérifier », jamais « invisible ».
+#[cfg(not(target_os = "linux"))]
+fn lire_etat() -> Option<Result<Etat, String>> {
+    lire().map(Ok)
+}
+
 #[cfg(target_os = "linux")]
-fn lire() -> Option<Etat> {
-    // Aucun adaptateur : rien à dire (sans quoi bluetoothctl attendrait un service qui n'existe pas).
+fn lire_etat() -> Option<Result<Etat, String>> {
+    use crate::machine::linux::dbus;
+    // Aucun adaptateur : rien à dire.
     let adaptateur = std::fs::read_dir("/sys/class/bluetooth")
         .ok()?
         .flatten()
@@ -194,24 +234,19 @@ fn lire() -> Option<Etat> {
         return None;
     }
     // Compte remappé dans un espace de noms d'utilisateur (`unshare -r`, conteneur sans droits) : le bus système y
-    // refuse l'authentification, et bluetoothctl 5.87 ne vérifie pas sa connexion et s'arrête net (SIGABRT, un
-    // vidage mémoire à chaque fois : plus de cent en une journée, venus de l'étape sans Internet des tests). Rien à
-    // lire de toute façon.
+    // refuse l'authentification. Rien à lire, comme du temps de bluetoothctl (qui s'y arrêtait net, SIGABRT).
     if std::fs::read_to_string("/proc/self/uid_map").is_ok_and(|m| !identite(&m)) {
         return None;
     }
-    let lancer = |args: &[&str]| {
-        crate::commande::lancer_en_anglais(std::process::Command::new("bluetoothctl").args(args), 5).map(|r| r.sortie)
-    };
-    let show = lancer(&["show"])?;
-    let mut etat = lire_show(&show)?;
-    // « paired-devices » a disparu de bluez 5.66 au profit de « devices Paired ».
-    let appareils = lancer(&["devices", "Paired"])
-        .filter(|s| !s.contains("Invalid command"))
-        .or_else(|| lancer(&["paired-devices"]))
-        .unwrap_or_default();
-    etat.appareils = lire_appareils(&appareils);
-    Some(etat)
+    // GetManagedObjects de BlueZ : tous les adaptateurs (bluetoothctl show ne voyait que celui par défaut) et tous
+    // les appareils, en une réponse typée.
+    let objets = dbus::Bus::systeme().and_then(|mut bus| bus.objets("org.bluez", "/"));
+    match objets {
+        // bluetoothd arrêté ou absent : comme bluetoothctl (« No default controller available »), rien à dire.
+        Err(e) if dbus::service_absent(&e) => None,
+        Err(e) => Some(Err(e)),
+        Ok(objets) => lire_objets(&objets).map(Ok),
+    }
 }
 
 /// `/proc/self/uid_map` sans remappage : une seule plage « 0 0 4294967295 », le compte vu tel qu'il est.
@@ -221,9 +256,70 @@ pub(crate) fn identite(uid_map: &str) -> bool {
     plages == [vec!["0", "0", "4294967295"]]
 }
 
-/// « bluetoothctl show » : Powered, Discoverable et DiscoverableTimeout (« 0x00000000 (0) » : sans limite).
-#[cfg(any(target_os = "linux", test))]
-fn lire_show(texte: &str) -> Option<Etat> {
+/// Les objets de BlueZ (chemin → interfaces → propriétés) : chaque `org.bluez.Adapter1` jugé à part (allumé, visible,
+/// sans limite de temps : DiscoverableTimeout à 0), et les `org.bluez.Device1` appairés (Paired), comme
+/// « bluetoothctl devices Paired ». `None` : aucun adaptateur chez BlueZ (rien à dire).
+#[cfg(target_os = "linux")]
+fn lire_objets(objets: &[(String, crate::machine::linux::dbus::Valeur)]) -> Option<Etat> {
+    let mut etat = Etat::default();
+    for (chemin, interfaces) in objets {
+        if let Some(a) = interfaces.champ("org.bluez.Adapter1") {
+            etat.adaptateurs += 1;
+            let oui = |cle: &str| a.champ(cle).and_then(super::linux::dbus::Valeur::booleen) == Some(true);
+            let allume = oui("Powered");
+            etat.allume |= allume;
+            let sans_limite = a
+                .champ("DiscoverableTimeout")
+                .and_then(super::linux::dbus::Valeur::entier)
+                == Some(0);
+            // Seul un objet de la forme /org/bluez/hciN finit dans la commande de correction.
+            let nom_hci = chemin.strip_prefix("/org/bluez/").filter(|n| {
+                n.strip_prefix("hci")
+                    .is_some_and(|c| !c.is_empty() && c.bytes().all(|o| o.is_ascii_digit()))
+            });
+            if allume && oui("Discoverable") && sans_limite {
+                let alias = a
+                    .champ("Alias")
+                    .or_else(|| a.champ("Name"))
+                    .and_then(|v| v.texte())
+                    .unwrap_or_default();
+                let hci = nom_hci.unwrap_or(chemin);
+                etat.visibles.push(Visible {
+                    chemin: if nom_hci.is_some() {
+                        chemin.clone()
+                    } else {
+                        String::new()
+                    },
+                    nom: if alias.is_empty() {
+                        hci.to_string()
+                    } else {
+                        format!("{hci} ({alias})")
+                    },
+                });
+            }
+        }
+        if let Some(d) = interfaces.champ("org.bluez.Device1")
+            && d.champ("Paired").and_then(super::linux::dbus::Valeur::booleen) == Some(true)
+            && let Some(mac) = d.champ("Address").and_then(|v| v.texte()).and_then(adresse)
+        {
+            let nom = d
+                .champ("Alias")
+                .or_else(|| d.champ("Name"))
+                .and_then(|v| v.texte())
+                .unwrap_or_default();
+            etat.appareils.push(Appareil {
+                adresse: mac,
+                nom: nom.trim().to_string(),
+            });
+        }
+    }
+    (etat.adaptateurs > 0).then_some(etat)
+}
+
+/// « bluetoothctl show » (Powered, Discoverable, DiscoverableTimeout « 0x00000000 (0) » : sans limite) : l'oracle de
+/// l'essai qui compare la lecture par BlueZ à l'outil.
+#[cfg(all(test, target_os = "linux"))]
+fn lire_show(texte: &str) -> Option<(bool, bool)> {
     if !texte.lines().any(|l| l.starts_with("Controller ")) {
         return None;
     }
@@ -234,15 +330,11 @@ fn lire_show(texte: &str) -> Option<Etat> {
     };
     let oui = |cle: &str| valeur(cle) == Some("yes");
     let sans_limite = valeur("DiscoverableTimeout").is_some_and(|v| v.starts_with("0x00000000") || v == "0");
-    Some(Etat {
-        allume: oui("Powered"),
-        visible_toujours: oui("Discoverable") && sans_limite,
-        appareils: Vec::new(),
-    })
+    Some((oui("Powered"), oui("Powered") && oui("Discoverable") && sans_limite))
 }
 
-/// « Device AA:BB:CC:DD:EE:FF Nom » par ligne.
-#[cfg(any(target_os = "linux", test))]
+/// « Device AA:BB:CC:DD:EE:FF Nom » par ligne (bluetoothctl devices Paired), pour le même essai.
+#[cfg(all(test, target_os = "linux"))]
 fn lire_appareils(texte: &str) -> Vec<Appareil> {
     texte
         .lines()
@@ -287,8 +379,9 @@ fn lire() -> Option<Etat> {
         .unwrap_or_default();
     Some(Etat {
         allume: true,
-        visible_toujours: false,
+        adaptateurs: 1,
         appareils,
+        ..Etat::default()
     })
 }
 
@@ -336,8 +429,9 @@ fn lire_profil(json: &str) -> Option<Etat> {
     }
     Some(Etat {
         allume,
-        visible_toujours: false,
+        adaptateurs: 1,
         appareils,
+        ..Etat::default()
     })
 }
 
@@ -364,6 +458,7 @@ mod tests {
         assert_eq!(adresse("a4:c1:38"), None);
         assert_eq!(adresse("zz:c1:38:0b:1e:22"), None);
         assert_eq!(adresse("../../a4c1380b1e22"), None);
+        assert_eq!(nom_utf8(b"Clavier \xc3\xa9t\xc3\xa9\0\0\x12"), "Clavier été");
     }
 
     #[test]
@@ -375,27 +470,131 @@ mod tests {
         assert!(!identite(""));
     }
 
+    #[cfg(target_os = "linux")]
+    fn adaptateur(powered: bool, visible: bool, delai: u32, alias: &str) -> crate::machine::linux::dbus::Valeur {
+        use crate::machine::linux::dbus::Valeur as V;
+        let p = |k: &str, v: V| (V::texte_de(k), V::Variante(String::new(), Box::new(v)));
+        V::Dictionnaire(vec![(
+            V::texte_de("org.bluez.Adapter1"),
+            V::Dictionnaire(vec![
+                p("Powered", V::Booleen(powered)),
+                p("Discoverable", V::Booleen(visible)),
+                p("DiscoverableTimeout", V::U32(delai)),
+                p("Alias", V::texte_de(alias)),
+            ]),
+        )])
+    }
+
+    #[cfg(target_os = "linux")]
+    fn appareil_bluez(mac: &str, nom: &str, paired: bool) -> crate::machine::linux::dbus::Valeur {
+        use crate::machine::linux::dbus::Valeur as V;
+        let p = |k: &str, v: V| (V::texte_de(k), V::Variante(String::new(), Box::new(v)));
+        V::Dictionnaire(vec![(
+            V::texte_de("org.bluez.Device1"),
+            V::Dictionnaire(vec![
+                p("Address", V::texte_de(mac)),
+                p("Alias", V::texte_de(nom)),
+                p("Paired", V::Booleen(paired)),
+            ]),
+        )])
+    }
+
+    /// Réponses de GetManagedObjects fabriquées : chaque adaptateur jugé à part et nommé, les appareils appairés
+    /// seulement, une adresse invalide ou un chemin étrange jamais repris dans une commande.
+    #[cfg(target_os = "linux")]
     #[test]
-    fn lectures_de_bluetoothctl() {
-        let show = "Controller 00:1A:7D:DA:71:13 (public)\n\tName: salon\n\tPowered: yes\n\tDiscoverable: yes\n\
-                    \tDiscoverableTimeout: 0x00000000 (0)\n\tPairable: yes\n";
-        let e = lire_show(show).unwrap();
-        assert!(e.allume && e.visible_toujours);
-        // Visible trois minutes (appairage en cours) : pas « toujours ».
-        let e = lire_show(&show.replace("0x00000000 (0)", "0x000000b4 (180)")).unwrap();
-        assert!(e.allume && !e.visible_toujours);
-        assert_eq!(lire_show("No default controller available\n"), None);
-        let appareils = lire_appareils(
-            "Device 98:7B:F3:11:22:33 Casque Salon\nDevice C8:3F:26:44:55:66 Xbox Wireless Controller\nautre\n",
-        );
+    fn lectures_de_bluez() {
+        let o = |c: &str, v| (c.to_string(), v);
+        let objets = vec![
+            o(
+                "/org/bluez",
+                crate::machine::linux::dbus::Valeur::Dictionnaire(Vec::new()),
+            ),
+            o("/org/bluez/hci0", adaptateur(true, false, 0, "salon")),
+            o("/org/bluez/hci1", adaptateur(true, true, 0, "cle")),
+            o(
+                "/org/bluez/hci0/dev_98_7B_F3_11_22_33",
+                appareil_bluez("98:7B:F3:11:22:33", "Casque Salon", true),
+            ),
+            o(
+                "/org/bluez/hci0/dev_C8_3F_26_44_55_66",
+                appareil_bluez("C8:3F:26:44:55:66", "Inconnu", false),
+            ),
+            o("/org/bluez/hci0/dev_x", appareil_bluez("pas une adresse", "x", true)),
+        ];
+        let e = lire_objets(&objets).unwrap();
+        assert!(e.allume);
+        assert_eq!(e.adaptateurs, 2);
         assert_eq!(
-            appareils,
-            [
-                appareil("98:7B:F3:11:22:33", "Casque Salon"),
-                appareil("C8:3F:26:44:55:66", "Xbox Wireless Controller")
-            ]
+            e.visibles,
+            [Visible {
+                chemin: "/org/bluez/hci1".into(),
+                nom: "hci1 (cle)".into()
+            }]
         );
-        assert_eq!(nom_utf8(b"Clavier \xc3\xa9t\xc3\xa9\0\0\x12"), "Clavier été");
+        assert_eq!(e.appareils, [appareil("98:7B:F3:11:22:33", "Casque Salon")]);
+        // Deux adaptateurs : la correction vise celui qui est visible, par son objet.
+        let (c, _) = juger(&e, Some(&Vus::default()), jour(10));
+        let k = c[0].correctif.as_ref().unwrap();
+        assert_eq!(
+            k.commandes,
+            ["busctl set-property org.bluez /org/bluez/hci1 org.bluez.Adapter1 Discoverable b false"]
+        );
+        assert!(c[0].message.contains("hci1 (cle)"), "{}", c[0].message);
+        // Visible trois minutes (appairage en cours) : pas « toujours ». Éteint : personne ne le voit.
+        for a in [adaptateur(true, true, 180, ""), adaptateur(false, true, 0, "")] {
+            let e = lire_objets(&[o("/org/bluez/hci0", a)]).unwrap();
+            assert!(e.visibles.is_empty(), "{e:?}");
+        }
+        // Un chemin d'adaptateur hors de la forme hciN : nommé, mais jamais dans une commande.
+        let mut e = lire_objets(&[
+            o("/org/bluez/hci0", adaptateur(true, true, 0, "")),
+            o("/org/bluez/hci0;reboot", adaptateur(true, true, 0, "")),
+        ])
+        .unwrap();
+        assert_eq!(e.visibles[1].chemin, "");
+        e.appareils.clear();
+        let (c, _) = juger(&e, Some(&Vus::default()), jour(10));
+        let k = c[0].correctif.as_ref().unwrap();
+        assert!(k.commandes.iter().all(|c| !c.contains("reboot")), "{:?}", k.commandes);
+        // Aucun adaptateur chez BlueZ : rien à dire. Pas de réponse : rien non plus, jamais « invisible ».
+        assert_eq!(lire_objets(&objets[..1]), None);
+        assert_eq!(lire_objets(&[]), None);
+        assert_eq!(lire_show("No default controller available\n"), None);
+    }
+
+    /// L'oracle : la lecture par BlueZ contre bluetoothctl, sur cette machine. bluetoothctl ne voit que l'adaptateur
+    /// par défaut : la comparaison ne vaut qu'avec un seul. Rien de personnel n'est écrit (des nombres seulement).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bluez_comme_bluetoothctl() {
+        let Some(Ok(natif)) = lire_etat() else {
+            return crate::essais::saute("pas d'adaptateur Bluetooth ni de BlueZ joignable");
+        };
+        if natif.adaptateurs != 1 {
+            return crate::essais::saute("plusieurs adaptateurs : bluetoothctl n'en voit qu'un");
+        }
+        let lancer = |args: &[&str]| {
+            crate::commande::lancer_en_anglais(std::process::Command::new("bluetoothctl").args(args), 5)
+                .map(|r| r.sortie)
+        };
+        let Some((allume, visible)) = lancer(&["show"]).as_deref().and_then(lire_show) else {
+            return crate::essais::saute("bluetoothctl absent ou muet");
+        };
+        assert_eq!((natif.allume, !natif.visibles.is_empty()), (allume, visible));
+        let mut outil: Vec<String> = lire_appareils(&lancer(&["devices", "Paired"]).unwrap_or_default())
+            .into_iter()
+            .map(|a| a.adresse)
+            .collect();
+        let mut lus: Vec<String> = natif.appareils.into_iter().map(|a| a.adresse).collect();
+        outil.sort();
+        lus.sort();
+        assert!(
+            outil == lus,
+            "appareils appairés : {} par BlueZ, {} par bluetoothctl",
+            lus.len(),
+            outil.len()
+        );
     }
 
     #[test]
@@ -405,7 +604,7 @@ mod tests {
             "device_connected":[{"AirPods d'Alice":{"device_address":"F4:65:A6:11:22:33"}}],
             "device_not_connected":[{"Magic Keyboard":{"device_address":"04-4B-ED-44-55-66"}},{"Sans adresse":{}}]}]}"#;
         let e = lire_profil(json).unwrap();
-        assert!(e.allume && !e.visible_toujours);
+        assert!(e.allume && e.visibles.is_empty());
         assert_eq!(
             e.appareils,
             [
@@ -422,8 +621,9 @@ mod tests {
         let clavier = appareil("C8:3F:26:44:55:66", "Clavier\x1b[2K");
         let etat = Etat {
             allume: true,
-            visible_toujours: false,
+            adaptateurs: 1,
             appareils: vec![casque.clone()],
+            ..Etat::default()
         };
         // Premier passage : le casque est connu d'avant, rien à signaler.
         let (c, vus) = juger(&etat, None, jour(10));
@@ -450,14 +650,30 @@ mod tests {
     fn visible_en_permanence() {
         let etat = Etat {
             allume: true,
-            visible_toujours: true,
+            adaptateurs: 1,
+            visibles: vec![Visible {
+                chemin: "/org/bluez/hci0".into(),
+                nom: "hci0".into(),
+            }],
             appareils: Vec::new(),
         };
         let (c, _) = juger(&etat, Some(&Vus::default()), jour(10));
         assert_eq!(c[0].probleme, Some(Niveau::Moyen));
         assert!(c[0].correctif.as_ref().unwrap().automatique);
+        assert_eq!(
+            c[0].correctif.as_ref().unwrap().commandes,
+            ["bluetoothctl discoverable off"]
+        );
         // Éteint : visible ou non, personne ne le voit.
-        let (c, _) = juger(&Etat { allume: false, ..etat }, None, jour(10));
+        let (c, _) = juger(
+            &Etat {
+                allume: false,
+                visibles: Vec::new(),
+                ..etat
+            },
+            None,
+            jour(10),
+        );
         assert!(c[0].probleme.is_none() && c[0].message.contains("éteint"));
     }
 }
