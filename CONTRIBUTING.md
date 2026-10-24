@@ -24,6 +24,7 @@ Une faille de sécurité ? Pas de ticket ni de demande de fusion publics : signa
 | `src/recherche.rs` | la recherche : score par mot, synonymes (« box » → routeur), fautes de frappe corrigées ; pour le menu et `vanguard chercher` |
 | `src/prediction.rs` | prédiction du mot en cours de frappe, la même dans tous les menus : sa fin en gris, Tab la complète |
 | `src/langue.rs` | choix de la langue et macros de traduction |
+| `src/masque.rs` | masque dans le binaire les mots d'attaque que Vanguard cherche (noms de commandes d'outils offensifs, contournements d'AMSI) par un XOR fait à la compilation (`liste_masquee!`, `mot_masque!`), décodé en mémoire au premier usage : qu'un antivirus ne prenne pas Vanguard pour l'outil qu'il traque ; le code source reste en clair |
 | `src/parametres.rs` | menu Paramètres et `vanguard parametres` : les réglages du lancement (langue, emojis, sans Internet) dans parametres.json, lus avant tout affichage, une variable d'environnement l'emportant ; protection en temps réel, surveillance, entretien, alertes apprises, blocage, restrictions des extensions et clé abuse.ch changés par leur propre code |
 | `src/machine/mod.rs` | types communs, affichage, exécution parallèle des vérifications |
 | `src/machine/regles.rs` | registre des règles du bilan : chacune se déclare où elle est écrite (`inventory::submit!`), avec un identifiant stable (« LNX-PLT-001 ») et au moins une référence du CIS, de Microsoft ou de l'ANSSI ; chacune tourne sous son délai (au-delà : non vérifiée, le bilan continue) ; `vanguard regles` les liste |

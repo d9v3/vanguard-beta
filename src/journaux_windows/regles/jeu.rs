@@ -15,6 +15,9 @@
 //! jamais à leur nom traduit.
 
 use std::net::IpAddr;
+use std::sync::LazyLock;
+
+use crate::{liste_masquee, mot_masque};
 
 use super::evenement::EvenementWindows;
 use super::moteur::{Audit, Condition, Forme, Gravite, Indice, Libelle, Regle, Test, Texte, Volet, couper, nombre};
@@ -976,12 +979,15 @@ impl Script {
         // Un motif à plusieurs mots (« -e powershell ») ne se ramasse pas : « the powershell » le formerait.
         let code = !motif.contains(' ') && motif.chars().any(|c| !c.is_ascii_alphanumeric());
         let m = ramasse(motif);
-        (code || RAMASSABLES.contains(&motif)) && m.chars().count() >= RAMASSE_MIN && self.ramasse.contains(&m)
+        (code || RAMASSABLES.iter().any(|r| r == motif))
+            && m.chars().count() >= RAMASSE_MIN
+            && self.ramasse.contains(&m)
     }
 }
 
-/// Des noms qui ne se forment pas par hasard en ramassant une phrase.
-const RAMASSABLES: &[&str] = &[
+/// Des noms qui ne se forment pas par hasard en ramassant une phrase. Masqués (`crate::masque`) : certains sont des
+/// noms de contournement d'AMSI ou de vidage de LSASS qu'un antivirus reconnaîtrait en clair dans le binaire.
+static RAMASSABLES: LazyLock<Vec<String>> = liste_masquee![
     "downloadstring",
     "frombase64string",
     "amsiutils",
@@ -1009,7 +1015,8 @@ fn contient_mot(texte: &str, motif: &str) -> bool {
     })
 }
 
-const AMSI: &[&str] = &[
+/// Masqué (`crate::masque`) : les noms internes d'AMSI, qu'un antivirus reconnaîtrait en clair.
+static AMSI: LazyLock<Vec<String>> = liste_masquee![
     "amsiutils",
     "amsiinitfailed",
     "amsiscanbuffer",
@@ -1017,8 +1024,9 @@ const AMSI: &[&str] = &[
     "amsiopensession",
 ];
 
-/// Des outils offensifs publiés, par les noms de leurs commandes : ils n'ont pas d'autre usage.
-const OUTILS_OFFENSIFS: &[&str] = &[
+/// Des outils offensifs publiés, par les noms de leurs commandes : ils n'ont pas d'autre usage. Masqué
+/// (`crate::masque`) : ces noms de commandes sont exactement ce qu'une signature d'antivirus cherche.
+static OUTILS_OFFENSIFS: LazyLock<Vec<String>> = liste_masquee![
     "invoke-mimikatz",
     "sekurlsa::",
     "lsadump::",
@@ -1112,14 +1120,14 @@ const DESARMER: &[&str] = &[
     "disableblockatfirstseen",
 ];
 
-fn un(s: &Script, motifs: &[&str]) -> bool {
-    motifs.iter().any(|m| s.contient(m))
+fn un<M: AsRef<str>>(s: &Script, motifs: &[M]) -> bool {
+    motifs.iter().any(|m| s.contient(m.as_ref()))
 }
 
 /// Ce qu'un bloc de script a de malveillant : (catégorie, gravité, pourquoi).
 pub(crate) fn script_suspect(texte: &str) -> Option<(&'static str, Gravite, Texte)> {
     let s = Script::de(texte);
-    if un(&s, AMSI) {
+    if un(&s, &AMSI[..]) {
         return Some((
             "amsi",
             Gravite::Critique,
@@ -1154,7 +1162,7 @@ pub(crate) fn script_suspect(texte: &str) -> Option<(&'static str, Gravite, Text
             ),
         ));
     }
-    if un(&s, OUTILS_OFFENSIFS) {
+    if un(&s, &OUTILS_OFFENSIFS[..]) {
         return Some((
             "outil",
             Gravite::Critique,
@@ -1164,7 +1172,7 @@ pub(crate) fn script_suspect(texte: &str) -> Option<(&'static str, Gravite, Text
             ),
         ));
     }
-    if s.contient("minidumpwritedump") && s.contient("lsass") {
+    if s.contient(mot_masque!("minidumpwritedump")) && s.contient("lsass") {
         return Some((
             "lsass",
             Gravite::Alerte,

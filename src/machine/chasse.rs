@@ -14,7 +14,7 @@ use super::regles::{Os, regle};
 use super::{Constat, alerte, impossible, ok};
 use crate::risk::Niveau;
 use crate::ui::{affichable, resume};
-use crate::{tr, trf};
+use crate::{mot_masque, tr, trf};
 
 regle!(
     "COM-CPT-003",
@@ -756,33 +756,40 @@ fn outil_offensif(noms: &[&str], ligne: &str) -> Option<(&'static str, usize)> {
     let bas = ligne.to_ascii_lowercase();
     for (i, nom) in noms.iter().enumerate() {
         let n = nom_de_fichier(nom).to_ascii_lowercase();
+        // Les noms d'outils cherchés sont masqués (`crate::masque`) : en clair dans le binaire, un antivirus y
+        // reconnaîtrait l'outil lui-même et prendrait Vanguard pour lui. Les noms *affichés* restent lisibles (`tr!`).
         let est = |outils: &[&str]| outils.iter().any(|o| est_l_outil(&n, o));
-        let raison = if est(&["mimikatz", "invoke-mimikatz"]) {
+        let raison = if est(&[mot_masque!("mimikatz"), mot_masque!("invoke-mimikatz")]) {
             tr!(
                 "voleur de mots de passe connu (Mimikatz)",
                 "known password stealer (Mimikatz)"
             )
-        } else if est(&["rubeus"]) {
+        } else if est(&[mot_masque!("rubeus")]) {
             tr!(
                 "outil connu d'attaque de Kerberos (Rubeus)",
                 "known Kerberos attack tool (Rubeus)"
             )
-        } else if est(&["sharphound"]) {
+        } else if est(&[mot_masque!("sharphound")]) {
             tr!(
                 "outil connu de reconnaissance d'Active Directory (SharpHound)",
                 "known Active Directory reconnaissance tool (SharpHound)"
             )
-        } else if est(&["lazagne"]) {
+        } else if est(&[mot_masque!("lazagne")]) {
             tr!(
                 "voleur de mots de passe connu (LaZagne)",
                 "known password stealer (LaZagne)"
             )
-        } else if est(&["xmrig"]) {
+        } else if est(&[mot_masque!("xmrig")]) {
             tr!(
                 "mineur de cryptomonnaie connu (XMRig)",
                 "known cryptocurrency miner (XMRig)"
             )
-        } else if est(&["procdump", "procdump64", "procdump64a"]) && bas.contains("lsass") {
+        } else if est(&[
+            mot_masque!("procdump"),
+            mot_masque!("procdump64"),
+            mot_masque!("procdump64a"),
+        ]) && bas.contains("lsass")
+        {
             tr!(
                 "copie la mémoire de LSASS, où sont les mots de passe (procdump)",
                 "copies the memory of LSASS, where the passwords are (procdump)"

@@ -23,6 +23,7 @@ A security flaw? No public issue or pull request: report it privately, see [SECU
 | `src/recherche.rs` | search: per-word score, synonyms ("box" → router), typos corrected; for the menu and `vanguard search` |
 | `src/prediction.rs` | prediction of the word being typed, the same in every menu: its end in grey, Tab completes it |
 | `src/langue.rs` | language choice and translation macros |
+| `src/masque.rs` | hides in the binary the attack words Vanguard searches for (offensive tool command names, AMSI bypasses) through a compile-time XOR (`liste_masquee!`, `mot_masque!`), decoded in memory on first use: so an antivirus does not take Vanguard for the tool it hunts; the source stays in the clear |
 | `src/parametres.rs` | Settings menu and `vanguard settings`: the startup settings (language, emojis, offline) in parametres.json, read before anything is shown, an environment variable winning; real-time protection, monitoring, check-up, learned alerts, blocking, extension restrictions and abuse.ch key changed by their own code |
 | `src/machine/mod.rs` | shared types, display, parallel execution of the checks |
 | `src/machine/regles.rs` | registry of check rules: each one is declared where it is written (`inventory::submit!`), with a stable identifier (“LNX-PLT-001”) and at least one CIS, Microsoft or ANSSI reference; each runs under its time limit (beyond it: not checked, the check goes on); `vanguard rules` lists them |

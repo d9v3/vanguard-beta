@@ -257,6 +257,7 @@ if [[ $MODE != --rapide ]]; then
   etape essais-cle bash outils/essais-cle.sh &
   etape signature bash outils/essais-signature.sh &
   etape essais-verifier bash outils/essais-verifier.sh &
+  etape masque bash outils/verifier-masque.sh &
   etape extensions extensions &
   etape python scripts_python &
   etape liens python3 outils/liens.py --hors-ligne &
@@ -362,6 +363,7 @@ if [[ $MODE != --rapide ]]; then
   ligne essais-cle "essais des outils de la clé"
   ligne signature "signature des versions"
   ligne essais-verifier "essais de verifier.sh (--seulement)"
+  ligne masque "mots d'attaque masqués"
   ligne extensions "extensions (sdk, exemple Rust)"
   ligne python "scripts Python"
   ligne liens "liens internes"

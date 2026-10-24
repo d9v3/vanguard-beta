@@ -25,6 +25,11 @@ mod trous;
 #[path = "../../src/journaux_windows/regles/moteur.rs"]
 mod moteur;
 
+// Le vrai module de masquage (autonome) : jeu.rs y prend `liste_masquee!`/`mot_masque!` comme dans le programme.
+#[allow(dead_code)]
+#[path = "../../src/masque.rs"]
+mod masque;
+
 #[allow(dead_code)]
 #[path = "../../src/journaux_windows/regles/jeu.rs"]
 mod jeu;

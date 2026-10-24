@@ -43,6 +43,7 @@ mod lenteur;
 mod logiciels;
 mod machine;
 mod maj;
+mod masque;
 mod mise_a_jour;
 mod modele;
 mod nettoyer;
