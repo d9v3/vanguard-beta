@@ -401,3 +401,15 @@ mod tests {
         assert_eq!(lire_trace("ip=2001:db8::1\n"), None);
     }
 }
+
+/// PROVISOIRE (lot H, à remplacer) : `--json` rend un résultat vide, donc « non vérifié ».
+pub fn json(_internet: bool) {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let r = crate::modele::resultat::Resultat::nouveau(
+        "PRO-LNO-001",
+        debut,
+        &[],
+        crate::modele::resultat::Couverture::default(),
+    );
+    println!("{}", crate::modele::resultat::json(&r));
+}

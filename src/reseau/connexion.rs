@@ -652,3 +652,15 @@ mod tests {
         );
     }
 }
+
+/// PROVISOIRE (lot H, à remplacer) : `--json` rend un résultat vide, donc « non vérifié ».
+pub async fn json() {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let r = crate::modele::resultat::Resultat::nouveau(
+        "PRO-CNX-001",
+        debut,
+        &[],
+        crate::modele::resultat::Couverture::default(),
+    );
+    println!("{}", crate::modele::resultat::json(&r));
+}

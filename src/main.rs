@@ -130,6 +130,9 @@ enum Commande {
     /// dangereux, Wi-Fi public, raccourci) ; « oui » ou « non » [--pendant 1h|4h] agit sur la protection en temps
     /// réel, comme « parametres temps-reel ».
     Protection {
+        /// L'état des interrupteurs en JSON, pour un script : rien n'est changé.
+        #[arg(long)]
+        json: bool,
         /// oui ou non (on, off), puis --pendant 1h ou 4h pour une coupure qui se termine seule.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         quoi: Vec<String>,
@@ -237,7 +240,11 @@ enum Commande {
     Gaming,
     /// Diagnostic de l'ordinateur : matériel, système et problèmes récents (plantages, erreurs). Lecture seule.
     #[command(name = "diagnostic", visible_alias = "diagnostics")]
-    Diagnostic,
+    Diagnostic {
+        /// Le résultat en JSON, pour un script : rien ne change.
+        #[arg(long)]
+        json: bool,
+    },
     /// Logiciels : les meilleurs, libres pour la plupart (navigateurs, mots de passe, bureautique, vidéo, création,
     /// outils système…), par catégorie : choisir puis installer depuis la source officielle du système.
     #[command(name = "logiciels", visible_alias = "software")]
@@ -274,11 +281,23 @@ enum Commande {
     Appris,
     /// Test de connexion pour le jeu : ping, gigue, pertes, débit et bufferbloat.
     #[command(name = "test-connexion", visible_alias = "connection-test")]
-    Connexion,
+    Connexion {
+        /// Le résultat en JSON, pour un script.
+        #[arg(long)]
+        json: bool,
+    },
     /// L'adresse Internet publique est-elle sur une liste noire (Spamhaus, SpamCop, DroneBL, PSBL) ? Si oui, un
     /// appareil est sans doute infecté. Après accord : les listes voient l'adresse.
     #[command(name = "listes-noires", visible_alias = "blocklists")]
-    ListesNoires,
+    ListesNoires {
+        /// Le résultat en JSON, pour un script : sans --internet, rien n'est envoyé et l'adresse est dite non
+        /// vérifiée.
+        #[arg(long)]
+        json: bool,
+        /// Accord donné d'avance : les quatre listes voient l'adresse publique (pour --json, qui ne demande rien).
+        #[arg(long)]
+        internet: bool,
+    },
     /// Wi-Fi encombré : les réseaux voisins par canal, et le canal le plus libre à régler sur le routeur. Lecture
     /// seule.
     #[command(name = "canaux-wifi", visible_alias = "wifi-channels")]
@@ -292,7 +311,11 @@ enum Commande {
     /// Routeur et objets connectés d'après le dernier scan gardé : ce que le routeur annonce (modèle, logiciel), son
     /// administration en HTTP seul, les caméras, imprimantes, NAS… et leur mot de passe d'origine. Rien n'est sondé.
     #[command(name = "objets-connectes", visible_alias = "smart-devices")]
-    Objets,
+    Objets {
+        /// Le résultat en JSON, pour un script.
+        #[arg(long)]
+        json: bool,
+    },
     /// DNS le plus rapide : mesure le DNS actuel et des DNS publics, puis propose le plus rapide, annulable. Un DNS
     /// qui protège (NextDNS, chiffré, filtrant) est gardé.
     #[command(name = "dns-rapide", visible_alias = "fast-dns")]
@@ -359,17 +382,32 @@ enum Commande {
     Navigateurs,
     /// Qui parle à Internet ? Les connexions en cours de chaque programme, avec le nom du serveur. Lecture seule.
     #[command(name = "connexions-sortantes", visible_alias = "outbound-connections")]
-    Sortantes,
+    Sortantes {
+        /// Le résultat en JSON, pour un script.
+        #[arg(long)]
+        json: bool,
+    },
     /// Mon ordinateur est-il contrôlé ? Les logiciels de prise de contrôle à distance (AnyDesk, TeamViewer,
     /// RustDesk…) installés, lancés au démarrage, en cours ou téléchargés : l'outil des faux techniciens. Retrait
     /// après accord ; un programme en cours demande un second accord.
     #[command(name = "acces-a-distance", visible_alias = "remote-access")]
-    Distance,
+    Distance {
+        /// Le résultat en JSON, pour un script : rien n'est retiré, aucune question.
+        #[arg(long)]
+        json: bool,
+    },
     /// Ce lien est-il dangereux ? Examiné sans jamais l'ouvrir ; après accord, son âge et des listes publiques.
     #[command(visible_alias = "link")]
     Lien {
         /// Le lien reçu (entre guillemets s'il contient « & » ou « ? »).
         adresse: String,
+        /// Le résultat en JSON, pour un script : sans --internet, l'examen sur l'ordinateur seulement (âge du domaine
+        /// et listes publiques dits non vérifiés).
+        #[arg(long)]
+        json: bool,
+        /// Accord donné d'avance : l'âge du domaine et les listes publiques sont demandés en ligne (pour --json).
+        #[arg(long)]
+        internet: bool,
     },
     /// Vérifier un fichier téléchargé : empreinte comparée à celle du site, nom et contenu, YARA et antivirus.
     #[command(name = "verifier-fichier", visible_alias = "check-file")]
@@ -440,7 +478,11 @@ enum Commande {
     /// Bilan de confidentialité : les applications qui ont accès à la position, aux contacts, à la caméra et au micro,
     /// et leur dernier usage quand il est noté. Lecture seule.
     #[command(name = "bilan-confidentialite", visible_alias = "privacy-review")]
-    Acces,
+    Acces {
+        /// Le résultat en JSON, pour un script.
+        #[arg(long)]
+        json: bool,
+    },
     /// Quarantaine : les fichiers isolés par l'antivirus ou YARA, à remettre à leur place (faux positif) ou à
     /// supprimer pour de bon.
     #[command(visible_alias = "quarantine")]
@@ -503,7 +545,11 @@ enum Commande {
     /// Pourquoi c'est lent ? Ce qui occupe le processeur, la mémoire et le disque, le démarrage, les programmes lancés
     /// à l'ouverture de session. Lecture seule.
     #[command(visible_alias = "slow")]
-    Lenteur,
+    Lenteur {
+        /// Le résultat en JSON, pour un script : rien ne change.
+        #[arg(long)]
+        json: bool,
+    },
     /// Programmes au démarrage : ceux qui se lancent à l'ouverture de session, à retirer ou à remettre après accord.
     /// Chaque retrait s'annule exactement (Optimiser › Tout remettre comme avant).
     #[command(visible_alias = "startup")]
@@ -2583,9 +2629,9 @@ fn interrupteur_wifi_public(mot: &str) -> Result<String, String> {
     }
 }
 
-/// `vanguard protection` : chaque interrupteur de protection et son état, en un écran.
-fn etat_de_la_protection() {
-    titre(tr!("Protection : les interrupteurs", "Protection: the switches"));
+/// Les interrupteurs de protection : un identifiant stable (pour `--json`), leur nom et leur état, dans la langue du
+/// moment. Le veilleur n'existe que sous Linux.
+fn interrupteurs() -> Vec<(&'static str, &'static str, String)> {
     let oui_non = |b: bool| {
         if b {
             tr!("activé", "on")
@@ -2595,10 +2641,12 @@ fn etat_de_la_protection() {
     };
     let mut lignes = vec![
         (
+            "temps-reel",
             tr!("Protection en temps réel", "Real-time protection"),
             protection::temps_reel::valeur(),
         ),
         (
+            "surveillance",
             tr!("Surveillance toutes les heures", "Hourly monitoring"),
             precision_surveillance(
                 reseau::surveillance::active(),
@@ -2607,32 +2655,52 @@ fn etat_de_la_protection() {
             .to_string(),
         ),
         (
+            "entretien",
             tr!("Entretien du mois", "Monthly maintenance"),
             oui_non(entretien::active()).to_string(),
         ),
         (
+            "blocage",
             tr!("Blocage des menaces", "Threat blocking"),
             protection::blocage::etat_court().to_string(),
         ),
     ];
     if cfg!(target_os = "linux") {
-        lignes.push((tr!("Veilleur", "Watcher"), precision_veilleur().to_string()));
+        lignes.push(("veilleur", tr!("Veilleur", "Watcher"), precision_veilleur().to_string()));
     }
     lignes.extend([
         (
+            "sites-dangereux",
             tr!("Sites dangereux bloqués", "Dangerous sites blocked"),
             oui_non(protection::sites_bloques::bloc_present()).to_string(),
         ),
         (
+            "wifi-public",
             tr!("Mode Wi-Fi public", "Public Wi-Fi mode"),
             reseau::wifi_public::etat_court().to_string(),
         ),
         (
+            "raccourci",
             tr!("Raccourci sur cet ordinateur", "Shortcut on this computer"),
             oui_non(raccourci::chemin().is_some_and(|c| c.exists())).to_string(),
         ),
     ]);
-    for (nom, etat) in lignes {
+    lignes
+}
+
+/// `vanguard protection --json` : les interrupteurs, sans rien changer ni verser au journal (un état, pas un examen).
+fn interrupteurs_json(lignes: &[(&str, &str, String)]) -> String {
+    let liste: Vec<serde_json::Value> = lignes
+        .iter()
+        .map(|(id, nom, etat)| serde_json::json!({"interrupteur": id, "nom": nom, "etat": etat}))
+        .collect();
+    serde_json::to_string_pretty(&serde_json::json!({ "interrupteurs": liste })).unwrap_or_default()
+}
+
+/// `vanguard protection` : chaque interrupteur de protection et son état, en un écran.
+fn etat_de_la_protection() {
+    titre(tr!("Protection : les interrupteurs", "Protection: the switches"));
+    for (_, nom, etat) in interrupteurs() {
         println!("  {:<32} {etat}", format!("{nom} :"));
     }
     trp!(
@@ -2876,6 +2944,21 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
                                   the online check nor the attachments scan, said not checked)"),
     ("evenements", "incident", "One incident's thread: this event, what caused it and what it caused"),
     ("autotest", "json", "The report as JSON, for a script (without any value read on the computer)"),
+    ("protection", "json", "The switches' state as JSON, for a script: nothing is changed"),
+    ("diagnostic", "json", "The result as JSON, for a script: nothing changes"),
+    ("lenteur", "json", "The result as JSON, for a script: nothing changes"),
+    ("connexions-sortantes", "json", "The result as JSON, for a script"),
+    ("acces-a-distance", "json", "The result as JSON, for a script: nothing is removed, no question"),
+    ("bilan-confidentialite", "json", "The result as JSON, for a script"),
+    ("test-connexion", "json", "The result as JSON, for a script"),
+    ("objets-connectes", "json", "The result as JSON, for a script"),
+    ("lien", "json", "The result as JSON, for a script: without --internet, the examination on the computer only \
+                      (domain age and public lists said not checked)"),
+    ("lien", "internet", "Consent given in advance: the domain age and the public lists are asked online (for --json)"),
+    ("listes-noires", "json", "The result as JSON, for a script: without --internet, nothing is sent and the address \
+                               is said not checked"),
+    ("listes-noires", "internet", "Consent given in advance: the four lists see the public address (for --json, which \
+                                   asks nothing)"),
     ("autotest", "internet", "Let the rules that need it go on the Internet (updates, software versions)"),
     ("autotest", "detail", "Show on screen the values that differ (package, unit, account names), here only"),
     ("autotest", "une_par_une", "The rules one by one, for timings without their neighbours (slower)"),
@@ -3278,8 +3361,10 @@ async fn main() {
                 nettoyer::menu();
             }
         }
-        Some(Commande::Connexion) => reseau::connexion::tester().await,
-        Some(Commande::Diagnostic) => diagnostic::diagnostic(),
+        Some(Commande::Connexion { json: false }) => reseau::connexion::tester().await,
+        Some(Commande::Connexion { json: true }) => reseau::connexion::json().await,
+        Some(Commande::Diagnostic { json: false }) => diagnostic::diagnostic(),
+        Some(Commande::Diagnostic { json: true }) => diagnostic::json(),
         Some(Commande::Logiciels { liste, recommandes }) => {
             if liste {
                 logiciels::liste();
@@ -3294,8 +3379,10 @@ async fn main() {
         Some(Commande::Courriel) => protection::fuites::verifier_courriel(),
         // Un seul écran, sans la boucle du menu (clé abuse.ch, « Après une infection ») : une commande se lit d'un
         // script. Le menu, lui, lance `sortantes::menu`, qui montre le même écran puis propose la suite.
-        Some(Commande::Sortantes) => protection::sortantes::afficher(),
-        Some(Commande::Distance) => protection::distance::menu(),
+        Some(Commande::Sortantes { json: false }) => protection::sortantes::afficher(),
+        Some(Commande::Sortantes { json: true }) => protection::sortantes::json(),
+        Some(Commande::Distance { json: false }) => protection::distance::menu(),
+        Some(Commande::Distance { json: true }) => protection::distance::json(),
         Some(Commande::VerifierMoi { programme }) => protection::manifeste::verifier_moi(programme.as_deref()),
         Some(Commande::Manifeste {
             ecrire,
@@ -3305,7 +3392,14 @@ async fn main() {
         }) => {
             protection::manifeste::commande(ecrire.as_deref(), accepter, images.as_deref().map(|d| (d, &image[..])));
         }
-        Some(Commande::Lien { adresse }) => protection::lien::verifier(Some(&adresse)),
+        Some(Commande::Lien {
+            adresse, json: false, ..
+        }) => protection::lien::verifier(Some(&adresse)),
+        Some(Commande::Lien {
+            adresse,
+            json: true,
+            internet,
+        }) => protection::lien::json(&adresse, internet),
         Some(Commande::VerifierFichier { fichier, empreinte }) => {
             protection::telechargement::verifier(Some(&fichier), empreinte.as_deref());
         }
@@ -3333,7 +3427,8 @@ async fn main() {
             effacer,
         }),
         Some(Commande::CameraMicro) => protection::camera::afficher_tout(),
-        Some(Commande::Acces) => protection::acces::afficher_tout(),
+        Some(Commande::Acces { json: false }) => protection::acces::afficher_tout(),
+        Some(Commande::Acces { json: true }) => protection::acces::json(),
         Some(Commande::Quarantaine) => protection::quarantaine::menu(),
         Some(Commande::Secrets) => protection::secrets_git::analyser(),
         Some(Commande::Conteneurs) => protection::conteneurs::analyser(),
@@ -3355,7 +3450,20 @@ async fn main() {
             }
         }
         Some(Commande::Annuler) => optimiser::tout_annuler(),
-        Some(Commande::Protection { quoi }) => match quoi.split_first() {
+        Some(Commande::Protection { json: true, quoi }) if quoi.is_empty() => {
+            println!("{}", interrupteurs_json(&interrupteurs()));
+        }
+        Some(Commande::Protection { json: true, .. }) => {
+            eprintln!(
+                "  ✖ {}",
+                tr!(
+                    "--json montre l'état seulement : sans oui ni non",
+                    "--json shows the state only: without on or off"
+                )
+            );
+            std::process::exit(2);
+        }
+        Some(Commande::Protection { quoi, .. }) => match quoi.split_first() {
             None => etat_de_la_protection(),
             Some((valeur, reste)) => match interrupteur(valeur).as_deref() {
                 Ok("etat") => etat_de_la_protection(),
@@ -3379,11 +3487,13 @@ async fn main() {
         // La portée vient des options ; le menu la demande (`yara::menu`), puis lance la même analyse.
         Some(Commande::Yara { complet, dossier }) => protection::yara::analyser(&portee(dossier, complet)),
         Some(Commande::Memoire) => protection::memoire::analyser(),
-        Some(Commande::ListesNoires) => reseau::listes_noires::verifier(),
+        Some(Commande::ListesNoires { json: false, .. }) => reseau::listes_noires::verifier(),
+        Some(Commande::ListesNoires { json: true, internet }) => reseau::listes_noires::json(internet),
         Some(Commande::Canaux) => reseau::canaux::analyser(),
         Some(Commande::Nat) => reseau::nat::tester(),
         Some(Commande::Cameras) => reseau::cameras::chercher_cameras().await,
-        Some(Commande::Objets) => reseau::objets::montrer(),
+        Some(Commande::Objets { json: false }) => reseau::objets::montrer(),
+        Some(Commande::Objets { json: true }) => reseau::objets::json(),
         Some(Commande::DnsRapide) => dns_rapide::mesurer_et_proposer(),
         Some(Commande::Optimiser { quoi }) => optimiser_en_ligne_de_commande(quoi.as_deref()).await,
         Some(Commande::WifiPublic { etat }) => reseau::wifi_public::commande(sans_etat(etat.as_deref())),
@@ -3399,7 +3509,8 @@ async fn main() {
         Some(Commande::Restaurer { fichier }) => donnees::restaurer(&fichier),
         Some(Commande::Nommer { appareil, surnom }) => nommer(&appareil, &surnom.join(" ")),
         Some(Commande::Guide { quoi, sommaire }) => guide::executer(&quoi.join(" "), sommaire),
-        Some(Commande::Lenteur) => lenteur::commande(),
+        Some(Commande::Lenteur { json: false }) => lenteur::commande(),
+        Some(Commande::Lenteur { json: true }) => lenteur::json(),
         Some(Commande::Demarrage) => optimiser::programmes_au_demarrage(),
         Some(Commande::Fiche { json }) => fiche::fiche(json),
         Some(Commande::CopierFichiers { destination }) => copier::commande(destination.as_deref()),

@@ -17,7 +17,10 @@ pub(crate) const PREFIXES: &[(&str, (&str, &str))] = &[
     ),
     (
         "PRO",
-        ("outils de protection lancés seuls", "protection tools run on their own"),
+        (
+            "outils lancés seuls (protection, réseau, dépannage)",
+            "tools run on their own (protection, network, troubleshooting)",
+        ),
     ),
     ("SUR", ("surveillance horaire", "hourly monitoring")),
     ("VEI", ("veilleur", "watcher")),
@@ -71,4 +74,11 @@ pub(crate) const OUTILS: &[Outil] = &[
     Outil { id: "VEI-RAN-002", module: "protection::rancongiciel", sujet: ("copies de secours effacées", "backup copies deleted") },
     Outil { id: "VEI-RAN-003", module: "protection::rancongiciel", sujet: ("fichier-piège touché en direct", "decoy file touched live") },
     Outil { id: "VEI-EXF-001", module: "protection::rancongiciel", sujet: ("exfiltration de fichiers personnels", "exfiltration of personal files") },
+    Outil { id: "PRO-DIA-001", module: "diagnostic", sujet: ("diagnostic de l'ordinateur : matériel, système, problèmes récents", "computer diagnostics: hardware, system, recent problems") },
+    Outil { id: "PRO-LEN-001", module: "lenteur", sujet: ("ce qui rend l'ordinateur lent", "what makes the computer slow") },
+    Outil { id: "PRO-SOR-001", module: "protection::sortantes", sujet: ("programmes qui parlent à Internet", "programs talking to the Internet") },
+    Outil { id: "PRO-DIS-001", module: "protection::distance", sujet: ("logiciels de prise de contrôle à distance", "remote control software") },
+    Outil { id: "PRO-CNX-001", module: "reseau::connexion", sujet: ("test de connexion pour le jeu", "connection test for gaming") },
+    Outil { id: "PRO-LNO-001", module: "reseau::listes_noires", sujet: ("adresse Internet publique sur une liste noire", "public Internet address on a blocklist") },
+    Outil { id: "PRO-OBJ-001", module: "reseau::objets", sujet: ("routeur et objets connectés du dernier scan", "router and connected devices from the last scan") },
 ];

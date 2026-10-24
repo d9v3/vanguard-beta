@@ -252,6 +252,22 @@ fn audit_en_json() {
     }
 }
 
+/// `protection --json` : chaque interrupteur avec son identifiant stable, rien de changé ; « --json on » est refusé.
+#[test]
+fn protection_en_json() {
+    let s = vanguard("fr", &["protection", "--json"], "", 60);
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    let v: serde_json::Value = serde_json::from_str(&s.texte).expect("protection --json : JSON illisible");
+    let liste = v["interrupteurs"].as_array().expect("pas d'interrupteurs");
+    let ids: Vec<&str> = liste.iter().filter_map(|i| i["interrupteur"].as_str()).collect();
+    for id in ["temps-reel", "surveillance", "blocage", "sites-dangereux", "raccourci"] {
+        assert!(ids.contains(&id), "{id} absent : {ids:?}");
+    }
+    assert!(liste.iter().all(|i| i["nom"].is_string() && i["etat"].is_string()));
+    let refus = vanguard("fr", &["protection", "--json", "non"], "", 60);
+    assert_eq!(refus.code, Some(2), "{}", refus.texte);
+}
+
 #[test]
 fn scan_de_cette_machine_en_json() {
     // Sous Wine, ce scan ne finit pas (sa pile réseau n'imite pas celle de Windows) ; le vrai Windows de la CI le fait.

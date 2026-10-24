@@ -1327,3 +1327,15 @@ mod tests {
         assert_eq!(lire_tcc(&base[..1000]), None);
     }
 }
+
+/// PROVISOIRE (lot H, à remplacer) : `--json` rend un résultat vide, donc « non vérifié ».
+pub fn json() {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let r = crate::modele::resultat::Resultat::nouveau(
+        "PRO-ACC-001",
+        debut,
+        &[],
+        crate::modele::resultat::Couverture::default(),
+    );
+    println!("{}", crate::modele::resultat::json(&r));
+}

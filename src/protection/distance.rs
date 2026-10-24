@@ -1908,3 +1908,15 @@ mod tests {
         );
     }
 }
+
+/// PROVISOIRE (lot H, à remplacer) : `--json` rend un résultat vide, donc « non vérifié ».
+pub fn json() {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let r = crate::modele::resultat::Resultat::nouveau(
+        "PRO-DIS-001",
+        debut,
+        &[],
+        crate::modele::resultat::Couverture::default(),
+    );
+    println!("{}", crate::modele::resultat::json(&r));
+}

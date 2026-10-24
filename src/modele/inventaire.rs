@@ -80,6 +80,15 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     scelle(crate::modele::resultat::FICHIERS[1], "modele::resultat"),
     scelle(crate::modele::resultat::FICHIERS[2], "modele::resultat"),
     scelle(crate::modele::resultat::FICHIERS[3], "modele::resultat"),
+    scelle(crate::modele::resultat::FICHIERS[4], "modele::resultat"),
+    scelle(crate::modele::resultat::FICHIERS[5], "modele::resultat"),
+    scelle(crate::modele::resultat::FICHIERS[6], "modele::resultat"),
+    scelle(crate::modele::resultat::FICHIERS[7], "modele::resultat"),
+    scelle(crate::modele::resultat::FICHIERS[8], "modele::resultat"),
+    scelle(crate::modele::resultat::FICHIERS[9], "modele::resultat"),
+    scelle(crate::modele::resultat::FICHIERS[10], "modele::resultat"),
+    scelle(crate::modele::resultat::FICHIERS[11], "modele::resultat"),
+    scelle(crate::modele::resultat::FICHIERS[12], "modele::resultat"),
     // L'autotest : la date du dernier (scellée, sinon un programme du compte repousserait l'hebdomadaire à jamais) et
     // ses lectures contredites ; le journal des mesures, non scellé (il ne décide d'aucune alerte).
     scelle(crate::autotest::DERNIER, "autotest"),

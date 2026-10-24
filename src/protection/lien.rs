@@ -1848,3 +1848,15 @@ mod tests {
         assert!(trop.contains('8'), "{trop}");
     }
 }
+
+/// PROVISOIRE (lot H, à remplacer) : `--json` rend un résultat vide, donc « non vérifié ».
+pub fn json(_adresse: &str, _internet: bool) {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let r = crate::modele::resultat::Resultat::nouveau(
+        "PRO-LIE-001",
+        debut,
+        &[],
+        crate::modele::resultat::Couverture::default(),
+    );
+    println!("{}", crate::modele::resultat::json(&r));
+}
