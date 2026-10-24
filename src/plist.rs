@@ -498,9 +498,86 @@ mod xml {
     }
 }
 
+/// Une plist écrite lisiblement, à la façon de `plutil -p` : une clé par ligne (« "Label" => "com.exemple" »), les
+/// tableaux par rang, l'imbrication par l'indentation ; les données par leur taille, les dates en UTC. Pour les
+/// traces d'incident, à côté de la sortie de plutil.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+pub fn afficher(v: &Valeur) -> String {
+    fn ecrire(v: &Valeur, retrait: usize, t: &mut String) {
+        use std::fmt::Write;
+        let marge = "  ".repeat(retrait + 1);
+        match v {
+            Valeur::Booleen(b) => t.push_str(if *b { "1" } else { "0" }),
+            Valeur::Entier(n) => {
+                let _ = write!(t, "{n}");
+            }
+            Valeur::Reel(r) => {
+                let _ = write!(t, "{r}");
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            Valeur::Date(s) => {
+                let d = chrono::DateTime::from_timestamp(ORIGINE_APPLE + *s as i64, 0);
+                let _ = write!(
+                    t,
+                    "{}",
+                    d.map_or_else(|| s.to_string(), |d| d.format("%Y-%m-%d %H:%M:%S +0000").to_string())
+                );
+            }
+            Valeur::Donnees(o) => {
+                let _ = write!(t, "{{length = {}}}", o.len());
+            }
+            Valeur::Texte(s) => {
+                let _ = write!(t, "{s:?}");
+            }
+            Valeur::Tableau(liste) => {
+                t.push_str("[\n");
+                for (i, e) in liste.iter().enumerate() {
+                    let _ = write!(t, "{marge}{i} => ");
+                    ecrire(e, retrait + 1, t);
+                    t.push('\n');
+                }
+                t.push_str(&"  ".repeat(retrait));
+                t.push(']');
+            }
+            Valeur::Dico(paires) => {
+                t.push_str("{\n");
+                for (k, e) in paires {
+                    let _ = write!(t, "{marge}{k:?} => ");
+                    ecrire(e, retrait + 1, t);
+                    t.push('\n');
+                }
+                t.push_str(&"  ".repeat(retrait));
+                t.push('}');
+            }
+        }
+    }
+    let mut t = String::new();
+    ecrire(v, 0, &mut t);
+    t.push('\n');
+    t
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plist_affichee_comme_plutil() {
+        let v = Valeur::Dico(vec![
+            ("Label".into(), Valeur::Texte("com.exemple.agent".into())),
+            (
+                "ProgramArguments".into(),
+                Valeur::Tableau(vec![Valeur::Texte("/bin/sh".into()), Valeur::Texte("-c".into())]),
+            ),
+            ("RunAtLoad".into(), Valeur::Booleen(true)),
+            ("Donnees".into(), Valeur::Donnees(vec![1, 2, 3])),
+            ("Quand".into(), Valeur::Date(0.0)),
+        ]);
+        assert_eq!(
+            afficher(&v),
+            "{\n  \"Label\" => \"com.exemple.agent\"\n  \"ProgramArguments\" => [\n    0 => \"/bin/sh\"\n    1 => \"-c\"\n  ]\n  \"RunAtLoad\" => 1\n  \"Donnees\" => {length = 3}\n  \"Quand\" => 2001-01-01 00:00:00 +0000\n}\n"
+        );
+    }
 
     const XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
