@@ -1,17 +1,20 @@
 //! Analyse YARA : 308 règles de ReversingLabs (rançongiciels, voleurs de mots de passe, chevaux de Troie, portes
 //! dérobées…), intégrées au programme (assets/yara, outils/maj-yara.sh ; allégées par build.rs, de 2,7 Mo à 1,2 Mo,
-//! sans en changer le sens) et appliquées par YARA-X, le moteur YARA écrit en Rust par VirusTotal (licence
-//! BSD-3-Clause), compilé dans Vanguard : rien à installer, depuis la clé et sans Internet comme ailleurs. En
-//! complément de l'antivirus : une règle décrit une famille entière, variantes comprises. Lecture seule : rien n'est
-//! déplacé ni supprimé. Chaque fichier lu est aussi comparé aux empreintes de MalwareBazaar (`empreintes`) : là, c'est
+//! sans en changer le sens) et appliquées par le moteur YARA de Vanguard (`moteur_yara`, écrit pour lui : rien à
+//! installer, depuis la clé et sans Internet comme ailleurs), que les tests comparent à YARA-X, le moteur de VirusTotal,
+//! gardé en oracle de développement seulement. Une règle que le moteur ne comprend pas entière est refusée, comptée et
+//! nommée : tant qu'il en reste une, aucune analyse ne se dit saine. En complément de l'antivirus : une règle décrit une
+//! famille entière, variantes comprises. Lecture seule : rien n'est déplacé ni supprimé. Chaque fichier lu est aussi comparé aux empreintes de MalwareBazaar (`empreintes`) : là, c'est
 //! un logiciel malveillant précis, reconnu sans doute possible.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::protection::antivirus::{Examen, Portee};
 use crate::protection::empreintes::{self, Empreintes};
+use crate::protection::moteur_yara::Regles;
+use crate::protection::regles_yara::Raison;
 use crate::ui::*;
 
 const REGLES: &str = include_str!(concat!(env!("OUT_DIR"), "/reversinglabs.yara"));
@@ -24,18 +27,57 @@ const TAILLE_MAX: u64 = 256 << 20;
 const DELAI_PAR_FICHIER: Duration = Duration::from_secs(30);
 const FILS: usize = 4;
 
-/// Les règles, compilées une fois par lancement (une seconde et demie) ; les analyses suivantes les reprennent.
-/// `Err` : elles ne se compilent pas, ce qu'un test empêche d'arriver jusqu'à une version livrée.
-pub(crate) fn regles() -> Result<&'static yara_x::Rules, &'static str> {
-    static COMPILEES: OnceLock<Result<yara_x::Rules, String>> = OnceLock::new();
-    COMPILEES
-        .get_or_init(|| {
-            let mut compilateur = yara_x::Compiler::new();
-            compilateur.add_source(REGLES).map_err(|e| e.to_string())?;
-            Ok(compilateur.build())
+/// Les règles, compilées une fois par lancement (quelques millisecondes) ; les analyses suivantes les reprennent.
+/// `Err` : aucune ne s'applique, ce qu'un test empêche d'arriver jusqu'à une version livrée.
+pub(crate) fn regles() -> Result<&'static Regles, &'static str> {
+    static COMPILEES: OnceLock<Regles> = OnceLock::new();
+    let regles = COMPILEES.get_or_init(|| Regles::compiler(REGLES));
+    if regles.nombre() == 0 {
+        return Err(tr!("aucune règle lisible", "no readable rule"));
+    }
+    Ok(regles)
+}
+
+/// La raison d'un refus, prête à montrer.
+fn raison(r: &Raison) -> String {
+    match r {
+        Raison::Inconnue(c) => trf!(
+            "construction inconnue du moteur ({c})",
+            "construct unknown to the engine ({c})"
+        ),
+        Raison::Syntaxe(a) => trf!("texte mal formé (attendu : {a})", "malformed text (expected: {a})"),
+        Raison::Nom(n) => trf!("nom en double ou introuvable ({n})", "duplicate or missing name ({n})"),
+        Raison::Import(m) => trf!("module {m} sans import", "module {m} without import"),
+        Raison::Borne(b) => trf!("trop grande ({b})", "too large ({b})"),
+        Raison::Motif(m) => trf!("chaîne refusée ({m})", "string refused ({m})"),
+    }
+}
+
+/// Les règles refusées par le moteur, en une phrase : leur nombre, les premières nommées avec leur raison. `None` :
+/// toutes s'appliquent.
+pub(crate) fn non_verifiees(regles: &Regles) -> Option<String> {
+    let refus = regles.refus();
+    if refus.is_empty() {
+        return None;
+    }
+    let premieres: Vec<String> = refus
+        .iter()
+        .take(3)
+        .map(|r| {
+            let nom = r
+                .regle
+                .as_deref()
+                .map_or_else(|| trf!("ligne {}", "line {}", r.ligne), affichable);
+            format!("{nom} : {}", raison(&r.raison))
         })
-        .as_ref()
-        .map_err(String::as_str)
+        .collect();
+    Some(trf!(
+        "{} règle(s) YARA non vérifiée(s), refusée(s) par le moteur : {}{}",
+        "{} YARA rule(s) not checked, refused by the engine: {}{}",
+        refus.len(),
+        premieres.join(" ; "),
+        if refus.len() > 3 { " ; …" } else { "" }
+    ))
 }
 
 /// Les endroits à risque : téléchargements, bureau, programmes lancés au démarrage (et le dossier temporaire sous
@@ -110,26 +152,37 @@ fn fichiers(cible: &Path, illisibles: &mut Vec<PathBuf>) -> Vec<PathBuf> {
     trouves
 }
 
-/// Les règles appliquées à des fichiers, par `FILS` fils, chacun avec son propre analyseur, et l'empreinte de chaque
-/// fichier cherchée dans celles de MalwareBazaar : (correspondances, fichiers illisibles ou trop longs à lire).
+/// Un fichier passé aux règles : les rangs des règles qui correspondent, ou `Err` s'il n'a pas pu être lu en entier
+/// (illisible, changé pendant la lecture, ou trop long à lire). Un fichier ordinaire seulement, ouvert sans attendre
+/// (un tube nommé glissé à sa place bloquerait la lecture), lu jusqu'à la taille qu'il avait à l'ouverture.
+fn analyser_fichier(regles: &Regles, chemin: &Path) -> Result<Vec<usize>, ()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
+    let mut fichier = options.open(chemin).map_err(|_| ())?;
+    let meta = fichier.metadata().map_err(|_| ())?;
+    if !meta.is_file() || meta.len() > TAILLE_MAX {
+        return Err(());
+    }
+    regles
+        .analyser_flux(&mut fichier, meta.len(), Some(Instant::now() + DELAI_PAR_FICHIER))
+        .map_err(|_| ())
+}
+
+/// Les règles appliquées à des fichiers, par `FILS` fils, et l'empreinte de chaque fichier cherchée dans celles de
+/// MalwareBazaar : (correspondances, fichiers illisibles ou trop longs à lire).
 fn analyser_fichiers(
-    regles: &yara_x::Rules,
+    regles: &Regles,
     empreintes: Option<&Empreintes>,
     liste: &[PathBuf],
 ) -> (Vec<Trouve>, Vec<PathBuf>) {
     par_lots(
         liste,
-        || {
-            let mut analyseur = yara_x::Scanner::new(regles);
-            analyseur.set_timeout(DELAI_PAR_FICHIER);
-            analyseur
-        },
-        |analyseur, f| match analyseur.scan_file(f) {
-            Ok(r) => (
-                r.matching_rules().map(|m| Trouve::nouveau(m.identifier(), f)).collect(),
-                true,
-            ),
-            Err(_) => (Vec::new(), false),
+        || (),
+        |(), f| match analyser_fichier(regles, f) {
+            Ok(r) => (r.into_iter().map(|k| Trouve::nouveau(regles.nom(k), f)).collect(), true),
+            Err(()) => (Vec::new(), false),
         },
         // Le fichier vient d'être lu : il est encore en mémoire, l'empreinte coûte peu.
         |f| {
@@ -145,11 +198,11 @@ fn analyser_fichiers(
 
 /// `liste` répartie en `FILS` lots, un fil par lot avec son propre analyseur (`nouveau`) ; `un` passe un fichier aux
 /// règles : (correspondances, lu jusqu'au bout) ; `empreinte` le cherche ensuite parmi les empreintes connues. Un
-/// fichier piégé peut faire paniquer YARA-X : il est alors rendu illisible, jamais sain, sans emporter les autres
-/// fichiers de son lot, et l'analyseur, peut-être resté au milieu de l'analyse interrompue, n'est plus réutilisé.
-/// L'empreinte, qui ne dépend pas de YARA-X, a sa propre garde : cherchée même après une panique des règles, elle
-/// garde « logiciel malveillant connu » à un fichier de MalwareBazaar qui ferait aussi paniquer YARA-X, au lieu de
-/// « impossible à vérifier ». Un fil qui tombe malgré tout (analyseur impossible à créer) rend tout son lot
+/// fichier piégé qui ferait paniquer le moteur (un dépassement de capacité oublié, que la version publiée vérifie aussi)
+/// est alors rendu illisible, jamais sain, sans emporter les autres fichiers de son lot, et l'analyseur, peut-être
+/// resté au milieu de l'analyse interrompue, n'est plus réutilisé. L'empreinte, qui ne dépend pas des règles, a sa
+/// propre garde : cherchée même après une panique des règles, elle garde « logiciel malveillant connu » à un fichier de
+/// MalwareBazaar qui ferait aussi paniquer le moteur, au lieu de « impossible à vérifier ». Un fil qui tombe malgré tout (analyseur impossible à créer) rend tout son lot
 /// illisible : jeté en silence, ce lot faisait conclure « sain » sans avoir été lu.
 fn par_lots<A>(
     liste: &[PathBuf],
@@ -256,7 +309,8 @@ fn appliquer(cibles: &[PathBuf]) -> Option<(Vec<Trouve>, Vec<String>, empreintes
     };
     let empreintes = empreintes::connues();
     let mut trouves = Vec::new();
-    let mut erreurs = Vec::new();
+    // Une règle refusée n'a rien vérifié : l'analyse n'est pas complète, et rien n'est dit sain.
+    let mut erreurs: Vec<String> = non_verifiees(regles).into_iter().collect();
     for cible in cibles {
         trp!("  Analyse de {}…", "  Scanning {}…", chemin_affichable(cible));
         let mut echecs = Vec::new();
@@ -498,14 +552,18 @@ mod tests {
         assert!(!piege.fichier.contains('\x1b') && !piege.fichier.contains('\u{202e}'));
     }
 
-    /// Les 308 règles se compilent avec YARA-X : une règle refusée ne passe pas jusqu'à une version livrée.
+    /// Les 308 règles s'appliquent toutes : une règle que le moteur refuserait (non vérifiée) ne passe pas jusqu'à une
+    /// version livrée.
     #[test]
     fn les_308_regles_se_compilent() {
-        assert!(regles().is_ok(), "{:?}", regles().err());
+        let r = regles().unwrap();
+        assert_eq!(r.refus(), [], "règles refusées par le moteur");
+        assert_eq!(r.nombre(), 308);
+        assert_eq!(non_verifiees(r), None);
     }
 
     /// Le fichier d'origine de ReversingLabs, tel qu'outils/maj-yara.sh le pose, sans l'allègement de build.rs, se
-    /// compile aussi avec YARA-X, le moteur du programme, et donne autant de règles que la version allégée. Il remplace
+    /// compile aussi avec YARA-X, l'oracle du moteur, et donne autant de règles que la version allégée. Il remplace
     /// l'étape de la CI qui le passait à libyara (yara-python, installé par pip sans version épinglée) : un autre moteur
     /// pouvait accepter une règle que YARA-X refuse, ou l'inverse.
     #[test]
@@ -515,20 +573,48 @@ mod tests {
             panic!("règles d'origine refusées par YARA-X : {e}");
         }
         let origine = compilateur.build();
-        assert_eq!(origine.iter().count(), regles().unwrap().iter().count());
+        assert_eq!(origine.iter().count(), regles().unwrap().nombre());
+    }
+
+    /// Le moteur de Vanguard accepte toutes les règles d'origine, sans l'allègement, et les mêmes que dans leur forme
+    /// allégée. outils/maj-yara.sh lance ce test après chaque mise à jour : une construction nouvelle de ReversingLabs
+    /// que le moteur ne connaît pas y est nommée, règle par règle.
+    #[test]
+    fn les_regles_d_origine_acceptees_par_le_moteur_maison() {
+        let origine = Regles::compiler(ORIGINE);
+        for r in origine.refus() {
+            eprintln!(
+                "RÈGLE NON VÉRIFIÉE : {} (ligne {}) : {}",
+                r.regle.as_deref().unwrap_or("?"),
+                r.ligne,
+                raison(&r.raison)
+            );
+        }
+        assert_eq!(origine.refus().len(), 0, "règles refusées, voir plus haut");
+        let allegees: Vec<&str> = regles().unwrap().noms().collect();
+        assert_eq!(origine.noms().collect::<Vec<_>>(), allegees);
+        assert_eq!(allegees.len(), 308);
+    }
+
+    /// Une règle refusée est dite, nommée, et empêche de conclure « sain » : examiner() rend « impossible ».
+    #[test]
+    fn une_regle_refusee_est_dite() {
+        let r = Regles::compiler(
+            r#"rule Bonne { strings: $a = "x" condition: $a } rule Mauvaise { strings: $a = "x" xor condition: $a }"#,
+        );
+        assert_eq!(r.nombre(), 1);
+        let texte = non_verifiees(&r).unwrap();
+        assert!(texte.contains("Mauvaise") && texte.contains("xor"), "{texte}");
     }
 
     /// Un dossier d'essai : un faux programme qui remplit une règle d'essai de même forme que celles de ReversingLabs
     /// (en-tête « MZ » et textes), un fichier ordinaire, un lien et un fichier creux trop gros, sautés.
     #[test]
     fn analyse_d_un_dossier() {
-        let mut compilateur = yara_x::Compiler::new();
-        compilateur
-            .add_source(
-                r#"rule Win32_Trojan_Essai { strings: $a = "vanguard-essai-yara" $b = { 4D 5A 90 } condition: uint16(0) == 0x5A4D and all of them }"#,
-            )
-            .unwrap();
-        let essai = compilateur.build();
+        let essai = Regles::compiler(
+            r#"rule Win32_Trojan_Essai { strings: $a = "vanguard-essai-yara" $b = { 4D 5A 90 } condition: uint16(0) == 0x5A4D and all of them }"#,
+        );
+        assert_eq!(essai.refus(), []);
         let dossier = crate::protection::isoler::dossier_jetable().unwrap();
         std::fs::create_dir_all(dossier.join("sous")).unwrap();
         std::fs::write(dossier.join("sous/facture.exe"), b"MZ\x90\x00 vanguard-essai-yara").unwrap();
@@ -573,12 +659,16 @@ mod tests {
         let mut absents = Vec::new();
         assert_eq!(fichiers(&dossier.join("absent"), &mut absents), Vec::<PathBuf>::new());
         assert!(illisible(&dossier, &absents).is_some());
+        // Un fichier qui disparaît entre la liste et la lecture : illisible, pas sain.
+        let parti = dossier.join("parti.exe");
+        let (trouves, echecs) = analyser_fichiers(&essai, None, std::slice::from_ref(&parti));
+        assert!(trouves.is_empty() && echecs == [parti]);
         let _ = std::fs::remove_dir_all(&dossier);
     }
 
     /// Un PE réduit à l'essentiel, dont l'unique section commence à 0xFFFFFF00 pour 0x200 octets : sa fin dépasse un
-    /// u32. YARA-X (1.21 comme 1.22) l'additionne sans contrôle dans pe.section_index, et les tests compilent avec le
-    /// contrôle des débordements : l'analyse panique, comme sur un vrai fichier piégé.
+    /// u32. YARA-X (1.21 comme 1.22) l'additionnait sans contrôle dans pe.section_index, et les tests compilent avec le
+    /// contrôle des débordements : l'analyse paniquait, comme sur un vrai fichier piégé.
     fn pe_dont_la_section_deborde() -> Vec<u8> {
         let mut pe = vec![0_u8; 0x200];
         pe[..2].copy_from_slice(b"MZ");
@@ -594,23 +684,18 @@ mod tests {
         pe
     }
 
-    /// Un fichier qui fait paniquer le vrai YARA-X n'est ni perdu ni dit sain. Avant, le fil emportait tout son lot (le
-    /// piège et son voisin), et le piège examiné seul ne donnait ni correspondance ni échec : « sain ». Une version de
-    /// YARA-X qui ne paniquerait plus lirait le piège, et l'essai tiendrait encore : chaque fichier est lu (la règle Tout
-    /// correspond à tout fichier lu) ou dit illisible, jamais ni l'un ni l'autre.
+    /// Le piège qui faisait paniquer YARA-X est lu par le moteur de Vanguard, ses voisins aussi, et son empreinte
+    /// reste trouvée : chaque fichier est lu (la règle Tout correspond à tout fichier lu) ou dit illisible, jamais ni
+    /// l'un ni l'autre.
     #[test]
-    fn un_fichier_qui_fait_paniquer_yara_x_n_est_ni_perdu_ni_sain() {
-        let mut compilateur = yara_x::Compiler::new();
-        compilateur
-            .add_source(
-                r#"import "pe" rule Section { condition: pe.section_index(0) == 0 } rule Tout { condition: true }"#,
-            )
-            .unwrap();
-        let essai = compilateur.build();
+    fn le_pe_qui_faisait_paniquer_yara_x_est_lu() {
+        let essai = Regles::compiler(
+            r#"import "pe" rule Entree { strings: $a = { 4D 5A } condition: $a at pe.entry_point } rule Tout { condition: true }"#,
+        );
+        assert_eq!(essai.refus(), []);
         let dossier = crate::protection::isoler::dossier_jetable().unwrap();
         let piege = dossier.join("piege.exe");
         std::fs::write(&piege, pe_dont_la_section_deborde()).unwrap();
-        // Huit fichiers, quatre lots de deux : le piège ouvre le troisième, son voisin passe après lui.
         let mut liste: Vec<PathBuf> = (0..7)
             .map(|i| {
                 let f = dossier.join(format!("note{i}.txt"));
@@ -619,37 +704,15 @@ mod tests {
             })
             .collect();
         liste.insert(4, piege.clone());
-        let (trouves, echecs) = analyser_fichiers(&essai, None, &liste);
-        for f in &liste {
-            let lu = trouves.iter().any(|t| t.chemin == *f && t.regle == "Tout");
-            assert!(lu != echecs.contains(f), "{f:?} : {trouves:?} {echecs:?}");
-        }
-        assert!(echecs.iter().all(|f| *f == piege), "{echecs:?}");
-        // Seul, comme examiner() le passe : lu, ou illisible, donc « impossible à vérifier ».
-        let (trouves, echecs) = analyser_fichiers(&essai, None, std::slice::from_ref(&piege));
-        assert!(
-            !trouves.is_empty() || (echecs == std::slice::from_ref(&piege) && illisible(&piege, &echecs).is_some()),
-            "{trouves:?} {echecs:?}"
-        );
-        let _ = std::fs::remove_dir_all(&dossier);
-    }
-
-    /// Un fichier connu de MalwareBazaar qui fait aussi paniquer YARA-X reste un « logiciel malveillant connu » :
-    /// l'empreinte ne dépend pas de YARA-X. Avant, elle était cherchée après l'analyse, sous la même garde, et la
-    /// panique la sautait : le fichier n'était plus qu'« impossible à vérifier », et une extension qui le portait
-    /// demandait quand même l'accord.
-    #[test]
-    fn une_empreinte_connue_est_trouvee_meme_si_yara_x_panique() {
-        let mut compilateur = yara_x::Compiler::new();
-        compilateur
-            .add_source(r#"import "pe" rule Section { condition: pe.section_index(0) == 0 }"#)
-            .unwrap();
-        let essai = compilateur.build();
-        let dossier = crate::protection::isoler::dossier_jetable().unwrap();
-        let piege = dossier.join("piege.exe");
-        std::fs::write(&piege, pe_dont_la_section_deborde()).unwrap();
         let connues = Empreintes::depuis(vec![empreintes::sha256(&piege).unwrap()]);
-        let (trouves, _) = analyser_fichiers(&essai, Some(&connues), std::slice::from_ref(&piege));
+        let (trouves, echecs) = analyser_fichiers(&essai, Some(&connues), &liste);
+        assert_eq!(echecs, Vec::<PathBuf>::new());
+        for f in &liste {
+            assert!(
+                trouves.iter().any(|t| t.chemin == *f && t.regle == "Tout"),
+                "{f:?} : {trouves:?}"
+            );
+        }
         assert!(
             trouves
                 .iter()

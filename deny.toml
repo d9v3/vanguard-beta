@@ -17,7 +17,8 @@ targets = [
 # dangereuse. Une faille s'ôte en mettant la dépendance à jour ; une exception n'est admise que sans correctif publié
 # et pour un défaut que Vanguard ne peut pas atteindre, dite ici avec sa preuve, affichée à chaque passage
 # (outils/verifier.sh) et à relire à chaque mise à jour de YARA-X. Elle vaut pour l'avis dans tout l'arbre : [bans]
-# réserve la bibliothèque à YARA-X. Dès qu'elle disparaît de l'arbre, l'exception devenue inutile fait échouer
+# réserve la bibliothèque à YARA-X, qui n'est plus qu'une dépendance de développement (l'oracle des tests du moteur YARA
+# maison, src/protection/oracle_yara.rs) : jamais dans les programmes publiés, mais compilé et lancé ici par les tests. Dès qu'elle disparaît de l'arbre, l'exception devenue inutile fait échouer
 # (advisory-not-detected), pour qu'on l'ôte. La raison commence par le nom de la bibliothèque et une virgule :
 # outils/verifier.sh la cite dans son résumé.
 [advisories]
@@ -38,7 +39,6 @@ allow = [
     "0BSD",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
-    "BSD-2-Clause",
     "BSD-3-Clause",
     "CC0-1.0",
     "ISC",

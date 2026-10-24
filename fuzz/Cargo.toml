@@ -171,6 +171,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "yara_regles"
+path = "fuzz_targets/yara_regles.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "analyse_fichier"
 path = "fuzz_targets/analyse_fichier.rs"
 test = false
@@ -180,6 +187,13 @@ bench = false
 [[bin]]
 name = "analyse_lecteurs"
 path = "fuzz_targets/analyse_lecteurs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "yara_recherche"
+path = "fuzz_targets/yara_recherche.rs"
 test = false
 doc = false
 bench = false

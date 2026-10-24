@@ -34,11 +34,6 @@ ignorer http://www.onvif.org/ver10/
 # Exemples de tldr-pages : le guide ajoute le nom de l'archive de chaque langue.
 essai https://github.com/tldr-pages/tldr/releases/latest/download/ https://github.com/tldr-pages/tldr/releases/latest/download/tldr-pages.fr.zip
 
-# Adresses de dépôt déclarées par des paquets tiers (LICENCES-TIERCES.txt les recopie de leur Cargo.toml) : mortes
-# chez leur auteur, gardées telles quelles. Vues le 20 oct. 2026 (dépendances de YARA-X).
-ignorer https://github.com/bpressure/ascii_tree
-ignorer https://github.com/rustwasm/walrus/tree/crates/macro
-
 # Images d'Omarchy (outils/images-cle.sh) : le serveur ne liste pas ses fichiers, le programme ajoute le nom de l'image.
 serveur https://iso.omarchy.org/
 

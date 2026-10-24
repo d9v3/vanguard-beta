@@ -60,7 +60,8 @@ Une faille de sécurité ? Pas de ticket ni de demande de fusion publics : signa
 | `src/risk.rs` | base de connaissances des ports et niveaux de risque |
 | `src/reseau/connexion.rs` | test de connexion pour le jeu |
 | `src/protection/antivirus.rs` | ClamAV / Defender, quarantaine |
-| `src/protection/yara.rs`, `src/protection/pieges.rs` | analyse YARA (règles intégrées, YARA-X compilé dans le programme) ; fichiers-pièges contre les rançongiciels |
+| `src/protection/yara.rs`, `src/protection/pieges.rs` | analyse YARA (règles intégrées, appliquées par le moteur de Vanguard) ; fichiers-pièges contre les rançongiciels |
+| `src/protection/regles_yara.rs`, `moteur_yara.rs`, `motifs.rs`, `oracle_yara.rs` | moteur YARA maison : lecteur du sous-ensemble du langage qu'utilisent les règles (le reste refusé, nommé, « non vérifié »), conditions et modules pe et elf (`moteur_yara.rs`, champs pe dans `src/pe.rs`), recherche multi-motifs d'après Aho-Corasick, en tampon ou en flux borné (`motifs.rs`, commun aux futures signatures ClamAV) ; YARA-X en oracle des tests seulement (`oracle_yara.rs`) |
 | `src/protection/rancongiciel/` | veilleur anti-rançongiciel : écoute en direct des dossiers personnels (`notify`, déjà présent), score à règles par groupe de processus sur une fenêtre de 10 s (rafale, contenu chiffré, noms, note de rançon, piège touché, copies effacées), attribution par les compteurs d'écriture et les descripteurs (`/proc/<pid>/io` et `fd`, sans root ni crate nouvelle) ; avec la protection active et un cas quasi certain, gel de la lignée, preuve, arrêt et quarantaine ; décisions en fonctions pures (testées sous Linux et Wine) |
 | `src/protection/memoire.rs`, `src/machine/windows/memoire.rs` | mémoire des programmes (`vanguard memoire`, à la demande) : les règles YARA sur les régions privées ou exécutables des processus en marche, bornées (64 Mio par région, 512 Mio par processus, 4 Gio et 5 minutes en tout) ; /proc/<pid>/maps et mem sous Linux, VirtualQueryEx et ReadProcessMemory sous Windows (LSASS, processus protégés et critiques jamais lus) ; macOS non vérifié ; rien de lu n'est gardé |
 | `src/protection/empreintes.rs` | empreintes SHA-256 de MalwareBazaar (abuse.ch, avec la clé) : liste complète chaque semaine (archive zip), récentes chaque jour, gardées dans le dossier de Vanguard et triées ; l'analyse YARA y cherche chaque fichier lu |
@@ -187,7 +188,7 @@ Le jugement s'écrit à part (`juger_…`, sans rien lire du système), pour se 
 ## Compiler, tester, déployer
 
 Prérequis : `rustup target add x86_64-unknown-linux-musl x86_64-pc-windows-gnu`, `musl` (musl-gcc), `mingw-w64-gcc`
-et `clang` : YARA-X compile un peu de C pour chaque cible (clang pour clippy sur les cibles Mac, voir
+et `clang` : ring (TLS) compile un peu de C pour chaque cible, et YARA-X aussi, l'oracle des tests (clang pour clippy sur les cibles Mac, voir
 `outils/verifier.sh`). Pour déployer, aussi `cargo install cargo-auditable --locked --version 0.7.7` et
 `cargo install cargo-audit --locked --version 0.22.2`, les versions de la CI (`.github/workflows/ci.yml`) :
 `deployer.sh` grave dans chaque programme la liste de ses dépendances, versions comprises (`cargo auditable build`),
@@ -257,7 +258,7 @@ de la compilation retirés (le dépôt devient `/vanguard`, le dossier de cargo 
 le même commit compilé dans deux dossiers différents de cet ordinateur donne deux programmes identiques, Linux comme
 Windows ; avant, les chemins du dossier personnel restaient dans le .exe (`~/Projects/vanguard/target/…`), et deux
 dossiers donnaient deux programmes. Ce qui peut encore différer d'un ordinateur à l'autre : les versions de musl-gcc
-et de MinGW (gcc, binutils, bibliothèques de démarrage), qui compilent le C de ring et de YARA-X et lient les
+et de MinGW (gcc, binutils, bibliothèques de démarrage), qui compilent le C de ring et lient les
 programmes. La CI écrit l'empreinte de ses compilations dans son journal (`EMPREINTE-VANGUARD-LINUX`, `-WINDOWS`), à
 comparer à `SHA256SUMS.txt` ; elles ne sont pas encore les mêmes que celles de l'ordinateur de l'auteur tant que ces
 outils diffèrent (Arch contre Ubuntu).

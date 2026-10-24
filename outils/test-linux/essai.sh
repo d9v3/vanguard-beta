@@ -217,7 +217,7 @@ verifier "pièges : tous retirés" test "$(find "$MAISON" -name '!Vanguard*' | w
 lancer_maison listes-noires 60 'n\n' listes-noires
 verifier "listes noires : refus respecté, rien envoyé" bash -c "grep -q \"Rien n'a été envoyé\" '$RES/listes-noires.txt' && ! grep -q 'Adresse publique' '$RES/listes-noires.txt'"
 
-# YARA-X est dans le programme : un dossier sans danger (un faux programme « MZ », un texte) est lu en entier, rien n'y
+# Le moteur YARA est dans le programme : un dossier sans danger (un faux programme « MZ », un texte) est lu en entier, rien n'y
 # correspond, et aucun moteur n'est cherché ni proposé.
 echo "fichier de l'essai" >"$BAC/yara/dossier/note.txt"
 printf 'MZ\220\000 programme sans danger' >"$BAC/yara/dossier/outil.exe"

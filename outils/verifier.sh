@@ -73,7 +73,7 @@ etape() {
 # VANGUARD_HORS_LIGNE fait comme sans Internet.
 internet() { [[ -z ${VANGUARD_HORS_LIGNE:-} ]] && curl -fsI --max-time 5 https://github.com >/dev/null 2>&1; }
 
-# YARA-X (par wasmtime) et ring (TLS du client HTTPS) compilent un peu de C : musl-gcc pour Linux, le gcc de MinGW pour
+# ring (TLS du client HTTPS) et YARA-X (l'oracle des tests, par wasmtime) compilent un peu de C : musl-gcc pour Linux, le gcc de MinGW pour
 # Windows, clang pour les cibles Mac, visées sans les outils d'Apple (outils/mac-entetes, ring sans en-têtes du
 # système) ; clippy n'assemble jamais le programme.
 clippy() {
@@ -88,7 +88,7 @@ clippy() {
 
 # Les compilateurs C qu'il faut ici, dits d'emblée plutôt qu'au milieu d'une compilation.
 for outil in musl-gcc x86_64-w64-mingw32-gcc clang; do
-  command -v "$outil" >/dev/null || echo "⚠ $outil manque (Arch : musl, mingw-w64-gcc, clang) : la compilation de YARA-X échouera."
+  command -v "$outil" >/dev/null || echo "⚠ $outil manque (Arch : musl, mingw-w64-gcc, clang) : la compilation de ring et de YARA-X (tests) échouera."
 done
 
 # Les tests sautés (src/essais.rs) d'une étape : un fichier par étape, qu'ils remplissent d'une ligne chacun.

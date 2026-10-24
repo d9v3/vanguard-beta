@@ -121,8 +121,8 @@ fn fabricants() {
 /// Les règles YARA (assets/yara, 2,7 Mo de texte), allégées pour le programme sans en changer le sens : sans les blocs
 /// « meta: » (auteur, description… que Vanguard n'affiche pas), sans indentation, un import de module une seule fois,
 /// les octets des chaînes hexadécimales collés (« 4D5A ») et chaque suite de « ?? » écrite en saut (« [6] » vaut six
-/// « ?? », documentation de YARA). YARA-X, compilé dans Vanguard, les lit comme les règles d'origine ; l'en-tête
-/// (source et licence) reste.
+/// « ?? », documentation de YARA). Le moteur YARA de Vanguard, comme YARA-X qui lui sert d'oracle dans les tests, les
+/// lit comme les règles d'origine ; l'en-tête (source et licence) reste.
 fn regles_yara() {
     println!("cargo:rerun-if-changed=assets/yara/reversinglabs.yara");
     let texte = std::fs::read_to_string("assets/yara/reversinglabs.yara").expect("règles YARA illisibles");
