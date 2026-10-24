@@ -1069,8 +1069,9 @@ fn lancer_chacune(correctifs: &[Vec<String>]) -> (Vec<bool>, Vec<Vec<String>>) {
         let mut faits: Vec<Option<bool>> = vec![None; correctifs.len()];
         let mut notes = correctifs.to_vec();
         lancer_les_ordres(correctifs, &mut faits, &mut notes);
-        // Le reste : les commandes des corrections du bilan, et les annulations notées par une version d'avant
-        // (reconnues mot pour mot, rejouées telles quelles), par bash comme avant.
+        // Le reste : les commandes des corrections du bilan, par bash comme avant. Les annulations d'un blocage n'y
+        // passent plus : même notées par une version d'avant, elles sont refaites en ordres typés
+        // (`blocage::gestes::commandes_d_annulation`).
         let resultats = correctifs
             .iter()
             .zip(faits)

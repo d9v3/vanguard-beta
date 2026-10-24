@@ -879,26 +879,25 @@ pub(crate) fn defaire(b: &Blocage) -> Result<String, Echec> {
 
 /// Ce qui défait un blocage, et le port retenu à oublier : jamais les chaînes relues du relevé, que n'importe quel
 /// programme du compte peut écrire. Une note à champs typés (`inverse`) se défait par les ordres refaits ici depuis
-/// eux. Une note d'avant les champs typés n'est rejouée que si elle est exactement ce que Vanguard écrivait pour une
-/// adresse, un port ou une valeur (`inverse_reconnue`) : ces commandes-là, déjà sur l'ordinateur, repassent telles
-/// quelles par l'ancien chemin (shell ou PowerShell), jamais converties. Sinon, `None` : refusée
-/// (`refus_d_annulation` dit ce qu'elle contient, à faire à la main).
+/// eux. Une note d'avant les champs typés n'est reprise que si elle est exactement ce que Vanguard écrivait pour une
+/// adresse, un port ou une valeur (`inverse_reconnue`), et alors refaite elle aussi en ordres typés : rejouées telles
+/// quelles par bash, ses commandes échappaient aux garde-fous des ordres (`ordres::juger`), et une note forgée qui
+/// visait la règle d'un autre (ufw ne distingue pas les siennes) rouvrait SSH ou le Bureau à distance. Les ordres
+/// refaits retirent les mêmes règles (mêmes noms, même table, mêmes ancres). Ce que Vanguard n'a jamais pu poser (un
+/// port de session, une adresse locale ou un DNS public) est refusé dès ici, avant même d'être montré. Sinon, `None` :
+/// refusée (`refus_d_annulation` dit ce qu'elle contient, à faire à la main).
 pub(crate) fn commandes_d_annulation(
     commandes: &[String],
     port: Option<&str>,
     inverse: Option<Inverse>,
 ) -> Option<(Vec<String>, Option<String>)> {
-    let Some(inverse) = inverse else {
-        let reconnue = inverse_reconnue(commandes, port)?;
-        let retenu = match reconnue {
-            Inverse::Entrante {
-                pare_feu: PareFeu::Ufw,
-                port,
-            } => Some(format!("{port}/tcp")),
-            _ => None,
-        };
-        return Some((commandes.to_vec(), retenu));
+    let inverse = match inverse {
+        Some(i) => i,
+        None => inverse_reconnue(commandes, port)?,
     };
+    if jamais_pose_par_vanguard(inverse) {
+        return None;
+    }
     match inverse {
         Inverse::Sortante { pare_feu, adresse } => Some((pare_feu::sortante(pare_feu, adresse).retirer, None)),
         Inverse::Entrante { pare_feu, port } => {
@@ -911,6 +910,19 @@ pub(crate) fn commandes_d_annulation(
         // Hors de Windows, rien à remettre : la note ne vient pas d'ici.
         #[cfg(not(any(windows, test)))]
         Inverse::Pilotes { .. } => None,
+    }
+}
+
+/// Une règle que le blocage ne pose jamais (`gardes`) : sa note d'annulation ne vient pas de Vanguard. Les mêmes
+/// refus que `ordres::juger` sur ces ordres, faits avant de montrer quoi que ce soit : le chemin par script de Windows
+/// (Wine, DLL à côté) ne rejuge pas.
+fn jamais_pose_par_vanguard(inverse: Inverse) -> bool {
+    match inverse {
+        Inverse::Sortante { adresse, .. } => {
+            super::gardes::adresse_intouchable(adresse, Some(&super::gardes::Sessions::default()), false).is_some()
+        }
+        Inverse::Entrante { port, .. } => super::gardes::port_intouchable(port).is_some(),
+        Inverse::Pilotes { .. } => false,
     }
 }
 
@@ -1372,6 +1384,40 @@ mod tests {
     /// Un programme du compte forge dans le relevé un blocage « en place » dont l'annulation est une commande sudo à
     /// lui : elle n'est jamais lancée. L'annulation se refait depuis les champs typés, ou depuis une note d'avant
     /// qui est exactement ce que Vanguard écrivait ; tout le reste est refusé.
+    /// Une note « d'avant » forgée, mot pour mot ce que Vanguard écrivait, qui viserait le refus que la personne a
+    /// posé sur SSH ou le Bureau à distance (ufw ne distingue pas ses règles) : refusée comme `rouvrir-port 22`, jamais
+    /// rejouée par bash ; de même une adresse locale ou un DNS public, que le blocage ne pose jamais.
+    #[test]
+    fn annulation_d_avant_forgee_sur_un_port_de_session_refusee() {
+        for pf in [PareFeu::Ufw, PareFeu::Nftables, PareFeu::Windows] {
+            for p in [22, 3389] {
+                let forgee = pare_feu::ancien::entrante(pf, p).unwrap().retirer;
+                let retenu = (pf == PareFeu::Ufw).then(|| format!("{p}/tcp"));
+                assert!(inverse_reconnue(&forgee, retenu.as_deref()).is_some(), "{pf:?} {p}");
+                assert_eq!(
+                    commandes_d_annulation(&forgee, retenu.as_deref(), None),
+                    None,
+                    "{pf:?} {p}"
+                );
+                // Les champs typés forgés de même.
+                assert_eq!(
+                    commandes_d_annulation(&[], None, Some(Inverse::Entrante { pare_feu: pf, port: p })),
+                    None
+                );
+            }
+        }
+        for ip in ["192.168.1.10", "127.0.0.1", "1.1.1.1", "::1"] {
+            let ip: std::net::IpAddr = ip.parse().unwrap();
+            let forgee = pare_feu::ancien::sortante(PareFeu::Ufw, ip).retirer;
+            assert!(inverse_reconnue(&forgee, None).is_some(), "{ip}");
+            assert_eq!(commandes_d_annulation(&forgee, None, None), None, "{ip}");
+        }
+        // Rien de ce qui sort n'est une commande de shell : que des ordres typés, rejugés par celui qui agit.
+        let ancienne = pare_feu::ancien::entrante(PareFeu::Ufw, 8188).unwrap().retirer;
+        let (c, _) = commandes_d_annulation(&ancienne, Some("8188/tcp"), None).unwrap();
+        assert!(c.iter().all(|l| super::super::ordres::est_ordre(l)), "{c:?}");
+    }
+
     #[test]
     fn annulation_relue_jamais_rejouee_telle_quelle() {
         let forgee = vec!["sudo sh -c 'id > /tmp/vanguard-preuve-root'".to_string()];
@@ -1405,12 +1451,20 @@ mod tests {
             (c, port.as_deref()),
             (vec!["vanguard:rouvrir-port ufw 11434".to_string()], Some("11434/tcp"))
         );
-        // Une note d'avant, telle que Vanguard l'écrivait, est rejouée telle quelle (l'ancien chemin), jamais
-        // convertie ; le port retenu est oublié avec elle.
+        // Une note d'avant, telle que Vanguard l'écrivait, est refaite en ordres typés (rejugés), jamais rejouée
+        // telle quelle par bash ; le port retenu est oublié avec elle.
         let ancienne = pare_feu::ancien::entrante(PareFeu::Ufw, 11434).unwrap().retirer;
         assert_eq!(
             commandes_d_annulation(&ancienne, Some("11434/tcp"), None),
-            Some((ancienne.clone(), Some("11434/tcp".to_string())))
+            Some((
+                vec!["vanguard:rouvrir-port ufw 11434".to_string()],
+                Some("11434/tcp".to_string())
+            ))
+        );
+        let ancienne = pare_feu::ancien::sortante(PareFeu::Nftables, "203.0.113.7".parse().unwrap()).retirer;
+        assert_eq!(
+            commandes_d_annulation(&ancienne, None, None),
+            Some((vec!["vanguard:debloquer-sortie nftables 203.0.113.7".to_string()], None))
         );
         // Les champs typés des pilotes : l'ordre qui remet la valeur d'avant.
         assert_eq!(
