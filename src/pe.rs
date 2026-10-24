@@ -500,6 +500,18 @@ fn morceau<R: Read + Seek>(source: &mut R, taille: u64, position: u64, n: usize)
 /// COFF (24 octets en tout) là où pointe e_lfanew. Un en-tête facultatif plus court que sa forme fixe (96 octets en
 /// PE32, 112 en PE32+, quelle que soit la taille qu'il annonce) compte comme rempli de zéros.
 pub(crate) fn champs_yara<R: Read + Seek>(source: &mut R, taille: u64) -> Option<ChampsYara> {
+    champs(source, taille, false)
+}
+
+/// `champs_yara` d'une image chargée en mémoire (sections à leur RVA, en-têtes à leur place) : pe.entry_point y est
+/// l'adresse d'entrée relative à la base, comme libyara la donne pour la mémoire d'un processus (base +
+/// AddressOfEntryPoint, la base étant ici le début des données). Le répertoire de sécurité désigne une position dans
+/// le FICHIER, qui n'est pas chargée : aucune signature n'y est lue.
+pub(crate) fn champs_yara_chargee<R: Read + Seek>(source: &mut R, taille: u64) -> Option<ChampsYara> {
+    champs(source, taille, true)
+}
+
+fn champs<R: Read + Seek>(source: &mut R, taille: u64, chargee: bool) -> Option<ChampsYara> {
     let dos = morceau(source, taille, 0, 0x40)?;
     if &dos[..2] != b"MZ" {
         return None;
@@ -535,6 +547,12 @@ pub(crate) fn champs_yara<R: Read + Seek>(source: &mut R, taille: u64) -> Option
             adresse: mot32(&s, 12),
             taille_brute: mot32(&s, 16),
             position: mot32(&s, 20),
+        });
+    }
+    if chargee {
+        return Some(ChampsYara {
+            point_d_entree: Some(u64::from(rva)),
+            securite: None,
         });
     }
     Some(ChampsYara {
