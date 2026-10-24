@@ -32,6 +32,7 @@ mod guide;
 mod historique;
 mod http;
 mod journal;
+mod journaux_windows;
 mod langue;
 mod lenteur;
 mod logiciels;

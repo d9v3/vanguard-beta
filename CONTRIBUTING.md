@@ -46,6 +46,7 @@ Une faille de sécurité ? Pas de ticket ni de demande de fusion publics : signa
 | `src/changements.rs` | ce que Vanguard a changé : chaque correction lancée par `machine::appliquer_chacune`, notée sur l'ordinateur ; un blocage avec de quoi l'annuler exactement, jamais élagué tant qu'il est en place ; une correction du bilan qui se défait, liée à sa note, annulée une par une |
 | `src/signaler/` | `vanguard signaler` (alias `disclose`) : préparer un signalement à un éditeur sans jamais l'envoyer ; tri (faille connue, logiciel malveillant, hameçonnage, détection ratée, contournement) dans `tri.rs`, liste fermée des programmes et de leurs champs dans `programmes.rs`, brouillon pur dans `brouillon.rs`, garde-fou de confidentialité en trois couches (réduire, masquer, contrôle final) dans `garde.rs`, neutralisation Markdown pure (banc de fuzzing) dans `markdown.rs` ; aucun code réseau, vérifié par une liste fermée des appels |
 | `src/evenements.rs` | `vanguard evenements [--json] [--incident id]` : le journal des événements montré, l'état de sa chaîne d'abord (un journal falsifié se lit, mais non vérifié), le fil d'un incident remonté par `cause` |
+| `src/journaux_windows/` | journaux d'événements de Windows lus par Vanguard lui-même, sous tous les systèmes : lecteur .evtx (`evtx/` : en-tête, morceaux de 64 Kio vérifiés par leur CRC32, BinXml de [MS-EVEN6] avec gabarits et substitutions, `binxml.rs`, `valeurs.rs`), borné en taille, profondeur et travail, ce qui n'a pas pu être lu compté dans un bilan ; lu croisé avec la crate `evtx` dans ses tests |
 | `src/annulation.rs` | « Tout remettre comme avant » : corrections du bilan, réglages d'Optimiser et de Gaming, blocages et mode Wi-Fi public, montrés puis défaits du plus récent au plus ancien, en une demande administrateur, relus après coup |
 | `src/sauvegarde.rs`, `src/raccourci.rs`, `src/mise_a_jour.rs`, `src/a_laisser.rs` | sauvegarde automatique guidée (Déjà Dup ou rsync, Time Machine, Historique des fichiers) et vérifier ma sauvegarde (la copie rsync relue sans cache, des fichiers au hasard comparés à leur original ; un original plus récent n'est pas une erreur) ; raccourci sur cet ordinateur ; mise à jour de sa copie depuis la clé (version gravée dans le programme, lue sans le lancer) ou depuis GitHub (`mise_a_jour/github.rs` : manifeste signé en Ed25519 publié dans d9v3/vanguard-update, taille, empreinte et version du programme vérifiées) ; rapport à laisser à la personne dépannée |
 | `src/corriger.rs` | application guidée des correctifs |
@@ -229,7 +230,7 @@ double licence possible de Vanguard : toute autre, même libre et compatible ave
 l'accord de l'auteur.
 
 Fuzzing : `outils/fuzz.sh [cible|tout] [secondes]` (cargo-fuzz et la chaîne nightly), sur les lecteurs de données venues
-d'ailleurs (plist, réponses HTTP et DNS, journaux de la chronologie, XML UPnP de la box, SQLite, YAML d'Échap,
+d'ailleurs (plist, réponses HTTP et DNS, journaux de la chronologie, journaux .evtx de Windows, XML UPnP de la box, SQLite, YAML d'Échap,
 archives, ressources des .exe…). `outils/verifier.sh` compile le banc et passe cinq secondes sur chaque cible (une
 cible cassée par un changement de `src/` se voit tout de suite), la CI cinq minutes chaque nuit ; ses dépendances
 passent à cargo deny (`fuzz/deny.toml`). Une cible s'ajoute dans `fuzz/Cargo.toml`, que `fuzz.sh` lit.

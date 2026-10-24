@@ -131,3 +131,8 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
 
 [dev-dependencies]
 proptest = "1.12.0"
+# Oracle du lecteur .evtx maison (src/journaux_windows/evtx/) : la lecture croisée de ses tests compare nos
+# événements aux siens. Jamais dans le programme (une dépendance de plus qui lirait des données hostiles), sans ses
+# fonctions par défaut (le programme evtx_dump, rayon). 0.13.0 (22 oct. 2026) et pas 0.12.3 : celle-ci amène
+# `encoding`, abandonnée (RUSTSEC-2021-0153), que deny.toml refuse ; 0.13.0 l'a remplacée par encoding_rs.
+evtx = { version = "=0.13.0", default-features = false }
