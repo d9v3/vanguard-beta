@@ -1117,9 +1117,16 @@ fn run_du_registre(sortie: &mut String) -> bool {
     illisibles.is_empty()
 }
 
+/// Les dossiers à lire, parmi ceux que l'environnement et le registre nomment : en chemin absolu seulement (un
+/// chemin vide ou relatif lirait le dossier courant).
+#[cfg(any(windows, test))]
+fn dossiers_nommes(candidats: impl IntoIterator<Item = Option<std::path::PathBuf>>) -> Vec<std::path::PathBuf> {
+    candidats.into_iter().flatten().filter(|d| d.is_absolute()).collect()
+}
+
 /// Les programmes, installateurs et archives posés dans Téléchargements, sur le Bureau, dans le dossier temporaire et
 /// dans les programmes du compte, sous-dossiers compris (un niveau) : « FIC|chemin|date ». `false` : un de ces
-/// dossiers existe sans se lire.
+/// dossiers existe sans se lire, ou aucun n'a pu être nommé (service, environnement vidé) : rien n'a été lu.
 #[cfg(windows)]
 fn fichiers_poses_windows(sortie: &mut String) -> bool {
     use std::fmt::Write;
@@ -1132,19 +1139,19 @@ fn fichiers_poses_windows(sortie: &mut String) -> bool {
         .ok()
         .map(PathBuf::from)
         .or_else(|| profil.as_ref().map(|p| p.join("Desktop")));
-    let dossiers = [
+    let dossiers = dossiers_nommes([
         profil.as_ref().map(|p| p.join("Downloads")),
         bureau,
         std::env::var_os("TEMP").map(PathBuf::from),
         std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Programs")),
-    ];
+    ]);
     let a_garder = |c: &Path| {
         c.extension()
             .and_then(|e| e.to_str())
             .is_some_and(|e| ["exe", "msi", "zip"].iter().any(|x| e.eq_ignore_ascii_case(x)))
     };
-    let mut lus = true;
-    for dossier in dossiers.into_iter().flatten().filter(|d| d.is_absolute()) {
+    let mut lus = !dossiers.is_empty();
+    for dossier in dossiers {
         if let Err(e) = std::fs::read_dir(&dossier) {
             lus &= e.kind() == std::io::ErrorKind::NotFound;
         }
@@ -1576,6 +1583,17 @@ pub fn json() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Sans aucun dossier nommé en chemin absolu (service, environnement vidé), rien n'est lu : la recherche des
+    /// fichiers posés ne compte pas vérifiée.
+    #[test]
+    fn dossiers_des_fichiers_poses() {
+        use std::path::PathBuf;
+        let aucun = dossiers_nommes([None, Some(PathBuf::new()), Some(PathBuf::from("Downloads"))]);
+        assert_eq!(aucun, Vec::<PathBuf>::new());
+        let absolu = std::env::temp_dir();
+        assert_eq!(dossiers_nommes([None, Some(absolu.clone())]), [absolu]);
+    }
 
     fn indice(nom: &str) -> usize {
         LOGICIELS
