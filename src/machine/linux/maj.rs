@@ -81,16 +81,20 @@ pub(super) fn autres_mises_a_jour() -> Vec<Constat> {
         // fwupd par D-Bus d'abord ; fwupdmgr en secours si le bus ne répond pas.
         let firmware = present("fwupdmgr").then(|| {
             portee.spawn(|| {
-                firmwares_par_dbus().ok().or_else(|| {
-                    sortie_delai(
-                        "fwupdmgr",
-                        &["get-updates", "--json", "--no-unreported-check"],
-                        40,
-                        &[0, 2],
-                    )
-                    .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok())
-                    .map(|v| firmwares_proposes(&v))
-                })
+                match firmwares_par_dbus() {
+                    Ok(v) => return Some(v),
+                    // fwupd a répondu par une erreur (métadonnées absentes…) : fwupdmgr la tairait.
+                    Err(e) if e.starts_with("org.freedesktop.fwupd.") => return None,
+                    Err(_) => {}
+                }
+                sortie_delai(
+                    "fwupdmgr",
+                    &["get-updates", "--json", "--no-unreported-check"],
+                    40,
+                    &[0, 2],
+                )
+                .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok())
+                .map(|v| firmwares_proposes(&v))
             })
         });
 
@@ -221,13 +225,15 @@ fn appareils_a_jour(liste: &dbus::Valeur) -> Vec<(String, String)> {
 }
 
 /// Ce que dit GetUpgrades d'un appareil : `Ok(true)` s'il a une version plus récente, `Ok(false)` pour « rien à
-/// faire » (NothingToDo : aucune version, déjà la dernière, ou pas d'objet) ; toute autre erreur reste une erreur.
+/// faire » (NothingToDo : aucune version plus récente, appareil qui ne se met pas à jour) ou pour un appareil parti
+/// entre la liste et la question (NotFound). NotSupported (« no components in silo » : métadonnées jamais
+/// téléchargées) et toute autre erreur restent des erreurs : fwupdmgr les taisait et disait « à jour ».
 fn reponse_upgrades(r: Result<Vec<dbus::Valeur>, String>) -> Result<bool, String> {
     match r {
         Ok(corps) => Ok(corps.first().is_some_and(|l| !l.elements().is_empty())),
         Err(e)
             if e.starts_with("org.freedesktop.fwupd.NothingToDo ")
-                || e.starts_with("org.freedesktop.fwupd.NotSupported ") =>
+                || e.starts_with("org.freedesktop.fwupd.NotFound ") =>
         {
             Ok(false)
         }
@@ -1783,6 +1789,11 @@ mod tests {
             Ok(false)
         );
         assert!(reponse_upgrades(erreur("org.freedesktop.fwupd.Internal : boom")).is_err());
+        assert!(reponse_upgrades(erreur("org.freedesktop.fwupd.NotSupported : no components in silo")).is_err());
+        assert_eq!(
+            reponse_upgrades(erreur("org.freedesktop.fwupd.NotFound : gone")),
+            Ok(false)
+        );
         assert!(reponse_upgrades(erreur("le bus n'a pas répondu à temps")).is_err());
         assert_eq!(reponse_upgrades(Ok(vec![V::Tableau(Vec::new())])), Ok(false));
         assert_eq!(
