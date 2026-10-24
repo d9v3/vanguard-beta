@@ -2,12 +2,41 @@
 //! passe, dossiers de commandes modifiables par d'autres comptes. Chaque système garde ses mots à lui (« la machine », « le Mac ») et ce qu'il vérifie en plus
 //! (machine/linux/privileges.rs, machine/macos/privileges.rs).
 
+use std::ffi::OsStr;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::{Constat, alerte, ok, sortie};
 use crate::risk::Niveau;
 use crate::{tr, trf};
+
+/// Le chemin du programme `cmd` dans les dossiers de `path` (le PATH), comme `command -v` le trouve, sans lancer de
+/// shell. Un nom avec une barre oblique est un chemin, pris tel quel. Le bit d'exécution compte : un fichier
+/// ordinaire du même nom ne se lance pas.
+pub(crate) fn chemin_dans(cmd: &str, path: &OsStr) -> Option<PathBuf> {
+    let executable = |f: &Path| {
+        f.metadata()
+            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    };
+    if cmd.is_empty() {
+        return None;
+    }
+    if cmd.contains('/') {
+        return executable(Path::new(cmd)).then(|| PathBuf::from(cmd));
+    }
+    // Une entrée vide du PATH veut dire le dossier courant pour le shell : on ne la suit pas, un programme posé là
+    // par un tiers passerait pour installé.
+    std::env::split_paths(path)
+        .filter(|d| !d.as_os_str().is_empty())
+        .map(|d| d.join(cmd))
+        .find(|f| executable(f))
+}
+
+/// Le programme `cmd` est-il dans le PATH, exécutable ?
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+pub(crate) fn present(cmd: &str) -> bool {
+    chemin_dans(cmd, &std::env::var_os("PATH").unwrap_or_default()).is_some()
+}
 
 /// Fichiers qui contiennent des mots de passe ou des jetons d'accès, chemin relatif au dossier personnel.
 const SECRETS: &[&str] = &[

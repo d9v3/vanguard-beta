@@ -260,8 +260,8 @@ fn sans_hex(t: &str) -> String {
 }
 
 /// Une taille écrite comme lsblk l'écrit : en puissances de 1024, une lettre (« 512B », « 47G », « 28,9G »), un
-/// chiffre après la virgule quand il n'est pas nul, arrondi comme util-linux le fait.
-#[cfg(any(target_os = "linux", test))]
+/// chiffre après la virgule quand il n'est pas nul, arrondi comme util-linux le fait. macOS l'écrit de même.
+#[cfg(any(unix, test))]
 fn taille_lsblk(octets: u64) -> String {
     const LETTRES: [&str; 6] = ["K", "M", "G", "T", "P", "E"];
     if octets < 1024 {
@@ -290,10 +290,11 @@ fn taille_lsblk(octets: u64) -> String {
 }
 
 /// Clés et disques externes montés sous macOS : tout ce qui est dans /Volumes, sauf le disque du système (un
-/// lien vers « / »). Description : nom et taille (df), prête à montrer (l'étiquette vient de qui a préparé la clé).
+/// lien vers « / »). Description : nom et taille (`tailles_des_volumes`), prête à montrer (l'étiquette vient de qui a préparé la clé).
 #[cfg(target_os = "macos")]
 fn volumes_amovibles() -> Vec<(PathBuf, String)> {
     let racine = std::fs::canonicalize("/").unwrap_or_default();
+    let tailles = tailles_des_volumes();
     std::fs::read_dir("/Volumes")
         .into_iter()
         .flatten()
@@ -301,20 +302,49 @@ fn volumes_amovibles() -> Vec<(PathBuf, String)> {
         .map(|d| d.path())
         .filter(|p| std::fs::canonicalize(p).is_ok_and(|r| r != racine))
         .map(|p| {
-            // Délai : un volume réseau qui ne répond plus ferait attendre df sans fin.
-            let taille = crate::commande::lancer(Command::new("df").args(["-h", "-P"]).arg(&p), 10)
-                .and_then(|o| {
-                    o.sortie
-                        .lines()
-                        .nth(1)
-                        .and_then(|l| l.split_whitespace().nth(1).map(str::to_string))
-                })
-                .unwrap_or_default();
+            let taille = tailles.get(&p).map(|&o| taille_lsblk(o)).unwrap_or_default();
             let nom = p
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
             (p, affichable(&format!("{nom} · {taille}")))
+        })
+        .collect()
+}
+
+/// La taille de chaque système de fichiers monté (point de montage → octets), lue par getfsstat avec MNT_NOWAIT :
+/// les valeurs que le noyau garde, sans interroger chaque volume, si bien qu'un volume réseau qui ne répond plus ne
+/// fait rien attendre (df, lancé avant, pouvait y rester bloqué jusqu'à son délai).
+#[cfg(target_os = "macos")]
+fn tailles_des_volumes() -> std::collections::HashMap<PathBuf, u64> {
+    use std::os::unix::ffi::OsStrExt;
+    // SAFETY : sans tampon, getfsstat rend seulement le nombre de systèmes de fichiers montés.
+    let n = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) };
+    let Ok(n) = usize::try_from(n) else {
+        return std::collections::HashMap::new();
+    };
+    // Quelques places de plus : un volume monté entre les deux appels n'est pas perdu.
+    // SAFETY : statfs n'est fait que d'entiers et de tableaux d'octets, pour qui zéro est une valeur permise.
+    let mut tampon: Vec<libc::statfs> = vec![unsafe { std::mem::zeroed() }; n + 8];
+    let Ok(taille) = libc::c_int::try_from(tampon.len() * std::mem::size_of::<libc::statfs>()) else {
+        return std::collections::HashMap::new();
+    };
+    // SAFETY : le tampon fait `taille` octets, à nous ; getfsstat y écrit au plus autant de structures et rend leur
+    // nombre.
+    let lus = unsafe { libc::getfsstat(tampon.as_mut_ptr(), taille, libc::MNT_NOWAIT) };
+    let lus = usize::try_from(lus).unwrap_or(0).min(tampon.len());
+    tampon[..lus]
+        .iter()
+        .map(|f| {
+            // f_mntonname : un nom C terminé par un zéro dans un tableau de 1024 octets.
+            let octets: Vec<u8> = f
+                .f_mntonname
+                .iter()
+                .take_while(|&&c| c != 0)
+                .map(|&c| c.cast_unsigned())
+                .collect();
+            let point = PathBuf::from(std::ffi::OsStr::from_bytes(&octets));
+            (point, f.f_blocks.saturating_mul(u64::from(f.f_bsize)))
         })
         .collect()
 }
@@ -657,14 +687,9 @@ fn preparer() -> bool {
     // Linux : le PATH parcouru sur le disque, sans lancer de shell.
     #[cfg(target_os = "linux")]
     let present = crate::machine::linux::natif::present(&outil_clamav("clamscan"));
+    // macOS aussi : le PATH parcouru sur le disque, sans bash (le chemin y était collé entre apostrophes).
     #[cfg(target_os = "macos")]
-    let present = crate::commande::lancer(
-        Command::new("bash")
-            .arg("-c")
-            .arg(format!("command -v '{}'", outil_clamav("clamscan"))),
-        5,
-    )
-    .is_some_and(|o| o.code == Some(0));
+    let present = crate::machine::unix::present(&outil_clamav("clamscan"));
     if !present {
         trp!(
             "  ClamAV (antivirus open source) n'est pas installé.",

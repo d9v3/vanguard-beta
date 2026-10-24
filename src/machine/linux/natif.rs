@@ -6,9 +6,10 @@
 //! analyseur qui reçoit la racine en paramètre : les tests lui donnent une arborescence inventée. `None` veut dire
 //! « non vérifié » (base absente, format inconnu), jamais « rien trouvé ».
 
+// La recherche dans le PATH est commune à Linux et macOS (`machine::unix`).
+use crate::machine::unix::chemin_dans;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::copier::sans_echappements;
@@ -51,25 +52,6 @@ const DOSSIERS_SYSTEME: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 /// prenaient un dossier ou un fichier non exécutable du même nom pour le programme.
 pub(crate) fn present_systeme(cmd: &str) -> bool {
     !cmd.contains('/') && chemin_dans(cmd, OsStr::new(DOSSIERS_SYSTEME)).is_some()
-}
-
-fn chemin_dans(cmd: &str, path: &OsStr) -> Option<PathBuf> {
-    let executable = |f: &Path| {
-        f.metadata()
-            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-    };
-    if cmd.is_empty() {
-        return None;
-    }
-    if cmd.contains('/') {
-        return executable(Path::new(cmd)).then(|| PathBuf::from(cmd));
-    }
-    // Une entrée vide du PATH veut dire le dossier courant pour le shell : on ne la suit pas, un programme posé là
-    // par un tiers passerait pour installé.
-    std::env::split_paths(path)
-        .filter(|d| !d.as_os_str().is_empty())
-        .map(|d| d.join(cmd))
-        .find(|f| executable(f))
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -957,7 +939,7 @@ pub(crate) fn taille_page() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{PermissionsExt, symlink};
 
     /// Une instance du modèle getty@.service, écrite par morceaux : son nom complet a la forme d'un courriel, que
     /// la vérification de confidentialité refuserait.

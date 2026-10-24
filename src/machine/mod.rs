@@ -45,7 +45,7 @@ use windows as os;
 #[cfg(target_os = "macos")]
 pub mod macos;
 #[cfg(unix)]
-mod unix;
+pub(crate) mod unix;
 #[cfg(target_os = "macos")]
 use macos as os;
 
