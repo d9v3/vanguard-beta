@@ -521,3 +521,89 @@ proptest::proptest! {
         }
     }
 }
+
+/// Les graines du banc de fuzzing (fuzz/graines/analyse_fichier, analyse_lecteurs), fabriquées ici : à relancer à la
+/// main quand un fabricant change, `VANGUARD_GRAINES=fuzz/graines cargo test ecrire_les_graines -- --ignored`.
+#[test]
+#[ignore = "à la main, pour refaire les graines"]
+fn ecrire_les_graines() {
+    let Some(racine) = std::env::var_os("VANGUARD_GRAINES") else {
+        return crate::essais::saute("VANGUARD_GRAINES absent");
+    };
+    let racine = std::path::PathBuf::from(racine);
+    let source = "Attribute VB_Name = \"Module1\"\r\nSub AutoOpen()\r\n  MsgBox 1\r\nEnd Sub\r\n";
+    let bin = document_vba("", source, false);
+    let mut ps = vec![0xFF, 0xFE];
+    ps.extend(
+        "$env:TEMP; Write-Host x; Invoke-Expression y"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes),
+    );
+    let mut gz = vec![0x1f, 0x8b, 8, 8, 0, 0, 0, 0, 0, 3];
+    gz.extend(b"a.txt\0");
+    gz.extend(miniz_oxide::deflate::compress_to_vec(b"bonjour bonjour", 6));
+    gz.extend(crate::archives::crc32::crc32(b"bonjour bonjour").to_le_bytes());
+    gz.extend(15u32.to_le_bytes());
+    let mut tar = vec![0u8; 512];
+    tar[..5].copy_from_slice(b"a.txt");
+    tar[124..135].copy_from_slice(b"00000000003");
+    tar[156] = b'0';
+    tar[257..263].copy_from_slice(b"ustar\0");
+    tar.extend(b"abc");
+    tar.resize(2048, 0);
+    let lnk = lnk::essais::raccourci(
+        Some(&[6, 0, b'c', b'm', b'd', 0]),
+        Some("C:\\Windows\\System32\\cmd.exe"),
+        Some("/c x"),
+        b"",
+    );
+    let fichier: Vec<(&str, Vec<u8>)> = vec![
+        ("pe-overlay-zip.bin", pe_wx(&zip_de(&[("a.txt", 8, b"bonjour")]))),
+        ("doc-vba.bin", document_vba("Macros", source, true)),
+        (
+            "docx-vba.bin",
+            zip_de(&[
+                (
+                    "[Content_Types].xml",
+                    8,
+                    b"<Types ContentType=\"application/vnd.ms-office.vbaProject\"/>",
+                ),
+                ("word/vbaProject.bin", 8, &bin),
+            ]),
+        ),
+        ("lnk.bin", lnk.clone()),
+        ("elf.bin", elf::essais::elf64(7, true, 0x40_0180, b"PK\x05\x06")),
+        (
+            "macho-universel.bin",
+            macho::essais::universel(&[macho::essais::macho64(5, false), macho::essais::macho64(7, true)]),
+        ),
+        ("gzip.bin", gz),
+        ("tar.bin", tar),
+        ("ps1-utf16.bin", ps),
+        (
+            "xls-xlm.bin",
+            cfb::essais::fichier(&[("Workbook", Some(&office::essais::classeur(false, &[("M", 2, 1)])))]),
+        ),
+    ];
+    let mut dir = vec![2u8];
+    dir.extend(vba::essais::dir(&[("Module1", "Module1", 0, 0x21)]));
+    let mut cfb_seul = vec![0u8];
+    cfb_seul.extend(&bin);
+    let mut ovba_seul = vec![1u8];
+    ovba_seul.extend(ovba::essais::compresser(source.as_bytes()));
+    let mut lnk_seul = vec![3u8];
+    lnk_seul.extend(&lnk);
+    let lecteurs: Vec<(&str, Vec<u8>)> = vec![
+        ("cfb.bin", cfb_seul),
+        ("ovba.bin", ovba_seul),
+        ("dir.bin", dir),
+        ("lnk.bin", lnk_seul),
+    ];
+    for (dossier, graines) in [("analyse_fichier", fichier), ("analyse_lecteurs", lecteurs)] {
+        let d = racine.join(dossier);
+        std::fs::create_dir_all(&d).unwrap();
+        for (nom, octets) in graines {
+            std::fs::write(d.join(nom), octets).unwrap();
+        }
+    }
+}

@@ -20,6 +20,8 @@ serde = { version = "1.0.229", features = ["derive"] }
 libc = "0.2.191"
 # Les lecteurs gzip et zip (src/archives/) : la même version que Cargo.lock de Vanguard.
 miniz_oxide = "=0.9.1"
+# L'empreinte des parties de l'analyse des fichiers (src/analyse/) : la même que Cargo.lock de Vanguard.
+sha2 = { version = "=0.11.1", default-features = false }
 
 # `fuzzing` : posé par cargo-fuzz ; src/sqlite.rs s'en sert pour ouvrir sa lecture des colonnes ici.
 [lints.rust]
@@ -157,6 +159,20 @@ bench = false
 [[bin]]
 name = "evenement_xml"
 path = "fuzz_targets/evenement_xml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "analyse_fichier"
+path = "fuzz_targets/analyse_fichier.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "analyse_lecteurs"
+path = "fuzz_targets/analyse_lecteurs.rs"
 test = false
 doc = false
 bench = false
