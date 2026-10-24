@@ -425,7 +425,7 @@ fn demander_phrase() -> Option<String> {
     Some(phrase)
 }
 
-/// Menu Données › Protéger les données de la clé : activer, changer la phrase, retirer la protection. Seulement sur
+/// Menu Vanguard › Protéger les données de la clé : activer, changer la phrase, retirer la protection. Seulement sur
 /// l'ordinateur du propriétaire, où la clé est modifiable.
 pub fn menu() {
     use crate::ui::*;
@@ -589,8 +589,8 @@ fn constat_de(donnees: &Path) -> Option<crate::machine::Constat> {
         .to_string(),
         correctif: Some(crate::machine::Correctif {
             action: crate::tr!(
-                "Menu Données › Protéger les données de la clé (une phrase, demandée seulement sur les autres ordinateurs)",
-                "Data menu › Protect the key's data (a passphrase, asked only on other computers)"
+                "Menu Vanguard › Protéger les données de la clé (une phrase, demandée seulement sur les autres ordinateurs)",
+                "Vanguard menu › Protect the drive's data (a passphrase, asked only on other computers)"
             )
             .to_string(),
             commandes: Vec::new(),

@@ -152,7 +152,8 @@ pub fn tout(reponse: &str) -> bool {
 pub fn role(nom: &str) -> &str {
     match (anglais(), nom) {
         (true, "passerelle") => "gateway",
-        (true, "cette machine") => "this machine",
+        (true, "cette machine") => "this computer",
+        (false, "cette machine") => "cet ordinateur",
         _ => nom,
     }
 }

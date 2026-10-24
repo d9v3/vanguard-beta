@@ -1762,10 +1762,10 @@ fn sauvegardes() -> Constat {
                 Niveau::Info,
                 tr!("Seulement des instantanés snapper, sur le même disque : ils ne protègent ni d'une panne de disque ni d'un vol.", "Only snapper snapshots, on the same disk: they protect neither against a disk failure nor against theft."),
             )
-            .manuel(tr!("Ajouter une vraie sauvegarde vers un autre disque : menu Données › Sauvegarde automatique, ou restic, Borg, Timeshift…", "Add a real backup to another disk: menu Data › Automatic backup, or restic, Borg, Timeshift…"), &[])
+            .manuel(tr!("Ajouter une vraie sauvegarde vers un autre disque : menu Données et sauvegardes › Sauvegarde automatique, ou restic, Borg, Timeshift…", "Add a real backup to another disk: menu Data › Automatic backup, or restic, Borg, Timeshift…"), &[])
         } else {
             alerte("Sauvegardes", Niveau::Moyen, tr!("Aucune sauvegarde automatique détectée.", "No automatic backup detected.")).manuel(
-                tr!("Mettre en place une sauvegarde vers un autre disque : menu Données › Sauvegarde automatique, ou restic, Borg, Timeshift…", "Set up a backup to another disk: menu Data › Automatic backup, or restic, Borg, Timeshift…"),
+                tr!("Mettre en place une sauvegarde vers un autre disque : menu Données et sauvegardes › Sauvegarde automatique, ou restic, Borg, Timeshift…", "Set up a backup to another disk: menu Data › Automatic backup, or restic, Borg, Timeshift…"),
                 &[],
             )
         };

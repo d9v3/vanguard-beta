@@ -20,7 +20,7 @@ pub const PROGRAMMES: &[Programme] = &[
                 "vanguard complet",
                 "vanguard full",
                 "Bilan complet : cet ordinateur, puis le réseau.",
-                "Full check: this machine, then the network.",
+                "Full check: this computer, then the network.",
                 false,
             ),
             traduite(

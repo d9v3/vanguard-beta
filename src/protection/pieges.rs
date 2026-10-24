@@ -260,10 +260,10 @@ fn texte() -> String {
     let mut t = String::from(
         "Fichier-piège de Vanguard : ne le modifiez pas, ne le déplacez pas, ne le supprimez pas.\n\
          Il sert à repérer un rançongiciel : s'il change, Vanguard vous alerte.\n\
-         Pour le retirer : Vanguard, menu Antivirus et protection › Fichiers-pièges, ou « vanguard pieges --retirer ».\n\n\
+         Pour le retirer : Vanguard, menu Virus et logiciels espions › Fichiers-pièges anti-rançongiciel, ou « vanguard pieges --retirer ».\n\n\
          Vanguard decoy file: do not modify, move or delete it.\n\
          It is there to catch ransomware: if it changes, Vanguard warns you.\n\
-         To remove it: Vanguard, Antivirus and protection menu › Decoy files, or “vanguard decoys --remove”.\n\n",
+         To remove it: Vanguard, Viruses and spyware menu › Ransomware decoy files, or “vanguard decoys --remove”.\n\n",
     );
     for i in 1..=250 {
         let _ = writeln!(t, "{i:03}  rien d'important ici / nothing important here");
@@ -508,8 +508,8 @@ fn juger(etats: &[(&Piege, Etat)]) -> Constat {
                 supprimes.join(", ")
             ),
             Some(tr!(
-                "Si c'est vous, reposez les fichiers-pièges (menu Antivirus et protection) ; sinon, lancez une analyse antivirus",
-                "If it was you, set the decoy files again (Antivirus and protection menu); otherwise, run an antivirus scan"
+                "Si c'est vous, reposez les fichiers-pièges (menu Virus et logiciels espions) ; sinon, lancez une analyse antivirus",
+                "If it was you, set the decoy files again (Viruses and spyware menu); otherwise, run an antivirus scan"
             )),
         )
     } else if !illisibles.is_empty() {

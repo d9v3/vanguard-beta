@@ -382,7 +382,7 @@ pub(crate) fn service_public(ip: IpAddr) -> Option<&'static str> {
 fn decrire(ip: IpAddr, s: &Serveurs) -> String {
     match origine(ip) {
         Origine::Local => match s.resolveur_local {
-            Some(nom) => trf!("{nom} (sur cette machine)", "{nom} (on this machine)"),
+            Some(nom) => trf!("{nom} (sur cet ordinateur)", "{nom} (on this computer)"),
             None => trf!("résolveur local ({ip})", "local resolver ({ip})"),
         },
         Origine::Reseau => trf!("votre routeur ou votre réseau ({ip})", "your router or network ({ip})"),

@@ -636,8 +636,8 @@ fn signalement(nom: &str, debut: &[u8]) -> Option<(String, String)> {
         .or_else(|| PROGRAMMES.contains(&extension.as_str()).then_some(Niveau::Info))?;
     let nom = affichable(nom);
     let verifier = tr!(
-        "vérifiez-le avant de l'ouvrir : menu Antivirus et protection › Vérifier un fichier téléchargé, ou « vanguard verifier-fichier ».",
-        "check it before opening it: menu Antivirus and protection › Check a downloaded file, or “vanguard check-file”."
+        "vérifiez-le avant de l'ouvrir : menu Virus et logiciels espions › Vérifier un fichier téléchargé, ou « vanguard verifier-fichier ».",
+        "check it before opening it: menu Viruses and spyware › Check a downloaded file, or “vanguard check-file”."
     );
     Some(if pire >= Niveau::Eleve {
         let raisons: Vec<&str> = signes

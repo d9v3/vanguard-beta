@@ -569,8 +569,8 @@ pub(super) fn proche() {
         crate::a_laisser::laisser_avec(&audit, &conseils(qui, raison));
     } else {
         conseil(tr!(
-            "La page reste possible plus tard : menu Cette machine › Rapport à laisser.",
-            "The page is still possible later: This machine menu › Report to leave behind."
+            "La page reste possible plus tard : menu Cet ordinateur › Rapport à laisser.",
+            "The page is still possible later: This computer menu › Report to leave behind."
         ));
     }
 }

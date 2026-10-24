@@ -685,8 +685,8 @@ fn appareils(d: &Donnees, nouveaux: &[&FicheAppareil]) -> String {
     ));
     if d.appareils.is_empty() {
         h += tr!(
-            "Aucun appareil connu : lancez un scan du réseau (menu « Réseau et Internet » › « Scanner le réseau », ou <code>vanguard reseau</code>) pour que Vanguard apprenne ceux de votre réseau.",
-            "No known device: run a network scan (menu “Network and Internet” › “Scan the network”, or <code>vanguard network</code>) so Vanguard learns your home's devices."
+            "Aucun appareil connu : lancez un scan du réseau (menu « Réseau et Internet » › « Appareils du réseau » › « Scan du réseau », ou <code>vanguard reseau</code>) pour que Vanguard apprenne ceux de votre réseau.",
+            "No known device: run a network scan (menu “Network and Internet” › “Devices on the network” › “Network scan”, or <code>vanguard network</code>) so Vanguard learns your home's devices."
         );
     } else if nouveaux.is_empty() {
         h += tr!(
@@ -800,8 +800,8 @@ pub(crate) fn html(d: &Donnees) -> String {
     if page_vide(d) {
         let _ = trw!(
             h,
-            "<div class=carte><span class=\"badge moyen\">COUPÉE</span> Rien à montrer pour l'instant : la surveillance horaire n'a jamais tourné sur cet ordinateur, et aucun appareil n'est encore connu.<div class=fix>{}</div><div class=fix>Pour voir tout de suite les appareils de votre réseau : menu « Réseau et Internet » › « Scanner le réseau », ou <code>vanguard reseau</code>.</div></div>",
-            "<div class=carte><span class=\"badge moyen\">OFF</span> Nothing to show yet: hourly monitoring has never run on this computer, and no device is known yet.<div class=fix>{}</div><div class=fix>To see your home's devices right away: menu “Network and Internet” › “Scan the network”, or <code>vanguard network</code>.</div></div>",
+            "<div class=carte><span class=\"badge moyen\">COUPÉE</span> Rien à montrer pour l'instant : la surveillance horaire n'a jamais tourné sur cet ordinateur, et aucun appareil n'est encore connu.<div class=fix>{}</div><div class=fix>Pour voir tout de suite les appareils de votre réseau : menu « Réseau et Internet » › « Appareils du réseau » › « Scan du réseau », ou <code>vanguard reseau</code>.</div></div>",
+            "<div class=carte><span class=\"badge moyen\">OFF</span> Nothing to show yet: hourly monitoring has never run on this computer, and no device is known yet.<div class=fix>{}</div><div class=fix>To see your home's devices right away: menu “Network and Internet” › “Devices on the network” › “Network scan”, or <code>vanguard network</code>.</div></div>",
             comment_activer()
         );
         h += "</main></body></html>";

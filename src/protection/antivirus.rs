@@ -943,8 +943,8 @@ fn clamav(portee: &Portee) {
     }
     if rep == "q" {
         trp!(
-            "  {GRIS}Quarantaine : {} ; un fichier se remet à sa place par le menu Antivirus et protection › Quarantaine.{RESET}",
-            "  {GRIS}Quarantine: {}; a file goes back to its place through the menu Antivirus and protection › Quarantine.{RESET}",
+            "  {GRIS}Quarantaine : {} ; un fichier se remet à sa place par le menu Virus et logiciels espions › Quarantaine.{RESET}",
+            "  {GRIS}Quarantine: {}; a file goes back to its place through the menu Viruses and spyware › Quarantine.{RESET}",
             crate::protection::quarantaine::dossier().display()
         );
     }
@@ -1129,8 +1129,8 @@ fn demarrage() {
     afficher_aligne(
         "  ",
         tr!(
-            "Pour qu'un programme ne se lance plus à l'ouverture de session, sans le désinstaller et de façon annulable : vanguard demarrage (ou Cette machine › Pourquoi c'est lent ?).",
-            "To stop a program from starting at login, without uninstalling it and in an undoable way: vanguard startup (or This machine › Why is it slow?)."
+            "Pour qu'un programme ne se lance plus à l'ouverture de session, sans le désinstaller et de façon annulable : vanguard demarrage (ou Optimiser et installer › Programmes au démarrage).",
+            "To stop a program from starting at login, without uninstalling it and in an undoable way: vanguard startup (or Optimize and install › Startup programs)."
         ),
         2,
         GRIS,

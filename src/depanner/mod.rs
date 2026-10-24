@@ -325,14 +325,14 @@ fn lent() {
     let mut conseils = Vec::new();
     if depuis == 2 {
         conseils.push(tr!(
-            "Par moments : lancez la mesure (outil « Pourquoi c'est lent ? », menu Cette machine) au moment où c'est lent, elle dira qui travaille à ce moment-là.",
-            "At times: run the measurement (“Why is it slow?” tool, This machine menu) when it is slow: it will say what is working at that moment."
+            "Par moments : lancez la mesure (outil « Pourquoi c'est lent ? », menu Optimiser et installer) au moment où c'est lent, elle dira qui travaille à ce moment-là.",
+            "At times: run the measurement (“Why is it slow?” tool, Optimize and install menu) when it is slow: it will say what is working at that moment."
         ));
     }
     if depuis == 1 {
         conseils.push(tr!(
-            "Depuis peu : un programme installé récemment peut se lancer au démarrage ou tourner en fond ; une mise à jour de pilote ratée se corrige par les mises à jour (menu Cette machine).",
-            "Recently: a newly installed program may start at login or run in the background; a failed driver update is fixed through the updates (This machine menu)."
+            "Depuis peu : un programme installé récemment peut se lancer au démarrage ou tourner en fond ; une mise à jour de pilote ratée se corrige par les mises à jour (menu Cet ordinateur).",
+            "Recently: a newly installed program may start at login or run in the background; a failed driver update is fixed through the updates (This computer menu › System updates)."
         ));
     }
     if quoi == 2 {
@@ -560,7 +560,7 @@ fn plus_gros_dossiers() -> Vec<(String, u64)> {
 
 /// Les parcours, pour la recherche d'un menu (« <cle>.3 » : le 3e parcours).
 pub fn lignes_de_recherche(cle: &str) -> Vec<Ligne> {
-    let chemin = format!("{} ›", tr!("Dépanner pas à pas", "Troubleshoot step by step"));
+    let chemin = format!("{} ›", tr!("Dépanner pas à pas", "Step-by-step troubleshooting"));
     PARCOURS
         .iter()
         .enumerate()
@@ -574,6 +574,11 @@ pub fn lignes_de_recherche(cle: &str) -> Vec<Ligne> {
             .avec_mots(p.mots)
         })
         .collect()
+}
+
+/// Le nombre de parcours : les outils du groupe Dépanner les suivent au menu (11.13, 11.14).
+pub fn nombre_de_parcours() -> usize {
+    PARCOURS.len()
 }
 
 /// « 3 » → le 3e parcours, tapé ou trouvé par la recherche.
@@ -596,41 +601,47 @@ pub fn ouvrir(n: usize) {
     }
 }
 
-/// Les parcours au menu.
-pub fn menu() {
+/// L'écran des parcours, suivis des `autres` outils du groupe : 24 rangées au plus avec l'aide et la saisie (test),
+/// d'où une explication d'une ligne.
+fn lignes_du_menu(autres: &[(&str, &str, &str)]) -> Vec<Ligne> {
+    let mut lignes: Vec<Ligne> = lignes_cadre(
+        &format!(
+            "{ACCENT}VANGUARD{RESET} {GRIS}›{RESET} {}",
+            tr!("Dépanner pas à pas", "Step-by-step troubleshooting")
+        ),
+        tr!("une panne, des questions", "a problem, a few questions"),
+    )
+    .into_iter()
+    .map(Ligne::Texte)
+    .collect();
+    lignes.push(Ligne::Texte(format!(
+        "  {GRIS}{}{RESET}",
+        tr!(
+            "Quelques questions, puis la bonne réparation, avec votre accord.",
+            "A few questions, then the right repair, with your consent."
+        )
+    )));
+    lignes.push(Ligne::Texte(String::new()));
+    for (i, p) in PARCOURS.iter().enumerate() {
+        lignes.push(
+            Ligne::choix(&(i + 1).to_string(), dans_la_langue(p.titre), dans_la_langue(p.apercu)).avec_mots(p.mots),
+        );
+    }
+    for (i, (titre, precision, mots)) in autres.iter().enumerate() {
+        lignes.push(Ligne::choix(&(PARCOURS.len() + i + 1).to_string(), titre, precision).avec_mots(mots));
+    }
+    lignes.push(Ligne::Texte(String::new()));
+    lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
+    lignes
+}
+
+/// Les parcours au menu, puis `autres` (titre, précision, mots), les outils du groupe qui ne sont pas des parcours :
+/// `lancer` reçoit le rang de celui qui est choisi.
+pub fn menu(autres: &[(&str, &str, &str)], lancer: &mut dyn FnMut(usize)) {
     let mut dernier = String::from("1");
     loop {
         print!("\x1b[2J\x1b[H");
-        let mut lignes: Vec<Ligne> = lignes_cadre(
-            &format!(
-                "{ACCENT}VANGUARD{RESET} {GRIS}›{RESET} {}",
-                tr!("Dépanner pas à pas", "Troubleshoot step by step")
-            ),
-            tr!("une panne, des questions", "a problem, a few questions"),
-        )
-        .into_iter()
-        .map(Ligne::Texte)
-        .collect();
-        lignes.extend(
-            envelopper(
-                tr!(
-                    "Choisissez ce qui ne va pas : deux ou trois questions, puis Vanguard vérifie lui-même et propose la bonne réparation. Rien n'est changé sans votre accord.",
-                    "Choose what is wrong: two or three questions, then Vanguard checks by itself and suggests the right repair. Nothing changes without your consent."
-                ),
-                LARGEUR - 2,
-            )
-            .into_iter()
-            .map(|l| Ligne::Texte(format!("  {GRIS}{l}{RESET}"))),
-        );
-        lignes.push(Ligne::Texte(String::new()));
-        for (i, p) in PARCOURS.iter().enumerate() {
-            lignes.push(
-                Ligne::choix(&(i + 1).to_string(), dans_la_langue(p.titre), dans_la_langue(p.apercu)).avec_mots(p.mots),
-            );
-        }
-        lignes.push(Ligne::Texte(String::new()));
-        lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
-        lignes.push(Ligne::Texte(String::new()));
+        let lignes = lignes_du_menu(autres);
         let Some(choix) = choisir(
             &lignes,
             tr!("  Choix (Entrée pour revenir) : ", "  Choice (Enter to go back): "),
@@ -640,13 +651,22 @@ pub fn menu() {
             return;
         };
         let choix = choix.trim().to_string();
-        match chemin(&choix) {
-            Some(n) => {
+        let autre = choix
+            .parse::<usize>()
+            .ok()
+            .and_then(|n| n.checked_sub(PARCOURS.len() + 1))
+            .filter(|i| *i < autres.len());
+        match (chemin(&choix), autre) {
+            (Some(n), _) => {
                 dernier = choix;
                 ouvrir(n);
             }
-            None if choix.is_empty() || choix == "↵" || choix.eq_ignore_ascii_case("q") => return,
-            None => {}
+            (None, Some(i)) => {
+                dernier = choix;
+                lancer(i);
+            }
+            _ if choix.is_empty() || choix == "↵" || choix.eq_ignore_ascii_case("q") => return,
+            _ => {}
         }
     }
 }
@@ -665,10 +685,11 @@ fn trouver(sujet: &str) -> Option<&'static Parcours> {
     })
 }
 
-/// « vanguard depanner [sujet] » : sans sujet, le menu ; sinon le parcours désigné.
+/// « vanguard depanner [sujet] » : sans sujet, les parcours seuls (main.rs ouvre le menu avec les autres outils du
+/// groupe) ; sinon le parcours désigné.
 pub fn executer(sujet: &str) {
     if sujet.trim().is_empty() {
-        menu();
+        menu(&[], &mut |_| {});
         return;
     }
     let Some(p) = trouver(sujet) else {
@@ -688,6 +709,16 @@ pub fn executer(sujet: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Les douze parcours et les deux outils du groupe (11.13, 11.14) tiennent dans un terminal de 24 rangées, avec
+    /// l'aide et la saisie : sinon 11.13, 11.14 et « Revenir » passent sous le bord.
+    #[test]
+    fn l_ecran_tient_dans_24_lignes() {
+        let autres = [("Réparer", "a", "m"), ("Diagnostic", "b", "m")];
+        let lignes = lignes_du_menu(&autres);
+        let affichees = lignes.iter().filter(|l| !matches!(l, Ligne::Cachee { .. })).count();
+        assert!(affichees + 2 <= 24, "{affichees} lignes affichées");
+    }
 
     #[test]
     fn chaque_parcours_tient_dans_son_menu() {

@@ -460,11 +460,18 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
     let mut haut = 0;
     // Ce qui est tapé au clavier : un raccourci validé par Entrée, comme avant, ou des mots à chercher.
     let mut tape = String::new();
-    let gauche = if gauche_revient { "/←" } else { "" };
-    let aide = trf!(
-        "  {GRIS}↑ ↓ choisir · Entrée/→ lancer · un mot : chercher · Échap{gauche} {echap}{RESET}",
-        "  {GRIS}↑ ↓ select · Enter/→ run · a word: search · Esc{gauche} {echap}{RESET}"
-    );
+    let aide = if gauche_revient {
+        trf!(
+            "  {GRIS}↑ ↓ choisir · Entrée/→ lancer · un mot : chercher · Échap/← {echap}{RESET}",
+            "  {GRIS}↑ ↓ select · Enter/→ run · a word: search · Esc/← {echap}{RESET}"
+        )
+    } else {
+        // Le menu principal : « s » (Paramètres) et « q » n'y ont plus de ligne à eux.
+        trf!(
+            "  {GRIS}↑ ↓ choisir · Entrée ouvrir · un mot : chercher · s réglages · q quitter{RESET}",
+            "  {GRIS}↑ ↓ select · Enter open · a word: search · s settings · q quit{RESET}"
+        )
+    };
     let aide_recherche = trf!(
         "  {GRIS}↑ ↓ choisir · Entrée/→ lancer · Échap/← effacer la recherche{RESET}",
         "  {GRIS}↑ ↓ select · Enter/→ run · Esc/← clear the search{RESET}"

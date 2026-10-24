@@ -424,8 +424,8 @@ pub(super) fn internet_lent() {
     section(tr!("CE QUE ÇA VEUT DIRE", "WHAT IT MEANS"));
     if panne(&e) == Panne::Aucune {
         conseil(tr!(
-            "La connexion marche. Pour savoir si elle est lente, et pourquoi : le test de connexion (Réseau et Internet › Test de connexion) mesure le débit, le ping et le bufferbloat (la lenteur quand quelqu'un télécharge).",
-            "The connection works. To know whether it is slow, and why: the connection test (Network and Internet › Connection test) measures speed, ping and bufferbloat (the slowness when someone downloads)."
+            "La connexion marche. Pour savoir si elle est lente, et pourquoi : le test de connexion (Optimiser et installer › Test de connexion) mesure le débit, le ping et le bufferbloat (la lenteur quand quelqu'un télécharge).",
+            "The connection works. To know whether it is slow, and why: the connection test (Optimize and install › Connection test) measures speed, ping and bufferbloat (the slowness when someone downloads)."
         ));
         if s.is_some_and(|s| s.qualite < 60) {
             conseil(tr!(

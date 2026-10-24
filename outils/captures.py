@@ -92,6 +92,8 @@ def preparer_bac(programme: Path, bac: Path):
     if local:
         for f in local.glob("*.json"):
             shutil.copy(f, bac / "donnees/vanguard" / f.name)
+    # L'avis du menu réorganisé (0.87) ne paraît qu'une fois : jamais sur les captures.
+    (bac / "donnees/vanguard/menu-0.87").write_text("")
     # Vanguard lit la base de la clé et celle de l'ordinateur : les deux copies sont rendues passe-partout.
     source = next((d / "appareils.json" for d in (cle, local) if d and (d / "appareils.json").is_file()), None)
     for copie in (bac / "cle/donnees/appareils.json", bac / "donnees/vanguard/appareils.json"):

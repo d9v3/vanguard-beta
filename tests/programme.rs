@@ -192,7 +192,10 @@ fn menu_quitte_par_q_et_par_la_fin_de_l_entree() {
     let s = vanguard("fr", &[], "q\n", 60);
     assert_eq!(s.code, Some(0), "{}", s.erreurs);
     let t = sans_couleurs(&s.texte);
-    assert!(t.contains("BILAN DE SÉCURITÉ") && t.contains("Quitter"), "{t}");
+    assert!(
+        t.contains("BILAN DE SÉCURITÉ") && t.contains("CYBERDÉFENSE") && t.contains("EN PLUS"),
+        "{t}"
+    );
     // Entrée fermée sans réponse (script, tâche planifiée) : le menu s'en va au lieu d'attendre.
     let ferme = vanguard("fr", &[], "", 60);
     assert_eq!(ferme.code, Some(0));
@@ -200,11 +203,11 @@ fn menu_quitte_par_q_et_par_la_fin_de_l_entree() {
 
 #[test]
 fn sous_menu_optimiser() {
-    // 8 : le groupe Optimiser ; Entrée : revenir ; q : quitter.
-    let s = vanguard("fr", &[], "8\n\nq\n", 60);
+    // 12 : le groupe Optimiser et installer ; Entrée : revenir ; q : quitter.
+    let s = vanguard("fr", &[], "12\n\nq\n", 60);
     let t = sans_couleurs(&s.texte);
     assert!(
-        t.contains("Nettoyer le système") && t.contains("Réglages recommandés"),
+        t.contains("Logiciels recommandés") && t.contains("Nettoyer le système") && t.contains("Réglages recommandés"),
         "{t}"
     );
     assert_eq!(s.code, Some(0));
@@ -385,30 +388,40 @@ fn entretien_du_mois_sans_rien_installer() {
     let t = sans_couleurs(&s.texte);
     assert_eq!(s.code, Some(0), "{}", s.erreurs);
     assert!(
-        t.contains("Note de cette machine") && t.contains("Entretien coupé"),
+        t.contains("Note de cet ordinateur") && t.contains("Entretien coupé"),
         "{t}"
     );
 }
 
 #[test]
 fn sous_menu_protection() {
-    // 6 : Antivirus et protection ; Entrée : revenir ; q : quitter.
-    let s = vanguard("fr", &[], "6\n\nq\n", 60);
+    // 6 : Virus et logiciels espions, puis 7 : Arnaques et vie privée ; Entrée : revenir ; q : quitter.
+    let s = vanguard("fr", &[], "6\n\n7\n\nq\n", 60);
     let t = sans_couleurs(&s.texte);
+    let arnaques = t
+        .find("VANGUARD › Arnaques et vie privée")
+        .expect("groupe 7 pas ouvert");
+    let (virus, arnaques) = t.split_at(arnaques);
     for outil in [
-        "Qui parle à Internet ?",
-        "Ce lien est-il dangereux ?",
-        "Vérifier un fichier téléchargé",
-        "Ce courriel est-il une arnaque ?",
+        "Analyse antivirus",
         "Logiciels espions : en ai-je un ?",
+        "Qui parle à Internet ?",
+        "Vérifier un fichier téléchargé",
     ] {
-        assert!(t.contains(outil), "{outil} absent : {t}");
+        assert!(virus.contains(outil), "{outil} absent du groupe 6 : {t}");
     }
-    // Logiciels espions : ajouté à la fin du groupe, sans décaler les autres lignes.
-    let courriel = t.find("Ce courriel est-il une arnaque ?").unwrap();
-    let espions = t.find("Logiciels espions : en ai-je un ?").unwrap();
-    assert!(courriel < espions, "{t}");
-    assert!(!t[espions..].contains("Mon ordinateur est-il contrôlé ?"), "{t}");
+    for outil in [
+        "Ce lien est-il dangereux ?",
+        "Ce courriel est-il une arnaque ?",
+        "Mon ordinateur est-il contrôlé ?",
+    ] {
+        assert!(arnaques.contains(outil), "{outil} absent du groupe 7 : {t}");
+    }
+    // Les variantes de l'analyse sont dans son écran à choix, pas dans le groupe.
+    assert!(!virus.contains("Analyse complète"), "{t}");
+    let antivirus = virus.find("Analyse antivirus").unwrap();
+    let espions = virus.find("Logiciels espions : en ai-je un ?").unwrap();
+    assert!(antivirus < espions, "{t}");
     // Chaque ligne du sous-menu tient dans 76 colonnes (sans terminal, l'écran suivant suit la question « Choix » sur
     // la même ligne : celles-là ne comptent pas).
     let longues: Vec<&str> = t
@@ -814,12 +827,10 @@ fn audit_du_reseau_au_menu_et_dans_l_aide() {
     let s = vanguard("fr", &[], "5\n\nq\n", 60);
     assert_eq!(s.code, Some(0), "{}", s.erreurs);
     let t = sans_couleurs(&s.texte);
-    let scanner = t.find("Scanner le réseau").expect("« Scanner le réseau » absent");
+    let appareils = t.find("Appareils du réseau").expect("« Appareils du réseau » absent");
     let audit = t.find("Audit du réseau").expect("« Audit du réseau » absent");
-    let appareil = t
-        .find("Scan approfondi d'un appareil")
-        .expect("« Scan approfondi » absent");
-    assert!(scanner < audit && audit < appareil, "{t}");
+    let nommer = t.find("Nommer un appareil").expect("« Nommer un appareil » absent");
+    assert!(appareils < audit && audit < nommer, "{t}");
     assert!(t.contains("six notes : routeur, Wi-Fi, DNS…"), "{t}");
     let longues: Vec<&str> = t
         .lines()
@@ -1666,24 +1677,25 @@ mod menus_dans_un_terminal {
     fn fleches_entree_echap_puis_quitter() {
         let maison = maison_jetable();
         let (mut enfant, mut t, lecteur) = lancer(&maison, &[]);
-        let menu = t.attendre("Quitter", 60);
+        let menu = t.attendre("q quitter", 60);
         assert!(
-            menu.contains("Bilan complet") && menu.contains("Cette machine"),
+            menu.contains("Bilan de sécurité complet") && menu.contains("Cet ordinateur"),
             "{menu}"
         );
-        // Trois fois en bas depuis « Bilan complet » : le premier groupe, « Cette machine », ouvert par Entrée.
+        // Trois fois en bas depuis « Bilan de sécurité complet » : le premier groupe, « Cet ordinateur », ouvert par
+        // Entrée.
         for _ in 0..3 {
             t.taper(BAS);
         }
         t.taper(ENTREE);
         let sous_menu = t.attendre("Revenir au menu principal", 30);
-        assert!(sous_menu.contains("VANGUARD › Cette machine"), "{sous_menu}");
+        assert!(sous_menu.contains("VANGUARD › Cet ordinateur"), "{sous_menu}");
         assert!(sous_menu.contains("Audit de sécurité"), "{sous_menu}");
         // Échap revient au menu principal, sans rien lancer.
         t.taper(ECHAP);
-        let retour = t.attendre("Quitter", 30);
-        assert!(retour.contains("Bilan complet"), "{retour}");
-        // « q » se tape dans la recherche, qui choisit « Quitter » ; Entrée le lance.
+        let retour = t.attendre("q quitter", 30);
+        assert!(retour.contains("Bilan de sécurité complet"), "{retour}");
+        // « q », une seule lettre, n'est pas une recherche : Entrée le valide comme raccourci, et Vanguard s'arrête.
         t.taper("q");
         t.taper(ENTREE);
         let fin = Instant::now() + Duration::from_secs(30);

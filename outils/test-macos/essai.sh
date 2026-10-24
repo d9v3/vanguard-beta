@@ -381,7 +381,10 @@ lancer connexion 180 '' connexion
 
 section "Menu : chaque groupe ouvert puis refermé, puis q"
 lancer menu 60 '4\n\n5\n\n6\n\n7\n\nq\n'
-verifier "menu : sous-menus affichés" grep -q 'Antivirus' "$RES/menu.txt"
+# Une ligne propre à chaque sous-menu : le titre du groupe paraît aussi au menu principal.
+for g in "Fiche de l'ordinateur" 'Surveillance toutes les heures' 'Analyse antivirus' 'Ce lien est-il dangereux'; do
+  verifier "menu : sous-menu avec « $g »" grep -q "$g" "$RES/menu.txt"
+done
 
 section "Mots de passe fuités (pseudo-terminal : saisie sans écho)"
 python3 -I "$(dirname "$0")/../test-commun/mot-de-passe-pty.py" "$VANGUARD" >"$RES/motdepasse.txt" 2>&1

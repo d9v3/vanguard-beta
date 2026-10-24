@@ -397,8 +397,8 @@ pub fn tester() {
     let conseil = match type_nat {
         TypeNat::Ouvert => tr!("Rien à faire pour le jeu en ligne.", "Nothing to do for online gaming."),
         TypeNat::Modere | TypeNat::Incertain => tr!(
-            "Pour passer en ouvert : activez l'UPnP dans le routeur, ou redirigez les ports du jeu vers cet appareil, après lui avoir donné une adresse fixe (réservation DHCP). L'UPnP laisse tout appareil ouvrir des ports, un appareil infecté aussi : surveillez-les (Scanner le réseau). La DMZ expose l'appareil entier à Internet : seulement pour une console.",
-            "To get open: turn UPnP on in the router, or forward the game's ports to this device after giving it a fixed address (DHCP reservation). UPnP lets any device open ports, an infected one too: keep an eye on them (Scan the network). The DMZ exposes the whole device to the Internet: only for a console."
+            "Pour passer en ouvert : activez l'UPnP dans le routeur, ou redirigez les ports du jeu vers cet appareil, après lui avoir donné une adresse fixe (réservation DHCP). L'UPnP laisse tout appareil ouvrir des ports, un appareil infecté aussi : surveillez-les (Scan du réseau). La DMZ expose l'appareil entier à Internet : seulement pour une console.",
+            "To get open: turn UPnP on in the router, or forward the game's ports to this device after giving it a fixed address (DHCP reservation). UPnP lets any device open ports, an infected one too: keep an eye on them (Network scan). The DMZ exposes the whole device to the Internet: only for a console."
         ),
         TypeNat::Strict => tr!(
             "Une redirection de ports vers cet appareil (adresse fixe d'abord) ou l'UPnP du routeur contournent souvent le NAT symétrique. Sinon, regardez dans le routeur une option « NAT » ou « jeu » (« endpoint-independent »), ou passez par l'IPv6.",

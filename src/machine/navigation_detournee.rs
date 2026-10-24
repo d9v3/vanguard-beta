@@ -47,8 +47,8 @@ fn juger(rien: bool, pourquoi: &str) -> Constat {
         )
         .manuel(
             tr!(
-                "Menu Cette machine › Réparer et nettoyer › Navigation détournée : il montre et défait ce qui a été trouvé",
-                "Menu This machine › Repair and clean up › Hijacked browsing: it shows and undoes what was found"
+                "Menu Dépanner pas à pas › Réparer une panne connue › Navigation détournée : il montre et défait ce qui a été trouvé",
+                "Menu Step-by-step troubleshooting › Repair a known problem › Hijacked browsing: it shows and undoes what was found"
             ),
             &[],
         )

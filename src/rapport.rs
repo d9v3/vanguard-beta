@@ -319,7 +319,7 @@ pub fn markdown(audit: Option<&Audit>, reseau: Option<&Rapport>, audit_reseau: O
     );
     let ligne_note = |quoi: &str, score: u32| format!("- {quoi} : **{}** ({score}/100)\n", note(score));
     if let Some(a) = audit.filter(|a| a.fiable()) {
-        m += &ligne_note(tr!("Cette machine", "This machine"), a.score);
+        m += &ligne_note(tr!("Cet ordinateur", "This computer"), a.score);
     }
     if let Some(r) = reseau {
         m += &ligne_note(&trf!("Réseau {}", "Network {}", r.reseau), r.score_global);
@@ -328,7 +328,7 @@ pub fn markdown(audit: Option<&Audit>, reseau: Option<&Rapport>, audit_reseau: O
         m += &ligne_note(tr!("Audit du réseau", "Network audit"), s);
     }
     if let Some(a) = audit {
-        let _ = trwln!(m, "\n## Cette machine ({})\n", "\n## This machine ({})\n", a.systeme);
+        let _ = trwln!(m, "\n## Cet ordinateur ({})\n", "\n## This computer ({})\n", a.systeme);
         // Les problèmes d'abord, les plus graves en tête ; puis ce qui va bien.
         let mut constats: Vec<_> = a.constats.iter().collect();
         constats.sort_by_key(|c| std::cmp::Reverse(c.probleme));
@@ -790,7 +790,7 @@ fn html(audit: Option<&Audit>, reseau: Option<&Rapport>, audit_reseau: Option<&A
     // Une note de machine n'est montrée que si l'audit a vraiment pu se faire.
     let audit_note = audit.filter(|a| a.fiable());
     if let Some(a) = audit_note {
-        h += &carte_note(tr!("Cette machine", "This machine"), a.score);
+        h += &carte_note(tr!("Cet ordinateur", "This computer"), a.score);
     }
     if let Some(r) = reseau {
         h += &carte_note(&trf!("Réseau {}", "Network {}", esc(&r.reseau)), r.score_global);
@@ -806,8 +806,8 @@ fn html(audit: Option<&Audit>, reseau: Option<&Rapport>, audit_reseau: Option<&A
     if let Some(svg) = crate::historique::courbe(&crate::historique::charger()) {
         let _ = trw!(
             h,
-            "<h2>Évolution des notes</h2><div class=carte>{svg}<div class=meta><span style=\"color:var(--info)\">●</span> cette machine · <span style=\"color:var(--ok)\">●</span> réseau (30 derniers bilans complets)</div></div>",
-            "<h2>Grade history</h2><div class=carte>{svg}<div class=meta><span style=\"color:var(--info)\">●</span> this machine · <span style=\"color:var(--ok)\">●</span> network (last 30 full checks)</div></div>"
+            "<h2>Évolution des notes</h2><div class=carte>{svg}<div class=meta><span style=\"color:var(--info)\">●</span> cet ordinateur · <span style=\"color:var(--ok)\">●</span> réseau (30 derniers bilans complets)</div></div>",
+            "<h2>Grade history</h2><div class=carte>{svg}<div class=meta><span style=\"color:var(--info)\">●</span> this computer · <span style=\"color:var(--ok)\">●</span> network (last 30 full checks)</div></div>"
         );
     }
 
@@ -828,8 +828,8 @@ fn html(audit: Option<&Audit>, reseau: Option<&Rapport>, audit_reseau: Option<&A
 
     if let Some(a) = audit {
         h += tr!(
-            "<h2>Cette machine</h2><div class=carte>",
-            "<h2>This machine</h2><div class=carte>"
+            "<h2>Cet ordinateur</h2><div class=carte>",
+            "<h2>This computer</h2><div class=carte>"
         );
         for c in &a.constats {
             ligne_constat(&mut h, c, false);

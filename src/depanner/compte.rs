@@ -155,8 +155,8 @@ pub(super) fn compte() {
         crate::protection::fuites::verifier,
     );
     a_savoir(&[tr!(
-        "Le piratage commence souvent par un faux message (« votre compte va être fermé ») : avant de cliquer, collez le lien dans « Ce lien est-il dangereux ? » (menu Antivirus et protection).",
-        "Hacking often starts with a fake message (“your account will be closed”): before clicking, paste the link into “Is this link dangerous?” (Antivirus and protection menu)."
+        "Le piratage commence souvent par un faux message (« votre compte va être fermé ») : avant de cliquer, collez le lien dans « Ce lien est-il dangereux ? » (menu Arnaques et vie privée).",
+        "Hacking often starts with a fake message (“your account will be closed”): before clicking, paste the link into “Is this link dangerous?” (Scams and privacy menu)."
     )]);
 }
 

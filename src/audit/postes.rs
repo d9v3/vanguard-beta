@@ -54,8 +54,8 @@ fn cet_ordinateur(machine: &[Constat]) -> Vec<Constat> {
             "Postes",
             "COM-PST-001",
             tr!(
-                "Les constats réseau du bilan de cette machine (pare-feu, ports en écoute, SSH, partages, DNS) n'ont pas pu être lus.",
-                "This machine's network findings (firewall, listening ports, SSH, shares, DNS) could not be read."
+                "Les constats réseau du bilan de cet ordinateur (pare-feu, ports en écoute, SSH, partages, DNS) n'ont pas pu être lus.",
+                "This computer's network findings (firewall, listening ports, SSH, shares, DNS) could not be read."
             ),
         )];
     }

@@ -84,9 +84,15 @@ version : [historique](CHANGELOG.md).
 - **Depuis la clé USB** : `Windows/vanguard.exe`, `Linux/vanguard`, ou `Lancer Vanguard.command` sous macOS ; le guide
   de la clé est dans `LISEZMOI.txt`.
 
-Dans le menu, choisir **1** (bilan complet), puis **2** (corriger). Les flèches ↑ ↓ pour se déplacer, Entrée ou → pour
+Dans le menu, choisir **1** (bilan de sécurité complet), puis **2** (corriger). Les flèches ↑ ↓ pour se déplacer, Entrée ou → pour
 choisir ; Échap, ← ou Retour arrière pour revenir. La fenêtre se met à la taille du menu quand elle a été ouverte pour
 Vanguard.
+
+Le menu range les outils en deux parties. **Cyberdéfense** : 4 Cet ordinateur, 5 Réseau et Internet, 6 Virus et
+logiciels espions, 7 Arnaques et vie privée, 8 Bloquer et réagir. **En plus** : 9 Données et sauvegardes, 10 Guide des
+commandes, 11 Dépanner pas à pas, 12 Optimiser et installer, 13 Vanguard (paramètres, mise à jour, extensions). Un mot
+tapé au menu principal (« antivirus », « sauvegarde ») retrouve n'importe quel outil ; son chemin (« 6.1.3 ») l'ouvre
+directement.
 
 ## Ce que fait Vanguard
 
@@ -266,7 +272,7 @@ https://auth.abuse.ch/, clé donnée dans Paramètres) : abuse.ch a fermé ses t
 2026. La clé reste sur l'ordinateur, jamais montrée en entier ; sans elle, ces listes sont dites non vérifiées. Ce que l'antivirus ou YARA trouve peut aller en quarantaine, réversible : le fichier est rendu
 inutilisable et noté, puis remis exactement à sa place si c'était un faux positif.
 
-**Blocage des menaces** (menu Antivirus et protection › Blocage des menaces, `vanguard blocage`) — chaque menace
+**Blocage des menaces** (menu Bloquer et réagir › Blocage des menaces, `vanguard blocage`) — chaque menace
 trouvée propose « Bloquer » : le geste est montré, fait après accord, noté dans « Ce que Vanguard a changé » et
 défait exactement par `vanguard blocage annuler` ; seul l'arrêt d'un programme ne se défait pas. Selon la menace : le
 programme arrêté puis mis en quarantaine, la connexion fermée au pare-feu (ufw, nftables, Pare-feu Windows, pf), un
@@ -312,7 +318,7 @@ du plus ancien au plus récent : connexions acceptées ou refusées, comptes cr�
 journaux effacés, détections de Defender, fichiers récents qui parlent (programmes, scripts, fichiers cachés). Les
 traces reprennent aussi ce que Vanguard a vu et fait (07-vanguard.txt) : ses alertes, ses blocages avec leur preuve.
 
-**Signaler une faille à un éditeur** (menu Antivirus et protection, `vanguard signaler`) — quand un logiciel se
+**Signaler une faille à un éditeur** (menu Bloquer et réagir › Signaler une faille à un éditeur, `vanguard signaler`) — quand un logiciel se
 comporte de façon anormale, Vanguard prépare le brouillon du rapport, que la personne relit et envoie elle-même. Il
 trie d'abord : une faille déjà connue (CVE, catalogue de la CISA) se corrige par une mise à jour ; un logiciel
 malveillant, une détection ratée ou un site d'hameçonnage ne sont pas des failles de l'éditeur, et le bon destinataire
@@ -424,7 +430,7 @@ fail2ban, sshguard ou CrowdSec bloque déjà les adresses qui insistent.
 
 #### Vie privée et secrets
 
-**Logiciels espions** (`vanguard logiciels-espions`, menu Antivirus et protection, et au bilan) — les signes d'un
+**Logiciels espions** (`vanguard logiciels-espions`, menu Virus et logiciels espions, et au bilan) — les signes d'un
 logiciel espion posé par un proche : connexions et noms demandés vers les serveurs et sites des logiciels espions
 connus (liste de l'association Échap, CC-BY 4.0, téléchargée à l'usage), logiciels de surveillance connus installés ou
 en marche (le contrôle parental et la surveillance d'employés sont dits normaux s'ils ont été installés exprès),
@@ -579,7 +585,7 @@ texte, et une menace certaine ne se tait jamais. Chaque test de connexion se com
 réseau ; un appareil connu qui paraît soudain tout fermé (en veille) est revérifié plus patiemment. « Ce que Vanguard
 a appris » montre tout et permet d'oublier.
 
-**Paramètres** (Cette machine › Paramètres, « s » au menu principal, `vanguard parametres`) — tous les réglages au même
+**Paramètres** (Vanguard › Paramètres, « s » au menu principal, `vanguard parametres`) — tous les réglages au même
 endroit : langue, emojis, travail sans Internet, protection en temps réel, surveillance horaire, entretien du mois,
 alertes apprises, blocage des menaces, restrictions des extensions et clé abuse.ch. Chaque changement montre la valeur
 d'avant et la commande pour la remettre ; les alertes apprises et le blocage ouvrent leur propre écran (« Ce que

@@ -353,7 +353,7 @@ fn nouveautes_machine(avant: &EtatMachine, apres: &EtatMachine) -> Vec<(String, 
             tr!("Vanguard : note en baisse", "Vanguard: grade dropping").to_string(),
             trf!(
                 "La note de cet ordinateur passe de {a} à {b} : lancez « vanguard machine » pour voir pourquoi.",
-                "This machine's grade drops from {a} to {b}: run “vanguard audit” to see why."
+                "This computer's grade drops from {a} to {b}: run “vanguard audit” to see why."
             ),
         ));
     }

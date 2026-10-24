@@ -411,7 +411,7 @@ pub fn afficher_changements(avant: &Bilan, apres: &Bilan) {
         "Since the last check ({})",
         avant.date
     ));
-    evolution(tr!("Cette machine", "This machine"), avant.machine, apres.machine);
+    evolution(tr!("Cet ordinateur", "This computer"), avant.machine, apres.machine);
     if avant.nom_reseau == apres.nom_reseau {
         evolution(tr!("Réseau", "Network"), avant.reseau, apres.reseau);
         evolution(
@@ -513,7 +513,7 @@ pub fn courbe(historique: &[Bilan]) -> Option<String> {
     serie(
         derniers.iter().map(|b| b.machine).collect(),
         "--info",
-        tr!("Cette machine", "This machine"),
+        tr!("Cet ordinateur", "This computer"),
     );
     serie(
         derniers

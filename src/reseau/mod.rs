@@ -1184,8 +1184,8 @@ fn afficher(r: &Rapport) {
     afficher_aligne(
         "  ",
         tr!(
-            "Astuce : menu 5 › 4 pour nommer un appareil (vanguard nommer <ip> <surnom>), 5 › 3 pour scanner tous ses ports (vanguard reseau <ip> -p tous).",
-            "Tip: menu 5 › 4 to name a device (vanguard name <ip> <nickname>), 5 › 3 to scan all its ports (vanguard network <ip> -p all)."
+            "Astuce : menu 5.3 pour nommer un appareil (vanguard nommer <ip> <surnom>), 5.1.2 pour scanner tous ses ports (vanguard reseau <ip> -p tous).",
+            "Tip: menu 5.3 to name a device (vanguard name <ip> <nickname>), 5.1.2 to scan all its ports (vanguard network <ip> -p all)."
         ),
         2,
         DISCRET,
@@ -1264,7 +1264,7 @@ pub async fn executer(o: Options) -> Result<Rapport, String> {
         if ips.iter().all(std::net::Ipv4Addr::is_loopback) {
             tre!(
                 "{GRIS}Note : 127.0.0.1 montre aussi les services réservés à cet ordinateur. Pour ce qui est vraiment exposé au réseau : vanguard machine.{RESET}",
-                "{GRIS}Note: 127.0.0.1 also shows services reserved for this machine. For what is really exposed to the network: vanguard audit.{RESET}"
+                "{GRIS}Note: 127.0.0.1 also shows services reserved for this computer. For what is really exposed to the network: vanguard audit.{RESET}"
             );
         }
     }

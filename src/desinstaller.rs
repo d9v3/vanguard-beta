@@ -1678,8 +1678,8 @@ fn changements_restants(a: &Annulables, donnees_effacees: bool) -> Vec<String> {
     }
     if a.optimiser > 0 {
         l.push(trf!(
-            "{} réglage(s) d'Optimiser restent : menu Optimiser › Tout remettre comme avant.",
-            "{} Optimize setting(s) stay: menu Optimize › Put everything back.",
+            "{} réglage(s) d'Optimiser restent : menu Bloquer et réagir › Tout remettre comme avant.",
+            "{} Optimize setting(s) stay: menu Block and respond › Put everything back.",
             a.optimiser
         ));
     }

@@ -244,8 +244,8 @@ fn juger(trouvailles: &[Trouvaille], aujourd_hui: NaiveDate) -> Vec<Constat> {
         constats.push(if en_cours {
             constat.manuel(
                 tr!(
-                    "Vanguard ne coupe pas une connexion à distance en cours. Si vous n'avez rien demandé : débranchez Internet (câble, Wi-Fi), puis menu « Antivirus et protection » › « Mon ordinateur est-il contrôlé ? » pour le fermer et le retirer",
-                    "Vanguard does not cut a remote connection in progress. If you did not ask for anything: unplug the Internet (cable, Wi-Fi), then menu “Antivirus and protection” › “Is my computer being controlled?” to close and remove it"
+                    "Vanguard ne coupe pas une connexion à distance en cours. Si vous n'avez rien demandé : débranchez Internet (câble, Wi-Fi), puis menu « Arnaques et vie privée » › « Mon ordinateur est-il contrôlé ? » pour le fermer et le retirer",
+                    "Vanguard does not cut a remote connection in progress. If you did not ask for anything: unplug the Internet (cable, Wi-Fi), then menu “Scams and privacy” › “Is my computer being controlled?” to close and remove it"
                 ),
                 &[],
             )

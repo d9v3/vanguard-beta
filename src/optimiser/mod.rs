@@ -690,8 +690,8 @@ pub fn appliquer_dns(serveurs4: &[&str], serveurs6: &[&str]) -> Result<(), Strin
         && Some(reseau.as_str()) != c.identite_dns()
     {
         return Err(tr!(
-            "Vanguard a déjà changé le DNS d'une autre connexion : remettez-le d'abord (Optimiser › Tout remettre comme avant).",
-            "Vanguard already changed the DNS of another connection: put it back first (Optimize › Put everything back)."
+            "Vanguard a déjà changé le DNS d'une autre connexion : remettez-le d'abord (Bloquer et réagir › Tout remettre comme avant).",
+            "Vanguard already changed the DNS of another connection: put it back first (Block and respond › Put everything back)."
         )
         .to_string());
     }

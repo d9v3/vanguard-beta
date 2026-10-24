@@ -122,8 +122,8 @@ pub(super) fn a_garder(nom: &str, commande: &str, bureau: bool) -> Option<&'stat
 fn ailleurs() -> &'static str {
     if cfg!(windows) {
         tr!(
-            "Les tâches planifiées et les services ne sont pas dans cette liste : Gestionnaire des tâches, ou Antivirus et protection › Analyse rapide (revue du démarrage).",
-            "Scheduled tasks and services are not in this list: Task Manager, or Antivirus and protection › Quick scan (startup review)."
+            "Les tâches planifiées et les services ne sont pas dans cette liste : Gestionnaire des tâches, ou Virus et logiciels espions › Analyse antivirus › Analyse rapide (revue du démarrage).",
+            "Scheduled tasks and services are not in this list: Task Manager, or Viruses and spyware › Antivirus scan › Quick scan (startup review)."
         )
     } else if cfg!(target_os = "macos") {
         tr!(

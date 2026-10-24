@@ -183,16 +183,16 @@ fn juger(nom: &str, ou: &str, cle_privee: bool, retirer: &[String]) -> Constat {
         _ if cle_privee && nom.eq_ignore_ascii_case("localhost") => (
             Niveau::Info,
             trf!(
-                "Certificat racine « localhost » ({ou}) dont la clé privée est sur cette machine : celui de .NET ou d'IIS Express si vous développez ; sinon, retirez-le, un nom ne prouve rien.",
-                "Root certificate “localhost” ({ou}) whose private key is on this machine: .NET's or IIS Express's if you develop; otherwise remove it, a name proves nothing."
+                "Certificat racine « localhost » ({ou}) dont la clé privée est sur cet ordinateur : celui de .NET ou d'IIS Express si vous développez ; sinon, retirez-le, un nom ne prouve rien.",
+                "Root certificate “localhost” ({ou}) whose private key is on this computer: .NET's or IIS Express's if you develop; otherwise remove it, a name proves nothing."
             ),
             false,
         ),
         _ if cle_privee => (
             Niveau::Eleve,
             trf!(
-                "Certificat racine « {nom} » ({ou}) dont la clé privée est sur cette machine : un programme peut fabriquer de faux certificats pour n'importe quel site.",
-                "Root certificate “{nom}” ({ou}) whose private key is on this machine: a program can forge certificates for any site."
+                "Certificat racine « {nom} » ({ou}) dont la clé privée est sur cet ordinateur : un programme peut fabriquer de faux certificats pour n'importe quel site.",
+                "Root certificate “{nom}” ({ou}) whose private key is on this computer: a program can forge certificates for any site."
             ),
             true,
         ),

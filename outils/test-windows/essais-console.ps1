@@ -2,8 +2,9 @@
 # travail de la file d'essais (surveillant-essais.ps1, en administrateur dans la VM), ou à la main :
 #   powershell -ExecutionPolicy Bypass -File essais-console.ps1 -Exe C:\…\vanguard.exe -Sortie C:\…\console
 # Pour chaque hôte (la vieille console conhost, puis Windows Terminal s'il est là) et chaque langue (VANGUARD_LANG) :
-#   C1 menu affiché · C2 fenêtre à la hauteur du menu · C3 fenêtre centrée · C4 ↓ jusqu'à « Antivirus et protection »
-#   C5 → entre (lignes « Logiciels espions » et « Logiciels pas à jour ») · C6 hauteur et centrage du sous-menu
+#   C1 menu affiché · C2 fenêtre à la hauteur du menu · C3 fenêtre centrée · C4 ↓ jusqu'à « Cet ordinateur »
+#   C5 → entre (lignes « Logiciels pas à jour » et « Blocages de Windows Defender », les deux dernières, propres à
+#   Windows) · C6 hauteur et centrage du sous-menu
 #   C7 ← revient · C8 q + Entrée quitte.
 # Un OK exige le texte vu à l'écran ET l'effet mesuré. Écran illisible ou touches refusées : « SAUTE » avec la raison
 # sous Windows Terminal (une limite connue de l'outil), « BUG » sous conhost (l'outil y marche : c'est Vanguard qui
@@ -154,9 +155,9 @@ public static class PiloteConsoleVg {
 
 # Les textes attendus, pris dans src/main.rs : [français, anglais].
 $textes = @{
-    protection = @('Antivirus et protection', 'Antivirus and protection')
-    autreGroupe = @('Installer et jouer', 'Install and play')
-    espions = @('Logiciels espions : en ai-je un ?', 'Spyware: is someone watching me?')
+    ordinateur = @('Cet ordinateur', 'This computer')
+    autreGroupe = @('Virus et logiciels espions', 'Viruses and spyware')
+    defender = @('Blocages de Windows Defender', 'Windows Defender blocking')
     perimes = @('Logiciels pas à jour', 'Outdated software')
     defile = @('ligne(s) plus', 'more line(s)')
 }
@@ -288,8 +289,8 @@ if ($Etape -eq 'pilote') {
         $menu = $null
         do {
             $menu = Ecran 'menu principal'
-            if ($menu -and $menu.Texte.Contains((Texte 'protection' $Langue)) -and (Hauteur-Menu $menu) -gt 0) { break }
-            if ($menu -and $menu.Texte.Contains((Texte 'protection' (Autre $Langue)))) { break }
+            if ($menu -and $menu.Texte.Contains((Texte 'ordinateur' $Langue)) -and (Hauteur-Menu $menu) -gt 0) { break }
+            if ($menu -and $menu.Texte.Contains((Texte 'ordinateur' (Autre $Langue)))) { break }
             if ($processus.HasExited) { break }
             Start-Sleep -Milliseconds 500
         } while ((Get-Date) -lt $fin)
@@ -304,20 +305,20 @@ if ($Etape -eq 'pilote') {
             Noter 'INFO' 'C3' "fenêtre $(([PiloteConsoleVg]::Rect($Fenetre)) -join ',') dans la zone $(([PiloteConsoleVg]::Zone($Fenetre)) -join ',') (mesuré, menu non lu)"
             return
         }
-        if ($menu.Texte.Contains((Texte 'protection' (Autre $Langue)))) {
+        if ($menu.Texte.Contains((Texte 'ordinateur' (Autre $Langue)))) {
             if ($Hote -eq 'wt') { Sauter-Reste $tous "Windows Terminal n'a pas transmis VANGUARD_LANG=$Langue (menu dans l'autre langue)" }
             else { Noter 'BUG' 'C1' "menu dans l'autre langue malgré VANGUARD_LANG=$Langue"; Sauter-Reste @('C2', 'C3', 'C4', 'C5', 'C6', 'C7', 'C8') 'langue' }
             return
         }
-        if (-not $menu.Texte.Contains((Texte 'protection' $Langue)) -or (Hauteur-Menu $menu) -lt 1) {
+        if (-not $menu.Texte.Contains((Texte 'ordinateur' $Langue)) -or (Hauteur-Menu $menu) -lt 1) {
             Noter 'BUG' 'C1' "menu principal pas vu en 20 s (écran $script:n gardé)"
             Sauter-Reste @('C2', 'C3', 'C4', 'C5', 'C6', 'C7', 'C8') 'menu principal pas vu'
             return
         }
-        Noter 'OK' 'C1' "menu principal affiché (« $(Texte 'protection' $Langue) » et la saisie « › » lus)"
+        Noter 'OK' 'C1' "menu principal affiché (« $(Texte 'ordinateur' $Langue) » et la saisie « › » lus)"
         Juger-Fenetre 'C2' 'C3' $menu 'menu principal'
 
-        # C4 : ↓ jusqu'à la ligne de Protection ; chaque ↓ déplace la marque « ► ».
+        # C4 : ↓ jusqu'à la ligne de Cet ordinateur ; chaque ↓ déplace la marque « ► ».
         $marquee = Ligne-Marquee $menu
         if (-not $marquee) {
             Noter 'BUG' 'C4' 'aucune ligne marquée « ► » : le menu n''est pas en mode clavier'
@@ -325,7 +326,7 @@ if ($Etape -eq 'pilote') {
             return
         }
         $ok4 = $true; $k = 0
-        while (-not $marquee.Contains((Texte 'protection' $Langue)) -and $k -lt 25) {
+        while (-not $marquee.Contains((Texte 'ordinateur' $Langue)) -and $k -lt 25) {
             $k++
             $err = Taper 'bas'
             if ($err) { Hors-Atteinte @('C4', 'C5', 'C6', 'C7', 'C8') "touches impossibles ($err)"; return }
@@ -337,10 +338,10 @@ if ($Etape -eq 'pilote') {
             $marquee = $nouvelle
         }
         if (-not $ok4) { Sauter-Reste @('C5', 'C6', 'C7', 'C8') '↓ sans effet'; return }
-        if (-not $marquee.Contains((Texte 'protection' $Langue))) {
-            Noter 'BUG' 'C4' "« $(Texte 'protection' $Langue) » pas atteint en 25 ↓"; Sauter-Reste @('C5', 'C6', 'C7', 'C8') 'Protection pas atteint'; return
+        if (-not $marquee.Contains((Texte 'ordinateur' $Langue))) {
+            Noter 'BUG' 'C4' "« $(Texte 'ordinateur' $Langue) » pas atteint en 25 ↓"; Sauter-Reste @('C5', 'C6', 'C7', 'C8') 'Cet ordinateur pas atteint'; return
         }
-        Noter 'OK' 'C4' "$k ↓ : « ► » sur « $(Texte 'protection' $Langue) »"
+        Noter 'OK' 'C4' "$k ↓ : « ► » sur « $(Texte 'ordinateur' $Langue) »"
 
         # C5 : → entre dans le groupe ; C6 : la fenêtre refaite à la hauteur du sous-menu, toujours centrée.
         $err = Taper 'droite'
@@ -349,12 +350,12 @@ if ($Etape -eq 'pilote') {
         [void](Stable)
         $sous = Ecran 'après →'
         if (-not $sous) { Hors-Atteinte @('C5', 'C6', 'C7', 'C8') $script:illisible; return }
-        $vus = $sous.Texte.Contains((Texte 'espions' $Langue)) -and $sous.Texte.Contains((Texte 'perimes' $Langue))
+        $vus = $sous.Texte.Contains((Texte 'defender' $Langue)) -and $sous.Texte.Contains((Texte 'perimes' $Langue))
         if ($vus -and -not $sous.Texte.Contains((Texte 'autreGroupe' $Langue))) {
-            Noter 'OK' 'C5' "→ : sous-menu avec « $(Texte 'espions' $Langue) » et « $(Texte 'perimes' $Langue) »"
-            Juger-Fenetre 'C6' 'C6' $sous 'sous-menu Protection'
+            Noter 'OK' 'C5' "→ : sous-menu avec « $(Texte 'defender' $Langue) » et « $(Texte 'perimes' $Langue) »"
+            Juger-Fenetre 'C6' 'C6' $sous 'sous-menu Cet ordinateur'
         } else {
-            Noter 'BUG' 'C5' "→ : sous-menu Protection pas vu (écran $script:n)"
+            Noter 'BUG' 'C5' "→ : sous-menu Cet ordinateur pas vu (écran $script:n)"
             Sauter-Reste @('C6') 'sous-menu pas vu'
         }
 
@@ -366,8 +367,8 @@ if ($Etape -eq 'pilote') {
         $retour = Ecran 'après ←'
         if (-not $retour) { Hors-Atteinte @('C7', 'C8') $script:illisible; return }
         $m = Ligne-Marquee $retour
-        if ($m -and $m.Contains((Texte 'protection' $Langue)) -and -not $retour.Texte.Contains((Texte 'espions' $Langue)) -and -not $retour.Texte.Contains((Texte 'perimes' $Langue))) {
-            Noter 'OK' 'C7' "← : menu principal revenu, « ► » sur « $(Texte 'protection' $Langue) »"
+        if ($m -and $m.Contains((Texte 'ordinateur' $Langue)) -and -not $retour.Texte.Contains((Texte 'defender' $Langue)) -and -not $retour.Texte.Contains((Texte 'perimes' $Langue))) {
+            Noter 'OK' 'C7' "← : menu principal revenu, « ► » sur « $(Texte 'ordinateur' $Langue) »"
             Juger-Fenetre 'C7' 'C7' $retour 'menu principal après ←'
         } else { Noter 'BUG' 'C7' "← : menu principal pas revenu (écran $script:n)" }
 

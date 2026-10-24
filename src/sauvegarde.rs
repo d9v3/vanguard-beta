@@ -1343,7 +1343,7 @@ fn sources_actuelles() -> Vec<(String, PathBuf)> {
 /// passage à l'autre : l'échantillon est déterministe) comparés à leur original. Rien n'est écrit ni effacé.
 pub fn verifier_sauvegarde() {
     println!();
-    titre(tr!("Vérifier ma sauvegarde", "Check my backup"));
+    titre(tr!("Vérifier la sauvegarde automatique", "Check the automatic backup"));
     let mise_en_place = charger_de(&fichier_notes()).mise_en_place;
     let Some(MiseEnPlace::Systemd { destination, date, .. }) = mise_en_place else {
         let texte = match mise_en_place {
@@ -1360,8 +1360,8 @@ pub fn verifier_sauvegarde() {
                 "File History: Control Panel › File History › Restore personal files, one file to another folder. Not checked here."
             ),
             _ => tr!(
-                "Aucune sauvegarde mise en place par Vanguard sur cet ordinateur : Données › Sauvegarde automatique. Une copie faite par « Copier mes fichiers » se vérifie avec « Vérifier une copie ».",
-                "No backup set up by Vanguard on this computer: Data › Automatic backup. A copy made by “Copy my files” is checked with “Check a copy”."
+                "Aucune sauvegarde mise en place par Vanguard sur cet ordinateur : Données et sauvegardes › Sauvegarde automatique. Une copie faite par « Copier mes fichiers » se vérifie avec « Une copie (un dossier) », sous « Vérifier une copie ou sauvegarde ».",
+                "No backup set up by Vanguard on this computer: Data and backups › Automatic backup. A copy made by “Copy my files” is checked with “A copy (a folder)”, under “Check a copy or backup”."
             ),
         };
         info(texte);
@@ -1437,8 +1437,8 @@ pub fn verifier_sauvegarde() {
     println!();
     if differents + illisibles > 0 {
         mauvais(tr!(
-            "La sauvegarde est abîmée : le disque perd peut-être des données. Vérifiez-le (Données › Vérifier ma clé) et refaites une sauvegarde complète sur un autre disque.",
-            "The backup is damaged: the disk may be losing data. Check it (Data › Check my drive) and make a full backup to another disk."
+            "La sauvegarde est abîmée : le disque perd peut-être des données. Vérifiez-le (Données et sauvegardes › Vérifier une clé USB ou un disque) et refaites une sauvegarde complète sur un autre disque.",
+            "The backup is damaged: the disk may be losing data. Check it (Data and backups › Check a USB drive or a disk) and make a full backup to another disk."
         ));
     } else if identiques > 0 {
         bon(tr!(

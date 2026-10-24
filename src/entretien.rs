@@ -88,13 +88,13 @@ fn nouvelles(avant: &Etat, apres: &[String]) -> Vec<String> {
 fn rediger(e: &Examen, nouvelles: Option<&[String]>) -> (&'static str, Vec<String>) {
     let mut lignes = vec![match e.score {
         Some(s) => trf!(
-            "Note de cette machine : {} ({s}/100).",
-            "This machine's grade: {} ({s}/100).",
+            "Note de cet ordinateur : {} ({s}/100).",
+            "This computer's grade: {} ({s}/100).",
             crate::risk::note(s)
         ),
         None => String::from(tr!(
-            "Note de cette machine : aucune (des vérifications n'ont pas pu se faire).",
-            "This machine's grade: none (some checks could not be done)."
+            "Note de cet ordinateur : aucune (des vérifications n'ont pas pu se faire).",
+            "This computer's grade: none (some checks could not be done)."
         )),
     }];
     lignes.push(match (e.maj.as_slice(), e.maj_inconnues.as_slice()) {

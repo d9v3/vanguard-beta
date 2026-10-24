@@ -727,18 +727,20 @@ if ((Sortie 'antivirus-dossier') -match 'No malware found|Aucun malware|aucune m
 Remove-Item $propre -Recurse -Force -ErrorAction SilentlyContinue
 
 Etape 'Menu : chaque groupe ouvert puis refermé'
-LancerAvec 'menu' @() "4`n`n5`n`n6`n`n7`n`n8`n`n9`n`n10`n`n11`n`nq`n"
+LancerAvec 'menu' @() "4`n`n5`n`n6`n`n7`n`n8`n`n9`n`n10`n`n11`n`n12`n`n13`n`nq`n"
 $m = Sortie 'menu'
 # Une ligne propre à chaque sous-menu (le titre d'un groupe s'affiche aussi au menu principal), majuscules comprises.
 $sousMenus = [ordered]@{
-    'Cette machine' = "Fiche de l'ordinateur|Computer specs"
+    'Cet ordinateur' = "Fiche de l'ordinateur|Computer specs"
     'Réseau et Internet' = 'Surveillance toutes les heures|Hourly monitoring'
-    'Antivirus et protection' = 'Ce lien est-il dangereux|Is this link dangerous'
-    'Installer et jouer' = 'les meilleurs, par catégorie|the best ones, by category'
-    'Optimiser' = 'Nettoyer le système|Clean up the system'
-    'Données' = 'Copier mes fichiers|Copy my files'
+    'Virus et logiciels espions' = 'Analyse antivirus|Antivirus scan'
+    'Arnaques et vie privée' = 'Ce lien est-il dangereux|Is this link dangerous'
+    'Bloquer et réagir' = 'Blocage des menaces|Threat blocking'
+    'Données et sauvegardes' = 'Copier mes fichiers|Copy my files'
     'Guide des commandes' = 'Tous les systèmes|All systems'
     'Dépanner pas à pas' = "Pas d'Internet|No Internet"
+    'Optimiser et installer' = 'Nettoyer le système|Clean up the system'
+    'Vanguard' = 'Retirer Vanguard|Remove Vanguard'
 }
 foreach ($g in $sousMenus.Keys) {
     if ($m -cmatch $sousMenus[$g]) { Ok "Sous-menu « $g » ouvert" } else { Bug "Sous-menu « $g » PAS ouvert" }
@@ -1265,13 +1267,14 @@ function Etat-Defender {
 $defAvant = Etat-Defender
 $modeDefender = (Get-MpComputerStatus).AMRunningMode
 Info "Defender ($modeDefender) : $defAvant"
-# Le numéro de l'outil dans le groupe Antivirus et protection (6), lu à l'écran : il change quand un outil s'ajoute.
-LancerAvec 'protection-groupe' @() "6`n`nq`n"
+# Le numéro de l'outil dans le groupe Cet ordinateur (4), lu à l'écran : 10, après les lignes communes (la conception
+# de la 0.87 le fige ; lu quand même, pour que les essais suivants tournent si une ligne s'ajoutait).
+LancerAvec 'protection-groupe' @() "4`n`nq`n"
 $groupe = (Sortie 'protection-groupe') -replace '\x1b\[[0-9;]*m', ''
 $numeroDefender = if ($groupe -match '(?m)^\s*(\d+)\s+(Blocages de Windows Defender|Windows Defender blocking)') { $Matches[1] } else { '' }
 if ($numeroDefender) {
-    Ok "Outil présent dans le groupe (6.$numeroDefender)"
-    LancerAvec 'protection' @() "6.$numeroDefender`n`n`nq`n"
+    if ($numeroDefender -eq '10') { Ok 'Outil présent dans le groupe, en 4.10' } else { Bug "Outil en 4.$numeroDefender, pas en 4.10" }
+    LancerAvec 'protection' @() "4.$numeroDefender`n`n`nq`n"
     $t = Sortie 'protection'
     foreach ($titre in 'Blocages de base de Defender|Defender basic blocking', 'Protection réseau de Defender|Defender network protection', 'Accès contrôlé aux dossiers|Controlled folder access') {
         if ($t -match $titre) { Ok "Réglage affiché : $($titre.Split('|')[0])" } else { Bug "Réglage ABSENT : $($titre.Split('|')[0])" }
@@ -1320,7 +1323,7 @@ try {
 
 # Defender : MSFT_MpComputerStatus et MSFT_MpPreference par WMI (l'outil « Blocages de Windows Defender »).
 if ($numeroDefender) {
-    LancerSurveille 'protection-sans-ps' @() "6.$numeroDefender`n`n`nq`n"
+    LancerSurveille 'protection-sans-ps' @() "4.$numeroDefender`n`n`nq`n"
     $t = Sortie 'protection-sans-ps'
     $modeDefender = (Get-MpComputerStatus -ErrorAction SilentlyContinue).AMRunningMode
     if ($modeDefender -eq 'Normal' -and $t -match "n'est pas l'antivirus actif|is not the active antivirus") { Bug 'Defender actif selon Get-MpComputerStatus, dit inactif par la lecture WMI' }
@@ -1426,7 +1429,7 @@ elseif (Question 'Faire ce test (deux fenêtres UAC à accepter) ?') {
     Write-Host '      points de restauration) : sinon, rien n''est changé.' -ForegroundColor Yellow
     # Ligne 3 de la liste : la protection réseau. Sans terminal, taper son numéro coche (ou décoche) et valide ; puis
     # « o » accepte.
-    LancerAvec 'protection-changer' @() "6.$numeroDefender`n3`no`n`nq`n"
+    LancerAvec 'protection-changer' @() "4.$numeroDefender`n3`no`n`nq`n"
     $np = Protection-Reseau-Attendue $npAutre
     if ($np -eq $npAutre) { Ok "Protection réseau passée de $npAvant à $npAutre par Vanguard" }
     elseif ((Sortie 'protection-changer') -match "Administrator prompt refused|Demande d'administrateur refusée") { Bug 'Fenêtre UAC refusée : rien changé (le test demande OUI)' }
@@ -1438,7 +1441,7 @@ elseif (Question 'Faire ce test (deux fenêtres UAC à accepter) ?') {
     # Rien n'a changé : une « remise » acceptée basculerait la protection au lieu de la remettre.
     if ($np -ne $npAutre) { Sautee 'Remise sautée : rien n''avait changé' }
     else {
-        LancerAvec 'protection-remettre' @() "6.$numeroDefender`n3`no`n`nq`n"
+        LancerAvec 'protection-remettre' @() "4.$numeroDefender`n3`no`n`nq`n"
         $np = Protection-Reseau-Attendue $npAvant
         if ($np -eq $npAvant) { Ok 'Protection réseau remise comme avant' } else { Bug "Protection réseau PAS remise ($np au lieu de $npAvant)" }
     }

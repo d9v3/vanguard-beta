@@ -74,8 +74,8 @@ pub fn tout_remettre() {
     let elements = a_defaire(annulables::notes(None), blocages);
     if elements.is_empty() {
         trp!(
-            "  {GRIS}Vanguard n'a rien changé qu'il sache défaire sur cette machine.{RESET}",
-            "  {GRIS}Vanguard has changed nothing it can undo on this machine.{RESET}"
+            "  {GRIS}Vanguard n'a rien changé qu'il sache défaire sur cet ordinateur.{RESET}",
+            "  {GRIS}Vanguard has changed nothing it can undo on this computer.{RESET}"
         );
         return;
     }

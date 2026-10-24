@@ -1115,8 +1115,8 @@ fn ligne_ouvrir(cible: &str) -> String {
 pub fn auditer(bavard: bool) -> Audit {
     if bavard {
         tre!(
-            "{GRAS}Audit de cette machine{RESET} ({})",
-            "{GRAS}Audit of this machine{RESET} ({})",
+            "{GRAS}Audit de cet ordinateur{RESET} ({})",
+            "{GRAS}Audit of this computer{RESET} ({})",
             os::NOM
         );
         tre!(
@@ -1167,7 +1167,7 @@ pub fn mises_a_jour_completes(seulement: Option<&[&str]>) -> Vec<Constat> {
 }
 
 pub fn afficher(a: &Audit) {
-    titre(&trf!("Cette machine ({})", "This machine ({})", a.systeme));
+    titre(&trf!("Cet ordinateur ({})", "This computer ({})", a.systeme));
     afficher_constats(&a.constats);
     println!();
     if a.fiable() {

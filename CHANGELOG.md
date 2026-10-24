@@ -23,6 +23,45 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   CVE), sans fausse alerte. Les alertes
   déclarées normales, reconnues à leur texte quand elles n'ont pas de clé, peuvent revenir une fois en français.
 
+- **Nouveau menu.** La défense d'abord : sous « Bilan de sécurité » (1 à 3, inchangés), la partie **Cyberdéfense**
+  (4 Cet ordinateur, 5 Réseau et Internet, 6 Virus et logiciels espions, 7 Arnaques et vie privée, 8 Bloquer et
+  réagir), puis **En plus** (9 Données et sauvegardes, 10 Guide des commandes, 11 Dépanner pas à pas, 12 Optimiser et
+  installer, 13 Vanguard). Aucun écran ne défile plus : les variantes passent dans un écran à choix (6.1 Analyse
+  antivirus › rapide, complète, clé USB, YARA ; 5.1 Appareils du réseau ; 4.8 Pour les développeurs ; 9.3 Vérifier une
+  copie ou sauvegarde ; 13.4 Vérifier Vanguard lui-même), joignable aussi par son chemin (« 6.1.3 »). Les lignes
+  propres à un système vont en fin de groupe : Defender est toujours en 4.10. Entrent au menu : Programmes au démarrage
+  (12.4), Journal des évènements (8.6), Règles du bilan (13.5), l'empreinte et l'autotest (13.4), et des raccourcis
+  d'incident (8.3 à 8.5 vers les parcours 11.7, 11.10 et 11.11). L'invite dit « Numéro, ou un mot à chercher » ; la
+  première ouverture le rappelle en tête du menu. Les chemins 1, 2, 3, 5.2, 10 et 11.1 à 11.12, les lettres d'avant la
+  0.43 et « s » ne bougent pas ; les autres chemins ont changé de sens (rien ne se modifie sans accord) :
+
+| 0.86 | 0.87 | | 0.86 | 0.87 | | 0.86 | 0.87 |
+|---|---|---|---|---|---|---|---|
+| 4.1 Audit de sécurité | 4.1 | | 5.14 Mode Wi-Fi public | 5.9 | | 6.20 Images Docker | 4.8.2 |
+| 4.2 Mises à jour | 4.2 | | 6.1 Analyse rapide | 6.1.1 | | 6.21 Blocage des menaces | 8.1 |
+| 4.3 Réparer et nettoyer | 11.13 | | 6.2 Analyse complète | 6.1.2 | | 6.22 Sites dangereux | 8.2 |
+| 4.4 Diagnostic | 11.14 | | 6.3 Clé USB ou dossier | 6.1.3 | | 6.23 Dernières failles | 4.3 |
+| 4.5 Intégrité | 4.4 | | 6.4 Analyse YARA | 6.1.4 | | 6.24 Courriel suspect | 7.2 |
+| 4.6 Ce que Vanguard a appris | 13.2 | | 6.5 Mémoire des processus | 6.4 | | 6.25 Logiciels espions | 6.2 |
+| 4.7 Pourquoi c'est lent ? | 12.3 | | 6.6 Fichiers-pièges | 6.5 | | 6.26 Logiciels pas à jour | 4.9 |
+| 4.8 Fiche de l'ordinateur | 4.6 | | 6.7 Defender | 4.10 | | 6.27 Signaler | 8.9 |
+| 4.9 Rapport à laisser | 4.7 | | 6.8 Bac à sable | 6.7 | | 7.1 Logiciels | 12.1 |
+| 4.10 Ce que Vanguard a changé | 8.7 | | 6.9 Mots de passe : fuite | 7.4 | | 7.2 Gaming | 12.6 |
+| 4.11 Entretien du mois | 4.5 | | 6.10 Mots de passe des navigateurs | 7.5 | | 8.1 Nettoyer | 12.2 |
+| 4.12 Paramètres | 13.1 | | 6.11 Courriel : fuite | 7.6 | | 8.2 Réglages recommandés | 12.5 |
+| 5.1 Scanner le réseau | 5.1.1 | | 6.12 Qui parle à Internet ? | 6.3 | | 8.3 Confidentialité | 12.11 |
+| 5.3 Scan approfondi | 5.1.2 | | 6.13 Caméra et micro | 7.7 | | 8.4 Performance | 12.13 |
+| 5.4 Nommer | 5.3 | | 6.14 Bilan de confidentialité | 7.8 | | 8.5 Confort et fichiers | 12.12 |
+| 5.5 Surveillance | 5.7 | | 6.15 Contrôle à distance | 7.3 | | 8.6 DNS le plus rapide | 12.7 |
+| 5.6 Tableau de bord | 5.8 | | 6.16 Ce lien est-il dangereux ? | 7.1 | | 8.7 Tout remettre comme avant | 8.8 |
+| 5.7 Veilleur (Linux) | 8.10 | | 6.17 Vérifier un fichier | 6.6 | | 9.1 Sauvegarder ou restaurer | 13.8 |
+| 5.8 Test de connexion | 12.8 | | 6.18 Quarantaine | 6.8 | | 9.2 à 9.3 Copier, sauvegarde auto | 9.1, 9.2 |
+| 5.9 Liste noire | 5.6 | | 6.19 Secrets git | 4.8.1 | | 9.4 Vérifier une copie | 9.3.2 |
+| 5.10 Wi-Fi encombré | 12.10 | | 9.5 Vérifier ma clé | 9.4 | | 9.6 Raccourci | 13.9 |
+| 5.11 Type de NAT | 12.9 | | 9.7 Mes ordinateurs | 13.6 | | 9.8 Protéger les données de la clé | 13.7 |
+| 5.12 Caméras cachées | 5.5 | | 9.9 Mettre Vanguard à jour | 13.3 | | 9.10 Vérifier ma sauvegarde | 9.3.1 |
+| 5.13 Box et objets connectés | 5.4 | | 9.11 Retirer Vanguard | 13.11 | | 12 Extensions | 13.10 |
+
 ## 23 octobre 2026 : version 0.86
 
 - **Logiciels espions.** `vanguard logiciels-espions` (alias `spyware` ; menu Antivirus et protection, en dernier)

@@ -252,7 +252,7 @@ regle!(
     "COM-SUR-001",
     Os::Tous,
     700,
-    ("surveillance de cette machine", "monitoring of this machine"),
+    ("surveillance de cet ordinateur", "monitoring of this computer"),
     &["CIS Controls v8 7.5"],
     || crate::reseau::surveillance::constat().into_iter().collect()
 );
@@ -261,7 +261,10 @@ regle!(
     "COM-SUR-003",
     Os::Tous,
     702,
-    ("entretien du mois de cette machine", "monthly check-up of this machine"),
+    (
+        "entretien du mois de cet ordinateur",
+        "monthly check-up of this computer"
+    ),
     &["CIS Controls v8 7.1"],
     || crate::entretien::constat().into_iter().collect()
 );

@@ -78,8 +78,13 @@ defensive: Vanguard never attacks any device.
 - **From the USB key**: `Windows/vanguard.exe`, `Linux/vanguard`, or `Lancer Vanguard.command` on macOS; the key's guide
   is in `README.txt`.
 
-In the menu, choose **1** (full check), then **2** (fix). ↑ ↓ to move, Enter or → to select; Esc, ← or Backspace to go
-back. The window fits the menu when it was opened for Vanguard.
+In the menu, choose **1** (full security check), then **2** (fix). ↑ ↓ to move, Enter or → to select; Esc, ← or
+Backspace to go back. The window fits the menu when it was opened for Vanguard.
+
+The menu sorts the tools in two parts. **Cyber defense**: 4 This computer, 5 Network and Internet, 6 Viruses and
+spyware, 7 Scams and privacy, 8 Block and respond. **Also included**: 9 Data and backups, 10 Command guide,
+11 Step-by-step troubleshooting, 12 Optimize and install, 13 Vanguard (settings, update, extensions). A word typed in
+the main menu ("antivirus", "backup") finds any tool; its path ("6.1.3") opens it directly.
 
 ## What Vanguard does
 
@@ -247,7 +252,7 @@ in Settings): abuse.ch closed its public downloads on October 21, 2026. The key 
 full; without it, these lists are reported as not checked. What the antivirus or YARA finds can go into a reversible quarantine: the file is made unusable and noted, then put back exactly in its place if it was a false
 positive.
 
-**Threat blocking** (Antivirus and protection › Threat blocking menu, `vanguard blocking`) — each threat found offers
+**Threat blocking** (Block and respond › Threat blocking menu, `vanguard blocking`) — each threat found offers
 "Block": the action is shown, carried out after your consent, written down in "What Vanguard changed" and undone
 exactly by `vanguard blocking undo`; only stopping a program cannot be undone. Depending on the threat: the program
 stopped then quarantined, the connection closed at the firewall (ufw, nftables, Windows Firewall, pf), a launch
@@ -291,7 +296,7 @@ everything in time order, oldest first: accepted or refused sign-ins, created ac
 cleared logs, Defender detections, recent files that matter (programs, scripts, hidden files). The traces also
 include what Vanguard saw and did (07-vanguard.txt): its alerts, its blocks with their evidence.
 
-**Report a flaw to a vendor** (Antivirus and protection menu, `vanguard disclose`) — when a program behaves
+**Report a flaw to a vendor** (Block and respond › Report a flaw to a vendor menu, `vanguard disclose`) — when a program behaves
 abnormally, Vanguard prepares the draft report, which the person reviews and sends personally. It sorts first: an
 already known flaw (CVE, CISA's catalog) is fixed by an update; malware, a missed detection or a phishing site are not
 flaws of the vendor, and the right recipient is named. Otherwise, the draft follows the chosen program's format (MSRC,
@@ -396,7 +401,7 @@ sshguard or CrowdSec already blocks the addresses that keep trying.
 
 #### Privacy and secrets
 
-**Spyware** (`vanguard spyware`, Antivirus and protection menu, and in the check) — signs of spyware planted by
+**Spyware** (`vanguard spyware`, Viruses and spyware menu, and in the check) — signs of spyware planted by
 someone close: connections and names asked towards known spyware servers and sites (list from the Échap association,
 CC-BY 4.0, downloaded when used), known monitoring software installed or running (parental control and employee
 monitoring are called normal if installed on purpose), programs reading the keyboard (Linux), Input Monitoring,
@@ -540,7 +545,7 @@ silenced. Each connection test is compared with the usual measurements on the sa
 suddenly seems all closed (asleep) is checked again more patiently. "What Vanguard has learned" shows everything and
 lets you forget.
 
-**Settings** (This machine › Settings, "s" in the main menu, `vanguard settings`) — every setting in one place:
+**Settings** (Vanguard › Settings, "s" in the main menu, `vanguard settings`) — every setting in one place:
 language, emojis, working without the Internet, real-time protection, hourly monitoring, monthly check-up, learned
 alerts, threat blocking, extension restrictions and the abuse.ch key. Each change shows the previous value and the
 command to put it back; learned alerts and blocking open their own screen ("What Vanguard has learned", Threat

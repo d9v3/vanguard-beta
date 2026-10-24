@@ -90,8 +90,8 @@ struct Arret {
 
 fn droits_manquants() -> String {
     tr!(
-        "droits d'administrateur manquants : rien n'a été fait (ouvrez Vanguard, Antivirus et protection › Blocage des menaces)",
-        "administrator rights missing: nothing was done (open Vanguard, Antivirus and protection › Threat blocking)"
+        "droits d'administrateur manquants : rien n'a été fait (ouvrez Vanguard, Bloquer et réagir › Blocage des menaces)",
+        "administrator rights missing: nothing was done (open Vanguard, Block and respond › Threat blocking)"
     )
     .to_string()
 }

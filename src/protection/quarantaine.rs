@@ -396,8 +396,8 @@ pub fn proposer(trouves: &[(PathBuf, String)]) {
         return;
     }
     let rep = demander(tr!(
-        "\n  Les mettre en quarantaine (réversible : menu Antivirus et protection › Quarantaine) ? [o/N] : ",
-        "\n  Quarantine them (reversible: menu Antivirus and protection › Quarantine)? [y/N]: "
+        "\n  Les mettre en quarantaine (réversible : menu Virus et logiciels espions › Quarantaine) ? [o/N] : ",
+        "\n  Quarantine them (reversible: menu Viruses and spyware › Quarantine)? [y/N]: "
     ));
     if !rep.oui() {
         trp!(

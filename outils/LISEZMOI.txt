@@ -39,127 +39,105 @@ journal-erreurs.txt : les erreurs rencontrées (version, système, message), san
 machine ni dossier personnel. De retour sur l'ordinateur du propriétaire, elles deviennent des tickets GitHub,
 pour améliorer Vanguard. Elle contient aussi ordinateurs.json (Mes ordinateurs : note et catégories des problèmes de
 chaque ordinateur, sans nom), qui ne part jamais sur GitHub.
-Données protégées : si le propriétaire a protégé les données de la clé (menu Données), Vanguard demande sa phrase sur
+Données protégées : si le propriétaire a protégé les données de la clé (menu Vanguard), Vanguard demande sa phrase sur
 un autre ordinateur pour lire le carnet des appareils ; Entrée sans rien, il continue sans le carnet. Windows ne lance rien tout seul depuis une clé USB
 (protection contre les virus depuis Windows 7) : il faut double-cliquer.
 
-Pour commencer : lancer Vanguard, choisir « 1. Bilan complet », puis « 2. Corriger ».
+Pour commencer : lancer Vanguard, choisir « 1. Bilan de sécurité complet », puis « 2. Corriger ».
 
 Menu (↑ ↓ pour choisir, Entrée ou → pour lancer, Échap, ← ou Retour arrière pour revenir ; ou le chiffre, puis
 Entrée ; la fenêtre ouverte pour Vanguard prend la taille du menu)
 Recherche : dans tout menu, un mot tapé (wifi, disque, dns…) ne laisse que les lignes qui le contiennent ;
 Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trouve aussi chaque outil des sous-menus
-(« 5.3 » : groupe 5, 3e outil, aussi tapable tel quel) et chaque page du guide.
-  1  Bilan complet : ordinateur, réseau, avec ce qui a changé depuis le bilan précédent
+(« 6.1.3 » : groupe 6, 1re ligne, 3e choix, aussi tapable tel quel) et chaque page du guide.
+  ── BILAN DE SÉCURITÉ ──
+  1  Bilan de sécurité complet : ordinateur, réseau, avec ce qui a changé depuis le bilan précédent
   2  Corriger les problèmes trouvés (chaque correction est montrée, puis confirmée)
   3  Rapport détaillé dans le navigateur, avec la courbe des notes
-
-  4  Cette machine ›
-       Audit de sécurité · Mises à jour (système, programmes, pilotes, firmware)
-       Réparer et nettoyer (Internet, navigation détournée, pare-feu, disque plein, mises à jour bloquées…)
-       Diagnostic (matériel, plantages et erreurs récents, copie texte sur la clé)
-       Intégrité des fichiers critiques (comptes, sudo, SSH, démarrage ; en direct : vanguard integrite --temps-reel)
-       Ce que Vanguard a appris : les habitudes, et les alertes déclarées normales (« i » à la correction, dans la
-         surveillance, le veilleur ou le blocage)
-       Pourquoi c'est lent ? (processeur, mémoire, disque, démarrage, programmes à l'ouverture de session ;
-       les retirer du démarrage ou les remettre, après accord : vanguard demarrage)
-       Fiche de l'ordinateur (modèle, processeur, mémoire, carte graphique, disques ; numéros de série à l'écran)
-       Rapport à laisser : une page simple pour la personne dépannée, posée sur son Bureau
-       Ce que Vanguard a changé : chaque correction lancée ici, datée, réussie ou non ; celles marquées
-         « annulable » s'y annulent une par une, puis l'état d'avant est relu
-       Entretien du mois : une notification par mois (note, mises à jour, place à libérer, problèmes nouveaux)
-       Paramètres (aussi « s » au menu principal) : langue, emojis, travail sans Internet, protection en temps
-         réel, surveillance, entretien, alertes apprises, blocage, restrictions des extensions, clé abuse.ch
-         (masquée) ; la valeur d'avant est montrée, sauf pour les alertes apprises et le blocage, qui ouvrent leur
-         propre écran (vanguard parametres)
-       Protection en temps réel : la surveillance horaire et la protection active du blocage coupées d'un coup,
-         après accord, pendant 1 h, 4 h ou jusqu'à reprise ; jamais Defender, le pare-feu ni l'UAC, et un blocage
-         déjà fait reste en place (vanguard parametres temps-reel non --pendant 1h)
+  ── CYBERDÉFENSE ──
+  4  Cet ordinateur ›
+       4.1 Audit de sécurité · 4.2 Mises à jour du système (système, programmes, pilotes, firmware)
+       4.3 Dernières failles exploitées : celles que la CISA vient d'ajouter à son catalogue (vanguard dernieres-failles)
+       4.4 Intégrité des fichiers critiques (comptes, sudo, SSH, démarrage ; en direct : vanguard integrite --temps-reel)
+       4.5 Entretien du mois : une notification par mois (note, mises à jour, place à libérer, problèmes nouveaux)
+       4.6 Fiche de l'ordinateur (modèle, processeur, mémoire, carte graphique, disques ; numéros de série à l'écran)
+       4.7 Rapport à laisser : une page simple pour la personne dépannée, posée sur son Bureau
+       4.8 Pour les développeurs › Secrets dans les projets git : mots de passe et clés oubliés dans l'historique
+         (et gitleaks, s'il est là) · Failles des images Docker : failles connues, graves ou critiques (trivy)
+       4.9 Logiciels pas à jour (Windows, macOS) : navigateurs, Office, Acrobat, Java, 7-Zip… et leurs failles
+         exploitées (lecture seule ; vanguard logiciels-perimes)
+       4.10 Blocages de Windows Defender : vol de mots de passe, pièces jointes piégées, sites dangereux, rançongiciels
   5  Réseau et Internet ›
-       Scanner le réseau (et démasquer un voleur de mots de passe comme Responder)
-       Audit du réseau : six notes (exposition à Internet, Wi-Fi, séparation des appareils, DNS et certificats,
+       5.1 Appareils du réseau › Scan du réseau (et démasquer un voleur de mots de passe comme Responder) ·
+         Tous les ports d'un appareil (scan approfondi)
+       5.2 Audit du réseau : six notes (exposition à Internet, Wi-Fi, séparation des appareils, DNS et certificats,
          objets connectés, ordinateurs), sans rien attaquer ; fait aussi par le bilan complet (vanguard audit-reseau)
-       Scan approfondi d'un appareil · Nommer un appareil (« imprimante HP »)
-       Surveillance toutes les heures (appareil inconnu, problème sur cet ordinateur, usurpation du routeur,
+       5.3 Nommer un appareil (« imprimante HP »)
+       5.4 Routeur et objets connectés : modèle du routeur, caméras, imprimantes, NAS… et leur mot de passe d'origine
+         (d'après le dernier scan, rien n'est sondé)
+       5.5 Caméras cachées ? (location, hébergement)
+       5.6 Adresse publique sur liste noire ? (Spamhaus, SpamCop, DroneBL, PSBL, après accord ; vanguard listes-noires)
+       5.7 Surveillance toutes les heures (appareil inconnu, problème sur cet ordinateur, usurpation du routeur,
          empoisonneur de noms, programme arrivé dans Téléchargements)
-       Tableau de bord de la surveillance : alertes jour par jour, nouveaux appareils (page locale)
-       Veilleur (Linux) : programmes lancés et connexions fermées vus sur le moment, coupé par défaut
+       5.8 Tableau de bord de la surveillance : alertes jour par jour, nouveaux appareils (page locale)
+       5.9 Mode Wi-Fi public (café, hôtel, aéroport) : entrées fermées, partage et annonce du nom coupés, DNS
+         protecteur, après accord ; tout se remet exactement en partant (vanguard wifi-public)
+  6  Virus et logiciels espions ›
+       6.1 Analyse antivirus › Analyse rapide · Analyse complète du dossier personnel · Clé USB ou dossier, avec les
+         pièges des vers de clé (faux raccourcis, autorun) · Règles YARA sur un dossier : 308 règles de familles de
+         logiciels malveillants (rançongiciels, voleurs de mots de passe…) et les empreintes de logiciels
+         malveillants connus de MalwareBazaar (clé abuse.ch gratuite)
+       6.2 Logiciels espions : en ai-je un ? Serveurs et sites connus, programmes qui lisent le clavier, autorisations
+         de surveillance (lecture seule ; vanguard logiciels-espions)
+       6.3 Qui parle à Internet ? Les connexions de chaque programme, avec le nom du serveur, et les serveurs de
+         botnets connus (Feodo Tracker, ThreatFox) ; lecture seule
+       6.4 Mémoire des processus : les règles YARA dans la mémoire des programmes qui tournent (malware sans
+         fichier), à la demande ; la mémoire de LSASS et des processus protégés n'est jamais lue (vanguard memoire)
+       6.5 Fichiers-pièges anti-rançongiciel : des leurres dans les dossiers personnels ; un rançongiciel qui les
+         touche déclenche l'alerte
+       6.6 Vérifier un fichier téléchargé : empreinte comparée à celle du site, nom et contenu, YARA, antivirus
+       6.7 Bac à sable : programme inconnu lancé sans réseau, à l'écart des fichiers personnels
+       6.8 Quarantaine : remettre un fichier isolé par l'antivirus ou YARA (faux positif), ou le supprimer
+  7  Arnaques et vie privée ›
+       7.1 Ce lien est-il dangereux ? Examiné sans l'ouvrir ; son âge et des listes publiques, après accord
+       7.2 Ce courriel est-il une arnaque ? Un courriel enregistré (.eml) examiné sans rien ouvrir : expéditeur,
+         liens, pièces jointes (vanguard courriel-suspect)
+       7.3 Mon ordinateur est-il contrôlé ? Logiciels de prise de contrôle à distance (faux technicien), retirés
+         après accord
+       7.4 Mots de passe : ont-ils fuité ? (seuls 5 caractères de leur empreinte sont envoyés)
+       7.5 Mots de passe des navigateurs : comptés et leur protection décrite, jamais lus ; la vérification de chacun
+       7.6 Courriel : a-t-il fuité ? (l'adresse est envoyée au service de recherche, après accord)
+       7.7 Caméra et micro : qui s'en sert ? (Windows : chaque programme et la dernière fois ; lecture seule)
+       7.8 Bilan de confidentialité : qui a accès à la position, aux contacts, à la caméra et au micro (lecture seule)
+  8  Bloquer et réagir ›
+       8.1 Blocage des menaces : « Bloquer » d'un clic pour chaque menace trouvée (geste montré, noté, annulable) ;
+         la protection active, une fois mise en marche, bloque toute seule ce qui ne fait aucun doute
+         (vanguard blocage)
+       8.2 Bloquer les sites dangereux : ceux d'URLhaus et les serveurs de commande de ThreatFox, dans le fichier
+         hosts, après accord ; retirés exactement (vanguard sites-dangereux)
+       8.3 Après une infection, pas à pas · 8.4 Compte piraté, pas à pas : les parcours 11.7 et 11.10
+       8.5 Collecter les traces avant de nettoyer : processus, connexions, démarrage, journaux, fichiers récents,
+         dans un dossier daté avec leurs empreintes, et la chronologie de l'incident (CHRONOLOGIE.txt) : tout ce
+         qui est daté, dans l'ordre du temps (lecture seule, rien n'est envoyé ; vanguard traces)
+       8.6 Journal des évènements : alertes, blocages et incidents, reliés (vanguard evenements)
+       8.7 Ce que Vanguard a changé : chaque correction lancée ici, datée, réussie ou non ; celles marquées
+         « annulable » s'y annulent une par une, puis l'état d'avant est relu
+       8.8 Tout remettre comme avant : défait les réglages d'Optimiser, les corrections du bilan, Jeux vidéo, les
+         blocages et le mode Wi-Fi public ; la valeur d'avant est remise (vanguard optimiser annuler)
+       8.9 Signaler une faille à un éditeur : brouillon au format du programme (MSRC, Mozilla, avis GHSA…),
+         ce qui est personnel retiré ; rien n'est jamais envoyé (vanguard signaler)
+       8.10 Veilleur (Linux) : programmes lancés et connexions fermées vus sur le moment, coupé par défaut
          (vanguard veilleur on) ; et, sur demande, les dossiers personnels surveillés en direct contre les
          rançongiciels : alerte en quelques secondes, gel puis arrêt d'un cas quasi certain seulement avec la
          protection active (vanguard veilleur rancongiciel on)
-       Test de connexion pour le jeu (ping, gigue, débit, bufferbloat), comparé aux mesures habituelles
-       Adresse Internet sur liste noire ? (Spamhaus, SpamCop, DroneBL, PSBL, après accord ; vanguard listes-noires)
-       Wi-Fi encombré ? (réseaux voisins par canal, et le canal le plus libre à régler sur le routeur)
-       Type de NAT pour le jeu (ouvert, modéré ou strict) · Caméras cachées ? (location, chez quelqu'un)
-       Routeur et objets connectés : modèle du routeur, caméras, imprimantes, NAS… et leur mot de passe d'origine
-         (d'après le dernier scan, rien n'est sondé)
-       Mode Wi-Fi public (café, hôtel, aéroport) : entrées fermées, partage et annonce du nom coupés, DNS
-         protecteur, après accord ; tout se remet exactement en partant (vanguard wifi-public)
-  6  Antivirus et protection ›
-       Analyse rapide · Analyse complète du dossier personnel
-       Clé USB ou dossier, avec les pièges des vers de clé (faux raccourcis, autorun)
-       Analyse YARA : 308 règles de familles de logiciels malveillants (rançongiciels, voleurs de mots de passe…)
-         et les empreintes de logiciels malveillants connus de MalwareBazaar (clé abuse.ch gratuite)
-       Mémoire des processus : les règles YARA dans la mémoire des programmes qui tournent (malware sans fichier),
-         à la demande ; la mémoire de LSASS et des processus protégés n'est jamais lue (vanguard memoire)
-       Fichiers-pièges : des leurres dans les dossiers personnels ; un rançongiciel qui les touche déclenche l'alerte
-       Blocages de Windows Defender : vol de mots de passe, pièces jointes piégées, sites dangereux, rançongiciels
-       Bac à sable : programme inconnu lancé sans réseau, à l'écart des fichiers personnels
-       Mots de passe : ont-ils fuité ? (seuls 5 caractères de leur empreinte sont envoyés)
-       Mots de passe des navigateurs : comptés et leur protection décrite, jamais lus ; la vérification de chacun
-       Courriel : a-t-il fuité ? (l'adresse est envoyée au service de recherche, après accord)
-       Qui parle à Internet ? Les connexions de chaque programme, avec le nom du serveur, et les serveurs de
-         botnets connus (Feodo Tracker, ThreatFox) ; lecture seule
-       Caméra et micro : qui s'en sert ? (Windows : chaque programme et la dernière fois ; lecture seule)
-       Bilan de confidentialité : qui a accès à la position, aux contacts, à la caméra et au micro (lecture seule)
-       Mon ordinateur est-il contrôlé ? Logiciels de prise de contrôle à distance (faux technicien), retirés après accord
-       Ce lien est-il dangereux ? Examiné sans l'ouvrir ; son âge et des listes publiques, après accord
-       Vérifier un fichier téléchargé : empreinte comparée à celle du site, nom et contenu, YARA, antivirus
-       Quarantaine : remettre un fichier isolé par l'antivirus ou YARA (faux positif), ou le supprimer
-       Secrets dans les projets git : mots de passe et clés oubliés dans l'historique (et gitleaks, s'il est là)
-       Failles des images Docker : failles connues, graves ou critiques (trivy, s'il est là)
-       Bloquer les sites dangereux : ceux d'URLhaus et les serveurs de commande de ThreatFox, dans le fichier
-         hosts, après accord ; retirés exactement (vanguard sites-dangereux)
-       Dernières failles exploitées : celles que la CISA vient d'ajouter à son catalogue (vanguard dernieres-failles)
-       Ce courriel est-il une arnaque ? Un courriel enregistré (.eml) examiné sans rien ouvrir : expéditeur, liens,
-         pièces jointes (vanguard courriel-suspect)
-       Logiciels espions : en ai-je un ? Serveurs et sites connus, programmes qui lisent le clavier, autorisations
-         de surveillance (lecture seule ; vanguard logiciels-espions)
-       Logiciels pas à jour (Windows, macOS) : navigateurs, Office, Acrobat, Java, 7-Zip… et leurs failles
-         exploitées (lecture seule ; vanguard logiciels-perimes)
-       Signaler une faille à un éditeur : brouillon au format du programme (MSRC, Mozilla, avis GHSA…),
-         ce qui est personnel retiré ; rien n'est jamais envoyé (vanguard signaler)
-       Blocage des menaces : « Bloquer » d'un clic pour chaque menace trouvée (geste montré, noté, annulable) ;
-         la protection active, une fois mise en marche, bloque toute seule ce qui ne fait aucun doute
-         (vanguard blocage)
-  7  Installer et jouer ›
-       Logiciels : les meilleurs, libres pour la plupart, par catégorie (navigateurs, mots de passe,
-       bureautique, vidéo, création, outils système…) et un pack de départ, depuis la source officielle
-       Gaming (Windows : Visual C++, DirectX… ; Linux : Steam, Vulkan, GameMode, MangoHud, Wine, Lutris… ;
-       macOS : Rosetta 2, Steam, Heroic, Epic, GOG, Prism, compteur Metal)
-  8  Optimiser ›
-       Nettoyer le système (caches, fichiers temporaires, paquets, corbeille… : la place de chacun, à cocher)
-       Réglages recommandés, en une fois · Confidentialité (télémétrie, publicités, suivi, Recall…)
-       Performance et fiabilité (démarrage rapide, SSD…) · Confort et fichiers (extensions visibles,
-       pas de lancement automatique des clés, menu complet au clic droit…)
-       DNS le plus rapide (mesuré ici ; un DNS qui protège est gardé) · Tout remettre comme avant
-       Chaque réglage montre son état et s'annule exactement : la valeur d'avant est remise. « Tout remettre comme
-       avant » défait aussi les corrections du bilan, Gaming, les blocages et le mode Wi-Fi public (vanguard
-       optimiser annuler).
-  9  Données ›
-       Sauvegarder ou restaurer (surnoms, historique des réseaux)
-       Copier mes fichiers vers un disque externe (copie vérifiée, rien d'effacé, reprise après interruption)
-       Sauvegarde automatique vers un disque externe, avec l'outil du système (annulable)
-       Vérifier une copie : relue sur le disque et comparée aux originaux (test de restauration)
-       Vérifier ma clé : vraie capacité (fausses clés), vitesses, blocs en erreur ; écrit dans le libre, puis efface
-       Raccourci sur cet ordinateur : Vanguard copié ici et lancé d'un clic
-       Mes ordinateurs : ceux où la clé a fait un bilan, leur note et leurs problèmes restants (vanguard ordinateurs)
-       Protéger les données de la clé : carnet des appareils chiffré par une phrase, demandée ailleurs seulement
-       Mettre Vanguard à jour : la copie de cet ordinateur, depuis la clé ou GitHub (d9v3/vanguard-update,
-         chaque version signée par l'auteur et vérifiée)
-       Vérifier ma sauvegarde : la sauvegarde rsync relue, des fichiers au hasard comparés à leur original
-       Retirer Vanguard de cet ordinateur : ce qu'il a posé, montré puis coché ; les données gardées sauf
-         second accord (vanguard desinstaller)
+  ── EN PLUS ──
+  9  Données et sauvegardes ›
+       9.1 Copier mes fichiers vers un disque externe (copie vérifiée, rien d'effacé, reprise après interruption)
+       9.2 Sauvegarde automatique vers un disque externe, avec l'outil du système (annulable)
+       9.3 Vérifier une copie ou sauvegarde › La sauvegarde automatique, relue : des fichiers au hasard comparés
+         à leur original · Une copie (un dossier) : relue sur le disque et comparée aux originaux
+       9.4 Vérifier une clé USB ou un disque : vraie capacité (fausses clés), vitesses, blocs en erreur ; écrit dans
+         le libre, puis efface
  10  Guide des commandes › les commandes utiles d'Omarchy, Arch, Fedora, Debian, Windows 11, macOS et de tous les
        systèmes, par programme, chacune expliquée (⚠ : elle change quelque chose), avec des marches à suivre pas à
        pas (mettre à jour, réparer, réseau, faire de la place…). Les commandes paraissent au fil de
@@ -169,20 +147,56 @@ Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trou
  11  Dépanner pas à pas › pas d'Internet, Wi-Fi qui coupe, ordinateur lent, pas de son, imprimante,
        disque plein : deux ou trois questions, puis Vanguard vérifie et propose la bonne réparation.
        Et : après une infection, nouvel ordinateur, ordinateur qui part (vente, don), compte piraté,
-       ordinateur d'un proche (trois questions, un résumé en mots simples, la page à laisser ; vanguard proche).
-       Collecter les traces avant de nettoyer : processus, connexions, démarrage, journaux, fichiers récents,
-       dans un dossier daté avec leurs empreintes, et la chronologie de l'incident (CHRONOLOGIE.txt) : tout ce
-       qui est daté, dans l'ordre du temps (lecture seule, rien n'est envoyé ; vanguard traces).
-       En ligne de commande : vanguard depanner son
- 12  Extensions › des programmes personnels, hors du code de Vanguard : plugins (un dossier avec plugin.toml, ajouté
-       depuis un dossier ou une archive .zip), scripts du labo posés tels quels, et l'interrupteur des restrictions.
-       Chacun est analysé (YARA, MalwareBazaar) et approuvé par ses empreintes avant de tourner, jamais tout seul en
-       administrateur ; ses constats ne comptent jamais dans la note.
-       En ligne de commande : vanguard plugin, vanguard labo, vanguard extensions
-  q  Quitter · s Paramètres
+       collecter les traces, ordinateur d'un proche (trois questions, un résumé en mots simples, la page à laisser ;
+       vanguard proche). En ligne de commande : vanguard depanner son
+       11.13 Réparer une panne connue (Internet, navigation détournée, pare-feu, disque plein, mises à jour bloquées…)
+       11.14 Diagnostic du matériel (matériel, plantages et erreurs récents, copie texte sur la clé)
+ 12  Optimiser et installer ›
+       12.1 Logiciels recommandés : les meilleurs, libres pour la plupart, par catégorie (navigateurs, mots de passe,
+         bureautique, vidéo, création, outils système…) et un pack de départ, depuis la source officielle
+       12.2 Nettoyer le système (caches, fichiers temporaires, paquets, corbeille… : la place de chacun, à cocher)
+       12.3 Pourquoi c'est lent ? (processeur, mémoire, disque, démarrage, programmes à l'ouverture de session)
+       12.4 Programmes au démarrage : les retirer du démarrage ou les remettre, après accord (vanguard demarrage)
+       12.5 Réglages recommandés, en une fois
+       12.6 Jeux vidéo (Windows : Visual C++, DirectX… ; Linux : Steam, Vulkan, GameMode, MangoHud, Wine, Lutris… ;
+         macOS : Rosetta 2, Steam, Heroic, Epic, GOG, Prism, compteur Metal)
+       12.7 DNS le plus rapide (mesuré ici ; un DNS qui protège est gardé)
+       12.8 Test de connexion (ping, gigue, débit, bufferbloat), comparé aux mesures habituelles
+       12.9 Type de NAT pour le jeu (ouvert, modéré ou strict)
+       12.10 Wi-Fi encombré ? (réseaux voisins par canal, et le canal le plus libre à régler sur le routeur)
+       12.11 Réglages de confidentialité (télémétrie, publicités, suivi, Recall…) · 12.12 Confort et fichiers
+         (extensions visibles, pas de lancement automatique des clés, menu complet au clic droit…) ·
+         12.13 Performance et fiabilité (démarrage rapide, SSD…), selon le système
+       Chaque réglage montre son état et s'annule exactement : la valeur d'avant est remise (8.8).
+ 13  Vanguard ›
+       13.1 Paramètres (aussi « s » au menu principal) : langue, emojis, travail sans Internet, protection en temps
+         réel, surveillance, entretien, alertes apprises, blocage, restrictions des extensions, clé abuse.ch
+         (masquée) ; la valeur d'avant est montrée, sauf pour les alertes apprises et le blocage, qui ouvrent leur
+         propre écran (vanguard parametres). Protection en temps réel : la surveillance horaire et la protection
+         active du blocage coupées d'un coup, après accord, pendant 1 h, 4 h ou jusqu'à reprise ; jamais Defender,
+         le pare-feu ni l'UAC, et un blocage déjà fait reste en place (vanguard parametres temps-reel non --pendant 1h)
+       13.2 Ce que Vanguard a appris : les habitudes, et les alertes déclarées normales (« i » à la correction, dans
+         la surveillance, le veilleur ou le blocage)
+       13.3 Mettre Vanguard à jour : la copie de cet ordinateur, depuis la clé ou GitHub (d9v3/vanguard-update,
+         chaque version signée par l'auteur et vérifiée)
+       13.4 Vérifier Vanguard lui-même › Empreinte du programme, à comparer à la page de la version
+         (vanguard verifier-moi) · Autotest des règles : chacune tourne sans rien changer (vanguard autotest)
+       13.5 Règles du bilan : identifiants et références CIS, Microsoft ou ANSSI (vanguard regles)
+       13.6 Mes ordinateurs : ceux où la clé a fait un bilan, leur note et leurs problèmes restants (vanguard ordinateurs)
+       13.7 Protéger les données de la clé : carnet des appareils chiffré par une phrase, demandée ailleurs seulement
+       13.8 Exporter ou importer les réglages (surnoms, historique des réseaux)
+       13.9 Raccourci sur cet ordinateur : Vanguard copié ici et lancé d'un clic
+       13.10 Extensions › des programmes personnels, hors du code de Vanguard : plugins (un dossier avec
+         plugin.toml, ajouté depuis un dossier ou une archive .zip), scripts du labo posés tels quels, et
+         l'interrupteur des restrictions. Chacun est analysé (YARA, MalwareBazaar) et approuvé par ses empreintes
+         avant de tourner, jamais tout seul en administrateur ; ses constats ne comptent jamais dans la note.
+         En ligne de commande : vanguard plugin, vanguard labo, vanguard extensions
+       13.11 Retirer Vanguard de cet ordinateur : ce qu'il a posé, montré puis coché ; les données gardées sauf
+         second accord (vanguard desinstaller)
+  s  Paramètres · q  Quitter
   Raccourcis des anciennes versions, depuis le menu principal : u mises à jour, r réparer, o diagnostic,
   i intégrité, n nommer, c connexion, a clé USB, b bac à sable, p mots de passe, e courriel, l logiciels,
-  g gaming, d données.
+  g jeux vidéo, d exporter ou importer.
 
 Le bilan vérifie notamment : pare-feu, ports ouverts, mises à jour, logiciels pas à jour (Windows, macOS) et
 logiciels installés depuis le dernier bilan, chiffrement, comptes, règle des mots de passe, SSH (ses tentatives de

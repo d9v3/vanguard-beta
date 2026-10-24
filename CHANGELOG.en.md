@@ -21,6 +21,44 @@ delivered just before it. Only the latest version has its download page; every v
   wording, by what names their object (addresses, ports, CVEs), with no false alert. Alerts marked normal, matched by their text when they have no key, may come
   back once in French.
 
+- **New menu.** Defense first: under "Security check" (1 to 3, unchanged), the **Cyber defense** part (4 This computer,
+  5 Network and Internet, 6 Viruses and spyware, 7 Scams and privacy, 8 Block and respond), then **Also included**
+  (9 Data and backups, 10 Command guide, 11 Step-by-step troubleshooting, 12 Optimize and install, 13 Vanguard). No
+  screen scrolls any more: variants move to a choice screen (6.1 Antivirus scan › quick, full, USB drive, YARA;
+  5.1 Devices on the network; 4.8 For developers; 9.3 Check a copy or backup; 13.4 Verify Vanguard itself), also
+  reachable by its path ("6.1.3"). Lines specific to one system go at the end of their group: Defender is always 4.10.
+  New in the menu: Startup programs (12.4), Event log (8.6), Check rules (13.5), the hash and the self-test (13.4), and
+  incident shortcuts (8.3 to 8.5, to guides 11.7, 11.10 and 11.11). The prompt says "Number, or a word to search"; the
+  first opening says so at the top of the menu. Paths 1, 2, 3, 5.2, 10 and 11.1 to 11.12, the letters from before 0.43
+  and "s" do not move; the other paths changed meaning (nothing changes without your consent):
+
+| 0.86 | 0.87 | | 0.86 | 0.87 | | 0.86 | 0.87 |
+|---|---|---|---|---|---|---|---|
+| 4.1 Security audit | 4.1 | | 5.14 Public Wi-Fi mode | 5.9 | | 6.20 Docker images | 4.8.2 |
+| 4.2 Updates | 4.2 | | 6.1 Quick scan | 6.1.1 | | 6.21 Threat blocking | 8.1 |
+| 4.3 Repair and clean up | 11.13 | | 6.2 Full scan | 6.1.2 | | 6.22 Dangerous sites | 8.2 |
+| 4.4 Diagnostic | 11.14 | | 6.3 USB drive or folder | 6.1.3 | | 6.23 Latest flaws | 4.3 |
+| 4.5 Integrity | 4.4 | | 6.4 YARA scan | 6.1.4 | | 6.24 Suspicious email | 7.2 |
+| 4.6 What Vanguard has learned | 13.2 | | 6.5 Process memory | 6.4 | | 6.25 Spyware | 6.2 |
+| 4.7 Why is it slow? | 12.3 | | 6.6 Decoy files | 6.5 | | 6.26 Outdated software | 4.9 |
+| 4.8 Computer specs | 4.6 | | 6.7 Defender | 4.10 | | 6.27 Report a flaw | 8.9 |
+| 4.9 Report to leave behind | 4.7 | | 6.8 Sandbox | 6.7 | | 7.1 Software | 12.1 |
+| 4.10 What Vanguard changed | 8.7 | | 6.9 Password leaks | 7.4 | | 7.2 Gaming | 12.6 |
+| 4.11 Monthly check-up | 4.5 | | 6.10 Browser passwords | 7.5 | | 8.1 Clean up | 12.2 |
+| 4.12 Settings | 13.1 | | 6.11 Email leaks | 7.6 | | 8.2 Recommended settings | 12.5 |
+| 5.1 Scan the network | 5.1.1 | | 6.12 Who talks to the Internet? | 6.3 | | 8.3 Privacy | 12.11 |
+| 5.3 Deep scan | 5.1.2 | | 6.13 Camera and mic | 7.7 | | 8.4 Performance | 12.13 |
+| 5.4 Name a device | 5.3 | | 6.14 Privacy check | 7.8 | | 8.5 Comfort and files | 12.12 |
+| 5.5 Monitoring | 5.7 | | 6.15 Remote control | 7.3 | | 8.6 Fastest DNS | 12.7 |
+| 5.6 Dashboard | 5.8 | | 6.16 Is this link dangerous? | 7.1 | | 8.7 Put everything back | 8.8 |
+| 5.7 Watcher (Linux) | 8.10 | | 6.17 Check a file | 6.6 | | 9.1 Back up or restore | 13.8 |
+| 5.8 Connection test | 12.8 | | 6.18 Quarantine | 6.8 | | 9.2 to 9.3 Copy, automatic backup | 9.1, 9.2 |
+| 5.9 Blocklist | 5.6 | | 6.19 Git secrets | 4.8.1 | | 9.4 Check a copy | 9.3.2 |
+| 5.10 Crowded Wi-Fi | 12.10 | | 9.5 Check my drive | 9.4 | | 9.6 Shortcut | 13.9 |
+| 5.11 NAT type | 12.9 | | 9.7 My computers | 13.6 | | 9.8 Protect the key's data | 13.7 |
+| 5.12 Hidden cameras | 5.5 | | 9.9 Update Vanguard | 13.3 | | 9.10 Check my backup | 9.3.1 |
+| 5.13 Box and connected devices | 5.4 | | 9.11 Remove Vanguard | 13.11 | | 12 Extensions | 13.10 |
+
 ## October 23, 2026: version 0.86
 
 - **Spyware.** `vanguard spyware` (or `logiciels-espions`; Antivirus and protection menu, last) looks for signs of

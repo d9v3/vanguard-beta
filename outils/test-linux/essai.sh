@@ -138,9 +138,11 @@ section "Bilan complet en texte"
 lancer complet 600 '' complet --texte
 
 section "Menu : chaque groupe ouvert puis refermé, puis q ; entrée fermée"
-lancer menu 60 '4\n\n5\n\n6\n\n7\n\nq\n'
-for g in 'Cette machine' 'Réseau et Internet' 'Antivirus et protection' 'Installer et jouer'; do
-  verifier "menu : groupe « $g »" grep -q "$g" "$RES/menu.txt"
+lancer menu 60 '4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n12\n\n13\n\nq\n'
+# Une ligne propre à chaque sous-menu : le titre du groupe paraît aussi au menu principal.
+for g in "Fiche de l'ordinateur" 'Surveillance toutes les heures' 'Analyse antivirus' 'Ce lien est-il dangereux' \
+  'Blocage des menaces' 'Copier mes fichiers' 'Nettoyer le système' 'Retirer Vanguard'; do
+  verifier "menu : sous-menu avec « $g »" grep -q "$g" "$RES/menu.txt"
 done
 USER=essai timeout 10 "$VANGUARD" </dev/null >"$RES/menu-eof.txt" 2>&1
 verifier "menu : quitte quand l'entrée est fermée" test $? -ne 124

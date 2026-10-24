@@ -2625,7 +2625,7 @@ xo1zjuQ=";
     /// À la demande (`cargo test -- --ignored --nocapture montrer`), pour une passe sur une vraie machine : ce que
     /// le domaine a lu et ce qu'il en conclut, en lecture seule.
     #[test]
-    #[ignore = "montre l'état réel de cette machine, à lancer à la main"]
+    #[ignore = "montre l'état réel de cet ordinateur, à lancer à la main"]
     fn montrer_les_constats_reels() {
         let e = entree(None, None);
         println!("{e:#?}");

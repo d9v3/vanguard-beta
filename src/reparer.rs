@@ -311,12 +311,12 @@ fn navigation() -> Reparation {
     )
 }
 
-/// ClamAV absent : où le menu propose de l'installer (Antivirus et protection › analyse rapide ou complète).
+/// ClamAV absent : où le menu propose de l'installer (Virus et logiciels espions › Analyse antivirus).
 #[cfg(target_os = "linux")]
 fn sans_clamav() -> &'static str {
     tr!(
-        "ClamAV n'est pas installé : l'analyse antivirus (menu 6 › 1 ou 6 › 2) propose de l'installer",
-        "ClamAV is not installed: the antivirus scan (menu 6 › 1 or 6 › 2) offers to install it"
+        "ClamAV n'est pas installé : l'analyse antivirus (menu 6.1, rapide ou complète) propose de l'installer",
+        "ClamAV is not installed: the antivirus scan (menu 6.1, quick or full) offers to install it"
     )
 }
 
@@ -1454,26 +1454,12 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn renvoi_au_menu_de_l_antivirus() {
-        use crate::{Action, GROUPES};
-        let ou = |a: Action| {
-            GROUPES.iter().enumerate().find_map(|(g, groupe)| {
-                let i = groupe
-                    .actions()
-                    .iter()
-                    .filter(|x| x.disponible())
-                    .position(|x| *x == a)?;
-                // Les groupes d'outils suivent les trois choix du bilan.
-                Some(format!("{} › {}", g + 4, i + 1))
-            })
-        };
-        for a in [Action::AntivirusRapide, Action::AntivirusComplet] {
-            let renvoi = ou(a).expect("analyse antivirus absente du menu");
-            assert!(
-                sans_clamav().contains(&renvoi),
-                "« {} » ne renvoie pas à {renvoi}",
-                sans_clamav()
-            );
-        }
+        let renvoi = crate::touche_de(crate::Action::Antivirus).expect("analyse antivirus absente du menu");
+        assert!(
+            sans_clamav().contains(&format!("menu {renvoi},")),
+            "« {} » ne renvoie pas à {renvoi}",
+            sans_clamav()
+        );
     }
 
     #[cfg(target_os = "linux")]
