@@ -580,6 +580,8 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
     let mut sortie = std::io::stdout();
     let _ = sortie.write_all(b"\x1b[2J");
     loop {
+        // La grille avant de dessiner : si elle change ensuite, sans que le terminal le dise, le menu se redessine.
+        let grille = terminal::size().ok();
         let recherche = est_une_recherche(&tape, &touches);
         let (trouves, corrections, partiels): (Vec<&Choisissable>, Vec<(String, String)>, bool) = if recherche {
             let mots = mots_du_menu
@@ -696,7 +698,7 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
         let _ = sortie.write_all(ecran.as_bytes());
         let _ = sortie.flush();
 
-        let Ok(Event::Key(k)) = event::read() else {
+        let Some(Event::Key(k)) = evenement(grille) else {
             continue;
         };
         // Windows signale aussi le relâchement de la touche : un seul événement par appui.
@@ -780,6 +782,26 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
             // La surbrillance suit la touche tapée.
             if let Some(i) = visibles.iter().position(|t| t.eq_ignore_ascii_case(&tape)) {
                 en_cours = i;
+            }
+        }
+    }
+}
+
+/// Le prochain événement du clavier ou du terminal, ou `None` quand la grille n'est plus `grille`, celle du dessin :
+/// le menu est à redessiner. La vieille console de Windows (conhost) n'annonce que les changements de son tampon
+/// (WINDOW_BUFFER_SIZE_EVENT), pas ceux de la fenêtre : son tampon a des milliers de lignes, et la fenêtre qui
+/// grandit (`fenetre::epouser`, ou la personne qui tire son bord) n'en montre qu'une plus grande partie, sans
+/// qu'aucun événement n'arrive. D'où la grille relue quand rien n'arrive.
+fn evenement(grille: Option<(u16, u16)>) -> Option<Event> {
+    loop {
+        match event::poll(std::time::Duration::from_millis(150)) {
+            Ok(true) => return event::read().ok(),
+            Ok(false) if terminal::size().ok() == grille => {}
+            Ok(false) => return None,
+            // Un terminal qui ne répond plus : le menu se redessine, sans tourner à vide.
+            Err(_) => {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                return None;
             }
         }
     }
@@ -1095,6 +1117,7 @@ fn cocher_ou_revenir(titre: &[String], cases: &[Case]) -> Option<Vec<bool>> {
     let mut sortie = std::io::stdout();
     let _ = sortie.write_all(b"\x1b[2J");
     loop {
+        let grille = terminal::size().ok();
         let montrees: Vec<usize> = recherche.as_deref().map_or_else(|| (0..cases.len()).collect(), filtrer);
         // La ligne en cours reste la même si la recherche la montre encore ; sinon, la première trouvée.
         if !montrees.contains(&en_cours)
@@ -1177,7 +1200,7 @@ fn cocher_ou_revenir(titre: &[String], cases: &[Case]) -> Option<Vec<bool>> {
         let _ = sortie.write_all(ecran.as_bytes());
         let _ = sortie.flush();
 
-        let Ok(Event::Key(k)) = event::read() else {
+        let Some(Event::Key(k)) = evenement(grille) else {
             continue;
         };
         if k.kind == KeyEventKind::Release {

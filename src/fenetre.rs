@@ -10,8 +10,9 @@
 //!
 //! Le terminal arrondit la fenêtre à ses cases, et ses bordures ne se voient pas de l'intérieur : la taille d'une case
 //! se devine d'abord (la fenêtre divisée par la grille, bordures comprises, donc un peu grande), puis se mesure entre
-//! deux tailles ; deux retouches au plus. Le tout dans un fil à part : le menu n'attend pas, et se redessine quand le
-//! terminal annonce sa nouvelle taille.
+//! deux tailles ; trois retouches au plus, qui repartent toutes de la place choisie par la personne. Le tout dans un
+//! fil à part : le menu n'attend pas, et se redessine quand sa grille change (annoncée par le terminal, ou relue par
+//! `selection` : la vieille console de Windows ne l'annonce pas).
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -91,25 +92,95 @@ fn ajuster(demande: u64, colonnes: u16, rangees: u16) {
         return;
     };
     let mut avant = None;
-    for _ in 0..3 {
+    // Trois retouches de la taille ; une quatrième mesure ne fait plus que remettre la fenêtre à sa place.
+    for tour in 0..4 {
         if DEMANDE.load(Ordering::SeqCst) != demande {
             return;
         }
         let Some((m, zone)) = fenetre.mesurer() else {
             return;
         };
-        let place = placement(m, avant, colonnes, rangees, zone, CENTRER);
-        // La bonne grille, ou la plus grande que l'écran permet : reste à la mettre à sa place.
-        if atteinte(&m, colonnes, rangees) || (place.2, place.3) == (m.l, m.h) {
-            if !centree(&m, place) {
-                fenetre.placer((place.0, place.1, m.l, m.h), &m);
+        let ancre = ancre(PLACE.lock().ok().and_then(|p| *p), &m);
+        let pas = match pas(ancre, m, avant, colonnes, rangees, zone, CENTRER) {
+            Pas::Poser(_) if tour == 3 => Pas::Finir(rester(ancre, &m, zone, CENTRER)),
+            pas => pas,
+        };
+        match pas {
+            Pas::Finir(place) => {
+                if let Some(place) = place {
+                    fenetre.placer(place, &m);
+                }
+                noter(ancre, place.map_or((m.x, m.y), |p| (p.0, p.1)));
+                return;
             }
-            return;
+            Pas::Poser(place) => {
+                fenetre.placer(place, &m);
+                noter(ancre, (place.0, place.1));
+                attendre_la_grille((m.colonnes, m.rangees));
+                avant = Some(m);
+            }
         }
-        fenetre.placer(place, &m);
-        attendre_la_grille((m.colonnes, m.rangees));
-        avant = Some(m);
     }
+}
+
+/// Le coin d'une fenêtre, en pixels du bureau.
+type Coin = (i32, i32);
+
+/// La place de la personne, et celle où Vanguard a posé la fenêtre en dernier pour la respecter : d'une retouche à
+/// l'autre, et d'une demande à l'autre quand les menus se suivent vite (un fil coupé par le suivant).
+static PLACE: Mutex<Option<(Coin, Coin)>> = Mutex::new(None);
+
+fn noter(ancre: Coin, posee: Coin) {
+    if let Ok(mut place) = PLACE.lock() {
+        *place = Some((ancre, posee));
+    }
+}
+
+/// D'où repart la retouche : la place de la personne, tant que la fenêtre est encore là où Vanguard l'a posée ;
+/// ailleurs, c'est qu'elle l'a déplacée (ou mise sur un autre écran) : sa nouvelle place devient la référence.
+fn ancre(memoire: Option<(Coin, Coin)>, m: &Mesure) -> Coin {
+    match memoire {
+        Some((ancre, posee)) if centree(m, (posee.0, posee.1, m.l, m.h)) => ancre,
+        _ => (m.x, m.y),
+    }
+}
+
+/// Ce que fait une retouche : poser la fenêtre puis la mesurer encore, ou finir, en la remettant à sa place s'il le
+/// faut (la taille ne change plus).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pas {
+    Poser(Place),
+    Finir(Option<Place>),
+}
+
+/// Une retouche, depuis la mesure `m` (et celle d'avant la retouche précédente). `ancre` : la place choisie par la
+/// personne (voir `ancre`) ; chaque retouche repart d'elle, pas du coin du moment. Au premier pas, la case devinée un
+/// peu grande peut faire la fenêtre trop haute, donc la remonter pour rester dans la zone : le pas suivant, qui la
+/// rapetisse, doit la redescendre d'autant, sans quoi un vide reste sous elle.
+fn pas(ancre: Coin, m: Mesure, avant: Option<Mesure>, colonnes: u16, rangees: u16, zone: Zone, centrer: bool) -> Pas {
+    let depuis = Mesure {
+        x: ancre.0,
+        y: ancre.1,
+        ..m
+    };
+    let place = placement(depuis, avant, colonnes, rangees, zone, centrer);
+    // La bonne grille, ou la plus grande que l'écran permet : reste la place, pour la taille d'à présent.
+    if atteinte(&m, colonnes, rangees) || (place.2, place.3) == (m.l, m.h) {
+        return Pas::Finir(rester(ancre, &m, zone, centrer));
+    }
+    Pas::Poser(place)
+}
+
+/// La place de la fenêtre à sa taille d'à présent, depuis `ancre` ; `None` si elle y est déjà.
+fn rester(ancre: Coin, m: &Mesure, zone: Zone, centrer: bool) -> Option<Place> {
+    let depuis = Mesure {
+        x: ancre.0,
+        y: ancre.1,
+        ..*m
+    };
+    let (x, y, ..) = placement(depuis, None, m.colonnes, m.rangees, zone, centrer);
+    let place = (x, y, m.l, m.h);
+    (!centree(m, place)).then_some(place)
 }
 
 /// La grille est-elle à la taille voulue ? Une case de trop est permise : la fenêtre tombe sur les cases du terminal.
@@ -548,6 +619,123 @@ mod tests {
         let (x, y, l, h) = placement(au_bord, None, 78, 30, ZONE, false);
         assert!(x + l <= ZONE.x + ZONE.l && y + h <= ZONE.y + ZONE.h, "{x} {y} {l} {h}");
         assert!(x >= ZONE.x && y >= ZONE.y);
+    }
+
+    /// Un terminal simulé, sous Windows (place gardée) : `bord` pixels de bordures et des cases de `case` pixels ; il
+    /// arrondit chaque hauteur posée à ses cases. Rend la fenêtre après les retouches de `ajuster`.
+    fn retoucher(depart: Mesure, rangees: u16, bord: i32, case: i32) -> Mesure {
+        let zone = Zone {
+            x: 0,
+            y: 0,
+            l: 1687,
+            h: 865,
+        };
+        let (ancre, mut ici, mut avant) = ((depart.x, depart.y), depart, None);
+        for _ in 0..3 {
+            match pas(ancre, ici, avant, ici.colonnes, rangees, zone, false) {
+                Pas::Finir(place) => {
+                    if let Some(place) = place {
+                        assert_eq!((place.2, place.3), (ici.l, ici.h), "finir ne change pas la taille");
+                        (ici.x, ici.y) = (place.0, place.1);
+                    }
+                    return ici;
+                }
+                Pas::Poser(place) => {
+                    avant = Some(ici);
+                    let cases = (place.3 - bord) / case;
+                    ici = Mesure {
+                        x: place.0,
+                        y: place.1,
+                        l: place.2,
+                        h: bord + cases * case,
+                        colonnes: ici.colonnes,
+                        rangees: u16::try_from(cases).unwrap(),
+                    };
+                }
+            }
+        }
+        ici
+    }
+
+    /// Près du bas de l'écran, la fenêtre qui grandit remonte juste assez pour rester entière : la case devinée au
+    /// premier pas, trop grande, la remontait davantage, et la suite la laissait là (un vide sous elle).
+    #[test]
+    fn en_grandissant_pres_du_bas_la_fenetre_remonte_juste_assez() {
+        // Une ligne de trop au premier pas (25 rangées pour 24, permise) : la place se refait pour la vraie taille.
+        let depart = Mesure {
+            x: 868,
+            y: 345,
+            ..m(779, 107 + 19 * 17, 78, 19)
+        };
+        let fin = retoucher(depart, 24, 107, 17);
+        assert_eq!(fin.rangees, 25);
+        assert_eq!((fin.x, fin.y), (868, 865 - fin.h), "{fin:?}");
+        // Deux lignes de trop au premier pas : le deuxième rapetisse la fenêtre et la redescend jusqu'à sa place.
+        let depart = Mesure {
+            x: 868,
+            y: 345,
+            ..m(779, 150 + 19 * 15, 78, 19)
+        };
+        let fin = retoucher(depart, 24, 150, 15);
+        assert_eq!(fin.rangees, 24);
+        assert_eq!((fin.x, fin.y), (868, 345), "{fin:?}");
+        // Loin du bas, la place ne bouge pas du tout.
+        let depart = Mesure {
+            x: 200,
+            y: 100,
+            ..m(779, 150 + 19 * 15, 78, 19)
+        };
+        let fin = retoucher(depart, 24, 150, 15);
+        assert_eq!((fin.x, fin.y, fin.rangees), (200, 100, 24), "{fin:?}");
+    }
+
+    /// La taille faite, une fenêtre déjà à sa place n'est pas reposée ; une autre y est remise, sans changer de taille.
+    #[test]
+    fn finir_remet_a_la_place_sans_retoucher_la_taille() {
+        let zone = Zone {
+            x: 0,
+            y: 0,
+            l: 1687,
+            h: 865,
+        };
+        let ici = Mesure {
+            x: 868,
+            y: 316,
+            ..m(779, 517, 78, 24)
+        };
+        assert_eq!(pas((868, 316), ici, None, 78, 24, zone, false), Pas::Finir(None));
+        assert_eq!(
+            pas((868, 345), ici, None, 78, 24, zone, false),
+            Pas::Finir(Some((868, 345, 779, 517)))
+        );
+        // Trop basse pour sa taille : ramenée dans la zone.
+        assert_eq!(
+            pas((868, 600), ici, None, 78, 24, zone, false),
+            Pas::Finir(Some((868, 865 - 517, 779, 517)))
+        );
+    }
+
+    /// La place de la personne survit aux retouches et aux demandes qui se suivent, tant que la fenêtre est là où
+    /// Vanguard l'a posée ; déplacée entre-temps, sa nouvelle place devient la référence.
+    #[test]
+    fn la_place_de_la_personne_suit_ses_deplacements() {
+        let ici = Mesure {
+            x: 868,
+            y: 316,
+            ..m(779, 517, 78, 24)
+        };
+        assert_eq!(ancre(None, &ici), (868, 316));
+        assert_eq!(ancre(Some(((868, 345), (868, 316))), &ici), (868, 345));
+        assert_eq!(
+            ancre(Some(((868, 345), (870, 313))), &ici),
+            (868, 345),
+            "arrondis du bureau"
+        );
+        assert_eq!(
+            ancre(Some(((868, 345), (600, 200))), &ici),
+            (868, 316),
+            "déplacée par la personne"
+        );
     }
 
     #[test]
