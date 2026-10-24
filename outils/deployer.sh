@@ -178,6 +178,11 @@ if [[ -f $WINDOWS ]]; then
     exit 1
   }
 fi
+# Aucun mot d'attaque que Vanguard cherche en clair dans les programmes qui partent : Defender a supprimé une
+# version pour la seule présence de « sekurlsa:: » (outils/verifier-masque.sh, sur les programmes livrés tels quels).
+MASQUES=("$LINUX")
+[[ -f $WINDOWS ]] && MASQUES+=("$WINDOWS")
+bash outils/verifier-masque.sh "${MASQUES[@]}" || { echo "✖ mot d'attaque en clair dans le programme : rien ne part."; exit 1; }
 # Les failles connues de leurs dépendances, lues dans la liste que chaque programme porte (outils/failles-programmes.sh,
 # avis traités comme par cargo deny) : une seule, et rien ne part, ni sur la clé, ni dans la VM, ni sur GitHub
 # (refuser, plus haut).
