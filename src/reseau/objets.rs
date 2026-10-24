@@ -11,6 +11,8 @@ use crate::reseau::{PortOuvert, cameras, date_fr};
 use crate::risk::Niveau;
 use crate::ui::*;
 
+mod resultat;
+
 /// Ce que Vanguard sait d'un appareil, par un scan qui vient de finir ou par le carnet du réseau.
 pub struct Appareil {
     pub ip: Ipv4Addr,
@@ -276,7 +278,10 @@ pub fn afficher(appareils: &[Appareil], carnet: bool) -> usize {
 /// Commande `objets` : la section d'après le dernier scan gardé de ce réseau, sans rien sonder.
 pub fn montrer() {
     titre(tr!("BOX ET OBJETS CONNECTÉS", "ROUTER AND CONNECTED DEVICES"));
-    let Some((nom_reseau, appareils)) = super::carnet_du_reseau() else {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let carnet = super::carnet_du_reseau();
+    crate::modele::resultat::verser(&resultat::resultat(carnet.as_ref().map(|(_, a)| a.as_slice()), debut));
+    let Some((nom_reseau, appareils)) = carnet else {
         afficher_aligne(
             "  ",
             tr!(
@@ -318,6 +323,16 @@ pub fn montrer() {
         2,
         DISCRET,
     );
+}
+
+/// `vanguard objets-connectes --json` : le même carnet que l'écran, jugé en résultat et versé comme lui. Rien n'est
+/// sondé ni demandé.
+pub fn json() {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let carnet = super::carnet_du_reseau();
+    let r = resultat::resultat(carnet.as_ref().map(|(_, a)| a.as_slice()), debut);
+    crate::modele::resultat::verser(&r);
+    println!("{}", crate::modele::resultat::json(&r));
 }
 
 #[cfg(test)]
@@ -433,16 +448,4 @@ mod tests {
         assert!(Genre::Camera.mot_de_passe_d_origine() && Genre::Nas.mot_de_passe_d_origine());
         assert!(!Genre::Console.mot_de_passe_d_origine() && !Genre::Diffusion.mot_de_passe_d_origine());
     }
-}
-
-/// PROVISOIRE (lot H, à remplacer) : `--json` rend un résultat vide, donc « non vérifié ».
-pub fn json() {
-    let debut = (chrono::Utc::now(), std::time::Instant::now());
-    let r = crate::modele::resultat::Resultat::nouveau(
-        "PRO-OBJ-001",
-        debut,
-        &[],
-        crate::modele::resultat::Couverture::default(),
-    );
-    println!("{}", crate::modele::resultat::json(&r));
 }

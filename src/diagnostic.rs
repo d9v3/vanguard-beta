@@ -7,11 +7,18 @@ use std::fmt::Write;
 use crate::risk::Niveau;
 use crate::ui::*;
 
+mod resultat;
+
 /// Une ligne du diagnostic : libellé, valeur, et un niveau quand la ligne signale un problème.
 struct Ligne {
     libelle: String,
     valeur: String,
     niveau: Option<Niveau>,
+    /// Ce que la ligne vérifie, sans langue (« plantages ») : l'objet de son constat (`resultat`). `None` : une
+    /// information (système, modèle, mémoire), qui ne juge rien.
+    point: Option<&'static str>,
+    /// La vérification de `point` n'a pas pu se faire : jamais comptée saine.
+    verifie: bool,
 }
 
 fn ligne(libelle: &str, valeur: impl Into<String>) -> Ligne {
@@ -19,14 +26,31 @@ fn ligne(libelle: &str, valeur: impl Into<String>) -> Ligne {
         libelle: libelle.to_string(),
         valeur: valeur.into(),
         niveau: None,
+        point: None,
+        verifie: true,
     }
 }
 
 fn alerte(libelle: &str, valeur: impl Into<String>, niveau: Niveau) -> Ligne {
     Ligne {
-        libelle: libelle.to_string(),
-        valeur: valeur.into(),
         niveau: Some(niveau),
+        ..ligne(libelle, valeur)
+    }
+}
+
+/// Une vérification qui n'a pas pu se faire : à l'écran comme une ligne simple, dans le résultat non vérifiée.
+fn non_verifie(libelle: &str, valeur: impl Into<String>, point: &'static str) -> Ligne {
+    Ligne {
+        verifie: false,
+        ..ligne(libelle, valeur).juge(point)
+    }
+}
+
+impl Ligne {
+    /// La ligne vérifie `point` : elle devient un constat du résultat.
+    fn juge(mut self, point: &'static str) -> Ligne {
+        self.point = Some(point);
+        self
     }
 }
 
@@ -70,7 +94,7 @@ fn plus_frequentes(sources: &[String], max: usize) -> String {
 
 /// La ligne des programmes plantés en 7 jours, la même sur les trois systèmes.
 fn programmes_plantes(plantages: &[String]) -> Ligne {
-    if plantages.is_empty() {
+    let l = if plantages.is_empty() {
         ligne(
             tr!("Programmes plantés", "Crashed programs"),
             tr!("aucun en 7 jours", "none in 7 days"),
@@ -86,7 +110,8 @@ fn programmes_plantes(plantages: &[String]) -> Ligne {
             ),
             Niveau::Moyen,
         )
-    }
+    };
+    l.juge("plantages")
 }
 
 /// Les trois sections du diagnostic, dans leur ordre.
@@ -100,9 +125,12 @@ fn trois_sections(systeme: Vec<Ligne>, materiel: Vec<Ligne>, problemes: Vec<Lign
 
 #[cfg(target_os = "linux")]
 mod systeme {
-    use super::{Ligne, Niveau, Section, alerte, duree, go, ligne, plus_frequentes};
+    use super::{Ligne, Niveau, Section, alerte, duree, go, ligne, non_verifie, plus_frequentes};
     use crate::ui::affichable;
     use crate::{tr, trf};
+
+    /// Le point des erreurs du journal (`Ligne::point`).
+    const ERREURS: &str = "erreurs-journal";
 
     fn lire(chemin: &str) -> Option<String> {
         std::fs::read_to_string(chemin)
@@ -360,15 +388,17 @@ mod systeme {
     /// répond pas laisse la ligne « non vérifié », pas « aucun ».
     fn services_en_echec() -> Ligne {
         use crate::machine::linux::dbus;
+        const POINT: &str = "services-en-echec";
         let libelle = tr!("Services en échec", "Failed services");
         match dbus::Bus::systeme().and_then(|mut bus| dbus::unites_en_echec(&mut bus)) {
-            Ok(en_echec) if en_echec.is_empty() => ligne(libelle, tr!("aucun", "none")),
+            Ok(en_echec) if en_echec.is_empty() => ligne(libelle, tr!("aucun", "none")).juge(POINT),
             Ok(en_echec) => alerte(
                 libelle,
                 en_echec.iter().map(|u| affichable(u)).collect::<Vec<_>>().join(", "),
                 Niveau::Moyen,
-            ),
-            Err(e) => ligne(libelle, trf!("non vérifié ({e})", "not verified ({e})")),
+            )
+            .juge(POINT),
+            Err(e) => non_verifie(libelle, trf!("non vérifié ({e})", "not verified ({e})"), POINT),
         }
     }
 
@@ -449,41 +479,49 @@ mod systeme {
         match sources_des_erreurs() {
             Some(sources) => {
                 if sources.is_empty() {
-                    problemes.push(ligne(
-                        tr!("Erreurs du journal", "Journal errors"),
-                        tr!("aucune depuis le démarrage", "none since boot"),
-                    ));
+                    problemes.push(
+                        ligne(
+                            tr!("Erreurs du journal", "Journal errors"),
+                            tr!("aucune depuis le démarrage", "none since boot"),
+                        )
+                        .juge(ERREURS),
+                    );
                 } else {
                     let niveau = if sources.len() > 200 {
                         Niveau::Moyen
                     } else {
                         Niveau::Info
                     };
-                    problemes.push(alerte(
-                        tr!("Erreurs du journal", "Journal errors"),
-                        trf!(
-                            "{} depuis le démarrage : {}",
-                            "{} since boot: {}",
-                            sources.len(),
-                            plus_frequentes(&sources, 5)
-                        ),
-                        niveau,
-                    ));
+                    problemes.push(
+                        alerte(
+                            tr!("Erreurs du journal", "Journal errors"),
+                            trf!(
+                                "{} depuis le démarrage : {}",
+                                "{} since boot: {}",
+                                sources.len(),
+                                plus_frequentes(&sources, 5)
+                            ),
+                            niveau,
+                        )
+                        .juge(ERREURS),
+                    );
                 }
             }
-            None => problemes.push(ligne(
+            None => problemes.push(non_verifie(
                 tr!("Erreurs du journal", "Journal errors"),
                 tr!("journal illisible sans droits", "journal unreadable without rights"),
+                ERREURS,
             )),
         }
         problemes.push(match plantages_de_la_semaine() {
             Some(plantages) => super::programmes_plantes(&plantages),
-            None => ligne(
+            None => non_verifie(
                 tr!("Programmes plantés", "Crashed programs"),
                 tr!(
                     "non vérifié (journal des plantages illisible)",
                     "not verified (crash journal unreadable)"
                 ),
+                "plantages",
             ),
         });
         problemes.push(services_en_echec());
@@ -493,7 +531,7 @@ mod systeme {
 
 #[cfg(target_os = "macos")]
 mod systeme {
-    use super::{Niveau, Section, alerte, duree, go, ligne};
+    use super::{Niveau, Section, alerte, duree, go, ligne, non_verifie};
     use crate::ui::affichable;
     use crate::{tr, trf};
 
@@ -513,11 +551,17 @@ mod systeme {
     }
 
     /// Rapports de plantage récents (moins de `jours`) : nom du programme avant la date (« Safari-2024-05-01-… »).
-    fn rapports(dossiers: &[std::path::PathBuf], extensions: &[&str], jours: u64) -> Vec<String> {
+    /// `None` : un dossier existe mais ne se lit pas, et rien n'a été trouvé ailleurs (« aucun » serait faux) ; un
+    /// dossier absent n'a simplement aucun rapport.
+    fn rapports(dossiers: &[std::path::PathBuf], extensions: &[&str], jours: u64) -> Option<Vec<String>> {
         let limite = std::time::Duration::from_secs(jours * 86_400);
-        dossiers
+        let lus: Vec<std::io::Result<std::fs::ReadDir>> = dossiers.iter().map(std::fs::read_dir).collect();
+        let refuse = lus
             .iter()
-            .filter_map(|d| std::fs::read_dir(d).ok())
+            .any(|l| l.as_ref().is_err_and(|e| e.kind() != std::io::ErrorKind::NotFound));
+        let trouves: Vec<String> = lus
+            .into_iter()
+            .filter_map(Result::ok)
             .flatten()
             .flatten()
             .filter(|f| f.path().extension().is_some_and(|e| extensions.iter().any(|x| e == *x)))
@@ -531,7 +575,8 @@ mod systeme {
                 // Le nom s'arrête au premier « -2 » d'une date (« Google Chrome Helper-2024-… »).
                 affichable(nom.split_once("-20").map_or(nom.as_str(), |(n, _)| n))
             })
-            .collect()
+            .collect();
+        (!refuse || !trouves.is_empty()).then_some(trouves)
     }
 
     pub fn sections() -> Vec<Section> {
@@ -617,15 +662,18 @@ mod systeme {
             std::path::PathBuf::from("/Library/Logs/DiagnosticReports"),
         ];
         let mut problemes = Vec::new();
-        let paniques = rapports(&dossiers, &["panic"], 30);
-        problemes.push(if paniques.is_empty() {
-            ligne(
-                tr!("Redémarrages brutaux", "Sudden restarts"),
-                tr!("aucun en 30 jours", "none in 30 days"),
-            )
-        } else {
-            alerte(
-                tr!("Redémarrages brutaux", "Sudden restarts"),
+        let illisible = tr!(
+            "non vérifié (dossier des rapports illisible)",
+            "not verified (reports folder unreadable)"
+        );
+        let brutaux = tr!("Redémarrages brutaux", "Sudden restarts");
+        problemes.push(match rapports(&dossiers, &["panic"], 30) {
+            None => non_verifie(brutaux, illisible, "redemarrages-brutaux"),
+            Some(paniques) if paniques.is_empty() => {
+                ligne(brutaux, tr!("aucun en 30 jours", "none in 30 days")).juge("redemarrages-brutaux")
+            }
+            Some(paniques) => alerte(
+                brutaux,
                 trf!(
                     "{} en 30 jours (panique du noyau : matériel, pilote ou extension)",
                     "{} in 30 days (kernel panic: hardware, driver or extension)",
@@ -633,9 +681,12 @@ mod systeme {
                 ),
                 Niveau::Moyen,
             )
+            .juge("redemarrages-brutaux"),
         });
-        let plantages = rapports(&dossiers, &["ips", "crash"], 7);
-        problemes.push(super::programmes_plantes(&plantages));
+        problemes.push(match rapports(&dossiers, &["ips", "crash"], 7) {
+            Some(plantages) => super::programmes_plantes(&plantages),
+            None => non_verifie(tr!("Programmes plantés", "Crashed programs"), illisible, "plantages"),
+        });
         super::trois_sections(systeme, materiel, problemes)
     }
 }
@@ -644,7 +695,7 @@ mod systeme {
 mod systeme {
     use serde::Deserialize;
 
-    use super::{Niveau, Section, alerte, duree, go, ligne};
+    use super::{Niveau, Section, alerte, duree, go, ligne, non_verifie};
     use crate::ui::affichable;
     use crate::{tr, trf};
 
@@ -667,6 +718,10 @@ mod systeme {
         dernier_ecran_bleu: String,
         arrets_brutaux: u32,
         plantages: Vec<String>,
+        /// Les points dont le journal a refusé la lecture directe (droits, délai) : « aucun » y serait faux. Le
+        /// script de secours ne le dit pas (-ErrorAction SilentlyContinue) : vide.
+        #[serde(skip)]
+        illisibles: Vec<&'static str>,
     }
 
     #[derive(Default, Deserialize)]
@@ -754,7 +809,6 @@ mod systeme {
                     ))
                 },
             )
-            .unwrap_or_default()
         };
         let bleus = evenements(
             "System",
@@ -765,6 +819,19 @@ mod systeme {
         );
         let arrets = evenements("System", format!("(EventID=41) and {}", depuis(30)));
         let plantages = evenements("Application", format!("(EventID=1000) and {}", depuis(7)));
+        let illisibles = [
+            ("ecrans-bleus", bleus.is_none()),
+            ("arrets-brutaux", arrets.is_none()),
+            ("plantages", plantages.is_none()),
+        ]
+        .into_iter()
+        .filter_map(|(point, refuse)| refuse.then_some(point))
+        .collect();
+        let (bleus, arrets, plantages) = (
+            bleus.unwrap_or_default(),
+            arrets.unwrap_or_default(),
+            plantages.unwrap_or_default(),
+        );
         let os = Some(&os);
         Some(Etat {
             systeme: texte(os, "Caption"),
@@ -789,6 +856,7 @@ mod systeme {
                 .iter()
                 .map(|l| l.split_once('|').map_or("", |(_, p)| p).to_string())
                 .collect(),
+            illisibles,
         })
     }
 
@@ -859,9 +927,10 @@ mod systeme {
         let Some(e) = lire() else {
             return vec![(
                 tr!("DIAGNOSTIC", "DIAGNOSTIC").into(),
-                vec![ligne(
+                vec![non_verifie(
                     tr!("Lecture", "Reading"),
                     tr!("PowerShell ne répond pas", "PowerShell is not responding"),
+                    "lecture",
                 )],
             )];
         };
@@ -895,11 +964,16 @@ mod systeme {
             };
             ligne(tr!("Disque", "Disk"), format!("{} · {} · {sorte}", d.nom, go(d.taille)))
         }));
-        let mut problemes = vec![if e.ecrans_bleus == 0 {
+        let refuse = |point: &'static str| e.illisibles.contains(&point);
+        let non_lu = tr!("non vérifié (journal illisible)", "not verified (log unreadable)");
+        let mut problemes = vec![if refuse("ecrans-bleus") {
+            non_verifie(tr!("Écrans bleus", "Blue screens"), non_lu, "ecrans-bleus")
+        } else if e.ecrans_bleus == 0 {
             ligne(
                 tr!("Écrans bleus", "Blue screens"),
                 tr!("aucun en 30 jours", "none in 30 days"),
             )
+            .juge("ecrans-bleus")
         } else {
             alerte(
                 tr!("Écrans bleus", "Blue screens"),
@@ -911,12 +985,16 @@ mod systeme {
                 ),
                 Niveau::Eleve,
             )
+            .juge("ecrans-bleus")
         }];
-        problemes.push(if e.arrets_brutaux == 0 {
+        problemes.push(if refuse("arrets-brutaux") {
+            non_verifie(tr!("Arrêts brutaux", "Unexpected shutdowns"), non_lu, "arrets-brutaux")
+        } else if e.arrets_brutaux == 0 {
             ligne(
                 tr!("Arrêts brutaux", "Unexpected shutdowns"),
                 tr!("aucun en 30 jours", "none in 30 days"),
             )
+            .juge("arrets-brutaux")
         } else {
             alerte(
                 tr!("Arrêts brutaux", "Unexpected shutdowns"),
@@ -927,8 +1005,13 @@ mod systeme {
                 ),
                 Niveau::Moyen,
             )
+            .juge("arrets-brutaux")
         });
-        problemes.push(super::programmes_plantes(&e.plantages));
+        problemes.push(if refuse("plantages") {
+            non_verifie(tr!("Programmes plantés", "Crashed programs"), non_lu, "plantages")
+        } else {
+            super::programmes_plantes(&e.plantages)
+        });
         super::trois_sections(systeme, materiel, problemes)
     }
 }
@@ -979,6 +1062,22 @@ fn a_l_ecran(l: &Ligne) -> Vec<String> {
         .collect()
 }
 
+/// Le relevé du diagnostic, le même pour l'écran et `--json` : les sections du système, puis le dernier
+/// autodiagnostic de Vanguard (« vanguard autotest ») : quand, et s'il a trouvé un écart.
+fn releve() -> Vec<Section> {
+    let mut sections = systeme::sections();
+    if let Some((_, lignes)) = sections.first_mut() {
+        let (valeur, niveau) = crate::autotest::ligne_diagnostic();
+        let libelle = tr!("Dernier autotest", "Last self-test");
+        // Un autotest jamais fait, ou sans écart, n'est qu'une information : il juge Vanguard, pas cet ordinateur.
+        lignes.push(match niveau {
+            Some(n) => alerte(libelle, valeur, n).juge("autotest"),
+            None => ligne(libelle, valeur),
+        });
+    }
+    sections
+}
+
 /// « vanguard diagnostic » : affiche le diagnostic et l'enregistre en texte.
 pub fn diagnostic() {
     println!();
@@ -993,16 +1092,9 @@ pub fn diagnostic() {
         "  {DISCRET}Lecture du matériel et des journaux…{RESET}",
         "  {DISCRET}Reading hardware and logs…{RESET}"
     );
-    let mut sections = systeme::sections();
-    // Le dernier autodiagnostic de Vanguard (« vanguard autotest ») : quand, et s'il a trouvé un écart.
-    if let Some((_, lignes)) = sections.first_mut() {
-        let (valeur, niveau) = crate::autotest::ligne_diagnostic();
-        let libelle = tr!("Dernier autotest", "Last self-test");
-        lignes.push(match niveau {
-            Some(n) => alerte(libelle, valeur, n),
-            None => ligne(libelle, valeur),
-        });
-    }
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let sections = releve();
+    crate::modele::resultat::verser(&resultat::resultat(&sections, debut));
     for (nom, lignes) in &sections {
         section(nom);
         for t in lignes.iter().flat_map(a_l_ecran) {
@@ -1022,6 +1114,15 @@ pub fn diagnostic() {
             fichier.display()
         );
     }
+}
+
+/// `vanguard diagnostic --json` : le même relevé que l'écran, jugé en résultat et versé comme lui. Ni copie texte, ni
+/// question.
+pub fn json() {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let r = resultat::resultat(&releve(), debut);
+    crate::modele::resultat::verser(&r);
+    println!("{}", crate::modele::resultat::json(&r));
 }
 
 #[cfg(test)]
@@ -1392,16 +1493,4 @@ mod tests {
             }
         }
     }
-}
-
-/// PROVISOIRE (lot H, à remplacer) : `--json` rend un résultat vide, donc « non vérifié ».
-pub fn json() {
-    let debut = (chrono::Utc::now(), std::time::Instant::now());
-    let r = crate::modele::resultat::Resultat::nouveau(
-        "PRO-DIA-001",
-        debut,
-        &[],
-        crate::modele::resultat::Couverture::default(),
-    );
-    println!("{}", crate::modele::resultat::json(&r));
 }
