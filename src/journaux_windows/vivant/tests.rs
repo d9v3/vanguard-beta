@@ -91,7 +91,8 @@ fn un_journal_de_collecte_se_reconnait() {
             Present {
                 numero: x,
                 date: None,
-                morceau: None
+                morceau: None,
+                verifie: true,
             }
         ));
     }
@@ -165,6 +166,7 @@ fn un_trou_non_reverifie_est_illisible() {
             numero,
             date: None,
             morceau: None,
+            verifie: true,
         })
         .collect();
     let fin = Instant::now() + std::time::Duration::from_secs(10);

@@ -50,6 +50,11 @@ pub(crate) struct EvenementWindows {
     /// nom) ou, à défaut, de UserData (les feuilles sous son premier élément, nommées par leur chemin « a/b »).
     pub champs: Vec<(String, String)>,
     pub origine: Origine,
+    /// Faux pour un événement relu dans un morceau .evtx au CRC faux (en-tête ou données) : sa structure se tient,
+    /// mais rien ne prouve que Windows l'ait écrit tel quel (page recopiée à moitié dans une copie à chaud, morceau
+    /// retouché). Toujours vrai pour la source vivante. Une règle (E3) peut en tirer un indice, en le disant ; jamais
+    /// conclure « sain » ou « rien vu » sur des événements non vérifiés seuls, ni sur leur absence.
+    pub verifie: bool,
 }
 
 impl EvenementWindows {
@@ -64,6 +69,7 @@ impl EvenementWindows {
             .and_then(|s| s.attribut("UserID"))
             .map(|u| u.trim().to_string())
             .filter(|u| !u.is_empty());
+        let verifie = e.verifie;
         let numero = match origine {
             Origine::Vivant => e.numero_systeme,
             Origine::Fichier { .. } => e.numero_systeme.or(Some(e.numero)),
@@ -79,6 +85,7 @@ impl EvenementWindows {
             utilisateur,
             champs: e.champs,
             origine,
+            verifie,
         })
     }
 

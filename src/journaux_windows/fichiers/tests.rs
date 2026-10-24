@@ -109,23 +109,28 @@ fn un_morceau_disparu_se_dit_selon_l_etat_du_fichier() {
 
 #[test]
 fn un_morceau_ecarte_n_est_pas_un_effacement() {
-    // Un octet de ses enregistrements changé, son en-tête (qui porte leur CRC) juste : sa plage annoncée (31 à
-    // 60) est illisible.
+    // Un octet de ses enregistrements changé, son en-tête (qui porte leur CRC) juste : le morceau est relu, ses
+    // enregistrements entiers présents mais non vérifiés ; ce qui ne se relit pas tombe dans sa plage : illisible.
     let mut f = fichier(&[morceau(1, 30, &[]), morceau(31, 60, &[]), morceau(61, 90, &[])]);
     f[4096 + 65_536 + 600] ^= 0xFF;
-    let (b, _) = lire(&f, "ecarte");
+    let (b, vus) = lire(&f, "ecarte");
     assert!(!b.complet());
-    assert_eq!(b.lecture.as_ref().unwrap().morceaux_illisibles, 1);
-    assert_eq!(trous_du_journal(&b), [(31, 60, Nature::Illisible)]);
-    // En-tête du morceau faux : la place de ses numéros n'est pas connue, et tout trou entre morceaux du fichier
-    // est illisible ; un retrait dans un morceau intact reste un retrait.
+    assert_eq!(b.lecture.as_ref().unwrap().morceaux_non_verifies, 1);
+    assert_eq!(b.non_verifies, vus.iter().filter(|e| !e.verifie).count() as u64);
+    assert!(b.non_verifies > 0);
+    assert!(b.suites[0].non_verifies > 0);
+    assert!(
+        trous_du_journal(&b)
+            .iter()
+            .all(|t| t.2 == Nature::Illisible && t.0 >= 31 && t.1 <= 60)
+    );
+    // En-tête du morceau faux : ses enregistrements relus non vérifiés, un retrait dans un morceau intact reste un
+    // retrait.
     let mut f = fichier(&[morceau(1, 30, &[5]), morceau(31, 60, &[]), morceau(61, 90, &[])]);
     f[4096 + 65_536 + 124] ^= 0xFF;
     let (b, _) = lire(&f, "en-tete-faux");
-    assert_eq!(
-        trous_du_journal(&b),
-        [(5, 5, Nature::Retires), (31, 60, Nature::Illisible)]
-    );
+    assert_eq!(trous_du_journal(&b), [(5, 5, Nature::Retires)]);
+    assert_eq!(b.suites[0].non_verifies, 30);
 }
 
 #[test]
@@ -474,11 +479,10 @@ fn une_perte_ne_couvre_que_ce_qu_elle_peut_porter() {
     ]);
     f[4096 + 2 * 65_536 + 100] ^= 0xFF;
     let (b, _) = lire(&f, "gros");
-    // Le morceau perdu peut être 10 061 à 10 090 (l'en-tête du fichier les attend) ; pas les 10 000 d'avant.
-    assert_eq!(
-        trous_du_journal(&b),
-        [(31, 10_030, Nature::Absents), (10_061, 10_090, Nature::Illisible)]
-    );
+    // Le morceau à l'en-tête faux est relu : 10 061 à 10 090 présents, non vérifiés ; il ne couvre pas les 10 000
+    // d'avant.
+    assert_eq!(trous_du_journal(&b), [(31, 10_030, Nature::Absents)]);
+    assert_eq!(b.suites[0].non_verifies, 30);
 }
 
 /// Un retrait dans un morceau intact reste un retrait, même son en-tête réécrit pour ne rien annoncer, rétréci, ou
@@ -566,4 +570,27 @@ fn la_memoire_gardee_est_bornee() {
     let au_dela: u64 = b.fichiers.iter().flat_map(|f| &f.suites).map(|s| s.trous_au_dela).sum();
     assert_eq!((gardes, au_dela), (50, 3 * 39 - 50));
     let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Un faux morceau au CRC faux, ajouté au fichier, qui porte les numéros retirés d'un morceau intact : ils ne
+/// comblent pas le retrait. Hors de ce que réclame un morceau vérifié, ses enregistrements sont présents, comptés
+/// non vérifiés : une suite sans trou n'est alors pas une preuve.
+#[test]
+fn un_morceau_non_verifie_ne_comble_pas_un_retrait() {
+    let mut leurre = fichier(&[morceau(14, 16, &[])]);
+    leurre[4096 + 600] ^= 0xFF;
+    let mut f = fichier(&[morceau(1, 30, &[14, 15, 16]), morceau(31, 60, &[])]);
+    f.extend_from_slice(&leurre[4096..4096 + 65_536]);
+    let (b, _) = lire(&f, "leurre-nv");
+    assert_eq!(b.lecture.as_ref().unwrap().morceaux[2].etat, EtatMorceau::NonVerifie);
+    assert_eq!(trous_du_journal(&b), [(14, 16, Nature::Retires)]);
+    // Un morceau disparu remplacé par un morceau au CRC faux qui porte ses numéros : pas de trou, mais non vérifié.
+    let mut milieu = fichier(&[morceau(31, 60, &[])]);
+    milieu[4096 + 300] ^= 1;
+    let mut f = fichier(&[morceau(1, 30, &[]), vec![0; 65_536], morceau(61, 90, &[])]);
+    f[4096 + 65_536..4096 + 2 * 65_536].copy_from_slice(&milieu[4096..4096 + 65_536]);
+    let (b, _) = lire(&f, "remplace");
+    assert_eq!(trous_du_journal(&b), []);
+    assert_eq!(b.suites[0].non_verifies, 30);
+    assert!(!b.complet());
 }

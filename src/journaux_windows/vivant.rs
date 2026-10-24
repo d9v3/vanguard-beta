@@ -302,6 +302,7 @@ pub(crate) fn lire_journal(
                         numero,
                         date: None,
                         morceau: None,
+                        verifie: true,
                     }),
                     None => compte.sans_numero += 1,
                 }
@@ -314,6 +315,7 @@ pub(crate) fn lire_journal(
                     numero,
                     date: e.cree,
                     morceau: None,
+                    verifie: true,
                 };
                 if !numeros.noter(&e.ordinateur, &e.canal, present) {
                     compte.hors_suites += 1;
@@ -442,6 +444,7 @@ fn juger_suite(
                     numero,
                     date,
                     morceau: None,
+                    verifie: true,
                 }),
                 None => sans_numero = true,
             }

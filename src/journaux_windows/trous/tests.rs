@@ -32,7 +32,23 @@ fn presents_dans(numeros: impl IntoIterator<Item = u64>, morceau: impl Fn(u64) -
             numero,
             date: DateTime::from_timestamp(i64::try_from(numero % (1 << 40)).unwrap_or(0) * 60, 0),
             morceau: morceau(numero),
+            verifie: true,
         })
+        .collect()
+}
+
+fn non_verifie(rang: u64, annonce: Option<(u64, u64)>, non_rendus: u64) -> RecapMorceau {
+    RecapMorceau {
+        etat: EtatMorceau::NonVerifie,
+        ..lu(rang, annonce, non_rendus)
+    }
+}
+
+/// Des présents d'un morceau non vérifié.
+fn non_verifies(numeros: impl IntoIterator<Item = u64>, rang: u64) -> Vec<Present> {
+    presents_dans(numeros, |_| Some(rang))
+        .into_iter()
+        .map(|p| Present { verifie: false, ..p })
         .collect()
 }
 
@@ -258,19 +274,15 @@ struct Cas {
 }
 
 /// Le modèle naïf, numéro par numéro : la définition du module.
-fn modele(cas: &Cas, entre: Nature) -> Vec<(u64, Nature)> {
-    let numeros: BTreeSet<u64> = cas.presents.iter().map(|p| p.numero).collect();
+fn modele(cas: &Cas, entre: Nature) -> (Vec<(u64, Nature)>, u64) {
+    let verifies: Vec<Present> = cas.presents.iter().copied().filter(|p| p.verifie).collect();
     // L'étendue de chaque morceau lu : son annonce et ses enregistrements.
     let etendue = |i: usize| -> Option<(u64, u64)> {
         let m = &cas.morceaux[i];
         if m.etat != EtatMorceau::Lu {
             return None;
         }
-        let siens = cas
-            .presents
-            .iter()
-            .filter(|p| p.morceau == Some(m.rang))
-            .map(|p| p.numero);
+        let siens = verifies.iter().filter(|p| p.morceau == Some(m.rang)).map(|p| p.numero);
         let bornes = m.annonce.into_iter().flat_map(|(a, b)| [a, b]).chain(siens);
         let (lo, hi) = bornes.fold((None, None), |(lo, hi): (Option<u64>, Option<u64>), n| {
             (Some(lo.map_or(n, |l| l.min(n))), Some(hi.map_or(n, |h| h.max(n))))
@@ -287,6 +299,32 @@ fn modele(cas: &Cas, entre: Nature) -> Vec<(u64, Nature)> {
         })
         .collect();
     let etendues: Vec<(usize, (u64, u64))> = premiers.iter().filter_map(|&i| Some((i, etendue(i)?))).collect();
+    // Ce que couvre chaque morceau non vérifié : son annonce et ses enregistrements relus (tous, même ceux qu'un
+    // morceau lu réclame).
+    let zones_nv: Vec<(u64, u64)> = cas
+        .morceaux
+        .iter()
+        .filter(|m| m.etat == EtatMorceau::NonVerifie)
+        .filter_map(|m| {
+            let siens = cas
+                .presents
+                .iter()
+                .filter(|p| !p.verifie && p.morceau == Some(m.rang))
+                .map(|p| p.numero);
+            let bornes = m.annonce.into_iter().flat_map(|(a, b)| [a, b]).chain(siens);
+            let lo = bornes.clone().min()?;
+            Some((lo, bornes.max()?))
+        })
+        .collect();
+    let dans_un_lu = |n: u64| etendues.iter().any(|(_, (a, b))| *a <= n && n <= *b);
+    let numeros: BTreeSet<u64> = cas
+        .presents
+        .iter()
+        .filter(|p| p.verifie || !dans_un_lu(p.numero))
+        .map(|p| p.numero)
+        .collect();
+    let numeros_verifies: BTreeSet<u64> = verifies.iter().map(|p| p.numero).collect();
+    let nombre_nv = numeros.iter().filter(|n| !numeros_verifies.contains(n)).count() as u64;
     let mut lo = numeros
         .iter()
         .next()
@@ -314,7 +352,7 @@ fn modele(cas: &Cas, entre: Nature) -> Vec<(u64, Nature)> {
         }
     }
     let (Some(lo), Some(hi)) = (lo.take(), hi) else {
-        return Vec::new();
+        return (Vec::new(), nombre_nv);
     };
     let classe = |n: u64| -> Classe {
         let proprietaire = etendues
@@ -327,7 +365,8 @@ fn modele(cas: &Cas, entre: Nature) -> Vec<(u64, Nature)> {
         let ecarte = cas
             .morceaux
             .iter()
-            .any(|m| m.etat == EtatMorceau::Ecarte && m.annonce.is_some_and(|(a, b)| a <= n && n <= b));
+            .any(|m| m.etat == EtatMorceau::Ecarte && m.annonce.is_some_and(|(a, b)| a <= n && n <= b))
+            || zones_nv.iter().any(|(a, b)| *a <= n && n <= *b);
         if ecarte { Classe::Ecarte } else { Classe::Libre }
     };
     let manquants: Vec<(u64, Classe)> = (lo..=hi)
@@ -352,7 +391,7 @@ fn modele(cas: &Cas, entre: Nature) -> Vec<(u64, Nature)> {
     }
     let tailles: Vec<u64> = libres.iter().map(|(a, b)| b - a + 1).collect();
     let couvert = couvertes(&tailles, &cas.pertes);
-    manquants
+    let sortie = manquants
         .iter()
         .map(|&(n, c)| {
             let nature = match c {
@@ -366,7 +405,8 @@ fn modele(cas: &Cas, entre: Nature) -> Vec<(u64, Nature)> {
             };
             (n, nature)
         })
-        .collect()
+        .collect::<Vec<_>>();
+    (sortie, nombre_nv)
 }
 
 /// Les trous rendus, numéro par numéro ; et deux trous qui se touchent n'ont jamais la même nature.
@@ -393,7 +433,7 @@ fn nature() -> impl Strategy<Value = Nature> {
 fn cas() -> impl Strategy<Value = Cas> {
     (
         prop_oneof![Just(1u64), 1u64..1_000_000, Just(u64::MAX - 5000)],
-        prop::collection::vec((1u64..30, 0u8..9, 0u64..4), 1..10),
+        prop::collection::vec((1u64..30, 0u8..11, 0u64..4), 1..10),
         prop::collection::vec(0u64..300, 0..25),
         any::<prop::sample::Index>(),
         prop::collection::vec(0u64..40, 0..3),
@@ -417,9 +457,20 @@ fn cas() -> impl Strategy<Value = Cas> {
                         morceaux.push(lu(rang, Some(plage), 0));
                         morceaux.push(ecarte(100 + rang, Some((plage.0 + k, plage.0 + k + 3))));
                     }
+                    // Non vérifié (CRC faux), relu : ses enregistrements non vérifiés, son annonce crue ou non.
+                    8 => {
+                        morceaux.push(non_verifie(rang, (*k > 1).then_some(plage), *k));
+                        presents.extend(non_verifies(siens.clone(), rang));
+                    }
+                    // Un leurre non vérifié qui porte des numéros d'un morceau lu (ôtés ou non).
+                    9 => {
+                        morceaux.push(lu(rang, Some(plage), 0));
+                        morceaux.push(non_verifie(200 + rang, None, 0));
+                        presents.extend(non_verifies(plage.0..=plage.0 + k, 200 + rang));
+                    }
                     _ => {}
                 }
-                if matches!(sorte, 0..=5 | 7) {
+                if matches!(sorte, 0..=5 | 7 | 9) {
                     presents.extend(presents_dans(siens, |_| Some(rang)));
                 }
                 n += taille;
@@ -473,8 +524,11 @@ proptest! {
             capacite: 0,
         };
         let s = juger_avec(cas.presents.clone(), &c);
-        prop_assert_eq!(deplies(&s), modele(&cas, entre));
-        let numeros: BTreeSet<u64> = cas.presents.iter().map(|p| p.numero).collect();
+        let (attendus, nv) = modele(&cas, entre);
+        prop_assert_eq!(deplies(&s), attendus);
+        prop_assert_eq!(s.non_verifies, nv);
+        // Un trou ne tombe jamais sur un numéro vérifié présent.
+        let numeros: BTreeSet<u64> = cas.presents.iter().filter(|p| p.verifie).map(|p| p.numero).collect();
         for t in &s.trous {
             prop_assert!(!numeros.contains(&t.de) && !numeros.contains(&t.a));
         }

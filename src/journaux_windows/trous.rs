@@ -24,6 +24,12 @@
 //!   fichier propre ou l'ordinateur vivant ; `CopieAChaud` pour un fichier « sale » qui en montre les signes ;
 //!   `AvantExport` pour les EventRecordID d'origine d'un fichier exporté).
 //!
+//! Un morceau au CRC faux est relu (`EtatMorceau::NonVerifie`) : ses enregistrements entiers comptent comme
+//! présents, mais ne comblent jamais un numéro qu'un morceau vérifié réclame (un faux morceau ajouté ne fait pas
+//! disparaître un retrait), et la suite dit combien de ses numéros ne tiennent qu'à eux (`Suite::non_verifies`) :
+//! une suite sans trou dont `non_verifies` n'est pas nul n'est pas une preuve que rien n'a été retiré. Un numéro
+//! manquant dans ce qu'il couvre est `Illisible`, peut-être un de ses enregistrements abîmés.
+//!
 //! Le prochain numéro qu'annonce l'en-tête du fichier (couvert par son CRC) fait voir les derniers enregistrements
 //! ôtés, et un journal remis à zéro à la main ; pas un journal vidé par Windows (un morceau préparé, aucun
 //! enregistrement), dont la numérotation continue sans trou.
@@ -119,14 +125,19 @@ pub(crate) struct Suite {
     pub trous: Vec<Trou>,
     /// Trous au-delà de `max_trous`, comptés sans être gardés.
     pub trous_au_dela: u64,
+    /// Numéros présents seulement par un enregistrement d'un morceau non vérifié : la suite n'est alors pas
+    /// prouvée sur eux (voir `juger`). Zéro pour une suite entièrement vérifiée.
+    pub non_verifies: u64,
 }
 
-/// Un numéro présent, sa date, et le rang du morceau qui le porte (rien hors d'un fichier).
+/// Un numéro présent, sa date, le rang du morceau qui le porte (rien hors d'un fichier), et s'il vient d'un
+/// morceau vérifié (`Enregistrement::verifie`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Present {
     pub numero: u64,
     pub date: Option<DateTime<Utc>>,
     pub morceau: Option<u64>,
+    pub verifie: bool,
 }
 
 /// Ce que l'on sait du journal autour de ses numéros.
@@ -187,7 +198,7 @@ fn etendues(presents: &[Present], morceaux: &[RecapMorceau]) -> Vec<Option<(u64,
         .iter()
         .map(|m| if m.etat == EtatMorceau::Lu { m.annonce } else { None })
         .collect();
-    for p in presents {
+    for p in presents.iter().filter(|p| p.verifie) {
         let Some(&i) = p.morceau.and_then(|r| rang_vers_indice.get(&r)) else {
             continue;
         };
@@ -199,10 +210,41 @@ fn etendues(presents: &[Present], morceaux: &[RecapMorceau]) -> Vec<Option<(u64,
     sortie
 }
 
+/// Ce qu'un morceau non vérifié couvre : sa plage annoncée (quand son en-tête est juste) et l'étendue de ses
+/// enregistrements relus. Un numéro manquant qui y tombe est peut-être un de ses enregistrements illisibles :
+/// `Illisible`, comme dans un morceau écarté.
+fn zones_non_verifiees(presents: &[Present], morceaux: &[RecapMorceau]) -> Vec<(u64, u64)> {
+    let mut zones: HashMap<u64, (u64, u64)> = HashMap::new();
+    for m in morceaux.iter().filter(|m| m.etat == EtatMorceau::NonVerifie) {
+        if let Some(a) = m.annonce {
+            zones.entry(m.rang).or_insert(a);
+        }
+    }
+    let rangs: BTreeSet<u64> = morceaux
+        .iter()
+        .filter(|m| m.etat == EtatMorceau::NonVerifie)
+        .map(|m| m.rang)
+        .collect();
+    for p in presents.iter().filter(|p| !p.verifie) {
+        let Some(r) = p.morceau.filter(|r| rangs.contains(r)) else {
+            continue;
+        };
+        let z = zones.entry(r).or_insert((p.numero, p.numero));
+        *z = (z.0.min(p.numero), z.1.max(p.numero));
+    }
+    let mut sortie: Vec<(u64, u64)> = zones.into_values().collect();
+    sortie.sort_unstable();
+    sortie
+}
+
 /// Des paliers : chaque palier vaut de son début jusqu'au début du suivant ; avant le premier, rien ne réclame.
 /// Pour chacun, le morceau lu qui réclame ses numéros (celui dont l'étendue commence le plus bas, puis le premier
 /// rang) et s'il tombe dans l'annonce d'un morceau écarté.
-fn paliers(etendues: &[Option<(u64, u64)>], morceaux: &[RecapMorceau]) -> Vec<(u64, Option<usize>, bool)> {
+fn paliers(
+    etendues: &[Option<(u64, u64)>],
+    morceaux: &[RecapMorceau],
+    zones_nv: &[(u64, u64)],
+) -> Vec<(u64, Option<usize>, bool)> {
     // (numéro, +1 entrée / -1 sortie, Some(indice) d'un lu ou None d'un écarté, début de l'étendue)
     let mut bords: Vec<(u64, i8, Option<usize>, u64)> = Vec::new();
     for (i, e) in etendues.iter().enumerate() {
@@ -213,12 +255,14 @@ fn paliers(etendues: &[Option<(u64, u64)>], morceaux: &[RecapMorceau]) -> Vec<(u
             }
         }
     }
-    for m in morceaux.iter().filter(|m| m.etat == EtatMorceau::Ecarte) {
-        if let Some((p, d)) = m.annonce {
-            bords.push((p, 1, None, p));
-            if let Some(fin) = d.checked_add(1) {
-                bords.push((fin, -1, None, p));
-            }
+    let annonces_ecartees = morceaux
+        .iter()
+        .filter(|m| m.etat == EtatMorceau::Ecarte)
+        .filter_map(|m| m.annonce);
+    for (p, d) in annonces_ecartees.chain(zones_nv.iter().copied()) {
+        bords.push((p, 1, None, p));
+        if let Some(fin) = d.checked_add(1) {
+            bords.push((fin, -1, None, p));
         }
     }
     bords.sort_unstable_by_key(|b| b.0);
@@ -286,11 +330,31 @@ pub(crate) fn juger(
     contexte: &Contexte,
     max_trous: usize,
 ) -> Suite {
-    presents.sort_unstable_by_key(|p| p.numero);
+    // Un numéro vu vérifié et non vérifié : le vérifié l'emporte.
+    presents.sort_unstable_by_key(|p| (p.numero, !p.verifie));
     let avant_dedoublonnage = presents.len();
     presents.dedup_by_key(|p| p.numero);
     let doublons = (avant_dedoublonnage - presents.len()) as u64;
     let etendues = etendues(&presents, contexte.morceaux);
+    let zones_nv = zones_non_verifiees(&presents, contexte.morceaux);
+    // Un numéro qu'un morceau vérifié réclame ne se comble pas par un enregistrement non vérifié (un faux morceau au
+    // CRC faux ajouté au fichier, qui porterait les numéros retirés) : il reste manquant. Ailleurs, l'enregistrement
+    // non vérifié existe dans le fichier, son numéro est présent ; la suite le compte (`Suite::non_verifies`).
+    let mut reclamees: Vec<(u64, u64)> = etendues.iter().flatten().copied().collect();
+    reclamees.sort_unstable();
+    let mut fusionnees: Vec<(u64, u64)> = Vec::new();
+    for (a, b) in reclamees {
+        match fusionnees.last_mut() {
+            Some(d) if a <= d.1.saturating_add(1) => d.1 = d.1.max(b),
+            _ => fusionnees.push((a, b)),
+        }
+    }
+    let reclame = |n: u64| {
+        let i = fusionnees.partition_point(|z| z.0 <= n);
+        i > 0 && fusionnees[i - 1].1 >= n
+    };
+    presents.retain(|p| p.verifie || !reclame(p.numero));
+    let non_verifies = presents.iter().filter(|p| !p.verifie).count() as u64;
     let mut premier = presents
         .first()
         .map(|p| p.numero)
@@ -326,12 +390,13 @@ pub(crate) fn juger(
         incoherences,
         trous: Vec::new(),
         trous_au_dela: 0,
+        non_verifies,
     };
     let (Some(lo), Some(hi)) = (premier, dernier) else {
         return suite;
     };
     // Les numéros manquants, découpés aux paliers : (de, a, classe).
-    let paliers = paliers(&etendues, contexte.morceaux);
+    let paliers = paliers(&etendues, contexte.morceaux, &zones_nv);
     let mut segments: Vec<(u64, u64, Classe)> = Vec::new();
     let mut k = 0usize;
     let mut decouper = |de: u64, a: u64, segments: &mut Vec<(u64, u64, Classe)>| {

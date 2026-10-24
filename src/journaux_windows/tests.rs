@@ -190,6 +190,7 @@ fn aller_retour(e: &evtx::Enregistrement) -> Option<(Option<EvenementWindows>, O
         // La source vivante ne connaît que l'EventRecordID de System, et la date de TimeCreated.
         v.numero = e.numero_systeme;
         v.date = e.cree;
+        v.verifie = true;
         v
     });
     Some((attendu, du_xml(&x)))

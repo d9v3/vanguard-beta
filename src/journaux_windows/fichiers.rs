@@ -71,6 +71,8 @@ pub(crate) struct BilanFichier {
     pub journaux: Vec<String>,
     /// Événements donnés à l'appelant.
     pub donnes: u64,
+    /// Parmi eux, ceux d'un morceau non vérifié (`EvenementWindows::verifie` faux).
+    pub non_verifies: u64,
     /// Événements écartés par le filtre (journal, numéro, dates).
     pub filtres: u64,
     /// Événements sans date lisible, quand le filtre a une fenêtre de dates : ni donnés ni jugés.
@@ -307,6 +309,7 @@ fn lire_fichier_borne(
         lecture: Err(ErreurFichier::PasUnEvtx),
         journaux: Vec::new(),
         donnes: 0,
+        non_verifies: 0,
         filtres: 0,
         sans_date: 0,
         sans_identifiant: 0,
@@ -330,8 +333,10 @@ fn lire_fichier_borne(
             numero: e.numero,
             date,
             morceau: Some(e.morceau),
+            verifie: e.verifie,
         });
-        if e.numero_systeme.is_some_and(|n| n != e.numero) {
+        // Un enregistrement non vérifié (page à moitié recopiée) ne fait pas d'un fichier un export.
+        if e.verifie && e.numero_systeme.is_some_and(|n| n != e.numero) {
             bilan.exporte = true;
         }
         if let Some(n) = e.numero_systeme {
@@ -340,6 +345,7 @@ fn lire_fichier_borne(
                 numero: n,
                 date,
                 morceau: None,
+                verifie: e.verifie,
             };
             match origines.iter().position(|(c, _)| *c == cle) {
                 Some(i) => origines[i].1.push(origine),
@@ -365,6 +371,7 @@ fn lire_fichier_borne(
         match filtre.juger(&evenement) {
             Ok(()) => {
                 bilan.donnes += 1;
+                bilan.non_verifies += u64::from(!evenement.verifie);
                 recevoir(evenement);
             }
             Err(Ecart::Filtre) => bilan.filtres += 1,
@@ -374,10 +381,17 @@ fn lire_fichier_borne(
     match lecture {
         Ok(lu) => {
             // Les enregistrements entiers non rendus existent : leur numéro n'est pas un trou.
+            // Un enregistrement non rendu d'un morceau non vérifié ne prouve pas plus que ceux qui s'y rendent.
+            let non_verifie = |rang: u64| {
+                lu.morceaux
+                    .iter()
+                    .any(|m| m.rang == rang && m.etat == EtatMorceau::NonVerifie)
+            };
             presents.extend(lu.numeros_non_rendus.iter().map(|&(numero, rang)| Present {
                 numero,
                 date: None,
                 morceau: Some(rang),
+                verifie: !non_verifie(rang),
             }));
             let max_trous = bornes.trous.min(trous_restants);
             bilan.suites = suites(&lu, presents, bilan.exporte, origines, max_trous);
@@ -432,6 +446,7 @@ pub(crate) fn entre_morceaux(lu: &Bilan) -> Nature {
 }
 
 /// Ce que la lecture a perdu sans savoir quels numéros : les morceaux écartés sans plage connue (à leur capacité ;
+/// pour un morceau non vérifié, ses passages abîmés ;
 /// rien pour un bloc au-delà du nombre de morceaux qu'annonce l'en-tête d'un fichier propre, qui n'a rien pu
 /// porter : du rebut ajouté au bout), les morceaux au-delà des bornes et ceux sans récapitulatif (pleins).
 fn pertes(lu: &Bilan) -> Vec<u64> {
@@ -442,13 +457,19 @@ fn pertes(lu: &Bilan) -> Vec<u64> {
     let mut sortie: Vec<u64> = lu
         .morceaux
         .iter()
-        .filter(|m| m.etat == EtatMorceau::Ecarte && m.annonce.is_none())
-        .map(|m| {
-            if ecrits.is_some_and(|n| m.rang >= n) {
+        .filter_map(|m| {
+            let capacite = match m.etat {
+                EtatMorceau::Ecarte if m.annonce.is_none() => m.capacite,
+                // Relu enregistrement par enregistrement : ses seules pertes sans numéro sont ses passages abîmés,
+                // à un enregistrement par 28 octets.
+                EtatMorceau::NonVerifie => m.non_rendus,
+                _ => return None,
+            };
+            Some(if ecrits.is_some_and(|n| m.rang >= n) {
                 0
             } else {
-                m.capacite
-            }
+                capacite
+            })
         })
         .collect();
     // Chacun pour soi : dans un journal tournant, deux morceaux voisins dans le fichier peuvent porter des numéros

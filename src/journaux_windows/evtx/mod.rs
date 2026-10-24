@@ -138,6 +138,11 @@ pub(crate) struct Enregistrement {
     /// Le rang dans le fichier du morceau qui le porte (0 : le premier après l'en-tête) : la suite des numéros se
     /// juge morceau par morceau (`RecapMorceau`).
     pub morceau: u64,
+    /// Faux s'il vient d'un morceau au CRC faux (en-tête ou données), relu enregistrement par enregistrement : sa
+    /// structure et son BinXml se tiennent, mais rien ne prouve que ce soit ce que Windows a écrit (une page à moitié
+    /// recopiée, un morceau retouché). Un événement non vérifié peut servir d'indice, jamais à lui seul de preuve
+    /// que tout va bien.
+    pub verifie: bool,
     /// La date d'écriture de l'en-tête de l'enregistrement (FILETIME, UTC) ; rien si elle est hors des dates
     /// représentables.
     pub date: Option<DateTime<Utc>>,
@@ -174,8 +179,14 @@ pub(crate) struct Bilan {
     pub morceaux_lus: u64,
     /// Morceaux vides (place réservée jamais écrite, ou morceau préparé sans enregistrement) : rien de perdu.
     pub morceaux_vides: u64,
-    /// Morceaux écartés : signature inconnue, CRC faux, place libre impossible, morceau coupé en fin de fichier.
+    /// Morceaux écartés : signature inconnue, morceau coupé en fin de fichier.
     pub morceaux_illisibles: u64,
+    /// Morceaux à la signature juste mais au CRC faux (en-tête ou données) ou à la place libre impossible, relus
+    /// quand même : ce qui s'y relit entier est rendu, marqué non vérifié (`Enregistrement::verifie`), le reste
+    /// compté illisible.
+    pub morceaux_non_verifies: u64,
+    /// Événements rendus depuis un morceau non vérifié (compris dans `enregistrements_lus`).
+    pub enregistrements_non_verifies: u64,
     /// Morceaux au-delà de `Bornes::taille_fichier` ou après `Bornes::enregistrements` : pas lus.
     pub morceaux_hors_borne: u64,
     pub enregistrements_lus: u64,
@@ -234,8 +245,10 @@ pub(crate) enum EtatMorceau {
     /// Préparé sans enregistrement (signature et en-tête justes, place libre au début) : ce que laisse un journal
     /// vidé par Windows (wevtutil cl, Clear-EventLog).
     Prepare,
-    /// Écarté (signature, CRC, place libre), ou coupé en fin de fichier.
+    /// Écarté (signature inconnue), ou coupé en fin de fichier.
     Ecarte,
+    /// Signature juste, CRC faux ou place libre impossible : relu, ses événements non vérifiés.
+    NonVerifie,
 }
 
 /// Le plus d'enregistrements qu'un morceau peut porter : ce qui suit son en-tête, en enregistrements minimaux.
@@ -272,6 +285,7 @@ impl Bilan {
     pub(crate) fn complet(&self) -> bool {
         !self.en_tete_abime
             && self.morceaux_illisibles == 0
+            && self.morceaux_non_verifies == 0
             && self.morceaux_hors_borne == 0
             && self.enregistrements_illisibles == 0
             && self.enregistrements_hors_borne == 0
@@ -399,37 +413,51 @@ enum Etat {
     /// Jamais écrit (tout à zéro), ou préparé sans aucun enregistrement (place libre au début, en-tête juste) : rien
     /// de perdu ; la place libre, s'il y en a une, pour y chercher ce qui y resterait.
     Vide(Option<usize>),
-    /// Écarté ; vrai si son en-tête est juste (signature et CRC) : c'est la place libre ou le CRC des
-    /// enregistrements qui ne vont pas, et la plage de numéros qu'il annonce reste crue.
-    Illisible(bool),
+    /// Signature juste, mais un CRC faux ou une place libre impossible : à relire sans rien croire. `en_tete_juste` :
+    /// seul le CRC des enregistrements (ou la place libre) ne va pas, la plage de numéros qu'il annonce reste crue ;
+    /// `libre` : la place libre, si elle se tient (sinon tout le morceau est relu).
+    NonVerifie { en_tete_juste: bool, libre: Option<usize> },
+    /// Écarté : pas la signature d'un morceau (et pas tout à zéro).
+    Illisible,
 }
 
 /// Le morceau vérifié : signature, CRC de l'en-tête, place libre plausible, CRC des enregistrements.
 fn verifier_morceau(morceau: &[u8]) -> Etat {
     if morceau.len() != MORCEAU {
-        return Etat::Illisible(false);
+        return Etat::Illisible;
     }
     if !morceau.starts_with(b"ElfChnk\0") {
         return if morceau.iter().all(|&b| b == 0) {
             Etat::Vide(None)
         } else {
-            Etat::Illisible(false)
+            Etat::Illisible
         };
     }
+    let libre = u32_a(morceau, 48)
+        .and_then(|l| usize::try_from(l).ok())
+        .filter(|l| (EN_TETE_MORCEAU..=MORCEAU).contains(l));
     let annonce = u32_a(morceau, 124);
     if annonce != Some(crc32(&[&morceau[..120], &morceau[128..EN_TETE_MORCEAU]])) {
-        return Etat::Illisible(false);
+        return Etat::NonVerifie {
+            en_tete_juste: false,
+            libre,
+        };
     }
-    let libre = u32_a(morceau, 48).and_then(|l| usize::try_from(l).ok());
-    let Some(libre) = libre.filter(|l| (EN_TETE_MORCEAU..=MORCEAU).contains(l)) else {
-        return Etat::Illisible(true);
+    let Some(libre) = libre else {
+        return Etat::NonVerifie {
+            en_tete_juste: true,
+            libre: None,
+        };
     };
     // Préparé sans aucun enregistrement : son CRC des enregistrements reste celui d'avant, mais il n'y a rien à lire.
     if libre == EN_TETE_MORCEAU {
         return Etat::Vide(Some(libre));
     }
     if u32_a(morceau, 52) != Some(crc32(&[&morceau[EN_TETE_MORCEAU..libre]])) {
-        return Etat::Illisible(true);
+        return Etat::NonVerifie {
+            en_tete_juste: true,
+            libre: Some(libre),
+        };
     }
     Etat::Lisible(libre)
 }
@@ -484,8 +512,12 @@ fn lire_morceau(
     restant: &mut usize,
     recevoir: &mut impl FnMut(Enregistrement),
 ) {
-    let libre = match verifier_morceau(morceau) {
-        Etat::Lisible(libre) => libre,
+    // `verifie` : les deux CRC justes. Sinon le morceau est relu enregistrement par enregistrement, avec les mêmes
+    // bornes et le même budget de lecture, ses événements marqués non vérifiés ; sa plage annoncée n'est crue que
+    // si son en-tête est juste.
+    let (libre, verifie, en_tete_juste) = match verifier_morceau(morceau) {
+        Etat::Lisible(libre) => (libre, true, true),
+        Etat::NonVerifie { en_tete_juste, libre } => (libre.unwrap_or(MORCEAU), false, en_tete_juste),
         Etat::Vide(libre) => {
             bilan.morceaux_vides += 1;
             bilan.enregistrements_apres_place_libre += libre.map_or(0, |l| apres_place_libre(morceau, l));
@@ -497,14 +529,13 @@ fn lire_morceau(
             recapituler(bilan, rang, etat, None, 0, false, 0);
             return;
         }
-        Etat::Illisible(en_tete_juste) => {
+        Etat::Illisible => {
             bilan.morceaux_illisibles += 1;
-            let annonce = if en_tete_juste { plage_annoncee(morceau) } else { None };
-            recapituler(bilan, rang, EtatMorceau::Ecarte, annonce, 0, false, CAPACITE_MORCEAU);
+            recapituler(bilan, rang, EtatMorceau::Ecarte, None, 0, false, CAPACITE_MORCEAU);
             return;
         }
     };
-    let annonce = plage_annoncee(morceau);
+    let annonce = if en_tete_juste { plage_annoncee(morceau) } else { None };
     // Un numéro d'enregistrement hors de la plage annoncée (ou rien d'annoncé) : l'en-tête ne se tient pas.
     let mut hors_annonce = annonce.is_none();
     let mut voir_numero = |n: Option<u64>| {
@@ -514,8 +545,12 @@ fn lire_morceau(
             hors_annonce = true;
         }
     };
-    bilan.morceaux_lus += 1;
-    bilan.enregistrements_apres_place_libre += apres_place_libre(morceau, libre);
+    if verifie {
+        bilan.morceaux_lus += 1;
+        bilan.enregistrements_apres_place_libre += apres_place_libre(morceau, libre);
+    } else {
+        bilan.morceaux_non_verifies += 1;
+    }
     let mut lecteur = binxml::Morceau::new(morceau, bornes);
     let avant = bilan.enregistrements_lus + bilan.enregistrements_illisibles + bilan.enregistrements_hors_borne;
     // Ce que le morceau peut cacher sans numéro connu (voir `RecapMorceau::non_rendus`).
@@ -558,8 +593,10 @@ fn lire_morceau(
             let date = u64_a(morceau, pos + 16).and_then(valeurs::filetime);
             let mut e = enregistrement(numero, date, evenement);
             e.morceau = rang;
+            e.verifie = verifie;
             recevoir(e);
             bilan.enregistrements_lus += 1;
+            bilan.enregistrements_non_verifies += u64::from(!verifie);
             *restant -= 1;
         } else {
             bilan.enregistrements_illisibles += 1;
@@ -569,19 +606,19 @@ fn lire_morceau(
     }
     let trouves =
         bilan.enregistrements_lus + bilan.enregistrements_illisibles + bilan.enregistrements_hors_borne - avant;
-    bilan.enregistrements_absents += annonces(morceau).saturating_sub(trouves);
+    if en_tete_juste {
+        bilan.enregistrements_absents += annonces(morceau).saturating_sub(trouves);
+    }
     // Les numéros (8, 16) et les identifiants (24, 32) d'un même morceau comptent autant d'enregistrements.
     let compte = |a: usize, b: usize| u64_a(morceau, b)?.checked_sub(u64_a(morceau, a)?);
-    let incoherent = hors_annonce || compte(8, 16) != compte(24, 32);
-    recapituler(
-        bilan,
-        rang,
-        EtatMorceau::Lu,
-        annonce,
-        non_rendus,
-        incoherent,
-        CAPACITE_MORCEAU,
-    );
+    // Un morceau non vérifié ne se juge pas à son en-tête : il n'est pas cru.
+    let incoherent = verifie && (hors_annonce || compte(8, 16) != compte(24, 32));
+    let etat = if verifie {
+        EtatMorceau::Lu
+    } else {
+        EtatMorceau::NonVerifie
+    };
+    recapituler(bilan, rang, etat, annonce, non_rendus, incoherent, CAPACITE_MORCEAU);
     bilan.valeurs_inconnues += lecteur.compteurs.valeurs_inconnues;
     bilan.chaines_tronquees += lecteur.compteurs.chaines_tronquees;
     bilan.substitutions_manquantes += lecteur.compteurs.substitutions_manquantes;
@@ -648,6 +685,7 @@ pub(crate) fn enregistrement(numero: u64, date: Option<DateTime<Utc>>, evenement
     Enregistrement {
         numero,
         morceau: 0,
+        verifie: true,
         date,
         fournisseur: fournisseur.unwrap_or_default(),
         id: texte("EventID").and_then(|t| t.parse().ok()),
