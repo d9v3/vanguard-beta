@@ -1,7 +1,14 @@
-//! Le processus élevé qui applique les corrections natives (`corrections`) : Vanguard se relance lui-même en
-//! administrateur (une seule demande UAC, qui nomme Vanguard et non « Windows PowerShell »), avec la sous-commande
-//! cachée `appliquer-eleve`. Le parent, non élevé, prépare la liste ; le fils, élevé, la relit contre la liste
-//! fermée, la montre, attend Entrée dans sa propre console, puis fait chaque geste et répond ligne à ligne.
+//! Le processus élevé qui applique les corrections natives (`corrections`) et les ordres du blocage
+//! (`protection::blocage::ordres`) : Vanguard se relance lui-même en administrateur (une seule demande UAC, qui
+//! nomme Vanguard et non « Windows PowerShell »), avec la sous-commande cachée `appliquer-eleve`. Le parent, non
+//! élevé, prépare la liste ; le fils, élevé, la relit contre la liste fermée (les ordres reparsés, puis rejugés par
+//! lui-même), la montre, attend Entrée dans sa propre console, puis fait chaque geste et répond ligne à ligne.
+//!
+//! Une liste qui mêle ces gestes à des commandes PowerShell passe aussi par lui, toujours en une seule demande UAC :
+//! le parent écrit les commandes PowerShell dans un script (.ps1, lisible, comme avant) et n'envoie que son empreinte
+//! SHA-256 et son chemin (`vanguard:script`). Le fils lit le script en mémoire, vérifie l'empreinte, et le lance
+//! lui-même dans sa console, par l'amorce de `windows::amorce_admin`, qui relit à son tour les octets en mémoire et
+//! refuse tout autre contenu que celui de l'empreinte : jamais le chemin seul, jamais un script changé entre-temps.
 //!
 //! La frontière entre les deux : un tube nommé au nom aléatoire, créé par le parent AVANT la relance, à instance
 //! unique (personne ne peut en créer une deuxième et se faire passer pour le serveur), aux clients distants refusés
@@ -32,7 +39,8 @@ use windows::Win32::System::Com::{
     RPC_C_IMP_LEVEL_IDENTIFY,
 };
 
-use super::corrections::{self, Correction, LIGNE_MAX, LIGNES_MAX, Resultat};
+use super::corrections::{self, Correction, LIGNES_MAX, Resultat};
+use crate::protection::blocage::ordres::{self, Ordre};
 use crate::ui::{GRIS, RESET, VERT, tr, trf, trp};
 
 #[link(name = "kernel32")]
@@ -125,6 +133,102 @@ const LISTE_REFUSEE: i32 = 8;
 const CANAL_REFUSE: i32 = 9;
 /// La dernière ligne de chaque sens du dialogue.
 const FIN: &str = "fin";
+/// La plus longue ligne admise : celle d'un ordre (un chemin de programme), plus longue qu'un identifiant.
+const LIGNE_MAX: usize = ordres::LIGNE_MAX;
+/// Le verbe d'un script PowerShell vérifié par empreinte.
+const SCRIPT: &str = "vanguard:script ";
+
+/// Une ligne de la liste, relue.
+pub(crate) enum Element {
+    Correction(&'static Correction),
+    Ordre(Ordre),
+    /// Un script PowerShell à lancer seulement si ses octets ont cette empreinte (SHA-256, hexadécimal majuscule).
+    Script {
+        empreinte: String,
+        chemin: String,
+    },
+}
+
+impl Element {
+    fn texte(&self) -> String {
+        match self {
+            Element::Correction(c) => c.texte().to_string(),
+            Element::Ordre(o) => o.texte(),
+            Element::Script { chemin, empreinte } => trf!(
+                "Lancer le script PowerShell {} (vérifié par son empreinte {}…)",
+                "Run the PowerShell script {} (checked by its fingerprint {}…)",
+                crate::ui::affichable(chemin),
+                &empreinte[..12]
+            ),
+        }
+    }
+}
+
+/// La ligne qui demande ce script.
+pub(crate) fn ligne_script(empreinte: &str, chemin: &str) -> String {
+    let hex = chemin.bytes().fold(String::new(), |mut s, o| {
+        let _ = write!(s, "{o:02x}");
+        s
+    });
+    format!("{SCRIPT}{empreinte} {hex}")
+}
+
+/// Le script d'une ligne, si et seulement si elle est exactement de sa forme : 64 chiffres hexadécimaux majuscules,
+/// une espace, un chemin complet de .ps1 en hexadécimal minuscule.
+fn analyser_script(ligne: &str) -> Option<Element> {
+    let (empreinte, hex) = ligne.strip_prefix(SCRIPT)?.split_once(' ')?;
+    let forme = empreinte.len() == 64 && empreinte.bytes().all(|o| matches!(o, b'0'..=b'9' | b'A'..=b'F'));
+    if !forme || hex.is_empty() || !hex.len().is_multiple_of(2) {
+        return None;
+    }
+    let octets: Option<Vec<u8>> = (0..hex.len())
+        .step_by(2)
+        .map(|i| {
+            let paire = hex.get(i..i + 2)?;
+            paire
+                .bytes()
+                .all(|o| matches!(o, b'0'..=b'9' | b'a'..=b'f'))
+                .then(|| u8::from_str_radix(paire, 16).ok())?
+        })
+        .collect();
+    let chemin = String::from_utf8(octets?).ok()?;
+    let o = chemin.as_bytes();
+    let complet = o.len() > 3 && o[0].is_ascii_alphabetic() && o[1] == b':' && o[2] == b'\\';
+    let ps1 = std::path::Path::new(&chemin)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("ps1"));
+    (complet && ps1 && !chemin.contains(['\0', '\n', '\r']) && ligne_script(empreinte, &chemin) == ligne).then(|| {
+        Element::Script {
+            empreinte: empreinte.to_string(),
+            chemin,
+        }
+    })
+}
+
+/// La liste telle que le processus élevé la recevra, validée ligne à ligne, dans l'ordre ; `None` dès qu'une ligne
+/// n'est ni une correction de la table, ni un ordre du blocage permis sous Windows, ni un script à empreinte, qu'il y
+/// en a trop, ou qu'une revient deux fois (une liste de Vanguard ne fait jamais deux fois le même geste).
+pub(crate) fn valider(lignes: &[String]) -> Option<Vec<Element>> {
+    if lignes.is_empty() || lignes.len() > LIGNES_MAX {
+        return None;
+    }
+    let mut vues = std::collections::HashSet::new();
+    lignes
+        .iter()
+        .map(|l| {
+            if !vues.insert(l.as_str()) {
+                return None;
+            }
+            if let Some(c) = corrections::analyser(l) {
+                return Some(Element::Correction(c));
+            }
+            if let Some(o) = ordres::analyser(l).filter(Ordre::permis_ici) {
+                return Some(Element::Ordre(o));
+            }
+            analyser_script(l)
+        })
+        .collect()
+}
 
 fn large(t: &str) -> Vec<u16> {
     std::ffi::OsStr::new(t).encode_wide().chain(Some(0)).collect()
@@ -151,6 +255,8 @@ fn ligne_resultat(r: &Resultat) -> String {
         (true, Some(avant)) => format!("ok avant={avant}"),
         // Fait, mais sans point de restauration : la personne l'a accepté ; c'est noté, ce n'est pas un échec.
         (true, None) if r.raison == sans_point_accepte() => SANS_POINT.to_string(),
+        // Un ordre réussi avec sa précision (« déjà retirée »).
+        (true, None) if !r.raison.is_empty() => format!("ok note={}", r.raison.replace(['\r', '\n'], " ")),
         (true, None) => "ok".to_string(),
         (false, _) => format!("echec {}", r.raison.replace(['\r', '\n'], " ")),
     }
@@ -160,8 +266,10 @@ fn ligne_resultat(r: &Resultat) -> String {
 pub(crate) struct Reponse {
     pub reussi: bool,
     pub avant: Option<String>,
-    /// À noter à côté de la commande (point de restauration manquant, accepté).
-    pub note: Option<&'static str>,
+    /// À noter à côté de la commande (point de restauration manquant, accepté ; précision d'un ordre).
+    pub note: Option<String>,
+    /// Pour un script : son code de sortie, quand il n'est pas 0.
+    pub code: Option<i32>,
 }
 
 /// La réponse d'un point de restauration manquant que la personne a accepté.
@@ -170,8 +278,30 @@ const SANS_POINT: &str = "ok sans-point";
 fn lire_reponse(ligne: &str) -> Reponse {
     let reussi = ligne == "ok" || ligne.starts_with("ok ");
     let avant = ligne.strip_prefix("ok avant=").map(str::to_string);
-    let note = (ligne == SANS_POINT).then(sans_point_accepte);
-    Reponse { reussi, avant, note }
+    let note = if ligne == SANS_POINT {
+        Some(sans_point_accepte().to_string())
+    } else {
+        ligne.strip_prefix("ok note=").map(str::to_string)
+    };
+    let code = ligne
+        .strip_prefix("echec code=")
+        .and_then(|c| c.split(' ').next()?.parse().ok());
+    Reponse {
+        reussi,
+        avant,
+        note,
+        code,
+    }
+}
+
+/// Une réponse « non fait ».
+fn non_faite() -> Reponse {
+    Reponse {
+        reussi: false,
+        avant: None,
+        note: None,
+        code: None,
+    }
 }
 
 // ---------------------------------------------------------------- le parent
@@ -219,16 +349,7 @@ pub(crate) fn appliquer(lignes: &[String]) -> Option<Vec<Reponse>> {
                 "    Demande d'administrateur refusée : rien n'a été modifié.",
                 "    Administrator prompt refused: nothing was changed."
             );
-            return Some(
-                lignes
-                    .iter()
-                    .map(|_| Reponse {
-                        reussi: false,
-                        avant: None,
-                        note: None,
-                    })
-                    .collect(),
-            );
+            return Some(lignes.iter().map(|_| non_faite()).collect());
         }
         Err(code) => {
             trp!(
@@ -249,38 +370,27 @@ pub(crate) fn appliquer(lignes: &[String]) -> Option<Vec<Reponse>> {
     let reponses = serveur.dialoguer(pid, lignes);
     drop(serveur);
     let _ = veilleur.join();
-    Some(reponses.unwrap_or_else(|| {
-        lignes
-            .iter()
-            .map(|_| Reponse {
-                reussi: false,
-                avant: None,
-                note: None,
-            })
-            .collect()
-    }))
+    Some(reponses.unwrap_or_else(|| lignes.iter().map(|_| non_faite()).collect()))
 }
 
-/// Déjà administrateur : chaque geste est fait ici, montré au passage.
+/// Déjà administrateur : chaque geste est fait ici, montré au passage, les ordres rejugés comme par le fils.
 fn appliquer_en_place(lignes: &[String]) -> Vec<Reponse> {
-    let Some(liste) = corrections::valider(lignes) else {
-        return lignes
-            .iter()
-            .map(|_| Reponse {
-                reussi: false,
-                avant: None,
-                note: None,
-            })
-            .collect();
+    let Some(liste) = valider(lignes) else {
+        return lignes.iter().map(|_| non_faite()).collect();
     };
+    let juge = ordres::Juge::lire(None);
     let mut reponses = Vec::with_capacity(liste.len());
     let mut arret = false;
-    for c in liste {
-        let r = if arret { refusee() } else { faire(c) };
-        arret |= !r.reussi && matches!(c.geste, corrections::Geste::PointDeRestauration);
+    for e in &liste {
+        let r = if arret { refusee() } else { faire(e, &juge) };
+        arret |= !r.reussi && est_point(e);
         reponses.push(lire_reponse(&ligne_resultat(&r)));
     }
     reponses
+}
+
+fn est_point(e: &Element) -> bool {
+    matches!(e, Element::Correction(c) if matches!(c.geste, corrections::Geste::PointDeRestauration))
 }
 
 /// Le nom d'une bibliothèque (.dll, .drv) dans ce dossier, s'il y en a une ; un dossier illisible compte comme suspect.
@@ -520,7 +630,7 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
     let Some(lignes) = lire_lignes(&tube) else {
         return CANAL_REFUSE;
     };
-    let Some(liste) = corrections::valider(&lignes) else {
+    let Some(liste) = valider(&lignes) else {
         trp!(
             "La liste reçue n'est pas une liste de corrections de Vanguard : rien n'est fait. Un autre programme y a touché : lancez une analyse antivirus.",
             "The list received is not a Vanguard fix list: nothing is done. Another program touched it: run an antivirus scan."
@@ -531,8 +641,8 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
     };
     println!();
     trp!("Ce qui va être fait :", "What will be done:");
-    for c in &liste {
-        println!("  · {}", c.texte());
+    for e in &liste {
+        println!("  · {}", e.texte());
     }
     println!();
     let accord = crate::ui::demander(tr!(
@@ -544,12 +654,14 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
     if arret {
         trp!("Annulé : rien n'a été modifié.", "Cancelled: nothing was changed.");
     }
-    for c in &liste {
-        let r = if arret { refusee() } else { faire(c) };
+    // Ce que le fils lit lui-même de l'ordinateur pour rejuger les ordres : sessions à distance, processus protégés.
+    let juge = ordres::Juge::lire(Some(parent));
+    for e in &liste {
+        let r = if arret { refusee() } else { faire(e, &juge) };
         if !r.reussi {
             code = 1;
             // Sans point de restauration, et la personne ne veut pas continuer sans : tout le reste est abandonné.
-            arret |= matches!(c.geste, corrections::Geste::PointDeRestauration);
+            arret |= est_point(e);
         }
         if tube.write_all(format!("{}\n", ligne_resultat(&r)).as_bytes()).is_err() {
             // Le parent n'entend plus : ce qui suivrait serait changé sans être noté dans « Ce que Vanguard a changé ».
@@ -587,22 +699,79 @@ fn refusee() -> Resultat {
 }
 
 /// Fait un geste de la liste, en l'annonçant, puis « OK » ou l'erreur : une fenêtre muette ne se distingue pas d'une
-/// fenêtre figée.
-fn faire(c: &Correction) -> Resultat {
-    println!("{GRIS}> {}  {}{RESET}", chrono::Local::now().format("%H:%M"), c.texte());
-    let r = corrections::appliquer(c);
+/// fenêtre figée. Un ordre est d'abord rejugé ici.
+fn faire(e: &Element, juge: &ordres::Juge) -> Resultat {
+    println!("{GRIS}> {}  {}{RESET}", chrono::Local::now().format("%H:%M"), e.texte());
+    let r = match e {
+        Element::Correction(c) => corrections::appliquer(c),
+        Element::Ordre(o) => {
+            let r = match ordres::juger(o, juge) {
+                Some(refus) => ordres::Resultat::echec(refus),
+                None => ordres::faire(o),
+            };
+            Resultat {
+                reussi: r.reussi,
+                avant: None,
+                raison: if r.reussi { r.note.unwrap_or_default() } else { r.raison },
+            }
+        }
+        Element::Script { empreinte, chemin } => lancer_script(chemin, empreinte),
+    };
     if r.reussi {
         match &r.avant {
             Some(avant) => trp!(
                 "  {VERT}OK{RESET} (avant : {avant})",
                 "  {VERT}OK{RESET} (before: {avant})"
             ),
+            None if !r.raison.is_empty() && r.raison != sans_point_accepte() => {
+                trp!("  {VERT}OK{RESET} ({})", "  {VERT}OK{RESET} ({})", r.raison);
+            }
             None => trp!("  {VERT}OK{RESET}", "  {VERT}OK{RESET}"),
         }
     } else {
         trp!("  Échec : {}", "  Failed: {}", r.raison);
     }
     r
+}
+
+/// Le script PowerShell d'une liste mêlée : lu ici en mémoire, son empreinte vérifiée, puis lancé dans cette console
+/// par l'amorce, qui relit les octets et refuse tout autre contenu. Un lien, un dossier ou un fichier changé : refusé.
+fn lancer_script(chemin: &str, empreinte: &str) -> Resultat {
+    let refus = |raison: String| Resultat {
+        reussi: false,
+        avant: None,
+        raison,
+    };
+    let ordinaire = std::fs::symlink_metadata(chemin).is_ok_and(|m| m.file_type().is_file());
+    let lu = if ordinaire { std::fs::read(chemin).ok() } else { None };
+    if lu.as_deref().map(super::sha256_hex).as_deref() != Some(empreinte) {
+        return refus(format!(
+            "code={} {}",
+            super::SCRIPT_MODIFIE,
+            tr!(
+                "script modifié ou supprimé depuis son écriture : rien n'est lancé",
+                "script modified or deleted since it was written: nothing is run"
+            )
+        ));
+    }
+    let statut = super::powershell()
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &super::amorce_admin(chemin, empreinte),
+        ])
+        .status();
+    match statut.ok().and_then(|s| s.code()) {
+        Some(0) => Resultat {
+            reussi: true,
+            avant: None,
+            raison: String::new(),
+        },
+        Some(c) => refus(format!("code={c}")),
+        None => refus(tr!("PowerShell ne s'est pas lancé", "PowerShell did not start").to_string()),
+    }
 }
 
 /// Se branche sur le tube du parent, puis vérifie que le serveur est bien le processus annoncé et que son programme
@@ -895,7 +1064,7 @@ mod tests {
             raison: sans_point_accepte().into(),
         };
         let r = lire_reponse(&ligne_resultat(&sans_point));
-        assert!(r.reussi && r.avant.is_none() && r.note == Some(sans_point_accepte()));
+        assert!(r.reussi && r.avant.is_none() && r.note.as_deref() == Some(sans_point_accepte()));
         assert!(lire_reponse("ok").note.is_none());
         assert!(!lire_reponse("").reussi);
         let aller_retour = ligne_resultat(&Resultat {

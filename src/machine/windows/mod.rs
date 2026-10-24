@@ -33,6 +33,7 @@ pub(crate) mod magasins;
 mod maj;
 pub(crate) mod memoire;
 pub(crate) mod ouvrir;
+pub(crate) mod pare_feu;
 pub(crate) mod partages;
 pub(crate) mod peripheriques;
 pub(crate) mod persistance;
@@ -257,7 +258,7 @@ fn script_admin(correctifs: &[Vec<String>], resultats: &str) -> String {
 }
 
 /// Code de sortie de la fenêtre administrateur quand le script n'est plus celui que Vanguard a écrit.
-const SCRIPT_MODIFIE: i32 = 6;
+pub(super) const SCRIPT_MODIFIE: i32 = 6;
 /// Code de sortie quand PowerShell est en mode restreint (stratégie WDAC ou AppLocker) : sans .NET, l'empreinte ne se
 /// vérifie pas, et un script modifié serait annoncé à tort.
 const LANGAGE_RESTREINT: i32 = 7;
@@ -281,7 +282,7 @@ pub(super) fn sha256_hex(octets: &[u8]) -> String {
 /// Une seule ligne, en clair et sans guillemet double : la demande d'administrateur la montre (« Plus de détails »),
 /// elle passe telle quelle entre guillemets, et reste loin des quelque 2 048 caractères au-delà desquels ShellExecute
 /// a été vu tronquer ses paramètres (encodée, elle en faisait 2 750).
-fn amorce_admin(chemin: &str, empreinte: &str) -> String {
+pub(super) fn amorce_admin(chemin: &str, empreinte: &str) -> String {
     let chemin = crate::commande::ps_texte(chemin);
     trf!(
         "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {{ Write-Host 'PowerShell en mode restreint : script non vérifiable, rien n''est lancé.' -ForegroundColor Red; Read-Host 'Appuyez sur Entrée pour fermer'; exit {LANGAGE_RESTREINT} }}; \
@@ -304,15 +305,22 @@ pub fn powershell_admin(commandes: &[String]) -> bool {
     powershell_admin_chacune(&[commandes.to_vec()]) == [true]
 }
 
-/// Lance des correctifs (chacun sa liste de commandes) dans une seule fenêtre PowerShell administrateur et dit
-/// lesquels ont réussi. Le script est écrit en clair dans un fichier .ps1 dont le chemin est affiché : on peut le
-/// lire avant d'accepter la demande d'administrateur, et il reste comme trace de ce qui a été modifié.
-pub fn powershell_admin_chacune(correctifs: &[Vec<String>]) -> Vec<bool> {
-    let echec = vec![false; correctifs.len()];
-    // Une correction native (« vanguard:… ») mêlée à du PowerShell passe par le script, sous sa forme PowerShell.
-    let correctifs = &corrections::en_powershell(correctifs);
+/// Un script de correction écrit, prêt à lancer : son chemin, le fichier où il répond, son empreinte.
+struct Script {
+    chemin: std::path::PathBuf,
+    resultats: std::path::PathBuf,
+    empreinte: String,
+}
+
+/// Écrit le script de ces correctifs (déjà en PowerShell) : en clair, dans un fichier .ps1 dont le chemin est
+/// affiché, qu'on peut lire avant d'accepter la demande d'administrateur et qui reste comme trace. `None` : il ne
+/// s'écrit pas (dit).
+fn ecrire_script(correctifs: &[Vec<String>]) -> Option<Script> {
+    static SUITE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let dossier = crate::socle::dossier_local().join("corrections");
-    let nom = format!("correction-{}", chrono::Local::now().format("%Y%m%d-%H%M%S"));
+    // Deux scripts dans la même seconde (une liste mêlée en plusieurs morceaux) ne s'écrasent pas.
+    let n = SUITE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nom = format!("correction-{}-{n}", chrono::Local::now().format("%Y%m%d-%H%M%S"));
     let chemin = dossier.join(format!("{nom}.ps1"));
     // La fenêtre administrateur est un autre processus : elle répond par ce fichier, une ligne par correctif.
     let resultats = dossier.join(format!("{nom}.resultats"));
@@ -335,7 +343,7 @@ pub fn powershell_admin_chacune(correctifs: &[Vec<String>]) -> Vec<bool> {
             "    Could not write the fix script to {}",
             dossier.display()
         );
-        return echec;
+        return None;
     }
     let _ = std::fs::remove_file(&resultats);
     trp!(
@@ -343,25 +351,15 @@ pub fn powershell_admin_chacune(correctifs: &[Vec<String>]) -> Vec<bool> {
         "    Fix script (readable): {}",
         chemin.display()
     );
-    let amorce = crate::commande::ps_texte(&amorce_admin(&chemin.display().to_string(), &empreinte));
-    // Demande d'administrateur refusée : Start-Process échoue et $p reste vide. Sans ce test, l'appel de méthode
-    // sur $null était sauté et « exit $p.ExitCode » devenait « exit 0 » : la correction s'affichait « fait ».
-    // Attente sans limite : la fenêtre est visible et attend Entrée, un délai compterait aussi le temps de lecture.
-    let lanceur = trf!(
-        "$q = [char]34; \
-         $p = Start-Process powershell -Verb RunAs -PassThru -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command',($q + '{amorce}' + $q); \
-         if (-not $p) {{ Write-Host 'Demande d''administrateur refusée : rien n''a été modifié.'; exit 3 }}; \
-         $p.WaitForExit(); \
-         if ($null -eq $p.ExitCode) {{ exit 4 }}; exit $p.ExitCode",
-        "$q = [char]34; \
-         $p = Start-Process powershell -Verb RunAs -PassThru -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command',($q + '{amorce}' + $q); \
-         if (-not $p) {{ Write-Host 'Administrator prompt refused: nothing was changed.'; exit 3 }}; \
-         $p.WaitForExit(); \
-         if ($null -eq $p.ExitCode) {{ exit 4 }}; exit $p.ExitCode"
-    );
-    let statut = powershell().args(["-NoProfile", "-Command", &lanceur]).status();
-    let reussi = statut.as_ref().is_ok_and(std::process::ExitStatus::success);
-    let code = statut.as_ref().ok().and_then(std::process::ExitStatus::code);
+    Some(Script {
+        chemin,
+        resultats,
+        empreinte,
+    })
+}
+
+/// Ce que dit le code de sortie de la fenêtre qui a lancé le script, quand il dit quelque chose.
+fn dire_code(code: Option<i32>) {
     if code == Some(crate::reparer::SANS_POINT_ARRETE) {
         trp!(
             "    Pas de point de restauration : arrêté à votre demande, rien n'a changé.",
@@ -380,16 +378,126 @@ pub fn powershell_admin_chacune(correctifs: &[Vec<String>]) -> Vec<bool> {
             "    PowerShell is in restricted mode on this PC (security policy): Vanguard cannot verify its script there, nothing was run."
         );
     }
-    let lus = std::fs::read_to_string(&resultats).unwrap_or_default();
-    let _ = std::fs::remove_file(&resultats);
+}
+
+/// La réussite de chaque correctif d'un script : tous, s'il a fini sans échec ; sinon ceux dont la ligne « ok » est
+/// dans son fichier de résultats (demande refusée, point de restauration refusé, fenêtre fermée en route : un
+/// correctif sans sa ligne « ok » n'a pas été fait, ou pas en entier).
+fn resultats_du_script(s: &Script, nombre: usize, reussi: bool) -> Vec<bool> {
+    let lus = std::fs::read_to_string(&s.resultats).unwrap_or_default();
+    let _ = std::fs::remove_file(&s.resultats);
     if reussi {
-        return vec![true; correctifs.len()];
+        return vec![true; nombre];
     }
-    // Demande refusée, point de restauration refusé, fenêtre fermée en route : un correctif sans sa ligne « ok »
-    // n'a pas été fait, ou pas en entier.
     let mut etats: Vec<bool> = lus.lines().map(|l| l.trim() == "ok").collect();
-    etats.resize(correctifs.len(), false);
+    etats.resize(nombre, false);
     etats
+}
+
+/// Lance des correctifs (chacun sa liste de commandes) dans une seule fenêtre PowerShell administrateur et dit
+/// lesquels ont réussi. Le chemin de secours : sous Wine, ou quand Vanguard ne peut pas se relancer lui-même en
+/// administrateur (une DLL posée à côté de lui).
+pub fn powershell_admin_chacune(correctifs: &[Vec<String>]) -> Vec<bool> {
+    let echec = vec![false; correctifs.len()];
+    // Une correction native (« vanguard:… ») ou un ordre mêlé à du PowerShell passe par le script, sous sa forme
+    // PowerShell.
+    let correctifs = &corrections::en_powershell(correctifs);
+    let Some(script) = ecrire_script(correctifs) else {
+        return echec;
+    };
+    let amorce = crate::commande::ps_texte(&amorce_admin(&script.chemin.display().to_string(), &script.empreinte));
+    // Demande d'administrateur refusée : Start-Process échoue et $p reste vide. Sans ce test, l'appel de méthode
+    // sur $null était sauté et « exit $p.ExitCode » devenait « exit 0 » : la correction s'affichait « fait ».
+    // Attente sans limite : la fenêtre est visible et attend Entrée, un délai compterait aussi le temps de lecture.
+    let lanceur = trf!(
+        "$q = [char]34; \
+         $p = Start-Process powershell -Verb RunAs -PassThru -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command',($q + '{amorce}' + $q); \
+         if (-not $p) {{ Write-Host 'Demande d''administrateur refusée : rien n''a été modifié.'; exit 3 }}; \
+         $p.WaitForExit(); \
+         if ($null -eq $p.ExitCode) {{ exit 4 }}; exit $p.ExitCode",
+        "$q = [char]34; \
+         $p = Start-Process powershell -Verb RunAs -PassThru -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command',($q + '{amorce}' + $q); \
+         if (-not $p) {{ Write-Host 'Administrator prompt refused: nothing was changed.'; exit 3 }}; \
+         $p.WaitForExit(); \
+         if ($null -eq $p.ExitCode) {{ exit 4 }}; exit $p.ExitCode"
+    );
+    let statut = powershell().args(["-NoProfile", "-Command", &lanceur]).status();
+    let reussi = statut.as_ref().is_ok_and(std::process::ExitStatus::success);
+    dire_code(statut.as_ref().ok().and_then(std::process::ExitStatus::code));
+    resultats_du_script(&script, correctifs.len(), reussi)
+}
+
+/// Une liste qui mêle corrections natives ou ordres du blocage et commandes PowerShell, en UNE seule demande UAC qui
+/// nomme Vanguard : les correctifs tout natifs vont tels quels au processus élevé ; chaque suite de correctifs
+/// PowerShell devient un script (sous sa forme PowerShell), que le processus élevé lit en mémoire, vérifie par son
+/// empreinte et lance lui-même. L'ordre de la liste est gardé. `None` : le processus élevé ne peut pas être lancé (le
+/// script par PowerShell prend alors le relais, comme avant).
+pub(crate) fn admin_mele(correctifs: &[Vec<String>]) -> Option<(Vec<bool>, Vec<Vec<String>>)> {
+    // Les morceaux : des correctifs tout natifs (un par un), ou une suite de correctifs PowerShell (un script).
+    enum Morceau {
+        Natif(usize),
+        Script(Vec<usize>, Script),
+    }
+    let mut morceaux = Vec::new();
+    let mut suite: Vec<usize> = Vec::new();
+    let fermer = |suite: &mut Vec<usize>, morceaux: &mut Vec<Morceau>| -> Option<()> {
+        if suite.is_empty() {
+            return Some(());
+        }
+        let ps = corrections::en_powershell(&suite.iter().map(|i| correctifs[*i].clone()).collect::<Vec<_>>());
+        let script = ecrire_script(&ps)?;
+        morceaux.push(Morceau::Script(std::mem::take(suite), script));
+        Some(())
+    };
+    for (i, c) in correctifs.iter().enumerate() {
+        if !c.is_empty() && c.iter().all(|l| corrections::native(l)) {
+            fermer(&mut suite, &mut morceaux)?;
+            morceaux.push(Morceau::Natif(i));
+        } else {
+            suite.push(i);
+        }
+    }
+    fermer(&mut suite, &mut morceaux)?;
+    let mut lignes = Vec::new();
+    for m in &morceaux {
+        match m {
+            Morceau::Natif(i) => lignes.extend(correctifs[*i].iter().cloned()),
+            Morceau::Script(_, s) => lignes.push(eleve::ligne_script(&s.empreinte, &s.chemin.display().to_string())),
+        }
+    }
+    let reponses = eleve::appliquer(&lignes)?;
+    let mut reponses = reponses.into_iter();
+    let mut resultats = vec![false; correctifs.len()];
+    let mut notes = correctifs.to_vec();
+    for m in &morceaux {
+        match m {
+            Morceau::Natif(i) => {
+                let mut reussi = true;
+                notes[*i] = correctifs[*i]
+                    .iter()
+                    .map(|c| {
+                        let r = reponses.next();
+                        reussi &= r.as_ref().is_some_and(|r| r.reussi);
+                        match r.map(|r| (r.avant, r.note)) {
+                            Some((Some(avant), _)) => format!("{c} (avant : {avant})"),
+                            Some((None, Some(n))) => format!("{c} ({n})"),
+                            _ => c.clone(),
+                        }
+                    })
+                    .collect();
+                resultats[*i] = reussi;
+            }
+            Morceau::Script(indices, s) => {
+                let r = reponses.next();
+                dire_code(r.as_ref().and_then(|r| r.code));
+                let faits = resultats_du_script(s, indices.len(), r.as_ref().is_some_and(|r| r.reussi));
+                for (i, ok) in indices.iter().zip(faits) {
+                    resultats[*i] = ok;
+                }
+            }
+        }
+    }
+    Some((resultats, notes))
 }
 
 /// État de chaque profil du pare-feu, lu dans le registre (les valeurs que rend Get-NetFirewallProfile, sans
