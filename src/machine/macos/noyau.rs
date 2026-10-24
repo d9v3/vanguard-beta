@@ -584,3 +584,273 @@ pub(crate) fn montages() -> Option<Vec<Montage>> {
             .collect(),
     )
 }
+
+/// Tests d'oracle : la lecture native contre l'outil d'Apple qui fait foi, sur le Mac de GitHub (`cargo test` de
+/// .github/workflows/macos.yml). C'est leur passage qui autorise, plus tard, à retirer l'outil gardé en secours.
+#[cfg(test)]
+mod oracles {
+    use std::process::Command;
+
+    use super::*;
+
+    fn outil(programme: &str, args: &[&str]) -> Option<String> {
+        crate::commande::lancer(Command::new(programme).args(args).env("LC_ALL", "C"), 60)
+            .filter(|r| r.code == Some(0))
+            .map(|r| r.sortie)
+    }
+
+    /// Ce processus, son parent et launchd : mêmes parent, compte, heure de démarrage et programme que `ps`.
+    #[test]
+    fn processus_contre_ps() {
+        let natifs = processus(true).expect("liste native des processus");
+        let moi = std::process::id();
+        let parent = natifs
+            .iter()
+            .find(|p| p.pid == moi)
+            .map(|p| p.ppid)
+            .expect("Vanguard dans la liste");
+        for pid in [moi, parent, 1] {
+            let p = natifs.iter().find(|p| p.pid == pid).expect("processus stable vu");
+            let ps = outil("ps", &["-o", "ppid=,uid=,lstart=", "-p", &pid.to_string()]).expect("ps");
+            let mots: Vec<&str> = ps.split_whitespace().collect();
+            assert_eq!(mots[0].parse::<u32>().unwrap(), p.ppid, "parent de {pid}");
+            assert_eq!(mots[1].parse::<u32>().unwrap(), p.uid, "compte de {pid}");
+            // « Sat Oct 24 10:00:00 2026 », à l'heure locale : comparé à la seconde près.
+            let lstart = mots[2..7].join(" ");
+            let lu = chrono::NaiveDateTime::parse_from_str(&lstart, "%a %b %d %H:%M:%S %Y").expect("lstart");
+            let (s, _) = p.debut.expect("heure de démarrage native");
+            let local = chrono::DateTime::from_timestamp(s, 0)
+                .unwrap()
+                .with_timezone(&chrono::Local)
+                .naive_local();
+            assert!((local - lu).num_seconds().abs() <= 1, "{pid} : {local} contre {lu}");
+        }
+        // Le programme et les arguments de ce processus.
+        let p = natifs.iter().find(|p| p.pid == moi).unwrap();
+        let args = outil("ps", &["-ww", "-o", "args=", "-p", &moi.to_string()]).unwrap();
+        assert_eq!(p.arguments.as_ref().unwrap().join(" "), args.trim());
+        // Le même fichier (appareil et nœud), quel que soit le chemin qui y mène (liens, firmlinks de macOS).
+        {
+            use std::os::unix::fs::MetadataExt;
+            let lu = std::fs::metadata(p.chemin.as_deref().expect("chemin natif")).unwrap();
+            let attendu = std::fs::metadata(std::env::current_exe().unwrap()).unwrap();
+            assert_eq!((lu.dev(), lu.ino()), (attendu.dev(), attendu.ino()), "{:?}", p.chemin);
+        }
+        // Tous les numéros de ps (moins les zombies, que le noyau ne décrit plus, et ceux nés ou morts entre les deux
+        // lectures) sont dans la liste native.
+        let ps: Vec<u32> = outil("ps", &["-axo", "pid=,stat="])
+            .unwrap()
+            .lines()
+            .filter_map(|l| {
+                let (pid, etat) = l.trim().split_once(char::is_whitespace)?;
+                (!etat.trim_start().starts_with('Z')).then(|| pid.parse().ok())?
+            })
+            .collect();
+        let apres: Vec<u32> = pids().unwrap();
+        let manquants: Vec<u32> = ps
+            .iter()
+            .filter(|p| !natifs.iter().any(|n| n.pid == **p) && apres.contains(p))
+            .copied()
+            .collect();
+        assert!(
+            manquants.len() <= 3,
+            "processus de ps absents de la lecture native : {manquants:?}"
+        );
+    }
+
+    /// pgrep -x et la recherche native par nom court disent la même chose ; les enfants de launchd aussi.
+    #[test]
+    fn noms_et_enfants_contre_pgrep() {
+        for nom in ["launchd", "nexistepasvanguard"] {
+            let pgrep = crate::commande::lancer(Command::new("pgrep").args(["-x", nom]), 20)
+                .unwrap()
+                .code
+                == Some(0);
+            assert_eq!(en_marche(nom), Some(pgrep), "{nom}");
+        }
+        let natifs: Vec<u32> = enfants(1).expect("enfants de launchd");
+        let pgrep: Vec<u32> = outil("pgrep", &["-P", "1"])
+            .unwrap()
+            .split_whitespace()
+            .filter_map(|p| p.parse().ok())
+            .collect();
+        let communs = pgrep.iter().filter(|p| natifs.contains(p)).count();
+        assert!(
+            communs + 3 >= pgrep.len(),
+            "{} de {} enfants de launchd",
+            communs,
+            pgrep.len()
+        );
+    }
+
+    /// Une prise ouverte par ce test : la lecture native la voit, en écoute puis établie, avec ce processus, comme
+    /// lsof ; netstat voit les mêmes ports.
+    #[test]
+    fn prises_contre_lsof_et_netstat() {
+        let serveur = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = serveur.local_addr().unwrap().port();
+        let client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (_accepte, _) = serveur.accept().unwrap();
+        let local = client.local_addr().unwrap().port();
+        let lues = prises().expect("prises natives");
+        let moi = std::process::id();
+        let a_moi: Vec<&PriseNoyau> = lues
+            .prises
+            .iter()
+            .filter(|(p, ..)| *p == moi)
+            .map(|(_, _, x)| x)
+            .collect();
+        assert!(
+            a_moi
+                .iter()
+                .any(|x| x.tcp && x.etat == darwin::TSI_S_LISTEN && x.port_local == port)
+        );
+        assert!(
+            a_moi.iter().any(|x| x.tcp
+                && x.etat == darwin::TSI_S_ESTABLISHED
+                && x.port_local == local
+                && x.port_distant == port)
+        );
+        let lsof = outil("lsof", &["-nP", "-a", "-p", &moi.to_string(), "-iTCP"]).expect("lsof");
+        assert!(lsof.contains(&format!("127.0.0.1:{port} (LISTEN)")), "{lsof}");
+        assert!(
+            lsof.contains(&format!("127.0.0.1:{local}->127.0.0.1:{port} (ESTABLISHED)")),
+            "{lsof}"
+        );
+        let netstat = outil("netstat", &["-an", "-p", "tcp"]).unwrap();
+        assert!(netstat.contains(&format!("127.0.0.1.{port}")), "{netstat}");
+    }
+
+    /// Passerelle et voisins : les mêmes que `route -n get default` et `arp -an`.
+    #[test]
+    fn routes_contre_route_et_arp() {
+        let route = outil("route", &["-n", "get", "default"]);
+        let attendue = route.as_deref().and_then(|r| {
+            r.lines()
+                .find_map(|l| l.trim().strip_prefix("gateway:"))
+                .and_then(|g| g.trim().parse::<Ipv4Addr>().ok())
+        });
+        assert_eq!(passerelle(), attendue, "{route:?}");
+        let voisins = voisins().expect("table ARP native");
+        for l in outil("arp", &["-an"])
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| !l.contains("incomplete"))
+        {
+            // « ? (192.168.64.1) at 1a:2b:3c:4d:5e:6f on en0 ifscope [ethernet] »
+            let Some(ip) = l
+                .split_once('(')
+                .and_then(|(_, r)| r.split_once(')'))
+                .and_then(|(ip, _)| ip.parse::<Ipv4Addr>().ok())
+            else {
+                continue;
+            };
+            assert!(
+                voisins.iter().any(|v| v.ip == ip),
+                "{ip} vu par arp, pas par la lecture native"
+            );
+        }
+    }
+
+    /// SIP : la configuration lue (0 = entière) dit la même chose que `csrutil status`.
+    #[test]
+    fn sip_contre_csrutil() {
+        let config = sip().expect("csr_get_active_config");
+        let texte = outil("csrutil", &["status"]).expect("csrutil");
+        let entier = texte.contains("status: enabled.");
+        assert_eq!(config == 0, entier, "config 0x{config:x} ; csrutil : {texte}");
+    }
+
+    /// Les options de démarrage : la NVRAM lue comme `nvram boot-args`, et kern.bootargs comme `sysctl -n`.
+    #[test]
+    fn options_de_demarrage_contre_nvram_et_sysctl() {
+        let nvram = crate::commande::lancer(Command::new("nvram").arg("boot-args"), 20).unwrap();
+        let Some(natif) = options_prochain_demarrage() else {
+            // Une machine sans NVRAM lisible (certaines machines virtuelles) : nvram le dit aussi.
+            assert!(
+                nvram.erreurs.contains("not supported"),
+                "{} {}",
+                nvram.sortie,
+                nvram.erreurs
+            );
+            return crate::essais::saute("NVRAM absente de ce Mac");
+        };
+        match natif {
+            OptionsNvram::Absentes => assert_ne!(nvram.code, Some(0), "{}", nvram.sortie),
+            OptionsNvram::Posees(t) => {
+                assert_eq!(
+                    nvram.sortie.trim().strip_prefix("boot-args").map(str::trim),
+                    Some(t.trim())
+                );
+            }
+        }
+        let sysctl = outil("sysctl", &["-n", "kern.bootargs"]).unwrap();
+        assert_eq!(options_demarrage_en_cours().as_deref(), Some(sysctl.trim()));
+    }
+
+    /// L'échange et la mémoire libre : les mêmes que `sysctl vm.swapusage` et `memory_pressure`.
+    #[test]
+    fn echange_et_memoire_contre_sysctl() {
+        let (total, _) = echange().expect("vm.swapusage");
+        let texte = outil("sysctl", &["-n", "vm.swapusage"]).unwrap();
+        let mo: f64 = texte
+            .split("total = ")
+            .nth(1)
+            .unwrap()
+            .split('M')
+            .next()
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        #[allow(clippy::cast_precision_loss)]
+        let natif = total as f64 / 1_048_576.0;
+        assert!((natif - mo).abs() < 1.0, "{natif} contre {texte}");
+        let niveau = super::super::sysctl_nombre("kern.memorystatus_level").expect("kern.memorystatus_level");
+        let pression = outil("memory_pressure", &[]).unwrap();
+        let pct: u64 = pression
+            .lines()
+            .find_map(|l| l.strip_prefix("System-wide memory free percentage:"))
+            .unwrap()
+            .trim()
+            .trim_end_matches('%')
+            .parse()
+            .unwrap();
+        assert!(niveau.abs_diff(pct) <= 5, "{niveau} contre {pct}");
+    }
+
+    /// L'identifiant de l'ordinateur : la chaîne de gethostuuid est exactement l'IOPlatformUUID d'ioreg. Tant que ce
+    /// test n'a pas passé sur le Mac de GitHub, l'empreinte de la machine reste calculée sur la sortie d'ioreg.
+    #[test]
+    fn uuid_contre_ioreg() {
+        let ioreg = outil("ioreg", &["-rd1", "-c", "IOPlatformExpertDevice"]).unwrap();
+        let attendu = ioreg
+            .lines()
+            .find(|l| l.contains("\"IOPlatformUUID\""))
+            .and_then(|l| l.rsplit('"').nth(1))
+            .unwrap()
+            .to_string();
+        assert_eq!(uuid_machine().as_deref(), Some(attendu.as_str()));
+    }
+
+    /// Les volumes montés : ceux de `mount`.
+    #[test]
+    fn montages_contre_mount() {
+        let natifs = montages().expect("getmntinfo");
+        for l in outil("mount", &[]).unwrap().lines() {
+            // « /dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled) »
+            let Some((source, reste)) = l.split_once(" on ") else {
+                continue;
+            };
+            let Some((point, options)) = reste.rsplit_once(" (") else {
+                continue;
+            };
+            let m = natifs
+                .iter()
+                .find(|m| m.point == point)
+                .unwrap_or_else(|| panic!("{point} absent"));
+            assert_eq!(m.source, source);
+            assert_eq!(m.lecture_seule, options.contains("read-only"), "{l}");
+        }
+    }
+}

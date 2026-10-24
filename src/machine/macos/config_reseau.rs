@@ -349,3 +349,73 @@ pub(crate) fn services() -> Option<Vec<Service>> {
     services.sort_by_key(|s| ordre.iter().position(|o| *o == s.id).unwrap_or(usize::MAX));
     Some(services)
 }
+
+#[cfg(test)]
+mod oracles {
+    use std::process::Command;
+
+    use super::*;
+
+    fn outil(programme: &str, args: &[&str]) -> Option<String> {
+        crate::commande::lancer(Command::new(programme).args(args).env("LC_ALL", "C"), 60)
+            .filter(|r| r.code == Some(0))
+            .map(|r| r.sortie)
+    }
+
+    /// Les serveurs DNS de `scutil --dns` sont tous dans la lecture native.
+    #[test]
+    fn dns_contre_scutil() {
+        let natifs = dns_en_vigueur().expect("configd");
+        let scutil = crate::machine::dns::lire_scutil(&outil("scutil", &["--dns"]).unwrap());
+        for ip in &scutil {
+            assert!(
+                natifs.contains(ip),
+                "{ip} : scutil le voit, pas la lecture native ({natifs:?})"
+            );
+        }
+    }
+
+    /// Le proxy : chaque « Clé : valeur » simple de `scutil --proxy` se retrouve dans le texte natif.
+    #[test]
+    fn proxy_contre_scutil() {
+        let natif = proxy_comme_scutil().expect("SCDynamicStoreCopyProxies");
+        for l in outil("scutil", &["--proxy"]).unwrap().lines() {
+            let l = l.trim();
+            if let Some((cle, valeur)) = l.split_once(" : ")
+                && !valeur.starts_with('<')
+                && !cle.chars().all(|c| c.is_ascii_digit())
+            {
+                assert!(natif.contains(&format!("{cle} : {valeur}")), "{l} absent de {natif}");
+            }
+        }
+    }
+
+    /// Les services : mêmes noms, même ordre, mêmes actifs que networksetup ; même DNS réglé à la main.
+    #[test]
+    fn services_contre_networksetup() {
+        let natifs = services().expect("SCPreferences");
+        let ordre = outil("networksetup", &["-listnetworkserviceorder"]).unwrap();
+        let attendus: Vec<(bool, String)> = ordre
+            .lines()
+            .filter_map(|l| {
+                let (numero, nom) = l.strip_prefix('(')?.split_once(") ")?;
+                (numero == "*" || numero.parse::<u32>().is_ok()).then(|| (numero != "*", nom.to_string()))
+            })
+            .collect();
+        let lus: Vec<(bool, String)> = natifs.iter().map(|s| (s.actif, s.nom.clone())).collect();
+        assert_eq!(lus, attendus, "{ordre}");
+        for s in &natifs {
+            let texte = outil("networksetup", &["-getdnsservers", &s.nom]).unwrap_or_default();
+            let attendu: Vec<IpAddr> = texte.lines().filter_map(|l| l.trim().parse().ok()).collect();
+            assert_eq!(s.dns, attendu, "{}", s.nom);
+        }
+        // La carte principale : celle de `route -n get default`.
+        if let Some(route) = outil("route", &["-n", "get", "default"]) {
+            let carte = route
+                .lines()
+                .find_map(|l| l.trim().strip_prefix("interface:"))
+                .map(str::trim);
+            assert_eq!(principal().and_then(|p| p.carte).as_deref(), carte);
+        }
+    }
+}
