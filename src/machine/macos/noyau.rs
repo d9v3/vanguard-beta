@@ -167,19 +167,27 @@ pub(crate) fn compte(uid: u32) -> Option<String> {
     (!nom.is_empty()).then_some(nom)
 }
 
-/// Les comptes de l'annuaire local (getpwent) : (nom, numéro), 10 000 au plus. getpwent n'est pas réentrant : un seul
-/// fil à la fois, par un verrou.
-pub(crate) fn comptes() -> Vec<(String, u32)> {
+/// Les comptes et les sessions lus au plus : `comptes` et `sessions_ouvertes` disent si la liste est coupée.
+pub(crate) const ENTREES_MAX: usize = 10_000;
+
+/// Les comptes de l'annuaire local (getpwent) : (nom, numéro), `ENTREES_MAX` au plus, et si la liste est coupée (une
+/// liste coupée n'est jamais prise pour complète). getpwent n'est pas réentrant : un seul fil à la fois, par un verrou.
+pub(crate) fn comptes() -> (Vec<(String, u32)>, bool) {
     static VERROU: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _garde = VERROU.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut liste = Vec::new();
+    let mut coupee = false;
     // SAFETY : setpwent, getpwent et endpwent dans ce seul fil (verrou) ; l'entrée rendue reste valable jusqu'à
     // l'appel suivant et elle est lue tout de suite (pointeur non nul vérifié, chaîne C terminée par un nul).
     unsafe {
         libc::setpwent();
-        while liste.len() < 10_000 {
+        loop {
             let e = libc::getpwent();
             if e.is_null() {
+                break;
+            }
+            if liste.len() >= ENTREES_MAX {
+                coupee = true;
                 break;
             }
             if !(*e).pw_name.is_null() {
@@ -188,7 +196,7 @@ pub(crate) fn comptes() -> Vec<(String, u32)> {
         }
         libc::endpwent();
     }
-    liste
+    (liste, coupee)
 }
 
 /// Une session ouverte, celle que montre `who`.
@@ -201,8 +209,9 @@ pub(crate) struct Session {
     pub depuis: String,
 }
 
-/// Les sessions ouvertes (getutxent, USER_PROCESS), ce que liste `who`.
-pub(crate) fn sessions_ouvertes() -> Vec<Session> {
+/// Les sessions ouvertes (getutxent, USER_PROCESS), ce que liste `who`, `ENTREES_MAX` au plus, et si la liste est
+/// coupée.
+pub(crate) fn sessions_ouvertes() -> (Vec<Session>, bool) {
     static VERROU: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _garde = VERROU.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let texte = |c: &[c_char]| {
@@ -212,12 +221,13 @@ pub(crate) fn sessions_ouvertes() -> Vec<Session> {
         String::from_utf8_lossy(&o[..fin]).into_owned()
     };
     let mut liste = Vec::new();
+    let mut coupee = false;
     // SAFETY : setutxent, getutxent et endutxent dans ce seul fil (verrou) ; l'entrée rendue reste valable jusqu'à
     // l'appel suivant, lue tout de suite (pointeur non nul vérifié) ; ses champs sont des tableaux de taille fixe,
     // lus jusqu'au premier nul ou à leur fin.
     unsafe {
         libc::setutxent();
-        while liste.len() < 10_000 {
+        loop {
             let e = libc::getutxent();
             if e.is_null() {
                 break;
@@ -225,6 +235,10 @@ pub(crate) fn sessions_ouvertes() -> Vec<Session> {
             let e = &*e;
             if e.ut_type != libc::USER_PROCESS {
                 continue;
+            }
+            if liste.len() >= ENTREES_MAX {
+                coupee = true;
+                break;
             }
             liste.push(Session {
                 compte: texte(&e.ut_user),
@@ -237,7 +251,7 @@ pub(crate) fn sessions_ouvertes() -> Vec<Session> {
         }
         libc::endutxent();
     }
-    liste
+    (liste, coupee)
 }
 
 /// Un processus lu au noyau. Les champs que le noyau réserve au compte du processus (arguments) manquent pour les

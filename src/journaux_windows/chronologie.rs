@@ -54,7 +54,7 @@ pub(crate) struct Periode {
 /// Le journal dont parle un manque, pour ceux que la lecture elle-même ne dit pas (`Periode::etat`).
 fn journal_du_manque(m: &Manque) -> Option<&str> {
     match m {
-        Manque::Vide(j) | Manque::Desactive(j) => Some(j),
+        Manque::Vide(j) | Manque::VideCalme(j) | Manque::Desactive(j) => Some(j),
         Manque::Muet { journal, .. }
         | Manque::AuditReduit { journal }
         | Manque::NonVerifies { journal, .. }

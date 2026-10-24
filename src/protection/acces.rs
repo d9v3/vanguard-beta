@@ -893,7 +893,11 @@ fn lire_tcc(octets: &[u8]) -> Option<Vec<Acces>> {
                     "kTCCServiceAddressBook" => Permission::Contacts,
                     _ => return None,
                 };
-                let source = match l[2].entier().or_else(|| l[3].entier().map(|a| a.saturating_mul(2)))? {
+                // Lus comme tccd les lit : un texte rangé dans une colonne d'entiers compte par son début numérique.
+                let source = match l[2]
+                    .entier_lu()
+                    .or_else(|| l[3].entier_lu().map(|a| a.saturating_mul(2)))?
+                {
                     2 => tr!("autorisée", "allowed"),
                     3 => tr!("autorisée en partie", "partly allowed"),
                     _ => return None,

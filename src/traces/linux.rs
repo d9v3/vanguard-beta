@@ -639,12 +639,16 @@ fn releve_utmp(
     }
 }
 
+/// Les sessions de logind lues au plus.
+const SESSIONS_MAX: usize = 1000;
+
 /// Les sessions de systemd (logind) par le client D-Bus maison : ListSessions, puis les propriétés de chacune.
 /// Rend les identifiants lus ; `None` : illisible, la raison écrite dans la feuille.
 fn sessions_logind(f: &mut Feuille) -> Option<Vec<String>> {
     use crate::machine::linux::dbus;
     const LOGIN1: &str = "org.freedesktop.login1";
     f.section("logind : ListSessions (lu par Vanguard / read by Vanguard)");
+    let mut coupees = 0usize;
     let r = dbus::Bus::systeme().and_then(|mut bus| {
         let liste = bus.appeler(
             LOGIN1,
@@ -656,13 +660,9 @@ fn sessions_logind(f: &mut Feuille) -> Option<Vec<String>> {
         )?;
         let mut lignes = Vec::new();
         let mut ids = Vec::new();
-        for s in liste
-            .first()
-            .map(dbus::Valeur::elements)
-            .unwrap_or_default()
-            .iter()
-            .take(1000)
-        {
+        let toutes = liste.first().map(dbus::Valeur::elements).unwrap_or_default();
+        coupees = toutes.len().saturating_sub(SESSIONS_MAX);
+        for s in toutes.iter().take(SESSIONS_MAX) {
             let m = s.elements();
             let (Some(id), Some(chemin)) = (
                 m.first().and_then(dbus::Valeur::texte),
@@ -708,6 +708,16 @@ fn sessions_logind(f: &mut Feuille) -> Option<Vec<String>> {
         Ok((lignes, ids)) => {
             f.ajouter(&lignes.join("\n"));
             f.lues += 1;
+            // Plus de sessions que la borne : la liste est coupée, et c'est dit (une session qui manque ici n'est pas
+            // une session absente).
+            if coupees > 0 {
+                let raison = Raison::Entrees(SESSIONS_MAX);
+                f.ajouter(&raison.note());
+                f.manques.push(Manque {
+                    quoi: Bi::new("Sessions de logind", "logind sessions"),
+                    raison,
+                });
+            }
             Some(ids)
         }
         Err(e) => {

@@ -217,7 +217,7 @@ pub(crate) fn compter_lignes(octets: &[u8], table: &str) -> Option<usize> {
 
 // ───────────────────────────── Lire des colonnes ─────────────────────────────
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) use colonnes::Valeur;
 /// La lecture des colonnes ne sert qu'à macOS (TCC.db) ; ailleurs, seulement aux essais et au banc de fuzzing
 /// (fuzz/, où cargo-fuzz pose `--cfg fuzzing`).
@@ -251,6 +251,31 @@ mod colonnes {
         pub(crate) fn texte(&self) -> Option<&str> {
             match self {
                 Valeur::Texte(t) => Some(t),
+                _ => None,
+            }
+        }
+
+        /// L'entier que lirait un programme qui demande un entier à SQLite (sqlite3_column_int) : un entier tel quel,
+        /// et un texte par son début numérique (blancs, signe, chiffres ; aucun chiffre : 0). Une colonne INTEGER
+        /// accepte un texte qui ne se convertit pas : lu comme entier seulement, « 2 » ou « 2x » rangé en texte
+        /// échappait au contrôle, alors que le programme qui le lit y voit 2. `None` : nul, ou d'un autre type.
+        #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))] // bases TCC du Mac
+        pub(crate) fn entier_lu(&self) -> Option<i64> {
+            match self {
+                Valeur::Entier(n) => Some(*n),
+                Valeur::Texte(t) => {
+                    let t = t.trim_start_matches([' ', '\t', '\n', '\r', '\x0b', '\x0c']);
+                    let (negatif, chiffres) = match t.as_bytes().first() {
+                        Some(b'-') => (true, &t[1..]),
+                        Some(b'+') => (false, &t[1..]),
+                        _ => (false, t),
+                    };
+                    let mut n: i64 = 0;
+                    for c in chiffres.bytes().take_while(u8::is_ascii_digit) {
+                        n = n.saturating_mul(10).saturating_add(i64::from(c - b'0'));
+                    }
+                    Some(if negatif { -n } else { n })
+                }
                 _ => None,
             }
         }

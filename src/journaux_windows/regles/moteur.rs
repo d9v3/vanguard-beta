@@ -344,6 +344,10 @@ pub(crate) enum Manque {
     /// Le journal a été lu mais n'a rien donné sur la période (Security et System écrivent sans cesse sur un
     /// ordinateur en marche) : vidé, remplacé, ou sa politique d'audit coupée.
     Vide(String),
+    /// Un journal calme (PowerShell, BITS, WMI, Defender…), présent et lu, mais sans un seul événement sur la période :
+    /// rien n'y a été vérifié. Courant (un journal où rien ne s'est passé), mais un journal vidé ressemble à cela :
+    /// pas de ✔ pour ses règles, sans alerte.
+    VideCalme(String),
     /// Le journal se tait depuis cette date alors que d'autres écrivent encore : service des journaux bloqué,
     /// audit coupé.
     Muet { journal: String, depuis: DateTime<Utc> },
@@ -770,7 +774,8 @@ impl Moteur {
                         sans_objet = trouvailles.is_empty();
                         if sans_objet {
                             // Un journal de Defender absent va de soi sans lui ; une lecture partielle reste dite.
-                            manques.retain(|m| !matches!(m, Manque::Absent(_) | Manque::Vide(_)));
+                            manques
+                                .retain(|m| !matches!(m, Manque::Absent(_) | Manque::Vide(_) | Manque::VideCalme(_)));
                         }
                     }
                     Some(true) => {}
@@ -882,8 +887,12 @@ fn lecture(
     // Les journaux qui écrivent sans cesse sur un ordinateur en marche : leur plus ancien événement après le début
     // demandé dit qu'il manque le début. Un journal calme (BITS, WMI) peut n'avoir simplement rien écrit avant.
     let actif = journal.eq_ignore_ascii_case("Security") || journal.eq_ignore_ascii_case("System");
-    if actif && lu && stat.evenements == 0 {
-        m.push(Manque::Vide(journal.to_string()));
+    if lu && stat.evenements == 0 {
+        m.push(if actif {
+            Manque::Vide(journal.to_string())
+        } else {
+            Manque::VideCalme(journal.to_string())
+        });
     }
     // Un journal qui écrit sans cesse et se tait depuis plus d'un jour quand d'autres écrivent encore.
     if let (true, Some(dernier), Some(recent)) = (actif, stat.dernier, plus_recent)

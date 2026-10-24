@@ -1053,7 +1053,11 @@ pub(crate) fn hebdomadaire_en_fond(constats: &[Constat]) {
         return;
     }
     #[cfg(target_os = "linux")]
-    if crate::machine::linux::dbus::gamemode_actif() == Some(true) {
+    if reporter(
+        dernier().as_ref(),
+        chrono::Utc::now(),
+        crate::machine::linux::dbus::gamemode_actif(),
+    ) {
         return;
     }
     let constats = constats.to_vec();
@@ -1074,6 +1078,17 @@ pub(crate) fn attendre_hebdomadaire() {
     if let Some(f) = fil {
         let _ = f.join();
     }
+}
+
+/// Reporter l'autotest dû parce qu'un jeu tourne ? Seulement une semaine de plus : un programme qui ferait croire à
+/// un jeu sans fin (ou un jeu jamais quitté) ne le repousse pas pour toujours ; au-delà de deux semaines depuis le
+/// dernier, il est lancé quand même (en fond, sans notification, comme toujours). Sans dernier autotest lisible,
+/// jamais reporté : rien ne dit depuis quand il attend.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn reporter(d: Option<&Dernier>, maintenant: chrono::DateTime<chrono::Utc>, jeu: Option<bool>) -> bool {
+    jeu == Some(true)
+        && d.and_then(|d| date(&d.quand))
+            .is_some_and(|q| maintenant - q < chrono::Duration::days(2 * SEMAINE))
 }
 
 /// L'hebdomadaire est-il dû ? Oui sans dernier autotest lisible (absent, changé hors de Vanguard : une date forgée ne
@@ -1101,6 +1116,22 @@ fn hebdomadaire(constats: &[Constat]) {
 mod tests {
     use super::*;
     use crate::machine::{alerte, impossible_par, ok};
+
+    /// Un jeu en cours (ou un faux GameMode) reporte l'autotest dû d'une semaine au plus ; sans dernier lisible, jamais.
+    #[test]
+    fn report_borne_pendant_un_jeu() {
+        let maintenant = chrono::Utc::now();
+        let il_y_a = |jours: i64| Dernier {
+            quand: (maintenant - chrono::Duration::days(jours)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            verdict: "ok".into(),
+            contredites: Vec::new(),
+        };
+        assert!(reporter(Some(&il_y_a(8)), maintenant, Some(true)));
+        assert!(!reporter(Some(&il_y_a(8)), maintenant, Some(false)));
+        assert!(!reporter(Some(&il_y_a(8)), maintenant, None));
+        assert!(!reporter(Some(&il_y_a(15)), maintenant, Some(true)));
+        assert!(!reporter(None, maintenant, Some(true)));
+    }
 
     fn constat(regle: &'static str, c: Constat) -> Constat {
         Constat { regle, ..c }

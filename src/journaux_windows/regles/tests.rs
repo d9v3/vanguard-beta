@@ -79,9 +79,11 @@ fn options() -> Options {
 }
 
 /// Ce qu'écrit tout ordinateur en marche : une ouverture de session d'un service (Security) et un service démarré
-/// (System). Sans eux, Security et System lus mais vides rendent leurs règles non vérifiées (`Manque::Vide`).
+/// (System). Sans eux, Security et System lus mais vides rendent leurs règles non vérifiées (`Manque::Vide`). Et un
+/// événement sans conséquence dans chaque autre journal : lu mais vide, un journal calme rend lui aussi ses règles non
+/// vérifiées (`Manque::VideCalme`).
 fn ordinaire() -> Vec<EvenementWindows> {
-    vec![
+    let mut v = vec![
         sec(4624, 0, &[("LogonType", "5"), ("TargetUserName", "SYSTEM")]),
         ev(
             "System",
@@ -90,7 +92,14 @@ fn ordinaire() -> Vec<EvenementWindows> {
             0,
             &[("param1", "Windows Update"), ("param2", "running")],
         ),
-    ]
+    ];
+    v.extend(
+        JOURNAUX
+            .iter()
+            .filter(|j| !matches!(**j, "Security" | "System"))
+            .map(|j| ev(j, "Microsoft-Windows-Essai", 65_000, 0, &[])),
+    );
+    v
 }
 
 fn juger_nu(evs: &[EvenementWindows], etats: &[EtatJournal], options: Options) -> Vec<Jugement> {
@@ -1377,6 +1386,39 @@ fn periode_plus_courte_que_demandee() {
         },
     );
     assert!(regle(&js, "EVT-BIT-001").verifie());
+}
+
+/// La preuve de la campagne d'attaque n° 3 : des journaux « Operational » présents, lus, mais vides rendaient vertes
+/// les règles qui n'ont de volets que sur eux (PowerShell, BITS, WMI, Defender). Désormais : non vérifiées, avec la
+/// raison (journal présent mais vide), sans alerte.
+#[test]
+fn journal_calme_vide_n_est_pas_verifie() {
+    let evs = [
+        sec(4624, 0, &[("LogonType", "5"), ("TargetUserName", "SYSTEM")]),
+        ev(
+            "System",
+            SCM,
+            7036,
+            0,
+            &[("param1", "Windows Update"), ("param2", "running")],
+        ),
+    ];
+    let js = juger_nu(&evs, &tout_lu(), options());
+    for id in ["EVT-PSH-001", "EVT-BIT-001", "EVT-WMI-001", "EVT-DEF-001"] {
+        let j = regle(&js, id);
+        assert!(!j.verifie(), "{id}");
+        assert!(j.trouvailles.is_empty(), "{id}");
+        assert!(
+            j.manques.iter().any(|m| matches!(m, Manque::VideCalme(_))),
+            "{id} : {:?}",
+            j.manques
+        );
+    }
+    // Un événement dans chacun : vérifiées.
+    let js = juger(&[]);
+    for id in ["EVT-PSH-001", "EVT-BIT-001", "EVT-WMI-001", "EVT-DEF-001"] {
+        assert!(regle(&js, id).verifie(), "{id} : {:?}", regle(&js, id).manques);
+    }
 }
 
 #[test]

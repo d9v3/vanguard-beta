@@ -429,6 +429,13 @@ pub(crate) fn manque(source: &Source, m: &Manque) -> (String, Raison) {
             );
             (t.clone(), Raison::Echoue(t))
         }
+        Manque::VideCalme(j) => {
+            let t = crate::trf!(
+                "journal {j} présent mais vide sur la période : rien n'y est vérifié (courant si rien ne s'est passé ; un journal vidé ressemble à cela)",
+                "log {j} present but empty over the period: nothing in it is checked (common if nothing happened; a cleared log looks the same)"
+            );
+            (t.clone(), Raison::Echoue(t))
+        }
         Manque::Muet { journal, depuis } => {
             let t = crate::trf!(
                 "journal {journal} muet depuis le {} alors que d'autres écrivent encore : service des journaux bloqué ou audit coupé",

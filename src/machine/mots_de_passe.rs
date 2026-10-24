@@ -32,6 +32,9 @@ pub(super) fn compter_firefox(texte: &str) -> Option<usize> {
 
 // ───────────────────────────── Les profils ─────────────────────────────
 
+/// La taille de logins.json lue au plus : quelques Ko par identifiant, des milliers d'identifiants tiennent dedans.
+const LOGINS_MAX: u64 = 32 << 20;
+
 /// Les profils des navigateurs installés et ce qu'ils gardent ; `Err` : le fichier existe mais ne se lit pas.
 fn profils() -> Vec<Result<Profil, (String, String)>> {
     let mut liste = Vec::new();
@@ -42,7 +45,12 @@ fn profils() -> Vec<Result<Profil, (String, String)>> {
                 if !f.is_file() {
                     continue;
                 }
-                match std::fs::read_to_string(&f).ok().and_then(|t| compter_firefox(&t)) {
+                // Un simple fichier, borné : un fichier creux énorme ou un tube posé là par un programme du compte ne
+                // remplit pas la mémoire et ne fige pas le bilan ; il est dit illisible.
+                let texte = crate::socle::lire_ordinaire(&f, LOGINS_MAX)
+                    .ok()
+                    .map(|o| String::from_utf8_lossy(&o).into_owned());
+                match texte.and_then(|t| compter_firefox(&t)) {
                     Some(n) => liste.push(Ok(Profil {
                         navigateur,
                         nom,
