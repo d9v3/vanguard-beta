@@ -1099,21 +1099,31 @@ fn demarrage() {
         }
     }
 
+    // Windows : clés Run et RunOnce (winreg), dossiers Démarrage, tâches planifiées hors \Microsoft\ (ITaskService),
+    // sans PowerShell ; Get-ScheduledTask seulement si le planificateur ne répond pas. Ce qui n'a pas été lu est dit.
     #[cfg(windows)]
-    {
-        use crate::machine::windows::ps;
-        let script = tr!(
-            "Get-CimInstance Win32_StartupCommand | ForEach-Object { \"$($_.Name) — $($_.Command)\" }; \
-                      Get-ScheduledTask | Where-Object { $_.TaskPath -notlike '\\Microsoft\\*' -and $_.State -ne 'Disabled' } | \
-                      ForEach-Object { \"tâche planifiée : $($_.TaskName) — $($_.Actions.Execute)\" }",
-            "Get-CimInstance Win32_StartupCommand | ForEach-Object { \"$($_.Name) — $($_.Command)\" }; \
-                      Get-ScheduledTask | Where-Object { $_.TaskPath -notlike '\\Microsoft\\*' -and $_.State -ne 'Disabled' } | \
-                      ForEach-Object { \"scheduled task: $($_.TaskName) — $($_.Actions.Execute)\" }"
-        );
-        entrees.extend(ps(script).unwrap_or_default().lines().map(affichable));
-    }
+    let non_lus = {
+        let (lignes, mut non_lus) = demarrage_windows();
+        entrees.extend(lignes);
+        std::mem::take(&mut non_lus)
+    };
+    #[cfg(not(windows))]
+    let non_lus: Vec<String> = Vec::new();
 
-    if entrees.is_empty() {
+    if !non_lus.is_empty() {
+        let liste = non_lus.join(", ");
+        afficher_aligne(
+            "  ",
+            &trf!(
+                "Non vérifié : {liste} (illisible d'ici) ; la liste ci-dessous peut être incomplète.",
+                "Not verified: {liste} (unreadable from here); the list below may be incomplete."
+            ),
+            2,
+            GRIS,
+        );
+    }
+    // « Rien de particulier » seulement quand tout a été lu : une source illisible ne passe pas pour vide.
+    if entrees.is_empty() && non_lus.is_empty() {
         trp!(
             "  {VERT}✔{RESET} Rien de particulier.",
             "  {VERT}✔{RESET} Nothing special."
@@ -1135,6 +1145,79 @@ fn demarrage() {
         2,
         GRIS,
     );
+}
+
+/// Ce qui se lance à l'ouverture de session sous Windows, lu sans PowerShell : (lignes à montrer, sources non lues).
+/// Win32_StartupCommand lisait les mêmes clés et dossiers (en administrateur, aussi les clés Run des autres comptes
+/// ouverts, qui manquent ici).
+#[cfg(windows)]
+fn demarrage_windows() -> (Vec<String>, Vec<String>) {
+    let mut lignes = Vec::new();
+    let (run, cles_non_lues) = crate::machine::windows::persistance::lignes_run();
+    let mut non_lus: Vec<String> = cles_non_lues.iter().map(|c| (*c).to_string()).collect();
+    for v in run {
+        let nom = if v.nom.is_empty() {
+            tr!("(par défaut)", "(default)").to_string()
+        } else {
+            affichable(&v.nom)
+        };
+        lignes.push(format!("{nom} — {}", affichable(&v.valeur)));
+    }
+    for (variable, sous_dossier) in [
+        ("APPDATA", r"Microsoft\Windows\Start Menu\Programs\Startup"),
+        ("ProgramData", r"Microsoft\Windows\Start Menu\Programs\StartUp"),
+    ] {
+        let Some(base) = std::env::var_os(variable) else {
+            non_lus.push(trf!(
+                "dossier Démarrage (%{variable}% inconnu)",
+                "Startup folder (%{variable}% unknown)"
+            ));
+            continue;
+        };
+        let dossier = std::path::PathBuf::from(base).join(sous_dossier);
+        match std::fs::read_dir(&dossier) {
+            Ok(fichiers) => {
+                for f in fichiers.flatten() {
+                    let nom = f.file_name().to_string_lossy().into_owned();
+                    // desktop.ini : la mise en forme du dossier par l'Explorateur, rien qui se lance.
+                    if !nom.eq_ignore_ascii_case("desktop.ini") {
+                        lignes.push(trf!(
+                            "{} (dossier Démarrage)",
+                            "{} (Startup folder)",
+                            chemin_affichable(&f.path())
+                        ));
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => non_lus.push(chemin_affichable(&dossier)),
+        }
+    }
+    if let Some(taches) = crate::machine::windows::planificateur::taches() {
+        for t in taches {
+            // « dossier|nom|programme|arguments » : le nom et le programme, comme le script les montrait.
+            let mut champs = t.splitn(4, '|').skip(1);
+            let (nom, programme) = (champs.next().unwrap_or_default(), champs.next().unwrap_or_default());
+            lignes.push(trf!(
+                "tâche planifiée : {} — {}",
+                "scheduled task: {} — {}",
+                affichable(nom),
+                affichable(programme)
+            ));
+        }
+    } else {
+        let script = tr!(
+            "Get-ScheduledTask | Where-Object { $_.TaskPath -notlike '\\Microsoft\\*' -and $_.State -ne 'Disabled' } | \
+             ForEach-Object { \"tâche planifiée : $($_.TaskName) — $($_.Actions.Execute)\" }",
+            "Get-ScheduledTask | Where-Object { $_.TaskPath -notlike '\\Microsoft\\*' -and $_.State -ne 'Disabled' } | \
+             ForEach-Object { \"scheduled task: $($_.TaskName) — $($_.Actions.Execute)\" }"
+        );
+        match crate::machine::windows::ps(script) {
+            Some(sortie) => lignes.extend(sortie.lines().filter(|l| !l.trim().is_empty()).map(affichable)),
+            None => non_lus.push(tr!("tâches planifiées", "scheduled tasks").to_string()),
+        }
+    }
+    (lignes, non_lus)
 }
 
 #[cfg(test)]

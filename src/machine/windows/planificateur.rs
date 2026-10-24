@@ -22,7 +22,7 @@ const DOSSIERS_MAX: usize = 10_000;
 /// lecture : PowerShell prend le relais, jamais une liste partielle qui passerait pour saine. Même chose sans le
 /// dossier \Microsoft, que tout Windows a : un planificateur qui ne le montre pas ne montre rien (celui de Wine rend
 /// des listes vides sans erreur, GetTasks n'y étant qu'une ébauche).
-pub(super) fn taches() -> Option<Vec<String>> {
+pub(crate) fn taches() -> Option<Vec<String>> {
     wmi::com("Tâches planifiées", "ITaskService", lire)
 }
 
