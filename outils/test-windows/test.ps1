@@ -1244,21 +1244,26 @@ if (Test-Path -LiteralPath $lanceur) {
     if (Test-Path -LiteralPath $essai) { Remove-Item -LiteralPath $essai -Recurse -Force }
     New-Item -ItemType Directory -Path $essai | Out-Null
     Copy-Item -LiteralPath $lanceur $essai -Force
+    # Un powershell.exe posé à côté du lanceur (la racine de la clé, son dossier courant) : hostname.exe, qui rend 0.
+    # Lancé à la place du vrai, le refus ne serait pas dit (code 0) : PowerShell doit venir de System32.
+    Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\HOSTNAME.EXE') (Join-Path $essai 'powershell.exe') -Force
     $defLanceur = (Get-MpPreference | Select-Object ExclusionPath, ControlledFolderAccessAllowedApplications | Out-String)
-    $sortieLanceur = 'N' | cmd /c "`"$(Join-Path $essai 'Lancer Vanguard.bat')`"" 2>&1 | Out-String
+    # Depuis son dossier, comme un double-clic : c'est là que cmd chercherait un programme nommé sans chemin.
+    $sortieLanceur = 'N' | cmd /c "pushd `"$essai`" && call `"$(Join-Path $essai 'Lancer Vanguard.bat')`"" 2>&1 | Out-String
     $codeLanceur = $LASTEXITCODE
     Set-Content -Path (Join-Path $res 'lanceur.out.txt') -Value $sortieLanceur -Encoding UTF8
-    if ($sortieLanceur -match 'Windows could not start Vanguard') { Ok 'Refus expliqué' } else { Bug 'Refus PAS expliqué' }
+    if ($sortieLanceur -match 'Windows could not start Vanguard') { Ok 'Refus expliqué (PowerShell de System32, pas celui de la clé)' } else { Bug 'Refus PAS expliqué (le powershell.exe de la clé lancé ?)' }
     if ($sortieLanceur -match 'Checksum unreadable') { Ok 'Empreinte dite illisible, programme absent' } else { Bug 'Empreinte : rien dit pour un programme absent' }
     if ($codeLanceur -eq 1) { Ok 'Code 1 quand Vanguard ne démarre pas' } else { Bug "Code $codeLanceur au lieu de 1" }
-    # PowerShell introuvable (PATH vidé, comme sur un poste où il est retiré ; le lanceur cherché à côté du .bat
-    # d'essai, pas dans le dossier courant de PowerShell) : un autre message, jamais celui de
-    # Defender, qui ferait chercher une alerte qui n'existe pas.
-    Set-Content -LiteralPath (Join-Path $essai 'sans-powershell.bat') -Value "@set PATH=`r`n@call `"%~dp0Lancer Vanguard.bat`"" -Encoding ASCII
-    $sortieSansPs = 'N' | cmd /c "`"$(Join-Path $essai 'sans-powershell.bat')`"" 2>&1 | Out-String
+    # PowerShell introuvable : le lanceur le prend dans System32 par son chemin complet, donc SystemRoot et windir
+    # pointés sur un dossier sans System32, comme un poste où il est retiré (le lanceur cherché à côté du .bat d'essai,
+    # pas dans le dossier courant de PowerShell). Un autre message, jamais celui de Defender, qui ferait chercher une
+    # alerte qui n'existe pas ; et pas le powershell.exe posé à côté.
+    Set-Content -LiteralPath (Join-Path $essai 'sans-powershell.bat') -Value "@set `"SystemRoot=%~dp0sans-systeme`"`r`n@set `"windir=%~dp0sans-systeme`"`r`n@call `"%~dp0Lancer Vanguard.bat`"" -Encoding ASCII
+    $sortieSansPs = 'N' | cmd /c "pushd `"$essai`" && call `"$(Join-Path $essai 'sans-powershell.bat')`"" 2>&1 | Out-String
     $codeSansPs = $LASTEXITCODE
     Set-Content -Path (Join-Path $res 'lanceur-sans-powershell.out.txt') -Value $sortieSansPs -Encoding UTF8
-    if ($sortieSansPs -match 'PowerShell is missing or blocked' -and $sortieSansPs -notmatch 'Windows could not start Vanguard') { Ok 'PowerShell absent : dit, sans accuser Defender' } else { Bug 'PowerShell absent : pris pour un blocage de Defender, ou rien dit' }
+    if ($sortieSansPs -match 'PowerShell is missing or blocked on this computer \(code introuvable\)' -and $sortieSansPs -notmatch 'Windows could not start Vanguard') { Ok 'PowerShell absent : dit, sans accuser Defender' } else { Bug 'PowerShell absent : pris pour un blocage de Defender, ou rien dit' }
     if ($codeSansPs -eq 1) { Ok 'Code 1 sans PowerShell' } else { Bug "Code $codeSansPs au lieu de 1 sans PowerShell" }
     if ((Get-MpPreference | Select-Object ExclusionPath, ControlledFolderAccessAllowedApplications | Out-String) -eq $defLanceur) { Ok 'Defender pas touché' } else { Bug 'Defender modifié par le lanceur' }
     Remove-Item -LiteralPath $essai -Recurse -Force -ErrorAction SilentlyContinue

@@ -117,7 +117,9 @@ delivered just before it. Only the latest version has its download page; every v
 - **Key tools in Rust.** At deployment, Vanguard itself checks the shipped vanguard.exe (DLLs loaded from System32,
   manifest read where Windows reads it), writes the key's markers and puts fully checked tldr-pages archives on it
   (CRC-32 of each entry, no overlap): no more Python at deployment. CI compiles the original YARA rules with the
-  program's own engine. The key launcher no longer mistakes a missing or blocked PowerShell for a Defender block.
+  program's own engine. The key launcher no longer mistakes a missing or blocked PowerShell for a Defender block, and
+  calls PowerShell (and the other Windows programs) by its full path in System32: a powershell.exe dropped at the root
+  of the key is no longer started in its place.
 
 ## October 23, 2026: version 0.86
 

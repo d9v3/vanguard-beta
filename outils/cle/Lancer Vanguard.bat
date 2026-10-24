@@ -3,13 +3,28 @@ rem Lance Vanguard dans sa propre fenetre (Windows ne lance rien tout seul depui
 rem Si Windows refuse (Defender l'a bloque, faux positif), le dit et propose d'ouvrir Securite Windows : c'est la
 rem personne qui decide d'autoriser Vanguard, dans l'outil de Microsoft. Ce lanceur ne touche jamais a Defender.
 setlocal
-chcp 65001 >nul
+rem Une commande nommee sans chemin, cmd la cherche d'abord dans le dossier courant : la racine de la cle, ou
+rem n'importe qui peut poser un powershell.exe ou un chcp.com. Chaque programme est donc appele par son chemin complet
+rem dans System32, et cette variable retire en plus le dossier courant de la recherche (NeedCurrentDirectoryForExePath).
+set "NoDefaultCurrentDirectoryInExePath=1"
+rem System32 lu dans SystemRoot, sinon windir, et seulement s'il a la forme d'un chemin absolu X:\... : vide ou relatif,
+rem il designerait la cle elle-meme. Un cmd 32 bits voit SysWOW64 a sa place, qui a les memes programmes en 32 bits.
+set "SYS="
+call :systeme SystemRoot
+if not defined SYS call :systeme windir
+if defined SYS "%SYS%\chcp.com" 65001 >nul
 set "VANGUARD=%~dp0Windows\vanguard.exe"
+set "PS="
+if defined SYS set "PS=%SYS%\WindowsPowerShell\v1.0\powershell.exe"
+rem Introuvable, il n'est pas appele : cmd rendrait 9009 ou 3 (chemin introuvable), et 3 doit rester le refus de Windows.
+set "CODE=introuvable"
+if not defined PS goto sans_powershell
+if not exist "%PS%" goto sans_powershell
 rem Start-Process echoue si le fichier manque ou si Windows refuse de le lancer (virus detecte, erreur 225) : code 3,
-rem le seul qui veut dire « Windows a refuse Vanguard ». Tout autre code non nul vient de PowerShell lui-meme : absent
-rem (9009, dit par cmd), bloque par une strategie (AppLocker, restriction logicielle) ou arrete avant la commande. Ce
-rem n'est alors pas Defender, et le dire ferait chercher une alerte qui n'existe pas.
-powershell -NoProfile -NonInteractive -Command "try { Start-Process -FilePath $env:VANGUARD -ErrorAction Stop } catch { exit 3 }; exit 0"
+rem le seul qui veut dire « Windows a refuse Vanguard ». Tout autre code non nul vient de PowerShell lui-meme : bloque
+rem par une strategie (AppLocker, restriction logicielle) ou arrete avant la commande. Ce n'est alors pas Defender, et
+rem le dire ferait chercher une alerte qui n'existe pas.
+"%PS%" -NoProfile -NonInteractive -Command "try { Start-Process -FilePath $env:VANGUARD -ErrorAction Stop } catch { exit 3 }; exit 0"
 set "CODE=%errorlevel%"
 if "%CODE%"=="0" exit /b 0
 if not "%CODE%"=="3" goto sans_powershell
@@ -29,11 +44,13 @@ echo   SHA-256 doit être celle de vanguard-windows-x86_64.exe dans SHA256SUMS.t
 echo   version de Vanguard. Sinon, n'autorisez rien.
 echo   Before allowing anything, check this is the real Vanguard: this SHA-256 checksum must match
 echo   vanguard-windows-x86_64.exe in SHA256SUMS.txt, on Vanguard's release page. Otherwise, allow nothing.
+rem certutil et findstr par leur chemin complet eux aussi ; « call » en tete, pour que la ligne ne commence pas par un
+rem guillemet, que cmd /c retirerait avec le dernier.
 set "EMPREINTE="
-for /f "delims=" %%l in ('certutil -hashfile "%VANGUARD%" SHA256 2^>nul ^| findstr /v ":"') do if not defined EMPREINTE set "EMPREINTE=%%l"
+for /f "delims=" %%l in ('call "%SYS%\certutil.exe" -hashfile "%VANGUARD%" SHA256 2^>nul ^| "%SYS%\findstr.exe" /v ":"') do if not defined EMPREINTE set "EMPREINTE=%%l"
 if defined EMPREINTE (echo   SHA-256 : %EMPREINTE%) else (echo   Empreinte illisible : programme absent ou verrouillé. / Checksum unreadable: program missing or locked.)
 echo.
-choice /c OYN /n /m "  Ouvrir Sécurité Windows ? / Open Windows Security? [O/Y = oui/yes, N = non/no] "
+"%SYS%\choice.exe" /c OYN /n /m "  Ouvrir Sécurité Windows ? / Open Windows Security? [O/Y = oui/yes, N = non/no] "
 if errorlevel 3 exit /b 1
 start "" "windowsdefender://threat"
 echo.
@@ -62,3 +79,27 @@ echo   You can start Vanguard yourself: Windows\vanguard.exe, on this key.
 echo.
 pause
 exit /b 1
+
+:systeme
+rem %1 : le nom d'une variable (SystemRoot, windir). SYS recoit son dossier System32 seulement si elle commence par
+rem une lettre, deux-points et une barre oblique inverse, sans guillemet ni caractere special de cmd : sa valeur est
+rem ensuite developpee sans guillemets autour (echo, for), ou elle lancerait une autre commande.
+setlocal EnableDelayedExpansion
+set "R=!%~1!"
+if not defined R (endlocal & exit /b 1)
+set "S=!R:"=!"
+set "S=!S:&=!"
+set "S=!S:|=!"
+set "S=!S:<=!"
+set "S=!S:>=!"
+set "S=!S:(=!"
+set "S=!S:)=!"
+set "S=!S:%%=!"
+if not "!S!"=="!R!" (endlocal & exit /b 1)
+if not "!R:~1,2!"==":\" (endlocal & exit /b 1)
+set "LETTRE="
+for %%L in (A B C D E F G H I J K L M N O P Q R S T U V W X Y Z) do if /i "!R:~0,1!"=="%%L" set "LETTRE=1"
+if not defined LETTRE (endlocal & exit /b 1)
+if "!R:~-1!"=="\" set "R=!R:~0,-1!"
+endlocal & set "SYS=%R%\System32"
+exit /b 0
