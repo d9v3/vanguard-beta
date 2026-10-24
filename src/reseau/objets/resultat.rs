@@ -20,6 +20,9 @@ const CAT: &str = "Appareils";
 
 type Debut = (chrono::DateTime<chrono::Utc>, std::time::Instant);
 
+/// Au-delà, le dernier scan est trop ancien pour conclure : des appareils ont pu arriver, d'autres changer.
+const SCAN_ANCIEN_JOURS: i64 = 30;
+
 /// L'objet d'un appareil : son adresse dans le réseau, ce que le carnet garde de lui sans langue.
 fn objet(a: &Appareil) -> Objet {
     Objet::de("appareil", &a.ip.to_string())
@@ -56,16 +59,30 @@ pub(super) fn resultat(appareils: Option<&[Appareil]>, debut: Debut) -> Resultat
     let mut reconnus: Vec<(Genre, &Appareil)> = appareils.iter().filter_map(|a| Some((genre(a)?, a))).collect();
     reconnus.sort_by_key(|(g, a)| (*g, a.ip));
     let mut constats: Vec<Constat> = Vec::new();
-    // Le carnet dit ce que le dernier scan a vu, pas ce qui est là maintenant : sa date suit le résultat.
+    // Le carnet dit ce que le dernier scan a vu, pas ce qui est là maintenant : sa date suit le résultat. Trop
+    // ancien, il ne permet plus de conclure (un « sain » d'il y a un an n'en est pas un).
     if let Some(jour) = appareils.iter().filter_map(|a| a.dernier_vu.as_deref()).max() {
-        constats.push(ok(
-            CAT,
-            trf!(
-                "D'après le dernier scan, du {} : rien n'est sondé ici, un appareil arrivé depuis n'y est pas.",
-                "From the last scan, of {}: nothing is probed here, a device that arrived since is not in it.",
+        let age = chrono::NaiveDate::parse_from_str(jour, "%Y-%m-%d")
+            .ok()
+            .map(|d| (debut.0.date_naive() - d).num_days());
+        if age.is_some_and(|a| a > SCAN_ANCIEN_JOURS) {
+            let pourquoi = trf!(
+                "dernier scan du {} : trop ancien pour conclure (plus de {SCAN_ANCIEN_JOURS} jours) ; relancez « Scan du réseau » (vanguard appareils)",
+                "last scan of {}: too old to conclude (more than {SCAN_ANCIEN_JOURS} days); run “Network scan” again (vanguard devices)",
                 date_fr(jour)
-            ),
-        ));
+            );
+            constats.push(impossible_par(CAT, Raison::Introuvable, pourquoi.clone()));
+            non_verifies.push(pourquoi);
+        } else {
+            constats.push(ok(
+                CAT,
+                trf!(
+                    "D'après le dernier scan, du {} : rien n'est sondé ici, un appareil arrivé depuis n'y est pas.",
+                    "From the last scan, of {}: nothing is probed here, a device that arrived since is not in it.",
+                    date_fr(jour)
+                ),
+            ));
+        }
     }
     for (g, a) in &reconnus {
         let titre = if a.titre.is_empty() {
@@ -141,8 +158,10 @@ mod tests {
         }
     }
 
+    /// Un jour fixe, quatre jours après le scan des appareils d'essai : le test ne vieillit pas.
     fn debut() -> Debut {
-        (chrono::Utc::now(), std::time::Instant::now())
+        let jour = chrono::NaiveDate::from_ymd_opt(2026, 10, 24).unwrap();
+        (jour.and_hms_opt(12, 0, 0).unwrap().and_utc(), std::time::Instant::now())
     }
 
     #[test]
@@ -181,5 +200,22 @@ mod tests {
             "non-verifie",
             "routeur : mot de passe d'origine non vérifié"
         );
+    }
+
+    /// Un scan de plus de 30 jours ne permet plus de conclure : jamais sain, la raison dite.
+    #[test]
+    fn scan_ancien_non_verifie() {
+        let mut appareils = [appareil(30, false, Some("Nintendo Co.,Ltd"), &[])];
+        appareils[0].dernier_vu = Some("2025-10-20".into());
+        let r = resultat(Some(&appareils), debut());
+        assert_eq!(r.verdict(), "non-verifie");
+        assert!(
+            r.couverture.non_verifies.iter().any(|n| n.contains("trop ancien")),
+            "{:?}",
+            r.couverture.non_verifies
+        );
+        // Trente jours tout juste : encore assez récent.
+        appareils[0].dernier_vu = Some("2026-09-24".into());
+        assert_eq!(resultat(Some(&appareils), debut()).verdict(), "sain");
     }
 }
