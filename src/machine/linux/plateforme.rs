@@ -417,7 +417,7 @@ pub(super) fn journal_audit() -> Option<Constat> {
         .any(|p| Path::new(p).exists());
     let actif = installe
         && service_tourne_dans(&RACINES_CGROUP.map(Path::new), "auditd.service")
-            .unwrap_or_else(|| sortie("systemctl", &["is-active", "auditd"]).is_some_and(|s| s.trim() == "active"));
+            .unwrap_or_else(|| super::service_actif("auditd"));
     juger_journal_audit(installe, actif)
 }
 

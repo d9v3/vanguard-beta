@@ -1020,6 +1020,59 @@ pub(crate) fn unites_chargees(bus: &mut Bus) -> Result<HashMap<String, String>, 
         .collect())
 }
 
+/// Les suffixes d'unité que systemctl reconnaît : un autre nom (« sshd ») est un service.
+const SUFFIXES_D_UNITE: [&str; 11] = [
+    ".service",
+    ".socket",
+    ".target",
+    ".timer",
+    ".mount",
+    ".automount",
+    ".path",
+    ".slice",
+    ".scope",
+    ".device",
+    ".swap",
+];
+
+/// Le nom complet d'une unité, comme systemctl le complète : « sshd » → « sshd.service », « ssh.socket » tel quel.
+pub(crate) fn nom_d_unite(nom: &str) -> String {
+    if SUFFIXES_D_UNITE.iter().any(|s| nom.ends_with(s)) {
+        nom.to_string()
+    } else {
+        format!("{nom}.service")
+    }
+}
+
+/// L'état d'activité d'une unité (« active », « reloading », « inactive », « failed »…), comme `systemctl
+/// is-active` l'écrit : GetUnit, qui trouve aussi une unité chargée sous un autre de ses noms (sshd.service, alias
+/// de ssh.service), puis sa propriété ActiveState. `Ok(None)` : aucune unité chargée de ce nom, donc inactive, et
+/// c'est vérifié.
+pub(crate) fn etat_d_activite(bus: &mut Bus, nom: &str) -> Result<Option<String>, String> {
+    let unite = nom_d_unite(nom);
+    let corps = match bus.appeler(
+        SYSTEMD,
+        CHEMIN_SYSTEMD,
+        GESTIONNAIRE,
+        "GetUnit",
+        "s",
+        vec![Valeur::texte_de(&unite)],
+    ) {
+        Ok(c) => c,
+        Err(e) if e.starts_with("org.freedesktop.systemd1.NoSuchUnit ") => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let chemin = corps
+        .first()
+        .and_then(Valeur::texte)
+        .ok_or_else(|| mal_forme("GetUnit sans chemin"))?
+        .to_string();
+    let etat = bus.propriete(SYSTEMD, &chemin, UNITE, "ActiveState")?;
+    etat.texte()
+        .map(|t| Some(t.to_string()))
+        .ok_or_else(|| mal_forme("ActiveState"))
+}
+
 /// Les noms d'une liste d'unités `a(ssssssouso)` (nom, description, chargement, activité, sous-état, suivie…), triés ;
 /// `sans_suivies` : sans celles qui en suivent une autre.
 fn noms_d_unites(liste: Option<&Valeur>, sans_suivies: bool) -> Vec<String> {
@@ -1638,5 +1691,73 @@ mod tests {
             Bus::systeme().expect("systemctl répond : le bus système aussi");
         }
         crate::autotest::croisees::essayer("AUT-LNX-007");
+    }
+
+    #[test]
+    fn noms_d_unites_completes() {
+        assert_eq!(nom_d_unite("sshd"), "sshd.service");
+        assert_eq!(nom_d_unite("ssh.socket"), "ssh.socket");
+        assert_eq!(nom_d_unite("auditd.service"), "auditd.service");
+        assert_eq!(nom_d_unite("multi-user.target"), "multi-user.target");
+        assert_eq!(
+            nom_d_unite("systemd-tmpfiles-clean.timer"),
+            "systemd-tmpfiles-clean.timer"
+        );
+        // Un point dans le nom n'est pas un suffixe.
+        assert_eq!(nom_d_unite("org.cups.cupsd"), "org.cups.cupsd.service");
+    }
+
+    /// GetUnit puis la propriété ActiveState : le chemin rendu est celui qui est lu ; une unité absente est
+    /// inactive (vérifié), une autre erreur reste une erreur.
+    #[test]
+    fn etat_d_activite_par_un_faux_bus() {
+        let (client, fil) = faux_bus(|s, appel| {
+            assert_eq!(appel.membre.as_deref(), Some("GetUnit"));
+            assert_eq!(appel.corps, vec![t("sshd.service")]);
+            s.write_all(&retour(
+                &appel,
+                "o",
+                vec![t("/org/freedesktop/systemd1/unit/ssh_2eservice")],
+            ))
+            .unwrap();
+            let get = lire_message(s);
+            assert_eq!(
+                get.chemin.as_deref(),
+                Some("/org/freedesktop/systemd1/unit/ssh_2eservice")
+            );
+            assert_eq!(get.corps, vec![t(UNITE), t("ActiveState")]);
+            s.write_all(&retour(
+                &get,
+                "v",
+                vec![Valeur::Variante("s".into(), Box::new(t("active")))],
+            ))
+            .unwrap();
+        });
+        let mut bus = Bus::sur(client).unwrap();
+        assert_eq!(etat_d_activite(&mut bus, "sshd").unwrap().as_deref(), Some("active"));
+        fil.join().unwrap();
+
+        let erreur = |nom: &'static str| {
+            move |s: &mut UnixStream, appel: Message| {
+                let m = Message {
+                    genre: ERREUR,
+                    serie: 3,
+                    reponse_a: Some(appel.serie),
+                    nom_erreur: Some(nom.into()),
+                    signature: "s".into(),
+                    corps: vec![t("Unit ufw.service not loaded.")],
+                    ..Message::default()
+                };
+                s.write_all(&m.encoder().unwrap()).unwrap();
+            }
+        };
+        let (client, fil) = faux_bus(erreur("org.freedesktop.systemd1.NoSuchUnit"));
+        let mut bus = Bus::sur(client).unwrap();
+        assert_eq!(etat_d_activite(&mut bus, "ufw"), Ok(None));
+        fil.join().unwrap();
+        let (client, fil) = faux_bus(erreur("org.freedesktop.DBus.Error.AccessDenied"));
+        let mut bus = Bus::sur(client).unwrap();
+        assert!(etat_d_activite(&mut bus, "ufw").is_err());
+        fil.join().unwrap();
     }
 }

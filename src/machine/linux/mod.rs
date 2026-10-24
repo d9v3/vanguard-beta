@@ -358,7 +358,23 @@ fn systemd() -> bool {
 }
 
 pub(crate) fn service_actif(nom: &str) -> bool {
-    sortie("systemctl", &["is-active", nom]).is_some_and(|s| s.trim() == "active")
+    services_systemd_actifs(&[nom]).first().copied().unwrap_or(false)
+}
+
+/// Chaque unité tourne-t-elle, comme le code de retour de `systemctl is-active` le dirait (« active »,
+/// « reloading » ou « refreshing ») ? L'état d'activité de systemd, lu sur un seul bus pour toutes : une unité « oneshot » qui reste
+/// active sans processus (ufw, nftables) et une prise d'écoute (ssh.socket) y sont actives, ce que les groupes de
+/// contrôle ne diraient pas. Sans bus (conteneur), ou sur une erreur pour un nom, `systemctl is-active` pour ce nom.
+pub(crate) fn services_systemd_actifs(noms: &[&str]) -> Vec<bool> {
+    // Les trois états où `systemctl is-active` répond 0 (systemctl-is-active.c).
+    let actif = |etat: &str| matches!(etat, "active" | "reloading" | "refreshing");
+    let mut bus = dbus::Bus::systeme().ok();
+    noms.iter()
+        .map(|nom| match bus.as_mut().map(|b| dbus::etat_d_activite(b, nom)) {
+            Some(Ok(etat)) => etat.as_deref().is_some_and(actif),
+            _ => sortie("systemctl", &["is-active", nom]).is_some_and(|s| actif(s.trim())),
+        })
+        .collect()
 }
 
 fn home() -> String {
@@ -1935,6 +1951,35 @@ mod tests {
             Etat::NonVerifie(Raison::Illisible(_))
         ));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Sur cet ordinateur, l'état lu par le bus est celui que `systemctl is-active` dit par son code de retour, pour
+    /// des unités de chaque genre : service qui tourne, prise d'écoute, service « oneshot », unité inconnue.
+    #[test]
+    fn services_comme_systemctl() {
+        let noms = [
+            "dbus",
+            "systemd-journald",
+            "systemd-journald.socket",
+            "sshd",
+            "ssh.socket",
+            "ufw",
+            "nftables",
+            "unite-inconnue-de-vanguard",
+        ];
+        let systemctl: Vec<Option<bool>> = noms
+            .iter()
+            .map(|n| {
+                crate::commande::lancer(Command::new("systemctl").args(["is-active", "--quiet", n]), 10)
+                    .and_then(|r| r.code)
+                    .map(|c| c == 0)
+            })
+            .collect();
+        if systemctl.iter().any(Option::is_none) || dbus::Bus::systeme().is_err() {
+            return crate::essais::saute("systemd ou le bus système absent");
+        }
+        let systemctl: Vec<bool> = systemctl.into_iter().flatten().collect();
+        assert_eq!(services_systemd_actifs(&noms), systemctl, "{noms:?}");
     }
 
     #[test]
