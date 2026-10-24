@@ -1,0 +1,1258 @@
+//! Le moteur des règles `EVT-` : chaque événement lu passe une fois, les règles qui l'attendent (même journal,
+//! même numéro, même fournisseur) l'examinent ; à la fin, ce que chaque règle a trouvé et ce qui l'a empêchée de
+//! tout voir.
+//!
+//! Trois formes :
+//! - `Forme::Chacun` : un événement qui suffit (un service qui lance PowerShell, un journal effacé) ;
+//! - `Forme::Rafale` : au moins `nombre` événements dans `fenetre` secondes, regroupés par des champs (le compte,
+//!   l'adresse) et l'ordinateur ;
+//! - `Forme::Apres` : une rafale d'événements A, puis un événement B de la même clé dans `delai` secondes (des
+//!   échecs de connexion en rafale, puis une connexion réussie).
+//!
+//! Les rafales se jugent à la fin, sur les dates triées : l'ordre de lecture (les plus récents d'abord pour la source
+//! vivante, morceau par morceau pour un fichier, un journal tournant qui reprend au début) ne fait ni perdre ni
+//! inventer une alerte. Tout est borné : clés, dates, trouvailles et exemples gardés ; ce qui dépasse est compté et
+//! rend la règle non vérifiée, jamais tu.
+//!
+//! Un événement d'un morceau abîmé (`EvenementWindows::verifie` faux) compte comme indice : la trouvaille qui ne
+//! tient qu'à de tels événements porte la réserve `Reserve::MorceauAbime`. Ce qui n'a pas pu être lu (journal
+//! absent, refusé, illisible, désactivé, lu en partie, sous-catégorie d'audit sans preuve qu'elle écrit) devient un
+//! `Manque` de la règle : elle est alors « non vérifiée », avec sa raison, et jamais « rien vu ».
+//!
+//! Les champs viennent du journal, parfois d'un attaquant : comparés sans jamais servir de motif (aucune expression
+//! régulière), coupés avant d'être gardés, jamais interprétés. Module autonome (aucun `crate::`, aucun texte
+//! traduit) : le banc de fuzzing l'inclut par son chemin.
+
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::Path;
+use std::sync::Arc;
+
+use chrono::{DateTime, Utc};
+
+use super::evenement::{EvenementWindows, Origine};
+use super::trous::{Nature, Numerotation, Suite};
+
+/// Un texte en français et en anglais, traduit à l'affichage.
+pub(crate) type Texte = (&'static str, &'static str);
+
+/// La gravité d'une trouvaille.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum Gravite {
+    /// À savoir, sans être une attaque à elle seule (un compte créé, un téléchargement par BITS d'un éditeur peu
+    /// courant).
+    Info,
+    /// Ce que fait une attaque, et rarement autre chose.
+    Alerte,
+    /// Une attaque presque à coup sûr, ou réussie (une rafale d'échecs suivie d'une connexion).
+    Critique,
+}
+
+/// Une comparaison sur la valeur d'un champ (rognée de ses blancs, comme Windows en laisse au bout de certains).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Test {
+    Egal(&'static str),
+    Commence(&'static str),
+    Finit(&'static str),
+    Contient(&'static str),
+    /// Égale à l'une d'elles.
+    Dans(&'static [&'static str]),
+    /// Un nombre (décimal, ou hexadécimal en « 0x ») égal à l'un d'eux.
+    NombreDans(&'static [u64]),
+    /// Un nombre au moins égal.
+    NombreAuMoins(u64),
+    /// Le champ est là, non vide et autre que « - » (ce que Windows écrit pour « sans valeur »).
+    Rempli,
+}
+
+/// Une condition sur un événement.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Condition {
+    Toujours,
+    /// Sans égard à la casse : Windows ne la distingue ni dans les noms de comptes, ni dans les chemins, ni dans les
+    /// SID, ni dans les noms de services.
+    Champ(&'static str, Test),
+    /// Avec la casse.
+    ChampExact(&'static str, Test),
+    Tous(&'static [Condition]),
+    Un(&'static [Condition]),
+    Pas(&'static Condition),
+    /// Ce que les données seules ne disent pas (un chemin à découper, une adresse à classer).
+    Si(fn(&EvenementWindows) -> bool),
+}
+
+/// Le nombre d'un champ : décimal, ou hexadécimal en « 0x » (Status, SubStatus, UserAccountControl).
+pub(crate) fn nombre(valeur: &str) -> Option<u64> {
+    let v = valeur.trim();
+    match v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
+        Some(h) => u64::from_str_radix(h, 16).ok(),
+        None => v.parse().ok(),
+    }
+}
+
+/// Deux textes égaux sans égard à la casse (en Unicode : un nom de compte accentué aussi).
+pub(crate) fn egal_sans_casse(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b) || (!a.is_ascii() || !b.is_ascii()) && a.to_lowercase() == b.to_lowercase()
+}
+
+impl Test {
+    fn vrai(self, valeur: &str, sans_casse: bool) -> bool {
+        let v = valeur.trim();
+        let bas = |t: &str| {
+            if sans_casse { t.to_lowercase() } else { t.to_string() }
+        };
+        match self {
+            Test::Egal(x) => {
+                if sans_casse {
+                    egal_sans_casse(v, x)
+                } else {
+                    v == x
+                }
+            }
+            Test::Commence(x) => bas(v).starts_with(&bas(x)),
+            Test::Finit(x) => bas(v).ends_with(&bas(x)),
+            Test::Contient(x) => bas(v).contains(&bas(x)),
+            Test::Dans(xs) => xs.iter().any(|x| Test::Egal(x).vrai(v, sans_casse)),
+            Test::NombreDans(ns) => nombre(v).is_some_and(|n| ns.contains(&n)),
+            Test::NombreAuMoins(m) => nombre(v).is_some_and(|n| n >= m),
+            Test::Rempli => !v.is_empty() && v != "-",
+        }
+    }
+}
+
+impl Condition {
+    pub(crate) fn vrai(&self, e: &EvenementWindows) -> bool {
+        match *self {
+            Condition::Toujours => true,
+            Condition::Champ(nom, t) => e.champ(nom).is_some_and(|v| t.vrai(v, true)),
+            Condition::ChampExact(nom, t) => e.champ(nom).is_some_and(|v| t.vrai(v, false)),
+            Condition::Tous(cs) => cs.iter().all(|c| c.vrai(e)),
+            Condition::Un(cs) => cs.iter().any(|c| c.vrai(e)),
+            Condition::Pas(c) => !c.vrai(e),
+            Condition::Si(f) => f(e),
+        }
+    }
+}
+
+/// Ce qu'on nomme dans le détail d'une trouvaille.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum Libelle {
+    Compte,
+    Adresse,
+    Programme,
+    Service,
+    Commande,
+    Demarrage,
+    Groupe,
+    Membre,
+    Auteur,
+    Journal,
+    Script,
+    Menace,
+    Action,
+    Reglage,
+    AncienneValeur,
+    NouvelleValeur,
+    AdresseWeb,
+    Consommateur,
+    TypeConnexion,
+    Changement,
+    Numeros,
+    Serveur,
+}
+
+impl Libelle {
+    pub(crate) fn textes(self) -> Texte {
+        match self {
+            Libelle::Compte => ("compte", "account"),
+            Libelle::Adresse => ("adresse", "address"),
+            Libelle::Programme => ("programme", "program"),
+            Libelle::Service => ("service", "service"),
+            Libelle::Commande => ("commande", "command"),
+            Libelle::Demarrage => ("démarrage", "start type"),
+            Libelle::Groupe => ("groupe", "group"),
+            Libelle::Membre => ("membre", "member"),
+            Libelle::Auteur => ("par", "by"),
+            Libelle::Journal => ("journal", "log"),
+            Libelle::Script => ("script", "script"),
+            Libelle::Menace => ("menace", "threat"),
+            Libelle::Action => ("action", "action"),
+            Libelle::Reglage => ("réglage", "setting"),
+            Libelle::AncienneValeur => ("avant", "before"),
+            Libelle::NouvelleValeur => ("après", "after"),
+            Libelle::AdresseWeb => ("adresse web", "URL"),
+            Libelle::Consommateur => ("consommateur", "consumer"),
+            Libelle::TypeConnexion => ("type de connexion", "logon type"),
+            Libelle::Changement => ("changement", "change"),
+            Libelle::Numeros => ("numéros", "record numbers"),
+            Libelle::Serveur => ("serveur", "server"),
+        }
+    }
+}
+
+/// Ce qu'un événement donne à une règle de forme `Chacun`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Indice {
+    /// Ce qui distingue la trouvaille (un service et son chemin, un compte) : stable, sans langue, minuscules. Avec
+    /// la règle, la clé d'une alerte déclarée normale.
+    pub objet: String,
+    pub gravite: Gravite,
+    pub pourquoi: Texte,
+    pub details: Vec<(Libelle, String)>,
+}
+
+/// La forme d'un volet de règle.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Forme {
+    /// Chaque événement qui répond est jugé seul ; `None` : rien à dire de celui-ci.
+    Chacun(fn(&EvenementWindows) -> Option<Indice>),
+    /// Au moins `nombre` événements de la même clé (`par`, et l'ordinateur) en `fenetre` secondes.
+    Rafale {
+        par: &'static [&'static str],
+        nombre: usize,
+        fenetre: i64,
+        gravite: Gravite,
+        pourquoi: Texte,
+    },
+    /// Une rafale (comme `Rafale`) puis, au plus `delai` secondes après le dernier échec, un événement B
+    /// (`b_ids`, `b_quand`) de la même clé.
+    Apres {
+        par: &'static [&'static str],
+        nombre: usize,
+        fenetre: i64,
+        delai: i64,
+        b_ids: &'static [u32],
+        b_quand: Condition,
+        gravite: Gravite,
+        pourquoi: Texte,
+    },
+    /// Les trous des suites de numéros de tous les journaux lus (`EtatJournal::suites`), croisés avec les arrêts
+    /// inattendus (System 6008, Kernel-Power 41).
+    Trous,
+}
+
+/// Ce que Windows écrit d'origine pour ce volet.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Audit {
+    /// Écrit sur un Windows 10 ou 11 tel qu'installé (journal actif, sous-catégorie auditée d'origine).
+    DOrigine,
+    /// Dépend d'une sous-catégorie de la politique d'audit qu'un réglage peut couper sans que rien ne le dise dans
+    /// le journal lu : sans un événement de `preuve` vu (vérifié) dans ce journal, la règle n'est pas vérifiée.
+    Preuve { preuve: &'static [u32], quoi: Texte },
+}
+
+/// Une partie d'une règle : un journal, des numéros d'événements, une forme.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Volet {
+    /// Le journal (System/Channel), sans égard à la casse.
+    pub journal: &'static str,
+    /// Les fournisseurs admis (System/Provider Name), sans égard à la casse ; vide : tous. Un même numéro sert à
+    /// d'autres fournisseurs dans d'autres journaux (Application 4625 d'EventSystem, CAPI2 41).
+    pub fournisseurs: &'static [&'static str],
+    pub ids: &'static [u32],
+    pub quand: Condition,
+    pub forme: Forme,
+    pub audit: Audit,
+}
+
+/// Une règle `EVT-`.
+#[derive(Debug)]
+pub(crate) struct Regle {
+    /// « EVT-EFF-001 » : stable, jamais repris.
+    pub id: &'static str,
+    pub sujet: Texte,
+    /// Les techniques d'ATT&CK (« T1685.005 »), dans la numérotation de la version 20 (T1070.001 y est devenue
+    /// T1685.005, T1562.001 T1685, T1562.002 T1685.001 : les anciennes ne sont plus que des renvois).
+    pub techniques: &'static [&'static str],
+    /// La documentation de Microsoft de ses événements, puis la page d'ATT&CK.
+    pub references: &'static [&'static str],
+    pub volets: &'static [Volet],
+    /// Ce que la règle ne peut pas voir, même tout lu (dit avec son verdict).
+    pub limite: Option<Texte>,
+    /// La règle juge Microsoft Defender : sans objet quand il n'est pas l'antivirus de l'ordinateur.
+    pub defender: bool,
+}
+
+/// Une réserve sur une trouvaille.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum Reserve {
+    /// Ne tient qu'à des événements de morceaux abîmés (CRC faux) : un indice, pas une preuve.
+    MorceauAbime,
+    /// Un trou dans un fichier copié pendant que Windows écrivait : effacement possible, non concluant.
+    CopieAChaud,
+    /// Un trou dans les numéros d'origine d'un fichier exporté : effacés avant l'export, ou laissés par le filtre de
+    /// l'export ; un fichier exporté se fabrique, rien ne prouve son origine.
+    AvantExport,
+    /// Un arrêt inattendu (6008) ou une coupure de courant (Kernel-Power 41) au même moment explique sans
+    /// effacement des enregistrements perdus.
+    ArretInattendu,
+}
+
+/// Un événement à l'appui d'une trouvaille, pour le retrouver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Repere {
+    pub journal: String,
+    pub id: u32,
+    pub date: Option<DateTime<Utc>>,
+    pub numero: Option<u64>,
+    pub verifie: bool,
+    /// Le fichier .evtx, pour la source fichiers.
+    pub fichier: Option<Arc<Path>>,
+}
+
+/// Ce qu'une règle a trouvé, regroupé par objet et par ordinateur.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Trouvaille {
+    /// L'indice du volet dans la règle.
+    pub volet: usize,
+    pub objet: String,
+    pub ordinateur: String,
+    /// La plus haute des événements regroupés.
+    pub gravite: Gravite,
+    pub pourquoi: Texte,
+    /// Ceux du plus ancien événement (le plus petit numéro à date égale) : le même quel que soit l'ordre de lecture.
+    pub details: Vec<(Libelle, String)>,
+    /// Événements à l'appui (pour une rafale : les événements des rafales).
+    pub nombre: u64,
+    /// Parmi eux, ceux d'un morceau vérifié.
+    pub verifies: u64,
+    pub premier: Option<DateTime<Utc>>,
+    pub dernier: Option<DateTime<Utc>>,
+    /// Les plus anciens, au plus `BornesMoteur::reperes`.
+    pub reperes: Vec<Repere>,
+    pub reserves: BTreeSet<Reserve>,
+}
+
+/// Pourquoi une règle n'a pas pu tout voir.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Manque {
+    /// Le journal n'est pas là : pas de fichier dans le dossier, ou absent de cet ordinateur.
+    Absent(String),
+    /// Lecture refusée (Security sans droits d'administrateur).
+    Refuse(String),
+    /// Illisible : le journal, et pourquoi (texte déjà dans la langue du moment, donné par la source).
+    Illisible(String, String),
+    /// Le journal est désactivé : il n'écrit plus rien, ce qui est lu est ancien.
+    Desactive(String),
+    /// Lu en partie : le journal, et ce qui manque (texte déjà dans la langue du moment).
+    Partiel(String, String),
+    /// La sous-catégorie d'audit qui écrit ces événements n'a laissé aucune preuve qu'elle est active.
+    NonAudite { journal: String, quoi: Texte },
+    /// Le journal ne remonte qu'à cette date, après le début de la période demandée : plus ancien écrasé (journal
+    /// plein qui tourne), effacé, ou rien écrit.
+    PeriodeCourte { journal: String, debut: DateTime<Utc> },
+    /// Une borne du moteur atteinte : des événements de la règle n'ont pas été jugés.
+    Bornes(u64),
+    /// Des événements de la règle sans date lisible : une rafale ne peut pas les placer.
+    SansDate(u64),
+    /// Des trous de numéros là où la lecture a perdu quelque chose : non vérifiés.
+    TrousIllisibles { journal: String, nombre: u64 },
+    /// Des numéros qui ne tiennent qu'à des morceaux abîmés : la suite n'est pas une preuve.
+    SuiteNonProuvee { journal: String, nombre: u64 },
+    /// Trous au-delà des bornes de la suite, comptés sans être jugés.
+    TrousAuDela { journal: String, nombre: u64 },
+    /// Rien ne dit si Defender est l'antivirus de l'ordinateur (dossier rapporté) : une protection coupée peut être
+    /// celle d'un Defender mis en retrait par un autre antivirus.
+    DefenderInconnu,
+}
+
+/// Ce que vaut la lecture d'un journal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Lecture {
+    /// Lu ; vide quand tout a été lu et jugé, sinon ce qui manque (dans la langue du moment).
+    Lu(Vec<String>),
+    Absent,
+    Refuse,
+    Illisible(String),
+}
+
+/// Un journal tel que la source l'a lu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EtatJournal {
+    pub nom: String,
+    pub lecture: Lecture,
+    /// Activé (registre) ; rien si on ne le sait pas.
+    pub active: Option<bool>,
+    pub suites: Vec<Suite>,
+}
+
+/// Ce qu'un journal a donné au moteur.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct StatJournal {
+    pub nom: String,
+    pub evenements: u64,
+    pub non_verifies: u64,
+    pub sans_date: u64,
+    pub premier: Option<DateTime<Utc>>,
+    pub dernier: Option<DateTime<Utc>>,
+    /// Numéros d'événements vus dans un morceau vérifié (au plus `MAX_IDS_VUS`) : la preuve qu'une sous-catégorie
+    /// d'audit écrit.
+    ids_vus: HashSet<u32>,
+}
+
+/// Ce que l'analyse sait d'avance.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Options {
+    /// Le début de la période demandée (rien : tout ce que les journaux contiennent).
+    pub depuis: Option<DateTime<Utc>>,
+    /// Microsoft Defender est-il l'antivirus de l'ordinateur ? Rien : on ne le sait pas (dossier rapporté).
+    pub defender_antivirus: Option<bool>,
+}
+
+/// Les bornes du moteur.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BornesMoteur {
+    /// Trouvailles distinctes gardées par règle.
+    pub trouvailles: usize,
+    /// Exemples gardés par trouvaille.
+    pub reperes: usize,
+    /// Dates gardées par volet de rafale (chaque événement A ou B).
+    pub dates: usize,
+    /// Clés distinctes par volet de rafale.
+    pub cles: usize,
+    /// Arrêts inattendus gardés pour expliquer les trous.
+    pub arrets: usize,
+    /// Journaux distincts suivis.
+    pub journaux: usize,
+}
+
+impl Default for BornesMoteur {
+    fn default() -> Self {
+        Self {
+            trouvailles: 500,
+            reperes: 5,
+            // Un événement daté fait 24 octets ici : deux millions par volet font 48 Mo au plus, pour quatre volets
+            // de rafales. Un journal de sécurité d'origine (20 Mo) en a quelques dizaines de milliers.
+            dates: 2_000_000,
+            cles: 100_000,
+            arrets: 10_000,
+            journaux: 512,
+        }
+    }
+}
+
+/// Les caractères gardés d'un objet ou d'un détail : un chemin de service, une adresse web, un extrait de script.
+pub(crate) const TEXTE_MAX: usize = 400;
+
+/// Numéros d'événements retenus par journal pour les preuves d'audit.
+const MAX_IDS_VUS: usize = 4096;
+
+/// Une marge autour d'un trou pour y chercher un arrêt inattendu : Windows écrit le 6008 et le 41 au démarrage
+/// suivant, quelques minutes après les derniers enregistrements perdus.
+const MARGE_ARRET: i64 = 15 * 60;
+
+/// Coupe un texte venu du journal à `TEXTE_MAX` caractères.
+pub(crate) fn couper(t: &str) -> String {
+    let t = t.trim();
+    match t.char_indices().nth(TEXTE_MAX) {
+        Some((i, _)) => format!("{}…", &t[..i]),
+        None => t.to_string(),
+    }
+}
+
+/// Un événement daté d'une rafale.
+#[derive(Debug, Clone, Copy)]
+struct Marque {
+    date: DateTime<Utc>,
+    numero: u64,
+    verifie: bool,
+}
+
+/// Le plus ancien événement d'une clé de rafale, son repère et ses détails.
+type Exemple = (Marque, Repere, Vec<(Libelle, String)>);
+
+/// Les événements datés d'un volet de rafale, par clé.
+#[derive(Debug, Default)]
+struct Rafales {
+    cles: HashMap<String, u32>,
+    /// Par indice de clé : (clé, A, B).
+    par_cle: Vec<(String, Vec<Marque>, Vec<Marque>)>,
+    gardes: usize,
+    /// Événements qu'une borne a fait laisser.
+    perdus: u64,
+    sans_date: u64,
+    /// Un exemple par clé (le plus ancien vu de A), pour les détails.
+    exemples: HashMap<u32, Exemple>,
+}
+
+/// Ce que le moteur garde d'une règle.
+#[derive(Debug, Default)]
+struct EtatRegle {
+    trouvailles: HashMap<(usize, String, String), Trouvaille>,
+    au_dela: u64,
+    rafales: HashMap<usize, Rafales>,
+    examines: u64,
+}
+
+/// Le jugement d'une règle.
+#[derive(Debug, Clone)]
+pub(crate) struct Jugement {
+    pub regle: &'static Regle,
+    /// Les plus graves d'abord, puis les plus anciennes.
+    pub trouvailles: Vec<Trouvaille>,
+    /// Trouvailles au-delà de `BornesMoteur::trouvailles`, comptées en événements.
+    pub au_dela: u64,
+    pub manques: Vec<Manque>,
+    /// Événements que la règle a examinés (de ses journaux, numéros et fournisseurs).
+    pub examines: u64,
+    /// Les journaux de la règle, et ce qu'ils ont donné.
+    pub journaux: Vec<StatJournal>,
+    /// Sans objet : la règle juge Defender, qui n'est pas l'antivirus ici.
+    pub sans_objet: bool,
+}
+
+impl Jugement {
+    /// Rien n'a manqué : la règle a tout lu de ce qu'elle cherche.
+    pub(crate) fn verifie(&self) -> bool {
+        self.manques.is_empty()
+    }
+}
+
+/// Le moteur, nourri événement par événement.
+pub(crate) struct Moteur {
+    regles: &'static [Regle],
+    bornes: BornesMoteur,
+    options: Options,
+    /// Par numéro d'événement : (règle, volet, B d'un volet `Apres`).
+    index: HashMap<u32, Vec<(usize, usize, bool)>>,
+    etats: Vec<EtatRegle>,
+    journaux: HashMap<String, StatJournal>,
+    journaux_au_dela: u64,
+    arrets: Vec<DateTime<Utc>>,
+    arrets_au_dela: u64,
+}
+
+/// La clé d'un journal (sans casse).
+fn cle_journal(nom: &str) -> String {
+    nom.to_lowercase()
+}
+
+fn repere(e: &EvenementWindows) -> Repere {
+    Repere {
+        journal: couper(&e.journal),
+        id: e.id,
+        date: e.date,
+        numero: e.numero,
+        verifie: e.verifie,
+        fichier: match &e.origine {
+            Origine::Fichier { chemin, .. } => Some(chemin.clone()),
+            Origine::Vivant => None,
+        },
+    }
+}
+
+/// L'ordre stable de deux événements : date, puis numéro (rien en dernier).
+fn rang(date: Option<DateTime<Utc>>, numero: Option<u64>) -> (bool, Option<DateTime<Utc>>, u64) {
+    (date.is_none(), date, numero.unwrap_or(u64::MAX))
+}
+
+impl Moteur {
+    pub(crate) fn nouveau(regles: &'static [Regle], options: Options, bornes: BornesMoteur) -> Self {
+        let mut index: HashMap<u32, Vec<(usize, usize, bool)>> = HashMap::new();
+        for (r, regle) in regles.iter().enumerate() {
+            for (v, volet) in regle.volets.iter().enumerate() {
+                for &id in volet.ids {
+                    index.entry(id).or_default().push((r, v, false));
+                }
+                if let Forme::Apres { b_ids, .. } = volet.forme {
+                    for &id in b_ids {
+                        index.entry(id).or_default().push((r, v, true));
+                    }
+                }
+            }
+        }
+        Self {
+            regles,
+            bornes,
+            options,
+            index,
+            etats: regles.iter().map(|_| EtatRegle::default()).collect(),
+            journaux: HashMap::new(),
+            journaux_au_dela: 0,
+            arrets: Vec::new(),
+            arrets_au_dela: 0,
+        }
+    }
+
+    /// Un événement lu, d'une source ou de l'autre.
+    pub(crate) fn recevoir(&mut self, e: &EvenementWindows) {
+        let cle = cle_journal(&e.journal);
+        let n = self.journaux.len();
+        let stat = match self.journaux.get_mut(&cle) {
+            Some(s) => Some(s),
+            None if n < self.bornes.journaux => Some(self.journaux.entry(cle).or_insert_with(|| StatJournal {
+                nom: couper(&e.journal),
+                ..StatJournal::default()
+            })),
+            None => {
+                self.journaux_au_dela += 1;
+                None
+            }
+        };
+        if let Some(s) = stat {
+            s.evenements += 1;
+            s.non_verifies += u64::from(!e.verifie);
+            match e.date {
+                Some(d) => {
+                    s.premier = Some(s.premier.map_or(d, |p| p.min(d)));
+                    s.dernier = Some(s.dernier.map_or(d, |p| p.max(d)));
+                }
+                None => s.sans_date += 1,
+            }
+            if e.verifie && s.ids_vus.len() < MAX_IDS_VUS {
+                s.ids_vus.insert(e.id);
+            }
+        }
+        if est_arret(e) {
+            match e.date {
+                Some(d) if self.arrets.len() < self.bornes.arrets => self.arrets.push(d),
+                Some(_) => self.arrets_au_dela += 1,
+                None => {}
+            }
+        }
+        let Some(cibles) = self.index.get(&e.id) else {
+            return;
+        };
+        for &(r, v, b) in cibles {
+            let volet = &self.regles[r].volets[v];
+            if !e.journal.eq_ignore_ascii_case(volet.journal)
+                || !(volet.fournisseurs.is_empty()
+                    || volet
+                        .fournisseurs
+                        .iter()
+                        .any(|f| f.eq_ignore_ascii_case(e.fournisseur.trim())))
+            {
+                continue;
+            }
+            let etat = &mut self.etats[r];
+            match volet.forme {
+                Forme::Chacun(juger) => {
+                    if !volet.quand.vrai(e) {
+                        continue;
+                    }
+                    etat.examines += 1;
+                    if let Some(indice) = juger(e) {
+                        ajouter(etat, &self.bornes, v, &e.ordinateur, indice, e);
+                    }
+                }
+                Forme::Rafale { par, .. } => {
+                    if volet.quand.vrai(e) {
+                        etat.examines += 1;
+                        noter_rafale(etat, &self.bornes, v, par, e, false);
+                    }
+                }
+                Forme::Apres { par, b_quand, .. } => {
+                    let voulu = if b { b_quand.vrai(e) } else { volet.quand.vrai(e) };
+                    if voulu {
+                        etat.examines += 1;
+                        noter_rafale(etat, &self.bornes, v, par, e, b);
+                    }
+                }
+                Forme::Trous => {}
+            }
+        }
+    }
+
+    /// Le jugement de chaque règle, d'après ce qu'elle a vu et la lecture de chaque journal.
+    pub(crate) fn conclure(mut self, journaux: &[EtatJournal]) -> Vec<Jugement> {
+        let arrets = std::mem::take(&mut self.arrets);
+        let mut sortie = Vec::new();
+        for (r, regle) in self.regles.iter().enumerate() {
+            let mut etat = std::mem::take(&mut self.etats[r]);
+            let mut manques: Vec<Manque> = Vec::new();
+            for (v, volet) in regle.volets.iter().enumerate() {
+                match volet.forme {
+                    Forme::Trous => trous(&mut etat, &self.bornes, v, journaux, &arrets, &mut manques),
+                    Forme::Rafale { .. } | Forme::Apres { .. } => {
+                        if let Some(raf) = etat.rafales.remove(&v) {
+                            juger_rafales(&mut etat, &self.bornes, v, volet.forme, raf, &mut manques);
+                        }
+                    }
+                    Forme::Chacun(_) => {}
+                }
+            }
+            if self.arrets_au_dela > 0 && regle.volets.iter().any(|v| matches!(v.forme, Forme::Trous)) {
+                manques.push(Manque::Bornes(self.arrets_au_dela));
+            }
+            if self.journaux_au_dela > 0 {
+                manques.push(Manque::Bornes(self.journaux_au_dela));
+            }
+            let mut stats = Vec::new();
+            let mut vus: HashSet<String> = HashSet::new();
+            for volet in regle.volets.iter().filter(|v| !v.journal.is_empty()) {
+                let cle = cle_journal(volet.journal);
+                let stat = self.journaux.get(&cle).cloned().unwrap_or_else(|| StatJournal {
+                    nom: volet.journal.to_string(),
+                    ..StatJournal::default()
+                });
+                if vus.insert(cle.clone()) {
+                    manques.extend(lecture(volet.journal, journaux, &stat, &self.options));
+                    stats.push(stat.clone());
+                }
+                if let Audit::Preuve { preuve, quoi } = volet.audit {
+                    let prouve = preuve.iter().any(|id| stat.ids_vus.contains(id));
+                    let m = Manque::NonAudite {
+                        journal: volet.journal.to_string(),
+                        quoi,
+                    };
+                    if !prouve && !manques.contains(&m) {
+                        manques.push(m);
+                    }
+                }
+            }
+            let mut trouvailles: Vec<Trouvaille> = etat.trouvailles.into_values().collect();
+            let mut sans_objet = false;
+            if regle.defender {
+                match self.options.defender_antivirus {
+                    // Un Defender en retrait coupe lui-même sa protection en temps réel (5001) : sans objet.
+                    Some(false) => {
+                        trouvailles.retain(|t| !t.objet.starts_with("temps-reel"));
+                        sans_objet = trouvailles.is_empty();
+                    }
+                    Some(true) => {}
+                    None => manques.push(Manque::DefenderInconnu),
+                }
+            }
+            if sans_objet {
+                // Rien à juger, et c'est su : les manques de lecture ne changent rien à un antivirus absent.
+                manques.clear();
+            }
+            trouvailles.sort_by(|a, b| {
+                b.gravite
+                    .cmp(&a.gravite)
+                    .then_with(|| rang(a.premier, None).cmp(&rang(b.premier, None)))
+                    .then_with(|| (a.volet, &a.ordinateur, &a.objet).cmp(&(b.volet, &b.ordinateur, &b.objet)))
+            });
+            for t in &mut trouvailles {
+                if t.verifies == 0 {
+                    t.reserves.insert(Reserve::MorceauAbime);
+                }
+            }
+            sortie.push(Jugement {
+                regle,
+                trouvailles,
+                au_dela: etat.au_dela,
+                manques,
+                examines: etat.examines,
+                journaux: stats,
+                sans_objet,
+            });
+        }
+        sortie
+    }
+
+    /// Ce que chaque journal a donné (tous ceux vus), pour la couverture.
+    pub(crate) fn journaux(&self) -> Vec<StatJournal> {
+        let mut v: Vec<StatJournal> = self.journaux.values().cloned().collect();
+        v.sort_by(|a, b| a.nom.cmp(&b.nom));
+        v
+    }
+}
+
+/// System 6008 (arrêt inattendu, écrit par EventLog) ou 41 (Kernel-Power : redémarré sans arrêt propre).
+fn est_arret(e: &EvenementWindows) -> bool {
+    e.journal.eq_ignore_ascii_case("System")
+        && ((e.id == 6008 && e.fournisseur.eq_ignore_ascii_case("EventLog"))
+            || (e.id == 41 && e.fournisseur.eq_ignore_ascii_case("Microsoft-Windows-Kernel-Power")))
+}
+
+/// Ce que vaut la lecture du journal d'une règle : rien quand il a été lu en entier.
+fn lecture(journal: &str, journaux: &[EtatJournal], stat: &StatJournal, options: &Options) -> Vec<Manque> {
+    let mut m = Vec::new();
+    let etats: Vec<&EtatJournal> = journaux
+        .iter()
+        .filter(|j| j.nom.eq_ignore_ascii_case(journal))
+        .collect();
+    if etats.is_empty() {
+        // La source ne l'a pas nommé, mais des événements en sont venus (archive d'événements transférés) : lu
+        // dans ce qui le portait, que la source a jugé ailleurs.
+        if stat.evenements == 0 {
+            m.push(Manque::Absent(journal.to_string()));
+        }
+        return m;
+    }
+    let lu = etats.iter().any(|j| matches!(j.lecture, Lecture::Lu(_)));
+    for j in &etats {
+        match &j.lecture {
+            Lecture::Lu(manques) => m.extend(manques.iter().map(|x| Manque::Partiel(journal.to_string(), x.clone()))),
+            Lecture::Absent if !lu => m.push(Manque::Absent(journal.to_string())),
+            Lecture::Absent => {}
+            Lecture::Refuse => m.push(Manque::Refuse(journal.to_string())),
+            Lecture::Illisible(x) => m.push(Manque::Illisible(journal.to_string(), x.clone())),
+        }
+        if j.active == Some(false) {
+            m.push(Manque::Desactive(journal.to_string()));
+        }
+    }
+    if stat.non_verifies > 0 && !m.iter().any(|x| matches!(x, Manque::Partiel(..))) {
+        // Le bilan de la source le dit déjà d'ordinaire (morceaux non vérifiés) : seulement s'il ne l'a pas dit.
+        m.push(Manque::Partiel(
+            journal.to_string(),
+            format!("{} non vérifiés", stat.non_verifies),
+        ));
+    }
+    // Les journaux qui écrivent sans cesse sur un ordinateur en marche : leur plus ancien événement après le début
+    // demandé dit qu'il manque le début. Un journal calme (BITS, WMI) peut n'avoir simplement rien écrit avant.
+    let actif = journal.eq_ignore_ascii_case("Security") || journal.eq_ignore_ascii_case("System");
+    if let (true, Some(depuis), Some(premier)) = (actif, options.depuis, stat.premier)
+        && premier - depuis > chrono::Duration::days(1)
+    {
+        m.push(Manque::PeriodeCourte {
+            journal: journal.to_string(),
+            debut: premier,
+        });
+    }
+    m.dedup();
+    m
+}
+
+/// Ajoute un indice à la trouvaille de son objet (créée au besoin, sous la borne).
+fn ajouter(
+    etat: &mut EtatRegle,
+    bornes: &BornesMoteur,
+    volet: usize,
+    ordinateur: &str,
+    indice: Indice,
+    e: &EvenementWindows,
+) {
+    let cle = (volet, couper(&ordinateur.to_lowercase()), couper(&indice.objet));
+    let n = etat.trouvailles.len();
+    let t = match etat.trouvailles.get_mut(&cle) {
+        Some(t) => t,
+        None if n < bornes.trouvailles => etat.trouvailles.entry(cle.clone()).or_insert_with(|| Trouvaille {
+            volet,
+            objet: cle.2.clone(),
+            ordinateur: couper(ordinateur),
+            gravite: indice.gravite,
+            pourquoi: indice.pourquoi,
+            details: Vec::new(),
+            nombre: 0,
+            verifies: 0,
+            premier: None,
+            dernier: None,
+            reperes: Vec::new(),
+            reserves: BTreeSet::new(),
+        }),
+        None => {
+            etat.au_dela += 1;
+            return;
+        }
+    };
+    let plus_ancien = t
+        .reperes
+        .first()
+        .is_none_or(|p| rang(e.date, e.numero) < rang(p.date, p.numero));
+    // La gravité la plus haute l'emporte, et avec elle son pourquoi ; à gravité égale, celui du plus ancien.
+    if indice.gravite > t.gravite || (indice.gravite == t.gravite && plus_ancien) || t.nombre == 0 {
+        if indice.gravite >= t.gravite {
+            t.pourquoi = indice.pourquoi;
+        }
+        t.gravite = t.gravite.max(indice.gravite);
+    }
+    if plus_ancien || t.nombre == 0 {
+        t.details = indice.details.into_iter().map(|(l, v)| (l, couper(&v))).collect();
+    }
+    t.nombre += 1;
+    t.verifies += u64::from(e.verifie);
+    if let Some(d) = e.date {
+        t.premier = Some(t.premier.map_or(d, |p| p.min(d)));
+        t.dernier = Some(t.dernier.map_or(d, |p| p.max(d)));
+    }
+    garder_repere(&mut t.reperes, repere(e), bornes.reperes);
+}
+
+/// Garde les `n` plus anciens repères, dans l'ordre.
+fn garder_repere(reperes: &mut Vec<Repere>, r: Repere, n: usize) {
+    let i = reperes.partition_point(|p| rang(p.date, p.numero) <= rang(r.date, r.numero));
+    if i < n {
+        reperes.insert(i, r);
+        reperes.truncate(n);
+    }
+}
+
+/// La clé de regroupement d'un événement : l'ordinateur et les champs `par`, en minuscules. Rien si un champ est
+/// vide, « - », ou une adresse de boucle (un échec à l'écran de l'ordinateur porte 127.0.0.1 : regroupé par
+/// compte, pas par adresse).
+fn cle_rafale(par: &[&str], e: &EvenementWindows) -> Option<String> {
+    let mut cle = couper(&e.ordinateur.to_lowercase());
+    for champ in par {
+        let v = e.champ(champ)?.trim();
+        if v.is_empty() || v == "-" || v == "127.0.0.1" || v == "::1" {
+            return None;
+        }
+        cle.push('\u{1f}');
+        cle.push_str(&couper(&v.to_lowercase()));
+    }
+    Some(cle)
+}
+
+fn noter_rafale(
+    etat: &mut EtatRegle,
+    bornes: &BornesMoteur,
+    volet: usize,
+    par: &[&str],
+    e: &EvenementWindows,
+    est_b: bool,
+) {
+    let raf = etat.rafales.entry(volet).or_default();
+    let Some(cle) = cle_rafale(par, e) else {
+        return;
+    };
+    let Some(date) = e.date else {
+        raf.sans_date += 1;
+        return;
+    };
+    if raf.gardes >= bornes.dates {
+        raf.perdus += 1;
+        return;
+    }
+    let deja = raf.cles.len();
+    let indice = match raf.cles.get(&cle) {
+        Some(&k) => k,
+        None if deja < bornes.cles => {
+            let k = u32::try_from(deja).unwrap_or(u32::MAX);
+            raf.cles.insert(cle.clone(), k);
+            raf.par_cle.push((cle, Vec::new(), Vec::new()));
+            k
+        }
+        None => {
+            raf.perdus += 1;
+            return;
+        }
+    };
+    let marque = Marque {
+        date,
+        numero: e.numero.unwrap_or(u64::MAX),
+        verifie: e.verifie,
+    };
+    let entree = &mut raf.par_cle[indice as usize];
+    if est_b {
+        entree.2.push(marque);
+    } else {
+        entree.1.push(marque);
+        let exemple = raf.exemples.get(&indice);
+        if exemple.is_none_or(|(x, _, _)| (marque.date, marque.numero) < (x.date, x.numero)) {
+            let details = details_rafale(par, e);
+            raf.exemples.insert(indice, (marque, repere(e), details));
+        }
+    }
+    raf.gardes += 1;
+}
+
+/// Les détails d'une rafale : les champs de sa clé, et le type de connexion s'il y en a un.
+fn details_rafale(par: &[&str], e: &EvenementWindows) -> Vec<(Libelle, String)> {
+    let mut d: Vec<(Libelle, String)> = par
+        .iter()
+        .filter_map(|c| {
+            let l = match *c {
+                "IpAddress" => Libelle::Adresse,
+                _ => Libelle::Compte,
+            };
+            e.champ(c).map(|v| (l, couper(v)))
+        })
+        .collect();
+    if let Some(t) = e.champ("LogonType") {
+        d.push((Libelle::TypeConnexion, couper(t)));
+    }
+    d
+}
+
+/// Les indices des dates (triées) qui tombent dans une rafale : au moins `nombre` dans `fenetre` secondes.
+fn dans_rafale(dates: &[Marque], nombre: usize, fenetre: i64) -> Vec<bool> {
+    let mut couvert = vec![false; dates.len()];
+    if nombre == 0 {
+        return couvert;
+    }
+    let mut i = 0;
+    let mut marque_jusqua = 0usize;
+    for j in 0..dates.len() {
+        while (dates[j].date - dates[i].date).num_seconds() > fenetre {
+            i += 1;
+        }
+        if j + 1 - i >= nombre {
+            for c in couvert.iter_mut().take(j + 1).skip(i.max(marque_jusqua)) {
+                *c = true;
+            }
+            marque_jusqua = j + 1;
+        }
+    }
+    couvert
+}
+
+/// Une réussite (B) à `s` suit-elle une rafale d'échecs (A, triés) : au moins `nombre` échecs en `fenetre`
+/// secondes, le dernier au plus `delai` secondes avant elle ?
+fn suit_une_rafale(a: &[Marque], s: DateTime<Utc>, nombre: usize, fenetre: i64, delai: i64) -> bool {
+    if nombre == 0 {
+        return false;
+    }
+    // Les échecs jusqu'à `s` compris.
+    let fin = a.partition_point(|d| d.date <= s);
+    if fin < nombre {
+        return false;
+    }
+    let dernier = a[fin - 1].date;
+    if (s - dernier).num_seconds() > delai {
+        return false;
+    }
+    // Une rafale qui finit au plus tard au dernier échec : `nombre` échecs consécutifs dans la fenêtre, parmi ceux
+    // des `fenetre + delai` secondes avant la réussite.
+    let debut = a.partition_point(|d| (s - d.date).num_seconds() > fenetre + delai);
+    a[debut..fin]
+        .windows(nombre)
+        .any(|w| (w[nombre - 1].date - w[0].date).num_seconds() <= fenetre)
+}
+
+fn juger_rafales(
+    etat: &mut EtatRegle,
+    bornes: &BornesMoteur,
+    v: usize,
+    forme: Forme,
+    raf: Rafales,
+    manques: &mut Vec<Manque>,
+) {
+    if raf.perdus > 0 {
+        manques.push(Manque::Bornes(raf.perdus));
+    }
+    if raf.sans_date > 0 {
+        manques.push(Manque::SansDate(raf.sans_date));
+    }
+    let (nombre, fenetre, delai, gravite, pourquoi) = match forme {
+        Forme::Rafale {
+            nombre,
+            fenetre,
+            gravite,
+            pourquoi,
+            ..
+        } => (nombre, fenetre, None, gravite, pourquoi),
+        Forme::Apres {
+            nombre,
+            fenetre,
+            delai,
+            gravite,
+            pourquoi,
+            ..
+        } => (nombre, fenetre, Some(delai), gravite, pourquoi),
+        _ => return,
+    };
+    let mut exemples = raf.exemples;
+    for (i, (cle, mut a, mut b)) in raf.par_cle.into_iter().enumerate() {
+        let tri = |x: &Marque, y: &Marque| (x.date, x.numero, !x.verifie).cmp(&(y.date, y.numero, !y.verifie));
+        a.sort_by(tri);
+        b.sort_by(tri);
+        // Les événements à l'appui : ceux des rafales, ou les réussites qui en suivent une.
+        let appui: Vec<Marque> = match delai {
+            None => {
+                let couvert = dans_rafale(&a, nombre, fenetre);
+                a.iter().zip(couvert).filter(|(_, c)| *c).map(|(d, _)| *d).collect()
+            }
+            Some(delai) => b
+                .iter()
+                .filter(|s| suit_une_rafale(&a, s.date, nombre, fenetre, delai))
+                .copied()
+                .collect(),
+        };
+        if appui.is_empty() {
+            continue;
+        }
+        // Sans les événements des morceaux abîmés, la rafale tient-elle encore ?
+        let a_verifies: Vec<Marque> = a.iter().filter(|d| d.verifie).copied().collect();
+        let tient = match delai {
+            None => dans_rafale(&a_verifies, nombre, fenetre).contains(&true),
+            Some(delai) => b
+                .iter()
+                .filter(|s| s.verifie)
+                .any(|s| suit_une_rafale(&a_verifies, s.date, nombre, fenetre, delai)),
+        };
+        let ordinateur = cle.split('\u{1f}').next().unwrap_or_default().to_string();
+        let mut objet: String = cle.split('\u{1f}').skip(1).collect::<Vec<_>>().join("|");
+        if objet.is_empty() {
+            // Regroupé par ordinateur seulement.
+            objet = "*".to_string();
+        }
+        let (details, reperes) = match u32::try_from(i).ok().and_then(|i| exemples.remove(&i)) {
+            Some((_, r, d)) => (d, vec![r]),
+            None => (Vec::new(), Vec::new()),
+        };
+        let cle_t = (v, ordinateur.clone(), couper(&objet));
+        if !etat.trouvailles.contains_key(&cle_t) && etat.trouvailles.len() >= bornes.trouvailles {
+            etat.au_dela += appui.len() as u64;
+            continue;
+        }
+        let mut reserves = BTreeSet::new();
+        if !tient {
+            reserves.insert(Reserve::MorceauAbime);
+        }
+        etat.trouvailles.insert(
+            cle_t,
+            Trouvaille {
+                volet: v,
+                objet: couper(&objet),
+                ordinateur,
+                gravite,
+                pourquoi,
+                details,
+                nombre: appui.len() as u64,
+                // Une rafale qui ne tient pas sans eux n'a pas d'appui vérifié.
+                verifies: if tient {
+                    appui.iter().filter(|d| d.verifie).count() as u64
+                } else {
+                    0
+                },
+                premier: appui.first().map(|d| d.date),
+                dernier: appui.last().map(|d| d.date),
+                reperes,
+                reserves,
+            },
+        );
+    }
+}
+
+/// Les trous des suites de numéros, jugés : `Retires` (des enregistrements ôtés d'un morceau intact) est un
+/// effacement partiel ; `Absents`, sauf si un arrêt inattendu tombe à côté ; `CopieAChaud` et `AvantExport`, des
+/// réserves dites ; `Illisible`, ce que la lecture a perdu, non vérifié.
+fn trous(
+    etat: &mut EtatRegle,
+    bornes: &BornesMoteur,
+    v: usize,
+    journaux: &[EtatJournal],
+    arrets: &[DateTime<Utc>],
+    manques: &mut Vec<Manque>,
+) {
+    for j in journaux {
+        for s in &j.suites {
+            let (journal, ordinateur) = match &s.numerotation {
+                Numerotation::Journal => (j.nom.clone(), String::new()),
+                Numerotation::Origine { ordinateur, journal } => (journal.clone(), ordinateur.clone()),
+            };
+            let mut illisibles = 0u64;
+            for t in &s.trous {
+                let explique = arrets.iter().any(|&a| {
+                    let apres_avant = t.avant.is_none_or(|d| (a - d).num_seconds() >= -MARGE_ARRET);
+                    let avant_apres = t.apres.is_none_or(|d| (d - a).num_seconds() >= -MARGE_ARRET);
+                    (t.avant.is_some() || t.apres.is_some()) && apres_avant && avant_apres
+                });
+                let (gravite, pourquoi, reserve) = match t.nature {
+                    Nature::Illisible => {
+                        illisibles = illisibles.saturating_add(t.nombre());
+                        continue;
+                    }
+                    Nature::Retires => (
+                        Gravite::Critique,
+                        (
+                            "des enregistrements ont été retirés un à un d'un morceau intact du journal (effacement partiel des traces)",
+                            "records were removed one by one from an intact chunk of the log (partial clearing of traces)",
+                        ),
+                        None,
+                    ),
+                    Nature::Absents if explique => (
+                        Gravite::Info,
+                        (
+                            "des enregistrements manquent, au moment d'un arrêt inattendu de l'ordinateur, qui les explique sans effacement",
+                            "records are missing, at the time of an unexpected shutdown of the computer, which explains them without clearing",
+                        ),
+                        Some(Reserve::ArretInattendu),
+                    ),
+                    Nature::Absents => (
+                        Gravite::Alerte,
+                        (
+                            "des enregistrements manquent dans la suite des numéros, sans arrêt inattendu pour l'expliquer : retirés, ou fichier copié incomplet",
+                            "records are missing from the numbering, with no unexpected shutdown to explain it: removed, or file copied incomplete",
+                        ),
+                        None,
+                    ),
+                    Nature::CopieAChaud => (
+                        Gravite::Info,
+                        (
+                            "des enregistrements manquent dans un fichier copié pendant que Windows écrivait : effacement possible, non concluant",
+                            "records are missing in a file copied while Windows was writing: possible clearing, not conclusive",
+                        ),
+                        Some(Reserve::CopieAChaud),
+                    ),
+                    Nature::AvantExport => (
+                        Gravite::Info,
+                        (
+                            "des numéros d'origine manquent dans un fichier exporté : effacés avant l'export, ou laissés de côté par son filtre",
+                            "original record numbers are missing in an exported file: cleared before the export, or left out by its filter",
+                        ),
+                        Some(Reserve::AvantExport),
+                    ),
+                };
+                let objet = format!("{}:{}-{}", journal.to_lowercase(), t.de, t.a);
+                let cle = (v, couper(&ordinateur.to_lowercase()), couper(&objet));
+                if !etat.trouvailles.contains_key(&cle) && etat.trouvailles.len() >= bornes.trouvailles {
+                    etat.au_dela += 1;
+                    continue;
+                }
+                let mut reserves = BTreeSet::new();
+                reserves.extend(reserve);
+                etat.trouvailles.insert(
+                    cle,
+                    Trouvaille {
+                        volet: v,
+                        objet: couper(&objet),
+                        ordinateur: couper(&ordinateur),
+                        gravite,
+                        pourquoi,
+                        details: vec![
+                            (Libelle::Journal, couper(&journal)),
+                            (Libelle::Numeros, format!("{}-{}", t.de, t.a)),
+                        ],
+                        nombre: t.nombre(),
+                        // Un trou se juge sur les numéros qui l'entourent, vérifiés par `trous::juger` : il
+                        // n'existe que si un morceau vérifié le réclame ou si la suite vérifiée le borde.
+                        verifies: t.nombre(),
+                        premier: t.avant,
+                        dernier: t.apres,
+                        reperes: Vec::new(),
+                        reserves,
+                    },
+                );
+            }
+            if illisibles > 0 {
+                manques.push(Manque::TrousIllisibles {
+                    journal: journal.clone(),
+                    nombre: illisibles,
+                });
+            }
+            if s.trous_au_dela > 0 {
+                manques.push(Manque::TrousAuDela {
+                    journal: journal.clone(),
+                    nombre: s.trous_au_dela,
+                });
+            }
+            if s.non_verifies > 0 {
+                manques.push(Manque::SuiteNonProuvee {
+                    journal: journal.clone(),
+                    nombre: s.non_verifies,
+                });
+            }
+            if s.doublons > 0 || s.incoherences > 0 {
+                let objet = format!("{}:incoherent", journal.to_lowercase());
+                let cle = (v, couper(&ordinateur.to_lowercase()), couper(&objet));
+                if etat.trouvailles.contains_key(&cle) || etat.trouvailles.len() < bornes.trouvailles {
+                    etat.trouvailles.insert(
+                        cle,
+                        Trouvaille {
+                            volet: v,
+                            objet: couper(&objet),
+                            ordinateur: couper(&ordinateur),
+                            gravite: Gravite::Alerte,
+                            pourquoi: (
+                                "la numérotation du journal est incohérente (numéros en double, en-tête qui ne suit pas) : un fichier réécrit ou assemblé",
+                                "the log numbering is inconsistent (duplicate numbers, header that does not match): a rewritten or assembled file",
+                            ),
+                            details: vec![(Libelle::Journal, couper(&journal))],
+                            nombre: s.doublons.saturating_add(s.incoherences),
+                            verifies: s.doublons.saturating_add(s.incoherences),
+                            premier: None,
+                            dernier: None,
+                            reperes: Vec::new(),
+                            reserves: BTreeSet::new(),
+                        },
+                    );
+                } else {
+                    etat.au_dela += 1;
+                }
+            }
+        }
+    }
+}

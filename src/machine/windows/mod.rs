@@ -490,6 +490,16 @@ fn antivirus_inscrits() -> Option<String> {
     )
 }
 
+/// Microsoft Defender est-il l'antivirus de cet ordinateur ? D'après les antivirus inscrits au Centre de sécurité ;
+/// rien sans Centre de sécurité ou sans antivirus inscrit (Windows Server, Wine) : on ne le sait pas.
+pub(crate) fn defender_est_l_antivirus() -> Option<bool> {
+    let inscrits = antivirus_inscrits()?;
+    if inscrits.trim().is_empty() {
+        return None;
+    }
+    Some(inscrits.to_lowercase().contains("defender"))
+}
+
 fn antivirus() -> Vec<Constat> {
     // WMI d'abord (quelques millisecondes) ; sinon un seul PowerShell (près d'une demi-seconde par lancement) pour
     // l'état de Defender et sa protection dans le cloud ensemble. Get-MpPreference peut manquer sans que l'état
