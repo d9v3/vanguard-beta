@@ -1,6 +1,7 @@
 //! Les traces sous Windows : processus par PowerShell (Win32_Process), connexions et ports par Get-NetTCPConnection,
 //! tâches planifiées, services, clés Run et abonnements WMI, comptes locaux, journaux d'événements exportés en .evtx
-//! par wevtutil (le format que lisent l'Observateur d'événements et les outils des spécialistes). Pour la chronologie,
+//! par l'API des journaux (EvtExportLog, wevtutil en secours : le format que lisent l'Observateur d'événements et les
+//! outils des spécialistes). Pour la chronologie,
 //! les événements qui racontent une intrusion sont lus en plus par les fonctions de Windows (wevtapi).
 
 use std::collections::HashMap;
@@ -11,6 +12,7 @@ use std::process::Command;
 use super::chronologie::{self, Apport};
 use super::{Bi, Empreinte, Feuille, Manque, Partie, Processus, Produit, Raison, bi};
 use crate::commande::section;
+use crate::machine::windows::export_journaux;
 
 /// Le séparateur des champs dans les sorties des scripts : une ligne de commande peut contenir « | » ou une
 /// tabulation, jamais ce caractère (retiré par N).
@@ -747,6 +749,17 @@ pub(crate) fn raison_wevtutil(erreurs: &str) -> Raison {
     }
 }
 
+/// Le fichier .evtx d'un journal, tel que les traces le décrivent.
+fn produit_du_journal(nom: &str, journal: &str, fr: &str, en: &str) -> Produit {
+    Produit {
+        nom: nom.into(),
+        contenu: bi!(
+            "{fr} ({journal}), les événements des 7 derniers jours, au format .evtx (Observateur d'événements)",
+            "{en} ({journal}), the events of the last 7 days, as .evtx (Event Viewer)"
+        ),
+    }
+}
+
 pub(super) fn journaux(dossier: &Path) -> Partie {
     let mut p = Partie::new(Bi::new("Journaux", "Logs"));
     let admin = administrateur();
@@ -759,6 +772,34 @@ pub(super) fn journaux(dossier: &Path) -> Partie {
             continue;
         }
         let destination = dossier.join(nom);
+        // L'API des journaux d'abord (EvtExportLog, le fichier que wevtutil epl écrit) ; wevtutil seulement si elle
+        // échoue pour une autre raison qu'un refus ou un canal absent, qu'il dirait pareil.
+        let requete = SEPT_JOURS.trim_start_matches("/q:");
+        match export_journaux::exporter(journal, requete, &destination, std::time::Duration::from_secs(120)) {
+            Ok(()) if destination.is_file() => {
+                total += std::fs::metadata(&destination).map_or(0, |m| m.len());
+                lus.push((fr, en));
+                p.fichiers.push(produit_du_journal(nom, journal, fr, en));
+                continue;
+            }
+            Err(export_journaux::Refus::Code(5)) => {
+                p.manque(titre, Raison::Droits);
+                continue;
+            }
+            Err(export_journaux::Refus::Code(15007)) => {
+                p.manque(titre, Raison::Introuvable);
+                continue;
+            }
+            Err(export_journaux::Refus::Delai) => {
+                p.manque(titre, Raison::Delai(120));
+                continue;
+            }
+            // Une réussite sans fichier, ou une autre erreur : wevtutil essaie à son tour (un fichier à moitié écrit
+            // est d'abord retiré, wevtutil refusant d'écraser).
+            _ => {
+                let _ = std::fs::remove_file(&destination);
+            }
+        }
         let debut = std::time::Instant::now();
         let r = crate::commande::lancer(
             crate::commande::systeme("wevtutil")
@@ -785,13 +826,7 @@ pub(super) fn journaux(dossier: &Path) -> Partie {
             Some(_) => {
                 total += std::fs::metadata(&destination).map_or(0, |m| m.len());
                 lus.push((fr, en));
-                p.fichiers.push(Produit {
-                    nom: nom.into(),
-                    contenu: bi!(
-                        "{fr} ({journal}), les événements des 7 derniers jours, au format .evtx (Observateur d'événements)",
-                        "{en} ({journal}), the events of the last 7 days, as .evtx (Event Viewer)"
-                    ),
-                });
+                p.fichiers.push(produit_du_journal(nom, journal, fr, en));
             }
         }
     }
@@ -997,8 +1032,12 @@ pub(super) fn place_des_journaux() -> u64 {
     JOURNAUX
         .iter()
         .map(|(journal, ..)| {
-            crate::commande::lancer(crate::commande::systeme("wevtutil").args(["gli", journal]), 15)
-                .and_then(|r| taille_gli(&r.sortie))
+            // EvtGetLogInfo d'abord ; wevtutil gli s'il ne répond pas.
+            export_journaux::taille(journal)
+                .or_else(|| {
+                    crate::commande::lancer(crate::commande::systeme("wevtutil").args(["gli", journal]), 15)
+                        .and_then(|r| taille_gli(&r.sortie))
+                })
                 .unwrap_or(20 << 20)
         })
         .sum()

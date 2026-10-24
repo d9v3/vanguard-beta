@@ -23,6 +23,7 @@ pub(crate) mod ecoute;
 pub(crate) mod eleve;
 pub(crate) mod evenements;
 mod exclusions;
+pub(crate) mod export_journaux;
 pub(crate) mod gestionnaire;
 pub(crate) mod hachage;
 pub(crate) mod impression;
