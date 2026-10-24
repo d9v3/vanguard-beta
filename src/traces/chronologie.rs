@@ -836,6 +836,13 @@ fn module_du_noyau(message: &str) -> Option<(Genre, String)> {
     Some((Genre::ModuleDuNoyau, format!("{nom} ({genre})")))
 }
 
+/// L'hôte d'une session vient du réseau : une adresse, ou un nom avec un point (pas un affichage local « :0 », ni
+/// « (tmux…) »).
+#[cfg(any(unix, test))]
+pub(crate) fn hote_distant(hote: &str) -> bool {
+    hote.parse::<std::net::IpAddr>().is_ok() || (hote.contains('.') && !hote.starts_with(':') && !hote.contains('('))
+}
+
 /// Les démarrages et les sessions depuis le réseau d'après « last » : « -F » de Linux (« Tue Oct 20 23:09:30 2026 »),
 /// ou sans année ni secondes (last de macOS, wtmpdb). Les sessions locales (terminaux, écran) ne sont pas gardées :
 /// chaque terminal ouvert en fait une.
@@ -889,9 +896,7 @@ pub(crate) fn lire_last<Tz: TimeZone>(sortie: &str, maintenant: chrono::NaiveDat
             "shutdown" | "runlevel" => {}
             _ => {
                 let hote = mots.get(2..i).map(|h| h.join(" ")).unwrap_or_default();
-                let distante = hote.parse::<std::net::IpAddr>().is_ok()
-                    || (hote.contains('.') && !hote.starts_with(':') && !hote.contains('('));
-                if distante {
+                if hote_distant(&hote) {
                     v.push(Evenement::new(
                         quand,
                         Source::Compte,
