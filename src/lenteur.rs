@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use crate::risk::Niveau;
 use crate::ui::*;
 
+mod resultat;
+
 /// Un programme (tous ses processus réunis : Firefox en compte une dizaine), tel que le script de Windows le donne.
 #[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
 #[serde(default)]
@@ -335,6 +337,8 @@ pub struct Conseil {
     pub grave: bool,
     pub texte: String,
     pub outil: Option<Outil>,
+    /// Ce que mesure le conseil, sans langue (« processeur », « demarrage ») : l'objet de son constat (`resultat`).
+    pub sujet: &'static str,
 }
 
 /// Programmes qui travaillent fort pendant un moment, puis se calment seuls : les nommer évite d'accuser l'ordinateur.
@@ -368,7 +372,14 @@ fn pourcent(n: u64, sur: u64) -> f64 {
 #[allow(clippy::cast_precision_loss)]
 pub fn conseils(i: &Instantane) -> Vec<Conseil> {
     let mut c = Vec::new();
-    let mut pousser = |grave, texte, outil| c.push(Conseil { grave, texte, outil });
+    let mut pousser = |grave, texte, outil, sujet| {
+        c.push(Conseil {
+            grave,
+            texte,
+            outil,
+            sujet,
+        });
+    };
     let plus = |cle: fn(&Programme) -> f64| {
         i.programmes
             .iter()
@@ -392,7 +403,7 @@ pub fn conseils(i: &Instantane) -> Vec<Conseil> {
             },
             None => trf!("Processeur occupé à {occupe:.0} %.", "Processor {occupe:.0}% busy."),
         };
-        pousser(true, texte, None);
+        pousser(true, texte, None, "processeur");
     }
     if let Some((total, dispo)) = i.memoire.filter(|&(t, d)| pourcent(d, t) < 10.0) {
         let texte = match plus(|p| p.memoire as f64) {
@@ -411,7 +422,7 @@ pub fn conseils(i: &Instantane) -> Vec<Conseil> {
                 taille(total)
             ),
         };
-        pousser(true, texte, Some(Outil::Demarrage));
+        pousser(true, texte, Some(Outil::Demarrage), "memoire");
     }
     if let Some(occupe) = i.disque.filter(|&o| o >= 80.0) {
         let texte = match plus(|p| p.disque.unwrap_or(0.0)) {
@@ -427,7 +438,7 @@ pub fn conseils(i: &Instantane) -> Vec<Conseil> {
                 "Disk busy {occupe:.0}% of the time: everything that reads or writes it waits its turn."
             ),
         };
-        pousser(true, texte, None);
+        pousser(true, texte, None, "disque");
     }
     if let Some((libre, total)) = i.place.filter(|&(l, t)| pourcent(l, t) < 10.0) {
         let texte = trf!(
@@ -436,7 +447,7 @@ pub fn conseils(i: &Instantane) -> Vec<Conseil> {
             taille(libre),
             taille(total)
         );
-        pousser(true, texte, Some(Outil::Nettoyer));
+        pousser(true, texte, Some(Outil::Nettoyer), "place");
     }
     if let Some(d) = i.demarrage.as_ref().ok().filter(|d| d.total >= 60.0) {
         let lents = retards(&d.lents[..d.lents.len().min(3)]);
@@ -449,7 +460,7 @@ pub fn conseils(i: &Instantane) -> Vec<Conseil> {
                 secondes_lisibles(d.total)
             )
         };
-        pousser(false, texte, Some(Outil::Performance));
+        pousser(false, texte, Some(Outil::Performance), "demarrage");
     }
     if i.au_demarrage.len() >= 8 || i.au_demarrage.iter().filter_map(|p| p.poids).sum::<u64>() >= 1 << 30 {
         let texte = trf!(
@@ -457,7 +468,7 @@ pub fn conseils(i: &Instantane) -> Vec<Conseil> {
             "{} programs start when you log in: those you do not need right away can wait until you open them.",
             i.au_demarrage.len()
         );
-        pousser(false, texte, Some(Outil::Demarrage));
+        pousser(false, texte, Some(Outil::Demarrage), "au-demarrage");
     }
     // Windows surtout : des semaines sans redémarrer, et des mises à jour attendent, des fuites de mémoire s'accumulent.
     if i.allume_depuis.is_some_and(|s| s >= 14 * 86_400) {
@@ -466,7 +477,7 @@ pub fn conseils(i: &Instantane) -> Vec<Conseil> {
             "On for {} days without a restart: restarting frees memory and finishes pending updates.",
             i.allume_depuis.unwrap_or(0) / 86_400
         );
-        pousser(false, texte, Some(Outil::MisesAJour));
+        pousser(false, texte, Some(Outil::MisesAJour), "allume");
     }
     c
 }
@@ -634,7 +645,9 @@ fn mesurer() -> Vec<Conseil> {
         "  {DISCRET}Mesure pendant deux secondes : utilisez l'ordinateur comme d'habitude…{RESET}",
         "  {DISCRET}Measuring for two seconds: keep using the computer as usual…{RESET}"
     );
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
     let i = systeme::instantane();
+    crate::modele::resultat::verser(&resultat::resultat(&i, debut));
     afficher(&i);
     let c = conseils(&i);
     section(tr!("CE QUE ÇA VEUT DIRE", "WHAT IT MEANS"));
@@ -662,6 +675,16 @@ fn mesurer() -> Vec<Conseil> {
 /// « vanguard lenteur » : l'instantané et ses conseils.
 pub fn commande() {
     mesurer();
+}
+
+/// `vanguard lenteur --json` : la même mesure de deux secondes que l'écran, jugée en résultat et versée comme lui.
+/// Rien n'est demandé ni changé.
+pub fn json() {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let i = systeme::instantane();
+    let r = resultat::resultat(&i, debut);
+    crate::modele::resultat::verser(&r);
+    println!("{}", crate::modele::resultat::json(&r));
 }
 
 /// L'outil au menu : l'instantané, ses conseils, puis l'outil qui règle ce qui a été trouvé.
@@ -2091,16 +2114,4 @@ mod tests {
         let activee = |u: &str| crate::machine::linux::natif::unite_activee(u, true) == Some(true);
         assert_eq!(systeme::services_actives(&dossier, activee), attendus);
     }
-}
-
-/// PROVISOIRE (lot H, à remplacer) : `--json` rend un résultat vide, donc « non vérifié ».
-pub fn json() {
-    let debut = (chrono::Utc::now(), std::time::Instant::now());
-    let r = crate::modele::resultat::Resultat::nouveau(
-        "PRO-LEN-001",
-        debut,
-        &[],
-        crate::modele::resultat::Couverture::default(),
-    );
-    println!("{}", crate::modele::resultat::json(&r));
 }

@@ -1975,3 +1975,50 @@ fn chercher_en_ligne_de_commande() {
     assert_eq!(rien.code, Some(1));
     assert!(sans_couleurs(&rien.texte).contains("Aucun résultat"));
 }
+
+/// `--json` d'un outil qui rend un résultat (`modele::resultat`) : code 0, rien d'autre que le JSON sur la sortie
+/// standard (toute la sortie se lit d'un bloc), son identifiant, son schéma et ses constats. Rien n'est demandé :
+/// l'entrée reste vide. Rend le résultat lu.
+fn examen_en_json(commande: &str, id: &str) -> serde_json::Value {
+    let maison = maison_jetable();
+    let s = vanguard_dans_env(
+        Path::new(env!("CARGO_BIN_EXE_vanguard")),
+        &maison,
+        "fr",
+        &[commande, "--json"],
+        "",
+        180,
+        &[("VANGUARD_HORS_LIGNE", "1")],
+    );
+    let _ = std::fs::remove_dir_all(&maison);
+    assert_eq!(s.code, Some(0), "{commande} --json : {}", s.erreurs);
+    assert!(s.texte.trim_start().starts_with('{'), "{commande} --json : {}", s.texte);
+    let v: serde_json::Value = serde_json::from_str(&s.texte)
+        .unwrap_or_else(|e| panic!("{commande} --json : JSON illisible ({e}) : {}", s.texte));
+    assert_eq!(v["outil"], id, "{v}");
+    assert_eq!(v["schema"], 1, "{v}");
+    assert!(v["constats"].is_array(), "{v}");
+    assert!(v["couverture"]["verifies"].is_u64(), "{v}");
+    v
+}
+
+/// `diagnostic --json` : le relevé jugé, sans copie texte ni question.
+#[test]
+fn diagnostic_en_json() {
+    examen_en_json("diagnostic", "PRO-DIA-001");
+}
+
+/// `lenteur --json` : la mesure de deux secondes jugée, sans le menu des outils.
+#[test]
+fn lenteur_en_json() {
+    examen_en_json("lenteur", "PRO-LEN-001");
+}
+
+/// `objets-connectes --json` : dans une maison jetable, aucun scan gardé ; jamais sain, et la raison est dite.
+#[test]
+fn objets_connectes_en_json() {
+    let v = examen_en_json("objets-connectes", "PRO-OBJ-001");
+    assert_eq!(v["couverture"]["verifies"], 0, "{v}");
+    assert!(v["couverture"]["non_verifies"][0].is_string(), "{v}");
+    assert_eq!(v["constats"][0]["raison"], "introuvable", "{v}");
+}
