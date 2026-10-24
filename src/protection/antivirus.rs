@@ -1218,16 +1218,15 @@ fn demarrage_windows() -> (Vec<String>, Vec<String>) {
             Err(_) => non_lus.push(chemin_affichable(&dossier)),
         }
     }
-    if let Some(taches) = crate::machine::windows::planificateur::taches() {
-        for t in taches {
-            // « dossier|nom|programme|arguments » : le nom et le programme, comme le script les montrait.
-            let mut champs = t.splitn(4, '|').skip(1);
-            let (nom, programme) = (champs.next().unwrap_or_default(), champs.next().unwrap_or_default());
+    // Chaque tâche active, à programme ou à gestionnaire COM (une persistance connue, que Get-ScheduledTask montrait
+    // aussi).
+    if let Some(taches) = crate::machine::windows::planificateur::lancements() {
+        for (nom, programme) in taches {
             lignes.push(trf!(
                 "tâche planifiée : {} — {}",
                 "scheduled task: {} — {}",
-                affichable(nom),
-                affichable(programme)
+                affichable(&nom),
+                affichable(&programme)
             ));
         }
     } else {

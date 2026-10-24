@@ -1094,15 +1094,17 @@ pub fn programmes_en_ecoute() -> std::collections::HashMap<u16, String> {
 pub fn ouvrir(cible: &str) {
     #[cfg(target_os = "linux")]
     let _ = Command::new("xdg-open").arg(cible).spawn();
-    // ShellExecuteW dans un fil à part, sans cmd : ni « & » ni « %VAR% » d'un lien ou d'un dossier n'y sont lus.
+    // ShellExecuteExW dans un fil à part, sans cmd : ni « & » ni « %VAR% » d'un lien ou d'un dossier n'y sont lus.
     #[cfg(windows)]
     windows::ouvrir::ouvrir(cible, None);
     #[cfg(target_os = "macos")]
     let _ = Command::new("open").arg(cible).spawn();
 }
 
-/// Ouvre un programme du système avec ses paramètres (« control.exe », « /name Microsoft.FileHistory »), que
-/// ShellExecuteW veut séparés : un seul texte serait cherché comme un fichier de ce nom.
+/// Ouvre un programme du système avec ses paramètres (« C:\Windows\System32\control.exe », « /name
+/// Microsoft.FileHistory »), que ShellExecuteExW veut séparés : un seul texte serait cherché comme un fichier de ce
+/// nom. `programme` est un chemin entier (`commande::systeme32`) : un nom seul serait cherché d'abord dans le dossier
+/// courant.
 #[cfg(windows)]
 pub fn ouvrir_avec(programme: &str, parametres: &str) {
     windows::ouvrir::ouvrir(programme, Some(parametres));
@@ -1113,6 +1115,13 @@ pub fn ouvrir_avec(programme: &str, parametres: &str) {
 pub fn attendre_ouvertures() {
     #[cfg(windows)]
     windows::ouvrir::attendre(std::time::Duration::from_secs(10));
+}
+
+/// Quitte le programme avec `code`, après avoir laissé aboutir les ouvertures en cours (Échap, Ctrl+C dans un menu) :
+/// `std::process::exit` les couperait.
+pub fn quitter(code: i32) -> ! {
+    attendre_ouvertures();
+    std::process::exit(code)
 }
 
 pub fn auditer(bavard: bool) -> Audit {

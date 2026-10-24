@@ -765,6 +765,19 @@ pub(super) fn journaux(dossier: &Path) -> Partie {
     let admin = administrateur();
     let mut lus = Vec::new();
     let mut total = 0;
+    // Les provisoires qu'un export d'avant, fini après son délai, aurait laissés dans le dossier temporaire : des
+    // copies de journaux, à ne pas laisser traîner.
+    for f in std::fs::read_dir(std::env::temp_dir()).into_iter().flatten().flatten() {
+        let n = f.file_name().to_string_lossy().into_owned();
+        if n.starts_with("vanguard-")
+            && n.contains("-05-")
+            && std::path::Path::new(&n)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("evtx"))
+        {
+            let _ = std::fs::remove_file(f.path());
+        }
+    }
     for (journal, nom, (fr, en), reserve) in JOURNAUX {
         let titre = Bi::new(fr, en);
         if reserve && !admin {

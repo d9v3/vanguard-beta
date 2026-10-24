@@ -517,7 +517,7 @@ pub fn demander(question: &str) -> String {
     // sans fin, en effaçant l'écran à toute vitesse (un cœur du processeur à 100 %). Vu en test.
     if matches!(std::io::stdin().read_line(&mut s), Ok(0) | Err(_)) {
         println!();
-        std::process::exit(0);
+        crate::machine::quitter(0);
     }
     noter_retour(false);
     s.trim().to_string()

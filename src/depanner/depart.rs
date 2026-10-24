@@ -455,6 +455,9 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn tpm_tbs_sans_planter() {
+        if crate::journal::sous_wine() {
+            return crate::essais::saute("tbs.dll n'est pas appelée sous Wine");
+        }
         let _ = tpm_tbs();
     }
 

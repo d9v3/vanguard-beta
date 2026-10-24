@@ -754,7 +754,7 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
             // Ctrl-C arrête Vanguard ; Ctrl-D (fin de l'entrée) le quitte, comme avant.
             let _ = terminal::disable_raw_mode();
             println!();
-            std::process::exit(if k.code == KeyCode::Char('c') { 130 } else { 0 });
+            crate::machine::quitter(if k.code == KeyCode::Char('c') { 130 } else { 0 });
         } else if matches!(k.code, KeyCode::Esc | KeyCode::Left) || (k.code == KeyCode::Backspace && tape.is_empty()) {
             // Retour arrière sans rien de tapé : revient en arrière, comme Échap.
             if tape.is_empty() {
@@ -824,7 +824,7 @@ pub fn attendre_retour_avant(question: &str, fin: Option<std::time::Instant>) ->
         if ctrl && matches!(k.code, KeyCode::Char('c' | 'd')) {
             let _ = terminal::disable_raw_mode();
             println!();
-            std::process::exit(if k.code == KeyCode::Char('c') { 130 } else { 0 });
+            crate::machine::quitter(if k.code == KeyCode::Char('c') { 130 } else { 0 });
         }
         if matches!(
             k.code,
@@ -874,7 +874,7 @@ pub fn choisir_en_ligne(options: &[(&str, &str)], invite: &str) -> Option<String
         if ctrl && matches!(k.code, KeyCode::Char('c' | 'd')) {
             let _ = terminal::disable_raw_mode();
             println!();
-            std::process::exit(if k.code == KeyCode::Char('c') { 130 } else { 0 });
+            crate::machine::quitter(if k.code == KeyCode::Char('c') { 130 } else { 0 });
         }
         match k.code {
             KeyCode::Up => en_cours = en_cours.checked_sub(1).unwrap_or(toutes.len() - 1),
@@ -927,7 +927,7 @@ fn lire_ou_revenir(question: &str) -> String {
         if ctrl && matches!(k.code, KeyCode::Char('c' | 'd')) {
             let _ = terminal::disable_raw_mode();
             println!();
-            std::process::exit(if k.code == KeyCode::Char('c') { 130 } else { 0 });
+            crate::machine::quitter(if k.code == KeyCode::Char('c') { 130 } else { 0 });
         }
         let entree = k.code == KeyCode::Enter || (ctrl && matches!(k.code, KeyCode::Char('j' | 'm')));
         if entree || (tape.is_empty() && matches!(k.code, KeyCode::Left | KeyCode::Esc)) {
@@ -1209,7 +1209,7 @@ fn cocher_ou_revenir(titre: &[String], cases: &[Case]) -> Option<Vec<bool>> {
         if ctrl && matches!(k.code, KeyCode::Char('c' | 'd')) {
             let _ = terminal::disable_raw_mode();
             println!();
-            std::process::exit(if k.code == KeyCode::Char('c') { 130 } else { 0 });
+            crate::machine::quitter(if k.code == KeyCode::Char('c') { 130 } else { 0 });
         }
         // Ctrl-J ou Ctrl-M : le saut de ligne que certains terminaux envoient pour Entrée.
         let entree = k.code == KeyCode::Enter || (ctrl && matches!(k.code, KeyCode::Char('j' | 'm')));

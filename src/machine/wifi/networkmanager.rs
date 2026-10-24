@@ -103,7 +103,11 @@ fn balise(proprietes: &Valeur, actif: bool) -> Option<Balise> {
         .and_then(Valeur::texte)
         .and_then(mac_normalisee)
         .unwrap_or_default();
-    let signal = u8::try_from(entier(Some(proprietes), "Strength").min(100)).ok();
+    // Une force absente ou d'un autre type n'est pas « 0 % » : inconnue.
+    let signal = proprietes
+        .champ("Strength")
+        .and_then(Valeur::entier)
+        .and_then(|s| u8::try_from(s.min(100)).ok());
     Some(Balise {
         borne: Borne {
             ssid,
@@ -378,7 +382,7 @@ mod tests {
     #[test]
     fn memes_bornes_que_nmcli() {
         let Ok(Some(l)) = lire() else {
-            return;
+            return crate::essais::saute("NetworkManager absent du bus");
         };
         let Some(r) = crate::commande::lancer_en_anglais(
             std::process::Command::new("nmcli").args([
@@ -394,7 +398,7 @@ mod tests {
             20,
         )
         .filter(|r| r.code == Some(0)) else {
-            return;
+            return crate::essais::saute("nmcli absent");
         };
         // « 02\:00\:00\:AA\:BB\:01:yes » : les « : » de l'adresse sont échappés.
         let mut nmcli: Vec<(String, bool)> = r

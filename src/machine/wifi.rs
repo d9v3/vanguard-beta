@@ -484,11 +484,18 @@ impl Lecture {
 }
 
 /// Le Wi-Fi de Linux : NetworkManager d'abord, qui garde les bornes de ses dernières recherches ; sans lui (iwd,
-/// systemd-networkd), sans carte qu'il gère ou si le bus refuse, le dernier balayage gardé par le noyau.
+/// systemd-networkd), sans carte qu'il gère, sans connexion qu'il voie ou si le bus refuse, le dernier balayage
+/// gardé par le noyau.
 #[cfg(target_os = "linux")]
 pub(crate) fn lecture_linux() -> Result<Lecture, &'static str> {
     match networkmanager::lire() {
-        Ok(Some(l)) => Ok(l),
+        Ok(Some(l)) if l.connexion.is_some() => Ok(l),
+        // NetworkManager ne voit aucune connexion : sa carte peut être « non gérée » (wpa_supplicant ou iwd lancés à
+        // part), et il la publie quand même, vide. Le noyau dit alors si elle est associée.
+        Ok(Some(l)) => match nl80211::lire() {
+            Ok(noyau) if noyau.connexion.is_some() => Ok(noyau),
+            _ => Ok(l),
+        },
         Ok(None) | Err(_) => nl80211::lire(),
     }
 }

@@ -229,7 +229,7 @@ struct Utilisateur4 {
     _groupe: u32,
     _profil: *const u16,
     _lecteur: *const u16,
-    _mot_de_passe_expire: u32,
+    mot_de_passe_expire: u32,
 }
 
 /// Une chaîne UTF-16 terminée par un zéro, lue au plus sur `max` caractères (borne vérifiée avant chaque lecture).
@@ -279,8 +279,8 @@ struct Compte {
     sid: String,
     /// Secondes depuis 1970 ; 0 : jamais connecté.
     derniere_connexion: u32,
-    /// Secondes depuis le dernier changement du mot de passe.
-    age_mot_de_passe: u32,
+    /// Secondes depuis le dernier changement du mot de passe ; `None` : à changer à la prochaine connexion.
+    age_mot_de_passe: Option<u32>,
     /// La description du compte (usri4_comment), celle de Get-LocalUser.
     description: String,
 }
@@ -347,7 +347,9 @@ fn comptes_natifs() -> Option<Vec<Compte>> {
                 mot_de_passe_exige: u.drapeaux & SANS_MOT_DE_PASSE == 0,
                 sid,
                 derniere_connexion: u.derniere_connexion,
-                age_mot_de_passe: u.age_mot_de_passe,
+                // À changer à la prochaine connexion (ou jamais défini) : Get-LocalUser ne dit alors aucune date, et
+                // l'âge rendu n'en est pas une.
+                age_mot_de_passe: (u.mot_de_passe_expire == 0).then_some(u.age_mot_de_passe),
                 description: texte_large(u.commentaire, 1024),
             });
             NetApiBufferFree(info.cast());
@@ -453,7 +455,11 @@ fn lignes_des_comptes(comptes: &[Compte], separateur: char, maintenant: i64) -> 
                 champ_de_trace(&c.nom, separateur),
                 vrai(c.actif).to_string(),
                 date_et_heure_locales(i64::from(c.derniere_connexion)),
-                date_et_heure_locales(maintenant - i64::from(c.age_mot_de_passe)),
+                c.age_mot_de_passe
+                    .map(i64::from)
+                    .filter(|&age| age < maintenant)
+                    .map(|age| date_et_heure_locales(maintenant - age))
+                    .unwrap_or_default(),
                 c.sid.clone(),
                 champ_de_trace(&c.description, separateur),
             ]
@@ -721,7 +727,7 @@ mod tests {
             mot_de_passe_exige: exige,
             sid: format!("S-1-5-21-1-1-1-{rid}"),
             derniere_connexion: connexion,
-            age_mot_de_passe: 0,
+            age_mot_de_passe: Some(0),
             description: String::new(),
         };
         let comptes = [
@@ -752,7 +758,7 @@ mod tests {
             mot_de_passe_exige: true,
             sid: "S-1-5-21-1-1-1-1001".into(),
             derniere_connexion: 1_792_000_000,
-            age_mot_de_passe: 3600,
+            age_mot_de_passe: Some(3600),
             description: "Compte\r\nde\u{1f}test".into(),
         };
         let jamais = Compte {
@@ -761,8 +767,15 @@ mod tests {
             description: String::new(),
             ..c.clone()
         };
+        // À changer à la prochaine connexion : aucune date de mot de passe, comme Get-LocalUser.
+        let a_changer = Compte {
+            nom: "carole".into(),
+            age_mot_de_passe: None,
+            ..c.clone()
+        };
         let sep = '\u{1f}';
-        let l = lignes_des_comptes(&[c, jamais], sep, 1_792_003_600);
+        let l = lignes_des_comptes(&[c, jamais, a_changer], sep, 1_792_003_600);
+        assert_eq!(l[2].split(sep).nth(3), Some(""));
         let champs: Vec<&str> = l[0].split(sep).collect();
         assert_eq!(champs.len(), 6);
         assert_eq!(

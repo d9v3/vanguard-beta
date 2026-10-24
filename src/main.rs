@@ -3311,7 +3311,7 @@ async fn main() {
             if let Err(e) = reseau::executer(o).await {
                 journal::erreur("scan réseau", &e);
                 eprintln!("{}", trf!("Erreur : {e}", "Error: {e}"));
-                std::process::exit(1);
+                machine::quitter(1);
             }
         }
         Some(Commande::AuditReseau { json, html, invite }) => {
@@ -3345,7 +3345,7 @@ async fn main() {
         Some(Commande::Entretenir) => entretien::entretenir(),
         Some(Commande::AppliquerEleve { canal, parent }) => {
             #[cfg(windows)]
-            std::process::exit(machine::windows::eleve::executer(&canal, parent));
+            machine::quitter(machine::windows::eleve::executer(&canal, parent));
             #[cfg(not(windows))]
             {
                 let _ = (canal, parent);
@@ -3437,7 +3437,7 @@ async fn main() {
         Some(Commande::Parametres { quoi }) => parametres::commande(&quoi),
         Some(Commande::Chercher { mots, premier, json }) => {
             if !chercher(&mots.join(" "), premier, json).await {
-                std::process::exit(1);
+                machine::quitter(1);
             }
         }
         // Le rapport du dernier bilan s'il a moins d'une heure ; sinon un bilan complet d'abord.
@@ -3468,7 +3468,7 @@ async fn main() {
                         "--json shows the state only: without on or off"
                     )
                 );
-                std::process::exit(2);
+                machine::quitter(2);
             }
             println!("{}", interrupteurs_json(&interrupteurs()));
         }
@@ -3486,7 +3486,7 @@ async fn main() {
                 }
                 Err(e) => {
                     eprintln!("  ✖ {e}");
-                    std::process::exit(2);
+                    machine::quitter(2);
                 }
             },
         },
@@ -3554,7 +3554,7 @@ async fn main() {
                 une_par_une,
             });
             // La sortie du processus arrête aussi une règle restée bloquée au-delà de son délai.
-            std::process::exit(code);
+            machine::quitter(code);
         }
         Some(Commande::Depanner { sujet }) if sujet.is_empty() => depanner_avec_ses_outils(),
         // « depanner traces [dossier] » : la collecte, comme l'ancienne commande « traces », avec son code de sortie
@@ -3563,20 +3563,20 @@ async fn main() {
             if (1..=2).contains(&sujet.len()) && ["traces", "evidence"].contains(&sujet[0].as_str()) =>
         {
             if !traces::commande(sujet.get(1).map(std::path::Path::new)) {
-                std::process::exit(1);
+                machine::quitter(1);
             }
         }
         Some(Commande::Depanner { sujet }) => depanner::executer(&sujet.join(" ")),
         Some(Commande::Plugin { quoi }) => {
             let code = plugins::commande(&quoi);
             if code != 0 {
-                std::process::exit(code);
+                machine::quitter(code);
             }
         }
         Some(Commande::Labo { quoi }) => {
             let code = plugins::labo::commande(&quoi);
             if code != 0 {
-                std::process::exit(code);
+                machine::quitter(code);
             }
         }
         Some(Commande::Extensions { sans_restrictions }) => match sans_restrictions {
@@ -3584,7 +3584,7 @@ async fn main() {
             Some(etat) => {
                 let code = plugins::regler_restrictions(etat == "on");
                 if code != 0 {
-                    std::process::exit(code);
+                    machine::quitter(code);
                 }
             }
         },

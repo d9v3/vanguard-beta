@@ -95,10 +95,12 @@ fn voisins_de(table: &[u8]) -> Vec<(Ipv4Addr, String)> {
 /// ipexport.h) ; `None` pour tout autre échec, l'API elle-même, qui ne prouve rien. `reponses` : le nombre rendu ;
 /// `tampon` : l'ICMP_ECHO_REPLY (Address à 0, Status à 4) ; `erreur` : GetLastError quand rien n'est rendu.
 fn echo_de(reponses: u32, tampon: &[u8], erreur: u32, cible: Ipv4Addr) -> Option<bool> {
-    /// IP_STATUS_BASE et le dernier code IP_* (IP_GENERAL_FAILURE).
-    const CODES_IP: std::ops::RangeInclusive<u32> = 11_000..=11_050;
+    /// Les codes IP_* qui disent la cible injoignable : réseau (11002), hôte (11003), délai (11010), durée de vie
+    /// épuisée en route (11013). Les autres (tampon, ressources, matériel, IP_GENERAL_FAILURE) disent un échec d'ici,
+    /// qui ne prouve rien sur la cible.
+    const INJOIGNABLE: [u32; 4] = [11_002, 11_003, 11_010, 11_013];
     if reponses == 0 {
-        return CODES_IP.contains(&erreur).then_some(false);
+        return INJOIGNABLE.contains(&erreur).then_some(false);
     }
     let depuis = Ipv4Addr::from(<[u8; 4]>::try_from(tampon.get(0..4)?).ok()?);
     let statut = u32_a(tampon, 4)?;
@@ -346,6 +348,8 @@ mod tests {
         // Délai écoulé (IP_REQ_TIMED_OUT) : ne répond pas ; une autre erreur de l'API : rien de prouvé.
         assert_eq!(echo_de(0, &[], 11_010, boite), Some(false));
         assert_eq!(echo_de(0, &[], 87, boite), None);
+        // IP_GENERAL_FAILURE (Wine sans ICMP) : un échec d'ici, pas une box muette.
+        assert_eq!(echo_de(0, &[], 11_050, boite), None);
         assert_eq!(echo_de(1, &[1, 2], 0, boite), None);
     }
 

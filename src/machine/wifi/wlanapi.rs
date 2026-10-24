@@ -277,6 +277,15 @@ fn protection_negociee(authentification: u32, chiffrement: u32) -> &'static str 
     }
 }
 
+/// La bande d'après le seul canal, quand il n'y en a qu'une possible : les canaux 1, 5, 9 et 13 sont aussi des canaux
+/// de 6 GHz, et Windows ne dit pas la fréquence de la connexion sans la liste des bornes.
+#[cfg(any(windows, test))]
+fn bande_sans_ambiguite(canal: u16) -> Option<Bande> {
+    (![1, 5, 9, 13].contains(&canal))
+        .then(|| Bande::de_canal(canal))
+        .flatten()
+}
+
 /// Les noms des profils d'un WLAN_PROFILE_INFO_LIST copié.
 #[cfg(any(windows, test))]
 fn profils_de(octets: &[u8]) -> Vec<String> {
@@ -324,7 +333,7 @@ mod natif {
     use std::ptr::{null, null_mut};
 
     use super::{
-        Balise, Bande, Connexion, ELEMENTS_MAX, ProfilEnregistre, balises_de, connexion_de, interfaces_de, profil_xml,
+        Balise, Connexion, ELEMENTS_MAX, ProfilEnregistre, balises_de, connexion_de, interfaces_de, profil_xml,
         profils_de,
     };
     use crate::machine::wifi::Lecture;
@@ -690,13 +699,13 @@ mod natif {
             for b in &mut lecture.balises {
                 b.borne.actif = !c.bssid.is_empty() && b.borne.bssid == c.bssid;
             }
-            // La bande de la borne de la connexion ; sans elle, d'après le canal (le 6 GHz s'y perd, faute de mieux).
+            // La bande de la borne de la connexion ; sans elle, d'après le canal, sauf un canal que le 6 GHz réutilise.
             c.bande = lecture
                 .balises
                 .iter()
                 .find(|b| b.borne.actif)
                 .map(|b| b.borne.bande)
-                .or_else(|| c.canal.and_then(Bande::de_canal));
+                .or_else(|| c.canal.and_then(super::bande_sans_ambiguite));
         }
         // Windows 11 24H2 ne liste les réseaux qu'avec l'autorisation de localisation.
         if refus || (lecture.balises.is_empty() && interfaces.iter().any(|i| i.connectee)) {
@@ -730,13 +739,19 @@ mod natif {
         if interfaces.is_empty() {
             return Err(pas_de_carte());
         }
+        let mut erreur = None;
         for i in interfaces.iter().filter(|i| i.connectee) {
             match session.connexion(&i.guid) {
                 Ok(Some(c)) => {
-                    return Ok(Some(Connexion {
-                        bande: c.canal.and_then(Bande::de_canal),
-                        ..c
-                    }));
+                    // La bande de la borne de la connexion dans la liste, quand Windows la donne ; sinon d'après le
+                    // canal, sauf s'il est aussi un canal de 6 GHz.
+                    let bande = session
+                        .balises(&i.guid)
+                        .ok()
+                        .and_then(|b| b.into_iter().find(|b| !c.bssid.is_empty() && b.borne.bssid == c.bssid))
+                        .map(|b| b.borne.bande)
+                        .or_else(|| c.canal.and_then(super::bande_sans_ambiguite));
+                    return Ok(Some(Connexion { bande, ..c }));
                 }
                 Err(ERROR_ACCESS_DENIED) => {
                     return Err(tr!(
@@ -744,10 +759,17 @@ mod natif {
                         "Windows tells the connected network only with location access"
                     ));
                 }
-                Ok(None) | Err(_) => {}
+                Ok(None) => {}
+                // Une carte connectée qui ne se lit pas : « pas connecté » ne serait pas prouvé.
+                Err(_) => {
+                    erreur.get_or_insert(tr!(
+                        "Windows ne dit pas le réseau connecté",
+                        "Windows does not tell the connected network"
+                    ));
+                }
             }
         }
-        Ok(None)
+        erreur.map_or(Ok(None), Err)
     }
 
     /// Les profils Wi-Fi enregistrés de toutes les cartes. `Err` : API absente ou service arrêté.
@@ -802,6 +824,17 @@ mod tests {
         assert_eq!(securite + offset_of!(WlanSecurityAttributes, securise), 588);
         assert_eq!(securite + offset_of!(WlanSecurityAttributes, authentification), 596);
         assert_eq!(securite + offset_of!(WlanSecurityAttributes, chiffrement), 600);
+    }
+
+    /// Le canal seul ne donne une bande que s'il n'est pas aussi un canal de 6 GHz.
+    #[test]
+    fn bande_d_apres_le_canal() {
+        assert_eq!(bande_sans_ambiguite(6), Some(Bande::G24));
+        assert_eq!(bande_sans_ambiguite(36), Some(Bande::G5));
+        for canal in [1, 5, 9, 13] {
+            assert_eq!(bande_sans_ambiguite(canal), None, "{canal}");
+        }
+        assert_eq!(bande_sans_ambiguite(0), None);
     }
 
     fn liste(n: u32, elements: &[Vec<u8>]) -> Vec<u8> {
