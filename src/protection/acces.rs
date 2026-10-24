@@ -54,6 +54,13 @@ struct Remarque {
     permission: Option<Permission>,
     texte: String,
     verifie: bool,
+    /// Les permissions qu'elle touche, pour le résultat : la sienne, ou toutes pour une remarque générale, sauf quand
+    /// celle-ci en nomme certaines (le journal WAL de macOS, qui ne touche pas la position).
+    touchees: Vec<Permission>,
+    /// Ce que le système ne liste pas (les programmes classiques, qui ne demandent rien) : un fait vrai à l'écran
+    /// (`verifie`), mais pour le résultat un manque sous chaque permission touchée. « Aucune application n'a accès à
+    /// la caméra » n'y serait pas vrai : un programme qu'aucune liste ne montre peut s'en servir.
+    hors_liste: bool,
 }
 
 #[derive(Debug, Default)]
@@ -68,7 +75,27 @@ impl Bilan {
             permission,
             texte: texte.into(),
             verifie,
+            touchees: permission.map_or_else(|| PERMISSIONS.to_vec(), |p| vec![p]),
+            hors_liste: false,
         });
+    }
+
+    /// Une remarque générale (affichée une fois, hors des permissions) qui ne touche que `touchees`.
+    fn remarque_sur(&mut self, touchees: &[Permission], verifie: bool, texte: impl Into<String>) {
+        self.remarque(None, verifie, texte);
+        if let Some(r) = self.remarques.last_mut() {
+            r.touchees = touchees.to_vec();
+        }
+    }
+
+    /// Ce que le système ne liste pas pour `touchees` : affiché comme un fait, jamais compté vérifié dans le
+    /// résultat. Sans permission touchée (toutes coupées pour ces programmes), un simple fait.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    fn hors_liste(&mut self, touchees: &[Permission], texte: impl Into<String>) {
+        self.remarque_sur(touchees, true, texte);
+        if let Some(r) = self.remarques.last_mut() {
+            r.hors_liste = !touchees.is_empty();
+        }
     }
 
     /// Ajoute les accès ; une même application vue deux fois pour la même permission (portail et permission fixe)
@@ -254,9 +281,11 @@ fn capacite(p: Permission) -> &'static str {
 /// Les accès d'une permission d'après le registre de ce compte (`compte`) et de l'ordinateur (`machine`) ; `None` :
 /// clé illisible. Une application du Store a accès si elle est autorisée (« Allow ») et que l'interrupteur du compte
 /// n'est pas coupé ; un programme classique, tant que ni l'interrupteur du compte ni celui des applications de bureau
-/// ne le sont. L'interrupteur de l'appareil (HKLM) coupé l'emporte sur tout.
+/// ne le sont. L'interrupteur de l'appareil (HKLM) coupé l'emporte sur tout. Rend `true` quand un programme classique
+/// peut s'en servir sans que Windows l'ait encore noté (ni l'ordinateur, ni le compte, ni les applications de bureau
+/// coupés) ; `false` aussi quand le compte est illisible, déjà dit non vérifié.
 #[cfg(any(windows, test))]
-fn juger_windows(p: Permission, compte: Option<&Consentement>, machine: Option<&Consentement>, b: &mut Bilan) {
+fn juger_windows(p: Permission, compte: Option<&Consentement>, machine: Option<&Consentement>, b: &mut Bilan) -> bool {
     let est = |v: &Option<String>, quoi: &str| v.as_deref().is_some_and(|v| v.eq_ignore_ascii_case(quoi));
     if machine.is_some_and(|m| est(&m.global, "Deny")) {
         b.remarque(
@@ -267,7 +296,7 @@ fn juger_windows(p: Permission, compte: Option<&Consentement>, machine: Option<&
                 "Turned off for the whole computer: no app has access."
             ),
         );
-        return;
+        return false;
     }
     let Some(compte) = compte else {
         b.remarque(
@@ -278,7 +307,7 @@ fn juger_windows(p: Permission, compte: Option<&Consentement>, machine: Option<&
                 "this account's settings cannot be read from the registry."
             ),
         );
-        return;
+        return false;
     };
     let compte_coupe = est(&compte.global, "Deny");
     let bureau_coupe = compte_coupe || est(&compte.hors_store, "Deny");
@@ -355,6 +384,7 @@ fn juger_windows(p: Permission, compte: Option<&Consentement>, machine: Option<&
         ))
     });
     b.acces.extend(trouves.into_iter().map(|(_, a)| a));
+    !bureau_coupe
 }
 
 #[cfg(windows)]
@@ -364,14 +394,16 @@ mod windows {
     use crate::tr;
 
     pub(super) fn lire(b: &mut Bilan) {
+        let mut libres = Vec::new();
         for p in PERMISSIONS {
             let compte = consentement(false, capacite(p));
             let machine = consentement(true, capacite(p));
-            juger_windows(p, compte.as_ref(), machine.as_ref(), b);
+            if juger_windows(p, compte.as_ref(), machine.as_ref(), b) {
+                libres.push(p);
+            }
         }
-        b.remarque(
-            None,
-            true,
+        b.hors_liste(
+            &libres,
             tr!(
                 "Les programmes classiques ne demandent pas d'autorisation une à une : Windows note seulement ceux qui se sont déjà servis de la position, de la caméra ou du micro. Un programme jamais lancé y aurait accès lui aussi.",
                 "Classic programs do not ask for permission one by one: Windows only records those that already used the location, camera or microphone. A program never started would have access too."
@@ -814,9 +846,8 @@ mod linux {
                 ),
             );
         }
-        b.remarque(
-            None,
-            true,
+        b.hors_liste(
+            &[Permission::Contacts, Permission::Camera, Permission::Micro],
             tr!(
                 "Les programmes installés hors Flatpak et Snap ne demandent aucune permission : ils peuvent tous se servir de la caméra, du micro et des contacts de ce compte. Ce qui s'en sert en ce moment : l'outil « Caméra et micro ».",
                 "Programs installed outside Flatpak and Snap ask for no permission: they can all use this account's camera, microphone and contacts. What uses them right now: the “Camera and mic” tool."
@@ -884,12 +915,13 @@ mod macos {
             Some((acces, wal)) => {
                 b.ajouter(acces);
                 if wal {
-                    b.remarque(
-                        None,
-                        true,
+                    // Un accès accordé à l'instant peut n'être encore que dans le journal : non vérifié.
+                    b.remarque_sur(
+                        &[Permission::Contacts, Permission::Camera, Permission::Micro],
+                        false,
                         tr!(
-                            "Caméra, micro et contacts : changements récents peut-être absents (journal WAL non lu).",
-                            "Camera, microphone and contacts: recent changes may be missing (WAL journal not read)."
+                            "un changement récent de la caméra, du micro ou des contacts peut manquer (journal WAL non lu).",
+                            "a recent change to the camera, microphone or contacts may be missing (WAL journal not read)."
                         ),
                     );
                 }

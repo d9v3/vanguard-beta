@@ -2,7 +2,7 @@
 //! lancées d'un dossier où un logiciel espion se cache souvent, et ce qui n'a pas pu être lu, sans l'écran. Versé au
 //! rapport (`examens/PRO-ACC-001.json`), au journal des événements, et rendu par `--json`.
 
-use super::{Acces, Bilan, PERMISSIONS, Permission};
+use super::{Acces, Bilan, PERMISSIONS, Permission, Remarque};
 use crate::machine::{Constat, alerte, impossible_par, ok};
 use crate::modele::resultat::{Couverture, Resultat, sans_piege};
 use crate::modele::{Objet, Raison};
@@ -92,23 +92,32 @@ fn constat_d_acces(a: &Acces) -> Constat {
 }
 
 /// Le résultat d'un bilan commencé à `debut`. Une permission n'est comptée vérifiée que si rien de ce qui la touche
-/// n'a échoué ; une lecture en échec se dit sous chaque permission qu'elle touchait (`non_verifies`, une fois par
-/// texte, avec les permissions concernées).
+/// n'a échoué, et que le système liste tout ce qui peut s'en servir ; une lecture en échec se dit sous chaque
+/// permission qu'elle touchait (`non_verifies`, une fois par texte, avec les permissions concernées).
 pub(super) fn resultat(b: &Bilan, debut: Debut) -> Resultat {
-    let general_manque = b.remarques.iter().any(|r| r.permission.is_none() && !r.verifie);
-    let verifiee =
-        |p: Permission| !general_manque && !b.remarques.iter().any(|r| r.permission == Some(p) && !r.verifie);
+    // Un manque, pour le résultat : une lecture en échec, ou ce que le système ne liste pas (affiché comme un fait).
+    let manque = |r: &Remarque| !r.verifie || r.hors_liste;
+    let touchee = |r: &Remarque, p: Permission| r.touchees.contains(&p);
+    let verifiee = |p: Permission| !b.remarques.iter().any(|r| manque(r) && touchee(r, p));
+    // Seul manque : ce qui n'est pas listé. Ce qui l'est a bien été lu.
+    let listee = |p: Permission| !b.remarques.iter().any(|r| !r.verifie && touchee(r, p));
+    // Les permissions d'une remarque, dans une phrase : « tout » quand elle les touche toutes.
+    let quoi = |r: &Remarque| match r.permission {
+        Some(p) => vec![nom(p)],
+        None if r.touchees.len() == PERMISSIONS.len() => vec![crate::tr!("tout", "everything")],
+        None => r.touchees.iter().map(|p| nom(*p)).collect(),
+    };
     let mut constats: Vec<Constat> = b.acces.iter().map(constat_d_acces).collect();
     for r in &b.remarques {
-        let c = if r.verifie {
-            ok(CAT, r.texte.clone())
-        } else {
-            let quoi = r.permission.map_or(crate::tr!("tout", "everything"), nom);
+        let c = if manque(r) {
+            let quoi = quoi(r).join(", ");
             impossible_par(
                 CAT,
                 Raison::Illisible(r.texte.clone()),
                 crate::trf!("Non vérifié ({quoi}) : {}", "Not checked ({quoi}): {}", r.texte),
             )
+        } else {
+            ok(CAT, r.texte.clone())
         };
         constats.push(match r.permission {
             Some(p) => c.avec_objet(Objet::de("permission", code(p))),
@@ -117,23 +126,30 @@ pub(super) fn resultat(b: &Bilan, debut: Debut) -> Resultat {
     }
     for p in PERMISSIONS {
         let rien = !b.acces.iter().any(|a| a.permission == p) && !b.remarques.iter().any(|r| r.permission == Some(p));
-        if rien && verifiee(p) {
-            constats.push(
-                ok(
-                    CAT,
-                    crate::trf!("Aucune application n'a accès {}.", "No app has access {}.", acces_a(p)),
-                )
-                .avec_objet(Objet::de("permission", code(p))),
-            );
+        if !rien {
+            continue;
         }
+        let message = if verifiee(p) {
+            crate::trf!("Aucune application n'a accès {}.", "No app has access {}.", acces_a(p))
+        } else if listee(p) {
+            // Ce qui est listé a été lu : le dire, sans conclure pour ce que le système ne montre pas.
+            crate::trf!(
+                "Aucune des applications que le système liste n'a accès {}.",
+                "None of the apps the system lists has access {}.",
+                acces_a(p)
+            )
+        } else {
+            continue;
+        };
+        constats.push(ok(CAT, message).avec_objet(Objet::de("permission", code(p))));
     }
     // Un même échec touche souvent plusieurs permissions : une ligne par texte, les permissions réunies.
     let mut manques: Vec<(Vec<&'static str>, &str)> = Vec::new();
-    for r in b.remarques.iter().filter(|r| !r.verifie) {
-        let touchee = r.permission.map_or(crate::tr!("tout", "everything"), nom);
+    for r in b.remarques.iter().filter(|r| manque(r)) {
+        let touchees = quoi(r);
         match manques.iter_mut().find(|(_, t)| *t == r.texte) {
-            Some((touchees, _)) => touchees.push(touchee),
-            None => manques.push((vec![touchee], &r.texte)),
+            Some((deja, _)) => deja.extend(touchees),
+            None => manques.push((touchees, &r.texte)),
         }
     }
     let non_verifies = manques
@@ -207,6 +223,108 @@ mod tests {
             2,
             "Zoom, et contacts : aucune"
         );
+    }
+
+    /// Ce que le système ne liste pas (programmes classiques sous Linux et Windows) : jamais « aucune application n'a
+    /// accès », jamais compté vérifié ; ce qui est listé reste dit. Un journal WAL non lu (macOS) : non vérifié.
+    #[test]
+    fn ce_qui_n_est_pas_liste() {
+        let debut = (chrono::Utc::now(), std::time::Instant::now());
+        let mut b = Bilan::default();
+        b.hors_liste(
+            &[Permission::Contacts, Permission::Camera, Permission::Micro],
+            "ils peuvent tous se servir de la caméra",
+        );
+        let r = resultat(&b, debut);
+        assert_eq!(r.verdict(), "non-verifie");
+        assert_eq!(r.couverture.verifies, 1, "la position seule");
+        assert_eq!(r.couverture.non_verifies.len(), 1, "{:?}", r.couverture.non_verifies);
+        assert!(
+            r.couverture.non_verifies[0].starts_with("contacts, caméra, micro : "),
+            "{:?}",
+            r.couverture.non_verifies
+        );
+        assert!(
+            !r.constats
+                .iter()
+                .any(|c| c.message.starts_with("Aucune application n'a accès à la caméra")),
+            "{:?}",
+            r.constats
+        );
+        let camera = r
+            .constats
+            .iter()
+            .find(|c| c.objet.as_deref() == Some("permission:camera"))
+            .unwrap();
+        assert_eq!(camera.etat, "sain");
+        assert!(camera.message.contains("que le système liste"), "{}", camera.message);
+        assert!(
+            r.constats
+                .iter()
+                .any(|c| c.etat == "non-verifie" && c.message.contains("se servir")),
+            "{:?}",
+            r.constats
+        );
+        // Toutes coupées pour ces programmes (Windows) : un simple fait, tout vérifié.
+        let mut b = Bilan::default();
+        b.hors_liste(&[], "un programme jamais lancé y aurait accès");
+        let r = resultat(&b, debut);
+        assert_eq!((r.verdict(), r.couverture.verifies), ("sain", 4));
+        // Un accès réel reste dit à côté du manque.
+        let mut b = Bilan::default();
+        b.acces.push(acces(Permission::Camera, "org.exemple.Visio"));
+        b.hors_liste(&[Permission::Camera], "programmes classiques");
+        let r = resultat(&b, debut);
+        assert!(
+            r.constats
+                .iter()
+                .any(|c| c.etat == "sain" && c.message.contains("Visio"))
+        );
+        assert_eq!((r.verdict(), r.couverture.verifies), ("non-verifie", 3));
+        // macOS : le journal WAL non lu touche caméra, micro et contacts, pas la position.
+        let mut b = Bilan::default();
+        b.remarque_sur(
+            &[Permission::Contacts, Permission::Camera, Permission::Micro],
+            false,
+            "journal WAL non lu",
+        );
+        let r = resultat(&b, debut);
+        assert_eq!((r.verdict(), r.couverture.verifies), ("non-verifie", 1));
+        assert_eq!(
+            r.couverture.non_verifies,
+            ["contacts, caméra, micro : journal WAL non lu"]
+        );
+        assert!(
+            !r.constats
+                .iter()
+                .any(|c| c.message.contains("Aucune") && c.objet.as_deref() != Some("permission:position"))
+        );
+    }
+
+    /// Windows : un programme classique peut se servir de ce qui n'est pas coupé pour lui sans être noté.
+    #[test]
+    fn programmes_classiques_de_windows() {
+        let libre = crate::protection::camera::Consentement {
+            global: Some("Allow".into()),
+            hors_store: Some("Allow".into()),
+            entrees: Vec::new(),
+        };
+        let mut coupe = libre.clone();
+        coupe.hors_store = Some("Deny".into());
+        let mut b = Bilan::default();
+        assert!(super::super::juger_windows(
+            Permission::Camera,
+            Some(&libre),
+            None,
+            &mut b
+        ));
+        assert!(!super::super::juger_windows(
+            Permission::Micro,
+            Some(&coupe),
+            None,
+            &mut b
+        ));
+        assert!(!super::super::juger_windows(Permission::Contacts, None, None, &mut b));
     }
 
     /// Un nom d'application piégé n'arrive pas brut dans l'objet (le message l'est par `ConstatEcrit`).
