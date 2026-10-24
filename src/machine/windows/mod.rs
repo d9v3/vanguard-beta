@@ -946,7 +946,7 @@ fn juger_bitlocker(etat: Option<&str>) -> Constat {
 }
 
 /// Ports TCP en écoute (« adresse|port|programme », une ligne chacun) et ports bloqués par une règle de Vanguard, lus
-/// sans PowerShell (netstat, tasklist, registre). `None` si netstat ne répond pas.
+/// sans PowerShell (tables TCP de Windows, processus, registre). `None` si ni les tables ni netstat ne répondent.
 fn ports_tcp_directs(pare_feu_actif: bool) -> Option<(String, Vec<u16>)> {
     let ecoutes = ecoute::ecoutes()?;
     let liste = ecoutes
@@ -978,8 +978,8 @@ fn ports_bloques_powershell() -> Vec<u16> {
     .collect()
 }
 
-/// Les mêmes, par PowerShell, quand netstat ne répond pas : les noms des programmes lus une fois, puis les ports en
-/// écoute, puis les règles de blocage dans leur section (leur échec ne fait pas perdre les ports).
+/// Les mêmes, par PowerShell, quand ni les tables ni netstat ne répondent : les noms des programmes lus une fois,
+/// puis les ports en écoute, puis les règles de blocage dans leur section (leur échec ne fait pas perdre les ports).
 fn ports_tcp_powershell(pare_feu_actif: bool) -> Option<(String, Vec<u16>)> {
     let regles = if pare_feu_actif {
         format!(
@@ -1005,8 +1005,8 @@ fn ports_tcp_powershell(pare_feu_actif: bool) -> Option<(String, Vec<u16>)> {
     Some((liste, bloques))
 }
 
-/// Les ports TCP en écoute et le nom de leur programme, pour nommer les services au scan du réseau ; `None` si netstat
-/// ne répond pas.
+/// Les ports TCP en écoute et le nom de leur programme, pour nommer les services au scan du réseau ; `None` si ni les
+/// tables de Windows ni netstat ne répondent.
 pub(super) fn ports_tcp_et_noms() -> Option<Vec<(u16, String)>> {
     Some(
         ecoute::ecoutes()?
@@ -1019,7 +1019,7 @@ pub(super) fn ports_tcp_et_noms() -> Option<Vec<(u16, String)>> {
 
 fn ports_ecoute(pare_feu_actif: bool, ip_lan: Option<&str>) -> Vec<Constat> {
     // Le plus lent du bilan Windows par PowerShell (4 à 6 s dans la VM, une vingtaine de PowerShell démarrant
-    // ensemble) : netstat et tasklist d'abord, PowerShell seulement s'ils ne répondent pas. Les ports bloqués par une
+    // ensemble) : les tables de Windows et la liste des processus d'abord, PowerShell seulement s'ils ne répondent pas. Les ports bloqués par une
     // règle de Vanguard écoutent toujours mais ne sont plus joignables : sans cette lecture, l'alerte et la même
     // correction (une règle de plus à chaque fois) revenaient à chaque audit.
     let Some((liste, bloques)) = ports_tcp_directs(pare_feu_actif).or_else(|| ports_tcp_powershell(pare_feu_actif))
@@ -1147,7 +1147,8 @@ fn wifi_sans_connexion() -> Constat {
 /// Ports UDP ouverts sur le réseau. Windows en ouvre beaucoup lui-même (découverte, heure, VPN) : on ne garde
 /// que les services à risque et ceux des programmes installés, hors ports éphémères (réponses de clients).
 fn ports_udp(pare_feu_actif: bool, ip_lan: Option<&str>) -> Vec<Constat> {
-    // Sans PowerShell d'abord : le réglage LLMNR dans le registre, les ports par netstat et tasklist.
+    // Sans PowerShell d'abord : le réglage LLMNR dans le registre, les ports par les tables de Windows et la liste
+    // des processus.
     if let Some(ecoutes) = ecoute::ecoutes() {
         let llmnr = registre::<u32>(
             winreg::enums::HKEY_LOCAL_MACHINE,

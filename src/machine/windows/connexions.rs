@@ -33,6 +33,30 @@ pub(crate) fn sockets() -> Option<Vec<Socket>> {
     Some(toutes)
 }
 
+/// Les connexions TCP établies, IPv4 puis IPv6 : le seul lecteur de GetExtendedTcpTable pour les connexions
+/// sortantes et la surveillance. `None` : aucune des deux tables ne se lit ; une seule lue suffit.
+#[cfg(windows)]
+pub(crate) fn tcp_etablies() -> Option<Vec<Socket>> {
+    let v4 = table(true, IPV4).map(|t| lire_tcp(&t, false));
+    let v6 = table(true, IPV6).map(|t| lire_tcp(&t, true));
+    if v4.is_none() && v6.is_none() {
+        return None;
+    }
+    Some(etablies(v4.into_iter().chain(v6).flatten()))
+}
+
+/// Les connexions TCP à l'état établi (MIB_TCP_STATE_ESTAB).
+fn etablies(sockets: impl Iterator<Item = Socket>) -> Vec<Socket> {
+    sockets.filter(|s| s.tcp && s.etat == "Established").collect()
+}
+
+/// La table TCP brute d'une famille (2 : IPv4, 23 : IPv6), lue comme `lire_tcp` la lit, pour qui lit d'autres
+/// colonnes (le blocage : les ports locaux des sessions à distance).
+#[cfg(windows)]
+pub(crate) fn table_tcp(famille: u32) -> Option<Vec<u8>> {
+    table(true, famille)
+}
+
 /// Une table brute (TCP_TABLE_OWNER_PID_ALL ou UDP_TABLE_OWNER_PID), coupée à ce que Windows a écrit.
 #[cfg(windows)]
 fn table(tcp: bool, famille: u32) -> Option<Vec<u8>> {
@@ -60,10 +84,11 @@ fn table(tcp: bool, famille: u32) -> Option<Vec<u8>> {
     const TROP_PETIT: u32 = 122;
     let mut taille = 64 * 1024u32;
     for _ in 0..4 {
-        let mut tampon = vec![0u8; usize::try_from(taille).ok()?];
-        let mut ecrit = taille;
-        // SAFETY : Windows écrit au plus `ecrit` octets dans `tampon`, qui les a, et y met la taille voulue s'il en
-        // faut plus.
+        // Des mots de 32 bits, pour que la table (des DWORD) soit alignée comme Windows l'écrit.
+        let mut tampon = vec![0u32; usize::try_from(taille.div_ceil(4)).ok()?];
+        let mut ecrit = u32::try_from(tampon.len() * 4).ok()?;
+        // SAFETY : `tampon` fait `ecrit` octets, alignés sur 4 ; Windows y écrit au plus `ecrit` octets, ou rien en y
+        // mettant la taille voulue s'il en faut plus.
         let code = unsafe {
             if tcp {
                 GetExtendedTcpTable(
@@ -87,8 +112,8 @@ fn table(tcp: bool, famille: u32) -> Option<Vec<u8>> {
         };
         match code {
             0 => {
-                tampon.truncate(usize::try_from(ecrit).ok()?.min(tampon.len()));
-                return Some(tampon);
+                let octets = tampon.iter().flat_map(|m| m.to_ne_bytes());
+                return Some(octets.take(usize::try_from(ecrit).ok()?).collect());
             }
             TROP_PETIT => taille = ecrit.max(taille) + 16 * 1024,
             _ => return None,
@@ -229,6 +254,30 @@ mod tests {
         assert_eq!((l[0].locale.1, l[0].pid, l[0].distante), (53, 7, None));
         assert_eq!(lire_tcp(&[1, 0], false), Vec::new());
         assert_eq!(mot_de_l_etat(2), "Listen");
+        // Une ligne TCP IPv6 : adresse locale, zone, port, distante, zone, port, état, programme (56 octets).
+        let ligne6 = |etat: u32| {
+            let mut l = Vec::new();
+            l.extend("2001:db8::20".parse::<Ipv6Addr>().unwrap().octets());
+            l.extend([0; 4]);
+            l.extend([0xc3, 0x51, 0, 0]);
+            l.extend("2606:4700::1111".parse::<Ipv6Addr>().unwrap().octets());
+            l.extend([0; 4]);
+            l.extend([0x01, 0xbb, 0, 0]);
+            l.extend(etat.to_ne_bytes());
+            l.extend(777u32.to_ne_bytes());
+            l
+        };
+        let mut t6 = 2u32.to_ne_bytes().to_vec();
+        t6.extend(ligne6(5));
+        t6.extend(ligne6(2));
+        let l = lire_tcp(&t6, true);
+        assert_eq!(l.len(), 2);
+        assert_eq!(l[0].distante, Some(("2606:4700::1111".parse().unwrap(), 443)));
+        assert_eq!((l[0].locale.1, l[0].pid), (50001, 777));
+        // Seules les établies restent pour les connexions sortantes ; une socket UDP n'en est jamais une.
+        let etab = etablies(l.into_iter().chain(lire_udp(&u, true)));
+        assert_eq!(etab.len(), 1);
+        assert_eq!(etab[0].etat, "Established");
     }
 
     /// Les vraies fonctions de Windows (Wine ici, la VM ensuite) : les tables se lisent.
@@ -237,5 +286,6 @@ mod tests {
     fn sockets_lues_par_windows() {
         let s = sockets().expect("tables TCP et UDP");
         assert!(s.iter().all(|s| s.tcp == s.distante.is_some()));
+        assert!(tcp_etablies().is_some() && table_tcp(2).is_some());
     }
 }

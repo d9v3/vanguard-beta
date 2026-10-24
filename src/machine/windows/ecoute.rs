@@ -1,13 +1,14 @@
-//! Ports en écoute de Windows lus sans PowerShell : `netstat -ano` (les sockets et le numéro de leur programme) et la
-//! liste des processus de Windows (le nom de chaque programme), qui répondent en quelques millisecondes. Les
-//! lectures par PowerShell (Get-NetTCPConnection, Get-NetUDPEndpoint) prenaient chacune 2 à 5 s au bilan, une
-//! vingtaine de PowerShell démarrant ensemble. Les règles de blocage de Vanguard se lisent dans le registre.
+//! Ports en écoute de Windows lus sans PowerShell : les tables TCP et UDP de Windows (GetExtendedTcpTable,
+//! GetExtendedUdpTable, par `connexions`), sans le texte traduit de netsh ni de netstat, et la liste des processus
+//! (le nom de chaque programme), qui répondent en quelques millisecondes. `netstat -ano` ne sert plus qu'en secours,
+//! si Windows refuse les tables. Les lectures par PowerShell (Get-NetTCPConnection, Get-NetUDPEndpoint) prenaient
+//! chacune 2 à 5 s au bilan. Les règles de blocage de Vanguard se lisent dans le registre.
 
 use std::collections::HashMap;
 
 /// Un port ouvert en écoute.
 pub(crate) struct Ecoute {
-    /// Adresse locale, sans crochets (« 0.0.0.0 », « :: », « 192.168.1.10 »).
+    /// Adresse locale, sans crochets ni zone (« 0.0.0.0 », « :: », « 192.168.1.10 »).
     pub adresse: String,
     pub port: u16,
     /// Nom du programme sans « .exe », comme Get-Process (« svchost », « System ») ; vide s'il est inconnu.
@@ -15,13 +16,20 @@ pub(crate) struct Ecoute {
     pub tcp: bool,
 }
 
-/// Les ports en écoute (TCP et UDP) et le nom de leur programme. `None` si netstat ne répond pas : l'appelant se
-/// replie alors sur PowerShell. Les noms viennent de la liste des processus de Windows (Toolhelp32).
+/// Les ports en écoute (TCP et UDP) et le nom de leur programme. `None` si ni les tables de Windows ni netstat ne
+/// répondent : l'appelant se replie alors sur PowerShell. Les noms viennent de la liste des processus de Windows
+/// (Toolhelp32).
 pub(crate) fn ecoutes() -> Option<Vec<Ecoute>> {
-    let sockets =
-        crate::commande::lancer(crate::commande::systeme("netstat").arg("-ano"), 20).filter(|r| r.code == Some(0))?;
+    let sockets = super::connexions::sockets()
+        .map(|s| en_ecoute(&s))
+        .filter(|e| !e.is_empty())
+        .or_else(|| {
+            let netstat = crate::commande::lancer(crate::commande::systeme("netstat").arg("-ano"), 20)
+                .filter(|r| r.code == Some(0))?;
+            Some(lire_netstat(&netstat.sortie))
+        })?;
     let noms: HashMap<u32, String> = super::processus::liste().into_iter().map(|p| (p.pid, p.nom)).collect();
-    let ecoutes = lire_netstat(&sockets.sortie)
+    let ecoutes = sockets
         .into_iter()
         .map(|(adresse, port, pid, tcp)| Ecoute {
             nom: noms.get(&pid).cloned().unwrap_or_default(),
@@ -32,6 +40,16 @@ pub(crate) fn ecoutes() -> Option<Vec<Ecoute>> {
         .collect::<Vec<_>>();
     // Une sortie sans aucun port n'est pas crédible (Windows écoute toujours sur 135 ou 445) : PowerShell la refera.
     (!ecoutes.is_empty()).then_some(ecoutes)
+}
+
+/// Les sockets en écoute des tables de Windows : (adresse, port, numéro du programme, TCP). En TCP, l'état
+/// « Listen » seul ; en UDP, toutes (pas d'état), comme netstat les liste.
+fn en_ecoute(sockets: &[super::connexions::Socket]) -> Vec<(String, u16, u32, bool)> {
+    sockets
+        .iter()
+        .filter(|s| !s.tcp || s.etat == "Listen")
+        .map(|s| (s.locale.0.to_string(), s.locale.1, s.pid, s.tcp))
+        .collect()
 }
 
 /// Les sockets en écoute de `netstat -ano` : (adresse, port, numéro du programme, TCP). Une ligne TCP en écoute a pour
@@ -100,6 +118,45 @@ pub(crate) fn port_bloque(regle: &str) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Les tables de Windows donnent les mêmes écoutes que netstat : TCP à l'état « Listen », toutes les UDP.
+    #[test]
+    fn ecoutes_des_tables() {
+        use super::super::connexions::Socket;
+        let socket = |tcp: bool, etat: &'static str, adresse: &str, port: u16, pid: u32| Socket {
+            tcp,
+            etat,
+            locale: (adresse.parse().unwrap(), port),
+            distante: tcp.then(|| ("0.0.0.0".parse().unwrap(), 0)),
+            pid,
+        };
+        let lues = en_ecoute(&[
+            socket(true, "Listen", "0.0.0.0", 135, 1012),
+            socket(true, "Listen", "::", 445, 4),
+            socket(true, "Established", "192.168.1.10", 49712, 5560),
+            socket(false, "", "0.0.0.0", 123, 1688),
+            socket(false, "", "fe80::1", 1900, 3300),
+        ]);
+        assert_eq!(
+            lues,
+            [
+                ("0.0.0.0".to_string(), 135, 1012, true),
+                ("::".to_string(), 445, 4, true),
+                ("0.0.0.0".to_string(), 123, 1688, false),
+                ("fe80::1".to_string(), 1900, 3300, false),
+            ]
+        );
+    }
+
+    /// Les vraies tables (Wine ici, la VM ensuite) : des écoutes, chacune lue des tables ou de netstat.
+    #[cfg(windows)]
+    #[test]
+    fn ecoutes_lues_par_windows() {
+        let Some(e) = ecoutes() else {
+            return crate::essais::saute("aucune écoute lue (tables et netstat)");
+        };
+        assert!(e.iter().all(|e| !e.adresse.contains('[')));
+    }
 
     #[test]
     fn sockets_de_netstat() {
