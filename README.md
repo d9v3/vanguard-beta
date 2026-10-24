@@ -474,7 +474,7 @@ Au-delà de la défense : le dépannage, l'optimisation, les données, puis le s
 | Domaine | Ce que fait Vanguard |
 |---|---|
 | **Dépannage** | Diagnostic de l'ordinateur, pannes de tous les jours pas à pas (Internet, Wi-Fi, lenteur, son, imprimante, disque plein), après une infection, nouvel ordinateur, ordinateur qui part, ordinateur d'un proche, « Pourquoi c'est lent ? », fiche de l'ordinateur, rapport à laisser, réparations. |
-| **Optimiser, logiciels et jeu** | Réglages de confidentialité et de performance qui s'annulent exactement, « Tout remettre comme avant » pour tout défaire, nettoyage à cocher avec la place gagnée mesurée, programmes du démarrage ; les meilleurs logiciels en 8 catégories, depuis leur source officielle, et les mises à jour de tout d'un coup ; connexion pour le jeu (ping, gigue, pertes, débit et bufferbloat, comparés aux mesures habituelles), Wi-Fi encombré, type de NAT, DNS le plus rapide (sans retirer un DNS qui protège), réglages pour jouer. |
+| **Optimiser, logiciels et jeu** | Réglages de confidentialité et de performance qui s'annulent exactement, « Tout remettre comme avant » pour tout défaire, nettoyage à cocher avec la place gagnée mesurée, programmes du démarrage ; les meilleurs logiciels en 10 catégories, depuis leur source officielle, et les mises à jour de tout d'un coup ; connexion pour le jeu (ping, gigue, pertes, débit et bufferbloat, comparés aux mesures habituelles), Wi-Fi encombré, type de NAT, DNS le plus rapide (sans retirer un DNS qui protège), réglages pour jouer. |
 | **Données et sauvegarde** | Sauvegarde automatique et vérifier ma sauvegarde (copie rsync réellement relue), copier mes fichiers (copie vérifiée) et vérifier une copie. |
 | **Suivi, outils et clé USB** | Rapport HTML avec la courbe des notes, entretien du mois, apprentissage sur l'ordinateur, ce que Vanguard a changé (chaque correction, datée, annulable une par une) et le journal des événements scellé, tous les paramètres au même endroit, extensions personnelles (plugins et scripts, vérifiés avant de tourner) ; clé USB protégée en écriture ailleurs que sur l'ordinateur de son propriétaire, vérifier ma clé (fausses clés, vitesse), mes ordinateurs (suivis par la clé), raccourci sur cet ordinateur, Vanguard mis à jour depuis la clé ou depuis GitHub (versions signées par l'auteur), retrait complet de Vanguard d'un ordinateur, guide des commandes, recherche dans tous les menus. |
 
@@ -548,11 +548,11 @@ adresse partagée par le fournisseur compris ; le DNS le plus rapide, mesuré ic
 pas un DNS qui protège (NextDNS, chiffré, filtrant) et annulable.
 
 - Mises à jour de tout d'un coup : système, programmes, pilotes, firmware.
-- Logiciels : les meilleurs de chaque usage, libres pour la plupart, rangés en 8 catégories (navigateurs et
-  courriel, messagerie et partage, sécurité et vie privée, bureautique, vidéo et musique, images et création, outils
-  système, programmation) et un pack de départ (Firefox, Bitwarden, VLC, LibreOffice, 7-Zip) : liste à cocher, déjà
-  installés reconnus, installation depuis la source officielle qui vérifie chaque téléchargement (winget, paquets de
-  la distribution ou Flathub, Homebrew).
+- Logiciels : les meilleurs de chaque usage, libres pour la plupart, rangés en 10 catégories (navigateurs et
+  courriel, messagerie et partage, comptes et chiffrement, bureautique, vidéo et musique, images et création,
+  outils système, programmation, vie privée et réseau, sauvegarde) et un pack de départ (Firefox, Bitwarden, VLC,
+  LibreOffice, 7-Zip) : liste à cocher, déjà installés reconnus, installation depuis la source officielle qui
+  vérifie chaque téléchargement (winget, paquets de la distribution ou Flathub, Homebrew).
 - Gaming : sous Windows, composants pour les jeux et réglages de Windows ; sous Linux, Steam, pilotes Vulkan 32 et
   64 bits selon la carte, GameMode, MangoHud, Gamescope, Wine, Lutris, Heroic, ProtonUp-Qt, vm.max_map_count, ntsync ;
   sous macOS, Rosetta 2, Steam, Heroic, Epic Games, GOG Galaxy, Prism Launcher et le compteur d'images de Metal.

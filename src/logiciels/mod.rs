@@ -473,8 +473,16 @@ pub fn lignes_de_recherche(cle: &str) -> Vec<crate::selection::Ligne> {
 /// Un logiciel a-t-il une source sur ce système (paquet ou Flathub sous Linux, winget, Homebrew) ? Sinon la
 /// recherche ne le propose pas : sa catégorie s'ouvrirait sans lui.
 fn pour_ce_systeme(l: &Logiciel) -> bool {
+    // Comme `lire` : le paquet de cette distribution, sinon Flathub s'il est là. Lu une fois : l'index de la
+    // recherche se refait à chaque affichage du menu.
     #[cfg(target_os = "linux")]
-    return l.paquets.iter().any(|p| !p.is_empty()) || l.flatpak.is_some();
+    {
+        use crate::machine::linux::Paquets;
+        static ICI: std::sync::OnceLock<(Option<Paquets>, bool)> = std::sync::OnceLock::new();
+        let (gestion, flatpak) =
+            *ICI.get_or_init(|| (Paquets::detecter(), crate::machine::linux::natif::present("flatpak")));
+        gestion.is_some_and(|g| !l.paquets[rang(g)].is_empty()) || (flatpak && l.flatpak.is_some())
+    }
     #[cfg(windows)]
     return l.winget.is_some();
     #[cfg(target_os = "macos")]
@@ -541,6 +549,14 @@ pub fn menu() {
                 &compte(etat.offres.iter().filter(|o| o.logiciel.categorie == *c)),
             ));
         }
+        // L'autre sens de « mettre à jour les programmes » : ceux déjà installés, par 4.2 (Mises à jour du système).
+        let maj = (categories.len() + 2).to_string();
+        let place_maj = crate::touche_de(crate::Action::Maj).unwrap_or_default();
+        lignes.push(Ligne::choix(
+            &maj,
+            tr!("Mettre tout l'ordinateur à jour", "Update the whole computer"),
+            &trf!("→ {place_maj}, logiciels compris", "→ {place_maj}, software included"),
+        ));
         lignes.push(Ligne::Texte(String::new()));
         lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
         lignes.push(Ligne::Texte(String::new()));
@@ -553,6 +569,18 @@ pub fn menu() {
             return;
         };
         let choix = choix.trim().to_string();
+        if choix == maj {
+            crate::maj::executer();
+            // Quittées par « revenir », les mises à jour n'ont rien à montrer de plus : pas de pause.
+            if !crate::ui::vient_de_revenir() {
+                crate::selection::attendre_retour(&trf!(
+                    "\n{GRIS}Entrée pour revenir…{RESET}",
+                    "\n{GRIS}Enter to go back…{RESET}"
+                ));
+            }
+            dernier = choix;
+            continue;
+        }
         let suite = if choix == "1" {
             pack(&etat)
         } else {

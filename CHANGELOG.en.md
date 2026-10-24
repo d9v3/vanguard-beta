@@ -59,6 +59,14 @@ delivered just before it. Only the latest version has its download page; every v
 | 5.12 Hidden cameras | 5.5 | | 9.9 Update Vanguard | 13.3 | | 9.10 Check my backup | 9.3.1 |
 | 5.13 Box and connected devices | 5.4 | | 9.11 Remove Vanguard | 13.11 | | 12 Extensions | 13.10 |
 
+- **Software: seven more, two categories.** Ente Auth (two-factor authentication, first in "Accounts and
+  encryption", formerly "Security and privacy"), Proton Pass, Mullvad Browser, Mullvad VPN (the only paid one, said in
+  its role), LuLu (macOS), Kopia (Windows, macOS) and Déjà Dup (Linux), each from its publisher's source, checked
+  online on October 24, 2026. Two categories at the end, without shifting the numbers: "Privacy and network" (Tor
+  Browser, Mullvad Browser, Proton VPN, Mullvad VPN, Wireshark, LuLu) and "Backup". Proton Pass, Mullvad Browser and
+  Kopia are not offered on Linux: their Flathub does not come from the publisher. Last line of the screen: update the
+  whole computer (4.2). Search only offers the software that installs on this computer.
+
 - **Small keyboard lists.** The letter questions (quarantine: restore or delete; dangerous sites: block or remove;
   who talks to the Internet: the abuse.ch key; protecting the key's data; my computers) become small lists drawn
   under the result, without erasing it: ↑ ↓ and Enter, the letter still a shortcut (it moves the marker, Enter

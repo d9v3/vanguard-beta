@@ -11,36 +11,45 @@ use crate::ui::tr;
 pub enum Categorie {
     Internet,
     Echanges,
-    Securite,
+    /// Mots de passe, double authentification, chiffrement des fichiers et des disques.
+    Comptes,
     Bureautique,
     Multimedia,
     Creation,
     Systeme,
     Programmation,
+    /// Navigation anonyme, VPN, pare-feu et analyse du réseau. Les deux dernières catégories vont en fin : les numéros
+    /// d'écran d'avant (2 à 9) ne bougent pas.
+    VieReseau,
+    Sauvegarde,
 }
 
 impl Categorie {
-    pub const TOUTES: [Categorie; 8] = [
+    pub const TOUTES: [Categorie; 10] = [
         Categorie::Internet,
         Categorie::Echanges,
-        Categorie::Securite,
+        Categorie::Comptes,
         Categorie::Bureautique,
         Categorie::Multimedia,
         Categorie::Creation,
         Categorie::Systeme,
         Categorie::Programmation,
+        Categorie::VieReseau,
+        Categorie::Sauvegarde,
     ];
 
     pub fn titre(self) -> &'static str {
         match self {
             Categorie::Internet => tr!("Navigateurs et courriel", "Browsers and email"),
             Categorie::Echanges => tr!("Messagerie et partage", "Messaging and sharing"),
-            Categorie::Securite => tr!("Sécurité et vie privée", "Security and privacy"),
+            Categorie::Comptes => tr!("Comptes et chiffrement", "Accounts and encryption"),
             Categorie::Bureautique => tr!("Bureautique et lecture", "Office and reading"),
             Categorie::Multimedia => tr!("Vidéo et musique", "Video and music"),
             Categorie::Creation => tr!("Images et création", "Images and design"),
             Categorie::Systeme => tr!("Outils système", "System tools"),
             Categorie::Programmation => tr!("Programmation", "Programming"),
+            Categorie::VieReseau => tr!("Vie privée et réseau", "Privacy and network"),
+            Categorie::Sauvegarde => tr!("Sauvegarde", "Backup"),
         }
     }
 }
@@ -217,10 +226,26 @@ pub const CATALOGUE: &[Logiciel] = &[
         winget: Some(("qBittorrent.qBittorrent", "qBittorrent")),
         mac: None,
     },
-    // ── Sécurité et vie privée ──
+    // ── Comptes et chiffrement (puis Vie privée et réseau, plus bas : Tor Browser, Proton VPN, Wireshark) ──
+    Logiciel {
+        nom: "Ente Auth",
+        categorie: Categorie::Comptes,
+        role: (
+            "Codes de double authentification, sauvegardés chiffrés, sur ordinateur et téléphone.",
+            "Two-factor codes, backed up encrypted, on computer and phone.",
+        ),
+        licence: Some("AGPL-3.0"),
+        recommande: false,
+        // Dans aucune distribution ; Flathub vérifié par l'éditeur (ente.io), vérifié le 24 oct. 2026.
+        paquets: AUCUN,
+        flatpak: Some("io.ente.auth"),
+        commandes: &["enteauth"],
+        winget: Some(("ente-io.auth-desktop", "Ente Auth")),
+        mac: Some(("ente-auth", "Ente Auth")),
+    },
     Logiciel {
         nom: "Bitwarden",
-        categorie: Categorie::Securite,
+        categorie: Categorie::Comptes,
         role: (
             "Gestionnaire de mots de passe synchronisé : un mot de passe différent par site.",
             "Synced password manager: a different password for each site.",
@@ -239,7 +264,7 @@ pub const CATALOGUE: &[Logiciel] = &[
     },
     Logiciel {
         nom: "KeePassXC",
-        categorie: Categorie::Securite,
+        categorie: Categorie::Comptes,
         role: (
             "Coffre de mots de passe hors ligne, dans un fichier chiffré qui vous appartient.",
             "Offline password vault, in an encrypted file that stays yours.",
@@ -254,8 +279,25 @@ pub const CATALOGUE: &[Logiciel] = &[
         mac: Some(("keepassxc", "KeePassXC")),
     },
     Logiciel {
+        nom: "Proton Pass",
+        categorie: Categorie::Comptes,
+        role: (
+            "Mots de passe chiffrés de bout en bout, synchronisés, appareils illimités.",
+            "End-to-end encrypted passwords, synced, unlimited devices.",
+        ),
+        licence: Some("GPL-3.0"),
+        recommande: false,
+        // Pas sous Linux : le Flathub me.proton.Pass n'est pas vérifié par Proton (tenu par un bénévole, recompilé), et aucune
+        // distribution ne l'a. Sous Windows, un MSIX depuis la 1.38 : reconnu à son nom de paquet, « ProtonPass ».
+        paquets: AUCUN,
+        flatpak: None,
+        commandes: &["proton-pass"],
+        winget: Some(("Proton.ProtonPass", "ProtonPass")),
+        mac: Some(("proton-pass", "Proton Pass")),
+    },
+    Logiciel {
         nom: "VeraCrypt",
-        categorie: Categorie::Securite,
+        categorie: Categorie::Comptes,
         role: (
             "Chiffre une clé USB, un disque externe ou un coffre. Disque système : BitLocker ou LUKS.",
             "Encrypts a USB stick, an external drive or a vault. System drive: BitLocker or LUKS.",
@@ -273,7 +315,7 @@ pub const CATALOGUE: &[Logiciel] = &[
     },
     Logiciel {
         nom: "Cryptomator",
-        categorie: Categorie::Securite,
+        categorie: Categorie::Comptes,
         role: (
             "Chiffre vos fichiers avant qu'ils partent dans le nuage (Drive, Dropbox, OneDrive…).",
             "Encrypts your files before they go to the cloud (Drive, Dropbox, OneDrive…).",
@@ -285,63 +327,6 @@ pub const CATALOGUE: &[Logiciel] = &[
         commandes: &["cryptomator"],
         winget: Some(("Cryptomator.Cryptomator", "Cryptomator")),
         mac: Some(("cryptomator", "Cryptomator")),
-    },
-    Logiciel {
-        nom: "Tor Browser",
-        categorie: Categorie::Securite,
-        role: (
-            "Navigation anonyme par le réseau Tor.",
-            "Anonymous browsing through the Tor network.",
-        ),
-        licence: Some("MPL-2.0"),
-        recommande: false,
-        // Debian le range dans « contrib », pas activé d'office : Flathub (publié par le projet Tor).
-        paquets: [
-            &["torbrowser-launcher"],
-            &[],
-            &["torbrowser-launcher"],
-            &["torbrowser-launcher"],
-        ],
-        flatpak: Some("org.torproject.torbrowser-launcher"),
-        commandes: &["torbrowser-launcher"],
-        winget: Some(("TorProject.TorBrowser", "Tor Browser")),
-        mac: Some(("tor-browser", "Tor Browser")),
-    },
-    Logiciel {
-        nom: "Proton VPN",
-        categorie: Categorie::Securite,
-        role: (
-            "VPN gratuit et sans limite de données, de Proton (Suisse).",
-            "Free VPN with no data cap, by Proton (Switzerland).",
-        ),
-        licence: Some("GPL-3.0"),
-        recommande: false,
-        // Ailleurs qu'Arch, Proton passe par son propre dépôt : rien d'officiel à installer d'ici.
-        paquets: [&["proton-vpn-gtk-app"], &[], &[], &[]],
-        flatpak: None,
-        commandes: &["protonvpn-app"],
-        winget: Some(("Proton.ProtonVPN", "Proton VPN")),
-        mac: Some(("protonvpn", "ProtonVPN")),
-    },
-    Logiciel {
-        nom: "Wireshark",
-        categorie: Categorie::Securite,
-        role: (
-            "Analyse ce qui passe sur le réseau, paquet par paquet (pour utilisateurs avancés).",
-            "Inspects network traffic, packet by packet (for advanced users).",
-        ),
-        licence: Some("GPL-2.0"),
-        recommande: false,
-        paquets: [
-            &["wireshark-qt"],
-            &["wireshark"],
-            &["wireshark"],
-            &["wireshark", "wireshark-ui-qt"],
-        ],
-        flatpak: None,
-        commandes: &["wireshark"],
-        winget: Some(("WiresharkFoundation.Wireshark", "Wireshark")),
-        mac: Some(("wireshark-app", "Wireshark")),
     },
     // ── Bureautique et lecture ──
     Logiciel {
@@ -789,6 +774,146 @@ pub const CATALOGUE: &[Logiciel] = &[
         commandes: &[],
         // Application du Store (MSIX) : reconnue par le nom de son paquet, pas dans « Applications installées ».
         winget: Some(("Microsoft.WindowsTerminal", "Microsoft.WindowsTerminal")),
+        mac: None,
+    },
+    // ── Vie privée et réseau ──
+    Logiciel {
+        nom: "Tor Browser",
+        categorie: Categorie::VieReseau,
+        role: (
+            "Navigation anonyme par le réseau Tor.",
+            "Anonymous browsing through the Tor network.",
+        ),
+        licence: Some("MPL-2.0"),
+        recommande: false,
+        // Debian le range dans « contrib », pas activé d'office : Flathub (publié par le projet Tor).
+        paquets: [
+            &["torbrowser-launcher"],
+            &[],
+            &["torbrowser-launcher"],
+            &["torbrowser-launcher"],
+        ],
+        flatpak: Some("org.torproject.torbrowser-launcher"),
+        commandes: &["torbrowser-launcher"],
+        winget: Some(("TorProject.TorBrowser", "Tor Browser")),
+        mac: Some(("tor-browser", "Tor Browser")),
+    },
+    Logiciel {
+        nom: "Mullvad Browser",
+        categorie: Categorie::VieReseau,
+        role: (
+            "Navigateur anti-pistage du Tor Project, sans le réseau Tor ; à utiliser avec un VPN.",
+            "Anti-tracking browser from the Tor Project, without the Tor network; pair it with a VPN.",
+        ),
+        licence: Some("MPL-2.0"),
+        recommande: false,
+        // Pas sous Linux : le Flathub net.mullvad.MullvadBrowser n'est pas vérifié par l'éditeur, et aucune distribution ne l'a.
+        paquets: AUCUN,
+        flatpak: None,
+        commandes: &["mullvad-browser"],
+        winget: Some(("MullvadVPN.MullvadBrowser", "Mullvad Browser")),
+        mac: Some(("mullvad-browser", "Mullvad Browser")),
+    },
+    Logiciel {
+        nom: "Proton VPN",
+        categorie: Categorie::VieReseau,
+        role: (
+            "VPN gratuit et sans limite de données, de Proton (Suisse).",
+            "Free VPN with no data cap, by Proton (Switzerland).",
+        ),
+        licence: Some("GPL-3.0"),
+        recommande: false,
+        // Ailleurs qu'Arch, Proton passe par son propre dépôt : rien d'officiel à installer d'ici.
+        paquets: [&["proton-vpn-gtk-app"], &[], &[], &[]],
+        flatpak: None,
+        commandes: &["protonvpn-app"],
+        winget: Some(("Proton.ProtonVPN", "Proton VPN")),
+        mac: Some(("protonvpn", "ProtonVPN")),
+    },
+    Logiciel {
+        nom: "Mullvad VPN",
+        categorie: Categorie::VieReseau,
+        role: (
+            "VPN audité, sans courriel ni donnée personnelle ; payant (5 €/mois).",
+            "Audited VPN, no email or personal data needed; paid (€5/month).",
+        ),
+        licence: Some("GPL-3.0-or-later"),
+        recommande: false,
+        // Le seul logiciel payant du catalogue, dit dans son rôle (décision de l'auteur, 23 oct. 2026). Arch l'a dans extra.
+        paquets: [&["mullvad-vpn"], &[], &[], &[]],
+        flatpak: None,
+        commandes: &["mullvad"],
+        winget: Some(("MullvadVPN.MullvadVPN", "Mullvad VPN")),
+        mac: Some(("mullvad-vpn", "Mullvad VPN")),
+    },
+    Logiciel {
+        nom: "Wireshark",
+        categorie: Categorie::VieReseau,
+        role: (
+            "Analyse ce qui passe sur le réseau, paquet par paquet (pour utilisateurs avancés).",
+            "Inspects network traffic, packet by packet (for advanced users).",
+        ),
+        licence: Some("GPL-2.0"),
+        recommande: false,
+        paquets: [
+            &["wireshark-qt"],
+            &["wireshark"],
+            &["wireshark"],
+            &["wireshark", "wireshark-ui-qt"],
+        ],
+        flatpak: None,
+        commandes: &["wireshark"],
+        winget: Some(("WiresharkFoundation.Wireshark", "Wireshark")),
+        mac: Some(("wireshark-app", "Wireshark")),
+    },
+    Logiciel {
+        nom: "LuLu",
+        categorie: Categorie::VieReseau,
+        role: (
+            "Pare-feu sortant : vous demande avant qu'un programme inconnu se connecte.",
+            "Outbound firewall: asks you before an unknown program connects out.",
+        ),
+        licence: Some("GPL-3.0"),
+        recommande: false,
+        // macOS seulement (Objective-See) : une Network Extension, à part de l'ancre pf que pose Vanguard.
+        paquets: AUCUN,
+        flatpak: None,
+        commandes: &[],
+        winget: None,
+        mac: Some(("lulu", "LuLu")),
+    },
+    // ── Sauvegarde ──
+    Logiciel {
+        nom: "Kopia",
+        categorie: Categorie::Sauvegarde,
+        role: (
+            "Sauvegarde chiffrée vers un disque externe ou le nuage, versions gardées.",
+            "Encrypted backup to an external drive or the cloud, keeps versions.",
+        ),
+        licence: Some("Apache-2.0"),
+        recommande: false,
+        // Pas sous Linux : KopiaUI n'est dans aucune distribution, et le Flathub io.kopia.KopiaUI dit lui-même ne pas venir du
+        // projet. La 0.23.0 corrige CVE-2026-45695 ; winget et Homebrew sont en 0.23.1 (vérifié le 24 oct. 2026).
+        paquets: AUCUN,
+        flatpak: None,
+        commandes: &[],
+        winget: Some(("Kopia.KopiaUI", "KopiaUI")),
+        mac: Some(("kopiaui", "KopiaUI")),
+    },
+    Logiciel {
+        nom: "Déjà Dup",
+        categorie: Categorie::Sauvegarde,
+        role: (
+            "Sauvegarde automatique et chiffrée de vos dossiers, vers un autre disque.",
+            "Automatic encrypted backup of your folders, to another disk.",
+        ),
+        licence: Some("GPL-3.0-or-later"),
+        recommande: false,
+        // Linux seulement. « sauvegarde-auto » le règle quand il vient de la distribution (pas encore celui de Flathub).
+        paquets: [&["deja-dup"], &["deja-dup"], &["deja-dup"], &["deja-dup"]],
+        flatpak: Some("org.gnome.DejaDup"),
+        commandes: &["deja-dup"],
+        winget: None,
         mac: None,
     },
 ];

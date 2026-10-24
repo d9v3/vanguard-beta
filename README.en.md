@@ -442,7 +442,7 @@ Beyond defense: troubleshooting, optimization, data, then follow-up, tools and t
 | Area | What Vanguard does |
 |---|---|
 | **Troubleshooting** | Computer diagnostic, everyday problems step by step (Internet, Wi-Fi, slowness, sound, printer, full disk), after an infection, new computer, computer leaving, a relative's computer, “Why is it slow?”, computer specs, report to leave behind, repairs. |
-| **Optimizing, software and gaming** | Privacy and performance settings that can be reverted exactly, “Put everything back” to undo it all, a cleanup checklist with the space gained measured, startup programs; the best software in 8 categories, from its official source, and updating everything at once; connection for gaming (ping, jitter, loss, speed and bufferbloat, compared with usual measurements), crowded Wi-Fi, NAT type, fastest DNS (without removing a DNS that protects you), settings for gaming. |
+| **Optimizing, software and gaming** | Privacy and performance settings that can be reverted exactly, “Put everything back” to undo it all, a cleanup checklist with the space gained measured, startup programs; the best software in 10 categories, from its official source, and updating everything at once; connection for gaming (ping, jitter, loss, speed and bufferbloat, compared with usual measurements), crowded Wi-Fi, NAT type, fastest DNS (without removing a DNS that protects you), settings for gaming. |
 | **Data and backup** | Automatic backup and check my backup (rsync copy actually read back), copy my files (checked copy) and check a copy. |
 | **Follow-up, tools and USB key** | HTML report with the grade curve, monthly check-up, learning on the computer, what Vanguard changed (each fix, dated, undoable one by one) and the sealed event log, every setting in one place, custom extensions (plugins and scripts, checked before they run); a USB key write-protected anywhere but on its owner's computer, check my drive (fake drives, speed), my computers (tracked by the key), shortcut on this computer, Vanguard updated from the key or from GitHub (versions signed by the author), complete removal of Vanguard from a computer, command guide, search in every menu. |
 
@@ -510,10 +510,11 @@ address included; the fastest DNS, measured here, offered only if it does not re
 (NextDNS, encrypted, filtering), and undoable.
 
 - Update everything at once: system, programs, drivers, firmware.
-- Software: the best program for each use, mostly open source, in 8 categories (browsers and email, messaging and
-  sharing, security and privacy, office, video and music, images and design, system tools, programming) plus a
-  starter pack (Firefox, Bitwarden, VLC, LibreOffice, 7-Zip): checklist, installed ones recognized, installation from
-  the official source that checks each download (winget, distribution packages or Flathub, Homebrew).
+- Software: the best program for each use, mostly open source, in 10 categories (browsers and email, messaging and
+  sharing, accounts and encryption, office, video and music, images and design, system tools, programming, privacy
+  and network, backup) plus a starter pack (Firefox, Bitwarden, VLC, LibreOffice, 7-Zip): checklist, installed
+  ones recognized, installation from the official source that checks each download (winget, distribution packages
+  or Flathub, Homebrew).
 - Gaming: on Windows, game components and Windows settings; on Linux, Steam, 32- and 64-bit Vulkan drivers for your
   graphics card, GameMode, MangoHud, Gamescope, Wine, Lutris, Heroic, ProtonUp-Qt, vm.max_map_count, ntsync; on
   macOS, Rosetta 2, Steam, Heroic, Epic Games, GOG Galaxy, Prism Launcher and the Metal frame counter.
