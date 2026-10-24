@@ -143,7 +143,10 @@ Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trou
        pas (mettre à jour, réparer, réseau, faire de la place…). Les commandes paraissent au fil de
        la frappe ; chacune se copie, ou se lance ici si elle ne fait que lire.
        Et les exemples de tldr-pages, déjà sur la clé et mis à jour chaque semaine : à copier seulement.
-       En ligne de commande : vanguard guide fedora, vanguard guide winget, vanguard guide cache dns
+       10.10 Commandes de Vanguard : chaque commande, rangée comme le menu, avec sa place au menu. Chaque page
+       finit par son chemin et sa commande (« Chemin : 10.6.7.2 · vanguard guide 6.7.2 »).
+       En ligne de commande : vanguard guide fedora, vanguard guide winget, vanguard guide cache dns,
+       vanguard guide 6.7.2, vanguard guide windows --sommaire
  11  Dépanner pas à pas › pas d'Internet, Wi-Fi qui coupe, ordinateur lent, pas de son, imprimante,
        disque plein : deux ou trois questions, puis Vanguard vérifie et propose la bonne réparation.
        Et : après une infection, nouvel ordinateur, ordinateur qui part (vente, don), compte piraté,

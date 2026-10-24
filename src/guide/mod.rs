@@ -51,10 +51,13 @@ pub enum Systeme {
     Linux,
     /// Les pages de tldr-pages, téléchargées chaque semaine : à copier seulement.
     Tldr,
+    /// Les commandes de Vanguard, un programme par groupe du menu : générées depuis le menu et la ligne de commande
+    /// (`crate::programmes_vanguard`), jamais écrites à la main.
+    Vanguard,
 }
 
 /// Les systèmes du menu, dans l'ordre : leur rang fait leur touche (« 3 » : Fedora).
-pub const SYSTEMES: [Systeme; 9] = [
+pub const SYSTEMES: [Systeme; 10] = [
     Systeme::Omarchy,
     Systeme::Arch,
     Systeme::Fedora,
@@ -64,6 +67,8 @@ pub const SYSTEMES: [Systeme; 9] = [
     Systeme::MacOs,
     Systeme::Tous,
     Systeme::Tldr,
+    // En fin : les numéros d'avant (6 Windows 11, 9 tldr…) ne bougent pas.
+    Systeme::Vanguard,
 ];
 
 /// La distribution de cet ordinateur, lue une fois.
@@ -104,7 +109,7 @@ impl Systeme {
     /// dit si le programme manque), celles de tous les systèmes aussi.
     fn d_ici(self) -> bool {
         let ici = Systeme::actuel();
-        self == Systeme::Tous || self == ici || (self.linux() && ici.linux())
+        matches!(self, Systeme::Tous | Systeme::Vanguard) || self == ici || (self.linux() && ici.linux())
     }
 
     fn nom(self) -> &'static str {
@@ -119,6 +124,7 @@ impl Systeme {
             Systeme::Tous => tr!("Tous les systèmes", "All systems"),
             Systeme::Linux => "Linux",
             Systeme::Tldr => "tldr-pages",
+            Systeme::Vanguard => tr!("Commandes de Vanguard", "Vanguard commands"),
         }
     }
 
@@ -135,6 +141,7 @@ impl Systeme {
             Systeme::Tous => &["tous", "all", "general"],
             Systeme::Linux => &["linux"],
             Systeme::Tldr => &["tldr"],
+            Systeme::Vanguard => &["vanguard", "commandes", "commands"],
         }
     }
 
@@ -152,6 +159,7 @@ impl Systeme {
             Systeme::Linux => linux::COMMUNS,
             // Ses pages se téléchargent : `programmes` les prend dans `tldr`.
             Systeme::Tldr => &[],
+            Systeme::Vanguard => crate::programmes_vanguard(),
         }
     }
 
@@ -209,6 +217,10 @@ impl Systeme {
                 "Les programmes communs à toutes les distributions de Linux.",
                 "The programs common to every Linux distribution."
             ),
+            Systeme::Vanguard => tr!(
+                "Chaque commande de Vanguard, rangée comme le menu : ce qu'elle fait et sa place au menu. Le détail d'une commande : vanguard <commande> --help.",
+                "Every Vanguard command, sorted like the menu: what it does and its place in the menu. The detail of a command: vanguard <command> --help."
+            ),
             Systeme::Tldr => tr!(
                 "Les exemples de tldr-pages (tldr.sh), des milliers de commandes écrites et tenues à jour par une communauté, sous licence CC BY 4.0 (creativecommons.org/licenses/by/4.0) ; Vanguard en adapte la mise en forme. Il les télécharge chaque semaine, mais ne les a pas vérifiées : elles se copient, et ne se lancent pas d'ici.",
                 "The examples of tldr-pages (tldr.sh), thousands of commands written and kept up to date by a community, under the CC BY 4.0 license (creativecommons.org/licenses/by/4.0); Vanguard adapts their layout. It downloads them every week, but has not checked them: they can be copied, and do not run from here."
@@ -253,7 +265,7 @@ impl Systeme {
                 "Terminal : Cmd+Espace, taper « Terminal », puis Entrée.",
                 "Terminal: Cmd+Space, type “Terminal”, then Enter."
             ),
-            Systeme::Tous | Systeme::Tldr => tr!(
+            Systeme::Tous | Systeme::Tldr | Systeme::Vanguard => tr!(
                 "Dans tout terminal : Tab complète un nom, ↑ rappelle la commande d'avant, Ctrl-C arrête celle en cours.",
                 "In any terminal: Tab completes a name, ↑ brings back the previous command, Ctrl-C stops the running one."
             ),
@@ -273,6 +285,7 @@ impl Systeme {
             Systeme::Tous => "Vanguard, ping, ssh, git, curl…",
             Systeme::Linux => "systemctl, journalctl, ip, nmcli…",
             Systeme::Tldr => tr!("des milliers d'exemples, à copier", "thousands of examples, to copy"),
+            Systeme::Vanguard => tr!("par groupe du menu", "by menu group"),
         }
     }
 }
@@ -729,6 +742,7 @@ fn ordre_de_recherche() -> Vec<Systeme> {
         Systeme::Omarchy,
         Systeme::Windows,
         Systeme::MacOs,
+        Systeme::Vanguard,
     ] {
         if !ordre.contains(&s) {
             ordre.push(s);
@@ -823,6 +837,54 @@ pub fn ouvrir(systeme: usize, programme: Option<usize>, commande: Option<usize>)
         Some(c) => montrer_commande(proprietaire, p, c),
         None => montrer_programme(proprietaire, p),
     }
+}
+
+/// La place d'un programme (et d'une de ses commandes, à partir de 1) au guide : « 6.7 », « 6.7.2 ». Un commun à
+/// Linux se dit dans la distribution de cet ordinateur s'il y est, sinon la première qui le montre ; tldr à part.
+fn place(s: Systeme, p: &Programme, commande: Option<usize>) -> Option<String> {
+    let candidats: Vec<(usize, Systeme)> = SYSTEMES
+        .iter()
+        .enumerate()
+        // Une page de tldr-pages se range sous tldr (9), son système propriétaire étant sa plateforme.
+        .filter(|(_, x)| **x != Systeme::Tldr || tldr::plateforme(p).is_some())
+        .map(|(rang, x)| (rang, *x))
+        .collect();
+    let rang_de = |x: Systeme| x.programmes().iter().position(|(_, q)| std::ptr::eq(*q, p));
+    let (systeme, programme) = candidats
+        .iter()
+        .find(|(_, x)| *x == Systeme::actuel() || *x == s)
+        .and_then(|(rang, x)| rang_de(*x).map(|r| (*rang, r)))
+        .or_else(|| candidats.iter().find_map(|(rang, x)| rang_de(*x).map(|r| (*rang, r))))?;
+    Some(match commande {
+        Some(numero) => format!("{}.{}.{numero}", systeme + 1, programme + 1),
+        None => format!("{}.{}", systeme + 1, programme + 1),
+    })
+}
+
+/// Le chemin mène-t-il à une page (système, programme, commande) ?
+fn page_existe(systeme: usize, programme: Option<usize>, commande: Option<usize>) -> bool {
+    let Some(&s) = systeme.checked_sub(1).and_then(|i| SYSTEMES.get(i)) else {
+        return false;
+    };
+    let Some(j) = programme else {
+        return true;
+    };
+    let programmes = s.programmes();
+    let Some((_, p)) = j.checked_sub(1).and_then(|j| programmes.get(j)) else {
+        return false;
+    };
+    commande.is_none_or(|k| (1..=p.commandes.len()).contains(&k))
+}
+
+/// Le pied de page d'un écran du guide : son chemin au menu et sa commande (« Chemin : 10.6.7.2 · vanguard guide
+/// 6.7.2 »), pour apprendre le raccourci.
+fn pied_de_page(s: Systeme, p: &Programme, commande: Option<usize>) -> Option<String> {
+    let ici = place(s, p, commande)?;
+    let cle = crate::cle_du_guide();
+    Some(trf!(
+        "Chemin : {cle}.{ici} · vanguard guide {ici}",
+        "Path: {cle}.{ici} · vanguard guide {ici}"
+    ))
 }
 
 /// Le chemin d'un programme en tête de ses écrans : « Guide › Fedora › dnf », ou « tldr-pages › linux › tar ».
@@ -921,6 +983,9 @@ fn montrer_commande(s: Systeme, p: &Programme, c: &Commande) {
                 &trf!("Pas lancée d'ici. {r}", "Not run from here. {r}"),
                 2,
             ));
+        }
+        if let Some(pied) = pied_de_page(s, p, Some(rang)) {
+            lignes.extend(lignes_grises(&pied, 2));
         }
         lignes.push(Ligne::Texte(String::new()));
         lignes.push(Ligne::choix(
@@ -1022,6 +1087,10 @@ fn montrer_programme(s: Systeme, p: &Programme) {
         for (i, c) in p.commandes.iter().enumerate() {
             lignes.push(Ligne::choix(&(i + 1).to_string(), &ligne_de_menu(c), "").avec_mots(&mots_de_la_commande(c)));
             lignes.extend(lignes_grises(dans_la_langue(c.texte), 9));
+        }
+        if let Some(pied) = pied_de_page(s, p, None) {
+            lignes.push(Ligne::Texte(String::new()));
+            lignes.extend(lignes_grises(&pied, 2));
         }
         lignes.push(Ligne::Texte(String::new()));
         lignes.push(Ligne::choix("↵", tr!("Revenir", "Back"), ""));
@@ -1248,17 +1317,21 @@ pub fn menu() {
     tldr::pages();
     tldr::renouveler_en_fond();
     let total: usize = pages().iter().map(|page| page.programme.commandes.len()).sum();
-    let mut dernier = String::from("1");
+    // Le curseur sur le système de cet ordinateur, marqué « (ce système) ».
+    let mut dernier = SYSTEMES
+        .iter()
+        .position(|s| *s == Systeme::actuel())
+        .map_or_else(|| "1".to_string(), |i| (i + 1).to_string());
     loop {
         print!("\x1b[2J\x1b[H");
         let mut lignes = entete(
             &[tr!("Guide des commandes", "Command guide")],
-            &trf!("{total} commandes", "{total} commands"),
+            &trf!("{total} commandes vérifiées", "{total} checked commands"),
         );
         lignes.extend(lignes_grises(
             tr!(
-                "Tapez ce que vous cherchez (wifi, disque, mise à jour…) : les commandes paraissent au fil de la frappe, et Tab complète le mot. Entrée ouvre la commande : ce qu'elle fait, la copier, ou la lancer ici si elle ne fait que lire.",
-                "Type what you are looking for (wifi, disk, update…): commands show up as you type, and Tab completes the word. Enter opens the command: what it does, copy it, or run it here if it only reads."
+                "Choisissez un système, ou tapez un mot (wifi, disque, mise à jour…) : les commandes paraissent au fil de la frappe. Une commande se copie, ou se lance ici si elle ne fait que lire.",
+                "Choose a system, or type a word (wifi, disk, update…): commands show up as you type. A command can be copied, or run here if it only reads."
             ),
             2,
         ));
@@ -1369,10 +1442,48 @@ fn programmes_nommes(tape: &str) -> Vec<(Systeme, &'static Programme)> {
 
 /// « vanguard guide [quoi] » : sans rien, le menu ; un système, toutes ses commandes ; un programme, les siennes ;
 /// sinon, la recherche de ces mots.
-pub fn executer(quoi: &str) {
+pub fn executer(quoi: &str, sommaire: bool) {
     let quoi = quoi.trim();
     if quoi.is_empty() {
         menu();
+        return;
+    }
+    // « vanguard guide 6.7.2 » : la page de ce chemin, comme au menu (10.6.7.2, que le pied de page cite aussi : un
+    // chemin à quatre nombres commence par la touche du guide).
+    let sans_cle = quoi
+        .strip_prefix(&format!("{}.", crate::cle_du_guide()))
+        .filter(|reste| reste.split('.').count() == 3)
+        .unwrap_or(quoi);
+    if sans_cle.starts_with(|c: char| c.is_ascii_digit())
+        && let Some((s, p, c)) = chemin(sans_cle)
+    {
+        if page_existe(s, p, c) {
+            ouvrir(s, p, c);
+        } else {
+            trp!(
+                "  Aucune page du guide à ce chemin : « {} ». vanguard guide <système> --sommaire donne les chemins.",
+                "  No guide page at this path: “{}”. vanguard guide <system> --summary gives the paths.",
+                affichable(quoi)
+            );
+            std::process::exit(1);
+        }
+        return;
+    }
+    if let Some(s) = systeme(quoi)
+        && sommaire
+    {
+        titre(&trf!("Guide des commandes › {}", "Command guide › {}", s.nom()));
+        for (proprietaire, p) in s.programmes() {
+            // Le chemin de la page, celui que le menu et « vanguard guide <chemin> » ouvrent (les communs à Linux se
+            // disent dans une distribution).
+            let ici = place(proprietaire, p, None).unwrap_or_else(|| "?".to_string());
+            println!(
+                "  {GRAS}{:<7}{RESET}{:<28} {GRIS}{}{RESET}",
+                ici,
+                couper(nom(p), 28),
+                dans_la_langue(p.role)
+            );
+        }
         return;
     }
     if let Some(s) = systeme(quoi) {
@@ -1424,6 +1535,45 @@ pub fn executer(quoi: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Les chemins que d'autres citent (le test de la VM, le CHANGELOG, l'aide) ne changent jamais de sens : un
+    /// système ou un programme ajouté va en fin de liste.
+    #[test]
+    fn chemins_figes() {
+        let systeme = |n: usize| SYSTEMES[n - 1];
+        assert_eq!(
+            [systeme(6), systeme(7), systeme(8), systeme(9), systeme(10)],
+            [
+                Systeme::Windows,
+                Systeme::MacOs,
+                Systeme::Tous,
+                Systeme::Tldr,
+                Systeme::Vanguard
+            ]
+        );
+        let programme = |s: usize, p: usize| systeme(s).programmes()[p - 1].1.nom;
+        assert_eq!(programme(6, 7), "winget");
+        assert_eq!(programme(6, 11), "ipconfig");
+        assert_eq!(programme(6, 36), "Get-NetConnectionProfile");
+    }
+
+    /// Les commandes de Vanguard (10.10) : chaque commande visible y est, une fois.
+    #[test]
+    fn chaque_commande_dans_commandes_de_vanguard() {
+        use clap::CommandFactory;
+        let lignes: Vec<&str> = Systeme::Vanguard
+            .programmes()
+            .iter()
+            .flat_map(|(_, p)| p.commandes.iter().map(|c| c.ligne))
+            .collect();
+        for c in crate::Args::command()
+            .get_subcommands()
+            .filter(|c| !c.is_hide_set() && c.get_name() != "help")
+        {
+            let voulu = format!("vanguard {}", c.get_name());
+            assert_eq!(lignes.iter().filter(|l| **l == voulu).count(), 1, "{voulu}");
+        }
+    }
 
     /// Chaque commande du guide une fois, avec le système sous lequel elle s'affiche.
     fn toutes() -> impl Iterator<Item = Trouvee> {

@@ -137,7 +137,9 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
        free up space…). Type what you are looking for: commands show up as
        you type; each one can be copied, or run here if it only reads. And the tldr-pages examples, already on
        the key and updated every week: to copy only. From the command line:
-       vanguard guide fedora, vanguard guide winget, vanguard guide dns cache
+       vanguard guide fedora, vanguard guide winget, vanguard guide dns cache, vanguard guide 6.7.2,
+       vanguard guide windows --summary. 10.10 Vanguard commands: every command, sorted like the menu, with its
+       place in the menu; each page ends with its path and command ("Path: 10.6.7.2 · vanguard guide 6.7.2").
  11  Step-by-step troubleshooting › no Internet, Wi-Fi dropping, slow computer, no sound, printer, disk full:
        two or three questions, then Vanguard checks and suggests the right repair.
        And: after an infection, new computer, computer leaving (sale, gift), hacked account, collect the

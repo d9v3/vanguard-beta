@@ -493,9 +493,12 @@ enum Commande {
     /// de tous les systèmes, rangées par programme, avec des marches à suivre ; et les exemples de tldr-pages,
     /// téléchargés chaque semaine.
     Guide {
-        /// Un système (omarchy, arch, fedora, debian, windows, macos, tous ; linux : les programmes communs ; tldr), un
-        /// programme (systemctl, winget, tar…) ou des mots à chercher.
+        /// Un système (omarchy, arch, fedora, debian, windows, macos, tous ; linux : les programmes communs ; tldr ;
+        /// vanguard), un programme (systemctl, winget, tar…), un chemin (6.7.2) ou des mots à chercher.
         quoi: Vec<String>,
+        /// Pour un système : la liste de ses programmes et leur chemin, sans leurs commandes.
+        #[arg(long, visible_alias = "summary")]
+        sommaire: bool,
     },
     /// Pourquoi c'est lent ? Ce qui occupe le processeur, la mémoire et le disque, le démarrage, les programmes lancés
     /// à l'ouverture de session. Lecture seule.
@@ -1299,6 +1302,157 @@ async fn chercher(requete: &str, premier: bool, json: bool) -> bool {
     true
 }
 
+/// La touche du guide au menu principal (« 10 »).
+fn cle_du_guide() -> String {
+    GROUPES
+        .iter()
+        .position(|g| *g == Groupe::Guide)
+        .map_or(0, |i| i + 4)
+        .to_string()
+}
+
+/// Les commandes qui ne changent rien sur l'ordinateur (elles lisent, montrent, cherchent ; au plus une page ou un
+/// rapport dans le dossier de Vanguard) : le guide (10.10) les dit « ✔ ne fait que lire ». Toute autre est marquée ⚠,
+/// même si chaque changement demande un accord.
+const COMMANDES_EN_LECTURE: &[&str] = &[
+    "bilan",
+    "rapport",
+    "chercher",
+    "audit",
+    "dernieres-failles",
+    "fiche-ordinateur",
+    "secrets",
+    "conteneurs",
+    "logiciels-perimes",
+    "appareils",
+    "audit-reseau",
+    "objets-connectes",
+    "cameras-cachees",
+    "listes-noires",
+    "tableau-de-bord",
+    "logiciels-espions",
+    "connexions-sortantes",
+    "memoire",
+    "verifier-fichier",
+    "lien",
+    "courriel-suspect",
+    "fuite-mot-de-passe",
+    "mots-de-passe-navigateurs",
+    "fuite-courriel",
+    "camera-micro",
+    "bilan-confidentialite",
+    "evenements",
+    "changements",
+    "verifier-sauvegarde",
+    "verifier-copie",
+    "guide",
+    "diagnostic",
+    "lenteur",
+    "test-connexion",
+    "nat",
+    "canaux-wifi",
+    "verifier-moi",
+    "autotest",
+    "regles",
+    "ordinateurs",
+];
+
+/// L'essentiel d'une aide de commande pour le guide, qui tient en deux lignes : ce qui précède son premier « : »,
+/// « ; » ou point (« Rapport détaillé dans le navigateur : le bilan… » → « Rapport détaillé dans le navigateur »).
+fn essentiel(aide: &str) -> String {
+    aide.split([':', ';', '.']).next().unwrap_or(aide).trim().to_string()
+}
+
+/// Une explication du guide en deux lignes au plus (la règle de ses pages), sa place au menu gardée : des mots
+/// retirés à la fin, remplacés par « … », quand il le faut.
+fn en_deux_lignes(texte: &str, place: &str) -> String {
+    let tient = |t: &str| envelopper(t, LARGEUR - 6).len() <= 2;
+    let mut mots: Vec<&str> = texte.split_whitespace().collect();
+    let entier = format!("{texte}{place}");
+    if tient(&entier) {
+        return entier;
+    }
+    while mots.len() > 1 {
+        mots.pop();
+        let court = format!("{}…{place}", mots.join(" "));
+        if tient(&court) {
+            return court;
+        }
+    }
+    entier
+}
+
+/// La place au menu d'une commande : 1 à 3, le chemin de son outil (les raccourcis 8.3 à 8.5 laissés de côté pour
+/// « depanner »), ou la touche d'un groupe ouvert directement (« 10 », « 11 »).
+fn place_de_commande(nom: &str) -> Option<String> {
+    let principal = [Action::Complet, Action::Corriger, Action::Rapport];
+    let raccourcis = [Action::DepannerInfection, Action::DepannerCompte, Action::Traces];
+    let outil = OUTILS
+        .iter()
+        .find(|o| o.commande == nom && !raccourcis.contains(&o.action))?;
+    if let Some(i) = principal.iter().position(|a| *a == outil.action) {
+        return Some((i + 1).to_string());
+    }
+    if let Some(g) = outil.groupe.filter(|g| g.direct())
+        && g.actions().first() == Some(&outil.action)
+    {
+        return GROUPES.iter().position(|x| *x == g).map(|i| (i + 4).to_string());
+    }
+    touche_de(outil.action)
+}
+
+/// Les commandes de Vanguard pour le guide (10.10) : un programme par rubrique de `--help`, une commande par ligne,
+/// avec son aide et sa place au menu. Construites une fois, depuis le menu et clap.
+fn programmes_vanguard() -> &'static [guide::Programme] {
+    static PROGRAMMES: std::sync::OnceLock<Vec<guide::Programme>> = std::sync::OnceLock::new();
+    PROGRAMMES.get_or_init(|| {
+        let garder = |t: String| -> &'static str { Box::leak(t.into_boxed_str()) };
+        let clap = Args::command();
+        rubriques_des_commandes()
+            .into_iter()
+            .map(|(groupe, noms)| {
+                let (numero, [fr, en]) = match groupe {
+                    None => ("1 2 3".to_string(), ["Bilan de sécurité", "Security check"]),
+                    Some(g) => (
+                        GROUPES.iter().position(|x| *x == g).map_or(0, |i| i + 4).to_string(),
+                        g.titres(),
+                    ),
+                };
+                let titre = (fr, en);
+                let commandes: Vec<guide::Commande> = noms
+                    .iter()
+                    .filter_map(|nom| clap.find_subcommand(nom))
+                    .map(|c| {
+                        let nom = c.get_name();
+                        let anglais = c.get_visible_aliases().next().unwrap_or(nom);
+                        let aide_fr = c.get_about().map(ToString::to_string).unwrap_or_default();
+                        let aide_en = AIDES_EN
+                            .iter()
+                            .find(|(n, _)| *n == nom)
+                            .map_or(aide_fr.clone(), |(_, a)| (*a).to_string());
+                        let place = place_de_commande(nom)
+                            .map(|t| (format!(" (menu {t})"), format!(" (menu {t})")))
+                            .unwrap_or_default();
+                        guide::traduite(
+                            garder(format!("vanguard {nom}")),
+                            garder(format!("vanguard {anglais}")),
+                            garder(en_deux_lignes(&essentiel(&aide_fr), &place.0)),
+                            garder(en_deux_lignes(&essentiel(&aide_en), &place.1)),
+                            !COMMANDES_EN_LECTURE.contains(&nom),
+                        )
+                    })
+                    .collect();
+                guide::Programme {
+                    nom: garder(format!("vanguard ({numero})")),
+                    role: titre,
+                    executable: "",
+                    commandes: Box::leak(commandes.into_boxed_slice()),
+                }
+            })
+            .collect()
+    })
+}
+
 /// Les noms de commandes d'avant la 0.87, que la ligne de commande n'accepte plus (décision de l'auteur) : la
 /// recherche les trouve encore (« harden » mène à Defender, « maj » aux mises à jour).
 const ANCIENS_NOMS: &[(&str, &str)] = &[
@@ -2069,17 +2223,22 @@ const ECRANS: &[(Action, &[Action])] = &[
 
 impl Groupe {
     fn titre(self) -> &'static str {
+        texte(self.titres())
+    }
+
+    /// Son titre en français et en anglais (le guide des commandes en a besoin dans les deux langues).
+    fn titres(self) -> [&'static str; 2] {
         match self {
-            Groupe::Ordinateur => tr!("Cet ordinateur", "This computer"),
-            Groupe::Reseau => tr!("Réseau et Internet", "Network and Internet"),
-            Groupe::Virus => tr!("Virus et logiciels espions", "Viruses and spyware"),
-            Groupe::Arnaques => tr!("Arnaques et vie privée", "Scams and privacy"),
-            Groupe::Reagir => tr!("Bloquer et réagir", "Block and respond"),
-            Groupe::Donnees => tr!("Données et sauvegardes", "Data and backups"),
-            Groupe::Guide => tr!("Guide des commandes", "Command guide"),
-            Groupe::Depanner => tr!("Dépanner pas à pas", "Step-by-step troubleshooting"),
-            Groupe::Optimiser => tr!("Optimiser et installer", "Optimize and install"),
-            Groupe::Vanguard => tr!("Vanguard", "Vanguard"),
+            Groupe::Ordinateur => ["Cet ordinateur", "This computer"],
+            Groupe::Reseau => ["Réseau et Internet", "Network and Internet"],
+            Groupe::Virus => ["Virus et logiciels espions", "Viruses and spyware"],
+            Groupe::Arnaques => ["Arnaques et vie privée", "Scams and privacy"],
+            Groupe::Reagir => ["Bloquer et réagir", "Block and respond"],
+            Groupe::Donnees => ["Données et sauvegardes", "Data and backups"],
+            Groupe::Guide => ["Guide des commandes", "Command guide"],
+            Groupe::Depanner => ["Dépanner pas à pas", "Step-by-step troubleshooting"],
+            Groupe::Optimiser => ["Optimiser et installer", "Optimize and install"],
+            Groupe::Vanguard => ["Vanguard", "Vanguard"],
         }
     }
 
@@ -2701,8 +2860,8 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
                                      Outlook on the web “Download”"),
     ("verifier-fichier", "empreinte", "The checksum published by the site (preferably SHA-256). Otherwise: a \
                                        SHA256SUMS or .sha256 next to it"),
-    ("guide", "quoi", "A system (omarchy, arch, fedora, debian, windows, macos, all; linux: the common programs; tldr), \
-                       a program (systemctl, winget, tar…) or words to look for"),
+    ("guide", "quoi", "A system (omarchy, arch, fedora, debian, windows, macos, all; linux: the common programs; tldr; \
+                       vanguard), a program (systemctl, winget, tar…), a path (6.7.2) or words to look for"),
     ("fiche-ordinateur", "json", "The specs as JSON, for a script (without the serial numbers)"),
     ("evenements", "json", "The log as JSON, for a script"),
     ("logiciels-espions", "json", "The result as JSON, for a script"),
@@ -2728,6 +2887,7 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
                            evidence [folder], relative (or words that describe it)"),
     ("protection", "quoi", "on or off, then --for 1h or 4h for a cut that ends by itself"),
     ("chercher", "mots", "The words searched for"),
+    ("guide", "sommaire", "For a system: the list of its programs and their path, without their commands"),
     ("chercher", "premier", "Open the best result right away"),
     ("plugins", "quoi", "add <folder>, approve <name>, list, remove <name>, or <name> [--report] [arguments]"),
     ("labo", "quoi", "open, list, or <file> [arguments]"),
@@ -2797,14 +2957,46 @@ fn rubriques_de_l_aide() -> Vec<(String, Vec<String>)> {
             .find(|c| c.get_name() == commande)
             .map(|c| nom_de_commande(c))
     };
-    let mut vus: Vec<&str> = Vec::new();
-    let mut ajouter = |liste: &mut Vec<String>, commande: &'static str| {
-        if commande.is_empty() || vus.contains(&commande) {
-            return;
-        }
-        if let Some(n) = nom(commande) {
+    let rubriques_fr = rubriques_des_commandes();
+    let vus: Vec<&str> = rubriques_fr.iter().flat_map(|(_, n)| n.iter().copied()).collect();
+    let mut rubriques: Vec<(String, Vec<String>)> = rubriques_fr
+        .into_iter()
+        .map(|(groupe, noms)| {
+            let titre = match groupe {
+                None => tr!("Bilan de sécurité", "Security check").to_string(),
+                Some(g) => format!(
+                    "{} {}",
+                    GROUPES.iter().position(|x| *x == g).map_or(0, |i| i + 4),
+                    g.titre()
+                ),
+            };
+            (titre, noms.into_iter().filter_map(nom).collect())
+        })
+        .collect();
+    let reste: Vec<String> = visibles
+        .iter()
+        .filter(|c| !vus.contains(&c.get_name()))
+        .map(|c| nom_de_commande(c))
+        .collect();
+    if !reste.is_empty() {
+        rubriques.push((tr!("Aussi", "Also").to_string(), reste));
+    }
+    rubriques
+}
+
+/// Les commandes visibles rangées comme le menu, par leur nom français : (groupe, aucun pour la rubrique du bilan ;
+/// noms dans l'ordre des lignes). Sans langue : `--help` et le guide (10.10) s'en servent.
+fn rubriques_des_commandes() -> Vec<(Option<Groupe>, Vec<&'static str>)> {
+    let clap = Args::command();
+    let existe = |commande: &str| {
+        clap.get_subcommands()
+            .any(|c| !c.is_hide_set() && c.get_name() == commande)
+    };
+    let mut vus: Vec<&'static str> = Vec::new();
+    let mut ajouter = |liste: &mut Vec<&'static str>, commande: &'static str| {
+        if !commande.is_empty() && !vus.contains(&commande) && existe(commande) {
             vus.push(commande);
-            liste.push(n);
+            liste.push(commande);
         }
     };
     let mut rubriques = Vec::new();
@@ -2814,8 +3006,8 @@ fn rubriques_de_l_aide() -> Vec<(String, Vec<String>)> {
     }
     // La recherche de l'accueil, en ligne de commande.
     ajouter(&mut premiere, "chercher");
-    rubriques.push((tr!("Bilan de sécurité", "Security check").to_string(), premiere));
-    for (i, g) in GROUPES.iter().enumerate() {
+    rubriques.push((None, premiere));
+    for g in GROUPES {
         let mut liste = Vec::new();
         // Les raccourcis d'incident (8.3 à 8.5) mènent à « depanner » : sa rubrique est celle de Dépanner.
         let raccourcis = [Action::DepannerInfection, Action::DepannerCompte, Action::Traces];
@@ -2825,18 +3017,10 @@ fn rubriques_de_l_aide() -> Vec<(String, Vec<String>)> {
                 ajouter(&mut liste, v.outil().commande);
             }
         }
-        for (commande, _) in RUBRIQUE_DES_AUTRES.iter().filter(|(_, r)| r == g) {
+        for (commande, _) in RUBRIQUE_DES_AUTRES.iter().filter(|(_, r)| *r == g) {
             ajouter(&mut liste, commande);
         }
-        rubriques.push((format!("{} {}", i + 4, g.titre()), liste));
-    }
-    let reste: Vec<String> = visibles
-        .iter()
-        .filter(|c| !vus.contains(&c.get_name()))
-        .map(|c| nom_de_commande(c))
-        .collect();
-    if !reste.is_empty() {
-        rubriques.push((tr!("Aussi", "Also").to_string(), reste));
+        rubriques.push((Some(g), liste));
     }
     rubriques
 }
@@ -3214,7 +3398,7 @@ async fn main() {
         Some(Commande::Sauvegarder { fichier }) => donnees::sauvegarder(fichier),
         Some(Commande::Restaurer { fichier }) => donnees::restaurer(&fichier),
         Some(Commande::Nommer { appareil, surnom }) => nommer(&appareil, &surnom.join(" ")),
-        Some(Commande::Guide { quoi }) => guide::executer(&quoi.join(" ")),
+        Some(Commande::Guide { quoi, sommaire }) => guide::executer(&quoi.join(" "), sommaire),
         Some(Commande::Lenteur) => lenteur::commande(),
         Some(Commande::Demarrage) => optimiser::programmes_au_demarrage(),
         Some(Commande::Fiche { json }) => fiche::fiche(json),
@@ -3688,6 +3872,28 @@ mod tests_menu {
             !selection::chercher(&lignes, "imprimnte").1.is_empty(),
             "la faute est dite"
         );
+    }
+
+    /// Les commandes dites « en lecture » au guide existent, et celles qui changent quelque chose y sont marquées ⚠.
+    #[test]
+    fn le_guide_dit_ce_qui_change() {
+        let commandes = sous_commandes();
+        for nom in COMMANDES_EN_LECTURE {
+            assert!(commandes.iter().any(|(n, _)| n == nom), "{nom}");
+        }
+        let marquee = |ligne: &str| {
+            programmes_vanguard()
+                .iter()
+                .flat_map(|p| p.commandes.iter())
+                .find(|c| c.ligne == ligne)
+                .map(|c| c.modifie)
+        };
+        assert_eq!(marquee("vanguard corriger"), Some(true));
+        assert_eq!(marquee("vanguard nettoyer"), Some(true));
+        assert_eq!(marquee("vanguard audit"), Some(false));
+        assert_eq!(place_de_commande("depanner").as_deref(), Some("11"));
+        assert_eq!(place_de_commande("guide").as_deref(), Some("10"));
+        assert_eq!(place_de_commande("bilan").as_deref(), Some("1"));
     }
 
     /// Les outils du menu qui n'ont pas de sous-commande, et pourquoi.

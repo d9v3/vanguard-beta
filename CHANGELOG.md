@@ -62,6 +62,12 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 | 5.12 Caméras cachées | 5.5 | | 9.9 Mettre Vanguard à jour | 13.3 | | 9.10 Vérifier ma sauvegarde | 9.3.1 |
 | 5.13 Box et objets connectés | 5.4 | | 9.11 Retirer Vanguard | 13.11 | | 12 Extensions | 13.10 |
 
+- **Guide des commandes.** Une nouvelle page en fin, 10.10 « Commandes de Vanguard » : chaque commande, rangée comme
+  le menu, avec ce qu'elle fait et sa place au menu, générée depuis le programme (jamais à recopier). Le curseur
+  s'ouvre sur le système de l'ordinateur. Chaque page de programme et de commande finit par son chemin et sa commande (« Chemin : 10.6.7.2 ·
+  vanguard guide 6.7.2 »). `vanguard guide <chemin>` ouvre une page directement ; `--sommaire` liste les programmes
+  d'un système avec leur chemin. Aucun chemin d'avant ne change (test).
+
 - **Recherche.** Un mot tapé au menu principal trouve chaque outil, ses variantes, les parcours, les pages du guide,
   les logiciels du catalogue (« gimp » ouvre sa catégorie) et les réglages des Paramètres, classés par pertinence :
   le titre avant le reste, des synonymes (« box » → routeur, « ransomware », « mdp », « maj ») et une faute de frappe
