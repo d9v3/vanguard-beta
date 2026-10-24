@@ -6,8 +6,13 @@
 //! agent, pkexec rend 127 et le suivant est essayé), run0 (Linux, systemd 256 et plus : son propre agent dans le
 //! terminal), sudo (dans le terminal ; use_pty, la règle par défaut depuis sudo 1.9.14, passe nos tubes tels quels),
 //! sinon c'est dit et rien n'est fait. Le programme lancé est, sous Linux, /proc/<pid>/exe de ce Vanguard : ce lien
-//! désigne l'image qui tourne, même si le fichier est remplacé entre-temps (sudo et run0 l'exécutent tel quel ;
-//! pkexec, lui, le résout en chemin réel avant de l'exécuter, comme pour tout programme qu'on lui donne).
+//! désigne l'image qui tourne, même si le fichier est remplacé entre-temps (sudo et run0 l'exécutent tel quel).
+//! pkexec, lui, le résout en chemin réel avant de l'exécuter (realpath dans pkexec.c), et macOS n'a pas de /proc :
+//! par chemin, seulement un programme que le compte ne peut pas remplacer (à root, dossiers compris) ; sinon pkexec
+//! est sauté (run0 ou sudo prennent la suite), et sous macOS c'est dit.
+//!
+//! Pendant le dialogue, le parent n'est plus « dumpable » : un autre processus du compte ne peut ni ouvrir ses tubes
+//! par /proc/<pid>/fd ni s'y attacher, donc ni glisser une autre liste au fils, ni répondre à sa place.
 //!
 //! Le canal : l'entrée et la sortie standard du fils, deux tubes que seul ce processus tient (pkexec, run0 et sudo
 //! les passent tels quels). Le fils dit d'abord qu'il est prêt (il tourne en root), lit la liste jusqu'à « fin »,
@@ -92,6 +97,30 @@ fn methodes(graphique: bool, terminal: bool, existe: impl Fn(&str) -> bool) -> V
         m.push(Methode::Sudo);
     }
     m
+}
+
+/// Le programme et tous ses dossiers appartiennent-ils à root, sans écriture pour le groupe ni les autres ? Alors
+/// personne d'autre que root ne peut le remplacer entre l'accord et son lancement par chemin (macOS, ou pkexec qui
+/// résout /proc/<pid>/exe en chemin réel avant de l'exécuter). Un programme dans un dossier du compte
+/// (Téléchargements, la clé) ne l'est pas.
+fn chemin_sur(chemin: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let mut courant = Some(chemin);
+    while let Some(c) = courant {
+        let Ok(m) = std::fs::metadata(c) else {
+            return false;
+        };
+        if m.uid() != 0 || m.mode() & 0o022 != 0 {
+            return false;
+        }
+        courant = c.parent().filter(|p| !p.as_os_str().is_empty());
+    }
+    true
+}
+
+/// L'image qui tourne est-elle à l'abri d'un remplacement par chemin (`chemin_sur`) ?
+fn image_sure() -> bool {
+    std::env::current_exe().is_ok_and(|c| chemin_sur(&c))
 }
 
 /// Le programme à relancer : l'image qui tourne (Linux), ou son chemin (macOS, sans /proc).
@@ -214,7 +243,7 @@ fn ranger(groupes: &[Vec<Ordre>], reponses: &[String]) -> Option<Vec<Vec<Resulta
             .iter()
             .map(|g| {
                 g.iter()
-                    .filter_map(|_| r.next().map(|l| ordres::lire_reponse(l)))
+                    .filter_map(|_| r.next().map(|l| ordres::lire_reponse(&crate::ui::affichable(l))))
                     .collect()
             })
             .collect(),
@@ -225,6 +254,12 @@ fn essayer(m: Methode, groupes: &[Vec<Ordre>]) -> Issue {
     let (Some(chemin), Some(programme)) = (outil(m.nom()), programme()) else {
         return Issue::Indisponible;
     };
+    // pkexec exécute le chemin réel du programme, et macOS n'a pas de /proc : par chemin, seulement un programme que
+    // le compte ne peut pas remplacer.
+    let par_chemin = m == Methode::Pkexec || cfg!(not(target_os = "linux"));
+    if par_chemin && !image_sure() {
+        return Issue::Indisponible;
+    }
     let terminal = terminal();
     trp!(
         "    {GRIS}Droits d'administrateur demandés par {} : Vanguard fera lui-même les gestes montrés, et rien d'autre.{RESET}",
@@ -298,6 +333,18 @@ pub(crate) fn appliquer(groupes: &[Vec<Ordre>]) -> Vec<Vec<Resultat>> {
     }
     let graphique = std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();
     let possibles = methodes(graphique, terminal(), |n| outil(n).is_some());
+    // Pendant le dialogue, plus aucun processus du compte ne peut ouvrir nos tubes par /proc/<pid>/fd ni s'attacher
+    // à nous (ptrace) pour glisser une autre liste au fils, ou lui répondre à sa place : un processus non
+    // « dumpable » n'est plus accessible qu'à root.
+    let _garde = Inaccessible::poser();
+    if cfg!(not(target_os = "linux")) && !image_sure() {
+        let raison = tr!(
+            "Vanguard tourne depuis un dossier que ce compte peut modifier : il ne se relance pas en administrateur par son chemin (il pourrait être remplacé entre-temps). Installez-le dans /Applications ou /usr/local/bin, ou lancez-le avec sudo",
+            "Vanguard runs from a folder this account can change: it does not relaunch itself as administrator by its path (it could be replaced meanwhile). Install it in /Applications or /usr/local/bin, or start it with sudo"
+        );
+        trp!("    ✖ {}", "    ✖ {}", raison);
+        return tous_en_echec(groupes, raison);
+    }
     for m in possibles {
         match essayer(m, groupes) {
             Issue::Fait(r) => return r,
@@ -321,6 +368,36 @@ pub(crate) fn appliquer(groupes: &[Vec<Ordre>]) -> Vec<Vec<Resultat>> {
     );
     trp!("    ✖ {}", "    ✖ {}", raison);
     tous_en_echec(groupes, raison)
+}
+
+/// Rend ce processus inaccessible au compte (PR_SET_DUMPABLE à 0) le temps du dialogue avec le fils, puis le remet.
+struct Inaccessible(#[cfg_attr(not(target_os = "linux"), allow(dead_code))] bool);
+
+impl Inaccessible {
+    fn poser() -> Inaccessible {
+        #[cfg(target_os = "linux")]
+        {
+            // SAFETY : prctl sans pointeur ; PR_GET_DUMPABLE rend 0 ou 1, PR_SET_DUMPABLE prend 0 ou 1.
+            let avant = unsafe { libc::prctl(libc::PR_GET_DUMPABLE) } == 1;
+            // SAFETY : voir ci-dessus.
+            unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) };
+            Inaccessible(avant)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Inaccessible(false)
+        }
+    }
+}
+
+impl Drop for Inaccessible {
+    fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        if self.0 {
+            // SAFETY : prctl sans pointeur.
+            unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 1) };
+        }
+    }
 }
 
 // ------------------------------------------------------------------ le fils
@@ -396,6 +473,35 @@ mod tests {
         } else {
             PareFeu::Nftables
         }
+    }
+
+    /// Un programme dans un dossier du compte n'est jamais relancé par son chemin ; un programme du système l'est.
+    #[test]
+    fn programme_relance_par_chemin_seulement_s_il_est_a_root() {
+        assert!(chemin_sur(std::path::Path::new("/usr/bin")));
+        assert!(!chemin_sur(&std::env::temp_dir().join("absent-vanguard")));
+        let d = std::env::temp_dir().join(format!("vanguard-chemin-sur-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        // SAFETY : geteuid ne prend aucun argument et ne touche aucune mémoire.
+        if unsafe { libc::geteuid() } != 0 {
+            assert!(!chemin_sur(&d));
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Le temps du dialogue, ce processus n'est plus accessible au compte ; il l'est de nouveau après.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn inaccessible_le_temps_du_dialogue() {
+        // SAFETY : prctl sans pointeur.
+        let avant = unsafe { libc::prctl(libc::PR_GET_DUMPABLE) };
+        {
+            let _g = Inaccessible::poser();
+            // SAFETY : voir ci-dessus.
+            assert_eq!(unsafe { libc::prctl(libc::PR_GET_DUMPABLE) }, 0);
+        }
+        // SAFETY : voir ci-dessus.
+        assert_eq!(unsafe { libc::prctl(libc::PR_GET_DUMPABLE) }, avant);
     }
 
     #[test]

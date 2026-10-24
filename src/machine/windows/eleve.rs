@@ -39,7 +39,7 @@ use windows::Win32::System::Com::{
     RPC_C_IMP_LEVEL_IDENTIFY,
 };
 
-use super::corrections::{self, Correction, LIGNES_MAX, Resultat};
+use super::corrections::{self, Correction, Resultat};
 use crate::protection::blocage::ordres::{self, Ordre};
 use crate::ui::{GRIS, RESET, VERT, tr, trf, trp};
 
@@ -135,6 +135,9 @@ const CANAL_REFUSE: i32 = 9;
 const FIN: &str = "fin";
 /// La plus longue ligne admise : celle d'un ordre (un chemin de programme), plus longue qu'un identifiant.
 const LIGNE_MAX: usize = ordres::LIGNE_MAX;
+/// Au-delà, une liste n'est pas celle d'une session de Vanguard (« Tout remettre comme avant » peut en compter
+/// plusieurs dizaines).
+const LIGNES_MAX: usize = ordres::LIGNES_MAX;
 /// Le verbe d'un script PowerShell vérifié par empreinte.
 const SCRIPT: &str = "vanguard:script ";
 
@@ -194,9 +197,15 @@ fn analyser_script(ligne: &str) -> Option<Element> {
     let chemin = String::from_utf8(octets?).ok()?;
     let o = chemin.as_bytes();
     let complet = o.len() > 3 && o[0].is_ascii_alphabetic() && o[1] == b':' && o[2] == b'\\';
-    let ps1 = std::path::Path::new(&chemin)
-        .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("ps1"));
+    // Un script de correction de Vanguard : « correction-….ps1 » dans un dossier « corrections ».
+    let p = std::path::Path::new(&chemin);
+    let ps1 = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("correction-") && n.to_ascii_lowercase().ends_with(".ps1"))
+        && p.parent()
+            .and_then(|d| d.file_name())
+            .is_some_and(|d| d.eq_ignore_ascii_case("corrections"));
     (complet && ps1 && !chemin.contains(['\0', '\n', '\r']) && ligne_script(empreinte, &chemin) == ligne).then(|| {
         Element::Script {
             empreinte: empreinte.to_string(),
@@ -213,21 +222,22 @@ pub(crate) fn valider(lignes: &[String]) -> Option<Vec<Element>> {
         return None;
     }
     let mut vues = std::collections::HashSet::new();
-    lignes
+    let liste: Option<Vec<Element>> = lignes
         .iter()
         .map(|l| {
-            if !vues.insert(l.as_str()) {
-                return None;
-            }
             if let Some(c) = corrections::analyser(l) {
-                return Some(Element::Correction(c));
+                // Une correction de la table ne revient jamais deux fois dans une liste de Vanguard ; un ordre, si
+                // (deux blocages notés de la même adresse) : le second dit « déjà retirée ».
+                return vues.insert(l.as_str()).then_some(Element::Correction(c));
             }
             if let Some(o) = ordres::analyser(l).filter(Ordre::permis_ici) {
                 return Some(Element::Ordre(o));
             }
             analyser_script(l)
         })
-        .collect()
+        .collect();
+    // Un script n'arrive que dans une liste mêlée, à côté d'un geste natif : jamais seul.
+    liste.filter(|l| l.iter().any(|e| !matches!(e, Element::Script { .. })))
 }
 
 fn large(t: &str) -> Vec<u16> {
@@ -311,6 +321,10 @@ fn non_faite() -> Reponse {
 /// préparer la relance (tube, identité du compte) ; l'appelant repasse alors par le script PowerShell. Une demande
 /// d'administrateur refusée n'est pas `None` : tout est « non fait », sans redemander.
 pub(crate) fn appliquer(lignes: &[String]) -> Option<Vec<Reponse>> {
+    // Trop long pour le processus élevé : le script PowerShell prend le relais (chaque geste y a son équivalent).
+    if lignes.len() > LIGNES_MAX {
+        return None;
+    }
     if super::processus::eleve() {
         return Some(appliquer_en_place(lignes));
     }
@@ -643,6 +657,14 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
     trp!("Ce qui va être fait :", "What will be done:");
     for e in &liste {
         println!("  · {}", e.texte());
+        // Le script lui-même, tel qu'il sera vérifié puis lancé : ce que l'Entrée autorise, ligne par ligne.
+        if let Element::Script { chemin, .. } = e
+            && let Ok(o) = std::fs::read(chemin)
+        {
+            for l in String::from_utf8_lossy(&o).trim_start_matches('\u{feff}').lines() {
+                println!("    {GRIS}{}{RESET}", crate::ui::affichable(l));
+            }
+        }
     }
     println!();
     let accord = crate::ui::demander(tr!(
@@ -1021,6 +1043,11 @@ mod tests {
             &empreinte,
             r"C:\Users\alice\AppData\Local\Vanguard\corrections\correction-1.ps1",
         );
+        // Seul, sans geste natif : refusé ; hors du dossier des corrections ou sous un autre nom : refusé.
+        assert!(valider(std::slice::from_ref(&script)).is_none());
+        let point = corrections::POINT.to_string();
+        assert!(valider(&[point.clone(), ligne_script(&empreinte, r"C:\Temp\correction-1.ps1")]).is_none());
+        assert!(valider(&[point, ligne_script(&empreinte, r"C:\x\corrections\autre.ps1")]).is_none());
         let bonne = vec![
             corrections::POINT.to_string(),
             "vanguard:bloquer-sortie windows 203.0.113.7".to_string(),

@@ -24,8 +24,7 @@ pub(crate) const PREFIXE: &str = "vanguard:";
 /// Une ligne plus longue ne vient pas de Vanguard : le plus long ordre porte un chemin de 4 096 octets en hexadécimal.
 pub(crate) const LIGNE_MAX: usize = 8448;
 /// Au-delà, une liste n'est pas celle d'une session de Vanguard.
-#[cfg(unix)]
-pub(crate) const LIGNES_MAX: usize = 64;
+pub(crate) const LIGNES_MAX: usize = 512;
 /// Le plus long chemin de programme qu'un ordre d'arrêt porte.
 const CHEMIN_MAX: usize = 4096;
 
@@ -431,8 +430,58 @@ pub(crate) fn juger(o: &Ordre, j: &Juge) -> Option<String> {
                 .find_map(|nom| gardes::processus_intouchable(*pid, nom, Some(&actuel), &j.intouchables, j.os))
                 .map(str::to_string)
         }
-        Ordre::DebloquerSortie { .. } | Ordre::RouvrirPort { .. } | Ordre::RemettrePilotes { .. } => None,
+        // Défaire n'est permis que pour ce que Vanguard a pu poser : il ne bloque jamais une adresse locale ou un DNS
+        // public, ne ferme jamais SSH ni le Bureau à distance. Une note forgée qui viserait la règle d'un autre (ufw ne
+        // distingue pas les siennes) pour rouvrir ces portes-là est refusée.
+        Ordre::DebloquerSortie { ip, .. } => {
+            gardes::adresse_intouchable(*ip, Some(&gardes::Sessions::default()), false).map(|_| pas_de_vanguard())
+        }
+        Ordre::RouvrirPort { port, .. } => gardes::port_intouchable(*port).map(|_| pas_de_vanguard()),
+        // La liste des pilotes n'est remise à sa valeur d'avant que si elle est encore celle que Vanguard a posée (1) :
+        // changée depuis, ou absente, rien n'est remis (et jamais coupée sur la foi d'une note seule).
+        #[cfg(windows)]
+        Ordre::RemettrePilotes { .. } => {
+            (crate::machine::windows::corrections::valeur_pilotes() != Some(1)).then(|| {
+                tr!(
+                    "la liste de blocage des pilotes n'est plus celle que Vanguard a posée : rien n'est remis",
+                    "the driver blocklist is no longer the one Vanguard set: nothing is put back"
+                )
+                .to_string()
+            })
+        }
+        #[cfg(not(windows))]
+        Ordre::RemettrePilotes { .. } => None,
     }
+}
+
+/// La précision d'une coupure qui n'a pas pu se faire : la règle tient, la connexion déjà ouverte non. Elle ne fait
+/// pas échouer le geste (la règle est posée), elle est dite.
+pub(crate) fn note_non_coupee() -> &'static str {
+    tr!("connexion déjà ouverte non coupée", "connection already open not cut")
+}
+
+/// La précision d'un port fermé par ufw : la règle est-elle relue avant toute autorisation (`ufw status`, lu par
+/// celui qui agit, en root) ? `None` : l'état d'ufw ne s'est pas lu.
+pub(crate) fn note_ufw(en_premier: Option<bool>) -> &'static str {
+    match en_premier {
+        Some(true) => tr!(
+            "refusé par ufw avant toute autorisation",
+            "denied by ufw before any allow rule"
+        ),
+        Some(false) => tr!(
+            "pas vu avant les autorisations d'ufw",
+            "not seen before ufw's allow rules"
+        ),
+        None => tr!("état d'ufw illisible", "ufw state unreadable"),
+    }
+}
+
+fn pas_de_vanguard() -> String {
+    tr!(
+        "Vanguard ne pose jamais cette règle : ce retrait ne défait pas un de ses blocages, rien n'est fait",
+        "Vanguard never adds this rule: this removal does not undo one of its blocks, nothing is done"
+    )
+    .to_string()
 }
 
 /// Fait les ordres, groupe par groupe : dans un groupe, un ordre refusé ou en échec arrête la suite (« non fait ») ;
@@ -566,7 +615,20 @@ mod linux {
             Ordre::BloquerSortie { ip, .. } => lancer_ufw(&ufw_args("prepend", "out", *ip)),
             Ordre::DebloquerSortie { ip, .. } => lancer_ufw(&ufw_args("delete", "out", *ip)),
             // En tête des règles : ajoutée à la fin, une autorisation déjà là pour ce port passerait avant elle.
-            Ordre::FermerPort { port, .. } => lancer_ufw(&["prepend".into(), "deny".into(), format!("{port}/tcp")]),
+            Ordre::FermerPort { port, .. } => {
+                let r = lancer_ufw(&["prepend".into(), "deny".into(), format!("{port}/tcp")]);
+                if !r.reussi {
+                    return r;
+                }
+                // Relu ici, en root : le Vanguard qui demande ne le lirait pas sans redemander le mot de passe.
+                let statut = ufw().and_then(|c| {
+                    crate::commande::lancer(std::process::Command::new(c).arg("status").env("LC_ALL", "C"), 30)
+                });
+                let en_premier = statut
+                    .filter(|s| s.code == Some(0))
+                    .map(|s| crate::protection::blocage::pare_feu::refuse_en_premier(&s.sortie, *port));
+                Resultat::ok_note(super::note_ufw(en_premier))
+            }
             Ordre::RouvrirPort { port, .. } => lancer_ufw(&["delete".into(), "deny".into(), format!("{port}/tcp")]),
             Ordre::CouperConnexions { ip } => match crate::machine::linux::couper::couper_vers(*ip) {
                 Ok(c) if c.coupees > 0 => Resultat::ok_note(trf!(
@@ -575,7 +637,7 @@ mod linux {
                     c.coupees
                 )),
                 Ok(_) => Resultat::ok(),
-                Err(e) => Resultat::echec(e.to_string()),
+                Err(e) => Resultat::ok_note(format!("{} : {e}", super::note_non_coupee())),
             },
             Ordre::ArreterProcessus { .. } | Ordre::RemettrePilotes { .. } => {
                 Resultat::echec(tr!("ordre d'un autre système", "order from another system"))
@@ -699,7 +761,7 @@ mod macos {
         if reussi(r.as_ref()) {
             Resultat::ok()
         } else {
-            echec_de(r)
+            Resultat::ok_note(format!("{} : {}", super::note_non_coupee(), echec_de(r).raison))
         }
     }
 

@@ -528,28 +528,42 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<String,
     };
     match pret.faire {
         Faire::Commandes { annulation, retenir } => {
-            // Le geste, puis ce qui suit (la coupure des connexions déjà ouvertes) : un seul passage de droits pour les
-            // deux, et l'échec du second dit sans défaire le premier.
-            let (reussis, notes) =
-                crate::machine::appliquer_groupes_sans_noter(&[pret.commandes.clone(), pret.apres.clone()]);
-            let reussi = reussis.first() == Some(&true);
-            let lancees: Vec<String> = notes.into_iter().flatten().collect();
+            // Le geste, puis ce qui suit (la coupure des connexions déjà ouvertes), dans le même groupe : la coupure ne
+            // part que si la règle est posée, et son échec est une précision dite, pas l'échec de la règle.
+            let groupe: Vec<String> = pret.commandes.iter().chain(&pret.apres).cloned().collect();
+            let (reussi, lancees) = crate::machine::appliquer_sans_noter(&groupe);
+            let precise = |note: &str| lancees.iter().any(|l| l.contains(&format!("({note}")));
             let mut fait = m.quoi.clone();
-            if reussi && !pret.apres.is_empty() && reussis.get(1) != Some(&true) {
+            if reussi && precise(super::ordres::note_non_coupee()) {
                 fait += tr!(
                     " (règle posée ; la connexion déjà ouverte n'a pas pu être coupée : voir le message ci-dessus)",
                     " (rule added; the connection already open could not be cut: see the message above)"
                 );
             }
             if reussi && let Some(port) = retenir {
-                // Le bilan dira le port fermé seulement si ufw le refuse vraiment avant toute autorisation.
-                if pare_feu::ufw_refuse_en_premier(port) == Some(true) {
-                    crate::machine::retenir_port(&format!("{port}/tcp"));
+                // Le bilan dira le port fermé seulement si ufw le refuse vraiment avant toute autorisation : relu par
+                // celui qui a posé la règle (en root), sinon ici.
+                let en_premier = if precise(super::ordres::note_ufw(Some(true))) {
+                    Some(true)
+                } else if precise(super::ordres::note_ufw(Some(false))) {
+                    Some(false)
                 } else {
-                    fait += tr!(
-                        " (règle posée, mais pas vue avant les autorisations d'ufw : le port n'est pas compté comme fermé)",
-                        " (rule added, but not seen before ufw's allow rules: the port is not counted as closed)"
-                    );
+                    pare_feu::ufw_refuse_en_premier(port)
+                };
+                match en_premier {
+                    Some(true) => crate::machine::retenir_port(&format!("{port}/tcp")),
+                    Some(false) => {
+                        fait += tr!(
+                            " (règle posée, mais pas vue avant les autorisations d'ufw : le port n'est pas compté comme fermé)",
+                            " (rule added, but not seen before ufw's allow rules: the port is not counted as closed)"
+                        );
+                    }
+                    None => {
+                        fait += tr!(
+                            " (règle posée ; l'état d'ufw ne s'est pas relu : le port n'est pas compté comme fermé)",
+                            " (rule added; ufw's state could not be read back: the port is not counted as closed)"
+                        );
+                    }
                 }
             }
             changements::noter_blocage(lancees, reussi, note(Some(annulation)), preuve);

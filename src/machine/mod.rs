@@ -963,26 +963,6 @@ pub(crate) fn appliquer_sans_noter(commandes: &[String]) -> (bool, Vec<String>) 
     (resultats == [true], notes.into_iter().next().unwrap_or_default())
 }
 
-/// Comme `appliquer_sans_noter`, pour plusieurs groupes faits dans le même passage de droits (un seul mot de passe,
-/// une seule fenêtre administrateur) : la réussite de chacun, et ce qu'il faut noter.
-pub(crate) fn appliquer_groupes_sans_noter(groupes: &[Vec<String>]) -> (Vec<bool>, Vec<Vec<String>>) {
-    let garder: Vec<usize> = (0..groupes.len()).filter(|i| !groupes[*i].is_empty()).collect();
-    let pleins: Vec<Vec<String>> = garder.iter().map(|i| groupes[*i].clone()).collect();
-    let (r, n) = if pleins.is_empty() {
-        (Vec::new(), Vec::new())
-    } else {
-        lancer_chacune(&pleins)
-    };
-    // Un groupe vide n'a rien à faire : il est réussi, sans rien noter.
-    let mut reussis = vec![true; groupes.len()];
-    let mut notes = vec![Vec::new(); groupes.len()];
-    for ((i, ok), note) in garder.into_iter().zip(r).zip(n) {
-        reussis[i] = ok;
-        notes[i] = note;
-    }
-    (reussis, notes)
-}
-
 /// La ligne notée d'une commande faite : la commande, et ce qu'il faut en garder (valeur d'avant, précision, raison
 /// de l'échec).
 #[cfg(unix)]
@@ -1098,11 +1078,16 @@ fn lancer_chacune(correctifs: &[Vec<String>]) -> (Vec<bool>, Vec<Vec<String>>) {
                 fait.unwrap_or_else(|| {
                     commandes.iter().all(|c| {
                         println!("    {GRIS}$ {}{RESET}", crate::ui::commande_affichable(c));
-                        Command::new("bash")
-                            .arg("-c")
-                            .arg(c)
-                            .status()
-                            .is_ok_and(|s| s.success())
+                        // bash par son chemin, jamais par le PATH du compte.
+                        Command::new(if std::path::Path::new("/usr/bin/bash").exists() {
+                            "/usr/bin/bash"
+                        } else {
+                            "/bin/bash"
+                        })
+                        .arg("-c")
+                        .arg(c)
+                        .status()
+                        .is_ok_and(|s| s.success())
                     })
                 })
             })

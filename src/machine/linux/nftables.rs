@@ -433,26 +433,32 @@ pub(crate) fn poser(element: Element) -> Result<(), Echec> {
     prise
         .envoyer_et_attendre(&octets, &attendus)
         .map_err(|(code, _)| refus(code))?;
-    let relue = relire(&prise)?;
-    if !relue.elements.contains(&element) {
-        return Err(Echec::echoue(
-            OU,
+    let probleme = match relire(&prise) {
+        Err(e) => Some(e.to_string()),
+        Ok(relue) if !relue.elements.contains(&element) => Some(
             tr!(
                 "la table relue ne contient pas l'élément posé : rien n'est compté comme bloqué",
                 "the table read back does not hold the element added: nothing is counted as blocked"
-            ),
-        ));
-    }
-    if relue.regles != [("sortie".to_string(), 2), ("entree".to_string(), 1)] {
-        return Err(Echec::echoue(
-            OU,
+            )
+            .to_string(),
+        ),
+        Ok(relue) if relue.regles != [("sortie".to_string(), 2), ("entree".to_string(), 1)] => Some(
             tr!(
                 "les règles de la table relue ne sont pas celles de Vanguard : rien n'est compté comme bloqué",
                 "the rules of the table read back are not Vanguard's: nothing is counted as blocked"
-            ),
-        ));
-    }
-    Ok(())
+            )
+            .to_string(),
+        ),
+        Ok(_) => None,
+    };
+    let Some(probleme) = probleme else {
+        return Ok(());
+    };
+    // Compté en échec, donc sans note pour l'annuler : l'élément posé est retiré aussitôt, pour ne pas laisser un
+    // blocage que rien ne défait.
+    let (octets, attendus) = lot_retirer(premier_numero(), element);
+    let _ = prise.envoyer_et_attendre(&octets, &attendus);
+    Err(Echec::echoue(OU, probleme))
 }
 
 /// Ce que donne le retrait d'un élément.

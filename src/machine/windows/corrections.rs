@@ -14,6 +14,7 @@ use crate::langue::anglais;
 /// Devant chaque identifiant, pour qu'aucune commande PowerShell ne soit prise pour une correction native.
 pub(crate) const PREFIXE: &str = "vanguard:";
 /// Au-delà, une liste n'est pas celle d'une session de Vanguard.
+#[cfg(test)]
 pub(crate) const LIGNES_MAX: usize = 64;
 /// Une ligne plus longue qu'un identifiant ne vient pas de Vanguard (le canal la refuse avant de l'analyser).
 pub(crate) const LIGNE_MAX: usize = 256;
@@ -329,6 +330,16 @@ pub(crate) fn affichable(commande: &str) -> String {
         || crate::protection::blocage::ordres::affichable(commande),
         |c| c.texte().to_string(),
     )
+}
+
+/// La valeur actuelle de VulnerableDriverBlocklistEnable ; `None` : absente ou illisible.
+pub(crate) fn valeur_pilotes() -> Option<u32> {
+    let racine = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE);
+    racine
+        .open_subkey_with_flags(PILOTES_VULNERABLES, winreg::enums::KEY_READ)
+        .ok()?
+        .get_value::<u32, _>("VulnerableDriverBlocklistEnable")
+        .ok()
 }
 
 /// La liste de blocage des pilotes vulnérables remise à sa valeur d'avant (`None` : la valeur est retirée), puis

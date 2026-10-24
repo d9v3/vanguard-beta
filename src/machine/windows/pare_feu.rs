@@ -10,7 +10,8 @@ use std::net::IpAddr;
 use windows::Win32::Foundation::VARIANT_TRUE;
 use windows::Win32::NetworkManagement::WindowsFirewall::{
     INetFwPolicy2, INetFwRule, INetFwRules, NET_FW_ACTION_BLOCK, NET_FW_IP_PROTOCOL_ANY, NET_FW_IP_PROTOCOL_TCP,
-    NET_FW_PROFILE2_ALL, NET_FW_RULE_DIR_IN, NET_FW_RULE_DIR_OUT, NET_FW_RULE_DIRECTION, NetFwPolicy2, NetFwRule,
+    NET_FW_PROFILE_TYPE2, NET_FW_PROFILE2_ALL, NET_FW_RULE_DIR_IN, NET_FW_RULE_DIR_OUT, NET_FW_RULE_DIRECTION,
+    NetFwPolicy2, NetFwRule,
 };
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::core::BSTR;
@@ -37,11 +38,24 @@ struct Voulue {
     port: Option<u16>,
 }
 
-fn regles() -> windows::core::Result<INetFwRules> {
+fn politique() -> windows::core::Result<INetFwPolicy2> {
     // SAFETY : COM est initialisé dans ce fil (`wmi::com_delai`) ; NetFwPolicy2 est la classe de la politique.
-    let politique: INetFwPolicy2 = unsafe { CoCreateInstance(&NetFwPolicy2, None, CLSCTX_INPROC_SERVER) }?;
-    // SAFETY : objet COM valide.
-    unsafe { politique.Rules() }
+    unsafe { CoCreateInstance(&NetFwPolicy2, None, CLSCTX_INPROC_SERVER) }
+}
+
+/// Le Pare-feu Windows est-il en marche pour chaque profil actif (domaine, privé, public) ? Coupé, une règle posée
+/// ne bloquerait rien : ce serait un faux « bloqué ».
+fn en_marche(p: &INetFwPolicy2) -> bool {
+    // SAFETY : objet COM valide ; chaque lecture rend une copie.
+    unsafe {
+        let Ok(actifs) = p.CurrentProfileTypes() else {
+            return false;
+        };
+        [1, 2, 4].into_iter().filter(|bit| actifs & bit != 0).all(|bit| {
+            p.get_FirewallEnabled(NET_FW_PROFILE_TYPE2(bit))
+                .is_ok_and(|e| e == VARIANT_TRUE)
+        }) && actifs & 7 != 0
+    }
 }
 
 /// La règle de ce nom, si elle existe.
@@ -58,14 +72,23 @@ fn conforme(regle: &INetFwRule, v: &Voulue) -> bool {
         let bloque = regle.Action().is_ok_and(|a| a == NET_FW_ACTION_BLOCK);
         let active = regle.Enabled().is_ok_and(|e| e == VARIANT_TRUE);
         let sens = regle.Direction().is_ok_and(|d| d == v.sens);
-        let vise = match (v.adresse, v.port) {
-            (Some(ip), _) => regle.RemoteAddresses().is_ok_and(|a| adresse_visee(&a.to_string(), ip)),
-            (None, Some(p)) => {
-                regle.Protocol().is_ok_and(|x| x == NET_FW_IP_PROTOCOL_TCP.0)
-                    && regle.LocalPorts().is_ok_and(|l| l == p.to_string().as_str())
-            }
-            (None, None) => false,
-        };
+        // Partout : tous les profils, aucune restriction d'adresse locale ni de port distant.
+        let tout = |b: windows::core::Result<BSTR>| b.is_ok_and(|b| b == "*" || b.is_empty());
+        let partout = regle.Profiles().is_ok_and(|p| p == NET_FW_PROFILE2_ALL.0)
+            && tout(regle.LocalAddresses())
+            && tout(regle.RemotePorts());
+        let vise = partout
+            && match (v.adresse, v.port) {
+                (Some(ip), _) => {
+                    regle.Protocol().is_ok_and(|x| x == NET_FW_IP_PROTOCOL_ANY.0)
+                        && regle.RemoteAddresses().is_ok_and(|a| adresse_visee(&a.to_string(), ip))
+                }
+                (None, Some(p)) => {
+                    regle.Protocol().is_ok_and(|x| x == NET_FW_IP_PROTOCOL_TCP.0)
+                        && regle.LocalPorts().is_ok_and(|l| l == p.to_string().as_str())
+                }
+                (None, None) => false,
+            };
         bloque && active && sens && vise
     }
 }
@@ -127,21 +150,27 @@ fn retirer_toutes(r: &INetFwRules, nom: &str) -> windows::core::Result<usize> {
 }
 
 /// Dans un fil COM à part, avec un délai : le Pare-feu Windows qui ne répond pas ne fige pas le processus élevé.
-fn dans_com(geste: impl FnOnce(&INetFwRules) -> Resultat + Send + 'static) -> Resultat {
+fn dans_com(geste: impl FnOnce(&INetFwPolicy2, &INetFwRules) -> Resultat + Send + 'static) -> Resultat {
     let r = super::wmi::com_delai(
         "Pare-feu Windows",
         "INetFwPolicy2",
         std::time::Duration::from_secs(60),
         move || {
             // Une erreur de COM se dit en texte ici, dans son appartement (voir `wmi::dans_un_fil`).
-            Ok(match regles() {
-                Ok(r) => geste(&r),
-                Err(e) => Resultat::echec(trf!(
-                    "Pare-feu Windows injoignable : {}",
-                    "Windows Firewall unreachable: {}",
-                    e.message()
-                )),
-            })
+            Ok(
+                match politique().and_then(|p| {
+                    // SAFETY : objet COM valide.
+                    let r = unsafe { p.Rules() }?;
+                    Ok((p, r))
+                }) {
+                    Ok((p, r)) => geste(&p, &r),
+                    Err(e) => Resultat::echec(trf!(
+                        "Pare-feu Windows injoignable : {}",
+                        "Windows Firewall unreachable: {}",
+                        e.message()
+                    )),
+                },
+            )
         },
     );
     r.unwrap_or_else(|| {
@@ -153,7 +182,13 @@ fn dans_com(geste: impl FnOnce(&INetFwRules) -> Resultat + Send + 'static) -> Re
 }
 
 fn poser(v: Voulue) -> Resultat {
-    dans_com(move |r| {
+    dans_com(move |p, r| {
+        if !en_marche(p) {
+            return Resultat::echec(tr!(
+                "le Pare-feu Windows est coupé pour le réseau actif : une règle n'y bloquerait rien, aucune n'est posée",
+                "the Windows Firewall is off for the active network: a rule would block nothing there, none is added"
+            ));
+        }
         if let Some(existante) = trouver(r, &v.nom) {
             if conforme(&existante, &v) {
                 return Resultat::ok_note(tr!("règle déjà en place", "rule already in place"));
@@ -171,16 +206,20 @@ fn poser(v: Voulue) -> Resultat {
         }
         match trouver(r, &v.nom) {
             Some(relue) if conforme(&relue, &v) => Resultat::ok(),
-            _ => Resultat::echec(tr!(
-                "la règle relue n'est pas celle posée : rien n'est compté comme bloqué",
-                "the rule read back is not the one added: nothing is counted as blocked"
-            )),
+            _ => {
+                // Comptée en échec, donc sans note pour l'annuler : retirée aussitôt.
+                let _ = retirer_toutes(r, &v.nom);
+                Resultat::echec(tr!(
+                    "la règle relue n'est pas celle posée : rien n'est compté comme bloqué",
+                    "the rule read back is not the one added: nothing is counted as blocked"
+                ))
+            }
         }
     })
 }
 
 fn enlever(nom: String) -> Resultat {
-    dans_com(move |r| match retirer_toutes(r, &nom) {
+    dans_com(move |_, r| match retirer_toutes(r, &nom) {
         Ok(_) if trouver(r, &nom).is_some() => Resultat::echec(tr!(
             "la règle est toujours là après son retrait",
             "the rule is still there after its removal"
