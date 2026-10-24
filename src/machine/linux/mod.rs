@@ -13,6 +13,7 @@ use crate::risk::{Niveau, info_port};
 use crate::{tr, trf, trw};
 
 mod algorithmes_ssh;
+pub(crate) mod cache_pacman;
 pub(crate) mod connexions;
 mod croisees;
 pub(crate) mod dbus;

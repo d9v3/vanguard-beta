@@ -180,11 +180,16 @@ fn paquets_telecharges(gestion: Paquets) -> Element {
     let (taille, commandes): (Option<u64>, Vec<&str>) = match gestion {
         // paccache garde les deux dernières versions de chaque paquet (de quoi revenir en arrière) ; sa simulation dit
         // exactement ce qu'il libère, sans droits.
+        // La place est calculée dans le cache lui-même (crate::machine::linux::cache_pacman), sans compter deux fois
+        // les vieilles versions d'un paquet désinstallé ; les simulations de paccache en secours.
         Paquets::Pacman if present("paccache") => (
-            Some(
-                lire_paccache(&sortie("paccache", &["-dk2"]).unwrap_or_default())
-                    .saturating_add(lire_paccache(&sortie("paccache", &["-duk0"]).unwrap_or_default())),
-            ),
+            Some(crate::machine::linux::cache_pacman::recuperable().map_or_else(
+                || {
+                    lire_paccache(&sortie("paccache", &["-dk2"]).unwrap_or_default())
+                        .saturating_add(lire_paccache(&sortie("paccache", &["-duk0"]).unwrap_or_default()))
+                },
+                |(anciennes, desinstalles)| anciennes.saturating_add(desinstalles),
+            )),
             vec!["sudo paccache -rk2", "sudo paccache -ruk0"],
         ),
         Paquets::Pacman => (None, vec!["sudo pacman -Sc --noconfirm"]),
