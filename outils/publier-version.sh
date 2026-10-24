@@ -220,41 +220,63 @@ printf '%s\n' "$NOTES" | python3 outils/confidentialite.py --texte || { echo "No
 printf '%s\n' "$NOTES" | python3 outils/liens.py --texte || { echo "Liens des notes : rien de publié."; exit 1; }
 python3 outils/confidentialite.py --binaire "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" \
   "$DOSSIER/vanguard-macos" || { echo "Programmes : rien de publié."; exit 1; }
+# Les mêmes programmes, avec leur manifeste signé (outils/signer-versions.sh), dans le dépôt public des versions : la
+# mise à jour depuis GitHub les y prend (src/mise_a_jour/github.rs), le code restant privé. Seule la dernière y reste.
+# Signés AVANT la création de toute page : un contrôle de signer-versions.sh qui refuse (forme d'un programme,
+# version, historique d'avant douteux, point sûr) n'arrête plus rien après coup, une page publique déjà en ligne et
+# une relance qui disait « déjà publiée ».
+DEPOT_VERSIONS=d9v3/vanguard-update
+SIGNEE=""
+if ! gh repo view "$DEPOT_VERSIONS" >/dev/null 2>&1; then
+  echo "Dépôt public des versions absent ($DEPOT_VERSIONS, outils/depot-versions.sh) : mise à jour depuis GitHub non publiée."
+else
+  mkdir -p "$DOSSIER/avant"
+  # L'historique signé de la version d'avant (ou, la première fois, son manifeste signé) : signer-versions.sh le
+  # revérifie (et le compare au point sûr, le dernier historique publié d'ici), y ajoute cette version et le signe ;
+  # publié avec elle, il permet de vérifier une copie qui n'est pas la dernière, une fois les pages d'avant retirées.
+  # Un téléchargement raté (réseau, limite de l'API, jeton expiré) n'est permis que si le dépôt n'a encore aucune
+  # version : sinon l'historique repartirait de zéro, et la boucle plus bas effacerait les pages d'avant. API muette :
+  # sortie vide, pas « 0 », donc rien de publié.
+  PREMIER=()
+  if ! gh release download -R "$DEPOT_VERSIONS" -D "$DOSSIER/avant" -p 'historique.txt*' -p 'derniere.txt*' \
+    >/dev/null 2>&1; then
+    [[ $(gh api "repos/$DEPOT_VERSIONS/releases?per_page=1" --jq length 2>/dev/null) == 0 ]] && PREMIER=(--premier)
+  fi
+  outils/signer-versions.sh "${PREMIER[@]}" "$DOSSIER" ||
+    { echo "✖ Signature refusée (voir ci-dessus) : rien de publié, ni page ni mise à jour."; exit 1; }
+  SIGNEE=1
+fi
 gh release create "$TAG" --target "$COMMIT" --title "$NOM $VERSION" --notes "$NOTES" \
   "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-macos" "$DOSSIER/SHA256SUMS.txt"
 echo "Version $TAG publiée : $(gh release view "$TAG" --json url -q .url)"
-# Les mêmes programmes, avec leur manifeste signé (outils/signer-versions.sh), dans le dépôt public des versions : la
-# mise à jour depuis GitHub les y prend (src/mise_a_jour/github.rs), le code restant privé. Seule la dernière y reste.
-DEPOT_VERSIONS=d9v3/vanguard-update
-if ! gh repo view "$DEPOT_VERSIONS" >/dev/null 2>&1; then
-  echo "Dépôt public des versions absent ($DEPOT_VERSIONS, outils/depot-versions.sh) : mise à jour depuis GitHub non publiée."
-elif mkdir -p "$DOSSIER/avant" &&
-  # L'historique signé de la version d'avant (ou, la première fois, son manifeste signé) : signer-versions.sh le
-  # revérifie, y ajoute cette version et le signe ; publié avec elle, il permet de vérifier une copie qui n'est pas
-  # la dernière, une fois les pages d'avant retirées. Un téléchargement raté (réseau, limite de l'API, jeton
-  # expiré) n'est permis que si le dépôt n'a encore aucune version : sinon l'historique repartirait de zéro, et la
-  # boucle plus bas effacerait les pages d'avant. API muette : sortie vide, pas « 0 », donc rien de publié.
-  PREMIER=() &&
-  { gh release download -R "$DEPOT_VERSIONS" -D "$DOSSIER/avant" -p 'historique.txt*' -p 'derniere.txt*' \
-    >/dev/null 2>&1 ||
-    { [[ $(gh api "repos/$DEPOT_VERSIONS/releases?per_page=1" --jq length 2>/dev/null) == 0 ]] && PREMIER=(--premier); }; } &&
-  outils/signer-versions.sh "${PREMIER[@]}" "$DOSSIER" &&
-  gh release create "$TAG" -R "$DEPOT_VERSIONS" --title "$NOM $VERSION" --notes "$NOTES" \
-    "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-macos" \
-    "$DOSSIER/SHA256SUMS.txt" "$DOSSIER/derniere.txt" "$DOSSIER/derniere.txt.sig" \
-    "$DOSSIER/historique.txt" "$DOSSIER/historique.txt.sig"; then
+PUBLIEE_SIGNEE=""
+if [[ -n $SIGNEE ]] && gh release create "$TAG" -R "$DEPOT_VERSIONS" --title "$NOM $VERSION" --notes "$NOTES" \
+  "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-macos" \
+  "$DOSSIER/SHA256SUMS.txt" "$DOSSIER/derniere.txt" "$DOSSIER/derniere.txt.sig" \
+  "$DOSSIER/historique.txt" "$DOSSIER/historique.txt.sig"; then
   echo "Version $TAG signée dans $DEPOT_VERSIONS : les Vanguard sans clé la proposeront."
+  PUBLIEE_SIGNEE=1
+  # Le point sûr (outils/signer-versions.sh) : le dernier historique en ligne, signé, gardé ici hors du dépôt des
+  # versions ; la signature suivante s'y comparera.
+  POINT_SUR=${VANGUARD_HISTORIQUE_PUBLIE:-${XDG_STATE_HOME:-$HOME/.local/state}/vanguard-dev/historique-publie.txt}
+  mkdir -p "$(dirname "$POINT_SUR")" && cp "$DOSSIER/historique.txt" "$POINT_SUR.nouveau" &&
+    cp "$DOSSIER/historique.txt.sig" "$POINT_SUR.sig.nouveau" && mv -f "$POINT_SUR.sig.nouveau" "$POINT_SUR.sig" &&
+    mv -f "$POINT_SUR.nouveau" "$POINT_SUR" || echo "⚠ Point sûr de l'historique pas gardé ($POINT_SUR)."
   for ancienne in $(gh release list -R "$DEPOT_VERSIONS" --limit 500 --json tagName -q '.[].tagName' | grep -vxF "$TAG"); do
     gh release delete "$ancienne" -R "$DEPOT_VERSIONS" --yes --cleanup-tag >/dev/null
   done
-else
-  echo "✖ Version non publiée dans $DEPOT_VERSIONS : relancer outils/signer-versions.sh puis gh release create à la main."
+elif [[ -n $SIGNEE ]]; then
+  echo "✖ Version non publiée dans $DEPOT_VERSIONS : relancer gh release create à la main (DOSSIER gardé : $DOSSIER)."
+  trap - EXIT
 fi
 # Seule la dernière version a sa page : CHANGELOG.md garde ce que chacune a apporté. Les pages d'avant sont retirées,
-# leurs étiquettes restent dans le dépôt (sans --cleanup-tag), pour recompiler une ancienne version au besoin.
-for ancienne in $(gh release list --limit 500 --json tagName -q '.[].tagName' | grep -vxF "$TAG"); do
-  gh release delete "$ancienne" --yes >/dev/null && echo "Page de $ancienne retirée (son étiquette reste)."
-done
+# leurs étiquettes restent dans le dépôt (sans --cleanup-tag), pour recompiler une ancienne version au besoin. Pas
+# tant que la mise à jour signée n'est pas en ligne : la page d'avant reste celle qu'on peut vérifier.
+if [[ -z $SIGNEE || -n $PUBLIEE_SIGNEE ]]; then
+  for ancienne in $(gh release list --limit 500 --json tagName -q '.[].tagName' | grep -vxF "$TAG"); do
+    gh release delete "$ancienne" --yes >/dev/null && echo "Page de $ancienne retirée (son étiquette reste)."
+  done
+fi
 command -v notify-send >/dev/null &&
   notify-send -a Vanguard -i vanguard "$NOM $VERSION publiée sur GitHub" "Page de la version : les trois programmes et leurs empreintes." || true
 

@@ -21,6 +21,18 @@
 #                                                 Jamais dans l'historique, que github.rs lit ligne par programme.
 #   outils/signer-versions.sh --premier DOSSIER   sans rien d'avant : l'historique commence à cette version (la
 #                                                 toute première publication seulement ; sinon, refusé)
+#   outils/signer-versions.sh --point-sur FICHIER …   le point sûr (voir plus bas) pris dans FICHIER (et FICHIER.sig)
+# LE POINT SÛR : le dernier historique que cet ordinateur a publié, gardé ici par outils/publier-version.sh une fois la
+# version en ligne (~/.local/state/vanguard-dev/historique-publie.txt et .sig ; VANGUARD_HISTORIQUE_PUBLIE pour un
+# autre), signé par une clé gravée. Ce qui est téléchargé de vanguard-update s'y compare : la clé principale volée et le
+# dépôt des versions pris suffiraient sinon à faire contresigner par la clé de secours un bloc forgé (campagne
+# d'attaque n° 3), ou à tronquer l'historique en le retirant. Ainsi :
+#   - clé principale : l'historique d'avant doit contenir tout le point sûr, et rien qu'il n'ait (une version que cet
+#     ordinateur n'a pas publiée, c'est la principale entre d'autres mains) ; sinon refusé ;
+#   - clé de secours : un historique d'avant signé par la principale n'est jamais repris au-delà du point sûr : ses
+#     blocs sont ceux du point sûr, les autres écartés et nommés ; sans point sûr, refusé (--point-sur une copie
+#     gardée ailleurs, une sauvegarde) ; signé par le secours lui-même, il est repris ;
+#   - avec un point sûr, ni le repli sur derniere.txt ni --premier : l'historique publié a disparu, il ne repart pas.
 #   outils/signer-versions.sh --cle [--secours]   la clé publique, sous la forme que github.rs grave
 # La clé privée ne quitte jamais cet ordinateur : ni GitHub, ni la clé USB. Chiffrée (« BEGIN ENCRYPTED PRIVATE KEY »,
 # voir la commande de chiffrement donnée à l'auteur), sa phrase est demandée une fois par signature, dans le terminal
@@ -31,14 +43,17 @@ cd "$(dirname "$0")/.."
 SECOURS=
 PREMIER=
 REVOQUER=
+POINT_SUR=${VANGUARD_HISTORIQUE_PUBLIE:-${XDG_STATE_HOME:-$HOME/.local/state}/vanguard-dev/historique-publie.txt}
 ARGS=()
-for a in "$@"; do
-  case $a in
+while (($#)); do
+  case $1 in
     --secours) SECOURS=1 ;;
     --premier) PREMIER=1 ;;
     --revoquer) REVOQUER=1 ;;
-    *) ARGS+=("$a") ;;
+    --point-sur) POINT_SUR=${2:?--point-sur FICHIER}; shift ;;
+    *) ARGS+=("$1") ;;
   esac
+  shift
 done
 set -- "${ARGS[@]+"${ARGS[@]}"}"
 
@@ -191,15 +206,17 @@ pem_de_gravee() {
   printf '%b' "$(printf '302a300506032b6570032100%s' "$octets" | sed 's/../\\x&/g')" | base64
   echo "-----END PUBLIC KEY-----"
 }
-# Un fichier d'avant signé par l'une des deux clés gravées, avec ce domaine-là.
+# La clé gravée qui a signé un fichier d'avant avec ce domaine-là (CLE_PUBLIQUE ou CLE_SECOURS), ou code 1.
 signe_par_une_gravee() { # $1 : fichier, $2 : domaine
   local message_avant cle gravee code=1
+  [[ -f $1.sig ]] || return 1
   message_avant=$(mktemp "$D/.avant.XXXX")
   cle=$(mktemp "$D/.gravee.XXXX")
   { printf '%s\n' "$2"; cat "$1"; } >"$message_avant"
   for gravee in CLE_PUBLIQUE CLE_SECOURS; do
     pem_de_gravee "$gravee" >"$cle" 2>/dev/null || continue
     if openssl pkeyutl -verify -pubin -inkey "$cle" -rawin -in "$message_avant" -sigfile "$1.sig" >/dev/null 2>&1; then
+      echo "$gravee"
       code=0
       break
     fi
@@ -208,22 +225,70 @@ signe_par_une_gravee() { # $1 : fichier, $2 : domaine
   return "$code"
 }
 
-# Les blocs d'avant, sans celui de cette version-ci (une signature refaite ne la compte pas deux fois).
+# Les blocs d'un historique ou d'un manifeste, un par ligne (ses lignes jointes par « | »), sans celui de cette
+# version-ci (une signature refaite ne la compte pas deux fois) ni la ligne de révocation ; dans leur ordre.
+blocs() { # fichier
+  awk -v ici="version $version" '
+    function sortir() { if (b != "" && garder) print b; b = "" }
+    /^version / { sortir(); b = $0; garder = ($0 != ici); next }
+    /^revoque / { next }
+    { if (b != "") b = b "|" $0 }
+    END { sortir() }' "$1"
+}
+# Les blocs de $1 absents de $2 (listes de blocs), dans l'ordre de $1.
+absents() { grep -vxF -f <(printf '%s\n' "$2") <<<"$1" || true; }
+versions_de() { cut -d'|' -f1 <<<"$1" | sed 's/^version //' | paste -sd' '; }
+
+# Le point sûr (en-tête) : signé par une clé gravée, sinon rien ne se signe sur une référence douteuse.
+POINT=""
+if [[ -f $POINT_SUR ]]; then
+  signe_par_une_gravee "$POINT_SUR" "$DOMAINE_HISTORIQUE" >/dev/null ||
+    erreur "point sûr mal signé ($POINT_SUR) : rien n'est signé sur une référence douteuse"
+  POINT=$(blocs "$POINT_SUR")
+fi
+
 AVANT=$D/avant
 anciens=""
 if [[ -f $AVANT/historique.txt ]]; then
-  [[ -f $AVANT/historique.txt.sig ]] && signe_par_une_gravee "$AVANT/historique.txt" "$DOMAINE_HISTORIQUE" ||
+  signee_par=$(signe_par_une_gravee "$AVANT/historique.txt" "$DOMAINE_HISTORIQUE") ||
     erreur "historique d'avant mal signé ($AVANT/historique.txt) : rien n'est ajouté à un historique douteux"
-  anciens=$(awk -v ici="version $version" '/^version / { garder = ($0 != ici) } garder' "$AVANT/historique.txt")
+  avant=$(blocs "$AVANT/historique.txt")
+  if [[ -n $SECOURS && $signee_par == CLE_PUBLIQUE ]]; then
+    # La principale est peut-être entre d'autres mains : rien de ce qu'elle a signé après le point sûr.
+    [[ -f $POINT_SUR ]] || erreur "historique d'avant signé par la clé principale, et pas de point sûr ($POINT_SUR) : \
+la clé de secours ne contresigne pas ce que la principale, peut-être volée, a pu y ajouter. --point-sur FICHIER : un \
+historique publié gardé ailleurs (sauvegarde)."
+    ecartes=$(absents "$avant" "$POINT")
+    [[ -z $ecartes ]] || echo "⚠ Écartées de l'historique (signées par la clé principale après le point sûr) : \
+$(versions_de "$ecartes")."
+    anciens=$POINT
+  else
+    if [[ -n $POINT && -z $SECOURS ]]; then
+      manquants=$(absents "$POINT" "$avant")
+      en_plus=$(absents "$avant" "$POINT")
+      [[ -z $manquants ]] || erreur "l'historique publié n'a plus des versions que cet ordinateur avait publiées \
+($(versions_de "$manquants")) : tronqué ou réécrit, rien n'est signé"
+      [[ -z $en_plus ]] || erreur "l'historique publié a des versions que cet ordinateur n'a pas publiées \
+($(versions_de "$en_plus")) : la clé principale est peut-être entre d'autres mains (--secours --revoquer). Publiées \
+par vous ailleurs : --point-sur $AVANT/historique.txt"
+    fi
+    anciens=$avant
+  fi
+elif [[ -n $POINT ]]; then
+  # Cet ordinateur a déjà publié un historique : qu'il manque en ligne n'est pas une première fois.
+  erreur "pas d'historique d'avant dans $AVANT, alors que cet ordinateur en a publié un ($POINT_SUR) : retiré du \
+dépôt des versions ? Rien n'est signé (l'historique ne repart pas de zéro)"
 elif [[ -f $AVANT/derniere.txt ]]; then
-  [[ -f $AVANT/derniere.txt.sig ]] && signe_par_une_gravee "$AVANT/derniere.txt" "$DOMAINE" ||
+  signee_par=$(signe_par_une_gravee "$AVANT/derniere.txt" "$DOMAINE") ||
     erreur "manifeste d'avant mal signé ($AVANT/derniere.txt) : il n'entre pas dans l'historique"
-  anciens=$(awk -v ici="version $version" '/^version / { garder = ($0 != ici) } /^revoque / { next } garder' \
-    "$AVANT/derniere.txt")
+  [[ -z $SECOURS || $signee_par == CLE_SECOURS ]] || erreur "manifeste d'avant signé par la clé principale, sans \
+point sûr ($POINT_SUR) : la clé de secours ne le contresigne pas (--point-sur FICHIER)"
+  anciens=$(blocs "$AVANT/derniere.txt")
   echo "Historique commencé à partir du manifeste signé de la version d'avant."
 else
   echo "Pas d'historique d'avant : il commence à cette version."
 fi
+anciens=$(tr '|' '\n' <<<"$anciens")
 {
   grep -v '^revoque ' "$D/derniere.txt"
   [[ -z $anciens ]] || printf '%s\n' "$anciens"
