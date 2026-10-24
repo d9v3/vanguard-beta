@@ -3,7 +3,7 @@
 # 1, 1260), PowerShell introuvable, SystemRoot vide ou relatif, et des programmes posés à la racine de la clé, qui ne
 # doivent jamais être lancés. Le faux powershell.exe (compilé ici par le gcc de MinGW) note chaque appel et sort avec
 # le code voulu, sans rien lancer. Lancé par outils/verifier.sh à la fin des tests Windows, dans leur préfixe Wine
-# jetable (WINEPREFIX) ; seul, il en crée un. Code 77 (sauté) sans Wine ou sans MinGW. Ce que fait le vrai Windows
+# jetable (VANGUARD_PREFIXE_LANCEUR) ; seul, il en crée un. Code 77 (sauté) sans Wine ou sans MinGW. Ce que fait le vrai Windows
 # (Start-Process, Defender, cmd 32 bits, l'empreinte : le findstr de Wine ignore /v) n'est vu que dans la VM (test.ps1).
 #   outils/essais-lanceur.sh
 set -uo pipefail
@@ -16,8 +16,15 @@ command -v x86_64-w64-mingw32-gcc >/dev/null || { echo "x86_64-w64-mingw32-gcc a
 # Hors de /tmp (quota partagé) ; un banc resté là (essais tués) part au ménage de la semaine (outils/menage-dev.sh).
 mkdir -p "$HOME/.cache/vanguard-dev"
 T=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-lanceur.XXXX") || exit 1
+# Le préfixe donné par verifier.sh (VANGUARD_PREFIXE_LANCEUR), seulement s'il est un banc jetable de vanguard-dev :
+# son powershell.exe y est remplacé puis retiré. Jamais le WINEPREFIX hérité (un préfixe de jeu, ~/.wine).
 PROPRE=
-if [[ -z ${WINEPREFIX:-} ]]; then
+P=${VANGUARD_PREFIXE_LANCEUR:-}
+if [[ -n $P ]]; then
+  P=$(realpath -e -- "$P") && [[ $P == "$(realpath -e -- "$HOME/.cache/vanguard-dev")"/verifier.*/wine.* ]] ||
+    { echo "VANGUARD_PREFIXE_LANCEUR refusé (pas un préfixe jetable de verifier.sh) : ${VANGUARD_PREFIXE_LANCEUR}"; exit 1; }
+  export WINEPREFIX=$P
+else
   export WINEPREFIX=$T/prefixe
   PROPRE=1
 fi
@@ -112,6 +119,8 @@ voir "rien de la racine de la clé lancé (powershell.exe, chcp.com, System32 re
 lancer 3
 voir "code 3 (Start-Process refusé) : Defender expliqué, empreinte dite illisible, code 1" \
   eval '((code == 1)) && dit "$DEFENDER" && dit "Checksum unreadable" && pas_dit "$SANS_PS" && [[ $(appels racine) == 0 ]]'
+# Wine n'a pas de choice.exe : comme un choice absent ou bloqué, la fenêtre attend une touche avant de se fermer.
+voir "choice.exe absent : la pause quand même (l'explication reste à l'écran)" dit "Press any key"
 for c in 1 1260; do
   lancer "$c"
   voir "code $c (PowerShell bloqué) : dit sans accuser Defender, code 1" \

@@ -172,7 +172,9 @@ preparer_programme() {
 # programme Linux de ce dépôt-ci (src/pe.rs), qui sait le faire même si la branche essayée est d'avant. Aucune
 # exception, même pour les essais : ils déposent un vrai petit PE qui porte ses gardes.
 verifier_pe() {
-  (cd "$DEPOT" && env -u CARGO_TARGET_DIR cargo run -q --target x86_64-unknown-linux-musl -- deploiement verifier-pe "$1") ||
+  (cd "$DEPOT" && env -u CARGO_TARGET_DIR cargo build -q --target x86_64-unknown-linux-musl) ||
+    { echo "Vanguard pour Linux pas compilé dans $DEPOT : $1 pas vérifié, rien déposé." >&2; exit 1; }
+  "$DEPOT/target/x86_64-unknown-linux-musl/debug/vanguard" deploiement verifier-pe "$1" ||
     { echo "Programme refusé par « vanguard deploiement verifier-pe » : rien déposé ($1)." >&2; exit 1; }
 }
 

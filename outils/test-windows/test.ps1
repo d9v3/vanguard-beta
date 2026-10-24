@@ -1255,6 +1255,15 @@ if (Test-Path -LiteralPath $lanceur) {
     if ($sortieLanceur -match 'Windows could not start Vanguard') { Ok 'Refus expliqué (PowerShell de System32, pas celui de la clé)' } else { Bug 'Refus PAS expliqué (le powershell.exe de la clé lancé ?)' }
     if ($sortieLanceur -match 'Checksum unreadable') { Ok 'Empreinte dite illisible, programme absent' } else { Bug 'Empreinte : rien dit pour un programme absent' }
     if ($codeLanceur -eq 1) { Ok 'Code 1 quand Vanguard ne démarre pas' } else { Bug "Code $codeLanceur au lieu de 1" }
+    # Un Windows\vanguard.exe qui n'est pas un programme : Start-Process le refuse (code 3), et l'empreinte montrée doit
+    # être la sienne (certutil et findstr de System32, lancés par for /f) ; illisible, elle ressemblerait au cas absent.
+    $fauxExe = Join-Path (New-Item -ItemType Directory -Force -Path (Join-Path $essai 'Windows')).FullName 'vanguard.exe'
+    Set-Content -LiteralPath $fauxExe -Value 'pas un programme' -Encoding ASCII
+    $empreinteAttendue = (Get-FileHash -LiteralPath $fauxExe -Algorithm SHA256).Hash
+    $sortieEmpreinte = 'N' | cmd /c "pushd `"$essai`" && call `"$(Join-Path $essai 'Lancer Vanguard.bat')`"" 2>&1 | Out-String
+    Set-Content -Path (Join-Path $res 'lanceur-empreinte.out.txt') -Value $sortieEmpreinte -Encoding UTF8
+    if ($sortieEmpreinte -match 'Windows could not start Vanguard' -and $sortieEmpreinte -match "SHA-256 : $empreinteAttendue") { Ok 'Empreinte du programme refusé montrée, la bonne' } else { Bug 'Empreinte du programme refusé absente ou fausse' }
+    Remove-Item -LiteralPath $fauxExe -Force
     # PowerShell introuvable : le lanceur le prend dans System32 par son chemin complet, donc SystemRoot et windir
     # pointés sur un dossier sans System32, comme un poste où il est retiré (le lanceur cherché à côté du .bat d'essai,
     # pas dans le dossier courant de PowerShell). Un autre message, jamais celui de Defender, qui ferait chercher une

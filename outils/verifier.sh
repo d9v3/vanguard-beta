@@ -116,7 +116,7 @@ tests_wine() {
   resultat=$?
   # Le lanceur de la clé dans le même préfixe, déjà prêt (son faux powershell.exe y remplace celui de Wine).
   local lanceur
-  WINEPREFIX=$prefixe VANGUARD_WINE=$WINE bash outils/essais-lanceur.sh
+  VANGUARD_PREFIXE_LANCEUR=$prefixe VANGUARD_WINE=$WINE bash outils/essais-lanceur.sh
   lanceur=$?
   ((lanceur == SAUTEE)) && echo "⚠ essais du lanceur de la clé sautés (voir la ligne plus haut)"
   ((lanceur == 0 || lanceur == SAUTEE)) || resultat=1

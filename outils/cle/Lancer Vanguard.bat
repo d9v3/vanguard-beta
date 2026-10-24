@@ -50,7 +50,11 @@ set "EMPREINTE="
 for /f "delims=" %%l in ('call "%SYS%\certutil.exe" -hashfile "%VANGUARD%" SHA256 2^>nul ^| "%SYS%\findstr.exe" /v ":"') do if not defined EMPREINTE set "EMPREINTE=%%l"
 if defined EMPREINTE (echo   SHA-256 : %EMPREINTE%) else (echo   Empreinte illisible : programme absent ou verrouillé. / Checksum unreadable: program missing or locked.)
 echo.
+rem Sans choice.exe, la fenetre se fermerait aussitot : l'explication reste lisible jusqu'a une touche.
+if not exist "%SYS%\choice.exe" (pause & exit /b 1)
 "%SYS%\choice.exe" /c OYN /n /m "  Ouvrir Sécurité Windows ? / Open Windows Security? [O/Y = oui/yes, N = non/no] "
+rem 1 a 3 : la reponse ; au-dela, choice a echoue (bloque) : la pause, pour la meme raison.
+if errorlevel 4 (pause & exit /b 1)
 if errorlevel 3 exit /b 1
 start "" "windowsdefender://threat"
 echo.
