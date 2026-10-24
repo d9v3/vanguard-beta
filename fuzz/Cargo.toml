@@ -160,3 +160,17 @@ path = "fuzz_targets/evenement_xml.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "yara_regles"
+path = "fuzz_targets/yara_regles.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "yara_recherche"
+path = "fuzz_targets/yara_recherche.rs"
+test = false
+doc = false
+bench = false

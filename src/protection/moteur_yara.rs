@@ -121,7 +121,7 @@ impl Regles {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, fuzzing))]
     pub(crate) fn avec_bloc(mut self, bloc: usize) -> Regles {
         self.bloc = bloc;
         self
