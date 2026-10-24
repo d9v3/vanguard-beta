@@ -152,7 +152,11 @@ delivered just before it. Only the latest version has its download page; every v
   shape serves both files and the running Windows, with refusals stated (security log without administrator rights,
   missing or unreadable log) instead of silence. Event numbers reveal removed events (partial wipe), without taking a
   rotating log, a damaged chunk or a copy made while writing for a wipe; a damaged chunk is read anyway, its events
-  marked unverified. The rules that judge these events come next (in place of Hayabusa, an external program).
+  marked unverified. Eleven in-house rules (EVT-), written from Microsoft's documentation and ATT&CK, judge these
+  events: cleared traces and removed records, attack service, extra administrator, guessed password, Remote Desktop
+  from the Internet or through a tunnel, other credentials, malicious PowerShell, disarmed Defender, BITS, WMI
+  persistence, reduced audit policy. A missing, refused, empty, silent, damaged or unaudited log makes the rule "not
+  verified", never "nothing seen". The command and the timeline come next.
 - **Windows, two fixes seen on a real Windows.** Wi-Fi on a computer without a Wi-Fi card (desktop, virtual machine) is "not applicable" instead of "not checked" when the WLAN service is stopped. The list of programs to update goes back through PowerShell when winget, run directly, answers with an error and no table: it said "not checked" in a virtual machine.
 - **Dependency security.** crypto-bigint 0.7.6 (advisory RUSTSEC-2026-0387: computations meant to always take the same time did not), brought in by YARA-X.
 - **Continuous checks back to green.** The Windows program reserves 8 MiB of stack (1 MiB by default with MSVC: the debug build overflowed at startup); journal issues no longer go through Claude on GitHub; nightly fuzzing finally runs (cargo-fuzz installed separately, checksum verified); the reproducible build checks the DLL guard with a recent enough linker.
