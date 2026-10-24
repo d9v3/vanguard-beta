@@ -152,7 +152,7 @@ pub(crate) fn chronologie(a: &Analyse, est_normale: &dyn Fn(&str) -> bool) -> Ch
     for j in &a.jugements {
         let r = j.regle;
         for t in &j.trouvailles {
-            if t.gravite < Gravite::Critique && est_normale(&resultat::cle_normale(r.id, &t.objet)) {
+            if resultat::taisable(r.id, t) && est_normale(&resultat::cle_normale(r.id, &t.objet)) {
                 c.tues += 1;
                 continue;
             }

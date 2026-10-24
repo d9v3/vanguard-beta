@@ -382,6 +382,14 @@ pub(crate) fn cle_normale(regle: &str, objet: &str) -> String {
     format!("evenements|{regle}|{objet}")
 }
 
+/// Une trouvaille qu'une alerte déclarée normale peut taire. Jamais une critique ; jamais non plus le regroupement
+/// des blocs que PowerShell juge suspects sans motif reconnu (`jeu::bloc_de_script`) : une seule clé pour tous, la
+/// déclarer normale tairait aussi les blocs à venir, d'une attaque que les motifs ne reconnaissent pas. Il ne fait
+/// qu'une ligne d'information.
+pub(crate) fn taisable(regle: &str, t: &Trouvaille) -> bool {
+    t.gravite < Gravite::Critique && !(regle == "EVT-PSH-001" && t.objet.starts_with("avertissement|"))
+}
+
 pub(crate) fn niveau(g: Gravite) -> Niveau {
     match g {
         Gravite::Info => Niveau::Info,
@@ -656,7 +664,7 @@ fn constats_dates(
         let mut tues = 0u64;
         for t in &j.trouvailles {
             // Une alerte critique ne se déclare jamais normale : elle revient toujours.
-            if t.gravite < Gravite::Critique && est_normale(&cle_normale(r.id, &t.objet)) {
+            if taisable(r.id, t) && est_normale(&cle_normale(r.id, &t.objet)) {
                 tues += 1;
                 continue;
             }

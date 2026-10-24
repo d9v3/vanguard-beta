@@ -922,10 +922,10 @@ const IDENTIFIANTS_ATTENDUS: &[&str] = &[
     "c:\\windows\\system32\\spoolsv.exe",
 ];
 
-/// Des noms de la liste qu'un programme légitime porte aussi ailleurs : OpenSSH pour Windows publié par Microsoft
-/// s'installe aussi dans Program Files (une version plus récente que celle de Windows), son sshd.exe n'y est pas
-/// déguisé (seulement « à savoir », comme tout programme installé hors de la liste).
-const NOMS_PARTAGES: &[&str] = &["sshd"];
+/// Des noms de la liste qu'un programme légitime porte aussi ailleurs, et où : OpenSSH pour Windows publié par
+/// Microsoft s'installe aussi dans Program Files (une version plus récente que celle de Windows), son sshd.exe n'y
+/// est pas déguisé (seulement « à savoir », comme tout programme installé hors de la liste). Ailleurs, il l'est.
+const NOMS_PARTAGES: &[(&str, &[&str])] = &[("sshd", &["c:\\program files\\", "c:\\program files (x86)\\"])];
 
 /// Des dossiers d'où un programme qui se sert d'autres identifiants est douteux (avec les temporaires).
 const DOUTEUX: &[&str] = &["\\downloads\\", "\\users\\public\\", "\\$recycle.bin\\", "\\perflogs\\"];
@@ -954,8 +954,10 @@ fn autres_identifiants(e: &EvenementWindows) -> Option<Indice> {
     // Un programme qui porte le nom d'un des programmes de Windows de la liste, ailleurs que chez lui, se fait
     // passer pour lui.
     let nom = nom_programme(&bas);
-    let deguise =
-        !NOMS_PARTAGES.contains(&nom.as_str()) && IDENTIFIANTS_ATTENDUS.iter().any(|a| nom_programme(a) == nom);
+    let partage = NOMS_PARTAGES
+        .iter()
+        .any(|(n, dossiers)| *n == nom && dossiers.iter().any(|d| bas.starts_with(d)));
+    let deguise = !partage && IDENTIFIANTS_ATTENDUS.iter().any(|a| nom_programme(a) == nom);
     let douteux = deguise || TEMPORAIRES.iter().chain(DOUTEUX).any(|d| bas.contains(d));
     let (gravite, pourquoi) = if est_interprete(&nom_programme(&bas)) || douteux {
         (
@@ -1170,7 +1172,13 @@ const LANCER_FIL: &[&str] = &["createthread", "createremotethread", "getdelegate
 
 /// Ce qui prend le jeton d'un autre programme pour agir sous son compte, puis ce qui s'en sert.
 const COPIER_JETON: &[&str] = &["duplicatetokenex", "impersonateloggedonuser", "setthreadtoken"];
-const SE_SERVIR_DU_JETON: &[&str] = &["createprocesswithtoken", "openprocesstoken", "openthreadtoken"];
+const SE_SERVIR_DU_JETON: &[&str] = &[
+    "createprocesswithtoken",
+    "openprocesstoken",
+    "openthreadtoken",
+    // Une ouverture de session avec un mot de passe, puis se faire passer pour ce compte dans le programme même.
+    "logonuser",
+];
 
 /// Ce qui lit le clavier touche par touche, et ce qui traduit la touche : un enregistreur de frappe.
 const LIRE_CLAVIER: &[&str] = &["getasynckeystate"];
@@ -1205,8 +1213,29 @@ fn reglage_employe(bas: &str, reglage: &str) -> bool {
     bas.match_indices(reglage).any(|(i, _)| {
         let avant = &bas[..i];
         let apres = bas[i + reglage.len()..].trim_start_matches(guillemets).trim_start();
-        let nomme = avant.trim_end_matches(guillemets).trim_end();
-        avant.ends_with('-')
+        let nomme = avant
+            .trim_end_matches(guillemets)
+            .trim_end()
+            .trim_end_matches('(')
+            .trim_end();
+        // Affecté par son index : « $h['DisableRealtimeMonitoring'] = $true », puis « Set-MpPreference @h ».
+        let par_index = apres
+            .strip_prefix(']')
+            .map(str::trim_start)
+            .is_some_and(|a| a.starts_with('=') && !a.starts_with("=="));
+        // Donné par position, suivi de sa valeur : « Set-ItemProperty $k DisableRealtimeMonitoring 1 ».
+        let valeur = apres.starts_with(|c: char| c.is_ascii_digit() || c == '$');
+        // Le nom d'une table de paramètres (« @{Path=$k;Name='DisableRealtimeMonitoring';Value=1} », puis
+        // « Set-ItemProperty @a ») ; celle du module CDXML porte aussi « ParameterType », qu'aucune commande de
+        // réglage n'accepte.
+        let table = (nomme.ends_with("name=") || nomme.ends_with("name =")) && {
+            let suite: String = apres.chars().take_while(|&c| c != '}').collect();
+            suite.contains("value") && !suite.contains("parametertype")
+        };
+        par_index
+            || valeur
+            || table
+            || avant.ends_with('-')
             || nomme.ends_with("-name")
             || nomme.ends_with("-name:")
             || nomme.ends_with("/v")
@@ -1286,6 +1315,18 @@ pub(crate) fn script_suspect(texte: &str) -> Option<(&'static str, Gravite, Text
             (
                 "un script vide la mémoire de LSASS, où Windows garde les identifiants des sessions",
                 "a script dumps the memory of LSASS, where Windows keeps session credentials",
+            ),
+        ));
+    }
+    // Sans le nom de LSASS (visé par son numéro de processus) : le même vidage, que PowerShell ne fait que marquer
+    // Avertissement ; aucun script ordinaire ne vide la mémoire d'un programme.
+    if s.contient(mot_masque!("minidumpwritedump")) {
+        return Some((
+            "lsass",
+            Gravite::Alerte,
+            (
+                "un script vide la mémoire d'un programme (MiniDumpWriteDump) : la façon de prendre les identifiants de LSASS",
+                "a script dumps a program's memory (MiniDumpWriteDump): how LSASS credentials get taken",
             ),
         ));
     }
@@ -1435,8 +1476,8 @@ fn bloc_de_script(e: &EvenementWindows) -> Option<Indice> {
                 format!("avertissement|{quoi}"),
                 Gravite::Info,
                 (
-                    "PowerShell a lui-même jugé suspects des blocs de script où aucun motif d'attaque n'est reconnu : il le fait pour une centaine de mots courants (Add-Type, Marshal, Bypass…), dans des modules de Windows aussi ; le premier",
-                    "PowerShell itself judged script blocks suspicious where no attack pattern is recognized: it does so for about a hundred common words (Add-Type, Marshal, Bypass…), in Windows modules too; the first one",
+                    "PowerShell a lui-même jugé suspects des blocs de script où aucun motif d'attaque n'est reconnu : il le fait pour une centaine de mots courants (Marshal, IntPtr, Bypass…), dans des modules de Windows aussi ; le premier",
+                    "PowerShell itself judged script blocks suspicious where no attack pattern is recognized: it does so for about a hundred common words (Marshal, IntPtr, Bypass…), in Windows modules too; the first one",
                 ),
                 vec![
                     (Libelle::Script, texte.chars().take(300).collect()),

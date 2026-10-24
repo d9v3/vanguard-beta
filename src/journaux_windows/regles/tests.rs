@@ -2383,6 +2383,9 @@ fn identifiants_de_la_mise_en_route_et_du_serveur_ssh() {
         par(4, r"C:\Users\alice\AppData\Local\Temp\UserOOBEBroker.exe", "alice"),
         par(5, r"C:\Windows\oobe\UserOOBEBroker.exe", "alice"),
         par(6, r"C:\Users\Public\sshd.exe", "alice"),
+        // Hors de Program Files, un sshd.exe est déguisé (même dans System32, hors du dossier d'OpenSSH).
+        par(8, r"C:\Windows\System32\sshd.exe", "alice"),
+        par(9, r"C:\Outils\sshd.exe", "alice"),
         // OpenSSH de Microsoft installé à part (Program Files) : à savoir, pas déguisé.
         par(7, r"C:\Program Files\OpenSSH\sshd.exe", "sshd_77"),
     ]);
@@ -2394,6 +2397,7 @@ fn identifiants_de_la_mise_en_route_et_du_serveur_ssh() {
     assert_eq!(
         v,
         [
+            (r"c:\outils\sshd.exe".to_string(), Gravite::Alerte),
             (r"c:\program files\openssh\sshd.exe".to_string(), Gravite::Info),
             (r"c:\programdata\useroobebroker.exe".to_string(), Gravite::Alerte),
             (
@@ -2402,6 +2406,7 @@ fn identifiants_de_la_mise_en_route_et_du_serveur_ssh() {
             ),
             (r"c:\users\public\sshd.exe".to_string(), Gravite::Alerte),
             (r"c:\windows\oobe\useroobebroker.exe".to_string(), Gravite::Alerte),
+            (r"c:\windows\system32\sshd.exe".to_string(), Gravite::Alerte),
         ]
     );
 }
@@ -2616,6 +2621,11 @@ fn abonnement_wmi_de_windows_lui_meme() {
     ]);
     // Seul le consommateur qui écrit au journal est celui de Windows ; un homonyme qui lance une commande reste critique.
     assert_eq!(gravites(&js, "EVT-WMI-001"), [Gravite::Critique]);
+    // Le même ailleurs que dans root\subscription : pas celui de Windows.
+    let mut autre = wmi("NTEventLogEventConsumer=\"SCM Event Log Consumer\"");
+    autre.champs.retain(|(n, _)| n != "Namespace");
+    autre.champs.push(("Namespace".into(), "//./root/cimv2".into()));
+    assert_eq!(gravites(&juger(&[autre]), "EVT-WMI-001"), [Gravite::Info]);
 }
 
 #[test]
@@ -2636,4 +2646,133 @@ fn hors_de_la_mise_en_route_la_raison_est_dite() {
     let libelles: Vec<_> = admin_ajoute(&t).details.iter().map(|(l, _)| *l).collect();
     assert!(libelles.contains(&super::moteur::Libelle::Installation));
     assert!(!libelles.contains(&super::moteur::Libelle::PremiereSession));
+}
+
+#[test]
+fn mise_en_route_seulement_si_tout_le_dit() {
+    let installe = Some(t0());
+    let admis = |evs: &[EvenementWindows], o: Options| {
+        let js = juger_avec(evs, &tout_lu(), o);
+        admin_ajoute(trouvailles(&js, "EVT-ADM-001")).gravite == Gravite::Info
+    };
+    let o = || Options {
+        installation: installe,
+        ..options()
+    };
+    assert!(admis(&premier_compte(600, "S-1-5-18"), o()));
+    // Le même ajout, une seconde fois par un autre compte : la trouvaille regroupée n'est plus la mise en route.
+    let mut evs = premier_compte(600, "S-1-5-18");
+    evs.extend(premier_compte(700, "S-1-5-21-1-2-3-500"));
+    assert!(!admis(&evs, o()));
+    // Un des événements sans date : il ne se place pas.
+    let mut evs = premier_compte(600, "S-1-5-18");
+    let mut sans_date = premier_compte(650, "S-1-5-18").remove(1);
+    sans_date.date = None;
+    evs.push(sans_date);
+    assert!(!admis(&evs, o()));
+    // Une session d'une personne sans date : peut-être avant.
+    let mut evs = premier_compte(600, "S-1-5-18");
+    let mut s = session(0, "bob", "S-1-5-21-1-2-3-1002");
+    s.date = None;
+    evs.push(s);
+    assert!(!admis(&evs, o()));
+    // Une session d'un compte Entra ID avant : la mise en route était finie.
+    let mut evs = premier_compte(600, "S-1-5-18");
+    evs.push(session(300, "bob@example.test", "S-1-12-1-1-2-3-4"));
+    assert!(!admis(&evs, o()));
+    // Un compte qui se fait appeler comme le compte temporaire, sans en avoir la forme : une session comme une autre.
+    let mut evs = premier_compte(600, "S-1-5-18");
+    evs.push(session(300, "defaultuser_bob", "S-1-5-21-1-2-3-1003"));
+    assert!(!admis(&evs, o()));
+    // Une session sur un autre nom de l'ordinateur (renommé pendant la mise en route) compte aussi.
+    let mut evs = premier_compte(600, "S-1-5-18");
+    let mut ailleurs = session(300, "bob", "S-1-5-21-1-2-3-1002");
+    ailleurs.ordinateur = "DESKTOP-ESSAI".into();
+    evs.push(ailleurs);
+    assert!(!admis(&evs, o()));
+    // Lu depuis une date plus récente que la fenêtre : les sessions d'avant n'ont pas été lues.
+    let recent = Options {
+        depuis: Some(t0() + Duration::hours(1)),
+        ..o()
+    };
+    assert!(!admis(&premier_compte(2 * 3600, "S-1-5-18"), recent));
+    // Un journal de sécurité qui commence bien avant l'installation dite : InstallDate récrite (un attaquant SYSTEM
+    // la met à aujourd'hui), ou un Windows installé depuis longtemps.
+    let mut evs = premier_compte(600, "S-1-5-18");
+    evs.push(sec(
+        4624,
+        -10 * 86_400,
+        &[("LogonType", "5"), ("TargetUserName", "SYSTEM")],
+    ));
+    assert!(!admis(&evs, o()));
+    // Un journal de sécurité vidé (1102) : ce qui précédait a pu partir avec lui.
+    let mut evs = premier_compte(600, "S-1-5-18");
+    evs.push(ev(
+        "Security",
+        "Microsoft-Windows-Eventlog",
+        1102,
+        60,
+        &[("SubjectUserName", "x")],
+    ));
+    assert!(!admis(&evs, o()));
+}
+
+#[test]
+fn un_compte_cree_par_system_hors_de_la_mise_en_route_reste_sans_ajout() {
+    // Déjà une information (un outil d'administration crée des comptes) : ni date d'installation ni réserve ajoutées.
+    let cree = premier_compte(30 * 86_400, "S-1-5-18").remove(0);
+    let t = adm(std::slice::from_ref(&cree), Some(t0()));
+    assert_eq!(t[0].gravite, Gravite::Info);
+    assert!(
+        t[0].details
+            .iter()
+            .all(|(l, _)| *l != super::moteur::Libelle::Installation)
+    );
+    let t = adm(&[cree], None);
+    assert!(t[0].reserves.is_empty());
+}
+
+#[test]
+fn reglages_de_defender_employes_autrement() {
+    let coupe = [
+        "Set-ItemProperty $k DisableRealtimeMonitoring 1",
+        "Set-ItemProperty -Path $k -Name (\"Disable\"+\"RealtimeMonitoring\") -Value 1",
+        "$a=@{Path=$k;Name='DisableRealtimeMonitoring';Value=1}; Set-ItemProperty @a",
+        "$h=@{}; $h['DisableRealtimeMonitoring'] = $true; Set-MpPreference @h",
+        "$h.Add('DisableIOAVProtection', $true)",
+    ];
+    for texte in coupe {
+        assert_eq!(script_suspect(texte).map(|x| x.0), Some("desarme"), "{texte}");
+    }
+}
+
+#[test]
+fn le_regroupement_des_avertissements_ne_se_tait_pas() {
+    let js = juger(&[bloc_ps(0, "Add-Type -TypeDefinition $c", "", 3)]);
+    let t = &trouvailles(&js, "EVT-PSH-001")[0];
+    assert_eq!(t.objet, "avertissement|sans-fichier");
+    assert!(!resultat::taisable("EVT-PSH-001", t));
+    let (constats, _) = resultat::constats(&analyse(js), &|_| true);
+    assert!(
+        constats
+            .iter()
+            .any(|c| c.regle == "EVT-PSH-001" && c.probleme.is_some())
+    );
+}
+
+#[test]
+fn vidage_et_usurpation_sans_le_geste_complet() {
+    let cas = [
+        (
+            "$p=Get-Process -Id 624; [W]::MiniDumpWriteDump($p.Handle,$p.Id,$f.SafeFileHandle,2,0,0,0)",
+            Some("lsass"),
+        ),
+        (
+            "[W]::LogonUser($u,$d,$m,9,0,[ref]$t); [W]::ImpersonateLoggedOnUser($t); Get-ChildItem \\\\srv\\c$; [W]::RevertToSelf()",
+            Some("jeton"),
+        ),
+    ];
+    for (texte, attendu) in cas {
+        assert_eq!(script_suspect(texte).map(|x| x.0), attendu, "{texte}");
+    }
 }
