@@ -1251,6 +1251,14 @@ if (Test-Path -LiteralPath $lanceur) {
     if ($sortieLanceur -match 'Windows could not start Vanguard') { Ok 'Refus expliqué' } else { Bug 'Refus PAS expliqué' }
     if ($sortieLanceur -match 'Checksum unreadable') { Ok 'Empreinte dite illisible, programme absent' } else { Bug 'Empreinte : rien dit pour un programme absent' }
     if ($codeLanceur -eq 1) { Ok 'Code 1 quand Vanguard ne démarre pas' } else { Bug "Code $codeLanceur au lieu de 1" }
+    # PowerShell introuvable (PATH vidé, comme sur un poste où il est retiré) : un autre message, jamais celui de
+    # Defender, qui ferait chercher une alerte qui n'existe pas.
+    Set-Content -LiteralPath (Join-Path $essai 'sans-powershell.bat') -Value "@set PATH=`r`n@call `"Lancer Vanguard.bat`"" -Encoding ASCII
+    $sortieSansPs = 'N' | cmd /c "`"$(Join-Path $essai 'sans-powershell.bat')`"" 2>&1 | Out-String
+    $codeSansPs = $LASTEXITCODE
+    Set-Content -Path (Join-Path $res 'lanceur-sans-powershell.out.txt') -Value $sortieSansPs -Encoding UTF8
+    if ($sortieSansPs -match 'PowerShell is missing or blocked' -and $sortieSansPs -notmatch 'Windows could not start Vanguard') { Ok 'PowerShell absent : dit, sans accuser Defender' } else { Bug 'PowerShell absent : pris pour un blocage de Defender, ou rien dit' }
+    if ($codeSansPs -eq 1) { Ok 'Code 1 sans PowerShell' } else { Bug "Code $codeSansPs au lieu de 1 sans PowerShell" }
     if ((Get-MpPreference | Select-Object ExclusionPath, ControlledFolderAccessAllowedApplications | Out-String) -eq $defLanceur) { Ok 'Defender pas touché' } else { Bug 'Defender modifié par le lanceur' }
     Remove-Item -LiteralPath $essai -Recurse -Force -ErrorAction SilentlyContinue
 } else {
