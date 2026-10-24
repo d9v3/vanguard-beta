@@ -332,7 +332,8 @@ T_CLE=$SECONDS
 # journaux reçoit le même jeton. Puis l'empreinte de cet ordinateur (SHA-1 de /etc/machine-id) dans vanguard.cle :
 # partout ailleurs, Vanguard remonte la clé en lecture seule sous Linux (src/protection/cle.rs). Avant la copie vers
 # la partition des journaux et avant le manifeste. Un programme d'avant « deploiement » (--sans-compiler) : le bash
-# d'avant, pour que la clé garde ses témoins.
+# d'avant, pour que la clé garde ses témoins (seulement sans vanguard.exe : avec lui, verifier-pe, sans repli, a déjà
+# arrêté le déploiement).
 if ./"$LINUX" deploiement temoins --help >/dev/null 2>&1; then
   ./"$LINUX" deploiement temoins "$CLE" || { echo "✖ Témoins de la clé non écrits : clé pas mise à jour."; exit 1; }
 else

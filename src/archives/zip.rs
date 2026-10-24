@@ -72,10 +72,25 @@ pub(crate) enum Defaut {
     Crc(usize),
 }
 
+/// Une entrée relue par `controler`, avant d'être décompressée.
+struct Entree<'a> {
+    nom: &'a [u8],
+    methode: u16,
+    crc: u32,
+    taille: usize,
+    local: usize,
+    donnees: std::ops::Range<usize>,
+}
+
 /// Le contrôle entier d'une archive, comme `zipfile.testzip()` de Python : chaque entrée du répertoire central relue
 /// à son en-tête local (même nom), décompressée, à sa taille et à son CRC-32 annoncés. Une seule qui ne va pas, et
 /// l'archive entière est refusée (`lire`, lui, la saute). Au plus `entrees` entrées, `fichier` octets annoncés par
 /// entrée et `total` en tout, jugés avant de décompresser. Rend les noms des entrées, dans l'ordre.
+///
+/// Deux passes : la forme d'abord, puis le contenu. Le répertoire central doit finir juste où commence sa fin (pas
+/// d'entrée cachée au-delà du nombre annoncé), et les entrées ne se chevauchent pas, comme le veut zipfile : chaque
+/// octet compressé n'est donc décompressé qu'une fois, et une archive où mille entrées désignent les mêmes 36 Mo ne
+/// coûte pas mille décompressions.
 pub(crate) fn controler(octets: &[u8], bornes: &Bornes) -> Result<Vec<String>, Defaut> {
     let fin = (0..octets.len().saturating_sub(21))
         .rev()
@@ -97,9 +112,15 @@ pub(crate) fn controler(octets: &[u8], bornes: &Bornes) -> Result<Vec<String>, D
     if usize::from(nombre) > bornes.entrees {
         return Err(Defaut::Demesuree);
     }
-    let mut noms = Vec::with_capacity(usize::from(nombre));
+    let (debut, taille_centrale) = (debut as usize, taille_centrale as usize);
+    // Un répertoire qui ne finit pas là où commence sa fin : des octets devant l'archive, ou des entrées cachées.
+    if debut.checked_add(taille_centrale) != Some(fin) {
+        return Err(Defaut::Illisible(0));
+    }
+    // Première passe : la forme de chaque entrée, sans rien décompresser.
+    let mut entrees = Vec::with_capacity(usize::from(nombre));
     let mut total: usize = 0;
-    let mut i = debut as usize;
+    let mut i = debut;
     for n in 0..usize::from(nombre) {
         if u32_a(octets, i) != Some(0x0201_4b50) {
             return Err(Defaut::Illisible(n));
@@ -125,18 +146,45 @@ pub(crate) fn controler(octets: &[u8], bornes: &Bornes) -> Result<Vec<String>, D
             return Err(Defaut::Illisible(n));
         }
         let donnees = donnees_locales(octets, local, compresse).ok_or(Defaut::Illisible(n))?;
-        let contenu = match methode {
-            0 => (donnees.len() == taille).then(|| donnees.to_vec()),
+        let depart = donnees.as_ptr() as usize - octets.as_ptr() as usize;
+        entrees.push(Entree {
+            nom,
+            methode,
+            crc,
+            taille,
+            local,
+            donnees: depart..depart + compresse,
+        });
+    }
+    if i != fin {
+        return Err(Defaut::Illisible(usize::from(nombre)));
+    }
+    // Pas de chevauchement : rangées par position, chaque entrée (en-tête local et données) finit avant la suivante,
+    // et la dernière avant le répertoire central.
+    let mut ordre: Vec<usize> = (0..entrees.len()).collect();
+    ordre.sort_by_key(|&k| entrees[k].local);
+    for (j, &k) in ordre.iter().enumerate() {
+        let suivante = ordre.get(j + 1).map_or(debut, |&s| entrees[s].local);
+        if entrees[k].donnees.end > suivante {
+            return Err(Defaut::Illisible(k));
+        }
+    }
+    // Seconde passe : le contenu, à sa taille et à son CRC.
+    let mut noms = Vec::with_capacity(entrees.len());
+    for (n, e) in entrees.iter().enumerate() {
+        let donnees = &octets[e.donnees.clone()];
+        let contenu = match e.methode {
+            0 => (donnees.len() == e.taille).then(|| donnees.to_vec()),
             // Un octet de marge : un contenu plus long que la taille annoncée se voit à sa longueur.
-            _ => miniz_oxide::inflate::decompress_to_vec_with_limit(donnees, taille.saturating_add(1))
+            _ => miniz_oxide::inflate::decompress_to_vec_with_limit(donnees, e.taille.saturating_add(1))
                 .ok()
-                .filter(|c| c.len() == taille),
+                .filter(|c| c.len() == e.taille),
         }
         .ok_or(Defaut::Illisible(n))?;
-        if super::crc32::crc32(&contenu) != crc {
+        if super::crc32::crc32(&contenu) != e.crc {
             return Err(Defaut::Crc(n));
         }
-        noms.push(String::from_utf8_lossy(nom).into_owned());
+        noms.push(String::from_utf8_lossy(e.nom).into_owned());
     }
     Ok(noms)
 }
@@ -376,6 +424,48 @@ mod tests {
         assert!(controler(&bonne[..bonne.len() / 2], &BORNES_CONTROLE).is_err());
         assert_eq!(controler(b"pas un zip", &BORNES_CONTROLE), Err(Defaut::PasUnZip));
         assert_eq!(controler(&[], &BORNES_CONTROLE), Err(Defaut::PasUnZip));
+    }
+
+    /// Ce que zipfile refuse aussi : des entrées qui se chevauchent (deux noms sur les mêmes données, ou l'une dans
+    /// les données de l'autre), un répertoire central qui cache des entrées au-delà du nombre annoncé.
+    #[test]
+    fn controle_chevauchements_et_entrees_cachees() {
+        let bonne = archive_controlee(&[("pages/a.md", 0, b"# a\n"), ("pages/b.md", 0, b"# b\n")]);
+        assert!(controler(&bonne, &BORNES_CONTROLE).is_ok());
+        let central = bonne
+            .windows(4)
+            .position(|f| f == 0x0201_4b50u32.to_le_bytes())
+            .unwrap();
+        let second = central + 46 + "pages/a.md".len();
+        // La seconde entrée désigne l'en-tête local de la première (même nom pour passer le contrôle du nom).
+        let mut meme = bonne.clone();
+        meme[second + 42..second + 46].copy_from_slice(&0u32.to_le_bytes());
+        meme[second + 46 + 6] = b'a';
+        assert!(controler(&meme, &BORNES_CONTROLE).is_err());
+        // La fin annonce une entrée, le répertoire en a deux.
+        let fin = bonne.len() - 22;
+        let mut cachee = bonne.clone();
+        cachee[fin + 8..fin + 12].copy_from_slice(&[1, 0, 1, 0]);
+        assert!(controler(&cachee, &BORNES_CONTROLE).is_err());
+        // Des octets devant l'archive : les positions ne disent plus rien.
+        let mut devant = b"MZ".to_vec();
+        devant.extend_from_slice(&bonne);
+        assert!(controler(&devant, &BORNES_CONTROLE).is_err());
+        // Mille entrées vides du même nom sur les mêmes données compressées : refusées avant toute décompression.
+        let vides: Vec<(&str, u16, &[u8])> = (0..1000).map(|_| ("pages/a.md", 8, &b""[..])).collect();
+        let mut multiple = archive_controlee(&vides);
+        let premier = multiple
+            .windows(4)
+            .position(|f| f == 0x0201_4b50u32.to_le_bytes())
+            .unwrap();
+        let mut j = premier;
+        while multiple.get(j..j + 4) == Some(&0x0201_4b50u32.to_le_bytes()[..]) {
+            let longueur = usize::from(u16::from_le_bytes([multiple[j + 28], multiple[j + 29]]));
+            let local = u32::from_le_bytes(multiple[premier + 42..premier + 46].try_into().unwrap());
+            multiple[j + 42..j + 46].copy_from_slice(&local.to_le_bytes());
+            j += 46 + longueur;
+        }
+        assert!(controler(&multiple, &BORNES_CONTROLE).is_err());
     }
 
     /// Les formes que le lecteur ne sait pas lire, et les bornes, jugées avant de décompresser.
