@@ -12,6 +12,8 @@ use tokio::net::TcpStream;
 use crate::risk::Niveau;
 use crate::ui::*;
 
+mod resultat;
+
 /// Serveur de référence sur Internet (Cloudflare, présent dans presque toutes les villes).
 const INTERNET: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 443);
 const TELECHARGEMENT: &str = "https://speed.cloudflare.com/__down?bytes=25000000";
@@ -158,6 +160,107 @@ async fn sous_charge(sens: Sens) -> (Serie, Option<f64>) {
     let mesures = serie(INTERNET, 35, Some(&arret)).await;
     arret.store(true, Ordering::Relaxed);
     (mesures, charge.await.ok().flatten())
+}
+
+/// Au repos : le routeur (le port qui répond, s'il y en a un) et Internet.
+struct Repos {
+    boite: Option<SocketAddr>,
+    serie_box: Option<Serie>,
+    internet: Serie,
+}
+
+async fn mesurer_repos() -> Repos {
+    let boite = match crate::reseau::scan::passerelle() {
+        Some(ip) => port_de_la_box(ip).await,
+        None => None,
+    };
+    let serie_box = match boite {
+        Some(cible) => Some(serie(cible, 20, None).await),
+        None => None,
+    };
+    let internet = serie(INTERNET, 20, None).await;
+    Repos {
+        boite,
+        serie_box,
+        internet,
+    }
+}
+
+/// Sous charge : la latence pendant un téléchargement puis pendant un envoi, et les débits obtenus.
+struct Charge {
+    en_reception: Serie,
+    debit_bas: Option<f64>,
+    en_envoi: Serie,
+    debit_haut: Option<f64>,
+}
+
+async fn mesurer_charge() -> Charge {
+    let (en_reception, debit_bas) = sous_charge(Sens::Reception).await;
+    let (en_envoi, debit_haut) = sous_charge(Sens::Envoi).await;
+    Charge {
+        en_reception,
+        debit_bas,
+        en_envoi,
+        debit_haut,
+    }
+}
+
+impl Charge {
+    /// La hausse de latence sous charge (bufferbloat) par rapport à la latence au repos ; `None` : aucune mesure
+    /// sous charge n'a abouti.
+    fn hausse(&self, repos: f64) -> Option<f64> {
+        [self.en_reception.mediane(), self.en_envoi.mediane()]
+            .into_iter()
+            .flatten()
+            .map(|m| (m - repos).max(0.0))
+            .reduce(f64::max)
+    }
+}
+
+/// Ce qu'a relevé un test : ce que l'écran montre et que `--json` juge, le même pour les deux.
+struct Releve {
+    repos: Repos,
+    /// `None` : Internet n'a pas répondu au repos, le test s'est arrêté là.
+    charge: Option<Charge>,
+    /// Les habitudes de ce réseau, d'avant ce test.
+    habituel: Option<Habitudes>,
+}
+
+/// Le test entier, sans rien afficher (`--json`) : les mêmes mesures que l'écran, dans le même ordre, et le test
+/// noté dans l'historique comme à l'écran.
+async fn relever() -> Releve {
+    let repos = mesurer_repos().await;
+    let Some(repos_ms) = repos.internet.mediane() else {
+        return Releve {
+            repos,
+            charge: None,
+            habituel: None,
+        };
+    };
+    let charge = mesurer_charge().await;
+    let habituel = noter(repos_ms, &repos.internet, &charge);
+    Releve {
+        repos,
+        charge: Some(charge),
+        habituel,
+    }
+}
+
+/// Les habitudes du réseau où l'on est (d'avant ce test), puis ce test gardé dans l'historique.
+fn noter(repos_ms: f64, internet: &Serie, charge: &Charge) -> Option<Habitudes> {
+    let reseau = reseau_actuel();
+    let habituel = habitudes(&historique(), reseau.as_deref());
+    enregistrer(Resultat {
+        date: chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
+        internet_ms: repos_ms,
+        gigue_ms: internet.gigue(),
+        pertes: internet.pertes(),
+        descendant: charge.debit_bas,
+        montant: charge.debit_haut,
+        hausse_ms: charge.hausse(repos_ms),
+        reseau,
+    });
+    habituel
 }
 
 /// Résultat d'un test, gardé sur cet ordinateur pour le rapport HTML.
@@ -343,6 +446,21 @@ fn verdict(bon: bool, critere: &str, valeur: &str, explication: &str) {
     );
 }
 
+/// La liaison avec le routeur est-elle instable (gigue, latence ou pertes) ? `None` : pas mesurable. Une box qui
+/// répond plus lentement qu'Internet ne l'est pas (routeur virtuel d'une VM, page web de la box lente).
+fn liaison_instable(box_: Option<&Serie>, internet: &Serie) -> Option<bool> {
+    let b = box_?;
+    let (m, i) = b.mediane().zip(internet.mediane())?;
+    (m < i).then(|| b.gigue() > 5.0 || m > 5.0 || b.pertes() > 0.0)
+}
+
+/// La connexion est-elle nettement moins bonne que d'habitude (ping ou débit) ?
+fn moins_bonne_que_d_habitude(h: &Habitudes, repos: f64, charge: &Charge) -> bool {
+    ping_degrade(h, repos)
+        || debit_degrade(h.descendant, charge.debit_bas)
+        || debit_degrade(h.montant, charge.debit_haut)
+}
+
 /// Conseils pour le jeu, du plus important au moins important.
 fn conseils(box_: Option<&Serie>, internet: &Serie, hausse: Option<f64>) -> Vec<String> {
     let mut c = Vec::new();
@@ -352,15 +470,7 @@ fn conseils(box_: Option<&Serie>, internet: &Serie, hausse: Option<f64>) -> Vec<
             "Packets are being lost: in game, that means stutter and “teleporting”. Restart the router; if it persists, call your provider."
         ).to_string());
     }
-    // Une box qui répond plus lentement qu'Internet n'est pas mesurable (routeur virtuel d'une VM, page web de la
-    // box lente) : pas de conseil sur la liaison dans ce cas.
-    let box_mesurable = box_
-        .and_then(Serie::mediane)
-        .zip(internet.mediane())
-        .is_some_and(|(b, i)| b < i);
-    if let Some(b) = box_.filter(|_| box_mesurable)
-        && (b.gigue() > 5.0 || b.mediane().is_some_and(|m| m > 5.0) || b.pertes() > 0.0)
-    {
+    if liaison_instable(box_, internet) == Some(true) {
         c.push(
             tr!(
                 "La liaison avec le routeur est instable (souvent le Wi-Fi) : un câble Ethernet règle presque toujours ça.",
@@ -406,25 +516,24 @@ pub async fn tester() {
         "  {DISCRET}The speed test downloads and uploads a few hundred MB at most.{RESET}"
     );
     section(tr!("AU REPOS", "AT REST"));
-    let boite = match crate::reseau::scan::passerelle() {
-        Some(ip) => port_de_la_box(ip).await,
-        None => None,
-    };
-    let serie_box = match boite {
-        Some(cible) => Some(serie(cible, 20, None).await),
-        None => None,
-    };
-    let internet = serie(INTERNET, 20, None).await;
-    if let (Some(cible), Some(s)) = (boite, &serie_box) {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let mesures_repos = mesurer_repos().await;
+    if let (Some(cible), Some(s)) = (mesures_repos.boite, &mesures_repos.serie_box) {
         ligne(&trf!("Routeur ({})", "Router ({})", cible.ip()), s);
     }
-    ligne("Internet (Cloudflare)", &internet);
-    let Some(repos) = internet.mediane() else {
+    ligne("Internet (Cloudflare)", &mesures_repos.internet);
+    let Some(repos) = mesures_repos.internet.mediane() else {
         trp!(
             "\n  {}✖ Internet ne répond pas : test arrêté.{RESET}",
             "\n  {}✖ Internet does not answer: test stopped.{RESET}",
             couleur(Niveau::Critique)
         );
+        let releve = Releve {
+            repos: mesures_repos,
+            charge: None,
+            habituel: None,
+        };
+        crate::modele::resultat::verser(&resultat::resultat(Some(&releve), debut));
         return;
     };
     section(tr!("SOUS CHARGE", "UNDER LOAD"));
@@ -432,10 +541,16 @@ pub async fn tester() {
         "  {DISCRET}Téléchargement puis envoi, 8 secondes chacun…{RESET}",
         "  {DISCRET}Download then upload, 8 seconds each…{RESET}"
     );
-    let (en_reception, debit_bas) = sous_charge(Sens::Reception).await;
-    let (en_envoi, debit_haut) = sous_charge(Sens::Envoi).await;
-    ligne(tr!("Pendant un téléchargement", "During a download"), &en_reception);
-    ligne(tr!("Pendant un envoi", "During an upload"), &en_envoi);
+    let charge = mesurer_charge().await;
+    let Charge {
+        en_reception,
+        debit_bas,
+        en_envoi,
+        debit_haut,
+    } = &charge;
+    let (debit_bas, debit_haut) = (*debit_bas, *debit_haut);
+    ligne(tr!("Pendant un téléchargement", "During a download"), en_reception);
+    ligne(tr!("Pendant un envoi", "During an upload"), en_envoi);
 
     section(tr!("DÉBIT", "SPEED"));
     for (nom, d) in [
@@ -451,14 +566,10 @@ pub async fn tester() {
             None => trp!("  {} ?", "  {} ?", ajuster(nom, 14)),
         }
     }
-    let hausse = [en_reception.mediane(), en_envoi.mediane()]
-        .into_iter()
-        .flatten()
-        .map(|m| (m - repos).max(0.0))
-        .reduce(f64::max);
-    // Apprendre la normale : le test du jour comparé aux habitudes de cette connexion.
-    let reseau = reseau_actuel();
-    let habituel = habitudes(&historique(), reseau.as_deref());
+    let hausse = charge.hausse(repos);
+    let internet = &mesures_repos.internet;
+    // Apprendre la normale : le test du jour comparé aux habitudes de cette connexion (puis gardé avec elles).
+    let habituel = noter(repos, internet, &charge);
     if let Some(h) = &habituel {
         section(tr!("PAR RAPPORT À D'HABITUDE", "COMPARED WITH USUAL"));
         let moins_bon = couleur(Niveau::Moyen);
@@ -488,17 +599,6 @@ pub async fn tester() {
             h.tests
         );
     }
-    enregistrer(Resultat {
-        date: chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
-        internet_ms: repos,
-        gigue_ms: internet.gigue(),
-        pertes: internet.pertes(),
-        descendant: debit_bas,
-        montant: debit_haut,
-        hausse_ms: hausse,
-        reseau,
-    });
-
     section(tr!("VERDICT POUR LE JEU", "VERDICT FOR GAMING"));
     let (gigue, pertes) = (internet.gigue(), internet.pertes());
     verdict(
@@ -550,9 +650,9 @@ pub async fn tester() {
             },
         );
     }
-    let mut conseils = conseils(serie_box.as_ref(), &internet, hausse);
+    let mut conseils = conseils(mesures_repos.serie_box.as_ref(), internet, hausse);
     if let Some(h) = &habituel
-        && (ping_degrade(h, repos) || debit_degrade(h.descendant, debit_bas) || debit_degrade(h.montant, debit_haut))
+        && moins_bonne_que_d_habitude(h, repos, &charge)
     {
         conseils.push(
             tr!(
@@ -574,6 +674,27 @@ pub async fn tester() {
             println!("  {} {l}", if i == 0 { ampoule() } else { "  " });
         }
     }
+    let releve = Releve {
+        repos: mesures_repos,
+        charge: Some(charge),
+        habituel,
+    };
+    crate::modele::resultat::verser(&resultat::resultat(Some(&releve), debut));
+}
+
+/// `vanguard test-connexion --json` : les mêmes mesures que l'écran, sans rien demander ni afficher d'autre que le
+/// JSON, jugées en résultat et versées comme à l'écran. Hors ligne (VANGUARD_HORS_LIGNE, Paramètres), rien ne part :
+/// tout est dit non vérifié.
+pub async fn json() {
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let releve = if crate::parametres::hors_ligne() {
+        None
+    } else {
+        Some(relever().await)
+    };
+    let r = resultat::resultat(releve.as_ref(), debut);
+    crate::modele::resultat::verser(&r);
+    println!("{}", crate::modele::resultat::json(&r));
 }
 
 #[cfg(test)]
@@ -651,16 +772,4 @@ mod tests {
             Vec::<String>::new()
         );
     }
-}
-
-/// PROVISOIRE (lot H, à remplacer) : `--json` rend un résultat vide, donc « non vérifié ».
-pub async fn json() {
-    let debut = (chrono::Utc::now(), std::time::Instant::now());
-    let r = crate::modele::resultat::Resultat::nouveau(
-        "PRO-CNX-001",
-        debut,
-        &[],
-        crate::modele::resultat::Couverture::default(),
-    );
-    println!("{}", crate::modele::resultat::json(&r));
 }
