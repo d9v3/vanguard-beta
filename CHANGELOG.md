@@ -9,6 +9,19 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 
 ## Prochaine version
 
+- **Sécurité de la clé et de la publication** (campagne d'attaque n° 3). Au branchement, la clé est comparée à sa
+  référence avant toute écriture : un fichier planté en voyage (raccourci, image, menu de Ventoy, archive tldr) ne
+  devient plus « la clé n'a pas changé » ; rien n'y est écrit, une notification le dit, et seul
+  `outils/deployer.sh --accepter-cle` reprend la clé telle qu'elle est. Les outils ne reconnaissent la clé qu'à son
+  jeton connu de cet ordinateur, comme le programme : un volume étiqueté VANGUARD ne reçoit plus le programme ni le
+  code source. Les images ISO sont suivies par leur empreinte SHA-256, relues une à une, recopiées si elles ont été
+  remplacées ; la partition de démarrage VTOYEFI, par l'empreinte de ses fichiers. Le journal de la clé ne fait plus
+  que 5 tickets GitHub par passage (10 par jour), et rien d'un journal suspect sans l'accord de l'auteur. La
+  signature des versions garde un point sûr que la clé de secours ne dépasse pas ; les programmes publiés sont, octet
+  pour octet, ceux de la compilation de leur commit (la 0.86.0 publiée est bien celle de son commit : seuls les
+  compilateurs C de la CI diffèrent). Claude sur GitHub ne touche plus une demande de fusion venue d'un fork. La file
+  d'essais de la VM ne fait plus que des travaux signés (HMAC du secret tiré à son installation, à refaire une fois),
+  et ses verdicts sont signés.
 - **Clé USB : le programme seul par défaut.** Une clé préparée par les outils du dépôt, sur n'importe quel ordinateur,
   ne porte plus que Vanguard, sa base, ses rapports et la partition VANGUARDLOG : ni images d'installation, ni Ventoy,
   ni partitions WIN11 et MACOS. La clé de secours complète ne se fait que sur un ordinateur dont le réglage local la

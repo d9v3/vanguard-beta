@@ -9,6 +9,18 @@ delivered just before it. Only the latest version has its download page; every v
 
 ## Next version
 
+- **USB key and release security** (third attack campaign). When the key is plugged in, it is compared with its
+  reference before anything is written: a file planted while it traveled (shortcut, image, Ventoy menu, tldr archive)
+  no longer becomes “the key has not changed”; nothing is written to it, a notification says so, and only
+  `outils/deployer.sh --accepter-cle` takes the key as it is. The tools only recognize the key by its token known to
+  this computer, like the program: a volume labeled VANGUARD no longer receives the program or the source code. ISO
+  images are tracked by their SHA-256 checksum, re-read one at a time, and copied again if they were replaced; the
+  VTOYEFI boot partition, by the checksum of its files. The key's error log makes at most 5 GitHub issues per run (10
+  a day), and nothing from a suspicious log without the author's consent. Release signing keeps a safe point the
+  backup key never goes past; published programs are, byte for byte, those built from their commit (the published
+  0.86.0 is indeed its commit's build: only the CI's C compilers differ). Claude on GitHub no longer acts on a pull
+  request from a fork. The VM test queue only runs signed jobs (HMAC with the secret drawn when it is installed, to be
+  redone once), and its verdicts are signed.
 - **USB key: the program alone by default.** A key prepared by the repository tools, on any computer, now only
   carries Vanguard, its database, its reports and the VANGUARDLOG partition: no installation images, no Ventoy, no
   WIN11 or MACOS partitions. The full rescue key is only made on a computer whose local setting asks for it
