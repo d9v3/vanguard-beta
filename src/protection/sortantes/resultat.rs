@@ -8,9 +8,9 @@ use std::collections::BTreeSet;
 use std::net::SocketAddr;
 
 use super::{Analyse, Releve, sites_trouves};
-use crate::machine::{Constat, alerte, impossible, ok};
-use crate::modele::Objet;
+use crate::machine::{Constat, alerte, impossible, impossible_par, ok};
 use crate::modele::resultat::{Couverture, Resultat};
+use crate::modele::{Objet, Raison};
 use crate::risk::Niveau;
 
 /// L'identifiant de l'outil (`modele::registre::OUTILS`).
@@ -55,6 +55,12 @@ pub(super) fn resultat(r: &Releve, a: &Analyse, debut: Debut) -> Resultat {
             "Mémoire DNS pas vérifiée : {raison}.",
             "DNS cache not checked: {raison}."
         )),
+        // Vide : rien n'a été comparé, ce n'est pas « aucun nom dangereux » (un autre résolveur répond peut-être).
+        Ok(noms) if noms.is_empty() => {
+            let raison = super::memoire_dns_vide();
+            constats.push(impossible_par(CAT, Raison::Introuvable, raison));
+            non_verifies.push(raison.to_string());
+        }
         Ok(noms) => {
             // Liste des domaines absente : déjà dite dans `listes_absentes`, rien n'est déclaré sain.
             if r.botnets.domaines.is_some() {
@@ -252,6 +258,28 @@ mod tests {
         let r = releve(Some(Vec::new()));
         let res = resultat(&r, &analyser(&r), debut());
         assert_eq!((res.verdict(), res.couverture.verifies), ("non-verifie", 1));
+    }
+
+    /// Une mémoire DNS vide n'a rien comparé : ni les serveurs de commande ni URLhaus ne comptent vérifiés.
+    #[test]
+    fn memoire_dns_vide_non_verifiee() {
+        let mut r = releve(Some(Vec::new()));
+        r.botnets.domaines = Some(HashMap::new());
+        r.urlhaus = Some(Ok((std::collections::HashSet::new(), None)));
+        r.memoire_dns = Ok(Vec::new());
+        let res = resultat(&r, &analyser(&r), debut());
+        assert_eq!((res.verdict(), res.couverture.verifies), ("non-verifie", 1));
+        assert!(
+            res.constats
+                .iter()
+                .any(|c| c.etat == "non-verifie" && c.message.contains("vide")),
+            "{:?}",
+            res.constats
+        );
+        // Un seul nom lu suffit : les deux comparaisons sont faites.
+        r.memoire_dns = Ok(vec!["exemple.org".into()]);
+        let res = resultat(&r, &analyser(&r), debut());
+        assert_eq!((res.verdict(), res.couverture.verifies), ("sain", 3));
     }
 
     #[test]

@@ -1745,6 +1745,14 @@ fn afficher_et_juger() -> bool {
     !trouves.is_empty()
 }
 
+/// Une mémoire DNS lue mais vide : rien à comparer, ce qui ne prouve rien (un autre résolveur répond peut-être).
+fn memoire_dns_vide() -> &'static str {
+    tr!(
+        "Mémoire DNS vide : rien à comparer aux serveurs de commande ni à URLhaus (un autre résolveur, comme dnsmasq ou NextDNS, répond peut-être à sa place).",
+        "DNS cache empty: nothing to compare with command servers or URLhaus (another resolver, such as dnsmasq or NextDNS, may answer instead)."
+    )
+}
+
 /// La mémoire DNS comparée aux domaines des serveurs de commande : un programme qui a demandé le nom de son serveur il
 /// y a une heure se voit, même si la connexion est fermée. Rend les noms trouvés.
 fn afficher_memoire_dns(r: &Releve) -> Vec<String> {
@@ -1761,6 +1769,10 @@ fn afficher_memoire_dns(r: &Releve) -> Vec<String> {
                 4,
                 GRIS,
             );
+            Vec::new()
+        }
+        Ok(noms) if noms.is_empty() => {
+            afficher_aligne(&format!("  {GRIS}?{RESET} "), memoire_dns_vide(), 4, GRIS);
             Vec::new()
         }
         Ok(noms) => {
