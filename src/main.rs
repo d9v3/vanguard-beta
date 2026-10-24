@@ -3450,18 +3450,26 @@ async fn main() {
             }
         }
         Some(Commande::Annuler) => optimiser::tout_annuler(),
-        Some(Commande::Protection { json: true, quoi }) if quoi.is_empty() => {
+        // `quoi` prend tout ce qui suit le premier mot (trailing_var_arg) : « etat --json » y laisse --json, qui vaut
+        // pourtant pour la commande ; sans cela, l'écran sortait là où un script attendait du JSON.
+        Some(Commande::Protection { json, quoi }) if json || quoi.iter().any(|m| m == "--json") => {
+            let mots: Vec<&String> = quoi.iter().filter(|m| *m != "--json").collect();
+            let etat = match mots.as_slice() {
+                [] => true,
+                [mot] => interrupteur(mot).as_deref() == Ok("etat"),
+                _ => false,
+            };
+            if !etat {
+                eprintln!(
+                    "  ✖ {}",
+                    tr!(
+                        "--json montre l'état seulement : sans oui ni non",
+                        "--json shows the state only: without on or off"
+                    )
+                );
+                std::process::exit(2);
+            }
             println!("{}", interrupteurs_json(&interrupteurs()));
-        }
-        Some(Commande::Protection { json: true, .. }) => {
-            eprintln!(
-                "  ✖ {}",
-                tr!(
-                    "--json montre l'état seulement : sans oui ni non",
-                    "--json shows the state only: without on or off"
-                )
-            );
-            std::process::exit(2);
         }
         Some(Commande::Protection { quoi, .. }) => match quoi.split_first() {
             None => etat_de_la_protection(),

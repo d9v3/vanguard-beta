@@ -266,6 +266,30 @@ fn protection_en_json() {
     assert!(liste.iter().all(|i| i["nom"].is_string() && i["etat"].is_string()));
     let refus = vanguard("fr", &["protection", "--json", "non"], "", 60);
     assert_eq!(refus.code, Some(2), "{}", refus.texte);
+    // --json après un mot vaut pour la commande : « etat --json » rend le même JSON ; « oui --json » et
+    // « non --json » sont refusés comme « --json non », sans rien changer (aucune coupure posée).
+    for args in [&["protection", "etat", "--json"][..], &["protection", "--json", "etat"]] {
+        let s = vanguard("fr", args, "", 60);
+        assert_eq!(s.code, Some(0), "{args:?} : {}", s.erreurs);
+        let v: serde_json::Value =
+            serde_json::from_str(&s.texte).unwrap_or_else(|e| panic!("{args:?} : JSON illisible ({e}) : {}", s.texte));
+        assert!(v["interrupteurs"].is_array(), "{args:?} : {v}");
+    }
+    let maison = maison_jetable();
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let avant = vanguard_dans(programme, &maison, "fr", &["protection", "--json"], "", 60);
+    for args in [
+        &["protection", "oui", "--json"][..],
+        &["protection", "non", "--json"],
+        &["protection", "non", "--pendant", "1h", "--json"],
+    ] {
+        let s = vanguard_dans(programme, &maison, "fr", args, "o\n", 60);
+        assert_eq!(s.code, Some(2), "{args:?} : {}", s.texte);
+        assert!(!s.texte.trim_start().starts_with('{'), "{args:?} : {}", s.texte);
+    }
+    let apres = vanguard_dans(programme, &maison, "fr", &["protection", "--json"], "", 60);
+    let _ = std::fs::remove_dir_all(&maison);
+    assert_eq!(avant.texte, apres.texte, "un refus a changé un interrupteur");
 }
 
 #[test]
