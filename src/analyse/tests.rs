@@ -274,7 +274,9 @@ fn macros_vba_d_un_document_97_et_d_un_docx() {
     let src = a.parties.iter().find(|p| p.type_ == Type::SourceVba).unwrap();
     assert_eq!(src.chemin, "Macros/VBA/Module1#source");
     assert!(src.faits.contains(&Fait::ProcedureAutomatique("AutoOpen".into())));
-    assert!(a.entierement_lue(), "{:?}", a.manques().collect::<Vec<_>>());
+    // Le p-code (qu'Office exécute) n'est pas décodé : seul manque, dit.
+    let seul_pcode = |a: &Analyse| a.manques().all(|(_, r)| *r == Raison::PcodeNonLu) && !a.entierement_lue();
+    assert!(seul_pcode(&a), "{:?}", a.manques().collect::<Vec<_>>());
     // Le même projet dans un docx (vbaProject.bin), avec un modèle chargé depuis l'extérieur.
     let bin = document_vba("", source, false);
     let types = br#"<?xml version="1.0"?><Types><Override PartName="/word/vbaProject.bin" ContentType="application/vnd.ms-office.vbaProject"/></Types>"#;
@@ -294,7 +296,7 @@ fn macros_vba_d_un_document_97_et_d_un_docx() {
     let bin = a.parties.iter().find(|p| p.chemin == "word/vbaProject.bin").unwrap();
     assert_eq!(bin.type_, Type::Cfb);
     assert!(bin.faits.contains(&Fait::ProcedureAutomatique("AutoOpen".into())));
-    assert!(a.entierement_lue(), "{:?}", a.manques().collect::<Vec<_>>());
+    assert!(seul_pcode(&a), "{:?}", a.manques().collect::<Vec<_>>());
     // Une source vide derrière du p-code (« VBA stomping ») : non vérifié.
     let vide = document_vba("Macros", "", true);
     let a = analyse(&vide, "a.doc");
@@ -604,6 +606,241 @@ fn relectures_faux_verts() {
 }
 
 /// Les plantages trouvés par le fuzzing, gardés en graines : plus jamais.
+/// Une image JPEG fabriquée : SOI, un segment APP0, un balayage dont les données contiennent FF 00 et un marqueur de
+/// reprise, puis EOI.
+fn jpeg() -> Vec<u8> {
+    let mut v = b"\xFF\xD8\xFF\xE0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00".to_vec();
+    v.extend(b"\xFF\xDA\x00\x08\x01\x01\x00\x00\x3F\x00");
+    v.extend([0x55u8; 500]);
+    v.extend(b"\xFF\x00\x12\xFF\xD0\x34");
+    v.extend([0x66u8; 500]);
+    v.extend(b"\xFF\xD9");
+    v
+}
+
+/// Un GIF89a fabriqué : table globale de deux couleurs, une extension, une image, le bloc de fin.
+fn gif() -> Vec<u8> {
+    let mut v = b"GIF89a\x01\x00\x01\x00\x80\x00\x00".to_vec();
+    v.extend([0, 0, 0, 255, 255, 255]);
+    v.extend(b"\x21\xF9\x04\x01\x00\x00\x00\x00");
+    v.extend(b"\x2C\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02\x44\x01\x00");
+    v.push(0x3B);
+    v
+}
+
+/// La preuve de la campagne d'attaque n° 3 : une image (JPEG, GIF, ICO, BMP) suivie d'une archive RAR, 7z ou gzip
+/// passait pour « entièrement lue » (seul le PNG cherchait sa fin). Désormais l'archive collée est une partie à elle,
+/// dite non lue pour son format ; une image dont la fin ne se trouve pas (TIFF) n'est jamais « entièrement lue ».
+#[test]
+fn image_suivie_d_une_archive() {
+    let mut gz = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3];
+    gz.extend(miniz_oxide::deflate::compress_to_vec(b"echo bonjour", 6));
+    gz.extend(crate::archives::crc32::crc32(b"echo bonjour").to_le_bytes());
+    gz.extend(12u32.to_le_bytes());
+    let mut ico = vec![0u8, 0, 1, 0, 1, 0];
+    ico.extend([16, 16, 0, 0, 1, 0, 32, 0]);
+    ico.extend(40u32.to_le_bytes());
+    ico.extend(22u32.to_le_bytes());
+    ico.extend([0u8; 40]);
+    let mut bmp = b"BM".to_vec();
+    bmp.extend(66u32.to_le_bytes());
+    bmp.extend([0u8; 8]);
+    bmp.extend(40u32.to_le_bytes());
+    bmp.resize(66, 0);
+    for (titre, image) in [("jpeg", jpeg()), ("gif", gif()), ("ico", ico), ("bmp", bmp)] {
+        assert_eq!(nature::fin_image(&image), Some(image.len()), "{titre}");
+        let seule = analyse(&image, "photo.jpg");
+        assert_eq!(seule.parties.len(), 1, "{titre}");
+        assert!(
+            seule.entierement_lue(),
+            "{titre} : {:?}",
+            seule.manques().collect::<Vec<_>>()
+        );
+        for (archive, ajout) in [
+            (
+                "rar",
+                b"Rar!\x1A\x07\x01\x00\x33\x92\xb5\xe5\x0a\x01\x05\x06\x00".to_vec(),
+            ),
+            ("7z", b"7z\xBC\xAF\x27\x1C\x00\x04\x8d\x9b\xd5\x0f".to_vec()),
+            ("gzip", gz.clone()),
+        ] {
+            let mut v = image.clone();
+            v.extend(&ajout);
+            let a = analyse(&v, "photo.jpg");
+            assert!(a.parties.len() >= 2, "{titre} + {archive}");
+            assert!(
+                a.parties[0].faits.contains(&Fait::Overlay(ajout.len() as u64)),
+                "{titre} + {archive}"
+            );
+            if archive != "gzip" {
+                assert!(!a.entierement_lue(), "{titre} + {archive}");
+            }
+        }
+    }
+    // Coupée avant sa fin : non lue en entier.
+    let j = jpeg();
+    assert!(!analyse(&j[..j.len() - 2], "a.jpg").entierement_lue());
+    // TIFF : sa fin ne se calcule pas ; jamais « entièrement lue », et une archive RAR en son sein est vue.
+    let mut tiff = b"II*\0\x08\0\0\0".to_vec();
+    tiff.extend([0u8; 64]);
+    let a = analyse(&tiff, "a.tif");
+    assert_eq!(a.parties[0].manques, [Raison::FinIntrouvable]);
+    tiff.extend(b"Rar!\x1A\x07\x01\x00abc");
+    let a = analyse(&tiff, "a.tif");
+    assert!(a.parties.iter().any(|p| p.type_ == Type::Rar), "{:?}", types(&a));
+    // Un son (format inerte) qui cache une archive 7z : vue aussi.
+    let mut son = b"ID3\x03\x00\x00\x00\x00\x00\x00".to_vec();
+    son.extend([0x11u8; 100]);
+    son.extend(b"7z\xBC\xAF\x27\x1C\x00\x04");
+    let a = analyse(&son, "a.mp3");
+    assert!(a.parties.iter().any(|p| p.type_ == Type::SeptZip), "{:?}", types(&a));
+}
+
+/// VBA de la campagne d'attaque n° 3 : une source leurre non vide derrière du p-code (« VBA stomping ») passait pour
+/// « entièrement lue » ; une continuation de ligne (« Sub _ » puis « AutoOpen() ») cachait la procédure
+/// automatique ; des fins de ligne CR seules aussi.
+#[test]
+fn vba_ecrase_et_continuations() {
+    let leurre = "Attribute VB_Name = \"Module1\"\r\nSub Bonjour()\r\nEnd Sub\r\n";
+    let a = analyse(&document_vba("Macros", leurre, true), "a.doc");
+    assert!(!a.entierement_lue());
+    assert!(a.manques().any(|(_, r)| *r == Raison::PcodeNonLu));
+    for source in [
+        "Attribute VB_Name = \"Module1\"\r\nSub _\r\nAutoOpen()\r\n  MsgBox 1\r\nEnd Sub\r\n",
+        "Attribute VB_Name = \"Module1\"\r\nPrivate Sub _\r\n Document_Open()\r\n  MsgBox 1\r\nEnd Sub\r\n",
+        "Attribute VB_Name = \"Module1\"\rSub AutoOpen()\r  MsgBox 1\rEnd Sub\r",
+        "Attribute VB_Name = \"Module1\"\nPublic _\n Sub _\n AutoOpen()\nEnd Sub\n",
+    ] {
+        let a = analyse(&document_vba("Macros", source, true), "a.doc");
+        let auto = a.parties[0]
+            .faits
+            .iter()
+            .any(|f| matches!(f, Fait::ProcedureAutomatique(p) if p.eq_ignore_ascii_case("autoopen") || p.eq_ignore_ascii_case("document_open")));
+        assert!(auto, "{source:?}");
+    }
+    // « _ » collé à un mot n'est pas une continuation.
+    assert_eq!(
+        vba::procedures_automatiques("Sub Mon_\r\nAutoOpen()\r\n", "M"),
+        Vec::<String>::new()
+    );
+}
+
+/// OOXML de la campagne d'attaque n° 3 : « [content_types].xml » en minuscules (lu comme un simple zip), .rels en
+/// UTF-16 : leurs relations externes sont vues.
+#[test]
+fn ooxml_casse_et_utf16() {
+    let types = br#"<?xml version="1.0"?><Types><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/></Types>"#;
+    let rels = r#"<Relationships><Relationship Id="r1" Type="x/attachedTemplate" Target="https://exemple.invalid/m.dotm" TargetMode="External"/></Relationships>"#;
+    let mut rels16 = vec![0xFF, 0xFE];
+    rels16.extend(rels.encode_utf16().flat_map(u16::to_le_bytes));
+    for (nom_types, contenu) in [
+        ("[content_types].xml", rels.as_bytes().to_vec()),
+        ("[Content_Types].xml", rels16),
+    ] {
+        let docx = zip_de(&[(nom_types, 8, types), ("word/_rels/settings.xml.rels", 8, &contenu)]);
+        let a = analyse(&docx, "a.docx");
+        assert_eq!(a.parties[0].type_, Type::Ooxml, "{nom_types}");
+        assert!(
+            a.parties[0]
+                .faits
+                .contains(&Fait::RelationExterne("https://exemple.invalid/m.dotm".into())),
+            "{nom_types}"
+        );
+    }
+}
+
+/// Un raccourci vers le nom court 8.3 d'un interpréteur (« POWERS~1.EXE ») : reconnu comme le nom long ; un nom court
+/// d'un autre programme ne l'est pas.
+#[test]
+fn lnk_nom_court() {
+    let mut l = lnk::Lnk {
+        chemin_local: Some("C:\\WINDOWS\\System32\\WINDOW~1\\v1.0\\POWERS~1.EXE".into()),
+        arguments: Some("-nop -w hidden -c Write-Output bonjour".into()),
+        ..lnk::Lnk::default()
+    };
+    assert!(l.interpreteurs().contains(&"powershell.exe"), "{:?}", l.interpreteurs());
+    l.chemin_local = Some("C:\\Windows\\System32\\SCRIPT~1.EXE".into());
+    assert!(l.interpreteurs().contains(&"scriptrunner.exe"));
+    l.chemin_local = Some("C:\\Windows\\System32\\msdt.exe".into());
+    assert!(l.interpreteurs().contains(&"msdt.exe"));
+    l.chemin_local = Some("C:\\Program Files\\NOTEPA~1.EXE".into());
+    l.arguments = None;
+    assert_eq!(l.interpreteurs(), Vec::<&str>::new());
+}
+
+/// Le délai de l'analyse tient, même dans une seule décompression (des blocs deflate vides) ; quatre entrées de
+/// tailles annoncées différentes sur les mêmes données ne se décompressent qu'une fois.
+#[test]
+fn delai_et_donnees_partagees() {
+    let zip = |vides: &[u8], n: usize, tailles_differentes: bool| {
+        let crc = crate::archives::crc32::crc32(b"x");
+        let nom = b"p/a.md";
+        let mut z = Vec::new();
+        z.extend(0x0403_4b50u32.to_le_bytes());
+        z.extend([20, 0, 0, 0, 8, 0, 0, 0, 0, 0]);
+        z.extend(crc.to_le_bytes());
+        z.extend(u32::try_from(vides.len()).unwrap().to_le_bytes());
+        z.extend(1u32.to_le_bytes());
+        z.extend(u16::try_from(nom.len()).unwrap().to_le_bytes());
+        z.extend(0u16.to_le_bytes());
+        z.extend(nom);
+        z.extend(vides);
+        let debut = z.len();
+        for k in 0..n {
+            let taille = if tailles_differentes {
+                1 + u32::try_from(k).unwrap()
+            } else {
+                1
+            };
+            z.extend(0x0201_4b50u32.to_le_bytes());
+            z.extend([20, 0, 20, 0, 0, 0, 8, 0, 0, 0, 0, 0]);
+            z.extend(crc.to_le_bytes());
+            z.extend(u32::try_from(vides.len()).unwrap().to_le_bytes());
+            z.extend(taille.to_le_bytes());
+            z.extend(u16::try_from(nom.len()).unwrap().to_le_bytes());
+            z.extend([0u8; 12]);
+            z.extend(0u32.to_le_bytes());
+            z.extend(nom);
+        }
+        let taille_centrale = z.len() - debut;
+        z.extend(0x0605_4b50u32.to_le_bytes());
+        z.extend([0u8; 4]);
+        z.extend(u16::try_from(n).unwrap().to_le_bytes());
+        z.extend(u16::try_from(n).unwrap().to_le_bytes());
+        z.extend(u32::try_from(taille_centrale).unwrap().to_le_bytes());
+        z.extend(u32::try_from(debut).unwrap().to_le_bytes());
+        z.extend(0u16.to_le_bytes());
+        z
+    };
+    let bornes = Bornes {
+        delai: std::time::Duration::from_millis(100),
+        ..Bornes::default()
+    };
+    let debut = std::time::Instant::now();
+    let gros = crate::archives::deflate::tests::blocs_vides(4 << 20);
+    let a = super::analyser(&zip(&gros, 1, false), "a.zip", &bornes, &mut |_, _| {});
+    assert!(
+        a.manques().any(|(_, r)| *r == Raison::Delai),
+        "{:?}",
+        a.manques().collect::<Vec<_>>()
+    );
+    // 4 Mio de blocs vides coûtent ≈ 5 s de processeur optimisé, bien plus dans un test (miniz_oxide n'y est pas
+    // optimisé) : l'échéance, regardée entre deux tranches de 64 Kio, l'a arrêté bien avant.
+    assert!(
+        debut.elapsed() < std::time::Duration::from_secs(20),
+        "{:?}",
+        debut.elapsed()
+    );
+    let petit = crate::archives::deflate::tests::blocs_vides(16 << 10);
+    let a = analyse(&zip(&petit, 4, true), "a.zip");
+    let partagees = a
+        .parties
+        .iter()
+        .filter(|p| p.faits.iter().any(|f| matches!(f, Fait::DonneesPartagees(_))))
+        .count();
+    assert_eq!(partagees, 3);
+}
+
 #[test]
 fn regressions_du_fuzzing() {
     // Une source VBA dont une ligne commence par un caractère sur plusieurs octets (coupé au milieu).
@@ -693,7 +930,7 @@ proptest::proptest! {
     #[test]
     fn jamais_de_plantage_et_bornes(
         octets in proptest::collection::vec(proptest::num::u8::ANY, 0..3000),
-        sorte in 0usize..6,
+        sorte in 0usize..8,
         i in 0usize..100_000,
         x in proptest::num::u8::ANY,
     ) {
@@ -704,6 +941,8 @@ proptest::proptest! {
             2 => document_vba("Macros", "Sub AutoOpen()\r\nEnd Sub\r\n", true),
             3 => lnk::essais::raccourci(Some(&[5, 0, b'a', b'b', b'c']), Some("C:\\a.exe"), Some("x"), &octets),
             4 => zip_de(&[("a.zip", 0, &zip_de(&[("b.txt", 8, &octets)])), ("c", 8, &octets)]),
+            5 => [jpeg(), octets.clone()].concat(),
+            6 => [gif(), octets.clone()].concat(),
             _ => elf::essais::elf64(5, false, 0, &octets),
         };
         if !base.is_empty() && sorte != 0 {
@@ -755,6 +994,14 @@ fn ecrire_les_graines() {
     tar[257..263].copy_from_slice(b"ustar\0");
     tar.extend(b"abc");
     tar.resize(2048, 0);
+    let rels16: Vec<u8> = [0xFF, 0xFE]
+        .into_iter()
+        .chain(
+            r#"<Relationships><Relationship Target="https://exemple.invalid/m.dotm" TargetMode="&#69;xternal"/></Relationships>"#
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes),
+        )
+        .collect();
     let lnk = lnk::essais::raccourci(
         Some(&[6, 0, b'c', b'm', b'd', 0]),
         Some("C:\\Windows\\System32\\cmd.exe"),
@@ -776,6 +1023,15 @@ fn ecrire_les_graines() {
             ]),
         ),
         ("lnk.bin", lnk.clone()),
+        ("jpeg-rar.bin", [jpeg(), b"Rar!\x1A\x07\x01\x00abc".to_vec()].concat()),
+        ("gif-7z.bin", [gif(), b"7z\xBC\xAF\x27\x1C\x00\x04".to_vec()].concat()),
+        (
+            "docx-rels-utf16.bin",
+            zip_de(&[
+                ("[content_types].xml", 8, b"<Types/>"),
+                ("word/_rels/settings.xml.rels", 8, &rels16),
+            ]),
+        ),
         ("elf.bin", elf::essais::elf64(7, true, 0x40_0180, b"PK\x05\x06")),
         (
             "macho-universel.bin",
@@ -797,11 +1053,14 @@ fn ecrire_les_graines() {
     ovba_seul.extend(ovba::essais::compresser(source.as_bytes()));
     let mut lnk_seul = vec![3u8];
     lnk_seul.extend(&lnk);
+    let mut xml_seul = vec![4u8];
+    xml_seul.extend(&rels16);
     let lecteurs: Vec<(&str, Vec<u8>)> = vec![
         ("cfb.bin", cfb_seul),
         ("ovba.bin", ovba_seul),
         ("dir.bin", dir),
         ("lnk.bin", lnk_seul),
+        ("xml.bin", xml_seul),
     ];
     for (dossier, graines) in [("analyse_fichier", fichier), ("analyse_lecteurs", lecteurs)] {
         let d = racine.join(dossier);

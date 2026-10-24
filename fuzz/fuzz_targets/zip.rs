@@ -32,7 +32,7 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
     let p = zip::parcourir(octets, BORNES.entrees);
     assert!(p.entrees.len() <= BORNES.entrees);
     for vue in &p.entrees {
-        if let Ok(x) = zip::extraire(octets, vue, BORNES.fichier) {
+        if let Ok(x) = zip::extraire_avant(octets, vue, BORNES.fichier, None) {
             assert!(x.contenu.len() <= BORNES.fichier);
         }
     }

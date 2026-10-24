@@ -629,8 +629,14 @@ pub(crate) struct Extrait {
     pub reste: std::ops::Range<usize>,
 }
 
-/// Le contenu de l'entrée `vue` de `octets`, au plus `limite` octets : stockée ou deflate seulement.
-pub(crate) fn extraire(octets: &[u8], vue: &Vue, limite: usize) -> Result<Extrait, Refus> {
+/// Le contenu de l'entrée `vue` de `octets`, au plus `limite` octets : stockée ou deflate seulement, le flux deflate
+/// arrêté à `echeance` (`Fin::Delai`) : une seule entrée de blocs vides ne dépasse plus le délai de l'analyse.
+pub(crate) fn extraire_avant(
+    octets: &[u8],
+    vue: &Vue,
+    limite: usize,
+    echeance: Option<std::time::Instant>,
+) -> Result<Extrait, Refus> {
     use super::deflate::Fin;
     if vue.drapeaux & 0x41 != 0 || vue.methode == 99 {
         return Err(Refus::Chiffree);
@@ -646,7 +652,7 @@ pub(crate) fn extraire(octets: &[u8], vue: &Vue, limite: usize) -> Result<Extrai
         0 if donnees.len() > limite => (donnees[..limite].to_vec(), Fin::Limite, 0..0),
         0 => (donnees.to_vec(), Fin::Complet, 0..0),
         8 => {
-            let lu = super::deflate::inflater(donnees, limite);
+            let lu = super::deflate::inflater_avant(donnees, limite, echeance);
             // Une entrée locale de taille inconnue court jusqu'à la fin du fichier : son « reste » est la suite.
             let reste = if lu.fin == Fin::Complet && !vue.taille_inconnue && lu.lus < donnees.len() {
                 debut + lu.lus..debut + donnees.len()
@@ -1041,8 +1047,8 @@ mod tests {
     /// partielle prise pour l'archive entière ; sans échéance proche, la même archive se lit.
     #[test]
     fn lire_s_arrete_a_l_echeance() {
-        let noms: Vec<String> = (0..64).map(|n| format!("pages/linux/{n}.md")).collect();
-        let vides = crate::archives::deflate::tests::blocs_vides(4000);
+        let noms: Vec<String> = (0..16).map(|n| format!("pages/linux/{n}.md")).collect();
+        let vides = crate::archives::deflate::tests::blocs_vides(1000);
         let entrees: Vec<(&str, Vec<u8>, u16, u32)> = noms.iter().map(|n| (n.as_str(), vides.clone(), 8, 1)).collect();
         let zip = archive(&entrees);
         let bornes = Bornes {
@@ -1050,7 +1056,7 @@ mod tests {
             fichier: 1 << 16,
             total: 1 << 20,
         };
-        assert_eq!(lire(&zip, &bornes).len(), 64);
+        assert_eq!(lire(&zip, &bornes).len(), 16);
         assert_eq!(lire_avant(&zip, &bornes, std::time::Instant::now()), []);
     }
 
