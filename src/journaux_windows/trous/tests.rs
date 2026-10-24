@@ -56,6 +56,7 @@ fn contexte<'a>(morceaux: &'a [RecapMorceau], entre: Nature, pertes: &'a [u64]) 
         entre_morceaux: entre,
         pertes,
         prochain: None,
+        prochain_peut_retarder: false,
         capacite: 0,
     }
 }
@@ -468,6 +469,7 @@ proptest! {
             entre_morceaux: entre,
             pertes: &cas.pertes,
             prochain: cas.prochain,
+            prochain_peut_retarder: false,
             capacite: 0,
         };
         let s = juger_avec(cas.presents.clone(), &c);

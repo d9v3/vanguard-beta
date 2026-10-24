@@ -745,8 +745,18 @@ fn chaque_morceau_laisse_son_recapitulatif() {
         ..Bornes::default()
     };
     let lu = lire_octets(&fichier(&[morceau_type(1), morceau_type(4)]), &bornes).unwrap();
-    assert_eq!(lu.bilan.morceaux, [recap(0, EtatMorceau::Lu, Some((1, 3)), 1, plein)]);
+    // Le troisième, au-delà de la borne : son numéro est connu, il existe.
+    assert_eq!(lu.bilan.morceaux, [recap(0, EtatMorceau::Lu, Some((1, 3)), 0, plein)]);
+    assert_eq!(lu.bilan.numeros_non_rendus, [(3, 0)]);
     assert_eq!(lu.bilan.morceaux_hors_borne, 1);
+    // Un morceau préparé sans enregistrement (un journal vidé par Windows) n'est pas un morceau à zéro.
+    let prepare = Ecrivain::new().finir();
+    let lu = lire_type(&fichier(&[prepare, vec![0; MORCEAU]]));
+    assert_eq!(
+        lu.bilan.morceaux.iter().map(|m| m.etat).collect::<Vec<_>>(),
+        [EtatMorceau::Prepare, EtatMorceau::Vide]
+    );
+    assert_eq!(lu.bilan.nombre_morceaux, Some(2));
     // Un morceau lu dont l'en-tête ne se tient pas : rien d'annoncé, ou des numéros et des identifiants qui ne
     // comptent pas autant, ou un enregistrement hors de l'annonce.
     for (ou, valeur) in [(32usize, 0u64), (16, 2), (32, 2)] {

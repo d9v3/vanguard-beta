@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use chrono::DateTime;
 
 use super::*;
+use crate::journaux_windows::evtx::EtatMorceau;
 use crate::journaux_windows::evtx::recalculer_crc;
 use crate::journaux_windows::evtx::tests::{fichier, morceau_aux_numeros};
 use crate::journaux_windows::trous::CLE_MAX;
@@ -312,11 +313,115 @@ fn les_derniers_otes_se_voient_a_l_en_tete_du_fichier() {
     let (b, vus) = lire(&f, "tout");
     assert_eq!(vus.len(), 0);
     assert_eq!(trous_du_journal(&b), [(1, 60, Nature::Absents)]);
-    // Le même fichier sale (l'en-tête d'un fichier sale retarde) : le prochain numéro n'est pas cru.
+    // Le même fichier marqué sale (le drapeau est hors du CRC de l'en-tête, gratuit) : un prochain numéro en avance
+    // reste un signe. Un prochain en retard, ordinaire dans un fichier sale, n'est pas une incohérence.
     let mut g = fichier(&[morceau(1, 30, &[]), morceau(31, 57, &[])]);
     g[24..32].copy_from_slice(&61u64.to_le_bytes());
     let (b, _) = lire(&sale(g), "fin-sale");
+    assert_eq!(trous_du_journal(&b), [(58, 60, Nature::Absents)]);
+    let mut g = fichier(&[morceau(1, 30, &[]), morceau(31, 57, &[])]);
+    g[24..32].copy_from_slice(&40u64.to_le_bytes());
+    let (b, _) = lire(&sale(g), "retard-sale");
+    assert_eq!((trous_du_journal(&b), b.suites[0].incoherences), (vec![], 0));
+}
+
+/// Un journal vidé par Windows (wevtutil cl : un morceau préparé, aucun enregistrement) continue sa numérotation :
+/// son prochain numéro n'attend rien. Le même journal remis à zéro à la main (morceaux tout à zéro), si.
+#[test]
+fn un_journal_vide_par_windows_n_a_pas_de_trou() {
+    use crate::journaux_windows::evtx::tests::morceau_aux_numeros as m;
+    let vide = avec_en_tete(fichier(&[m(&[], |n| n)]), 0, 5000, 1);
+    let (b, _) = lire(&vide, "vide");
+    assert_eq!(b.lecture.as_ref().unwrap().morceaux[0].etat, EtatMorceau::Prepare);
     assert_eq!(trous_du_journal(&b), []);
+    let zero = avec_en_tete(fichier(&[vec![0; 65_536]]), 0, 5000, 1);
+    assert_eq!(trous_du_journal(&lire(&zero, "zero").0).len(), 1);
+}
+
+/// 64 Kio de rebut ajoutés au bout d'un fichier propre : au-delà des morceaux qu'annonce son en-tête, ils n'ont rien
+/// pu porter, et ne couvrent pas un morceau disparu.
+#[test]
+fn un_bloc_de_rebut_ne_couvre_rien() {
+    let mut f = fichier(&[morceau(1, 30, &[]), vec![0; 65_536], morceau(61, 90, &[])]);
+    f.extend((0..65_536u32).map(|i| (i % 251) as u8));
+    let (b, _) = lire(&f, "rebut");
+    assert!(!b.complet());
+    assert_eq!(trous_du_journal(&b), [(31, 60, Nature::Absents)]);
+}
+
+/// Des fausses signatures écrites dans un morceau (CRC recalculés) ne couvrent pas un retrait : un passage abîmé ne
+/// cache qu'un enregistrement par 28 octets. Un enregistrement entier au BinXml illisible existe : pas un trou.
+#[test]
+fn les_enregistrements_abimes_ne_couvrent_que_leur_place() {
+    let mut m = morceau(1, 30, &[14, 15, 16]);
+    let libre = u32::from_le_bytes(m[48..52].try_into().unwrap()) as usize;
+    for k in 0..3 {
+        m[libre + 16 * k..libre + 16 * k + 4].copy_from_slice(b"**\0\0");
+        m[libre + 16 * k + 4..libre + 16 * k + 16].fill(0xAB);
+    }
+    m[48..52].copy_from_slice(&u32::try_from(libre + 48).unwrap().to_le_bytes());
+    let (b, _) = lire(&fichier(&[m, morceau(31, 60, &[])]), "signatures");
+    assert!(b.lecture.as_ref().unwrap().enregistrements_illisibles > 0);
+    assert_eq!(trous_du_journal(&b), [(14, 16, Nature::Retires)]);
+    // Le BinXml du 14e enregistrement abîmé (son premier jeton), CRC recalculés : illisible, mais son numéro est là.
+    let mut m = morceau(1, 30, &[]);
+    let positions: Vec<usize> = (512..65_532).filter(|&i| m[i..i + 4] == *b"**\0\0").collect();
+    m[positions[13] + 24] = 0xEE;
+    let (b, vus) = lire(&fichier(&[m]), "binxml");
+    assert_eq!(vus.len(), 29);
+    assert_eq!(b.lecture.as_ref().unwrap().numeros_non_rendus, [(14, 0)]);
+    assert_eq!(trous_du_journal(&b), []);
+    assert!(!b.complet());
+}
+
+/// Dans un fichier sale, un morceau resté d'un tour plus ancien (un seul retour en arrière, que le morceau suivant
+/// ne prolonge pas) est un signe de copie à chaud.
+#[test]
+fn un_morceau_d_un_tour_plus_ancien_est_un_signe_de_copie() {
+    let f = sale(fichier(&[
+        morceau(700, 729, &[]),
+        morceau(100, 129, &[]),
+        morceau(670, 699, &[]),
+    ]));
+    assert_eq!(trous_du_journal(&lire(&f, "tour").0), [(130, 669, Nature::CopieAChaud)]);
+}
+
+/// Des variantes de casse d'un nom prioritaire (sur un système de fichiers qui les distingue) ne passent pas devant
+/// le vrai journal ni hors de la borne : un seul fichier par nom prioritaire, l'exact d'abord.
+#[cfg(target_os = "linux")]
+#[test]
+fn les_variantes_de_casse_ne_font_pas_sortir_le_vrai_journal() {
+    let d = jetable("casse");
+    std::fs::write(d.join("Security.evtx"), fichier(&[morceau(1, 5, &[])])).unwrap();
+    for i in 0..40u32 {
+        let nom: String = "security.evtx"
+            .chars()
+            .enumerate()
+            .map(|(k, c)| {
+                if (i >> (k % 8)) & 1 == 1 {
+                    c.to_ascii_uppercase()
+                } else {
+                    c
+                }
+            })
+            .collect();
+        if nom != "Security.evtx" {
+            std::fs::write(d.join(nom), b"").unwrap();
+        }
+    }
+    let bornes = BornesFichiers {
+        fichiers: 4,
+        ..BornesFichiers::default()
+    };
+    let b = lire_dossier(&d, &Filtre::default(), &bornes, |_| {}).unwrap();
+    assert!(
+        b.fichiers[0].chemin.ends_with("Security.evtx"),
+        "{:?}",
+        b.fichiers[0].chemin
+    );
+    assert_eq!(b.fichiers.len(), 4);
+    assert!(b.hors_borne > 0);
+    let _ = std::fs::remove_dir_all(&d);
 }
 
 /// Le drapeau « sale » (hors du CRC de l'en-tête) ou un en-tête abîmé, posés sans rien recalculer, ne suffisent pas

@@ -100,7 +100,8 @@ impl BilanFichier {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BilanDossier {
     pub dossier: PathBuf,
-    /// Un bilan par fichier .evtx essayé, dans l'ordre de leur nom.
+    /// Un bilan par fichier .evtx essayé, dans l'ordre de lecture : les journaux qui comptent (`PRIORITAIRES`), puis
+    /// les autres du plus petit au plus grand.
     pub fichiers: Vec<BilanFichier>,
     /// Fichiers .evtx au-delà de `BornesFichiers::fichiers` ou `BornesFichiers::octets` : pas lus.
     pub hors_borne: u64,
@@ -142,13 +143,12 @@ const PRIORITAIRES: [&str; 16] = [
     "05-Defender.evtx",
 ];
 
-/// Le rang de lecture d'un fichier d'après son nom : celui de la liste des prioritaires, sinon après eux.
-fn priorite(chemin: &Path) -> usize {
+/// Le rang d'un fichier dans la liste des prioritaires, et si son nom y est écrit exactement (même casse) : sur un
+/// système de fichiers sensible à la casse, « SECURity.evtx » peut voisiner avec le vrai.
+fn priorite(chemin: &Path) -> Option<(usize, bool)> {
     let nom = chemin.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-    PRIORITAIRES
-        .iter()
-        .position(|p| p.eq_ignore_ascii_case(nom))
-        .unwrap_or(PRIORITAIRES.len())
+    let rang = PRIORITAIRES.iter().position(|p| p.eq_ignore_ascii_case(nom))?;
+    Some((rang, PRIORITAIRES[rang] == nom))
 }
 
 /// Coupe un nom venu du journal à `CLE_MAX` caractères.
@@ -156,8 +156,9 @@ fn couper(t: &str) -> String {
     t.chars().take(CLE_MAX).collect()
 }
 
-/// Lit les fichiers .evtx du dossier (pas ses sous-dossiers), dans l'ordre de leur nom, et donne à `recevoir` chaque
-/// événement que `filtre` veut. `Err` : le dossier lui-même ne se lit pas.
+/// Lit les fichiers .evtx du dossier (pas ses sous-dossiers), les journaux qui comptent d'abord (un seul fichier par
+/// nom prioritaire, celui écrit exactement de préférence), puis les autres du plus petit au plus grand, et donne à
+/// `recevoir` chaque événement que `filtre` veut. `Err` : le dossier lui-même ne se lit pas.
 pub(crate) fn lire_dossier(
     dossier: &Path,
     filtre: &Filtre,
@@ -171,9 +172,20 @@ pub(crate) fn lire_dossier(
         entrees_illisibles: 0,
         autres: 0,
     };
-    // (priorité, taille, chemin). La taille d'après le dossier, sans suivre de lien : elle décide seulement de
-    // l'ordre et de la borne ; le lecteur borne lui-même ce qu'il lit.
-    let mut chemins: Vec<(usize, u64, PathBuf)> = Vec::new();
+    // La taille d'après le dossier, sans suivre de lien : elle décide seulement de l'ordre et de la borne ; le
+    // lecteur borne lui-même ce qu'il lit.
+    let taille = |c: &Path| std::fs::symlink_metadata(c).map_or(0, |m| m.len());
+    // Un fichier par nom prioritaire (écrit exactement, s'il y en a un), et les autres : au-delà de deux fois la
+    // borne, ceux-ci ne sont comptés qu'en nombre (un dossier hostile peut contenir des millions d'entrées).
+    let mut prioritaires: Vec<Option<(bool, PathBuf)>> = vec![None; PRIORITAIRES.len()];
+    let mut autres: Vec<(u64, PathBuf)> = Vec::new();
+    let ranger_autre = |c: PathBuf, autres: &mut Vec<(u64, PathBuf)>, bilan: &mut BilanDossier| {
+        if autres.len() >= bornes.fichiers.saturating_mul(2) {
+            bilan.hors_borne += 1;
+        } else {
+            autres.push((taille(&c), c));
+        }
+    };
     for entree in std::fs::read_dir(dossier)? {
         let Ok(entree) = entree else {
             bilan.entrees_illisibles += 1;
@@ -188,20 +200,30 @@ pub(crate) fn lire_dossier(
             bilan.autres += 1;
             continue;
         }
-        let rang = priorite(&chemin);
-        // Un dossier hostile peut contenir des millions d'entrées : au-delà de deux fois la borne, les autres ne
-        // sont comptées qu'en nombre ; les prioritaires (seize noms) sont toujours gardés.
-        if rang == PRIORITAIRES.len() && chemins.len() >= bornes.fichiers.saturating_mul(2) {
-            bilan.hors_borne += 1;
-            continue;
+        match priorite(&chemin) {
+            Some((rang, exact)) => match prioritaires[rang].take() {
+                None => prioritaires[rang] = Some((exact, chemin)),
+                Some((false, deja)) if exact => {
+                    ranger_autre(deja, &mut autres, &mut bilan);
+                    prioritaires[rang] = Some((true, chemin));
+                }
+                Some(deja) => {
+                    prioritaires[rang] = Some(deja);
+                    ranger_autre(chemin, &mut autres, &mut bilan);
+                }
+            },
+            None => ranger_autre(chemin, &mut autres, &mut bilan),
         }
-        let taille = std::fs::symlink_metadata(&chemin).map_or(0, |m| m.len());
-        chemins.push((rang, taille, chemin));
     }
-    chemins.sort();
+    autres.sort();
+    let chemins = prioritaires
+        .into_iter()
+        .flatten()
+        .map(|(_, c)| (taille(&c), c))
+        .chain(autres);
     let mut octets = 0u64;
     let mut trous_restants = bornes.trous_dossier;
-    for (_, taille, chemin) in chemins {
+    for (taille, chemin) in chemins {
         if bilan.fichiers.len() >= bornes.fichiers || octets.saturating_add(taille) > bornes.octets {
             bilan.hors_borne += 1;
             continue;
@@ -239,6 +261,19 @@ fn ouvrir(chemin: &Path) -> Result<std::fs::File, ErreurFichier> {
         options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     }
     let fichier = options.open(chemin).map_err(|e| ErreurFichier::Ouverture(e.kind()))?;
+    // Un point d'analyse qui n'est pas un lien (fichier OneDrive « à la demande », déduplication) s'ouvre lui-même
+    // sans ses données : rouvert normalement, il se lit (un lien, lui, n'est pas un fichier et reste refusé).
+    #[cfg(windows)]
+    let fichier = {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        match fichier.metadata() {
+            Ok(m) if m.file_type().is_file() && m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 => {
+                std::fs::File::open(chemin).map_err(|e| ErreurFichier::Ouverture(e.kind()))?
+            }
+            _ => fichier,
+        }
+    };
     match fichier.metadata() {
         Ok(m) if m.file_type().is_file() => Ok(fichier),
         Ok(_) => Err(ErreurFichier::PasUnFichier),
@@ -338,6 +373,12 @@ fn lire_fichier_borne(
     });
     match lecture {
         Ok(lu) => {
+            // Les enregistrements entiers non rendus existent : leur numéro n'est pas un trou.
+            presents.extend(lu.numeros_non_rendus.iter().map(|&(numero, rang)| Present {
+                numero,
+                date: None,
+                morceau: Some(rang),
+            }));
             let max_trous = bornes.trous.min(trous_restants);
             bilan.suites = suites(&lu, presents, bilan.exporte, origines, max_trous);
             bilan.lecture = Ok(lu);
@@ -351,26 +392,34 @@ fn lire_fichier_borne(
 /// Les signes d'une copie à chaud, que le drapeau « sale » seul ne prouve pas (il n'est pas couvert par le CRC de
 /// l'en-tête) : un morceau à zéro avant un morceau écrit (jamais arrivé sur le disque ; Windows remplit ses
 /// morceaux dans l'ordre, et un journal fermé proprement n'a de morceaux à zéro qu'à la fin), ou des morceaux
-/// d'époques mêlées (plus d'un retour en arrière des numéros dans l'ordre du fichier, quand un journal tournant
-/// n'en a qu'un, là où il reprend au début). Vus dans les échantillons publics copiés d'un cliché de volume.
+/// d'époques mêlées : plus d'un retour en arrière des numéros dans l'ordre du fichier (un journal tournant n'en a
+/// qu'un, là où il reprend au début), ou un retour en arrière vers un morceau que le suivant ne prolonge pas (un
+/// morceau resté d'un tour plus ancien). Vus dans les échantillons publics copiés d'un cliché de volume. Un
+/// attaquant qui remet un morceau à zéro et pose le drapeau fabrique les mêmes signes : la copie à chaud reste une
+/// réserve, jamais une absence de constat.
 fn signes_de_copie(lu: &Bilan) -> bool {
     let mut vide_avant = false;
     let mut zero_au_milieu = false;
     for m in &lu.morceaux {
         match m.etat {
-            EtatMorceau::Vide => vide_avant = true,
+            EtatMorceau::Vide | EtatMorceau::Prepare => vide_avant = true,
             _ if vide_avant => zero_au_milieu = true,
             _ => {}
         }
     }
-    let debuts: Vec<u64> = lu
+    let plages: Vec<(u64, u64)> = lu
         .morceaux
         .iter()
         .filter(|m| m.etat == EtatMorceau::Lu)
-        .filter_map(|m| m.annonce.map(|a| a.0))
+        .filter_map(|m| m.annonce)
         .collect();
-    let reculs = debuts.windows(2).filter(|p| p[1] < p[0]).count();
-    zero_au_milieu || reculs > 1
+    let reculs: Vec<usize> = (1..plages.len()).filter(|&i| plages[i].0 < plages[i - 1].0).collect();
+    let recul_isole = reculs.iter().any(|&i| {
+        plages
+            .get(i + 1)
+            .is_some_and(|suivant| plages[i].1.checked_add(1) != Some(suivant.0))
+    });
+    zero_au_milieu || reculs.len() > 1 || recul_isole
 }
 
 /// La nature d'un trou entre deux morceaux que les pertes de lecture ne couvrent pas, d'après l'état du fichier.
@@ -382,14 +431,25 @@ pub(crate) fn entre_morceaux(lu: &Bilan) -> Nature {
     }
 }
 
-/// Ce que la lecture a perdu sans savoir quels numéros : les morceaux écartés sans plage connue (à leur capacité),
-/// les morceaux au-delà des bornes et ceux sans récapitulatif (pleins).
+/// Ce que la lecture a perdu sans savoir quels numéros : les morceaux écartés sans plage connue (à leur capacité ;
+/// rien pour un bloc au-delà du nombre de morceaux qu'annonce l'en-tête d'un fichier propre, qui n'a rien pu
+/// porter : du rebut ajouté au bout), les morceaux au-delà des bornes et ceux sans récapitulatif (pleins).
 fn pertes(lu: &Bilan) -> Vec<u64> {
+    let ecrits = lu
+        .nombre_morceaux
+        .filter(|_| !lu.sale && !lu.en_tete_abime)
+        .map(u64::from);
     let mut sortie: Vec<u64> = lu
         .morceaux
         .iter()
         .filter(|m| m.etat == EtatMorceau::Ecarte && m.annonce.is_none())
-        .map(|m| m.capacite)
+        .map(|m| {
+            if ecrits.is_some_and(|n| m.rang >= n) {
+                0
+            } else {
+                m.capacite
+            }
+        })
         .collect();
     // Chacun pour soi : dans un journal tournant, deux morceaux voisins dans le fichier peuvent porter des numéros
     // éloignés. Au-delà de `MAX_RECAPS` pertes, la dernière prend le reste (le bilan ne grossit pas sans fin).
@@ -414,13 +474,22 @@ fn suites(
 ) -> Vec<Suite> {
     let pertes = pertes(lu);
     let morceaux = lu.morceaux.len() as u64 + lu.morceaux_hors_borne + lu.morceaux_sans_recap;
+    let vide_par_windows = presents.is_empty()
+        && lu.morceaux.iter().any(|m| m.etat == EtatMorceau::Prepare)
+        && lu
+            .morceaux
+            .iter()
+            .all(|m| matches!(m.etat, EtatMorceau::Prepare | EtatMorceau::Vide));
     let contexte = Contexte {
         morceaux: &lu.morceaux,
         entre_morceaux: entre_morceaux(lu),
         pertes: &pertes,
-        // Le prochain numéro de l'en-tête ne se croit que d'un fichier fermé proprement : dans un fichier sale,
-        // il retarde.
-        prochain: lu.prochain_numero.filter(|_| !lu.sale && !lu.en_tete_abime),
+        // Le prochain numéro de l'en-tête (juste, couvert par son CRC) : dans un fichier sale, il retarde (vu dans
+        // chaque échantillon sale), mais un prochain en avance y reste un signe ; le drapeau sale, hors du CRC, ne
+        // le fait pas taire. Rien pour un journal vidé par Windows (un morceau préparé, aucun enregistrement) : la
+        // numérotation continue après un effacement, sans trou.
+        prochain: lu.prochain_numero.filter(|_| !vide_par_windows),
+        prochain_peut_retarder: lu.sale,
         capacite: morceaux.saturating_mul(CAPACITE_MORCEAU),
     };
     let mut sortie = vec![trous::juger(Numerotation::Journal, presents, &contexte, max_trous)];

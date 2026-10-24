@@ -208,7 +208,17 @@ pub(crate) struct Bilan {
     /// un (vu sur chaque échantillon public propre) : les derniers enregistrements ôtés s'y voient. Dans un fichier
     /// sale, il retarde.
     pub prochain_numero: Option<u64>,
+    /// Le nombre de morceaux qu'annonce l'en-tête du fichier (octet 42), quand cet en-tête est juste. Dans un fichier
+    /// fermé proprement, c'est le nombre de morceaux écrits : un bloc au-delà n'a rien pu porter.
+    pub nombre_morceaux: Option<u16>,
+    /// Les numéros (et le rang du morceau) des enregistrements entiers (signature, taille et copie justes) qui n'ont
+    /// pas été rendus : BinXml illisible, ou au-delà de `Bornes::enregistrements`. Ils existent : leur numéro n'est
+    /// pas un trou. Au plus `MAX_NON_RENDUS` ; les suivants comptent dans `RecapMorceau::non_rendus`.
+    pub numeros_non_rendus: Vec<(u64, u64)>,
 }
+
+/// Les numéros d'enregistrements non rendus gardés au plus.
+pub(crate) const MAX_NON_RENDUS: usize = 1 << 18;
 
 /// Les récapitulatifs de morceaux gardés au plus : 4 Gio de morceaux, quatre fois la borne de taille par défaut ;
 /// une borne choisie démesurée ne fait pas grossir le bilan sans fin.
@@ -219,8 +229,11 @@ pub(crate) const MAX_RECAPS: usize = 1 << 16;
 pub(crate) enum EtatMorceau {
     /// Ses deux CRC justes : ses enregistrements lus.
     Lu,
-    /// Tout à zéro, ou préparé sans enregistrement : rien à lire.
+    /// Tout à zéro : jamais écrit (ou remis à zéro).
     Vide,
+    /// Préparé sans enregistrement (signature et en-tête justes, place libre au début) : ce que laisse un journal
+    /// vidé par Windows (wevtutil cl, Clear-EventLog).
+    Prepare,
     /// Écarté (signature, CRC, place libre), ou coupé en fin de fichier.
     Ecarte,
 }
@@ -238,8 +251,9 @@ pub(crate) struct RecapMorceau {
     /// quand cet en-tête est juste (signature, CRC) et se tient (dernier après le premier, pas plus qu'un morceau ne
     /// peut en contenir) ; rien sinon.
     pub annonce: Option<(u64, u64)>,
-    /// Enregistrements de ce morceau lu qui n'ont pas été rendus : illisibles, ou laissés au-delà de
-    /// `Bornes::enregistrements`. Ils peuvent porter n'importe quels numéros, mais pas plus de numéros qu'eux.
+    /// Ce que ce morceau lu peut cacher sans numéro connu : les passages abîmés (signature, taille ou copie fausses),
+    /// à un enregistrement par 28 octets sautés au plus, et les non-rendus au-delà de `MAX_NON_RENDUS`. Les
+    /// enregistrements entiers non rendus ont leur numéro dans `Bilan::numeros_non_rendus`, pas ici.
     pub non_rendus: u64,
     /// Morceau lu dont l'en-tête ne se tient pas : rien d'annoncé, des numéros (octets 8 et 16) qui ne comptent pas
     /// autant d'enregistrements que les identifiants (24 et 32), ou un enregistrement hors de la plage annoncée.
@@ -325,7 +339,10 @@ pub(crate) fn parcourir<R: Read + Seek>(
         ..Bilan::default()
     };
     bilan.sale = !bilan.en_tete_abime && u32_a(&en_tete, 120).is_some_and(|d| d & 1 != 0);
-    bilan.prochain_numero = if bilan.en_tete_abime { None } else { u64_a(&en_tete, 24) };
+    if !bilan.en_tete_abime {
+        bilan.prochain_numero = u64_a(&en_tete, 24);
+        bilan.nombre_morceaux = en_tete.get(42..44).map(|o| u16::from_le_bytes([o[0], o[1]]));
+    }
 
     // Le nombre de morceaux de l'en-tête n'est pas cru (un fichier sale en annonce moins qu'il n'en a, [libyal]
     // « Dirty file with invalid number of chunks ») : c'est la taille du fichier qui compte, bornée.
@@ -472,7 +489,12 @@ fn lire_morceau(
         Etat::Vide(libre) => {
             bilan.morceaux_vides += 1;
             bilan.enregistrements_apres_place_libre += libre.map_or(0, |l| apres_place_libre(morceau, l));
-            recapituler(bilan, rang, EtatMorceau::Vide, None, 0, false, 0);
+            let etat = if libre.is_some() {
+                EtatMorceau::Prepare
+            } else {
+                EtatMorceau::Vide
+            };
+            recapituler(bilan, rang, etat, None, 0, false, 0);
             return;
         }
         Etat::Illisible(en_tete_juste) => {
@@ -496,7 +518,12 @@ fn lire_morceau(
     bilan.enregistrements_apres_place_libre += apres_place_libre(morceau, libre);
     let mut lecteur = binxml::Morceau::new(morceau, bornes);
     let avant = bilan.enregistrements_lus + bilan.enregistrements_illisibles + bilan.enregistrements_hors_borne;
-    let avant_non_rendus = bilan.enregistrements_illisibles + bilan.enregistrements_hors_borne;
+    // Ce que le morceau peut cacher sans numéro connu (voir `RecapMorceau::non_rendus`).
+    let mut non_rendus = 0u64;
+    let noter_non_rendu = |bilan: &mut Bilan, numero: Option<u64>, non_rendus: &mut u64| match numero {
+        Some(n) if bilan.numeros_non_rendus.len() < MAX_NON_RENDUS => bilan.numeros_non_rendus.push((n, rang)),
+        _ => *non_rendus += 1,
+    };
     let mut pos = EN_TETE_MORCEAU;
     while pos + ENREGISTREMENT_MIN <= libre {
         let Some(taille) = taille_enregistrement(morceau, pos, libre) else {
@@ -506,8 +533,12 @@ fn lire_morceau(
             }
             // Signature, taille ou copie fausses : compté, puis la suite cherchée à la signature suivante
             // ([libyal] « Corrupt event record »), sans jamais revenir en arrière.
+            // Le passage sauté ne peut avoir porté qu'un enregistrement par 28 octets : une fausse signature de
+            // quelques octets ne couvre rien.
             bilan.enregistrements_illisibles += 1;
-            match chercher_signature(morceau, pos + 1, libre) {
+            let suivant = chercher_signature(morceau, pos + 1, libre);
+            non_rendus += (suivant.unwrap_or(libre) - pos) as u64 / ENREGISTREMENT_MIN as u64;
+            match suivant {
                 Some(suivant) => {
                     pos = suivant;
                     continue;
@@ -518,27 +549,27 @@ fn lire_morceau(
         voir_numero(u64_a(morceau, pos + 8));
         if *restant == 0 {
             bilan.enregistrements_hors_borne += 1;
+            noter_non_rendu(bilan, u64_a(morceau, pos + 8), &mut non_rendus);
             pos += taille;
             continue;
         }
-        match lecteur.rendre(pos + 24, pos + taille - 4) {
-            Ok(evenement) => {
-                let numero = u64_a(morceau, pos + 8).unwrap_or(0);
-                let date = u64_a(morceau, pos + 16).and_then(valeurs::filetime);
-                let mut e = enregistrement(numero, date, evenement);
-                e.morceau = rang;
-                recevoir(e);
-                bilan.enregistrements_lus += 1;
-                *restant -= 1;
-            }
-            Err(_) => bilan.enregistrements_illisibles += 1,
+        if let Ok(evenement) = lecteur.rendre(pos + 24, pos + taille - 4) {
+            let numero = u64_a(morceau, pos + 8).unwrap_or(0);
+            let date = u64_a(morceau, pos + 16).and_then(valeurs::filetime);
+            let mut e = enregistrement(numero, date, evenement);
+            e.morceau = rang;
+            recevoir(e);
+            bilan.enregistrements_lus += 1;
+            *restant -= 1;
+        } else {
+            bilan.enregistrements_illisibles += 1;
+            noter_non_rendu(bilan, u64_a(morceau, pos + 8), &mut non_rendus);
         }
         pos += taille;
     }
     let trouves =
         bilan.enregistrements_lus + bilan.enregistrements_illisibles + bilan.enregistrements_hors_borne - avant;
     bilan.enregistrements_absents += annonces(morceau).saturating_sub(trouves);
-    let non_rendus = bilan.enregistrements_illisibles + bilan.enregistrements_hors_borne - avant_non_rendus;
     // Les numéros (8, 16) et les identifiants (24, 32) d'un même morceau comptent autant d'enregistrements.
     let compte = |a: usize, b: usize| u64_a(morceau, b)?.checked_sub(u64_a(morceau, a)?);
     let incoherent = hors_annonce || compte(8, 16) != compte(24, 32);

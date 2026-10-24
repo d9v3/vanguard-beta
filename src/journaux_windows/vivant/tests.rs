@@ -68,34 +68,34 @@ fn la_fin_de_la_fenetre_n_ecarte_rien() {
     assert_eq!(date_xpath(rond, true), "2026-10-24T12:00:00.250Z");
 }
 
-/// Un journal de collecte garde les EventRecordID des ordinateurs d'origine : sa suite se juge par ordinateur.
+/// Un journal de collecte garde les EventRecordID des ordinateurs d'origine : sa suite se juge par ordinateur. Un
+/// poste renommé ou joint à un domaine change de nom dans son propre journal, sans que ses numéros se chevauchent.
 #[test]
 fn un_journal_de_collecte_se_reconnait() {
-    let noms = |v: &[&str]| v.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
-    assert!(!collecte("Security", &noms(&["poste-alice"]), Some("POSTE-ALICE")));
-    assert!(!collecte(
-        "Security",
-        &noms(&["poste-alice.maison.lan"]),
-        Some("POSTE-ALICE")
-    ));
-    // Un nom DNS de plus de quinze caractères : le nom NetBIOS en est le début.
-    assert!(!collecte(
-        "System",
-        &noms(&["desktop-abcdefghij"]),
-        Some("DESKTOP-ABCDEFG")
-    ));
-    assert!(!collecte("System", &noms(&["poste-alice"]), None));
-    assert!(collecte(
-        "ForwardedEvents",
-        &noms(&["poste-alice"]),
-        Some("POSTE-ALICE")
-    ));
-    assert!(collecte("Security", &noms(&["poste-alice", "serveur"]), None));
-    assert!(collecte(
-        "Security",
-        &noms(&["serveur.maison.lan"]),
-        Some("POSTE-ALICE")
-    ));
+    assert!(!collecte("Security", vec![(1, 500)]));
+    // « DESKTOP-ALICE » puis « DESKTOP-ALICE.salon.local » : une seule suite qui continue.
+    assert!(!collecte("Security", vec![(501, 900), (1, 500)]));
+    assert!(collecte("ForwardedEvents", vec![(1, 500)]));
+    // Deux ordinateurs (ou deux journaux d'origine) dont les numéros se mêlent.
+    assert!(collecte("Security", vec![(1, 500), (300, 800)]));
+    assert!(collecte("Security", vec![(25_416, 25_416), (25_416, 40_825)]));
+    let mut n = Numeros::default();
+    for (o, c, x) in [
+        ("pc", "System", 5),
+        ("pc", "Application", 7),
+        ("PC.maison.lan", "System", 6),
+    ] {
+        assert!(n.noter(
+            o,
+            c,
+            Present {
+                numero: x,
+                date: None,
+                morceau: None
+            }
+        ));
+    }
+    assert_eq!(n.plages(), [(5, 5), (7, 7), (6, 6)]);
 }
 
 #[test]

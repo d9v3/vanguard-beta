@@ -24,6 +24,10 @@
 //!   fichier propre ou l'ordinateur vivant ; `CopieAChaud` pour un fichier « sale » qui en montre les signes ;
 //!   `AvantExport` pour les EventRecordID d'origine d'un fichier exporté).
 //!
+//! Le prochain numéro qu'annonce l'en-tête du fichier (couvert par son CRC) fait voir les derniers enregistrements
+//! ôtés, et un journal remis à zéro à la main ; pas un journal vidé par Windows (un morceau préparé, aucun
+//! enregistrement), dont la numérotation continue sans trou.
+//!
 //! Le drapeau « sale » de l'en-tête du fichier n'est pas couvert par son CRC : un attaquant le pose sans rien
 //! recalculer. `CopieAChaud` n'est donc jamais une raison de se taire, seulement une réserve (fichiers::entre_morceaux
 //! exige en plus les signes d'une copie à chaud : morceaux remis à zéro avant d'autres, morceaux d'époques mêlées,
@@ -139,6 +143,8 @@ pub(crate) struct Contexte<'a> {
     /// Le prochain numéro qu'annonce l'en-tête d'un fichier fermé proprement : ce qui manque entre le plus grand
     /// présent et lui est un trou (les derniers enregistrements ôtés).
     pub prochain: Option<u64>,
+    /// Le prochain numéro peut retarder sur les présents (fichier sale) sans que l'en-tête soit incohérent.
+    pub prochain_peut_retarder: bool,
     /// Le plus d'enregistrements que le fichier peut porter (ses morceaux, pleins) : quand aucun numéro n'est
     /// connu mais que l'en-tête en attend, le plus ancien possible est `prochain - capacite`.
     pub capacite: u64,
@@ -152,6 +158,7 @@ impl Contexte<'_> {
             entre_morceaux,
             pertes: &[],
             prochain: None,
+            prochain_peut_retarder: false,
             capacite: 0,
         }
     }
@@ -245,18 +252,24 @@ fn paliers(etendues: &[Option<(u64, u64)>], morceaux: &[RecapMorceau]) -> Vec<(u
 fn couvertes(tailles: &[u64], pertes: &[u64]) -> Vec<bool> {
     let mut ordre: Vec<usize> = (0..tailles.len()).collect();
     ordre.sort_unstable_by(|&a, &b| tailles[b].cmp(&tailles[a]));
-    let mut restantes: Vec<u64> = pertes.iter().copied().filter(|&c| c > 0).collect();
-    restantes.sort_unstable_by(|a, b| b.cmp(a));
+    let mut triees: Vec<u64> = pertes.iter().copied().filter(|&c| c > 0).collect();
+    triees.sort_unstable_by(|a, b| b.cmp(a));
+    // Les sommes cumulées : les pertes prises dans l'ordre, la recherche de celles qui couvrent une plage se fait
+    // par dichotomie (des milliers d'événements sans numéro font autant de pertes d'un numéro).
+    let mut cumul = Vec::with_capacity(triees.len() + 1);
+    cumul.push(0u64);
+    for c in &triees {
+        let dernier = *cumul.last().unwrap_or(&0);
+        cumul.push(dernier.saturating_add(*c));
+    }
+    let mut debut = 0usize;
     let mut sortie = vec![false; tailles.len()];
     for i in ordre {
-        let mut somme = 0u64;
-        let mut prises = 0;
-        while somme < tailles[i] && prises < restantes.len() {
-            somme = somme.saturating_add(restantes[prises]);
-            prises += 1;
-        }
-        if somme >= tailles[i] {
-            restantes.drain(..prises);
+        let base = cumul[debut];
+        // La plus petite fin `j` telle que les pertes de `debut` à `j` couvrent la plage.
+        let j = debut + cumul[debut..].partition_point(|&s| s - base < tailles[i]);
+        if j < cumul.len() {
+            debut = j;
             sortie[i] = true;
         }
     }
@@ -293,7 +306,7 @@ pub(crate) fn juger(
     let mut incoherences = contexte.morceaux.iter().filter(|m| m.incoherent).count() as u64;
     if let Some(attendu) = contexte.prochain.and_then(|p| p.checked_sub(1)) {
         match dernier {
-            Some(d) if attendu < d => incoherences += 1,
+            Some(d) if attendu < d => incoherences += u64::from(!contexte.prochain_peut_retarder),
             Some(_) => dernier = Some(attendu),
             // Rien de présent ni de réclamé, et l'en-tête attend des enregistrements : tout ce que le fichier
             // pouvait porter manque.

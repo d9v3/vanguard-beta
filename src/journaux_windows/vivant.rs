@@ -89,10 +89,10 @@ pub(crate) struct BilanVivant {
     pub interrompu: Option<RefusVivant>,
     /// Les suites des EventRecordID lus, quand la requête les a tous pris (pas de numéro d'événement dans la
     /// requête ; vide sinon, un trou n'y voudrait rien dire) : celle du journal ; pour un journal de collecte
-    /// (ForwardedEvents, ou des événements d'autres ordinateurs, qui gardent leurs numéros d'origine), une par
-    /// ordinateur, en `Numerotation::Origine`.
+    /// (ForwardedEvents, ou des numéros d'ordinateurs qui se chevauchent : ils gardent leurs numéros d'origine), une
+    /// par ordinateur et par journal d'origine, en `Numerotation::Origine`.
     pub suites: Vec<Suite>,
-    /// Événements dont l'ordinateur n'a pas eu sa suite (au-delà de `MAX_ORDINATEURS`).
+    /// Événements dont l'ordinateur et le journal d'origine n'ont pas eu leur suite (au-delà de `MAX_ORDINATEURS`).
     pub hors_suites: u64,
     /// Trous qui n'ont pas pu être revérifiés (borne des revérifications, délai, lecture coupée) : rendus
     /// `Illisible`, faute de savoir si leurs numéros sont hors de la fenêtre de dates.
@@ -114,7 +114,7 @@ impl BilanVivant {
     }
 }
 
-/// Les ordinateurs suivis au plus dans un journal de collecte.
+/// Les ordinateurs (et journaux d'origine) suivis au plus dans un journal de collecte.
 const MAX_ORDINATEURS: usize = 64;
 
 /// Une date dans la forme que comparent les requêtes du journal (celle que pose l'Observateur d'événements pour
@@ -197,41 +197,56 @@ struct Compte {
     hors_suites: u64,
 }
 
-/// Les numéros lus, par ordinateur (System/Computer, coupé à `trous::CLE_MAX` caractères).
+/// Les numéros lus, par ordinateur et par journal d'origine (System/Computer, System/Channel, coupés à
+/// `trous::CLE_MAX` caractères) : un journal de collecte mêle les suites de plusieurs.
 #[derive(Default)]
 struct Numeros {
-    ordinateurs: Vec<String>,
+    cles: Vec<(String, String)>,
     presents: Vec<(usize, Present)>,
     /// Numéros d'événements au XML illisible, pris sans leur ordinateur.
     orphelins: Vec<Present>,
 }
 
 impl Numeros {
-    /// Note un numéro ; faux si son ordinateur n'a pas pu avoir sa suite.
-    fn noter(&mut self, ordinateur: &str, present: Present) -> bool {
-        let nom: String = ordinateur.chars().take(trous::CLE_MAX).collect();
-        let i = match self.ordinateurs.iter().position(|o| *o == nom) {
+    /// Note un numéro ; faux si sa clé n'a pas pu avoir sa suite (au-delà de `MAX_ORDINATEURS`).
+    fn noter(&mut self, ordinateur: &str, canal: &str, present: Present) -> bool {
+        let cle = (
+            ordinateur.chars().take(trous::CLE_MAX).collect::<String>(),
+            canal.chars().take(trous::CLE_MAX).collect::<String>(),
+        );
+        let i = match self.cles.iter().position(|c| *c == cle) {
             Some(i) => i,
-            None if self.ordinateurs.len() < MAX_ORDINATEURS => {
-                self.ordinateurs.push(nom);
-                self.ordinateurs.len() - 1
+            None if self.cles.len() < MAX_ORDINATEURS => {
+                self.cles.push(cle);
+                self.cles.len() - 1
             }
             None => return false,
         };
         self.presents.push((i, present));
         true
     }
+
+    /// Le plus petit et le plus grand numéro de chaque clé.
+    fn plages(&self) -> Vec<(u64, u64)> {
+        let mut plages: Vec<Option<(u64, u64)>> = vec![None; self.cles.len()];
+        for (i, p) in &self.presents {
+            plages[*i] = Some(match plages[*i] {
+                Some((a, b)) => (a.min(p.numero), b.max(p.numero)),
+                None => (p.numero, p.numero),
+            });
+        }
+        plages.into_iter().flatten().collect()
+    }
 }
 
 /// Le journal est-il un journal de collecte (des événements d'autres ordinateurs, avec leurs numéros d'origine) ?
-/// ForwardedEvents, plus d'un ordinateur, ou un seul qui n'est pas celui-ci (`local` : son nom NetBIOS, soit les
-/// quinze premiers caractères du premier mot de son nom DNS ; rien s'il n'est pas connu).
-fn collecte(journal: &str, ordinateurs: &[String], local: Option<&str>) -> bool {
-    let autre = |o: &String| {
-        let netbios: String = o.split('.').next().unwrap_or_default().chars().take(15).collect();
-        local.is_some_and(|l| !netbios.eq_ignore_ascii_case(l))
-    };
-    journal.eq_ignore_ascii_case("ForwardedEvents") || ordinateurs.len() > 1 || ordinateurs.iter().any(autre)
+/// ForwardedEvents, ou des numéros de plusieurs ordinateurs ou journaux d'origine qui se chevauchent. Un nom
+/// d'ordinateur qui change dans un journal local (poste renommé, joint à un domaine, « PC » puis « PC.maison.lan »)
+/// ne suffit pas : ses numéros se suivent d'un nom à l'autre, une seule suite. Ni le nom de cet ordinateur, que
+/// n'importe quel compte change dans son environnement.
+fn collecte(journal: &str, mut plages: Vec<(u64, u64)>) -> bool {
+    plages.sort_unstable();
+    journal.eq_ignore_ascii_case("ForwardedEvents") || plages.windows(2).any(|p| p[1].0 <= p[0].1)
 }
 
 /// L'événement d'un XML rendu, et son numéro même quand le XML ne se lit pas (`numero_de_secours`).
@@ -300,7 +315,7 @@ pub(crate) fn lire_journal(
                     date: e.cree,
                     morceau: None,
                 };
-                if !numeros.noter(&e.ordinateur, present) {
+                if !numeros.noter(&e.ordinateur, &e.canal, present) {
                     compte.hors_suites += 1;
                 }
             }
@@ -342,11 +357,10 @@ pub(crate) fn lire_journal(
         trous_non_confirmes: 0,
     };
     if !ids_dans_la_requete {
-        let local = std::env::var("COMPUTERNAME").ok();
-        if collecte(journal, &numeros.ordinateurs, local.as_deref()) {
+        if collecte(journal, numeros.plages()) {
             // Un numéro sans son ordinateur ne se range dans aucune suite d'origine.
             bilan.hors_suites += numeros.orphelins.len() as u64;
-            bilan.suites = suites_de_collecte(journal, numeros, bornes.trous);
+            bilan.suites = suites_de_collecte(numeros, bornes.trous);
         } else {
             let mut presents: Vec<Present> = numeros.presents.into_iter().map(|(_, p)| p).collect();
             presents.append(&mut numeros.orphelins);
@@ -360,24 +374,21 @@ pub(crate) fn lire_journal(
     Ok(bilan)
 }
 
-/// Les suites d'un journal de collecte : une par ordinateur, en numéros d'origine, que le filtre de l'abonnement
-/// peut trouer (`AvantExport`).
-fn suites_de_collecte(journal: &str, numeros: Numeros, max_trous: usize) -> Vec<Suite> {
-    let mut par_ordinateur: Vec<Vec<Present>> = vec![Vec::new(); numeros.ordinateurs.len()];
+/// Les suites d'un journal de collecte : une par ordinateur et par journal d'origine, en numéros d'origine, que le
+/// filtre de l'abonnement peut trouer (`AvantExport`).
+fn suites_de_collecte(numeros: Numeros, max_trous: usize) -> Vec<Suite> {
+    let mut par_cle: Vec<Vec<Present>> = vec![Vec::new(); numeros.cles.len()];
     for (i, p) in numeros.presents {
-        par_ordinateur[i].push(p);
+        par_cle[i].push(p);
     }
     let mut restant = max_trous;
     numeros
-        .ordinateurs
+        .cles
         .into_iter()
-        .zip(par_ordinateur)
-        .map(|(ordinateur, presents)| {
+        .zip(par_cle)
+        .map(|((ordinateur, journal), presents)| {
             let s = trous::juger(
-                Numerotation::Origine {
-                    ordinateur,
-                    journal: journal.chars().take(trous::CLE_MAX).collect(),
-                },
+                Numerotation::Origine { ordinateur, journal },
                 presents,
                 &Contexte::nu(Nature::AvantExport),
                 restant,
