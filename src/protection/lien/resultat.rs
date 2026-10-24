@@ -36,12 +36,12 @@ fn objet(lien: &Lien) -> Objet {
 }
 
 /// Un signe : au-dessus d'une information, une alerte ; sinon un fait (domaine officiel, adresse locale, vieux
-/// domaine).
+/// domaine). Le texte qui peut s'écrire : jamais l'identifiant d'un lien.
 fn constat_de(s: &Signe) -> Constat {
     if s.niveau > Niveau::Info {
-        alerte(CAT, s.niveau, s.texte.clone())
+        alerte(CAT, s.niveau, s.a_ecrire())
     } else {
-        ok(CAT, s.texte.clone())
+        ok(CAT, s.a_ecrire())
     }
 }
 
@@ -126,6 +126,35 @@ mod tests {
         let debut = (chrono::Utc::now(), std::time::Instant::now());
         let lien = decouper(&nettoyer(adresse)).unwrap();
         resultat(&lien, &examiner(&lien), en_ligne, debut)
+    }
+
+    /// Ce qui précède « @ » peut être un vrai identifiant : le signe reste, l'identifiant ne s'écrit pas (résultat,
+    /// courriel suspect) ; l'écran, lui, le montre.
+    #[test]
+    fn identifiants_d_un_lien_jamais_ecrits() {
+        let sans = EnLigneVu::PasFaites("pas demandées");
+        let adresse = "https://alice:Secr3t@paypal.com.compte.example/x";
+        let r = examen(adresse, &sans);
+        assert_eq!(r.verdict(), "probleme");
+        let tout = serde_json::to_string(&r).unwrap();
+        assert!(!tout.contains("Secr3t") && !tout.contains("alice"), "{tout}");
+        assert!(
+            r.constats
+                .iter()
+                .any(|c| c.etat == "probleme" && c.message.contains("identifiants retirés")),
+            "{tout}"
+        );
+        let lien = decouper(&nettoyer(adresse)).unwrap();
+        assert!(
+            examiner(&lien).iter().any(|s| s.texte.contains("alice:Secr3t")),
+            "l'écran le montre"
+        );
+        let (_, signes) = super::super::examiner_lien(adresse).unwrap();
+        assert!(signes.iter().all(|(_, t)| !t.contains("Secr3t")), "{signes:?}");
+        assert!(
+            signes.iter().any(|(_, t)| t.contains("identifiants retirés")),
+            "{signes:?}"
+        );
     }
 
     #[test]

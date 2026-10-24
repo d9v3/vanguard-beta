@@ -33,13 +33,25 @@ struct Lien {
 #[derive(Debug, PartialEq, Eq)]
 struct Signe {
     niveau: Niveau,
+    /// Ce que l'écran montre.
     texte: String,
+    /// Ce qui s'écrit à sa place quand il ne doit pas quitter l'écran (le résultat versé, le courriel suspect) : un
+    /// identifiant ou un mot de passe glissé dans le lien.
+    ecrit: Option<String>,
 }
 
 fn signe(niveau: Niveau, texte: impl Into<String>) -> Signe {
     Signe {
         niveau,
         texte: texte.into(),
+        ecrit: None,
+    }
+}
+
+impl Signe {
+    /// Le texte qui peut s'écrire (résultat, rapport, brouillon de signalement) : jamais un identifiant.
+    fn a_ecrire(&self) -> &str {
+        self.ecrit.as_deref().unwrap_or(&self.texte)
     }
 }
 
@@ -516,14 +528,22 @@ fn examiner(lien: &Lien) -> Vec<Signe> {
     let hote = lien.hote.as_str();
     let domaine = domaine_enregistrable(hote);
 
+    // Ce qui précède « @ » peut être un vrai identifiant, mot de passe compris (« alice:motdepasse@site ») : l'écran
+    // le montre, le résultat versé (examens/, rapport, signalement) le remplace par un marqueur. Le signe reste.
     if let Some(faux) = &lien.utilisateur {
-        signes.push(signe(
-            Niveau::Eleve,
-            trf!(
-                "Un « @ » cache le vrai site : on lit « {faux} », mais le lien mène à {hote}.",
-                "An “@” hides the real site: you read “{faux}”, but the link leads to {hote}."
-            ),
-        ));
+        signes.push(Signe {
+            ecrit: Some(trf!(
+                "Un « @ » cache le vrai site : on lit ce qui le précède (identifiants retirés), mais le lien mène à {hote}.",
+                "An “@” hides the real site: you read what comes before it (credentials removed), but the link leads to {hote}."
+            )),
+            ..signe(
+                Niveau::Eleve,
+                trf!(
+                    "Un « @ » cache le vrai site : on lit « {faux} », mais le lien mène à {hote}.",
+                    "An “@” hides the real site: you read “{faux}”, but the link leads to {hote}."
+                ),
+            )
+        });
     }
 
     // Adresse IP au lieu d'un nom, parfois déguisée en un seul nombre (« http://3232235777/ »).
@@ -1341,7 +1361,14 @@ pub(crate) fn examiner_lien(texte: &str) -> Option<(String, Vec<(Niveau, String)
     } else {
         site(&lien)
     };
-    Some((site, examiner(&lien).into_iter().map(|s| (s.niveau, s.texte)).collect()))
+    // Ses signes vont aussi au résultat du courriel : le texte qui peut s'écrire.
+    Some((
+        site,
+        examiner(&lien)
+            .iter()
+            .map(|s| (s.niveau, s.a_ecrire().to_string()))
+            .collect(),
+    ))
 }
 
 /// Le domaine d'une adresse de courriel : lettres déguisées, marque imitée, sous-domaine trompeur, hébergement

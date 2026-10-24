@@ -2114,6 +2114,41 @@ fn lien_en_json() {
     assert_eq!(v["constats"][0]["etat"], "non-verifie", "{v}");
 }
 
+/// Un lien à identifiants (« alice:motdepasse@site ») : le signe reste, mais ni l'identifiant ni le mot de passe ne
+/// s'écrivent, ni dans le JSON, ni sur le disque (examens/, journal des événements). Valeurs inventées.
+#[test]
+fn lien_a_identifiants_rien_sur_le_disque() {
+    let maison = maison_jetable();
+    let s = vanguard_dans_env(
+        Path::new(env!("CARGO_BIN_EXE_vanguard")),
+        &maison,
+        "fr",
+        &["lien", "https://alice:Secr3t@paypal.com.compte.example/x", "--json"],
+        "",
+        60,
+        &[("VANGUARD_HORS_LIGNE", "1")],
+    );
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    assert!(s.texte.contains("identifiants retirés"), "{}", s.texte);
+    let mut a_voir = vec![maison.clone()];
+    let mut lus = 0;
+    while let Some(d) = a_voir.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                a_voir.push(p);
+            } else if let Ok(octets) = std::fs::read(&p) {
+                lus += 1;
+                let t = String::from_utf8_lossy(&octets);
+                assert!(!t.contains("Secr3t") && !t.contains("alice"), "{} : {t}", p.display());
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&maison);
+    assert!(lus > 0, "rien n'a été versé");
+    assert!(!s.texte.contains("Secr3t") && !s.texte.contains("alice"), "{}", s.texte);
+}
+
 /// `--json` d'un outil de protection, hors ligne : code 0, rien d'autre que le JSON sur la sortie standard (il se lit
 /// en entier), l'identifiant de l'outil, le format 1 et des constats. Des réponses sont tapées d'avance : une question
 /// posée les lirait (et, pour les listes noires, enverrait l'adresse).
