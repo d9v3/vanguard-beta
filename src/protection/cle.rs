@@ -121,7 +121,7 @@ pub fn chez_le_proprietaire(cle: &Path) -> bool {
 }
 
 fn empreinte_attendue(cle: &Path) -> String {
-    std::fs::read_to_string(cle.join(crate::reseau::TEMOIN_CLE)).unwrap_or_default()
+    crate::socle::lire_texte_ordinaire(&cle.join(crate::reseau::TEMOIN_CLE), 4 << 10).unwrap_or_default()
 }
 
 /// Au démarrage : sur un ordinateur qui n'est pas celui du propriétaire, remonte la clé en lecture seule.

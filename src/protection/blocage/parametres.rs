@@ -218,24 +218,72 @@ pub(crate) fn decider(p: &Parametres, c: Categorie, certaine: bool) -> Decision 
     }
 }
 
+/// Le nom du fichier, scellé (`sceau`) : une catégorie désactivée ne bloque plus rien.
+pub(crate) const BLOCAGE: &str = "blocage.json";
+
 fn fichier() -> PathBuf {
-    crate::socle::dossier_local().join("blocage.json")
+    crate::socle::dossier_local().join(BLOCAGE)
 }
 
 /// Les réglages ; `Err` (la raison) si le fichier existe mais ne se lit pas : les défauts servent, sans automatique,
 /// et rien ne l'écrase en silence.
 pub(crate) fn charger() -> Result<Parametres, Echec> {
-    charger_de(&fichier())
+    charger_de(&fichier()).map(|(p, _)| p)
 }
 
-fn charger_de(chemin: &Path) -> Result<Parametres, Echec> {
+/// Pourquoi des catégories désactivées dans blocage.json ne comptent pas (`charger_de`), ou `None`.
+pub(crate) fn ignores() -> Option<&'static str> {
+    charger_de(&fichier()).ok().and_then(|(_, r)| r)
+}
+
+/// Les réglages relus sous leur sceau. Changés hors de Vanguard, ou acceptés tels quels après des sceaux refaits :
+/// une catégorie « désactivée » vaut « un clic » (la défense reste là, l'alerte du bilan garde son bouton), l'accord
+/// de la protection active ne vaut rien (rien ne se bloque sans clic sur la foi d'un fichier non cru), et la raison
+/// est rendue pour être dite. Un programme du compte qui y désactivait ses propres catégories ne coupait sinon le
+/// blocage choisi par la personne qu'en silence.
+fn charger_de(chemin: &Path) -> Result<(Parametres, Option<&'static str>), Echec> {
+    use crate::sceau::Lecture;
     const OU: &str = "blocage/reglages";
-    match std::fs::read_to_string(chemin) {
-        Ok(texte) => serde_json::from_str(texte.trim_start_matches('\u{feff}'))
-            .map_err(|e| Echec::new(OU, Raison::Illisible(e.to_string()))),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Parametres::default()),
-        Err(e) => Err(Echec::io(OU, &e)),
+    let dossier = chemin.parent().unwrap_or_else(|| Path::new("."));
+    let nom = chemin.file_name().and_then(|n| n.to_str()).unwrap_or(BLOCAGE);
+    let (octets, douteux) = match crate::sceau::lire_dans(dossier, nom) {
+        Lecture::Absent | Lecture::Inconnu | Lecture::Falsifie(None) => return Ok((Parametres::default(), None)),
+        Lecture::Illisible(e) => return Err(Echec::new(OU, Raison::Illisible(e))),
+        Lecture::Intact(o) => (o, None),
+        // Repris d'une version d'avant à la mise à jour : le choix de la personne, gardé. Après des sceaux refaits :
+        // rien ne prouve qui l'a écrit.
+        Lecture::Adopte(o) if !crate::sceau::refaits_dans(dossier) => (o, None),
+        Lecture::Adopte(o) => (
+            o,
+            Some(tr!(
+                "accepté tel quel après des sceaux refaits",
+                "accepted as it was after seals were remade"
+            )),
+        ),
+        Lecture::Falsifie(Some(o)) => (o, Some(tr!("changé hors de Vanguard", "changed outside Vanguard"))),
+    };
+    let texte = String::from_utf8(octets).map_err(|e| Echec::new(OU, Raison::Illisible(e.to_string())))?;
+    let mut p: Parametres = serde_json::from_str(texte.trim_start_matches('\u{feff}'))
+        .map_err(|e| Echec::new(OU, Raison::Illisible(e.to_string())))?;
+    let Some(raison) = douteux else {
+        return Ok((p, None));
+    };
+    let mut coupait = false;
+    for m in [&mut p.programmes, &mut p.connexions, &mut p.demarrage, &mut p.agents_ia] {
+        if *m == Mode::Desactive {
+            *m = Mode::UnClic;
+            coupait = true;
+        }
     }
+    // L'accord de la protection active est le seul témoin du consentement à bloquer sans clic : venu d'un fichier
+    // non cru, il ne vaut rien (l'automatique redevient un clic).
+    coupait |= p.accord.take().is_some();
+    Ok((p, coupait.then_some(raison)))
+}
+
+/// blocage.json d'une version d'avant, accepté tel quel à la mise à jour : rescellé (`sceau::resceller_si`).
+pub(crate) fn resceller_d_avant() {
+    crate::sceau::resceller_si(BLOCAGE, |o| serde_json::from_slice::<Parametres>(o).is_ok());
 }
 
 pub(crate) fn enregistrer(p: &Parametres) -> std::io::Result<()> {
@@ -243,11 +291,10 @@ pub(crate) fn enregistrer(p: &Parametres) -> std::io::Result<()> {
 }
 
 fn enregistrer_dans(p: &Parametres, chemin: &Path) -> std::io::Result<()> {
-    if let Some(d) = chemin.parent() {
-        std::fs::create_dir_all(d)?;
-    }
     let texte = serde_json::to_string_pretty(p).map_err(std::io::Error::other)?;
-    crate::socle::ecrire_atomique(chemin, texte)
+    let dossier = chemin.parent().unwrap_or_else(|| Path::new("."));
+    let nom = chemin.file_name().and_then(|n| n.to_str()).unwrap_or(BLOCAGE);
+    crate::sceau::ecrire_dans(dossier, nom, texte.as_bytes())
 }
 
 #[cfg(test)]
@@ -289,13 +336,58 @@ mod tests {
         assert_eq!(decider(&p, Categorie::AgentsIa, true), Decision::UnClic);
     }
 
+    /// Un texte écrit par Vanguard tel quel, scellé.
+    fn enregistrer_brut(f: &Path, texte: &str) {
+        crate::sceau::ecrire_dans(f.parent().unwrap(), BLOCAGE, texte.as_bytes()).unwrap();
+    }
+
+    /// Un programme du compte désactive des catégories dans blocage.json : le fichier n'est plus scellé, ces
+    /// catégories valent « un clic » (rien ne se coupe), son accord ne fait rien bloquer sans clic, et la raison est
+    /// rendue pour être dite.
+    #[test]
+    fn categories_desactivees_hors_de_vanguard_ne_coupent_rien() {
+        let d = crate::socle::dossier_local().join("essai-blocage-forge");
+        let _ = std::fs::remove_dir_all(&d);
+        let f = d.join(BLOCAGE);
+        let p = Parametres {
+            accord: Some("2026-10-21 20:00".into()),
+            connexions: Mode::Automatique,
+            ..Parametres::default()
+        };
+        enregistrer_dans(&p, &f).unwrap();
+        assert_eq!(charger_de(&f).unwrap(), (p.clone(), None));
+        std::fs::write(
+            &f,
+            r#"{"accord":"2026-10-21 20:00","programmes":"desactive","connexions":"automatique","demarrage":"desactive","agents_ia":"desactive"}"#,
+        )
+        .unwrap();
+        let (lu, raison) = charger_de(&f).unwrap();
+        assert!(raison.is_some_and(|r| r.contains("hors de Vanguard") || r.contains("outside Vanguard")));
+        for c in Categorie::TOUTES {
+            assert_ne!(lu.effectif(c), Mode::Desactive, "{c:?}");
+        }
+        // L'accord forgé ne vaut rien : l'automatique redevient un clic.
+        assert_eq!(lu.accord, None);
+        assert_eq!(decider(&lu, Categorie::Connexions, true), Decision::UnClic);
+        assert!(!lu.rien());
+        // Réglé de nouveau par Vanguard : scellé, une catégorie désactivée l'est pour de bon.
+        let mut voulu = lu;
+        voulu.regler(Categorie::Programmes, Mode::Desactive).unwrap();
+        enregistrer_dans(&voulu, &f).unwrap();
+        assert_eq!(
+            charger_de(&f).unwrap().0.effectif(Categorie::Programmes),
+            Mode::Desactive
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn reglages_ecrits_relus_ou_refuses() {
-        let d = std::env::temp_dir().join(format!("vanguard-blocage-reglages-{}", std::process::id()));
+        let d = crate::socle::dossier_local().join("essai-blocage-reglages");
         let _ = std::fs::remove_dir_all(&d);
         let f = d.join("blocage.json");
         // Absent : les défauts.
-        assert_eq!(charger_de(&f).unwrap(), Parametres::default());
+        assert_eq!(charger_de(&f).unwrap().0, Parametres::default());
         let p = Parametres {
             accord: Some("2026-10-21 20:00".into()),
             programmes: Mode::Automatique,
@@ -306,12 +398,12 @@ mod tests {
         enregistrer_dans(&p, &f).unwrap();
         let texte = std::fs::read_to_string(&f).unwrap();
         assert!(texte.contains("\"programmes\": \"automatique\"") && texte.contains("\"agents_ia\": \"desactive\""));
-        assert_eq!(charger_de(&f).unwrap(), p);
+        assert_eq!(charger_de(&f).unwrap().0, p);
         // Un champ manquant (version d'avant) prend sa valeur par défaut.
-        std::fs::write(&f, "{\"connexions\": \"un-clic\"}").unwrap();
-        assert_eq!(charger_de(&f).unwrap(), Parametres::default());
+        enregistrer_brut(&f, "{\"connexions\": \"un-clic\"}");
+        assert_eq!(charger_de(&f).unwrap().0, Parametres::default());
         // Abîmé : refusé, jamais lu comme des défauts qu'on réécrirait par-dessus.
-        std::fs::write(&f, "{pas du json").unwrap();
+        enregistrer_brut(&f, "{pas du json");
         assert!(charger_de(&f).is_err());
         let _ = std::fs::remove_dir_all(&d);
     }

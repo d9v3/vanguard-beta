@@ -62,6 +62,10 @@ pub(crate) fn liste(
     liste_validee(demande, lieu, fraiche, &valide)
 }
 
+/// Au-delà, ce n'est pas une liste téléchargée (la plus grosse, l'archive complète de MalwareBazaar, fait quelques
+/// centaines de Mio au plus).
+pub(crate) const LISTE_MAX: u64 = 1 << 30;
+
 /// `liste`, pour un `valide` qui a besoin de son contexte (une fermeture : les versions des logiciels jugent chaque
 /// source par son propre lecteur).
 pub(crate) fn liste_validee(
@@ -72,8 +76,9 @@ pub(crate) fn liste_validee(
 ) -> Liste {
     let dossier = super::dossier_local().join(sous_dossier);
     let fichier = dossier.join(nom);
+    // L'âge du fichier lui-même, jamais d'une cible de lien (qui ne serait de toute façon pas lue).
     let age = || {
-        std::fs::metadata(&fichier)
+        std::fs::symlink_metadata(&fichier)
             .and_then(|m| m.modified())
             .ok()
             .map(|t| t.elapsed().unwrap_or_default())
@@ -97,7 +102,8 @@ pub(crate) fn liste_validee(
         }
     }
     Liste {
-        copie: std::fs::read(&fichier).ok().zip(age()),
+        // Un simple fichier, borné : un tube ou un lien vers /dev/zero posé à sa place ne fige ni ne remplit rien.
+        copie: super::lire_ordinaire(&fichier, LISTE_MAX).ok().zip(age()),
         code,
         manque,
     }

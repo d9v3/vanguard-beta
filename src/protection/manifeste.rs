@@ -359,7 +359,7 @@ pub fn ecrire(racine: &Path) -> Result<(usize, PathBuf), String> {
 }
 
 fn lire(reference: &Path) -> Result<Manifeste, String> {
-    let texte = std::fs::read_to_string(reference).map_err(|e| e.to_string())?;
+    let texte = crate::socle::lire_texte_ordinaire(reference, 64 << 20).map_err(|e| e.to_string())?;
     let mut valeur: serde_json::Value =
         serde_json::from_str(texte.trim_start_matches('\u{feff}')).map_err(|e| e.to_string())?;
     // Manifeste écrit avant le changement de nom (`passage`).

@@ -136,7 +136,7 @@ pub fn scripts(racine: &Path) -> Vec<Script> {
 
 /// Les premières lignes d'un script, prêtes à montrer ; un programme binaire est dit tel quel.
 fn apercu(copie: &Path) -> Vec<String> {
-    let octets = std::fs::read(copie).unwrap_or_default();
+    let octets = crate::socle::lire_ordinaire(copie, 16 << 20).unwrap_or_default();
     if octets.iter().take(4096).any(|o| *o == 0) {
         return vec![trf!(
             "(programme binaire, {} octets)",

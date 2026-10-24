@@ -103,11 +103,15 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
         schema: 2,
         ..local("historique.json", "historique")
     },
-    local("changements.jsonl", "changements"),
+    // Le relevé des corrections et des blocages : « Tout remettre comme avant » le rejoue en administrateur.
+    scelle(crate::changements::RELEVE, "changements"),
+    // L'empreinte de chacune de ses lignes : un relevé changé garde les lignes que Vanguard a écrites.
+    scelle(crate::changements::LIGNES, "changements"),
     local(crate::modele::journal::DOSSIER, "modele::journal"),
     local("evenements.verrou", "modele::journal"),
     local(crate::modele::resultat::EXAMENS, "modele::resultat"),
-    local("parametres.json", "parametres"),
+    // Le travail sans Internet, l'autodiagnostic et les versions des logiciels s'y coupent.
+    scelle(crate::parametres::PARAMETRES, "parametres"),
     local("passage-restes", "passage"),
     local("reprise-version-d-avant", "passage"),
     local("bin", "mise_a_jour"),
@@ -124,8 +128,8 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     local("plugins", "plugins::sortie"),
     local("tldr", "guide::tldr"),
     // Machine.
-    local("administrateurs.json", "machine::administrateurs"),
-    local("bluetooth.json", "machine::bluetooth"),
+    scelle(sceau::ADMINISTRATEURS, "machine::administrateurs"),
+    scelle(sceau::BLUETOOTH, "machine::bluetooth"),
     local("ports-bloques.txt", "machine"),
     local("corrections", "machine::windows"),
     local("accessibilite", "machine::windows::portes"),
@@ -137,12 +141,13 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     // Réglages du veilleur anti-rançongiciel (dossiers en plus, exclusions), scellés ; écrit par le palier 1 Linux.
     scelle("rancongiciel-reglages.json", "protection::rancongiciel"),
     // Protection.
-    local("blocage.json", "protection::blocage"),
+    // Une catégorie désactivée ne bloque plus rien.
+    scelle(crate::protection::blocage::parametres::BLOCAGE, "protection::blocage"),
     local("blocage", "protection::blocage::gestes"),
     local("quarantaine", "protection::quarantaine"),
     local("pieges.json", "protection::pieges"),
     local("sites-bloques", "protection::sites_bloques"),
-    local("cles-connues.json", "protection::cles_connues"),
+    scelle(sceau::CLES_CONNUES, "protection::cles_connues"),
     local("manifestes-cle", "protection::manifeste"),
     local("manifeste-cle.json", "protection::manifeste"),
     local("empreintes", "protection::empreintes, traces"),

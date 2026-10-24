@@ -270,7 +270,8 @@ fn borner(mut alertes: Vec<Alerte>, maintenant: NaiveDateTime) -> Vec<Alerte> {
 /// laissée de côté : le reste du journal sert quand même. Les textes sont rendus inoffensifs pour le terminal comme
 /// pour la page, qui les échappe en plus.
 fn lire_journal(fichier: &Path) -> Vec<Alerte> {
-    let Ok(texte) = std::fs::read_to_string(fichier) else {
+    // Un simple fichier, borné : un tube à sa place figeait la passe de la surveillance qui y note ses alertes.
+    let Ok(texte) = crate::socle::lire_texte_ordinaire(fichier, 64 << 20) else {
         return Vec::new();
     };
     alertes_du_texte(&texte)
@@ -370,7 +371,7 @@ fn ecrire_reseau(fichier: &Path, non_verifie: Option<&str>, maintenant: NaiveDat
 
 /// La note relue : (date, raison) ; une note abîmée ou mal datée est laissée de côté, comme une ligne du journal.
 fn lire_reseau(fichier: &Path) -> Option<(String, String)> {
-    let texte = std::fs::read_to_string(fichier).ok()?;
+    let texte = crate::socle::lire_texte_ordinaire(fichier, 64 << 10).ok()?;
     let (date, raison) = texte.split_once('\n')?;
     let date = date.trim();
     NaiveDateTime::parse_from_str(date, FORMAT_DATE).ok()?;
@@ -380,7 +381,7 @@ fn lire_reseau(fichier: &Path) -> Option<(String, String)> {
 /// La dernière passe : notée par `noter_passe`, sinon (passes d'avant le tableau) la date de l'état de la machine,
 /// que chaque passe réécrit.
 fn derniere_passe() -> Option<String> {
-    let notee = std::fs::read_to_string(fichier_passe())
+    let notee = crate::socle::lire_texte_ordinaire(&fichier_passe(), 4 << 10)
         .ok()
         .map(|t| t.trim().to_string())
         .filter(|t| NaiveDateTime::parse_from_str(t, FORMAT_DATE).is_ok());
@@ -420,14 +421,20 @@ const BOTNETS_RECENTS_HEURES: i64 = 2;
 
 fn collecter() -> Donnees {
     let fichier_botnets = crate::protection::sortantes::fichier_botnets();
-    let botnets_en_cours = std::fs::read_to_string(&fichier_botnets)
-        .unwrap_or_default()
+    // Lu sous son sceau, comme la surveillance qui l'écrit : jamais un tube ou un lien suivi.
+    let botnets = match crate::sceau::lire(crate::sceau::BOTNETS) {
+        crate::sceau::Lecture::Intact(o)
+        | crate::sceau::Lecture::Adopte(o)
+        | crate::sceau::Lecture::Falsifie(Some(o)) => String::from_utf8_lossy(&o).into_owned(),
+        _ => String::new(),
+    };
+    let botnets_en_cours = botnets
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .map(crate::ui::affichable)
         .collect();
-    let botnets_vus = std::fs::metadata(&fichier_botnets)
+    let botnets_vus = std::fs::symlink_metadata(&fichier_botnets)
         .and_then(|m| m.modified())
         .ok()
         .map(|t| chrono::DateTime::<chrono::Local>::from(t).naive_local());

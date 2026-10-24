@@ -98,9 +98,9 @@ pub(crate) fn entrante(pf: PareFeu, port: u16) -> Option<Regle> {
 
 /// Ce que les versions d'avant écrivaient, mot pour mot : des commandes de shell (sudo, nft, ufw, pfctl) et de
 /// PowerShell. Plus rien ne les lance pour poser une règle ; elles servent à reconnaître une note d'annulation écrite
-/// par une version d'avant (`gestes::inverse_reconnue`), qui est alors rejouée telle quelle par l'ancien chemin
-/// (`machine::appliquer`), et à remplir le champ `commandes` des nouvelles notes, que seules les versions d'avant
-/// lisent. Sous Windows, elles sont aussi l'équivalent PowerShell d'un ordre (`ordres::powershell`).
+/// par une version d'avant (`gestes::inverse_reconnue`), qui est alors refaite en ordres typés (jamais rejouée
+/// telle quelle : bash ne rejugeait rien), et à remplir le champ `commandes` des nouvelles notes, que seules les
+/// versions d'avant lisent. Sous Windows, elles sont aussi l'équivalent PowerShell d'un ordre (`ordres::powershell`).
 pub(crate) mod ancien {
     use std::net::IpAddr;
 

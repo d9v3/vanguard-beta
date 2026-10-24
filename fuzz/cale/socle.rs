@@ -9,6 +9,12 @@ pub mod adresses;
 
 pub mod cache {
     pub(crate) use crate::protection::abuse_ch::{Echec, Liste, liste};
+    pub(crate) const LISTE_MAX: u64 = 1 << 30;
+}
+
+/// Le fuzzing ne lit aucun fichier d'état : « absent ».
+pub(crate) fn lire_ordinaire(_chemin: &std::path::Path, _max: u64) -> std::io::Result<Vec<u8>> {
+    Err(std::io::Error::from(std::io::ErrorKind::NotFound))
 }
 
 pub fn dossier_local() -> std::path::PathBuf {

@@ -191,7 +191,7 @@ fn chemin_local() -> PathBuf {
 }
 
 pub(crate) fn lire_cle_locale(chemin: &Path) -> Option<Cle> {
-    let octets: [u8; 32] = std::fs::read(chemin).ok()?.try_into().ok()?;
+    let octets: [u8; 32] = crate::socle::lire_ordinaire(chemin, 32).ok()?.try_into().ok()?;
     Some(Cle(octets))
 }
 
@@ -227,7 +227,7 @@ fn cle_pour(donnees: &Path) -> Option<Cle> {
 
 fn obtenir(donnees: &Path) -> Option<Cle> {
     use std::io::IsTerminal;
-    let enveloppe = std::fs::read(donnees.join(ENVELOPPE)).ok()?;
+    let enveloppe = crate::socle::lire_ordinaire(&donnees.join(ENVELOPPE), 64 << 10).ok()?;
     let identifiant = identifiant_de(&enveloppe)?;
     if let Some(cle) = lire_cle_locale(&chemin_local()).filter(|c| c.identifiant() == identifiant) {
         return Some(cle);
@@ -290,8 +290,11 @@ pub(crate) fn lire_carnet(donnees: &Path) -> Option<String> {
 }
 
 fn lire_carnet_avec(donnees: &Path, cle: &Cle) -> Option<String> {
-    let Ok(octets) = std::fs::read(donnees.join(CARNET_CHIFFRE)) else {
-        return Some("{}".into());
+    let octets = match crate::socle::lire_ordinaire(&donnees.join(CARNET_CHIFFRE), crate::reseau::CARNET_MAX) {
+        Ok(o) => o,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some("{}".into()),
+        // Là mais pas un simple fichier, ou démesuré : rien n'est lu, jamais un carnet vide qu'on réécrirait.
+        Err(_) => return None,
     };
     if let Ok(clair) = dechiffrer(cle, "appareils.json", &octets) {
         String::from_utf8(clair).ok()
@@ -345,7 +348,11 @@ pub(crate) fn proteger_dans(
     parametres: (u32, u32, u32),
 ) -> std::io::Result<()> {
     let cle = Cle::nouvelle()?;
-    let clair = std::fs::read_to_string(donnees.join("appareils.json")).unwrap_or_else(|_| "{}".into());
+    let clair = match crate::socle::lire_texte_ordinaire(&donnees.join("appareils.json"), crate::reseau::CARNET_MAX) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => "{}".into(),
+        Err(e) => return Err(e),
+    };
     ecrire_cle_locale(&cle, cle_locale)?;
     crate::socle::ecrire_atomique(&donnees.join(ENVELOPPE), envelopper(&cle, phrase, parametres)?)?;
     let chiffre = chiffrer(&cle, "appareils.json", clair.as_bytes())?;
@@ -373,7 +380,11 @@ fn deplacer_rapports(donnees: &Path, local: &Path) {
                 .is_some_and(|x| x.eq_ignore_ascii_case("txt"));
         if (rapport || diagnostic) && std::fs::create_dir_all(local).is_ok() {
             let vers = local.join(&nom);
-            if std::fs::rename(e.path(), &vers).is_err() && std::fs::copy(e.path(), &vers).is_ok() {
+            // Copié borné, en simple fichier seulement : un lien vers /dev/zero posé sur la clé ne se recopie pas.
+            if std::fs::rename(e.path(), &vers).is_err()
+                && crate::socle::lire_ordinaire(&e.path(), 64 << 20)
+                    .is_ok_and(|o| crate::socle::ecrire_atomique(&vers, o).is_ok())
+            {
                 let _ = std::fs::remove_file(e.path());
             }
         }

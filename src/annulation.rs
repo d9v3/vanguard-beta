@@ -57,7 +57,17 @@ fn ligne(e: &Element) -> String {
             };
             format!("[{}] {}{refus}", n.origine.nom(), affichable(&n.titre))
         }
-        Element::Blocage(_, b) => format!("[{}] {}", tr!("Blocage", "Block"), affichable(&b.quoi)),
+        Element::Blocage(_, b) => {
+            let refus = if crate::changements::refus_d_origine(b).is_some() {
+                trf!(
+                    " {GRIS}(note refusée : relevé changé ou d'avant le sceau){RESET}",
+                    " {GRIS}(note refused: record changed or from before the seal){RESET}"
+                )
+            } else {
+                String::new()
+            };
+            format!("[{}] {}{refus}", tr!("Blocage", "Block"), affichable(&b.quoi))
+        }
     }
 }
 
@@ -121,12 +131,16 @@ pub fn tout_remettre() {
 /// Les commandes refaites d'un blocage et le port retenu à oublier, ou le refus.
 type Prepare = Result<(Vec<String>, Option<String>), crate::modele::Echec>;
 
-/// Ce que défait un blocage par commandes, refait depuis ses champs typés. changements.jsonl n'est pas scellé :
-/// n'importe quel programme du compte peut y écrire un blocage « en place » dont l'annulation est sa propre commande
-/// sudo ; rejouée telle quelle dans la demande administrateur, elle lui donnerait root. Le même chemin que
+/// Ce que défait un blocage par commandes, refait depuis ses champs typés. changements.jsonl est scellé, mais un
+/// programme du compte peut toujours y écrire (le sceau dit seulement que c'est arrivé) : une ligne relue hors de son
+/// sceau n'est pas rejouée (`changements::refus_d_origine`), et même scellée, une annulation n'est jamais sa commande
+/// relue, qui, rejouée telle quelle dans la demande administrateur, donnerait root à qui l'a écrite. Le même chemin que
 /// `gestes::defaire`, donc, jamais le texte relu ; `None` pour un blocage qui ne se défait pas par commandes.
 fn preparer(b: &Blocage) -> Option<Prepare> {
     use crate::protection::blocage::gestes;
+    if let Some(refus) = crate::changements::refus_d_origine(b) {
+        return Some(Err(crate::modele::Echec::refuse("annulation/remettre", refus)));
+    }
     match &b.annulation {
         Some(Annulation::Commandes {
             commandes,
@@ -257,6 +271,7 @@ mod tests {
             annule: None,
             supprime: false,
             evenement: None,
+            origine: None,
             preuve: None,
         }
     }

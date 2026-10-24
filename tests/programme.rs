@@ -156,6 +156,88 @@ fn version() {
     assert_eq!(s.texte.trim(), format!("vanguard {}", env!("CARGO_PKG_VERSION")));
 }
 
+/// Un tube nommé ou un lien vers /dev/zero posé à la place d'un fichier d'état (par n'importe quel programme du
+/// compte) ne fige jamais Vanguard ni ne lui fait charger sans fin : ni au lancement (`--version` lit les réglages et
+/// les clés connues), ni pour « Ce que Vanguard a changé », ni pour les Paramètres, qui lisent la plupart d'entre eux.
+#[cfg(unix)]
+#[test]
+fn fichiers_d_etat_piegees_ne_figent_rien() {
+    const ETAT: &[&str] = &[
+        "parametres.json",
+        "cles-connues.json",
+        "changements.jsonl",
+        "blocage.json",
+        "sceaux.json",
+        "sceaux.verrou",
+        "historique.json",
+        "reglages.json",
+        "appris.json",
+        "normales.json",
+        "temps-reel.json",
+        "administrateurs.json",
+        "bluetooth.json",
+        "ports-bloques.txt",
+        "entretien.json",
+        "connexion.json",
+        "surveillance-alertes.jsonl",
+        "surveillance-passe.txt",
+        "appareils.json",
+        "evenements.tete",
+        "jeux.json",
+        "sauvegarde.json",
+        "pieges.json",
+        "evenements.verrou",
+        "appareils.verrou",
+        "alertes.verrou",
+        "journal-erreurs.txt",
+    ];
+    for piege in ["tube", "zero"] {
+        let maison = maison_jetable();
+        let donnees = maison.join("donnees").join("vanguard");
+        std::fs::create_dir_all(&donnees).unwrap();
+        for nom in ETAT {
+            let chemin = donnees.join(nom);
+            if piege == "tube" {
+                let c = std::ffi::CString::new(chemin.as_os_str().as_encoded_bytes()).unwrap();
+                // SAFETY : mkfifo reçoit un chemin terminé par zéro, qui vit le temps de l'appel.
+                assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "{nom}");
+            } else {
+                std::os::unix::fs::symlink("/dev/zero", &chemin).unwrap();
+            }
+        }
+        let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+        for args in [&["--version"][..], &["changements"], &["parametres"]] {
+            let s = vanguard_dans_env(programme, &maison, "fr", args, "", 60, &[("VANGUARD_HORS_LIGNE", "1")]);
+            assert_eq!(s.code, Some(0), "{piege} {args:?} : {}", s.erreurs);
+        }
+        let _ = std::fs::remove_dir_all(&maison);
+    }
+}
+
+/// parametres.json changé hors de Vanguard (sans son sceau) : le lancement ne fige pas (la langue se lit dans ce
+/// fichier, et la raison n'est traduite qu'à l'affichage), la langue reste, le travail sans Internet qu'il demandait
+/// ne coupe rien, et les Paramètres le disent.
+#[cfg(unix)]
+#[test]
+fn parametres_changes_hors_de_vanguard_dits_sans_rien_couper() {
+    let maison = maison_jetable();
+    let donnees = maison.join("donnees").join("vanguard");
+    std::fs::create_dir_all(&donnees).unwrap();
+    std::fs::write(
+        donnees.join("sceaux.json"),
+        r#"{"depuis":"2026-10-01","fichiers":{},"vus":["parametres.json"]}"#,
+    )
+    .unwrap();
+    std::fs::write(donnees.join("parametres.json"), r#"{"langue":"en","hors_ligne":true}"#).unwrap();
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let s = vanguard_dans_env(programme, &maison, "en", &["--version"], "", 30, &[]);
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    let s = vanguard_dans_env(programme, &maison, "en", &["parametres"], "", 30, &[]);
+    let texte = sans_couleurs(&s.texte);
+    assert!(texte.contains("changed outside Vanguard"), "{texte}");
+    let _ = std::fs::remove_dir_all(&maison);
+}
+
 #[test]
 fn aide_dans_les_deux_langues() {
     let fr = vanguard("fr", &["--help"], "", 30);

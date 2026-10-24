@@ -189,6 +189,22 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 - **Sécurité des dépendances.** crypto-bigint 0.7.6 (avis RUSTSEC-2026-0387 : des calculs censés prendre toujours le même temps n'y arrivaient pas), amené par YARA-X.
 - **Vérification continue remise au vert.** Le programme Windows réserve 8 Mio de pile (1 Mio d'origine avec MSVC : la version de mise au point débordait dès le démarrage) ; les journaux des tickets ne passent plus par Claude dans GitHub ; le fuzzing de nuit tourne enfin (cargo-fuzz installé à part, empreinte vérifiée) ; la compilation reproductible vérifie la garde des DLL avec un éditeur de liens assez récent.
 - **Les mots d'attaque cherchés ne sont plus en clair dans le programme.** Les noms de commandes d'outils offensifs et de contournements d'AMSI que Vanguard reconnaît dans les scripts sont brouillés dans le binaire (décodés en mémoire au besoin), pour qu'un antivirus ne prenne pas Vanguard pour l'outil qu'il traque. Rien de caché : le code source reste en clair et un garde-fou inspecte le binaire pour qu'aucun de ces mots n'y revienne en clair.
+- **Sécurité de l'état.** Ce que Vanguard garde sur l'ordinateur ne se retourne plus contre lui. Un tube nommé ou un
+  lien vers /dev/zero posé à la place d'un fichier d'état ne fige plus Vanguard (même `--version`, la surveillance, le
+  veilleur) et ne lui fait plus charger sans fin : chaque fichier relu l'est en simple fichier, borné. Le relevé des
+  changements (`changements.jsonl`), les réglages qui coupent une défense (`parametres.json` : travail sans Internet,
+  autodiagnostic, versions des logiciels ; `blocage.json` : catégories désactivées), les comptes administrateurs et
+  appareils Bluetooth déjà vus et les clés connues sont scellés : changés hors de Vanguard, rien n'y est rejoué en
+  administrateur, rien ne s'y coupe (un réglage ignoré se dit dans les Paramètres, le menu du blocage et le bilan, et
+  se règle de nouveau), et ce qui était déjà vu est redit. Les fichiers repris d'une version d'avant à la mise à jour
+  gardent leurs valeurs ; acceptés après des sceaux effacés, ils ne coupent rien ni ne sont crus. Un blocage noté
+  avant le sceau ne se défait tout seul que s'il se rejuge
+  sans sa note (une règle de pare-feu, un programme remis au démarrage), le reste à la main. « Tout remettre comme
+  avant » ne rejoue plus jamais une ancienne note telle quelle : elle repasse par les garde-fous des ordres (jamais
+  SSH ni le Bureau à distance rouverts). Un port fermé par ufw sans relecture se dit « non vérifié », pas « bloqué ».
+  Le journal des événements s'écrit en deux temps : des lignes ajoutées sans sa tête se lisent falsifiées, puis
+  comme une rupture dite au bilan, jamais reprises comme celles de Vanguard. Effacer les sceaux avec leur verrou ne
+  ramène plus au premier usage, et un mois posé « en 2099 » ne relie plus un geste à une fausse cause.
 
 ## 23 octobre 2026 : version 0.86
 

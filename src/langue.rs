@@ -58,6 +58,11 @@ pub fn anglais() -> bool {
     if let Some(forcee) = FORCEE.with(std::cell::Cell::get) {
         return forcee;
     }
+    // Pendant la lecture des réglages du lancement (qui disent la langue), un texte se donne en français sans rien
+    // retenir : sinon la langue attendrait sa propre réponse.
+    if crate::parametres::en_lecture() {
+        return ANGLAIS.get().copied().unwrap_or(false);
+    }
     *ANGLAIS.get_or_init(detecter)
 }
 

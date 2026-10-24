@@ -144,6 +144,7 @@ mod tests {
             lecture: Lecture::Falsifie("2026-10 ligne/line 3".into()),
             evenements: Vec::new(),
             illisibles: 1,
+            verifies_des: 0,
         };
         let v = en_json(&lu, &[]);
         assert_eq!(v["etat"], "falsifie");

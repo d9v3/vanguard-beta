@@ -180,6 +180,22 @@ delivered just before it. Only the latest version has its download page; every v
 - **Dependency security.** crypto-bigint 0.7.6 (advisory RUSTSEC-2026-0387: computations meant to always take the same time did not), brought in by YARA-X.
 - **Continuous checks back to green.** The Windows program reserves 8 MiB of stack (1 MiB by default with MSVC: the debug build overflowed at startup); journal issues no longer go through Claude on GitHub; nightly fuzzing finally runs (cargo-fuzz installed separately, checksum verified); the reproducible build checks the DLL guard with a recent enough linker.
 - **The attack words it searches for are no longer in the clear in the program.** The offensive-tool command names and AMSI bypasses Vanguard recognizes in scripts are scrambled in the binary (decoded in memory when needed), so an antivirus does not take Vanguard for the tool it hunts. Nothing is hidden: the source stays in the clear, and a guard inspects the binary so that none of these words comes back into it in the clear.
+- **State security.** What Vanguard keeps on the computer no longer turns against it. A named pipe or a link to
+  /dev/zero put in place of a state file no longer freezes Vanguard (even `--version`, monitoring, the watcher) nor
+  makes it load without end: every file read back is read as a plain file, bounded. The record of changes
+  (`changements.jsonl`), the settings that turn a defense off (`parametres.json`: offline work, self-test, software
+  versions; `blocage.json`: categories turned off), the administrator accounts and Bluetooth devices already seen, and
+  the known keys are sealed: changed outside Vanguard, nothing in them is replayed as administrator, nothing in them
+  turns anything off (an ignored setting is said in Settings, the blocking menu and the check-up, and can be set
+  again), and what was already seen is reported again. Files taken over from an earlier version at the update keep
+  their values; accepted after the seals were deleted, they turn nothing off and are not trusted. A block noted
+  before the seal is only undone by itself if it can be judged
+  again without its note (a firewall rule, a program put back at startup), the rest by hand. “Put everything back”
+  never replays an old note as it is: it goes through the order guards (SSH and Remote Desktop are never reopened).
+  A port closed by ufw without a read-back is said “not verified”, not “blocked”. The event log is written in two
+  steps: lines added without its head read as tampered, then as a break reported at the check-up, never taken in as
+  Vanguard's own. Deleting the seals with their lock no longer brings back the first use, and a month placed “in 2099”
+  no longer links an action to a false cause.
 
 ## October 23, 2026: version 0.86
 

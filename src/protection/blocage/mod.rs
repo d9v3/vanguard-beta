@@ -16,7 +16,7 @@ mod gardes;
 pub(crate) mod gestes;
 mod menaces;
 pub(crate) mod ordres;
-mod parametres;
+pub(crate) mod parametres;
 pub(crate) mod pare_feu;
 
 use std::collections::BTreeSet;
@@ -34,6 +34,17 @@ use crate::ui::*;
 
 /// Les réglages ; illisibles, ceux par défaut (un clic, rien d'automatique), et c'est dit.
 fn parametres() -> Parametres {
+    if let Some(raison) = parametres::ignores() {
+        afficher_aligne(
+            &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Eleve)),
+            &trf!(
+                "blocage.json {raison} : les catégories qu'il désactivait restent sur « un clic », et son accord à la protection active ne fait rien bloquer sans clic. Réglez-les de nouveau ici si c'est bien votre choix.",
+                "blocage.json {raison}: the categories it turned off stay on “one click”, and its consent to active protection blocks nothing without a click. Set them again here if that really is your choice."
+            ),
+            4,
+            "",
+        );
+    }
     parametres::charger().unwrap_or_else(|e| {
         trp!(
             "  {}⚠{RESET} Réglages du blocage illisibles ({e}) : un clic partout, rien d'automatique.",
@@ -47,12 +58,15 @@ fn parametres() -> Parametres {
 /// Enregistre les réglages. Un fichier illisible n'est pas écrasé en silence : il est d'abord mis de côté, intact.
 fn enregistrer(p: &Parametres) -> bool {
     if parametres::charger().is_err() {
-        let f = crate::socle::dossier_local().join("blocage.json");
+        let f = crate::socle::dossier_local().join(parametres::BLOCAGE);
         let copie = f.with_extension(format!(
             "illisible-{}.json",
             chrono::Local::now().format("%Y%m%d-%H%M%S")
         ));
-        if std::fs::copy(&f, &copie).is_ok() {
+        // Seulement un simple fichier, borné : un tube ou un lien vers /dev/zero à sa place ne se recopie pas.
+        if crate::socle::ecriture_sure(&crate::socle::dossier_local())
+            && crate::socle::lire_ordinaire(&f, 1 << 20).is_ok_and(|o| crate::socle::ecrire_atomique(&copie, o).is_ok())
+        {
             trp!(
                 "  {GRIS}Ancien fichier illisible gardé : {}{RESET}",
                 "  {GRIS}Unreadable old file kept: {}{RESET}",
@@ -150,7 +164,7 @@ pub(crate) fn arreter_programme_automatique(
     };
     let ctx = Contexte::lire(intouchables.clone(), false);
     let pret = gestes::preparer(&menace, &ctx, true)?;
-    gestes::faire(&menace, pret, true)
+    gestes::faire(&menace, pret, true).map(|f| f.quoi)
 }
 
 /// Ce que la protection active devient en administrateur, dit là où elle tournerait.
@@ -598,16 +612,37 @@ fn bloquer_tout_seul(m: &Menace, ctx: &Contexte, signalees: Option<(&BTreeSet<St
         gestes::faire(m, pret, true)
     });
     match resultat {
-        Ok(quoi) => {
+        Ok(fait) => {
+            let quoi = &fait.quoi;
             if ctx.interactif {
-                trp!(
-                    "  {VERT}✔{RESET} Bloqué tout seul (protection active).",
-                    "  {VERT}✔{RESET} Blocked by itself (active protection)."
-                );
+                if fait.verifie {
+                    trp!(
+                        "  {VERT}✔{RESET} Bloqué tout seul (protection active).",
+                        "  {VERT}✔{RESET} Blocked by itself (active protection)."
+                    );
+                } else {
+                    afficher_aligne(
+                        &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Moyen)),
+                        &trf!(
+                            "Règle posée toute seule (protection active), non vérifiée : {quoi}.",
+                            "Rule added by itself (active protection), not verified: {quoi}."
+                        ),
+                        4,
+                        "",
+                    );
+                }
             }
+            let titre = if fait.verifie {
+                tr!("Vanguard a bloqué une menace", "Vanguard blocked a threat")
+            } else {
+                tr!(
+                    "Vanguard a posé une règle sans pouvoir la vérifier",
+                    "Vanguard added a rule without being able to verify it"
+                )
+            };
             alerter_blocage(
                 m,
-                tr!("Vanguard a bloqué une menace", "Vanguard blocked a threat"),
+                titre,
                 &trf!(
                     "{quoi}. Pour annuler : vanguard blocage annuler.",
                     "{quoi}. To undo: vanguard blocking undo."
@@ -711,7 +746,7 @@ pub(crate) fn en_surveillance() {
 
 /// Une commande telle qu'elle est montrée : la phrase d'un ordre ou d'une correction native de Windows, la commande
 /// sinon.
-pub(super) fn commande_montree(c: &str) -> String {
+pub(crate) fn commande_montree(c: &str) -> String {
     #[cfg(windows)]
     {
         crate::machine::windows::corrections::affichable(c)
@@ -855,9 +890,18 @@ fn proposer(menaces: Vec<Menace>, ctx: &Contexte) {
             continue;
         }
         match gestes::faire(&m, pret, false) {
-            Ok(_) => trp!(
+            Ok(f) if f.verifie => trp!(
                 "  {VERT}✔{RESET} Bloqué. Pour annuler : vanguard blocage annuler.",
                 "  {VERT}✔{RESET} Blocked. To undo: vanguard blocking undo."
+            ),
+            Ok(f) => afficher_aligne(
+                &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Moyen)),
+                &trf!(
+                    "Non vérifié : {f}. Pour retirer la règle : vanguard blocage annuler.",
+                    "Not verified: {f}. To remove the rule: vanguard blocking undo."
+                ),
+                4,
+                "",
             ),
             Err(e) => trp!("  ✖ {e}", "  ✖ {e}"),
         }
@@ -949,7 +993,9 @@ pub fn annuler() {
         };
         println!();
         afficher_aligne("  ", &affichable(&b.quoi), 2, GRAS);
-        if let Some(a) = &b.annulation {
+        if let Some(refus) = crate::changements::refus_d_origine(b) {
+            afficher_aligne("    → ", &refus, 6, "");
+        } else if let Some(a) = &b.annulation {
             afficher_aligne("    → ", &decrire_annulation(a), 6, "");
         }
         if !demander(tr!("\n  Annuler ce blocage ? [o/N] : ", "\n  Undo this block? [y/N]: ")).oui() {

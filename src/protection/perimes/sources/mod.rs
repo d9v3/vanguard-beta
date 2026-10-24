@@ -654,12 +654,15 @@ pub(crate) fn demande<'a>(source: &Source, adresse: &'a str) -> crate::http::Dem
 /// La copie gardée et son âge, sans rien demander.
 fn gardee((sous_dossier, nom): (&str, &str)) -> Option<(Vec<u8>, Duration)> {
     let fichier = crate::socle::dossier_local().join(sous_dossier).join(nom);
-    let age = std::fs::metadata(&fichier)
+    let age = std::fs::symlink_metadata(&fichier)
         .and_then(|m| m.modified())
         .ok()?
         .elapsed()
         .unwrap_or_default();
-    Some((std::fs::read(&fichier).ok()?, age))
+    Some((
+        crate::socle::lire_ordinaire(&fichier, crate::socle::cache::LISTE_MAX).ok()?,
+        age,
+    ))
 }
 
 /// Le contenu d'une réponse ou d'une copie, décompressé s'il le faut, et seulement s'il a la forme attendue.
