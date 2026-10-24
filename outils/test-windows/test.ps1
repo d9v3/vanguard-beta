@@ -1251,9 +1251,10 @@ if (Test-Path -LiteralPath $lanceur) {
     if ($sortieLanceur -match 'Windows could not start Vanguard') { Ok 'Refus expliqué' } else { Bug 'Refus PAS expliqué' }
     if ($sortieLanceur -match 'Checksum unreadable') { Ok 'Empreinte dite illisible, programme absent' } else { Bug 'Empreinte : rien dit pour un programme absent' }
     if ($codeLanceur -eq 1) { Ok 'Code 1 quand Vanguard ne démarre pas' } else { Bug "Code $codeLanceur au lieu de 1" }
-    # PowerShell introuvable (PATH vidé, comme sur un poste où il est retiré) : un autre message, jamais celui de
+    # PowerShell introuvable (PATH vidé, comme sur un poste où il est retiré ; le lanceur cherché à côté du .bat
+    # d'essai, pas dans le dossier courant de PowerShell) : un autre message, jamais celui de
     # Defender, qui ferait chercher une alerte qui n'existe pas.
-    Set-Content -LiteralPath (Join-Path $essai 'sans-powershell.bat') -Value "@set PATH=`r`n@call `"Lancer Vanguard.bat`"" -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $essai 'sans-powershell.bat') -Value "@set PATH=`r`n@call `"%~dp0Lancer Vanguard.bat`"" -Encoding ASCII
     $sortieSansPs = 'N' | cmd /c "`"$(Join-Path $essai 'sans-powershell.bat')`"" 2>&1 | Out-String
     $codeSansPs = $LASTEXITCODE
     Set-Content -Path (Join-Path $res 'lanceur-sans-powershell.out.txt') -Value $sortieSansPs -Encoding UTF8

@@ -158,6 +158,19 @@ fn position(sections: &[Section], rva: u32, n: u32) -> Option<u64> {
     Some(u64::from(s.position) + u64::from(decalage))
 }
 
+/// `position`, en plus stricte : les `n` octets doivent aussi tenir dans la taille virtuelle de la section (quand elle
+/// est donnée), c'est-à-dire dans ce que le chargeur de Windows met en mémoire, pas seulement dans le fichier.
+fn position_chargee(sections: &[Section], rva: u32, n: u32) -> Option<u64> {
+    let s = sections.iter().find(|s| {
+        rva >= s.adresse && u64::from(rva) < u64::from(s.adresse) + u64::from(s.taille_virtuelle.max(s.taille_brute))
+    })?;
+    let fin = u64::from(rva - s.adresse) + u64::from(n);
+    if s.taille_virtuelle != 0 && fin > u64::from(s.taille_virtuelle) {
+        return None;
+    }
+    position(sections, rva, n)
+}
+
 /// Les en-têtes d'un PE, lus et contrôlés : architecture, forme (PE32+ ou PE32), table des répertoires de données,
 /// sections dont les données brutes sont toutes dans le fichier.
 struct Entetes {
@@ -269,10 +282,12 @@ pub(crate) struct LoadConfig {
 
 impl LoadConfig {
     /// Les DLL importées ne viennent-elles que de System32 ? Seulement si le champ y est, et couvert par les deux
-    /// tailles : une taille plus courte laisserait le champ ignoré, quelle que soit sa valeur.
+    /// tailles : une taille plus courte laisserait le champ ignoré, quelle que soit sa valeur. Les deux tailles
+    /// doivent aussi être égales, comme les écrivent GNU ld, lld et MSVC : deux valeurs différentes, c'est une image
+    /// retouchée dont on ne sait pas laquelle Windows croira.
     pub(crate) fn system32_seulement(&self) -> bool {
         self.taille >= TAILLE_MIN_DRAPEAUX
-            && self.taille_repertoire >= TAILLE_MIN_DRAPEAUX
+            && self.taille_repertoire == self.taille
             && self.drapeaux == SYSTEM32_SEULEMENT
     }
 }
@@ -294,7 +309,7 @@ pub(crate) fn lire_gardes<R: Read + Seek>(source: &mut R, taille: u64) -> Option
         .then(|| {
             let (rva, taille_repertoire) = e.repertoire(&mut l, REPERTOIRE_LOAD_CONFIG)?;
             // Les octets jusqu'au champ compris doivent être dans les données brutes d'une même section.
-            let debut = position(&e.sections, rva, TAILLE_MIN_DRAPEAUX)?;
+            let debut = position_chargee(&e.sections, rva, TAILLE_MIN_DRAPEAUX)?;
             Some(LoadConfig {
                 taille_repertoire,
                 taille: l.u32(debut)?,
@@ -800,7 +815,7 @@ mod tests {
             None
         );
         // Une taille qui ne couvre pas le champ, de l'un ou l'autre côté : Windows ne le lit pas.
-        for (taille, repertoire) in [(79, 148), (148, 79), (0, 0)] {
+        for (taille, repertoire) in [(79, 148), (148, 79), (0, 0), (79, 79), (148, 80), (80, 148)] {
             let g = gardes_lues(&gardes_d_essai(Some((taille, repertoire, 0x800)), None, 1)).unwrap();
             assert!(!g.load_config.unwrap().system32_seulement(), "{taille} {repertoire}");
         }
@@ -830,6 +845,11 @@ mod tests {
             hors[repertoire..repertoire + 4].copy_from_slice(&rva.to_le_bytes());
             assert_eq!(gardes_lues(&hors).unwrap().load_config, None, "{rva:x}");
         }
+        // Le Load Config au-delà de la taille virtuelle de la section (hors de l'image chargée), même dans le fichier.
+        let mut virtuelle = bon.clone();
+        let section = 0x58 + 240;
+        virtuelle[section + 8..section + 12].copy_from_slice(&40u32.to_le_bytes());
+        assert_eq!(gardes_lues(&virtuelle).unwrap().load_config, None);
         // Moins de 11 répertoires annoncés : le n° 10 n'existe pas.
         let mut peu = bon.clone();
         peu[0x58 + 108..0x58 + 112].copy_from_slice(&10u32.to_le_bytes());

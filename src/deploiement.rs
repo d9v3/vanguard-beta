@@ -143,6 +143,7 @@ fn verifier_pe(fichier: &Path) -> bool {
 /// a été tiré.
 fn temoins(racine: &Path, empreinte: Option<String>) -> Result<bool, PasEcrit> {
     let empreinte = empreinte.ok_or(PasEcrit::SansEmpreinte)?;
+    retirer_les_restes(racine);
     let jeton = crate::protection::cles_connues::JETON;
     let tire = crate::protection::cles_connues::jeton_de(racine).is_none();
     if tire {
@@ -172,6 +173,20 @@ fn temoins(racine: &Path, empreinte: Option<String>) -> Result<bool, PasEcrit> {
             .map_err(|e| PasEcrit::Fichier(crate::reseau::TEMOIN_CLE, e))?;
     }
     Ok(tire)
+}
+
+/// Les temporaires d'une écriture de témoin interrompue (clé retirée, déploiement arrêté) : `vanguard.tmp-…`, que le
+/// manifeste de la clé compterait sinon. Seulement des fichiers ordinaires de cette forme, à la racine.
+fn retirer_les_restes(racine: &Path) {
+    let Ok(fichiers) = std::fs::read_dir(racine) else {
+        return;
+    };
+    for f in fichiers.flatten() {
+        let nom = f.file_name().to_string_lossy().into_owned();
+        if nom.starts_with("vanguard.tmp-") && f.file_type().is_ok_and(|t| t.is_file()) {
+            let _ = std::fs::remove_file(f.path());
+        }
+    }
 }
 
 /// Pourquoi les témoins ne sont pas écrits.
@@ -327,7 +342,9 @@ mod tests {
         std::fs::write(d.join("vanguard.jeton"), "pas un jeton\n").unwrap();
         assert!(matches!(temoins(&d, empreinte()), Ok(true)));
         assert!(crate::protection::cles_connues::jeton_de(&d).is_some());
-        // Aucun temporaire de l'écriture atomique ne reste sur la clé.
+        // Le reste d'une écriture interrompue est retiré ; aucun temporaire ne reste sur la clé.
+        std::fs::write(d.join("vanguard.tmp-1-0-0123456789abcdef"), "tronq").unwrap();
+        assert!(matches!(temoins(&d, empreinte()), Ok(false)));
         let restes: Vec<_> = std::fs::read_dir(&d)
             .unwrap()
             .flatten()
