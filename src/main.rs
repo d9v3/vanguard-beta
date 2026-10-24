@@ -741,11 +741,15 @@ enum Commande {
     /// Windows : le processus élevé qui applique les corrections natives (lancé par Vanguard lui-même, après la
     /// demande d'administrateur ; voir machine/windows/eleve.rs).
     #[command(name = "appliquer-eleve", hide = true)]
+    /// Linux et macOS : l'assistant élevé qui fait les ordres du blocage (lancé par Vanguard lui-même, par pkexec, run0
+    /// ou sudo ; voir machine/assistant.rs).
     AppliquerEleve {
         #[arg(long)]
-        canal: String,
+        canal: Option<String>,
         #[arg(long)]
-        parent: u32,
+        parent: Option<u32>,
+        #[arg(long)]
+        langue: Option<String>,
     },
 }
 
@@ -3248,12 +3252,21 @@ async fn main() {
     let _ = crossterm::ansi_support::supports_ansi();
     // Le processus élevé ne fait que sa liste : rien d'autre ne doit tourner avec le jeton administrateur (journal,
     // passage, reconnaissance de la clé écrivent dans des dossiers que le compte contrôle).
-    #[cfg(windows)]
     if std::env::args_os().nth(1).is_some_and(|a| a == "appliquer-eleve") {
         let code = match Args::from_arg_matches(&ligne_de_commande().get_matches()) {
+            #[cfg(windows)]
             Ok(Args {
-                commande: Some(Commande::AppliquerEleve { canal, parent }),
+                commande:
+                    Some(Commande::AppliquerEleve {
+                        canal: Some(canal),
+                        parent: Some(parent),
+                        ..
+                    }),
             }) => machine::windows::eleve::executer(&canal, parent),
+            #[cfg(unix)]
+            Ok(Args {
+                commande: Some(Commande::AppliquerEleve { langue, parent, .. }),
+            }) => machine::assistant::executer(langue.as_deref(), parent),
             _ => 2,
         };
         std::process::exit(code);
@@ -3350,15 +3363,8 @@ async fn main() {
             None => entretien::maintenant(),
         },
         Some(Commande::Entretenir) => entretien::entretenir(),
-        Some(Commande::AppliquerEleve { canal, parent }) => {
-            #[cfg(windows)]
-            machine::quitter(machine::windows::eleve::executer(&canal, parent));
-            #[cfg(not(windows))]
-            {
-                let _ = (canal, parent);
-                trp!("Sous Windows seulement.", "Windows only.");
-            }
-        }
+        // Traité au tout début de main, avant tout le reste : jamais ici.
+        Some(Commande::AppliquerEleve { .. }) => machine::quitter(2),
         Some(Commande::Maj) => maj::executer(),
         Some(Commande::Reparer) => reparer::menu(),
         Some(Commande::Gaming) => gaming::menu(),

@@ -327,7 +327,7 @@ mod tests {
             ],
         );
         let (prepares, groupes) = blocages_prepares(&elements);
-        assert_eq!(groupes, [vec!["sudo ufw delete deny out to '203.0.113.7'".to_string()]]);
+        assert_eq!(groupes, [vec!["vanguard:debloquer-sortie ufw 203.0.113.7".to_string()]]);
         assert!(groupes.iter().flatten().all(|c| !c.contains("sh -c")), "{groupes:?}");
         let refus = prepares.iter().find(|(b, _)| b.id == "forge").map(|(_, p)| p.clone());
         let refus = refus.and_then(Result::err).map(String::from).unwrap_or_default();

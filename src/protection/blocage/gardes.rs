@@ -377,8 +377,9 @@ pub(crate) fn etablies_proc(texte: &str, moi: u32, noms: &std::collections::Hash
         .collect()
 }
 
-/// Les connexions établies d'une table TCP de Windows (GetExtendedTcpTable, « propriétaire, toutes ») : voir
-/// `sortantes::lire_table_tcp` pour la forme. → (port local, adresse distante, port distant, processus).
+/// Les connexions établies d'une table TCP de Windows (GetExtendedTcpTable, « propriétaire, toutes »), telle que la
+/// rend `machine::windows::connexions::table_tcp` (la forme est lue par `connexions::lire_tcp`) : MIB_TCPROW_OWNER_PID
+/// de 24 octets, MIB_TCP6ROW_OWNER_PID de 56. → (port local, adresse distante, port distant, processus).
 #[cfg(any(windows, test))]
 pub(crate) fn etablies_table(octets: &[u8], ipv6: bool) -> Vec<(u16, IpAddr, u16, u32)> {
     let mot = |o: &[u8], i: usize| o.get(i..i + 4).map(|m| u32::from_ne_bytes([m[0], m[1], m[2], m[3]]));

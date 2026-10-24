@@ -11,9 +11,11 @@
 //! garde-fous (`gardes`) passent avant tout : jamais Vanguard ni ce qui le fait tourner, jamais un processus critique
 //! ou un programme du système, jamais une connexion à distance en cours ; sans les droits, rien n'est fait à moitié.
 
+mod arret;
 mod gardes;
 pub(crate) mod gestes;
 mod menaces;
+pub(crate) mod ordres;
 mod parametres;
 pub(crate) mod pare_feu;
 
@@ -707,7 +709,8 @@ pub(crate) fn en_surveillance() {
     );
 }
 
-/// Une commande telle qu'elle est montrée : la phrase d'une correction native de Windows, la commande sinon.
+/// Une commande telle qu'elle est montrée : la phrase d'un ordre ou d'une correction native de Windows, la commande
+/// sinon.
 pub(super) fn commande_montree(c: &str) -> String {
     #[cfg(windows)]
     {
@@ -715,7 +718,7 @@ pub(super) fn commande_montree(c: &str) -> String {
     }
     #[cfg(not(windows))]
     {
-        commande_affichable(c)
+        ordres::affichable(c)
     }
 }
 
@@ -726,8 +729,8 @@ fn montrer(m: &Menace, pret: &gestes::Pret) {
     for e in &pret.etapes {
         afficher_aligne("    → ", e, 6, "");
     }
-    for c in &pret.commandes {
-        afficher_aligne(&format!("      {GRIS}${RESET} "), &commande_montree(c), 8, GRIS);
+    for c in pret.commandes.iter().chain(&pret.apres) {
+        afficher_aligne(&format!("      {GRIS}>{RESET} "), &commande_montree(c), 8, GRIS);
     }
 }
 
