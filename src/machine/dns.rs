@@ -157,14 +157,20 @@ fn serveurs() -> Option<Serveurs> {
         && let Some(vrais) = std::fs::read_to_string(RESOLV_CONF_AMONT)
             .ok()
             .map(|t| lire_resolv_conf(&t))
+            .or_else(|| resolved_par_dbus().ok().map(|r| r.serveurs))
             .or_else(|| super::sortie("resolvectl", &["dns"]).map(|d| lire_resolvectl(&d)))
     {
         if !vrais.is_empty() {
             liste = vrais;
         }
         // DNS over TLS : l'état n'est écrit dans aucun fichier (resolved.conf dit la consigne, pas ce qui
-        // tourne) ; seul resolvectl le dit sans parler D-Bus.
-        chiffre = super::sortie("resolvectl", &["status"]).map(|s| s.contains("+DNSOverTLS"));
+        // tourne) ; resolved le dit par D-Bus, lien par lien. resolvectl status ne sert plus qu'en secours.
+        chiffre = match resolved_par_dbus() {
+            Ok(r) => r.chiffre,
+            // resolved arrêté : rien de su, comme avant.
+            Err(e) if crate::machine::linux::dbus::service_absent(&e) => None,
+            Err(_) => super::sortie("resolvectl", &["status"]).map(|s| s.contains("+DNSOverTLS")),
+        };
     }
     let mut resolveur_local = None;
     if liste.iter().any(IpAddr::is_loopback) {
@@ -194,6 +200,101 @@ fn serveurs() -> Option<Serveurs> {
         chiffre,
         resolveur_local,
         remise: Vec::new(),
+    })
+}
+
+/// Ce que systemd-resolved dit par D-Bus : ses serveurs, et si toutes ses requêtes partent chiffrées.
+#[cfg(target_os = "linux")]
+#[derive(Debug, PartialEq)]
+struct Resolved {
+    serveurs: Vec<IpAddr>,
+    /// `Some(true)` : chaque lien qui porte des serveurs (et le réglage global, s'il en porte) est en DNS over TLS
+    /// strict (« yes ») ; « opportunistic » retombe en clair si le serveur ne parle pas TLS : pas chiffré.
+    chiffre: Option<bool>,
+}
+
+/// Le mode DNS over TLS d'un lien : le sien, sinon (vide) le réglage global, comme le fait resolved.
+#[cfg(target_os = "linux")]
+fn mode_effectif<'a>(lien: &'a str, global: &'a str) -> &'a str {
+    if lien.is_empty() { global } else { lien }
+}
+
+/// Les serveurs de la propriété DNS du gestionnaire de resolved (`a(iiay)` : interface, famille, adresse), dans
+/// l'ordre, avec l'interface de chacun (0 : réglage global).
+#[cfg(target_os = "linux")]
+fn serveurs_resolved(dns: &crate::machine::linux::dbus::Valeur) -> Vec<(i32, IpAddr)> {
+    use crate::machine::linux::dbus::Valeur;
+    dns.elements()
+        .iter()
+        .filter_map(|s| {
+            let [Valeur::I32(lien), Valeur::I32(famille), octets] = s.elements() else {
+                return None;
+            };
+            let o: Vec<u8> = octets
+                .elements()
+                .iter()
+                .filter_map(|v| match v {
+                    Valeur::Octet(o) => Some(*o),
+                    _ => None,
+                })
+                .collect();
+            let ip = match (*famille, o.len()) {
+                (libc::AF_INET, 4) => IpAddr::from([o[0], o[1], o[2], o[3]]),
+                (libc::AF_INET6, 16) => IpAddr::from(<[u8; 16]>::try_from(o.as_slice()).ok()?),
+                _ => return None,
+            };
+            Some((*lien, ip))
+        })
+        .collect()
+}
+
+/// Le jugement « chiffré » d'après le mode global et celui de chaque lien qui porte des serveurs. Sans aucun serveur
+/// connu, le réglage global seul.
+#[cfg(target_os = "linux")]
+fn chiffre_resolved(
+    serveurs: &[(i32, IpAddr)],
+    global: &str,
+    mut mode_du_lien: impl FnMut(i32) -> Option<String>,
+) -> Option<bool> {
+    let mut liens: Vec<i32> = serveurs.iter().map(|(l, _)| *l).collect();
+    liens.sort_unstable();
+    liens.dedup();
+    if liens.is_empty() {
+        return Some(global == "yes");
+    }
+    let mut tous = true;
+    for lien in liens {
+        let mode = if lien == 0 {
+            global.to_string()
+        } else {
+            mode_du_lien(lien)?
+        };
+        tous &= mode_effectif(&mode, global) == "yes";
+    }
+    Some(tous)
+}
+
+/// systemd-resolved lu par le client D-Bus maison (org.freedesktop.resolve1) au lieu de `resolvectl`.
+#[cfg(target_os = "linux")]
+fn resolved_par_dbus() -> Result<Resolved, String> {
+    use crate::machine::linux::dbus::Bus;
+    const RESOLVE1: &str = "org.freedesktop.resolve1";
+    const CHEMIN: &str = "/org/freedesktop/resolve1";
+    let mut bus = Bus::systeme()?;
+    let dns = bus.propriete(RESOLVE1, CHEMIN, "org.freedesktop.resolve1.Manager", "DNS")?;
+    let global = bus.propriete(RESOLVE1, CHEMIN, "org.freedesktop.resolve1.Manager", "DNSOverTLS")?;
+    let global = global.texte().unwrap_or_default().to_string();
+    let serveurs = serveurs_resolved(&dns);
+    // Le chemin d'un lien : son numéro, dont le premier chiffre est échappé (« 3 » → « _33 », sd_bus_path_encode).
+    let chiffre = chiffre_resolved(&serveurs, &global, |lien| {
+        let chemin = format!("{CHEMIN}/link/_3{lien}");
+        bus.propriete(RESOLVE1, &chemin, "org.freedesktop.resolve1.Link", "DNSOverTLS")
+            .ok()
+            .and_then(|v| v.texte().map(String::from))
+    });
+    Ok(Resolved {
+        serveurs: serveurs.into_iter().map(|(_, ip)| ip).collect(),
+        chiffre,
     })
 }
 
@@ -661,6 +762,75 @@ mod tests {
             lire_resolvectl(resolvectl),
             [ip("127.0.0.1"), ip("10.0.0.1"), ip("1.1.1.1"), ip("fe80::1")]
         );
+    }
+
+    /// La propriété DNS de resolved et les modes DNS over TLS, fabriqués : seul « yes » sur chaque lien qui porte des
+    /// serveurs compte comme chiffré ; un lien en « no » sous un réglage global à « yes » ne l'est pas.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dns_over_tls_par_resolved() {
+        use crate::machine::linux::dbus::Valeur as V;
+        let serveur = |lien: i32, famille: i32, octets: &[u8]| {
+            V::Structure(vec![
+                V::I32(lien),
+                V::I32(famille),
+                V::Tableau(octets.iter().map(|o| V::Octet(*o)).collect()),
+            ])
+        };
+        let mut v6 = [0u8; 16];
+        v6[..2].copy_from_slice(&[0x20, 0x01]);
+        let dns = V::Tableau(vec![
+            serveur(0, libc::AF_INET, &[127, 0, 0, 1]),
+            serveur(3, libc::AF_INET, &[10, 0, 0, 1]),
+            serveur(3, libc::AF_INET6, &v6),
+            // Famille et longueur qui ne vont pas ensemble : sautée.
+            serveur(3, libc::AF_INET6, &[1, 2, 3, 4]),
+        ]);
+        let s = serveurs_resolved(&dns);
+        assert_eq!(s.len(), 3);
+        assert_eq!(s[1], (3, ip("10.0.0.1")));
+        let mode = |m: &'static str| move |_| Some(m.to_string());
+        assert_eq!(chiffre_resolved(&s, "yes", mode("")), Some(true));
+        assert_eq!(chiffre_resolved(&s, "yes", mode("no")), Some(false));
+        assert_eq!(chiffre_resolved(&s, "yes", mode("opportunistic")), Some(false));
+        assert_eq!(
+            chiffre_resolved(&s, "no", mode("yes")),
+            Some(false),
+            "le global porte un serveur"
+        );
+        assert_eq!(chiffre_resolved(&s[1..], "no", mode("yes")), Some(true));
+        // Un lien illisible : rien de su, jamais « chiffré ».
+        assert_eq!(chiffre_resolved(&s, "yes", |_| None), None);
+        assert_eq!(chiffre_resolved(&[], "opportunistic", |_| None), Some(false));
+    }
+
+    /// L'oracle : resolved lu par D-Bus contre `resolvectl status` et `resolvectl dns`, sur cet ordinateur. resolvectl
+    /// écrit « +DNSOverTLS » dès qu'un lien ou le global est strict ; la lecture native, plus stricte, ne dit
+    /// « chiffré » que si tous le sont : elle ne peut dire oui quand l'outil dit non.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resolved_comme_resolvectl() {
+        let natif = match resolved_par_dbus() {
+            Ok(r) => r,
+            Err(e) => return crate::essais::saute(&format!("resolved injoignable par D-Bus ({e})")),
+        };
+        let (Some(status), Some(dns)) = (
+            super::super::sortie("resolvectl", &["status"]),
+            super::super::sortie("resolvectl", &["dns"]),
+        ) else {
+            return crate::essais::saute("resolvectl absent");
+        };
+        let outil_chiffre = status.contains("+DNSOverTLS");
+        if natif.chiffre == Some(true) {
+            assert!(outil_chiffre, "chiffré pour D-Bus, pas pour resolvectl");
+        }
+        let mut a = natif.serveurs.clone();
+        let mut b = lire_resolvectl(&dns);
+        a.sort();
+        a.dedup();
+        b.sort();
+        b.dedup();
+        assert!(a == b, "serveurs : {} par D-Bus, {} par resolvectl", a.len(), b.len());
     }
 
     /// Sur cet ordinateur, le resolv.conf amont de resolved donne les serveurs de `resolvectl dns`.
