@@ -985,8 +985,11 @@ impl Script {
     }
 }
 
-/// Des noms qui ne se forment pas par hasard en ramassant une phrase. Masqués (`crate::masque`) : certains sont des
-/// noms de contournement d'AMSI ou de vidage de LSASS qu'un antivirus reconnaîtrait en clair dans le binaire.
+/// Des noms qui ne se forment pas par hasard en ramassant une phrase. La liste est masquée (`crate::masque`) parce
+/// qu'elle contient des noms que reconnaîtrait un antivirus (les `amsi…`, `minidumpwritedump`) ; les autres entrées
+/// (`downloadstring`, `virtualprotect`…) sont de simples noms d'API ou de cmdlets à double usage, présents en clair
+/// dans d'innombrables programmes et ici même ailleurs (motifs plus bas, message montré) : les masquer ici ne les
+/// cache nulle part, c'est seulement que la liste s'encode d'un bloc. On ne masque que ce qui *désigne un outil*.
 static RAMASSABLES: LazyLock<Vec<String>> = liste_masquee![
     "downloadstring",
     "frombase64string",
@@ -1053,6 +1056,11 @@ static OUTILS_OFFENSIFS: LazyLock<Vec<String>> = liste_masquee![
     "-e powershell",
     "-e cmd",
 ];
+
+// Les listes qui suivent restent volontairement en clair : ce sont des noms d'API, de cmdlets et de techniques à
+// double usage (télécharger, exécuter, écrire une clé, couper une protection), présents dans quantité de scripts
+// d'administration légitimes et dans d'autres programmes. Elles ne *désignent pas un outil* précis, donc ne font pas
+// qu'un antivirus prenne Vanguard pour tel outil ; le masquage (`crate::masque`) vise ce qui, seul, le trahirait.
 
 /// Ce qui change le programme d'un service par le registre : la clé des services, la valeur, une écriture.
 const SERVICES: &[&str] = &["currentcontrolset\\services\\"];
@@ -1137,11 +1145,12 @@ pub(crate) fn script_suspect(texte: &str) -> Option<(&'static str, Gravite, Text
             ),
         ));
     }
-    // AMSI aveuglé sans le nommer (« '{1}{0}' -f », variables) : la même manœuvre, par sa forme.
-    if s.contient("management.automation")
-        && s.contient("getfield")
-        && s.contient("nonpublic")
-        && s.contient("setvalue($null,$true)")
+    // AMSI aveuglé sans le nommer (« '{1}{0}' -f », variables) : la même manœuvre, par sa forme. Masqué
+    // (`crate::masque`) : c'est un contournement d'AMSI, qu'un antivirus reconnaîtrait en clair.
+    if s.contient(mot_masque!("management.automation"))
+        && s.contient(mot_masque!("getfield"))
+        && s.contient(mot_masque!("nonpublic"))
+        && s.contient(mot_masque!("setvalue($null,$true)"))
     {
         return Some((
             "amsi",

@@ -76,9 +76,27 @@ macro_rules! liste_masquee {
 mod tests {
     #[test]
     fn aller_retour() {
-        // Encodé à la compilation puis décodé : on retrouve le mot, et il n'est jamais nul.
-        let mot = mot_masque!("sekurlsa::");
-        assert_eq!(mot, "sekurlsa::");
+        // Encodé à la compilation puis décodé : on retrouve le mot exactement, « :: » et « $ » compris.
+        assert_eq!(mot_masque!("sekurlsa::"), "sekurlsa::");
+        assert_eq!(mot_masque!("setvalue($null,$true)"), "setvalue($null,$true)");
+        // Un espace et un tiret dans le mot (« -e powershell ») passent aussi.
+        assert_eq!(mot_masque!("-e powershell"), "-e powershell");
+    }
+
+    #[test]
+    fn encode_vraiment() {
+        // Le code n'est pas le mot : au moins un octet diffère (sinon le masquage ne servirait à rien).
+        const CODE: [u8; 10] = super::encoder::<10>(b"sekurlsa::");
+        assert_ne!(&CODE, b"sekurlsa::");
+    }
+
+    #[test]
+    fn non_ascii_et_vide() {
+        // Décodage d'UTF-8 multioctet et du mot vide : pas de panique, résultat exact.
+        assert_eq!(super::decoder(&super::encoder::<0>(b"")), "");
+        let accents = "élève";
+        let code = super::encoder::<{ "élève".len() }>(accents.as_bytes());
+        assert_eq!(super::decoder(&code), accents);
     }
 
     #[test]

@@ -784,6 +784,9 @@ fn outil_offensif(noms: &[&str], ligne: &str) -> Option<(&'static str, usize)> {
                 "mineur de cryptomonnaie connu (XMRig)",
                 "known cryptocurrency miner (XMRig)"
             )
+        // procdump est un outil légitime de Microsoft détourné : son nom s'affiche en clair dans le message
+        // ci-dessous, le garde-fou (outils/verifier-masque.sh) ne l'interdit donc pas, mais on le masque ici par
+        // cohérence avec les autres noms cherchés.
         } else if est(&[
             mot_masque!("procdump"),
             mot_masque!("procdump64"),
