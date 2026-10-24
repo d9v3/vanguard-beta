@@ -160,7 +160,7 @@ fn version() {
 fn aide_dans_les_deux_langues() {
     let fr = vanguard("fr", &["--help"], "", 30);
     assert_eq!(fr.code, Some(0));
-    for commande in ["complet", "machine", "logiciels", "nettoyer", "reparer", "maj"] {
+    for commande in ["bilan", "audit", "logiciels", "nettoyer", "reparer", "mises-a-jour"] {
         assert!(fr.texte.contains(commande), "aide sans « {commande} »");
     }
     let en = vanguard("en", &["nettoyer", "--help"], "", 30);
@@ -171,10 +171,10 @@ fn aide_dans_les_deux_langues() {
 // Blocages de Windows Defender : en anglais dans l'aide ; ailleurs que sous Windows, rien à proposer et rien changé.
 #[test]
 fn durcir_hors_de_windows() {
-    let aide = vanguard("en", &["harden", "--help"], "", 30);
+    let aide = vanguard("en", &["defender", "--help"], "", 30);
     assert!(aide.texte.contains("Windows Defender blocking"), "{}", aide.texte);
     if !cfg!(windows) {
-        let r = vanguard("en", &["harden"], "", 30);
+        let r = vanguard("en", &["defender"], "", 30);
         assert_eq!(r.code, Some(0));
         assert!(r.texte.contains("Nothing in this category"), "{}", r.texte);
     }
@@ -240,7 +240,7 @@ fn nettoyer_mesure_puis_refus() {
 
 #[test]
 fn audit_en_json() {
-    let s = vanguard("fr", &["machine", "--json"], "", 300);
+    let s = vanguard("fr", &["audit", "--json"], "", 300);
     assert_eq!(s.code, Some(0), "{}", s.erreurs);
     let audit: serde_json::Value = serde_json::from_str(&s.texte).expect("machine --json : JSON illisible");
     let score = audit["score"].as_u64().expect("pas de note");
@@ -259,7 +259,7 @@ fn scan_de_cette_machine_en_json() {
         return essais::saute("sous Wine, le scan ne finit pas");
     }
     // 127.0.0.1 seulement : aucun paquet ne part sur le réseau.
-    let s = vanguard("fr", &["reseau", "127.0.0.1", "--json"], "", 300);
+    let s = vanguard("fr", &["appareils", "127.0.0.1", "--json"], "", 300);
     assert_eq!(s.code, Some(0), "{}", s.erreurs);
     let scan: serde_json::Value = serde_json::from_str(&s.texte).expect("reseau --json : JSON illisible");
     let hotes = scan["hotes"].as_array().expect("pas d'appareils");
@@ -271,12 +271,12 @@ fn sauvegarde_puis_restauration() {
     // Hors du dossier personnel jetable : le fichier doit passer d'un lancement à l'autre.
     let fichier = std::env::temp_dir().join(format!("vanguard-sauvegarde-essai-{}.json", std::process::id()));
     let chemin = fichier.to_str().unwrap();
-    let s = vanguard("fr", &["sauvegarder", chemin], "", 60);
+    let s = vanguard("fr", &["exporter", chemin], "", 60);
     assert_eq!(s.code, Some(0), "{}", s.erreurs);
     assert!(sans_couleurs(&s.texte).contains("Sauvegarde écrite"), "{}", s.texte);
     let texte = std::fs::read_to_string(&fichier).unwrap();
     assert!(texte.contains("\"format\": \"vanguard-sauvegarde\""), "{texte}");
-    let r = vanguard("fr", &["restaurer", chemin], "", 60);
+    let r = vanguard("fr", &["importer", chemin], "", 60);
     assert_eq!(r.code, Some(0), "{}", r.erreurs);
     assert!(
         sans_couleurs(&r.texte).contains("Ajouté à la base actuelle"),
@@ -285,7 +285,7 @@ fn sauvegarde_puis_restauration() {
     );
     // Un fichier qui n'est pas une sauvegarde : rien n'est restauré.
     std::fs::write(&fichier, "{\"autre\":1}").unwrap();
-    let refus = vanguard("fr", &["restaurer", chemin], "", 60);
+    let refus = vanguard("fr", &["importer", chemin], "", 60);
     assert!(
         sans_couleurs(&refus.texte).contains("Rien de restauré"),
         "{}",
@@ -306,7 +306,7 @@ fn ordinateur_d_un_proche_tout_refuse() {
         Path::new(env!("CARGO_BIN_EXE_vanguard")),
         &maison,
         "en",
-        &["relative"],
+        &["troubleshoot", "relative"],
         &entree,
         180,
     );
@@ -327,7 +327,7 @@ fn ordinateur_d_un_proche_tout_refuse() {
 #[test]
 fn lenteur_fiche_depanner_et_copie_sans_rien_changer() {
     // Fiche en JSON : lisible, et sans les numéros de série (ils ne s'affichent qu'à l'écran).
-    let sortie_fiche = vanguard("fr", &["fiche", "--json"], "", 120);
+    let sortie_fiche = vanguard("fr", &["fiche-ordinateur", "--json"], "", 120);
     assert_eq!(sortie_fiche.code, Some(0), "{}", sortie_fiche.erreurs);
     let fiche: serde_json::Value = serde_json::from_str(&sortie_fiche.texte).expect("fiche --json : JSON illisible");
     assert!(
@@ -368,7 +368,7 @@ fn lenteur_fiche_depanner_et_copie_sans_rien_changer() {
 
 #[test]
 fn gaming_quitte_sans_rien_installer() {
-    let s = vanguard("fr", &["gaming"], "\n", 120);
+    let s = vanguard("fr", &["jeux"], "\n", 120);
     let t = sans_couleurs(&s.texte);
     assert_eq!(s.code, Some(0), "{}", s.erreurs);
     assert!(t.contains("Gaming") && !t.contains("Terminé"), "{t}");
@@ -547,7 +547,7 @@ fn verifier_fichier_absent_ou_dossier() {
 
 #[test]
 fn sortantes_en_lecture_seule() {
-    let s = vanguard("fr", &["sortantes"], "", 90);
+    let s = vanguard("fr", &["connexions-sortantes"], "", 90);
     assert_eq!(s.code, Some(0), "{}", s.erreurs);
     let t = sans_couleurs(&s.texte);
     assert!(
@@ -564,7 +564,7 @@ fn sortantes_en_lecture_seule() {
 /// Mon ordinateur est-il contrôlé ? : l'arnaque est expliquée, la recherche se fait, et « n » ne retire rien.
 #[test]
 fn distance_sans_rien_retirer() {
-    let s = vanguard("fr", &["distance"], "n\nn\n", 120);
+    let s = vanguard("fr", &["acces-a-distance"], "n\nn\n", 120);
     assert_eq!(s.code, Some(0), "{}", s.erreurs);
     let t = sans_couleurs(&s.texte);
     assert!(
@@ -735,9 +735,9 @@ fn sans_internet_chaque_outil_le_dit() {
         (&["listes-noires"], "o\n", "Adresse publique introuvable"),
         (&["nat"], "", "Aucun serveur n'a répondu"),
         (&["dns-rapide"], "", "ne répond pas"),
-        (&["sortantes"], "", "Aucune connexion vers Internet"),
+        (&["connexions-sortantes"], "", "Aucune connexion vers Internet"),
         (&["logiciels-espions"], "", "liste d'Échap non vérifiée"),
-        (&["connexion"], "", "Internet ne répond pas : test arrêté"),
+        (&["test-connexion"], "", "Internet ne répond pas : test arrêté"),
         (
             &["lien", "https://exemple.com/a"],
             "n\n",
@@ -764,7 +764,7 @@ fn sans_internet_chaque_outil_le_dit() {
     }
     let _ = std::fs::remove_dir_all(&dossier);
     // Le scan sans réseau local : une erreur claire, pas une attente.
-    let s = vanguard("fr", &["reseau"], "", 60);
+    let s = vanguard("fr", &["appareils"], "", 60);
     assert_eq!(s.code, Some(1), "{}", s.texte);
     assert!(
         sans_couleurs(&s.erreurs).contains("impossible de détecter le réseau local"),
@@ -778,7 +778,7 @@ fn sans_internet_chaque_outil_le_dit() {
     assert_eq!(s.code, Some(0), "{}", s.erreurs);
     assert!(debut.elapsed() < Duration::from_secs(60), "{:?}", debut.elapsed());
     let audit: serde_json::Value = serde_json::from_str(&s.texte).expect("audit-reseau --json : JSON illisible");
-    assert!(audit["score"].is_null() && audit["reseau"].is_null(), "{audit}");
+    assert!(audit["score"].is_null() && audit["appareils"].is_null(), "{audit}");
     let domaines = audit["domaines"].as_array().expect("pas de domaines");
     assert_eq!(domaines.len(), 6);
     for d in domaines {
@@ -802,12 +802,15 @@ fn sans_internet_chaque_outil_le_dit() {
 /// Internet », juste après « Scanner le réseau », chaque ligne dans 76 colonnes. Rien n'est lancé.
 #[test]
 fn audit_du_reseau_au_menu_et_dans_l_aide() {
+    // L'aide générée montre les noms de la langue de l'interface, rangés comme le menu.
     let aide = vanguard("en", &["--help"], "", 30);
     assert!(
-        aide.texte.contains("audit-reseau") && aide.texte.contains("network-audit"),
+        aide.texte.contains("5 Network and Internet") && aide.texte.contains("network-audit"),
         "{}",
         aide.texte
     );
+    let aide_fr = vanguard("fr", &["--help"], "", 30);
+    assert!(aide_fr.texte.contains("audit-reseau"), "{}", aide_fr.texte);
     let commande = vanguard("en", &["network-audit", "--help"], "", 30);
     assert_eq!(commande.code, Some(0), "{}", commande.erreurs);
     assert!(
@@ -879,7 +882,7 @@ fn outils_recents_sans_rien_changer() {
         "{}",
         compte.texte
     );
-    let aide = vanguard("en", &["--help"], "", 30);
+    let aide = vanguard("fr", &["--help"], "", 30);
     for commande in [
         "camera-micro",
         "quarantaine",
@@ -887,7 +890,7 @@ fn outils_recents_sans_rien_changer() {
         "verifier-cle",
         "sauvegarde-auto",
         "raccourci",
-        "a-laisser",
+        "rapport-a-laisser",
     ] {
         assert!(aide.texte.contains(commande), "aide sans « {commande} »");
     }
@@ -912,7 +915,7 @@ fn bilan_de_confidentialite_en_lecture_seule() {
             "Nothing was changed.",
         ),
     ] {
-        let s = vanguard(langue, &["acces"], "", 120);
+        let s = vanguard(langue, &["bilan-confidentialite"], "", 120);
         assert_eq!(s.code, Some(0), "{}", s.erreurs);
         let t = sans_couleurs(&s.texte);
         assert!(t.contains(titre), "{t}");
@@ -924,7 +927,7 @@ fn bilan_de_confidentialite_en_lecture_seule() {
         assert_eq!(longues, Vec::<&str>::new(), "lignes trop longues");
     }
     // L'alias anglais mène au même écran.
-    let alias = vanguard("en", &["permissions"], "", 120);
+    let alias = vanguard("en", &["privacy-review"], "", 120);
     assert!(sans_couleurs(&alias.texte).contains("Privacy check"));
 }
 
@@ -1155,7 +1158,7 @@ fn traces_collectees_et_manifeste_juste() {
         Path::new(env!("CARGO_BIN_EXE_vanguard")),
         &maison,
         "fr",
-        &["traces", dossier.to_str().unwrap()],
+        &["depanner", "traces", dossier.to_str().unwrap()],
         "",
         300,
     );
@@ -1253,7 +1256,7 @@ fn tableau_de_bord_sans_surveillance_explique() {
     let maison = maison_jetable();
     let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
     for (langue, args, attendu) in [
-        ("fr", ["tableau", "--sans-ouvrir"], "vanguard surveillance on"),
+        ("fr", ["tableau-de-bord", "--sans-ouvrir"], "vanguard surveillance on"),
         ("en", ["dashboard", "--no-open"], "vanguard monitor on"),
     ] {
         let s = vanguard_dans(programme, &maison, langue, &args, "", 60);
@@ -1292,7 +1295,7 @@ fn plugin_d_exemple_et_labo() {
         programme,
         &maison,
         "fr",
-        &["plugin", "ajouter", &source_texte],
+        &["plugins", "ajouter", &source_texte],
         "o\n",
         120,
         &env,
@@ -1303,7 +1306,7 @@ fn plugin_d_exemple_et_labo() {
         "{}",
         s.texte
     );
-    let s = vanguard_dans_env(programme, &maison, "fr", &["plugin", "exemple"], "", 60, &env);
+    let s = vanguard_dans_env(programme, &maison, "fr", &["plugins", "exemple"], "", 60, &env);
     assert_eq!(s.code, Some(0), "{}{}", s.texte, s.erreurs);
     assert!(
         s.texte.contains("Bonjour depuis le plugin d'exemple (--salut)"),
@@ -1319,7 +1322,7 @@ fn plugin_d_exemple_et_labo() {
     let mut script = std::fs::read_to_string(plugins.join("exemple/exemple.sh")).unwrap();
     script.push_str("echo de plus\n");
     std::fs::write(plugins.join("exemple/exemple.sh"), script).unwrap();
-    let s = vanguard_dans_env(programme, &maison, "fr", &["plugin", "exemple"], "", 60, &env);
+    let s = vanguard_dans_env(programme, &maison, "fr", &["plugins", "exemple"], "", 60, &env);
     assert_eq!(s.code, Some(1));
     assert!(s.texte.contains("a changé depuis son approbation"), "{}", s.texte);
 
@@ -1812,7 +1815,7 @@ fn autotest_ne_change_rien() {
         let _ = std::fs::remove_dir_all(&maison);
         return essais::saute("en root (unshare) : seul le refus est essayé");
     }
-    let bilan = vanguard_dans(programme, &maison, "fr", &["machine", "--json"], "", 300);
+    let bilan = vanguard_dans(programme, &maison, "fr", &["audit", "--json"], "", 300);
     assert_eq!(bilan.code, Some(0), "{}", bilan.erreurs);
     let avant = contenus(&dossier);
     let s = vanguard_dans(programme, &maison, "fr", &["autotest", "--json"], "", 600);

@@ -1,6 +1,6 @@
 //! Écrire un plugin de Vanguard en Rust.
 //!
-//! Un plugin est un programme que Vanguard lance (`vanguard plugin <nom>`) ; ce qu'il écrit sur sa sortie standard
+//! Un plugin est un programme que Vanguard lance (`vanguard plugins <nom>`) ; ce qu'il écrit sur sa sortie standard
 //! est montré, et une ligne qui est un objet JSON `{"vanguard":1,"niveau":…,"categorie":…,"message":…}` devient un
 //! constat, affiché comme ceux du bilan (jamais compté dans la note). Cette bibliothèque écrit ces lignes
 //! exactement comme Vanguard les lit, dit la langue de l'interface, et lance un autre programme proprement : sans
@@ -164,7 +164,7 @@ pub fn tr<'a>(fr: &'a str, en: &'a str) -> &'a str {
     if langue() == Langue::Francais { fr } else { en }
 }
 
-/// Les arguments donnés au plugin (ceux du manifeste, puis ceux tapés après `vanguard plugin <nom>`).
+/// Les arguments donnés au plugin (ceux du manifeste, puis ceux tapés après `vanguard plugins <nom>`).
 #[must_use]
 pub fn arguments() -> Vec<String> {
     std::env::args().skip(1).collect()

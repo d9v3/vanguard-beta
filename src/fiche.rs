@@ -1,6 +1,6 @@
 //! Fiche de l'ordinateur : ce qu'on demande au téléphone ou pour acheter une pièce. Modèle, carte mère, processeur,
 //! mémoire (barrettes quand le système les dit), carte graphique et son pilote, disques, système. Lecture seule.
-//! Les numéros de série s'affichent à l'écran seulement : ni dans le JSON (`vanguard fiche --json`), ni dans un
+//! Les numéros de série s'affichent à l'écran seulement : ni dans le JSON (`vanguard fiche-ordinateur --json`), ni dans un
 //! fichier, ni dans le journal des erreurs. Ils identifient un appareil, et une fiche se partage facilement.
 
 use serde::Serialize;
@@ -1016,7 +1016,7 @@ fn afficher(f: &Fiche) {
     }
 }
 
-/// « vanguard fiche » : la fiche à l'écran ; `--json` pour les scripts, sans les numéros de série.
+/// « vanguard fiche-ordinateur » : la fiche à l'écran ; `--json` pour les scripts, sans les numéros de série.
 pub fn fiche(json: bool) {
     if json {
         println!("{}", serde_json::to_string_pretty(&lire()).unwrap_or_default());

@@ -19,7 +19,7 @@ This USB key holds the program for Linux, Windows and macOS, its database and it
   donnees/              Device database (one notebook per network: the owner's, each friend's) and the latest
                         report (rapport.html, and rapport.md as plain text, readable without a browser). It travels with the key: any Vanguard that sees the key plugged in uses it. On another
                         computer the key is protected: the database is read there, and what is added stays on that computer.
-  traces/               Traces collected after an infection (vanguard evidence), one dated folder per collection;
+  traces/               Traces collected after an infection (vanguard troubleshoot evidence), one dated folder per collection;
                         in clear text, with personal data. Away from the owner's computer, the key is protected:
                         they stay on that computer.
   source/               Full source code (Rust) with its git history.
@@ -67,7 +67,7 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
        4.10 Windows Defender blocking: password theft, booby-trapped attachments, dangerous sites, ransomware
   5  Network and Internet ›
        5.1 Devices on the network › Network scan (and unmask a password thief like Responder) · All ports of one
-         device (deep scan)
+         device (deep scan; vanguard devices)
        5.2 Network audit: six grades (Internet exposure, Wi-Fi, device separation, DNS and certificates, connected
          devices, computers), attacking nothing; also done by the full check (vanguard network-audit)
        5.3 Name a device ("HP printer")
@@ -112,7 +112,7 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
        8.3 After an infection, step by step · 8.4 Hacked account, step by step: guides 11.7 and 11.10
        8.5 Collect the evidence before cleaning up: processes, connections, startup, logs, recent files, in a
          dated folder with their fingerprints, and the incident timeline (CHRONOLOGIE.txt): everything dated,
-         in time order (read-only, nothing is sent; vanguard evidence)
+         in time order (read-only, nothing is sent; vanguard troubleshoot evidence)
        8.6 Event log: alerts, blocks and incidents, linked (vanguard events)
        8.7 What Vanguard changed: each fix run here, dated, successful or not; those marked "undoable" can be
          undone there one by one, then the previous state is read back
@@ -142,7 +142,7 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
        two or three questions, then Vanguard checks and suggests the right repair.
        And: after an infection, new computer, computer leaving (sale, gift), hacked account, collect the
        evidence, a relative's computer (three questions, a summary in plain words, the page to leave;
-       vanguard relative). From the command line: vanguard troubleshoot sound
+       vanguard troubleshoot relative). From the command line: vanguard troubleshoot sound
        11.13 Repair a known problem (Internet, hijacked browsing, firewall, disk full, stuck updates…)
        11.14 Hardware diagnostics (hardware, recent crashes and errors, text copy on the key)
  12  Optimize and install ›
@@ -184,7 +184,7 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
          from a folder or a .zip archive), lab scripts dropped as they are, and the restrictions switch. Each one
          is scanned (YARA, MalwareBazaar) and approved by its fingerprints before it runs, never by itself as
          administrator; its findings never count in the grade.
-         From the command line: vanguard plugin, vanguard lab, vanguard extensions
+         From the command line: vanguard plugins, vanguard lab, vanguard extensions
        13.11 Remove Vanguard from this computer: what it placed, shown then checked; data kept unless you agree
          twice (vanguard uninstall)
   s  Settings · q  Quit

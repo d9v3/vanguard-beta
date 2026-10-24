@@ -333,7 +333,7 @@ jobs:
         run: |
           $s = ".\target\x86_64-pc-windows-msvc\debug\vanguard.exe"
           & $s --version
-          & $s machine --json > audit.json
+          & $s audit --json > audit.json
           Get-Content audit.json -TotalCount 40
           & $s logiciels --liste
           & $s nettoyer --liste
@@ -364,7 +364,7 @@ jobs:
           & $s --version
           if ($LASTEXITCODE -ne 0) { throw "--version : code $LASTEXITCODE" }
           $env:VANGUARD_LANG = 'fr'
-          & $s machine --json > audit.json
+          & $s audit --json > audit.json
           $bilan = Get-Content audit.json -Raw -Encoding UTF8 | ConvertFrom-Json
           if (-not $bilan.constats) { throw "bilan sans constats" }
           $aide = (& $s --help | Out-String)

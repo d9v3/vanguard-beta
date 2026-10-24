@@ -319,7 +319,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
     </div>
     <div class="domaines">
       <article class="domaine" id="bilan">
-        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8.1-8 9-4.6-.9-8-4.5-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg></span><div><h3>Le bilan, noté de A à F</h3><span class="touche">menu 1 · 2 · 3 · vanguard complet · logiciels-perimes · dernieres-failles · autotest</span></div></header>
+        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8.1-8 9-4.6-.9-8-4.5-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg></span><div><h3>Le bilan, noté de A à F</h3><span class="touche">menu 1 · 2 · 3 · vanguard bilan · logiciels-perimes · dernieres-failles · autotest</span></div></header>
         <ul>
           <li><b>Les bases</b> : pare-feu, mises à jour et failles connues, chiffrement du disque, antivirus, comptes et mots de passe, heure, fin de support.</li>
           <li><b>Accès à distance</b> : SSH et ses algorithmes faibles, Bureau à distance, partages ouverts à tous, proxy détourné (WPAD).</li>
@@ -334,7 +334,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
         </ul>
       </article>
       <article class="domaine" id="exposition">
-        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg></span><div><h3>Exposition vers Internet</h3><span class="touche">vanguard audit-reseau · reseau</span></div></header>
+        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg></span><div><h3>Exposition vers Internet</h3><span class="touche">vanguard audit-reseau · appareils</span></div></header>
         <ul>
           <li><b>Les ports que le routeur ouvre vers Internet</b>, demandés au routeur lui-même (UPnP) : une caméra ou un bureau à distance joignable de n'importe où, c'est critique.</li>
           <li><b>UPnP actif</b> : n'importe quel programme du réseau local peut ouvrir un port ; CGNAT ou double NAT reconnus.</li>
@@ -351,7 +351,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
         </ul>
       </article>
       <article class="domaine" id="objets">
-        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4M7 9h4M7 13h2"/></svg></span><div><h3>Objets connectés</h3><span class="touche">vanguard objets · cameras</span></div></header>
+        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4M7 9h4M7 13h2"/></svg></span><div><h3>Objets connectés</h3><span class="touche">vanguard objets-connectes · cameras-cachees</span></div></header>
         <ul>
           <li><b>Le routeur et les objets reconnus</b> : caméras, imprimantes, NAS, télés, enceintes, consoles, domotique, avec ce que le routeur annonce (modèle, logiciel).</li>
           <li><b>Mot de passe d'origine à changer</b>, administration en HTTP seul ou en telnet : un conseil clair, jamais un essai de mot de passe.</li>
@@ -359,7 +359,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
         </ul>
       </article>
       <article class="domaine" id="infection">
-        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8 11h6M11 8v6"/></svg></span><div><h3>Poste infecté</h3><span class="touche">menu 6 · vanguard blocage · evenements · yara · traces · signaler</span></div></header>
+        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8 11h6M11 8v6"/></svg></span><div><h3>Poste infecté</h3><span class="touche">menu 6 · 8 · vanguard blocage · evenements · yara · depanner traces · signaler</span></div></header>
         <ul>
           <li><b>Antivirus, 308 règles YARA et les empreintes</b> de logiciels malveillants connus de MalwareBazaar (clé abuse.ch gratuite ; la dernière copie sert hors ligne) ; quarantaine réversible.</li>
           <li><b>Blocage des menaces</b> d'un clic : programme arrêté et mis en quarantaine, connexion fermée au pare-feu, lancement retiré, tout annulable sauf l'arrêt ; la <b>protection active</b>, une fois mise en marche, bloque toute seule ce qui ne fait aucun doute et prévient.</li>
@@ -385,7 +385,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
         </ul>
       </article>
       <article class="domaine" id="arnaques">
-        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v12H8l-4 4z"/><path d="M12 7v4M12 13.5h.01"/></svg></span><div><h3>Arnaques et prise de contrôle</h3><span class="touche">vanguard distance · lien · courriel-suspect · verifier-fichier</span></div></header>
+        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v12H8l-4 4z"/><path d="M12 7v4M12 13.5h.01"/></svg></span><div><h3>Arnaques et prise de contrôle</h3><span class="touche">menu 7 · vanguard acces-a-distance · lien · courriel-suspect · verifier-fichier</span></div></header>
         <ul>
           <li><b>Faux technicien</b> : AnyDesk, TeamViewer, RustDesk… installés, lancés ou téléchargés, retirés après accord.</li>
           <li><b>Ce courriel est-il une arnaque ?</b> Un courriel enregistré, lu sans rien ouvrir : vrai expéditeur, SPF, DKIM et DMARC du fournisseur, chaque lien, les pièces jointes passées à YARA et à l'antivirus ; le verdict n'est jamais « sûr ».</li>
@@ -395,7 +395,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
         </ul>
       </article>
       <article class="domaine" id="vie-privee">
-        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><div><h3>Vie privée et secrets</h3><span class="touche">menu 6 · vanguard logiciels-espions · acces · secrets</span></div></header>
+        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><div><h3>Vie privée et secrets</h3><span class="touche">menu 6 · 7 · vanguard logiciels-espions · bilan-confidentialite · secrets</span></div></header>
         <ul>
           <li><b>Logiciels espions</b> posés par un proche : serveurs et sites connus (liste d'Échap), logiciels de surveillance, programmes qui lisent le clavier, autorisations de surveillance sous macOS ; en lecture seule, car celui qui l'a posé pourrait le voir. <span class="nouveau">nouveau</span></li>
           <li><b>Bilan de confidentialité</b> : qui a accès à la position, aux contacts, à la caméra et au micro.</li>
@@ -413,7 +413,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
     </div>
     <div class="domaines">
       <article class="domaine" id="depannage">
-        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 6.5a4 4 0 0 0-5.3 5.3L3.5 17.5l3 3 5.7-5.7a4 4 0 0 0 5.3-5.3l-2.3 2.3-2.4-.6-.6-2.4z"/></svg></span><div><h3>Dépannage</h3><span class="touche">menu 4 · 11 · vanguard depanner · proche</span></div></header>
+        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 6.5a4 4 0 0 0-5.3 5.3L3.5 17.5l3 3 5.7-5.7a4 4 0 0 0 5.3-5.3l-2.3 2.3-2.4-.6-.6-2.4z"/></svg></span><div><h3>Dépannage</h3><span class="touche">menu 11 · vanguard depanner · depanner proche</span></div></header>
         <ul>
           <li><b>Pas à pas</b> : Internet, Wi-Fi, lenteur, son, imprimante, disque plein, une question à la fois.</li>
           <li><b>Ordinateur d'un proche</b> : trois questions, un résumé en mots simples, une page à laisser avec des conseils choisis pour la personne.</li>
@@ -421,7 +421,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
         </ul>
       </article>
       <article class="domaine" id="optimiser">
-        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 18l4-6"/></svg></span><div><h3>Optimiser, logiciels et jeu</h3><span class="touche">menu 7 · 8 · vanguard connexion</span></div></header>
+        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 18l4-6"/></svg></span><div><h3>Optimiser, logiciels et jeu</h3><span class="touche">menu 12 · vanguard test-connexion</span></div></header>
         <ul>
           <li><b>Réglages</b> de confidentialité et de performance qui s'annulent exactement ; nettoyage à cocher ; programmes du démarrage.</li>
           <li><b>Tout remettre comme avant</b> : les corrections du bilan, Optimiser, Gaming, les blocages et le mode Wi-Fi public défaits du plus récent au plus ancien, en une demande administrateur. <span class="nouveau">nouveau</span></li>
@@ -437,7 +437,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
         </ul>
       </article>
       <article class="domaine" id="suivi">
-        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19V5M9 8h6M9 12h6"/></svg></span><div><h3>Suivi, outils et clé USB</h3><span class="touche">menu 10 · 12 · vanguard guide · parametres · extensions · verifier-cle</span></div></header>
+        <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19V5M9 8h6M9 12h6"/></svg></span><div><h3>Suivi, outils et clé USB</h3><span class="touche">menu 10 · 13 · vanguard guide · parametres · extensions · verifier-cle</span></div></header>
         <ul>
           <li><b>Rapport HTML</b> avec la courbe des notes, entretien du mois, apprentissage, ce que Vanguard a changé.</li>
           <li><b>Menus au clavier</b> : → entre, ← revient ; la fenêtre ouverte pour Vanguard prend la taille du menu et se centre. <span class="nouveau">nouveau</span></li>
@@ -584,7 +584,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
 <pre class="exemple"><span class="g"># l'audit du réseau, lisible par un script</span>
 vanguard audit-reseau --json &gt; audit.json
 <span class="g"># le bilan de cet ordinateur, sans menu ni question</span>
-vanguard machine --json &gt; bilan.json
+vanguard audit --json &gt; bilan.json
 <span class="g"># tout le dossier personnel, règles YARA et empreintes</span>
 vanguard yara --complet</pre>
   </section>

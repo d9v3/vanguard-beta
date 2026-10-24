@@ -148,8 +148,8 @@ pub(super) fn juger_demarrage(d: &Demarrage, root: bool) -> Constat {
                 Raison::Droits
             },
             tr!(
-                "Impossible de vérifier la sécurité du démarrage (bputil -d se lit en administrateur : sudo vanguard machine).",
-                "Could not check startup security (bputil -d is read as administrator: sudo vanguard machine)."
+                "Impossible de vérifier la sécurité du démarrage (bputil -d se lit en administrateur : sudo vanguard audit).",
+                "Could not check startup security (bputil -d is read as administrator: sudo vanguard audit)."
             ),
         ),
         Demarrage::AppleSilicon(Some(mode)) => {
@@ -297,8 +297,8 @@ pub(super) fn juger_btm(sortie: Option<&str>, root: bool) -> Vec<Constat> {
                 Raison::Droits
             },
             tr!(
-                "Impossible de vérifier les éléments d'ouverture et de fond (sfltool dumpbtm se lit en administrateur : sudo vanguard machine).",
-                "Could not check login and background items (sfltool dumpbtm is read as administrator: sudo vanguard machine)."
+                "Impossible de vérifier les éléments d'ouverture et de fond (sfltool dumpbtm se lit en administrateur : sudo vanguard audit).",
+                "Could not check login and background items (sfltool dumpbtm is read as administrator: sudo vanguard audit)."
             ),
         )];
     };
@@ -388,8 +388,8 @@ pub(super) fn juger_crochets(
     for (chemin, raison) in illisibles {
         let message = if *raison == Raison::Droits {
             trf!(
-                "Impossible de vérifier le crochet de connexion : {chemin} se lit en administrateur (sudo vanguard machine).",
-                "Could not check the login hook: {chemin} is read as administrator (sudo vanguard machine)."
+                "Impossible de vérifier le crochet de connexion : {chemin} se lit en administrateur (sudo vanguard audit).",
+                "Could not check the login hook: {chemin} is read as administrator (sudo vanguard audit)."
             )
         } else {
             trf!(
@@ -625,7 +625,7 @@ mod tests {
         let c = juger_crochets(&[], Some(&[]), Some(&[]), &[(ROOT_PREFS, Raison::Droits)]);
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].etat(), Etat::NonVerifie(Raison::Droits));
-        assert!(c[0].message.contains("sudo vanguard machine"));
+        assert!(c[0].message.contains("sudo vanguard audit"));
         let c = juger_crochets(
             &[],
             Some(&[]),

@@ -20,7 +20,7 @@ Cette clé contient le programme pour Linux, Windows et macOS, sa base de donné
   donnees/              Base des appareils (un carnet par réseau : celui du propriétaire, celui de chaque ami)
                         et dernier rapport (rapport.html, et rapport.md en texte simple, lisible sans navigateur). Elle voyage avec la clé : tout Vanguard qui voit la clé branchée l'utilise. Sur un autre
                         ordinateur, la clé est protégée : la base y est lue, et ce qui est ajouté reste sur cet ordinateur.
-  traces/               Traces collectées après une infection (vanguard traces), un dossier daté par collecte ;
+  traces/               Traces collectées après une infection (vanguard depanner traces), un dossier daté par collecte ;
                         en clair, avec des données personnelles. Hors de l'ordinateur du propriétaire, la clé est
                         protégée : elles restent sur cet ordinateur.
   source/               Code source complet (Rust) avec son historique git.
@@ -69,7 +69,7 @@ Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trou
        4.10 Blocages de Windows Defender : vol de mots de passe, pièces jointes piégées, sites dangereux, rançongiciels
   5  Réseau et Internet ›
        5.1 Appareils du réseau › Scan du réseau (et démasquer un voleur de mots de passe comme Responder) ·
-         Tous les ports d'un appareil (scan approfondi)
+         Tous les ports d'un appareil (scan approfondi ; vanguard appareils)
        5.2 Audit du réseau : six notes (exposition à Internet, Wi-Fi, séparation des appareils, DNS et certificats,
          objets connectés, ordinateurs), sans rien attaquer ; fait aussi par le bilan complet (vanguard audit-reseau)
        5.3 Nommer un appareil (« imprimante HP »)
@@ -118,7 +118,7 @@ Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trou
        8.3 Après une infection, pas à pas · 8.4 Compte piraté, pas à pas : les parcours 11.7 et 11.10
        8.5 Collecter les traces avant de nettoyer : processus, connexions, démarrage, journaux, fichiers récents,
          dans un dossier daté avec leurs empreintes, et la chronologie de l'incident (CHRONOLOGIE.txt) : tout ce
-         qui est daté, dans l'ordre du temps (lecture seule, rien n'est envoyé ; vanguard traces)
+         qui est daté, dans l'ordre du temps (lecture seule, rien n'est envoyé ; vanguard depanner traces)
        8.6 Journal des évènements : alertes, blocages et incidents, reliés (vanguard evenements)
        8.7 Ce que Vanguard a changé : chaque correction lancée ici, datée, réussie ou non ; celles marquées
          « annulable » s'y annulent une par une, puis l'état d'avant est relu
@@ -148,7 +148,7 @@ Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trou
        disque plein : deux ou trois questions, puis Vanguard vérifie et propose la bonne réparation.
        Et : après une infection, nouvel ordinateur, ordinateur qui part (vente, don), compte piraté,
        collecter les traces, ordinateur d'un proche (trois questions, un résumé en mots simples, la page à laisser ;
-       vanguard proche). En ligne de commande : vanguard depanner son
+       vanguard depanner proche). En ligne de commande : vanguard depanner son
        11.13 Réparer une panne connue (Internet, navigation détournée, pare-feu, disque plein, mises à jour bloquées…)
        11.14 Diagnostic du matériel (matériel, plantages et erreurs récents, copie texte sur la clé)
  12  Optimiser et installer ›
@@ -190,7 +190,7 @@ Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trou
          plugin.toml, ajouté depuis un dossier ou une archive .zip), scripts du labo posés tels quels, et
          l'interrupteur des restrictions. Chacun est analysé (YARA, MalwareBazaar) et approuvé par ses empreintes
          avant de tourner, jamais tout seul en administrateur ; ses constats ne comptent jamais dans la note.
-         En ligne de commande : vanguard plugin, vanguard labo, vanguard extensions
+         En ligne de commande : vanguard plugins, vanguard labo, vanguard extensions
        13.11 Retirer Vanguard de cet ordinateur : ce qu'il a posé, montré puis coché ; les données gardées sauf
          second accord (vanguard desinstaller)
   s  Paramètres · q  Quitter

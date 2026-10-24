@@ -173,7 +173,7 @@ fn fuites_courriel(adresse: &str) -> Option<(Vec<String>, &'static str)> {
     }
 }
 
-/// « vanguard courriel » : dans quelles fuites de données une adresse apparaît-elle ?
+/// « vanguard fuite-courriel » : dans quelles fuites de données une adresse apparaît-elle ?
 pub fn verifier_courriel() {
     titre(tr!("Fuites d'adresse courriel", "Email address leaks"));
     let service = if cle_hibp().is_some() {

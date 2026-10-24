@@ -132,7 +132,7 @@ jobs:
           echo "EMPREINTE-VANGUARD-MACOS $(shasum -a 256 vanguard | cut -d' ' -f1)"
       - name: Essai du programme sur ce Mac
         run: |
-          ./vanguard machine --json > audit.json || true
+          ./vanguard audit --json > audit.json || true
           head -c 3000 audit.json
           ./vanguard diagnostic | tail -20 || true
       # La moitié Intel du programme universel, que ce Mac Apple Silicon ne lance jamais tout seul : par Rosetta 2,
@@ -145,7 +145,7 @@ jobs:
             exit 0
           fi
           arch -x86_64 ./vanguard --version
-          arch -x86_64 ./vanguard machine --json > audit-intel.json
+          arch -x86_64 ./vanguard audit --json > audit-intel.json
           python3 -c "import json; b = json.load(open('audit-intel.json')); assert b['constats'], 'bilan sans constats'; print(len(b['constats']), 'constats (Intel)')"
       - name: Essai complet
         if: github.event_name == 'workflow_dispatch' && inputs.essai_complet

@@ -106,12 +106,12 @@ def commandes_du_guide(programme: Path) -> str:
 
 
 def commandes_en_ligne(programme: Path) -> tuple[int, str]:
-    """Les commandes de « vanguard --help » : leur nombre et la liste prête pour la page (nom, alias anglais,
+    """Les commandes de « vanguard help » (la liste de clap ; « --help » les range en rubriques) : leur nombre et la liste prête pour la page (nom, alias anglais,
     description), dans l'ordre du programme. Un description est coupée à la première phrase ou à 110 caractères."""
-    aide = lancer(programme, "--help")
+    aide = lancer(programme, "help")
     bloc = re.search(r"^Commands:\n(.*?)^Options:", aide, re.S | re.M)
     if not bloc:
-        sys.exit(f"✖ « --help » n'a pas donné sa liste de commandes ({programme})")
+        sys.exit(f"✖ « help » n'a pas donné sa liste de commandes ({programme})")
     entrees = []
     for ligne in bloc.group(1).splitlines():
         m = re.match(r"  ([a-z][a-z0-9-]*)\s+(.*)", ligne)

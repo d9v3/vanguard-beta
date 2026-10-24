@@ -1160,7 +1160,7 @@ pub fn auditer_seulement(garder: impl Fn(&str) -> bool) -> Audit {
     }
 }
 
-/// Système, programmes, pilotes et firmware : tout ce qui doit être à jour (`vanguard maj`). `seulement` limite
+/// Système, programmes, pilotes et firmware : tout ce qui doit être à jour (`vanguard mises-a-jour`). `seulement` limite
 /// les longues recherches à ces catégories, pour revérifier ce qui vient d'être installé.
 pub fn mises_a_jour_completes(seulement: Option<&[&str]>) -> Vec<Constat> {
     os::mises_a_jour_completes(seulement)

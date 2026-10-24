@@ -352,11 +352,11 @@ Lancer 'version' @('--version')
 Lancer 'aide' @('--help')
 
 Etape 'Audit de la machine (texte et JSON)'
-Lancer 'machine' @('machine')
+Lancer 'machine' @('audit')
 # VANGUARD_CHRONO : le temps de chaque vérification part sur la sortie d'erreur, gardée avec les résultats (le bilan
 # Windows prend plusieurs secondes : on voit lesquelles, sans pouvoir mesurer depuis Linux).
 $env:VANGUARD_CHRONO = '1'
-Lancer 'machine-json' @('machine', '--json')
+Lancer 'machine-json' @('audit', '--json')
 Remove-Item Env:VANGUARD_CHRONO
 $lentes = @(Get-Content (Join-Path $res 'machine-json.err.txt') -ErrorAction SilentlyContinue |
     Where-Object { $_ -match '^chrono\s+\d+\s+(\d+) ms\s+(.*)$' } |
@@ -449,7 +449,7 @@ Etape 'Plantage du 20 octobre (0.82) : vanguard machine trois fois de suite, cod
 # hasard des règles (0xC0000005, code -1073741819), jamais sous Wine. Trois passes de suite pour la débusquer.
 $codesMachine = @()
 foreach ($n in 1..3) {
-    LancerSurveille "machine-suite-$n" @('machine')
+    LancerSurveille "machine-suite-$n" @('audit')
     $codesMachine += $script:etape.Commandes[-1].Code
     if ($n -eq 1) { $psMachine = @($script:powershells) }
 }
@@ -461,8 +461,8 @@ else { Ok 'Trois bilans de suite, code 0 chaque fois' }
 Info "PowerShell lancé(s) par un bilan : $($psMachine.Count)$(if ($psMachine.Count) { ' : ' + ((@($psMachine | Select-Object -Unique) | Select-Object -First 6) -join ' / ') })"
 
 Etape 'Scan du réseau de la VM'
-Lancer 'reseau' @('reseau')
-Lancer 'reseau-json' @('reseau', '--json')
+Lancer 'reseau' @('appareils')
+Lancer 'reseau-json' @('appareils', '--json')
 try {
     $scan = Sortie 'reseau-json' | ConvertFrom-Json
     Ok "$(@($scan.hotes).Count) appareil(s) trouvé(s) sur $($scan.reseau)"
@@ -478,13 +478,13 @@ $localVide = Join-Path $env:TEMP 'vanguard-objets-vide'
 New-Item -ItemType Directory -Force $localVide | Out-Null
 try {
     $env:LOCALAPPDATA = $localVide
-    Lancer 'objets-sans-scan' @('iot')
+    Lancer 'objets-sans-scan' @('objets-connectes')
 } finally { $env:LOCALAPPDATA = $vraiLocal }
 Remove-Item $localVide -Recurse -Force -ErrorAction SilentlyContinue
 $o = (Sortie 'objets-sans-scan') -replace '\s+', ' '
 if ($o -match 'Aucun scan gardé pour ce réseau|No scan kept for this network') { Ok 'Sans scan gardé : renvoi vers le scan du réseau' } else { Bug 'Sans scan gardé : pas de renvoi vers le scan' }
 # Après le scan de la VM : la commande relit le carnet, et le scan a déjà montré la section si la box y est.
-Lancer 'objets' @('iot')
+Lancer 'objets' @('objets-connectes')
 $o = Sortie 'objets'
 if ($o -match 'BOX ET OBJETS CONNECTÉS|ROUTER AND CONNECTED DEVICES') { Ok 'iot : écran affiché' } else { Bug 'iot : écran ABSENT' }
 if (($o -replace '\s+', ' ') -match "D'après le dernier scan|From the last scan") { Ok 'iot : d''après le dernier scan gardé, rien sondé' } else { Bug 'iot : dernier scan gardé PAS relu' }
@@ -587,7 +587,7 @@ elseif (Question $qPareFeu) { Bug 'Une fenêtre du pare-feu Windows (« autorise
 else { Ok 'Aucune fenêtre du pare-feu Windows pendant l''audit du réseau' }
 
 Etape 'Tous les ports de cette machine (127.0.0.1)'
-Lancer 'local-tous' @('reseau', '127.0.0.1', '-p', 'tous')
+Lancer 'local-tous' @('appareils', '127.0.0.1', '-p', 'tous')
 
 Etape 'Persistance suspecte : fausse tâche planifiée et fausse entrée de démarrage'
 Info 'Une tâche et un raccourci du dossier Démarrage « PowerShell caché en base64 », et un programme dans C:\Users\Public, inoffensifs, retirés juste après.'
@@ -603,7 +603,7 @@ if (Question 'Faire ce test ?' 'o') {
         $r.TargetPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
         $r.Arguments = '-NoProfile -w hidden -enc VwByAGkAdABlAC0ASABvAHMAdAAgAHQAZQBzAHQA'
         $r.Save()
-        Lancer 'machine-persistance' @('machine')
+        Lancer 'machine-persistance' @('audit')
         $sortie = Sortie 'machine-persistance'
         if ($sortie -match '(?s)vanguard-test-suspect.*base64|base64.*vanguard-test-suspect') { Ok 'Tâche suspecte repérée' } else { Bug 'Tâche suspecte NON repérée' }
         if ($sortie -match 'Public') { Ok 'Entrée de démarrage suspecte repérée' } else { Bug 'Entrée de démarrage suspecte NON repérée' }
@@ -652,14 +652,14 @@ if ($n -match '(?m)(Vos fichiers temporaires|Your temporary files)\s+\S') { Ok '
 if ($n -match 'Disque du système|System disk') { Ok 'Place libre du disque lue' } else { Bug 'Place libre du disque non lue (PowerShell)' }
 
 Etape 'Test de connexion'
-Lancer 'connexion' @('connexion')
+Lancer 'connexion' @('test-connexion')
 if ((Sortie 'connexion') -match 'Mbit/s') { Ok 'Débit mesuré' } else { Bug 'Débit non mesuré' }
 
 Etape 'Mots de passe fuités'
 if ($Auto) { Sautee 'Sautée : il faut taper un mot de passe (test avec questions).' } else {
     Write-Host '      Tape « password » (il doit être trouvé des millions de fois), puis Entrée seule pour terminer.' -ForegroundColor Yellow
     Vider-Clavier
-    & $exe motdepasse
+    & $exe fuite-mot-de-passe
     Constat 'La saisie était-elle masquée et « password » trouvé dans des fuites ?'
 }
 
@@ -667,7 +667,7 @@ Etape 'Réparer (liste), mises à jour (vérification seule), gaming, courriel r
 LancerAvec 'reparer' @('reparer') "`n"
 $n = ([regex]::Matches(((Sortie 'reparer') -replace '\x1b\[[0-9;]*m', ''), '(?m)^\s+\d+\s{2,}\S')).Count
 if ($n -gt 0) { Ok "$n réparation(s) proposée(s)" } else { Bug 'Liste des réparations vide' }
-LancerSurveille 'maj' @('maj') "n`nn`nn`nn`nn`n"
+LancerSurveille 'maj' @('mises-a-jour') "n`nn`nn`nn`nn`n"
 # 0.82 : winget lancé par son chemin complet (celui du Store), sans PowerShell autour ; Windows Update par son API.
 $mj = ((Sortie 'maj') -replace '\x1b\[[0-9;]*m', '') -replace '\s+', ' '
 if ($mj -match 'Programs up to date \(winget\)|Programmes à jour \(winget\)|\d+ (program\(s\) to update|programme\(s\) à mettre à jour)') { Ok "Programmes lus par winget : $($Matches[0])" }
@@ -698,14 +698,14 @@ if ($mj -match 'search failed, offline\?|recherche impossible, hors ligne') {
     else { Info "Windows Update : Vanguard $vuesVanguard, recherche faite ici $wuNombre (la liste change d'une recherche à l'autre)" }
 } else { Bug 'Windows Update : rien dit' }
 Info 'Recherche hors ligne pas essayée : couper le réseau de la VM demande les droits d''administrateur (à la main : « impossible », jamais « à jour »).'
-LancerAvec 'gaming' @('gaming') "`n"
-LancerAvec 'courriel' @('courriel') "test@example.com`nn`n"
+LancerAvec 'gaming' @('jeux') "`n"
+LancerAvec 'courriel' @('fuite-courriel') "test@example.com`nn`n"
 if ((Sortie 'courriel') -match 'XposedOrNot|accord|consent') { Ok 'Accord demandé avant d''envoyer l''adresse' } else { Bug 'Accord NON demandé avant l''envoi' }
 
 Etape 'Données : sauvegarde puis restauration'
 $sauvegarde = Join-Path $res 'sauvegarde.json'
-Lancer 'sauvegarder' @('sauvegarder', $sauvegarde)
-Lancer 'restaurer' @('restaurer', $sauvegarde)
+Lancer 'sauvegarder' @('exporter', $sauvegarde)
+Lancer 'restaurer' @('importer', $sauvegarde)
 if ((Test-Path $sauvegarde) -and (Get-Item $sauvegarde).Length -gt 0) { Ok 'Sauvegarde écrite puis relue' } else { Bug 'Sauvegarde ABSENTE' }
 
 Etape 'Nommer la box trouvée par le scan, puis retirer le surnom'
@@ -759,7 +759,7 @@ LancerAvec 'lenteur' @('lenteur') "`n"
 $t = Sortie 'lenteur'
 if ($t -match "POURQUOI C'EST LENT|WHY IS IT SLOW") { Ok 'Instantané affiché' } else { Bug 'Instantané ABSENT' }
 if ($t -match 'PowerShell ne répond pas|PowerShell is not responding') { Bug 'Lecture PowerShell en échec' }
-Lancer 'fiche-json' @('fiche', '--json')
+Lancer 'fiche-json' @('fiche-ordinateur', '--json')
 try {
     $f = Sortie 'fiche-json' | ConvertFrom-Json
     if ($f.processeur) { Ok "Processeur : $($f.processeur)" } else { Bug 'Processeur non lu' }
@@ -798,11 +798,11 @@ LancerAvec 'appris' @('appris') "`n"
 if ((Sortie 'appris') -match 'Ce que Vanguard a appris|What Vanguard has learned') { Ok 'Page « appris » affichée' } else { Bug 'Page « appris » ABSENTE' }
 
 Etape 'Réseau : Wi-Fi encombré, type de NAT, caméras, listes noires refusées'
-Lancer 'canaux' @('canaux')
+Lancer 'canaux' @('canaux-wifi')
 if ((Sortie 'canaux') -match 'Wi-Fi encombré|Crowded Wi-Fi') { Ok 'Wi-Fi examiné (la VM n''en a pas : la sortie doit le dire)' } else { Bug 'Wi-Fi encombré : rien affiché' }
 Lancer 'nat' @('nat')
 if ((Sortie 'nat') -match 'Type de NAT|NAT type') { Ok 'Type de NAT examiné' } else { Bug 'Type de NAT : rien affiché' }
-Lancer 'cameras' @('cameras')
+Lancer 'cameras' @('cameras-cachees')
 if ((Sortie 'cameras') -match 'Caméras cachées|Hidden cameras') { Ok 'Recherche de caméras faite' } else { Bug 'Caméras : rien affiché' }
 LancerAvec 'listes-noires' @('listes-noires') "n`n"
 if ((Sortie 'listes-noires') -match "Rien n'a été envoyé|Nothing was sent") { Ok 'Accord demandé, refus respecté' } else { Bug 'Refus des listes noires PAS respecté' }
@@ -815,7 +815,7 @@ $dnsApres = Get-DnsClientServerAddress -AddressFamily IPv4 | Format-Table -AutoS
 if ($dnsAvant -eq $dnsApres) { Ok 'DNS inchangés (refusé)' } else { Bug 'DNS changés malgré le refus' }
 
 Etape 'Qui parle à Internet ? Ce lien est-il dangereux ?'
-Lancer 'sortantes' @('sortantes')
+Lancer 'sortantes' @('connexions-sortantes')
 $s = Sortie 'sortantes'
 if ($s -match 'Qui parle à Internet|Who talks to the Internet') { Ok 'Connexions listées' } else { Bug 'Connexions : rien affiché' }
 if ($s -match 'PowerShell ne répond pas|PowerShell is not responding') { Bug 'Lecture PowerShell en échec' }
@@ -943,7 +943,7 @@ Etape 'Collecter les traces (0.79) : dossier daté, LISEZMOI, manifeste juste, r
 $dossierTraces = Join-Path $env:TEMP 'vanguard-traces-test'
 Remove-Item $dossierTraces -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $dossierTraces | Out-Null
-LancerSurveille 'traces' @('traces', $dossierTraces)
+LancerSurveille 'traces' @('depanner', 'traces', $dossierTraces)
 $tr = Sortie 'traces'
 if ($tr -match 'Collecter les traces|Collect the traces') { Ok 'Collecte lancée' } else { Bug 'Collecte PAS lancée' }
 $dates = @(Get-ChildItem -LiteralPath $dossierTraces -Directory -Filter 'traces-*')
@@ -1145,7 +1145,7 @@ Etape 'Tableau de bord de la surveillance (0.81) : page écrite, sans navigateur
 # Après la surveillance ci-dessus : la page doit montrer sa dernière passe. --sans-ouvrir : rien ne surgit à l'écran.
 $page = Join-Path $env:LOCALAPPDATA 'vanguard\tableau.html'
 $avantTableau = Get-Date
-Lancer 'tableau' @('tableau', '--sans-ouvrir')
+Lancer 'tableau' @('tableau-de-bord', '--sans-ouvrir')
 if ((Sortie 'tableau') -match 'Tableau de bord :|Dashboard:') { Ok 'Chemin de la page affiché' } else { Bug 'Chemin de la page PAS affiché' }
 if ((Test-Path -LiteralPath $page) -and (Get-Item -LiteralPath $page).LastWriteTime -ge $avantTableau.AddSeconds(-2)) {
     Ok 'Page écrite dans le dossier de Vanguard'
@@ -1187,7 +1187,7 @@ $pagesAvant = @(Get-ChildItem -LiteralPath $bureauProche -Filter $motifPage -Err
 $poserPage = -not $SansOuvrir
 $avantProche = Get-Date
 $reste = if ($poserPage) { "`n" * 80 } else { "n`n" * 80 }
-LancerAvec 'proche' @('relative') ("1`n2`n1`n`ny`n" + $reste)
+LancerAvec 'proche' @('troubleshoot', 'relative') ("1`n2`n1`n`ny`n" + $reste)
 $pr = (Sortie 'proche') -replace '\x1b\[[0-9;]*m', ''
 $prPlat = $pr -replace '\s+', ' '
 Info ("Durée du parcours (bilan compris) : {0:N1} s" -f $script:etape.Commandes[-1].Duree)
@@ -1216,11 +1216,11 @@ Etape 'Rapport HTML de Vanguard'
 $avantComplet = Get-Date
 if ($SansOuvrir) {
     # En arrière-plan, le navigateur ne doit pas surgir : le bilan complet, en texte.
-    Lancer 'complet' @('complet', '--texte')
+    Lancer 'complet' @('bilan', '--texte')
     Info 'Rapport HTML pas ouvert : test en arrière-plan.'
     if ((Sortie 'complet') -match '(?m)^## (Audit du réseau|Network audit)') { Ok 'Rapport en texte : section de l''audit du réseau' } else { Bug 'Rapport en texte : section « Network audit » ABSENTE' }
 } else {
-    Lancer 'complet-html' @('complet', '--html')
+    Lancer 'complet-html' @('bilan', '--html')
     Start-Sleep -Seconds 3
     Constat 'Le rapport s''est-il ouvert dans le navigateur, lisible, avec les accents corrects ?'
 }
@@ -1384,7 +1384,7 @@ if ($d -match 'PowerShell is not responding|PowerShell ne répond pas') { Bug 'D
 Sans-PowerShell 'Diagnostic'
 
 # Fiche : les mêmes classes, rendues dans le JSON qu'écrivait le script.
-LancerSurveille 'fiche-json-sans-ps' @('fiche', '--json')
+LancerSurveille 'fiche-json-sans-ps' @('fiche-ordinateur', '--json')
 try {
     $fj = Sortie 'fiche-json-sans-ps' | ConvertFrom-Json
     $csRef = Get-CimInstance Win32_ComputerSystem
@@ -1474,7 +1474,7 @@ if (Question 'Faire ce test ?') {
     Constat 'La correction s''est-elle bien passée (affichage clair, une fenêtre UAC par correction, « OK » à chaque étape) ?'
 
     # Un port bloqué par Vanguard ne doit plus être signalé comme à corriger (0.9.6).
-    Lancer 'machine-apres-blocage' @('machine')
+    Lancer 'machine-apres-blocage' @('audit')
     if ((Sortie 'machine-apres-blocage') -match 'bloqué en entrée par la règle|blocked inbound by the') { Ok 'Port bloqué reconnu à l''audit suivant' }
     else { Info 'Aucun port reconnu comme bloqué (normal si aucun port n''a été bloqué)' }
 
@@ -1498,7 +1498,7 @@ Lancer 'camera-micro' @('camera-micro')
 $c = Sortie 'camera-micro'
 if ($c -match 'Camera and microphone|Caméra et micro') { Ok 'Caméra et micro : historique lu' } else { Bug 'Caméra et micro : écran absent' }
 if ($c -match 'PowerShell is not responding|PowerShell ne répond pas') { Bug 'Caméra et micro : lecture en échec' }
-Lancer 'acces' @('acces')
+Lancer 'acces' @('bilan-confidentialite')
 $c = Sortie 'acces'
 if ($c -match 'Privacy check|Bilan de confidentialit') { Ok 'Bilan de confidentialité : écran lu' } else { Bug 'Bilan de confidentialité : écran absent' }
 if ($c -match 'settings cannot be read from the registry|illisibles dans le registre') { Bug 'Bilan de confidentialité : registre illisible' }
@@ -1520,7 +1520,7 @@ Etape 'Réglages Windows de la 0.68 à la 0.78 : Vanguard voit-il ce que Windows
 # Chaque réglage est relu ici, sans Vanguard ; Vanguard doit le signaler s'il est risqué, et seulement dans ce cas.
 # Un bilan refait maintenant : celui du début précède les corrections acceptées plus haut (WPAD, longueur des mots
 # de passe…), et le registre relu ici les montre déjà faites. Les deux se comparent au même instant (et à la 0.79).
-Lancer 'machine-json-relu' @('machine', '--json')
+Lancer 'machine-json-relu' @('audit', '--json')
 try {
     $audit = Sortie 'machine-json-relu' | ConvertFrom-Json
     function Signale($motif) { [bool]@($audit.constats | Where-Object { $_.probleme -and $_.message -match $motif }).Count }
@@ -1677,7 +1677,7 @@ if (Question 'Faire ce test ?') {
     $essai = Get-LocalUser -Name 'vanguard-essai' -ErrorAction SilentlyContinue
     if (-not $essai) { Bug 'Compte de test non créé (UAC refusée ?)' }
     else {
-        Lancer 'machine-compte-essai' @('machine', '--json')
+        Lancer 'machine-compte-essai' @('audit', '--json')
         try {
             $vu = @((Sortie 'machine-compte-essai' | ConvertFrom-Json).constats | Where-Object { $_.probleme -and $_.message -match 'vanguard-essai' })
             if (-not $vu.Count) { Bug 'Compte sans mot de passe exigé NON signalé' }
@@ -1692,7 +1692,7 @@ if (Question 'Faire ce test ?') {
 Etape 'Couleurs et accents dans la console'
 if ($Auto) { Sautee 'Sautée : il faut regarder l''écran (test avec questions).' } else {
     Vider-Clavier
-    & $exe machine
+    & $exe audit
     Constat 'Dans l''audit ci-dessus, les couleurs et les accents (é, è, ✔, ✖) s''affichent-ils correctement ?'
 }
 

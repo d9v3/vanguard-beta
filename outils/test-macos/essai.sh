@@ -104,8 +104,8 @@ lancer version 10 '' --version
 lancer aide 10 '' --help
 
 section "Audit"
-lancer machine 300 '' machine
-lancer machine-json 300 '' machine --json
+lancer machine 300 '' audit
+lancer machine-json 300 '' audit --json
 verifier "audit JSON lisible" python3 -c "import json; json.load(open('$RES/machine-json.txt'))"
 # Seule exception : COM-CPT-003 quand sshd est là (Session à distance allumée sur les Mac de GitHub) : son journal
 # unifié n'est pas lu, et « non vérifié » est alors la réponse juste, pas un défaut.
@@ -125,7 +125,7 @@ done
 section "Diagnostic"
 lancer diagnostic 120 '' diagnostic
 verifier "diagnostic : section MATÉRIEL" grep -q 'MATÉRIEL' "$RES/diagnostic.txt"
-lancer fiche-json 60 '' fiche --json
+lancer fiche-json 60 '' fiche-ordinateur --json
 
 section "Lectures en Rust (0.82) : les mêmes réponses que les outils d'Apple"
 # Depuis la 0.82, Vanguard lit lui-même les plist, sysctl, les noms du Mac, la place libre et les administrateurs, au
@@ -285,7 +285,7 @@ AGENTS_CREE=0
 [ -d "$AGENTS" ] || { mkdir -p "$AGENTS"; AGENTS_CREE=1; }
 DROITS_AGENTS=$(stat -f '%Lp' "$AGENTS")
 chmod 000 "$AGENTS"
-lancer machine-agents-illisibles 300 '' machine --json
+lancer machine-agents-illisibles 300 '' audit --json
 chmod "$DROITS_AGENTS" "$AGENTS"
 [ "$AGENTS_CREE" = 1 ] && rmdir "$AGENTS"
 verifier "persistance : $AGENTS dit illisible, non vérifié" python3 -I -c "
@@ -373,11 +373,11 @@ lancer integrite-modification 60 '' integrite
 verifier "intégrité : ~/.zshrc modifié repéré" grep -q 'zshrc' "$RES/integrite-modification.txt"
 
 section "Ports de cette machine"
-lancer local 300 '' reseau 127.0.0.1
-lancer local-json 300 '' reseau 127.0.0.1 --json
+lancer local 300 '' appareils 127.0.0.1
+lancer local-json 300 '' appareils 127.0.0.1 --json
 
 section "Connexion"
-lancer connexion 180 '' connexion
+lancer connexion 180 '' test-connexion
 
 section "Menu : chaque groupe ouvert puis refermé, puis q"
 lancer menu 60 '4\n\n5\n\n6\n\n7\n\nq\n'
@@ -393,7 +393,7 @@ verifier "mot de passe : jamais affiché" bash -c "! grep -q 'Mot de passe : pas
 
 section "Réparer (liste), mises à jour (sans rien installer), logiciels, gaming"
 lancer reparer 60 '\n' reparer
-lancer maj 400 'n\nn\nn\nn\n' maj
+lancer maj 400 'n\nn\nn\nn\n' mises-a-jour
 verifier "maj : jamais « --install --all » (installerait une nouvelle version majeure)" bash -c "! grep -q -- '--install --all' '$RES/maj.txt'"
 lancer logiciels-liste 120 '' logiciels --liste
 verifier "logiciels : au moins 20 proposés" python3 -c "import re, sys; t = open('$RES/logiciels-liste.txt', encoding='utf-8').read(); sys.exit(len(re.findall(r'(?m)^ +(?:\x1b\[[0-9;]*m)?[✔·]', t)) < 20)"
@@ -401,11 +401,11 @@ lancer logiciels 60 '\n' logiciels
 lancer nettoyer-liste 120 '' nettoyer --liste
 verifier "nettoyer : place à gagner mesurée, rien effacé" grep -qiE 'rien n.a été effacé|nothing was deleted' "$RES/nettoyer-liste.txt"
 verifier "logiciels : menu affiché" grep -qE 'Pack de départ|Starter pack' "$RES/logiciels.txt"
-lancer gaming 60 '\n' gaming
+lancer gaming 60 '\n' jeux
 
 section "Données : sauvegarde puis restauration"
-lancer sauvegarder 60 '' sauvegarder "$RES/sauvegarde.json"
-lancer restaurer 60 '' restaurer "$RES/sauvegarde.json"
+lancer sauvegarder 60 '' exporter "$RES/sauvegarde.json"
+lancer restaurer 60 '' importer "$RES/sauvegarde.json"
 verifier "sauvegarde écrite" test -s "$RES/sauvegarde.json"
 
 section "Vérifier ma sauvegarde (0.81) : aucune, puis une fausse sauvegarde rsync relue et une copie abîmée"
@@ -439,13 +439,13 @@ verifier "verifier-sauvegarde : sauvegarde dite abîmée" contient "$RES/verifie
 rm -rf "$NOTES" "$ORIGINAUX" "$DISQUE"
 
 section "Tableau de bord de la surveillance (0.81) : page écrite, sans navigateur"
-lancer tableau 60 '' tableau --sans-ouvrir
+lancer tableau 60 '' tableau-de-bord --sans-ouvrir
 verifier "tableau : chemin de la page affiché" grep -q 'Tableau de bord :' "$RES/tableau.txt"
 verifier "tableau : page écrite dans le dossier de Vanguard" grep -q 'Surveillance du réseau' "$DOSSIER_VANGUARD/tableau.html"
 cp "$DOSSIER_VANGUARD/tableau.html" "$RES/tableau.html" 2>/dev/null
 
 section "Courriel (refus de l'envoi)"
-lancer courriel 60 'test@example.com\nn\n' courriel
+lancer courriel 60 'test@example.com\nn\n' fuite-courriel
 
 section "Surveillance : agent launchd"
 lancer surveillance-on 60 '' surveillance on
@@ -502,21 +502,21 @@ verifier "empreintes : quarantaine refusée, rien fait" grep -q 'Rien n.a été 
 verifier "empreintes : fichier laissé en place" test -f "$ESSAI_YARA/facture.pdf.exe"
 
 section "Protection : qui parle à Internet, prise de contrôle, lien, fichier téléchargé"
-lancer sortantes 180 '' sortantes
+lancer sortantes 180 '' connexions-sortantes
 verifier "sortantes : connexions listées" grep -qE 'connexion\(s\) vers Internet|Aucune connexion' "$RES/sortantes.txt"
-lancer distance 120 '' distance
+lancer distance 120 '' acces-a-distance
 verifier "distance : verdict donné" grep -qE 'Aucun logiciel de prise de contrôle|prise de contrôle à distance' "$RES/distance.txt"
 lancer lien 60 'n\n' lien 'https://paypal.com.compte-securite.xyz/login'
 verifier "lien : faux sous-domaine de PayPal repéré" grep -q 'le vrai : paypal.com' "$RES/lien.txt"
 lancer verifier-fichier 300 '\n' verifier-fichier "$ESSAI_AV/eicar.com"
 verifier "verifier-fichier : EICAR signalé" grep -qiE 'eicar|danger|malveillant' "$RES/verifier-fichier.txt"
 lancer camera-micro 60 '' camera-micro
-lancer acces 60 '' acces
+lancer acces 60 '' bilan-confidentialite
 verifier "acces : bilan de confidentialité affiché" grep -qE 'Bilan de confidentialité|Privacy check' "$RES/acces.txt"
 lancer quarantaine 60 '' quarantaine
 
 section "Collecter les traces : dossier daté, manifeste vérifié par shasum"
-lancer traces 600 '\n' traces
+lancer traces 600 '\n' depanner traces
 TRACES=$(ls -dt "$HOME/Library/Application Support/vanguard/traces/traces-"* 2>/dev/null | head -1)
 note "traces : $TRACES"
 verifier "traces : dossier daté écrit" test -d "$TRACES"
@@ -530,7 +530,7 @@ lancer se-mettre-a-jour 120 'n\n' se-mettre-a-jour
 verifier "mise à jour : GitHub interrogé, rien installé sans accord" grep -qE 'GitHub|Dernière version' "$RES/se-mettre-a-jour.txt"
 lancer verifier-moi 30 '' verifier-moi
 verifier "verifier-moi : empreinte SHA-256 du programme" grep -qE '[0-9a-f]{64}' "$RES/verifier-moi.txt"
-lancer fiche 60 '' fiche
+lancer fiche 60 '' fiche-ordinateur
 lancer lenteur 120 '' lenteur
 lancer demarrage 60 '\n' demarrage
 lancer entretien 120 '' entretien
@@ -560,7 +560,7 @@ touch /Volumes/VANGUARDLOG/vanguard-journal.cle
 head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' >/Volumes/VANGUARD/vanguard.jeton
 cp /Volumes/VANGUARD/vanguard.jeton /Volumes/VANGUARDLOG/vanguard.jeton
 note "$(mount | grep VANGUARD)"
-(cd / && printf '' | delai 120 /Volumes/VANGUARD/macOS/vanguard reseau 999.1.1.1 >"$RES/cle-protection.txt" 2>&1)
+(cd / && printf '' | delai 120 /Volumes/VANGUARD/macOS/vanguard appareils 999.1.1.1 >"$RES/cle-protection.txt" 2>&1)
 note "$(mount | grep VANGUARD)"
 verifier "clé : remontée en lecture seule" bash -c "mount | grep ' on /Volumes/VANGUARD ' | grep -q read-only"
 verifier "clé : écriture refusée" bash -c "! touch /Volumes/VANGUARD/essai-ecriture"

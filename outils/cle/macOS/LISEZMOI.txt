@@ -27,15 +27,15 @@ M2…) et Intel, rien à installer.
 
    Sans rien après « vanguard » : le menu. Sinon (« vanguard » = /Volumes/VANGUARD/macOS/vanguard) :
 
-     vanguard complet              bilan complet : ce Mac, puis le réseau
-     vanguard complet --texte      même bilan, rapport en texte simple
+     vanguard bilan                bilan complet : ce Mac, puis le réseau
+     vanguard bilan --texte        même bilan, rapport en texte simple
      vanguard corriger             bilan, puis chaque correction montrée et confirmée
-     vanguard machine              audit de ce Mac seulement
-     vanguard reseau               scan du réseau local
-     vanguard maj                  mises à jour : macOS, Homebrew, App Store…
+     vanguard audit                audit de ce Mac seulement
+     vanguard appareils            scan du réseau local
+     vanguard mises-a-jour         mises à jour : macOS, Homebrew, App Store…
      vanguard reparer              réparations : Internet, DNS, disque plein…
      vanguard nettoyer --liste     place à gagner, sans rien effacer
-     vanguard connexion            test de connexion : ping, débit, bufferbloat
+     vanguard test-connexion       test de connexion : ping, débit, bufferbloat
      vanguard antivirus <dossier>  analyser une clé, un disque ou un dossier (ClamAV)
      vanguard --help               toutes les commandes (vanguard <commande> --help : le détail)
      vanguard --version            la version

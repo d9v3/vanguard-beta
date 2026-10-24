@@ -313,7 +313,7 @@ pub(crate) fn lignes_indices(i: &Indices) -> Vec<(String, Option<Niveau>)> {
     l
 }
 
-/// Menu Réseau et Internet › Caméras cachées, ou `vanguard cameras`.
+/// Menu Réseau et Internet › Caméras cachées, ou `vanguard cameras-cachees`.
 pub async fn chercher_cameras() {
     titre(tr!("Caméras cachées ?", "Hidden cameras?"));
     let intro = tr!(

@@ -7,7 +7,7 @@ part et ne comptent jamais dans la note.
 Deux formes :
 
 - **Plugin** : un outil durable, dans son dossier, avec un manifeste `plugin.toml`. Ajouté une fois
-  (`vanguard plugin ajouter <dossier ou archive.zip>`), il est ensuite dans le menu.
+  (`vanguard plugins ajouter <dossier ou archive.zip>`), il est ensuite dans le menu.
 - **Script du labo** : un fichier posé tel quel, sans manifeste, pour essayer vite (`vanguard labo ouvrir`
   donne le dossier).
 
@@ -67,17 +67,17 @@ est celui du plugin : lis tes fichiers par là (le programme lancé est une copi
 Commandes :
 
 ```
-vanguard plugin ajouter extensions/exemples/exemple   copie, analyse, montre, demande l'accord
-vanguard plugin exemple                                le lance
-vanguard plugin exemple --rapport                      ses constats dans le rapport HTML (section Plugins)
-vanguard plugin exemple --isole                        sans réseau, dossier personnel masqué (Linux :
+vanguard plugins ajouter extensions/exemples/exemple   copie, analyse, montre, demande l'accord
+vanguard plugins exemple                                le lance
+vanguard plugins exemple --rapport                      ses constats dans le rapport HTML (section Plugins)
+vanguard plugins exemple --isole                        sans réseau, dossier personnel masqué (Linux :
                                                        bubblewrap ; macOS : sandbox-exec ; pas sous Windows)
-vanguard plugin liste                                  chaque plugin et son état
-vanguard plugin approuver exemple                      après un changement, le remontre et le réapprouve
-vanguard plugin retirer exemple
+vanguard plugins liste                                  chaque plugin et son état
+vanguard plugins approuver exemple                      après un changement, le remontre et le réapprouve
+vanguard plugins retirer exemple
 ```
 
-Après `--`, tout va au plugin tel quel (`vanguard plugin exemple -- --rapport`).
+Après `--`, tout va au plugin tel quel (`vanguard plugins exemple -- --rapport`).
 
 ### Signer un plugin (auteur vérifié)
 
@@ -147,8 +147,8 @@ L'exemple complet est [exemples/rust-exemple](exemples/rust-exemple) :
 ```
 cd extensions/exemples/rust-exemple
 cargo install --path . --root . --no-track      le programme dans bin/
-vanguard plugin ajouter .
-vanguard plugin rust-exemple
+vanguard plugins ajouter .
+vanguard plugins rust-exemple
 ```
 
 `target/` et `.git/` ne sont pas copiés avec le plugin.
@@ -164,7 +164,7 @@ Restrictions **actives** (par défaut) :
 - aucun lien suivi ; une archive ne peut rien écrire hors de son dossier (50 Mo au plus, ni « .. », ni nom de
   périphérique Windows comme CON ou COM1) ;
 - jamais tout seul en administrateur (chaque lancement y est demandé, voir plus bas) ; jamais dans le bilan, la
-  surveillance, l'entretien ni `complet` ;
+  surveillance, l'entretien ni `bilan` ;
 - le terminal retiré à l'extension (elle ne peut ni y écrire à côté du filtre ni y lire les frappes) ; délai et
   sortie bornés (1 Mio) : au-delà, elle est arrêtée avec tout ce qu'elle a lancé (sous Linux, ce qui reste de son
   groupe l'est aussi quand elle finit d'elle-même) ; environnement minimal (PATH du système, LANG, HOME),

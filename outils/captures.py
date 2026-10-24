@@ -447,14 +447,14 @@ def main():
         for langue in ("fr", "en"):
             suffixe = "" if langue == "fr" else "-en"
             env = environnement(bac, langue)
-            complet = lancer(exe, ["complet", "--html"], env)
+            complet = lancer(exe, ["bilan", "--html"], env)
             rapports[f"rapport{suffixe}.png"] = (langue, haut_du_rapport((bac / "cle/donnees/rapport.html").read_text()))
             machine, reseau = decouper(complet)
             ecrans[f"bilan{suffixe}.png"] = (langue, extrait_machine(machine, langue))
             ecrans[f"reseau{suffixe}.png"] = (langue, reseau)
             ecrans[f"menu{suffixe}.png"] = (langue, lancer(exe, [], env, attendre="›", touches=b"q\r", delai=30))
             if connexion:
-                ecrans[f"connexion{suffixe}.png"] = (langue, lancer(exe, ["connexion"], env, delai=180))
+                ecrans[f"connexion{suffixe}.png"] = (langue, lancer(exe, ["test-connexion"], env, delai=180))
         masque = conf.Masque([texte(r) for _, rangees in ecrans.values() for r in rangees]
                         + [page for _, page in rapports.values()])
         moi = conf.compte()

@@ -59,6 +59,30 @@ delivered just before it. Only the latest version has its download page; every v
 | 5.12 Hidden cameras | 5.5 | | 9.9 Update Vanguard | 13.3 | | 9.10 Check my backup | 9.3.1 |
 | 5.13 Box and connected devices | 5.4 | | 9.11 Remove Vanguard | 13.11 | | 12 Extensions | 13.10 |
 
+- **Renamed commands.** Whole words, no abbreviations, following the menu's labels; the English alias really
+  translates the French name. The old names are no longer accepted: a script or task that calls them needs updating
+  (the tasks Vanguard sets up itself keep their names). New commands: `rapport` (`report`), `annuler` (`undo`, like
+  `optimize undo`) and `protection` (the state of each switch; `on` or `off` acts on real-time protection). Switches
+  take `on|off`, `yes|no` (and the French `oui|non`, `marche|arret`) and `status`. `vanguard -h` gives the essentials
+  in a few lines, `vanguard --help` every command sorted like the menu, generated from it.
+
+| 0.86 | 0.87 | | 0.86 | 0.87 |
+|---|---|---|---|---|
+| `complet / full` | `bilan / check` | | `tableau` | `tableau-de-bord` |
+| `machine / audit` | `audit` | | `fiche` | `fiche-ordinateur` |
+| `reseau / network` | `appareils / devices` | | `durcir / harden` | `defender` |
+| `maj / update` | `mises-a-jour / updates` | | `a-laisser` | `rapport-a-laisser` |
+| `motdepasse / password` | `fuite-mot-de-passe / password-leak` | | `sauvegarder / backup` | `exporter / export` |
+| `courriel / email` | `fuite-courriel / email-leak` | | `restaurer / restore` | `importer / import` |
+| `navigateurs` | `mots-de-passe-navigateurs` | | `gaming` | `jeux / gaming` |
+| `sortantes / outbound` | `connexions-sortantes / outbound-connections` | | `plugin` | `plugins` |
+| `distance` | `acces-a-distance` | | `diag (alias)` | `diagnostics` |
+| `acces / permissions` | `bilan-confidentialite / privacy-review` | | `apps (alias)` | `software` |
+| `objets / iot` | `objets-connectes / smart-devices` | | `ext (alias)` | — |
+| `cameras` | `cameras-cachees / hidden-cameras` | | `traces / evidence` | `depanner traces / troubleshoot evidence` |
+| `canaux / channels` | `canaux-wifi / wifi-channels` | | `proche / relative` | `depanner proche / troubleshoot relative` |
+| `connexion / connection` | `test-connexion / connection-test` | |  |  |
+
 ## October 23, 2026: version 0.86
 
 - **Spyware.** `vanguard spyware` (or `logiciels-espions`; Antivirus and protection menu, last) looks for signs of

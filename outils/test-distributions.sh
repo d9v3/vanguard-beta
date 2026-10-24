@@ -24,7 +24,7 @@ for image in fedora:latest debian:stable ubuntu:latest opensuse/tumbleweed; do
   docker run --rm -v "$PROGRAMME:/vanguard:ro" -v "$RES:/res" -e VANGUARD_LANG=fr "$image" bash -c "
     ${INSTALLER[$image]} >/dev/null 2>&1 || echo 'installation de openssh-server impossible'
     cat /etc/os-release | head -2
-    timeout 300 /vanguard machine --json >/res/$nom.json 2>/res/$nom.err; echo \$? >/res/$nom.code
+    timeout 300 /vanguard audit --json >/res/$nom.json 2>/res/$nom.err; echo \$? >/res/$nom.code
   "
   code=$(cat "$RES/$nom.code" 2>/dev/null || echo absent)
   if python3 - "$RES/$nom.json" "$image" "$code" <<'FIN'; then echo "✓ $image"; else echo "✗ $image"; echecs=$((echecs + 1)); fi

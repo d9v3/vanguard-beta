@@ -22,7 +22,7 @@ Le programme : « vanguard.exe », dans ce dossier. Windows 10 et 11 (64 bits), 
    Si tu connais la lettre de la clé (ici E:, voir l'Explorateur de fichiers > Ce PC) :
 
      & "E:\Windows\vanguard.exe"
-     & "E:\Windows\vanguard.exe" complet
+     & "E:\Windows\vanguard.exe" bilan
 
 
 3. DANS L'INVITE DE COMMANDES (cmd)
@@ -30,22 +30,22 @@ Le programme : « vanguard.exe », dans ce dossier. Windows 10 et 11 (64 bits), 
    Touche Windows, taper « cmd », Entrée. Puis (remplacer E: par la lettre de la clé) :
 
      E:\Windows\vanguard.exe
-     E:\Windows\vanguard.exe complet
+     E:\Windows\vanguard.exe bilan
 
 
 4. COMMANDES UTILES
 
    Sans rien après « vanguard.exe » : le menu. Sinon :
 
-     vanguard.exe complet              bilan complet : cet ordinateur, puis le réseau
-     vanguard.exe complet --texte      même bilan, rapport en texte simple
+     vanguard.exe bilan                bilan complet : cet ordinateur, puis le réseau
+     vanguard.exe bilan --texte        même bilan, rapport en texte simple
      vanguard.exe corriger             bilan, puis chaque correction montrée et confirmée
-     vanguard.exe machine              audit de cet ordinateur seulement
-     vanguard.exe reseau               scan du réseau local
-     vanguard.exe maj                  mises à jour : Windows, programmes (winget), pilotes…
+     vanguard.exe audit                audit de cet ordinateur seulement
+     vanguard.exe appareils            scan du réseau local
+     vanguard.exe mises-a-jour         mises à jour : Windows, programmes (winget), pilotes…
      vanguard.exe reparer              réparations : Internet, Windows Update bloqué, disque plein…
      vanguard.exe nettoyer --liste     place à gagner, sans rien effacer
-     vanguard.exe connexion            test de connexion : ping, débit, bufferbloat
+     vanguard.exe test-connexion       test de connexion : ping, débit, bufferbloat
      vanguard.exe antivirus <dossier>  analyser une clé, un disque ou un dossier (Defender)
      vanguard.exe --help               toutes les commandes (vanguard.exe <commande> --help : le détail)
      vanguard.exe --version            la version

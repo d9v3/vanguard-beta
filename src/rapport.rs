@@ -110,8 +110,8 @@ fn connexions(tests: &[crate::reseau::connexion::Resultat]) -> String {
         );
     }
     h += tr!(
-        "</table><div class=meta>Menu c ou « vanguard connexion » pour un nouveau test.</div></div>",
-        "</table><div class=meta>Menu c or “vanguard connection” for a new test.</div></div>"
+        "</table><div class=meta>Menu c ou « vanguard test-connexion » pour un nouveau test.</div></div>",
+        "</table><div class=meta>Menu c or “vanguard connection-test” for a new test.</div></div>"
     );
     h
 }
@@ -404,7 +404,7 @@ fn md(texte: &str) -> String {
     s
 }
 
-/// La section des plugins (`vanguard plugin <nom> --rapport`) en Markdown : à part, sans note.
+/// La section des plugins (`vanguard plugins <nom> --rapport`) en Markdown : à part, sans note.
 fn plugins_markdown(m: &mut String, gardes: &[crate::plugins::sortie::Gardes]) {
     if gardes.is_empty() {
         return;
@@ -443,8 +443,8 @@ fn plugins_html(h: &mut String, gardes: &[crate::plugins::sortie::Gardes]) {
     }
     let _ = trw!(
         h,
-        "<h2>Plugins (hors code de Vanguard)</h2><p class=meta>Ces constats viennent de programmes ajoutés à Vanguard (« vanguard plugin … --rapport ») : ils ne comptent pas dans la note.</p>",
-        "<h2>Plugins (not Vanguard's code)</h2><p class=meta>These findings come from programs added to Vanguard (“vanguard plugin … --report”): they do not count in the grade.</p>"
+        "<h2>Plugins (hors code de Vanguard)</h2><p class=meta>Ces constats viennent de programmes ajoutés à Vanguard (« vanguard plugins … --rapport ») : ils ne comptent pas dans la note.</p>",
+        "<h2>Plugins (not Vanguard's code)</h2><p class=meta>These findings come from programs added to Vanguard (“vanguard plugins … --report”): they do not count in the grade.</p>"
     );
     for g in gardes {
         let _ = trw!(
@@ -946,6 +946,13 @@ fn html(audit: Option<&Audit>, reseau: Option<&Rapport>, audit_reseau: Option<&A
     plugins_html(&mut h, &crate::plugins::sortie::gardes());
     h += "</main></body></html>";
     h
+}
+
+/// Le rapport écrit par le dernier bilan, s'il a moins de `age_max` : `vanguard rapport` le rouvre sans refaire le bilan.
+pub fn recent(age_max: std::time::Duration) -> Option<PathBuf> {
+    let chemin = crate::reseau::dossier_donnees().join("rapport.html");
+    let age = std::fs::metadata(&chemin).ok()?.modified().ok()?.elapsed().ok()?;
+    (age <= age_max).then_some(chemin)
 }
 
 pub fn ouvrir(audit: Option<&Audit>, reseau: Option<&Rapport>, audit_reseau: Option<&AuditReseau>) {

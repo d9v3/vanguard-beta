@@ -233,7 +233,7 @@ fn constat_windows_update(
     .corriger(action, &installer_windows_update(pilotes))
 }
 
-/// Les quatre petites lectures de `vanguard maj` (redémarrage, signatures, périphériques, cartes graphiques), chacune
+/// Les quatre petites lectures de `vanguard mises-a-jour` (redémarrage, signatures, périphériques, cartes graphiques), chacune
 /// avec son script de secours. Chaque section a son try et se termine par « NOM_FIN » : une lecture qui échoue
 /// (Defender remplacé par un antivirus tiers…) ne prive pas les autres.
 const LECTURES_RAPIDES: [(&str, &str); 4] = [
@@ -705,7 +705,7 @@ fn cartes_graphiques(lectures: Option<&str>) -> Vec<Constat> {
         .collect()
 }
 
-/// Signatures de Defender : la même règle pour l'audit et pour `vanguard maj`.
+/// Signatures de Defender : la même règle pour l'audit et pour `vanguard mises-a-jour`.
 pub(super) fn signatures(age: u64) -> Constat {
     if age > 3 {
         alerte(

@@ -242,7 +242,7 @@ public.
 
 #### Objets connectés
 
-**Routeur et objets connectés** — après le scan, ou plus tard d'après le dernier scan gardé (`vanguard objets`), ce
+**Routeur et objets connectés** — après le scan, ou plus tard d'après le dernier scan gardé (`vanguard objets-connectes`), ce
 que le routeur dit de lui-même (souvent son modèle et la version de son logiciel), une page d'administration en HTTP
 seul, et les caméras, imprimantes, NAS, télés, enceintes, consoles et objets de domotique, reconnus à leur
 fabricant, à leur nom, à leurs ports et à leurs annonces. Pour le routeur, les caméras, les imprimantes et les NAS, le
@@ -457,7 +457,7 @@ position, aux contacts, à la caméra et au micro, et leur dernier usage quand l
 autorisations sous Windows, Flatpak et Snap sous Linux, base des autorisations de macOS, lisible avec l'accès complet
 au disque). Rien n'est retiré : la marche à suivre est donnée, et ce qui n'a pas pu être lu est dit non vérifié.
 
-**Mots de passe des navigateurs** (`vanguard navigateurs`) — combien chaque navigateur en garde et comment ils sont
+**Mots de passe des navigateurs** (`vanguard mots-de-passe-navigateurs`) — combien chaque navigateur en garde et comment ils sont
 protégés : comptés, jamais lus ni envoyés. La vérification intégrée du navigateur (mots de passe faibles, réutilisés,
 compromis) est indiquée, et un mot de passe tapé peut être cherché dans les fuites (Have I Been Pwned, 5 caractères
 de son empreinte seulement).
@@ -499,7 +499,7 @@ comptes déconnectés, clé BitLocker ou FileVault mise de côté, effacement s�
 à zéro). Vanguard n'efface rien lui-même. Et **mon compte a été piraté** : reprendre la main par la page officielle,
 puis mot de passe, validation en deux étapes, sessions fermées, et la vérification que cet ordinateur n'a pas livré
 le mot de passe. Lent **depuis une mise à jour** : les dernières mises à jour, datées, et comment revenir en arrière.
-Et l'**ordinateur d'un proche** (`vanguard proche`) : trois questions (qui s'en sert, pourquoi il est confié, et
+Et l'**ordinateur d'un proche** (`vanguard depanner proche`) : trois questions (qui s'en sert, pourquoi il est confié, et
 si son réseau peut être regardé, avec son accord seulement), le bilan, puis un résumé en mots de tous les jours, mis
 en ordre selon les réponses : ce qui reste à faire d'abord, ce qui va bien ensuite. Les outils qui répondent à la
 raison (lenteur, antivirus, faux technicien), les corrections une à une, et la page à laisser, avec des conseils
@@ -606,7 +606,7 @@ ne se règle pas : son réglage est celui du compte (sous sudo, celui du compte 
 
 **Extensions** (menu 12, `vanguard extensions`) — des programmes personnels dans Vanguard, sans toucher à son code. Un
 plugin est un dossier avec un manifeste `plugin.toml`, ajouté une fois depuis un dossier ou une archive .zip
-(`vanguard plugin ajouter`) ; un script du laboratoire est un fichier posé tel quel (`vanguard labo`), pour essayer
+(`vanguard plugins ajouter`) ; un script du laboratoire est un fichier posé tel quel (`vanguard labo`), pour essayer
 une idée vite. Un plugin est un script (sh, bash, PowerShell, Python) ou un programme compilé, en Rust par exemple
 avec la bibliothèque `extensions/sdk`. Leurs constats sont montrés à part et ne comptent jamais dans la note
 (`--rapport` les met dans une section à part du rapport HTML). Avant l'accord, tout le dossier ou l'archive est
@@ -726,99 +726,103 @@ Chaque entrée du menu existe aussi en commande.
 
 | Commande | Rôle |
 |---|---|
-| `vanguard complet [--html] [--texte]` | bilan complet : cet ordinateur puis le réseau ; `--texte` l'affiche en texte simple (mode urgence) |
+| **Bilan de sécurité** | |
+| `vanguard bilan [--html] [--texte]` | bilan complet : cet ordinateur puis le réseau ; `--texte` l'affiche en texte simple (mode urgence) |
 | `vanguard corriger` | corriger les problèmes trouvés |
-| `vanguard machine [--json]` | audit de cet ordinateur |
-| `vanguard regles` | les règles du bilan déclarées pour ce système : identifiant, sujet, références |
-| `vanguard autotest [--json] [--internet] [--detail] [--une-par-une]` | autodiagnostic : chaque règle du bilan sous garde et délai, en lecture seule prouvée par empreintes, et les lectures de Vanguard comparées aux outils du système (pacman, systemctl, ss, PowerShell…) ; rien n'est changé, hors ligne par défaut, un écart va au journal des erreurs sans aucune valeur de l'ordinateur ; code de sortie 0 sain, 1 écart, 2 non vérifié. Refait chaque semaine avec la surveillance (`vanguard parametres autotest non` pour le couper) |
-| `vanguard reseau [cible] [-p courants\|tous\|22,80,8000-8100] [--json]` | scan du réseau ou d'un appareil |
-| `vanguard audit-reseau [--json] [--html] [--invite]` | audit du réseau par domaine : six notes (exposition, Wi-Fi, séparation des appareils, DNS et certificats, objets connectés, ordinateurs), sans rien attaquer ; `--invite` : sur le réseau invité, vérifie qu'il est bien séparé du réseau principal |
-| `vanguard connexion` | test de connexion pour le jeu |
-| `vanguard nettoyer [--liste]` | nettoyer le système ; `--liste` : la place à gagner, sans rien effacer |
-| `vanguard logiciels [--liste] [--recommandes]` | logiciels à installer par catégorie ; `--liste` : leur état, sans rien installer |
-| `vanguard diagnostic` | diagnostic de l'ordinateur : matériel, système, plantages et erreurs récents |
-| `vanguard depanner [sujet]` | dépanner pas à pas : `internet`, `wifi`, `lent`, `son`, `imprimante`, `disque`, `infection`, `nouveau`, `depart`, `compte`, `traces`, `proche` |
-| `vanguard traces [dossier]` | collecter les traces après une infection, avant de nettoyer : processus, connexions, démarrage, comptes, journaux, fichiers récents, dans un dossier daté avec leurs empreintes SHA-256, et la chronologie de l'incident (CHRONOLOGIE.txt) ; lecture seule |
-| `vanguard lenteur` | pourquoi c'est lent : processeur, mémoire, disque, démarrage, programmes à l'ouverture |
-| `vanguard demarrage` | programmes au démarrage : les retirer ou les remettre, après accord ; chaque retrait s'annule |
-| `vanguard evenements [--json] [--incident id]` | le journal des événements : alertes, preuves relevées avant un geste, gestes, annulations, alertes déclarées normales et passages de version, reliés ; l'état de sa chaîne scellée d'abord |
-| `vanguard changements` | ce que Vanguard a changé : chaque correction lancée ici, sa date et son résultat ; une correction marquée « annulable » s'y annule, puis l'état d'avant est relu |
-| `vanguard parametres [réglage valeur]` | paramètres (aussi « s » au menu principal) : langue, emojis, travail sans Internet, protection en temps réel (`temps-reel non --pendant 1h\|4h`, ou jusqu'à reprise), surveillance, entretien du mois, alertes apprises, blocage, restrictions des extensions, clé abuse.ch (masquée) ; la valeur d'avant est montrée pour revenir |
-| `vanguard blocage [chercher\|annuler\|auto\|clic\|catégorie mode]` | blocage des menaces : « Bloquer » d'un clic pour chaque menace (geste montré, noté, annulable) ; protection active, après un accord, qui bloque toute seule ce qui ne fait aucun doute (empreinte de MalwareBazaar, outil d'attaque connu, serveur de commande) |
-| `vanguard a-laisser` | rapport à laisser : une page simple pour la personne dépannée |
-| `vanguard proche` | ordinateur d'un proche : trois questions, le bilan, un résumé en mots simples, les corrections, la page à laisser avec ses conseils |
-| `vanguard sauvegarde-auto [--annuler]` | sauvegarde automatique vers un disque externe, avec l'outil du système |
-| `vanguard raccourci [on\|off]` | raccourci sur cet ordinateur |
-| `vanguard ordinateurs` | mes ordinateurs : ceux où la clé a fait un bilan, leur note et leurs problèmes restants |
-| `vanguard se-mettre-a-jour` | mettre Vanguard à jour sur cet ordinateur, depuis la clé ou depuis GitHub (versions signées par l'auteur) |
-| `vanguard desinstaller [--liste]` | retirer Vanguard de cet ordinateur : ce qu'il a posé, retrouvé, montré puis coché (données gardées sauf second accord, clé jamais touchée) ; `--liste` : sans rien retirer |
-| `vanguard fiche [--json]` | fiche de l'ordinateur ; `--json` sans les numéros de série |
-| `vanguard copier-fichiers [destination]` | copier mes fichiers vers un disque externe, copie vérifiée |
-| `vanguard verifier-cle [dossier]` | vérifier ma clé : capacité réelle, vitesses, blocs en erreur (écrit dans le libre après accord, puis efface) |
-| `vanguard verifier-copie [dossier]` | vérifier une copie : relue sur le disque et comparée aux originaux (test de restauration) |
-| `vanguard verifier-sauvegarde` | vérifier ma sauvegarde : la sauvegarde rsync relue, des fichiers au hasard comparés à leur original (lecture seule) |
-| `vanguard antivirus [--complet] [dossier]` | analyse antivirus (ordinateur, ou une clé / un dossier) |
-| `vanguard yara [--complet] [dossier]` | analyse YARA : 308 règles de familles de logiciels malveillants, et les empreintes de MalwareBazaar |
-| `vanguard memoire` | analyse YARA de la mémoire des programmes qui tournent (malware sans fichier), à la demande ; LSASS et processus protégés : leur mémoire n'est jamais lue |
-| `vanguard pieges [--retirer]` | fichiers-pièges contre les rançongiciels : les poser, les vérifier, les retirer |
-| `vanguard durcir` | blocages de Windows Defender : règles ASR, protection réseau, logiciels indésirables, accès contrôlé aux dossiers ; chacun après accord, annulable (Windows) |
-| `vanguard listes-noires` | l'adresse Internet publique sur liste noire ? (après accord) |
-| `vanguard canaux` | Wi-Fi encombré : les réseaux voisins par canal, et le canal le plus libre |
-| `vanguard nat` | type de NAT pour le jeu : ouvert, modéré ou strict |
-| `vanguard cameras` | caméras cachées sur le réseau (location, chez quelqu'un) |
-| `vanguard objets` | routeur et objets connectés d'après le dernier scan gardé : modèle du routeur, caméras, imprimantes, NAS… et leur mot de passe d'origine (rien n'est sondé) |
-| `vanguard dns-rapide` | DNS le plus rapide, mesuré ici et annulable ; un DNS qui protège est gardé |
-| `vanguard optimiser [recommandes\|confidentialite\|performance\|confort\|annuler]` | les réglages d'Optimiser, chacun montré, accepté et annulable exactement ; `annuler` remet tout comme avant (corrections du bilan, Optimiser, Gaming, blocages, mode Wi-Fi public) ; sans argument, le menu Optimiser |
-| `vanguard wifi-public [on\|off\|portail]` | mode Wi-Fi public (café, hôtel, aéroport) : entrées fermées, partage et annonce du nom coupés, DNS protecteur, après accord ; `off` remet tout exactement, `portail` rouvre la page de connexion du réseau |
-| `vanguard appris` | ce que Vanguard a appris : les habitudes et les choix notés, et les oublier |
-| `vanguard motdepasse` | mots de passe fuités |
-| `vanguard navigateurs` | mots de passe des navigateurs : combien et comment protégés (comptés, jamais lus), la vérification intégrée de chaque navigateur, et un mot de passe tapé cherché dans les fuites |
-| `vanguard isoler <fichier>` | lancer un programme inconnu dans un bac à sable (bubblewrap ou firejail, Windows Sandbox) |
-| `vanguard courriel` | fuites d'adresse courriel (XposedOrNot, ou Have I Been Pwned avec `VANGUARD_HIBP_CLE`) |
-| `vanguard sortantes` | qui parle à Internet : les connexions de chaque programme (lecture seule) |
-| `vanguard logiciels-espions` | logiciels espions : serveurs et sites connus (liste d'Échap), programmes qui lisent le clavier, autorisations de surveillance, logiciels de surveillance connus (lecture seule) |
-| `vanguard logiciels-perimes` | logiciels pas à jour (Windows, macOS) : navigateurs, Office, Acrobat, Java, 7-Zip, PuTTY, Slack comparés à leur dernière version ; failles exploitées (lecture seule) |
-| `vanguard signaler [--incident id] [--outil id] [--programme nom] [--langue fr\|en] [--json] [--effacer]` | préparer un signalement à un éditeur (MSRC, Google, Chrome, Mozilla, Apple, avis GHSA, CERT/CC, CERT-FR, Vanguard) : trié d'abord, brouillon au format du programme, ce qui est personnel retiré, écrit sur cet ordinateur et montré en entier ; rien n'est jamais envoyé |
+| `vanguard rapport` | le rapport détaillé dans le navigateur : le bilan de cette session, sinon un bilan complet d'abord |
+| **4 Cet ordinateur** | |
+| `vanguard audit [--json]` | audit de cet ordinateur |
+| `vanguard mises-a-jour` | mises à jour |
 | `vanguard dernieres-failles [--jours N]` | dernières failles exploitées : celles que la CISA vient d'ajouter à son catalogue, les plus récentes d'abord |
-| `vanguard sites-dangereux [on\|off]` | sites dangereux bloqués par le fichier hosts (URLhaus, serveurs de commande de ThreatFox), après accord ; `off` les retire exactement |
-| `vanguard verifier-moi [programme]` | vérifier Vanguard lui-même : version, date de compilation, empreinte SHA-256 à comparer à la page de la version ; sur la clé du propriétaire, le manifeste de la clé ; après accord, l'historique signé des versions publiées, qui vérifie aussi une autre copie (`programme`), même une version d'avant |
-| `vanguard camera-micro` | caméra et micro : qui s'en sert ? (lecture seule) |
-| `vanguard acces` | bilan de confidentialité : qui a accès à la position, aux contacts, à la caméra et au micro (lecture seule) |
-| `vanguard quarantaine` | les fichiers isolés, à remettre à leur place ou à supprimer |
+| `vanguard integrite [--accepter] [--temps-reel]` | intégrité des fichiers critiques (empreintes BLAKE3), en direct possible |
+| `vanguard entretien [on\|off]` | entretien du mois ; sans argument : ce qu'il dirait maintenant |
+| `vanguard fiche-ordinateur [--json]` | fiche de l'ordinateur ; `--json` sans les numéros de série |
+| `vanguard rapport-a-laisser` | rapport à laisser : une page simple pour la personne dépannée |
 | `vanguard secrets` | secrets oubliés dans l'historique des projets git (et gitleaks, s'il est installé ; lecture seule) |
 | `vanguard conteneurs` | failles connues des images Docker ou Podman (trivy, s'il est installé ; lecture seule) |
-| `vanguard distance` | mon ordinateur est-il contrôlé ? logiciels de prise de contrôle à distance (faux technicien), retrait après accord |
+| `vanguard logiciels-perimes` | logiciels pas à jour (Windows, macOS) : navigateurs, Office, Acrobat, Java, 7-Zip, PuTTY, Slack comparés à leur dernière version ; failles exploitées (lecture seule) |
+| `vanguard defender` | blocages de Windows Defender : règles ASR, protection réseau, logiciels indésirables, accès contrôlé aux dossiers ; chacun après accord, annulable (Windows) |
+| **5 Réseau et Internet** | |
+| `vanguard appareils [cible] [-p courants\|tous\|22,80,8000-8100] [--json]` | scan du réseau ou d'un appareil |
+| `vanguard audit-reseau [--json] [--html] [--invite]` | audit du réseau par domaine : six notes (exposition, Wi-Fi, séparation des appareils, DNS et certificats, objets connectés, ordinateurs), sans rien attaquer ; `--invite` : sur le réseau invité, vérifie qu'il est bien séparé du réseau principal |
+| `vanguard nommer <ip\|mac> <surnom>` | nommer un appareil |
+| `vanguard objets-connectes` | routeur et objets connectés d'après le dernier scan gardé : modèle du routeur, caméras, imprimantes, NAS… et leur mot de passe d'origine (rien n'est sondé) |
+| `vanguard cameras-cachees` | caméras cachées sur le réseau (location, chez quelqu'un) |
+| `vanguard listes-noires` | l'adresse Internet publique sur liste noire ? (après accord) |
+| `vanguard surveillance on\|off` | surveillance horaire |
+| `vanguard tableau-de-bord [--sans-ouvrir]` | tableau de bord de la surveillance : page locale ouverte dans le navigateur ; `--sans-ouvrir` l'écrit seulement |
+| `vanguard wifi-public [on\|off\|portail]` | mode Wi-Fi public (café, hôtel, aéroport) : entrées fermées, partage et annonce du nom coupés, DNS protecteur, après accord ; `off` remet tout exactement, `portail` rouvre la page de connexion du réseau |
+| **6 Virus et logiciels espions** | |
+| `vanguard antivirus [--complet] [dossier]` | analyse antivirus (ordinateur, ou une clé / un dossier) |
+| `vanguard yara [--complet] [dossier]` | analyse YARA : 308 règles de familles de logiciels malveillants, et les empreintes de MalwareBazaar |
+| `vanguard logiciels-espions` | logiciels espions : serveurs et sites connus (liste d'Échap), programmes qui lisent le clavier, autorisations de surveillance, logiciels de surveillance connus (lecture seule) |
+| `vanguard connexions-sortantes` | qui parle à Internet : les connexions de chaque programme (lecture seule) |
+| `vanguard memoire` | analyse YARA de la mémoire des programmes qui tournent (malware sans fichier), à la demande ; LSASS et processus protégés : leur mémoire n'est jamais lue |
+| `vanguard pieges [--retirer]` | fichiers-pièges contre les rançongiciels : les poser, les vérifier, les retirer |
+| `vanguard verifier-fichier <fichier> [empreinte]` | vérifier un fichier téléchargé : empreinte, nom et contenu, YARA, antivirus |
+| `vanguard isoler <fichier>` | lancer un programme inconnu dans un bac à sable (bubblewrap ou firejail, Windows Sandbox) |
+| `vanguard quarantaine` | les fichiers isolés, à remettre à leur place ou à supprimer |
+| **7 Arnaques et vie privée** | |
 | `vanguard lien <adresse>` | ce lien est-il dangereux ? (examiné sans l'ouvrir ; en ligne après accord) |
 | `vanguard courriel-suspect <fichier.eml>` | ce courriel est-il une arnaque ? l'expéditeur et son authentification, les liens, les pièces jointes, examinés sans rien ouvrir ; en ligne après accord |
-| `vanguard verifier-fichier <fichier> [empreinte]` | vérifier un fichier téléchargé : empreinte, nom et contenu, YARA, antivirus |
-| `vanguard integrite [--accepter] [--temps-reel]` | intégrité des fichiers critiques (empreintes BLAKE3), en direct possible |
-| `vanguard maj` | mises à jour |
-| `vanguard reparer` | réparations et nettoyage |
-| `vanguard surveillance on\|off` | surveillance horaire |
+| `vanguard acces-a-distance` | mon ordinateur est-il contrôlé ? logiciels de prise de contrôle à distance (faux technicien), retrait après accord |
+| `vanguard fuite-mot-de-passe` | mots de passe fuités |
+| `vanguard mots-de-passe-navigateurs` | mots de passe des navigateurs : combien et comment protégés (comptés, jamais lus), la vérification intégrée de chaque navigateur, et un mot de passe tapé cherché dans les fuites |
+| `vanguard fuite-courriel` | fuites d'adresse courriel (XposedOrNot, ou Have I Been Pwned avec `VANGUARD_HIBP_CLE`) |
+| `vanguard camera-micro` | caméra et micro : qui s'en sert ? (lecture seule) |
+| `vanguard bilan-confidentialite` | bilan de confidentialité : qui a accès à la position, aux contacts, à la caméra et au micro (lecture seule) |
+| **8 Bloquer et réagir** | |
+| `vanguard blocage [chercher\|annuler\|auto\|clic\|catégorie mode]` | blocage des menaces : « Bloquer » d'un clic pour chaque menace (geste montré, noté, annulable) ; protection active, après un accord, qui bloque toute seule ce qui ne fait aucun doute (empreinte de MalwareBazaar, outil d'attaque connu, serveur de commande) |
+| `vanguard sites-dangereux [on\|off]` | sites dangereux bloqués par le fichier hosts (URLhaus, serveurs de commande de ThreatFox), après accord ; `off` les retire exactement |
+| `vanguard evenements [--json] [--incident id]` | le journal des événements : alertes, preuves relevées avant un geste, gestes, annulations, alertes déclarées normales et passages de version, reliés ; l'état de sa chaîne scellée d'abord |
+| `vanguard changements` | ce que Vanguard a changé : chaque correction lancée ici, sa date et son résultat ; une correction marquée « annulable » s'y annule, puis l'état d'avant est relu |
+| `vanguard annuler` | tout remettre comme avant : défait ce que Vanguard a changé (réglages, corrections, jeux, blocages, Wi-Fi public), après accord ; comme `optimiser annuler` |
+| `vanguard signaler [--incident id] [--outil id] [--programme nom] [--langue fr\|en] [--json] [--effacer]` | préparer un signalement à un éditeur (MSRC, Google, Chrome, Mozilla, Apple, avis GHSA, CERT/CC, CERT-FR, Vanguard) : trié d'abord, brouillon au format du programme, ce qui est personnel retiré, écrit sur cet ordinateur et montré en entier ; rien n'est jamais envoyé |
 | `vanguard veilleur [on\|off]` | veilleur (Linux 6.6 et plus) : programmes lancés et connexions fermées, vus sur le moment ; `rancongiciel on\|off` : les dossiers personnels surveillés en direct contre les rançongiciels ; coupé par défaut |
-| `vanguard tableau [--sans-ouvrir]` | tableau de bord de la surveillance : page locale ouverte dans le navigateur ; `--sans-ouvrir` l'écrit seulement |
-| `vanguard entretien [on\|off]` | entretien du mois ; sans argument : ce qu'il dirait maintenant |
-| `vanguard nommer <ip\|mac> <surnom>` | nommer un appareil |
-| `vanguard sauvegarder [fichier]` | sauvegarde des données (surnoms, historique des réseaux, état de la surveillance) dans un fichier JSON |
-| `vanguard restaurer <fichier>` | ajoute une sauvegarde à la base actuelle, sans rien effacer |
-| `vanguard gaming` | paquets et réglages pour jouer (Windows et Linux) |
+| `vanguard protection [oui\|non] [--pendant 1h\|4h]` | l'état de chaque interrupteur de protection en un écran ; `oui` ou `non` agit sur la protection en temps réel |
+| **9 Données et sauvegardes** | |
+| `vanguard copier-fichiers [destination]` | copier mes fichiers vers un disque externe, copie vérifiée |
+| `vanguard sauvegarde-auto [--annuler]` | sauvegarde automatique vers un disque externe, avec l'outil du système |
+| `vanguard verifier-sauvegarde` | vérifier ma sauvegarde : la sauvegarde rsync relue, des fichiers au hasard comparés à leur original (lecture seule) |
+| `vanguard verifier-copie [dossier]` | vérifier une copie : relue sur le disque et comparée aux originaux (test de restauration) |
+| `vanguard verifier-cle [dossier]` | vérifier ma clé : capacité réelle, vitesses, blocs en erreur (écrit dans le libre après accord, puis efface) |
+| **10 Guide des commandes** | |
 | `vanguard guide [système\|programme\|mots]` | guide des commandes : un système (`omarchy`, `arch`, `fedora`, `debian`, `windows`, `macos`, `tous`, ou `linux` pour les programmes communs, ou `tldr`), un programme (`winget`, `systemctl`…) ou des mots à chercher (`cache dns`) |
+| **11 Dépanner pas à pas** | |
+| `vanguard depanner [sujet]` | dépanner pas à pas : `internet`, `wifi`, `lent`, `son`, `imprimante`, `disque`, `infection`, `nouveau`, `depart`, `compte`, `traces`, `proche` ; `traces [dossier]` collecte les traces d'un incident dans ce dossier, `proche` ouvre le parcours de l'ordinateur d'un proche |
+| `vanguard reparer` | réparations et nettoyage |
+| `vanguard diagnostic` | diagnostic de l'ordinateur : matériel, système, plantages et erreurs récents |
+| **12 Optimiser et installer** | |
+| `vanguard logiciels [--liste] [--recommandes]` | logiciels à installer par catégorie ; `--liste` : leur état, sans rien installer |
+| `vanguard nettoyer [--liste]` | nettoyer le système ; `--liste` : la place à gagner, sans rien effacer |
+| `vanguard lenteur` | pourquoi c'est lent : processeur, mémoire, disque, démarrage, programmes à l'ouverture |
+| `vanguard demarrage` | programmes au démarrage : les retirer ou les remettre, après accord ; chaque retrait s'annule |
+| `vanguard optimiser [recommandes\|confidentialite\|performance\|confort\|annuler]` | les réglages d'Optimiser, chacun montré, accepté et annulable exactement ; `annuler` remet tout comme avant (corrections du bilan, Optimiser, Gaming, blocages, mode Wi-Fi public) ; sans argument, le menu Optimiser |
+| `vanguard jeux` | paquets et réglages pour jouer (Windows et Linux) |
+| `vanguard dns-rapide` | DNS le plus rapide, mesuré ici et annulable ; un DNS qui protège est gardé |
+| `vanguard test-connexion` | test de connexion pour le jeu |
+| `vanguard nat` | type de NAT pour le jeu : ouvert, modéré ou strict |
+| `vanguard canaux-wifi` | Wi-Fi encombré : les réseaux voisins par canal, et le canal le plus libre |
+| **13 Vanguard** | |
+| `vanguard parametres [réglage valeur]` | paramètres (aussi « s » au menu principal) : langue, emojis, travail sans Internet, protection en temps réel (`temps-reel non --pendant 1h\|4h`, ou jusqu'à reprise), surveillance, entretien du mois, alertes apprises, blocage, restrictions des extensions, clé abuse.ch (masquée) ; la valeur d'avant est montrée pour revenir |
+| `vanguard appris` | ce que Vanguard a appris : les habitudes et les choix notés, et les oublier |
+| `vanguard se-mettre-a-jour` | mettre Vanguard à jour sur cet ordinateur, depuis la clé ou depuis GitHub (versions signées par l'auteur) |
+| `vanguard verifier-moi [programme]` | vérifier Vanguard lui-même : version, date de compilation, empreinte SHA-256 à comparer à la page de la version ; sur la clé du propriétaire, le manifeste de la clé ; après accord, l'historique signé des versions publiées, qui vérifie aussi une autre copie (`programme`), même une version d'avant |
+| `vanguard autotest [--json] [--internet] [--detail] [--une-par-une]` | autodiagnostic : chaque règle du bilan sous garde et délai, en lecture seule prouvée par empreintes, et les lectures de Vanguard comparées aux outils du système (pacman, systemctl, ss, PowerShell…) ; rien n'est changé, hors ligne par défaut, un écart va au journal des erreurs sans aucune valeur de l'ordinateur ; code de sortie 0 sain, 1 écart, 2 non vérifié. Refait chaque semaine avec la surveillance (`vanguard parametres autotest non` pour le couper) |
+| `vanguard regles` | les règles du bilan déclarées pour ce système : identifiant, sujet, références |
+| `vanguard ordinateurs` | mes ordinateurs : ceux où la clé a fait un bilan, leur note et leurs problèmes restants |
+| `vanguard exporter [fichier]` | sauvegarde des données (surnoms, historique des réseaux, état de la surveillance) dans un fichier JSON |
+| `vanguard raccourci [on\|off]` | raccourci sur cet ordinateur |
 | `vanguard extensions [--sans-restrictions on\|off]` | extensions : le menu des plugins et des scripts du labo ; `--sans-restrictions on` coupe leurs garde-fous pour les extensions personnelles (refusé en administrateur) |
-| `vanguard plugin [ajouter <dossier\|archive.zip>\|approuver <nom>\|liste\|retirer <nom>\|<nom> [--rapport] [--isole]]` | plugins : ajouté après analyse (YARA, MalwareBazaar) et approuvé par ses empreintes SHA-256, lancé, réapprouvé après un changement, retiré ; hors de la note |
+| `vanguard desinstaller [--liste]` | retirer Vanguard de cet ordinateur : ce qu'il a posé, retrouvé, montré puis coché (données gardées sauf second accord, clé jamais touchée) ; `--liste` : sans rien retirer |
+| `vanguard importer <fichier>` | ajoute une sauvegarde à la base actuelle, sans rien effacer |
+| `vanguard plugins [ajouter <dossier\|archive.zip>\|approuver <nom>\|liste\|retirer <nom>\|<nom> [--rapport] [--isole]]` | plugins : ajouté après analyse (YARA, MalwareBazaar) et approuvé par ses empreintes SHA-256, lancé, réapprouvé après un changement, retiré ; hors de la note |
 | `vanguard labo [ouvrir\|liste\|<fichier> [--isole] [arguments]]` | laboratoire : un script posé tel quel, montré et approuvé par son empreinte au premier lancement ; hors de la note |
 
 </details>
 
 **Langue** : celle du système (français ou anglais). Pour forcer : menu Paramètres, ou `VANGUARD_LANG=fr` ou
-`VANGUARD_LANG=en` (la variable l'emporte). Les commandes ont aussi un nom anglais (`full`, `audit`, `fix`, `network`,
-`network-audit`, `monitor`, `dashboard`, `maintenance`, `update`, `repair`, `diag`, `apps`, `clean`, `learned`,
-`connection`, `blocklists`, `channels`, `iot`, `fast-dns`, `integrity`, `decoys`, `harden`, `memory`, `sandbox`,
-`email`, `password`, `browser-passwords`, `outbound`, `remote-access`, `link`, `check-file`, `camera-mic`,
-`permissions`, `quarantine`, `containers`, `settings`, `blocking`, `backup`, `restore`, `name`, `slow`, `startup`,
-`specs`, `copy-files`, `check-copy`, `check-backup`, `check-drive`, `handout`, `changes`, `events`, `auto-backup`,
-`shortcut`, `computers`, `self-update`, `uninstall`, `rules`, `self-test`, `evidence`, `troubleshoot`, `relative`, `self-check`,
-`lab`, `ext`, `watcher`, `dangerous-sites`, `latest-flaws`, `public-wifi`, `optimize`, `suspicious-email`, `spyware`,
-`outdated-software`, `disclose`).
+`VANGUARD_LANG=en` (la variable l'emporte). Les commandes ont aussi un nom anglais (`check`, `fix`, `report`, `undo`, `devices`, `network-audit`, `monitor`, `dashboard`, `latest-flaws`, `dangerous-sites`, `watcher`, `maintenance`, `updates`, `repair`, `gaming`, `diagnostics`, `software`, `clean`, `optimize`, `learned`, `connection-test`, `blocklists`, `wifi-channels`, `hidden-cameras`, `smart-devices`, `fast-dns`, `public-wifi`, `integrity`, `decoys`, `memory`, `sandbox`, `email-leak`, `password-leak`, `browser-passwords`, `outbound-connections`, `remote-access`, `link`, `check-file`, `suspicious-email`, `spyware`, `outdated-software`, `disclose`, `camera-mic`, `privacy-review`, `quarantine`, `containers`, `settings`, `blocking`, `export`, `import`, `name`, `slow`, `startup`, `specs`, `copy-files`, `check-copy`, `check-backup`, `check-drive`, `handout`, `changes`, `events`, `auto-backup`, `shortcut`, `computers`, `self-update`, `uninstall`, `rules`, `self-test`, `troubleshoot`, `self-check`, `lab`).
 
 **Emojis** : dans l'ancienne console de Windows (invite de commandes ou PowerShell hors du Terminal Windows, courant
 sous Windows 10), qui les dessine mal et décale les menus, 💡 et 🔧 deviennent → et +. `VANGUARD_EMOJI=0` les retire

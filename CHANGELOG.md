@@ -62,6 +62,31 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 | 5.12 Caméras cachées | 5.5 | | 9.9 Mettre Vanguard à jour | 13.3 | | 9.10 Vérifier ma sauvegarde | 9.3.1 |
 | 5.13 Box et objets connectés | 5.4 | | 9.11 Retirer Vanguard | 13.11 | | 12 Extensions | 13.10 |
 
+- **Commandes renommées.** Des noms entiers, sans abréviation, qui suivent les libellés du menu ; l'alias anglais
+  traduit vraiment le nom français. Les anciens noms ne sont plus acceptés : un script ou une tâche qui les appelle
+  est à mettre à jour (les tâches que Vanguard pose lui-même gardent leurs noms). Nouvelles commandes : `rapport`
+  (`report`), `annuler` (`undo`, comme `optimiser annuler`) et `protection` (l'état de chaque interrupteur ; `oui` ou
+  `non` agit sur la protection en temps réel). Les interrupteurs prennent `oui|non`, `on|off`, `marche|arret` et
+  `etat`. `vanguard -h` donne l'essentiel en quelques lignes, `vanguard --help` toutes les commandes rangées comme le
+  menu, générées depuis lui.
+
+| 0.86 | 0.87 | | 0.86 | 0.87 |
+|---|---|---|---|---|
+| `complet / full` | `bilan / check` | | `tableau` | `tableau-de-bord` |
+| `machine / audit` | `audit` | | `fiche` | `fiche-ordinateur` |
+| `reseau / network` | `appareils / devices` | | `durcir / harden` | `defender` |
+| `maj / update` | `mises-a-jour / updates` | | `a-laisser` | `rapport-a-laisser` |
+| `motdepasse / password` | `fuite-mot-de-passe / password-leak` | | `sauvegarder / backup` | `exporter / export` |
+| `courriel / email` | `fuite-courriel / email-leak` | | `restaurer / restore` | `importer / import` |
+| `navigateurs` | `mots-de-passe-navigateurs` | | `gaming` | `jeux / gaming` |
+| `sortantes / outbound` | `connexions-sortantes / outbound-connections` | | `plugin` | `plugins` |
+| `distance` | `acces-a-distance` | | `diag (alias)` | `diagnostics` |
+| `acces / permissions` | `bilan-confidentialite / privacy-review` | | `apps (alias)` | `software` |
+| `objets / iot` | `objets-connectes / smart-devices` | | `ext (alias)` | — |
+| `cameras` | `cameras-cachees / hidden-cameras` | | `traces / evidence` | `depanner traces / troubleshoot evidence` |
+| `canaux / channels` | `canaux-wifi / wifi-channels` | | `proche / relative` | `depanner proche / troubleshoot relative` |
+| `connexion / connection` | `test-connexion / connection-test` | |  |  |
+
 ## 23 octobre 2026 : version 0.86
 
 - **Logiciels espions.** `vanguard logiciels-espions` (alias `spyware` ; menu Antivirus et protection, en dernier)

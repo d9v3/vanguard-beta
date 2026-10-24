@@ -135,7 +135,7 @@ pub(crate) fn notifier(titre: &str, corps: &str) {
 }
 
 /// Une alerte de la surveillance : gardée au journal du tableau de bord, puis notifiée. Une notification disparaît
-/// en quelques secondes ; celle de la nuit se relit ainsi le matin (« vanguard tableau »).
+/// en quelques secondes ; celle de la nuit se relit ainsi le matin (« vanguard tableau-de-bord »).
 pub(crate) fn alerter(genre: Genre, titre: &str, texte: &str) {
     tableau::noter_alerte(genre, titre, texte);
     notifier(titre, texte);
@@ -340,7 +340,7 @@ fn nouveautes_machine(avant: &EtatMachine, apres: &EtatMachine) -> Vec<(String, 
         notes.push((
             tr!("Vanguard : autres problèmes", "Vanguard: other problems").to_string(),
             trf!(
-                "{} autre(s) problème(s) nouveau(x) : lancez « vanguard machine ».",
+                "{} autre(s) problème(s) nouveau(x) : lancez « vanguard audit ».",
                 "{} other new problem(s): run “vanguard audit”.",
                 nouvelles.len() - 3
             ),
@@ -352,7 +352,7 @@ fn nouveautes_machine(avant: &EtatMachine, apres: &EtatMachine) -> Vec<(String, 
         notes.push((
             tr!("Vanguard : note en baisse", "Vanguard: grade dropping").to_string(),
             trf!(
-                "La note de cet ordinateur passe de {a} à {b} : lancez « vanguard machine » pour voir pourquoi.",
+                "La note de cet ordinateur passe de {a} à {b} : lancez « vanguard audit » pour voir pourquoi.",
                 "This computer's grade drops from {a} to {b}: run “vanguard audit” to see why."
             ),
         ));

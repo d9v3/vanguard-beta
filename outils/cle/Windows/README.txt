@@ -22,7 +22,7 @@ The program: "vanguard.exe", in this folder. Windows 10 and 11 (64-bit), nothing
    If you know the letter of the key (here E:, see File Explorer > This PC):
 
      & "E:\Windows\vanguard.exe"
-     & "E:\Windows\vanguard.exe" full
+     & "E:\Windows\vanguard.exe" check
 
 
 3. IN THE COMMAND PROMPT (cmd)
@@ -30,25 +30,25 @@ The program: "vanguard.exe", in this folder. Windows 10 and 11 (64-bit), nothing
    Windows key, type "cmd", Enter. Then (replace E: with the letter of the key):
 
      E:\Windows\vanguard.exe
-     E:\Windows\vanguard.exe full
+     E:\Windows\vanguard.exe check
 
 
 4. USEFUL COMMANDS
 
    Nothing after "vanguard.exe": the menu. Otherwise:
 
-     vanguard.exe full                 full check: this machine, then the network
-     vanguard.exe full --text          same check, report as plain text
-     vanguard.exe fix                  check, then each fix shown and confirmed
-     vanguard.exe audit                audit of this machine only
-     vanguard.exe network              local network scan
-     vanguard.exe update               updates: Windows, programs (winget), drivers…
-     vanguard.exe repair               repairs: Internet, stuck Windows Update, full disk…
-     vanguard.exe clean --list         space to gain, deleting nothing
-     vanguard.exe connection           connection test: ping, speed, bufferbloat
-     vanguard.exe antivirus <folder>   scan a key, a disk or a folder (Defender)
-     vanguard.exe --help               every command (vanguard.exe <command> --help: the details)
-     vanguard.exe --version            the version
+     vanguard.exe check               full check: this machine, then the network
+     vanguard.exe check --text        same check, report as plain text
+     vanguard.exe fix                 check, then each fix shown and confirmed
+     vanguard.exe audit               audit of this machine only
+     vanguard.exe devices             local network scan
+     vanguard.exe updates             updates: Windows, programs (winget), drivers…
+     vanguard.exe repair              repairs: Internet, stuck Windows Update, full disk…
+     vanguard.exe clean --list        space to gain, deleting nothing
+     vanguard.exe connection-test     connection test: ping, speed, bufferbloat
+     vanguard.exe antivirus <folder>  scan a key, a disk or a folder (Defender)
+     vanguard.exe --help              every command (vanguard.exe <command> --help: the details)
+     vanguard.exe --version           the version
 
 
 5. GOOD TO KNOW

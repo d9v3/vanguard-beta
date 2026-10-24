@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Essai de « vanguard motdepasse » dans un pseudo-terminal : la saisie se fait sans écho, elle exige un vrai
+"""Essai de « vanguard fuite-mot-de-passe » dans un pseudo-terminal : la saisie se fait sans écho, elle exige un vrai
 terminal. Tape « password » (trouvé des millions de fois dans des fuites), puis Entrée seule pour terminer.
     python3 outils/test-commun/mot-de-passe-pty.py <programme vanguard>
 """
@@ -8,7 +8,7 @@ exe = sys.argv[1]
 pid, fd = pty.fork()
 if pid == 0:
     os.environ["VANGUARD_LANG"] = "fr"
-    os.execv(exe, [exe, "motdepasse"])
+    os.execv(exe, [exe, "fuite-mot-de-passe"])
 out = b""
 def lire(t):
     global out

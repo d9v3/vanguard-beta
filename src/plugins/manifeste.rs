@@ -16,7 +16,7 @@ const TABLEAU_MAX: usize = 32;
 const DELAI_DEFAUT: u64 = 60;
 const DELAI_MAX: u64 = 600;
 
-/// Les mots de `vanguard plugin …` : un plugin ne peut pas porter leur nom.
+/// Les mots de `vanguard plugins …` : un plugin ne peut pas porter leur nom.
 pub const RESERVES: [&str; 10] = [
     "ajouter",
     "add",

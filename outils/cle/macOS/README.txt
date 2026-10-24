@@ -27,15 +27,15 @@ Intel Macs, nothing to install.
 
    Nothing after "vanguard": the menu. Otherwise ("vanguard" = /Volumes/VANGUARD/macOS/vanguard):
 
-     vanguard full                 full check: this Mac, then the network
-     vanguard full --text          same check, report as plain text
+     vanguard check                full check: this Mac, then the network
+     vanguard check --text         same check, report as plain text
      vanguard fix                  check, then each fix shown and confirmed
      vanguard audit                audit of this Mac only
-     vanguard network              local network scan
-     vanguard update               updates: macOS, Homebrew, App Store…
+     vanguard devices              local network scan
+     vanguard updates              updates: macOS, Homebrew, App Store…
      vanguard repair               repairs: Internet, DNS, full disk…
      vanguard clean --list         space to gain, deleting nothing
-     vanguard connection           connection test: ping, speed, bufferbloat
+     vanguard connection-test      connection test: ping, speed, bufferbloat
      vanguard antivirus <folder>   scan a key, a disk or a folder (ClamAV)
      vanguard --help               every command (vanguard <command> --help: the details)
      vanguard --version            the version

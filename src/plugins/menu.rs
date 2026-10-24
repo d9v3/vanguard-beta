@@ -1,5 +1,5 @@
 //! Les menus des extensions : « Extensions » (menu principal, `vanguard extensions`) ouvre deux listes, les plugins
-//! (`vanguard plugin` sans argument) et les scripts du laboratoire (`vanguard labo` sans argument). Choisir un numéro
+//! (`vanguard plugins` sans argument) et les scripts du laboratoire (`vanguard labo` sans argument). Choisir un numéro
 //! lance l'élément ; les lettres du bas ajoutent, approuvent ou retirent. Rien ne s'y lance en administrateur.
 
 use std::path::Path;
@@ -107,7 +107,7 @@ fn etat_court(e: &Etat) -> String {
         Etat::NonApprouve => tr!("non approuvé", "not approved").to_string(),
         Etat::Change => tr!("modifié depuis l'approbation", "changed since approval").to_string(),
         Etat::AutreSysteme => tr!("pas pour ce système", "not for this system").to_string(),
-        Etat::Invalide(_) => tr!("invalide (vanguard plugin liste)", "invalid (vanguard plugin list)").to_string(),
+        Etat::Invalide(_) => tr!("invalide (vanguard plugins liste)", "invalid (vanguard plugins list)").to_string(),
     }
 }
 
@@ -294,7 +294,7 @@ pub fn extensions() {
     }
 }
 
-/// La liste des plugins (Extensions › Plugins, `vanguard plugin` sans argument).
+/// La liste des plugins (Extensions › Plugins, `vanguard plugins` sans argument).
 pub fn plugins(racine: &Path) {
     let mut dernier = String::from("1");
     loop {

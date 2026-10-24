@@ -1,10 +1,10 @@
 //! Plugins : des programmes ajoutés à Vanguard sans changer son code (un essai, un outil expérimental), chacun dans
 //! son sous-dossier de `<dossier local>/plugins/`, décrit par un `plugin.toml` (voir `manifeste`).
 //!
-//! Un plugin n'est pas du code de Vanguard : il ne tourne qu'à la demande (`vanguard plugin <nom>`, menu
+//! Un plugin n'est pas du code de Vanguard : il ne tourne qu'à la demande (`vanguard plugins <nom>`, menu
 //! Extensions), jamais en administrateur, et ses constats ne touchent jamais la note. Avec le bilan complet ou la
 //! surveillance, seulement s'il le demande et que la personne l'a accordé par une question à part (sans restrictions,
-//! pour ce dossier tel qu'il est : `reglages`) ; jamais avec l'entretien. Il doit avoir été approuvé : `vanguard plugin ajouter` montre ce qu'il
+//! pour ce dossier tel qu'il est : `reglages`) ; jamais avec l'entretien. Il doit avoir été approuvé : `vanguard plugins ajouter` montre ce qu'il
 //! lancera et note l'empreinte SHA-256 du manifeste et de chaque programme ; une empreinte qui change ensuite le fait
 //! refuser jusqu'à une nouvelle approbation. Au lancement, le programme est copié en même temps qu'il est haché, et
 //! c'est la copie vérifiée qui tourne : le remplacer entre la vérification et le lancement ne sert à rien. La
@@ -1076,7 +1076,7 @@ fn menage(racine: &Path) {
     }
 }
 
-/// `vanguard plugin ajouter <dossier ou archive.zip>` : copie le plugin dans le dossier des plugins, l'analyse, montre
+/// `vanguard plugins ajouter <dossier ou archive.zip>` : copie le plugin dans le dossier des plugins, l'analyse, montre
 /// ce qu'il lancera, et l'approuve sur accord. Ce qui est montré, analysé et haché est la copie, pas l'original : c'est
 /// elle qui tournera. Une archive est d'abord dépliée à l'écart (`archive`). Rend le nom.
 fn ajouter(racine: &Path, source: &Path, accord: impl FnMut(&str) -> bool) -> Result<String, String> {
@@ -1090,8 +1090,8 @@ fn ajouter(racine: &Path, source: &Path, accord: impl FnMut(&str) -> bool) -> Re
             std::fs::canonicalize(source).map_err(|e| trf!("{} : {e}", "{}: {e}", chemin_affichable(source)))?;
         if std::fs::canonicalize(racine).is_ok_and(|r| source_reelle.starts_with(r)) {
             return Err(tr!(
-                "Ce dossier est déjà dans celui des plugins : « vanguard plugin approuver <nom> ».",
-                "This folder is already in the plugins folder: “vanguard plugin approve <name>”."
+                "Ce dossier est déjà dans celui des plugins : « vanguard plugins approuver <nom> ».",
+                "This folder is already in the plugins folder: “vanguard plugins approve <name>”."
             )
             .to_string());
         }
@@ -1206,7 +1206,7 @@ fn noter(racine: &Path, nom: &str, fichiers: Fichiers, cle_auteur: Option<&[u8; 
     enregistrer(racine, &a)
 }
 
-/// `vanguard plugin approuver <nom>` : le plugin tel qu'il est maintenant dans son dossier, copié, remontré, puis
+/// `vanguard plugins approuver <nom>` : le plugin tel qu'il est maintenant dans son dossier, copié, remontré, puis
 /// approuvé (ce qui est approuvé est ce qui a été montré).
 fn approuver(racine: &Path, nom: &str, mut accord: impl FnMut(&str) -> bool) -> Result<(), String> {
     if eleve() {
@@ -1271,15 +1271,15 @@ fn dossier_du_plugin(racine: &Path, nom: &str) -> Result<PathBuf, String> {
     let d = racine.join(nom);
     if std::fs::symlink_metadata(&d).is_err() {
         return Err(trf!(
-            "Aucun plugin « {nom} » : « vanguard plugin liste ».",
-            "No plugin “{nom}”: “vanguard plugin list”."
+            "Aucun plugin « {nom} » : « vanguard plugins liste ».",
+            "No plugin “{nom}”: “vanguard plugins list”."
         ));
     }
     dossier_sur(&d)?;
     Ok(d)
 }
 
-/// `vanguard plugin retirer <nom>` : son dossier, son approbation, sa confiance et ses constats gardés, sur accord.
+/// `vanguard plugins retirer <nom>` : son dossier, son approbation, sa confiance et ses constats gardés, sur accord.
 fn retirer(racine: &Path, nom: &str, accord: impl FnOnce(&str) -> bool) -> Result<bool, String> {
     if !manifeste::nom_valide(nom) {
         return Err(trf!(
@@ -1459,8 +1459,8 @@ pub fn lancer(racine: &Path, nom: &str, arguments: &[String], facon: Facon) -> R
     let d = dossier_du_plugin(racine, nom)?;
     let refuse_change = || {
         trf!(
-            "Le plugin « {nom} » a changé depuis son approbation : refusé. Relisez-le, puis « vanguard plugin approuver {nom} ».",
-            "The plugin “{nom}” changed since it was approved: refused. Review it, then “vanguard plugin approve {nom}”."
+            "Le plugin « {nom} » a changé depuis son approbation : refusé. Relisez-le, puis « vanguard plugins approuver {nom} ».",
+            "The plugin “{nom}” changed since it was approved: refused. Review it, then “vanguard plugins approve {nom}”."
         )
     };
     let commande_ici = |m: &Manifeste| {
@@ -1526,8 +1526,8 @@ pub fn lancer(racine: &Path, nom: &str, arguments: &[String], facon: Facon) -> R
                 Some(false) => return Err(refuse_change()),
                 None => {
                     return Err(trf!(
-                        "Le plugin « {nom} » n'est pas approuvé : « vanguard plugin approuver {nom} » montre ce qu'il lancera.",
-                        "The plugin “{nom}” is not approved: “vanguard plugin approve {nom}” shows what it will run."
+                        "Le plugin « {nom} » n'est pas approuvé : « vanguard plugins approuver {nom} » montre ce qu'il lancera.",
+                        "The plugin “{nom}” is not approved: “vanguard plugins approve {nom}” shows what it will run."
                     ));
                 }
             },
@@ -1551,7 +1551,7 @@ pub fn lancer(racine: &Path, nom: &str, arguments: &[String], facon: Facon) -> R
     Ok(Issue { manifeste, borne })
 }
 
-/// `vanguard plugin …` : rend le code de sortie (celui du plugin lancé, sinon 0 ou 1).
+/// `vanguard plugins …` : rend le code de sortie (celui du plugin lancé, sinon 0 ou 1).
 pub fn commande(quoi: &[String]) -> i32 {
     let Some(mot) = quoi.first().map(String::as_str) else {
         return match dossier() {
@@ -1581,8 +1581,8 @@ pub fn commande(quoi: &[String]) -> i32 {
     let resultat = match (mot, deuxieme) {
         ("ajouter" | "add", Some(source)) => ajouter(&racine, Path::new(source), accord).map(|nom| {
             trp!(
-                "  {VERT}✔{RESET} Plugin « {nom} » ajouté et approuvé : « vanguard plugin {nom} » le lance.",
-                "  {VERT}✔{RESET} Plugin “{nom}” added and approved: “vanguard plugin {nom}” runs it."
+                "  {VERT}✔{RESET} Plugin « {nom} » ajouté et approuvé : « vanguard plugins {nom} » le lance.",
+                "  {VERT}✔{RESET} Plugin “{nom}” added and approved: “vanguard plugins {nom}” runs it."
             );
         }),
         ("approuver" | "approve", Some(nom)) => approuver(&racine, nom, accord).map(|()| {
@@ -1594,8 +1594,8 @@ pub fn commande(quoi: &[String]) -> i32 {
             }
         }),
         ("ajouter" | "add" | "approuver" | "approve" | "retirer" | "remove", None) => Err(trf!(
-            "Il manque le dossier ou le nom : « vanguard plugin {mot} <…> ».",
-            "The folder or the name is missing: “vanguard plugin {mot} <…>”."
+            "Il manque le dossier ou le nom : « vanguard plugins {mot} <…> ».",
+            "The folder or the name is missing: “vanguard plugins {mot} <…>”."
         )),
         (nom, _) => {
             let (rapport, facon, arguments) = options_de_lancement(&quoi[1..]);
@@ -1660,8 +1660,8 @@ fn executer(racine: &Path, nom: &str, arguments: &[String], rapport: bool, facon
             if rapport {
                 match sortie::garder(racine, &issue.manifeste, &lu.constats) {
                     Ok(()) => trp!(
-                        "\n  {GRIS}Constats gardés pour le rapport HTML (section Plugins) : menu 3, ou « vanguard complet --html ».{RESET}",
-                        "\n  {GRIS}Findings kept for the HTML report (Plugins section): menu 3, or “vanguard full --html”.{RESET}"
+                        "\n  {GRIS}Constats gardés pour le rapport HTML (section Plugins) : menu 3, ou « vanguard bilan --html ».{RESET}",
+                        "\n  {GRIS}Findings kept for the HTML report (Plugins section): menu 3, or “vanguard check --html”.{RESET}"
                     ),
                     Err(e) => {
                         echec(&e);
@@ -1673,7 +1673,7 @@ fn executer(racine: &Path, nom: &str, arguments: &[String], rapport: bool, facon
     }
 }
 
-/// `vanguard plugin liste` : chaque plugin du dossier et son état.
+/// `vanguard plugins liste` : chaque plugin du dossier et son état.
 fn liste(racine: &Path) {
     titre(tr!("Plugins", "Plugins"));
     afficher_aligne(
@@ -1701,16 +1701,16 @@ fn liste(racine: &Path) {
             Etat::NonApprouve => (
                 format!("{}•{RESET}", couleur(crate::risk::Niveau::Moyen)),
                 trf!(
-                    "pas approuvé : vanguard plugin approuver {}",
-                    "not approved: vanguard plugin approve {}",
+                    "pas approuvé : vanguard plugins approuver {}",
+                    "not approved: vanguard plugins approve {}",
                     p.nom
                 ),
             ),
             Etat::Change => (
                 format!("{}✖{RESET}", couleur(crate::risk::Niveau::Eleve)),
                 trf!(
-                    "a changé depuis son approbation : refusé (vanguard plugin approuver {})",
-                    "changed since its approval: refused (vanguard plugin approve {})",
+                    "a changé depuis son approbation : refusé (vanguard plugins approuver {})",
+                    "changed since its approval: refused (vanguard plugins approve {})",
                     p.nom
                 ),
             ),
@@ -1739,8 +1739,8 @@ fn liste(racine: &Path) {
 
 fn aide_ajout() {
     trp!(
-        "  Aucun plugin. Un plugin est un programme à vous (script, programme) dans un dossier avec un plugin.toml ; « vanguard plugin ajouter <dossier> » le copie ici et l'approuve. Un exemple : extensions/exemples/exemple dans les sources de Vanguard.",
-        "  No plugin. A plugin is a program of yours (script, program) in a folder with a plugin.toml; “vanguard plugin add <folder>” copies it here and approves it. An example: extensions/exemples/exemple in Vanguard's sources."
+        "  Aucun plugin. Un plugin est un programme à vous (script, programme) dans un dossier avec un plugin.toml ; « vanguard plugins ajouter <dossier> » le copie ici et l'approuve. Un exemple : extensions/exemples/exemple dans les sources de Vanguard.",
+        "  No plugin. A plugin is a program of yours (script, program) in a folder with a plugin.toml; “vanguard plugins add <folder>” copies it here and approves it. An example: extensions/exemples/exemple in Vanguard's sources."
     );
 }
 

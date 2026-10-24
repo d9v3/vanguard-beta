@@ -229,7 +229,7 @@ fn checkups(profils: &[Result<Profil, (String, String)>]) -> Vec<Checkup> {
     v
 }
 
-/// « vanguard navigateurs » : l'état des mots de passe enregistrés dans les navigateurs (comptés,
+/// « vanguard mots-de-passe-navigateurs » : l'état des mots de passe enregistrés dans les navigateurs (comptés,
 /// jamais lus), où lancer la vérification intégrée de chaque navigateur pour trouver les faibles,
 /// réutilisés et compromis, puis la vérification HIBP d'un mot de passe tapé. Vanguard ne lit ni ne
 /// déchiffre jamais un mot de passe enregistré : les lire, c'est le geste d'un voleur de mots de

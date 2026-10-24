@@ -102,7 +102,7 @@ Une faille de sécurité ? Pas de ticket ni de demande de fusion publics : signa
 | `src/dns_rapide.rs` | DNS le plus rapide : mesure, DNS qui protège gardé, réglage annulable par `optimiser/` |
 | `src/reseau/cameras.rs` | caméras cachées : fabricant, flux RTSP, recherche ONVIF (WS-Discovery), page web |
 | `src/reseau/wifi_public/` | mode Wi-Fi public : état d'avant scellé et validé (`etat.rs`), commandes pures et lectures par système (`linux.rs`, `windows.rs`, `macos.rs`), suggestion et page du portail sans rien envoyer (`portail.rs`), allumer, éteindre, extinction sûre et constat du bilan (`mod.rs`) |
-| `src/reseau/objets.rs` | box et objets connectés : ce que la box annonce (SNMP, UPnP, en-tête web), administration en HTTP seul, objets reconnus à leur fabricant, leur nom, leurs ports et leurs annonces ; conseil du mot de passe d'origine, jamais vérifié (aucun essai, rien de sondé en plus) ; section du scan et `vanguard objets` d'après le carnet |
+| `src/reseau/objets.rs` | box et objets connectés : ce que la box annonce (SNMP, UPnP, en-tête web), administration en HTTP seul, objets reconnus à leur fabricant, leur nom, leurs ports et leurs annonces ; conseil du mot de passe d'origine, jamais vérifié (aucun essai, rien de sondé en plus) ; section du scan et `vanguard objets-connectes` d'après le carnet |
 | `src/depanner/` | dépanner pas à pas : les parcours (`mod.rs`), réseau et Wi-Fi (`reseau.rs`), son (`son.rs`), imprimante (`imprimante.rs`), après une infection (`infection.rs`), nouvel ordinateur (`nouveau.rs`), ordinateur qui part (`depart.rs`), compte piraté (`compte.rs`), ordinateur d'un proche (`proche.rs` : trois questions, résumé de cinq points au plus mis en ordre selon les réponses, conseils de la page à laisser), lent depuis une mise à jour (`depuis_maj.rs`) |
 | `src/protection/preuve.rs`, `src/protection/sources.rs`, `src/protection/normales.rs` | la preuve relevée avant chaque blocage ou quarantaine (processus, ligne de commande, SHA-256, connexions ; « impossible (raison) » sinon) ; la voie unique des sources de menaces (MalwareBazaar, outils offensifs, COM-PRG-001) pour le blocage, le bilan et le veilleur ; les alertes du veilleur, de la surveillance et du blocage déclarées normales (scellées, 90 jours) |
 | `src/traces/` | collecter les traces : processus avec leur SHA-256, réseau, démarrage, bilan JSON, comptes, journaux des 7 jours, fichiers récents, ce que Vanguard a vu et fait (`vanguard.rs` : alertes, gestes et leur preuve, fils d'incident, fichiers d'état recopiés), puis LISEZMOI et MANIFESTE (format de `sha256sum -c`), dans un dossier daté ; partie commune (`mod.rs`), par système (`linux.rs`, `windows.rs`, `macos.rs`, `unix.rs`), chronologie de l'incident (`chronologie.rs` : CHRONOLOGIE.txt, ce qui a été lu de daté remis dans l'ordre du temps sur 7 jours, 5 000 lignes au plus) ; lecture seule |
@@ -190,7 +190,7 @@ puis y cherche les failles connues (`outils/failles-programmes.sh`) ; sans eux, 
 outils/deployer.sh     # compile Linux (musl, statique) + Windows, installe en local, pousse sur GitHub, met à jour la clé
 ```
 
-Bilan lent ? `VANGUARD_CHRONO=1 vanguard machine --json >/dev/null` donne le temps de chaque vérification (elles
+Bilan lent ? `VANGUARD_CHRONO=1 vanguard audit --json >/dev/null` donne le temps de chaque vérification (elles
 tournent en même temps : la plus lente fait la durée).
 
 Tests : `cargo test` (Linux, dans un dossier de données jetable : jamais les vraies données de l'ordinateur) ; tests

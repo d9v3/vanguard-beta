@@ -1143,8 +1143,8 @@ fn juger_lance(l: &Lance) -> Option<Alerte> {
         )
         .to_string(),
         texte: trf!(
-            "{} ; lignée : {lignee} ; vu au lancement par le veilleur.{nom_seul} Ne rien arrêter à la hâte : vanguard traces garde ses traces, puis Dépanner › Après une infection s'il n'est pas à vous.",
-            "{}; lineage: {lignee}; seen at start by the watcher.{nom_seul} Do not stop anything in a hurry: vanguard traces keeps its traces, then Troubleshoot › After an infection if it is not yours.",
+            "{} ; lignée : {lignee} ; vu au lancement par le veilleur.{nom_seul} Ne rien arrêter à la hâte : vanguard depanner traces garde ses traces, puis Dépanner › Après une infection s'il n'est pas à vous.",
+            "{}; lineage: {lignee}; seen at start by the watcher.{nom_seul} Do not stop anything in a hurry: vanguard depanner traces keeps its traces, then Troubleshoot › After an infection if it is not yours.",
             chasse::montrer(p, &s)
         ),
     })
@@ -1170,8 +1170,8 @@ fn juger_lance_avec(l: &Lance, fichiers: &mut crate::protection::sources::Fichie
             )
             .to_string(),
             texte: trf!(
-                "« {} » (PID {}) : {raison}. Ne rien arrêter à la hâte : vanguard traces garde ses traces, puis Dépanner › Après une infection.",
-                "“{}” (PID {}): {raison}. Do not stop anything in a hurry: vanguard traces keeps its traces, then Troubleshoot › After an infection.",
+                "« {} » (PID {}) : {raison}. Ne rien arrêter à la hâte : vanguard depanner traces garde ses traces, puis Dépanner › Après une infection.",
+                "“{}” (PID {}): {raison}. Do not stop anything in a hurry: vanguard depanner traces keeps its traces, then Troubleshoot › After an infection.",
                 crate::ui::affichable(chemin),
                 l.pid
             ),
@@ -1510,7 +1510,7 @@ fn servir() -> i32 {
                         "Vanguard: watcher, burst of alerts"
                     ),
                     &trf!(
-                        "{n} autre(s) alerte(s) du veilleur non notée(s), pour ne pas inonder le journal : lancez « vanguard machine » pour un bilan complet.",
+                        "{n} autre(s) alerte(s) du veilleur non notée(s), pour ne pas inonder le journal : lancez « vanguard audit » pour un bilan complet.",
                         "{n} other watcher alert(s) not noted, so as not to flood the log: run “vanguard audit” for a full check."
                     ),
                 );
@@ -1884,7 +1884,7 @@ fn systemctl(args: &[&str]) -> bool {
 
 fn explication() -> &'static str {
     tr!(
-        "Le veilleur voit chaque programme lancé sur cet ordinateur, de tous les comptes, même s'il ne vit que quelques millisecondes, et chaque connexion TCP ou UDP au moment où elle se ferme. Il les juge comme le bilan (outil offensif connu, commande qui télécharge ou cache ce qu'elle lance) et contre les serveurs de commande de botnets déjà téléchargés par la surveillance ou le bilan. Il n'envoie rien, et garde les alertes au tableau de bord (vanguard tableau). Après l'allumage, il vous propose aussi de surveiller vos dossiers personnels contre les rançongiciels : avec la protection active, il peut alors geler puis arrêter un rançongiciel quasi certain. Un programme parti avant d'être lu est compté tel quel, jamais jugé sain ; le programme d'une connexion fermée n'est pas connu (le noyau ne le donne pas). Il tourne pendant votre session ouverte, sans droits d'administrateur ni code chargé dans le noyau.",
+        "Le veilleur voit chaque programme lancé sur cet ordinateur, de tous les comptes, même s'il ne vit que quelques millisecondes, et chaque connexion TCP ou UDP au moment où elle se ferme. Il les juge comme le bilan (outil offensif connu, commande qui télécharge ou cache ce qu'elle lance) et contre les serveurs de commande de botnets déjà téléchargés par la surveillance ou le bilan. Il n'envoie rien, et garde les alertes au tableau de bord (vanguard tableau-de-bord). Après l'allumage, il vous propose aussi de surveiller vos dossiers personnels contre les rançongiciels : avec la protection active, il peut alors geler puis arrêter un rançongiciel quasi certain. Un programme parti avant d'être lu est compté tel quel, jamais jugé sain ; le programme d'une connexion fermée n'est pas connu (le noyau ne le donne pas). Il tourne pendant votre session ouverte, sans droits d'administrateur ni code chargé dans le noyau.",
         "The watcher sees each program started on this computer, from every account, even one that lives only a few milliseconds, and each TCP or UDP connection as it closes. It judges them as the check does (known offensive tool, command that downloads or hides what it runs) and against the botnet command servers already downloaded by the monitoring or the check. It sends nothing, and keeps the alerts on the dashboard (vanguard dashboard). After it is turned on, it also offers to watch your personal folders against ransomware: with active protection, it can then freeze and stop an almost certain ransomware. A program gone before it could be read is counted as such, never judged safe; the program of a closed connection is not known (the kernel does not give it). It runs while your session is open, without administrator rights or code loaded into the kernel."
     )
 }
@@ -1999,7 +1999,7 @@ fn allumer() {
     std::thread::sleep(Duration::from_secs(3));
     if lire_etat().is_some_and(|e| vivant_d_apres(&e, maintenant()) && e.raison_arret.is_none()) {
         trp!(
-            "  {VERT}✔{RESET} Veilleur allumé : ses alertes vont au tableau de bord (vanguard tableau), le grave en notification.",
+            "  {VERT}✔{RESET} Veilleur allumé : ses alertes vont au tableau de bord (vanguard tableau-de-bord), le grave en notification.",
             "  {VERT}✔{RESET} Watcher on: its alerts go to the dashboard (vanguard dashboard), what is serious as a notification."
         );
     } else {

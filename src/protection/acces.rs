@@ -93,7 +93,7 @@ impl Bilan {
     }
 }
 
-/// `vanguard acces` et le menu Antivirus et protection.
+/// `vanguard bilan-confidentialite` et le menu Antivirus et protection.
 pub fn afficher_tout() {
     titre(tr!(
         "Bilan de confidentialité : qui a accès à quoi ?",

@@ -86,7 +86,7 @@ struct Args {
 #[derive(Subcommand)]
 enum Commande {
     /// Bilan complet : cet ordinateur puis le réseau.
-    #[command(visible_alias = "full")]
+    #[command(name = "bilan", visible_alias = "check")]
     Complet {
         /// Ouvrir aussi le rapport HTML dans le navigateur.
         #[arg(long)]
@@ -96,7 +96,7 @@ enum Commande {
         texte: bool,
     },
     /// Audit de cet ordinateur (pare-feu, ports, SSH, mises à jour, chiffrement…).
-    #[command(visible_alias = "audit")]
+    #[command(name = "audit")]
     Machine {
         #[arg(long)]
         json: bool,
@@ -104,8 +104,23 @@ enum Commande {
     /// Audit de l'ordinateur puis application guidée des correctifs.
     #[command(visible_alias = "fix")]
     Corriger,
+    /// Rapport détaillé dans le navigateur : le bilan de cette session s'il y en a un, sinon un bilan complet d'abord.
+    #[command(visible_alias = "report")]
+    Rapport,
+    /// Tout remettre comme avant : défait ce que Vanguard a changé (réglages d'Optimiser, corrections du bilan, jeux,
+    /// blocages, mode Wi-Fi public), la valeur d'avant remise, après accord. Comme « optimiser annuler ».
+    #[command(visible_alias = "undo")]
+    Annuler,
+    /// Protection : l'état de chaque interrupteur (temps réel, surveillance, entretien, blocage, veilleur, sites
+    /// dangereux, Wi-Fi public, raccourci) ; « oui » ou « non » [--pendant 1h|4h] agit sur la protection en temps
+    /// réel, comme « parametres temps-reel ».
+    Protection {
+        /// oui ou non (on, off), puis --pendant 1h ou 4h pour une coupure qui se termine seule.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        quoi: Vec<String>,
+    },
     /// Scan du réseau : appareils, ports ouverts, risques, nouveautés depuis les scans précédents.
-    #[command(visible_alias = "network")]
+    #[command(name = "appareils", visible_alias = "devices")]
     Reseau {
         /// IP, réseau CIDR (10.0.0.0/24) ou plage (10.0.0.1-50). Par défaut : votre réseau local.
         cible: Option<String>,
@@ -146,12 +161,12 @@ enum Commande {
     /// Active ou désactive la surveillance horaire du réseau (notification si appareil inconnu).
     #[command(visible_alias = "monitor")]
     Surveillance {
-        #[arg(value_parser = ["on", "off"])]
+        #[arg(value_parser = interrupteur, value_name = "on|off")]
         etat: String,
     },
     /// Tableau de bord de la surveillance dans le navigateur : son état, les alertes jour par jour, les nouveaux
     /// appareils et les connexions suspectes. Page locale, rien n'est envoyé.
-    #[command(visible_alias = "dashboard")]
+    #[command(name = "tableau-de-bord", visible_alias = "dashboard")]
     Tableau {
         /// Écrire la page sans l'ouvrir (sans affichage graphique, par SSH).
         #[arg(long, visible_alias = "no-open")]
@@ -170,7 +185,7 @@ enum Commande {
     /// leur état.
     #[command(name = "sites-dangereux", visible_alias = "dangerous-sites")]
     SitesDangereux {
-        #[arg(value_parser = ["on", "off"])]
+        #[arg(value_parser = interrupteur, value_name = "on|off")]
         etat: Option<String>,
     },
     /// Veilleur (Linux 6.6 et plus) : chaque programme lancé et chaque connexion fermée, vus sur le moment et jugés
@@ -179,10 +194,10 @@ enum Commande {
     /// veille anti-rançongiciel des dossiers personnels.
     #[command(visible_alias = "watcher")]
     Veilleur {
-        #[arg(value_parser = ["on", "off", "rancongiciel", "ransomware"])]
+        #[arg(value_parser = interrupteur_veilleur, value_name = "on|off|rancongiciel")]
         etat: Option<String>,
         /// Pour « rancongiciel » : on ou off.
-        #[arg(value_parser = ["on", "off"])]
+        #[arg(value_parser = interrupteur, value_name = "on|off")]
         sous_etat: Option<String>,
         /// Le service lui-même, lancé par systemd.
         #[arg(long, hide = true)]
@@ -192,24 +207,25 @@ enum Commande {
     /// les problèmes nouveaux, en une notification ; rien n'est changé. Sans argument : ce qu'il dirait maintenant.
     #[command(visible_alias = "maintenance")]
     Entretien {
-        #[arg(value_parser = ["on", "off"])]
+        #[arg(value_parser = interrupteur, value_name = "on|off")]
         etat: Option<String>,
     },
     /// Mises à jour : système, programmes, pilotes et firmware vérifiés d'un coup, puis installés après accord.
-    #[command(visible_alias = "update", alias = "mises-a-jour")]
+    #[command(name = "mises-a-jour", visible_alias = "updates")]
     Maj,
     /// Réparations courantes : réseau, navigation détournée, pare-feu, antivirus, fichiers système, disque, place, mises à jour, heure.
     #[command(visible_alias = "repair")]
     Reparer,
     /// Gaming : composants pour les jeux (Windows : Visual C++, DirectX… ; Linux : Steam, Vulkan, GameMode, Wine… ;
     /// macOS : Rosetta, Steam, Epic…) et réglages du système.
+    #[command(name = "jeux", visible_alias = "gaming")]
     Gaming,
     /// Diagnostic de l'ordinateur : matériel, système et problèmes récents (plantages, erreurs). Lecture seule.
-    #[command(visible_alias = "diag")]
+    #[command(name = "diagnostic", visible_alias = "diagnostics")]
     Diagnostic,
     /// Logiciels : les meilleurs, libres pour la plupart (navigateurs, mots de passe, bureautique, vidéo, création,
     /// outils système…), par catégorie : choisir puis installer depuis la source officielle du système.
-    #[command(visible_alias = "apps")]
+    #[command(name = "logiciels", visible_alias = "software")]
     Logiciels {
         /// Montrer chaque logiciel proposé et son état, sans rien installer.
         #[arg(long, visible_alias = "list")]
@@ -242,7 +258,7 @@ enum Commande {
     #[command(visible_alias = "learned")]
     Appris,
     /// Test de connexion pour le jeu : ping, gigue, pertes, débit et bufferbloat.
-    #[command(visible_alias = "connection")]
+    #[command(name = "test-connexion", visible_alias = "connection-test")]
     Connexion,
     /// L'adresse Internet publique est-elle sur une liste noire (Spamhaus, SpamCop, DroneBL, PSBL) ? Si oui, un
     /// appareil est sans doute infecté. Après accord : les listes voient l'adresse.
@@ -250,16 +266,17 @@ enum Commande {
     ListesNoires,
     /// Wi-Fi encombré : les réseaux voisins par canal, et le canal le plus libre à régler sur le routeur. Lecture
     /// seule.
-    #[command(visible_alias = "channels")]
+    #[command(name = "canaux-wifi", visible_alias = "wifi-channels")]
     Canaux,
     /// Type de NAT pour le jeu (ouvert, modéré ou strict), d'après deux serveurs publics (STUN). Lecture seule.
     Nat,
     /// Caméras cachées : sur le réseau d'une location ou de quelqu'un, les appareils qui ressemblent à des caméras.
     /// Lecture seule.
+    #[command(name = "cameras-cachees", visible_alias = "hidden-cameras")]
     Cameras,
     /// Routeur et objets connectés d'après le dernier scan gardé : ce que le routeur annonce (modèle, logiciel), son
     /// administration en HTTP seul, les caméras, imprimantes, NAS… et leur mot de passe d'origine. Rien n'est sondé.
-    #[command(visible_alias = "iot")]
+    #[command(name = "objets-connectes", visible_alias = "smart-devices")]
     Objets,
     /// DNS le plus rapide : mesure le DNS actuel et des DNS publics, puis propose le plus rapide, annulable. Un DNS
     /// qui protège (NextDNS, chiffré, filtrant) est gardé.
@@ -271,7 +288,7 @@ enum Commande {
     /// argument : son état.
     #[command(name = "wifi-public", visible_alias = "public-wifi")]
     WifiPublic {
-        #[arg(value_parser = ["on", "off", "portail", "portal"])]
+        #[arg(value_parser = interrupteur_wifi_public, value_name = "on|off|portail")]
         etat: Option<String>,
     },
     /// Intégrité des fichiers critiques : référence d'empreintes BLAKE3, puis ce qui a changé depuis.
@@ -293,7 +310,7 @@ enum Commande {
     },
     /// Blocages de Windows Defender : règles ASR, protection réseau, logiciels indésirables, accès contrôlé aux
     /// dossiers. Chacun s'active après accord et s'annule exactement (Windows seulement).
-    #[command(visible_alias = "harden")]
+    #[command(name = "defender")]
     Durcir,
     /// Analyse YARA : 308 règles de familles de logiciels malveillants (ReversingLabs) et les empreintes de
     /// MalwareBazaar, en complément de l'antivirus. Sans dossier : téléchargements, bureau, démarrage. Lecture seule.
@@ -316,22 +333,22 @@ enum Commande {
         fichier: std::path::PathBuf,
     },
     /// Fuites d'adresse courriel : l'adresse est envoyée au service de recherche, après votre accord.
-    #[command(visible_alias = "email")]
+    #[command(name = "fuite-courriel", visible_alias = "email-leak")]
     Courriel,
     /// Vérifie si des mots de passe ont fuité (Have I Been Pwned) ; seuls 5 caractères de leur empreinte partent.
-    #[command(name = "motdepasse", visible_alias = "password")]
+    #[command(name = "fuite-mot-de-passe", visible_alias = "password-leak")]
     MotDePasse,
     /// Mots de passe enregistrés dans les navigateurs : combien et comment protégés (comptés, jamais lus), où lancer
     /// la vérification intégrée du navigateur (faibles, réutilisés, compromis), et la vérification HIBP d'un mot tapé.
-    #[command(visible_alias = "browser-passwords")]
+    #[command(name = "mots-de-passe-navigateurs", visible_alias = "browser-passwords")]
     Navigateurs,
     /// Qui parle à Internet ? Les connexions en cours de chaque programme, avec le nom du serveur. Lecture seule.
-    #[command(visible_alias = "outbound")]
+    #[command(name = "connexions-sortantes", visible_alias = "outbound-connections")]
     Sortantes,
     /// Mon ordinateur est-il contrôlé ? Les logiciels de prise de contrôle à distance (AnyDesk, TeamViewer,
     /// RustDesk…) installés, lancés au démarrage, en cours ou téléchargés : l'outil des faux techniciens. Retrait
     /// après accord ; un programme en cours demande un second accord.
-    #[command(visible_alias = "remote-access")]
+    #[command(name = "acces-a-distance", visible_alias = "remote-access")]
     Distance,
     /// Ce lien est-il dangereux ? Examiné sans jamais l'ouvrir ; après accord, son âge et des listes publiques.
     #[command(visible_alias = "link")]
@@ -407,7 +424,7 @@ enum Commande {
     CameraMicro,
     /// Bilan de confidentialité : les applications qui ont accès à la position, aux contacts, à la caméra et au micro,
     /// et leur dernier usage quand il est noté. Lecture seule.
-    #[command(visible_alias = "permissions")]
+    #[command(name = "bilan-confidentialite", visible_alias = "privacy-review")]
     Acces,
     /// Quarantaine : les fichiers isolés par l'antivirus ou YARA, à remettre à leur place (faux positif) ou à
     /// supprimer pour de bon.
@@ -441,13 +458,13 @@ enum Commande {
         quoi: Vec<String>,
     },
     /// Sauvegarde la base des appareils et l'état de la surveillance dans un fichier JSON.
-    #[command(visible_alias = "backup")]
+    #[command(name = "exporter", visible_alias = "export")]
     Sauvegarder {
         /// Fichier à écrire (par défaut : vanguard-sauvegarde-AAAA-MM-JJ.json dans le dossier personnel ou Documents).
         fichier: Option<std::path::PathBuf>,
     },
     /// Ajoute une sauvegarde (ou un appareils.json) à la base actuelle, sans rien effacer.
-    #[command(visible_alias = "restore")]
+    #[command(name = "importer", visible_alias = "import")]
     Restaurer { fichier: std::path::PathBuf },
     /// Donne un surnom à un appareil de la base (« imprimante HP »), désigné par son IP ou sa MAC.
     #[command(visible_alias = "name")]
@@ -475,7 +492,7 @@ enum Commande {
     Demarrage,
     /// Fiche de l'ordinateur : modèle, carte mère, processeur, mémoire, carte graphique, disques, système. Les numéros
     /// de série s'affichent à l'écran seulement.
-    #[command(visible_alias = "specs")]
+    #[command(name = "fiche-ordinateur", visible_alias = "specs")]
     Fiche {
         /// La fiche en JSON, pour un script (sans les numéros de série).
         #[arg(long)]
@@ -509,7 +526,7 @@ enum Commande {
     },
     /// Rapport à laisser : une page simple pour la personne qu'on vient de dépanner (note, ce qu'il lui reste à faire,
     /// ce qui va bien), posée sur son Bureau après accord et ouverte dans le navigateur.
-    #[command(name = "a-laisser", visible_alias = "handout")]
+    #[command(name = "rapport-a-laisser", visible_alias = "handout")]
     ALaisser,
     /// Ce que Vanguard a changé : chaque correction lancée sur cet ordinateur, sa date et son résultat.
     #[command(visible_alias = "changes")]
@@ -537,7 +554,7 @@ enum Commande {
     /// sous Windows et macOS). Sans argument : l'état, puis la proposition.
     #[command(visible_alias = "shortcut")]
     Raccourci {
-        #[arg(value_parser = ["on", "off"])]
+        #[arg(value_parser = interrupteur, value_name = "on|off")]
         etat: Option<String>,
     },
     /// Mes ordinateurs : ceux où la clé VANGUARD a fait un bilan, leur note et leurs problèmes restants (sur la
@@ -579,27 +596,16 @@ enum Commande {
         #[arg(long = "une-par-une", visible_alias = "one-by-one")]
         une_par_une: bool,
     },
-    /// Collecter les traces après une infection, avant de nettoyer : processus, connexions, ce qui se lance tout seul,
-    /// comptes, journaux des 7 derniers jours, fichiers récents et la chronologie de l'incident, dans un dossier daté
-    /// (LISEZMOI, empreintes SHA-256). Lecture seule ; rien ne part sur Internet.
-    #[command(visible_alias = "evidence")]
-    Traces {
-        /// Le dossier où créer traces-AAAAMMJJ-HHMMSS (par défaut : la clé VANGUARD si Vanguard tourne depuis elle,
-        /// sinon le dossier de Vanguard de l'ordinateur).
-        dossier: Option<std::path::PathBuf>,
-    },
     /// Dépanner pas à pas : pas d'Internet, Wi-Fi qui coupe, ordinateur lent, pas de son, imprimante, disque plein ;
-    /// après une infection, nouvel ordinateur, ordinateur qui part (vente, don).
+    /// après une infection, nouvel ordinateur, ordinateur qui part (vente, don), compte piraté, collecter les traces
+    /// (« traces [dossier] » : processus, connexions, démarrage, comptes, journaux, fichiers récents et chronologie,
+    /// dans un dossier daté ; lecture seule), ordinateur d'un proche.
     #[command(visible_alias = "troubleshoot")]
     Depanner {
-        /// Le sujet : internet, wifi, lent, son, imprimante, disque, infection, nouveau, depart (ou des mots qui le
-        /// décrivent).
+        /// Le sujet : internet, wifi, lent, son, imprimante, disque, infection, nouveau, depart, compte, traces [dossier],
+        /// proche (ou des mots qui le décrivent).
         sujet: Vec<String>,
     },
-    /// Ordinateur d'un proche : trois questions (qui s'en sert, pourquoi on vous l'a confié, son réseau), le bilan, un
-    /// résumé en mots simples, les corrections acceptées une à une, puis la page à laisser avec ses conseils.
-    #[command(visible_alias = "relative")]
-    Proche,
     /// Vérifier Vanguard lui-même : version, date de compilation, empreinte SHA-256 du programme (à comparer à la
     /// page de la version), sur la clé du propriétaire le manifeste de la clé, et après accord l'historique signé des
     /// versions publiées ; ou une autre copie de Vanguard, par son empreinte et cet historique.
@@ -631,6 +637,7 @@ enum Commande {
     /// « approuver <nom> » après un changement, « liste », « retirer <nom> », ou « <nom> [arguments] » pour le
     /// lancer (« --rapport » : ses constats dans le rapport HTML) ; sans argument, la liste à choisir. Jamais en
     /// administrateur ; hors de la note.
+    #[command(name = "plugins")]
     Plugin {
         /// ajouter <dossier>, approuver <nom>, liste, retirer <nom>, ou <nom> [--rapport] [arguments].
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -646,7 +653,7 @@ enum Commande {
         quoi: Vec<String>,
     },
     /// Extensions : le menu des plugins et des scripts du labo, à choisir et lancer.
-    #[command(visible_alias = "ext")]
+    #[command(name = "extensions")]
     Extensions {
         /// on : les restrictions des extensions coupées (sans accord, empreinte ni analyse, avec tous vos droits) ;
         /// off : remises. Le dossier des extensions doit rester à vous seul.
@@ -1040,7 +1047,7 @@ fn lignes_du_menu(etat: Vec<String>) -> Vec<Ligne> {
             ou = format!("{ou} {} ›", parent.libelle().0);
         }
         let (texte, precision) = a.libelle();
-        // Le nom de sa sous-commande aussi : qui connaît « vanguard sortantes » la retrouve au menu.
+        // Le nom de sa sous-commande aussi : qui connaît « vanguard connexions-sortantes » la retrouve au menu.
         let mots = format!("{} {}", a.outil().mots, a.outil().commande);
         lignes.push(Ligne::cachee(&chemin, &ou, texte, precision).avec_mots(&mots));
     }
@@ -1316,21 +1323,21 @@ struct Outil {
 #[rustfmt::skip] // une ligne de données par outil, que rustfmt étalerait sur huit
 const OUTILS: &[Outil] = &[
     // Au menu principal : 1, 2, 3.
-    Outil { action: Action::Complet, commande: "complet", groupe: None, lettre: "",
+    Outil { action: Action::Complet, commande: "bilan", groupe: None, lettre: "",
         titre: ["Bilan de sécurité complet", "Full security check"], precision: ["← commencer ici", "← start here"],
         mots: "" },
     Outil { action: Action::Corriger, commande: "corriger", groupe: None, lettre: "",
         titre: ["Corriger les problèmes trouvés", "Fix the problems found"], precision: ["un à un, avec votre accord", "one by one, with your consent"],
         mots: "" },
-    Outil { action: Action::Rapport, commande: "", groupe: None, lettre: "",
+    Outil { action: Action::Rapport, commande: "rapport", groupe: None, lettre: "",
         titre: ["Rapport détaillé", "Detailed report"], precision: ["dans le navigateur", "in the browser"],
         mots: "" },
     // 4 Cet ordinateur. Les lignes propres à un système en fin de groupe : Defender toujours en 4.10.
-    Outil { action: Action::Audit, commande: "machine", groupe: Some(Groupe::Ordinateur), lettre: "",
+    Outil { action: Action::Audit, commande: "audit", groupe: Some(Groupe::Ordinateur), lettre: "",
         titre: ["Audit de sécurité", "Security audit"],
         precision: ["pare-feu, comptes, chiffrement…", "firewall, accounts, encryption…"],
         mots: "sécurité security pare-feu firewall ports ssh chiffrement encryption comptes accounts" },
-    Outil { action: Action::Maj, commande: "maj", groupe: Some(Groupe::Ordinateur), lettre: "u",
+    Outil { action: Action::Maj, commande: "mises-a-jour", groupe: Some(Groupe::Ordinateur), lettre: "u",
         titre: ["Mises à jour du système", "System updates"], precision: ["système, programmes, pilotes", "system, programs, drivers"],
         mots: "update upgrade pilotes drivers firmware bios windows update" },
     Outil { action: Action::DernieresFailles, commande: "dernieres-failles", groupe: Some(Groupe::Ordinateur), lettre: "",
@@ -1345,11 +1352,11 @@ const OUTILS: &[Outil] = &[
     Outil { action: Action::Entretien, commande: "entretien", groupe: Some(Groupe::Ordinateur), lettre: "",
         titre: ["Entretien du mois", "Monthly maintenance"], precision: ["", ""],
         mots: "maintenance mensuel monthly mois month rappel reminder notification" },
-    Outil { action: Action::Fiche, commande: "fiche", groupe: Some(Groupe::Ordinateur), lettre: "",
+    Outil { action: Action::Fiche, commande: "fiche-ordinateur", groupe: Some(Groupe::Ordinateur), lettre: "",
         titre: ["Fiche de l'ordinateur", "Computer specs"],
         precision: ["modèle, processeur, mémoire…", "model, processor, memory…"],
         mots: "fiche specs matériel hardware modèle model processeur carte graphique gpu mémoire ram série" },
-    Outil { action: Action::ALaisser, commande: "a-laisser", groupe: Some(Groupe::Ordinateur), lettre: "",
+    Outil { action: Action::ALaisser, commande: "rapport-a-laisser", groupe: Some(Groupe::Ordinateur), lettre: "",
         titre: ["Rapport à laisser", "Report to leave behind"],
         precision: ["une page simple, à imprimer", "a simple page, to print"],
         mots: "rapport report imprimer print dépannage help famille family laisser leave page résumé summary" },
@@ -1371,20 +1378,20 @@ const OUTILS: &[Outil] = &[
         precision: ["versions, failles exploitées", "versions, exploited flaws"],
         mots: "logiciel software version périmé outdated mise à jour update navigateur browser chrome edge \
                firefox brave office word excel acrobat reader java kev faille exploitée exploited" },
-    Outil { action: Action::Protection, commande: "durcir", groupe: Some(Groupe::Ordinateur), lettre: "",
+    Outil { action: Action::Protection, commande: "defender", groupe: Some(Groupe::Ordinateur), lettre: "",
         titre: ["Blocages de Windows Defender", "Windows Defender blocking"],
         precision: ["ASR, réseau, dossiers contrôlés", "ASR, network, folders"],
         mots: "defender asr bloquer block exploit dossiers contrôlés controlled folder pua" },
     // 5 Réseau et Internet.
-    Outil { action: Action::Appareils, commande: "reseau", groupe: Some(Groupe::Reseau), lettre: "",
+    Outil { action: Action::Appareils, commande: "appareils", groupe: Some(Groupe::Reseau), lettre: "",
         titre: ["Appareils du réseau", "Devices on the network"],
         precision: ["scan, ports, nouveaux appareils", "scan, ports, new devices"],
         mots: "scan scanner appareils devices ports réseau network nmap" },
-    Outil { action: Action::Scanner, commande: "reseau", groupe: None, lettre: "",
+    Outil { action: Action::Scanner, commande: "appareils", groupe: None, lettre: "",
         titre: ["Scan du réseau", "Network scan"],
         precision: ["ports courants, nouveaux venus", "common ports, newcomers"],
         mots: "appareils devices ports réseau network lan nmap" },
-    Outil { action: Action::Appareil, commande: "reseau", groupe: None, lettre: "",
+    Outil { action: Action::Appareil, commande: "appareils", groupe: None, lettre: "",
         titre: ["Tous les ports d'un appareil", "All ports of one device"], precision: ["scan approfondi, plus long", "deep scan, takes longer"],
         mots: "appareils devices ports réseau network lan nmap" },
     Outil { action: Action::AuditReseau, commande: "audit-reseau", groupe: Some(Groupe::Reseau), lettre: "",
@@ -1395,12 +1402,12 @@ const OUTILS: &[Outil] = &[
     Outil { action: Action::Nommer, commande: "nommer", groupe: Some(Groupe::Reseau), lettre: "n",
         titre: ["Nommer un appareil", "Name a device"], precision: ["« imprimante HP »", "“HP printer”"],
         mots: "surnom nickname" },
-    Outil { action: Action::Objets, commande: "objets", groupe: Some(Groupe::Reseau), lettre: "",
+    Outil { action: Action::Objets, commande: "objets-connectes", groupe: Some(Groupe::Reseau), lettre: "",
         titre: ["Routeur et objets connectés", "Router and smart devices"],
         precision: ["modèle, mots de passe d'origine", "model, default passwords"],
         mots: "box routeur router modem objets connectés iot smart caméra camera imprimante printer nas télé tv \
                domotique smart home mot de passe d'origine default password firmware upnp" },
-    Outil { action: Action::Cameras, commande: "cameras", groupe: Some(Groupe::Reseau), lettre: "",
+    Outil { action: Action::Cameras, commande: "cameras-cachees", groupe: Some(Groupe::Reseau), lettre: "",
         titre: ["Caméras cachées ?", "Hidden cameras?"],
         precision: ["location, hébergement", "rentals, short stays"],
         mots: "caméra camera espion spy cachée hidden location rental airbnb rtsp onvif" },
@@ -1411,7 +1418,7 @@ const OUTILS: &[Outil] = &[
     Outil { action: Action::Surveillance, commande: "surveillance", groupe: Some(Groupe::Reseau), lettre: "",
         titre: ["Surveillance toutes les heures", "Hourly monitoring"], precision: ["", ""],
         mots: "monitor surveiller notification" },
-    Outil { action: Action::Tableau, commande: "tableau", groupe: Some(Groupe::Reseau), lettre: "",
+    Outil { action: Action::Tableau, commande: "tableau-de-bord", groupe: Some(Groupe::Reseau), lettre: "",
         titre: ["Tableau de bord de la surveillance", "Monitoring dashboard"],
         precision: ["alertes, nouveaux appareils", "alerts, new devices"],
         mots: "tableau dashboard historique history alertes alerts nouveaux new appareils devices botnet \
@@ -1444,7 +1451,7 @@ const OUTILS: &[Outil] = &[
         precision: ["clavier épié, indicateurs Échap", "keyboard spying, Échap indicators"],
         mots: "espion spyware stalkerware logiciel espion keylogger enregistreur de frappe clavier keyboard \
                surveillance monitoring harcèlement stalking échap mspy flexispy contrôle parental parental control" },
-    Outil { action: Action::QuiParle, commande: "sortantes", groupe: Some(Groupe::Virus), lettre: "",
+    Outil { action: Action::QuiParle, commande: "connexions-sortantes", groupe: Some(Groupe::Virus), lettre: "",
         titre: ["Qui parle à Internet ?", "Who talks to the Internet?"],
         precision: ["connexions de chaque programme", "each program's connections"],
         mots: "connexions connections sortantes outbound espion spyware mouchard télémétrie telemetry serveurs \
@@ -1479,21 +1486,21 @@ const OUTILS: &[Outil] = &[
         precision: ["examiné sans rien ouvrir", "checked without opening anything"],
         mots: "courriel email mail eml arnaque scam hameçonnage phishing expéditeur sender pièce jointe attachment \
                spf dkim dmarc thunderbird outlook gmail msg usurpation spoofing" },
-    Outil { action: Action::Distance, commande: "distance", groupe: Some(Groupe::Arnaques), lettre: "",
+    Outil { action: Action::Distance, commande: "acces-a-distance", groupe: Some(Groupe::Arnaques), lettre: "",
         titre: ["Mon ordinateur est-il contrôlé ?", "Is my computer being controlled?"],
         precision: ["faux technicien, accès à distance", "tech-support scam, remote access"],
         mots: "arnaque scam faux technicien fake tech support anydesk teamviewer rustdesk accès distance remote \
                access contrôle control prise de contrôle" },
-    Outil { action: Action::MotsDePasse, commande: "motdepasse", groupe: Some(Groupe::Arnaques), lettre: "p",
+    Outil { action: Action::MotsDePasse, commande: "fuite-mot-de-passe", groupe: Some(Groupe::Arnaques), lettre: "p",
         titre: ["Mots de passe : ont-ils fuité ?", "Passwords: have they leaked?"],
         precision: ["rien n'est envoyé en clair", "nothing sent in clear"],
         mots: "password hibp pwned fuite leak" },
-    Outil { action: Action::Navigateurs, commande: "navigateurs", groupe: Some(Groupe::Arnaques), lettre: "",
+    Outil { action: Action::Navigateurs, commande: "mots-de-passe-navigateurs", groupe: Some(Groupe::Arnaques), lettre: "",
         titre: ["Mots de passe des navigateurs", "Browser passwords"],
         precision: ["comptés, jamais lus", "counted, never read"],
         mots: "navigateur browser firefox chrome edge chromium brave vivaldi mots de passe password \
                enregistrés saved faible weak réutilisé reused fuite leak checkup about:logins" },
-    Outil { action: Action::Courriel, commande: "courriel", groupe: Some(Groupe::Arnaques), lettre: "e",
+    Outil { action: Action::Courriel, commande: "fuite-courriel", groupe: Some(Groupe::Arnaques), lettre: "e",
         titre: ["Courriel : a-t-il fuité ?", "Email address: has it leaked?"],
         precision: ["avec votre accord", "with your consent"],
         mots: "email mail fuite leak" },
@@ -1501,7 +1508,7 @@ const OUTILS: &[Outil] = &[
         titre: ["Caméra et micro : qui s'en sert ?", "Camera and mic: who uses them?"],
         precision: ["programmes et dernière fois", "programs and last time"],
         mots: "caméra camera webcam micro microphone espion spy écoute voyant light enregistre record" },
-    Outil { action: Action::Acces, commande: "acces", groupe: Some(Groupe::Arnaques), lettre: "",
+    Outil { action: Action::Acces, commande: "bilan-confidentialite", groupe: Some(Groupe::Arnaques), lettre: "",
         titre: ["Bilan de confidentialité", "Privacy check"],
         precision: ["position, contacts, caméra, micro", "location, contacts, camera, mic"],
         mots: "confidentialité privacy permissions autorisations accès access position location localisation gps \
@@ -1524,7 +1531,7 @@ const OUTILS: &[Outil] = &[
         titre: ["Compte piraté, pas à pas", "Hacked account, step by step"],
         precision: ["raccourci vers 11.10", "shortcut to 11.10"],
         mots: "piraté hacked compte account mot de passe password" },
-    Outil { action: Action::Traces, commande: "traces", groupe: Some(Groupe::Reagir), lettre: "",
+    Outil { action: Action::Traces, commande: "depanner", groupe: Some(Groupe::Reagir), lettre: "",
         titre: ["Collecter les traces", "Collect the evidence"],
         precision: ["avant de nettoyer, daté", "before cleaning up, dated"],
         mots: "traces evidence preuves forensics incident chronologie timeline" },
@@ -1536,7 +1543,7 @@ const OUTILS: &[Outil] = &[
         titre: ["Ce que Vanguard a changé", "What Vanguard changed"],
         precision: ["chaque correction, datée", "each fix, dated"],
         mots: "changements changes historique history corrections fixes journal log annuler undo" },
-    Outil { action: Action::OptimiserAnnuler, commande: "optimiser", groupe: Some(Groupe::Reagir), lettre: "",
+    Outil { action: Action::OptimiserAnnuler, commande: "annuler", groupe: Some(Groupe::Reagir), lettre: "",
         titre: ["Tout remettre comme avant", "Put everything back"],
         precision: ["annule ce que Vanguard a changé", "undo what Vanguard changed"],
         mots: "annuler undo restaurer" },
@@ -1613,7 +1620,7 @@ const OUTILS: &[Outil] = &[
         titre: ["Réglages recommandés", "Recommended settings"],
         precision: ["en une fois, tout s'annule", "in one go, all undoable"],
         mots: "réglages settings" },
-    Outil { action: Action::Gaming, commande: "gaming", groupe: Some(Groupe::Optimiser), lettre: "g",
+    Outil { action: Action::Gaming, commande: "jeux", groupe: Some(Groupe::Optimiser), lettre: "g",
         titre: ["Jeux vidéo", "Gaming"],
         precision: if cfg!(windows) { ["composants et réglages de Windows", "components and Windows settings"] }
             else if cfg!(target_os = "macos") { ["Rosetta, Steam, Epic, GOG…", "Rosetta, Steam, Epic, GOG…"] }
@@ -1622,7 +1629,7 @@ const OUTILS: &[Outil] = &[
     Outil { action: Action::DnsRapide, commande: "dns-rapide", groupe: Some(Groupe::Optimiser), lettre: "",
         titre: ["DNS le plus rapide", "Fastest DNS"], precision: ["mesuré ici, annulable", "measured here, undoable"],
         mots: "dns rapide fast résolveur resolver cloudflare quad9 google adguard vitesse speed" },
-    Outil { action: Action::Connexion, commande: "connexion", groupe: Some(Groupe::Optimiser), lettre: "c",
+    Outil { action: Action::Connexion, commande: "test-connexion", groupe: Some(Groupe::Optimiser), lettre: "c",
         titre: ["Test de connexion", "Connection test"],
         precision: ["ping, gigue, débit, bufferbloat", "ping, jitter, speed, bufferbloat"],
         mots: "ping latence latency débit speed jitter gigue bufferbloat jeu" },
@@ -1631,7 +1638,7 @@ const OUTILS: &[Outil] = &[
         precision: ["ouvert, modéré ou strict", "open, moderate or strict"],
         mots: "nat stun upnp console xbox playstation jeu game multijoueur multiplayer redirection port forwarding \
                ouvert open modéré moderate strict" },
-    Outil { action: Action::WifiCanaux, commande: "canaux", groupe: Some(Groupe::Optimiser), lettre: "",
+    Outil { action: Action::WifiCanaux, commande: "canaux-wifi", groupe: Some(Groupe::Optimiser), lettre: "",
         titre: ["Wi-Fi encombré ?", "Crowded Wi-Fi?"],
         precision: ["canaux voisins, le plus libre", "nearby channels, the freest"],
         mots: "wifi canal canaux channel encombré crowded interférences interference voisins neighbors signal box \
@@ -1694,7 +1701,7 @@ const OUTILS: &[Outil] = &[
         precision: ["carnet chiffré par une phrase", "record encrypted by a passphrase"],
         mots: "chiffrer encrypt chiffrement encryption phrase passphrase mot de passe password protéger protect \
                perdue lost" },
-    Outil { action: Action::Sauvegarder, commande: "sauvegarder", groupe: Some(Groupe::Vanguard), lettre: "d",
+    Outil { action: Action::Sauvegarder, commande: "exporter", groupe: Some(Groupe::Vanguard), lettre: "d",
         titre: ["Exporter ou importer les réglages", "Export or import settings"],
         precision: ["appareils nommés, préférences", "named devices, preferences"],
         mots: "backup restore sauvegarde base" },
@@ -2185,20 +2192,115 @@ async fn executer(s: &mut Session, action: Action) {
     }
 }
 
+/// La valeur d'un interrupteur, dans les mots de l'une ou l'autre langue : « on » (oui, marche, yes), « off » (non,
+/// arret, no) ou « etat » (status : le dire sans rien changer). Un seul analyseur pour surveillance, entretien,
+/// veilleur, raccourci, sites-dangereux et wifi-public.
+fn interrupteur(mot: &str) -> Result<String, String> {
+    match selection::simplifier(mot.trim()).as_str() {
+        "on" | "oui" | "o" | "marche" | "yes" | "y" | "activer" => Ok("on".into()),
+        "off" | "non" | "n" | "arret" | "no" | "desactiver" => Ok("off".into()),
+        "etat" | "status" | "state" => Ok("etat".into()),
+        _ => Err(trf!(
+            "« {} » : oui ou non (on, off ; marche, arret), ou etat",
+            "“{}”: on or off (yes, no), or status",
+            ui::affichable(mot)
+        )),
+    }
+}
+
+/// « etat » ne change rien : comme sans valeur, la commande dit son état (jamais lu comme « off »).
+fn sans_etat(valeur: Option<&str>) -> Option<&str> {
+    valeur.filter(|v| *v != "etat")
+}
+
+/// Le veilleur prend aussi « rancongiciel » (ransomware), pour la surveillance en direct des dossiers.
+fn interrupteur_veilleur(mot: &str) -> Result<String, String> {
+    match selection::simplifier(mot.trim()).as_str() {
+        "rancongiciel" | "ransomware" => Ok("rancongiciel".into()),
+        _ => interrupteur(mot),
+    }
+}
+
+/// Le mode Wi-Fi public prend aussi « portail » (portal), pour la page de connexion d'un café ou d'un hôtel.
+fn interrupteur_wifi_public(mot: &str) -> Result<String, String> {
+    match selection::simplifier(mot.trim()).as_str() {
+        "portail" | "portal" => Ok("portail".into()),
+        _ => interrupteur(mot),
+    }
+}
+
+/// `vanguard protection` : chaque interrupteur de protection et son état, en un écran.
+fn etat_de_la_protection() {
+    titre(tr!("Protection : les interrupteurs", "Protection: the switches"));
+    let oui_non = |b: bool| {
+        if b {
+            tr!("activé", "on")
+        } else {
+            tr!("désactivé", "off")
+        }
+    };
+    let mut lignes = vec![
+        (
+            tr!("Protection en temps réel", "Real-time protection"),
+            protection::temps_reel::valeur(),
+        ),
+        (
+            tr!("Surveillance toutes les heures", "Hourly monitoring"),
+            precision_surveillance(
+                reseau::surveillance::active(),
+                protection::temps_reel::coupure().is_some(),
+            )
+            .to_string(),
+        ),
+        (
+            tr!("Entretien du mois", "Monthly maintenance"),
+            oui_non(entretien::active()).to_string(),
+        ),
+        (
+            tr!("Blocage des menaces", "Threat blocking"),
+            protection::blocage::etat_court().to_string(),
+        ),
+    ];
+    if cfg!(target_os = "linux") {
+        lignes.push((tr!("Veilleur", "Watcher"), precision_veilleur().to_string()));
+    }
+    lignes.extend([
+        (
+            tr!("Sites dangereux bloqués", "Dangerous sites blocked"),
+            oui_non(protection::sites_bloques::bloc_present()).to_string(),
+        ),
+        (
+            tr!("Mode Wi-Fi public", "Public Wi-Fi mode"),
+            reseau::wifi_public::etat_court().to_string(),
+        ),
+        (
+            tr!("Raccourci sur cet ordinateur", "Shortcut on this computer"),
+            oui_non(raccourci::chemin().is_some_and(|c| c.exists())).to_string(),
+        ),
+    ]);
+    for (nom, etat) in lignes {
+        println!("  {:<32} {etat}", format!("{nom} :"));
+    }
+    trp!(
+        "\n  {GRIS}vanguard protection non [--pendant 1h|4h] : couper d'un coup la protection en temps réel ; oui : la remettre.{RESET}",
+        "\n  {GRIS}vanguard protection off [--for 1h|4h]: turn real-time protection off at once; on: turn it back on.{RESET}"
+    );
+}
+
 /// Aide anglaise des commandes : la française est dans les commentaires de `Commande`.
 #[rustfmt::skip] // une ligne par aide, que rustfmt étalerait sur quatre
 const AIDES_EN: &[(&str, &str)] = &[
-    ("complet", "Full check: this computer, then the network"),
-    ("machine", "Audit this computer (firewall, ports, SSH, updates, encryption…)"),
+    ("bilan", "Full check: this computer, then the network"),
+    ("audit", "Audit this computer (firewall, ports, SSH, updates, encryption…)"),
     ("corriger", "Audit the machine, then apply the fixes step by step"),
-    ("reseau", "Network scan: devices, open ports, risks, changes since previous scans"),
+    ("appareils", "Network scan: devices, open ports, risks, changes since previous scans"),
     ("audit-reseau", "Network audit by domain: six grades (exposure to the Internet, Wi-Fi, segmentation, DNS and TLS, \
                       connected devices, computers) from the local network scan, this computer's network findings and \
                       a few more read-only checks, attacking nothing; what could not be checked is said, never counted \
                       as safe"),
     ("antivirus", "Malware scan: ClamAV (Linux, macOS) or Microsoft Defender (Windows)"),
     ("surveillance", "Turn hourly network monitoring on or off (notification for unknown devices)"),
-    ("tableau", "Monitoring dashboard in the browser: its state, the alerts day by day, the new devices and the \
+    ("tableau-de-bord", "Monitoring dashboard in the browser: its state, the alerts day by day, the new devices and the \
                  suspicious connections. Local page, nothing is sent"),
     ("dernieres-failles", "Latest exploited flaws: those CISA added to its catalog (known real attacks) in the last \
                             days, newest first; on Arch, those affecting a package on this computer first"),
@@ -2211,7 +2313,7 @@ const AIDES_EN: &[(&str, &str)] = &[
                    your consent. \"ransomware on|off\" sets the personal-folder ransomware watch"),
     ("entretien", "Monthly check-up: once a month, silently, the grade, waiting updates, space to free and new \
                    problems, in one notification; nothing is changed. Without argument: what it would say now"),
-    ("maj", "Updates: system, programs, drivers and firmware checked at once, then installed with your consent"),
+    ("mises-a-jour", "Updates: system, programs, drivers and firmware checked at once, then installed with your consent"),
     ("reparer", "Common repairs: network, hijacked browsing, firewall, antivirus, system files, disk, space, updates, \
                  time"),
     ("logiciels", "Software: the best programs, mostly open source (browsers, passwords, office, video, design, system \
@@ -2219,7 +2321,7 @@ const AIDES_EN: &[(&str, &str)] = &[
     ("diagnostic", "Computer diagnostic: hardware, system and recent problems (crashes, errors). Read only"),
     ("nettoyer", "Clean up the system: caches, temporary files, downloaded packages, old logs, trash… The space each \
                   item frees is shown first; check, then accept"),
-    ("connexion", "Connection test for gaming: ping, jitter, packet loss, speed and bufferbloat"),
+    ("test-connexion", "Connection test for gaming: ping, jitter, packet loss, speed and bufferbloat"),
     ("appris", "What Vanguard has learned on this computer: the alerts declared normal, and forgetting them"),
     ("listes-noires", "Is your home's Internet address on a blocklist (Spamhaus, SpamCop, DroneBL, PSBL)? If so, a \
                        device is probably infected. After your consent: the lists see the address"),
@@ -2239,10 +2341,10 @@ const AIDES_EN: &[(&str, &str)] = &[
     ("blocage", "Threat blocking: each threat found offers “Block” (the action shown, accepted, written down, \
                  undoable); active protection, after a consent given once, blocks what is certain by itself \
                  (MalwareBazaar fingerprint, known attack tool, command server), then warns you. No argument: the menu"),
-    ("canaux", "Crowded Wi-Fi: nearby networks by channel, and the freest channel to set on the router. Read-only"),
+    ("canaux-wifi", "Crowded Wi-Fi: nearby networks by channel, and the freest channel to set on the router. Read-only"),
     ("nat", "NAT type for gaming (open, moderate or strict), from two public servers (STUN). Read-only"),
-    ("cameras", "Hidden cameras: on a rental's or someone's network, the devices that look like cameras. Read-only"),
-    ("objets", "Router and connected devices from the last kept scan: what the router announces (model, software), \
+    ("cameras-cachees", "Hidden cameras: on a rental's or someone's network, the devices that look like cameras. Read-only"),
+    ("objets-connectes", "Router and connected devices from the last kept scan: what the router announces (model, software), \
                 its HTTP-only admin page, the cameras, printers, NAS… and their default password. Nothing is probed"),
     ("dns-rapide", "Fastest DNS: measures the current DNS and public ones, then offers the fastest, undoable. A DNS \
                     that protects (NextDNS, encrypted, filtering) is kept"),
@@ -2252,18 +2354,18 @@ const AIDES_EN: &[(&str, &str)] = &[
                      \"portal\" reopens the network's login page. Without argument: its state"),
     ("pieges", "Decoy files against ransomware: place them (after your consent), see whether they are intact, or \
                 remove them"),
-    ("durcir", "Windows Defender blocking: ASR rules, network protection, unwanted software, controlled folder access. \
+    ("defender", "Windows Defender blocking: ASR rules, network protection, unwanted software, controlled folder access. \
                 Each one is turned on after your consent and undoes exactly (Windows only)"),
     ("isoler", "Run an unknown program in a sandbox: no network, home folder hidden"),
-    ("courriel", "Email address leaks: the address is sent to the search service, after your consent"),
+    ("fuite-courriel", "Email address leaks: the address is sent to the search service, after your consent"),
     ("integrite", "Critical file integrity: BLAKE3 fingerprint reference, then what changed since"),
-    ("motdepasse", "Check whether passwords have leaked (Have I Been Pwned); only 5 characters of their fingerprint \
+    ("fuite-mot-de-passe", "Check whether passwords have leaked (Have I Been Pwned); only 5 characters of their fingerprint \
                     are sent"),
-    ("navigateurs", "Passwords saved in the browsers: how many and how protected (counted, never read), where to run \
+    ("mots-de-passe-navigateurs", "Passwords saved in the browsers: how many and how protected (counted, never read), where to run \
                      the browser's built-in check (weak, reused, compromised), and the HIBP check of a typed password"),
-    ("sortantes", "Who talks to the Internet? Each program's current connections, with the server's name. Read-only"),
+    ("connexions-sortantes", "Who talks to the Internet? Each program's current connections, with the server's name. Read-only"),
     ("verifier-moi", "Check Vanguard itself: version, build date, SHA-256 fingerprint of the program (to compare with the release page), on the owner's key the key manifest, and after your consent the signed history of published versions; or another copy of Vanguard, by its fingerprint and that history"),
-    ("distance", "Is my computer being controlled? Remote control software (AnyDesk, TeamViewer, RustDesk…) installed, started at boot, running or downloaded: the fake technicians' tool. Removed after your consent; a running program asks for a second consent"),
+    ("acces-a-distance", "Is my computer being controlled? Remote control software (AnyDesk, TeamViewer, RustDesk…) installed, started at boot, running or downloaded: the fake technicians' tool. Removed after your consent; a running program asks for a second consent"),
     ("lien", "Is this link dangerous? Checked without ever opening it; after your consent, its age and public lists"),
     ("verifier-fichier", "Check a downloaded file: checksum compared with the site's, name and content, YARA and \
                           antivirus"),
@@ -2286,14 +2388,14 @@ const AIDES_EN: &[(&str, &str)] = &[
                   full. Nothing is ever sent: you read it, copy it and submit it yourself"),
     ("camera-micro", "Camera and microphone: who uses them? On Windows, each program and the last time; on Linux, \
                       what holds them right now. Read-only"),
-    ("acces", "Privacy check: the apps that have access to the location, contacts, camera and microphone, and their \
+    ("bilan-confidentialite", "Privacy check: the apps that have access to the location, contacts, camera and microphone, and their \
                last use when it is recorded. Read-only"),
     ("quarantaine", "Quarantine: the files isolated by the antivirus or YARA, to put back in their place (false \
                      positive) or to delete for good"),
-    ("sauvegarder", "Back up the device database and the monitoring state to a JSON file"),
-    ("restaurer", "Add a backup (or an appareils.json) to the current database, without erasing anything"),
+    ("exporter", "Back up the device database and the monitoring state to a JSON file"),
+    ("importer", "Add a backup (or an appareils.json) to the current database, without erasing anything"),
     ("nommer", "Give a nickname to a device of the database (“HP printer”), by its IP or MAC"),
-    ("gaming", "Gaming: components for games (Windows: Visual C++, DirectX…; Linux: Steam, Vulkan, GameMode, Wine…; \
+    ("jeux", "Gaming: components for games (Windows: Visual C++, DirectX…; Linux: Steam, Vulkan, GameMode, Wine…; \
                 macOS: Rosetta, Steam, Epic…) and system settings"),
     ("guide", "Command guide: the useful commands of Omarchy, Arch, Fedora, Debian, other Linux, Windows, macOS and \
                all systems, sorted by program, with step-by-step guides; plus the tldr-pages examples, downloaded \
@@ -2302,7 +2404,7 @@ const AIDES_EN: &[(&str, &str)] = &[
                  login. Read only"),
     ("demarrage", "Startup programs: those that start at login, to remove or put back after your consent. Each removal \
                    is undone exactly (Block and respond › Put everything back)"),
-    ("fiche", "Computer specs: model, motherboard, processor, memory, graphics card, disks, system. Serial numbers are \
+    ("fiche-ordinateur", "Computer specs: model, motherboard, processor, memory, graphics card, disks, system. Serial numbers are \
                shown on screen only"),
     ("copier-fichiers", "Copy my files (Documents, Pictures, Desktop, Videos, Music) to an external disk: checked \
                          copy, nothing deleted or overwritten, an interrupted copy resumes"),
@@ -2317,7 +2419,7 @@ const AIDES_EN: &[(&str, &str)] = &[
     ("changements", "What Vanguard changed: each fix run on this computer, its date and its result"),
     ("evenements", "The event log: alerts, evidence recorded before an action, actions, undos, alerts declared normal \
                     and version changes, linked together, with the state of its sealed chain. Read only"),
-    ("a-laisser", "Report to leave behind: a simple page for the person you just helped (grade, what is left to do, \
+    ("rapport-a-laisser", "Report to leave behind: a simple page for the person you just helped (grade, what is left to do, \
                    what is fine), put on their Desktop after consent and opened in the browser"),
     ("sauvegarde-auto", "Automatic backup: set up with the system's tool (Déjà Dup or rsync every day, Time Machine, \
                          File History) to an external disk, after your consent, exactly undoable"),
@@ -2338,12 +2440,17 @@ const AIDES_EN: &[(&str, &str)] = &[
                       the USB key is never touched"),
     ("ordinateurs", "My computers: those where the VANGUARD key ran a check, their grade and remaining problems (on the \
      key's VANGUARDLOG partition)"),
-    ("traces", "Collect the traces after an infection, before cleaning up: processes, connections, what starts by \
-                itself, accounts, logs of the last 7 days, recent files and the incident timeline, in a dated folder \
-                (README, SHA-256 fingerprints). Read-only; nothing goes to the Internet"),
     ("depanner", "Troubleshoot step by step: no Internet, Wi-Fi dropping, slow computer, no sound, printer, disk full; \
-                  after an infection, new computer, computer leaving (sale, gift)"),
-    ("plugin", "Plugins: programs of yours added to Vanguard without changing its code (tests, experimental tools), \
+                  after an infection, new computer, computer leaving (sale, gift), hacked account, collect the \
+                  evidence (“evidence [folder]”: processes, connections, startup, accounts, logs, recent files and \
+                  timeline, in a dated folder; read-only), a relative's computer"),
+    ("rapport", "Detailed report in the browser: this session's check if there is one, otherwise a full check first"),
+    ("annuler", "Put everything back: undoes what Vanguard changed (Optimize settings, check-up fixes, gaming, blocks, \
+                 public Wi-Fi mode), the previous value put back, after your consent. Like “optimize undo”"),
+    ("protection", "Protection: the state of each switch (real-time, monitoring, maintenance, blocking, watcher, \
+                    dangerous sites, public Wi-Fi, shortcut); “on” or “off” [--for 1h|4h] acts on real-time \
+                    protection, like “settings real-time”"),
+    ("plugins", "Plugins: programs of yours added to Vanguard without changing its code (tests, experimental tools), \
                 each in a folder with a plugin.toml. “add <folder>” copies and approves it (SHA-256 fingerprints), \
                 “approve <name>” after a change, “list”, “remove <name>”, or “<name> [arguments]” to run it \
                 (“--report”: its findings in the HTML report); no argument: the list to choose from. Never as \
@@ -2355,9 +2462,6 @@ const AIDES_EN: &[(&str, &str)] = &[
     ("optimiser", "Optimize: the recommended settings, the privacy, performance (except macOS) and comfort ones, each \
                    shown, accepted, then exactly undoable; “undo” puts everything back as it was. No argument: the \
                    Optimize menu"),
-    ("proche", "A relative's computer: three questions (who uses it, why you were asked to look at it, their \
-                network), the check-up, a summary in plain words, the fixes accepted one by one, then the page to \
-                leave with its tips"),
 ];
 
 /// Aide anglaise des options : (commande, option, aide).
@@ -2369,14 +2473,14 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
     ("logiciels", "liste", "Show each program offered and its state, without installing anything"),
     ("logiciels", "recommandes", "Install the starter pack (browser, passwords, video, office, archives), after your \
                                   consent"),
-    ("complet", "html", "Also open the HTML report in the browser"),
-    ("tableau", "sans_ouvrir", "Write the page without opening it (no graphical display, over SSH)"),
-    ("complet", "texte", "Show the report as plain text (Markdown) in the terminal: no browser or graphical display \
+    ("bilan", "html", "Also open the HTML report in the browser"),
+    ("tableau-de-bord", "sans_ouvrir", "Write the page without opening it (no graphical display, over SSH)"),
+    ("bilan", "texte", "Show the report as plain text (Markdown) in the terminal: no browser or graphical display \
                           needed"),
-    ("reseau", "cible", "IP, CIDR network (10.0.0.0/24) or range (10.0.0.1-50). Default: your local network"),
-    ("reseau", "ports", "“courants”/“common” (default), “tous”/“all” (1-65535) or a list “22,80,8000-8100”"),
-    ("reseau", "timeout", "Connection timeout per port, in milliseconds"),
-    ("reseau", "parallele", "Number of simultaneous connections"),
+    ("appareils", "cible", "IP, CIDR network (10.0.0.0/24) or range (10.0.0.1-50). Default: your local network"),
+    ("appareils", "ports", "“courants”/“common” (default), “tous”/“all” (1-65535) or a list “22,80,8000-8100”"),
+    ("appareils", "timeout", "Connection timeout per port, in milliseconds"),
+    ("appareils", "parallele", "Number of simultaneous connections"),
     ("audit-reseau", "html", "Also open the HTML report in the browser"),
     ("audit-reseau", "invite", "You are on the guest network: Vanguard checks that it is really separated from the main \
                                 one"),
@@ -2389,7 +2493,7 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
     ("yara", "dossier", "A USB drive, external disk or folder to scan entirely"),
     ("integrite", "accepter", "Take the current state as the new reference (after a system update)"),
     ("integrite", "temps_reel", "Watch the critical files live until Ctrl-C"),
-    ("sauvegarder", "fichier", "File to write (default: vanguard-sauvegarde-YYYY-MM-DD.json in the home or Documents \
+    ("exporter", "fichier", "File to write (default: vanguard-sauvegarde-YYYY-MM-DD.json in the home or Documents \
                                 folder)"),
     ("nommer", "appareil", "IP (on the current network) or MAC address of the device"),
     ("nommer", "surnom", "The nickname; empty to remove it"),
@@ -2401,7 +2505,7 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
                                        SHA256SUMS or .sha256 next to it"),
     ("guide", "quoi", "A system (omarchy, arch, fedora, debian, windows, macos, all; linux: the common programs; tldr), \
                        a program (systemctl, winget, tar…) or words to look for"),
-    ("fiche", "json", "The specs as JSON, for a script (without the serial numbers)"),
+    ("fiche-ordinateur", "json", "The specs as JSON, for a script (without the serial numbers)"),
     ("evenements", "json", "The log as JSON, for a script"),
     ("logiciels-espions", "json", "The result as JSON, for a script"),
     ("logiciels-perimes", "json", "The result as JSON, for a script"),
@@ -2422,9 +2526,10 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
     ("verifier-copie", "dossier", "The disk or the folder of the copy (default: chosen among the plugged-in disks)"),
     ("verifier-cle", "dossier", "A folder of the drive or disk (default: chosen among the plugged-in disks)"),
     ("sauvegarde-auto", "annuler", "Remove the automatic backup set up by Vanguard (the backed-up files stay)"),
-    ("traces", "dossier", "The folder where traces-YYYYMMDD-HHMMSS is created (default: the VANGUARD key if Vanguard \
-                           runs from it, otherwise this computer's Vanguard folder)"),
-    ("plugin", "quoi", "add <folder>, approve <name>, list, remove <name>, or <name> [--report] [arguments]"),
+    ("depanner", "sujet", "The subject: internet, wifi, slow, sound, printer, disk, infection, new, leaving, account, \
+                           evidence [folder], relative (or words that describe it)"),
+    ("protection", "quoi", "on or off, then --for 1h or 4h for a cut that ends by itself"),
+    ("plugins", "quoi", "add <folder>, approve <name>, list, remove <name>, or <name> [--report] [arguments]"),
     ("labo", "quoi", "open, list, or <file> [arguments]"),
     ("extensions", "sans_restrictions", "on: the extensions' restrictions turned off (no consent, fingerprint or scan, \
                                          with all your rights); off: back on. The extensions folder must stay yours \
@@ -2457,6 +2562,165 @@ fn ligne_de_commande() -> clap::Command {
         c = c.mut_subcommand(commande, |s| s.mut_arg(option, |a| a.help(aide)));
     }
     c
+}
+
+/// Les commandes de la ligne de commande qui ne sont l'outil d'aucune ligne du menu, et la rubrique de `--help` où
+/// elles vont.
+const RUBRIQUE_DES_AUTRES: &[(&str, Groupe)] = &[
+    ("protection", Groupe::Reagir),
+    ("importer", Groupe::Vanguard),
+    ("plugins", Groupe::Vanguard),
+    ("labo", Groupe::Vanguard),
+];
+
+/// Le nom d'une commande dans la langue de l'interface : son alias anglais visible en anglais, s'il en a un.
+fn nom_de_commande(commande: &clap::Command) -> String {
+    if langue::anglais()
+        && let Some(alias) = commande.get_visible_aliases().next()
+    {
+        return alias.to_string();
+    }
+    commande.get_name().to_string()
+}
+
+/// Les commandes de `--help`, rangées comme le menu : (rubrique, noms dans l'ordre des lignes), puis celles qui ne
+/// sont dans aucune rubrique (aucune, d'après le test `l_aide_cite_chaque_commande`).
+fn rubriques_de_l_aide() -> Vec<(String, Vec<String>)> {
+    let clap = Args::command();
+    let visibles: Vec<&clap::Command> = clap
+        .get_subcommands()
+        .filter(|c| !c.is_hide_set() && c.get_name() != "help")
+        .collect();
+    let nom = |commande: &str| {
+        visibles
+            .iter()
+            .find(|c| c.get_name() == commande)
+            .map(|c| nom_de_commande(c))
+    };
+    let mut vus: Vec<&str> = Vec::new();
+    let mut ajouter = |liste: &mut Vec<String>, commande: &'static str| {
+        if commande.is_empty() || vus.contains(&commande) {
+            return;
+        }
+        if let Some(n) = nom(commande) {
+            vus.push(commande);
+            liste.push(n);
+        }
+    };
+    let mut rubriques = Vec::new();
+    let mut premiere = Vec::new();
+    for a in [Action::Complet, Action::Corriger, Action::Rapport] {
+        ajouter(&mut premiere, a.outil().commande);
+    }
+    rubriques.push((tr!("Bilan de sécurité", "Security check").to_string(), premiere));
+    for (i, g) in GROUPES.iter().enumerate() {
+        let mut liste = Vec::new();
+        // Les raccourcis d'incident (8.3 à 8.5) mènent à « depanner » : sa rubrique est celle de Dépanner.
+        let raccourcis = [Action::DepannerInfection, Action::DepannerCompte, Action::Traces];
+        for a in g.actions().into_iter().filter(|a| !raccourcis.contains(a)) {
+            ajouter(&mut liste, a.outil().commande);
+            for v in a.variantes() {
+                ajouter(&mut liste, v.outil().commande);
+            }
+        }
+        for (commande, _) in RUBRIQUE_DES_AUTRES.iter().filter(|(_, r)| r == g) {
+            ajouter(&mut liste, commande);
+        }
+        rubriques.push((format!("{} {}", i + 4, g.titre()), liste));
+    }
+    let reste: Vec<String> = visibles
+        .iter()
+        .filter(|c| !vus.contains(&c.get_name()))
+        .map(|c| nom_de_commande(c))
+        .collect();
+    if !reste.is_empty() {
+        rubriques.push((tr!("Aussi", "Also").to_string(), reste));
+    }
+    rubriques
+}
+
+/// `vanguard --help` : toutes les commandes en rubriques, aux noms et numéros du menu, générées depuis `OUTILS` et
+/// clap (jamais écrites à la main).
+fn aide_longue() -> String {
+    use std::fmt::Write;
+    let mut t = trf!(
+        "Vanguard {} : cyberdéfense portable des postes et des réseaux.\nSans argument : le menu.\n\nUsage : vanguard [commande] [options]\n\n",
+        "Vanguard {}: portable cyber defense for endpoints and networks.\nNo argument: the menu.\n\nUsage: vanguard [command] [options]\n\n",
+        env!("CARGO_PKG_VERSION")
+    );
+    let rubriques = rubriques_de_l_aide();
+    let colonne = rubriques.iter().map(|(r, _)| largeur_affichee(r)).max().unwrap_or(0) + 2;
+    for (rubrique, noms) in rubriques {
+        let lignes = envelopper(&noms.join(", "), LARGEUR - 2 - colonne);
+        for (i, ligne) in lignes.iter().enumerate() {
+            let tete = if i == 0 { rubrique.as_str() } else { "" };
+            let blanc = " ".repeat(colonne - largeur_affichee(tete));
+            let _ = writeln!(t, "  {tete}{blanc}{ligne}");
+        }
+    }
+    t += tr!(
+        "\nDétail d'une commande : vanguard <commande> --help.\nNoms changés depuis la 0.86 : dans l'historique des versions (CHANGELOG.md).\n",
+        "\nDetail of a command: vanguard <command> --help.\nNames changed since 0.86: in the version history (CHANGELOG.en.md).\n"
+    );
+    t
+}
+
+/// `vanguard -h` : l'essentiel, en une quinzaine de lignes.
+fn aide_courte() -> String {
+    use std::fmt::Write;
+    let mut t = trf!(
+        "Vanguard {} : cyberdéfense portable des postes et des réseaux.\nSans argument : le menu (↑ ↓, ou un mot pour chercher un outil).\n\n",
+        "Vanguard {}: portable cyber defense for endpoints and networks.\nNo argument: the menu (↑ ↓, or a word to find a tool).\n\n",
+        env!("CARGO_PKG_VERSION")
+    );
+    let clap = Args::command();
+    let nom = |commande: &str| {
+        clap.find_subcommand(commande)
+            .map_or_else(|| commande.to_string(), nom_de_commande)
+    };
+    let lignes: [(String, &str); 6] = [
+        (
+            nom("bilan"),
+            tr!("le bilan de sécurité complet", "the full security check"),
+        ),
+        (
+            nom("corriger"),
+            tr!(
+                "corriger les problèmes trouvés, un à un",
+                "fix the problems found, one by one"
+            ),
+        ),
+        (
+            nom("rapport"),
+            tr!(
+                "le rapport détaillé dans le navigateur",
+                "the detailed report in the browser"
+            ),
+        ),
+        (
+            nom("protection"),
+            tr!("l'état des protections ; les couper", "the protections: state, off, on"),
+        ),
+        (
+            format!("{} [{}]", nom("depanner"), tr!("sujet", "subject")),
+            tr!(
+                "dépanner pas à pas (internet, son, lent…)",
+                "troubleshooting (internet, sound, slow…)"
+            ),
+        ),
+        (
+            format!("{} [{}]", nom("guide"), tr!("quoi", "what")),
+            tr!("les commandes utiles, expliquées", "useful commands, explained"),
+        ),
+    ];
+    for (commande, quoi) in lignes {
+        let _ = writeln!(t, "  vanguard {commande:<24}{quoi}");
+    }
+    t += tr!(
+        "\nvanguard --help : toutes les commandes, rangées comme le menu.\n",
+        "\nvanguard --help: every command, sorted like the menu.\n"
+    );
+    t
 }
 
 /// `vanguard optimiser [quoi]` : l'outil du menu Optimiser qui porte ce nom, lancé comme depuis le menu (la même
@@ -2522,6 +2786,16 @@ async fn main() {
     #[cfg(unix)]
     crate::socle::proteger_dossier_local();
     protection::cles_connues::reconnaitre_la_cle_du_programme();
+    // « vanguard -h » ou « --help » seuls : les aides générées depuis le menu (`aide_courte`, `aide_longue`). L'aide
+    // d'une commande reste celle de clap (« vanguard bilan --help »), et « vanguard help » sa liste à plat, dans
+    // l'ordre des déclarations (outils/page-fonctions.py la lit). args_os : un argument qui n'est pas de l'UTF-8
+    // (un nom de fichier) ne doit pas arrêter le programme ici.
+    let premiers: Vec<std::ffi::OsString> = std::env::args_os().skip(1).take(2).collect();
+    match premiers.as_slice() {
+        [h] if h == "-h" => return print!("{}", aide_courte()),
+        [h] if h == "--help" => return print!("{}", aide_longue()),
+        _ => {}
+    }
     let args = Args::from_arg_matches(&ligne_de_commande().get_matches()).unwrap_or_else(|e| e.exit());
     match args.commande {
         None => menu().await,
@@ -2567,17 +2841,27 @@ async fn main() {
             Session::default().audit_reseau(json, html, invite).await;
         }
         Some(Commande::Antivirus { complet, dossier }) => protection::antivirus::analyser(portee(dossier, complet)),
-        Some(Commande::Surveillance { etat }) => reseau::surveillance::activer(etat == "on"),
+        Some(Commande::Surveillance { etat }) => match etat.as_str() {
+            "on" | "off" => reseau::surveillance::activer(etat == "on"),
+            _ => println!(
+                "  {} : {}",
+                tr!("Surveillance toutes les heures", "Hourly monitoring"),
+                precision_surveillance(
+                    reseau::surveillance::active(),
+                    protection::temps_reel::coupure().is_some()
+                )
+            ),
+        },
         Some(Commande::Tableau { sans_ouvrir }) => reseau::tableau::ouvrir(sans_ouvrir),
         Some(Commande::Veilleur {
             etat,
             sous_etat,
             servir,
-        }) => veilleur(etat.as_deref(), sous_etat.as_deref(), servir),
-        Some(Commande::SitesDangereux { etat }) => protection::sites_bloques::commande(etat.as_deref()),
+        }) => veilleur(sans_etat(etat.as_deref()), sans_etat(sous_etat.as_deref()), servir),
+        Some(Commande::SitesDangereux { etat }) => protection::sites_bloques::commande(sans_etat(etat.as_deref())),
         Some(Commande::DernieresFailles { jours }) => protection::kev::ecran(jours),
         Some(Commande::Surveiller) => reseau::surveillance::surveiller().await,
-        Some(Commande::Entretien { etat }) => match etat {
+        Some(Commande::Entretien { etat }) => match sans_etat(etat.as_deref()) {
             Some(e) => entretien::activer(e == "on"),
             None => entretien::maintenant(),
         },
@@ -2662,6 +2946,35 @@ async fn main() {
         Some(Commande::Conteneurs) => protection::conteneurs::analyser(),
         Some(Commande::Blocage { quoi }) => protection::blocage::commande(&quoi),
         Some(Commande::Parametres { quoi }) => parametres::commande(&quoi),
+        // Le rapport du dernier bilan s'il a moins d'une heure ; sinon un bilan complet d'abord.
+        Some(Commande::Rapport) => {
+            if let Some(chemin) = rapport::recent(std::time::Duration::from_secs(3600)) {
+                trp!("  Rapport : {}", "  Report: {}", chemin.display());
+                machine::ouvrir(&chemin.display().to_string());
+            } else {
+                let mut s = Session::default();
+                executer(&mut s, Action::Rapport).await;
+            }
+        }
+        Some(Commande::Annuler) => optimiser::tout_annuler(),
+        Some(Commande::Protection { quoi }) => match quoi.split_first() {
+            None => etat_de_la_protection(),
+            Some((valeur, reste)) => match interrupteur(valeur).as_deref() {
+                Ok("etat") => etat_de_la_protection(),
+                // oui, marche, on… : la valeur que « parametres temps-reel » connaît.
+                Ok(v) => {
+                    let mots: Vec<String> = ["temps-reel".to_string(), v.to_string()]
+                        .into_iter()
+                        .chain(reste.iter().cloned())
+                        .collect();
+                    parametres::commande(&mots);
+                }
+                Err(e) => {
+                    eprintln!("  ✖ {e}");
+                    std::process::exit(2);
+                }
+            },
+        },
         Some(Commande::Isoler { fichier }) => protection::isoler::isoler(&fichier),
         Some(Commande::Pieges { retirer }) => protection::pieges::commande(retirer),
         Some(Commande::Durcir) => optimiser::protection(),
@@ -2675,7 +2988,7 @@ async fn main() {
         Some(Commande::Objets) => reseau::objets::montrer(),
         Some(Commande::DnsRapide) => dns_rapide::mesurer_et_proposer(),
         Some(Commande::Optimiser { quoi }) => optimiser_en_ligne_de_commande(quoi.as_deref()).await,
-        Some(Commande::WifiPublic { etat }) => reseau::wifi_public::commande(etat.as_deref()),
+        Some(Commande::WifiPublic { etat }) => reseau::wifi_public::commande(sans_etat(etat.as_deref())),
         Some(Commande::Appris) => apprentissage::menu(),
         Some(Commande::Integrite { accepter, temps_reel }) => {
             if temps_reel {
@@ -2705,7 +3018,7 @@ async fn main() {
                 sauvegarde::menu();
             }
         }
-        Some(Commande::Raccourci { etat }) => raccourci::commande(etat.map(|e| e == "on")),
+        Some(Commande::Raccourci { etat }) => raccourci::commande(sans_etat(etat.as_deref()).map(|e| e == "on")),
         Some(Commande::Ordinateurs) => ordinateurs::menu(),
         Some(Commande::SeMettreAJour) => mise_a_jour::commande(),
         Some(Commande::Desinstaller { liste }) => desinstaller::commande(liste),
@@ -2726,8 +3039,16 @@ async fn main() {
             std::process::exit(code);
         }
         Some(Commande::Depanner { sujet }) if sujet.is_empty() => depanner_avec_ses_outils(),
+        // « depanner traces [dossier] » : la collecte, comme l'ancienne commande « traces », avec son code de sortie
+        // (1 si elle a échoué) pour un script ou une tâche ; le menu passe par le parcours 11.11 et son conseil.
+        Some(Commande::Depanner { sujet })
+            if (1..=2).contains(&sujet.len()) && ["traces", "evidence"].contains(&sujet[0].as_str()) =>
+        {
+            if !traces::commande(sujet.get(1).map(std::path::Path::new)) {
+                std::process::exit(1);
+            }
+        }
         Some(Commande::Depanner { sujet }) => depanner::executer(&sujet.join(" ")),
-        Some(Commande::Proche) => depanner::executer("proche"),
         Some(Commande::Plugin { quoi }) => {
             let code = plugins::commande(&quoi);
             if code != 0 {
@@ -2749,11 +3070,6 @@ async fn main() {
                 }
             }
         },
-        Some(Commande::Traces { dossier }) => {
-            if !traces::commande(dossier.as_deref()) {
-                std::process::exit(1);
-            }
-        }
     }
 }
 
@@ -3037,9 +3353,65 @@ mod tests_menu {
         assert!(OUTILS.iter().any(|o| o.action == Action::Parametres && o.lettre == "s"));
     }
 
+    /// `--help` range chaque commande visible dans une rubrique du menu (aucune dans « Aussi »), et ses deux aides
+    /// tiennent dans la largeur ; `-h` reste court.
+    #[test]
+    fn l_aide_cite_chaque_commande() {
+        let rubriques = rubriques_de_l_aide();
+        assert_eq!(rubriques.len(), 11, "bilan puis les dix groupes");
+        let noms: Vec<&String> = rubriques.iter().flat_map(|(_, n)| n).collect();
+        for (nom, _) in sous_commandes() {
+            assert_eq!(
+                noms.iter().filter(|n| ***n == nom).count(),
+                1,
+                "vanguard {nom} dans --help"
+            );
+        }
+        for aide in [aide_longue(), aide_courte()] {
+            for ligne in aide.lines() {
+                assert!(largeur_affichee(ligne) <= LARGEUR, "{ligne}");
+            }
+        }
+        assert!(aide_courte().lines().count() <= 15);
+    }
+
+    /// Le tableau « Toutes les commandes » du README suit les rubriques de `--help`, dans le même ordre.
+    #[test]
+    fn le_readme_suit_les_rubriques_de_l_aide() {
+        let readme = lire("README.md");
+        let tableau: Vec<String> = readme
+            .lines()
+            .filter_map(|l| l.strip_prefix("| `vanguard "))
+            .filter_map(|l| l.split([' ', '`']).next().map(str::to_string))
+            .collect();
+        let aide: Vec<String> = rubriques_de_l_aide().into_iter().flat_map(|(_, n)| n).collect();
+        assert_eq!(tableau, aide);
+    }
+
+    /// Un interrupteur se dit dans l'une ou l'autre langue ; « etat » ne change jamais rien.
+    #[test]
+    fn interrupteurs_dans_les_deux_langues() {
+        for (mot, attendu) in [
+            ("on", "on"),
+            ("oui", "on"),
+            ("Marche", "on"),
+            ("off", "off"),
+            ("non", "off"),
+            ("arrêt", "off"),
+            ("etat", "etat"),
+            ("status", "etat"),
+        ] {
+            assert_eq!(interrupteur(mot).as_deref(), Ok(attendu), "{mot}");
+        }
+        assert!(interrupteur("peut-etre").is_err());
+        assert_eq!(interrupteur_veilleur("ransomware").as_deref(), Ok("rancongiciel"));
+        assert_eq!(interrupteur_wifi_public("portal").as_deref(), Ok("portail"));
+        assert_eq!(sans_etat(Some("etat")), None);
+        assert_eq!(sans_etat(Some("on")), Some("on"));
+    }
+
     /// Les outils du menu qui n'ont pas de sous-commande, et pourquoi.
     const MENU_SEULEMENT: &[(Action, &str)] = &[
-        (Action::Rapport, "vanguard complet --html : le bilan puis son rapport"),
         (
             Action::ProtegerDonnees,
             "la phrase se tape et se confirme à l'écran, sur l'ordinateur du propriétaire",
@@ -3058,12 +3430,15 @@ mod tests_menu {
     /// Les sous-commandes sans outil du menu, et pourquoi.
     const LIGNE_DE_COMMANDE_SEULEMENT: &[(&str, &str)] = &[
         (
-            "restaurer",
-            "le menu Vanguard › Exporter ou importer les réglages propose aussi la restauration",
+            "importer",
+            "le menu Vanguard › Exporter ou importer les réglages propose aussi l'import",
         ),
-        ("plugin", "le menu Extensions les liste et les lance"),
+        ("plugins", "le menu Extensions les liste et les lance"),
         ("labo", "le menu Extensions les liste et les lance"),
-        ("proche", "dans le menu, un parcours de Dépanner pas à pas"),
+        (
+            "protection",
+            "l'état de tous les interrupteurs d'un coup ; chacun a aussi sa ligne dans son groupe",
+        ),
     ];
 
     /// Les sous-commandes visibles : (nom, alias visibles).

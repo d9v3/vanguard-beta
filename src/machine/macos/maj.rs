@@ -187,7 +187,7 @@ pub fn homebrew_a_jour() -> Vec<Constat> {
     constats
 }
 
-/// `vanguard maj` : système, Homebrew, App Store. `seulement` limite aux catégories qu'on vient d'installer.
+/// `vanguard mises-a-jour` : système, Homebrew, App Store. `seulement` limite aux catégories qu'on vient d'installer.
 pub fn mises_a_jour_completes(seulement: Option<&[&str]>) -> Vec<Constat> {
     let voulu = |categories: &[&str]| seulement.is_none_or(|s| categories.iter().any(|c| s.contains(c)));
     std::thread::scope(|portee| {

@@ -639,8 +639,8 @@ pub fn nommer(qui: &str, surnom: Option<&str>) -> Result<String, String> {
     }
     let Some(decrit) = trouve else {
         return Err(trf!(
-            "aucun appareil « {qui} » dans la base : lancez d'abord un scan du réseau (vanguard reseau)",
-            "no device “{qui}” in the database: first run a network scan (vanguard network)"
+            "aucun appareil « {qui} » dans la base : lancez d'abord un scan du réseau (vanguard appareils)",
+            "no device “{qui}” in the database: first run a network scan (vanguard devices)"
         ));
     };
     base.enregistrer(&chemins);
@@ -1184,8 +1184,8 @@ fn afficher(r: &Rapport) {
     afficher_aligne(
         "  ",
         tr!(
-            "Astuce : menu 5.3 pour nommer un appareil (vanguard nommer <ip> <surnom>), 5.1.2 pour scanner tous ses ports (vanguard reseau <ip> -p tous).",
-            "Tip: menu 5.3 to name a device (vanguard name <ip> <nickname>), 5.1.2 to scan all its ports (vanguard network <ip> -p all)."
+            "Astuce : menu 5.3 pour nommer un appareil (vanguard nommer <ip> <surnom>), 5.1.2 pour scanner tous ses ports (vanguard appareils <ip> -p tous).",
+            "Tip: menu 5.3 to name a device (vanguard name <ip> <nickname>), 5.1.2 to scan all its ports (vanguard devices <ip> -p all)."
         ),
         2,
         DISCRET,
@@ -1263,7 +1263,7 @@ pub async fn executer(o: Options) -> Result<Rapport, String> {
         );
         if ips.iter().all(std::net::Ipv4Addr::is_loopback) {
             tre!(
-                "{GRIS}Note : 127.0.0.1 montre aussi les services réservés à cet ordinateur. Pour ce qui est vraiment exposé au réseau : vanguard machine.{RESET}",
+                "{GRIS}Note : 127.0.0.1 montre aussi les services réservés à cet ordinateur. Pour ce qui est vraiment exposé au réseau : vanguard audit.{RESET}",
                 "{GRIS}Note: 127.0.0.1 also shows services reserved for this computer. For what is really exposed to the network: vanguard audit.{RESET}"
             );
         }

@@ -203,7 +203,7 @@ fn bureau() -> Option<PathBuf> {
     }
 }
 
-/// Menu Cette machine › Rapport à laisser (`vanguard a-laisser`) : d'après le dernier bilan de la session, ou un neuf.
+/// Menu Cette machine › Rapport à laisser (`vanguard rapport-a-laisser`) : d'après le dernier bilan de la session, ou un neuf.
 pub fn laisser(audit: &Audit) {
     laisser_avec(audit, &[]);
 }

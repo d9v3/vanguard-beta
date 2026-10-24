@@ -48,8 +48,8 @@ fn lire() -> Result<Vec<String>, String> {
     };
     let en_root = || {
         crate::tr!(
-            "lisible seulement en root : sudo vanguard sortantes",
-            "readable only as root: sudo vanguard outbound"
+            "lisible seulement en root : sudo vanguard connexions-sortantes",
+            "readable only as root: sudo vanguard outbound-connections"
         )
         .to_string()
     };

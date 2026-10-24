@@ -579,8 +579,8 @@ fn corps(b: &Bilan) {
     afficher_aligne(
         "  ",
         tr!(
-            "Pour mettre à jour : ouvrir le logiciel (Aide › À propos pour un navigateur), ou Cet ordinateur › Mises à jour du système (vanguard maj).",
-            "To update: open the program (Help › About for a browser), or This computer › System updates (vanguard update)."
+            "Pour mettre à jour : ouvrir le logiciel (Aide › À propos pour un navigateur), ou Cet ordinateur › Mises à jour du système (vanguard mises-a-jour).",
+            "To update: open the program (Help › About for a browser), or This computer › System updates (vanguard updates)."
         ),
         2,
         GRIS,

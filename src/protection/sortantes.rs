@@ -1544,7 +1544,7 @@ fn serveurs(connexions: &[(&Connexion, Option<&String>)]) -> String {
     resume(&liste, 6, ", ")
 }
 
-/// Menu Antivirus et protection › Qui parle à Internet ?, ou `vanguard sortantes`.
+/// Menu Antivirus et protection › Qui parle à Internet ?, ou `vanguard connexions-sortantes`.
 pub fn afficher() {
     let _ = afficher_et_juger();
 }
@@ -1834,7 +1834,10 @@ fn afficher_connexions(botnets: &Botnets) -> BTreeSet<String> {
                 "run Vanguard as administrator (right-click, “Run as administrator”)"
             )
         } else {
-            tr!("sudo vanguard sortantes", "sudo vanguard outbound")
+            tr!(
+                "sudo vanguard connexions-sortantes",
+                "sudo vanguard outbound-connections"
+            )
         };
         trp!(
             "  {GRIS}Pour tout voir : {comment}.{RESET}",

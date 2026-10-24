@@ -101,8 +101,8 @@ lancer version 10 '' --version
 lancer aide 10 '' --help
 
 section "Audit"
-lancer machine 300 '' machine
-lancer machine-json 300 '' machine --json
+lancer machine 300 '' audit
+lancer machine-json 300 '' audit --json
 verifier "audit JSON lisible" python3 -c "import json; json.load(open('$RES/machine-json.txt'))"
 verifier "aucune vérification impossible" python3 -c "
 import json,sys; a=json.load(open('$RES/machine-json.txt'))
@@ -120,11 +120,11 @@ lancer integrite-verification 120 '' integrite
 verifier "intégrité : 2e passage identique" grep -qi 'identique' "$RES/integrite-verification.txt"
 
 section "Réseau de la maison, ports de ce PC, connexion"
-lancer reseau 300 '' reseau
-lancer reseau-json 300 '' reseau --json
+lancer reseau 300 '' appareils
+lancer reseau-json 300 '' appareils --json
 verifier "scan JSON lisible" python3 -c "import json; json.load(open('$RES/reseau-json.txt'))"
-lancer local 300 '' reseau 127.0.0.1
-lancer connexion 180 '' connexion
+lancer local 300 '' appareils 127.0.0.1
+lancer connexion 180 '' test-connexion
 BOX=$(python3 -c "
 import json; r=json.load(open('$RES/reseau-json.txt'))
 print(next((h['ip'] for h in r['hotes'] if h.get('role')=='passerelle'), ''))" 2>/dev/null)
@@ -135,7 +135,7 @@ if [ -n "$BOX" ]; then
 fi
 
 section "Bilan complet en texte"
-lancer complet 600 '' complet --texte
+lancer complet 600 '' bilan --texte
 
 section "Menu : chaque groupe ouvert puis refermé, puis q ; entrée fermée"
 lancer menu 60 '4\n\n5\n\n6\n\n7\n\n8\n\n9\n\n12\n\n13\n\nq\n'
@@ -154,19 +154,19 @@ verifier "mot de passe : jamais affiché" bash -c "! grep -q 'Mot de passe : pas
 
 section "Réparer (liste), mises à jour (sans rien installer), logiciels, gaming, courriel refusé"
 lancer reparer 60 '\n' reparer
-lancer maj 600 'n\nn\nn\nn\nn\n' maj
+lancer maj 600 'n\nn\nn\nn\nn\n' mises-a-jour
 lancer logiciels-liste 120 '' logiciels --liste
 verifier "logiciels : au moins 20 proposés" python3 -c "import re, sys; t = open('$RES/logiciels-liste.txt', encoding='utf-8').read(); sys.exit(len(re.findall(r'(?m)^ +(?:\x1b\[[0-9;]*m)?[✔·]', t)) < 20)"
 lancer logiciels 60 '\n' logiciels
 lancer nettoyer-liste 120 '' nettoyer --liste
 verifier "nettoyer : place à gagner mesurée, rien effacé" grep -qiE 'rien n.a été effacé|nothing was deleted' "$RES/nettoyer-liste.txt"
 verifier "logiciels : menu affiché" grep -qE 'Pack de départ|Starter pack' "$RES/logiciels.txt"
-lancer gaming 60 '\n' gaming
-lancer courriel 60 'test@example.com\nn\n' courriel
+lancer gaming 60 '\n' jeux
+lancer courriel 60 'test@example.com\nn\n' fuite-courriel
 
 section "Données : sauvegarde puis restauration"
-lancer sauvegarder 60 '' sauvegarder "$RES/sauvegarde.json"
-lancer restaurer 60 '' restaurer "$RES/sauvegarde.json"
+lancer sauvegarder 60 '' exporter "$RES/sauvegarde.json"
+lancer restaurer 60 '' importer "$RES/sauvegarde.json"
 verifier "sauvegarde écrite" test -s "$RES/sauvegarde.json"
 
 section "Surveillance : minuterie systemd activée puis retirée"
@@ -207,7 +207,7 @@ lancer_maison pieges-pose 60 'o\n' pieges
 verifier "pièges : 4 posés (Documents, Images)" test "$(find "$MAISON" -name '!Vanguard*' | wc -l)" = 4
 LEURRE=$(find "$MAISON/Documents" -name '!Vanguard*.txt' | head -1)
 echo "modifié par l'essai" >>"$LEURRE"
-lancer_maison pieges-alerte 300 '' machine --json
+lancer_maison pieges-alerte 300 '' audit --json
 verifier "pièges : leurre modifié → alerte critique « Rançongiciels »" python3 -c "
 import json,sys; a=json.load(open('$RES/pieges-alerte.txt'))
 sys.exit(not any(c['categorie']=='Rançongiciels' and c['probleme']=='Critique' for c in a['constats']))"
@@ -257,7 +257,7 @@ unshare -rm bash -c "
   mkdir /run/media/$(id -un)/VANGUARD /run/media/$(id -un)/VANGUARDLOG
   mount --bind '$BAC/cle' /run/media/$(id -un)/VANGUARD && mount -o remount,bind,ro /run/media/$(id -un)/VANGUARD
   mount --bind '$BAC/log' /run/media/$(id -un)/VANGUARDLOG
-  cd / && /run/media/$(id -un)/VANGUARD/Linux/vanguard reseau 999.1.1.1
+  cd / && /run/media/$(id -un)/VANGUARD/Linux/vanguard appareils 999.1.1.1
   printf 'q\n' | /run/media/$(id -un)/VANGUARD/Linux/vanguard
 " >"$RES/cle.txt" 2>&1
 verifier "clé protégée : rien écrit dessus" bash -c "[ -z \"\$(ls -A '$BAC/cle/donnees')\" ]"

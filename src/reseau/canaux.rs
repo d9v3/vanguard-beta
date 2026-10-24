@@ -206,7 +206,7 @@ fn lire() -> Result<Lecture, &'static str> {
     }
 }
 
-/// Menu Réseau et Internet › Wi-Fi encombré, ou `vanguard canaux`.
+/// Menu Réseau et Internet › Wi-Fi encombré, ou `vanguard canaux-wifi`.
 pub fn analyser() {
     titre(tr!("Wi-Fi encombré ?", "Crowded Wi-Fi?"));
     let intro = tr!(

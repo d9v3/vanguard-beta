@@ -280,8 +280,8 @@ pub fn montrer() {
         afficher_aligne(
             "  ",
             tr!(
-                "Aucun scan gardé pour ce réseau : lancez d'abord « Scan du réseau » (menu 5.1.1, vanguard reseau), puis revenez ici.",
-                "No scan kept for this network: first run “Network scan” (menu 5.1.1, vanguard network), then come back here."
+                "Aucun scan gardé pour ce réseau : lancez d'abord « Scan du réseau » (menu 5.1.1, vanguard appareils), puis revenez ici.",
+                "No scan kept for this network: first run “Network scan” (menu 5.1.1, vanguard devices), then come back here."
             ),
             2,
             "",

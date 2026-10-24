@@ -1600,8 +1600,8 @@ fn accord_donnees(e: &Element, a: &Annulables, gardes: &[(PathBuf, String)]) -> 
     }
     if !avant
         && demander(tr!(
-            "\n  Faire d'abord une sauvegarde du carnet des appareils (vanguard sauvegarder) ? [O/n] : ",
-            "\n  First back up the device record (vanguard backup)? [Y/n]: "
+            "\n  Faire d'abord une sauvegarde du carnet des appareils (vanguard exporter) ? [O/n] : ",
+            "\n  First back up the device record (vanguard export)? [Y/n]: "
         ))
         .chars()
         .next()

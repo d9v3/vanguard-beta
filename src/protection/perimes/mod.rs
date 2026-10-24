@@ -77,8 +77,8 @@ pub fn afficher() {
         crate::ui::afficher_aligne(
             "  ",
             tr!(
-                "Ce contrôle vise Windows et macOS. Sous Linux, le gestionnaire de paquets tient les versions : vanguard maj, et le bilan (Failles connues) avec le catalogue de la CISA.",
-                "This check is for Windows and macOS. On Linux, the package manager keeps the versions: vanguard update, and the check-up (Known flaws) with CISA's catalog."
+                "Ce contrôle vise Windows et macOS. Sous Linux, le gestionnaire de paquets tient les versions : vanguard mises-a-jour, et le bilan (Failles connues) avec le catalogue de la CISA.",
+                "This check is for Windows and macOS. On Linux, the package manager keeps the versions: vanguard updates, and the check-up (Known flaws) with CISA's catalog."
             ),
             2,
             "",
