@@ -20,6 +20,7 @@ pub(crate) mod dbus;
 pub(crate) mod dconf;
 pub(crate) mod dissimulation;
 mod docker;
+mod dpkg_verifier;
 mod durcissement;
 pub(crate) mod ecoute;
 pub(crate) mod gvdb;
@@ -269,6 +270,12 @@ impl Paquets {
                     })
                     .collect()
             }
+            // Les empreintes de la base de dpkg (md5sums et conffiles), lues par Vanguard ; dpkg --verify si elle ne
+            // se lit pas ici.
+            Paquets::Apt if let Some(e) = dpkg_verifier::empreintes(Path::new(dpkg_verifier::BASE), paquet) => fichiers
+                .iter()
+                .map(|f| dpkg_verifier::modifie(&e, f, chemin_hors_usr(f).as_deref()))
+                .collect(),
             Paquets::Apt | Paquets::Dnf | Paquets::Zypper => {
                 // dpkg --verify et rpm -V répondent 1 quand ils trouvent une différence : c'est une réponse, pas une erreur.
                 let (outil, option) = if self == Paquets::Apt {
