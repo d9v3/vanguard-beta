@@ -921,24 +921,39 @@ menu() { # point
   secours_demandee "le menu de Ventoy n'est pas écrit." || return 1
   mkdir -p "$point/ventoy"
   find "$point/ISO" -maxdepth 1 -type f -iname '*.iso' -printf '%f\n' 2>/dev/null | sort | python3 -I -c '
-import fnmatch, json, sys
+import fnmatch, json, re, sys
+# (motifs, nom au menu, version tirée du nom du fichier, conseil d’une ligne montré en bas de l’écran par Ventoy).
 noms = [
-    (["Win11*.iso", "Windows11*.iso"], "Windows 11 (secours, si le PC ne propose pas WIN11)"),
-    (["archlinux-*.iso"], "Arch Linux : installer par Internet"),
-    (["debian-*-netinst.iso"], "Debian : installer par Internet"),
-    (["Fedora-Everything-netinst-*.iso"], "Fedora : installer par Internet"),
-    (["systemrescue-*.iso"], "SystemRescue : réparer, sauver des fichiers, tester la mémoire"),
-    (["omarchy-*.iso"], "Omarchy : installer (sans Internet)"),
-    (["kali-linux-*-live-everything-*.iso"], "Kali Linux : outils de sécurité (live complète)"),
+    (["Win11*.iso", "Windows11*.iso"], "Windows 11 (build {v}) : installer ou réparer Windows", r"_(\d{5})_",
+     "Installer Windows 11, ou « Réparer l’ordinateur » (démarrage, restauration). Secours si WIN11 manque."),
+    (["omarchy-*.iso"], "Omarchy {v} : installer (sans Internet)", r"omarchy-([\d.]+)\.iso",
+     "Installe Omarchy (Arch Linux + Hyprland). Efface le disque choisi. Tout est sur la clé."),
+    (["archlinux-*.iso"], "Arch Linux {v} : installer par Internet", r"archlinux-(\d{4}\.\d{2})",
+     "Installateur minimal d’Arch Linux, en ligne de commande. Internet nécessaire."),
+    (["debian-*-netinst.iso"], "Debian {v} : installer par Internet", r"debian-([\d.]+)-",
+     "Installateur Debian (netinst) : télécharge le reste pendant l’installation."),
+    (["Fedora-Everything-netinst-*.iso"], "Fedora {v} : installer par Internet", r"netinst-x86_64-(\d+)-",
+     "Installateur Fedora (netinst) : télécharge le reste pendant l’installation."),
+    (["systemrescue-*.iso"], "SystemRescue {v} : réparer, sauver des fichiers, tester la mémoire",
+     r"systemrescue-([\d.]+)-",
+     "Secours en mémoire : récupérer des fichiers, réparer disques et démarrage. Rien n’est installé."),
+    (["kali-linux-*-live-everything-*.iso"], "Kali Linux {v} : outils de sécurité (live, rien d’installé)",
+     r"kali-linux-([\d.]+)-", "Démarre Kali sans rien installer : outils d’audit de sécurité, pour votre réseau."),
 ]
-alias = []
+alias, conseils = [], []
 for image in sys.stdin.read().split("\n"):
-    for motifs, nom in noms:
+    for motifs, nom, version, conseil in noms:
         if image and any(fnmatch.fnmatch(image.lower(), m.lower()) for m in motifs):
+            v = re.search(version, image)
+            # Sans version lisible dans le nom du fichier, le nom reste sans numéro.
+            nom = nom.replace("{v}", v.group(1)) if v else nom.replace(" (build {v})", "").replace(" {v}", "")
             alias.append({"image": "/ISO/" + image, "alias": nom})
+            conseils.append({"image": "/ISO/" + image, "tip": conseil})
             break
 print(json.dumps({"control": [{"VTOY_DEFAULT_SEARCH_ROOT": "/ISO"}, {"VTOY_MENU_LANGUAGE": "fr_FR"}],
-                  "menu_alias": alias}, ensure_ascii=False, indent=2))
+                  "menu_alias": alias,
+                  "menu_tip": {"left": "5%", "top": "85%", "color": "#eee3db", "tips": conseils}},
+                 ensure_ascii=False, indent=2))
 ' >"$point/ventoy/ventoy.json.part"
   if cmp -s "$point/ventoy/ventoy.json.part" "$point/ventoy/ventoy.json"; then
     rm -f "$point/ventoy/ventoy.json.part"
