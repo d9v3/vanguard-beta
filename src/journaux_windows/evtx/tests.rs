@@ -693,6 +693,28 @@ fn un_crc_faux_fait_relire_le_morceau_sans_rien_croire() {
     assert_eq!(lu.bilan.morceaux[0].etat, EtatMorceau::NonVerifie);
     assert_eq!(lu.bilan.morceaux[0].annonce, None);
     assert!(lu.enregistrements.iter().all(|e| e.verifie == (e.numero >= 4)));
+    // Le même morceau au CRC faux, le BinXml de son premier enregistrement abîmé : les deux autres rendus non
+    // vérifiés, le premier compté illisible avec son numéro (il existe : pas un trou), aucun passage abîmé à couvrir.
+    let mut f = fichier(&[morceau_type(1)]);
+    let premier = (EN_TETE + EN_TETE_MORCEAU..EN_TETE + MORCEAU)
+        .find(|&i| f[i..i + 4] == *b"**\0\0")
+        .unwrap();
+    f[premier + 24] = 0xEE;
+    let lu = lire_type(&f);
+    let b = &lu.bilan;
+    assert_eq!(
+        (
+            b.morceaux_non_verifies,
+            b.enregistrements_lus,
+            b.enregistrements_illisibles
+        ),
+        (1, 2, 1),
+        "{b:?}"
+    );
+    assert_eq!(b.enregistrements_non_verifies, 2);
+    assert_eq!(b.numeros_non_rendus, [(1, 0)]);
+    assert_eq!(b.morceaux[0].non_rendus, 0);
+    assert!(lu.enregistrements.iter().all(|e| !e.verifie));
     // Une signature inconnue reste écartée.
     let mut f = fichier(&[morceau_type(1), morceau_type(4)]);
     f[EN_TETE] = b'X';
@@ -1141,9 +1163,16 @@ proptest::proptest! {
         let bornes = Bornes { noeuds: 64, travail: 2000, ..Bornes::default() };
         if let Ok(lu) = lire_octets(&f, &bornes) {
             verifier_bornes(&lu, &bornes);
-            // Sans CRC recalculés, un coup dans le morceau l'écarte tout entier, et c'est compté.
+            // Sans CRC recalculés, un coup dans le morceau le fait écarter (signature changée) ou relire sans rien
+            // croire : ses événements sont alors tous non vérifiés, et la lecture ne se dit jamais complète.
             if !recalculer && lu.enregistrements.len() < 3 {
-                proptest::prop_assert!(lu.bilan.morceaux_illisibles == 1, "{:?}", lu.bilan);
+                let b = &lu.bilan;
+                proptest::prop_assert!(b.morceaux_illisibles + b.morceaux_non_verifies == 1, "{:?}", b);
+                if b.morceaux_non_verifies == 1 {
+                    proptest::prop_assert!(lu.enregistrements.iter().all(|e| !e.verifie), "{:?}", b);
+                    proptest::prop_assert_eq!(b.enregistrements_non_verifies, lu.enregistrements.len() as u64);
+                    proptest::prop_assert!(!b.complet(), "{:?}", b);
+                }
             }
         }
     }
