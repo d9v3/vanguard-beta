@@ -914,7 +914,7 @@ fn allumer() {
             afficher_aligne(
                 "\n  ✖ ",
                 &trf!(
-                    "L'état du mode a été {raison} : éteins-le d'abord (« vanguard wifi-public off », extinction sûre).",
+                    "L'état du mode a été {raison} : éteignez-le d'abord (« vanguard wifi-public off », extinction sûre).",
                     "The mode's state was {raison}: turn it off first (“vanguard public-wifi off”, safe shutdown)."
                 ),
                 4,
@@ -942,7 +942,7 @@ fn allumer() {
         afficher_aligne(
             "\n  ✖ ",
             &trf!(
-                "Le mode est encore allumé pour « {} » : éteins-le d'abord (« vanguard wifi-public off »).",
+                "Le mode est encore allumé pour « {} » : éteignez-le d'abord (« vanguard wifi-public off »).",
                 "The mode is still on for “{}”: turn it off first (“vanguard public-wifi off”).",
                 affichable(&a.reseau.nom),
             ),
@@ -1099,7 +1099,7 @@ fn allumer() {
         afficher_aligne(
             "\n  ✖ ",
             tr!(
-                "Le mode reste à moitié : rallume-le (« vanguard wifi-public on ») ou éteins-le.",
+                "Le mode reste à moitié : rallumez-le (« vanguard wifi-public on ») ou éteignez-le.",
                 "The mode stays half on: turn it on again (“vanguard public-wifi on”) or turn it off."
             ),
             4,
@@ -1359,7 +1359,7 @@ fn extinction_sure(raison: &str) {
     afficher_aligne(
         "\n  ",
         tr!(
-            "Restent tels quels, plus sûrs : la catégorie Public, le pare-feu, NetBIOS coupé, le DNS protecteur, les réglages du profil Wi-Fi (mDNS, LLMNR, DNS chiffré) et les services d'annonce et de partage masqués jusqu'au redémarrage (« systemctl unmask --runtime <unité> » pour les rendre avant). À remettre à la main si tu le veux, dans les réglages réseau du système.",
+            "Restent tels quels, plus sûrs : la catégorie Public, le pare-feu, NetBIOS coupé, le DNS protecteur, les réglages du profil Wi-Fi (mDNS, LLMNR, DNS chiffré) et les services d'annonce et de partage masqués jusqu'au redémarrage (« systemctl unmask --runtime <unité> » pour les rendre avant). À remettre à la main si vous le voulez, dans les réglages réseau du système.",
             "Left as they are, safer: the Public category, the firewall, NetBIOS off, the protective DNS, the Wi-Fi profile settings (mDNS, LLMNR, encrypted DNS) and the announcement and sharing services masked until restart (“systemctl unmask --runtime <unit>” to give them back sooner). Put them back by hand if you want, in the system's network settings."
         ),
         2,
@@ -1407,7 +1407,7 @@ fn portail_revenu() {
         afficher_aligne(
             "  ",
             tr!(
-                "Le DNS chiffré empêche la page de connexion de paraître : il passe en « opportuniste » le temps de te connecter, jusqu'à Entrée (10 minutes au plus), puis redevient strict ; si Vanguard est fermé avant, son lancement suivant le propose. Le pare-feu et les partages ne bougent pas.",
+                "Le DNS chiffré empêche la page de connexion de paraître : il passe en « opportuniste » le temps de vous connecter, jusqu'à Entrée (10 minutes au plus), puis redevient strict ; si Vanguard est fermé avant, son lancement suivant le propose. Le pare-feu et les partages ne bougent pas.",
                 "Encrypted DNS keeps the login page from appearing: it switches to “opportunistic” while you log in, until Enter (10 minutes at most), then becomes strict again; if Vanguard is closed before, its next launch offers it. The firewall and sharing do not change."
             ),
             2,

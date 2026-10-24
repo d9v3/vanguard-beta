@@ -29,7 +29,7 @@ pub const COMMUNS: &[Programme] = &[
             ),
             voir(
                 "systemctl --user status <service>",
-                "Un service de ta session plutôt que du système.",
+                "Un service de votre session plutôt que du système.",
                 "A service of your session rather than of the system.",
             ),
             changer(
@@ -191,7 +191,7 @@ pub const COMMUNS: &[Programme] = &[
             ),
             voir(
                 "ip route",
-                "Les routes : « default via » donne l'adresse de la box.",
+                "Les routes : « default via » donne l'adresse du routeur.",
                 "Routes: “default via” gives the router's address.",
             ),
             voir(
@@ -523,12 +523,12 @@ pub const COMMUNS: &[Programme] = &[
         commandes: &[
             voir(
                 "id",
-                "Ton compte et tes groupes (wheel ou sudo : administrateur).",
+                "Votre compte et vos groupes (wheel ou sudo : administrateur).",
                 "Your account and groups (wheel or sudo: administrator).",
             ),
             voir(
                 "sudo -l",
-                "Ce que tu as le droit de faire avec sudo.",
+                "Ce que vous avez le droit de faire avec sudo.",
                 "What you are allowed to do with sudo.",
             ),
             voir(
@@ -538,20 +538,20 @@ pub const COMMUNS: &[Programme] = &[
             ),
             voir(
                 "ls -l <fichier>",
-                "Les droits d'un fichier : rwx pour toi, ton groupe, les autres.",
+                "Les droits d'un fichier : rwx pour vous, votre groupe, les autres.",
                 "A file's permissions: rwx for you, your group, the others.",
             ),
             changer(
                 "chmod 600 <fichier>",
-                "Rend un fichier lisible par toi seul (clé, mot de passe).",
+                "Rend un fichier lisible par vous seul (clé, mot de passe).",
                 "Makes a file readable by you only (key, password).",
             ),
             changer(
                 "sudo chown -R $USER: <dossier>",
-                "Te rend propriétaire d'un dossier, après un sudo de trop.",
+                "Vous rend propriétaire d'un dossier, après un sudo de trop.",
                 "Makes you the owner of a folder, after one sudo too many.",
             ),
-            changer("passwd", "Change ton mot de passe.", "Changes your password."),
+            changer("passwd", "Change votre mot de passe.", "Changes your password."),
         ],
     },
     Programme {
@@ -561,7 +561,7 @@ pub const COMMUNS: &[Programme] = &[
         commandes: &[
             voir(
                 "find ~ -iname \"*<mot>*\"",
-                "Cherche un fichier par son nom dans ton dossier personnel.",
+                "Cherche un fichier par son nom dans votre dossier personnel.",
                 "Finds a file by name in your home folder.",
             ),
             voir(
@@ -727,7 +727,7 @@ pub const COMMUNS: &[Programme] = &[
             ),
             voir(
                 "dig @1.1.1.1 <site>",
-                "La même chose avec un autre serveur DNS (Cloudflare) : le tien répond-il mal ?",
+                "La même chose avec un autre serveur DNS (Cloudflare) : le vôtre répond-il mal ?",
                 "The same with another DNS server (Cloudflare): does yours answer badly?",
             ),
             voir(
@@ -846,7 +846,7 @@ pub const COMMUNS: &[Programme] = &[
         role: ("comptes et groupes", "accounts and groups"),
         executable: "useradd",
         commandes: &[
-            voir("groups", "Tes groupes.", "Your groups."),
+            voir("groups", "Vos groupes.", "Your groups."),
             voir(
                 "getent group sudo wheel",
                 "Qui peut utiliser sudo (groupes sudo ou wheel).",
@@ -884,7 +884,7 @@ pub const COMMUNS: &[Programme] = &[
         role: ("tâches planifiées (cron)", "scheduled tasks (cron)"),
         executable: "crontab",
         commandes: &[
-            voir("crontab -l", "Tes tâches planifiées.", "Your scheduled tasks."),
+            voir("crontab -l", "Vos tâches planifiées.", "Your scheduled tasks."),
             changer("crontab -e", "Les modifie.", "Edits them."),
             voir(
                 "ls /etc/cron.d /etc/cron.daily",
@@ -998,7 +998,7 @@ pub const COMMUNS: &[Programme] = &[
             ),
             changer(
                 "sudo fail2ban-client set sshd unbanip <adresse>",
-                "Débannit une adresse (la tienne, par erreur).",
+                "Débannit une adresse (la vôtre, par erreur).",
                 "Unbans an address (yours, by mistake).",
             ),
         ],

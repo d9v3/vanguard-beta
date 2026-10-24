@@ -85,7 +85,7 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Commande {
-    /// Bilan complet : cette machine puis le réseau.
+    /// Bilan complet : cet ordinateur puis le réseau.
     #[command(visible_alias = "full")]
     Complet {
         /// Ouvrir aussi le rapport HTML dans le navigateur.
@@ -95,19 +95,19 @@ enum Commande {
         #[arg(long, visible_alias = "text")]
         texte: bool,
     },
-    /// Audit de cette machine (pare-feu, ports, SSH, mises à jour, chiffrement…).
+    /// Audit de cet ordinateur (pare-feu, ports, SSH, mises à jour, chiffrement…).
     #[command(visible_alias = "audit")]
     Machine {
         #[arg(long)]
         json: bool,
     },
-    /// Audit de la machine puis application guidée des correctifs.
+    /// Audit de l'ordinateur puis application guidée des correctifs.
     #[command(visible_alias = "fix")]
     Corriger,
     /// Scan du réseau : appareils, ports ouverts, risques, nouveautés depuis les scans précédents.
     #[command(visible_alias = "network")]
     Reseau {
-        /// IP, réseau CIDR (10.0.0.0/24) ou plage (10.0.0.1-50). Par défaut : ton réseau local.
+        /// IP, réseau CIDR (10.0.0.0/24) ou plage (10.0.0.1-50). Par défaut : votre réseau local.
         cible: Option<String>,
         /// « courants » (défaut), « tous » (1-65535) ou liste « 22,80,8000-8100 ».
         #[arg(short, long, default_value = "courants")]
@@ -122,7 +122,7 @@ enum Commande {
         json: bool,
     },
     /// Audit du réseau par domaine : six notes (exposition à Internet, Wi-Fi, segmentation, DNS et TLS, objets
-    /// connectés, ordinateurs) d'après le scan du réseau local, les constats réseau de cette machine et quelques
+    /// connectés, ordinateurs) d'après le scan du réseau local, les constats réseau de cet ordinateur et quelques
     /// lectures de plus, sans rien attaquer ; ce qui n'a pas pu être vérifié est dit, jamais compté comme sain.
     #[command(name = "audit-reseau", visible_alias = "network-audit")]
     AuditReseau {
@@ -131,7 +131,7 @@ enum Commande {
         /// Ouvrir aussi le rapport HTML dans le navigateur.
         #[arg(long)]
         html: bool,
-        /// Tu es sur le réseau invité : Vanguard vérifie qu'il est bien séparé du réseau principal.
+        /// Vous êtes sur le réseau invité : Vanguard vérifie qu'il est bien séparé du réseau principal.
         #[arg(long, visible_alias = "guest")]
         invite: bool,
     },
@@ -244,11 +244,12 @@ enum Commande {
     /// Test de connexion pour le jeu : ping, gigue, pertes, débit et bufferbloat.
     #[command(visible_alias = "connection")]
     Connexion,
-    /// L'adresse Internet de la maison est-elle sur une liste noire (Spamhaus, SpamCop, DroneBL, PSBL) ? Si oui, un
+    /// L'adresse Internet publique est-elle sur une liste noire (Spamhaus, SpamCop, DroneBL, PSBL) ? Si oui, un
     /// appareil est sans doute infecté. Après accord : les listes voient l'adresse.
     #[command(name = "listes-noires", visible_alias = "blocklists")]
     ListesNoires,
-    /// Wi-Fi encombré : les réseaux voisins par canal, et le canal le plus libre à régler sur la box. Lecture seule.
+    /// Wi-Fi encombré : les réseaux voisins par canal, et le canal le plus libre à régler sur le routeur. Lecture
+    /// seule.
     #[command(visible_alias = "channels")]
     Canaux,
     /// Type de NAT pour le jeu (ouvert, modéré ou strict), d'après deux serveurs publics (STUN). Lecture seule.
@@ -256,7 +257,7 @@ enum Commande {
     /// Caméras cachées : sur le réseau d'une location ou de quelqu'un, les appareils qui ressemblent à des caméras.
     /// Lecture seule.
     Cameras,
-    /// Box et objets connectés d'après le dernier scan gardé : ce que la box annonce (modèle, logiciel), son
+    /// Routeur et objets connectés d'après le dernier scan gardé : ce que le routeur annonce (modèle, logiciel), son
     /// administration en HTTP seul, les caméras, imprimantes, NAS… et leur mot de passe d'origine. Rien n'est sondé.
     #[command(visible_alias = "iot")]
     Objets,
@@ -314,7 +315,7 @@ enum Commande {
         /// Programme ou script à lancer.
         fichier: std::path::PathBuf,
     },
-    /// Fuites d'adresse courriel : l'adresse est envoyée au service de recherche, après ton accord.
+    /// Fuites d'adresse courriel : l'adresse est envoyée au service de recherche, après votre accord.
     #[command(visible_alias = "email")]
     Courriel,
     /// Vérifie si des mots de passe ont fuité (Have I Been Pwned) ; seuls 5 caractères de leur empreinte partent.
@@ -327,7 +328,7 @@ enum Commande {
     /// Qui parle à Internet ? Les connexions en cours de chaque programme, avec le nom du serveur. Lecture seule.
     #[command(visible_alias = "outbound")]
     Sortantes,
-    /// Quelqu'un contrôle mon ordinateur ? Les logiciels de prise de contrôle à distance (AnyDesk, TeamViewer,
+    /// Mon ordinateur est-il contrôlé ? Les logiciels de prise de contrôle à distance (AnyDesk, TeamViewer,
     /// RustDesk…) installés, lancés au démarrage, en cours ou téléchargés : l'outil des faux techniciens. Retrait
     /// après accord ; un programme en cours demande un second accord.
     #[command(visible_alias = "remote-access")]
@@ -347,8 +348,8 @@ enum Commande {
         empreinte: Option<String>,
     },
     /// Ce courriel est-il une arnaque ? Un courriel enregistré (.eml) examiné sans rien ouvrir : l'expéditeur et son
-    /// authentification écrite par ton fournisseur, les liens, les pièces jointes ; après accord, l'âge des domaines et
-    /// leur présence dans des listes publiques.
+    /// authentification écrite par votre fournisseur, les liens, les pièces jointes ; après accord, l'âge des domaines
+    /// et leur présence dans des listes publiques.
     #[command(name = "courriel-suspect", visible_alias = "suspicious-email")]
     CourrielSuspect {
         /// Le courriel enregistré (.eml) : « Enregistrer sous » de Thunderbird, « Télécharger le message » de Gmail,
@@ -500,7 +501,7 @@ enum Commande {
     #[command(name = "verifier-sauvegarde", visible_alias = "check-backup")]
     VerifierSauvegarde,
     /// Vérifier ma clé : capacité réelle (fausses clés), vitesses et blocs en erreur d'une clé USB ou d'un disque
-    /// externe. Écrit dans l'espace libre après accord, relit, puis efface ; tes fichiers ne sont pas touchés.
+    /// externe. Écrit dans l'espace libre après accord, relit, puis efface ; vos fichiers ne sont pas touchés.
     #[command(name = "verifier-cle", visible_alias = "check-drive")]
     VerifierCle {
         /// Un dossier de la clé ou du disque (par défaut : choisi parmi les disques branchés).
@@ -595,7 +596,7 @@ enum Commande {
         /// décrivent).
         sujet: Vec<String>,
     },
-    /// Ordinateur d'un proche : trois questions (qui s'en sert, pourquoi on te l'a confié, son réseau), le bilan, un
+    /// Ordinateur d'un proche : trois questions (qui s'en sert, pourquoi on vous l'a confié, son réseau), le bilan, un
     /// résumé en mots simples, les corrections acceptées une à une, puis la page à laisser avec ses conseils.
     #[command(visible_alias = "relative")]
     Proche,
@@ -625,7 +626,7 @@ enum Commande {
         #[arg(long, requires = "images")]
         image: Vec<String>,
     },
-    /// Plugins : des programmes à toi ajoutés à Vanguard sans changer son code (essais, outils expérimentaux), chacun
+    /// Plugins : des programmes à vous ajoutés à Vanguard sans changer son code (essais, outils expérimentaux), chacun
     /// dans un dossier avec un plugin.toml. « ajouter <dossier> » le copie et l'approuve (empreintes SHA-256),
     /// « approuver <nom> » après un changement, « liste », « retirer <nom> », ou « <nom> [arguments] » pour le
     /// lancer (« --rapport » : ses constats dans le rapport HTML) ; sans argument, la liste à choisir. Jamais en
@@ -647,8 +648,8 @@ enum Commande {
     /// Extensions : le menu des plugins et des scripts du labo, à choisir et lancer.
     #[command(visible_alias = "ext")]
     Extensions {
-        /// on : les restrictions des extensions coupées (sans accord, empreinte ni analyse, avec tous tes droits) ;
-        /// off : remises. Le dossier des extensions doit rester à toi seul.
+        /// on : les restrictions des extensions coupées (sans accord, empreinte ni analyse, avec tous vos droits) ;
+        /// off : remises. Le dossier des extensions doit rester à vous seul.
         #[arg(long, visible_alias = "no-restrictions", value_parser = ["on", "off"])]
         sans_restrictions: Option<String>,
     },
@@ -842,7 +843,7 @@ fn avertir_si_root() {
     }
     for (i, ligne) in envelopper(
         tr!(
-            "Vanguard tourne en root (sudo) : il n'en a pas besoin, chaque correction demande le mot de passe au moment voulu, et une sortie piégée aurait ici tous les droits. Relance-le sans sudo, sauf si aucune fenêtre ne peut demander le mot de passe sur cet ordinateur (pas de session graphique) : alors continue.",
+            "Vanguard tourne en root (sudo) : il n'en a pas besoin, chaque correction demande le mot de passe au moment voulu, et une sortie piégée aurait ici tous les droits. Relancez-le sans sudo, sauf si aucune fenêtre ne peut demander le mot de passe sur cet ordinateur (pas de session graphique) : alors continuez.",
             "Vanguard is running as root (sudo): it does not need it, each fix asks for the password when needed, and a booby-trapped output would have every right here. Start it again without sudo, unless no window can ask for the password on this computer (no graphical session): then carry on."
         ),
         LARGEUR - 4,
@@ -869,7 +870,7 @@ fn etat_du_menu(surveillance_active: bool) -> Vec<String> {
         Some(b) => {
             let note = |s: Option<u32>| s.map_or_else(|| "—".to_string(), etiquette_note);
             trf!(
-                "  {GRIS}Dernier bilan{RESET}  {}   machine {}   réseau {}",
+                "  {GRIS}Dernier bilan{RESET}  {}   ordinateur {}   réseau {}",
                 "  {GRIS}Last check{RESET}     {}   machine {}   network {}",
                 b.date,
                 note(b.machine),
@@ -877,7 +878,7 @@ fn etat_du_menu(surveillance_active: bool) -> Vec<String> {
             )
         }
         None => trf!(
-            "  {GRIS}Aucun bilan encore : commence par 1.{RESET}",
+            "  {GRIS}Aucun bilan encore : commencez par 1.{RESET}",
             "  {GRIS}No check yet: start with 1.{RESET}"
         ),
     };
@@ -1258,7 +1259,7 @@ struct Outil {
 #[rustfmt::skip] // une ligne de données par outil, que rustfmt étalerait sur huit
 const OUTILS: &[Outil] = &[
     Outil { action: Action::Complet, commande: "complet", groupe: None, lettre: "",
-        titre: ["Bilan complet : machine + réseau", "Full check: machine + network"], precision: ["", ""],
+        titre: ["Bilan complet : ordinateur, réseau", "Full check: machine + network"], precision: ["", ""],
         mots: "" },
     Outil { action: Action::Corriger, commande: "corriger", groupe: None, lettre: "",
         titre: ["Corriger les problèmes trouvés", "Fix the problems found"], precision: ["", ""],
@@ -1287,7 +1288,7 @@ const OUTILS: &[Outil] = &[
         mots: "blake3 empreintes fingerprints fichiers files" },
     Outil { action: Action::Appris, commande: "appris", groupe: Some(Groupe::Machine), lettre: "",
         titre: ["Ce que Vanguard a appris", "What Vanguard has learned"],
-        precision: ["tes choix, tes habitudes", "your choices, your habits"],
+        precision: ["vos choix, vos habitudes", "your choices, your habits"],
         mots: "apprentissage learning appris learned choix choices normal oublier forget" },
     Outil { action: Action::Lenteur, commande: "lenteur", groupe: Some(Groupe::Machine), lettre: "",
         titre: ["Pourquoi c'est lent ?", "Why is it slow?"],
@@ -1314,7 +1315,7 @@ const OUTILS: &[Outil] = &[
         mots: "appareils devices ports réseau network lan nmap" },
     Outil { action: Action::AuditReseau, commande: "audit-reseau", groupe: Some(Groupe::Reseau), lettre: "",
         titre: ["Audit du réseau", "Network audit"],
-        precision: ["six notes : box, Wi-Fi, DNS…", "six grades: router, Wi-Fi, DNS…"],
+        precision: ["six notes : routeur, Wi-Fi, DNS…", "six grades: router, Wi-Fi, DNS…"],
         mots: "audit réseau network exposition exposure wifi dns tls segmentation appareils devices objets postes \
                computers upnp redirection note grade cyberdéfense cyberdefense box routeur router" },
     Outil { action: Action::Appareil, commande: "reseau", groupe: Some(Groupe::Reseau), lettre: "",
@@ -1358,7 +1359,7 @@ const OUTILS: &[Outil] = &[
         precision: ["location, chez quelqu'un", "rental, someone else's place"],
         mots: "caméra camera espion spy cachée hidden location rental airbnb rtsp onvif" },
     Outil { action: Action::Objets, commande: "objets", groupe: Some(Groupe::Reseau), lettre: "",
-        titre: ["Box et objets connectés", "Router and connected devices"],
+        titre: ["Routeur et objets connectés", "Router and connected devices"],
         precision: ["modèle, mots de passe d'origine", "model, default passwords"],
         mots: "box routeur router modem objets connectés iot smart caméra camera imprimante printer nas télé tv \
                domotique smart home mot de passe d'origine default password firmware upnp" },
@@ -1409,7 +1410,7 @@ const OUTILS: &[Outil] = &[
                enregistrés saved faible weak réutilisé reused fuite leak checkup about:logins" },
     Outil { action: Action::Courriel, commande: "courriel", groupe: Some(Groupe::Protection), lettre: "e",
         titre: ["Courriel : a-t-il fuité ?", "Email address: has it leaked?"],
-        precision: ["avec ton accord", "with your consent"],
+        precision: ["avec votre accord", "with your consent"],
         mots: "email mail fuite leak" },
     Outil { action: Action::QuiParle, commande: "sortantes", groupe: Some(Groupe::Protection), lettre: "",
         titre: ["Qui parle à Internet ?", "Who talks to the Internet?"],
@@ -1426,7 +1427,7 @@ const OUTILS: &[Outil] = &[
         mots: "confidentialité privacy permissions autorisations accès access position location localisation gps \
                contacts carnet address book caméra camera micro microphone flatpak snap tcc applications apps" },
     Outil { action: Action::Distance, commande: "distance", groupe: Some(Groupe::Protection), lettre: "",
-        titre: ["Quelqu'un contrôle mon ordi ?", "Is someone controlling my PC?"],
+        titre: ["Mon ordinateur est-il contrôlé ?", "Is my computer being controlled?"],
         precision: ["faux technicien, accès à distance", "tech-support scam, remote access"],
         mots: "arnaque scam faux technicien fake tech support anydesk teamviewer rustdesk accès distance remote \
                access contrôle control prise de contrôle" },
@@ -1482,7 +1483,7 @@ const OUTILS: &[Outil] = &[
                firefox brave office word excel acrobat reader java kev faille exploitée exploited" },
     Outil { action: Action::Signaler, commande: "signaler", groupe: Some(Groupe::Protection), lettre: "",
         titre: ["Signaler une faille à un éditeur", "Report a flaw to a vendor"],
-        precision: ["rien n'est envoyé, tu relis", "nothing is sent, you review"],
+        precision: ["rien n'est envoyé, vous relisez", "nothing is sent, you review"],
         mots: "signaler disclose signalement report divulgation disclosure faille vulnerability bogue bug éditeur \
                vendor msrc microsoft google chrome mozilla bugzilla apple ghsa github cert prime bounty" },
     Outil { action: Action::Logiciels, commande: "logiciels", groupe: Some(Groupe::Installer), lettre: "l",
@@ -2007,7 +2008,7 @@ const AIDES_EN: &[(&str, &str)] = &[
                      the browser's built-in check (weak, reused, compromised), and the HIBP check of a typed password"),
     ("sortantes", "Who talks to the Internet? Each program's current connections, with the server's name. Read-only"),
     ("verifier-moi", "Check Vanguard itself: version, build date, SHA-256 fingerprint of the program (to compare with the release page), on the owner's key the key manifest, and after your consent the signed history of published versions; or another copy of Vanguard, by its fingerprint and that history"),
-    ("distance", "Is someone controlling my computer? Remote control software (AnyDesk, TeamViewer, RustDesk…) installed, started at boot, running or downloaded: the fake technicians' tool. Removed after your consent; a running program asks for a second consent"),
+    ("distance", "Is my computer being controlled? Remote control software (AnyDesk, TeamViewer, RustDesk…) installed, started at boot, running or downloaded: the fake technicians' tool. Removed after your consent; a running program asks for a second consent"),
     ("lien", "Is this link dangerous? Checked without ever opening it; after your consent, its age and public lists"),
     ("verifier-fichier", "Check a downloaded file: checksum compared with the site's, name and content, YARA and \
                           antivirus"),

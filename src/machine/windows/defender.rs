@@ -181,7 +181,7 @@ pub(super) fn juger(etat: Option<&Etat>, notes: &[String]) -> Vec<Constat> {
         );
         if !autres.is_empty() {
             texte.push_str(&trf!(
-                " À choisir dans Optimiser si tu veux : {}.",
+                " À choisir dans Optimiser si vous voulez : {}.",
                 " To choose in Optimize if you want: {}.",
                 autres.join(", ")
             ));

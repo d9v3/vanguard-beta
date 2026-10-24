@@ -107,7 +107,7 @@ pub fn afficher_tout() {
         println!();
         for l in envelopper(
             tr!(
-                "Linux ne garde pas d'historique : seul ce qui s'en sert maintenant se voit, pour les programmes de ce compte. Relance l'outil quand le voyant de la caméra s'allume sans raison.",
+                "Linux ne garde pas d'historique : seul ce qui s'en sert maintenant se voit, pour les programmes de ce compte. Relancez l'outil quand le voyant de la caméra s'allume sans raison.",
                 "Linux keeps no history: only what uses them now is visible, for this account's programs. Run the tool again when the camera light turns on for no reason."
             ),
             LARGEUR - 2,
@@ -129,7 +129,7 @@ pub fn afficher_tout() {
     {
         for l in envelopper(
             tr!(
-                "macOS protège cette liste : un point vert (caméra) ou orange (micro) s'allume en haut de l'écran quand un programme s'en sert, et le Centre de contrôle dit lequel. Les programmes autorisés : Réglages Système › Confidentialité et sécurité › Caméra, et › Micro ; retire ceux que tu ne reconnais pas.",
+                "macOS protège cette liste : un point vert (caméra) ou orange (micro) s'allume en haut de l'écran quand un programme s'en sert, et le Centre de contrôle dit lequel. Les programmes autorisés : Réglages Système › Confidentialité et sécurité › Caméra, et › Micro ; retirez ceux que vous ne reconnaissez pas.",
                 "macOS protects this list: a green (camera) or orange (microphone) dot lights up at the top of the screen when a program uses them, and Control Center says which one. The allowed programs: System Settings › Privacy & Security › Camera, and › Microphone; remove those you do not recognize."
             ),
             LARGEUR - 2,
@@ -152,8 +152,8 @@ fn conclure<'a>(usages: impl Iterator<Item = &'a Usage>) {
     } else if suspects == 0 {
         for l in envelopper(
             tr!(
-                "Un programme que tu ne reconnais pas : cherche son nom, puis retire-le (Logiciels, ou « Quelqu'un contrôle mon ordi ? » pour un logiciel de prise de contrôle). Rien n'a été changé.",
-                "A program you do not recognize: look up its name, then remove it (Software, or “Is someone controlling my PC?” for a remote access tool). Nothing was changed."
+                "Un programme que vous ne reconnaissez pas : cherchez son nom, puis retirez-le (Logiciels, ou « Mon ordinateur est-il contrôlé ? » pour un logiciel de prise de contrôle). Rien n'a été changé.",
+                "A program you do not recognize: look up its name, then remove it (Software, or “Is my computer being controlled?” for a remote access tool). Nothing was changed."
             ),
             LARGEUR - 2,
         ) {
@@ -162,7 +162,7 @@ fn conclure<'a>(usages: impl Iterator<Item = &'a Usage>) {
     } else {
         for l in envelopper(
             tr!(
-                "⚠ Un programme lancé depuis un dossier temporaire ou Téléchargements s'est servi de la caméra ou du micro : un logiciel espion se cache souvent là. Fais vérifier le fichier (Vérifier un fichier téléchargé, Analyse YARA) avant tout. Rien n'a été changé.",
+                "⚠ Un programme lancé depuis un dossier temporaire ou Téléchargements s'est servi de la caméra ou du micro : un logiciel espion se cache souvent là. Faites vérifier le fichier (Vérifier un fichier téléchargé, Analyse YARA) avant tout. Rien n'a été changé.",
                 "⚠ A program started from a temporary folder or Downloads used the camera or microphone: spyware often hides there. Have the file checked (Check a downloaded file, YARA scan) first. Nothing was changed."
             ),
             LARGEUR - 2,

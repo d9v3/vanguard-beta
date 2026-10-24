@@ -281,7 +281,7 @@ impl Programme {
     pub(crate) fn avertissement(self) -> Option<&'static str> {
         match self {
             Programme::Mozilla => Some(tr!(
-                "Sur Bugzilla, une description ne se modifie plus une fois envoyée : relis avant. Coche « security » (bogue de sécurité).",
+                "Sur Bugzilla, une description ne se modifie plus une fois envoyée : relisez avant. Cochez « security » (bogue de sécurité).",
                 "On Bugzilla, a description cannot be edited once submitted: read it first. Tick “security” (security bug)."
             )),
             Programme::Ghsa => Some(tr!(
@@ -289,7 +289,7 @@ impl Programme {
                 "The “Report a vulnerability” button (the repository's Security tab) only exists if the repository enabled it. Otherwise, follow its SECURITY.md."
             )),
             Programme::Apple => Some(tr!(
-                "Apple limite les envois et peut suspendre une personne qui envoie des rapports automatiques non validés : n'envoie qu'un rapport que tu as reproduit, avec ses étapes et sa preuve de concept.",
+                "Apple limite les envois et peut suspendre une personne qui envoie des rapports automatiques non validés : n'envoyez qu'un rapport que vous avez reproduit, avec ses étapes et sa preuve de concept.",
                 "Apple caps submissions and may suspend someone who sends unvalidated automated reports: only send a report you reproduced, with its steps and proof of concept."
             )),
             Programme::CertCc => Some(tr!(

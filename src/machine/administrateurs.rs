@@ -162,7 +162,7 @@ fn juger(admins: &[String], avant: Option<&Vus>, aujourd_hui: NaiveDate) -> (Con
             CAT,
             Niveau::Eleve,
             trf!(
-                "Nouveau compte administrateur cette semaine : {}. Si ce n'est pas toi qui l'as ajouté, quelqu'un s'est donné tous les droits sur cet ordinateur.",
+                "Nouveau compte administrateur cette semaine : {}. Si ce n'est pas vous qui l'avez ajouté, quelqu'un s'est donné tous les droits sur cet ordinateur.",
                 "New administrator account this week: {}. If you did not add it, someone gave themselves every right on this computer.",
                 recents.join(", ")
             ),
@@ -181,17 +181,17 @@ fn juger(admins: &[String], avant: Option<&Vus>, aujourd_hui: NaiveDate) -> (Con
 fn retrait() -> &'static str {
     if cfg!(windows) {
         tr!(
-            "S'il n'est pas à toi : le retirer des administrateurs (Gestion de l'ordinateur › Utilisateurs et groupes locaux › Groupes › Administrateurs), puis changer tes mots de passe et lancer l'antivirus",
+            "S'il n'est pas à vous : le retirer des administrateurs (Gestion de l'ordinateur › Utilisateurs et groupes locaux › Groupes › Administrateurs), puis changer vos mots de passe et lancer l'antivirus",
             "If it is not yours: remove it from administrators (Computer Management › Local Users and Groups › Groups › Administrators), then change your passwords and run the antivirus"
         )
     } else if cfg!(target_os = "macos") {
         tr!(
-            "S'il n'est pas à toi : Réglages Système › Utilisateurs et groupes, lui retirer « Administrateur », puis changer tes mots de passe",
+            "S'il n'est pas à vous : Réglages Système › Utilisateurs et groupes, lui retirer « Administrateur », puis changer vos mots de passe",
             "If it is not yours: System Settings › Users & Groups, remove “Administrator”, then change your passwords"
         )
     } else {
         tr!(
-            "S'il n'est pas à toi : le retirer du groupe (« sudo gpasswd -d <compte> wheel », ou sudo), puis changer tes mots de passe et lancer l'antivirus",
+            "S'il n'est pas à vous : le retirer du groupe (« sudo gpasswd -d <compte> wheel », ou sudo), puis changer vos mots de passe et lancer l'antivirus",
             "If it is not yours: remove it from the group (“sudo gpasswd -d <account> wheel”, or sudo), then change your passwords and run the antivirus"
         )
     }

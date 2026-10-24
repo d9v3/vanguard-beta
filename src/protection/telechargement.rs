@@ -240,7 +240,7 @@ pub(crate) fn nature(nom: &str, debut: &[u8]) -> Vec<(Niveau, String)> {
             signes.push((
                 Niveau::Info,
                 trf!(
-                    "Programme ({sorte}) : ne le lance que s'il vient du site officiel de son éditeur.",
+                    "Programme ({sorte}) : ne le lancez que s'il vient du site officiel de son éditeur.",
                     "Program ({sorte}): only run it if it comes from its publisher's official site."
                 ),
             ));
@@ -292,7 +292,7 @@ pub fn verifier(fichier: Option<&Path>, empreinte: Option<&str>) {
         f.to_path_buf()
     } else {
         let reponse = demander(tr!(
-            "  Fichier à vérifier (glisse-le ici, ou tape son chemin) : ",
+            "  Fichier à vérifier (glissez-le ici, ou tapez son chemin) : ",
             "  File to check (drag it here, or type its path): "
         ));
         let reponse = reponse.trim().trim_matches(['"', '\'']);
@@ -343,7 +343,7 @@ pub fn verifier(fichier: Option<&Path>, empreinte: Option<&str>) {
     let saisie = match empreinte {
         Some(e) => Some(e.to_string()),
         None if interactif && empreinte_a_cote(&chemin).is_none() => Some(demander(tr!(
-            "  Empreinte publiée par le site (SHA-256 ; Entrée si tu ne l'as pas) : ",
+            "  Empreinte publiée par le site (SHA-256 ; Entrée si vous ne l'avez pas) : ",
             "  Checksum published by the site (SHA-256; Enter if you do not have it): "
         )))
         .filter(|e| !e.trim().is_empty()),
@@ -397,7 +397,7 @@ pub fn verifier(fichier: Option<&Path>, empreinte: Option<&str>) {
         None => ligne(
             Some(Niveau::Info),
             tr!(
-                "Pas d'empreinte à comparer : cherche « SHA-256 » sur la page de téléchargement officielle, puis refais la vérification avec elle.",
+                "Pas d'empreinte à comparer : cherchez « SHA-256 » sur la page de téléchargement officielle, puis refaites la vérification avec elle.",
                 "No checksum to compare: look for “SHA-256” on the official download page, then check again with it."
             ),
         ),
@@ -510,13 +510,13 @@ pub fn verifier(fichier: Option<&Path>, empreinte: Option<&str>) {
     println!();
     let verdict = if detecte {
         tr!(
-            "Ne l'ouvre pas : il contient un logiciel malveillant connu. Supprime-le (ou laisse-le en quarantaine) et vide la corbeille.",
+            "Ne l'ouvrez pas : il contient un logiciel malveillant connu. Supprimez-le (ou laissez-le en quarantaine) et videz la corbeille.",
             "Do not open it: it contains known malware. Delete it (or leave it in quarantine) and empty the trash."
         )
         .to_string()
     } else if pire >= Some(Niveau::Eleve) {
         tr!(
-            "Ne l'ouvre pas : ce fichier n'est pas ce qu'il prétend être, ou il a été modifié. Retélécharge-le depuis le site officiel.",
+            "Ne l'ouvrez pas : ce fichier n'est pas ce qu'il prétend être, ou il a été modifié. Retéléchargez-le depuis le site officiel.",
             "Do not open it: this file is not what it claims to be, or it was modified. Download it again from the official site."
         )
         .to_string()
@@ -535,7 +535,7 @@ pub fn verifier(fichier: Option<&Path>, empreinte: Option<&str>) {
             .to_string()
         };
         t += tr!(
-            " Aucun outil ne garantit qu'un programme est honnête : télécharge seulement depuis le site officiel de l'éditeur.",
+            " Aucun outil ne garantit qu'un programme est honnête : téléchargez seulement depuis le site officiel de l'éditeur.",
             " No tool guarantees a program is honest: only download from the publisher's official site."
         );
         t
@@ -636,7 +636,7 @@ fn signalement(nom: &str, debut: &[u8]) -> Option<(String, String)> {
         .or_else(|| PROGRAMMES.contains(&extension.as_str()).then_some(Niveau::Info))?;
     let nom = affichable(nom);
     let verifier = tr!(
-        "vérifie-le avant de l'ouvrir : menu Antivirus et protection › Vérifier un fichier téléchargé, ou « vanguard verifier-fichier ».",
+        "vérifiez-le avant de l'ouvrir : menu Antivirus et protection › Vérifier un fichier téléchargé, ou « vanguard verifier-fichier ».",
         "check it before opening it: menu Antivirus and protection › Check a downloaded file, or “vanguard check-file”."
     );
     Some(if pire >= Niveau::Eleve {
@@ -652,7 +652,7 @@ fn signalement(nom: &str, debut: &[u8]) -> Option<(String, String)> {
             )
             .to_string(),
             trf!(
-                "« {nom} » : {} Ne l'ouvre pas ; {verifier}",
+                "« {nom} » : {} Ne l'ouvrez pas ; {verifier}",
                 "“{nom}”: {} Do not open it; {verifier}",
                 raisons.join(" ")
             ),
@@ -685,7 +685,7 @@ fn a_signaler(fichiers: &[(String, u64, Vec<u8>)], depuis: u64) -> Vec<(String, 
             )
             .to_string(),
             trf!(
-                "{} autre(s) programme(s) arrivé(s) dans Téléchargements : vérifie-les avant de les ouvrir.",
+                "{} autre(s) programme(s) arrivé(s) dans Téléchargements : vérifiez-les avant de les ouvrir.",
                 "{} other program(s) arrived in Downloads: check them before opening them.",
                 trouves.len() - 3
             ),

@@ -198,7 +198,7 @@ impl Systeme {
                 "Windows 11 (and 10): software through winget or the Microsoft Store, updates through Windows Update, security through Microsoft Defender. Commands are typed in the Terminal (PowerShell)."
             ),
             Systeme::MacOs => tr!(
-                "macOS : logiciels par l'App Store ou Homebrew (brew), mises à jour par softwareupdate, sauvegardes par Time Machine. sudo demande le mot de passe de ta session.",
+                "macOS : logiciels par l'App Store ou Homebrew (brew), mises à jour par softwareupdate, sauvegardes par Time Machine. sudo demande le mot de passe de votre session.",
                 "macOS: software through the App Store or Homebrew (brew), updates through softwareupdate, backups through Time Machine. sudo asks for your session password."
             ),
             Systeme::Tous => tr!(
@@ -409,7 +409,6 @@ const A_REMPLACER: &[(&str, &str)] = &[
     ("<adresse>", "<address>"),
     ("<app>", "<app>"),
     ("<archive>", "<archive>"),
-    ("<box>", "<router>"),
     ("<clé>", "<key>"),
     ("<destination>", "<destination>"),
     ("<disque>", "<disk>"),
@@ -431,6 +430,7 @@ const A_REMPLACER: &[(&str, &str)] = &[
     ("<PID>", "<PID>"),
     ("<port>", "<port>"),
     ("<programme>", "<program>"),
+    ("<routeur>", "<router>"),
     ("<service>", "<service>"),
     ("<site>", "<site>"),
     ("<source>", "<source>"),
@@ -963,7 +963,7 @@ fn montrer_commande(s: Systeme, p: &Programme, c: &Commande) {
                         "  {}✖{RESET} {}",
                         couleur(Niveau::Moyen),
                         tr!(
-                            "Presse-papier inaccessible ici : sélectionne la commande à la souris.",
+                            "Presse-papier inaccessible ici : sélectionnez la commande à la souris.",
                             "Clipboard unavailable here: select the command with the mouse."
                         )
                     )
@@ -1077,7 +1077,7 @@ fn menu_systeme(s: Systeme) {
             lignes.extend(lignes_grises(
                 if tldr::en_cours() {
                     tr!(
-                        "Téléchargement en cours : reviens dans un instant.",
+                        "Téléchargement en cours : revenez dans un instant.",
                         "Downloading: come back in a moment."
                     )
                 } else {
@@ -1217,7 +1217,7 @@ fn afficher_resultats(recherche: &str, trouvees: &[Trouvee]) {
         afficher_aligne(
             "  ",
             &trf!(
-                "Rien trouvé pour « {recherche} ». Essaie un autre mot : disque, wifi, dns, mise à jour…",
+                "Rien trouvé pour « {recherche} ». Essayez un autre mot : disque, wifi, dns, mise à jour…",
                 "Nothing found for “{recherche}”. Try another word: disk, wifi, dns, update…"
             ),
             2,
@@ -1257,7 +1257,7 @@ pub fn menu() {
         );
         lignes.extend(lignes_grises(
             tr!(
-                "Tape ce que tu cherches (wifi, disque, mise à jour…) : les commandes paraissent au fil de la frappe, et Tab complète le mot. Entrée ouvre la commande : ce qu'elle fait, la copier, ou la lancer ici si elle ne fait que lire.",
+                "Tapez ce que vous cherchez (wifi, disque, mise à jour…) : les commandes paraissent au fil de la frappe, et Tab complète le mot. Entrée ouvre la commande : ce qu'elle fait, la copier, ou la lancer ici si elle ne fait que lire.",
                 "Type what you are looking for (wifi, disk, update…): commands show up as you type, and Tab completes the word. Enter opens the command: what it does, copy it, or run it here if it only reads."
             ),
             2,

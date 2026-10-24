@@ -198,7 +198,7 @@ fn eleve() -> bool {
 
 fn refus_eleve() -> String {
     tr!(
-        "Vanguard tourne en administrateur : les plugins sont refusés. Un plugin n'est pas du code de Vanguard ; lancé ainsi, il aurait tous les droits sur l'ordinateur. Relance Vanguard sans droits d'administrateur (sans sudo, ou pas « en tant qu'administrateur ») pour ajouter, approuver ou lancer un plugin.",
+        "Vanguard tourne en administrateur : les plugins sont refusés. Un plugin n'est pas du code de Vanguard ; lancé ainsi, il aurait tous les droits sur l'ordinateur. Relancez Vanguard sans droits d'administrateur (sans sudo, ou pas « en tant qu'administrateur ») pour ajouter, approuver ou lancer un plugin.",
         "Vanguard is running as administrator: plugins are refused. A plugin is not Vanguard's code; run like this, it would have every right on the computer. Start Vanguard again without administrator rights (no sudo, or not “as administrator”) to add, approve or run a plugin."
     )
     .to_string()
@@ -515,7 +515,7 @@ fn comparer_auteur(avant: Option<&Approbation>, cle: Option<&[u8; 32]>) {
         (Some(_), _) => afficher_aligne(
             &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Eleve)),
             &trf!(
-                "Il n'est plus signé par la clé de l'auteur approuvé le {} : quelqu'un d'autre a pu le remplacer. Ne l'approuve que si tu sais pourquoi.",
+                "Il n'est plus signé par la clé de l'auteur approuvé le {} : quelqu'un d'autre a pu le remplacer. Ne l'approuvez que si vous savez pourquoi.",
                 "It is no longer signed by the key of the author approved on {}: someone else may have replaced it. Only approve it if you know why.",
                 affichable(&a.le)
             ),
@@ -1022,7 +1022,7 @@ fn presenter(
                 tr!("Il demande : ", "It asks for: ")
             ),
             &trf!(
-                "{} — rien de cela n'est accordé sans ta réponse à une question à part",
+                "{} — rien de cela n'est accordé sans votre réponse à une question à part",
                 "{} — none of it is granted without your answer to a separate question",
                 demandes.join(", ")
             ),
@@ -1033,7 +1033,7 @@ fn presenter(
     afficher_aligne(&trf!("  Analyse    : ", "  Scan       : "), analyse, 15, "");
     println!();
     rappel(tr!(
-        "Un plugin n'est pas du code de Vanguard : ce programme pourra lire et modifier tes fichiers, comme toi, et parler au réseau. N'approuve que ce que tu as écrit ou relu. S'il change, Vanguard le refusera jusqu'à une nouvelle approbation.",
+        "Un plugin n'est pas du code de Vanguard : ce programme pourra lire et modifier vos fichiers, comme vous, et parler au réseau. N'approuvez que ce que vous avez écrit ou relu. S'il change, Vanguard le refusera jusqu'à une nouvelle approbation.",
         "A plugin is not Vanguard's code: this program will be able to read and change your files, like you, and talk to the network. Only approve what you wrote or reviewed. If it changes, Vanguard will refuse it until approved again."
     ));
 }
@@ -1176,7 +1176,7 @@ fn demander_confiance(
         quoi.push(tr!("avec chaque passe de la surveillance", "with each monitoring pass"));
     }
     if accord(&trf!(
-        "  Ce plugin demande de tourner {}, avec tous tes droits. L'accorder (tant qu'il ne change pas) ? [o/N] : ",
+        "  Ce plugin demande de tourner {}, avec tous vos droits. L'accorder (tant qu'il ne change pas) ? [o/N] : ",
         "  This plugin asks to run {}, with all your rights. Grant it (as long as it does not change)? [y/N]: ",
         quoi.join(", ")
     )) {
@@ -1459,7 +1459,7 @@ pub fn lancer(racine: &Path, nom: &str, arguments: &[String], facon: Facon) -> R
     let d = dossier_du_plugin(racine, nom)?;
     let refuse_change = || {
         trf!(
-            "Le plugin « {nom} » a changé depuis son approbation : refusé. Relis-le, puis « vanguard plugin approuver {nom} ».",
+            "Le plugin « {nom} » a changé depuis son approbation : refusé. Relisez-le, puis « vanguard plugin approuver {nom} ».",
             "The plugin “{nom}” changed since it was approved: refused. Review it, then “vanguard plugin approve {nom}”."
         )
     };
@@ -1739,7 +1739,7 @@ fn liste(racine: &Path) {
 
 fn aide_ajout() {
     trp!(
-        "  Aucun plugin. Un plugin est un programme à toi (script, programme) dans un dossier avec un plugin.toml ; « vanguard plugin ajouter <dossier> » le copie ici et l'approuve. Un exemple : extensions/exemples/exemple dans les sources de Vanguard.",
+        "  Aucun plugin. Un plugin est un programme à vous (script, programme) dans un dossier avec un plugin.toml ; « vanguard plugin ajouter <dossier> » le copie ici et l'approuve. Un exemple : extensions/exemples/exemple dans les sources de Vanguard.",
         "  No plugin. A plugin is a program of yours (script, program) in a folder with a plugin.toml; “vanguard plugin add <folder>” copies it here and approves it. An example: extensions/exemples/exemple in Vanguard's sources."
     );
 }

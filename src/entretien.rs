@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use crate::reseau::surveillance::domaine_launchd;
 #[cfg(unix)]
 use crate::reseau::surveillance::reussit;
-use crate::reseau::surveillance::{cle_alerte, executable};
+use crate::reseau::surveillance::{TEXTES, cle_alerte, executable, sans_formulation};
 use crate::risk::Niveau;
 use crate::ui::*;
 
@@ -31,6 +31,9 @@ struct Etat {
     score: Option<u32>,
     /// Problèmes moyens ou plus graves, « catégorie : message ».
     alertes: Vec<String>,
+    /// La génération des textes (`surveillance::TEXTES`) ; 0 dans l'état d'une version d'avant.
+    #[serde(default)]
+    textes: u32,
 }
 
 fn fichier_etat() -> std::path::PathBuf {
@@ -66,10 +69,18 @@ fn examiner() -> Examen {
     }
 }
 
-/// Les problèmes de ce mois que le mois d'avant n'avait pas (comparés sans leurs nombres, comme la surveillance).
-fn nouvelles(avant: &[String], apres: &[String]) -> Vec<String> {
-    let connues: Vec<String> = avant.iter().map(|a| cle_alerte(a)).collect();
-    let nouvelle = |a: &&String| !connues.contains(&cle_alerte(a));
+/// Les problèmes de ce mois que le mois d'avant n'avait pas (comparés sans leurs nombres, comme la surveillance ; sans
+/// leur formulation face à un état d'une autre génération de textes).
+fn nouvelles(avant: &Etat, apres: &[String]) -> Vec<String> {
+    let cle = |a: &str| {
+        if avant.textes == TEXTES {
+            cle_alerte(a)
+        } else {
+            sans_formulation(a)
+        }
+    };
+    let connues: Vec<String> = avant.alertes.iter().map(|a| cle(a)).collect();
+    let nouvelle = |a: &&String| !connues.contains(&cle(a));
     apres.iter().filter(nouvelle).cloned().collect()
 }
 
@@ -120,7 +131,7 @@ fn rediger(e: &Examen, nouvelles: Option<&[String]>) -> (&'static str, Vec<Strin
     }
     if !e.maj.is_empty() || place.is_some() || nouvelles.is_some_and(|n| !n.is_empty()) || e.coupure.is_some() {
         lignes.push(String::from(tr!(
-            "Ouvre Vanguard pour t'en occuper : rien n'a été changé.",
+            "Ouvrez Vanguard pour vous en occuper : rien n'a été changé.",
             "Open Vanguard to deal with it: nothing was changed."
         )));
     }
@@ -150,13 +161,14 @@ fn lire_etat() -> Option<Etat> {
 pub fn entretenir() {
     let examen = examiner();
     let avant = lire_etat();
-    let nouvelles = avant.as_ref().map(|a| nouvelles(&a.alertes, &examen.alertes));
+    let nouvelles = avant.as_ref().map(|a| nouvelles(a, &examen.alertes));
     let (titre, lignes) = rediger(&examen, nouvelles.as_deref());
     crate::reseau::surveillance::notifier(titre, &lignes.join("\n"));
     let etat = Etat {
         date: chrono::Local::now().format("%Y-%m-%d").to_string(),
         score: examen.score,
         alertes: examen.alertes,
+        textes: TEXTES,
     };
     if let Ok(t) = serde_json::to_string(&etat) {
         let _ = std::fs::create_dir_all(crate::socle::dossier_local());
@@ -176,7 +188,7 @@ pub fn maintenant() {
     );
     let examen = examiner();
     let avant = lire_etat();
-    let nouvelles = avant.as_ref().map(|a| nouvelles(&a.alertes, &examen.alertes));
+    let nouvelles = avant.as_ref().map(|a| nouvelles(a, &examen.alertes));
     let (_, lignes) = rediger(&examen, nouvelles.as_deref());
     println!();
     for ligne in &lignes {
@@ -409,11 +421,32 @@ mod tests {
             "Santé : Disque presque plein : / n'a plus que 22 Go libres (3 %).".to_string(),
             "Clés SSH : Clé sans phrase de passe.".to_string(),
         ];
+        let etat = |alertes: Vec<String>, textes| Etat {
+            date: String::new(),
+            score: None,
+            alertes,
+            textes,
+        };
         // Le disque, avec d'autres nombres, n'est pas nouveau ; le pare-feu réglé n'apparaît pas.
         assert_eq!(
-            nouvelles(&avant, &apres),
+            nouvelles(&etat(avant, TEXTES), &apres),
             vec!["Clés SSH : Clé sans phrase de passe.".to_string()]
         );
+        // L'état d'une version d'avant, au tutoiement : le même problème redit autrement n'est pas nouveau, un autre
+        // objet de la même catégorie, si.
+        let ancien = etat(
+            vec![
+                "Groupes : Tu es dans le groupe docker.".to_string(),
+                "Ports : Port 8080/tcp ouvert à tous.".to_string(),
+            ],
+            0,
+        );
+        let ce_mois = [
+            "Groupes : Vous êtes dans le groupe docker.".to_string(),
+            "Ports : Port 8080/tcp ouvert à tous les appareils.".to_string(),
+            "Ports : Port 9000/tcp ouvert à tous les appareils.".to_string(),
+        ];
+        assert_eq!(nouvelles(&ancien, &ce_mois), [ce_mois[2].clone()]);
     }
 
     #[test]

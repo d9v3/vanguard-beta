@@ -111,11 +111,11 @@ fn qualite(signal: u8) -> &'static str {
         70.. => tr!("excellent", "excellent"),
         50..=69 => tr!("bon", "good"),
         30..=49 => tr!(
-            "moyen : rapproche-toi de la box, ou ajoute un répéteur",
+            "moyen : rapprochez-vous du routeur, ou ajoutez un répéteur",
             "fair: move closer to the router, or add a repeater"
         ),
         _ => tr!(
-            "faible : la box est loin ou derrière des murs épais ; un répéteur ou un système maillé (mesh) aiderait",
+            "faible : le routeur est loin ou derrière des murs épais ; un répéteur ou un système maillé (mesh) aiderait",
             "weak: the router is far or behind thick walls; a repeater or a mesh system would help"
         ),
     }
@@ -210,7 +210,7 @@ fn lire() -> Result<Lecture, &'static str> {
 pub fn analyser() {
     titre(tr!("Wi-Fi encombré ?", "Crowded Wi-Fi?"));
     let intro = tr!(
-        "Les réseaux des voisins qui émettent sur le même canal que ta box se partagent l'antenne avec elle : le Wi-Fi ralentit et coupe. Vanguard regarde qui émet où, sans rien changer.",
+        "Les réseaux des voisins qui émettent sur le même canal que votre routeur se partagent l'antenne avec lui : le Wi-Fi ralentit et coupe. Vanguard regarde qui émet où, sans rien changer.",
         "Neighbors' networks on the same channel as your router share the air with it: the Wi-Fi slows down and drops. Vanguard looks at who transmits where, without changing anything."
     );
     for ligne in envelopper(intro, LARGEUR - 2) {
@@ -250,7 +250,7 @@ fn afficher(lecture: &Lecture) {
         afficher_aligne("  ", &connexion, 2, "");
     } else {
         let ailleurs = tr!(
-            "Pas connecté en Wi-Fi : les conseils valent pour ta box, si elle est à portée.",
+            "Pas connecté en Wi-Fi : les conseils valent pour votre routeur, s'il est à portée.",
             "Not connected over Wi-Fi: the advice applies to your router, if it is within range."
         );
         afficher_aligne("  ", ailleurs, 2, GRIS);
@@ -272,7 +272,7 @@ fn afficher(lecture: &Lecture) {
         let siennes = bornes.iter().filter(|b| b.bande == bande && (b.actif || du_reseau(b)));
         siennes.max_by_key(|b| (b.actif, b.signal)).map(|b| b.canal)
     };
-    let ta_box = tr!(" ← ta box", " ← your router");
+    let ta_box = tr!(" ← votre routeur", " ← your router");
     section(tr!("2,4 GHz", "2.4 GHz"));
     let canal_24 = canal_de_ta_box(Bande::G24);
     let genes = CANAUX_24.map(|c| gene_24(&voisines, c));
@@ -285,16 +285,16 @@ fn afficher(lecture: &Lecture) {
     let meilleur = meilleur_24(&voisines);
     let conseil_24 = match canal_24 {
         Some(c) if !CANAUX_24.contains(&c) => trf!(
-            "Ta box est sur le canal {}, qui chevauche ses voisins des deux côtés : règle-la sur le canal {meilleur}.",
+            "Votre routeur est sur le canal {}, qui chevauche ses voisins des deux côtés : réglez-le sur le canal {meilleur}.",
             "Your router is on channel {}, which overlaps its neighbors on both sides: set it to channel {meilleur}.",
             c
         ),
         Some(c) if gene_24(&voisines, c) <= gene_24(&voisines, meilleur) + 0.1 => String::from(tr!(
-            "Ton canal est déjà le plus libre : rien à changer.",
+            "Votre canal est déjà le plus libre : rien à changer.",
             "Your channel is already the freest: nothing to change."
         )),
         Some(_) => trf!(
-            "Le canal {meilleur} est plus libre : à régler dans l'administration de la box (Wi-Fi 2,4 GHz, canal), au lieu de « automatique » si elle reste sur un canal chargé.",
+            "Le canal {meilleur} est plus libre : à régler dans l'administration du routeur (Wi-Fi 2,4 GHz, canal), au lieu de « automatique » s'il reste sur un canal chargé.",
             "Channel {meilleur} is freer: set it in the router's admin page (2.4 GHz Wi-Fi, channel), instead of “automatic” if it stays on a busy channel."
         ),
         None => trf!(
@@ -318,17 +318,17 @@ fn afficher(lecture: &Lecture) {
         let ((debut, fin, _), libre) = meilleur_5(&voisines);
         let mut conseil = match canal_5 {
             Some(c) if (debut..=fin).contains(&c) => String::from(tr!(
-                "Ta box est déjà dans le bloc le plus libre sans radar.",
+                "Votre routeur est déjà dans le bloc le plus libre sans radar.",
                 "Your router is already in the freest block without radar."
             )),
             _ => trf!(
-                "Le bloc le plus libre sans radar : canaux {debut} à {fin} (canal {debut} dans l'administration de la box).",
+                "Le bloc le plus libre sans radar : canaux {debut} à {fin} (canal {debut} dans l'administration du routeur).",
                 "The freest block without radar: channels {debut} to {fin} (channel {debut} in the router's admin page)."
             ),
         };
         if let Some((d, f, _)) = libre {
             conseil += &trf!(
-                " Les canaux {d} à {f} sont libres, mais la box doit y céder la place aux radars (coupures de quelques secondes).",
+                " Les canaux {d} à {f} sont libres, mais le routeur doit y céder la place aux radars (coupures de quelques secondes).",
                 " Channels {d} to {f} are free, but the router must give way to radars there (drops of a few seconds)."
             );
         }
@@ -347,7 +347,7 @@ fn afficher(lecture: &Lecture) {
     if active.is_some_and(|a| a.bande == Bande::G24) && bornes.iter().any(|b| b.bande != Bande::G24 && du_reseau(b)) {
         println!();
         let astuce = tr!(
-            "Ta box émet aussi en 5 GHz sous le même nom : près d'elle, c'est plus rapide et moins encombré. Si l'appareil reste en 2,4 GHz, donne un nom différent à chaque bande dans la box.",
+            "Votre routeur émet aussi en 5 GHz sous le même nom : près de lui, c'est plus rapide et moins encombré. Si l'appareil reste en 2,4 GHz, donnez un nom différent à chaque bande dans le routeur.",
             "Your router also broadcasts in 5 GHz under the same name: near it, that is faster and less crowded. If the device stays on 2.4 GHz, give each band a different name in the router."
         );
         afficher_aligne(&format!("  {} ", ampoule()), astuce, 5, "");

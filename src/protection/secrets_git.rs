@@ -511,7 +511,7 @@ pub fn analyser() {
     let depots = depots(&maison);
     if depots.is_empty() {
         trp!(
-            "  Aucun projet git dans ton dossier personnel.",
+            "  Aucun projet git dans votre dossier personnel.",
             "  No git project in your home folder."
         );
         return;
@@ -582,7 +582,7 @@ pub fn analyser() {
             println!(
                 "  {VERT}✔{RESET} {}",
                 trf!(
-                    "Aucun secret dans l'historique de tes {sains} projet(s).",
+                    "Aucun secret dans l'historique de vos {sains} projet(s).",
                     "No secret in the history of your {sains} project(s)."
                 )
             );

@@ -258,8 +258,8 @@ fn nom(code: &str, extension: &str) -> String {
 /// de lignes pour qu'il ne passe pas pour un fichier vide, que certains rançongiciels sautent.
 fn texte() -> String {
     let mut t = String::from(
-        "Fichier-piège de Vanguard : ne le modifie pas, ne le déplace pas, ne le supprime pas.\n\
-         Il sert à repérer un rançongiciel : s'il change, Vanguard t'alerte.\n\
+        "Fichier-piège de Vanguard : ne le modifiez pas, ne le déplacez pas, ne le supprimez pas.\n\
+         Il sert à repérer un rançongiciel : s'il change, Vanguard vous alerte.\n\
          Pour le retirer : Vanguard, menu Antivirus et protection › Fichiers-pièges, ou « vanguard pieges --retirer ».\n\n\
          Vanguard decoy file: do not modify, move or delete it.\n\
          It is there to catch ransomware: if it changes, Vanguard warns you.\n\
@@ -490,12 +490,12 @@ fn juger(etats: &[(&Piege, Etat)]) -> Constat {
         constat_de(
             Some(Niveau::Critique),
             trf!(
-                "Fichier-piège touché : {}. Un rançongiciel chiffre peut-être tes fichiers en ce moment.",
+                "Fichier-piège touché : {}. Un rançongiciel chiffre peut-être vos fichiers en ce moment.",
                 "Decoy file touched: {}. Ransomware may be encrypting your files right now.",
                 touches.join(", ")
             ),
             Some(tr!(
-                "Débranche tout de suite Internet (câble, Wi-Fi) et tes disques de sauvegarde, puis éteins l'ordinateur pour arrêter le chiffrement. Ensuite, analyse-le avec l'antivirus de Vanguard depuis la clé, avant de le rebrancher. Si c'est toi qui as ouvert et modifié ce fichier, repose les fichiers-pièges",
+                "Débranchez tout de suite Internet (câble, Wi-Fi) et vos disques de sauvegarde, puis éteignez l'ordinateur pour arrêter le chiffrement. Ensuite, analysez-le avec l'antivirus de Vanguard depuis la clé, avant de le rebrancher. Si c'est vous qui avez ouvert et modifié ce fichier, reposez les fichiers-pièges",
                 "Unplug the Internet (cable, Wi-Fi) and your backup drives right now, then shut the computer down to stop the encryption. Then scan it with Vanguard's antivirus from the key before plugging it back in. If you opened and changed that file yourself, set the decoy files again"
             )),
         )
@@ -503,12 +503,12 @@ fn juger(etats: &[(&Piege, Etat)]) -> Constat {
         constat_de(
             Some(Niveau::Moyen),
             trf!(
-                "Fichier-piège supprimé : {}. Si ce n'est pas toi, un programme touche à tes documents.",
+                "Fichier-piège supprimé : {}. Si ce n'est pas vous, un programme touche à vos documents.",
                 "Decoy file deleted: {}. If it was not you, a program is touching your documents.",
                 supprimes.join(", ")
             ),
             Some(tr!(
-                "Si c'est toi, repose les fichiers-pièges (menu Antivirus et protection) ; sinon, lance une analyse antivirus",
+                "Si c'est vous, reposez les fichiers-pièges (menu Antivirus et protection) ; sinon, lancez une analyse antivirus",
                 "If it was you, set the decoy files again (Antivirus and protection menu); otherwise, run an antivirus scan"
             )),
         )
@@ -626,7 +626,7 @@ fn poser() {
         return;
     }
     dire(tr!(
-        "Vanguard peut poser un texte et un PDF leurres dans tes dossiers. Personne n'a de raison d'y toucher ; un rançongiciel, lui, les chiffre avec le reste : chaque bilan, et la surveillance toutes les heures, le voient et t'alertent. Leur nom commence par « !Vanguard » ; ils s'enlèvent d'ici, en une fois.",
+        "Vanguard peut poser un texte et un PDF leurres dans vos dossiers. Personne n'a de raison d'y toucher ; un rançongiciel, lui, les chiffre avec le reste : chaque bilan, et la surveillance toutes les heures, le voient et vous alertent. Leur nom commence par « !Vanguard » ; ils s'enlèvent d'ici, en une fois.",
         "Vanguard can place a decoy text file and PDF in your folders. Nobody has a reason to touch them; ransomware encrypts them along with everything else: each check, and hourly monitoring, see it and warn you. Their name starts with “!Vanguard”; they are removed from here, in one go."
     ));
     println!();
@@ -666,7 +666,7 @@ fn poser() {
             );
             if !crate::reseau::surveillance::active() {
                 dire(tr!(
-                    "Active la surveillance (menu Réseau et Internet) pour qu'ils soient vérifiés toutes les heures, et pas seulement à chaque bilan.",
+                    "Activez la surveillance (menu Réseau et Internet) pour qu'ils soient vérifiés toutes les heures, et pas seulement à chaque bilan.",
                     "Turn monitoring on (Network and Internet menu) so they are checked every hour, not only at each check."
                 ));
             }

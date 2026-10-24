@@ -10,7 +10,7 @@ pub(super) fn fichiers_secrets() -> Vec<Constat> {
     super::super::unix::fichiers_secrets(
         Path::new(&home()),
         tr!(
-            "Ton dossier personnel est lisible par les autres comptes de la machine.",
+            "Votre dossier personnel est lisible par les autres comptes de la machine.",
             "Your home folder is readable by the other accounts of the machine."
         ),
     )
@@ -33,12 +33,12 @@ pub(super) fn groupes_privilegies() -> Option<Constat> {
             "Groupes",
             Niveau::Moyen,
             trf!(
-                "Tu es dans le groupe {} : tout programme lancé par toi peut devenir root sans mot de passe (par un conteneur, une machine virtuelle ou le disque lui-même).", "You are in the {} group: any program you run can become root without a password (through a container, a virtual machine or the disk itself).",
+                "Vous êtes dans le groupe {} : tout programme lancé par vous peut devenir root sans mot de passe (par un conteneur, une machine virtuelle ou le disque lui-même).", "You are in the {} group: any program you run can become root without a password (through a container, a virtual machine or the disk itself).",
                 risques.join(", ")
             ),
         )
         .manuel(
-            tr!("Si tu n'en as pas besoin chaque jour, sors du groupe (l'outil demandera alors sudo) ; sinon, garde-le en connaissance de cause", "If you do not need it every day, leave the group (the tool will then ask for sudo); otherwise, keep it knowingly"),
+            tr!("Si vous n'en avez pas besoin chaque jour, sortez du groupe (l'outil demandera alors sudo) ; sinon, gardez-le en connaissance de cause", "If you do not need it every day, leave the group (the tool will then ask for sudo); otherwise, keep it knowingly"),
             &[&format!("sudo gpasswd -d $USER {}", risques.first().copied().unwrap_or("docker"))],
         )
     })
@@ -66,7 +66,7 @@ fn groupes_a_risque(groupes: &str) -> Vec<&str> {
 
 pub(super) fn sudo_sans_mot_de_passe() -> Vec<Constat> {
     super::super::unix::sudo_sans_mot_de_passe(tr!(
-        "sudo sans mot de passe pour TOUTES les commandes : n'importe quel programme lancé par toi peut devenir root.",
+        "sudo sans mot de passe pour TOUTES les commandes : n'importe quel programme lancé par vous peut devenir root.",
         "sudo without a password for ALL commands: any program you run can become root."
     ))
 }

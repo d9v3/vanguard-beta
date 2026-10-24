@@ -456,13 +456,13 @@ fn juger_winlogon(
                 CAT,
                 Niveau::Eleve,
                 trf!(
-                    "Ton compte remplace le bureau de Windows par « {valeur} » (Shell dans Winlogon) : ce programme démarre à chaque ouverture de ta session.",
+                    "Votre compte remplace le bureau de Windows par « {valeur} » (Shell dans Winlogon) : ce programme démarre à chaque ouverture de votre session.",
                     "Your account replaces Windows' desktop with “{valeur}” (Shell in Winlogon): this program starts every time you sign in."
                 ),
             )
             .corriger(
                 tr!(
-                    "Retirer ce remplacement : ton compte reprend le bureau de Windows",
+                    "Retirer ce remplacement : votre compte reprend le bureau de Windows",
                     "Remove this replacement: your account goes back to Windows' desktop"
                 ),
                 &[format!(
@@ -838,7 +838,7 @@ fn juger_wmi(sortie: Option<&str>) -> Vec<Constat> {
             )
             .manuel(
                 tr!(
-                    "Si tu ne l'as pas posé toi-même : le retirer (commandes ci-dessous, en administrateur), puis lancer une analyse antivirus complète",
+                    "Si vous ne l'avez pas posé vous-même : le retirer (commandes ci-dessous, en administrateur), puis lancer une analyse antivirus complète",
                     "If you did not set it up yourself: remove it (commands below, as administrator), then run a full antivirus scan"
                 ),
                 &retirer,

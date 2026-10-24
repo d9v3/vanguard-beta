@@ -38,7 +38,7 @@ pub const PAS_A_PAS: &[Programme] = &[
             ),
             voir(
                 "pacman -Q linux && uname -r",
-                "Le noyau installé, puis celui qui tourne : s'ils diffèrent, redémarre.",
+                "Le noyau installé, puis celui qui tourne : s'ils diffèrent, redémarrez.",
                 "The installed kernel, then the running one: if they differ, restart.",
             ),
             changer(
@@ -81,7 +81,7 @@ pub const PAS_A_PAS: &[Programme] = &[
             ),
             changer(
                 "omarchy refresh config <fichier>",
-                "Un réglage cassé : remet ce fichier par défaut (le tien gardé en copie).",
+                "Un réglage cassé : remet ce fichier par défaut (le vôtre gardé en copie).",
                 "A broken setting: resets this file to default (yours kept as a copy).",
             ),
             changer(
@@ -156,7 +156,7 @@ const OMARCHY_CLI: Programme = Programme {
         ),
         voir(
             "omarchy debug --print --no-sudo",
-            "Les informations de dépannage, à joindre à une demande d'aide (relis-les avant).",
+            "Les informations de dépannage, à joindre à une demande d'aide (relisez-les avant).",
             "Troubleshooting information, to attach to a help request (read it first).",
         )
         .sauf(Obstacle::Fichier),
@@ -192,12 +192,12 @@ const OMARCHY_CLI: Programme = Programme {
         ),
         changer(
             "omarchy refresh config <fichier>",
-            "Remet un fichier de réglages d'Omarchy par défaut ; le tien est gardé en copie.",
+            "Remet un fichier de réglages d'Omarchy par défaut ; le vôtre est gardé en copie.",
             "Resets an Omarchy settings file to default; yours is kept as a copy.",
         ),
         changer(
             "omarchy reinstall configs",
-            "Remet TOUS les réglages d'Omarchy par défaut : tes changements sont perdus.",
+            "Remet TOUS les réglages d'Omarchy par défaut : vos changements sont perdus.",
             "Resets ALL Omarchy settings to default: your changes are lost.",
         ),
         changer(
@@ -459,7 +459,7 @@ const MATERIEL: Programme = Programme {
         ),
         changer(
             "omarchy dns Cloudflare",
-            "Passe le DNS à Cloudflare ; omarchy dns DHCP revient à celui de la box.",
+            "Passe le DNS à Cloudflare ; omarchy dns DHCP revient à celui du routeur.",
             "Switches DNS to Cloudflare; omarchy dns DHCP goes back to the router's.",
         ),
         changer(
@@ -519,7 +519,7 @@ const RESEAU: Programme = Programme {
     commandes: &[
         voir(
             "omarchy network status --verbose",
-            "La connexion active : Wi-Fi ou câble, adresse, force du signal, délai vers la box et Internet.",
+            "La connexion active : Wi-Fi ou câble, adresse, force du signal, délai vers le routeur et Internet.",
             "The active connection: Wi-Fi or cable, address, signal strength, delay to the router and Internet.",
         ),
         voir(
@@ -544,7 +544,7 @@ const RESEAU: Programme = Programme {
         ),
         changer(
             "omarchy tailscale send <machine> <fichier>",
-            "Envoie un fichier à un de tes appareils Tailscale (Taildrop).",
+            "Envoie un fichier à un de vos appareils Tailscale (Taildrop).",
             "Sends a file to one of your Tailscale devices (Taildrop).",
         ),
         changer(
@@ -608,7 +608,7 @@ const INSTALLER: Programme = Programme {
         ),
         changer(
             "omarchy install service tailscale",
-            "Tailscale : un réseau privé entre tes appareils, où qu'ils soient.",
+            "Tailscale : un réseau privé entre vos appareils, où qu'ils soient.",
             "Tailscale: a private network between your devices, wherever they are.",
         ),
         changer(

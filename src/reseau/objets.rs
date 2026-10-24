@@ -42,7 +42,7 @@ pub enum Genre {
 impl Genre {
     pub(crate) fn nom(self) -> &'static str {
         match self {
-            Genre::Boite => tr!("box", "router"),
+            Genre::Boite => tr!("routeur", "router"),
             Genre::Camera => tr!("caméra", "camera"),
             Genre::Imprimante => tr!("imprimante", "printer"),
             Genre::Nas => tr!("NAS (stockage)", "NAS (storage)"),
@@ -198,7 +198,7 @@ pub fn afficher(appareils: &[Appareil], carnet: bool) -> usize {
         afficher_aligne(
             "  ",
             tr!(
-                "Aucun objet connecté reconnu (caméra, imprimante, NAS, télé…), ni la box.",
+                "Aucun objet connecté reconnu (caméra, imprimante, NAS, télé…), ni le routeur.",
                 "No connected device recognized (camera, printer, NAS, TV…), nor the router."
             ),
             2,
@@ -239,7 +239,7 @@ pub fn afficher(appareils: &[Appareil], carnet: bool) -> usize {
                 afficher_aligne(
                     &format!("      {}→{RESET} ", couleur(Niveau::Moyen)),
                     tr!(
-                        "Sa page d'administration répond en HTTP et le scan n'a pas trouvé de HTTPS : son mot de passe passe peut-être en clair sur le réseau. Ouvre-la depuis un câble plutôt que d'un Wi-Fi partagé, et active HTTPS dans ses réglages s'il existe.",
+                        "Sa page d'administration répond en HTTP et le scan n'a pas trouvé de HTTPS : son mot de passe passe peut-être en clair sur le réseau. Ouvrez-la depuis un câble plutôt que d'un Wi-Fi partagé, et activez HTTPS dans ses réglages s'il existe.",
                         "Its admin page answers over HTTP and the scan found no HTTPS: its password may travel in clear text on the network. Open it over a cable rather than a shared Wi-Fi, and turn on HTTPS in its settings if it exists."
                     ),
                     8,
@@ -263,7 +263,7 @@ pub fn afficher(appareils: &[Appareil], carnet: bool) -> usize {
         afficher_aligne(
             &format!("  {}→{RESET} ", couleur(Niveau::Moyen)),
             &trf!(
-                "Mot de passe d'origine ({liste}) : ces appareils sortent souvent d'usine avec un mot de passe connu de tous (« admin », celui de la notice). S'il n'a jamais été changé, change-le dans leur application ou leur page web. Conseil seulement : Vanguard n'en essaie aucun.",
+                "Mot de passe d'origine ({liste}) : ces appareils sortent souvent d'usine avec un mot de passe connu de tous (« admin », celui de la notice). S'il n'a jamais été changé, changez-le dans leur application ou leur page web. Conseil seulement : Vanguard n'en essaie aucun.",
                 "Default password ({liste}): these devices often leave the factory with a password everyone knows (“admin”, the one in the manual). If it was never changed, change it in their app or web page. Advice only: Vanguard tries none.",
             ),
             4,
@@ -280,7 +280,7 @@ pub fn montrer() {
         afficher_aligne(
             "  ",
             tr!(
-                "Aucun scan gardé pour ce réseau : lance d'abord « Scanner le réseau » (vanguard reseau), puis reviens ici.",
+                "Aucun scan gardé pour ce réseau : lancez d'abord « Scanner le réseau » (vanguard reseau), puis revenez ici.",
                 "No scan kept for this network: first run “Scan the network” (vanguard network), then come back here."
             ),
             2,
@@ -300,7 +300,7 @@ pub fn montrer() {
     afficher_aligne(
         "  ",
         &trf!(
-            "D'après le dernier scan{quand}{reseau}. Rien n'est sondé ici : pour les nouveautés, refais un scan.",
+            "D'après le dernier scan{quand}{reseau}. Rien n'est sondé ici : pour les nouveautés, refaites un scan.",
             "From the last scan{quand}{reseau}. Nothing is probed here: for anything new, scan again."
         ),
         2,
@@ -312,7 +312,7 @@ pub fn montrer() {
     afficher_aligne(
         "  ",
         tr!(
-            "Les ports que la box ouvre vers Internet (UPnP) sont dans le scan du réseau, qui les demande à la box.",
+            "Les ports que le routeur ouvre vers Internet (UPnP) sont dans le scan du réseau, qui les demande au routeur.",
             "The ports the router opens to the Internet (UPnP) are in the network scan, which asks the router for them."
         ),
         2,

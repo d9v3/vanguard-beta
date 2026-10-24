@@ -396,7 +396,7 @@ fn carte_par_defaut(table: &str) -> Option<String> {
 /// seulement si la connexion se sert de l'IPv6. Erreur : pourquoi il faut le faire à la main.
 pub fn dns_principal(v4: &[&str], v6: &[&str]) -> Result<Changement, String> {
     let a_la_main = tr!(
-        "NetworkManager ne gère pas cette connexion : le DNS se règle à la main (paramètres réseau, ou dans la box).",
+        "NetworkManager ne gère pas cette connexion : le DNS se règle à la main (paramètres réseau, ou dans le routeur).",
         "NetworkManager does not manage this connection: set the DNS by hand (network settings, or in the router)."
     );
     let carte = std::fs::read_to_string("/proc/net/route")

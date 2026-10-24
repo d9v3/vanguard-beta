@@ -475,7 +475,7 @@ pub fn temps_reel() {
         Reference::Valable(r) | Reference::Adoptee(r) => r,
         Reference::Absente => {
             trp!(
-                "  Pas encore de référence : lance d'abord « vanguard integrite ».",
+                "  Pas encore de référence : lancez d'abord « vanguard integrite ».",
                 "  No reference yet: run “vanguard integrity” first."
             );
             return;

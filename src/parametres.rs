@@ -464,7 +464,7 @@ fn valeurs_dites(r: Reglage) -> String {
     let valeurs = r.valeurs().join(", ");
     if r == Reglage::TempsReel {
         trf!(
-            "{valeurs} [--pendant 1h|4h] (sans --pendant : jusqu'à ce que tu la remettes)",
+            "{valeurs} [--pendant 1h|4h] (sans --pendant : jusqu'à ce que vous la remettiez)",
             "{valeurs} [--for 1h|4h] (without --for: until you turn it back on)"
         )
     } else {
@@ -761,7 +761,7 @@ fn explication(r: Reglage) -> &'static str {
             "What Vanguard asks the Internet by itself is skipped: address seen from the Internet, the audit's DNS, new version, MalwareBazaar fingerprints, software versions."
         ),
         Reglage::VersionsLogiciels => tr!(
-            "Oui : Vanguard télécharge une fois par jour, en entier, les fichiers publics des dernières versions (sites des éditeurs, endoflife.date, Homebrew, avis de Mozilla) et le catalogue des failles exploitées de la CISA, les mêmes pour tous : la liste de tes logiciels ne sort jamais. Non : rien n'est téléchargé ; les copies déjà gardées servent encore 30 jours au plus (3 jours pour dire « à jour »), puis les logiciels pas à jour ne sont plus vérifiés, ce qui est dit.",
+            "Oui : Vanguard télécharge une fois par jour, en entier, les fichiers publics des dernières versions (sites des éditeurs, endoflife.date, Homebrew, avis de Mozilla) et le catalogue des failles exploitées de la CISA, les mêmes pour tous : la liste de vos logiciels ne sort jamais. Non : rien n'est téléchargé ; les copies déjà gardées servent encore 30 jours au plus (3 jours pour dire « à jour »), puis les logiciels pas à jour ne sont plus vérifiés, ce qui est dit.",
             "Yes: once a day, Vanguard downloads the public files of the latest versions in full (publishers' sites, endoflife.date, Homebrew, Mozilla advisories) and CISA's exploited flaws catalog, the same for everyone: the list of your software never leaves. No: nothing is downloaded; the copies already kept still serve for 30 days at most (3 days to say “up to date”), then outdated software is no longer checked, which is said."
         ),
         Reglage::Autotest => tr!(
@@ -769,7 +769,7 @@ fn explication(r: Reglage) -> &'static str {
             "Yes: once a week, with the monitoring, Vanguard compares its own readings (installed software, services, ports, accounts, firewall) with what the system's tools say, and notes what slows down. Nothing is changed, nothing is sent, no notification; postponed during a game. “vanguard autotest” does it by hand."
         ),
         Reglage::TempsReel => tr!(
-            "Coupe d'un coup ce que Vanguard fait tout seul en continu : la surveillance horaire et la protection active du blocage, pendant 1 heure, 4 heures ou jusqu'à ce que tu la remettes. Les réglages de chacun ne changent pas : à la reprise, chacun retrouve son état d'avant. Jamais Defender, le pare-feu ni l'UAC.",
+            "Coupe d'un coup ce que Vanguard fait tout seul en continu : la surveillance horaire et la protection active du blocage, pendant 1 heure, 4 heures ou jusqu'à ce que vous la remettiez. Les réglages de chacun ne changent pas : à la reprise, chacun retrouve son état d'avant. Jamais Defender, le pare-feu ni l'UAC.",
             "Turns off at once what Vanguard does by itself all the time: the hourly monitoring and the active protection of blocking, for 1 hour, 4 hours or until you turn it back on. Each part's settings do not change: when it comes back, each one is as it was. Never Defender, the firewall or UAC."
         ),
         Reglage::Surveillance => tr!(
@@ -781,7 +781,7 @@ fn explication(r: Reglage) -> &'static str {
             "One notification a month: grade, updates, space, new problems."
         ),
         Reglage::Restrictions => tr!(
-            "Oui : une extension demande ton accord, son empreinte est vérifiée, elle est analysée et bornée, jamais en administrateur. Non : elle tourne comme un de tes programmes, sans contrôle ; couper demande ton accord une fois.",
+            "Oui : une extension demande votre accord, son empreinte est vérifiée, elle est analysée et bornée, jamais en administrateur. Non : elle tourne comme un de vos programmes, sans contrôle ; couper demande votre accord une fois.",
             "Yes: an extension asks for your consent, its fingerprint is checked, it is scanned and limited, never as administrator. No: it runs like one of your programs, without checks; turning them off asks for your consent once."
         ),
         Reglage::Appris | Reglage::Blocage | Reglage::CleAbuseCh => "",

@@ -77,7 +77,7 @@ fn lire_firefox(texte: &str) -> Vec<Extension> {
         let origines = chaines(&a["userPermissions"]["origins"]);
         let origine_suspecte = if a["installTelemetryInfo"]["method"] == "sideload" {
             Some(tr!(
-                "installée par un programme, sans passer par toi",
+                "installée par un programme, sans passer par vous",
                 "installed by a program, without going through you"
             ))
         } else if a["signedState"].as_i64().is_some_and(|s| s <= 0) {
@@ -193,7 +193,7 @@ fn juger(navigateur: &str, extensions: &[Extension]) -> Vec<Constat> {
                     CAT,
                     niveau,
                     trf!(
-                        "{navigateur} : extension « {} » {raison}{}. Retire-la si tu ne l'as pas installée toi-même.",
+                        "{navigateur} : extension « {} » {raison}{}. Retirez-la si vous ne l'avez pas installée vous-même.",
                         "{navigateur}: extension “{}” {raison}{}. Remove it if you did not install it yourself.",
                         e.nom,
                         if e.partout {
@@ -238,7 +238,7 @@ fn juger(navigateur: &str, extensions: &[Extension]) -> Vec<Constat> {
         CAT,
         Niveau::Info,
         trf!(
-            "{navigateur} : {} extension(s), dont {} avec accès à tous les sites : {noms}. Garde seulement celles que tu utilises et dont tu connais l'éditeur.",
+            "{navigateur} : {} extension(s), dont {} avec accès à tous les sites : {noms}. Gardez seulement celles que vous utilisez et dont vous connaissez l'éditeur.",
             "{navigateur}: {} extension(s), {} of them with access to every site: {noms}. Keep only the ones you use and whose publisher you know.",
             extensions.len(),
             partout.len()

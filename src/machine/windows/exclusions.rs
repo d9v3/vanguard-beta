@@ -86,7 +86,7 @@ pub(super) fn juger(chemins: &[String], processus: &[String], extensions: &[Stri
         )
         .manuel(
             tr!(
-                "Si tu n'as pas ajouté ces exclusions toi-même, les retirer (commandes ci-dessous, en administrateur), puis lancer une analyse complète",
+                "Si vous n'avez pas ajouté ces exclusions vous-même, les retirer (commandes ci-dessous, en administrateur), puis lancer une analyse complète",
                 "If you did not add these exclusions yourself, remove them (commands below, as administrator), then run a full scan"
             ),
             &commandes,

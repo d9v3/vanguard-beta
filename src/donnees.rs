@@ -207,7 +207,7 @@ pub fn menu() {
             sauvegarder(Some(fichier));
         }
         "2" => match chemin_saisi(&demander(tr!(
-            "  Fichier à restaurer (tu peux le glisser dans la fenêtre) : ",
+            "  Fichier à restaurer (vous pouvez le glisser dans la fenêtre) : ",
             "  File to restore (you can drag it into the window): "
         ))) {
             Some(f) => restaurer(&f),

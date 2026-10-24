@@ -52,36 +52,36 @@ pub(super) fn urgences(signe: Signe, internet: bool) -> Vec<&'static str> {
     if signe == Signe::Rancon {
         if internet {
             u.push(tr!(
-                "Coupe Internet tout de suite (câble débranché, Wi-Fi éteint) : un rançongiciel en cours chiffre aussi les disques partagés, le stockage en ligne et les sauvegardes branchées.",
+                "Coupez Internet tout de suite (câble débranché, Wi-Fi éteint) : un rançongiciel en cours chiffre aussi les disques partagés, le stockage en ligne et les sauvegardes branchées.",
                 "Cut the Internet right now (cable unplugged, Wi-Fi off): ransomware at work also encrypts shared disks, online storage and plugged-in backups."
             ));
         }
         u.push(tr!(
-            "Ne paie pas : rien ne garantit la clé, et payer fait de toi une cible. Garde les fichiers chiffrés tels quels : des déchiffreurs sortent parfois (projet No More Ransom, d'Europol et de la police néerlandaise).",
+            "Ne payez pas : rien ne garantit la clé, et payer fait de vous une cible. Gardez les fichiers chiffrés tels quels : des déchiffreurs sortent parfois (projet No More Ransom, d'Europol et de la police néerlandaise).",
             "Do not pay: nothing guarantees the key, and paying makes you a target. Keep the encrypted files as they are: decryptors come out sometimes (No More Ransom project, by Europol and the Dutch police)."
         ));
     }
     if signe == Signe::PriseDeControle {
         if internet {
             u.push(tr!(
-                "Si la personne est peut-être encore connectée : coupe Internet d'abord, le programme de prise de contrôle se retire ensuite (« Quelqu'un contrôle mon ordi ? », proposé plus bas).",
-                "If the person may still be connected: cut the Internet first, the remote control program is removed afterwards (“Is someone controlling my PC?”, offered below)."
+                "Si la personne est peut-être encore connectée : coupez Internet d'abord, le programme de prise de contrôle se retire ensuite (« Mon ordinateur est-il contrôlé ? », proposé plus bas).",
+                "If the person may still be connected: cut the Internet first, the remote control program is removed afterwards (“Is my computer being controlled?”, offered below)."
             ));
         }
         u.push(tr!(
-            "Ne rappelle jamais le numéro affiché ni celui de l'appel : un vrai soutien technique n'appelle pas sans qu'on l'ait demandé. Si tu as payé, appelle ta banque pour contester.",
+            "Ne rappelez jamais le numéro affiché ni celui de l'appel : un vrai soutien technique n'appelle pas sans qu'on l'ait demandé. Si vous avez payé, appelez votre banque pour contester.",
             "Never call back the number shown or the caller's: real technical support does not call unasked. If you paid, call your bank to dispute it."
         ));
     }
     if signe == Signe::FichierOuvert {
         u.push(tr!(
-            "Le fichier ouvert reste sur le disque : ne le rouvre pas. Les analyses ci-dessous le retrouvent dans Téléchargements, sur le Bureau et au démarrage.",
+            "Le fichier ouvert reste sur le disque : ne le rouvrez pas. Les analyses ci-dessous le retrouvent dans Téléchargements, sur le Bureau et au démarrage.",
             "The opened file is still on the disk: do not open it again. The scans below find it in Downloads, on the Desktop and at startup."
         ));
     }
     if signe == Signe::AntivirusAlerte {
         u.push(tr!(
-            "L'antivirus a isolé ce qu'il a trouvé : laisse-le en quarantaine. Ce qui compte maintenant, c'est ce qu'il n'a pas vu : ce qui se lance au démarrage et ce qui a changé.",
+            "L'antivirus a isolé ce qu'il a trouvé : laissez-le en quarantaine. Ce qui compte maintenant, c'est ce qu'il n'a pas vu : ce qui se lance au démarrage et ce qui a changé.",
             "The antivirus isolated what it found: leave it in quarantine. What matters now is what it did not see: what starts at boot and what changed."
         ));
     }
@@ -110,7 +110,7 @@ pub(super) fn mots_de_passe(signe: Signe) -> Vec<&'static str> {
             "The accounts that open the rest: Microsoft, Apple, Google, and the password manager itself."
         ),
         tr!(
-            "Les réseaux sociaux et la messagerie (ils servent à arnaquer tes proches en ton nom).",
+            "Les réseaux sociaux et la messagerie (ils servent à arnaquer vos proches en votre nom).",
             "Social networks and messaging (they are used to scam your relatives in your name)."
         ),
         tr!(
@@ -130,7 +130,7 @@ pub(super) fn mots_de_passe(signe: Signe) -> Vec<&'static str> {
 pub(crate) fn infection() {
     let Some(signe) = question(
         tr!(
-            "Qu'est-ce qui te fait penser à une infection ?",
+            "Qu'est-ce qui vous fait penser à une infection ?",
             "What makes you think there is an infection?"
         ),
         &[
@@ -196,7 +196,7 @@ pub(crate) fn infection() {
     afficher_aligne(
         "  ",
         tr!(
-            "Depuis un AUTRE appareil (téléphone, ordinateur sain), tant que celui-ci n'est pas lavé de tout doute. Active la validation en deux étapes partout où c'est possible, et déconnecte les sessions ouvertes ailleurs.",
+            "Depuis un AUTRE appareil (téléphone, ordinateur sain), tant que celui-ci n'est pas lavé de tout doute. Activez la validation en deux étapes partout où c'est possible, et déconnectez les sessions ouvertes ailleurs.",
             "From ANOTHER device (phone, clean computer), as long as this one is not cleared of all doubt. Turn on two-step verification wherever possible, and sign out the sessions open elsewhere."
         ),
         2,
@@ -206,13 +206,13 @@ pub(crate) fn infection() {
         afficher_aligne(&format!("  {TOUCHE}{}{RESET} ", i + 1), m, 4, "");
     }
     conseil(tr!(
-        "Dans le courriel, vérifie aussi les règles de transfert automatique et les adresses de secours : un intrus s'en sert pour garder l'accès après le changement de mot de passe.",
+        "Dans le courriel, vérifiez aussi les règles de transfert automatique et les adresses de secours : un intrus s'en sert pour garder l'accès après le changement de mot de passe.",
         "In the mailbox, also check the automatic forwarding rules and the recovery addresses: an intruder uses them to keep access after the password change."
     ));
     if internet {
         proposer_outil(
             tr!(
-                "\n  Chercher tes anciens mots de passe dans les fuites connues ? [o/N] : ",
+                "\n  Chercher vos anciens mots de passe dans les fuites connues ? [o/N] : ",
                 "\n  Check whether one of your old passwords is in the known leaks? [y/N]: "
             ),
             crate::protection::fuites::verifier,
@@ -221,12 +221,12 @@ pub(crate) fn infection() {
     let mut conseils = Vec::new();
     if matches!(signe, Signe::Rancon | Signe::PriseDeControle) {
         conseils.push(tr!(
-            "Quand le doute reste (rançongiciel, prise de contrôle confirmée), la seule certitude est la réinstallation complète : d'abord une copie vérifiée de tes fichiers (Copier mes fichiers), puis le système réinstallé depuis la clé VANGUARD ou l'outil de récupération.",
+            "Quand le doute reste (rançongiciel, prise de contrôle confirmée), la seule certitude est la réinstallation complète : d'abord une copie vérifiée de vos fichiers (Copier mes fichiers), puis le système réinstallé depuis la clé VANGUARD ou l'outil de récupération.",
             "When doubt remains (ransomware, confirmed remote control), the only certainty is a full reinstall: first a checked copy of your files (Copy my files), then the system reinstalled from the VANGUARD key or the recovery tool."
         ));
     }
     conseils.push(tr!(
-        "Les autres appareils de la maison ont pu être touchés par le même courriel ou la même clé USB : refais au moins l'analyse rapide dessus.",
+        "Les autres appareils de votre domicile ont pu être touchés par le même courriel ou la même clé USB : refaites au moins l'analyse rapide dessus.",
         "The other devices of the house may have been hit by the same email or USB stick: at least run the quick scan on them too."
     ));
     a_savoir(&conseils);
@@ -300,7 +300,7 @@ pub(super) fn traces() {
     ecran();
     section(tr!("COLLECTER LES TRACES", "COLLECT THE TRACES"));
     conseil(tr!(
-        "Avant de nettoyer ou de réinstaller un ordinateur infecté : ce qu'un spécialiste voudra voir, gardé dans un dossier daté. Lecture seule, rien ne part sur Internet. Fais-le avant de débrancher le réseau : les connexions en cours disparaissent avec lui. Sauf devant un rançongiciel ou une prise de contrôle en cours : coupe Internet d'abord.",
+        "Avant de nettoyer ou de réinstaller un ordinateur infecté : ce qu'un spécialiste voudra voir, gardé dans un dossier daté. Lecture seule, rien ne part sur Internet. Faites-le avant de débrancher le réseau : les connexions en cours disparaissent avec lui. Sauf devant un rançongiciel ou une prise de contrôle en cours : coupez Internet d'abord.",
         "Before cleaning up or reinstalling an infected computer: what a specialist will want to see, kept in a dated folder. Read-only, nothing goes to the Internet. Do it before unplugging the network: current connections vanish with it. Except with ransomware or a remote control in progress: cut the Internet first."
     ));
     crate::traces::collecter(None);
@@ -375,10 +375,10 @@ fn liste_des_analyses(signe: Signe, internet: bool) -> Vec<Analyse> {
         });
     }
     a.push(Analyse {
-        texte: tr!("Quelqu'un contrôle mon ordi ?", "Is someone controlling my PC?"),
+        texte: tr!("Mon ordinateur est-il contrôlé ?", "Is my computer being controlled?"),
         precision: tr!("retire après accord", "removes after consent"),
         detail: tr!(
-            "Les programmes de prise de contrôle à distance (AnyDesk, TeamViewer, RustDesk…) installés, au démarrage, en cours ou téléchargés ; chacun n'est retiré qu'après ton accord.",
+            "Les programmes de prise de contrôle à distance (AnyDesk, TeamViewer, RustDesk…) installés, au démarrage, en cours ou téléchargés ; chacun n'est retiré qu'après votre accord.",
             "Remote control programs (AnyDesk, TeamViewer, RustDesk…) installed, at boot, running or downloaded; each is removed only after your consent."
         ),
         cochee: matches!(signe, Signe::PriseDeControle | Signe::Doute),
@@ -405,7 +405,7 @@ fn analyses(signe: Signe, internet: bool) {
         String::new(),
         ligne_section(tr!("ANALYSES", "SCANS")),
         trf!(
-            "  {GRIS}Chaque analyse dit ce qu'elle trouve ; rien n'est retiré sans ton accord.{RESET}",
+            "  {GRIS}Chaque analyse dit ses trouvailles ; rien n'est retiré sans votre accord.{RESET}",
             "  {GRIS}Each scan says what it finds; nothing is removed without your consent.{RESET}"
         ),
         String::new(),
@@ -441,8 +441,8 @@ mod tests {
         let branche = urgences(Signe::Rancon, true);
         let coupe = urgences(Signe::Rancon, false);
         assert_eq!(branche.len(), coupe.len() + 1);
-        assert!(branche[0].contains("Coupe Internet"));
-        assert!(coupe[0].contains("Ne paie pas"));
+        assert!(branche[0].contains("Coupez Internet"));
+        assert!(coupe[0].contains("Ne payez pas"));
         assert_eq!(urgences(Signe::Doute, true).len(), 0);
         assert_eq!(urgences(Signe::PriseDeControle, false).len(), 1);
     }
@@ -482,8 +482,8 @@ mod tests {
             assert!(!couper_d_abord(signe), "{signe:?}");
         }
         // Ce qui est montré avant les traces commence bien par la coupure.
-        assert!(urgences(Signe::Rancon, true)[0].contains("Coupe Internet"));
-        assert!(urgences(Signe::PriseDeControle, true)[0].contains("coupe Internet"));
+        assert!(urgences(Signe::Rancon, true)[0].contains("Coupez Internet"));
+        assert!(urgences(Signe::PriseDeControle, true)[0].contains("coupez Internet"));
     }
 
     #[test]

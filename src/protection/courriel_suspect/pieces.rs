@@ -210,7 +210,7 @@ pub(crate) fn juger(nom: &str, type_declare: &str, contenu: &[u8]) -> (Vec<Signe
         Some(Classe::Programme) => signes.push((
             Niveau::Eleve,
             trf!(
-                "{montre} : un programme en pièce jointe. Aucun service sérieux n'en envoie ; ne l'ouvre pas.",
+                "{montre} : un programme en pièce jointe. Aucun service sérieux n'en envoie ; ne l'ouvrez pas.",
                 "{montre}: a program as an attachment. No serious service sends one; do not open it."
             ),
         )),
@@ -238,14 +238,14 @@ pub(crate) fn juger(nom: &str, type_declare: &str, contenu: &[u8]) -> (Vec<Signe
         Some(Classe::PageWeb) => signes.push((
             Niveau::Eleve,
             trf!(
-                "{montre} : page web en pièce jointe, souvent une fausse page de connexion qui s'ouvre depuis ton ordinateur.",
+                "{montre} : page web en pièce jointe, souvent une fausse page de connexion qui s'ouvre depuis votre ordinateur.",
                 "{montre}: web page as an attachment, often a fake login page that opens from your computer."
             ),
         )),
         Some(Classe::Macros) => signes.push((
             Niveau::Eleve,
             trf!(
-                "{montre} : document à macros ; n'active jamais le contenu qu'il demande.",
+                "{montre} : document à macros ; n'activez jamais le contenu qu'il demande.",
                 "{montre}: macro-enabled document; never enable the content it asks for."
             ),
         )),

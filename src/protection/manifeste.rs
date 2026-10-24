@@ -457,7 +457,7 @@ pub fn constat() -> Option<Constat> {
         Ok(ecart) if ecart.vide() => ok(
             CAT,
             trf!(
-                "La clé VANGUARD n'a pas changé depuis son écriture ({} fichiers vérifiés ; données, images ISO et menu Ventoy mis à part : redéploie-la pour qu'ils le soient).",
+                "La clé VANGUARD n'a pas changé depuis son écriture ({} fichiers vérifiés ; données, images ISO et menu Ventoy mis à part : redéployez-la pour qu'ils le soient).",
                 "The VANGUARD key has not changed since it was written ({} files checked; data, ISO images and Ventoy menu aside: redeploy it so they are).",
                 ecart.verifies
             ),
@@ -473,7 +473,7 @@ pub fn constat() -> Option<Constat> {
         )
         .manuel(
             tr!(
-                "Ne lance plus Vanguard depuis cette clé avant de l'avoir réécrite : chez toi, outils/deployer.sh la remet à neuf",
+                "Ne lancez plus Vanguard depuis cette clé avant de l'avoir réécrite : chez vous, outils/deployer.sh la remet à neuf",
                 "Do not run Vanguard from this key until it is rewritten: at home, outils/deployer.sh restores it"
             ),
             &[],
@@ -510,18 +510,18 @@ fn sans_reference(d_autres: bool, sans: SansReference) -> Option<Constat> {
                 "This VANGUARD key carries the token of a key deployed here, but its volume identifier no longer matches its manifest: it was changed without reformatting the key. That is what it takes for its content to no longer be compared: possible trap, nothing was checked."
             ),
             tr!(
-                "Ne lance rien depuis cette clé ; chez toi, outils/deployer.sh la réécrit (et son manifeste). Clé recopiée sur une autre à dessein : la redéployer suffit",
+                "Ne lancez rien depuis cette clé ; chez vous, outils/deployer.sh la réécrit (et son manifeste). Clé recopiée sur une autre à dessein : la redéployer suffit",
                 "Do not run anything from this key; at home, outils/deployer.sh rewrites it (and its manifest). Key copied onto another on purpose: redeploying it is enough"
             ),
         ),
         SansReference::Inconnue => (
             Niveau::Moyen,
             tr!(
-                "Cette clé VANGUARD n'a pas de manifeste sur cet ordinateur : autre clé que celles déployées ici, ou clé dont le jeton et l'identifiant de volume ont été changés. Rien n'a été comparé : ne lance rien depuis elle avant de l'avoir redéployée.",
+                "Cette clé VANGUARD n'a pas de manifeste sur cet ordinateur : autre clé que celles déployées ici, ou clé dont le jeton et l'identifiant de volume ont été changés. Rien n'a été comparé : ne lancez rien depuis elle avant de l'avoir redéployée.",
                 "This VANGUARD key has no manifest on this computer: a key other than those deployed here, or a key whose token and volume identifier were changed. Nothing was compared: do not run anything from it before redeploying it."
             ),
             tr!(
-                "Redéploie-la avec outils/deployer.sh (il écrit son manifeste)",
+                "Redéployez-la avec outils/deployer.sh (il écrit son manifeste)",
                 "Redeploy it with outils/deployer.sh (it writes its manifest)"
             ),
         ),
@@ -532,7 +532,7 @@ fn sans_reference(d_autres: bool, sans: SansReference) -> Option<Constat> {
                 "The volume identifier of this VANGUARD key could not be read: its manifest was not found, and its content could not be compared."
             ),
             tr!(
-                "Rebranche-la et relance le bilan ; sinon outils/deployer.sh écrit son manifeste en la mettant à jour",
+                "Rebranchez-la et relancez le bilan ; sinon outils/deployer.sh écrit son manifeste en la mettant à jour",
                 "Plug it in again and rerun the check-up; otherwise outils/deployer.sh writes its manifest when it updates the key"
             ),
         ),
@@ -563,7 +563,7 @@ fn avertissement(jours: i64) -> Option<String> {
     (jours >= PERIME_JOURS).then(|| {
         let mois = jours / 30;
         trf!(
-            "Cette copie de Vanguard a {mois} mois : remets la clé à jour chez toi.",
+            "Cette copie de Vanguard a {mois} mois : remettez la clé à jour chez vous.",
             "This copy of Vanguard is {mois} months old: update the key at home."
         )
     })
@@ -645,13 +645,13 @@ pub fn verifier_moi(autre: Option<&Path>) {
         match reference(&cle).ok_or(()).and_then(|r| lire(&r).map_err(|_| ())) {
             // Reconnue mais sans référence : la comparaison a sauté parce que l'identifiant du volume a changé.
             Err(()) if identifiant_change => trp!(
-                "  ✖ Jeton d'une clé déployée ici, mais son identifiant de volume ne correspond plus à son manifeste : rien n'a pu être comparé. Possible piège : ne lance rien depuis elle, réécris-la (outils/deployer.sh).",
+                "  ✖ Jeton d'une clé déployée ici, mais son identifiant de volume ne correspond plus à son manifeste : rien n'a pu être comparé. Possible piège : ne lancez rien depuis elle, réécrivez-la (outils/deployer.sh).",
                 "  ✖ Token of a key deployed here, but its volume identifier no longer matches its manifest: nothing could be compared. Possible trap: do not run anything from it, rewrite it (outils/deployer.sh)."
             ),
             // Chez le propriétaire (d'autres clés ont leur référence) : une clé sans la sienne n'est pas « hors de
             // chez lui », c'est une clé à redéployer avant de s'en servir.
             Err(()) if a_des_references(&base) => trp!(
-                "  ⚠ Pas de manifeste ici pour cette clé, alors que d'autres clés y ont le leur : autre clé, ou jeton et identifiant changés. Rien n'a été comparé : ne lance rien depuis elle avant de l'avoir redéployée.",
+                "  ⚠ Pas de manifeste ici pour cette clé, alors que d'autres clés y ont le leur : autre clé, ou jeton et identifiant changés. Rien n'a été comparé : ne lancez rien depuis elle avant de l'avoir redéployée.",
                 "  ⚠ No manifest here for this key, while other keys have theirs: another key, or token and identifier changed. Nothing was compared: do not run anything from it before redeploying it."
             ),
             Err(()) => trp!(
@@ -665,7 +665,7 @@ pub fn verifier_moi(autre: Option<&Path>) {
                     m.date
                 ),
                 Some(_) => trp!(
-                    "  ✖ DIFFÈRE du manifeste écrit le {} : ce n'est pas le programme posé sur la clé. Réécris la clé (outils/deployer.sh) avant de t'en servir.",
+                    "  ✖ DIFFÈRE du manifeste écrit le {} : ce n'est pas le programme posé sur la clé. Réécrivez la clé (outils/deployer.sh) avant de vous en servir.",
                     "  ✖ DIFFERS from the manifest written on {}: this is not the program put on the key. Rewrite the key (outils/deployer.sh) before using it.",
                     m.date
                 ),
@@ -682,7 +682,7 @@ pub fn verifier_moi(autre: Option<&Path>) {
     println!();
     for ligne in envelopper(
         tr!(
-            "Compare l'empreinte SHA-256 à celle de la page de la version de Vanguard, ou à celle que t'a donnée la personne qui t'a remis le programme. Si elles diffèrent, ne l'utilise pas.",
+            "Comparez l'empreinte SHA-256 à celle de la page de la version de Vanguard, ou à celle que vous a donnée la personne qui vous a remis le programme. Si elles diffèrent, ne l'utilisez pas.",
             "Compare the SHA-256 checksum with the one on Vanguard's release page, or the one given by the person who handed you the program. If they differ, do not use it."
         ),
         LARGEUR - 2,
@@ -752,7 +752,7 @@ fn comparer_a_l_historique(hex: &str) {
             "  {VERT}✔{RESET} Version {version} published and signed by the author ({systeme})."
         ),
         Ok(None) => trp!(
-            "  ⚠ Absente de l'historique signé : une version intermédiaire, une version d'avant l'historique (0.84 et plus anciennes), ou un programme changé. Ne t'en sers que si tu sais d'où il vient.",
+            "  ⚠ Absente de l'historique signé : une version intermédiaire, une version d'avant l'historique (0.84 et plus anciennes), ou un programme changé. Ne vous en servez que si vous savez d'où il vient.",
             "  ⚠ Missing from the signed history: an intermediate version, a version older than the history (0.84 and earlier), or a changed program. Only use it if you know where it comes from."
         ),
         Err(e) => trp!(
@@ -822,7 +822,7 @@ pub fn commande(ecrire_dossier: Option<&Path>, accepter: bool, images: Option<(&
                 }
             }
             trp!(
-                "  {} fichiers inchangés. Réécris la clé chez toi (outils/deployer.sh) avant de t'en servir.",
+                "  {} fichiers inchangés. Réécrivez la clé chez vous (outils/deployer.sh) avant de vous en servir.",
                 "  {} files unchanged. Rewrite the key at home (outils/deployer.sh) before using it.",
                 ecart.verifies
             );
@@ -1089,7 +1089,7 @@ mod tests {
         assert_eq!(avertissement(179), None);
         assert_eq!(
             avertissement(210).as_deref(),
-            Some("Cette copie de Vanguard a 7 mois : remets la clé à jour chez toi.")
+            Some("Cette copie de Vanguard a 7 mois : remettez la clé à jour chez vous.")
         );
     }
 }

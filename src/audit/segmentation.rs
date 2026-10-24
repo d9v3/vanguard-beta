@@ -183,7 +183,7 @@ fn objets_avec_les_ordinateurs(e: &Entree) -> Constat {
             ..ok(
                 "Réseau local",
                 tr!(
-                    "Aucun objet connecté reconnu sur le réseau de tes ordinateurs.",
+                    "Aucun objet connecté reconnu sur le réseau de vos ordinateurs.",
                     "No connected device recognized on your computers' network."
                 ),
             )
@@ -198,7 +198,7 @@ fn objets_avec_les_ordinateurs(e: &Entree) -> Constat {
             "Réseau local",
             niveau,
             trf!(
-                "Objets connectés sur le réseau de tes ordinateurs ({n}) : {liste}. Un objet piraté peut les atteindre. Si la box le permet, crée un réseau invité ou « objets » et mets-y télés, prises, caméras et assistants ; garde sur le réseau principal ce qui doit parler à tes ordinateurs (imprimante, Chromecast).",
+                "Objets connectés sur le réseau de vos ordinateurs ({n}) : {liste}. Un objet piraté peut les atteindre. Si le routeur le permet, créez un réseau invité ou « objets » et mettez-y télés, prises, caméras et assistants ; gardez sur le réseau principal ce qui doit parler à vos ordinateurs (imprimante, Chromecast).",
                 "Connected devices on your computers' network ({n}): {liste}. A hacked device can reach them. If the router allows it, create a guest or “devices” network and move TVs, plugs, cameras and assistants there; keep on the main network what must talk to your computers (printer, Chromecast)."
             ),
         )
@@ -230,7 +230,7 @@ fn isolation(e: &Entree) -> Constat {
                 "Réseau local",
                 Niveau::Info,
                 trf!(
-                    "{n} appareil(s) se voient entre eux sur ce réseau : normal chez toi. L'étanchéité du réseau invité de la box se teste en s'y connectant puis en relançant l'audit.{ethernet}",
+                    "{n} appareil(s) se voient entre eux sur ce réseau : normal chez vous. L'étanchéité du réseau invité du routeur se teste en s'y connectant puis en relançant l'audit.{ethernet}",
                     "{n} device(s) can see each other on this network: normal at home. The router's guest network isolation is tested by joining it and running the audit again.{ethernet}"
                 ),
             )
@@ -242,7 +242,7 @@ fn isolation(e: &Entree) -> Constat {
             ..ok(
                 "Réseau local",
                 trf!(
-                    "Depuis le réseau invité « {nom} », aucun appareil de la maison ne répond : il est bien séparé du réseau principal.",
+                    "Depuis le réseau invité « {nom} », aucun appareil de votre domicile ne répond : il est bien séparé du réseau principal.",
                     "From the guest network “{nom}”, no household device answers: it is properly separated from the main network."
                 ),
             )
@@ -261,7 +261,7 @@ fn isolation(e: &Entree) -> Constat {
             "Réseau local",
             niveau,
             trf!(
-                "Depuis le réseau invité « {nom} », {n} appareil(s) de la maison répondent encore ({liste}) : ce réseau n'est pas séparé du principal. Dans la box : réseau invité › activer l'isolation (« isolation des clients », accès au réseau local désactivé). Un appareil en Ethernet reste visible malgré l'isolation Wi-Fi.",
+                "Depuis le réseau invité « {nom} », {n} appareil(s) de votre domicile répondent encore ({liste}) : ce réseau n'est pas séparé du principal. Dans le routeur : réseau invité › activer l'isolation (« isolation des clients », accès au réseau local désactivé). Un appareil en Ethernet reste visible malgré l'isolation Wi-Fi.",
                 "From the guest network “{nom}”, {n} household device(s) still answer ({liste}): this network is not separated from the main one. In the router: guest network › enable isolation (“client isolation”, local network access off). A device on Ethernet stays visible despite Wi-Fi isolation."
             ),
         )
@@ -284,16 +284,15 @@ fn serveur_dhcp(e: &Entree) -> Constat {
             )
         };
     };
-    let boite = e
-        .passerelle
-        .map_or_else(|| tr!("la box", "the router").to_string(), |p| p.to_string());
+    // « le routeur 10.0.0.1 », ou « le routeur » seul quand son adresse n'est pas connue.
+    let boite = e.passerelle.map_or_else(String::new, |p| format!(" {p}"));
     if Some(serveur) == e.passerelle {
         return Constat {
             regle: "COM-SEG-004",
             ..ok(
                 "Réseau local",
                 trf!(
-                    "Les adresses du réseau sont distribuées par la box ({serveur}).",
+                    "Les adresses du réseau sont distribuées par le routeur ({serveur}).",
                     "Network addresses are handed out by the router ({serveur})."
                 ),
             )
@@ -312,8 +311,8 @@ fn serveur_dhcp(e: &Entree) -> Constat {
             "Réseau local",
             niveau,
             trf!(
-                "Les adresses du réseau sont distribuées par {serveur} ({qui}) et non par la box {boite} : si ce n'est pas un serveur à toi (Pi-hole, NAS, second routeur), un appareil peut se faire passer pour la box et voir passer ton trafic. Un second serveur DHCP concurrent ne se détecte pas d'ici.",
-                "Network addresses are handed out by {serveur} ({qui}) and not by the router {boite}: if it is not a server of yours (Pi-hole, NAS, second router), a device may pose as the router and see your traffic. A competing second DHCP server cannot be detected from here."
+                "Les adresses du réseau sont distribuées par {serveur} ({qui}) et non par le routeur{boite} : si ce n'est pas un serveur à vous (Pi-hole, NAS, second routeur), un appareil peut se faire passer pour le routeur et voir passer votre trafic. Un second serveur DHCP concurrent ne se détecte pas d'ici.",
+                "Network addresses are handed out by {serveur} ({qui}) and not by the router{boite}: if it is not a server of yours (Pi-hole, NAS, second router), a device may pose as the router and see your traffic. A competing second DHCP server cannot be detected from here."
             ),
         )
     }
@@ -389,7 +388,7 @@ fn deux_routeurs_ipv6(e: &Entree) -> Constat {
                     "Réseau local",
                     Niveau::Moyen,
                     trf!(
-                        "Deux appareils se présentent comme routeur IPv6 ({a} et {b}) : l'un n'est pas la box, et ton trafic IPv6 peut passer par lui. Trouve l'appareil à l'adresse MAC {mac} dans le carnet des appareils et débranche-le ; si c'est un second routeur à toi, désactive son IPv6 ou mets-le en mode pont. Normal pendant un changement de box ou avec le partage de connexion d'un téléphone.",
+                        "Deux appareils se présentent comme routeur IPv6 ({a} et {b}) : l'un n'est pas votre routeur, et votre trafic IPv6 peut passer par lui. Trouvez l'appareil à l'adresse MAC {mac} dans le carnet des appareils et débranchez-le ; si c'est un second routeur à vous, désactivez son IPv6 ou mettez-le en mode pont. Normal pendant un changement de routeur ou avec le partage de connexion d'un téléphone.",
                         "Two devices present themselves as the IPv6 router ({a} and {b}): one of them is not your router, and your IPv6 traffic may go through it. Find the device with MAC address {mac} in the device list and unplug it; if it is a second router of yours, disable its IPv6 or set it to bridge mode. Normal while replacing the router or when sharing a phone's connection."
                     ),
                 )

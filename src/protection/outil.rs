@@ -87,7 +87,7 @@ pub(crate) fn proposer(e: &Externe) -> Option<PathBuf> {
         println!(
             "  {}",
             trf!(
-                "Installe-le comme l'explique son site ({}), puis relance.",
+                "Installez-le comme l'explique son site ({}), puis relancez.",
                 "Install it as its site explains ({}), then run again.",
                 e.site
             )
@@ -129,7 +129,7 @@ pub(crate) fn proposer(e: &Externe) -> Option<PathBuf> {
     let trouve = trouver(e.nom);
     if trouve.is_none() {
         trp!(
-            "  ✖ Installé, mais pas encore trouvé : relance Vanguard.",
+            "  ✖ Installé, mais pas encore trouvé : relancez Vanguard.",
             "  ✖ Installed, but not found yet: restart Vanguard."
         );
     }

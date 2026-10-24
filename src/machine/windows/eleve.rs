@@ -208,7 +208,7 @@ pub(crate) fn appliquer(lignes: &[String]) -> Option<Vec<Reponse>> {
         std::fs::OpenOptions::new().read(true).share_mode(1).open(&exe).ok()?
     };
     trp!(
-        "    {GRIS}Une fenêtre Vanguard administrateur s'ouvre, montre la liste et attend Entrée ; attends qu'elle se ferme.{RESET}",
+        "    {GRIS}Une fenêtre Vanguard administrateur s'ouvre, montre la liste et attend Entrée ; attendez qu'elle se ferme.{RESET}",
         "    {GRIS}A Vanguard administrator window opens, shows the list and waits for Enter; wait for it to close.{RESET}"
     );
     let parametres = format!("appliquer-eleve --canal {canal} --parent {}", std::process::id());
@@ -522,7 +522,7 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
     };
     let Some(liste) = corrections::valider(&lignes) else {
         trp!(
-            "La liste reçue n'est pas une liste de corrections de Vanguard : rien n'est fait. Un autre programme y a touché : lance une analyse antivirus.",
+            "La liste reçue n'est pas une liste de corrections de Vanguard : rien n'est fait. Un autre programme y a touché : lancez une analyse antivirus.",
             "The list received is not a Vanguard fix list: nothing is done. Another program touched it: run an antivirus scan."
         );
         let _ = tube.write_all(format!("{FIN}\n").as_bytes());
@@ -536,7 +536,7 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
     }
     println!();
     let accord = crate::ui::demander(tr!(
-        "Appuie sur Entrée pour appliquer ; toute autre réponse qu'oui annule : ",
+        "Appuyez sur Entrée pour appliquer ; toute autre réponse qu'oui annule : ",
         "Press Enter to apply; any answer other than yes cancels: "
     ));
     let mut code = 0;
@@ -574,7 +574,7 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
 }
 
 fn attendre_entree_pour_fermer() {
-    let _ = crate::ui::demander(tr!("Appuie sur Entrée pour fermer : ", "Press Enter to close: "));
+    let _ = crate::ui::demander(tr!("Appuyez sur Entrée pour fermer : ", "Press Enter to close: "));
 }
 
 /// Une correction non faite parce qu'on s'est arrêté avant.
@@ -671,7 +671,7 @@ fn continuer_sans_point(raison: &str, demander: impl FnOnce(&str) -> String) -> 
         // Pas de point, accepté : la suite continue, et « Ce que Vanguard a changé » le note.
         (true, sans_point_accepte().to_string())
     } else {
-        (false, tr!("arrêté à ta demande", "stopped as you asked").to_string())
+        (false, tr!("arrêté à votre demande", "stopped as you asked").to_string())
     }
 }
 

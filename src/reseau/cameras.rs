@@ -325,7 +325,7 @@ pub async fn chercher_cameras() {
     }
     let Some((cible, moi)) = scan::reseau_local() else {
         trp!(
-            "\n  ✖ Pas de réseau local détecté : connecte-toi d'abord au Wi-Fi du lieu.",
+            "\n  ✖ Pas de réseau local détecté : connectez-vous d'abord au Wi-Fi du lieu.",
             "\n  ✖ No local network detected: connect to the place's Wi-Fi first."
         );
         return;
@@ -350,7 +350,7 @@ pub async fn chercher_cameras() {
         );
         afficher_aligne(&format!("  {VERT}✔{RESET} "), aucune, 4, "");
         tr!(
-            "Une caméra en 4G, ou qui n'enregistre que sur sa carte mémoire, n'apparaît sur aucun réseau : regarde aussi les détecteurs de fumée, chargeurs, réveils et cadres tournés vers le lit ou la douche, avec la lampe du téléphone (l'objectif renvoie un petit reflet).",
+            "Une caméra en 4G, ou qui n'enregistre que sur sa carte mémoire, n'apparaît sur aucun réseau : regardez aussi les détecteurs de fumée, chargeurs, réveils et cadres tournés vers le lit ou la douche, avec la lampe du téléphone (l'objectif renvoie un petit reflet).",
             "A camera on 4G, or recording only to its memory card, shows up on no network: also look at smoke detectors, chargers, clocks and frames facing the bed or shower, with the phone's flashlight (the lens gives a small reflection)."
         )
     } else {
@@ -365,7 +365,7 @@ pub async fn chercher_cameras() {
             }
         }
         tr!(
-            "Une caméra peut être légitime (entrée, extérieur), mais la plupart des plateformes de location interdisent celles des chambres et des salles de bain, et exigent d'annoncer les autres. Ne la débranche pas et ne t'y connecte pas : prends une photo de l'appareil, puis préviens l'hôte et la plateforme.",
+            "Une caméra peut être légitime (entrée, extérieur), mais la plupart des plateformes de location interdisent celles des chambres et des salles de bain, et exigent d'annoncer les autres. Ne la débranchez pas et ne vous y connectez pas : prenez une photo de l'appareil, puis prévenez l'hôte et la plateforme.",
             "A camera can be legitimate (entrance, outdoors), but most rental platforms forbid them in bedrooms and bathrooms, and require the others to be disclosed. Do not unplug it or connect to it: take a photo of the device, then tell the host and the platform."
         )
     };

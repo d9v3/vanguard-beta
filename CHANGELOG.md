@@ -14,6 +14,14 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   2026.3.1) ; Flathub n'y distribue plus que sa version commerciale, qui se dit donc « pas libre »,
   alors que winget et Homebrew installent la version GPL-3.0. VeraCrypt sert aux clés USB, disques externes et coffres,
   le disque système allant à BitLocker ou LUKS. Rôles au vouvoiement.
+- **Vouvoiement et vocabulaire.** Tout ce que Vanguard affiche en français vouvoie (menus, messages, aide de la
+  ligne de commande, guide, rapports) et parle de « routeur », de « réseau local » et d'« adresse Internet publique »
+  au lieu de « box » et de « maison » ; « Quelqu'un contrôle mon ordi ? » devient « Mon ordinateur est-il contrôlé ? »,
+  « Box et objets connectés » « Routeur et objets connectés ». `outils/textes.py` refuse désormais un tutoiement dans
+  un texte affiché. La surveillance horaire et l'entretien du mois notent la génération des textes : la première passe
+  après la mise à jour compare les constats sans leur formulation, par ce qui désigne leur objet (adresses, ports,
+  CVE), sans fausse alerte. Les alertes
+  déclarées normales, reconnues à leur texte quand elles n'ont pas de clé, peuvent revenir une fois en français.
 
 ## 23 octobre 2026 : version 0.86
 

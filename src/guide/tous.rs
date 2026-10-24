@@ -19,7 +19,7 @@ pub const PROGRAMMES: &[Programme] = &[
             traduite(
                 "vanguard complet",
                 "vanguard full",
-                "Bilan complet : cette machine, puis le réseau.",
+                "Bilan complet : cet ordinateur, puis le réseau.",
                 "Full check: this machine, then the network.",
                 false,
             ),
@@ -89,7 +89,7 @@ pub const PROGRAMMES: &[Programme] = &[
             traduite(
                 "vanguard motdepasse",
                 "vanguard password",
-                "Tes mots de passe ont-ils fuité ? Seuls 5 caractères de leur empreinte partent.",
+                "Vos mots de passe ont-ils fuité ? Seuls 5 caractères de leur empreinte partent.",
                 "Have your passwords leaked? Only 5 characters of their hash are sent.",
                 false,
             ),
@@ -180,8 +180,8 @@ pub const PROGRAMMES: &[Programme] = &[
             traduite(
                 "vanguard distance",
                 "vanguard remote-access",
-                "Quelqu'un contrôle mon ordinateur ? AnyDesk, TeamViewer… installés ou lancés.",
-                "Is someone controlling my computer? AnyDesk, TeamViewer… installed or running.",
+                "Mon ordinateur est-il contrôlé ? AnyDesk, TeamViewer… installés ou lancés.",
+                "Is my computer being controlled? AnyDesk, TeamViewer… installed or running.",
                 false,
             ),
             traduite(
@@ -341,7 +341,7 @@ pub const PROGRAMMES: &[Programme] = &[
             traduite(
                 "vanguard objets",
                 "vanguard iot",
-                "La box et les objets connectés, d'après le dernier scan.",
+                "Le routeur et les objets connectés, d'après le dernier scan.",
                 "The router and connected devices, from the last scan.",
                 false,
             ),
@@ -415,8 +415,8 @@ pub const PROGRAMMES: &[Programme] = &[
         executable: "ping",
         commandes: &[
             voir(
-                "ping <box>",
-                "La box répond-elle ? Son adresse : ip route, ipconfig, ou les réglages du réseau.",
+                "ping <routeur>",
+                "Le routeur répond-il ? Son adresse : ip route, ipconfig, ou les réglages du réseau.",
                 "Does the router answer? Its address: ip route, ipconfig, or the network settings.",
             ),
             voir(
@@ -438,12 +438,12 @@ pub const PROGRAMMES: &[Programme] = &[
         commandes: &[
             voir(
                 "nslookup <site>",
-                "L'adresse d'un site d'après ton DNS.",
+                "L'adresse d'un site d'après votre DNS.",
                 "A site's address according to your DNS.",
             ),
             voir(
                 "nslookup <site> 1.1.1.1",
-                "La même chose avec un autre DNS : deux réponses différentes, ton DNS est en panne ou détourné.",
+                "La même chose avec un autre DNS : deux réponses différentes, votre DNS est en panne ou détourné.",
                 "The same with another DNS: two different answers, your DNS is broken or hijacked.",
             ),
         ],
@@ -480,7 +480,7 @@ pub const PROGRAMMES: &[Programme] = &[
             ),
             changer(
                 "ssh-keygen -t ed25519",
-                "Crée une clé SSH ; donne-lui une phrase de passe.",
+                "Crée une clé SSH ; donnez-lui une phrase de passe.",
                 "Creates an SSH key; give it a passphrase.",
             ),
             voir(
@@ -522,7 +522,7 @@ pub const PROGRAMMES: &[Programme] = &[
             ),
             voir(
                 "curl https://ifconfig.me",
-                "Ton adresse IP publique, celle qu'Internet voit.",
+                "Votre adresse Internet publique, celle que voit Internet.",
                 "Your public IP address, the one the Internet sees.",
             ),
             changer(
@@ -619,7 +619,7 @@ pub const PROGRAMMES: &[Programme] = &[
                 "D'où vient le projet, et où il s'envoie.",
                 "Where the project comes from, and where it is sent.",
             ),
-            changer("git push", "Envoie tes enregistrements.", "Sends your commits."),
+            changer("git push", "Envoie vos enregistrements.", "Sends your commits."),
             changer(
                 "git stash",
                 "Met de côté les changements en cours…",
@@ -639,19 +639,19 @@ pub const PROGRAMMES: &[Programme] = &[
             ),
             changer(
                 "git config --global user.name \"<nom>\"",
-                "Ton nom dans les enregistrements.",
+                "Votre nom dans les enregistrements.",
                 "Your name in commits.",
             ),
         ],
     },
     Programme {
         nom: "whoami, hostname",
-        role: ("ton compte, cet ordinateur", "your account, this computer"),
+        role: ("votre compte, cet ordinateur", "your account, this computer"),
         executable: "whoami",
         commandes: &[
             voir(
                 "whoami",
-                "Le compte avec lequel tu travailles.",
+                "Le compte avec lequel vous travaillez.",
                 "The account you are working with.",
             ),
             voir("hostname", "Le nom de cet ordinateur.", "This computer's name."),
@@ -713,12 +713,12 @@ pub const PAS_A_PAS: &[Programme] = &[
         commandes: &[
             changer(
                 "ssh-keygen -t ed25519",
-                "Crée ta paire de clés ; protège-la par une phrase de passe.",
+                "Crée votre paire de clés ; protégez-la par une phrase de passe.",
                 "Creates your key pair; protect it with a passphrase.",
             ),
             voir(
                 "cat $HOME/.ssh/id_ed25519.pub",
-                "Ta clé publique, la seule à donner : une ligne qui commence par ssh-ed25519.",
+                "Votre clé publique, la seule à donner : une ligne qui commence par ssh-ed25519.",
                 "Your public key, the only one to give out: a line starting with ssh-ed25519.",
             ),
             changer(
@@ -733,7 +733,7 @@ pub const PAS_A_PAS: &[Programme] = &[
             ),
             voir(
                 "ssh <utilisateur>@<adresse>",
-                "Connecte-toi : plus de mot de passe du serveur, seulement ta phrase de passe.",
+                "Connectez-vous : plus de mot de passe du serveur, seulement votre phrase de passe.",
                 "Connect: no more server password, only your passphrase.",
             ),
         ],
@@ -746,11 +746,11 @@ pub const PAS_A_PAS: &[Programme] = &[
             changer("git clone <adresse>", "Récupère un projet.", "Gets a project."),
             changer(
                 "git switch -c <nom>",
-                "Une branche pour ton travail.",
+                "Une branche pour votre travail.",
                 "A branch for your work.",
             ),
-            voir("git status", "Ce que tu as changé.", "What you changed."),
-            changer("git add <fichier>", "Prépare tes changements…", "Stages your changes…"),
+            voir("git status", "Ce que vous avez changé.", "What you changed."),
+            changer("git add <fichier>", "Prépare vos changements…", "Stages your changes…"),
             changer(
                 "git commit -m \"<texte>\"",
                 "…et les enregistre, avec un message.",
@@ -761,7 +761,11 @@ pub const PAS_A_PAS: &[Programme] = &[
                 "Reprend les nouveautés des autres par-dessus.",
                 "Takes the others' changes underneath yours.",
             ),
-            changer("git push -u origin <nom>", "Envoie ta branche.", "Sends your branch."),
+            changer(
+                "git push -u origin <nom>",
+                "Envoie votre branche.",
+                "Sends your branch.",
+            ),
         ],
     },
 ];

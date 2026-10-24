@@ -54,7 +54,7 @@ impl Echec {
             )
             .into(),
             Echec::Refusee => tr!(
-                "clé abuse.ch refusée (vérifie-la sur https://auth.abuse.ch/, puis redonne-la dans Paramètres)",
+                "clé abuse.ch refusée (vérifiez-la sur https://auth.abuse.ch/, puis redonnez-la dans Paramètres)",
                 "abuse.ch key refused (check it at https://auth.abuse.ch/, then give it again in Settings)"
             )
             .into(),
@@ -230,7 +230,7 @@ pub(crate) fn etat_court() -> String {
 /// Ce que la clé ouvre, et où la trouver.
 fn explication() -> &'static str {
     tr!(
-        "Depuis le 21 octobre 2026, abuse.ch ne donne ses listes qu'avec la clé gratuite d'un compte : empreintes de logiciels malveillants (MalwareBazaar), liens piégés (URLhaus), serveurs de botnets (ThreatFox). Sans elle, ces listes ne sont pas vérifiées, et c'est dit. Crée un compte sur https://auth.abuse.ch/, puis copie ta clé (« Auth-Key »). Elle reste sur cet ordinateur, lisible par ton compte seul : jamais sur la clé USB, jamais montrée en entier.",
+        "Depuis le 21 octobre 2026, abuse.ch ne donne ses listes qu'avec la clé gratuite d'un compte : empreintes de logiciels malveillants (MalwareBazaar), liens piégés (URLhaus), serveurs de botnets (ThreatFox). Sans elle, ces listes ne sont pas vérifiées, et c'est dit. Créez un compte sur https://auth.abuse.ch/, puis copiez votre clé (« Auth-Key »). Elle reste sur cet ordinateur, lisible par votre compte seul : jamais sur la clé USB, jamais montrée en entier.",
         "Since October 21, 2026, abuse.ch only gives its lists with a free account key: malware fingerprints (MalwareBazaar), malicious links (URLhaus), botnet servers (ThreatFox). Without it, these lists are not checked, and that is said. Create an account at https://auth.abuse.ch/, then copy your key (“Auth-Key”). It stays on this computer, readable by your account only: never on the USB key, never shown in full."
     )
 }

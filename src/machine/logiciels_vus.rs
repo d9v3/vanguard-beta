@@ -300,7 +300,7 @@ fn juger(lus: &[(String, String)], avant: Option<&Vus>, aujourd_hui: NaiveDate) 
             CAT,
             Niveau::Info,
             trf!(
-                "Nouveau logiciel installé depuis le dernier bilan (cette semaine) : {}. Si tu ne reconnais pas l'un d'eux, cherche d'où il vient avant de t'en servir : un logiciel espion s'installe souvent ainsi, ou avec un autre programme.",
+                "Nouveau logiciel installé depuis le dernier bilan (cette semaine) : {}. Si vous ne reconnaissez pas l'un d'eux, cherchez d'où il vient avant de vous en servir : un logiciel espion s'installe souvent ainsi, ou avec un autre programme.",
                 "New software installed since the last check (this week): {}. If you do not recognize one of them, find out where it comes from before using it: stalkerware often gets installed this way, or along with another program.",
                 resume(&noms, 8, ", ")
             ),
@@ -309,7 +309,7 @@ fn juger(lus: &[(String, String)], avant: Option<&Vus>, aujourd_hui: NaiveDate) 
         .avec_objet(Objet::de("logiciels", &cles.join(",")))
         .manuel(
             tr!(
-                "S'il n'est pas à toi : le désinstaller, puis lancer l'antivirus et « Logiciels espions : en ai-je un ? »",
+                "S'il n'est pas à vous : le désinstaller, puis lancer l'antivirus et « Logiciels espions : en ai-je un ? »",
                 "If it is not yours: uninstall it, then run the antivirus and “Stalkerware: do I have one?”"
             ),
             &[],

@@ -81,11 +81,11 @@ fn requete(ip: Ipv4Addr, zone: &str) -> String {
 }
 
 fn chercher_avec(ip: Ipv4Addr, zone: &str, resoudre: impl Fn(&str) -> Option<Vec<Ipv4Addr>>) -> Verdict {
-    let muet = || Verdict::Impossible(tr!("ton DNS n'a pas répondu", "your DNS did not answer").into());
+    let muet = || Verdict::Impossible(tr!("votre DNS n'a pas répondu", "your DNS did not answer").into());
     let remplace = || {
         Verdict::Impossible(
             tr!(
-                "ton DNS remplace les réponses de la liste (fournisseur qui détourne les noms inconnus)",
+                "votre DNS remplace les réponses de la liste (fournisseur qui détourne les noms inconnus)",
                 "your DNS replaces the list's answers (provider redirecting unknown names)"
             )
             .into(),
@@ -99,7 +99,7 @@ fn chercher_avec(ip: Ipv4Addr, zone: &str, resoudre: impl Fn(&str) -> Option<Vec
         // listes : la vraie réponse serait retirée de même, et « absente » serait un mensonge.
         return Verdict::Impossible(
             tr!(
-                "ton DNS ne transmet pas les réponses de cette liste",
+                "votre DNS ne transmet pas les réponses de cette liste",
                 "your DNS does not pass this list's answers on"
             )
             .into(),
@@ -111,7 +111,7 @@ fn chercher_avec(ip: Ipv4Addr, zone: &str, resoudre: impl Fn(&str) -> Option<Vec
     if refus(&essai) {
         return Verdict::Impossible(
             tr!(
-                "la liste refuse ton DNS (résolveur public)",
+                "la liste refuse votre DNS (résolveur public)",
                 "the list refuses your DNS (public resolver)"
             )
             .into(),
@@ -143,7 +143,7 @@ fn sens(zone: &str, codes: &[Ipv4Addr]) -> (String, Option<Niveau>) {
         if derniers.iter().any(|&c| (4..=7).contains(&c)) {
             return (
                 tr!(
-                    "XBL : un appareil de la maison est infecté (réseau de zombies, logiciel qui envoie du pourriel)",
+                    "XBL : un appareil du réseau local est infecté (réseau de zombies, logiciel qui envoie du pourriel)",
                     "XBL: a device in the house is infected (botnet, malware sending spam)"
                 )
                 .into(),
@@ -162,7 +162,7 @@ fn sens(zone: &str, codes: &[Ipv4Addr]) -> (String, Option<Niveau>) {
         }
         return (
             tr!(
-                "PBL : adresse résidentielle, normal (rien n'est envoyé directement depuis chez toi)",
+                "PBL : adresse résidentielle, normal (rien n'est envoyé directement depuis chez vous)",
                 "PBL: residential address, normal (nothing is sent directly from your home)"
             )
             .into(),
@@ -172,7 +172,7 @@ fn sens(zone: &str, codes: &[Ipv4Addr]) -> (String, Option<Niveau>) {
     if zone.starts_with("dnsbl.dronebl") {
         return (
             tr!(
-                "un appareil de la maison attaque d'autres ordinateurs ou sert de relais (zombie, proxy ouvert)",
+                "un appareil du réseau local attaque d'autres ordinateurs ou sert de relais (zombie, proxy ouvert)",
                 "a device in the house attacks other computers or serves as a relay (zombie, open proxy)"
             )
             .into(),
@@ -210,7 +210,7 @@ pub fn verifier() {
     ));
     for ligne in envelopper(
         tr!(
-            "Si l'adresse Internet de ta maison est sur une liste noire pour pourriel ou attaques, un de tes appareils est sans doute infecté. Vanguard demande ton adresse à Cloudflare, puis la cherche dans quatre listes publiques (Spamhaus, SpamCop, DroneBL, PSBL) : elles verront ton adresse.",
+            "Si votre adresse Internet publique est sur une liste noire pour pourriel ou attaques, un de vos appareils est sans doute infecté. Vanguard demande votre adresse à Cloudflare, puis la cherche dans quatre listes publiques (Spamhaus, SpamCop, DroneBL, PSBL) : elles verront votre adresse.",
             "If your home's Internet address is on a blocklist for spam or attacks, one of your devices is probably infected. Vanguard asks Cloudflare for your address, then looks it up in four public lists (Spamhaus, SpamCop, DroneBL, PSBL): they will see your address."
         ),
         LARGEUR - 2,
@@ -266,7 +266,7 @@ pub fn verifier() {
     println!();
     let conclusion = match (pire, verifiees) {
         (Some(_), _) => tr!(
-            "Analyse chaque ordinateur de la maison (antivirus de Vanguard), mets à jour les téléphones, les objets connectés et la box, change le mot de passe de la box et coupe UPnP si tu n'en as pas besoin. Si ton fournisseur partage ton adresse avec d'autres abonnés, la liste peut viser un voisin : la question vaut alors la peine d'être posée au fournisseur.",
+            "Analysez chaque ordinateur du réseau local (antivirus de Vanguard), mettez à jour les téléphones, les objets connectés et le routeur, changez le mot de passe du routeur et coupez UPnP si vous n'en avez pas besoin. Si votre fournisseur partage votre adresse avec d'autres abonnés, la liste peut viser un voisin : la question vaut alors la peine d'être posée au fournisseur.",
             "Scan every computer in the house (Vanguard's antivirus), update phones, connected devices and the router, change the router's password and turn UPnP off if you do not need it. If your provider shares your address with other customers, the listing may target a neighbor: worth asking the provider."
         ),
         (None, 0) => tr!(
@@ -274,7 +274,7 @@ pub fn verifier() {
             "No list could be queried: nothing is concluded."
         ),
         (None, _) => tr!(
-            "Ton adresse n'est sur aucune liste noire interrogée : rien n'indique un appareil infecté.",
+            "Votre adresse n'est sur aucune liste noire interrogée : rien n'indique un appareil infecté.",
             "Your address is on none of the blocklists queried: nothing points to an infected device."
         ),
     };

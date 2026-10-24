@@ -100,7 +100,7 @@ pub fn mises_a_jour() -> Vec<Constat> {
                 "Mises à jour",
                 Niveau::Info,
                 trf!(
-                    "macOS {version} est disponible : une nouvelle version du système, pas une simple mise à jour. À installer quand tu veux, après une sauvegarde.",
+                    "macOS {version} est disponible : une nouvelle version du système, pas une simple mise à jour. À installer quand vous voulez, après une sauvegarde.",
                     "macOS {version} is available: a new version of the system, not just an update. Install it when you like, after a backup."
                 ),
             )

@@ -227,21 +227,21 @@ fn complements_scan_markdown(m: &mut String, r: &Rapport) {
             upnp::Etat::Absent => {
                 let _ = trwln!(
                     m,
-                    "UPnP coupé ou absent sur la box : aucun appareil ne peut ouvrir de port vers Internet tout seul.",
+                    "UPnP coupé ou absent sur le routeur : aucun appareil ne peut ouvrir de port vers Internet tout seul.",
                     "UPnP off or absent on the router: no device can open a port to the Internet by itself."
                 );
             }
             upnp::Etat::OutilAbsent => {
                 let _ = trwln!(
                     m,
-                    "Non vérifié : les redirections de la box n'ont pas pu être lues.",
+                    "Non vérifié : les redirections du routeur n'ont pas pu être lues.",
                     "Not checked: the router's forwardings could not be read."
                 );
             }
             upnp::Etat::Usurpee(ips) => {
                 let _ = trwln!(
                     m,
-                    "Non vérifié : la box n'a pas répondu, mais {} se dit box en UPnP (suspect).",
+                    "Non vérifié : le routeur n'a pas répondu, mais {} se dit routeur en UPnP (suspect).",
                     "Not checked: the router did not answer, but {} claims to be the router over UPnP (suspicious).",
                     liste_ips(ips)
                 );
@@ -249,7 +249,7 @@ fn complements_scan_markdown(m: &mut String, r: &Rapport) {
             upnp::Etat::Actif(l) if l.lues && l.redirections.is_empty() => {
                 let _ = trwln!(
                     m,
-                    "UPnP actif sur la box, aucun port ouvert pour l'instant. À couper dans la box si aucun appareil n'en a besoin.",
+                    "UPnP actif sur le routeur, aucun port ouvert pour l'instant. À couper dans le routeur si aucun appareil n'en a besoin.",
                     "UPnP on at the router, no port open for now. Turn it off in the router if no device needs it."
                 );
             }
@@ -268,7 +268,7 @@ fn complements_scan_markdown(m: &mut String, r: &Rapport) {
                 }
                 let _ = trwln!(
                     m,
-                    "\nChaque ligne rend un appareil joignable depuis Internet. Si tu n'en as pas besoin, coupe UPnP dans la box.",
+                    "\nChaque ligne rend un appareil joignable depuis Internet. Si vous n'en avez pas besoin, coupez UPnP dans le routeur.",
                     "\nEach line makes a device reachable from the Internet. If you do not need it, turn UPnP off in the router."
                 );
             }
@@ -295,7 +295,7 @@ fn complements_scan_markdown(m: &mut String, r: &Rapport) {
                 for p in liste {
                     let _ = trwln!(
                         m,
-                        "- [{}] {} répond à des noms qui n'existent pas ({}) : un outil comme Responder vole ainsi les mots de passe Windows. Débranche-le.",
+                        "- [{}] {} répond à des noms qui n'existent pas ({}) : un outil comme Responder vole ainsi les mots de passe Windows. Débranchez-le.",
                         "- [{}] {} answers names that do not exist ({}): a tool like Responder steals Windows passwords this way. Unplug it.",
                         Niveau::Eleve.libelle(),
                         p.ip,
@@ -613,7 +613,7 @@ fn complements_scan_html(h: &mut String, r: &Rapport) {
         ));
         match e {
             upnp::Etat::Absent => h.push_str(tr!(
-                "<div class=meta>UPnP coupé ou absent sur la box : aucun appareil ne peut ouvrir de port vers Internet tout seul.</div>",
+                "<div class=meta>UPnP coupé ou absent sur le routeur : aucun appareil ne peut ouvrir de port vers Internet tout seul.</div>",
                 "<div class=meta>UPnP off or absent on the router: no device can open a port to the Internet by itself.</div>"
             )),
             upnp::Etat::OutilAbsent => {
@@ -622,7 +622,7 @@ fn complements_scan_html(h: &mut String, r: &Rapport) {
                     "<div class=ligne>{}<div>{}</div></div>",
                     badge_non_verifie(),
                     tr!(
-                        "Les redirections de la box n'ont pas pu être lues.",
+                        "Les redirections du routeur n'ont pas pu être lues.",
                         "The router's forwardings could not be read."
                     )
                 );
@@ -633,14 +633,14 @@ fn complements_scan_html(h: &mut String, r: &Rapport) {
                     "<div class=ligne>{}<div>{}</div></div>",
                     badge_non_verifie(),
                     esc(&trf!(
-                        "La box n'a pas répondu, mais {} se dit box en UPnP (suspect).",
+                        "Le routeur n'a pas répondu, mais {} se dit routeur en UPnP (suspect).",
                         "The router did not answer, but {} claims to be the router over UPnP (suspicious).",
                         liste_ips(ips)
                     ))
                 );
             }
             upnp::Etat::Actif(l) if l.lues && l.redirections.is_empty() => h.push_str(tr!(
-                "<div class=meta>UPnP actif sur la box, aucun port ouvert pour l'instant. À couper dans la box si aucun appareil n'en a besoin.</div>",
+                "<div class=meta>UPnP actif sur le routeur, aucun port ouvert pour l'instant. À couper dans le routeur si aucun appareil n'en a besoin.</div>",
                 "<div class=meta>UPnP on at the router, no port open for now. Turn it off in the router if no device needs it.</div>"
             )),
             upnp::Etat::Actif(l) => {
@@ -658,7 +658,7 @@ fn complements_scan_html(h: &mut String, r: &Rapport) {
                     );
                 }
                 h.push_str(tr!(
-                    "</table><div class=meta>Chaque ligne rend un appareil joignable depuis Internet. Si tu n'en as pas besoin, coupe UPnP dans la box.</div>",
+                    "</table><div class=meta>Chaque ligne rend un appareil joignable depuis Internet. Si vous n'en avez pas besoin, coupez UPnP dans le routeur.</div>",
                     "</table><div class=meta>Each line makes a device reachable from the Internet. If you do not need it, turn UPnP off in the router.</div>"
                 ));
             }
@@ -697,7 +697,7 @@ fn complements_scan_html(h: &mut String, r: &Rapport) {
                 for p in liste {
                     let _ = trw!(
                         h,
-                        "<div class=ligne>{}<div>{} répond à des noms qui n'existent pas ({}) : un outil comme Responder vole ainsi les mots de passe Windows. Débranche-le.</div></div>",
+                        "<div class=ligne>{}<div>{} répond à des noms qui n'existent pas ({}) : un outil comme Responder vole ainsi les mots de passe Windows. Débranchez-le.</div></div>",
                         "<div class=ligne>{}<div>{} answers names that do not exist ({}): a tool like Responder steals Windows passwords this way. Unplug it.</div></div>",
                         badge(Some(Niveau::Eleve)),
                         p.ip,
@@ -1158,7 +1158,7 @@ mod tests {
         let mut joignable =
             crate::machine::alerte("Appareils", Niveau::Critique, "<b>cam</b> joignable depuis Internet.");
         joignable.regle = "COM-APP-001";
-        let joignable = joignable.manuel("Retire la redirection", &[]);
+        let joignable = joignable.manuel("Retirez la redirection", &[]);
         let trafic = crate::audit::non_verifie("Appareils", "COM-APP-003", "trafic <script>x</script> non visible");
         let domaines = Domaine::TOUS
             .into_iter()
@@ -1251,7 +1251,7 @@ mod tests {
         assert!(page.contains("<h3>Appareils — C (70/100)</h3>"));
         assert!(page.contains("NON VÉRIFIÉ") && page.contains("<h3>Non vérifié (6)</h3>"));
         assert!(page.contains("COM-APP-001 · objet joignable depuis Internet"), "{page}");
-        assert!(page.contains("💡 À faire : Retire la redirection"));
+        assert!(page.contains("💡 À faire : Retirez la redirection"));
         assert!(
             page.contains("Ports ouverts vers Internet (UPnP)")
                 && page.contains("<td>8080/tcp</td><td>→ 10.0.0.30:80</td>")

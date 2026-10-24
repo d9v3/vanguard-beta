@@ -14,7 +14,7 @@ use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, HKEY_USERS, KEY_READ,
 const UNINSTALL: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall";
 const UNINSTALL_32: &str = r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall";
 /// Les trois clés Uninstall du panneau « Applications installées » : machine (64 puis 32 bits) et ce compte. Une
-/// seule liste pour ceux qui les lisent (ici, et « Quelqu'un contrôle mon ordi ? »).
+/// seule liste pour ceux qui les lisent (ici, et « Mon ordinateur est-il contrôlé ? »).
 pub(crate) const CLES_UNINSTALL: [(winreg::HKEY, &str); 3] = [
     (HKEY_LOCAL_MACHINE, UNINSTALL),
     (HKEY_LOCAL_MACHINE, UNINSTALL_32),

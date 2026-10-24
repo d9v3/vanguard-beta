@@ -348,7 +348,7 @@ fn conseils(box_: Option<&Serie>, internet: &Serie, hausse: Option<f64>) -> Vec<
     let mut c = Vec::new();
     if internet.pertes() > 1.0 {
         c.push(tr!(
-            "Des paquets se perdent : en jeu, ça donne des saccades et des « téléportations ». Redémarre la box ; si ça reste, appelle ton fournisseur.",
+            "Des paquets se perdent : en jeu, ça donne des saccades et des « téléportations ». Redémarrez le routeur ; si ça reste, appelez votre fournisseur.",
             "Packets are being lost: in game, that means stutter and “teleporting”. Restart the router; if it persists, call your provider."
         ).to_string());
     }
@@ -363,7 +363,7 @@ fn conseils(box_: Option<&Serie>, internet: &Serie, hausse: Option<f64>) -> Vec<
     {
         c.push(
             tr!(
-                "La liaison avec la box est instable (souvent le Wi-Fi) : un câble Ethernet règle presque toujours ça.",
+                "La liaison avec le routeur est instable (souvent le Wi-Fi) : un câble Ethernet règle presque toujours ça.",
                 "The link to the router is unstable (often Wi-Fi): an Ethernet cable almost always fixes it."
             )
             .to_string(),
@@ -373,14 +373,14 @@ fn conseils(box_: Option<&Serie>, internet: &Serie, hausse: Option<f64>) -> Vec<
         && h > 30.0
     {
         c.push(trf!(
-            "Le ping grimpe de {h:.0} ms dès que la connexion est occupée : active la QoS « SQM » / « Smart Queue » de ta box ou routeur, ou limite les téléchargements pendant les parties.",
+            "Le ping grimpe de {h:.0} ms dès que la connexion est occupée : activez la QoS « SQM » / « Smart Queue » de votre routeur, ou limitez les téléchargements pendant les parties.",
             "Ping rises by {h:.0} ms as soon as the connection is busy: turn on “SQM” / “Smart Queue” QoS on your router, or limit downloads while playing."
         ));
     }
     if internet.gigue() > 10.0 {
         c.push(
             tr!(
-                "Le ping varie beaucoup (gigue) : ferme les téléchargements et le streaming en arrière-plan.",
+                "Le ping varie beaucoup (gigue) : fermez les téléchargements et le streaming en arrière-plan.",
                 "Ping varies a lot (jitter): close background downloads and streaming."
             )
             .to_string(),
@@ -416,7 +416,7 @@ pub async fn tester() {
     };
     let internet = serie(INTERNET, 20, None).await;
     if let (Some(cible), Some(s)) = (boite, &serie_box) {
-        ligne(&trf!("Box ({})", "Router ({})", cible.ip()), s);
+        ligne(&trf!("Routeur ({})", "Router ({})", cible.ip()), s);
     }
     ligne("Internet (Cloudflare)", &internet);
     let Some(repos) = internet.mediane() else {
@@ -483,7 +483,7 @@ pub async fn tester() {
             }
         }
         trp!(
-            "  {GRIS}d'après tes {} derniers tests{RESET}",
+            "  {GRIS}d'après vos {} derniers tests{RESET}",
             "  {GRIS}from your last {} tests{RESET}",
             h.tests
         );
@@ -556,7 +556,7 @@ pub async fn tester() {
     {
         conseils.push(
             tr!(
-                "Ta connexion est nettement moins bonne que d'habitude : quelqu'un envoie ou télécharge peut-être en ce moment ; sinon, redémarre la box, et si ça dure, appelle ton fournisseur.",
+                "Votre connexion est nettement moins bonne que d'habitude : quelqu'un envoie ou télécharge peut-être en ce moment ; sinon, redémarrez le routeur, et si ça dure, appelez votre fournisseur.",
                 "Your connection is clearly worse than usual: someone may be uploading or downloading right now; otherwise, restart the router, and if it lasts, call your provider."
             )
             .to_string(),

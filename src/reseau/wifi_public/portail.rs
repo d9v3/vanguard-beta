@@ -82,7 +82,7 @@ pub(crate) fn ouvrir_et_attendre(fin: Option<std::time::Instant>) -> bool {
         None => afficher_aligne(
             "  ",
             tr!(
-                "Pour faire paraître la page de connexion, ouvre dans le navigateur un site en « http:// » (pas https) : le réseau le détourne vers sa page.",
+                "Pour faire paraître la page de connexion, ouvrez dans le navigateur un site en « http:// » (pas https) : le réseau le détourne vers sa page.",
                 "To bring up the login page, open a site starting with “http://” (not https) in the browser: the network redirects it to its page."
             ),
             2,

@@ -242,7 +242,7 @@ pub(super) fn juger_serveur(s: &Serveur) -> Vec<Constat> {
             )
             .manuel(
                 trf!(
-                    "Après avoir ajouté ta clé depuis l'autre ordinateur : {ou} : « PasswordAuthentication no ». Ou arrêter le service s'il ne sert pas",
+                    "Après avoir ajouté votre clé depuis l'autre ordinateur : {ou} : « PasswordAuthentication no ». Ou arrêter le service s'il ne sert pas",
                     "After adding your key from the other computer: {ou}: “PasswordAuthentication no”. Or stop the service if unused"
                 ),
                 &[],
@@ -315,7 +315,7 @@ pub(super) fn juger_cles(dossier_existe: bool, cles: &[Cle]) -> Vec<Constat> {
                 .avec_objet(objet)
                 .manuel(
                     trf!(
-                        "Réserver {nom} à ton compte : Propriétés › Sécurité › Avancé, désactiver l'héritage et ne garder que toi, SYSTEM et Administrateurs",
+                        "Réserver {nom} à votre compte : Propriétés › Sécurité › Avancé, désactiver l'héritage et ne garder que vous, SYSTEM et Administrateurs",
                         "Restrict {nom} to your account: Properties › Security › Advanced, disable inheritance and keep only you, SYSTEM and Administrators"
                     ),
                     &[],
@@ -340,7 +340,7 @@ pub(super) fn juger_cles(dossier_existe: bool, cles: &[Cle]) -> Vec<Constat> {
         constats.push(ok(
             CAT_CLES,
             tr!(
-                "Clés privées de .ssh protégées par une phrase de passe et réservées à ton compte.",
+                "Clés privées de .ssh protégées par une phrase de passe et réservées à votre compte.",
                 "Private keys in .ssh protected by a passphrase and restricted to your account."
             ),
         ));

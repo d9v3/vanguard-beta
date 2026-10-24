@@ -164,7 +164,7 @@ fn juger(nom: &str, ou: &str, cle_privee: bool, retirer: &[String]) -> Constat {
         Famille::Compromis => (
             Niveau::Critique,
             trf!(
-                "Certificat racine « {nom} » ({ou}) : installé par un logiciel publicitaire, sa clé est publique et permet à n'importe qui de lire ton trafic HTTPS.",
+                "Certificat racine « {nom} » ({ou}) : installé par un logiciel publicitaire, sa clé est publique et permet à n'importe qui de lire votre trafic HTTPS.",
                 "Root certificate “{nom}” ({ou}): installed by adware, its key is public and lets anyone read your HTTPS traffic."
             ),
             true,
@@ -172,7 +172,7 @@ fn juger(nom: &str, ou: &str, cle_privee: bool, retirer: &[String]) -> Constat {
         Famille::Interception => (
             Niveau::Moyen,
             trf!(
-                "Certificat racine « {nom} » ({ou}) : outil d'interception du trafic. À retirer si tu ne t'en sers plus.",
+                "Certificat racine « {nom} » ({ou}) : outil d'interception du trafic. À retirer si vous ne vous en servez plus.",
                 "Root certificate “{nom}” ({ou}): traffic interception tool. Remove it if you no longer use it."
             ),
             true,
@@ -183,7 +183,7 @@ fn juger(nom: &str, ou: &str, cle_privee: bool, retirer: &[String]) -> Constat {
         _ if cle_privee && nom.eq_ignore_ascii_case("localhost") => (
             Niveau::Info,
             trf!(
-                "Certificat racine « localhost » ({ou}) dont la clé privée est sur cette machine : celui de .NET ou d'IIS Express si tu développes ; sinon, retire-le, un nom ne prouve rien.",
+                "Certificat racine « localhost » ({ou}) dont la clé privée est sur cette machine : celui de .NET ou d'IIS Express si vous développez ; sinon, retirez-le, un nom ne prouve rien.",
                 "Root certificate “localhost” ({ou}) whose private key is on this machine: .NET's or IIS Express's if you develop; otherwise remove it, a name proves nothing."
             ),
             false,
@@ -199,7 +199,7 @@ fn juger(nom: &str, ou: &str, cle_privee: bool, retirer: &[String]) -> Constat {
         Famille::Inspection => (
             Niveau::Info,
             trf!(
-                "Certificat racine « {nom} » ({ou}) : un antivirus ou un filtre inspecte ton trafic HTTPS. Normal si tu l'as installé.",
+                "Certificat racine « {nom} » ({ou}) : un antivirus ou un filtre inspecte votre trafic HTTPS. Normal si vous l'avez installé.",
                 "Root certificate “{nom}” ({ou}): an antivirus or filter inspects your HTTPS traffic. Normal if you installed it."
             ),
             false,
@@ -207,7 +207,7 @@ fn juger(nom: &str, ou: &str, cle_privee: bool, retirer: &[String]) -> Constat {
         Famille::Developpement => (
             Niveau::Info,
             trf!(
-                "Certificat racine de développement « {nom} » ({ou}). Normal pour un développeur ; garde sa clé privée pour toi.",
+                "Certificat racine de développement « {nom} » ({ou}). Normal pour un développeur ; gardez sa clé privée pour vous.",
                 "Development root certificate “{nom}” ({ou}). Normal for a developer; keep its private key to yourself."
             ),
             false,
@@ -215,7 +215,7 @@ fn juger(nom: &str, ou: &str, cle_privee: bool, retirer: &[String]) -> Constat {
         Famille::Autre => (
             Niveau::Info,
             trf!(
-                "Certificat racine ajouté : « {nom} » ({ou}). Normal si tu l'as installé (entreprise, école, VPN) ; sinon, retire-le.",
+                "Certificat racine ajouté : « {nom} » ({ou}). Normal si vous l'avez installé (entreprise, école, VPN) ; sinon, retirez-le.",
                 "Added root certificate: “{nom}” ({ou}). Normal if you installed it (work, school, VPN); otherwise remove it."
             ),
             false,

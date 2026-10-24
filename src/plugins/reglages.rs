@@ -143,7 +143,7 @@ pub fn oublier(racine: &Path, labo: bool, nom: &str) -> Result<(), String> {
 /// Ce que dit l'interrupteur, et la phrase qui explique ce qui reste.
 pub fn ce_qui_reste() -> &'static str {
     tr!(
-        "Même sans restrictions, le dossier des extensions doit être à toi et fermé aux autres comptes : sinon un programme d'un autre compte pourrait y poser du code qui tournerait comme toi, sans rien demander.",
+        "Même sans restrictions, le dossier des extensions doit être à vous et fermé aux autres comptes : sinon un programme d'un autre compte pourrait y poser du code qui tournerait comme vous, sans rien demander.",
         "Even without restrictions, the extensions folder must be yours and closed to other accounts: otherwise a program of another account could drop code there that would run as you, without asking anything."
     )
 }
@@ -157,7 +157,7 @@ pub fn basculer(racine: &Path, accord: impl FnOnce(&str) -> bool) -> Result<bool
     } else {
         if !r.coupure_confirmee {
             if !accord(tr!(
-                "  Les extensions tourneront sans contrôle, avec tous tes droits. Activer ? [o/N] : ",
+                "  Les extensions tourneront sans contrôle, avec tous vos droits. Activer ? [o/N] : ",
                 "  Extensions will run without any check, with all your rights. Turn on? [y/N]: "
             )) {
                 return Ok(false);
@@ -201,7 +201,7 @@ pub fn basculer_element(
     }
     if !r.coupure_confirmee {
         if !accord(tr!(
-            "  Cet élément tournera sans contrôle, avec tous tes droits. Activer ? [o/N] : ",
+            "  Cet élément tournera sans contrôle, avec tous vos droits. Activer ? [o/N] : ",
             "  This item will run without any check, with all your rights. Turn on? [y/N]: "
         )) {
             return Ok(false);

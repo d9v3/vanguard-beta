@@ -142,7 +142,7 @@ pub(super) fn autres_mises_a_jour() -> Vec<Constat> {
                 )
                 .manuel(
                     tr!(
-                        "Les paquets AUR se compilent : mets-les à jour toi-même et relis ce qui change",
+                        "Les paquets AUR se compilent : mettez-les à jour vous-même et relisez ce qui change",
                         "AUR packages are compiled: update them yourself and read what changes"
                     ),
                     &[&format!("{outil} -Sua")],

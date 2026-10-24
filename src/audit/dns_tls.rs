@@ -822,10 +822,10 @@ fn nommer(ip: IpAddr, e: &Entree) -> String {
         return format!("{nom} ({ip})");
     }
     if e.passerelle == Some(ip) {
-        return trf!("la box ({ip})", "the router ({ip})");
+        return trf!("le routeur ({ip})", "the router ({ip})");
     }
     if du_reseau(ip) {
-        return trf!("{ip}, un appareil de ton réseau", "{ip}, a device on your network");
+        return trf!("{ip}, un appareil de votre réseau", "{ip}, a device on your network");
     }
     ip.to_string()
 }
@@ -860,7 +860,7 @@ fn constats_bail(e: &Entree) -> Vec<Constat> {
                 CAT_DNS,
                 Niveau::Info,
                 tr!(
-                    "La box ne distribue aucun serveur DNS par DHCP : chaque appareil doit en avoir un réglé à la main.",
+                    "Le routeur ne distribue aucun serveur DNS par DHCP : chaque appareil doit en avoir un réglé à la main.",
                     "The router hands out no DNS server by DHCP: every device must have one set by hand."
                 ),
             ),
@@ -883,7 +883,7 @@ fn constats_bail(e: &Entree) -> Vec<Constat> {
             CAT_DNS,
             Niveau::Info,
             trf!(
-                "La box ({distribue}) résout les noms pour toute la maison et transmet les questions à un serveur qu'on ne voit pas d'ici (celui du fournisseur, normalement).",
+                "Le routeur ({distribue}) résout les noms pour tout le réseau local et transmet les questions à un serveur qu'on ne voit pas d'ici (celui du fournisseur, normalement).",
                 "The router ({distribue}) resolves names for the whole household and forwards questions to a server that cannot be seen from here (the provider's, normally)."
             ),
         )
@@ -891,7 +891,7 @@ fn constats_bail(e: &Entree) -> Vec<Constat> {
         ok(
             CAT_DNS,
             trf!(
-                "La box distribue {service} ({liste}) à tous tes appareils.",
+                "Le routeur distribue {service} ({liste}) à tous vos appareils.",
                 "The router hands out {service} ({liste}) to all your devices."
             ),
         )
@@ -900,7 +900,7 @@ fn constats_bail(e: &Entree) -> Vec<Constat> {
             CAT_DNS,
             Niveau::Info,
             trf!(
-                "La box distribue le DNS {distribue}, un appareil de ton réseau (Pi-hole, NAS, AdGuard Home ?), à tous tes appareils : normal si c'est à toi.",
+                "Le routeur distribue le DNS {distribue}, un appareil de votre réseau (Pi-hole, NAS, AdGuard Home ?), à tous vos appareils : normal si c'est à vous.",
                 "The router hands out DNS {distribue}, a device on your network (Pi-hole, NAS, AdGuard Home?), to all your devices: normal if it is yours."
             ),
         )
@@ -918,13 +918,13 @@ fn constats_bail(e: &Entree) -> Vec<Constat> {
             CAT_DNS,
             niveau,
             trf!(
-                "La box distribue le DNS {distribue} à tous tes appareils : ce n'est ni elle ni un service connu. Normal si c'est celui de ton fournisseur ; sinon, la box a pu être modifiée, et toute la maison la suit.{suite}",
+                "Le routeur distribue le DNS {distribue} à tous vos appareils : ce n'est ni lui ni un service connu. Normal si c'est celui de votre fournisseur ; sinon, le routeur a pu être modifié, et tout le réseau local le suit.{suite}",
                 "The router hands out DNS {distribue} to all your devices: it is neither itself nor a known service. Normal if it is your provider's; otherwise the router may have been tampered with, and the whole household follows it.{suite}"
             ),
         )
         .manuel(
             tr!(
-                "Admin de la box > DNS : automatique ou un service connu ; change le mot de passe de la box et mets-la à jour",
+                "Admin du routeur > DNS : automatique ou un service connu ; changez le mot de passe du routeur et mettez-le à jour",
                 "Router admin > DNS: automatic or a known service; change the router password and update it"
             ),
             &[],
@@ -945,7 +945,7 @@ fn constats_bail(e: &Entree) -> Vec<Constat> {
         ok(
             CAT_DNS,
             trf!(
-                "Cet ordinateur utilise {service} ({actuel}) au lieu du DNS distribué par la box ({distribue}) : un choix, pas un problème.",
+                "Cet ordinateur utilise {service} ({actuel}) au lieu du DNS distribué par le routeur ({distribue}) : un choix, pas un problème.",
                 "This computer uses {service} ({actuel}) instead of the DNS handed out by the router ({distribue}): a choice, not a problem."
             ),
         )
@@ -954,7 +954,7 @@ fn constats_bail(e: &Entree) -> Vec<Constat> {
             CAT_DNS,
             Niveau::Info,
             trf!(
-                "Cet ordinateur utilise {actuel} (ton réseau) au lieu du DNS distribué par la box ({distribue}).",
+                "Cet ordinateur utilise {actuel} (votre réseau) au lieu du DNS distribué par le routeur ({distribue}).",
                 "This computer uses {actuel} (your network) instead of the DNS handed out by the router ({distribue})."
             ),
         )
@@ -968,13 +968,13 @@ fn constats_bail(e: &Entree) -> Vec<Constat> {
             CAT_DNS,
             Niveau::Moyen,
             trf!(
-                "Cet ordinateur n'utilise pas le DNS distribué par la box ({distribue}) mais {actuel}, {comment} : un serveur inconnu. Si tu ne l'as pas choisi, un programme a pu le changer pour détourner tes visites.",
+                "Cet ordinateur n'utilise pas le DNS distribué par le routeur ({distribue}) mais {actuel}, {comment} : un serveur inconnu. Si vous ne l'avez pas choisi, un programme a pu le changer pour détourner vos visites.",
                 "This computer does not use the DNS handed out by the router ({distribue}) but {actuel}, {comment}: an unknown server. If you did not choose it, a program may have changed it to hijack your browsing."
             ),
         )
         .manuel(
             tr!(
-                "Remets le DNS de cet ordinateur en automatique (celui que donne la box)",
+                "Remettez le DNS de cet ordinateur en automatique (celui que donne le routeur)",
                 "Set this computer's DNS back to automatic (the one the router provides)"
             ),
             &[],
@@ -1078,7 +1078,7 @@ fn constats_divergence(e: &Entree) -> Vec<Constat> {
             if let Some(&(_, ip)) = e.interrompues.iter().find(|(r, _)| *r == role) {
                 let message = if role == Role::Bail {
                     trf!(
-                        "DNS que la box distribue ({ip}) : mesure interrompue par une erreur interne, réponses non comparées",
+                        "DNS que le routeur distribue ({ip}) : mesure interrompue par une erreur interne, réponses non comparées",
                         "DNS the router hands out ({ip}): measurement interrupted by an internal error, answers not compared"
                     )
                 } else {
@@ -1122,26 +1122,26 @@ fn constats_divergence(e: &Entree) -> Vec<Constat> {
             let meme = b.divergents.iter().all(|(_, v, _)| *v == vu);
             let qui = if role == Role::Bail {
                 tr!(
-                    "Le DNS que la box distribue à toute la maison",
+                    "Le DNS que le routeur distribue à tout le réseau local",
                     "The DNS the router hands out to the whole household"
                 )
             } else {
-                tr!("Ton DNS", "Your DNS")
+                tr!("Votre DNS", "Your DNS")
             };
             let message = if meme {
                 trf!(
-                    "{qui} ({serveur}) renvoie tous les noms vers la même adresse ({vu}, au lieu de {attendu} pour {nom}) : un portail Wi-Fi (hôtel, café) ou un détournement complet. Chez toi, c'est un détournement.",
+                    "{qui} ({serveur}) renvoie tous les noms vers la même adresse ({vu}, au lieu de {attendu} pour {nom}) : un portail Wi-Fi (hôtel, café) ou un détournement complet. Chez vous, c'est un détournement.",
                     "{qui} ({serveur}) sends every name to the same address ({vu} instead of {attendu} for {nom}): a Wi-Fi portal (hotel, café) or a complete hijack. At home, it is a hijack."
                 )
             } else {
                 trf!(
-                    "{qui} ({serveur}) répond autre chose que l'adresse connue de {nom} ({vu} au lieu de {attendu}) : quelque chose entre toi et Internet réécrit les réponses DNS.",
+                    "{qui} ({serveur}) répond autre chose que l'adresse connue de {nom} ({vu} au lieu de {attendu}) : quelque chose entre vous et Internet réécrit les réponses DNS.",
                     "{qui} ({serveur}) answers something other than the known address of {nom} ({vu} instead of {attendu}): something between you and the Internet rewrites DNS answers."
                 )
             };
             alerte(CAT_DNS, Niveau::Eleve, message).manuel(
                 tr!(
-                    "Remets le DNS en automatique ou sur un service connu sur cet ordinateur ET dans la box ; change le mot de passe de la box ; relance Vanguard. Si ça revient, la box est à mettre à jour ou à remplacer",
+                    "Remettez le DNS en automatique ou sur un service connu sur cet ordinateur ET dans le routeur ; changez le mot de passe du routeur ; relancez Vanguard. Si ça revient, le routeur est à mettre à jour ou à remplacer",
                     "Set DNS back to automatic or to a known service on this computer AND in the router; change the router password; run Vanguard again. If it comes back, the router needs an update or a replacement"
                 ),
                 &[],
@@ -1172,7 +1172,7 @@ fn constats_divergence(e: &Entree) -> Vec<Constat> {
             )
             .manuel(
                 tr!(
-                    "Choisis un DNS qui ne réécrit rien (Quad9, Cloudflare, Bouclier canadien), sur cet ordinateur ou dans la box",
+                    "Choisissez un DNS qui ne réécrit rien (Quad9, Cloudflare, Bouclier canadien), sur cet ordinateur ou dans le routeur",
                     "Pick a DNS that rewrites nothing (Quad9, Cloudflare, Canadian Shield), on this computer or in the router"
                 ),
                 &[],
@@ -1183,7 +1183,7 @@ fn constats_divergence(e: &Entree) -> Vec<Constat> {
                 CAT_DNS,
                 Niveau::Info,
                 trf!(
-                    "{serveur} bloque les autres résolveurs ({noms}) : filtre volontaire (NextDNS, AdGuard, Pi-hole) ou blocage par la box. Normal si tu l'as choisi.",
+                    "{serveur} bloque les autres résolveurs ({noms}) : filtre volontaire (NextDNS, AdGuard, Pi-hole) ou blocage par le routeur. Normal si vous l'avez choisi.",
                     "{serveur} blocks the other resolvers ({noms}): a deliberate filter (NextDNS, AdGuard, Pi-hole) or a block by the router. Normal if you chose it."
                 ),
             )
@@ -1247,7 +1247,7 @@ fn constat_dnssec(e: &Entree) -> Constat {
             impossible(
                 CAT_DNS,
                 &trf!(
-                    "{serveur} ne répond pas aux questions DNSSEC (EDNS bloqué par la box ?)",
+                    "{serveur} ne répond pas aux questions DNSSEC (EDNS bloqué par le routeur ?)",
                     "{serveur} does not answer DNSSEC questions (EDNS blocked by the router?)"
                 ),
             ),
@@ -1259,7 +1259,7 @@ fn constat_dnssec(e: &Entree) -> Constat {
             impossible(
                 CAT_DNS,
                 &trf!(
-                    "réponses DNSSEC tronquées : ta box ne laisse pas passer DNSSEC (EDNS) vers {serveur}",
+                    "réponses DNSSEC tronquées : votre routeur ne laisse pas passer DNSSEC (EDNS) vers {serveur}",
                     "DNSSEC answers truncated: your router does not let DNSSEC (EDNS) through to {serveur}"
                 ),
             ),
@@ -1448,19 +1448,19 @@ fn constat_chiffrement(e: &Entree) -> Constat {
     }
     let offre = if !ddr.is_empty() {
         trf!(
-            " Ton résolveur propose du DNS chiffré ({}) : active-le sur tes appareils.",
+            " Votre résolveur propose du DNS chiffré ({}) : activez-le sur vos appareils.",
             " Your resolver offers encrypted DNS ({}): turn it on on your devices.",
             ddr.join(" ; ")
         )
     } else if e.hors_ligne || e.ddr.is_empty() {
         tr!(
-            " (La box et le fournisseur n'ont pas pu être questionnés sur le DNS chiffré.)",
+            " (Le routeur et le fournisseur n'ont pas pu être questionnés sur le DNS chiffré.)",
             " (The router and the provider could not be asked about encrypted DNS.)"
         )
         .to_string()
     } else {
         tr!(
-            " Ni la box ni le fournisseur n'en proposent (DDR).",
+            " Ni le routeur ni le fournisseur n'en proposent (DDR).",
             " Neither the router nor the provider offers it (DDR)."
         )
         .to_string()
@@ -1500,7 +1500,7 @@ fn constat_chiffrement(e: &Entree) -> Constat {
             CAT_DNS,
             Niveau::Info,
             trf!(
-                "Les questions DNS partent en clair ({serveur}) : ton fournisseur, et quiconque sur le Wi-Fi, voit les noms des sites visités.{offre}{navigateur}{opportuniste}{windows_10}",
+                "Les questions DNS partent en clair ({serveur}) : votre fournisseur, et quiconque sur le Wi-Fi, voit les noms des sites visités.{offre}{navigateur}{opportuniste}{windows_10}",
                 "DNS questions leave unencrypted ({serveur}): your provider, and anyone on the Wi-Fi, sees the names of the sites you visit.{offre}{navigateur}{opportuniste}{windows_10}"
             ),
         ),
@@ -1552,7 +1552,7 @@ fn constat_tls(e: &Entree) -> Constat {
                     CAT_TLS,
                     Niveau::Info,
                     trf!(
-                        "Le HTTPS vers {site} est inspecté par un antivirus ou un filtre : le certificat vient de « {nom} ». Normal si tu l'as installé ; il lit tes pages chiffrées.",
+                        "Le HTTPS vers {site} est inspecté par un antivirus ou un filtre : le certificat vient de « {nom} ». Normal si vous l'avez installé ; il lit vos pages chiffrées.",
                         "HTTPS to {site} is inspected by an antivirus or a filter: the certificate comes from “{nom}”. Normal if you installed it; it reads your encrypted pages."
                     ),
                 ),
@@ -1560,7 +1560,7 @@ fn constat_tls(e: &Entree) -> Constat {
                     CAT_TLS,
                     Niveau::Moyen,
                     trf!(
-                        "Le HTTPS vers {site} passe par une autorité de développement (« {nom} ») : un outil de test intercepte tes pages chiffrées.",
+                        "Le HTTPS vers {site} passe par une autorité de développement (« {nom} ») : un outil de test intercepte vos pages chiffrées.",
                         "HTTPS to {site} goes through a development authority (“{nom}”): a test tool intercepts your encrypted pages."
                     ),
                 ),
@@ -1575,13 +1575,13 @@ fn constat_tls(e: &Entree) -> Constat {
                     CAT_TLS,
                     Niveau::Eleve,
                     trf!(
-                        "Le HTTPS vers {site} est intercepté : le certificat vient de « {nom} », pas d'une autorité publique. Quelque chose entre toi et Internet lit tes pages chiffrées (antivirus, proxy, logiciel indésirable).",
+                        "Le HTTPS vers {site} est intercepté : le certificat vient de « {nom} », pas d'une autorité publique. Quelque chose entre vous et Internet lit vos pages chiffrées (antivirus, proxy, logiciel indésirable).",
                         "HTTPS to {site} is intercepted: the certificate comes from “{nom}”, not a public authority. Something between you and the Internet reads your encrypted pages (antivirus, proxy, unwanted software)."
                     ),
                 )
                 .manuel(
                     tr!(
-                        "Si tu n'as pas installé d'antivirus qui inspecte le web ni de proxy d'entreprise : retire le certificat racine ajouté (le bilan les liste, certificats racine ajoutés) et désinstalle le programme qui l'a posé",
+                        "Si vous n'avez pas installé d'antivirus qui inspecte le web ni de proxy d'entreprise : retirez le certificat racine ajouté (le bilan les liste, certificats racine ajoutés) et désinstallez le programme qui l'a posé",
                         "If you did not install an antivirus that inspects the web nor a company proxy: remove the added root certificate (the check lists them, added root certificates) and uninstall the program that put it there"
                     ),
                     &[],
@@ -1655,7 +1655,7 @@ fn constat_exceptions(e: &Entree) -> Constat {
         )
     } else {
         trf!(
-            "{navigateur} garde {n} exception(s) de certificat pour ton réseau ({hotes}) : NAS, box ou imprimante au certificat maison, sans doute. Normal si c'est toi.",
+            "{navigateur} garde {n} exception(s) de certificat pour votre réseau ({hotes}) : NAS, routeur ou imprimante au certificat maison, sans doute. Normal si c'est vous.",
             "{navigateur} keeps {n} certificate exception(s) for your network ({hotes}): a NAS, router or printer with a home-made certificate, most likely. Normal if it is you."
         )
     };
@@ -1663,7 +1663,7 @@ fn constat_exceptions(e: &Entree) -> Constat {
     regle(
         alerte(CAT_TLS, niveau, message).manuel(
             tr!(
-                "Firefox > Paramètres > Vie privée et sécurité > Certificats > Afficher > Serveurs : supprime celles que tu n'as pas voulues",
+                "Firefox > Paramètres > Vie privée et sécurité > Certificats > Afficher > Serveurs : supprimez celles que vous n'avez pas voulues",
                 "Firefox > Settings > Privacy and security > Certificates > View > Servers: delete the ones you did not want"
             ),
             &[],
@@ -1683,7 +1683,7 @@ fn constats_racines_navigateurs(e: &Entree) -> Vec<Constat> {
         let liste = p.certificats.join(", ");
         let message = if n > 0 {
             trf!(
-                "Une politique installe {n} certificat(s) dans Firefox ({fichier} : {liste}) : normal en entreprise ou à l'école ; sinon, une autorité ajoutée à ton insu, qui peut lire tes pages chiffrées.",
+                "Une politique installe {n} certificat(s) dans Firefox ({fichier} : {liste}) : normal en entreprise ou à l'école ; sinon, une autorité ajoutée à votre insu, qui peut lire vos pages chiffrées.",
                 "A policy installs {n} certificate(s) into Firefox ({fichier}: {liste}): normal at work or school; otherwise an authority added without your knowledge, able to read your encrypted pages."
             )
         } else {
@@ -1725,7 +1725,7 @@ fn constat_box_pq(e: &Entree) -> Constat {
             impossible(
                 CAT_PQ,
                 tr!(
-                    "box absente du scan : son administration n'a pas été sondée pour l'échange post-quantique",
+                    "routeur absent du scan : son administration n'a pas été sondée pour l'échange post-quantique",
                     "router missing from the scan: its administration was not probed for post-quantum key exchange"
                 ),
             ),
@@ -1738,7 +1738,7 @@ fn constat_box_pq(e: &Entree) -> Constat {
                 CAT_PQ,
                 Absence::Inactif,
                 tr!(
-                    "Administration de la box en SSH ou en HTTPS non trouvée ouverte par le scan : rien à sonder pour l'échange post-quantique.",
+                    "Administration du routeur en SSH ou en HTTPS non trouvée ouverte par le scan : rien à sonder pour l'échange post-quantique.",
                     "Router administration over SSH or HTTPS not found open by the scan: nothing to probe for post-quantum key exchange."
                 ),
             ),
@@ -1772,14 +1772,14 @@ fn constat_box_pq(e: &Entree) -> Constat {
             CAT_PQ,
             Niveau::Info,
             trf!(
-                "Box : son administration ({}) ne propose aucun échange de clés post-quantique.{non_verifies}",
+                "Routeur : son administration ({}) ne propose aucun échange de clés post-quantique.{non_verifies}",
                 "Router: its administration ({}) offers no post-quantum key exchange.{non_verifies}",
                 sans.join(", ")
             ),
         )
         .manuel(
             tr!(
-                "Vérifier une mise à jour du micrologiciel de la box ; ce trafic reste sur le réseau local, où le risque d'enregistrement est faible",
+                "Vérifier une mise à jour du micrologiciel du routeur ; ce trafic reste sur le réseau local, où le risque d'enregistrement est faible",
                 "Check for a router firmware update; this traffic stays on the local network, where the risk of recording is low"
             ),
             &[],
@@ -1788,7 +1788,7 @@ fn constat_box_pq(e: &Entree) -> Constat {
         impossible(
             CAT_PQ,
             &trf!(
-                "administration de la box sondée sans réponse claire : {}",
+                "administration du routeur sondée sans réponse claire : {}",
                 "router administration probed without a clear answer: {}",
                 affichable(&inconnus.join(", "))
             ),
@@ -1797,7 +1797,7 @@ fn constat_box_pq(e: &Entree) -> Constat {
         ok(
             CAT_PQ,
             trf!(
-                "Box : son administration ({}) propose un échange de clés post-quantique.",
+                "Routeur : son administration ({}) propose un échange de clés post-quantique.",
                 "Router: its administration ({}) offers a post-quantum key exchange.",
                 avec.join(", ")
             ),
@@ -2011,7 +2011,7 @@ mod tests {
         assert!(bail[0].message.contains("203.0.113.53") && bail[0].message.contains("fournisseur"));
         let chiffre = par_regle(&c, "COM-DNS-003");
         assert_eq!(chiffre[0].probleme, Some(Niveau::Info));
-        assert!(chiffre[0].message.contains("en clair") && chiffre[0].message.contains("Ni la box"));
+        assert!(chiffre[0].message.contains("en clair") && chiffre[0].message.contains("Ni le routeur"));
         let divergence = par_regle(&c, "COM-DNS-004");
         assert_eq!(divergence.len(), 1);
         assert_eq!(divergence[0].probleme, None, "{}", divergence[0].message);
@@ -2057,7 +2057,11 @@ mod tests {
             .cloned()
             .collect::<Vec<_>>();
         assert_eq!(c.len(), 1);
-        assert!(c[0].message.contains("La box (10.0.0.1) résout"), "{}", c[0].message);
+        assert!(
+            c[0].message.contains("Le routeur (10.0.0.1) résout"),
+            "{}",
+            c[0].message
+        );
         // Un service connu distribué : rien à redire.
         e.baux = Ok(vec![bail(&["9.9.9.9", "149.112.112.112"])]);
         let c = constats(&e);
@@ -2188,7 +2192,7 @@ mod tests {
         assert_eq!(d.len(), 2);
         assert_eq!(d[0].probleme, None);
         assert_eq!(d[1].probleme, Some(Niveau::Eleve));
-        assert!(d[1].message.contains("toute la maison"));
+        assert!(d[1].message.contains("tout le réseau local"));
     }
 
     /// Un fil de mesure qui tombe n'emporte plus sa mesure en silence : le résolveur est rendu avec son rôle, puis jugé
@@ -2229,7 +2233,7 @@ mod tests {
         assert!(d[0].verifie);
         assert!(
             !d[1].verifie
-                && d[1].message.contains("box distribue (203.0.113.53)")
+                && d[1].message.contains("routeur distribue (203.0.113.53)")
                 && d[1].message.contains("interrompue"),
             "{}",
             d[1].message
@@ -2469,7 +2473,7 @@ mod tests {
         e.exceptions.remove(0);
         let c = constants_locaux(&e);
         assert_eq!(c.probleme, Some(Niveau::Info));
-        assert!(c.message.contains("ton réseau"));
+        assert!(c.message.contains("votre réseau"));
         // Un hôte piégé reste inoffensif à l'écran.
         e.exceptions.push(Exception {
             navigateur: "Firefox".into(),

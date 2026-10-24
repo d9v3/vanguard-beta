@@ -556,7 +556,7 @@ mod tests {
             titre: "Paquets devenus inutiles",
             effet: "Paquets installés pour un autre que plus rien n'utilise.".into(),
             prudence: Some(
-                "La liste s'affiche et se confirme avant : vérifie qu'elle ne contient rien que tu utilises.",
+                "La liste s'affiche et se confirme avant : vérifiez qu'elle ne contient rien que vous utilisez.",
             ),
             taille: None,
             commandes: vec!["sudo apt-get autoremove --purge".into()],

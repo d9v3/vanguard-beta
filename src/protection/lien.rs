@@ -534,7 +534,7 @@ fn examiner(lien: &Lien) -> Vec<Signe> {
             signe(
                 Niveau::Info,
                 tr!(
-                    "Adresse d'un appareil de ton réseau (box, imprimante…), pas un site d'Internet.",
+                    "Adresse d'un appareil de votre réseau (routeur, imprimante…), pas un site d'Internet.",
                     "Address of a device on your network (router, printer…), not an Internet site."
                 ),
             )
@@ -595,7 +595,7 @@ fn examiner(lien: &Lien) -> Vec<Signe> {
         signes.push(signe(
             Niveau::Moyen,
             trf!(
-                "Il télécharge un fichier .{ext} : un programme ou un installateur. Ne le lance pas s'il ne vient pas du site officiel.",
+                "Il télécharge un fichier .{ext} : un programme ou un installateur. Ne le lancez pas s'il ne vient pas du site officiel.",
                 "It downloads a .{ext} file: a program or an installer. Do not run it unless it comes from the official site."
             ),
         ));
@@ -760,7 +760,7 @@ fn examiner_marques_de(hote: &str, domaine: &str, dire_officiel: bool) -> Vec<Si
         signes.push(signe(
             Niveau::Moyen,
             tr!(
-                "Raccourcisseur de liens : on ne voit pas où il mène avant de l'ouvrir. Ne l'ouvre que si tu connais l'expéditeur.",
+                "Raccourcisseur de liens : on ne voit pas où il mène avant de l'ouvrir. Ne l'ouvrez que si vous connaissez l'expéditeur.",
                 "Link shortener: you cannot see where it leads before opening it. Only open it if you know the sender."
             ),
         ));
@@ -769,7 +769,7 @@ fn examiner_marques_de(hote: &str, domaine: &str, dire_officiel: bool) -> Vec<Si
         signes.push(signe(
             if marque_imitee { Niveau::Eleve } else { Niveau::Info },
             trf!(
-                "Site hébergé gratuitement ({h}) : n'importe qui en crée un en une minute, aucun service sérieux n'y demande ton mot de passe.",
+                "Site hébergé gratuitement ({h}) : n'importe qui en crée un en une minute, aucun service sérieux n'y demande votre mot de passe.",
                 "Site on free hosting ({h}): anyone can create one in a minute; no serious service asks for your password there."
             ),
         ));
@@ -807,18 +807,18 @@ fn chercher_dns(
     refuse: impl Fn(&[Ipv4Addr]) -> bool,
     resoudre: impl Fn(&str) -> Option<Vec<Ipv4Addr>>,
 ) -> Result<Vec<Ipv4Addr>, String> {
-    let muet = || tr!("ton DNS n'a pas répondu", "your DNS did not answer").to_string();
+    let muet = || tr!("votre DNS n'a pas répondu", "your DNS did not answer").to_string();
     let reponse = resoudre(&format!("{essai}.{zone}")).ok_or_else(muet)?;
     if reponse.is_empty() {
         return Err(tr!(
-            "ton DNS ne transmet pas les réponses de cette liste",
+            "votre DNS ne transmet pas les réponses de cette liste",
             "your DNS does not pass this list's answers on"
         )
         .into());
     }
     if refuse(&reponse) {
         return Err(tr!(
-            "la liste refuse ton DNS (résolveur public ou trop de demandes)",
+            "la liste refuse votre DNS (résolveur public ou trop de demandes)",
             "the list refuses your DNS (public resolver or too many queries)"
         )
         .into());
@@ -1248,17 +1248,17 @@ fn en_ligne(lien: &Lien, adresse: &str) -> Vec<Verification> {
 /// n'ont pas (toutes) pu se faire.
 fn verdict(pire: Option<Niveau>, en_ligne: &EnLigne) -> String {
     let rappel = tr!(
-        "Après un lien reçu, ne tape jamais de mot de passe : va sur le site en tapant son adresse toi-même.",
+        "Après un lien reçu, ne tapez jamais de mot de passe : allez sur le site en tapant son adresse vous-même.",
         "After a link you received, never type a password: go to the site by typing its address yourself."
     );
     let mut t = match pire {
         Some(Niveau::Critique | Niveau::Eleve) => tr!(
-            "Dangereux : ne l'ouvre pas. Supprime le message. S'il parle d'un service que tu utilises, va sur son site en tapant toi-même son adresse.",
+            "Dangereux : ne l'ouvrez pas. Supprimez le message. S'il parle d'un service que vous utilisez, allez sur son site en tapant vous-même son adresse.",
             "Dangerous: do not open it. Delete the message. If it mentions a service you use, go to its site by typing the address yourself."
         )
         .to_string(),
         Some(Niveau::Moyen) => tr!(
-            "Douteux : ne l'ouvre que si tu connais l'expéditeur et que tu attendais ce lien. N'y tape jamais de mot de passe.",
+            "Douteux : ne l'ouvrez que si vous connaissez l'expéditeur et que vous attendiez ce lien. N'y tapez jamais de mot de passe.",
             "Doubtful: only open it if you know the sender and were expecting this link. Never type a password there."
         )
         .to_string(),
@@ -1446,7 +1446,7 @@ pub fn verifier(adresse: Option<&str>) {
     let saisie = match adresse {
         Some(a) => a.to_string(),
         None => demander(tr!(
-            "\n  Lien à vérifier (colle-le ici) : ",
+            "\n  Lien à vérifier (collez-le ici) : ",
             "\n  Link to check (paste it here): "
         )),
     };

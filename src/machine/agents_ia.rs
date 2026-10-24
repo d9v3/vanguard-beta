@@ -149,7 +149,7 @@ fn juger_exposition(prises: &[Prise], fermes: &HashSet<u16>, noms: Noms) -> Cons
         CAT,
         Niveau::Eleve,
         trf!(
-            "Serveur d'IA ouvert au réseau, sans mot de passe : {liste}. N'importe quel appareil du Wi-Fi peut s'en servir (et, selon l'outil, lire ou écrire des fichiers). Fais-le écouter sur 127.0.0.1 seulement (Ollama : OLLAMA_HOST=127.0.0.1).",
+            "Serveur d'IA ouvert au réseau, sans mot de passe : {liste}. N'importe quel appareil du Wi-Fi peut s'en servir (et, selon l'outil, lire ou écrire des fichiers). Faites-le écouter sur 127.0.0.1 seulement (Ollama : OLLAMA_HOST=127.0.0.1).",
             "AI server open to the network, without a password: {liste}. Any device on the Wi-Fi can use it (and, depending on the tool, read or write files). Make it listen on 127.0.0.1 only (Ollama: OLLAMA_HOST=127.0.0.1)."
         ),
     )
@@ -551,7 +551,7 @@ fn juger_reglages(t: &Trouvailles, fichiers: usize, illisibles: &[String]) -> Ve
             CAT,
             Niveau::Eleve,
             trf!(
-                "Agent d'IA réglé pour tout faire sans demander (bypassPermissions) : {l}. Une page ou un fichier piégé qu'il lit peut lui faire lancer n'importe quelle commande. Remets les demandes de permission (defaultMode « default » ou « acceptEdits »).",
+                "Agent d'IA réglé pour tout faire sans demander (bypassPermissions) : {l}. Une page ou un fichier piégé qu'il lit peut lui faire lancer n'importe quelle commande. Remettez les demandes de permission (defaultMode « default » ou « acceptEdits »).",
                 "AI agent set to do everything without asking (bypassPermissions): {l}. A booby-trapped page or file it reads can make it run any command. Turn permission prompts back on (defaultMode “default” or “acceptEdits”)."
             ),
         ));
@@ -573,7 +573,7 @@ fn juger_reglages(t: &Trouvailles, fichiers: usize, illisibles: &[String]) -> Ve
             CAT,
             Niveau::Moyen,
             trf!(
-                "Serveur MCP lancé sans version fixée : {l}. Chaque lancement prend la dernière version publiée ; si elle est piégée, elle s'exécute avec tes droits. Fixe la version (« paquet@1.2.3 »).",
+                "Serveur MCP lancé sans version fixée : {l}. Chaque lancement prend la dernière version publiée ; si elle est piégée, elle s'exécute avec vos droits. Fixez la version (« paquet@1.2.3 »).",
                 "MCP server started without a pinned version: {l}. Each start takes the latest published version; if it is booby-trapped, it runs with your rights. Pin the version (“package@1.2.3”)."
             ),
         ));
@@ -584,7 +584,7 @@ fn juger_reglages(t: &Trouvailles, fichiers: usize, illisibles: &[String]) -> Ve
             CAT,
             Niveau::Moyen,
             trf!(
-                "Serveur MCP joint sans chiffrement (http://) : {l}. Sur le réseau, ses réponses peuvent être lues ou changées, et un agent obéit à ce qu'il reçoit. Utilise https.",
+                "Serveur MCP joint sans chiffrement (http://) : {l}. Sur le réseau, ses réponses peuvent être lues ou changées, et un agent obéit à ce qu'il reçoit. Utilisez https.",
                 "MCP server reached without encryption (http://): {l}. On the network its answers can be read or changed, and an agent obeys what it receives. Use https."
             ),
         ));
@@ -595,7 +595,7 @@ fn juger_reglages(t: &Trouvailles, fichiers: usize, illisibles: &[String]) -> Ve
             CAT,
             Niveau::Moyen,
             trf!(
-                "Clé ou jeton écrit en clair dans les réglages d'un serveur MCP : {l}. Tout programme de ton compte peut le lire. Passe-le par une variable d'environnement (« ${{NOM}} ») ou le trousseau.",
+                "Clé ou jeton écrit en clair dans les réglages d'un serveur MCP : {l}. Tout programme de votre compte peut le lire. Passez-le par une variable d'environnement (« ${{NOM}} ») ou le trousseau.",
                 "Key or token written in clear text in an MCP server's settings: {l}. Any program of your account can read it. Pass it through an environment variable (“${{NAME}}”) or the keychain."
             ),
         ));

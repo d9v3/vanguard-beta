@@ -499,7 +499,7 @@ pub(super) fn defaire_dans(
         let r = tous.iter().find(|r| r.id.as_ref() == id.as_str());
         let issue = match r {
             _ if id == DNS && tient_le_dns => refus(
-                "le mode Wi-Fi public tient le DNS : éteins-le d'abord",
+                "le mode Wi-Fi public tient le DNS : éteignez-le d'abord",
                 "public Wi-Fi mode holds the DNS: turn it off first",
             ),
             None => refus(
@@ -579,7 +579,7 @@ pub(crate) fn annuler_une(id: &str) -> Option<Issue> {
         afficher_aligne(
             "  ✖ ",
             &trf!(
-                "« {} », plus récente, touche la même chose : annule-la d'abord, sinon l'état d'entre les deux reviendrait.",
+                "« {} », plus récente, touche la même chose : annulez-la d'abord, sinon l'état d'entre les deux reviendrait.",
                 "“{}”, more recent, touches the same thing: undo it first, or the state in between would come back.",
                 affichable(&titre)
             ),

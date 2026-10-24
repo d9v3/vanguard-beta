@@ -478,7 +478,7 @@ pub(crate) fn juger_authentification(
     let mut manques = Vec::new();
     let non_verifiable = || {
         tr!(
-            "Authentification de l'expéditeur impossible à vérifier : aucun résultat écrit par ton fournisseur (ceux plus bas dans le courriel peuvent venir de l'expéditeur).",
+            "Authentification de l'expéditeur impossible à vérifier : aucun résultat écrit par votre fournisseur (ceux plus bas dans le courriel peuvent venir de l'expéditeur).",
             "Sender authentication could not be checked: no result written by your provider (those further down the email may come from the sender)."
         )
         .to_string()
@@ -540,14 +540,14 @@ pub(crate) fn juger_authentification(
     let authentique = (
         Niveau::Info,
         tr!(
-            "Domaine de l'expéditeur authentifié par ton fournisseur. Authentique ne veut pas dire honnête : un escroc authentifie très bien son propre domaine.",
+            "Domaine de l'expéditeur authentifié par votre fournisseur. Authentique ne veut pas dire honnête : un escroc authentifie très bien son propre domaine.",
             "Sender domain authenticated by your provider. Authentic does not mean honest: a scammer authenticates their own domain just fine."
         )
         .to_string(),
     );
     let incertain = || {
         tr!(
-            "le résultat d'authentification (pas sûr qu'il vienne de ton fournisseur)",
+            "le résultat d'authentification (pas sûr qu'il vienne de votre fournisseur)",
             "the authentication result (not sure it comes from your provider)"
         )
         .to_string()
@@ -557,7 +557,7 @@ pub(crate) fn juger_authentification(
         (
             Niveau::Info,
             tr!(
-                "Le résultat dit « réussi », mais rien ne prouve que ton fournisseur l'a écrit : il n'est pas cru.",
+                "Le résultat dit « réussi », mais rien ne prouve que votre fournisseur l'a écrit : il n'est pas cru.",
                 "The result says “pass”, but nothing proves your provider wrote it: it is not trusted."
             )
             .to_string(),
@@ -570,7 +570,7 @@ pub(crate) fn juger_authentification(
             signes.push((
                 Niveau::Moyen,
                 tr!(
-                    "DMARC : échec, mais ton fournisseur l'a quand même accepté (courriel renvoyé ou liste de diffusion). Rien n'a pu être conclu.",
+                    "DMARC : échec, mais votre fournisseur l'a quand même accepté (courriel renvoyé ou liste de diffusion). Rien n'a pu être conclu.",
                     "DMARC: fail, but your provider still accepted it (forwarded email or mailing list). Nothing could be concluded."
                 )
                 .to_string(),

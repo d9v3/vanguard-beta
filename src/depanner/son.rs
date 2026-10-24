@@ -93,7 +93,7 @@ pub(super) fn son() {
     }
     if ou == 2 {
         conseils.push(tr!(
-            "Son qui grésille : essaie une autre prise ou un autre câble ; en Bluetooth, rapproche le casque et éloigne-le du Wi-Fi 2,4 GHz. Relancer le service du son règle souvent les coupures.",
+            "Son qui grésille : essayez une autre prise ou un autre câble ; en Bluetooth, rapprochez le casque et éloignez-le du Wi-Fi 2,4 GHz. Relancer le service du son règle souvent les coupures.",
             "Crackling sound: try another port or cable; on Bluetooth, bring the headset closer and away from 2.4 GHz Wi-Fi. Restarting the sound service often fixes the cuts."
         ));
     }
@@ -105,7 +105,7 @@ pub(super) fn son() {
     }
     if sortie_voulue == 3 {
         conseils.push(tr!(
-            "Bluetooth : un casque connecté en « mains libres » sonne mal ; déconnecte-le puis reconnecte-le, ou choisis le profil « haute qualité » (A2DP).",
+            "Bluetooth : un casque connecté en « mains libres » sonne mal ; déconnectez-le puis reconnectez-le, ou choisissez le profil « haute qualité » (A2DP).",
             "Bluetooth: a headset connected as “hands-free” sounds bad; disconnect and reconnect it, or choose the “high quality” profile (A2DP)."
         ));
     }
@@ -211,7 +211,7 @@ mod systeme {
                 return;
             }
             Etat::Info.dire(tr!(
-                "Le son sort peut-être ailleurs que là où tu l'attends. Sorties disponibles :",
+                "Le son sort peut-être ailleurs que là où vous l'attendez. Sorties disponibles :",
                 "The sound may be going somewhere else than where you expect. Available outputs:"
             ));
             for (i, s) in candidates.iter().enumerate() {

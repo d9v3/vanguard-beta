@@ -133,7 +133,7 @@ fn constats_disques(disques: &[Disque]) -> Vec<Constat> {
                     CAT,
                     Niveau::Eleve,
                     trf!(
-                        "Le disque {} annonce une panne proche (SMART). Sauvegarde tes fichiers maintenant et prévois de le remplacer.",
+                        "Le disque {} annonce une panne proche (SMART). Sauvegardez vos fichiers maintenant et prévoyez de le remplacer.",
                         "The {} disk announces an upcoming failure (SMART). Back up your files now and plan to replace it.",
                         d.modele
                     ),
@@ -155,7 +155,7 @@ fn constats_disques(disques: &[Disque]) -> Vec<Constat> {
                 CAT,
                 Niveau::Moyen,
                 trf!(
-                    "Le disque {} vieillit ({detail}) : garde une sauvegarde à jour.",
+                    "Le disque {} vieillit ({detail}) : gardez une sauvegarde à jour.",
                     "The {} disk is aging ({detail}): keep a backup up to date.",
                     d.modele
                 ),

@@ -521,7 +521,7 @@ fn mettre_en_place(provisoire: &Path, cible: &Path) -> std::io::Result<()> {
     // Celui d'une mise à jour précédente tourne peut-être encore : rien ne se remplace, et c'est dit clairement.
     if std::fs::symlink_metadata(&ancien).is_ok() && std::fs::remove_file(&ancien).is_err() {
         return Err(std::io::Error::other(tr!(
-            "l'ancienne copie tourne encore (surveillance) : réessaie dans une minute",
+            "l'ancienne copie tourne encore (surveillance) : réessayez dans une minute",
             "the old copy is still running (monitoring): try again in a minute"
         )));
     }
@@ -564,7 +564,7 @@ pub fn commande() {
         Etat::ClePlusAncienne { copie, cle } => {
             let (copie, cle) = cote_a_cote(copie, cle);
             trp!(
-                "  La copie d'ici ({copie}) est plus récente que la clé ({cle}).\n  Remets la clé à jour chez toi : Vanguard ne revient jamais en arrière.",
+                "  La copie d'ici ({copie}) est plus récente que la clé ({cle}).\n  Remettez la clé à jour chez vous : Vanguard ne revient jamais en arrière.",
                 "  The copy on this computer ({copie}) is newer than the key ({cle}).\n  Update the key at home: Vanguard never goes back to an older version."
             );
         }
@@ -578,7 +578,7 @@ pub fn commande() {
 fn depuis_github() {
     if let Some(exe) = programme_ecarte_en_root() {
         trp!(
-            "\n  {GRIS}Lancé en root depuis un dossier que d'autres comptes peuvent changer :\n  {}\n  Ce programme n'est pas remplacé d'ici : pose-le dans un dossier à root,\n  ou mets-le à jour sans sudo.{RESET}",
+            "\n  {GRIS}Lancé en root depuis un dossier que d'autres comptes peuvent changer :\n  {}\n  Ce programme n'est pas remplacé d'ici : posez-le dans un dossier à root,\n  ou mettez-le à jour sans sudo.{RESET}",
             "\n  {GRIS}Started as root from a folder other accounts can change:\n  {}\n  This program is not replaced from here: put it in a root-owned folder,\n  or update it without sudo.{RESET}",
             chemin_affichable(&exe)
         );
@@ -589,7 +589,7 @@ fn depuis_github() {
     }
     if !github::dossier_sur() {
         trp!(
-            "\n  {GRIS}Lancé en root avec le dossier d'un autre compte : pas de mise à jour depuis GitHub.\n  Relance Vanguard depuis ce compte.{RESET}",
+            "\n  {GRIS}Lancé en root avec le dossier d'un autre compte : pas de mise à jour depuis GitHub.\n  Relancez Vanguard depuis ce compte.{RESET}",
             "\n  {GRIS}Started as root with another account's folder: no update from GitHub.\n  Start Vanguard again from that account.{RESET}"
         );
         return;

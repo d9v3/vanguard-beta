@@ -175,7 +175,7 @@ fn isoler_dans(chemin: &Path, detection: &str, dossier: &Path, sha256: Option<St
     // fichier reste en place, et `isoler` note l'échec.
     if !crate::socle::ecriture_sure(dossier) {
         return Err(std::io::Error::other(tr!(
-            "root n'écrit pas dans le dossier d'un compte (sudo -E) : relance sans sudo",
+            "root n'écrit pas dans le dossier d'un compte (sudo -E) : relancez sans sudo",
             "root does not write into an account's folder (sudo -E): start again without sudo"
         )));
     }

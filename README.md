@@ -236,7 +236,7 @@ public.
 
 #### Objets connectés
 
-**Box et objets connectés** — après le scan, ou plus tard d'après le dernier scan gardé (`vanguard objets`), ce
+**Routeur et objets connectés** — après le scan, ou plus tard d'après le dernier scan gardé (`vanguard objets`), ce
 que le routeur dit de lui-même (souvent son modèle et la version de son logiciel), une page d'administration en HTTP
 seul, et les caméras, imprimantes, NAS, télés, enceintes, consoles et objets de domotique, reconnus à leur
 fabricant, à leur nom, à leurs ports et à leurs annonces. Pour le routeur, les caméras, les imprimantes et les NAS, le
@@ -406,7 +406,7 @@ fail2ban, sshguard ou CrowdSec bloque déjà les adresses qui insistent.
 
 #### Arnaques et prise de contrôle
 
-- Quelqu'un contrôle mon ordi ? : l'arnaque au faux technicien (« votre ordinateur est infecté ») fait installer un
+- Mon ordinateur est-il contrôlé ? : l'arnaque au faux technicien (« votre ordinateur est infecté ») fait installer un
   logiciel de prise de contrôle à distance. Vanguard cherche AnyDesk, TeamViewer, RustDesk, Assistance rapide,
   Splashtop, UltraViewer… installés (et depuis quand), lancés au démarrage, en cours d'exécution ou simplement posés
   dans Téléchargements ; il explique quoi faire (couper Internet, prévenir la banque, changer les mots de passe) et
@@ -720,9 +720,9 @@ Chaque entrée du menu existe aussi en commande.
 
 | Commande | Rôle |
 |---|---|
-| `vanguard complet [--html] [--texte]` | bilan complet : machine + réseau ; `--texte` l'affiche en texte simple (mode urgence) |
+| `vanguard complet [--html] [--texte]` | bilan complet : cet ordinateur puis le réseau ; `--texte` l'affiche en texte simple (mode urgence) |
 | `vanguard corriger` | corriger les problèmes trouvés |
-| `vanguard machine [--json]` | audit de cette machine |
+| `vanguard machine [--json]` | audit de cet ordinateur |
 | `vanguard regles` | les règles du bilan déclarées pour ce système : identifiant, sujet, références |
 | `vanguard autotest [--json] [--internet] [--detail] [--une-par-une]` | autodiagnostic : chaque règle du bilan sous garde et délai, en lecture seule prouvée par empreintes, et les lectures de Vanguard comparées aux outils du système (pacman, systemctl, ss, PowerShell…) ; rien n'est changé, hors ligne par défaut, un écart va au journal des erreurs sans aucune valeur de l'ordinateur ; code de sortie 0 sain, 1 écart, 2 non vérifié. Refait chaque semaine avec la surveillance (`vanguard parametres autotest non` pour le couper) |
 | `vanguard reseau [cible] [-p courants\|tous\|22,80,8000-8100] [--json]` | scan du réseau ou d'un appareil |
@@ -781,7 +781,7 @@ Chaque entrée du menu existe aussi en commande.
 | `vanguard quarantaine` | les fichiers isolés, à remettre à leur place ou à supprimer |
 | `vanguard secrets` | secrets oubliés dans l'historique des projets git (et gitleaks, s'il est installé ; lecture seule) |
 | `vanguard conteneurs` | failles connues des images Docker ou Podman (trivy, s'il est installé ; lecture seule) |
-| `vanguard distance` | quelqu'un contrôle mon ordinateur ? logiciels de prise de contrôle à distance (faux technicien), retrait après accord |
+| `vanguard distance` | mon ordinateur est-il contrôlé ? logiciels de prise de contrôle à distance (faux technicien), retrait après accord |
 | `vanguard lien <adresse>` | ce lien est-il dangereux ? (examiné sans l'ouvrir ; en ligne après accord) |
 | `vanguard courriel-suspect <fichier.eml>` | ce courriel est-il une arnaque ? l'expéditeur et son authentification, les liens, les pièces jointes, examinés sans rien ouvrir ; en ligne après accord |
 | `vanguard verifier-fichier <fichier> [empreinte]` | vérifier un fichier téléchargé : empreinte, nom et contenu, YARA, antivirus |

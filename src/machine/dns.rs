@@ -385,7 +385,7 @@ fn decrire(ip: IpAddr, s: &Serveurs) -> String {
             Some(nom) => trf!("{nom} (sur cette machine)", "{nom} (on this machine)"),
             None => trf!("résolveur local ({ip})", "local resolver ({ip})"),
         },
-        Origine::Reseau => trf!("ta box ou ton réseau ({ip})", "your router or network ({ip})"),
+        Origine::Reseau => trf!("votre routeur ou votre réseau ({ip})", "your router or network ({ip})"),
         Origine::Connu(nom) => format!("{nom} ({ip})"),
         Origine::Inconnu => ip.to_string(),
     }
@@ -424,7 +424,7 @@ fn constat_serveurs(s: &Serveurs) -> Constat {
             CAT,
             Niveau::Moyen,
             trf!(
-                "DNS réglé à la main vers un serveur inconnu : {liste}. Si tu ne l'as pas choisi, un programme a pu le changer pour détourner tes visites.",
+                "DNS réglé à la main vers un serveur inconnu : {liste}. Si vous ne l'avez pas choisi, un programme a pu le changer pour détourner vos visites.",
                 "DNS manually set to an unknown server: {liste}. If you did not choose it, a program may have changed it to hijack your browsing."
             ),
         );
@@ -441,7 +441,7 @@ fn constat_serveurs(s: &Serveurs) -> Constat {
         commandes.dedup();
         return constat.corriger(
             tr!(
-                "Remettre le DNS en automatique (celui que donne la box)",
+                "Remettre le DNS en automatique (celui que donne le routeur)",
                 "Set DNS back to automatic (the one the router provides)"
             ),
             &commandes,
@@ -450,7 +450,7 @@ fn constat_serveurs(s: &Serveurs) -> Constat {
     let chiffrement = match s.chiffre {
         Some(true) => tr!(", requêtes chiffrées", ", encrypted queries"),
         Some(false) => tr!(
-            ", requêtes non chiffrées (ton fournisseur Internet voit les sites visités)",
+            ", requêtes non chiffrées (votre fournisseur Internet voit les sites visités)",
             ", unencrypted queries (your Internet provider sees the sites you visit)"
         ),
         None => "",
@@ -460,7 +460,7 @@ fn constat_serveurs(s: &Serveurs) -> Constat {
             CAT,
             Niveau::Info,
             trf!(
-                "DNS : {noms}{chiffrement}. Serveur hors des services connus : normal si c'est celui de ton fournisseur Internet.",
+                "DNS : {noms}{chiffrement}. Serveur hors des services connus : normal si c'est celui de votre fournisseur Internet.",
                 "DNS: {noms}{chiffrement}. Server outside the known services: normal if it is your Internet provider's."
             ),
         );
@@ -485,7 +485,7 @@ fn sans_blocage(s: &Serveurs) -> Option<Constat> {
             CAT,
             Niveau::Info,
             tr!(
-                "Ton DNS ne bloque pas les sites dangereux (hameçonnage, logiciels malveillants). Un DNS qui protège les arrête avant même la connexion : le Bouclier canadien « Protégé » de l'ACEI (gratuit, sans profilage) ou Quad9.",
+                "Votre DNS ne bloque pas les sites dangereux (hameçonnage, logiciels malveillants). Un DNS qui protège les arrête avant même la connexion : le Bouclier canadien « Protégé » de l'ACEI (gratuit, sans profilage) ou Quad9.",
                 "Your DNS does not block dangerous sites (phishing, malware). A protective DNS stops them before the connection even starts: CIRA's Canadian Shield “Protected” (free, no profiling) or Quad9."
             ),
         )
@@ -553,7 +553,7 @@ pub fn dns() -> Vec<Constat> {
             CAT,
             Niveau::Moyen,
             trf!(
-                "Le DNS répond même pour un site qui n'existe pas (→ {ip}) : ton fournisseur redirige les erreurs vers ses pages, un portail Wi-Fi intercepte, ou quelqu'un détourne tes requêtes.",
+                "Le DNS répond même pour un site qui n'existe pas (→ {ip}) : votre fournisseur redirige les erreurs vers ses pages, un portail Wi-Fi intercepte, ou quelqu'un détourne vos requêtes.",
                 "The DNS answers even for a site that does not exist (→ {ip}): your provider redirects errors to its pages, a Wi-Fi portal intercepts, or someone is hijacking your queries."
             ),
         ));

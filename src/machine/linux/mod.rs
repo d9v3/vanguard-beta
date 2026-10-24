@@ -61,7 +61,7 @@ pub fn commande_installation(paquet: &str) -> String {
     match Paquets::detecter() {
         Some(g) => g.installer(paquet),
         None => trf!(
-            "installe « {paquet} » avec ta distribution",
+            "installez « {paquet} » avec votre distribution",
             "install “{paquet}” with your distribution"
         ),
     }
@@ -179,7 +179,7 @@ impl Paquets {
         if let Some(outil) = image {
             return format!(
                 "{outil} {paquets} && echo \"{}\"",
-                tr!("Redémarre pour l'utiliser.", "Reboot to use it.")
+                tr!("Redémarrez pour l'utiliser.", "Reboot to use it.")
             );
         }
         match self {
@@ -305,7 +305,7 @@ impl Paquets {
             return format!(
                 "{outil} {paquets} && echo \"{}\"",
                 tr!(
-                    "Redémarre pour que le retrait prenne effet.",
+                    "Redémarrez pour que le retrait prenne effet.",
                     "Reboot for the removal to take effect."
                 )
             );
@@ -475,7 +475,7 @@ fn pare_feu() -> Constat {
         let installer_ufw = match Paquets::detecter() {
             Some(g) => g.installer("ufw"),
             None => String::from(tr!(
-                "echo 'Installe ufw avec ta distribution'",
+                "echo 'Installez ufw avec votre distribution'",
                 "echo 'Install ufw with your distribution'"
             )),
         };
@@ -632,14 +632,14 @@ fn ports_ecoute(pare_feu_actif: bool, ufw: bool) -> Vec<Constat> {
                     // Réglage déjà coupé : le port vient d'un Steam pas redémarré, ou de sa découverte locale.
                     Some(false) => constat.manuel(
                         tr!("Remote Play est déjà désactivé dans Steam, mais Steam garde le port qu'il a ouvert au démarrage : \
-                         quitte complètement Steam et relance-le. S'il reste ouvert, c'est la découverte des autres PC Steam \
-                         du réseau ; ton pare-feu le bloque de toute façon", "Remote Play is already off in Steam, but Steam keeps the port it opened at startup: \
+                         quittez complètement Steam et relancez-le. S'il reste ouvert, c'est la découverte des autres PC Steam \
+                         du réseau ; votre pare-feu le bloque de toute façon", "Remote Play is already off in Steam, but Steam keeps the port it opened at startup: \
                          quit Steam completely and start it again. If it stays open, it is the discovery of the other Steam PCs \
                          on the network; your firewall blocks it anyway"),
                         &[],
                     ),
                     _ => constat.manuel(
-                        tr!("Si tu n'utilises pas Remote Play : Steam > Paramètres > Remote Play > décocher « Activer Remote Play »", "If you do not use Remote Play: Steam > Settings > Remote Play > uncheck “Enable Remote Play”"),
+                        tr!("Si vous n'utilisez pas Remote Play : Steam > Paramètres > Remote Play > décocher « Activer Remote Play »", "If you do not use Remote Play: Steam > Settings > Remote Play > uncheck “Enable Remote Play”"),
                         &[],
                     ),
                 },
@@ -757,7 +757,7 @@ fn ssh_serveur() -> Constat {
         );
         return if a_des_cles {
             c.corriger(
-                tr!("N'accepter que les clés SSH (tu as déjà des clés autorisées)", "Accept SSH keys only (you already have authorized keys)"),
+                tr!("N'accepter que les clés SSH (vous avez déjà des clés autorisées)", "Accept SSH keys only (you already have authorized keys)"),
                 &[
                     &format!("printf 'PasswordAuthentication no\\nKbdInteractiveAuthentication no\\n' | sudo tee -a {SSHD_VANGUARD} >/dev/null"),
                     RECHARGER_SSHD,
@@ -767,7 +767,7 @@ fn ssh_serveur() -> Constat {
         } else {
             // Sans clé autorisée, couper les mots de passe t'enfermerait dehors.
             c.manuel(
-                tr!("Ajoute d'abord ta clé depuis l'autre ordinateur (ssh-copy-id), puis relance la correction. Ou désactive SSH si inutile :", "First add your key from the other computer (ssh-copy-id), then run the fix again. Or turn SSH off if unused:"),
+                tr!("Ajoutez d'abord votre clé depuis l'autre ordinateur (ssh-copy-id), puis relancez la correction. Ou désactivez SSH si inutile :", "First add your key from the other computer (ssh-copy-id), then run the fix again. Or turn SSH off if unused:"),
                 &["sudo systemctl disable --now sshd"],
             )
         };
@@ -986,14 +986,14 @@ const BLOQUEURS: [&str; 3] = ["fail2ban", "sshguard", "crowdsec"];
 fn conseil_echecs_ssh(bloqueur: bool, internet: bool) -> Option<String> {
     let installer = (!bloqueur).then(|| {
         trf!(
-            "Bloquer les adresses qui insistent : sshguard (ou fail2ban), à régler avec ton pare-feu selon la documentation de ta distribution : {}",
+            "Bloquer les adresses qui insistent : sshguard (ou fail2ban), à régler avec votre pare-feu selon la documentation de votre distribution : {}",
             "Block the addresses that keep trying: sshguard (or fail2ban), to set up with your firewall following your distribution's documentation: {}",
             commande_installation("sshguard")
         )
     });
     let fermer = internet.then(|| {
         tr!(
-            "Si tu n'as pas besoin de SSH depuis l'extérieur, retire la redirection du port sur ta box",
+            "Si vous n'avez pas besoin de SSH depuis l'extérieur, retirez la redirection du port sur votre routeur",
             "If you do not need SSH from outside, remove the port forwarding on your router"
         )
         .to_string()
@@ -1175,7 +1175,7 @@ fn juger_ouverture_automatique(compte: &str, fichier: &str, chiffree: Option<boo
         "Comptes",
         Niveau::Moyen,
         trf!(
-            "La session de « {compte} » s'ouvre toute seule au démarrage, sans disque chiffré : un ordinateur volé s'allume directement sur tes fichiers.",
+            "La session de « {compte} » s'ouvre toute seule au démarrage, sans disque chiffré : un ordinateur volé s'allume directement sur vos fichiers.",
             "“{compte}”'s session opens by itself at startup, without an encrypted disk: a stolen computer boots straight into your files."
         ),
     )
@@ -1559,7 +1559,7 @@ fn juger_xhost(sortie: &str) -> Option<Constat> {
                 "Affichage X11",
                 Niveau::Eleve,
                 tr!(
-                    "L'affichage accepte tout le monde (« xhost + ») : n'importe quel programme, même d'un autre ordinateur, peut lire ton clavier et copier ton écran.",
+                    "L'affichage accepte tout le monde (« xhost + ») : n'importe quel programme, même d'un autre ordinateur, peut lire votre clavier et copier votre écran.",
                     "The display accepts everyone (“xhost +”): any program, even from another computer, can read your keyboard and copy your screen."
                 ),
             )
@@ -1592,14 +1592,14 @@ fn juger_xhost(sortie: &str) -> Option<Constat> {
             "Affichage X11",
             Niveau::Moyen,
             trf!(
-                "D'autres ordinateurs peuvent se servir de ton affichage (lire le clavier, copier l'écran) : {}.",
+                "D'autres ordinateurs peuvent se servir de votre affichage (lire le clavier, copier l'écran) : {}.",
                 "Other computers can use your display (read the keyboard, copy the screen): {}.",
                 crate::ui::resume(&montres, 4, ", ")
             ),
         )
         .manuel(
             tr!(
-                "Les retirer si tu ne les reconnais pas (et de ~/.xprofile ou ~/.xinitrc s'ils y sont ajoutés)",
+                "Les retirer si vous ne les reconnaissez pas (et de ~/.xprofile ou ~/.xinitrc s'ils y sont ajoutés)",
                 "Remove them if you do not recognize them (and from ~/.xprofile or ~/.xinitrc if they are added there)"
             ),
             &commandes,
@@ -2306,9 +2306,9 @@ pas-un-uuid;rm -rf ~:802-11-wireless:yes:Piège
         assert!(conseil_echecs_ssh(false, false).unwrap().contains("sshguard"));
         assert!(conseil_echecs_ssh(true, false).is_none());
         let internet = conseil_echecs_ssh(true, true).unwrap();
-        assert!(!internet.contains("sshguard") && internet.contains("box"));
+        assert!(!internet.contains("sshguard") && internet.contains("routeur"));
         let tout = conseil_echecs_ssh(false, true).unwrap();
-        assert!(tout.contains("sshguard") && tout.contains("box"));
+        assert!(tout.contains("sshguard") && tout.contains("routeur"));
     }
 
     #[test]

@@ -1009,7 +1009,7 @@ fn afficher(f: &Fiche) {
             ligne(quoi, numero);
         }
         let nulle_part = tr!(
-            "Ils ne sont écrits nulle part : ni rapport, ni fichier, ni journal. Recopie-les toi-même si un service après-vente les demande.",
+            "Ils ne sont écrits nulle part : ni rapport, ni fichier, ni journal. Recopiez-les vous-même si un service après-vente les demande.",
             "They are written nowhere: no report, no file, no log. Copy them yourself if an after-sales service asks for them."
         );
         afficher_aligne("  ", nulle_part, 2, DISCRET);

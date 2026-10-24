@@ -55,7 +55,7 @@ pub fn info_udp(port: u16) -> InfoPort {
             "DNS",
             Info,
             crate::tr!(
-                "Résout les noms : normal sur la box. Sur un autre appareil, à reconnaître (Pi-hole, serveur…).",
+                "Résout les noms : normal sur le routeur. Sur un autre appareil, à reconnaître (Pi-hole, serveur…).",
                 "Resolves names: normal on the router. On another device, make sure you know it (Pi-hole, server…)."
             ),
         ),
@@ -79,7 +79,7 @@ pub fn info_udp(port: u16) -> InfoPort {
             "SNMP",
             Eleve,
             crate::tr!(
-                "Répond avec le mot de passe par défaut « public » : livre sa configuration à tout le réseau, parfois la laisse modifier. Change la communauté SNMP ou coupe SNMP dans l'appareil.",
+                "Répond avec le mot de passe par défaut « public » : livre sa configuration à tout le réseau, parfois la laisse modifier. Changez la communauté SNMP ou coupez SNMP dans l'appareil.",
                 "Answers with the default password “public”: gives its configuration to the whole network, sometimes lets it be changed. Change the SNMP community or turn SNMP off on the device."
             ),
         ),
@@ -87,7 +87,7 @@ pub fn info_udp(port: u16) -> InfoPort {
             "SSDP / UPnP",
             Moyen,
             crate::tr!(
-                "Annonce l'appareil par UPnP ; sur la box, permet aux appareils d'ouvrir des ports vers Internet tout seuls. À couper s'il ne sert pas.",
+                "Annonce l'appareil par UPnP ; sur le routeur, permet aux appareils d'ouvrir des ports vers Internet tout seuls. À couper s'il ne sert pas.",
                 "Announces the device over UPnP; on the router, lets devices open ports to the Internet by themselves. Turn it off if unused."
             ),
         ),
@@ -571,7 +571,7 @@ pub fn info_port(port: u16) -> InfoPort {
             "VPN IPsec",
             Info,
             crate::tr!(
-                "VPN IPsec : normal si tu l'utilises.",
+                "VPN IPsec : normal si vous l'utilisez.",
                 "IPsec VPN: normal if you use it."
             ),
         ),
@@ -611,7 +611,7 @@ pub fn info_port(port: u16) -> InfoPort {
             "WireGuard",
             Info,
             crate::tr!(
-                "VPN WireGuard : normal si tu l'utilises.",
+                "VPN WireGuard : normal si vous l'utilisez.",
                 "WireGuard VPN: normal if you use it."
             ),
         ),
@@ -643,7 +643,7 @@ pub fn info_port(port: u16) -> InfoPort {
             "KDE Connect",
             Info,
             crate::tr!(
-                "Liaison téléphone/PC : n'apparier que tes propres appareils.",
+                "Liaison téléphone/PC : n'apparier que vos propres appareils.",
                 "Phone/PC link: only pair your own devices."
             ),
         ),

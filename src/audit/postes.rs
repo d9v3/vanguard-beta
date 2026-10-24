@@ -88,7 +88,7 @@ fn autres_postes(e: &Entree) -> Vec<Constat> {
                 "Postes",
                 Niveau::Moyen,
                 trf!(
-                    "{} ordinateur(s) de la maison exposent le partage Windows (445) au réseau ({}) : si l'un est infecté, un rançongiciel passe par là.",
+                    "{} ordinateur(s) du réseau local exposent le partage Windows (445) au réseau ({}) : si l'un est infecté, un rançongiciel passe par là.",
                     "{} computer(s) of the home expose Windows file sharing (445) to the network ({}): if one is infected, ransomware goes through there.",
                     partages.len(),
                     resume(&partages, 4, ", ")
@@ -96,7 +96,7 @@ fn autres_postes(e: &Entree) -> Vec<Constat> {
             )
             .manuel(
                 tr!(
-                    "Lance Vanguard sur chacun (SMBv1, pare-feu) ; coupe le partage de fichiers sur ceux qui ne partagent rien",
+                    "Lancez Vanguard sur chacun (SMBv1, pare-feu) ; coupez le partage de fichiers sur ceux qui ne partagent rien",
                     "Run Vanguard on each one (SMBv1, firewall); turn file sharing off on those that share nothing"
                 ),
                 &[],
@@ -118,7 +118,7 @@ fn autres_postes(e: &Entree) -> Vec<Constat> {
                 )
                 .manuel(
                     tr!(
-                        "Sur ce poste : mot de passe fort et NLA pour le Bureau à distance, ou coupe-le ; pour VNC, un mot de passe fort ou un tunnel SSH",
+                        "Sur ce poste : mot de passe fort et NLA pour le Bureau à distance, ou coupez-le ; pour VNC, un mot de passe fort ou un tunnel SSH",
                         "On that computer: a strong password and NLA for Remote Desktop, or turn it off; for VNC, a strong password or an SSH tunnel"
                     ),
                     &[],
@@ -158,7 +158,7 @@ fn autres_postes(e: &Entree) -> Vec<Constat> {
         constats.push(ok(
             "Postes",
             trf!(
-                "Aucun autre ordinateur de la maison n'expose de partage Windows ni de bureau à distance ({autres} autre(s) appareil(s) vu(s)).",
+                "Aucun autre ordinateur du réseau local n'expose de partage Windows ni de bureau à distance ({autres} autre(s) appareil(s) vu(s)).",
                 "No other computer of the home exposes Windows sharing or a remote desktop ({autres} other device(s) seen)."
             ),
         ));
@@ -209,7 +209,7 @@ fn empoisonneur(e: &Entree) -> Vec<Constat> {
             )
             .manuel(
                 tr!(
-                    "Débranche cet appareil ; sur tes PC Windows, coupe LLMNR et NetBIOS (Vanguard le fait au bilan)",
+                    "Débranchez cet appareil ; sur vos PC Windows, coupez LLMNR et NetBIOS (Vanguard le fait au bilan)",
                     "Unplug that device; on your Windows PCs, turn off LLMNR and NetBIOS (Vanguard does it in the audit)"
                 ),
                 &[],
@@ -264,7 +264,7 @@ fn botnets(en_cours: Option<&sortantes::EnCours>) -> Vec<Constat> {
             )
             .manuel(
                 tr!(
-                    "Coupe Internet d'abord, puis ouvre « Après une infection » dans Vanguard (vanguard depanner infection)",
+                    "Coupez Internet d'abord, puis ouvrez « Après une infection » dans Vanguard (vanguard depanner infection)",
                     "Cut the Internet first, then open “After an infection” in Vanguard (vanguard troubleshoot infection)"
                 ),
                 &[],
@@ -280,7 +280,7 @@ fn liste_noire() -> Constat {
         "Postes",
         "COM-PST-003",
         tr!(
-            "L'adresse publique de la maison n'est cherchée dans les listes noires qu'avec ton accord : « Adresse sur liste noire ? » (vanguard listes-noires) le demande, et dit si un appareil de la maison envoie du pourriel ou des attaques.",
+            "L'adresse Internet publique n'est cherchée dans les listes noires qu'avec votre accord : « Adresse sur liste noire ? » (vanguard listes-noires) le demande, et dit si un appareil du réseau local envoie du pourriel ou des attaques.",
             "The home's public address is only looked up in blocklists with your consent: “Address on blocklists?” (vanguard listes-noires) asks for it, and says whether a device of the home sends spam or attacks."
         ),
     )

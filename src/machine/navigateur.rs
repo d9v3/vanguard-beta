@@ -342,7 +342,7 @@ fn juger(navigateur: &str, r: &Reglages) -> Constat {
             CAT,
             Niveau::Info,
             trf!(
-                "{navigateur} : protection contre les sites frauduleux active, mais tous les cookies tiers sont acceptés : les publicitaires te suivent de site en site ({dns}).",
+                "{navigateur} : protection contre les sites frauduleux active, mais tous les cookies tiers sont acceptés : les publicitaires vous suivent de site en site ({dns}).",
                 "{navigateur}: protection against fraudulent sites on, but all third-party cookies are accepted: advertisers follow you from site to site ({dns})."
             ),
         );

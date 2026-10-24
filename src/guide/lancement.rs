@@ -26,19 +26,19 @@ const LIGNES_MONTREES: usize = 1000;
 pub(super) fn obstacle(c: &Commande) -> Option<&'static str> {
     if c.obstacle == Obstacle::NonVerifiee {
         return Some(tr!(
-            "Elle vient de tldr-pages, que Vanguard n'a pas vérifié : copie-la, et lis-la avant de la taper.",
+            "Elle vient de tldr-pages, que Vanguard n'a pas vérifié : copiez-la, et lisez-la avant de la taper.",
             "It comes from tldr-pages, which Vanguard has not checked: copy it, and read it before typing it."
         ));
     }
     if c.modifie {
         return Some(tr!(
-            "Elle change quelque chose : à taper toi-même dans un terminal, en sachant ce qu'elle fait.",
+            "Elle change quelque chose : à taper vous-même dans un terminal, en sachant ce qu'elle fait.",
             "It changes something: type it yourself in a terminal, knowing what it does."
         ));
     }
     if c.ligne.contains('<') {
         return Some(tr!(
-            "Elle a des mots à remplacer (<…>) : copie-la, puis complète-la dans un terminal.",
+            "Elle a des mots à remplacer (<…>) : copiez-la, puis complétez-la dans un terminal.",
             "It has words to replace (<…>): copy it, then complete it in a terminal."
         ));
     }
@@ -68,7 +68,7 @@ pub(super) fn obstacle(c: &Commande) -> Option<&'static str> {
             "It takes over the whole terminal: type it in a real terminal (q to leave)."
         )),
         Obstacle::Fichier => Some(tr!(
-            "Elle écrit un fichier de rapport : à taper dans un terminal, dans le dossier de ton choix.",
+            "Elle écrit un fichier de rapport : à taper dans un terminal, dans le dossier de votre choix.",
             "It writes a report file: type it in a terminal, in the folder of your choice."
         )),
         Obstacle::Longue => Some(tr!(
@@ -354,11 +354,11 @@ pub(super) fn lancer_ici(c: &Commande) {
             "\n  {orange}●{RESET} Stopped by the system after {duree} s."
         ),
         Fin::Arretee => trp!(
-            "\n  {GRIS}■{RESET} Arrêtée après {duree} s, à ta demande.",
+            "\n  {GRIS}■{RESET} Arrêtée après {duree} s, à votre demande.",
             "\n  {GRIS}■{RESET} Stopped after {duree} s, as you asked."
         ),
         Fin::TropLongue => trp!(
-            "\n  {orange}●{RESET} Arrêtée au bout de deux minutes : pour la laisser tourner, tape-la dans\n    un terminal.",
+            "\n  {orange}●{RESET} Arrêtée au bout de deux minutes : pour la laisser tourner, tapez-la dans\n    un terminal.",
             "\n  {orange}●{RESET} Stopped after two minutes: to let it run, type it in a terminal."
         ),
         Fin::PasDemarree(erreur) => trp!(

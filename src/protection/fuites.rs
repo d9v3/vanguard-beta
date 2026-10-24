@@ -62,7 +62,7 @@ fn conseil_forme(mot_de_passe: &str) -> Option<&'static str> {
 pub fn verifier() {
     titre(tr!("Mots de passe fuités", "Leaked passwords"));
     trp!(
-        "  Tape un mot de passe : il ne s'affiche pas et ne quitte jamais cet ordinateur. Seuls 5 caractères de son\n  empreinte sont envoyés à Have I Been Pwned, et la comparaison se fait ici. Entrée seule pour terminer.\n",
+        "  Tapez un mot de passe : il ne s'affiche pas et ne quitte jamais cet ordinateur. Seuls 5 caractères de\n  son empreinte sont envoyés à Have I Been Pwned, la comparaison se fait ici. Entrée seule pour terminer.\n",
         "  Type a password: it is not shown and never leaves this computer. Only 5 characters of its hash\n  are sent to Have I Been Pwned, and the comparison happens here. Enter alone to finish.\n"
     );
     while let Ok(mot_de_passe) = rpassword::prompt_password(tr!("  Mot de passe : ", "  Password: ")) {
@@ -88,7 +88,7 @@ pub fn verifier() {
                 }
             }
             n => trp!(
-                "  {}✖ Trouvé {} fois dans des fuites{RESET} : les pirates l'essaient en premier. Change-le partout où tu l'utilises,\n    et prends un mot de passe différent pour chaque site (un gestionnaire comme Bitwarden s'en charge).",
+                "  {}✖ Trouvé {} fois dans des fuites{RESET} : les pirates l'essaient en premier. Changez-le partout\n    où vous l'utilisez, et prenez un mot de passe différent pour chaque site (un gestionnaire\n    comme Bitwarden s'en charge).",
                 "  {}✖ Found {} times in leaks{RESET}: attackers try it first. Change it everywhere you use it,\n    and use a different password for each site (a manager like Bitwarden does it for you).",
                 couleur(crate::risk::Niveau::Critique),
                 milliers(n)
@@ -226,7 +226,7 @@ pub fn verifier_courriel() {
                 resume(&liste, 12, ", ")
             );
             trp!(
-                "\n  {} Change le mot de passe de ces sites (et partout où tu utilisais le même), active la double\n     authentification, et méfie-toi des courriels qui citent ces sites : ils servent à l'hameçonnage.",
+                "\n  {} Changez le mot de passe de ces sites (et partout où vous utilisiez le même), activez la\n     double authentification, et méfiez-vous des courriels qui citent ces sites : ils servent\n     à l'hameçonnage.",
                 "\n  {} Change the password of these sites (and anywhere you used the same one), turn on two-factor\n     authentication, and beware of emails mentioning these sites: they are used for phishing.",
                 ampoule()
             );

@@ -726,7 +726,7 @@ pub(crate) fn examiner_liens(liens: &[LienTrouve], max_sites: usize) -> ExamenLi
             r.trompeurs.push((
                 Niveau::Info,
                 trf!(
-                    "Le lien affiche « {texte_montre} » mais passe par {site}, le filtre de sécurité de ton organisation ; la vraie destination n'a pas pu être vérifiée.",
+                    "Le lien affiche « {texte_montre} » mais passe par {site}, le filtre de sécurité de votre organisation ; la vraie destination n'a pas pu être vérifiée.",
                     "The link shows “{texte_montre}” but goes through {site}, your organization's security filter; the real destination could not be checked."
                 ),
             ));
@@ -785,11 +785,11 @@ pub(crate) fn signes_html(h: &Html, ou: &str) -> Vec<Signe> {
             Niveau::Eleve,
             match cible {
                 Some(site) => trf!(
-                    "Formulaire {ou} (envoyé à {site}) : un vrai service ne te fait jamais taper ton mot de passe dans un courriel.",
+                    "Formulaire {ou} (envoyé à {site}) : un vrai service ne vous fait jamais taper votre mot de passe dans un courriel.",
                     "Form {ou} (sent to {site}): a real service never has you type your password in an email."
                 ),
                 None => trf!(
-                    "Formulaire {ou} : un vrai service ne te fait jamais taper ton mot de passe dans un courriel.",
+                    "Formulaire {ou} : un vrai service ne vous fait jamais taper votre mot de passe dans un courriel.",
                     "Form {ou}: a real service never has you type your password in an email."
                 ),
             },

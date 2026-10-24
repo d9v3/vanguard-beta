@@ -76,7 +76,7 @@ impl Duree {
         match self {
             Duree::UneHeure => tr!("pendant 1 heure", "for 1 hour"),
             Duree::QuatreHeures => tr!("pendant 4 heures", "for 4 hours"),
-            Duree::JusquaReprise => tr!("jusqu'à ce que tu la remettes", "until you turn it back on"),
+            Duree::JusquaReprise => tr!("jusqu'à ce que vous la remettiez", "until you turn it back on"),
         }
     }
 
@@ -329,7 +329,7 @@ fn administrateur() -> bool {
 
 fn refus_administrateur() -> String {
     tr!(
-        "Vanguard tourne en administrateur : la protection en temps réel ne se règle pas d'ici. Son réglage est celui de ton compte, lu par la surveillance sans droits ; relance Vanguard sans droits d'administrateur (sans sudo, ou pas « en tant qu'administrateur ») pour la couper ou la remettre.",
+        "Vanguard tourne en administrateur : la protection en temps réel ne se règle pas d'ici. Son réglage est celui de votre compte, lu par la surveillance sans droits ; relancez Vanguard sans droits d'administrateur (sans sudo, ou pas « en tant qu'administrateur ») pour la couper ou la remettre.",
         "Vanguard is running as administrator: real-time protection is not set from here. Its setting belongs to your account and is read by the monitoring without rights; start Vanguard again without administrator rights (no sudo, or not “as administrator”) to turn it off or back on."
     )
     .to_string()
@@ -441,7 +441,7 @@ fn phrase_pour(ou: Ou, c: &Coupure, maintenant: i64) -> String {
     let quand = jusqu_a(c, maintenant);
     match ou {
         Ou::Blocage => trf!(
-            "Protection en temps réel coupée ({quand}) : rien n'est bloqué tout seul, le certain se propose d'un clic. Les blocages déjà faits restent en place ; tes réglages reviennent tels quels à la reprise.",
+            "Protection en temps réel coupée ({quand}) : rien n'est bloqué tout seul, le certain se propose d'un clic. Les blocages déjà faits restent en place ; vos réglages reviennent tels quels à la reprise.",
             "Real-time protection off ({quand}): nothing is blocked by itself, what is certain is offered with one click. The blocks already made stay in place; your settings come back as they were when it resumes."
         ),
         Ou::Sortantes => trf!(
@@ -511,7 +511,7 @@ fn texte_du_rappel(c: &Coupure, maintenant: i64) -> (&'static str, String) {
             "Vanguard: real-time protection is off"
         ),
         trf!(
-            "Coupée depuis {} ({}) : la surveillance horaire ne regarde plus rien et rien n'est bloqué tout seul. Si ce n'est pas toi, un programme l'a peut-être coupée exprès. La remettre : vanguard parametres temps-reel oui.",
+            "Coupée depuis {} ({}) : la surveillance horaire ne regarde plus rien et rien n'est bloqué tout seul. Si ce n'est pas vous, un programme l'a peut-être coupée exprès. La remettre : vanguard parametres temps-reel oui.",
             "Off since {} ({}): the hourly monitoring no longer looks at anything and nothing is blocked by itself. If it was not you, a program may have turned it off on purpose. Turn it back on: vanguard settings real-time yes.",
             heure(c.depuis, maintenant),
             jusqu_a(c, maintenant)
@@ -562,7 +562,7 @@ pub(crate) fn a_la_passe() -> bool {
                         "Vanguard: real-time protection back on"
                     ),
                     tr!(
-                        "La coupure est finie : la surveillance et la protection active reprennent comme tu les avais réglées.",
+                        "La coupure est finie : la surveillance et la protection active reprennent comme vous les aviez réglées.",
                         "The pause is over: monitoring and active protection resume as you had set them."
                     ),
                 );
@@ -597,7 +597,7 @@ pub(crate) fn ce_qui_s_arrete(surveillance: bool, protection_active: bool) -> Ve
     };
     let mut lignes = vec![
         trf!(
-            "• La surveillance horaire ({}) : plus de scan du réseau ni d'audit de la machine, plus aucune notification (appareil nouveau, port ouvert, box, DNS, Wi-Fi, fichiers critiques, téléchargements, serveurs de botnet, extensions qui veillent), sauf celle qui redit la coupure, une fois par jour.",
+            "• La surveillance horaire ({}) : plus de scan du réseau ni d'audit de l'ordinateur, plus aucune notification (appareil nouveau, port ouvert, routeur, DNS, Wi-Fi, fichiers critiques, téléchargements, serveurs de botnet, extensions qui veillent), sauf celle qui redit la coupure, une fois par jour.",
             "• Hourly monitoring ({}): no more network scan or machine audit, no notification at all (new device, open port, router, DNS, Wi-Fi, critical files, downloads, botnet servers, extensions that watch), except the one that recalls the pause, once a day.",
             etat(surveillance)
         ),
@@ -629,7 +629,7 @@ pub(crate) fn ce_qui_s_arrete(surveillance: bool, protection_active: bool) -> Ve
 /// Ce que la coupure ne touche jamais.
 pub(crate) fn ce_qui_reste() -> &'static str {
     tr!(
-        "Ce qui ne change pas : Defender, le pare-feu et l'UAC, que ce réglage ne touche jamais ; les blocages déjà faits, qui restent en place (règles du pare-feu, quarantaine ; « vanguard blocage annuler » en défait un) ; tes réglages de surveillance et de blocage, retrouvés tels quels à la reprise ; le bilan, l'antivirus et les outils que tu lances ; l'entretien du mois.",
+        "Ce qui ne change pas : Defender, le pare-feu et l'UAC, que ce réglage ne touche jamais ; les blocages déjà faits, qui restent en place (règles du pare-feu, quarantaine ; « vanguard blocage annuler » en défait un) ; vos réglages de surveillance et de blocage, retrouvés tels quels à la reprise ; le bilan, l'antivirus et les outils que vous lancez ; l'entretien du mois.",
         "What does not change: Defender, the firewall and UAC, which this setting never touches; the blocks already made, which stay in place (firewall rules, quarantine; “vanguard blocking undo” undoes one); your monitoring and blocking settings, found as they were when it comes back; the check-up, the antivirus and the tools you start; the monthly check-up notification."
     )
 }

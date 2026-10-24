@@ -434,7 +434,7 @@ pub fn menu() {
         afficher_aligne(
             "  ",
             tr!(
-                "Branche la clé VANGUARD sur ton ordinateur (celui où elle est modifiable) : la protection se règle seulement là.",
+                "Branchez la clé VANGUARD sur votre ordinateur (celui où elle est modifiable) : la protection se règle seulement là.",
                 "Plug the VANGUARD key into your own computer (where it can be written): protection is set only there."
             ),
             2,
@@ -505,7 +505,7 @@ pub fn menu() {
     }
     for l in envelopper(
         tr!(
-            "Le carnet des appareils de la clé (noms, adresses MAC, surnoms de chez toi et de chez tes amis) est en clair : qui ramasse la clé le lit. Protégé, il est chiffré par une phrase. Ici, rien ne change ; sur un autre ordinateur, Vanguard demande la phrase. Le rapport et le diagnostic ne s'écrivent plus sur la clé. Phrase oubliée : cet ordinateur en pose une nouvelle. Cet ordinateur et la phrase perdus : le carnet est perdu.",
+            "Le carnet des appareils de la clé (noms, adresses MAC, surnoms de chez vous et de chez vos amis) est en clair : qui ramasse la clé le lit. Protégé, il est chiffré par une phrase. Ici, rien ne change ; sur un autre ordinateur, Vanguard demande la phrase. Le rapport et le diagnostic ne s'écrivent plus sur la clé. Phrase oubliée : cet ordinateur en pose une nouvelle. Cet ordinateur et la phrase perdus : le carnet est perdu.",
             "The key's device record (names, MAC addresses, nicknames from your home and your friends') is in clear: whoever picks up the key reads it. Protected, it is encrypted by a passphrase. Here, nothing changes; on another computer, Vanguard asks for the passphrase. The report and the diagnostic are no longer written to the key. Forgotten passphrase: this computer sets a new one. This computer and the passphrase lost: the record is lost."
         ),
         LARGEUR - 2,
@@ -539,7 +539,7 @@ pub fn menu() {
             afficher_aligne(
                 &format!("  {VERT}✔{RESET} "),
                 tr!(
-                    "Carnet chiffré. Retiens bien la phrase : sans elle, ailleurs, Vanguard continue sans le carnet.",
+                    "Carnet chiffré. Retenez bien la phrase : sans elle, ailleurs, Vanguard continue sans le carnet.",
                     "Record encrypted. Remember the passphrase: without it, elsewhere, Vanguard goes on without the record."
                 ),
                 4,

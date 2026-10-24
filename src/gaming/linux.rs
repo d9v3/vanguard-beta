@@ -195,14 +195,14 @@ fn composants(gestion: Paquets) -> Vec<Element> {
                 let mut el = element(
                     tr!("Pilote NVIDIA", "NVIDIA driver"),
                     tr!(
-                        "Pilote absent : installe-le avec l'outil de ta distribution (sous Omarchy, il est installé d'office).",
+                        "Pilote absent : installez-le avec l'outil de votre distribution (sous Omarchy, il est installé d'office).",
                         "Driver missing: install it with your distribution's tool (Omarchy installs it by default)."
                     ),
                     Some(false),
                     Vec::new(),
                 );
                 el.deconseille = Some(tr!(
-                    "à installer avec l'outil de ta distribution",
+                    "à installer avec l'outil de votre distribution",
                     "install it with your distribution's tool"
                 ));
                 l.push(el);

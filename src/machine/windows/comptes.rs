@@ -57,7 +57,7 @@ fn juger_comptes(utilisateurs: &[&str], moi: Option<&str>, lbp: Option<u32>) -> 
             constats.push(if moi == Some(sid) {
                 constat.manuel(
                     tr!(
-                        "Créer ton propre compte administrateur, puis désactiver celui-ci",
+                        "Créer votre propre compte administrateur, puis désactiver celui-ci",
                         "Create your own administrator account, then disable this one"
                     ),
                     &["Start-Process ms-settings:otherusers"],

@@ -444,7 +444,7 @@ pub fn afficher(rapport: &Rapport, hotes: &[super::Hote]) {
         afficher_aligne(
             "    → ",
             tr!(
-                "Débranche cet appareil. Sur tes PC Windows, coupe LLMNR et NetBIOS (Vanguard le fait au bilan).",
+                "Débranchez cet appareil. Sur vos PC Windows, coupez LLMNR et NetBIOS (Vanguard le fait au bilan).",
                 "Unplug this device. On your Windows PCs, turn off LLMNR and NetBIOS (Vanguard does it in the audit)."
             ),
             6,

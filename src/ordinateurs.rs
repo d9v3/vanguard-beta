@@ -287,7 +287,7 @@ pub fn menu() {
         afficher_aligne(
             "  ",
             tr!(
-                "Branche la clé VANGUARD : le tableau est gardé sur sa partition VANGUARDLOG. Une clé qui n'en a pas se refait avec outils/preparer-cle.sh.",
+                "Branchez la clé VANGUARD : le tableau est gardé sur sa partition VANGUARDLOG. Une clé qui n'en a pas se refait avec outils/preparer-cle.sh.",
                 "Plug in the VANGUARD key: the table is kept on its VANGUARDLOG partition. A key without it is rebuilt with outils/preparer-cle.sh."
             ),
             2,

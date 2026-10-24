@@ -127,7 +127,7 @@ fn ailleurs() -> &'static str {
         )
     } else if cfg!(target_os = "macos") {
         tr!(
-            "Éléments de connexion et agents de toute la machine : Réglages Système › Général › Ouverture (« − » pour retirer). Ils demandent un geste dans les Réglages ou l'administrateur. Les agents qui ne partent qu'à la demande ou à heure fixe ne sont pas dans cette liste.",
+            "Éléments de connexion et agents de tout l'ordinateur : Réglages Système › Général › Ouverture (« − » pour retirer). Ils demandent un geste dans les Réglages ou l'administrateur. Les agents qui ne partent qu'à la demande ou à heure fixe ne sont pas dans cette liste.",
             "Login items and machine-wide agents: System Settings › General › Login Items (“−” to remove). They need a step in Settings or an administrator. Agents that only start on demand or on a schedule are not in this list."
         )
     } else {
@@ -393,7 +393,7 @@ pub fn menu() {
             let mut detail = x.commande.chars().take(200).collect::<String>();
             if x.machine {
                 detail.push_str(tr!(
-                    " · toute la machine : la fenêtre administrateur s'ouvrira",
+                    " · tout l'ordinateur : la fenêtre administrateur s'ouvrira",
                     " · whole machine: the administrator window will open"
                 ));
             }
@@ -412,7 +412,7 @@ pub fn menu() {
         String::new(),
         ligne_titre(tr!("Programmes au démarrage", "Startup programs")),
         trf!(
-            "  {GRIS}Coché = se lance à l'ouverture de session. Décoche pour le retirer :{RESET}",
+            "  {GRIS}Coché = se lance à l'ouverture de session. Décochez pour le retirer :{RESET}",
             "  {GRIS}Checked = starts at login. Uncheck to remove it: it stays{RESET}"
         ),
         trf!(

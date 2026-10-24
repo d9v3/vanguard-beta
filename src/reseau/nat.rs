@@ -230,21 +230,21 @@ fn juger(m: &Mesure, upnp: Option<bool>) -> Option<(TypeNat, &'static str)> {
         (None, _) => (
             TypeNat::Incertain,
             tr!(
-                "Un seul serveur a répondu : la traduction de la box n'a pas pu être comparée.",
+                "Un seul serveur a répondu : la traduction du routeur n'a pas pu être comparée.",
                 "Only one server answered: the router's translation could not be compared."
             ),
         ),
         (Some((_, seconde)), _) if seconde != premiere => (
             TypeNat::Strict,
             tr!(
-                "La box change de port à chaque destination (NAT symétrique) : les autres joueurs ne peuvent pas te joindre directement.",
+                "Le routeur change de port à chaque destination (NAT symétrique) : les autres joueurs ne peuvent pas vous joindre directement.",
                 "The router changes the port for each destination (symmetric NAT): other players cannot reach you directly."
             ),
         ),
         (_, Some(true)) => (
             TypeNat::Ouvert,
             tr!(
-                "Même port vu de partout, et l'UPnP de la box laisse les jeux ouvrir eux-mêmes leurs ports.",
+                "Même port vu de partout, et l'UPnP du routeur laisse les jeux ouvrir eux-mêmes leurs ports.",
                 "Same port seen from everywhere, and the router's UPnP lets games open their ports themselves."
             ),
         ),
@@ -258,7 +258,7 @@ fn juger(m: &Mesure, upnp: Option<bool>) -> Option<(TypeNat, &'static str)> {
         (_, None) => (
             TypeNat::Modere,
             tr!(
-                "Même port vu de partout. Ouvert si l'UPnP de la box est actif, ce qui n'a pas pu se lire ici.",
+                "Même port vu de partout. Ouvert si l'UPnP du routeur est actif, ce qui n'a pas pu se lire ici.",
                 "Same port seen from everywhere. Open if the router's UPnP is on, which could not be read here."
             ),
         ),
@@ -271,15 +271,15 @@ pub(crate) fn adresse_partagee(box_internet: Option<Ipv4Addr>, publique: IpAddr)
     let b = box_internet.filter(|b| !b.is_unspecified() && !b.is_link_local())?;
     match crate::socle::adresses::portee(b.into()) {
         crate::socle::adresses::Portee::Partagee => Some(tr!(
-            "Ton fournisseur partage ton adresse Internet avec d'autres abonnés (CGNAT) : aucune redirection de ports ne peut marcher. Demande-lui une adresse IPv4 publique, ou sers-toi de l'IPv6.",
+            "Votre fournisseur partage votre adresse Internet avec d'autres abonnés (CGNAT) : aucune redirection de ports ne peut marcher. Demandez-lui une adresse IPv4 publique, ou servez-vous de l'IPv6.",
             "Your provider shares your Internet address with other customers (CGNAT): no port forwarding can work. Ask them for a public IPv4 address, or use IPv6."
         )),
         _ if b.is_private() => Some(tr!(
-            "Double NAT : ta box est elle-même derrière un autre routeur. Mets la box du fournisseur en mode « bridge », ou dirige sa DMZ vers ton routeur.",
+            "Double NAT : votre routeur est lui-même derrière un autre routeur. Mettez celui du fournisseur en mode « bridge », ou dirigez sa DMZ vers votre propre routeur.",
             "Double NAT: your router is itself behind another router. Put the provider's box in “bridge” mode, or point its DMZ at your router."
         )),
         _ => (IpAddr::V4(b) != publique).then_some(tr!(
-            "L'adresse que la box dit avoir n'est pas celle que voit Internet : le fournisseur partage sans doute les adresses (CGNAT).",
+            "L'adresse que le routeur dit avoir n'est pas celle que voit Internet : le fournisseur partage sans doute les adresses (CGNAT).",
             "The address the router says it has is not the one the Internet sees: the provider probably shares addresses (CGNAT)."
         )),
     }
@@ -305,7 +305,7 @@ fn afficher_ipv6() {
             "IPv6: absent on this network. Games go through IPv4, hence through the NAT above."
         )),
         Some(Some(ip)) if locales.contains(&ip) => directe(tr!(
-            "IPv6 : directe, sans NAT. Les jeux et les consoles qui s'en servent sont joignables, si le pare-feu de la box les laisse passer.",
+            "IPv6 : directe, sans NAT. Les jeux et les consoles qui s'en servent sont joignables, si le pare-feu du routeur les laisse passer.",
             "IPv6: direct, without NAT. Games and consoles that use it are reachable, if the router's firewall lets them through."
         )),
         Some(Some(_)) => info(tr!(
@@ -313,7 +313,7 @@ fn afficher_ipv6() {
             "IPv6: present, but translated as well (rare): same as IPv4."
         )),
         Some(None) => info(tr!(
-            "IPv6 : une adresse, mais Internet ne répond pas par là (bloquée par la box ou le fournisseur).",
+            "IPv6 : une adresse, mais Internet ne répond pas par là (bloquée par le routeur ou le fournisseur).",
             "IPv6: an address, but the Internet does not answer that way (blocked by the router or the provider)."
         )),
     }
@@ -323,7 +323,7 @@ fn afficher_ipv6() {
 pub fn tester() {
     titre(tr!("Type de NAT pour le jeu", "NAT type for gaming"));
     let intro = tr!(
-        "Ouvert, modéré ou strict : c'est ce qui décide si tu peux rejoindre les parties des autres, et eux les tiennes. Deux serveurs publics (Cloudflare, Google) disent quelle adresse et quel port ils voient ; ils voient ton adresse, comme n'importe quel site. Rien n'est changé.",
+        "Ouvert, modéré ou strict : c'est ce qui décide si vous pouvez rejoindre les parties des autres, et eux les vôtres. Deux serveurs publics (Cloudflare, Google) disent quelle adresse et quel port ils voient ; ils voient votre adresse, comme n'importe quel site. Rien n'est changé.",
         "Open, moderate or strict: it decides whether you can join other people's sessions, and they yours. Two public servers (Cloudflare, Google) tell which address and port they see; they see your address, like any website. Nothing is changed."
     );
     for ligne in envelopper(intro, LARGEUR - 2) {
@@ -347,12 +347,12 @@ pub fn tester() {
         Etat::Absent => (Some(false), tr!("coupé ou absent", "off or absent")),
         Etat::OutilAbsent => (
             None,
-            tr!("inconnu (box non interrogée)", "unknown (router not queried)"),
+            tr!("inconnu (routeur non interrogé)", "unknown (router not queried)"),
         ),
         Etat::Usurpee(_) => (
             None,
             tr!(
-                "inconnu (un autre appareil se dit box)",
+                "inconnu (un autre appareil se dit routeur)",
                 "unknown (another device claims to be the router)"
             ),
         ),
@@ -373,7 +373,7 @@ pub fn tester() {
         mesure.port_local
     );
     champ(tr!("Ports vus", "Ports seen"), &vus);
-    champ(tr!("UPnP de la box", "Router UPnP"), etat_upnp);
+    champ(tr!("UPnP du routeur", "Router UPnP"), etat_upnp);
     let Some((type_nat, pourquoi)) = juger(&mesure, upnp_actif) else {
         return;
     };
@@ -397,11 +397,11 @@ pub fn tester() {
     let conseil = match type_nat {
         TypeNat::Ouvert => tr!("Rien à faire pour le jeu en ligne.", "Nothing to do for online gaming."),
         TypeNat::Modere | TypeNat::Incertain => tr!(
-            "Pour passer en ouvert : active l'UPnP dans la box, ou redirige les ports du jeu vers cet appareil, après lui avoir donné une adresse fixe (réservation DHCP). L'UPnP laisse tout appareil ouvrir des ports, un appareil infecté aussi : surveille-les (Scanner le réseau). La DMZ expose l'appareil entier à Internet : seulement pour une console.",
+            "Pour passer en ouvert : activez l'UPnP dans le routeur, ou redirigez les ports du jeu vers cet appareil, après lui avoir donné une adresse fixe (réservation DHCP). L'UPnP laisse tout appareil ouvrir des ports, un appareil infecté aussi : surveillez-les (Scanner le réseau). La DMZ expose l'appareil entier à Internet : seulement pour une console.",
             "To get open: turn UPnP on in the router, or forward the game's ports to this device after giving it a fixed address (DHCP reservation). UPnP lets any device open ports, an infected one too: keep an eye on them (Scan the network). The DMZ exposes the whole device to the Internet: only for a console."
         ),
         TypeNat::Strict => tr!(
-            "Une redirection de ports vers cet appareil (adresse fixe d'abord) ou l'UPnP de la box contournent souvent le NAT symétrique. Sinon, regarde dans la box une option « NAT » ou « jeu » (« endpoint-independent »), ou passe par l'IPv6.",
+            "Une redirection de ports vers cet appareil (adresse fixe d'abord) ou l'UPnP du routeur contournent souvent le NAT symétrique. Sinon, regardez dans le routeur une option « NAT » ou « jeu » (« endpoint-independent »), ou passez par l'IPv6.",
             "Port forwarding to this device (fixed address first) or the router's UPnP often get around symmetric NAT. Otherwise, look in the router for a “NAT” or “gaming” option (“endpoint-independent”), or use IPv6."
         ),
     };

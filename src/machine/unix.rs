@@ -63,7 +63,7 @@ pub(super) fn fichiers_secrets(maison: &Path, dossier_ouvert: &str) -> Vec<Const
                 ),
             )
             .corriger(
-                tr!("Réserver ces fichiers à toi seul", "Restrict these files to you only"),
+                tr!("Réserver ces fichiers à vous seul", "Restrict these files to you only"),
                 &cmds,
             )
             .annulable(gestes),
@@ -76,7 +76,7 @@ pub(super) fn fichiers_secrets(maison: &Path, dossier_ouvert: &str) -> Vec<Const
             alerte("Fichiers secrets", Niveau::Info, dossier_ouvert)
                 .corriger(
                     tr!(
-                        "Fermer ton dossier personnel aux autres comptes",
+                        "Fermer votre dossier personnel aux autres comptes",
                         "Close your home folder to the other accounts"
                     ),
                     &["chmod 750 ~"],
@@ -151,7 +151,7 @@ pub(super) fn sudo_sans_mot_de_passe(tout_permis: &str) -> Vec<Constat> {
                 "Sudo",
                 Niveau::Eleve,
                 tr!(
-                    "sudo ne demande jamais le mot de passe (« Defaults !authenticate ») : n'importe quel programme lancé par toi peut devenir root.",
+                    "sudo ne demande jamais le mot de passe (« Defaults !authenticate ») : n'importe quel programme lancé par vous peut devenir root.",
                     "sudo never asks for the password (“Defaults !authenticate”): any program you run can become root."
                 ),
             )
@@ -335,7 +335,7 @@ pub(super) fn juger_dossiers_de_commandes(dossiers: &[DossierDeCommandes], propr
         "Privilèges",
         niveau,
         trf!(
-            "D'autres comptes peuvent déposer des programmes dans {} : une fausse commande y prendrait la place de la vraie, avec tes droits, ou ceux de root après sudo.",
+            "D'autres comptes peuvent déposer des programmes dans {} : une fausse commande y prendrait la place de la vraie, avec vos droits, ou ceux de root après sudo.",
             "Other accounts can drop programs into {}: a fake command there would take the real one's place, with your rights, or root's after sudo.",
             noms.join(", ")
         ),

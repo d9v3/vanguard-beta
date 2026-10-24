@@ -301,7 +301,7 @@ fn examiner(m: &Message) -> (Constats, Vec<&[u8]>) {
         c.html.push((
             Niveau::Info,
             trf!(
-                "{} image(s) à charger depuis Internet : l'expéditeur saura que tu l'as ouvert si ton logiciel les charge.",
+                "{} image(s) à charger depuis Internet : l'expéditeur saura que vous l'avez ouvert si votre logiciel les charge.",
                 "{} image(s) loaded from the Internet: the sender will know you opened it if your program loads them.",
                 images_distantes
             ),
@@ -312,7 +312,7 @@ fn examiner(m: &Message) -> (Constats, Vec<&[u8]>) {
         c.html.push((
             Niveau::Info,
             tr!(
-                "Courriel fait surtout d'images : un code QR dans une image n'est pas lu par Vanguard. Ne le photographie pas pour l'ouvrir.",
+                "Courriel fait surtout d'images : un code QR dans une image n'est pas lu par Vanguard. Ne le photographiez pas pour l'ouvrir.",
                 "Email made mostly of images: a QR code in an image is not read by Vanguard. Do not scan it to open it."
             )
             .to_string(),
@@ -394,15 +394,15 @@ fn est_un_courriel(m: &Message, octets: &[u8]) -> bool {
 fn verdict(pire: Option<Niveau>, manques: &[String]) -> String {
     let mut t = match pire {
         Some(Niveau::Critique | Niveau::Eleve) => tr!(
-            "Arnaque probable : ne clique sur aucun lien, n'ouvre aucune pièce jointe et ne réponds pas. Supprime-le. S'il parle d'un service que tu utilises, va sur son site en tapant toi-même son adresse.",
+            "Arnaque probable : ne cliquez sur aucun lien, n'ouvrez aucune pièce jointe et ne répondez pas. Supprimez-le. S'il parle d'un service que vous utilisez, allez sur son site en tapant vous-même son adresse.",
             "Probably a scam: do not click any link, do not open any attachment and do not reply. Delete it. If it mentions a service you use, go to its site by typing the address yourself."
         ),
         Some(Niveau::Moyen) => tr!(
-            "Douteux : ne clique et n'ouvre rien tant que tu n'as pas vérifié auprès de l'expéditeur par un autre moyen (téléphone, site officiel).",
+            "Douteux : ne cliquez et n'ouvrez rien tant que vous n'avez pas vérifié auprès de l'expéditeur par un autre moyen (téléphone, site officiel).",
             "Doubtful: do not click or open anything until you have checked with the sender another way (phone, official site)."
         ),
         _ => tr!(
-            "Rien de suspect trouvé dans ce que Vanguard a examiné. Ce n'est pas une garantie : une arnaque soignée, ou le vrai compte piraté d'un proche, ne laisse pas toujours de trace. Au moindre doute, contacte l'expéditeur par un autre moyen.",
+            "Rien de suspect trouvé dans ce que Vanguard a examiné. Ce n'est pas une garantie : une arnaque soignée, ou le vrai compte piraté d'un proche, ne laisse pas toujours de trace. Au moindre doute, contactez l'expéditeur par un autre moyen.",
             "Nothing suspicious found in what Vanguard examined. That is not a guarantee: a careful scam, or a friend's real hacked account, does not always leave a trace. If in doubt, contact the sender another way."
         ),
     }
@@ -467,7 +467,7 @@ fn afficher_refus(refus: &Refus, chemin: &Path) {
         Refus::PasUnFichier => ligne(
             Some(Niveau::Moyen),
             tr!(
-                "Ce n'est pas un fichier : donne un courriel enregistré (.eml).",
+                "Ce n'est pas un fichier : donnez un courriel enregistré (.eml).",
                 "This is not a file: give a saved email (.eml)."
             ),
         ),
@@ -483,13 +483,13 @@ fn afficher_refus(refus: &Refus, chemin: &Path) {
             ligne(
                 Some(Niveau::Info),
                 tr!(
-                    "C'est un message Outlook (.msg), que Vanguard ne lit pas. Enregistre le même message en .eml :",
+                    "C'est un message Outlook (.msg), que Vanguard ne lit pas. Enregistrez le même message en .eml :",
                     "This is an Outlook message (.msg), which Vanguard does not read. Save the same message as .eml:"
                 ),
             );
             for etape in [
                 tr!(
-                    "Outlook sur le web ou nouvel Outlook : ouvre le message, menu « … » › Enregistrer sous (ou Télécharger) ;",
+                    "Outlook sur le web ou nouvel Outlook : ouvrez le message, menu « … » › Enregistrer sous (ou Télécharger) ;",
                     "Outlook on the web or new Outlook: open the message, “…” menu › Save as (or Download);"
                 ),
                 tr!(
@@ -508,7 +508,7 @@ fn afficher_refus(refus: &Refus, chemin: &Path) {
                 afficher_aligne("      • ", etape, 8, "");
             }
             paragraphe(tr!(
-                "Outlook classique (Windows) n'enregistre pas en .eml : passe par Outlook sur le web.",
+                "Outlook classique (Windows) n'enregistre pas en .eml : passez par Outlook sur le web.",
                 "Classic Outlook (Windows) does not save as .eml: use Outlook on the web."
             ));
         }
@@ -780,7 +780,7 @@ pub fn verifier(fichier: Option<&Path>) {
         f.to_path_buf()
     } else {
         let r = demander(tr!(
-            "\n  Courriel à examiner (.eml ; glisse-le ici, ou tape son chemin) : ",
+            "\n  Courriel à examiner (.eml ; glissez-le ici, ou tapez son chemin) : ",
             "\n  Email to check (.eml; drag it here, or type its path): "
         ));
         // Un fichier glissé arrive entre guillemets, ou en « file:// » selon le terminal.
@@ -837,7 +837,7 @@ pub fn verifier(fichier: Option<&Path>) {
     }
     lignes(&c.expediteur);
     section(tr!(
-        "Authentification (écrite par ton fournisseur)",
+        "Authentification (écrite par votre fournisseur)",
         "Authentication (written by your provider)"
     ));
     lignes(&c.authentification);

@@ -146,23 +146,23 @@ pub const PROGRAMMES: &[Programme] = &[
     },
     Programme {
         nom: "ipconfig",
-        role: ("adresses, box, DNS", "addresses, router, DNS"),
+        role: ("adresses, routeur, DNS", "addresses, router, DNS"),
         executable: "ipconfig",
         commandes: &[
             voir(
                 "ipconfig /all",
-                "Adresse, box (passerelle), DNS et adresse MAC de chaque carte réseau.",
+                "Adresse, routeur (passerelle), DNS et adresse MAC de chaque carte réseau.",
                 "Address, router (gateway), DNS and MAC address of each network card.",
             ),
             changer("ipconfig /flushdns", "Vide le cache DNS.", "Clears the DNS cache."),
             changer(
                 "ipconfig /release",
-                "Rend l'adresse donnée par la box (le réseau se coupe).",
+                "Rend l'adresse donnée par le routeur (le réseau se coupe).",
                 "Gives back the address from the router (the network goes down).",
             ),
             changer(
                 "ipconfig /renew",
-                "Redemande une adresse à la box.",
+                "Redemande une adresse au routeur.",
                 "Asks the router for a new address.",
             ),
             voir(
@@ -228,7 +228,7 @@ pub const PROGRAMMES: &[Programme] = &[
         commandes: &[
             voir(
                 "Get-NetIPConfiguration",
-                "Le résumé de chaque carte réseau : adresse, box, DNS.",
+                "Le résumé de chaque carte réseau : adresse, routeur, DNS.",
                 "Each network card's summary: address, router, DNS.",
             ),
             voir(
@@ -723,7 +723,7 @@ pub const PROGRAMMES: &[Programme] = &[
             ),
             voir(
                 "Get-NetRoute -DestinationPrefix 0.0.0.0/0",
-                "La passerelle par défaut : l'adresse de la box.",
+                "La passerelle par défaut : l'adresse du routeur.",
                 "The default gateway: the router's address.",
             ),
             voir(
@@ -822,7 +822,7 @@ pub const PROGRAMMES: &[Programme] = &[
         commandes: &[
             voir(
                 "gpresult /r",
-                "Les stratégies appliquées à l'ordinateur et à ton compte.",
+                "Les stratégies appliquées à l'ordinateur et à votre compte.",
                 "Policies applied to the computer and your account.",
             ),
             changer(
@@ -879,7 +879,7 @@ pub const PROGRAMMES: &[Programme] = &[
         commandes: &[
             voir(
                 "Get-AppxPackage | Select Name, Version",
-                "Les applications du Store installées pour ton compte.",
+                "Les applications du Store installées pour votre compte.",
                 "Store apps installed for your account.",
             ),
             voir(
@@ -1074,7 +1074,7 @@ pub const PAS_A_PAS: &[Programme] = &[
             .sauf(Obstacle::Administrateur),
             changer(
                 "chkdsk C: /f",
-                "Le disque : accepte la vérification au prochain redémarrage (O).",
+                "Le disque : acceptez la vérification au prochain redémarrage (O).",
                 "The disk: accept the check at the next restart (Y).",
             ),
             changer(
@@ -1096,7 +1096,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         commandes: &[
             voir(
                 "ipconfig /all",
-                "L'état des cartes : adresse (169.254… : la box ne répond pas), passerelle, DNS.",
+                "L'état des cartes : adresse (169.254… : le routeur ne répond pas), passerelle, DNS.",
                 "The cards' state: address (169.254…: the router does not answer), gateway, DNS.",
             ),
             voir(
@@ -1108,7 +1108,7 @@ pub const PAS_A_PAS: &[Programme] = &[
             changer("ipconfig /flushdns", "Vide le cache DNS.", "Empties the DNS cache."),
             changer(
                 "ipconfig /release; ipconfig /renew",
-                "Redemande une adresse à la box.",
+                "Redemande une adresse au routeur.",
                 "Asks the router for a new address.",
             ),
             changer(
@@ -1143,7 +1143,7 @@ pub const PAS_A_PAS: &[Programme] = &[
             .sauf(Obstacle::Fenetre),
             changer(
                 "Remove-Item $env:TEMP\\* -Recurse -Force -ErrorAction SilentlyContinue",
-                "Vide ton dossier temporaire (ce qui sert encore reste).",
+                "Vide votre dossier temporaire (ce qui sert encore reste).",
                 "Empties your temporary folder (what is still in use stays).",
             ),
             changer(
@@ -1220,7 +1220,7 @@ pub const PAS_A_PAS: &[Programme] = &[
             ),
             voir(
                 "start ms-settings:startupapps",
-                "Les applications au démarrage : coupe celles dont tu n'as pas besoin.",
+                "Les applications au démarrage : coupez celles dont vous n'avez pas besoin.",
                 "Startup apps: turn off those you do not need.",
             )
             .sauf(Obstacle::Fenetre),

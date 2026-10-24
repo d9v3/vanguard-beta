@@ -310,7 +310,7 @@ fn installer(etat: &Etat, choisis: &[&Offre]) -> Suite {
         .filter(|p| !p.pour_flatpak || choisis.iter().any(|o| o.flatpak));
     if let Some(lien) = prealable.and_then(|p| p.lien) {
         let manque = tr!(
-            "winget manque : il vient avec « Programme d'installation d'application », dans le Microsoft Store. J'ouvre sa page ; reviens ici une fois installé.",
+            "winget manque : il vient avec « Programme d'installation d'application », dans le Microsoft Store. J'ouvre sa page ; revenez ici une fois installé.",
             "winget is missing: it comes with “App Installer”, in the Microsoft Store. I am opening its page; come back here once it is installed."
         );
         println!();
@@ -417,7 +417,7 @@ fn categorie(etat: &Etat, c: Categorie) -> Suite {
         String::new(),
         ligne_titre(c.titre()),
         trf!(
-            "  {GRIS}Coche ce que tu veux installer ; [✔] = déjà installé.{RESET}",
+            "  {GRIS}Cochez ce que vous voulez installer ; [✔] = déjà installé.{RESET}",
             "  {GRIS}Check what you want to install; [✔] = already installed.{RESET}"
         ),
         String::new(),

@@ -82,7 +82,7 @@ fn avis_variable(source: &str, valeur: &str, niveau: Niveau) -> Avis {
         )
     } else {
         trf!(
-            "{source} = {valeur} : une bibliothèque qui ne vient pas d'un paquet du système est injectée dans tous les programmes de cette session, Vanguard compris. Mes résultats peuvent être faussés. Cherche qui pose cela (.bashrc, .profile, /etc/environment, /etc/ld.so.preload), ou relance depuis une session propre.",
+            "{source} = {valeur} : une bibliothèque qui ne vient pas d'un paquet du système est injectée dans tous les programmes de cette session, Vanguard compris. Mes résultats peuvent être faussés. Cherchez qui pose cela (.bashrc, .profile, /etc/environment, /etc/ld.so.preload), ou relancez depuis une session propre.",
             "{source} = {valeur}: a library that does not come from a system package is injected into every program of this session, Vanguard included. My results may be tampered with. Find what sets it (.bashrc, .profile, /etc/environment, /etc/ld.so.preload), or restart from a clean session."
         )
     };
@@ -151,7 +151,7 @@ fn avis() -> Vec<Avis> {
             liste.push(Avis {
                 niveau: Niveau::Eleve,
                 texte: trf!(
-                    "AppInit_DLLs = {} : Windows charge ces DLL dans chaque programme, Vanguard compris. Mes résultats peuvent être faussés. Un Windows sain n'en a aucune : regarde quel programme les a posées (clé {cle}).",
+                    "AppInit_DLLs = {} : Windows charge ces DLL dans chaque programme, Vanguard compris. Mes résultats peuvent être faussés. Un Windows sain n'en a aucune : regardez quel programme les a posées (clé {cle}).",
                     "AppInit_DLLs = {}: Windows loads these DLLs into every program, Vanguard included. My results may be tampered with. A healthy Windows has none: look at which program set them (key {cle}).",
                     affichable(dlls.trim())
                 ),

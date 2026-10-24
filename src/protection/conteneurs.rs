@@ -183,7 +183,7 @@ pub fn analyser() {
         println!();
         for ligne in envelopper(
             tr!(
-                "Une image ne se met pas à jour toute seule. Récupère sa dernière version (docker pull <image>), puis recrée les conteneurs qui s'en servent ; une image que son auteur ne suit plus est à remplacer. Rien n'a été changé.",
+                "Une image ne se met pas à jour toute seule. Récupérez sa dernière version (docker pull <image>), puis recréez les conteneurs qui s'en servent ; une image que son auteur ne suit plus est à remplacer. Rien n'a été changé.",
                 "An image does not update by itself. Fetch its latest version (docker pull <image>), then recreate the containers that use it; an image its author no longer maintains should be replaced. Nothing was changed."
             ),
             LARGEUR - 2,

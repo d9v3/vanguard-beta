@@ -90,7 +90,7 @@ struct Arret {
 
 fn droits_manquants() -> String {
     tr!(
-        "droits d'administrateur manquants : rien n'a été fait (ouvre Vanguard, Antivirus et protection › Blocage des menaces)",
+        "droits d'administrateur manquants : rien n'a été fait (ouvrez Vanguard, Antivirus et protection › Blocage des menaces)",
         "administrator rights missing: nothing was done (open Vanguard, Antivirus and protection › Threat blocking)"
     )
     .to_string()
@@ -181,7 +181,7 @@ pub(crate) fn preparer(m: &Menace, ctx: &Contexte, automatique: bool) -> Result<
                 return Err(Echec::refuse(
                     OU,
                     trf!(
-                        "non disponible ici : fais écouter {nom} sur 127.0.0.1 seulement (Ollama : OLLAMA_HOST=127.0.0.1)",
+                        "non disponible ici : faites écouter {nom} sur 127.0.0.1 seulement (Ollama : OLLAMA_HOST=127.0.0.1)",
                         "not available here: make {nom} listen on 127.0.0.1 only (Ollama: OLLAMA_HOST=127.0.0.1)"
                     ),
                 ));
@@ -319,7 +319,7 @@ fn preparer_programme(
                 return Err(Echec::refuse(
                     "blocage/preparer",
                     tr!(
-                        "ce compte ne peut pas déplacer ce fichier : relance Vanguard en administrateur (sudo, ou « Exécuter en tant qu'administrateur ») ; rien n'a été fait",
+                        "ce compte ne peut pas déplacer ce fichier : relancez Vanguard en administrateur (sudo, ou « Exécuter en tant qu'administrateur ») ; rien n'a été fait",
                         "this account cannot move this file: start Vanguard again as administrator (sudo, or “Run as administrator”); nothing was done"
                     ),
                 ));
@@ -830,7 +830,7 @@ pub(crate) fn commandes_d_annulation(
 /// Le refus d'une annulation qui ne se refait pas (`commandes_d_annulation`), avec ses commandes montrées.
 pub(crate) fn refus_d_annulation(commandes: &[String]) -> String {
     trf!(
-        "annulation notée sous une forme que Vanguard ne rejoue pas (elle a pu être écrite par un autre programme) : rien n'est lancé. Si ce blocage est bien le tien, défais-le à la main : {}",
+        "annulation notée sous une forme que Vanguard ne rejoue pas (elle a pu être écrite par un autre programme) : rien n'est lancé. Si ce blocage est bien le vôtre, défaites-le à la main : {}",
         "undo noted in a form Vanguard does not replay (another program may have written it): nothing is run. If this block really is yours, undo it by hand: {}",
         commandes
             .iter()

@@ -639,7 +639,7 @@ pub fn nommer(qui: &str, surnom: Option<&str>) -> Result<String, String> {
     }
     let Some(decrit) = trouve else {
         return Err(trf!(
-            "aucun appareil « {qui} » dans la base : lance d'abord un scan du réseau (vanguard reseau)",
+            "aucun appareil « {qui} » dans la base : lancez d'abord un scan du réseau (vanguard reseau)",
             "no device “{qui}” in the database: first run a network scan (vanguard network)"
         ));
     };
@@ -943,7 +943,7 @@ pub fn usurpation_arp(r: &Rapport) -> Option<(Ipv4Addr, String, Ipv4Addr)> {
 /// Phrase d'alerte pour une usurpation ARP possible.
 pub fn message_usurpation(boite: Ipv4Addr, mac: &str, autre: Ipv4Addr) -> String {
     trf!(
-        "{autre} répond avec l'adresse MAC de la box ({boite}, {mac}) : quelqu'un se fait peut-être passer pour elle pour intercepter ton trafic (usurpation ARP). Sauf répéteur Wi-Fi connu, débranche cet appareil et redémarre la box.",
+        "{autre} répond avec l'adresse MAC du routeur ({boite}, {mac}) : quelqu'un se fait peut-être passer pour lui pour intercepter votre trafic (usurpation ARP). Sauf répéteur Wi-Fi connu, débranchez cet appareil et redémarrez le routeur.",
         "{autre} answers with the router's MAC address ({boite}, {mac}): someone may be impersonating it to intercept your traffic (ARP spoofing). Unless it is a known Wi-Fi repeater, unplug that device and restart the router."
     )
 }
@@ -1037,16 +1037,20 @@ fn afficher(r: &Rapport) {
     section(&trf!("APPAREILS ({})", "DEVICES ({})", r.hotes.len()));
     for h in &r.hotes {
         let etiquette = if h.nouvelle {
-            format!("{}{}{RESET}", couleur(Niveau::Moyen), ajuster(tr!("NOUVEAU", "NEW"), 8))
+            format!(
+                "{}{}{RESET}",
+                couleur(Niveau::Moyen),
+                ajuster(tr!("NOUVEAU", "NEW"), 10)
+            )
         } else if let Some(role) = h.role {
             let court = match role {
-                "passerelle" => tr!("box", "router"),
-                "cette machine" => tr!("toi", "you"),
+                "passerelle" => tr!("routeur", "router"),
+                "cette machine" => tr!("vous", "you"),
                 autre => autre,
             };
-            format!("{ACCENT}{}{RESET}", ajuster(&format!("[{court}]"), 8))
+            format!("{ACCENT}{}{RESET}", ajuster(&format!("[{court}]"), 10))
         } else {
-            " ".repeat(8)
+            " ".repeat(10)
         };
         let ports = match h.ports.len() {
             0 => format!("{DISCRET}{}{RESET}", ajuster("—", 8)),
@@ -1057,7 +1061,7 @@ fn afficher(r: &Rapport) {
             "  {} {GRAS}{:<15}{RESET} {} {etiquette}{ports}{}",
             pastille(h),
             h.ip.to_string(),
-            ajuster(&nom_affiche(h), 33),
+            ajuster(&nom_affiche(h), 31),
             etiquette_note(h.score)
         );
     }
@@ -1200,7 +1204,7 @@ pub async fn executer(o: Options) -> Result<Rapport, String> {
         None => {
             local
                 .ok_or(tr!(
-                    "impossible de détecter le réseau local ; précise une cible (ex. 192.168.1.0/24)",
+                    "impossible de détecter le réseau local ; précisez une cible (ex. 192.168.1.0/24)",
                     "cannot detect the local network; give a target (e.g. 192.168.1.0/24)"
                 ))?
                 .0
@@ -1259,7 +1263,7 @@ pub async fn executer(o: Options) -> Result<Rapport, String> {
         );
         if ips.iter().all(std::net::Ipv4Addr::is_loopback) {
             tre!(
-                "{GRIS}Note : 127.0.0.1 montre aussi les services réservés à cette machine. Pour ce qui est vraiment exposé au réseau : vanguard machine.{RESET}",
+                "{GRIS}Note : 127.0.0.1 montre aussi les services réservés à cet ordinateur. Pour ce qui est vraiment exposé au réseau : vanguard machine.{RESET}",
                 "{GRIS}Note: 127.0.0.1 also shows services reserved for this machine. For what is really exposed to the network: vanguard audit.{RESET}"
             );
         }

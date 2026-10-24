@@ -92,7 +92,7 @@ impl Domaine {
     pub fn precision(self) -> &'static str {
         match self {
             Domaine::Exposition => tr!(
-                "ce que la box laisse entrer d'Internet : redirections, adresse publique, IPv6, services de la box",
+                "ce que le routeur laisse entrer d'Internet : redirections, adresse publique, IPv6, services du routeur",
                 "what the router lets in from the Internet: forwardings, public address, IPv6, router services"
             ),
             Domaine::WiFi => tr!(
@@ -100,11 +100,11 @@ impl Domaine {
                 "encryption, WPS, transmitters of the same name, open networks, unknown devices"
             ),
             Domaine::Segmentation => tr!(
-                "objets et ordinateurs sur le même réseau, réseau invité, serveur DHCP, routeurs IPv6, box usurpée",
+                "objets et ordinateurs sur le même réseau, réseau invité, serveur DHCP, routeurs IPv6, routeur usurpé",
                 "devices and computers on the same network, guest network, DHCP server, IPv6 routers, impersonated router"
             ),
             Domaine::DnsTls => tr!(
-                "DNS distribué par la box, DNS chiffré, réponses divergentes, DNSSEC, HTTPS intercepté, post-quantique",
+                "DNS distribué par le routeur, DNS chiffré, réponses divergentes, DNSSEC, HTTPS intercepté, post-quantique",
                 "DNS handed out by the router, encrypted DNS, diverging answers, DNSSEC, intercepted HTTPS, post-quantum"
             ),
             Domaine::Appareils => tr!(

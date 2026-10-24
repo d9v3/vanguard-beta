@@ -796,14 +796,14 @@ fn constat_de(l: &Lecture) -> Option<crate::machine::Constat> {
             crate::sceau::CAT,
             Niveau::Eleve,
             trf!(
-                "Le journal des événements a été changé hors de Vanguard ({}) : ses alertes ne sont pas tenues pour vérifiées. Un programme qui tourne sous ton compte a pu retirer celles qui le gênaient.",
+                "Le journal des événements a été changé hors de Vanguard ({}) : ses alertes ne sont pas tenues pour vérifiées. Un programme qui tourne sous votre compte a pu retirer celles qui le gênaient.",
                 "The event log was changed outside Vanguard ({}): its alerts are not taken as verified. A program running under your account may have removed the ones in its way.",
                 crate::ui::affichable(r)
             ),
         )
         .manuel(
             tr!(
-                "« vanguard evenements » dit où ; regarde ce qui tourne sous ton compte (Protection › Qui parle à Internet ?)",
+                "« vanguard evenements » dit où ; regardez ce qui tourne sous votre compte (Protection › Qui parle à Internet ?)",
                 "“vanguard events” says where; look at what runs under your account (Protection › Who talks to the Internet?)"
             ),
             &[],

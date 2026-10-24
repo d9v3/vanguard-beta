@@ -89,7 +89,7 @@ pub(super) fn lignes_extensions(plugins: usize, scripts: usize, sans: bool) -> V
 pub fn dire_restrictions(sans: bool) {
     if sans {
         crate::trp!(
-            "  {}⚠{RESET} Restrictions coupées : les extensions tournent sans accord, sans empreinte ni analyse, avec tous tes droits.",
+            "  {}⚠{RESET} Restrictions coupées : les extensions tournent sans accord, sans empreinte ni analyse, avec tous vos droits.",
             "  {}⚠{RESET} Restrictions off: extensions run without consent, fingerprint or scan, with all your rights.",
             couleur(crate::risk::Niveau::Eleve)
         );
@@ -121,7 +121,7 @@ pub(super) fn lignes_plugins(plugins: &[Plugin], reglages: &super::reglages::Reg
         paragraphe(
             &mut l,
             tr!(
-                "Aucun plugin : « a » copie ici un dossier qui contient ton programme et son plugin.toml (exemple : extensions/exemples/exemple dans les sources de Vanguard).",
+                "Aucun plugin : « a » copie ici un dossier qui contient votre programme et son plugin.toml (exemple : extensions/exemples/exemple dans les sources de Vanguard).",
                 "No plugin: “a” copies here a folder holding your program and its plugin.toml (example: extensions/exemples/exemple in Vanguard's sources)."
             ),
         );
@@ -196,7 +196,7 @@ pub(super) fn lignes_labo(
         paragraphe(
             &mut l,
             tr!(
-                "Aucun script : pose un .sh, .bash, .ps1, .py ou un programme dans le dossier du labo, puis reviens ici :",
+                "Aucun script : posez un .sh, .bash, .ps1, .py ou un programme dans le dossier du labo, puis revenez ici :",
                 "No script: put a .sh, .bash, .ps1, .py or a program in the lab folder, then come back here:"
             ),
         );

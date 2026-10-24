@@ -468,7 +468,7 @@ try {
     Ok "$(@($scan.hotes).Count) appareil(s) trouvé(s) sur $($scan.reseau)"
 } catch { Bug "reseau --json illisible : $($_.Exception.Message)" }
 
-Etape 'Box et objets connectés (0.82) : sans scan gardé, puis d''après le scan, en 76 colonnes'
+Etape 'Routeur et objets connectés (0.82) : sans scan gardé, puis d''après le scan, en 76 colonnes'
 # Les lignes de l'écran sans couleurs ; la plus longue doit tenir dans les 76 colonnes de Vanguard.
 function Lignes([string]$texte) { @(($texte -replace '\x1b\[[0-9;]*[A-Za-z]', '') -split "`r?`n") }
 function Trop-Larges([string[]]$lignes) { @($lignes | Where-Object { $_.TrimEnd().Length -gt 76 }) }
@@ -648,7 +648,7 @@ Etape 'Nettoyer le système : place à gagner, rien effacé'
 Lancer 'nettoyer-liste' @('nettoyer', '--liste')
 $n = Sortie 'nettoyer-liste'
 if ($n -match 'rien n.a été effacé|nothing was deleted') { Ok 'Liste du nettoyage affichée' } else { Bug 'Liste du nettoyage absente' }
-if ($n -match '(?m)(Tes fichiers temporaires|Your temporary files)\s+\S') { Ok 'Fichiers temporaires mesurés' } else { Bug 'Fichiers temporaires non mesurés' }
+if ($n -match '(?m)(Vos fichiers temporaires|Your temporary files)\s+\S') { Ok 'Fichiers temporaires mesurés' } else { Bug 'Fichiers temporaires non mesurés' }
 if ($n -match 'Disque du système|System disk') { Ok 'Place libre du disque lue' } else { Bug 'Place libre du disque non lue (PowerShell)' }
 
 Etape 'Test de connexion'
@@ -995,7 +995,7 @@ New-Item -ItemType Directory -Force $refuse | Out-Null
 LancerAvec 'copier-refus' @('copier-fichiers', $refuse) "`nn`n"
 if ((Sortie 'copier-refus') -match 'disque du système|system disk') { Ok 'Copie sur le disque du système refusée' } else { Bug 'Copie sur le disque du système PAS refusée' }
 Remove-Item $refuse -Recurse -Force -ErrorAction SilentlyContinue
-if (Question 'Faire une vraie copie de tes dossiers vers le dossier partagé (dans les résultats, effacée après) ?') {
+if (Question 'Faire une vraie copie de vos dossiers vers le dossier partagé (dans les résultats, effacée après) ?') {
     # Sur le Bureau : l'accès contrôlé aux dossiers de Defender, s'il est actif, empêche PowerShell d'écrire dans
     # Documents, et le témoin n'existerait pas. Le Bureau n'est pas protégé d'office.
     $temoin = Join-Path ([Environment]::GetFolderPath('Desktop')) 'vanguard-test-copie.txt'
@@ -1130,11 +1130,11 @@ if (Test-Path $base) {
     if (Test-Path -LiteralPath $etatAudit) { Ok 'Audit du réseau mémorisé (surveillance-audit.json)' } else { Bug 'surveillance-audit.json PAS écrit' }
     $alertesPasse = @(Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'vanguard\surveillance-alertes.jsonl') -Encoding UTF8 -ErrorAction SilentlyContinue |
         ForEach-Object { try { $_ | ConvertFrom-Json } catch { } } | Where-Object { $_.date -ge $avantSurveiller })
-    $alertesAudit = @($alertesPasse | Where-Object { $_.titre -match 'opens a port to the Internet|ouvre un port vers Internet|DNS handed out by the router changed|DNS distribué par la box a changé|DNS answers hijacked|réponses DNS détournées|exposed over IPv6|exposé en IPv6|Wi-Fi less protected|Wi-Fi moins protégé' })
+    $alertesAudit = @($alertesPasse | Where-Object { $_.titre -match 'opens a port to the Internet|ouvre un port vers Internet|DNS handed out by the router changed|DNS distribué par le routeur a changé|DNS answers hijacked|réponses DNS détournées|exposed over IPv6|exposé en IPv6|Wi-Fi less protected|Wi-Fi moins protégé' })
     if ($alertesAudit.Count) { Bug "Alerte de l'audit dès son premier passage : $($alertesAudit[0].titre)" }
     else { Ok "Premier passage de l'audit : aucune alerte ($($alertesPasse.Count) autre(s) alerte(s) de la passe)" }
     Start-Sleep -Seconds 3
-    Constat 'As-tu vu la notification « Nouvel appareil sur ton réseau » ?'
+    Constat 'Avez-vous vu la notification « Nouvel appareil sur votre réseau » ?'
 } else {
     Sautee 'Pas de base créée par le scan : test de notification sauté.'
 }
@@ -1193,7 +1193,7 @@ if ($pr -match 'EN RÉSUMÉ|IN SHORT') { Ok 'Résumé affiché' } else { Bug 'R�
 if ($pr -match 'Note de l.ordinateur|Computer grade') { Ok 'Note de l''ordinateur au résumé' } else { Info 'Pas de note au résumé (bilan pas assez fiable ici)' }
 if ($pr -match 'Ce qui reste à faire|What is left to do') { Ok 'Ce qui reste à faire : présent' } else { Bug 'Ce qui reste à faire : ABSENT' }
 if ($pr -match 'Ce qui va bien|What is fine') { Info "Ce qui va bien : $(($pr -split "`r?`n" | Where-Object { $_ -match '^\s+✔' } | Select-Object -First 2 | ForEach-Object { $_.Trim() }) -join ' / ')" }
-if ($prPlat -match "Quelqu'un contrôle mon ordi|Is someone controlling my PC") { Ok 'Faux technicien : la recherche de prise de contrôle s''est ouverte' } else { Bug 'Faux technicien : recherche PAS ouverte' }
+if ($prPlat -match "Mon ordinateur est-il contrôlé|Is my computer being controlled") { Ok 'Faux technicien : la recherche de prise de contrôle s''est ouverte' } else { Bug 'Faux technicien : recherche PAS ouverte' }
 if ($pr -match 'Network scan|Scan du réseau') { Bug 'Réseau scanné malgré le refus' } else { Ok 'Réseau refusé : pas de scan' }
 if ((Etat-Systeme | Out-String) -eq $etatAvant) { Ok 'Rien changé (pare-feu, démarrage, Defender)' } else { Bug 'Le système a changé alors que tout était refusé' }
 $pagesNouvelles = @(Get-ChildItem -LiteralPath $bureauProche -Filter $motifPage -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notin $pagesAvant -or $_.LastWriteTime -ge $avantProche })
@@ -1201,7 +1201,7 @@ if ($poserPage) {
     if ($pagesNouvelles.Count) {
         Ok "Page posée sur le Bureau : $($pagesNouvelles[0].Name)"
         $html = Get-Content -LiteralPath $pagesNouvelles[0].FullName -Raw -Encoding UTF8
-        if ($html -match 'Pour toi en particulier|Especially for you') { Ok 'Page : conseils pour la personne' } else { Bug 'Page : section des conseils ABSENTE' }
+        if ($html -match 'Pour vous en particulier|Especially for you') { Ok 'Page : conseils pour la personne' } else { Bug 'Page : section des conseils ABSENTE' }
         # Retirée si elle n'existait pas avant la passe.
         $pagesNouvelles | Where-Object { $_.FullName -notin $pagesAvant } | Remove-Item -Force -ErrorAction SilentlyContinue
     } else { Bug 'Page PAS posée sur le Bureau' }

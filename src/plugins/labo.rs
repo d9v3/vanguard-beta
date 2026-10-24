@@ -190,7 +190,7 @@ fn presenter(chemin: &Path, copie: &Path, empreinte: &str, avant: Option<&Approb
     }
     println!();
     rappel(tr!(
-        "Ce script n'est pas du code de Vanguard : il pourra lire et modifier tes fichiers, comme toi. N'approuve que ce que tu as écrit ou relu.",
+        "Ce script n'est pas du code de Vanguard : il pourra lire et modifier vos fichiers, comme vous. N'approuvez que ce que vous avez écrit ou relu.",
         "This script is not Vanguard's code: it will be able to read and change your files, like you. Only approve what you wrote or reviewed."
     ));
 }
@@ -445,7 +445,7 @@ pub fn commande(quoi: &[String]) -> i32 {
 
 pub fn montrer_dossier(d: &Path) {
     trp!(
-        "  Dossier du labo (pose tes scripts ici : .sh, .bash, .ps1, .py ou un programme) :",
+        "  Dossier du labo (posez vos scripts ici : .sh, .bash, .ps1, .py ou un programme) :",
         "  Lab folder (put your scripts here: .sh, .bash, .ps1, .py or a program):"
     );
     println!("  {}", chemin_affichable(d));

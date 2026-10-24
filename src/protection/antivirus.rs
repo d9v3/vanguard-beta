@@ -401,17 +401,17 @@ fn signes_de_ver(entrees: &[(String, bool)]) -> Vec<(Niveau, String)> {
         let (souche, extension) = bas.rsplit_once('.').unwrap_or((&bas, ""));
         if bas == "autorun.inf" {
             signes.push((Niveau::Moyen, trf!(
-                "autorun.inf : Windows ne le lance plus tout seul, mais des vers s'en servent encore. À supprimer si tu ne l'as pas mis.",
+                "autorun.inf : Windows ne le lance plus tout seul, mais des vers s'en servent encore. À supprimer si vous ne l'avez pas mis.",
                 "autorun.inf: Windows no longer runs it by itself, but worms still use it. Delete it if you did not put it there."
             )));
         } else if extension == "lnk" && (dossiers.iter().any(|d| d == souche) || entrees.len() <= 3) && !dossier {
             signes.push((Niveau::Eleve, trf!(
-                "« {nom} » : un raccourci qui se fait passer pour un dossier, technique classique d'un ver de clé USB (le vrai dossier est caché, le raccourci lance le ver). N'ouvre pas ce raccourci.",
+                "« {nom} » : un raccourci qui se fait passer pour un dossier, technique classique d'un ver de clé USB (le vrai dossier est caché, le raccourci lance le ver). N'ouvrez pas ce raccourci.",
                 "“{nom}”: a shortcut posing as a folder, a classic USB worm trick (the real folder is hidden, the shortcut runs the worm). Do not open this shortcut."
             )));
         } else if ["vbs", "vbe", "js", "jse", "wsf", "wsh", "scr", "pif", "hta"].contains(&extension) {
             signes.push((Niveau::Eleve, trf!(
-                "« {nom} » : script ou programme rarement légitime sur une clé. Ne le lance pas sans savoir d'où il vient.",
+                "« {nom} » : script ou programme rarement légitime sur une clé. Ne le lancez pas sans savoir d'où il vient.",
                 "“{nom}”: a script or program rarely legitimate on a drive. Do not run it without knowing where it comes from."
             )));
         }
@@ -680,7 +680,7 @@ fn preparer() -> bool {
             Some(g) => g.installer("clamav"),
             None => {
                 trp!(
-                    "  Gestionnaire de paquets non reconnu : installe ClamAV avec l'outil de ta distribution.",
+                    "  Gestionnaire de paquets non reconnu : installez ClamAV avec l'outil de votre distribution.",
                     "  Package manager not recognized: install ClamAV with your distribution's tool."
                 );
                 return false;
@@ -1123,7 +1123,7 @@ fn demarrage() {
         println!("  • {e}");
     }
     trp!(
-        "  {GRIS}Si tu ne reconnais pas une entrée, renseigne-toi avant de la supprimer.{RESET}",
+        "  {GRIS}Si vous ne reconnaissez pas une entrée, renseignez-vous avant de la supprimer.{RESET}",
         "  {GRIS}If you do not recognize an entry, look it up before deleting it.{RESET}"
     );
     afficher_aligne(

@@ -63,7 +63,7 @@ const PLATEFORMES: &[&str] = &[
 
 /// Les domaines (et leurs sous-domaines) d'entrées écartées, jamais gardés ni comme serveur ni comme site : Traccar
 /// est un projet libre de suivi GPS (sa documentation, demo.traccar.org), Bark un contrôle parental, WiseMo un bureau à
-/// distance (renvoyé à « Quelqu'un contrôle mon ordi ? »), FindMyKids une localisation d'enfant qu'un parent règle depuis
+/// distance (renvoyé à « Mon ordinateur est-il contrôlé ? »), FindMyKids une localisation d'enfant qu'un parent règle depuis
 /// son ordinateur (plan, § 1). Les visiter n'est pas un signe ; les domaines de Cerberus, eux, restent.
 const DOMAINES_ECARTES: &[&str] = &["traccar.org", "bark.us", "wisemo.com", "findmykids.org"];
 
@@ -129,8 +129,8 @@ fn partagee(ip: IpAddr) -> bool {
 
 /// Noms d'entrées jamais comparés aux noms des programmes : mots courants (« Observer », « Dash »), projets libres ou
 /// outils qui ne sont pas des logiciels espions sur un ordinateur (Traccar, Metasploit), applications de contrôle
-/// parental ou de localisation de téléphone, logiciel de bureau à distance (WiseMo : renvoyé à « Quelqu'un contrôle mon
-/// ordi ? ») et noms qui sont aussi ceux d'éléments ordinaires d'un système (« Screen Time » de macOS, « Mobile Backup »,
+/// parental ou de localisation de téléphone, logiciel de bureau à distance (WiseMo : renvoyé à « Mon ordinateur est-il
+/// contrôlé ? ») et noms qui sont aussi ceux d'éléments ordinaires d'un système (« Screen Time » de macOS, « Mobile Backup »,
 /// « System Framework »). Normalisés (minuscules, lettres et chiffres seulement). Tout nom de moins de 6 caractères
 /// est écarté aussi.
 const EXCLUS: &[&str] = &[

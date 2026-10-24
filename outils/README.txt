@@ -110,7 +110,7 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
          servers (Feodo Tracker, ThreatFox); read-only
        Camera and mic: who uses them? (Windows: each program and the last time; read-only)
        Privacy check: who can access location, contacts, camera and microphone (read-only)
-       Is someone controlling my PC? Remote control tools (tech-support scam), removed after your consent
+       Is my computer being controlled? Remote control tools (tech-support scam), removed after your consent
        Is this link dangerous? Checked without opening it; its age and public lists, after your consent
        Check a downloaded file: checksum compared with the site's, name and content, YARA, antivirus
        Quarantine: restore a file isolated by the antivirus or YARA (false positive), or delete it

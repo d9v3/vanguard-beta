@@ -28,7 +28,7 @@ fn mac_de_la_box_changee(e: &Entree) -> Constat {
             regle: "COM-ARP-002",
             ..impossible(
                 "Réseau local",
-                tr!("adresse MAC de la box inconnue", "router MAC address unknown"),
+                tr!("adresse MAC du routeur inconnue", "router MAC address unknown"),
             )
         };
     };
@@ -47,7 +47,7 @@ fn mac_de_la_box_changee(e: &Entree) -> Constat {
             ..ok(
                 "Réseau local",
                 trf!(
-                    "La box répond avec l'adresse MAC connue des scans précédents ({mac}).",
+                    "Le routeur répond avec l'adresse MAC connue des scans précédents ({mac}).",
                     "The router answers with the MAC address known from previous scans ({mac})."
                 ),
             )
@@ -62,7 +62,7 @@ fn mac_de_la_box_changee(e: &Entree) -> Constat {
             "Réseau local",
             Niveau::Eleve,
             trf!(
-                "La box du Wi-Fi « {nom} » ({boite}) répond avec une autre adresse MAC ({mac}) que lors des scans précédents ({liste}) : un appareil se fait peut-être passer pour elle. Normal si tu viens de changer de box ou son module Wi-Fi : déclare-le (apprentissage) et l'ancien carnet sera mis de côté.",
+                "Le routeur du Wi-Fi « {nom} » ({boite}) répond avec une autre adresse MAC ({mac}) que lors des scans précédents ({liste}) : un appareil se fait peut-être passer pour lui. Normal si vous venez de changer de routeur ou son module Wi-Fi : déclarez-le (apprentissage) et l'ancien carnet sera mis de côté.",
                 "The router of Wi-Fi “{nom}” ({boite}) answers with a different MAC address ({mac}) than in previous scans ({liste}): a device may be posing as it. Normal if you just replaced the router or its Wi-Fi module: declare it (learning) and the old record will be set aside."
             ),
         )
@@ -174,7 +174,7 @@ fn fabricant_de_la_box(e: &Entree) -> Constat {
             regle: "COM-ARP-003",
             ..impossible(
                 "Réseau local",
-                tr!("box absente du scan", "router missing from the scan"),
+                tr!("routeur absent du scan", "router missing from the scan"),
             )
         };
     };
@@ -190,7 +190,7 @@ fn fabricant_de_la_box(e: &Entree) -> Constat {
                 "Réseau local",
                 Niveau::Moyen,
                 tr!(
-                    "La box répond avec une adresse MAC aléatoire, comme un téléphone ou une tablette : un appareil se fait peut-être passer pour elle. Normal si tu partages la connexion d'un téléphone.",
+                    "Le routeur répond avec une adresse MAC aléatoire, comme un téléphone ou une tablette : un appareil se fait peut-être passer pour lui. Normal si vous partagez la connexion d'un téléphone.",
                     "The router answers with a random MAC address, like a phone or a tablet: a device may be posing as it. Normal if you are sharing a phone's connection."
                 ),
             )
@@ -202,7 +202,7 @@ fn fabricant_de_la_box(e: &Entree) -> Constat {
             ..ok(
                 "Réseau local",
                 tr!(
-                    "Le fabricant de la box n'est pas dans le registre des adresses MAC : rien ne dit qu'un ordinateur ou un téléphone se fait passer pour elle.",
+                    "Le fabricant du routeur n'est pas dans le registre des adresses MAC : rien ne dit qu'un ordinateur ou un téléphone se fait passer pour lui.",
                     "The router's maker is not in the MAC address registry: nothing says a computer or a phone is posing as it."
                 ),
             )
@@ -216,7 +216,7 @@ fn fabricant_de_la_box(e: &Entree) -> Constat {
             ..ok(
                 "Réseau local",
                 trf!(
-                    "La box répond avec une adresse de {fabricant}, un fabricant de box et de routeurs.",
+                    "Le routeur répond avec une adresse de {fabricant}, un fabricant de routeurs.",
                     "The router answers with an address from {fabricant}, a maker of routers."
                 ),
             )
@@ -229,7 +229,7 @@ fn fabricant_de_la_box(e: &Entree) -> Constat {
                 "Réseau local",
                 Niveau::Moyen,
                 trf!(
-                    "La box répond avec une adresse de {fabricant} (ordinateurs, téléphones) : un ordinateur ou un téléphone se fait peut-être passer pour elle. Normal si tu partages la connexion d'un téléphone ou si un PC sert de routeur.",
+                    "Le routeur répond avec une adresse de {fabricant} (ordinateurs, téléphones) : un ordinateur ou un téléphone se fait peut-être passer pour lui. Normal si vous partagez la connexion d'un téléphone ou si un PC sert de routeur.",
                     "The router answers with an address from {fabricant} (computers, phones): a computer or a phone may be posing as it. Normal if you are sharing a phone's connection or if a PC acts as the router."
                 ),
             )
@@ -240,7 +240,7 @@ fn fabricant_de_la_box(e: &Entree) -> Constat {
         ..ok(
             "Réseau local",
             trf!(
-                "La box répond avec une adresse de {fabricant} : ni un fabricant d'ordinateurs ni un fabricant de box connu, rien d'anormal.",
+                "Le routeur répond avec une adresse de {fabricant} : ni un fabricant d'ordinateurs ni un fabricant de routeurs connu, rien d'anormal.",
                 "The router answers with an address from {fabricant}: neither a known computer maker nor a known router maker, nothing unusual."
             ),
         )
@@ -296,7 +296,7 @@ fn mac_pour_plusieurs_adresses(e: &Entree) -> Constat {
             "Réseau local",
             Niveau::Info,
             trf!(
-                "Une même adresse MAC répond pour plusieurs adresses IP : {liste}. C'est une machine virtuelle en pont, un répéteur Wi-Fi, ou un appareil qui a changé d'adresse pendant le scan ; rien à faire si tu reconnais l'appareil.",
+                "Une même adresse MAC répond pour plusieurs adresses IP : {liste}. C'est une machine virtuelle en pont, un répéteur Wi-Fi, ou un appareil qui a changé d'adresse pendant le scan ; rien à faire si vous reconnaissez l'appareil.",
                 "One MAC address answers for several IP addresses: {liste}. That is a bridged virtual machine, a Wi-Fi repeater, or a device that changed address during the scan; nothing to do if you recognize the device."
             ),
         )

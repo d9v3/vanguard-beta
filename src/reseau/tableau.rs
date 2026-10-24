@@ -531,7 +531,7 @@ details summary{cursor:pointer;font-weight:600}
 /// Le comment l'activer, dit partout où la surveillance manque.
 fn comment_activer() -> &'static str {
     tr!(
-        "Pour l'activer : menu « Réseau et Internet » › « Surveillance toutes les heures », ou <code>vanguard surveillance on</code>. Elle scanne alors le réseau toutes les heures, sans rien changer, et notifie un nouvel appareil, un port dangereux nouvellement ouvert, une box usurpée, un port que la box ouvre vers Internet, un DNS ou un Wi-Fi qui changent, ou un programme qui parle à un serveur de botnet ; chaque alerte est gardée ici.",
+        "Pour l'activer : menu « Réseau et Internet » › « Surveillance toutes les heures », ou <code>vanguard surveillance on</code>. Elle scanne alors le réseau toutes les heures, sans rien changer, et notifie un nouvel appareil, un port dangereux nouvellement ouvert, un routeur usurpé, un port que le routeur ouvre vers Internet, un DNS ou un Wi-Fi qui changent, ou un programme qui parle à un serveur de botnet ; chaque alerte est gardée ici.",
         "To turn it on: menu “Network and Internet” › “Hourly monitoring”, or <code>vanguard monitor on</code>. It then scans the network every hour, changing nothing, and notifies a new device, a dangerous newly opened port, an impersonated router, a port the router opens to the Internet, a DNS or Wi-Fi that changes, or a program talking to a botnet server; each alert is kept here."
     )
 }
@@ -685,7 +685,7 @@ fn appareils(d: &Donnees, nouveaux: &[&FicheAppareil]) -> String {
     ));
     if d.appareils.is_empty() {
         h += tr!(
-            "Aucun appareil connu : lance un scan du réseau (menu « Réseau et Internet » › « Scanner le réseau », ou <code>vanguard reseau</code>) pour que Vanguard apprenne ceux de la maison.",
+            "Aucun appareil connu : lancez un scan du réseau (menu « Réseau et Internet » › « Scanner le réseau », ou <code>vanguard reseau</code>) pour que Vanguard apprenne ceux de votre réseau.",
             "No known device: run a network scan (menu “Network and Internet” › “Scan the network”, or <code>vanguard network</code>) so Vanguard learns your home's devices."
         );
     } else if nouveaux.is_empty() {
@@ -757,7 +757,7 @@ fn connexions_suspectes(d: &Donnees, vues: &[&Alerte]) -> String {
             let _ = write!(h, "<li><span class=\"badge critique\">BOTNET</span> {}</li>", esc(c));
         }
         h += tr!(
-            "</ul><div class=fix>Ouvre « Après une infection » dans Vanguard (<code>vanguard depanner infection</code>) : coupe Internet d'abord.</div>",
+            "</ul><div class=fix>Ouvrez « Après une infection » dans Vanguard (<code>vanguard depanner infection</code>) : coupez Internet d'abord.</div>",
             "</ul><div class=fix>Open “After an infection” in Vanguard (<code>vanguard troubleshoot infection</code>): cut the Internet first.</div>"
         );
     }
@@ -800,7 +800,7 @@ pub(crate) fn html(d: &Donnees) -> String {
     if page_vide(d) {
         let _ = trw!(
             h,
-            "<div class=carte><span class=\"badge moyen\">COUPÉE</span> Rien à montrer pour l'instant : la surveillance horaire n'a jamais tourné sur cet ordinateur, et aucun appareil n'est encore connu.<div class=fix>{}</div><div class=fix>Pour voir tout de suite les appareils de la maison : menu « Réseau et Internet » › « Scanner le réseau », ou <code>vanguard reseau</code>.</div></div>",
+            "<div class=carte><span class=\"badge moyen\">COUPÉE</span> Rien à montrer pour l'instant : la surveillance horaire n'a jamais tourné sur cet ordinateur, et aucun appareil n'est encore connu.<div class=fix>{}</div><div class=fix>Pour voir tout de suite les appareils de votre réseau : menu « Réseau et Internet » › « Scanner le réseau », ou <code>vanguard reseau</code>.</div></div>",
             "<div class=carte><span class=\"badge moyen\">OFF</span> Nothing to show yet: hourly monitoring has never run on this computer, and no device is known yet.<div class=fix>{}</div><div class=fix>To see your home's devices right away: menu “Network and Internet” › “Scan the network”, or <code>vanguard network</code>.</div></div>",
             comment_activer()
         );
@@ -892,7 +892,7 @@ mod tests {
                 une_alerte(
                     "2026-10-19 03:00:00",
                     Genre::Appareil,
-                    "Nouvel appareil sur ton réseau",
+                    "Nouvel appareil sur votre réseau",
                     "10.0.0.66 — <script>alert(1)</script> 3c:22:fb:00:00:66",
                 ),
                 une_alerte(
@@ -1009,7 +1009,7 @@ mod tests {
         };
         let page = html(&coupee);
         assert!(page.contains("COUPÉE") && page.contains("vanguard surveillance on"));
-        assert!(page.contains("Nouvel appareil sur ton réseau"));
+        assert!(page.contains("Nouvel appareil sur votre réseau"));
         // Active mais la protection en temps réel coupée : en pause, pas « ACTIVE », et la façon de la remettre.
         let en_pause = Donnees {
             temps_reel_coupe: Some("jusqu'à reprise".into()),

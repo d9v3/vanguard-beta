@@ -24,7 +24,7 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Vec<&'static str> {
         );
     } else {
         trp!(
-            "  {} correction(s) possible(s). Chacune te sera montrée avant d'être appliquée.",
+            "  {} correction(s) possible(s). Chacune vous sera montrée avant d'être appliquée.",
             "  {} fix(es) available. Each one will be shown to you before it is applied.",
             auto.len()
         );
@@ -168,7 +168,7 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Vec<&'static str> {
         .filter_map(|c| Some((c, c.correctif.as_ref().filter(|k| !k.automatique)?)))
         .collect();
     if !manuels.is_empty() {
-        titre(tr!("À faire toi-même", "To do yourself"));
+        titre(tr!("À faire vous-même", "To do yourself"));
         for (c, k) in &manuels {
             let cat = crate::langue::categorie(c.categorie);
             let ampoule = ampoule();

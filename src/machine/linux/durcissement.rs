@@ -379,7 +379,7 @@ pub(super) fn module_securite() -> Constat {
             "AppArmor/SELinux",
             Niveau::Moyen,
             tr!(
-                "Ni AppArmor ni SELinux n'est actif, alors que ta distribution l'active normalement.",
+                "Ni AppArmor ni SELinux n'est actif, alors que votre distribution l'active normalement.",
                 "Neither AppArmor nor SELinux is on, although your distribution normally turns it on."
             ),
         )

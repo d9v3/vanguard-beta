@@ -493,7 +493,7 @@ fn entete(categorie: Categorie) -> Vec<String> {
         String::new(),
         ligne_titre(categorie.titre()),
         trf!(
-            "  {GRIS}Coché = réglage en place. Ce que tu coches s'applique,{RESET}\n  {GRIS}ce que tu décoches s'annule.{RESET}",
+            "  {GRIS}Coché = réglage en place. Ce que vous cochez s'applique,{RESET}\n  {GRIS}ce que vous décochez s'annule.{RESET}",
             "  {GRIS}Checked = setting in place. What you check is applied,{RESET}\n  {GRIS}what you uncheck is undone.{RESET}"
         ),
         String::new(),
@@ -611,10 +611,10 @@ pub fn recommandes() {
 /// après les serveurs listés.
 fn texte_dns(serveurs: &[&str], avec_box: bool) -> String {
     match (serveurs.is_empty(), avec_box) {
-        (true, _) => tr!("DNS automatique : celui de la box", "automatic DNS: the router's").to_string(),
+        (true, _) => tr!("DNS automatique : celui du routeur", "automatic DNS: the router's").to_string(),
         (false, false) => trf!("DNS : {}", "DNS: {}", serveurs.join(", ")),
         (false, true) => trf!(
-            "DNS : {}, puis celui de la box",
+            "DNS : {}, puis celui du routeur",
             "DNS: {}, then the router's",
             serveurs.join(", ")
         ),
@@ -679,7 +679,7 @@ pub fn appliquer_dns(serveurs4: &[&str], serveurs6: &[&str]) -> Result<(), Strin
     // Le mode Wi-Fi public remettra, en s'éteignant, le DNS qu'il a trouvé : il écraserait ce choix.
     if crate::reseau::wifi_public::tient_le_dns() {
         return Err(tr!(
-            "Le mode Wi-Fi public tient le DNS : éteins-le d'abord (« vanguard wifi-public off »).",
+            "Le mode Wi-Fi public tient le DNS : éteignez-le d'abord (« vanguard wifi-public off »).",
             "Public Wi-Fi mode holds the DNS: turn it off first (“vanguard public-wifi off”)."
         )
         .to_string());
@@ -690,7 +690,7 @@ pub fn appliquer_dns(serveurs4: &[&str], serveurs6: &[&str]) -> Result<(), Strin
         && Some(reseau.as_str()) != c.identite_dns()
     {
         return Err(tr!(
-            "Vanguard a déjà changé le DNS d'une autre connexion : remets-le d'abord (Optimiser › Tout remettre comme avant).",
+            "Vanguard a déjà changé le DNS d'une autre connexion : remettez-le d'abord (Optimiser › Tout remettre comme avant).",
             "Vanguard already changed the DNS of another connection: put it back first (Optimize › Put everything back)."
         )
         .to_string());
@@ -736,7 +736,7 @@ fn dire_dns_tenu() {
     afficher_aligne(
         "  ",
         tr!(
-            "Le mode Wi-Fi public tient le DNS : il est laissé ; éteins le mode d'abord (« vanguard wifi-public off »).",
+            "Le mode Wi-Fi public tient le DNS : il est laissé ; éteignez le mode d'abord (« vanguard wifi-public off »).",
             "Public Wi-Fi mode holds the DNS: it is left as is; turn the mode off first (“vanguard public-wifi off”)."
         ),
         2,

@@ -166,11 +166,11 @@ fn comptes(intrusions: &[Intrusion]) -> String {
 fn conseil(systeme: Os, comptes: &str) -> String {
     match systeme {
         Os::Windows => trf!(
-            "Change tout de suite le mot de passe de {comptes}, coupe le Bureau à distance s'il ne sert pas, et regarde ce qui s'est passé : vanguard traces",
+            "Changez tout de suite le mot de passe de {comptes}, coupez le Bureau à distance s'il ne sert pas, et regardez ce qui s'est passé : vanguard traces",
             "Change the password of {comptes} right away, turn off Remote Desktop if it is not used, and look at what happened: vanguard traces"
         ),
         Os::Linux | Os::MacOs | Os::Tous => trf!(
-            "Change tout de suite le mot de passe de {comptes} (passwd), coupe la connexion par mot de passe de SSH (PasswordAuthentication no, puis recharger sshd), et regarde ce qui s'est passé : vanguard traces",
+            "Changez tout de suite le mot de passe de {comptes} (passwd), coupez la connexion par mot de passe de SSH (PasswordAuthentication no, puis recharger sshd), et regardez ce qui s'est passé : vanguard traces",
             "Change the password of {comptes} right away (passwd), turn off password sign-in for SSH (PasswordAuthentication no, then reload sshd), and look at what happened: vanguard traces"
         ),
     }
@@ -212,7 +212,7 @@ pub(crate) fn juger_intrusions(intrusions: &[Intrusion], systeme: Os, partiel: O
         .any(|i| crate::socle::adresses::sur_internet(i.adresse))
     {
         texte.push_str(tr!(
-            " L'adresse est sur le réseau local : un appareil de la maison qui gardait un vieux mot de passe l'explique aussi.",
+            " L'adresse est sur le réseau local : un appareil de votre domicile qui gardait un vieux mot de passe l'explique aussi.",
             " The address is on the local network: a device at home that kept an old password also explains it."
         ));
     }
@@ -1028,7 +1028,7 @@ pub(crate) fn montrer(p: &EnMarche, s: &Soupcon) -> String {
 /// traces partiraient avec lui), noter d'où il vient, puis le parcours de Vanguard après une infection.
 fn conseil_programmes() -> &'static str {
     tr!(
-        "Ne rien arrêter à la hâte : garder ses traces (vanguard traces note son chemin, son parent, sa ligne de commande), puis suivre Dépanner › Après une infection s'il n'est pas à toi",
+        "Ne rien arrêter à la hâte : garder ses traces (vanguard traces note son chemin, son parent, sa ligne de commande), puis suivre Dépanner › Après une infection s'il n'est pas à vous",
         "Do not stop anything in a hurry: keep its traces (vanguard traces notes its path, parent and command line), then follow Troubleshoot › After an infection if it is not yours"
     )
 }
@@ -1188,7 +1188,7 @@ fn programmes_en_marche() -> Option<(Vec<EnMarche>, Option<&'static str>)> {
         })
         .collect();
     let partiel = proc_masque(&montages).then_some(tr!(
-        "/proc ne montre que tes programmes (hidepid) : ceux des autres comptes ne sont pas vérifiés.",
+        "/proc ne montre que vos programmes (hidepid) : ceux des autres comptes ne sont pas vérifiés.",
         "/proc only shows your programs (hidepid): those of other accounts are not checked."
     ));
     Some((liste, partiel))

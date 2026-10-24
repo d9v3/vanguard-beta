@@ -568,7 +568,7 @@ pub(crate) fn en_markdown(b: &Brouillon) -> String {
         "{}\n\n{}",
         neutraliser_markdown(&b.masques.texte_dans(l == Langue::En)),
         l.t(
-            "Limites : deux serveurs différents peuvent porter le même numéro 203.0.113.x ; un nom de moins de 3 caractères (4 pour un réseau ou un appareil) n'est jamais masqué ; un nom de fichier avec des espaces peut garder sa fin ; les adresses web ont perdu leur requête et leur nom de site. Remets ce qu'il faut pour reproduire, et relis : toi seul sais ce qui est personnel.",
+            "Limites : deux serveurs différents peuvent porter le même numéro 203.0.113.x ; un nom de moins de 3 caractères (4 pour un réseau ou un appareil) n'est jamais masqué ; un nom de fichier avec des espaces peut garder sa fin ; les adresses web ont perdu leur requête et leur nom de site. Remettez ce qu'il faut pour reproduire, et relisez : vous seul savez ce qui est personnel.",
             "Limits: two different servers may carry the same 203.0.113.x number; a name shorter than 3 characters (4 for a network or a device) is never masked; a file name with spaces may keep its end; web addresses lost their query string and site name. Put back what is needed to reproduce, and read it again: only you know what is personal."
         )
     );

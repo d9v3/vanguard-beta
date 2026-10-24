@@ -208,7 +208,7 @@ fn persistance_dans(dossiers: impl IntoIterator<Item = (PathBuf, bool)>) -> Vec<
                         .avec_objet(crate::modele::Objet::agent(&chemin.to_string_lossy(), None))
                         .manuel(
                             tr!(
-                                "Regarde-le avec « plutil -p » dans le Terminal ; s'il ne vient d'aucun programme que tu connais, mets-le à la corbeille et redémarre",
+                                "Regardez-le avec « plutil -p » dans le Terminal ; s'il ne vient d'aucun programme que vous connaissez, mettez-le à la corbeille et redémarrez",
                                 "Look at it with “plutil -p” in Terminal; if it comes from no program you know, move it to the Trash and restart"
                             ),
                             &[],

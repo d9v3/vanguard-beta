@@ -238,7 +238,7 @@ pub(crate) fn accepter() {
     };
     if jeton_de(&cle).is_none() {
         trp!(
-            "  Cette clé n'a pas de jeton (vanguard.jeton) : rien à accepter. Remets-la à jour chez toi (outils/deployer.sh).",
+            "  Cette clé n'a pas de jeton (vanguard.jeton) : rien à accepter. Remettez-la à jour chez vous (outils/deployer.sh).",
             "  This key has no token (vanguard.jeton): nothing to accept. Update it at home (outils/deployer.sh)."
         );
         return;
@@ -294,7 +294,7 @@ fn constat_refus(refus: Refus) -> Constat {
     .avec_objet(crate::modele::Objet::de("refus", objet))
     .manuel(
         tr!(
-            "Si c'est voulu (copie restaurée, protection retirée ailleurs) : vanguard manifeste --accepter ; sinon, regarde ce qui a touché la clé avant de t'en resservir",
+            "Si c'est voulu (copie restaurée, protection retirée ailleurs) : vanguard manifeste --accepter ; sinon, regardez ce qui a touché la clé avant de vous en resservir",
             "If intended (restored copy, protection removed elsewhere): vanguard manifeste --accepter; otherwise, find out what touched the key before using it again"
         ),
         &[],
@@ -313,13 +313,13 @@ fn constat_inconnue(deja_deployees: bool) -> Constat {
                 CAT,
                 Niveau::Moyen,
                 tr!(
-                    "Un volume branché porte le témoin d'une clé VANGUARD sans jeton connu de cet ordinateur : autre clé que celles déployées ici, ou clé dont le jeton et l'identifiant de volume ont été changés. Rien n'a été comparé ni lu : ne lance rien depuis elle avant de l'avoir redéployée.",
+                    "Un volume branché porte le témoin d'une clé VANGUARD sans jeton connu de cet ordinateur : autre clé que celles déployées ici, ou clé dont le jeton et l'identifiant de volume ont été changés. Rien n'a été comparé ni lu : ne lancez rien depuis elle avant de l'avoir redéployée.",
                     "A plugged-in volume carries a VANGUARD key marker without a token known to this computer: a key other than those deployed here, or a key whose token and volume identifier were changed. Nothing was compared or read: do not run anything from it before redeploying it."
                 ),
             )
             .manuel(
                 tr!(
-                    "Redéploie-la avec outils/deployer.sh",
+                    "Redéployez-la avec outils/deployer.sh",
                     "Redeploy it with outils/deployer.sh"
                 ),
                 &[],
@@ -336,7 +336,7 @@ fn constat_inconnue(deja_deployees: bool) -> Constat {
     )
     .manuel(
         tr!(
-            "Si c'est ta clé : lance Vanguard depuis elle une fois, ou remets-la à jour chez toi (outils/deployer.sh)",
+            "Si c'est votre clé : lancez Vanguard depuis elle une fois, ou remettez-la à jour chez vous (outils/deployer.sh)",
             "If it is your key: run Vanguard from it once, or update it at home (outils/deployer.sh)"
         ),
         &[],

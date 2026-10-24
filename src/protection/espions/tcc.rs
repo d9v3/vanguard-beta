@@ -125,7 +125,7 @@ pub(super) fn autorisations(octets: &[u8]) -> Option<Vec<Autorisation>> {
 pub(super) enum Jugement {
     /// Une application qui en a besoin d'ordinaire.
     Attendue,
-    /// Un logiciel de prise de contrôle à distance : renvoyé à « Quelqu'un contrôle mon ordi ? ».
+    /// Un logiciel de prise de contrôle à distance : renvoyé à « Mon ordinateur est-il contrôlé ? ».
     ADistance,
     Signe(Niveau, String),
 }
@@ -199,7 +199,7 @@ pub(super) fn juger(a: &Autorisation, ind: Option<&Indicateurs>) -> Jugement {
     Jugement::Signe(
         Niveau::Moyen,
         crate::tr!(
-            "application inconnue : l'as-tu autorisée toi-même ?",
+            "application inconnue : l'avez-vous autorisée vous-même ?",
             "unknown app: did you allow it yourself?"
         )
         .to_string(),
@@ -251,7 +251,7 @@ pub(super) fn relever(r: &mut super::Releve, ind: Option<&Indicateurs>) {
                 }
             }
             None => r.non_verifie(tr!(
-                "autorisations protégées par macOS : Réglages Système › Confidentialité et sécurité › Accès complet au disque, ajoute le Terminal",
+                "autorisations protégées par macOS : Réglages Système › Confidentialité et sécurité › Accès complet au disque, ajoutez le Terminal",
                 "permissions protected by macOS: System Settings › Privacy & Security › Full Disk Access, add Terminal"
             )),
         }

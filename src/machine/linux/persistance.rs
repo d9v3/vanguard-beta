@@ -415,7 +415,7 @@ pub(super) fn persistance() -> Vec<Constat> {
         }
         message.push('.');
         constats.push(alerte(CAT, niveau, message).avec_objet(objet_des_lancements(sources)).manuel(
-            tr!("Ne rien lancer : lire chaque ligne signalée et supprimer celles que tu n'as pas ajoutées, puis lancer l'antivirus", "Do not run anything: read each reported line and delete the ones you did not add, then run the antivirus"),
+            tr!("Ne rien lancer : lire chaque ligne signalée et supprimer celles que vous n'avez pas ajoutées, puis lancer l'antivirus", "Do not run anything: read each reported line and delete the ones you did not add, then run the antivirus"),
             &[],
         ));
     }
@@ -446,7 +446,7 @@ pub(super) fn persistance() -> Vec<Constat> {
                 .avec_objet(crate::modele::Objet::de("services", &maison.join(",")))
                 .manuel(
                     tr!(
-                        "Si tu n'en reconnais pas un, lis ce qu'il lance avant de le désactiver",
+                        "Si vous n'en reconnaissez pas un, lisez ce qu'il lance avant de le désactiver",
                         "If you do not recognize one, read what it starts before turning it off"
                     ),
                     &[&format!("systemctl cat {premier}")],
@@ -607,7 +607,7 @@ pub(super) fn fichiers_suspects() -> Vec<Constat> {
                 ),
             )
             .manuel(
-                tr!("Ne pas le lancer. Remettre l'original depuis les dépôts, puis lancer l'antivirus et changer tes mots de passe", "Do not run it. Restore the original from the repositories, then run the antivirus and change your passwords"),
+                tr!("Ne pas le lancer. Remettre l'original depuis les dépôts, puis lancer l'antivirus et changer vos mots de passe", "Do not run it. Restore the original from the repositories, then run the antivirus and change your passwords"),
                 &[&reinstaller],
             ),
         );

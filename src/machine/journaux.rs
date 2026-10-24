@@ -77,7 +77,7 @@ fn juger_effacements(effacements: &[(String, String)], aujourdhui: chrono::Naive
         CAT,
         if recent { Niveau::Moyen } else { Niveau::Info },
         trf!(
-            "Journal d'événements effacé le {date} ({detail}). Si ce n'est pas toi, quelqu'un a pu effacer ses traces.",
+            "Journal d'événements effacé le {date} ({detail}). Si ce n'est pas vous, quelqu'un a pu effacer ses traces.",
             "Event log cleared on {date} ({detail}). If it was not you, someone may have erased their tracks."
         ),
     )

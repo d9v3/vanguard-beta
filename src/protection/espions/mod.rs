@@ -5,8 +5,8 @@
 //! bloqué, car celui qui a posé le logiciel peut le voir disparaître ; l'écran le dit, avec qui appeler.
 //!
 //! Ce qui n'a pas pu être vérifié est dit et compté : le verdict n'est jamais « aucun logiciel espion », seulement
-//! « aucun signe parmi ce qui a été vérifié ». Un logiciel de prise de contrôle à distance est renvoyé à « Quelqu'un
-//! contrôle mon ordi ? ».
+//! « aucun signe parmi ce qui a été vérifié ». Un logiciel de prise de contrôle à distance est renvoyé à « Mon
+//! ordinateur est-il contrôlé ? ».
 
 #[cfg(any(target_os = "linux", test))]
 mod clavier;
@@ -109,12 +109,12 @@ pub(super) fn texte_genre(s: &connus::Surveillance) -> String {
             s.nom
         ),
         connus::Genre::Parental => trf!(
-            "{} : contrôle parental, normal s'il a été installé exprès (ordinateur d'un enfant) ; sinon, quelqu'un te surveille",
+            "{} : contrôle parental, normal s'il a été installé exprès (ordinateur d'un enfant) ; sinon, quelqu'un vous surveille",
             "{}: parental control, normal if installed on purpose (a child's computer); otherwise, someone is watching you",
             s.nom
         ),
         connus::Genre::Employeur => trf!(
-            "{} : surveillance des employés, normale sur un ordinateur de travail ; sinon, quelqu'un te surveille",
+            "{} : surveillance des employés, normale sur un ordinateur de travail ; sinon, quelqu'un vous surveille",
             "{}: employee monitoring, normal on a work computer; otherwise, someone is watching you",
             s.nom
         ),
@@ -388,7 +388,7 @@ fn relever_linux(r: &mut Releve, ind: Option<&Indicateurs>) {
     if clavier::dans_le_groupe_input(&group, &status) {
         r.notes.push(
             tr!(
-                "ton compte est dans le groupe « input » : tout programme lancé par ton compte peut lire le clavier sans droits",
+                "votre compte est dans le groupe « input » : tout programme lancé par votre compte peut lire le clavier sans droits",
                 "your account is in the “input” group: any program started by your account can read the keyboard without rights"
             )
             .to_string(),
@@ -630,8 +630,8 @@ fn ecran() -> Option<Niveau> {
         afficher_aligne(
             &format!("  {}ℹ{RESET} ", couleur(Niveau::Info)),
             &trf!(
-                "Logiciel de prise de contrôle à distance vu ({}) : regarde « Quelqu'un contrôle mon ordi ? ».",
-                "Remote control software seen ({}): see “Is someone controlling my PC?”.",
+                "Logiciel de prise de contrôle à distance vu ({}) : regardez « Mon ordinateur est-il contrôlé ? ».",
+                "Remote control software seen ({}): see “Is my computer being controlled?”.",
                 resume(&noms, 3, ", ")
             ),
             4,
@@ -655,7 +655,7 @@ fn ecran() -> Option<Niveau> {
         afficher_aligne(
             &format!("  {}! {RESET}", couleur(Niveau::Eleve)),
             tr!(
-                "Si quelqu'un de ton entourage a pu l'installer, le retirer peut l'alerter : garde des captures et demande de l'aide avant (Échap : https://echap.eu.org).",
+                "Si quelqu'un de votre entourage a pu l'installer, le retirer peut l'alerter : gardez des captures et demandez de l'aide avant (Échap : https://echap.eu.org).",
                 "If someone close to you may have installed it, removing it can alert them: keep screenshots and ask for help first (Échap: https://echap.eu.org)."
             ),
             4,

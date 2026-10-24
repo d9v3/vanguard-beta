@@ -628,7 +628,7 @@ fn choisir_disque() -> Option<crate::copier::Disque> {
     let liste = crate::copier::disques();
     if liste.is_empty() {
         mauvais(tr!(
-            "Aucune clé ni disque externe à vérifier (la clé VANGUARD et le disque du système ne comptent pas). Branche la clé, attends qu'elle apparaisse, puis recommence.",
+            "Aucune clé ni disque externe à vérifier (la clé VANGUARD et le disque du système ne comptent pas). Branchez la clé, attendez qu'elle apparaisse, puis recommencez.",
             "No USB stick or external disk to check (the VANGUARD key and the system disk do not count). Plug in the stick, wait for it to appear, then start again."
         ));
         return None;
@@ -760,7 +760,7 @@ pub fn commande(dossier: Option<&Path>) {
     afficher_aligne(
         "  ",
         tr!(
-            "Une fausse clé annonce 1 To et n'en a que 16 Go : elle accepte tout et rend n'importe quoi au-delà. Vanguard écrit dans l'espace libre un contenu qu'il saura reconnaître, relit tout en contournant la mémoire de l'ordinateur, mesure les vitesses, puis efface tout. Tes fichiers ne sont pas touchés.",
+            "Une fausse clé annonce 1 To et n'en a que 16 Go : elle accepte tout et rend n'importe quoi au-delà. Vanguard écrit dans l'espace libre un contenu qu'il saura reconnaître, relit tout en contournant la mémoire de l'ordinateur, mesure les vitesses, puis efface tout. Vos fichiers ne sont pas touchés.",
             "A fake drive claims 1 TB and has only 16 GB: it accepts everything and returns garbage beyond that. Vanguard writes recognizable content into the free space, reads it all back bypassing the computer's memory, measures the speeds, then erases everything. Your files are not touched."
         ),
         2,
@@ -802,7 +802,7 @@ pub fn commande(dossier: Option<&Path>) {
     let Some(mode) = choisir_mode(libre) else {
         if plan(libre, Mode::Complete, &Parametres::REELS).is_none() {
             mauvais(&trf!(
-                "Trop peu de place libre ({}) : libère de la place ou vide la clé, puis recommence.",
+                "Trop peu de place libre ({}) : libérez de la place ou videz la clé, puis recommencez.",
                 "Too little free space ({}): free up space or empty the drive, then start again.",
                 taille_lisible(libre)
             ));
@@ -889,7 +889,7 @@ pub fn commande(dossier: Option<&Path>) {
     section(tr!("RÉSULTAT", "RESULT"));
     match conclure(mode, plan.octets, occupe, total, &ecriture, &lecture) {
         Conclusion::Prouvee { verifie, occupe } => bon(&trf!(
-            "Capacité confirmée : {} écrits et relus sans une erreur ({} déjà occupés par tes fichiers, non vérifiés).",
+            "Capacité confirmée : {} écrits et relus sans une erreur ({} déjà occupés par vos fichiers, non vérifiés).",
             "Capacity confirmed: {} written and read back without a single error ({} already used by your files, not checked).",
             taille_lisible(verifie),
             taille_lisible(occupe)
@@ -910,12 +910,12 @@ pub fn commande(dossier: Option<&Path>) {
                 lecture.recouverts
             ));
             info(tr!(
-                "Garde la preuve (cet écran) pour le vendeur ou la plateforme ; n'y stocke rien d'important.",
+                "Gardez la preuve (cet écran) pour le vendeur ou la plateforme ; n'y stockez rien d'important.",
                 "Keep the proof (this screen) for the seller or the platform; store nothing important on it."
             ));
         }
         Conclusion::Defaillante { defauts, premier } => mauvais(&trf!(
-            "{defauts} bloc(s) faux ou illisibles (le premier vers {}) : la clé est en train de lâcher. Copie ce qu'elle contient ailleurs dès maintenant, puis ne lui confie plus rien.",
+            "{defauts} bloc(s) faux ou illisibles (le premier vers {}) : la clé est en train de lâcher. Copiez ce qu'elle contient ailleurs dès maintenant, puis ne lui confie plus rien.",
             "{defauts} wrong or unreadable block(s) (the first around {}): the drive is failing. Copy what it holds elsewhere right now, then trust it with nothing more.",
             taille_lisible(premier)
         )),
@@ -926,7 +926,7 @@ pub fn commande(dossier: Option<&Path>) {
             taille_lisible(prevu)
         )),
         Conclusion::Interrompue { verifie } => info(&trf!(
-            "Arrêté à ta demande : {} écrits, {} relus sans erreur. Rien n'est prouvé au-delà.",
+            "Arrêté à votre demande : {} écrits, {} relus sans erreur. Rien n'est prouvé au-delà.",
             "Stopped at your request: {} written, {} read back without error. Nothing is proven beyond that.",
             taille_lisible(ecriture.octets),
             taille_lisible(verifie)
@@ -960,7 +960,7 @@ pub fn commande(dossier: Option<&Path>) {
             "Everything Vanguard wrote is erased; the drive is as before."
         )),
         Err(e) => mauvais(&trf!(
-            "Le dossier de l'essai n'a pas pu être effacé ({e}) : supprime {} toi-même.",
+            "Le dossier de l'essai n'a pas pu être effacé ({e}) : supprimez {} vous-même.",
             "The check folder could not be erased ({e}): delete {} yourself.",
             chemin_affichable(&dossier)
         )),

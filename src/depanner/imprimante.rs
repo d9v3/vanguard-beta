@@ -191,13 +191,13 @@ pub(super) fn imprimante() {
     let mut conseils = Vec::new();
     if quoi == 2 {
         conseils.push(tr!(
-            "Erreur sur l'imprimante : son écran ou ses voyants disent laquelle. Bourrage : retire doucement la feuille dans le sens du papier, imprimante éteinte. Puis annule l'impression bloquée et relance-la.",
+            "Erreur sur l'imprimante : son écran ou ses voyants disent laquelle. Bourrage : retirez doucement la feuille dans le sens du papier, imprimante éteinte. Puis annulez l'impression bloquée et relancez-la.",
             "Error on the printer: its screen or lights say which one. Jam: gently pull the sheet out in the paper's direction, printer off. Then cancel the stuck job and print again."
         ));
     }
     if liaison == 1 {
         conseils.push(tr!(
-            "En Wi-Fi, l'imprimante doit être sur le même réseau que l'ordinateur. Si la box lui donne une autre adresse à chaque fois, la réserver dans la box (« bail fixe ») évite de la perdre.",
+            "En Wi-Fi, l'imprimante doit être sur le même réseau que l'ordinateur. Si le routeur lui donne une autre adresse à chaque fois, la réserver dans le routeur (« bail fixe ») évite de la perdre.",
             "On Wi-Fi, the printer must be on the same network as the computer. If the router gives it a different address every time, reserving one in the router (“static lease”) keeps it from getting lost."
         ));
     }
@@ -222,7 +222,7 @@ pub(super) fn imprimante() {
     }
     if liaison == 0 {
         conseils.push(tr!(
-            "En USB : essaie un autre port et un autre câble, imprimante allumée avant de le brancher.",
+            "En USB : essayez un autre port et un autre câble, imprimante allumée avant de le brancher.",
             "On USB: try another port and another cable, with the printer on before plugging it in."
         ));
     }

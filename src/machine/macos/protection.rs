@@ -134,7 +134,7 @@ fn juger_profils(profils: &[String], gere: bool) -> Constat {
     )
     .manuel(
         tr!(
-            "Si tu ne les reconnais pas : Réglages Système › Confidentialité et sécurité › Profils, puis les retirer",
+            "Si vous ne les reconnaissez pas : Réglages Système › Confidentialité et sécurité › Profils, puis les retirer",
             "If you do not recognize them: System Settings › Privacy & Security › Profiles, then remove them"
         ),
         &[],

@@ -148,18 +148,18 @@ fn filtrant(ip: IpAddr) -> Option<&'static str> {
 fn protection(a: &Actuel, passerelle: Option<IpAddr>) -> Option<String> {
     if let Some(nom) = a.resolveur_local {
         return Some(trf!(
-            "{nom} tourne sur cet ordinateur : il chiffre ou filtre tes requêtes.",
+            "{nom} tourne sur cet ordinateur : il chiffre ou filtre vos requêtes.",
             "{nom} runs on this computer: it encrypts or filters your queries."
         ));
     }
     if a.serveurs.iter().any(|(ip, _)| ip.is_loopback()) {
         return Some(String::from(tr!(
-            "un résolveur tourne sur cet ordinateur : il chiffre ou filtre sans doute tes requêtes.",
+            "un résolveur tourne sur cet ordinateur : il chiffre ou filtre sans doute vos requêtes.",
             "a resolver runs on this computer: it probably encrypts or filters your queries."
         )));
     }
     if a.chiffre == Some(true) {
-        return Some(tr!("tes requêtes DNS sont chiffrées.", "your DNS queries are encrypted.").to_string());
+        return Some(tr!("vos requêtes DNS sont chiffrées.", "your DNS queries are encrypted.").to_string());
     }
     if let Some(nom) = a.serveurs.iter().find_map(|(ip, _)| filtrant(*ip)) {
         return Some(trf!(
@@ -174,7 +174,7 @@ fn protection(a: &Actuel, passerelle: Option<IpAddr>) -> Option<String> {
         .iter()
         .find(|(ip, _)| ip.is_ipv4() && locale(*ip) && Some(*ip) != passerelle)?;
     Some(trf!(
-        "{ip} est un serveur DNS de ton réseau qui n'est pas la box (Pi-hole, AdGuard Home, VPN ?) : il filtre sans doute.",
+        "{ip} est un serveur DNS de votre réseau qui n'est pas le routeur (Pi-hole, AdGuard Home, VPN ?) : il filtre sans doute.",
         "{ip} is a DNS server on your network that is not the router (Pi-hole, AdGuard Home, VPN?): it probably filters."
     ))
 }
@@ -212,11 +212,11 @@ fn nom_actuel(ip: IpAddr, a: &Actuel, passerelle: Option<IpAddr>) -> &'static st
     } else if let Some(nom) = service_public(ip) {
         nom
     } else if Some(ip) == passerelle || (ip.is_ipv6() && locale(ip)) {
-        tr!("ta box", "your router")
+        tr!("votre routeur", "your router")
     } else if locale(ip) {
-        tr!("ton réseau", "your network")
+        tr!("votre réseau", "your network")
     } else {
-        tr!("ton fournisseur ?", "your provider?")
+        tr!("votre fournisseur ?", "your provider?")
     }
 }
 
@@ -269,7 +269,7 @@ fn precision(p: &Public, temps: Option<Duration>, plus_rapide: bool) -> String {
 pub fn mesurer_et_proposer() {
     titre(tr!("DNS le plus rapide", "Fastest DNS"));
     let intro = tr!(
-        "Chaque visite de site commence par une question au DNS. Vanguard mesure ici le DNS actuel et quatre DNS publics, en douze questions chacun. Un DNS qui te protège est gardé, même plus lent.",
+        "Chaque visite de site commence par une question au DNS. Vanguard mesure ici le DNS actuel et quatre DNS publics, en douze questions chacun. Un DNS qui vous protège est gardé, même plus lent.",
         "Every site visit starts with a question to the DNS. Vanguard measures the current DNS and four public ones here, twelve questions each. A DNS that protects you is kept, even if slower."
     );
     for ligne in envelopper(intro, LARGEUR - 2) {
@@ -390,7 +390,7 @@ pub fn mesurer_et_proposer() {
     let conclusion = match meilleur {
         _ if garde.is_some() => "",
         _ if inconnu => tr!(
-            "Ton DNS actuel a une adresse de lien local, que Vanguard ne sait pas mesurer : rien n'est comparé.",
+            "Votre DNS actuel a une adresse de lien local, que Vanguard ne sait pas mesurer : rien n'est comparé.",
             "Your current DNS has a link-local address, which Vanguard cannot measure: nothing is compared."
         ),
         None => tr!(
@@ -398,11 +398,11 @@ pub fn mesurer_et_proposer() {
             "Public DNS servers do not answer from here (UDP 53 blocked by the network?): nothing to compare."
         ),
         Some(_) if proposer => tr!(
-            "Un DNS public répond nettement plus vite : choisis-le, ou garde l'actuel.",
+            "Un DNS public répond nettement plus vite : choisissez-le, ou gardez l'actuel.",
             "A public DNS answers clearly faster: choose it, or keep the current one."
         ),
         Some(_) => tr!(
-            "Ton DNS actuel est déjà rapide : changer ne ferait presque rien gagner.",
+            "Votre DNS actuel est déjà rapide : changer ne ferait presque rien gagner.",
             "Your current DNS is already fast: switching would gain almost nothing."
         ),
     };
@@ -607,7 +607,7 @@ mod tests {
         assert!(protection(&actuel(&["10.0.0.53"], None, None), box_).is_some());
         assert_eq!(
             nom_actuel("10.0.0.1".parse().unwrap(), &actuel(&[], None, None), box_),
-            tr!("ta box", "your router")
+            tr!("votre routeur", "your router")
         );
     }
 

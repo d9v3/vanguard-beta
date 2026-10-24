@@ -131,7 +131,7 @@ fn juger(etat: &Etat, avant: Option<&Vus>, aujourd_hui: NaiveDate) -> (Vec<Const
                 CAT,
                 Niveau::Moyen,
                 trf!(
-                    "Appareil Bluetooth appairé depuis peu : « {nom} » ({}). Si ce n'est pas le tien (un clavier appairé par quelqu'un d'autre tape ce qu'il veut), retire-le.",
+                    "Appareil Bluetooth appairé depuis peu : « {nom} » ({}). Si ce n'est pas le vôtre (un clavier appairé par quelqu'un d'autre tape ce qu'il veut), retirez-le.",
                     "Bluetooth device paired recently: “{nom}” ({}). If it is not yours (a keyboard paired by someone else types whatever it wants), remove it.",
                     a.adresse
                 ),

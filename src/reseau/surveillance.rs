@@ -179,10 +179,19 @@ const CATEGORIES_SURVEILLEES: &[&str] = &[
 /// une faille activement exploitée (catalogue KEV de la CISA) ou critique pour la distribution.
 const FAILLES_CRITIQUES: &str = "Failles connues";
 
+/// La génération des textes des alertes suivies, notée dans chaque état (ici et dans l'entretien du mois) : à monter
+/// quand un message suivi change de formulation (1 : vouvoiement de la 0.87). Un état écrit sous une autre génération
+/// se compare une passe sans la formulation (`sans_formulation`) : la mise à jour ne fait pas passer pour nouveau ce
+/// qui était déjà là.
+pub(crate) const TEXTES: u32 = 1;
+
 /// État de la machine au dernier passage de la surveillance.
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct EtatMachine {
     score: Option<u32>,
+    /// `TEXTES` à l'écriture ; 0 dans l'état d'une version d'avant.
+    #[serde(default)]
+    textes: u32,
     /// Problèmes moyens ou plus graves des catégories surveillées, « catégorie : message ».
     alertes: Vec<String>,
     /// La clé de chaque alerte (`Constat::cle`), dans l'ordre de `alertes` ; `None` pour une règle qui ne pose pas
@@ -257,6 +266,7 @@ fn machine_surveillee(c: &crate::machine::Constat) -> bool {
 fn etat_machine(a: &crate::machine::Audit) -> EtatMachine {
     let mut etat = EtatMachine {
         score: a.fiable().then_some(a.score),
+        textes: TEXTES,
         ..EtatMachine::default()
     };
     for c in a.constats.iter().filter(|c| machine_surveillee(c)) {
@@ -271,11 +281,13 @@ fn etat_machine(a: &crate::machine::Audit) -> EtatMachine {
 }
 
 /// Deux alertes sont-elles la même ? Par leur clé quand les deux en ont une (une autre langue ne renotifie rien),
-/// sinon par leur texte sans ses nombres (`cle_alerte`), comme avant les clés.
-fn meme_alerte(a: (&str, Option<&str>), b: (&str, Option<&str>)) -> bool {
+/// sinon par leur texte sans ses nombres (`cle_alerte`), comme avant les clés ; face à un état d'une autre génération
+/// de textes, sans leur formulation, le temps d'une passe.
+fn meme_alerte(a: (&str, Option<&str>), b: (&str, Option<&str>), memes_textes: bool) -> bool {
     match (a.1, b.1) {
         (Some(x), Some(y)) => x == y,
-        _ => cle_alerte(a.0) == cle_alerte(b.0),
+        _ if memes_textes => cle_alerte(a.0) == cle_alerte(b.0),
+        _ => sans_formulation(a.0) == sans_formulation(b.0),
     }
 }
 
@@ -310,10 +322,9 @@ fn nouveautes_machine(avant: &EtatMachine, apres: &EtatMachine) -> Vec<(String, 
         .alertes_et_cles()
         .enumerate()
         .filter(|(i, a)| {
-            !avant
-                .alertes_et_cles()
-                .enumerate()
-                .any(|(j, b)| meme_alerte(*a, b) && !aggravee(apres.niveau(*i), avant.niveau(j)))
+            !avant.alertes_et_cles().enumerate().any(|(j, b)| {
+                meme_alerte(*a, b, avant.textes == TEXTES) && !aggravee(apres.niveau(*i), avant.niveau(j))
+            })
         })
         .map(|(_, a)| a.0)
         .collect();
@@ -329,7 +340,7 @@ fn nouveautes_machine(avant: &EtatMachine, apres: &EtatMachine) -> Vec<(String, 
         notes.push((
             tr!("Vanguard : autres problèmes", "Vanguard: other problems").to_string(),
             trf!(
-                "{} autre(s) problème(s) nouveau(x) : lance « vanguard machine ».",
+                "{} autre(s) problème(s) nouveau(x) : lancez « vanguard machine ».",
                 "{} other new problem(s): run “vanguard audit”.",
                 nouvelles.len() - 3
             ),
@@ -341,7 +352,7 @@ fn nouveautes_machine(avant: &EtatMachine, apres: &EtatMachine) -> Vec<(String, 
         notes.push((
             tr!("Vanguard : note en baisse", "Vanguard: grade dropping").to_string(),
             trf!(
-                "La note de cette machine passe de {a} à {b} : lance « vanguard machine » pour voir pourquoi.",
+                "La note de cet ordinateur passe de {a} à {b} : lancez « vanguard machine » pour voir pourquoi.",
                 "This machine's grade drops from {a} to {b}: run “vanguard audit” to see why."
             ),
         ));
@@ -385,6 +396,9 @@ fn veiller_machine() -> crate::machine::Audit {
 #[derive(serde::Serialize, serde::Deserialize, Default, Debug, PartialEq)]
 struct EtatAudit {
     redirections: Option<Vec<String>>,
+    /// `TEXTES` à l'écriture ; 0 dans l'état d'une version d'avant.
+    #[serde(default)]
+    textes: u32,
     /// « règle|catégorie : message », les nombres neutralisés sauf pour le DNS du bail, dont l'adresse compte.
     constats: Vec<String>,
 }
@@ -395,6 +409,7 @@ struct EtatAudit {
 fn audit_d_avant(lu: crate::sceau::Lecture) -> Option<EtatAudit> {
     use crate::sceau::Lecture;
     let vide = EtatAudit {
+        textes: TEXTES,
         redirections: Some(Vec::new()),
         constats: Vec::new(),
     };
@@ -445,8 +460,36 @@ fn cle_constat(c: &Constat) -> String {
     format!("{}|{texte}", c.regle)
 }
 
+/// Une alerte « catégorie : message » sans sa formulation, pour la comparer à un état d'une autre génération de
+/// textes : sa catégorie, et ce qui désigne son objet quelle que soit la phrase (adresses IP et MAC, CVE, ports
+/// « 8080/tcp »). Une alerte nouvelle sur un autre objet reste nouvelle ; seul un même objet redit autrement se tait.
+pub(crate) fn sans_formulation(alerte: &str) -> String {
+    let (categorie, message) = alerte.split_once(" : ").unwrap_or((alerte, ""));
+    let objet = |m: &&str| {
+        m.parse::<std::net::IpAddr>().is_ok()
+            || m.len() == 17 && m.chars().all(|c| c.is_ascii_hexdigit() || matches!(c, ':' | '-'))
+            || m.starts_with("CVE-")
+            || m.split_once('/').is_some_and(|(n, p)| {
+                !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) && matches!(p, "tcp" | "udp")
+            })
+    };
+    let objets: Vec<&str> = message
+        .split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '(' | ')' | '«' | '»'))
+        .map(|m| m.trim_end_matches(['.', ':']))
+        .filter(objet)
+        .collect();
+    format!("{categorie}|{}", objets.join(" "))
+}
+
+/// Une clé de `cle_constat` (« règle|catégorie : message ») sans sa formulation : la règle et l'objet du message.
+fn sans_texte(cle: &str) -> String {
+    let (regle, texte) = cle.split_once('|').unwrap_or((cle, ""));
+    format!("{regle}|{}", sans_formulation(texte))
+}
+
 fn etat_audit(r: &reseau::Rapport, a: &crate::audit::AuditReseau) -> EtatAudit {
     EtatAudit {
+        textes: TEXTES,
         redirections: crate::audit::redirections_du_scan(r).map(|l| l.iter().map(cle_redirection).collect()),
         constats: a
             .domaines
@@ -462,7 +505,7 @@ fn etat_audit(r: &reseau::Rapport, a: &crate::audit::AuditReseau) -> EtatAudit {
 fn titre_alerte(regle: &str) -> String {
     match regle {
         "COM-DNS-002" => tr!(
-            "Vanguard : le DNS distribué par la box a changé",
+            "Vanguard : le DNS distribué par le routeur a changé",
             "Vanguard: the DNS handed out by the router changed"
         ),
         "COM-DNS-004" => tr!("Vanguard : réponses DNS détournées", "Vanguard: DNS answers hijacked"),
@@ -496,12 +539,12 @@ fn nouveautes_audit(
             };
             alertes.push((
                 tr!(
-                    "Vanguard : la box ouvre un port vers Internet",
+                    "Vanguard : le routeur ouvre un port vers Internet",
                     "Vanguard: the router opens a port to the Internet"
                 )
                 .to_string(),
                 trf!(
-                    "Nouvelle redirection : port {}/{} d'Internet vers {}:{} ({}){description}. Un appareil l'a demandée à la box (UPnP) : si ce n'est pas voulu, retire-la et coupe UPnP dans la box.",
+                    "Nouvelle redirection : port {}/{} d'Internet vers {}:{} ({}){description}. Un appareil l'a demandée au routeur (UPnP) : si ce n'est pas voulu, retirez-la et coupez UPnP dans le routeur.",
                     "New forwarding: Internet port {}/{} to {}:{} ({}){description}. A device asked the router for it (UPnP): if it is not wanted, remove it and turn UPnP off in the router.",
                     r.port_public,
                     r.protocole.to_lowercase(),
@@ -513,9 +556,16 @@ fn nouveautes_audit(
             ));
         }
     }
+    let deja = |cle: &str| {
+        if avant.textes == TEXTES {
+            avant.constats.iter().any(|a| a == cle)
+        } else {
+            avant.constats.iter().any(|a| sans_texte(a) == sans_texte(cle))
+        }
+    };
     for c in constats.iter().filter(|c| surveille(c)) {
         let cle = cle_constat(c);
-        if apres.constats.contains(&cle) && !avant.constats.contains(&cle) {
+        if apres.constats.contains(&cle) && !deja(&cle) {
             let Some(genre) = genre_de(c.regle) else { continue };
             alertes.push((titre_alerte(c.regle), c.message.clone(), genre));
         }
@@ -582,7 +632,7 @@ fn veiller_passerelle(r: &reseau::Rapport) {
     if let Some((boite, mac, autre)) = reseau::usurpation_arp(r) {
         alerter(
             Genre::Passerelle,
-            tr!("Vanguard : box usurpée ?", "Vanguard: router impersonated?"),
+            tr!("Vanguard : routeur usurpé ?", "Vanguard: router impersonated?"),
             &reseau::message_usurpation(boite, &mac, autre),
         );
         return;
@@ -593,11 +643,11 @@ fn veiller_passerelle(r: &reseau::Rapport) {
         alerter(
             Genre::Passerelle,
             tr!(
-                "Vanguard : la box a changé d'adresse MAC",
+                "Vanguard : le routeur a changé d'adresse MAC",
                 "Vanguard: the router's MAC address changed"
             ),
             &trf!(
-                "La box {} répondait avec {ancienne}, elle répond maintenant avec {nouvelle}. Normal si tu viens de changer de box ; sinon, quelqu'un se fait peut-être passer pour elle (usurpation ARP).",
+                "Le routeur {} répondait avec {ancienne}, il répond maintenant avec {nouvelle}. Normal si vous venez de changer de routeur ; sinon, quelqu'un se fait peut-être passer pour lui (usurpation ARP).",
                 "The router {} answered with {ancienne}, it now answers with {nouvelle}. Normal if you just replaced it; otherwise someone may be impersonating it (ARP spoofing).",
                 apres.ip
             ),
@@ -727,7 +777,7 @@ async fn passe() {
                     "Vanguard: name poisoner on the network"
                 ),
                 &trf!(
-                    "{} répond à des noms qui n'existent pas : un outil comme Responder vole les mots de passe Windows. Débranche-le.",
+                    "{} répond à des noms qui n'existent pas : un outil comme Responder vole les mots de passe Windows. Débranchez-le.",
                     "{} answers names that do not exist: a tool like Responder steals Windows passwords. Unplug it.",
                     titre.map_or_else(|| e.ip.to_string(), |t| format!("{} ({t})", e.ip))
                 ),
@@ -748,7 +798,7 @@ async fn passe() {
         alerter_cle(
             Genre::Appareil,
             &cle,
-            tr!("Nouvel appareil sur ton réseau", "New device on your network"),
+            tr!("Nouvel appareil sur votre réseau", "New device on your network"),
             &format!("{} — {qui} {}", h.ip, h.mac.as_deref().unwrap_or("")),
         );
     }
@@ -833,13 +883,13 @@ fn juger_disparition(voulue: bool, installee: bool) -> Option<crate::machine::Co
             "Surveillance",
             Niveau::Eleve,
             tr!(
-                "La surveillance horaire que tu avais activée n'existe plus : sa minuterie ou sa tâche planifiée a été retirée ou désactivée. Une mise à jour du système peut l'avoir fait ; un logiciel malveillant aussi, qui coupe d'abord ce qui le surveille.",
+                "La surveillance horaire que vous aviez activée n'existe plus : sa minuterie ou sa tâche planifiée a été retirée ou désactivée. Une mise à jour du système peut l'avoir fait ; un logiciel malveillant aussi, qui coupe d'abord ce qui le surveille.",
                 "The hourly monitoring you had turned on no longer exists: its timer or scheduled task was removed or disabled. A system update may have done it; so may malware, which first cuts what watches it."
             ),
         )
         .manuel(
             tr!(
-                "La remettre : menu « Réseau et Internet » › Surveillance, ou « vanguard surveillance on » ; si c'est toi qui l'as coupée, « vanguard surveillance off » pour que Vanguard l'oublie",
+                "La remettre : menu « Réseau et Internet » › Surveillance, ou « vanguard surveillance on » ; si c'est vous qui l'avez coupée, « vanguard surveillance off » pour que Vanguard l'oublie",
                 "Turn it back on: menu “Network and Internet” › Monitoring, or “vanguard monitor on”; if you turned it off yourself, “vanguard monitor off” so Vanguard forgets it"
             ),
             &[],
@@ -1095,7 +1145,7 @@ pub(crate) fn juger_tache(
             )
             .manuel(
                 tr!(
-                    "La remettre : « vanguard surveillance on » (Vanguard est recopié sur cet ordinateur et la tâche refaite) ; si tu n'en veux plus, « vanguard surveillance off »",
+                    "La remettre : « vanguard surveillance on » (Vanguard est recopié sur cet ordinateur et la tâche refaite) ; si vous n'en voulez plus, « vanguard surveillance off »",
                     "Turn it back on: “vanguard monitor on” (Vanguard is copied onto this computer again and the task redone); if you no longer want it, “vanguard monitor off”"
                 ),
                 &[],
@@ -1110,7 +1160,7 @@ pub(crate) fn juger_tache(
             )
             .manuel(
                 tr!(
-                    "Le remettre : « vanguard entretien on » ; si tu n'en veux plus, « vanguard entretien off »",
+                    "Le remettre : « vanguard entretien on » ; si vous n'en voulez plus, « vanguard entretien off »",
                     "Turn it back on: “vanguard maintenance on”; if you no longer want it, “vanguard maintenance off”"
                 ),
                 &[],
@@ -1156,7 +1206,7 @@ pub(crate) fn juger_tache(
     Some(
         crate::machine::alerte("Surveillance", Niveau::Info, message).manuel(
             tr!(
-                "La mettre à jour, si tu veux : « vanguard surveillance on » refait la tâche avec ces réglages ; rien d'autre ne change",
+                "La mettre à jour, si vous voulez : « vanguard surveillance on » refait la tâche avec ces réglages ; rien d'autre ne change",
                 "Update it if you want: “vanguard monitor on” redoes the task with these settings; nothing else changes"
             ),
             &[],
@@ -2290,6 +2340,7 @@ mod tests {
     fn etat(score: u32, alertes: &[&str]) -> EtatMachine {
         EtatMachine {
             score: Some(score),
+            textes: TEXTES,
             alertes: alertes.iter().map(ToString::to_string).collect(),
             cles: Vec::new(),
             niveaux: Vec::new(),
@@ -2441,6 +2492,7 @@ mod tests {
             active: true,
         };
         let apres = EtatAudit {
+            textes: TEXTES,
             redirections: Some(vec![cle_redirection(&r)]),
             constats: Vec::new(),
         };
@@ -2527,7 +2579,7 @@ mod tests {
         let dns = constat(
             "COM-DNS-002",
             Niveau::Info,
-            "La box distribue le DNS 203.0.113.9 à tous tes appareils.",
+            "Le routeur distribue le DNS 203.0.113.9 à tous vos appareils.",
         );
         let ipv6 = constat(
             "COM-EXP-003",
@@ -2541,6 +2593,7 @@ mod tests {
         non_verifie.verifie = false;
         let constats = [&tkip, &dns, &ipv6, &hors, &info, &non_verifie];
         let avant = EtatAudit {
+            textes: TEXTES,
             redirections: Some(vec![cle_redirection(&redirections[0])]),
             constats: vec![
                 cle_constat(&constat(
@@ -2551,11 +2604,12 @@ mod tests {
                 cle_constat(&constat(
                     "COM-DNS-002",
                     Niveau::Info,
-                    "La box distribue le DNS 10.0.0.1 à tous tes appareils.",
+                    "Le routeur distribue le DNS 10.0.0.1 à tous vos appareils.",
                 )),
             ],
         };
         let apres = EtatAudit {
+            textes: TEXTES,
             redirections: Some(redirections.iter().map(cle_redirection).collect()),
             constats: constats
                 .iter()
@@ -2598,5 +2652,70 @@ mod tests {
         let c = juger_disparition(true, false).expect("constat");
         assert_eq!(c.probleme, Some(Niveau::Eleve));
         assert!(!c.correctif.as_ref().unwrap().automatique);
+    }
+
+    /// Un état de la 0.86 (textes au tutoiement, « box ») face aux textes d'aujourd'hui : rien de nouveau, sauf un
+    /// DNS du bail qui a vraiment changé d'adresse. Ensuite, la comparaison reprend par le texte.
+    #[test]
+    fn etat_d_autres_textes_compare_sans_les_textes() {
+        let constat = |regle: &'static str, niveau: Niveau, message: &str| {
+            let mut c = crate::machine::alerte("Wi-Fi", niveau, message);
+            c.regle = regle;
+            c
+        };
+        let wps = constat("COM-WIF-004", Niveau::Moyen, "Le WPS de votre routeur est actif.");
+        let dns = |ip: &str| {
+            constat(
+                "COM-DNS-002",
+                Niveau::Info,
+                &format!("Le routeur distribue le DNS {ip} à tous vos appareils."),
+            )
+        };
+        let avant: EtatAudit = serde_json::from_str(
+            r#"{"redirections":[],"constats":["COM-WIF-004|Wi-Fi : Le WPS de ta box est actif.","COM-DNS-002|Wi-Fi : La box distribue le DNS 10.0.0.1 à tous tes appareils."]}"#,
+        )
+        .unwrap();
+        assert_eq!(avant.textes, 0);
+        let meme = dns("10.0.0.1");
+        let constats = [&wps, &meme];
+        let apres = EtatAudit {
+            textes: TEXTES,
+            redirections: Some(Vec::new()),
+            constats: constats.iter().map(|c| cle_constat(c)).collect(),
+        };
+        assert_eq!(nouveautes_audit(&avant, &apres, &[], &constats), Vec::new());
+        let detourne = dns("203.0.113.9");
+        let constats = [&wps, &detourne];
+        let apres = EtatAudit {
+            constats: constats.iter().map(|c| cle_constat(c)).collect(),
+            ..apres
+        };
+        let alertes = nouveautes_audit(&avant, &apres, &[], &constats);
+        assert!(
+            alertes.len() == 1 && alertes[0].1.contains("203.0.113.9"),
+            "{alertes:?}"
+        );
+        // Même génération : le texte compte de nouveau.
+        let autre = constat(
+            "COM-WIF-004",
+            Niveau::Moyen,
+            "Le WPS de votre routeur « Bureau » est actif.",
+        );
+        let constats = [&autre, &detourne];
+        let suivant = EtatAudit {
+            constats: constats.iter().map(|c| cle_constat(c)).collect(),
+            ..EtatAudit::default()
+        };
+        assert_eq!(nouveautes_audit(&apres, &suivant, &[], &constats).len(), 1);
+
+        // Côté machine : une alerte sans clé, reformulée, ne renotifie pas face à un état d'avant.
+        let mut ancien = etat(80, &["Mots de passe : Ton gestionnaire n'est pas verrouillé."]);
+        ancien.textes = 0;
+        let nouveau = etat(80, &["Mots de passe : Votre gestionnaire n'est pas verrouillé."]);
+        assert_eq!(nouveautes_machine(&ancien, &nouveau), Vec::new());
+        assert_eq!(
+            nouveautes_machine(&etat(80, &["Mots de passe : Autre."]), &nouveau).len(),
+            1
+        );
     }
 }

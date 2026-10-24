@@ -189,7 +189,7 @@ fn juger_dlls(sujet: (&str, &str), entrees: &[(String, String)], installe: Nivea
         CAT,
         niveau,
         trf!(
-            "{fr} : DLL chargée par Windows hors du dossier système : {liste}. Si le logiciel ne te dit rien, c'est une façon pour un malware de se faire lancer par Windows lui-même.",
+            "{fr} : DLL chargée par Windows hors du dossier système : {liste}. Si le logiciel ne vous dit rien, c'est une façon pour un malware de se faire lancer par Windows lui-même.",
             "{en}: DLL loaded by Windows outside the system folder: {liste}. If you don't know the software, it is a way for malware to get started by Windows itself."
         ),
     )
@@ -251,7 +251,7 @@ fn juger_lsa(lues: &[(&str, Vec<String>)], illisibles: &[&str]) -> Constat {
     }
     let liste = couper(&affichable(&inconnus.join(", ")), 200);
     let mut message = trf!(
-        "LSA, le gardien des mots de passe de Windows, charge un paquet que Vanguard ne connaît pas : {liste}. Un filtre de mot de passe (Notification Packages) reçoit chaque nouveau mot de passe en clair. S'il ne vient pas d'un logiciel que tu as installé (gestionnaire de mots de passe d'entreprise, par exemple), c'est un vol de mots de passe.",
+        "LSA, le gardien des mots de passe de Windows, charge un paquet que Vanguard ne connaît pas : {liste}. Un filtre de mot de passe (Notification Packages) reçoit chaque nouveau mot de passe en clair. S'il ne vient pas d'un logiciel que vous avez installé (gestionnaire de mots de passe d'entreprise, par exemple), c'est un vol de mots de passe.",
         "LSA, Windows' password keeper, loads a package Vanguard does not know: {liste}. A password filter (Notification Packages) receives every new password in clear text. If it does not come from software you installed (a company password manager, for example), it is password theft."
     );
     if !illisibles.is_empty() {

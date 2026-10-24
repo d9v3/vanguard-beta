@@ -325,7 +325,7 @@ fn lent() {
     let mut conseils = Vec::new();
     if depuis == 2 {
         conseils.push(tr!(
-            "Par moments : lance la mesure (outil « Pourquoi c'est lent ? », menu Cette machine) au moment où c'est lent, elle dira qui travaille à ce moment-là.",
+            "Par moments : lancez la mesure (outil « Pourquoi c'est lent ? », menu Cette machine) au moment où c'est lent, elle dira qui travaille à ce moment-là.",
             "At times: run the measurement (“Why is it slow?” tool, This machine menu) when it is slow: it will say what is working at that moment."
         ));
     }
@@ -343,7 +343,7 @@ fn lent() {
     }
     if quoi == 3 {
         conseils.push(tr!(
-            "Le démarrage : regarde la ligne « Retardé par » et les programmes lancés à l'ouverture ; chacun en moins fait gagner quelques secondes.",
+            "Le démarrage : regardez la ligne « Retardé par » et les programmes lancés à l'ouverture ; chacun en moins fait gagner quelques secondes.",
             "Startup: look at the “Delayed by” line and the programs started at login; each one removed saves a few seconds."
         ));
     }
@@ -368,7 +368,7 @@ fn disque_plein() {
     };
     let Some(a_garder) = question(
         tr!(
-            "As-tu des photos, des vidéos ou de la musique à garder ailleurs, sur un disque externe ?",
+            "Avez-vous des photos, des vidéos ou de la musique à garder ailleurs, sur un disque externe ?",
             "Do you have photos, videos or music to keep elsewhere, on an external disk?"
         ),
         &[tr!("Oui", "Yes"), tr!("Non", "No")],
@@ -416,7 +416,7 @@ fn disque_plein() {
     }
     if a_garder == 0 {
         conseil(tr!(
-            "D'abord une copie vérifiée sur un disque externe (Copier mes fichiers). Ensuite seulement, supprime toi-même les originaux dont tu n'as plus besoin ici : Vanguard ne supprime jamais tes fichiers.",
+            "D'abord une copie vérifiée sur un disque externe (Copier mes fichiers). Ensuite seulement, supprimez vous-même les originaux dont vous n'avez plus besoin ici : Vanguard ne supprime jamais vos fichiers.",
             "First a checked copy on an external disk (Copy my files). Only then, delete the originals you no longer need here yourself: Vanguard never deletes your files."
         ));
         proposer_outil(
@@ -614,7 +614,7 @@ pub fn menu() {
         lignes.extend(
             envelopper(
                 tr!(
-                    "Choisis ce qui ne va pas : deux ou trois questions, puis Vanguard vérifie lui-même et propose la bonne réparation. Rien n'est changé sans ton accord.",
+                    "Choisissez ce qui ne va pas : deux ou trois questions, puis Vanguard vérifie lui-même et propose la bonne réparation. Rien n'est changé sans votre accord.",
                     "Choose what is wrong: two or three questions, then Vanguard checks by itself and suggests the right repair. Nothing changes without your consent."
                 ),
                 LARGEUR - 2,

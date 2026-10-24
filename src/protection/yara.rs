@@ -340,7 +340,7 @@ pub fn analyser(portee: &Portee) {
     println!();
     for ligne in envelopper(
         tr!(
-            "Ne les ouvre pas. Fais-les aussi analyser par l'antivirus (même menu). Une règle peut se tromper sur un fichier légitime : la quarantaine se défait, et en cas de doute, envoie-le à VirusTotal.",
+            "Ne les ouvrez pas. Faites-les aussi analyser par l'antivirus (même menu). Une règle peut se tromper sur un fichier légitime : la quarantaine se défait, et en cas de doute, envoyez-le à VirusTotal.",
             "Do not open them. Have the antivirus scan them too (same menu). A rule can be wrong about a legitimate file: the quarantine can be undone, and when in doubt, upload it to VirusTotal."
         ),
         LARGEUR - 2,

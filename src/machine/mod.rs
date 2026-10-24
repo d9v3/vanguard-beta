@@ -566,7 +566,7 @@ fn cles_ssh() -> Vec<Constat> {
                 ),
             )
             .corriger(
-                tr!("Restreindre ~/.ssh à toi seul", "Restrict ~/.ssh to you only"),
+                tr!("Restreindre ~/.ssh à vous seul", "Restrict ~/.ssh to you only"),
                 &["chmod 700 ~/.ssh"],
             )
             .annulable(vec![crate::optimiser::Geste::droits(&dossier)]),
@@ -783,7 +783,7 @@ fn constats_config_ssh(lignes: &[(String, usize, String)]) -> Vec<Constat> {
             } else {
                 (
                     trf!(
-                        "{fichier}, ligne {ligne} : ton agent SSH est prêté à tous les serveurs ; un serveur piraté peut s'en servir pour se connecter ailleurs avec tes clés.",
+                        "{fichier}, ligne {ligne} : votre agent SSH est prêté à tous les serveurs ; un serveur piraté peut s'en servir pour se connecter ailleurs avec vos clés.",
                         "{fichier}, line {ligne}: your SSH agent is lent to every server; a hacked server can use it to log in elsewhere with your keys."
                     ),
                     tr!(
@@ -986,7 +986,7 @@ fn lancer_chacune(correctifs: &[Vec<String>]) -> (Vec<bool>, Vec<Vec<String>>) {
             }
         }
         trp!(
-            "    {GRIS}Une fenêtre administrateur s'ouvre et montre chaque étape ; attends qu'elle se ferme.{RESET}",
+            "    {GRIS}Une fenêtre administrateur s'ouvre et montre chaque étape ; attendez qu'elle se ferme.{RESET}",
             "    {GRIS}An administrator window opens and shows each step; wait for it to close.{RESET}"
         );
         (windows::powershell_admin_chacune(correctifs), correctifs.to_vec())

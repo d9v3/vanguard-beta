@@ -218,10 +218,11 @@ dependances() {
 # cargo-audit, et sans Internet : une base qui n'est plus à jour dirait vert à tort.
 failles_connues() { bash outils/failles-programmes.sh --depot; }
 
-# Les textes affichés comparés à master (outils/textes.py) : un texte perdu ou nouveau se voit avant le commit. Sur
-# master, rien à comparer ; sans master (clone partiel de la CI), sautée.
+# Les textes affichés comparés à master (outils/textes.py) : un texte perdu ou nouveau se voit avant le commit, un
+# tutoiement fait échouer. Sur master, le vouvoiement seul ; sans master (clone partiel de la CI), la comparaison
+# est sautée, pas le vouvoiement.
 textes() {
-  [[ $(git rev-parse HEAD) == $(git rev-parse master 2>/dev/null) ]] && { echo "sur master"; return 0; }
+  [[ $(git rev-parse HEAD) == $(git rev-parse master 2>/dev/null) ]] && { python3 outils/textes.py --vouvoiement; return; }
   python3 outils/textes.py
 }
 

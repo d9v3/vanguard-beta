@@ -179,7 +179,7 @@ fn etat_court_de(lu: Result<Parametres, crate::modele::Echec>, coupee: bool) -> 
         Ok(p) if p.actif() && coupee => tr!("en pause (temps réel coupé)", "paused (real-time off)"),
         Ok(p) if p.actif() => tr!("protection active", "active protection"),
         Ok(p) if p.rien() => tr!("désactivé", "off"),
-        Ok(_) => tr!("un clic, avec ton accord", "one click, with your consent"),
+        Ok(_) => tr!("un clic, avec votre accord", "one click, with your consent"),
         Err(_) => tr!("réglages illisibles", "settings unreadable"),
     }
 }
@@ -252,7 +252,7 @@ fn afficher_etat(p: &Parametres) {
             }
         ),
         _ => trp!(
-            "  Protection active : non. Rien n'est bloqué sans ton clic.",
+            "  Protection active : non. Rien n'est bloqué sans votre clic.",
             "  Active protection: no. Nothing is blocked without your click."
         ),
     }
@@ -267,7 +267,7 @@ fn demander_accord() -> bool {
     titre(tr!("Protection active", "Active protection"));
     for t in [
         tr!(
-            "La protection active bloque toute seule, sans te demander, seulement ce qui est certain :",
+            "La protection active bloque toute seule, sans vous demander, seulement ce qui est certain :",
             "Active protection blocks by itself, without asking you, only what is certain:"
         ),
         tr!(
@@ -279,7 +279,7 @@ fn demander_accord() -> bool {
             "• a connection to a known botnet command server (Feodo Tracker, ThreatFox): blocked by the firewall."
         ),
         tr!(
-            "Chaque blocage te prévient (notification, tableau de bord), est noté dans « Ce que Vanguard a changé » et s'annule par « vanguard blocage annuler ». Jamais Vanguard, un processus critique, un programme du système ni une connexion à distance en cours. Le douteux reste une alerte avec son bouton. Elle tourne au bilan et dans la surveillance horaire ; sans les droits d'administrateur, ce qui les demande n'est pas fait, et c'est dit. En administrateur, rien n'est bloqué tout seul : le certain s'y propose d'un clic.",
+            "Chaque blocage vous prévient (notification, tableau de bord), est noté dans « Ce que Vanguard a changé » et s'annule par « vanguard blocage annuler ». Jamais Vanguard, un processus critique, un programme du système ni une connexion à distance en cours. Le douteux reste une alerte avec son bouton. Elle tourne au bilan et dans la surveillance horaire ; sans les droits d'administrateur, ce qui les demande n'est pas fait, et c'est dit. En administrateur, rien n'est bloqué tout seul : le certain s'y propose d'un clic.",
             "Each block warns you (notification, dashboard), is written in “What Vanguard changed” and is undone with “vanguard blocking undo”. Never Vanguard, a critical process, a system program or a remote connection in progress. What is doubtful stays an alert with its button. It runs at the check-up and in the hourly monitoring; without administrator rights, what needs them is not done, and you are told. As administrator, nothing is blocked by itself: what is certain is offered with one click there."
         ),
     ] {
@@ -363,7 +363,7 @@ pub fn menu() {
                 )
             } else {
                 trf!(
-                    "  {GRIS}Rien n'est bloqué sans ton clic. Une catégorie se règle :{RESET}",
+                    "  {GRIS}Rien n'est bloqué sans votre clic. Une catégorie se règle :{RESET}",
                     "  {GRIS}Nothing is blocked without your click. Set a category:{RESET}"
                 )
             }),
@@ -509,7 +509,7 @@ fn chercher_et_proposer() {
     let categories = categories_actives(&p);
     if categories.is_empty() {
         trp!(
-            "  Tout est désactivé : rien n'est cherché. Règle une catégorie sur « un clic ».",
+            "  Tout est désactivé : rien n'est cherché. Réglez une catégorie sur « un clic ».",
             "  Everything is off: nothing is looked for. Set a category to “one click”."
         );
         return;
@@ -767,7 +767,7 @@ fn proposer(menaces: Vec<Menace>, ctx: &Contexte) {
         let mut lignes = vec![
             Ligne::Texte(String::new()),
             Ligne::Texte(trf!(
-                "  {GRIS}Choisis une menace : son geste est montré avant d'être fait.{RESET}",
+                "  {GRIS}Choisissez une menace : son geste est montré avant d'être fait.{RESET}",
                 "  {GRIS}Pick a threat: its action is shown before it is done.{RESET}"
             )),
         ];

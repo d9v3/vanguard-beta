@@ -84,7 +84,7 @@ pub(super) fn etapes(origine: Origine, fichiers_a_ramener: bool, chiffre: Option
         titre: tr!("Chiffrement du disque", "Disk encryption"),
         pourquoi: match chiffre {
             Some(true) => tr!(
-                "Déjà chiffré : garde la clé de récupération (compte Microsoft, iCloud, ou imprimée) hors de l'ordinateur ; sans elle, un disque chiffré qui ne démarre plus est perdu.",
+                "Déjà chiffré : gardez la clé de récupération (compte Microsoft, iCloud, ou imprimée) hors de l'ordinateur ; sans elle, un disque chiffré qui ne démarre plus est perdu.",
                 "Already encrypted: keep the recovery key (Microsoft account, iCloud, or printed) away from the computer; without it, an encrypted disk that no longer boots is lost."
             ),
             Some(false) => tr!(
@@ -92,7 +92,7 @@ pub(super) fn etapes(origine: Origine, fichiers_a_ramener: bool, chiffre: Option
                 "Not encrypted: a lost or stolen computer hands over all its files to whoever plugs it elsewhere. Turn it on now, while there is almost nothing on it (it is quick): the steps are in the check above."
             ),
             None => tr!(
-                "Vanguard n'a pas pu lire l'état du chiffrement : vérifie-le toi-même (BitLocker, FileVault ou LUKS). Un ordinateur perdu ou volé non chiffré livre tous ses fichiers.",
+                "Vanguard n'a pas pu lire l'état du chiffrement : vérifiez-le vous-même (BitLocker, FileVault ou LUKS). Un ordinateur perdu ou volé non chiffré livre tous ses fichiers.",
                 "Vanguard could not read the encryption state: check it yourself (BitLocker, FileVault or LUKS). A lost or stolen unencrypted computer hands over all its files."
             ),
         },
@@ -102,7 +102,7 @@ pub(super) fn etapes(origine: Origine, fichiers_a_ramener: bool, chiffre: Option
         titre: tr!("Sauvegardes", "Backups"),
         pourquoi: if fichiers_a_ramener {
             tr!(
-                "Ramène tes fichiers depuis le disque de l'ancien ordinateur ou la copie faite avec Copier mes fichiers, dans Documents, Images, Vidéos… Puis une sauvegarde automatique vers un autre disque ou en ligne : un disque qui lâche, un vol ou un rançongiciel emportent tout ce qui n'existe qu'ici.",
+                "Ramenez vos fichiers depuis le disque de l'ancien ordinateur ou la copie faite avec Copier mes fichiers, dans Documents, Images, Vidéos… Puis une sauvegarde automatique vers un autre disque ou en ligne : un disque qui lâche, un vol ou un rançongiciel emportent tout ce qui n'existe qu'ici.",
                 "Bring your files back from the old computer's disk or the copy made with Copy my files, into Documents, Pictures, Videos… Then an automatic backup to another disk or online: a failing disk, a theft or ransomware takes everything that exists only here."
             )
         } else {
@@ -134,7 +134,7 @@ pub(super) fn etapes(origine: Origine, fichiers_a_ramener: bool, chiffre: Option
         e.push(Etape {
             titre: tr!("Confidentialité", "Privacy"),
             pourquoi: tr!(
-                "Les réglages d'usine envoient télémétrie, publicité ciblée et suggestions : chaque réglage est montré, s'applique si tu le coches et s'annule exactement.",
+                "Les réglages d'usine envoient télémétrie, publicité ciblée et suggestions : chaque réglage est montré, s'applique si vous le cochez et s'annule exactement.",
                 "Factory settings send telemetry, targeted ads and suggestions: each setting is shown, applies if you check it and is undone exactly."
             ),
             outil: Some((
@@ -184,7 +184,7 @@ pub(super) fn nouveau() {
     let origine = Origine::depuis(origine);
     let Some(fichiers) = question(
         tr!(
-            "As-tu des fichiers à ramener d'un ancien ordinateur ?",
+            "Avez-vous des fichiers à ramener d'un ancien ordinateur ?",
             "Do you have files to bring back from an old computer?"
         ),
         &[tr!("Oui", "Yes"), tr!("Non", "No")],
@@ -204,17 +204,17 @@ pub(super) fn nouveau() {
     }
     a_savoir(&[
         tr!(
-            "Pour finir, le bilan complet (menu principal) note la machine, et la surveillance du réseau (menu Réseau) prévient quand un appareil inconnu arrive.",
+            "Pour finir, le bilan complet (menu principal) note l'ordinateur, et la surveillance du réseau (menu Réseau) prévient quand un appareil inconnu arrive.",
             "To finish, the full check (main menu) grades the machine, and the network monitoring (Network menu) warns when an unknown device shows up."
         ),
         tr!(
-            "Garde la clé VANGUARD dans un tiroir : elle redémarre l'ordinateur quand le système ne veut plus, et porte une copie de Vanguard pour les trois systèmes.",
+            "Gardez la clé VANGUARD dans un tiroir : elle redémarre l'ordinateur quand le système ne veut plus, et porte une copie de Vanguard pour les trois systèmes.",
             "Keep the VANGUARD key in a drawer: it boots the computer when the system no longer will, and carries a copy of Vanguard for the three systems."
         ),
     ]);
     if origine == Origine::Occasion {
         conseil(tr!(
-            "Occasion : demande au vendeur la facture et vérifie que l'ordinateur n'est plus lié à son compte (Localiser, compte Microsoft, Google) ; sinon il peut le verrouiller à distance.",
+            "Occasion : demandez au vendeur la facture et vérifiez que l'ordinateur n'est plus lié à son compte (Localiser, compte Microsoft, Google) ; sinon il peut le verrouiller à distance.",
             "Used: ask the seller for the invoice and check that the computer is no longer tied to their account (Find My, Microsoft account, Google); otherwise they can lock it remotely."
         ));
     }

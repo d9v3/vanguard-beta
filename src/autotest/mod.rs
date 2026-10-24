@@ -449,7 +449,7 @@ fn texte_preuve(p: &Preuve) -> String {
             p.fichiers.join(", ")
         ),
         "non-concluante" => tr!(
-            "Preuve non concluante : la surveillance horaire a tourné pendant l'essai et écrit dans le même dossier. Relance l'autotest plus tard pour la preuve.",
+            "Preuve non concluante : la surveillance horaire a tourné pendant l'essai et écrit dans le même dossier. Relancez l'autotest plus tard pour la preuve.",
             "Inconclusive proof: the hourly monitoring ran during the test and wrote to the same folder. Run the self-test again later for the proof."
         )
         .to_string(),
@@ -980,7 +980,7 @@ pub(crate) fn executer(o: &Options) -> i32 {
             );
         } else {
             trp!(
-                "  ✖ L'autotest tourne avec les droits de ton compte, jamais en root : relance-le sans sudo.",
+                "  ✖ L'autotest tourne avec les droits de votre compte, jamais en root : relancez-le sans sudo.",
                 "  ✖ The self-test runs with your account's rights, never as root: run it again without sudo."
             );
         }

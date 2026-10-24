@@ -1,6 +1,6 @@
 //! Windows : les logiciels de surveillance connus parmi les programmes installés, les processus, les services et les
 //! programmes lancés au démarrage (clés Run et RunOnce, dossiers Démarrage), lus dans le registre (winreg) et par les fonctions de Windows, sans
-//! PowerShell. Les mêmes clés que « Quelqu'un contrôle mon ordi ? » (`distance.rs`) : la petite répétition est
+//! PowerShell. Les mêmes clés que « Mon ordinateur est-il contrôlé ? » (`distance.rs`) : la petite répétition est
 //! voulue, chaque outil garde son propre relevé.
 
 use super::Releve;

@@ -5,7 +5,7 @@
 //! (Actual Keylogger, SpyAgent, Wolfeye, Bark et Hubstaff, le 23 oct. 2026). « bark » seul serait un mot courant.
 //!
 //! Un motif se reconnaît au début d'un mot (`distance::contient_mot`) : « refog » dans « Refog Personal Monitor », pas
-//! dans « prefogged ». Les logiciels de prise de contrôle à distance restent à « Quelqu'un contrôle mon ordi ? »
+//! dans « prefogged ». Les logiciels de prise de contrôle à distance restent à « Mon ordinateur est-il contrôlé ? »
 //! (`distance.rs`) : aucun motif commun.
 
 /// Pourquoi ce logiciel surveille.

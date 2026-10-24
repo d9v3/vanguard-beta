@@ -42,7 +42,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         role: ("passer à la Fedora suivante", "move to the next Fedora"),
         executable: "dnf",
         commandes: &[
-            voir("rpm -E %fedora", "Ta version de Fedora.", "Your Fedora release."),
+            voir("rpm -E %fedora", "Votre version de Fedora.", "Your Fedora release."),
             changer(
                 "sudo dnf upgrade --refresh",
                 "D'abord, tout à jour.",
@@ -50,12 +50,12 @@ pub const PAS_A_PAS: &[Programme] = &[
             ),
             changer(
                 "sudo dnf system-upgrade download --releasever=<numéro>",
-                "Télécharge la version suivante (ta version + 1).",
+                "Télécharge la version suivante (votre version + 1).",
                 "Downloads the next release (your release + 1).",
             ),
             changer(
                 "sudo dnf system-upgrade reboot",
-                "Redémarre pour l'installer ; ne coupe pas l'ordinateur pendant.",
+                "Redémarre pour l'installer ; ne coupez pas l'ordinateur pendant.",
                 "Restarts to install it; do not turn the computer off meanwhile.",
             ),
             changer(
@@ -88,7 +88,7 @@ pub const PAS_A_PAS: &[Programme] = &[
             ),
             voir(
                 "modinfo -F version nvidia",
-                "Attends qu'il soit construit (quelques minutes) : sa version s'affiche quand il est prêt.",
+                "Attendez qu'il soit construit (quelques minutes) : sa version s'affiche quand il est prêt.",
                 "Wait until it is built (a few minutes): its version shows when it is ready.",
             ),
             changer(
@@ -207,7 +207,7 @@ pub const PAS_A_PAS: &[Programme] = &[
             ),
             voir(
                 "du -sh ~/.cache",
-                "Le cache de tes programmes, souvent gros (navigateurs).",
+                "Le cache de vos programmes, souvent gros (navigateurs).",
                 "Your programs' cache, often big (browsers).",
             ),
         ],
@@ -360,7 +360,7 @@ const RPM: Programme = Programme {
         ),
         voir(
             "rpm -E %fedora",
-            "Le numéro de ta version de Fedora.",
+            "Le numéro de votre version de Fedora.",
             "Your Fedora release number.",
         ),
     ],

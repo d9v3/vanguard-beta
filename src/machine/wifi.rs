@@ -52,7 +52,7 @@ pub(crate) fn securite(ssid: &str, libelle: &str, admin: &[&str]) -> Constat {
     );
     // Ouvert ou sans mot de passe : souvent un réseau public, que la box ne permet pas de régler.
     let public = tr!(
-        "Sur un réseau public (café, hôtel) : « vanguard wifi-public on » ferme l'ordinateur à ce réseau ; chez toi, ouvrir l'admin du routeur > Wi-Fi > Sécurité : choisir « WPA2/WPA3 » ou « WPA3 »",
+        "Sur un réseau public (café, hôtel) : « vanguard wifi-public on » ferme l'ordinateur à ce réseau ; chez vous, ouvrir l'admin du routeur > Wi-Fi > Sécurité : choisir « WPA2/WPA3 » ou « WPA3 »",
         "On a public network (café, hotel): “vanguard public-wifi on” closes the computer to this network; at home, open the router admin > Wi-Fi > Security: choose “WPA2/WPA3” or “WPA3”"
     );
     match force(libelle) {
@@ -219,7 +219,7 @@ pub(super) fn jumeau(visibles: &[Visible]) -> Option<Constat> {
         )
         .manuel(
             tr!(
-                "Ne t'y connecte pas, et refuse si un appareil propose de le rejoindre. Si c'est un de tes appareils (vieux répéteur, réseau invité), donne-lui un autre nom ou un mot de passe",
+                "Ne vous y connectez pas, et refusez si un appareil propose de le rejoindre. Si c'est un de vos appareils (vieux répéteur, réseau invité), donnez-lui un autre nom ou un mot de passe",
                 "Do not connect to it, and decline if a device offers to join it. If it is one of your devices (old repeater, guest network), give it another name or a password"
             ),
             &[],

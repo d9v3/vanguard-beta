@@ -501,7 +501,7 @@ fn juger_echecs(echecs: &[Echec]) -> Constat {
             "Comptes",
             Niveau::Moyen,
             trf!(
-                "{rafale_reseau} échecs de connexion en une heure, tous depuis {} sur le réseau local et pour le seul compte {} ({total} en {JOURS} jours) : sans doute un appareil de la maison (NAS, imprimante, autre ordinateur) qui garde un vieux mot de passe pour un partage. Si tu ne le reconnais pas, c'est peut-être quelqu'un sur ton réseau.",
+                "{rafale_reseau} échecs de connexion en une heure, tous depuis {} sur le réseau local et pour le seul compte {} ({total} en {JOURS} jours) : sans doute un appareil de votre domicile (NAS, imprimante, autre ordinateur) qui garde un vieux mot de passe pour un partage. Si vous ne le reconnaissez pas, c'est peut-être quelqu'un sur votre réseau.",
                 "{rafale_reseau} failed sign-ins within an hour, all from {} on the local network and for the single account {} ({total} in {JOURS} days): most likely a device at home (NAS, printer, another computer) keeping an old password for a share. If you do not recognize it, it may be someone on your network.",
                 affichable(&adresse),
                 affichable(&compte)
@@ -509,7 +509,7 @@ fn juger_echecs(echecs: &[Echec]) -> Constat {
         )
         .manuel(
             tr!(
-                "Sur cet appareil, remets le mot de passe actuel du partage, ou retire le partage enregistré",
+                "Sur cet appareil, remettez le mot de passe actuel du partage, ou retirez le partage enregistré",
                 "On that device, enter the share's current password again, or remove the saved share"
             ),
             &[],
@@ -532,7 +532,7 @@ fn juger_echecs(echecs: &[Echec]) -> Constat {
         )
         .manuel(
             tr!(
-                "Si ce n'est pas toi : des mots de passe longs, le blocage après des essais ratés, et le Bureau à distance coupé s'il ne sert pas",
+                "Si ce n'est pas vous : des mots de passe longs, le blocage après des essais ratés, et le Bureau à distance coupé s'il ne sert pas",
                 "If it is not you: long passwords, lockout after failed attempts, and Remote Desktop turned off if it is not used"
             ),
             &["Start-Process ms-settings:remotedesktop"],
@@ -567,7 +567,7 @@ fn juger_securite(lignes: &[&str]) -> Vec<Constat> {
             "Journaux",
             Niveau::Eleve,
             trf!(
-                "Le journal de sécurité a été effacé le {quand} (compte {compte}){autres} : si ce n'est pas toi, quelqu'un a pu effacer les traces d'une intrusion.",
+                "Le journal de sécurité a été effacé le {quand} (compte {compte}){autres} : si ce n'est pas vous, quelqu'un a pu effacer les traces d'une intrusion.",
                 "The security log was cleared on {quand} (account {compte}){autres}: if it was not you, someone may have erased the traces of an intrusion."
             ),
         ));
@@ -591,7 +591,7 @@ fn juger_securite(lignes: &[&str]) -> Vec<Constat> {
             "Comptes",
             Niveau::Info,
             trf!(
-                "Compte(s) créé(s) ces {JOURS} derniers jours : {}. Si l'un t'est inconnu, quelqu'un s'est fait une entrée.",
+                "Compte(s) créé(s) ces {JOURS} derniers jours : {}. Si l'un vous est inconnu, quelqu'un s'est fait une entrée.",
                 "Account(s) created over the last {JOURS} days: {}. If one is unknown to you, someone made themselves a way in.",
                 resume(&crees, 5, ", ")
             ),
@@ -656,7 +656,7 @@ fn juger_services(lignes: &[&str]) -> Vec<Constat> {
                 )
                 .manuel(
                     tr!(
-                        "Si tu ne l'as pas installé toi-même : le regarder dans Services, puis lancer une analyse antivirus complète",
+                        "Si vous ne l'avez pas installé vous-même : le regarder dans Services, puis lancer une analyse antivirus complète",
                         "If you did not install it yourself: look at it in Services, then run a full antivirus scan"
                     ),
                     &["Start-Process services.msc"],
@@ -670,7 +670,7 @@ fn juger_services(lignes: &[&str]) -> Vec<Constat> {
             "Persistance",
             Niveau::Info,
             trf!(
-                "Service(s) installé(s) ces {JOURS} derniers jours : {}. Rien d'anormal dans leur chemin ; si l'un t'est inconnu, regarde-le dans Services.",
+                "Service(s) installé(s) ces {JOURS} derniers jours : {}. Rien d'anormal dans leur chemin ; si l'un vous est inconnu, regardez-le dans Services.",
                 "Service(s) installed over the last {JOURS} days: {}. Nothing odd in their path; if one is unknown to you, look at it in Services.",
                 resume(&ordinaires, 5, ", ")
             ),

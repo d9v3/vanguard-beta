@@ -379,7 +379,7 @@ sshguard or CrowdSec already blocks the addresses that keep trying.
 
 #### Scams and remote control
 
-- Is someone controlling my PC?: the tech-support scam (“your computer is infected”) gets a remote control tool
+- Is my computer being controlled?: the tech-support scam (“your computer is infected”) gets a remote control tool
   installed. Vanguard looks for AnyDesk, TeamViewer, RustDesk, Quick Assist, Splashtop, UltraViewer… installed (and
   since when), started at boot, running or simply sitting in Downloads; it explains what to do (cut the Internet, tell
   the bank, change passwords) and removes them after your consent. A running program is never cut without a second,
@@ -738,7 +738,7 @@ Each menu entry is also a command.
 | `vanguard quarantine` | the isolated files, to put back in their place or to delete |
 | `vanguard secrets` | secrets forgotten in the history of git projects (and gitleaks, if installed; read-only) |
 | `vanguard containers` | known flaws in Docker or Podman images (trivy, if installed; read-only) |
-| `vanguard remote-access` | is someone controlling my computer? remote control tools (tech-support scam), removed after consent |
+| `vanguard remote-access` | is my computer being controlled? remote control tools (tech-support scam), removed after consent |
 | `vanguard link <address>` | is this link dangerous? (checked without opening it; online after your consent) |
 | `vanguard suspicious-email <file.eml>` | is this email a scam? the sender and their authentication, the links, the attachments, examined without opening anything; online after your consent |
 | `vanguard check-file <file> [checksum]` | check a downloaded file: checksum, name and content, YARA, antivirus |

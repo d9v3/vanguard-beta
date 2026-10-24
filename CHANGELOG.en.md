@@ -14,6 +14,12 @@ delivered just before it. Only the latest version has its download page; every v
   now only ships its commercial build, which is therefore shown as not open source, while winget and Homebrew install
   the GPL-3.0 build. VeraCrypt is for USB sticks, external drives and vaults, the system drive going to BitLocker or
   LUKS.
+- **Wording.** All French text is now formal (« vous ») and says « routeur », « réseau local » and « adresse
+  Internet publique » instead of « box » and « maison »; “Is someone controlling my PC?” becomes “Is my computer being
+  controlled?”. `outils/textes.py` now rejects informal French in displayed text. Hourly monitoring and the monthly
+  check-up record the generation of their texts: the first run after the update compares findings without their
+  wording, by what names their object (addresses, ports, CVEs), with no false alert. Alerts marked normal, matched by their text when they have no key, may come
+  back once in French.
 
 ## October 23, 2026: version 0.86
 

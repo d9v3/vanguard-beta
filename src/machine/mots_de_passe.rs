@@ -94,17 +94,17 @@ fn compter_base(chemin: &Path) -> Option<usize> {
 fn protection_chromium() -> &'static str {
     if cfg!(windows) {
         tr!(
-            "protégés par ta session Windows seulement (DPAPI) : qui ouvre ta session, ou un programme qui tourne dedans, les lit",
+            "protégés par votre session Windows seulement (DPAPI) : qui ouvre votre session, ou un programme qui tourne dedans, les lit",
             "protected by your Windows session only (DPAPI): whoever opens your session, or a program running in it, reads them"
         )
     } else if cfg!(target_os = "macos") {
         tr!(
-            "la clé est dans le trousseau : un programme qui tourne dans ta session peut la demander",
+            "la clé est dans le trousseau : un programme qui tourne dans votre session peut la demander",
             "the key is in the keychain: a program running in your session can ask for it"
         )
     } else {
         tr!(
-            "la clé est dans le porte-clés du bureau, ou en clair s'il n'y en a pas : qui ouvre ta session les lit",
+            "la clé est dans le porte-clés du bureau, ou en clair s'il n'y en a pas : qui ouvre votre session les lit",
             "the key is in the desktop keyring, or in clear if there is none: whoever opens your session reads them"
         )
     }
@@ -150,7 +150,7 @@ pub(super) fn juger(profils: &[Result<Profil, (String, String)>]) -> Vec<Constat
     let mut protection = Vec::new();
     if firefox {
         protection.push(tr!(
-            "Firefox : Vanguard ne peut pas voir si un mot de passe principal les protège ; sans lui, qui ouvre ta session les lit tous",
+            "Firefox : Vanguard ne peut pas voir si un mot de passe principal les protège ; sans lui, qui ouvre votre session les lit tous",
             "Firefox: Vanguard cannot see whether a primary password protects them; without one, whoever opens your session reads them all"
         ).to_string());
     }
@@ -180,7 +180,7 @@ pub(super) fn juger(profils: &[Result<Profil, (String, String)>]) -> Vec<Constat
                 )
             } else {
                 tr!(
-                    "Un gestionnaire de mots de passe (Bitwarden, KeePassXC) avec son propre mot de passe principal, et le verrouillage de l'écran quand tu t'éloignes",
+                    "Un gestionnaire de mots de passe (Bitwarden, KeePassXC) avec son propre mot de passe principal, et le verrouillage de l'écran quand vous vous éloignez",
                     "A password manager (Bitwarden, KeePassXC) with its own primary password, and the screen lock when you step away"
                 )
             },
@@ -259,7 +259,7 @@ pub(crate) fn navigateurs() {
     }
     // 2. Ce que Vanguard ne fait pas, et pourquoi : c'est une garantie, pas une limite.
     trp!(
-        "\n  {GRIS}Vanguard ne lit ni ne déchiffre jamais tes mots de passe enregistrés : les lire, c'est le\n  geste d'un voleur de mots de passe. Il les compte seulement, et te renvoie à ton navigateur.{RESET}",
+        "\n  {GRIS}Vanguard ne lit ni ne déchiffre jamais vos mots de passe enregistrés : les lire, c'est le\n  geste d'un voleur de mots de passe. Il les compte seulement, et vous renvoie à votre navigateur.{RESET}",
         "\n  {GRIS}Vanguard never reads or decrypts your saved passwords: reading them is what a password\n  stealer does. It only counts them, and points you to your browser.{RESET}"
     );
     // 3. La vérification intégrée de chaque navigateur présent (faibles, réutilisés, compromis).
@@ -269,7 +269,7 @@ pub(crate) fn navigateurs() {
         // de la phrase une fois la première ligne recoupée par l'affichage.
         println!();
         let conseil = tr!(
-            "Pour les mots de passe faibles, réutilisés ou compromis, ouvre la vérification intégrée de ton navigateur, en copiant l'adresse dans sa barre :",
+            "Pour les mots de passe faibles, réutilisés ou compromis, ouvrez la vérification intégrée de votre navigateur, en copiant l'adresse dans sa barre :",
             "For weak, reused or compromised passwords, open your browser's built-in check (paste the address into its bar):"
         );
         for (i, ligne) in envelopper(conseil, LARGEUR - 5).into_iter().enumerate() {
@@ -295,7 +295,7 @@ pub(crate) fn navigateurs() {
     // 4. Vérifier un mot de passe précis, tapé maintenant : jamais affiché, jamais écrit, seuls 5
     //    caractères de son empreinte partent (réutilise la vérification HIBP existante).
     trp!(
-        "\n  Tu peux aussi vérifier un mot de passe précis : il ne s'affiche pas, ne quitte pas cet\n  ordinateur, et seuls 5 caractères de son empreinte partent vers Have I Been Pwned.",
+        "\n  Vous pouvez vérifier un mot de passe précis : il ne s'affiche pas, ne quitte pas cet\n  ordinateur, et seuls 5 caractères de son empreinte partent vers Have I Been Pwned.",
         "\n  You can also check a specific password: it is not shown, it does not leave this computer,\n  and only 5 characters of its fingerprint are sent to Have I Been Pwned."
     );
     if demander(tr!(

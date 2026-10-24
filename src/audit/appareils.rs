@@ -108,7 +108,7 @@ fn joignables_depuis_internet(e: &Entree, objets: &[Objet]) -> Vec<Constat> {
             "Appareils",
             "COM-APP-001",
             tr!(
-                "Les redirections de la box n'ont pas pu être lues : impossible de savoir si un objet est joignable depuis Internet (voir le domaine Exposition).",
+                "Les redirections du routeur n'ont pas pu être lues : impossible de savoir si un objet est joignable depuis Internet (voir le domaine Exposition).",
                 "The router's port forwardings could not be read: no way to know whether a device is reachable from the Internet (see the Exposure domain)."
             ),
         )];
@@ -131,7 +131,7 @@ fn joignables_depuis_internet(e: &Entree, objets: &[Objet]) -> Vec<Constat> {
                 "Appareils",
                 niveau,
                 trf!(
-                    "{} ({}){veille} est joignable depuis Internet par le port {}/{} de la box, vers son port {} ({}) : n'importe qui sur Internet peut tenter de s'y connecter ; une caméra ou un enregistreur ainsi exposé est la cible la plus courante des réseaux de machines zombies.",
+                    "{} ({}){veille} est joignable depuis Internet par le port {}/{} du routeur, vers son port {} ({}) : n'importe qui sur Internet peut tenter de s'y connecter ; une caméra ou un enregistreur ainsi exposé est la cible la plus courante des réseaux de machines zombies.",
                     "{} ({}){veille} can be reached from the Internet through the router's port {}/{}, to its port {} ({}): anyone on the Internet can try to connect; a camera or recorder exposed this way is the most common target of zombie networks.",
                     o.nom,
                     o.genre.nom(),
@@ -143,7 +143,7 @@ fn joignables_depuis_internet(e: &Entree, objets: &[Objet]) -> Vec<Constat> {
             )
             .manuel(
                 tr!(
-                    "Retire la redirection (ou coupe UPnP dans l'administration de la box) ; si l'accès à distance est voulu, passe par l'application du fabricant ou un VPN vers la box, jamais par un port ouvert",
+                    "Retirez la redirection (ou coupez UPnP dans l'administration du routeur) ; si l'accès à distance est voulu, passez par l'application du fabricant ou un VPN vers le routeur, jamais par un port ouvert",
                     "Remove the forwarding (or turn UPnP off in the router's administration); if remote access is wanted, go through the maker's app or a VPN to the router, never through an open port"
                 ),
                 &[],
@@ -155,13 +155,13 @@ fn joignables_depuis_internet(e: &Entree, objets: &[Objet]) -> Vec<Constat> {
             "Appareils",
             if redirections.is_empty() {
                 tr!(
-                    "Aucune redirection de la box ne vise un objet connecté (celles réglées à la main dans la box ne se lisent pas d'ici).",
+                    "Aucune redirection du routeur ne vise un objet connecté (celles réglées à la main dans le routeur ne se lisent pas d'ici).",
                     "No router forwarding targets a connected device (those set by hand in the router cannot be read from here)."
                 )
                 .to_string()
             } else {
                 trf!(
-                    "Aucune des {} redirection(s) de la box ne vise un objet connecté.",
+                    "Aucune des {} redirection(s) du routeur ne vise un objet connecté.",
                     "None of the router's {} forwarding(s) targets a connected device.",
                     redirections.len()
                 )
@@ -212,7 +212,7 @@ fn administrations_ouvertes(hotes: &[Hote], objets: &[Objet]) -> Vec<Constat> {
             )
             .manuel(
                 tr!(
-                    "Dans l'application ou la page web de l'objet, coupe ce qui ne sert pas (Telnet, FTP, SNMP, débogage) et mets-le à jour ; si rien ne se règle, mets-le sur le réseau invité de la box",
+                    "Dans l'application ou la page web de l'objet, coupez ce qui ne sert pas (Telnet, FTP, SNMP, débogage) et mettez-le à jour ; si rien ne se règle, mettez-le sur le réseau invité du routeur",
                     "In the device's app or web page, turn off what is not needed (Telnet, FTP, SNMP, debugging) and update it; if nothing can be set, put it on the router's guest network"
                 ),
                 &[],
@@ -246,7 +246,7 @@ fn trafic_des_objets() -> Constat {
         "Appareils",
         "COM-APP-003",
         tr!(
-            "Le trafic de chaque objet vers Internet n'est pas visible d'ici (il faudrait la box ou un miroir du réseau). Indices disponibles : l'adresse publique sur une liste noire (« Adresse sur liste noire ? », avec ton accord) et les redirections demandées par un objet (ci-dessus).",
+            "Le trafic de chaque objet vers Internet n'est pas visible d'ici (il faudrait le routeur ou un miroir du réseau). Indices disponibles : l'adresse publique sur une liste noire (« Adresse sur liste noire ? », avec votre accord) et les redirections demandées par un objet (ci-dessus).",
             "Each device's traffic to the Internet is not visible from here (it would take the router or a network mirror). Available clues: the public address on a blocklist (“Address on blocklists?”, with your consent) and the forwardings requested by a device (above)."
         ),
     )
@@ -268,7 +268,7 @@ fn mots_de_passe_d_origine(hotes: &[Hote]) -> Constat {
         ok(
             "Appareils",
             tr!(
-                "Aucun appareil du scan n'est d'un type livré avec un mot de passe d'usine connu de tous (box, caméra, imprimante, NAS).",
+                "Aucun appareil du scan n'est d'un type livré avec un mot de passe d'usine connu de tous (routeur, caméra, imprimante, NAS).",
                 "No device of the scan is of a type shipped with a factory password everyone knows (router, camera, printer, NAS)."
             ),
         )
@@ -277,7 +277,7 @@ fn mots_de_passe_d_origine(hotes: &[Hote]) -> Constat {
             "Appareils",
             Niveau::Info,
             trf!(
-                "{} appareil(s) d'un type souvent livré avec un mot de passe d'usine connu de tous ({}) : s'il n'a jamais été changé, change-le dans leur application ou leur page web, et vérifie une mise à jour. Conseil seulement : Vanguard n'en essaie aucun.",
+                "{} appareil(s) d'un type souvent livré avec un mot de passe d'usine connu de tous ({}) : s'il n'a jamais été changé, changez-le dans leur application ou leur page web, et vérifiez une mise à jour. Conseil seulement : Vanguard n'en essaie aucun.",
                 "{} device(s) of a type often shipped with a factory password everyone knows ({}): if it was never changed, change it in their app or web page, and check for an update. Advice only: Vanguard tries none.",
                 a_changer.len(),
                 resume(&a_changer, 4, " ; ")
@@ -322,7 +322,7 @@ fn cameras_du_reseau(e: &Entree) -> Vec<Constat> {
                 )
                 .manuel(
                     tr!(
-                        "Donne-lui un mot de passe dans son application ou sa page web ; si elle ne le permet pas, remplace-la ou mets-la sur le réseau invité",
+                        "Donnez-lui un mot de passe dans son application ou sa page web ; si elle ne le permet pas, remplacez-la ou mettez-la sur le réseau invité",
                         "Give it a password in its app or web page; if it does not allow one, replace it or put it on the guest network"
                     ),
                     &[],
@@ -332,7 +332,7 @@ fn cameras_du_reseau(e: &Entree) -> Vec<Constat> {
                     "Appareils",
                     Niveau::Info,
                     trf!(
-                        "Caméra sur ton réseau : {qui} ({details}). Vérifie son mot de passe et ses mises à jour.",
+                        "Caméra sur votre réseau : {qui} ({details}). Vérifiez son mot de passe et ses mises à jour.",
                         "Camera on your network: {qui} ({details}). Check its password and its updates."
                     ),
                 )
@@ -594,7 +594,7 @@ pub(crate) mod tests {
         // La box, la caméra, l'imprimante et le NAS ; pas le PC ni cette machine.
         assert!(c.message.starts_with("4 appareil(s)"), "{}", c.message);
         assert!(
-            c.message.contains("10.0.0.1 (Sagemcom Broadband SAS) : box"),
+            c.message.contains("10.0.0.1 (Sagemcom Broadband SAS) : routeur"),
             "{}",
             c.message
         );

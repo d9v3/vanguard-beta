@@ -42,7 +42,7 @@ pub const PAS_A_PAS: &[Programme] = &[
             changer("flatpak update", "Les applications Flatpak.", "The Flatpak apps."),
             voir(
                 "cat /var/run/reboot-required",
-                "« System restart required » : redémarre. Fichier absent : pas besoin.",
+                "« System restart required » : redémarrez. Fichier absent : pas besoin.",
                 "“System restart required”: restart. File missing: no need.",
             ),
         ],
@@ -88,7 +88,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         commandes: &[
             voir(
                 "pgrep -a 'apt|dpkg'",
-                "« Could not get lock » : un apt tourne déjà (souvent les mises à jour automatiques) ; attends.",
+                "« Could not get lock » : un apt tourne déjà (souvent les mises à jour automatiques) ; attendez.",
                 "“Could not get lock”: an apt is already running (often automatic updates); wait.",
             ),
             changer(
@@ -123,7 +123,7 @@ pub const PAS_A_PAS: &[Programme] = &[
         role: ("Ubuntu ou Debian suivante", "next Ubuntu or Debian"),
         executable: "apt",
         commandes: &[
-            voir("lsb_release -a", "Ta version.", "Your release."),
+            voir("lsb_release -a", "Votre version.", "Your release."),
             changer(
                 "sudo apt update && sudo apt full-upgrade",
                 "D'abord, tout à jour.",
@@ -136,7 +136,7 @@ pub const PAS_A_PAS: &[Programme] = &[
             ),
             changer(
                 "sudo do-release-upgrade",
-                "Ubuntu : passe à la suivante (garde l'ordinateur branché).",
+                "Ubuntu : passe à la suivante (gardez l'ordinateur branché).",
                 "Ubuntu: moves to the next one (keep the computer plugged in).",
             ),
             voir(
@@ -169,7 +169,7 @@ pub const PAS_A_PAS: &[Programme] = &[
             ),
             changer(
                 "sudo ufw allow ssh",
-                "…sauf ce que tu veux ouvrir (ici SSH).",
+                "…sauf ce que vous voulez ouvrir (ici SSH).",
                 "…except what you want to open (here SSH).",
             ),
             changer(
@@ -197,7 +197,7 @@ pub const PAS_A_PAS: &[Programme] = &[
             ),
             changer(
                 "sudo dpkg-reconfigure -plow unattended-upgrades",
-                "Les active : réponds Oui.",
+                "Les active : répondez Oui.",
                 "Turns them on: answer Yes.",
             ),
             voir(

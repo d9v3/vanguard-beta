@@ -453,7 +453,7 @@ pub fn conseils(i: &Instantane) -> Vec<Conseil> {
     }
     if i.au_demarrage.len() >= 8 || i.au_demarrage.iter().filter_map(|p| p.poids).sum::<u64>() >= 1 << 30 {
         let texte = trf!(
-            "{} programmes se lancent à l'ouverture de session : ceux dont tu n'as pas besoin tout de suite peuvent attendre que tu les ouvres.",
+            "{} programmes se lancent à l'ouverture de session : ceux dont vous n'avez pas besoin tout de suite peuvent attendre que vous les ouvriez.",
             "{} programs start when you log in: those you do not need right away can wait until you open them.",
             i.au_demarrage.len()
         );
@@ -631,7 +631,7 @@ fn mesurer() -> Vec<Conseil> {
         &format!("{GRIS}{}{RESET}", tr!("lecture seule", "read only")),
     );
     trp!(
-        "  {DISCRET}Mesure pendant deux secondes : continue à utiliser l'ordinateur comme d'habitude…{RESET}",
+        "  {DISCRET}Mesure pendant deux secondes : utilisez l'ordinateur comme d'habitude…{RESET}",
         "  {DISCRET}Measuring for two seconds: keep using the computer as usual…{RESET}"
     );
     let i = systeme::instantane();
@@ -646,7 +646,7 @@ fn mesurer() -> Vec<Conseil> {
         afficher_aligne(&format!("  {}⚠{RESET} ", couleur(Niveau::Moyen)), rien, 4, "");
     } else if c.is_empty() {
         let rien = tr!(
-            "Rien ne force en ce moment : si c'est lent par moments, relance la mesure à ce moment-là.",
+            "Rien ne force en ce moment : si c'est lent par moments, relancez la mesure à ce moment-là.",
             "Nothing is straining right now: if it is slow at times, run the measurement again at that moment."
         );
         afficher_aligne(&format!("  {VERT}✔{RESET} "), rien, 4, "");

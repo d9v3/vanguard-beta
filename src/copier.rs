@@ -915,7 +915,7 @@ fn choisir_disque() -> Option<PathBuf> {
     let liste = disques();
     if liste.is_empty() {
         let aucun = tr!(
-            "Aucun disque externe branché (la clé VANGUARD et le disque du système ne comptent pas). Branche un disque ou une clé assez grande, attends qu'il apparaisse, puis recommence.",
+            "Aucun disque externe branché (la clé VANGUARD et le disque du système ne comptent pas). Branchez un disque ou une clé assez grande, attendez qu'il apparaisse, puis recommencez.",
             "No external disk plugged in (the VANGUARD key and the system disk do not count). Plug in a large enough disk or USB stick, wait for it to appear, then start again."
         );
         afficher_aligne("  ✖ ", aucun, 4, "");
@@ -1035,7 +1035,7 @@ pub fn commande(destination: Option<&Path>) {
         && besoin > libre
     {
         trp!(
-            "\n  ✖ Pas assez de place : il faut {}, le disque n'a que {} de libre. Décoche des dossiers, ou prends un disque plus grand.",
+            "\n  ✖ Pas assez de place : il faut {}, le disque n'a que {} de libre. Décochez des dossiers, ou prenez un disque plus grand.",
             "\n  ✖ Not enough space: {} needed, the disk only has {} free. Uncheck some folders, or use a larger disk.",
             taille_lisible(besoin),
             taille_lisible(libre)
@@ -1086,7 +1086,7 @@ fn afficher_bilan(b: &Bilan, dossier: &Path, duree: Duration) {
         );
     } else {
         trp!(
-            "  ⚠ Copie terminée avec {} échec(s) : {} fichier(s) copié(s), {} déjà là. Relance la copie pour réessayer les fichiers ratés.",
+            "  ⚠ Copie terminée avec {} échec(s) : {} fichier(s) copié(s), {} déjà là. Relancez la copie pour réessayer les fichiers ratés.",
             "  ⚠ Copy finished with {} failure(s): {} file(s) copied, {} already there. Run the copy again to retry the failed files.",
             b.echecs.len(),
             b.copies,
@@ -1326,7 +1326,7 @@ pub fn verifier_copie(destination: Option<&Path>) {
         .any(|t| dossier.join(t).is_file())
     {
         trp!(
-            "  {}⚠{RESET} Cette copie n'est pas finie : relance « Copier mes fichiers » vers ce disque pour la reprendre.",
+            "  {}⚠{RESET} Cette copie n'est pas finie : relancez « Copier mes fichiers » vers ce disque pour la reprendre.",
             "  {}⚠{RESET} This copy is not finished: run “Copy my files” to this disk again to resume it.",
             couleur(crate::risk::Niveau::Moyen)
         );
@@ -1364,13 +1364,13 @@ pub fn verifier_copie(destination: Option<&Path>) {
         trp!("  ✖ La copie est vide.", "  ✖ The copy is empty.");
     } else if r.abimes.is_empty() {
         trp!(
-            "  {VERT}✔{RESET} La copie se relit : tes fichiers se récupéreraient.",
+            "  {VERT}✔{RESET} La copie se relit : vos fichiers se récupéreraient.",
             "  {VERT}✔{RESET} The copy reads back: your files could be recovered."
         );
     } else {
         for l in envelopper(
             tr!(
-                "Des fichiers de la copie ne se relisent pas tels qu'ils ont été copiés : ce disque perd des données. Refais la copie sur un autre disque, et fais vérifier celui-ci (Diagnostic, état SMART).",
+                "Des fichiers de la copie ne se relisent pas tels qu'ils ont été copiés : ce disque perd des données. Refaites la copie sur un autre disque, et faites vérifier celui-ci (Diagnostic, état SMART).",
                 "Some files of the copy do not read back as they were copied: this disk loses data. Make the copy again on another disk, and have this one checked (Diagnostic, SMART status)."
             ),
             LARGEUR - 4,

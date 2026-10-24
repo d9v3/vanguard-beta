@@ -592,7 +592,7 @@ mod tests {
     fn question_dans_la_largeur() {
         let courte = "\n  Couper la protection en temps réel pendant 1 heure ? [o/N] : ";
         assert_eq!(question_en_lignes(courte), courte);
-        let longue = "\n  Couper la protection en temps réel jusqu'à ce que tu la remettes ? [o/N] : ";
+        let longue = "\n  Couper la protection en temps réel jusqu'à ce que vous la remettiez ? [o/N] : ";
         let l = question_en_lignes(longue);
         assert!(l.starts_with("\n  Couper") && l.ends_with("[o/N] : "), "{l:?}");
         let lignes: Vec<&str> = l.split('\n').collect();
@@ -614,8 +614,8 @@ mod tests {
         // Trop longue : coupée aux espaces, la suite sous le texte du « ✖ », chaque ligne dans 76 colonnes, aucun mot
         // perdu ni coupé.
         let long = format!(
-            "  {GRIS}✖ Pas assez de place : il faut 12,4 Go, le disque n'a que 3,1 Go de libre. Décoche des dossiers, ou \
-             choisis un autre disque.{RESET}"
+            "  {GRIS}✖ Pas assez de place : il faut 12,4 Go, le disque n'a que 3,1 Go de libre. Décochez des dossiers, ou \
+             choisissez un autre disque.{RESET}"
         );
         let lignes = mettre_en_lignes(&long);
         assert!(lignes.lines().count() >= 2, "{lignes}");
@@ -636,7 +636,7 @@ mod tests {
         );
         // Une phrase coupée à la main pour un terminal plus large est recoupée d'un seul tenant ; une nouvelle phrase
         // (majuscule) garde sa ligne ; sans signe en tête, la suite s'aligne sous le début.
-        let a_la_main = "  Tape un mot de passe : il ne s'affiche pas et ne quitte jamais cet ordinateur. Seuls 5 caractères \
+        let a_la_main = "  Tapez un mot de passe : il ne s'affiche pas et ne quitte jamais cet ordinateur. Seuls 5 caractères \
                          de son\n  empreinte sont envoyés à Have I Been Pwned, et la comparaison se fait ici.\n  Entrée seule \
                          pour terminer.";
         let lignes = mettre_en_lignes(a_la_main);
@@ -650,7 +650,7 @@ mod tests {
         assert!(lignes.contains("de son empreinte"), "{lignes}");
         assert_eq!(largeur_de_la_marque("2. Restaurer"), 3);
         assert_eq!(largeur_de_la_marque(&format!("{GRIS}✖{RESET} Copie")), 2);
-        assert_eq!(largeur_de_la_marque("Tape un mot"), 0);
+        assert_eq!(largeur_de_la_marque("Tapez un mot"), 0);
     }
 
     #[test]

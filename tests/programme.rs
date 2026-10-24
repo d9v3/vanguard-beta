@@ -408,7 +408,7 @@ fn sous_menu_protection() {
     let courriel = t.find("Ce courriel est-il une arnaque ?").unwrap();
     let espions = t.find("Logiciels espions : en ai-je un ?").unwrap();
     assert!(courriel < espions, "{t}");
-    assert!(!t[espions..].contains("Quelqu'un contrôle mon ordi ?"), "{t}");
+    assert!(!t[espions..].contains("Mon ordinateur est-il contrôlé ?"), "{t}");
     // Chaque ligne du sous-menu tient dans 76 colonnes (sans terminal, l'écran suivant suit la question « Choix » sur
     // la même ligne : celles-là ne comptent pas).
     let longues: Vec<&str> = t
@@ -548,14 +548,14 @@ fn sortantes_en_lecture_seule() {
     );
 }
 
-/// Quelqu'un contrôle mon ordi ? : l'arnaque est expliquée, la recherche se fait, et « n » ne retire rien.
+/// Mon ordinateur est-il contrôlé ? : l'arnaque est expliquée, la recherche se fait, et « n » ne retire rien.
 #[test]
 fn distance_sans_rien_retirer() {
     let s = vanguard("fr", &["distance"], "n\nn\n", 120);
     assert_eq!(s.code, Some(0), "{}", s.erreurs);
     let t = sans_couleurs(&s.texte);
     assert!(
-        t.contains("Quelqu'un contrôle mon ordi ?") && t.contains("faux technicien"),
+        t.contains("Mon ordinateur est-il contrôlé ?") && t.contains("faux technicien"),
         "{t}"
     );
     // Rien trouvé, quelque chose trouvé mais gardé, ou PowerShell absent (Wine) : jamais un retrait.
@@ -684,7 +684,7 @@ fn verifier_moi_en_lecture_seule() {
     // Sans terminal, la question de l'historique signé n'est pas posée : elle aurait lu la fin de l'entrée et quitté
     // avant l'avertissement final. Ses lignes sont recollées : le paragraphe est coupé à la largeur.
     let mots = t.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(mots.contains("Si elles diffèrent, ne l'utilise pas."), "{t}");
+    assert!(mots.contains("Si elles diffèrent, ne l'utilisez pas."), "{t}");
 }
 
 /// Programmes au démarrage : la liste se montre, et Entrée sans rien décocher ne change rien.
@@ -820,7 +820,7 @@ fn audit_du_reseau_au_menu_et_dans_l_aide() {
         .find("Scan approfondi d'un appareil")
         .expect("« Scan approfondi » absent");
     assert!(scanner < audit && audit < appareil, "{t}");
-    assert!(t.contains("six notes : box, Wi-Fi, DNS…"), "{t}");
+    assert!(t.contains("six notes : routeur, Wi-Fi, DNS…"), "{t}");
     let longues: Vec<&str> = t
         .lines()
         .filter(|l| !l.contains("Choix :") && l.chars().count() > 76)

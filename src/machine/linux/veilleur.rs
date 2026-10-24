@@ -521,7 +521,7 @@ impl Refus {
             )
             .to_string(),
             Refus::Passager => tr!(
-                "Le noyau n'a pas pu confirmer l'abonnement, pour une cause passagère (son tampon a débordé, ou il manquait de mémoire) : rien n'est installé ; réessaie dans un instant.",
+                "Le noyau n'a pas pu confirmer l'abonnement, pour une cause passagère (son tampon a débordé, ou il manquait de mémoire) : rien n'est installé ; réessayez dans un instant.",
                 "The kernel could not confirm the subscription, for a passing cause (its buffer overflowed, or it was short of memory): nothing is installed; try again in a moment."
             )
             .to_string(),
@@ -1143,7 +1143,7 @@ fn juger_lance(l: &Lance) -> Option<Alerte> {
         )
         .to_string(),
         texte: trf!(
-            "{} ; lignée : {lignee} ; vu au lancement par le veilleur.{nom_seul} Ne rien arrêter à la hâte : vanguard traces garde ses traces, puis Dépanner › Après une infection s'il n'est pas à toi.",
+            "{} ; lignée : {lignee} ; vu au lancement par le veilleur.{nom_seul} Ne rien arrêter à la hâte : vanguard traces garde ses traces, puis Dépanner › Après une infection s'il n'est pas à vous.",
             "{}; lineage: {lignee}; seen at start by the watcher.{nom_seul} Do not stop anything in a hurry: vanguard traces keeps its traces, then Troubleshoot › After an infection if it is not yours.",
             chasse::montrer(p, &s)
         ),
@@ -1202,7 +1202,7 @@ fn juger_prise(f: &FinPrise, serveurs: &ServeursDeCommande) -> Option<Alerte> {
         )
         .to_string(),
         texte: trf!(
-            "{serveur} : connexion {protocole} avec un serveur de commande connu, fermée. Le programme n'est plus connu : le noyau ne le donne pas à la fin d'une connexion. Ouvre « Après une infection » : coupe Internet d'abord.",
+            "{serveur} : connexion {protocole} avec un serveur de commande connu, fermée. Le programme n'est plus connu : le noyau ne le donne pas à la fin d'une connexion. Ouvrez « Après une infection » : coupez Internet d'abord.",
             "{serveur}: {protocole} connection with a known command server, closed. The program is no longer known: the kernel does not give it at the end of a connection. Open “After an infection”: cut the Internet first."
         ),
     })
@@ -1510,7 +1510,7 @@ fn servir() -> i32 {
                         "Vanguard: watcher, burst of alerts"
                     ),
                     &trf!(
-                        "{n} autre(s) alerte(s) du veilleur non notée(s), pour ne pas inonder le journal : lance « vanguard machine » pour un bilan complet.",
+                        "{n} autre(s) alerte(s) du veilleur non notée(s), pour ne pas inonder le journal : lancez « vanguard machine » pour un bilan complet.",
                         "{n} other watcher alert(s) not noted, so as not to flood the log: run “vanguard audit” for a full check."
                     ),
                 );
@@ -1651,7 +1651,7 @@ fn repondre_quasi_certain(groupe: u32, s: &score::Signaux, etat: &mut Etat, debi
         // Alerte Grave, « Bloquer » proposé au bilan ; jamais d'arrêt sans la protection active.
         let titre = tr!("Vanguard : rançongiciel possible", "Vanguard: possible ransomware");
         let texte = trf!(
-            "{nom_aff} a réécrit {} de tes fichiers dans {} dossiers, et leur contenu ne ressemble plus à leur format (chiffré). Coupe Internet et débranche tes disques de sauvegarde, puis ouvre Vanguard pour le bloquer.",
+            "{nom_aff} a réécrit {} de vos fichiers dans {} dossiers, et leur contenu ne ressemble plus à leur format (chiffré). Coupez Internet et débranchez vos disques de sauvegarde, puis ouvrez Vanguard pour le bloquer.",
             "{nom_aff} rewrote {} of your files across {} folders, and their content no longer matches their format (encrypted). Cut the Internet and unplug your backup drives, then open Vanguard to block it.",
             s.reecrits,
             s.dossiers
@@ -1673,7 +1673,7 @@ fn repondre_quasi_certain(groupe: u32, s: &score::Signaux, etat: &mut Etat, debi
             etat.rancon_rafales += 1;
             let titre = tr!("Vanguard : rançongiciel arrêté", "Vanguard: ransomware stopped");
             let texte = trf!(
-                "{nom_aff} chiffrait tes fichiers et a touché un fichier-piège. Vanguard l'a gelé, a relevé la preuve, puis l'a arrêté et mis en quarantaine. {} fichiers ont été touchés avant l'arrêt : la liste est dans « Ce que Vanguard a changé ».",
+                "{nom_aff} chiffrait vos fichiers et a touché un fichier-piège. Vanguard l'a gelé, a relevé la preuve, puis l'a arrêté et mis en quarantaine. {} fichiers ont été touchés avant l'arrêt : la liste est dans « Ce que Vanguard a changé ».",
                 "{nom_aff} was encrypting your files and touched a decoy file. Vanguard froze it, recorded the evidence, then stopped and quarantined it. {} files were touched before the stop: the list is in “What Vanguard changed”.",
                 s.reecrits
             );
@@ -1688,7 +1688,7 @@ fn repondre_quasi_certain(groupe: u32, s: &score::Signaux, etat: &mut Etat, debi
             let titre = tr!("Vanguard : rançongiciel gelé", "Vanguard: ransomware frozen");
             // Seul ce qui existe est proposé : aucun écran n'offre encore « Reprendre » ni « Arrêter » à part.
             let texte = trf!(
-                "{nom_aff} est gelé, pas arrêté : {raison}. Si c'est toi : vanguard veilleur rancongiciel off le reprend (et coupe la surveillance des fichiers).",
+                "{nom_aff} est gelé, pas arrêté : {raison}. Si c'est vous : vanguard veilleur rancongiciel off le reprend (et coupe la surveillance des fichiers).",
                 "{nom_aff} is frozen, not stopped: {raison}. If it was you: vanguard watcher ransomware off resumes it (and turns file watching off)."
             );
             crate::reseau::surveillance::alerter_cle(crate::reseau::tableau::Genre::Rancongiciel, &cle, titre, &texte);
@@ -1696,7 +1696,7 @@ fn repondre_quasi_certain(groupe: u32, s: &score::Signaux, etat: &mut Etat, debi
         reponse::Issue::Refuse(raison) => {
             let titre = tr!("Vanguard : rançongiciel possible", "Vanguard: possible ransomware");
             let texte = trf!(
-                "Des fichiers sont chiffrés en rafale, mais Vanguard ne peut pas geler le programme ({raison}) : rien n'est arrêté tout seul. Coupe Internet et ouvre Vanguard.",
+                "Des fichiers sont chiffrés en rafale, mais Vanguard ne peut pas geler le programme ({raison}) : rien n'est arrêté tout seul. Coupez Internet et ouvrez Vanguard.",
                 "Files are being encrypted in a burst, but Vanguard cannot freeze the program ({raison}): nothing is stopped automatically. Cut the Internet and open Vanguard."
             );
             noter_rancon(debit, &cle, true, titre, &texte);
@@ -1716,7 +1716,7 @@ fn alerter_rafale(verdict: Verdict, s: &score::Signaux, groupe: Option<u32>, deb
             (
                 format!("veilleur|rancongiciel|{objet}"),
                 trf!(
-                    "{nom_aff} a réécrit {} de tes fichiers dans {} dossiers, et leur contenu ne ressemble plus à leur format (chiffré). Coupe Internet et débranche tes disques de sauvegarde, puis ouvre Vanguard pour le bloquer.",
+                    "{nom_aff} a réécrit {} de vos fichiers dans {} dossiers, et leur contenu ne ressemble plus à leur format (chiffré). Coupez Internet et débranchez vos disques de sauvegarde, puis ouvrez Vanguard pour le bloquer.",
                     "{nom_aff} rewrote {} of your files across {} folders, and their content no longer matches their format (encrypted). Cut the Internet and unplug your backup drives, then open Vanguard to block it.",
                     s.reecrits,
                     s.dossiers
@@ -1726,7 +1726,7 @@ fn alerter_rafale(verdict: Verdict, s: &score::Signaux, groupe: Option<u32>, deb
         None => (
             "veilleur|rancongiciel|rafale".to_string(),
             trf!(
-                "Des fichiers sont chiffrés en rafale ({} dans {} dossiers), mais Vanguard ne sait pas quel programme le fait (non vérifié) : rien n'est arrêté tout seul. Coupe Internet et ouvre Vanguard.",
+                "Des fichiers sont chiffrés en rafale ({} dans {} dossiers), mais Vanguard ne sait pas quel programme le fait (non vérifié) : rien n'est arrêté tout seul. Coupez Internet et ouvrez Vanguard.",
                 "Files are being encrypted in a burst ({} across {} folders), but Vanguard cannot tell which program is doing it (not verified): nothing is stopped automatically. Cut the Internet and open Vanguard.",
                 s.reecrits,
                 s.dossiers
@@ -1884,7 +1884,7 @@ fn systemctl(args: &[&str]) -> bool {
 
 fn explication() -> &'static str {
     tr!(
-        "Le veilleur voit chaque programme lancé sur cet ordinateur, de tous les comptes, même s'il ne vit que quelques millisecondes, et chaque connexion TCP ou UDP au moment où elle se ferme. Il les juge comme le bilan (outil offensif connu, commande qui télécharge ou cache ce qu'elle lance) et contre les serveurs de commande de botnets déjà téléchargés par la surveillance ou le bilan. Il n'envoie rien, et garde les alertes au tableau de bord (vanguard tableau). Après l'allumage, il te propose aussi de surveiller tes dossiers personnels contre les rançongiciels : avec la protection active, il peut alors geler puis arrêter un rançongiciel quasi certain. Un programme parti avant d'être lu est compté tel quel, jamais jugé sain ; le programme d'une connexion fermée n'est pas connu (le noyau ne le donne pas). Il tourne pendant ta session ouverte, sans droits d'administrateur ni code chargé dans le noyau.",
+        "Le veilleur voit chaque programme lancé sur cet ordinateur, de tous les comptes, même s'il ne vit que quelques millisecondes, et chaque connexion TCP ou UDP au moment où elle se ferme. Il les juge comme le bilan (outil offensif connu, commande qui télécharge ou cache ce qu'elle lance) et contre les serveurs de commande de botnets déjà téléchargés par la surveillance ou le bilan. Il n'envoie rien, et garde les alertes au tableau de bord (vanguard tableau). Après l'allumage, il vous propose aussi de surveiller vos dossiers personnels contre les rançongiciels : avec la protection active, il peut alors geler puis arrêter un rançongiciel quasi certain. Un programme parti avant d'être lu est compté tel quel, jamais jugé sain ; le programme d'une connexion fermée n'est pas connu (le noyau ne le donne pas). Il tourne pendant votre session ouverte, sans droits d'administrateur ni code chargé dans le noyau.",
         "The watcher sees each program started on this computer, from every account, even one that lives only a few milliseconds, and each TCP or UDP connection as it closes. It judges them as the check does (known offensive tool, command that downloads or hides what it runs) and against the botnet command servers already downloaded by the monitoring or the check. It sends nothing, and keeps the alerts on the dashboard (vanguard dashboard). After it is turned on, it also offers to watch your personal folders against ransomware: with active protection, it can then freeze and stop an almost certain ransomware. A program gone before it could be read is counted as such, never judged safe; the program of a closed connection is not known (the kernel does not give it). It runs while your session is open, without administrator rights or code loaded into the kernel."
     )
 }
@@ -1892,7 +1892,7 @@ fn explication() -> &'static str {
 fn allumer() {
     if root() {
         trp!(
-            "  ✖ En root, rien n'est posé : le veilleur se pose pour ton compte. Relance sans sudo.",
+            "  ✖ En root, rien n'est posé : le veilleur se pose pour votre compte. Relancez sans sudo.",
             "  ✖ As root, nothing is set up: the watcher is set up for your account. Run it again without sudo."
         );
         return;
@@ -2218,7 +2218,7 @@ pub(crate) fn commande(etat: Option<&str>, sous_etat: Option<&str>, servir: bool
 /// Le texte d'accord de la surveillance des fichiers (plan §5) : lu avant la question, dans la langue du bureau.
 fn texte_accord_rancon() -> &'static str {
     tr!(
-        "Le veilleur surveillera aussi tes dossiers personnels en direct. Il lit au plus 12 Kio des fichiers qui viennent d'être réécrits, en mémoire, pour voir s'ils sont chiffrés ; rien ne quitte cet ordinateur. Avec la protection active, il peut geler puis arrêter tout seul un rançongiciel quasi certain (jusqu'ici le veilleur n'arrêtait rien). Un programme malveillant de ton compte peut l'éteindre : ce n'est pas un rempart, ta sauvegarde reste la vraie protection.",
+        "Le veilleur surveillera aussi vos dossiers personnels en direct. Il lit au plus 12 Kio des fichiers qui viennent d'être réécrits, en mémoire, pour voir s'ils sont chiffrés ; rien ne quitte cet ordinateur. Avec la protection active, il peut geler puis arrêter tout seul un rançongiciel quasi certain (jusqu'ici le veilleur n'arrêtait rien). Un programme malveillant de votre compte peut l'éteindre : ce n'est pas un rempart, votre sauvegarde reste la vraie protection.",
         "The watcher will also watch your personal folders live. It reads at most 12 KiB of files that were just rewritten, in memory, to see whether they are encrypted; nothing leaves this computer. With active protection, it can freeze then stop an almost certain ransomware by itself (until now the watcher stopped nothing). A malicious program in your account can switch it off: it is not a wall, your backup remains the real protection."
     )
 }
@@ -2232,7 +2232,7 @@ fn proposer_rancon() {
     println!();
     afficher_aligne("  ", texte_accord_rancon(), 2, "");
     if !demander(tr!(
-        "\n  Surveiller aussi tes dossiers personnels contre les rançongiciels ? [o/N] : ",
+        "\n  Surveiller aussi vos dossiers personnels contre les rançongiciels ? [o/N] : ",
         "\n  Also watch your personal folders against ransomware? [y/N]: "
     ))
     .oui()
@@ -2254,7 +2254,7 @@ fn activer_rancon() {
     let _ = std::fs::write(fichier_rancon_voulu(), b"");
     let _ = systemctl(&["--user", "try-restart", UNITE]);
     trp!(
-        "  {VERT}✔{RESET} Surveillance des fichiers allumée : une rafale de chiffrement t'alerte en quelques secondes.",
+        "  {VERT}✔{RESET} Surveillance des fichiers allumée : une rafale de chiffrement vous alerte en quelques secondes.",
         "  {VERT}✔{RESET} File watching on: an encryption burst alerts you within seconds."
     );
     trp!(
@@ -2417,13 +2417,13 @@ fn juger_etat(voulu: bool, activee: Option<bool>, etat: Option<&Etat>, vivant: b
             CAT,
             Niveau::Eleve,
             tr!(
-                "Le veilleur que tu avais allumé n'est plus activé : son unité a été retirée ou désactivée. Une mise à jour du système peut l'avoir fait ; un logiciel malveillant aussi, qui coupe d'abord ce qui le surveille.",
+                "Le veilleur que vous aviez allumé n'est plus activé : son unité a été retirée ou désactivée. Une mise à jour du système peut l'avoir fait ; un logiciel malveillant aussi, qui coupe d'abord ce qui le surveille.",
                 "The watcher you had turned on is no longer enabled: its unit was removed or disabled. A system update may have done it; so may malware, which first cuts what watches it."
             ),
         )
         .manuel(
             tr!(
-                "Le rallumer : vanguard veilleur on ; si c'est toi qui l'as coupé, vanguard veilleur off pour que Vanguard l'oublie",
+                "Le rallumer : vanguard veilleur on ; si c'est vous qui l'avez coupé, vanguard veilleur off pour que Vanguard l'oublie",
                 "Turn it back on: vanguard watcher on; if you turned it off yourself, vanguard watcher off so Vanguard forgets it"
             ),
             &["vanguard veilleur on"],
@@ -2489,7 +2489,7 @@ fn juger_etat(voulu: bool, activee: Option<bool>, etat: Option<&Etat>, vivant: b
             if e.masque {
                 ajouter(
                     tr!(
-                        "/proc ne montre que tes programmes (hidepid) : ceux des autres comptes comptent parmi les partis.",
+                        "/proc ne montre que vos programmes (hidepid) : ceux des autres comptes comptent parmi les partis.",
                         "/proc only shows your programs (hidepid): those of other accounts count among the gone ones."
                     )
                     .to_string(),

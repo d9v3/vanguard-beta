@@ -87,7 +87,7 @@ fn effacement() -> &'static str {
         )
     } else {
         tr!(
-            "Démarre sur la clé VANGUARD (SystemRescue) : un SSD s'efface en entier avec « blkdiscard » (ou « nvme format » pour un NVMe), un disque dur avec « shred -n 1 » ; puis réinstalle le système pour le prochain. Un disque chiffré LUKS devient illisible dès que son en-tête est effacé (« cryptsetup erase »).",
+            "Démarrez sur la clé VANGUARD (SystemRescue) : un SSD s'efface en entier avec « blkdiscard » (ou « nvme format » pour un NVMe), un disque dur avec « shred -n 1 » ; puis réinstallez le système pour le prochain. Un disque chiffré LUKS devient illisible dès que son en-tête est effacé (« cryptsetup erase »).",
             "Boot from the VANGUARD key (SystemRescue): an SSD is wiped whole with “blkdiscard” (or “nvme format” for an NVMe), a hard disk with “shred -n 1”; then reinstall the system for the next person. A LUKS-encrypted disk becomes unreadable as soon as its header is erased (“cryptsetup erase”)."
         )
     }
@@ -97,17 +97,17 @@ fn effacement() -> &'static str {
 fn comptes() -> &'static str {
     if cfg!(windows) {
         tr!(
-            "Paramètres > Comptes : déconnecte le compte Microsoft, et retire l'appareil de ta liste sur account.microsoft.com (Appareils) ; Paramètres > Confidentialité et sécurité > Localiser mon appareil : désactivé. Déconnecte aussi le navigateur (synchronisation), Office, Steam, Adobe (désautoriser).",
+            "Paramètres > Comptes : déconnectez le compte Microsoft, et retirez l'appareil de votre liste sur account.microsoft.com (Appareils) ; Paramètres > Confidentialité et sécurité > Localiser mon appareil : désactivé. Déconnectez aussi le navigateur (synchronisation), Office, Steam, Adobe (désautoriser).",
             "Settings > Accounts: sign out of the Microsoft account, and remove the device from your list on account.microsoft.com (Devices); Settings > Privacy & security > Find my device: off. Also sign out of the browser (sync), Office, Steam, Adobe (deauthorize)."
         )
     } else if cfg!(target_os = "macos") {
         tr!(
-            "Réglages Système > Identifiant Apple : désactive Localiser mon Mac, puis déconnecte-toi ; sinon le verrou d'activation rend le Mac inutilisable pour le prochain. Déconnecte aussi iMessage, Musique (désautoriser l'ordinateur), le navigateur, Steam, Adobe.",
+            "Réglages Système > Identifiant Apple : désactivez Localiser mon Mac, puis déconnectez-vous ; sinon le verrou d'activation rend le Mac inutilisable pour le prochain. Déconnectez aussi iMessage, Musique (désautoriser l'ordinateur), le navigateur, Steam, Adobe.",
             "System Settings > Apple ID: turn off Find My Mac, then sign out; otherwise the Activation Lock makes the Mac unusable for the next person. Also sign out of iMessage, Music (deauthorize this computer), the browser, Steam, Adobe."
         )
     } else {
         tr!(
-            "Déconnecte le navigateur (synchronisation Firefox ou Google), les comptes en ligne du bureau (GNOME, KDE), Steam, et retire les clés SSH et jetons (~/.ssh, gestionnaires de mots de passe) qui ouvrent tes serveurs et services depuis cet ordinateur.",
+            "Déconnectez le navigateur (synchronisation Firefox ou Google), les comptes en ligne du bureau (GNOME, KDE), Steam, et retirez les clés SSH et jetons (~/.ssh, gestionnaires de mots de passe) qui ouvrent vos serveurs et services depuis cet ordinateur.",
             "Sign out of the browser (Firefox or Google sync), the desktop's online accounts (GNOME, KDE), Steam, and remove the SSH keys and tokens (~/.ssh, password managers) that open your servers and services from this computer."
         )
     }
@@ -117,15 +117,15 @@ fn comptes() -> &'static str {
 fn cle_de_recuperation(chiffre: Option<bool>) -> &'static str {
     match chiffre {
         Some(true) if cfg!(windows) => tr!(
-            "Le disque est chiffré (BitLocker) : la clé de récupération est dans ton compte Microsoft (account.microsoft.com > Appareils > clés de récupération). Garde-la jusqu'à la fin : un effacement interrompu laisse un disque chiffré qui ne démarre plus, et elle seule le rouvre. Après l'effacement, elle ne sert plus.",
+            "Le disque est chiffré (BitLocker) : la clé de récupération est dans votre compte Microsoft (account.microsoft.com > Appareils > clés de récupération). Gardez-la jusqu'à la fin : un effacement interrompu laisse un disque chiffré qui ne démarre plus, et elle seule le rouvre. Après l'effacement, elle ne sert plus.",
             "The disk is encrypted (BitLocker): the recovery key is in your Microsoft account (account.microsoft.com > Devices > recovery keys). Keep it until the end: an interrupted wipe leaves an encrypted disk that no longer boots, and only the key reopens it. After the wipe, it is useless."
         ),
         Some(true) if cfg!(target_os = "macos") => tr!(
-            "Le disque est chiffré (FileVault) : la clé de secours est celle notée à l'activation, ou dans iCloud. Garde-la jusqu'à la fin de l'effacement ; après, elle ne sert plus.",
+            "Le disque est chiffré (FileVault) : la clé de secours est celle notée à l'activation, ou dans iCloud. Gardez-la jusqu'à la fin de l'effacement ; après, elle ne sert plus.",
             "The disk is encrypted (FileVault): the recovery key is the one noted at activation, or in iCloud. Keep it until the wipe is done; afterwards, it is useless."
         ),
         Some(true) => tr!(
-            "Le disque est chiffré (LUKS) : bonne nouvelle, les données sont déjà illisibles sans la phrase de passe ; effacer l'en-tête LUKS suffit à les rendre irrécupérables, même pour toi.",
+            "Le disque est chiffré (LUKS) : bonne nouvelle, les données sont déjà illisibles sans la phrase de passe ; effacer l'en-tête LUKS suffit à les rendre irrécupérables, même pour vous.",
             "The disk is encrypted (LUKS): good news, the data is already unreadable without the passphrase; erasing the LUKS header is enough to make it unrecoverable, even for you."
         ),
         Some(false) => tr!(
@@ -133,7 +133,7 @@ fn cle_de_recuperation(chiffre: Option<bool>) -> &'static str {
             "The disk is not encrypted: everything “normally” deleted for years is still recoverable on it. The wipe below must clean the whole drive, not just delete files."
         ),
         None => tr!(
-            "Vanguard n'a pas pu lire l'état du chiffrement : s'il est chiffré, mets la clé de récupération de côté jusqu'à la fin de l'effacement ; sinon, l'effacement doit nettoyer le lecteur en entier.",
+            "Vanguard n'a pas pu lire l'état du chiffrement : s'il est chiffré, mettez la clé de récupération de côté jusqu'à la fin de l'effacement ; sinon, l'effacement doit nettoyer le lecteur en entier.",
             "Vanguard could not read the encryption state: if encrypted, set the recovery key aside until the wipe is done; otherwise, the wipe must clean the whole drive."
         ),
     }
@@ -151,11 +151,11 @@ fn puce(tpm: Option<bool>) -> Option<&'static str> {
             "TPM chip present: it holds the BitLocker and Windows Hello keys. After the wipe, “Reset this PC” clears it; otherwise Windows Security > Device security > Security processor > Troubleshoot > Clear TPM."
         )),
         Some(true) => Some(tr!(
-            "Puce TPM présente : elle peut garder des clés de ton disque. Après l'effacement, remets-la à zéro dans le firmware (UEFI, section Sécurité : « Clear TPM »).",
+            "Puce TPM présente : elle peut garder des clés de votre disque. Après l'effacement, remettez-la à zéro dans le firmware (UEFI, section Sécurité : « Clear TPM »).",
             "TPM chip present: it may hold keys of your disk. After the wipe, clear it in the firmware (UEFI, Security section: “Clear TPM”)."
         )),
         None => Some(tr!(
-            "Puce TPM : état illisible ici. Si l'ordinateur en a une (tous ceux faits pour Windows 11), remets-la à zéro après l'effacement, dans le firmware (UEFI) ou par « Réinitialiser ce PC ».",
+            "Puce TPM : état illisible ici. Si l'ordinateur en a une (tous ceux faits pour Windows 11), remettez-la à zéro après l'effacement, dans le firmware (UEFI) ou par « Réinitialiser ce PC ».",
             "TPM chip: state unreadable here. If the computer has one (all those built for Windows 11), clear it after the wipe, in the firmware (UEFI) or with “Reset this PC”."
         )),
     }
@@ -175,7 +175,7 @@ pub(super) fn etapes(
         e.push(Etape {
             titre: tr!("Une copie vérifiée d'abord", "A checked copy first"),
             detail: tr!(
-                "Documents, Images, Vidéos, Musique, Bureau vers un disque externe, chaque fichier relu après la copie. Pense aussi à ce qui n'est pas dans ces dossiers : mots de passe du navigateur (exportés dans le gestionnaire), clés de licence, favoris, courriels locaux, codes de validation en deux étapes.",
+                "Documents, Images, Vidéos, Musique, Bureau vers un disque externe, chaque fichier relu après la copie. Pensez aussi à ce qui n'est pas dans ces dossiers : mots de passe du navigateur (exportés dans le gestionnaire), clés de licence, favoris, courriels locaux, codes de validation en deux étapes.",
                 "Documents, Pictures, Videos, Music, Desktop to an external disk, each file read back after the copy. Also think of what is not in those folders: browser passwords (exported to the manager), license keys, bookmarks, local emails, two-step verification codes."
             )
             .to_string(),
@@ -189,7 +189,7 @@ pub(super) fn etapes(
         });
     }
     e.push(Etape {
-        titre: tr!("Déconnecter tes comptes", "Sign out of your accounts"),
+        titre: tr!("Déconnecter vos comptes", "Sign out of your accounts"),
         detail: comptes().to_string(),
         outil: None,
     });
@@ -200,9 +200,9 @@ pub(super) fn etapes(
     });
     match devenir {
         Devenir::Rendu => e.push(Etape {
-            titre: tr!("Rendu : ne l'efface pas toi-même", "Returned: do not wipe it yourself"),
+            titre: tr!("Rendu : ne l'effacez pas vous-même", "Returned: do not wipe it yourself"),
             detail: tr!(
-                "L'appareil appartient à l'employeur, à l'école ou au loueur : c'est leur procédure qui s'applique, et un effacement non demandé peut leur poser problème (licences, gestion à distance). Retire seulement tes comptes et fichiers personnels, et demande-leur ce qu'ils attendent.",
+                "L'appareil appartient à l'employeur, à l'école ou au loueur : c'est leur procédure qui s'applique, et un effacement non demandé peut leur poser problème (licences, gestion à distance). Retirez seulement vos comptes et fichiers personnels, et demandez-leur ce qu'ils attendent.",
                 "The device belongs to the employer, the school or the renter: their procedure applies, and an unrequested wipe may cause them trouble (licenses, remote management). Only remove your personal accounts and files, and ask them what they expect."
             )
             .to_string(),
@@ -211,7 +211,7 @@ pub(super) fn etapes(
         Devenir::Recycle => e.push(Etape {
             titre: tr!("Recyclage : le disque à part", "Recycling: keep the disk separate"),
             detail: tr!(
-                "Si l'ordinateur ne démarre plus, le disque, lui, se lit sur un autre : retire-le (SSD, NVMe ou disque dur) et garde-le, ou détruis-le (perceuse à travers un disque dur ; un SSD se casse). Le reste va au point de collecte. S'il démarre encore, l'effacement ci-dessous suffit.",
+                "Si l'ordinateur ne démarre plus, le disque, lui, se lit sur un autre : retirez-le (SSD, NVMe ou disque dur) et gardez-le, ou détruisez-le (perceuse à travers un disque dur ; un SSD se casse). Le reste va au point de collecte. S'il démarre encore, l'effacement ci-dessous suffit.",
                 "If the computer no longer boots, the disk itself is readable on another one: remove it (SSD, NVMe or hard disk) and keep it, or destroy it (drill through a hard disk; an SSD snaps). The rest goes to the collection point. If it still boots, the wipe below is enough."
             )
             .to_string(),
@@ -239,7 +239,7 @@ pub(super) fn etapes(
     e.push(Etape {
         titre: tr!("Les données de Vanguard", "Vanguard's data"),
         detail: trf!(
-            "La base des appareils, les surnoms et l'historique de tes réseaux sont dans {} : exporte-les si tu veux les retrouver sur le prochain ordinateur (ils partent avec l'effacement). La clé VANGUARD, elle, te suit.",
+            "La base des appareils, les surnoms et l'historique de vos réseaux sont dans {} : exportez-les si vous voulez les retrouver sur le prochain ordinateur (ils partent avec l'effacement). La clé VANGUARD, elle, vous suit.",
             "The device database, the nicknames and the history of your networks are in {}: export them if you want them back on the next computer (the wipe erases them). The VANGUARD key itself goes with you.",
             chemin_affichable(&crate::socle::dossier_local())
         ),
@@ -274,7 +274,7 @@ pub(super) fn depart() {
     let devenir = Devenir::depuis(devenir);
     let Some(copie) = question(
         tr!(
-            "As-tu déjà une copie vérifiée de ce que tu veux garder ?",
+            "Avez-vous déjà une copie vérifiée de ce que vous voulez garder ?",
             "Do you already have a checked copy of what you want to keep?"
         ),
         &[
@@ -308,12 +308,12 @@ pub(super) fn depart() {
         println!();
     }
     a_savoir(&[tr!(
-        "Vanguard n'efface rien lui-même : l'outil du système sait traiter chaque disque (SSD, puce de sécurité, verrou d'activation), et c'est toi qui appuies. Ce parcours vérifie et explique, c'est tout.",
+        "Vanguard n'efface rien lui-même : l'outil du système sait traiter chaque disque (SSD, puce de sécurité, verrou d'activation), et c'est vous qui appuyez. Ce parcours vérifie et explique, c'est tout.",
         "Vanguard wipes nothing itself: the system's tool knows how to handle each disk (SSD, security chip, activation lock), and you are the one who presses. This path checks and explains, that is all."
     )]);
     if devenir == Devenir::VenduOuDonne {
         conseil(tr!(
-            "Donne au prochain la facture ou la boîte si tu les as, et dis-lui que le disque a été effacé : il saura qu'il doit tout réinstaller lui-même, avec ses propres comptes.",
+            "Donnez au prochain la facture ou la boîte si vous les avez, et dites-lui que le disque a été effacé : il saura qu'il doit tout réinstaller lui-même, avec ses propres comptes.",
             "Give the next person the invoice or the box if you have them, and tell them the disk was wiped: they will know they must reinstall everything themselves, with their own accounts."
         ));
     }

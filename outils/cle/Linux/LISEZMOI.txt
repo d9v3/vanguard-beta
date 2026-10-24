@@ -28,10 +28,10 @@ Le programme : « vanguard », dans ce dossier. Toutes les distributions 64 bits
 
    Sans rien après « vanguard » : le menu. Sinon (« vanguard » = le chemin complet ci-dessus) :
 
-     vanguard complet              bilan complet : cette machine, puis le réseau
+     vanguard complet              bilan complet : cet ordinateur, puis le réseau
      vanguard complet --texte      même bilan, rapport en texte simple (serveur sans écran)
      vanguard corriger             bilan, puis chaque correction montrée et confirmée
-     vanguard machine              audit de cette machine seulement
+     vanguard machine              audit de cet ordinateur seulement
      vanguard reseau               scan du réseau local
      vanguard maj                  mises à jour : système, Flatpak, Snap, firmware…
      vanguard reparer              réparations : Internet, disque plein, mises à jour bloquées…

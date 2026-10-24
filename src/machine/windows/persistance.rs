@@ -141,7 +141,7 @@ pub(crate) struct ValeurRun {
 /// valeurs comptent : le filtre « PS* » du script n'écartait que les propriétés ajoutées par PowerShell (PSPath…),
 /// mais cachait aussi une valeur nommée « PSUpdate ». Les noms sont lus en UTF-16 brut : la conversion en texte de
 /// winreg refusait un nom mal formé, et la valeur, que Windows lance quand même, était sautée. La seule lecture des
-/// clés Run de Vanguard : « Quelqu'un contrôle mon ordi ? » et « Logiciels espions » en avaient chacun une copie, qui
+/// clés Run de Vanguard : « Mon ordinateur est-il contrôlé ? » et « Logiciels espions » en avaient chacun une copie, qui
 /// jetait sans rien dire les valeurs que winreg ne rendait pas et ne lisait pas toutes les clés.
 pub(crate) fn lignes_run() -> (Vec<ValeurRun>, Vec<&'static str>) {
     use std::os::windows::ffi::OsStrExt;
@@ -576,7 +576,7 @@ fn info_fenetre_cachee(ou: &str, commande: &str) -> Constat {
         "Persistance",
         Niveau::Info,
         trf!(
-            "{ou} lance PowerShell en fenêtre cachée ({commande}) : des outils légitimes le font, mais c'est aussi un réflexe de logiciel malveillant. Vérifie que tu le reconnais.",
+            "{ou} lance PowerShell en fenêtre cachée ({commande}) : des outils légitimes le font, mais c'est aussi un réflexe de logiciel malveillant. Vérifiez que vous le reconnaissez.",
             "{ou} starts PowerShell in a hidden window ({commande}): legitimate tools do this, but so does malware. Check that you recognize it."
         ),
     )

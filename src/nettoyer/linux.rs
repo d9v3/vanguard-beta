@@ -280,7 +280,7 @@ fn paquets_inutiles(gestion: Paquets) -> Option<Element> {
         )
         .into(),
         prudence: Some(tr!(
-            "La liste s'affiche et se confirme avant : vérifie qu'elle ne contient rien que tu utilises.",
+            "La liste s'affiche et se confirme avant : vérifiez qu'elle ne contient rien que vous utilisez.",
             "The list is shown and confirmed first: check it holds nothing you use."
         )),
         taille,

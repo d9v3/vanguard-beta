@@ -147,7 +147,7 @@ pub(crate) fn proposer(nom: &str, liste: &[Element], restauration: bool) {
         String::new(),
         ligne_titre(nom),
         trf!(
-            "  {GRIS}Coche ce que tu veux faire ; [✔] = déjà fait.{RESET}",
+            "  {GRIS}Cochez ce que vous voulez faire ; [✔] = déjà fait.{RESET}",
             "  {GRIS}Check what you want to do; [✔] = already done.{RESET}"
         ),
         String::new(),
@@ -216,7 +216,7 @@ pub(crate) fn proposer(nom: &str, liste: &[Element], restauration: bool) {
         afficher_aligne("  ", &fait, 4, "");
     } else {
         trp!(
-            "  ✖ Une étape a échoué : lis le message ci-dessus.",
+            "  ✖ Une étape a échoué : lisez le message ci-dessus.",
             "  ✖ A step failed: read the message above."
         );
     }

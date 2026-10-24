@@ -245,8 +245,8 @@ fn script_admin(correctifs: &[Vec<String>], resultats: &str) -> String {
     }
     script += "if ($resultats) { $resultats.Dispose() }\ntry { Stop-Transcript | Out-Null } catch { }\n";
     script += tr!(
-        "if ($echecs) { Write-Host ''; Write-Host \"Terminé, avec $echecs étape(s) en échec.\" -ForegroundColor Red; Read-Host 'Appuie sur Entrée pour fermer'; exit 1 }\n\
-               Write-Host ''; Write-Host 'Terminé.' -ForegroundColor Green; Read-Host 'Appuie sur Entrée pour fermer'; exit 0",
+        "if ($echecs) { Write-Host ''; Write-Host \"Terminé, avec $echecs étape(s) en échec.\" -ForegroundColor Red; Read-Host 'Appuyez sur Entrée pour fermer'; exit 1 }\n\
+               Write-Host ''; Write-Host 'Terminé.' -ForegroundColor Green; Read-Host 'Appuyez sur Entrée pour fermer'; exit 0",
         "if ($echecs) { Write-Host ''; Write-Host \"Finished, with $echecs failed step(s).\" -ForegroundColor Red; Read-Host 'Press Enter to close'; exit 1 }\n\
                Write-Host ''; Write-Host 'Finished.' -ForegroundColor Green; Read-Host 'Press Enter to close'; exit 0"
     );
@@ -281,10 +281,10 @@ pub(super) fn sha256_hex(octets: &[u8]) -> String {
 fn amorce_admin(chemin: &str, empreinte: &str) -> String {
     let chemin = crate::commande::ps_texte(chemin);
     trf!(
-        "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {{ Write-Host 'PowerShell en mode restreint : script non vérifiable, rien n''est lancé.' -ForegroundColor Red; Read-Host 'Appuie sur Entrée pour fermer'; exit {LANGAGE_RESTREINT} }}; \
+        "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {{ Write-Host 'PowerShell en mode restreint : script non vérifiable, rien n''est lancé.' -ForegroundColor Red; Read-Host 'Appuyez sur Entrée pour fermer'; exit {LANGAGE_RESTREINT} }}; \
          $o = $null; try {{ $o = [IO.File]::ReadAllBytes('{chemin}') }} catch {{ }}; \
          $h = if ($null -ne $o) {{ [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($o)).Replace('-', '') }} else {{ '' }}; \
-         if ($h -ne '{empreinte}') {{ Write-Host 'Script modifié ou supprimé depuis son écriture : rien n''est lancé.' -ForegroundColor Red; Read-Host 'Appuie sur Entrée pour fermer'; exit {SCRIPT_MODIFIE} }}; \
+         if ($h -ne '{empreinte}') {{ Write-Host 'Script modifié ou supprimé depuis son écriture : rien n''est lancé.' -ForegroundColor Red; Read-Host 'Appuyez sur Entrée pour fermer'; exit {SCRIPT_MODIFIE} }}; \
          $t = [Text.Encoding]::UTF8.GetString($o); if ($t.Length -and $t[0] -eq [char]0xFEFF) {{ $t = $t.Substring(1) }}; \
          & ([ScriptBlock]::Create($t))",
         "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {{ Write-Host 'PowerShell in restricted mode: script cannot be verified, nothing is run.' -ForegroundColor Red; Read-Host 'Press Enter to close'; exit {LANGAGE_RESTREINT} }}; \
@@ -314,7 +314,7 @@ pub fn powershell_admin_chacune(correctifs: &[Vec<String>]) -> Vec<bool> {
     // La fenêtre administrateur est un autre processus : elle répond par ce fichier, une ligne par correctif.
     let resultats = dossier.join(format!("{nom}.resultats"));
     let entete = trf!(
-        "# Correction proposée par Vanguard {} le {}.\r\n# Ce script n'est lancé qu'après ton accord (demande d'administrateur).\r\n\r\n",
+        "# Correction proposée par Vanguard {} le {}.\r\n# Ce script n'est lancé qu'après votre accord (demande d'administrateur).\r\n\r\n",
         "# Fix proposed by Vanguard {} on {}.\r\n# This script only runs after your consent (administrator prompt).\r\n\r\n",
         env!("CARGO_PKG_VERSION"),
         chrono::Local::now().format(tr!("%d/%m/%Y à %H:%M", "%Y-%m-%d %H:%M"))
@@ -361,13 +361,13 @@ pub fn powershell_admin_chacune(correctifs: &[Vec<String>]) -> Vec<bool> {
     let code = statut.as_ref().ok().and_then(std::process::ExitStatus::code);
     if code == Some(crate::reparer::SANS_POINT_ARRETE) {
         trp!(
-            "    Pas de point de restauration : arrêté à ta demande, rien n'a changé.",
+            "    Pas de point de restauration : arrêté à votre demande, rien n'a changé.",
             "    No restore point: stopped as you asked, nothing was changed."
         );
     }
     if code == Some(SCRIPT_MODIFIE) {
         trp!(
-            "    ✖ Le script de correction a été modifié ou supprimé après son écriture : rien n'a été lancé avec les droits d'administrateur. Un autre programme y a touché : lance une analyse antivirus.",
+            "    ✖ Le script de correction a été modifié ou supprimé après son écriture : rien n'a été lancé avec les droits d'administrateur. Un autre programme y a touché : lancez une analyse antivirus.",
             "    ✖ The fix script was modified or deleted after being written: nothing was run with administrator rights. Another program touched it: run an antivirus scan."
         );
     }
@@ -669,8 +669,8 @@ fn bureau_distance() -> Constat {
     // Session ouverte PAR le Bureau à distance (SESSIONNAME = RDP-Tcp#…) : le couper couperait l'utilisateur
     // lui-même. Jamais en correction automatique dans ce cas.
     if session_a_distance() {
-        alerte("Bureau à distance", Niveau::Moyen, tr!("RDP activé ; tu es connecté par lui en ce moment.", "RDP on; you are connected through it right now.")).manuel(
-            tr!("Ne pas le couper d'ici (tu perdrais la connexion). S'il n'est pas utile, le désactiver depuis l'écran de l'ordinateur : Paramètres > Système > Bureau à distance", "Do not turn it off from here (you would lose the connection). If it is not needed, turn it off from the computer's own screen: Settings > System > Remote Desktop"),
+        alerte("Bureau à distance", Niveau::Moyen, tr!("RDP activé ; vous êtes connecté par lui en ce moment.", "RDP on; you are connected through it right now.")).manuel(
+            tr!("Ne pas le couper d'ici (vous perdriez la connexion). S'il n'est pas utile, le désactiver depuis l'écran de l'ordinateur : Paramètres > Système > Bureau à distance", "Do not turn it off from here (you would lose the connection). If it is not needed, turn it off from the computer's own screen: Settings > System > Remote Desktop"),
             &[],
         )
     } else if impose {
@@ -700,7 +700,7 @@ fn bureau_distance() -> Constat {
         )
         .corriger(
             tr!(
-                "Désactiver le Bureau à distance si tu ne l'utilises pas",
+                "Désactiver le Bureau à distance si vous ne l'utilisez pas",
                 "Turn Remote Desktop off if you do not use it"
             ),
             &[&couper],
@@ -776,7 +776,7 @@ fn juger_uac(lua: Option<&str>, consentement: Option<&str>) -> Option<Constat> {
                 "UAC",
                 Niveau::Eleve,
                 tr!(
-                    "L'UAC ne demande plus rien aux administrateurs : un programme lancé depuis ton compte prend \
+                    "L'UAC ne demande plus rien aux administrateurs : un programme lancé depuis votre compte prend \
                      les droits admin en silence.",
                     "UAC no longer asks administrators anything: a program started from your account silently \
                      gets admin rights."
@@ -1273,7 +1273,7 @@ fn lire_ports_udp(liste: &str, pare_feu_actif: bool, ip_lan: Option<&str>) -> Ve
             ),
             1900 => constat.corriger(
                 tr!(
-                    "Couper la découverte UPnP (SSDP) ; à garder si tu diffuses vers une TV ou une console",
+                    "Couper la découverte UPnP (SSDP) ; à garder si vous diffusez vers une TV ou une console",
                     "Turn off UPnP discovery (SSDP); keep it if you cast to a TV or console"
                 ),
                 &["Stop-Service SSDPSRV -Force", "Set-Service SSDPSRV -StartupType Disabled"],

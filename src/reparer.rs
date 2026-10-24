@@ -192,7 +192,7 @@ fn session_ssh() -> bool {
 fn sauf_en_ssh(r: &mut Reparation) {
     if session_ssh() {
         r.bloquee = Some(tr!(
-            "tu es connecté par SSH : relancer le réseau couperait ta connexion",
+            "vous êtes connecté par SSH : relancer le réseau couperait votre connexion",
             "you are connected over SSH: restarting the network would cut your connection"
         ));
     }
@@ -476,7 +476,7 @@ fn pare_feu(e: &EtatPareFeu) -> Reparation {
     let ssh = |r: &mut Reparation| {
         if e.ssh {
             r.bloquee = Some(tr!(
-                "tu es connecté par SSH : changer le pare-feu pourrait couper ta connexion",
+                "vous êtes connecté par SSH : changer le pare-feu pourrait couper votre connexion",
                 "you are connected over SSH: changing the firewall could cut your connection"
             ));
         }
@@ -518,7 +518,7 @@ fn pare_feu(e: &EtatPareFeu) -> Reparation {
         }
         let Some(g) = e.gestion else {
             r.inutile = Some(String::from(tr!(
-                "aucun pare-feu, et gestionnaire de paquets non reconnu : installe ufw avec ta distribution",
+                "aucun pare-feu, et gestionnaire de paquets non reconnu : installez ufw avec votre distribution",
                 "no firewall, and package manager not recognized: install ufw with your distribution"
             )));
             return r;
@@ -570,7 +570,7 @@ fn paquets_casses(
             &[
                 // pamac (Manjaro) et PackageKit (Discover) travaillent sur la même base sans lancer pacman : effacer
                 // leur verrou en pleine opération l'abîmerait.
-                tr!("pgrep -x 'pacman|pamac-daemon|packagekitd' >/dev/null && echo 'un gestionnaire de paquets tourne déjà (pacman, pamac ou PackageKit) : attends la fin' && exit 1; sudo rm -f /var/lib/pacman/db.lck", "pgrep -x 'pacman|pamac-daemon|packagekitd' >/dev/null && echo 'a package manager is already running (pacman, pamac or PackageKit): wait for it to finish' && exit 1; sudo rm -f /var/lib/pacman/db.lck"),
+                tr!("pgrep -x 'pacman|pamac-daemon|packagekitd' >/dev/null && echo 'un gestionnaire de paquets tourne déjà (pacman, pamac ou PackageKit) : attendez la fin' && exit 1; sudo rm -f /var/lib/pacman/db.lck", "pgrep -x 'pacman|pamac-daemon|packagekitd' >/dev/null && echo 'a package manager is already running (pacman, pamac or PackageKit): wait for it to finish' && exit 1; sudo rm -f /var/lib/pacman/db.lck"),
                 // Les dérivées signent aussi leurs paquets avec leurs propres clés.
                 "sudo pacman -Sy --needed --noconfirm archlinux-keyring $(pacman -Qq manjaro-keyring endeavouros-keyring cachyos-keyring omarchy-keyring 2>/dev/null)",
                 // Sous Omarchy, sa mise à jour (instantané, migrations) plutôt qu'un pacman -Syu brut.
@@ -660,7 +660,7 @@ pub fn liste() -> Vec<Reparation> {
         if btrfs {
             tr!("Lit l'état SMART de chaque disque (usure, secteurs défectueux) et vérifie toutes les données du système (btrfs scrub).", "Reads the SMART state of each disk (wear, bad sectors) and checks all the system data (btrfs scrub).")
         } else {
-            tr!("Lit l'état SMART de chaque disque (usure, secteurs défectueux). Pour réparer un ext4, démarre sur la clé (SystemRescue).", "Reads the SMART state of each disk (wear, bad sectors). To repair ext4, boot from the USB key (SystemRescue).")
+            tr!("Lit l'état SMART de chaque disque (usure, secteurs défectueux). Pour réparer un ext4, démarrez sur la clé (SystemRescue).", "Reads the SMART state of each disk (wear, bad sectors). To repair ext4, boot from the USB key (SystemRescue).")
         },
         if btrfs { tr!("de quelques minutes à une heure", "from a few minutes to an hour") } else { tr!("quelques secondes", "a few seconds") },
         &disque,
@@ -782,7 +782,7 @@ pub fn liste() -> Vec<Reparation> {
     let mut r = rep(
         tr!("Internet ne marche plus", "Internet no longer works"),
         tr!(
-            "Vide le cache DNS, redemande une adresse à la box et relance le Wi-Fi (sites introuvables, Wi-Fi bloqué).",
+            "Vide le cache DNS, redemande une adresse au routeur et relance le Wi-Fi (sites introuvables, Wi-Fi bloqué).",
             "Clears the DNS cache, asks the router for a new address and restarts Wi-Fi (sites not found, Wi-Fi stuck)."
         ),
         tr!("quelques secondes", "a few seconds"),
@@ -1130,7 +1130,7 @@ pub fn liste() -> Vec<Reparation> {
     ).avec_restauration();
     if a_distance {
         reseau.bloquee = Some(tr!(
-            "tu es connecté par le Bureau à distance : cette réparation couperait ta connexion",
+            "vous êtes connecté par le Bureau à distance : cette réparation couperait votre connexion",
             "you are connected over Remote Desktop: this repair would cut your connection"
         ));
     }
@@ -1267,7 +1267,7 @@ pub fn lancer(r: &Reparation) {
     trp!("  {GRIS}Durée : {}{RESET}", "  {GRIS}Duration: {}{RESET}", r.duree);
     if let Some(raison) = r.bloquee {
         trp!(
-            "\n  ✖ Pas maintenant : {raison}. Fais-la depuis l'écran de l'ordinateur.",
+            "\n  ✖ Pas maintenant : {raison}. Faites-la depuis l'écran de l'ordinateur.",
             "\n  ✖ Not now: {raison}. Do it from the computer's own screen."
         );
         return;
@@ -1317,7 +1317,7 @@ pub fn lancer(r: &Reparation) {
         );
     } else {
         trp!(
-            "  ✖ Une étape a échoué : lis le message ci-dessus.",
+            "  ✖ Une étape a échoué : lisez le message ci-dessus.",
             "  ✖ A step failed: read the message above."
         );
     }

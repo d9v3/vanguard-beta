@@ -85,7 +85,7 @@ pub(crate) fn constat_navigateur(nom: &str, jours: u64) -> Constat {
         "Navigateur",
         Niveau::Moyen,
         trf!(
-            "{nom} n'a pas été mis à jour depuis {jours} jours, alors qu'il l'est toutes les quatre semaines : sa mise à jour automatique ne se fait plus, et chaque faille corrigée depuis reste ouverte chez toi.",
+            "{nom} n'a pas été mis à jour depuis {jours} jours, alors qu'il l'est toutes les quatre semaines : sa mise à jour automatique ne se fait plus, et chaque faille corrigée depuis reste ouverte chez vous.",
             "{nom} has not been updated for {jours} days, though it is every four weeks: its automatic update no longer happens, and every flaw fixed since stays open here."
         ),
     )

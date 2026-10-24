@@ -222,7 +222,7 @@ pub fn constat() -> Option<crate::machine::Constat> {
             )
             .manuel(
                 tr!(
-                    "Regarde ce qui a accès au dossier de Vanguard (menu Protection › Intégrité, Qui parle à Internet ?) ; la chaîne repart au prochain bilan",
+                    "Regardez ce qui a accès au dossier de Vanguard (menu Protection › Intégrité, Qui parle à Internet ?) ; la chaîne repart au prochain bilan",
                     "Look at what has access to Vanguard's folder (Protection menu › Integrity, Who talks to the Internet?); the chain restarts at the next check"
                 ),
                 &[],

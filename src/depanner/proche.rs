@@ -148,7 +148,7 @@ impl Sujet {
             ),
             Sujet::SansFil => tr!("Le Wi-Fi et le Bluetooth sont sûrs.", "Wi-Fi and Bluetooth are safe."),
             Sujet::Maison => tr!(
-                "Les autres appareils de la maison n'exposent rien d'inquiétant.",
+                "Les autres appareils du réseau local n'exposent rien d'inquiétant.",
                 "The other devices in the home expose nothing worrying."
             ),
         }
@@ -205,7 +205,7 @@ impl Sujet {
                 "Wi-Fi or Bluetooth is not safe."
             ),
             Sujet::Maison => tr!(
-                "Un appareil de la maison est à régler sur l'appareil lui-même (box, imprimante…).",
+                "Un appareil du réseau local est à régler sur l'appareil lui-même (routeur, imprimante…).",
                 "A device in the home needs fixing on the device itself (router, printer…)."
             ),
         }
@@ -337,7 +337,7 @@ fn conseils(qui: Qui, raison: Raison) -> Vec<&'static str> {
     let mut c = Vec::new();
     match qui {
         Qui::Age => c.push(tr!(
-            "Si quelqu'un t'appelle pour « réparer ton ordinateur », ou si une fenêtre dit qu'il est bloqué et donne un numéro à appeler : raccroche, ferme la fenêtre, et appelle la personne qui t'aide. Les vraies entreprises n'appellent jamais d'elles-mêmes.",
+            "Si quelqu'un vous appelle pour « réparer votre ordinateur », ou si une fenêtre dit qu'il est bloqué et donne un numéro à appeler : raccrochez, fermez la fenêtre, et appelez la personne qui vous aide. Les vraies entreprises n'appellent jamais d'elles-mêmes.",
             "If someone calls you to “fix your computer”, or a window says it is locked and gives a number to call: hang up, close the window, and call the person who helps you. Real companies never call on their own."
         )),
         Qui::Enfant => {
@@ -351,17 +351,17 @@ fn conseils(qui: Qui, raison: Raison) -> Vec<&'static str> {
             ));
         }
         Qui::Adulte => c.push(tr!(
-            "Active la validation en deux étapes sur ton courriel et ta banque : un mot de passe volé ne suffit alors plus.",
+            "Activez la validation en deux étapes sur votre courriel et votre banque : un mot de passe volé ne suffit alors plus.",
             "Turn on two-step verification for your email and your bank: a stolen password is then no longer enough."
         )),
     }
     match raison {
         Raison::Lent => c.push(tr!(
-            "Redémarre l'ordinateur au moins une fois par semaine, et désinstalle les programmes dont tu ne te sers plus : il reste plus rapide.",
+            "Redémarrez l'ordinateur au moins une fois par semaine, et désinstallez les programmes dont vous ne vous servez plus : il reste plus rapide.",
             "Restart the computer at least once a week, and uninstall the programs you no longer use: it stays faster."
         )),
         Raison::Virus => c.push(tr!(
-            "Un message qui presse (« ton compte sera fermé », « virus détecté », « colis en attente ») est presque toujours une arnaque : ne clique pas, ne rappelle pas, demande d'abord.",
+            "Un message qui presse (« votre compte sera fermé », « virus détecté », « colis en attente ») est presque toujours une arnaque : ne cliquez pas, ne rappelez pas, demandez d'abord.",
             "A message that rushes you (“your account will be closed”, “virus detected”, “parcel waiting”) is almost always a scam: do not click, do not call back, ask first."
         )),
         Raison::Bilan => {}
@@ -472,7 +472,7 @@ pub(super) fn proche() {
         return;
     };
     let Some(raison) = question(
-        tr!("Pourquoi te l'a-t-on confié ?", "Why were you asked to look at it?"),
+        tr!("Pourquoi vous l'a-t-on confié ?", "Why were you asked to look at it?"),
         &[
             tr!("Il est lent", "It is slow"),
             tr!("Peur d'un virus ou d'une arnaque", "Fear of a virus or a scam"),
@@ -484,7 +484,7 @@ pub(super) fn proche() {
     // « Non » d'abord : c'est la réponse par défaut, le réseau du proche ne se regarde qu'avec son accord.
     let Some(reseau) = question(
         tr!(
-            "Regarder aussi le réseau de la maison (box, autres appareils) ? C'est le réseau de ton proche : seulement avec son accord.",
+            "Regarder aussi le réseau local (routeur, autres appareils) ? C'est le réseau de votre proche : seulement avec son accord.",
             "Also look at the home network (router, other devices)? It is your relative's network: only with their consent."
         ),
         &[
@@ -558,7 +558,7 @@ pub(super) fn proche() {
     };
 
     if demander(tr!(
-        "\n  Préparer la page à laisser à ton proche (note, ce qui reste à faire, conseils) ? [O/n] : ",
+        "\n  Préparer la page à laisser à votre proche (note, ce qui reste à faire, conseils) ? [O/n] : ",
         "\n  Prepare the page to leave to your relative (grade, what is left to do, tips)? [Y/n]: "
     ))
     .trim()

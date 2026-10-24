@@ -225,7 +225,7 @@ fn juger_pilotes(pilotes: &[(Pilote, Fichier)], liste: Option<&HashSet<[u8; 32]>
             CAT,
             Niveau::Eleve,
             trf!(
-                "Pilote connu pour être vulnérable ou malveillant (LOLDrivers) : {noms}. Signé, il se charge sans alerte ; un attaquant qui a les droits d'administrateur s'en sert pour désarmer l'antivirus. Mets à jour ou désinstalle le logiciel qui l'a posé, et active l'intégrité de la mémoire (elle bloque ces pilotes).",
+                "Pilote connu pour être vulnérable ou malveillant (LOLDrivers) : {noms}. Signé, il se charge sans alerte ; un attaquant qui a les droits d'administrateur s'en sert pour désarmer l'antivirus. Mettez à jour ou désinstallez le logiciel qui l'a posé, et activez l'intégrité de la mémoire (elle bloque ces pilotes).",
                 "Driver known to be vulnerable or malicious (LOLDrivers): {noms}. Being signed, it loads without warning; an attacker with administrator rights uses it to disarm the antivirus. Update or uninstall the software that put it there, and turn on memory integrity (it blocks these drivers)."
             ),
         ));

@@ -487,7 +487,7 @@ pub(super) fn juger_sans_fichier(
                 .to_string()
             } else {
                 trf!(
-                    "Les {lus} programmes de ton compte ont leur fichier sur le disque ; les {illisibles} des autres comptes (root, services) ne se lisent qu'avec les droits root : pas vérifiés.",
+                    "Les {lus} programmes de votre compte ont leur fichier sur le disque ; les {illisibles} des autres comptes (root, services) ne se lisent qu'avec les droits root : pas vérifiés.",
                     "The {lus} programs of your account have their file on disk; the {illisibles} of other accounts (root, services) can only be read with root rights: not checked."
                 )
             },
@@ -814,7 +814,7 @@ pub(super) fn juger_ecoute(cartes: &[Carte]) -> Option<Constat> {
         )
         .manuel(
             tr!(
-                "Si tu ne captures rien toi-même, voir quel programme écoute",
+                "Si vous ne capturez rien vous-même, voir quel programme écoute",
                 "If you are not capturing anything yourself, see which program is listening"
             ),
             &["sudo ss -0 -p"],

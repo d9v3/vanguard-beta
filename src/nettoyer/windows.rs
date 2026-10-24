@@ -53,9 +53,9 @@ fn elements_selon(env: &dyn Fn(&str) -> Option<PathBuf>) -> Vec<Element> {
     let rapports: Vec<&Path> = rapports.iter().map(PathBuf::as_path).collect();
     [
         dossier(env, "TEMP").map(|temp| Element {
-            titre: tr!("Tes fichiers temporaires", "Your temporary files"),
+            titre: tr!("Vos fichiers temporaires", "Your temporary files"),
             effet: tr!(
-                "Ce que les programmes laissent dans ton dossier temporaire ; un fichier encore ouvert reste.",
+                "Ce que les programmes laissent dans votre dossier temporaire ; un fichier encore ouvert reste.",
                 "What programs leave in your temporary folder; a file still open stays."
             )
             .into(),
@@ -126,7 +126,7 @@ fn elements_selon(env: &dyn Fn(&str) -> Option<PathBuf>) -> Vec<Element> {
         dossier(env, "LOCALAPPDATA").map(|local| {
             let plantages = local.join("CrashDumps");
             Element {
-                titre: tr!("Tes rapports de plantage", "Your crash reports"),
+                titre: tr!("Vos rapports de plantage", "Your crash reports"),
                 effet: tr!(
                     "Copies de la mémoire des programmes qui ont planté.",
                     "Memory copies of programs that crashed."

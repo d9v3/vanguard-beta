@@ -296,7 +296,7 @@ fn par_ligne(choix: &[Choisissable<'_>], touches: &[&str], invite: &str) -> Stri
                     println!("{}", rendu_trouve(c, largeur, false));
                 }
                 trp!(
-                    "  {GRIS}Tape la touche de ton choix, ou d'autres mots.{RESET}",
+                    "  {GRIS}Tapez la touche de votre choix, ou d'autres mots.{RESET}",
                     "  {GRIS}Type the key of your choice, or other words.{RESET}"
                 );
             }
@@ -549,7 +549,7 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
                     ecran,
                     "  {GRIS}{}{RESET}\x1b[K\r\n",
                     trf!(
-                        "… {} en tout : ajoute un mot pour préciser.",
+                        "… {} en tout : ajoutez un mot pour préciser.",
                         "… {} in all: add a word to narrow it down.",
                         trouves.len()
                     )

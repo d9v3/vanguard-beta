@@ -192,7 +192,7 @@ fn reseau<'a>(e: &'a Entree, sujet: &str) -> Result<(&'a Connexion, Vec<&'a Bali
         return Err(Box::new(impossible(
             CATEGORIE,
             &trf!(
-                "{sujet} : pas connecté en Wi-Fi, le réseau de la maison ne se voit pas d'ici",
+                "{sujet} : pas connecté en Wi-Fi, le réseau local ne se voit pas d'ici",
                 "{sujet}: not connected over Wi-Fi, the home network cannot be seen from here"
             ),
         )));
@@ -254,7 +254,7 @@ fn chiffrement(e: &Entree) -> Constat {
         };
         return alerte(CATEGORIE, Niveau::Moyen, message).manuel(
             tr!(
-                "Admin de la box > Wi-Fi > Sécurité : WPA2-AES (CCMP) ou WPA3, sans TKIP ; un très vieil appareil qui ne connaît que TKIP devra être remplacé ou mis sur le réseau invité",
+                "Admin du routeur > Wi-Fi > Sécurité : WPA2-AES (CCMP) ou WPA3, sans TKIP ; un très vieil appareil qui ne connaît que TKIP devra être remplacé ou mis sur le réseau invité",
                 "Router admin > Wi-Fi > Security: WPA2-AES (CCMP) or WPA3, without TKIP; a very old device that only knows TKIP will have to be replaced or moved to the guest network"
             ),
             &[],
@@ -266,7 +266,7 @@ fn chiffrement(e: &Entree) -> Constat {
 /// COM-WIF-002 : WPS allumé sur la box, d'après l'élément WPS de ses balises. Moyen si la méthode PIN est offerte
 /// (ou que la borne ne dit pas ses méthodes), Info si le bouton seul ou la méthode PIN verrouillée.
 fn wps(e: &Entree) -> Constat {
-    let sujet = tr!("WPS de la box", "router WPS");
+    let sujet = tr!("WPS du routeur", "router WPS");
     let (c, bornes) = match reseau(e, sujet) {
         Ok(r) => r,
         Err(k) => return *k,
@@ -281,7 +281,7 @@ fn wps(e: &Entree) -> Constat {
         return ok(
             CATEGORIE,
             trf!(
-                "La box n'annonce pas WPS pour « {nom} » : rien à couper.",
+                "Le routeur n'annonce pas WPS pour « {nom} » : rien à couper.",
                 "The router does not advertise WPS for “{nom}”: nothing to turn off."
             ),
         );
@@ -313,13 +313,13 @@ fn wps(e: &Entree) -> Constat {
         CATEGORIE,
         niveau,
         trf!(
-            "Ta box garde WPS allumé (le bouton ou le code PIN pour connecter un appareil){qui} : une faiblesse connue de ce mécanisme permet d'entrer sans le mot de passe du Wi-Fi.",
+            "Votre routeur garde WPS allumé (le bouton ou le code PIN pour connecter un appareil){qui} : une faiblesse connue de ce mécanisme permet d'entrer sans le mot de passe du Wi-Fi.",
             "Your router keeps WPS on (the button or PIN code to join a device){qui}: a known weakness of this mechanism lets someone in without the Wi-Fi password."
         ),
     )
     .manuel(
         tr!(
-            "Désactive WPS dans la box (Wi-Fi > WPS) : les appareils déjà connectés le restent. Si l'émetteur nommé est un répéteur à toi, c'est lui qu'il faut régler",
+            "Désactivez WPS dans le routeur (Wi-Fi > WPS) : les appareils déjà connectés le restent. Si l'émetteur nommé est un répéteur à vous, c'est lui qu'il faut régler",
             "Turn WPS off in the router (Wi-Fi > WPS): devices already connected stay connected. If the named transmitter is a repeater of yours, that is the one to set"
         ),
         &[],
@@ -398,7 +398,7 @@ fn emetteurs(e: &Entree) -> Constat {
         return ok(
             CATEGORIE,
             trf!(
-                "Un seul émetteur diffuse « {nom} » : ta box.",
+                "Un seul émetteur diffuse « {nom} » : votre routeur.",
                 "A single transmitter broadcasts “{nom}”: your router."
             ),
         );
@@ -408,13 +408,13 @@ fn emetteurs(e: &Entree) -> Constat {
             CATEGORIE,
             Niveau::Info,
             trf!(
-                "{n} émetteurs diffusent « {nom} », un nom par défaut que des voisins portent sans doute aussi : tes appareils peuvent confondre leur box et la tienne.",
+                "{n} émetteurs diffusent « {nom} », un nom par défaut que des voisins portent sans doute aussi : vos appareils peuvent confondre leur routeur et le vôtre.",
                 "{n} transmitters broadcast “{nom}”, a default name neighbors probably use too: your devices may mix up their router and yours."
             ),
         )
         .manuel(
             tr!(
-                "Donne un nom à toi à ton réseau dans l'admin de la box (Wi-Fi > nom du réseau), puis reconnecte tes appareils",
+                "Donnez à votre réseau un nom bien à vous dans l'admin du routeur (Wi-Fi > nom du réseau), puis reconnectez vos appareils",
                 "Give your network a name of your own in the router admin (Wi-Fi > network name), then reconnect your devices"
             ),
             &[],
@@ -434,7 +434,7 @@ fn emetteurs(e: &Entree) -> Constat {
         return ok(
             CATEGORIE,
             trf!(
-                "{n} émetteurs diffusent « {nom} », tous de la marque de ta box (2,4 et 5 GHz, répéteur) : normal.",
+                "{n} émetteurs diffusent « {nom} », tous de la marque de votre routeur (2,4 et 5 GHz, répéteur) : normal.",
                 "{n} transmitters broadcast “{nom}”, all of your router's brand (2.4 and 5 GHz, repeater): normal."
             ),
         );
@@ -453,25 +453,25 @@ fn emetteurs(e: &Entree) -> Constat {
         };
         if de_la_box {
             trf!(
-                "{n} émetteurs diffusent « {nom} » ; l'un d'eux ({bssid}, {fabricant}) n'est pas de la marque de ta box{faible} : un répéteur à toi, ou un faux point d'accès qui copie ton réseau.",
+                "{n} émetteurs diffusent « {nom} » ; l'un d'eux ({bssid}, {fabricant}) n'est pas de la marque de votre routeur{faible} : un répéteur à vous, ou un faux point d'accès qui copie votre réseau.",
                 "{n} transmitters broadcast “{nom}”; one of them ({bssid}, {fabricant}) is not your router's brand{faible}: a repeater of yours, or a fake access point copying your network."
             )
         } else {
             trf!(
-                "{n} émetteurs diffusent « {nom} » ; l'un d'eux ({bssid}, {fabricant}) n'est pas de la marque de celui où tu es connecté{faible} : un répéteur à toi, ou un faux point d'accès qui copie ton réseau.",
+                "{n} émetteurs diffusent « {nom} » ; l'un d'eux ({bssid}, {fabricant}) n'est pas de la marque de celui où vous êtes connecté{faible} : un répéteur à vous, ou un faux point d'accès qui copie votre réseau.",
                 "{n} transmitters broadcast “{nom}”; one of them ({bssid}, {fabricant}) is not the brand of the one you are connected to{faible}: a repeater of yours, or a fake access point copying your network."
             )
         }
     } else {
         trf!(
-            "{n} émetteurs diffusent « {nom} » ; l'un d'eux ({bssid}, {fabricant}) protège moins bien ({}) que celui où tu es connecté : un vieux répéteur à toi, ou un faux point d'accès qui copie ton réseau.",
+            "{n} émetteurs diffusent « {nom} » ; l'un d'eux ({bssid}, {fabricant}) protège moins bien ({}) que celui où vous êtes connecté : un vieux répéteur à vous, ou un faux point d'accès qui copie votre réseau.",
             "{n} transmitters broadcast “{nom}”; one of them ({bssid}, {fabricant}) is less protected ({}) than the one you are connected to: an old repeater of yours, or a fake access point copying your network.",
             suspect.protection.libelle()
         )
     };
     alerte(CATEGORIE, Niveau::Moyen, message).manuel(
         tr!(
-            "Si ce n'est pas un répéteur ou un système maillé à toi, change le mot de passe du Wi-Fi et préviens tes proches de ne pas se connecter à ce nom hors de chez toi",
+            "Si ce n'est pas un répéteur ou un système maillé à vous, changez le mot de passe du Wi-Fi et prévenez vos proches de ne pas se connecter à ce nom hors de chez vous",
             "If it is not a repeater or a mesh system of yours, change the Wi-Fi password and tell your family not to connect to this name away from home"
         ),
         &[],
@@ -543,7 +543,7 @@ fn inconnus(e: &Entree) -> Constat {
         )
         .manuel(
             tr!(
-                "Si tu ne les reconnais pas, change le mot de passe du Wi-Fi dans la box et reconnecte tes appareils ; ceux que tu reconnais, note-les dans le carnet du scan",
+                "Si vous ne les reconnaissez pas, changez le mot de passe du Wi-Fi dans le routeur et reconnectez vos appareils ; ceux que vous reconnaissez, notez-les dans le carnet du scan",
                 "If you do not recognize them, change the Wi-Fi password in the router and reconnect your devices; note those you recognize in the scan's device book"
             ),
             &[],
@@ -551,12 +551,12 @@ fn inconnus(e: &Entree) -> Constat {
     }
     let message = if n == 1 {
         trf!(
-            "Un appareil inconnu sur le réseau : {liste}. Un nouvel appareil à toi, ou quelqu'un qui a le mot de passe du Wi-Fi.",
+            "Un appareil inconnu sur le réseau : {liste}. Un nouvel appareil à vous, ou quelqu'un qui a le mot de passe du Wi-Fi.",
             "One unknown device on the network: {liste}. A new device of yours, or someone who has the Wi-Fi password."
         )
     } else {
         trf!(
-            "{n} appareils inconnus sur le réseau : {liste}. De nouveaux appareils à toi, ou quelqu'un qui a le mot de passe du Wi-Fi.",
+            "{n} appareils inconnus sur le réseau : {liste}. De nouveaux appareils à vous, ou quelqu'un qui a le mot de passe du Wi-Fi.",
             "{n} unknown devices on the network: {liste}. New devices of yours, or someone who has the Wi-Fi password."
         )
     };
@@ -829,13 +829,13 @@ mod tests {
         ]);
         let c = &constats(&e)[2];
         assert_eq!(c.probleme, Some(Niveau::Moyen));
-        assert!(c.message.contains("00:11:33:aa:bb:02") && c.message.contains("marque de ta box"));
+        assert!(c.message.contains("00:11:33:aa:bb:02") && c.message.contains("marque de votre routeur"));
         assert!(c.correctif.as_ref().is_some_and(|k| !k.automatique));
         // Sans l'adresse de la box : comparé à l'émetteur de la connexion.
         e.mac_box = None;
         let c = &constats(&e)[2];
         assert_eq!(c.probleme, Some(Niveau::Moyen));
-        assert!(c.message.contains("où tu es connecté"));
+        assert!(c.message.contains("où vous êtes connecté"));
         // Même marque, mais ouvert : un jumeau possible.
         e.bornes = Ok(vec![
             balise("Salon", "00:11:22:aa:bb:01", 36, true, wpa2(), None),

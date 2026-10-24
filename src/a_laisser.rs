@@ -41,12 +41,12 @@ pub(crate) fn page(a: &Audit, arrivee: Option<u32>, date: &str, conseils: &[&str
          footer{{margin-top:2rem;color:#777;font-size:.9rem}} @media print{{body{{margin:0}}}}\
          </style></head><body>",
         tr!("fr", "en"),
-        tr!("Bilan de ton ordinateur", "Your computer's check-up")
+        tr!("Bilan de votre ordinateur", "Your computer's check-up")
     );
     let _ = write!(
         h,
         "<h1>{}</h1><div class=\"date\">{}</div>",
-        tr!("Bilan de ton ordinateur", "Your computer's check-up"),
+        tr!("Bilan de votre ordinateur", "Your computer's check-up"),
         esc(date)
     );
     if a.fiable() {
@@ -79,14 +79,14 @@ pub(crate) fn page(a: &Audit, arrivee: Option<u32>, date: &str, conseils: &[&str
     let _ = write!(
         h,
         "<h2>{}</h2>",
-        tr!("Ce qu'il te reste à faire", "What is left for you to do")
+        tr!("Ce qu'il vous reste à faire", "What is left for you to do")
     );
     if a_faire.is_empty() {
         let _ = write!(
             h,
             "<p class=\"ok\">{}</p>",
             tr!(
-                "Rien d'important : ton ordinateur est en ordre.",
+                "Rien d'important : votre ordinateur est en ordre.",
                 "Nothing important: your computer is in order."
             )
         );
@@ -136,7 +136,7 @@ pub(crate) fn page(a: &Audit, arrivee: Option<u32>, date: &str, conseils: &[&str
         let _ = write!(
             h,
             "<h2>{}</h2><ul>",
-            tr!("Pour toi en particulier", "Especially for you")
+            tr!("Pour vous en particulier", "Especially for you")
         );
         for c in conseils {
             let _ = write!(h, "<li>{}</li>", esc(c));
@@ -148,15 +148,15 @@ pub(crate) fn page(a: &Audit, arrivee: Option<u32>, date: &str, conseils: &[&str
         "<h2>{}</h2><ul><li>{}</li><li>{}</li><li>{}</li></ul>",
         tr!("Trois habitudes", "Three habits"),
         tr!(
-            "Accepte les mises à jour quand l'ordinateur les propose : elles bouchent les failles.",
+            "Acceptez les mises à jour quand l'ordinateur les propose : elles bouchent les failles.",
             "Accept updates when the computer offers them: they plug the holes."
         ),
         tr!(
-            "Garde une copie de tes photos et documents sur un disque à part, débranché après la copie.",
+            "Gardez une copie de vos photos et documents sur un disque à part, débranché après la copie.",
             "Keep a copy of your photos and documents on a separate disk, unplugged after copying."
         ),
         tr!(
-            "Un mot de passe différent pour chaque site, retenu par un gestionnaire de mots de passe ; et personne ne doit prendre la main sur ton ordinateur après un appel que tu n'as pas demandé.",
+            "Un mot de passe différent pour chaque site, retenu par un gestionnaire de mots de passe ; et personne ne doit prendre la main sur votre ordinateur après un appel que vous n'avez pas demandé.",
             "A different password for each site, remembered by a password manager; and nobody should take control of your computer after a call you did not ask for."
         )
     );
@@ -283,7 +283,7 @@ mod tests {
         assert!(!p.contains("Information seulement") && !p.contains("<script>"));
         assert!(p.contains("&lt;script&gt;") && p.contains("Lui donner un mot de passe"));
         assert!(p.contains("Ce qui va bien") && p.contains("Pare-feu"));
-        assert!(!p.contains("Pour toi en particulier"));
+        assert!(!p.contains("Pour vous en particulier"));
         // Une catégorie dite une fois, et jamais « bien » quand une de ses vérifications signale quelque chose.
         let b = Audit {
             systeme: "test",
@@ -299,10 +299,10 @@ mod tests {
         let p = page(&b, None, "19/10/2026 à 10:00", &[]);
         assert!(p.contains("Comptes · SSH<") && !p.contains("Persistance"), "{p}");
         // Les conseils d'un proche : leur section, avant les habitudes, échappés comme le reste.
-        let p = page(&a, None, "19/10/2026 à 10:00", &["Raccroche <b>vite</b>."]);
-        let i_toi = p.find("Pour toi en particulier").unwrap();
+        let p = page(&a, None, "19/10/2026 à 10:00", &["Raccrochez <b>vite</b>."]);
+        let i_toi = p.find("Pour vous en particulier").unwrap();
         assert!(i_toi < p.find("Trois habitudes").unwrap());
-        assert!(p.contains("Raccroche &lt;b&gt;vite&lt;/b&gt;.") && !p.contains("à l'arrivée"));
+        assert!(p.contains("Raccrochez &lt;b&gt;vite&lt;/b&gt;.") && !p.contains("à l'arrivée"));
     }
 
     #[test]

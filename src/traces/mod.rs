@@ -1581,7 +1581,7 @@ pub fn collecter(argument: Option<&Path>) -> Option<PathBuf> {
         Lieu::Local if cle_du_programme.is_some() => afficher_aligne(
             "  ",
             tr!(
-                "La clé est en lecture seule sur cet ordinateur : les traces restent dans le dossier de Vanguard de l'ordinateur. Copie-les ensuite sur un autre disque.",
+                "La clé est en lecture seule sur cet ordinateur : les traces restent dans le dossier de Vanguard de l'ordinateur. Copiez-les ensuite sur un autre disque.",
                 "The key is read-only on this computer: the traces stay in this computer's Vanguard folder. Copy them to another disk afterwards."
             ),
             2,
@@ -1594,7 +1594,7 @@ pub fn collecter(argument: Option<&Path>) -> Option<PathBuf> {
         afficher_aligne(
             &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Moyen)),
             tr!(
-                "Ce disque ne garde pas les droits (exFAT, FAT) : le dossier n'y est pas réservé à ton compte.",
+                "Ce disque ne garde pas les droits (exFAT, FAT) : le dossier n'y est pas réservé à votre compte.",
                 "This disk does not keep permissions (exFAT, FAT): the folder is not restricted to your account there."
             ),
             4,
@@ -1714,7 +1714,7 @@ pub fn collecter(argument: Option<&Path>) -> Option<PathBuf> {
     afficher_aligne(
         &format!("  {} ", ampoule()),
         tr!(
-            "Garde ce dossier tel quel et copie-le sur un autre disque avant de nettoyer. Il contient des données personnelles (noms de fichiers, comptes, adresses) : ne le donne qu'à quelqu'un de confiance. LISEZMOI.txt dit ce que contient chaque fichier.",
+            "Gardez ce dossier tel quel et copiez-le sur un autre disque avant de nettoyer. Il contient des données personnelles (noms de fichiers, comptes, adresses) : ne le donnez qu'à quelqu'un de confiance. LISEZMOI.txt dit ce que contient chaque fichier.",
             "Keep this folder as it is and copy it to another disk before cleaning up. It contains personal data (file names, accounts, addresses): only give it to someone you trust. LISEZMOI.txt says what each file contains."
         ),
         5,

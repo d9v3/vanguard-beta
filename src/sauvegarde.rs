@@ -434,7 +434,7 @@ fn historique_des_fichiers() -> Constat {
             "Sauvegardes",
             Niveau::Moyen,
             trf!(
-                "Historique des fichiers vers « {cible} » : dernière sauvegarde il y a {jours} jours. Rebranche le disque.",
+                "Historique des fichiers vers « {cible} » : dernière sauvegarde il y a {jours} jours. Rebranchez le disque.",
                 "File History to “{cible}”: last backup {jours} days ago. Plug the disk back in."
             ),
         ),
@@ -614,7 +614,7 @@ fn choisir_disque() -> Option<crate::copier::Disque> {
     let liste = crate::copier::disques();
     if liste.is_empty() {
         mauvais(tr!(
-            "Aucun disque externe branché (la clé VANGUARD et le disque du système ne comptent pas). Branche un disque assez grand pour tes fichiers, attends qu'il apparaisse, puis recommence.",
+            "Aucun disque externe branché (la clé VANGUARD et le disque du système ne comptent pas). Branchez un disque assez grand pour vos fichiers, attendez qu'il apparaisse, puis recommencez.",
             "No external disk plugged in (the VANGUARD key and the system disk do not count). Plug in a disk large enough for your files, wait for it to appear, then start again."
         ));
         return None;
@@ -665,7 +665,7 @@ fn mettre_en_place() -> Option<MiseEnPlace> {
     let outil = match (deja_dup, &rsync) {
         (false, None) => {
             mauvais(tr!(
-                "Ni Déjà Dup ni rsync sur cet ordinateur : installe rsync (paquet « rsync ») ou Déjà Dup, puis recommence.",
+                "Ni Déjà Dup ni rsync sur cet ordinateur : installez rsync (paquet « rsync ») ou Déjà Dup, puis recommencez.",
                 "Neither Déjà Dup nor rsync on this computer: install rsync (“rsync” package) or Déjà Dup, then start again."
             ));
             return None;
@@ -755,7 +755,7 @@ fn mettre_en_place() -> Option<MiseEnPlace> {
             }
         }
         bon(tr!(
-            "Déjà Dup réglé. Ouvre-le une première fois (il demande les dossiers à inclure et un mot de passe de chiffrement) : « deja-dup ».",
+            "Déjà Dup réglé. Ouvrez-le une première fois (il demande les dossiers à inclure et un mot de passe de chiffrement) : « deja-dup ».",
             "Déjà Dup set. Open it once (it asks which folders to include and an encryption password): “deja-dup”."
         ));
         return Some(MiseEnPlace::DejaDup {
@@ -780,14 +780,14 @@ fn mettre_en_place() -> Option<MiseEnPlace> {
         Ok(unites) => unites,
         Err(Refus::Controle) => {
             mauvais(tr!(
-                "Le nom de ce disque ou d'un dossier contient un caractère de contrôle : rien n'est posé. Renomme le disque, puis recommence.",
+                "Le nom de ce disque ou d'un dossier contient un caractère de contrôle : rien n'est posé. Renommez le disque, puis recommencez.",
                 "The name of this disk or of a folder contains a control character: nothing is set up. Rename the disk, then start again."
             ));
             return None;
         }
         Err(Refus::Identite) => {
             mauvais(tr!(
-                "L'identité de ce disque (UUID de son système de fichiers) ne se lit pas : rien n'est posé. Sans elle, n'importe quel disque du même nom recevrait la copie de tes dossiers.",
+                "L'identité de ce disque (UUID de son système de fichiers) ne se lit pas : rien n'est posé. Sans elle, n'importe quel disque du même nom recevrait la copie de vos dossiers.",
                 "This disk's identity (its file system UUID) cannot be read: nothing is set up. Without it, any disk with the same name would receive the copy of your folders."
             ));
             return None;
@@ -918,7 +918,7 @@ fn mettre_en_place() -> Option<MiseEnPlace> {
     let apres = crate::machine::sortie("tmutil", &["destinationinfo"]).unwrap_or_default();
     let identifiant = nouvel_identifiant(&identifiants_time_machine(&avant), &identifiants_time_machine(&apres));
     bon(&trf!(
-        "Time Machine sauvegarde vers « {} ». Laisse le disque branché : la première sauvegarde prend du temps.",
+        "Time Machine sauvegarde vers « {} ». Laissez le disque branché : la première sauvegarde prend du temps.",
         "Time Machine backs up to “{}”. Leave the disk plugged in: the first backup takes time.",
         disque.nom
     ));
@@ -936,15 +936,15 @@ fn mettre_en_place() -> Option<MiseEnPlace> {
     section(tr!("PAS À PAS", "STEP BY STEP"));
     for (i, etape) in [
         tr!(
-            "Branche un disque externe (ou une grosse clé) qui restera branché le plus souvent possible.",
+            "Branchez un disque externe (ou une grosse clé) qui restera branché le plus souvent possible.",
             "Plug in an external disk (or a big USB stick) that will stay plugged in as often as possible."
         ),
         tr!(
-            "Dans la fenêtre qui s'ouvre (Panneau de configuration > Historique des fichiers), choisis « Sélectionner un lecteur », puis ce disque.",
+            "Dans la fenêtre qui s'ouvre (Panneau de configuration > Historique des fichiers), choisissez « Sélectionner un lecteur », puis ce disque.",
             "In the window that opens (Control Panel > File History), choose “Select drive”, then that disk."
         ),
         tr!(
-            "Clique « Activer ». Dans « Paramètres avancés », garde « Toutes les heures » et « Conserver les versions : toujours ».",
+            "Cliquez sur « Activer ». Dans « Paramètres avancés », gardez « Toutes les heures » et « Conserver les versions : toujours ».",
             "Click “Turn on”. In “Advanced settings”, keep “Every hour” and “Keep saved versions: forever”."
         ),
         tr!(
@@ -1089,7 +1089,7 @@ pub fn annuler() {
     if ok && !gardees.is_empty() {
         // Une unité de Vanguard reste : sa note aussi, sinon plus rien ne la retrouverait.
         mauvais(&trf!(
-            "Retiré, sauf {} : modifié(s) depuis la pose, laissé(s) en place. Supprime-les toi-même si tu n'en veux plus ; la note est gardée.",
+            "Retiré, sauf {} : modifié(s) depuis la pose, laissé(s) en place. Supprimez-les vous-même si vous n'en voulez plus ; la note est gardée.",
             "Removed, except {}: changed since they were placed, left in place. Delete them yourself if you no longer want them; the note is kept.",
             gardees
                 .iter()
@@ -1141,7 +1141,7 @@ pub fn menu() {
                 && std::fs::read_to_string(dossier_unites().join(SERVICE)).is_ok_and(|s| !verifie_le_disque(&s))
             {
                 mauvais(tr!(
-                    "Cette sauvegarde reconnaît son disque à son seul nom : un autre disque du même nom recevrait la copie de tes dossiers. Annule-la, puis remets-la en place : Vanguard vérifie maintenant l'identité du disque à chaque passage.",
+                    "Cette sauvegarde reconnaît son disque à son seul nom : un autre disque du même nom recevrait la copie de vos dossiers. Annulez-la, puis remettez-la en place : Vanguard vérifie maintenant l'identité du disque à chaque passage.",
                     "This backup recognizes its disk by name only: another disk with the same name would receive the copy of your folders. Undo it, then set it up again: Vanguard now checks the disk's identity at every run."
                 ));
             }
@@ -1437,7 +1437,7 @@ pub fn verifier_sauvegarde() {
     println!();
     if differents + illisibles > 0 {
         mauvais(tr!(
-            "La sauvegarde est abîmée : le disque perd peut-être des données. Vérifie-le (Données › Vérifier ma clé) et refais une sauvegarde complète sur un autre disque.",
+            "La sauvegarde est abîmée : le disque perd peut-être des données. Vérifiez-le (Données › Vérifier ma clé) et refaites une sauvegarde complète sur un autre disque.",
             "The backup is damaged: the disk may be losing data. Check it (Data › Check my drive) and make a full backup to another disk."
         ));
     } else if identiques > 0 {

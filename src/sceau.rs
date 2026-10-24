@@ -469,13 +469,13 @@ fn juger_refaits(adoptes: &[&str], depuis: &str, aujourd_hui: chrono::NaiveDate)
             CAT,
             Niveau::Eleve,
             trf!(
-                "Les sceaux de l'état de Vanguard (sceaux.json) ont été refaits le {depuis}, alors que Vanguard avait déjà servi sur cet ordinateur : ils ont été effacés ou abîmés hors de Vanguard. Fichiers acceptés tels quels : {liste} ; ceux qui manquaient sont traités comme vides (rien n'est tu).",
+                "Les sceaux de l'état de Vanguard (sceaux.json) ont été refaits le {depuis}, alors que Vanguard avait déjà servi sur cet ordinateur : ils ont été effacés ou abîmés hors de Vanguard. Fichiers acceptés tels quels : {liste} ; ceux qui manquaient sont traités comme vides (rien n'est passé sous silence).",
                 "The seals of Vanguard's state (sceaux.json) were remade on {depuis}, although Vanguard had already run on this computer: they were deleted or damaged outside Vanguard. Files accepted as they were: {liste}; the missing ones are treated as empty (nothing is silenced)."
             ),
         )
         .manuel(
             tr!(
-                "Regarde ce qui tourne sous ton compte (Protection › Qui parle à Internet ?) ; « vanguard integrite --accepter » refait la référence",
+                "Regardez ce qui tourne sous votre compte (Protection › Qui parle à Internet ?) ; « vanguard integrite --accepter » refait la référence",
                 "Look at what runs under your account (Protection › Who talks to the Internet?); “vanguard integrity --accept” remakes the reference"
             ),
             &[],
@@ -500,13 +500,13 @@ fn juger_constat(falsifies: &[&str], illisibles: bool, copie_ancienne: bool) -> 
         )
     } else {
         trf!(
-            "L'état de Vanguard a été changé hors de Vanguard : {liste}. Un programme qui tourne sous ton compte a pu s'en servir pour faire taire une alerte ; Vanguard n'en tient plus compte (aucune alerte n'est tue) jusqu'à ce qu'il les réécrive.",
+            "L'état de Vanguard a été changé hors de Vanguard : {liste}. Un programme qui tourne sous votre compte a pu s'en servir pour faire taire une alerte ; Vanguard n'en tient plus compte (aucune alerte n'est tue) jusqu'à ce qu'il les réécrive.",
             "Vanguard's state was changed outside Vanguard: {liste}. A program running under your account may have used it to silence an alert; Vanguard ignores it (no alert is silenced) until it rewrites it."
         )
     };
     if copie_ancienne {
         message += tr!(
-            " Cause probable : la copie de Vanguard de cet ordinateur est plus ancienne et écrit ces fichiers sans sceau ; mets-la à jour (« vanguard se-mettre-a-jour »).",
+            " Cause probable : la copie de Vanguard de cet ordinateur est plus ancienne et écrit ces fichiers sans sceau ; mettez-la à jour (« vanguard se-mettre-a-jour »).",
             " Likely cause: the copy of Vanguard on this computer is older and writes these files without a seal; update it (“vanguard se-mettre-a-jour”)."
         );
     }
@@ -514,7 +514,7 @@ fn juger_constat(falsifies: &[&str], illisibles: bool, copie_ancienne: bool) -> 
     Some(
         crate::machine::alerte(CAT, niveau, message).manuel(
             tr!(
-                "Regarde ce qui tourne sous ton compte (Protection › Qui parle à Internet ?) ; Ce que Vanguard a appris et « vanguard integrite --accepter » refont leurs fichiers",
+                "Regardez ce qui tourne sous votre compte (Protection › Qui parle à Internet ?) ; Ce que Vanguard a appris et « vanguard integrite --accepter » refont leurs fichiers",
                 "Look at what runs under your account (Protection › Who talks to the Internet?); What Vanguard has learned and “vanguard integrity --accept” remake their files"
             ),
             &[],
@@ -541,7 +541,7 @@ fn juger_adoptes(adoptes: &[&str], depuis: &str) -> Option<Constat> {
         )
         .manuel(
             tr!(
-                "Ce que Vanguard a appris propose de garder tes choix ; « vanguard integrite --accepter » refait la référence ; les autres sont réécrits par la surveillance",
+                "Ce que Vanguard a appris propose de garder vos choix ; « vanguard integrite --accepter » refait la référence ; les autres sont réécrits par la surveillance",
                 "What Vanguard has learned offers to keep your choices; “vanguard integrity --accept” remakes the reference; monitoring rewrites the others"
             ),
             &[],

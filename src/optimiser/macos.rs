@@ -353,7 +353,7 @@ fn service_de(liste: &str, carte: &str) -> Option<String> {
 /// se sert que de ceux qu'il peut joindre). Erreur : pourquoi il faut le faire à la main.
 pub fn dns_principal(v4: &[&str], v6: &[&str]) -> Result<Changement, String> {
     let a_la_main = tr!(
-        "Le service réseau principal est illisible : le DNS se règle à la main (Réglages Système > Réseau, ou dans la box).",
+        "Le service réseau principal est illisible : le DNS se règle à la main (Réglages Système > Réseau, ou dans le routeur).",
         "The main network service is unreadable: set the DNS by hand (System Settings > Network, or in the router)."
     );
     let route = crate::commande::lancer(Command::new("route").args(["-n", "get", "default"]), 10)
@@ -529,7 +529,7 @@ pub fn catalogue() -> Vec<Reglage> {
             )
             .into(),
             effet: tr!(
-                "Apple ne se sert plus de ce qu'il sait de toi pour choisir les publicités de l'App Store, d'Apple News et de Bourse.",
+                "Apple ne se sert plus de ce qu'il sait de vous pour choisir les publicités de l'App Store, d'Apple News et de Bourse.",
                 "Apple no longer uses what it knows about you to pick ads in the App Store, Apple News and Stocks."
             ),
             prudence: None,
@@ -539,7 +539,7 @@ pub fn catalogue() -> Vec<Reglage> {
         Reglage {
             id: "analyses".into(),
             categorie: Confidentialite,
-            titre: tr!("Analyses du Mac gardées pour toi", "Mac analytics kept to yourself").into(),
+            titre: tr!("Analyses du Mac gardées pour vous", "Mac analytics kept to yourself").into(),
             effet: tr!(
                 "Les rapports d'utilisation et de plantage ne partent plus chez Apple ni chez les développeurs des applications.",
                 "Usage and crash reports no longer go to Apple or to app developers."

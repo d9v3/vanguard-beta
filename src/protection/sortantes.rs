@@ -272,7 +272,7 @@ fn connexions() -> Option<Vec<Connexion>> {
 }
 
 /// Les processus qui ont une connexion TCP établie vers une autre machine (ni 127.0.0.1 ni ::1, IPv4 dans IPv6
-/// comprise), lus dans /proc sans lancer ss : pour « Quelqu'un contrôle mon ordi ? ». Chaque processus qui tient la
+/// comprise), lus dans /proc sans lancer ss : pour « Mon ordinateur est-il contrôlé ? ». Chaque processus qui tient la
 /// prise compte, comme ss les montre tous (un programme et l'enfant qui l'a reçue). Sans droits root, seuls ceux de
 /// ce compte se voient, comme avec ss. `None` : ni /proc/net/tcp ni tcp6 lisible.
 #[cfg(target_os = "linux")]
@@ -369,7 +369,7 @@ mod windows {
 }
 
 /// Les processus qui ont une connexion TCP établie vers une autre machine (ni 127.0.0.1 ni ::1), lus par Windows sans
-/// PowerShell : pour « Quelqu'un contrôle mon ordi ? ». `None` : aucune des deux tables lisible.
+/// PowerShell : pour « Mon ordinateur est-il contrôlé ? ». `None` : aucune des deux tables lisible.
 #[cfg(windows)]
 pub(crate) fn processus_connectes() -> Option<std::collections::BTreeSet<u32>> {
     let v4 = windows::table_tcp(2).map(|t| lire_table_tcp(&t, false));
@@ -1248,7 +1248,7 @@ pub(crate) fn botnets_a_signaler() -> Vec<(String, String, String)> {
                 )
                 .to_string(),
                 trf!(
-                    "{a} : un serveur de commande connu. Ouvre « Après une infection » dans Vanguard : coupe Internet d'abord.",
+                    "{a} : un serveur de commande connu. Ouvrez « Après une infection » dans Vanguard : coupez Internet d'abord.",
                     "{a}: a known command server. Open “After an infection” in Vanguard: cut the Internet first."
                 ),
             )
@@ -1304,7 +1304,7 @@ pub(crate) fn sites_dangereux_a_signaler() -> Vec<(String, String, String)> {
                 )
                 .to_string(),
                 trf!(
-                    "Cet ordinateur a demandé {site} : un téléchargement a pu suivre. Lance un examen antivirus et regarde les fichiers téléchargés récemment.",
+                    "Cet ordinateur a demandé {site} : un téléchargement a pu suivre. Lancez un examen antivirus et regardez les fichiers téléchargés récemment.",
                     "This computer asked for {site}: a download may have followed. Run an antivirus scan and check recently downloaded files."
                 ),
             )
@@ -1331,10 +1331,10 @@ pub fn menu() {
     loop {
         let cle = abuse_ch::cle().is_some();
         let cle_texte = if cle {
-            tr!("C pour retirer ta clé abuse.ch", "C to remove your abuse.ch key")
+            tr!("C pour retirer votre clé abuse.ch", "C to remove your abuse.ch key")
         } else {
             tr!(
-                "C pour donner ta clé abuse.ch (gratuite)",
+                "C pour donner votre clé abuse.ch (gratuite)",
                 "C to give your abuse.ch key (free)"
             )
         };
@@ -1399,7 +1399,7 @@ fn signes(
             Some(ancien) if pose_par_le_systeme(std::path::Path::new(ancien)) => signes.push((
                 Niveau::Info,
                 tr!(
-                    "Mis à jour pendant qu'il tournait : l'ancienne version tourne encore, redémarre-le.",
+                    "Mis à jour pendant qu'il tournait : l'ancienne version tourne encore, redémarrez-le.",
                     "Updated while running: the old version is still running, restart it."
                 )
                 .to_string(),
@@ -1577,7 +1577,7 @@ fn afficher_et_juger() -> bool {
         println!();
         for ligne in envelopper(
             &trf!(
-                "⚠ Cet ordinateur parle à un serveur de commande de botnet, ou en a demandé le nom ({liste}) : quelqu'un peut le piloter. Coupe Internet d'abord (câble ou Wi-Fi), puis suis « Après une infection » (Dépanner).",
+                "⚠ Cet ordinateur parle à un serveur de commande de botnet, ou en a demandé le nom ({liste}) : quelqu'un peut le piloter. Coupez Internet d'abord (câble ou Wi-Fi), puis suivez « Après une infection » (Dépanner).",
                 "⚠ This computer talks to a botnet command server, or asked for its name ({liste}): someone may be controlling it. Cut the Internet first (cable or Wi-Fi), then follow “After an infection” (Troubleshoot)."
             ),
             LARGEUR - 2,
@@ -1663,7 +1663,7 @@ fn afficher_sites_dangereux(noms: &[String]) {
     afficher_aligne(
         &format!("  {}✖{RESET} ", couleur(Niveau::Eleve)),
         &trf!(
-            "Site qui distribue des logiciels malveillants demandé récemment : {liste}. Un téléchargement a pu suivre : lance un examen antivirus et regarde les fichiers téléchargés récemment.",
+            "Site qui distribue des logiciels malveillants demandé récemment : {liste}. Un téléchargement a pu suivre : lancez un examen antivirus et regardez les fichiers téléchargés récemment.",
             "Site that distributes malware asked recently: {liste}. A download may have followed: run an antivirus scan and check recently downloaded files."
         ),
         4,
@@ -1819,7 +1819,7 @@ fn afficher_connexions(botnets: &Botnets) -> BTreeSet<String> {
         let liste = resume(&a_regarder, 4, ", ");
         for ligne in envelopper(
             &trf!(
-                "À regarder de près : {liste}. Si tu ne connais pas un programme signalé, analyse-le (antivirus, YARA, même menu), puis désinstalle-le. Vanguard ne coupe rien.",
+                "À regarder de près : {liste}. Si vous ne connaissez pas un programme signalé, analysez-le (antivirus, YARA, même menu), puis désinstallez-le. Vanguard ne coupe rien.",
                 "Worth a close look: {liste}. If you do not know a flagged program, scan it (antivirus, YARA, same menu), then uninstall it. Vanguard cuts nothing."
             ),
             LARGEUR - 2,
@@ -1830,7 +1830,7 @@ fn afficher_connexions(botnets: &Botnets) -> BTreeSet<String> {
     if !cachees.is_empty() || chemins_invisibles > 0 {
         let comment = if cfg!(windows) {
             tr!(
-                "lance Vanguard en administrateur (clic droit, « Exécuter en tant qu'administrateur »)",
+                "lancez Vanguard en administrateur (clic droit, « Exécuter en tant qu'administrateur »)",
                 "run Vanguard as administrator (right-click, “Run as administrator”)"
             )
         } else {

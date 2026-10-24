@@ -124,7 +124,7 @@ fn lancer(o: &Options) -> Result<(), Echec> {
             afficher_aligne(
                 "  ",
                 tr!(
-                    "Vanguard prépare le texte. Il ne l'envoie jamais : c'est toi qui le relis, le copies et le soumets.",
+                    "Vanguard prépare le texte. Il ne l'envoie jamais : c'est vous qui le relisez, le copiez et le soumettez.",
                     "Vanguard prepares the text. It never sends it: you read it, copy it and submit it yourself."
                 ),
                 2,
@@ -251,7 +251,7 @@ fn choisir_sujet(lu: &Lu) -> Option<Sujet> {
     lignes.push(Ligne::Texte(String::new()));
     let choix = crate::selection::choisir(
         &lignes,
-        tr!("Que veux-tu signaler ? ", "What do you want to report? "),
+        tr!("Que voulez-vous signaler ? ", "What do you want to report? "),
         "0",
         tr!("revenir", "back"),
     )?;
@@ -468,7 +468,7 @@ fn interactif(lu: &Lu, sujet: &Sujet, programme: Option<Programme>, langue: Opti
                 Kev::Exploitees(dans) if !dans.is_empty() => afficher_aligne(
                     "  ",
                     &trf!(
-                        "Exploitée selon le catalogue de la CISA : {}. Mets à jour d'abord.",
+                        "Exploitée selon le catalogue de la CISA : {}. Mettez à jour d'abord.",
                         "Exploited according to CISA's catalog: {}. Update first.",
                         dans.join(", ")
                     ),
@@ -504,7 +504,7 @@ fn interactif(lu: &Lu, sujet: &Sujet, programme: Option<Programme>, langue: Opti
             afficher_aligne(
                 "  ",
                 &trf!(
-                    "Un logiciel malveillant ou une détection ratée n'est pas une faille de l'éditeur. Pour aider les antivirus, tu peux envoyer le fichier toi-même à {}. Vanguard ne prépare rien : un fichier envoyé peut contenir tes données, et il y est gardé longtemps.",
+                    "Un logiciel malveillant ou une détection ratée n'est pas une faille de l'éditeur. Pour aider les antivirus, vous pouvez envoyer le fichier vous-même à {}. Vanguard ne prépare rien : un fichier envoyé peut contenir vos données, et il y est gardé longtemps.",
                     "Malware or a missed detection is not a flaw in the vendor's product. To help antivirus engines, you can send the file yourself to {}. Vanguard prepares nothing: a submitted file can hold your data, and it is kept there a long time.",
                     WDSI
                 ),
@@ -523,7 +523,7 @@ fn interactif(lu: &Lu, sujet: &Sujet, programme: Option<Programme>, langue: Opti
             afficher_aligne(
                 "  ",
                 &trf!(
-                    "Un lien ou un courriel d'hameçonnage n'est pas une faille de l'éditeur. Tu peux signaler le site toi-même : {}",
+                    "Un lien ou un courriel d'hameçonnage n'est pas une faille de l'éditeur. Vous pouvez signaler le site vous-même : {}",
                     "A phishing link or email is not a flaw in the vendor's product. You can report the site yourself: {}",
                     HAMECONNAGE
                 ),
@@ -542,7 +542,7 @@ fn interactif(lu: &Lu, sujet: &Sujet, programme: Option<Programme>, langue: Opti
             afficher_aligne(
                 "  ",
                 tr!(
-                    "Microsoft ne corrige pas par défaut le contournement d'une protection « en profondeur » (AppLocker, accès contrôlé aux dossiers, Exploit Guard). Tu peux continuer : ce sera dit dans le brouillon.",
+                    "Microsoft ne corrige pas par défaut le contournement d'une protection « en profondeur » (AppLocker, accès contrôlé aux dossiers, Exploit Guard). Vous pouvez continuer : ce sera dit dans le brouillon.",
                     "Microsoft does not fix by default the bypass of a “defense-in-depth” protection (AppLocker, controlled folder access, Exploit Guard). You can go on: the draft will say so."
                 ),
                 2,
@@ -570,14 +570,14 @@ fn interactif(lu: &Lu, sujet: &Sujet, programme: Option<Programme>, langue: Opti
     afficher_aligne(
         "  ",
         tr!(
-            "Une ligne par réponse ; Entrée pour passer. Tu pourras compléter le fichier ensuite.",
+            "Une ligne par réponse ; Entrée pour passer. Vous pourrez compléter le fichier ensuite.",
             "One line per answer; Enter to skip. You can complete the file afterwards."
         ),
         2,
         GRIS,
     );
     r.fait = question(tr!(
-        "Qu'as-tu fait, étape par étape ?",
+        "Qu'avez-vous fait, étape par étape ?",
         "What did you do, step by step?"
     ));
     r.vu = question(tr!("Qu'est-ce qui s'est passé ?", "What happened?"));
@@ -590,7 +590,7 @@ fn interactif(lu: &Lu, sujet: &Sujet, programme: Option<Programme>, langue: Opti
     }
     if fiche.champs.contains(&programmes::Champ::Impact) {
         r.impact = question(tr!(
-            "L'impact, si tu le connais (sinon Entrée) :",
+            "L'impact, si vous le connaissez (sinon Entrée) :",
             "The impact, if you know it (otherwise Enter):"
         ));
     }
@@ -605,7 +605,7 @@ fn interactif(lu: &Lu, sujet: &Sujet, programme: Option<Programme>, langue: Opti
     afficher_aligne(
         "  ",
         &trf!(
-            "Retiré avant d'écrire : {}. Relis quand même : toi seul sais ce qui est personnel.",
+            "Retiré avant d'écrire : {}. Relisez quand même : vous seul savez ce qui est personnel.",
             "Removed before writing: {}. Read it anyway: only you know what is personal.",
             b.masques.texte()
         ),
@@ -642,7 +642,7 @@ fn interactif(lu: &Lu, sujet: &Sujet, programme: Option<Programme>, langue: Opti
     )?;
     let ecrit = if fiche.compte_verifie() {
         trf!(
-            "{VERT}✔{RESET} Brouillon écrit : {}. Soumets-le sur {} (compte {} demandé).",
+            "{VERT}✔{RESET} Brouillon écrit : {}. Soumettez-le sur {} (compte {} demandé).",
             "{VERT}✔{RESET} Draft written: {}. Submit it at {} ({} account required).",
             chemin_affichable(&chemin),
             fiche.adresse,
@@ -655,7 +655,7 @@ fn interactif(lu: &Lu, sujet: &Sujet, programme: Option<Programme>, langue: Opti
     } else {
         // Le compte exigé par ce programme n'a pas été vérifié : il n'est pas annoncé comme une exigence.
         trf!(
-            "{VERT}✔{RESET} Brouillon écrit : {}. Soumets-le sur {} (compte demandé : non vérifié).",
+            "{VERT}✔{RESET} Brouillon écrit : {}. Soumettez-le sur {} (compte demandé : non vérifié).",
             "{VERT}✔{RESET} Draft written: {}. Submit it at {} (account required: not checked).",
             chemin_affichable(&chemin),
             fiche.adresse

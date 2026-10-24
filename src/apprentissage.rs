@@ -141,7 +141,7 @@ pub fn accepter(c: &Constat) {
         Ok(a) => a,
         Err(Refus::Illisible) => {
             trp!(
-                "    ✖ La liste de tes choix ne se lit plus ({}) : rien n'est retenu, pour ne pas l'écraser.",
+                "    ✖ La liste de vos choix ne se lit plus ({}) : rien n'est retenu, pour ne pas l'écraser.",
                 "    ✖ Your choice list can no longer be read ({}): nothing is saved, so as not to overwrite it.",
                 fichier().display()
             );
@@ -149,7 +149,7 @@ pub fn accepter(c: &Constat) {
         }
         Err(Refus::Falsifiee(_)) => {
             trp!(
-                "    ✖ La liste de tes choix a été changée hors de Vanguard : rien\n      n'est retenu. « Ce que Vanguard a appris » la montre, pour la\n      reprendre ou l'oublier.",
+                "    ✖ La liste de vos choix a été changée hors de Vanguard : rien\n      n'est retenu. « Ce que Vanguard a appris » la montre, pour la\n      reprendre ou l'oublier.",
                 "    ✖ Your choice list was changed outside Vanguard: nothing is\n      saved. “What Vanguard has learned” shows it, to take it back or\n      forget it."
             );
             return;
@@ -295,7 +295,7 @@ fn appliquer_avec(
         c.probleme = Some(Niveau::Info);
         c.correctif = None;
         c.message += &trf!(
-            " (normal chez toi, selon ton choix du {le})",
+            " (normal chez vous, selon votre choix du {le})",
             " (normal for you, as you chose on {le})"
         );
         n += 1;
@@ -305,7 +305,7 @@ fn appliquer_avec(
 
 /// Ce qui est habituel ici, appris des mesures passées : la connexion (médiane des derniers tests).
 fn habitudes() {
-    section(tr!("TES HABITUDES", "YOUR HABITS"));
+    section(tr!("VOS HABITUDES", "YOUR HABITS"));
     let Some(h) = crate::reseau::connexion::habitudes_ici() else {
         for ligne in envelopper(
             tr!(
@@ -327,7 +327,7 @@ fn habitudes() {
         debit(h.montant)
     );
     trp!(
-        "  {GRIS}médiane de tes {} derniers tests ; chaque nouveau test s'y compare{RESET}",
+        "  {GRIS}médiane de vos {} derniers tests ; chaque nouveau test s'y compare{RESET}",
         "  {GRIS}median of your last {} tests; each new test is compared to it{RESET}",
         h.tests
     );
@@ -338,12 +338,12 @@ pub fn menu() {
     titre(tr!("Ce que Vanguard a appris", "What Vanguard has learned"));
     habitudes();
     crate::protection::normales::section();
-    section(tr!("TES CHOIX", "YOUR CHOICES"));
+    section(tr!("VOS CHOIX", "YOUR CHOICES"));
     let mut appris = match charger() {
         Ok(a) => a,
         Err(Refus::Illisible) => {
             trp!(
-                "  ✖ La liste de tes choix ne se lit plus : {}",
+                "  ✖ La liste de vos choix ne se lit plus : {}",
                 "  ✖ Your choice list can no longer be read: {}",
                 fichier().display()
             );
@@ -362,7 +362,7 @@ pub fn menu() {
         }
         for ligne in envelopper(
             tr!(
-                "Rien pour l'instant. Quand une alerte est normale chez toi, réponds « i » au moment de la corriger : Vanguard s'en souviendra pendant 90 jours, et te la montrera seulement pour info.",
+                "Rien pour l'instant. Quand une alerte est normale chez vous, répondez « i » au moment de la corriger : Vanguard s'en souviendra pendant 90 jours, et vous la montrera seulement pour info.",
                 "Nothing yet. When an alert is normal for you, answer “i” when it is offered as a fix: Vanguard will remember it for 90 days, and only show it for information."
             ),
             LARGEUR - 2,
@@ -372,7 +372,7 @@ pub fn menu() {
         return;
     }
     trp!(
-        "  Alertes que tu as déclarées normales :\n",
+        "  Alertes que vous avez déclarées normales :\n",
         "  Alerts you declared normal:\n"
     );
     let liste: Vec<(String, Acceptee)> = appris.acceptees.clone().into_iter().collect();
@@ -434,7 +434,7 @@ fn garder_adoptee(appris: &Appris) {
         "\n  This list was accepted as it was, without an earlier seal (Vanguard\n  update, or seals deleted by another program)."
     );
     if !demander(tr!(
-        "  Ce sont bien tes choix : les garder ? [o/N] : ",
+        "  Ce sont bien vos choix : les garder ? [o/N] : ",
         "  These are really your choices: keep them? [y/N]: "
     ))
     .oui()
@@ -452,7 +452,7 @@ fn garder_adoptee(appris: &Appris) {
 /// ils sont oubliés, et leurs alertes reviennent.
 fn reprendre(contenu: Option<Appris>) {
     trp!(
-        "  ✖ La liste de tes choix a été changée hors de Vanguard :\n    aucun n'est appliqué.",
+        "  ✖ La liste de vos choix a été changée hors de Vanguard :\n    aucun n'est appliqué.",
         "  ✖ Your choice list was changed outside Vanguard:\n    none is applied."
     );
     let appris = contenu.unwrap_or_default();
@@ -466,7 +466,7 @@ fn reprendre(contenu: Option<Appris>) {
     }
     let garder = !appris.acceptees.is_empty()
         && demander(tr!(
-            "\n  Ce sont bien tes choix : les garder ? [o/N] : ",
+            "\n  Ce sont bien vos choix : les garder ? [o/N] : ",
             "\n  These are really your choices: keep them? [y/N]: "
         ))
         .oui();

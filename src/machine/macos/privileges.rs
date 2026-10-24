@@ -13,7 +13,7 @@ pub(super) fn fichiers_secrets() -> Vec<Constat> {
     crate::machine::unix::fichiers_secrets(
         &maison(),
         tr!(
-            "Ton dossier personnel est lisible par les autres comptes du Mac.",
+            "Votre dossier personnel est lisible par les autres comptes du Mac.",
             "Your home folder is readable by the Mac's other accounts."
         ),
     )
@@ -21,7 +21,7 @@ pub(super) fn fichiers_secrets() -> Vec<Constat> {
 
 pub(super) fn sudo_sans_mot_de_passe() -> Vec<Constat> {
     crate::machine::unix::sudo_sans_mot_de_passe(tr!(
-        "sudo sans mot de passe pour TOUTES les commandes : n'importe quel programme lancé par toi peut prendre la main sur le Mac.",
+        "sudo sans mot de passe pour TOUTES les commandes : n'importe quel programme lancé par vous peut prendre la main sur le Mac.",
         "sudo without a password for ALL commands: any program you run can take over the Mac."
     ))
 }

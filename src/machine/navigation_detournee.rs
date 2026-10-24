@@ -41,7 +41,7 @@ fn juger(rien: bool, pourquoi: &str) -> Constat {
             CAT,
             Niveau::Moyen,
             crate::trf!(
-                "La navigation peut être détournée ({trouve}) : un serveur choisi par quelqu'un d'autre peut lire et modifier les pages. Normal seulement si toi ou ton employeur l'avez réglé.",
+                "La navigation peut être détournée ({trouve}) : un serveur choisi par quelqu'un d'autre peut lire et modifier les pages. Normal seulement si vous ou votre employeur l'avez réglé.",
                 "Browsing may be hijacked ({trouve}): a server chosen by someone else can read and change the pages. Normal only if you or your employer set it up."
             ),
         )

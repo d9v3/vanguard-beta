@@ -366,7 +366,7 @@ fn sauvegarde(l: &Lieux, r: &mut Recensement) {
         .filter(|p| p.ends_with(SERVICE))
         .find_map(|p| std::fs::read_to_string(p).ok())
         .and_then(|t| surveillance::programme_d_une_unite(&t));
-    let precision = tr!("retirée, tes copies restent", "removed, your copies stay").to_string();
+    let precision = tr!("retirée, vos copies restent", "removed, your copies stay").to_string();
     let montre: Vec<String> = unites.iter().map(|p| chemin_affichable(p)).collect();
     let rsync_texte = tr!("Sauvegarde automatique (rsync)", "Automatic backup (rsync)").to_string();
     let element = match crate::sauvegarde::mise_en_place_de(&l.donnees) {
@@ -530,7 +530,7 @@ pub(crate) fn recenser(l: &Lieux) -> Recensement {
             .to_string(),
             precision: trf!("{n} retiré(s), sauf les modifiés", "{n} removed, except changed ones"),
             detail: tr!(
-                "Les fichiers « !Vanguard » posés dans tes dossiers partent ; un fichier modifié ou renommé reste : c'est la preuve d'un passage.",
+                "Les fichiers « !Vanguard » posés dans vos dossiers partent ; un fichier modifié ou renommé reste : c'est la preuve d'un passage.",
                 "The “!Vanguard” files placed in your folders go; a changed or renamed one stays: it is the evidence of an attack."
             )
             .to_string(),
@@ -631,7 +631,7 @@ pub(crate) fn recenser(l: &Lieux) -> Recensement {
     fichiers.retain(|f| !tourne(f));
     if let Some(g) = &garde {
         r.a_faire.push(trf!(
-            "Ce programme est la copie de bin/ ({}) : Windows n'efface pas un programme en marche. Ferme Vanguard, puis supprime le dossier {} ; ou lance « vanguard desinstaller » depuis la clé, qui l'effacera.",
+            "Ce programme est la copie de bin/ ({}) : Windows n'efface pas un programme en marche. Fermez Vanguard, puis supprimez le dossier {} ; ou lancez « vanguard desinstaller » depuis la clé, qui l'effacera.",
             "This program is the bin/ copy ({}): Windows does not erase a running program. Close Vanguard, then delete the folder {}; or run “vanguard uninstall” from the key, which will erase it.",
             chemin_affichable(g),
             chemin_affichable(&bin)
@@ -676,7 +676,7 @@ pub(crate) fn recenser(l: &Lieux) -> Recensement {
             ));
         } else if !dans_les_donnees {
             r.pas_a_lui.push(trf!(
-                "Le programme lancé ({}) n'a pas été posé par Vanguard : il reste. Supprime-le toi-même si tu n'en veux plus.",
+                "Le programme lancé ({}) n'a pas été posé par Vanguard : il reste. Supprimez-le vous-même si vous n'en voulez plus.",
                 "The running program ({}) was not placed by Vanguard: it stays. Delete it yourself if you no longer want it.",
                 chemin_affichable(p)
             ));
@@ -770,7 +770,7 @@ fn dossier_de_donnees(d: &Path, genre: Genre, detail: &str, pas_a_lui: &mut Vec<
                 "Data folder ({taille_ou_lien})"
             )
         },
-        precision: tr!("gardé, sauf si tu le coches", "kept unless you check it").to_string(),
+        precision: tr!("gardé, sauf si vous le cochez", "kept unless you check it").to_string(),
         detail: detail.to_string(),
         coche: false,
         lance: None,
@@ -821,7 +821,7 @@ fn garder_les_dependances(e: &[Element], etats: &mut [bool]) -> Vec<String> {
             {
                 etats[j] = false;
                 messages.push(trf!(
-                    "Copie du programme gardée : {}, que tu gardes, la lance.",
+                    "Copie du programme gardée : {}, que vous gardez, la lance.",
                     "Program copy kept: {}, which you keep, starts it.",
                     garde_e.texte
                 ));
@@ -1030,7 +1030,7 @@ fn defaire_d_abord(liste: bool) {
     afficher_aligne(
         "  ",
         tr!(
-            "Retirer Vanguard ne les défait pas : défais d'abord ceux que tu ne veux plus, avec leurs outils. Ce que tu gardes est redit à la fin.",
+            "Retirer Vanguard ne les défait pas : défaites d'abord ceux que vous ne voulez plus, avec leurs outils. Ce que vous gardez est redit à la fin.",
             "Removing Vanguard does not undo them: first undo those you no longer want, with their tools. What you keep is said again at the end."
         ),
         2,
@@ -1198,7 +1198,7 @@ fn rediger_bilan(b: &Bilan) -> Vec<String> {
             .collect(),
     );
     partie(
-        tr!("Reste à faire toi-même", "Left for you to do"),
+        tr!("Reste à faire vous-même", "Left for you to do"),
         b.a_faire.iter().map(|x| format!("  → {x}")).collect(),
     );
     partie(
@@ -1292,7 +1292,7 @@ fn retirer(e: &Element, x: &mut Execution) -> Result<String, Echec> {
             // Une unité modifiée depuis sa pose reste, et sa note avec elle, même si le dossier de données part.
             for u in &laissees {
                 x.a_faire.push(trf!(
-                    "{} : modifié depuis sa pose, laissé en place ; supprime-le toi-même si tu n'en veux plus. Sa note est gardée : « vanguard sauvegarde-auto --annuler » le retrouve.",
+                    "{} : modifié depuis sa pose, laissé en place ; supprimez-le vous-même si vous n'en voulez plus. Sa note est gardée : « vanguard sauvegarde-auto --annuler » le retrouve.",
                     "{}: changed since it was placed, left in place; delete it yourself if you no longer want it. Its note is kept: “vanguard auto-backup --undo” finds it.",
                     chemin_affichable(u)
                 ));
@@ -1302,7 +1302,7 @@ fn retirer(e: &Element, x: &mut Execution) -> Result<String, Echec> {
                     .push((x.donnees.join(crate::sauvegarde::NOTES), e.texte.clone()));
             }
             Ok(trf!(
-                "{} (tes copies restent sur le disque)",
+                "{} (vos copies restent sur le disque)",
                 "{} (your copies stay on the disk)",
                 e.texte
             ))
@@ -1386,7 +1386,7 @@ fn retirer(e: &Element, x: &mut Execution) -> Result<String, Echec> {
                     // Sous Windows, un programme en marche (une passe de la surveillance) ne s'efface pas.
                     let raison = if cfg!(windows) {
                         trf!(
-                            "{x} ; la surveillance tourne peut-être encore, réessaie dans une minute",
+                            "{x} ; la surveillance tourne peut-être encore, réessayez dans une minute",
                             "{x}; monitoring may still be running, try again in a minute"
                         )
                     } else {
@@ -1401,7 +1401,7 @@ fn retirer(e: &Element, x: &mut Execution) -> Result<String, Echec> {
             }
             if let Some(l) = lancees.first() {
                 echecs.push(trf!(
-                    "copie gardée ({}) : le veilleur n'a pas pu être arrêté et la lance ; « vanguard veilleur off » puis réessaie",
+                    "copie gardée ({}) : le veilleur n'a pas pu être arrêté et la lance ; « vanguard veilleur off » puis réessayez",
                     "copy kept ({}): the watcher could not be stopped and starts it; “vanguard watcher off” then try again",
                     chemin_affichable(l)
                 ));
@@ -1416,7 +1416,7 @@ fn retirer(e: &Element, x: &mut Execution) -> Result<String, Echec> {
         // et le bilan le dirait retiré. Rien n'y est touché.
         Retrait::Dossier(_) if e.genre == Genre::Donnees && x.veilleur_reste.is_some() => Err(Echec::Echoue(
             tr!(
-                "gardé : le veilleur n'a pas pu être arrêté et le recréerait ; « vanguard veilleur off » puis réessaie",
+                "gardé : le veilleur n'a pas pu être arrêté et le recréerait ; « vanguard veilleur off » puis réessayez",
                 "kept: the watcher could not be stopped and would create it again; “vanguard watcher off” then try again"
             )
             .to_string(),
@@ -1443,7 +1443,7 @@ fn retirer(e: &Element, x: &mut Execution) -> Result<String, Echec> {
                     .map(|(p, pour)| format!("{} ({pour})", chemin_affichable(p)))
                     .collect();
                 return Ok(trf!(
-                    "{} ; gardé, pour ce que tu gardes : {}",
+                    "{} ; gardé, pour ce que vous gardez : {}",
                     "{}; kept, for what you keep: {}",
                     e.texte,
                     liste.join(", ")
@@ -1453,7 +1453,7 @@ fn retirer(e: &Element, x: &mut Execution) -> Result<String, Echec> {
             if std::fs::symlink_metadata(d).is_ok() {
                 return Err(Echec::Echoue(
                     tr!(
-                        "revenu pendant l'effacement : une passe de Vanguard encore en cours y a écrit ; réessaie dans une minute",
+                        "revenu pendant l'effacement : une passe de Vanguard encore en cours y a écrit ; réessayez dans une minute",
                         "back during the erasing: a Vanguard run still in progress wrote into it; try again in a minute"
                     )
                     .to_string(),
@@ -1517,7 +1517,7 @@ fn accord_donnees(e: &Element, a: &Annulables, gardes: &[(PathBuf, String)]) -> 
     let traces = compter(&|x| x.file_name().to_string_lossy().starts_with("traces-"), d);
     if extensions + traces > 0 {
         dire(&trf!(
-            "Tes extensions ({extensions}) et les traces collectées ({traces}) y sont aussi.",
+            "Vos extensions ({extensions}) et les traces collectées ({traces}) y sont aussi.",
             "Your extensions ({extensions}) and the collected traces ({traces}) are there too."
         ));
     }
@@ -1525,7 +1525,7 @@ fn accord_donnees(e: &Element, a: &Annulables, gardes: &[(PathBuf, String)]) -> 
     if quarantaine > 0 && avant {
         // Le menu de la quarantaine ne remet que celle d'aujourd'hui : ces fichiers-là ne pourraient plus revenir.
         dire(&trf!(
-            "Il garde {quarantaine} fichier(s) en quarantaine, qui ne se remettent pas d'ici : le dossier est gardé. Une détection peut se tromper : remets d'abord ceux qui sont à toi (dans {}), puis efface ce dossier toi-même.",
+            "Il garde {quarantaine} fichier(s) en quarantaine, qui ne se remettent pas d'ici : le dossier est gardé. Une détection peut se tromper : remettez d'abord ceux qui sont à vous (dans {}), puis effacez ce dossier vous-même.",
             "It holds {quarantaine} quarantined file(s), which cannot be put back from here: the folder is kept. A detection can be wrong: first put back those that are yours (in {}), then erase this folder yourself.",
             chemin_affichable(&d.join("quarantaine"))
         ));
@@ -1536,13 +1536,13 @@ fn accord_donnees(e: &Element, a: &Annulables, gardes: &[(PathBuf, String)]) -> 
     let brouillons = crate::signaler::nombre_dans(d);
     if brouillons > 0 {
         dire(&trf!(
-            "{brouillons} brouillon(s) de signalement (signalements) seront effacés avec lui : copie-les d'abord s'ils ne sont pas encore soumis.",
+            "{brouillons} brouillon(s) de signalement (signalements) seront effacés avec lui : copiez-les d'abord s'ils ne sont pas encore soumis.",
             "{brouillons} vulnerability report draft(s) (signalements) will be erased with it: copy them first if they are not submitted yet."
         ));
     }
     if quarantaine > 0 {
         dire(&trf!(
-            "Il garde aussi {quarantaine} fichier(s) en quarantaine. Une détection peut se tromper : remets d'abord ceux qui sont à toi, ou garde le dossier.",
+            "Il garde aussi {quarantaine} fichier(s) en quarantaine. Une détection peut se tromper : remettez d'abord ceux qui sont à vous, ou gardez le dossier.",
             "It also holds {quarantaine} quarantined file(s). A detection can be wrong: first put back those that are yours, or keep the folder."
         ));
         if demander(tr!(
@@ -1591,7 +1591,7 @@ fn accord_donnees(e: &Element, a: &Annulables, gardes: &[(PathBuf, String)]) -> 
     }
     if !gardes.is_empty() {
         dire(tr!(
-            "Ce qui y reste, parce qu'un élément que tu gardes s'en sert :",
+            "Ce qui y reste, parce qu'un élément que vous gardez s'en sert :",
             "What stays in it, because an item you keep uses it:"
         ));
         for (p, pour) in gardes {
@@ -1716,7 +1716,7 @@ pub fn commande(liste: bool) {
     afficher_aligne(
         "  ",
         tr!(
-            "Vanguard cherche ce qu'il a posé sur cet ordinateur : il le retrouve, rien n'est noté d'avance. Rien n'est retiré sans ton accord ; la clé USB et ce que Vanguard n'a pas posé ne sont jamais touchés.",
+            "Vanguard cherche ce qu'il a posé sur cet ordinateur : il le retrouve, rien n'est noté d'avance. Rien n'est retiré sans votre accord ; la clé USB et ce que Vanguard n'a pas posé ne sont jamais touchés.",
             "Vanguard looks for what it placed on this computer: it finds it, nothing is recorded in advance. Nothing is removed without your consent; the USB key and what Vanguard did not place are never touched."
         ),
         2,
@@ -1821,7 +1821,7 @@ pub fn commande(liste: bool) {
     entete.extend(
         envelopper(
             tr!(
-                "Coche ce qui doit partir. Le dossier de données n'est pas coché : il garde tes données.",
+                "Cochez ce qui doit partir. Le dossier de données n'est pas coché : il garde vos données.",
                 "Check what should go. The data folder is not checked: it keeps your data."
             ),
             LARGEUR - 2,

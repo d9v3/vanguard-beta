@@ -143,7 +143,7 @@ pub const PROGRAMMES: &[Programme] = &[
             ),
             voir(
                 "networksetup -getinfo Wi-Fi",
-                "L'adresse, le masque et la box du Wi-Fi.",
+                "L'adresse, le masque et le routeur du Wi-Fi.",
                 "Wi-Fi address, mask and router.",
             ),
             voir(
@@ -153,7 +153,7 @@ pub const PROGRAMMES: &[Programme] = &[
             ),
             changer(
                 "sudo networksetup -setdnsservers Wi-Fi empty",
-                "Remet les DNS donnés par la box.",
+                "Remet les DNS donnés par le routeur.",
                 "Goes back to the DNS given by the router.",
             ),
         ],
@@ -177,7 +177,7 @@ pub const PROGRAMMES: &[Programme] = &[
             ),
             changer(
                 "sudo ipconfig set en0 DHCP",
-                "Redemande une adresse à la box.",
+                "Redemande une adresse au routeur.",
                 "Asks the router for a new address.",
             ),
         ],
@@ -216,7 +216,7 @@ pub const PROGRAMMES: &[Programme] = &[
             ),
             voir(
                 "lsof -nP -i",
-                "Les connexions réseau de tes programmes.",
+                "Les connexions réseau de vos programmes.",
                 "Your programs' network connections.",
             ),
             voir(
@@ -328,7 +328,7 @@ pub const PROGRAMMES: &[Programme] = &[
         commandes: &[
             voir(
                 "launchctl list",
-                "Les services de ta session.",
+                "Les services de votre session.",
                 "Your session's services.",
             ),
             voir(
@@ -338,7 +338,7 @@ pub const PROGRAMMES: &[Programme] = &[
             ),
             changer(
                 "launchctl bootout gui/$(id -u)/<service>",
-                "Arrête un service de ta session.",
+                "Arrête un service de votre session.",
                 "Stops a service of your session.",
             ),
         ],
@@ -505,7 +505,7 @@ pub const PROGRAMMES: &[Programme] = &[
                 "Les comptes, sans ceux du système.",
                 "Accounts, without the system ones.",
             ),
-            voir("id", "Ton compte et ses groupes.", "Your account and its groups."),
+            voir("id", "Votre compte et ses groupes.", "Your account and its groups."),
             changer(
                 "sudo dscl . -delete /Groups/admin GroupMembership <utilisateur>",
                 "Retire un compte des administrateurs.",
@@ -675,7 +675,7 @@ pub const PAS_A_PAS: &[Programme] = &[
             ),
             changer(
                 "sudo shutdown -r now",
-                "Le disque du système se répare depuis la récupération : redémarre en tenant Cmd+R (Apple : le bouton).",
+                "Le disque du système se répare depuis la récupération : redémarrez en tenant Cmd+R (Apple : le bouton).",
                 "The system disk is repaired from recovery: restart holding Cmd+R (Apple chip: the button).",
             ),
         ],
@@ -707,7 +707,7 @@ pub const PAS_A_PAS: &[Programme] = &[
             ),
             changer(
                 "sudo ipconfig set en0 DHCP",
-                "Redemande une adresse à la box.",
+                "Redemande une adresse au routeur.",
                 "Asks the router for a new address.",
             ),
             changer(

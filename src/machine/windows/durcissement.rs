@@ -117,7 +117,7 @@ pub(super) fn juger_assistance(valeur: Option<u32>) -> Option<Constat> {
         )
         .manuel(
             tr!(
-                "Si personne ne t'aide ainsi : Panneau de configuration › Système › Paramètres d'utilisation à distance, décocher « Autoriser les connexions d'assistance à distance »",
+                "Si personne ne vous aide ainsi : Panneau de configuration › Système › Paramètres d'utilisation à distance, décocher « Autoriser les connexions d'assistance à distance »",
                 "If nobody helps you this way: Control Panel › System › Remote settings, uncheck “Allow Remote Assistance connections”"
             ),
             &["Start-Process SystemPropertiesRemote.exe"],
@@ -169,7 +169,7 @@ pub(super) fn juger_ouverture_auto(auto: Option<&str>, mot_de_passe: bool) -> Op
         )
         .manuel(
             tr!(
-                "Si l'ordinateur sort de la maison : touche Windows + R, « netplwiz », cocher « Les utilisateurs doivent entrer un nom et un mot de passe »",
+                "Si l'ordinateur sort de votre domicile : touche Windows + R, « netplwiz », cocher « Les utilisateurs doivent entrer un nom et un mot de passe »",
                 "If the computer leaves the house: Windows key + R, “netplwiz”, check “Users must enter a user name and password”"
             ),
             &[],
@@ -504,13 +504,13 @@ pub(super) fn juger_wpad(desactive: Option<u32>, domaine: bool) -> Option<Consta
             DURCI,
             Niveau::Moyen,
             tr!(
-                "Windows cherche son proxy tout seul sur le réseau (WPAD) : sur un Wi-Fi public, un autre appareil peut répondre et faire passer ta navigation par lui.",
+                "Windows cherche son proxy tout seul sur le réseau (WPAD) : sur un Wi-Fi public, un autre appareil peut répondre et faire passer votre navigation par lui.",
                 "Windows looks for its proxy by itself on the network (WPAD): on public Wi-Fi, another device can answer and route your browsing through itself."
             ),
         )
         .corriger(
             tr!(
-                "Couper la recherche automatique du proxy de Windows (effective au prochain redémarrage) ; pour le navigateur, décoche aussi « Détecter automatiquement les paramètres » (Paramètres > Réseau > Proxy)",
+                "Couper la recherche automatique du proxy de Windows (effective au prochain redémarrage) ; pour le navigateur, décochez aussi « Détecter automatiquement les paramètres » (Paramètres > Réseau > Proxy)",
                 "Turn off Windows' automatic proxy discovery (takes effect at the next restart); for the browser, also untick “Automatically detect settings” (Settings > Network > Proxy)"
             ),
             // Clé créée seulement si elle manque, comme pour LLMNR : « New-Item -Force » écraserait ses autres valeurs.
@@ -699,7 +699,7 @@ pub(super) fn juger_invite_smb(strategie: Option<u32>, reglage: Option<u32>) -> 
             DURCI,
             Niveau::Moyen,
             tr!(
-                "Les partages réseau acceptent une connexion « invité » sans mot de passe : un faux partage peut se faire passer pour ton NAS et te donner des fichiers piégés.",
+                "Les partages réseau acceptent une connexion « invité » sans mot de passe : un faux partage peut se faire passer pour votre NAS et vous donner des fichiers piégés.",
                 "Network shares accept a password-less “guest” connection: a fake share can pose as your NAS and hand you booby-trapped files."
             ),
         );

@@ -321,7 +321,7 @@ pub(super) fn juger_btm(sortie: Option<&str>, root: bool) -> Vec<Constat> {
                 .avec_objet(Objet::fichier(&e.programme))
                 .manuel(
                     tr!(
-                        "Réglages Système › Général › Ouverture et extensions : le désactiver s'il n'est pas à toi, puis lancer l'antivirus",
+                        "Réglages Système › Général › Ouverture et extensions : le désactiver s'il n'est pas à vous, puis lancer l'antivirus",
                         "System Settings › General › Login Items & Extensions: turn it off if it is not yours, then run the antivirus"
                     ),
                     &[],
@@ -414,7 +414,7 @@ pub(super) fn juger_crochets(
             .avec_objet(Objet::fichier(script))
             .manuel(
                 trf!(
-                    "S'il n'est pas à toi : sudo defaults delete com.apple.loginwindow {}",
+                    "S'il n'est pas à vous : sudo defaults delete com.apple.loginwindow {}",
                     "If it is not yours: sudo defaults delete com.apple.loginwindow {}",
                     affichable(crochet)
                 ),
@@ -466,7 +466,7 @@ pub(super) fn juger_crochets(
                     .avec_objet(Objet::de("dossier", &format!("{dossier}#{}", noms.join(","))))
                     .manuel(
                         trf!(
-                            "S'il n'est pas à toi : le mettre à la corbeille depuis {dossier} (mot de passe administrateur), puis redémarrer",
+                            "S'il n'est pas à vous : le mettre à la corbeille depuis {dossier} (mot de passe administrateur), puis redémarrer",
                             "If it is not yours: move it to the Trash from {dossier} (administrator password), then restart"
                         ),
                         &[],

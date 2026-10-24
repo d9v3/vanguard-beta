@@ -1,4 +1,4 @@
-//! Quelqu'un contrôle mon ordinateur ? Les logiciels de prise de contrôle à distance (AnyDesk, TeamViewer, RustDesk,
+//! Mon ordinateur est-il contrôlé ? Les logiciels de prise de contrôle à distance (AnyDesk, TeamViewer, RustDesk,
 //! Assistance rapide…) installés, lancés au démarrage, en cours d'exécution, ou simplement posés dans Téléchargements.
 //! C'est l'outil de l'arnaque au faux technicien : un appel (« votre ordinateur est infecté »), une fenêtre qui fait
 //! peur, puis on fait installer le programme ; l'arnaqueur voit l'écran, bouge la souris, vole des mots de passe ou
@@ -229,12 +229,12 @@ fn juger(trouvailles: &[Trouvaille], aujourd_hui: NaiveDate) -> Vec<Constat> {
         let etats = etats.join(tr!(" ; ", "; "));
         let message = if logiciel.integre {
             trf!(
-                "{nom} (fourni avec Windows) est ouvert en ce moment : la personne à l'autre bout peut voir cet écran et commander cet ordinateur. Ne l'ouvre que si c'est toi qui as appelé un soutien technique de confiance ; un faux technicien demande justement de l'ouvrir.",
+                "{nom} (fourni avec Windows) est ouvert en ce moment : la personne à l'autre bout peut voir cet écran et commander cet ordinateur. Ne l'ouvrez que si c'est vous qui avez appelé un soutien technique de confiance ; un faux technicien demande justement de l'ouvrir.",
                 "{nom} (built into Windows) is open right now: the person at the other end can see this screen and operate this computer. Open it only if you called trusted technical support yourself; a fake technician asks precisely to open it."
             )
         } else {
             trf!(
-                "{nom} est présent : {etats}. C'est un logiciel de prise de contrôle à distance : qui l'a installé peut voir cet écran et commander cet ordinateur ; c'est l'outil des faux techniciens (« votre ordinateur est infecté, laissez-moi réparer »). Si c'est toi qui l'utilises, déclare-le normal (« i » à la correction).",
+                "{nom} est présent : {etats}. C'est un logiciel de prise de contrôle à distance : qui l'a installé peut voir cet écran et commander cet ordinateur ; c'est l'outil des faux techniciens (« votre ordinateur est infecté, laissez-moi réparer »). Si c'est vous qui l'utilisez, déclarez-le normal (« i » à la correction).",
                 "{nom} is present: {etats}. It is a remote control tool: whoever installed it can see this screen and operate this computer; it is the tech-support scammers' tool (“your computer is infected, let me fix it”). If you use it yourself, mark it as normal (“i” at the fix step)."
             )
         };
@@ -244,8 +244,8 @@ fn juger(trouvailles: &[Trouvaille], aujourd_hui: NaiveDate) -> Vec<Constat> {
         constats.push(if en_cours {
             constat.manuel(
                 tr!(
-                    "Vanguard ne coupe pas une connexion à distance en cours. Si tu n'as rien demandé : débranche Internet (câble, Wi-Fi), puis menu « Antivirus et protection » › « Quelqu'un contrôle mon ordi ? » pour le fermer et le retirer",
-                    "Vanguard does not cut a remote connection in progress. If you did not ask for anything: unplug the Internet (cable, Wi-Fi), then menu “Antivirus and protection” › “Is someone controlling my PC?” to close and remove it"
+                    "Vanguard ne coupe pas une connexion à distance en cours. Si vous n'avez rien demandé : débranchez Internet (câble, Wi-Fi), puis menu « Antivirus et protection » › « Mon ordinateur est-il contrôlé ? » pour le fermer et le retirer",
+                    "Vanguard does not cut a remote connection in progress. If you did not ask for anything: unplug the Internet (cable, Wi-Fi), then menu “Antivirus and protection” › “Is my computer being controlled?” to close and remove it"
                 ),
                 &[],
             )
@@ -1304,12 +1304,15 @@ fn decrire(t: &Trouvaille, aujourd_hui: NaiveDate) -> String {
     }
 }
 
-/// Menu Antivirus et protection › Quelqu'un contrôle mon ordi ? : explique l'arnaque, cherche, conseille, puis retire
+/// Menu Antivirus et protection › Mon ordinateur est-il contrôlé ? : explique l'arnaque, cherche, conseille, puis retire
 /// après accord ; un programme en cours demande un second accord exprès.
 pub fn menu() {
-    titre(tr!("Quelqu'un contrôle mon ordi ?", "Is someone controlling my PC?"));
+    titre(tr!(
+        "Mon ordinateur est-il contrôlé ?",
+        "Is my computer being controlled?"
+    ));
     dire(tr!(
-        "L'arnaque au faux technicien : un appel (« votre ordinateur est infecté »), une fenêtre qui fait peur ou un courriel urgent, puis on te fait installer un programme de prise de contrôle à distance (AnyDesk, TeamViewer, RustDesk…). La personne voit ton écran, bouge ta souris, et en profite pour voler des mots de passe ou faire payer une réparation inventée. Vanguard cherche ces programmes ici : installés, lancés au démarrage, en cours, ou simplement téléchargés.",
+        "L'arnaque au faux technicien : un appel (« votre ordinateur est infecté »), une fenêtre qui fait peur ou un courriel urgent, puis on vous fait installer un programme de prise de contrôle à distance (AnyDesk, TeamViewer, RustDesk…). La personne voit votre écran, bouge votre souris, et en profite pour voler des mots de passe ou faire payer une réparation inventée. Vanguard cherche ces programmes ici : installés, lancés au démarrage, en cours, ou simplement téléchargés.",
         "The tech-support scam: a call (“your computer is infected”), a scary pop-up or an urgent email, then you are made to install a remote control program (AnyDesk, TeamViewer, RustDesk…). The person sees your screen, moves your mouse, and takes the opportunity to steal passwords or charge for a made-up repair. Vanguard looks for these programs here: installed, started at boot, running, or simply downloaded."
     ));
     println!();
@@ -1337,7 +1340,7 @@ pub fn menu() {
         );
         if cfg!(windows) {
             dire(tr!(
-                "Assistance rapide fait partie de Windows : n'accepte de l'ouvrir que si c'est toi qui as appelé un soutien technique de confiance.",
+                "Assistance rapide fait partie de Windows : n'acceptez de l'ouvrir que si c'est vous qui avez appelé un soutien technique de confiance.",
                 "Quick Assist is part of Windows: agree to open it only if you called trusted technical support yourself."
             ));
         }
@@ -1358,28 +1361,28 @@ pub fn menu() {
     }
     println!();
     dire(tr!(
-        "Si tu n'as pas installé ça toi-même, quelqu'un peut voir cet écran et commander cet ordinateur :",
+        "Si vous n'avez pas installé ça vous-même, quelqu'un peut voir cet écran et commander cet ordinateur :",
         "If you did not install this yourself, someone may see this screen and operate this computer:"
     ));
     for conseil in [
         tr!(
-            "1. Débranche le câble réseau ou coupe le Wi-Fi.",
+            "1. Débranchez le câble réseau ou coupez le Wi-Fi.",
             "1. Unplug the network cable or turn Wi-Fi off."
         ),
         tr!(
-            "2. Ne paie rien, ne rappelle pas, ne donne aucun code.",
+            "2. Ne payez rien, ne rappelez pas, ne donnez aucun code.",
             "2. Pay nothing, do not call back, give no code."
         ),
         tr!(
-            "3. Change tes mots de passe importants (courriel, banque) depuis un autre appareil.",
+            "3. Changez vos mots de passe importants (courriel, banque) depuis un autre appareil.",
             "3. Change your important passwords (email, bank) from another device."
         ),
         tr!(
-            "4. Préviens ta banque si tu as payé ou donné un accès.",
+            "4. Prévenez votre banque si vous avez payé ou donné un accès.",
             "4. Tell your bank if you paid or gave access."
         ),
         tr!(
-            "5. Signale l'arnaque : au Canada, le Centre antifraude du Canada (1-888-495-8501) ; ailleurs, la police ou l'autorité contre la fraude de ton pays.",
+            "5. Signalez l'arnaque : au Canada, le Centre antifraude du Canada (1-888-495-8501) ; ailleurs, la police ou l'autorité contre la fraude de votre pays.",
             "5. Report the scam: in Canada, the Canadian Anti-Fraud Centre (1-888-495-8501); elsewhere, the police or your country's anti-fraud authority."
         ),
     ] {
@@ -1387,7 +1390,7 @@ pub fn menu() {
     }
     println!();
     dire(tr!(
-        "Si c'est toi qui l'utilises (pour aider quelqu'un, ou te faire aider par une personne de confiance), garde-le : réponds non.",
+        "Si c'est vous qui l'utilisez (pour aider quelqu'un, ou vous faire aider par une personne de confiance), gardez-le : répondez non.",
         "If you use it yourself (to help someone, or to be helped by someone you trust), keep it: answer no."
     ));
     if !demander(tr!(
@@ -1410,7 +1413,7 @@ pub fn menu() {
             // Le second accord : la personne qui aide peut être connectée par ce programme même.
             println!();
             dire(&trf!(
-                "{nom} est en cours d'exécution : une session à distance est peut-être ouverte. Si tu es toi-même connecté à cet ordinateur par {nom}, réponds non.",
+                "{nom} est en cours d'exécution : une session à distance est peut-être ouverte. Si vous êtes vous-même connecté à cet ordinateur par {nom}, répondez non.",
                 "{nom} is running: a remote session may be open. If you are yourself connected to this computer through {nom}, answer no."
             ));
             if !demander(&trf!(
@@ -1452,7 +1455,7 @@ pub fn menu() {
         }
     }
     dire(tr!(
-        "Ensuite : change tes mots de passe importants depuis un autre appareil, et refais un bilan complet (menu principal, 1).",
+        "Ensuite : changez vos mots de passe importants depuis un autre appareil, et refaites un bilan complet (menu principal, 1).",
         "Next: change your important passwords from another device, and run a full check again (main menu, 1)."
     ));
 }

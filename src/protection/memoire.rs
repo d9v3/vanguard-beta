@@ -628,7 +628,7 @@ fn afficher(bilan: &Bilan) {
             )
         } else {
             trf!(
-                "{} processus n'ont pas pu être lus (droits insuffisants : relance en administrateur ou root) : rien n'est conclu pour eux.",
+                "{} processus n'ont pas pu être lus (droits insuffisants : relancez en administrateur ou root) : rien n'est conclu pour eux.",
                 "{} processes could not be read (insufficient rights: run again as administrator or root): nothing is concluded for them.",
                 bilan.non_lus
             )
@@ -696,7 +696,7 @@ fn afficher(bilan: &Bilan) {
             println!();
             for ligne in envelopper(
                 tr!(
-                    "Rien n'a été arrêté : c'est une alerte, à juger. Un programme légitime peut porter une signature en mémoire (antivirus, outils de sécurité, navigateur ouvert sur une page qui parle de ces menaces). Note le programme et son PID ; en cas de doute, coupe Internet, puis collecte les traces (Suis-je infecté ?).",
+                    "Rien n'a été arrêté : c'est une alerte, à juger. Un programme légitime peut porter une signature en mémoire (antivirus, outils de sécurité, navigateur ouvert sur une page qui parle de ces menaces). Notez le programme et son PID ; en cas de doute, coupez Internet, puis collectez les traces (Suis-je infecté ?).",
                     "Nothing was stopped: this is an alert, for you to judge. A legitimate program can carry a signature in memory (antivirus, security tools, a browser open on a page about these threats). Note the program and its PID; when in doubt, cut the Internet, then collect the traces (Am I infected?)."
                 ),
                 LARGEUR - 2,

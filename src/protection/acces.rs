@@ -176,7 +176,7 @@ fn conclure(bilan: &Bilan) {
     let mut lignes = Vec::new();
     if suspects > 0 {
         lignes.push(tr!(
-            "⚠ Un programme lancé depuis un dossier temporaire ou Téléchargements a l'un de ces accès : un logiciel espion se cache souvent là. Fais vérifier le fichier (Vérifier un fichier téléchargé, Analyse YARA) avant tout.",
+            "⚠ Un programme lancé depuis un dossier temporaire ou Téléchargements a l'un de ces accès : un logiciel espion se cache souvent là. Faites vérifier le fichier (Vérifier un fichier téléchargé, Analyse YARA) avant tout.",
             "⚠ A program started from a temporary folder or Downloads has one of these accesses: spyware often hides there. Have the file checked (Check a downloaded file, YARA scan) first."
         ));
     }
@@ -204,12 +204,12 @@ fn conclure(bilan: &Bilan) {
 fn marche_a_suivre() -> &'static str {
     if cfg!(windows) {
         tr!(
-            "Pour retirer un accès : Paramètres › Confidentialité et sécurité › Position (ou Contacts, Caméra, Microphone). Un programme classique n'a pas d'interrupteur à lui : « Autoriser les applications de bureau » les coupe tous, sinon désinstalle-le (Logiciels).",
+            "Pour retirer un accès : Paramètres › Confidentialité et sécurité › Position (ou Contacts, Caméra, Microphone). Un programme classique n'a pas d'interrupteur à lui : « Autoriser les applications de bureau » les coupe tous, sinon désinstallez-le (Logiciels).",
             "To remove an access: Settings › Privacy & security › Location (or Contacts, Camera, Microphone). A classic program has no switch of its own: “Let desktop apps access” turns them all off, otherwise uninstall it (Software)."
         )
     } else if cfg!(target_os = "macos") {
         tr!(
-            "Pour retirer un accès : Réglages Système › Confidentialité et sécurité › Service de localisation (ou Contacts, Caméra, Micro), puis décoche l'application que tu ne reconnais pas.",
+            "Pour retirer un accès : Réglages Système › Confidentialité et sécurité › Service de localisation (ou Contacts, Caméra, Micro), puis décochez l'application que vous ne reconnaissez pas.",
             "To remove an access: System Settings › Privacy & Security › Location Services (or Contacts, Camera, Microphone), then untick the app you do not recognize."
         )
     } else {
@@ -896,7 +896,7 @@ mod macos {
                         Some(p),
                         false,
                         tr!(
-                            "la liste est protégée par macOS. Pour que Vanguard la lise : Réglages Système › Confidentialité et sécurité › Accès complet au disque, ajoute le Terminal, puis relance. Sinon, regarde-la à la même page.",
+                            "la liste est protégée par macOS. Pour que Vanguard la lise : Réglages Système › Confidentialité et sécurité › Accès complet au disque, ajoutez le Terminal, puis relancez. Sinon, regardez-la à la même page.",
                             "macOS protects the list. For Vanguard to read it: System Settings › Privacy & Security › Full Disk Access, add Terminal, then run again. Otherwise, look at it on the same page."
                         ),
                     );
@@ -907,7 +907,7 @@ mod macos {
             Some(Permission::Position),
             false,
             tr!(
-                "macOS garde ces autorisations hors de portée des programmes. Regarde-les dans Réglages Système › Confidentialité et sécurité › Service de localisation.",
+                "macOS garde ces autorisations hors de portée des programmes. Regardez-les dans Réglages Système › Confidentialité et sécurité › Service de localisation.",
                 "macOS keeps these permissions out of programs' reach. See them in System Settings › Privacy & Security › Location Services."
             ),
         );

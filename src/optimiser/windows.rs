@@ -148,7 +148,7 @@ fn carte_principale() -> Option<String> {
 /// sert. Erreur : pourquoi il faut le faire à la main.
 pub fn dns_principal(v4: &[&str], v6: &[&str]) -> Result<Changement, String> {
     let a_la_main = tr!(
-        "La carte réseau principale est illisible : le DNS se règle à la main (Paramètres > Réseau, ou dans la box).",
+        "La carte réseau principale est illisible : le DNS se règle à la main (Paramètres > Réseau, ou dans le routeur).",
         "The main network adapter is unreadable: set the DNS by hand (Settings > Network, or in the router)."
     );
     let sortie = match carte_principale() {
@@ -870,7 +870,7 @@ pub fn apres(touches: &[&Reglage]) {
     .oui()
     {
         trp!(
-            "  {GRIS}Les changements de l'Explorateur apparaîtront à ta prochaine session.{RESET}",
+            "  {GRIS}Les changements de l'Explorateur apparaîtront à votre prochaine session.{RESET}",
             "  {GRIS}File Explorer changes will show at your next sign-in.{RESET}"
         );
         return;
@@ -960,7 +960,7 @@ pub fn catalogue() -> Vec<Reglage> {
             Confidentialite,
             tr!("Identifiant de publicité coupé", "Advertising ID turned off"),
             tr!(
-                "Les applications ne peuvent plus te suivre de l'une à l'autre pour te montrer de la publicité ciblée.",
+                "Les applications ne peuvent plus vous suivre de l'une à l'autre pour vous montrer de la publicité ciblée.",
                 "Apps can no longer follow you from one to another to show you targeted ads."
             ),
             None,
@@ -978,7 +978,7 @@ pub fn catalogue() -> Vec<Reglage> {
             Confidentialite,
             tr!("Pas de publicités dans Windows", "No ads inside Windows"),
             tr!(
-                "Fini les applications installées sans ton accord (jeux mis en avant) et les suggestions dans le menu Démarrer, les Paramètres et l'écran de verrouillage.",
+                "Fini les applications installées sans votre accord (jeux mis en avant) et les suggestions dans le menu Démarrer, les Paramètres et l'écran de verrouillage.",
                 "No more apps installed without your consent (promoted games), and no suggestions in Start, Settings and on the lock screen."
             ),
             None,
@@ -1001,7 +1001,7 @@ pub fn catalogue() -> Vec<Reglage> {
             Confidentialite,
             tr!("Historique des activités coupé", "Activity history turned off"),
             tr!(
-                "Windows ne garde plus la liste de ce que tu ouvres (documents, sites, applications) et ne l'envoie plus à ton compte Microsoft.",
+                "Windows ne garde plus la liste de ce que vous ouvrez (documents, sites, applications) et ne l'envoie plus à votre compte Microsoft.",
                 "Windows no longer keeps the list of what you open (documents, sites, apps) nor sends it to your Microsoft account."
             ),
             None,
@@ -1016,7 +1016,7 @@ pub fn catalogue() -> Vec<Reglage> {
             Confidentialite,
             tr!("Recherche du menu Démarrer sans Bing", "Start menu search without Bing"),
             tr!(
-                "La recherche du menu Démarrer cherche dans l'ordinateur, plus sur Internet : elle répond plus vite, et ce que tu tapes ne part plus chez Microsoft.",
+                "La recherche du menu Démarrer cherche dans l'ordinateur, plus sur Internet : elle répond plus vite, et ce que vous tapez ne part plus chez Microsoft.",
                 "Start menu search looks in the computer, no longer on the Internet: it answers faster, and what you type no longer goes to Microsoft."
             ),
             None,
@@ -1043,7 +1043,7 @@ pub fn catalogue() -> Vec<Reglage> {
             Confidentialite,
             tr!("Plus de demandes d'avis", "No more feedback requests"),
             tr!(
-                "Windows ne te demande plus ton avis par des notifications.",
+                "Windows ne vous demande plus votre avis par des notifications.",
                 "Windows no longer asks for your feedback through notifications."
             ),
             None,
@@ -1062,9 +1062,9 @@ pub fn catalogue() -> Vec<Reglage> {
         r(
             "saisie",
             Confidentialite,
-            tr!("Ce que tu tapes reste chez toi", "What you type stays with you"),
+            tr!("Ce que vous tapez reste chez vous", "What you type stays with you"),
             tr!(
-                "Windows n'envoie plus d'exemples de ta frappe et de ton écriture manuscrite pour « améliorer » la reconnaissance, et ne relève plus tes contacts pour cela.",
+                "Windows n'envoie plus d'exemples de votre frappe et de votre écriture manuscrite pour « améliorer » la reconnaissance, et ne relève plus vos contacts pour cela.",
                 "Windows no longer sends samples of your typing and handwriting to “improve” recognition, nor collects your contacts for it."
             ),
             None,
@@ -1105,7 +1105,7 @@ pub fn catalogue() -> Vec<Reglage> {
             Confidentialite,
             tr!("Pas de conseils tirés des diagnostics", "No tips based on diagnostics"),
             tr!(
-                "Microsoft n'utilise plus tes données de diagnostic pour te montrer des conseils, des publicités et des recommandations personnalisés.",
+                "Microsoft n'utilise plus vos données de diagnostic pour vous montrer des conseils, des publicités et des recommandations personnalisés.",
                 "Microsoft no longer uses your diagnostic data to show you personalized tips, ads and recommendations."
             ),
             None,
@@ -1251,7 +1251,7 @@ pub fn catalogue() -> Vec<Reglage> {
             Confort,
             tr!("Verr. num. allumé à l'ouverture", "Num Lock on at sign-in"),
             tr!(
-                "Le pavé numérique est prêt dès l'ouverture de ta session.",
+                "Le pavé numérique est prêt dès l'ouverture de votre session.",
                 "The number pad is ready as soon as you sign in."
             ),
             None,

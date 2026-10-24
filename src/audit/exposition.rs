@@ -123,12 +123,12 @@ fn usurpateurs(ips: &[std::net::Ipv4Addr], box_aussi: bool) -> Constat {
     let liste = ips.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
     let suite = if box_aussi {
         tr!(
-            " Seule la réponse de la box (la passerelle) est lue.",
+            " Seule la réponse du routeur (la passerelle) est lue.",
             " Only the router's answer (the gateway) is read."
         )
     } else {
         tr!(
-            " La box elle-même n'a pas répondu : ce qu'elle ouvre vers Internet n'est pas vérifié.",
+            " Le routeur lui-même n'a pas répondu : ce qu'il ouvre vers Internet n'est pas vérifié.",
             " The router itself did not answer: what it opens to the Internet is not checked."
         )
     };
@@ -138,13 +138,13 @@ fn usurpateurs(ips: &[std::net::Ipv4Addr], box_aussi: bool) -> Constat {
             CATEGORIE,
             if box_aussi { Niveau::Moyen } else { Niveau::Eleve },
             trf!(
-                "{liste} se dit box en UPnP sans être la passerelle du réseau : un appareil se fait peut-être passer pour elle, pour cacher les ports qu'il ouvre ou en inventer.{suite}",
+                "{liste} se dit routeur en UPnP sans être la passerelle du réseau : un appareil se fait peut-être passer pour lui, pour cacher les ports qu'il ouvre ou en inventer.{suite}",
                 "{liste} claims to be the router over UPnP without being the network's gateway: a device may be impersonating it, to hide the ports it opens or make some up.{suite}"
             ),
         )
         .manuel(
             tr!(
-                "Regarde quel appareil a cette adresse (Réseau › appareils) ; s'il n'a rien d'un routeur, débranche-le du réseau",
+                "Regardez quel appareil a cette adresse (Réseau › appareils) ; s'il n'a rien d'un routeur, débranchez-le du réseau",
                 "Check which device has this address (Network › devices); if it is nothing like a router, unplug it from the network"
             ),
             &[],
@@ -160,7 +160,7 @@ fn redirections(e: &Entree) -> Vec<Constat> {
             impossible(
                 CATEGORIE,
                 tr!(
-                    "UPnP non demandé à la box : scan d'une cible précise",
+                    "UPnP non demandé au routeur : scan d'une cible précise",
                     "UPnP not asked of the router: scan of a single target"
                 ),
             ),
@@ -173,7 +173,7 @@ fn redirections(e: &Entree) -> Vec<Constat> {
                 ok(
                     CATEGORIE,
                     tr!(
-                        "UPnP coupé ou absent sur la box : aucun appareil ne peut ouvrir un port vers Internet tout seul. Les redirections réglées à la main dans la box ne se lisent pas d'ici.",
+                        "UPnP coupé ou absent sur le routeur : aucun appareil ne peut ouvrir un port vers Internet tout seul. Les redirections réglées à la main dans le routeur ne se lisent pas d'ici.",
                         "UPnP off or absent on the router: no device can open a port to the Internet by itself. Port forwards set by hand in the router cannot be read from here."
                     ),
                 ),
@@ -195,7 +195,7 @@ fn redirections(e: &Entree) -> Vec<Constat> {
                 impossible(
                     CATEGORIE,
                     &trf!(
-                        "la box n'a pas pu être interrogée en UPnP{repli}",
+                        "le routeur n'a pas pu être interrogé en UPnP{repli}",
                         "the router could not be queried over UPnP{repli}"
                     ),
                 ),
@@ -219,13 +219,13 @@ fn redirections(e: &Entree) -> Vec<Constat> {
             CATEGORIE,
             Niveau::Moyen,
             trf!(
-                "UPnP est actif sur la box{boite} : n'importe quel programme du réseau, un appareil infecté aussi, peut lui demander d'ouvrir un port vers Internet sans te le dire.{compte}",
+                "UPnP est actif sur le routeur{boite} : n'importe quel programme du réseau, un appareil infecté aussi, peut lui demander d'ouvrir un port vers Internet sans vous le dire.{compte}",
                 "UPnP is on at the router{boite}: any program on the network, an infected device too, can ask it to open a port to the Internet without telling you.{compte}"
             ),
         )
         .manuel(
             tr!(
-                "Coupe UPnP dans l'administration de la box (souvent sous « Avancé », « NAT » ou « Jeux ») ; pour une console, règle plutôt une redirection à la main.",
+                "Coupez UPnP dans l'administration du routeur (souvent sous « Avancé », « NAT » ou « Jeux ») ; pour une console, réglez plutôt une redirection à la main.",
                 "Turn UPnP off in the router's administration (often under “Advanced”, “NAT” or “Gaming”); for a console, set a port forward by hand instead."
             ),
             &[],
@@ -240,7 +240,7 @@ fn redirections(e: &Entree) -> Vec<Constat> {
             impossible(
                 CATEGORIE,
                 tr!(
-                    "la box annonce UPnP mais ne dit pas ses redirections",
+                    "le routeur annonce UPnP mais ne dit pas ses redirections",
                     "the router announces UPnP but does not tell its port forwards"
                 ),
             ),
@@ -262,7 +262,7 @@ fn redirections(e: &Entree) -> Vec<Constat> {
                 CATEGORIE,
                 Niveau::Info,
                 trf!(
-                    "{n} redirection(s) lue(s) : la box en a peut-être d'autres.",
+                    "{n} redirection(s) lue(s) : le routeur en a peut-être d'autres.",
                     "{n} port forward(s) read: the router may have more."
                 ),
             ),
@@ -302,7 +302,7 @@ fn constat_redirection(e: &Entree, r: &igd::Redirection, sans_effet: bool) -> Co
         format!(" ({})", service.service)
     };
     let mut message = trf!(
-        "La box renvoie le port {}/{} d'Internet vers {appareil}:{}{nom_service} : n'importe qui sur Internet peut essayer de s'y connecter.",
+        "Le routeur renvoie le port {}/{} d'Internet vers {appareil}:{}{nom_service} : n'importe qui sur Internet peut essayer de s'y connecter.",
         "The router forwards Internet port {}/{} to {appareil}:{}{nom_service}: anyone on the Internet can try to connect to it.",
         r.port_public,
         r.protocole.to_lowercase(),
@@ -316,7 +316,7 @@ fn constat_redirection(e: &Entree, r: &igd::Redirection, sans_effet: bool) -> Co
     }
     if !r.active {
         message += tr!(
-            " Désactivée dans la box : sans effet tant qu'elle le reste.",
+            " Désactivée dans le routeur : sans effet tant qu'elle le reste.",
             " Disabled in the router: no effect as long as it stays so."
         );
     } else if !connu {
@@ -327,13 +327,13 @@ fn constat_redirection(e: &Entree, r: &igd::Redirection, sans_effet: bool) -> Co
     }
     if sans_effet {
         message += tr!(
-            " Sans effet derrière le partage d'adresse de ton fournisseur ou un second routeur, mais à retirer quand même.",
+            " Sans effet derrière le partage d'adresse de votre fournisseur ou un second routeur, mais à retirer quand même.",
             " No effect behind your provider's shared address or a second router, but to be removed anyway."
         );
     }
     alerte(CATEGORIE, niveau, message).manuel(
         tr!(
-            "Si tu n'as pas demandé cette ouverture, coupe UPnP dans l'administration de la box et retire la redirection. Si elle sert (console, caméra), mets l'appareil à jour et donne-lui un mot de passe fort.",
+            "Si vous n'avez pas demandé cette ouverture, coupez UPnP dans l'administration du routeur et retirez la redirection. Si elle sert (console, caméra), mettez l'appareil à jour et donnez-lui un mot de passe fort.",
             "If you did not ask for this opening, turn UPnP off in the router's administration and remove the port forward. If it is needed (console, camera), update the device and give it a strong password."
         ),
         &[],
@@ -351,14 +351,14 @@ fn adresse_publique(e: &Entree) -> Vec<Constat> {
     let constat = match e.internet {
         Some(Internet { v4: Some(ip), .. }) => {
             let situation = crate::reseau::nat::adresse_partagee(boite, ip).unwrap_or(tr!(
-                "Ta box est joignable d'Internet : ce qui compte, c'est ce qu'elle laisse passer (redirections ci-dessus, IPv6 ci-dessous).",
+                "Votre routeur est joignable d'Internet : ce qui compte, c'est ce qu'il laisse passer (redirections ci-dessus, IPv6 ci-dessous).",
                 "Your router is reachable from the Internet: what matters is what it lets through (port forwards above, IPv6 below)."
             ));
             alerte(
                 CATEGORIE,
                 Niveau::Info,
                 trf!(
-                    "Ton adresse Internet est {ip}. {situation}",
+                    "Votre adresse Internet est {ip}. {situation}",
                     "Your Internet address is {ip}. {situation}"
                 ),
             )
@@ -375,7 +375,7 @@ fn adresse_publique(e: &Entree) -> Vec<Constat> {
                 CATEGORIE,
                 Niveau::Info,
                 trf!(
-                    "La box dit avoir l'adresse Internet {ip}. {}",
+                    "Le routeur dit avoir l'adresse Internet {ip}. {}",
                     "The router says its Internet address is {ip}. {}",
                     situation_de_la_box(ip)
                 ),
@@ -396,17 +396,17 @@ fn adresse_publique(e: &Entree) -> Vec<Constat> {
 fn situation_de_la_box(ip: Ipv4Addr) -> &'static str {
     if partagee(ip) {
         tr!(
-            "Adresse partagée par le fournisseur (CGNAT) : personne ne joint ta box depuis Internet en IPv4, mais regarde l'IPv6 ci-dessous.",
+            "Adresse partagée par le fournisseur (CGNAT) : personne ne joint votre routeur depuis Internet en IPv4, mais regardez l'IPv6 ci-dessous.",
             "Address shared by the provider (CGNAT): nobody reaches your router from the Internet over IPv4, but look at IPv6 below."
         )
     } else if ip.is_private() {
         tr!(
-            "Adresse privée : ta box est derrière un autre routeur (double NAT), deux administrations à vérifier.",
+            "Adresse privée : votre routeur est derrière un autre routeur (double NAT), deux administrations à vérifier.",
             "Private address: your router sits behind another router (double NAT), two administrations to check."
         )
     } else {
         tr!(
-            "Adresse publique, non confirmée d'Internet : ta box est joignable, ce qui compte est ce qu'elle laisse passer.",
+            "Adresse publique, non confirmée d'Internet : votre routeur est joignable, ce qui compte est ce qu'il laisse passer.",
             "Public address, not confirmed from the Internet: your router is reachable, what matters is what it lets through."
         )
     }
@@ -480,7 +480,7 @@ fn adresses_ipv6(e: &Entree) -> Vec<Constat> {
             _ => Niveau::Info,
         };
         let mut message = trf!(
-            "Cet ordinateur a une adresse IPv6 publique ({prefixes}, {n} adresse(s){dont}) : en IPv6, rien ne le cache derrière la box ; seul un pare-feu (le sien ou celui de la box) arrête Internet. Le sien est {etat}.",
+            "Cet ordinateur a une adresse IPv6 publique ({prefixes}, {n} adresse(s){dont}) : en IPv6, rien ne le cache derrière le routeur ; seul un pare-feu (le sien ou celui du routeur) arrête Internet. Le sien est {etat}.",
             "This computer has a public IPv6 address ({prefixes}, {n} address(es){dont}): in IPv6, nothing hides it behind the router; only a firewall (its own or the router's) stops the Internet. Its own is {etat}."
         );
         let tunnels: BTreeSet<&str> = lecture
@@ -491,7 +491,7 @@ fn adresses_ipv6(e: &Entree) -> Vec<Constat> {
             .collect();
         for tunnel in tunnels {
             message += &trf!(
-                " {tunnel} est un tunnel (VPN) : son adresse vient de lui, pas de la box.",
+                " {tunnel} est un tunnel (VPN) : son adresse vient de lui, pas du routeur.",
                 " {tunnel} is a tunnel (VPN): its address comes from it, not from the router."
             );
         }
@@ -502,14 +502,14 @@ fn adresses_ipv6(e: &Entree) -> Vec<Constat> {
             );
         }
         message += tr!(
-            " Le pare-feu IPv6 de la box ne se lit pas d'ici : il faudrait qu'un serveur extérieur essaie de te joindre, ce que Vanguard ne fait pas.",
+            " Le pare-feu IPv6 du routeur ne se lit pas d'ici : il faudrait qu'un serveur extérieur essaie de vous joindre, ce que Vanguard ne fait pas.",
             " The router's IPv6 firewall cannot be read from here: an outside server would have to try to reach you, which Vanguard does not do."
         );
         message += autres_non_lus;
         liste.push(marque(
             alerte(CATEGORIE, niveau, message).manuel(
                 tr!(
-                    "Active le pare-feu de cet ordinateur (Vanguard le propose au bilan) ; dans l'admin de la box, vérifie que le pare-feu IPv6 est activé.",
+                    "Activez le pare-feu de cet ordinateur (Vanguard le propose au bilan) ; dans l'admin du routeur, vérifiez que le pare-feu IPv6 est activé.",
                     "Turn on this computer's firewall (Vanguard offers it in the check); in the router's admin, make sure the IPv6 firewall is on."
                 ),
                 &[],
@@ -525,7 +525,7 @@ fn adresses_ipv6(e: &Entree) -> Vec<Constat> {
                 CATEGORIE,
                 Niveau::Info,
                 trf!(
-                    "{n} autre(s) appareil(s) du réseau ont une adresse IPv6 publique : eux aussi ne dépendent que du pare-feu de la box.",
+                    "{n} autre(s) appareil(s) du réseau ont une adresse IPv6 publique : eux aussi ne dépendent que du pare-feu du routeur.",
                     "{n} other device(s) on the network have a public IPv6 address: they too depend only on the router's firewall."
                 ),
             ),
@@ -543,14 +543,14 @@ fn services_de_la_box(e: &Entree) -> Vec<Constat> {
         return vec![marque(
             impossible(
                 CATEGORIE,
-                tr!("la box n'est pas dans le scan", "the router is not in the scan"),
+                tr!("le routeur n'est pas dans le scan", "the router is not in the scan"),
             ),
             REGLE,
         )];
     };
     let tcp = |port: u16| boite.ports.iter().any(|p| !p.udp && p.port == port);
     let marche = tr!(
-        "Dans l'admin de la box, coupe ce qui ne sert pas ; vérifie que l'administration à distance (depuis Internet) est désactivée.",
+        "Dans l'admin du routeur, coupez ce qui ne sert pas ; vérifiez que l'administration à distance (depuis Internet) est désactivée.",
         "In the router's admin, turn off what is not needed; make sure remote administration (from the Internet) is off."
     );
     let mut liste = Vec::new();
@@ -571,7 +571,7 @@ fn services_de_la_box(e: &Entree) -> Vec<Constat> {
             7547 => (
                 Niveau::Info,
                 tr!(
-                    "Gestion à distance par le fournisseur : normal sur une box louée, à savoir.",
+                    "Gestion à distance par le fournisseur : normal sur un routeur loué, à savoir.",
                     "Remote management by the provider: normal on a rented router, worth knowing."
                 ),
             ),
@@ -581,7 +581,7 @@ fn services_de_la_box(e: &Entree) -> Vec<Constat> {
             CATEGORIE,
             niveau,
             trf!(
-                "La box offre {} ({}) à tout le réseau. {conseil}",
+                "Le routeur offre {} ({}) à tout le réseau. {conseil}",
                 "The router offers {} ({}) to the whole network. {conseil}",
                 p.service,
                 p.libelle()
@@ -599,7 +599,7 @@ fn services_de_la_box(e: &Entree) -> Vec<Constat> {
             ok(
                 CATEGORIE,
                 trf!(
-                    "La box n'offre au réseau local aucun service d'administration à risque ({} port(s) vus). Son administration à distance (depuis Internet) ne se voit pas d'ici.",
+                    "Le routeur n'offre au réseau local aucun service d'administration à risque ({} port(s) vus). Son administration à distance (depuis Internet) ne se voit pas d'ici.",
                     "The router offers the local network no risky administration service ({} port(s) seen). Its remote administration (from the Internet) cannot be seen from here.",
                     boite.ports.len()
                 ),
@@ -800,7 +800,7 @@ mod tests {
         assert!(
             exp[1]
                 .message
-                .starts_with("La box renvoie le port 3389/tcp d'Internet vers 10.0.0.10 (pc-alice):3389 (RDP)")
+                .starts_with("Le routeur renvoie le port 3389/tcp d'Internet vers 10.0.0.10 (pc-alice):3389 (RDP)")
         );
         assert!(exp[1].message.contains("Demandée comme « Bureau »"));
         // Le web d'une caméra : le niveau du port, au moins moyen.
@@ -847,7 +847,7 @@ mod tests {
         let r = rapport(Some(Etat::OutilAbsent));
         let liste = constats(&entree(&r));
         let exp = regle(&liste, "COM-EXP-001");
-        assert!(!exp[0].verifie && exp[0].message.contains("interrogée"));
+        assert!(!exp[0].verifie && exp[0].message.contains("interrogé"));
         let r = rapport(None);
         let liste = constats(&entree(&r));
         assert!(!regle(&liste, "COM-EXP-001")[0].verifie);
@@ -903,7 +903,7 @@ mod tests {
         assert!(
             exp[0]
                 .message
-                .starts_with("Ton adresse Internet est 203.0.113.7. Ta box est joignable")
+                .starts_with("Votre adresse Internet est 203.0.113.7. Votre routeur est joignable")
         );
         // La box dit une adresse partagée (CGNAT) : le jugement de « Type de NAT ».
         let r = rapport(Some(Etat::Actif(lecture(
@@ -924,7 +924,7 @@ mod tests {
             exp[0].verifie
                 && exp[0]
                     .message
-                    .starts_with("La box dit avoir l'adresse Internet 100.64.1.2. Adresse partagée")
+                    .starts_with("Le routeur dit avoir l'adresse Internet 100.64.1.2. Adresse partagée")
         );
         let r = rapport(Some(Etat::Actif(lecture(
             Vec::new(),
@@ -1032,7 +1032,7 @@ mod tests {
         assert!(
             exp[0]
                 .message
-                .starts_with("La box offre HTTP (80/tcp) à tout le réseau. Sa page d'administration")
+                .starts_with("Le routeur offre HTTP (80/tcp) à tout le réseau. Sa page d'administration")
         );
         assert_eq!(exp[0].probleme, Some(Niveau::Moyen));
         assert!(exp[0].correctif.is_some());
@@ -1049,7 +1049,7 @@ mod tests {
         let exp = regle(&liste, "COM-EXP-004");
         assert_eq!(exp.len(), 1);
         assert_eq!(exp[0].probleme, Some(Niveau::Critique));
-        assert!(exp[0].message.starts_with("La box offre Telnet (23/tcp)"));
+        assert!(exp[0].message.starts_with("Le routeur offre Telnet (23/tcp)"));
         // Rien à risque : dit sain, et l'administration à distance dite invisible d'ici.
         let saine = Rapport {
             hotes: vec![hote("10.0.0.1", Some("box"), Some("passerelle"), &[443], &[53])],

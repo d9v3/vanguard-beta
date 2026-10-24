@@ -30,12 +30,12 @@ pub const PAS_A_PAS: &[Programme] = &[
             changer("yay -Sua", "Puis les paquets de l'AUR.", "Then the AUR packages."),
             voir(
                 "pacdiff -o",
-                "Les réglages .pacnew laissés par la mise à jour : à comparer avec les tiens (sudo pacdiff).",
+                "Les réglages .pacnew laissés par la mise à jour : à comparer avec les vôtres (sudo pacdiff).",
                 "The .pacnew settings left by the update: to compare with yours (sudo pacdiff).",
             ),
             voir(
                 "pacman -Q linux && uname -r",
-                "Le noyau installé, puis celui qui tourne : s'ils diffèrent, redémarre.",
+                "Le noyau installé, puis celui qui tourne : s'ils diffèrent, redémarrez.",
                 "The installed kernel, then the running one: if they differ, restart.",
             ),
             changer("systemctl reboot", "Redémarre pour finir.", "Restarts to finish."),
@@ -69,10 +69,10 @@ pub const PAS_A_PAS: &[Programme] = &[
             ),
             voir(
                 "yay -Gp <paquet>",
-                "Lis son PKGBUILD avant : c'est le script qui le construit sur ta machine.",
+                "Lisez son PKGBUILD avant : c'est le script qui le construit sur votre ordinateur.",
                 "Read its PKGBUILD first: it is the script that builds it on your machine.",
             ),
-            changer("yay -S <paquet>", "Puis installe-le.", "Then install it."),
+            changer("yay -S <paquet>", "Puis installez-le.", "Then install it."),
             changer(
                 "sudo pacman -Rns <paquet>",
                 "Pour le retirer, avec ses dépendances devenues inutiles.",
@@ -108,7 +108,7 @@ pub const PAS_A_PAS: &[Programme] = &[
             ),
             changer(
                 "sudo pacman -Rns $(pacman -Qdtq)",
-                "Les retire (relis la liste avant).",
+                "Les retire (relisez la liste avant).",
                 "Removes them (read the list first).",
             ),
             voir(
@@ -123,7 +123,7 @@ pub const PAS_A_PAS: &[Programme] = &[
             ),
             voir(
                 "du -sh ~/.cache",
-                "Le cache de tes programmes, souvent gros (navigateurs).",
+                "Le cache de vos programmes, souvent gros (navigateurs).",
                 "Your programs' cache, often big (browsers).",
             ),
         ],
@@ -155,23 +155,23 @@ pub const PAS_A_PAS: &[Programme] = &[
             ),
             changer(
                 "sudo pacman -U /var/cache/pacman/pkg/<paquet>-<version>*.pkg.tar.zst",
-                "Une mise à jour casse un programme : reviens à sa version d'avant, gardée dans le cache.",
+                "Une mise à jour casse un programme : revenez à sa version d'avant, gardée dans le cache.",
                 "An update breaks a program: go back to its previous version, kept in the cache.",
             ),
             changer(
                 "mount /dev/<partition> /mnt",
-                "Ne démarre plus ? Depuis la clé d'installation d'Arch, monte la partition du système…",
+                "Ne démarre plus ? Depuis la clé d'installation d'Arch, montez la partition du système…",
                 "Won't boot? From the Arch install key, mount the system partition…",
             ),
-            changer("arch-chroot /mnt", "…entre dans ton système…", "…enter your system…"),
+            changer("arch-chroot /mnt", "…entrez dans votre système…", "…enter your system…"),
             changer(
                 "pacman -Syu",
-                "…finis la mise à jour interrompue…",
+                "…finissez la mise à jour interrompue…",
                 "…finish the interrupted update…",
             ),
             changer(
                 "mkinitcpio -P",
-                "…refais l'image de démarrage, puis redémarre.",
+                "…refaites l'image de démarrage, puis redémarrez.",
                 "…rebuild the boot image, then restart.",
             ),
         ],
@@ -203,7 +203,7 @@ pub const PAS_A_PAS: &[Programme] = &[
             ),
             changer(
                 "sudo ufw allow ssh",
-                "…sauf ce que tu veux ouvrir (ici SSH, si tu t'y connectes à distance).",
+                "…sauf ce que vous voulez ouvrir (ici SSH, si vous vous y connectez à distance).",
                 "…except what you want to open (here SSH, if you connect remotely).",
             ),
             changer("sudo ufw enable", "Active le pare-feu.", "Turns the firewall on."),
@@ -372,7 +372,7 @@ pub(super) const YAY: Programme = Programme {
         ),
         changer(
             "yay -S <paquet>",
-            "Installe depuis l'AUR : lis le PKGBUILD avant, personne ne l'a vérifié pour toi.",
+            "Installe depuis l'AUR : lisez le PKGBUILD avant, personne ne l'a vérifié pour vous.",
             "Installs from the AUR: read the PKGBUILD first, nobody checked it for you.",
         ),
         voir(
@@ -436,7 +436,7 @@ const CONTRIB: Programme = Programme {
         ),
         voir(
             "pacdiff -o",
-            "Les fichiers .pacnew et .pacsave laissés par les mises à jour : des réglages à comparer avec les tiens.",
+            "Les fichiers .pacnew et .pacsave laissés par les mises à jour : des réglages à comparer avec les vôtres.",
             "The .pacnew and .pacsave files left by updates: settings to compare with yours.",
         ),
         changer(

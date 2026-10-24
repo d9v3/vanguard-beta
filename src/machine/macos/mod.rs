@@ -295,7 +295,7 @@ fn ports_ecoute(pare_feu_actif: bool) -> Vec<Constat> {
             constats.push(match partage(port) {
                 Some(service) => constat.manuel(
                     trf!(
-                        "Si tu ne t'en sers pas : Réglages Système > Général > Partage > désactiver « {service} »",
+                        "Si vous ne vous en servez pas : Réglages Système > Général > Partage > désactiver « {service} »",
                         "If you do not use it: System Settings > General > Sharing > turn off “{service}”"
                     ),
                     &[],
@@ -464,7 +464,7 @@ fn ouverture_de_session() -> Vec<Constat> {
                 "Comptes",
                 Niveau::Moyen,
                 trf!(
-                    "La session de « {compte} » s'ouvre toute seule au démarrage : un Mac volé s'allume directement sur tes fichiers (et FileVault ne peut pas protéger le disque).",
+                    "La session de « {compte} » s'ouvre toute seule au démarrage : un Mac volé s'allume directement sur vos fichiers (et FileVault ne peut pas protéger le disque).",
                     "“{compte}”'s session opens by itself at startup: a stolen Mac boots straight into your files (and FileVault cannot protect the disk)."
                 ),
             )
@@ -659,7 +659,7 @@ fn comptes() -> Constat {
             "Comptes",
             Niveau::Info,
             trf!(
-                "{} comptes administrateurs : {}. Chacun peut tout modifier ; vérifie qu'ils sont tous connus.",
+                "{} comptes administrateurs : {}. Chacun peut tout modifier ; vérifiez qu'ils sont tous connus.",
                 "{} administrator accounts: {}. Each can change everything; check they are all known.",
                 admins.len(),
                 admins.join(", ")
@@ -806,13 +806,13 @@ fn sauvegarde_chiffree() -> Option<Constat> {
             Niveau::Moyen,
             if n == 1 {
                 tr!(
-                    "La sauvegarde Time Machine n'est pas chiffrée : le disque de sauvegarde volé donne tous tes fichiers, même avec FileVault.",
+                    "La sauvegarde Time Machine n'est pas chiffrée : le disque de sauvegarde volé donne tous vos fichiers, même avec FileVault.",
                     "The Time Machine backup is not encrypted: a stolen backup disk gives away all your files, even with FileVault."
                 )
                 .to_string()
             } else {
                 trf!(
-                    "{n} sauvegardes Time Machine ne sont pas chiffrées : un disque de sauvegarde volé donne tous tes fichiers, même avec FileVault.",
+                    "{n} sauvegardes Time Machine ne sont pas chiffrées : un disque de sauvegarde volé donne tous vos fichiers, même avec FileVault.",
                     "{n} Time Machine backups are not encrypted: a stolen backup disk gives away all your files, even with FileVault."
                 )
             },
@@ -857,7 +857,7 @@ fn sauvegardes() -> Constat {
                     "Sauvegardes",
                     Niveau::Moyen,
                     trf!(
-                        "Dernière sauvegarde Time Machine il y a {jours} jours : rebranche le disque de sauvegarde.",
+                        "Dernière sauvegarde Time Machine il y a {jours} jours : rebranchez le disque de sauvegarde.",
                         "Last Time Machine backup {jours} days ago: plug the backup disk back in."
                     ),
                 )

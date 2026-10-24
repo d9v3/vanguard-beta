@@ -224,7 +224,7 @@ pub(super) fn airdrop() -> Option<Constat> {
             "AirDrop",
             Niveau::Info,
             tr!(
-                "AirDrop est visible par tout le monde : des inconnus à proximité peuvent t'envoyer des fichiers et voient le nom de ce Mac.",
+                "AirDrop est visible par tout le monde : des inconnus à proximité peuvent vous envoyer des fichiers et voient le nom de ce Mac.",
                 "AirDrop is visible to everyone: strangers nearby can send you files and see this Mac's name."
             ),
         )
@@ -255,13 +255,13 @@ pub(super) fn juger_decouverte_proxy(scutil: &str) -> Option<Constat> {
             "Durcissement",
             Niveau::Moyen,
             tr!(
-                "Le Mac cherche son proxy tout seul sur le réseau (WPAD) : sur un Wi-Fi public, un autre appareil peut répondre et faire passer ta navigation par lui.",
+                "Le Mac cherche son proxy tout seul sur le réseau (WPAD) : sur un Wi-Fi public, un autre appareil peut répondre et faire passer votre navigation par lui.",
                 "The Mac looks for its proxy by itself on the network (WPAD): on public Wi-Fi, another device can answer and route your browsing through itself."
             ),
         )
         .manuel(
             tr!(
-                "Réglages Système > Réseau > ta connexion > Détails > Proxys : décoche « Découverte automatique du proxy »",
+                "Réglages Système > Réseau > votre connexion > Détails > Proxys : décochez « Découverte automatique du proxy »",
                 "System Settings > Network > your connection > Details > Proxies: untick “Auto proxy discovery”"
             ),
             &["networksetup -setproxyautodiscovery Wi-Fi off"],

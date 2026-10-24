@@ -115,7 +115,7 @@ fn failles_firefox(
     }
     let non_jugees = (inconnues > 0).then(|| {
         trf!(
-            "{inconnues} faille(s) exploitée(s) sans correctif connu pour ta branche dans les avis de Mozilla",
+            "{inconnues} faille(s) exploitée(s) sans correctif connu pour votre branche dans les avis de Mozilla",
             "{inconnues} exploited flaw(s) without a known fix for your branch in Mozilla's advisories"
         )
     });
@@ -225,7 +225,7 @@ fn ligne(j: &Juge) -> String {
             _ => "Firefox",
         };
         let mut t = trf!(
-            "{nom} : la faille exploitée {cve} (catalogue de la CISA) est corrigée dans {court} {z}, et ta version est antérieure.",
+            "{nom} : la faille exploitée {cve} (catalogue de la CISA) est corrigée dans {court} {z}, et votre version est antérieure.",
             "{nom}: the exploited flaw {cve} (CISA catalog) is fixed in {court} {z}, and your version is older."
         );
         if j.failles.len() > 1 {
@@ -313,11 +313,11 @@ fn ligne_kev(produit: Produit, kev: &[Exploitee]) -> Option<String> {
     let nom = nom_kev(produit);
     Some(match derniere {
         Some(d) => trf!(
-            "{nom} compte {n} faille(s) exploitée(s) au catalogue de la CISA (la dernière ajoutée le {d}) ; rien ne dit si ta version en a.",
+            "{nom} compte {n} faille(s) exploitée(s) au catalogue de la CISA (la dernière ajoutée le {d}) ; rien ne dit si votre version en a.",
             "{nom} has {n} exploited flaw(s) in CISA's catalog (latest added {d}); nothing says whether your version has any."
         ),
         None => trf!(
-            "{nom} compte {n} faille(s) exploitée(s) au catalogue de la CISA ; rien ne dit si ta version en a.",
+            "{nom} compte {n} faille(s) exploitée(s) au catalogue de la CISA ; rien ne dit si votre version en a.",
             "{nom} has {n} exploited flaw(s) in CISA's catalog; nothing says whether your version has any."
         ),
     })

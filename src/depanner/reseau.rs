@@ -200,7 +200,7 @@ fn afficher_etat(e: &EtatReseau) {
             "This computer has an address on the network ({ip})."
         )),
         Adresse::Autoattribuee => Etat::Mauvais.dire(tr!(
-            "Adresse en 169.254.x.x : la box n'a pas donné d'adresse à cet ordinateur.",
+            "Adresse en 169.254.x.x : le routeur n'a pas donné d'adresse à cet ordinateur.",
             "Address in 169.254.x.x: the router gave no address to this computer."
         )),
         Adresse::Aucune => Etat::Mauvais.dire(tr!(
@@ -212,13 +212,13 @@ fn afficher_etat(e: &EtatReseau) {
         return;
     }
     match (e.passerelle, e.passerelle_repond) {
-        (Some(b), true) => Etat::Bon.dire(&trf!("La box ({b}) répond.", "The router ({b}) answers.")),
+        (Some(b), true) => Etat::Bon.dire(&trf!("Le routeur ({b}) répond.", "The router ({b}) answers.")),
         (Some(b), false) => (if e.internet { Etat::Info } else { Etat::Mauvais }).dire(&trf!(
-            "La box ({b}) ne répond pas aux essais.",
+            "Le routeur ({b}) ne répond pas aux essais.",
             "The router ({b}) does not answer the tests."
         )),
         (None, _) => Etat::Mauvais.dire(tr!(
-            "Aucune box (passerelle) n'est connue de cet ordinateur.",
+            "Aucun routeur (passerelle) n'est connu de cet ordinateur.",
             "No router (gateway) is known to this computer."
         )),
     }
@@ -269,7 +269,7 @@ fn navigation_detournee() -> bool {
 fn reparer_le_reseau() {
     if !proposer_reparation(titre_internet()) {
         conseil(tr!(
-            "Redémarre l'ordinateur : il refait toute la connexion au réseau.",
+            "Redémarrez l'ordinateur : il refait toute la connexion au réseau.",
             "Restart the computer: it redoes the whole network connection."
         ));
     }
@@ -277,7 +277,7 @@ fn reparer_le_reseau() {
 
 fn redemarrer_la_box() {
     conseil(tr!(
-        "Redémarre la box : débranche-la 30 secondes, rebranche-la, attends que ses voyants soient stables (deux à trois minutes). Si un voyant reste rouge ou orange, le fournisseur d'accès a sans doute une panne : regarde son site ou son application sur ton téléphone, en données mobiles.",
+        "Redémarrez le routeur : débranchez-le 30 secondes, rebranchez-le, attendez que ses voyants soient stables (deux à trois minutes). Si un voyant reste rouge ou orange, le fournisseur d'accès a sans doute une panne : regardez son site ou son application sur votre téléphone, en données mobiles.",
         "Restart the router: unplug it for 30 seconds, plug it back in, wait until its lights are steady (two to three minutes). If a light stays red or orange, the Internet provider probably has an outage: check its website or app on your phone, using mobile data."
     ));
 }
@@ -286,7 +286,7 @@ fn redemarrer_la_box() {
 pub(super) fn internet() {
     let Some(qui) = question(
         tr!(
-            "Le problème touche-t-il aussi les autres appareils de la maison (téléphone en Wi-Fi, télé…) ?",
+            "Le problème touche-t-il aussi les autres appareils de votre domicile (téléphone en Wi-Fi, télé…) ?",
             "Does the problem also affect the other devices at home (phone on Wi-Fi, TV…)?"
         ),
         &[
@@ -330,14 +330,14 @@ pub(super) fn internet() {
     match panne(&e) {
         Panne::PasConnecte => {
             Etat::Info.dire(tr!(
-                "Cet ordinateur n'est pas sur le réseau : rebranche le câble, ou rallume le Wi-Fi (touche ou bouton « avion ») et choisis ton réseau.",
+                "Cet ordinateur n'est pas sur le réseau : rebranchez le câble, ou rallumez le Wi-Fi (touche ou bouton « avion ») et choisissez votre réseau.",
                 "This computer is not on the network: plug the cable back in, or turn Wi-Fi back on (airplane key or button) and choose your network."
             ));
             reparer_le_reseau();
         }
         Panne::PasDAdresse => {
             Etat::Info.dire(tr!(
-                "La box ne donne plus d'adresse : souvent, elle est plantée.",
+                "Le routeur ne donne plus d'adresse : souvent, il est planté.",
                 "The router no longer gives addresses: often, it has crashed."
             ));
             redemarrer_la_box();
@@ -345,28 +345,28 @@ pub(super) fn internet() {
         }
         Panne::BoxMuette if tous => {
             Etat::Info.dire(tr!(
-                "Rien ne passe par la box, pour aucun appareil : c'est la box.",
+                "Rien ne passe par le routeur, pour aucun appareil : c'est le routeur.",
                 "Nothing goes through the router, for any device: it is the router."
             ));
             redemarrer_la_box();
         }
         Panne::BoxMuette => {
             Etat::Info.dire(tr!(
-                "Cet ordinateur ne joint pas la box.",
+                "Cet ordinateur ne joint pas le routeur.",
                 "This computer cannot reach the router."
             ));
             reparer_le_reseau();
         }
         Panne::InternetCoupe if tous => {
             Etat::Info.dire(tr!(
-                "La box répond, mais Internet ne passe pas : panne chez le fournisseur d'accès, ou box à redémarrer.",
+                "Le routeur répond, mais Internet ne passe pas : panne chez le fournisseur d'accès, ou routeur à redémarrer.",
                 "The router answers, but the Internet does not get through: outage at the Internet provider, or router to restart."
             ));
             redemarrer_la_box();
         }
         Panne::InternetCoupe => {
             Etat::Info.dire(tr!(
-                "La box répond, mais cet ordinateur ne sort pas sur Internet : un VPN, un pare-feu ou un proxy l'en empêche peut-être.",
+                "Le routeur répond, mais cet ordinateur ne sort pas sur Internet : un VPN, un pare-feu ou un proxy l'en empêche peut-être.",
                 "The router answers, but this computer does not get out to the Internet: a VPN, a firewall or a proxy may prevent it."
             ));
             reparer_le_reseau();
@@ -377,7 +377,7 @@ pub(super) fn internet() {
                 "The Internet answers, but site names are no longer translated: DNS is down or misconfigured."
             ));
             conseil(tr!(
-                "Un DNS public (Cloudflare 1.1.1.1, Quad9 9.9.9.9) se règle dans la box, ou sur cet ordinateur.",
+                "Un DNS public (Cloudflare 1.1.1.1, Quad9 9.9.9.9) se règle dans le routeur, ou sur cet ordinateur.",
                 "A public DNS (Cloudflare 1.1.1.1, Quad9 9.9.9.9) can be set in the router, or on this computer."
             ));
             reparer_le_reseau();
@@ -395,7 +395,7 @@ pub(super) fn internet() {
                 "The Internet works from this computer, right now."
             ));
             conseil(tr!(
-                "Si un site ne s'ouvre pas, essaie un autre navigateur : s'il s'ouvre, une extension ou le cache du premier est en cause. Si c'était passager, le test de connexion (Réseau et Internet) mesure les pertes et les coupures.",
+                "Si un site ne s'ouvre pas, essayez un autre navigateur : s'il s'ouvre, une extension ou le cache du premier est en cause. Si c'était passager, le test de connexion (Réseau et Internet) mesure les pertes et les coupures.",
                 "If a site does not open, try another browser: if it opens, an extension or the cache of the first one is to blame. If it was temporary, the connection test (Network and Internet) measures losses and drops."
             ));
         }
@@ -716,7 +716,7 @@ fn afficher_signal(s: &Signal) {
 fn economie_d_energie() -> &'static str {
     if cfg!(windows) {
         tr!(
-            "Gestionnaire de périphériques › Cartes réseau › ta carte Wi-Fi › Gestion de l'alimentation : décoche « Autoriser l'ordinateur à éteindre ce périphérique pour économiser l'énergie ».",
+            "Gestionnaire de périphériques › Cartes réseau › votre carte Wi-Fi › Gestion de l'alimentation : décochez « Autoriser l'ordinateur à éteindre ce périphérique pour économiser l'énergie ».",
             "Device Manager › Network adapters › your Wi-Fi card › Power Management: uncheck “Allow the computer to turn off this device to save power”."
         )
     } else if cfg!(target_os = "macos") {
@@ -737,8 +737,8 @@ pub(super) fn wifi() {
     let Some(quand) = question(
         tr!("Quand le Wi-Fi coupe-t-il ?", "When does Wi-Fi drop?"),
         &[
-            tr!("Au hasard, même près de la box", "Randomly, even near the router"),
-            tr!("Quand je m'éloigne de la box", "When I move away from the router"),
+            tr!("Au hasard, même près du routeur", "Randomly, even near the router"),
+            tr!("Quand je m'éloigne du routeur", "When I move away from the router"),
             tr!("Après la mise en veille", "After sleep"),
             tr!("Il ne se connecte plus du tout", "It no longer connects at all"),
         ],
@@ -777,13 +777,13 @@ pub(super) fn wifi() {
     let faible = s.as_ref().is_some_and(|s| s.qualite < 40);
     if autres == 0 {
         conseil(tr!(
-            "Tous les appareils coupent : la box est en cause (surchauffe, canal encombré par les voisins, logiciel de la box). Redémarre-la ; si ça revient, change son canal Wi-Fi (le moins encombré, d'après l'outil des canaux Wi-Fi de Réseau et Internet) et cherche une mise à jour de la box.",
+            "Tous les appareils coupent : le routeur est en cause (surchauffe, canal encombré par les voisins, logiciel du routeur). Redémarrez-le ; si ça revient, changez son canal Wi-Fi (le moins encombré, d'après l'outil des canaux Wi-Fi de Réseau et Internet) et cherchez une mise à jour du routeur.",
             "All devices drop: the router is to blame (overheating, channel crowded by the neighbors, router software). Restart it; if it comes back, change its Wi-Fi channel (the least crowded, according to the Wi-Fi channels tool in Network and Internet) and look for a router update."
         ));
     }
     if faible || quand == 1 {
         conseil(tr!(
-            "Signal trop faible là où tu es : rapproche-toi, mets la box en hauteur, loin du micro-ondes et des murs épais. Un répéteur ou un Wi-Fi maillé (mesh) l'étend. Près de la box, la bande 5 GHz est plus rapide ; loin, la 2,4 GHz porte mieux.",
+            "Signal trop faible là où vous êtes : rapprochez-vous, mettez le routeur en hauteur, loin du micro-ondes et des murs épais. Un répéteur ou un Wi-Fi maillé (mesh) l'étend. Près du routeur, la bande 5 GHz est plus rapide ; loin, la 2,4 GHz porte mieux.",
             "Signal too weak where you are: move closer, put the router up high, away from the microwave and thick walls. A repeater or a mesh Wi-Fi extends it. Near the router, the 5 GHz band is faster; far away, 2.4 GHz reaches better."
         ));
     }
@@ -792,13 +792,13 @@ pub(super) fn wifi() {
     }
     if quand == 3 {
         conseil(tr!(
-            "Il ne se connecte plus : oublie le réseau dans les réglages du Wi-Fi, puis reconnecte-toi avec le mot de passe (il a peut-être changé sur la box).",
+            "Il ne se connecte plus : oubliez le réseau dans les réglages du Wi-Fi, puis reconnectez-vous avec le mot de passe (il a peut-être changé sur le routeur).",
             "It no longer connects: forget the network in the Wi-Fi settings, then reconnect with the password (it may have changed on the router)."
         ));
     }
     if quand == 0 && autres == 1 {
         conseil(tr!(
-            "Au hasard, et seulement cet ordinateur : la carte Wi-Fi ou son pilote. Mets à jour les pilotes, et coupe l'économie d'énergie du Wi-Fi.",
+            "Au hasard, et seulement cet ordinateur : la carte Wi-Fi ou son pilote. Mettez à jour les pilotes, et coupez l'économie d'énergie du Wi-Fi.",
             "Randomly, and only this computer: the Wi-Fi card or its driver. Update the drivers, and turn off Wi-Fi power saving."
         ));
         if quand != 2 {

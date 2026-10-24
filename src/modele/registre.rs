@@ -58,7 +58,7 @@ pub(crate) const OUTILS: &[Outil] = &[
     Outil { id: "SUR-FIC-001", module: "protection::integrite", sujet: ("fichier critique changé", "critical file changed") },
     Outil { id: "SUR-TEL-001", module: "protection::telechargement", sujet: ("programme arrivé dans Téléchargements", "program arrived in Downloads") },
     Outil { id: "SUR-BOT-001", module: "protection::sortantes", sujet: ("connexion à un serveur de botnet", "connection to a botnet server") },
-    Outil { id: "SUR-PAS-001", module: "reseau::surveillance", sujet: ("box qui change d'adresse MAC", "router changing MAC address") },
+    Outil { id: "SUR-PAS-001", module: "reseau::surveillance", sujet: ("routeur qui change d'adresse MAC", "router changing MAC address") },
     Outil { id: "SUR-EMP-001", module: "reseau::empoisonnement", sujet: ("empoisonnement ARP sur le réseau", "ARP poisoning on the network") },
     Outil { id: "SUR-APP-001", module: "reseau::surveillance", sujet: ("appareil inconnu sur le réseau", "unknown device on the network") },
     Outil { id: "SUR-PRT-001", module: "reseau::surveillance", sujet: ("port nouvellement ouvert", "newly opened port") },
