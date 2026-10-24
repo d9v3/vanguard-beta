@@ -5,6 +5,14 @@ ouvert. Lancé par outils/deployer.sh avec gh, déjà connecté sur l'ordinateur
 dans le programme ni sur la clé.
 
     python3 outils/journal-vers-github.py <fichier des entrées à envoyer>
+    python3 outils/journal-vers-github.py --accord <fichier>   l'auteur a regardé ce qui attend : plafonds élargis
+
+Le journal de la clé s'écrit sur n'importe quel ordinateur (la partition VANGUARDLOG est modifiable partout) : un
+journal forgé ne doit pas devenir des centaines de tickets publics sous le compte de l'auteur. D'où des plafonds :
+par passage (PLAFOND_PASSAGE : tickets créés, commentaires) et par jour (PLAFOND_JOUR, compté dans envois-github.json
+à côté du fichier) ; le reste attend, et c'est dit (sortie et notification). Un envoi qui ferait plus de
+SIGNATURES_MAX erreurs distinctes n'est pas une suite de vraies erreurs : rien ne part sans l'accord de l'auteur
+(--accord). Chaque passage dit ce qu'il a envoyé (sortie, et notification au branchement, où personne ne lit).
 
 Les entrées d'une même erreur (même signature) dans un même envoi partent ensemble : un seul ticket, ou un seul
 commentaire qui les réunit (« vu N fois, systèmes…, versions… »), coupé sous la limite d'un corps de GitHub.
@@ -16,6 +24,7 @@ aurait laissé passer de cet ordinateur-ci, et ce qui pourrait nommer n'importe 
 de série, noms d'appareils et du Wi-Fi ; adresses MAC et IP remplacées, préfixe du fabricant gardé).
 """
 
+import datetime
 import hashlib
 import json
 import os
@@ -32,6 +41,13 @@ ETIQUETTE_AUTOTEST = "autotest"
 MASQUE = "‹masqué›"
 # GitHub refuse un corps de plus de 65 536 caractères, que certains comptent en octets UTF-8 : marge prise en octets.
 CORPS_MAX = 60_000
+# Plafonds (voir plus haut) : par passage, par jour, et au-delà duquel rien ne part sans accord. Avec --accord, ceux du
+# passage sont multipliés par ACCORD et celui du jour levé.
+PLAFOND_PASSAGE = {"tickets": 5, "commentaires": 20}
+PLAFOND_JOUR = {"tickets": 10, "commentaires": 40}
+SIGNATURES_MAX = 50
+ACCORD = 10
+COMPTEURS = "envois-github.json"
 # Un identifiant de règle ou de lecture (« LNX-PFE-001 », « AUT-LNX-002 ») : gardé tel quel dans la signature.
 IDENTIFIANT = re.compile(r"\b[A-Z]{3}-[A-Z]{3}-\d{3}\b")
 
@@ -106,8 +122,33 @@ def gh(*args):
     return subprocess.run(["gh", *args], capture_output=True, text=True, timeout=60)
 
 
+def dire(titre, texte):
+    """Sur la sortie, et par une notification : au branchement de la clé (deployer.sh), personne ne lit la sortie."""
+    print(f"{titre} : {texte}")
+    try:
+        subprocess.run(["notify-send", "-a", "Vanguard", "-i", "vanguard", titre, texte],
+                       capture_output=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def lire_compteurs(chemin, jour):
+    """Les envois du jour (tickets, commentaires) ; remis à zéro chaque jour, et si le fichier est illisible."""
+    try:
+        with open(chemin, encoding="utf-8") as f:
+            c = json.load(f)
+        if c.get("jour") == jour and all(isinstance(c.get(k), int) for k in PLAFOND_JOUR):
+            return c
+    except (OSError, ValueError, AttributeError):
+        pass
+    return {"jour": jour, **{k: 0 for k in PLAFOND_JOUR}}
+
+
 def main():
-    chemin = sys.argv[1]
+    arguments = sys.argv[1:]
+    accord = "--accord" in arguments
+    arguments = [a for a in arguments if a != "--accord"]
+    chemin = arguments[0]
     with open(chemin, encoding="utf-8") as f:
         liste = entrees(f.read())
     if not liste:
@@ -141,6 +182,26 @@ def main():
         contexte, detail, sig = signature(e)
         e, contexte, detail = sans_arobase(e), sans_arobase(contexte), sans_arobase(detail)
         groupes.setdefault(sig, (contexte, detail, []))[2].append(e)
+    dossier = os.path.dirname(os.path.abspath(chemin))
+    if len(groupes) > SIGNATURES_MAX and not accord:
+        # Rien n'est envoyé ni retiré : le fichier attend l'accord de l'auteur.
+        dire("Vanguard : journal à regarder avant tout envoi",
+             f"{len(groupes)} erreurs distinctes ({len(liste)} entrées) : plus que les {SIGNATURES_MAX} d'un vrai "
+             f"journal ; peut-être forgé sur un autre ordinateur. Rien n'est envoyé sur GitHub. À regarder : {chemin} ; "
+             f"pour l'envoyer quand même : python3 outils/journal-vers-github.py --accord {chemin}")
+        return
+    compteurs_chemin = os.path.join(dossier, COMPTEURS)
+    compteurs = lire_compteurs(compteurs_chemin, datetime.date.today().isoformat())
+    faits = {k: 0 for k in PLAFOND_PASSAGE}
+
+    def reste(sorte):
+        """Combien de tickets (ou commentaires) peuvent encore partir dans ce passage."""
+        passage = PLAFOND_PASSAGE[sorte] * (ACCORD if accord else 1) - faits[sorte]
+        if accord:
+            return passage
+        return min(passage, PLAFOND_JOUR[sorte] - compteurs[sorte])
+
+    plafonnees = 0
     for sig, (contexte, detail, groupe) in groupes.items():
         marque = f"vanguard-signature-{sig}"
         etiquettes = [ETIQUETTE] + ([ETIQUETTE_AUTOTEST] if contexte.startswith("[autotest ") else [])
@@ -157,6 +218,12 @@ def main():
             numero = r.stdout.strip() or None
             if numero:
                 ouverts[sig] = numero
+        sorte = "commentaires" if numero else "tickets"
+        if reste(sorte) <= 0:
+            # Plafond du passage ou du jour : l'erreur attend le passage suivant, et c'est dit plus bas.
+            restantes.extend(groupe)
+            plafonnees += 1
+            continue
         if numero:
             r = gh("issue", "comment", numero, "--body", borne(f"Encore vu :\n\n{corps_groupe(groupe)}"))
         else:
@@ -170,14 +237,26 @@ def main():
                 ouverts[sig] = r.stdout.strip().rsplit("/", 1)[-1]
         if r.returncode == 0:
             envoyees += len(groupe)
+            faits[sorte] += 1
+            compteurs[sorte] += 1
         else:
             restantes.extend(groupe)
     with open(chemin, "w", encoding="utf-8") as f:
         f.write("".join(x + "\n\n" for x in restantes))
     with open(notes, "w", encoding="utf-8") as f:
         json.dump(ouverts, f, indent=1)
+    with open(compteurs_chemin, "w", encoding="utf-8") as f:
+        json.dump(compteurs, f)
     attente = f", {len(restantes)} en attente" if restantes else ""
     print(f"Journal : {envoyees} erreur(s) envoyée(s) sur GitHub{attente}.")
+    if faits["tickets"] or faits["commentaires"]:
+        dire("Vanguard : journal envoyé sur GitHub",
+             f"{faits['tickets']} ticket(s) créé(s), {faits['commentaires']} commentaire(s) (étiquette « {ETIQUETTE} »).")
+    if plafonnees:
+        dire("Vanguard : envoi du journal plafonné",
+             f"{plafonnees} erreur(s) distincte(s) attendent (au plus {PLAFOND_PASSAGE['tickets']} tickets et "
+             f"{PLAFOND_PASSAGE['commentaires']} commentaires par passage, {PLAFOND_JOUR['tickets']} et "
+             f"{PLAFOND_JOUR['commentaires']} par jour) : {chemin}")
 
 
 if __name__ == "__main__":

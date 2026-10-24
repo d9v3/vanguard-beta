@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Essais des outils de la clé VANGUARD (images-cle.sh, cle-secours.sh, ventoy-racine.sh, menage-dev.sh), sans rien
+# Essais des outils de la clé VANGUARD (images-cle.sh, cle-secours.sh, ventoy-racine.sh, menage-dev.sh, la partie clé
+# de deployer.sh et cle-commun.sh, journal-vers-github.py avec un faux gh), sans rien
 # toucher de l'ordinateur. Tout se passe dans un espace de noms à part (unshare -rmn : sans root ni Internet) où
 # /run/media et /run/user sont cachés par des tmpfs : ni la vraie clé, ni la session (D-Bus, notifications) n'y sont
 # plus. Une fausse clé (un tmpfs de la taille voulue), un faux cache d'images, de faux notify-send, aria2c, pkexec et
@@ -1154,6 +1155,72 @@ voir "--accepter-cle DOSSIER : le volume adopté (programme copié, référence 
   eval '((code == 0)) && [[ -f $K/Linux/vanguard ]] && dit "$BANC/vanguard.log" "manifeste --ecrire $K --forcer"' ||
   montrer "$BANC/sortie"
 rm -rf /run/media/alice
+# Un journal au-delà de la borne de src/journal.rs (4 Mio) : mis de côté, rien n'en part vers GitHub.
+mkdir -p "$BANC/donnees/vanguard"
+{ echo "== 2026-10-24 · vanguard 0.86.0 · linux · fr · bilan"; head -c $((5 * 1024 * 1024)) /dev/zero | tr '\0' x; } \
+  >"$BANC/donnees/vanguard/journal-erreurs.txt"
+deployer --sans-compiler
+voir "journal démesuré (5 Mio) : mis de côté, rien à envoyer sur GitHub, et dit" \
+  eval 'dit "$BANC/sortie" "démesuré" && [[ ! -s $BANC/donnees/vanguard/retours/a-envoyer-github.txt ]] &&
+    compgen -G "$BANC/donnees/vanguard/retours/journal-demesure-*" >/dev/null' || montrer "$BANC/sortie"
+
+# --- Journal vers GitHub (journal-vers-github.py) -------------------------------------------------------------------
+
+echo "Journal vers GitHub :"
+# Un faux gh : chaque appel noté, un ticket créé par « issue create » (numéro suivant), aucun trouvé par la recherche.
+mkdir -p "$BANC/faux-gh" "$BANC/retours"
+cat >"$BANC/faux-gh/gh" <<'FIN'
+#!/usr/bin/env bash
+echo "$*" >>"$BANC/gh.log"
+case "$1 $2" in
+  "issue create") n=$(($(cat "$BANC/gh.n" 2>/dev/null || echo 0) + 1)); echo "$n" >"$BANC/gh.n"
+    echo "https://github.com/exemple/depot/issues/$n" ;;
+  "issue view") echo OPEN ;;
+esac
+exit 0
+FIN
+chmod +x "$BANC/faux-gh/gh"
+journal_force() { # nombre d'erreurs distinctes, chacune deux fois, numéro de la première (0 par défaut)
+  local i
+  for ((i = ${2:-0}; i < $1 + ${2:-0}; i++)); do
+    for _ in 1 2; do printf '== 2026-10-24 · vanguard 0.86.0 · linux · fr · bilan\n[contexte %s]\nerreur inventée %s\n\n' \
+      "$(printf '%s' "$i" | tr 0-9 a-j)" "$(printf '%s' "$i" | tr 0-9 k-t)"; done
+  done >"$BANC/retours/a-envoyer-github.txt"
+}
+envoyer() { # arguments… : sortie dans $BANC/sortie
+  rm -f "$BANC/gh.log" "$BANC/notifications.log"
+  PATH=$BANC/faux-gh:$PATH python3 -I outils/journal-vers-github.py "$@" "$BANC/retours/a-envoyer-github.txt" \
+    >"$BANC/sortie" 2>&1
+}
+tickets() { grep -c '^issue create' "$BANC/gh.log" 2>/dev/null || true; }
+journal_force 3
+envoyer
+voir "doublons regroupés : une erreur vue deux fois, un seul ticket ; l'envoi dit (notification)" \
+  eval '[[ $(tickets) == 3 ]] && dit "$BANC/notifications.log" "3 ticket(s) créé(s)" &&
+    [[ ! -s $BANC/retours/a-envoyer-github.txt ]]' || { montrer "$BANC/sortie"; montrer "$BANC/gh.log"; }
+rm -f "$BANC/retours/envois-github.json" "$BANC/retours/tickets-github.json"
+journal_force 8
+envoyer
+voir "8 erreurs distinctes : 5 tickets par passage, les 3 autres attendent, et c'est dit" \
+  eval '[[ $(tickets) == 5 ]] && dit "$BANC/notifications.log" "envoi du journal plafonné" &&
+    [[ $(grep -c "^== " "$BANC/retours/a-envoyer-github.txt") == 6 ]]' || { montrer "$BANC/sortie"; }
+journal_force 9 10
+envoyer
+voir "le même jour : 10 tickets au plus, le reste attend" \
+  eval '[[ $(tickets) == 5 ]] && dit "$BANC/notifications.log" "plafonné"' || montrer "$BANC/sortie"
+journal_force 3 30
+envoyer
+voir "plafond du jour atteint : plus aucun ticket" eval '[[ $(tickets) == 0 ]]' || montrer "$BANC/sortie"
+rm -f "$BANC/retours/envois-github.json" "$BANC/retours/tickets-github.json"
+journal_force 60
+cp "$BANC/retours/a-envoyer-github.txt" "$BANC/journal-60"
+envoyer
+voir "journal forgé (60 erreurs distinctes) : rien n'est envoyé ni retiré, l'accord est demandé" \
+  eval '[[ $(tickets) == 0 ]] && cmp -s "$BANC/retours/a-envoyer-github.txt" "$BANC/journal-60" &&
+    dit "$BANC/notifications.log" "journal à regarder avant tout envoi"' || montrer "$BANC/sortie"
+envoyer --accord
+voir "--accord : l'auteur l'envoie quand même, 50 tickets au plus par passage" \
+  eval '[[ $(tickets) == 50 ]]' || montrer "$BANC/sortie"
 
 # --- Ménage (menage-dev.sh) ------------------------------------------------------------------------------------------
 

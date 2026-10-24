@@ -61,9 +61,20 @@ copier() { cmp -s "$1" "$2" 2>/dev/null || cp -f "$1" "$2"; }
 # répétitions en commentaire ; outils/journal-vers-github.py). Sans Internet, elles attendent le déploiement suivant.
 RETOURS="${XDG_DATA_HOME:-$HOME/.local/share}/vanguard/retours"
 rapatrier_journal() { # $1 : journal à vider, $2 : d'où il vient
-  [[ -s $1 ]] || return 0
+  [[ -s $1 && -f $1 && ! -L $1 ]] || return 0
   mkdir -p "$RETOURS"
-  local nb
+  local nb cote
+  # Au-delà de la borne de src/journal.rs (4 Mio), ce n'est pas un journal que Vanguard a écrit (celui de la clé
+  # s'écrit sur n'importe quel ordinateur) : son début mis de côté pour être regardé, rien n'en part sur GitHub.
+  if (($(stat -c %s "$1") > 4 * 1024 * 1024)); then
+    cote="$RETOURS/journal-demesure-$(date +%Y%m%d-%H%M%S).txt"
+    head -c $((4 * 1024 * 1024)) "$1" >"$cote"
+    : >"$1"
+    echo "Journal $2 démesuré (plus de 4 Mio) : mis de côté ($cote), rien n'en est envoyé."
+    command -v notify-send >/dev/null &&
+      notify-send -a Vanguard -i vanguard "Vanguard : journal $2 démesuré, rien envoyé" "$cote" || true
+    return 0
+  fi
   nb=$(grep -c '^== ' "$1" || true)
   cat "$1" >>"$RETOURS/journal-erreurs.txt"
   cat "$1" >>"$RETOURS/a-envoyer-github.txt"
