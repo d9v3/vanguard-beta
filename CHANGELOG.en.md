@@ -108,6 +108,13 @@ delivered just before it. Only the latest version has its download page; every v
 | `canaux / channels` | `canaux-wifi / wifi-channels` | | `proche / relative` | `depanner proche / troubleshoot relative` |
 | `connexion / connection` | `test-connexion / connection-test` | |  |  |
 
+- **Results for scripts.** `diagnostic`, `lenteur`, `connexions-sortantes`, `acces-a-distance`,
+  `bilan-confidentialite`, `test-connexion`, `lien`, `objets-connectes` and `listes-noires` take `--json`, in the same
+  format as `logiciels-espions`: the findings, what was checked and what was not, never "safe" by default. Under
+  `--json`, nothing is asked or changed; `lien` and `listes-noires` go on the Internet only with `--internet`, consent
+  given in advance. Each examination, on screen as in JSON, is kept for the report and the event log.
+  `protection --json` gives each switch's state, without changing anything.
+
 ## October 23, 2026: version 0.86
 
 - **Spyware.** `vanguard spyware` (or `logiciels-espions`; Antivirus and protection menu, last) looks for signs of

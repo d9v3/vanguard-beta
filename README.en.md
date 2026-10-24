@@ -704,9 +704,9 @@ Each menu entry is also a command.
 | `vanguard devices [target] [-p common\|all\|22,80,8000-8100] [--json]` | scan the network or one device |
 | `vanguard network-audit [--json] [--html] [--guest]` | network audit by domain: six grades (exposure, Wi-Fi, device separation, DNS and certificates, connected devices, computers), attacking nothing; `--guest`: on the guest network, checks that it is really separated from the main one |
 | `vanguard name <ip\|mac> <nickname>` | name a device |
-| `vanguard smart-devices` | router and connected devices from the last scan kept: the router's model, cameras, printers, NAS… and their default password (nothing is probed) |
+| `vanguard smart-devices [--json]` | router and connected devices from the last scan kept: the router's model, cameras, printers, NAS… and their default password (nothing is probed) |
 | `vanguard hidden-cameras` | hidden cameras on the network (rental, someone else's place) |
-| `vanguard blocklists` | the public Internet address on a blocklist? (after your consent) |
+| `vanguard blocklists [--json] [--internet]` | the public Internet address on a blocklist? (after your consent; `--internet` gives it in advance) |
 | `vanguard monitor on\|off` | hourly monitoring |
 | `vanguard dashboard [--no-open]` | monitoring dashboard: a local page opened in the browser; `--no-open` only writes it |
 | `vanguard public-wifi [on\|off\|portal]` | public Wi-Fi mode (café, hotel, airport): incoming connections closed, sharing and name announcement off, protective DNS, after your consent; `off` puts everything back exactly, `portal` reopens the network's sign-in page |
@@ -714,21 +714,21 @@ Each menu entry is also a command.
 | `vanguard antivirus [--full] [folder]` | antivirus scan (computer, or a key / a folder) |
 | `vanguard yara [--full] [folder]` | YARA scan: 308 rules for malware families, and MalwareBazaar's fingerprints |
 | `vanguard spyware` | spyware: known servers and sites (Échap list), programs reading the keyboard, monitoring permissions, known monitoring software (read-only) |
-| `vanguard outbound-connections` | who talks to the Internet: each program's connections (read-only) |
+| `vanguard outbound-connections [--json]` | who talks to the Internet: each program's connections (read-only) |
 | `vanguard memory` | YARA scan of the memory of running programs (fileless malware), on demand; LSASS and protected processes: their memory is never read |
 | `vanguard decoys [--remove]` | decoy files against ransomware: place them, check them, remove them |
 | `vanguard check-file <file> [checksum]` | check a downloaded file: checksum, name and content, YARA, antivirus |
 | `vanguard sandbox <file>` | run an unknown program in a sandbox (bubblewrap or firejail, Windows Sandbox) |
 | `vanguard quarantine` | the isolated files, to put back in their place or to delete |
 | **7 Scams and privacy** | |
-| `vanguard link <address>` | is this link dangerous? (checked without opening it; online after your consent) |
+| `vanguard link <address> [--json] [--internet]` | is this link dangerous? (checked without opening it; online after your consent, which `--internet` gives in advance) |
 | `vanguard suspicious-email <file.eml>` | is this email a scam? the sender and their authentication, the links, the attachments, examined without opening anything; online after your consent |
-| `vanguard remote-access` | is my computer being controlled? remote control tools (tech-support scam), removed after consent |
+| `vanguard remote-access [--json]` | is my computer being controlled? remote control tools (tech-support scam), removed after consent |
 | `vanguard password-leak` | leaked passwords |
 | `vanguard browser-passwords` | browser passwords: how many and how protected (counted, never read), each browser's built-in check, and a typed password looked up in leaks |
 | `vanguard email-leak` | email address leaks (XposedOrNot, or Have I Been Pwned with `VANGUARD_HIBP_CLE`) |
 | `vanguard camera-mic` | camera and microphone: who uses them? (read-only) |
-| `vanguard privacy-review` | privacy check: who can access location, contacts, camera and microphone (read-only) |
+| `vanguard privacy-review [--json]` | privacy check: who can access location, contacts, camera and microphone (read-only) |
 | **8 Block and respond** | |
 | `vanguard blocking [search\|undo\|auto\|click\|category mode]` | threat blocking: one-click “Block” for each threat (action shown, written down, undoable); active protection, after a consent, that blocks clear-cut threats by itself (MalwareBazaar fingerprint, known attack tool, command server) |
 | `vanguard dangerous-sites [on\|off]` | dangerous sites blocked by the hosts file (URLhaus, ThreatFox command servers), after your consent; `off` removes them exactly |
@@ -737,7 +737,7 @@ Each menu entry is also a command.
 | `vanguard undo` | put everything back: undoes what Vanguard changed (settings, fixes, gaming, blocks, public Wi-Fi), after your consent; like `optimize undo` |
 | `vanguard disclose [--incident id] [--outil id] [--programme name] [--langue fr\|en] [--json] [--effacer]` | prepare a report for a vendor (MSRC, Google, Chrome, Mozilla, Apple, GHSA advisory, CERT/CC, CERT-FR, Vanguard): sorted first, a draft in the program's format, what is personal removed, written on this computer and shown in full; nothing is ever sent |
 | `vanguard watcher [on\|off]` | watcher (Linux 6.6 and later): programs started and connections closed, seen as they happen; `ransomware on\|off`: personal folders watched live against ransomware; off by default |
-| `vanguard protection [on\|off] [--for 1h\|4h]` | the state of each protection switch on one screen; `on` or `off` acts on real-time protection |
+| `vanguard protection [on\|off] [--for 1h\|4h] [--json]` | the state of each protection switch on one screen (`--json`: without changing anything); `on` or `off` acts on real-time protection |
 | **9 Data and backups** | |
 | `vanguard copy-files [destination]` | copy my files to an external disk, checked copy |
 | `vanguard auto-backup [--undo]` | automatic backup to an external disk, with the system's tool |
@@ -749,16 +749,16 @@ Each menu entry is also a command.
 | **11 Step-by-step troubleshooting** | |
 | `vanguard troubleshoot [subject]` | troubleshoot step by step: `internet`, `wifi`, `slow`, `sound`, `printer`, `disk`, `infection`, `new`, `leaving`, `account`, `evidence`, `relative`; `evidence [folder]` collects an incident's evidence into that folder, `relative` opens the relative's-computer guide |
 | `vanguard repair` | repairs and cleaning |
-| `vanguard diagnostics` | computer diagnostic: hardware, system, recent crashes and errors |
+| `vanguard diagnostics [--json]` | computer diagnostic: hardware, system, recent crashes and errors |
 | **12 Optimize and install** | |
 | `vanguard software [--list] [--recommended]` | software to install by category; `--list`: their state, installing nothing |
 | `vanguard clean [--list]` | clean up the system; `--list`: the space to gain, deleting nothing |
-| `vanguard slow` | why it is slow: processor, memory, disk, startup, programs at login |
+| `vanguard slow [--json]` | why it is slow: processor, memory, disk, startup, programs at login |
 | `vanguard startup` | startup programs: remove or put them back, after your consent; each removal can be reverted exactly |
 | `vanguard optimize [recommended\|privacy\|performance\|comfort\|undo]` | the Optimize settings, each shown, accepted and exactly undoable; `undo` puts everything back as it was (check-up fixes, Optimize, Gaming, blocks, public Wi-Fi mode); no argument: the Optimize menu |
 | `vanguard jeux` | packages and settings for gaming (Windows and Linux) |
 | `vanguard fast-dns` | fastest DNS, measured here and undoable; a DNS that protects you is kept |
-| `vanguard connection-test` | connection test for gaming |
+| `vanguard connection-test [--json]` | connection test for gaming |
 | `vanguard nat` | NAT type for gaming: open, moderate or strict |
 | `vanguard wifi-channels` | crowded Wi-Fi: nearby networks by channel, and the freest channel |
 | **13 Vanguard** | |

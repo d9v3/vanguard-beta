@@ -113,6 +113,13 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 | `canaux / channels` | `canaux-wifi / wifi-channels` | | `proche / relative` | `depanner proche / troubleshoot relative` |
 | `connexion / connection` | `test-connexion / connection-test` | |  |  |
 
+- **Résultats pour les scripts.** `diagnostic`, `lenteur`, `connexions-sortantes`, `acces-a-distance`,
+  `bilan-confidentialite`, `test-connexion`, `lien`, `objets-connectes` et `listes-noires` prennent `--json`, au même
+  format que `logiciels-espions` : les constats, ce qui a été vérifié et ce qui ne l'a pas été, jamais « sain » par
+  défaut. Sous `--json`, rien n'est demandé ni changé ; `lien` et `listes-noires` ne vont sur Internet qu'avec
+  `--internet`, l'accord donné d'avance. Chaque examen, à l'écran comme en JSON, est gardé pour le rapport et le
+  journal des événements. `protection --json` donne l'état de chaque interrupteur, sans rien changer.
+
 ## 23 octobre 2026 : version 0.86
 
 - **Logiciels espions.** `vanguard logiciels-espions` (alias `spyware` ; menu Antivirus et protection, en dernier)
