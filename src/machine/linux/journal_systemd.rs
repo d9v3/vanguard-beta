@@ -216,6 +216,260 @@ pub(crate) fn chercher(fichiers: &[PathBuf], requete: &Requete) -> Option<Vec<En
     Some(toutes.into_iter().map(|(_, _, e)| e).collect())
 }
 
+/// Les champs déjà lus d'un fichier, par position : borné en octets (un compte peut écrire des champs énormes que
+/// le parcours lirait tous), et un champ de plus de 64 Kio n'y entre pas.
+#[derive(Default)]
+struct Cache {
+    champs: HashMap<u64, Champ>,
+    octets: usize,
+}
+
+impl Cache {
+    const MAX: usize = 8 << 20;
+
+    fn garder(&mut self, pos: u64, c: &Champ) {
+        let taille = match c {
+            Champ::Voulu(n, v) => n.len() + v.len(),
+            Champ::Autre => 0,
+        } + 32;
+        if taille > 64 << 10 {
+            return;
+        }
+        if self.octets + taille > Self::MAX {
+            self.champs.clear();
+            self.octets = 0;
+        }
+        self.octets += taille;
+        self.champs.insert(pos, c.clone());
+    }
+}
+
+/// Les champs qu'écrit `journalctl -o short-iso` : l'heure de la source, l'hôte, l'identifiant, le processus, le
+/// message.
+pub(crate) const CHAMPS_COURTS: &[&str] = &[
+    "_SOURCE_REALTIME_TIMESTAMP",
+    "_HOSTNAME",
+    "SYSLOG_IDENTIFIER",
+    "_COMM",
+    "_PID",
+    "SYSLOG_PID",
+    "MESSAGE",
+];
+
+/// Une entrée écrite comme `journalctl -o short-iso` l'écrit (logs-show.c) : « 2026-10-24T06:36:34-04:00 hôte
+/// identifiant[pid]: message ». L'heure est celle de la source (_SOURCE_REALTIME_TIMESTAMP), sinon celle de
+/// l'entrée ; l'identifiant SYSLOG_IDENTIFIER, sinon _COMM ; le processus _PID, sinon SYSLOG_PID ; un message sur
+/// plusieurs lignes continue sous le premier, décalé. `None` : une entrée sans MESSAGE, que journalctl ne montre pas
+/// dans ce format. Les caractères de contrôle restent : l'appelant les neutralise.
+pub(crate) fn ligne_courte(e: &Entree) -> Option<String> {
+    let message = e.champ("MESSAGE")?;
+    let quand = e
+        .champ("_SOURCE_REALTIME_TIMESTAMP")
+        .and_then(|t| t.parse::<u64>().ok())
+        .unwrap_or(e.quand);
+    let date = chrono::DateTime::from_timestamp(i64::try_from(quand / 1_000_000).ok()?, 0)?
+        .with_timezone(&chrono::Local)
+        .format("%Y-%m-%dT%H:%M:%S%:z")
+        .to_string();
+    let mut debut = date;
+    if let Some(h) = e.champ("_HOSTNAME") {
+        debut.push(' ');
+        debut.push_str(h);
+    }
+    debut.push(' ');
+    debut.push_str(
+        e.champ("SYSLOG_IDENTIFIER")
+            .or_else(|| e.champ("_COMM"))
+            .unwrap_or("unknown"),
+    );
+    if let Some(pid) = e.champ("_PID").or_else(|| e.champ("SYSLOG_PID")) {
+        debut.push('[');
+        debut.push_str(pid);
+        debut.push(']');
+    }
+    debut.push_str(": ");
+    let decalage = " ".repeat(debut.chars().count());
+    let message = sans_ansi(message);
+    let mut lignes = message.trim_end_matches('\n').split('\n');
+    let mut texte = debut;
+    texte.push_str(lignes.next().unwrap_or_default());
+    for l in lignes {
+        texte.push('\n');
+        texte.push_str(&decalage);
+        texte.push_str(l);
+    }
+    Some(texte)
+}
+
+/// Un message sans ses séquences de terminal (couleurs « ESC [ … m », titres « ESC ] … BEL »), que journalctl retire
+/// à l'affichage sans couleurs.
+fn sans_ansi(t: &str) -> String {
+    let mut sortie = String::with_capacity(t.len());
+    let mut c = t.chars().peekable();
+    while let Some(x) = c.next() {
+        if x != '\x1b' {
+            sortie.push(x);
+            continue;
+        }
+        match c.peek() {
+            Some('[') => {
+                c.next();
+                // Paramètres et intermédiaires, puis l'octet final (de @ à ~).
+                for y in c.by_ref() {
+                    if ('@'..='~').contains(&y) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                c.next();
+                while let Some(y) = c.next() {
+                    if y == '\x07' || (y == '\x1b' && c.next_if_eq(&'\\').is_some()) {
+                        break;
+                    }
+                }
+            }
+            _ => sortie.push(x),
+        }
+    }
+    sortie
+}
+
+/// Les entrées des journaux que `journalctl` lit sans option, qui portent l'un des champs `un_de`, depuis
+/// `depuis` (µs depuis 1970), avec les champs `champs`, de la plus ancienne à la plus récente. `None` : le journal ne
+/// se lit pas ici (droits, format, xz) : journalctl prendra le relais.
+pub(crate) fn entrees(un_de: &[&str], depuis: u64, champs: &[&str]) -> Option<Vec<Entree>> {
+    chercher_dans_le_systeme(
+        &Requete {
+            un_de,
+            depuis: Some(depuis),
+            demarrage: None,
+            champs,
+        },
+        false,
+    )
+}
+
+/// La plus ancienne entrée des journaux (µs depuis 1970), comme la première ligne de `journalctl --lines=+1` :
+/// jusqu'où le journal remonte. `None` : illisible ici, ou aucune entrée.
+pub(crate) fn plus_ancienne() -> Option<u64> {
+    let mut min: Option<u64> = None;
+    for chemin in fichiers_du_systeme()? {
+        let fichier = match std::fs::File::open(&chemin) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return None,
+        };
+        if let Ouvert::Pret(j) = Journal::ouvrir(fichier)?
+            && j.premiere_heure != 0
+        {
+            min = Some(min.map_or(j.premiere_heure, |m| m.min(j.premiere_heure)));
+        }
+    }
+    min
+}
+
+/// Ce que `tout_le_journal` a lu.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Parcours {
+    /// Entrées écrites.
+    pub(crate) entrees: usize,
+    /// La lecture s'est arrêtée à la demande de l'appelant (sa borne) alors qu'il restait des entrées.
+    pub(crate) coupe: bool,
+}
+
+/// Un fichier parcouru à l'envers : ses tableaux d'entrées restant à lire, et les cases du tableau en cours.
+struct Recul {
+    journal: Journal,
+    tableaux: Vec<u64>,
+    cases: Vec<u64>,
+}
+
+impl Recul {
+    /// La position de l'entrée précédente ; `Ok(None)` : le fichier est fini ; `Err` : un tableau illisible.
+    fn precedente(&mut self) -> Result<Option<u64>, ()> {
+        loop {
+            if let Some(e) = self.cases.pop() {
+                return Ok(Some(e));
+            }
+            let Some(t) = self.tableaux.pop() else {
+                return Ok(None);
+            };
+            self.cases = self.journal.cases_du_tableau(t).ok_or(())?;
+        }
+    }
+}
+
+/// Tout le journal depuis `depuis` (µs depuis 1970), du plus récent au plus ancien, comme `journalctl --since …
+/// --reverse -o short-iso` : les fichiers que journalctl lit (`fichiers_du_systeme`), chacun parcouru à l'envers
+/// par ses tableaux d'entrées, fusionnés par l'heure ; une entrée recopiée dans deux fichiers ne compte qu'une fois.
+/// Chaque ligne passe à `ecrire`, qui rend faux pour arrêter (sa borne atteinte). `None` : le journal ne se lit pas
+/// ici en entier (droits, format, xz, fichier abîmé) : journalctl prendra le relais, jamais une lecture partielle
+/// prise pour complète.
+pub(crate) fn tout_le_journal(depuis: u64, mut ecrire: impl FnMut(&str) -> bool) -> Option<Parcours> {
+    let fichiers = fichiers_du_systeme()?;
+    let mut reculs: Vec<Recul> = Vec::new();
+    for chemin in &fichiers {
+        let fichier = match std::fs::File::open(chemin) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return None,
+        };
+        let Ouvert::Pret(mut journal) = Journal::ouvrir(fichier)? else {
+            continue;
+        };
+        // Tous les fichiers restent ouverts pendant le parcours : 1 Mio de morceaux chacun.
+        journal.lecteur.morceaux_max = 16;
+        if journal.derniere_heure != 0 && journal.derniere_heure < depuis {
+            continue;
+        }
+        let tableaux = journal.tableaux_des_entrees()?;
+        reculs.push(Recul {
+            journal,
+            tableaux,
+            cases: Vec::new(),
+        });
+    }
+    parcourir(reculs, depuis, &mut ecrire)
+}
+
+fn parcourir(mut reculs: Vec<Recul>, depuis: u64, ecrire: &mut impl FnMut(&str) -> bool) -> Option<Parcours> {
+    use std::collections::BinaryHeap;
+    // (heure, numéro dans le fichier, fichier, position) de l'entrée la plus récente de chaque fichier.
+    let mut tas: BinaryHeap<(u64, u64, usize, u64)> = BinaryHeap::new();
+    let avancer = |reculs: &mut Vec<Recul>, i: usize, tas: &mut BinaryHeap<(u64, u64, usize, u64)>| -> Option<()> {
+        if let Some(pos) = reculs[i].precedente().ok()? {
+            let (numero, quand) = reculs[i].journal.en_tete(pos)?;
+            tas.push((quand, numero, i, pos));
+        }
+        Some(())
+    };
+    for i in 0..reculs.len() {
+        avancer(&mut reculs, i, &mut tas)?;
+    }
+    let mut vues: HashSet<([u8; 16], u64)> = HashSet::new();
+    let mut caches: Vec<Cache> = (0..reculs.len()).map(|_| Cache::default()).collect();
+    let mut parcours = Parcours::default();
+    while let Some((quand, numero, i, pos)) = tas.pop() {
+        if quand < depuis {
+            // Le plus récent de ce fichier est plus ancien que la borne : il n'a plus rien à donner.
+            continue;
+        }
+        if vues.insert((reculs[i].journal.suite, numero)) {
+            let e = reculs[i].journal.entree(pos, CHAMPS_COURTS, &mut caches[i])?;
+            if let Some(l) = ligne_courte(&e) {
+                if !ecrire(&l) {
+                    parcours.coupe = true;
+                    return Some(parcours);
+                }
+                parcours.entrees += 1;
+            }
+        }
+        avancer(&mut reculs, i, &mut tas)?;
+    }
+    Some(parcours)
+}
+
 /// Un fichier ouvert, lu par morceaux de 64 Kio gardés en mémoire (les objets voisins se lisent d'un coup).
 ///
 /// Un budget borne ce que lit une requête : un fichier abîmé ou hostile (des objets qui se chevauchent, une chaîne
@@ -228,6 +482,8 @@ struct Lecteur {
     morceaux: HashMap<u64, Vec<u8>>,
     lus: u64,
     budget: u64,
+    /// Morceaux gardés au plus (512 : 32 Mio) ; le parcours complet, qui garde tous les fichiers ouverts, en garde moins.
+    morceaux_max: usize,
 }
 
 const MORCEAU: u64 = 64 << 10;
@@ -240,6 +496,7 @@ impl Lecteur {
             morceaux: HashMap::new(),
             lus: 0,
             budget: longueur.saturating_mul(16).saturating_add(256 << 20),
+            morceaux_max: 512,
         }
     }
 
@@ -262,7 +519,7 @@ impl Lecteur {
             let k = p / MORCEAU;
             if !self.morceaux.contains_key(&k) {
                 // 32 Mio au plus en mémoire : au-delà, on repart de zéro plutôt que de tout garder.
-                if self.morceaux.len() >= 512 {
+                if self.morceaux.len() >= self.morceaux_max {
                     self.morceaux.clear();
                 }
                 let taille = usize::try_from(MORCEAU.min(self.longueur - k * MORCEAU)).ok()?;
@@ -330,6 +587,10 @@ struct Journal {
     table: u64,
     cases: u64,
     derniere_heure: u64,
+    /// La plus ancienne entrée du fichier (µs depuis 1970 ; 0 s'il n'en a pas).
+    premiere_heure: u64,
+    /// Le premier tableau de toutes les entrées du fichier (chaîné, dans l'ordre des numéros).
+    tableau_entrees: u64,
 }
 
 impl Journal {
@@ -369,6 +630,8 @@ impl Journal {
             table,
             cases,
             derniere_heure: u64_a(&h, 192),
+            premiere_heure: u64_a(&h, 184),
+            tableau_entrees: u64_a(&h, 176),
         };
         // La table de hachage est bien là où l'en-tête la place (son objet la précède de 16 octets).
         j.objet(table.checked_sub(16)?, TABLE_DATA, 16)?;
@@ -592,6 +855,86 @@ impl Journal {
         Some(sortie)
     }
 
+    /// Le numéro et l'heure d'une entrée (sans ses champs).
+    fn en_tete(&mut self, pos: u64) -> Option<(u64, u64)> {
+        self.objet(pos, ENTREE, 64)?;
+        let o = self.lecteur.lire(pos, 64)?;
+        Some((u64_a(&o, 16), u64_a(&o, 24)))
+    }
+
+    /// Une entrée et ses champs voulus ; `cache` garde les champs déjà lus (un même champ revient dans beaucoup
+    /// d'entrées), borné en octets.
+    fn entree(&mut self, pos: u64, voulus: &[&str], cache: &mut Cache) -> Option<Entree> {
+        let (_, taille) = self.objet(pos, ENTREE, 64)?;
+        let o = self.lecteur.lire(pos, usize::try_from(taille).ok()?)?;
+        let largeur = if self.compact() { 4 } else { 16 };
+        let mut champs = Vec::new();
+        for k in 0..(o.len() - 64) / largeur {
+            let p = 64 + k * largeur;
+            let objet = if self.compact() {
+                u64::from(u32_a(&o, p))
+            } else {
+                u64_a(&o, p)
+            };
+            let champ = if let Some(c) = cache.champs.get(&objet) {
+                c.clone()
+            } else {
+                let c = self.champ(objet, voulus)?;
+                cache.garder(objet, &c);
+                c
+            };
+            if let Champ::Voulu(nom, valeur) = champ {
+                champs.push((nom, valeur));
+            }
+        }
+        Some(Entree {
+            quand: u64_a(&o, 24),
+            champs,
+        })
+    }
+
+    /// Les tableaux de toutes les entrées, dans l'ordre de la chaîne. Une chaîne qui revient sur elle-même, ou plus
+    /// longue que le fichier ne peut en tenir, rend `None`.
+    fn tableaux_des_entrees(&mut self) -> Option<Vec<u64>> {
+        let longueur = self.lecteur.longueur;
+        let mut tableaux = Vec::new();
+        let mut vus: HashSet<u64> = HashSet::new();
+        let mut t = self.tableau_entrees;
+        let mut pas = longueur / 24;
+        while t != 0 && t < longueur {
+            pas = pas.checked_sub(1)?;
+            if !vus.insert(t) {
+                return None;
+            }
+            self.objet(t, TABLEAU, 24)?;
+            tableaux.push(t);
+            t = u64_a(&self.lecteur.lire(t + 16, 8)?, 0);
+        }
+        Some(tableaux)
+    }
+
+    /// Les positions d'entrées d'un tableau, jusqu'à sa première case vide (le fichier en cours s'arrête là).
+    fn cases_du_tableau(&mut self, tableau: u64) -> Option<Vec<u64>> {
+        let longueur = self.lecteur.longueur;
+        let (_, taille) = self.objet(tableau, TABLEAU, 24)?;
+        let o = self.lecteur.lire(tableau, usize::try_from(taille).ok()?)?;
+        let largeur: usize = if self.compact() { 4 } else { 8 };
+        let mut cases = Vec::new();
+        for k in 0..(o.len() - 24) / largeur {
+            let p = 24 + k * largeur;
+            let e = if largeur == 4 {
+                u64::from(u32_a(&o, p))
+            } else {
+                u64_a(&o, p)
+            };
+            if e == 0 || e >= longueur {
+                break;
+            }
+            cases.push(e);
+        }
+        Some(cases)
+    }
+
     /// Le champ à `pos`, s'il fait partie de ceux qu'on veut : le début seul se lit d'abord, un champ long qui n'est
     /// pas compressé ne se lit en entier que s'il est voulu. `None` pour un champ voulu qui ne se lit pas, ou un champ
     /// compressé qui ne se décompresse pas (son nom ne se sait qu'après) : l'entrée compterait sans son message, et
@@ -795,6 +1138,68 @@ mod tests {
         assert_eq!(jenkins64(b""), 0xdead_beef_dead_beef);
     }
 
+    /// L'oracle du parcours complet : les 5 premiers Mo de `journalctl --since=-7d --reverse -o short-iso` contre
+    /// le parcours de Vanguard, sur cet ordinateur. Les lignes d'avant le début des deux lectures (moins une marge)
+    /// doivent être les mêmes, dans le même ordre ; rien de personnel dans les messages (des nombres).
+    #[test]
+    fn tout_le_journal_comme_journalctl() {
+        let depart = maintenant();
+        let depuis = depart - 7 * 86_400 * 1_000_000;
+        let mut natives: Vec<String> = Vec::new();
+        let mut octets = 0usize;
+        let chrono = std::time::Instant::now();
+        let Some(parcours) = tout_le_journal(depuis, |l| {
+            octets += l.len() + 1;
+            natives.push(l.to_string());
+            octets < 5 << 20
+        }) else {
+            return crate::essais::saute("journal illisible ici");
+        };
+        let duree = chrono.elapsed();
+        let Some(sortie) = crate::commande::lancer(
+            std::process::Command::new("sh")
+                .args([
+                    "-c",
+                    "journalctl --since=-7d --reverse --no-pager -o short-iso | head -c 5242880",
+                ])
+                .env("LC_ALL", "C.UTF-8"),
+            120,
+        ) else {
+            return crate::essais::saute("journalctl absent");
+        };
+        // Seules les entrées : une ligne qui commence par une date (les suites de messages sur plusieurs lignes
+        // commencent par des espaces).
+        let entrees = |t: &[String]| -> Vec<String> {
+            t.iter()
+                .flat_map(|l| l.lines().map(String::from).collect::<Vec<_>>())
+                .filter(|l| l.as_bytes().first().is_some_and(u8::is_ascii_digit))
+                .collect()
+        };
+        let natives = entrees(&natives);
+        let outil = entrees(&sortie.sortie.lines().map(String::from).collect::<Vec<_>>());
+        // Les 10 dernières secondes avant le départ peuvent différer (des entrées écrites entre les deux lectures).
+        let limite = chrono::DateTime::from_timestamp(i64::try_from((depart - 10_000_000) / 1_000_000).unwrap(), 0)
+            .unwrap()
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%dT%H:%M:%S%:z")
+            .to_string();
+        let anciennes = |v: &[String]| -> Vec<String> {
+            v.iter()
+                .filter(|l| l.get(..25).is_some_and(|d| d < limite.as_str()))
+                .cloned()
+                .collect()
+        };
+        let (a, b) = (anciennes(&natives), anciennes(&outil));
+        let n = a.len().min(b.len()).saturating_sub(50);
+        let differentes = a.iter().zip(&b).take(n).filter(|(x, y)| x != y).count();
+        eprintln!(
+            "parcours : {} entrées en {duree:?}, coupé {} ; comparées {n}, différentes {differentes}",
+            parcours.entrees, parcours.coupe
+        );
+        assert!(n > 100, "trop peu à comparer : {n}");
+        assert_eq!(differentes, 0);
+    }
+
     #[test]
     fn lz4_de_journald() {
         // « salon salon salon » : 6 littéraux, puis une copie de 12 octets pris 6 plus tôt, puis rien.
@@ -975,6 +1380,35 @@ mod tests {
             self.ecrire(192, &quand.to_le_bytes());
         }
 
+        /// Les tableaux de toutes les entrées (en-tête : premier tableau et plus ancienne heure), `par` entrées par
+        /// tableau, chaînés comme journald les chaîne ; le dernier garde une case vide (le fichier en cours).
+        fn tableaux_des_entrees(&mut self, par: usize) {
+            let positions = self.positions.clone();
+            let mut precedent: Option<u64> = None;
+            for (k, morceau) in positions.chunks(par).enumerate() {
+                let mut t = vec![0u8; 24];
+                t[0] = TABLEAU;
+                for &p in morceau {
+                    if self.compact() {
+                        t.extend(&u32::try_from(p).unwrap().to_le_bytes());
+                    } else {
+                        t.extend(&p.to_le_bytes());
+                    }
+                }
+                if (k + 1) * par >= positions.len() {
+                    t.extend(&[0u8; 8]);
+                }
+                let pos = self.objet(t);
+                match precedent {
+                    None => self.ecrire(176, &pos.to_le_bytes()),
+                    Some(p) => self.ecrire(p + 16, &pos.to_le_bytes()),
+                }
+                precedent = Some(pos);
+            }
+            let premiere = self.lire(self.positions[0] + 24);
+            self.ecrire(184, &premiere.to_le_bytes());
+        }
+
         fn fichier(&self, dossier: &Path, nom: &str) -> PathBuf {
             let p = dossier.join(nom);
             std::fs::write(&p, &self.o).unwrap();
@@ -1064,6 +1498,108 @@ mod tests {
                 .filter_map(|e| e.champ("MESSAGE").map(str::to_string))
                 .collect(),
         )
+    }
+
+    /// Le parcours complet à l'envers, fusionné entre deux fichiers, dédoublonné, écrit comme short-iso ; une
+    /// borne qui coupe ; une chaîne de tableaux qui revient sur elle-même, refusée.
+    #[test]
+    fn parcours_a_l_envers_de_deux_fichiers() {
+        let dossier = jetable("parcours");
+        for drapeaux in [HACHAGE_A_CLE | COMPACT | ZSTD | LZ4, 0] {
+            let mut a = journal_invente(drapeaux);
+            a.tableaux_des_entrees(3);
+            let fa = a.fichier(&dossier, "system.journal");
+            let mut b = Ecrivain::new(drapeaux);
+            // Une autre suite de numéros (un autre journald) : ses numéros 1 et 2 ne sont pas ceux de `a`.
+            b.ecrire(72, b"autre-suite-num!");
+            b.entree(
+                2_500_000,
+                DEMARRAGE,
+                &[
+                    b"_HOSTNAME=portable",
+                    b"SYSLOG_IDENTIFIER=sudo",
+                    b"_PID=7",
+                    b"MESSAGE=alice : TTY=pts/0 ; COMMAND=/bin/ls",
+                ],
+            );
+            b.entree(
+                8_000_000,
+                DEMARRAGE,
+                &[b"_HOSTNAME=portable", b"_COMM=bash", b"MESSAGE=deux\nlignes"],
+            );
+            b.tableaux_des_entrees(1);
+            let fb = b.fichier(&dossier, "user-1000.journal");
+            let reculs: Vec<Recul> = [&fa, &fb]
+                .iter()
+                .map(|f| {
+                    let mut journal = ouvert(f);
+                    let tableaux = journal.tableaux_des_entrees().unwrap();
+                    Recul {
+                        journal,
+                        tableaux,
+                        cases: Vec::new(),
+                    }
+                })
+                .collect();
+            let mut lignes = Vec::new();
+            let lu = parcourir(reculs, 2_000, &mut |l: &str| {
+                lignes.push(l.to_string());
+                true
+            })
+            .unwrap();
+            // Du plus récent au plus ancien ; sans MESSAGE, pas de ligne ; avant 2 000 µs, rien.
+            let fins: Vec<&str> = lignes.iter().map(|l| &l[26..]).collect();
+            assert!(fins[0].starts_with("portable bash: deux\n"), "{fins:?}");
+            assert!(fins[0].ends_with(&format!("{}lignes", " ".repeat(26 + "portable bash: ".len()))));
+            assert_eq!(fins[1], "portable sudo[7]: alice : TTY=pts/0 ; COMMAND=/bin/ls");
+            assert_eq!(
+                fins.last().copied(),
+                Some("sshd: Accepted publickey for alice"),
+                "{fins:?}"
+            );
+            assert_eq!(
+                lu,
+                Parcours {
+                    entrees: lignes.len(),
+                    coupe: false
+                }
+            );
+            assert_eq!(lignes.len(), 7, "{fins:?}");
+            // Une borne : arrêt net, et dit.
+            let mut journal = ouvert(&fa);
+            let tableaux = journal.tableaux_des_entrees().unwrap();
+            let lu = parcourir(
+                vec![Recul {
+                    journal,
+                    tableaux,
+                    cases: Vec::new(),
+                }],
+                0,
+                &mut |_: &str| false,
+            )
+            .unwrap();
+            assert_eq!(
+                lu,
+                Parcours {
+                    entrees: 0,
+                    coupe: true
+                }
+            );
+            // Le dernier tableau renvoie au premier : refusé, jamais une boucle.
+            let premier = a.lire(176);
+            let mut t = premier;
+            while a.lire(t + 16) != 0 {
+                t = a.lire(t + 16);
+            }
+            a.ecrire(t + 16, &premier.to_le_bytes());
+            let boucle = a.fichier(&dossier, "system.journal");
+            assert!(ouvert(&boucle).tableaux_des_entrees().is_none());
+        }
+        assert_eq!(
+            sans_ansi("\x1b[1;31mrouge\x1b[0m \x1b]0;titre\x07fin \x1b]8;;u\x1b\\x"),
+            "rouge fin x"
+        );
+        assert_eq!(sans_ansi("\x1b"), "\x1b");
     }
 
     #[test]

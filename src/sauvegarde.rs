@@ -297,6 +297,20 @@ fn cles_deja_dup(destination: &Path) -> Vec<(&'static str, &'static str, String)
     ]
 }
 
+/// `gsettings set` : par l'écrivain de dconf (bus de la session), la valeur vérifiée contre le schéma puis relue ;
+/// gsettings seulement quand ce chemin ne s'applique pas (schéma inconnu ici, valeur d'un autre type, pas de bus).
+#[cfg(target_os = "linux")]
+fn regler_gsettings(schema: &str, cle: &str, valeur: &str) -> bool {
+    // Sous les essais, aucun réglage réel ne s'écrit, ni par dconf ni par gsettings.
+    if cfg!(test) {
+        return false;
+    }
+    match crate::machine::linux::dconf::gsettings_set(schema, cle, valeur) {
+        Some(ecrit) => ecrit,
+        None => crate::machine::sortie("gsettings", &["set", schema, cle, valeur]).is_some(),
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn deja_dup_present() -> bool {
     dans_le_path("deja-dup").is_some()
@@ -536,7 +550,10 @@ fn retirer_horodatage() -> Vec<String> {
 /// Dit si systemctl n'a pas répondu.
 pub(crate) fn retirer_sans_note(fichiers: &[PathBuf]) -> Result<(), String> {
     #[cfg(target_os = "linux")]
-    let arretee = crate::reseau::surveillance::reussit("systemctl", &["--user", "disable", "--now", TIMER]);
+    let arretee = crate::machine::linux::dbus::actions::utilisateur(
+        crate::machine::linux::dbus::actions::Geste::Desactiver { maintenant: true },
+        TIMER,
+    );
     #[cfg(not(target_os = "linux"))]
     let arretee = false;
     let mut echecs = Vec::new();
@@ -550,7 +567,8 @@ pub(crate) fn retirer_sans_note(fichiers: &[PathBuf]) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     echecs.extend(retirer_horodatage());
     #[cfg(target_os = "linux")]
-    let recharge = crate::reseau::surveillance::reussit("systemctl", &["--user", "daemon-reload"]);
+    let recharge =
+        crate::machine::linux::dbus::actions::utilisateur(crate::machine::linux::dbus::actions::Geste::Recharger, "");
     #[cfg(not(target_os = "linux"))]
     let recharge = false;
     if !echecs.is_empty() {
@@ -746,7 +764,7 @@ fn mettre_en_place() -> Option<MiseEnPlace> {
                 .or_else(|| crate::machine::sortie("gsettings", &["get", schema, cle]))
                 .unwrap_or_default();
             avant.push((format!("{schema} {cle}"), ancienne.trim().to_string()));
-            if crate::machine::sortie("gsettings", &["set", schema, cle, valeur]).is_none() {
+            if !regler_gsettings(schema, cle, valeur) {
                 mauvais(&trf!(
                     "gsettings set {schema} {cle} a échoué ; rien d'autre n'est changé.",
                     "gsettings set {schema} {cle} failed; nothing else is changed."
@@ -861,7 +879,10 @@ fn mettre_en_place() -> Option<MiseEnPlace> {
         ))
         .oui()
         {
-            if crate::machine::sortie("systemctl", &["--user", "start", "--no-block", SERVICE]).is_some() {
+            if crate::machine::linux::dbus::actions::utilisateur(
+                crate::machine::linux::dbus::actions::Geste::Demarrer { attendre: false },
+                SERVICE,
+            ) {
                 info(&trf!(
                     "Première sauvegarde lancée. La suivre : journalctl --user -u {SERVICE} -f ; le bilan (catégorie Sauvegardes) dira la date du dernier passage.",
                     "First backup started. Follow it: journalctl --user -u {SERVICE} -f; the check (Backups category) will show the date of the last run."
@@ -1015,7 +1036,10 @@ fn annuler_mise_en_place(m: &MiseEnPlace) -> (bool, Vec<PathBuf>) {
                         Err(_) => {}
                     }
                 }
-                let _ = crate::machine::sortie("systemctl", &["--user", "daemon-reload"]);
+                let _ = crate::machine::linux::dbus::actions::utilisateur(
+                    crate::machine::linux::dbus::actions::Geste::Recharger,
+                    "",
+                );
                 // Sa minuterie (Persistent=true) a un fichier d'horodatage que systemd ne retire jamais : il part avec
                 // elle, et reste si elle reste.
                 if !gardees.contains(&dossier.join(TIMER)) && !retirer_horodatage().is_empty() {
@@ -1038,7 +1062,7 @@ fn annuler_mise_en_place(m: &MiseEnPlace) -> (bool, Vec<PathBuf>) {
                         continue;
                     };
                     println!("    {GRIS}$ gsettings set {schema} {cle} {valeur}{RESET}");
-                    if crate::machine::sortie("gsettings", &["set", schema, cle, valeur]).is_none() {
+                    if !regler_gsettings(schema, cle, valeur) {
                         ok = false;
                     }
                 }

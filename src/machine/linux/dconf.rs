@@ -122,6 +122,119 @@ pub(crate) fn lire(lieux: &Lieux, schema: &str, cle: &str) -> Option<Variante> {
     }
 }
 
+/// Une valeur écrite au format texte de GVariant, comme `gsettings set` la reçoit et `gsettings get` la rend, pour
+/// un type simple : booléen, entiers (avec ou sans leur annotation, « uint32 300 »), chaîne entre apostrophes ou
+/// guillemets (échappements \\, \', \", \n, \t, \r). `None` pour un autre type ou un texte qui n'est pas de
+/// cette forme : `gsettings set` en décide alors.
+pub(crate) fn valeur_du_texte(genre: &Genre, texte: &str) -> Option<Variante> {
+    let t = texte.trim();
+    let nombre = |annotation: &str| t.strip_prefix(annotation).map_or(t, str::trim);
+    Some(match genre {
+        Genre::Simple(b'b') => match t {
+            "true" => Variante::Booleen(true),
+            "false" => Variante::Booleen(false),
+            _ => return None,
+        },
+        Genre::Simple(b'n') => Variante::Entier16(nombre("int16 ").parse().ok()?),
+        Genre::Simple(b'q') => Variante::Naturel16(nombre("uint16 ").parse().ok()?),
+        Genre::Simple(b'i') => Variante::Entier32(nombre("int32 ").parse().ok()?),
+        Genre::Simple(b'u') => Variante::Naturel32(nombre("uint32 ").parse().ok()?),
+        Genre::Simple(b'x') => Variante::Entier64(nombre("int64 ").parse().ok()?),
+        Genre::Simple(b't') => Variante::Naturel64(nombre("uint64 ").parse().ok()?),
+        Genre::Simple(b's') => {
+            let mut c = t.chars();
+            let ouvre = c.next().filter(|q| matches!(q, '\'' | '"'))?;
+            let mut v = String::new();
+            loop {
+                match c.next()? {
+                    '\\' => v.push(match c.next()? {
+                        '\\' => '\\',
+                        '\'' => '\'',
+                        '"' => '"',
+                        'n' => '\n',
+                        't' => '\t',
+                        'r' => '\r',
+                        _ => return None,
+                    }),
+                    q if q == ouvre => break,
+                    autre => v.push(autre),
+                }
+            }
+            // Rien après la fin de la chaîne.
+            if c.next().is_some() {
+                return None;
+            }
+            Variante::Chaine(v)
+        }
+        _ => return None,
+    })
+}
+
+/// Un changement de dconf pour `gsettings set <schema> <cle> <texte>`, vérifié contre le schéma compilé comme
+/// gsettings le fait (type de la clé, choix permis, plage) : (le chemin dans dconf, la valeur, le changement
+/// sérialisé en GVariant `a{smv}` que l'écrivain de dconf attend). `None` : schéma ou clé inconnus ici, valeur
+/// refusée ou d'un type que ce lecteur n'écrit pas, profil de dconf inhabituel ; `gsettings set` tranche alors.
+/// Sans cette vérification, une valeur d'un mauvais type s'écrirait, puis GLib l'ignorerait : un faux succès.
+pub(crate) fn changement(lieux: &Lieux, schema: &str, cle: &str, texte: &str) -> Option<(String, Variante, Vec<u8>)> {
+    if lieux.moteur.as_deref().is_some_and(|m| m != "dconf") {
+        return None;
+    }
+    let mut sources = Vec::new();
+    for d in &lieux.schemas {
+        if let Some(t) = ouvrir(&d.join("gschemas.compiled")).ok()? {
+            sources.push(t);
+        }
+    }
+    let (rang, table) = chercher_schema(&sources, 0, schema)?;
+    let chemin = format!("{}{cle}", table.valeur(".path")?.chaine()?);
+    let infos = infos_de_cle(&sources, rang, &table, cle, 0)?;
+    let v = valeur_du_texte(&infos.defaut.genre(), texte)?;
+    if !valide(&infos, &v)? {
+        return None;
+    }
+    let entree = Genre::Entree(
+        Box::new(Genre::Simple(b's')),
+        Box::new(Genre::Peut(Box::new(Genre::Variante))),
+    );
+    let changement = Variante::Tableau(
+        entree,
+        vec![Variante::Entree(
+            Box::new(Variante::Chaine(chemin.clone())),
+            Box::new(Variante::Peut(
+                Genre::Variante,
+                Some(Box::new(Variante::Boite(Box::new(v.clone())))),
+            )),
+        )],
+    );
+    Some((chemin, v, super::gvdb::ecriture::serialiser(&changement)))
+}
+
+/// `gsettings set <schema> <cle> <texte>` sans gsettings : la valeur vérifiée contre le schéma, écrite par
+/// l'écrivain de dconf (bus de la session), puis relue dans les fichiers, comme GSettings la verrait. `Some(true)` :
+/// écrite et relue ; `Some(false)` : écrite mais relue autrement (verrou du système, autre profil) ; `None` : rien
+/// n'a été écrit d'ici (schéma inconnu, valeur à laisser à gsettings, bus injoignable), à faire par gsettings.
+pub(crate) fn gsettings_set(schema: &str, cle: &str, texte: &str) -> Option<bool> {
+    let lieux = Lieux::du_systeme();
+    // Une valeur que ce lecteur ne sait pas relire (profil inhabituel, fichier illisible) ne se prouverait pas
+    // écrite : laissée à gsettings.
+    lire(&lieux, schema, cle)?;
+    // L'écrivain écrit dans la base « user » : seulement si le profil la lit en premier (un profil à « user-db:autre »
+    // garderait une valeur écrite à côté).
+    if bases_du_profil(&lieux)?.first() != Some(&lieux.config.join("dconf/user")) {
+        return None;
+    }
+    let (_, v, octets) = changement(&lieux, schema, cle, texte)?;
+    super::dbus::actions::changer_dconf(&octets).ok()?;
+    // L'écrivain répond une fois la base réécrite ; une relecture qui rate se refait un peu plus tard.
+    for _ in 0..10 {
+        if lire(&lieux, schema, cle).as_ref() == Some(&v) {
+            return Some(true);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    Some(false)
+}
+
 /// Le schéma `id` dans la première source qui l'a, à partir du rang `depuis` (GLib cherche ainsi les schémas
 /// qu'un autre étend).
 fn chercher_schema(sources: &[Table], depuis: usize, id: &str) -> Option<(usize, Table)> {
@@ -499,6 +612,115 @@ mod tests {
             ..lieux(&r)
         };
         assert_eq!(texte(&autre, "org.gnome.desktop.screensaver", "lock-enabled"), None);
+    }
+
+    /// Un changement pour l'écrivain de dconf : vérifié contre le schéma comme gsettings set (type, choix, plage),
+    /// sérialisé en GVariant « a{smv} » qui se relit à l'identique.
+    #[test]
+    fn changement_verifie_contre_le_schema() {
+        let r = jetable("changement");
+        ecrire(&r.join("usr/glib-2.0/schemas/gschemas.compiled"), &schemas());
+        let l = lieux(&r);
+        let (chemin, v, octets) = changement(&l, "org.gnome.desktop.session", "idle-delay", "uint32 600").unwrap();
+        assert_eq!(chemin, "/org/gnome/desktop/session/idle-delay");
+        assert_eq!(v, Variante::Naturel32(600));
+        let genre = Genre::depuis(b"a{smv}").unwrap();
+        let relu = super::super::gvdb::decoder(&genre, &octets).unwrap();
+        let Variante::Tableau(_, entrees) = relu else {
+            panic!("{relu:?}")
+        };
+        assert_eq!(
+            entrees,
+            [Variante::Entree(
+                Box::new(Variante::Chaine(chemin)),
+                Box::new(Variante::Peut(
+                    Genre::Variante,
+                    Some(Box::new(Variante::Boite(Box::new(Variante::Naturel32(600)))))
+                ))
+            )]
+        );
+        // Sans annotation, comme gsettings set l'accepte aussi.
+        assert!(changement(&l, "org.gnome.desktop.session", "idle-delay", "600").is_some());
+        // Hors de la plage, d'un autre type, hors des choix, clé ou schéma inconnus : rien d'écrit d'ici.
+        assert_eq!(
+            changement(&l, "org.gnome.desktop.session", "idle-delay", "uint32 9999"),
+            None
+        );
+        assert_eq!(changement(&l, "org.gnome.desktop.session", "idle-delay", "'600'"), None);
+        assert_eq!(changement(&l, "org.gnome.system.proxy", "mode", "'tout'"), None);
+        assert!(changement(&l, "org.gnome.system.proxy", "mode", "'manual'").is_some());
+        assert_eq!(changement(&l, "org.gnome.system.proxy", "absente", "true"), None);
+        assert_eq!(changement(&l, "org.exemple.Absent", "cle", "true"), None);
+        // Une liste : laissée à gsettings.
+        assert_eq!(changement(&l, "org.gnome.system.proxy", "ignore-hosts", "['a']"), None);
+        let (_, v, _) = changement(&l, "org.gnome.desktop.screensaver", "picture-uri", "'l\\'été \\\\ x'").unwrap();
+        assert_eq!(v, Variante::Chaine("l'été \\ x".into()));
+    }
+
+    /// L'oracle de la sérialisation : le même changement « a{smv} » écrit par GLib (PyGObject du système), octet
+    /// pour octet, pour les types que Vanguard écrit.
+    #[test]
+    fn changement_comme_glib() {
+        let code = "import sys\nfrom gi.repository import GLib\n\
+            v = GLib.Variant('a{smv}', {'/org/x/a': GLib.Variant('s', sys.argv[1]), '/org/x/b': GLib.Variant('b', True),\
+            '/org/x/c': GLib.Variant('i', -7), '/org/x/d': GLib.Variant('u', 600)})\n\
+            print(v.get_data_as_bytes().get_data().hex())";
+        let Some(r) = crate::commande::lancer(
+            std::process::Command::new("/usr/bin/python3").args(["-I", "-c", code, "/srv/sauvegardes/l'été"]),
+            20,
+        )
+        .filter(|r| r.code == Some(0)) else {
+            return crate::essais::saute("PyGObject absent");
+        };
+        let entree = |chemin: &str, v: Variante| {
+            Variante::Entree(
+                Box::new(Variante::Chaine(chemin.into())),
+                Box::new(Variante::Peut(
+                    Genre::Variante,
+                    Some(Box::new(Variante::Boite(Box::new(v)))),
+                )),
+            )
+        };
+        // GLib range un dictionnaire construit depuis Python dans l'ordre des clés données.
+        let changement = Variante::Tableau(
+            Genre::depuis(b"{smv}").unwrap(),
+            vec![
+                entree("/org/x/a", Variante::Chaine("/srv/sauvegardes/l'été".into())),
+                entree("/org/x/b", Variante::Booleen(true)),
+                entree("/org/x/c", Variante::Entier32(-7)),
+                entree("/org/x/d", Variante::Naturel32(600)),
+            ],
+        );
+        let nous = super::super::gvdb::ecriture::serialiser(&changement)
+            .iter()
+            .fold(String::new(), |mut h, o| {
+                use std::fmt::Write as _;
+                let _ = write!(h, "{o:02x}");
+                h
+            });
+        assert_eq!(nous, r.sortie.trim());
+    }
+
+    #[test]
+    fn valeurs_en_texte() {
+        let g = |c: u8| Genre::Simple(c);
+        assert_eq!(valeur_du_texte(&g(b'b'), " true "), Some(Variante::Booleen(true)));
+        assert_eq!(valeur_du_texte(&g(b'b'), "1"), None);
+        assert_eq!(valeur_du_texte(&g(b'i'), "-3"), Some(Variante::Entier32(-3)));
+        assert_eq!(valeur_du_texte(&g(b'x'), "int64 7"), Some(Variante::Entier64(7)));
+        assert_eq!(valeur_du_texte(&g(b'u'), "-1"), None);
+        assert_eq!(
+            valeur_du_texte(&g(b's'), "\"a'b\""),
+            Some(Variante::Chaine("a'b".into()))
+        );
+        assert_eq!(valeur_du_texte(&g(b's'), "'a' 'b'"), None, "texte après la chaîne");
+        assert_eq!(valeur_du_texte(&g(b's'), "'non fermée"), None);
+        assert_eq!(
+            valeur_du_texte(&g(b's'), "'\\u00e9'"),
+            None,
+            "échappement laissé à gsettings"
+        );
+        assert_eq!(valeur_du_texte(&g(b'd'), "1.0"), None);
     }
 
     #[test]

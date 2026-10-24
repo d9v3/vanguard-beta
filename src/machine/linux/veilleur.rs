@@ -1878,10 +1878,6 @@ fn exe_prevu() -> Option<String> {
     Some(exe.display().to_string())
 }
 
-fn systemctl(args: &[&str]) -> bool {
-    crate::reseau::surveillance::reussit("systemctl", args)
-}
-
 fn explication() -> &'static str {
     tr!(
         "Le veilleur voit chaque programme lancé sur cet ordinateur, de tous les comptes, même s'il ne vit que quelques millisecondes, et chaque connexion TCP ou UDP au moment où elle se ferme. Il les juge comme le bilan (outil offensif connu, commande qui télécharge ou cache ce qu'elle lance) et contre les serveurs de commande de botnets déjà téléchargés par la surveillance ou le bilan. Il n'envoie rien, et garde les alertes au tableau de bord (vanguard tableau-de-bord). Après l'allumage, il vous propose aussi de surveiller vos dossiers personnels contre les rançongiciels : avec la protection active, il peut alors geler puis arrêter un rançongiciel quasi certain. Un programme parti avant d'être lu est compté tel quel, jamais jugé sain ; le programme d'une connexion fermée n'est pas connu (le noyau ne le donne pas). Il tourne pendant votre session ouverte, sans droits d'administrateur ni code chargé dans le noyau.",
@@ -1976,7 +1972,9 @@ fn allumer() {
     }
     let ecrit =
         chemin.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) && std::fs::write(&chemin, &texte).is_ok();
-    let reussi = ecrit && systemctl(&["--user", "daemon-reload"]) && systemctl(&["--user", "enable", "--now", UNITE]);
+    let reussi = ecrit
+        && super::dbus::actions::utilisateur(super::dbus::actions::Geste::Recharger, "")
+        && super::dbus::actions::utilisateur(super::dbus::actions::Geste::Activer { maintenant: true }, UNITE);
     crate::changements::noter(
         &[vec![
             format!("{} → {}", tr!("écrire", "write"), chemin.display()),
@@ -2119,14 +2117,14 @@ pub(crate) fn retirer_sans_question(chemin: &std::path::Path, arreter_l_etranger
     {
         reponse::reprendre(&e.pids_geles);
     }
-    let arrete = systemctl(&["--user", "disable", "--now", UNITE]);
+    let arrete = super::dbus::actions::utilisateur(super::dbus::actions::Geste::Desactiver { maintenant: true }, UNITE);
     let mut commandes = vec![format!("systemctl --user disable --now {UNITE}")];
     if a_nous {
         commandes.push(format!("{} {}", tr!("retirer", "remove"), chemin.display()));
         let _ = std::fs::remove_file(chemin);
     }
     commandes.push("systemctl --user daemon-reload".to_string());
-    let _ = systemctl(&["--user", "daemon-reload"]);
+    let _ = super::dbus::actions::utilisateur(super::dbus::actions::Geste::Recharger, "");
     let encore_la = a_nous && std::fs::symlink_metadata(chemin).is_ok();
     let activee = crate::machine::linux::natif::unite_activee(UNITE, true);
     let tourne = avant.as_ref().filter(|e| en_marche(e)).map(|e| e.pid);
@@ -2252,7 +2250,7 @@ fn activer_rancon() {
         let _ = std::fs::create_dir_all(d);
     }
     let _ = std::fs::write(fichier_rancon_voulu(), b"");
-    let _ = systemctl(&["--user", "try-restart", UNITE]);
+    let _ = super::dbus::actions::utilisateur(super::dbus::actions::Geste::RedemarrerSiActive, UNITE);
     trp!(
         "  {VERT}✔{RESET} Surveillance des fichiers allumée : une rafale de chiffrement vous alerte en quelques secondes.",
         "  {VERT}✔{RESET} File watching on: an encryption burst alerts you within seconds."
@@ -2339,7 +2337,7 @@ fn couper_rancon() {
         reponse::reprendre(&e.pids_geles);
     }
     let _ = std::fs::remove_file(fichier_rancon_voulu());
-    let _ = systemctl(&["--user", "try-restart", UNITE]);
+    let _ = super::dbus::actions::utilisateur(super::dbus::actions::Geste::RedemarrerSiActive, UNITE);
     trp!(
         "  {VERT}✔{RESET} Surveillance des fichiers coupée (le veilleur continue d'observer lancements et connexions).",
         "  {VERT}✔{RESET} File watching off (the watcher keeps observing launches and connections)."

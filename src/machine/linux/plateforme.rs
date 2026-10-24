@@ -252,17 +252,79 @@ pub(super) fn juger_plateforme(attributs: Option<&[Attribut]>) -> Constat {
     }
 }
 
-/// La sécurité de la plateforme d'après fwupd, sans droits. Pas dans un espace de noms d'utilisateur (la suite de tests
-/// sans réseau) : le service de fwupd y voit un autre compte.
+/// Les drapeaux d'un attribut de fwupd (FwupdSecurityAttrFlags, libfwupd/fwupd-security-attr-struct.h) : satisfait,
+/// et obsolète (remplacé par un autre, ne compte plus). La réponse D-Bus les donne en bits, le JSON de fwupdmgr en
+/// mots (« success », « obsoleted »).
+const DRAPEAU_REUSSI: u64 = 1 << 0;
+const DRAPEAU_OBSOLETE: u64 = 1 << 1;
+
+/// Les attributs à niveau de `GetHostSecurityAttrs` (`aa{sv}` : AppstreamId, Name, HsiLevel, Flags), jugés comme
+/// ceux du JSON de fwupdmgr (`lire_attributs`). Un attribut sans drapeaux lisibles n'est jamais compté satisfait.
+pub(super) fn lire_attributs_dbus(liste: &dbus::Valeur) -> Vec<Attribut> {
+    liste
+        .elements()
+        .iter()
+        .filter_map(|a| {
+            let niveau = a
+                .champ("HsiLevel")
+                .and_then(dbus::Valeur::entier)
+                .and_then(|n| u8::try_from(n).ok())
+                .filter(|n| (1..=4).contains(n))?;
+            let drapeaux = a.champ("Flags").and_then(dbus::Valeur::entier).unwrap_or(0);
+            let texte = |cle: &str| {
+                a.champ(cle)
+                    .and_then(dbus::Valeur::texte)
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            (drapeaux & DRAPEAU_OBSOLETE == 0).then(|| Attribut {
+                niveau,
+                id: texte("AppstreamId"),
+                nom: texte("Name"),
+                reussi: drapeaux & DRAPEAU_REUSSI != 0,
+            })
+        })
+        .collect()
+}
+
+/// Les attributs lus par le client D-Bus maison (org.freedesktop.fwupd, GetHostSecurityAttrs), sans droits ni
+/// fenêtre polkit. `Err` : la raison (service absent compris, que l'appelant reconnaît par `service_absent`).
+fn attributs_par_dbus() -> Result<Vec<Attribut>, crate::modele::Echec> {
+    let echec = |e: String| crate::modele::Echec::echoue("plateforme/fwupd", e);
+    let mut bus = dbus::Bus::systeme().map_err(echec)?;
+    let corps = bus
+        .appeler(
+            "org.freedesktop.fwupd",
+            "/",
+            "org.freedesktop.fwupd",
+            "GetHostSecurityAttrs",
+            "",
+            Vec::new(),
+        )
+        .map_err(echec)?;
+    Ok(corps.first().map(lire_attributs_dbus).unwrap_or_default())
+}
+
+/// La sécurité de la plateforme d'après fwupd, sans droits : par D-Bus d'abord, `fwupdmgr security --json` en
+/// secours. Pas dans un espace de noms d'utilisateur (la suite de tests sans réseau) : le service de fwupd y voit
+/// un autre compte.
 pub(super) fn securite_plateforme() -> Constat {
-    if !Path::new("/usr/bin/fwupdmgr").exists() && !Path::new("/bin/fwupdmgr").exists() {
-        return impossible(
-            "Plateforme",
-            tr!("fwupd absent : paquet fwupd", "fwupd missing: fwupd package"),
-        );
-    }
     if std::fs::read_to_string("/proc/self/uid_map").is_ok_and(|m| !crate::machine::bluetooth::identite(&m)) {
         return impossible("Plateforme", tr!("espace de noms isolé", "isolated namespace"));
+    }
+    let outil = Path::new("/usr/bin/fwupdmgr").exists() || Path::new("/bin/fwupdmgr").exists();
+    match attributs_par_dbus() {
+        Ok(a) if !a.is_empty() => return juger_plateforme(Some(&a)),
+        Err(e) if dbus::service_absent(&e.to_string()) && !outil => {
+            return impossible(
+                "Plateforme",
+                tr!("fwupd absent : paquet fwupd", "fwupd missing: fwupd package"),
+            );
+        }
+        _ => {}
+    }
+    if !outil {
+        return juger_plateforme(None);
     }
     let json = crate::commande::lancer(Command::new("fwupdmgr").args(["security", "--json"]), 20)
         .filter(|r| r.code == Some(0))
@@ -544,6 +606,82 @@ mod tests {
         // Rien de lisible : dit, jamais compté comme sain.
         assert!(!juger_plateforme(None).verifie);
         assert_eq!(lire_attributs("pas du json"), None);
+    }
+
+    /// La même réponse que `JSON`, telle que GetHostSecurityAttrs la donne par D-Bus (drapeaux en bits) : les mêmes
+    /// attributs, le même jugement. Des valeurs d'un autre type ou absentes ne comptent jamais comme satisfaites.
+    #[test]
+    fn attributs_par_dbus_comme_le_json() {
+        use dbus::Valeur as V;
+        let v: serde_json::Value = serde_json::from_str(JSON).unwrap();
+        let p = |k: &str, v: V| (V::texte_de(k), V::Variante(String::new(), Box::new(v)));
+        let mut liste: Vec<V> = v["SecurityAttributes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| {
+                let mut bits = 0u64;
+                for f in a["Flags"].as_array().unwrap() {
+                    bits |= match f.as_str().unwrap() {
+                        "success" => DRAPEAU_REUSSI,
+                        "obsoleted" => DRAPEAU_OBSOLETE,
+                        _ => 1 << 8,
+                    };
+                }
+                let mut d = vec![
+                    p("AppstreamId", V::texte_de(a["AppstreamId"].as_str().unwrap())),
+                    p("Name", V::texte_de(a["Name"].as_str().unwrap())),
+                    p("Flags", V::U64(bits)),
+                    p("HsiResult", V::U32(13)),
+                ];
+                if let Some(n) = a["HsiLevel"].as_u64() {
+                    d.push(p("HsiLevel", V::U32(u32::try_from(n).unwrap())));
+                }
+                V::Dictionnaire(d)
+            })
+            .collect();
+        assert_eq!(
+            lire_attributs_dbus(&V::Tableau(liste.clone())),
+            lire_attributs(JSON).unwrap()
+        );
+        // Un niveau hors de 1 à 4, des drapeaux en texte : sautés ou non satisfaits, jamais « réussi ».
+        liste.push(V::Dictionnaire(vec![
+            p("AppstreamId", V::texte_de("org.fwupd.hsi.Piege")),
+            p("HsiLevel", V::U32(1)),
+            p("Flags", V::texte_de("success")),
+        ]));
+        liste.push(V::Dictionnaire(vec![p("HsiLevel", V::U32(9)), p("Flags", V::U64(1))]));
+        let a = lire_attributs_dbus(&V::Tableau(liste));
+        assert_eq!(a.len(), 6);
+        assert!(!a[5].reussi && a[5].id == "org.fwupd.hsi.Piege");
+        let vide = lire_attributs_dbus(&V::Texte("rien".into()));
+        assert!(vide.is_empty(), "{vide:?}");
+    }
+
+    /// L'oracle : GetHostSecurityAttrs par le client maison contre `fwupdmgr security --json`, sur cet ordinateur.
+    #[test]
+    fn fwupd_par_dbus_comme_fwupdmgr() {
+        if std::fs::read_to_string("/proc/self/uid_map").is_ok_and(|m| !crate::machine::bluetooth::identite(&m)) {
+            return crate::essais::saute("espace de noms isolé");
+        }
+        let natif = match attributs_par_dbus() {
+            Ok(a) => a,
+            Err(e) => return crate::essais::saute(&format!("fwupd injoignable ({e})")),
+        };
+        let Some(json) = crate::commande::lancer(Command::new("fwupdmgr").args(["security", "--json"]), 30)
+            .filter(|r| r.code == Some(0))
+            .map(|r| r.sortie)
+        else {
+            return crate::essais::saute("fwupdmgr absent ou muet");
+        };
+        let mut outil = lire_attributs(&json).unwrap();
+        let mut lus = natif;
+        let cle = |a: &Attribut| (a.niveau, a.id.clone(), a.reussi);
+        outil.sort_by_key(cle);
+        lus.sort_by_key(cle);
+        let (a, b): (Vec<_>, Vec<_>) = (lus.iter().map(cle).collect(), outil.iter().map(cle).collect());
+        assert_eq!(a, b);
+        assert_eq!(niveau_hsi(&lus), niveau_hsi(&outil));
     }
 
     #[test]

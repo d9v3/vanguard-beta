@@ -95,23 +95,73 @@ fn lire_lastlog(ligne: &str) -> Option<chrono::NaiveDate> {
         .map(|d| d.date_naive())
 }
 
+/// La date locale de secondes depuis 1970 (0 ou moins : jamais).
+#[cfg(target_os = "linux")]
+fn jour_de(secondes: i64) -> Option<chrono::NaiveDate> {
+    (secondes > 0)
+        .then(|| chrono::DateTime::from_timestamp(secondes, 0))
+        .flatten()
+        .map(|d| d.with_timezone(&chrono::Local).date_naive())
+}
+
+/// Les dernières connexions de lastlog2.db, lues par le lecteur SQLite maison : compte → jour. `Some(vide)` sans
+/// base (le système ne s'en sert pas) ; `None` : base présente mais pas lisible seule (journal en attente, abîmée,
+/// droits) : l'outil lastlog2 la relira.
+#[cfg(target_os = "linux")]
+fn lastlog2_natif() -> Option<std::collections::HashMap<String, chrono::NaiveDate>> {
+    use crate::machine::linux::connexions;
+    match connexions::base(std::path::Path::new(connexions::LASTLOG2)) {
+        Err(connexions::PasLue::Absente) => Some(std::collections::HashMap::new()),
+        Err(_) => None,
+        Ok(octets) => Some(
+            connexions::lastlog2(&octets)?
+                .into_iter()
+                .filter_map(|d| Some((d.compte, jour_de(d.secondes)?)))
+                .collect(),
+        ),
+    }
+}
+
+/// La dernière connexion d'un compte : lastlog2.db puis /var/log/lastlog, lus par Vanguard (la plus récente des
+/// deux, comme lastlog2 puis lastlog l'étaient) ; l'outil seulement pour une source qui ne se lit pas ici.
+#[cfg(target_os = "linux")]
+fn derniere_connexion(
+    nom: &str,
+    uid: u32,
+    natif2: Option<&std::collections::HashMap<String, chrono::NaiveDate>>,
+) -> Option<chrono::NaiveDate> {
+    use crate::machine::linux::connexions;
+    let outil = |outil: &str| {
+        let r = crate::commande::lancer_en_anglais(std::process::Command::new(outil).args(["-u", nom]), 5)?;
+        r.sortie.lines().skip(1).find_map(lire_lastlog)
+    };
+    let par_lastlog2 = match natif2 {
+        Some(m) => m.get(nom).copied(),
+        None => outil("lastlog2"),
+    };
+    let par_lastlog = match connexions::lastlog_de(std::path::Path::new(connexions::LASTLOG), uid) {
+        Ok(e) => e.and_then(|(t, _, _)| jour_de(i64::from(t))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => outil("lastlog"),
+    };
+    par_lastlog2.max(par_lastlog)
+}
+
 #[cfg(target_os = "linux")]
 pub fn constats() -> Vec<Constat> {
     let moi = moi();
     let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
+    let natif2 = lastlog2_natif();
     let comptes: Vec<Compte> = passwd
         .lines()
         .filter_map(|l| {
             let c: Vec<&str> = l.split(':').collect();
             let (nom, uid, maison, shell) = (*c.first()?, c.get(2)?.parse::<u32>().ok()?, *c.get(5)?, *c.get(6)?);
             let humain = (1000..60000).contains(&uid) && !shell.ends_with("nologin") && !shell.ends_with("false");
-            (humain && nom != moi).then(|| (nom.to_string(), maison.to_string()))
+            (humain && nom != moi).then(|| (nom.to_string(), uid, maison.to_string()))
         })
-        .map(|(nom, maison)| {
-            let connexion = ["lastlog2", "lastlog"].iter().find_map(|outil| {
-                let r = crate::commande::lancer_en_anglais(std::process::Command::new(outil).args(["-u", &nom]), 5)?;
-                r.sortie.lines().skip(1).find_map(lire_lastlog)
-            });
+        .map(|(nom, uid, maison)| {
+            let connexion = derniere_connexion(&nom, uid, natif2.as_ref());
             let dossier = date_de(std::path::Path::new(&maison));
             Compte {
                 nom,
@@ -328,6 +378,35 @@ mod tests {
             c.iter()
                 .all(|x| x.probleme == Some(Niveau::Info) && !x.correctif.as_ref().unwrap().automatique)
         );
+    }
+
+    /// L'oracle : la dernière connexion de chaque compte de cet ordinateur, lue par Vanguard (lastlog2.db,
+    /// /var/log/lastlog), contre lastlog2 -u puis lastlog -u comme avant. Rien de personnel dans le message.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn derniere_connexion_comme_lastlog2() {
+        if crate::commande::lancer(std::process::Command::new("lastlog2").arg("--help"), 5).is_none() {
+            return crate::essais::saute("lastlog2 absent");
+        }
+        let passwd = std::fs::read_to_string("/etc/passwd").unwrap();
+        let natif2 = lastlog2_natif();
+        let mut ecarts = 0;
+        let mut vus = 0;
+        for l in passwd.lines() {
+            let c: Vec<&str> = l.split(':').collect();
+            let (Some(nom), Some(Ok(uid))) = (c.first(), c.get(2).map(|u| u.parse::<u32>())) else {
+                continue;
+            };
+            let outil = ["lastlog2", "lastlog"].iter().find_map(|outil| {
+                let r = crate::commande::lancer_en_anglais(std::process::Command::new(outil).args(["-u", nom]), 5)?;
+                r.sortie.lines().skip(1).find_map(lire_lastlog)
+            });
+            vus += 1;
+            if derniere_connexion(nom, uid, natif2.as_ref()) != outil {
+                ecarts += 1;
+            }
+        }
+        assert_eq!(ecarts, 0, "{ecarts} comptes sur {vus} diffèrent de lastlog2");
     }
 
     #[test]

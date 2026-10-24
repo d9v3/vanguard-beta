@@ -16,6 +16,10 @@ use std::time::{Duration, Instant};
 
 use crate::{tr, trf};
 
+/// Les quelques actions de Vanguard (unités de l'utilisateur, notification, dconf), à part des lectures de ce fichier :
+/// une seconde liste fermée, sur le bus de la session seulement.
+pub(crate) mod actions;
+
 /// La prise du bus système (chemin fixe de la spécification ; /var/run en est un lien).
 const BUS_SYSTEME: &str = "/run/dbus/system_bus_socket";
 /// Le temps laissé à une réponse, comme `busctl` (10 s) : un service bloqué ne doit pas figer Vanguard.
@@ -51,6 +55,15 @@ const LECTURES: &[(&str, &str)] = &[
     (GESTIONNAIRE, "GetUnit"),
     // Lit le journal SMART déjà relevé par udisks2 ; SmartUpdate, qui le relève, n'est pas permis.
     ("org.freedesktop.UDisks2.NVMe.Controller", "SmartGetAttributes"),
+    // Lot 4 (Linux) : lectures qui remplacent systemctl, loginctl, fwupdmgr et nmcli. GetSettings ne rend jamais
+    // les secrets (GetSecrets, à part, n'est pas permis) ; GetUpgrades lit les métadonnées déjà téléchargées.
+    (GESTIONNAIRE, "ListUnitFiles"),
+    ("org.freedesktop.login1.Manager", "ListSessions"),
+    ("org.freedesktop.fwupd", "GetHostSecurityAttrs"),
+    ("org.freedesktop.fwupd", "GetDevices"),
+    ("org.freedesktop.fwupd", "GetUpgrades"),
+    ("org.freedesktop.NetworkManager.Settings", "ListConnections"),
+    ("org.freedesktop.NetworkManager.Settings.Connection", "GetSettings"),
 ];
 
 // Genres de message.

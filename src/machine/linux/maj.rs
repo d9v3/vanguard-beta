@@ -72,20 +72,44 @@ pub(super) fn autres_mises_a_jour() -> Vec<Constat> {
                 )
             })
         });
-        let snap = present("snap").then(|| portee.spawn(|| sortie_delai("snap", &["refresh", "--list"], 30, &[0])));
+        // snapd par son API (/run/snapd.socket) ; la CLI si la prise ne répond pas. Un nombre de snaps à mettre à
+        // jour ; `None` : impossible à savoir.
+        let snap = present("snap").then(|| {
+            portee.spawn(|| {
+                match super::http_unix::snaps_a_mettre_a_jour(Path::new(super::http_unix::SNAPD)) {
+                    Ok(l) => return Some(l.len()),
+                    // snapd a répondu par une erreur (magasin injoignable…) : la CLI dirait la même chose.
+                    Err(e) if e.to_string().contains("snapd") || e.to_string().starts_with("HTTP ") => return None,
+                    Err(_) => {}
+                }
+                // « All snaps up to date » part sur la sortie d'erreur : sortie vide = à jour. Une ligne d'en-tête
+                // sinon.
+                sortie_delai("snap", &["refresh", "--list"], 30, &[0])
+                    .map(|l| l.lines().filter(|x| !x.trim().is_empty()).count().saturating_sub(1))
+            })
+        });
         // L'assistant AUR ne sert plus qu'à nommer la commande proposée : la liste vient de l'AUR lui-même.
         let aur = ["yay", "paru"]
             .into_iter()
             .find(|c| present(c))
             .map(|c| (c, portee.spawn(aur_a_mettre_a_jour)));
+        // fwupd par D-Bus d'abord ; fwupdmgr en secours si le bus ne répond pas.
         let firmware = present("fwupdmgr").then(|| {
             portee.spawn(|| {
+                match firmwares_par_dbus() {
+                    Ok(v) => return Some(v),
+                    // fwupd a répondu par une erreur (métadonnées absentes…) : fwupdmgr la tairait.
+                    Err(e) if e.to_string().starts_with("org.freedesktop.fwupd.") => return None,
+                    Err(_) => {}
+                }
                 sortie_delai(
                     "fwupdmgr",
                     &["get-updates", "--json", "--no-unreported-check"],
                     40,
                     &[0, 2],
                 )
+                .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok())
+                .map(|v| firmwares_proposes(&v))
             })
         });
 
@@ -112,18 +136,13 @@ pub(super) fn autres_mises_a_jour() -> Vec<Constat> {
             });
         }
         if let Some(t) = snap {
-            // « All snaps up to date » part sur la sortie d'erreur : sortie vide = à jour. Une ligne d'en-tête sinon.
             constats.push(match t.join().ok().flatten() {
                 None => impossible("Snap", tr!("snapd injoignable", "snapd unreachable")),
-                Some(l) if lignes(&l) <= 1 => ok("Snap", tr!("Paquets Snap à jour.", "Snap packages up to date.")),
-                Some(l) => alerte(
+                Some(0) => ok("Snap", tr!("Paquets Snap à jour.", "Snap packages up to date.")),
+                Some(n) => alerte(
                     "Snap",
                     Niveau::Moyen,
-                    trf!(
-                        "{} paquet(s) Snap à mettre à jour.",
-                        "{} Snap package(s) to update.",
-                        lignes(&l) - 1
-                    ),
+                    trf!("{n} paquet(s) Snap à mettre à jour.", "{n} Snap package(s) to update."),
                 )
                 .corriger(
                     tr!("Mettre à jour les paquets Snap", "Update the Snap packages"),
@@ -150,12 +169,7 @@ pub(super) fn autres_mises_a_jour() -> Vec<Constat> {
             });
         }
         if let Some(t) = firmware {
-            let json = t
-                .join()
-                .ok()
-                .flatten()
-                .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok());
-            constats.push(match json {
+            constats.push(match t.join().ok().flatten() {
                 None => impossible(
                     "Firmware",
                     tr!(
@@ -163,8 +177,7 @@ pub(super) fn autres_mises_a_jour() -> Vec<Constat> {
                         "fwupd metadata missing: fwupdmgr refresh"
                     ),
                 ),
-                Some(v) => {
-                    let appareils = firmwares_proposes(&v);
+                Some(appareils) => {
                     if appareils.is_empty() {
                         ok(
                             "Firmware",
@@ -196,6 +209,86 @@ pub(super) fn autres_mises_a_jour() -> Vec<Constat> {
         }
     });
     constats
+}
+
+/// Le bit « se met à jour » des drapeaux d'un appareil de fwupd (FWUPD_DEVICE_FLAG_UPDATABLE,
+/// libfwupd/fwupd-device-struct.h).
+const APPAREIL_MAJ: u64 = 1 << 1;
+
+/// Les appareils de fwupd à interroger : (identifiant, nom), ceux qui se mettent à jour seulement, comme fwupdmgr
+/// get-updates.
+fn appareils_a_jour(liste: &dbus::Valeur) -> Vec<(String, String)> {
+    liste
+        .elements()
+        .iter()
+        .filter(|d| d.champ("Flags").and_then(dbus::Valeur::entier).unwrap_or(0) & APPAREIL_MAJ != 0)
+        .filter_map(|d| {
+            let id = d.champ("DeviceId")?.texte()?.to_string();
+            let nom = d
+                .champ("Name")
+                .and_then(dbus::Valeur::texte)
+                .unwrap_or_default()
+                .to_string();
+            Some((id, nom))
+        })
+        .collect()
+}
+
+/// Ce que dit GetUpgrades d'un appareil : `Ok(true)` s'il a une version plus récente, `Ok(false)` pour « rien à
+/// faire » (NothingToDo : aucune version plus récente, appareil qui ne se met pas à jour) ou pour un appareil parti
+/// entre la liste et la question (NotFound). NotSupported (« no components in silo » : métadonnées jamais
+/// téléchargées) et toute autre erreur restent des erreurs : fwupdmgr les taisait et disait « à jour ».
+fn reponse_upgrades(r: Result<Vec<dbus::Valeur>, String>) -> Result<bool, crate::modele::Echec> {
+    match r {
+        Ok(corps) => Ok(corps.first().is_some_and(|l| !l.elements().is_empty())),
+        Err(e)
+            if e.starts_with("org.freedesktop.fwupd.NothingToDo ")
+                || e.starts_with("org.freedesktop.fwupd.NotFound ") =>
+        {
+            Ok(false)
+        }
+        Err(e) => Err(echec_fwupd(e)),
+    }
+}
+
+/// Une erreur de fwupd ou du bus dans le canal d'erreur commun (son texte reste celui du bus).
+fn echec_fwupd(e: String) -> crate::modele::Echec {
+    crate::modele::Echec::echoue("maj/fwupd", e)
+}
+
+/// Les appareils à qui fwupd propose un nouveau firmware, lus par le client D-Bus maison (GetDevices puis GetUpgrades
+/// pour chacun) au lieu de `fwupdmgr get-updates`. Une réponse d'un autre genre que « rien à faire » rend toute la
+/// lecture impossible : jamais « à jour » sur une erreur.
+fn firmwares_par_dbus() -> Result<Vec<String>, crate::modele::Echec> {
+    if std::fs::read_to_string("/proc/self/uid_map").is_ok_and(|m| !crate::machine::bluetooth::identite(&m)) {
+        return Err(echec_fwupd("espace de noms isolé".into()));
+    }
+    let mut bus = dbus::Bus::systeme().map_err(echec_fwupd)?;
+    let corps = bus
+        .appeler(
+            "org.freedesktop.fwupd",
+            "/",
+            "org.freedesktop.fwupd",
+            "GetDevices",
+            "",
+            Vec::new(),
+        )
+        .map_err(echec_fwupd)?;
+    let mut proposes = Vec::new();
+    for (id, nom) in appareils_a_jour(corps.first().ok_or_else(|| echec_fwupd("réponse vide".into()))?) {
+        let r = bus.appeler(
+            "org.freedesktop.fwupd",
+            "/",
+            "org.freedesktop.fwupd",
+            "GetUpgrades",
+            "s",
+            vec![dbus::Valeur::Texte(id)],
+        );
+        if reponse_upgrades(r)? {
+            proposes.push(crate::ui::affichable(&nom));
+        }
+    }
+    Ok(proposes)
 }
 
 /// Appareils à qui fwupd propose un nouveau firmware (`fwupdmgr get-updates --json`). Le nom vient souvent de
@@ -1689,6 +1782,65 @@ mod tests {
             {"Name": "Disque", "Releases": []}
         ]});
         assert_eq!(firmwares_proposes(&v), ["Souris�]52;c;eA==��[2K��"]);
+    }
+
+    /// GetDevices fabriqué : seuls les appareils qui se mettent à jour sont interrogés ; « rien à faire » n'est pas
+    /// une erreur, toute autre réponse d'erreur l'est (jamais « à jour » sur une erreur).
+    #[test]
+    fn firmwares_par_fwupd_fabrique() {
+        use dbus::Valeur as V;
+        let p = |k: &str, v: V| (V::texte_de(k), V::Variante(String::new(), Box::new(v)));
+        let liste = V::Tableau(vec![
+            V::Dictionnaire(vec![
+                p("DeviceId", V::texte_de("a1")),
+                p("Name", V::texte_de("SSD")),
+                p("Flags", V::U64(APPAREIL_MAJ | 1)),
+            ]),
+            V::Dictionnaire(vec![p("DeviceId", V::texte_de("b2")), p("Flags", V::U64(1))]),
+            V::Dictionnaire(vec![p("DeviceId", V::U32(3)), p("Flags", V::U64(APPAREIL_MAJ))]),
+        ]);
+        assert_eq!(appareils_a_jour(&liste), [("a1".to_string(), "SSD".to_string())]);
+        let erreur = |e: &str| Err(e.to_string());
+        assert_eq!(
+            reponse_upgrades(erreur("org.freedesktop.fwupd.NothingToDo : No releases found")),
+            Ok(false)
+        );
+        assert!(reponse_upgrades(erreur("org.freedesktop.fwupd.Internal : boom")).is_err());
+        assert!(reponse_upgrades(erreur("org.freedesktop.fwupd.NotSupported : no components in silo")).is_err());
+        assert_eq!(
+            reponse_upgrades(erreur("org.freedesktop.fwupd.NotFound : gone")),
+            Ok(false)
+        );
+        assert!(reponse_upgrades(erreur("le bus n'a pas répondu à temps")).is_err());
+        assert_eq!(reponse_upgrades(Ok(vec![V::Tableau(Vec::new())])), Ok(false));
+        assert_eq!(
+            reponse_upgrades(Ok(vec![V::Tableau(vec![V::Dictionnaire(Vec::new())])])),
+            Ok(true)
+        );
+    }
+
+    /// L'oracle : les firmwares proposés par D-Bus contre `fwupdmgr get-updates --json`, sur cet ordinateur (des
+    /// nombres seulement dans le message).
+    #[test]
+    fn firmwares_par_dbus_comme_fwupdmgr() {
+        let natif = match firmwares_par_dbus() {
+            Ok(n) => n,
+            Err(e) => return crate::essais::saute(&format!("fwupd injoignable ({e})")),
+        };
+        let Some(json) = sortie_delai(
+            "fwupdmgr",
+            &["get-updates", "--json", "--no-unreported-check"],
+            60,
+            &[0, 2],
+        )
+        .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok()) else {
+            return crate::essais::saute("fwupdmgr absent, muet ou sans métadonnées");
+        };
+        let mut outil = firmwares_proposes(&json);
+        let mut lus = natif;
+        outil.sort();
+        lus.sort();
+        assert!(lus == outil, "{} par D-Bus, {} par fwupdmgr", lus.len(), outil.len());
     }
 
     #[test]

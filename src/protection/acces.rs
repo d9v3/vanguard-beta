@@ -571,23 +571,30 @@ fn lire_flatpak_statiques(application: &str, texte: &str) -> Vec<Acces> {
 /// sortie (« - ») est débranchée.
 #[cfg(any(target_os = "linux", test))]
 fn lire_snap(texte: &str) -> Vec<Acces> {
-    let mut acces = Vec::new();
-    for ligne in texte.lines() {
+    acces_snap(texte.lines().filter_map(|ligne| {
         let c = colonnes(ligne);
         let [interface, prise, sortie, ..] = c.as_slice() else {
-            continue;
+            return None;
         };
         if *interface == "Interface" || *sortie == "-" {
-            continue;
+            return None;
         }
-        let permission = match *interface {
+        Some((*interface, prise.split(':').next().unwrap_or("")))
+    }))
+}
+
+/// Les accès sensibles des connexions établies (interface, snap qui la reçoit).
+#[cfg(any(target_os = "linux", test))]
+fn acces_snap<'a>(connexions: impl Iterator<Item = (&'a str, &'a str)>) -> Vec<Acces> {
+    let mut acces = Vec::new();
+    for (interface, snap) in connexions {
+        let permission = match interface {
             "camera" => Permission::Camera,
             "audio-record" | "pulseaudio" => Permission::Micro,
             "location-observe" | "location-control" => Permission::Position,
             "contacts-service" => Permission::Contacts,
             _ => continue,
         };
-        let snap = prise.split(':').next().unwrap_or("");
         if snap.is_empty() {
             continue;
         }
@@ -605,7 +612,8 @@ fn lire_snap(texte: &str) -> Vec<Acces> {
 #[cfg(target_os = "linux")]
 mod linux {
     use super::{
-        Acces, Bilan, PERMISSIONS, Permission, acces_portail, lire_flatpak_portails, lire_flatpak_statiques, lire_snap,
+        Acces, Bilan, PERMISSIONS, Permission, acces_portail, acces_snap, lire_flatpak_portails,
+        lire_flatpak_statiques, lire_snap,
     };
     use crate::machine::linux::gvdb::{Genre, Gvdb, Variante};
     use crate::machine::linux::natif;
@@ -824,8 +832,14 @@ mod linux {
             self::flatpak(b);
         }
         if snap {
-            match sortie("snap", &["connections"]) {
-                Some(t) => b.ajouter(lire_snap(&t)),
+            // snapd par son API (/run/snapd.socket : state.json est réservé à root) ; la CLI en secours.
+            let par_l_api = crate::machine::linux::http_unix::connexions_snap(std::path::Path::new(
+                crate::machine::linux::http_unix::SNAPD,
+            ))
+            .ok()
+            .map(|c| acces_snap(c.iter().map(|(i, s)| (i.as_str(), s.as_str()))));
+            match par_l_api.or_else(|| sortie("snap", &["connections"]).map(|t| lire_snap(&t))) {
+                Some(a) => b.ajouter(a),
                 None => non_verifie(
                     b,
                     &PERMISSIONS,

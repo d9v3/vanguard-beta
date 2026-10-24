@@ -1,6 +1,7 @@
 //! Un lecteur SQLite écrit pour Vanguard, sans bibliothèque ni programme sqlite3 : un fichier lu en mémoire, page par
 //! page. Il compte les lignes d'une table (identifiants des navigateurs, sans en décoder une seule) et lit quelques
-//! colonnes d'une table (la base des autorisations de macOS, TCC.db). Lecture seule, bornée : une base abîmée ou
+//! colonnes d'une table (la base des autorisations de macOS, TCC.db ; sous Linux, les dernières connexions de
+//! lastlog2 et les sessions de wtmpdb). Lecture seule, bornée : une base abîmée ou
 //! fabriquée (page qui renvoie à elle-même, débordement sans fin, arbre trop profond) est refusée, jamais suivie.
 //! Le journal WAL n'est pas lu : l'appelant dit que les changements récents peuvent manquer.
 
@@ -216,12 +217,16 @@ pub(crate) fn compter_lignes(octets: &[u8], table: &str) -> Option<usize> {
 
 // ───────────────────────────── Lire des colonnes ─────────────────────────────
 
+#[cfg(target_os = "linux")]
+pub(crate) use colonnes::Valeur;
 /// La lecture des colonnes ne sert qu'à macOS (TCC.db) ; ailleurs, seulement aux essais et au banc de fuzzing
 /// (fuzz/, où cargo-fuzz pose `--cfg fuzzing`).
 #[cfg(any(target_os = "macos", test, fuzzing))]
-pub(crate) use colonnes::{compteur, lignes};
+pub(crate) use colonnes::compteur;
+#[cfg(any(target_os = "macos", target_os = "linux", test, fuzzing))]
+pub(crate) use colonnes::lignes;
 
-#[cfg(any(target_os = "macos", test, fuzzing))]
+#[cfg(any(target_os = "macos", target_os = "linux", test, fuzzing))]
 mod colonnes {
     use super::{Sqlite, taille_colonne, u32be, varint};
     use std::collections::HashSet;
@@ -514,6 +519,7 @@ mod colonnes {
 
     /// Le compteur de changements du fichier (octets 24 à 27 de l'en-tête), qui avance à chaque écriture validée : deux
     /// lectures qui le voient différent n'ont pas lu la même base.
+    #[cfg_attr(not(any(target_os = "macos", test, fuzzing)), allow(dead_code))]
     pub(crate) fn compteur(octets: &[u8]) -> Option<u32> {
         if octets.get(..16)? != b"SQLite format 3\0" {
             return None;

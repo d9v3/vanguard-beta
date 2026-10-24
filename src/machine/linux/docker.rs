@@ -31,16 +31,36 @@ pub(super) fn docker() -> Vec<Constat> {
     {
         return vec![];
     }
+    // L'API locale du démon d'abord (lecture seule) ; la CLI quand un autre hôte ou un contexte est réglé, ou si le
+    // démon ne répond pas sur sa prise.
+    if docker_api::hote_par_defaut() && Path::new(docker_api::PRISE).exists() {
+        match docker_api::conteneurs_sur(Path::new(docker_api::PRISE)) {
+            Ok(liste) => return constats_docker(liste),
+            // Hors du groupe docker (qui vaut root) : la CLI serait refusée de même.
+            Err(e) if e.raison == crate::modele::Raison::Droits => return vec![docker_sans_acces(&processus())],
+            Err(_) => {}
+        }
+    }
     let Some(liste) = sortie_delai("docker", &["ps", "--format", "{{.Names}}\t{{.Ports}}"], 15, &[0]) else {
         return vec![docker_sans_acces(&processus())];
     };
+    constats_docker(
+        liste
+            .lines()
+            .map(|ligne| {
+                let (nom, colonne) = ligne.split_once('\t').unwrap_or((ligne, ""));
+                (crate::ui::affichable(nom), ports_docker_exposes(colonne))
+            })
+            .collect(),
+    )
+}
+
+/// Les constats des conteneurs actifs : (nom prêt à montrer, ports exposés au réseau).
+fn constats_docker(liste: Vec<(String, Vec<String>)>) -> Vec<Constat> {
     let mut constats = Vec::new();
     let mut actifs = 0;
-    for ligne in liste.lines() {
-        let (nom, colonne) = ligne.split_once('\t').unwrap_or((ligne, ""));
-        let nom = crate::ui::affichable(nom);
+    for (nom, exposes) in liste {
         actifs += 1;
-        let exposes = ports_docker_exposes(colonne);
         if exposes.is_empty() {
             continue;
         }

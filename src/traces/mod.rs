@@ -119,6 +119,10 @@ pub(crate) enum Raison {
     /// Le système ne l'a pas gardé (journal tourné ou vidé), alors que Vanguard l'a lu en entier, avec les droits.
     #[cfg_attr(windows, allow(dead_code))]
     NonGarde,
+    /// Le relevé de Vanguard et la sortie de l'outil qu'il remplace ne disent pas la même chose (ce qui diffère) :
+    /// un outil remplacé qui cache quelque chose, ou un changement entre les deux lectures.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Ecart(Bi),
     /// Ce que le système a répondu.
     Erreur(String),
 }
@@ -169,6 +173,16 @@ impl Raison {
                 format!("only {} read by Vanguard", etendue.en),
             ),
             Raison::NonGarde => Bi::new("le système ne l'a pas gardé", "the system did not keep it"),
+            Raison::Ecart(ce_qui) => Bi::new(
+                format!(
+                    "le relevé de Vanguard et l'outil diffèrent ({}) : l'outil a peut-être été remplacé, ou la machine a changé entre les deux lectures",
+                    ce_qui.fr
+                ),
+                format!(
+                    "Vanguard's reading and the tool differ ({}): the tool may have been replaced, or the machine changed between the two readings",
+                    ce_qui.en
+                ),
+            ),
             Raison::Erreur(e) => Bi::meme(e.clone()),
         }
     }

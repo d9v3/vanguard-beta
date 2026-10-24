@@ -371,14 +371,12 @@ impl Genre {
         }
     }
 
-    /// L'alignement d'une valeur de ce type (pour la fabrique et les tests ; le décodage lit celui de son `Plan`).
-    #[cfg(test)]
+    /// L'alignement d'une valeur de ce type (pour l'écriture et les tests ; le décodage lit celui de son `Plan`).
     fn alignement(&self) -> usize {
         Plan::de(self).alignement
     }
 
     /// La taille d'une valeur de ce type quand elle est fixe ; `None` pour les chaînes, tableaux, variantes…
-    #[cfg(test)]
     fn taille_fixe(&self) -> Option<usize> {
         Plan::de(self).taille
     }
@@ -855,17 +853,18 @@ fn elements(e: &Plan, octets: &[u8], profondeur: usize, budget: &mut usize) -> O
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Fabrique, pour les tests : sérialisation GVariant et fichiers GVDB comme les écrivent GLib et dconf.
+// Écriture GVariant (l'écrivain de dconf, et les tests), puis fabrique de fichiers GVDB pour les tests.
 
-#[cfg(test)]
-pub(crate) mod fabrique {
-    use super::{Genre, Variante, aligner, hachage, taille_decalage};
+/// L'écriture d'une valeur au format sérialisé de GVariant (celui de GLib, petit-boutiste) : ce que l'écrivain de
+/// dconf attend dans un changement (`dconf::changement`), et ce que les essais fabriquent.
+pub(crate) mod ecriture {
+    use super::{Variante, aligner, taille_decalage};
 
-    fn completer(sortie: &mut Vec<u8>, alignement: usize) {
+    pub(crate) fn completer(sortie: &mut Vec<u8>, alignement: usize) {
         sortie.resize(aligner(sortie.len(), alignement).expect("taille"), 0);
     }
 
-    fn decalages(corps: &mut Vec<u8>, fins: &[usize]) {
+    pub(crate) fn decalages(corps: &mut Vec<u8>, fins: &[usize]) {
         let mut tde = 1;
         while taille_decalage(corps.len() + fins.len() * tde) > tde {
             tde *= 2;
@@ -948,6 +947,13 @@ pub(crate) mod fabrique {
             }
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) mod fabrique {
+    use super::ecriture::completer;
+    pub(crate) use super::ecriture::serialiser;
+    use super::{Genre, Variante, hachage};
 
     /// Le contenu d'une table à fabriquer : une valeur, une table imbriquée ou un dossier de dconf (genre `L`).
     pub(crate) enum Contenu {
