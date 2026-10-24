@@ -1107,7 +1107,10 @@ case "$1 ${2:-}" in
     exit $((inconnu * 3)) ;;
   "deploiement comparer-cle")
     [[ -f $BANC/reference ]] || { echo "aucune référence" >&2; exit 3; }
-    diff <(releve "$3") "$BANC/reference" >&2 || exit 2 ;;
+    # --reprise : ce que le déploiement pose (ici Linux/ et source/) ne compte pas.
+    filtre='^$'
+    [[ ${4:-} == --reprise ]] && filtre=' \./(Linux|source)/'
+    diff <(releve "$3" | grep -vE "$filtre") <(grep -vE "$filtre" "$BANC/reference") >&2 || exit 2 ;;
   "deploiement temoins")
     [[ -s $3/vanguard.jeton ]] || echo fedcba9876543210fedcba9876543210 >"$3/vanguard.jeton"
     echo temoin >"$3/vanguard.cle" ;;
@@ -1140,6 +1143,15 @@ voir "clé connue, identique à sa référence : programme et code source copié
   eval '((code == 0)) && [[ -f $K/Linux/vanguard && -d $K/source/outils ]] &&
     dit "$BANC/vanguard.log" "deploiement comparer-cle $K" && dit "$BANC/vanguard.log" "manifeste --ecrire $K"' ||
   { montrer "$BANC/sortie"; }
+# Un déploiement arrêté en route (le programme à moitié copié) : le suivant reprend, sans fausse alerte ; un fichier
+# planté, lui, compte toujours.
+: >"$BANC/etat/vanguard/deploiement-en-cours-$J" 2>/dev/null || { mkdir -p "$BANC/etat/vanguard"; : >"$BANC/etat/vanguard/deploiement-en-cours-$J"; }
+echo "moitié" >"$K/Linux/vanguard"
+deployer --sans-compiler
+code=$?
+voir "déploiement arrêté en route : le suivant reprend (sa copie à moitié écrite ne compte pas), repère retiré" \
+  eval '((code == 0)) && dit "$BANC/vanguard.log" "comparer-cle $K --reprise" && [[ ! -e $BANC/etat/vanguard/deploiement-en-cours-$J ]] &&
+    ! grep -qx moitié "$K/Linux/vanguard"' || montrer "$BANC/sortie"
 # Le voyage : un raccourci planté. Rien n'est écrit (ni copie, ni référence), une notification le dit.
 echo piege >"$K/Photos.lnk"
 echo "ancien" >"$K/Linux/vanguard"
@@ -1220,6 +1232,8 @@ cat >"$BANC/faux-gh/gh" <<'FIN'
 echo "$*" >>"$BANC/gh.log"
 case "$1 $2" in
   "issue create") n=$(($(cat "$BANC/gh.n" 2>/dev/null || echo 0) + 1)); echo "$n" >"$BANC/gh.n"
+    # ESSAI_GH_TUER=N : le passage est arrêté (SIGTERM, comme par le timeout de deployer.sh) au N-ième ticket.
+    [[ -n ${ESSAI_GH_TUER:-} && $n == "$ESSAI_GH_TUER" ]] && { kill -TERM "$PPID"; sleep 2; exit 1; }
     echo "https://github.com/exemple/depot/issues/$n" ;;
   "issue view") echo OPEN ;;
 esac
@@ -1267,6 +1281,12 @@ voir "journal forgé (60 erreurs distinctes) : rien n'est envoyé ni retiré, l'
 envoyer --accord
 voir "--accord : l'auteur l'envoie quand même, 50 tickets au plus par passage" \
   eval '[[ $(tickets) == 50 ]]' || montrer "$BANC/sortie"
+rm -f "$BANC/retours/envois-github.json" "$BANC/retours/tickets-github.json" "$BANC/gh.n"
+journal_force 5 100
+ESSAI_GH_TUER=3 envoyer
+voir "passage arrêté en route (SIGTERM) : les deux tickets faits comptés et notés, le reste attend" \
+  eval '[[ $(jq .tickets "$BANC/retours/envois-github.json") == 2 && $(jq length "$BANC/retours/tickets-github.json") == 2 &&
+    $(grep -c "^== " "$BANC/retours/a-envoyer-github.txt") == 6 ]]' || montrer "$BANC/sortie"
 
 # --- Ménage (menage-dev.sh) ------------------------------------------------------------------------------------------
 

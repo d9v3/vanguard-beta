@@ -317,6 +317,7 @@ awk '/uses: Swatinem\/rust-cache/ { getline; exit !($0 ~ /if: github.ref_name !=
 G=$T/depot-compilation
 mkdir -p "$G/src" "$G/docs" "$G/.github" "$G/target/x86_64-unknown-linux-musl/release" "$G/target/x86_64-pc-windows-gnu/release"
 grep -v '^#' "$DEPOT/.github/hors-code.txt" >"$G/.github/hors-code.txt"
+mkdir -p "$G/outils" && cp "$DEPOT/outils/date-du-code.sh" "$G/outils/"
 echo 'fn main() {}' >"$G/src/main.rs"
 echo doc >"$G/docs/index.md"
 git -C "$G" init -q && git -C "$G" add -A && git -C "$G" -c user.name=essai -c user.email=essai@exemple.invalid \
@@ -341,9 +342,17 @@ programmes_g "$DATE1"
 [[ $(compilation) == "$C1" ]] && ok "publier : les octets de la compilation de ce commit valent" ||
   ko "publier, compilation juste refusée : $(compilation)"
 echo autre >>"$G/docs/index.md"
-git -C "$G" -c user.name=essai -c user.email=essai@exemple.invalid commit -qam captures
+GIT_COMMITTER_DATE="@$((DATE1 + 100)) +0000" git -C "$G" -c user.name=essai -c user.email=essai@exemple.invalid \
+  commit -qam captures
 [[ $(compilation) == "$C1" ]] && ok "publier : un commit hors du programme (documentation) ne les change pas" ||
   ko "publier après un commit de documentation : $(compilation)"
+[[ $(cd "$G" && bash outils/date-du-code.sh) == "$DATE1" ]] &&
+  ok "date du code : celle du dernier commit qui touche le programme (le Mac et Linux gravent la même)" ||
+  ko "date du code : $(cd "$G" && bash outils/date-du-code.sh) au lieu de $DATE1"
+programmes_g $((DATE1 + 100))
+compilation >/dev/null && ko "publier : la date d'un commit de documentation gravée est acceptée" ||
+  ok "publier : la date gravée doit être celle du code, pas d'un commit de documentation"
+programmes_g "$DATE1"
 printf 'MZ autre' >"$G/target/x86_64-pc-windows-gnu/release/vanguard.exe"
 compilation >/dev/null && ko "publier : un programme remplacé depuis sa compilation est accepté" ||
   ok "publier : un programme remplacé depuis sa compilation (autre worktree, cargo build) est refusé"

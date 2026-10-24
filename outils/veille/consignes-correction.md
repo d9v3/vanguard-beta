@@ -37,9 +37,10 @@ Ce que tu fais n'est qu'une PROPOSITION : l'auteur la relira et la fusionnera lu
    - `hebdo` : une proposition écrite par la relecture hebdomadaire ; vérifie-la dans le code avant d'y croire.
 3. Corrige avec un test qui échoue avant et passe après. Jamais : retirer ou ignorer (`#[ignore]`) un test, baisser
    un seuil pour le faire passer, ajouter une dépendance, toucher `.github/`, `.claude/`, `.cargo/`, `CLAUDE.md`,
-   `deny.toml`, `outils/veille/`, `outils/hooks/`, `outils/confidentialite.py`, `outils/verifier.sh`,
-   `outils/vm-tester.sh`, un `build.rs`, `rust-toolchain` ou le fichier `.git` du worktree (un garde-fou mécanique
-   refuse la proposition entière).
+   `deny.toml`, quoi que ce soit dans `outils/` (essais, banc Windows, chaîne de publication et de la clé ; seule
+   exception, `outils/liens.txt` pour une alerte `lien`), un `build.rs`, `rust-toolchain` ou le fichier `.git` du
+   worktree (un garde-fou mécanique refuse la proposition entière). Une panne qui ne se corrige que dans `outils/` :
+   dis-le dans `reste`, sans rien changer.
 4. `cargo fmt`, puis `cargo clippy -q --all-targets -- -D warnings` et `cargo test -q` ; corrige ce qu'ils disent.
 5. Committe dans la branche courante (`git add <chemins>` puis `git commit`, message en français qui dit le pourquoi).
    Tu n'as ni réseau (sauf crates.io pour une alerte rustsec), ni GitHub, ni le droit de changer de branche,

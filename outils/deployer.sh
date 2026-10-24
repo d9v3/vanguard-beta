@@ -374,6 +374,17 @@ VM="$HOME/Windows/VANGUARD-TEST"
 # Un test qui tourne dans la VM garde son programme : le remplacer en pleine passe mélangerait deux versions. Le témoin
 # est celui du menu des tests, périmé au bout de 3 h comme là-bas.
 EN_COURS="$VM/resultats/.test-en-cours.txt"
+# La version qui aura sa page : aussi un essai signé de la file (test.ps1 en administrateur), dont le verdict signé
+# par le surveillant est la porte de outils/publier-version.sh. Déposé même pendant une passe du menu : le surveillant
+# attend sa fin. Seulement la file réinstallée (secret ici).
+if [[ -z ${VANGUARD_INTERMEDIAIRE:-} && -n $A_PUBLIER && -f $WINDOWS && -d $HOME/Windows ]]; then
+  if [[ -s ${XDG_CONFIG_HOME:-$HOME/.config}/vanguard/file-essais/secret ]]; then
+    bash outils/vm-tester.sh --exe "$WINDOWS" --sans-console --sans-attendre ||
+      echo "VM Windows : essai de la file pas déposé (voir ci-dessus) : sans son verdict signé, pas de page."
+  else
+    echo "VM Windows : file d'essais pas réinstallée (pas de secret) : la page se fiera à historique.txt, non authentifié."
+  fi
+fi
 if [[ -n ${VANGUARD_INTERMEDIAIRE:-} ]]; then
   echo "VM Windows : version intermédiaire d'une série, rien n'y est déposé (la dernière le sera)."
 elif [[ -n $(find "$EN_COURS" -mmin -180 2>/dev/null) ]]; then
@@ -390,12 +401,6 @@ elif [[ -d $HOME/Windows && -f $WINDOWS ]]; then
     echo "VM Windows : version déposée. Dernière passe : $(tail -n 1 "$VM/resultats/historique.txt" | sed 's/ *->.*//')"
   else
     echo "VM Windows : version déposée dans $VM."
-  fi
-  # La version qui aura sa page : aussi un essai signé de la file (test.ps1 en administrateur), dont le verdict signé
-  # par le surveillant est la porte de outils/publier-version.sh. Seulement la file réinstallée (secret ici).
-  if [[ -n $A_PUBLIER && -s ${XDG_CONFIG_HOME:-$HOME/.config}/vanguard/file-essais/secret ]]; then
-    bash outils/vm-tester.sh --exe "$WINDOWS" --sans-console --sans-attendre ||
-      echo "VM Windows : essai de la file pas déposé (voir ci-dessus) : sans son verdict signé, pas de page."
   fi
 fi
 
@@ -418,7 +423,9 @@ publier_la_version() {
 # volume étiqueté VANGUARD au jeton inconnu ne reçoit rien. --accepter-cle DOSSIER : celui que l'auteur désigne.
 CODE_CLE=0
 if [[ -n $ACCEPTER_CLE ]]; then
-  CLE=$ACCEPTER_CLE
+  # Normalisé (barre finale de la complétion, « .. ») : sinon son identifiant de volume ne se lit pas, et la
+  # référence part sous un autre nom que celui du branchement suivant.
+  CLE=$(realpath -s -- "$ACCEPTER_CLE")
   if [[ ! -d $CLE || ! -f $CLE/vanguard.cle || -L $CLE/vanguard.cle ]]; then
     echo "✖ $CLE ne porte pas le témoin vanguard.cle d'une clé VANGUARD : rien n'y est écrit."
     exit 1
@@ -449,7 +456,13 @@ T_CLE=$SECONDS
 # ventoy.json ou une archive tldr posés pendant le voyage y sont vus, et rien n'est écrit (ni programme, ni journal
 # vidé, ni manifeste), jusqu'à l'accord de l'auteur (--accepter-cle). Sans cela, la référence réécrite après la copie
 # les reprenait, et le bilan disait « la clé n'a pas changé » (campagne d'attaque n° 3).
-if [[ -z $ACCEPTER ]] && ! ECART=$(./"$LINUX" deploiement comparer-cle "$CLE" 2>&1); then
+# Un déploiement arrêté en route (clé retirée, rsync ou copie en échec) laisse son repère, au jeton de la clé : le
+# suivant ne compte pas ce que le déploiement pose lui-même et a pu laisser à moitié écrit (il le réécrit), tout le
+# reste si. Retiré une fois la référence réécrite.
+REPRISE=${XDG_STATE_HOME:-$HOME/.local/state}/vanguard/deploiement-en-cours-$(jeton_du_volume "$CLE")
+REPRENDRE=()
+[[ -f $REPRISE && $REPRISE != */deploiement-en-cours- ]] && REPRENDRE=(--reprise)
+if [[ -z $ACCEPTER ]] && ! ECART=$(./"$LINUX" deploiement comparer-cle "$CLE" "${REPRENDRE[@]}" 2>&1); then
   echo "✖ La clé VANGUARD ($CLE) a changé depuis son dernier déploiement : rien n'y est écrit."
   sed 's/^/  /' <<<"$ECART"
   echo "  Regarder ces fichiers (un raccourci ou une image plantés sont un piège). S'ils sont voulus :"
@@ -468,6 +481,9 @@ fi
 # Vanguard remonte la clé en lecture seule sous Linux (src/protection/cle.rs). Avant la copie vers la partition des
 # journaux et avant le manifeste.
 ./"$LINUX" deploiement temoins "$CLE" || { echo "✖ Témoins de la clé non écrits : clé pas mise à jour."; exit 1; }
+# Le jeton est là maintenant (tiré pour une clé acceptée) : le repère d'un déploiement en cours, à son nom.
+REPRISE=${XDG_STATE_HOME:-$HOME/.local/state}/vanguard/deploiement-en-cours-$(jeton_du_volume "$CLE")
+mkdir -p "${REPRISE%/*}" && : >"$REPRISE"
 
 # Partition VANGUARDLOG (la seule modifiable sur les autres ordinateurs) : celle du même disque, au jeton de la clé
 # (outils/cle-commun.sh) ; elle se monte en même temps que VANGUARD, parfois une seconde après. Son journal d'erreurs
@@ -568,7 +584,9 @@ cp -f outils/cle/autorun.inf outils/cle/autorun.sh "outils/cle/Lancer Vanguard.b
 # Code source complet (avec l'historique git) pour continuer le développement depuis n'importe quel ordinateur.
 # exFAT ne garde ni droits ni liens : -rt suffit, --modify-window tolère sa précision de 2 s. Les copies de travail
 # des sessions Claude (.claude/worktrees, avec leurs propres compilations) restent sur l'ordinateur.
-rsync -rt --delete --modify-window=2 --exclude /target/ --exclude /.claude/worktrees/ ./ "$CLE/source/"
+# Code 24 : des fichiers ont disparu pendant la copie (une autre session committe) ; le reste est copié, pas une panne.
+rsync -rt --delete --modify-window=2 --exclude /target/ --exclude /.claude/worktrees/ ./ "$CLE/source/" ||
+  { code=$?; ((code == 24)) || exit "$code"; }
 # Exemples de tldr-pages sur la clé (src/guide/tldr/cle.rs) : lancé depuis la clé, le guide les a tout de suite, même
 # sur un ordinateur sans Internet. Une fois par jour au plus ; sans Internet, la clé garde les siens. Avant le
 # manifeste : une archive remplacée sur la clé par quelqu'un d'autre se verra au retour. Un programme d'avant
@@ -589,6 +607,8 @@ regarder ; si c'est voulu : outils/deployer.sh --accepter-cle"
   exit 1
 elif ((CODE_MANIFESTE != 0)); then
   echo "Manifeste de la clé non écrit : le bilan ne pourra pas la comparer."
+else
+  rm -f "$REPRISE"
 fi
 sync
 duree clé "$T_CLE"

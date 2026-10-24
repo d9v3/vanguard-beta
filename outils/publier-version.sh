@@ -112,9 +112,10 @@ verifier_compilation() {
     echo "Les programmes compilés viennent de ${compile:0:12}, et le code a changé depuis : lancer d'abord outils/deployer.sh."
     return 1
   fi
-  # La date gravée avec la version (VANGUARD-VERSION:x.y.z+N, build.rs) est celle du commit compilé.
+  # La date gravée avec la version (VANGUARD-VERSION:x.y.z+N, build.rs) est celle du code du commit compilé
+  # (outils/date-du-code.sh), celle que le Mac de GitHub grave aussi.
   gravee=$(grep -aoE 'VANGUARD-VERSION:[0-9]+\.[0-9]+\.[0-9]+\+[0-9]+;' "$LINUX" | head -1 | sed 's/.*+//; s/;$//')
-  [[ $gravee == "$(git log -1 --format=%ct "$compile")" ]] ||
+  [[ $gravee == "$(bash outils/date-du-code.sh "$compile")" ]] ||
     { echo "Date gravée dans le programme (${gravee:-absente}) ≠ celle du commit compilé : rien de publié."; return 1; }
   echo "$compile"
 }

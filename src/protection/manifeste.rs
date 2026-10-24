@@ -421,10 +421,18 @@ fn relever(racine: &Path, gros: u64) -> Vec<Entree> {
         .collect()
 }
 
-fn ecrire_dans(racine: &Path, reference: &Path, gros: u64) -> Result<usize, String> {
+/// `garder_differentes` faux (`--forcer`, l'auteur accepte la clé telle qu'elle est) : une image notée différente
+/// n'est plus suivie par son empreinte d'avant (sa taille seulement, jusqu'à ce qu'images-cle.sh la repose ou la
+/// relise) ; sinon elle resterait « modifiée » pour toujours, et la clé refusée.
+fn ecrire_dans(racine: &Path, reference: &Path, gros: u64, garder_differentes: bool) -> Result<usize, String> {
     let mut fichiers = relever(racine, gros);
     if let Ok(avant) = lire(reference) {
         garder_empreintes(&mut fichiers, &avant.fichiers);
+        if !garder_differentes {
+            for e in fichiers.iter_mut().filter(|e| e.differente) {
+                (e.sha256, e.relue, e.differente) = (None, None, false);
+            }
+        }
     }
     let manifeste = Manifeste {
         format: FORMAT.to_string(),
@@ -522,7 +530,7 @@ pub fn ecrire(racine: &Path, forcer: bool) -> Result<(usize, PathBuf), PasEcrit>
         reecriture_permise(&base, racine, reference_lue(&base, id.as_deref()).as_deref(), GROS)?;
     }
     let chemin = reference_ecrite(&base, id.as_deref());
-    let n = ecrire_dans(racine, &chemin, GROS).map_err(PasEcrit::Erreur)?;
+    let n = ecrire_dans(racine, &chemin, GROS, !forcer).map_err(PasEcrit::Erreur)?;
     if id.is_some() {
         let _ = std::fs::remove_file(base.join(ANCIENNE_REFERENCE));
     }
@@ -588,9 +596,10 @@ pub fn comparer(racine: &Path) -> Result<Ecart, String> {
 }
 
 /// Avant que le déploiement n'écrive quoi que ce soit sur la clé `racine` (`vanguard deploiement comparer-cle`) :
-/// elle doit être exactement sa référence. `Ok` : le nombre de fichiers vérifiés. Sinon le code de sortie et ce
+/// elle doit être exactement sa référence (`reprise` : sauf ce que le déploiement pose lui-même, après un déploiement
+/// arrêté en route). `Ok` : le nombre de fichiers vérifiés. Sinon le code de sortie et ce
 /// qu'il faut dire : 2, la clé a changé (l'écart) ; 3, pas de référence pour elle ici.
-pub(crate) fn avant_deploiement(racine: &Path) -> Result<usize, (i32, String)> {
+pub(crate) fn avant_deploiement(racine: &Path, reprise: bool) -> Result<usize, (i32, String)> {
     let base = crate::socle::dossier_local();
     let Some(reference) = reference(racine) else {
         let pourquoi = if identifiant_change(&base, racine) {
@@ -607,7 +616,12 @@ pub(crate) fn avant_deploiement(racine: &Path) -> Result<usize, (i32, String)> {
         return Err((3, pourquoi.to_string()));
     };
     let m = lire(&reference).map_err(|e| (1, e))?;
-    let ecart = comparer_avec(racine, &m, GROS);
+    let mut ecart = comparer_avec(racine, &m, GROS);
+    // La reprise d'un déploiement arrêté en route (clé retirée, rsync en échec) : ce qu'il pose lui-même a pu rester
+    // à moitié écrit, et il va le réécrire ; un fichier qu'il ne pose pas compte toujours.
+    if reprise {
+        ecart = hors_deploiement(ecart);
+    }
     if ecart.vide() {
         Ok(ecart.verifies)
     } else {
@@ -1191,7 +1205,7 @@ mod tests {
         std::fs::write(racine.join("autorun.sh"), b"#!/bin/sh").unwrap();
         std::fs::write(racine.join("ISO/systemrescue-12.0-amd64.iso"), b"0123456789abcdef").unwrap();
         std::fs::write(racine.join("ventoy/ventoy.json"), br#"{"control":[]}"#).unwrap();
-        ecrire_dans(&racine, &reference, 10).unwrap();
+        ecrire_dans(&racine, &reference, 10, true).unwrap();
         let m = lire(&reference).unwrap();
         assert!(comparer_avec(&racine, &m, 10).vide());
         std::fs::write(
@@ -1226,7 +1240,7 @@ mod tests {
         std::fs::write(racine.join("Linux"), b"programme").unwrap();
         std::fs::write(racine.join("ISO/archlinux-2026.10.01-x86_64.iso"), b"0123456789abcdef").unwrap();
         std::fs::write(racine.join("ventoy/ventoy.json"), b"{1}").unwrap();
-        ecrire_dans(&racine, &reference, 10).unwrap();
+        ecrire_dans(&racine, &reference, 10, true).unwrap();
         // La nouvelle version copiée, l'ancienne retirée, le menu réécrit ; et une image plantée par ailleurs.
         std::fs::remove_file(racine.join("ISO/archlinux-2026.10.01-x86_64.iso")).unwrap();
         std::fs::write(racine.join("ISO/archlinux-2026.11.01-x86_64.iso"), b"0123456789abcdefg").unwrap();
@@ -1287,14 +1301,14 @@ mod tests {
         std::fs::write(racine.join(crate::protection::cles_connues::JETON), JETON).unwrap();
         std::fs::write(racine.join("a.txt"), b"a").unwrap();
         // Une référence d'une autre clé, sans jeton : la clé connue n'y a pas la sienne.
-        ecrire_dans(&racine, &reference_ecrite(&base, Some("AAAA-1111")), GROS).unwrap();
+        ecrire_dans(&racine, &reference_ecrite(&base, Some("AAAA-1111")), GROS, true).unwrap();
         let mut m = lire(&reference_ecrite(&base, Some("AAAA-1111"))).unwrap();
         assert_eq!(m.jeton.as_deref(), Some(JETON));
         m.jeton = None;
         enregistrer(&reference_ecrite(&base, Some("AAAA-1111")), &m).unwrap();
         assert!(!identifiant_change_dans(&base, Some("BBBB-2222"), Some(JETON)));
         // La référence porte le jeton de la clé, sous un autre identifiant : changé.
-        ecrire_dans(&racine, &reference_ecrite(&base, Some("CCCC-3333")), GROS).unwrap();
+        ecrire_dans(&racine, &reference_ecrite(&base, Some("CCCC-3333")), GROS, true).unwrap();
         assert!(identifiant_change_dans(&base, Some("BBBB-2222"), Some(JETON)));
         // Sous son propre identifiant, rien n'a changé ; illisible ou sans jeton, rien n'est prouvé.
         assert!(!identifiant_change_dans(&base, Some("CCCC-3333"), Some(JETON)));
@@ -1319,7 +1333,7 @@ mod tests {
         std::fs::write(racine.join("donnees/appareils.json"), b"{}").unwrap();
         std::fs::write(racine.join("ISO/x.iso"), b"iso").unwrap();
         // Au-delà de 10 octets, la taille seulement.
-        assert_eq!(ecrire_dans(&racine, &reference, 10).unwrap(), 4);
+        assert_eq!(ecrire_dans(&racine, &reference, 10, true).unwrap(), 4);
         let m = lire(&reference).unwrap();
         assert_eq!(m.format, FORMAT);
         let gros = m.fichiers.iter().find(|e| e.chemin == "gros.img").unwrap();
@@ -1396,7 +1410,7 @@ mod tests {
         // Premier déploiement sur cet ordinateur (aucune référence) : permis ; ensuite, rien n'a changé.
         assert_eq!(reecriture_permise(&base, &racine, None, 10), Ok(()));
         std::fs::create_dir_all(reference.parent().unwrap()).unwrap();
-        ecrire_dans(&racine, &reference, 10).unwrap();
+        ecrire_dans(&racine, &reference, 10, true).unwrap();
         assert_eq!(reecriture_permise(&base, &racine, Some(&reference), 10), Ok(()));
         // Le voyage : un raccourci à la racine, une image, le menu de Ventoy, un fichier glissé dans Linux/.
         std::fs::write(racine.join("Photos.lnk"), "piege").unwrap();
@@ -1454,7 +1468,7 @@ mod tests {
         std::fs::create_dir_all(racine.join("ISO")).unwrap();
         std::fs::write(racine.join("ISO/arch.iso"), b"0123456789abcdef").unwrap();
         std::fs::write(racine.join("ISO/debian.iso"), b"0123456789abcdef0").unwrap();
-        ecrire_dans(&racine, &reference, 10).unwrap();
+        ecrire_dans(&racine, &reference, 10, true).unwrap();
         // Rien à relire sans empreinte connue.
         let lire_ok = |_: &Path| Some(SHA.to_string());
         assert_eq!(
@@ -1464,7 +1478,7 @@ mod tests {
         // Posée et relue par images-cle.sh : son empreinte entre ; une réécriture de la référence la garde.
         let posee = [("arch.iso".to_string(), Some(SHA.to_string()))];
         rafraichir_images_dans(&racine, &reference, &posee, 10).unwrap();
-        ecrire_dans(&racine, &reference, 10).unwrap();
+        ecrire_dans(&racine, &reference, 10, true).unwrap();
         let m = lire(&reference).unwrap();
         let arch = m.fichiers.iter().find(|e| e.chemin == "ISO/arch.iso").unwrap();
         assert_eq!(arch.sha256.as_deref(), Some(SHA));
@@ -1482,9 +1496,16 @@ mod tests {
         let m = lire(&reference).unwrap();
         let ecart = comparer_avec(&racine, &m, 10);
         assert_eq!(ecart.modifies.len(), 1, "{ecart:?}");
-        // Réécrite par le déploiement, elle reste différente ; reposée par images-cle.sh, elle est de nouveau saine.
-        ecrire_dans(&racine, &reference, 10).unwrap();
+        // Réécrite par le déploiement, elle reste différente ; acceptée telle quelle (--forcer), elle n'est plus
+        // suivie que par sa taille ; reposée par images-cle.sh, elle est de nouveau saine.
+        ecrire_dans(&racine, &reference, 10, true).unwrap();
         assert_eq!(comparer_avec(&racine, &lire(&reference).unwrap(), 10).modifies.len(), 1);
+        let sauvegarde = std::fs::read(&reference).unwrap();
+        ecrire_dans(&racine, &reference, 10, false).unwrap();
+        let forcee = lire(&reference).unwrap();
+        assert!(comparer_avec(&racine, &forcee, 10).vide());
+        assert!(forcee.fichiers.iter().all(|e| !e.differente));
+        std::fs::write(&reference, sauvegarde).unwrap();
         let nom = ecart.modifies[0].rsplit('/').next().unwrap().to_string();
         rafraichir_images_dans(&racine, &reference, &[(nom, Some(SHA.into()))], 10).unwrap();
         assert!(comparer_avec(&racine, &lire(&reference).unwrap(), 10).vide());

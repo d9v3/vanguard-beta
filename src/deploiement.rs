@@ -37,6 +37,10 @@ pub(crate) enum Etape {
     ComparerCle {
         /// La racine de la clé.
         racine: PathBuf,
+        /// Le déploiement d'avant s'est arrêté en route (son repère est resté) : ses propres fichiers à moitié
+        /// écrits ne comptent pas, tout le reste si.
+        #[arg(long)]
+        reprise: bool,
     },
     /// Relire en entier une image de ISO/ (la moins récemment relue) et comparer son SHA-256 à la référence. Code 2 :
     /// l'image a été remplacée (notée dans la référence : le bilan la dit modifiée).
@@ -63,7 +67,7 @@ pub(crate) fn executer(etape: Etape) -> i32 {
             }
         },
         Etape::Cle => return cle(),
-        Etape::ComparerCle { racine } => return comparer_cle(&racine),
+        Etape::ComparerCle { racine, reprise } => return comparer_cle(&racine, reprise),
         Etape::RelireImage { racine, empreinte } => return relire_image(&racine, &empreinte),
     };
     i32::from(!reussi)
@@ -113,8 +117,8 @@ fn cle() -> i32 {
     }
 }
 
-fn comparer_cle(racine: &Path) -> i32 {
-    match crate::protection::manifeste::avant_deploiement(racine) {
+fn comparer_cle(racine: &Path, reprise: bool) -> i32 {
+    match crate::protection::manifeste::avant_deploiement(racine, reprise) {
         Ok(n) => {
             println!(
                 "{}",

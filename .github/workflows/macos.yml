@@ -75,7 +75,11 @@ jobs:
     # Sur master, tout se compile sans cache (voir plus bas) : plus long qu'une branche qui reprend le sien.
     timeout-minutes: 60
     steps:
+      # Tout l'historique : la date gravée est celle du code (outils/date-du-code.sh), le dernier commit qui a touché
+      # le programme, la même que gravent Linux et Windows.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       # La chaîne de rust-toolchain.toml, avec les cibles Apple Silicon et Intel.
       - name: Rust (rust-toolchain.toml)
         run: rustup toolchain install
@@ -119,6 +123,8 @@ jobs:
       # (cargo auditable) ; cargo audit ne lit pas un programme universel : les deux moitiés sont vérifiées avant lipo.
       - name: Compilation
         run: |
+          SOURCE_DATE_EPOCH=$(bash outils/date-du-code.sh)
+          export SOURCE_DATE_EPOCH
           cargo auditable build --release --target aarch64-apple-darwin --target x86_64-apple-darwin
           bash outils/failles-programmes.sh target/aarch64-apple-darwin/release/vanguard \
             target/x86_64-apple-darwin/release/vanguard

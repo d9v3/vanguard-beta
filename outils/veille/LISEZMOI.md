@@ -57,8 +57,9 @@ claude n'a rien pu faire (limite, erreur) rend son alerte, reprise la nuit suiva
 `alerte.sh` : worktree jetable `~/.cache/vanguard-dev/veille-arbres/<sujet>` sur une branche
 `veille/AAAA-MM-JJ-<sujet>` partie de la tête de prochaine ; `claude -p` (consignes `consignes-correction.md`) corrige
 avec un test et committe ; **garde-fous mécaniques** (refus d'un diff qui touche `.github/`, `.claude/`, `.cargo/`,
-`CLAUDE.md`, `deny.toml`, `outils/veille/`, `outils/hooks/`, `outils/confidentialite.py` (lancé par le crochet
-pre-commit), `outils/verifier.sh`, `outils/vm-tester.sh`, un `build.rs`, `rust-toolchain`, qui ajoute `#[ignore]`,
+`CLAUDE.md`, `deny.toml`, tout `outils/` (sauf `outils/liens.txt` pour une alerte « lien » : l'IA y forgerait le vert
+de sa proposition, ou changerait la chaîne de publication et de la clé ; une alerte « verifier » sur une étape portée
+par un essai d'`outils/` n'appelle donc pas l'IA, elle est dite à l'auteur), un `build.rs`, `rust-toolchain`, qui ajoute `#[ignore]`,
 retire un test, change les dépendances hors d'une alerte RUSTSEC, ou n'ajoute aucun test ; refus aussi si le lien
 `.git` du worktree a été réécrit) ; `verifier.sh` dans l'arbre, **dans un bac à sable** ; **relecture adversariale**
 par un second `claude -p` neuf en lecture seule (`consignes-relecture.md`) ; **jamais la VM** : ce qui y est déposé

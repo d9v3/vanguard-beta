@@ -9,7 +9,8 @@
 #     (CARGO_HOME, bibliothèques téléchargées) /cargo. Sans cela, ils gardent /home/<compte>/… ou /home/runner/…, et
 #     le même code compilé dans deux dossiers donne deux programmes (et un nom de compte publié avec chaque version).
 #     RUSTFLAGS remplace les rustflags d'un ~/.cargo/config.toml personnel : seuls ceux-ci comptent ;
-#   - la date gravée est celle du commit (build.rs), jamais l'heure de la compilation ; l'éditeur de liens de MinGW
+#   - la date gravée est celle du code (outils/date-du-code.sh, par SOURCE_DATE_EPOCH que lit build.rs), jamais
+#     l'heure de la compilation ; l'éditeur de liens de MinGW
 #     n'écrit pas l'heure dans l'en-tête PE (--no-insert-timestamp, build.rs).
 # Ce qui peut encore différer d'un ordinateur à l'autre, et que cette recette ne fixe pas : les versions de musl-gcc
 # et de MinGW (gcc, binutils, ses bibliothèques de démarrage), qui compilent le C de ring et lient les programmes
@@ -30,6 +31,12 @@ export RUSTFLAGS="--remap-path-prefix=$RACINE=/vanguard --remap-path-prefix=$CAR
 for cible in x86_64_unknown_linux_musl x86_64_pc_windows_gnu; do
   export "CFLAGS_$cible=-ffile-prefix-map=$RACINE=/vanguard -ffile-prefix-map=$CARGO_DOSSIER=/cargo"
 done
+# La date gravée : celle du code (outils/date-du-code.sh), pas du dernier commit, pour que les commits des captures et
+# de la page des fonctions ne la changent pas et que le Mac de GitHub grave la même. Une date déjà donnée l'emporte.
+if [[ -z ${SOURCE_DATE_EPOCH:-} ]]; then
+  DATE_DU_CODE=$(bash outils/date-du-code.sh 2>/dev/null || true)
+  [[ -z $DATE_DU_CODE ]] || export SOURCE_DATE_EPOCH=$DATE_DU_CODE
+fi
 CIBLES=${CARGO_TARGET_DIR:-target}
 REPERE=$CIBLES/.compilation
 rm -f "$REPERE"

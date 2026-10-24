@@ -52,6 +52,15 @@ grep -qxF "$SIGNATURE" "$ETAT/alertes-traitees.txt" 2>/dev/null && { conclure "a
 
 # Le sujet : [a-z0-9-]{1,40}, tiré de la signature (genre et premier morceau de la clé).
 CLE=${SIGNATURE#*:}
+# Une étape de verifier.sh portée par un essai de outils/, que les garde-fous interdisent à l'IA de toucher : l'appeler
+# brûlerait un lancement pour un refus certain. Dite à l'auteur, sans IA.
+if [[ $GENRE == verifier ]]; then
+  case ${CLE%%:*} in
+    essais-cle | signature | essais-verifier | masque)
+      conclure "étape ${CLE%%:*} de verifier.sh : un essai de outils/ (protégé), à corriger par l'auteur, sans IA"
+      exit 0 ;;
+  esac
+fi
 SUJET=$(printf '%s-%s' "$GENRE" "${CLE%%:*}" | tr 'A-Z_' 'a-z-' | tr -cd 'a-z0-9-' | cut -c1-40)
 BRANCHE=veille/$JOUR_ALERTE-$SUJET
 DOSSIER=$VEILLE/ia/$JOUR_ALERTE-$SUJET
