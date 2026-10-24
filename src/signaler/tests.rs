@@ -138,6 +138,8 @@ fn liste_fermee_des_appels() {
         "crate::machine::ouvrir",
         "crate::risk::Niveau::Moyen",
         "crate::risk::Niveau::Critique",
+        "crate::risk::Niveau::Eleve",
+        "crate::risk::Niveau",
         "crate::tr",
         "crate::trf",
         "crate::trp",
@@ -744,6 +746,57 @@ fn examen_des_perimes_sans_inventaire() {
     for absent in ["PuTTY", "7-Zip", "Slack", "Tor Browser"] {
         assert!(!md.contains(absent), "{absent} dans :\n{md}");
     }
+}
+
+/// Le diagnostic et les connexions sortantes nomment aussi l'inventaire (programmes plantés, sources du journal,
+/// programmes et leurs serveurs) : seuls les constats élevés ou plus partent, et le compte des points non vérifiés.
+#[test]
+fn diagnostic_et_sortantes_sans_inventaire() {
+    use crate::risk::Niveau;
+    let examen = |outil: &str, constats: Vec<ConstatEcrit>| Resultat {
+        outil: outil.into(),
+        schema: 1,
+        debut: "2026-10-23T10:00:00Z".into(),
+        duree_ms: 1,
+        couverture: Couverture {
+            verifies: 3,
+            non_verifies: vec!["Services en échec : bus-maison illisible".into()],
+        },
+        constats,
+    };
+    let diagnostic = examen(
+        "PRO-DIA-001",
+        vec![
+            constat("probleme", Some(Niveau::Eleve), "Écrans bleus : 2 en 30 jours"),
+            constat(
+                "probleme",
+                Some(Niveau::Moyen),
+                "Programmes plantés : 3 en 7 jours : outil-secret (2), Signal (1)",
+            ),
+            constat("non-verifie", None, "Erreurs du journal : nextdns illisible"),
+        ],
+    );
+    let md = markdown(&Sujet::Examen(Box::new(diagnostic)), &reponses(), None, Programme::Msrc);
+    assert!(
+        md.contains("Écrans bleus") && md.contains("not checked: 1 item(s)"),
+        "{md}"
+    );
+    for absent in ["outil-secret", "Signal", "nextdns", "bus-maison"] {
+        assert!(!md.contains(absent), "{absent} dans :\n{md}");
+    }
+    let sortantes = examen(
+        "PRO-SOR-001",
+        vec![
+            constat(
+                "probleme",
+                Some(Niveau::Eleve),
+                "facture → 203.0.113.7:443 : serveur de commande de botnet connu",
+            ),
+            constat("probleme", Some(Niveau::Moyen), "Signal → 198.51.100.4:443 : non signé"),
+        ],
+    );
+    let md = markdown(&Sujet::Examen(Box::new(sortantes)), &reponses(), None, Programme::Msrc);
+    assert!(md.contains("203.0.113.7") && !md.contains("Signal"), "{md}");
 }
 
 /// Sans CVE citée, le catalogue KEV n'a rien cherché : jamais « absente du catalogue », même avec une copie gardée.

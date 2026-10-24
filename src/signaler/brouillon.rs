@@ -257,6 +257,19 @@ fn contenu(e: &Evenement, m: &Masque, d: &mut Decompte, l: Langue) -> String {
     m.masquer(&lignes.join("\n"), d)
 }
 
+/// Les examens qui nomment l'inventaire de la machine, et le niveau des constats qui partent quand même. Les logiciels
+/// périmés nomment chaque logiciel installé (VPN, Tor Browser…) : seuls les produits touchés par une faille exploitée
+/// (critique). Le diagnostic nomme les programmes plantés, les sources des erreurs du journal et les services en
+/// échec ; les connexions sortantes, chaque programme et ses serveurs : seuls les constats élevés ou plus (écrans
+/// bleus, serveur de commande de botnet). Un rapport sur un seul programme n'a pas à emporter le reste.
+fn seuil_d_inventaire(outil: &str) -> Option<crate::risk::Niveau> {
+    match outil {
+        "PRO-PER-001" => Some(crate::risk::Niveau::Critique),
+        "PRO-DIA-001" | "PRO-SOR-001" => Some(crate::risk::Niveau::Eleve),
+        _ => None,
+    }
+}
+
 /// L'en-tête d'un examen : l'outil, la date, le verdict, ce qui n'a pas pu être vérifié (dont un sceau qui ne tient
 /// pas : `resultat::derniers` ne reprend alors aucun constat), puis ses constats non sains.
 fn examen(r: &Resultat, m: &Masque, d: &mut Decompte, l: Langue) -> (Vec<Texte>, Vec<Observation>) {
@@ -274,11 +287,10 @@ fn examen(r: &Resultat, m: &Masque, d: &mut Decompte, l: Langue) -> (Vec<Texte>,
             r.couverture.verifies
         ),
     ];
-    // Le bilan des logiciels périmés nomme chaque logiciel installé (en retard, non comparé) : c'est l'inventaire de
-    // la machine (VPN, Tor Browser…), qu'un rapport sur un seul navigateur n'a pas à emporter. Seul le compte des
-    // points non vérifiés reste, et seuls les constats critiques, un par produit touché par une faille exploitée.
-    let perimes = r.outil == "PRO-PER-001";
-    if perimes {
+    // Un examen qui nomme l'inventaire de la machine (`seuil_d_inventaire`) : seul le compte des points non vérifiés
+    // reste, et seuls les problèmes au seuil ou au-dessus.
+    let seuil = seuil_d_inventaire(&r.outil);
+    if seuil.is_some() {
         if !r.couverture.non_verifies.is_empty() {
             lignes.push(format!(
                 "{} {} {}",
@@ -300,7 +312,7 @@ fn examen(r: &Resultat, m: &Masque, d: &mut Decompte, l: Langue) -> (Vec<Texte>,
         .constats
         .iter()
         .filter(|c| c.etat != "sain" && c.etat != "sans-objet")
-        .filter(|c| !perimes || (c.etat == "probleme" && c.niveau == Some(crate::risk::Niveau::Critique)))
+        .filter(|c| seuil.is_none_or(|s| c.etat == "probleme" && c.niveau >= Some(s)))
         .take(CONSTATS_MAX)
         .map(|c| Observation {
             quand: String::new(),
