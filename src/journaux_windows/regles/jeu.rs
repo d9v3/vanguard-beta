@@ -1325,8 +1325,8 @@ pub(crate) fn script_suspect(texte: &str) -> Option<(&'static str, Gravite, Text
             "lsass",
             Gravite::Alerte,
             (
-                "un script vide la mémoire d'un programme (MiniDumpWriteDump) : la façon de prendre les identifiants de LSASS",
-                "a script dumps a program's memory (MiniDumpWriteDump): how LSASS credentials get taken",
+                "un script vide la mémoire d'un programme : la façon de prendre les identifiants de LSASS",
+                "a script dumps a program's memory: how LSASS credentials get taken",
             ),
         ));
     }
