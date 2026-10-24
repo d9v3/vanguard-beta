@@ -1,6 +1,7 @@
 # Claude sur GitHub : écrire @claude dans un ticket, une demande de fusion (PR) ou un commentaire pour lui poser une
 # question ou lui demander une correction ; il suit CLAUDE.md. Seul le propriétaire du dépôt le déclenche : vérifié
 # ici avant même de démarrer (un dépôt public reçoit des commentaires de n'importe qui), puis par l'action elle-même.
+# Jamais sur une demande de fusion venue d'un fork (le travail « garde »).
 # Activation, une fois : /install-github-app dans Claude Code (application GitHub + secret CLAUDE_CODE_OAUTH_TOKEN,
 # le jeton de l'abonnement Claude, que donne `claude setup-token`).
 name: Claude
@@ -14,7 +15,11 @@ on:
   pull_request_review:
     types: [submitted]
 jobs:
-  claude:
+  # Une demande de fusion venue d'un fork n'est jamais traitée : Claude y lancerait cargo build et cargo test, donc le
+  # build.rs et les tests de ce code étranger, avec le droit d'écrire dans le dépôt et le jeton de l'abonnement
+  # (campagne d'attaque n° 3). Ce garde lit d'où vient la demande, en lecture seule, sans secret ni code extrait ; le
+  # numéro passe par une variable, jamais dans le script.
+  garde:
     if: |
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')
         && github.event.comment.author_association == 'OWNER') ||
@@ -25,6 +30,33 @@ jobs:
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))
         && github.event.issue.author_association == 'OWNER')
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      permis: ${{ steps.origine.outputs.permis }}
+    steps:
+      - id: origine
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEMANDE: ${{ github.event.pull_request.number || (github.event.issue.pull_request && github.event.issue.number) || '' }}
+        run: |
+          if [ -z "$DEMANDE" ]; then
+            echo "permis=oui" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          tete=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$DEMANDE" --jq .head.repo.full_name)
+          if [ "$tete" = "$GITHUB_REPOSITORY" ]; then
+            echo "permis=oui" >>"$GITHUB_OUTPUT"
+          else
+            echo "::warning::Demande de fusion venue de « ${tete:-un dépôt supprimé} » : Claude n'y est pas lancé."
+            echo "permis=non" >>"$GITHUB_OUTPUT"
+          fi
+  claude:
+    needs: garde
+    # Le garde a déjà vérifié le propriétaire et l'origine de la demande ; sauté ou refusé, rien ne se lance.
+    if: needs.garde.outputs.permis == 'oui'
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
       contents: write
@@ -33,9 +65,11 @@ jobs:
       id-token: write
       actions: read
     steps:
+      # Le jeton de l'extraction n'est pas laissé dans .git/config, où tout programme lancé ensuite le lirait.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 1
+          persist-credentials: false
       # .cargo/config.toml vise la cible musl : sans elle, cargo test ne compile pas.
       - name: Rust à jour
         run: |

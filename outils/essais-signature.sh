@@ -21,6 +21,8 @@
 #      (publier-version.sh, verifier_compilation, dans un dépôt git jetable) : remplacés, compilés d'un arbre modifié,
 #      d'un commit au code changé depuis, ou à la date gravée d'un autre commit, ils sont refusés ; un commit qui ne
 #      touche que .github/hors-code.txt (captures, documentation) les laisse valoir.
+#   9. .github/workflows/claude.yml ne lance jamais Claude (cargo build et test, droit d'écrire, jeton de
+#      l'abonnement) sur une demande de fusion venue d'un fork : son garde, rejoué ici avec un faux gh.
 #   6. Le programme Mac que la clé signe vient d'une exécution de master : publier-version.sh (sa fonction
 #      avec_programme, face à un faux gh) écarte celle d'une autre branche, même plus récente et du même commit ; et
 #      macos.yml ne reprend aucun cache sur master. Sans jq, cet essai est sauté et dit.
@@ -351,6 +353,30 @@ echo 'fn main() { piege() }' >"$G/src/main.rs"
 git -C "$G" -c user.name=essai -c user.email=essai@exemple.invalid commit -qam code
 compilation >/dev/null && ko "publier : un code changé depuis la compilation est accepté" ||
   ok "publier : le code a changé depuis la compilation : refusé"
+
+# 9. Le garde de claude.yml : le script de son étape, rejoué avec un faux gh qui dit d'où vient la demande.
+Y=$DEPOT/.github/workflows/claude.yml
+awk '/^  garde:/ { g = 1 } g && /^  claude:/ { exit } g && /^        run: \|/ { r = 1; next } r { sub(/^          /, ""); print }' \
+  "$Y" >"$T/garde.sh"
+mkdir -p "$T/faux-gh-garde"
+printf '#!/bin/sh\necho "$ESSAI_TETE"\n' >"$T/faux-gh-garde/gh"
+chmod +x "$T/faux-gh-garde/gh"
+garde() { # numéro de la demande, dépôt d'où elle vient : la sortie « permis=… » du garde
+  : >"$T/garde.sortie"
+  PATH="$T/faux-gh-garde:$PATH" GITHUB_OUTPUT=$T/garde.sortie GITHUB_REPOSITORY=d9v3/vanguard-beta DEMANDE=$1 \
+    ESSAI_TETE=$2 sh "$T/garde.sh" >/dev/null 2>&1
+  cat "$T/garde.sortie"
+}
+if [[ -s $T/garde.sh ]] && [[ $(garde 12 pirate/vanguard-beta) == permis=non ]] &&
+  [[ $(garde 12 d9v3/vanguard-beta) == permis=oui ]] && [[ $(garde "" "") == permis=oui ]]; then
+  ok "claude.yml : une demande venue d'un fork est refusée ; du dépôt, ou un ticket, permis"
+else
+  ko "claude.yml : garde absent ou qui laisse passer un fork ($(garde 12 pirate/vanguard-beta))"
+fi
+awk '/^  claude:/ { c = 1 } c && /needs: garde/ { n = 1 } c && /if: needs.garde.outputs.permis == .oui.$/ { i = 1 }
+  c && /persist-credentials: false/ { p = 1 } END { exit !(n && i && p) }' "$Y" &&
+  ok "claude.yml : Claude attend le garde, et le jeton de l'extraction n'est pas gardé" ||
+  ko "claude.yml : Claude ne dépend pas du garde, ou garde le jeton de l'extraction"
 
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }
 echo "Signature des versions : tout est juste."
