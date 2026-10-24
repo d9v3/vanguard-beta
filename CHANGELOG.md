@@ -165,6 +165,10 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   macOS, documents Office et leurs macros VBA, raccourcis, scripts, archives zip, gzip et tar), bornés contre les
   fichiers piégés (bombes de décompression, archives qui se contiennent elles-mêmes) ; ce qu'il ne sait pas lire
   (7z, RAR, ISO, PDF, chiffré, coupé) est dit non vérifié, jamais sain.
+- **YARA maison.** Les 308 règles de ReversingLabs sont appliquées par un moteur YARA écrit pour Vanguard (recherche
+  multi-motifs d'après Aho-Corasick, modules pe et elf) ; une règle qu'il ne comprend pas est refusée, nommée et rend
+  l'analyse incomplète, jamais saine. YARA-X ne sert plus qu'à vérifier ce moteur dans les tests, sans un écart : le
+  programme Windows passe de 34 à 18 Mo, avec 150 bibliothèques de moins.
 - **Journaux de Windows lus par Vanguard lui-même (première partie).** Un lecteur maison des fichiers .evtx, écrit
   d'après la spécification de Microsoft, borné contre les fichiers piégés et passé au fuzzing, lit les journaux sous
   Linux, macOS et Windows ; une seule forme d'événement sert aux fichiers comme au Windows en marche, avec le refus dit

@@ -158,6 +158,10 @@ delivered just before it. Only the latest version has its download page; every v
   macOS programs, Office documents and their VBA macros, shortcuts, scripts, zip, gzip and tar archives), bounded
   against booby-trapped files (decompression bombs, archives that contain themselves); what it cannot read (7z, RAR,
   ISO, PDF, encrypted, truncated) is reported as unchecked, never clean.
+- **Home-made YARA.** The 308 ReversingLabs rules are applied by a YARA engine written for Vanguard (multi-pattern
+  search after Aho-Corasick, pe and elf modules); a rule it does not understand is refused, named, and makes the scan
+  incomplete, never clean. YARA-X now only checks this engine in the tests, with no discrepancy: the Windows program
+  drops from 34 to 18 MB, with 150 fewer libraries.
 - **Windows event logs read by Vanguard itself (first part).** A home-made .evtx reader, written from Microsoft's
   specification, bounded against booby-trapped files and fuzzed, reads the logs on Linux, macOS and Windows; one event
   shape serves both files and the running Windows, with refusals stated (security log without administrator rights,

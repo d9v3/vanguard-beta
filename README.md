@@ -261,7 +261,7 @@ dans Documents, Images et Bureau, que personne n'a de raison de toucher. Un ran�
 renomme déclenche une alerte critique, au bilan et toutes les heures par la surveillance, avec la marche à suivre ;
 posés et retirés après accord. Et une analyse YARA : 308 règles de ReversingLabs qui reconnaissent des familles
 entières (rançongiciels, voleurs de mots de passe, chevaux de Troie, portes dérobées…), en complément de
-l'antivirus, appliquées par YARA-X, compilé dans Vanguard : rien à installer. Chaque fichier lu est aussi comparé
+l'antivirus, appliquées par le moteur YARA de Vanguard, écrit pour lui : rien à installer. Chaque fichier lu est aussi comparé
 aux empreintes SHA-256 de logiciels malveillants connus de MalwareBazaar (abuse.ch) : là, c'est ce
 logiciel précis, sans doute possible. La liste complète se télécharge une fois par semaine (environ 43 Mo), les
 nouveautés des 48 dernières heures une fois par jour ; sans Internet, la copie gardée sert, et sans copie du tout,
@@ -840,9 +840,9 @@ Compiler, tester, déployer, la clé USB, le journal des erreurs : voir [CONTRIB
 Une faille de sécurité dans Vanguard se signale en privé : voir [SECURITY.md](SECURITY.md).
 Chaque programme publié porte la liste de ses dépendances, versions comprises (cargo auditable), que cargo audit
 compare aux failles connues de la base RustSec :
-`cargo audit bin --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2025-0141 <programme>`. Ces deux avis sont admis, chacun
-avec sa preuve dans [deny.toml](deny.toml) : rsa, sans version corrigée, et bincode, abandonné, tous deux par YARA-X ;
-sans `--ignore`, cargo audit les signale (« 1 vulnerability found »). Sous macOS, sur une moitié du programme
+`cargo audit bin <programme>`. Jusqu'à la 0.86, le programme portait YARA-X, et avec lui rsa (sans version corrigée)
+et bincode (abandonné), deux avis admis avec leur preuve dans [deny.toml](deny.toml) : pour ces versions, ajouter
+`--ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2025-0141`. Sous macOS, sur une moitié du programme
 universel, qu'il ne lit pas tel quel : `lipo vanguard-macos -thin arm64 -output vanguard-arm64`. La vérification de
 chaque publication, avis traités comme par cargo deny : `outils/failles-programmes.sh <programme>`, depuis le code.
 

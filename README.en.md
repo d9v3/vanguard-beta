@@ -243,7 +243,7 @@ video stream, ONVIF), without turning anything off or watching anything.
 which nobody has a reason to touch. Ransomware that encrypts or renames them triggers a critical alert, at each
 check and hourly through monitoring, with what to do; placed and removed after your consent. And a YARA scan: 308
 ReversingLabs rules that recognize whole families (ransomware, password stealers, trojans, backdoors…), alongside
-the antivirus, applied by YARA-X, compiled into Vanguard: nothing to install. Each file read is also compared with
+the antivirus, applied by Vanguard's own YARA engine: nothing to install. Each file read is also compared with
 the SHA-256 fingerprints of known malware from MalwareBazaar (abuse.ch): there, it is that very
 program, beyond doubt. The full list is downloaded once a week (about 43 MB), the last 48 hours once a day; offline,
 the saved copy is used, and with no copy at all, it says so.
@@ -797,9 +797,9 @@ Building, testing, deploying, the USB key, the error journal: see [CONTRIBUTING.
 A security flaw in Vanguard? Report it privately: see [SECURITY.md](SECURITY.md#security).
 Every published program carries the list of its dependencies, versions included (cargo auditable), which cargo audit
 checks against the known vulnerabilities of the RustSec database:
-`cargo audit bin --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2025-0141 <program>`. These two advisories are accepted,
-each with its proof in [deny.toml](deny.toml): rsa, with no fixed version, and bincode, unmaintained, both through
-YARA-X; without `--ignore`, cargo audit reports them (“1 vulnerability found”). On macOS, on one half of the universal
+`cargo audit bin <program>`. Up to 0.86, the program carried YARA-X, and with it rsa (no fixed version) and bincode
+(unmaintained), two advisories accepted with their proof in [deny.toml](deny.toml): for those versions, add
+`--ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2025-0141`. On macOS, on one half of the universal
 program, which it cannot read as is: `lipo vanguard-macos -thin arm64 -output vanguard-arm64`. The check run before
 each release, advisories handled as cargo deny does: `outils/failles-programmes.sh <program>`, from the source.
 

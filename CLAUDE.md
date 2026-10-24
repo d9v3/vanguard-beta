@@ -23,7 +23,8 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
   module ; `tests/programme.rs` lance le vrai programme (dossier personnel jetable, rien ne change le système).
 - Lint, zéro remarque (clippy pedantic, voir Cargo.toml) sur les quatre cibles : les étapes clippy de
   `outils/verifier.sh`. À la main, Linux et Windows : `cargo clippy -q --all-targets --target <cible>` ; les cibles
-  Mac (YARA-X compile du C, sans les outils d'Apple) demandent en plus `CC_<cible>=clang` et
+  Mac (ring compile du C, et YARA-X aussi, oracle des tests seulement depuis le lot AV2 ; sans les outils d'Apple)
+  demandent en plus `CC_<cible>=clang` et
   `CFLAGS_<cible>=-ffreestanding -nostdlibinc -DRING_CORE_NOSTDLIBINC -I$PWD/outils/mac-entetes` (`<cible>` avec des `_`, voir verifier.sh).
 - Mise en forme : `cargo fmt`, toujours avant un commit.
 - Dépendances : `cargo deny check` (`deny.toml` : failles RustSec, licences permises, crates.io seulement, doublons dits
