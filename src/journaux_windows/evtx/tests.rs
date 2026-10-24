@@ -427,7 +427,7 @@ fn valeurs_securite(
 
 /// Trois enregistrements numérotés à partir de `premier` : un 4624 (gabarit rangé en place), un 4625 (le même
 /// gabarit désigné, valeurs optionnelles nulles), un 1102 à UserData (valeur BinXml portant sa propre instance).
-fn morceau_type(premier: u64) -> Vec<u8> {
+pub(crate) fn morceau_type(premier: u64) -> Vec<u8> {
     morceau_type_avec(premier, true)
 }
 
@@ -472,7 +472,7 @@ fn morceau_type_avec(premier: u64, etrange: bool) -> Vec<u8> {
 }
 
 /// Un fichier : en-tête puis les morceaux donnés, CRC recalculés.
-fn fichier(morceaux: &[Vec<u8>]) -> Vec<u8> {
+pub(crate) fn fichier(morceaux: &[Vec<u8>]) -> Vec<u8> {
     let mut f = vec![0u8; EN_TETE];
     f[..8].copy_from_slice(b"ElfFile\0");
     let n = u64::try_from(morceaux.len()).unwrap();
@@ -483,11 +483,51 @@ fn fichier(morceaux: &[Vec<u8>]) -> Vec<u8> {
     f[38..40].copy_from_slice(&3u16.to_le_bytes());
     f[40..42].copy_from_slice(&4096u16.to_le_bytes());
     f[42..44].copy_from_slice(&u16::try_from(n).unwrap().to_le_bytes());
+    // Le prochain numéro : le plus grand qu'annoncent les morceaux, plus un, comme Windows le tient dans un fichier
+    // fermé proprement.
+    let prochain = morceaux
+        .iter()
+        .filter(|m| m.starts_with(b"ElfChnk\0"))
+        .filter_map(|m| u64_a(m, 32))
+        .max()
+        .map_or(1, |d| d + 1);
+    f[24..32].copy_from_slice(&prochain.to_le_bytes());
     for m in morceaux {
         f.extend_from_slice(m);
     }
     recalculer_crc(&mut f);
     f
+}
+
+/// Un morceau d'échecs de connexion (4625, journal Security) aux numéros d'enregistrement donnés, dans cet ordre,
+/// l'EventRecordID de chacun valant `origine(numéro)` et sa date `DATE` plus son numéro : l'en-tête du morceau
+/// annonce du premier au dernier, comme Windows l'écrit. Pour les essais de la suite des numéros
+/// (journaux_windows::fichiers).
+pub(crate) fn morceau_aux_numeros(numeros: &[u64], origine: impl Fn(u64) -> u64) -> Vec<u8> {
+    let mut m = Ecrivain::new();
+    for &n in numeros {
+        m.enregistrement(n, DATE + n, |m| {
+            m.instance(
+                1,
+                &gabarit_securite(),
+                &valeurs_securite(4625, origine(n), "alice", Some("192.0.2.10"), false),
+            );
+        });
+    }
+    m.finir()
+}
+
+/// Comme `morceau_aux_numeros`, l'ordinateur (System/Computer) nommé `nom`.
+pub(crate) fn morceau_ordinateur(numeros: &[u64], origine: impl Fn(u64) -> u64, nom: &'static str) -> Vec<u8> {
+    let mut m = Ecrivain::new();
+    for &n in numeros {
+        m.enregistrement(n, DATE + n, |m| {
+            let mut v = valeurs_securite(4625, origine(n), "alice", Some("192.0.2.10"), false);
+            v[8] = V::Chaine(nom);
+            m.instance(1, &gabarit_securite(), &v);
+        });
+    }
+    m.finir()
 }
 
 fn fichier_type() -> Vec<u8> {
@@ -540,7 +580,7 @@ fn un_fichier_fabrique_se_lit_entier() {
     );
     assert_eq!(ouverture.date, valeurs::filetime(DATE + 1));
     assert_eq!(ouverture.cree, valeurs::filetime(DATE + 1));
-    assert_eq!(valeurs::date(ouverture.cree.unwrap()), "2026-10-24T13:05:09.1234568Z");
+    assert_eq!(valeurs::date(ouverture.cree.unwrap()), "2026-10-24T13:05:09.123456800Z");
     assert_eq!(champ(ouverture, "TargetUserName"), Some("alice"));
     assert_eq!(champ(ouverture, "IpAddress"), Some("192.0.2.10"));
     assert_eq!(champ(ouverture, "LogonType"), Some("10"));
@@ -624,25 +664,40 @@ fn ce_qui_n_est_pas_un_evtx_est_refuse() {
 }
 
 #[test]
-fn un_crc_faux_ecarte_le_morceau_sans_taire_les_suivants() {
+fn un_crc_faux_fait_relire_le_morceau_sans_rien_croire() {
     let mut f = fichier(&[morceau_type(1), morceau_type(4), morceau_type(7)]);
-    // Un octet d'un enregistrement du deuxième morceau, après le calcul des CRC.
+    // Un octet d'un enregistrement du deuxième morceau, après le calcul des CRC : le morceau est relu, ce qui s'y
+    // rend entier est donné non vérifié, les suivants lus comme d'ordinaire.
     f[EN_TETE + MORCEAU + 600] ^= 0xFF;
     let lu = lire_type(&f);
+    let b = &lu.bilan;
     assert_eq!(
-        (lu.bilan.morceaux_lus, lu.bilan.morceaux_illisibles),
-        (2, 1),
-        "{:?}",
-        lu.bilan
+        (b.morceaux_lus, b.morceaux_non_verifies, b.morceaux_illisibles),
+        (2, 1, 0),
+        "{b:?}"
     );
-    let numeros: Vec<u64> = lu.enregistrements.iter().map(|e| e.numero).collect();
-    assert_eq!(numeros, [1, 2, 3, 7, 8, 9]);
-    // L'en-tête du morceau abîmé, cette fois.
+    assert!(!b.complet());
+    let vus: Vec<(u64, bool)> = lu.enregistrements.iter().map(|e| (e.numero, e.verifie)).collect();
+    assert!(vus.iter().all(|&(n, v)| v != (4..=6).contains(&n)), "{vus:?}");
+    assert_eq!(
+        b.enregistrements_non_verifies,
+        vus.iter().filter(|v| !v.1).count() as u64
+    );
+    assert_eq!(b.enregistrements_lus + b.enregistrements_illisibles, 9);
+    // L'en-tête du morceau abîmé, cette fois : ses enregistrements, entiers, sont rendus non vérifiés, et sa plage
+    // annoncée n'est pas crue.
     let mut f = fichier(&[morceau_type(1), morceau_type(4)]);
     f[EN_TETE + 300] ^= 1;
     let lu = lire_type(&f);
-    assert_eq!((lu.bilan.morceaux_lus, lu.bilan.morceaux_illisibles), (1, 1));
-    assert_eq!(lu.enregistrements[0].numero, 4);
+    assert_eq!((lu.bilan.morceaux_lus, lu.bilan.morceaux_non_verifies), (1, 1));
+    assert_eq!(lu.bilan.morceaux[0].etat, EtatMorceau::NonVerifie);
+    assert_eq!(lu.bilan.morceaux[0].annonce, None);
+    assert!(lu.enregistrements.iter().all(|e| e.verifie == (e.numero >= 4)));
+    // Une signature inconnue reste écartée.
+    let mut f = fichier(&[morceau_type(1), morceau_type(4)]);
+    f[EN_TETE] = b'X';
+    let lu = lire_type(&f);
+    assert_eq!((lu.bilan.morceaux_illisibles, lu.bilan.morceaux_non_verifies), (1, 0));
 }
 
 #[test]
@@ -654,6 +709,96 @@ fn un_en_tete_de_fichier_abime_n_empeche_pas_de_lire_les_morceaux() {
     assert!(lu.bilan.en_tete_abime);
     assert!(!lu.bilan.complet());
     assert_eq!(lu.enregistrements.len(), 3);
+}
+
+/// Chaque morceau lu ou écarté laisse son récapitulatif (sa plage annoncée quand son en-tête est juste, ce qu'il n'a
+/// pas rendu) et chaque événement le rang de son morceau : de quoi juger la suite des numéros (journaux_windows::trous).
+#[test]
+fn chaque_morceau_laisse_son_recapitulatif() {
+    let mut f = fichier(&[
+        morceau_type(1),
+        vec![0; MORCEAU],
+        morceau_type(4),
+        morceau_type(7),
+        morceau_type(10),
+    ]);
+    // Le morceau de rang 3 : un octet de ses enregistrements changé, son en-tête (qui porte le CRC des
+    // enregistrements) juste. Celui de rang 4 : en-tête faux.
+    f[EN_TETE + 3 * MORCEAU + EN_TETE_MORCEAU + 40] ^= 0xFF;
+    f[EN_TETE + 4 * MORCEAU + 124] ^= 0xFF;
+    // Un morceau coupé en fin de fichier.
+    f.extend_from_slice(&[b'E'; 100]);
+    let lu = lire_type(&f);
+    let recap = |rang, etat, annonce, non_rendus, capacite| RecapMorceau {
+        rang,
+        etat,
+        annonce,
+        non_rendus,
+        incoherent: false,
+        capacite,
+    };
+    let plein = CAPACITE_MORCEAU;
+    assert_eq!(
+        lu.bilan.morceaux,
+        [
+            recap(0, EtatMorceau::Lu, Some((1, 3)), 0, plein),
+            recap(1, EtatMorceau::Vide, None, 0, 0),
+            recap(2, EtatMorceau::Lu, Some((4, 6)), 0, plein),
+            recap(3, EtatMorceau::NonVerifie, Some((7, 9)), 0, plein),
+            recap(4, EtatMorceau::NonVerifie, None, 0, plein),
+            // 100 octets : moins que l'en-tête d'un morceau, rien n'y tient.
+            recap(5, EtatMorceau::Ecarte, None, 0, 0),
+        ]
+    );
+    assert_eq!(lu.bilan.morceaux_sans_recap, 0);
+    assert_eq!(lu.bilan.prochain_numero, Some(13));
+    let rangs: Vec<(u64, u64)> = lu.enregistrements.iter().map(|e| (e.numero, e.morceau)).collect();
+    // Les morceaux aux CRC faux relus : leurs événements non vérifiés.
+    assert_eq!(
+        rangs,
+        [
+            (1, 0),
+            (2, 0),
+            (3, 0),
+            (4, 2),
+            (5, 2),
+            (6, 2),
+            (7, 3),
+            (8, 3),
+            (9, 3),
+            (10, 4),
+            (11, 4),
+            (12, 4)
+        ]
+    );
+    assert!(lu.enregistrements.iter().all(|e| e.verifie == (e.morceau < 3)));
+    // Un enregistrement illisible ou laissé au-delà de la borne compte dans son morceau.
+    let bornes = Bornes {
+        enregistrements: 2,
+        ..Bornes::default()
+    };
+    let lu = lire_octets(&fichier(&[morceau_type(1), morceau_type(4)]), &bornes).unwrap();
+    // Le troisième, au-delà de la borne : son numéro est connu, il existe.
+    assert_eq!(lu.bilan.morceaux, [recap(0, EtatMorceau::Lu, Some((1, 3)), 0, plein)]);
+    assert_eq!(lu.bilan.numeros_non_rendus, [(3, 0)]);
+    assert_eq!(lu.bilan.morceaux_hors_borne, 1);
+    // Un morceau préparé sans enregistrement (un journal vidé par Windows) n'est pas un morceau à zéro.
+    let prepare = Ecrivain::new().finir();
+    let lu = lire_type(&fichier(&[prepare, vec![0; MORCEAU]]));
+    assert_eq!(
+        lu.bilan.morceaux.iter().map(|m| m.etat).collect::<Vec<_>>(),
+        [EtatMorceau::Prepare, EtatMorceau::Vide]
+    );
+    assert_eq!(lu.bilan.nombre_morceaux, Some(2));
+    // Un morceau lu dont l'en-tête ne se tient pas : rien d'annoncé, ou des numéros et des identifiants qui ne
+    // comptent pas autant, ou un enregistrement hors de l'annonce.
+    for (ou, valeur) in [(32usize, 0u64), (16, 2), (32, 2)] {
+        let mut m = morceau_type(1);
+        m[ou..ou + 8].copy_from_slice(&valeur.to_le_bytes());
+        let lu = lire_type(&fichier(&[m]));
+        assert!(lu.bilan.morceaux[0].incoherent, "{ou} {valeur}");
+    }
+    assert!(!lire_type(&fichier_type()).bilan.morceaux[0].incoherent);
 }
 
 #[test]
@@ -1144,9 +1289,9 @@ fn vu_xml(xml: &str) -> Vu {
 
 /// Les événements vus par la crate evtx (CRC vérifiés, comme nous), par numéro d'enregistrement, et le nombre de
 /// ceux qu'elle n'a pas pu rendre.
-fn lecture_oracle(octets: Vec<u8>) -> (BTreeMap<u64, Vu>, usize) {
+fn lecture_oracle(octets: Vec<u8>, valider: bool) -> (BTreeMap<u64, Vu>, usize) {
     let reglages = evtx::ParserSettings::new()
-        .validate_checksums(true)
+        .validate_checksums(valider)
         .num_threads(1)
         .indent(false);
     let mut lecteur = evtx::EvtxParser::from_buffer(octets)
@@ -1169,7 +1314,7 @@ fn lecture_oracle(octets: Vec<u8>) -> (BTreeMap<u64, Vu>, usize) {
 /// les livre (XML 1.0 § 2.11 : « \r\n » devient « \n »), un GUID sans accolades (que nous gardons, comme la forme
 /// canonique de [MS-EVEN6] 3.1.4.7.3), une date à la microseconde (la crate s'y arrête, nous gardons les centaines
 /// de nanosecondes du FILETIME et les millisecondes du SYSTEMTIME).
-fn forme_commune(v: &str) -> String {
+pub(crate) fn forme_commune(v: &str) -> String {
     let v = v.replace("\r\n", "\n").replace('\r', "\n");
     if let Ok(d) = DateTime::parse_from_rfc3339(&v) {
         return d.timestamp_micros().to_string();
@@ -1195,12 +1340,18 @@ struct Croisement {
     enregistrements_illisibles: u64,
     enregistrements_absents: u64,
     apres_place_libre: u64,
+    /// Nos événements non vérifiés (morceaux aux CRC faux relus), comparés à la crate sans vérification des CRC.
+    non_verifies: usize,
+    non_verifies_compares: usize,
+    /// Non vérifiés que la crate, même sans vérifier les CRC, ne lit pas.
+    non_verifies_seulement_nous: usize,
     ecarts: BTreeMap<&'static str, (usize, String)>,
 }
 
 fn croiser(octets: &[u8]) -> Croisement {
     let nous = lire_type(octets);
-    let (oracle, erreurs_oracle) = lecture_oracle(octets.to_vec());
+    let (oracle, erreurs_oracle) = lecture_oracle(octets.to_vec(), true);
+    let (oracle_libre, _) = lecture_oracle(octets.to_vec(), false);
     let mut c = Croisement {
         erreurs_oracle,
         morceaux_illisibles: nous.bilan.morceaux_illisibles,
@@ -1210,14 +1361,36 @@ fn croiser(octets: &[u8]) -> Croisement {
         ..Croisement::default()
     };
     let mut vus = BTreeMap::new();
+    let mut vus_non_verifies = BTreeMap::new();
     for e in &nous.enregistrements {
-        vus.insert(e.numero, vu(e));
+        if e.verifie {
+            vus.insert(e.numero, vu(e));
+        } else {
+            vus_non_verifies.insert(e.numero, vu(e));
+        }
     }
-    for (numero, a) in &vus {
-        let Some(b) = oracle.get(numero) else {
-            c.seulement_nous += 1;
+    c.non_verifies = vus_non_verifies.len();
+    let a_comparer = vus
+        .iter()
+        .map(|(n, v)| (n, v, true))
+        .chain(vus_non_verifies.iter().map(|(n, v)| (n, v, false)));
+    for (numero, a, verifie) in a_comparer {
+        let b = if verifie {
+            oracle.get(numero)
+        } else {
+            oracle_libre.get(numero)
+        };
+        let Some(b) = b else {
+            if verifie {
+                c.seulement_nous += 1;
+            } else {
+                c.non_verifies_seulement_nous += 1;
+            }
             continue;
         };
+        if !verifie {
+            c.non_verifies_compares += 1;
+        }
         c.compares += 1;
         let mut ecart = |sorte: &'static str, detail: String| {
             let entree = c.ecarts.entry(sorte).or_insert((0, detail));
@@ -1266,7 +1439,10 @@ fn croiser(octets: &[u8]) -> Croisement {
             );
         }
     }
-    c.seulement_oracle = oracle.keys().filter(|n| !vus.contains_key(n)).count();
+    c.seulement_oracle = oracle
+        .keys()
+        .filter(|n| !vus.contains_key(n) && !vus_non_verifies.contains_key(n))
+        .count();
     c
 }
 
@@ -1302,7 +1478,8 @@ fn lecture_croisee_des_echantillons() {
         let c = croiser(&octets);
         eprintln!(
             "{} : {} comparés, {} seulement nous, {} seulement evtx ({} erreurs), écarts {:?} ; nous : {} morceaux \
-             écartés, {} enregistrements illisibles, {} absents",
+             écartés, {} enregistrements illisibles, {} absents ; non vérifiés : {} ({} comparés à la crate sans \
+             CRC, {} qu'elle ne lit pas)",
             chemin.file_name().unwrap().to_string_lossy(),
             c.compares,
             c.seulement_nous,
@@ -1311,7 +1488,10 @@ fn lecture_croisee_des_echantillons() {
             c.ecarts,
             c.morceaux_illisibles,
             c.enregistrements_illisibles,
-            c.enregistrements_absents
+            c.enregistrements_absents,
+            c.non_verifies,
+            c.non_verifies_compares,
+            c.non_verifies_seulement_nous
         );
         total.compares += c.compares;
         total.seulement_nous += c.seulement_nous;
@@ -1322,16 +1502,26 @@ fn lecture_croisee_des_echantillons() {
         total.enregistrements_illisibles += c.enregistrements_illisibles;
         total.enregistrements_absents += c.enregistrements_absents;
         total.apres_place_libre += c.apres_place_libre;
+        total.non_verifies += c.non_verifies;
+        total.non_verifies_compares += c.non_verifies_compares;
+        total.non_verifies_seulement_nous += c.non_verifies_seulement_nous;
         for (sorte, (n, d)) in c.ecarts {
             total.ecarts.entry(sorte).or_insert((0, d)).0 += n;
         }
     }
     eprintln!("TOTAL : {total:?}");
     assert!(total.compares > 0);
-    // Aucun écart, et rien que nous lisions sans que la crate le lise aussi. L'inverse arrive : elle lit des morceaux
-    // aux CRC faux que nous écartons (Application_no_crc32.evtx des échantillons de la crate), et c'est compté.
+    // Aucun écart, et rien de vérifié que nous lisions sans que la crate (CRC vérifiés) le lise aussi. Nos
+    // événements non vérifiés viennent de morceaux aux CRC faux : la crate qui vérifie les CRC les saute (sauf un
+    // morceau dont seul le CRC manque, Application_no_crc32.evtx), celle qui ne les vérifie pas les lit, et ils
+    // doivent être les mêmes que les siens.
     assert!(total.ecarts.is_empty(), "{total:?}");
     assert_eq!(total.seulement_nous, 0, "{total:?}");
+    assert!(total.non_verifies > 0, "{total:?}");
+    assert_eq!(
+        total.non_verifies_compares + total.non_verifies_seulement_nous,
+        total.non_verifies
+    );
     assert!(
         total.seulement_oracle == 0 || total.morceaux_illisibles > 0,
         "{total:?}"

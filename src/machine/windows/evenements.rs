@@ -312,13 +312,54 @@ fn parcourir_xml(
     fin: std::time::Instant,
     mut faire: impl FnMut(&str) -> Option<String>,
 ) -> Result<Vec<String>, Arret> {
+    let mut lignes = Vec::new();
+    let lecture = lire_rendus(journal, requete, fin, max == 0, |xml| {
+        if lignes.len() < max
+            && let Some(l) = xml.and_then(&mut faire)
+        {
+            lignes.push(l);
+        }
+        lignes.len() < max
+    });
+    match lecture {
+        FinLecture::Complete => Ok(lignes),
+        FinLecture::Delai => Err(Arret::Delai(lignes)),
+        FinLecture::Refus(_) => Err(Arret::Refus),
+    }
+}
+
+/// Comment s'est finie une lecture de `lire_rendus`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FinLecture {
+    /// Lue jusqu'au bout, ou jusqu'à ce que l'appelant n'en veuille plus.
+    Complete,
+    /// Le délai est dépassé ; ce qui a été donné jusque-là l'a été.
+    Delai,
+    /// Le journal refuse (EvtQuery, ou EvtNext en cours de route), avec le code d'erreur de Windows lu aussitôt :
+    /// 5 (accès refusé : Security sans droits d'administrateur), 15007 (journal introuvable), 15001 (requête
+    /// refusée)…
+    Refus(Option<i32>),
+}
+
+/// Le cœur de toutes les lectures : chaque événement de `journal` qui répond à la requête XPath `requete`, les plus
+/// récents d'abord, rendu en XML (rien s'il ne se rend pas) et donné à `voir`, qui rend faux quand il n'en veut plus
+/// (les suivants ne sont alors ni rendus ni donnés). `assez` : n'en lire aucun, la requête posée quand même pour
+/// qu'un refus se voie. Le code d'erreur de Windows reste celui du refus après le retour (rien d'autre n'appelle
+/// Windows entre-temps que EvtClose, comme avant) : `traces::windows` le relit.
+pub(crate) fn lire_rendus(
+    journal: &str,
+    requete: &str,
+    fin: std::time::Instant,
+    assez: bool,
+    mut voir: impl FnMut(Option<&str>) -> bool,
+) -> FinLecture {
     const CHEMIN_DU_JOURNAL: u32 = 0x1;
     const PLUS_RECENTS_D_ABORD: u32 = 0x200;
     const PLUS_RIEN: i32 = 259;
     const DELAI_DEPASSE: i32 = 1460;
     let large = |t: &str| t.encode_utf16().chain([0]).collect::<Vec<u16>>();
     let (journal, requete) = (large(journal), large(requete));
-    let mut lignes = Vec::new();
+    let mut encore = !assez;
     // SAFETY : les chaînes sont terminées par un zéro et vivent pendant l'appel ; la requête (nulle : refus, vérifié) et
     // chaque événement rendu par EvtNext sont fermés une seule fois, ici. EvtNext écrit au plus `lot.len()` poignées.
     unsafe {
@@ -329,43 +370,38 @@ fn parcourir_xml(
             CHEMIN_DU_JOURNAL | PLUS_RECENTS_D_ABORD,
         );
         if resultats.is_null() {
-            return Err(Arret::Refus);
+            return FinLecture::Refus(std::io::Error::last_os_error().raw_os_error());
         }
         let mut lot = [std::ptr::null_mut::<c_void>(); 64];
-        // `None` : lu jusqu'au bout ou jusqu'à `max`. Le délai reçoit ses lignes à la fin.
-        let mut arret = None;
-        while lignes.len() < max {
+        // `Complete` : lu jusqu'au bout ou jusqu'à ce que `voir` n'en veuille plus.
+        let mut arret = FinLecture::Complete;
+        while encore {
             let reste = fin.saturating_duration_since(std::time::Instant::now());
             if reste.is_zero() {
-                arret = Some(Arret::Delai(Vec::new()));
+                arret = FinLecture::Delai;
                 break;
             }
             let mut rendus = 0u32;
             let delai = u32::try_from(reste.as_millis()).unwrap_or(u32::MAX);
             if EvtNext(resultats, 64, lot.as_mut_ptr(), delai, 0, &raw mut rendus) == 0 {
-                arret = match std::io::Error::last_os_error().raw_os_error() {
-                    Some(PLUS_RIEN) => None,
-                    _ if std::time::Instant::now() >= fin => Some(Arret::Delai(Vec::new())),
-                    Some(DELAI_DEPASSE) => Some(Arret::Delai(Vec::new())),
-                    _ => Some(Arret::Refus),
+                let code = std::io::Error::last_os_error().raw_os_error();
+                arret = match code {
+                    Some(PLUS_RIEN) => FinLecture::Complete,
+                    _ if std::time::Instant::now() >= fin => FinLecture::Delai,
+                    Some(DELAI_DEPASSE) => FinLecture::Delai,
+                    _ => FinLecture::Refus(code),
                 };
                 break;
             }
             for &evenement in lot.iter().take(usize::try_from(rendus).unwrap_or(0)) {
-                if lignes.len() < max
-                    && let Some(l) = rendre(evenement).as_deref().and_then(&mut faire)
-                {
-                    lignes.push(l);
+                if encore {
+                    encore = voir(rendre(evenement).as_deref());
                 }
                 EvtClose(evenement);
             }
         }
         EvtClose(resultats);
-        match arret {
-            None => Ok(lignes),
-            Some(Arret::Delai(_)) => Err(Arret::Delai(lignes)),
-            Some(Arret::Refus) => Err(Arret::Refus),
-        }
+        arret
     }
 }
 

@@ -153,3 +153,10 @@ path = "fuzz_targets/binxml.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "evenement_xml"
+path = "fuzz_targets/evenement_xml.rs"
+test = false
+doc = false
+bench = false

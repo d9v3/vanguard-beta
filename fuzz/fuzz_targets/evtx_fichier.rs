@@ -23,6 +23,12 @@ fn verifier(octets: &[u8], bornes: &evtx::Bornes) {
     let Ok(lu) = evtx::lire_octets(octets, bornes) else { return };
     assert!(lu.enregistrements.len() <= bornes.enregistrements);
     assert_eq!(lu.bilan.enregistrements_lus, lu.enregistrements.len() as u64);
+    // Un récapitulatif par morceau lu ou écarté, dans l'ordre du fichier, borné ; chaque événement d'un morceau lu.
+    assert!(lu.bilan.morceaux.len() <= evtx::MAX_RECAPS);
+    assert!(lu.bilan.morceaux.windows(2).all(|p| p[0].rang < p[1].rang));
+    for e in &lu.enregistrements {
+        assert!(lu.bilan.morceaux.iter().any(|m| m.etat == evtx::EtatMorceau::Lu && m.rang == e.morceau));
+    }
     for e in &lu.enregistrements {
         let (mut noeuds, mut texte) = (0, 0);
         let mut pile = vec![&e.evenement];
