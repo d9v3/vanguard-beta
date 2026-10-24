@@ -372,6 +372,39 @@ mod systeme {
         (r.code == Some(0) || vide).then_some(r.sortie)
     }
 
+    /// Le message de systemd-coredump pour chaque plantage (sd-messages.h, SD_MESSAGE_COREDUMP).
+    const MESSAGE_VIDAGE: &str = "MESSAGE_ID=fc2e22bc6ee647b6b90729ab34a250b1";
+
+    /// Les plantages depuis `depuis` (µs) lus par Vanguard dans les fichiers du journal, comme `coredumpctl list` :
+    /// (programme, numéro du processus). Le programme est la fin de COREDUMP_EXE (la colonne EXE de coredumpctl),
+    /// sinon COREDUMP_COMM. `None` : le journal ne se lit pas ici, coredumpctl prendra le relais.
+    pub(super) fn journal_plantages_natif(depuis: u64) -> Option<Vec<(String, Option<u32>)>> {
+        let entrees = crate::machine::linux::journal_systemd::entrees(
+            &[MESSAGE_VIDAGE],
+            depuis,
+            &["COREDUMP_EXE", "COREDUMP_COMM", "COREDUMP_PID"],
+        )?;
+        Some(plantages_du_journal(&entrees))
+    }
+
+    pub(super) fn plantages_du_journal(
+        entrees: &[crate::machine::linux::journal_systemd::Entree],
+    ) -> Vec<(String, Option<u32>)> {
+        entrees
+            .iter()
+            .map(|e| {
+                let exe = e
+                    .champ("COREDUMP_EXE")
+                    .or_else(|| e.champ("COREDUMP_COMM"))
+                    .unwrap_or("?");
+                (
+                    affichable(exe.rsplit('/').next().unwrap_or(exe)),
+                    e.champ("COREDUMP_PID").and_then(|p| p.parse().ok()),
+                )
+            })
+            .collect()
+    }
+
     /// Les programmes plantés en 7 jours ; `None` si rien ne permet de le savoir.
     fn plantages_de_la_semaine() -> Option<Vec<String>> {
         let maintenant = std::time::SystemTime::now()
@@ -380,7 +413,7 @@ mod systeme {
         let depuis = maintenant.saturating_sub(7 * 86_400 * 1_000_000);
         plantages_reunis(
             plantages_coredump(std::path::Path::new(VIDAGES), depuis, attribut_exe),
-            journal_coredumpctl().map(|t| plantages_coredumpctl(&t)),
+            journal_plantages_natif(depuis).or_else(|| journal_coredumpctl().map(|t| plantages_coredumpctl(&t))),
         )
     }
 
@@ -1521,6 +1554,38 @@ mod tests {
         assert_eq!(
             systeme::plantages_reunis(Some(vec![("x".to_string(), 1)]), None),
             Some(vec!["x".to_string()])
+        );
+    }
+
+    /// L'oracle : les plantages de 6 jours lus par Vanguard dans le journal contre `coredumpctl list`, sur cet
+    /// ordinateur (programme et numéro, des nombres seulement dans le message).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn plantages_du_journal_comme_coredumpctl() {
+        let maintenant = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros(),
+        )
+        .unwrap();
+        let Some(mut natifs) = systeme::journal_plantages_natif(maintenant - 6 * 86_400 * 1_000_000) else {
+            return crate::essais::saute("journal illisible ici");
+        };
+        let Some(r) = crate::commande::lancer(
+            std::process::Command::new("coredumpctl").args(["list", "--no-pager", "-q", "--since=-6d"]),
+            20,
+        ) else {
+            return crate::essais::saute("coredumpctl absent");
+        };
+        let mut outil = systeme::plantages_coredumpctl(&r.sortie);
+        natifs.sort();
+        outil.sort();
+        assert!(
+            natifs == outil,
+            "plantages : {} lus, {} par coredumpctl",
+            natifs.len(),
+            outil.len()
         );
     }
 

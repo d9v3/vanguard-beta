@@ -235,13 +235,38 @@ pub(super) fn journal_vers(
     garder: Garder,
     etendue: Option<&Bi>,
 ) -> std::io::Result<Option<crate::commande::Ecrit>> {
+    journal_vers_borne(
+        dossier,
+        nom,
+        titre,
+        commande,
+        secondes,
+        garder,
+        etendue,
+        super::BORNE_JOURNAL,
+    )
+}
+
+/// `journal_vers`, `borne` octets au plus (le témoin d'un relevé, plus court que le journal lui-même).
+#[allow(clippy::too_many_arguments)]
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub(super) fn journal_vers_borne(
+    dossier: &Path,
+    nom: &str,
+    titre: &Bi,
+    commande: &mut Command,
+    secondes: u64,
+    garder: Garder,
+    etendue: Option<&Bi>,
+    borne: u64,
+) -> std::io::Result<Option<crate::commande::Ecrit>> {
     let mut f = creer_fichier(&dossier.join(nom))?;
     f.write_all(entete(titre).as_bytes())?;
     if let Some(etendue) = etendue {
         f.write_all(ligne_lu_sur(etendue).as_bytes())?;
     }
     let _ = writeln!(f, "# $ {}", super::affichage_commande(commande));
-    Ok(lancer_vers(commande, secondes, &f, super::BORNE_JOURNAL, garder))
+    Ok(lancer_vers(commande, secondes, &f, borne, garder))
 }
 
 /// La taille lisible d'un journal écrit.

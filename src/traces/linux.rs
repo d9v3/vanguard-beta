@@ -881,6 +881,33 @@ pub(super) fn journaux(dossier: &Path) -> Partie {
     let mut p = Partie::new(Bi::new("Journaux", "Logs"));
     let titre = Bi::new("Journal du système, 7 jours", "System log, 7 days");
     let nom = JOURNAL_ECRIT;
+    // Les fichiers du journal lus par Vanguard d'abord ; journalctl à côté en témoin, ou à leur place s'ils ne se
+    // lisent pas ici (droits, xz).
+    if let Some(natif) = journal_natif(dossier, &titre) {
+        match natif {
+            Ok(n) => {
+                p.fichiers.push(super::Produit {
+                    nom: nom.into(),
+                    contenu: Bi::new(
+                        "le journal de systemd des 7 derniers jours, lu par Vanguard dans ses fichiers, du plus récent au plus ancien, 50 Mo au plus",
+                        "the systemd journal of the last 7 days, read by Vanguard from its files, newest first, 50 MB at most",
+                    ),
+                });
+                if n.coupe {
+                    p.manque(
+                        Bi::new("Journal du système, les plus anciens", "System log, the oldest entries"),
+                        Raison::Borne(super::BORNE_JOURNAL),
+                    );
+                }
+                let m = mo(n.octets);
+                p.compte = Some(Bi::new(format!("{} (7 jours)", m.fr), format!("{} (7 days)", m.en)));
+                temoin_journalctl(&mut p, dossier, &n.prefixes, n.debut);
+                return p;
+            }
+            Err(e) => p.manque(titre.clone(), Raison::Erreur(e.to_string())),
+        }
+        return p;
+    }
     let mut commande = Command::new("journalctl");
     commande
         .args(["--since=-7d", "--reverse", "--no-pager", "-o", "short-iso"])
@@ -958,6 +985,169 @@ pub(super) fn journaux(dossier: &Path) -> Partie {
     p
 }
 
+/// Le témoin du journal lu par Vanguard : la sortie de journalctl, les plus récentes d'abord, bornée plus court.
+const TEMOIN_JOURNAL: u64 = 10 << 20;
+/// Le fichier du témoin : hors des « 05-… » que la chronologie relit (il ferait des doublons).
+const TEMOIN_ECRIT: &str = "05b-journalctl.txt";
+/// Entrées du relevé gardées pour la comparaison avec le témoin (le début, les plus récentes).
+const PREFIXES_GARDES: usize = 200_000;
+
+/// Ce que le relevé du journal par Vanguard a écrit.
+struct JournalNatif {
+    octets: u64,
+    coupe: bool,
+    /// (heure en secondes, « date hôte identifiant[pid] ») des premières entrées écrites, pour le témoin.
+    prefixes: Vec<(i64, String)>,
+    /// Le début de la lecture (secondes) : ce qui s'est écrit ensuite n'y est pas, et ne se compare pas.
+    debut: i64,
+}
+
+/// Le début d'une ligne courte du journal, jusqu'au « : » qui suit l'identifiant et le processus, et son heure.
+fn prefixe(ligne: &str) -> Option<(i64, String)> {
+    let date = ligne.get(..25)?;
+    let quand = chrono::DateTime::parse_from_rfc3339(date).ok()?.timestamp();
+    let fin = ligne.get(26..)?.find(": ")? + 26;
+    Some((quand, ligne[..fin].to_string()))
+}
+
+/// Le journal de systemd lu par Vanguard dans ses fichiers (`journal_systemd::tout_le_journal`), écrit dans
+/// 05-journal.txt. `None` : il ne se lit pas ici, journalctl le fera ; `Some(Err)` : le fichier ne s'écrit pas.
+fn journal_natif(dossier: &Path, titre: &Bi) -> Option<std::io::Result<JournalNatif>> {
+    use std::io::Write as _;
+    let depuis = u64::try_from(chronologie::secondes(std::time::SystemTime::now())? - chronologie::JOURS * 86_400)
+        .ok()?
+        .saturating_mul(1_000_000);
+    let debut = chronologie::secondes(std::time::SystemTime::now())?;
+    let chemin = dossier.join(JOURNAL_ECRIT);
+    let mut f = match super::creer_fichier(&chemin) {
+        Ok(f) => std::io::BufWriter::new(f),
+        Err(e) => return Some(Err(e)),
+    };
+    let mut entete = super::entete(titre);
+    entete.push_str("# lu par Vanguard dans les fichiers du journal / read by Vanguard from the journal files\n");
+    let mut octets = 0u64;
+    let mut erreur = None;
+    let mut prefixes = Vec::new();
+    if let Err(e) = f.write_all(entete.as_bytes()) {
+        return Some(Err(e));
+    }
+    let parcours = crate::machine::linux::journal_systemd::tout_le_journal(depuis, |l| {
+        let mut ligne = super::texte_sur(l);
+        ligne.push('\n');
+        if octets + ligne.len() as u64 > super::BORNE_JOURNAL {
+            return false;
+        }
+        if prefixes.len() < PREFIXES_GARDES
+            && let Some(p) = prefixe(l)
+        {
+            prefixes.push(p);
+        }
+        octets += ligne.len() as u64;
+        match f.write_all(ligne.as_bytes()) {
+            Ok(()) => true,
+            Err(e) => {
+                erreur = Some(e);
+                false
+            }
+        }
+    });
+    if let Some(e) = erreur {
+        return Some(Err(e));
+    }
+    let Some(parcours) = parcours else {
+        // Illisible ici : le fichier commencé est retiré, journalctl l'écrira.
+        drop(f);
+        let _ = std::fs::remove_file(&chemin);
+        return None;
+    };
+    if let Err(e) = f.flush() {
+        return Some(Err(e));
+    }
+    Some(Ok(JournalNatif {
+        octets,
+        coupe: parcours.coupe,
+        prefixes,
+        debut,
+    }))
+}
+
+/// Les entrées présentes d'un côté et pas de l'autre, comptées par leur début (date, hôte, identifiant, processus)
+/// sur la période que les deux lectures couvrent (jusqu'à dix secondes avant `fin`, le début de la première
+/// lecture : ce qui s'écrit ensuite n'est que dans la seconde) : (absentes de journalctl, absentes du relevé).
+fn ecarts_du_journal(natifs: &[(i64, String)], temoin: &[(i64, String)], fin: i64) -> (usize, usize) {
+    fn compter(v: &[(i64, String)], periode: std::ops::Range<i64>) -> HashMap<&str, isize> {
+        let mut m: HashMap<&str, isize> = HashMap::new();
+        for (q, p) in v {
+            if periode.contains(q) {
+                *m.entry(p.as_str()).or_default() += 1;
+            }
+        }
+        m
+    }
+    let (Some(debut_n), Some(debut_t)) = (natifs.iter().map(|p| p.0).min(), temoin.iter().map(|p| p.0).min()) else {
+        return (0, 0);
+    };
+    // La plus ancienne seconde de chaque lecture peut être coupée : elle ne compte pas.
+    let debut = debut_n.max(debut_t) + 1;
+    let fin = fin - 10;
+    let (n, t) = (compter(natifs, debut..fin), compter(temoin, debut..fin));
+    let manque = |a: &HashMap<&str, isize>, b: &HashMap<&str, isize>| {
+        a.iter()
+            .map(|(k, v)| (v - b.get(k).copied().unwrap_or(0)).max(0))
+            .sum::<isize>()
+            .unsigned_abs()
+    };
+    (manque(&n, &t), manque(&t, &n))
+}
+
+/// journalctl à côté du relevé, en témoin (10 Mo, les plus récentes), et l'écart entre les deux : une entrée lue
+/// dans les fichiers et absente de journalctl (un journalctl remplacé qui la cache), ou l'inverse.
+fn temoin_journalctl(p: &mut Partie, dossier: &Path, natifs: &[(i64, String)], debut_du_releve: i64) {
+    let titre = Bi::new(
+        "Journal du système, témoin (journalctl)",
+        "System log, witness (journalctl)",
+    );
+    let mut commande = Command::new("journalctl");
+    commande
+        .args(["--since=-7d", "--reverse", "--no-pager", "-o", "short-iso"])
+        .env("LC_ALL", "C.UTF-8");
+    match super::unix::journal_vers_borne(
+        dossier,
+        TEMOIN_ECRIT,
+        &titre,
+        &mut commande,
+        120,
+        Garder::Debut,
+        None,
+        TEMOIN_JOURNAL,
+    ) {
+        // journalctl absent : pas de témoin, rien à comparer.
+        Ok(None) => {}
+        Err(e) => p.manque(titre, Raison::Erreur(e.to_string())),
+        Ok(Some(_)) => {
+            p.fichiers.push(super::Produit {
+                nom: TEMOIN_ECRIT.into(),
+                contenu: Bi::new(
+                    "la sortie de journalctl sur la même semaine (10 Mo, les plus récentes), gardée en témoin du relevé",
+                    "the output of journalctl over the same week (10 MB, newest first), kept as a witness of the reading",
+                ),
+            });
+            let texte = std::fs::read_to_string(dossier.join(TEMOIN_ECRIT)).unwrap_or_default();
+            let temoin: Vec<(i64, String)> = texte.lines().filter_map(prefixe).collect();
+            let (cachees, en_plus) = ecarts_du_journal(natifs, &temoin, debut_du_releve);
+            if cachees > 0 || en_plus > 0 {
+                p.manque(
+                    Bi::new("Comparaison avec « journalctl »", "Comparison with “journalctl”"),
+                    Raison::Ecart(bi!(
+                        "{cachees} entrées des fichiers absentes de journalctl, {en_plus} de journalctl absentes des fichiers",
+                        "{cachees} entries from the files missing from journalctl, {en_plus} from journalctl missing from the files"
+                    )),
+                );
+            }
+        }
+    }
+}
+
 /// Les entrées gardées au plus par lecture ciblée du journal (quelques Mo) : de quoi couvrir la semaine même quand un
 /// robot essaie des mots de passe par milliers.
 const ENTREES_CIBLEES: usize = 20_000;
@@ -996,6 +1186,32 @@ fn journalctl_7_jours() -> Command {
     c
 }
 
+/// Une lecture ciblée (filtres de journalctl : « -t X » ou « CHAMP=valeur ») faite dans les fichiers du journal :
+/// les `ENTREES_CIBLEES` plus récentes depuis `depuis` (µs), écrites comme `journalctl -o short-iso`. `None` : le
+/// journal ne se lit pas ici.
+fn journal_cible_natif(filtres: &[&str], depuis: u64) -> Option<String> {
+    use crate::machine::linux::journal_systemd::{CHAMPS_COURTS, entrees, ligne_courte};
+    let mut champs = Vec::new();
+    let mut f = filtres.iter();
+    while let Some(x) = f.next() {
+        champs.push(if *x == "-t" {
+            format!("SYSLOG_IDENTIFIER={}", f.next()?)
+        } else {
+            (*x).to_string()
+        });
+    }
+    let champs: Vec<&str> = champs.iter().map(String::as_str).collect();
+    let toutes = entrees(&champs, depuis, CHAMPS_COURTS)?;
+    let debut = toutes.len().saturating_sub(ENTREES_CIBLEES);
+    Some(
+        toutes[debut..]
+            .iter()
+            .filter_map(ligne_courte)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
 /// Le journal refuse ce qui n'est pas du compte (ni root, ni groupe systemd-journal ou wheel).
 fn journal_reserve(erreurs: &str) -> bool {
     erreurs.contains("not seeing messages from other users") || erreurs.contains("insufficient permissions")
@@ -1011,8 +1227,18 @@ pub(super) fn evenements_des_journaux(dossier: &Path) -> Apport {
     let mut apport = Apport::default();
     let mut lu = false;
     let mut reserve = false;
+    let depuis_us = u64::try_from(debut).unwrap_or(0).saturating_mul(1_000_000);
     for (fr, en, filtres) in LECTURES_CIBLEES {
         let quoi = bi!("Chronologie : journal ciblé ({fr})", "Timeline: targeted log ({en})");
+        // Les fichiers du journal lus par Vanguard d'abord : « -t X » est le champ SYSLOG_IDENTIFIER=X, un champ
+        // exact reste tel quel. journalctl seulement s'ils ne se lisent pas ici.
+        if let Some(texte) = journal_cible_natif(filtres, depuis_us) {
+            lu = true;
+            let mut lecture = super::unix::lire_texte(&texte, maintenant);
+            apport.manques.extend(lecture_coupee(quoi, lecture.entrees));
+            apport.evenements.append(&mut lecture.evenements);
+            continue;
+        }
         let mut c = journalctl_7_jours();
         c.arg(format!("--lines={ENTREES_CIBLEES}")).args(filtres);
         let depart = std::time::Instant::now();
@@ -1062,12 +1288,16 @@ pub(super) fn evenements_des_journaux(dossier: &Path) -> Apport {
         // avant, rien n'est affirmé). Un journal tourné tôt sur un ordinateur bavard ne garde qu'un jour ou deux.
         let mut c = journalctl_7_jours();
         c.arg("--lines=+1");
-        let plus_ancienne = crate::commande::lancer(&mut c, 30)
-            .filter(|r| r.code == Some(0))
-            .and_then(|r| {
-                r.sortie
-                    .lines()
-                    .find_map(|l| chronologie::quand_de_ligne(l, maintenant, &chrono::Local))
+        let plus_ancienne = crate::machine::linux::journal_systemd::plus_ancienne()
+            .and_then(|us| i64::try_from(us / 1_000_000).ok())
+            .or_else(|| {
+                crate::commande::lancer(&mut c, 30)
+                    .filter(|r| r.code == Some(0))
+                    .and_then(|r| {
+                        r.sortie
+                            .lines()
+                            .find_map(|l| chronologie::quand_de_ligne(l, maintenant, &chrono::Local))
+                    })
             });
         if let Some(q) = plus_ancienne.filter(|q| *q > debut + 3600) {
             let depuis = chronologie::date_locale(q, &chrono::Local);
@@ -1123,7 +1353,7 @@ fn montages_selon(mountinfo: &str) -> Vec<PathBuf> {
 
 /// La place que peuvent prendre les journaux.
 pub(super) fn place_des_journaux() -> u64 {
-    super::BORNE_JOURNAL
+    super::BORNE_JOURNAL + TEMOIN_JOURNAL
 }
 
 #[cfg(test)]
@@ -1279,6 +1509,74 @@ mod tests {
         assert!(ecarts.is_empty(), "{ecarts:?}");
         let texte = std::fs::read_to_string(dossier.join("03-demarrage.txt")).unwrap();
         assert!(texte.contains("ListUnitFiles") && texte.contains("$ systemctl list-unit-files"));
+    }
+
+    /// L'oracle des lectures ciblées : pour chacune, les entrées lues dans les fichiers du journal et celles de
+    /// journalctl, comptées par leur début, sur la période que les deux couvrent ; et l'écart compté sur des listes
+    /// fabriquées.
+    #[test]
+    fn lectures_ciblees_comme_journalctl() {
+        let maintenant = chronologie::secondes(std::time::SystemTime::now()).unwrap();
+        let depuis = u64::try_from(maintenant - chronologie::JOURS * 86_400).unwrap() * 1_000_000;
+        for (_, en, filtres) in LECTURES_CIBLEES {
+            let Some(natif) = journal_cible_natif(filtres, depuis) else {
+                return crate::essais::saute("journal illisible ici");
+            };
+            let mut c = journalctl_7_jours();
+            c.arg(format!("--lines={ENTREES_CIBLEES}")).args(filtres);
+            let Some(r) = crate::commande::lancer(&mut c, 60).filter(|r| r.code == Some(0)) else {
+                return crate::essais::saute("journalctl absent");
+            };
+            let n: Vec<(i64, String)> = natif.lines().filter_map(prefixe).collect();
+            let t: Vec<(i64, String)> = r.sortie.lines().filter_map(prefixe).collect();
+            assert_eq!(
+                ecarts_du_journal(&n, &t, maintenant),
+                (0, 0),
+                "{en} : {} lues, {} par journalctl",
+                n.len(),
+                t.len()
+            );
+        }
+        let p = |q: i64, s: &str| (q, s.to_string());
+        let natifs = [p(100, "a"), p(200, "b"), p(200, "b"), p(300, "c")];
+        assert_eq!(
+            ecarts_du_journal(&natifs, &[p(100, "a"), p(200, "b"), p(300, "c")], 1000),
+            (1, 0)
+        );
+        assert_eq!(
+            ecarts_du_journal(&natifs, &[p(150, "z"), p(200, "b"), p(200, "b")], 1000),
+            (1, 0),
+            "c caché"
+        );
+        // Les dix dernières secondes et la plus ancienne seconde commune ne comptent pas.
+        assert_eq!(
+            ecarts_du_journal(&natifs, &[p(100, "a"), p(200, "b"), p(200, "b")], 305),
+            (0, 0)
+        );
+        assert_eq!(
+            prefixe("2026-10-24T06:36:34-04:00 hote sshd[42]: Accepted"),
+            Some((1_792_838_194, "2026-10-24T06:36:34-04:00 hote sshd[42]".to_string()))
+        );
+        assert_eq!(prefixe("  suite d'un message"), None);
+    }
+
+    /// L'oracle du journal complet dans les traces : écrit par Vanguard, avec journalctl en témoin, sans écart.
+    #[test]
+    fn journal_de_cette_machine() {
+        let dossier = crate::socle::dossier_local().join("traces-journal");
+        std::fs::create_dir_all(&dossier).unwrap();
+        let p = journaux(&dossier);
+        if !p.fichiers.iter().any(|f| f.nom == TEMOIN_ECRIT) {
+            return crate::essais::saute("journal illisible ici ou journalctl absent");
+        }
+        let ecarts: Vec<_> = p
+            .manques
+            .iter()
+            .filter(|m| matches!(m.raison, Raison::Ecart(_)))
+            .collect();
+        assert!(ecarts.is_empty(), "{ecarts:?}");
+        let texte = std::fs::read_to_string(dossier.join(JOURNAL_ECRIT)).unwrap();
+        assert!(texte.contains("lu par Vanguard"));
     }
 
     #[test]
