@@ -23,8 +23,10 @@ L'accord est gardé dans ce Windows, pas dans le dossier partagé.
 
 ESSAIS SANS CLIC (file d'essais)
 --------------------------------
-Une seule fois : double-clic sur INSTALLER-ESSAIS-AUTO.bat, « Oui » à la
-fenêtre UAC, puis « o ». Une tâche planifiée, Vanguard-File-Essais, tourne
+Une seule fois : sur Linux, outils/vm-tester.sh --installer ; ici, double-clic
+sur INSTALLER-ESSAIS-AUTO.bat, « Oui » à la fenêtre UAC, puis « o ». Il
+affiche un CODE DE VÉRIFICATION : sur Linux, vm-tester.sh montre le sien ;
+n'y répondre « o » que s'il est identique. Une tâche planifiée, Vanguard-File-Essais, tourne
 ensuite toute seule tant que la session est ouverte. Depuis Linux,
 outils/vm-tester.sh dépose un essai dans file-essais\<id>\ : la tâche vérifie
 l'empreinte de chaque fichier, lance test.ps1 (automatique, en administrateur),
@@ -46,13 +48,31 @@ Windows Terminal, un écran illisible est « sauté » avec la raison ; sous
 conhost, c'est un problème (Vanguard bloqué ou arrêté). Une partie demandée
 sans un seul OK n'est jamais un essai réussi.
 
+RÉINSTALLER UNE FOIS (24 oct. 2026) : depuis la signature des travaux, le
+surveillant d'avant ne reçoit plus rien. Sur Linux outils/vm-tester.sh
+--installer, puis ici INSTALLER-ESSAIS-AUTO.bat (double-clic, UAC, « o »), et
+comparer le code. Jusque-là, vm-tester.sh refuse de déposer, et le dit.
+
 SÉCURITÉ. Ce qui est déposé dans file-essais s'exécute EN ADMINISTRATEUR dans
-cette VM, sans clic. Le dossier partagé s'écrit depuis Linux : tout programme
-du compte Linux peut donc devenir administrateur de la VM. À n'installer que
+cette VM, sans clic. Le dossier partagé s'écrit depuis Linux, mais aussi depuis
+cette VM, par n'importe quel compte : la tâche ne fait donc qu'un travail signé
+(HMAC-SHA256 de travail.txt, empreintes des fichiers comprises) par le secret
+tiré à l'installation. Ce secret vit ici dans secret.bin, que seuls les
+administrateurs lisent, et sur Linux hors du partage ; il n'a traversé le
+partage que chiffré pour la seule clé de Linux, et le code de vérification
+prouve que ni la clé ni le secret n'ont été échangés en route. LIMITE :
+l'installateur lui-même est lu sur le partage, et relu après la fenêtre UAC ;
+un programme de cette VM qui le remplacerait à ce moment tournerait en
+administrateur et choisirait le code. vm-tester.sh refuse d'adopter le secret
+si l'installateur, le surveillant ou la clé ont changé sur le partage depuis
+--installer, mais ne voit pas un fichier remplacé puis remis : lancer
+--installer, puis INSTALLER-ESSAIS-AUTO.bat aussitôt, sur une VM saine. Un travail déjà fait n'est jamais
+refait ; fini.txt porte la signature du surveillant, et Linux ne croit que
+celui-là. Tout programme du compte Linux, qui lit ce secret, peut encore
+devenir administrateur de la VM. À n'installer que
 dans la VM de test, jamais sur un vrai PC : l'installateur et la tâche ne font
 rien sans \\host.lan\Data. L'empreinte SHA-256 est vérifiée sur la copie
-locale, juste avant le lancement : elle protège d'une copie partielle ou d'un
-fichier remplacé en route, ce n'est pas une signature. Seuls les fichiers
+locale, juste avant le lancement. Seuls les fichiers
 nommés dans travail.txt (vanguard.exe, test.ps1, essais-console.ps1, le
 lanceur de la clé) sont copiés. Un lien symbolique de Linux, Samba le suit
 sans que Windows le voie : outils/vm-tester.sh refuse d'en déposer.

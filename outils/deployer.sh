@@ -8,6 +8,14 @@
 #                                      du journal) ; le service de copie qui suit la compilation le respecte aussi
 #   outils/deployer.sh --publier       comme sans option (gardée pour les anciens appels : chaque publication a
 #                                      désormais sa page)
+#   outils/deployer.sh --accepter-cle [DOSSIER]
+#                                      comme --sans-compiler, sur une clé que l'auteur accepte telle qu'elle est :
+#                                      une clé neuve (outils/preparer-cle.sh, cle-secours.sh --ecrire), un volume au
+#                                      jeton inconnu (DOSSIER, son point de montage), ou la clé connue dont l'écart
+#                                      avec sa référence a été regardé ; sa référence (manifeste) la reprend telle quelle
+# La clé n'est jamais que celle de cet ordinateur (jeton connu, outils/cle-commun.sh), et rien n'y est écrit quand
+# elle a changé depuis son dernier déploiement (comparée à sa référence AVANT toute écriture) : ce qui y a été planté
+# en voyage n'entre jamais en silence dans la référence. Notification, puis --accepter-cle si c'est voulu.
 # VANGUARD_INTERMEDIAIRE=1 : une version d'une série livrée d'affilée. Pas de page (la dernière de la série reprend
 # leurs notes) ni de dépôt dans la VM Windows (son test automatique passerait sur chacune) : le Mac de GitHub et la VM
 # ne voient que la dernière.
@@ -17,12 +25,33 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 LINUX=target/x86_64-unknown-linux-musl/release/vanguard
 WINDOWS=target/x86_64-pc-windows-gnu/release/vanguard.exe
-# Commit dont viennent les binaires compilés : on ne recompile pas une version déjà compilée.
-COMMIT_COMPILE=target/.commit-compile
+# Le repère de la compilation (outils/compiler-version.sh) : le commit compilé, l'arbre propre ou non, l'empreinte
+# des deux programmes. Rien ne part (clé, VM, GitHub) dont les octets ne sont pas ceux qu'il a relevés.
+REPERE_COMPILATION=target/.compilation
+commit_compile() { sed -n 's/^commit //p' "$REPERE_COMPILATION" 2>/dev/null | head -1; }
+# Le code a-t-il changé depuis le commit compilé ? Les commits qui ne touchent que ce que le programme n'intègre pas
+# (captures, page des fonctions, documentation : .github/hors-code.txt) n'obligent pas à recompiler : le programme
+# de ce commit-là est le même, et sa date gravée reste celle du commit compilé (celui que la page de la version
+# étiquette, outils/publier-version.sh).
+code_change_depuis() { # commit compilé
+  local hors
+  [[ -n $1 && -f $LINUX ]] || return 0
+  [[ $1 != "$(git rev-parse HEAD)" ]] || return 1
+  git merge-base --is-ancestor "$1" HEAD 2>/dev/null || return 0
+  hors=$(grep -v '^#' .github/hors-code.txt 2>/dev/null | head -n 1)
+  [[ -n $hors ]] || return 0
+  git diff --name-only "$1" HEAD | grep -vqE "$hors"
+}
 MODE=${1:-}
 if [[ $MODE == --publier ]]; then
   MODE=""
 fi
+ACCEPTER="" ACCEPTER_CLE=""
+if [[ $MODE == --accepter-cle ]]; then
+  ACCEPTER=1 ACCEPTER_CLE=${2:-} MODE=--sans-compiler
+fi
+# shellcheck source=outils/cle-commun.sh
+source outils/cle-commun.sh
 # « Seulement sur cet ordinateur » : rien n'est envoyé sur GitHub. Le repère dure 2 h, assez pour le service de copie
 # que la compilation déclenche (--sans-compiler, qui sinon pousserait) ; un déploiement normal l'efface.
 REPERE_LOCAL="${XDG_RUNTIME_DIR:-/tmp}/vanguard-deployer-local"
@@ -34,6 +63,11 @@ elif [[ -z $MODE ]]; then
 fi
 LOCAL=""
 [[ -n $(find "$REPERE_LOCAL" -mmin -120 2>/dev/null) ]] && LOCAL=1
+
+# Une alerte que personne ne lirait au branchement (vanguard-cle.service) sans notification.
+avertir_cle() { # titre texte
+  command -v notify-send >/dev/null && notify-send -a Vanguard -i vanguard -u critical -- "$1" "$2" || true
+}
 
 # Durée de chaque étape, dite à la fin : on voit où part le temps d'un déploiement.
 DUREES=""
@@ -47,9 +81,20 @@ copier() { cmp -s "$1" "$2" 2>/dev/null || cp -f "$1" "$2"; }
 # répétitions en commentaire ; outils/journal-vers-github.py). Sans Internet, elles attendent le déploiement suivant.
 RETOURS="${XDG_DATA_HOME:-$HOME/.local/share}/vanguard/retours"
 rapatrier_journal() { # $1 : journal à vider, $2 : d'où il vient
-  [[ -s $1 ]] || return 0
+  [[ -s $1 && -f $1 && ! -L $1 ]] || return 0
   mkdir -p "$RETOURS"
-  local nb
+  local nb cote
+  # Au-delà de la borne de src/journal.rs (4 Mio), ce n'est pas un journal que Vanguard a écrit (celui de la clé
+  # s'écrit sur n'importe quel ordinateur) : son début mis de côté pour être regardé, rien n'en part sur GitHub.
+  if (($(stat -c %s "$1") > 4 * 1024 * 1024)); then
+    cote="$RETOURS/journal-demesure-$(date +%Y%m%d-%H%M%S).txt"
+    head -c $((4 * 1024 * 1024)) "$1" >"$cote"
+    : >"$1"
+    echo "Journal $2 démesuré (plus de 4 Mio) : mis de côté ($cote), rien n'en est envoyé."
+    command -v notify-send >/dev/null &&
+      notify-send -a Vanguard -i vanguard "Vanguard : journal $2 démesuré, rien envoyé" "$cote" || true
+    return 0
+  fi
   nb=$(grep -c '^== ' "$1" || true)
   cat "$1" >>"$RETOURS/journal-erreurs.txt"
   cat "$1" >>"$RETOURS/a-envoyer-github.txt"
@@ -73,8 +118,12 @@ refuser() {
   local cle journal="" repere="${XDG_RUNTIME_DIR:-/tmp}/vanguard-refus.empreinte" empreinte
   echo "Déploiement arrêté : seuls les journaux d'erreurs sont rapatriés."
   rapatrier_journal "${XDG_DATA_HOME:-$HOME/.local/share}/vanguard/journal-erreurs.txt" "de cet ordinateur"
-  cle=$(find "/run/media/$USER" -maxdepth 2 -name vanguard.cle -printf '%h\n' 2>/dev/null | head -1 || true)
-  [[ -z $cle ]] || journal=$(findmnt -nro TARGET -S LABEL=VANGUARDLOG 2>/dev/null | head -1 || true)
+  # La partition des journaux de la clé de cet ordinateur seulement, et seulement si la clé n'a pas changé : vider le
+  # journal est une écriture.
+  cle=$(cle_connue "./$LINUX" 2>/dev/null || true)
+  if [[ -n $cle ]] && ./"$LINUX" deploiement comparer-cle "$cle" >/dev/null 2>&1; then
+    journal=$(journal_de_la_cle "$cle" 2>/dev/null || true)
+  fi
   [[ -z $journal ]] || rapatrier_journal "$journal/journal-erreurs.txt" "de la clé"
   envoyer_journal
   empreinte=$({ cat "$LINUX" "$WINDOWS" 2>/dev/null || true; } | sha256sum)
@@ -87,6 +136,17 @@ refuser() {
 }
 
 compiler() {
+  # Un programme qui part sur GitHub doit être celui de son commit : rien de compilé d'un arbre où le code a changé
+  # sans être commité (une autre session, un essai en cours), qui partirait signé puis disparaîtrait. Seul un
+  # déploiement local (--local) le permet, et son repère le dit (outils/publier-version.sh refuse alors de publier).
+  if [[ -z $LOCAL && -n $(git status --porcelain -- src build.rs assets Cargo.toml Cargo.lock .cargo \
+    rust-toolchain.toml) ]]; then
+    echo "✖ Compilation refusée : le code a des changements non commités (git status) ; un programme publié est"
+    echo "  celui de son commit. Les committer, ou outils/deployer.sh --local pour cet ordinateur seulement."
+    avertir_cle "Vanguard : rien compilé ni copié" "Le code a des changements non commités : la clé n'est pas mise \
+à jour (outils/deployer.sh le dit)."
+    exit 1
+  fi
   # Chaque programme porte la liste de ses dépendances, versions comprises (cargo auditable, section .dep-v0), que
   # cargo audit bin relit plus bas, et chez quiconque l'a téléchargé. Sans ces outils, rien n'est compilé : jamais de
   # programme publié sans sa liste. cargo-auditable dans la version de la CI (.github/workflows/ci.yml) : une autre
@@ -121,7 +181,6 @@ compiler() {
   # (outils/compiler-version.sh : chaîne épinglée, Cargo.lock tel quel, chemins de la compilation retirés).
   local debut=$SECONDS
   outils/compiler-version.sh
-  git rev-parse HEAD >"$COMMIT_COMPILE"
   duree compilation "$debut"
 }
 
@@ -141,6 +200,8 @@ flock 9
 # dépendances que cargo écrit à côté du programme dit d'où elle vient (.git/worktrees/<nom>/HEAD).
 if [[ $MODE == --sans-compiler ]] && grep -qs "/\.git/worktrees/" "$LINUX.d" "${WINDOWS%.exe}.d"; then
   echo "Compilation venue d'une branche en cours (worktree) : rien n'est copié ni envoyé."
+  # Une clé à adopter (preparer-cle.sh, cle-secours.sh --ecrire) ne reste pas sans programme en silence.
+  [[ -z $ACCEPTER ]] || { echo "✖ --accepter-cle : relancer outils/deployer.sh (il recompile), puis --accepter-cle."; exit 1; }
   exit 0
 fi
 
@@ -162,7 +223,7 @@ if [[ $MODE == --branchement ]]; then
   else
     echo "GitHub injoignable : copie de la version locale."
   fi
-  if [[ ! -f $LINUX || $(cat "$COMMIT_COMPILE" 2>/dev/null) != $(git rev-parse HEAD) ]]; then
+  if code_change_depuis "$(commit_compile)"; then
     compiler
   fi
 elif [[ $MODE != --sans-compiler ]]; then
@@ -177,6 +238,31 @@ if [[ -f $WINDOWS ]]; then
     echo "✖ vanguard.exe non vérifié (DLL depuis System32, manifeste) : rien ne part. Un programme Linux d'avant « deploiement » ne sait pas le vérifier : recompiler."
     exit 1
   }
+fi
+# Les octets qui vont partir sont-ils ceux que outils/compiler-version.sh a relevés à la compilation ? Le dossier de
+# compilation est partagé avec les worktrees, et une compilation ordinaire (cargo build) y remplace les programmes sans
+# toucher le repère : ceux-là ne partent nulle part.
+octets_compiles() {
+  local sorte fichier attendu
+  for sorte in linux-x86_64 windows-x86_64; do
+    fichier=$LINUX
+    [[ $sorte == linux-x86_64 ]] || fichier=$WINDOWS
+    [[ -f $fichier ]] || continue
+    attendu=$(sed -n "s/^$sorte //p" "$REPERE_COMPILATION" 2>/dev/null | head -1)
+    [[ -n $attendu && $attendu == "$(sha256sum "$fichier" | cut -d' ' -f1)" ]] || return 1
+  done
+}
+if ! octets_compiles; then
+  if [[ $MODE == --sans-compiler && -z $ACCEPTER ]]; then
+    echo "Programmes de target/ pas ceux de outils/compiler-version.sh (compilation ordinaire, autre dossier) : rien"
+    echo "n'est copié."
+    exit 0
+  fi
+  echo "✖ Programmes remplacés depuis leur compilation (empreintes ≠ $REPERE_COMPILATION) : rien ne part. Relancer"
+  echo "  outils/deployer.sh (il recompile)."
+  avertir_cle "Vanguard : rien copié ni envoyé" "Les programmes de target/ ne sont plus ceux de leur compilation : \
+relancer outils/deployer.sh."
+  exit 1
 fi
 # Aucun mot d'attaque que Vanguard cherche en clair dans les programmes qui partent : Defender a supprimé une
 # version pour la seule présence de « sekurlsa:: » (outils/verifier-masque.sh, sur les programmes livrés tels quels).
@@ -208,10 +294,10 @@ if [[ -z $MODE ]]; then
   if [[ -n $A_PUBLIER && $(cat assets/captures/VERSION 2>/dev/null) != "$VERSION" ]]; then
     if command -v uv >/dev/null && timeout 900 uv run -q --no-project --with pyte python outils/captures.py "$LINUX"; then
       git add assets/captures assets/partage.png
-      # Les captures ne sont pas dans le programme : celui qui vient d'être compilé reste celui de ce commit, que
-      # outils/publier-version.sh publiera.
+      # Les captures ne sont pas dans le programme (.github/hors-code.txt) : celui qui vient d'être compilé reste
+      # celui du commit compilé, que outils/publier-version.sh étiquette et publie.
       git commit -q -m "Captures d'écran : v$VERSION" -- assets/captures assets/partage.png &&
-        echo "Captures d'écran refaites (v$VERSION)." && git rev-parse HEAD >"$COMMIT_COMPILE"
+        echo "Captures d'écran refaites (v$VERSION)."
     else
       echo "Captures d'écran non refaites : le README garde celles d'avant."
     fi
@@ -226,7 +312,7 @@ if [[ -z $MODE ]]; then
       if git diff --quiet --cached -- docs/index.html; then
         echo "Page des fonctions déjà à jour."
       elif git commit -q -m "Page des fonctions : v$VERSION" -- docs/index.html; then
-        echo "Page des fonctions refaite (v$VERSION) : docs/index.html." && git rev-parse HEAD >"$COMMIT_COMPILE"
+        echo "Page des fonctions refaite (v$VERSION) : docs/index.html."
       fi
     else
       echo "Page des fonctions non refaite : GitHub Pages garde celle d'avant."
@@ -288,6 +374,17 @@ VM="$HOME/Windows/VANGUARD-TEST"
 # Un test qui tourne dans la VM garde son programme : le remplacer en pleine passe mélangerait deux versions. Le témoin
 # est celui du menu des tests, périmé au bout de 3 h comme là-bas.
 EN_COURS="$VM/resultats/.test-en-cours.txt"
+# La version qui aura sa page : aussi un essai signé de la file (test.ps1 en administrateur), dont le verdict signé
+# par le surveillant est la porte de outils/publier-version.sh. Déposé même pendant une passe du menu : le surveillant
+# attend sa fin. Seulement la file réinstallée (secret ici).
+if [[ -z ${VANGUARD_INTERMEDIAIRE:-} && -n $A_PUBLIER && -f $WINDOWS && -d $HOME/Windows ]]; then
+  if [[ -s ${XDG_CONFIG_HOME:-$HOME/.config}/vanguard/file-essais/secret ]]; then
+    bash outils/vm-tester.sh --exe "$WINDOWS" --sans-console --sans-attendre ||
+      echo "VM Windows : essai de la file pas déposé (voir ci-dessus) : sans son verdict signé, pas de page."
+  else
+    echo "VM Windows : file d'essais pas réinstallée (pas de secret) : la page se fiera à historique.txt, non authentifié."
+  fi
+fi
 if [[ -n ${VANGUARD_INTERMEDIAIRE:-} ]]; then
   echo "VM Windows : version intermédiaire d'une série, rien n'y est déposé (la dernière le sera)."
 elif [[ -n $(find "$EN_COURS" -mmin -180 2>/dev/null) ]]; then
@@ -322,38 +419,78 @@ publier_la_version() {
   duree "page de la version" "$debut"
 }
 
-CLE=$(find "/run/media/$USER" -maxdepth 2 -name vanguard.cle -printf '%h\n' 2>/dev/null | head -1)
+# La clé de cet ordinateur : le volume au témoin vanguard.cle dont le jeton est connu ici (outils/cle-commun.sh). Un
+# volume étiqueté VANGUARD au jeton inconnu ne reçoit rien. --accepter-cle DOSSIER : celui que l'auteur désigne.
+CODE_CLE=0
+if [[ -n $ACCEPTER_CLE ]]; then
+  # Normalisé (barre finale de la complétion, « .. ») : sinon son identifiant de volume ne se lit pas, et la
+  # référence part sous un autre nom que celui du branchement suivant.
+  CLE=$(realpath -s -- "$ACCEPTER_CLE")
+  if [[ ! -d $CLE || ! -f $CLE/vanguard.cle || -L $CLE/vanguard.cle ]]; then
+    echo "✖ $CLE ne porte pas le témoin vanguard.cle d'une clé VANGUARD : rien n'y est écrit."
+    exit 1
+  fi
+else
+  CLE=$(cle_connue "./$LINUX") || CODE_CLE=$?
+fi
 if [[ -z $CLE ]]; then
-  echo "Clé VANGUARD non branchée : elle sera mise à jour au prochain branchement."
+  if ((CODE_CLE == 3)); then
+    echo "Volume au témoin VANGUARD, au jeton inconnu de cet ordinateur : rien n'y est écrit (ni programme, ni code"
+    echo "source). S'il est à vous : outils/deployer.sh --accepter-cle <son dossier>."
+    avertir_cle "Volume VANGUARD inconnu : rien n'y est écrit" "Ce n'est pas une clé déployée ici (jeton absent ou \
+inconnu). Si elle est à vous : outils/deployer.sh --accepter-cle <son dossier>."
+  elif ((CODE_CLE != 0)); then
+    echo "✖ Clé VANGUARD pas cherchée (le programme ne sait pas la reconnaître : recompiler) : rien n'y est écrit."
+  else
+    echo "Clé VANGUARD non branchée : elle sera mise à jour au prochain branchement."
+  fi
   publier_la_version
   dire_durees
+  # Une clé demandée (--accepter-cle) mais pas trouvée, ou pas cherchée : un échec ; un volume inconnu, non.
+  if [[ -n $ACCEPTER ]] || ((CODE_CLE != 0 && CODE_CLE != 3)); then exit 1; fi
   exit 0
 fi
 T_CLE=$SECONDS
 
-# Témoins de la clé, écrits par le programme (src/deploiement.rs) : le jeton d'identité (src/protection/cles_connues.rs),
-# 32 caractères hexadécimaux tirés une fois et gardés ensuite ; cet ordinateur le note (vanguard manifeste --ecrire,
-# plus bas) et, depuis sa copie locale, ne reconnaît plus un volume au seul témoin vanguard.cle. La partition des
-# journaux reçoit le même jeton. Puis l'empreinte de cet ordinateur (SHA-1 de /etc/machine-id) dans vanguard.cle :
-# partout ailleurs, Vanguard remonte la clé en lecture seule sous Linux (src/protection/cle.rs). Avant la copie vers
-# la partition des journaux et avant le manifeste. Un programme d'avant « deploiement » (--sans-compiler) : le bash
-# d'avant, pour que la clé garde ses témoins (seulement sans vanguard.exe : avec lui, verifier-pe, sans repli, a déjà
-# arrêté le déploiement).
-if ./"$LINUX" deploiement temoins --help >/dev/null 2>&1; then
-  ./"$LINUX" deploiement temoins "$CLE" || { echo "✖ Témoins de la clé non écrits : clé pas mise à jour."; exit 1; }
-else
-  if ! grep -qxE '[0-9a-fA-F]{32}' "$CLE/vanguard.jeton" 2>/dev/null; then
-    head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$CLE/vanguard.jeton"
-    echo >>"$CLE/vanguard.jeton"
-  fi
-  printf '%s' "$(cat /etc/machine-id)" | sha1sum | cut -d' ' -f1 >"$CLE/vanguard.cle"
+# La clé comparée à sa référence AVANT toute écriture (src/protection/manifeste.rs) : un raccourci, une image, un
+# ventoy.json ou une archive tldr posés pendant le voyage y sont vus, et rien n'est écrit (ni programme, ni journal
+# vidé, ni manifeste), jusqu'à l'accord de l'auteur (--accepter-cle). Sans cela, la référence réécrite après la copie
+# les reprenait, et le bilan disait « la clé n'a pas changé » (campagne d'attaque n° 3).
+# Un déploiement arrêté en route (clé retirée, rsync ou copie en échec) laisse son repère, au jeton de la clé : le
+# suivant ne compte pas ce que le déploiement pose lui-même et a pu laisser à moitié écrit (il le réécrit), tout le
+# reste si. Retiré une fois la référence réécrite.
+REPRISE=${XDG_STATE_HOME:-$HOME/.local/state}/vanguard/deploiement-en-cours-$(jeton_du_volume "$CLE")
+REPRENDRE=()
+[[ -f $REPRISE && $REPRISE != */deploiement-en-cours- ]] && REPRENDRE=(--reprise)
+if [[ -z $ACCEPTER ]] && ! ECART=$(./"$LINUX" deploiement comparer-cle "$CLE" "${REPRENDRE[@]}" 2>&1); then
+  echo "✖ La clé VANGUARD ($CLE) a changé depuis son dernier déploiement : rien n'y est écrit."
+  sed 's/^/  /' <<<"$ECART"
+  echo "  Regarder ces fichiers (un raccourci ou une image plantés sont un piège). S'ils sont voulus :"
+  echo "  outils/deployer.sh --accepter-cle (la clé est réécrite et sa référence la reprend telle quelle)."
+  avertir_cle "Clé VANGUARD changée : rien n'y est écrit" "$(head -c 300 <<<"$ECART")
+À regarder avant tout usage ; si c'est voulu : outils/deployer.sh --accepter-cle"
+  publier_la_version
+  dire_durees
+  exit 1
 fi
 
-# Partition VANGUARDLOG (la seule modifiable sur les autres ordinateurs) : elle se monte en même temps que VANGUARD,
-# parfois une seconde après. Son journal d'erreurs est rapatrié ici puis vidé, pour améliorer Vanguard.
+# Témoins de la clé, écrits par le programme (src/deploiement.rs) : le jeton d'identité (src/protection/cles_connues.rs),
+# 32 caractères hexadécimaux tirés une fois et gardés ensuite (seulement pour une clé acceptée : une clé connue a
+# déjà le sien) ; cet ordinateur le note (vanguard manifeste --ecrire, plus bas). La partition des journaux reçoit le
+# même jeton. Puis l'empreinte de cet ordinateur (SHA-1 de /etc/machine-id) dans vanguard.cle : partout ailleurs,
+# Vanguard remonte la clé en lecture seule sous Linux (src/protection/cle.rs). Avant la copie vers la partition des
+# journaux et avant le manifeste.
+./"$LINUX" deploiement temoins "$CLE" || { echo "✖ Témoins de la clé non écrits : clé pas mise à jour."; exit 1; }
+# Le jeton est là maintenant (tiré pour une clé acceptée) : le repère d'un déploiement en cours, à son nom.
+REPRISE=${XDG_STATE_HOME:-$HOME/.local/state}/vanguard/deploiement-en-cours-$(jeton_du_volume "$CLE")
+mkdir -p "${REPRISE%/*}" && : >"$REPRISE"
+
+# Partition VANGUARDLOG (la seule modifiable sur les autres ordinateurs) : celle du même disque, au jeton de la clé
+# (outils/cle-commun.sh) ; elle se monte en même temps que VANGUARD, parfois une seconde après. Son journal d'erreurs
+# est rapatrié ici puis vidé, pour améliorer Vanguard.
 JOURNAL=""
 for _ in {1..10}; do
-  JOURNAL=$(findmnt -nro TARGET -S LABEL=VANGUARDLOG 2>/dev/null | head -1 || true)
+  JOURNAL=$(journal_de_la_cle "$CLE") || break
   [[ -n $JOURNAL ]] && break
   sleep 1
 done
@@ -372,12 +509,15 @@ copier "$LINUX" "$CLE/Linux/vanguard"
 MAC=target/macos
 if [[ -z $LOCAL ]] && command -v gh >/dev/null; then
   # La dernière compilation réussie qui a vraiment produit le programme : une exécution de nuit sautée (code
-  # inchangé) réussit aussi, sans rien produire. Toutes branches confondues (le passage d'une branche sur le Mac,
-  # avant sa fusion, est souvent la dernière), mais seulement un commit déjà dans celui-ci : jamais celui d'une
-  # branche pas encore fusionnée.
+  # inchangé) réussit aussi, sans rien produire. Comme pour la page de la version (outils/publier-version.sh) :
+  # seulement une exécution de master, lancée par la nuit ou à la main (celle d'une autre branche tourne avec son
+  # macos.yml et le cache qu'elle a pu préparer), d'un commit déjà dans celui-ci ; puis son commit.txt et l'empreinte
+  # que son journal annonce, relus sur ce qui est téléchargé (campagne d'attaque n° 3).
   RUN=""
-  for execution in $(timeout 20 gh run list --workflow macos.yml --status success --limit 20 \
-    --json databaseId,headSha -q '.[] | "\(.databaseId):\(.headSha)"' 2>/dev/null || true); do
+  for execution in $(timeout 20 gh run list --workflow macos.yml --branch master --status success --limit 20 \
+    --json databaseId,headSha,headBranch,event \
+    -q '.[] | select(.headBranch == "master" and (.event == "schedule" or .event == "workflow_dispatch"))
+      | "\(.databaseId):\(.headSha)"' 2>/dev/null || true); do
     git merge-base --is-ancestor "${execution#*:}" HEAD 2>/dev/null || continue
     if [[ -n $(timeout 20 gh api "repos/{owner}/{repo}/actions/runs/${execution%%:*}/artifacts" \
       -q '.artifacts[] | select(.name == "vanguard-macos" and (.expired | not)) | .name' 2>/dev/null) ]]; then
@@ -392,7 +532,15 @@ if [[ -z $LOCAL ]] && command -v gh >/dev/null; then
     ! { [[ -n $ACTUEL ]] && git merge-base --is-ancestor "${RUN#* }" "$ACTUEL" 2>/dev/null; }; then
     rm -rf "$MAC.nouveau"
     if timeout 120 gh run download "${RUN%% *}" -n vanguard-macos -D "$MAC.nouveau" >/dev/null 2>&1; then
-      rm -rf "$MAC" && mv "$MAC.nouveau" "$MAC" && echo "Version macOS récupérée de GitHub (commit ${RUN#* })."
+      ANNONCEE=$(timeout 60 gh run view "${RUN%% *}" --log 2>/dev/null | grep -oE 'EMPREINTE-VANGUARD-MACOS [0-9a-f]{64}' |
+        tail -1 | cut -d' ' -f2 || true)
+      if [[ $(tr -d '[:space:]' <"$MAC.nouveau/commit.txt" 2>/dev/null) != "${RUN#* }" || -z $ANNONCEE ||
+        $ANNONCEE != "$(sha256sum "$MAC.nouveau/vanguard" 2>/dev/null | cut -d' ' -f1)" ]]; then
+        echo "Version macOS de GitHub écartée : commit.txt ou empreinte différents de son exécution (${RUN%% *})."
+        rm -rf "$MAC.nouveau"
+      else
+        rm -rf "$MAC" && mv "$MAC.nouveau" "$MAC" && echo "Version macOS récupérée de GitHub (commit ${RUN#* })."
+      fi
     fi
   fi
 fi
@@ -436,7 +584,9 @@ cp -f outils/cle/autorun.inf outils/cle/autorun.sh "outils/cle/Lancer Vanguard.b
 # Code source complet (avec l'historique git) pour continuer le développement depuis n'importe quel ordinateur.
 # exFAT ne garde ni droits ni liens : -rt suffit, --modify-window tolère sa précision de 2 s. Les copies de travail
 # des sessions Claude (.claude/worktrees, avec leurs propres compilations) restent sur l'ordinateur.
-rsync -rt --delete --modify-window=2 --exclude /target/ --exclude /.claude/worktrees/ ./ "$CLE/source/"
+# Code 24 : des fichiers ont disparu pendant la copie (une autre session committe) ; le reste est copié, pas une panne.
+rsync -rt --delete --modify-window=2 --exclude /target/ --exclude /.claude/worktrees/ ./ "$CLE/source/" ||
+  { code=$?; ((code == 24)) || exit "$code"; }
 # Exemples de tldr-pages sur la clé (src/guide/tldr/cle.rs) : lancé depuis la clé, le guide les a tout de suite, même
 # sur un ordinateur sans Internet. Une fois par jour au plus ; sans Internet, la clé garde les siens. Avant le
 # manifeste : une archive remplacée sur la clé par quelqu'un d'autre se verra au retour. Un programme d'avant
@@ -444,9 +594,22 @@ rsync -rt --delete --modify-window=2 --exclude /target/ --exclude /.claude/workt
 ./"$LINUX" deploiement tldr "$CLE/tldr" || echo "Exemples de tldr-pages non mis à jour sur la clé."
 # Manifeste de la clé (src/protection/manifeste.rs) : l'empreinte de chaque fichier (vanguard.jeton compris), gardée
 # sur cet ordinateur et jamais sur la clé ; le bilan la compare quand la clé revient de chez quelqu'un. La même
-# commande note la clé parmi celles que cet ordinateur connaît, avec l'état de son carnet. Un programme d'avant la
-# 0.59 n'a pas cette commande : la clé est à jour quand même.
-./"$LINUX" manifeste --ecrire "$CLE" || echo "Manifeste de la clé non écrit : le bilan ne pourra pas la comparer."
+# commande note la clé parmi celles que cet ordinateur connaît, avec l'état de son carnet. Elle ne reprend sans accord
+# que ce que ce déploiement vient de poser (programmes, guides, lanceurs, code source, tldr) : un fichier apparu
+# depuis la comparaison du début la fait refuser (code 2), --accepter-cle la force.
+FORCER=()
+[[ -z $ACCEPTER ]] || FORCER=(--forcer)
+CODE_MANIFESTE=0
+./"$LINUX" manifeste --ecrire "$CLE" "${FORCER[@]}" || CODE_MANIFESTE=$?
+if ((CODE_MANIFESTE == 2)); then
+  avertir_cle "Clé VANGUARD : référence pas réécrite" "Un fichier est apparu sur la clé pendant le déploiement. À \
+regarder ; si c'est voulu : outils/deployer.sh --accepter-cle"
+  exit 1
+elif ((CODE_MANIFESTE != 0)); then
+  echo "Manifeste de la clé non écrit : le bilan ne pourra pas la comparer."
+else
+  rm -f "$REPRISE"
+fi
 sync
 duree clé "$T_CLE"
 echo "Clé VANGUARD à jour : $CLE ($(./"$LINUX" --version))"

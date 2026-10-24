@@ -77,16 +77,49 @@ if [[ ${1:-} == --notes ]]; then
   exit 0
 fi
 
-# Les programmes publiés doivent être ceux de ce commit, et ce commit celui de GitHub : la page de la version y
-# renvoie, et le Mac de GitHub compile la tête de master.
+# Les programmes publiés doivent être, octet pour octet, ceux que outils/compiler-version.sh a compilés d'un arbre
+# propre (son repère, target/.compilation : commit, arbre propre, empreintes) ; ce commit-là, ou un d'avant dont le
+# programme est le même (seuls des captures, la page des fonctions, la documentation ont changé depuis :
+# .github/hors-code.txt), et HEAD celui de GitHub : la page de la version y renvoie, et le Mac de GitHub compile la
+# tête de master. L'étiquette se pose sur le commit compilé : qui la recompile retrouve sa date gravée.
 if [[ -n $(git status --porcelain --untracked-files=no) ]]; then
   echo "Des changements ne sont pas committés : rien de publié."
   exit 1
 fi
-if [[ $(cat target/.commit-compile 2>/dev/null) != "$COMMIT" || ! -f $LINUX || ! -f $WINDOWS ]]; then
-  echo "Les programmes compilés ne viennent pas de ce commit : lancer d'abord outils/deployer.sh."
-  exit 1
-fi
+REPERE=target/.compilation
+repere() { sed -n "s/^$1 //p" "$REPERE" 2>/dev/null | head -1; }
+HORS_CODE=$(grep -v '^#' .github/hors-code.txt | head -n 1)
+# Le commit compilé sur la sortie si les programmes sont bien les siens ; sinon la raison, et code 1. Lue telle quelle
+# par outils/essais-signature.sh.
+verifier_compilation() {
+  local compile sorte fichier gravee
+  compile=$(repere commit)
+  [[ -f $LINUX && -f $WINDOWS && -n $compile ]] ||
+    { echo "Pas de programmes compilés par outils/compiler-version.sh ($REPERE) : lancer d'abord outils/deployer.sh."; return 1; }
+  [[ $(repere propre) == oui ]] ||
+    { echo "Programmes compilés d'un arbre aux changements non commités ($REPERE) : rien de publié (outils/deployer.sh)."; return 1; }
+  for sorte in linux-x86_64 windows-x86_64; do
+    fichier=$LINUX
+    [[ $sorte == linux-x86_64 ]] || fichier=$WINDOWS
+    [[ $(repere "$sorte") == "$(sha256sum "$fichier" | cut -d' ' -f1)" ]] || {
+      echo "$fichier n'est plus celui de sa compilation (empreinte ≠ $REPERE : compilation ordinaire, autre worktree) :"
+      echo "rien de publié. Relancer outils/deployer.sh."
+      return 1
+    }
+  done
+  if [[ $compile != "$COMMIT" ]] && ! { git merge-base --is-ancestor "$compile" "$COMMIT" 2>/dev/null &&
+    [[ -n $HORS_CODE ]] && ! git diff --name-only "$compile" "$COMMIT" | grep -vqE "$HORS_CODE"; }; then
+    echo "Les programmes compilés viennent de ${compile:0:12}, et le code a changé depuis : lancer d'abord outils/deployer.sh."
+    return 1
+  fi
+  # La date gravée avec la version (VANGUARD-VERSION:x.y.z+N, build.rs) est celle du code du commit compilé
+  # (outils/date-du-code.sh), celle que le Mac de GitHub grave aussi.
+  gravee=$(grep -aoE 'VANGUARD-VERSION:[0-9]+\.[0-9]+\.[0-9]+\+[0-9]+;' "$LINUX" | head -1 | sed 's/.*+//; s/;$//')
+  [[ $gravee == "$(bash outils/date-du-code.sh "$compile")" ]] ||
+    { echo "Date gravée dans le programme (${gravee:-absente}) ≠ celle du commit compilé : rien de publié."; return 1; }
+  echo "$compile"
+}
+COMPILE=$(verifier_compilation) || { echo "$COMPILE"; exit 1; }
 git fetch -q --tags origin
 if [[ $(git rev-parse origin/master) != "$COMMIT" ]]; then
   echo "Ce commit n'est pas la tête de master sur GitHub : lancer d'abord outils/deployer.sh."
@@ -105,6 +138,10 @@ DOSSIER=$(mktemp -d)
 trap 'rm -rf "$DOSSIER"' EXIT
 cp "$LINUX" "$DOSSIER/vanguard-linux-x86_64"
 cp "$WINDOWS" "$DOSSIER/vanguard-windows-x86_64.exe"
+# Les copies qui partent, relues : celles-là, et pas un fichier remplacé entre la vérification et la copie.
+[[ $(sha256sum "$DOSSIER/vanguard-linux-x86_64" | cut -d' ' -f1) == "$(repere linux-x86_64)" &&
+  $(sha256sum "$DOSSIER/vanguard-windows-x86_64.exe" | cut -d' ' -f1) == "$(repere windows-x86_64)" ]] ||
+  { echo "Copie des programmes différente de leur compilation : rien de publié."; exit 1; }
 # Les failles connues, revérifiées sur les fichiers mêmes qui partent (outils/failles-programmes.sh, comme dans
 # deployer.sh) : depuis, une compilation ordinaire a pu remplacer ceux de target/ par d'autres, sans leur liste, sans
 # toucher .commit-compile, et une faille paraître. Avant d'attendre le Mac ; la version macOS l'est une fois récupérée.
@@ -119,7 +156,6 @@ outils/failles-programmes.sh "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard
 # tourne avec le macos.yml de cette branche et le cache qu'elle a pu préparer, et un compte GitHub pris ferait ainsi
 # signer par la clé de l'auteur un programme compilé ailleurs. master compile sans cache (macos.yml). Le passage
 # de la branche sur le Mac, avant la fusion, reste un essai : il ne sert plus à la page.
-HORS_CODE=$(grep -v '^#' .github/hors-code.txt | head -n 1)
 avec_programme() {
   local id sha
   while read -r id sha; do
@@ -183,21 +219,32 @@ if [[ -z $ANNONCEE || $ANNONCEE != "$(sha256sum "$DOSSIER/vanguard-macos" | cut 
 fi
 outils/failles-programmes.sh "$DOSSIER/vanguard-macos" || { echo "Version macOS : rien de publié."; exit 1; }
 
-# Le programme Windows publié doit être celui qu'une passe réussie de la VM a fait tourner, octet pour octet
-# (outils/test-windows/test.ps1 note l'empreinte de ce qu'il lance, à la fin de sa ligne d'historique) : la CI teste
-# la cible MSVC sur Windows, Wine a ses faux verts, et seule la VM essaie ce .exe-là sur un vrai Windows. deployer.sh
-# vient de l'y déposer : sa passe automatique (choix 6 du menu des tests) prend six minutes environ, attendues ici
-# (VANGUARD_ATTENTE_VM, en minutes, 25 par défaut). Une passe en échec, ou aucune : rien de publié.
-# VANGUARD_PUBLIER_SANS_VM=1 publie quand même (VM en panne), et le dit.
+# Le programme Windows publié doit être celui qu'une passe réussie de la VM a fait tourner, octet pour octet : la CI
+# teste la cible MSVC sur Windows, Wine a ses faux verts, et seule la VM essaie ce .exe-là sur un vrai Windows. Une
+# porte de qualité, pas de sécurité. Sa preuve : le verdict OK, signé par le surveillant de la file d'essais (HMAC du
+# secret de la file), d'un travail signé qui a fait tourner ce .exe (outils/vm-tester.sh --verdict) ; deployer.sh
+# vient de l'y déposer. Tant que la file n'est pas réinstallée (pas de secret ici : code 3), la ligne de
+# resultats/historique.txt qu'écrit test.ps1 en sert encore, et c'est dit : n'importe quel programme qui écrit dans
+# le partage pourrait l'écrire (campagne d'attaque n° 3). Attendue VANGUARD_ATTENTE_VM minutes (40 par défaut). Une
+# passe en échec, ou aucune : rien de publié. VANGUARD_PUBLIER_SANS_VM=1 publie quand même (VM en panne), et le dit.
 VM_HISTORIQUE=$HOME/Windows/VANGUARD-TEST/resultats/historique.txt
 EXE_PUBLIE=$(sha256sum "$DOSSIER/vanguard-windows-x86_64.exe" | cut -d' ' -f1)
 # Les lignes de l'historique finissent par \r\n (écrites sous Windows).
-passe_de_la_vm() { tr -d '\r' <"$VM_HISTORIQUE" 2>/dev/null | grep -E " sha256 $EXE_PUBLIE\$" | tail -n 1; }
+passe_de_la_vm() {
+  local code=0 ligne
+  ligne=$(bash outils/vm-tester.sh --verdict "$EXE_PUBLIE" 2>/dev/null) || code=$?
+  if ((code == 0)); then
+    echo "OK, tout est passé (verdict signé de la file d'essais : $ligne)"
+  elif ((code == 3)); then
+    ligne=$(tr -d '\r' <"$VM_HISTORIQUE" 2>/dev/null | grep -E " sha256 $EXE_PUBLIE\$" | tail -n 1)
+    [[ -z $ligne ]] || echo "$ligne [NON AUTHENTIFIÉ : historique.txt, file d'essais pas réinstallée]"
+  fi
+}
 if [[ -n ${VANGUARD_PUBLIER_SANS_VM:-} ]]; then
   echo "⚠ Programme Windows publié sans passe de la VM sur ce .exe (VANGUARD_PUBLIER_SANS_VM)."
 else
-  fin=$((SECONDS + 60 * ${VANGUARD_ATTENTE_VM:-25}))
-  [[ -n $(passe_de_la_vm) ]] || echo "Programme Windows : attente de sa passe dans la VM (${VANGUARD_ATTENTE_VM:-25} min au plus)…"
+  fin=$((SECONDS + 60 * ${VANGUARD_ATTENTE_VM:-40}))
+  [[ -n $(passe_de_la_vm) ]] || echo "Programme Windows : attente de sa passe dans la VM (${VANGUARD_ATTENTE_VM:-40} min au plus)…"
   while [[ -z $(passe_de_la_vm) ]] && ((SECONDS < fin)); do
     sleep 20
   done
@@ -208,6 +255,7 @@ else
     echo "  (VANGUARD_PUBLIER_SANS_VM=1 outils/publier-version.sh pour publier sans elle.)"
     exit 1
   fi
+  [[ $PASSE != *"NON AUTHENTIFIÉ"* ]] || echo "⚠ Porte de la VM non authentifiée : réinstaller la file d'essais (outils/vm-tester.sh --installer)."
   echo "✔ Programme Windows essayé tel quel dans la VM : ${PASSE%% ->*}"
 fi
 (cd "$DOSSIER" && sha256sum vanguard-windows-x86_64.exe vanguard-linux-x86_64 vanguard-macos >SHA256SUMS.txt)
@@ -220,51 +268,81 @@ printf '%s\n' "$NOTES" | python3 outils/confidentialite.py --texte || { echo "No
 printf '%s\n' "$NOTES" | python3 outils/liens.py --texte || { echo "Liens des notes : rien de publié."; exit 1; }
 python3 outils/confidentialite.py --binaire "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" \
   "$DOSSIER/vanguard-macos" || { echo "Programmes : rien de publié."; exit 1; }
-gh release create "$TAG" --target "$COMMIT" --title "$NOM $VERSION" --notes "$NOTES" \
-  "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-macos" "$DOSSIER/SHA256SUMS.txt"
-echo "Version $TAG publiée : $(gh release view "$TAG" --json url -q .url)"
 # Les mêmes programmes, avec leur manifeste signé (outils/signer-versions.sh), dans le dépôt public des versions : la
 # mise à jour depuis GitHub les y prend (src/mise_a_jour/github.rs), le code restant privé. Seule la dernière y reste.
+# Signés AVANT la création de toute page : un contrôle de signer-versions.sh qui refuse (forme d'un programme,
+# version, historique d'avant douteux, point sûr) n'arrête plus rien après coup, une page publique déjà en ligne et
+# une relance qui disait « déjà publiée ».
 DEPOT_VERSIONS=d9v3/vanguard-update
+SIGNEE=""
 if ! gh repo view "$DEPOT_VERSIONS" >/dev/null 2>&1; then
   echo "Dépôt public des versions absent ($DEPOT_VERSIONS, outils/depot-versions.sh) : mise à jour depuis GitHub non publiée."
-elif mkdir -p "$DOSSIER/avant" &&
+else
+  mkdir -p "$DOSSIER/avant"
   # L'historique signé de la version d'avant (ou, la première fois, son manifeste signé) : signer-versions.sh le
-  # revérifie, y ajoute cette version et le signe ; publié avec elle, il permet de vérifier une copie qui n'est pas
-  # la dernière, une fois les pages d'avant retirées. Un téléchargement raté (réseau, limite de l'API, jeton
-  # expiré) n'est permis que si le dépôt n'a encore aucune version : sinon l'historique repartirait de zéro, et la
-  # boucle plus bas effacerait les pages d'avant. API muette : sortie vide, pas « 0 », donc rien de publié.
-  PREMIER=() &&
-  { gh release download -R "$DEPOT_VERSIONS" -D "$DOSSIER/avant" -p 'historique.txt*' -p 'derniere.txt*' \
-    >/dev/null 2>&1 ||
-    { [[ $(gh api "repos/$DEPOT_VERSIONS/releases?per_page=1" --jq length 2>/dev/null) == 0 ]] && PREMIER=(--premier); }; } &&
-  outils/signer-versions.sh "${PREMIER[@]}" "$DOSSIER" &&
-  gh release create "$TAG" -R "$DEPOT_VERSIONS" --title "$NOM $VERSION" --notes "$NOTES" \
-    "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-macos" \
-    "$DOSSIER/SHA256SUMS.txt" "$DOSSIER/derniere.txt" "$DOSSIER/derniere.txt.sig" \
-    "$DOSSIER/historique.txt" "$DOSSIER/historique.txt.sig"; then
+  # revérifie (et le compare au point sûr, le dernier historique publié d'ici), y ajoute cette version et le signe ;
+  # publié avec elle, il permet de vérifier une copie qui n'est pas la dernière, une fois les pages d'avant retirées.
+  # Un téléchargement raté (réseau, limite de l'API, jeton expiré) n'est permis que si le dépôt n'a encore aucune
+  # version : sinon l'historique repartirait de zéro, et la boucle plus bas effacerait les pages d'avant. API muette :
+  # sortie vide, pas « 0 », donc rien de publié.
+  PREMIER=()
+  if ! gh release download -R "$DEPOT_VERSIONS" -D "$DOSSIER/avant" -p 'historique.txt*' -p 'derniere.txt*' \
+    >/dev/null 2>&1; then
+    [[ $(gh api "repos/$DEPOT_VERSIONS/releases?per_page=1" --jq length 2>/dev/null) == 0 ]] && PREMIER=(--premier)
+  fi
+  outils/signer-versions.sh "${PREMIER[@]}" "$DOSSIER" ||
+    { echo "✖ Signature refusée (voir ci-dessus) : rien de publié, ni page ni mise à jour."; exit 1; }
+  SIGNEE=1
+fi
+gh release create "$TAG" --target "$COMPILE" --title "$NOM $VERSION" --notes "$NOTES" \
+  "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-macos" "$DOSSIER/SHA256SUMS.txt"
+echo "Version $TAG publiée : $(gh release view "$TAG" --json url -q .url)"
+PUBLIEE_SIGNEE=""
+if [[ -n $SIGNEE ]] && gh release create "$TAG" -R "$DEPOT_VERSIONS" --title "$NOM $VERSION" --notes "$NOTES" \
+  "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-macos" \
+  "$DOSSIER/SHA256SUMS.txt" "$DOSSIER/derniere.txt" "$DOSSIER/derniere.txt.sig" \
+  "$DOSSIER/historique.txt" "$DOSSIER/historique.txt.sig"; then
   echo "Version $TAG signée dans $DEPOT_VERSIONS : les Vanguard sans clé la proposeront."
+  PUBLIEE_SIGNEE=1
+  # Le point sûr (outils/signer-versions.sh) : le dernier historique en ligne, signé, gardé ici hors du dépôt des
+  # versions ; la signature suivante s'y comparera.
+  POINT_SUR=${VANGUARD_HISTORIQUE_PUBLIE:-${XDG_STATE_HOME:-$HOME/.local/state}/vanguard-dev/historique-publie.txt}
+  mkdir -p "$(dirname "$POINT_SUR")" && cp "$DOSSIER/historique.txt" "$POINT_SUR.nouveau" &&
+    cp "$DOSSIER/historique.txt.sig" "$POINT_SUR.sig.nouveau" && mv -f "$POINT_SUR.sig.nouveau" "$POINT_SUR.sig" &&
+    mv -f "$POINT_SUR.nouveau" "$POINT_SUR" || echo "⚠ Point sûr de l'historique pas gardé ($POINT_SUR)."
   for ancienne in $(gh release list -R "$DEPOT_VERSIONS" --limit 500 --json tagName -q '.[].tagName' | grep -vxF "$TAG"); do
     gh release delete "$ancienne" -R "$DEPOT_VERSIONS" --yes --cleanup-tag >/dev/null
   done
-else
-  echo "✖ Version non publiée dans $DEPOT_VERSIONS : relancer outils/signer-versions.sh puis gh release create à la main."
+elif [[ -n $SIGNEE ]]; then
+  echo "✖ Version non publiée dans $DEPOT_VERSIONS : relancer gh release create à la main (DOSSIER gardé : $DOSSIER)."
+  trap - EXIT
 fi
 # Seule la dernière version a sa page : CHANGELOG.md garde ce que chacune a apporté. Les pages d'avant sont retirées,
-# leurs étiquettes restent dans le dépôt (sans --cleanup-tag), pour recompiler une ancienne version au besoin.
-for ancienne in $(gh release list --limit 500 --json tagName -q '.[].tagName' | grep -vxF "$TAG"); do
-  gh release delete "$ancienne" --yes >/dev/null && echo "Page de $ancienne retirée (son étiquette reste)."
-done
+# leurs étiquettes restent dans le dépôt (sans --cleanup-tag), pour recompiler une ancienne version au besoin. Pas
+# tant que la mise à jour signée n'est pas en ligne : la page d'avant reste celle qu'on peut vérifier.
+if [[ -z $SIGNEE || -n $PUBLIEE_SIGNEE ]]; then
+  for ancienne in $(gh release list --limit 500 --json tagName -q '.[].tagName' | grep -vxF "$TAG"); do
+    gh release delete "$ancienne" --yes >/dev/null && echo "Page de $ancienne retirée (son étiquette reste)."
+  done
+fi
 command -v notify-send >/dev/null &&
   notify-send -a Vanguard -i vanguard "$NOM $VERSION publiée sur GitHub" "Page de la version : les trois programmes et leurs empreintes." || true
 
 # La version macOS publiée est gardée comme une compilation récupérée (outils/deployer.sh ne la redemande pas) et
 # copiée sur la clé si elle est branchée : sinon la clé garderait celle d'avant jusqu'au déploiement suivant.
 rm -rf target/macos && mkdir -p target/macos && cp "$DOSSIER/mac/"* target/macos/
-CLE=$(find "/run/media/$USER" -maxdepth 2 -name vanguard.cle -printf '%h\n' 2>/dev/null | head -1)
-if [[ -n $CLE && -d $CLE/macOS ]] && cp -f target/macos/vanguard "$CLE/macOS/vanguard" && sync; then
-  echo "Version macOS $VERSION copiée sur la clé."
-  # Le manifeste de la clé, écrit par deployer.sh avant cette copie, la reprend : sinon le bilan suivant dirait le
-  # programme macOS remplacé.
-  ./"$LINUX" manifeste --ecrire "$CLE" || echo "Manifeste de la clé non réécrit : relancer outils/deployer.sh."
+# Seulement la clé de cet ordinateur (jeton connu, outils/cle-commun.sh), et seulement si elle est encore sa référence :
+# comparée avant la copie, comme dans deployer.sh, pour que la réécriture du manifeste ne reprenne rien d'autre.
+# shellcheck source=outils/cle-commun.sh
+source outils/cle-commun.sh
+CLE=$(cle_connue "./$LINUX" 2>/dev/null || true)
+if [[ -n $CLE && -d $CLE/macOS ]]; then
+  if ! ./"$LINUX" deploiement comparer-cle "$CLE" >/dev/null 2>&1; then
+    echo "Clé VANGUARD différente de sa référence : la version macOS n'y est pas copiée (outils/deployer.sh le dit)."
+  elif cp -f target/macos/vanguard "$CLE/macOS/vanguard" && sync; then
+    echo "Version macOS $VERSION copiée sur la clé."
+    # Le manifeste de la clé, écrit par deployer.sh avant cette copie, la reprend : sinon le bilan suivant dirait le
+    # programme macOS remplacé.
+    ./"$LINUX" manifeste --ecrire "$CLE" || echo "Manifeste de la clé non réécrit : relancer outils/deployer.sh."
+  fi
 fi

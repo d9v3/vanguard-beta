@@ -137,9 +137,10 @@ fn mettre_a_jour(
     let mut reussi = true;
     for langue in LANGUES {
         let fin = dossier.join(nom_d_archive(langue));
-        let sur_la_cle = date_de(&fin);
-        // Une date dans le futur compte comme fraîche, comme pour `find -mmin` du script d'avant.
-        if sur_la_cle.is_some_and(|d| d.elapsed().map_or(true, |age| age < UN_JOUR)) {
+        // Une date dans le futur ne vaut rien (campagne d'attaque n° 3) : jugée fraîche, une archive plantée avec la
+        // date de 2099 n'était jamais remplacée, ni par le téléchargement ni par la copie de cet ordinateur.
+        let sur_la_cle = date_de(&fin).filter(|d| d.elapsed().is_ok());
+        if sur_la_cle.is_some_and(|d| d.elapsed().is_ok_and(|age| age < UN_JOUR)) {
             continue;
         }
         let minimum = minimum(langue);
@@ -349,6 +350,38 @@ mod tests {
         let copiee = date_de(&cle.join("tldr-pages.en.zip")).unwrap();
         let ecart = copiee.duration_since(date).unwrap_or_else(|e| e.duration());
         assert!(ecart < Duration::from_secs(2), "{ecart:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Une archive datée du futur sur la clé (plantée pour ne jamais être remplacée) : remplacée par la copie de cet
+    /// ordinateur, sans Internet, et le téléchargement est essayé.
+    #[test]
+    fn archive_datee_du_futur_remplacee() {
+        let d = dossier_d_essai();
+        let (cle, local) = (d.join("cle"), d.join("local"));
+        let futur = SystemTime::now() + Duration::from_hours(80 * 365 * 24);
+        for l in LANGUES {
+            ecrire_date(
+                &local.join(nom_d_archive(l)),
+                &archive_de(minimum(l), "locale"),
+                il_y_a(200),
+            );
+            ecrire_date(&cle.join(nom_d_archive(l)), b"plantee", futur);
+        }
+        let appels = Cell::new(0);
+        assert!(mettre_a_jour(
+            &cle,
+            |l| local.join(nom_d_archive(l)),
+            |_| {
+                appels.set(appels.get() + 1);
+                None
+            },
+            POSER
+        ));
+        assert_eq!(appels.get(), 2);
+        for l in LANGUES {
+            assert_ne!(std::fs::read(cle.join(nom_d_archive(l))).unwrap(), b"plantee");
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 

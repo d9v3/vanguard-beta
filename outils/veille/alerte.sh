@@ -52,6 +52,15 @@ grep -qxF "$SIGNATURE" "$ETAT/alertes-traitees.txt" 2>/dev/null && { conclure "a
 
 # Le sujet : [a-z0-9-]{1,40}, tiré de la signature (genre et premier morceau de la clé).
 CLE=${SIGNATURE#*:}
+# Une étape de verifier.sh portée par un essai de outils/, que les garde-fous interdisent à l'IA de toucher : l'appeler
+# brûlerait un lancement pour un refus certain. Dite à l'auteur, sans IA.
+if [[ $GENRE == verifier ]]; then
+  case ${CLE%%:*} in
+    essais-cle | signature | essais-verifier | masque)
+      conclure "étape ${CLE%%:*} de verifier.sh : un essai de outils/ (protégé), à corriger par l'auteur, sans IA"
+      exit 0 ;;
+  esac
+fi
 SUJET=$(printf '%s-%s' "$GENRE" "${CLE%%:*}" | tr 'A-Z_' 'a-z-' | tr -cd 'a-z0-9-' | cut -c1-40)
 BRANCHE=veille/$JOUR_ALERTE-$SUJET
 DOSSIER=$VEILLE/ia/$JOUR_ALERTE-$SUJET
@@ -135,8 +144,11 @@ case $GENRE in
     ;;
   canari)
     SOURCE=$(jq -r --arg s "$SIGNATURE" '.alertes[] | select(.signature == $s) | .source' "$RAPPORT")
+    # Sa forme seulement (rapport.py structure : clés, champs, forme des lignes), jamais la réponse brute du flux
+    # d'Internet : seule entrée de l'IA qui n'était pas en liste blanche (campagne d'attaque n° 3). La copie reste
+    # pour l'auteur dans canaris/<jour>/.
     for f in "$VEILLE/canaris/$JOUR_ALERTE/second/brut/$SOURCE" "$VEILLE/canaris/$JOUR_ALERTE/brut/$SOURCE"; do
-      [[ -f $f ]] && { cp "$f" "$DONNEES/copie-$SOURCE"; break; }
+      [[ -f $f ]] && { python_rapport structure "$f" "$DONNEES/structure-$SOURCE"; break; }
     done
     ;;
 esac
@@ -185,16 +197,23 @@ fi
 # les crochets, les règles et les exceptions des dépendances.
 # Et ce qui tourne hors de tout bac à sable (le crochet pre-commit lance outils/confidentialite.py ; verifier.sh et
 # vm-tester.sh jugent la proposition) ou décide de ce qui compile (build.rs, chaîne de rust-toolchain).
-PROTEGES='^(\.github/|\.claude/|\.cargo/|outils/veille/|outils/hooks/|CLAUDE\.md$|deny\.toml$|fuzz/deny\.toml$|'
-PROTEGES+='extensions/deny\.toml$|outils/exceptions-rustsec\.py$|outils/confidentialite\.py$|outils/verifier\.sh$|'
-PROTEGES+='outils/vm-tester\.sh$|([^/]+/)*build\.rs$|rust-toolchain(\.toml)?$)'
+# Et outils/ en entier (campagne d'attaque n° 3) : les essais que verifier.sh lance (essais-*.sh, textes.py,
+# verifier-masque.sh, failles-programmes.sh, fuzz.sh…), ceux que la VM fait tourner en administrateur (test-windows/,
+# pris dans la branche par vm-tester.sh --branche), la chaîne de publication et de la clé (deployer.sh,
+# publier-version.sh, signer-versions.sh, livrer-branche.sh, compiler-version.sh, images-cle.sh, cle-secours.sh,
+# maj-cle.sh) : l'IA y forgerait le vert de sa proposition, ou y glisserait ce que seul l'œil de l'auteur verrait.
+# Seule exception : outils/liens.txt pour une alerte « lien ».
+PROTEGES='^(\.github/|\.claude/|\.cargo/|outils/|CLAUDE\.md$|deny\.toml$|fuzz/deny\.toml$|'
+PROTEGES+='extensions/deny\.toml$|([^/]+/)*build\.rs$|rust-toolchain(\.toml)?$)'
+PERMIS_GENRE='^$'
+[[ $GENRE != lien ]] || PERMIS_GENRE='^outils/liens\.txt$'
 garde_fous() {
   local diff fichiers ajoutes retires touches
   [[ -n $LIEN_OK ]] || { echo "lien .git du worktree réécrit : rien n'est relu"; return; }
   [[ $(git_trav symbolic-ref -q --short HEAD) == "$BRANCHE" ]] || { echo "HEAD a quitté $BRANCHE"; return; }
   fichiers=$(git_trav diff --name-only "$TETE"..HEAD)
   [[ -z $fichiers ]] && { echo "aucun changement"; return; }
-  touches=$(grep -E "$PROTEGES" <<<"$fichiers" | head -n3 | paste -sd' ')
+  touches=$(grep -E "$PROTEGES" <<<"$fichiers" | grep -vE "$PERMIS_GENRE" | head -n3 | paste -sd' ')
   [[ -n $touches ]] && { echo "touche un fichier protégé : $touches"; return; }
   if [[ $GENRE != rustsec ]] && grep -qE '(^|/)Cargo\.(toml|lock)$' <<<"$fichiers"; then
     echo "dépendances changées hors d'une alerte RUSTSEC"

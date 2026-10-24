@@ -707,6 +707,10 @@ enum Commande {
         /// Écrire le manifeste de ce dossier (la racine de la clé) dans la référence de cet ordinateur.
         #[arg(long)]
         ecrire: Option<std::path::PathBuf>,
+        /// Avec --ecrire : réécrire la référence même si la clé a changé ailleurs que dans ce que le déploiement y
+        /// pose (l'auteur a regardé l'écart ; outils/deployer.sh --accepter-cle).
+        #[arg(long, requires = "ecrire")]
+        forcer: bool,
         /// Accepter le carnet de la clé branchée tel qu'il est (copie restaurée, protection retirée ailleurs).
         #[arg(long)]
         accepter: bool,
@@ -714,7 +718,8 @@ enum Commande {
         /// outils/images-cle.sh (seulement les images nommées par --image, qu'il vient de copier et de vérifier).
         #[arg(long)]
         images: Option<std::path::PathBuf>,
-        /// Une image copiée et vérifiée par outils/images-cle.sh (son nom dans ISO/), avec --images.
+        /// Une image copiée et vérifiée par outils/images-cle.sh (son nom dans ISO/, « NOM=SHA256 » avec l'empreinte
+        /// relue sur la clé), avec --images.
         #[arg(long, requires = "images")]
         image: Vec<String>,
     },
@@ -3442,11 +3447,17 @@ async fn main() {
         Some(Commande::VerifierMoi { programme }) => protection::manifeste::verifier_moi(programme.as_deref()),
         Some(Commande::Manifeste {
             ecrire,
+            forcer,
             accepter,
             images,
             image,
         }) => {
-            protection::manifeste::commande(ecrire.as_deref(), accepter, images.as_deref().map(|d| (d, &image[..])));
+            protection::manifeste::commande(
+                ecrire.as_deref(),
+                forcer,
+                accepter,
+                images.as_deref().map(|d| (d, &image[..])),
+            );
         }
         Some(Commande::Deploiement { etape }) => {
             let code = deploiement::executer(etape);

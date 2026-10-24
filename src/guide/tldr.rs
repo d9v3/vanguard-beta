@@ -114,7 +114,9 @@ fn archives(langue: &str, dossiers: &[PathBuf]) -> Vec<Archive> {
             (archive.taille <= TAILLE_ARCHIVE && connue(&archive) != Some(false)).then_some(archive)
         })
         .collect();
-    archives.sort_by_key(|a| std::cmp::Reverse(a.date));
+    // La plus récente d'abord, une date dans le futur en dernier : sur une clé, elle ne prend pas la place de la
+    // copie de cet ordinateur (campagne d'attaque n° 3).
+    archives.sort_by_key(|a| (a.date.elapsed().is_err(), std::cmp::Reverse(a.date)));
     archives
 }
 

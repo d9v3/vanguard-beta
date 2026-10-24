@@ -9,11 +9,17 @@
 #     (CARGO_HOME, bibliothèques téléchargées) /cargo. Sans cela, ils gardent /home/<compte>/… ou /home/runner/…, et
 #     le même code compilé dans deux dossiers donne deux programmes (et un nom de compte publié avec chaque version).
 #     RUSTFLAGS remplace les rustflags d'un ~/.cargo/config.toml personnel : seuls ceux-ci comptent ;
-#   - la date gravée est celle du commit (build.rs), jamais l'heure de la compilation ; l'éditeur de liens de MinGW
+#   - la date gravée est celle du code (outils/date-du-code.sh, par SOURCE_DATE_EPOCH que lit build.rs), jamais
+#     l'heure de la compilation ; l'éditeur de liens de MinGW
 #     n'écrit pas l'heure dans l'en-tête PE (--no-insert-timestamp, build.rs).
 # Ce qui peut encore différer d'un ordinateur à l'autre, et que cette recette ne fixe pas : les versions de musl-gcc
 # et de MinGW (gcc, binutils, ses bibliothèques de démarrage), qui compilent le C de ring et lient les programmes
 # (YARA-X n'y entre plus : c'est l'oracle des tests). Le résumé de la mesure est dans CONTRIBUTING.md, section « Compilation reproductible ».
+# Le repère de la compilation, target/.compilation : le commit compilé, si l'arbre du programme était propre (aucun
+# changement non commité ni fichier non suivi dans ce que le programme intègre), et l'empreinte SHA-256 des deux
+# programmes, relevée à la sortie de cargo. outils/publier-version.sh et outils/deployer.sh n'envoient que ces
+# octets-là : un target/ partagé avec les worktrees, une compilation ordinaire ou un fichier modifié le temps d'une
+# compilation ne partent plus signés (campagne d'attaque n° 3).
 #   outils/compiler-version.sh [options de cargo build en plus]
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -25,4 +31,30 @@ export RUSTFLAGS="--remap-path-prefix=$RACINE=/vanguard --remap-path-prefix=$CAR
 for cible in x86_64_unknown_linux_musl x86_64_pc_windows_gnu; do
   export "CFLAGS_$cible=-ffile-prefix-map=$RACINE=/vanguard -ffile-prefix-map=$CARGO_DOSSIER=/cargo"
 done
-exec cargo auditable build --release --locked --target x86_64-unknown-linux-musl --target x86_64-pc-windows-gnu "$@"
+# La date gravée : celle du code (outils/date-du-code.sh), pas du dernier commit, pour que les commits des captures et
+# de la page des fonctions ne la changent pas et que le Mac de GitHub grave la même. Une date déjà donnée l'emporte.
+if [[ -z ${SOURCE_DATE_EPOCH:-} ]]; then
+  DATE_DU_CODE=$(bash outils/date-du-code.sh 2>/dev/null || true)
+  [[ -z $DATE_DU_CODE ]] || export SOURCE_DATE_EPOCH=$DATE_DU_CODE
+fi
+CIBLES=${CARGO_TARGET_DIR:-target}
+REPERE=$CIBLES/.compilation
+rm -f "$REPERE"
+# L'arbre du programme lu avant la compilation : ce que cargo compile, c'est cet état-là.
+COMMIT=$(git rev-parse HEAD 2>/dev/null || echo inconnu)
+PROPRE=non
+if [[ $COMMIT != inconnu && -z $(git status --porcelain -- src build.rs assets Cargo.toml Cargo.lock .cargo \
+  rust-toolchain.toml 2>/dev/null) ]]; then
+  PROPRE=oui
+fi
+cargo auditable build --release --locked --target x86_64-unknown-linux-musl --target x86_64-pc-windows-gnu "$@"
+# Relu après : un fichier changé pendant la compilation la rend douteuse.
+[[ $PROPRE == oui && $(git rev-parse HEAD) == "$COMMIT" && -z $(git status --porcelain -- src build.rs assets \
+  Cargo.toml Cargo.lock .cargo rust-toolchain.toml 2>/dev/null) ]] || PROPRE=non
+{
+  echo "commit $COMMIT"
+  echo "propre $PROPRE"
+  echo "linux-x86_64 $(sha256sum "$CIBLES/x86_64-unknown-linux-musl/release/vanguard" | cut -d' ' -f1)"
+  echo "windows-x86_64 $(sha256sum "$CIBLES/x86_64-pc-windows-gnu/release/vanguard.exe" | cut -d' ' -f1)"
+} >"$REPERE.nouveau"
+mv -f "$REPERE.nouveau" "$REPERE"
