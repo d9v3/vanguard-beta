@@ -126,13 +126,42 @@ tests_wine() {
   return "$resultat"
 }
 
+# Chaque script analysé, puis une faute que l'analyse laisse passer : PowerShell ne distingue pas les majuscules des
+# variables, si bien qu'un `$langues = @(...)` écrit au niveau du script range le tableau dans le paramètre
+# `[string]$Langues`, converti en « fr en » (vu dans la VM : tous les essais de console fondus en un seul). Un nom
+# de paramètre réaffecté sous une autre casse est refusé ; même casse (`$Exe = (Resolve-Path ...).Path`) : voulu.
 scripts_powershell() {
-  local erreurs=0 f
+  local erreurs=0 f verif
   [[ -n $PWSH ]] || { echo "pwsh absent (VANGUARD_PWSH pour le donner)"; return "$SAUTEE"; }
+  verif=$(
+    cat <<'EOF'
+$ErrorActionPreference = 'Stop'
+$f = $env:VG_PS_FICHIER; $nom = $env:VG_PS_NOM; $e = $null; $t = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$t, [ref]$e)
+if ($e.Count) { $e | ForEach-Object { "$nom : " + $_.Message }; exit 1 }
+if (-not $ast.ParamBlock) { exit 0 }
+$params = @{}
+foreach ($p in $ast.ParamBlock.Parameters) { $params[$p.Name.VariablePath.UserPath.ToLowerInvariant()] = $p }
+$fautes = foreach ($a in $ast.FindAll({ param($x) $x -is [System.Management.Automation.Language.AssignmentStatementAst] -or $x -is [System.Management.Automation.Language.ForEachStatementAst] }, $true)) {
+    $v = if ($a -is [System.Management.Automation.Language.ForEachStatementAst]) { $a.Variable } else { $a.Left }
+    while ($v -is [System.Management.Automation.Language.ConvertExpressionAst]) { $v = $v.Child }
+    if ($v -isnot [System.Management.Automation.Language.VariableExpressionAst]) { continue }
+    $chemin = $v.VariablePath
+    if (-not ($chemin.IsUnqualified -or $chemin.IsScript)) { continue }
+    $n = $chemin.UserPath -replace '^script:', ''
+    $p = $params[$n.ToLowerInvariant()]
+    if (-not $p -or $n -ceq $p.Name.VariablePath.UserPath) { continue }
+    # Dans une fonction, une affectation sans portée crée une variable à elle : le paramètre du script n'y est pas touché.
+    $dansFonction = $false
+    for ($q = $a.Parent; $q; $q = $q.Parent) { if ($q -is [System.Management.Automation.Language.FunctionDefinitionAst]) { $dansFonction = $true; break } }
+    if ($dansFonction -and -not $chemin.IsScript) { continue }
+    '{0}:{1} : ${2} est le paramètre [{3}]${4} (PowerShell ne distingue pas les majuscules) : à renommer' -f $nom, $v.Extent.StartLineNumber, $n, $p.StaticType.Name, $p.Name.VariablePath.UserPath
+}
+if ($fautes) { $fautes; exit 1 }
+EOF
+  )
   for f in outils/test-windows/*.ps1 extensions/exemples/*/*.ps1; do
-    "$PWSH" -NoProfile -NonInteractive -Command \
-      "\$e = \$null; \$t = \$null; [void][System.Management.Automation.Language.Parser]::ParseFile('$PWD/$f', [ref]\$t, [ref]\$e); if (\$e.Count) { \$e | ForEach-Object { '$f : ' + \$_.Message }; exit 1 }" ||
-      erreurs=$((erreurs + 1))
+    VG_PS_FICHIER=$PWD/$f VG_PS_NOM=$f "$PWSH" -NoProfile -NonInteractive -Command "$verif" || erreurs=$((erreurs + 1))
   done
   ((erreurs == 0))
 }

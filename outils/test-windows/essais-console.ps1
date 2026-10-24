@@ -396,7 +396,8 @@ New-Item -ItemType Directory -Force -Path $Sortie | Out-Null
 $Exe = (Resolve-Path -LiteralPath $Exe).Path
 $resume = Join-Path $Sortie 'resume.txt'
 Set-Content -LiteralPath $resume -Value @() -Encoding UTF8
-function Resume([string]$t) { Add-Content -LiteralPath $resume -Value $t -Encoding UTF8; Write-Host $t }
+# Une ligne par essai : un message d'erreur sur plusieurs lignes est remis sur une seule (le surveillant lit ligne à ligne).
+function Resume([string]$t) { $t = $t -replace '\s*[\r\n]+\s*', ' '; Add-Content -LiteralPath $resume -Value $t -Encoding UTF8; Write-Host $t }
 Add-Type -TypeDefinition $srcPilote
 # Ce script tourne en administrateur : chaque programme est pris par un chemin que l'utilisateur sans droits ne peut
 # pas détourner. Ni le PATH ni %SystemRoot% (l'un et l'autre réglables dans HKCU\Environment), ni un nom nu que
@@ -405,8 +406,8 @@ $systeme = [Environment]::SystemDirectory
 $PowerShell = Join-Path $systeme 'WindowsPowerShell\v1.0\powershell.exe'
 $limite = (Get-Date).AddMinutes([Math]::Max(1, $LimiteMinutes))
 $moi = $MyInvocation.MyCommand.Path
-$langues = @($Langues -split ',' | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ -in 'fr', 'en' })
-$hotes = @($Hotes -split ',' | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ -in 'conhost', 'wt' })
+$listeLangues = @($Langues -split ',' | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ -in 'fr', 'en' })
+$listeHotes = @($Hotes -split ',' | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ -in 'conhost', 'wt' })
 
 # Les vanguard.exe lancés depuis ce chemin-là, par leur numéro (jamais par le nom seul).
 function Vanguards { @(Get-CimInstance Win32_Process -Filter "Name = 'vanguard.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -eq $Exe }) }
@@ -427,17 +428,17 @@ function Trouver-Wt {
     }
     [pscustomobject]@{ Chemin = $null; Raison = "Windows Terminal installé hors de $apps : pas lancé en administrateur" }
 }
-$wt = if ($hotes -contains 'wt') { Trouver-Wt } else { $null }
-foreach ($hote in $hotes) {
-    foreach ($langue in $langues) {
-        if ((Get-Date) -gt $limite) { Resume "SAUTE $hote $langue C1-C8 délai des essais de console dépassé"; continue }
-        if ($hote -eq 'wt' -and -not $wt.Chemin) { Resume "SAUTE wt $langue C1-C8 $($wt.Raison)"; continue }
+$wt = if ($listeHotes -contains 'wt') { Trouver-Wt } else { $null }
+foreach ($hoteEssai in $listeHotes) {
+    foreach ($langueEssai in $listeLangues) {
+        if ((Get-Date) -gt $limite) { Resume "SAUTE $hoteEssai $langueEssai C1-C8 délai des essais de console dépassé"; continue }
+        if ($hoteEssai -eq 'wt' -and -not $wt.Chemin) { Resume "SAUTE wt $langueEssai C1-C8 $($wt.Raison)"; continue }
         $avant = @(Vanguards | ForEach-Object { [int]$_.ProcessId })
-        $fenetresAvant = if ($hote -eq 'wt') { @([PiloteConsoleVg]::Fenetres('CASCADIA_HOSTING_WINDOW_CLASS')) } else { @() }
-        $env:VANGUARD_LANG = $langue
-        $hoteProc = $null; $fenetre = 0; $cible = 0
+        $fenetresAvant = if ($hoteEssai -eq 'wt') { @([PiloteConsoleVg]::Fenetres('CASCADIA_HOSTING_WINDOW_CLASS')) } else { @() }
+        $env:VANGUARD_LANG = $langueEssai
+        $hoteProc = $null; $fenetreVg = 0; $pidVanguard = 0
         try {
-            if ($hote -eq 'conhost') {
+            if ($hoteEssai -eq 'conhost') {
                 # conhost.exe lancé soi-même : la vieille console, même si Windows Terminal est le terminal par défaut.
                 $hoteProc = Start-Process -FilePath (Join-Path $systeme 'conhost.exe') -ArgumentList "`"$Exe`"" `
                     -WorkingDirectory (Split-Path -Parent $Exe) -PassThru
@@ -445,49 +446,49 @@ foreach ($hote in $hotes) {
                 $hoteProc = Start-Process -FilePath $wt.Chemin -ArgumentList @('-w', 'new', "`"$Exe`"") -WorkingDirectory (Split-Path -Parent $Exe) -PassThru
             }
             $fin = (Get-Date).AddSeconds(30)
-            while ((Get-Date) -lt $fin -and (-not $fenetre -or -not $cible)) {
+            while ((Get-Date) -lt $fin -and (-not $fenetreVg -or -not $pidVanguard)) {
                 Start-Sleep -Milliseconds 300
-                if (-not $cible) { $v = @(Vanguards | Where-Object { [int]$_.ProcessId -notin $avant }); if ($v.Count -eq 1) { $cible = [int]$v[0].ProcessId } }
-                if (-not $fenetre) {
-                    if ($hote -eq 'conhost') {
+                if (-not $pidVanguard) { $v = @(Vanguards | Where-Object { [int]$_.ProcessId -notin $avant }); if ($v.Count -eq 1) { $pidVanguard = [int]$v[0].ProcessId } }
+                if (-not $fenetreVg) {
+                    if ($hoteEssai -eq 'conhost') {
                         $f = @([PiloteConsoleVg]::Fenetres('ConsoleWindowClass') | Where-Object { [PiloteConsoleVg]::ProcessusDe($_) -eq $hoteProc.Id })
                     } else {
                         $f = @([PiloteConsoleVg]::Fenetres('CASCADIA_HOSTING_WINDOW_CLASS') | Where-Object { $_ -notin $fenetresAvant })
                     }
-                    if ($f.Count -eq 1) { $fenetre = $f[0] }
+                    if ($f.Count -eq 1) { $fenetreVg = $f[0] }
                 }
             }
-            if (-not $cible -or -not $fenetre) {
+            if (-not $pidVanguard -or -not $fenetreVg) {
                 # Windows Terminal lancé par le chemin de son paquet qui refuse de s'ouvrir : l'outil, pas Vanguard.
-                if ($hote -eq 'wt' -and -not $cible -and $hoteProc.HasExited -and $hoteProc.ExitCode -ne 0) {
-                    Resume "SAUTE wt $langue C1-C8 Windows Terminal ne s'ouvre pas depuis son paquet (code $($hoteProc.ExitCode))"
+                if ($hoteEssai -eq 'wt' -and -not $pidVanguard -and $hoteProc.HasExited -and $hoteProc.ExitCode -ne 0) {
+                    Resume "SAUTE wt $langueEssai C1-C8 Windows Terminal ne s'ouvre pas depuis son paquet (code $($hoteProc.ExitCode))"
                     continue
                 }
-                $quoi = if (-not $cible) { 'Vanguard ne s''est pas lancé' } else { 'fenêtre de Vanguard introuvable' }
-                Resume "BUG $hote $langue C1 $quoi en 30 s"
+                $quoi = if (-not $pidVanguard) { 'Vanguard ne s''est pas lancé' } else { 'fenêtre de Vanguard introuvable' }
+                Resume "BUG $hoteEssai $langueEssai C1 $quoi en 30 s"
                 continue
             }
-            $rectInitial = ([PiloteConsoleVg]::Rect($fenetre)) -join ','
+            $rectDepart = ([PiloteConsoleVg]::Rect($fenetreVg)) -join ','
             $pilote = Start-Process -FilePath $PowerShell -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass',
-                '-File', "`"$moi`"", '-Etape', 'pilote', '-Cible', $cible, '-Fenetre', $fenetre, '-Hote', $hote, '-Langue', $langue, '-Sortie', "`"$Sortie`"", '-RectInitial', $rectInitial)
+                '-File', "`"$moi`"", '-Etape', 'pilote', '-Cible', $pidVanguard, '-Fenetre', $fenetreVg, '-Hote', $hoteEssai, '-Langue', $langueEssai, '-Sortie', "`"$Sortie`"", '-RectInitial', $rectDepart)
             $reste = [Math]::Max(5000, [int](($limite - (Get-Date)).TotalMilliseconds))
             if (-not $pilote.WaitForExit([Math]::Min($reste, 240000))) {
                 Stop-Process -Id $pilote.Id -Force -ErrorAction SilentlyContinue
-                Resume "BUG $hote $langue pilote arrêté : pas fini à temps"
+                Resume "BUG $hoteEssai $langueEssai pilote arrêté : pas fini à temps"
             }
-            $f = Join-Path $Sortie "pilote-$hote-$langue.txt"
+            $f = Join-Path $Sortie "pilote-$hoteEssai-$langueEssai.txt"
             if (Test-Path -LiteralPath $f) { Get-Content -LiteralPath $f -Encoding UTF8 | Where-Object { $_ } | ForEach-Object { Resume $_ } }
-            else { Resume "BUG $hote $langue pilote sans résultat" }
+            else { Resume "BUG $hoteEssai $langueEssai pilote sans résultat" }
         } catch {
-            Resume "BUG $hote $langue erreur du chef : $($_.Exception.Message)"
+            Resume "BUG $hoteEssai $langueEssai erreur du chef : $($_.Exception.Message)"
         } finally {
             # Tout ce que cet essai a ouvert est refermé : la fenêtre par son adresse, puis Vanguard par son numéro.
-            if ($cible -and (Get-Process -Id $cible -ErrorAction SilentlyContinue)) {
-                if ($fenetre -and [PiloteConsoleVg]::Existe($fenetre)) { [void][PiloteConsoleVg]::Fermer($fenetre); Start-Sleep -Seconds 2 }
-                Stop-Process -Id $cible -Force -ErrorAction SilentlyContinue
+            if ($pidVanguard -and (Get-Process -Id $pidVanguard -ErrorAction SilentlyContinue)) {
+                if ($fenetreVg -and [PiloteConsoleVg]::Existe($fenetreVg)) { [void][PiloteConsoleVg]::Fermer($fenetreVg); Start-Sleep -Seconds 2 }
+                Stop-Process -Id $pidVanguard -Force -ErrorAction SilentlyContinue
             }
-            if ($hote -eq 'wt' -and $fenetre -and [PiloteConsoleVg]::Existe($fenetre)) { [void][PiloteConsoleVg]::Fermer($fenetre) }
-            if ($hote -eq 'conhost' -and $hoteProc -and -not $hoteProc.HasExited) {
+            if ($hoteEssai -eq 'wt' -and $fenetreVg -and [PiloteConsoleVg]::Existe($fenetreVg)) { [void][PiloteConsoleVg]::Fermer($fenetreVg) }
+            if ($hoteEssai -eq 'conhost' -and $hoteProc -and -not $hoteProc.HasExited) {
                 Start-Sleep -Seconds 1
                 if (-not $hoteProc.HasExited) { Stop-Process -Id $hoteProc.Id -Force -ErrorAction SilentlyContinue }
             }

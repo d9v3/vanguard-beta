@@ -82,13 +82,23 @@ function Court([string[]]$arguments) {
 }
 
 function Noter-Commande($fichier, [string[]]$arguments, $code, $duree, $entree) {
-    [void]$script:etape.Commandes.Add([pscustomobject]@{ Fichier = $fichier; Arguments = ($arguments -join ' '); Code = $code; Duree = $duree; Entree = $entree })
+    [void]$script:etape.Commandes.Add([pscustomobject]@{ Fichier = $fichier; Arguments = ($arguments -join ' '); Code = $code; Duree = $duree; Entree = $entree; Voulu = $false })
     Journal ("vanguard {0} -> code {1}, {2:N1} s" -f ($arguments -join ' '), $code, $duree)
     $texte = if ($arguments) { 'vanguard ' + (Court $arguments) } else { 'vanguard (menu)' }
     if ($texte.Length -gt 58) { $texte = $texte.Substring(0, 57) + '…' }
     Write-Host ('      ' + $texte.PadRight(60)) -NoNewline
     if ($code -eq 0) { Write-Host '✔' -ForegroundColor Green -NoNewline } else { Write-Host "✖ code $code" -ForegroundColor Red -NoNewline }
     Write-Host (' {0,6:N1} s' -f $duree) -ForegroundColor DarkGray
+}
+
+# Une commande en échec : code non nul, sauf celui qu'elle rend par conception et que sa sortie a confirmé (Code-Voulu).
+function En-Echec { process { if ($_.Code -ne 0 -and -not $_.Voulu) { $_ } } }
+
+# Le code non nul que la commande `$fichier` rend par conception (autotest : 2, « non vérifié »), accepté seulement quand
+# sa sortie l'a confirmé (l'appelant l'a lue) et pour ce code-là : un autre code reste un échec.
+function Code-Voulu($fichier, [int]$code, [string]$raison) {
+    $c = @($script:etape.Commandes | Where-Object Fichier -eq $fichier)[-1]
+    if ($c -and $c.Code -eq $code) { $c.Voulu = $true; Info "vanguard $($c.Arguments) : code $code voulu ($raison), pas un échec" }
 }
 
 # Lance Vanguard sans interaction ; garde sortie, erreurs, code de retour et durée.
@@ -228,7 +238,7 @@ function Rapport {
     $nbBug = @($toutes | Where-Object Etat -eq 'bug').Count
     $nbSaute = @($toutes | Where-Object Etat -eq 'saute').Count
     $nbCmd = @($script:etapes | ForEach-Object { $_.Commandes }).Count
-    $nbEchec = @($script:etapes | ForEach-Object { $_.Commandes } | Where-Object Code -ne 0).Count
+    $nbEchec = @($script:etapes | ForEach-Object { $_.Commandes } | En-Echec).Count
     $duree = [math]::Round(((Get-Date) - $debutTest).TotalMinutes, 1)
     $windows = (Get-CimInstance Win32_OperatingSystem).Caption
     $reussi = $nbBug -eq 0 -and $nbEchec -eq 0
@@ -262,7 +272,7 @@ summary code{color:var(--texte);font-variant-ligatures:none}summary .d{color:var
 <div class="case"><b class="$(if ($nbSaute) { 'saute' } else { 'info' })">$nbSaute</b><span>sautées</span></div></div>
 "@)
     foreach ($e in $script:etapes) {
-        $rouge = @($e.Verifs | Where-Object Etat -eq 'bug').Count + @($e.Commandes | Where-Object Code -ne 0).Count
+        $rouge = @($e.Verifs | Where-Object Etat -eq 'bug').Count + @($e.Commandes | En-Echec).Count
         $classe = if ($rouge) { 'rouge' } elseif (-not $e.Verifs.Count -and -not $e.Commandes.Count) { 'grise' } else { '' }
         [void]$sb.Append("<section class=""etape $classe""><h2><span class=""pastille""></span>$(& $h $e.Titre)</h2>")
         if ($e.Verifs.Count) {
@@ -281,7 +291,7 @@ summary code{color:var(--texte);font-variant-ligatures:none}summary .d{color:var
                 $texte = if (Test-Path $chemin) { Get-Content $chemin -Raw -Encoding UTF8 } else { $null }
                 if ($texte) { $sortie += $ansi.Replace($texte, '') }
             }
-            $etat = if ($c.Code -eq 0) { '<span class="ok">✓</span>' } else { "<span class=""bug"">✗ code $($c.Code)</span>" }
+            $etat = if ($c.Code -eq 0) { '<span class="ok">✓</span>' } elseif ($c.Voulu) { "<span class=""ok"">✓ code $($c.Code) voulu</span>" } else { "<span class=""bug"">✗ code $($c.Code)</span>" }
             $entree = if ($c.Entree) { "<div class=""entree"">réponses tapées : $(& $h $c.Entree)</div>" } else { '' }
             $complete = if ($c.Arguments) { "vanguard $($c.Arguments)" } else { 'vanguard (menu)' }
             $commande = if ($c.Arguments) { 'vanguard ' + (Court ($c.Arguments -split ' ')) } else { 'vanguard (menu)' }
@@ -772,6 +782,10 @@ Etape 'Autodiagnostic : lectures croisées, rien changé'
 Lancer 'autotest-json' @('autotest', '--json')
 try {
     $a = Sortie 'autotest-json' | ConvertFrom-Json
+    # 2 = « non vérifié » (règles hors ligne, mesures trop jeunes) : voulu, seulement si le JSON le dit lui-même.
+    $codeAutotest = $script:etape.Commandes[-1].Code
+    if ($a.verdict -eq 'non-verifie' -and $a.code -eq 2) { Code-Voulu 'autotest-json' 2 'verdict « non-verifie »' }
+    if ($null -ne $a.code -and $a.code -ne $codeAutotest) { Bug "Autotest : code de sortie $codeAutotest, le rapport dit $($a.code)" }
     if ($a.outil -eq 'AUT-VAN-001') { Ok "Autotest : $($a.verdict), $($a.regles.ont_repondu)/$($a.regles.essayees) règles ont répondu" } else { Bug 'Autotest : rapport inattendu' }
     foreach ($c in @($a.croisees)) {
         if ($c.verdict -eq 'different') { Bug "Lecture croisée $($c.id) ($($c.outil)) : $($c.genre)" }
@@ -1802,7 +1816,7 @@ if ($journauxAdmin) {
 $nbOk = @($toutes | Where-Object Etat -eq 'ok').Count
 $nbBug = @($toutes | Where-Object Etat -eq 'bug').Count
 $nbSaute = @($toutes | Where-Object Etat -eq 'saute').Count
-$nbEchec = @($script:etapes | ForEach-Object { $_.Commandes } | Where-Object Code -ne 0).Count
+$nbEchec = @($script:etapes | ForEach-Object { $_.Commandes } | En-Echec).Count
 Write-Host ''
 Write-Host '  ──────────────────────────────────────────────────────────' -ForegroundColor DarkGray
 if ($nbBug -eq 0 -and $nbEchec -eq 0) { Write-Host "  ✔ Tout est passé : $nbOk vérification(s) réussie(s)." -ForegroundColor Green }

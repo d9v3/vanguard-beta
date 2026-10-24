@@ -473,13 +473,24 @@ public static class PiloteConsoleVg {
   public static long[] Fenetres(string c) { return new long[0]; }
 }
 EOF2
-    python3 - "$DEPOT/outils/test-windows/essais-console.ps1" "$T/faux-pilote.cs" "$T/essais-console-factice.ps1" <<'EOF2'
+    # Le chef aussi, sur la même fausse console : seuls changent ce que Linux n'a pas (System32, Program Files, la
+    # liste des processus par CIM). Le lancement de conhost y échoue (« BUG <hôte> <langue> erreur du chef »), Windows
+    # Terminal y est sauté : une ligne par hôte et par langue, ce qui suffit à voir les paramètres mal découpés.
+    python3 - "$DEPOT/outils/test-windows/essais-console.ps1" "$T/faux-pilote.cs" "$T/essais-console-factice.ps1" "$T/essais-console-chef.ps1" <<'EOF2'
 import re, sys
 s = open(sys.argv[1], encoding='utf-8-sig').read()
 faux = open(sys.argv[2], encoding='utf-8').read()
 s, n = re.subn(r"(?ms)^\$srcPilote = @'\n.*?^'@$", lambda m: "$srcPilote = @'\n" + faux + "'@", s, count=1)
 assert n == 1
 open(sys.argv[3], 'w', encoding='utf-8-sig').write(s)
+for avant, apres in [("$systeme = [Environment]::SystemDirectory", "$systeme = '/nulle-part/System32'"),
+                     ("[Environment]::GetFolderPath('ProgramFiles')", "'/nulle-part'"),
+                     ("Get-AppxPackage -Name 'Microsoft.WindowsTerminal*' -ErrorAction Stop", "@()")]:
+    assert s.count(avant) == 1, avant
+    s = s.replace(avant, apres)
+s, n = re.subn(r"(?m)^function Vanguards \{.*\}$", "function Vanguards { @() }", s, count=1)
+assert n == 1
+open(sys.argv[4], 'w', encoding='utf-8-sig').write(s)
 EOF2
     pilote_factice conhost-illisible conhost 0 6 40 & pilotes+=($!)
     pilote_factice wt-illisible wt 0 6 40 & pilotes+=($!)
@@ -602,9 +613,24 @@ EOF2
     PRIS=1 vmt --attendre "$ID"
     wait "$occupe"
     voir "VM occupée par un autre travail : attend son tour (pas d'échec à 1 s), puis fait, code 0" eval '((code == 0)) && dit "attend son tour" && dit "fait un autre travail"'
+    # 20. Le chef des essais de console lancé par le surveillant (-Langues fr,en, -Hotes par défaut) : une ligne par
+    #     hôte et par langue. Un tableau rangé dans un paramètre [string] du même nom (PowerShell ne distingue pas
+    #     $Langues de $langues) donnait une seule ligne « conhost wt fr en » et un Start-Process sans programme.
+    nouvelle_vm; sources 0 0 0 'OK x'
+    cp "$T/essais-console-chef.ps1" "$SRC/essais-console.ps1"
+    vmt --sans-attendre; tour
+    local R=$VMD/file-essais/$ID/resultats/console/resume.txt
+    voir "chef lancé par le surveillant : conhost et wt, fr et en, chacun à part" eval 'tr -d "\r" <"$R" | sed "1s/^\xef\xbb\xbf//" >"$T/chef-lignes" &&
+      grep -q "^BUG conhost fr erreur du chef" "$T/chef-lignes" && grep -q "^BUG conhost en erreur du chef" "$T/chef-lignes" &&
+      grep -q "^SAUTE wt fr C1-C8" "$T/chef-lignes" && grep -q "^SAUTE wt en C1-C8" "$T/chef-lignes" && (($(wc -l <"$T/chef-lignes") == 4)) ||
+      { cp "$R" "$T/sortie" 2>/dev/null; false; }'
+    "$PWSH" -NoProfile -NonInteractive -File "$T/essais-console-chef.ps1" -Exe "$T/vanguard.exe" -Sortie "$T/chef-direct" -Hotes wt,conhost \
+      -Langues ' EN , fr' >"$T/sortie" 2>&1
+    voir "chef, -Hotes wt,conhost -Langues « EN , fr » : quatre essais, dans l'ordre demandé" eval 'tr -d "\r" <"$T/chef-direct/resume.txt" | sed "1s/^\xef\xbb\xbf//" | cut -d" " -f1-3 |
+      tr "\n" "|" | grep -qx "SAUTE wt en|SAUTE wt fr|BUG conhost en|BUG conhost fr|"'
   else
     for s in "tout passe" "problèmes" "empreinte fausse" "liste fermée" ".partiel" "deux travaux" "témoin" "délai" "sautés seuls" "--sans-console" \
-      "boucle tuée" "témoin d'une autre passe" "VM occupée" "pilote factice"; do sauter "$s"; done
+      "boucle tuée" "témoin d'une autre passe" "VM occupée" "pilote factice" "chef des essais de console"; do sauter "$s"; done
   fi
 
   # 18. Pris, puis la VM dit faire autre chose (battement frais) ou se tait : vm-tester.sh n'attend pas tout le délai.
