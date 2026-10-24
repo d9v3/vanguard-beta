@@ -186,11 +186,14 @@ fn juger_pilotes(pilotes: &[(Pilote, Fichier)], liste: Option<&HashSet<[u8; 32]>
         ));
     }
     let Some(liste) = liste else {
-        constats.push(impossible(
+        // Typée : un Windows tout juste installé, sans Internet ou hors ligne, n'a pas encore de copie de la liste ;
+        // l'autotest compte sinon ce constat parmi les « non vérifiés sans raison ».
+        constats.push(crate::machine::impossible_par(
             CAT,
+            crate::modele::Raison::Introuvable,
             tr!(
-                "pilotes vulnérables connus : liste LOLDrivers indisponible (sans Internet ?)",
-                "known vulnerable drivers: LOLDrivers list unavailable (no Internet?)"
+                "Impossible de vérifier (pilotes vulnérables connus : liste LOLDrivers indisponible, sans Internet ?).",
+                "Could not check (known vulnerable drivers: LOLDrivers list unavailable, no Internet?)."
             ),
         ));
         return constats;
@@ -211,12 +214,14 @@ fn juger_pilotes(pilotes: &[(Pilote, Fichier)], liste: Option<&HashSet<[u8; 32]>
             ),
         ));
         if illisibles > 0 {
-            constats.push(impossible(
+            let quoi = trf!(
+                "pilotes vulnérables connus : {illisibles} fichier(s) de pilote illisible(s), comparés à aucune liste",
+                "known vulnerable drivers: {illisibles} unreadable driver file(s), compared with no list"
+            );
+            constats.push(crate::machine::impossible_par(
                 CAT,
-                &trf!(
-                    "pilotes vulnérables connus : {illisibles} fichier(s) de pilote illisible(s), comparés à aucune liste",
-                    "known vulnerable drivers: {illisibles} unreadable driver file(s), compared with no list"
-                ),
+                crate::modele::Raison::Illisible(quoi.clone()),
+                trf!("Impossible de vérifier ({quoi}).", "Could not check ({quoi})."),
             ));
         }
     } else {
@@ -443,6 +448,14 @@ mod tests {
             let c = juger_pilotes(&[(p("cache", f), Fichier::Illisible)], Some(&liste));
             assert_eq!(c[0].probleme, Some(Niveau::Eleve), "{f}");
             assert!(c.iter().any(|c| !c.verifie), "{f}");
+            // Avec sa raison : l'autotest compte les « non vérifiés » sans raison typée.
+            assert!(
+                c.iter().all(|c| !matches!(
+                    c.etat(),
+                    crate::modele::Etat::NonVerifie(crate::modele::Raison::NonPrecisee)
+                )),
+                "{f}"
+            );
         }
         // Absent (déclaré, pas installé) : ni compté ni signalé.
         let c = juger_pilotes(
@@ -453,6 +466,11 @@ mod tests {
         // Sans la liste : dit non vérifié, jamais sain.
         let c = juger_pilotes(&sains, None);
         assert!(!c[1].verifie);
+        // Hors ligne sur un Windows tout juste installé (aucune copie de la liste) : non vérifié avec sa raison.
+        assert_eq!(
+            c[1].etat(),
+            crate::modele::Etat::NonVerifie(crate::modele::Raison::Introuvable)
+        );
     }
 }
 

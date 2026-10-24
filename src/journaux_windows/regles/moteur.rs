@@ -158,6 +158,8 @@ pub(crate) enum Libelle {
     Changement,
     Numeros,
     Serveur,
+    Installation,
+    PremiereSession,
 }
 
 impl Libelle {
@@ -185,6 +187,8 @@ impl Libelle {
             Libelle::Changement => ("changement", "change"),
             Libelle::Numeros => ("numéros", "record numbers"),
             Libelle::Serveur => ("serveur", "server"),
+            Libelle::Installation => ("Windows installé le", "Windows installed on"),
+            Libelle::PremiereSession => ("première session le", "first sign-in on"),
         }
     }
 }
@@ -198,6 +202,10 @@ pub(crate) struct Indice {
     pub gravite: Gravite,
     pub pourquoi: Texte,
     pub details: Vec<(Libelle, String)>,
+    /// Ce que fait aussi la mise en route de Windows (le compte de l'ordinateur crée le premier compte et le met
+    /// administrateur) : le pourquoi à dire si l'événement tombe pendant l'installation (`Options::installation`).
+    /// Rien : l'événement se juge seul.
+    pub mise_en_route: Option<Texte>,
 }
 
 /// La forme d'un volet de règle.
@@ -291,6 +299,9 @@ pub(crate) enum Reserve {
     /// Un autre antivirus est inscrit au Centre de sécurité : Defender se met alors en retrait de lui-même ; mais un
     /// faux antivirus inscrit fait de même (l'outil defendnot), et c'est l'état d'aujourd'hui qui juge le passé.
     AutreAntivirus,
+    /// Fait par le compte de l'ordinateur, comme la mise en route de Windows crée le premier compte ; la date de
+    /// l'installation n'est pas connue ici (un dossier rapporté, ou illisible) : l'alerte reste.
+    MiseEnRoutePossible,
 }
 
 /// Un événement à l'appui d'une trouvaille, pour le retrouver.
@@ -326,6 +337,8 @@ pub(crate) struct Trouvaille {
     /// Les plus anciens, au plus `BornesMoteur::reperes`.
     pub reperes: Vec<Repere>,
     pub reserves: BTreeSet<Reserve>,
+    /// Le pourquoi « pendant l'installation de Windows », si chacun de ses événements en a un (`Indice`).
+    pub mise_en_route: Option<Texte>,
 }
 
 /// Pourquoi une règle n'a pas pu tout voir.
@@ -419,6 +432,9 @@ pub(crate) struct Options {
     pub depuis: Option<DateTime<Utc>>,
     /// Microsoft Defender est-il l'antivirus de l'ordinateur ? Rien : on ne le sait pas (dossier rapporté).
     pub defender_antivirus: Option<bool>,
+    /// L'installation de Windows sur cet ordinateur (InstallDate du registre). Rien : pas connue (dossier rapporté,
+    /// valeur illisible) ; ce que fait aussi la mise en route reste alors une alerte, avec sa réserve.
+    pub installation: Option<DateTime<Utc>>,
 }
 
 /// Les bornes du moteur.
@@ -560,6 +576,14 @@ pub(crate) struct Moteur {
     arrets_au_dela: u64,
     /// Les sous-catégories d'audit réduites par un 4719 (GUID en minuscules), au plus `MAX_REDUITES`.
     audit_reduit: BTreeSet<String>,
+    /// La première session ouverte par une personne (`session_d_une_personne`), tous noms d'ordinateur confondus :
+    /// la mise en route crée le premier compte avant qu'il ouvre sa session, et le nom de l'ordinateur change souvent
+    /// pendant elle. La date d'installation n'est connue que de la source vivante, un seul ordinateur.
+    premiere_session: Option<DateTime<Utc>>,
+    /// Une session d'une personne sans date : on ne sait plus si elle précède, rien n'est admis.
+    session_sans_date: bool,
+    /// Un 1102 lu (journal de sécurité vidé) : les sessions d'avant ont pu disparaître avec lui.
+    securite_videe: bool,
 }
 
 /// La clé d'un journal (sans casse).
@@ -612,6 +636,9 @@ impl Moteur {
             arrets: Vec::new(),
             arrets_au_dela: 0,
             audit_reduit: BTreeSet::new(),
+            premiere_session: None,
+            session_sans_date: false,
+            securite_videe: false,
         }
     }
 
@@ -658,6 +685,18 @@ impl Moteur {
             && self.audit_reduit.len() < MAX_REDUITES
         {
             self.audit_reduit.insert(guid);
+        }
+        if e.id == 1102
+            && e.journal.eq_ignore_ascii_case("Security")
+            && e.fournisseur.eq_ignore_ascii_case("Microsoft-Windows-Eventlog")
+        {
+            self.securite_videe = true;
+        }
+        if session_d_une_personne(e) {
+            match e.date {
+                Some(d) => self.premiere_session = Some(self.premiere_session.map_or(d, |p| p.min(d))),
+                None => self.session_sans_date = true,
+            }
         }
         let Some(cibles) = self.index.get(&e.id) else {
             return;
@@ -782,6 +821,7 @@ impl Moteur {
                     None => manques.push(Manque::DefenderInconnu),
                 }
             }
+            self.juger_mise_en_route(&mut trouvailles);
             trouvailles.sort_by(|a, b| {
                 b.gravite
                     .cmp(&a.gravite)
@@ -807,6 +847,46 @@ impl Moteur {
         sortie
     }
 
+    /// Ce que fait aussi la mise en route de Windows (le compte de l'ordinateur crée le premier compte et le met
+    /// administrateur) : une information quand c'est pendant l'installation, une alerte avec sa réserve quand la
+    /// date d'installation n'est pas connue, une alerte seule ensuite. SYSTEM est aussi ce qu'obtient un attaquant :
+    /// la fenêtre est courte (`pendant_la_mise_en_route`), et l'absence de session ne prouve rien si le journal de
+    /// sécurité ne remonte pas jusqu'à l'installation : InstallDate s'écrit sans laisser de trace (un attaquant SYSTEM
+    /// peut la mettre à aujourd'hui), mais le journal d'un Windows installé depuis longtemps commence bien avant, et
+    /// un journal vidé pour faire croire le contraire laisse son 1102.
+    fn juger_mise_en_route(&self, trouvailles: &mut [Trouvaille]) {
+        let debut_securite = self.journaux.get(&cle_journal("Security")).and_then(|s| s.premier);
+        for t in trouvailles.iter_mut() {
+            let Some(pourquoi) = t.mise_en_route else { continue };
+            // Une information de toute façon (un compte créé, par SYSTEM ou non) : rien à expliquer.
+            let alerte = t.gravite > Gravite::Info;
+            match self.options.installation {
+                Some(installation) => {
+                    let session = self.premiere_session;
+                    let couvert = !self.securite_videe
+                        && !self.session_sans_date
+                        && lu_depuis_l_installation(self.options.depuis, debut_securite, installation);
+                    if couvert && pendant_la_mise_en_route(t, installation, session) {
+                        t.gravite = Gravite::Info;
+                        t.pourquoi = pourquoi;
+                    } else if alerte {
+                        // Ce qui l'écarte de la mise en route, pour en juger soi-même.
+                        let date =
+                            |d: DateTime<Utc>| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string();
+                        t.details.push((Libelle::Installation, date(installation)));
+                        if let Some(s) = session.filter(|s| t.dernier.is_some_and(|d| d > *s)) {
+                            t.details.push((Libelle::PremiereSession, date(s)));
+                        }
+                    }
+                }
+                None if alerte => {
+                    t.reserves.insert(Reserve::MiseEnRoutePossible);
+                }
+                None => {}
+            }
+        }
+    }
+
     /// Ce que chaque journal a donné (tous ceux vus), pour la couverture.
     pub(crate) fn journaux(&self) -> Vec<StatJournal> {
         let mut v: Vec<StatJournal> = self.journaux.values().cloned().collect();
@@ -817,6 +897,69 @@ impl Moteur {
 
 /// Sous-catégories d'audit réduites gardées au plus : Windows en a une soixantaine.
 const MAX_REDUITES: usize = 128;
+
+/// Avant la date d'installation : InstallDate peut être récrite après la mise en route, par les mises à jour des
+/// premières heures (sur un vrai Windows 11 installé le jour même, une heure après la création du premier compte).
+/// L'attaque que cette marge laisserait passer aurait eu lieu avant toute session d'une personne (exigé aussi).
+const AVANT_INSTALLATION: i64 = 24 * 3600;
+
+/// Après la date d'installation : la mise en route peut attendre des heures qu'on choisisse son compte (Windows
+/// installé le soir, le compte créé le lendemain matin), jamais plus d'un jour.
+const APRES_INSTALLATION: i64 = 24 * 3600;
+
+/// Une ouverture de session par une personne (4624 au clavier, au Bureau à distance ou en cache, d'un compte local
+/// ou du domaine, S-1-5-21-…, ou d'Entra ID, S-1-12-1-…) : celles des comptes de service et des comptes virtuels ne
+/// comptent pas, ni le compte temporaire de la mise en route elle-même (« defaultuser0 », « defaultuser100000 »),
+/// qu'elle ouvre avant de créer le vrai.
+fn session_d_une_personne(e: &EvenementWindows) -> bool {
+    if e.id != 4624
+        || !e.journal.eq_ignore_ascii_case("Security")
+        || !e
+            .fournisseur
+            .eq_ignore_ascii_case("Microsoft-Windows-Security-Auditing")
+    {
+        return false;
+    }
+    let Some(type_) = e.champ("LogonType").and_then(nombre) else {
+        return false;
+    };
+    let sid = e.champ("TargetUserSid").unwrap_or_default().trim().to_ascii_uppercase();
+    let nom = e.champ("TargetUserName").unwrap_or_default().trim().to_lowercase();
+    let temporaire = nom
+        .strip_prefix("defaultuser")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|o| o.is_ascii_digit()));
+    matches!(type_, 2 | 10 | 11) && (sid.starts_with("S-1-5-21-") || sid.starts_with("S-1-12-1-")) && !temporaire
+}
+
+/// Le journal de sécurité lu remonte jusqu'à l'installation : sans cela, l'absence de session ne prouve rien (lu
+/// depuis une date plus récente, ou un journal qui a tourné). La période demandée commence avant la fenêtre, et le
+/// plus ancien événement lu tombe autour de l'installation (un Windows installé depuis longtemps a un journal plus
+/// ancien : une InstallDate récrite à aujourd'hui ne l'y fait pas passer).
+fn lu_depuis_l_installation(
+    depuis: Option<DateTime<Utc>>,
+    debut_securite: Option<DateTime<Utc>>,
+    installation: DateTime<Utc>,
+) -> bool {
+    let fenetre = installation - chrono::Duration::seconds(AVANT_INSTALLATION);
+    depuis.is_none_or(|d| d <= fenetre)
+        && debut_securite.is_some_and(|d| d >= fenetre && d <= installation + chrono::Duration::seconds(MARGE_JOURNAL))
+}
+
+/// Le journal de sécurité commence avec l'installation (avant InstallDate, sur un vrai Windows 11) ; une heure de
+/// marge après elle.
+const MARGE_JOURNAL: i64 = 3600;
+
+/// Tous les événements de la trouvaille tombent dans la mise en route : à un jour près de la date d'installation, et
+/// avant que quiconque ait ouvert une session sur cet ordinateur. Un événement sans date n'y tombe jamais (et en
+/// exclut sa trouvaille : `ajouter`).
+fn pendant_la_mise_en_route(t: &Trouvaille, installation: DateTime<Utc>, session: Option<DateTime<Utc>>) -> bool {
+    let (Some(premier), Some(dernier)) = (t.premier, t.dernier) else {
+        return false;
+    };
+    premier >= installation - chrono::Duration::seconds(AVANT_INSTALLATION)
+        && dernier <= installation + chrono::Duration::seconds(APRES_INSTALLATION)
+        && session.is_none_or(|s| dernier <= s)
+}
 
 /// La sous-catégorie qu'un 4719 réduit (succès ou échec retiré : %%8448, %%8450), en minuscules.
 fn audit_reduit(e: &EvenementWindows) -> Option<String> {
@@ -985,8 +1128,14 @@ fn ajouter(
             dernier: None,
             reperes: Vec::new(),
             reserves: BTreeSet::new(),
+            mise_en_route: indice.mise_en_route,
         }),
     };
+    // Un seul de ses événements jugé seul suffit à ce que la trouvaille le soit ; un événement sans date ne se place
+    // pas dans la mise en route.
+    if indice.mise_en_route.is_none() || e.date.is_none() {
+        t.mise_en_route = None;
+    }
     let plus_ancien = t
         .reperes
         .first()
@@ -1373,6 +1522,7 @@ fn juger_rafales(
                 dernier: appui.last().map(|d| d.date),
                 reperes,
                 reserves,
+                mise_en_route: None,
             },
         );
     }
@@ -1483,6 +1633,7 @@ fn trous(
                         dernier: t.apres,
                         reperes: Vec::new(),
                         reserves,
+                        mise_en_route: None,
                     },
                 );
             }
@@ -1526,6 +1677,7 @@ fn trous(
                             dernier: None,
                             reperes: Vec::new(),
                             reserves: BTreeSet::new(),
+                            mise_en_route: None,
                         },
                     );
                 }

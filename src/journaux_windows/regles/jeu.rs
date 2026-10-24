@@ -62,6 +62,15 @@ fn indice(objet: String, gravite: Gravite, pourquoi: Texte, details: Vec<(Libell
         gravite,
         pourquoi,
         details: details.into_iter().filter(|(_, v)| rempli(v)).collect(),
+        mise_en_route: None,
+    })
+}
+
+/// Un indice que la mise en route de Windows donne aussi, avec le pourquoi à dire si c'est elle.
+fn ou_mise_en_route(i: Option<Indice>, e: &EvenementWindows, pendant: Texte) -> Option<Indice> {
+    i.map(|i| Indice {
+        mise_en_route: par_l_ordinateur(e).then_some(pendant),
+        ..i
     })
 }
 
@@ -550,6 +559,13 @@ fn journal_des_evenements_change(e: &EvenementWindows) -> Option<Indice> {
 // EVT-ADM-001 : un administrateur de plus
 // ---------------------------------------------------------------------------------------------------------------
 
+/// L'auteur est le compte de l'ordinateur lui-même (SYSTEM, S-1-5-18, que le journal écrit « DOMAINE\ORDINATEUR$ ») :
+/// c'est lui qui, pendant la mise en route de Windows, crée le premier compte et le met administrateur. C'est aussi ce
+/// qu'obtient un attaquant qui a pris la main : seulement pendant l'installation (`moteur::Options::installation`).
+fn par_l_ordinateur(e: &EvenementWindows) -> bool {
+    champ(e, "SubjectUserSid").eq_ignore_ascii_case("S-1-5-18")
+}
+
 fn compte_cree(e: &EvenementWindows) -> Option<Indice> {
     let nom = champ(e, "TargetUserName");
     let details = vec![(Libelle::Compte, nom.to_string()), (Libelle::Auteur, auteur(e))];
@@ -566,11 +582,18 @@ fn compte_cree(e: &EvenementWindows) -> Option<Indice> {
             details,
         );
     }
-    indice(
-        format!("cree:{}", nom.to_lowercase()),
-        Gravite::Info,
-        ("un compte a été créé", "an account was created"),
-        details,
+    ou_mise_en_route(
+        indice(
+            format!("cree:{}", nom.to_lowercase()),
+            Gravite::Info,
+            ("un compte a été créé", "an account was created"),
+            details,
+        ),
+        e,
+        (
+            "un compte a été créé pendant l'installation de Windows, par le compte de l'ordinateur : la mise en route crée ainsi le premier compte",
+            "an account was created during Windows setup, by the computer account: setup creates the first account this way",
+        ),
     )
 }
 
@@ -644,7 +667,7 @@ fn membre(e: &EvenementWindows) -> String {
 fn ajout_groupe_local(e: &EvenementWindows) -> Option<Indice> {
     let sid = champ(e, "TargetSid");
     let &(s, gravite, pourquoi) = GROUPES_LOCAUX.iter().find(|(s, _, _)| s.eq_ignore_ascii_case(sid))?;
-    indice(
+    let i = indice(
         format!("groupe:{}:{}", s.to_lowercase(), membre(e).to_lowercase()),
         gravite,
         pourquoi,
@@ -653,8 +676,24 @@ fn ajout_groupe_local(e: &EvenementWindows) -> Option<Indice> {
             (Libelle::Membre, membre(e)),
             (Libelle::Auteur, auteur(e)),
         ],
+    );
+    // La mise en route ne met le premier compte que parmi les Administrateurs (et les Utilisateurs, que la règle ne
+    // regarde pas) : un ajout au Bureau à distance ou aux Opérateurs de sauvegarde reste une alerte.
+    if !s.eq_ignore_ascii_case(ADMINISTRATEURS) {
+        return i;
+    }
+    ou_mise_en_route(
+        i,
+        e,
+        (
+            "un compte a été ajouté au groupe des Administrateurs pendant l'installation de Windows, par le compte de l'ordinateur : la mise en route y met ainsi le premier compte",
+            "an account was added to the Administrators group during Windows setup, by the computer account: setup puts the first account there this way",
+        ),
     )
 }
+
+/// Le groupe local des Administrateurs.
+const ADMINISTRATEURS: &str = "S-1-5-32-544";
 
 fn ajout_groupe_domaine(e: &EvenementWindows) -> Option<Indice> {
     let sid = champ(e, "TargetSid").to_ascii_uppercase();
@@ -854,7 +893,11 @@ fn rdp_authentifie(e: &EvenementWindows) -> Option<Indice> {
 /// l'Explorateur qui monte un lecteur réseau avec un autre compte, le client Bureau à distance (mstsc) et la
 /// console d'administration (mmc) ; vus dans les échantillons publics sains : wininit (l'hôte des pilotes de
 /// polices, compte UMFD-0, à chaque démarrage), taskeng (les tâches de Windows 7), et la première mise en route
-/// (msoobe, CloudExperienceHostBroker), et le spouleur d'impression (une imprimante réseau). Ailleurs, rien de
+/// (msoobe, CloudExperienceHostBroker), et le spouleur d'impression (une imprimante réseau) ; vus sur un Windows 11
+/// installé le jour même : UserOOBEBroker (la mise en route, qui connecte le compte Microsoft) et le serveur OpenSSH
+/// de Windows (System32\OpenSSH, une fonctionnalité facultative de Windows : chaque connexion SSH par mot de passe
+/// passe par un 4648 de sshd, sous SYSTEM, pour le compte qui se connecte ou pour son compte virtuel « sshd_<pid> »).
+/// Une connexion SSH elle-même se juge ailleurs (échecs en rafale : EVT-MDP-001). Ailleurs, rien de
 /// Windows ne le fait : un programme inhabituel l'a fait. Ce que la règle ne voit pas : « Exécuter en tant que »
 /// et ses semblables passent par le service d'ouverture de session secondaire (svchost), qu'elle ne peut pas
 /// distinguer de l'ordinaire.
@@ -873,9 +916,16 @@ const IDENTIFIANTS_ATTENDUS: &[&str] = &[
     "c:\\windows\\system32\\wininit.exe",
     "c:\\windows\\system32\\taskeng.exe",
     "c:\\windows\\system32\\oobe\\msoobe.exe",
+    "c:\\windows\\system32\\oobe\\useroobebroker.exe",
+    "c:\\windows\\system32\\openssh\\sshd.exe",
     "c:\\windows\\system32\\cloudexperiencehostbroker.exe",
     "c:\\windows\\system32\\spoolsv.exe",
 ];
+
+/// Des noms de la liste qu'un programme légitime porte aussi ailleurs, et où : OpenSSH pour Windows publié par
+/// Microsoft s'installe aussi dans Program Files (une version plus récente que celle de Windows), son sshd.exe n'y
+/// est pas déguisé (seulement « à savoir », comme tout programme installé hors de la liste). Ailleurs, il l'est.
+const NOMS_PARTAGES: &[(&str, &[&str])] = &[("sshd", &["c:\\program files\\", "c:\\program files (x86)\\"])];
 
 /// Des dossiers d'où un programme qui se sert d'autres identifiants est douteux (avec les temporaires).
 const DOUTEUX: &[&str] = &["\\downloads\\", "\\users\\public\\", "\\$recycle.bin\\", "\\perflogs\\"];
@@ -904,7 +954,10 @@ fn autres_identifiants(e: &EvenementWindows) -> Option<Indice> {
     // Un programme qui porte le nom d'un des programmes de Windows de la liste, ailleurs que chez lui, se fait
     // passer pour lui.
     let nom = nom_programme(&bas);
-    let deguise = IDENTIFIANTS_ATTENDUS.iter().any(|a| nom_programme(a) == nom);
+    let partage = NOMS_PARTAGES
+        .iter()
+        .any(|(n, dossiers)| *n == nom && dossiers.iter().any(|d| bas.starts_with(d)));
+    let deguise = !partage && IDENTIFIANTS_ATTENDUS.iter().any(|a| nom_programme(a) == nom);
     let douteux = deguise || TEMPORAIRES.iter().chain(DOUTEUX).any(|d| bas.contains(d));
     let (gravite, pourquoi) = if est_interprete(&nom_programme(&bas)) || douteux {
         (
@@ -1111,12 +1164,88 @@ const TELECHARGER_EN_MEMOIRE: &[&str] = &["downloadstring", "downloaddata"];
 const DECODER: &[&str] = &["frombase64string"];
 const CHARGER: &[&str] = &["reflection.assembly]::load", "::load(", "-bxor"];
 
-/// Ce qui coupe une défense de Defender ou efface un journal.
-const DESARMER: &[&str] = &[
+/// Ce qui réserve ou écrit de la mémoire, puis ce qui y lance un fil d'exécution : le chargeur de code en mémoire
+/// (« shellcode ») de PowerShell le plus courant, sans fichier. PowerShell met ces noms parmi ceux qu'il juge
+/// suspects (Avertissement) ; seuls, sans lancement, ils sont aussi ceux d'outils d'administration.
+const ALLOUER: &[&str] = &["virtualalloc", "writeprocessmemory"];
+const LANCER_FIL: &[&str] = &["createthread", "createremotethread", "getdelegateforfunctionpointer"];
+
+/// Ce qui prend le jeton d'un autre programme pour agir sous son compte, puis ce qui s'en sert.
+const COPIER_JETON: &[&str] = &["duplicatetokenex", "impersonateloggedonuser", "setthreadtoken"];
+const SE_SERVIR_DU_JETON: &[&str] = &[
+    "createprocesswithtoken",
+    "openprocesstoken",
+    "openthreadtoken",
+    // Une ouverture de session avec un mot de passe, puis se faire passer pour ce compte dans le programme même.
+    "logonuser",
+];
+
+/// Ce qui lit le clavier touche par touche, et ce qui traduit la touche : un enregistreur de frappe.
+const LIRE_CLAVIER: &[&str] = &["getasynckeystate"];
+const TRADUIRE_TOUCHE: &[&str] = &["getkeyboardstate", "mapvirtualkey", "tounicode"];
+
+/// Ce qui demande des identifiants dans une fenêtre, les vérifie, puis en tire le mot de passe en clair : la fausse
+/// fenêtre de connexion (ATT&CK T1056.002), qui redemande tant que le mot de passe est faux.
+const DEMANDER: &[&str] = &["promptforcredential", "get-credential"];
+const VERIFIER_MOT_DE_PASSE: &[&str] = &["validatecredentials"];
+const EN_CLAIR: &[&str] = &["getnetworkcredential"];
+
+/// Les réglages qui désarment Defender, par leur nom. Defender les déclare lui-même dans son module de PowerShell
+/// (ConfigDefender : un module CDXML que Windows génère, que PowerShell journalise en Avertissement dès qu'on s'en
+/// sert, Get-MpComputerStatus compris) : « ${DisableRealtimeMonitoring} », « ContainsKey('DisableRealtimeMonitoring') »,
+/// « Name = 'DisableRealtimeMonitoring' ». Seul compte un nom employé pour régler (`reglage_employe`).
+const REGLAGES_DE_DEFENDER: &[&str] = &[
     "disablerealtimemonitoring",
     "disableioavprotection",
     "disablebehaviormonitoring",
     "disablescriptscanning",
+    "disablearchivescanning",
+    "disableblockatfirstseen",
+];
+
+/// `reglage` employé pour régler, et pas seulement déclaré : passé en paramètre (« -DisableRealtimeMonitoring $true »,
+/// « -DisableRealtimeMonitoring:1 »), nommé pour le registre (« -Name DisableRealtimeMonitoring », « -Name
+/// 'DisableRealtimeMonitoring' », « reg add … /v DisableRealtimeMonitoring »), affecté (« $p.DisableRealtimeMonitoring =
+/// $true », « @{DisableRealtimeMonitoring=1} », « 'DisableRealtimeMonitoring' = 1 ») ou passé à une méthode
+/// (« SetValue('…', 'DisableRealtimeMonitoring', 1) »). `bas` : la forme comparable du script (`script_bas`).
+fn reglage_employe(bas: &str, reglage: &str) -> bool {
+    let guillemets: &[char] = &['\'', '"'];
+    bas.match_indices(reglage).any(|(i, _)| {
+        let avant = &bas[..i];
+        let apres = bas[i + reglage.len()..].trim_start_matches(guillemets).trim_start();
+        let nomme = avant
+            .trim_end_matches(guillemets)
+            .trim_end()
+            .trim_end_matches('(')
+            .trim_end();
+        // Affecté par son index : « $h['DisableRealtimeMonitoring'] = $true », puis « Set-MpPreference @h ».
+        let par_index = apres
+            .strip_prefix(']')
+            .map(str::trim_start)
+            .is_some_and(|a| a.starts_with('=') && !a.starts_with("=="));
+        // Donné par position, suivi de sa valeur : « Set-ItemProperty $k DisableRealtimeMonitoring 1 ».
+        let valeur = apres.starts_with(|c: char| c.is_ascii_digit() || c == '$');
+        // Le nom d'une table de paramètres (« @{Path=$k;Name='DisableRealtimeMonitoring';Value=1} », puis
+        // « Set-ItemProperty @a ») ; celle du module CDXML porte aussi « ParameterType », qu'aucune commande de
+        // réglage n'accepte.
+        let table = (nomme.ends_with("name=") || nomme.ends_with("name =")) && {
+            let suite: String = apres.chars().take_while(|&c| c != '}').collect();
+            suite.contains("value") && !suite.contains("parametertype")
+        };
+        par_index
+            || valeur
+            || table
+            || avant.ends_with('-')
+            || nomme.ends_with("-name")
+            || nomme.ends_with("-name:")
+            || nomme.ends_with("/v")
+            || (apres.starts_with('=') && !apres.starts_with("=="))
+            || apres.starts_with(',')
+    })
+}
+
+/// Ce qui coupe une défense de Defender (avec `REGLAGES_DE_DEFENDER`) ou efface un journal.
+const DESARMER: &[&str] = &[
     "add-mppreference -exclusion",
     "clear-eventlog",
     "wevtutil cl",
@@ -1124,8 +1253,6 @@ const DESARMER: &[&str] = &[
     "remove-eventlog",
     "enablescriptblocklogging",
     "cachedgrouppolicysettings",
-    "disablearchivescanning",
-    "disableblockatfirstseen",
 ];
 
 fn un<M: AsRef<str>>(s: &Script, motifs: &[M]) -> bool {
@@ -1191,6 +1318,18 @@ pub(crate) fn script_suspect(texte: &str) -> Option<(&'static str, Gravite, Text
             ),
         ));
     }
+    // Sans le nom de LSASS (visé par son numéro de processus) : le même vidage, que PowerShell ne fait que marquer
+    // Avertissement ; aucun script ordinaire ne vide la mémoire d'un programme.
+    if s.contient(mot_masque!("minidumpwritedump")) {
+        return Some((
+            "lsass",
+            Gravite::Alerte,
+            (
+                "un script vide la mémoire d'un programme : la façon de prendre les identifiants de LSASS",
+                "a script dumps a program's memory: how LSASS credentials get taken",
+            ),
+        ));
+    }
     if s.contient("virtualprotect") && s.contient("getprocaddress") {
         return Some((
             "memoire",
@@ -1201,7 +1340,47 @@ pub(crate) fn script_suspect(texte: &str) -> Option<(&'static str, Gravite, Text
             ),
         ));
     }
-    if un(&s, DESARMER) {
+    if un(&s, ALLOUER) && un(&s, LANCER_FIL) {
+        return Some((
+            "memoire",
+            Gravite::Alerte,
+            (
+                "un script réserve de la mémoire et y lance du code (VirtualAlloc, CreateThread) : la façon de charger un programme d'attaque sans fichier",
+                "a script reserves memory and runs code in it (VirtualAlloc, CreateThread): how an attack program gets loaded without a file",
+            ),
+        ));
+    }
+    if un(&s, COPIER_JETON) && un(&s, SE_SERVIR_DU_JETON) {
+        return Some((
+            "jeton",
+            Gravite::Alerte,
+            (
+                "un script prend le jeton d'un autre programme pour agir sous son compte (DuplicateTokenEx, ImpersonateLoggedOnUser) : une élévation ou un vol de session",
+                "a script takes another program's token to act under its account (DuplicateTokenEx, ImpersonateLoggedOnUser): an elevation or a session theft",
+            ),
+        ));
+    }
+    if un(&s, LIRE_CLAVIER) && un(&s, TRADUIRE_TOUCHE) {
+        return Some((
+            "clavier",
+            Gravite::Alerte,
+            (
+                "un script lit le clavier touche par touche (GetAsyncKeyState) : un enregistreur de frappe",
+                "a script reads the keyboard key by key (GetAsyncKeyState): a keylogger",
+            ),
+        ));
+    }
+    if un(&s, DEMANDER) && un(&s, VERIFIER_MOT_DE_PASSE) && un(&s, EN_CLAIR) {
+        return Some((
+            "hameconnage",
+            Gravite::Alerte,
+            (
+                "un script ouvre une fenêtre qui demande le mot de passe, le vérifie et le garde en clair : une fausse fenêtre de connexion",
+                "a script opens a window asking for the password, checks it and keeps it in clear text: a fake sign-in window",
+            ),
+        ));
+    }
+    if un(&s, DESARMER) || REGLAGES_DE_DEFENDER.iter().any(|r| reglage_employe(&s.bas, r)) {
         return Some((
             "desarme",
             Gravite::Alerte,
@@ -1264,7 +1443,13 @@ pub(crate) fn script_suspect(texte: &str) -> Option<(&'static str, Gravite, Text
     None
 }
 
-/// Le niveau Avertissement (3) : PowerShell écrit lui-même d'origine les blocs qu'il juge suspects.
+/// Le niveau Avertissement (3) : PowerShell écrit lui-même d'origine, même sans la journalisation des blocs, ceux
+/// qu'il juge suspects. Il en juge ainsi tout bloc qui contient l'un d'une centaine de mots (la liste est dans son
+/// code, `CompiledScriptBlock.cs` : Add-Type, DllImport, Marshal, IntPtr, GetMethod, Methods, Properties, Bypass,
+/// Cryptography, FromBase64String, VirtualAlloc…), ce que font aussi des modules de Windows lui-même (les modules
+/// CDXML générés, la liste des méthodes de saisie) et des scripts d'installation (« -ExecutionPolicy Bypass »). Ce
+/// niveau seul ne dit donc presque rien : sans motif reconnu (`script_suspect`), une information, regroupée par
+/// fichier de script (ou tous les blocs sans fichier ensemble), qui dit combien.
 const AVERTISSEMENT: u8 = 3;
 
 /// FNV-1a sur 64 bits : une empreinte stable d'une version à l'autre du programme (celle de `std` ne l'est pas).
@@ -1279,14 +1464,27 @@ fn bloc_de_script(e: &EvenementWindows) -> Option<Indice> {
     let chemin = champ(e, "Path");
     let (categorie, gravite, pourquoi) = match script_suspect(texte) {
         Some(x) => x,
-        None if e.niveau == Some(AVERTISSEMENT) => (
-            "avertissement",
-            Gravite::Info,
-            (
-                "PowerShell a lui-même jugé ce bloc de script suspect (des scripts d'installation le sont aussi)",
-                "PowerShell itself judged this script block suspicious (setup scripts can be too)",
-            ),
-        ),
+        None if e.niveau == Some(AVERTISSEMENT) => {
+            // Regroupés : un Windows tout juste installé en écrit des centaines, chacun d'un texte différent (un
+            // module généré par commande), ce qu'une empreinte par bloc ne réunirait pas.
+            let quoi = if rempli(chemin) {
+                chemin_bas(chemin)
+            } else {
+                "sans-fichier".to_string()
+            };
+            return indice(
+                format!("avertissement|{quoi}"),
+                Gravite::Info,
+                (
+                    "PowerShell a lui-même jugé suspects des blocs de script où aucun motif d'attaque n'est reconnu : il le fait pour une centaine de mots courants (Marshal, IntPtr, Bypass…), dans des modules de Windows aussi ; le premier",
+                    "PowerShell itself judged script blocks suspicious where no attack pattern is recognized: it does so for about a hundred common words (Marshal, IntPtr, Bypass…), in Windows modules too; the first one",
+                ),
+                vec![
+                    (Libelle::Script, texte.chars().take(300).collect()),
+                    (Libelle::Programme, chemin.to_string()),
+                ],
+            );
+        }
         None => return None,
     };
     // L'objet : la catégorie et le fichier du script (un même script relancé reste un seul objet, que l'on peut
@@ -1601,9 +1799,16 @@ fn bits(e: &EvenementWindows) -> Option<Indice> {
 // EVT-WMI-001 : persistance par WMI ; EVT-AUD-001 : politique d'audit changée
 // ---------------------------------------------------------------------------------------------------------------
 
+/// L'abonnement que Windows pose lui-même (5861 à chaque démarrage du service WMI) : un consommateur qui écrit dans le
+/// journal, sans commande possible, quel que soit son filtre. Un homonyme posé par un autre ne peut pas davantage.
+const ABONNEMENT_DE_WINDOWS: &str = "nteventlogeventconsumer=\"scm event log consumer\"";
+
 fn wmi(e: &EvenementWindows) -> Option<Indice> {
     let consommateur = champ(e, "CONSUMER");
     let bas = consommateur.to_lowercase();
+    if bas == ABONNEMENT_DE_WINDOWS && champ(e, "Namespace").eq_ignore_ascii_case("//./root/subscription") {
+        return None;
+    }
     let (gravite, pourquoi) = if bas.contains("commandlineeventconsumer") || bas.contains("activescripteventconsumer") {
         (
             Gravite::Critique,

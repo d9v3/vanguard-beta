@@ -45,6 +45,7 @@ fn options(jours: u32) -> Options {
     Options {
         depuis: Some(Utc::now() - chrono::Duration::days(i64::from(jours))),
         defender_antivirus: None,
+        installation: None,
     }
 }
 

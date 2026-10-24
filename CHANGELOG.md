@@ -209,7 +209,13 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   compte, programme, adresse, journal et numéro, la période vraiment lue par journal et ce qui reste au-delà des
   bornes ; sur ce Windows, ou sur un dossier de .evtx depuis n'importe quel système. Le rapport a sa section « Journaux
   de Windows », CHRONOLOGIE.txt des traces place les alertes à leur heure, et une alerte qui n'est pas critique peut
-  être déclarée normale.
+  être déclarée normale. Essayées sur un vrai Windows 11 installé le jour même, ces règles ne donnent plus d'alerte
+  pour ce que fait Windows lui-même : les blocs que PowerShell juge suspects sans motif d'attaque reconnu (ses propres
+  modules) font une information par script, qui dit combien ; la mise en route et le serveur OpenSSH de Windows se
+  servent d'identifiants sans alerte ; l'abonnement WMI que Windows pose lui-même n'est plus signalé ; le premier
+  administrateur créé par la mise en route est dit tel quand la date d'installation et le journal de sécurité le
+  confirment. Chargeurs de code en mémoire, vidage de mémoire, vol de jeton, enregistreur de frappe et fausse fenêtre
+  de connexion sont reconnus en plus.
 - **Windows, deux correctifs vus dans un vrai Windows.** Le Wi-Fi d'un ordinateur sans carte Wi-Fi (bureau, machine virtuelle) est « sans objet » au lieu de « non vérifié » quand le service WLAN est arrêté. La liste des programmes à mettre à jour repasse par PowerShell quand winget, lancé directement, répond par une erreur sans tableau : elle disait « non vérifié » dans une machine virtuelle.
 - **Sécurité des dépendances.** crypto-bigint 0.7.6 (avis RUSTSEC-2026-0387 : des calculs censés prendre toujours le même temps n'y arrivaient pas), amené par YARA-X.
 - **Vérification continue remise au vert.** Le programme Windows réserve 8 Mio de pile (1 Mio d'origine avec MSVC : la version de mise au point débordait dès le démarrage) ; les journaux des tickets ne passent plus par Claude dans GitHub ; le fuzzing de nuit tourne enfin (cargo-fuzz installé à part, empreinte vérifiée) ; la compilation reproductible vérifie la garde des DLL avec un éditeur de liens assez récent.

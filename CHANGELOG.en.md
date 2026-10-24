@@ -198,7 +198,12 @@ delivered just before it. Only the latest version has its download page; every v
   happened?": each rule's verdict, the alerts in time order with account, program, address, log and number, the
   period really read per log and what is left beyond the limits; on this Windows, or on a folder of .evtx from any
   system. The report has its "Windows logs" section, the evidence's CHRONOLOGIE.txt places the alerts at their time,
-  and an alert that is not critical can be declared normal.
+  and an alert that is not critical can be declared normal. Tried on a real Windows 11 installed the same day, these
+  rules no longer raise alerts for what Windows itself does: blocks PowerShell judges suspicious with no recognized
+  attack pattern (its own modules) make one information line per script, saying how many; Windows setup and Windows'
+  OpenSSH server use credentials without an alert; the WMI subscription Windows sets up itself is no longer reported;
+  the first administrator created by setup is called so when the installation date and the security log confirm it.
+  In-memory code loaders, memory dumps, token theft, keyloggers and fake sign-in windows are recognized too.
 - **Windows, two fixes seen on a real Windows.** Wi-Fi on a computer without a Wi-Fi card (desktop, virtual machine) is "not applicable" instead of "not checked" when the WLAN service is stopped. The list of programs to update goes back through PowerShell when winget, run directly, answers with an error and no table: it said "not checked" in a virtual machine.
 - **Dependency security.** crypto-bigint 0.7.6 (advisory RUSTSEC-2026-0387: computations meant to always take the same time did not), brought in by YARA-X.
 - **Continuous checks back to green.** The Windows program reserves 8 MiB of stack (1 MiB by default with MSVC: the debug build overflowed at startup); journal issues no longer go through Claude on GitHub; nightly fuzzing finally runs (cargo-fuzz installed separately, checksum verified); the reproducible build checks the DLL guard with a recent enough linker.
