@@ -9,14 +9,17 @@
 //! - `trous` : les trous dans la suite des numéros d'enregistrement (effacement partiel), et ce qui les explique
 //!   sans effacement.
 //!
-//! Les règles et la chronologie suivent (lots E3 et E4).
+//! - `regles` : les règles `EVT-` et leur moteur, sur l'une ou l'autre source.
+//!
+//! La chronologie et la commande suivent (lot E4).
 
-// Appelé par E3 (les règles des journaux) : rien ne s'en sert encore hors des tests.
+// Appelé par E4 (la commande et la chronologie) : rien ne s'en sert encore hors des tests.
 #![cfg_attr(not(test), allow(dead_code))]
 
 pub(crate) mod evenement;
 pub(crate) mod evtx;
 pub(crate) mod fichiers;
+pub(crate) mod regles;
 pub(crate) mod trous;
 #[cfg(windows)]
 pub(crate) mod vivant;

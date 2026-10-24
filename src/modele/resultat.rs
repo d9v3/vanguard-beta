@@ -34,12 +34,13 @@ pub(crate) const AVEC_RESULTAT: &[&str] = &[
     "PRO-LIE-001",
     "PRO-OBJ-001",
     "PRO-LNO-001",
+    "PRO-EVT-001",
 ];
 
 /// Le fichier de chaque outil de `AVEC_RESULTAT`, scellé (`sceau`) : un « rien trouvé » réécrit par un programme du
 /// compte s'affichait en vert dans le rapport. Inventoriés (`modele::inventaire`) ; un outil qui s'ajoute à
 /// `AVEC_RESULTAT` s'ajoute ici aussi (`fichiers_scelles`).
-pub(crate) const FICHIERS: [&str; 13] = [
+pub(crate) const FICHIERS: [&str; 14] = [
     "examens/PRO-ESP-001.json",
     "examens/PRO-PER-001.json",
     "examens/PRO-COU-001.json",
@@ -53,6 +54,7 @@ pub(crate) const FICHIERS: [&str; 13] = [
     "examens/PRO-LIE-001.json",
     "examens/PRO-OBJ-001.json",
     "examens/PRO-LNO-001.json",
+    "examens/PRO-EVT-001.json",
 ];
 
 /// Le fichier scellé d'un outil, s'il en a un.
@@ -539,6 +541,9 @@ mod tests {
             "reseau/objets/resultat.rs",
             "reseau/connexion/resultat.rs",
             "reseau/listes_noires/resultat.rs",
+            "journaux_windows/regles/resultat.rs",
+            "journaux_windows/regles/moteur.rs",
+            "journaux_windows/regles/jeu.rs",
         ] {
             let texte = std::fs::read_to_string(racine.join(f)).unwrap();
             let code = texte.find("#[cfg(test)]\nmod ").map_or(texte.as_str(), |t| &texte[..t]);

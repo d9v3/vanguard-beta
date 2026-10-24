@@ -160,3 +160,10 @@ path = "fuzz_targets/evenement_xml.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "evtx_regles"
+path = "fuzz_targets/evtx_regles.rs"
+test = false
+doc = false
+bench = false

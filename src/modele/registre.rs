@@ -1,5 +1,6 @@
 //! Le registre des préfixes d'identifiants, et les identifiants des outils et des surveillances. Les règles du bilan
-//! se déclarent avec `regle!` (machine/regles.rs), celles de l'audit du réseau dans `audit::fiches` ; un même test les
+//! se déclarent avec `regle!` (machine/regles.rs), celles de l'audit du réseau dans `audit::fiches`, celles des
+//! journaux d'événements de Windows dans `journaux_windows::regles::jeu` ; un même test les
 //! parcourt avec ceux-ci (`machine::regles::tous_les_identifiants`) : un identifiant n'existe qu'une fois, toutes
 //! familles confondues, et le JSON comme l'historique ne peuvent pas rattacher un constat à la mauvaise règle.
 
@@ -21,6 +22,10 @@ pub(crate) const PREFIXES: &[(&str, (&str, &str))] = &[
             "outils lancés seuls (protection, réseau, dépannage)",
             "tools run on their own (protection, network, troubleshooting)",
         ),
+    ),
+    (
+        "EVT",
+        ("règles des journaux d'événements de Windows", "Windows event log rules"),
     ),
     ("SUR", ("surveillance horaire", "hourly monitoring")),
     ("VEI", ("veilleur", "watcher")),
@@ -80,5 +85,6 @@ pub(crate) const OUTILS: &[Outil] = &[
     Outil { id: "PRO-DIS-001", module: "protection::distance", sujet: ("logiciels de prise de contrôle à distance", "remote control software") },
     Outil { id: "PRO-CNX-001", module: "reseau::connexion", sujet: ("test de connexion pour le jeu", "connection test for gaming") },
     Outil { id: "PRO-LNO-001", module: "reseau::listes_noires", sujet: ("adresse Internet publique sur une liste noire", "public Internet address on a blocklist") },
+    Outil { id: "PRO-EVT-001", module: "journaux_windows::regles", sujet: ("traces d'attaque dans les journaux d'événements de Windows", "attack traces in Windows event logs") },
     Outil { id: "PRO-OBJ-001", module: "reseau::objets", sujet: ("routeur et objets connectés du dernier scan", "router and connected devices from the last scan") },
 ];

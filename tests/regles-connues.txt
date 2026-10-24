@@ -1,5 +1,6 @@
 # Tous les identifiants que Vanguard a donnés : règles du bilan (regle!), fiches de l'audit du réseau
-# (audit/fiches.rs), outils et surveillances (modele/registre.rs),
+# (audit/fiches.rs), outils et surveillances (modele/registre.rs), règles des journaux de Windows
+# (journaux_windows/regles/jeu.rs),
 # lectures croisées de l'autotest (autotest/croisees.rs). Une ligne par identifiant, suivie de ses marques :
 #   retire          l'identifiant n'est plus utilisé et ne doit jamais revenir (une autre règle le reprendrait
 #                   sans que l'historique ni les alertes acceptées ne le voient).
@@ -92,6 +93,17 @@ COM-WIF-002
 COM-WIF-003
 COM-WIF-004
 COM-WIF-005
+EVT-ADM-001
+EVT-AUD-001
+EVT-BIT-001
+EVT-DEF-001
+EVT-EFF-001
+EVT-IDE-001
+EVT-MDP-001
+EVT-PSH-001
+EVT-RDP-001
+EVT-SRV-001
+EVT-WMI-001
 LNX-CHF-001
 LNX-CPT-001
 LNX-CPT-002
@@ -180,6 +192,7 @@ PRO-CTN-001
 PRO-DIA-001
 PRO-DIS-001
 PRO-ESP-001
+PRO-EVT-001
 PRO-GIT-001
 PRO-LEN-001
 PRO-LIE-001
