@@ -606,13 +606,16 @@ pub(crate) fn comptes(octets: &[u8]) -> Option<[usize; 4]> {
 /// La copie gardée par un téléchargement d'avant, et son âge.
 fn copie_gardee() -> Option<(Vec<u8>, Duration)> {
     let fichier = crate::socle::dossier_local().join("echap").join("ioc.yaml");
-    let age = std::fs::metadata(&fichier)
+    let age = std::fs::symlink_metadata(&fichier)
         .ok()?
         .modified()
         .ok()?
         .elapsed()
         .unwrap_or_default();
-    Some((std::fs::read(&fichier).ok()?, age))
+    Some((
+        crate::socle::lire_ordinaire(&fichier, crate::socle::cache::LISTE_MAX).ok()?,
+        age,
+    ))
 }
 
 /// L'âge par défaut au-delà duquel `vanguard logiciels-espions` ne se sert plus d'une copie.

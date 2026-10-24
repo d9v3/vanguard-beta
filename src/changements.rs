@@ -179,7 +179,7 @@ fn noter_dans(chemin: &std::path::Path, correctifs: &[Vec<String>], resultats: &
             origine: None,
         });
     }
-    ecrire(chemin, tous);
+    ecrire(chemin, &tous);
 }
 
 /// Note que la correction liée à cette note (`annulable`) est défaite.
@@ -196,7 +196,7 @@ fn marquer_defaite_dans(chemin: &std::path::Path, id: &str) {
     if let Some(c) = tous.iter().rev().find(|c| c.annulable.as_deref() == Some(id)) {
         noter_annulation(id, c.evenement.as_deref(), false);
     }
-    ecrire(chemin, tous);
+    ecrire(chemin, &tous);
 }
 
 fn maintenant() -> String {
@@ -213,7 +213,7 @@ fn en_place(c: &Changement) -> bool {
 
 /// Garde les `GARDES` derniers changements (et `OCTETS_GARDES` au plus), plus tous les blocages en place, puis
 /// réécrit le fichier d'un coup, scellé (`sceau`).
-fn ecrire(chemin: &std::path::Path, tous: Vec<Changement>) {
+fn ecrire(chemin: &std::path::Path, tous: &[Changement]) {
     let mut lignes: Vec<(bool, String)> = tous
         .iter()
         .filter_map(|c| Some((en_place(c), serde_json::to_string(c).ok()? + "\n")))
@@ -314,7 +314,7 @@ fn ecrire_blocage(chemin: &std::path::Path, commandes: Vec<String>, reussi: bool
         evenement: None,
         origine: None,
     });
-    ecrire(chemin, tous);
+    ecrire(chemin, &tous);
 }
 
 /// Les blocages en place (réussis, pas encore annulés), du plus ancien au plus récent, avec leur date.
@@ -368,7 +368,7 @@ fn marquer_annule_dans(chemin: &std::path::Path, id: &str, supprime: bool) {
     if let Some(action) = trouve {
         noter_annulation(id, action.as_deref(), supprime);
     }
-    ecrire(chemin, tous);
+    ecrire(chemin, &tous);
 }
 
 /// Le fichier isolé sous ce nom est sorti de la quarantaine depuis son menu, remis ou `supprime` pour de bon : le
@@ -442,7 +442,7 @@ pub(crate) fn resceller_d_avant() {
     if crate::sceau::adopte(RELEVE) {
         let chemin = fichier();
         let tous = lire_de(&chemin);
-        ecrire(&chemin, tous);
+        ecrire(&chemin, &tous);
     }
 }
 
@@ -979,10 +979,10 @@ mod tests {
         // SAFETY : mkfifo reçoit un chemin terminé par zéro, qui vit le temps de l'appel.
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
         let debut = std::time::Instant::now();
-        assert!(blocages_en_place_de(&f).is_empty());
+        assert_eq!(blocages_en_place_de(&f), Vec::new());
         std::fs::remove_file(&f).unwrap();
         std::os::unix::fs::symlink("/dev/zero", &f).unwrap();
-        assert!(blocages_en_place_de(&f).is_empty());
+        assert_eq!(blocages_en_place_de(&f), Vec::new());
         assert!(debut.elapsed() < std::time::Duration::from_secs(5));
     }
 }

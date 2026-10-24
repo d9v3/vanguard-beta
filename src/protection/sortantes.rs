@@ -1013,12 +1013,16 @@ impl ServeursDeCommande {
 pub(crate) fn serveurs_gardes() -> (ServeursDeCommande, Vec<String>) {
     let garde = |sous_dossier: &str, nom: &str| {
         let fichier = crate::socle::dossier_local().join(sous_dossier).join(nom);
-        let age = std::fs::metadata(&fichier)
+        let age = std::fs::symlink_metadata(&fichier)
             .and_then(|m| m.modified())
             .ok()?
             .elapsed()
             .unwrap_or_default();
-        Some((std::fs::read(&fichier).ok()?, age))
+        // Un simple fichier, borné : un tube posé à sa place figeait le veilleur.
+        Some((
+            crate::socle::lire_ordinaire(&fichier, crate::socle::cache::LISTE_MAX).ok()?,
+            age,
+        ))
     };
     let pas_encore = |nom: &str| {
         trf!(

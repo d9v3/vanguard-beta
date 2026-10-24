@@ -140,6 +140,8 @@ const LIGNE_MAX: usize = ordres::LIGNE_MAX;
 const LIGNES_MAX: usize = ordres::LIGNES_MAX;
 /// Le verbe d'un script PowerShell vérifié par empreinte.
 const SCRIPT: &str = "vanguard:script ";
+/// Au-delà, ce n'est pas un script de correction de Vanguard (quelques dizaines de Kio) : il n'est ni montré ni lancé.
+const SCRIPT_MAX: u64 = 16 << 20;
 
 /// Une ligne de la liste, relue.
 pub(crate) enum Element {
@@ -659,7 +661,7 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
         println!("  · {}", e.texte());
         // Le script lui-même, tel qu'il sera vérifié puis lancé : ce que l'Entrée autorise, ligne par ligne.
         if let Element::Script { chemin, .. } = e
-            && let Ok(o) = std::fs::read(chemin)
+            && let Ok(o) = crate::socle::lire_ordinaire(std::path::Path::new(chemin), SCRIPT_MAX)
         {
             for l in String::from_utf8_lossy(&o).trim_start_matches('\u{feff}').lines() {
                 println!("    {GRIS}{}{RESET}", crate::ui::affichable(l));
@@ -764,8 +766,8 @@ fn lancer_script(chemin: &str, empreinte: &str) -> Resultat {
         avant: None,
         raison,
     };
-    let ordinaire = std::fs::symlink_metadata(chemin).is_ok_and(|m| m.file_type().is_file());
-    let lu = if ordinaire { std::fs::read(chemin).ok() } else { None };
+    // Ni lien, ni tube, ni fichier démesuré : ouvert sans suivre de lien, jugé sur ce qui est ouvert.
+    let lu = crate::socle::lire_ordinaire(std::path::Path::new(chemin), SCRIPT_MAX).ok();
     if lu.as_deref().map(super::sha256_hex).as_deref() != Some(empreinte) {
         return refus(format!(
             "code={} {}",

@@ -28,6 +28,8 @@ use crate::ui::*;
 
 /// Nombre de bilans gardés.
 const GARDES: usize = 200;
+/// Au-delà, ce n'est pas l'historique de Vanguard (200 bilans font quelques Mio) : il n'est pas chargé.
+const HISTORIQUE_MAX: u64 = 64 << 20;
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct Bilan {
@@ -266,7 +268,8 @@ fn lire() -> Result<Vec<Bilan>, String> {
 /// Celui d'un fichier donné : les tests ont chacun le leur, sans quoi l'un réécrirait celui qu'un autre lit (le menu,
 /// le rapport ; sous Windows, un fichier ouvert ne se remplace pas).
 fn lire_de(chemin: &std::path::Path) -> Result<Vec<Bilan>, String> {
-    match std::fs::read_to_string(chemin) {
+    // Un simple fichier, borné : un tube ou un lien vers /dev/zero à sa place ne fige ni ne remplit rien.
+    match crate::socle::lire_texte_ordinaire(chemin, HISTORIQUE_MAX) {
         Ok(t) => serde_json::from_str(t.trim_start_matches('\u{feff}')).map_err(|e| e.to_string()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(e.to_string()),
@@ -326,7 +329,10 @@ fn enregistrer_dans(chemin: &std::path::Path, mut nouveau: Bilan) -> (Option<Bil
                 "illisible-{}.json",
                 chrono::Local::now().format("%Y%m%d-%H%M%S")
             ));
-            let _ = std::fs::copy(chemin, &copie);
+            // Seulement un simple fichier, borné : un tube ou un lien vers /dev/zero ne se recopie pas.
+            if let Ok(o) = crate::socle::lire_ordinaire(chemin, HISTORIQUE_MAX) {
+                let _ = crate::socle::ecrire_atomique(&copie, o);
+            }
             tre!(
                 "Attention : historique des bilans illisible ({e}). Copie gardée : {}",
                 "Warning: check history unreadable ({e}). Copy kept: {}",

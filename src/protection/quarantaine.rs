@@ -48,7 +48,7 @@ fn registre_dans(dossier: &Path) -> PathBuf {
 }
 
 fn charger(dossier: &Path) -> Registre {
-    std::fs::read_to_string(registre_dans(dossier))
+    crate::socle::lire_texte_ordinaire(&registre_dans(dossier), 16 << 20)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default()
@@ -262,7 +262,7 @@ fn liste_dans(dossier: &Path) -> Vec<Entree> {
         .into_iter()
         .filter(|e| dossier.join(&e.nom).exists())
         .collect();
-    let journal = std::fs::read_to_string(dossier.join("journal.txt")).unwrap_or_default();
+    let journal = crate::socle::lire_texte_ordinaire(&dossier.join("journal.txt"), 16 << 20).unwrap_or_default();
     for l in journal.lines() {
         let c: Vec<&str> = l.split('\t').collect();
         let [date, detection, origine, nom] = c[..] else {

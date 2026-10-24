@@ -94,7 +94,7 @@ fn dossiers_en_plus(declares: &str, maison: &Path) -> Vec<PathBuf> {
 }
 
 fn charger_de(liste: &Path) -> Result<Vec<Piege>, ()> {
-    match std::fs::read_to_string(liste) {
+    match crate::socle::lire_texte_ordinaire(liste, 16 << 20) {
         Ok(texte) => serde_json::from_str(&texte).map_err(|_| ()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(_) => Err(()),

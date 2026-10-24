@@ -6,7 +6,6 @@
 use std::path::PathBuf;
 
 use crate::tre;
-use crate::ui::*;
 
 /// Écrit d'abord un fichier temporaire, le force sur le disque, puis le renomme à la place de l'ancien :
 /// une coupure, un Ctrl-C ou une clé arrachée laissent soit l'ancienne base, soit la nouvelle, jamais une
@@ -90,10 +89,12 @@ pub(crate) fn lire_ordinaire(chemin: &std::path::Path, max: u64) -> std::io::Res
         }
     })?;
     let m = f.metadata()?;
+    // Les raisons en deux langues, sans `tr!` : les réglages du lancement se lisent par ici avant que la langue soit
+    // connue, et la demander pendant qu'on la lit figeait le programme (`langue::anglais` attend sa propre réponse).
     if !m.file_type().is_file() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            tr!("pas un simple fichier", "not a plain file"),
+            "pas un simple fichier / not a plain file",
         ));
     }
     if m.len() > max {
@@ -107,10 +108,15 @@ pub(crate) fn lire_ordinaire(chemin: &std::path::Path, max: u64) -> std::io::Res
     Ok(octets)
 }
 
+/// `lire_ordinaire`, en texte UTF-8 (`InvalidData` sinon) : ce que lisent la plupart des fichiers d'état.
+pub(crate) fn lire_texte_ordinaire(chemin: &std::path::Path, max: u64) -> std::io::Result<String> {
+    String::from_utf8(lire_ordinaire(chemin, max)?).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
 fn trop_gros(max: u64) -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::InvalidData,
-        trf!("plus de {} Kio", "over {} KiB", max >> 10),
+        format!("plus de {k} Kio / over {k} KiB", k = max >> 10),
     )
 }
 

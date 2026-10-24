@@ -53,7 +53,7 @@ fn fichier() -> PathBuf {
 }
 
 /// Le fichier ; absent : les défauts ; `Err` (la raison) s'il est là mais ne se lit pas.
-fn charger_de(chemin: &Path) -> Result<Fichier, String> {
+fn charger_de(chemin: &Path) -> Result<Fichier, crate::modele::Echec> {
     charger_juge(chemin).map(|(f, _)| f)
 }
 
@@ -64,28 +64,33 @@ fn charger_de(chemin: &Path) -> Result<Fichier, String> {
 /// au premier usage des sceaux (rien ne prouve qui l'a écrit) : ces réglages valent leur défaut, le plus protecteur,
 /// jusqu'à ce que la personne les règle de nouveau ici ; la langue et les emojis, eux, restent. Lu sans rien écrire
 /// (`sceau::lire_sans_ecrire`) : il l'est au lancement, avant la reprise des données d'une version d'avant.
-fn charger_juge(chemin: &Path) -> Result<(Fichier, Option<&'static str>), String> {
+///
+/// Rien ici ne passe par `tr!` : la langue se lit dans ce fichier, et la demander pendant qu'on le lit figeait le
+/// programme dès le lancement (`langue::anglais` attendait sa propre réponse). Les raisons se traduisent à
+/// l'affichage (`Douteux::texte`).
+fn charger_juge(chemin: &Path) -> Result<(Fichier, Option<Douteux>), crate::modele::Echec> {
+    use crate::modele::{Echec, Raison};
     use crate::sceau::Lecture;
+    const OU: &str = "parametres/lire";
+    let illisible = |e: String| Echec::new(OU, Raison::Illisible(e));
     let dossier = chemin.parent().unwrap_or_else(|| Path::new("."));
     let nom = chemin.file_name().and_then(|n| n.to_str()).unwrap_or(PARAMETRES);
     let (octets, douteux) = match crate::sceau::lire_sans_ecrire(dossier, nom) {
         Lecture::Absent | Lecture::Inconnu | Lecture::Falsifie(None) => return Ok((Fichier::default(), None)),
-        Lecture::Illisible(e) => return Err(e),
+        Lecture::Illisible(e) => return Err(illisible(e)),
         Lecture::Intact(o) => (o, None),
-        Lecture::Adopte(o) => (
-            o,
-            Some(tr!(
-                "accepté tel quel, sans sceau d'avant",
-                "accepted as it was, without an earlier seal"
-            )),
-        ),
-        Lecture::Falsifie(Some(o)) => (o, Some(tr!("changé hors de Vanguard", "changed outside Vanguard"))),
+        Lecture::Adopte(o) => (o, Some(Douteux::Adopte)),
+        Lecture::Falsifie(Some(o)) => (o, Some(Douteux::HorsVanguard)),
     };
     if octets.len() as u64 > TAILLE_MAX {
-        return Err(trf!("plus de {} Kio", "over {} KiB", TAILLE_MAX >> 10));
+        return Err(illisible(format!(
+            "plus de {k} Kio / over {k} KiB",
+            k = TAILLE_MAX >> 10
+        )));
     }
-    let texte = String::from_utf8(octets).map_err(|e| e.to_string())?;
-    let mut f: Fichier = serde_json::from_str(texte.trim_start_matches('\u{feff}')).map_err(|e| e.to_string())?;
+    let texte = String::from_utf8(octets).map_err(|e| illisible(e.to_string()))?;
+    let mut f: Fichier =
+        serde_json::from_str(texte.trim_start_matches('\u{feff}')).map_err(|e| illisible(e.to_string()))?;
     let Some(raison) = douteux else {
         return Ok((f, None));
     };
@@ -101,6 +106,27 @@ pub(crate) fn resceller_d_avant() {
     crate::sceau::resceller_si(PARAMETRES, |o| {
         serde_json::from_slice::<Fichier>(o).is_ok_and(|f| !(f.hors_ligne || f.sans_autotest || f.sans_versions))
     });
+}
+
+/// Pourquoi des réglages qui coupaient une défense ont été ignorés.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Douteux {
+    /// Accepté tel quel au premier usage des sceaux.
+    Adopte,
+    /// Changé hors de Vanguard.
+    HorsVanguard,
+}
+
+impl Douteux {
+    fn texte(self) -> &'static str {
+        match self {
+            Douteux::Adopte => tr!(
+                "accepté tel quel, sans sceau d'avant",
+                "accepted as it was, without an earlier seal"
+            ),
+            Douteux::HorsVanguard => tr!("changé hors de Vanguard", "changed outside Vanguard"),
+        }
+    }
 }
 
 fn enregistrer_dans(f: &Fichier, chemin: &Path) -> std::io::Result<()> {
@@ -798,11 +824,12 @@ fn afficher() {
             "  {}⚠{RESET} parametres.json unreadable ({e}): the defaults are used.",
             couleur(crate::risk::Niveau::Moyen)
         ),
-        Ok((_, Some(raison))) => afficher_aligne(
+        Ok((_, Some(douteux))) => afficher_aligne(
             &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Eleve)),
             &trf!(
-                "parametres.json {raison} : le travail sans Internet, l'autodiagnostic et les versions des logiciels qu'il coupait restent en marche. Réglez-les de nouveau ici s'ils sont bien de vous.",
-                "parametres.json {raison}: offline work, the self-test and software versions it turned off stay on. Set them again here if they really are yours."
+                "parametres.json {} : le travail sans Internet, l'autodiagnostic et les versions des logiciels qu'il coupait restent en marche. Réglez-les de nouveau ici s'ils sont bien de vous.",
+                "parametres.json {}: offline work, the self-test and software versions it turned off stay on. Set them again here if they really are yours.",
+                douteux.texte()
             ),
             4,
             "",
@@ -1067,7 +1094,7 @@ mod tests {
         )
         .unwrap();
         let (lu, raison) = charger_juge(&f).unwrap();
-        assert!(raison.is_some_and(|r| r.contains("hors de Vanguard") || r.contains("outside Vanguard")));
+        assert_eq!(raison, Some(Douteux::HorsVanguard));
         assert!(!lu.hors_ligne && !lu.sans_autotest && !lu.sans_versions, "{lu:?}");
         assert_eq!(lu.langue.as_deref(), Some("en"));
         // La personne le règle elle-même : écrit et scellé par Vanguard, il vaut.

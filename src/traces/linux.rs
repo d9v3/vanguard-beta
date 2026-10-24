@@ -1258,7 +1258,8 @@ fn temoin_journalctl(p: &mut Partie, dossier: &Path, natifs: &[(i64, String)], d
                     "the output of journalctl over the same week (10 MB, newest first), kept as a witness of the reading",
                 ),
             });
-            let texte = std::fs::read_to_string(dossier.join(TEMOIN_ECRIT)).unwrap_or_default();
+            // Borné (le témoin fait 10 Mo au plus), en simple fichier : rien de posé à sa place ne fige la collecte.
+            let texte = crate::socle::lire_texte_ordinaire(&dossier.join(TEMOIN_ECRIT), 32 << 20).unwrap_or_default();
             let temoin: Vec<(i64, String)> = texte.lines().filter_map(prefixe).collect();
             let (cachees, en_plus) = ecarts_du_journal(natifs, &temoin, debut_du_releve, ecrit.tronque);
             if cachees > 0 || en_plus > 0 {

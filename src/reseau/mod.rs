@@ -317,7 +317,7 @@ impl Base {
     }
 
     fn lire(p: &std::path::Path) -> Base {
-        let Ok(texte) = std::fs::read_to_string(p) else {
+        let Ok(texte) = crate::socle::lire_texte_ordinaire(p, CARNET_MAX) else {
             return Base::default();
         };
         // Le Bloc-notes et PowerShell 5.1 ajoutent une marque d'ordre des octets (BOM) en tête.
@@ -651,6 +651,10 @@ pub fn nommer(qui: &str, surnom: Option<&str>) -> Result<String, String> {
 /// Fichier témoin à la racine de la clé USB de Vanguard.
 pub const TEMOIN_CLE: &str = "vanguard.cle";
 
+/// Au-delà, ce n'est pas un carnet des appareils (même chiffré) : il n'est pas chargé. Lu sur la clé aussi, où
+/// n'importe quel ordinateur a pu poser un tube, un lien vers /dev/zero ou un fichier creux de plusieurs Gio.
+pub(crate) const CARNET_MAX: u64 = 256 << 20;
+
 /// Volumes montés pour l'utilisateur, un sous-dossier par clé : /run/media/<utilisateur> (Arch, Fedora, openSUSE…)
 /// et /media/<utilisateur> (Debian, Ubuntu, Mint), où udisks range les clés selon la distribution.
 #[cfg(target_os = "linux")]
@@ -760,7 +764,7 @@ pub fn noms_connus() -> (Vec<String>, Vec<String>) {
         .map(|c| c.join("donnees"))
         .into_iter()
         .chain([dossier_local()])
-        .filter_map(|d| std::fs::read_to_string(d.join("appareils.json")).ok())
+        .filter_map(|d| crate::socle::lire_texte_ordinaire(&d.join("appareils.json"), CARNET_MAX).ok())
         // Le carnet chiffré, s'il a été ouvert pendant ce lancement : ses noms aussi restent hors du journal.
         .chain(crate::chiffrement::carnet_ouvert())
         .collect();

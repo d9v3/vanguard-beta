@@ -155,7 +155,7 @@ fn categories(noms: &[impl AsRef<str>]) -> String {
 }
 
 fn lire_etat() -> Option<Etat> {
-    serde_json::from_str(&std::fs::read_to_string(fichier_etat()).ok()?).ok()
+    serde_json::from_str(&crate::socle::lire_texte_ordinaire(&fichier_etat(), 1 << 20).ok()?).ok()
 }
 
 /// Appelé par le planificateur : examen silencieux, notification, puis l'état est gardé pour le mois suivant.

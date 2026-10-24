@@ -356,7 +356,7 @@ fn mois_suivant(mois: &str) -> String {
 enum TeteLue {
     Absente,
     /// Lue ; `true` : scellée telle quelle au premier usage des sceaux.
-    Lue(Tete, bool),
+    Lue(Box<Tete>, bool),
     /// Changée hors de Vanguard.
     Falsifiee,
     /// Ni crue ni prouvée changée : sceaux refaits, illisible. La raison suit.
@@ -368,7 +368,7 @@ fn tete_lue(dossier: &Path) -> TeteLue {
     let lire = |o: &[u8], adoptee| {
         serde_json::from_slice(o).map_or_else(
             |e: serde_json::Error| TeteLue::Douteuse(e.to_string()),
-            |t| TeteLue::Lue(t, adoptee),
+            |t| TeteLue::Lue(Box::new(t), adoptee),
         )
     };
     match crate::sceau::lire_dans(dossier, TETE) {
@@ -503,7 +503,7 @@ fn ecrire_dans(
                 }
             }
             t.annonce = None;
-            t
+            *t
         }
         TeteLue::Absente if presents.is_empty() => Tete::default(),
         TeteLue::Absente => {
@@ -718,7 +718,7 @@ fn lire_borne(dossier: &Path, bornes: Bornes) -> Lu {
         _ => mois_de(chrono::Utc::now()),
     };
     let (presents, ecartes, posterieurs) = segments_bornes(presents, bornes, &plafond);
-    let (evenements, illisibles, chaine, laisses) = relire(&presents, &ecartes, tete.as_ref(), bornes.evenements);
+    let (evenements, illisibles, chaine, laisses) = relire(&presents, &ecartes, tete.as_deref(), bornes.evenements);
     lecture = lecture.pire(chaine);
     if let Some(r) = dire_posterieurs(&posterieurs) {
         lecture = lecture.pire(if tete.is_some() {
@@ -1447,7 +1447,7 @@ mod tests {
         let lu = lire_dans(&d);
         assert!(matches!(lu.lecture, Lecture::Falsifie(_)), "{:?}", lu.lecture);
         assert!(constat_de(&lu.lecture).is_some());
-        assert!(lu.verifies().is_empty());
+        assert_eq!(lu.verifies(), &[] as &[Evenement]);
         // Une écriture ordinaire : la rupture est notée, rien n'est repris comme de Vanguard.
         remplir(&d, 1, "2026-10-23T11:00:00Z");
         let lu = lire_dans(&d);

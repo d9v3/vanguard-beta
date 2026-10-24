@@ -1031,7 +1031,7 @@ pub(crate) fn remettre_copie(fichier: &Path, copie: &Path, empreinte: &str) -> R
     if !copie_admise(fichier, copie) {
         return Err(Echec::refuse(OU, refus_de_copie(fichier, copie)));
     }
-    let actuel = std::fs::read(fichier).map_err(|e| Echec::io(OU, &e))?;
+    let actuel = crate::socle::lire_ordinaire(fichier, 16 << 20).map_err(|e| Echec::io(OU, &e))?;
     if empreinte_texte(&actuel) != empreinte {
         return Err(Echec::refuse(
             OU,
@@ -1042,7 +1042,7 @@ pub(crate) fn remettre_copie(fichier: &Path, copie: &Path, empreinte: &str) -> R
             ),
         ));
     }
-    let avant = std::fs::read(copie).map_err(|e| Echec::io(OU, &e))?;
+    let avant = crate::socle::lire_ordinaire(copie, 16 << 20).map_err(|e| Echec::io(OU, &e))?;
     std::fs::write(fichier, avant).map_err(|e| Echec::ecriture(OU, &e))
 }
 

@@ -867,7 +867,7 @@ fn lire_blocages(texte: &str) -> std::collections::HashSet<String> {
 /// Les ports que Vanguard a bloqués en entrée, d'après sa note (« 11434/tcp ») : le bilan (Linux) et le blocage ne
 /// les reproposent pas.
 pub(crate) fn ports_bloques() -> std::collections::HashSet<String> {
-    lire_blocages(&std::fs::read_to_string(fichier_blocages()).unwrap_or_default())
+    lire_blocages(&crate::socle::lire_texte_ordinaire(&fichier_blocages(), 1 << 20).unwrap_or_default())
 }
 
 /// À appeler après une correction réussie : retient le port qu'elle a bloqué.
@@ -920,7 +920,7 @@ pub(crate) fn oublier_port(port: &str) {
 
 fn changer_blocages(changer: impl FnOnce(&mut std::collections::HashSet<String>) -> bool) {
     let chemin = fichier_blocages();
-    let mut deja = lire_blocages(&std::fs::read_to_string(&chemin).unwrap_or_default());
+    let mut deja = lire_blocages(&crate::socle::lire_texte_ordinaire(&chemin, 1 << 20).unwrap_or_default());
     if changer(&mut deja) {
         let mut lignes: Vec<_> = deja.into_iter().collect();
         lignes.sort();

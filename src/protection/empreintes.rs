@@ -163,7 +163,7 @@ fn dossier() -> PathBuf {
 }
 
 fn age(chemin: &Path) -> Option<Duration> {
-    std::fs::metadata(chemin)
+    std::fs::symlink_metadata(chemin)
         .and_then(|m| m.modified())
         .ok()
         .map(|t| t.elapsed().unwrap_or_default())
@@ -191,7 +191,8 @@ pub(crate) fn gardees() -> Chargees {
 /// d'empreintes) ne tiendrait pas. `None` : aucune copie gardée.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn recentes_gardees() -> Option<Empreintes> {
-    let texte = std::fs::read_to_string(dossier().join("recentes.txt")).ok()?;
+    // Borné comme une liste : le veilleur tient en 128 Mo, un fichier creux de plusieurs Gio ne s'y charge pas.
+    let texte = crate::socle::lire_texte_ordinaire(&dossier().join("recentes.txt"), TEXTE_MAX as u64).ok()?;
     let mut triees = lire_texte(&texte);
     triees.sort_unstable();
     triees.dedup();
@@ -233,12 +234,14 @@ fn charger(telecharger: bool) -> Result<Empreintes, String> {
             }
         }
     }
-    let mut triees = std::fs::read(&complete)
+    let mut triees = crate::socle::lire_ordinaire(&complete, crate::socle::cache::LISTE_MAX)
         .ok()
         .and_then(|a| premier_fichier_zip(&a, TEXTE_MAX))
         .map(|t| lire_octets(&t))
         .unwrap_or_default();
-    triees.extend(lire_octets(&std::fs::read(&recentes).unwrap_or_default()));
+    triees.extend(lire_octets(
+        &crate::socle::lire_ordinaire(&recentes, TEXTE_MAX as u64).unwrap_or_default(),
+    ));
     triees.sort_unstable();
     triees.dedup();
     if triees.is_empty() {
