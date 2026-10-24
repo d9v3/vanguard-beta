@@ -170,6 +170,12 @@ impl Resultat {
         constats: &[Constat],
         couverture: Couverture,
     ) -> Resultat {
+        // Un manque reprend souvent un texte du système (erreur de D-Bus, de systemd-resolved, d'une liste) : nettoyé
+        // comme les messages, sur une ligne.
+        let couverture = Couverture {
+            non_verifies: couverture.non_verifies.iter().map(|n| sans_piege(n, false)).collect(),
+            ..couverture
+        };
         Resultat {
             outil: outil.to_string(),
             schema: SCHEMA,
@@ -339,6 +345,19 @@ mod tests {
         c.objet = crate::modele::id::Objet::De("programme:facture\u{202e}fdp.exe\n".into());
         let o = ConstatEcrit::from(&c).objet.unwrap();
         assert!(!crate::ui::contient_un_piege(&o) && !o.contains('\n'), "{o:?}");
+        // Les manques de la couverture aussi.
+        let r = Resultat::nouveau(
+            "PRO-DIA-001",
+            debut(),
+            &[],
+            Couverture {
+                verifies: 0,
+                non_verifies: vec!["bus : erreur\u{1b}[2J\u{202e}\nfin".into()],
+            },
+        );
+        let n = &r.couverture.non_verifies[0];
+        assert!(!crate::ui::contient_un_piege(n) && !n.contains('\n'), "{n:?}");
+        assert!(n.starts_with("bus : erreur") && n.ends_with("fin"), "{n:?}");
     }
 
     /// Jamais « sain » avec un manque, ni sans rien de vérifié ; le pire problème décide.
