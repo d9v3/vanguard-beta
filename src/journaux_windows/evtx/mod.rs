@@ -78,8 +78,11 @@ pub(crate) struct Bornes {
     /// Pas de rendu pour un enregistrement (contenus, attributs) : le coût d'un gabarit démultiplié s'arrête là.
     pub travail: usize,
     /// Lectures d'octets du BinXml pour tout un morceau, gabarits et noms désignés compris. Un vrai morceau en fait
-    /// quelques centaines de milliers (chaque octet lu une fois, chaque gabarit une fois) ; des gabarits désignés à
-    /// des positions qui se chevauchent feraient sinon relire le morceau presque autant de fois qu'il a d'octets.
+    /// quelques centaines de milliers (chaque jeton lu une fois, chaque gabarit et chaque nom une fois, les noms
+    /// étant lus à part dans la limite de 256 caractères) ; des gabarits désignés à des positions qui se chevauchent
+    /// feraient sinon relire le morceau presque autant de fois qu'il a d'octets. Le budget vaut pour tout le
+    /// morceau : épuisé par un enregistrement fabriqué, il rend illisibles (et comptés) tous ceux qui suivent dans
+    /// ce morceau, jamais ceux des morceaux suivants.
     pub lecture_morceau: usize,
 }
 
@@ -193,7 +196,10 @@ pub(crate) struct Bilan {
 }
 
 impl Bilan {
-    /// Tout ce que le fichier contenait a été lu et rendu exactement (les morceaux vides ne contiennent rien).
+    /// Tout ce que le fichier contenait a été lu et rendu exactement (les morceaux vides ne contiennent rien). Les
+    /// enregistrements laissés après la place libre (`enregistrements_apres_place_libre`) n'y comptent pas, comme
+    /// Windows ne les lit pas : un appelant qui juge un journal doit les regarder à part (une place libre reculée à
+    /// la main, CRC recalculés, laisse `complet` vrai et ne se voit que là).
     pub(crate) fn complet(&self) -> bool {
         !self.en_tete_abime
             && self.morceaux_illisibles == 0
@@ -279,7 +285,12 @@ pub(crate) fn parcourir<R: Read + Seek>(
             bilan.morceaux_hors_borne += blocs_lus - i;
             break;
         }
-        source.seek(SeekFrom::Start(EN_TETE_U64 + i * MORCEAU_U64))?;
+        // `i` reste sous la borne de taille, mais une borne choisie démesurée ne doit pas faire déborder le calcul.
+        let Some(debut) = i.checked_mul(MORCEAU_U64).and_then(|d| d.checked_add(EN_TETE_U64)) else {
+            bilan.morceaux_hors_borne += blocs_lus - i;
+            break;
+        };
+        source.seek(SeekFrom::Start(debut))?;
         if lire_au_plus(&mut source, &mut morceau)? < MORCEAU {
             // Coupé en fin de fichier : son CRC ne peut pas être vérifié.
             bilan.morceaux_illisibles += 1;
