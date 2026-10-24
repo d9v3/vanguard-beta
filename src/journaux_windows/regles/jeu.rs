@@ -41,6 +41,16 @@ fn chemin_bas(t: &str) -> String {
     t.trim().to_lowercase().replace('/', "\\")
 }
 
+/// L'instant d'un événement, pour l'objet d'un événement ponctuel (un journal effacé, une protection coupée) :
+/// déclarer normal celui-là ne fait pas taire les suivants.
+fn instant(e: &EvenementWindows) -> String {
+    match (e.date, e.numero) {
+        (Some(d), _) => d.format("%Y-%m-%dT%H:%M:%S").to_string(),
+        (None, Some(n)) => format!("n{n}"),
+        (None, None) => "?".to_string(),
+    }
+}
+
 // Rend une `Option` pour que chaque juge finisse sur une seule expression, comme ses refus (`return None`).
 #[allow(clippy::unnecessary_wraps)]
 fn indice(objet: String, gravite: Gravite, pourquoi: Texte, details: Vec<(Libelle, String)>) -> Option<Indice> {
@@ -79,12 +89,15 @@ const INTERPRETES: &[&str] = &[
     "cmstp",
     "odbcconf",
     "forfiles",
-    "bash",
-    "wsl",
-    "python",
-    "pythonw",
-    "node",
 ];
+
+/// Des interpréteurs de scripts que des programmes légitimes lancent aussi en service (un serveur Node.js, un
+/// outil en Python) : moins sûrs qu'un cmd ou un PowerShell de service, qui ne sert qu'aux attaques.
+const AUTRES_INTERPRETES: &[&str] = &["bash", "wsl", "python", "pythonw", "node"];
+
+fn est_autre_interprete(nom: &str) -> bool {
+    AUTRES_INTERPRETES.contains(&nom)
+}
 
 /// Ce qu'une ligne de commande contient quand elle lance un interpréteur ou du code encodé, où qu'il soit (après
 /// « /c », dans un argument).
@@ -111,6 +124,9 @@ const LANCEMENTS: &[&str] = &[
 
 /// Des dossiers où un compte ordinaire écrit : un service ou un pilote qui s'y trouve peut être remplacé par
 /// n'importe quel programme de ce compte, et rien ne s'installe normalement là.
+/// Les dossiers temporaires, parmi les inscriptibles.
+const TEMPORAIRES: &[&str] = &["\\temp\\", "\\tmp\\", "%temp%", "%tmp%"];
+
 const INSCRIPTIBLES: &[&str] = &[
     "\\users\\",
     "\\appdata\\",
@@ -262,7 +278,7 @@ fn auteur(e: &EvenementWindows) -> String {
 
 fn securite_effacee(e: &EvenementWindows) -> Option<Indice> {
     indice(
-        "security".into(),
+        format!("security|{}", instant(e)),
         Gravite::Alerte,
         (
             "le journal de sécurité a été effacé (rien ne l'efface d'ordinaire : c'est ce que fait un attaquant qui cache ses traces)",
@@ -275,7 +291,7 @@ fn securite_effacee(e: &EvenementWindows) -> Option<Indice> {
 fn journal_efface(e: &EvenementWindows) -> Option<Indice> {
     let journal = champ(e, "Channel");
     indice(
-        journal.to_lowercase(),
+        format!("{}|{}", journal.to_lowercase(), instant(e)),
         Gravite::Alerte,
         (
             "un journal d'événements a été effacé (une désinstallation peut vider le sien ; sinon, des traces cachées)",
@@ -300,30 +316,82 @@ const OUTILS_DE_SERVICE: &[&str] = &[
     "wceservice",
 ];
 
-/// Les mises à jour des définitions de Defender installent un pilote « MpKsl… » depuis leur dossier, à chaque
-/// mise à jour (noté par Microsoft) : protégé par Defender lui-même.
-fn pilote_de_defender(nom: &str, chemin: &str) -> bool {
-    nom.to_lowercase().starts_with("mpksl")
-        && chemin.contains("\\programdata\\microsoft\\windows defender\\definition updates\\")
+/// Les mises à jour des définitions de Defender installent un pilote « MpKsl » suivi de chiffres hexadécimaux
+/// depuis leur dossier, à chaque mise à jour (noté par Microsoft) : ce dossier est protégé par Defender lui-même.
+/// Le programme doit y être, pas seulement la ligne de commande le nommer.
+fn pilote_de_defender(nom: &str, programme_bas: &str) -> bool {
+    const DOSSIER: &str = "c:\\programdata\\microsoft\\windows defender\\definition updates\\";
+    let nom = nom.to_ascii_lowercase();
+    let hexa = nom
+        .strip_prefix("mpksl")
+        .is_some_and(|r| !r.is_empty() && r.chars().all(|c| c.is_ascii_hexdigit()));
+    let chemin = programme_bas.strip_prefix("\\??\\").unwrap_or(programme_bas);
+    hexa && chemin.starts_with(DOSSIER) && !chemin.contains("\\..\\")
 }
 
-/// Ce qu'un nouveau service a de suspect : sa gravité et pourquoi ; rien pour un service ordinaire.
-pub(crate) fn service_suspect(nom: &str, image: &str) -> Option<(Gravite, Texte)> {
-    let bas = chemin_bas(image);
-    let (programme, _) = decouper(image);
-    let programme_bas = chemin_bas(&programme);
-    let nom_prog = nom_programme(&programme);
-    if est_interprete(&nom_prog) || LANCEMENTS.iter().any(|l| bas.contains(l)) {
+/// Le chemin d'un programme sans ses préfixes de chemin long ou de l'espace de noms du noyau (« \\?\ »,
+/// « \??\ ») ; un partage réseau sous ces formes (« \\?\UNC\hôte\ ») redevient « \\hôte\ ».
+fn sans_prefixe(programme_bas: &str) -> String {
+    for p in ["\\\\?\\unc\\", "\\??\\unc\\"] {
+        if let Some(r) = programme_bas.strip_prefix(p) {
+            return format!("\\\\{r}");
+        }
+    }
+    for p in ["\\\\?\\", "\\??\\"] {
+        if let Some(r) = programme_bas.strip_prefix(p) {
+            return r.to_string();
+        }
+    }
+    programme_bas.to_string()
+}
+
+/// Les programmes de Microsoft qui s'installent à la racine du dossier de Windows : Sysmon (Sysinternals) et son
+/// pilote, vus dans un échantillon public.
+const RACINE_CONNUS: &[&str] = &["sysmon", "sysmon64", "sysmondrv"];
+
+/// Le dossier de Windows, sous ses noms.
+fn dans_windows(chemin: &str) -> Option<&str> {
+    ["c:\\windows\\", "%systemroot%\\", "%windir%\\", "\\systemroot\\"]
+        .iter()
+        .find_map(|p| chemin.strip_prefix(p))
+}
+
+/// Ce qu'un nouveau service a de suspect : sa gravité, pourquoi, et si son objet doit oublier les chiffres de son
+/// chemin (un pilote d'outil de matériel posé dans un dossier temporaire numéroté à chaque version) ; rien pour un
+/// service ordinaire.
+pub(crate) fn service_suspect(nom: &str, image: &str) -> Option<(Gravite, Texte, bool)> {
+    let (programme, arguments) = decouper(image);
+    let programme_bas = sans_prefixe(&chemin_bas(&programme));
+    let arguments_bas = chemin_bas(&arguments);
+    let nom_prog = nom_programme(&programme_bas);
+    // Le programme lui-même, ou ce que ses arguments lancent : pas le nom d'un dossier (« PowerShell Universal »).
+    if est_interprete(&nom_prog)
+        || chemin_bas(image).contains("%comspec%")
+        || LANCEMENTS
+            .iter()
+            .any(|l| arguments_bas.contains(l) || format!(" {arguments_bas} ").contains(l))
+    {
         return Some((
             Gravite::Critique,
             (
                 "le service lance un interpréteur de commandes ou du code encodé, comme les outils d'attaque qui s'installent à distance",
                 "the service runs a command interpreter or encoded code, like attack tools that install themselves remotely",
             ),
+            false,
         ));
     }
-    if pilote_de_defender(nom, &bas) {
+    if pilote_de_defender(nom, &chemin_bas(&programme)) {
         return None;
+    }
+    if est_autre_interprete(&nom_prog) {
+        return Some((
+            Gravite::Alerte,
+            (
+                "le service lance un interpréteur de scripts (Python, Node.js, Bash) : des programmes légitimes le font, des portes dérobées aussi",
+                "the service runs a script interpreter (Python, Node.js, Bash): legitimate programs do, backdoors too",
+            ),
+            false,
+        ));
     }
     if OUTILS_DE_SERVICE
         .iter()
@@ -332,9 +400,10 @@ pub(crate) fn service_suspect(nom: &str, image: &str) -> Option<(Gravite, Texte)
         return Some((
             Gravite::Alerte,
             (
-                "le service est celui d'un outil qui lance des commandes à distance (PsExec et ses semblables), l'outil le plus utilisé par les attaquants pour passer d'un ordinateur à l'autre",
-                "the service belongs to a tool that runs commands remotely (PsExec and the like), the tool attackers use most to move from one computer to another",
+                "le service est celui d'un outil qui lance des commandes à distance (PsExec et ses semblables) : un administrateur s'en sert, et c'est l'outil le plus utilisé par les attaquants pour passer d'un ordinateur à l'autre",
+                "the service belongs to a tool that runs commands remotely (PsExec and the like): administrators use it, and it is the tool attackers use most to move from one computer to another",
             ),
+            false,
         ));
     }
     if !programme_bas.contains('\\') && !programme_bas.starts_with('%') && !programme_bas.is_empty() {
@@ -344,27 +413,55 @@ pub(crate) fn service_suspect(nom: &str, image: &str) -> Option<(Gravite, Texte)
                 "le service n'a pas de dossier : son programme est cherché ailleurs, là où un autre du même nom peut l'attendre",
                 "the service has no folder: its program is looked up elsewhere, where another one with the same name may wait",
             ),
+            false,
         ));
     }
-    if INSCRIPTIBLES.iter().any(|d| programme_bas.contains(d)) {
-        return Some((
-            Gravite::Alerte,
-            (
-                "le service est rangé dans un dossier où un compte ordinaire écrit (profil, dossier temporaire), où rien ne s'installe normalement",
-                "the service is stored in a folder an ordinary account can write to (profile, temporary folder), where nothing is normally installed",
-            ),
-        ));
-    }
-    if programme_bas.starts_with("\\\\")
-        && !programme_bas.starts_with("\\\\?\\")
-        && !programme_bas.starts_with("\\??\\")
-    {
+    if programme_bas.starts_with("\\\\") {
         return Some((
             Gravite::Alerte,
             (
                 "le service est lancé depuis un partage réseau",
                 "the service is run from a network share",
             ),
+            false,
+        ));
+    }
+    let pilote = nom_prog.len() < programme_bas.len()
+        && std::path::Path::new(&programme_bas)
+            .extension()
+            .is_some_and(|x| x.eq_ignore_ascii_case("sys"));
+    if INSCRIPTIBLES.iter().any(|d| programme_bas.contains(d)) {
+        if pilote && TEMPORAIRES.iter().any(|d| programme_bas.contains(d)) {
+            return Some((
+                Gravite::Info,
+                (
+                    "un pilote a été posé depuis un dossier temporaire : des outils de matériel le font (CPU-Z, HWiNFO, GPU-Z), et aussi les attaquants qui apportent un pilote vulnérable pour couper l'antivirus",
+                    "a driver was loaded from a temporary folder: hardware tools do it (CPU-Z, HWiNFO, GPU-Z), and so do attackers bringing a vulnerable driver to kill the antivirus",
+                ),
+                true,
+            ));
+        }
+        return Some((
+            Gravite::Alerte,
+            (
+                "le service est rangé dans un dossier où un compte ordinaire écrit (profil, dossier temporaire), où rien ne s'installe normalement",
+                "the service is stored in a folder an ordinary account can write to (profile, temporary folder), where nothing is normally installed",
+            ),
+            false,
+        ));
+    }
+    // Un programme posé à la racine du dossier de Windows : l'endroit où psexec d'Impacket et Metasploit déposent
+    // le leur sous un nom tiré au hasard (le partage ADMIN$).
+    if dans_windows(&programme_bas).is_some_and(|r| !r.is_empty() && !r.contains('\\'))
+        && !RACINE_CONNUS.contains(&nom_prog.as_str())
+    {
+        return Some((
+            Gravite::Alerte,
+            (
+                "le programme du service est posé à la racine du dossier de Windows, où les outils d'attaque à distance déposent le leur",
+                "the service program sits at the root of the Windows folder, where remote attack tools drop theirs",
+            ),
+            false,
         ));
     }
     if programme_bas.contains("\\programdata\\") {
@@ -374,6 +471,7 @@ pub(crate) fn service_suspect(nom: &str, image: &str) -> Option<(Gravite, Texte)
                 "le service est rangé dans ProgramData, où tout compte peut créer des dossiers ; certains programmes y installent le leur",
                 "the service is stored in ProgramData, where any account can create folders; some programs install theirs there",
             ),
+            false,
         ));
     }
     if nom_court(&programme_bas) {
@@ -383,6 +481,22 @@ pub(crate) fn service_suspect(nom: &str, image: &str) -> Option<(Gravite, Texte)
                 "le chemin du service passe par un nom court 8.3, qui cache le nom du dossier",
                 "the service path goes through an 8.3 short name, which hides the folder name",
             ),
+            false,
+        ));
+    }
+    let dossier_des_pilotes = ["system32\\drivers\\", "system32\\driverstore\\", "syswow64\\drivers\\"]
+        .iter()
+        .any(|d| programme_bas.contains(d));
+    let connu_a_la_racine =
+        RACINE_CONNUS.contains(&nom_prog.as_str()) && dans_windows(&programme_bas).is_some_and(|r| !r.contains('\\'));
+    if pilote && !dossier_des_pilotes && !connu_a_la_racine {
+        return Some((
+            Gravite::Info,
+            (
+                "un pilote du noyau est installé hors du dossier des pilotes de Windows (les anti-triche des jeux le font ; un pilote vulnérable apporté aussi)",
+                "a kernel driver is installed outside the Windows driver folder (game anti-cheats do; a vulnerable driver brought along too)",
+            ),
+            false,
         ));
     }
     None
@@ -391,9 +505,17 @@ pub(crate) fn service_suspect(nom: &str, image: &str) -> Option<(Gravite, Texte)
 fn service_installe(e: &EvenementWindows) -> Option<Indice> {
     let nom = champ(e, "ServiceName");
     let image = champ(e, "ImagePath");
-    let (gravite, pourquoi) = service_suspect(nom, image)?;
+    let (gravite, pourquoi, sans_chiffres) = service_suspect(nom, image)?;
+    let mut objet = format!("{}|{}", nom.to_lowercase(), chemin_bas(image));
+    if sans_chiffres {
+        // « cpuz154\cpuz154_x64.sys » et « cpuz160\cpuz160_x64.sys » : le même outil, une seule normale.
+        objet = objet
+            .chars()
+            .map(|c| if c.is_ascii_digit() { '#' } else { c })
+            .collect();
+    }
     indice(
-        format!("{}|{}", nom.to_lowercase(), chemin_bas(image)),
+        objet,
         gravite,
         pourquoi,
         vec![
@@ -407,7 +529,7 @@ fn service_installe(e: &EvenementWindows) -> Option<Indice> {
 
 fn journal_des_evenements_change(e: &EvenementWindows) -> Option<Indice> {
     indice(
-        "eventlog".into(),
+        format!("eventlog|{}", instant(e)),
         Gravite::Critique,
         (
             "le démarrage du service des journaux d'événements a été changé : coupé, Windows n'écrit plus aucun journal",
@@ -506,12 +628,13 @@ const GROUPES_LOCAUX: &[(&str, Gravite, Texte)] = &[
 /// schéma (518), de l'entreprise (519), Propriétaires créateurs de stratégie de groupe (520).
 const RID_DOMAINE: &[&str] = &["-512", "-518", "-519", "-520"];
 
+/// Le membre ajouté : son SID (MemberName vaut « - » pour un groupe local, dit Microsoft), à défaut son nom.
 fn membre(e: &EvenementWindows) -> String {
-    let nom = champ(e, "MemberName");
-    if rempli(nom) {
-        nom.to_string()
+    let sid = champ(e, "MemberSid");
+    if rempli(sid) {
+        sid.to_string()
     } else {
-        champ(e, "MemberSid").to_string()
+        champ(e, "MemberName").to_string()
     }
 }
 
@@ -519,7 +642,7 @@ fn ajout_groupe_local(e: &EvenementWindows) -> Option<Indice> {
     let sid = champ(e, "TargetSid");
     let &(s, gravite, pourquoi) = GROUPES_LOCAUX.iter().find(|(s, _, _)| s.eq_ignore_ascii_case(sid))?;
     indice(
-        format!("groupe:{}:{}", s.to_lowercase(), champ(e, "MemberSid").to_lowercase()),
+        format!("groupe:{}:{}", s.to_lowercase(), membre(e).to_lowercase()),
         gravite,
         pourquoi,
         vec![
@@ -536,7 +659,7 @@ fn ajout_groupe_domaine(e: &EvenementWindows) -> Option<Indice> {
         return None;
     }
     indice(
-        format!("groupe:{}:{}", sid.to_lowercase(), champ(e, "MemberSid").to_lowercase()),
+        format!("groupe:{}:{}", sid.to_lowercase(), membre(e).to_lowercase()),
         Gravite::Alerte,
         (
             "un compte a été ajouté à un groupe privilégié du domaine",
@@ -634,10 +757,38 @@ const DEVINE_ET_ENTRE: Texte = (
 // EVT-RDP-001 : Bureau à distance depuis l'extérieur
 // ---------------------------------------------------------------------------------------------------------------
 
+/// Une adresse de boucle (127.0.0.0/8, ::1, ::ffff:127.x) : cet ordinateur lui-même.
+fn boucle(adresse: &str) -> bool {
+    let a = adresse.trim().trim_start_matches('[').trim_end_matches(']');
+    match a.split('%').next().unwrap_or(a).parse::<IpAddr>() {
+        Ok(IpAddr::V4(v)) => v.is_loopback(),
+        Ok(IpAddr::V6(v)) => v.is_loopback() || v.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback()),
+        Err(_) => false,
+    }
+}
+
+/// Un compte sans son domaine, en minuscules (« POSTE\alice », « alice@domaine » : « alice »).
+fn compte_seul(compte: &str) -> String {
+    let bas = compte.trim().to_lowercase();
+    let sans = bas.rsplit('\\').next().unwrap_or(&bas);
+    sans.split('@').next().unwrap_or(sans).to_string()
+}
+
 fn distance(adresse: &str, compte: &str) -> Option<Indice> {
-    let (gravite, pourquoi) = match lieu(adresse) {
+    // Une session de Bureau à distance qui arrive par la boucle locale est passée par un tunnel (ngrok, plink,
+    // chisel : T1572) qui la fait entrer par cet ordinateur lui-même.
+    let (lieu_dit, gravite, pourquoi) = match lieu(adresse) {
+        Lieu::Local if boucle(adresse) => (
+            "tunnel",
+            Gravite::Alerte,
+            (
+                "une session de Bureau à distance est arrivée par la boucle locale : passée par un tunnel, qui cache d'où elle vient",
+                "a Remote Desktop session came in through the loopback address: through a tunnel, which hides where it comes from",
+            ),
+        ),
         Lieu::Local => return None,
         Lieu::Internet => (
+            "internet",
             Gravite::Alerte,
             (
                 "une session de Bureau à distance a été ouverte depuis une adresse d'Internet : le Bureau à distance est exposé",
@@ -645,6 +796,7 @@ fn distance(adresse: &str, compte: &str) -> Option<Indice> {
             ),
         ),
         Lieu::Partage => (
+            "partage",
             Gravite::Info,
             (
                 "une session de Bureau à distance depuis une adresse partagée (100.64.0.0/10 : opérateur, ou réseau privé comme Tailscale)",
@@ -652,6 +804,7 @@ fn distance(adresse: &str, compte: &str) -> Option<Indice> {
             ),
         ),
         Lieu::Illisible => (
+            "illisible",
             Gravite::Info,
             (
                 "une session de Bureau à distance depuis une adresse illisible",
@@ -659,8 +812,10 @@ fn distance(adresse: &str, compte: &str) -> Option<Indice> {
             ),
         ),
     };
+    // L'objet : le compte et d'où (Internet, tunnel…), pas l'adresse, qui change à chaque connexion depuis un
+    // téléphone ; une même session (4624, puis 21 et 1149 qui nomment le compte avec son domaine) ne fait qu'un.
     indice(
-        format!("{}|{}", adresse.trim().to_lowercase(), compte.trim().to_lowercase()),
+        format!("{lieu_dit}|{}", compte_seul(compte)),
         gravite,
         pourquoi,
         vec![
@@ -696,7 +851,10 @@ fn rdp_authentifie(e: &EvenementWindows) -> Option<Indice> {
 /// l'Explorateur qui monte un lecteur réseau avec un autre compte, le client Bureau à distance (mstsc) et la
 /// console d'administration (mmc) ; vus dans les échantillons publics sains : wininit (l'hôte des pilotes de
 /// polices, compte UMFD-0, à chaque démarrage), taskeng (les tâches de Windows 7), et la première mise en route
-/// (msoobe, CloudExperienceHostBroker). Ailleurs, rien de Windows ne le fait : un programme inhabituel l'a fait.
+/// (msoobe, CloudExperienceHostBroker), et le spouleur d'impression (une imprimante réseau). Ailleurs, rien de
+/// Windows ne le fait : un programme inhabituel l'a fait. Ce que la règle ne voit pas : « Exécuter en tant que »
+/// et ses semblables passent par le service d'ouverture de session secondaire (svchost), qu'elle ne peut pas
+/// distinguer de l'ordinaire.
 const IDENTIFIANTS_ATTENDUS: &[&str] = &[
     "c:\\windows\\system32\\winlogon.exe",
     "c:\\windows\\system32\\lsass.exe",
@@ -713,7 +871,11 @@ const IDENTIFIANTS_ATTENDUS: &[&str] = &[
     "c:\\windows\\system32\\taskeng.exe",
     "c:\\windows\\system32\\oobe\\msoobe.exe",
     "c:\\windows\\system32\\cloudexperiencehostbroker.exe",
+    "c:\\windows\\system32\\spoolsv.exe",
 ];
+
+/// Des dossiers d'où un programme qui se sert d'autres identifiants est douteux (avec les temporaires).
+const DOUTEUX: &[&str] = &["\\downloads\\", "\\users\\public\\", "\\$recycle.bin\\", "\\perflogs\\"];
 
 fn autres_identifiants(e: &EvenementWindows) -> Option<Indice> {
     let programme = champ(e, "ProcessName");
@@ -734,7 +896,14 @@ fn autres_identifiants(e: &EvenementWindows) -> Option<Indice> {
         (Libelle::Auteur, auteur(e)),
     ];
     let objet = format!("{bas}|{}|{}", cible.to_lowercase(), serveur.to_lowercase());
-    let (gravite, pourquoi) = if est_interprete(&nom_programme(&bas)) || INSCRIPTIBLES.iter().any(|d| bas.contains(d)) {
+    // Un programme installé pour un seul compte (Chrome, Teams, Zoom dans le profil) n'est qu'à savoir ; un
+    // interpréteur, ou un programme d'un dossier temporaire, des téléchargements ou public, ce que font les outils.
+    // Un programme qui porte le nom d'un des programmes de Windows de la liste, ailleurs que chez lui, se fait
+    // passer pour lui.
+    let nom = nom_programme(&bas);
+    let deguise = IDENTIFIANTS_ATTENDUS.iter().any(|a| nom_programme(a) == nom);
+    let douteux = deguise || TEMPORAIRES.iter().chain(DOUTEUX).any(|d| bas.contains(d));
+    let (gravite, pourquoi) = if est_interprete(&nom_programme(&bas)) || douteux {
         (
             Gravite::Alerte,
             (
@@ -798,12 +967,46 @@ impl Script {
     }
 
     fn contient(&self, motif: &str) -> bool {
-        if self.bas.contains(motif) {
+        if contient_mot(&self.bas, motif) {
             return true;
         }
+        // La forme ramassée seulement pour un motif de code (un point, un tiret, une parenthèse : « net.webclient »)
+        // ou un nom qu'aucune phrase ne forme (« downloadstring ») : « # Download data » ramassé ferait
+        // « downloaddata ».
+        // Un motif à plusieurs mots (« -e powershell ») ne se ramasse pas : « the powershell » le formerait.
+        let code = !motif.contains(' ') && motif.chars().any(|c| !c.is_ascii_alphanumeric());
         let m = ramasse(motif);
-        m.chars().count() >= RAMASSE_MIN && self.ramasse.contains(&m)
+        (code || RAMASSABLES.contains(&motif)) && m.chars().count() >= RAMASSE_MIN && self.ramasse.contains(&m)
     }
+}
+
+/// Des noms qui ne se forment pas par hasard en ramassant une phrase.
+const RAMASSABLES: &[&str] = &[
+    "downloadstring",
+    "frombase64string",
+    "amsiutils",
+    "amsiinitfailed",
+    "amsiscanbuffer",
+    "amsicontext",
+    "amsiopensession",
+    "minidumpwritedump",
+    "virtualprotect",
+    "getprocaddress",
+];
+
+/// `motif` dans `texte` ; un motif court qui commence par une lettre (« iex », « irm ») doit commencer un mot :
+/// « -Confirm » ne contient pas « irm ».
+fn contient_mot(texte: &str, motif: &str) -> bool {
+    let court = motif.len() < RAMASSE_MIN && motif.starts_with(|c: char| c.is_ascii_alphabetic());
+    if !court {
+        return texte.contains(motif);
+    }
+    texte.match_indices(motif).any(|(i, _)| {
+        texte[..i]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_alphanumeric() && c != '-' && c != '_')
+    })
 }
 
 const AMSI: &[&str] = &[
@@ -839,7 +1042,6 @@ const OUTILS_OFFENSIFS: &[&str] = &[
     "get-keystrokes",
     "invoke-ninjacopy",
     "invoke-credentialinjection",
-    "minidumpwritedump",
     "-e powershell",
     "-e cmd",
 ];
@@ -879,8 +1081,11 @@ const TELECHARGER: &[&str] = &[
     "invoke-webrequest",
     "invoke-restmethod",
     "start-bitstransfer",
+    "net.http.httpclient",
     "iwr ",
     "irm ",
+    "curl ",
+    "wget ",
 ];
 
 /// Ce qui télécharge du texte en mémoire, presque toujours pour l'exécuter.
@@ -888,13 +1093,7 @@ const TELECHARGER_EN_MEMOIRE: &[&str] = &["downloadstring", "downloaddata"];
 
 /// Ce qui défait une valeur encodée en code.
 const DECODER: &[&str] = &["frombase64string"];
-const CHARGER: &[&str] = &[
-    "reflection.assembly]::load",
-    "::load(",
-    "-bxor",
-    "gzipstream",
-    "deflatestream",
-];
+const CHARGER: &[&str] = &["reflection.assembly]::load", "::load(", "-bxor"];
 
 /// Ce qui coupe une défense de Defender ou efface un journal.
 const DESARMER: &[&str] = &[
@@ -907,6 +1106,10 @@ const DESARMER: &[&str] = &[
     "wevtutil cl",
     "wevtutil.exe cl",
     "remove-eventlog",
+    "enablescriptblocklogging",
+    "cachedgrouppolicysettings",
+    "disablearchivescanning",
+    "disableblockatfirstseen",
 ];
 
 fn un(s: &Script, motifs: &[&str]) -> bool {
@@ -926,6 +1129,31 @@ pub(crate) fn script_suspect(texte: &str) -> Option<(&'static str, Gravite, Text
             ),
         ));
     }
+    // AMSI aveuglé sans le nommer (« '{1}{0}' -f », variables) : la même manœuvre, par sa forme.
+    if s.contient("management.automation")
+        && s.contient("getfield")
+        && s.contient("nonpublic")
+        && s.contient("setvalue($null,$true)")
+    {
+        return Some((
+            "amsi",
+            Gravite::Critique,
+            (
+                "un script change un champ caché de PowerShell lui-même : la façon connue d'aveugler AMSI",
+                "a script changes a hidden field of PowerShell itself: the known way to blind AMSI",
+            ),
+        ));
+    }
+    if s.contient("net.sockets.tcpclient") && s.contient("getstream") && un(&s, EXECUTER) {
+        return Some((
+            "outil",
+            Gravite::Critique,
+            (
+                "un script ouvre une connexion et exécute ce qu'elle reçoit : un shell inversé",
+                "a script opens a connection and runs what it receives: a reverse shell",
+            ),
+        ));
+    }
     if un(&s, OUTILS_OFFENSIFS) {
         return Some((
             "outil",
@@ -933,6 +1161,26 @@ pub(crate) fn script_suspect(texte: &str) -> Option<(&'static str, Gravite, Text
             (
                 "un script nomme un outil d'attaque publié (vol de mots de passe, prise de contrôle)",
                 "a script names a published attack tool (password theft, takeover)",
+            ),
+        ));
+    }
+    if s.contient("minidumpwritedump") && s.contient("lsass") {
+        return Some((
+            "lsass",
+            Gravite::Alerte,
+            (
+                "un script vide la mémoire de LSASS, où Windows garde les identifiants des sessions",
+                "a script dumps the memory of LSASS, where Windows keeps session credentials",
+            ),
+        ));
+    }
+    if s.contient("virtualprotect") && s.contient("getprocaddress") {
+        return Some((
+            "memoire",
+            Gravite::Alerte,
+            (
+                "un script réécrit du code en mémoire (VirtualProtect, GetProcAddress) : la façon de patcher AMSI ou un antivirus",
+                "a script rewrites code in memory (VirtualProtect, GetProcAddress): how AMSI or an antivirus gets patched",
             ),
         ));
     }
@@ -951,8 +1199,8 @@ pub(crate) fn script_suspect(texte: &str) -> Option<(&'static str, Gravite, Text
             "telecharge",
             Gravite::Alerte,
             (
-                "un script télécharge du code et l'exécute aussitôt, sans fichier",
-                "a script downloads code and runs it right away, without a file",
+                "un script télécharge du code et l'exécute aussitôt, sans fichier (les installateurs de Scoop ou de Chocolatey le font aussi)",
+                "a script downloads code and runs it right away, without a file (the Scoop or Chocolatey installers do too)",
             ),
         ));
     }
@@ -1002,6 +1250,13 @@ pub(crate) fn script_suspect(texte: &str) -> Option<(&'static str, Gravite, Text
 /// Le niveau Avertissement (3) : PowerShell écrit lui-même d'origine les blocs qu'il juge suspects.
 const AVERTISSEMENT: u8 = 3;
 
+/// FNV-1a sur 64 bits : une empreinte stable d'une version à l'autre du programme (celle de `std` ne l'est pas).
+fn empreinte(texte: &str) -> u64 {
+    texte.bytes().fold(0xcbf2_9ce4_8422_2325, |h, o| {
+        (h ^ u64::from(o)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
 fn bloc_de_script(e: &EvenementWindows) -> Option<Indice> {
     let texte = champ(e, "ScriptBlockText");
     let chemin = champ(e, "Path");
@@ -1021,12 +1276,10 @@ fn bloc_de_script(e: &EvenementWindows) -> Option<Indice> {
     // déclarer normal), ou à défaut son numéro de bloc.
     let quoi = if rempli(chemin) {
         chemin_bas(chemin)
-    } else if rempli(champ(e, "ScriptBlockId")) {
-        // Les parties d'un long script (MessageNumber, MessageTotal) portent le même numéro de bloc : une seule
-        // trouvaille par script lancé.
-        champ(e, "ScriptBlockId").to_lowercase()
     } else {
-        ramasse(&script_bas(texte)).chars().take(120).collect()
+        // Sans fichier : une empreinte du texte (le numéro de bloc change à chaque exécution, une tâche planifiée
+        // qui relance la même commande ne ferait que des trouvailles nouvelles).
+        format!("bloc:{:016x}", empreinte(&ramasse(&script_bas(texte))))
     };
     indice(
         format!("{categorie}|{quoi}"),
@@ -1079,9 +1332,51 @@ fn action_prise(e: &EvenementWindows) -> Option<Indice> {
     )
 }
 
-fn temps_reel_coupe(_: &EvenementWindows) -> Option<Indice> {
+fn action_echouee(e: &EvenementWindows) -> Option<Indice> {
+    let menace = champ(e, "Threat Name");
+    let chemin = champ(e, "Path");
     indice(
-        "temps-reel".into(),
+        format!("echec:{}|{}", menace.to_lowercase(), chemin_bas(chemin)),
+        Gravite::Critique,
+        (
+            "Microsoft Defender n'a pas pu agir contre une menace : elle est peut-être encore là",
+            "Microsoft Defender could not act against a threat: it may still be there",
+        ),
+        vec![
+            (Libelle::Menace, menace.to_string()),
+            (Libelle::Action, champ(e, "Action Name").to_string()),
+            (Libelle::Commande, chemin.to_string()),
+        ],
+    )
+}
+
+/// 5010 (analyse contre les logiciels espions coupée), 5012 (analyse antivirus coupée), 5013 (la protection
+/// contre les falsifications a bloqué un changement : quelqu'un a essayé).
+fn protection_touchee(e: &EvenementWindows) -> Option<Indice> {
+    let pourquoi = match e.id {
+        5013 => (
+            "la protection contre les falsifications de Defender a bloqué une tentative de changer ses réglages",
+            "Defender tamper protection blocked an attempt to change its settings",
+        ),
+        _ => (
+            "une analyse de Microsoft Defender a été coupée",
+            "a Microsoft Defender scan was turned off",
+        ),
+    };
+    indice(
+        format!("protection:{}|{}", e.id, instant(e)),
+        Gravite::Alerte,
+        pourquoi,
+        vec![
+            (Libelle::Reglage, champ(e, "Value").to_string()),
+            (Libelle::NouvelleValeur, champ(e, "New Value").to_string()),
+        ],
+    )
+}
+
+fn temps_reel_coupe(e: &EvenementWindows) -> Option<Indice> {
+    indice(
+        format!("temps-reel|{}", instant(e)),
         Gravite::Alerte,
         (
             "la protection en temps réel de Microsoft Defender a été coupée",
@@ -1123,11 +1418,21 @@ fn reglage_change(e: &EvenementWindows) -> Option<Indice> {
             details,
         );
     }
-    let coupe = COUPURES.iter().find(|c| bas.contains(&format!("\\{c}=0x1")))?;
+    // « …\DisableRealtimeMonitoring = 0x1 » : la valeur lue comme un nombre (« 1 », « 0x00000001 »), non nulle.
+    let coupe = COUPURES.iter().find(|c| {
+        let motif = format!("\\{c}=");
+        bas.find(&motif).is_some_and(|i| {
+            let valeur: String = bas[i + motif.len()..]
+                .chars()
+                .take_while(char::is_ascii_alphanumeric)
+                .collect();
+            nombre(&valeur).is_some_and(|n| n != 0)
+        })
+    })?;
     let objet = if *coupe == "disablerealtimemonitoring" {
-        "temps-reel:reglage".to_string()
+        format!("temps-reel:reglage|{}", instant(e))
     } else {
-        format!("reglage:{coupe}")
+        format!("reglage:{coupe}|{}", instant(e))
     };
     indice(
         objet,
@@ -1145,21 +1450,29 @@ fn reglage_change(e: &EvenementWindows) -> Option<Indice> {
 // ---------------------------------------------------------------------------------------------------------------
 
 /// Les domaines d'où Windows et les programmes les plus courants téléchargent par BITS : Microsoft (Windows Update,
-/// Office, Edge, Defender, Store ; OneDrive par sfx.ms, OneNote par onenote.net, vus dans un échantillon public), Google (mise à jour de Chrome : dl.google.com, gvt1.com), Mozilla (mise à jour
-/// de Firefox), Adobe. Seulement des domaines où seul leur éditeur publie : pas de stockage ouvert à tous
-/// (blob.core.windows.net, storage.googleapis.com, github.com).
+/// Office, Edge, Defender, Store ; OneDrive par sfx.ms et g.live.com, OneNote par onenote.net, vus dans un
+/// échantillon public ;
+/// aka.ms, son raccourcisseur ; le CDN d'Office chez Akamai), Google (mise à jour de Chrome : dl.google.com,
+/// update.googleapis.com, gvt1.com), Mozilla (mise à jour de Firefox), Adobe. Seulement des noms où seul leur
+/// éditeur publie : ni stockage ouvert à tous (blob.core.windows.net, storage.googleapis.com, github.com,
+/// drive.google.com, onedrive.live.com : d'où google.com et live.com ne sont pas pris entiers), ni CDN loué
+/// (azureedge.net, vo.msecnd.net, akamaized.net). Une redirection suivie par BITS ne se voit pas : le 59 ne garde
+/// que l'adresse de départ.
 const DOMAINES_ATTENDUS: &[&str] = &[
     "microsoft.com",
     "windowsupdate.com",
     "windows.com",
     "office.com",
     "office.net",
-    "live.com",
     "msedge.net",
+    "g.live.com",
+    "aka.ms",
+    "officecdn.microsoft.com.edgesuite.net",
     "sfx.ms",
     "onenote.net",
     "xboxlive.com",
-    "google.com",
+    "dl.google.com",
+    "update.googleapis.com",
     "gvt1.com",
     "mozilla.org",
     "mozilla.net",
@@ -1217,6 +1530,22 @@ pub(crate) fn adresse_inhabituelle(url: &str) -> Option<(String, Gravite, Texte)
     }
     if hote == "localhost" {
         return None;
+    }
+    // Un nom du réseau local (une seule étiquette, ou .local, .lan, .home.arpa, .internal) : le serveur de mises à
+    // jour d'une petite entreprise (WSUS), un NAS. À savoir, sans plus.
+    if !hote.contains('.')
+        || [".local", ".lan", ".home.arpa", ".internal", ".localdomain", ".corp"]
+            .iter()
+            .any(|s| hote.ends_with(s))
+    {
+        return Some((
+            hote.to_string(),
+            Gravite::Info,
+            (
+                "BITS a téléchargé depuis un serveur du réseau local (un serveur de mises à jour, un NAS)",
+                "BITS downloaded from a local network server (an update server, a NAS)",
+            ),
+        ));
     }
     if DOMAINES_ATTENDUS
         .iter()
@@ -1317,6 +1646,58 @@ fn audit_change(e: &EvenementWindows) -> Option<Indice> {
     )
 }
 
+fn journal_plein(e: &EvenementWindows) -> Option<Indice> {
+    indice(
+        format!("plein|{}", instant(e)),
+        Gravite::Alerte,
+        (
+            "le journal de sécurité est plein et réglé pour ne rien écraser : Windows n'y écrit plus (un attaquant peut le remplir exprès)",
+            "the security log is full and set to overwrite nothing: Windows no longer writes to it (an attacker can fill it on purpose)",
+        ),
+        Vec::new(),
+    )
+}
+
+fn compte_verrouille(e: &EvenementWindows) -> Option<Indice> {
+    let compte = champ(e, "TargetUserName");
+    indice(
+        format!("verrouille:{}", compte_seul(compte)),
+        Gravite::Alerte,
+        (
+            "un compte a été verrouillé après trop d'échecs de connexion",
+            "an account was locked out after too many failed logons",
+        ),
+        vec![
+            (Libelle::Compte, compte.to_string()),
+            (Libelle::Serveur, champ(e, "TargetDomainName").to_string()),
+        ],
+    )
+}
+
+/// Windows PowerShell 400 (moteur démarré) : « EngineVersion=2.0 » dans ses données (des valeurs sans nom). La
+/// version 2 n'écrit aucun bloc de script : la lancer exprès (« powershell -version 2 ») contourne la
+/// journalisation et AMSI.
+fn powershell_2(e: &EvenementWindows) -> Option<Indice> {
+    let donnees = e
+        .champs
+        .iter()
+        .map(|(_, v)| v.as_str())
+        .find(|v| v.to_lowercase().contains("engineversion=2."))?;
+    let ligne = donnees
+        .lines()
+        .find(|l| l.to_lowercase().contains("hostapplication="))
+        .unwrap_or_default();
+    indice(
+        format!("v2|{}", instant(e)),
+        Gravite::Alerte,
+        (
+            "PowerShell 2 a été lancé : il n'écrit aucun bloc de script et échappe à AMSI, la façon connue de contourner la journalisation",
+            "PowerShell 2 was started: it writes no script block and escapes AMSI, the known way to bypass logging",
+        ),
+        vec![(Libelle::Commande, ligne.trim().to_string())],
+    )
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Les règles
 // ---------------------------------------------------------------------------------------------------------------
@@ -1335,18 +1716,78 @@ const fn chacun(
         quand,
         forme: Forme::Chacun(f),
         audit: Audit::DOrigine,
+        sous_categorie: None,
     }
 }
+
+/// Un volet du journal de sécurité, sa sous-catégorie d'audit nommée (un 4719 qui la réduit le rend non vérifié).
+const fn securite(
+    ids: &'static [u32],
+    quand: Condition,
+    f: fn(&EvenementWindows) -> Option<Indice>,
+    sc: &'static str,
+) -> Volet {
+    Volet {
+        sous_categorie: Some(sc),
+        ..chacun(SECURITY, AUDIT, ids, quand, f)
+    }
+}
+
+/// Les GUID des sous-catégories d'audit (« auditpol /list /subcategory:* /v »), en minuscules comme le moteur les
+/// compare.
+const LOGON: &str = "{0cce9215-69ae-11d9-bed3-505054503030}";
+const COMPTES: &str = "{0cce9235-69ae-11d9-bed3-505054503030}";
+const GROUPES: &str = "{0cce9237-69ae-11d9-bed3-505054503030}";
+
+/// L'audit des ouvertures de session : un poste allumé écrit sans cesse des 4624 ; sans un seul 4624, 4625 ou
+/// 4648 vu, rien ne prouve que la sous-catégorie écrit encore.
+const AUDIT_LOGON: Audit = Audit::Preuve {
+    preuve: &[4624, 4625, 4648],
+    quoi: (
+        "aucune ouverture de session journalisée : l'audit des ouvertures de session est peut-être coupé",
+        "no logon recorded: logon auditing may be turned off",
+    ),
+};
+
+/// Un volet de rafale d'échecs de connexion.
+const fn echecs(par: &'static [&'static str], nombre: usize, fenetre: i64, gravite: Gravite, pourquoi: Texte) -> Volet {
+    Volet {
+        journal: SECURITY,
+        fournisseurs: AUDIT,
+        ids: &[4625],
+        quand: DEVINABLE,
+        forme: Forme::Rafale {
+            par,
+            nombre,
+            fenetre,
+            gravite,
+            pourquoi,
+        },
+        audit: AUDIT_LOGON,
+        sous_categorie: Some(LOGON),
+    }
+}
+
+/// Trente échecs en un jour, par compte ou par adresse : l'attaquant patient qui reste sous le seuil de
+/// verrouillage (neuf essais toutes les dix minutes) ; le seuil d'origine de Windows 10 est zéro (jamais).
+const ECHECS_LENTS: usize = 30;
+const FENETRE_LENTE: i64 = 24 * 3600;
+const DEVINE_LENTEMENT: Texte = (
+    "des échecs de connexion répétés sur une journée : quelqu'un essaie des mots de passe sans se faire verrouiller (ou un programme garde un mot de passe périmé)",
+    "repeated failed logons over a day: someone is trying passwords without getting locked out (or a program keeps an outdated password)",
+);
 
 const SECURITY: &str = "Security";
 const SYSTEM: &str = "System";
 const POWERSHELL: &str = "Microsoft-Windows-PowerShell/Operational";
 const POWERSHELL_7: &str = "PowerShellCore/Operational";
+const POWERSHELL_CLASSIQUE: &str = "Windows PowerShell";
 const DEFENDER: &str = "Microsoft-Windows-Windows Defender/Operational";
 const BITS: &str = "Microsoft-Windows-Bits-Client/Operational";
 const WMI: &str = "Microsoft-Windows-WMI-Activity/Operational";
 const LSM: &str = "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational";
 const RCM: &str = "Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational";
+const DEFENDER_P: &[&str] = &["Microsoft-Windows-Windows Defender"];
 
 /// Les journaux que lisent les règles.
 pub(crate) const JOURNAUX: &[&str] = &[
@@ -1354,6 +1795,7 @@ pub(crate) const JOURNAUX: &[&str] = &[
     SYSTEM,
     POWERSHELL,
     POWERSHELL_7,
+    POWERSHELL_CLASSIQUE,
     DEFENDER,
     BITS,
     WMI,
@@ -1386,11 +1828,13 @@ pub(crate) static REGLES: &[Regle] = &[
                 quand: Condition::Toujours,
                 forme: Forme::Trous,
                 audit: Audit::DOrigine,
+                sous_categorie: None,
             },
+            chacun(SECURITY, EVENTLOG, &[1104], Condition::Toujours, journal_plein),
         ],
         limite: Some((
-            "un enregistrement changé ou remplacé sans changer son numéro ne se voit pas",
-            "a record changed or replaced without changing its number cannot be seen",
+            "un enregistrement changé ou remplacé sans changer son numéro ne se voit pas, ni un journal qui cesse d'écrire (service coupé par le registre) sans laisser de trou",
+            "a record changed or replaced without changing its number cannot be seen, nor a log that stops writing (service turned off in the registry) without leaving a gap",
         )),
         defender: false,
     },
@@ -1417,7 +1861,10 @@ pub(crate) static REGLES: &[Regle] = &[
                 journal_des_evenements_change,
             ),
         ],
-        limite: None,
+        limite: Some((
+            "un service changé directement dans le registre (ImagePath, Start) n'écrit ni 7045 ni 7040",
+            "a service changed directly in the registry (ImagePath, Start) writes neither 7045 nor 7040",
+        )),
         defender: false,
     },
     Regle {
@@ -1436,16 +1883,10 @@ pub(crate) static REGLES: &[Regle] = &[
             "https://attack.mitre.org/techniques/T1098/",
         ],
         volets: &[
-            chacun(SECURITY, AUDIT, &[4720], Condition::Toujours, compte_cree),
-            chacun(SECURITY, AUDIT, &[4732], Condition::Toujours, ajout_groupe_local),
-            chacun(
-                SECURITY,
-                AUDIT,
-                &[4728, 4756],
-                Condition::Toujours,
-                ajout_groupe_domaine,
-            ),
-            chacun(SECURITY, AUDIT, &[4738], Condition::Toujours, compte_change),
+            securite(&[4720], Condition::Toujours, compte_cree, COMPTES),
+            securite(&[4732], Condition::Toujours, ajout_groupe_local, GROUPES),
+            securite(&[4728, 4756], Condition::Toujours, ajout_groupe_domaine, GROUPES),
+            securite(&[4738], Condition::Toujours, compte_change, COMPTES),
         ],
         limite: None,
         defender: false,
@@ -1460,52 +1901,16 @@ pub(crate) static REGLES: &[Regle] = &[
         references: &[
             "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4625",
             "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4624",
+            "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4740",
             "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/audit-policy-recommendations",
             "https://attack.mitre.org/techniques/T1110/001/",
         ],
         volets: &[
-            Volet {
-                journal: SECURITY,
-                fournisseurs: AUDIT,
-                ids: &[4625],
-                quand: DEVINABLE,
-                forme: Forme::Rafale {
-                    par: &["TargetUserName"],
-                    nombre: ECHECS,
-                    fenetre: FENETRE_ECHECS,
-                    gravite: Gravite::Alerte,
-                    pourquoi: DEVINE,
-                },
-                audit: Audit::DOrigine,
-            },
-            Volet {
-                journal: SECURITY,
-                fournisseurs: AUDIT,
-                ids: &[4625],
-                quand: DEVINABLE,
-                forme: Forme::Rafale {
-                    par: &["IpAddress"],
-                    nombre: ECHECS,
-                    fenetre: FENETRE_ECHECS,
-                    gravite: Gravite::Alerte,
-                    pourquoi: DEVINE,
-                },
-                audit: Audit::DOrigine,
-            },
-            Volet {
-                journal: SECURITY,
-                fournisseurs: AUDIT,
-                ids: &[4625],
-                quand: DEVINABLE,
-                forme: Forme::Rafale {
-                    par: &[],
-                    nombre: ECHECS_RAPIDES,
-                    fenetre: FENETRE_RAPIDE,
-                    gravite: Gravite::Alerte,
-                    pourquoi: DEVINE_VITE,
-                },
-                audit: Audit::DOrigine,
-            },
+            echecs(&["TargetUserName"], ECHECS, FENETRE_ECHECS, Gravite::Alerte, DEVINE),
+            echecs(&["IpAddress"], ECHECS, FENETRE_ECHECS, Gravite::Alerte, DEVINE),
+            echecs(&[], ECHECS_RAPIDES, FENETRE_RAPIDE, Gravite::Alerte, DEVINE_VITE),
+            // La réussite après une rafale, par compte seulement : par adresse, un appareil du réseau qui retente un
+            // ancien mot de passe d'un compte ferait croire deviné le compte d'un autre qui se connecte de là.
             Volet {
                 journal: SECURITY,
                 fournisseurs: AUDIT,
@@ -1521,25 +1926,24 @@ pub(crate) static REGLES: &[Regle] = &[
                     gravite: Gravite::Critique,
                     pourquoi: DEVINE_ET_ENTRE,
                 },
-                audit: Audit::DOrigine,
+                audit: AUDIT_LOGON,
+                sous_categorie: Some(LOGON),
             },
-            Volet {
-                journal: SECURITY,
-                fournisseurs: AUDIT,
-                ids: &[4625],
-                quand: DEVINABLE,
-                forme: Forme::Apres {
-                    par: &["IpAddress"],
-                    nombre: ECHECS,
-                    fenetre: FENETRE_ECHECS,
-                    delai: DELAI_REUSSITE,
-                    b_ids: &[4624],
-                    b_quand: DEVINABLE,
-                    gravite: Gravite::Critique,
-                    pourquoi: DEVINE_ET_ENTRE,
-                },
-                audit: Audit::DOrigine,
-            },
+            echecs(
+                &["TargetUserName"],
+                ECHECS_LENTS,
+                FENETRE_LENTE,
+                Gravite::Alerte,
+                DEVINE_LENTEMENT,
+            ),
+            echecs(
+                &["IpAddress"],
+                ECHECS_LENTS,
+                FENETRE_LENTE,
+                Gravite::Alerte,
+                DEVINE_LENTEMENT,
+            ),
+            securite(&[4740], Condition::Toujours, compte_verrouille, COMPTES),
         ],
         limite: None,
         defender: false,
@@ -1557,13 +1961,15 @@ pub(crate) static REGLES: &[Regle] = &[
             "https://attack.mitre.org/techniques/T1133/",
         ],
         volets: &[
-            chacun(
-                SECURITY,
-                AUDIT,
-                &[4624],
-                Condition::Champ("LogonType", Test::NombreDans(&[10, 12])),
-                rdp_securite,
-            ),
+            Volet {
+                audit: AUDIT_LOGON,
+                ..securite(
+                    &[4624],
+                    Condition::Champ("LogonType", Test::NombreDans(&[10, 12])),
+                    rdp_securite,
+                    LOGON,
+                )
+            },
             chacun(
                 LSM,
                 &["Microsoft-Windows-TerminalServices-LocalSessionManager"],
@@ -1593,14 +1999,14 @@ pub(crate) static REGLES: &[Regle] = &[
             "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4648",
             "https://attack.mitre.org/techniques/T1078/",
         ],
-        volets: &[chacun(
-            SECURITY,
-            AUDIT,
-            &[4648],
-            Condition::Toujours,
-            autres_identifiants,
-        )],
-        limite: None,
+        volets: &[Volet {
+            audit: AUDIT_LOGON,
+            ..securite(&[4648], Condition::Toujours, autres_identifiants, LOGON)
+        }],
+        limite: Some((
+            "« Exécuter en tant que » et ses semblables passent par le service d'ouverture de session secondaire, indiscernable de l'ordinaire",
+            "“Run as” and the like go through the Secondary Logon service, indistinguishable from the ordinary",
+        )),
         defender: false,
     },
     Regle {
@@ -1631,10 +2037,17 @@ pub(crate) static REGLES: &[Regle] = &[
                 Condition::Toujours,
                 bloc_de_script,
             ),
+            chacun(
+                POWERSHELL_CLASSIQUE,
+                &["PowerShell"],
+                &[400],
+                Condition::Toujours,
+                powershell_2,
+            ),
         ],
         limite: Some((
-            "sans la stratégie « Activer la journalisation des blocs de script », PowerShell n'écrit d'origine que les blocs qu'il juge lui-même suspects ; PowerShell 7 n'écrit dans son journal qu'une fois inscrit",
-            "without the “Turn on Script Block Logging” policy, PowerShell only writes by default the blocks it judges suspicious itself; PowerShell 7 only writes to its log once registered",
+            "sans la stratégie « Activer la journalisation des blocs de script », PowerShell n'écrit d'origine que les blocs qu'il juge lui-même suspects ; PowerShell 7 n'écrit dans son journal qu'une fois inscrit ; un long script est jugé partie par partie",
+            "without the “Turn on Script Block Logging” policy, PowerShell only writes by default the blocks it judges suspicious itself; PowerShell 7 only writes to its log once registered; a long script is judged part by part",
         )),
         defender: false,
     },
@@ -1651,33 +2064,17 @@ pub(crate) static REGLES: &[Regle] = &[
             "https://attack.mitre.org/techniques/T1685/",
         ],
         volets: &[
+            chacun(DEFENDER, DEFENDER_P, &[1116], Condition::Toujours, menace_trouvee),
+            chacun(DEFENDER, DEFENDER_P, &[1117], Condition::Toujours, action_prise),
+            chacun(DEFENDER, DEFENDER_P, &[1118, 1119], Condition::Toujours, action_echouee),
+            chacun(DEFENDER, DEFENDER_P, &[5001], Condition::Toujours, temps_reel_coupe),
+            chacun(DEFENDER, DEFENDER_P, &[5007], Condition::Toujours, reglage_change),
             chacun(
                 DEFENDER,
-                &["Microsoft-Windows-Windows Defender"],
-                &[1116],
+                DEFENDER_P,
+                &[5010, 5012, 5013],
                 Condition::Toujours,
-                menace_trouvee,
-            ),
-            chacun(
-                DEFENDER,
-                &["Microsoft-Windows-Windows Defender"],
-                &[1117],
-                Condition::Toujours,
-                action_prise,
-            ),
-            chacun(
-                DEFENDER,
-                &["Microsoft-Windows-Windows Defender"],
-                &[5001],
-                Condition::Toujours,
-                temps_reel_coupe,
-            ),
-            chacun(
-                DEFENDER,
-                &["Microsoft-Windows-Windows Defender"],
-                &[5007],
-                Condition::Toujours,
-                reglage_change,
+                protection_touchee,
             ),
         ],
         limite: None,
@@ -1701,7 +2098,10 @@ pub(crate) static REGLES: &[Regle] = &[
             Condition::Toujours,
             bits,
         )],
-        limite: None,
+        limite: Some((
+            "une redirection suivie par BITS ne se voit pas : seule l'adresse de départ est écrite",
+            "a redirect followed by BITS cannot be seen: only the starting address is written",
+        )),
         defender: false,
     },
     Regle {
@@ -1733,6 +2133,7 @@ pub(crate) static REGLES: &[Regle] = &[
             "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4719",
             "https://attack.mitre.org/techniques/T1685/001/",
         ],
+        // 4719 s'écrit quelle que soit la politique d'audit (Microsoft) : pas de sous-catégorie à prouver.
         volets: &[chacun(SECURITY, AUDIT, &[4719], Condition::Toujours, audit_change)],
         limite: None,
         defender: false,

@@ -169,6 +169,8 @@ fn etats_du_dossier(fichiers: &[BilanFichier]) -> Vec<EtatJournal> {
                 Lecture::Illisible(crate::trf!("{nom} : {}", "{nom}: {}", erreur_fichier(*e)))
             }
         };
+        let du_nom = journal_du_nom(&f.chemin);
+        let seul = noms.len() <= 1;
         for (i, nom) in noms.iter().enumerate() {
             // Les suites d'un fichier : la sienne (portée par son premier journal) et celles d'origine, qui portent
             // leur journal.
@@ -177,6 +179,9 @@ fn etats_du_dossier(fichiers: &[BilanFichier]) -> Vec<EtatJournal> {
                 nom: nom.clone(),
                 lecture: lecture.clone(),
                 active: None,
+                // Le journal du fichier lui-même : seul dans son fichier, ou nommé par lui. Une archive
+                // d'événements transférés ne porte que quelques-uns des événements de chacun.
+                principal: seul || du_nom.as_deref().is_some_and(|d| d.eq_ignore_ascii_case(nom)),
                 suites,
             });
         }
@@ -319,6 +324,7 @@ pub(crate) fn analyser_vivant(options: &Options, fin: std::time::Instant) -> Ana
                 nom: (*journal).to_string(),
                 lecture: Lecture::Lu(partiel_vivant(&b)),
                 active: b.active,
+                principal: true,
                 suites: b.suites,
             },
             Err(r) => EtatJournal {
@@ -333,6 +339,7 @@ pub(crate) fn analyser_vivant(options: &Options, fin: std::time::Instant) -> Ana
                     }),
                 },
                 active: None,
+                principal: true,
                 suites: Vec::new(),
             },
         });
@@ -414,6 +421,35 @@ fn manque(source: &Source, m: &Manque) -> (String, Raison) {
             let t = crate::trf!("journal {j} lu en partie ({x})", "log {j} partly read ({x})");
             (t.clone(), ill(&t))
         }
+        Manque::Vide(j) => {
+            let t = crate::trf!(
+                "journal {j} lu mais vide sur la période : vidé, remplacé, ou son audit coupé",
+                "log {j} read but empty over the period: cleared, replaced, or its auditing turned off"
+            );
+            (t.clone(), Raison::Echoue(t))
+        }
+        Manque::Muet { journal, depuis } => {
+            let t = crate::trf!(
+                "journal {journal} muet depuis le {} alors que d'autres écrivent encore : service des journaux bloqué ou audit coupé",
+                "log {journal} silent since {} while others still write: event log service blocked or auditing turned off",
+                date(*depuis)
+            );
+            (t.clone(), Raison::Echoue(t))
+        }
+        Manque::AuditReduit { journal } => {
+            let t = crate::trf!(
+                "{journal} : la politique d'audit de ces événements a été réduite pendant la période (4719)",
+                "{journal}: the audit policy of these events was reduced during the period (4719)"
+            );
+            (t.clone(), Raison::Echoue(t))
+        }
+        Manque::NonVerifies { journal, nombre } => {
+            let t = crate::trf!(
+                "journal {journal} : {nombre} événements de morceaux abîmés, sans preuve que Windows les a écrits ainsi",
+                "log {journal}: {nombre} events from damaged chunks, with no proof Windows wrote them that way"
+            );
+            (t.clone(), ill(&t))
+        }
         Manque::NonAudite { journal, quoi } => {
             let q = texte(*quoi);
             let t = crate::trf!(
@@ -490,6 +526,10 @@ fn reserve(r: Reserve) -> &'static str {
         Reserve::AvantExport => crate::tr!(
             "fichier exporté : rien ne prouve son origine, un export se fabrique",
             "exported file: nothing proves its origin, an export can be forged"
+        ),
+        Reserve::AutreAntivirus => crate::tr!(
+            "un autre antivirus est inscrit, qui met Defender en retrait ; mais un faux antivirus inscrit fait de même",
+            "another antivirus is registered, which puts Defender aside; but a fake registered antivirus does the same"
         ),
         Reserve::ArretInattendu => crate::tr!(
             "un arrêt inattendu au même moment l'explique",
@@ -568,7 +608,8 @@ pub(crate) fn constats(a: &Analyse, est_normale: &dyn Fn(&str) -> bool) -> (Vec<
         let r = j.regle;
         let mut tues = 0u64;
         for t in &j.trouvailles {
-            if est_normale(&cle_normale(r.id, &t.objet)) {
+            // Une alerte critique ne se déclare jamais normale : elle revient toujours.
+            if t.gravite < Gravite::Critique && est_normale(&cle_normale(r.id, &t.objet)) {
                 tues += 1;
                 continue;
             }
@@ -579,7 +620,7 @@ pub(crate) fn constats(a: &Analyse, est_normale: &dyn Fn(&str) -> bool) -> (Vec<
         if j.au_dela > 0 {
             let mut c = alerte(
                 CAT,
-                Niveau::Eleve,
+                niveau(j.au_dela_pire.unwrap_or(Gravite::Alerte)),
                 crate::trf!(
                     "{} : {} événements de plus à signaler, au-delà de ce qui est gardé",
                     "{}: {} more events to report, beyond what is kept",
@@ -592,7 +633,7 @@ pub(crate) fn constats(a: &Analyse, est_normale: &dyn Fn(&str) -> bool) -> (Vec<
             constats.push(c);
         }
         let sujet = texte(r.sujet);
-        let mut c = if j.sans_objet {
+        let mut c = if j.sans_objet && j.manques.is_empty() {
             sans_objet(
                 CAT,
                 Absence::Logiciel,

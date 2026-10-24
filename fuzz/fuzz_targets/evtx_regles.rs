@@ -56,6 +56,7 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
     let bornes = bornes();
     let b = bornes_moteur();
     let mut m = moteur::Moteur::nouveau(jeu::REGLES, moteur::Options::default(), b.clone());
+    let mut tous: Vec<evenement::EvenementWindows> = Vec::new();
     let mut recus = 0usize;
     for morceau in octets.split(|&o| o == 0) {
         let Ok(x) = std::str::from_utf8(morceau) else { continue };
@@ -67,6 +68,8 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
             abime.verifie = false;
             m.recevoir(&v);
             m.recevoir(&abime);
+            tous.push(v);
+            tous.push(abime);
             recus += 2;
         }
     }
@@ -74,6 +77,7 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
         for e in lu.enregistrements {
             if let Some(v) = evenement::EvenementWindows::depuis(e, evenement::Origine::Vivant) {
                 m.recevoir(&v);
+                tous.push(v);
                 recus += 1;
             }
         }
@@ -84,10 +88,38 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
             nom: (*j).to_string(),
             lecture: moteur::Lecture::Lu(Vec::new()),
             active: None,
+            principal: true,
             suites: Vec::new(),
         })
         .collect();
-    for j in m.conclure(&etats) {
+    // Les mêmes événements à l'envers (la source vivante lit les plus récents d'abord) : sans borne atteinte, les
+    // mêmes trouvailles.
+    let mut inverse = moteur::Moteur::nouveau(jeu::REGLES, moteur::Options::default(), b.clone());
+    for e in tous.iter().rev() {
+        inverse.recevoir(e);
+    }
+    let resume = |js: &[moteur::Jugement]| -> Vec<(usize, usize, String, String, u64, u64)> {
+        let mut v: Vec<_> = js
+            .iter()
+            .enumerate()
+            .flat_map(|(r, j)| {
+                j.trouvailles
+                    .iter()
+                    .map(move |t| (r, t.volet, t.objet.clone(), format!("{:?}", t.gravite), t.nombre, t.verifies))
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    let a = m.conclure(&etats);
+    let z = inverse.conclure(&etats);
+    let borne = a.iter().chain(&z).any(|j| {
+        j.au_dela > 0 || j.manques.iter().any(|x| matches!(x, moteur::Manque::Bornes(_)))
+    });
+    if !borne {
+        assert_eq!(resume(&a), resume(&z));
+    }
+    for j in a {
         assert!(j.trouvailles.len() <= b.trouvailles, "{}", j.regle.id);
         assert!(j.examines <= recus as u64 * 8);
         for t in &j.trouvailles {
