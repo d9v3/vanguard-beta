@@ -47,7 +47,8 @@ delivered just before it. Only the latest version has its download page; every v
   the entry point where it belongs); what cannot be judged is said unchecked, never ✔. A fake access point copying
   the router's address on another channel is reported. Never again "nothing found" for a file to check that is a link
   or a pipe, for a Windows log present but empty, or for a list cut at its limit (Wi-Fi profiles, sessions,
-  accounts); a fake GameMode no longer postpones the weekly self-test forever. File analysis, not wired in yet, sees
+  accounts); a fake GameMode no longer postpones the weekly self-test forever; comparing the key with its manifest
+  no longer follows a link or waits on a pipe. File analysis, not wired in yet, sees
   archives appended to an image, macros where only the compiled code counts, procedures hidden by a line
   continuation and OOXML relationships hidden by an XML detail.
 

@@ -51,7 +51,8 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   vérifié, jamais ✔. Un faux point d'accès qui recopie l'adresse du routeur sur un autre canal est signalé. Plus
   jamais « rien trouvé » pour un fichier à vérifier qui est un lien ou un tube, pour un journal Windows présent mais
   vide, ni pour une liste coupée à sa borne (profils Wi-Fi, sessions, comptes) ; un faux GameMode ne reporte plus
-  l'autotest de la semaine sans fin. L'analyse des fichiers, pas encore branchée, voit les archives collées derrière
+  l'autotest de la semaine sans fin ; la comparaison de la clé à son manifeste ne suit plus un lien ni n'attend sur
+  un tube. L'analyse des fichiers, pas encore branchée, voit les archives collées derrière
   une image, les macros dont seul le code compilé compte, les procédures cachées par une continuation de ligne et les
   relations OOXML cachées par un détail XML.
 
