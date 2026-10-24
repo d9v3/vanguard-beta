@@ -1163,7 +1163,7 @@ $notesSauvegarde = Join-Path $env:LOCALAPPDATA 'vanguard\sauvegarde.json'
 $notesAvant = Test-Path -LiteralPath $notesSauvegarde
 Lancer 'verifier-sauvegarde' @('verifier-sauvegarde')
 $vs = (Sortie 'verifier-sauvegarde') -replace '\s+', ' '
-if ($vs -match 'Vérifier ma sauvegarde|Check my backup') { Ok 'Écran affiché' } else { Bug 'Écran ABSENT' }
+if ($vs -match 'Vérifier la sauvegarde automatique|Check the automatic backup') { Ok 'Écran affiché' } else { Bug 'Écran ABSENT' }
 if ($notesAvant) { Info 'Notes de sauvegarde déjà présentes : la marche à suivre peut différer' }
 elseif ($vs -match 'Historique des fichiers|File History' -and $vs -match 'Non vérifié ici|Not checked here') { Ok 'Historique des fichiers : marche à suivre, dit non vérifié' }
 else { Bug 'Marche à suivre de l''Historique des fichiers ABSENTE' }

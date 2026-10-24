@@ -871,7 +871,7 @@ fn etat_du_menu(surveillance_active: bool, nouveau_menu: bool) -> Vec<String> {
             let note = |s: Option<u32>| s.map_or_else(|| "—".to_string(), etiquette_note);
             trf!(
                 "  {GRIS}Dernier bilan{RESET}  {}   ordinateur {}   réseau {}",
-                "  {GRIS}Last check{RESET}     {}   machine {}   network {}",
+                "  {GRIS}Last check{RESET}     {}   computer {}   network {}",
                 b.date,
                 note(b.machine),
                 note(b.reseau)
