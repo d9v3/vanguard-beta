@@ -5,6 +5,12 @@
 //! taille du fichier, l'arbre des ressources a sa profondeur exacte (3) et au plus 1 024 entrées par répertoire, et
 //! tout ce qui sort de la forme attendue donne `None`, jamais une panique.
 //!
+//! Les mêmes en-têtes donnent aussi les gardes que le programme Windows de Vanguard doit porter (`gardes`) : le champ
+//! DependentLoadFlags de son répertoire « Load Config » (ses DLL importées ne viennent que de System32, voir
+//! `machine/windows/chargement.rs`) et son manifeste (ressource RT_MANIFEST n° 1). Le déploiement, qui tourne sous
+//! Linux, les relit dans le vanguard.exe compilé avant de le livrer (`vanguard deploiement verifier-pe`), comme la
+//! compilation reproductible de la CI : d'où ce module compilé partout, et pas seulement sous Windows.
+//!
 //! Lecteur pur, sans `crate::` : le banc de fuzzing l'inclut par son chemin.
 
 use std::io::{Read, Seek, SeekFrom};
@@ -22,6 +28,19 @@ const VERSION_MAX: u32 = 64 << 10;
 const LUS_MAX: usize = 256 << 10;
 /// Le type RT_VERSION.
 const RT_VERSION: u32 = 16;
+/// Le type RT_MANIFEST, et le numéro du manifeste qu'un .exe porte pour son propre processus
+/// (CREATEPROCESS_MANIFEST_RESOURCE_ID) : le seul que Windows lit en le lançant.
+const RT_MANIFEST: u32 = 24;
+const MANIFESTE_DU_PROCESSUS: u32 = 1;
+/// Le répertoire de données n° 2 (ressources) et n° 10 (Load Config).
+const REPERTOIRE_RESSOURCES: u32 = 2;
+const REPERTOIRE_LOAD_CONFIG: u32 = 10;
+/// DependentLoadFlags est au décalage 78 (2 octets) d'IMAGE_LOAD_CONFIG_DIRECTORY64 : Windows ne le lit que si la
+/// taille annoncée du répertoire le couvre.
+const DRAPEAUX_DE_CHARGEMENT: u32 = 78;
+pub(crate) const TAILLE_MIN_DRAPEAUX: u32 = DRAPEAUX_DE_CHARGEMENT + 2;
+/// LOAD_LIBRARY_SEARCH_SYSTEM32.
+pub(crate) const SYSTEM32_SEULEMENT: u16 = 0x800;
 /// La signature de VS_FIXEDFILEINFO.
 const SIGNATURE: u32 = 0xFEEF_04BD;
 
@@ -65,17 +84,24 @@ pub(crate) enum Echec {
 }
 
 /// La version de l'exécutable `chemin`. Un fichier ordinaire seulement (un tube nommé bloquerait la lecture).
+#[cfg_attr(not(any(windows, test)), allow(dead_code))] // logiciels pas à jour, sous Windows
 pub(crate) fn version(chemin: &Path) -> Result<InfoPe, Echec> {
+    let (mut fichier, taille) = ouvrir(chemin)?;
+    lire(&mut fichier, taille).ok_or(Echec::Format)
+}
+
+/// Un fichier ordinaire ouvert sans attendre (un tube nommé bloquerait la lecture), et sa taille.
+fn ouvrir(chemin: &Path) -> Result<(std::fs::File, u64), Echec> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
-    let mut fichier = options.open(chemin).map_err(|e| Echec::Ouverture(e.kind()))?;
+    let fichier = options.open(chemin).map_err(|e| Echec::Ouverture(e.kind()))?;
     let meta = fichier.metadata().map_err(|e| Echec::Ouverture(e.kind()))?;
     if !meta.is_file() {
         return Err(Echec::PasUnFichier);
     }
-    lire(&mut fichier, meta.len()).ok_or(Echec::Format)
+    Ok((fichier, meta.len()))
 }
 
 /// Une section : où ses données sont en mémoire (RVA) et dans le fichier.
@@ -132,10 +158,33 @@ fn position(sections: &[Section], rva: u32, n: u32) -> Option<u64> {
     Some(u64::from(s.position) + u64::from(decalage))
 }
 
-/// La version et l'architecture d'un exécutable de `taille` octets. `None` : pas un PE, pas de ressource de version,
-/// ou une forme refusée.
-pub(crate) fn lire<R: Read + Seek>(source: &mut R, taille: u64) -> Option<InfoPe> {
-    let mut l = Lecteur { source, taille, lus: 0 };
+/// Les en-têtes d'un PE, lus et contrôlés : architecture, forme (PE32+ ou PE32), table des répertoires de données,
+/// sections dont les données brutes sont toutes dans le fichier.
+struct Entetes {
+    machine: Machine,
+    pe32_plus: bool,
+    /// Position de la table des répertoires dans le fichier, et ce qu'en annonce l'en-tête facultatif : nombre
+    /// d'entrées, place qu'elles ont avant la fin de l'en-tête.
+    repertoires: u64,
+    nombre_repertoires: u32,
+    place_repertoires: u32,
+    sections: Vec<Section>,
+}
+
+impl Entetes {
+    /// L'adresse (RVA) et la taille du répertoire n° `n` ; `None` s'il n'est pas annoncé, ne tient pas dans l'en-tête
+    /// facultatif ou est vide.
+    fn repertoire<R: Read + Seek>(&self, l: &mut Lecteur<'_, R>, n: u32) -> Option<(u32, u32)> {
+        if n >= self.nombre_repertoires || (n + 1) * 8 > self.place_repertoires {
+            return None;
+        }
+        let entree = self.repertoires + u64::from(n) * 8;
+        let rva = l.u32(entree)?;
+        (rva != 0).then_some((rva, l.u32(entree + 4)?))
+    }
+}
+
+fn entetes<R: Read + Seek>(l: &mut Lecteur<'_, R>) -> Option<Entetes> {
     // En-tête DOS, puis l'en-tête PE qu'il désigne.
     if l.octets(0, 2)? != b"MZ" {
         return None;
@@ -157,19 +206,12 @@ pub(crate) fn lire<R: Read + Seek>(source: &mut R, taille: u64) -> Option<InfoPe
     }
     // En-tête facultatif : PE32 ou PE32+, et la table des répertoires de données qui le termine.
     let facultatif = pe + 24;
-    let (nombre_repertoires, repertoires) = match l.u16(facultatif)? {
-        0x10B => (l.u32(facultatif + 92)?, 96u16),
-        0x20B => (l.u32(facultatif + 108)?, 112u16),
+    let (pe32_plus, nombre_repertoires, debut_repertoires) = match l.u16(facultatif)? {
+        0x10B => (false, l.u32(facultatif + 92)?, 96u16),
+        0x20B => (true, l.u32(facultatif + 108)?, 112u16),
         _ => return None,
     };
-    // Le répertoire n° 2 (ressources) doit exister, et tenir dans l'en-tête facultatif annoncé.
-    if nombre_repertoires <= 2 || u32::from(repertoires) + 3 * 8 > u32::from(taille_facultatif) {
-        return None;
-    }
-    let rva_ressources = l.u32(facultatif + u64::from(repertoires) + 16)?;
-    if rva_ressources == 0 {
-        return None;
-    }
+    let place_repertoires = u32::from(taille_facultatif.checked_sub(debut_repertoires)?);
     // Table des sections.
     let table = facultatif + u64::from(taille_facultatif);
     let mut sections = Vec::with_capacity(usize::from(nombre_sections));
@@ -186,17 +228,98 @@ pub(crate) fn lire<R: Read + Seek>(source: &mut R, taille: u64) -> Option<InfoPe
     // Les données brutes de chaque section doivent être dans le fichier.
     if sections
         .iter()
-        .any(|s| u64::from(s.position) + u64::from(s.taille_brute) > taille)
+        .any(|s| u64::from(s.position) + u64::from(s.taille_brute) > l.taille)
     {
         return None;
     }
-    let donnees = ressource_de_version(&mut l, &sections, rva_ressources)?;
+    Some(Entetes {
+        machine,
+        pe32_plus,
+        repertoires: facultatif + u64::from(debut_repertoires),
+        nombre_repertoires,
+        place_repertoires,
+        sections,
+    })
+}
+
+/// La version et l'architecture d'un exécutable de `taille` octets. `None` : pas un PE, pas de ressource de version,
+/// ou une forme refusée.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))] // logiciels pas à jour, sous Windows
+pub(crate) fn lire<R: Read + Seek>(source: &mut R, taille: u64) -> Option<InfoPe> {
+    let mut l = Lecteur { source, taille, lus: 0 };
+    let e = entetes(&mut l)?;
+    let (rva_ressources, _) = e.repertoire(&mut l, REPERTOIRE_RESSOURCES)?;
+    let donnees = ressource(&mut l, &e.sections, rva_ressources, RT_VERSION, None, VERSION_MAX)?;
     let (fichier, produit) = info_fixe(&donnees)?;
     Some(InfoPe {
         fichier,
         produit,
-        machine,
+        machine: e.machine,
     })
+}
+
+/// Le répertoire « Load Config » d'un PE 64 bits, tel que Windows le lit : la taille annoncée par la table des
+/// répertoires, celle écrite au début de la structure, et DependentLoadFlags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LoadConfig {
+    pub taille_repertoire: u32,
+    pub taille: u32,
+    pub drapeaux: u16,
+}
+
+impl LoadConfig {
+    /// Les DLL importées ne viennent-elles que de System32 ? Seulement si le champ y est, et couvert par les deux
+    /// tailles : une taille plus courte laisserait le champ ignoré, quelle que soit sa valeur.
+    pub(crate) fn system32_seulement(&self) -> bool {
+        self.taille >= TAILLE_MIN_DRAPEAUX
+            && self.taille_repertoire >= TAILLE_MIN_DRAPEAUX
+            && self.drapeaux == SYSTEM32_SEULEMENT
+    }
+}
+
+/// Les gardes d'un exécutable : son Load Config (PE32+ seulement) et son manifeste. Chacune `None` quand elle manque
+/// ou ne se lit pas.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Gardes {
+    pub load_config: Option<LoadConfig>,
+    pub manifeste: Option<Vec<u8>>,
+}
+
+/// Les gardes d'un exécutable de `taille` octets. `None` : pas un PE, ou des en-têtes refusés.
+pub(crate) fn lire_gardes<R: Read + Seek>(source: &mut R, taille: u64) -> Option<Gardes> {
+    let mut l = Lecteur { source, taille, lus: 0 };
+    let e = entetes(&mut l)?;
+    let load_config = e
+        .pe32_plus
+        .then(|| {
+            let (rva, taille_repertoire) = e.repertoire(&mut l, REPERTOIRE_LOAD_CONFIG)?;
+            // Les octets jusqu'au champ compris doivent être dans les données brutes d'une même section.
+            let debut = position(&e.sections, rva, TAILLE_MIN_DRAPEAUX)?;
+            Some(LoadConfig {
+                taille_repertoire,
+                taille: l.u32(debut)?,
+                drapeaux: l.u16(debut + u64::from(DRAPEAUX_DE_CHARGEMENT))?,
+            })
+        })
+        .flatten();
+    let manifeste = e.repertoire(&mut l, REPERTOIRE_RESSOURCES).and_then(|(rva, _)| {
+        ressource(
+            &mut l,
+            &e.sections,
+            rva,
+            RT_MANIFEST,
+            Some(MANIFESTE_DU_PROCESSUS),
+            VERSION_MAX,
+        )
+    });
+    Some(Gardes { load_config, manifeste })
+}
+
+/// Les gardes de l'exécutable `chemin`, lu sans être lancé. Un fichier ordinaire seulement.
+#[cfg_attr(not(any(target_os = "linux", windows, test)), allow(dead_code))] // le déploiement, sous Linux
+pub(crate) fn gardes(chemin: &Path) -> Result<Gardes, Echec> {
+    let (mut fichier, taille) = ouvrir(chemin)?;
+    lire_gardes(&mut fichier, taille).ok_or(Echec::Format)
 }
 
 /// Une entrée d'un répertoire de ressources : son nom ou numéro, et le décalage de ce qu'elle désigne (bit de poids
@@ -238,25 +361,31 @@ fn entrees<R: Read + Seek>(
 
 const SOUS_REPERTOIRE: u32 = 0x8000_0000;
 
-/// Les octets de la ressource de version : niveau 1, le type 16 ; niveau 2, son premier nom ; niveau 3, sa première
-/// langue, qui désigne les données. Chaque sous-répertoire est plus loin que son parent : un arbre qui reviendrait en
+/// Les octets d'une ressource : niveau 1, le type `type_` ; niveau 2, le nom `nom` (le premier si `None`) ; niveau 3,
+/// sa première langue, qui désigne les données, de `max` octets au plus. Chaque sous-répertoire est plus loin que son parent : un arbre qui reviendrait en
 /// arrière (une boucle) est refusé.
-fn ressource_de_version<R: Read + Seek>(
+fn ressource<R: Read + Seek>(
     l: &mut Lecteur<'_, R>,
     sections: &[Section],
     rva_ressources: u32,
+    type_: u32,
+    nom: Option<u32>,
+    max: u32,
 ) -> Option<Vec<u8>> {
     let niveau1 = entrees(l, sections, rva_ressources, 0)?;
-    let version = niveau1.iter().find(|e| e.nom == RT_VERSION)?;
-    if version.decalage & SOUS_REPERTOIRE == 0 {
+    let de_type = niveau1.iter().find(|e| e.nom == type_)?;
+    if de_type.decalage & SOUS_REPERTOIRE == 0 {
         return None;
     }
-    let decalage2 = version.decalage & !SOUS_REPERTOIRE;
+    let decalage2 = de_type.decalage & !SOUS_REPERTOIRE;
     if decalage2 == 0 {
         return None;
     }
     let niveau2 = entrees(l, sections, rva_ressources, decalage2)?;
-    let nom = niveau2.first()?;
+    let nom = match nom {
+        Some(n) => niveau2.iter().find(|e| e.nom == n)?,
+        None => niveau2.first()?,
+    };
     if nom.decalage & SOUS_REPERTOIRE == 0 {
         return None;
     }
@@ -274,7 +403,7 @@ fn ressource_de_version<R: Read + Seek>(
     let entree = position(sections, rva_ressources.checked_add(langue.decalage)?, 16)?;
     let rva_donnees = l.u32(entree)?;
     let taille = l.u32(entree + 4)?;
-    if taille == 0 || taille > VERSION_MAX {
+    if taille == 0 || taille > max {
         return None;
     }
     let debut = position(sections, rva_donnees, taille)?;
@@ -447,11 +576,70 @@ pub(crate) mod essais {
         v[r + 0x60..r + 0x60 + donnees.len()].copy_from_slice(&donnees);
         v
     }
+
+    /// Un PE32+ qui porte des gardes (`lire_gardes`) : une section « .rdata » (RVA 0x1000, à 0x200 du fichier) où
+    /// commence le Load Config — (taille écrite dans la structure, taille annoncée par le répertoire n° 10,
+    /// DependentLoadFlags), absent si `None` — et une section « .rsrc » (RVA 0x2000, à 0x400) dont l'arbre a un seul
+    /// manifeste (RT_MANIFEST, au `numero` donné, langue 0x409), sans ressources si `None`.
+    pub(crate) fn gardes_d_essai(
+        load_config: Option<(u32, u32, u16)>,
+        manifeste: Option<&[u8]>,
+        numero: u32,
+    ) -> Vec<u8> {
+        let mut v = vec![0u8; 0x800];
+        v[..2].copy_from_slice(b"MZ");
+        mot32(&mut v, 0x3C, 0x40);
+        v[0x40..0x44].copy_from_slice(b"PE\0\0");
+        mot16(&mut v, 0x44, 0x8664);
+        mot16(&mut v, 0x46, 2);
+        mot16(&mut v, 0x54, 240);
+        let facultatif = 0x58;
+        mot16(&mut v, facultatif, 0x20B);
+        mot32(&mut v, facultatif + 108, 16);
+        let repertoires = facultatif + 112;
+        if let Some((taille, taille_repertoire, drapeaux)) = load_config {
+            mot32(&mut v, repertoires + 80, 0x1000);
+            mot32(&mut v, repertoires + 84, taille_repertoire);
+            mot32(&mut v, 0x200, taille);
+            mot16(&mut v, 0x200 + 78, drapeaux);
+        }
+        let table = facultatif + 240;
+        for (i, (nom, rva, brut)) in [(&b".rdata"[..], 0x1000u32, 0x200u32), (&b".rsrc"[..], 0x2000, 0x400)]
+            .into_iter()
+            .enumerate()
+        {
+            let s = table + 40 * i;
+            v[s..s + nom.len()].copy_from_slice(nom);
+            mot32(&mut v, s + 8, 0x200);
+            mot32(&mut v, s + 12, rva);
+            mot32(&mut v, s + 16, 0x200);
+            mot32(&mut v, s + 20, brut);
+        }
+        if let Some(manifeste) = manifeste {
+            mot32(&mut v, repertoires + 16, 0x2000);
+            mot32(&mut v, repertoires + 20, 0x200);
+            let r = 0x400;
+            // Niveau 1 : RT_MANIFEST ; niveau 2 : le numéro ; niveau 3 : une langue, qui désigne l'entrée à 0x48.
+            for (niveau, nom, suite) in [
+                (0, 24, 0x8000_0018u32),
+                (0x18, numero, 0x8000_0030),
+                (0x30, 0x409, 0x48),
+            ] {
+                mot16(&mut v, r + niveau + 14, 1);
+                mot32(&mut v, r + niveau + 16, nom);
+                mot32(&mut v, r + niveau + 20, suite);
+            }
+            mot32(&mut v, r + 0x48, 0x2060);
+            mot32(&mut v, r + 0x4C, u32::try_from(manifeste.len()).unwrap());
+            v[r + 0x60..r + 0x60 + manifeste.len()].copy_from_slice(manifeste);
+        }
+        v
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::essais::{Fabrique, pe};
+    use super::essais::{Fabrique, gardes_d_essai, pe};
     use super::*;
     use std::io::Cursor;
 
@@ -577,6 +765,84 @@ mod tests {
         assert_eq!(lu(b"#!/bin/sh\n"), None);
     }
 
+    fn gardes_lues(octets: &[u8]) -> Option<Gardes> {
+        lire_gardes(&mut Cursor::new(octets), octets.len() as u64)
+    }
+
+    #[test]
+    fn gardes_d_un_pe_fabrique() {
+        let manifeste = b"<assembly>asInvoker UTF-8</assembly>";
+        let g = gardes_lues(&gardes_d_essai(Some((148, 148, 0x800)), Some(manifeste), 1)).unwrap();
+        let lc = g.load_config.unwrap();
+        assert_eq!(
+            lc,
+            LoadConfig {
+                taille_repertoire: 148,
+                taille: 148,
+                drapeaux: 0x800
+            }
+        );
+        assert!(lc.system32_seulement());
+        assert_eq!(g.manifeste.as_deref(), Some(&manifeste[..]));
+        // Rien : un PE sans Load Config ni ressources reste un PE.
+        assert_eq!(
+            gardes_lues(&gardes_d_essai(None, None, 1)),
+            Some(Gardes {
+                load_config: None,
+                manifeste: None
+            })
+        );
+        // Un manifeste sous un autre numéro n'est pas celui du processus.
+        assert_eq!(
+            gardes_lues(&gardes_d_essai(None, Some(manifeste), 2))
+                .unwrap()
+                .manifeste,
+            None
+        );
+        // Une taille qui ne couvre pas le champ, de l'un ou l'autre côté : Windows ne le lit pas.
+        for (taille, repertoire) in [(79, 148), (148, 79), (0, 0)] {
+            let g = gardes_lues(&gardes_d_essai(Some((taille, repertoire, 0x800)), None, 1)).unwrap();
+            assert!(!g.load_config.unwrap().system32_seulement(), "{taille} {repertoire}");
+        }
+        assert!(
+            LoadConfig {
+                taille_repertoire: 80,
+                taille: 80,
+                drapeaux: SYSTEM32_SEULEMENT
+            }
+            .system32_seulement()
+        );
+        assert_eq!(gardes_lues(b"MZ"), None);
+        assert_eq!(gardes_lues(&[]), None);
+    }
+
+    #[test]
+    fn gardes_formes_refusees() {
+        let bon = gardes_d_essai(Some((148, 148, 0x800)), Some(b"asInvoker"), 1);
+        let repertoire = 0x58 + 112 + 80;
+        // PE32 (32 bits) : le Load Config n'a pas cette forme, il n'est pas lu.
+        let mut pe32 = bon.clone();
+        pe32[0x58..0x5A].copy_from_slice(&0x10Bu16.to_le_bytes());
+        assert_eq!(gardes_lues(&pe32).unwrap().load_config, None);
+        // Un RVA hors de toute section, ou au bord de la section : les 80 octets n'y sont pas.
+        for rva in [0x9000u32, 0x1000 + 0x200 - 40] {
+            let mut hors = bon.clone();
+            hors[repertoire..repertoire + 4].copy_from_slice(&rva.to_le_bytes());
+            assert_eq!(gardes_lues(&hors).unwrap().load_config, None, "{rva:x}");
+        }
+        // Moins de 11 répertoires annoncés : le n° 10 n'existe pas.
+        let mut peu = bon.clone();
+        peu[0x58 + 108..0x58 + 112].copy_from_slice(&10u32.to_le_bytes());
+        assert_eq!(gardes_lues(&peu).unwrap().load_config, None);
+        // Tronqué au milieu du Load Config, ou avant les en-têtes.
+        assert_eq!(gardes_lues(&bon[..0x200 + 40]), None);
+        assert_eq!(gardes_lues(&bon[..0x60]), None);
+        // e_lfanew démesuré.
+        let mut loin = bon.clone();
+        loin[0x3C..0x40].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(gardes_lues(&loin), None);
+    }
+
     #[test]
     fn fichier_ordinaire_seulement() {
         let dossier = std::env::temp_dir().join(format!("vanguard-pe-{}", std::process::id()));
@@ -623,12 +889,14 @@ mod tests {
         #[test]
         fn jamais_de_plantage(octets in proptest::collection::vec(proptest::num::u8::ANY, 0..1200)) {
             let _ = lu(&octets);
+            let _ = gardes_lues(&octets);
             let mut mz = octets.clone();
             if mz.len() >= 0x40 {
                 mz[..2].copy_from_slice(b"MZ");
                 mz[0x3C..0x40].copy_from_slice(&0x40u32.to_le_bytes());
             }
             let _ = lu(&mz);
+            let _ = gardes_lues(&mz);
         }
 
         /// Un PE valide abîmé à quelques endroits : lu ou refusé, sans planter.
@@ -639,6 +907,16 @@ mod tests {
                 octets[i] = x;
             }
             let _ = lu(&octets);
+        }
+
+        /// Un PE à gardes abîmé à quelques endroits : lu ou refusé, sans planter.
+        #[test]
+        fn gardes_abimees(changements in proptest::collection::vec((0usize..0x800, proptest::num::u8::ANY), 1..8)) {
+            let mut octets = gardes_d_essai(Some((148, 148, 0x800)), Some(b"asInvoker UTF-8"), 1);
+            for (i, x) in changements {
+                octets[i] = x;
+            }
+            let _ = gardes_lues(&octets);
         }
     }
 }

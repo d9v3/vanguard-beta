@@ -46,7 +46,6 @@ mod optimiser;
 mod ordinateurs;
 mod parametres;
 mod passage;
-#[cfg(any(windows, test))]
 mod pe;
 #[cfg(any(target_os = "macos", test))]
 mod plist;

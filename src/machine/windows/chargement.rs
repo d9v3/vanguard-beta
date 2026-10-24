@@ -7,7 +7,7 @@
 //!
 //! GNU ld n'a pas d'option pour ce champ, mais il remplit le répertoire « Load Config » du PE dès qu'un symbole
 //! `_load_config_used` existe, avec la taille lue dans son premier mot ; le CRT de MinGW n'en fournit pas. Un test lit
-//! le programme compilé pour vérifier que le champ y est bien ; le déploiement le relit dans vanguard.exe (`machine::pe`).
+//! le programme compilé pour vérifier que le champ y est bien ; le déploiement le relit dans vanguard.exe (`crate::pe`).
 
 /// IMAGE_LOAD_CONFIG_DIRECTORY64 jusqu'à GuardFlags (148 octets, la forme de Windows 8.1) : tout à zéro (ni cookie,
 /// ni SafeSEH, ni CFG), sauf la taille et DependentLoadFlags.
@@ -29,7 +29,7 @@ pub(crate) struct ConfigurationDeChargement {
 }
 
 // La valeur vient du module commun, celui que le déploiement relit sous Linux : les deux ne peuvent pas diverger.
-use crate::machine::pe::SYSTEM32_SEULEMENT;
+use crate::pe::SYSTEM32_SEULEMENT;
 
 /// Taille annoncée : jusqu'à GuardFlags compris (sans le bourrage final de la structure Rust).
 pub(crate) const TAILLE: u32 = 148;
@@ -70,10 +70,16 @@ mod tests {
     /// côté de Vanguard serait chargée avant sa première ligne.
     #[test]
     fn le_programme_ne_charge_ses_dll_que_depuis_system32() {
-        let pe = std::fs::read(std::env::current_exe().unwrap()).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let gardes = crate::pe::gardes(&exe).unwrap_or_else(|e| panic!("{}: {e:?}", exe.display()));
         assert_eq!(
-            crate::machine::pe::lire_load_config(&pe),
-            Some((TAILLE, SYSTEM32_SEULEMENT))
+            gardes.load_config,
+            Some(crate::pe::LoadConfig {
+                taille_repertoire: TAILLE,
+                taille: TAILLE,
+                drapeaux: SYSTEM32_SEULEMENT
+            })
         );
+        assert!(gardes.load_config.is_some_and(|c| c.system32_seulement()));
     }
 }

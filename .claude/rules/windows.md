@@ -21,8 +21,8 @@ paths:
   deux côtés ; `const` pour une table dont on compare les adresses se copie à chaque usage : `static`.
 - Une DLL importée hors des « DLL connues » est cherchée d'abord à côté de vanguard.exe, avant `main` : la garde est
   DependentLoadFlags = 0x800 dans le Load Config du PE (`chargement.rs`, symbole `_load_config_used`, lu par GNU
-  ld) ; `outils/verifier-pe.py` refuse de déployer un programme qui ne l'a pas. Aucun contrôle à l'exécution ne la
-  remplace : il arrive après le chargeur.
+  ld) ; `vanguard deploiement verifier-pe` (`src/pe.rs`) refuse de déployer un programme qui ne l'a pas. Aucun
+  contrôle à l'exécution ne la remplace : il arrive après le chargeur.
 - La fenêtre administrateur répond par le fichier `.resultats` (une ligne ok/echec par correctif) : c'est un autre
   processus, son code de retour ne suffit pas.
 - Vérifier un script généré : l'écrire depuis un test temporaire sous Wine (chemin `Z:\…`), puis l'analyser avec

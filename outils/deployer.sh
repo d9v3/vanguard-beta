@@ -169,11 +169,12 @@ elif [[ $MODE != --sans-compiler ]]; then
   compiler
 fi
 # Une DLL posée à côté de vanguard.exe ne doit jamais être chargée : le programme Windows qui n'en porte pas la
-# garde (chargement.rs) ne part nulle part. Vérifié après la compilation, sur le programme qui va être copié, par le
-# programme Linux (src/machine/pe.rs) ; sans repli : un .exe non vérifié n'est jamais compté sain.
+# garde (chargement.rs), ou pas son manifeste (UTF-8, asInvoker), ne part nulle part. Vérifié après la compilation,
+# sur le programme qui va être copié, par le programme Linux (src/pe.rs, src/deploiement.rs) ; sans repli : un .exe
+# non vérifié n'est jamais compté sain.
 if [[ -f $WINDOWS ]]; then
   ./"$LINUX" deploiement verifier-pe "$WINDOWS" || {
-    echo "✖ vanguard.exe non vérifié (DLL depuis System32) : rien ne part. Un programme Linux d'avant « deploiement » ne sait pas le vérifier : recompiler."
+    echo "✖ vanguard.exe non vérifié (DLL depuis System32, manifeste) : rien ne part. Un programme Linux d'avant « deploiement » ne sait pas le vérifier : recompiler."
     exit 1
   }
 fi

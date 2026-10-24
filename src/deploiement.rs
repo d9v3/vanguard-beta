@@ -3,7 +3,6 @@
 //! n'écrit rien de lui-même : chaque étape n'est lancée que par le déploiement, sur l'ordinateur de l'auteur.
 
 use std::fmt::Write as _;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::ui::*;
@@ -16,7 +15,8 @@ pub(crate) enum Etape {
         /// Le dossier tldr de la clé.
         dossier: PathBuf,
     },
-    /// Vérifier que vanguard.exe ne charge ses DLL importées que depuis System32 (DependentLoadFlags).
+    /// Vérifier que vanguard.exe ne charge ses DLL importées que depuis System32 (DependentLoadFlags) et porte son
+    /// manifeste (UTF-8, asInvoker).
     #[command(name = "verifier-pe")]
     VerifierPe {
         /// Le programme Windows compilé, lu sans être lancé.
@@ -45,72 +45,88 @@ pub(crate) fn executer(etape: Etape) -> i32 {
     i32::from(!reussi)
 }
 
-/// Au-delà, ce n'est pas un programme de Vanguard : il n'est pas lu (la même borne que la mise à jour).
-const PROGRAMME_MAX: u64 = 512 << 20;
+/// Les deux réglages du manifeste (build.rs), cherchés tels que build.rs les écrit, dans la ressource que Windows lit
+/// en lançant le programme : la page de code UTF-8 (sans elle, accents et chemins sont cassés dans la console et les
+/// fichiers) et asInvoker (Vanguard démarre sans droits d'administrateur).
+const MANIFESTE: [&[u8]; 2] = [
+    b"<requestedExecutionLevel level=\"asInvoker\"",
+    b">UTF-8</activeCodePage>",
+];
 
-/// Le contenu entier d'un fichier ordinaire de `max` octets au plus.
-fn lire_entier(chemin: &Path, max: u64) -> Result<Vec<u8>, String> {
-    let meta = std::fs::metadata(chemin).map_err(|e| e.to_string())?;
-    if !meta.is_file() {
-        return Err(tr!("pas un fichier ordinaire", "not a regular file").into());
-    }
-    if meta.len() > max {
-        return Err(tr!("démesuré", "oversized").into());
-    }
-    let mut octets = Vec::new();
-    std::fs::File::open(chemin)
-        .and_then(|f| f.take(max + 1).read_to_end(&mut octets))
-        .map_err(|e| e.to_string())?;
-    if u64::try_from(octets.len()).is_ok_and(|n| n > max) {
-        return Err(tr!("démesuré", "oversized").into());
-    }
-    Ok(octets)
-}
-
-/// Le programme Windows porte-t-il la garde qui ferme le chargement d'une DLL posée à côté de lui
-/// (`machine::windows::chargement`) ? Lu, jamais lancé. Un fichier absent ou illisible est refusé : ce qui n'est pas
-/// vérifié ne part pas.
+/// Le programme Windows porte-t-il ses gardes ? DependentLoadFlags (`machine::windows::chargement`), qui ferme le
+/// chargement d'une DLL posée à côté de lui, et son manifeste. Lu, jamais lancé (`crate::pe`). Un fichier absent,
+/// illisible ou qui n'est pas un PE est refusé : ce qui n'est pas vérifié ne part pas.
 fn verifier_pe(fichier: &Path) -> bool {
     let f = fichier.display();
-    let octets = match lire_entier(fichier, PROGRAMME_MAX) {
-        Ok(o) => o,
+    let gardes = match crate::pe::gardes(fichier) {
+        Ok(g) => g,
         Err(e) => {
+            let pourquoi = match e {
+                crate::pe::Echec::Ouverture(k) => std::io::Error::from(k).to_string(),
+                crate::pe::Echec::PasUnFichier => tr!("pas un fichier ordinaire", "not a regular file").to_string(),
+                crate::pe::Echec::Format => {
+                    tr!("pas un programme Windows lisible", "not a readable Windows program").to_string()
+                }
+            };
             eprintln!(
                 "{}",
                 trf!(
-                    "✖ {f} illisible ({e}) : ne pas le livrer",
-                    "✖ {f} unreadable ({e}): do not ship it"
+                    "✖ {f} illisible ({pourquoi}) : ne pas le livrer",
+                    "✖ {f} unreadable ({pourquoi}): do not ship it"
                 )
             );
             return false;
         }
     };
-    let lu = crate::machine::pe::lire_load_config(&octets);
-    if crate::machine::pe::system32_seulement(lu) {
-        println!(
+    if !gardes.load_config.is_some_and(|c| c.system32_seulement()) {
+        let config = match gardes.load_config {
+            None => tr!("absent", "missing").to_string(),
+            Some(c) => trf!(
+                "tailles {} et {}, drapeaux 0x{:X}",
+                "sizes {} and {}, flags 0x{:X}",
+                c.taille_repertoire,
+                c.taille,
+                c.drapeaux
+            ),
+        };
+        eprintln!(
             "{}",
             trf!(
-                "✔ {f} : DLL importées depuis System32 seulement",
-                "✔ {f}: imported DLLs from System32 only"
+                "✖ {f} : DLL importées pas limitées à System32 (Load Config : {config}) ; ne pas le livrer",
+                "✖ {f}: imported DLLs not limited to System32 (Load Config: {config}); do not ship it"
             )
         );
-        return true;
+        return false;
     }
-    let config = match lu {
-        None => tr!("absent", "missing").to_string(),
-        Some((taille, drapeaux)) => trf!(
-            "taille {taille}, drapeaux 0x{drapeaux:X}",
-            "size {taille}, flags 0x{drapeaux:X}"
-        ),
-    };
-    eprintln!(
+    let manquants: Vec<String> = MANIFESTE
+        .iter()
+        .filter(|m| {
+            !gardes
+                .manifeste
+                .as_deref()
+                .is_some_and(|t| t.windows(m.len()).any(|f| f == **m))
+        })
+        .map(|m| String::from_utf8_lossy(m).into_owned())
+        .collect();
+    if !manquants.is_empty() {
+        let manquants = manquants.join(", ");
+        eprintln!(
+            "{}",
+            trf!(
+                "✖ {f} : manifeste absent ou incomplet ({manquants}) ; ne pas le livrer",
+                "✖ {f}: manifest missing or incomplete ({manquants}); do not ship it"
+            )
+        );
+        return false;
+    }
+    println!(
         "{}",
         trf!(
-            "✖ {f} : DLL importées pas limitées à System32 (Load Config : {config}) ; ne pas le livrer",
-            "✖ {f}: imported DLLs not limited to System32 (Load Config: {config}); do not ship it"
+            "✔ {f} : DLL importées depuis System32 seulement, manifeste UTF-8 et asInvoker",
+            "✔ {f}: imported DLLs from System32 only, UTF-8 and asInvoker manifest"
         )
     );
-    false
+    true
 }
 
 /// Les deux témoins de la clé, que le bash du déploiement écrivait à côté du code qui les relit :
@@ -172,7 +188,7 @@ fn temoins(racine: &Path, empreinte: Option<String>) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::machine::pe::tests::pe_d_essai;
+    use crate::pe::essais::gardes_d_essai;
 
     fn dossier() -> PathBuf {
         let d = crate::protection::isoler::dossier_jetable().unwrap();
@@ -180,20 +196,63 @@ mod tests {
         d
     }
 
+    const MANIFESTE_D_ESSAI: &[u8] = br#"<assembly><security><requestedPrivileges><requestedExecutionLevel level="asInvoker" uiAccess="false"/></requestedPrivileges></security><windowsSettings><activeCodePage>UTF-8</activeCodePage></windowsSettings></assembly>"#;
+
     #[test]
     fn verifier_pe_accepte_et_refuse() {
         let d = dossier();
+        let essai = |nom: &str, octets: Vec<u8>| {
+            let chemin = d.join(nom);
+            std::fs::write(&chemin, octets).unwrap();
+            verifier_pe(&chemin)
+        };
         let bon = d.join("bon.exe");
-        std::fs::write(&bon, pe_d_essai(148, 0x800)).unwrap();
+        std::fs::write(
+            &bon,
+            gardes_d_essai(Some((148, 148, 0x800)), Some(MANIFESTE_D_ESSAI), 1),
+        )
+        .unwrap();
         assert!(verifier_pe(&bon));
         assert_eq!(executer(Etape::VerifierPe { fichier: bon }), 0);
-        let sans = d.join("sans.exe");
-        std::fs::write(&sans, pe_d_essai(148, 0)).unwrap();
-        assert!(!verifier_pe(&sans));
-        let court = d.join("court.exe");
-        std::fs::write(&court, pe_d_essai(64, 0x800)).unwrap();
-        assert!(!verifier_pe(&court));
-        // Absent, ou un dossier : refusé, jamais compté comme vérifié.
+        // DependentLoadFlags absent, autre, ou pas couvert par l'une des deux tailles.
+        assert!(!essai("sans.exe", gardes_d_essai(None, Some(MANIFESTE_D_ESSAI), 1)));
+        assert!(!essai(
+            "zero.exe",
+            gardes_d_essai(Some((148, 148, 0)), Some(MANIFESTE_D_ESSAI), 1)
+        ));
+        assert!(!essai(
+            "court.exe",
+            gardes_d_essai(Some((64, 148, 0x800)), Some(MANIFESTE_D_ESSAI), 1)
+        ));
+        assert!(!essai(
+            "repertoire.exe",
+            gardes_d_essai(Some((148, 64, 0x800)), Some(MANIFESTE_D_ESSAI), 1)
+        ));
+        // Manifeste absent, incomplet, ou sous un autre numéro que celui que Windows lit.
+        assert!(!essai(
+            "sans-manifeste.exe",
+            gardes_d_essai(Some((148, 148, 0x800)), None, 1)
+        ));
+        let sans_utf8 = String::from_utf8_lossy(MANIFESTE_D_ESSAI).replace("UTF-8", "Latin1");
+        assert!(!essai(
+            "latin1.exe",
+            gardes_d_essai(Some((148, 148, 0x800)), Some(sans_utf8.as_bytes()), 1)
+        ));
+        let administrateur = String::from_utf8_lossy(MANIFESTE_D_ESSAI).replace("asInvoker", "requireAdministrator");
+        assert!(!essai(
+            "admin.exe",
+            gardes_d_essai(Some((148, 148, 0x800)), Some(administrateur.as_bytes()), 1)
+        ));
+        assert!(!essai(
+            "autre-numero.exe",
+            gardes_d_essai(Some((148, 148, 0x800)), Some(MANIFESTE_D_ESSAI), 2)
+        ));
+        // Les deux textes ailleurs que dans le manifeste (une chaîne du programme) : pas un manifeste.
+        let mut ailleurs = gardes_d_essai(Some((148, 148, 0x800)), None, 1);
+        ailleurs.extend_from_slice(MANIFESTE_D_ESSAI);
+        assert!(!essai("ailleurs.exe", ailleurs));
+        // Pas un PE, absent, ou un dossier : refusé, jamais compté comme vérifié.
+        assert!(!essai("texte.exe", b"MZ pas un programme".to_vec()));
         assert!(!verifier_pe(&d.join("absent.exe")));
         assert!(!verifier_pe(&d));
         assert_eq!(
