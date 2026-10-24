@@ -6,7 +6,9 @@
 //! D-Bus, elle, est typée.
 //!
 //! Lecture seule : seules les méthodes de `LECTURES` partent, toutes sans effet sur le système ; une autre est refusée
-//! avant d'être envoyée. Aucun appel ne demande d'autorisation interactive (pas de fenêtre polkit).
+//! avant d'être envoyée. Aucun appel ne demande d'autorisation interactive (pas de fenêtre polkit). Les quelques
+//! actions de Vanguard (unités de l'utilisateur, notification, dconf) sont à part, dans `actions`, avec leur propre
+//! liste fermée, sur le bus de la session seulement.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -15,6 +17,9 @@ use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
 use crate::{tr, trf};
+
+/// Les actions (bus de la session), à part des lectures de ce fichier : une seconde liste fermée.
+pub(crate) mod actions;
 
 /// La prise du bus système (chemin fixe de la spécification ; /var/run en est un lien).
 const BUS_SYSTEME: &str = "/run/dbus/system_bus_socket";

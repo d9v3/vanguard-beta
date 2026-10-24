@@ -99,12 +99,18 @@ pub(crate) fn sous(p: &Path, d: &Path) -> bool {
 
 pub(crate) fn notifier(titre: &str, corps: &str) {
     // Délai : sans service de notifications qui réponde, notify-send attendrait sans fin, et la surveillance avec.
+    // Par D-Bus (org.freedesktop.Notifications.Notify, urgence critique) ; notify-send seulement sans bus de la
+    // session joignable par le client maison.
     #[cfg(target_os = "linux")]
-    let _ = crate::commande::lancer(
-        // « -- » : un titre ou un corps qui commence par « - » (venu d'une extension) n'est jamais lu comme une option.
-        Command::new("notify-send").args(["-a", "Vanguard", "-i", "vanguard", "-u", "critical", "--", titre, corps]),
-        10,
-    );
+    if crate::machine::linux::dbus::actions::notifier(titre, corps).is_err() {
+        let _ = crate::commande::lancer(
+            // « -- » : un titre ou un corps qui commence par « - » (venu d'une extension) n'est jamais lu comme une
+            // option.
+            Command::new("notify-send")
+                .args(["-a", "Vanguard", "-i", "vanguard", "-u", "critical", "--", titre, corps]),
+            10,
+        );
+    }
     // macOS : notification du Centre de notifications, par AppleScript (texte entre guillemets échappés).
     #[cfg(target_os = "macos")]
     {
@@ -1351,11 +1357,21 @@ pub(crate) fn retirer_planifie(quoi: Planifie, trouves: &[PathBuf]) -> Result<()
             return Ok(());
         }
         // Sans son fichier, systemctl dirait « unité inconnue » : une unité absente n'est pas à arrêter.
-        let arretee =
-            !present("timer") || reussit("systemctl", &["--user", "disable", "--now", &format!("{nom}.timer")]);
-        let passe = !present("service") || reussit("systemctl", &["--user", "stop", &format!("{nom}.service")]);
+        let arretee = !present("timer")
+            || crate::machine::linux::dbus::actions::utilisateur(
+                crate::machine::linux::dbus::actions::Geste::Desactiver { maintenant: true },
+                &format!("{nom}.timer"),
+            );
+        let passe = !present("service")
+            || crate::machine::linux::dbus::actions::utilisateur(
+                crate::machine::linux::dbus::actions::Geste::Arreter,
+                &format!("{nom}.service"),
+            );
         let mut echecs = retirer_fichiers(&fichiers);
-        let recharge = reussit("systemctl", &["--user", "daemon-reload"]);
+        let recharge = crate::machine::linux::dbus::actions::utilisateur(
+            crate::machine::linux::dbus::actions::Geste::Recharger,
+            "",
+        );
         echecs.extend(encore_la(&fichiers));
         // Après l'arrêt de la minuterie : en marche, elle le recréerait à sa passe suivante.
         echecs.extend(retirer_horodatage(horodatages.as_deref(), nom));
@@ -1590,9 +1606,16 @@ fn installer(exe: &str, r: Reglages) -> bool {
     // Redémarrée plutôt que « enable --now » : une minuterie déjà en marche (une réactivation qui remplace celle d'une
     // version d'avant) ne serait pas relancée par start, et rien ici ne vérifie que daemon-reload lui fait prendre ses
     // nouveaux réglages ; redémarrée, elle les prend à coup sûr. Arrêtée, restart la démarre, comme start.
-    let posee = reussit("systemctl", &["--user", "daemon-reload"])
-        && reussit("systemctl", &["--user", "enable", &minuterie])
-        && reussit("systemctl", &["--user", "restart", &minuterie]);
+    let posee =
+        crate::machine::linux::dbus::actions::utilisateur(crate::machine::linux::dbus::actions::Geste::Recharger, "")
+            && crate::machine::linux::dbus::actions::utilisateur(
+                crate::machine::linux::dbus::actions::Geste::Activer { maintenant: false },
+                &minuterie,
+            )
+            && crate::machine::linux::dbus::actions::utilisateur(
+                crate::machine::linux::dbus::actions::Geste::Redemarrer,
+                &minuterie,
+            );
     // La minuterie d'avant (Persistent=true) laisse son fichier d'horodatage ; celle d'aujourd'hui n'en a plus
     // l'usage. Retiré après le redémarrage, quand plus rien ne le touche. Un échec reste sans effet sur la
     // surveillance (plus aucune minuterie ne le lit), et la désinstallation le retire de nouveau, relu ensuite.

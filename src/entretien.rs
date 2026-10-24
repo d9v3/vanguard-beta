@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 #[cfg(target_os = "macos")]
 use crate::reseau::surveillance::domaine_launchd;
 #[cfg(unix)]
+#[cfg(target_os = "macos")]
 use crate::reseau::surveillance::reussit;
 use crate::reseau::surveillance::{TEXTES, cle_alerte, executable, sans_formulation};
 use crate::risk::Niveau;
@@ -332,8 +333,11 @@ fn installer(exe: &str) -> bool {
     let (service, minuterie) = unites_systemd(exe);
     std::fs::write(dossier.join(format!("{NOM}.service")), service).is_ok()
         && std::fs::write(dossier.join(format!("{NOM}.timer")), minuterie).is_ok()
-        && reussit("systemctl", &["--user", "daemon-reload"])
-        && reussit("systemctl", &["--user", "enable", "--now", &format!("{NOM}.timer")])
+        && crate::machine::linux::dbus::actions::utilisateur(crate::machine::linux::dbus::actions::Geste::Recharger, "")
+        && crate::machine::linux::dbus::actions::utilisateur(
+            crate::machine::linux::dbus::actions::Geste::Activer { maintenant: true },
+            &format!("{NOM}.timer"),
+        )
 }
 
 /// Agent launchd : le 1er du mois à midi (au réveil suivant si le Mac dormait).
