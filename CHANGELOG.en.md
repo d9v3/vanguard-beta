@@ -154,6 +154,10 @@ delivered just before it. Only the latest version has its download page; every v
   is stopped without a race on its number. On Windows, Firewall rules go through its interface, and a list mixed with
   PowerShell asks for a single consent, in Vanguard's name. Undo notes written by earlier versions can still be
   replayed as they are.
+- **Vanguard's own antivirus, first building block.** Vanguard reads the files it scans by itself (Windows, Linux and
+  macOS programs, Office documents and their VBA macros, shortcuts, scripts, zip, gzip and tar archives), bounded
+  against booby-trapped files (decompression bombs, archives that contain themselves); what it cannot read (7z, RAR,
+  ISO, PDF, encrypted, truncated) is reported as unchecked, never clean.
 - **Windows event logs read by Vanguard itself (first part).** A home-made .evtx reader, written from Microsoft's
   specification, bounded against booby-trapped files and fuzzed, reads the logs on Linux, macOS and Windows; one event
   shape serves both files and the running Windows, with refusals stated (security log without administrator rights,

@@ -161,6 +161,10 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   processus s'arrête sans course sur son numéro. Sous Windows, les règles du Pare-feu passent par son interface, et
   une liste mêlée de PowerShell ne demande plus qu'une autorisation, au nom de Vanguard. Les annulations notées par
   les versions d'avant restent rejouables telles quelles.
+- **Antivirus maison, première brique.** Vanguard lit lui-même les fichiers qu'il analyse (programmes Windows, Linux et
+  macOS, documents Office et leurs macros VBA, raccourcis, scripts, archives zip, gzip et tar), bornés contre les
+  fichiers piégés (bombes de décompression, archives qui se contiennent elles-mêmes) ; ce qu'il ne sait pas lire
+  (7z, RAR, ISO, PDF, chiffré, coupé) est dit non vérifié, jamais sain.
 - **Journaux de Windows lus par Vanguard lui-même (première partie).** Un lecteur maison des fichiers .evtx, écrit
   d'après la spécification de Microsoft, borné contre les fichiers piégés et passé au fuzzing, lit les journaux sous
   Linux, macOS et Windows ; une seule forme d'événement sert aux fichiers comme au Windows en marche, avec le refus dit
