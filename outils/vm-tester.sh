@@ -5,7 +5,7 @@
 # Dans la VM, une seule fois : double-clic sur INSTALLER-ESSAIS-AUTO.bat (une fenêtre UAC ; --installer l'y pose).
 #   outils/vm-tester.sh                       l'arbre courant (HEAD, « modifie=oui » s'il n'est pas propre)
 #   outils/vm-tester.sh --branche B           la branche B (son worktree, ou un worktree temporaire)
-#   outils/vm-tester.sh --exe chemin.exe      un programme déjà compilé (rien n'est compilé)
+#   outils/vm-tester.sh --exe chemin.exe      un programme déjà compilé (rien compilé ; passé à verifier-pe)
 #   options : --sans-console --sans-test --langues fr,en --delai MIN (60) --sans-attendre
 #   outils/vm-tester.sh --attendre <id>       attendre (de nouveau) un travail déjà déposé
 #   outils/vm-tester.sh --installer           pose INSTALLER-/DESINSTALLER-ESSAIS-AUTO.bat dans la VM
@@ -151,6 +151,7 @@ preparer_programme() {
   fi
   if [[ -n $EXE ]]; then
     [[ -f $EXE ]] || { echo "Programme absent : $EXE" >&2; exit 1; }
+    verifier_pe "$EXE"
     COMMIT=inconnu BRANCHE="exe fourni" MODIFIE=non
     return
   fi
@@ -163,10 +164,16 @@ preparer_programme() {
   echo "Compilation de $BRANCHE ($(git -C "$ARBRE" rev-parse --short HEAD)) pour Windows…"
   (cd "$ARBRE" && cargo build -q --release --target x86_64-pc-windows-gnu) || { echo "Compilation en échec." >&2; exit 1; }
   EXE=$cible/x86_64-pc-windows-gnu/release/vanguard.exe
-  # Comme deployer.sh : un programme qui chargerait une DLL posée à côté de lui, ou sans son manifeste, ne part pas.
-  # Vérifié par le programme Linux de ce dépôt-ci (src/pe.rs), qui sait le faire même si la branche essayée est d'avant.
-  (cd "$DEPOT" && env -u CARGO_TARGET_DIR cargo run -q --target x86_64-unknown-linux-musl -- deploiement verifier-pe "$EXE") ||
-    exit 1
+  verifier_pe "$EXE"
+}
+
+# Comme deployer.sh : un programme qui chargerait une DLL posée à côté de lui, ou sans son manifeste, ne part pas,
+# qu'il vienne d'être compilé ou qu'il soit fourni par --exe (il tournera en administrateur dans la VM). Vérifié par le
+# programme Linux de ce dépôt-ci (src/pe.rs), qui sait le faire même si la branche essayée est d'avant. Aucune
+# exception, même pour les essais : ils déposent un vrai petit PE qui porte ses gardes.
+verifier_pe() {
+  (cd "$DEPOT" && env -u CARGO_TARGET_DIR cargo run -q --target x86_64-unknown-linux-musl -- deploiement verifier-pe "$1") ||
+    { echo "Programme refusé par « vanguard deploiement verifier-pe » : rien déposé ($1)." >&2; exit 1; }
 }
 
 # Copie un fichier dans le travail ; un .ps1 reçoit le BOM qui lui manque (PowerShell 5.1 lirait sinon en ANSI).
@@ -361,7 +368,29 @@ essai_local() {
   trap "rm -rf '$T'" EXIT
   # pwsh laisse ses tubes dans TMPDIR quand il est arrêté (essai du délai) : ils partent avec le banc.
   mkdir -p "$T/tmp" && export TMPDIR=$T/tmp
-  printf 'MZ faux programme pour les essais\n' >"$T/vanguard.exe"
+  # Un vrai petit PE32+ qui porte les gardes que vérifie verifier-pe (comme pe::essais::gardes_d_essai) : Load Config
+  # de 148 octets, DependentLoadFlags 0x800, manifeste n° 1 ; jamais lancé.
+  python3 - "$T/vanguard.exe" <<'EOF2' || { echo "faux vanguard.exe : écriture en échec"; exit 1; }
+import struct, sys
+v = bytearray(0x800)
+def m16(a, x): v[a:a + 2] = struct.pack('<H', x)
+def m32(a, x): v[a:a + 4] = struct.pack('<I', x)
+v[0:2] = b'MZ'; m32(0x3C, 0x40); v[0x40:0x44] = b'PE\0\0'; m16(0x44, 0x8664); m16(0x46, 2); m16(0x54, 240)
+f = 0x58; m16(f, 0x20B); m32(f + 108, 16); r = f + 112
+m32(r + 80, 0x1000); m32(r + 84, 148); m32(0x200, 148); m16(0x200 + 78, 0x800)
+for i, (nom, rva, brut) in enumerate([(b'.rdata', 0x1000, 0x200), (b'.rsrc', 0x2000, 0x400)]):
+    s = f + 240 + 40 * i
+    v[s:s + len(nom)] = nom; m32(s + 8, 0x200); m32(s + 12, rva); m32(s + 16, 0x200); m32(s + 20, brut)
+man = (b'<assembly><security><requestedPrivileges><requestedExecutionLevel level="asInvoker" uiAccess="false"/>'
+       b'</requestedPrivileges></security><windowsSettings><activeCodePage>UTF-8</activeCodePage></windowsSettings>'
+       b'</assembly>')
+m32(r + 16, 0x2000); m32(r + 20, 0x200); b = 0x400
+for niveau, nom, suite in [(0, 24, 0x80000018), (0x18, 1, 0x80000030), (0x30, 0x409, 0x48)]:
+    m16(b + niveau + 14, 1); m32(b + niveau + 16, nom); m32(b + niveau + 20, suite)
+m32(b + 0x48, 0x2060); m32(b + 0x4C, len(man)); v[b + 0x60:b + 0x60 + len(man)] = man
+open(sys.argv[1], 'wb').write(v)
+EOF2
+  printf 'MZ programme abîmé pour les essais\n' >"$T/abime.exe"
   local avec_pwsh=1
   [[ -x $PWSH ]] || avec_pwsh=
 
@@ -457,6 +486,13 @@ EOF2
   fi
 
   echo "File d'essais (vm-tester.sh, surveillant-essais.ps1), sans VM :"
+  # 0. Un programme fourni par --exe passe par verifier-pe comme un programme compilé ; sans pwsh (rien ne tourne).
+  nouvelle_vm; sources 0 0 0 'OK conhost fr C1 menu'
+  vmt --exe "$T/abime.exe" --sans-attendre
+  voir "--exe abîmé : refusé par verifier-pe, rien déposé, code 1" \
+    eval '((code == 1)) && dit "refusé par « vanguard deploiement verifier-pe » : rien déposé" && [[ -z $(ls -A "$VMD/file-essais") ]]'
+  vmt --sans-attendre
+  voir "--exe qui porte ses gardes : accepté, travail déposé" eval '((code == 0)) && dit "Travail déposé"'
   if [[ -n $avec_pwsh ]]; then
     # 1. Tout passe, la VM jouée en même temps par une boucle de tours.
     nouvelle_vm; sources 0 4 0 'OK conhost fr C1 menu' 'OK conhost fr C2 hauteur' 'OK conhost en C1 menu'
