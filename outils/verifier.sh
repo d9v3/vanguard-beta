@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Tout vérifier en une commande, avant un commit ou une livraison : mise en forme, clippy sur les quatre cibles, tests
-# Linux et Windows (sous Wine), les tests Linux refaits sans Internet, scripts PowerShell, shell et Python, essais des
-# outils de la clé (outils/essais-cle.sh), de la signature des versions (outils/essais-signature.sh) et de ce script
-# même sous --seulement (outils/essais-verifier.sh), liens internes, textes français et anglais (outils/textes.py),
-# dépendances (cargo deny) et leurs failles connues (cargo audit), banc de fuzzing compilé et passé quelques secondes
-# par cible.
+# Linux et Windows (sous Wine, avec le lanceur de la clé : outils/essais-lanceur.sh), les tests Linux refaits sans
+# Internet, scripts PowerShell, shell et Python, essais des outils de la clé (outils/essais-cle.sh), de la signature
+# des versions (outils/essais-signature.sh) et de ce script même sous --seulement (outils/essais-verifier.sh), liens
+# internes, textes français et anglais (outils/textes.py), dépendances (cargo deny) et leurs failles connues (cargo
+# audit), banc de fuzzing compilé et passé quelques secondes par cible.
 # La CI lance ce même script (.github/workflows/ci.yml) : une seule logique, ici.
 # Chaque cible de compilation a sa chaîne (clippy, puis ses tests) et les quatre tournent en même temps : cargo garde
 # un dossier par cible, elles ne s'attendent presque pas. À la fin, une ligne par étape ; le code de sortie dit si tout
@@ -114,6 +114,12 @@ tests_wine() {
   WINEPREFIX=$prefixe WINEDEBUG=-all CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=$WINE \
     VANGUARD_TESTS_SAUTES="Z:${f//\//\\}" cargo test -q --target x86_64-pc-windows-gnu
   resultat=$?
+  # Le lanceur de la clé dans le même préfixe, déjà prêt (son faux powershell.exe y remplace celui de Wine).
+  local lanceur
+  VANGUARD_PREFIXE_LANCEUR=$prefixe VANGUARD_WINE=$WINE bash outils/essais-lanceur.sh
+  lanceur=$?
+  ((lanceur == SAUTEE)) && echo "⚠ essais du lanceur de la clé sautés (voir la ligne plus haut)"
+  ((lanceur == 0 || lanceur == SAUTEE)) || resultat=1
   # Le serveur de Wine survit quelques secondes aux tests et écrit encore dans le préfixe : arrêté avant le ménage.
   WINEPREFIX=$prefixe "${WINE%/*}/wineserver" -k 2>/dev/null
   WINEPREFIX=$prefixe "${WINE%/*}/wineserver" -w 2>/dev/null

@@ -123,7 +123,8 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   System32, manifeste lu là où Windows le lit), écrit les témoins de la clé et y met les archives de tldr-pages
   contrôlées entières (CRC-32 de chaque entrée, sans chevauchement) : plus de Python au déploiement. La CI compile les
   règles YARA d'origine avec le moteur du programme. Le lanceur de la clé ne prend plus un PowerShell absent ou bloqué
-  pour un blocage de Defender.
+  pour un blocage de Defender, et appelle PowerShell (et les autres programmes de Windows) par son chemin complet dans
+  System32 : un powershell.exe posé à la racine de la clé n'est plus lancé à sa place.
 - **Le système lu directement.** Plus de programmes externes là où le système répond lui-même : Wi-Fi lu par l'API
   WLAN, NetworkManager (bus, lecture seule) et le noyau, sans netsh, nmcli ni iw, et une liste de voisins trop vieille
   est dite non vérifiée ; état des services par systemd sur le bus ; puce TPM lue sans droits d'administrateur ; ports
