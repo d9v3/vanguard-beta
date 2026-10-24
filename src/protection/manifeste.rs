@@ -37,6 +37,7 @@ use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
 use crate::machine::{Constat, alerte, impossible, ok};
+use crate::modele::Echec;
 use crate::risk::Niveau;
 use crate::ui::*;
 
@@ -619,18 +620,24 @@ fn sha256_valide(texte: &str) -> Option<String> {
 
 /// « NOM » ou « NOM=EMPREINTE » (`--image`, `--empreinte`) : le nom d'une image de ISO/ et son SHA-256 vérifié.
 /// Une empreinte mal formée est refusée, pas ignorée : l'image entrerait sans elle.
-pub fn image_et_empreinte(texte: &str) -> Result<(String, Option<String>), String> {
+pub fn image_et_empreinte(texte: &str) -> Result<(String, Option<String>), Echec> {
     match texte.rsplit_once('=') {
         Some((nom, sha)) if !nom.is_empty() && !nom.contains('/') => {
             sha256_valide(sha).map(|h| (nom.to_string(), Some(h))).ok_or_else(|| {
-                trf!(
-                    "empreinte SHA-256 mal formée : {sha}",
-                    "malformed SHA-256 checksum: {sha}"
+                Echec::refuse(
+                    "manifeste/image",
+                    trf!(
+                        "empreinte SHA-256 mal formée : {sha}",
+                        "malformed SHA-256 checksum: {sha}"
+                    ),
                 )
             })
         }
         None if !texte.is_empty() && !texte.contains('/') => Ok((texte.to_string(), None)),
-        _ => Err(trf!("nom d'image refusé : {texte}", "image name refused: {texte}")),
+        _ => Err(Echec::refuse(
+            "manifeste/image",
+            trf!("nom d'image refusé : {texte}", "image name refused: {texte}"),
+        )),
     }
 }
 
@@ -644,7 +651,7 @@ pub(crate) enum Relecture {
     /// Autres octets : l'image a été remplacée (notée `differente` dans la référence).
     Differente(String),
     /// Illisible (clé retirée en route) : rien de conclu, rien de noté.
-    Illisible(String, String),
+    Illisible(String),
 }
 
 /// Relit en entier une image de ISO/, celle dont la dernière relecture est la plus ancienne (jamais relue d'abord),
@@ -655,9 +662,9 @@ fn relire_image_dans(
     racine: &Path,
     reference: &Path,
     empreintes: &[(String, Option<String>)],
-    lire_sha256: impl Fn(&Path) -> Result<String, String>,
-) -> Result<Relecture, String> {
-    let mut m = lire(reference)?;
+    lire_sha256: impl Fn(&Path) -> Option<String>,
+) -> Result<Relecture, Echec> {
+    let mut m = lire(reference).map_err(|e| Echec::echoue("manifeste/relire", e))?;
     let attendue = |e: &Entree| {
         e.sha256.clone().or_else(|| {
             let nom = e.chemin.rsplit('/').next().unwrap_or_default();
@@ -676,9 +683,8 @@ fn relire_image_dans(
     };
     let sha = attendue(&m.fichiers[i]).unwrap_or_default();
     let chemin = m.fichiers[i].chemin.clone();
-    let lue = match lire_sha256(&racine.join(&chemin)) {
-        Ok(h) => h.to_ascii_lowercase(),
-        Err(e) => return Ok(Relecture::Illisible(chemin, e)),
+    let Some(lue) = lire_sha256(&racine.join(&chemin)).map(|h| h.to_ascii_lowercase()) else {
+        return Ok(Relecture::Illisible(chemin));
     };
     let e = &mut m.fichiers[i];
     let resultat = if lue == sha {
@@ -690,16 +696,20 @@ fn relire_image_dans(
         e.differente = true;
         Relecture::Differente(chemin)
     };
-    enregistrer(reference, &m).map_err(|e| e.to_string())?;
+    enregistrer(reference, &m).map_err(|e| Echec::ecriture("manifeste/relire", &e))?;
     Ok(resultat)
 }
 
 /// `relire_image_dans` pour la clé `racine` et sa référence sur cet ordinateur.
-pub(crate) fn relire_image(racine: &Path, empreintes: &[(String, Option<String>)]) -> Result<Relecture, String> {
-    let reference = reference(racine)
-        .ok_or_else(|| tr!("aucune référence pour cette clé", "no reference for this key").to_string())?;
+pub(crate) fn relire_image(racine: &Path, empreintes: &[(String, Option<String>)]) -> Result<Relecture, Echec> {
+    let reference = reference(racine).ok_or_else(|| {
+        Echec::refuse(
+            "manifeste/relire",
+            tr!("aucune référence pour cette clé", "no reference for this key"),
+        )
+    })?;
     relire_image_dans(racine, &reference, empreintes, |f| {
-        crate::protection::telechargement::calculer(f, crate::protection::telechargement::Algo::Sha256)
+        crate::protection::telechargement::calculer(f, crate::protection::telechargement::Algo::Sha256).ok()
     })
 }
 
@@ -1060,7 +1070,7 @@ pub fn commande(ecrire_dossier: Option<&Path>, forcer: bool, accepter: bool, ima
         return;
     }
     if let Some((racine, nouvelles)) = images {
-        let nouvelles: Result<Vec<_>, String> = nouvelles.iter().map(|n| image_et_empreinte(n)).collect();
+        let nouvelles: Result<Vec<_>, Echec> = nouvelles.iter().map(|n| image_et_empreinte(n)).collect();
         let nouvelles = match nouvelles {
             Ok(n) => n,
             Err(e) => {
@@ -1437,7 +1447,7 @@ mod tests {
         std::fs::write(racine.join("ISO/debian.iso"), b"0123456789abcdef0").unwrap();
         ecrire_dans(&racine, &reference, 10).unwrap();
         // Rien à relire sans empreinte connue.
-        let lire_ok = |_: &Path| Ok(SHA.to_string());
+        let lire_ok = |_: &Path| Some(SHA.to_string());
         assert_eq!(
             relire_image_dans(&racine, &reference, &[], lire_ok).unwrap(),
             Relecture::Rien
@@ -1457,7 +1467,7 @@ mod tests {
             Relecture::Pareille("ISO/debian.iso".into())
         );
         // L'image remplacée, même taille : différente, et le bilan la dit modifiée.
-        let lire_autre = |_: &Path| Ok(AUTRE.to_string());
+        let lire_autre = |_: &Path| Some(AUTRE.to_string());
         let r = relire_image_dans(&racine, &reference, &cache, lire_autre).unwrap();
         assert!(matches!(r, Relecture::Differente(_)), "{r:?}");
         let m = lire(&reference).unwrap();
@@ -1470,7 +1480,7 @@ mod tests {
         rafraichir_images_dans(&racine, &reference, &[(nom, Some(SHA.into()))], 10).unwrap();
         assert!(comparer_avec(&racine, &lire(&reference).unwrap(), 10).vide());
         // Illisible : rien de conclu, rien de noté.
-        let illisible = |_: &Path| Err("clé retirée".to_string());
+        let illisible = |_: &Path| None;
         assert!(matches!(
             relire_image_dans(&racine, &reference, &[], illisible).unwrap(),
             Relecture::Illisible(..)

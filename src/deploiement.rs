@@ -140,7 +140,7 @@ fn comparer_cle(racine: &Path) -> i32 {
 
 fn relire_image(racine: &Path, empreintes: &[String]) -> i32 {
     use crate::protection::manifeste::{Relecture, image_et_empreinte, relire_image};
-    let empreintes: Result<Vec<_>, String> = empreintes.iter().map(|e| image_et_empreinte(e)).collect();
+    let empreintes: Result<Vec<_>, crate::modele::Echec> = empreintes.iter().map(|e| image_et_empreinte(e)).collect();
     let resultat = empreintes.and_then(|e| relire_image(racine, &e));
     match resultat {
         Ok(Relecture::Rien) => {
@@ -177,12 +177,12 @@ fn relire_image(racine: &Path, empreintes: &[String]) -> i32 {
             );
             2
         }
-        Ok(Relecture::Illisible(c, e)) => {
+        Ok(Relecture::Illisible(c)) => {
             eprintln!(
                 "{}",
                 trf!(
-                    "· {} pas relue ({e}) : rien de conclu.",
-                    "· {} not re-read ({e}): nothing concluded.",
+                    "· {} pas relue (illisible, clé retirée ?) : rien de conclu.",
+                    "· {} not re-read (unreadable, key removed?): nothing concluded.",
                     affichable(&c)
                 )
             );
