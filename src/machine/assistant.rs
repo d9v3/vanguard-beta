@@ -489,10 +489,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// Le temps du dialogue, ce processus n'est plus accessible au compte ; il l'est de nouveau après.
+    /// Le temps du dialogue, ce processus n'est plus accessible au compte ; il l'est de nouveau après. Lancé dans un
+    /// processus à part par `inaccessible_le_temps_du_dialogue` : le drapeau vaut pour tout le processus, et les
+    /// autres essais, qui tournent en même temps, lisent /proc.
     #[cfg(target_os = "linux")]
     #[test]
-    fn inaccessible_le_temps_du_dialogue() {
+    #[ignore = "lancé dans un processus à part par inaccessible_le_temps_du_dialogue"]
+    fn inaccessible_dedans() {
         // SAFETY : prctl sans pointeur.
         let avant = unsafe { libc::prctl(libc::PR_GET_DUMPABLE) };
         {
@@ -502,6 +505,23 @@ mod tests {
         }
         // SAFETY : voir ci-dessus.
         assert_eq!(unsafe { libc::prctl(libc::PR_GET_DUMPABLE) }, avant);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn inaccessible_le_temps_du_dialogue() {
+        let moi = std::env::current_exe().unwrap();
+        let sortie = std::process::Command::new(moi)
+            .args([
+                "--ignored",
+                "--exact",
+                "machine::assistant::tests::inaccessible_dedans",
+                "--test-threads=1",
+            ])
+            .output()
+            .unwrap();
+        let texte = String::from_utf8_lossy(&sortie.stdout);
+        assert!(sortie.status.success() && texte.contains("1 passed"), "{texte}");
     }
 
     #[test]
