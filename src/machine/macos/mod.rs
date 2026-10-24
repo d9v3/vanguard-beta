@@ -369,34 +369,61 @@ fn protection_systeme() -> Vec<Constat> {
         ),
         None => constats.push(impossible("Protection système", tr!("spctl illisible", "spctl unreadable"))),
     }
-    match sortie("csrutil", &["status"]) {
-        Some(s) if s.contains("status: enabled") => constats.push(ok(
+    constats.push(sip());
+    constats
+}
+
+/// SIP : demandé au noyau (csr_get_active_config, cherché par dlsym), `csrutil status` en secours et comme oracle
+/// (noyau.rs). Entier quand aucun drapeau n'est posé ; « enabled (Custom Configuration) » de csrutil, une exception
+/// faite par `csrutil enable --without …`, est un SIP réduit.
+fn sip() -> Constat {
+    let sain = || {
+        ok(
             "Protection système",
             tr!(
                 "Protection de l'intégrité du système (SIP) active.",
                 "System Integrity Protection (SIP) on."
             ),
-        )),
-        Some(_) => constats.push(
-            alerte(
-                "Protection système",
-                Niveau::Eleve,
+        )
+    };
+    let reduit = |drapeaux: &str| {
+        alerte(
+            "Protection système",
+            Niveau::Eleve,
+            if drapeaux.is_empty() {
                 tr!(
                     "La protection de l'intégrité du système (SIP) est désactivée ou réduite : un programme administrateur peut modifier macOS lui-même.",
                     "System Integrity Protection (SIP) is off or reduced: an administrator program can modify macOS itself."
-                ),
-            )
-            .manuel(
-                tr!(
-                    "Redémarrer en mode de secours (bouton d'alimentation maintenu sur Apple Silicon, Cmd-R sur Intel), Utilitaires > Terminal : csrutil enable, puis redémarrer",
-                    "Restart in Recovery (hold the power button on Apple Silicon, Cmd-R on Intel), Utilities > Terminal: csrutil enable, then restart"
-                ),
-                &[],
+                )
+                .to_string()
+            } else {
+                trf!(
+                    "La protection de l'intégrité du système (SIP) est désactivée ou réduite ({drapeaux}) : un programme administrateur peut modifier macOS lui-même.",
+                    "System Integrity Protection (SIP) is off or reduced ({drapeaux}): an administrator program can modify macOS itself."
+                )
+            },
+        )
+        .manuel(
+            tr!(
+                "Redémarrer en mode de secours (bouton d'alimentation maintenu sur Apple Silicon, Cmd-R sur Intel), Utilitaires > Terminal : csrutil enable, puis redémarrer",
+                "Restart in Recovery (hold the power button on Apple Silicon, Cmd-R on Intel), Utilities > Terminal: csrutil enable, then restart"
             ),
-        ),
-        None => constats.push(impossible("Protection système", tr!("csrutil illisible", "csrutil unreadable"))),
+            &[],
+        )
+    };
+    if let Some(config) = noyau::sip() {
+        let drapeaux = crate::machine::darwin::drapeaux_sip(config);
+        return if drapeaux.is_empty() {
+            sain()
+        } else {
+            reduit(&drapeaux.join(", "))
+        };
     }
-    constats
+    match sortie("csrutil", &["status"]) {
+        Some(s) if s.contains("status: enabled.") => sain(),
+        Some(_) => reduit(""),
+        None => impossible("Protection système", tr!("csrutil illisible", "csrutil unreadable")),
+    }
 }
 
 /// Mot de passe à la sortie de veille.
