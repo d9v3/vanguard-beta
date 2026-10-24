@@ -427,7 +427,7 @@ fn valeurs_securite(
 
 /// Trois enregistrements numérotés à partir de `premier` : un 4624 (gabarit rangé en place), un 4625 (le même
 /// gabarit désigné, valeurs optionnelles nulles), un 1102 à UserData (valeur BinXml portant sa propre instance).
-fn morceau_type(premier: u64) -> Vec<u8> {
+pub(crate) fn morceau_type(premier: u64) -> Vec<u8> {
     morceau_type_avec(premier, true)
 }
 
@@ -472,7 +472,7 @@ fn morceau_type_avec(premier: u64, etrange: bool) -> Vec<u8> {
 }
 
 /// Un fichier : en-tête puis les morceaux donnés, CRC recalculés.
-fn fichier(morceaux: &[Vec<u8>]) -> Vec<u8> {
+pub(crate) fn fichier(morceaux: &[Vec<u8>]) -> Vec<u8> {
     let mut f = vec![0u8; EN_TETE];
     f[..8].copy_from_slice(b"ElfFile\0");
     let n = u64::try_from(morceaux.len()).unwrap();
@@ -488,6 +488,24 @@ fn fichier(morceaux: &[Vec<u8>]) -> Vec<u8> {
     }
     recalculer_crc(&mut f);
     f
+}
+
+/// Un morceau d'échecs de connexion (4625, journal Security) aux numéros d'enregistrement donnés, dans cet ordre,
+/// l'EventRecordID de chacun valant `origine(numéro)` et sa date `DATE` plus son numéro : l'en-tête du morceau
+/// annonce du premier au dernier, comme Windows l'écrit. Pour les essais de la suite des numéros
+/// (journaux_windows::fichiers).
+pub(crate) fn morceau_aux_numeros(numeros: &[u64], origine: impl Fn(u64) -> u64) -> Vec<u8> {
+    let mut m = Ecrivain::new();
+    for &n in numeros {
+        m.enregistrement(n, DATE + n, |m| {
+            m.instance(
+                1,
+                &gabarit_securite(),
+                &valeurs_securite(4625, origine(n), "alice", Some("192.0.2.10"), false),
+            );
+        });
+    }
+    m.finir()
 }
 
 fn fichier_type() -> Vec<u8> {
@@ -654,6 +672,53 @@ fn un_en_tete_de_fichier_abime_n_empeche_pas_de_lire_les_morceaux() {
     assert!(lu.bilan.en_tete_abime);
     assert!(!lu.bilan.complet());
     assert_eq!(lu.enregistrements.len(), 3);
+}
+
+/// Chaque morceau lu ou écarté laisse son récapitulatif (sa plage annoncée quand son en-tête est juste, ce qu'il n'a
+/// pas rendu) et chaque événement le rang de son morceau : de quoi juger la suite des numéros (journaux_windows::trous).
+#[test]
+fn chaque_morceau_laisse_son_recapitulatif() {
+    let mut f = fichier(&[
+        morceau_type(1),
+        vec![0; MORCEAU],
+        morceau_type(4),
+        morceau_type(7),
+        morceau_type(10),
+    ]);
+    // Le morceau de rang 3 : un octet de ses enregistrements changé, son en-tête (qui porte le CRC des
+    // enregistrements) juste. Celui de rang 4 : en-tête faux.
+    f[EN_TETE + 3 * MORCEAU + EN_TETE_MORCEAU + 40] ^= 0xFF;
+    f[EN_TETE + 4 * MORCEAU + 124] ^= 0xFF;
+    // Un morceau coupé en fin de fichier.
+    f.extend_from_slice(&[b'E'; 100]);
+    let lu = lire_type(&f);
+    let recap = |rang, lu, annonce, non_rendus| RecapMorceau {
+        rang,
+        lu,
+        annonce,
+        non_rendus,
+    };
+    assert_eq!(
+        lu.bilan.morceaux,
+        [
+            recap(0, true, Some((1, 3)), 0),
+            recap(2, true, Some((4, 6)), 0),
+            recap(3, false, Some((7, 9)), 0),
+            recap(4, false, None, 0),
+            recap(5, false, None, 0),
+        ]
+    );
+    assert_eq!(lu.bilan.morceaux_sans_recap, 0);
+    let rangs: Vec<(u64, u64)> = lu.enregistrements.iter().map(|e| (e.numero, e.morceau)).collect();
+    assert_eq!(rangs, [(1, 0), (2, 0), (3, 0), (4, 2), (5, 2), (6, 2)]);
+    // Un enregistrement illisible ou laissé au-delà de la borne compte dans son morceau.
+    let bornes = Bornes {
+        enregistrements: 2,
+        ..Bornes::default()
+    };
+    let lu = lire_octets(&fichier(&[morceau_type(1), morceau_type(4)]), &bornes).unwrap();
+    assert_eq!(lu.bilan.morceaux, [recap(0, true, Some((1, 3)), 1)]);
+    assert_eq!(lu.bilan.morceaux_hors_borne, 1);
 }
 
 #[test]
@@ -1169,7 +1234,7 @@ fn lecture_oracle(octets: Vec<u8>) -> (BTreeMap<u64, Vu>, usize) {
 /// les livre (XML 1.0 § 2.11 : « \r\n » devient « \n »), un GUID sans accolades (que nous gardons, comme la forme
 /// canonique de [MS-EVEN6] 3.1.4.7.3), une date à la microseconde (la crate s'y arrête, nous gardons les centaines
 /// de nanosecondes du FILETIME et les millisecondes du SYSTEMTIME).
-fn forme_commune(v: &str) -> String {
+pub(crate) fn forme_commune(v: &str) -> String {
     let v = v.replace("\r\n", "\n").replace('\r', "\n");
     if let Ok(d) = DateTime::parse_from_rfc3339(&v) {
         return d.timestamp_micros().to_string();

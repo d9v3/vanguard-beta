@@ -29,8 +29,9 @@
 mod binxml;
 mod valeurs;
 
+// Ses fabriques de fichiers servent aussi aux essais de la suite des numéros (journaux_windows::trous).
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -134,6 +135,9 @@ impl Noeud {
 pub(crate) struct Enregistrement {
     /// Le numéro d'enregistrement (EventRecordID) de l'en-tête de l'enregistrement.
     pub numero: u64,
+    /// Le rang dans le fichier du morceau qui le porte (0 : le premier après l'en-tête) : la suite des numéros se
+    /// juge morceau par morceau (`RecapMorceau`).
+    pub morceau: u64,
     /// La date d'écriture de l'en-tête de l'enregistrement (FILETIME, UTC) ; rien si elle est hors des dates
     /// représentables.
     pub date: Option<DateTime<Utc>>,
@@ -193,6 +197,32 @@ pub(crate) struct Bilan {
     pub chaines_tronquees: u64,
     /// Substitutions sans valeur dans leur instance, rendues vides.
     pub substitutions_manquantes: u64,
+    /// Ce que chaque morceau lu ou écarté (pas les vides) annonce et a donné, dans l'ordre du fichier, au plus
+    /// `MAX_RECAPS` : de quoi dire d'un trou dans la suite des numéros s'il tombe dans un morceau intact (des
+    /// enregistrements retirés) ou dans ce que la lecture a perdu (journaux_windows::trous).
+    pub morceaux: Vec<RecapMorceau>,
+    /// Morceaux lus ou écartés au-delà de `MAX_RECAPS`, sans récapitulatif.
+    pub morceaux_sans_recap: u64,
+}
+
+/// Les récapitulatifs de morceaux gardés au plus : 4 Gio de morceaux, quatre fois la borne de taille par défaut ;
+/// une borne choisie démesurée ne fait pas grossir le bilan sans fin.
+pub(crate) const MAX_RECAPS: usize = 1 << 16;
+
+/// Un morceau tel que la lecture l'a vu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RecapMorceau {
+    /// Son rang dans le fichier (0 : le premier après l'en-tête).
+    pub rang: u64,
+    /// Lu (ses deux CRC justes) ou écarté.
+    pub lu: bool,
+    /// Le premier et le dernier numéro d'enregistrement (identifiants, octets 24 et 32) qu'annonce son en-tête,
+    /// quand cet en-tête est juste (signature, CRC) et se tient (dernier après le premier, pas plus qu'un morceau ne
+    /// peut en contenir) ; rien sinon.
+    pub annonce: Option<(u64, u64)>,
+    /// Enregistrements de ce morceau lu qui n'ont pas été rendus : illisibles, ou laissés au-delà de
+    /// `Bornes::enregistrements`. Ils peuvent porter n'importe quel numéro de l'annonce.
+    pub non_rendus: u64,
 }
 
 impl Bilan {
@@ -294,9 +324,10 @@ pub(crate) fn parcourir<R: Read + Seek>(
         if lire_au_plus(&mut source, &mut morceau)? < MORCEAU {
             // Coupé en fin de fichier : son CRC ne peut pas être vérifié.
             bilan.morceaux_illisibles += 1;
+            recapituler(&mut bilan, i, false, None, 0);
             break;
         }
-        lire_morceau(&morceau, bornes, &mut bilan, &mut restant, &mut recevoir);
+        lire_morceau(&morceau, i, bornes, &mut bilan, &mut restant, &mut recevoir);
     }
     Ok(bilan)
 }
@@ -322,35 +353,37 @@ enum Etat {
     /// Jamais écrit (tout à zéro), ou préparé sans aucun enregistrement (place libre au début, en-tête juste) : rien
     /// de perdu ; la place libre, s'il y en a une, pour y chercher ce qui y resterait.
     Vide(Option<usize>),
-    Illisible,
+    /// Écarté ; vrai si son en-tête est juste (signature et CRC) : c'est la place libre ou le CRC des
+    /// enregistrements qui ne vont pas, et la plage de numéros qu'il annonce reste crue.
+    Illisible(bool),
 }
 
 /// Le morceau vérifié : signature, CRC de l'en-tête, place libre plausible, CRC des enregistrements.
 fn verifier_morceau(morceau: &[u8]) -> Etat {
     if morceau.len() != MORCEAU {
-        return Etat::Illisible;
+        return Etat::Illisible(false);
     }
     if !morceau.starts_with(b"ElfChnk\0") {
         return if morceau.iter().all(|&b| b == 0) {
             Etat::Vide(None)
         } else {
-            Etat::Illisible
+            Etat::Illisible(false)
         };
     }
     let annonce = u32_a(morceau, 124);
     if annonce != Some(crc32(&[&morceau[..120], &morceau[128..EN_TETE_MORCEAU]])) {
-        return Etat::Illisible;
+        return Etat::Illisible(false);
     }
     let libre = u32_a(morceau, 48).and_then(|l| usize::try_from(l).ok());
     let Some(libre) = libre.filter(|l| (EN_TETE_MORCEAU..=MORCEAU).contains(l)) else {
-        return Etat::Illisible;
+        return Etat::Illisible(true);
     };
     // Préparé sans aucun enregistrement : son CRC des enregistrements reste celui d'avant, mais il n'y a rien à lire.
     if libre == EN_TETE_MORCEAU {
         return Etat::Vide(Some(libre));
     }
     if u32_a(morceau, 52) != Some(crc32(&[&morceau[EN_TETE_MORCEAU..libre]])) {
-        return Etat::Illisible;
+        return Etat::Illisible(true);
     }
     Etat::Lisible(libre)
 }
@@ -372,9 +405,24 @@ fn apres_place_libre(morceau: &[u8], libre: usize) -> u64 {
     n
 }
 
+/// Note ce qu'un morceau lu ou écarté a donné, dans la limite de `MAX_RECAPS`.
+fn recapituler(bilan: &mut Bilan, rang: u64, lu: bool, annonce: Option<(u64, u64)>, non_rendus: u64) {
+    if bilan.morceaux.len() < MAX_RECAPS {
+        bilan.morceaux.push(RecapMorceau {
+            rang,
+            lu,
+            annonce,
+            non_rendus,
+        });
+    } else {
+        bilan.morceaux_sans_recap += 1;
+    }
+}
+
 /// Les enregistrements d'un morceau de 64 Kio, après vérification de ses deux CRC.
 fn lire_morceau(
     morceau: &[u8],
+    rang: u64,
     bornes: &Bornes,
     bilan: &mut Bilan,
     restant: &mut usize,
@@ -387,8 +435,10 @@ fn lire_morceau(
             bilan.enregistrements_apres_place_libre += libre.map_or(0, |l| apres_place_libre(morceau, l));
             return;
         }
-        Etat::Illisible => {
+        Etat::Illisible(en_tete_juste) => {
             bilan.morceaux_illisibles += 1;
+            let annonce = if en_tete_juste { plage_annoncee(morceau) } else { None };
+            recapituler(bilan, rang, false, annonce, 0);
             return;
         }
     };
@@ -396,6 +446,7 @@ fn lire_morceau(
     bilan.enregistrements_apres_place_libre += apres_place_libre(morceau, libre);
     let mut lecteur = binxml::Morceau::new(morceau, bornes);
     let avant = bilan.enregistrements_lus + bilan.enregistrements_illisibles + bilan.enregistrements_hors_borne;
+    let avant_non_rendus = bilan.enregistrements_illisibles + bilan.enregistrements_hors_borne;
     let mut pos = EN_TETE_MORCEAU;
     while pos + ENREGISTREMENT_MIN <= libre {
         let Some(taille) = taille_enregistrement(morceau, pos, libre) else {
@@ -423,7 +474,9 @@ fn lire_morceau(
             Ok(evenement) => {
                 let numero = u64_a(morceau, pos + 8).unwrap_or(0);
                 let date = u64_a(morceau, pos + 16).and_then(valeurs::filetime);
-                recevoir(enregistrement(numero, date, evenement));
+                let mut e = enregistrement(numero, date, evenement);
+                e.morceau = rang;
+                recevoir(e);
                 bilan.enregistrements_lus += 1;
                 *restant -= 1;
             }
@@ -434,6 +487,8 @@ fn lire_morceau(
     let trouves =
         bilan.enregistrements_lus + bilan.enregistrements_illisibles + bilan.enregistrements_hors_borne - avant;
     bilan.enregistrements_absents += annonces(morceau).saturating_sub(trouves);
+    let non_rendus = bilan.enregistrements_illisibles + bilan.enregistrements_hors_borne - avant_non_rendus;
+    recapituler(bilan, rang, true, plage_annoncee(morceau), non_rendus);
     bilan.valeurs_inconnues += lecteur.compteurs.valeurs_inconnues;
     bilan.chaines_tronquees += lecteur.compteurs.chaines_tronquees;
     bilan.substitutions_manquantes += lecteur.compteurs.substitutions_manquantes;
@@ -450,6 +505,15 @@ fn annonces(morceau: &[u8]) -> u64 {
         Some(n) if n < (MORCEAU / ENREGISTREMENT_MIN) as u64 => n + 1,
         _ => 0,
     }
+}
+
+/// La plage d'identifiants d'enregistrements (premier, dernier) qu'annonce l'en-tête du morceau (octets 24 et 32,
+/// [libyal] « First / Last event record identifier » : les numéros que portent les enregistrements eux-mêmes ;
+/// ceux des octets 8 et 16 repartent de 1 après un effacement). Rien si elle ne se tient pas, comme `annonces`.
+fn plage_annoncee(morceau: &[u8]) -> Option<(u64, u64)> {
+    let (premier, dernier) = (u64_a(morceau, 24)?, u64_a(morceau, 32)?);
+    let n = dernier.checked_sub(premier)?;
+    (n < (MORCEAU / ENREGISTREMENT_MIN) as u64).then_some((premier, dernier))
 }
 
 /// La taille de l'enregistrement qui commence à `pos`, s'il est entier : signature, taille plausible qui tient avant
@@ -471,8 +535,9 @@ fn chercher_signature(morceau: &[u8], depuis: usize, libre: usize) -> Option<usi
     zone.windows(4).position(|f| f == b"**\0\0").map(|i| depuis + i)
 }
 
-/// Les champs utiles tirés de l'arbre rendu.
-fn enregistrement(numero: u64, date: Option<DateTime<Utc>>, evenement: Noeud) -> Enregistrement {
+/// Les champs utiles tirés de l'arbre rendu. Sert aussi à l'arbre lu dans le XML que rend Windows (source vivante,
+/// journaux_windows::xml) : les deux sources tirent leurs champs de la même façon.
+pub(crate) fn enregistrement(numero: u64, date: Option<DateTime<Utc>>, evenement: Noeud) -> Enregistrement {
     let systeme = evenement.enfant("System");
     let texte = |nom: &str| systeme.and_then(|s| s.enfant(nom)).map(|e| e.texte.trim().to_string());
     let fournisseur = systeme.and_then(|s| s.enfant("Provider")).map(|p| {
@@ -489,6 +554,7 @@ fn enregistrement(numero: u64, date: Option<DateTime<Utc>>, evenement: Noeud) ->
         .map(|d| d.with_timezone(&Utc));
     Enregistrement {
         numero,
+        morceau: 0,
         date,
         fournisseur: fournisseur.unwrap_or_default(),
         id: texte("EventID").and_then(|t| t.parse().ok()),
