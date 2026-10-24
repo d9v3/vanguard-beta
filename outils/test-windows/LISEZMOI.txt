@@ -60,7 +60,13 @@ cette VM, par n'importe quel compte : la tâche ne fait donc qu'un travail sign�
 tiré à l'installation. Ce secret vit ici dans secret.bin, que seuls les
 administrateurs lisent, et sur Linux hors du partage ; il n'a traversé le
 partage que chiffré pour la seule clé de Linux, et le code de vérification
-prouve que personne ne l'a échangé en route. Un travail déjà fait n'est jamais
+prouve que ni la clé ni le secret n'ont été échangés en route. LIMITE :
+l'installateur lui-même est lu sur le partage, et relu après la fenêtre UAC ;
+un programme de cette VM qui le remplacerait à ce moment tournerait en
+administrateur et choisirait le code. vm-tester.sh refuse d'adopter le secret
+si l'installateur, le surveillant ou la clé ont changé sur le partage depuis
+--installer, mais ne voit pas un fichier remplacé puis remis : lancer
+--installer, puis INSTALLER-ESSAIS-AUTO.bat aussitôt, sur une VM saine. Un travail déjà fait n'est jamais
 refait ; fini.txt porte la signature du surveillant, et Linux ne croit que
 celui-là. Tout programme du compte Linux, qui lit ce secret, peut encore
 devenir administrateur de la VM. À n'installer que

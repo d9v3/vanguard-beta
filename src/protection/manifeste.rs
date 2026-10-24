@@ -340,13 +340,16 @@ fn depose_par_le_deploiement(chemin: &str) -> bool {
         ("Windows", "vanguard.exe"),
         ("macOS", "vanguard"),
     ];
-    if RACINE.contains(&chemin) || chemin.starts_with("source/") {
+    // Le code source est une copie exacte (rsync --delete), sauf ce que rsync laisse de côté : jamais écrit par lui.
+    if RACINE.contains(&chemin)
+        || (chemin.starts_with("source/")
+            && !chemin.starts_with("source/target/")
+            && !chemin.starts_with("source/.claude/worktrees/"))
+    {
         return true;
     }
     if let Some(nom) = chemin.strip_prefix("tldr/") {
-        return nom.starts_with("tldr-pages.")
-            && Path::new(nom).extension().is_some_and(|x| x == "zip")
-            && !nom.contains('/');
+        return matches!(nom, "tldr-pages.en.zip" | "tldr-pages.fr.zip");
     }
     PROGRAMMES.iter().any(|(dossier, programme)| {
         chemin
@@ -693,7 +696,9 @@ fn relire_image_dans(
         e.differente = false;
         Relecture::Pareille(chemin)
     } else {
+        // Relue quand même : la rotation passe aux autres images, même si celle-ci ne peut pas être recopiée.
         e.differente = true;
+        e.relue = Some(maintenant());
         Relecture::Differente(chemin)
     };
     enregistrer(reference, &m).map_err(|e| Echec::ecriture("manifeste/relire", &e))?;
@@ -1430,6 +1435,10 @@ mod tests {
         assert!(!depose_par_le_deploiement("Windows/vanguard.dll"));
         assert!(!depose_par_le_deploiement("tldr/x/tldr-pages.en.zip"));
         assert!(!depose_par_le_deploiement("Linuxx/vanguard"));
+        assert!(!depose_par_le_deploiement("source/target/x.so"));
+        assert!(!depose_par_le_deploiement("source/.claude/worktrees/a/b"));
+        assert!(!depose_par_le_deploiement("tldr/tldr-pages.piege.zip"));
+        assert!(depose_par_le_deploiement("tldr/tldr-pages.en.zip"));
         let _ = std::fs::remove_dir_all(&base);
         let _ = std::fs::remove_dir_all(&racine);
     }

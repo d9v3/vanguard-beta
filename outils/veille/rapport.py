@@ -770,8 +770,11 @@ def structure(copie, sortie):
     champs, et la forme des premières lignes (lettres → a, chiffres → 9, le reste en classes). Tout nom gardé passe
     par une liste blanche courte ([A-Za-z0-9_.-], 40 caractères) ; le reste devient « (retiré) »."""
     octets = Path(copie).read_bytes()[:64 << 20]
-    nom = re.compile(r"[A-Za-z0-9_.-]{1,40}")
-    sur_nom = lambda k: k if nom.fullmatch(str(k)) else RETIRE
+    # Les noms aussi en classes de caractères (lettres → a, chiffres → 9) : « IGNORE-PREVIOUS-INSTRUCTIONS » passe
+    # une liste blanche de caractères ; sa forme, « a-a-a », ne dit plus rien.
+    def sur_nom(k):
+        k = str(k)[:40]
+        return re.sub(r"[0-9]+", "9", re.sub(r"[A-Za-z]+", "a", k)) if re.fullmatch(r"[A-Za-z0-9_.-]{1,40}", k) else RETIRE
     lignes = [f"taille {len(octets)} octets", f"sha256 {hashlib.sha256(octets).hexdigest()}"]
     try:
         valeur = json.loads(octets.decode("utf-8-sig"))

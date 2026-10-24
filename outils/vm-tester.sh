@@ -298,8 +298,9 @@ deposer() {
 resumer() {
   local d=$FILE/$1 f=$FILE/$1/fini.txt t=$FILE/$1/travail.txt code etat duree c
   if ! signe_par_le_secret "$DOMAINE_FINI" "$f"; then
-    echo "Essai $1 : fini.txt NON SIGNÉ par le surveillant (écrit par un autre programme, ou file d'essais à"
-    echo "  réinstaller) : verdict ignoré ($(cle "$f" etat || true) annoncé). Dossier : $d"
+    echo "Essai $1 : fini.txt NON SIGNÉ par le surveillant (écrit par un autre programme, travail abandonné par une"
+    echo "  désinstallation ou réinstallation, ou file d'essais à réinstaller) : verdict ignoré ($(cle "$f" etat || true)"
+    echo "  annoncé, jamais vert). Dossier : $d"
     return 1
   fi
   code=$(cle "$f" code) etat=$(cle "$f" etat) duree=$(cle "$f" duree_s)
@@ -436,6 +437,10 @@ installer() {
   for f in essais-auto-installation.ps1 surveillant-essais.ps1; do copier "outils/test-windows/$f" "$VM/programme/$f"; done
   xml=$(xml_cle_linux) || { echo "Clé de Linux illisible ($CLE_LINUX)." >&2; exit 1; }
   printf '%s' "$xml" >"$VM/programme/cle-linux.xml"
+  # Ce que l'installation de la VM va lire sur le partage, tel que posé ici : relu avant d'adopter le secret. Le
+  # partage s'écrit aussi depuis la VM, et l'installateur y est relu après l'élévation.
+  (cd "$VM/programme" && sha256sum essais-auto-installation.ps1 surveillant-essais.ps1 cle-linux.xml) \
+    >"$CLES/installation.sha256"
   # Un secret chiffré d'une installation d'avant n'est pas celui qu'on attend.
   rm -f "$FILE/secret-chiffre.bin"
   cp -f outils/test-windows/INSTALLER-ESSAIS-AUTO.bat outils/test-windows/DESINSTALLER-ESSAIS-AUTO.bat "$VM/"
@@ -446,9 +451,23 @@ installer() {
   echo "En attente du secret de l'installation (20 min au plus ; Ctrl-C puis --adopter plus tard)…"
   for _ in $(seq 240); do
     [[ -s $FILE/secret-chiffre.bin ]] && { sleep 2; adopter; return; }
+    installation_intacte || return 1
     sleep 5
   done
   echo "Pas de secret déposé en 20 min : après l'installation, outils/vm-tester.sh --adopter."
+}
+
+# Les fichiers de l'installation, sur le partage, toujours ceux que --installer y a posés ? Sinon, dit, et rien ne
+# sera adopté : un programme de la VM a pu les remplacer (l'installateur, relu après l'UAC, tournerait en
+# administrateur et choisirait le secret et le code). Ne voit pas un fichier remplacé puis remis à temps : voir
+# outils/test-windows/LISEZMOI.txt.
+installation_intacte() {
+  [[ -s $CLES/installation.sha256 ]] || { echo "Empreintes de l'installation absentes : outils/vm-tester.sh --installer d'abord." >&2; return 1; }
+  (cd "$VM/programme" && sha256sum --quiet -c "$CLES/installation.sha256" >/dev/null 2>&1) && return 0
+  echo "✖ Installateur, surveillant ou clé de Linux CHANGÉS sur le partage depuis --installer : un programme de la VM" >&2
+  echo "  a pu les remplacer. Rien n'est adopté ; réinstaller (--installer, puis INSTALLER-ESSAIS-AUTO.bat aussitôt)." >&2
+  rm -f "$FILE/secret-chiffre.bin"
+  return 1
 }
 
 # Le secret que l'installation a déposé, chiffré pour la clé de Linux : déchiffré ici, son code de vérification
@@ -458,6 +477,7 @@ adopter() {
   local blob=$FILE/secret-chiffre.bin hex xml empreinte code reponse
   [[ -s $blob && ! -L $blob ]] || { echo "Pas de secret déposé ($blob) : lancer INSTALLER-ESSAIS-AUTO.bat dans la VM." >&2; return 1; }
   [[ -s $CLE_LINUX ]] || { echo "Clé de Linux absente ($CLE_LINUX) : outils/vm-tester.sh --installer d'abord." >&2; return 1; }
+  installation_intacte || return 1
   hex=$(openssl pkeyutl -decrypt -inkey "$CLE_LINUX" -pkeyopt rsa_padding_mode:oaep -in "$blob" 2>/dev/null |
     od -An -tx1 -v | tr -d ' \n')
   rm -f "$blob"
@@ -741,6 +761,11 @@ EOF2
     mv "$VMD/programme/secret-chiffre.bin" "$VMD/file-essais/" 2>/dev/null
     CLES_VMT=$T/cles-installation vmt --adopter <<<n
     voir "installation : l'auteur dit que les codes diffèrent : rien n'est gardé" eval '((code == 1)) && [[ ! -e $T/cles-installation/secret ]]'
+    "$PWSH" -NoProfile -NonInteractive -File "$DEPOT/outils/test-windows/essais-auto-installation.ps1" -EssaiSecret "$VMD/programme" >/dev/null 2>&1
+    mv "$VMD/programme/secret-chiffre.bin" "$VMD/file-essais/" 2>/dev/null
+    echo "# remplacé depuis la VM" >>"$VMD/programme/essais-auto-installation.ps1"
+    CLES_VMT=$T/cles-installation vmt --adopter <<<o
+    voir "installation : installateur changé sur le partage depuis --installer : rien adopté, même avec « o »" eval '((code == 1)) && dit "CHANGÉS sur le partage" && [[ ! -e $T/cles-installation/secret ]]'
 
     # 5. Un dossier .partiel n'est jamais pris.
     nouvelle_vm; sources 0 0 0 'OK x'

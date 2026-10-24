@@ -270,7 +270,7 @@ $(versions_de "$ecartes")."
 ($(versions_de "$manquants")) : tronqué ou réécrit, rien n'est signé"
       [[ -z $en_plus ]] || erreur "l'historique publié a des versions que cet ordinateur n'a pas publiées \
 ($(versions_de "$en_plus")) : la clé principale est peut-être entre d'autres mains (--secours --revoquer). Publiées \
-par vous ailleurs : --point-sur $AVANT/historique.txt"
+par vous ailleurs : gh release download -R d9v3/vanguard-update -p 'historique.txt*', puis --point-sur ce fichier"
     fi
     anciens=$avant
   fi

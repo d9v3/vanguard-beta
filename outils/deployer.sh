@@ -64,6 +64,11 @@ fi
 LOCAL=""
 [[ -n $(find "$REPERE_LOCAL" -mmin -120 2>/dev/null) ]] && LOCAL=1
 
+# Une alerte que personne ne lirait au branchement (vanguard-cle.service) sans notification.
+avertir_cle() { # titre texte
+  command -v notify-send >/dev/null && notify-send -a Vanguard -i vanguard -u critical -- "$1" "$2" || true
+}
+
 # Durée de chaque étape, dite à la fin : on voit où part le temps d'un déploiement.
 DUREES=""
 duree() { DUREES+="${DUREES:+ · }$1 $((SECONDS - $2)) s"; }
@@ -138,6 +143,8 @@ compiler() {
     rust-toolchain.toml) ]]; then
     echo "✖ Compilation refusée : le code a des changements non commités (git status) ; un programme publié est"
     echo "  celui de son commit. Les committer, ou outils/deployer.sh --local pour cet ordinateur seulement."
+    avertir_cle "Vanguard : rien compilé ni copié" "Le code a des changements non commités : la clé n'est pas mise \
+à jour (outils/deployer.sh le dit)."
     exit 1
   fi
   # Chaque programme porte la liste de ses dépendances, versions comprises (cargo auditable, section .dep-v0), que
@@ -193,6 +200,8 @@ flock 9
 # dépendances que cargo écrit à côté du programme dit d'où elle vient (.git/worktrees/<nom>/HEAD).
 if [[ $MODE == --sans-compiler ]] && grep -qs "/\.git/worktrees/" "$LINUX.d" "${WINDOWS%.exe}.d"; then
   echo "Compilation venue d'une branche en cours (worktree) : rien n'est copié ni envoyé."
+  # Une clé à adopter (preparer-cle.sh, cle-secours.sh --ecrire) ne reste pas sans programme en silence.
+  [[ -z $ACCEPTER ]] || { echo "✖ --accepter-cle : relancer outils/deployer.sh (il recompile), puis --accepter-cle."; exit 1; }
   exit 0
 fi
 
@@ -251,6 +260,8 @@ if ! octets_compiles; then
   fi
   echo "✖ Programmes remplacés depuis leur compilation (empreintes ≠ $REPERE_COMPILATION) : rien ne part. Relancer"
   echo "  outils/deployer.sh (il recompile)."
+  avertir_cle "Vanguard : rien copié ni envoyé" "Les programmes de target/ ne sont plus ceux de leur compilation : \
+relancer outils/deployer.sh."
   exit 1
 fi
 # Aucun mot d'attaque que Vanguard cherche en clair dans les programmes qui partent : Defender a supprimé une
@@ -403,9 +414,6 @@ publier_la_version() {
   duree "page de la version" "$debut"
 }
 
-avertir_cle() { # titre texte : une alerte de la clé, que personne ne lit au branchement sans notification
-  command -v notify-send >/dev/null && notify-send -a Vanguard -i vanguard -u critical -- "$1" "$2" || true
-}
 # La clé de cet ordinateur : le volume au témoin vanguard.cle dont le jeton est connu ici (outils/cle-commun.sh). Un
 # volume étiqueté VANGUARD au jeton inconnu ne reçoit rien. --accepter-cle DOSSIER : celui que l'auteur désigne.
 CODE_CLE=0

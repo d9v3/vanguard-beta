@@ -885,6 +885,22 @@ voir "image remplacée par une autre de même taille : dite, recopiée, son empr
   eval '((code == 0)) && cmp -s "$NEUVE" "$IMAGE5" && dit "$BANC/notifications.log" "image remplacée" &&
     dit "$BANC/faux-vanguard.log" "manifeste --images $BANC/cle5 --image ${IMAGE5##*/}=$SHA5"' ||
   { montrer "$BANC/sortie"; montrer "$BANC/faux-vanguard.log"; }
+# La clé trouvée toute seule (branchement, chaque jour) et changée depuis sa référence : aucune image n'y est écrite.
+cat >"$BANC/faux-vanguard-ecart" <<FIN
+#!/usr/bin/env bash
+case "\$1 \$2" in
+  "deploiement cle") echo "$BANC/cle5" ;;
+  "deploiement comparer-cle") exit 2 ;;
+esac
+exit 0
+FIN
+chmod +x "$BANC/faux-vanguard-ecart"
+head -c $((8 * 1024 * 1024)) /dev/urandom >"$NEUVE"
+cp "$NEUVE" "$BANC/neuve-avant"
+ESSAI_RELUE=${IMAGE5##*/} VANGUARD_IMAGES=$BANC/cache5 VANGUARD_PROGRAMME=$BANC/faux-vanguard-ecart \
+  bash outils/images-cle.sh --cle >"$BANC/sortie" 2>&1
+voir "clé trouvée seule mais changée depuis sa référence : aucune image écrite, et dit" \
+  eval 'cmp -s "$NEUVE" "$BANC/neuve-avant" && dit "$BANC/sortie" "aucune image copiée"' || montrer "$BANC/sortie"
 /usr/bin/umount "$BANC/cle5"
 
 # Kali cède sa place : une nouvelle SystemRescue (14 Mio) ne tient pas sur la clé de 530 Mio, même sans l'ancienne
@@ -1174,6 +1190,16 @@ deployer --accepter-cle
 code=$?
 voir "… et --accepter-cle refuse (code 1)" eval '((code == 1)) && [[ ! -e $K/Linux ]]' || montrer "$BANC/sortie"
 cp "$BANC/compilation" "$DD/target/.compilation"
+rm -rf /run/media/alice
+# --accepter-cle quand la dernière compilation vient d'un worktree : un échec dit, pas un succès silencieux.
+mkdir -p "$K"
+echo temoin >"$K/vanguard.cle"
+echo '/x/.git/worktrees/b/HEAD' >"$DD/target/x86_64-unknown-linux-musl/release/vanguard.d"
+deployer --accepter-cle "$K"
+code=$?
+voir "--accepter-cle sur une compilation de worktree : code 1, rien copié" eval '((code == 1)) && [[ ! -e $K/Linux ]]' ||
+  montrer "$BANC/sortie"
+rm -f "$DD/target/x86_64-unknown-linux-musl/release/vanguard.d"
 rm -rf /run/media/alice
 # Un journal au-delà de la borne de src/journal.rs (4 Mio) : mis de côté, rien n'en part vers GitHub.
 mkdir -p "$BANC/donnees/vanguard"
