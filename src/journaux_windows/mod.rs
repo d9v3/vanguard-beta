@@ -9,13 +9,15 @@
 //! - `trous` : les trous dans la suite des numéros d'enregistrement (effacement partiel), et ce qui les explique
 //!   sans effacement.
 //!
-//! - `regles` : les règles `EVT-` et leur moteur, sur l'une ou l'autre source.
-//!
-//! La chronologie et la commande suivent (lot E4).
+//! - `regles` : les règles `EVT-` et leur moteur, sur l'une ou l'autre source ;
+//! - `chronologie` : les alertes remises dans l'ordre du temps, et la période lue par journal (sans écran) ;
+//! - `commande` : `vanguard journaux-windows`, l'écran « Que s'est-il passé ? » et `--json`.
 
-// Appelé par E4 (la commande et la chronologie) : rien ne s'en sert encore hors des tests.
+// Le lecteur et la source vivante gardent des fonctions que seuls les tests et le banc de fuzzing appellent.
 #![cfg_attr(not(test), allow(dead_code))]
 
+pub(crate) mod chronologie;
+pub(crate) mod commande;
 pub(crate) mod evenement;
 pub(crate) mod evtx;
 pub(crate) mod fichiers;

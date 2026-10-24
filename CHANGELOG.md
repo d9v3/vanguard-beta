@@ -175,7 +175,12 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   événements : traces effacées et enregistrements retirés, service d'attaque, administrateur de plus, mot de passe
   deviné, Bureau à distance depuis Internet ou par un tunnel, autres identifiants, PowerShell malveillant, Defender
   désarmé, BITS, persistance WMI, politique d'audit réduite. Un journal absent, refusé, vide, muet, abîmé ou non
-  audité rend la règle « non vérifiée », jamais « rien vu ». La commande et la chronologie suivent.
+  audité rend la règle « non vérifiée », jamais « rien vu ». `vanguard journaux-windows [--dossier D] [--jours N]
+  [--json]` répond à « Que s'est-il passé ? » : le verdict de chaque règle, les alertes dans l'ordre du temps avec
+  compte, programme, adresse, journal et numéro, la période vraiment lue par journal et ce qui reste au-delà des
+  bornes ; sur ce Windows, ou sur un dossier de .evtx depuis n'importe quel système. Le rapport a sa section « Journaux
+  de Windows », CHRONOLOGIE.txt des traces place les alertes à leur heure, et une alerte qui n'est pas critique peut
+  être déclarée normale.
 - **Windows, deux correctifs vus dans un vrai Windows.** Le Wi-Fi d'un ordinateur sans carte Wi-Fi (bureau, machine virtuelle) est « sans objet » au lieu de « non vérifié » quand le service WLAN est arrêté. La liste des programmes à mettre à jour repasse par PowerShell quand winget, lancé directement, répond par une erreur sans tableau : elle disait « non vérifié » dans une machine virtuelle.
 - **Sécurité des dépendances.** crypto-bigint 0.7.6 (avis RUSTSEC-2026-0387 : des calculs censés prendre toujours le même temps n'y arrivaient pas), amené par YARA-X.
 - **Vérification continue remise au vert.** Le programme Windows réserve 8 Mio de pile (1 Mio d'origine avec MSVC : la version de mise au point débordait dès le démarrage) ; les journaux des tickets ne passent plus par Claude dans GitHub ; le fuzzing de nuit tourne enfin (cargo-fuzz installé à part, empreinte vérifiée) ; la compilation reproductible vérifie la garde des DLL avec un éditeur de liens assez récent.

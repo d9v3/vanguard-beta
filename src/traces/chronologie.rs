@@ -89,6 +89,8 @@ pub(crate) enum Genre {
     MenaceTraitee,
     #[cfg_attr(not(windows), allow(dead_code))]
     ProtectionCoupee,
+    /// Une alerte d'une règle `EVT-` (`journaux_windows`), à la date de son premier événement.
+    AlerteDesJournaux,
     // Comptes.
     #[cfg_attr(windows, allow(dead_code))]
     DemarrageOrdinateur,
@@ -152,6 +154,10 @@ impl Genre {
                 "Many programs, scripts or hidden files modified (folder and subfolders)",
             ),
             Genre::AlerteDeVanguard => ("Alerte de Vanguard", "Vanguard alert"),
+            Genre::AlerteDesJournaux => (
+                "ALERTE des journaux de Windows (règle EVT-)",
+                "ALERT from the Windows logs (EVT- rule)",
+            ),
             Genre::GesteDeVanguard => (
                 "Geste de Vanguard (blocage, quarantaine)",
                 "Vanguard action (block, quarantine)",
@@ -190,6 +196,7 @@ impl Genre {
             | Genre::FichiersGroupes
             | Genre::ProgrammesGroupes
             | Genre::AlerteDeVanguard
+            | Genre::AlerteDesJournaux
             | Genre::GesteDeVanguard => return None,
         })
     }
@@ -571,6 +578,16 @@ where
         par(Source::Demarrage),
         par(Source::Fichier)
     );
+    let alertes = evenements
+        .iter()
+        .filter(|e| e.genre == Genre::AlerteDesJournaux)
+        .count();
+    if alertes > 0 {
+        let _ = writeln!(
+            t,
+            "# Alertes des journaux de Windows (règles EVT-, vanguard journaux-windows) / Windows log alerts (EVT- rules, vanguard windows-logs) : {alertes}, marquées « ALERTE » / marked “ALERT”"
+        );
+    }
     if coupees > 0 {
         let _ = writeln!(
             t,

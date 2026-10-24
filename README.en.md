@@ -357,7 +357,10 @@ sshguard or CrowdSec already blocks the addresses that keep trying.
   the whole network).
 - Windows event logs, over the last 7 days: bursts of wrong passwords from the network (Remote Desktop, shares),
   security log cleared, accounts created, services installed from a temporary folder or that start an interpreter.
-  The security log can only be read as administrator: without that right, it is said.
+  The security log can only be read as administrator: without that right, it is said. “What happened?” (`vanguard
+  windows-logs`): the EVT- rules read by Vanguard itself, on this Windows or on a folder of .evtx from Linux or macOS
+  (disk mounted from the rescue drive), then the alerts in time order, with the period really read per log; included
+  in the report and in the evidence's CHRONOLOGIE.txt.
 - Antivirus: ClamAV (Linux, macOS) or Microsoft Defender (Windows), on the computer or on a chosen USB key / folder,
   with the tricks of USB worms (shortcut posing as a folder, autorun.inf, scripts).
 - Integrity of critical files (accounts, sudo, SSH, PAM, cron, services, autostart): BLAKE3 fingerprints, what changed
@@ -739,6 +742,7 @@ Each menu entry is also a command.
 | `vanguard disclose [--incident id] [--outil id] [--programme name] [--langue fr\|en] [--json] [--effacer]` | prepare a report for a vendor (MSRC, Google, Chrome, Mozilla, Apple, GHSA advisory, CERT/CC, CERT-FR, Vanguard): sorted first, a draft in the program's format, what is personal removed, written on this computer and shown in full; nothing is ever sent |
 | `vanguard watcher [on\|off]` | watcher (Linux 6.6 and later): programs started and connections closed, seen as they happen; `ransomware on\|off`: personal folders watched live against ransomware; off by default |
 | `vanguard protection [on\|off] [--for 1h\|4h] [--json]` | the state of each protection switch on one screen (`--json`: without changing anything); `on` or `off` acts on real-time protection |
+| `vanguard windows-logs [--folder D] [--days N] [--json]` | what happened? The EVT- rules on the Windows logs, of this computer (Windows) or of a folder of .evtx (any system: `winevt\Logs` of a mounted disk, folder of `troubleshoot evidence`): each rule's verdict (“not verified” and why when a log is missing), the alerts in time order with account, program and address, the period really read per log; 7 days by default (read-only) |
 | **9 Data and backups** | |
 | `vanguard copy-files [destination]` | copy my files to an external disk, checked copy |
 | `vanguard auto-backup [--undo]` | automatic backup to an external disk, with the system's tool |
@@ -781,7 +785,7 @@ Each menu entry is also a command.
 </details>
 
 **Language**: the system's (English or French). To force it: the Settings menu, or `VANGUARD_LANG=en` or
-`VANGUARD_LANG=fr` (the variable wins). The commands also keep their French names (`bilan`, `chercher`, `corriger`, `rapport`, `annuler`, `appareils`, `audit-reseau`, `surveillance`, `tableau-de-bord`, `dernieres-failles`, `sites-dangereux`, `veilleur`, `entretien`, `mises-a-jour`, `reparer`, `jeux`, `diagnostic`, `logiciels`, `nettoyer`, `optimiser`, `appris`, `test-connexion`, `listes-noires`, `canaux-wifi`, `cameras-cachees`, `objets-connectes`, `dns-rapide`, `wifi-public`, `integrite`, `pieges`, `memoire`, `isoler`, `fuite-courriel`, `fuite-mot-de-passe`, `mots-de-passe-navigateurs`, `connexions-sortantes`, `acces-a-distance`, `lien`, `verifier-fichier`, `courriel-suspect`, `logiciels-espions`, `logiciels-perimes`, `signaler`, `camera-micro`, `bilan-confidentialite`, `quarantaine`, `conteneurs`, `parametres`, `blocage`, `exporter`, `importer`, `nommer`, `lenteur`, `demarrage`, `fiche-ordinateur`, `copier-fichiers`, `verifier-copie`, `verifier-sauvegarde`, `verifier-cle`, `rapport-a-laisser`, `changements`, `evenements`, `sauvegarde-auto`, `raccourci`, `ordinateurs`, `se-mettre-a-jour`, `desinstaller`, `regles`, `autotest`, `depanner`, `verifier-moi`, `labo`).
+`VANGUARD_LANG=fr` (the variable wins). The commands also keep their French names (`bilan`, `chercher`, `corriger`, `rapport`, `annuler`, `appareils`, `audit-reseau`, `surveillance`, `tableau-de-bord`, `dernieres-failles`, `sites-dangereux`, `veilleur`, `entretien`, `mises-a-jour`, `reparer`, `jeux`, `diagnostic`, `logiciels`, `nettoyer`, `optimiser`, `appris`, `test-connexion`, `listes-noires`, `canaux-wifi`, `cameras-cachees`, `objets-connectes`, `dns-rapide`, `wifi-public`, `integrite`, `pieges`, `memoire`, `isoler`, `fuite-courriel`, `fuite-mot-de-passe`, `mots-de-passe-navigateurs`, `connexions-sortantes`, `acces-a-distance`, `lien`, `verifier-fichier`, `courriel-suspect`, `logiciels-espions`, `logiciels-perimes`, `signaler`, `camera-micro`, `bilan-confidentialite`, `quarantaine`, `conteneurs`, `parametres`, `blocage`, `exporter`, `importer`, `nommer`, `lenteur`, `demarrage`, `fiche-ordinateur`, `copier-fichiers`, `verifier-copie`, `verifier-sauvegarde`, `verifier-cle`, `rapport-a-laisser`, `changements`, `evenements`, `journaux-windows`, `sauvegarde-auto`, `raccourci`, `ordinateurs`, `se-mettre-a-jour`, `desinstaller`, `regles`, `autotest`, `depanner`, `verifier-moi`, `labo`).
 
 **Emojis**: in the old Windows console (command prompt or PowerShell outside Windows Terminal, common on Windows 10),
 which draws them badly and shifts the menus, 💡 and 🔧 become → and +. `VANGUARD_EMOJI=0` removes them everywhere,

@@ -1,6 +1,7 @@
 //! Les règles `EVT-` changées en constats et en couverture (`modele::resultat`), et leurs deux points d'entrée : un
 //! dossier de .evtx (Linux, macOS, Windows : journaux rapportés, `winevt\Logs` d'un disque monté) et l'ordinateur
-//! vivant (Windows). Sans écran : la commande, le menu et la chronologie viennent après (lot E4).
+//! vivant (Windows). Sans écran : la commande (`journaux_windows::commande`) et la chronologie
+//! (`journaux_windows::chronologie`) le reprennent.
 //!
 //! Chaque règle rend ses trouvailles (une alerte par objet), puis, si elle n'a pas tout lu, un « non vérifié » qui
 //! dit pourquoi ; « rien trouvé » seulement quand tout ce qu'elle cherche a été lu. Une alerte déclarée normale
@@ -46,12 +47,12 @@ pub(crate) struct Analyse {
     pub manques_source: Vec<String>,
 }
 
-fn texte(t: Texte) -> &'static str {
+pub(crate) fn texte(t: Texte) -> &'static str {
     if crate::langue::anglais() { t.1 } else { t.0 }
 }
 
 /// Une date de journal, à l'heure de l'ordinateur qui lit.
-fn date(d: DateTime<Utc>) -> String {
+pub(crate) fn date(d: DateTime<Utc>) -> String {
     d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string()
 }
 
@@ -364,7 +365,7 @@ pub(crate) fn cle_normale(regle: &str, objet: &str) -> String {
     format!("evenements|{regle}|{objet}")
 }
 
-fn niveau(g: Gravite) -> Niveau {
+pub(crate) fn niveau(g: Gravite) -> Niveau {
     match g {
         Gravite::Info => Niveau::Info,
         Gravite::Alerte => Niveau::Eleve,
@@ -384,7 +385,7 @@ fn journal_dit(source: &Source, journal: &str) -> String {
 }
 
 /// Un manque, dans la langue du moment, et sa raison typée.
-fn manque(source: &Source, m: &Manque) -> (String, Raison) {
+pub(crate) fn manque(source: &Source, m: &Manque) -> (String, Raison) {
     let ill = |t: &str| Raison::Illisible(t.to_string());
     match m {
         Manque::Absent(j) => (
@@ -513,7 +514,7 @@ fn manque(source: &Source, m: &Manque) -> (String, Raison) {
 }
 
 /// Le texte d'une réserve.
-fn reserve(r: Reserve) -> &'static str {
+pub(crate) fn reserve(r: Reserve) -> &'static str {
     match r {
         Reserve::MorceauAbime => crate::tr!(
             "vient d'un morceau abîmé du journal : un indice, pas une preuve",
@@ -538,8 +539,9 @@ fn reserve(r: Reserve) -> &'static str {
     }
 }
 
-/// Le message d'une trouvaille.
-fn message(t: &Trouvaille) -> String {
+/// Ce que dit une trouvaille, sans ses dates : pourquoi, puis ses détails (compte, programme, adresse), venus du
+/// journal et nettoyés (`nom_sans_piege` : ni séquence de terminal ni saut de ligne, coupés).
+pub(crate) fn corps(t: &Trouvaille) -> String {
     let mut m = texte(t.pourquoi).to_string();
     let details: Vec<String> = t
         .details
@@ -550,6 +552,12 @@ fn message(t: &Trouvaille) -> String {
         m.push_str(" : ");
         m.push_str(&details.join(", "));
     }
+    m
+}
+
+/// Le message d'une trouvaille.
+fn message(t: &Trouvaille) -> String {
+    let mut m = corps(t);
     m.push_str(&match (t.premier, t.dernier) {
         (Some(p), Some(d)) if t.nombre > 1 => crate::trf!(
             " ({} fois, du {} au {})",
@@ -599,7 +607,18 @@ fn lu(j: &Jugement) -> String {
 
 /// Les constats d'une analyse, et sa couverture. `est_normale` : l'alerte de cette clé est-elle déclarée normale ?
 pub(crate) fn constats(a: &Analyse, est_normale: &dyn Fn(&str) -> bool) -> (Vec<Constat>, Couverture) {
+    let (constats, _, couverture) = constats_dates(a, est_normale);
+    (constats, couverture)
+}
+
+/// Comme `constats`, avec la date de chaque constat (celle du premier événement d'une alerte ; rien pour les autres),
+/// dans le même ordre : le rapport remet les alertes dans l'ordre du temps.
+fn constats_dates(
+    a: &Analyse,
+    est_normale: &dyn Fn(&str) -> bool,
+) -> (Vec<Constat>, Vec<Option<DateTime<Utc>>>, Couverture) {
     let mut constats = Vec::new();
+    let mut dates = Vec::new();
     let mut couverture = Couverture::default();
     for m in &a.manques_source {
         couverture.non_verifies.push(m.clone());
@@ -616,6 +635,7 @@ pub(crate) fn constats(a: &Analyse, est_normale: &dyn Fn(&str) -> bool) -> (Vec<
             let mut c = alerte(CAT, niveau(t.gravite), message(t)).avec_objet(Objet::de("evt", &t.objet));
             c.regle = r.id;
             constats.push(c);
+            dates.push(t.premier);
         }
         if j.au_dela > 0 {
             let mut c = alerte(
@@ -631,6 +651,7 @@ pub(crate) fn constats(a: &Analyse, est_normale: &dyn Fn(&str) -> bool) -> (Vec<
             .avec_objet(Objet::de("evt", "au-dela"));
             c.regle = r.id;
             constats.push(c);
+            dates.push(None);
         }
         let sujet = texte(r.sujet);
         let mut c = if j.sans_objet && j.manques.is_empty() {
@@ -680,7 +701,7 @@ pub(crate) fn constats(a: &Analyse, est_normale: &dyn Fn(&str) -> bool) -> (Vec<
             let deja = if j.trouvailles.is_empty() {
                 String::new()
             } else {
-                crate::tr!(" (les alertes ci-dessus restent)", " (the alerts above stand)").to_string()
+                crate::tr!(" (ses alertes restent)", " (its alerts stand)").to_string()
             };
             impossible_par(
                 CAT,
@@ -694,8 +715,9 @@ pub(crate) fn constats(a: &Analyse, est_normale: &dyn Fn(&str) -> bool) -> (Vec<
         };
         c.regle = r.id;
         constats.push(c.avec_objet(Objet::de("evt", "couverture")));
+        dates.push(None);
     }
-    (constats, couverture)
+    (constats, dates, couverture)
 }
 
 /// Le résultat commun d'une analyse commencée à `debut`.
@@ -704,6 +726,10 @@ pub(crate) fn resultat(
     debut: (DateTime<Utc>, std::time::Instant),
     est_normale: &dyn Fn(&str) -> bool,
 ) -> Resultat {
-    let (constats, couverture) = constats(a, est_normale);
-    Resultat::nouveau(ID, debut, &constats, couverture)
+    let (constats, dates, couverture) = constats_dates(a, est_normale);
+    let mut r = Resultat::nouveau(ID, debut, &constats, couverture);
+    for (c, d) in r.constats.iter_mut().zip(dates) {
+        c.date = d.map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string());
+    }
+    r
 }

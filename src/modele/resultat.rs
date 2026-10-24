@@ -85,6 +85,10 @@ pub(crate) struct ConstatEcrit {
     /// Une correction est proposée (montrée et confirmée ailleurs).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub corrigeable: bool,
+    /// « AAAA-MM-JJTHH:MM:SSZ » : le moment de ce que relève le constat, quand il en a un (le premier événement d'une
+    /// alerte des journaux de Windows), pour remettre les alertes dans l'ordre du temps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
 }
 
 /// Un texte venu de l'extérieur (nom de pièce jointe, de réseau, de programme), prêt à écrire dans un résultat :
@@ -138,6 +142,7 @@ impl From<&Constat> for ConstatEcrit {
             // restent (mise en forme de Vanguard) ; les autres caractères piégés deviennent « � ».
             message: sans_piege(&c.message, true),
             corrigeable: c.correctif.is_some(),
+            date: None,
         }
     }
 }
@@ -156,6 +161,10 @@ pub(crate) struct Couverture {
 pub(crate) struct Resultat {
     /// L'identifiant de l'outil (`registre::OUTILS`, « PRO-ESP-001 »).
     pub outil: String,
+    /// Le dossier analysé quand ce n'est pas cet ordinateur (journaux .evtx rapportés, disque monté) : le rapport le
+    /// dit, au lieu de prêter ses alertes à cet ordinateur. Absent : cet ordinateur.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dossier: Option<String>,
     pub schema: u16,
     /// « AAAA-MM-JJTHH:MM:SSZ ».
     pub debut: String,
@@ -184,6 +193,7 @@ impl Resultat {
         };
         Resultat {
             outil: outil.to_string(),
+            dossier: None,
             schema: SCHEMA,
             debut: debut.0.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
             duree_ms: u64::try_from(debut.1.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -289,6 +299,7 @@ fn derniers_dans(dossier: &std::path::Path) -> Vec<Resultat> {
             // Rien de ce qu'il dit n'est repris : seulement la date, s'il en a une, et le non vérifié.
             Lecture::Falsifie(o) => Some(Resultat {
                 outil: (*id).to_string(),
+                dossier: None,
                 schema: SCHEMA,
                 debut: o.and_then(|o| relu(&o, id)).map(|r| r.debut).unwrap_or_default(),
                 duree_ms: 0,
@@ -446,6 +457,7 @@ mod tests {
         crate::sceau::ecrire_dans(&d, fichier("PRO-ESP-001").unwrap(), b"{abime").unwrap();
         let autre = Resultat {
             outil: "PRO-ESP-001".into(),
+            dossier: None,
             ..r.clone()
         };
         crate::sceau::ecrire_dans(&d, fichier("PRO-COU-001").unwrap(), json(&autre).as_bytes()).unwrap();
@@ -544,6 +556,7 @@ mod tests {
             "journaux_windows/regles/resultat.rs",
             "journaux_windows/regles/moteur.rs",
             "journaux_windows/regles/jeu.rs",
+            "journaux_windows/chronologie.rs",
         ] {
             let texte = std::fs::read_to_string(racine.join(f)).unwrap();
             let code = texte.find("#[cfg(test)]\nmod ").map_or(texte.as_str(), |t| &texte[..t]);
@@ -573,6 +586,7 @@ mod tests {
                     raison,
                     message,
                     corrigeable,
+                    date: None,
                 },
             )
     }
@@ -584,6 +598,7 @@ mod tests {
                         verifies in any::<u32>(), manques in proptest::collection::vec("[a-z ]{1,20}", 0..3)) {
             let r = Resultat {
                 outil: "PRO-ESP-001".into(),
+                dossier: None,
                 schema: SCHEMA,
                 debut: "2026-10-23T10:00:00Z".into(),
                 duree_ms: 12,

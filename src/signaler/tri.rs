@@ -163,6 +163,7 @@ mod tests {
         let probleme = etat == "probleme";
         Sujet::Examen(Box::new(Resultat {
             outil: outil.into(),
+            dossier: None,
             schema: 1,
             debut: "2026-10-23T10:00:00Z".into(),
             duree_ms: 1,
@@ -179,6 +180,7 @@ mod tests {
                 raison: None,
                 message: message.into(),
                 corrigeable: false,
+                date: None,
             }],
         }))
     }
