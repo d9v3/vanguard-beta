@@ -450,18 +450,34 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
 /// Les comptes (getpwent) et les sessions ouvertes (getutxent) lus par Vanguard, à côté de dscl et who.
 fn comptes_natifs(f: &mut Feuille) {
     f.section("Lu par Vanguard : comptes (getpwent) / Read by Vanguard: accounts (getpwent)");
-    let comptes = crate::machine::macos::noyau::comptes();
+    let (comptes, comptes_coupes) = crate::machine::macos::noyau::comptes();
     let mut t = String::new();
     for (nom, uid) in &comptes {
         let _ = writeln!(t, "{nom}\t{uid}");
     }
     f.ajouter(if t.is_empty() { "(illisible / unreadable)" } else { &t });
+    coupee(f, comptes_coupes, Bi::new("Comptes (getpwent)", "Accounts (getpwent)"));
     f.section("Lu par Vanguard : sessions ouvertes (getutxent) / Read by Vanguard: open sessions (getutxent)");
     let mut t = String::new();
-    for s in crate::machine::macos::noyau::sessions_ouvertes() {
+    let (sessions, sessions_coupees) = crate::machine::macos::noyau::sessions_ouvertes();
+    for s in sessions {
         let _ = writeln!(t, "{}\t{}\t{}\t{}", s.compte, s.ligne, s.depuis, s.hote);
     }
     f.ajouter(if t.is_empty() { "(aucune / none)" } else { &t });
+    coupee(
+        f,
+        sessions_coupees,
+        Bi::new("Sessions ouvertes (getutxent)", "Open sessions (getutxent)"),
+    );
+}
+
+/// Une liste coupée à sa borne : dit dans la feuille et compté parmi les manques, jamais prise pour complète.
+fn coupee(f: &mut Feuille, coupee: bool, quoi: Bi) {
+    if coupee {
+        let raison = Raison::Entrees(crate::machine::macos::noyau::ENTREES_MAX);
+        f.ajouter(&raison.note());
+        f.manques.push(Manque { quoi, raison });
+    }
 }
 
 /// Le journal unifié du dernier jour (log show est lent : deux minutes au plus, et seule la fin, la plus récente, est

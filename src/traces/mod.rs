@@ -113,7 +113,6 @@ pub(crate) enum Raison {
     /// Tant de lignes de plus, au-delà de la borne de la chronologie : pas gardées.
     Lignes(usize),
     /// Coupé à tant d'entrées, les plus récentes gardées.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
     Entrees(usize),
     /// Vanguard ne l'a lu que sur cette étendue, par choix (« 10 Mo », la fin d'un fichier ; « 1 jour ») : le reste
     /// existe peut-être.

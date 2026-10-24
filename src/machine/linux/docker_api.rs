@@ -23,10 +23,13 @@ pub(crate) fn hote_par_defaut() -> bool {
     let config = variable("DOCKER_CONFIG")
         .map(PathBuf::from)
         .or_else(|| crate::socle::personnel::dossier_personnel().map(|m| m.join(".docker")));
-    let Some(config) = config else {
-        return true;
-    };
-    match std::fs::read_to_string(config.join("config.json")) {
+    config.is_none_or(|c| config_par_defaut(&c))
+}
+
+/// Le config.json du dossier `config` laisse-t-il le contexte par défaut ? Absent : oui. Lu comme un simple fichier,
+/// borné : un tube nommé posé à sa place figeait la lecture ; illisible, c'est « on ne sait pas ».
+fn config_par_defaut(config: &std::path::Path) -> bool {
+    match crate::socle::lire_texte_ordinaire(&config.join("config.json"), 1 << 20) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
         Err(_) => false,
         Ok(t) => contexte_par_defaut(&t),
@@ -135,6 +138,22 @@ pub(crate) fn images_sur(prise: &Path) -> Result<Vec<String>, Echec> {
 mod tests {
     use super::super::http_unix::essais::faux_demon;
     use super::*;
+
+    /// Un tube nommé à la place de config.json : la lecture ne se fige pas, et le démon n'est pas dit « par défaut ».
+    #[test]
+    fn config_en_tube_ne_fige_pas() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        assert!(config_par_defaut(&d));
+        let nom = std::ffi::CString::new(d.join("config.json").to_string_lossy().as_bytes()).unwrap();
+        // SAFETY : chaîne C terminée par un zéro, à nous ; mkfifo ne la garde pas.
+        assert_eq!(unsafe { libc::mkfifo(nom.as_ptr(), 0o600) }, 0);
+        assert!(!config_par_defaut(&d));
+        let _ = std::fs::remove_dir_all(&d);
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        std::fs::write(d.join("config.json"), br#"{"currentContext":"distant"}"#).unwrap();
+        assert!(!config_par_defaut(&d));
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     fn reponse(json: &str) -> Vec<u8> {
         format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{json}", json.len()).into_bytes()

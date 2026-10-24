@@ -178,8 +178,8 @@ pub(crate) fn procedures_automatiques(source: &str, nom_module: &str) -> Vec<Str
     // Un témoin en minuscules : une source de cent mille procédures ne coûte pas leur carré.
     let mut vues = std::collections::HashSet::new();
     let module_auto = AUTO_WORD.contains(&nom_module.to_ascii_lowercase().as_str());
-    for ligne in source.lines() {
-        let Some(nom) = procedure_declaree(ligne) else {
+    for ligne in lignes_logiques(source) {
+        let Some(nom) = procedure_declaree(&ligne) else {
             continue;
         };
         let bas = nom.to_ascii_lowercase();
@@ -201,10 +201,34 @@ pub(crate) fn procedures_automatiques(source: &str, nom_module: &str) -> Vec<Str
 
 const PROCEDURES_MAX: usize = 64;
 
+/// Les lignes de `source` comme VBA les lit : fins de ligne CR LF, LF ou CR seul (que `str::lines` ne coupe pas), et
+/// une ligne qui finit par « _ » précédé d'un blanc (continuation) jointe à la suivante. « Sub _ » puis « AutoOpen() »
+/// à la ligne déclare bien AutoOpen.
+fn lignes_logiques(source: &str) -> Vec<String> {
+    let mut lignes = Vec::new();
+    let mut courante = String::new();
+    for physique in source.replace("\r\n", "\n").split(['\r', '\n']) {
+        let sans_fin = physique.trim_end();
+        if let Some(debut) = sans_fin.strip_suffix('_')
+            && (debut.is_empty() || debut.ends_with(char::is_whitespace))
+        {
+            courante.push_str(debut);
+            courante.push(' ');
+            continue;
+        }
+        courante.push_str(physique);
+        lignes.push(std::mem::take(&mut courante));
+    }
+    if !courante.is_empty() {
+        lignes.push(courante);
+    }
+    lignes
+}
+
 /// Une source sans code : rien que des lignes « Attribute … », des commentaires et des blancs (ce qui reste d'un
 /// module dont la source a été effacée, alors que son code compilé, le p-code, s'exécute quand même).
 pub(crate) fn source_sans_code(source: &str) -> bool {
-    source.lines().all(|l| {
+    lignes_logiques(source).iter().all(|l| {
         let l = l.trim();
         l.is_empty()
             || l.starts_with('\'')

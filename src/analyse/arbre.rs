@@ -333,6 +333,7 @@ impl Etat<'_> {
             Type::Cfb => self.cfb(i, octets),
             Type::Lnk => overlay = self.lnk(i, octets),
             Type::Image => overlay = self.image(i, octets),
+            Type::Media | Type::Police | Type::Sqlite | Type::Wasm => overlay = self.archive_cachee(i, octets),
             Type::Script(_) | Type::Texte => self.texte(i, octets),
             Type::Inconnu => self.manque(i, Raison::FormatInconnu),
             t if t.non_lu() => self.manque(i, Raison::FormatNonLu(t)),
@@ -356,15 +357,32 @@ impl Etat<'_> {
         }
     }
 
-    /// Une image PNG : ses morceaux jusqu'à IEND ; ce qui suit est analysé à part.
+    /// Une image : jusqu'à sa fin (`nature::fin_image`) ; ce qui suit est analysé à part. Sans fin trouvée, l'image
+    /// n'est pas dite lue en entière, et une archive RAR ou 7z en son sein est quand même analysée.
     fn image(&mut self, i: usize, octets: &[u8]) -> Option<u64> {
-        let fin = nature::fin_png(octets)?;
+        let Some(fin) = nature::fin_image(octets) else {
+            self.manque(i, Raison::FinIntrouvable);
+            return self.archive_cachee(i, octets);
+        };
+        // Dans l'image même : sa fin est écrite par le fichier (taille d'un BMP, répertoire d'un ICO), et un morceau
+        // privé d'un PNG ou un commentaire d'un JPEG peut porter une archive qu'un extracteur ouvrirait.
+        self.archive_cachee(i, &octets[..fin]);
         if fin >= octets.len() {
             return None;
         }
         let r = fin as u64..octets.len() as u64;
         self.fait(i, Fait::Overlay(r.end - r.start));
         self.morceau(i, octets, r.clone(), "#apres-image", Origine::Overlay);
+        Some(r.start)
+    }
+
+    /// Une archive RAR, 7z, CAB ou xz cachée dans un format inerte (ou dans une image) : analysée à part (dite non
+    /// lue par son propre type), depuis sa signature.
+    fn archive_cachee(&mut self, i: usize, octets: &[u8]) -> Option<u64> {
+        let debut = nature::archive_cachee(octets)?;
+        let r = debut as u64..octets.len() as u64;
+        self.fait(i, Fait::Overlay(r.end - r.start));
+        self.morceau(i, octets, r.clone(), "#archive-cachee", Origine::Overlay);
         Some(r.start)
     }
 
@@ -554,7 +572,9 @@ impl Etat<'_> {
         // Le type précis, par les noms d'entrées.
         let noms: Vec<String> = p.entrees.iter().map(|v| nom_zip(&v.nom, v.utf8)).collect();
         let a = |n: &str| noms.iter().any(|x| x == n);
-        self.parties[i].type_ = if a("[Content_Types].xml") {
+        // Les noms des parties d'un paquet OPC ne tiennent pas compte de la casse (ECMA-376, partie 2) : Office ouvre
+        // un « [content_types].xml » comme l'autre.
+        self.parties[i].type_ = if noms.iter().any(|x| x.eq_ignore_ascii_case("[Content_Types].xml")) {
             Type::Ooxml
         } else if a("mimetype") && noms.iter().any(|n| n.starts_with("META-INF/")) {
             Type::OpenDocument
@@ -572,10 +592,12 @@ impl Etat<'_> {
         for n in &noms {
             *vus_casse.entry(n.to_lowercase()).or_default() += 1;
         }
-        // Les données déjà lues : même en-tête local, même méthode, mêmes tailles et drapeaux de chiffrement (une
-        // entrée qui désigne le même en-tête avec une autre méthode ou une autre taille se lit autrement : relue).
-        let mut locaux: std::collections::HashMap<(usize, u16, u64, u64, u16), String> =
-            std::collections::HashMap::new();
+        // Les données déjà lues : même en-tête local, même méthode, même taille compressée et mêmes drapeaux de
+        // chiffrement (une entrée qui désigne le même en-tête avec une autre méthode se lit autrement : relue). La
+        // taille annoncée n'y est pas : elle ne change rien à la lecture, et quatre entrées de tailles différentes
+        // sur les mêmes données coûtaient quatre décompressions. Chaque lecture compte ses octets compressés dans le
+        // travail (`examines`) : varier la taille compressée pour échapper au témoin épuise cette borne.
+        let mut locaux: std::collections::HashMap<(usize, u16, u64, u16), String> = std::collections::HashMap::new();
         for (vue, nom) in p.entrees.iter().zip(noms) {
             if self.debut.elapsed() > self.bornes.delai {
                 self.manque(i, Raison::Delai);
@@ -606,7 +628,7 @@ impl Etat<'_> {
             if nom.ends_with('/') && vue.taille == 0 && vue.compresse == 0 {
                 continue;
             }
-            let cle = (vue.local, vue.methode, vue.compresse, vue.taille, vue.drapeaux & 0x41);
+            let cle = (vue.local, vue.methode, vue.compresse, vue.drapeaux & 0x41);
             if let Some(autre) = locaux.get(&cle) {
                 faits.push(Fait::DonneesPartagees(autre.clone()));
                 self.non_lue(Some(i), nom, origine, vue.taille, faits, Vec::new());
@@ -624,7 +646,13 @@ impl Etat<'_> {
                     continue;
                 }
             };
-            match zip::extraire(octets, vue, limite) {
+            let compresses = vue.donnees.as_ref().map_or(0, |d| (d.end - d.start) as u64);
+            if self.examines.saturating_add(compresses) > self.bornes.examines {
+                self.non_lue(Some(i), nom, origine, vue.taille, faits, vec![Raison::Travail]);
+                continue;
+            }
+            self.examines = self.examines.saturating_add(compresses);
+            match zip::extraire_avant(octets, vue, limite, Some(self.debut + self.bornes.delai)) {
                 Err(refus) => {
                     let raison = match refus {
                         zip::Refus::Chiffree => Raison::Chiffre,
@@ -641,6 +669,7 @@ impl Etat<'_> {
                         deflate::Fin::Limite => manques.push(self.raison_de_limite(limite)),
                         deflate::Fin::Coupe => manques.push(Raison::Tronque),
                         deflate::Fin::Abime => manques.push(Raison::Illisible("flux deflate")),
+                        deflate::Fin::Delai => manques.push(Raison::Delai),
                     }
                     if x.crc_juste == Some(false) {
                         faits.push(Fait::CrcFaux);
@@ -668,8 +697,8 @@ impl Etat<'_> {
         if !matches!(self.parties[i].type_, Type::Ooxml) {
             return;
         }
-        if nom == "[Content_Types].xml" {
-            let t = office::types_de_contenu(&String::from_utf8_lossy(contenu));
+        if nom.eq_ignore_ascii_case("[Content_Types].xml") {
+            let t = office::types_de_contenu(&office::texte_xml(contenu));
             if t.macros_xlm {
                 self.fait(i, Fait::MacrosXlm(String::new()));
             }
@@ -677,8 +706,12 @@ impl Etat<'_> {
                 self.fait(i, Fait::ActiveX);
             }
         } else if nom.to_ascii_lowercase().ends_with(".rels") {
-            for cible in office::relations_externes(&String::from_utf8_lossy(contenu)) {
+            let (cibles, coupe) = office::relations_externes_bornees(&office::texte_xml(contenu));
+            for cible in cibles {
                 self.fait(i, Fait::RelationExterne(cible));
+            }
+            if coupe {
+                self.manque(i, Raison::Illisible("relations OOXML trop nombreuses"));
             }
         }
     }
@@ -746,7 +779,11 @@ impl Etat<'_> {
                 manques.push(Raison::Illisible("en-tête gzip"));
                 break;
             };
-            let lu = deflate::inflater(&octets[flux..], limite - contenu.len());
+            let lu = deflate::inflater_avant(
+                &octets[flux..],
+                limite - contenu.len(),
+                Some(self.debut + self.bornes.delai),
+            );
             let fin = flux + lu.lus;
             if lu.fin == deflate::Fin::Complet {
                 let crc = octets
@@ -769,6 +806,10 @@ impl Etat<'_> {
                 }
                 deflate::Fin::Abime => {
                     manques.push(Raison::Illisible("flux deflate"));
+                    break;
+                }
+                deflate::Fin::Delai => {
+                    manques.push(Raison::Delai);
                     break;
                 }
             }
@@ -1134,10 +1175,15 @@ impl Etat<'_> {
             Some(_) => manques.push(Raison::SourceVbaIllisible),
         }
         let source = super::lecture::latin1_ou_utf8(&d.contenu);
-        // Une source sans code (rien que ses lignes « Attribute ») derrière du code compilé (le flux en a avant
-        // `decalage`) : ce code s'exécute quand même, et n'est pas décodé ici.
-        if decalage > 0 && vba::source_sans_code(&source) {
-            manques.push(Raison::SourceVbaIllisible);
+        // Du code compilé (le flux en a avant `decalage`, le p-code) : c'est lui qu'Office exécute quand sa version
+        // correspond, et il n'est pas décodé ici ; rien ne prouve que la source lue lui corresponde (« VBA
+        // stomping » : une source leurre, un p-code malveillant). Une source sans code du tout (rien que ses lignes
+        // « Attribute ») est dite à part.
+        if decalage > 0 {
+            manques.push(Raison::PcodeNonLu);
+            if vba::source_sans_code(&source) {
+                manques.push(Raison::SourceVbaIllisible);
+            }
         }
         let faits: Vec<Fait> = vba::procedures_automatiques(&source, nom_module)
             .into_iter()

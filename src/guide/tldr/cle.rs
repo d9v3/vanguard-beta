@@ -14,8 +14,12 @@ use super::{ADRESSE, LANGUES, TAILLE_ARCHIVE, archive, nom_d_archive};
 use crate::archives::zip::{self, Defaut};
 use crate::ui::*;
 
-/// Une archive de la clé plus jeune est gardée telle quelle : le projet refait les siennes chaque jour.
+/// Une archive intacte de la clé plus jeune est gardée : le projet refait les siennes chaque jour.
 const UN_JOUR: Duration = Duration::from_hours(24);
+
+/// L'avance tolérée sur l'horloge : FAT arrondit les dates à 2 s, et deux horloges ne s'accordent jamais tout à fait.
+/// Au-delà, une date dans le futur est suspecte.
+const MARGE_FUTUR: Duration = Duration::from_mins(5);
 
 /// Les bornes du contrôle, jugées sur les tailles annoncées avant toute décompression : une entrée plus grosse n'est
 /// pas une page, et quelques Mo de deflate pourraient sinon en annoncer des Go à recalculer. Autant d'entrées que le
@@ -53,6 +57,11 @@ impl Refus {
                 "entry {n} encrypted or of an unknown method"
             ),
             Refus::Abimee(Defaut::Crc(n)) => trf!("CRC faux à l'entrée {n}", "wrong CRC at entry {n}"),
+            Refus::Abimee(Defaut::Delai) => tr!(
+                "trop longue à décompresser (blocs vides)",
+                "too slow to decompress (empty blocks)"
+            )
+            .to_string(),
             Refus::TropPeu(pages, minimum) => trf!(
                 "{pages} pages, moins de {minimum}",
                 "{pages} pages, fewer than {minimum}"
@@ -111,11 +120,12 @@ fn retirer_les_restes(dossier: &Path) {
     }
 }
 
-/// Met à jour les archives de `dossier` (celui de la clé) : pour chaque langue, une archive de moins d'un jour est
-/// gardée ; sinon, celle téléchargée si elle est intacte ; sinon, sans Internet, la copie de cet ordinateur (`locale`)
-/// si elle est plus récente et intacte. Une page d'erreur ou une archive tronquée ne remplace jamais la bonne. Une
-/// copie qui échoue laisse la clé avec son archive, et l'autre langue est quand même essayée. `false` : une copie a
-/// échoué.
+/// Met à jour les archives de `dossier` (celui de la clé) : pour chaque langue, une archive intacte de moins d'un jour
+/// est gardée ; sinon, celle téléchargée si elle est intacte ; sinon, sans Internet, la copie de cet ordinateur
+/// (`locale`) si elle est intacte et plus récente que celle de la clé (ou si celle de la clé est refusée : abîmée,
+/// datée dans le futur). Une archive abîmée que rien ne remplace est retirée. Une page d'erreur ou une archive
+/// tronquée ne remplace jamais la bonne. Une copie qui échoue laisse la clé avec son archive, et l'autre langue est
+/// quand même essayée. `false` : une copie a échoué.
 fn mettre_a_jour(
     dossier: &Path,
     locale: impl Fn(&str) -> PathBuf,
@@ -137,13 +147,45 @@ fn mettre_a_jour(
     let mut reussi = true;
     for langue in LANGUES {
         let fin = dossier.join(nom_d_archive(langue));
-        // Une date dans le futur ne vaut rien (campagne d'attaque n° 3) : jugée fraîche, une archive plantée avec la
-        // date de 2099 n'était jamais remplacée, ni par le téléchargement ni par la copie de cet ordinateur.
-        let sur_la_cle = date_de(&fin).filter(|d| d.elapsed().is_ok());
-        if sur_la_cle.is_some_and(|d| d.elapsed().is_ok_and(|age| age < UN_JOUR)) {
-            continue;
-        }
         let minimum = minimum(langue);
+        // L'archive de la clé est contrôlée comme une autre : un ordinateur piégé où la clé a été branchée a pu y
+        // poser une archive « fraîche » qui fige le guide ; le déploiement la gardait sans la relire, puis
+        // l'inscrivait au manifeste. Une date dans le futur n'est pas fraîche : elle est suspecte, et ne sert pas de
+        // référence (elle ferait refuser toute copie plus ancienne qu'elle).
+        let sur_la_cle = date_de(&fin).map(|date| {
+            let futur = date
+                .duration_since(SystemTime::now())
+                .is_ok_and(|ecart| ecart > MARGE_FUTUR);
+            let jugee = lire_archive(&fin).map_or(Err(None), |o| intacte(&o, minimum).map(|_| ()).map_err(Some));
+            (date, futur, jugee)
+        });
+        let reference = match &sur_la_cle {
+            Some((date, false, Ok(()))) => {
+                if date.elapsed().is_ok_and(|age| age < UN_JOUR) {
+                    continue;
+                }
+                Some(*date)
+            }
+            Some((_, futur, jugee)) => {
+                let raison = match (futur, jugee) {
+                    (true, _) => tr!("datée dans le futur", "dated in the future").to_string(),
+                    (false, Err(Some(r))) => r.texte(),
+                    (false, _) => tr!("illisible", "unreadable").to_string(),
+                };
+                eprintln!(
+                    "{}",
+                    trf!(
+                        "tldr-pages ({langue}) : archive de la clé refusée ({raison}).",
+                        "tldr-pages ({langue}): key archive refused ({raison})."
+                    )
+                );
+                None
+            }
+            None => None,
+        };
+        // Seule une archive qui n'est pas intacte est retirée faute de remplaçante : une archive intacte datée dans le
+        // futur (l'horloge de cet ordinateur en retard) n'est que privée de son rôle de référence.
+        let refusee = matches!(sur_la_cle, Some((_, _, Err(_))));
         // Une archive reçue mais refusée le dit : le script d'avant la taisait.
         let recue = telecharger(langue).filter(|o| match intacte(o, minimum) {
             Ok(_) => true,
@@ -161,11 +203,34 @@ fn mettre_a_jour(
         });
         let source = recue.map(|o| (o, None)).or_else(|| {
             let chemin = locale(langue);
-            let date = date_de(&chemin).filter(|d| sur_la_cle.is_none_or(|c| d > &c))?;
+            let date = date_de(&chemin).filter(|d| reference.is_none_or(|c| d > &c))?;
             let octets = lire_archive(&chemin).filter(|o| intacte(o, minimum).is_ok())?;
             Some((octets, Some(date)))
         });
         let Some((octets, date)) = source else {
+            // Rien pour la remplacer : une archive refusée ne reste pas sur la clé, où le guide la lirait et où le
+            // manifeste l'inscrirait.
+            if refusee {
+                if std::fs::remove_file(&fin).is_ok() {
+                    eprintln!(
+                        "{}",
+                        trf!(
+                            "tldr-pages ({langue}) : rien à copier, l'archive refusée est retirée de la clé.",
+                            "tldr-pages ({langue}): nothing to copy, the refused archive is removed from the key."
+                        )
+                    );
+                } else {
+                    eprintln!(
+                        "{}",
+                        trf!(
+                            "tldr-pages ({langue}) : l'archive refusée n'a pas pu être retirée de la clé.",
+                            "tldr-pages ({langue}): the refused archive could not be removed from the key."
+                        )
+                    );
+                    reussi = false;
+                }
+                continue;
+            }
             eprintln!(
                 "{}",
                 trf!(
@@ -311,11 +376,15 @@ mod tests {
     }
 
     #[test]
-    fn archive_fraiche_de_la_cle_pas_touchee() {
+    fn archive_fraiche_et_intacte_de_la_cle_pas_touchee() {
         let d = dossier_d_essai();
         let cle = d.join("cle");
         for l in LANGUES {
-            ecrire_date(&cle.join(nom_d_archive(l)), b"ancienne", il_y_a(2));
+            ecrire_date(
+                &cle.join(nom_d_archive(l)),
+                &archive_de(minimum(l), "fraiche"),
+                il_y_a(2),
+            );
         }
         let appels = Cell::new(0);
         let local = d.join("local");
@@ -329,7 +398,52 @@ mod tests {
             POSER
         ));
         assert_eq!(appels.get(), 0);
-        assert_eq!(std::fs::read(cle.join("tldr-pages.en.zip")).unwrap(), b"ancienne");
+        assert_eq!(
+            std::fs::read(cle.join("tldr-pages.en.zip")).unwrap(),
+            archive_de(5000, "fraiche")
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Une archive « fraîche » posée sur la clé par un ordinateur piégé : abîmée (ou pas un zip), ou datée dans le
+    /// futur. Elle était gardée sans être relue ; elle est contrôlée, refusée, remplacée par une archive intacte
+    /// (même plus ancienne qu'elle), ou retirée si rien ne la remplace.
+    #[test]
+    fn archive_fraiche_abimee_ou_du_futur_refusee() {
+        let d = dossier_d_essai();
+        let (cle, local) = (d.join("cle"), d.join("local"));
+        // Anglais : pas un zip, d'il y a deux heures ; une copie locale intacte de 30 h la remplace.
+        ecrire_date(&cle.join("tldr-pages.en.zip"), b"pas un zip", il_y_a(2));
+        let anglais = archive_de(5000, "locale");
+        ecrire_date(&local.join("tldr-pages.en.zip"), &anglais, il_y_a(30));
+        // Français : intact mais daté d'une semaine dans le futur, rien pour le remplacer : refusé comme référence,
+        // gardé (une horloge en retard ne fait pas perdre une bonne archive) ; abîmé et sans remplaçante : retiré.
+        let futur = SystemTime::now() + Duration::from_hours(7 * 24);
+        ecrire_date(&cle.join("tldr-pages.fr.zip"), &archive_de(500, "futur"), futur);
+        let appels = Cell::new(0);
+        assert!(mettre_a_jour(
+            &cle,
+            |l| local.join(nom_d_archive(l)),
+            |_| {
+                appels.set(appels.get() + 1);
+                None
+            },
+            POSER
+        ));
+        assert_eq!(
+            appels.get(),
+            2,
+            "les deux refusées : un téléchargement essayé pour chacune"
+        );
+        assert_eq!(std::fs::read(cle.join("tldr-pages.en.zip")).unwrap(), anglais);
+        assert_eq!(
+            std::fs::read(cle.join("tldr-pages.fr.zip")).unwrap(),
+            archive_de(500, "futur")
+        );
+        // Abîmée, fraîche, sans remplaçante : retirée.
+        ecrire_date(&cle.join("tldr-pages.fr.zip"), b"pas un zip", il_y_a(1));
+        assert!(mettre_a_jour(&cle, |l| local.join(nom_d_archive(l)), |_| None, POSER));
+        assert!(!cle.join("tldr-pages.fr.zip").exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -395,11 +509,17 @@ mod tests {
                 &archive_de(minimum(l), "locale"),
                 il_y_a(200),
             );
-            ecrire_date(&cle.join(nom_d_archive(l)), b"de la cle", il_y_a(100));
+            ecrire_date(&cle.join(nom_d_archive(l)), &archive_de(minimum(l), "cle"), il_y_a(100));
         }
         assert!(mettre_a_jour(&cle, |l| local.join(nom_d_archive(l)), |_| None, POSER));
-        assert_eq!(std::fs::read(cle.join("tldr-pages.en.zip")).unwrap(), b"de la cle");
-        assert_eq!(std::fs::read(cle.join("tldr-pages.fr.zip")).unwrap(), b"de la cle");
+        assert_eq!(
+            std::fs::read(cle.join("tldr-pages.en.zip")).unwrap(),
+            archive_de(5000, "cle")
+        );
+        assert_eq!(
+            std::fs::read(cle.join("tldr-pages.fr.zip")).unwrap(),
+            archive_de(500, "cle")
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

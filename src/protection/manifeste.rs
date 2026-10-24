@@ -280,12 +280,29 @@ fn parcourir_tout(racine: &Path) -> Vec<(String, u64)> {
     liste
 }
 
-/// L'empreinte BLAKE3 d'un fichier, lu par morceaux.
+/// L'empreinte BLAKE3 d'un fichier, lu par morceaux : un simple fichier seulement, ouvert sans suivre de lien et sans
+/// attendre, jugé sur ce qui est ouvert (fstat), et de moins de `GROS` octets. Un fichier listé puis remplacé par un
+/// lien (vers un fichier sain du même contenu) ou par un tube nommé (qui figeait la lecture) donne `None` : comparé à
+/// une empreinte connue, c'est un écart, jamais « inchangé ».
 fn empreinte(chemin: &Path) -> Option<String> {
-    let mut fichier = std::fs::File::open(chemin).ok()?;
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    #[cfg(windows)]
+    {
+        // FILE_FLAG_OPEN_REPARSE_POINT : un lien s'ouvre lui-même, et n'est pas un simple fichier.
+        std::os::windows::fs::OpenOptionsExt::custom_flags(&mut options, 0x0020_0000);
+    }
+    let fichier = options.open(chemin).ok()?;
+    let meta = fichier.metadata().ok()?;
+    if !meta.is_file() || meta.len() >= GROS {
+        return None;
+    }
     let mut hacheur = blake3::Hasher::new();
-    std::io::copy(&mut fichier, &mut hacheur).ok()?;
-    Some(hacheur.finalize().to_hex().to_string())
+    let lus = std::io::copy(&mut fichier.take(GROS), &mut hacheur).ok()?;
+    (lus < GROS).then(|| hacheur.finalize().to_hex().to_string())
 }
 
 fn entree(racine: &Path, chemin: String, taille: u64, gros: u64) -> Entree {
@@ -426,6 +443,15 @@ fn relever(racine: &Path, gros: u64) -> Vec<Entree> {
 /// relise) ; sinon elle resterait « modifiée » pour toujours, et la clé refusée.
 fn ecrire_dans(racine: &Path, reference: &Path, gros: u64, garder_differentes: bool) -> Result<usize, String> {
     let mut fichiers = relever(racine, gros);
+    // Un petit fichier dont l'empreinte ne se prend pas (remplacé entre-temps par un lien ou un tube, illisible) ne
+    // part pas dans la référence sans elle : il y serait ensuite jugé sur sa seule taille.
+    if let Some(e) = fichiers.iter().find(|e| e.taille < gros && e.blake3.is_none()) {
+        return Err(trf!(
+            "{} : empreinte impossible (pas un simple fichier, ou illisible)",
+            "{}: fingerprint impossible (not a plain file, or unreadable)",
+            e.chemin
+        ));
+    }
     if let Ok(avant) = lire(reference) {
         garder_empreintes(&mut fichiers, &avant.fichiers);
         if !garder_differentes {
@@ -1194,6 +1220,53 @@ mod tests {
 
     /// Un PC hostile réécrit le menu de Ventoy (une image démarrée d'office) et plante une image : la clé « a
     /// changé ». Une référence d'avant les images les laisse de côté, comme alors.
+    /// Un fichier de la clé remplacé par un lien (vers un fichier du même contenu) ou par un tube nommé entre le relevé
+    /// et l'empreinte : jamais d'empreinte (un tube figeait la lecture), donc un écart, jamais « inchangé » ; et une
+    /// référence ne s'écrit pas sans l'empreinte d'un petit fichier.
+    #[cfg(unix)]
+    #[test]
+    fn empreinte_d_un_lien_ou_d_un_tube() {
+        let racine = dossier_jetable("empreinte");
+        std::fs::write(racine.join("vrai"), b"programme").unwrap();
+        std::os::unix::fs::symlink(racine.join("vrai"), racine.join("lien")).unwrap();
+        let nom = std::ffi::CString::new(racine.join("tube").to_string_lossy().as_bytes()).unwrap();
+        // SAFETY : chaîne C terminée par un zéro, à nous ; mkfifo ne la garde pas.
+        assert_eq!(unsafe { libc::mkfifo(nom.as_ptr(), 0o600) }, 0);
+        assert!(empreinte(&racine.join("vrai")).is_some());
+        let (envoi, reception) = std::sync::mpsc::channel();
+        let r = racine.clone();
+        std::thread::spawn(move || {
+            let _ = envoi.send((empreinte(&r.join("lien")), empreinte(&r.join("tube"))));
+        });
+        let (lien, tube) = reception
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("l'empreinte d'un tube ne doit pas attendre");
+        assert_eq!((lien, tube), (None, None));
+        // Comparé à une référence qui connaît son empreinte : un écart.
+        let manifeste = Manifeste {
+            format: FORMAT.to_string(),
+            version_vanguard: String::new(),
+            date: String::new(),
+            fichiers: vec![Entree {
+                chemin: "vrai".into(),
+                taille: 9,
+                blake3: empreinte(&racine.join("vrai")),
+                sha256: None,
+                relue: None,
+                differente: false,
+            }],
+            images: true,
+            jeton: None,
+        };
+        assert_eq!(comparer_avec(&racine, &manifeste, 64).modifies, Vec::<String>::new());
+        // Le même nom devenu un lien vers un fichier du même contenu : plus d'empreinte, donc pas « pareil ».
+        std::fs::rename(racine.join("vrai"), racine.join("autre")).unwrap();
+        std::os::unix::fs::symlink(racine.join("autre"), racine.join("vrai")).unwrap();
+        assert_ne!(empreinte(&racine.join("vrai")), manifeste.fichiers[0].blake3);
+        assert!(!comparer_avec(&racine, &manifeste, 64).vide());
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
     #[test]
     fn menu_ventoy_et_images_dans_le_manifeste() {
         let racine = dossier_jetable("ventoy");

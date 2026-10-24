@@ -256,6 +256,12 @@ pub(crate) enum Raison {
     MacrosXlmNonDecodees,
     /// Un exécutable compressé par un paqueteur connu (UPX) : son vrai code n'est pas lu.
     Paquete(&'static str),
+    /// Un format dont la fin ne se trouve pas (TIFF, image coupée ou abîmée) : des données ajoutées après, qu'un
+    /// extracteur ouvrirait, ne se distinguent pas de l'image.
+    FinIntrouvable,
+    /// Un module VBA qui a du code compilé (p-code) : c'est lui qu'Office exécute quand sa version correspond, et il
+    /// n'est pas décodé ici. Une source leurre (« Sub Bonjour() ») peut le cacher : la source lue ne prouve rien.
+    PcodeNonLu,
 }
 
 /// Un fait relevé (pour les heuristiques d'AV4) : rien de tout cela n'est un verdict.

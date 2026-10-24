@@ -189,7 +189,12 @@ pub(crate) fn connus_macos(plist: &crate::plist::Valeur) -> Vec<ProfilEnregistre
 fn fichiers(dossier: &str) -> std::io::Result<Vec<(String, String)>> {
     use std::io::Read;
     let mut liste = Vec::new();
-    for entree in std::fs::read_dir(dossier)?.flatten().take(FICHIERS_MAX) {
+    let entrees: Vec<std::fs::DirEntry> = std::fs::read_dir(dossier)?.flatten().take(FICHIERS_MAX + 1).collect();
+    // Plus de fichiers que la borne : pas une liste partielle prise pour complète (le bilan passe alors par D-Bus).
+    if entrees.len() > FICHIERS_MAX {
+        return Err(std::io::Error::from(std::io::ErrorKind::FileTooLarge));
+    }
+    for entree in entrees {
         let chemin = entree.path();
         if !chemin.is_file() {
             continue;
@@ -215,6 +220,18 @@ fn fichiers(dossier: &str) -> std::io::Result<Vec<(String, String)>> {
 pub(crate) fn lire_linux() -> Result<Vec<ProfilEnregistre>, &'static str> {
     let nm = fichiers("/etc/NetworkManager/system-connections");
     let iwd_dossier = fichiers("/var/lib/iwd");
+    let run = fichiers("/run/NetworkManager/system-connections");
+    let usr = fichiers("/usr/lib/NetworkManager/system-connections");
+    // Un dossier qui a plus de profils que la borne : rien n'est conclu d'ici (le bilan passe par D-Bus, qui le dit).
+    if [&nm, &iwd_dossier, &run, &usr]
+        .iter()
+        .any(|r| r.as_ref().is_err_and(|e| e.kind() == std::io::ErrorKind::FileTooLarge))
+    {
+        return Err(crate::tr!(
+            "trop de profils enregistrés pour les lire tous",
+            "too many saved profiles to read them all"
+        ));
+    }
     if nm.is_err() && iwd_dossier.is_err() {
         return Err(crate::tr!(
             "lisibles seulement en administrateur (NetworkManager, iwd) ; le bilan les lit par nmcli",
@@ -228,8 +245,8 @@ pub(crate) fn lire_linux() -> Result<Vec<ProfilEnregistre>, &'static str> {
     let mut profils: Vec<ProfilEnregistre> = nm
         .into_iter()
         .flatten()
-        .chain(fichiers("/run/NetworkManager/system-connections").unwrap_or_default())
-        .chain(fichiers("/usr/lib/NetworkManager/system-connections").unwrap_or_default())
+        .chain(run.unwrap_or_default())
+        .chain(usr.unwrap_or_default())
         .filter_map(|(_, texte)| nm_keyfile(&texte))
         .collect();
     profils.extend(
@@ -276,6 +293,24 @@ pub(crate) fn lire_macos() -> Result<Vec<ProfilEnregistre>, &'static str> {
 
 #[cfg(test)]
 mod tests {
+    /// Plus de profils dans un dossier que la borne : pas une liste partielle prise pour complète.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dossier_de_profils_trop_plein() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        for n in 0..=super::FICHIERS_MAX {
+            std::fs::write(d.join(format!("p{n}.nmconnection")), b"[connection]\n").unwrap();
+        }
+        let e = super::fichiers(&d.to_string_lossy()).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::FileTooLarge);
+        std::fs::remove_file(d.join("p0.nmconnection")).unwrap();
+        assert_eq!(
+            super::fichiers(&d.to_string_lossy()).unwrap().len(),
+            super::FICHIERS_MAX
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     use super::*;
     use crate::plist::Valeur;
 

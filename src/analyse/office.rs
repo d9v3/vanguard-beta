@@ -94,7 +94,8 @@ pub(crate) struct TypesDeContenu {
 }
 
 pub(crate) fn types_de_contenu(xml: &str) -> TypesDeContenu {
-    let bas = xml.to_ascii_lowercase();
+    // Les entités décodées d'abord : « vba&#80;roject » est le même type de contenu pour Office.
+    let bas = entites(xml).to_ascii_lowercase();
     TypesDeContenu {
         projet_vba: bas.contains("application/vnd.ms-office.vbaproject"),
         macros_xlm: bas.contains("macrosheet+xml"),
@@ -103,55 +104,179 @@ pub(crate) fn types_de_contenu(xml: &str) -> TypesDeContenu {
 }
 
 const RELATIONS_MAX: usize = 256;
+/// Les éléments parcourus dans un fichier XML : au-delà, le reste n'est pas lu (`Xml::coupe`).
+const ELEMENTS_MAX: usize = 1 << 16;
 
-/// Les cibles des relations vers l'extérieur (TargetMode="External") d'un fichier .rels, lues sans analyseur XML :
-/// chaque élément « <Relationship … /> », ses attributs Target et TargetMode.
-pub(crate) fn relations_externes(xml: &str) -> Vec<String> {
-    let mut cibles = Vec::new();
-    for element in xml.split('<').skip(1) {
-        if cibles.len() >= RELATIONS_MAX {
-            break;
+/// Le texte d'une partie XML, quel que soit son encodage : UTF-8 (avec ou sans marque), UTF-16 petit- ou
+/// gros-boutiste (avec marque, ou reconnu à « < » suivi ou précédé d'un zéro), comme un lecteur XML le décode. Lu en
+/// UTF-8, un .rels en UTF-16 cachait toutes ses relations.
+pub(crate) fn texte_xml(octets: &[u8]) -> String {
+    let utf16 = |o: &[u8], gros: bool| -> String {
+        let mots: Vec<u16> = o
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|p| {
+                if gros {
+                    u16::from_be_bytes(*p)
+                } else {
+                    u16::from_le_bytes(*p)
+                }
+            })
+            .collect();
+        String::from_utf16_lossy(&mots)
+    };
+    match octets {
+        [0xEF, 0xBB, 0xBF, reste @ ..] => String::from_utf8_lossy(reste).into_owned(),
+        [0xFF, 0xFE, reste @ ..] => utf16(reste, false),
+        [0xFE, 0xFF, reste @ ..] => utf16(reste, true),
+        [b'<', 0, ..] => utf16(octets, false),
+        [0, b'<', ..] => utf16(octets, true),
+        _ => String::from_utf8_lossy(octets).into_owned(),
+    }
+}
+
+/// Un élément XML ouvrant (ou vide) : son nom local (sans préfixe d'espace de noms) et ses attributs, valeurs
+/// décodées (entités nommées et numériques).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Element {
+    nom: String,
+    attributs: Vec<(String, String)>,
+}
+
+/// Les éléments ouvrants de `xml`, lus comme un analyseur XML les lit : guillemets respectés (un « > » dans une
+/// valeur ne ferme pas l'élément), commentaires, instructions, sections CDATA et déclarations sautés. Bornés à
+/// `ELEMENTS_MAX` ; `true` en second : coupé à la borne.
+fn elements(xml: &str) -> (Vec<Element>, bool) {
+    let mut sortie = Vec::new();
+    let mut reste = xml;
+    while let Some(p) = reste.find('<') {
+        if sortie.len() >= ELEMENTS_MAX {
+            return (sortie, true);
         }
-        let element = element.split('>').next().unwrap_or("");
-        let nom = element.split_whitespace().next().unwrap_or("");
-        if !nom
-            .rsplit(':')
-            .next()
-            .unwrap_or("")
-            .eq_ignore_ascii_case("Relationship")
-        {
+        reste = &reste[p + 1..];
+        let sautee = [("!--", "-->"), ("![CDATA[", "]]>"), ("?", "?>"), ("!", ">")]
+            .into_iter()
+            .find(|(debut, _)| reste.starts_with(debut));
+        if let Some((_, fin)) = sautee {
+            reste = reste.find(fin).map_or("", |f| &reste[f + fin.len()..]);
             continue;
         }
-        let externe = attribut(element, "TargetMode").is_some_and(|m| m.eq_ignore_ascii_case("External"));
-        if externe && let Some(cible) = attribut(element, "Target") {
+        if reste.starts_with('/') || reste.is_empty() {
+            continue;
+        }
+        let fin_nom = reste
+            .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
+            .unwrap_or(reste.len());
+        let nom = reste[..fin_nom].rsplit(':').next().unwrap_or("").to_string();
+        reste = &reste[fin_nom..];
+        let mut attributs = Vec::new();
+        loop {
+            reste = reste.trim_start();
+            if reste.is_empty() || reste.starts_with('>') || reste.starts_with("/>") {
+                break;
+            }
+            let Some(egal) = reste.find('=') else {
+                reste = "";
+                break;
+            };
+            let cle = reste[..egal].trim().rsplit(':').next().unwrap_or("").to_string();
+            let apres = reste[egal + 1..].trim_start();
+            let Some(guillemet) = apres.chars().next().filter(|c| *c == '"' || *c == '\'') else {
+                reste = apres;
+                break;
+            };
+            let corps = &apres[1..];
+            let Some(f) = corps.find(guillemet) else {
+                reste = "";
+                break;
+            };
+            attributs.push((cle, entites(&corps[..f])));
+            reste = &corps[f + 1..];
+        }
+        sortie.push(Element { nom, attributs });
+    }
+    (sortie, false)
+}
+
+/// Les entités d'une valeur d'attribut : les cinq nommées de XML et les références numériques (« &#69; », « &#x45; »).
+fn entites(valeur: &str) -> String {
+    if !valeur.contains('&') {
+        return valeur.to_string();
+    }
+    let mut sortie = String::with_capacity(valeur.len());
+    let mut reste = valeur;
+    while let Some(p) = reste.find('&') {
+        sortie.push_str(&reste[..p]);
+        reste = &reste[p..];
+        // « ; » cherché dans les 12 octets qui suivent seulement : chercher plus loin coûtait la longueur du reste à
+        // chaque « & », le carré de la taille pour un fichier fait d'esperluettes.
+        let Some(fin) = reste.as_bytes()[1..reste.len().min(13)]
+            .iter()
+            .position(|&b| b == b';')
+            .map(|f| f + 1)
+        else {
+            sortie.push('&');
+            reste = &reste[1..];
+            continue;
+        };
+        let nom = &reste[1..fin];
+        let caractere = match nom {
+            "amp" => Some('&'),
+            "lt" => Some('<'),
+            "gt" => Some('>'),
+            "quot" => Some('"'),
+            "apos" => Some('\''),
+            _ => nom
+                .strip_prefix("#x")
+                .or_else(|| nom.strip_prefix("#X"))
+                .and_then(|h| u32::from_str_radix(h, 16).ok())
+                .or_else(|| nom.strip_prefix('#').and_then(|d| d.parse().ok()))
+                .and_then(char::from_u32),
+        };
+        if let Some(c) = caractere {
+            sortie.push(c);
+            reste = &reste[fin + 1..];
+        } else {
+            sortie.push('&');
+            reste = &reste[1..];
+        }
+    }
+    sortie.push_str(reste);
+    sortie
+}
+
+/// Les cibles des relations vers l'extérieur (TargetMode="External") d'un fichier .rels : chaque élément
+/// « Relationship », ses attributs Target et TargetMode, sans tenir compte de la casse des noms (ni de celle de
+/// « External »), valeurs décodées. Un fichier coupé à la borne des éléments rend aussi `true`.
+pub(crate) fn relations_externes(xml: &str) -> Vec<String> {
+    relations_externes_bornees(xml).0
+}
+
+/// `relations_externes`, et si le fichier a été coupé à la borne des éléments (le reste n'est pas lu).
+pub(crate) fn relations_externes_bornees(xml: &str) -> (Vec<String>, bool) {
+    let (elements, coupe) = elements(xml);
+    let mut cibles = Vec::new();
+    for e in elements {
+        if cibles.len() >= RELATIONS_MAX {
+            return (cibles, true);
+        }
+        if !e.nom.eq_ignore_ascii_case("Relationship") {
+            continue;
+        }
+        let valeur = |nom: &str| {
+            e.attributs
+                .iter()
+                .find(|(c, _)| c.eq_ignore_ascii_case(nom))
+                .map(|(_, v)| v.trim())
+        };
+        if valeur("TargetMode").is_some_and(|m| m.eq_ignore_ascii_case("External"))
+            && let Some(cible) = valeur("Target")
+        {
             cibles.push(cible.to_string());
         }
     }
-    cibles
-}
-
-/// La valeur de l'attribut `nom` (entre guillemets simples ou doubles) d'un élément.
-fn attribut<'a>(element: &'a str, nom: &str) -> Option<&'a str> {
-    let mut reste = element;
-    while let Some(p) = reste.find(nom) {
-        let avant = reste[..p].chars().next_back();
-        let apres = reste[p + nom.len()..].trim_start();
-        reste = &reste[p + nom.len()..];
-        if !avant.is_some_and(char::is_whitespace) {
-            continue;
-        }
-        let Some(valeur) = apres.strip_prefix('=') else {
-            continue;
-        };
-        let valeur = valeur.trim_start();
-        let guillemet = valeur.chars().next()?;
-        if guillemet != '"' && guillemet != '\'' {
-            continue;
-        }
-        let corps = &valeur[1..];
-        return corps.find(guillemet).map(|f| &corps[..f]);
-    }
-    None
+    (cibles, coupe)
 }
 
 /// Le CLSID de la racine d'un paquet Windows Installer ({000C1084-0000-0000-C000-000000000046}, rangé comme le fait
@@ -241,6 +366,49 @@ mod tests {
         assert_eq!(relations_externes("<Relationship Target="), Vec::<String>::new());
     }
 
+    /// Les relations que la campagne d'attaque n° 3 cachait derrière un détail XML valide : un « > » dans une valeur
+    /// placée avant TargetMode, une entité numérique dans « External », un .rels en UTF-16 ; et un commentaire qui
+    /// contient une fausse relation ne compte pas.
+    #[test]
+    fn relations_cachees_par_le_xml() {
+        let chevron = r#"<Relationships><Relationship Id="r1" Type="x/attachedTemplate" Target="https://exemple.invalid/m.dotm?a=>" TargetMode="External"/></Relationships>"#;
+        assert_eq!(relations_externes(chevron), ["https://exemple.invalid/m.dotm?a=>"]);
+        let reference = r#"<Relationships><Relationship Id="r1" Target="https://exemple.invalid/m.dotm" TargetMode="&#69;xternal"/><Relationship Target="&#x68;ttps://exemple.invalid/b" TargetMode="&#x45;xternal"/></Relationships>"#;
+        assert_eq!(
+            relations_externes(reference),
+            ["https://exemple.invalid/m.dotm", "https://exemple.invalid/b"]
+        );
+        let normal = r#"<Relationships><Relationship Target="https://exemple.invalid/m.dotm" TargetMode="External"/></Relationships>"#;
+        let mut utf16 = vec![0xFF, 0xFE];
+        utf16.extend(normal.encode_utf16().flat_map(u16::to_le_bytes));
+        assert_eq!(
+            relations_externes(&texte_xml(&utf16)),
+            ["https://exemple.invalid/m.dotm"]
+        );
+        let gros: Vec<u8> = normal.encode_utf16().flat_map(u16::to_be_bytes).collect();
+        assert_eq!(
+            relations_externes(&texte_xml(&gros)),
+            ["https://exemple.invalid/m.dotm"]
+        );
+        let mut bom = vec![0xEF, 0xBB, 0xBF];
+        bom.extend(normal.as_bytes());
+        assert_eq!(relations_externes(&texte_xml(&bom)), ["https://exemple.invalid/m.dotm"]);
+        let commentaire = r#"<!-- <Relationship Target="https://faux.invalid" TargetMode="External"/> --><?xml version="1.0"?><x:Relationship xmlns:x="r" x:Target='&amp;b' x:TargetMode='EXTERNAL'/>"#;
+        assert_eq!(relations_externes(commentaire), ["&b"]);
+        // Des esperluettes en masse : linéaire (un Mio en bien moins d'une seconde, même non optimisé).
+        let debut = std::time::Instant::now();
+        assert_eq!(entites(&"&".repeat(1 << 20)).len(), 1 << 20);
+        assert!(
+            debut.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            debut.elapsed()
+        );
+        assert_eq!(entites("&amp;&#x41;&lt"), "&A&lt");
+        // La borne des éléments : dit coupé.
+        let enorme = "<a/>".repeat(ELEMENTS_MAX + 1);
+        assert!(relations_externes_bornees(&enorme).1);
+    }
+
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig { cases: 2000, failure_persistence: None, ..proptest::prelude::ProptestConfig::default() })]
         #[test]
@@ -249,6 +417,7 @@ mod tests {
             let _ = word_chiffre(&octets);
             let texte = String::from_utf8_lossy(&octets);
             let _ = relations_externes(&texte);
+            let _ = relations_externes(&texte_xml(&octets));
             let _ = types_de_contenu(&texte);
         }
     }

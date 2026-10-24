@@ -1512,27 +1512,16 @@ fn wifi_ouvert(details: &str) -> bool {
 
 /// Réseaux ouverts enregistrés (sans gestion de clé) qui se reconnectent seuls : les profils lus nativement, comme
 /// l'audit du réseau (NetworkManager et iwd, en administrateur) ; sinon NetworkManager par D-Bus ; sinon nmcli, 40
-/// connexions regardées au plus.
+/// connexions regardées au plus. Au-delà des bornes : non vérifié (`trop_de_profils`).
 fn wifi_ouverts_automatiques() -> Option<Constat> {
     if let Ok(profils) = super::wifi::profils::lire_linux() {
         return super::wifi::ouverts_des_profils(&profils);
     }
     // Sans droits : NetworkManager par D-Bus (GetSettings, sans les secrets), nmcli en secours.
-    if let Ok(profils) = networkmanager::profils() {
-        let (mut noms, mut commandes) = (Vec::new(), Vec::new());
-        for p in &profils {
-            let Some(uuid) = p
-                .uuid()
-                .filter(|u| u.len() == 36 && u.chars().all(|c| c.is_ascii_hexdigit() || c == '-'))
-            else {
-                continue;
-            };
-            if p.genre() == "802-11-wireless" && p.automatique() && p.ouvert() {
-                commandes.push(format!("nmcli connection modify {uuid} connection.autoconnect no"));
-                noms.push(p.nom().to_string());
-            }
-        }
-        return super::wifi::ouverts_automatiques(&noms, &commandes);
+    match networkmanager::profils() {
+        Ok(networkmanager::Releve::Trop(n)) => return Some(trop_de_profils(n)),
+        Ok(networkmanager::Releve::Profils(profils)) => return ouverts_par_dbus(&profils),
+        Err(_) => {}
     }
     let liste = crate::commande::lancer_en_anglais(
         Command::new("nmcli").args([
@@ -1548,7 +1537,12 @@ fn wifi_ouverts_automatiques() -> Option<Constat> {
     )
     .filter(|r| r.code == Some(0))?;
     let (mut noms, mut commandes) = (Vec::new(), Vec::new());
-    for (uuid, nom) in connexions_wifi_auto(&liste.sortie).into_iter().take(40) {
+    let connexions = connexions_wifi_auto(&liste.sortie);
+    // nmcli est lancé une fois par connexion : au-delà de 40, pas de liste partielle jugée complète.
+    if connexions.len() > NMCLI_MAX {
+        return Some(trop_de_profils(connexions.len()));
+    }
+    for (uuid, nom) in connexions {
         // Toute la connexion (les secrets restent cachés sans --show-secrets) : un réseau ouvert n'a pas de section
         // de sécurité, et demander un de ses champs pourrait faire répondre nmcli par une erreur.
         let ouvert =
@@ -1560,6 +1554,38 @@ fn wifi_ouverts_automatiques() -> Option<Constat> {
         }
     }
     super::wifi::ouverts_automatiques(&noms, &commandes)
+}
+
+/// Les connexions Wi-Fi regardées une à une par nmcli, au plus.
+const NMCLI_MAX: usize = 40;
+
+/// Les réseaux ouverts en reconnexion automatique, d'après les profils lus par D-Bus.
+fn ouverts_par_dbus(profils: &[networkmanager::Profil]) -> Option<Constat> {
+    let (mut noms, mut commandes) = (Vec::new(), Vec::new());
+    for p in profils {
+        let Some(uuid) = p
+            .uuid()
+            .filter(|u| u.len() == 36 && u.chars().all(|c| c.is_ascii_hexdigit() || c == '-'))
+        else {
+            continue;
+        };
+        if p.genre() == "802-11-wireless" && p.automatique() && p.ouvert() {
+            commandes.push(format!("nmcli connection modify {uuid} connection.autoconnect no"));
+            noms.push(p.nom().to_string());
+        }
+    }
+    super::wifi::ouverts_automatiques(&noms, &commandes)
+}
+
+/// Trop de profils enregistrés pour les lire tous : non vérifié, dit, jamais « aucun réseau ouvert ».
+fn trop_de_profils(n: usize) -> Constat {
+    crate::machine::impossible(
+        "Wi-Fi",
+        &trf!(
+            "réseaux enregistrés : {n} profils, trop pour les lire tous ; un réseau ouvert en reconnexion automatique pourrait s'y cacher",
+            "saved networks: {n} profiles, too many to read them all; an open network that reconnects automatically could hide among them"
+        ),
+    )
 }
 
 /// Contrôle d'accès de l'affichage X11 (`xhost`) : coupé (« xhost + »), n'importe quel programme, même d'un autre

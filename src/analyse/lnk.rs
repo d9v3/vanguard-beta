@@ -84,7 +84,33 @@ pub(crate) const INTERPRETEURS: &[&str] = &[
     "msxsl.exe",
     "odbcconf.exe",
     "pcalua.exe",
+    "msdt.exe",
+    "wsl.exe",
+    "bash.exe",
+    "scriptrunner.exe",
+    "mmc.exe",
+    "presentationhost.exe",
+    "infdefaultinstall.exe",
+    "syncappvpublishingserver.exe",
 ];
+
+/// Un nom court 8.3 (« POWERS~1.EXE ») qui désigne `interpreteur` : Windows le forme des premiers caractères du nom
+/// long (six, ou cinq au-delà de ~9), d'un tilde et d'un numéro, et l'ouvre comme le nom long. Seulement pour un nom
+/// long de plus de huit caractères (un nom qui tient en 8.3 n'a pas de nom court), et l'extension, s'il y en a une,
+/// doit être .exe.
+fn nom_court_de(mot: &str, interpreteur: &str) -> bool {
+    let (base, extension) = mot.rsplit_once('.').unwrap_or((mot, "exe"));
+    let Some((debut, numero)) = base.split_once('~') else {
+        return false;
+    };
+    let long = interpreteur.trim_end_matches(".exe");
+    extension == "exe"
+        && (5..=6).contains(&debut.len())
+        && !numero.is_empty()
+        && numero.chars().all(|c| c.is_ascii_digit())
+        && long.len() > 8
+        && long.starts_with(debut)
+}
 
 impl Lnk {
     /// La cible, telle que Windows la compose : chemin local ou réseau et son suffixe, sinon le bloc d'environnement,
@@ -162,10 +188,9 @@ impl Lnk {
             .filter(|i| {
                 let sans_exe = i.trim_end_matches(".exe");
                 textes.iter().any(|t| {
-                    t.contains(i)
-                        || (sans_exe.len() >= 4
-                            && t.split(|c: char| !(c.is_alphanumeric() || c == '.' || c == '_' || c == '-'))
-                                .any(|mot| mot == sans_exe))
+                    let mut mots =
+                        t.split(|c: char| !(c.is_alphanumeric() || c == '.' || c == '_' || c == '-' || c == '~'));
+                    t.contains(i) || mots.any(|mot| (sans_exe.len() >= 4 && mot == sans_exe) || nom_court_de(mot, i))
                 })
             })
             .collect()

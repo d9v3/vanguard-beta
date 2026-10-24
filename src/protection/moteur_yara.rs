@@ -161,7 +161,17 @@ impl Regles {
     /// Les règles (leurs rangs) qui correspondent à `donnees`, lues comme un fichier : un tampon de la mémoire d'un
     /// processus se lit ainsi, positions comptées depuis son début.
     pub(crate) fn analyser_tampon(&self, donnees: &[u8], echeance: Option<Instant>) -> Result<Vec<usize>, Echec> {
-        let mut acces = Tampon(donnees);
+        let mut acces = Tampon {
+            donnees,
+            chargee: false,
+        };
+        self.analyser(&mut acces, echeance)
+    }
+
+    /// Comme `analyser_tampon`, pour une image chargée en mémoire (régions d'une même allocation recollées depuis sa
+    /// base) : pe.entry_point y est une RVA, pas une position dans le fichier (`crate::pe::champs_yara_chargee`).
+    pub(crate) fn analyser_image(&self, donnees: &[u8], echeance: Option<Instant>) -> Result<Vec<usize>, Echec> {
+        let mut acces = Tampon { donnees, chargee: true };
         self.analyser(&mut acces, echeance)
     }
 
@@ -236,18 +246,22 @@ trait Acces {
     fn entree_elf(&mut self) -> Option<u64>;
 }
 
-struct Tampon<'a>(&'a [u8]);
+/// Des données en mémoire ; `chargee` : une image chargée (pe.entry_point en RVA).
+struct Tampon<'a> {
+    donnees: &'a [u8],
+    chargee: bool,
+}
 
 impl Acces for Tampon<'_> {
     fn taille(&self) -> u64 {
-        self.0.len() as u64
+        self.donnees.len() as u64
     }
 
     fn lire(&mut self, position: u64, n: usize) -> Vec<u8> {
         let Ok(debut) = usize::try_from(position) else {
             return Vec::new();
         };
-        self.0
+        self.donnees
             .get(debut..)
             .map_or_else(Vec::new, |r| r[..n.min(r.len())].to_vec())
     }
@@ -259,19 +273,24 @@ impl Acces for Tampon<'_> {
         utile: &[bool],
         echeance: Option<Instant>,
     ) -> Result<(), Echec> {
-        recherche.dans_tampon(self.0, vus, utile, echeance)
+        recherche.dans_tampon(self.donnees, vus, utile, echeance)
     }
 
     fn champs_pe(&mut self) -> Option<crate::pe::ChampsYara> {
-        crate::pe::champs_yara(&mut std::io::Cursor::new(self.0), self.taille())
+        let mut curseur = std::io::Cursor::new(self.donnees);
+        if self.chargee {
+            crate::pe::champs_yara_chargee(&mut curseur, self.taille())
+        } else {
+            crate::pe::champs_yara(&mut curseur, self.taille())
+        }
     }
 
     fn signature(&mut self, champs: &crate::pe::ChampsYara) -> bool {
-        crate::pe::signature_presente(&mut std::io::Cursor::new(self.0), self.taille(), champs)
+        crate::pe::signature_presente(&mut std::io::Cursor::new(self.donnees), self.taille(), champs)
     }
 
     fn entree_elf(&mut self) -> Option<u64> {
-        entree_elf(&mut std::io::Cursor::new(self.0), self.taille())
+        entree_elf(&mut std::io::Cursor::new(self.donnees), self.taille())
     }
 }
 
@@ -748,6 +767,28 @@ mod tests {
             r.analyser_flux(&mut std::io::Cursor::new(&b"MZ"[..]), 0x100, None),
             Err(Echec::Lecture)
         );
+    }
+
+    /// Une image PE chargée (section de code à sa RVA 0x1000, alors qu'elle est à 0x200 dans le fichier) : « at
+    /// pe.entry_point » visait la position dans le fichier (0x200) et manquait le code chargé ; lue comme une image,
+    /// l'entrée est la RVA. Le même PE en disposition fichier reste jugé comme avant.
+    #[test]
+    fn point_d_entree_d_une_image_chargee() {
+        let mut fichier = crate::pe::essais::pe(&crate::pe::essais::Fabrique::default());
+        // AddressOfEntryPoint = 0x1000 (dans la section .rsrc fabriquée, RVA 0x1000, données à 0x200).
+        let facultatif = 0x40 + 24;
+        fichier[facultatif + 16..facultatif + 20].copy_from_slice(&0x1000u32.to_le_bytes());
+        let mut chargee = vec![0u8; 0x1400];
+        chargee[..0x200].copy_from_slice(&fichier[..0x200]);
+        chargee[0x1000..0x1200].copy_from_slice(&fichier[0x200..0x400]);
+        chargee[0x1000..0x1004].copy_from_slice(b"ENTR");
+        fichier[0x200..0x204].copy_from_slice(b"ENTR");
+        let r = Regles::compiler(r#"import "pe" rule entree { strings: $a = "ENTR" condition: $a at pe.entry_point }"#);
+        assert_eq!(r.refus(), []);
+        assert_eq!(r.analyser_tampon(&fichier, None), Ok(vec![0]));
+        assert_eq!(r.analyser_tampon(&chargee, None), Ok(vec![]));
+        assert_eq!(r.analyser_image(&chargee, None), Ok(vec![0]));
+        assert_eq!(r.analyser_image(&fichier, None), Ok(vec![]));
     }
 
     #[test]

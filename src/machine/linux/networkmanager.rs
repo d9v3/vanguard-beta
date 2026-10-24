@@ -121,8 +121,16 @@ impl Profil {
     }
 }
 
-/// Tous les profils enregistrés (au plus `PROFILS_MAX`), sur le bus système.
-pub(crate) fn profils() -> Result<Vec<Profil>, Echec> {
+/// Les profils enregistrés, ou leur nombre s'il dépasse `PROFILS_MAX` : une session active peut créer des profils
+/// personnels en masse (polkit `settings.modify.own`), et une liste coupée en silence cachait un Wi-Fi ouvert en
+/// reconnexion automatique derrière les mille premiers.
+pub(crate) enum Releve {
+    Profils(Vec<Profil>),
+    Trop(usize),
+}
+
+/// Tous les profils enregistrés, sur le bus système ; au-delà de `PROFILS_MAX`, aucun n'est lu (`Releve::Trop`).
+pub(crate) fn profils() -> Result<Releve, Echec> {
     let mut bus = Bus::systeme().map_err(echec)?;
     let liste = bus
         .appeler(
@@ -139,8 +147,11 @@ pub(crate) fn profils() -> Result<Vec<Profil>, Echec> {
         Some(t @ Valeur::Tableau(_)) => t.textes(),
         _ => return Err(echec("réponse d'un autre type".into())),
     };
+    if chemins.len() > PROFILS_MAX {
+        return Ok(Releve::Trop(chemins.len()));
+    }
     let mut profils = Vec::new();
-    for chemin in chemins.iter().take(PROFILS_MAX) {
+    for chemin in &chemins {
         let r = bus.appeler(
             NM,
             chemin,
@@ -158,12 +169,18 @@ pub(crate) fn profils() -> Result<Vec<Profil>, Echec> {
             Err(e) => return Err(echec(e)),
         }
     }
-    Ok(profils)
+    Ok(Releve::Profils(profils))
 }
 
-/// Le profil de cet UUID.
+/// Le profil de cet UUID ; trop de profils pour les lire : une erreur, jamais « pas de tel profil ».
 pub(crate) fn profil(uuid: &str) -> Result<Option<Profil>, Echec> {
-    Ok(profils()?.into_iter().find(|p| p.uuid() == Some(uuid)))
+    match profils()? {
+        Releve::Profils(p) => Ok(p.into_iter().find(|p| p.uuid() == Some(uuid))),
+        Releve::Trop(n) => Err(echec(crate::trf!(
+            "{n} profils enregistrés, plus que les {PROFILS_MAX} que Vanguard lit",
+            "{n} saved profiles, more than the {PROFILS_MAX} Vanguard reads"
+        ))),
+    }
 }
 
 /// Les connexions actives : (UUID, noms des cartes), comme `nmcli -t -f UUID,DEVICE connection show --active`.
@@ -303,7 +320,8 @@ mod tests {
     #[test]
     fn profils_comme_nmcli() {
         let natifs = match profils() {
-            Ok(p) => p,
+            Ok(Releve::Profils(p)) => p,
+            Ok(Releve::Trop(n)) => return crate::essais::saute(&format!("{n} profils, plus que la borne")),
             Err(e) => return crate::essais::saute(&format!("NetworkManager injoignable ({e})")),
         };
         let Some(r) = crate::commande::lancer_en_anglais(

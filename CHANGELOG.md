@@ -43,6 +43,18 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   après la mise à jour compare les constats sans leur formulation, par ce qui désigne leur objet (adresses, ports,
   CVE), sans fausse alerte. Les alertes
   déclarées normales, reconnues à leur texte quand elles n'ont pas de clé, peuvent revenir une fois en français.
+- **Données piégées.** Une archive de tldr-pages fabriquée (blocs deflate vides, entrées qui partagent leurs données)
+  ne fige plus le guide des commandes : elle est refusée à sa forme, et la lecture s'arrête après 5 s ; une archive
+  « fraîche » de la clé est contrôlée comme les autres, refusée si elle est abîmée ou datée dans le futur. Mémoire des
+  programmes : une bibliothèque réécrite en mémoire, un programme effacé ou posé sur tmpfs est lu en entier, ses
+  régions recollées (l'en-tête et le code ensemble, le point d'entrée à sa place) ; ce qui ne se juge pas est dit non
+  vérifié, jamais ✔. Un faux point d'accès qui recopie l'adresse du routeur sur un autre canal est signalé. Plus
+  jamais « rien trouvé » pour un fichier à vérifier qui est un lien ou un tube, pour un journal Windows présent mais
+  vide, ni pour une liste coupée à sa borne (profils Wi-Fi, sessions, comptes) ; un faux GameMode ne reporte plus
+  l'autotest de la semaine sans fin ; la comparaison de la clé à son manifeste ne suit plus un lien ni n'attend sur
+  un tube. L'analyse des fichiers, pas encore branchée, voit les archives collées derrière
+  une image, les macros dont seul le code compilé compte, les procédures cachées par une continuation de ligne et les
+  relations OOXML cachées par un détail XML.
 
 - **Nouveau menu.** La défense d'abord : sous « Bilan de sécurité » (1 à 3, inchangés), la partie **Cyberdéfense**
   (4 Cet ordinateur, 5 Réseau et Internet, 6 Virus et logiciels espions, 7 Arnaques et vie privée, 8 Bloquer et

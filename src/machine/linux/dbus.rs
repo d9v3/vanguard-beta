@@ -47,6 +47,8 @@ pub(crate) const UNITE: &str = "org.freedesktop.systemd1.Unit";
 /// Les seules méthodes que ce client envoie, (interface, méthode) : toutes lisent, aucune ne change le système.
 const LECTURES: &[(&str, &str)] = &[
     (DBUS, "Hello"),
+    // Le processus qui tient un nom du bus : pour ne croire un service que s'il est le vrai programme.
+    (DBUS, "GetConnectionUnixProcessID"),
     (PROPRIETES, "Get"),
     (PROPRIETES, "GetAll"),
     (OBJETS, "GetManagedObjects"),
@@ -977,19 +979,45 @@ fn chemin_de_session(adresse: &str) -> Option<std::path::PathBuf> {
     })
 }
 
-/// Un jeu tourne-t-il sous GameMode (`ClientCount` > 0 sur le bus de la session) ? `None` : GameMode absent ou le
-/// bus injoignable, rien de su (seul un jeu lancé par gamemoderun est vu).
+/// Un jeu tourne-t-il sous GameMode (`ClientCount` > 0 sur le bus de la session) ? `None` : GameMode absent, le bus
+/// injoignable, ou le nom tenu par un autre programme que gamemoded : rien de su (seul un jeu lancé par gamemoderun
+/// est vu). Le nom com.feralinteractive.GameMode, lancé à la demande, est souvent libre : n'importe quel programme du
+/// compte pouvait le prendre et répondre ce qu'il voulait. Le vrai gamemoded peut, lui, compter un client qui ne joue
+/// pas : c'est la borne du report de l'autotest (`autotest::reporter`) qui empêche un report sans fin.
 pub(crate) fn gamemode_actif() -> Option<bool> {
+    const NOM: &str = "com.feralinteractive.GameMode";
     let mut bus = Bus::session()?;
-    bus.propriete(
-        "com.feralinteractive.GameMode",
-        "/com/feralinteractive/GameMode",
-        "com.feralinteractive.GameMode",
-        "ClientCount",
-    )
-    .ok()?
-    .entier()
-    .map(|n| n > 0)
+    let pid = bus
+        .appeler(
+            DBUS,
+            "/org/freedesktop/DBus",
+            DBUS,
+            "GetConnectionUnixProcessID",
+            "s",
+            vec![Valeur::texte_de(NOM)],
+        )
+        .ok()?
+        .first()?
+        .entier()?;
+    if !programme_gamemoded(std::path::Path::new(&format!("/proc/{pid}/exe"))) {
+        return None;
+    }
+    bus.propriete(NOM, "/com/feralinteractive/GameMode", NOM, "ClientCount")
+        .ok()?
+        .entier()
+        .map(|n| n > 0)
+}
+
+/// Le programme désigné (le lien /proc/<pid>/exe d'un processus) est-il gamemoded installé par le système : nommé
+/// ainsi, à root, que personne d'autre ne peut réécrire ? Un faux service est lancé par le compte, depuis un fichier
+/// du compte (ou par un interpréteur, qui ne s'appelle pas gamemoded).
+fn programme_gamemoded(exe: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(cible) = std::fs::read_link(exe) else {
+        return false;
+    };
+    cible.file_name().is_some_and(|n| n == "gamemoded")
+        && std::fs::metadata(&cible).is_ok_and(|m| m.is_file() && m.uid() == 0 && m.mode() & 0o022 == 0)
 }
 
 /// L'erreur d'un appel dit que le service n'est pas sur ce bus (pas installé, ou arrêté sans activation) : rien à
@@ -1310,6 +1338,27 @@ mod tests {
         // Une valeur qui ne va pas avec sa signature n'est pas écrite.
         assert!(Ecrivain::default().ecrire(b"s", &Valeur::U32(1), 0).is_err());
         assert!(Ecrivain::default().ecrire(b"o", &t("pas un chemin"), 0).is_err());
+    }
+
+    /// Un faux GameMode lancé par le compte n'est pas cru : seul un programme nommé gamemoded, à root et que personne
+    /// d'autre ne réécrit, l'est.
+    #[test]
+    fn faux_gamemode() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let faux = d.join("gamemoded");
+        std::fs::write(&faux, b"#!/bin/sh\n").unwrap();
+        let lien = d.join("exe");
+        std::os::unix::fs::symlink(&faux, &lien).unwrap();
+        // Réécrivable par le groupe : refusé, même là où il paraît à root (`unshare -r` des essais sans Internet).
+        std::fs::set_permissions(&faux, std::fs::Permissions::from_mode(0o775)).unwrap();
+        assert!(!programme_gamemoded(&lien));
+        // Un interpréteur du système (à root), sous un autre nom : refusé.
+        let sh = d.join("sh");
+        std::os::unix::fs::symlink("/bin/sh", &sh).unwrap();
+        assert!(!programme_gamemoded(&sh));
+        assert!(!programme_gamemoded(&d.join("absent")));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Une méthode hors de la liste des lectures n'est pas envoyée, même à un faux bus.

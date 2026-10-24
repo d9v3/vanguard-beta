@@ -191,6 +191,137 @@ pub(crate) fn fin_png(octets: &[u8]) -> Option<usize> {
     }
 }
 
+/// La fin d'une image (PNG, JPEG, GIF, BMP, ICO, WebP) : là où son format dit qu'elle finit. Un lecteur d'images
+/// s'arrête là, un extracteur d'archives cherche sa signature au-delà : une archive collée derrière une photo passe
+/// pour la photo. `None` : un format dont la fin ne se calcule pas ici (TIFF, dont les données sont n'importe où), ou
+/// une image coupée ou abîmée avant sa fin.
+pub(crate) fn fin_image(octets: &[u8]) -> Option<usize> {
+    let fin = if octets.starts_with(b"\x89PNG\r\n\x1a\n") {
+        fin_png(octets)?
+    } else if octets.starts_with(b"\xFF\xD8\xFF") {
+        fin_jpeg(octets)?
+    } else if octets.starts_with(b"GIF87a") || octets.starts_with(b"GIF89a") {
+        fin_gif(octets)?
+    } else if octets.starts_with(b"BM") {
+        // bfSize : la taille du fichier, écrite par tout éditeur (un zéro n'apprend rien).
+        usize::try_from(super::lecture::u32le(octets, 2)?)
+            .ok()
+            .filter(|&n| n >= 26)?
+    } else if octets.starts_with(b"\0\0\x01\0") {
+        fin_ico(octets)?
+    } else if octets.starts_with(b"RIFF") && octets.get(8..12) == Some(b"WEBP") {
+        let n = usize::try_from(super::lecture::u32le(octets, 4)?).ok()?;
+        8usize.checked_add(n)?.checked_add(n & 1)?
+    } else {
+        return None;
+    };
+    (fin <= octets.len()).then_some(fin)
+}
+
+/// JPEG (ITU T.81, annexe B) : des segments (FF, code, longueur sur 16 bits gros-boutiste, sauf les marqueurs seuls),
+/// et après chaque début de balayage (SOS, FFDA) les données compressées, où FF n'est suivi que de 00 ou d'un
+/// marqueur de reprise (FFD0-FFD7) ; la fin est FFD9 (EOI).
+fn fin_jpeg(o: &[u8]) -> Option<usize> {
+    let mut p = 2usize;
+    loop {
+        if *o.get(p)? != 0xFF {
+            return None;
+        }
+        while *o.get(p)? == 0xFF {
+            p += 1;
+        }
+        let code = o[p];
+        p += 1;
+        match code {
+            0xD9 => return Some(p),
+            0x01 | 0xD0..=0xD7 => {}
+            0x00 | 0xD8 => return None,
+            _ => {
+                let n = usize::from(u16::from_be_bytes([*o.get(p)?, *o.get(p + 1)?]));
+                if n < 2 {
+                    return None;
+                }
+                p = p.checked_add(n)?;
+                if code == 0xDA {
+                    // Les données du balayage, jusqu'au prochain vrai marqueur.
+                    loop {
+                        let q = p + o.get(p..)?.iter().position(|&b| b == 0xFF)?;
+                        match *o.get(q + 1)? {
+                            0x00 | 0xD0..=0xD7 => p = q + 2,
+                            0xFF => p = q + 1,
+                            _ => {
+                                p = q;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// GIF (spécification 89a) : écran logique et table de couleurs globale, puis des blocs (image 0x2C, extension
+/// 0x21), chacun suivi de sous-blocs (un octet de taille, 0 pour finir), jusqu'au bloc de fin 0x3B.
+fn fin_gif(o: &[u8]) -> Option<usize> {
+    let table = |drapeaux: u8| {
+        if drapeaux & 0x80 != 0 {
+            3usize << ((drapeaux & 7) + 1)
+        } else {
+            0
+        }
+    };
+    let mut p = 13usize.checked_add(table(*o.get(10)?))?;
+    let sous_blocs = |mut p: usize| -> Option<usize> {
+        loop {
+            let n = usize::from(*o.get(p)?);
+            p += 1;
+            if n == 0 {
+                return Some(p);
+            }
+            p = p.checked_add(n)?;
+        }
+    };
+    loop {
+        match *o.get(p)? {
+            0x3B => return Some(p + 1),
+            0x21 => p = sous_blocs(p.checked_add(2)?)?,
+            0x2C => {
+                let drapeaux = *o.get(p + 9)?;
+                p = p.checked_add(10)?.checked_add(table(drapeaux))?.checked_add(1)?;
+                p = sous_blocs(p)?;
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// ICO : un répertoire d'images (16 octets chacune : taille en 8, position en 12) ; la fin est celle de l'image qui
+/// finit le plus loin.
+fn fin_ico(o: &[u8]) -> Option<usize> {
+    let n = usize::from(super::lecture::u16le(o, 4)?);
+    let mut fin = 6usize.checked_add(16 * n)?;
+    for k in 0..n {
+        let e = 6 + 16 * k;
+        let taille = usize::try_from(super::lecture::u32le(o, e + 8)?).ok()?;
+        let position = usize::try_from(super::lecture::u32le(o, e + 12)?).ok()?;
+        fin = fin.max(position.checked_add(taille)?);
+    }
+    Some(fin)
+}
+
+/// Une archive d'un format non lu ici (RAR, 7z, CAB, xz) placée après le début de `octets` : sa position. Pour les
+/// formats « inertes » dont la fin ne se calcule pas (TIFF, sons, vidéos, polices, bases SQLite, WebAssembly) et
+/// l'intérieur des images, qu'un extracteur ouvrirait pourtant par cette signature. Les signatures sont longues (6 à
+/// 8 octets) : une rencontre par hasard est négligeable.
+pub(crate) fn archive_cachee(octets: &[u8]) -> Option<usize> {
+    const SIGNATURES: [&[u8]; 4] = [b"Rar!\x1A\x07", b"7z\xBC\xAF\x27\x1C", b"MSCF\0\0\0\0", b"\xFD7zXZ\0"];
+    SIGNATURES
+        .iter()
+        .filter_map(|s| octets.get(1..)?.windows(s.len()).position(|f| f == *s).map(|p| p + 1))
+        .min()
+}
+
 /// Un en-tête tar d'avant ustar : la somme de ses octets (le champ de contrôle compté en espaces) égale à la valeur
 /// octale de ce champ, et un nom non vide.
 fn tar_v7(octets: &[u8]) -> bool {

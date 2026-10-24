@@ -136,6 +136,12 @@ fn fichiers(cible: &Path, illisibles: &mut Vec<PathBuf>) -> Vec<PathBuf> {
             illisibles.push(chemin);
             continue;
         };
+        // La cible elle-même, ni fichier ni dossier (un lien, un tube nommé) : rien n'en est lu, et ce n'est pas
+        // « rien trouvé ». Plus bas dans un dossier, un lien n'est pas suivi, comme dit.
+        if chemin.as_path() == cible && !meta.is_file() && !meta.is_dir() {
+            illisibles.push(chemin);
+            continue;
+        }
         if meta.is_file() {
             if meta.len() <= TAILLE_MAX {
                 trouves.push(chemin);
@@ -158,8 +164,12 @@ fn fichiers(cible: &Path, illisibles: &mut Vec<PathBuf>) -> Vec<PathBuf> {
 fn analyser_fichier(regles: &Regles, chemin: &Path) -> Result<Vec<usize>, ()> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
+    // Sans suivre de lien : un fichier listé puis remplacé par un lien (vers un autre fichier, un tube) avant d'être
+    // ouvert est illisible, jamais un autre fichier analysé sous son nom. Le descripteur ouvert est ensuite jugé. Pas
+    // d'équivalent sous Windows : FILE_FLAG_OPEN_REPARSE_POINT ouvrirait aussi sans leur pilote les fichiers
+    // compressés par le système (WOF) ou dédupliqués, dont on lirait la souche au lieu du contenu.
     #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK | libc::O_NOFOLLOW);
     let mut fichier = options.open(chemin).map_err(|_| ())?;
     let meta = fichier.metadata().map_err(|_| ())?;
     if !meta.is_file() || meta.len() > TAILLE_MAX {
@@ -293,7 +303,7 @@ pub(crate) fn famille(regle: &str) -> &'static str {
 /// Applique les 308 règles et les empreintes de MalwareBazaar aux cibles : (correspondances, ce qui n'a pas pu être
 /// lu, les empreintes s'il y en avait). `None` : règles qui ne se compilent pas, ce qui est dit. Tout ce qui n'a pas
 /// pu être lu est rendu : jamais compté comme sain.
-fn appliquer(cibles: &[PathBuf]) -> Option<(Vec<Trouve>, Vec<String>, empreintes::Chargees)> {
+fn appliquer(cibles: &[PathBuf]) -> Option<(Vec<Trouve>, Vec<String>, empreintes::Chargees, usize)> {
     let regles = match regles() {
         Ok(r) => r,
         Err(e) => {
@@ -311,16 +321,18 @@ fn appliquer(cibles: &[PathBuf]) -> Option<(Vec<Trouve>, Vec<String>, empreintes
     let mut trouves = Vec::new();
     // Une règle refusée n'a rien vérifié : l'analyse n'est pas complète, et rien n'est dit sain.
     let mut erreurs: Vec<String> = non_verifiees(regles).into_iter().collect();
+    let mut listes = 0usize;
     for cible in cibles {
         trp!("  Analyse de {}…", "  Scanning {}…", chemin_affichable(cible));
         let mut echecs = Vec::new();
         let liste = fichiers(cible, &mut echecs);
+        listes += liste.len();
         let (t, e) = analyser_fichiers(regles, empreintes.ok(), &liste);
         trouves.extend(t);
         echecs.extend(e);
         erreurs.extend(illisible(cible, &echecs));
     }
-    Some((trouves, erreurs, empreintes))
+    Some((trouves, erreurs, empreintes, listes))
 }
 
 pub fn analyser(portee: &Portee) {
@@ -334,7 +346,7 @@ pub fn analyser(portee: &Portee) {
         trp!("  Rien à analyser ici.", "  Nothing to scan here.");
         return;
     }
-    let Some((trouves, erreurs, empreintes)) = appliquer(&cibles) else {
+    let Some((trouves, erreurs, empreintes, _)) = appliquer(&cibles) else {
         return;
     };
     println!();
@@ -352,6 +364,19 @@ pub fn analyser(portee: &Portee) {
             avertissement: Some(a), ..
         }) => afficher_aligne("  ⚠ ", a, 4, ""),
         Ok(_) => {}
+    }
+    // Les flux de données alternatifs de NTFS (« fichier.txt:cache ») ne sont pas listés par le système de fichiers
+    // comme des fichiers : un contenu qui s'y cache n'est pas lu, et c'est dit.
+    if cfg!(windows) {
+        for ligne in envelopper(
+            tr!(
+                "Les flux de données alternatifs de NTFS (« fichier:flux ») ne sont pas lus : un contenu qui s'y cache n'est pas vérifié.",
+                "NTFS alternate data streams (“file:stream”) are not read: content hidden in them is not checked."
+            ),
+            LARGEUR - 2,
+        ) {
+            println!("  {GRIS}{ligne}{RESET}");
+        }
     }
     for e in &erreurs {
         for (i, ligne) in envelopper(
@@ -419,13 +444,15 @@ pub fn analyser(portee: &Portee) {
 pub(crate) fn examiner(fichier: &Path) -> Examen {
     match appliquer(&[fichier.to_path_buf()]) {
         None => Examen::Impossible(tr!("règles YARA inutilisables", "YARA rules unusable").into()),
-        Some((trouves, _, _)) if !trouves.is_empty() => Examen::Trouve(
+        Some((trouves, _, _, _)) if !trouves.is_empty() => Examen::Trouve(
             trouves
                 .iter()
                 .map(|t| format!("{} ({})", famille(&t.regle), t.regle))
                 .collect(),
         ),
-        Some((_, erreurs, _)) if !erreurs.is_empty() => Examen::Impossible(erreurs.join(" ; ")),
+        Some((_, erreurs, _, _)) if !erreurs.is_empty() => Examen::Impossible(erreurs.join(" ; ")),
+        // Aucun fichier listé : rien n'a été lu, ce n'est pas « sain ».
+        Some((_, _, _, 0)) => Examen::Impossible(tr!("aucun fichier lu", "no file read").into()),
         Some(_) => Examen::Sain,
     }
 }
@@ -769,6 +796,35 @@ mod tests {
         echecs.extend(trouves.into_iter().map(|t| t.chemin));
         echecs.sort();
         assert_eq!(echecs, liste);
+    }
+
+    /// La preuve de la campagne d'attaque n° 3 : examiner() répondait « Sain » sans lire un octet quand la cible était
+    /// un lien ou un tube nommé. Désormais : impossible à vérifier ; et un fichier remplacé par un lien après avoir été
+    /// listé n'est pas suivi.
+    #[cfg(unix)]
+    #[test]
+    fn un_lien_ou_un_tube_n_est_jamais_sain() {
+        let d = crate::protection::isoler::dossier_jetable().unwrap();
+        let vrai = d.join("vrai.bin");
+        std::fs::write(&vrai, b"rien de particulier").unwrap();
+        let lien = d.join("lien.bin");
+        std::os::unix::fs::symlink(&vrai, &lien).unwrap();
+        let tube = d.join("tube");
+        let nom = std::ffi::CString::new(tube.to_string_lossy().as_bytes()).unwrap();
+        // SAFETY : chaîne C terminée par un zéro, à nous ; mkfifo ne la garde pas.
+        assert_eq!(unsafe { libc::mkfifo(nom.as_ptr(), 0o600) }, 0);
+        assert_eq!(examiner(&vrai), Examen::Sain);
+        for cible in [&lien, &tube] {
+            assert!(matches!(examiner(cible), Examen::Impossible(_)), "{}", cible.display());
+        }
+        let mut illisibles = Vec::new();
+        assert_eq!(fichiers(&lien, &mut illisibles), Vec::<PathBuf>::new());
+        assert_eq!(illisibles, std::slice::from_ref(&lien));
+        // Listé comme fichier, ouvert comme lien : illisible.
+        let regles = regles().unwrap();
+        assert!(analyser_fichier(regles, &lien).is_err());
+        assert!(analyser_fichier(regles, &vrai).is_ok());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Les règles et l'empreinte, chacune sous sa garde : une panique des règles ne saute pas l'empreinte (le fichier
