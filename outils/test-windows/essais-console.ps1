@@ -2,10 +2,11 @@
 # travail de la file d'essais (surveillant-essais.ps1, en administrateur dans la VM), ou à la main :
 #   powershell -ExecutionPolicy Bypass -File essais-console.ps1 -Exe C:\…\vanguard.exe -Sortie C:\…\console
 # Pour chaque hôte (la vieille console conhost, puis Windows Terminal s'il est là) et chaque langue (VANGUARD_LANG) :
-#   C1 menu affiché · C2 fenêtre à la hauteur du menu · C3 fenêtre centrée · C4 ↓ jusqu'à « Cet ordinateur »
-#   C5 → entre (lignes « Logiciels pas à jour » et « Blocages de Windows Defender », les deux dernières, propres à
-#   Windows) · C6 hauteur et centrage du sous-menu
-#   C7 ← revient · C8 q + Entrée quitte.
+#   C1 menu affiché · C2 fenêtre à la hauteur du menu · C3 fenêtre entière dans la zone de travail, à la place où
+#   elle s'est ouverte (sous Windows, Vanguard ne recentre pas : src/fenetre.rs, CENTRER) · C4 ↓ jusqu'à « Cet
+#   ordinateur » · C5 → entre (lignes « Logiciels pas à jour » et « Blocages de Windows Defender », les deux
+#   dernières, propres à Windows) · C6 hauteur et place du sous-menu (celle du menu, sans saut)
+#   C7 ← revient, même hauteur et même place · C8 q + Entrée quitte.
 # Un OK exige le texte vu à l'écran ET l'effet mesuré. Écran illisible ou touches refusées : « SAUTE » avec la raison
 # sous Windows Terminal (une limite connue de l'outil), « BUG » sous conhost (l'outil y marche : c'est Vanguard qui
 # n'affiche rien, bloqué ou arrêté) ; jamais OK. Résultat : une ligne « OK|BUG|SAUTE|INFO hôte langue Cn texte » par essai dans
@@ -234,7 +235,12 @@ if ($Etape -eq 'pilote') {
     }
     function Ligne-Marquee($ecran) { @($ecran.Lignes | Where-Object { $_ -match '^\s{0,3}►' }) | Select-Object -First 1 }
 
-    # C2/C3 (et C6) : la hauteur et le centrage, d'après le texte vu ET la fenêtre mesurée.
+    # La place d'où la fenêtre ne doit pas sauter : celle où elle s'est ouverte, puis celle du menu jugé avant.
+    $script:placeAvant = $null
+
+    # C2/C3 (et C6, C7) : la hauteur, d'après le texte vu ET la fenêtre mesurée ; la place, comme src/fenetre.rs la
+    # tient sous Windows : la fenêtre reste où elle était (coin haut gauche), ramenée dans la zone de travail
+    # seulement si sa nouvelle taille l'en ferait sortir, et toujours entière dans cette zone.
     function Juger-Fenetre([string]$essaiH, [string]$essaiC, $ecran, [string]$quoi) {
         $r = [PiloteConsoleVg]::Rect($Fenetre); $z = [PiloteConsoleVg]::Zone($Fenetre); $d = [PiloteConsoleVg]::RectDwm($Fenetre)
         Geo ("{0} {1:HH:mm:ss} : fenêtre {2} (x,y,l,h) ; DWM {3} ; zone de travail {4} ; {5} colonnes × {6} rangées ; classe {7}" -f `
@@ -252,10 +258,24 @@ if ($Etape -eq 'pilote') {
         } elseif ($ecran.Rangees -ge $voulu -and $ecran.Rangees -le $voulu + 1) {
             Noter 'OK' $essaiH "$quoi : $($ecran.Colonnes) × $($ecran.Rangees) pour un menu de $n rangées"
         } else { Noter 'BUG' $essaiH "$quoi : $($ecran.Rangees) rangées visibles pour un menu de $n (attendu $voulu ou $($voulu + 1))" }
-        $cx = $z[0] + [int](($z[2] - $r[2]) / 2); $cy = $z[1] + [int](($z[3] - $r[3]) / 2)
-        $ecart = "écart x $($r[0] - $cx), y $($r[1] - $cy) px"
-        if ([Math]::Abs($r[0] - $cx) -le 8 -and [Math]::Abs($r[1] - $cy) -le 8) { Noter 'OK' $essaiC "$quoi : centrée ($ecart)" }
-        else { Noter 'BUG' $essaiC "$quoi : pas centrée ($ecart ; fenêtre $($r -join ','), zone $($z -join ','))" }
+        # Quelques pixels de jeu : bordures invisibles et arrondis du bureau, comme `centree` dans src/fenetre.rs.
+        $jeu = 8
+        $avant = $script:placeAvant
+        $script:placeAvant = $r
+        $mesures = "fenêtre $($r -join ','), zone $($z -join ',')"
+        $dehors = @()
+        if ($r[0] -lt $z[0] - $jeu) { $dehors += 'à gauche' }
+        if ($r[1] -lt $z[1] - $jeu) { $dehors += 'en haut' }
+        if ($r[0] + $r[2] -gt $z[0] + $z[2] + $jeu) { $dehors += 'à droite' }
+        if ($r[1] + $r[3] -gt $z[1] + $z[3] + $jeu) { $dehors += 'en bas' }
+        if ($dehors.Count) { Noter 'BUG' $essaiC "$quoi : fenêtre pas entière dans la zone de travail (dépasse $($dehors -join ', ') ; $mesures)"; return }
+        if (-not $avant) { Noter 'BUG' $essaiC "$quoi : place d'avant inconnue, saut impossible à juger ($mesures)"; return }
+        # La place attendue : celle d'avant, bornée à la zone pour la taille d'à présent (la règle de `placement`).
+        $ax = [Math]::Max($z[0], [Math]::Min($avant[0], $z[0] + $z[2] - $r[2]))
+        $ay = [Math]::Max($z[1], [Math]::Min($avant[1], $z[1] + $z[3] - $r[3]))
+        $ecart = "écart x $($r[0] - $ax), y $($r[1] - $ay) px de la place attendue $ax,$ay (avant : $($avant[0]),$($avant[1]))"
+        if ([Math]::Abs($r[0] - $ax) -le $jeu -and [Math]::Abs($r[1] - $ay) -le $jeu) { Noter 'OK' $essaiC "$quoi : entière dans la zone, place gardée ($ecart)" }
+        else { Noter 'BUG' $essaiC "$quoi : la fenêtre a sauté ($ecart ; $mesures)" }
     }
 
     function Sauter-Reste([string[]]$essais, [string]$raison) { foreach ($e in $essais) { Noter 'SAUTE' $e $raison } }
@@ -283,6 +303,9 @@ if ($Etape -eq 'pilote') {
 
         # C1 : la fenêtre a pris sa taille (elle a bougé puis s'est arrêtée), puis le menu se lit. 20 s au plus.
         $initial = if ($RectInitial) { $RectInitial } else { ([PiloteConsoleVg]::Rect($Fenetre)) -join ',' }
+        $script:placeAvant = @($initial -split ',' | Where-Object { $_ -ne '' } | ForEach-Object { [int]$_ })
+        if ($script:placeAvant.Count -ne 4) { $script:placeAvant = $null }
+        Geo "fenêtre à l'ouverture (x,y,l,h) : $initial"
         $fin = (Get-Date).AddSeconds(20)
         while ((Get-Date) -lt $fin -and -not $processus.HasExited -and ([PiloteConsoleVg]::Rect($Fenetre) -join ',') -eq $initial) { Start-Sleep -Milliseconds 200 }
         [void](Stable)
@@ -343,7 +366,7 @@ if ($Etape -eq 'pilote') {
         }
         Noter 'OK' 'C4' "$k ↓ : « ► » sur « $(Texte 'ordinateur' $Langue) »"
 
-        # C5 : → entre dans le groupe ; C6 : la fenêtre refaite à la hauteur du sous-menu, toujours centrée.
+        # C5 : → entre dans le groupe ; C6 : la fenêtre refaite à la hauteur du sous-menu, à la même place.
         $err = Taper 'droite'
         if ($err) { Hors-Atteinte @('C5', 'C6', 'C7', 'C8') "touches impossibles ($err)"; return }
         Start-Sleep -Milliseconds 300
@@ -359,7 +382,7 @@ if ($Etape -eq 'pilote') {
             Sauter-Reste @('C6') 'sous-menu pas vu'
         }
 
-        # C7 : ← revient au menu principal, à sa hauteur.
+        # C7 : ← revient au menu principal, à sa hauteur et à la même place.
         $err = Taper 'gauche'
         if ($err) { Hors-Atteinte @('C7', 'C8') "touches impossibles ($err)"; return }
         Start-Sleep -Milliseconds 300
@@ -434,7 +457,9 @@ foreach ($hoteEssai in $listeHotes) {
         if ((Get-Date) -gt $limite) { Resume "SAUTE $hoteEssai $langueEssai C1-C8 délai des essais de console dépassé"; continue }
         if ($hoteEssai -eq 'wt' -and -not $wt.Chemin) { Resume "SAUTE wt $langueEssai C1-C8 $($wt.Raison)"; continue }
         $avant = @(Vanguards | ForEach-Object { [int]$_.ProcessId })
-        $fenetresAvant = if ($hoteEssai -eq 'wt') { @([PiloteConsoleVg]::Fenetres('CASCADIA_HOSTING_WINDOW_CLASS')) } else { @() }
+        # Les fenêtres de Windows Terminal déjà là : la sienne est la nouvelle ; sous conhost, une nouvelle dirait que
+        # Windows a confié la console au terminal par défaut.
+        $fenetresAvant = @([PiloteConsoleVg]::Fenetres('CASCADIA_HOSTING_WINDOW_CLASS'))
         $env:VANGUARD_LANG = $langueEssai
         $hoteProc = $null; $fenetreVg = 0; $pidVanguard = 0
         try {
@@ -451,7 +476,11 @@ foreach ($hoteEssai in $listeHotes) {
                 if (-not $pidVanguard) { $v = @(Vanguards | Where-Object { [int]$_.ProcessId -notin $avant }); if ($v.Count -eq 1) { $pidVanguard = [int]$v[0].ProcessId } }
                 if (-not $fenetreVg) {
                     if ($hoteEssai -eq 'conhost') {
-                        $f = @([PiloteConsoleVg]::Fenetres('ConsoleWindowClass') | Where-Object { [PiloteConsoleVg]::ProcessusDe($_) -eq $hoteProc.Id })
+                        # conhost prête sa fenêtre au premier programme de sa console (SetConsoleWindowOwner, dans
+                        # src/interactivity/win32/windowio.cpp de microsoft/terminal) : GetWindowThreadProcessId y rend
+                        # le numéro de vanguard.exe, jamais celui de conhost.exe. Cherchée donc par Vanguard, une fois
+                        # son numéro connu.
+                        $f = if ($pidVanguard) { @([PiloteConsoleVg]::Fenetres('ConsoleWindowClass') | Where-Object { [PiloteConsoleVg]::ProcessusDe($_) -eq $pidVanguard }) } else { @() }
                     } else {
                         $f = @([PiloteConsoleVg]::Fenetres('CASCADIA_HOSTING_WINDOW_CLASS') | Where-Object { $_ -notin $fenetresAvant })
                     }
@@ -462,6 +491,21 @@ foreach ($hoteEssai in $listeHotes) {
                 # Windows Terminal lancé par le chemin de son paquet qui refuse de s'ouvrir : l'outil, pas Vanguard.
                 if ($hoteEssai -eq 'wt' -and -not $pidVanguard -and $hoteProc.HasExited -and $hoteProc.ExitCode -ne 0) {
                     Resume "SAUTE wt $langueEssai C1-C8 Windows Terminal ne s'ouvre pas depuis son paquet (code $($hoteProc.ExitCode))"
+                    continue
+                }
+                if ($hoteEssai -eq 'conhost' -and $pidVanguard) {
+                    $consoles = @([PiloteConsoleVg]::Fenetres('ConsoleWindowClass') | ForEach-Object { "$_ (processus $([PiloteConsoleVg]::ProcessusDe($_)))" })
+                    $nouvelles = @([PiloteConsoleVg]::Fenetres('CASCADIA_HOSTING_WINDOW_CLASS') | Where-Object { $_ -notin $fenetresAvant })
+                    $etat = "Vanguard $pidVanguard, conhost $($hoteProc.Id)$(if ($hoteProc.HasExited) { ' (fermé)' }) ; fenêtres ConsoleWindowClass : $(if ($consoles.Count) { $consoles -join ', ' } else { 'aucune' })"
+                    # Windows a tout de même confié la console au terminal par défaut : la vieille console n'est
+                    # pas à l'écran, rien à y essayer ; ce n'est pas Vanguard.
+                    if ($nouvelles.Count) {
+                        # Refermée par son adresse avec le reste de l'essai (finally), quand elle est seule nouvelle.
+                        if ($nouvelles.Count -eq 1) { $fenetreVg = $nouvelles[0] }
+                        Resume "SAUTE conhost $langueEssai C1-C8 Windows a ouvert Vanguard dans Windows Terminal (terminal par défaut) malgré conhost.exe lancé soi-même : vieille console absente ($etat)"
+                        continue
+                    }
+                    Resume "BUG conhost $langueEssai C1 fenêtre de Vanguard introuvable en 30 s ($etat)"
                     continue
                 }
                 $quoi = if (-not $pidVanguard) { 'Vanguard ne s''est pas lancé' } else { 'fenêtre de Vanguard introuvable' }
