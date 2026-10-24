@@ -49,6 +49,8 @@ static TEXTES: [PrefTexte; 1] = [PrefTexte {
 }];
 
 /// Les réglages de launchd pour ce compte (`launchctl print-disabled`), nom → désactivé ; `None` : illisible.
+/// launchctl fait foi (outil gardé, §4) : le fichier dessous, /private/var/db/com.apple.xpc.launchd/disabled.<uid>.plist,
+/// ne se lit qu'en root, et son format n'est pas documenté. Lancé sans shell.
 fn agents_etats() -> Option<std::collections::HashMap<String, bool>> {
     // SAFETY : getuid n'a ni argument ni échec possible.
     let uid = unsafe { libc::getuid() };
@@ -81,6 +83,13 @@ impl Changement {
                 (r.code == Some(0)).then(|| r.sortie.trim().to_string())
             }
             Changement::Dns { service, .. } => {
+                // Lu dans les réglages (SCPreferences, ce que networksetup écrit) ; networksetup en secours.
+                if let Some(services) = crate::machine::macos::config_reseau::services() {
+                    // Un service inconnu : illisible, pas « aucun ».
+                    let s = services.into_iter().find(|s| s.nom == *service)?;
+                    let liste: Vec<String> = s.dns.iter().map(ToString::to_string).collect();
+                    return Some(format!("{service}\n{}", liste.join(",")));
+                }
                 let r = crate::commande::lancer(Command::new("networksetup").args(["-getdnsservers", service]), 10)?;
                 // Un service inconnu répond « … is not a recognized network service » : illisible, pas « aucun ».
                 (r.code == Some(0) && !r.sortie.contains("not a recognized"))
@@ -356,6 +365,24 @@ pub fn dns_principal(v4: &[&str], v6: &[&str]) -> Result<Changement, String> {
         "Le service réseau principal est illisible : le DNS se règle à la main (Réglages Système > Réseau, ou dans le routeur).",
         "The main network service is unreadable: set the DNS by hand (System Settings > Network, or in the router)."
     );
+    // Le service de la route par défaut, demandé à configd (State:/Network/Global/IPv4) puis aux réglages ; route et
+    // networksetup en secours, tant que l'oracle de macos.yml n'a pas prouvé la lecture native.
+    let natif = crate::machine::macos::config_reseau::principal()
+        .and_then(|p| p.service)
+        .and_then(|id| {
+            crate::machine::macos::config_reseau::services()?
+                .into_iter()
+                .find(|s| s.id == id)
+        })
+        .filter(|s| s.actif && !s.nom.is_empty());
+    if let Some(s) = natif {
+        let mut serveurs: Vec<&str> = v4.to_vec();
+        serveurs.extend(v6);
+        return Ok(Changement::Dns {
+            service: s.nom,
+            cible: Some(serveurs.join(",")),
+        });
+    }
     let route = crate::commande::lancer(Command::new("route").args(["-n", "get", "default"]), 10)
         .map(|r| r.sortie)
         .unwrap_or_default();

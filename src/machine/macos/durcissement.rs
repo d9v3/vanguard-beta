@@ -269,8 +269,11 @@ pub(super) fn juger_decouverte_proxy(scutil: &str) -> Option<Constat> {
     })
 }
 
+/// Le proxy en vigueur demandé à configd ; `scutil --proxy` en secours tant que l'oracle de macos.yml n'a pas prouvé
+/// la lecture native.
 pub(super) fn decouverte_proxy() -> Option<Constat> {
-    juger_decouverte_proxy(&sortie("scutil", &["--proxy"])?)
+    let texte = super::config_reseau::proxy_comme_scutil().or_else(|| sortie("scutil", &["--proxy"]))?;
+    juger_decouverte_proxy(&texte)
 }
 
 #[cfg(test)]

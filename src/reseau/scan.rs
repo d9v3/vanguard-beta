@@ -163,13 +163,23 @@ pub fn passerelle() -> Option<Ipv4Addr> {
             .min()
             .map(|(_, ip)| ip)
     }
-    // macOS : « gateway: 10.0.0.1 » dans `route -n get default`.
+    // macOS : la route par défaut lue dans la table du noyau (sysctl NET_RT_DUMP) ; « gateway: 10.0.0.1 » de
+    // `route -n get default` en secours, tant que l'oracle de macos.yml n'a pas prouvé la lecture native.
     #[cfg(target_os = "macos")]
     {
-        commande("route", &["-n", "get", "default"])
-            .lines()
-            .find_map(|l| l.trim().strip_prefix("gateway:"))
-            .and_then(|g| g.trim().parse().ok())
+        crate::machine::macos::noyau::passerelle()
+            .or_else(
+                || match crate::machine::macos::config_reseau::principal()?.passerelle? {
+                    std::net::IpAddr::V4(ip) => Some(ip),
+                    std::net::IpAddr::V6(_) => None,
+                },
+            )
+            .or_else(|| {
+                commande("route", &["-n", "get", "default"])
+                    .lines()
+                    .find_map(|l| l.trim().strip_prefix("gateway:"))
+                    .and_then(|g| g.trim().parse().ok())
+            })
     }
 }
 

@@ -709,9 +709,13 @@ pub(crate) fn point_restauration(_titre: &str) -> Option<(&'static str, String)>
     Some(("Time Machine", "tmutil localsnapshot".to_string()))
 }
 
-/// Services réseau actifs de macOS (« Wi-Fi », « Ethernet »…), pour networksetup.
+/// Services réseau actifs de macOS (« Wi-Fi », « Ethernet »…), pour networksetup : lus dans les réglages
+/// (SCPreferences), `networksetup -listallnetworkservices` en secours.
 #[cfg(target_os = "macos")]
 fn services_reseau() -> Vec<String> {
+    if let Some(services) = crate::machine::macos::config_reseau::services() {
+        return services.into_iter().filter(|s| s.actif).map(|s| s.nom).collect();
+    }
     crate::commande::lancer(
         std::process::Command::new("networksetup").arg("-listallnetworkservices"),
         10,
@@ -729,8 +733,9 @@ fn services_reseau() -> Vec<String> {
 #[cfg(target_os = "macos")]
 fn navigation_macos() -> Reparation {
     let detournees = redirections(&std::fs::read_to_string("/etc/hosts").unwrap_or_default());
-    let proxy = crate::commande::lancer(std::process::Command::new("scutil").arg("--proxy"), 5)
-        .map(|r| r.sortie)
+    // Demandé à configd ; scutil en secours.
+    let proxy = crate::machine::macos::config_reseau::proxy_comme_scutil()
+        .or_else(|| crate::commande::lancer(std::process::Command::new("scutil").arg("--proxy"), 5).map(|r| r.sortie))
         .unwrap_or_default();
     let actifs: Vec<&str> = ["HTTPEnable", "HTTPSEnable", "SOCKSEnable", "ProxyAutoConfigEnable"]
         .into_iter()

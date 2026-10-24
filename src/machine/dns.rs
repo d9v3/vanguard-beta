@@ -200,7 +200,7 @@ fn serveurs() -> Option<Serveurs> {
 /// Serveurs de `scutil --dns` (« nameserver[0] : 10.0.0.1 »), section principale seulement : celle « for scoped
 /// queries » répète les mêmes serveurs par interface.
 #[cfg(any(target_os = "macos", test))]
-fn lire_scutil(sortie: &str) -> Vec<IpAddr> {
+pub(crate) fn lire_scutil(sortie: &str) -> Vec<IpAddr> {
     let mut liste = Vec::new();
     for l in sortie.lines().take_while(|l| !l.contains("for scoped queries")) {
         if let Some((cle, valeur)) = l.split_once(':')
@@ -225,28 +225,41 @@ const RESOLVEURS: &[(&str, &str, bool)] = &[
     ("dnsmasq", "dnsmasq", false),
 ];
 
-/// macOS : serveurs en service d'après `scutil --dns` ; un serveur est « réglé à la main » s'il figure dans les
-/// réglages d'un service réseau (`networksetup -getdnsservers`), sinon il vient de la box (DHCP).
+/// macOS : serveurs en service d'après configd (SCDynamicStore) ; un serveur est « réglé à la main » s'il figure dans
+/// les réglages d'un service réseau actif (SCPreferences), sinon il vient de la box (DHCP). `scutil --dns` et
+/// `networksetup` restent en secours tant que le test d'oracle de macos.yml n'a pas prouvé la lecture native.
 #[cfg(target_os = "macos")]
 fn serveurs() -> Option<Serveurs> {
-    let liste = lire_scutil(&super::sortie("scutil", &["--dns"])?);
-    let services: Vec<String> = super::sortie("networksetup", &["-listallnetworkservices"])
-        .unwrap_or_default()
-        .lines()
-        .skip(1)
-        // Un service désactivé commence par « * ».
-        .filter(|l| !l.starts_with('*') && !l.trim().is_empty())
-        .map(str::to_string)
-        .collect();
-    let mut manuels: Vec<(IpAddr, String)> = Vec::new();
-    for service in &services {
-        for ip in super::sortie("networksetup", &["-getdnsservers", service])
+    use super::macos::config_reseau;
+    // Une liste native vide (configd sans résolveur, ou lecture qui ne comprend pas ce macOS) : scutil tranche.
+    let liste = match config_reseau::dns_en_vigueur().filter(|l| !l.is_empty()) {
+        Some(l) => l,
+        None => lire_scutil(&super::sortie("scutil", &["--dns"])?),
+    };
+    // (nom du service, serveurs réglés à la main) des services actifs.
+    let reglages: Vec<(String, Vec<IpAddr>)> = match config_reseau::services() {
+        Some(s) => s.into_iter().filter(|s| s.actif).map(|s| (s.nom, s.dns)).collect(),
+        None => super::sortie("networksetup", &["-listallnetworkservices"])
             .unwrap_or_default()
             .lines()
-            .filter_map(|l| adresse(l.trim()))
-        {
+            .skip(1)
+            // Un service désactivé commence par « * ».
+            .filter(|l| !l.starts_with('*') && !l.trim().is_empty())
+            .map(|service| {
+                let dns = super::sortie("networksetup", &["-getdnsservers", service])
+                    .unwrap_or_default()
+                    .lines()
+                    .filter_map(|l| adresse(l.trim()))
+                    .collect();
+                (service.to_string(), dns)
+            })
+            .collect(),
+    };
+    let mut manuels: Vec<(IpAddr, String)> = Vec::new();
+    for (service, dns) in &reglages {
+        for ip in dns {
             let cite = crate::commande::sh_chaine(service);
-            manuels.push((ip, format!("sudo networksetup -setdnsservers {cite} empty")));
+            manuels.push((*ip, format!("sudo networksetup -setdnsservers {cite} empty")));
         }
     }
     let mut resolveur_local = None;
