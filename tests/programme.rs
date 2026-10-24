@@ -2114,10 +2114,10 @@ fn lien_en_json() {
     assert_eq!(v["constats"][0]["etat"], "non-verifie", "{v}");
 }
 
-/// `--json` d'un outil de protection : code 0, rien d'autre que le JSON sur la sortie standard (il se lit en entier),
-/// l'identifiant de l'outil, le format 1 et des constats. Des réponses sont tapées d'avance : une question posée les
-/// lirait (et, pour les listes noires, enverrait l'adresse).
-fn resultat_json(args: &[&str], outil: &str, secondes: u64) -> serde_json::Value {
+/// `--json` d'un outil de protection, hors ligne : code 0, rien d'autre que le JSON sur la sortie standard (il se lit
+/// en entier), l'identifiant de l'outil, le format 1 et des constats. Des réponses sont tapées d'avance : une question
+/// posée les lirait (et, pour les listes noires, enverrait l'adresse).
+fn resultat_json_hors_ligne(args: &[&str], outil: &str, secondes: u64) -> serde_json::Value {
     let maison = maison_jetable();
     let s = vanguard_dans_env(
         Path::new(env!("CARGO_BIN_EXE_vanguard")),
@@ -2142,7 +2142,7 @@ fn resultat_json(args: &[&str], outil: &str, secondes: u64) -> serde_json::Value
 
 #[test]
 fn connexions_sortantes_en_json() {
-    let v = resultat_json(&["connexions-sortantes", "--json"], "PRO-SOR-001", 120);
+    let v = resultat_json_hors_ligne(&["connexions-sortantes", "--json"], "PRO-SOR-001", 120);
     // Lecture seule : aucune correction proposée.
     let constats = v["constats"].as_array().unwrap();
     assert!(constats.iter().all(|c| c.get("corrigeable").is_none()), "{v}");
@@ -2150,7 +2150,7 @@ fn connexions_sortantes_en_json() {
 
 #[test]
 fn acces_a_distance_en_json() {
-    let v = resultat_json(&["acces-a-distance", "--json"], "PRO-DIS-001", 120);
+    let v = resultat_json_hors_ligne(&["acces-a-distance", "--json"], "PRO-DIS-001", 120);
     // Toujours au moins un constat : un logiciel trouvé, ou ce qui a été cherché.
     let constats = v["constats"].as_array().unwrap();
     assert!(!constats.is_empty(), "{v}");
@@ -2166,7 +2166,7 @@ fn acces_a_distance_en_json() {
 /// non vérifié, la raison dite, sans l'attente d'une demande en ligne. Avec --internet mais hors ligne, rien non plus.
 #[test]
 fn listes_noires_en_json_sans_rien_envoyer() {
-    let v = resultat_json(&["listes-noires", "--json"], "PRO-LNO-001", 60);
+    let v = resultat_json_hors_ligne(&["listes-noires", "--json"], "PRO-LNO-001", 60);
     assert_eq!(v["couverture"]["verifies"], 0, "{v}");
     let constats = v["constats"].as_array().unwrap();
     assert!(
@@ -2181,7 +2181,7 @@ fn listes_noires_en_json_sans_rien_envoyer() {
         "{v}"
     );
     assert!(v["duree_ms"].as_u64().is_some_and(|d| d < 2000), "{v}");
-    let hors_ligne = resultat_json(&["listes-noires", "--json", "--internet"], "PRO-LNO-001", 60);
+    let hors_ligne = resultat_json_hors_ligne(&["listes-noires", "--json", "--internet"], "PRO-LNO-001", 60);
     assert_eq!(hors_ligne["couverture"]["verifies"], 0, "{hors_ligne}");
     assert_eq!(hors_ligne["constats"][0]["raison"], "refuse", "{hors_ligne}");
 }
