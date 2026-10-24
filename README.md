@@ -730,6 +730,7 @@ Chaque entrée du menu existe aussi en commande.
 | `vanguard bilan [--html] [--texte]` | bilan complet : cet ordinateur puis le réseau ; `--texte` l'affiche en texte simple (mode urgence) |
 | `vanguard corriger` | corriger les problèmes trouvés |
 | `vanguard rapport` | le rapport détaillé dans le navigateur : le bilan de cette session, sinon un bilan complet d'abord |
+| `vanguard chercher <mots> [--premier] [--json]` | chercher un outil, une page du guide, un logiciel ou un réglage, comme à l'accueil du menu : synonymes (« box » → routeur) et fautes de frappe compris ; un numéro ouvre le résultat |
 | **4 Cet ordinateur** | |
 | `vanguard audit [--json]` | audit de cet ordinateur |
 | `vanguard mises-a-jour` | mises à jour |
@@ -822,7 +823,7 @@ Chaque entrée du menu existe aussi en commande.
 </details>
 
 **Langue** : celle du système (français ou anglais). Pour forcer : menu Paramètres, ou `VANGUARD_LANG=fr` ou
-`VANGUARD_LANG=en` (la variable l'emporte). Les commandes ont aussi un nom anglais (`check`, `fix`, `report`, `undo`, `devices`, `network-audit`, `monitor`, `dashboard`, `latest-flaws`, `dangerous-sites`, `watcher`, `maintenance`, `updates`, `repair`, `gaming`, `diagnostics`, `software`, `clean`, `optimize`, `learned`, `connection-test`, `blocklists`, `wifi-channels`, `hidden-cameras`, `smart-devices`, `fast-dns`, `public-wifi`, `integrity`, `decoys`, `memory`, `sandbox`, `email-leak`, `password-leak`, `browser-passwords`, `outbound-connections`, `remote-access`, `link`, `check-file`, `suspicious-email`, `spyware`, `outdated-software`, `disclose`, `camera-mic`, `privacy-review`, `quarantine`, `containers`, `settings`, `blocking`, `export`, `import`, `name`, `slow`, `startup`, `specs`, `copy-files`, `check-copy`, `check-backup`, `check-drive`, `handout`, `changes`, `events`, `auto-backup`, `shortcut`, `computers`, `self-update`, `uninstall`, `rules`, `self-test`, `troubleshoot`, `self-check`, `lab`).
+`VANGUARD_LANG=en` (la variable l'emporte). Les commandes ont aussi un nom anglais (`check`, `search`, `fix`, `report`, `undo`, `devices`, `network-audit`, `monitor`, `dashboard`, `latest-flaws`, `dangerous-sites`, `watcher`, `maintenance`, `updates`, `repair`, `gaming`, `diagnostics`, `software`, `clean`, `optimize`, `learned`, `connection-test`, `blocklists`, `wifi-channels`, `hidden-cameras`, `smart-devices`, `fast-dns`, `public-wifi`, `integrity`, `decoys`, `memory`, `sandbox`, `email-leak`, `password-leak`, `browser-passwords`, `outbound-connections`, `remote-access`, `link`, `check-file`, `suspicious-email`, `spyware`, `outdated-software`, `disclose`, `camera-mic`, `privacy-review`, `quarantine`, `containers`, `settings`, `blocking`, `export`, `import`, `name`, `slow`, `startup`, `specs`, `copy-files`, `check-copy`, `check-backup`, `check-drive`, `handout`, `changes`, `events`, `auto-backup`, `shortcut`, `computers`, `self-update`, `uninstall`, `rules`, `self-test`, `troubleshoot`, `self-check`, `lab`).
 
 **Emojis** : dans l'ancienne console de Windows (invite de commandes ou PowerShell hors du Terminal Windows, courant
 sous Windows 10), qui les dessine mal et décale les menus, 💡 et 🔧 deviennent → et +. `VANGUARD_EMOJI=0` les retire

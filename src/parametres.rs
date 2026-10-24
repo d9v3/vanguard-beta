@@ -789,6 +789,15 @@ fn explication(r: Reglage) -> &'static str {
 }
 
 /// Le menu Paramètres : chaque réglage et sa valeur ; choisi, ses valeurs (ou son outil).
+/// Les réglages, pour la recherche du menu principal : chacun ouvre Paramètres (`cle`, « 13.1 »).
+pub fn lignes_de_recherche(cle: &str) -> Vec<crate::selection::Ligne> {
+    let chemin = format!("Vanguard › {} ›", tr!("Paramètres", "Settings"));
+    Reglage::TOUS
+        .into_iter()
+        .map(|r| crate::selection::Ligne::cachee(cle, &chemin, r.titre(), "").avec_mots(r.mot()))
+        .collect()
+}
+
 pub fn menu() {
     let mut dernier = String::from("1");
     loop {

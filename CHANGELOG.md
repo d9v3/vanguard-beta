@@ -62,6 +62,13 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 | 5.12 Caméras cachées | 5.5 | | 9.9 Mettre Vanguard à jour | 13.3 | | 9.10 Vérifier ma sauvegarde | 9.3.1 |
 | 5.13 Box et objets connectés | 5.4 | | 9.11 Retirer Vanguard | 13.11 | | 12 Extensions | 13.10 |
 
+- **Recherche.** Un mot tapé au menu principal trouve chaque outil, ses variantes, les parcours, les pages du guide,
+  les logiciels du catalogue (« gimp » ouvre sa catégorie) et les réglages des Paramètres, classés par pertinence :
+  le titre avant le reste, des synonymes (« box » → routeur, « ransomware », « mdp », « maj ») et une faute de frappe
+  corrigée et dite (« imprimnte »). Les anciens noms de commandes s'y cherchent encore (« harden » mène à Defender).
+  `vanguard chercher <mots>` (`search`) fait de même en ligne de commande : les dix meilleurs, avec leur place et
+  leur commande ; `--premier` ouvre le meilleur, `--json` pour un script.
+
 - **Commandes renommées.** Des noms entiers, sans abréviation, qui suivent les libellés du menu ; l'alias anglais
   traduit vraiment le nom français. Les anciens noms ne sont plus acceptés : un script ou une tâche qui les appelle
   est à mettre à jour (les tâches que Vanguard pose lui-même gardent leurs noms). Nouvelles commandes : `rapport`

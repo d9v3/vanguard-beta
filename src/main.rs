@@ -53,6 +53,7 @@ mod prediction;
 mod protection;
 mod raccourci;
 mod rapport;
+mod recherche;
 mod reparer;
 mod reseau;
 mod risk;
@@ -104,6 +105,20 @@ enum Commande {
     /// Audit de l'ordinateur puis application guidée des correctifs.
     #[command(visible_alias = "fix")]
     Corriger,
+    /// Chercher un outil, une page du guide, un logiciel ou un réglage : les dix meilleurs résultats, avec leur place
+    /// au menu et leur commande ; dans un terminal, un numéro ouvre le résultat. Synonymes (box, routeur) et fautes
+    /// de frappe compris. Code de sortie 1 si rien n'est trouvé.
+    #[command(visible_alias = "search")]
+    Chercher {
+        /// Les mots cherchés.
+        #[arg(required = true)]
+        mots: Vec<String>,
+        /// Ouvrir tout de suite le meilleur résultat.
+        #[arg(long, visible_alias = "first")]
+        premier: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Rapport détaillé dans le navigateur : le bilan de cette session s'il y en a un, sinon un bilan complet d'abord.
     #[command(visible_alias = "report")]
     Rapport,
@@ -1009,7 +1024,14 @@ fn lignes_du_menu(etat: Vec<String>) -> Vec<Ligne> {
         .enumerate()
     {
         let (texte, precision) = action.libelle();
-        lignes.push(Ligne::choix(&(touche + 1).to_string(), texte, precision));
+        let commande = action.outil().commande;
+        let anciens = ANCIENS_NOMS
+            .iter()
+            .find(|(n, _)| *n == commande)
+            .map_or("", |(_, a)| *a);
+        lignes.push(
+            Ligne::choix(&(touche + 1).to_string(), texte, precision).avec_mots(&format!("{commande} {anciens}")),
+        );
     }
     for (i, groupe) in GROUPES.iter().enumerate() {
         if i == 0 {
@@ -1047,9 +1069,24 @@ fn lignes_du_menu(etat: Vec<String>) -> Vec<Ligne> {
             ou = format!("{ou} {} ›", parent.libelle().0);
         }
         let (texte, precision) = a.libelle();
-        // Le nom de sa sous-commande aussi : qui connaît « vanguard connexions-sortantes » la retrouve au menu.
-        let mots = format!("{} {}", a.outil().mots, a.outil().commande);
+        // Le nom de sa sous-commande aussi, et ses anciens noms : qui connaît « vanguard connexions-sortantes » ou
+        // « harden » la retrouve au menu.
+        let commande = a.outil().commande;
+        // Les raccourcis 8.3 à 8.5 mènent à « depanner » : ses anciens noms (« proche », « traces ») restent au groupe 11.
+        let raccourci = matches!(a, Action::DepannerInfection | Action::DepannerCompte | Action::Traces);
+        let anciens = ANCIENS_NOMS
+            .iter()
+            .find(|(n, _)| *n == commande && !raccourci)
+            .map_or("", |(_, a)| *a);
+        let mots = format!("{} {commande} {anciens}", a.outil().mots);
         lignes.push(Ligne::cachee(&chemin, &ou, texte, precision).avec_mots(&mots));
+    }
+    // Ce qu'il y a dans les outils : les logiciels du catalogue, les réglages des Paramètres.
+    if let Some(cle) = touche_de(Action::Logiciels) {
+        lignes.extend(logiciels::lignes_de_recherche(&cle));
+    }
+    if let Some(cle) = touche_de(Action::Parametres) {
+        lignes.extend(parametres::lignes_de_recherche(&cle));
     }
     lignes.extend(guide::lignes_de_recherche(&cle_de(Groupe::Guide)));
     lignes
@@ -1087,6 +1124,206 @@ fn autotest_a_part() {
         );
     }
 }
+
+/// Où mène une touche du menu principal, tapée ou trouvée par la recherche.
+#[derive(Debug, PartialEq)]
+enum Destination {
+    /// Une page ou une commande du guide (« 10.3.1.2 »).
+    Guide(usize, Option<usize>, Option<usize>),
+    /// Un parcours de dépannage (« 11.4 »).
+    Parcours(usize),
+    /// Un outil par son chemin (« 5.2 », « 6.1.3 », « 11.13 »).
+    Chemin(Action),
+    /// Un logiciel du catalogue : sa catégorie (« 12.1.5 »).
+    Logiciel(usize),
+    /// Un groupe (« 5 »).
+    Groupe(Groupe),
+    /// 1 à 3, ou une lettre d'avant la 0.43.
+    Outil(Action),
+}
+
+/// La destination d'une touche : 1 à 3, un groupe, un chemin, une page du guide, un parcours, un logiciel, une
+/// lettre d'avant la 0.43. Un seul aiguillage pour le menu et `vanguard chercher` ; `None` : rien n'y répond.
+fn destination(choix: &str) -> Option<Destination> {
+    let cle_de = |voulu: Groupe| GROUPES.iter().position(|g| *g == voulu).map(|i| (i + 4).to_string());
+    if let Some((groupe, reste)) = choix.split_once('.') {
+        if cle_de(Groupe::Guide).as_deref() == Some(groupe) {
+            return guide::chemin(reste).map(|(s, p, c)| Destination::Guide(s, p, c));
+        }
+        if cle_de(Groupe::Depanner).as_deref() == Some(groupe)
+            && let Some(n) = depanner::chemin(reste)
+        {
+            return Some(Destination::Parcours(n));
+        }
+        if let Some(action) = outil_au_chemin(choix) {
+            return Some(Destination::Chemin(action));
+        }
+        return touche_de(Action::Logiciels)
+            .and_then(|l| choix.strip_prefix(&format!("{l}.")).map(str::to_string))
+            .and_then(|n| n.parse::<usize>().ok())
+            .map(Destination::Logiciel);
+    }
+    if let Some(g) = choix
+        .parse::<usize>()
+        .ok()
+        .and_then(|n| n.checked_sub(4))
+        .and_then(|i| GROUPES.get(i))
+    {
+        return Some(Destination::Groupe(*g));
+    }
+    match choix {
+        "1" => Some(Destination::Outil(Action::Complet)),
+        "2" => Some(Destination::Outil(Action::Corriger)),
+        "3" => Some(Destination::Outil(Action::Rapport)),
+        // Raccourcis des versions précédentes (une lettre par outil), toujours acceptés.
+        autre => OUTILS
+            .iter()
+            .find(|o| !o.lettre.is_empty() && o.lettre == autre)
+            .map(|o| Destination::Outil(o.action)),
+    }
+}
+
+/// Ouvre ce que désigne une touche du menu principal (`destination`). `false` : rien n'y répond.
+async fn ouvrir_touche(s: &mut Session, choix: &str) -> bool {
+    match destination(choix) {
+        None => return false,
+        Some(Destination::Guide(systeme, programme, commande)) => guide::ouvrir(systeme, programme, commande),
+        Some(Destination::Parcours(n)) => depanner::ouvrir(n),
+        Some(Destination::Chemin(action)) => {
+            lancer(s, action, &chemin_de(choix)).await;
+            revenir_au_menu(action);
+        }
+        Some(Destination::Logiciel(place)) => logiciels::ouvrir_sur(place),
+        Some(Destination::Groupe(g)) => sous_menu(s, g).await,
+        Some(Destination::Outil(action)) => {
+            executer(s, action).await;
+            revenir_au_menu(action);
+        }
+    }
+    true
+}
+
+/// `vanguard chercher` : les dix meilleurs résultats de la recherche du menu, avec leur place et leur commande ; un
+/// numéro (dans un terminal) ou `--premier` ouvre le résultat par le même aiguillage que le menu. `false` : rien trouvé.
+async fn chercher(requete: &str, premier: bool, json: bool) -> bool {
+    use std::io::IsTerminal;
+    let lignes = lignes_du_menu(Vec::new());
+    let (trouves, corrections, partiels) = selection::chercher(&lignes, requete);
+    let trouves: Vec<_> = trouves.into_iter().take(10).collect();
+    let commande_de = |touche: &str| {
+        outil_au_chemin(touche)
+            .map(|a| a.outil().commande)
+            .filter(|c| !c.is_empty())
+            .map(|c| format!("vanguard {c}"))
+            .unwrap_or_default()
+    };
+    if json {
+        let liste: Vec<serde_json::Value> = trouves
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "touche": t.touche, "texte": t.texte, "precision": t.precision, "commande": commande_de(&t.touche)
+                })
+            })
+            .collect();
+        let corrections: Vec<_> = corrections
+            .iter()
+            .map(|(a, b)| serde_json::json!({"tape": a, "corrige": b}))
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({"resultats": liste, "partiels": partiels, "corrections": corrections})
+        );
+        return !trouves.is_empty();
+    }
+    if trouves.is_empty() {
+        trp!(
+            "  Aucun résultat pour « {} ». Essayez : disque, wifi, dns, mise à jour.",
+            "  No result for “{}”. Try: disk, wifi, dns, update.",
+            affichable(requete)
+        );
+        return false;
+    }
+    if premier {
+        let touche = trouves[0].touche.clone();
+        let mut s = Session::default();
+        return ouvrir_touche(&mut s, &touche).await;
+    }
+    for (a, b) in &corrections {
+        trp!(
+            "  {GRIS}Résultats pour « {b} » (tapé : « {a} »).{RESET}",
+            "  {GRIS}Results for “{b}” (typed: “{a}”).{RESET}"
+        );
+    }
+    if partiels {
+        trp!(
+            "  {GRIS}Aucun résultat n'a tous les mots : résultats partiels.{RESET}",
+            "  {GRIS}No result has every word: partial results.{RESET}"
+        );
+    }
+    let largeur = trouves.iter().map(|t| largeur_affichee(&t.touche)).max().unwrap_or(0);
+    for (i, t) in trouves.iter().enumerate() {
+        let commande = commande_de(&t.touche);
+        let tete = format!("  {:>2}  {:<largeur$}  ", i + 1, t.touche);
+        let reste = LARGEUR.saturating_sub(largeur_affichee(&tete));
+        println!("{tete}{}", couper(&t.texte, reste));
+        let detail: Vec<&str> = [t.precision.as_str(), commande.as_str()]
+            .into_iter()
+            .filter(|x| !x.is_empty())
+            .collect();
+        if !detail.is_empty() {
+            println!(
+                "{}{GRIS}{}{RESET}",
+                " ".repeat(largeur_affichee(&tete)),
+                couper(&detail.join(" · "), reste)
+            );
+        }
+    }
+    if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+        return true;
+    }
+    let reponse = demander(tr!(
+        "\n  Numéro à ouvrir (Entrée : rien) : ",
+        "\n  Number to open (Enter: nothing): "
+    ));
+    if let Some(t) = reponse
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .and_then(|n| n.checked_sub(1))
+        .and_then(|i| trouves.get(i))
+    {
+        let mut s = Session::default();
+        ouvrir_touche(&mut s, &t.touche).await;
+    }
+    true
+}
+
+/// Les noms de commandes d'avant la 0.87, que la ligne de commande n'accepte plus (décision de l'auteur) : la
+/// recherche les trouve encore (« harden » mène à Defender, « maj » aux mises à jour).
+const ANCIENS_NOMS: &[(&str, &str)] = &[
+    ("bilan", "complet full"),
+    ("audit", "machine"),
+    ("appareils", "reseau network"),
+    ("mises-a-jour", "maj update"),
+    ("fuite-mot-de-passe", "motdepasse password"),
+    ("fuite-courriel", "courriel email"),
+    ("mots-de-passe-navigateurs", "navigateurs"),
+    ("connexions-sortantes", "sortantes outbound"),
+    ("acces-a-distance", "distance"),
+    ("bilan-confidentialite", "acces permissions"),
+    ("objets-connectes", "objets iot"),
+    ("cameras-cachees", "cameras"),
+    ("canaux-wifi", "canaux channels"),
+    ("test-connexion", "connexion connection"),
+    ("tableau-de-bord", "tableau"),
+    ("fiche-ordinateur", "fiche"),
+    ("defender", "durcir harden"),
+    ("rapport-a-laisser", "a-laisser"),
+    ("exporter", "sauvegarder backup"),
+    ("jeux", "gaming"),
+    ("depanner", "traces evidence proche relative"),
+];
 
 /// Le titre de l'écran d'où s'ouvre un outil désigné par son chemin (« 6.1.3 » : Virus et logiciels espions).
 fn chemin_de(chemin: &str) -> String {
@@ -1135,56 +1372,14 @@ async fn menu() {
             break;
         };
         let choix = choix.trim().to_lowercase();
+        if choix == "q" {
+            break;
+        }
         println!();
-        // Un outil, une page ou une commande du guide, trouvés par la recherche (ou leur chemin tapé : « 5.2 »,
-        // « 10.3.1 », « 10.3.1.2 »).
-        if let Some((groupe, reste)) = choix.split_once('.') {
-            let cle_de = |voulu: Groupe| GROUPES.iter().position(|g| *g == voulu).map(|i| (i + 4).to_string());
-            if cle_de(Groupe::Guide).as_deref() == Some(groupe) {
-                if let Some((systeme, programme, commande)) = guide::chemin(reste) {
-                    dernier = groupe.to_string();
-                    guide::ouvrir(systeme, programme, commande);
-                }
-                continue;
-            }
-            if cle_de(Groupe::Depanner).as_deref() == Some(groupe)
-                && let Some(n) = depanner::chemin(reste)
-            {
-                dernier = groupe.to_string();
-                depanner::ouvrir(n);
-                continue;
-            }
-            if let Some(action) = outil_au_chemin(&choix) {
-                dernier = groupe.to_string();
-                lancer(&mut s, action, &chemin_de(&choix)).await;
-                revenir_au_menu(action);
-            }
-            continue;
+        if ouvrir_touche(&mut s, &choix).await {
+            // Le groupe d'où vient l'outil, en surbrillance au retour (« 5 » pour « 5.2 »).
+            dernier = choix.split('.').next().unwrap_or(&choix).to_string();
         }
-        let groupe = choix
-            .parse::<usize>()
-            .ok()
-            .and_then(|n| n.checked_sub(4))
-            .and_then(|i| GROUPES.get(i));
-        if let Some(g) = groupe {
-            dernier = choix;
-            sous_menu(&mut s, *g).await;
-            continue;
-        }
-        let action = match choix.as_str() {
-            "1" => Action::Complet,
-            "2" => Action::Corriger,
-            "3" => Action::Rapport,
-            "q" => break,
-            // Raccourcis des versions précédentes (une lettre par outil), toujours acceptés.
-            autre => match OUTILS.iter().find(|o| !o.lettre.is_empty() && o.lettre == autre) {
-                Some(o) => o.action,
-                None => continue,
-            },
-        };
-        dernier = choix;
-        executer(&mut s, action).await;
-        revenir_au_menu(action);
     }
 }
 
@@ -1821,7 +2016,7 @@ fn texte([fr, en]: [&'static str; 2]) -> &'static str {
 }
 
 /// Un groupe d'outils du menu principal, ouvert en sous-menu : la cyberdéfense (4 à 8), puis le reste (9 à 13).
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Groupe {
     Ordinateur,
     Reseau,
@@ -2444,6 +2639,9 @@ const AIDES_EN: &[(&str, &str)] = &[
                   after an infection, new computer, computer leaving (sale, gift), hacked account, collect the \
                   evidence (“evidence [folder]”: processes, connections, startup, accounts, logs, recent files and \
                   timeline, in a dated folder; read-only), a relative's computer"),
+    ("chercher", "Search for a tool, a guide page, a program or a setting: the ten best results, with their place in \
+                  the menu and their command; in a terminal, a number opens the result. Synonyms (box, router) and \
+                  typos included. Exit code 1 if nothing is found"),
     ("rapport", "Detailed report in the browser: this session's check if there is one, otherwise a full check first"),
     ("annuler", "Put everything back: undoes what Vanguard changed (Optimize settings, check-up fixes, gaming, blocks, \
                  public Wi-Fi mode), the previous value put back, after your consent. Like “optimize undo”"),
@@ -2529,6 +2727,8 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
     ("depanner", "sujet", "The subject: internet, wifi, slow, sound, printer, disk, infection, new, leaving, account, \
                            evidence [folder], relative (or words that describe it)"),
     ("protection", "quoi", "on or off, then --for 1h or 4h for a cut that ends by itself"),
+    ("chercher", "mots", "The words searched for"),
+    ("chercher", "premier", "Open the best result right away"),
     ("plugins", "quoi", "add <folder>, approve <name>, list, remove <name>, or <name> [--report] [arguments]"),
     ("labo", "quoi", "open, list, or <file> [arguments]"),
     ("extensions", "sans_restrictions", "on: the extensions' restrictions turned off (no consent, fingerprint or scan, \
@@ -2612,6 +2812,8 @@ fn rubriques_de_l_aide() -> Vec<(String, Vec<String>)> {
     for a in [Action::Complet, Action::Corriger, Action::Rapport] {
         ajouter(&mut premiere, a.outil().commande);
     }
+    // La recherche de l'accueil, en ligne de commande.
+    ajouter(&mut premiere, "chercher");
     rubriques.push((tr!("Bilan de sécurité", "Security check").to_string(), premiere));
     for (i, g) in GROUPES.iter().enumerate() {
         let mut liste = Vec::new();
@@ -2678,7 +2880,7 @@ fn aide_courte() -> String {
         clap.find_subcommand(commande)
             .map_or_else(|| commande.to_string(), nom_de_commande)
     };
-    let lignes: [(String, &str); 6] = [
+    let lignes: [(String, &str); 7] = [
         (
             nom("bilan"),
             tr!("le bilan de sécurité complet", "the full security check"),
@@ -2706,6 +2908,13 @@ fn aide_courte() -> String {
             tr!(
                 "dépanner pas à pas (internet, son, lent…)",
                 "troubleshooting (internet, sound, slow…)"
+            ),
+        ),
+        (
+            format!("{} <{}>", nom("chercher"), tr!("mots", "words")),
+            tr!(
+                "trouver un outil, un logiciel, un réglage",
+                "find a tool, a program, a setting"
             ),
         ),
         (
@@ -2946,6 +3155,11 @@ async fn main() {
         Some(Commande::Conteneurs) => protection::conteneurs::analyser(),
         Some(Commande::Blocage { quoi }) => protection::blocage::commande(&quoi),
         Some(Commande::Parametres { quoi }) => parametres::commande(&quoi),
+        Some(Commande::Chercher { mots, premier, json }) => {
+            if !chercher(&mots.join(" "), premier, json).await {
+                std::process::exit(1);
+            }
+        }
         // Le rapport du dernier bilan s'il a moins d'une heure ; sinon un bilan complet d'abord.
         Some(Commande::Rapport) => {
             if let Some(chemin) = rapport::recent(std::time::Duration::from_secs(3600)) {
@@ -3410,6 +3624,72 @@ mod tests_menu {
         assert_eq!(sans_etat(Some("on")), Some("on"));
     }
 
+    /// Chaque touche de l'index de recherche (outils, variantes, parcours, logiciels, réglages, guide) mène quelque
+    /// part par `destination`, le même aiguillage que le menu et `vanguard chercher`.
+    #[test]
+    fn chaque_touche_de_l_index_s_ouvre() {
+        for l in lignes_du_menu(Vec::new()) {
+            let (Ligne::Choix { touche, .. } | Ligne::Cachee { touche, .. }) = &l else {
+                continue;
+            };
+            if touche != "q" {
+                assert!(destination(touche).is_some(), "« {touche} » ne mène nulle part");
+            }
+        }
+        assert_eq!(destination("12.1.7"), Some(Destination::Logiciel(7)));
+        assert_eq!(destination("zz"), None);
+    }
+
+    /// Les mots de la conception (§ 5.9) mettent leur cible dans les trois premiers résultats.
+    #[test]
+    fn la_recherche_trouve_ce_qu_on_attend() {
+        let lignes = lignes_du_menu(Vec::new());
+        let trois = |requete: &str| -> Vec<String> {
+            selection::chercher(&lignes, requete)
+                .0
+                .into_iter()
+                .take(3)
+                .map(|t| t.touche)
+                .collect()
+        };
+        let place = |a: Action| touche_de(a).unwrap();
+        for (requete, cible) in [
+            ("wifi public", place(Action::WifiPublic)),
+            ("mot de passe", place(Action::MotsDePasse)),
+            ("password", place(Action::MotsDePasse)),
+            ("lent", "11.3".to_string()),
+            ("imprimante", "11.5".to_string()),
+            ("imprimnte", "11.5".to_string()),
+            ("ransomware", place(Action::Pieges)),
+            ("box", place(Action::Objets)),
+            ("maj", place(Action::Maj)),
+            ("sortantes", place(Action::QuiParle)),
+        ] {
+            assert!(
+                trois(requete).contains(&cible),
+                "« {requete} » : {:?}, attendu {cible}",
+                trois(requete)
+            );
+        }
+        let logiciels = format!("{}.", place(Action::Logiciels));
+        assert!(
+            trois("gimp").iter().any(|t| t.starts_with(&logiciels)),
+            "{:?}",
+            trois("gimp")
+        );
+        assert!(
+            trois("vpn").iter().any(|t| t.starts_with(&logiciels)),
+            "{:?}",
+            trois("vpn")
+        );
+        #[cfg(windows)]
+        assert!(trois("harden").contains(&"4.10".to_string()));
+        assert!(
+            !selection::chercher(&lignes, "imprimnte").1.is_empty(),
+            "la faute est dite"
+        );
+    }
+
     /// Les outils du menu qui n'ont pas de sous-commande, et pourquoi.
     const MENU_SEULEMENT: &[(Action, &str)] = &[
         (
@@ -3438,6 +3718,10 @@ mod tests_menu {
         (
             "protection",
             "l'état de tous les interrupteurs d'un coup ; chacun a aussi sa ligne dans son groupe",
+        ),
+        (
+            "chercher",
+            "la recherche de l'accueil (« Numéro, ou un mot à chercher »)",
         ),
     ];
 

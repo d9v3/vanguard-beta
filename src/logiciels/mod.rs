@@ -448,6 +448,68 @@ fn compte<'a>(offres: impl Iterator<Item = &'a Offre>) -> String {
 }
 
 /// « vanguard logiciels » : le pack de départ, puis une liste à cocher par catégorie.
+/// Chaque logiciel du catalogue, pour la recherche du menu principal : « gimp » ouvre sa catégorie
+/// (`cle`.N, N la place de la catégorie dans le catalogue, le pack de départ étant 1).
+pub fn lignes_de_recherche(cle: &str) -> Vec<crate::selection::Ligne> {
+    let chemin = format!(
+        "{} › {} ›",
+        tr!("Optimiser et installer", "Optimize and install"),
+        tr!("Logiciels recommandés", "Recommended software")
+    );
+    let categories = categories_de_ce_systeme();
+    CATALOGUE
+        .iter()
+        .filter(|l| pour_ce_systeme(l))
+        .filter_map(|l| {
+            let place = categories.iter().position(|c| *c == l.categorie)?;
+            Some(
+                crate::selection::Ligne::cachee(&format!("{cle}.{}", place + 2), &chemin, l.nom, role(l))
+                    .avec_mots(l.categorie.titre()),
+            )
+        })
+        .collect()
+}
+
+/// Un logiciel a-t-il une source sur ce système (paquet ou Flathub sous Linux, winget, Homebrew) ? Sinon la
+/// recherche ne le propose pas : sa catégorie s'ouvrirait sans lui.
+fn pour_ce_systeme(l: &Logiciel) -> bool {
+    #[cfg(target_os = "linux")]
+    return l.paquets.iter().any(|p| !p.is_empty()) || l.flatpak.is_some();
+    #[cfg(windows)]
+    return l.winget.is_some();
+    #[cfg(target_os = "macos")]
+    return l.mac.is_some();
+}
+
+/// Les catégories qui ont au moins un logiciel sur ce système, dans l'ordre du menu Logiciels (2, 3… après le pack).
+fn categories_de_ce_systeme() -> Vec<Categorie> {
+    Categorie::TOUTES
+        .into_iter()
+        .filter(|c| CATALOGUE.iter().any(|l| l.categorie == *c && pour_ce_systeme(l)))
+        .collect()
+}
+
+/// Les logiciels d'une catégorie, ouverts depuis la recherche (N de `lignes_de_recherche` ; 1, le pack de départ, et
+/// tout autre N ouvrent le menu Logiciels), puis Entrée pour revenir.
+pub fn ouvrir_sur(place: usize) {
+    let Some(c) = place
+        .checked_sub(2)
+        .and_then(|i| categories_de_ce_systeme().get(i).copied())
+    else {
+        menu();
+        return;
+    };
+    let Some(etat) = lire_en_parlant() else {
+        return;
+    };
+    if categorie(&etat, c) != Suite::Rien {
+        crate::selection::attendre_retour(&trf!(
+            "\n{GRIS}Entrée pour revenir…{RESET}",
+            "\n{GRIS}Enter to go back…{RESET}"
+        ));
+    }
+}
+
 pub fn menu() {
     let Some(mut etat) = lire_en_parlant() else {
         return;

@@ -59,6 +59,12 @@ delivered just before it. Only the latest version has its download page; every v
 | 5.12 Hidden cameras | 5.5 | | 9.9 Update Vanguard | 13.3 | | 9.10 Check my backup | 9.3.1 |
 | 5.13 Box and connected devices | 5.4 | | 9.11 Remove Vanguard | 13.11 | | 12 Extensions | 13.10 |
 
+- **Search.** A word typed in the main menu finds every tool, its variants, the guides, the guide pages, the
+  catalog's programs ("gimp" opens its category) and the Settings, ranked by relevance: the title before the rest,
+  synonyms ("box" → router, "ransomware", "password", "update") and a typo corrected and said ("imprimnte"). Old
+  command names can still be searched for ("harden" leads to Defender). `vanguard search <words>` does the same from
+  the command line: the ten best, with their place and command; `--first` opens the best, `--json` for a script.
+
 - **Renamed commands.** Whole words, no abbreviations, following the menu's labels; the English alias really
   translates the French name. The old names are no longer accepted: a script or task that calls them needs updating
   (the tasks Vanguard sets up itself keep their names). New commands: `rapport` (`report`), `annuler` (`undo`, like

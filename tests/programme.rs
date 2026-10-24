@@ -1906,3 +1906,19 @@ fn tickets_du_journal_regroupes() {
     assert_eq!(std::fs::read_to_string(&fichier).unwrap().trim(), "");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// `vanguard chercher` : la recherche du menu en ligne de commande. « box » mène au routeur (synonyme), une faute
+/// se corrige, rien de trouvé sort en 1.
+#[test]
+fn chercher_en_ligne_de_commande() {
+    let s = vanguard("fr", &["chercher", "box", "--json"], "", 60);
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    let v: serde_json::Value = serde_json::from_str(&s.texte).unwrap();
+    assert_eq!(v["resultats"][0]["touche"], "5.4", "{v}");
+    let faute = vanguard("fr", &["chercher", "imprimnte", "--json"], "", 60);
+    let v: serde_json::Value = serde_json::from_str(&faute.texte).unwrap();
+    assert_eq!(v["corrections"][0]["corrige"], "imprimante", "{v}");
+    let rien = vanguard("fr", &["chercher", "zzzqqq"], "", 60);
+    assert_eq!(rien.code, Some(1));
+    assert!(sans_couleurs(&rien.texte).contains("Aucun résultat"));
+}

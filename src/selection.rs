@@ -146,6 +146,85 @@ fn rang(recherche: &str, nom: &str) -> u8 {
     }
 }
 
+/// Les lignes trouvées par `tape`, de la mieux notée à la moins bien notée (à égalité, l'ordre du menu : les outils
+/// avant les pages du guide), avec les fautes corrigées et si ce ne sont que des résultats partiels (pas tous les
+/// mots tapés). `mots` : le vocabulaire du menu, vers lequel une faute se corrige.
+fn trier<'a, 'b>(
+    choix: &'b [Choisissable<'a>],
+    tape: &str,
+    mots: &[String],
+) -> (Vec<&'b Choisissable<'a>>, Vec<(String, String)>, bool) {
+    use crate::recherche::{score, termes_corriges};
+    let (termes, corrections) = termes_corriges(tape, mots, |forme| {
+        let un = crate::recherche::termes(forme);
+        choix.iter().any(|c| score(&un, &c.nom, &c.cherche).is_some())
+    });
+    let notes: Vec<(&Choisissable, u32, bool)> = choix
+        .iter()
+        .filter_map(|c| score(&termes, &c.nom, &c.cherche).map(|(n, tous)| (c, n, tous)))
+        .collect();
+    let complets = notes.iter().any(|(_, _, tous)| *tous);
+    let mut gardes: Vec<(&Choisissable, u32)> = notes
+        .into_iter()
+        .filter(|(_, _, tous)| *tous || !complets)
+        .map(|(c, n, _)| (c, n))
+        .collect();
+    gardes.sort_by_key(|g| std::cmp::Reverse(g.1));
+    let partiels = !complets && !gardes.is_empty();
+    (gardes.into_iter().map(|(c, _)| c).collect(), corrections, partiels)
+}
+
+/// Une ligne trouvée par `chercher` : sa touche, son texte (précédé de son chemin pour une ligne cachée) et sa précision.
+pub(crate) struct Trouve {
+    pub touche: String,
+    pub texte: String,
+    pub precision: String,
+}
+
+/// La recherche du menu, hors du menu (`vanguard chercher`) : les lignes trouvées, de la mieux notée à la moins
+/// bien notée, les fautes corrigées (« tapé → corrigé ») et si ce ne sont que des résultats partiels.
+pub(crate) fn chercher(lignes: &[Ligne], requete: &str) -> (Vec<Trouve>, Vec<(String, String)>, bool) {
+    let choix = choisissables(lignes);
+    let mots = crate::recherche::vocabulaire(choix.iter().map(|c| c.cherche.as_str()));
+    let (trouves, corrections, partiels) = trier(&choix, requete, &mots);
+    let trouves = trouves
+        .into_iter()
+        .map(|c| Trouve {
+            touche: c.touche.to_string(),
+            texte: c.texte.clone(),
+            precision: simplement_affiche(c.precision),
+        })
+        .collect();
+    (trouves, corrections, partiels)
+}
+
+/// Le titre de la recherche : ce qui est tapé, ou le mot corrigé et ce qui avait été tapé ; « partiels » quand aucune
+/// ligne n'a tous les mots.
+fn titre_de_recherche(tape: &str, corrections: &[(String, String)], partiels: bool) -> String {
+    let mot = if corrections.is_empty() {
+        trf!("RECHERCHE « {} »", "SEARCH “{}”", couper(tape.trim(), 40))
+    } else {
+        let corrige = corrections
+            .iter()
+            .map(|(_, c)| c.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        trf!(
+            "RECHERCHE « {} » (tapé : « {} »)",
+            "SEARCH “{}” (typed: “{}”)",
+            couper(&corrige, 24),
+            couper(tape.trim(), 24)
+        )
+    };
+    let titre = if partiels {
+        trf!("{mot} : RÉSULTATS PARTIELS", "{mot}: PARTIAL RESULTS")
+    } else {
+        mot
+    };
+    // Le filet de la section l'entoure : sur une seule rangée, même pour un long mot tapé.
+    couper(&titre, LARGEUR - 8)
+}
+
 /// Ce qui est tapé est-il une recherche ? Pas une touche du menu ni le début d'une touche (« 1 » de « 10 », « 4. » de
 /// « 4.2 »), et au moins deux lettres : une lettre seule reste un raccourci des anciennes versions (u, r, o…).
 fn est_une_recherche(tape: &str, touches: &[&str]) -> bool {
@@ -480,8 +559,9 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
         "  {GRIS}↑ ↓ choisir · Tab/→ compléter · Entrée lancer · Échap effacer la recherche{RESET}",
         "  {GRIS}↑ ↓ select · Tab/→ complete · Enter run · Esc clear the search{RESET}"
     );
-    // Les mots du menu, lus à la première recherche seulement.
+    // Les mots du menu, lus à la première recherche seulement : pour la fin de mot proposée, et pour corriger une faute.
     let mut vocabulaire: Option<Vocabulaire> = None;
+    let mut mots_du_menu: Option<Vec<String>> = None;
     // L'en-tête (cadre, titre, état) reste en place pendant la recherche, sans le sous-titre ni la ligne vide qui
     // annonçaient la première section (« BILAN DE SÉCURITÉ ») : les lignes trouvées viennent de partout.
     let mut entete: Vec<String> = lignes
@@ -501,12 +581,12 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
     let _ = sortie.write_all(b"\x1b[2J");
     loop {
         let recherche = est_une_recherche(&tape, &touches);
-        let trouves: Vec<&Choisissable> = if recherche {
-            let mut trouves: Vec<&Choisissable> = choix.iter().filter(|c| correspond(&tape, &c.cherche)).collect();
-            trouves.sort_by_key(|c| rang(&tape, &c.nom));
-            trouves
+        let (trouves, corrections, partiels): (Vec<&Choisissable>, Vec<(String, String)>, bool) = if recherche {
+            let mots = mots_du_menu
+                .get_or_insert_with(|| crate::recherche::vocabulaire(choix.iter().map(|c| c.cherche.as_str())));
+            trier(&choix, &tape, mots)
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new(), false)
         };
         en_cours_trouve = en_cours_trouve.min(trouves.len().saturating_sub(1));
         let suite = if recherche {
@@ -528,7 +608,7 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
                     ecran += "\x1b[K\r\n";
                 }
             }
-            ecran += &ligne_section(&trf!("RECHERCHE « {} »", "SEARCH “{}”", couper(tape.trim(), 40)));
+            ecran += &ligne_section(&titre_de_recherche(&tape, &corrections, partiels));
             ecran += "\x1b[K\r\n";
             // Ce qui tient sous l'en-tête, au-dessus de l'aide et de la saisie ; au-delà, une ligne le dit.
             let au_dessus = if montre_entete { hauteur_entete } else { 0 };

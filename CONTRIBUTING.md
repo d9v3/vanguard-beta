@@ -20,6 +20,7 @@ Une faille de sécurité ? Pas de ticket ni de demande de fusion publics : signa
 | `src/main.rs` | menu et sous-commandes |
 | `src/ui.rs` | couleurs, titres, cadres, barres, lignes coupées et alignées dans 76 colonnes |
 | `src/selection.rs` | menus et listes à cocher au clavier (flèches, Entrée, Échap ou Retour arrière), recherche par mot dans les menus |
+| `src/recherche.rs` | la recherche : score par mot, synonymes (« box » → routeur), fautes de frappe corrigées ; pour le menu et `vanguard chercher` |
 | `src/prediction.rs` | prédiction du mot en cours de frappe, la même dans tous les menus : sa fin en gris, Tab la complète |
 | `src/langue.rs` | choix de la langue et macros de traduction |
 | `src/parametres.rs` | menu Paramètres et `vanguard parametres` : les réglages du lancement (langue, emojis, sans Internet) dans parametres.json, lus avant tout affichage, une variable d'environnement l'emportant ; protection en temps réel, surveillance, entretien, alertes apprises, blocage, restrictions des extensions et clé abuse.ch changés par leur propre code |

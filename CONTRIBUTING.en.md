@@ -19,6 +19,7 @@ A security flaw? No public issue or pull request: report it privately, see [SECU
 | `src/main.rs` | menu and subcommands |
 | `src/ui.rs` | colors, titles, frames, bars, lines wrapped and aligned within 76 columns |
 | `src/selection.rs` | keyboard menus and checklists (arrows, Enter, Esc or Backspace), word search in menus |
+| `src/recherche.rs` | search: per-word score, synonyms ("box" → router), typos corrected; for the menu and `vanguard search` |
 | `src/prediction.rs` | prediction of the word being typed, the same in every menu: its end in grey, Tab completes it |
 | `src/langue.rs` | language choice and translation macros |
 | `src/parametres.rs` | Settings menu and `vanguard settings`: the startup settings (language, emojis, offline) in parametres.json, read before anything is shown, an environment variable winning; real-time protection, monitoring, check-up, learned alerts, blocking, extension restrictions and abuse.ch key changed by their own code |

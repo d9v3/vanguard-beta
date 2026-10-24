@@ -14641,7 +14641,7 @@ SOFTWARE.
 
 
 ================================================================================
-crypto-bigint 0.7.5 — Apache-2.0 OR MIT
+crypto-bigint 0.7.6 — Apache-2.0 OR MIT
 https://github.com/RustCrypto/crypto-bigint
 ================================================================================
 
@@ -15575,7 +15575,7 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 
 
 ================================================================================
-ctutils 0.4.4 — Apache-2.0 OR MIT
+ctutils 0.4.5 — Apache-2.0 OR MIT
 https://github.com/RustCrypto/utils
 ================================================================================
 
