@@ -1979,6 +1979,11 @@ mod tests {
             return crate::essais::saute("systemd ou le bus système absent");
         }
         let systemctl: Vec<bool> = systemctl.into_iter().flatten().collect();
+        // dbus tourne forcément là où le bus répond : systemctl qui le dit arrêté ne joint pas systemd (espace de
+        // noms d'`unshare -rn`, où il se croit root et cherche une prise privée), rien à comparer.
+        if !systemctl[0] {
+            return crate::essais::saute("systemctl ne joint pas systemd ici");
+        }
         assert_eq!(services_systemd_actifs(&noms), systemctl, "{noms:?}");
     }
 
