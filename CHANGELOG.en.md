@@ -147,6 +147,13 @@ delivered just before it. Only the latest version has its download page; every v
   files, no longer through tools a rootkit can replace; what cannot be read is reported as impossible, never healthy.
   In the traces, the tools' output stays alongside as a witness, and a discrepancy between the two is flagged. Unit
   activations, notifications and Déjà Dup settings go through a closed list of D-Bus actions, on the session bus only.
+- **Shell-free blocking.** Every step done as administrator is an order from a closed list, with typed parameters,
+  that Vanguard judges again itself before acting (remote sessions, local network, ports 22 and 3389 never touched).
+  On Linux and macOS, Vanguard relaunches itself (pkexec, run0 or sudo) instead of running "sudo sh -c"; nf_tables is
+  written directly through netlink, connections already open are cut by the kernel (failure reported) and a process
+  is stopped without a race on its number. On Windows, Firewall rules go through its interface, and a list mixed with
+  PowerShell asks for a single consent, in Vanguard's name. Undo notes written by earlier versions can still be
+  replayed as they are.
 - **Windows event logs read by Vanguard itself (first part).** A home-made .evtx reader, written from Microsoft's
   specification, bounded against booby-trapped files and fuzzed, reads the logs on Linux, macOS and Windows; one event
   shape serves both files and the running Windows, with refusals stated (security log without administrator rights,

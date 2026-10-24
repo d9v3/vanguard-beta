@@ -154,6 +154,13 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   Dans les traces, la sortie des outils reste à côté en témoin, et un écart entre les deux est signalé. Activations
   d'unités, notifications et réglages de Déjà Dup passent par une liste fermée d'actions D-Bus, sur le bus de la
   session seulement.
+- **Blocage sans shell.** Chaque geste fait en administrateur est un ordre d'une liste fermée, à paramètres typés,
+  que Vanguard rejuge lui-même avant d'agir (sessions à distance, réseau local, ports 22 et 3389 jamais touchés). Sous
+  Linux et macOS, Vanguard se relance lui-même (pkexec, run0 ou sudo) au lieu de lancer « sudo sh -c » ; nf_tables
+  est écrit directement par netlink, les connexions déjà ouvertes sont coupées par le noyau (échec dit) et un
+  processus s'arrête sans course sur son numéro. Sous Windows, les règles du Pare-feu passent par son interface, et
+  une liste mêlée de PowerShell ne demande plus qu'une autorisation, au nom de Vanguard. Les annulations notées par
+  les versions d'avant restent rejouables telles quelles.
 - **Journaux de Windows lus par Vanguard lui-même (première partie).** Un lecteur maison des fichiers .evtx, écrit
   d'après la spécification de Microsoft, borné contre les fichiers piégés et passé au fuzzing, lit les journaux sous
   Linux, macOS et Windows ; une seule forme d'événement sert aux fichiers comme au Windows en marche, avec le refus dit
