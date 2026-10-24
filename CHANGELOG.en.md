@@ -118,6 +118,13 @@ delivered just before it. Only the latest version has its download page; every v
   manifest read where Windows reads it), writes the key's markers and puts fully checked tldr-pages archives on it
   (CRC-32 of each entry, no overlap): no more Python at deployment. CI compiles the original YARA rules with the
   program's own engine. The key launcher no longer mistakes a missing or blocked PowerShell for a Defender block.
+- **The system read directly.** No more external programs where the system answers by itself: Wi-Fi read through
+  the WLAN API, NetworkManager (bus, read only) and the kernel, without netsh, nmcli or iw, and a too-old list of
+  nearby networks is reported as not verified; service state from systemd over the bus; TPM chip read without
+  administrator rights; listening ports, gateway, ARP table and router echo from the system tables (Windows, macOS),
+  with a ping that no longer mistakes a "host unreachable" for a reply; accounts in the traces and log export without
+  PowerShell or wevtutil; links and files opened without cmd; startup programs in the antivirus menu read without
+  PowerShell, and an unreadable source is no longer shown as empty.
 
 ## October 23, 2026: version 0.86
 

@@ -124,6 +124,13 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   contrôlées entières (CRC-32 de chaque entrée, sans chevauchement) : plus de Python au déploiement. La CI compile les
   règles YARA d'origine avec le moteur du programme. Le lanceur de la clé ne prend plus un PowerShell absent ou bloqué
   pour un blocage de Defender.
+- **Le système lu directement.** Plus de programmes externes là où le système répond lui-même : Wi-Fi lu par l'API
+  WLAN, NetworkManager (bus, lecture seule) et le noyau, sans netsh, nmcli ni iw, et une liste de voisins trop vieille
+  est dite non vérifiée ; état des services par systemd sur le bus ; puce TPM lue sans droits d'administrateur ; ports
+  en écoute, passerelle, table ARP et écho de la box par les tables du système (Windows, macOS), avec un ping qui ne
+  prend plus un « hôte inaccessible » pour une réponse ; comptes des traces et export des journaux sans PowerShell ni
+  wevtutil ; liens et fichiers ouverts sans cmd ; programmes de démarrage du menu antivirus lus sans PowerShell, et une
+  source illisible n'y passe plus pour vide.
 
 ## 23 octobre 2026 : version 0.86
 
