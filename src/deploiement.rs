@@ -27,6 +27,27 @@ pub(crate) enum Etape {
         /// La racine de la clé.
         racine: PathBuf,
     },
+    /// La racine de la clé VANGUARD de cet ordinateur : le volume monté au témoin vanguard.cle dont le jeton est connu
+    /// ici, comme le programme la reconnaît. Rien (code 0) sans volume au témoin ; code 3 quand des volumes portent le
+    /// témoin sans jeton connu (dits sur la sortie d'erreur) : rien ne doit y être écrit.
+    Cle,
+    /// Avant d'écrire sur la clé : elle doit être exactement sa référence (manifeste). Code 2 : elle a changé (l'écart
+    /// est dit) ; 3 : pas de référence pour elle ici.
+    #[command(name = "comparer-cle")]
+    ComparerCle {
+        /// La racine de la clé.
+        racine: PathBuf,
+    },
+    /// Relire en entier une image de ISO/ (la moins récemment relue) et comparer son SHA-256 à la référence. Code 2 :
+    /// l'image a été remplacée (notée dans la référence : le bilan la dit modifiée).
+    #[command(name = "relire-image")]
+    RelireImage {
+        /// La racine de la clé.
+        racine: PathBuf,
+        /// « NOM=SHA256 » d'une image vérifiée du cache, pour une image que la référence a sans empreinte.
+        #[arg(long)]
+        empreinte: Vec<String>,
+    },
 }
 
 /// 0 : l'étape a réussi ; 1 : elle a échoué, et l'a dit.
@@ -41,8 +62,137 @@ pub(crate) fn executer(etape: Etape) -> i32 {
                 false
             }
         },
+        Etape::Cle => return cle(),
+        Etape::ComparerCle { racine } => return comparer_cle(&racine),
+        Etape::RelireImage { racine, empreinte } => return relire_image(&racine, &empreinte),
     };
     i32::from(!reussi)
+}
+
+/// La clé connue parmi `volumes` (`Ok(Some)`), aucune (`Ok(None)` : aucun volume ne porte le témoin), ou les
+/// volumes au témoin sans jeton connu (`Err`). La règle du programme (`reseau::cle_usb`) : le témoin dit qu'un volume
+/// est fait comme une clé, pas que c'est la sienne.
+fn cle_parmi(
+    mut volumes: Vec<PathBuf>,
+    jetons: &std::collections::BTreeSet<String>,
+) -> Result<Option<PathBuf>, Vec<PathBuf>> {
+    volumes.retain(|d| d.join(crate::reseau::TEMOIN_CLE).is_file());
+    volumes.sort();
+    if let Some(c) = volumes
+        .iter()
+        .find(|d| crate::protection::cles_connues::connue(d, jetons))
+    {
+        return Ok(Some(c.clone()));
+    }
+    if volumes.is_empty() { Ok(None) } else { Err(volumes) }
+}
+
+fn cle() -> i32 {
+    match cle_parmi(
+        crate::reseau::volumes_montes(),
+        &crate::protection::cles_connues::jetons(),
+    ) {
+        Ok(Some(c)) => {
+            println!("{}", c.display());
+            0
+        }
+        Ok(None) => 0,
+        Err(inconnus) => {
+            for v in inconnus {
+                eprintln!(
+                    "{}",
+                    trf!(
+                        "Volume au témoin de la clé, sans jeton connu de cet ordinateur : {} (rien n'y est écrit)",
+                        "Volume with the key marker, without a token known to this computer: {} (nothing is written to it)",
+                        v.display()
+                    )
+                );
+            }
+            3
+        }
+    }
+}
+
+fn comparer_cle(racine: &Path) -> i32 {
+    match crate::protection::manifeste::avant_deploiement(racine) {
+        Ok(n) => {
+            println!(
+                "{}",
+                trf!(
+                    "✔ Clé identique à sa référence ({n} fichiers vérifiés).",
+                    "✔ Key identical to its reference ({n} files checked)."
+                )
+            );
+            0
+        }
+        Err((code, pourquoi)) => {
+            eprintln!(
+                "{}",
+                trf!(
+                    "✖ Clé différente de sa référence : {pourquoi}",
+                    "✖ Key different from its reference: {pourquoi}"
+                )
+            );
+            code
+        }
+    }
+}
+
+fn relire_image(racine: &Path, empreintes: &[String]) -> i32 {
+    use crate::protection::manifeste::{Relecture, image_et_empreinte, relire_image};
+    let empreintes: Result<Vec<_>, String> = empreintes.iter().map(|e| image_et_empreinte(e)).collect();
+    let resultat = empreintes.and_then(|e| relire_image(racine, &e));
+    match resultat {
+        Ok(Relecture::Rien) => {
+            println!(
+                "{}",
+                tr!(
+                    "· Aucune image de la clé n'a d'empreinte à relire.",
+                    "· No image on the key has a checksum to re-read."
+                )
+            );
+            0
+        }
+        Ok(Relecture::Pareille(c)) => {
+            println!(
+                "{}",
+                trf!(
+                    "✔ {} relue en entier : l'image vérifiée, octet pour octet.",
+                    "✔ {} re-read in full: the verified image, byte for byte.",
+                    affichable(&c)
+                )
+            );
+            0
+        }
+        Ok(Relecture::Differente(c)) => {
+            // Le chemin sur la sortie : outils/images-cle.sh recopie l'image vérifiée.
+            println!("{c}");
+            eprintln!(
+                "{}",
+                trf!(
+                    "✖ {} : autres octets que l'image vérifiée (même taille) ; remplacée sur la clé. Le bilan la dit modifiée.",
+                    "✖ {}: different bytes from the verified image (same size); replaced on the key. The check-up reports it modified.",
+                    affichable(&c)
+                )
+            );
+            2
+        }
+        Ok(Relecture::Illisible(c, e)) => {
+            eprintln!(
+                "{}",
+                trf!(
+                    "· {} pas relue ({e}) : rien de conclu.",
+                    "· {} not re-read ({e}): nothing concluded.",
+                    affichable(&c)
+                )
+            );
+            1
+        }
+        Err(e) => {
+            eprintln!("{}", trf!("✖ Relecture impossible : {e}", "✖ Re-read impossible: {e}"));
+            1
+        }
+    }
 }
 
 /// Les deux réglages du manifeste (build.rs), cherchés tels que build.rs les écrit, dans la ressource que Windows lit
@@ -352,6 +502,42 @@ mod tests {
             .filter(|n| n.contains(".tmp-"))
             .collect();
         assert!(restes.is_empty(), "{restes:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Campagne 3 : les scripts prenaient le premier volume au témoin vanguard.cle. Seul un volume au jeton connu est
+    /// la clé ; un volume étranger, même au témoin, est dit, et rien n'y est écrit.
+    #[test]
+    fn cle_au_jeton_connu_seulement() {
+        let d = dossier();
+        let jeton = "0123456789abcdef0123456789abcdef";
+        let volume = |nom: &str, jeton: Option<&str>| {
+            let v = d.join(nom);
+            std::fs::create_dir_all(&v).unwrap();
+            std::fs::write(v.join("vanguard.cle"), "x\n").unwrap();
+            if let Some(j) = jeton {
+                std::fs::write(v.join("vanguard.jeton"), format!("{j}\n")).unwrap();
+            }
+            v
+        };
+        let etrangere = volume("VANGUARD", None);
+        let autre_jeton = volume("VANGUARD1", Some("ffffffffffffffffffffffffffffffff"));
+        let sans_temoin = d.join("PHOTOS");
+        std::fs::create_dir_all(&sans_temoin).unwrap();
+        let connus: std::collections::BTreeSet<String> = [jeton.to_string()].into();
+        assert_eq!(cle_parmi(vec![sans_temoin.clone()], &connus), Ok(None));
+        assert_eq!(
+            cle_parmi(
+                vec![etrangere.clone(), autre_jeton.clone(), sans_temoin.clone()],
+                &connus
+            ),
+            Err(vec![etrangere.clone(), autre_jeton.clone()])
+        );
+        let la_mienne = volume("VANGUARD2", Some(&jeton.to_uppercase()));
+        assert_eq!(
+            cle_parmi(vec![etrangere, autre_jeton, la_mienne.clone(), sans_temoin], &connus),
+            Ok(Some(la_mienne))
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

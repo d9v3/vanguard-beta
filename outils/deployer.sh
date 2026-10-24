@@ -8,6 +8,14 @@
 #                                      du journal) ; le service de copie qui suit la compilation le respecte aussi
 #   outils/deployer.sh --publier       comme sans option (gardée pour les anciens appels : chaque publication a
 #                                      désormais sa page)
+#   outils/deployer.sh --accepter-cle [DOSSIER]
+#                                      comme --sans-compiler, sur une clé que l'auteur accepte telle qu'elle est :
+#                                      une clé neuve (outils/preparer-cle.sh, cle-secours.sh --ecrire), un volume au
+#                                      jeton inconnu (DOSSIER, son point de montage), ou la clé connue dont l'écart
+#                                      avec sa référence a été regardé ; sa référence (manifeste) la reprend telle quelle
+# La clé n'est jamais que celle de cet ordinateur (jeton connu, outils/cle-commun.sh), et rien n'y est écrit quand
+# elle a changé depuis son dernier déploiement (comparée à sa référence AVANT toute écriture) : ce qui y a été planté
+# en voyage n'entre jamais en silence dans la référence. Notification, puis --accepter-cle si c'est voulu.
 # VANGUARD_INTERMEDIAIRE=1 : une version d'une série livrée d'affilée. Pas de page (la dernière de la série reprend
 # leurs notes) ni de dépôt dans la VM Windows (son test automatique passerait sur chacune) : le Mac de GitHub et la VM
 # ne voient que la dernière.
@@ -23,6 +31,12 @@ MODE=${1:-}
 if [[ $MODE == --publier ]]; then
   MODE=""
 fi
+ACCEPTER="" ACCEPTER_CLE=""
+if [[ $MODE == --accepter-cle ]]; then
+  ACCEPTER=1 ACCEPTER_CLE=${2:-} MODE=--sans-compiler
+fi
+# shellcheck source=outils/cle-commun.sh
+source outils/cle-commun.sh
 # « Seulement sur cet ordinateur » : rien n'est envoyé sur GitHub. Le repère dure 2 h, assez pour le service de copie
 # que la compilation déclenche (--sans-compiler, qui sinon pousserait) ; un déploiement normal l'efface.
 REPERE_LOCAL="${XDG_RUNTIME_DIR:-/tmp}/vanguard-deployer-local"
@@ -73,8 +87,12 @@ refuser() {
   local cle journal="" repere="${XDG_RUNTIME_DIR:-/tmp}/vanguard-refus.empreinte" empreinte
   echo "Déploiement arrêté : seuls les journaux d'erreurs sont rapatriés."
   rapatrier_journal "${XDG_DATA_HOME:-$HOME/.local/share}/vanguard/journal-erreurs.txt" "de cet ordinateur"
-  cle=$(find "/run/media/$USER" -maxdepth 2 -name vanguard.cle -printf '%h\n' 2>/dev/null | head -1 || true)
-  [[ -z $cle ]] || journal=$(findmnt -nro TARGET -S LABEL=VANGUARDLOG 2>/dev/null | head -1 || true)
+  # La partition des journaux de la clé de cet ordinateur seulement, et seulement si la clé n'a pas changé : vider le
+  # journal est une écriture.
+  cle=$(cle_connue "./$LINUX" 2>/dev/null || true)
+  if [[ -n $cle ]] && ./"$LINUX" deploiement comparer-cle "$cle" >/dev/null 2>&1; then
+    journal=$(journal_de_la_cle "$cle" 2>/dev/null || true)
+  fi
   [[ -z $journal ]] || rapatrier_journal "$journal/journal-erreurs.txt" "de la clé"
   envoyer_journal
   empreinte=$({ cat "$LINUX" "$WINDOWS" 2>/dev/null || true; } | sha256sum)
@@ -322,38 +340,70 @@ publier_la_version() {
   duree "page de la version" "$debut"
 }
 
-CLE=$(find "/run/media/$USER" -maxdepth 2 -name vanguard.cle -printf '%h\n' 2>/dev/null | head -1)
+avertir_cle() { # titre texte : une alerte de la clé, que personne ne lit au branchement sans notification
+  command -v notify-send >/dev/null && notify-send -a Vanguard -i vanguard -u critical -- "$1" "$2" || true
+}
+# La clé de cet ordinateur : le volume au témoin vanguard.cle dont le jeton est connu ici (outils/cle-commun.sh). Un
+# volume étiqueté VANGUARD au jeton inconnu ne reçoit rien. --accepter-cle DOSSIER : celui que l'auteur désigne.
+CODE_CLE=0
+if [[ -n $ACCEPTER_CLE ]]; then
+  CLE=$ACCEPTER_CLE
+  if [[ ! -d $CLE || ! -f $CLE/vanguard.cle || -L $CLE/vanguard.cle ]]; then
+    echo "✖ $CLE ne porte pas le témoin vanguard.cle d'une clé VANGUARD : rien n'y est écrit."
+    exit 1
+  fi
+else
+  CLE=$(cle_connue "./$LINUX") || CODE_CLE=$?
+fi
 if [[ -z $CLE ]]; then
-  echo "Clé VANGUARD non branchée : elle sera mise à jour au prochain branchement."
+  if ((CODE_CLE == 3)); then
+    echo "Volume au témoin VANGUARD, au jeton inconnu de cet ordinateur : rien n'y est écrit (ni programme, ni code"
+    echo "source). S'il est à vous : outils/deployer.sh --accepter-cle <son dossier>."
+    avertir_cle "Volume VANGUARD inconnu : rien n'y est écrit" "Ce n'est pas une clé déployée ici (jeton absent ou \
+inconnu). Si elle est à vous : outils/deployer.sh --accepter-cle <son dossier>."
+  elif ((CODE_CLE != 0)); then
+    echo "✖ Clé VANGUARD pas cherchée (le programme ne sait pas la reconnaître : recompiler) : rien n'y est écrit."
+  else
+    echo "Clé VANGUARD non branchée : elle sera mise à jour au prochain branchement."
+  fi
   publier_la_version
   dire_durees
+  # Une clé demandée (--accepter-cle) mais pas trouvée, ou pas cherchée : un échec ; un volume inconnu, non.
+  if [[ -n $ACCEPTER ]] || ((CODE_CLE != 0 && CODE_CLE != 3)); then exit 1; fi
   exit 0
 fi
 T_CLE=$SECONDS
 
-# Témoins de la clé, écrits par le programme (src/deploiement.rs) : le jeton d'identité (src/protection/cles_connues.rs),
-# 32 caractères hexadécimaux tirés une fois et gardés ensuite ; cet ordinateur le note (vanguard manifeste --ecrire,
-# plus bas) et, depuis sa copie locale, ne reconnaît plus un volume au seul témoin vanguard.cle. La partition des
-# journaux reçoit le même jeton. Puis l'empreinte de cet ordinateur (SHA-1 de /etc/machine-id) dans vanguard.cle :
-# partout ailleurs, Vanguard remonte la clé en lecture seule sous Linux (src/protection/cle.rs). Avant la copie vers
-# la partition des journaux et avant le manifeste. Un programme d'avant « deploiement » (--sans-compiler) : le bash
-# d'avant, pour que la clé garde ses témoins (seulement sans vanguard.exe : avec lui, verifier-pe, sans repli, a déjà
-# arrêté le déploiement).
-if ./"$LINUX" deploiement temoins --help >/dev/null 2>&1; then
-  ./"$LINUX" deploiement temoins "$CLE" || { echo "✖ Témoins de la clé non écrits : clé pas mise à jour."; exit 1; }
-else
-  if ! grep -qxE '[0-9a-fA-F]{32}' "$CLE/vanguard.jeton" 2>/dev/null; then
-    head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$CLE/vanguard.jeton"
-    echo >>"$CLE/vanguard.jeton"
-  fi
-  printf '%s' "$(cat /etc/machine-id)" | sha1sum | cut -d' ' -f1 >"$CLE/vanguard.cle"
+# La clé comparée à sa référence AVANT toute écriture (src/protection/manifeste.rs) : un raccourci, une image, un
+# ventoy.json ou une archive tldr posés pendant le voyage y sont vus, et rien n'est écrit (ni programme, ni journal
+# vidé, ni manifeste), jusqu'à l'accord de l'auteur (--accepter-cle). Sans cela, la référence réécrite après la copie
+# les reprenait, et le bilan disait « la clé n'a pas changé » (campagne d'attaque n° 3).
+if [[ -z $ACCEPTER ]] && ! ECART=$(./"$LINUX" deploiement comparer-cle "$CLE" 2>&1); then
+  echo "✖ La clé VANGUARD ($CLE) a changé depuis son dernier déploiement : rien n'y est écrit."
+  sed 's/^/  /' <<<"$ECART"
+  echo "  Regarder ces fichiers (un raccourci ou une image plantés sont un piège). S'ils sont voulus :"
+  echo "  outils/deployer.sh --accepter-cle (la clé est réécrite et sa référence la reprend telle quelle)."
+  avertir_cle "Clé VANGUARD changée : rien n'y est écrit" "$(head -c 300 <<<"$ECART")
+À regarder avant tout usage ; si c'est voulu : outils/deployer.sh --accepter-cle"
+  publier_la_version
+  dire_durees
+  exit 1
 fi
 
-# Partition VANGUARDLOG (la seule modifiable sur les autres ordinateurs) : elle se monte en même temps que VANGUARD,
-# parfois une seconde après. Son journal d'erreurs est rapatrié ici puis vidé, pour améliorer Vanguard.
+# Témoins de la clé, écrits par le programme (src/deploiement.rs) : le jeton d'identité (src/protection/cles_connues.rs),
+# 32 caractères hexadécimaux tirés une fois et gardés ensuite (seulement pour une clé acceptée : une clé connue a
+# déjà le sien) ; cet ordinateur le note (vanguard manifeste --ecrire, plus bas). La partition des journaux reçoit le
+# même jeton. Puis l'empreinte de cet ordinateur (SHA-1 de /etc/machine-id) dans vanguard.cle : partout ailleurs,
+# Vanguard remonte la clé en lecture seule sous Linux (src/protection/cle.rs). Avant la copie vers la partition des
+# journaux et avant le manifeste.
+./"$LINUX" deploiement temoins "$CLE" || { echo "✖ Témoins de la clé non écrits : clé pas mise à jour."; exit 1; }
+
+# Partition VANGUARDLOG (la seule modifiable sur les autres ordinateurs) : celle du même disque, au jeton de la clé
+# (outils/cle-commun.sh) ; elle se monte en même temps que VANGUARD, parfois une seconde après. Son journal d'erreurs
+# est rapatrié ici puis vidé, pour améliorer Vanguard.
 JOURNAL=""
 for _ in {1..10}; do
-  JOURNAL=$(findmnt -nro TARGET -S LABEL=VANGUARDLOG 2>/dev/null | head -1 || true)
+  JOURNAL=$(journal_de_la_cle "$CLE") || break
   [[ -n $JOURNAL ]] && break
   sleep 1
 done
@@ -444,9 +494,20 @@ rsync -rt --delete --modify-window=2 --exclude /target/ --exclude /.claude/workt
 ./"$LINUX" deploiement tldr "$CLE/tldr" || echo "Exemples de tldr-pages non mis à jour sur la clé."
 # Manifeste de la clé (src/protection/manifeste.rs) : l'empreinte de chaque fichier (vanguard.jeton compris), gardée
 # sur cet ordinateur et jamais sur la clé ; le bilan la compare quand la clé revient de chez quelqu'un. La même
-# commande note la clé parmi celles que cet ordinateur connaît, avec l'état de son carnet. Un programme d'avant la
-# 0.59 n'a pas cette commande : la clé est à jour quand même.
-./"$LINUX" manifeste --ecrire "$CLE" || echo "Manifeste de la clé non écrit : le bilan ne pourra pas la comparer."
+# commande note la clé parmi celles que cet ordinateur connaît, avec l'état de son carnet. Elle ne reprend sans accord
+# que ce que ce déploiement vient de poser (programmes, guides, lanceurs, code source, tldr) : un fichier apparu
+# depuis la comparaison du début la fait refuser (code 2), --accepter-cle la force.
+FORCER=()
+[[ -z $ACCEPTER ]] || FORCER=(--forcer)
+CODE_MANIFESTE=0
+./"$LINUX" manifeste --ecrire "$CLE" "${FORCER[@]}" || CODE_MANIFESTE=$?
+if ((CODE_MANIFESTE == 2)); then
+  avertir_cle "Clé VANGUARD : référence pas réécrite" "Un fichier est apparu sur la clé pendant le déploiement. À \
+regarder ; si c'est voulu : outils/deployer.sh --accepter-cle"
+  exit 1
+elif ((CODE_MANIFESTE != 0)); then
+  echo "Manifeste de la clé non écrit : le bilan ne pourra pas la comparer."
+fi
 sync
 duree clé "$T_CLE"
 echo "Clé VANGUARD à jour : $CLE ($(./"$LINUX" --version))"

@@ -261,10 +261,18 @@ command -v notify-send >/dev/null &&
 # La version macOS publiée est gardée comme une compilation récupérée (outils/deployer.sh ne la redemande pas) et
 # copiée sur la clé si elle est branchée : sinon la clé garderait celle d'avant jusqu'au déploiement suivant.
 rm -rf target/macos && mkdir -p target/macos && cp "$DOSSIER/mac/"* target/macos/
-CLE=$(find "/run/media/$USER" -maxdepth 2 -name vanguard.cle -printf '%h\n' 2>/dev/null | head -1)
-if [[ -n $CLE && -d $CLE/macOS ]] && cp -f target/macos/vanguard "$CLE/macOS/vanguard" && sync; then
-  echo "Version macOS $VERSION copiée sur la clé."
-  # Le manifeste de la clé, écrit par deployer.sh avant cette copie, la reprend : sinon le bilan suivant dirait le
-  # programme macOS remplacé.
-  ./"$LINUX" manifeste --ecrire "$CLE" || echo "Manifeste de la clé non réécrit : relancer outils/deployer.sh."
+# Seulement la clé de cet ordinateur (jeton connu, outils/cle-commun.sh), et seulement si elle est encore sa référence :
+# comparée avant la copie, comme dans deployer.sh, pour que la réécriture du manifeste ne reprenne rien d'autre.
+# shellcheck source=outils/cle-commun.sh
+source outils/cle-commun.sh
+CLE=$(cle_connue "./$LINUX" 2>/dev/null || true)
+if [[ -n $CLE && -d $CLE/macOS ]]; then
+  if ! ./"$LINUX" deploiement comparer-cle "$CLE" >/dev/null 2>&1; then
+    echo "Clé VANGUARD différente de sa référence : la version macOS n'y est pas copiée (outils/deployer.sh le dit)."
+  elif cp -f target/macos/vanguard "$CLE/macOS/vanguard" && sync; then
+    echo "Version macOS $VERSION copiée sur la clé."
+    # Le manifeste de la clé, écrit par deployer.sh avant cette copie, la reprend : sinon le bilan suivant dirait le
+    # programme macOS remplacé.
+    ./"$LINUX" manifeste --ecrire "$CLE" || echo "Manifeste de la clé non réécrit : relancer outils/deployer.sh."
+  fi
 fi

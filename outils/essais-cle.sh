@@ -468,6 +468,26 @@ compte ventoy_maj
 voir "--ventoy-maj sur une clé plus récente que l'épingle : rien à faire, pas de mot de passe demandé" \
   eval '[[ ! -s $BANC/pkexec.log ]] && dit "$BANC/sortie" "déjà sur la clé"' || montrer "$BANC/sortie"
 
+# La partition de démarrage jugée par ses fichiers, pas par sa version : réécrite en voyage à version égale, vue.
+cle_simulee 1.1.99
+compte verifier_ventoy "$BANC/point"
+voir "VTOYEFI : première relève prise pour référence, et dit" \
+  eval 'dit "$BANC/sortie" "première relève ici" && [[ -s $BANC/etat/vanguard/vtoyefi/SERIE-A ]]' ||
+  montrer "$BANC/sortie"
+compte verifier_ventoy "$BANC/point"
+voir "VTOYEFI inchangée : identique à sa référence" dit "$BANC/sortie" "identique à sa référence" ||
+  montrer "$BANC/sortie"
+echo piege >"$BANC/vtoyefi/grub/grubx64.efi"
+compte verifier_ventoy "$BANC/point"
+code=$?
+voir "VTOYEFI changée à version égale : alerte, code 1, la référence reste" \
+  eval '((code == 1)) && dit "$BANC/notifications.log" "démarrage (VTOYEFI) modifié" &&
+    dit "$BANC/sortie" "--accepter-vtoyefi"' || montrer "$BANC/sortie"
+compte accepter_vtoyefi
+compte verifier_ventoy "$BANC/point"
+voir "--accepter-vtoyefi : la partition telle qu'elle est devient la référence" \
+  dit "$BANC/sortie" "identique à sa référence" || montrer "$BANC/sortie"
+
 cle_simulee 1.1.10
 ESSAI_CLIC=default VANGUARD_RACINE=$BANC/absente/ventoy-racine compte verifier_ventoy "$BANC/point"
 voir "partie root pas installée : rien de proposé, la notification dit comment l'installer" \
@@ -840,6 +860,30 @@ copier
 code=$?
 voir "et la copie se refait au passage suivant" \
   eval '((code == 0)) && cmp -s "$NEUVE" "$IMAGE5"' || montrer "$BANC/sortie"
+# La relecture d'une image (vanguard deploiement relire-image, faux ici) : une Kali remplacée par une autre de même
+# taille, que la taille seule ne voyait pas, est recopiée ; son empreinte vérifiée part à la référence.
+cat >"$BANC/faux-vanguard" <<'FIN'
+#!/usr/bin/env bash
+echo "$*" >>"$BANC/faux-vanguard.log"
+if [[ "$1 $2" == "deploiement relire-image" && -n ${ESSAI_RELUE:-} ]]; then echo "ISO/$ESSAI_RELUE"; exit 2; fi
+exit 0
+FIN
+chmod +x "$BANC/faux-vanguard"
+SHA5=$(cat "$IMAGE5.sha256")
+rm -f "$BANC/faux-vanguard.log" "$BANC/notifications.log"
+VANGUARD_PROGRAMME=$BANC/faux-vanguard copier
+code=$?
+voir "image intacte relue : pas recopiée ; la relecture a l'empreinte vérifiée du cache" \
+  eval '((code == 0)) && dit "$BANC/faux-vanguard.log" "deploiement relire-image $BANC/cle5 --empreinte ${IMAGE5##*/}=$SHA5" &&
+    pas_dit "$BANC/notifications.log" "copie de"' || { montrer "$BANC/sortie"; montrer "$BANC/faux-vanguard.log"; }
+head -c $((8 * 1024 * 1024)) /dev/urandom >"$NEUVE"
+rm -f "$BANC/faux-vanguard.log" "$BANC/notifications.log"
+ESSAI_RELUE=${IMAGE5##*/} VANGUARD_PROGRAMME=$BANC/faux-vanguard copier
+code=$?
+voir "image remplacée par une autre de même taille : dite, recopiée, son empreinte redite à la référence" \
+  eval '((code == 0)) && cmp -s "$NEUVE" "$IMAGE5" && dit "$BANC/notifications.log" "image remplacée" &&
+    dit "$BANC/faux-vanguard.log" "manifeste --images $BANC/cle5 --image ${IMAGE5##*/}=$SHA5"' ||
+  { montrer "$BANC/sortie"; montrer "$BANC/faux-vanguard.log"; }
 /usr/bin/umount "$BANC/cle5"
 
 # Kali cède sa place : une nouvelle SystemRescue (14 Mio) ne tient pas sur la clé de 530 Mio, même sans l'ancienne
@@ -970,6 +1014,145 @@ voir "mise à jour du jour sans clé de secours : le programme seul, ni images n
     pas_dit "$BANC/sortie" "== images" && dit "$BANC/sortie" "ni images ni démarrage"' ||
   { montrer "$BANC/sortie"; montrer "$BANC/notifications.log"; }
 reglage CLE_SECOURS=oui
+rm -rf /run/media/alice
+
+# --- Déploiement de la clé (deployer.sh, cle-commun.sh) ------------------------------------------------------------
+
+echo "Déploiement de la clé :"
+# La partition des journaux : celle du même disque, au jeton de la clé (findmnt et lsblk simulés).
+J=0123456789abcdef0123456789abcdef
+mkdir -p "$BANC/log-a" "$BANC/log-b" "$BANC/cle-j"
+echo "$J" >"$BANC/cle-j/vanguard.jeton"
+journal_simule() { # jeton de VANGUARDLOG sur le disque de la clé (vide : sans jeton), « ailleurs » : sur un autre disque
+  (
+    # shellcheck source=outils/cle-commun.sh
+    source outils/cle-commun.sh
+    findmnt() {
+      case "$*" in
+        "-nvo SOURCE -T $BANC/cle-j") echo /dev/sdy1 ;;
+        "-nro TARGET -S /dev/sdy3") echo "$BANC/log-a" ;;
+        "-nro TARGET -S /dev/sdx1") echo "$BANC/log-b" ;;
+      esac
+    }
+    lsblk() {
+      case "$*" in
+        "-dno PKNAME /dev/sdy1") echo sdy ;;
+        "-lnpo NAME,LABEL /dev/sdy") printf '/dev/sdy\n/dev/sdy1 VANGUARD\n/dev/sdy3 %s\n' "$ESSAI_LABEL_Y" ;;
+        "-lnpo NAME,LABEL /dev/sdx") printf '/dev/sdx1 VANGUARDLOG\n' ;;
+      esac
+    }
+    journal_de_la_cle "$BANC/cle-j"
+  )
+}
+rm -f "$BANC/log-a/vanguard.jeton"
+voir "VANGUARDLOG du même disque, sans jeton encore : prise" \
+  eval '[[ $(ESSAI_LABEL_Y=VANGUARDLOG journal_simule 2>/dev/null) == "$BANC/log-a" ]]'
+echo "$J" | tr 'a-f' 'A-F' >"$BANC/log-a/vanguard.jeton"
+voir "VANGUARDLOG au jeton de la clé : prise" \
+  eval '[[ $(ESSAI_LABEL_Y=VANGUARDLOG journal_simule 2>/dev/null) == "$BANC/log-a" ]]'
+echo ffffffffffffffffffffffffffffffff >"$BANC/log-a/vanguard.jeton"
+voir "VANGUARDLOG au jeton d'une autre clé : refusée, dit" \
+  eval 'sortie=$(ESSAI_LABEL_Y=VANGUARDLOG journal_simule 2>&1); (($? == 1)) && [[ $sortie == *"autre clé"* ]]'
+voir "seul un volume VANGUARDLOG d'un autre disque : rien" \
+  eval '[[ -z $(ESSAI_LABEL_Y=AUTRE journal_simule 2>/dev/null) ]]'
+
+# deployer.sh lui-même, dans un faux dépôt : un faux vanguard (la clé connue par les jetons de $BANC/connus, la
+# référence par l'empreinte de chaque fichier), sans compilation ni GitHub (--sans-compiler, repère « local »).
+DD=$BANC/depot-dep
+mkdir -p "$DD/outils" "$DD/assets/icones" "$DD/target/x86_64-unknown-linux-musl/release" "$BANC/faux-dep"
+cp outils/deployer.sh outils/cle-commun.sh outils/LISEZMOI.txt outils/README.txt "$DD/outils/"
+cp -r outils/cle "$DD/outils/"
+printf '#!/bin/sh\nexit 0\n' | tee "$DD/outils/verifier-masque.sh" "$DD/outils/failles-programmes.sh" \
+  >"$BANC/faux-dep/pgrep"
+: >"$DD/outils/licences-tierces.py"
+sed -i 's/exit 0/exit 1/' "$BANC/faux-dep/pgrep"
+chmod +x "$DD"/outils/*.sh "$DD"/outils/*.py "$BANC/faux-dep/pgrep"
+: >"$DD/LICENSE"
+: >"$DD/LICENCES-TIERCES.txt"
+: >"$DD/assets/vanguard.ico"
+: >"$DD/assets/icones/vanguard-16.png"
+cat >"$DD/target/x86_64-unknown-linux-musl/release/vanguard" <<'FIN'
+#!/usr/bin/env bash
+# Faux vanguard du banc : chaque appel noté dans $BANC/vanguard.log.
+echo "$*" >>"$BANC/vanguard.log"
+releve() { (cd "$1" && find . -type f ! -path './donnees/*' -print0 | sort -z | xargs -0 -r sha256sum); }
+case "$1 ${2:-}" in
+  "--version ") echo "Vanguard 0.0.0-essai" ;;
+  "deploiement cle")
+    inconnu=0
+    for v in /run/media/"$USER"/*; do
+      [[ -f $v/vanguard.cle ]] || continue
+      j=$(tr -d '[:space:]' <"$v/vanguard.jeton" 2>/dev/null)
+      if [[ -n $j ]] && grep -qxF "$j" "$BANC/connus" 2>/dev/null; then echo "$v"; exit 0; fi
+      inconnu=1
+      echo "Volume au témoin de la clé, sans jeton connu : $v" >&2
+    done
+    exit $((inconnu * 3)) ;;
+  "deploiement comparer-cle")
+    [[ -f $BANC/reference ]] || { echo "aucune référence" >&2; exit 3; }
+    diff <(releve "$3") "$BANC/reference" >&2 || exit 2 ;;
+  "deploiement temoins")
+    [[ -s $3/vanguard.jeton ]] || echo fedcba9876543210fedcba9876543210 >"$3/vanguard.jeton"
+    echo temoin >"$3/vanguard.cle" ;;
+  "manifeste --ecrire")
+    releve "$3" >"$BANC/reference"
+    tr -d '[:space:]' <"$3/vanguard.jeton" >>"$BANC/connus"
+    echo >>"$BANC/connus" ;;
+esac
+exit 0
+FIN
+chmod +x "$DD/target/x86_64-unknown-linux-musl/release/vanguard"
+deployer() { # arguments… : sortie dans $BANC/sortie, code de sortie rendu
+  rm -f "$BANC/notifications.log" "$BANC/vanguard.log"
+  touch "$BANC/run/vanguard-deployer-local"
+  PATH=$BANC/faux-dep:$PATH bash "$DD/outils/deployer.sh" "$@" >"$BANC/sortie" 2>&1
+}
+etat_cle() { (cd "$1" && find . -type f -print0 | sort -z | xargs -0 -r sha256sum); }
+K=/run/media/alice/VANGUARD
+mkdir -p "$K"
+echo temoin >"$K/vanguard.cle"
+echo "$J" >"$K/vanguard.jeton"
+echo "$J" >"$BANC/connus"
+(cd "$K" && find . -type f -print0 | sort -z | xargs -0 sha256sum) >"$BANC/reference"
+deployer --sans-compiler
+code=$?
+voir "clé connue, identique à sa référence : programme et code source copiés, référence réécrite ; code 0" \
+  eval '((code == 0)) && [[ -f $K/Linux/vanguard && -d $K/source/outils ]] &&
+    dit "$BANC/vanguard.log" "deploiement comparer-cle $K" && dit "$BANC/vanguard.log" "manifeste --ecrire $K"' ||
+  { montrer "$BANC/sortie"; }
+# Le voyage : un raccourci planté. Rien n'est écrit (ni copie, ni référence), une notification le dit.
+echo piege >"$K/Photos.lnk"
+echo "ancien" >"$K/Linux/vanguard"
+etat_cle "$K" >"$BANC/avant"
+cp "$BANC/reference" "$BANC/reference-avant"
+deployer --sans-compiler
+code=$?
+voir "clé changée en voyage : rien n'y est écrit, la référence reste, notification ; code 1" \
+  eval '((code == 1)) && cmp -s <(etat_cle "$K") "$BANC/avant" && cmp -s "$BANC/reference" "$BANC/reference-avant" &&
+    pas_dit "$BANC/vanguard.log" "manifeste --ecrire" && pas_dit "$BANC/vanguard.log" "temoins" &&
+    dit "$BANC/notifications.log" "Clé VANGUARD changée" && dit "$BANC/sortie" "Photos.lnk"' ||
+  { montrer "$BANC/sortie"; montrer "$BANC/vanguard.log"; }
+deployer --accepter-cle
+code=$?
+voir "--accepter-cle : la clé réécrite, sa référence forcée telle quelle ; code 0" \
+  eval '((code == 0)) && dit "$BANC/vanguard.log" "manifeste --ecrire $K --forcer" &&
+    ! grep -qx ancien "$K/Linux/vanguard" && [[ -f $K/Photos.lnk ]]' || montrer "$BANC/sortie"
+# Un volume étranger au témoin VANGUARD (jeton inconnu), la vraie clé débranchée : il ne reçoit rien.
+rm -rf "$K"
+mkdir -p "$K"
+echo temoin >"$K/vanguard.cle"
+echo eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee >"$K/vanguard.jeton"
+etat_cle "$K" >"$BANC/avant"
+deployer --sans-compiler
+code=$?
+voir "volume VANGUARD au jeton inconnu : rien n'y est écrit (ni programme, ni source), notification ; code 0" \
+  eval '((code == 0)) && cmp -s <(etat_cle "$K") "$BANC/avant" && [[ ! -e $K/source ]] &&
+    dit "$BANC/notifications.log" "Volume VANGUARD inconnu"' || { montrer "$BANC/sortie"; montrer "$BANC/vanguard.log"; }
+deployer --accepter-cle "$K"
+code=$?
+voir "--accepter-cle DOSSIER : le volume adopté (programme copié, référence forcée)" \
+  eval '((code == 0)) && [[ -f $K/Linux/vanguard ]] && dit "$BANC/vanguard.log" "manifeste --ecrire $K --forcer"' ||
+  montrer "$BANC/sortie"
 rm -rf /run/media/alice
 
 # --- Ménage (menage-dev.sh) ------------------------------------------------------------------------------------------

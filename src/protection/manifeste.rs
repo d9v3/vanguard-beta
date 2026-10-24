@@ -8,8 +8,16 @@
 //! image démarrée d'office, un script injecté dans une image par ailleurs signée) ou une image plantée s'y voient.
 //! outils/images-cle.sh, qui les met à jour chez le propriétaire après avoir vérifié leur signature, redit à la
 //! référence ce qu'il a posé (`vanguard manifeste --images`) : seulement les images qu'il vient de copier et le menu
-//! qu'il vient d'écrire, jamais une image qu'il n'a pas posée. Une référence d'avant (`Manifeste::images` faux) les
-//! laisse de côté, comme alors, jusqu'au prochain déploiement.
+//! qu'il vient d'écrire, jamais une image qu'il n'a pas posée, avec l'empreinte SHA-256 relue sur la clé : la taille
+//! seule laisse passer une autre image de même taille. Chacun de ses passages relit en entier une image de plus
+//! (`vanguard deploiement relire-image`, la moins récemment relue) ; une image aux autres octets reste « modifiée »
+//! jusqu'à ce qu'il la repose. Une référence d'avant (`Manifeste::images` faux) les laisse de côté, comme alors,
+//! jusqu'au prochain déploiement.
+//!
+//! La référence n'est jamais réécrite d'après une clé qui a changé en voyage (campagne d'attaque n° 3) : le
+//! déploiement compare d'abord (`vanguard deploiement comparer-cle`) et n'écrit rien sur une clé changée ; `--ecrire`
+//! lui-même ne reprend sans `--forcer` que ce que le déploiement pose (`depose_par_le_deploiement`). Sinon un
+//! raccourci planté devenait, au déploiement suivant, « la clé n'a pas changé ».
 //!
 //! Une clé dont le jeton est celui d'une référence d'ici, mais dont l'identifiant de volume ne correspond plus à
 //! aucune n'est pas « une autre clé » : quatre octets du secteur d'amorce changés suffisaient à faire sauter la
@@ -57,6 +65,18 @@ struct Entree {
     /// Absente pour un gros fichier, comparé par sa taille.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     blake3: Option<String>,
+    /// L'empreinte SHA-256 d'une image de ISO/, celle de l'image vérifiée qu'outils/images-cle.sh y a posée et relue
+    /// (`--image NOM=EMPREINTE`) : la taille seule laisse passer une autre image de même taille. Le bilan ne relit pas
+    /// des Gio ; `vanguard deploiement relire-image` en relit une à chaque passage d'images-cle.sh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
+    /// « AAAA-MM-JJ HH:MM » de la dernière relecture entière de l'image sur la clé, qui a retrouvé `sha256`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    relue: Option<String>,
+    /// La dernière relecture a trouvé d'autres octets que `sha256` : l'image a été remplacée. Comptée modifiée
+    /// jusqu'à ce qu'images-cle.sh repose l'image vérifiée.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    differente: bool,
 }
 
 /// Les dossiers des images de secours (taille) et du menu de Ventoy (empreinte), relevés depuis la 0.86.
@@ -272,6 +292,121 @@ fn entree(racine: &Path, chemin: String, taille: u64, gros: u64) -> Entree {
         blake3: (taille < gros).then(|| empreinte(&racine.join(&chemin))).flatten(),
         chemin,
         taille,
+        sha256: None,
+        relue: None,
+        differente: false,
+    }
+}
+
+fn maintenant() -> String {
+    chrono::Local::now().format("%Y-%m-%d %H:%M").to_string()
+}
+
+/// Un gros fichier relevé de nouveau (par sa taille) garde l'empreinte SHA-256, la relecture et le verdict de la
+/// référence d'avant quand son chemin et sa taille n'ont pas changé : sinon chaque déploiement les effacerait.
+fn garder_empreintes(fichiers: &mut [Entree], avant: &[Entree]) {
+    for e in fichiers.iter_mut().filter(|e| e.blake3.is_none()) {
+        if let Some(a) = avant.iter().find(|a| a.chemin == e.chemin && a.taille == e.taille) {
+            e.sha256.clone_from(&a.sha256);
+            e.relue.clone_from(&a.relue);
+            e.differente = a.differente;
+        }
+    }
+}
+
+/// Ce que le déploiement (outils/deployer.sh, outils/publier-version.sh) pose lui-même sur la clé, et réécrit à
+/// chaque passage : les programmes et leurs modes d'emploi, les lanceurs et guides de la racine, les témoins, le code
+/// source (une copie exacte, rsync --delete) et les archives de tldr-pages. Seul un écart sur ces chemins-là peut
+/// entrer dans la référence sans accord : le déploiement vient de les écrire. Tout le reste (un raccourci planté à la
+/// racine, une image, le menu de Ventoy, un fichier ajouté dans Linux/) attend `--forcer`.
+fn depose_par_le_deploiement(chemin: &str) -> bool {
+    const RACINE: &[&str] = &[
+        "vanguard.cle",
+        "vanguard.jeton",
+        "LISEZMOI.txt",
+        "README.txt",
+        "LICENSE.txt",
+        "LICENCES-TIERCES.txt",
+        "vanguard.ico",
+        "autorun.inf",
+        "autorun.sh",
+        "Lancer Vanguard.bat",
+        "Lancer Vanguard.command",
+        ".metadata_never_index",
+    ];
+    const PROGRAMMES: &[(&str, &str)] = &[
+        ("Linux", "vanguard"),
+        ("Windows", "vanguard.exe"),
+        ("macOS", "vanguard"),
+    ];
+    if RACINE.contains(&chemin) || chemin.starts_with("source/") {
+        return true;
+    }
+    if let Some(nom) = chemin.strip_prefix("tldr/") {
+        return nom.starts_with("tldr-pages.")
+            && Path::new(nom).extension().is_some_and(|x| x == "zip")
+            && !nom.contains('/');
+    }
+    PROGRAMMES.iter().any(|(dossier, programme)| {
+        chemin
+            .strip_prefix(dossier)
+            .and_then(|c| c.strip_prefix('/'))
+            .is_some_and(|nom| nom == *programme || nom == "LISEZMOI.txt" || nom == "README.txt")
+    })
+}
+
+/// L'écart, sans ce que le déploiement pose lui-même (`depose_par_le_deploiement`).
+fn hors_deploiement(mut ecart: Ecart) -> Ecart {
+    for liste in [&mut ecart.nouveaux, &mut ecart.modifies, &mut ecart.disparus] {
+        liste.retain(|c| !depose_par_le_deploiement(c));
+    }
+    ecart
+}
+
+/// Pourquoi la référence d'une clé n'est pas réécrite.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PasEcrit {
+    /// La clé a changé depuis sa référence ailleurs que dans ce que le déploiement y pose : le résumé de l'écart.
+    Ecart(String),
+    /// Aucune référence pour cette clé, alors que d'autres clés ont la leur ici (autre clé, identifiant changé).
+    SansReference,
+    /// Lecture ou écriture impossible.
+    Erreur(String),
+}
+
+impl std::fmt::Display for PasEcrit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PasEcrit::Ecart(r) => f.write_str(&trf!(
+                "la clé a changé depuis sa référence : {r}",
+                "the key has changed since its reference: {r}"
+            )),
+            PasEcrit::SansReference => f.write_str(tr!(
+                "aucune référence pour cette clé ici, alors que d'autres clés ont la leur",
+                "no reference for this key here, while other keys have theirs"
+            )),
+            PasEcrit::Erreur(e) => f.write_str(e),
+        }
+    }
+}
+
+/// La référence `reference` peut-elle être réécrite d'après la clé `racine` sans accord ? Oui quand elle n'a changé
+/// que dans ce que le déploiement y pose ; une référence absente ne l'est que là où aucune clé n'a encore la sienne
+/// (premier déploiement sur cet ordinateur).
+fn reecriture_permise(base: &Path, racine: &Path, reference: Option<&Path>, gros: u64) -> Result<(), PasEcrit> {
+    let Some(reference) = reference else {
+        return if a_des_references(base) {
+            Err(PasEcrit::SansReference)
+        } else {
+            Ok(())
+        };
+    };
+    let m = lire(reference).map_err(PasEcrit::Erreur)?;
+    let ecart = hors_deploiement(comparer_avec(racine, &m, gros));
+    if ecart.vide() {
+        Ok(())
+    } else {
+        Err(PasEcrit::Ecart(resume_ecart(&ecart)))
     }
 }
 
@@ -283,11 +418,14 @@ fn relever(racine: &Path, gros: u64) -> Vec<Entree> {
 }
 
 fn ecrire_dans(racine: &Path, reference: &Path, gros: u64) -> Result<usize, String> {
-    let fichiers = relever(racine, gros);
+    let mut fichiers = relever(racine, gros);
+    if let Ok(avant) = lire(reference) {
+        garder_empreintes(&mut fichiers, &avant.fichiers);
+    }
     let manifeste = Manifeste {
         format: FORMAT.to_string(),
         version_vanguard: env!("CARGO_PKG_VERSION").to_string(),
-        date: chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
+        date: maintenant(),
         fichiers,
         images: true,
         jeton: crate::protection::cles_connues::jeton_de(racine),
@@ -306,11 +444,16 @@ fn enregistrer(reference: &Path, manifeste: &Manifeste) -> std::io::Result<()> {
 /// vient de le réécrire d'après ISO/) ; dans ISO/, une image déjà relevée et de même taille reste, une image copiée
 /// entre, une image retirée sort, et toute autre reste hors de la référence : le bilan la dira nouvelle. Rend le
 /// nombre d'images relevées.
-fn rafraichir_images_dans(racine: &Path, reference: &Path, nouvelles: &[String], gros: u64) -> std::io::Result<usize> {
+fn rafraichir_images_dans(
+    racine: &Path,
+    reference: &Path,
+    nouvelles: &[(String, Option<String>)],
+    gros: u64,
+) -> std::io::Result<usize> {
     let mut m = lire(reference).map_err(std::io::Error::other)?;
     if !m.images {
         return Err(std::io::Error::other(tr!(
-            "référence écrite avant que la clé relève ses images : redéploie la clé (outils/deployer.sh)",
+            "référence écrite avant que la clé relève ses images : redéployez la clé (outils/deployer.sh)",
             "reference written before the key recorded its images: redeploy the key (outils/deployer.sh)"
         )));
     }
@@ -319,7 +462,18 @@ fn rafraichir_images_dans(racine: &Path, reference: &Path, nouvelles: &[String],
     let mut images = 0;
     for (chemin, taille) in parcourir(racine, true).into_iter().filter(|(c, _)| d_images(c)) {
         let nom = chemin.rsplit('/').next().unwrap_or_default();
-        let e = if chemin.starts_with("ventoy/") || nouvelles.iter().any(|n| n == nom) {
+        let posee = nouvelles
+            .iter()
+            .find(|(n, _)| n == nom)
+            .filter(|_| chemin.starts_with("ISO/"));
+        let e = if let Some((_, sha256)) = posee {
+            // Posée et relue par images-cle.sh : son empreinte vérifiée, et la relecture de l'instant.
+            Entree {
+                sha256: sha256.clone(),
+                relue: sha256.as_ref().map(|_| maintenant()),
+                ..entree(racine, chemin, taille, gros)
+            }
+        } else if chemin.starts_with("ventoy/") {
             entree(racine, chemin, taille, gros)
         } else if let Some(e) = avant.iter().find(|e| e.chemin == chemin && e.taille == taille) {
             e.clone()
@@ -330,13 +484,13 @@ fn rafraichir_images_dans(racine: &Path, reference: &Path, nouvelles: &[String],
         m.fichiers.push(e);
     }
     m.fichiers.sort_by(|a, b| a.chemin.cmp(&b.chemin));
-    m.date = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+    m.date = maintenant();
     enregistrer(reference, &m)?;
     Ok(images)
 }
 
 /// `rafraichir_images_dans` pour la clé `racine` et sa référence sur cet ordinateur.
-pub fn rafraichir_images(racine: &Path, nouvelles: &[String]) -> std::io::Result<usize> {
+pub fn rafraichir_images(racine: &Path, nouvelles: &[(String, Option<String>)]) -> std::io::Result<usize> {
     let reference = reference(racine)
         .ok_or_else(|| std::io::Error::other(tr!("aucune référence pour cette clé", "no reference for this key")))?;
     rafraichir_images_dans(racine, &reference, nouvelles, GROS)
@@ -345,11 +499,16 @@ pub fn rafraichir_images(racine: &Path, nouvelles: &[String]) -> std::io::Result
 /// Écrit le manifeste de la clé `racine` dans sa référence sur cet ordinateur ; rend le nombre de fichiers et la
 /// référence. L'ancienne référence unique part dès qu'une clé a la sienne : elle décrivait la clé déployée jusque-là,
 /// et gardée, elle servirait de référence à une autre.
-pub fn ecrire(racine: &Path) -> Result<(usize, PathBuf), String> {
+pub fn ecrire(racine: &Path, forcer: bool) -> Result<(usize, PathBuf), PasEcrit> {
     let base = crate::socle::dossier_local();
     let id = identifiant_volume(racine);
+    // Jamais une référence réécrite d'après une clé qui a changé en voyage : ce qui y a été planté deviendrait « la
+    // clé n'a pas changé » au bilan suivant. Seul `--forcer` (l'auteur a regardé l'écart) le permet.
+    if !forcer {
+        reecriture_permise(&base, racine, reference_lue(&base, id.as_deref()).as_deref(), GROS)?;
+    }
     let chemin = reference_ecrite(&base, id.as_deref());
-    let n = ecrire_dans(racine, &chemin, GROS)?;
+    let n = ecrire_dans(racine, &chemin, GROS).map_err(PasEcrit::Erreur)?;
     if id.is_some() {
         let _ = std::fs::remove_file(base.join(ANCIENNE_REFERENCE));
     }
@@ -381,7 +540,8 @@ fn comparer_avec(racine: &Path, manifeste: &Manifeste, gros: u64) -> Ecart {
         match manifeste.fichiers.iter().find(|e| e.chemin == *chemin) {
             None => ecart.nouveaux.push(chemin.clone()),
             Some(attendu) => {
-                let pareil = attendu.taille == *taille
+                let pareil = !attendu.differente
+                    && attendu.taille == *taille
                     && match &attendu.blake3 {
                         Some(h) if *taille < gros => empreinte(&racine.join(chemin)).as_deref() == Some(h.as_str()),
                         _ => true,
@@ -411,6 +571,126 @@ pub fn comparer(racine: &Path) -> Result<Ecart, String> {
     let reference = reference(racine)
         .ok_or_else(|| tr!("aucune référence pour cette clé", "no reference for this key").to_string())?;
     Ok(comparer_avec(racine, &lire(&reference)?, GROS))
+}
+
+/// Avant que le déploiement n'écrive quoi que ce soit sur la clé `racine` (`vanguard deploiement comparer-cle`) :
+/// elle doit être exactement sa référence. `Ok` : le nombre de fichiers vérifiés. Sinon le code de sortie et ce
+/// qu'il faut dire : 2, la clé a changé (l'écart) ; 3, pas de référence pour elle ici.
+pub(crate) fn avant_deploiement(racine: &Path) -> Result<usize, (i32, String)> {
+    let base = crate::socle::dossier_local();
+    let Some(reference) = reference(racine) else {
+        let pourquoi = if identifiant_change(&base, racine) {
+            tr!(
+                "son jeton est celui d'une clé déployée ici, mais son identifiant de volume a changé",
+                "its token is that of a key deployed here, but its volume identifier has changed"
+            )
+        } else {
+            tr!(
+                "aucune référence pour cette clé sur cet ordinateur",
+                "no reference for this key on this computer"
+            )
+        };
+        return Err((3, pourquoi.to_string()));
+    };
+    let m = lire(&reference).map_err(|e| (1, e))?;
+    let ecart = comparer_avec(racine, &m, GROS);
+    if ecart.vide() {
+        Ok(ecart.verifies)
+    } else {
+        Err((2, resume_ecart(&ecart)))
+    }
+}
+
+/// Une empreinte SHA-256 en hexadécimal (64 caractères), en minuscules.
+fn sha256_valide(texte: &str) -> Option<String> {
+    let t = texte.trim();
+    (t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit())).then(|| t.to_ascii_lowercase())
+}
+
+/// « NOM » ou « NOM=EMPREINTE » (`--image`, `--empreinte`) : le nom d'une image de ISO/ et son SHA-256 vérifié.
+/// Une empreinte mal formée est refusée, pas ignorée : l'image entrerait sans elle.
+pub fn image_et_empreinte(texte: &str) -> Result<(String, Option<String>), String> {
+    match texte.rsplit_once('=') {
+        Some((nom, sha)) if !nom.is_empty() && !nom.contains('/') => {
+            sha256_valide(sha).map(|h| (nom.to_string(), Some(h))).ok_or_else(|| {
+                trf!(
+                    "empreinte SHA-256 mal formée : {sha}",
+                    "malformed SHA-256 checksum: {sha}"
+                )
+            })
+        }
+        None if !texte.is_empty() && !texte.contains('/') => Ok((texte.to_string(), None)),
+        _ => Err(trf!("nom d'image refusé : {texte}", "image name refused: {texte}")),
+    }
+}
+
+/// Ce que la relecture d'une image a trouvé.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Relecture {
+    /// Aucune image de la référence n'a d'empreinte à retrouver.
+    Rien,
+    /// L'image a été relue en entier : mêmes octets que l'image vérifiée.
+    Pareille(String),
+    /// Autres octets : l'image a été remplacée (notée `differente` dans la référence).
+    Differente(String),
+    /// Illisible (clé retirée en route) : rien de conclu, rien de noté.
+    Illisible(String, String),
+}
+
+/// Relit en entier une image de ISO/, celle dont la dernière relecture est la plus ancienne (jamais relue d'abord),
+/// et compare son SHA-256 à celui de la référence, ou, à défaut, à celui d'`empreintes` (les images vérifiées du
+/// cache d'images-cle.sh). Une par appel : une image se lit en quelques dizaines de secondes à quelques minutes
+/// (16 Gio pour Kali), et images-cle.sh passe au branchement et chaque jour.
+fn relire_image_dans(
+    racine: &Path,
+    reference: &Path,
+    empreintes: &[(String, Option<String>)],
+    lire_sha256: impl Fn(&Path) -> Result<String, String>,
+) -> Result<Relecture, String> {
+    let mut m = lire(reference)?;
+    let attendue = |e: &Entree| {
+        e.sha256.clone().or_else(|| {
+            let nom = e.chemin.rsplit('/').next().unwrap_or_default();
+            empreintes.iter().find(|(n, _)| n == nom).and_then(|(_, h)| h.clone())
+        })
+    };
+    let Some(i) = m
+        .fichiers
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.chemin.starts_with("ISO/") && e.blake3.is_none() && attendue(e).is_some())
+        .min_by(|(_, a), (_, b)| a.relue.cmp(&b.relue))
+        .map(|(i, _)| i)
+    else {
+        return Ok(Relecture::Rien);
+    };
+    let sha = attendue(&m.fichiers[i]).unwrap_or_default();
+    let chemin = m.fichiers[i].chemin.clone();
+    let lue = match lire_sha256(&racine.join(&chemin)) {
+        Ok(h) => h.to_ascii_lowercase(),
+        Err(e) => return Ok(Relecture::Illisible(chemin, e)),
+    };
+    let e = &mut m.fichiers[i];
+    let resultat = if lue == sha {
+        e.sha256 = Some(sha);
+        e.relue = Some(maintenant());
+        e.differente = false;
+        Relecture::Pareille(chemin)
+    } else {
+        e.differente = true;
+        Relecture::Differente(chemin)
+    };
+    enregistrer(reference, &m).map_err(|e| e.to_string())?;
+    Ok(resultat)
+}
+
+/// `relire_image_dans` pour la clé `racine` et sa référence sur cet ordinateur.
+pub(crate) fn relire_image(racine: &Path, empreintes: &[(String, Option<String>)]) -> Result<Relecture, String> {
+    let reference = reference(racine)
+        .ok_or_else(|| tr!("aucune référence pour cette clé", "no reference for this key").to_string())?;
+    relire_image_dans(racine, &reference, empreintes, |f| {
+        crate::protection::telechargement::calculer(f, crate::protection::telechargement::Algo::Sha256)
+    })
 }
 
 /// Les changements, en une liste courte : « autorun.inf (nouveau), Windows/vanguard.exe (modifié)… ».
@@ -473,8 +753,8 @@ pub fn constat() -> Option<Constat> {
         )
         .manuel(
             tr!(
-                "Ne lancez plus Vanguard depuis cette clé avant de l'avoir réécrite : chez vous, outils/deployer.sh la remet à neuf",
-                "Do not run Vanguard from this key until it is rewritten: at home, outils/deployer.sh restores it"
+                "Ne lancez plus Vanguard depuis cette clé : chez vous, regardez ces fichiers ; le déploiement n'écrit rien sur une clé changée, outils/deployer.sh --accepter-cle la réécrit une fois l'écart compris",
+                "Do not run Vanguard from this key: at home, look at these files; deployment writes nothing to a changed key, outils/deployer.sh --accepter-cle rewrites it once the difference is understood"
             ),
             &[],
         ),
@@ -510,8 +790,8 @@ fn sans_reference(d_autres: bool, sans: SansReference) -> Option<Constat> {
                 "This VANGUARD key carries the token of a key deployed here, but its volume identifier no longer matches its manifest: it was changed without reformatting the key. That is what it takes for its content to no longer be compared: possible trap, nothing was checked."
             ),
             tr!(
-                "Ne lancez rien depuis cette clé ; chez vous, outils/deployer.sh la réécrit (et son manifeste). Clé recopiée sur une autre à dessein : la redéployer suffit",
-                "Do not run anything from this key; at home, outils/deployer.sh rewrites it (and its manifest). Key copied onto another on purpose: redeploying it is enough"
+                "Ne lancez rien depuis cette clé ; chez vous, outils/deployer.sh --accepter-cle la réécrit (et son manifeste). Clé recopiée sur une autre à dessein : l'accepter ainsi suffit",
+                "Do not run anything from this key; at home, outils/deployer.sh --accepter-cle rewrites it (and its manifest). Key copied onto another on purpose: accepting it that way is enough"
             ),
         ),
         SansReference::Inconnue => (
@@ -521,8 +801,8 @@ fn sans_reference(d_autres: bool, sans: SansReference) -> Option<Constat> {
                 "This VANGUARD key has no manifest on this computer: a key other than those deployed here, or a key whose token and volume identifier were changed. Nothing was compared: do not run anything from it before redeploying it."
             ),
             tr!(
-                "Redéployez-la avec outils/deployer.sh (il écrit son manifeste)",
-                "Redeploy it with outils/deployer.sh (it writes its manifest)"
+                "Si elle est à vous : outils/deployer.sh --accepter-cle <son dossier> (il écrit son manifeste)",
+                "If it is yours: outils/deployer.sh --accepter-cle <its folder> (it writes its manifest)"
             ),
         ),
         SansReference::IdentifiantIllisible => (
@@ -764,13 +1044,21 @@ fn comparer_a_l_historique(hex: &str) {
 
 /// « vanguard manifeste [--ecrire DOSSIER | --images DOSSIER --image NOM…] » : écrit la référence (déploiement),
 /// y redit les images posées par outils/images-cle.sh, ou compare la clé branchée.
-pub fn commande(ecrire_dossier: Option<&Path>, accepter: bool, images: Option<(&Path, &[String])>) {
+pub fn commande(ecrire_dossier: Option<&Path>, forcer: bool, accepter: bool, images: Option<(&Path, &[String])>) {
     if accepter {
         crate::protection::cles_connues::accepter();
         return;
     }
     if let Some((racine, nouvelles)) = images {
-        match rafraichir_images(racine, nouvelles) {
+        let nouvelles: Result<Vec<_>, String> = nouvelles.iter().map(|n| image_et_empreinte(n)).collect();
+        let nouvelles = match nouvelles {
+            Ok(n) => n,
+            Err(e) => {
+                trp!("✖ Images non relevées : {e}", "✖ Images not recorded: {e}");
+                std::process::exit(1);
+            }
+        };
+        match rafraichir_images(racine, &nouvelles) {
             Ok(n) => trp!(
                 "Images de la clé redites à sa référence : {n} image(s) relevée(s), menu de Ventoy compris.",
                 "Key images restated to its reference: {n} image(s) recorded, Ventoy menu included."
@@ -783,12 +1071,20 @@ pub fn commande(ecrire_dossier: Option<&Path>, accepter: bool, images: Option<(&
         return;
     }
     if let Some(racine) = ecrire_dossier {
-        match ecrire(racine) {
+        match ecrire(racine, forcer) {
             Ok((n, reference)) => trp!(
                 "Manifeste de la clé écrit : {n} fichiers, référence {}",
                 "Key manifest written: {n} files, reference {}",
                 chemin_affichable(&reference)
             ),
+            // Code 2 : refus voulu, que les scripts distinguent d'une panne.
+            Err(e @ (PasEcrit::Ecart(_) | PasEcrit::SansReference)) => {
+                trp!(
+                    "✖ Manifeste non réécrit : {e}. Rien n'entre dans la référence sans accord : si c'est voulu, outils/deployer.sh --accepter-cle.",
+                    "✖ Manifest not rewritten: {e}. Nothing enters the reference without consent: if intended, outils/deployer.sh --accepter-cle."
+                );
+                std::process::exit(2);
+            }
             Err(e) => {
                 trp!("✖ Manifeste non écrit : {e}", "✖ Manifest not written: {e}");
                 std::process::exit(1);
@@ -822,8 +1118,8 @@ pub fn commande(ecrire_dossier: Option<&Path>, accepter: bool, images: Option<(&
                 }
             }
             trp!(
-                "  {} fichiers inchangés. Réécrivez la clé chez vous (outils/deployer.sh) avant de vous en servir.",
-                "  {} files unchanged. Rewrite the key at home (outils/deployer.sh) before using it.",
+                "  {} fichiers inchangés. Regardez ces fichiers avant de vous en servir ; voulus : outils/deployer.sh --accepter-cle.",
+                "  {} files unchanged. Look at these files before using it; intended: outils/deployer.sh --accepter-cle.",
                 ecart.verifies
             );
         }
@@ -911,7 +1207,7 @@ mod tests {
         std::fs::write(racine.join("ISO/archlinux-2026.11.01-x86_64.iso"), b"0123456789abcdefg").unwrap();
         std::fs::write(racine.join("ISO/archlinux-2026.11.02-x86_64.iso"), b"piege").unwrap();
         std::fs::write(racine.join("ventoy/ventoy.json"), b"{2}").unwrap();
-        let copiee = vec!["archlinux-2026.11.01-x86_64.iso".to_string()];
+        let copiee = vec![("archlinux-2026.11.01-x86_64.iso".to_string(), None)];
         assert_eq!(rafraichir_images_dans(&racine, &reference, &copiee, 10).unwrap(), 1);
         let ecart = comparer_avec(&racine, &lire(&reference).unwrap(), 10);
         assert_eq!(ecart.nouveaux, ["ISO/archlinux-2026.11.02-x86_64.iso"]);
@@ -1043,6 +1339,137 @@ mod tests {
         )
         .unwrap();
         assert!(lire(&reference).is_err());
+        let _ = std::fs::remove_dir_all(&racine);
+        let _ = std::fs::remove_dir_all(reference.parent().unwrap());
+    }
+
+    /// Campagne 3 : au branchement, la référence était réécrite d'après la clé telle qu'elle revenait, ce qui y avait
+    /// été planté compris. Seul ce que le déploiement pose lui-même peut maintenant y entrer sans `--forcer`.
+    #[test]
+    fn reecriture_refusee_pour_ce_qui_a_ete_plante_en_voyage() {
+        let base = dossier_jetable("blanchiment-base");
+        let racine = dossier_jetable("blanchiment-cle");
+        let reference = reference_ecrite(&base, Some("1A2B-3C4D"));
+        for d in ["Linux", "ISO", "ventoy", "source/src", "tldr"] {
+            std::fs::create_dir_all(racine.join(d)).unwrap();
+        }
+        for (f, o) in [
+            ("vanguard.cle", "temoin"),
+            ("Linux/vanguard", "programme"),
+            ("autorun.inf", "[autorun]"),
+            ("ISO/systemrescue.iso", "0123456789abcdef"),
+            ("ventoy/ventoy.json", "{}"),
+            ("source/src/main.rs", "fn main() {}"),
+        ] {
+            std::fs::write(racine.join(f), o).unwrap();
+        }
+        // Premier déploiement sur cet ordinateur (aucune référence) : permis ; ensuite, rien n'a changé.
+        assert_eq!(reecriture_permise(&base, &racine, None, 10), Ok(()));
+        std::fs::create_dir_all(reference.parent().unwrap()).unwrap();
+        ecrire_dans(&racine, &reference, 10).unwrap();
+        assert_eq!(reecriture_permise(&base, &racine, Some(&reference), 10), Ok(()));
+        // Le voyage : un raccourci à la racine, une image, le menu de Ventoy, un fichier glissé dans Linux/.
+        std::fs::write(racine.join("Photos.lnk"), "piege").unwrap();
+        std::fs::write(racine.join("ISO/x.iso"), "piege").unwrap();
+        std::fs::write(
+            racine.join("ventoy/ventoy.json"),
+            r#"{"control":[{"VTOY_DEFAULT_IMAGE":"/ISO/x.iso"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(racine.join("Linux/libpiege.so"), "piege").unwrap();
+        // Le déploiement réécrit ses propres fichiers : le programme, un guide, le code source, une archive tldr.
+        std::fs::write(racine.join("Linux/vanguard"), "programme 2").unwrap();
+        std::fs::write(racine.join("source/src/lib.rs"), "// nouveau").unwrap();
+        std::fs::write(racine.join("tldr/tldr-pages.fr.zip"), "zip").unwrap();
+        let Err(PasEcrit::Ecart(resume)) = reecriture_permise(&base, &racine, Some(&reference), 10) else {
+            panic!("écart accepté");
+        };
+        for planté in ["Photos.lnk", "ISO/x.iso", "ventoy/ventoy.json", "Linux/libpiege.so"] {
+            assert!(resume.contains(planté), "{planté} absent de : {resume}");
+        }
+        for posé in ["Linux/vanguard", "source/src/lib.rs", "tldr-pages"] {
+            assert!(!resume.contains(posé), "{posé} dans : {resume}");
+        }
+        // Le plantage retiré : ce qu'a posé le déploiement entre seul.
+        for f in ["Photos.lnk", "ISO/x.iso", "Linux/libpiege.so"] {
+            std::fs::remove_file(racine.join(f)).unwrap();
+        }
+        std::fs::write(racine.join("ventoy/ventoy.json"), "{}").unwrap();
+        assert_eq!(reecriture_permise(&base, &racine, Some(&reference), 10), Ok(()));
+        // Une clé sans référence là où d'autres ont la leur : autre clé, ou identifiant changé.
+        assert_eq!(
+            reecriture_permise(&base, &racine, None, 10),
+            Err(PasEcrit::SansReference)
+        );
+        assert!(depose_par_le_deploiement("Windows/README.txt"));
+        assert!(!depose_par_le_deploiement("Windows/vanguard.dll"));
+        assert!(!depose_par_le_deploiement("tldr/x/tldr-pages.en.zip"));
+        assert!(!depose_par_le_deploiement("Linuxx/vanguard"));
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// Une image remplacée par une autre de même taille : la taille ne la voit pas, sa relecture si. L'empreinte
+    /// posée par images-cle.sh survit aux réécritures de la référence ; une image notée différente reste modifiée.
+    #[test]
+    fn image_de_meme_taille_vue_a_la_relecture() {
+        const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const AUTRE: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let racine = dossier_jetable("relire");
+        let reference = dossier_jetable("relire-ref").join("ref.json");
+        std::fs::create_dir_all(racine.join("ISO")).unwrap();
+        std::fs::write(racine.join("ISO/arch.iso"), b"0123456789abcdef").unwrap();
+        std::fs::write(racine.join("ISO/debian.iso"), b"0123456789abcdef0").unwrap();
+        ecrire_dans(&racine, &reference, 10).unwrap();
+        // Rien à relire sans empreinte connue.
+        let lire_ok = |_: &Path| Ok(SHA.to_string());
+        assert_eq!(
+            relire_image_dans(&racine, &reference, &[], lire_ok).unwrap(),
+            Relecture::Rien
+        );
+        // Posée et relue par images-cle.sh : son empreinte entre ; une réécriture de la référence la garde.
+        let posee = [("arch.iso".to_string(), Some(SHA.to_string()))];
+        rafraichir_images_dans(&racine, &reference, &posee, 10).unwrap();
+        ecrire_dans(&racine, &reference, 10).unwrap();
+        let m = lire(&reference).unwrap();
+        let arch = m.fichiers.iter().find(|e| e.chemin == "ISO/arch.iso").unwrap();
+        assert_eq!(arch.sha256.as_deref(), Some(SHA));
+        assert!(arch.relue.is_some());
+        // Debian sans empreinte dans la référence : celle du cache sert, et c'est elle (jamais relue) qui passe.
+        let cache = [("debian.iso".to_string(), Some(SHA.to_string()))];
+        assert_eq!(
+            relire_image_dans(&racine, &reference, &cache, lire_ok).unwrap(),
+            Relecture::Pareille("ISO/debian.iso".into())
+        );
+        // L'image remplacée, même taille : différente, et le bilan la dit modifiée.
+        let lire_autre = |_: &Path| Ok(AUTRE.to_string());
+        let r = relire_image_dans(&racine, &reference, &cache, lire_autre).unwrap();
+        assert!(matches!(r, Relecture::Differente(_)), "{r:?}");
+        let m = lire(&reference).unwrap();
+        let ecart = comparer_avec(&racine, &m, 10);
+        assert_eq!(ecart.modifies.len(), 1, "{ecart:?}");
+        // Réécrite par le déploiement, elle reste différente ; reposée par images-cle.sh, elle est de nouveau saine.
+        ecrire_dans(&racine, &reference, 10).unwrap();
+        assert_eq!(comparer_avec(&racine, &lire(&reference).unwrap(), 10).modifies.len(), 1);
+        let nom = ecart.modifies[0].rsplit('/').next().unwrap().to_string();
+        rafraichir_images_dans(&racine, &reference, &[(nom, Some(SHA.into()))], 10).unwrap();
+        assert!(comparer_avec(&racine, &lire(&reference).unwrap(), 10).vide());
+        // Illisible : rien de conclu, rien de noté.
+        let illisible = |_: &Path| Err("clé retirée".to_string());
+        assert!(matches!(
+            relire_image_dans(&racine, &reference, &[], illisible).unwrap(),
+            Relecture::Illisible(..)
+        ));
+        assert!(comparer_avec(&racine, &lire(&reference).unwrap(), 10).vide());
+        // Les noms et empreintes donnés par images-cle.sh.
+        assert_eq!(image_et_empreinte("a.iso"), Ok(("a.iso".into(), None)));
+        assert_eq!(
+            image_et_empreinte(&format!("a.iso={}", SHA.to_uppercase())),
+            Ok(("a.iso".into(), Some(SHA.into())))
+        );
+        assert!(image_et_empreinte("a.iso=1234").is_err());
+        assert!(image_et_empreinte("../a.iso").is_err());
+        assert!(image_et_empreinte("").is_err());
         let _ = std::fs::remove_dir_all(&racine);
         let _ = std::fs::remove_dir_all(reference.parent().unwrap());
     }

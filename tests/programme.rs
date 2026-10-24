@@ -2394,3 +2394,42 @@ fn journaux_windows_sur_les_echantillons() {
         "échantillons abîmés exprès : jamais tout vérifié"
     );
 }
+
+/// Campagne 3, la haute : au branchement, `manifeste --ecrire` réécrivait la référence d'après la clé telle qu'elle
+/// revenait, et ce qui avait été planté en voyage devenait « la clé n'a pas changé ». Le déploiement compare d'abord
+/// (`deploiement comparer-cle`) ; `--ecrire` refuse un écart hors de ce que le déploiement pose (code 2) ; seul
+/// `--forcer` (l'accord de l'auteur) l'accepte.
+#[test]
+fn manifeste_de_la_cle_jamais_reecrit_sur_un_ecart() {
+    let maison = maison_jetable();
+    let cle = maison.join("cle");
+    std::fs::create_dir_all(cle.join("Linux")).unwrap();
+    std::fs::write(cle.join("vanguard.cle"), "temoin\n").unwrap();
+    std::fs::write(cle.join("vanguard.jeton"), "0123456789abcdef0123456789abcdef\n").unwrap();
+    std::fs::write(cle.join("Linux/vanguard"), "programme").unwrap();
+    let cle_txt = cle.to_string_lossy().into_owned();
+    let lancer = |args: &[&str]| vanguard_dans(Path::new(env!("CARGO_BIN_EXE_vanguard")), &maison, "fr", args, "", 120);
+    let s = lancer(&["manifeste", "--ecrire", &cle_txt]);
+    assert_eq!(s.code, Some(0), "{}{}", s.texte, s.erreurs);
+    assert_eq!(lancer(&["deploiement", "comparer-cle", &cle_txt]).code, Some(0));
+    // Le voyage : un raccourci planté à la racine.
+    std::fs::write(cle.join("Photos.lnk"), "piege").unwrap();
+    let s = lancer(&["deploiement", "comparer-cle", &cle_txt]);
+    assert_eq!(s.code, Some(2), "{}{}", s.texte, s.erreurs);
+    assert!(s.erreurs.contains("Photos.lnk"), "{}", s.erreurs);
+    let s = lancer(&["manifeste", "--ecrire", &cle_txt]);
+    assert_eq!(s.code, Some(2), "réécrite malgré l'écart : {}{}", s.texte, s.erreurs);
+    assert_eq!(lancer(&["deploiement", "comparer-cle", &cle_txt]).code, Some(2));
+    // Le programme réécrit par le déploiement entre seul, une fois le plantage retiré.
+    std::fs::remove_file(cle.join("Photos.lnk")).unwrap();
+    std::fs::write(cle.join("Linux/vanguard"), "programme 2").unwrap();
+    assert_eq!(lancer(&["manifeste", "--ecrire", &cle_txt]).code, Some(0));
+    // L'accord explicite.
+    std::fs::write(cle.join("Photos.lnk"), "voulu").unwrap();
+    assert_eq!(lancer(&["manifeste", "--ecrire", &cle_txt, "--forcer"]).code, Some(0));
+    assert_eq!(lancer(&["deploiement", "comparer-cle", &cle_txt]).code, Some(0));
+    // Aucune clé montée pour ce compte d'essai : rien, sans erreur.
+    let s = lancer(&["deploiement", "cle"]);
+    assert_eq!((s.code, s.texte.trim()), (Some(0), ""), "{}", s.erreurs);
+    let _ = std::fs::remove_dir_all(&maison);
+}

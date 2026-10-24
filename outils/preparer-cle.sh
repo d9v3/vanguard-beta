@@ -86,6 +86,8 @@ if [[ -n $ANCIENNE ]]; then
   cp -r "$ANCIENNE" "$CLE/"
   echo "Base remise sur la clé : $ANCIENNE"
 fi
-outils/deployer.sh --sans-compiler
+# Une clé neuve, que l'auteur vient d'effacer : son jeton est tiré et cet ordinateur l'adopte (sans cela, deployer.sh
+# refuse un volume au jeton inconnu).
+outils/deployer.sh --accepter-cle "$CLE"
 lsblk -o NAME,SIZE,FSTYPE,LABEL,PARTLABEL,MOUNTPOINTS "$DISQUE"
 echo "Attribut lecture seule (Windows) : $(udisksctl info -b "/dev/$(basename "$P1")" | awk '/Flags:/{print $2}')"

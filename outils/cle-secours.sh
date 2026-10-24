@@ -39,6 +39,9 @@
 #                                                 est signalé : son image se prend à la main chez Microsoft
 #   outils/cle-secours.sh --ventoy-maj [/dev/sdX] met Ventoy à jour sur la clé, sans rien effacer (root : une fenêtre
 #                                                 pkexec ; journal dans ~/.local/state/vanguard/ventoy/)
+#   outils/cle-secours.sh --accepter-vtoyefi      la partition de démarrage VTOYEFI de la clé branchée, telle qu'elle
+#                                                 est, prise pour référence (--a-jour compare l'empreinte de ses
+#                                                 fichiers à chaque passage, et alerte sur un écart)
 #   outils/cle-secours.sh --installer-racine      une fois, et après chaque changement d'épingle : la partie root de
 #                                                 --ventoy-maj (outils/ventoy-racine.sh), copiée en fichier de root
 #   outils/cle-secours.sh --ventoy-publie         (développement) GitHub a-t-il un Ventoy plus récent que l'épingle ?
@@ -422,7 +425,7 @@ Commandes de --ecrire (rien n'est lancé ici) :
                                     sfdisk --part-attrs $disque 1 GUID:60
   sans root                       → témoins, ISO/ (images-cle.sh --toutes) et ventoy/ventoy.json ; WIN11 : 7z x de l'image sans
                                     install.wim, ses morceaux .swm, vérification, démontage ; base remise,
-                                    deployer.sh --sans-compiler
+                                    deployer.sh --accepter-cle
 EOF
 }
 
@@ -694,6 +697,10 @@ ecrire() { # disque dossier
   pkexec --keep-cwd "$PWD/outils/cle-secours.sh" --racine "$disque" "$(lsblk -dno SERIAL "$disque")" \
     "$octets" "$(realpath "$d")" "$macos" "$windows"
   udevadm settle
+  # Le démarrage que Ventoy vient d'écrire, depuis l'archive épinglée : sa référence (controler_vtoyefi).
+  local version_vt empreinte_vt
+  read -r version_vt empreinte_vt <<<"$(vtoyefi_de "$disque")"
+  noter_vtoyefi "$disque" "$version_vt" "$empreinte_vt"
   local cle journal win
   cle=$(monter "$(partition "$disque" 1)") || erreur "partition VANGUARD impossible à monter."
   journal=$(monter "$(partition "$disque" 3)") || erreur "partition VANGUARDLOG impossible à monter."
@@ -727,7 +734,8 @@ ecrire() { # disque dossier
     echo "Aucune base donnees/ trouvée dans les sauvegardes : la clé démarre sans base."
   fi
   sync
-  outils/deployer.sh --sans-compiler
+  # Une clé neuve, que l'auteur vient d'effacer : adoptée par cet ordinateur (deployer.sh refuse un jeton inconnu).
+  outils/deployer.sh --accepter-cle "$cle"
   lsblk -o NAME,SIZE,FSTYPE,LABEL,PARTLABEL,MOUNTPOINTS "$disque"
 }
 
@@ -765,8 +773,16 @@ noter() { # nom texte
   mkdir -p "$ETAT" && printf '%s\n' "$2" >"$ETAT/$1"
 }
 
-# La clé VANGUARD montée (témoin vanguard.cle), comme deployer.sh la cherche.
-point_cle() { find "/run/media/$USER" -maxdepth 2 -name vanguard.cle -printf '%h\n' 2>/dev/null | head -1 || true; }
+# La clé VANGUARD de cet ordinateur (témoin vanguard.cle et jeton connu ici, outils/cle-commun.sh), comme deployer.sh
+# la cherche.
+# Sans lui (une copie partielle des outils), la clé n'est pas cherchée : rien n'y est écrit.
+if [[ -f $(dirname "${BASH_SOURCE[0]}")/cle-commun.sh ]]; then
+  # shellcheck source=outils/cle-commun.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/cle-commun.sh"
+else
+  cle_connue() { echo "· outils/cle-commun.sh absent : la clé VANGUARD n'est pas cherchée." >&2; return 2; }
+fi
+point_cle() { cle_connue || true; }
 
 # Le disque d'une clé montée (/dev/sda pour /dev/sda1) ; rien si ce n'est pas une partition d'un disque. Deux montages
 # l'un sur l'autre au même endroit : celui du dessus, le seul visible, est le dernier de la liste.
@@ -784,12 +800,22 @@ version_ventoy() { # dossier
     head -1 || true
 }
 
-# Version de Ventoy d'une clé, lue sans rien écrire : sa partition VTOYEFI, montée par le bureau, sinon montée en
-# lecture seule le temps de lire. VANGUARD_VTOYEFI : un dossier lu à sa place (essais).
-ventoy_de() { # disque
-  local p2 point montee="" version=""
+# L'empreinte du contenu d'un dossier VTOYEFI : le SHA-256 de la liste de ses fichiers, chacun avec le sien (32 Mio en
+# tout, lus en une seconde). Rien s'il est illisible.
+empreinte_vtoyefi() { # dossier
+  local liste
+  liste=$(cd "$1" 2>/dev/null && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum) || return 0
+  [[ -n $liste ]] && sha256sum <<<"$liste" | cut -d' ' -f1
+  return 0
+}
+
+# Version de Ventoy d'une clé et empreinte de sa partition de démarrage (« version empreinte »), lues sans rien
+# écrire : sa partition VTOYEFI, montée par le bureau, sinon montée en lecture seule le temps de lire.
+# VANGUARD_VTOYEFI : un dossier lu à sa place (essais).
+vtoyefi_de() { # disque
+  local p2 point montee="" version="" empreinte=""
   if [[ -n ${VANGUARD_VTOYEFI:-} ]]; then
-    version_ventoy "$VANGUARD_VTOYEFI"
+    echo "$(version_ventoy "$VANGUARD_VTOYEFI") $(empreinte_vtoyefi "$VANGUARD_VTOYEFI")"
     return 0
   fi
   [[ -n $1 ]] || return 0
@@ -800,9 +826,70 @@ ventoy_de() { # disque
     montee=1
     point=$(findmnt -nro TARGET -S "$p2" 2>/dev/null | head -1 || true)
   fi
-  [[ -z $point ]] || version=$(version_ventoy "$point")
+  if [[ -n $point ]]; then
+    version=$(version_ventoy "$point")
+    empreinte=$(empreinte_vtoyefi "$point")
+  fi
   if [[ -n $montee ]]; then udisksctl unmount -b "$p2" >/dev/null 2>&1 || true; fi
+  echo "$version $empreinte"
+}
+
+ventoy_de() { # disque : la version seule
+  local version _
+  read -r version _ <<<"$(vtoyefi_de "$1")"
   echo "$version"
+}
+
+# La partition de démarrage VTOYEFI (le chargeur que tout ordinateur exécute avant même Ventoy) comparée à sa
+# référence sur cet ordinateur, par l'empreinte de tous ses fichiers : jugée par sa seule version, elle pouvait être
+# réécrite en voyage sans que rien ne le voie (campagne d'attaque n° 3). La référence (~/.local/state/vanguard/
+# vtoyefi/<numéro de série>) s'écrit après chaque mise à jour de Ventoy faite ici, et à la première relève d'une clé
+# (sa confiance du jour : dit) ; un écart n'est jamais repris tout seul : notification, puis --accepter-vtoyefi.
+REFERENCES_VTOYEFI=$ETAT/vtoyefi
+reference_vtoyefi() { # disque : le chemin de sa référence, ou rien (numéro de série illisible)
+  local serie
+  serie=$(lsblk -dno SERIAL "$1" 2>/dev/null | tr -cd 'A-Za-z0-9._-' || true)
+  [[ -n $serie ]] && echo "$REFERENCES_VTOYEFI/$serie"
+  return 0
+}
+noter_vtoyefi() { # disque version empreinte
+  local ref
+  ref=$(reference_vtoyefi "$1")
+  [[ -n $ref && -n $3 ]] || return 0
+  mkdir -p "$REFERENCES_VTOYEFI" && printf '%s %s\n' "$2" "$3" >"$ref"
+}
+controler_vtoyefi() { # disque version empreinte : 1 si elle a changé (dit)
+  local ref
+  ref=$(reference_vtoyefi "$1")
+  if [[ -z $ref || -z $3 ]]; then
+    echo "· Démarrage de la clé (VTOYEFI) : pas comparé (numéro de série ou fichiers illisibles)."
+    return 0
+  fi
+  if [[ ! -s $ref ]]; then
+    noter_vtoyefi "$@"
+    echo "· Démarrage de la clé (VTOYEFI) : première relève ici, prise pour référence (Ventoy $2)."
+    return 0
+  fi
+  if [[ $(cat "$ref") == "$2 $3" ]]; then
+    echo "✔ Démarrage de la clé (VTOYEFI) identique à sa référence."
+    return 0
+  fi
+  echo "✖ Démarrage de la clé (VTOYEFI) changé hors de ce script depuis sa référence (Ventoy $2 sur la clé) : possible"
+  echo "  piège, à ne démarrer nulle part. Remis à neuf par une mise à jour de Ventoy ; voulu : outils/cle-secours.sh"
+  echo "  --accepter-vtoyefi."
+  avertir "Clé VANGUARD : démarrage (VTOYEFI) modifié" "Ses fichiers ne sont plus ceux relevés ici après la dernière \
+mise à jour de Ventoy. Ne démarrez aucun ordinateur sur cette clé avant d'avoir compris pourquoi."
+  return 1
+}
+accepter_vtoyefi() { # la clé branchée : sa partition de démarrage telle qu'elle est devient la référence
+  local point disque version empreinte
+  point=$(point_cle)
+  [[ -n $point ]] || erreur "Clé VANGUARD non branchée (ou au jeton inconnu de cet ordinateur)."
+  disque=$(disque_de "$point")
+  read -r version empreinte <<<"$(vtoyefi_de "$disque")"
+  [[ -n $empreinte && -n $(reference_vtoyefi "$disque") ]] || erreur "VTOYEFI illisible : rien n'est noté."
+  noter_vtoyefi "$disque" "$version" "$empreinte"
+  echo "✔ Démarrage de la clé (VTOYEFI, Ventoy ${version:-?}) pris pour référence."
 }
 
 # L'archive de Ventoy épinglée, rangée avec les images (téléchargée au besoin), vérifiée par son empreinte : son chemin,
@@ -882,13 +969,14 @@ de passe ?) : à relire avant de s'en servir."
 # clic, --ventoy-maj tout de suite, sur la clé relevée au moment de la proposition (numéro de série et taille). Sans la
 # partie root installée, rien n'est proposé : la notification dit comment l'installer.
 verifier_ventoy() { # point de la clé
-  local point=$1 disque version raison commande serie octets reponse
+  local point=$1 disque version empreinte raison commande serie octets reponse
   disque=$(disque_de "$point")
-  version=$(ventoy_de "$disque")
+  read -r version empreinte <<<"$(vtoyefi_de "$disque")"
   if [[ -z $version ]]; then
     echo "· Ventoy : version pas lue (VTOYEFI introuvable ou illisible) : non vérifié."
     return 0
   fi
+  controler_vtoyefi "$disque" "$version" "$empreinte" || return 1
   if ! plus_ancienne "$version" "$VENTOY"; then
     echo "✔ Ventoy $version sur la clé (épinglé ici : $VENTOY)."
     return 0
@@ -1000,9 +1088,12 @@ ventoy_maj() { # disque serie octets (facultatifs : la clé branchée, relevée 
     fi
   done
   flock -u 9
-  apres=$(ventoy_de "$disque")
+  local empreinte_apres
+  read -r apres empreinte_apres <<<"$(vtoyefi_de "$disque")"
   echo "Ventoy lu sur la clé après la mise à jour : ${apres:-pas lu}." | tee -a "$journal"
   if ((code == 0)) && [[ $apres == "$VENTOY" ]]; then
+    # Ce que la partie root vient d'écrire, depuis l'archive épinglée : la nouvelle référence du démarrage.
+    noter_vtoyefi "$disque" "$apres" "$empreinte_apres"
     echo "✔ Ventoy $VENTOY sur la clé ; rien n'a été effacé." | tee -a "$journal"
     avertir "Clé VANGUARD : Ventoy $VENTOY installé" "Rien n'a été effacé. Journal : $journal"
     return 0
@@ -1119,7 +1210,8 @@ secours_ici() {
   esac
 }
 case ${1:-} in
-  --plan | --essai | --telecharger | --verifier | --ecrire | --windows | --ventoy-maj | --installer-racine)
+  --plan | --essai | --telecharger | --verifier | --ecrire | --windows | --ventoy-maj | --installer-racine | \
+    --accepter-vtoyefi)
     secours_ici ||
       erreur "clé de secours pas demandée sur cet ordinateur : rien n'est préparé (ni images, ni Ventoy, ni WIN11, \
 ni MACOS) ; la clé ne porte que le programme (outils/preparer-cle.sh). Pour la faire ici : une ligne CLE_SECOURS=oui \
@@ -1149,6 +1241,7 @@ case ${1:-} in
   --racine) [[ $EUID -eq 0 ]] || erreur "--racine se lance par pkexec, depuis --ecrire."; racine "${@:2}" ;;
   --a-jour) a_jour "${2:-}" ;;
   --ventoy-maj) ventoy_maj "${2:-}" ;;
+  --accepter-vtoyefi) accepter_vtoyefi ;;
   --installer-racine) installer_racine ;;
   --ventoy-publie) ventoy_publie ;;
   *) sed -n '2,47p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
