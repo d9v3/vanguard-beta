@@ -9,6 +9,7 @@ pub mod listes_noires;
 pub mod nat;
 pub mod nmap;
 pub mod objets;
+pub(crate) mod ping;
 pub mod scan;
 pub mod surveillance;
 pub mod tableau;

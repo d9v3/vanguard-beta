@@ -112,7 +112,8 @@ fn noms_resolus() -> bool {
     false
 }
 
-/// La box répond-elle ? Un de ses services, sinon un ping, sinon (Linux) une entrée de voisin confirmée à l'instant.
+/// La box répond-elle ? Un de ses services, sinon (Linux) une entrée de voisin confirmée à l'instant, sinon un écho
+/// ICMP (`reseau::ping`, `ping` en secours).
 /// La table ARP seule ne suffit pas : une entrée périmée y reste plusieurs minutes après la panne de la box, et juste
 /// après une panne le diagnostic disait « la box répond ».
 fn box_repond(box_: Ipv4Addr) -> bool {
@@ -126,6 +127,10 @@ fn box_repond(box_: Ipv4Addr) -> bool {
     #[cfg(target_os = "linux")]
     if box_confirmee(crate::reseau::scan::etats_voisins().as_ref(), box_) {
         return true;
+    }
+    // Un écho ICMP envoyé d'ici, sans lancer ping ; `ping` seulement si le système refuse la prise ou l'API.
+    if let Some(repond) = crate::reseau::ping::echo(box_, Duration::from_secs(2)) {
+        return repond;
     }
     #[cfg(target_os = "linux")]
     let essai = ["-c", "1", "-W", "2", &ip];

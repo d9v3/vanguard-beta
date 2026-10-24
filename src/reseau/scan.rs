@@ -149,6 +149,12 @@ pub fn passerelle() -> Option<Ipv4Addr> {
         let table = std::fs::read_to_string("/proc/net/route").ok()?;
         passerelle_linux(&table)
     }
+    // La table des routes de Windows (GetIpForwardTable2), métriques de route et d'interface additionnées comme
+    // route print le fait ; route print seulement si Windows refuse la table.
+    #[cfg(windows)]
+    if let Some(p) = crate::machine::windows::routes::passerelle() {
+        return Some(p);
+    }
     #[cfg(windows)]
     {
         // Ligne « 0.0.0.0  0.0.0.0  <passerelle>  <interface>  <métrique> » ; la plus petite métrique gagne.
@@ -235,15 +241,19 @@ pub fn table_arp() -> HashMap<Ipv4Addr, String> {
             Some((ip.to_string(), mac.to_string()))
         })
         .collect();
-    // Windows : « 10.0.0.1   f8-79-0a-0d-03-a2   dynamique »
+    // Windows : la table des voisins (GetIpNetTable2) ; `arp -a` (« 10.0.0.1   f8-79-0a-0d-03-a2   dynamique »)
+    // seulement si Windows la refuse.
     #[cfg(windows)]
-    let entrees: Vec<(String, String)> = commande("arp", &["-a"])
-        .lines()
-        .filter_map(|l| {
-            let c: Vec<&str> = l.split_whitespace().collect();
-            Some((c.first()?.to_string(), c.get(1)?.to_string()))
-        })
-        .collect();
+    let entrees: Vec<(String, String)> = match crate::machine::windows::routes::voisins() {
+        Some(v) => v.into_iter().map(|(ip, mac)| (ip.to_string(), mac)).collect(),
+        None => commande("arp", &["-a"])
+            .lines()
+            .filter_map(|l| {
+                let c: Vec<&str> = l.split_whitespace().collect();
+                Some((c.first()?.to_string(), c.get(1)?.to_string()))
+            })
+            .collect(),
+    };
 
     entrees
         .into_iter()
