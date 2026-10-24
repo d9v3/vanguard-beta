@@ -364,6 +364,9 @@ impl Etat<'_> {
             self.manque(i, Raison::FinIntrouvable);
             return self.archive_cachee(i, octets);
         };
+        // Dans l'image même : sa fin est écrite par le fichier (taille d'un BMP, répertoire d'un ICO), et un morceau
+        // privé d'un PNG ou un commentaire d'un JPEG peut porter une archive qu'un extracteur ouvrirait.
+        self.archive_cachee(i, &octets[..fin]);
         if fin >= octets.len() {
             return None;
         }
@@ -373,7 +376,7 @@ impl Etat<'_> {
         Some(r.start)
     }
 
-    /// Une archive RAR ou 7z cachée dans un format inerte dont la fin ne se calcule pas : analysée à part (dite non
+    /// Une archive RAR, 7z, CAB ou xz cachée dans un format inerte (ou dans une image) : analysée à part (dite non
     /// lue par son propre type), depuis sa signature.
     fn archive_cachee(&mut self, i: usize, octets: &[u8]) -> Option<u64> {
         let debut = nature::archive_cachee(octets)?;

@@ -399,11 +399,13 @@ fn emetteurs(e: &Entree) -> Constat {
         Some((*a, *autre))
     });
     if let Some((a, b)) = jumeau {
-        // Le suspect : celui qui n'est pas la connexion, ou le moins protégé.
-        let (vrai, copie) = if b.borne.actif || (!a.borne.actif && a.protection.force() < b.protection.force()) {
-            (b, a)
-        } else {
-            (a, b)
+        // Le suspect : celui qui n'est pas la connexion ; si les deux le sont (wlanapi marque toutes les entrées de la
+        // connexion) ou aucun, le moins protégé.
+        let (vrai, copie) = match (a.borne.actif, b.borne.actif) {
+            (true, false) => (a, b),
+            (false, true) => (b, a),
+            _ if a.protection.force() >= b.protection.force() => (a, b),
+            _ => (b, a),
         };
         let bssid = affichable(&copie.borne.bssid);
         let (canal_vrai, canal_copie) = (vrai.borne.canal, copie.borne.canal);

@@ -893,11 +893,14 @@ fn lire_tcc(octets: &[u8]) -> Option<Vec<Acces>> {
                     "kTCCServiceAddressBook" => Permission::Contacts,
                     _ => return None,
                 };
-                // Lus comme tccd les lit : un texte rangé dans une colonne d'entiers compte par son début numérique.
-                let source = match l[2]
-                    .entier_lu()
-                    .or_else(|| l[3].entier_lu().map(|a| a.saturating_mul(2)))?
-                {
+                // Lus comme tccd les lit : un texte rangé dans une colonne d'entiers compte par son début
+                // numérique ; un nombre à virgule ou un blob (`Autre`) compte comme autorisé, jamais sauté.
+                let auth = if l[2] == crate::sqlite::Valeur::Autre {
+                    Some(2)
+                } else {
+                    l[2].entier_lu()
+                };
+                let source = match auth.or_else(|| l[3].entier_lu().map(|a| a.saturating_mul(2)))? {
                     2 => tr!("autorisée", "allowed"),
                     3 => tr!("autorisée en partie", "partly allowed"),
                     _ => return None,

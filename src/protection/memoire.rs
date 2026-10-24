@@ -72,7 +72,8 @@ pub(crate) struct Bloc {
     /// La taille du tampon : jusqu'à la fin du morceau qui finit le plus loin.
     pub taille: u64,
     /// Disposition chargée (Windows : positions comptées depuis la base de l'allocation) : pe.entry_point y est une
-    /// RVA, comme pour libyara en mémoire. Sinon (Linux : positions dans le fichier), une position de fichier.
+    /// RVA, comme pour libyara en mémoire, et aussi une position de fichier quand le bloc commence par « MZ » (un PE
+    /// gardé tel que sur le disque). Sinon (Linux : positions dans le fichier), une position de fichier.
     pub chargee: bool,
 }
 
@@ -126,6 +127,8 @@ pub(crate) fn regrouper(mut morceaux: Vec<(Region, u64)>, chargee: bool) -> Vec<
 pub(crate) struct Releve {
     pub blocs: Vec<Bloc>,
     pub images_non_verifiees: usize,
+    /// Les images laissées au scan de fichiers : leur fichier est là, sur un disque, et rien n'y a changé en mémoire.
+    pub images_laissees: usize,
 }
 
 /// Le nom d'un processus critique de Windows, quelle que soit sa casse.
@@ -213,9 +216,10 @@ pub(crate) fn lisible_windows(etat: u32, protection: u32) -> bool {
 }
 
 /// Une image chargée de Windows (MEM_IMAGE) : `Some(true)` à lire en entier, `Some(false)` laissée au scan de
-/// fichiers, `None` non vérifiée. Écartée seulement si son fichier est là ET qu'aucune de ses pages de code n'est
-/// privée : la réécriture d'une DLL chargée (pages copiées à l'écriture, devenues privées) et les processus
-/// « fantômes » (image d'un fichier effacé) vivent en MEM_IMAGE, sur un fichier sain ou absent, que ni le scan de
+/// fichiers, `None` non vérifiée. `fichier_present` : son fichier est là ET son en-tête est celui de l'image (`Some
+/// (false)` : absent, ou un autre en-tête). Écartée seulement si c'est le cas et qu'aucune de ses pages de code n'est
+/// privée : la réécriture d'une DLL chargée (pages copiées à l'écriture, devenues privées), une image d'un fichier
+/// effacé, ou d'un fichier réécrit depuis, vivent en MEM_IMAGE, sur un fichier sain ou absent, que ni le scan de
 /// fichiers ni celui des régions privées ne voyaient. Une page de code en lecture-écriture-exécution
 /// (PAGE_EXECUTE_READWRITE) n'est pas celle d'une image intacte : lue aussi.
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -224,6 +228,35 @@ pub(crate) fn image_windows(fichier_present: Option<bool>, pages_privees: Option
         return Some(true);
     }
     (fichier_present == Some(true) && pages_privees == Some(false)).then_some(false)
+}
+
+/// Les en-têtes PE de la première page d'une image en mémoire et du début de son fichier disent-ils la même chose ?
+/// Comparés : la date de liaison et le nombre de sections (COFF), le point d'entrée, la taille de l'image et la somme
+/// de contrôle (en-tête facultatif), et la table des sections ; pas l'adresse de base, que le chargeur réécrit en
+/// mémoire quand il déplace l'image. `None` : l'un des deux n'est pas un PE lisible.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn entetes_pe_concordent(memoire: &[u8], fichier: &[u8]) -> Option<bool> {
+    fn champs(o: &[u8]) -> Option<Vec<&[u8]>> {
+        if o.get(..2)? != b"MZ" {
+            return None;
+        }
+        let pe = usize::try_from(u32::from_le_bytes(o.get(0x3C..0x40)?.try_into().ok()?)).ok()?;
+        if o.get(pe..pe.checked_add(4)?)? != b"PE\0\0" {
+            return None;
+        }
+        let sections = usize::from(u16::from_le_bytes(o.get(pe + 6..pe + 8)?.try_into().ok()?));
+        let facultatif = usize::from(u16::from_le_bytes(o.get(pe + 20..pe + 22)?.try_into().ok()?));
+        let opt = pe + 24;
+        let table = opt.checked_add(facultatif)?;
+        Some(vec![
+            o.get(pe + 6..pe + 12)?,
+            o.get(opt + 16..opt + 20)?,
+            o.get(opt + 56..opt + 60)?,
+            o.get(opt + 64..opt + 68)?,
+            o.get(table..table.checked_add(sections.checked_mul(40)?)?)?,
+        ])
+    }
+    Some(champs(memoire)? == champs(fichier)?)
 }
 
 /// Une entrée de /proc/<pid>/smaps : l'en-tête (celui de maps) et le champ « Anonymous » (pages privées, copiées à
@@ -279,9 +312,10 @@ fn entete_linux(ligne: &str) -> Option<Mappage> {
     })
 }
 
-/// Les systèmes de fichiers en mémoire (tmpfs, ramfs) de /proc/<pid>/mountinfo, par numéro de périphérique : un
-/// fichier qui y est mappé n'est sur aucun disque, et le scan de fichiers ne couvre ni /dev/shm, ni /tmp, ni
-/// /run/user.
+/// Les systèmes de fichiers de /proc/<pid>/mountinfo dont le contenu ne vient pas d'un disque local, par numéro de
+/// périphérique : en mémoire (tmpfs, ramfs : le scan de fichiers ne couvre ni /dev/shm, ni /tmp, ni /run/user), servis
+/// par un programme (FUSE, qu'un compte monte lui-même et qui peut rendre un contenu au chargeur et un autre à une
+/// lecture ultérieure) ou par le réseau. Une image qui y est mappée se lit en mémoire.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn en_memoire_linux(mountinfo: &str) -> Vec<(u32, u32)> {
     mountinfo
@@ -289,7 +323,11 @@ pub(crate) fn en_memoire_linux(mountinfo: &str) -> Vec<(u32, u32)> {
         .filter_map(|ligne| {
             let (avant, apres) = ligne.split_once(" - ")?;
             let genre = apres.split(' ').next()?;
-            if !matches!(genre, "tmpfs" | "ramfs") {
+            let ailleurs = matches!(genre, "tmpfs" | "ramfs" | "9p" | "cifs" | "smb3" | "nfs" | "nfs4")
+                || genre == "fuse"
+                || genre.starts_with("fuse.")
+                || genre == "fuseblk";
+            if !ailleurs {
                 return None;
             }
             let (majeur, mineur) = avant.split(' ').nth(2)?.split_once(':')?;
@@ -316,54 +354,56 @@ pub(crate) fn releve_linux(smaps: &str, en_memoire: Option<&[(u32, u32)]>) -> Re
         }
     }
     let mut releve = Releve::default();
-    let mut groupe: Vec<Mappage> = Vec::new();
-    let vider = |groupe: &mut Vec<Mappage>, releve: &mut Releve| {
-        let Some(premier) = groupe.first() else {
-            return;
-        };
-        let efface = premier.chemin.ends_with(" (deleted)") || premier.chemin.starts_with("/memfd:");
-        let tmpfs = en_memoire.map(|e| e.contains(&premier.peripherique));
-        let reecrit = groupe.iter().any(|m| m.executable && m.anonyme_ko > 0);
-        if efface || reecrit || tmpfs == Some(true) {
-            let morceaux = groupe.iter().map(|m| (m.region, m.decalage)).collect();
-            releve.blocs.extend(regrouper(morceaux, false));
-        } else {
-            releve.blocs.extend(
-                groupe
-                    .iter()
-                    .filter(|m| m.anonyme_ko > 0)
-                    .map(|m| Bloc::seule(m.region, false)),
-            );
-            if tmpfs.is_none() {
-                releve.images_non_verifiees += 1;
-            }
-        }
-        groupe.clear();
-    };
+    // Les mappages d'un même fichier sont rassemblés où qu'ils soient dans la liste : d'autres régions entre l'en-tête
+    // et le code d'une image ne la coupent pas en deux.
+    let mut images: Vec<Vec<Mappage>> = Vec::new();
+    let mut rang: std::collections::HashMap<((u32, u32), u64, String), usize> = std::collections::HashMap::new();
     for m in mappages {
-        // Une région illisible (garde, réservation) n'est ni lue ni une coupure : les segments d'une bibliothèque
-        // sont souvent séparés par une telle région.
-        if !m.lisible {
+        // Une région ni lisible ni exécutable (garde, réservation) n'a rien à lire. Une région exécutable sans droit
+        // de lecture se lit quand même par /proc/<pid>/mem : elle est gardée.
+        if !m.lisible && !m.executable {
             continue;
         }
         let anonyme = m.chemin.is_empty()
             || m.chemin == "[heap]"
             || m.chemin.starts_with("[stack")
             || m.chemin.starts_with("[anon");
-        let fichier = !anonyme && !m.chemin.starts_with('[');
-        let meme = groupe
-            .first()
-            .is_some_and(|g| g.chemin == m.chemin && g.inode == m.inode && g.peripherique == m.peripherique);
-        if !(fichier && meme) {
-            vider(&mut groupe, &mut releve);
-        }
-        if fichier {
-            groupe.push(m);
-        } else if anonyme {
+        if anonyme {
             releve.blocs.push(Bloc::seule(m.region, false));
+            continue;
+        }
+        if m.chemin.starts_with('[') {
+            continue;
+        }
+        let cle = (m.peripherique, m.inode, m.chemin.clone());
+        let k = *rang.entry(cle).or_insert_with(|| {
+            images.push(Vec::new());
+            images.len() - 1
+        });
+        images[k].push(m);
+    }
+    for groupe in images {
+        let premier = &groupe[0];
+        let efface = premier.chemin.ends_with(" (deleted)") || premier.chemin.starts_with("/memfd:");
+        let hors_disque = en_memoire.map(|e| e.contains(&premier.peripherique));
+        let reecrit = groupe.iter().any(|m| m.executable && m.anonyme_ko > 0);
+        if efface || reecrit || hors_disque == Some(true) {
+            let morceaux = groupe.iter().map(|m| (m.region, m.decalage)).collect();
+            releve.blocs.extend(regrouper(morceaux, false));
+            continue;
+        }
+        releve.blocs.extend(
+            groupe
+                .iter()
+                .filter(|m| m.anonyme_ko > 0)
+                .map(|m| Bloc::seule(m.region, false)),
+        );
+        if hors_disque.is_none() {
+            releve.images_non_verifiees += 1;
+        } else {
+            releve.images_laissees += 1;
         }
     }
-    vider(&mut groupe, &mut releve);
     releve
 }
 
@@ -521,11 +561,16 @@ fn analyser_regions(
                 let echeance = Instant::now() + DELAI_PAR_REGION;
                 let zone = if recolle { &zone[..] } else { &zone[..fin] };
                 match crate::journal::rattraper(std::panic::AssertUnwindSafe(|| {
-                    if bloc.chargee {
-                        regles.analyser_image(zone, Some(echeance))
-                    } else {
-                        regles.analyser_tampon(zone, Some(echeance))
+                    let tel_quel = regles.analyser_tampon(zone, Some(echeance))?;
+                    // Une allocation qui commence par « MZ » peut garder un PE chargé (sections à leur RVA) ou tel
+                    // que sur le disque (un tampon de téléchargeur) : les deux lectures de pe.entry_point sont faites.
+                    if !(bloc.chargee && zone.starts_with(b"MZ")) {
+                        return Ok::<_, crate::protection::motifs::Echec>(tel_quel);
                     }
+                    let mut toutes = regles.analyser_image(zone, Some(echeance))?;
+                    toutes.extend(tel_quel.into_iter().filter(|k| !toutes.contains(k)).collect::<Vec<_>>());
+                    toutes.sort_unstable();
+                    Ok(toutes)
                 })) {
                     Ok(Ok(trouvees)) => lecture
                         .trouves
@@ -568,16 +613,20 @@ mod plateforme {
             .collect()
     }
 
-    /// Un fichier de /proc, borné (smaps d'un navigateur : quelques Mio).
+    /// Un fichier de /proc lu au plus (smaps d'un navigateur : quelques Mio).
+    const PROC_MAX: u64 = 256 << 20;
+
+    /// Un fichier de /proc, en entier ou pas du tout : coupé à la borne, la liste des régions serait partielle et le
+    /// processus compté lu ; plus grand, il n'est pas lu (le processus compte alors parmi les non lus).
     fn lire_proc(chemin: &str) -> Option<String> {
         use std::io::Read;
         let mut texte = String::new();
         File::open(chemin)
             .ok()?
-            .take(256 << 20)
+            .take(PROC_MAX + 1)
             .read_to_string(&mut texte)
             .ok()?;
-        Some(texte)
+        (texte.len() as u64 <= PROC_MAX).then_some(texte)
     }
 
     /// /proc/<pid>/smaps pour les régions (et leurs pages privées), mountinfo pour les systèmes de fichiers en
@@ -612,6 +661,7 @@ mod plateforme {
             Releve {
                 blocs: self.releve.blocs.clone(),
                 images_non_verifiees: self.releve.images_non_verifiees,
+                images_laissees: self.releve.images_laissees,
             }
         }
 
@@ -751,7 +801,8 @@ struct Masque {
 }
 
 /// Le bilan de l'analyse : combien de processus lus, non lus (droits), exclus par choix, lus en partie (et lesquels),
-/// les régions trop grosses et les images non jugées, si une borne a tout arrêté, les règles que le moteur a refusées (non vérifiées), les correspondances et les masquages.
+/// les régions trop grosses, les images non jugées ou laissées au scan de fichiers, si une borne a tout arrêté, les
+/// règles que le moteur a refusées (non vérifiées), les correspondances et les masquages.
 #[derive(Debug, Default, PartialEq)]
 struct Bilan {
     regles_refusees: usize,
@@ -765,6 +816,8 @@ struct Bilan {
     trop_grosses: usize,
     /// Les images chargées qui n'ont pas pu être jugées (`Releve`).
     images_non_verifiees: usize,
+    /// Les images laissées au scan de fichiers (`Releve`).
+    images_laissees: usize,
     arrete: bool,
     trouves: Vec<Trouve>,
     masques: Vec<Masque>,
@@ -857,6 +910,7 @@ fn parcourir(regles: &Regles) -> Bilan {
                 bilan.lus += 1;
                 bilan.trop_grosses += lecture.trop_grosses;
                 bilan.images_non_verifiees += releve.images_non_verifiees;
+                bilan.images_laissees += releve.images_laissees;
                 if lecture.incomplete() {
                     bilan.incomplets += 1;
                 }
@@ -947,18 +1001,30 @@ fn afficher(bilan: &Bilan, regles: &Regles) {
     }
     if bilan.trop_grosses > 0 {
         avertir(&trf!(
-            "{} régions de plus de {} Mio jamais lues : une charge cachée dans l'une d'elles n'est pas vue.",
-            "{} regions over {} MiB never read: a payload hidden in one of them is not seen.",
+            "Régions de plus de {1} Mio jamais lues : {0}. Ce qui serait caché dans l'une d'elles n'est pas vu.",
+            "Regions over {1} MiB never read: {0}. Whatever might be hidden in one of them is not seen.",
             bilan.trop_grosses,
             TAILLE_REGION_MAX >> 20
         ));
     }
     if bilan.images_non_verifiees > 0 {
         avertir(&trf!(
-            "{} images chargées (programmes, bibliothèques) n'ont pas pu être jugées : ni leur fichier ni leurs pages modifiées en mémoire ne se lisent. Rien n'est conclu pour elles.",
-            "{} loaded images (programs, libraries) could not be judged: neither their file nor their pages modified in memory can be read. Nothing is concluded for them.",
+            "Images chargées (programmes, bibliothèques) qu'on n'a pas pu juger : {}. Rien ne dit si elles ont été modifiées en mémoire ; rien n'est conclu pour elles.",
+            "Loaded images (programs, libraries) that could not be judged: {}. Nothing tells whether they were modified in memory; nothing is concluded for them.",
             bilan.images_non_verifiees
         ));
+    }
+    if bilan.images_laissees > 0 {
+        for ligne in envelopper(
+            &trf!(
+                "Images chargées laissées au scan de fichiers : {} (leur fichier est sur le disque, et rien n'y a été modifié en mémoire).",
+                "Loaded images left to the file scan: {} (their file is on disk, and nothing in them was modified in memory).",
+                bilan.images_laissees
+            ),
+            LARGEUR - 2,
+        ) {
+            println!("  {GRIS}{ligne}{RESET}");
+        }
     }
     if bilan.arrete {
         avertir(&trf!(
@@ -1326,6 +1392,24 @@ mod tests {
         ]
         .concat();
         assert_eq!(releve_linux(&deux, Some(&[])).blocs.len(), 2);
+        // L'en-tête et le code d'une même image séparés par une région anonyme : toujours une seule image.
+        let separee = [
+            smaps("5600000000-5600001000 r--p 00000000 00:05 77   /a (deleted)", 0),
+            smaps("5600001000-5600002000 rw-p 00000000 00:00 0 ", 4),
+            smaps("5600002000-5600003000 r-xp 00001000 00:05 77   /a (deleted)", 0),
+        ]
+        .concat();
+        let releve = releve_linux(&separee, Some(&[]));
+        let image: Vec<&Bloc> = releve.blocs.iter().filter(|b| b.morceaux.len() == 2).collect();
+        assert_eq!(image.len(), 1, "{:x?}", releve.blocs);
+        // Une région exécutable sans droit de lecture se lit par /proc/<pid>/mem : gardée.
+        let sans_lecture = smaps("7f5000000000-7f5000001000 --xp 00000000 00:00 0 ", 4);
+        assert_eq!(releve_linux(&sans_lecture, Some(&[])).blocs.len(), 1);
+        // Une bibliothèque intacte d'un disque : laissée au scan de fichiers, et comptée.
+        assert_eq!(releve_linux(&libc, Some(&[])).images_laissees, 1);
+        // Servie par FUSE : lue en mémoire.
+        let fuse = "40 1 0:50 / /home/alice/m rw - fuse.sshfs x rw\n";
+        assert_eq!(en_memoire_linux(fuse), [(0, 50)]);
     }
 
     /// Un regroupement qui tiendrait mal (trop grand, ou fait surtout de trous) se lit région par région.
@@ -1345,6 +1429,74 @@ mod tests {
 
     /// Windows : une image chargée n'est laissée au scan de fichiers que si son fichier est là et qu'aucune page de
     /// code n'est privée ; ce qui ne se sait pas est non vérifié.
+    /// L'en-tête d'une image en mémoire comparé à celui de son fichier : l'adresse de base réécrite par le chargeur ne
+    /// compte pas ; une autre date de liaison, un autre point d'entrée ou une autre table des sections (un fichier
+    /// réécrit après le chargement), si.
+    #[test]
+    fn entetes_de_l_image_et_du_fichier() {
+        let fichier = crate::pe::essais::pe(&crate::pe::essais::Fabrique::default());
+        let opt = 0x40 + 24;
+        let mut memoire = fichier.clone();
+        memoire[opt + 24..opt + 32].copy_from_slice(&0x7FF6_1234_0000u64.to_le_bytes());
+        assert_eq!(entetes_pe_concordent(&memoire, &fichier), Some(true));
+        for (position, longueur) in [(0x40 + 8, 4), (opt + 16, 4), (opt + 56, 4), (opt + 240 + 12, 4)] {
+            let mut autre = fichier.clone();
+            autre[position] ^= 0x10;
+            assert_eq!(
+                entetes_pe_concordent(&memoire, &autre),
+                Some(false),
+                "{position:#x}/{longueur}"
+            );
+        }
+        assert_eq!(entetes_pe_concordent(b"pas un PE", &fichier), None);
+        assert_eq!(entetes_pe_concordent(&memoire, &fichier[..0x50]), None);
+    }
+
+    /// Une allocation privée qui garde un PE tel que sur le disque (sections à leur position de fichier) : « at
+    /// pe.entry_point » s'y lit aussi, à côté de la lecture en RVA.
+    #[test]
+    fn pe_tel_quel_dans_une_allocation_privee() {
+        let mut fichier = crate::pe::essais::pe(&crate::pe::essais::Fabrique::default());
+        let opt = 0x40 + 24;
+        fichier[opt + 16..opt + 20].copy_from_slice(&0x1000u32.to_le_bytes());
+        fichier[0x200..0x204].copy_from_slice(b"ENTR");
+        let essai = regles(r#"import "pe" rule entree { strings: $a = "ENTR" condition: $a at pe.entry_point }"#);
+        let region = Region {
+            debut: 0x1_0000,
+            taille: fichier.len() as u64,
+        };
+        let mut tampon = Tampon::nouveau(fichier.len());
+        let remplir = |_: &Region, z: &mut [u8]| {
+            z.copy_from_slice(&fichier);
+            z.len()
+        };
+        let lecture = analyser_regions(
+            &essai,
+            &[Bloc::seule(region, true)],
+            &mut tampon.0,
+            remplir,
+            0,
+            Instant::now(),
+        );
+        assert_eq!(lecture.trouves.len(), 1, "{lecture:?}");
+    }
+
+    /// Sur un vrai Windows : kernel32, chargée dans ce processus et intacte, a son fichier, le même en-tête et aucune
+    /// page de code privée ; elle est laissée au scan de fichiers. Sous Wine (qui charge les PE lui-même), sauté.
+    #[cfg(windows)]
+    #[test]
+    fn kernel32_intacte_est_laissee_au_scan_de_fichiers() {
+        if crate::journal::sous_wine() {
+            return crate::essais::saute("Wine charge les PE lui-même");
+        }
+        let lecteur = plateforme::Lecteur::ouvrir(std::process::id()).expect("son propre processus doit s'ouvrir");
+        let releve = lecteur.regions();
+        assert!(
+            releve.images_laissees > 0,
+            "aucune image laissée au scan de fichiers : {releve:?}"
+        );
+    }
+
     #[test]
     fn images_de_windows() {
         assert_eq!(image_windows(Some(true), Some(false), false), Some(false));

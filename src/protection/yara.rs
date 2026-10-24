@@ -165,14 +165,11 @@ fn analyser_fichier(regles: &Regles, chemin: &Path) -> Result<Vec<usize>, ()> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     // Sans suivre de lien : un fichier listé puis remplacé par un lien (vers un autre fichier, un tube) avant d'être
-    // ouvert est illisible, jamais un autre fichier analysé sous son nom. Le descripteur ouvert est ensuite jugé.
+    // ouvert est illisible, jamais un autre fichier analysé sous son nom. Le descripteur ouvert est ensuite jugé. Pas
+    // d'équivalent sous Windows : FILE_FLAG_OPEN_REPARSE_POINT ouvrirait aussi sans leur pilote les fichiers
+    // compressés par le système (WOF) ou dédupliqués, dont on lirait la souche au lieu du contenu.
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK | libc::O_NOFOLLOW);
-    #[cfg(windows)]
-    {
-        // FILE_FLAG_OPEN_REPARSE_POINT : un lien s'ouvre lui-même, et n'est pas un fichier ordinaire.
-        std::os::windows::fs::OpenOptionsExt::custom_flags(&mut options, 0x0020_0000);
-    }
     let mut fichier = options.open(chemin).map_err(|_| ())?;
     let meta = fichier.metadata().map_err(|_| ())?;
     if !meta.is_file() || meta.len() > TAILLE_MAX {

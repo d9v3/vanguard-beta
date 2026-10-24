@@ -310,12 +310,12 @@ fn fin_ico(o: &[u8]) -> Option<usize> {
     Some(fin)
 }
 
-/// Une archive d'un format non lu ici (RAR, 7z) placée après le début de `octets` : sa position. Pour les formats
-/// « inertes » dont la fin ne se calcule pas (TIFF, sons, vidéos, polices, bases SQLite, WebAssembly), qu'un
-/// extracteur ouvrirait pourtant par cette signature. Les signatures sont longues (6 et 7 octets) : une rencontre
-/// par hasard est négligeable.
+/// Une archive d'un format non lu ici (RAR, 7z, CAB, xz) placée après le début de `octets` : sa position. Pour les
+/// formats « inertes » dont la fin ne se calcule pas (TIFF, sons, vidéos, polices, bases SQLite, WebAssembly) et
+/// l'intérieur des images, qu'un extracteur ouvrirait pourtant par cette signature. Les signatures sont longues (6 à
+/// 8 octets) : une rencontre par hasard est négligeable.
 pub(crate) fn archive_cachee(octets: &[u8]) -> Option<usize> {
-    const SIGNATURES: [&[u8]; 2] = [b"Rar!\x1A\x07", b"7z\xBC\xAF\x27\x1C"];
+    const SIGNATURES: [&[u8]; 4] = [b"Rar!\x1A\x07", b"7z\xBC\xAF\x27\x1C", b"MSCF\0\0\0\0", b"\xFD7zXZ\0"];
     SIGNATURES
         .iter()
         .filter_map(|s| octets.get(1..)?.windows(s.len()).position(|f| f == *s).map(|p| p + 1))

@@ -1086,9 +1086,13 @@ pub(crate) fn attendre_hebdomadaire() {
 /// jamais reporté : rien ne dit depuis quand il attend.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn reporter(d: Option<&Dernier>, maintenant: chrono::DateTime<chrono::Utc>, jeu: Option<bool>) -> bool {
+    // Une date dans le futur (horloge reculée, dernier forgé) ne compte pas comme récente : sans cela le report
+    // n'avait plus de fin.
     jeu == Some(true)
-        && d.and_then(|d| date(&d.quand))
-            .is_some_and(|q| maintenant - q < chrono::Duration::days(2 * SEMAINE))
+        && d.and_then(|d| date(&d.quand)).is_some_and(|q| {
+            let ecart = maintenant - q;
+            ecart >= chrono::Duration::zero() && ecart < chrono::Duration::days(2 * SEMAINE)
+        })
 }
 
 /// L'hebdomadaire est-il dû ? Oui sans dernier autotest lisible (absent, changé hors de Vanguard : une date forgée ne
@@ -1117,7 +1121,8 @@ mod tests {
     use super::*;
     use crate::machine::{alerte, impossible_par, ok};
 
-    /// Un jeu en cours (ou un faux GameMode) reporte l'autotest dû d'une semaine au plus ; sans dernier lisible, jamais.
+    /// Un jeu en cours (ou un faux GameMode) reporte l'autotest dû d'une semaine au plus ; sans dernier lisible, ou
+    /// daté dans le futur, jamais.
     #[test]
     fn report_borne_pendant_un_jeu() {
         let maintenant = chrono::Utc::now();
@@ -1131,6 +1136,10 @@ mod tests {
         assert!(!reporter(Some(&il_y_a(8)), maintenant, None));
         assert!(!reporter(Some(&il_y_a(15)), maintenant, Some(true)));
         assert!(!reporter(None, maintenant, Some(true)));
+        assert!(
+            !reporter(Some(&il_y_a(-30)), maintenant, Some(true)),
+            "une date dans le futur"
+        );
     }
 
     fn constat(regle: &'static str, c: Constat) -> Constat {

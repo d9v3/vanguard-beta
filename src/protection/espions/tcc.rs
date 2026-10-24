@@ -111,8 +111,11 @@ pub(super) fn autorisations(octets: &[u8]) -> Option<Vec<Autorisation>> {
                 let service = SERVICES.iter().position(|(s, _)| Some(*s) == l[0].texte())?;
                 // Lus comme tccd les lit (un texte rangé dans une colonne d'entiers compte par son début numérique) :
                 // une autorisation rangée en texte ne disparaît pas du bilan.
+                // Un nombre à virgule ou un blob (`Autre`), que tccd lirait aussi comme un entier : compté accordé
+                // plutôt que sauté, une autorisation forgée ne disparaît jamais du bilan.
+                let autre = l[3] == crate::sqlite::Valeur::Autre;
                 let accordee =
-                    l[3].entier_lu() == Some(2) || (l[3].entier_lu().is_none() && l[4].entier_lu() == Some(1));
+                    autre || l[3].entier_lu() == Some(2) || (l[3].entier_lu().is_none() && l[4].entier_lu() == Some(1));
                 accordee.then(|| Autorisation {
                     service,
                     client: crate::ui::affichable(l[1].texte().unwrap_or_default()),
@@ -380,14 +383,15 @@ mod tests {
 
     /// La piste de la campagne d'attaque n° 3 : une autorisation dont `auth_value` est rangé en texte (« 2x », qu'une
     /// colonne INTEGER garde tel quel) était sautée en silence ; lue comme tccd la lit (début numérique : 2), elle est
-    /// vue. Base fabriquée par sqlite3 de Python (assets/essais/tcc-texte.sqlite) ; « 0x » vaut 0, refusée.
+    /// vue ; un nombre à virgule (2.5) aussi. Base fabriquée par sqlite3 de Python (assets/essais/tcc-texte.sqlite) ;
+    /// « 0x » vaut 0, refusée.
     #[test]
     fn auth_value_rangee_en_texte() {
         use crate::sqlite::Valeur;
         let base = include_bytes!("../../../assets/essais/tcc-texte.sqlite");
         let a = autorisations(base).unwrap();
         let clients: Vec<&str> = a.iter().map(|a| a.client.as_str()).collect();
-        assert_eq!(clients, ["com.example.Texte", "/Users/alice/outil"]);
+        assert_eq!(clients, ["com.example.Texte", "/Users/alice/outil", "com.example.Reel"]);
         assert!(a[1].chemin);
         for (texte, attendu) in [("2", 2), ("2x", 2), (" +2 ", 2), ("-3", -3), ("abc", 0), ("", 0)] {
             assert_eq!(Valeur::Texte(texte.into()).entier_lu(), Some(attendu), "{texte:?}");

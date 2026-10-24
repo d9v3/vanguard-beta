@@ -4,10 +4,10 @@
 
 use super::Bornes;
 
-/// Le temps de `lire` pour une archive entière. Une vraie archive de tldr-pages (quelques Mio) se lit en bien moins
-/// d'une seconde ; une archive fabriquée de blocs deflate vides coûte ≈ 1,2 s de processeur par Mio compressé, et
-/// figeait le guide des commandes (90 s pour 2 Mio).
-const DELAI_LECTURE: std::time::Duration = std::time::Duration::from_secs(5);
+/// Le temps de `lire` pour une archive entière. Une vraie archive de tldr-pages (3,4 Mio, 7 600 entrées) se lit en
+/// 50 ms ; une archive fabriquée de blocs deflate vides coûte ≈ 1,2 s de processeur par Mio compressé, et figeait le
+/// guide des commandes (90 s pour 2 Mio).
+const DELAI_LECTURE: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Le temps de `controler` (déploiement de la clé, sans personne qui attend un écran) : plus large, même raison.
 const DELAI_CONTROLE: std::time::Duration = std::time::Duration::from_secs(30);
@@ -15,9 +15,9 @@ const DELAI_CONTROLE: std::time::Duration = std::time::Duration::from_secs(30);
 /// Les fichiers (nom, contenu). L'archive doit avoir la forme que `controler` exige (répertoire central entier, sans
 /// entrée cachée, entrées qui ne se chevauchent pas, octets compressés plausibles pour leur taille), sinon la liste
 /// est vide : chaque octet compressé n'est ainsi décompressé qu'une fois. Une entrée hors des bornes (au plus
-/// `fichier` octets annoncés par entrée, `total` en tout), ou dont le contenu ne se lit pas à la taille annoncée, est
-/// sautée ; le CRC n'est pas recalculé. Plus de `DELAI_LECTURE` en
-/// tout : liste vide, l'archive est jugée illisible.
+/// `fichier` octets annoncés par entrée, `total` en tout) est sautée ; une entrée dont le contenu ne se lit pas à la
+/// taille annoncée, ou plus de `DELAI_LECTURE` en tout, et la liste est vide : l'archive est jugée illisible. Le CRC
+/// n'est pas recalculé.
 pub(crate) fn lire(octets: &[u8], bornes: &Bornes) -> Vec<(String, Vec<u8>)> {
     lire_avant(octets, bornes, std::time::Instant::now() + DELAI_LECTURE)
 }
@@ -37,10 +37,11 @@ pub(crate) fn lire_avant(octets: &[u8], bornes: &Bornes, echeance: std::time::In
         if e.hors_bornes {
             continue;
         }
+        // Une entrée qui ne se lit pas à sa taille annoncée rend l'archive illisible, tout de suite : la sauter et
+        // continuer laissait une archive faite d'entrées illisibles mais coûteuses aller jusqu'à l'échéance.
         match contenu(octets, e, echeance) {
             Ok(c) => fichiers.push((String::from_utf8_lossy(e.nom).into_owned(), c)),
-            Err(Echec::Delai) => return Vec::new(),
-            Err(Echec::Illisible) => {}
+            Err(_) => return Vec::new(),
         }
     }
     fichiers
@@ -794,8 +795,19 @@ mod tests {
             fichier: 1 << 16,
             total: 1 << 16,
         };
+        // La taille fausse de c.md rend l'archive entière illisible ; sans elle, les deux autres se lisent.
+        assert_eq!(lire(&zip, &bornes), []);
+        let zip = archive(&[
+            ("pages/common/a.md", b"stockee".to_vec(), 0, 7),
+            (
+                "pages/common/b.md",
+                miniz_oxide::deflate::compress_to_vec(&texte, 6),
+                8,
+                taille,
+            ),
+        ]);
         let lus = lire(&zip, &bornes);
-        assert_eq!(lus.len(), 2, "la taille fausse de c.md l'écarte");
+        assert_eq!(lus.len(), 2);
         assert_eq!(lus[0], ("pages/common/a.md".to_string(), b"stockee".to_vec()));
         assert_eq!(lus[1].1, texte);
     }
@@ -1015,6 +1027,34 @@ mod tests {
             "{:?}",
             debut.elapsed()
         );
+    }
+
+    /// Mille entrées centrales qui désignent la même entrée locale, plausible (une vraie page compressée) : `lire`
+    /// les rendait toutes, une décompression chacune ; refusée à sa forme (chevauchement), sans rien décompresser.
+    #[test]
+    fn lire_refuse_le_chevauchement_d_entrees_plausibles() {
+        let vides: Vec<(&str, u16, &[u8])> = (0..1000).map(|_| ("pages/a.md", 8, &b"# a\n\n> Page.\n"[..])).collect();
+        let mut multiple = archive_controlee(&vides);
+        let premier = multiple
+            .windows(4)
+            .position(|f| f == 0x0201_4b50u32.to_le_bytes())
+            .unwrap();
+        let local = u32::from_le_bytes(multiple[premier + 42..premier + 46].try_into().unwrap());
+        let mut j = premier;
+        while multiple.get(j..j + 4) == Some(&0x0201_4b50u32.to_le_bytes()[..]) {
+            let longueur = usize::from(u16::from_le_bytes([multiple[j + 28], multiple[j + 29]]));
+            multiple[j + 42..j + 46].copy_from_slice(&local.to_le_bytes());
+            j += 46 + longueur;
+        }
+        let bornes = Bornes {
+            entrees: 50_000,
+            fichier: 256 << 10,
+            total: 64 << 20,
+        };
+        assert_eq!(lire(&multiple, &bornes), []);
+        assert!(controler(&multiple, &bornes).is_err());
+        // La même archive sans le partage se lit : seules les données partagées la font refuser.
+        assert_eq!(lire(&archive_controlee(&vides), &bornes).len(), 1000);
     }
 
     /// Des octets compressés bien plus nombreux que le contenu qu'ils annoncent : des blocs vides, refusés à la

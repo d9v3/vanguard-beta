@@ -982,7 +982,8 @@ fn chemin_de_session(adresse: &str) -> Option<std::path::PathBuf> {
 /// Un jeu tourne-t-il sous GameMode (`ClientCount` > 0 sur le bus de la session) ? `None` : GameMode absent, le bus
 /// injoignable, ou le nom tenu par un autre programme que gamemoded : rien de su (seul un jeu lancé par gamemoderun
 /// est vu). Le nom com.feralinteractive.GameMode, lancé à la demande, est souvent libre : n'importe quel programme du
-/// compte pouvait le prendre et faire croire à un jeu sans fin.
+/// compte pouvait le prendre et répondre ce qu'il voulait. Le vrai gamemoded peut, lui, compter un client qui ne joue
+/// pas : c'est la borne du report de l'autotest (`autotest::reporter`) qui empêche un report sans fin.
 pub(crate) fn gamemode_actif() -> Option<bool> {
     const NOM: &str = "com.feralinteractive.GameMode";
     let mut bus = Bus::session()?;

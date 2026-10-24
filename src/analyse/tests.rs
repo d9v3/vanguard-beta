@@ -677,6 +677,17 @@ fn image_suivie_d_une_archive() {
             }
         }
     }
+    // Une archive DANS l'image (un commentaire JPEG, la taille d'un BMP qui l'englobe) : vue aussi.
+    let mut commentaire = jpeg();
+    let cab = b"MSCF\0\0\0\0\x10\x00\x00\x00".to_vec();
+    let mut segment = vec![0xFF, 0xFE];
+    segment.extend(u16::try_from(cab.len() + 2).unwrap().to_be_bytes());
+    segment.extend(&cab);
+    commentaire.splice(2..2, segment);
+    assert_eq!(nature::fin_image(&commentaire), Some(commentaire.len()));
+    let a = analyse(&commentaire, "a.jpg");
+    assert!(a.parties.iter().any(|p| p.type_ == Type::Cab), "{:?}", types(&a));
+    assert!(!a.entierement_lue());
     // Coupée avant sa fin : non lue en entier.
     let j = jpeg();
     assert!(!analyse(&j[..j.len() - 2], "a.jpg").entierement_lue());

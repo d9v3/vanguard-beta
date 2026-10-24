@@ -209,7 +209,13 @@ fn entites(valeur: &str) -> String {
     while let Some(p) = reste.find('&') {
         sortie.push_str(&reste[..p]);
         reste = &reste[p..];
-        let Some(fin) = reste.find(';').filter(|&f| f <= 12) else {
+        // « ; » cherché dans les 12 octets qui suivent seulement : chercher plus loin coûtait la longueur du reste à
+        // chaque « & », le carré de la taille pour un fichier fait d'esperluettes.
+        let Some(fin) = reste.as_bytes()[1..reste.len().min(13)]
+            .iter()
+            .position(|&b| b == b';')
+            .map(|f| f + 1)
+        else {
             sortie.push('&');
             reste = &reste[1..];
             continue;
@@ -389,6 +395,15 @@ mod tests {
         assert_eq!(relations_externes(&texte_xml(&bom)), ["https://exemple.invalid/m.dotm"]);
         let commentaire = r#"<!-- <Relationship Target="https://faux.invalid" TargetMode="External"/> --><?xml version="1.0"?><x:Relationship xmlns:x="r" x:Target='&amp;b' x:TargetMode='EXTERNAL'/>"#;
         assert_eq!(relations_externes(commentaire), ["&b"]);
+        // Des esperluettes en masse : linéaire (un Mio en bien moins d'une seconde, même non optimisé).
+        let debut = std::time::Instant::now();
+        assert_eq!(entites(&"&".repeat(1 << 20)).len(), 1 << 20);
+        assert!(
+            debut.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            debut.elapsed()
+        );
+        assert_eq!(entites("&amp;&#x41;&lt"), "&A&lt");
         // La borne des éléments : dit coupé.
         let enorme = "<a/>".repeat(ELEMENTS_MAX + 1);
         assert!(relations_externes_bornees(&enorme).1);
