@@ -35,8 +35,9 @@ pub(super) struct Etape {
     pub outil: Option<(&'static str, fn())>,
 }
 
-/// La puce TPM : présente, absente, ou illisible. Sous Linux, le noyau l'expose dans /sys ; sous Windows, Get-Tpm
-/// (parfois réservé à l'administrateur) ; un Mac n'en a pas (sa puce de sécurité est effacée avec le reste).
+/// La puce TPM : présente, absente, ou illisible. Sous Linux, le noyau l'expose dans /sys ; sous Windows, le service
+/// TPM de base (TBS), qui répond sans droits, puis Get-Tpm (réservé à l'administrateur) en secours ; un Mac n'en a pas
+/// (sa puce de sécurité est effacée avec le reste).
 fn tpm() -> Option<bool> {
     #[cfg(target_os = "linux")]
     {
@@ -44,7 +45,7 @@ fn tpm() -> Option<bool> {
     }
     #[cfg(windows)]
     {
-        crate::machine::windows::ps("(Get-Tpm).TpmPresent").and_then(|s| tpm_de_ps(&s))
+        tpm_tbs().or_else(|| crate::machine::windows::ps("(Get-Tpm).TpmPresent").and_then(|s| tpm_de_ps(&s)))
     }
     #[cfg(target_os = "macos")]
     {
@@ -61,6 +62,65 @@ fn tpm_dans(classe: &std::path::Path) -> Option<bool> {
             .flatten()
             .any(|e| e.file_name().to_string_lossy().starts_with("tpm")),
     )
+}
+
+/// Tbsi_GetDeviceInfo de tbs.dll, chargée à la demande depuis System32 seulement : une liaison fixe empêcherait
+/// vanguard.exe de démarrer là où elle manque, et un nom seul la chercherait d'abord à côté du programme (clé USB,
+/// Téléchargements), où une fausse DLL s'exécuterait. Sous Wine, la fonction n'est pas appelée (ses fonctions
+/// système peuvent n'être que des coquilles) : le secours décide.
+#[cfg(windows)]
+fn tpm_tbs() -> Option<bool> {
+    use std::ffi::c_void;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn LoadLibraryExW(nom: *const u16, fichier: *mut c_void, drapeaux: u32) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, nom: *const u8) -> *mut c_void;
+        fn FreeLibrary(module: *mut c_void) -> i32;
+    }
+    type LireInfo = unsafe extern "system" fn(u32, *mut c_void) -> u32;
+    /// LOAD_LIBRARY_SEARCH_SYSTEM32.
+    const CHERCHER_DANS_SYSTEM32: u32 = 0x800;
+
+    if crate::journal::sous_wine() {
+        return None;
+    }
+    let nom: Vec<u16> = "tbs.dll\0".encode_utf16().collect();
+    // TPM_DEVICE_INFO (tbs.h) : quatre UINT32 (version de la structure, du TPM, type et révision de l'interface),
+    // que seule la réussite de l'appel intéresse ici.
+    let mut info = [0u32; 4];
+    let taille = u32::try_from(std::mem::size_of_val(&info)).ok()?;
+    // SAFETY : le nom de la DLL et celui de la fonction sont terminés par un zéro ; le pointeur rendu est vérifié non
+    // nul avant d'être converti à la signature de tbs.h (UINT32, PVOID → TBS_RESULT) ; la structure est à nous, de la
+    // taille annoncée, vivante pendant l'appel ; le module n'est libéré qu'une fois, après le dernier appel.
+    unsafe {
+        let module = LoadLibraryExW(nom.as_ptr(), std::ptr::null_mut(), CHERCHER_DANS_SYSTEM32);
+        if module.is_null() {
+            return None;
+        }
+        let fonction = GetProcAddress(module, c"Tbsi_GetDeviceInfo".as_ptr().cast());
+        let resultat = if fonction.is_null() {
+            None
+        } else {
+            let lire = std::mem::transmute::<*mut c_void, LireInfo>(fonction);
+            tpm_de_tbs(lire(taille, (&raw mut info).cast()))
+        };
+        FreeLibrary(module);
+        resultat
+    }
+}
+
+/// Le code de Tbsi_GetDeviceInfo : réussite, une puce ; TBS_E_TPM_NOT_FOUND, aucune. Tout le reste (service TBS
+/// arrêté ou désactivé, refus) ne prouve pas l'absence : illisible.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn tpm_de_tbs(code: u32) -> Option<bool> {
+    const TBS_SUCCESS: u32 = 0;
+    const TBS_E_TPM_NOT_FOUND: u32 = 0x8028_400F;
+    match code {
+        TBS_SUCCESS => Some(true),
+        TBS_E_TPM_NOT_FOUND => Some(false),
+        _ => None,
+    }
 }
 
 /// « True » ou « False », tels que PowerShell les écrit.
@@ -379,6 +439,23 @@ mod tests {
         assert!(cle_de_recuperation(Some(false)).contains("pas chiffré"));
         assert!(cle_de_recuperation(None).contains("pas pu lire"));
         assert!(cle_de_recuperation(Some(true)).contains("chiffré"));
+    }
+
+    #[test]
+    fn tpm_lu_du_service_tbs() {
+        assert_eq!(tpm_de_tbs(0), Some(true));
+        assert_eq!(tpm_de_tbs(0x8028_400F), Some(false));
+        // Service arrêté, désactivé, accès refusé, paramètre refusé : illisible, jamais « pas de puce ».
+        for code in [0x8028_4008, 0x8028_4010, 0x8028_4001, 0x8028_4002, 5] {
+            assert_eq!(tpm_de_tbs(code), None, "{code:#x}");
+        }
+    }
+
+    /// Sous Wine, le service n'est pas appelé, sans planter ; sur un vrai Windows, une réponse se tient.
+    #[cfg(windows)]
+    #[test]
+    fn tpm_tbs_sans_planter() {
+        let _ = tpm_tbs();
     }
 
     #[test]
