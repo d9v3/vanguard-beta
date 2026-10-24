@@ -209,6 +209,7 @@ fn categorie_en(nom: &str) -> Option<&'static str> {
         "Intégrité" => "Integrity",
         "État de Vanguard" => "Vanguard's state",
         "Journaux" => "Logs",
+        "Journaux d'événements" => "Event logs",
         "Navigateur" => "Browser",
         "Mises à jour" => "Updates",
         "Noyau" => "Kernel",

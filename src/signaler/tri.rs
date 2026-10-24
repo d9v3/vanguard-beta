@@ -179,6 +179,7 @@ mod tests {
                 raison: None,
                 message: message.into(),
                 corrigeable: false,
+                date: None,
             }],
         }))
     }

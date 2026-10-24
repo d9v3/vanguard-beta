@@ -49,11 +49,16 @@ pub(crate) enum Genre {
     Veilleur,
     /// Un rançongiciel repéré en direct par le veilleur (rafale de chiffrement, piège touché, copies effacées).
     Rancongiciel,
+    /// Une alerte des journaux de Windows (règles `EVT-`, `vanguard journaux-windows`).
+    Evenements,
     Autre,
 }
 
+/// La famille des alertes des journaux de Windows, telle que le journal des événements la garde.
+pub(crate) const FAMILLE_EVENEMENTS: &str = "evenements";
+
 impl Genre {
-    const TOUS: [Genre; 13] = [
+    const TOUS: [Genre; 14] = [
         Genre::Machine,
         Genre::Fichiers,
         Genre::Telechargement,
@@ -66,6 +71,7 @@ impl Genre {
         Genre::Blocage,
         Genre::Veilleur,
         Genre::Rancongiciel,
+        Genre::Evenements,
         Genre::Autre,
     ];
 
@@ -84,6 +90,7 @@ impl Genre {
             Genre::Blocage => "blocage",
             Genre::Veilleur => "veilleur",
             Genre::Rancongiciel => "rancongiciel",
+            Genre::Evenements => FAMILLE_EVENEMENTS,
             Genre::Autre => "autre",
         }
     }
@@ -107,6 +114,7 @@ impl Genre {
             Genre::Blocage => tr!("BLOCAGE", "BLOCKING"),
             Genre::Veilleur => tr!("VEILLEUR", "WATCHER"),
             Genre::Rancongiciel => tr!("RANÇONGICIEL", "RANSOMWARE"),
+            Genre::Evenements => tr!("JOURNAUX WINDOWS", "WINDOWS LOGS"),
             Genre::Autre => tr!("AUTRE", "OTHER"),
         }
     }
@@ -117,7 +125,9 @@ impl Genre {
             Genre::Botnet | Genre::Passerelle | Genre::Empoisonneur | Genre::Blocage | Genre::Rancongiciel => {
                 "critique"
             }
-            Genre::Appareil | Genre::Port | Genre::Fichiers | Genre::WiFi | Genre::Veilleur => "eleve",
+            Genre::Appareil | Genre::Port | Genre::Fichiers | Genre::WiFi | Genre::Veilleur | Genre::Evenements => {
+                "eleve"
+            }
             Genre::Machine | Genre::Telechargement => "moyen",
             Genre::Autre => "info",
         }

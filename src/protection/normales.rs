@@ -158,6 +158,8 @@ fn genre_de_la_cle(cle: &str, genre: &str) -> bool {
         Some("site") => &[Genre::Telechargement],
         Some("appareil") => &[Genre::Appareil],
         Some("port") => &[Genre::Port],
+        // Les alertes des journaux de Windows (`journaux_windows::regles::resultat::cle_normale`).
+        Some("evenements") => &[Genre::Evenements],
         _ => &[],
     };
     attendus.iter().any(|g| nom_genre(*g) == genre)
@@ -189,6 +191,11 @@ fn recentes(
         .iter()
         .rev()
         .filter(|a| a.date >= limite)
+        // Une alerte critique des journaux de Windows ne se tait jamais (le résultat l'ignore) : la proposer
+        // tromperait.
+        .filter(|a| {
+            !(a.genre == crate::reseau::tableau::FAMILLE_EVENEMENTS && a.gravite == Some(crate::risk::Niveau::Critique))
+        })
         .filter(|a| {
             a.cle
                 .as_deref()
@@ -474,5 +481,29 @@ mod tests {
         assert_eq!(r.len(), 1);
         let r = recentes(&[ligne("blocage")], &Normales::default(), jour);
         assert_eq!(r.len(), 0);
+    }
+
+    /// Une alerte des journaux de Windows se propose, sous son genre seulement ; une critique jamais (le résultat ne
+    /// la tait pas : la proposer tromperait).
+    #[test]
+    fn alerte_des_journaux_de_windows_proposee_sauf_critique() {
+        use crate::risk::Niveau;
+        let ligne = |genre: &str, cle: &str, gravite: Niveau| crate::reseau::tableau::Alerte {
+            gravite: Some(gravite),
+            date: "2026-10-22 10:00:00".into(),
+            genre: genre.into(),
+            titre: "EVT-SRV-001 : alerte".into(),
+            texte: cle.into(),
+            cle: Some(cle.into()),
+        };
+        let jour = NaiveDate::parse_from_str("2026-10-23", "%Y-%m-%d").unwrap();
+        let journal = vec![
+            ligne("evenements", "evenements|EVT-SRV-001|x|c:\\temp\\x.exe", Niveau::Eleve),
+            ligne("evenements", "evenements|EVT-EFF-001|security|1", Niveau::Critique),
+            ligne("veilleur", "evenements|EVT-ADM-001|alice", Niveau::Eleve),
+        ];
+        let r = recentes(&journal, &Normales::default(), jour);
+        let cles: Vec<&str> = r.iter().filter_map(|a| a.cle.as_deref()).collect();
+        assert_eq!(cles, ["evenements|EVT-SRV-001|x|c:\\temp\\x.exe"]);
     }
 }

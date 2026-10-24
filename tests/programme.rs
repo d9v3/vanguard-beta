@@ -2256,3 +2256,136 @@ fn listes_noires_en_json_sans_rien_envoyer() {
     assert_eq!(hors_ligne["couverture"]["verifies"], 0, "{hors_ligne}");
     assert_eq!(hors_ligne["constats"][0]["raison"], "refuse", "{hors_ligne}");
 }
+
+/// `journaux-windows` sans `--dossier`, hors de Windows : rien à lire ici, dit sur la sortie d'erreur avec
+/// l'exemple d'un dossier, code 2 ; rien sur la sortie, même sous `--json`.
+#[test]
+fn journaux_windows_sans_dossier() {
+    if cfg!(windows) {
+        return essais::saute("sous Windows, sans --dossier, ce sont les journaux de l'ordinateur");
+    }
+    for args in [&["journaux-windows"][..], &["journaux-windows", "--json"]] {
+        let s = vanguard("fr", args, "", 30);
+        assert_eq!(s.code, Some(2), "{args:?} : {}", s.erreurs);
+        assert!(s.texte.trim().is_empty(), "{args:?} : {}", s.texte);
+        let e = sans_couleurs(&s.erreurs);
+        assert!(e.contains("--dossier") && e.contains("winevt"), "{e}");
+    }
+}
+
+/// `--jours` : 0 et un nombre négatif refusés avant toute lecture ; un dossier qui n'existe pas, code 1.
+#[test]
+fn journaux_windows_options_refusees() {
+    for jours in ["0", "-3", "abc"] {
+        let s = vanguard("fr", &["journaux-windows", "--dossier", ".", "--jours", jours], "", 30);
+        assert_eq!(s.code, Some(2), "--jours {jours} : {}", s.erreurs);
+        assert!(s.texte.trim().is_empty(), "--jours {jours} : {}", s.texte);
+    }
+    let absent = maison_jetable().join("pas-la");
+    let s = vanguard(
+        "fr",
+        &["journaux-windows", "--dossier", absent.to_str().unwrap()],
+        "",
+        30,
+    );
+    assert_eq!(s.code, Some(1), "{}", s.erreurs);
+    assert!(sans_couleurs(&s.erreurs).contains("ne se lit pas"), "{}", s.erreurs);
+}
+
+/// Un dossier sans journal lisible (un faux .evtx) : jamais « rien trouvé » ; chaque règle non vérifiée, la période de
+/// chaque journal dite, et en JSON le résultat commun, non vérifié. Rien n'est demandé (aucune entrée tapée).
+#[test]
+fn journaux_windows_dossier_sans_journal_lisible() {
+    let d = maison_jetable();
+    std::fs::write(d.join("System.evtx"), b"pas un journal").unwrap();
+    let dossier = d.to_str().unwrap();
+    let s = vanguard("fr", &["journaux-windows", "--dossier", dossier], "", 60);
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    let t = sans_couleurs(&s.texte);
+    assert!(t.contains("QUE S'EST-IL PASSÉ ?") && t.contains("CHRONOLOGIE"), "{t}");
+    assert!(t.contains("EVT-SRV-001") && t.contains("non vérifié"), "{t}");
+    assert!(t.contains("Pas tout vérifié") && !t.contains("Rien trouvé"), "{t}");
+    assert!(
+        t.contains("PÉRIODE LUE PAR JOURNAL") && t.contains("absent du dossier"),
+        "{t}"
+    );
+    for l in t.lines() {
+        assert!(l.chars().count() <= 76, "{l}");
+    }
+    let s = vanguard(
+        "en",
+        &["windows-logs", "--folder", dossier, "--days", "30", "--json"],
+        "",
+        60,
+    );
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    let v: serde_json::Value = serde_json::from_str(&s.texte).unwrap_or_else(|e| panic!("{e} : {}", s.texte));
+    assert_eq!(v["outil"], "PRO-EVT-001", "{v}");
+    assert_eq!(v["schema"], 1, "{v}");
+    assert_eq!(v["couverture"]["verifies"], 0, "{v}");
+    assert!(!v["couverture"]["non_verifies"].as_array().unwrap().is_empty(), "{v}");
+    assert!(
+        v["constats"].as_array().unwrap().iter().all(|c| c["etat"] != "sain"),
+        "{v}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Sur les échantillons publics (journaux d'attaque publiés) : des alertes datées dans l'ordre du temps, avec leur
+/// contexte ; en JSON, chaque alerte porte sa date en UTC. Tout tient dans 76 colonnes.
+#[test]
+fn journaux_windows_sur_les_echantillons() {
+    let Some(dossier) = std::env::var_os("VANGUARD_EVTX_ECHANTILLONS") else {
+        return essais::saute("VANGUARD_EVTX_ECHANTILLONS absente : pas d'échantillons .evtx");
+    };
+    let dossier = dossier.to_str().unwrap().to_string();
+    let s = vanguard(
+        "fr",
+        &["journaux-windows", "--dossier", &dossier, "--jours", "3650"],
+        "",
+        300,
+    );
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    let t = sans_couleurs(&s.texte);
+    assert!(t.contains("EVT-ADM-001") && t.contains("événement 4720"), "{t}");
+    assert!(t.contains("alerte(s) à regarder"), "{t}");
+    for l in t.lines() {
+        assert!(l.chars().count() <= 76, "{l}");
+    }
+    // Les dates de la chronologie, dans l'ordre.
+    let dates: Vec<&str> = t
+        .lines()
+        .filter_map(|l| l.trim_start().strip_prefix("✖ "))
+        .filter(|l| l.as_bytes().first().is_some_and(u8::is_ascii_digit))
+        .filter_map(|l| l.get(..16))
+        .collect();
+    assert!(dates.len() > 5, "{t}");
+    assert!(dates.windows(2).all(|w| w[0] <= w[1]), "{dates:?}");
+    let s = vanguard(
+        "fr",
+        &["journaux-windows", "--dossier", &dossier, "--jours", "3650", "--json"],
+        "",
+        300,
+    );
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    let v: serde_json::Value = serde_json::from_str(&s.texte).unwrap();
+    let alertes: Vec<&serde_json::Value> = v["constats"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["etat"] == "probleme")
+        .collect();
+    assert!(
+        alertes
+            .iter()
+            .filter(|c| c["date"].as_str().is_some_and(|d| d.ends_with('Z')))
+            .count()
+            > 5,
+        "{v}"
+    );
+    assert_ne!(
+        v["couverture"]["verifies"],
+        serde_json::json!(11),
+        "échantillons abîmés exprès : jamais tout vérifié"
+    );
+}

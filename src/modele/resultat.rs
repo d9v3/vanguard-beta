@@ -85,6 +85,10 @@ pub(crate) struct ConstatEcrit {
     /// Une correction est proposée (montrée et confirmée ailleurs).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub corrigeable: bool,
+    /// « AAAA-MM-JJTHH:MM:SSZ » : le moment de ce que relève le constat, quand il en a un (le premier événement d'une
+    /// alerte des journaux de Windows), pour remettre les alertes dans l'ordre du temps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
 }
 
 /// Un texte venu de l'extérieur (nom de pièce jointe, de réseau, de programme), prêt à écrire dans un résultat :
@@ -138,6 +142,7 @@ impl From<&Constat> for ConstatEcrit {
             // restent (mise en forme de Vanguard) ; les autres caractères piégés deviennent « � ».
             message: sans_piege(&c.message, true),
             corrigeable: c.correctif.is_some(),
+            date: None,
         }
     }
 }
@@ -544,6 +549,7 @@ mod tests {
             "journaux_windows/regles/resultat.rs",
             "journaux_windows/regles/moteur.rs",
             "journaux_windows/regles/jeu.rs",
+            "journaux_windows/chronologie.rs",
         ] {
             let texte = std::fs::read_to_string(racine.join(f)).unwrap();
             let code = texte.find("#[cfg(test)]\nmod ").map_or(texte.as_str(), |t| &texte[..t]);
@@ -573,6 +579,7 @@ mod tests {
                     raison,
                     message,
                     corrigeable,
+                    date: None,
                 },
             )
     }

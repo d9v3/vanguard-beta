@@ -383,6 +383,10 @@ fail2ban, sshguard ou CrowdSec bloque déjà les adresses qui insistent.
 - Journaux d'événements de Windows, sur les 7 derniers jours : rafales de mots de passe faux venues du réseau (Bureau
   à distance, partages), journal de sécurité effacé, comptes créés, services installés depuis un dossier temporaire
   ou qui lancent un interpréteur. Le journal de sécurité ne se lit qu'en administrateur : sans ce droit, c'est dit.
+  « Que s'est-il passé ? » (`vanguard journaux-windows`) : les règles EVT- lues par Vanguard lui-même, sur ce Windows
+  ou sur un dossier de .evtx depuis Linux ou macOS (disque monté depuis la clé de secours), puis les alertes dans
+  l'ordre du temps, avec la période vraiment lue par journal ; reprises dans le rapport et dans CHRONOLOGIE.txt des
+  traces.
 - Antivirus : ClamAV (Linux, macOS) ou Microsoft Defender (Windows), sur l'ordinateur ou sur une clé USB / un dossier
   choisi, avec les pièges des vers de clé (raccourci qui imite un dossier, autorun.inf, scripts).
 - Intégrité des fichiers critiques (comptes, sudo, SSH, PAM, cron, services, démarrage automatique) : empreintes
@@ -781,6 +785,7 @@ Chaque entrée du menu existe aussi en commande.
 | `vanguard signaler [--incident id] [--outil id] [--programme nom] [--langue fr\|en] [--json] [--effacer]` | préparer un signalement à un éditeur (MSRC, Google, Chrome, Mozilla, Apple, avis GHSA, CERT/CC, CERT-FR, Vanguard) : trié d'abord, brouillon au format du programme, ce qui est personnel retiré, écrit sur cet ordinateur et montré en entier ; rien n'est jamais envoyé |
 | `vanguard veilleur [on\|off]` | veilleur (Linux 6.6 et plus) : programmes lancés et connexions fermées, vus sur le moment ; `rancongiciel on\|off` : les dossiers personnels surveillés en direct contre les rançongiciels ; coupé par défaut |
 | `vanguard protection [oui\|non] [--pendant 1h\|4h] [--json]` | l'état de chaque interrupteur de protection en un écran (`--json` : sans rien changer) ; `oui` ou `non` agit sur la protection en temps réel |
+| `vanguard journaux-windows [--dossier D] [--jours N] [--json]` | que s'est-il passé ? Les règles EVT- sur les journaux de Windows, de cet ordinateur (Windows) ou d'un dossier de .evtx (tout système : `winevt\Logs` d'un disque monté, dossier de `depanner traces`) : le verdict de chaque règle (« non vérifié » et pourquoi quand un journal manque), les alertes dans l'ordre du temps avec compte, programme et adresse, la période vraiment lue par journal ; 7 jours par défaut (lecture seule) |
 | **9 Données et sauvegardes** | |
 | `vanguard copier-fichiers [destination]` | copier mes fichiers vers un disque externe, copie vérifiée |
 | `vanguard sauvegarde-auto [--annuler]` | sauvegarde automatique vers un disque externe, avec l'outil du système |
@@ -823,7 +828,7 @@ Chaque entrée du menu existe aussi en commande.
 </details>
 
 **Langue** : celle du système (français ou anglais). Pour forcer : menu Paramètres, ou `VANGUARD_LANG=fr` ou
-`VANGUARD_LANG=en` (la variable l'emporte). Les commandes ont aussi un nom anglais (`check`, `search`, `fix`, `report`, `undo`, `devices`, `network-audit`, `monitor`, `dashboard`, `latest-flaws`, `dangerous-sites`, `watcher`, `maintenance`, `updates`, `repair`, `gaming`, `diagnostics`, `software`, `clean`, `optimize`, `learned`, `connection-test`, `blocklists`, `wifi-channels`, `hidden-cameras`, `smart-devices`, `fast-dns`, `public-wifi`, `integrity`, `decoys`, `memory`, `sandbox`, `email-leak`, `password-leak`, `browser-passwords`, `outbound-connections`, `remote-access`, `link`, `check-file`, `suspicious-email`, `spyware`, `outdated-software`, `disclose`, `camera-mic`, `privacy-review`, `quarantine`, `containers`, `settings`, `blocking`, `export`, `import`, `name`, `slow`, `startup`, `specs`, `copy-files`, `check-copy`, `check-backup`, `check-drive`, `handout`, `changes`, `events`, `auto-backup`, `shortcut`, `computers`, `self-update`, `uninstall`, `rules`, `self-test`, `troubleshoot`, `self-check`, `lab`).
+`VANGUARD_LANG=en` (la variable l'emporte). Les commandes ont aussi un nom anglais (`check`, `search`, `fix`, `report`, `undo`, `devices`, `network-audit`, `monitor`, `dashboard`, `latest-flaws`, `dangerous-sites`, `watcher`, `maintenance`, `updates`, `repair`, `gaming`, `diagnostics`, `software`, `clean`, `optimize`, `learned`, `connection-test`, `blocklists`, `wifi-channels`, `hidden-cameras`, `smart-devices`, `fast-dns`, `public-wifi`, `integrity`, `decoys`, `memory`, `sandbox`, `email-leak`, `password-leak`, `browser-passwords`, `outbound-connections`, `remote-access`, `link`, `check-file`, `suspicious-email`, `spyware`, `outdated-software`, `disclose`, `camera-mic`, `privacy-review`, `quarantine`, `containers`, `settings`, `blocking`, `export`, `import`, `name`, `slow`, `startup`, `specs`, `copy-files`, `check-copy`, `check-backup`, `check-drive`, `handout`, `changes`, `events`, `windows-logs`, `auto-backup`, `shortcut`, `computers`, `self-update`, `uninstall`, `rules`, `self-test`, `troubleshoot`, `self-check`, `lab`).
 
 **Emojis** : dans l'ancienne console de Windows (invite de commandes ou PowerShell hors du Terminal Windows, courant
 sous Windows 10), qui les dessine mal et décale les menus, 💡 et 🔧 deviennent → et +. `VANGUARD_EMOJI=0` les retire

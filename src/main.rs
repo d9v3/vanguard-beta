@@ -607,6 +607,22 @@ enum Commande {
         #[arg(long)]
         incident: Option<String>,
     },
+    /// Journaux de Windows : que s'est-il passé ? Les règles EVT- (traces effacées, service d'attaque, administrateur
+    /// de plus, mot de passe deviné, Bureau à distance, PowerShell, Defender…) sur les journaux de cet ordinateur
+    /// (Windows) ou d'un dossier de .evtx (tout système), puis les alertes dans l'ordre du temps. Lecture seule.
+    #[command(name = "journaux-windows", visible_alias = "windows-logs")]
+    JournauxWindows {
+        /// Un dossier de journaux .evtx (winevt\Logs d'un disque monté, dossier de « depanner traces ») ; sans lui,
+        /// ceux de ce Windows.
+        #[arg(long, visible_alias = "folder")]
+        dossier: Option<std::path::PathBuf>,
+        /// Combien de jours en arrière (7 par défaut).
+        #[arg(long, visible_alias = "days", default_value_t = 7, value_parser = clap::value_parser!(u32).range(1..=3650))]
+        jours: u32,
+        /// Le résultat en JSON, pour un script : rien n'est demandé.
+        #[arg(long)]
+        json: bool,
+    },
     /// Sauvegarde automatique : mise en place avec l'outil du système (Déjà Dup ou rsync chaque jour, Time Machine,
     /// Historique des fichiers) vers un disque externe, après accord, annulable exactement.
     #[command(name = "sauvegarde-auto", visible_alias = "auto-backup")]
@@ -1396,6 +1412,7 @@ const COMMANDES_EN_LECTURE: &[&str] = &[
     "camera-micro",
     "bilan-confidentialite",
     "evenements",
+    "journaux-windows",
     "changements",
     "verifier-sauvegarde",
     "verifier-copie",
@@ -2849,6 +2866,9 @@ const AIDES_EN: &[(&str, &str)] = &[
     ("changements", "What Vanguard changed: each fix run on this computer, its date and its result"),
     ("evenements", "The event log: alerts, evidence recorded before an action, actions, undos, alerts declared normal \
                     and version changes, linked together, with the state of its sealed chain. Read only"),
+    ("journaux-windows", "Windows logs: what happened? The EVT- rules (cleared traces, attack service, one more \
+                          administrator, guessed password, Remote Desktop, PowerShell, Defender…) on this computer's \
+                          logs (Windows) or a folder of .evtx (any system), then the alerts in time order. Read only"),
     ("rapport-a-laisser", "Report to leave behind: a simple page for the person you just helped (grade, what is left to do, \
                    what is fine), put on their Desktop after consent and opened in the browser"),
     ("sauvegarde-auto", "Automatic backup: set up with the system's tool (Déjà Dup or rsync every day, Time Machine, \
@@ -2951,6 +2971,10 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
     ("courriel-suspect", "json", "The result as JSON, for a script: the examination on the computer only (neither \
                                   the online check nor the attachments scan, said not checked)"),
     ("evenements", "incident", "One incident's thread: this event, what caused it and what it caused"),
+    ("journaux-windows", "dossier", "A folder of .evtx logs (winevt\\Logs of a mounted disk, folder of “troubleshoot \
+                                    evidence”); without it, this Windows' logs"),
+    ("journaux-windows", "jours", "How many days back (7 by default)"),
+    ("journaux-windows", "json", "The result as JSON, for a script: nothing is asked"),
     ("autotest", "json", "The report as JSON, for a script (without any value read on the computer)"),
     ("protection", "json", "The switches' state as JSON, for a script: nothing is changed"),
     ("diagnostic", "json", "The result as JSON, for a script: nothing changes"),
@@ -3019,6 +3043,8 @@ fn ligne_de_commande() -> clap::Command {
 /// elles vont.
 const RUBRIQUE_DES_AUTRES: &[(&str, Groupe)] = &[
     ("protection", Groupe::Reagir),
+    // Sa place au menu se décide avec le lot E5.
+    ("journaux-windows", Groupe::Reagir),
     ("importer", Groupe::Vanguard),
     ("plugins", Groupe::Vanguard),
     ("labo", Groupe::Vanguard),
@@ -3541,6 +3567,9 @@ async fn main() {
         Some(Commande::VerifierCle { dossier }) => verifier_cle::commande(dossier.as_deref()),
         Some(Commande::Changements) => changements::afficher(),
         Some(Commande::Evenements { json, incident }) => evenements::afficher(json, incident.as_deref()),
+        Some(Commande::JournauxWindows { dossier, jours, json }) => {
+            journaux_windows::commande::executer(dossier.as_deref(), jours, json);
+        }
         Some(Commande::ALaisser) => a_laisser::laisser(&machine::executer(false)),
         Some(Commande::SauvegardeAuto { annuler }) => {
             if annuler {
@@ -4056,6 +4085,10 @@ mod tests_menu {
             "le menu Vanguard › Exporter ou importer les réglages propose aussi l'import",
         ),
         ("plugins", "le menu Extensions les liste et les lance"),
+        (
+            "journaux-windows",
+            "sa place au menu se décide au lot E5 ; la recherche la trouve par le guide",
+        ),
         ("labo", "le menu Extensions les liste et les lance"),
         (
             "protection",
