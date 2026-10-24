@@ -38,8 +38,8 @@ fn parametres() -> Parametres {
         afficher_aligne(
             &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Eleve)),
             &trf!(
-                "blocage.json {raison} : les catégories qu'il désactivait restent sur « un clic ». Réglez-les de nouveau ici si c'est bien votre choix.",
-                "blocage.json {raison}: the categories it turned off stay on “one click”. Set them again here if that really is your choice."
+                "blocage.json {raison} : les catégories qu'il désactivait restent sur « un clic », et son accord à la protection active ne fait rien bloquer sans clic. Réglez-les de nouveau ici si c'est bien votre choix.",
+                "blocage.json {raison}: the categories it turned off stay on “one click”, and its consent to active protection blocks nothing without a click. Set them again here if that really is your choice."
             ),
             4,
             "",
@@ -64,7 +64,9 @@ fn enregistrer(p: &Parametres) -> bool {
             chrono::Local::now().format("%Y%m%d-%H%M%S")
         ));
         // Seulement un simple fichier, borné : un tube ou un lien vers /dev/zero à sa place ne se recopie pas.
-        if crate::socle::lire_ordinaire(&f, 1 << 20).is_ok_and(|o| crate::socle::ecrire_atomique(&copie, o).is_ok()) {
+        if crate::socle::ecriture_sure(&crate::socle::dossier_local())
+            && crate::socle::lire_ordinaire(&f, 1 << 20).is_ok_and(|o| crate::socle::ecrire_atomique(&copie, o).is_ok())
+        {
             trp!(
                 "  {GRIS}Ancien fichier illisible gardé : {}{RESET}",
                 "  {GRIS}Unreadable old file kept: {}{RESET}",
@@ -619,10 +621,14 @@ fn bloquer_tout_seul(m: &Menace, ctx: &Contexte, signalees: Option<(&BTreeSet<St
                         "  {VERT}✔{RESET} Blocked by itself (active protection)."
                     );
                 } else {
-                    let c = couleur(crate::risk::Niveau::Moyen);
-                    trp!(
-                        "  {c}⚠{RESET} Règle posée toute seule (protection active), non vérifiée : {quoi}.",
-                        "  {c}⚠{RESET} Rule added by itself (active protection), not verified: {quoi}."
+                    afficher_aligne(
+                        &format!("  {}⚠{RESET} ", couleur(crate::risk::Niveau::Moyen)),
+                        &trf!(
+                            "Règle posée toute seule (protection active), non vérifiée : {quoi}.",
+                            "Rule added by itself (active protection), not verified: {quoi}."
+                        ),
+                        4,
+                        "",
                     );
                 }
             }

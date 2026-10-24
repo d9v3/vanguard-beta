@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use crate::tre;
+use crate::{tr, tre, trf};
 
 /// Écrit d'abord un fichier temporaire, le force sur le disque, puis le renomme à la place de l'ancien :
 /// une coupure, un Ctrl-C ou une clé arrachée laissent soit l'ancienne base, soit la nouvelle, jamais une
@@ -89,12 +89,10 @@ pub(crate) fn lire_ordinaire(chemin: &std::path::Path, max: u64) -> std::io::Res
         }
     })?;
     let m = f.metadata()?;
-    // Les raisons en deux langues, sans `tr!` : les réglages du lancement se lisent par ici avant que la langue soit
-    // connue, et la demander pendant qu'on la lit figeait le programme (`langue::anglais` attend sa propre réponse).
     if !m.file_type().is_file() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "pas un simple fichier / not a plain file",
+            tr!("pas un simple fichier", "not a plain file"),
         ));
     }
     if m.len() > max {
@@ -116,7 +114,7 @@ pub(crate) fn lire_texte_ordinaire(chemin: &std::path::Path, max: u64) -> std::i
 fn trop_gros(max: u64) -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::InvalidData,
-        format!("plus de {k} Kio / over {k} KiB", k = max >> 10),
+        trf!("plus de {} Kio", "over {} KiB", max >> 10),
     )
 }
 
@@ -189,22 +187,32 @@ impl Verrou {
             match std::fs::OpenOptions::new().write(true).create_new(true).open(&chemin) {
                 Ok(_) => return Some(Verrou(chemin)),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let ancien = std::fs::metadata(&chemin)
-                        .and_then(|m| m.modified())
-                        .ok()
+                    // Le verrou lui-même, jamais la cible d'un lien. Un dossier, un tube ou un lien posé à sa place
+                    // ne se retire pas comme un verrou d'un Vanguard interrompu : sans cela, la boucle reprenait sans
+                    // fin (un dossier ne s'efface pas par remove_file), et tout ce qui note au journal se figeait.
+                    let meta = std::fs::symlink_metadata(&chemin).ok();
+                    if meta.as_ref().is_some_and(|m| !m.file_type().is_file()) {
+                        tre!(
+                            "Attention : « {nom} » n'est pas un simple fichier (posé hors de Vanguard ?), écriture sans verrou.",
+                            "Warning: “{nom}” is not a plain file (placed outside Vanguard?), writing without a lock."
+                        );
+                        return None;
+                    }
+                    let ancien = meta
+                        .and_then(|m| m.modified().ok())
                         .and_then(|t| t.elapsed().ok())
                         .is_some_and(|age| age > std::time::Duration::from_secs(120));
-                    if ancien {
-                        let _ = std::fs::remove_file(&chemin);
-                    } else if std::time::Instant::now() > fin {
+                    if ancien && std::fs::remove_file(&chemin).is_ok() {
+                        continue;
+                    }
+                    if std::time::Instant::now() > fin {
                         tre!(
                             "Attention : « {nom} » occupé par un autre Vanguard, écriture sans verrou.",
                             "Warning: “{nom}” locked by another Vanguard, writing without a lock."
                         );
                         return None;
-                    } else {
-                        std::thread::sleep(std::time::Duration::from_millis(200));
                     }
+                    std::thread::sleep(std::time::Duration::from_millis(200));
                 }
                 Err(_) => return None,
             }
@@ -395,6 +403,34 @@ mod tests {
         assert!(!ecriture_sure_pour(0, &d.join("pas-encore/vanguard")));
         assert!(ecriture_sure_pour(0, std::path::Path::new("/")));
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    /// Un dossier (ancien) ou un tube posé à la place d'un verrou : jamais une boucle sans fin ni dix secondes
+    /// d'attente à chaque écriture ; l'écriture se fait sans verrou, et c'est dit.
+    #[cfg(unix)]
+    #[test]
+    fn verrou_qui_n_est_pas_un_fichier_ne_fige_rien() {
+        let dossier = std::env::temp_dir().join(format!("vanguard-verrou-piege-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dossier);
+        std::fs::create_dir_all(dossier.join("evenements.verrou")).unwrap();
+        let ancien = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::open(dossier.join("evenements.verrou"))
+            .unwrap()
+            .set_modified(ancien)
+            .unwrap();
+        let tube = dossier.join("alertes.verrou");
+        let c = std::ffi::CString::new(tube.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY : mkfifo reçoit un chemin terminé par zéro, qui vit le temps de l'appel.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let debut = std::time::Instant::now();
+        assert!(Verrou::prendre_nomme(&dossier, "evenements.verrou").is_none());
+        assert!(Verrou::prendre_nomme(&dossier, "alertes.verrou").is_none());
+        assert!(
+            debut.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            debut.elapsed()
+        );
+        std::fs::remove_dir_all(&dossier).unwrap();
     }
 
     /// Une écriture qui échoue (le dossier parent est un fichier) ne laisse aucun fichier provisoire derrière elle.

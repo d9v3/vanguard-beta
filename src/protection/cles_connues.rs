@@ -115,8 +115,9 @@ fn lire_dans(base: &Path) -> BTreeMap<String, CleConnue> {
     use crate::sceau::Lecture;
     let fichier = chemin(base);
     let octets = match crate::sceau::lire_dans(base, FICHIER) {
-        Lecture::Intact(o) | Lecture::Adopte(o) => Some(o),
-        Lecture::Falsifie(Some(_)) => None,
+        Lecture::Intact(o) => Some(o),
+        Lecture::Adopte(o) if !crate::sceau::refaits_dans(base) => Some(o),
+        Lecture::Adopte(_) | Lecture::Falsifie(Some(_)) => None,
         Lecture::Absent | Lecture::Inconnu | Lecture::Falsifie(None) | Lecture::Illisible(_) => {
             return BTreeMap::new();
         }
@@ -130,7 +131,10 @@ fn lire_dans(base: &Path) -> BTreeMap<String, CleConnue> {
                 "illisible-{}.json",
                 chrono::Local::now().format("%Y%m%d-%H%M%S")
             ));
-            let _ = std::fs::rename(&fichier, &copie);
+            // Jamais en administrateur dans le dossier d'un compte (`socle::ecriture_sure`).
+            if crate::socle::ecriture_sure(base) {
+                let _ = std::fs::rename(&fichier, &copie);
+            }
             BTreeMap::new()
         }
     }
@@ -460,6 +464,16 @@ mod tests {
         let cles = lire_verrouille(&base);
         assert!(!cles.contains_key(JETON_B), "{cles:?}");
         assert!(cles.is_empty());
+        // Le même jeton inscrit, puis sceaux.json effacé (son verrou resté) : accepté tel quel, jamais cru.
+        assert!(reconnaitre_dans(&base, &a));
+        let texte = std::fs::read_to_string(chemin(&base)).unwrap().replacen(
+            "\"cles\": {",
+            &format!("\"cles\": {{\n    \"{JETON_B}\": {{\"depuis\": \"2026-01-01 10:00\"}},"),
+            1,
+        );
+        std::fs::write(chemin(&base), texte).unwrap();
+        std::fs::remove_file(base.join("sceaux.json")).unwrap();
+        assert!(!lire_verrouille(&base).contains_key(JETON_B));
         for d in [base, a] {
             let _ = std::fs::remove_dir_all(d);
         }

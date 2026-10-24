@@ -187,8 +187,9 @@ delivered just before it. Only the latest version has its download page; every v
   versions; `blocage.json`: categories turned off), the administrator accounts and Bluetooth devices already seen, and
   the known keys are sealed: changed outside Vanguard, nothing in them is replayed as administrator, nothing in them
   turns anything off (an ignored setting is said in Settings, the blocking menu and the check-up, and can be set
-  again), and what was already seen is reported again. After the update, an earlier setting that turned one of these
-  defenses off is to be confirmed once; a block noted before the seal is only undone by itself if it can be judged
+  again), and what was already seen is reported again. Files taken over from an earlier version at the update keep
+  their values; accepted after the seals were deleted, they turn nothing off and are not trusted. A block noted
+  before the seal is only undone by itself if it can be judged
   again without its note (a firewall rule, a program put back at startup), the rest by hand. “Put everything back”
   never replays an old note as it is: it goes through the order guards (SSH and Remote Desktop are never reopened).
   A port closed by ufw without a read-back is said “not verified”, not “blocked”. The event log is written in two

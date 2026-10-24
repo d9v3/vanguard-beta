@@ -196,8 +196,9 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   autodiagnostic, versions des logiciels ; `blocage.json` : catégories désactivées), les comptes administrateurs et
   appareils Bluetooth déjà vus et les clés connues sont scellés : changés hors de Vanguard, rien n'y est rejoué en
   administrateur, rien ne s'y coupe (un réglage ignoré se dit dans les Paramètres, le menu du blocage et le bilan, et
-  se règle de nouveau), et ce qui était déjà vu est redit. Après la mise à jour, un réglage d'avant qui coupait l'une
-  de ces défenses est à confirmer une fois ; un blocage noté avant le sceau ne se défait tout seul que s'il se rejuge
+  se règle de nouveau), et ce qui était déjà vu est redit. Les fichiers repris d'une version d'avant à la mise à jour
+  gardent leurs valeurs ; acceptés après des sceaux effacés, ils ne coupent rien ni ne sont crus. Un blocage noté
+  avant le sceau ne se défait tout seul que s'il se rejuge
   sans sa note (une règle de pare-feu, un programme remis au démarrage), le reste à la main. « Tout remettre comme
   avant » ne rejoue plus jamais une ancienne note telle quelle : elle repasse par les garde-fous des ordres (jamais
   SSH ni le Bureau à distance rouverts). Un port fermé par ufw sans relecture se dit « non vérifié », pas « bloqué ».

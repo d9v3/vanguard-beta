@@ -186,6 +186,10 @@ fn fichiers_d_etat_piegees_ne_figent_rien() {
         "jeux.json",
         "sauvegarde.json",
         "pieges.json",
+        "evenements.verrou",
+        "appareils.verrou",
+        "alertes.verrou",
+        "journal-erreurs.txt",
     ];
     for piege in ["tube", "zero"] {
         let maison = maison_jetable();

@@ -569,6 +569,9 @@ fn retirer_bloquees(menaces: &mut Vec<Menace>, en_place: &[(String, crate::chang
     let bloquees: HashSet<&str> = en_place
         .iter()
         .filter(|(_, b)| !matches!(b.annulation, Some(crate::changements::Annulation::Quarantaine { .. })))
+        // Une ligne trouvée dans un relevé changé hors de Vanguard ne prouve aucun blocage : sans cela, un blocage
+        // « en place » forgé pour sa propre clé faisait taire la menace pour toujours.
+        .filter(|(_, b)| b.origine != Some(crate::changements::Origine::HorsVanguard))
         .map(|(_, b)| b.cle.as_str())
         .collect();
     menaces.retain(|m| !bloquees.contains(m.cle.as_str()));

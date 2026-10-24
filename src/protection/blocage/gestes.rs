@@ -591,7 +591,12 @@ pub(crate) fn faire(m: &Menace, pret: Pret, automatique: bool) -> Result<Fait, E
                     }
                 }
             }
-            changements::noter_blocage(lancees, reussi, note(Some(annulation)), preuve);
+            // Non vérifié : noté avec sa précision, que le relevé, l'annulation et les traces montrent.
+            let mut b = note(Some(annulation));
+            if !verifie {
+                b.quoi.clone_from(&fait);
+            }
+            changements::noter_blocage(lancees, reussi, b, preuve);
             if reussi {
                 Ok(Fait { quoi: fait, verifie })
             } else {

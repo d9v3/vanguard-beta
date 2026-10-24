@@ -603,15 +603,35 @@ fn juger_adoptes(adoptes: &[&str], depuis: &str) -> Option<Constat> {
     )
 }
 
-/// Réécrit, scellé, un fichier accepté tel quel au premier usage dont le contenu ne fait rien taire ni couper
-/// (`sans_risque`) : sans cela, chaque version d'avant mise à jour garderait l'alerte « accepté tel quel » jusqu'à ce
-/// qu'on change un réglage. Ce qui coupait une défense reste adopté, et dit.
+/// Réécrit, scellé, un fichier accepté tel quel lors d'une mise à jour (`sans_risque` : ce que son lecteur croit de
+/// toute façon) : sans cela, chaque version d'avant mise à jour garderait l'alerte « accepté tel quel » jusqu'à ce
+/// qu'on change un réglage. Jamais après des sceaux refaits.
 pub(crate) fn resceller_si(nom: &str, sans_risque: impl Fn(&[u8]) -> bool) {
+    // Accepté quand les sceaux ont été refaits : rien n'est rescellé, l'alerte reste.
+    if refaits() {
+        return;
+    }
     if let Lecture::Adopte(o) = lire(nom)
         && sans_risque(&o)
     {
         let _ = ecrire(nom, &o);
     }
+}
+
+/// Les sceaux ont-ils été refaits (effacés ou abîmés alors qu'une version qui scelle avait servi ici) ? Lu sans rien
+/// écrire. Un fichier accepté tel quel lors d'une mise à jour (sceaux d'une version d'avant qui ne le protégeaient
+/// pas encore) vient de Vanguard ; accepté tel quel quand les sceaux ont été refaits, il vient peut-être de qui les a
+/// effacés : ce qui s'y fiait (un réglage qui coupe, un déjà vu, une note rejouée) ne s'y fie plus.
+pub(crate) fn refaits_dans(dossier: &Path) -> bool {
+    match registre(dossier) {
+        Ok(Some(r)) => r.refaits,
+        Ok(None) => deja_scelle(dossier),
+        Err(()) => true,
+    }
+}
+
+pub(crate) fn refaits() -> bool {
+    refaits_dans(&dossier())
 }
 
 /// Un « déjà vu » scellé (comptes administrateurs, appareils Bluetooth) : `Ok(Some)` tel que Vanguard l'a écrit (ou
@@ -620,9 +640,10 @@ pub(crate) fn resceller_si(nom: &str, sans_risque: impl Fn(&[u8]) -> bool) {
 /// inscrire d'avance, taisait sinon « Nouveau compte administrateur cette semaine ».
 pub(crate) fn deja_vus(nom: &str) -> Result<Option<Vec<u8>>, ()> {
     match lire(nom) {
-        Lecture::Intact(o) | Lecture::Adopte(o) => Ok(Some(o)),
+        Lecture::Intact(o) => Ok(Some(o)),
+        Lecture::Adopte(o) if !refaits() => Ok(Some(o)),
         Lecture::Absent => Ok(None),
-        Lecture::Falsifie(_) | Lecture::Inconnu | Lecture::Illisible(_) => Err(()),
+        Lecture::Adopte(_) | Lecture::Falsifie(_) | Lecture::Inconnu | Lecture::Illisible(_) => Err(()),
     }
 }
 
@@ -640,7 +661,7 @@ pub(crate) fn constat() -> Vec<Constat> {
     crate::parametres::resceller_d_avant();
     crate::protection::blocage::parametres::resceller_d_avant();
     crate::changements::resceller_d_avant();
-    // Les déjà vus et les clés connues : un fichier accepté y vaut déjà comme écrit par Vanguard.
+    // Les déjà vus et les clés connues : accepté lors d'une mise à jour, un fichier y vaut comme écrit par Vanguard.
     for nom in [ADMINISTRATEURS, BLUETOOTH, CLES_CONNUES] {
         resceller_si(nom, |_| true);
     }

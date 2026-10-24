@@ -236,11 +236,11 @@ pub(crate) fn ignores() -> Option<&'static str> {
     charger_de(&fichier()).ok().and_then(|(_, r)| r)
 }
 
-/// Les réglages relus sous leur sceau. Changés hors de Vanguard, ou acceptés tels quels au premier usage des sceaux :
-/// une catégorie « désactivée » vaut « un clic » (la défense reste là, l'alerte du bilan garde son bouton), et la
-/// raison est rendue pour être dite. Un programme du compte qui y désactivait ses propres catégories ne coupait
-/// sinon le blocage choisi par la personne qu'en silence. Le reste (un clic, automatique avec l'accord) est gardé :
-/// toucher au fichier ne doit pas non plus suffire à couper la protection active qu'elle a choisie.
+/// Les réglages relus sous leur sceau. Changés hors de Vanguard, ou acceptés tels quels après des sceaux refaits :
+/// une catégorie « désactivée » vaut « un clic » (la défense reste là, l'alerte du bilan garde son bouton), l'accord
+/// de la protection active ne vaut rien (rien ne se bloque sans clic sur la foi d'un fichier non cru), et la raison
+/// est rendue pour être dite. Un programme du compte qui y désactivait ses propres catégories ne coupait sinon le
+/// blocage choisi par la personne qu'en silence.
 fn charger_de(chemin: &Path) -> Result<(Parametres, Option<&'static str>), Echec> {
     use crate::sceau::Lecture;
     const OU: &str = "blocage/reglages";
@@ -250,11 +250,14 @@ fn charger_de(chemin: &Path) -> Result<(Parametres, Option<&'static str>), Echec
         Lecture::Absent | Lecture::Inconnu | Lecture::Falsifie(None) => return Ok((Parametres::default(), None)),
         Lecture::Illisible(e) => return Err(Echec::new(OU, Raison::Illisible(e))),
         Lecture::Intact(o) => (o, None),
+        // Repris d'une version d'avant à la mise à jour : le choix de la personne, gardé. Après des sceaux refaits :
+        // rien ne prouve qui l'a écrit.
+        Lecture::Adopte(o) if !crate::sceau::refaits_dans(dossier) => (o, None),
         Lecture::Adopte(o) => (
             o,
             Some(tr!(
-                "accepté tel quel, sans sceau d'avant",
-                "accepted as it was, without an earlier seal"
+                "accepté tel quel après des sceaux refaits",
+                "accepted as it was after seals were remade"
             )),
         ),
         Lecture::Falsifie(Some(o)) => (o, Some(tr!("changé hors de Vanguard", "changed outside Vanguard"))),
@@ -272,18 +275,15 @@ fn charger_de(chemin: &Path) -> Result<(Parametres, Option<&'static str>), Echec
             coupait = true;
         }
     }
+    // L'accord de la protection active est le seul témoin du consentement à bloquer sans clic : venu d'un fichier
+    // non cru, il ne vaut rien (l'automatique redevient un clic).
+    coupait |= p.accord.take().is_some();
     Ok((p, coupait.then_some(raison)))
 }
 
-/// blocage.json d'une version d'avant, accepté tel quel : rescellé s'il ne désactive rien (`sceau::resceller_si`).
+/// blocage.json d'une version d'avant, accepté tel quel à la mise à jour : rescellé (`sceau::resceller_si`).
 pub(crate) fn resceller_d_avant() {
-    crate::sceau::resceller_si(BLOCAGE, |o| {
-        serde_json::from_slice::<Parametres>(o).is_ok_and(|p| {
-            [p.programmes, p.connexions, p.demarrage, p.agents_ia]
-                .iter()
-                .all(|m| *m != Mode::Desactive)
-        })
-    });
+    crate::sceau::resceller_si(BLOCAGE, |o| serde_json::from_slice::<Parametres>(o).is_ok());
 }
 
 pub(crate) fn enregistrer(p: &Parametres) -> std::io::Result<()> {
@@ -342,8 +342,8 @@ mod tests {
     }
 
     /// Un programme du compte désactive des catégories dans blocage.json : le fichier n'est plus scellé, ces
-    /// catégories valent « un clic » (rien ne se coupe), et la raison est rendue pour être dite. Le mode automatique
-    /// choisi par la personne, lui, tient même si le fichier est touché.
+    /// catégories valent « un clic » (rien ne se coupe), son accord ne fait rien bloquer sans clic, et la raison est
+    /// rendue pour être dite.
     #[test]
     fn categories_desactivees_hors_de_vanguard_ne_coupent_rien() {
         let d = crate::socle::dossier_local().join("essai-blocage-forge");
@@ -366,7 +366,9 @@ mod tests {
         for c in Categorie::TOUTES {
             assert_ne!(lu.effectif(c), Mode::Desactive, "{c:?}");
         }
-        assert_eq!(decider(&lu, Categorie::Connexions, true), Decision::Auto);
+        // L'accord forgé ne vaut rien : l'automatique redevient un clic.
+        assert_eq!(lu.accord, None);
+        assert_eq!(decider(&lu, Categorie::Connexions, true), Decision::UnClic);
         assert!(!lu.rien());
         // Réglé de nouveau par Vanguard : scellé, une catégorie désactivée l'est pour de bon.
         let mut voulu = lu;

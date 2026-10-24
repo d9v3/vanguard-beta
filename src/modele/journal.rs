@@ -414,6 +414,12 @@ pub(crate) fn noter_dans(
     ecrire_dans(dossier, Some(ev), maintenant).map(|()| id)
 }
 
+// Les essais arrêtent l'écriture juste après l'ajout, comme un arrêt net du programme (`arret_entre_ajout_…`).
+#[cfg(test)]
+thread_local! {
+    static ARRET_APRES_AJOUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// L'écriture elle-même ; sans événement, seuls une rupture et un passage de version s'écrivent, s'il y en a.
 fn ecrire_dans(
     dossier: &Path,
@@ -620,6 +626,10 @@ fn ecrire_dans(
         &serde_json::to_vec(&tete).map_err(std::io::Error::other)?,
     )?;
     ajouter(&rep.join(format!("{mois}.jsonl")), &a_ajouter)?;
+    #[cfg(test)]
+    if ARRET_APRES_AJOUT.with(std::cell::Cell::get) {
+        return Ok(());
+    }
     tete.annonce = None;
     if let Some((m, c)) = clos_ici {
         tete.clos.insert(m, c);
@@ -939,10 +949,12 @@ fn constat_de_rupture(
     let limite = (maintenant - chrono::Duration::days(RUPTURE_DITE_JOURS))
         .format("%Y-%m-%dT%H:%M:%SZ")
         .to_string();
+    // Jamais après maintenant : une rupture datée de l'avenir (horloge avancée) ne tiendrait l'alerte que plus longtemps.
+    let apres = maintenant.format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let r = evenements
         .iter()
         .rev()
-        .find(|e| matches!(e.quoi, Genre::Rupture { .. }) && e.quand >= limite)?;
+        .find(|e| matches!(e.quoi, Genre::Rupture { .. }) && e.quand >= limite && e.quand <= apres)?;
     let quand = r.date_locale().unwrap_or_default();
     Some(
         crate::machine::alerte(
@@ -1453,8 +1465,16 @@ mod tests {
         let lu = lire_dans(&d);
         assert_ne!(lu.lecture, Lecture::Intact, "{:?}", lu.lecture);
         assert!(lu.evenements.iter().any(|e| matches!(e.quoi, Genre::Rupture { .. })));
-        assert!(constat_de_rupture(&lu.evenements, le("2026-10-24T00:00:00Z")).is_some());
-        assert!(constat_de_rupture(&lu.evenements, le("2026-12-24T00:00:00Z")).is_none());
+        // La rupture est datée par l'horloge : dite un mois après, jamais avant elle.
+        let quand = lu
+            .evenements
+            .iter()
+            .find(|e| matches!(e.quoi, Genre::Rupture { .. }))
+            .map(|e| le(&e.quand))
+            .unwrap();
+        assert!(constat_de_rupture(&lu.evenements, quand + chrono::Duration::days(1)).is_some());
+        assert!(constat_de_rupture(&lu.evenements, quand + chrono::Duration::days(60)).is_none());
+        assert!(constat_de_rupture(&lu.evenements, quand - chrono::Duration::days(1)).is_none());
         assert!(
             !alertes(lu.verifies()).any(|(e, ..)| e.cle.as_deref() == Some("port|99")),
             "la ligne forgée passe pour vérifiée"
@@ -1478,31 +1498,16 @@ mod tests {
         ] {
             let d = dossier("annonce");
             remplir(&d, 2, avant);
-            // L'écriture annoncée, scellée, puis l'ajout ; la tête finale manque (arrêt).
-            let tete_avant = crate::sceau::lire_dans(&d, TETE);
-            noter_dans(&d, alerte(7, apres), le(apres)).unwrap();
-            let mois = &apres[..7];
-            let o = std::fs::read(segment(&d, mois)).unwrap();
-            let mut t: Tete = match tete_avant {
-                crate::sceau::Lecture::Intact(o) => serde_json::from_slice(&o).unwrap(),
-                autre => panic!("{autre:?}"),
-            };
-            t.annonce = Some(Annonce {
-                segment: mois.to_string(),
-                lignes: lignes(&o).len() as u64,
-                derniere: empreinte_ligne(lignes(&o).last().unwrap()),
-                clos: (avant[..7] != *mois).then(|| {
-                    let c = std::fs::read(segment(&d, &avant[..7])).unwrap();
-                    (
-                        avant[..7].to_string(),
-                        Clos {
-                            lignes: lignes(&c).len() as u64,
-                            empreinte: empreinte_segment(&c),
-                        },
-                    )
-                }),
-            });
-            crate::sceau::ecrire_dans(&d, TETE, &serde_json::to_vec(&t).unwrap()).unwrap();
+            // L'écriture annoncée, scellée, puis l'ajout ; la tête finale manque : arrêt juste après l'ajout, dans la
+            // vraie écriture (l'annonce est celle qu'elle a scellée).
+            ARRET_APRES_AJOUT.with(|a| a.set(true));
+            let r = noter_dans(&d, alerte(7, apres), le(apres));
+            ARRET_APRES_AJOUT.with(|a| a.set(false));
+            r.unwrap();
+            assert!(
+                matches!(tete_lue(&d), TeteLue::Lue(t, _) if t.annonce.is_some()),
+                "l'annonce n'est pas dans la tête"
+            );
             let lu = lire_dans(&d);
             assert!(
                 matches!(&lu.lecture, Lecture::Incomplet(r) if r.contains("sans sa tête")),

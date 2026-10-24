@@ -105,6 +105,8 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     },
     // Le relevé des corrections et des blocages : « Tout remettre comme avant » le rejoue en administrateur.
     scelle(crate::changements::RELEVE, "changements"),
+    // L'empreinte de chacune de ses lignes : un relevé changé garde les lignes que Vanguard a écrites.
+    scelle(crate::changements::LIGNES, "changements"),
     local(crate::modele::journal::DOSSIER, "modele::journal"),
     local("evenements.verrou", "modele::journal"),
     local(crate::modele::resultat::EXAMENS, "modele::resultat"),
