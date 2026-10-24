@@ -985,7 +985,27 @@ fn raison_evtquery(code: Option<i32>, delai: bool) -> Raison {
 /// Les événements des journaux de Windows pour la chronologie, lus par wevtapi sans PowerShell : 30 s en tout. Le
 /// journal de sécurité ne se lit qu'en administrateur : sans, c'est dit une fois. Chaque journal qui refuse est dit.
 pub(super) fn evenements_des_journaux(_dossier: &Path) -> Apport {
-    lire_journaux_chronologie(administrateur())
+    let mut apport = lire_journaux_chronologie(administrateur());
+    let alertes = alertes_des_journaux();
+    apport.evenements.extend(alertes.evenements);
+    apport.manques.extend(alertes.manques);
+    apport
+}
+
+/// Les alertes des règles `EVT-` sur les journaux de cet ordinateur, des 7 jours de la chronologie, pour qu'elles y
+/// soient à leur place dans le temps ; l'analyse est versée comme celle de `vanguard journaux-windows` (le rapport la
+/// reprend). Une minute au plus : au-delà, les plus anciens ne sont pas lus, et c'est dit.
+fn alertes_des_journaux() -> Apport {
+    use crate::journaux_windows::regles::{moteur::Options, resultat};
+    let debut = (chrono::Utc::now(), std::time::Instant::now());
+    let options = Options {
+        depuis: Some(debut.0 - chrono::Duration::days(chronologie::JOURS)),
+        defender_antivirus: None,
+    };
+    let a = resultat::analyser_vivant(&options, debut.1 + std::time::Duration::from_secs(60));
+    let est_normale = |cle: &str| crate::protection::normales::est_normale(cle);
+    crate::modele::resultat::verser(&resultat::resultat(&a, debut, &est_normale));
+    chronologie::alertes_des_journaux(&a, &est_normale)
 }
 
 fn lire_journaux_chronologie(admin: bool) -> Apport {
