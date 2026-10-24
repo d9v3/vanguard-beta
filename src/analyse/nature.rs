@@ -1,0 +1,238 @@
+//! Le type d'un fichier, par son CONTENU (octets magiques, structure), jamais par son extension : un programme
+//! renommé « facture.pdf » reste un programme. Les signatures sont celles des spécifications de chaque format (PE :
+//! « MZ » puis « PE\0\0 » à e_lfanew ; ELF : 7F « ELF » ; Mach-O : FEEDFACE/FEEDFACF dans les deux ordres, CAFEBABE
+//! et CAFEBABF pour les fichiers universels ; zip : en-tête local « PK\3\4 » ou fin de répertoire « PK\5\6 » ; gzip
+//! 1F 8B 08 ; fichier composé D0CF11E0A1B11AE1 ; raccourci : taille 0x4C et CLSID ; tar : « ustar » en 257 ou somme
+//! de contrôle juste), et celles, publiées par leurs auteurs, des formats reconnus mais pas ouverts ici (7z, RAR,
+//! CAB, ISO 9660, bzip2, xz, zstd, PDF, RTF…), qui seront dits « non vérifiés ».
+
+use super::Type;
+use super::texte;
+
+/// Ce qu'on regarde pour deviner du texte : le reste est lu ensuite, si c'en est.
+const ECHANTILLON_TEXTE: usize = 64 << 10;
+
+/// Le type de `octets`.
+pub(crate) fn deviner(octets: &[u8]) -> Type {
+    if octets.is_empty() {
+        return Type::Vide;
+    }
+    let commence = |m: &[u8]| octets.starts_with(m);
+    let a = |position: usize, m: &[u8]| octets.get(position..position + m.len()) == Some(m);
+    if commence(b"MZ") {
+        let pe = super::lecture::u32le(octets, 0x3C)
+            .and_then(|e| usize::try_from(e).ok())
+            .is_some_and(|e| a(e, b"PE\0\0"));
+        return if pe { Type::Pe } else { Type::ExecutableDos };
+    }
+    if commence(b"\x7fELF") {
+        return Type::Elf;
+    }
+    if let Some(magie) = super::lecture::u32le(octets, 0) {
+        use super::macho::{FAT_MAGIC, FAT_MAGIC_64, MH_MAGIC, MH_MAGIC_64};
+        if matches!(magie, MH_MAGIC | MH_MAGIC_64) || matches!(magie.swap_bytes(), MH_MAGIC | MH_MAGIC_64) {
+            return Type::MachO;
+        }
+        if matches!(magie.swap_bytes(), FAT_MAGIC | FAT_MAGIC_64) {
+            // Même signature qu'une classe Java : un fichier universel a peu d'architectures, une classe a ses
+            // numéros de version (45 et plus) à la place.
+            let n = super::lecture::Ordre { gros_boutiste: true }
+                .u32(octets, 4)
+                .unwrap_or(0);
+            return if (1..=super::macho::TRANCHES_MAX).contains(&n) {
+                Type::MachOUniversel
+            } else {
+                Type::ClasseJava
+            };
+        }
+    }
+    if commence(b"PK\x03\x04") || commence(b"PK\x05\x06") || commence(b"PK\x07\x08") {
+        return Type::Zip;
+    }
+    if commence(&[0x1f, 0x8b, 8]) {
+        return Type::Gzip;
+    }
+    if commence(&super::cfb::SIGNATURE) {
+        return Type::Cfb;
+    }
+    if commence(&[0x4C, 0, 0, 0]) && a(4, &super::lnk::CLSID) {
+        return Type::Lnk;
+    }
+    if a(257, b"ustar") || tar_v7(octets) {
+        return Type::Tar;
+    }
+    let non_lus: &[(&[u8], Type)] = &[
+        (b"7z\xBC\xAF\x27\x1C", Type::SeptZip),
+        (b"Rar!\x1A\x07\x00", Type::Rar),
+        (b"Rar!\x1A\x07\x01\x00", Type::Rar),
+        (b"MSCF\0\0\0\0", Type::Cab),
+        (b"\xFD7zXZ\0", Type::Xz),
+        (b"\x28\xB5\x2F\xFD", Type::Zstd),
+        (b"{\\rtf", Type::Rtf),
+        (b"ITSF", Type::Chm),
+        (b"MSWIM\0\0\0", Type::Wim),
+        (b"vhdxfile", Type::DisqueVirtuel),
+        (b"conectix", Type::DisqueVirtuel),
+        (b"xar!", Type::Xar),
+        (b"!<arch>\n", Type::Ar),
+        (b"\xED\xAB\xEE\xDB", Type::Rpm),
+        (b"hsqs", Type::SquashFs),
+        (b"070701", Type::Cpio),
+        (b"070702", Type::Cpio),
+        (b"070707", Type::Cpio),
+        (b"LZIP", Type::Lzip),
+        // OneNote : le GUID de section {7B5C52E4-D88C-4DA7-AEB1-5378D02996D3}.
+        (
+            &[
+                0xE4, 0x52, 0x5C, 0x7B, 0x8C, 0xD8, 0xA7, 0x4D, 0xAE, 0xB1, 0x53, 0x78, 0xD0, 0x29, 0x96, 0xD3,
+            ],
+            Type::OneNote,
+        ),
+    ];
+    for (signature, type_) in non_lus {
+        if commence(signature) {
+            return *type_;
+        }
+    }
+    if commence(b"BZh") && octets.get(3).is_some_and(|c| (b'1'..=b'9').contains(c)) {
+        return Type::Bzip2;
+    }
+    // ISO 9660 et UDF : le descripteur de volume au secteur 16 (« CD001 », « BEA01 »…), et ses copies.
+    if [0x8001usize, 0x8801, 0x9001]
+        .iter()
+        .any(|&p| a(p, b"CD001") || a(p, b"BEA01") || a(p, b"NSR02") || a(p, b"NSR03"))
+    {
+        return Type::Iso;
+    }
+    // Une image disque d'Apple ou un disque virtuel : la signature est dans les 512 derniers octets.
+    if let Some(queue) = octets.len().checked_sub(512) {
+        if a(queue, b"koly") {
+            return Type::Dmg;
+        }
+        if a(queue, b"conectix") {
+            return Type::DisqueVirtuel;
+        }
+    }
+    // Un PDF : l'en-tête peut être n'importe où dans le premier Kio (les lecteurs le cherchent là).
+    if octets[..octets.len().min(1024)].windows(5).any(|f| f == b"%PDF-") {
+        return Type::Pdf;
+    }
+    let inertes: &[(&[u8], Type)] = &[
+        (b"\x89PNG\r\n\x1a\n", Type::Image),
+        (b"\xFF\xD8\xFF", Type::Image),
+        (b"GIF87a", Type::Image),
+        (b"GIF89a", Type::Image),
+        (b"\0\0\x01\0", Type::Image),
+        (b"II*\0", Type::Image),
+        (b"MM\0*", Type::Image),
+        (b"ID3", Type::Media),
+        (b"OggS", Type::Media),
+        (b"fLaC", Type::Media),
+        (b"\x1A\x45\xDF\xA3", Type::Media),
+        (b"\0\x01\0\0\0", Type::Police),
+        (b"OTTO", Type::Police),
+        (b"wOFF", Type::Police),
+        (b"wOF2", Type::Police),
+        (b"SQLite format 3\0", Type::Sqlite),
+        (b"\0asm", Type::Wasm),
+    ];
+    for (signature, type_) in inertes {
+        if commence(signature) {
+            return *type_;
+        }
+    }
+    // BMP : « BM » puis, en 14, la taille d'un en-tête d'image connu (« BM » seul commence bien des textes).
+    if commence(b"BM")
+        && super::lecture::u32le(octets, 14).is_some_and(|t| matches!(t, 12 | 40 | 52 | 56 | 64 | 108 | 124))
+    {
+        return Type::Image;
+    }
+    if commence(b"RIFF") && a(8, b"WEBP") {
+        return Type::Image;
+    }
+    if commence(b"RIFF") && (a(8, b"WAVE") || a(8, b"AVI ")) || a(4, b"ftyp") {
+        return Type::Media;
+    }
+    match texte::lire(&octets[..octets.len().min(ECHANTILLON_TEXTE)], ECHANTILLON_TEXTE) {
+        Some(t) if t.langage == texte::Langage::Texte => Type::Texte,
+        Some(t) => Type::Script(t.langage),
+        None => Type::Inconnu,
+    }
+}
+
+/// Un en-tête tar d'avant ustar : la somme de ses octets (le champ de contrôle compté en espaces) égale à la valeur
+/// octale de ce champ, et un nom non vide.
+fn tar_v7(octets: &[u8]) -> bool {
+    let Some(entete) = octets.get(..512) else {
+        return false;
+    };
+    if entete[0] == 0 {
+        return false;
+    }
+    let champ = &entete[148..156];
+    let Ok(texte) = std::str::from_utf8(champ) else {
+        return false;
+    };
+    let texte = texte.trim_matches(|c| c == ' ' || c == '\0');
+    let Ok(attendue) = u32::from_str_radix(texte, 8) else {
+        return false;
+    };
+    let somme: u32 = entete
+        .iter()
+        .enumerate()
+        .map(|(i, &o)| if (148..156).contains(&i) { 32 } else { u32::from(o) })
+        .sum();
+    !texte.is_empty() && somme == attendue
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn par_le_contenu() {
+        let mut pe = vec![0u8; 0x80];
+        pe[..2].copy_from_slice(b"MZ");
+        pe[0x3C] = 0x40;
+        pe[0x40..0x44].copy_from_slice(b"PE\0\0");
+        assert_eq!(deviner(&pe), Type::Pe);
+        assert_eq!(deviner(b"MZ\x90\0"), Type::ExecutableDos);
+        assert_eq!(deviner(b"\x7fELF\x02\x01"), Type::Elf);
+        assert_eq!(deviner(&[0xcf, 0xfa, 0xed, 0xfe, 7, 0, 0, 1]), Type::MachO);
+        assert_eq!(deviner(&[0xfe, 0xed, 0xfa, 0xce, 0, 0, 0, 18]), Type::MachO);
+        assert_eq!(deviner(&[0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 2]), Type::MachOUniversel);
+        assert_eq!(deviner(&[0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 65]), Type::ClasseJava);
+        assert_eq!(deviner(b"PK\x03\x04\x14\0"), Type::Zip);
+        assert_eq!(deviner(&[0x1f, 0x8b, 8, 0]), Type::Gzip);
+        assert_eq!(deviner(&super::super::cfb::SIGNATURE), Type::Cfb);
+        assert_eq!(deviner(b"7z\xBC\xAF\x27\x1C\0\x04"), Type::SeptZip);
+        assert_eq!(deviner(b"Rar!\x1A\x07\x01\0"), Type::Rar);
+        assert_eq!(deviner(b"MSCF\0\0\0\0\x10"), Type::Cab);
+        assert_eq!(deviner(b"BZh91AY"), Type::Bzip2);
+        assert_eq!(deviner(b"%PDF-1.7\n"), Type::Pdf);
+        let mut iso = vec![0u8; 0x9000];
+        iso[0x8001..0x8006].copy_from_slice(b"CD001");
+        assert_eq!(deviner(&iso), Type::Iso);
+        assert_eq!(deviner(b"\x89PNG\r\n\x1a\n"), Type::Image);
+        assert_eq!(
+            deviner(b"@echo off\r\nset /a x=1\r\n"),
+            Type::Script(texte::Langage::Batch)
+        );
+        assert_eq!(deviner(b"Une lettre.\n"), Type::Texte);
+        assert_eq!(deviner(&[0x00, 0x01, 0x02, 0x03, 0xff, 0x10]), Type::Inconnu);
+        assert_eq!(deviner(b""), Type::Vide);
+        // L'extension n'y est pour rien : seul le contenu compte (le nom n'est même pas donné).
+    }
+
+    #[test]
+    fn tar_par_sa_somme() {
+        let mut entete = [0u8; 512];
+        entete[..5].copy_from_slice(b"a.txt");
+        entete[124..135].copy_from_slice(b"00000000003");
+        let somme: u32 = entete.iter().map(|&o| u32::from(o)).sum::<u32>() + 8 * 32;
+        entete[148..155].copy_from_slice(format!("{somme:06o}\0").as_bytes());
+        assert_eq!(deviner(&entete), Type::Tar);
+        entete[0] ^= 1;
+        assert_ne!(deviner(&entete), Type::Tar);
+    }
+}

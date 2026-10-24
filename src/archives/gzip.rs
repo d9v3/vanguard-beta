@@ -12,7 +12,7 @@ pub(crate) fn est_gzip(octets: &[u8]) -> bool {
 }
 
 /// Où commence le flux deflate d'un membre qui commence en `debut`. `None` : pas du gzip, ou en-tête coupé.
-fn debut_du_flux(octets: &[u8], debut: usize) -> Option<usize> {
+pub(crate) fn debut_du_flux(octets: &[u8], debut: usize) -> Option<usize> {
     const FHCRC: u8 = 2;
     const FEXTRA: u8 = 4;
     const FNAME: u8 = 8;
@@ -77,30 +77,10 @@ pub(crate) fn degzip_controle(octets: &[u8], limite: usize) -> Option<Vec<u8>> {
 
 #[cfg_attr(not(any(windows, target_os = "macos", test)), allow(dead_code))] // logiciels pas à jour
 /// Le flux deflate de `flux`, au plus `limite` octets, et le nombre d'octets qu'il occupe (pour trouver la fin du
-/// membre, qui le suit). Le même travail que `decompress_to_vec_with_limit`, qui ne dit pas où le flux finit.
+/// membre, qui le suit) : la lecture commune (`deflate::inflater`), entière seulement.
 fn inflater(flux: &[u8], limite: usize) -> Option<(Vec<u8>, usize)> {
-    use miniz_oxide::inflate::TINFLStatus;
-    use miniz_oxide::inflate::core::{DecompressorOxide, decompress, inflate_flags};
-    let drapeaux = inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
-    let mut sortie = vec![0u8; flux.len().saturating_mul(2).clamp(64, 1 << 20).min(limite)];
-    let mut decodeur = Box::<DecompressorOxide>::default();
-    let (mut lus, mut ecrits) = (0usize, 0usize);
-    loop {
-        let (etat, consommes, produits) = decompress(&mut decodeur, flux.get(lus..)?, &mut sortie, ecrits, drapeaux);
-        lus = lus.checked_add(consommes)?;
-        ecrits = ecrits.checked_add(produits)?;
-        match etat {
-            TINFLStatus::Done => {
-                sortie.truncate(ecrits);
-                return Some((sortie, lus));
-            }
-            TINFLStatus::HasMoreOutput if sortie.len() < limite => {
-                let nouvelle = sortie.len().saturating_mul(2).min(limite);
-                sortie.resize(nouvelle, 0);
-            }
-            _ => return None,
-        }
-    }
+    let lu = super::deflate::inflater(flux, limite);
+    (lu.fin == super::deflate::Fin::Complet).then_some((lu.contenu, lu.lus))
 }
 
 #[cfg(test)]

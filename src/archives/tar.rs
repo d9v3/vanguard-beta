@@ -16,68 +16,129 @@ pub(crate) struct Lus {
     pub trop_gros: usize,
 }
 
-/// Les fichiers ordinaires de `tar` dont `garder` accepte le nom complet. `None` : archive coupée avant ses blocs de
-/// fin (ce qui manque ne doit pas passer pour absent), taille illisible, ou une borne dépassée (`entrees` en-têtes
-/// parcourus, `total` octets gardés). Un fichier voulu de plus de `fichier` octets est sauté sans être lu, et
-/// compté dans `trop_gros`.
-pub(crate) fn fichiers(tar: &[u8], bornes: &Bornes, mut garder: impl FnMut(&str) -> bool) -> Option<Lus> {
-    let mut lus = Lus::default();
-    let mut total = 0usize;
+/// Une entrée vue par `parcourir` : son nom complet (pax, GNU ou ustar), son type (octet 156 de l'en-tête : `0` ou
+/// nul pour un fichier ordinaire, `5` un dossier, `1` et `2` des liens…), son contenu et la position de son en-tête.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Entree<'a> {
+    pub nom: String,
+    pub type_: u8,
+    pub contenu: &'a [u8],
+    pub position: usize,
+}
+
+/// Comment s'est arrêté `parcourir`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FinTar {
+    /// Le bloc nul de fin : tout a été vu.
+    Fin,
+    /// Coupée avant ses blocs de fin, ou un contenu qui déborde du fichier.
+    Coupee,
+    /// Une taille illisible, un en-tête pax ou un nom GNU qui n'en est pas un.
+    Illisible,
+    /// Plus d'en-têtes que la borne : le reste n'est pas vu.
+    Limite,
+    /// Le visiteur a demandé l'arrêt.
+    Arretee,
+}
+
+/// Chaque entrée de `tar` (sauf les en-têtes pax « x » et « g » et les noms longs GNU « L » et « K », appliqués à
+/// l'entrée qui suit), dans l'ordre, au plus `entrees` en-têtes parcourus.
+pub(crate) fn parcourir<'a>(
+    tar: &'a [u8],
+    entrees: usize,
+    mut visiteur: impl FnMut(Entree<'a>) -> std::ops::ControlFlow<()>,
+) -> FinTar {
     let mut pos = 0usize;
     // Le nom et la taille donnés par un en-tête pax ou GNU, pour l'entrée qui suit seulement.
     let mut nom_suivant: Option<String> = None;
     let mut taille_suivante: Option<usize> = None;
-    for _ in 0..bornes.entrees {
-        let entete = tar.get(pos..pos.checked_add(512)?)?;
+    for _ in 0..entrees {
+        let Some(entete) = pos.checked_add(512).and_then(|fin| tar.get(pos..fin)) else {
+            return FinTar::Coupee;
+        };
         // Deux blocs nuls marquent la fin ; le premier suffit à dire qu'il n'y a plus rien à lire.
         if entete.iter().all(|&o| o == 0) {
-            return Some(lus);
+            return FinTar::Fin;
         }
         let taille = match taille_suivante.take() {
             Some(t) => t,
-            None => octal(&entete[124..136])?,
+            None => match octal(&entete[124..136]) {
+                Some(t) => t,
+                None => return FinTar::Illisible,
+            },
         };
         let debut = pos + 512;
-        let contenu = tar.get(debut..debut.checked_add(taille)?)?;
-        pos = debut.checked_add(taille.div_ceil(512).checked_mul(512)?)?;
+        let Some(contenu) = debut.checked_add(taille).and_then(|fin| tar.get(debut..fin)) else {
+            return FinTar::Coupee;
+        };
+        let position = pos;
+        let Some(suivant) = taille
+            .div_ceil(512)
+            .checked_mul(512)
+            .and_then(|arrondi| debut.checked_add(arrondi))
+        else {
+            return FinTar::Coupee;
+        };
+        pos = suivant;
         match entete[156] {
             b'x' => {
-                let (nom, taille) = pax(contenu)?;
+                let Some((nom, taille)) = pax(contenu) else {
+                    return FinTar::Illisible;
+                };
                 nom_suivant = nom;
                 taille_suivante = taille;
             }
             b'L' => {
                 // Un nom, terminé par un nul ; au-delà de 4 Kio, ce n'en est pas un.
                 if contenu.len() > 4096 {
-                    return None;
+                    return FinTar::Illisible;
                 }
                 let fin = contenu.iter().position(|&o| o == 0).unwrap_or(contenu.len());
                 nom_suivant = Some(String::from_utf8_lossy(&contenu[..fin]).into_owned());
             }
             // L'en-tête global de git archive (le commit), le lien long de GNU : rien pour l'entrée qui suit.
             b'g' | b'K' => {}
-            b'0' | 0 => {
+            type_ => {
                 let nom = nom_suivant.take().unwrap_or_else(|| nom_ustar(entete));
-                if garder(&nom) {
-                    if taille > bornes.fichier {
-                        lus.trop_gros += 1;
-                    } else {
-                        total = total.checked_add(taille)?;
-                        if total > bornes.total {
-                            return None;
-                        }
-                        lus.fichiers.push((nom, contenu.to_vec()));
-                    }
+                let entree = Entree {
+                    nom,
+                    type_,
+                    contenu,
+                    position,
+                };
+                if visiteur(entree).is_break() {
+                    return FinTar::Arretee;
                 }
-            }
-            // Dossier, lien, périphérique, tube : sautés, et le nom long qui les visait avec.
-            _ => {
-                nom_suivant = None;
             }
         }
     }
-    // Plus d'en-têtes que la borne : le reste ne serait pas lu.
-    None
+    FinTar::Limite
+}
+
+/// Les fichiers ordinaires de `tar` dont `garder` accepte le nom complet. `None` : archive coupée avant ses blocs de
+/// fin (ce qui manque ne doit pas passer pour absent), taille illisible, ou une borne dépassée (`entrees` en-têtes
+/// parcourus, `total` octets gardés). Un fichier voulu de plus de `fichier` octets est sauté sans être lu, et
+/// compté dans `trop_gros`. Dossiers, liens et le reste sont sautés, jamais suivis.
+pub(crate) fn fichiers(tar: &[u8], bornes: &Bornes, mut garder: impl FnMut(&str) -> bool) -> Option<Lus> {
+    use std::ops::ControlFlow;
+    let mut lus = Lus::default();
+    let mut total = 0usize;
+    let fin = parcourir(tar, bornes.entrees, |e| {
+        if !matches!(e.type_, b'0' | 0) || !garder(&e.nom) {
+            return ControlFlow::Continue(());
+        }
+        if e.contenu.len() > bornes.fichier {
+            lus.trop_gros += 1;
+            return ControlFlow::Continue(());
+        }
+        match total.checked_add(e.contenu.len()) {
+            Some(t) if t <= bornes.total => total = t,
+            _ => return ControlFlow::Break(()),
+        }
+        lus.fichiers.push((e.nom, e.contenu.to_vec()));
+        ControlFlow::Continue(())
+    });
+    (fin == FinTar::Fin).then_some(lus)
 }
 
 /// Le nom d'un en-tête : préfixe ustar (345..500) et nom (0..100), chacun jusqu'à son premier nul.

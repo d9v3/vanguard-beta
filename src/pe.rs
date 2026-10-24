@@ -462,6 +462,387 @@ fn info_fixe(donnees: &[u8]) -> Option<([u16; 4], [u16; 4])> {
     ))
 }
 
+// --- Structure entière d'un PE, pour l'analyse des fichiers (`analyse/`) ---
+//
+// Ajoutée en bloc au lecteur commun : les mêmes en-têtes (`entetes`, contrôlés), puis ce qu'une analyse antivirus
+// regarde : sections (nom, droits, entropie), point d'entrée, imports, présence d'une signature Authenticode (sa
+// VÉRIFICATION n'est pas faite ici), octets après la dernière section (overlay). D'après « PE Format »
+// (learn.microsoft.com) : en-tête facultatif (AddressOfEntryPoint en 16, SizeOfHeaders en 60, Subsystem en 68),
+// table des sections (Characteristics en 36), répertoire n° 1 (imports, IMAGE_IMPORT_DESCRIPTOR de 20 octets),
+// n° 4 (certificats : une POSITION dans le fichier, pas une RVA ; WIN_CERTIFICATE alignés sur 8 octets) et n° 14
+// (en-tête CLR : .NET). Le fichier est déjà en mémoire (borné par l'appelant) : lu par tranches contrôlées.
+
+/// IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_WRITE.
+const SCN_EXECUTE: u32 = 0x2000_0000;
+const SCN_WRITE: u32 = 0x8000_0000;
+/// Le répertoire n° 1 (imports), n° 4 (certificats), n° 14 (en-tête CLR).
+const REPERTOIRE_IMPORTS: u32 = 1;
+const REPERTOIRE_CERTIFICATS: u32 = 4;
+const REPERTOIRE_CLR: u32 = 14;
+/// Bornes des imports : bien au-delà d'un programme réel (quelques dizaines de DLL, quelques milliers de fonctions).
+const DLL_MAX: usize = 512;
+const FONCTIONS_MAX: usize = 16_384;
+const NOM_MAX: usize = 256;
+/// Les certificats parcourus (un programme réel en a un, parfois deux).
+const CERTIFICATS_MAX: usize = 16;
+
+/// Une section, telle que la décrit sa table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SectionPe {
+    /// Huit octets au plus, jusqu'au premier nul (sans le décodage « /n » des fichiers objets : un exécutable n'en a
+    /// pas).
+    pub nom: String,
+    pub adresse: u32,
+    pub taille_virtuelle: u32,
+    pub position: u32,
+    pub taille_brute: u32,
+    pub caracteristiques: u32,
+    /// Entropie de Shannon des données brutes, en millièmes de bit par octet (0 à 8 000).
+    pub entropie: u16,
+}
+
+impl SectionPe {
+    pub(crate) fn executable(&self) -> bool {
+        self.caracteristiques & SCN_EXECUTE != 0
+    }
+
+    pub(crate) fn ecrivable(&self) -> bool {
+        self.caracteristiques & SCN_WRITE != 0
+    }
+
+    fn contient_rva(&self, rva: u32) -> bool {
+        let etendue = self.taille_virtuelle.max(self.taille_brute);
+        rva >= self.adresse && u64::from(rva) < u64::from(self.adresse) + u64::from(etendue)
+    }
+}
+
+/// Une DLL importée et ses fonctions (« #n » pour un import par numéro).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ImportPe {
+    pub dll: String,
+    pub fonctions: Vec<String>,
+}
+
+/// La signature Authenticode : présente ou non (jamais vérifiée ici).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Authenticode {
+    Absente,
+    /// Une table de certificats dont la première entrée est un PKCS#7 (WIN_CERT_TYPE_PKCS_SIGNED_DATA, révision 2).
+    Presente,
+    /// Annoncée, mais hors du fichier ou d'une autre forme.
+    Illisible,
+}
+
+/// La structure d'un PE.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StructurePe {
+    pub machine: Machine,
+    pub pe32_plus: bool,
+    /// Characteristics de l'en-tête COFF (0x2000 : une DLL).
+    pub caracteristiques: u16,
+    pub sous_systeme: u16,
+    pub point_entree: u32,
+    pub sections: Vec<SectionPe>,
+    pub imports: Vec<ImportPe>,
+    /// La table des imports ne se lit pas jusqu'au bout (hors section, sans fin, au-delà des bornes).
+    pub imports_incomplets: bool,
+    pub authenticode: Authenticode,
+    /// La place de la table des certificats dans le fichier, si elle y est.
+    pub certificats: Option<std::ops::Range<u64>>,
+    /// Octets de la table des certificats au-delà des entrées qu'elle déclare (des données cachées « dans » la
+    /// signature, que la vérification d'Authenticode ne couvre pas).
+    pub apres_certificats: Option<std::ops::Range<u64>>,
+    pub dotnet: bool,
+    /// La fin des en-têtes et des données des sections : au-delà, c'est l'overlay (hors certificats).
+    pub fin_des_donnees: u64,
+    /// Les morceaux de l'overlay, hors table des certificats.
+    pub overlay: Vec<std::ops::Range<u64>>,
+}
+
+impl StructurePe {
+    /// Le point d'entrée est-il dans une section ? (Un point d'entrée nul, celui d'une DLL sans DllMain, l'est
+    /// toujours.)
+    pub(crate) fn point_entree_dans_une_section(&self) -> bool {
+        self.point_entree == 0 || self.sections.iter().any(|s| s.contient_rva(self.point_entree))
+    }
+
+    /// La section qui contient le point d'entrée.
+    pub(crate) fn section_du_point_entree(&self) -> Option<&SectionPe> {
+        self.sections.iter().find(|s| s.contient_rva(self.point_entree))
+    }
+}
+
+/// L'entropie de Shannon d'octets, en millièmes de bit par octet.
+pub(crate) fn entropie(octets: &[u8]) -> u16 {
+    if octets.is_empty() {
+        return 0;
+    }
+    let mut compte = [0u64; 256];
+    for &o in octets {
+        compte[usize::from(o)] += 1;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let n = octets.len() as f64;
+    let h: f64 = compte
+        .iter()
+        .filter(|&&c| c > 0)
+        .map(|&c| {
+            #[allow(clippy::cast_precision_loss)]
+            let p = c as f64 / n;
+            -p * p.log2()
+        })
+        .sum();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let milli = (h * 1000.0).round().clamp(0.0, 8000.0) as u16;
+    milli
+}
+
+fn mot16_a(octets: &[u8], i: usize) -> Option<u16> {
+    octets
+        .get(i..i.checked_add(2)?)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+}
+
+fn mot32_a(octets: &[u8], i: usize) -> Option<u32> {
+    octets
+        .get(i..i.checked_add(4)?)
+        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+}
+
+fn mot64_a(octets: &[u8], i: usize) -> Option<u64> {
+    let b = octets.get(i..i.checked_add(8)?)?;
+    let mut m = [0u8; 8];
+    m.copy_from_slice(b);
+    Some(u64::from_le_bytes(m))
+}
+
+/// La position dans le fichier d'une RVA : dans les données brutes d'une section, ou dans les en-têtes (avant la
+/// première section, où le chargeur les met tels quels).
+fn position_rva(sections: &[Section], taille_entetes: u32, rva: u32, n: u32) -> Option<usize> {
+    if let Some(p) = position(sections, rva, n) {
+        return usize::try_from(p).ok();
+    }
+    (u64::from(rva) + u64::from(n) <= u64::from(taille_entetes)).then_some(rva as usize)
+}
+
+/// Une chaîne ASCII terminée par un nul, d'au plus `NOM_MAX` octets, à la RVA `rva`.
+fn chaine_rva(octets: &[u8], sections: &[Section], taille_entetes: u32, rva: u32) -> Option<String> {
+    let debut = position_rva(sections, taille_entetes, rva, 1)?;
+    let reste = octets.get(debut..)?;
+    let reste = &reste[..reste.len().min(NOM_MAX)];
+    let fin = reste.iter().position(|&o| o == 0)?;
+    Some(String::from_utf8_lossy(&reste[..fin]).into_owned())
+}
+
+/// La structure du PE `octets` (le fichier entier). `None` : pas un PE, ou des en-têtes refusés par `entetes`.
+pub(crate) fn structure(octets: &[u8]) -> Option<StructurePe> {
+    let mut curseur = std::io::Cursor::new(octets);
+    let taille = octets.len() as u64;
+    let mut l = Lecteur {
+        source: &mut curseur,
+        taille,
+        lus: 0,
+    };
+    let e = entetes(&mut l)?;
+    let pe = usize::try_from(mot32_a(octets, 0x3C)?).ok()?;
+    let facultatif = pe + 24;
+    let taille_facultatif = usize::from(mot16_a(octets, pe + 20)?);
+    let caracteristiques = mot16_a(octets, pe + 22)?;
+    let point_entree = mot32_a(octets, facultatif + 16)?;
+    let taille_entetes = mot32_a(octets, facultatif + 60)?;
+    let sous_systeme = mot16_a(octets, facultatif + 68)?;
+    let table = facultatif + taille_facultatif;
+    let mut sections = Vec::with_capacity(e.sections.len());
+    for (i, s) in e.sections.iter().enumerate() {
+        let entree = octets.get(table + i * 40..table + i * 40 + 40)?;
+        let nom = &entree[..8];
+        let nom = String::from_utf8_lossy(&nom[..nom.iter().position(|&o| o == 0).unwrap_or(8)]).into_owned();
+        let debut = s.position as usize;
+        let brut = octets.get(debut..debut + s.taille_brute as usize).unwrap_or(&[]);
+        sections.push(SectionPe {
+            nom,
+            adresse: s.adresse,
+            taille_virtuelle: s.taille_virtuelle,
+            position: s.position,
+            taille_brute: s.taille_brute,
+            caracteristiques: mot32_a(entree, 36)?,
+            entropie: entropie(brut),
+        });
+    }
+    let repertoire = |n: u32| -> Option<(u32, u32)> {
+        if n >= e.nombre_repertoires || (n + 1) * 8 > e.place_repertoires {
+            return None;
+        }
+        let entree = usize::try_from(e.repertoires).ok()? + n as usize * 8;
+        let rva = mot32_a(octets, entree)?;
+        (rva != 0).then_some((rva, mot32_a(octets, entree + 4)?))
+    };
+    let (imports, imports_incomplets) = match repertoire(REPERTOIRE_IMPORTS) {
+        Some((rva, _)) => imports(octets, &e.sections, taille_entetes, rva, e.pe32_plus),
+        None => (Vec::new(), false),
+    };
+    // Certificats : position et taille dans le fichier.
+    let (mut authenticode, mut certificats, mut apres_certificats) = (Authenticode::Absente, None, None);
+    if let Some((position_cert, taille_cert)) = repertoire(REPERTOIRE_CERTIFICATS).filter(|&(_, t)| t > 0) {
+        let fin = u64::from(position_cert) + u64::from(taille_cert);
+        if fin > taille || taille_cert < 8 {
+            authenticode = Authenticode::Illisible;
+        } else {
+            certificats = Some(u64::from(position_cert)..fin);
+            let debut = position_cert as usize;
+            let revision = mot16_a(octets, debut + 4);
+            let sorte = mot16_a(octets, debut + 6);
+            authenticode = if revision == Some(0x0200) && sorte == Some(0x0002) {
+                Authenticode::Presente
+            } else {
+                Authenticode::Illisible
+            };
+            // Les entrées WIN_CERTIFICATE à la suite, chacune arrondie à 8 octets ; ce qui reste au-delà de la
+            // dernière n'est pas un certificat.
+            let mut i = 0u64;
+            for _ in 0..CERTIFICATS_MAX {
+                // `i` reste sous `taille_cert` (32 bits) : la conversion ne coupe rien.
+                let Some(longueur) = usize::try_from(i)
+                    .ok()
+                    .and_then(|d| mot32_a(octets, debut + d))
+                    .map(u64::from)
+                else {
+                    break;
+                };
+                if longueur < 8 || i + longueur > u64::from(taille_cert) {
+                    break;
+                }
+                i += longueur.next_multiple_of(8);
+                if i >= u64::from(taille_cert) {
+                    break;
+                }
+            }
+            let couvert = u64::from(position_cert) + i.min(u64::from(taille_cert));
+            if fin > couvert && fin - couvert >= 8 {
+                apres_certificats = Some(couvert..fin);
+            }
+        }
+    }
+    let dotnet = repertoire(REPERTOIRE_CLR).is_some();
+    // La fin des données : les en-têtes, puis la plus lointaine des sections (données brutes).
+    let fin_des_donnees = sections
+        .iter()
+        .filter(|s| s.taille_brute > 0)
+        .map(|s| u64::from(s.position) + u64::from(s.taille_brute))
+        .chain([u64::from(taille_entetes).min(taille)])
+        .max()
+        .unwrap_or(0);
+    let mut overlay = Vec::new();
+    if fin_des_donnees < taille {
+        match certificats.clone() {
+            Some(c) if c.start >= fin_des_donnees => {
+                if c.start > fin_des_donnees {
+                    overlay.push(fin_des_donnees..c.start);
+                }
+                if c.end < taille {
+                    overlay.push(c.end..taille);
+                }
+            }
+            Some(c) if c.end > fin_des_donnees => overlay.push(c.end..taille),
+            _ => overlay.push(fin_des_donnees..taille),
+        }
+        overlay.retain(|r| r.end > r.start);
+    }
+    Some(StructurePe {
+        machine: e.machine,
+        pe32_plus: e.pe32_plus,
+        caracteristiques,
+        sous_systeme,
+        point_entree,
+        sections,
+        imports,
+        imports_incomplets,
+        authenticode,
+        certificats,
+        apres_certificats,
+        dotnet,
+        fin_des_donnees,
+        overlay,
+    })
+}
+
+/// La table des imports à la RVA `rva` : (DLL et fonctions, lue jusqu'au bout ou non).
+fn imports(
+    octets: &[u8],
+    sections: &[Section],
+    taille_entetes: u32,
+    rva: u32,
+    pe32_plus: bool,
+) -> (Vec<ImportPe>, bool) {
+    let mut dlls = Vec::new();
+    let mut fonctions_lues = 0usize;
+    let largeur: u32 = if pe32_plus { 8 } else { 4 };
+    for n in 0..=DLL_MAX {
+        let Some(descripteur) = rva
+            .checked_add(u32::try_from(n * 20).unwrap_or(u32::MAX))
+            .and_then(|r| position_rva(sections, taille_entetes, r, 20))
+        else {
+            return (dlls, true);
+        };
+        let Some(d) = octets.get(descripteur..descripteur + 20) else {
+            return (dlls, true);
+        };
+        if d.iter().all(|&o| o == 0) {
+            return (dlls, false);
+        }
+        if n == DLL_MAX {
+            return (dlls, true);
+        }
+        let champ = |a: usize| u32::from_le_bytes([d[a], d[a + 1], d[a + 2], d[a + 3]]);
+        let (recherche, nom, adresses) = (champ(0), champ(12), champ(16));
+        let Some(dll) = chaine_rva(octets, sections, taille_entetes, nom) else {
+            return (dlls, true);
+        };
+        let table = if recherche != 0 { recherche } else { adresses };
+        let mut fonctions = Vec::new();
+        let mut complete = false;
+        for k in 0u32.. {
+            if fonctions_lues >= FONCTIONS_MAX {
+                break;
+            }
+            let Some(p) = k
+                .checked_mul(largeur)
+                .and_then(|d| table.checked_add(d))
+                .and_then(|r| position_rva(sections, taille_entetes, r, largeur))
+            else {
+                break;
+            };
+            let (valeur, par_numero) = if pe32_plus {
+                let Some(v) = mot64_a(octets, p) else { break };
+                (v & 0x7FFF_FFFF, v & (1 << 63) != 0)
+            } else {
+                let Some(v) = mot32_a(octets, p) else { break };
+                (u64::from(v & 0x7FFF_FFFF), v & (1 << 31) != 0)
+            };
+            if valeur == 0 && !par_numero {
+                complete = true;
+                break;
+            }
+            fonctions_lues += 1;
+            if par_numero {
+                fonctions.push(format!("#{}", valeur & 0xFFFF));
+            } else {
+                // Hint/Name : un indice de 2 octets, puis le nom.
+                let nom = u32::try_from(valeur)
+                    .ok()
+                    .and_then(|r| r.checked_add(2))
+                    .and_then(|r| chaine_rva(octets, sections, taille_entetes, r));
+                fonctions.push(nom.unwrap_or_default());
+            }
+        }
+        dlls.push(ImportPe { dll, fonctions });
+        if !complete {
+            return (dlls, true);
+        }
+    }
+    (dlls, true)
+}
+
 #[cfg(test)]
 pub(crate) mod essais {
     //! Un PE minimal fabriqué en Rust, pour les tests d'ici et de l'inventaire : aucun .exe tiers dans le dépôt.
