@@ -11,45 +11,52 @@
 //! tête d'un fichier dont les morceaux recomptent depuis 1). Ni l'effacement ni la rotation ne font donc de trou :
 //! ils font commencer la suite plus loin. Ce qui précède le plus petit numéro n'est jamais un trou.
 //!
-//! Ce qui fait un trou sans effacement, et que ce module dit autrement :
-//! - un morceau écarté par le lecteur (CRC faux), des enregistrements illisibles ou laissés au-delà des bornes :
-//!   la lecture, pas le journal (`Nature::Illisible`) ;
-//! - un fichier « sale », copié pendant que Windows l'écrivait : les morceaux qu'il gardait en mémoire ne sont pas
-//!   encore sur le disque, ou y portent d'anciens enregistrements. Vu dans les échantillons publics copiés depuis
-//!   un cliché de volume (2-vss_0-…RemoteConnectionManager…evtx : des morceaux d'août 3 à 7 mêlés, des centaines de
-//!   milliers de numéros entre eux ; 2-vss_7-System.evtx : deux morceaux à zéro au milieu) ; (`Nature::CopieAChaud`) ;
-//! - un fichier exporté (wevtutil epl avec une requête, « Enregistrer les événements sélectionnés ») ou une archive
-//!   d'événements transférés : les enregistrements y sont renumérotés depuis 1, les EventRecordID d'origine gardés ;
-//!   un trou dans ceux-ci peut venir du filtre de l'export (`Nature::AvantExport`).
+//! Où tombe chaque numéro manquant, et ce qu'il veut dire :
+//! - entre deux enregistrements d'un même morceau lu, ou dans la plage qu'annonce l'en-tête d'un morceau lu : ce
+//!   morceau le réclame. Windows numérote les enregistrements d'un morceau à la suite : il y manque des
+//!   enregistrements retirés (`Retires`), le morceau réécrit et ses CRC recalculés ; sauf si le morceau a des
+//!   enregistrements que la lecture n'a pas rendus, et assez pour couvrir tout ce qui lui manque (`Illisible`).
+//!   Un morceau écarté qui annoncerait les mêmes numéros n'y change rien : un numéro n'a qu'un morceau ;
+//! - dans la plage qu'annonce un morceau écarté (CRC faux) : la lecture l'a perdu (`Illisible`) ;
+//! - ailleurs, entre deux morceaux : la lecture a pu le perdre dans un morceau écarté dont la plage n'est pas
+//!   connue, mais un tel morceau ne porte qu'une plage contiguë d'au plus `CAPACITE_MORCEAU` numéros : ce que les
+//!   pertes peuvent couvrir est `Illisible`, le reste prend la nature donnée par l'appelant (`Absents` pour un
+//!   fichier propre ou l'ordinateur vivant ; `CopieAChaud` pour un fichier « sale » qui en montre les signes ;
+//!   `AvantExport` pour les EventRecordID d'origine d'un fichier exporté).
 //!
-//! Ce qui reste un constat : un trou dans la plage qu'annonce l'en-tête d'un morceau lu en entier (`Retires` :
-//! Windows n'y laisse jamais de trou, le morceau a été réécrit et ses CRC recalculés), ou entre deux morceaux d'un
-//! fichier fermé proprement, ou dans ce que rend le service des journaux (`Absents`). Jugé par E3, jamais ici.
+//! Le drapeau « sale » de l'en-tête du fichier n'est pas couvert par son CRC : un attaquant le pose sans rien
+//! recalculer. `CopieAChaud` n'est donc jamais une raison de se taire, seulement une réserve (fichiers::entre_morceaux
+//! exige en plus les signes d'une copie à chaud : morceaux remis à zéro avant d'autres, morceaux d'époques mêlées,
+//! vus dans les échantillons publics copiés d'un cliché de volume). Ce que la suite ne peut pas voir : des
+//! enregistrements modifiés ou remplacés sans changer leur numéro, et un fichier renuméroté entier.
 //!
 //! Module autonome (aucun `crate::`) : pur, sans entrée ni sortie, essayé par proptest contre un modèle naïf.
 
+use std::collections::{BTreeSet, HashMap};
+
 use chrono::{DateTime, Utc};
 
-use super::evtx::RecapMorceau;
+use super::evtx::{EtatMorceau, RecapMorceau};
 
 /// Ce qu'un trou veut dire, d'après l'endroit où il tombe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum Nature {
-    /// Dans la plage qu'annonce l'en-tête d'un morceau lu en entier (deux CRC justes, tous ses enregistrements
-    /// rendus) : le morceau dit que ces enregistrements y étaient, ils n'y sont plus.
+    /// Réclamé par un morceau lu (entre deux de ses enregistrements, ou dans sa plage annoncée) que ses
+    /// enregistrements non rendus ne suffisent pas à expliquer : des enregistrements retirés du morceau.
     Retires,
-    /// Entre deux morceaux d'un fichier fermé proprement (ni sale ni abîmé) dont la lecture n'a rien perdu, ou dans
-    /// ce que rend le service des journaux de l'ordinateur : des enregistrements manquent. Retirés (morceaux remis à
-    /// zéro ou ôtés, fichier remplacé), ou fichier copié incomplet.
+    /// Entre deux morceaux d'un fichier fermé proprement, ou dans ce que rend le service des journaux de
+    /// l'ordinateur, au-delà de ce que la lecture a pu perdre : des enregistrements manquent. Retirés (morceaux
+    /// remis à zéro ou ôtés, derniers enregistrements ôtés, fichier remplacé), ou fichier copié incomplet.
     Absents,
-    /// Entre deux morceaux d'un fichier « sale » ou à l'en-tête abîmé : copié pendant que Windows l'écrivait, ou
-    /// pas fermé proprement. Pas une preuve d'effacement.
+    /// Comme `Absents`, dans un fichier « sale » ou à l'en-tête abîmé qui montre les signes d'une copie à chaud :
+    /// les morceaux que Windows gardait en mémoire n'étaient pas sur le disque. Pas une preuve d'effacement, mais
+    /// pas une absence de preuve non plus (le drapeau n'est pas protégé).
     CopieAChaud,
-    /// Là où la lecture a perdu quelque chose (morceau écarté, enregistrement illisible ou au-delà des bornes), ou
-    /// dans un fichier où elle a perdu des morceaux sans savoir quels numéros ils portaient : non vérifié.
+    /// Là où la lecture a perdu quelque chose qui peut le contenir : non vérifié.
     Illisible,
-    /// Entre deux EventRecordID d'origine d'un fichier exporté ou d'une archive d'événements transférés : effacés
-    /// du journal d'origine avant l'export, ou laissés de côté par le filtre de l'export ou de l'abonnement.
+    /// Entre deux EventRecordID d'origine d'un fichier exporté, d'une archive d'événements transférés ou d'un
+    /// journal de collecte : effacés du journal d'origine avant l'export, ou laissés de côté par le filtre de
+    /// l'export ou de l'abonnement.
     AvantExport,
 }
 
@@ -59,10 +66,15 @@ pub(crate) enum Numerotation {
     /// Ceux du journal lu : les en-têtes des enregistrements d'un fichier, ou les EventRecordID que rend le service
     /// des journaux.
     Journal,
-    /// Les EventRecordID d'origine d'un fichier exporté, pour un ordinateur et un journal (System/Computer,
-    /// System/Channel) : une archive d'événements transférés en mêle plusieurs, chacun avec sa propre suite.
+    /// Les EventRecordID d'origine d'un fichier exporté ou d'un journal de collecte, pour un ordinateur et un
+    /// journal (System/Computer, System/Channel, coupés à `CLE_MAX` caractères) : une archive d'événements
+    /// transférés en mêle plusieurs, chacun avec sa propre suite.
     Origine { ordinateur: String, journal: String },
 }
+
+/// Les caractères gardés d'un nom d'ordinateur ou de journal dans `Numerotation::Origine` : un vrai nom en a moins
+/// de 256 (un nom DNS complet 253), un nom démesuré ne fait pas grossir le bilan.
+pub(crate) const CLE_MAX: usize = 256;
 
 /// Des numéros qui manquent, de `de` à `a` compris.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,94 +100,173 @@ impl Trou {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Suite {
     pub numerotation: Numerotation,
-    /// Le plus petit et le plus grand numéro présents ou annoncés par un morceau lu ; rien pour une suite vide.
+    /// Le plus petit et le plus grand numéro présents, réclamés par un morceau lu, ou attendus d'après l'en-tête
+    /// du fichier ; rien pour une suite vide.
     pub premier: Option<u64>,
     pub dernier: Option<u64>,
     /// Numéros distincts présents.
     pub presents: u64,
     /// Numéros vus plus d'une fois (au-delà de la première) : jamais écrits ainsi par Windows dans un même journal.
     pub doublons: u64,
+    /// Morceaux lus à l'en-tête incohérent (`RecapMorceau::incoherent`), et un prochain numéro annoncé par
+    /// l'en-tête du fichier qui ne dépasse pas le plus grand présent : un fichier réécrit.
+    pub incoherences: u64,
     /// Les trous, dans l'ordre des numéros, au plus `max_trous`.
     pub trous: Vec<Trou>,
     /// Trous au-delà de `max_trous`, comptés sans être gardés.
     pub trous_au_dela: u64,
 }
 
-/// Un numéro présent et sa date.
+/// Un numéro présent, sa date, et le rang du morceau qui le porte (rien hors d'un fichier).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Present {
     pub numero: u64,
     pub date: Option<DateTime<Utc>>,
+    pub morceau: Option<u64>,
 }
 
 /// Ce que l'on sait du journal autour de ses numéros.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Contexte<'a> {
-    /// Les morceaux lus ou écartés (vide pour la source vivante et pour les EventRecordID d'origine).
+    /// Les morceaux du fichier (vide pour la source vivante et pour les EventRecordID d'origine).
     pub morceaux: &'a [RecapMorceau],
-    /// La nature d'un trou qu'aucun morceau ne réclame : `Absents` pour un fichier propre ou l'ordinateur vivant,
-    /// `CopieAChaud` pour un fichier sale, `Illisible` quand la lecture a perdu des morceaux sans place connue,
-    /// `AvantExport` pour les EventRecordID d'origine.
+    /// La nature d'un trou qu'aucun morceau ne réclame et que les pertes ne couvrent pas.
     pub entre_morceaux: Nature,
+    /// Ce que la lecture a perdu sans savoir où : pour chaque perte, le plus de numéros contigus qu'elle peut
+    /// cacher (un morceau écarté sans plage connue, un morceau au-delà des bornes, un événement rendu sans son
+    /// numéro : 1).
+    pub pertes: &'a [u64],
+    /// Le prochain numéro qu'annonce l'en-tête d'un fichier fermé proprement : ce qui manque entre le plus grand
+    /// présent et lui est un trou (les derniers enregistrements ôtés).
+    pub prochain: Option<u64>,
+    /// Le plus d'enregistrements que le fichier peut porter (ses morceaux, pleins) : quand aucun numéro n'est
+    /// connu mais que l'en-tête en attend, le plus ancien possible est `prochain - capacite`.
+    pub capacite: u64,
 }
 
-/// Ce qui couvre un numéro : combien de morceaux lus en entier l'annoncent, combien de morceaux où la lecture a
-/// perdu quelque chose.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct Couverture {
-    reclame: u32,
-    perdu: u32,
-}
-
-/// La couverture des numéros, par paliers : chaque palier vaut de son début jusqu'au début du suivant ; avant le
-/// premier, rien ne couvre.
-fn paliers(morceaux: &[RecapMorceau]) -> Vec<(u64, Couverture)> {
-    // (numéro, réclamé +1/-1, perdu +1/-1)
-    let mut bords: Vec<(u64, i64, i64)> = Vec::new();
-    for m in morceaux {
-        let Some((p, d)) = m.annonce else { continue };
-        let (r, l) = if m.lu && m.non_rendus == 0 { (1, 0) } else { (0, 1) };
-        bords.push((p, r, l));
-        // Une annonce qui finit au dernier numéro possible n'a pas de fin à poser.
-        if let Some(fin) = d.checked_add(1) {
-            bords.push((fin, -r, -l));
+impl Contexte<'_> {
+    /// Sans morceaux, sans pertes, sans en-tête : la source vivante ou les EventRecordID d'origine.
+    pub(crate) fn nu(entre_morceaux: Nature) -> Contexte<'static> {
+        Contexte {
+            morceaux: &[],
+            entre_morceaux,
+            pertes: &[],
+            prochain: None,
+            capacite: 0,
         }
     }
-    bords.sort_unstable_by_key(|b| b.0);
-    let mut sortie: Vec<(u64, Couverture)> = Vec::new();
-    let (mut r, mut l) = (0i64, 0i64);
-    let mut i = 0;
-    while i < bords.len() {
-        let pos = bords[i].0;
-        while i < bords.len() && bords[i].0 == pos {
-            r += bords[i].1;
-            l += bords[i].2;
-            i += 1;
+}
+
+/// D'où relève un numéro manquant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Classe {
+    /// Réclamé par le morceau lu de cet indice (dans `Contexte::morceaux`).
+    Morceau(usize),
+    /// Dans la plage qu'annonce un morceau écarté.
+    Ecarte,
+    /// Entre deux morceaux.
+    Libre,
+}
+
+/// La plage qu'un morceau lu réclame : son annonce et l'étendue de ses propres enregistrements, ensemble.
+fn etendues(presents: &[Present], morceaux: &[RecapMorceau]) -> Vec<Option<(u64, u64)>> {
+    let mut rang_vers_indice: HashMap<u64, usize> = HashMap::new();
+    for (i, m) in morceaux.iter().enumerate() {
+        if m.etat == EtatMorceau::Lu {
+            rang_vers_indice.entry(m.rang).or_insert(i);
         }
-        let c = Couverture {
-            reclame: u32::try_from(r.max(0)).unwrap_or(u32::MAX),
-            perdu: u32::try_from(l.max(0)).unwrap_or(u32::MAX),
+    }
+    let mut sortie: Vec<Option<(u64, u64)>> = morceaux
+        .iter()
+        .map(|m| if m.etat == EtatMorceau::Lu { m.annonce } else { None })
+        .collect();
+    for p in presents {
+        let Some(&i) = p.morceau.and_then(|r| rang_vers_indice.get(&r)) else {
+            continue;
         };
-        sortie.push((pos, c));
+        sortie[i] = Some(match sortie[i] {
+            Some((a, b)) => (a.min(p.numero), b.max(p.numero)),
+            None => (p.numero, p.numero),
+        });
     }
     sortie
 }
 
-fn nature(c: Couverture, entre: Nature) -> Nature {
-    if c.perdu > 0 {
-        Nature::Illisible
-    } else if c.reclame > 0 {
-        Nature::Retires
-    } else {
-        entre
+/// Des paliers : chaque palier vaut de son début jusqu'au début du suivant ; avant le premier, rien ne réclame.
+/// Pour chacun, le morceau lu qui réclame ses numéros (celui dont l'étendue commence le plus bas, puis le premier
+/// rang) et s'il tombe dans l'annonce d'un morceau écarté.
+fn paliers(etendues: &[Option<(u64, u64)>], morceaux: &[RecapMorceau]) -> Vec<(u64, Option<usize>, bool)> {
+    // (numéro, +1 entrée / -1 sortie, Some(indice) d'un lu ou None d'un écarté, début de l'étendue)
+    let mut bords: Vec<(u64, i8, Option<usize>, u64)> = Vec::new();
+    for (i, e) in etendues.iter().enumerate() {
+        if let Some((p, d)) = *e {
+            bords.push((p, 1, Some(i), p));
+            if let Some(fin) = d.checked_add(1) {
+                bords.push((fin, -1, Some(i), p));
+            }
+        }
     }
+    for m in morceaux.iter().filter(|m| m.etat == EtatMorceau::Ecarte) {
+        if let Some((p, d)) = m.annonce {
+            bords.push((p, 1, None, p));
+            if let Some(fin) = d.checked_add(1) {
+                bords.push((fin, -1, None, p));
+            }
+        }
+    }
+    bords.sort_unstable_by_key(|b| b.0);
+    let mut actifs: BTreeSet<(u64, u64, usize)> = BTreeSet::new();
+    let mut ecartes = 0i64;
+    let mut sortie = Vec::new();
+    let mut i = 0;
+    while i < bords.len() {
+        let pos = bords[i].0;
+        while i < bords.len() && bords[i].0 == pos {
+            let (_, sens, lu, debut) = bords[i];
+            match (lu, sens) {
+                (Some(k), 1) => {
+                    actifs.insert((debut, morceaux[k].rang, k));
+                }
+                (Some(k), _) => {
+                    actifs.remove(&(debut, morceaux[k].rang, k));
+                }
+                (None, s) => ecartes += i64::from(s),
+            }
+            i += 1;
+        }
+        sortie.push((pos, actifs.first().map(|a| a.2), ecartes > 0));
+    }
+    sortie
+}
+
+/// Des pertes de capacités données couvrent-elles chaque plage de `tailles` ? Une perte ne couvre qu'une partie
+/// contiguë d'une seule plage ; les plus grandes plages servies d'abord par les plus grandes pertes, une plage que
+/// le reste ne couvre pas entière n'est pas couverte (et ne consomme rien). Rend, pour chaque plage, si elle l'est.
+fn couvertes(tailles: &[u64], pertes: &[u64]) -> Vec<bool> {
+    let mut ordre: Vec<usize> = (0..tailles.len()).collect();
+    ordre.sort_unstable_by(|&a, &b| tailles[b].cmp(&tailles[a]));
+    let mut restantes: Vec<u64> = pertes.iter().copied().filter(|&c| c > 0).collect();
+    restantes.sort_unstable_by(|a, b| b.cmp(a));
+    let mut sortie = vec![false; tailles.len()];
+    for i in ordre {
+        let mut somme = 0u64;
+        let mut prises = 0;
+        while somme < tailles[i] && prises < restantes.len() {
+            somme = somme.saturating_add(restantes[prises]);
+            prises += 1;
+        }
+        if somme >= tailles[i] {
+            restantes.drain(..prises);
+            sortie[i] = true;
+        }
+    }
+    sortie
 }
 
 /// La suite des numéros `presents` (dans n'importe quel ordre, doublons compris) et ses trous, d'après le
-/// `contexte`. Les numéros manquants sont ceux qui tombent entre le plus petit et le plus grand numéro présents ou
-/// annoncés par un morceau lu : ce qui précède le plus petit (journal tournant, effacé) n'en est pas un, ce qui suit
-/// le plus grand non plus, sauf si un morceau lu l'annonce (des derniers enregistrements ôtés, la place libre
-/// reculée).
+/// `contexte`. Les numéros manquants sont ceux qui tombent entre le plus petit et le plus grand numéro présents,
+/// réclamés par un morceau lu, ou attendus d'après l'en-tête du fichier : ce qui précède le plus petit (journal
+/// tournant, effacé) n'en est pas un.
 pub(crate) fn juger(
     numerotation: Numerotation,
     mut presents: Vec<Present>,
@@ -186,80 +277,68 @@ pub(crate) fn juger(
     let avant_dedoublonnage = presents.len();
     presents.dedup_by_key(|p| p.numero);
     let doublons = (avant_dedoublonnage - presents.len()) as u64;
-    let annonces_lues = contexte.morceaux.iter().filter(|m| m.lu).filter_map(|m| m.annonce);
-    let premier = presents
+    let etendues = etendues(&presents, contexte.morceaux);
+    let mut premier = presents
         .first()
         .map(|p| p.numero)
         .into_iter()
-        .chain(annonces_lues.clone().map(|a| a.0))
+        .chain(etendues.iter().flatten().map(|e| e.0))
         .min();
-    let dernier = presents
+    let mut dernier = presents
         .last()
         .map(|p| p.numero)
         .into_iter()
-        .chain(annonces_lues.map(|a| a.1))
+        .chain(etendues.iter().flatten().map(|e| e.1))
         .max();
+    let mut incoherences = contexte.morceaux.iter().filter(|m| m.incoherent).count() as u64;
+    if let Some(attendu) = contexte.prochain.and_then(|p| p.checked_sub(1)) {
+        match dernier {
+            Some(d) if attendu < d => incoherences += 1,
+            Some(_) => dernier = Some(attendu),
+            // Rien de présent ni de réclamé, et l'en-tête attend des enregistrements : tout ce que le fichier
+            // pouvait porter manque.
+            None if attendu >= 1 => {
+                premier = Some(attendu.saturating_sub(contexte.capacite.saturating_sub(1)).max(1));
+                dernier = Some(attendu);
+            }
+            None => {}
+        }
+    }
     let mut suite = Suite {
         numerotation,
         premier,
         dernier,
         presents: presents.len() as u64,
         doublons,
+        incoherences,
         trous: Vec::new(),
         trous_au_dela: 0,
     };
     let (Some(lo), Some(hi)) = (premier, dernier) else {
         return suite;
     };
-    let paliers = paliers(contexte.morceaux);
-    // Le palier en cours : les trous viennent dans l'ordre, l'indice ne recule jamais.
+    // Les numéros manquants, découpés aux paliers : (de, a, classe).
+    let paliers = paliers(&etendues, contexte.morceaux);
+    let mut segments: Vec<(u64, u64, Classe)> = Vec::new();
     let mut k = 0usize;
-    let ranger = |de: u64, a: u64, suite: &mut Suite, k: &mut usize| {
+    let mut decouper = |de: u64, a: u64, segments: &mut Vec<(u64, u64, Classe)>| {
         let mut x = de;
         loop {
-            while *k < paliers.len() && paliers[*k].0 <= x {
-                *k += 1;
+            while k < paliers.len() && paliers[k].0 <= x {
+                k += 1;
             }
-            let couverture = if *k == 0 {
-                Couverture::default()
-            } else {
-                paliers[*k - 1].1
+            let classe = match k.checked_sub(1).map(|j| paliers[j]) {
+                Some((_, Some(m), _)) => Classe::Morceau(m),
+                Some((_, None, true)) => Classe::Ecarte,
+                _ => Classe::Libre,
             };
-            let n = nature(couverture, contexte.entre_morceaux);
-            // Jusqu'au palier suivant, ou la fin du trou.
-            let mut fin = match paliers.get(*k) {
-                Some(&(debut, _)) if debut <= a => debut - 1,
+            let fin = match paliers.get(k) {
+                Some(&(debut, _, _)) if debut <= a => debut - 1,
                 _ => a,
             };
-            // Les paliers suivants de même nature prolongent le même trou.
-            while fin < a {
-                let suivant = fin + 1;
-                while *k < paliers.len() && paliers[*k].0 <= suivant {
-                    *k += 1;
-                }
-                let c = if *k == 0 {
-                    Couverture::default()
-                } else {
-                    paliers[*k - 1].1
-                };
-                if nature(c, contexte.entre_morceaux) != n {
-                    break;
-                }
-                fin = match paliers.get(*k) {
-                    Some(&(debut, _)) if debut <= a => debut - 1,
-                    _ => a,
-                };
-            }
-            if suite.trous.len() < max_trous {
-                suite.trous.push(Trou {
-                    de: x,
-                    a: fin,
-                    nature: n,
-                    avant: None,
-                    apres: None,
-                });
-            } else {
-                suite.trous_au_dela += 1;
+            match segments.last_mut() {
+                Some(dernier) if dernier.2 == classe && dernier.1.checked_add(1) == Some(x) => dernier.1 = fin,
+                _ => segments.push((x, fin, classe)),
             }
             if fin >= a {
                 break;
@@ -273,14 +352,55 @@ pub(crate) fn juger(
         if let Some(x) = attendu
             && p.numero > x
         {
-            ranger(x, p.numero - 1, &mut suite, &mut k);
+            decouper(x, p.numero - 1, &mut segments);
         }
         attendu = p.numero.checked_add(1);
     }
     if let Some(x) = attendu
         && x <= hi
     {
-        ranger(x, hi, &mut suite, &mut k);
+        decouper(x, hi, &mut segments);
+    }
+    // Ce qui manque à chaque morceau lu, contre ce qu'il n'a pas rendu ; les plages libres contre les pertes.
+    let mut manque_au_morceau = vec![0u64; contexte.morceaux.len()];
+    let mut libres = Vec::new();
+    for &(de, a, classe) in &segments {
+        let n = (a - de).saturating_add(1);
+        match classe {
+            Classe::Morceau(m) => manque_au_morceau[m] = manque_au_morceau[m].saturating_add(n),
+            Classe::Libre => libres.push(n),
+            Classe::Ecarte => {}
+        }
+    }
+    let mut couverte = couvertes(&libres, contexte.pertes).into_iter();
+    // Le dernier trou compté au-delà de la borne (nature, fin) : un segment qui le prolonge n'en fait pas un de plus.
+    let mut dernier_au_dela: Option<(Nature, u64)> = None;
+    for (de, a, classe) in segments {
+        let nature = match classe {
+            Classe::Morceau(m) if manque_au_morceau[m] <= contexte.morceaux[m].non_rendus => Nature::Illisible,
+            Classe::Morceau(_) => Nature::Retires,
+            Classe::Ecarte => Nature::Illisible,
+            Classe::Libre if couverte.next().unwrap_or(false) => Nature::Illisible,
+            Classe::Libre => contexte.entre_morceaux,
+        };
+        let gardes = suite.trous.len();
+        match suite.trous.last_mut() {
+            Some(t) if t.nature == nature && t.a.checked_add(1) == Some(de) => t.a = a,
+            _ if gardes >= max_trous => {
+                let prolonge = dernier_au_dela.is_some_and(|(n, fin)| n == nature && fin.checked_add(1) == Some(de));
+                if !prolonge {
+                    suite.trous_au_dela += 1;
+                }
+                dernier_au_dela = Some((nature, a));
+            }
+            _ => suite.trous.push(Trou {
+                de,
+                a,
+                nature,
+                avant: None,
+                apres: None,
+            }),
+        }
     }
     // Les dates autour de chaque trou : celles des présents voisins.
     for t in &mut suite.trous {

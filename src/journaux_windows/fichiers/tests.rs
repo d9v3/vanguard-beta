@@ -8,6 +8,7 @@ use chrono::DateTime;
 use super::*;
 use crate::journaux_windows::evtx::recalculer_crc;
 use crate::journaux_windows::evtx::tests::{fichier, morceau_aux_numeros};
+use crate::journaux_windows::trous::CLE_MAX;
 
 fn jetable(nom: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("vanguard-journaux-{nom}-{}", std::process::id()));
@@ -181,13 +182,14 @@ fn le_filtre_ne_change_pas_la_suite() {
         ..Filtre::default()
     });
     assert_eq!((n, b.donnes, b.filtres), (11, 11, 18));
-    // Un autre journal : rien donné, et pas de suite (le fichier n'en porte aucun de voulu).
+    // Un autre journal : rien donné, la suite jugée quand même (un journal renommé dans les enregistrements ne la
+    // fait pas taire).
     let (b, n) = lire_avec(&Filtre {
         journaux: vec!["system".into()],
         ..Filtre::default()
     });
     assert_eq!((n, b.filtres), (0, 29));
-    assert_eq!(b.suites, []);
+    assert_eq!(trous_du_journal(&b), [(10, 10, Nature::Retires)]);
     // Le journal voulu, sans égard à la casse.
     let (_, n) = lire_avec(&Filtre {
         journaux: vec!["SECURITY".into()],
@@ -201,6 +203,7 @@ fn le_filtre_ne_change_pas_la_suite() {
 fn un_dossier_se_lit_fichier_par_fichier_et_dit_ce_qu_il_n_a_pas_lu() {
     let d = jetable("dossier");
     std::fs::write(d.join("a-Security.evtx"), fichier(&[morceau(1, 10, &[])])).unwrap();
+    std::fs::write(d.join("SECURITY.evtx"), fichier(&[morceau(1, 3, &[])])).unwrap();
     std::fs::write(d.join("b.EVTX"), fichier(&[morceau(1, 5, &[])])).unwrap();
     std::fs::write(d.join("c.evtx"), b"pas un journal").unwrap();
     std::fs::write(d.join("notes.txt"), b"ignore").unwrap();
@@ -209,16 +212,29 @@ fn un_dossier_se_lit_fichier_par_fichier_et_dit_ce_qu_il_n_a_pas_lu() {
     std::os::unix::fs::symlink(d.join("a-Security.evtx"), d.join("d-lien.evtx")).unwrap();
     let mut n = 0;
     let b = lire_dossier(&d, &Filtre::default(), &BornesFichiers::default(), |_| n += 1).unwrap();
-    assert_eq!(n, 15);
+    assert_eq!(n, 18);
+    assert_eq!(b.autres, 1);
     let noms: Vec<String> = b
         .fichiers
         .iter()
         .map(|f| f.chemin.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
+    // Le journal de sécurité d'abord, quel que soit son nom en majuscules ou minuscules ; les autres du plus petit
+    // au plus grand.
+    assert_eq!(noms[0], "SECURITY.evtx");
+    let mut tries = noms.clone();
+    tries.sort();
     #[cfg(unix)]
     assert_eq!(
-        noms,
-        ["a-Security.evtx", "b.EVTX", "c.evtx", "d-lien.evtx", "dossier.evtx"]
+        tries,
+        [
+            "SECURITY.evtx",
+            "a-Security.evtx",
+            "b.EVTX",
+            "c.evtx",
+            "d-lien.evtx",
+            "dossier.evtx"
+        ]
     );
     let lecture = |nom: &str| &b.fichiers[noms.iter().position(|x| x == nom).unwrap()].lecture;
     assert!(lecture("a-Security.evtx").is_ok());
@@ -234,6 +250,7 @@ fn un_dossier_se_lit_fichier_par_fichier_et_dit_ce_qu_il_n_a_pas_lu() {
     };
     let b = lire_dossier(&d, &Filtre::default(), &un, |_| {}).unwrap();
     assert_eq!((b.fichiers.len(), b.hors_borne), (1, noms.len() as u64 - 1));
+    assert!(b.fichiers[0].chemin.ends_with("SECURITY.evtx"));
     let peu = BornesFichiers {
         octets: 10,
         ..BornesFichiers::default()
@@ -266,5 +283,182 @@ fn un_tube_n_est_pas_ouvert() {
     }
     let b = lire_fichier(&tube, &Filtre::default(), &BornesFichiers::default(), |_| {});
     assert_eq!(b.lecture, Err(ErreurFichier::PasUnFichier));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---- Ce que les relectures adverses ont essayé ----
+
+/// Le fichier, son en-tête réécrit : dernier morceau, prochain numéro, nombre de morceaux, CRC recalculés.
+fn avec_en_tete(mut f: Vec<u8>, dernier_morceau: u64, prochain: u64, nombre: u16) -> Vec<u8> {
+    f[16..24].copy_from_slice(&dernier_morceau.to_le_bytes());
+    f[24..32].copy_from_slice(&prochain.to_le_bytes());
+    f[42..44].copy_from_slice(&nombre.to_le_bytes());
+    recalculer_crc(&mut f);
+    f
+}
+
+/// Les derniers enregistrements ôtés (le cas le plus courant : l'attaquant efface sa propre activité) : l'en-tête
+/// du fichier, couvert par son CRC, attend encore leurs numéros.
+#[test]
+fn les_derniers_otes_se_voient_a_l_en_tete_du_fichier() {
+    // Le morceau le plus récent remis à zéro.
+    let f = avec_en_tete(fichier(&[morceau(1, 30, &[]), vec![0; 65_536]]), 1, 61, 2);
+    assert_eq!(trous_du_journal(&lire(&f, "recent").0), [(31, 60, Nature::Absents)]);
+    // Les derniers d'un morceau ôtés, son en-tête recalculé pour ne plus les annoncer.
+    let f = avec_en_tete(fichier(&[morceau(1, 30, &[]), morceau(31, 57, &[])]), 1, 61, 2);
+    assert_eq!(trous_du_journal(&lire(&f, "fin").0), [(58, 60, Nature::Absents)]);
+    // Tout remis à zéro, sans 1102 : rien de présent, tout ce que le fichier pouvait porter manque (depuis 1 ici).
+    let f = avec_en_tete(fichier(&[vec![0; 65_536], vec![0; 65_536]]), 1, 61, 2);
+    let (b, vus) = lire(&f, "tout");
+    assert_eq!(vus.len(), 0);
+    assert_eq!(trous_du_journal(&b), [(1, 60, Nature::Absents)]);
+    // Le même fichier sale (l'en-tête d'un fichier sale retarde) : le prochain numéro n'est pas cru.
+    let mut g = fichier(&[morceau(1, 30, &[]), morceau(31, 57, &[])]);
+    g[24..32].copy_from_slice(&61u64.to_le_bytes());
+    let (b, _) = lire(&sale(g), "fin-sale");
+    assert_eq!(trous_du_journal(&b), []);
+}
+
+/// Le drapeau « sale » (hors du CRC de l'en-tête) ou un en-tête abîmé, posés sans rien recalculer, ne suffisent pas
+/// à faire passer un morceau disparu pour une copie à chaud : il en faut les signes (un morceau à zéro avant un
+/// morceau écrit, des morceaux d'époques mêlées).
+#[test]
+fn le_drapeau_sale_seul_ne_change_rien() {
+    // Un morceau ôté du fichier (les suivants remontés) : aucun morceau à zéro.
+    let propre = fichier(&[morceau(1, 30, &[]), morceau(61, 90, &[])]);
+    assert_eq!(
+        trous_du_journal(&lire(&propre, "propre").0),
+        [(31, 60, Nature::Absents)]
+    );
+    let mut f = propre.clone();
+    f[120] |= 1;
+    let (b, _) = lire(&f, "drapeau");
+    assert!(b.lecture.as_ref().unwrap().sale);
+    assert_eq!(trous_du_journal(&b), [(31, 60, Nature::Absents)]);
+    let mut f = propre.clone();
+    f[8] ^= 0xFF;
+    let (b, _) = lire(&f, "abime");
+    assert!(b.lecture.as_ref().unwrap().en_tete_abime);
+    assert_eq!(trous_du_journal(&b), [(31, 60, Nature::Absents)]);
+    // Des morceaux d'époques mêlées dans un fichier sale : copie à chaud.
+    let melange = sale(fichier(&[
+        morceau(301, 330, &[]),
+        morceau(1, 30, &[]),
+        morceau(201, 230, &[]),
+        morceau(101, 130, &[]),
+    ]));
+    let (b, _) = lire(&melange, "melange");
+    let t = trous_du_journal(&b);
+    assert!(!t.is_empty() && t.iter().all(|t| t.2 == Nature::CopieAChaud), "{t:?}");
+}
+
+/// Un octet ajouté au fichier, ou un morceau à l'en-tête faux : la lecture a perdu ce qu'ils peuvent porter, pas
+/// plus. Un trou plus grand qu'un morceau reste un constat.
+#[test]
+fn une_perte_ne_couvre_que_ce_qu_elle_peut_porter() {
+    let propre = fichier(&[morceau(1, 30, &[]), vec![0; 65_536], morceau(61, 90, &[])]);
+    let mut f = propre.clone();
+    f.push(0);
+    let (b, _) = lire(&f, "octet");
+    assert!(!b.complet());
+    assert_eq!(trous_du_journal(&b), [(31, 60, Nature::Absents)]);
+    let mut f = fichier(&[
+        morceau(1, 30, &[]),
+        morceau(10_031, 10_060, &[]),
+        morceau(10_061, 10_090, &[]),
+    ]);
+    f[4096 + 2 * 65_536 + 100] ^= 0xFF;
+    let (b, _) = lire(&f, "gros");
+    // Le morceau perdu peut être 10 061 à 10 090 (l'en-tête du fichier les attend) ; pas les 10 000 d'avant.
+    assert_eq!(
+        trous_du_journal(&b),
+        [(31, 10_030, Nature::Absents), (10_061, 10_090, Nature::Illisible)]
+    );
+}
+
+/// Un retrait dans un morceau intact reste un retrait, même son en-tête réécrit pour ne rien annoncer, rétréci, ou
+/// un faux morceau écarté qui annonce les mêmes numéros.
+#[test]
+fn un_retrait_ne_se_deguise_pas() {
+    let mut m = morceau(1, 30, &[14, 15, 16]);
+    m[32..40].copy_from_slice(&0u64.to_le_bytes());
+    m[16..24].copy_from_slice(&0u64.to_le_bytes());
+    let (b, _) = lire(&fichier(&[m, morceau(31, 60, &[])]), "annonce-effacee");
+    assert_eq!(trous_du_journal(&b), [(14, 16, Nature::Retires)]);
+    assert_eq!(b.suites[0].incoherences, 1);
+    let mut m = morceau(1, 30, &[14, 15, 16]);
+    m[32..40].copy_from_slice(&13u64.to_le_bytes());
+    let (b, _) = lire(&fichier(&[m, morceau(31, 60, &[])]), "annonce-retrecie");
+    assert_eq!(trous_du_journal(&b), [(14, 16, Nature::Retires)]);
+    assert_eq!(b.suites[0].incoherences, 1);
+    // Le leurre : un morceau d'en-tête juste qui annonce 14 à 16, ses enregistrements abîmés.
+    let mut seul = fichier(&[morceau(14, 16, &[])]);
+    seul[4096 + 600] ^= 0xFF;
+    let mut f = fichier(&[morceau(1, 30, &[14, 15, 16]), morceau(31, 60, &[])]);
+    f.extend_from_slice(&seul[4096..4096 + 65_536]);
+    let (b, _) = lire(&f, "leurre");
+    assert_eq!(b.lecture.as_ref().unwrap().morceaux[2].annonce, Some((14, 16)));
+    assert_eq!(trous_du_journal(&b), [(14, 16, Nature::Retires)]);
+}
+
+/// Les numéros des enregistrements renumérotés après un retrait (les EventRecordID gardés) : le fichier passe pour
+/// un export, et le retrait se dit avant l'export. Inévitable (un export filtré a la même forme) : il reste dit.
+#[test]
+fn une_renumerotation_laisse_le_trou_en_numeros_d_origine() {
+    let decale = |n: u64| if n <= 13 { n } else { n + 3 };
+    let f = fichier(&[
+        morceau_aux_numeros(&(1..=27).collect::<Vec<_>>(), decale),
+        morceau_aux_numeros(&(28..=57).collect::<Vec<_>>(), decale),
+    ]);
+    let (b, _) = lire(&f, "renum");
+    assert!(b.exporte);
+    assert_eq!(
+        b.suites[1]
+            .trous
+            .iter()
+            .map(|t| (t.de, t.a, t.nature))
+            .collect::<Vec<_>>(),
+        [(14, 16, Nature::AvantExport)]
+    );
+}
+
+/// Des noms d'ordinateur démesurés : la clé de chaque suite d'origine coupée, et les trous d'un dossier bornés.
+#[test]
+fn la_memoire_gardee_est_bornee() {
+    use crate::journaux_windows::evtx::tests::morceau_ordinateur;
+    let mut morceaux = Vec::new();
+    for k in 0..64u64 {
+        let nom: &'static str = Box::leak(format!("{k:02}{}", "x".repeat(15_000)).into_boxed_str());
+        morceaux.push(morceau_ordinateur(
+            &[2 * k + 1, 2 * k + 2],
+            |n| if n % 2 == 1 { 1 } else { 3 },
+            nom,
+        ));
+    }
+    let (b, _) = lire(&fichier(&morceaux), "memoire");
+    assert_eq!(b.suites.len(), 65);
+    for s in &b.suites[1..] {
+        let Numerotation::Origine { ordinateur, journal } = &s.numerotation else {
+            panic!("{s:?}")
+        };
+        assert!(ordinateur.chars().count() <= CLE_MAX && journal.chars().count() <= CLE_MAX);
+    }
+    let d = jetable("trous-dossier");
+    for i in 0..3 {
+        let numeros: Vec<u64> = (1..=40).map(|n| n * 2).collect();
+        std::fs::write(
+            d.join(format!("j{i}.evtx")),
+            fichier(&[morceau_aux_numeros(&numeros, |n| n)]),
+        )
+        .unwrap();
+    }
+    let bornes = BornesFichiers {
+        trous_dossier: 50,
+        ..BornesFichiers::default()
+    };
+    let b = lire_dossier(&d, &Filtre::default(), &bornes, |_| {}).unwrap();
+    let gardes: usize = b.fichiers.iter().flat_map(|f| &f.suites).map(|s| s.trous.len()).sum();
+    let au_dela: u64 = b.fichiers.iter().flat_map(|f| &f.suites).map(|s| s.trous_au_dela).sum();
+    assert_eq!((gardes, au_dela), (50, 3 * 39 - 50));
     let _ = std::fs::remove_dir_all(&d);
 }

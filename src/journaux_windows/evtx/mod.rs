@@ -197,32 +197,57 @@ pub(crate) struct Bilan {
     pub chaines_tronquees: u64,
     /// Substitutions sans valeur dans leur instance, rendues vides.
     pub substitutions_manquantes: u64,
-    /// Ce que chaque morceau lu ou écarté (pas les vides) annonce et a donné, dans l'ordre du fichier, au plus
-    /// `MAX_RECAPS` : de quoi dire d'un trou dans la suite des numéros s'il tombe dans un morceau intact (des
-    /// enregistrements retirés) ou dans ce que la lecture a perdu (journaux_windows::trous).
+    /// Ce que chaque morceau lu, vide ou écarté annonce et a donné, dans l'ordre du fichier, au plus `MAX_RECAPS` :
+    /// de quoi dire d'un trou dans la suite des numéros s'il tombe dans un morceau intact (des enregistrements
+    /// retirés) ou dans ce que la lecture a perdu (journaux_windows::trous).
     pub morceaux: Vec<RecapMorceau>,
-    /// Morceaux lus ou écartés au-delà de `MAX_RECAPS`, sans récapitulatif.
+    /// Morceaux au-delà de `MAX_RECAPS`, sans récapitulatif.
     pub morceaux_sans_recap: u64,
+    /// Le prochain numéro d'enregistrement qu'annonce l'en-tête du fichier (octet 24, [libyal] « Next record
+    /// identifier »), quand cet en-tête est juste. Dans un fichier fermé proprement, c'est le plus grand numéro plus
+    /// un (vu sur chaque échantillon public propre) : les derniers enregistrements ôtés s'y voient. Dans un fichier
+    /// sale, il retarde.
+    pub prochain_numero: Option<u64>,
 }
 
 /// Les récapitulatifs de morceaux gardés au plus : 4 Gio de morceaux, quatre fois la borne de taille par défaut ;
 /// une borne choisie démesurée ne fait pas grossir le bilan sans fin.
 pub(crate) const MAX_RECAPS: usize = 1 << 16;
 
+/// Ce qu'est devenu un morceau.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EtatMorceau {
+    /// Ses deux CRC justes : ses enregistrements lus.
+    Lu,
+    /// Tout à zéro, ou préparé sans enregistrement : rien à lire.
+    Vide,
+    /// Écarté (signature, CRC, place libre), ou coupé en fin de fichier.
+    Ecarte,
+}
+
+/// Le plus d'enregistrements qu'un morceau peut porter : ce qui suit son en-tête, en enregistrements minimaux.
+pub(crate) const CAPACITE_MORCEAU: u64 = ((MORCEAU - EN_TETE_MORCEAU) / ENREGISTREMENT_MIN) as u64;
+
 /// Un morceau tel que la lecture l'a vu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RecapMorceau {
     /// Son rang dans le fichier (0 : le premier après l'en-tête).
     pub rang: u64,
-    /// Lu (ses deux CRC justes) ou écarté.
-    pub lu: bool,
+    pub etat: EtatMorceau,
     /// Le premier et le dernier numéro d'enregistrement (identifiants, octets 24 et 32) qu'annonce son en-tête,
     /// quand cet en-tête est juste (signature, CRC) et se tient (dernier après le premier, pas plus qu'un morceau ne
     /// peut en contenir) ; rien sinon.
     pub annonce: Option<(u64, u64)>,
     /// Enregistrements de ce morceau lu qui n'ont pas été rendus : illisibles, ou laissés au-delà de
-    /// `Bornes::enregistrements`. Ils peuvent porter n'importe quel numéro de l'annonce.
+    /// `Bornes::enregistrements`. Ils peuvent porter n'importe quels numéros, mais pas plus de numéros qu'eux.
     pub non_rendus: u64,
+    /// Morceau lu dont l'en-tête ne se tient pas : rien d'annoncé, des numéros (octets 8 et 16) qui ne comptent pas
+    /// autant d'enregistrements que les identifiants (24 et 32), ou un enregistrement hors de la plage annoncée.
+    /// Windows ne l'écrit pas ainsi : un morceau réécrit.
+    pub incoherent: bool,
+    /// Le plus d'enregistrements qu'il pouvait porter (`CAPACITE_MORCEAU`, moins pour un morceau coupé en fin de
+    /// fichier) : ce qu'un morceau écarté sans plage connue peut cacher.
+    pub capacite: u64,
 }
 
 impl Bilan {
@@ -300,6 +325,7 @@ pub(crate) fn parcourir<R: Read + Seek>(
         ..Bilan::default()
     };
     bilan.sale = !bilan.en_tete_abime && u32_a(&en_tete, 120).is_some_and(|d| d & 1 != 0);
+    bilan.prochain_numero = if bilan.en_tete_abime { None } else { u64_a(&en_tete, 24) };
 
     // Le nombre de morceaux de l'en-tête n'est pas cru (un fichier sale en annonce moins qu'il n'en a, [libyal]
     // « Dirty file with invalid number of chunks ») : c'est la taille du fichier qui compte, bornée.
@@ -322,9 +348,12 @@ pub(crate) fn parcourir<R: Read + Seek>(
         };
         source.seek(SeekFrom::Start(debut))?;
         if lire_au_plus(&mut source, &mut morceau)? < MORCEAU {
-            // Coupé en fin de fichier : son CRC ne peut pas être vérifié.
+            // Coupé en fin de fichier : son CRC ne peut pas être vérifié. Il ne peut cacher que ce que ses octets
+            // portent (rien sous 540 octets).
             bilan.morceaux_illisibles += 1;
-            recapituler(&mut bilan, i, false, None, 0);
+            let octets = (taille - debut).min(MORCEAU_U64);
+            let capacite = octets.saturating_sub(EN_TETE_MORCEAU as u64) / ENREGISTREMENT_MIN as u64;
+            recapituler(&mut bilan, i, EtatMorceau::Ecarte, None, 0, false, capacite);
             break;
         }
         lire_morceau(&morceau, i, bornes, &mut bilan, &mut restant, &mut recevoir);
@@ -405,14 +434,24 @@ fn apres_place_libre(morceau: &[u8], libre: usize) -> u64 {
     n
 }
 
-/// Note ce qu'un morceau lu ou écarté a donné, dans la limite de `MAX_RECAPS`.
-fn recapituler(bilan: &mut Bilan, rang: u64, lu: bool, annonce: Option<(u64, u64)>, non_rendus: u64) {
+/// Note ce qu'un morceau a donné, dans la limite de `MAX_RECAPS`.
+fn recapituler(
+    bilan: &mut Bilan,
+    rang: u64,
+    etat: EtatMorceau,
+    annonce: Option<(u64, u64)>,
+    non_rendus: u64,
+    incoherent: bool,
+    capacite: u64,
+) {
     if bilan.morceaux.len() < MAX_RECAPS {
         bilan.morceaux.push(RecapMorceau {
             rang,
-            lu,
+            etat,
             annonce,
             non_rendus,
+            incoherent,
+            capacite,
         });
     } else {
         bilan.morceaux_sans_recap += 1;
@@ -433,13 +472,24 @@ fn lire_morceau(
         Etat::Vide(libre) => {
             bilan.morceaux_vides += 1;
             bilan.enregistrements_apres_place_libre += libre.map_or(0, |l| apres_place_libre(morceau, l));
+            recapituler(bilan, rang, EtatMorceau::Vide, None, 0, false, 0);
             return;
         }
         Etat::Illisible(en_tete_juste) => {
             bilan.morceaux_illisibles += 1;
             let annonce = if en_tete_juste { plage_annoncee(morceau) } else { None };
-            recapituler(bilan, rang, false, annonce, 0);
+            recapituler(bilan, rang, EtatMorceau::Ecarte, annonce, 0, false, CAPACITE_MORCEAU);
             return;
+        }
+    };
+    let annonce = plage_annoncee(morceau);
+    // Un numéro d'enregistrement hors de la plage annoncée (ou rien d'annoncé) : l'en-tête ne se tient pas.
+    let mut hors_annonce = annonce.is_none();
+    let mut voir_numero = |n: Option<u64>| {
+        if let (Some(n), Some((p, d))) = (n, annonce)
+            && !(p..=d).contains(&n)
+        {
+            hors_annonce = true;
         }
     };
     bilan.morceaux_lus += 1;
@@ -465,6 +515,7 @@ fn lire_morceau(
                 None => break,
             }
         };
+        voir_numero(u64_a(morceau, pos + 8));
         if *restant == 0 {
             bilan.enregistrements_hors_borne += 1;
             pos += taille;
@@ -488,7 +539,18 @@ fn lire_morceau(
         bilan.enregistrements_lus + bilan.enregistrements_illisibles + bilan.enregistrements_hors_borne - avant;
     bilan.enregistrements_absents += annonces(morceau).saturating_sub(trouves);
     let non_rendus = bilan.enregistrements_illisibles + bilan.enregistrements_hors_borne - avant_non_rendus;
-    recapituler(bilan, rang, true, plage_annoncee(morceau), non_rendus);
+    // Les numéros (8, 16) et les identifiants (24, 32) d'un même morceau comptent autant d'enregistrements.
+    let compte = |a: usize, b: usize| u64_a(morceau, b)?.checked_sub(u64_a(morceau, a)?);
+    let incoherent = hors_annonce || compte(8, 16) != compte(24, 32);
+    recapituler(
+        bilan,
+        rang,
+        EtatMorceau::Lu,
+        annonce,
+        non_rendus,
+        incoherent,
+        CAPACITE_MORCEAU,
+    );
     bilan.valeurs_inconnues += lecteur.compteurs.valeurs_inconnues;
     bilan.chaines_tronquees += lecteur.compteurs.chaines_tronquees;
     bilan.substitutions_manquantes += lecteur.compteurs.substitutions_manquantes;

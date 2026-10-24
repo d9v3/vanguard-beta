@@ -286,17 +286,19 @@ pub(crate) fn filetime(valeur: u64) -> Option<DateTime<Utc>> {
 }
 
 /// Une date en texte RFC 3339 à la centaine de nanosecondes, la précision d'un FILETIME (la forme de [MS-EVEN6]
-/// 2.2.12.3 s'arrête aux millisecondes : la suite perdue servirait pourtant à ordonner deux événements voisins).
+/// 2.2.12.3 s'arrête aux millisecondes : la suite perdue servirait pourtant à ordonner deux événements voisins),
+/// écrite sur neuf décimales comme le XML que rend Windows (« 2015-10-09T05:04:30.000941900Z », exemples des pages
+/// des événements 4616 et 1102 de Microsoft) : la source vivante et la source fichiers rendent la même valeur.
 pub(crate) fn date(d: DateTime<Utc>) -> String {
     format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:07}Z",
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:09}Z",
         d.year(),
         d.month(),
         d.day(),
         d.hour(),
         d.minute(),
         d.second(),
-        d.nanosecond() / 100
+        d.nanosecond() / 100 * 100
     )
 }
 
@@ -348,7 +350,7 @@ mod tests {
         // 1er janvier 1970 en FILETIME.
         assert_eq!(
             scalaire(0x11, &116_444_736_000_000_000u64.to_le_bytes(), 100).0,
-            "1970-01-01T00:00:00.0000000Z"
+            "1970-01-01T00:00:00.000000000Z"
         );
         let mut st = Vec::new();
         for v in [2026u16, 10, 6, 24, 13, 5, 9, 42] {

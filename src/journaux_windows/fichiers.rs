@@ -2,7 +2,8 @@
 //! traces`, ou `Windows\System32\winevt\Logs` d'un disque monté depuis la clé de secours), lu sous Linux, macOS ou
 //! Windows par le lecteur maison, en flux : morceau par morceau, chaque événement voulu donné un à un.
 //!
-//! Les fichiers viennent d'ailleurs, parfois d'un Windows piraté : nombre de fichiers et octets lus bornés, liens
+//! Les fichiers viennent d'ailleurs, parfois d'un Windows piraté : nombre de fichiers et octets lus bornés (les
+//! journaux qui comptent lus d'abord, pour qu'un dossier gonflé de leurres ne les fasse pas passer au-delà), liens
 //! et fichiers spéciaux (tubes, périphériques) jamais ouverts, rien du contenu des journaux utilisé comme chemin.
 //! Ce qui n'a pas pu être lu est dit fichier par fichier, avec le bilan du lecteur tel quel : jamais « rien vu ».
 
@@ -10,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::evenement::{Ecart, EvenementWindows, Filtre, Origine};
-use super::evtx::{self, Bilan, Bornes};
-use super::trous::{self, Contexte, Nature, Numerotation, Present, Suite};
+use super::evtx::{self, Bilan, Bornes, CAPACITE_MORCEAU, EtatMorceau};
+use super::trous::{self, CLE_MAX, Contexte, Nature, Numerotation, Present, Suite};
 
 /// Les bornes d'une lecture de dossier.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +25,8 @@ pub(crate) struct BornesFichiers {
     pub evtx: Bornes,
     /// Trous gardés au plus par suite de numéros.
     pub trous: usize,
+    /// Trous gardés au plus pour tout le dossier : les suivants sont comptés (`Suite::trous_au_dela`).
+    pub trous_dossier: usize,
     /// Suites d'EventRecordID d'origine gardées au plus par fichier exporté (une par ordinateur et par journal).
     pub suites_origine: usize,
 }
@@ -37,6 +40,7 @@ impl Default for BornesFichiers {
             octets: 16 << 30,
             evtx: Bornes::default(),
             trous: 1000,
+            trous_dossier: 20_000,
             suites_origine: 64,
         }
     }
@@ -102,6 +106,8 @@ pub(crate) struct BilanDossier {
     pub hors_borne: u64,
     /// Entrées du dossier qui n'ont pas pu être lues (nom ou type) : peut-être des .evtx.
     pub entrees_illisibles: u64,
+    /// Autres entrées du dossier, pas en .evtx : pas lues (un journal renommé n'est pas vu).
+    pub autres: u64,
 }
 
 impl BilanDossier {
@@ -111,9 +117,44 @@ impl BilanDossier {
     }
 }
 
-/// Journaux gardés au plus dans `BilanFichier::journaux` : un fichier ordinaire n'en a qu'un, une archive
-/// d'événements transférés quelques-uns.
+/// Journaux gardés au plus dans `BilanFichier::journaux` (chacun coupé à `CLE_MAX` caractères) : un fichier
+/// ordinaire n'en a qu'un, une archive d'événements transférés quelques-uns.
 pub(crate) const MAX_JOURNAUX: usize = 16;
+
+/// Les journaux lus d'abord, dans cet ordre (noms de fichiers de `winevt\Logs`, puis ceux qu'exporte `vanguard
+/// traces`) : ceux où une attaque se voit. Le reste suit, du plus petit au plus grand.
+const PRIORITAIRES: [&str; 16] = [
+    "Security.evtx",
+    "System.evtx",
+    "Microsoft-Windows-PowerShell%4Operational.evtx",
+    "Microsoft-Windows-Windows Defender%4Operational.evtx",
+    "Windows PowerShell.evtx",
+    "Microsoft-Windows-TaskScheduler%4Operational.evtx",
+    "Microsoft-Windows-TerminalServices-LocalSessionManager%4Operational.evtx",
+    "Microsoft-Windows-TerminalServices-RemoteConnectionManager%4Operational.evtx",
+    "Microsoft-Windows-Bits-Client%4Operational.evtx",
+    "Microsoft-Windows-WMI-Activity%4Operational.evtx",
+    "Microsoft-Windows-Sysmon%4Operational.evtx",
+    "Application.evtx",
+    "05-Security.evtx",
+    "05-System.evtx",
+    "05-PowerShell.evtx",
+    "05-Defender.evtx",
+];
+
+/// Le rang de lecture d'un fichier d'après son nom : celui de la liste des prioritaires, sinon après eux.
+fn priorite(chemin: &Path) -> usize {
+    let nom = chemin.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    PRIORITAIRES
+        .iter()
+        .position(|p| p.eq_ignore_ascii_case(nom))
+        .unwrap_or(PRIORITAIRES.len())
+}
+
+/// Coupe un nom venu du journal à `CLE_MAX` caractères.
+fn couper(t: &str) -> String {
+    t.chars().take(CLE_MAX).collect()
+}
 
 /// Lit les fichiers .evtx du dossier (pas ses sous-dossiers), dans l'ordre de leur nom, et donne à `recevoir` chaque
 /// événement que `filtre` veut. `Err` : le dossier lui-même ne se lit pas.
@@ -128,8 +169,11 @@ pub(crate) fn lire_dossier(
         fichiers: Vec::new(),
         hors_borne: 0,
         entrees_illisibles: 0,
+        autres: 0,
     };
-    let mut chemins = Vec::new();
+    // (priorité, taille, chemin). La taille d'après le dossier, sans suivre de lien : elle décide seulement de
+    // l'ordre et de la borne ; le lecteur borne lui-même ce qu'il lit.
+    let mut chemins: Vec<(usize, u64, PathBuf)> = Vec::new();
     for entree in std::fs::read_dir(dossier)? {
         let Ok(entree) = entree else {
             bilan.entrees_illisibles += 1;
@@ -140,34 +184,33 @@ pub(crate) fn lire_dossier(
             .extension()
             .and_then(|x| x.to_str())
             .is_some_and(|x| x.eq_ignore_ascii_case("evtx"));
-        if evtx {
-            chemins.push(chemin);
+        if !evtx {
+            bilan.autres += 1;
+            continue;
         }
-        // Un dossier hostile peut contenir des millions d'entrées : la liste s'arrête un peu après la borne, le
-        // reste n'est compté qu'en nombre.
-        if chemins.len() > bornes.fichiers.saturating_mul(2) {
-            bilan.hors_borne += 1;
-            chemins.pop();
-        }
-    }
-    chemins.sort();
-    let mut octets = 0u64;
-    for chemin in chemins {
-        if bilan.fichiers.len() >= bornes.fichiers {
+        let rang = priorite(&chemin);
+        // Un dossier hostile peut contenir des millions d'entrées : au-delà de deux fois la borne, les autres ne
+        // sont comptées qu'en nombre ; les prioritaires (seize noms) sont toujours gardés.
+        if rang == PRIORITAIRES.len() && chemins.len() >= bornes.fichiers.saturating_mul(2) {
             bilan.hors_borne += 1;
             continue;
         }
-        // La taille d'après le dossier, sans suivre de lien : elle décide seulement si le fichier entre dans la
-        // borne ; le lecteur borne lui-même ce qu'il lit.
         let taille = std::fs::symlink_metadata(&chemin).map_or(0, |m| m.len());
-        if octets.saturating_add(taille) > bornes.octets {
+        chemins.push((rang, taille, chemin));
+    }
+    chemins.sort();
+    let mut octets = 0u64;
+    let mut trous_restants = bornes.trous_dossier;
+    for (_, taille, chemin) in chemins {
+        if bilan.fichiers.len() >= bornes.fichiers || octets.saturating_add(taille) > bornes.octets {
             bilan.hors_borne += 1;
             continue;
         }
         octets = octets.saturating_add(taille);
-        bilan
-            .fichiers
-            .push(lire_fichier(&chemin, filtre, bornes, &mut recevoir));
+        let f = lire_fichier_borne(&chemin, filtre, bornes, trous_restants, &mut recevoir);
+        let gardes: usize = f.suites.iter().map(|s| s.trous.len()).sum();
+        trous_restants = trous_restants.saturating_sub(gardes);
+        bilan.fichiers.push(f);
     }
     Ok(bilan)
 }
@@ -187,20 +230,40 @@ fn ouvrir(chemin: &Path) -> Result<std::fs::File, ErreurFichier> {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
+    // Sous Windows, un point d'analyse (lien, jonction) est ouvert lui-même, pas suivi : posé entre la vérification
+    // et l'ouverture, il n'est pas un fichier ordinaire et se voit ci-dessous.
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
     let fichier = options.open(chemin).map_err(|e| ErreurFichier::Ouverture(e.kind()))?;
     match fichier.metadata() {
-        Ok(m) if m.is_file() => Ok(fichier),
+        Ok(m) if m.file_type().is_file() => Ok(fichier),
         Ok(_) => Err(ErreurFichier::PasUnFichier),
         Err(e) => Err(ErreurFichier::Ouverture(e.kind())),
     }
 }
 
 /// Lit un fichier .evtx et donne à `recevoir` chaque événement que `filtre` veut ; la suite de ses numéros est jugée
-/// sur tous ses enregistrements, voulus ou non.
+/// sur tous ses enregistrements, voulus ou non, quel que soit leur journal (un journal renommé dans les
+/// enregistrements ne fait pas taire la suite).
 pub(crate) fn lire_fichier(
     chemin: &Path,
     filtre: &Filtre,
     bornes: &BornesFichiers,
+    recevoir: impl FnMut(EvenementWindows),
+) -> BilanFichier {
+    lire_fichier_borne(chemin, filtre, bornes, bornes.trous_dossier, recevoir)
+}
+
+/// `lire_fichier`, au plus `trous_restants` trous gardés en tout (ce qu'il reste de la borne du dossier).
+fn lire_fichier_borne(
+    chemin: &Path,
+    filtre: &Filtre,
+    bornes: &BornesFichiers,
+    trous_restants: usize,
     mut recevoir: impl FnMut(EvenementWindows),
 ) -> BilanFichier {
     let chemin: Arc<Path> = Arc::from(chemin);
@@ -226,31 +289,33 @@ pub(crate) fn lire_fichier(
     let mut presents: Vec<Present> = Vec::new();
     // Les EventRecordID d'origine, par (ordinateur, journal).
     let mut origines: Vec<((String, String), Vec<Present>)> = Vec::new();
-    let mut voulu = filtre.journaux.is_empty();
     let lecture = evtx::parcourir(std::io::BufReader::new(fichier), &bornes.evtx, |e| {
         let date = e.cree.or(e.date);
-        presents.push(Present { numero: e.numero, date });
+        presents.push(Present {
+            numero: e.numero,
+            date,
+            morceau: Some(e.morceau),
+        });
         if e.numero_systeme.is_some_and(|n| n != e.numero) {
             bilan.exporte = true;
         }
         if let Some(n) = e.numero_systeme {
-            let cle = (e.ordinateur.as_str(), e.canal.as_str());
-            let place = origines.iter().position(|(c, _)| (c.0.as_str(), c.1.as_str()) == cle);
-            match place {
-                Some(i) => origines[i].1.push(Present { numero: n, date }),
-                None if origines.len() < bornes.suites_origine => {
-                    origines.push((
-                        (e.ordinateur.clone(), e.canal.clone()),
-                        vec![Present { numero: n, date }],
-                    ));
-                }
+            let cle = (couper(&e.ordinateur), couper(&e.canal));
+            let origine = Present {
+                numero: n,
+                date,
+                morceau: None,
+            };
+            match origines.iter().position(|(c, _)| *c == cle) {
+                Some(i) => origines[i].1.push(origine),
+                None if origines.len() < bornes.suites_origine => origines.push((cle, vec![origine])),
                 None => bilan.hors_suites += 1,
             }
         }
-        if !bilan.journaux.contains(&e.canal) && bilan.journaux.len() < MAX_JOURNAUX {
-            bilan.journaux.push(e.canal.clone());
+        let journal = couper(&e.canal);
+        if !bilan.journaux.contains(&journal) && bilan.journaux.len() < MAX_JOURNAUX {
+            bilan.journaux.push(journal);
         }
-        voulu |= filtre.veut_journal(&e.canal);
         let numero_fichier = e.numero;
         let Some(evenement) = EvenementWindows::depuis(
             e,
@@ -273,9 +338,8 @@ pub(crate) fn lire_fichier(
     });
     match lecture {
         Ok(lu) => {
-            if voulu {
-                bilan.suites = suites(&lu, presents, bilan.exporte, origines, bornes.trous);
-            }
+            let max_trous = bornes.trous.min(trous_restants);
+            bilan.suites = suites(&lu, presents, bilan.exporte, origines, max_trous);
             bilan.lecture = Ok(lu);
         }
         Err(evtx::Erreur::PasUnEvtx) => bilan.lecture = Err(ErreurFichier::PasUnEvtx),
@@ -284,18 +348,60 @@ pub(crate) fn lire_fichier(
     bilan
 }
 
-/// La nature d'un trou entre deux morceaux, d'après ce que la lecture du fichier a pu faire.
+/// Les signes d'une copie à chaud, que le drapeau « sale » seul ne prouve pas (il n'est pas couvert par le CRC de
+/// l'en-tête) : un morceau à zéro avant un morceau écrit (jamais arrivé sur le disque ; Windows remplit ses
+/// morceaux dans l'ordre, et un journal fermé proprement n'a de morceaux à zéro qu'à la fin), ou des morceaux
+/// d'époques mêlées (plus d'un retour en arrière des numéros dans l'ordre du fichier, quand un journal tournant
+/// n'en a qu'un, là où il reprend au début). Vus dans les échantillons publics copiés d'un cliché de volume.
+fn signes_de_copie(lu: &Bilan) -> bool {
+    let mut vide_avant = false;
+    let mut zero_au_milieu = false;
+    for m in &lu.morceaux {
+        match m.etat {
+            EtatMorceau::Vide => vide_avant = true,
+            _ if vide_avant => zero_au_milieu = true,
+            _ => {}
+        }
+    }
+    let debuts: Vec<u64> = lu
+        .morceaux
+        .iter()
+        .filter(|m| m.etat == EtatMorceau::Lu)
+        .filter_map(|m| m.annonce.map(|a| a.0))
+        .collect();
+    let reculs = debuts.windows(2).filter(|p| p[1] < p[0]).count();
+    zero_au_milieu || reculs > 1
+}
+
+/// La nature d'un trou entre deux morceaux que les pertes de lecture ne couvrent pas, d'après l'état du fichier.
 pub(crate) fn entre_morceaux(lu: &Bilan) -> Nature {
-    let pertes_sans_place = lu.morceaux_hors_borne > 0
-        || lu.morceaux_sans_recap > 0
-        || lu.morceaux.iter().any(|m| !m.lu && m.annonce.is_none());
-    if pertes_sans_place {
-        Nature::Illisible
-    } else if lu.sale || lu.en_tete_abime {
+    if (lu.sale || lu.en_tete_abime) && signes_de_copie(lu) {
         Nature::CopieAChaud
     } else {
         Nature::Absents
     }
+}
+
+/// Ce que la lecture a perdu sans savoir quels numéros : les morceaux écartés sans plage connue (à leur capacité),
+/// les morceaux au-delà des bornes et ceux sans récapitulatif (pleins).
+fn pertes(lu: &Bilan) -> Vec<u64> {
+    let mut sortie: Vec<u64> = lu
+        .morceaux
+        .iter()
+        .filter(|m| m.etat == EtatMorceau::Ecarte && m.annonce.is_none())
+        .map(|m| m.capacite)
+        .collect();
+    // Chacun pour soi : dans un journal tournant, deux morceaux voisins dans le fichier peuvent porter des numéros
+    // éloignés. Au-delà de `MAX_RECAPS` pertes, la dernière prend le reste (le bilan ne grossit pas sans fin).
+    let pleins = lu.morceaux_hors_borne.saturating_add(lu.morceaux_sans_recap);
+    let un_par_un = pleins.min(evtx::MAX_RECAPS as u64);
+    sortie.extend((0..un_par_un).map(|_| CAPACITE_MORCEAU));
+    if let Some(dernier) = sortie.last_mut()
+        && pleins > un_par_un
+    {
+        *dernier = dernier.saturating_add((pleins - un_par_un).saturating_mul(CAPACITE_MORCEAU));
+    }
+    sortie
 }
 
 /// Les suites d'un fichier lu : la sienne, puis, s'il est exporté, celles des EventRecordID d'origine.
@@ -306,23 +412,29 @@ fn suites(
     origines: Vec<((String, String), Vec<Present>)>,
     max_trous: usize,
 ) -> Vec<Suite> {
+    let pertes = pertes(lu);
+    let morceaux = lu.morceaux.len() as u64 + lu.morceaux_hors_borne + lu.morceaux_sans_recap;
     let contexte = Contexte {
         morceaux: &lu.morceaux,
         entre_morceaux: entre_morceaux(lu),
+        pertes: &pertes,
+        // Le prochain numéro de l'en-tête ne se croit que d'un fichier fermé proprement : dans un fichier sale,
+        // il retarde.
+        prochain: lu.prochain_numero.filter(|_| !lu.sale && !lu.en_tete_abime),
+        capacite: morceaux.saturating_mul(CAPACITE_MORCEAU),
     };
     let mut sortie = vec![trous::juger(Numerotation::Journal, presents, &contexte, max_trous)];
     if exporte {
-        let sans_morceaux = Contexte {
-            morceaux: &[],
-            entre_morceaux: Nature::AvantExport,
-        };
+        let mut restant = max_trous.saturating_sub(sortie[0].trous.len());
         for ((ordinateur, journal), v) in origines {
-            sortie.push(trous::juger(
+            let s = trous::juger(
                 Numerotation::Origine { ordinateur, journal },
                 v,
-                &sans_morceaux,
-                max_trous,
-            ));
+                &Contexte::nu(Nature::AvantExport),
+                restant,
+            );
+            restant = restant.saturating_sub(s.trous.len());
+            sortie.push(s);
         }
     }
     sortie

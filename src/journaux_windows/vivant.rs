@@ -81,17 +81,21 @@ pub(crate) struct BilanVivant {
     pub illisibles: u64,
     /// Textes coupés à `Bornes::texte` caractères.
     pub chaines_tronquees: u64,
-    /// `BornesVivant::evenements` atteinte : les plus anciens ne sont pas lus.
+    /// `BornesVivant::evenements` atteinte (ou nulle) : les plus anciens ne sont pas lus.
     pub borne_atteinte: bool,
     /// Le délai est tombé : les plus anciens ne sont pas lus.
     pub delai: bool,
     /// Le journal a refusé en cours de route, et pourquoi : les plus anciens ne sont pas lus.
     pub interrompu: Option<RefusVivant>,
-    /// La suite des EventRecordID lus, quand la requête les a tous pris (pas de numéro d'événement dans la
-    /// requête) : rien sinon, un trou n'y voudrait rien dire.
-    pub suite: Option<Suite>,
-    /// Trous qui n'ont pas pu être revérifiés (borne des revérifications, délai) : ils restent, sans certitude
-    /// que leurs numéros ne soient pas hors de la fenêtre de dates.
+    /// Les suites des EventRecordID lus, quand la requête les a tous pris (pas de numéro d'événement dans la
+    /// requête ; vide sinon, un trou n'y voudrait rien dire) : celle du journal ; pour un journal de collecte
+    /// (ForwardedEvents, ou des événements d'autres ordinateurs, qui gardent leurs numéros d'origine), une par
+    /// ordinateur, en `Numerotation::Origine`.
+    pub suites: Vec<Suite>,
+    /// Événements dont l'ordinateur n'a pas eu sa suite (au-delà de `MAX_ORDINATEURS`).
+    pub hors_suites: u64,
+    /// Trous qui n'ont pas pu être revérifiés (borne des revérifications, délai, lecture coupée) : rendus
+    /// `Illisible`, faute de savoir si leurs numéros sont hors de la fenêtre de dates.
     pub trous_non_confirmes: u64,
 }
 
@@ -105,13 +109,23 @@ impl BilanVivant {
             && self.chaines_tronquees == 0
             && self.sans_date == 0
             && self.sans_identifiant == 0
+            && self.hors_suites == 0
             && self.trous_non_confirmes == 0
     }
 }
 
+/// Les ordinateurs suivis au plus dans un journal de collecte.
+const MAX_ORDINATEURS: usize = 64;
+
 /// Une date dans la forme que comparent les requêtes du journal (celle que pose l'Observateur d'événements pour
-/// une plage personnalisée) : « 2026-10-17T04:00:00.000Z ».
-fn date_xpath(d: DateTime<Utc>) -> String {
+/// une plage personnalisée) : « 2026-10-17T04:00:00.000Z ». `haut` : arrondie à la milliseconde au-dessus (la fin
+/// d'une fenêtre ne doit écarter aucun événement qu'elle contient).
+fn date_xpath(d: DateTime<Utc>, haut: bool) -> String {
+    let d = if haut && !d.timestamp_subsec_nanos().is_multiple_of(1_000_000) {
+        DateTime::from_timestamp_millis(d.timestamp_millis().saturating_add(1)).unwrap_or(d)
+    } else {
+        d
+    };
     d.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
 }
 
@@ -127,10 +141,10 @@ pub(crate) fn requete(filtre: &Filtre) -> (String, bool) {
     }
     let mut dates = Vec::new();
     if let Some(d) = filtre.depuis {
-        dates.push(format!("@SystemTime>='{}'", date_xpath(d)));
+        dates.push(format!("@SystemTime>='{}'", date_xpath(d, false)));
     }
     if let Some(j) = filtre.jusqua {
-        dates.push(format!("@SystemTime<='{}'", date_xpath(j)));
+        dates.push(format!("@SystemTime<='{}'", date_xpath(j, true)));
     }
     if !dates.is_empty() {
         conditions.push(format!("TimeCreated[{}]", dates.join(" and ")));
@@ -178,8 +192,64 @@ struct Compte {
     illisibles: u64,
     chaines_tronquees: u64,
     vus: u64,
-    /// Événements dont l'EventRecordID n'a pas pu être lu : un trou peut être l'un d'eux.
+    /// Événements dont l'EventRecordID n'a pas pu être lu : chacun peut être un numéro manquant.
     sans_numero: u64,
+    hors_suites: u64,
+}
+
+/// Les numéros lus, par ordinateur (System/Computer, coupé à `trous::CLE_MAX` caractères).
+#[derive(Default)]
+struct Numeros {
+    ordinateurs: Vec<String>,
+    presents: Vec<(usize, Present)>,
+    /// Numéros d'événements au XML illisible, pris sans leur ordinateur.
+    orphelins: Vec<Present>,
+}
+
+impl Numeros {
+    /// Note un numéro ; faux si son ordinateur n'a pas pu avoir sa suite.
+    fn noter(&mut self, ordinateur: &str, present: Present) -> bool {
+        let nom: String = ordinateur.chars().take(trous::CLE_MAX).collect();
+        let i = match self.ordinateurs.iter().position(|o| *o == nom) {
+            Some(i) => i,
+            None if self.ordinateurs.len() < MAX_ORDINATEURS => {
+                self.ordinateurs.push(nom);
+                self.ordinateurs.len() - 1
+            }
+            None => return false,
+        };
+        self.presents.push((i, present));
+        true
+    }
+}
+
+/// Le journal est-il un journal de collecte (des événements d'autres ordinateurs, avec leurs numéros d'origine) ?
+/// ForwardedEvents, plus d'un ordinateur, ou un seul qui n'est pas celui-ci (`local` : son nom NetBIOS, soit les
+/// quinze premiers caractères du premier mot de son nom DNS ; rien s'il n'est pas connu).
+fn collecte(journal: &str, ordinateurs: &[String], local: Option<&str>) -> bool {
+    let autre = |o: &String| {
+        let netbios: String = o.split('.').next().unwrap_or_default().chars().take(15).collect();
+        local.is_some_and(|l| !netbios.eq_ignore_ascii_case(l))
+    };
+    journal.eq_ignore_ascii_case("ForwardedEvents") || ordinateurs.len() > 1 || ordinateurs.iter().any(autre)
+}
+
+/// L'événement d'un XML rendu, et son numéro même quand le XML ne se lit pas (`numero_de_secours`).
+enum Rendu {
+    Lu(Box<super::evtx::Enregistrement>, u64),
+    Illisible(Option<u64>),
+}
+
+fn rendu(xml: Option<&str>, bornes: &Bornes) -> Rendu {
+    let Some(x) = xml else {
+        // Windows n'a pas pu le rendre : ni l'événement ni son numéro.
+        return Rendu::Illisible(None);
+    };
+    match xml::enregistrement(x, bornes) {
+        Ok((e, tronquees)) => Rendu::Lu(Box::new(e), tronquees),
+        // Illisible ou démesuré : son numéro est quand même pris dans System, pour que la suite ne s'y troue pas.
+        Err(_) => Rendu::Illisible(xml::numero_de_secours(x)),
+    }
 }
 
 /// Lit le journal nommé `journal` de cet ordinateur (« Security », « Microsoft-Windows-PowerShell/Operational »…),
@@ -201,29 +271,39 @@ pub(crate) fn lire_journal(
 ) -> Result<BilanVivant, RefusVivant> {
     let (requete, ids_dans_la_requete) = requete(filtre);
     let mut compte = Compte::default();
-    let mut presents: Vec<Present> = Vec::new();
+    let mut numeros = Numeros::default();
     let max = bornes.evenements;
     let lecture = lire_rendus(journal, &requete, fin, max == 0, |xml| {
         compte.vus += 1;
-        let Some(x) = xml else {
-            // Windows n'a pas pu le rendre : ni l'événement ni son numéro.
-            compte.illisibles += 1;
-            compte.sans_numero += 1;
-            return compte.vus < max as u64;
-        };
-        let Ok((e, tronquees)) = xml::enregistrement(x, &bornes.xml) else {
-            // Illisible ou démesuré : son numéro est quand même pris dans System, pour que la suite ne s'y troue
-            // pas.
-            compte.illisibles += 1;
-            match xml::numero_de_secours(x) {
-                Some(numero) => presents.push(Present { numero, date: None }),
-                None => compte.sans_numero += 1,
+        let e = match rendu(xml, &bornes.xml) {
+            Rendu::Lu(e, tronquees) => {
+                compte.chaines_tronquees += tronquees;
+                *e
             }
-            return compte.vus < max as u64;
+            Rendu::Illisible(numero) => {
+                compte.illisibles += 1;
+                match numero {
+                    Some(numero) => numeros.orphelins.push(Present {
+                        numero,
+                        date: None,
+                        morceau: None,
+                    }),
+                    None => compte.sans_numero += 1,
+                }
+                return compte.vus < max as u64;
+            }
         };
-        compte.chaines_tronquees += tronquees;
         match e.numero_systeme {
-            Some(numero) => presents.push(Present { numero, date: e.cree }),
+            Some(numero) => {
+                let present = Present {
+                    numero,
+                    date: e.cree,
+                    morceau: None,
+                };
+                if !numeros.noter(&e.ordinateur, present) {
+                    compte.hors_suites += 1;
+                }
+            }
             None => compte.sans_numero += 1,
         }
         match EvenementWindows::depuis(e, Origine::Vivant) {
@@ -254,75 +334,136 @@ pub(crate) fn lire_journal(
         sans_identifiant: compte.sans_identifiant,
         illisibles: compte.illisibles,
         chaines_tronquees: compte.chaines_tronquees,
-        borne_atteinte: max > 0 && compte.vus >= max as u64 && lecture == FinLecture::Complete,
+        borne_atteinte: max == 0 || (compte.vus >= max as u64 && lecture == FinLecture::Complete),
         delai,
         interrompu,
-        suite: None,
+        suites: Vec::new(),
+        hors_suites: compte.hors_suites,
         trous_non_confirmes: 0,
     };
     if !ids_dans_la_requete {
-        let fenetre = filtre.depuis.is_some() || filtre.jusqua.is_some();
-        // Un événement lu sans son numéro peut être n'importe quel trou : ils sont alors tous non vérifiés.
-        let entre = if compte.sans_numero > 0 {
-            Nature::Illisible
+        let local = std::env::var("COMPUTERNAME").ok();
+        if collecte(journal, &numeros.ordinateurs, local.as_deref()) {
+            // Un numéro sans son ordinateur ne se range dans aucune suite d'origine.
+            bilan.hors_suites += numeros.orphelins.len() as u64;
+            bilan.suites = suites_de_collecte(journal, numeros, bornes.trous);
         } else {
-            Nature::Absents
-        };
-        let (suite, non_confirmes) = juger_suite(journal, presents, entre, fenetre, bornes, fin);
-        bilan.suite = Some(suite);
-        bilan.trous_non_confirmes = non_confirmes;
+            let mut presents: Vec<Present> = numeros.presents.into_iter().map(|(_, p)| p).collect();
+            presents.append(&mut numeros.orphelins);
+            let fenetre = filtre.depuis.is_some() || filtre.jusqua.is_some();
+            let pertes = vec![1u64; usize::try_from(compte.sans_numero).unwrap_or(usize::MAX)];
+            let (suite, non_confirmes) = juger_suite(journal, presents, &pertes, fenetre, bornes, fin);
+            bilan.suites = vec![suite];
+            bilan.trous_non_confirmes = non_confirmes;
+        }
     }
     Ok(bilan)
 }
 
-/// La suite des EventRecordID lus et ses trous ; avec une fenêtre de dates, chaque trou revérifié par une requête
-/// sur ses seuls numéros (sans fenêtre), au plus `BornesVivant::confirmations`. Avec le nombre de trous qui n'ont pas
-/// pu l'être.
+/// Les suites d'un journal de collecte : une par ordinateur, en numéros d'origine, que le filtre de l'abonnement
+/// peut trouer (`AvantExport`).
+fn suites_de_collecte(journal: &str, numeros: Numeros, max_trous: usize) -> Vec<Suite> {
+    let mut par_ordinateur: Vec<Vec<Present>> = vec![Vec::new(); numeros.ordinateurs.len()];
+    for (i, p) in numeros.presents {
+        par_ordinateur[i].push(p);
+    }
+    let mut restant = max_trous;
+    numeros
+        .ordinateurs
+        .into_iter()
+        .zip(par_ordinateur)
+        .map(|(ordinateur, presents)| {
+            let s = trous::juger(
+                Numerotation::Origine {
+                    ordinateur,
+                    journal: journal.chars().take(trous::CLE_MAX).collect(),
+                },
+                presents,
+                &Contexte::nu(Nature::AvantExport),
+                restant,
+            );
+            restant = restant.saturating_sub(s.trous.len());
+            s
+        })
+        .collect()
+}
+
+/// La suite des EventRecordID lus et ses trous (`pertes` : un numéro par événement lu sans le sien) ; avec une
+/// fenêtre de dates, chaque trou revérifié par une requête sur ses seuls numéros (sans fenêtre), au plus
+/// `BornesVivant::confirmations`. Un trou qui n'a pas pu l'être est rendu `Illisible`. Avec leur nombre.
 fn juger_suite(
     journal: &str,
     mut presents: Vec<Present>,
-    entre: Nature,
+    pertes: &[u64],
     fenetre: bool,
     bornes: &BornesVivant,
     fin: Instant,
 ) -> (Suite, u64) {
     let contexte = Contexte {
-        morceaux: &[],
-        entre_morceaux: entre,
+        pertes,
+        ..Contexte::nu(Nature::Absents)
     };
     let suite = trous::juger(Numerotation::Journal, presents.clone(), &contexte, bornes.trous);
-    if !fenetre || suite.trous.is_empty() {
+    if !fenetre || (suite.trous.is_empty() && suite.trous_au_dela == 0) {
         return (suite, 0);
     }
-    let mut non_confirmes = suite.trous_au_dela;
+    // Les plages qui n'ont pas pu être revérifiées.
+    let mut plages_douteuses: Vec<(u64, u64)> = Vec::new();
     for (i, t) in suite.trous.iter().enumerate() {
+        if t.nature != Nature::Absents {
+            continue;
+        }
         if i >= bornes.confirmations {
-            non_confirmes += 1;
+            plages_douteuses.push((t.de, t.a));
             continue;
         }
         let requete = format!("*[System[EventRecordID>={} and EventRecordID<={}]]", t.de, t.a);
         let mut vus = 0usize;
+        let mut sans_numero = false;
         let lecture = lire_rendus(journal, &requete, fin, false, |xml| {
             vus += 1;
-            if let Some(Ok((e, _))) = xml.map(|x| xml::enregistrement(x, &bornes.xml))
-                && let Some(n) = e.numero_systeme
-            {
-                presents.push(Present {
-                    numero: n,
-                    date: e.cree,
-                });
+            let numero = match rendu(xml, &bornes.xml) {
+                Rendu::Lu(e, _) => e.numero_systeme.map(|n| (n, e.cree)),
+                Rendu::Illisible(n) => n.map(|n| (n, None)),
+            };
+            match numero {
+                Some((numero, date)) => presents.push(Present {
+                    numero,
+                    date,
+                    morceau: None,
+                }),
+                None => sans_numero = true,
             }
             vus < bornes.par_confirmation
         });
-        // Une revérification bornée, coupée ou refusée laisse le trou sans certitude.
-        if lecture != FinLecture::Complete || vus >= bornes.par_confirmation {
+        // Une revérification bornée, coupée, refusée, ou qui a lu un événement sans son numéro laisse le trou
+        // sans certitude.
+        if lecture != FinLecture::Complete || vus >= bornes.par_confirmation || sans_numero {
+            plages_douteuses.push((t.de, t.a));
+        }
+    }
+    let mut suite = trous::juger(Numerotation::Journal, presents, &contexte, bornes.trous);
+    // Les trous au-delà de la borne n'ont pas été revérifiés non plus.
+    let mut non_confirmes = suite.trous_au_dela;
+    for t in &mut suite.trous {
+        if t.nature == Nature::Absents && plages_douteuses.iter().any(|&(de, a)| t.de <= a && de <= t.a) {
+            t.nature = Nature::Illisible;
             non_confirmes += 1;
         }
     }
-    (
-        trous::juger(Numerotation::Journal, presents, &contexte, bornes.trous),
-        non_confirmes,
-    )
+    // Deux trous voisins devenus de même nature n'en font qu'un.
+    let mut fusionnes: Vec<trous::Trou> = Vec::new();
+    for t in suite.trous {
+        match fusionnes.last_mut() {
+            Some(d) if d.nature == t.nature && d.a.checked_add(1) == Some(t.de) => {
+                d.a = t.a;
+                d.apres = t.apres;
+            }
+            _ => fusionnes.push(t),
+        }
+    }
+    suite.trous = fusionnes;
+    (suite, non_confirmes)
 }
 
 #[cfg(test)]

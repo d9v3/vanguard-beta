@@ -27,7 +27,7 @@ fn verifier(octets: &[u8], bornes: &evtx::Bornes) {
     assert!(lu.bilan.morceaux.len() <= evtx::MAX_RECAPS);
     assert!(lu.bilan.morceaux.windows(2).all(|p| p[0].rang < p[1].rang));
     for e in &lu.enregistrements {
-        assert!(lu.bilan.morceaux.iter().any(|m| m.lu && m.rang == e.morceau));
+        assert!(lu.bilan.morceaux.iter().any(|m| m.etat == evtx::EtatMorceau::Lu && m.rang == e.morceau));
     }
     for e in &lu.enregistrements {
         let (mut noeuds, mut texte) = (0, 0);

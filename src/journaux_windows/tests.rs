@@ -69,6 +69,22 @@ fn le_xml_de_windows_donne_la_forme_commune() {
     assert_eq!(e.champ("SubjectUserSid"), Some("S-1-5-21-1"));
 }
 
+/// Les fins de ligne et les tabulations d'une valeur (un bloc de script, une ligne de commande) restent telles
+/// quelles, dans le texte comme dans un attribut, brutes ou en références : le même texte que le lecteur .evtx.
+#[test]
+fn les_fins_de_ligne_ne_sont_pas_normalisees() {
+    let x = "<Event a='p\tq\r\nr&#13;'><Data>x\r\ny\rz&#xD;&#10;</Data></Event>";
+    let a = xml::arbre(x, &Bornes::default()).unwrap();
+    assert_eq!(a.racine.attribut("a"), Some("p\tq\r\nr\r"));
+    assert_eq!(a.racine.enfants[0].texte, "x\r\ny\rz\r\n");
+    // Un « & » sans « ; » reste tel quel dans un attribut ; une référence inconnue y devient U+FFFD.
+    let a = xml::arbre("<Event a='x &amp; y' b='&inconnue;' c='&#0;'/>", &Bornes::default()).unwrap();
+    assert_eq!(
+        (a.racine.attribut("a"), a.racine.attribut("b"), a.racine.attribut("c")),
+        (Some("x & y"), Some("\u{FFFD}"), Some("\u{FFFD}"))
+    );
+}
+
 #[test]
 fn un_xml_mal_forme_ou_demesure_est_illisible() {
     let b = Bornes::default();
@@ -123,8 +139,8 @@ fn un_xml_mal_forme_ou_demesure_est_illisible() {
 
 // ---- L'arbre d'un fichier réécrit en XML ----
 
-/// Une valeur écrite comme Windows l'échappe ; les fins de ligne et les tabulations en références de caractères,
-/// pour que la normalisation de XML (§ 2.11 et 3.3.3) ne les change pas : l'arbre doit revenir à l'identique.
+/// Une valeur écrite comme Windows l'échappe, fins de ligne et tabulations telles quelles : la source vivante ne
+/// les normalise pas (XML § 2.11 et 3.3.3), l'arbre doit revenir à l'identique.
 fn echapper(v: &str, sortie: &mut String) {
     for c in v.chars() {
         match c {
@@ -133,9 +149,6 @@ fn echapper(v: &str, sortie: &mut String) {
             '>' => sortie.push_str("&gt;"),
             '\'' => sortie.push_str("&apos;"),
             '"' => sortie.push_str("&quot;"),
-            '\r' | '\n' | '\t' => {
-                let _ = write!(sortie, "&#{};", u32::from(c));
-            }
             c => sortie.push(c),
         }
     }
@@ -314,6 +327,8 @@ fn les_echantillons_passent_par_la_forme_commune() {
                     .map(|t| (t.de, t.a, t.nature))
                     .collect::<Vec<_>>()
             );
+            // Windows écrit des en-têtes de morceaux qui se tiennent, et un prochain numéro qui suit le dernier.
+            assert_eq!(s.incoherences, 0, "{nom}");
             // Les EventRecordID d'origine ne viennent que des fichiers exportés.
             assert!(matches!(s.numerotation, Numerotation::Journal) || f.exporte, "{nom}");
             // Aucun trou d'un fichier propre : ces échantillons publics ne sont pas trafiqués ; ceux des copies à

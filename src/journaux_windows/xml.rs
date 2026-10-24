@@ -98,9 +98,7 @@ impl Compte<'_> {
             }
             let a = a.map_err(|_| ErreurXml::MalForme)?;
             let nom: &str = a.key.as_ref();
-            let valeur = a
-                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
-                .map_err(|_| ErreurXml::MalForme)?;
+            let valeur = deplier(&a.value);
             let (mut v, mut caracteres, mut coupe) = (String::new(), 0, false);
             self.ajouter(&mut v, &mut caracteres, &mut coupe, &valeur)?;
             noeud.attributs.push((Arc::from(nom), v));
@@ -115,6 +113,49 @@ impl Compte<'_> {
     fn texte(&mut self, o: &mut Ouvert, texte: &str) -> Result<(), ErreurXml> {
         self.ajouter(&mut o.noeud.texte, &mut o.caracteres, &mut o.coupe, texte)
     }
+}
+
+/// Une référence (« amp », « #x41 ») : les cinq entités de XML et les références de caractères ; rien d'autre
+/// n'est défini (aucune DTD n'est lue ni dépliée). Inconnue ou invalide : U+FFFD, la valeur reste, marquée.
+fn reference(nom: &str) -> char {
+    match nom {
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "apos" => '\'',
+        _ => {
+            let nombre = match nom.strip_prefix("#x").or_else(|| nom.strip_prefix("#X")) {
+                Some(h) => u32::from_str_radix(h, 16).ok(),
+                None => nom.strip_prefix('#').and_then(|d| d.parse::<u32>().ok()),
+            };
+            nombre
+                .and_then(char::from_u32)
+                .filter(|&c| c != '\0')
+                .unwrap_or('\u{FFFD}')
+        }
+    }
+}
+
+/// La valeur d'un attribut, ses références dépliées, sans la normalisation des blancs de XML (§ 3.3.3) : le lecteur
+/// .evtx garde tabulations et fins de ligne, la source vivante doit rendre la même valeur. Un « & » sans « ; » dans
+/// les 32 caractères qui suivent reste tel quel.
+fn deplier(brut: &str) -> String {
+    let mut sortie = String::with_capacity(brut.len());
+    let mut reste = brut;
+    while let Some(i) = reste.find('&') {
+        sortie.push_str(&reste[..i]);
+        let apres = &reste[i + 1..];
+        if let Some((j, _)) = apres.char_indices().take(32).find(|&(_, c)| c == ';') {
+            sortie.push(reference(&apres[..j]));
+            reste = &apres[j + 1..];
+        } else {
+            sortie.push('&');
+            reste = apres;
+        }
+    }
+    sortie.push_str(reste);
+    sortie
 }
 
 /// L'arbre du premier élément du XML (l'élément Event) ; ce qui le suit est ignoré, comme EvtRender n'en rend
@@ -145,7 +186,10 @@ pub(crate) fn arbre(xml: &str, bornes: &Bornes) -> Result<Arbre, ErreurXml> {
             Event::End(_) => Some(pile.pop().ok_or(ErreurXml::MalForme)?.noeud),
             Event::Text(t) => {
                 if let Some(o) = pile.last_mut() {
-                    let t = t.xml10_content();
+                    // Tel quel, sans la normalisation des fins de ligne de XML (§ 2.11) : le lecteur .evtx garde
+                    // « \r\n », la source vivante doit rendre le même texte (un bloc de script, une ligne de
+                    // commande).
+                    let t = t.into_inner();
                     compte.texte(o, &t)?;
                 }
                 None
@@ -159,17 +203,7 @@ pub(crate) fn arbre(xml: &str, bornes: &Bornes) -> Result<Arbre, ErreurXml> {
             }
             Event::GeneralRef(r) => {
                 if let Some(o) = pile.last_mut() {
-                    // Les cinq entités de XML et les références de caractères ; rien d'autre n'est défini (aucune
-                    // DTD n'est lue ni dépliée). Une référence inconnue ou invalide devient U+FFFD : la valeur
-                    // reste, marquée.
-                    let c = match r.as_ref() {
-                        "amp" => '&',
-                        "lt" => '<',
-                        "gt" => '>',
-                        "quot" => '"',
-                        "apos" => '\'',
-                        _ => r.resolve_char_ref().ok().flatten().unwrap_or('\u{FFFD}'),
-                    };
+                    let c = reference(r.as_ref());
                     compte.texte(o, c.encode_utf8(&mut [0; 4]))?;
                 }
                 None

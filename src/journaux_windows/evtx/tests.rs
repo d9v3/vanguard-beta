@@ -483,6 +483,15 @@ pub(crate) fn fichier(morceaux: &[Vec<u8>]) -> Vec<u8> {
     f[38..40].copy_from_slice(&3u16.to_le_bytes());
     f[40..42].copy_from_slice(&4096u16.to_le_bytes());
     f[42..44].copy_from_slice(&u16::try_from(n).unwrap().to_le_bytes());
+    // Le prochain numéro : le plus grand qu'annoncent les morceaux, plus un, comme Windows le tient dans un fichier
+    // fermé proprement.
+    let prochain = morceaux
+        .iter()
+        .filter(|m| m.starts_with(b"ElfChnk\0"))
+        .filter_map(|m| u64_a(m, 32))
+        .max()
+        .map_or(1, |d| d + 1);
+    f[24..32].copy_from_slice(&prochain.to_le_bytes());
     for m in morceaux {
         f.extend_from_slice(m);
     }
@@ -503,6 +512,19 @@ pub(crate) fn morceau_aux_numeros(numeros: &[u64], origine: impl Fn(u64) -> u64)
                 &gabarit_securite(),
                 &valeurs_securite(4625, origine(n), "alice", Some("192.0.2.10"), false),
             );
+        });
+    }
+    m.finir()
+}
+
+/// Comme `morceau_aux_numeros`, l'ordinateur (System/Computer) nommé `nom`.
+pub(crate) fn morceau_ordinateur(numeros: &[u64], origine: impl Fn(u64) -> u64, nom: &'static str) -> Vec<u8> {
+    let mut m = Ecrivain::new();
+    for &n in numeros {
+        m.enregistrement(n, DATE + n, |m| {
+            let mut v = valeurs_securite(4625, origine(n), "alice", Some("192.0.2.10"), false);
+            v[8] = V::Chaine(nom);
+            m.instance(1, &gabarit_securite(), &v);
         });
     }
     m.finir()
@@ -558,7 +580,7 @@ fn un_fichier_fabrique_se_lit_entier() {
     );
     assert_eq!(ouverture.date, valeurs::filetime(DATE + 1));
     assert_eq!(ouverture.cree, valeurs::filetime(DATE + 1));
-    assert_eq!(valeurs::date(ouverture.cree.unwrap()), "2026-10-24T13:05:09.1234568Z");
+    assert_eq!(valeurs::date(ouverture.cree.unwrap()), "2026-10-24T13:05:09.123456800Z");
     assert_eq!(champ(ouverture, "TargetUserName"), Some("alice"));
     assert_eq!(champ(ouverture, "IpAddress"), Some("192.0.2.10"));
     assert_eq!(champ(ouverture, "LogonType"), Some("10"));
@@ -692,23 +714,29 @@ fn chaque_morceau_laisse_son_recapitulatif() {
     // Un morceau coupé en fin de fichier.
     f.extend_from_slice(&[b'E'; 100]);
     let lu = lire_type(&f);
-    let recap = |rang, lu, annonce, non_rendus| RecapMorceau {
+    let recap = |rang, etat, annonce, non_rendus, capacite| RecapMorceau {
         rang,
-        lu,
+        etat,
         annonce,
         non_rendus,
+        incoherent: false,
+        capacite,
     };
+    let plein = CAPACITE_MORCEAU;
     assert_eq!(
         lu.bilan.morceaux,
         [
-            recap(0, true, Some((1, 3)), 0),
-            recap(2, true, Some((4, 6)), 0),
-            recap(3, false, Some((7, 9)), 0),
-            recap(4, false, None, 0),
-            recap(5, false, None, 0),
+            recap(0, EtatMorceau::Lu, Some((1, 3)), 0, plein),
+            recap(1, EtatMorceau::Vide, None, 0, 0),
+            recap(2, EtatMorceau::Lu, Some((4, 6)), 0, plein),
+            recap(3, EtatMorceau::Ecarte, Some((7, 9)), 0, plein),
+            recap(4, EtatMorceau::Ecarte, None, 0, plein),
+            // 100 octets : moins que l'en-tête d'un morceau, rien n'y tient.
+            recap(5, EtatMorceau::Ecarte, None, 0, 0),
         ]
     );
     assert_eq!(lu.bilan.morceaux_sans_recap, 0);
+    assert_eq!(lu.bilan.prochain_numero, Some(13));
     let rangs: Vec<(u64, u64)> = lu.enregistrements.iter().map(|e| (e.numero, e.morceau)).collect();
     assert_eq!(rangs, [(1, 0), (2, 0), (3, 0), (4, 2), (5, 2), (6, 2)]);
     // Un enregistrement illisible ou laissé au-delà de la borne compte dans son morceau.
@@ -717,8 +745,17 @@ fn chaque_morceau_laisse_son_recapitulatif() {
         ..Bornes::default()
     };
     let lu = lire_octets(&fichier(&[morceau_type(1), morceau_type(4)]), &bornes).unwrap();
-    assert_eq!(lu.bilan.morceaux, [recap(0, true, Some((1, 3)), 1)]);
+    assert_eq!(lu.bilan.morceaux, [recap(0, EtatMorceau::Lu, Some((1, 3)), 1, plein)]);
     assert_eq!(lu.bilan.morceaux_hors_borne, 1);
+    // Un morceau lu dont l'en-tête ne se tient pas : rien d'annoncé, ou des numéros et des identifiants qui ne
+    // comptent pas autant, ou un enregistrement hors de l'annonce.
+    for (ou, valeur) in [(32usize, 0u64), (16, 2), (32, 2)] {
+        let mut m = morceau_type(1);
+        m[ou..ou + 8].copy_from_slice(&valeur.to_le_bytes());
+        let lu = lire_type(&fichier(&[m]));
+        assert!(lu.bilan.morceaux[0].incoherent, "{ou} {valeur}");
+    }
+    assert!(!lire_type(&fichier_type()).bilan.morceaux[0].incoherent);
 }
 
 #[test]

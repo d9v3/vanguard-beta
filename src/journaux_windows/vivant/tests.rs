@@ -53,6 +53,51 @@ fn la_requete_ne_porte_que_des_nombres_et_des_dates() {
     );
 }
 
+/// La fin d'une fenêtre arrondie à la milliseconde au-dessus : aucun événement qu'elle contient n'est écarté par
+/// Windows sans être compté.
+#[test]
+fn la_fin_de_la_fenetre_n_ecarte_rien() {
+    let d = DateTime::parse_from_rfc3339("2026-10-24T12:00:00.000900Z")
+        .unwrap()
+        .to_utc();
+    assert_eq!(date_xpath(d, true), "2026-10-24T12:00:00.001Z");
+    assert_eq!(date_xpath(d, false), "2026-10-24T12:00:00.000Z");
+    let rond = DateTime::parse_from_rfc3339("2026-10-24T12:00:00.250Z")
+        .unwrap()
+        .to_utc();
+    assert_eq!(date_xpath(rond, true), "2026-10-24T12:00:00.250Z");
+}
+
+/// Un journal de collecte garde les EventRecordID des ordinateurs d'origine : sa suite se juge par ordinateur.
+#[test]
+fn un_journal_de_collecte_se_reconnait() {
+    let noms = |v: &[&str]| v.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+    assert!(!collecte("Security", &noms(&["poste-alice"]), Some("POSTE-ALICE")));
+    assert!(!collecte(
+        "Security",
+        &noms(&["poste-alice.maison.lan"]),
+        Some("POSTE-ALICE")
+    ));
+    // Un nom DNS de plus de quinze caractères : le nom NetBIOS en est le début.
+    assert!(!collecte(
+        "System",
+        &noms(&["desktop-abcdefghij"]),
+        Some("DESKTOP-ABCDEFG")
+    ));
+    assert!(!collecte("System", &noms(&["poste-alice"]), None));
+    assert!(collecte(
+        "ForwardedEvents",
+        &noms(&["poste-alice"]),
+        Some("POSTE-ALICE")
+    ));
+    assert!(collecte("Security", &noms(&["poste-alice", "serveur"]), None));
+    assert!(collecte(
+        "Security",
+        &noms(&["serveur.maison.lan"]),
+        Some("POSTE-ALICE")
+    ));
+}
+
 #[test]
 fn les_refus_de_windows_sont_distincts() {
     assert_eq!(refus(Some(5)), RefusVivant::Droits);
@@ -91,7 +136,7 @@ fn les_journaux_de_cet_ordinateur_se_lisent_ou_se_refusent_proprement() {
                         .all(|e| e.origine == Origine::Vivant && e.journal.eq_ignore_ascii_case(journal))
                 );
                 // Toute la requête lue sans numéro d'événement : la suite est jugée.
-                assert!(b.suite.is_some());
+                assert_ne!(b.suites.len(), 0);
                 // La borne atteinte n'est jamais une lecture complète.
                 assert!(!(b.borne_atteinte && b.complet()), "{b:?}");
             }
@@ -107,4 +152,36 @@ fn les_journaux_de_cet_ordinateur_se_lisent_ou_se_refusent_proprement() {
             }
         }
     }
+}
+
+/// Un trou qui n'a pas pu être revérifié (ici, le journal refuse la revérification : il n'existe pas) n'est pas
+/// rendu comme un constat : `Illisible`, et compté. Sans fenêtre de dates, il n'y a rien à revérifier.
+#[test]
+fn un_trou_non_reverifie_est_illisible() {
+    let presents: Vec<Present> = (1..=5)
+        .chain(10..=12)
+        .chain(20..=22)
+        .map(|numero| Present {
+            numero,
+            date: None,
+            morceau: None,
+        })
+        .collect();
+    let fin = Instant::now() + std::time::Duration::from_secs(10);
+    let bornes = BornesVivant::default();
+    let journal = "Vanguard-Essai/Inexistant";
+    let (s, n) = juger_suite(journal, presents.clone(), &[], false, &bornes, fin);
+    let plages = |s: &Suite| s.trous.iter().map(|t| (t.de, t.a, t.nature)).collect::<Vec<_>>();
+    assert_eq!(
+        (plages(&s), n),
+        (vec![(6, 9, Nature::Absents), (13, 19, Nature::Absents)], 0)
+    );
+    let (s, n) = juger_suite(journal, presents.clone(), &[], true, &bornes, fin);
+    assert_eq!(
+        (plages(&s), n),
+        (vec![(6, 9, Nature::Illisible), (13, 19, Nature::Illisible)], 2)
+    );
+    // Un événement lu sans son numéro peut être un numéro manquant, pas plus.
+    let (s, _) = juger_suite(journal, presents, &[4], false, &bornes, fin);
+    assert_eq!(plages(&s), [(6, 9, Nature::Illisible), (13, 19, Nature::Absents)]);
 }
