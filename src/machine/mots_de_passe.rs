@@ -47,9 +47,7 @@ fn profils() -> Vec<Result<Profil, (String, String)>> {
                 }
                 // Un simple fichier, borné : un fichier creux énorme ou un tube posé là par un programme du compte ne
                 // remplit pas la mémoire et ne fige pas le bilan ; il est dit illisible.
-                let texte = crate::socle::lire_ordinaire(&f, LOGINS_MAX)
-                    .ok()
-                    .map(|o| String::from_utf8_lossy(&o).into_owned());
+                let texte = crate::socle::lire_texte_ordinaire(&f, LOGINS_MAX).ok();
                 match texte.and_then(|t| compter_firefox(&t)) {
                     Some(n) => liste.push(Ok(Profil {
                         navigateur,

@@ -29,10 +29,10 @@ pub(crate) fn hote_par_defaut() -> bool {
 /// Le config.json du dossier `config` laisse-t-il le contexte par défaut ? Absent : oui. Lu comme un simple fichier,
 /// borné : un tube nommé posé à sa place figeait la lecture ; illisible, c'est « on ne sait pas ».
 fn config_par_defaut(config: &std::path::Path) -> bool {
-    match crate::socle::lire_ordinaire(&config.join("config.json"), 1 << 20) {
+    match crate::socle::lire_texte_ordinaire(&config.join("config.json"), 1 << 20) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
         Err(_) => false,
-        Ok(t) => contexte_par_defaut(&String::from_utf8_lossy(&t)),
+        Ok(t) => contexte_par_defaut(&t),
     }
 }
 
