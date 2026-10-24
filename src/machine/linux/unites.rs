@@ -10,6 +10,15 @@ fn echec(e: String) -> Echec {
     Echec::echoue("systemd", e)
 }
 
+/// Le premier membre d'une réponse, s'il est un tableau : une réponse vide ou d'un autre type est une erreur, jamais
+/// « aucune unité ».
+fn tableau(v: Option<&Valeur>) -> Result<&Valeur, Echec> {
+    match v.map(Valeur::nue) {
+        Some(t @ Valeur::Tableau(_)) => Ok(t),
+        _ => Err(Echec::echoue("systemd", "réponse d'un autre type")),
+    }
+}
+
 /// Le bus d'un gestionnaire : celui du système, ou celui de l'utilisateur (bus de la session ; refusé sous root).
 pub(crate) fn bus(utilisateur: bool) -> Result<Bus, Echec> {
     if utilisateur {
@@ -35,7 +44,7 @@ pub(crate) fn unites(bus: &mut Bus) -> Result<Vec<Unite>, Echec> {
     let corps = bus
         .appeler(SYSTEMD, CHEMIN_SYSTEMD, GESTIONNAIRE, "ListUnits", "", Vec::new())
         .map_err(echec)?;
-    Ok(lire_unites(corps.first()))
+    Ok(lire_unites(Some(tableau(corps.first())?)))
 }
 
 fn lire_unites(liste: Option<&Valeur>) -> Vec<Unite> {
@@ -65,7 +74,7 @@ pub(crate) fn fichiers(bus: &mut Bus) -> Result<Vec<(String, String)>, Echec> {
     let corps = bus
         .appeler(SYSTEMD, CHEMIN_SYSTEMD, GESTIONNAIRE, "ListUnitFiles", "", Vec::new())
         .map_err(echec)?;
-    Ok(lire_fichiers(corps.first()))
+    Ok(lire_fichiers(Some(tableau(corps.first())?)))
 }
 
 fn lire_fichiers(liste: Option<&Valeur>) -> Vec<(String, String)> {

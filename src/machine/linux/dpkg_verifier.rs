@@ -76,6 +76,17 @@ fn lire_conffiles(status: &str, nom: &str, arch: Option<&str>) -> Vec<(PathBuf, 
     Vec::new()
 }
 
+/// Les chemins détournés d'après /var/lib/dpkg/diversions : trois lignes par détournement (le chemin d'origine, sa
+/// nouvelle place, le paquet qui détourne) ; les deux chemins comptent.
+fn detournes(texte: &str) -> Vec<PathBuf> {
+    let lignes: Vec<&str> = texte.lines().collect();
+    lignes
+        .chunks(3)
+        .filter(|c| c.len() == 3)
+        .flat_map(|c| [PathBuf::from(c[0]), PathBuf::from(c[1])])
+        .collect()
+}
+
 /// Les empreintes connues de dpkg pour `paquet` sous la base `base` : chemin → MD5. Celles de md5sums d'abord ; un
 /// conffile sans ligne dans md5sums prend la sienne (comme verify.c). `None` : la base ne se lit pas, ou le paquet
 /// n'y est pas (dpkg dira).
@@ -115,13 +126,31 @@ pub(crate) fn empreintes(base: &Path, paquet: &str) -> Option<HashMap<PathBuf, S
     }
     let mut empreintes: HashMap<PathBuf, String> = conffiles.into_iter().collect();
     empreintes.extend(lire_md5sums(md5sums.as_deref().unwrap_or_default()));
+    // Un fichier détourné (dpkg-divert) : à son chemin se trouve le fichier d'un autre paquet, et dpkg vérifie
+    // l'emplacement détourné. Sans suivre le détournement ici, il n'est pas comparé (non vérifiable), jamais dit
+    // modifié à tort.
+    if let Ok(d) = std::fs::read_to_string(base.join("diversions")) {
+        for chemin in detournes(&d) {
+            empreintes.remove(&chemin);
+        }
+    }
     Some(empreintes)
 }
 
 /// Le MD5 d'un fichier, en hexadécimal.
 fn md5_de(chemin: &Path) -> Option<String> {
     use md5::Digest;
-    let mut f = std::fs::File::open(chemin).ok()?;
+    use std::os::unix::fs::OpenOptionsExt;
+    // Un fichier ordinaire seulement, ouvert sans attendre : une FIFO posée sur un chemin du paquet figerait la
+    // lecture.
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(chemin)
+        .ok()?;
+    if !f.metadata().ok()?.is_file() {
+        return None;
+    }
     let mut h = md5::Md5::new();
     let mut tampon = vec![0u8; 64 << 10];
     loop {
@@ -193,6 +222,15 @@ mod tests {
             );
             assert!(e.contains_key(Path::new("/etc/vieux")));
         }
+        // Un fichier détourné : plus comparé.
+        std::fs::write(
+            base.join("diversions"),
+            format!("{}\n{}.distrib\nautre-paquet\n", change.display(), change.display()),
+        )
+        .unwrap();
+        let e = empreintes(&base, "outil").unwrap();
+        assert_eq!(modifie(&e, &change, None), None);
+        std::fs::remove_file(base.join("diversions")).unwrap();
         // Le chemin d'avant /usr fusionné.
         let e = empreintes(&base, "outil").unwrap();
         assert_eq!(modifie(&e, &bon, Some(Path::new("/x"))), Some(false));

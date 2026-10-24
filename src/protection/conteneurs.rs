@@ -67,7 +67,6 @@ pub(crate) fn lire_rapport(json: &str) -> Option<Vec<Faille>> {
     )
 }
 
-/// Le moteur de conteneurs de cet ordinateur : Docker, sinon Podman.
 /// Les images de Docker par son API (/var/run/docker.sock), une par ligne comme la CLI les écrit ; `None` : Podman,
 /// un autre hôte ou contexte réglé, ou le démon injoignable (la CLI dira).
 #[cfg(target_os = "linux")]
@@ -86,6 +85,7 @@ fn images_par_l_api(_: &str) -> Option<String> {
     None
 }
 
+/// Le moteur de conteneurs de cet ordinateur : Docker, sinon Podman.
 fn moteur() -> Option<(&'static str, PathBuf)> {
     ["docker", "podman"]
         .into_iter()

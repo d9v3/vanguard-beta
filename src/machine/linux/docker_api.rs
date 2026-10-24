@@ -70,6 +70,7 @@ fn ports_exposes(ports: &serde_json::Value) -> Vec<String> {
             (!locale).then(|| crate::ui::affichable(&format!("{public}/{proto}")))
         })
         .collect();
+    v.sort();
     v.dedup();
     v
 }

@@ -853,7 +853,7 @@ fn elements(e: &Plan, octets: &[u8], profondeur: usize, budget: &mut usize) -> O
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Fabrique, pour les tests : sérialisation GVariant et fichiers GVDB comme les écrivent GLib et dconf.
+// Écriture GVariant (l'écrivain de dconf, et les tests), puis fabrique de fichiers GVDB pour les tests.
 
 /// L'écriture d'une valeur au format sérialisé de GVariant (celui de GLib, petit-boutiste) : ce que l'écrivain de
 /// dconf attend dans un changement (`dconf::changement`), et ce que les essais fabriquent.

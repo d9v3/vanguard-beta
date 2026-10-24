@@ -216,6 +216,34 @@ pub(crate) fn chercher(fichiers: &[PathBuf], requete: &Requete) -> Option<Vec<En
     Some(toutes.into_iter().map(|(_, _, e)| e).collect())
 }
 
+/// Les champs déjà lus d'un fichier, par position : borné en octets (un compte peut écrire des champs énormes que
+/// le parcours lirait tous), et un champ de plus de 64 Kio n'y entre pas.
+#[derive(Default)]
+struct Cache {
+    champs: HashMap<u64, Champ>,
+    octets: usize,
+}
+
+impl Cache {
+    const MAX: usize = 8 << 20;
+
+    fn garder(&mut self, pos: u64, c: &Champ) {
+        let taille = match c {
+            Champ::Voulu(n, v) => n.len() + v.len(),
+            Champ::Autre => 0,
+        } + 32;
+        if taille > 64 << 10 {
+            return;
+        }
+        if self.octets + taille > Self::MAX {
+            self.champs.clear();
+            self.octets = 0;
+        }
+        self.octets += taille;
+        self.champs.insert(pos, c.clone());
+    }
+}
+
 /// Les champs qu'écrit `journalctl -o short-iso` : l'heure de la source, l'hôte, l'identifiant, le processus, le
 /// message.
 pub(crate) const CHAMPS_COURTS: &[&str] = &[
@@ -390,6 +418,8 @@ pub(crate) fn tout_le_journal(depuis: u64, mut ecrire: impl FnMut(&str) -> bool)
         let Ouvert::Pret(mut journal) = Journal::ouvrir(fichier)? else {
             continue;
         };
+        // Tous les fichiers restent ouverts pendant le parcours : 1 Mio de morceaux chacun.
+        journal.lecteur.morceaux_max = 16;
         if journal.derniere_heure != 0 && journal.derniere_heure < depuis {
             continue;
         }
@@ -418,7 +448,7 @@ fn parcourir(mut reculs: Vec<Recul>, depuis: u64, ecrire: &mut impl FnMut(&str) 
         avancer(&mut reculs, i, &mut tas)?;
     }
     let mut vues: HashSet<([u8; 16], u64)> = HashSet::new();
-    let mut caches: Vec<HashMap<u64, Champ>> = (0..reculs.len()).map(|_| HashMap::new()).collect();
+    let mut caches: Vec<Cache> = (0..reculs.len()).map(|_| Cache::default()).collect();
     let mut parcours = Parcours::default();
     while let Some((quand, numero, i, pos)) = tas.pop() {
         if quand < depuis {
@@ -452,6 +482,8 @@ struct Lecteur {
     morceaux: HashMap<u64, Vec<u8>>,
     lus: u64,
     budget: u64,
+    /// Morceaux gardés au plus (512 : 32 Mio) ; le parcours complet, qui garde tous les fichiers ouverts, en garde moins.
+    morceaux_max: usize,
 }
 
 const MORCEAU: u64 = 64 << 10;
@@ -464,6 +496,7 @@ impl Lecteur {
             morceaux: HashMap::new(),
             lus: 0,
             budget: longueur.saturating_mul(16).saturating_add(256 << 20),
+            morceaux_max: 512,
         }
     }
 
@@ -486,7 +519,7 @@ impl Lecteur {
             let k = p / MORCEAU;
             if !self.morceaux.contains_key(&k) {
                 // 32 Mio au plus en mémoire : au-delà, on repart de zéro plutôt que de tout garder.
-                if self.morceaux.len() >= 512 {
+                if self.morceaux.len() >= self.morceaux_max {
                     self.morceaux.clear();
                 }
                 let taille = usize::try_from(MORCEAU.min(self.longueur - k * MORCEAU)).ok()?;
@@ -830,8 +863,8 @@ impl Journal {
     }
 
     /// Une entrée et ses champs voulus ; `cache` garde les champs déjà lus (un même champ revient dans beaucoup
-    /// d'entrées), vidé au-delà de 100 000 pour borner la mémoire.
-    fn entree(&mut self, pos: u64, voulus: &[&str], cache: &mut HashMap<u64, Champ>) -> Option<Entree> {
+    /// d'entrées), borné en octets.
+    fn entree(&mut self, pos: u64, voulus: &[&str], cache: &mut Cache) -> Option<Entree> {
         let (_, taille) = self.objet(pos, ENTREE, 64)?;
         let o = self.lecteur.lire(pos, usize::try_from(taille).ok()?)?;
         let largeur = if self.compact() { 4 } else { 16 };
@@ -843,14 +876,11 @@ impl Journal {
             } else {
                 u64_a(&o, p)
             };
-            if cache.len() > 100_000 {
-                cache.clear();
-            }
-            let champ = if let Some(c) = cache.get(&objet) {
+            let champ = if let Some(c) = cache.champs.get(&objet) {
                 c.clone()
             } else {
                 let c = self.champ(objet, voulus)?;
-                cache.insert(objet, c.clone());
+                cache.garder(objet, &c);
                 c
             };
             if let Champ::Voulu(nom, valeur) = champ {

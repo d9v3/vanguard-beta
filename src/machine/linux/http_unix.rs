@@ -29,6 +29,17 @@ pub(crate) fn get(prise: &Path, chemin: &str) -> Result<(u16, Vec<u8>), Echec> {
     if !chemin.starts_with('/') || chemin.bytes().any(|o| o <= b' ' || o == 0x7f) {
         return Err(echec("chemin refusé"));
     }
+    // La prise d'un démon du système appartient à root (ou au compte, pour un démon à lui) : une autre, posée par un
+    // autre compte, n'est pas celle du démon.
+    {
+        use std::os::unix::fs::MetadataExt;
+        let m = std::fs::metadata(prise).map_err(|e| Echec::io("http_unix/connexion", &e))?;
+        // SAFETY : geteuid ne prend rien et ne peut pas échouer.
+        let moi = unsafe { libc::geteuid() };
+        if m.uid() != 0 && m.uid() != moi {
+            return Err(echec("prise d'un autre compte"));
+        }
+    }
     let mut s = UnixStream::connect(prise).map_err(|e| Echec::io("http_unix/connexion", &e))?;
     s.set_read_timeout(Some(DELAI)).map_err(|e| echec(e.to_string()))?;
     s.set_write_timeout(Some(DELAI)).map_err(|e| echec(e.to_string()))?;
@@ -37,12 +48,25 @@ pub(crate) fn get(prise: &Path, chemin: &str) -> Result<(u16, Vec<u8>), Echec> {
         "GET {chemin} HTTP/1.1\r\nHost: api.moby.localhost\r\nUser-Agent: Vanguard\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
     );
     s.write_all(demande.as_bytes()).map_err(|e| echec(e.to_string()))?;
+    // Une échéance pour toute la réponse, pas seulement pour chaque lecture : un démon qui envoie un octet toutes les
+    // neuf secondes ne retient pas Vanguard.
+    let echeance = std::time::Instant::now() + DELAI;
     let mut octets = Vec::new();
-    s.take(REPONSE_MAX as u64 + 1)
-        .read_to_end(&mut octets)
-        .map_err(|e| echec(e.to_string()))?;
-    if octets.len() > REPONSE_MAX {
-        return Err(echec("réponse trop grosse"));
+    let mut tampon = vec![0u8; 64 << 10];
+    loop {
+        let reste = echeance.saturating_duration_since(std::time::Instant::now());
+        if reste.is_zero() {
+            return Err(echec("pas de réponse à temps"));
+        }
+        s.set_read_timeout(Some(reste)).map_err(|e| echec(e.to_string()))?;
+        let n = s.read(&mut tampon).map_err(|e| echec(e.to_string()))?;
+        if n == 0 {
+            break;
+        }
+        octets.extend_from_slice(&tampon[..n]);
+        if octets.len() > REPONSE_MAX {
+            return Err(echec("réponse trop grosse"));
+        }
     }
     lire_reponse(&octets)
 }

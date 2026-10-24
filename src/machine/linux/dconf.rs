@@ -218,6 +218,11 @@ pub(crate) fn gsettings_set(schema: &str, cle: &str, texte: &str) -> Option<bool
     // Une valeur que ce lecteur ne sait pas relire (profil inhabituel, fichier illisible) ne se prouverait pas
     // écrite : laissée à gsettings.
     lire(&lieux, schema, cle)?;
+    // L'écrivain écrit dans la base « user » : seulement si le profil la lit en premier (un profil à « user-db:autre »
+    // garderait une valeur écrite à côté).
+    if bases_du_profil(&lieux)?.first() != Some(&lieux.config.join("dconf/user")) {
+        return None;
+    }
     let (_, v, octets) = changement(&lieux, schema, cle, texte)?;
     super::dbus::actions::changer_dconf(&octets).ok()?;
     // L'écrivain répond une fois la base réécrite ; une relecture qui rate se refait un peu plus tard.

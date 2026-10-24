@@ -301,6 +301,10 @@ fn cles_deja_dup(destination: &Path) -> Vec<(&'static str, &'static str, String)
 /// gsettings seulement quand ce chemin ne s'applique pas (schéma inconnu ici, valeur d'un autre type, pas de bus).
 #[cfg(target_os = "linux")]
 fn regler_gsettings(schema: &str, cle: &str, valeur: &str) -> bool {
+    // Sous les essais, aucun réglage réel ne s'écrit, ni par dconf ni par gsettings.
+    if cfg!(test) {
+        return false;
+    }
     match crate::machine::linux::dconf::gsettings_set(schema, cle, valeur) {
         Some(ecrit) => ecrit,
         None => crate::machine::sortie("gsettings", &["set", schema, cle, valeur]).is_some(),

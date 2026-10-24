@@ -102,7 +102,8 @@ pub(crate) fn notifier(titre: &str, corps: &str) {
     // Par D-Bus (org.freedesktop.Notifications.Notify, urgence critique) ; notify-send seulement sans bus de la
     // session joignable par le client maison.
     #[cfg(target_os = "linux")]
-    if crate::machine::linux::dbus::actions::notifier(titre, corps).is_err() {
+    // Sous les essais, ni le bus ni notify-send : aucune vraie notification ne part d'un test.
+    if !cfg!(test) && crate::machine::linux::dbus::actions::notifier(titre, corps).is_err() {
         let _ = crate::commande::lancer(
             // « -- » : un titre ou un corps qui commence par « - » (venu d'une extension) n'est jamais lu comme une
             // option.

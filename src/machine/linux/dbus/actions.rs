@@ -120,7 +120,36 @@ pub(crate) fn prises_de(adresse: &str) -> Vec<Prise> {
         .collect()
 }
 
+/// Le compte du programme à l'autre bout de la prise (SO_PEERCRED) : le bus de la session doit tourner sous le
+/// nôtre, sinon un autre compte qui aurait pris le nom (prise abstraite d'un bus mort) recevrait nos actions.
+fn compte_d_en_face(s: &UnixStream) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: u32::MAX,
+        gid: 0,
+    };
+    let mut taille = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).ok()?;
+    // SAFETY : getsockopt écrit au plus `taille` octets dans `cred`, une structure à nous vivante pendant l'appel, sur
+    // une prise ouverte que `s` garde.
+    let r = unsafe {
+        libc::getsockopt(
+            s.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut cred).cast(),
+            &raw mut taille,
+        )
+    };
+    (r == 0).then_some(cred.uid)
+}
+
 fn connecter(prise: &Prise, uid: u32) -> Option<UnixStream> {
+    let s = connecter_sans_verifier(prise, uid)?;
+    (compte_d_en_face(&s) == Some(uid)).then_some(s)
+}
+
+fn connecter_sans_verifier(prise: &Prise, uid: u32) -> Option<UnixStream> {
     match prise {
         Prise::Chemin(c) => {
             use std::os::unix::fs::MetadataExt;
@@ -342,9 +371,15 @@ pub(crate) fn utilisateur(geste: Geste, unite: &str) -> bool {
     if !ACTION_REELLE.with(std::cell::Cell::get) {
         return false;
     }
-    if let Ok(mut bus) = session_pour_agir() {
-        systemd_sur(&mut bus, geste, unite).is_ok()
-    } else {
+    // Un bus de la session sans le gestionnaire de systemd (dbus-run-session, dbus-launch) : systemctl --user le
+    // joint par sa prise privée.
+    let par_le_bus = session_pour_agir().map(|mut bus| systemd_sur(&mut bus, geste, unite));
+    match par_le_bus {
+        Ok(Ok(())) => return true,
+        Ok(Err(e)) if !super::service_absent(&e.to_string()) => return false,
+        _ => {}
+    }
+    {
         let mut args = vec!["--user"];
         args.extend_from_slice(match geste {
             Geste::Recharger => &["daemon-reload"][..],

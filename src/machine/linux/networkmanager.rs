@@ -134,7 +134,11 @@ pub(crate) fn profils() -> Result<Vec<Profil>, Echec> {
             Vec::new(),
         )
         .map_err(echec)?;
-    let chemins = liste.first().map(Valeur::textes).unwrap_or_default();
+    // Une réponse d'un autre type que « ao » : une erreur, jamais « aucun profil ».
+    let chemins = match liste.first().map(Valeur::nue) {
+        Some(t @ Valeur::Tableau(_)) => t.textes(),
+        _ => return Err(echec("réponse d'un autre type".into())),
+    };
     let mut profils = Vec::new();
     for chemin in chemins.iter().take(PROFILS_MAX) {
         let r = bus.appeler(

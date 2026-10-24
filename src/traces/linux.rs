@@ -218,9 +218,19 @@ pub(super) fn reseau(dossier: &Path) -> Partie {
     let ss = f.commande(Command::new("ss").args(["-tunap"]), 15, prises.is_none());
     if let (Some(natives), Some(ss)) = (&prises, &ss) {
         let outil = reseau_natif::ecoutes_de_ss(ss);
+        // Relu après ss : seule une prise à l'écoute avant ET après lui compte (une prise UDP d'un instant, une
+        // question DNS, n'est pas cachée).
+        let apres: std::collections::HashSet<(bool, u16)> = reseau_natif::prises()
+            .unwrap_or_default()
+            .iter()
+            .filter(|p| p.a_l_ecoute())
+            .map(|p| (p.udp, p.port_local))
+            .collect();
         let mut caches: Vec<String> = natives
             .iter()
-            .filter(|p| p.a_l_ecoute() && !outil.contains(&(p.udp, p.port_local)))
+            .filter(|p| {
+                p.a_l_ecoute() && apres.contains(&(p.udp, p.port_local)) && !outil.contains(&(p.udp, p.port_local))
+            })
             .map(|p| format!("{} {}", if p.udp { "udp" } else { "tcp" }, p.port_local))
             .collect();
         caches.sort();
@@ -464,8 +474,9 @@ const FIN_WTMP: u64 = 32 << 20;
 const LIGNES_CONNEXIONS: usize = 5000;
 
 /// Les secondes de chaque connexion et démarrage listés par `last -F` (la première date de chaque ligne, en heure
-/// locale), pour comparer au relevé de Vanguard.
-fn dates_de_last(sortie: &str) -> Vec<i64> {
+/// locale), pour comparer au relevé de Vanguard. À l'heure ambiguë du passage à l'heure d'hiver, les deux lectures
+/// possibles de la date.
+fn dates_de_last(sortie: &str) -> Vec<Vec<i64>> {
     const JOURS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     sortie
         .lines()
@@ -477,38 +488,51 @@ fn dates_de_last(sortie: &str) -> Vec<i64> {
             let i = mots.iter().position(|m| JOURS.contains(m))?;
             let texte = mots.get(i..i + 5)?.join(" ");
             let d = chrono::NaiveDateTime::parse_from_str(&texte, "%a %b %e %H:%M:%S %Y").ok()?;
-            chrono::TimeZone::from_local_datetime(&chrono::Local, &d)
-                .earliest()
+            let r = chrono::TimeZone::from_local_datetime(&chrono::Local, &d);
+            let mut v: Vec<i64> = [r.earliest(), r.latest()]
+                .into_iter()
+                .flatten()
                 .map(|d| d.timestamp())
+                .collect();
+            v.dedup();
+            (!v.is_empty()).then_some(v)
         })
         .collect()
 }
 
-/// Les connexions et démarrages de wtmp que `last` aurait dû montrer (ceux d'après sa plus ancienne ligne) et qui n'y
-/// sont pas : un `last` remplacé qui cache une session. Comptés par seconde, pour que deux sessions de la même seconde
-/// comptent deux fois.
-fn absentes_de_last(natifs: &[crate::machine::linux::connexions::Enregistrement], last: &[i64]) -> usize {
+/// Les connexions et démarrages de wtmp que `last` aurait dû montrer et qui n'y sont pas : un `last` remplacé qui
+/// cache une session. Comparés par position, pas par l'heure (une horloge qui recule ne trompe pas) : les N derniers
+/// enregistrements que last montre, N le nombre de ses lignes, ou tous s'il en a montré moins que sa borne. Comptés
+/// par seconde, pour que deux sessions de la même seconde comptent deux fois.
+fn absentes_de_last(
+    natifs: &[crate::machine::linux::connexions::Enregistrement],
+    last: &[Vec<i64>],
+    borne: usize,
+) -> usize {
     use crate::machine::linux::connexions::{BOOT_TIME, USER_PROCESS};
-    let Some(&debut) = last.iter().min() else {
-        return 0;
-    };
-    let mut vus: HashMap<i64, usize> = HashMap::new();
-    for t in last {
-        *vus.entry(*t).or_default() += 1;
-    }
-    let mut absentes = 0;
-    for e in natifs {
-        let montree = match e.genre {
+    let montres: Vec<i64> = natifs
+        .iter()
+        .filter(|e| match e.genre {
             BOOT_TIME => true,
             USER_PROCESS => !e.compte.is_empty() && !e.ligne.is_empty() && e.ligne != "~",
             _ => false,
-        };
-        let t = i64::from(e.secondes);
-        if !montree || t <= debut {
-            continue;
-        }
-        match vus.get_mut(&t) {
-            Some(n) if *n > 0 => *n -= 1,
+        })
+        .map(|e| i64::from(e.secondes))
+        .collect();
+    // last s'arrête à sa borne : seuls les plus récents se comparent.
+    let n = if last.len() >= borne {
+        last.len().min(montres.len())
+    } else {
+        montres.len()
+    };
+    let mut vus: HashMap<i64, usize> = HashMap::new();
+    for t in last.iter().flatten() {
+        *vus.entry(*t).or_default() += 1;
+    }
+    let mut absentes = 0;
+    for t in &montres[montres.len() - n..] {
+        match vus.get_mut(t) {
+            Some(k) if *k > 0 => *k -= 1,
             _ => absentes += 1,
         }
     }
@@ -549,6 +573,10 @@ fn evenements_wtmpdb(sessions: &[crate::machine::linux::connexions::Session]) ->
         .iter()
         .filter_map(|s| {
             let quand = s.entree / 1_000_000;
+            // Sans date d'entrée : rien à placer dans la chronologie (pas en 1970).
+            if quand <= 0 {
+                return None;
+            }
             match s.genre {
                 WTMPDB_BOOT_TIME => Some(chronologie::Evenement::new(
                     quand,
@@ -689,6 +717,19 @@ fn sessions_logind(f: &mut Feuille) -> Option<Vec<String>> {
     }
 }
 
+/// Pourquoi une base de connexions n'a pas été lue ici, dans les deux langues (l'outil, à côté, la lit).
+fn raison_base(e: Option<&crate::machine::linux::connexions::PasLue>) -> String {
+    use crate::machine::linux::connexions::PasLue;
+    match e {
+        Some(PasLue::Journal) => "écriture en attente dans son journal / write pending in its journal".into(),
+        Some(PasLue::TropGrosse) => "base trop grosse pour Vanguard / database too big for Vanguard".into(),
+        Some(PasLue::Illisible(x)) => format!("illisible / unreadable : {x}"),
+        Some(PasLue::Absente) => "absente / missing".into(),
+        // Lue, mais pas comprise : abîmée, schéma inattendu, ou plus de lignes que le lecteur n'en lit.
+        None => "base abîmée, d'une autre forme ou trop longue / damaged, unexpected or too long database".into(),
+    }
+}
+
 /// Un écart entre le relevé de Vanguard et l'outil qu'il remplace, pour l'écran.
 fn ecart(f: &mut Feuille, outil: &str, ce_qui: Bi) {
     let _ = writeln!(f.texte, "{}", Raison::Ecart(ce_qui.clone()).note());
@@ -722,7 +763,13 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
                 .collect();
             f.ajouter(&v.iter().map(cx::ligne).collect::<Vec<_>>().join("\n"));
             f.lues += 1;
-            Some(v.len())
+            // who ne montre que les sessions d'un compte dont le processus vit encore : une entrée périmée (terminal
+            // tué) n'est pas un écart.
+            Some(
+                v.iter()
+                    .filter(|e| !e.compte.is_empty() && Path::new(&format!("/proc/{}", e.pid)).exists())
+                    .count(),
+            )
         }
         Err(e) => {
             f.ajouter(&Raison::Erreur(e.to_string()).note());
@@ -732,7 +779,8 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
     let who = f.commande(&mut Command::new("who"), 10, false);
     if let (Some(n), Some(w)) = (ouvertes, &who) {
         let outil = w.lines().filter(|l| !l.trim().is_empty()).count();
-        if outil != n {
+        // Seulement des sessions qui manquent à who (un who construit avec logind peut en montrer davantage).
+        if outil < n {
             ecart(
                 &mut f,
                 "who",
@@ -777,7 +825,7 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
         false,
     );
     if let (Some(n), Some(l)) = (&wtmp, &last) {
-        let absentes = absentes_de_last(n, &dates_de_last(l));
+        let absentes = absentes_de_last(n, &dates_de_last(l), 1000);
         if absentes > 0 {
             ecart(
                 &mut f,
@@ -793,6 +841,7 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
         Err(cx::PasLue::Absente) => None,
         lue => {
             f.section(&format!("{} (wtmpdb, lu par Vanguard / read by Vanguard)", cx::WTMPDB));
+            let pourquoi = raison_base(lue.as_ref().err());
             let sessions = lue.ok().as_deref().and_then(cx::wtmpdb);
             match &sessions {
                 Some(s) => {
@@ -816,10 +865,7 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
                     f.ajouter(&lignes.join("\n"));
                     f.lues += 1;
                 }
-                None => f.ajouter(
-                    &Raison::Erreur("base illisible ou en cours d'écriture / unreadable or being written".into())
-                        .note(),
-                ),
+                None => f.ajouter(&Raison::Erreur(pourquoi.clone()).note()),
             }
             sessions
         }
@@ -834,6 +880,7 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
                 "{} (lastlog2, lu par Vanguard / read by Vanguard)",
                 cx::LASTLOG2
             ));
+            let pourquoi = raison_base(lue.as_ref().err());
             match lue.ok().as_deref().and_then(cx::lastlog2) {
                 Some(l) => {
                     let lignes: Vec<String> = l
@@ -852,10 +899,7 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
                     f.ajouter(&lignes.join("\n"));
                     f.lues += 1;
                 }
-                None => f.ajouter(
-                    &Raison::Erreur("base illisible ou en cours d'écriture / unreadable or being written".into())
-                        .note(),
-                ),
+                None => f.ajouter(&Raison::Erreur(pourquoi.clone()).note()),
             }
         }
     }
@@ -901,15 +945,27 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
     // Pour la chronologie : démarrages et sessions depuis le réseau, lus par Vanguard (wtmp, sinon wtmpdb) ; la
     // sortie de last ou de wtmpdb seulement quand ni l'un ni l'autre ne s'est lu. Et la date des fichiers des
     // comptes, changée par chaque compte créé ou modifié.
+    let wtmpdb_absente = !Path::new(cx::WTMPDB).exists();
     p.evenements = match (&wtmp, &wtmpdb) {
         (Some(n), _) if !n.is_empty() => evenements_wtmp(n),
         (_, Some(s)) => evenements_wtmpdb(s),
-        (Some(n), None) => evenements_wtmp(n),
-        (None, None) => {
+        // wtmp vide et pas de wtmpdb : vraiment rien.
+        (Some(n), None) if wtmpdb_absente => evenements_wtmp(n),
+        // Ni wtmp ni wtmpdb lus ici : la sortie des outils, sinon c'est dit.
+        _ => {
             let sessions = last
                 .filter(|s| !s.trim().is_empty())
                 .or(wtmpdb_outil)
                 .unwrap_or_default();
+            if sessions.trim().is_empty() {
+                p.manques.push(Manque {
+                    quoi: Bi::new(
+                        "Chronologie : démarrages et sessions (wtmp et wtmpdb illisibles)",
+                        "Timeline: boots and sessions (wtmp and wtmpdb unreadable)",
+                    ),
+                    raison: Raison::Introuvable,
+                });
+            }
             chronologie::lire_last(&sessions, chrono::Local::now().naive_local(), &chrono::Local)
         }
     };
@@ -1131,10 +1187,17 @@ fn journal_natif(dossier: &Path, titre: &Bi) -> Option<std::io::Result<JournalNa
     }))
 }
 
-/// Les entrées présentes d'un côté et pas de l'autre, comptées par leur début (date, hôte, identifiant, processus)
-/// sur la période que les deux lectures couvrent (jusqu'à dix secondes avant `fin`, le début de la première
-/// lecture : ce qui s'écrit ensuite n'est que dans la seconde) : (absentes de journalctl, absentes du relevé).
-fn ecarts_du_journal(natifs: &[(i64, String)], temoin: &[(i64, String)], fin: i64) -> (usize, usize) {
+/// Les entrées présentes d'un côté et pas de l'autre, comptées par leur début (date, hôte, identifiant, processus) :
+/// (absentes du témoin, absentes du relevé). La période comparée part du relevé : du plus ancien qu'il a gardé
+/// jusqu'à dix secondes avant `fin`, le début de la première lecture (ce qui s'écrit ensuite n'est que dans la
+/// seconde). Un témoin coupé à sa borne (`temoin_coupe`) ne couvre que ses plus récentes : la période s'arrête alors à
+/// sa plus ancienne. Un témoin vide ne la réduit pas : tout ce que le relevé a manque alors au témoin.
+fn ecarts_du_journal(
+    natifs: &[(i64, String)],
+    temoin: &[(i64, String)],
+    fin: i64,
+    temoin_coupe: bool,
+) -> (usize, usize) {
     fn compter(v: &[(i64, String)], periode: std::ops::Range<i64>) -> HashMap<&str, isize> {
         let mut m: HashMap<&str, isize> = HashMap::new();
         for (q, p) in v {
@@ -1144,11 +1207,14 @@ fn ecarts_du_journal(natifs: &[(i64, String)], temoin: &[(i64, String)], fin: i6
         }
         m
     }
-    let (Some(debut_n), Some(debut_t)) = (natifs.iter().map(|p| p.0).min(), temoin.iter().map(|p| p.0).min()) else {
+    let Some(debut_n) = natifs.iter().map(|p| p.0).min() else {
         return (0, 0);
     };
-    // La plus ancienne seconde de chaque lecture peut être coupée : elle ne compte pas.
-    let debut = debut_n.max(debut_t) + 1;
+    // La plus ancienne seconde peut être coupée : elle ne compte pas.
+    let mut debut = debut_n + 1;
+    if temoin_coupe && let Some(debut_t) = temoin.iter().map(|p| p.0).min() {
+        debut = debut.max(debut_t + 1);
+    }
     let fin = fin - 10;
     let (n, t) = (compter(natifs, debut..fin), compter(temoin, debut..fin));
     let manque = |a: &HashMap<&str, isize>, b: &HashMap<&str, isize>| {
@@ -1184,7 +1250,7 @@ fn temoin_journalctl(p: &mut Partie, dossier: &Path, natifs: &[(i64, String)], d
         // journalctl absent : pas de témoin, rien à comparer.
         Ok(None) => {}
         Err(e) => p.manque(titre, Raison::Erreur(e.to_string())),
-        Ok(Some(_)) => {
+        Ok(Some(ecrit)) => {
             p.fichiers.push(super::Produit {
                 nom: TEMOIN_ECRIT.into(),
                 contenu: Bi::new(
@@ -1194,7 +1260,7 @@ fn temoin_journalctl(p: &mut Partie, dossier: &Path, natifs: &[(i64, String)], d
             });
             let texte = std::fs::read_to_string(dossier.join(TEMOIN_ECRIT)).unwrap_or_default();
             let temoin: Vec<(i64, String)> = texte.lines().filter_map(prefixe).collect();
-            let (cachees, en_plus) = ecarts_du_journal(natifs, &temoin, debut_du_releve);
+            let (cachees, en_plus) = ecarts_du_journal(natifs, &temoin, debut_du_releve, ecrit.tronque);
             if cachees > 0 || en_plus > 0 {
                 p.manque(
                     Bi::new("Comparaison avec « journalctl »", "Comparison with “journalctl”"),
@@ -1506,21 +1572,43 @@ mod tests {
             e(USER_PROCESS, "", "pts/3", 360),
             e(USER_PROCESS, "mallory", "pts/4", 400),
         ];
-        assert_eq!(absentes_de_last(&natifs, &[150, 200, 300, 300, 400]), 0);
+        let l = |v: &[i64]| v.iter().map(|t| vec![*t]).collect::<Vec<_>>();
+        assert_eq!(absentes_de_last(&natifs, &l(&[100, 200, 300, 300, 400]), 1000), 0);
         assert_eq!(
-            absentes_de_last(&natifs, &[150, 200, 300, 400]),
+            absentes_de_last(&natifs, &l(&[100, 200, 300, 400]), 1000),
             1,
             "deux sessions de la même seconde"
         );
-        assert_eq!(absentes_de_last(&natifs, &[150, 200, 300, 300]), 1, "mallory caché");
-        assert_eq!(absentes_de_last(&natifs, &[]), 0);
+        assert_eq!(
+            absentes_de_last(&natifs, &l(&[100, 200, 300, 300]), 1000),
+            1,
+            "mallory caché"
+        );
+        // Un last qui ne montre rien : tout manque.
+        assert_eq!(absentes_de_last(&natifs, &[], 1000), 5);
+        // À sa borne, seuls les plus récents se comparent (ici les 2 derniers).
+        assert_eq!(absentes_de_last(&natifs, &l(&[300, 400]), 2), 0);
+        // Une horloge qui recule : comparé par position, pas par l'heure.
+        let recul = [
+            e(USER_PROCESS, "alice", "pts/0", 900),
+            e(USER_PROCESS, "alice", "pts/1", 50),
+        ];
+        assert_eq!(absentes_de_last(&recul, &l(&[900, 50]), 1000), 0);
+        assert_eq!(
+            absentes_de_last(
+                &natifs,
+                &[vec![150, 100], vec![200], vec![300], vec![300], vec![400]],
+                1000
+            ),
+            0
+        );
         // Les dates de last -F, en heure locale : jours sur un ou deux chiffres, « wtmp begins » sauté.
         let texte = "alice    pts/0        192.0.2.10       Tue Oct  6 23:09:30 2026 - Tue Oct  6 23:10:00 2026  (00:00)\n\
                      reboot   system boot  6.17.1-arch1-1   Sat Oct 24 02:21:00 2026   still running\n\n\
                      wtmp begins Wed Sep  3 13:47:00 2026\n";
         let d = dates_de_last(texte);
         assert_eq!(d.len(), 2);
-        assert_eq!(d[1] - d[0], 17 * 86_400 + 3 * 3600 + 11 * 60 + 30);
+        assert_eq!(d[1][0] - d[0][0], 17 * 86_400 + 3 * 3600 + 11 * 60 + 30);
         // Les événements de wtmp : démarrage et session depuis le réseau, pas la session locale.
         let mut reseau = e(USER_PROCESS, "alice", "pts/0", 500);
         reseau.hote = "192.0.2.10".into();
@@ -1537,6 +1625,13 @@ mod tests {
     /// who, loginctl et last (un écart dirait un outil remplacé, ou une session ouverte entre les deux lectures).
     #[test]
     fn comptes_de_cette_machine() {
+        let present = |c: &str, a: &str| crate::commande::lancer(Command::new(c).arg(a), 10).is_some();
+        if std::fs::read(crate::machine::linux::connexions::UTMP).is_err()
+            || !present("who", "--version")
+            || !present("last", "-n1")
+        {
+            return crate::essais::saute("utmp illisible, ou who et last absents");
+        }
         let dossier = crate::socle::dossier_local().join("traces-comptes");
         std::fs::create_dir_all(&dossier).unwrap();
         let p = comptes(&dossier);
@@ -1558,6 +1653,12 @@ mod tests {
     /// la sortie de systemctl, sur cet ordinateur ; le relevé et son témoin sont écrits.
     #[test]
     fn demarrage_de_cette_machine() {
+        // Les deux côtés doivent se lire, sinon la comparaison passerait à vide.
+        let lu =
+            crate::machine::linux::unites::bus(false).and_then(|mut b| crate::machine::linux::unites::fichiers(&mut b));
+        if !lu.is_ok_and(|f| !f.is_empty()) || crate::machine::sortie("systemctl", &["--version"]).is_none() {
+            return crate::essais::saute("systemd illisible par D-Bus, ou systemctl absent");
+        }
         let dossier = crate::socle::dossier_local().join("traces-demarrage");
         std::fs::create_dir_all(&dossier).unwrap();
         let p = demarrage(&dossier);
@@ -1578,6 +1679,7 @@ mod tests {
     fn lectures_ciblees_comme_journalctl() {
         let maintenant = chronologie::secondes(std::time::SystemTime::now()).unwrap();
         let depuis = u64::try_from(maintenant - chronologie::JOURS * 86_400).unwrap() * 1_000_000;
+        let mut comparees = 0;
         for (_, en, filtres) in LECTURES_CIBLEES {
             let Some(natif) = journal_cible_natif(filtres, depuis) else {
                 return crate::essais::saute("journal illisible ici");
@@ -1589,28 +1691,37 @@ mod tests {
             };
             let n: Vec<(i64, String)> = natif.lines().filter_map(prefixe).collect();
             let t: Vec<(i64, String)> = r.sortie.lines().filter_map(prefixe).collect();
+            comparees += n.len();
             assert_eq!(
-                ecarts_du_journal(&n, &t, maintenant),
+                ecarts_du_journal(&n, &t, maintenant, t.len() >= ENTREES_CIBLEES),
                 (0, 0),
                 "{en} : {} lues, {} par journalctl",
                 n.len(),
                 t.len()
             );
         }
+        // Le noyau écrit au moins quelques lignes par semaine : la comparaison n'a pas tourné à vide.
+        assert!(comparees > 0, "aucune entrée comparée");
         let p = |q: i64, s: &str| (q, s.to_string());
         let natifs = [p(100, "a"), p(200, "b"), p(200, "b"), p(300, "c")];
         assert_eq!(
-            ecarts_du_journal(&natifs, &[p(100, "a"), p(200, "b"), p(300, "c")], 1000),
+            ecarts_du_journal(&natifs, &[p(100, "a"), p(200, "b"), p(300, "c")], 1000, false),
             (1, 0)
         );
         assert_eq!(
-            ecarts_du_journal(&natifs, &[p(150, "z"), p(200, "b"), p(200, "b")], 1000),
-            (1, 0),
-            "c caché"
+            ecarts_du_journal(&natifs, &[p(150, "z"), p(200, "b"), p(200, "b")], 1000, false),
+            (1, 1),
+            "c caché, z en plus"
         );
-        // Les dix dernières secondes et la plus ancienne seconde commune ne comptent pas.
+        // Un témoin vide : tout manque. Coupé à sa borne : seule sa période compte.
+        assert_eq!(ecarts_du_journal(&natifs, &[], 1000, false), (3, 0));
         assert_eq!(
-            ecarts_du_journal(&natifs, &[p(100, "a"), p(200, "b"), p(200, "b")], 305),
+            ecarts_du_journal(&natifs, &[p(200, "b"), p(300, "c")], 1000, true),
+            (0, 0)
+        );
+        // Les dix dernières secondes et la plus ancienne seconde ne comptent pas.
+        assert_eq!(
+            ecarts_du_journal(&natifs, &[p(100, "a"), p(200, "b"), p(200, "b")], 305, false),
             (0, 0)
         );
         assert_eq!(
@@ -1643,6 +1754,9 @@ mod tests {
     /// son témoin sont écrits.
     #[test]
     fn reseau_de_cette_machine() {
+        if crate::machine::linux::reseau_natif::prises().is_none() || crate::machine::sortie("ss", &["-V"]).is_none() {
+            return crate::essais::saute("sock_diag refusé, ou ss absent");
+        }
         let dossier = crate::socle::dossier_local().join("traces-reseau");
         std::fs::create_dir_all(&dossier).unwrap();
         let p = reseau(&dossier);
