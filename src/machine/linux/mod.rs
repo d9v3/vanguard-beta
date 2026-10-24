@@ -31,6 +31,7 @@ mod persistance;
 mod plateforme;
 mod privileges;
 mod regles;
+pub(crate) mod unites;
 pub(crate) mod veilleur;
 pub(crate) mod zstd;
 
@@ -1705,18 +1706,30 @@ fn verrouillage_ecran() -> Option<Constat> {
     })
 }
 
-/// Minuteries systemd (système et utilisateur) : (nom, dernier passage en µs depuis 1970, service lancé, utilisateur ?).
-fn minuteries() -> Vec<(String, u64, String, bool)> {
+/// Les minuteries lues, et les gestionnaires non lus (vrai : celui de l'utilisateur).
+type Minuteries = (Vec<(String, u64, String, bool)>, Vec<bool>);
+
+/// Minuteries systemd (système et utilisateur) : (nom, dernier passage en µs depuis 1970, service lancé, utilisateur ?),
+/// lues par D-Bus (ListUnits, puis LastTriggerUSec et Unit de chaque minuterie), `systemctl list-timers` en secours.
+/// Rend aussi les gestionnaires qui n'ont pu être lus ni par l'un ni par l'autre (« système », « utilisateur ») :
+/// « aucune sauvegarde » n'y serait pas prouvé.
+fn minuteries() -> Minuteries {
     let mut toutes = Vec::new();
+    let mut non_lus = Vec::new();
     for utilisateur in [false, true] {
+        if let Ok(liste) = unites::bus(utilisateur).and_then(|mut b| unites::minuteries(&mut b)) {
+            toutes.extend(liste.into_iter().map(|m| (m.nom, m.dernier, m.service, utilisateur)));
+            continue;
+        }
         let mut args = vec!["list-timers", "--all", "--output=json"];
         if utilisateur {
             args.insert(0, "--user");
         }
-        let Some(json) = sortie("systemctl", &args) else {
-            continue;
-        };
-        let Ok(serde_json::Value::Array(liste)) = serde_json::from_str::<serde_json::Value>(&json) else {
+        let Some(liste) = sortie("systemctl", &args).and_then(|json| match serde_json::from_str(&json) {
+            Ok(serde_json::Value::Array(l)) => Some(l),
+            _ => None,
+        }) else {
+            non_lus.push(utilisateur);
             continue;
         };
         for t in liste {
@@ -1725,7 +1738,19 @@ fn minuteries() -> Vec<(String, u64, String, bool)> {
             toutes.push((nom, t["last"].as_u64().unwrap_or(0), service, utilisateur));
         }
     }
-    toutes
+    (toutes, non_lus)
+}
+
+/// Le résultat du dernier passage d'un service (« success »…), par D-Bus, `systemctl show -p Result` en secours.
+fn resultat_du_service(service: &str, utilisateur: bool) -> Option<String> {
+    if let Ok(mut b) = unites::bus(utilisateur) {
+        return unites::resultat(&mut b, service);
+    }
+    let mut args = vec!["show", service, "-p", "Result", "--value"];
+    if utilisateur {
+        args.insert(0, "--user");
+    }
+    sortie("systemctl", &args).map(|r| r.trim().to_string())
 }
 
 /// Une minuterie de sauvegarde ? `Some(true)` = vraie sauvegarde, `Some(false)` = instantanés sur le même disque.
@@ -1762,7 +1787,7 @@ fn sauvegardes() -> Constat {
     let maintenant = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_micros()).unwrap_or(u64::MAX));
-    let toutes = minuteries();
+    let (toutes, non_lus) = minuteries();
     let vraies: Vec<_> = toutes.iter().filter(|t| type_sauvegarde(&t.0) == Some(true)).collect();
     let instantanes = toutes.iter().any(|t| type_sauvegarde(&t.0) == Some(false));
     let Some(meilleure) = vraies.iter().filter(|t| t.1 > 0).max_by_key(|t| t.1) else {
@@ -1783,6 +1808,17 @@ fn sauvegardes() -> Constat {
                 tr!("Seulement des instantanés snapper, sur le même disque : ils ne protègent ni d'une panne de disque ni d'un vol.", "Only snapper snapshots, on the same disk: they protect neither against a disk failure nor against theft."),
             )
             .manuel(tr!("Ajouter une vraie sauvegarde vers un autre disque : menu Données et sauvegardes › Sauvegarde automatique, ou restic, Borg, Timeshift…", "Add a real backup to another disk: menu Data › Automatic backup, or restic, Borg, Timeshift…"), &[])
+        } else if !non_lus.is_empty() {
+            // Un gestionnaire qui ne répond pas (bus de la session absent, sous sudo) peut porter la sauvegarde :
+            // « aucune » n'est pas prouvé.
+            impossible(
+                "Sauvegardes",
+                if non_lus.contains(&true) {
+                    tr!("minuteries de l'utilisateur illisibles", "user timers unreadable")
+                } else {
+                    tr!("minuteries du système illisibles", "system timers unreadable")
+                },
+            )
         } else {
             alerte("Sauvegardes", Niveau::Moyen, tr!("Aucune sauvegarde automatique détectée.", "No automatic backup detected.")).manuel(
                 tr!("Mettre en place une sauvegarde vers un autre disque : menu Données et sauvegardes › Sauvegarde automatique, ou restic, Borg, Timeshift…", "Set up a backup to another disk: menu Data › Automatic backup, or restic, Borg, Timeshift…"),
@@ -1791,11 +1827,7 @@ fn sauvegardes() -> Constat {
         };
     };
     let (nom, dernier, service, utilisateur) = meilleure;
-    let mut args = vec!["show", service.as_str(), "-p", "Result", "--value"];
-    if *utilisateur {
-        args.insert(0, "--user");
-    }
-    let resultat = sortie("systemctl", &args).map(|r| r.trim().to_string());
+    let resultat = resultat_du_service(service, *utilisateur);
     let age = maintenant.saturating_sub(*dernier) / 86_400_000_000;
     let quand = if age == 0 {
         tr!("aujourd'hui", "today").to_string()

@@ -2,6 +2,7 @@
 //! les fichiers de démarrage, les comptes et leurs connexions, le journal de systemd.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -235,10 +236,18 @@ pub(super) fn demarrage(dossier: &Path) -> Partie {
     let mut p = Partie::new(Bi::new("Ce qui se lance tout seul", "What starts by itself"));
     let mut f = Feuille::new(&p.titre);
     let m = maison();
-    f.commande(
+    // Le relevé de Vanguard (D-Bus) d'abord, la sortie de systemctl ensuite, en témoin.
+    let systeme = releve_systemd(&mut f, false);
+    let outil = f.commande(
         Command::new("systemctl").args(["list-unit-files", "--no-pager", "--full"]),
         20,
-        true,
+        systeme.is_none(),
+    );
+    comparer_fichiers_d_unites(
+        &mut f,
+        systeme.as_deref(),
+        outil.as_deref(),
+        "systemctl list-unit-files",
     );
     f.commande(
         Command::new("systemctl").args(["list-units", "--all", "--no-pager", "--full", "--plain"]),
@@ -250,10 +259,17 @@ pub(super) fn demarrage(dossier: &Path) -> Partie {
         20,
         false,
     );
-    f.commande(
+    let utilisateur = releve_systemd(&mut f, true);
+    let outil = f.commande(
         Command::new("systemctl").args(["--user", "list-unit-files", "--no-pager", "--full"]),
         20,
         false,
+    );
+    comparer_fichiers_d_unites(
+        &mut f,
+        utilisateur.as_deref(),
+        outil.as_deref(),
+        "systemctl --user list-unit-files",
     );
     // Les unités posées à la main (hors paquets) : là où une persistance s'installe. Dans leurs dossiers .wants, la
     // date de chaque lien est celle où le service a été activé : la chronologie la reprend.
@@ -277,13 +293,92 @@ pub(super) fn demarrage(dossier: &Path) -> Partie {
         "03-demarrage.txt",
         &f.texte,
         Bi::new(
-            "ce qui se lance tout seul, tel quel : unités et minuteries de systemd (et services activés, dossiers .wants), tâches cron, démarrage de session (autostart), bibliothèque préchargée (ld.so.preload), fichiers du shell, clés SSH autorisées, modules du noyau chargés",
-            "what starts by itself, as is: systemd units and timers (and enabled services, .wants folders), cron jobs, session autostart, preloaded library (ld.so.preload), shell files, authorized SSH keys, loaded kernel modules",
+            "ce qui se lance tout seul : unités et minuteries de systemd lues par Vanguard (D-Bus), avec la sortie de systemctl à côté en témoin (et services activés, dossiers .wants), tâches cron, démarrage de session (autostart), bibliothèque préchargée (ld.so.preload), fichiers du shell, clés SSH autorisées, modules du noyau chargés",
+            "what starts by itself: systemd units and timers read by Vanguard (D-Bus), with the output of systemctl alongside as a witness (and enabled services, .wants folders), cron jobs, session autostart, preloaded library (ld.so.preload), shell files, authorized SSH keys, loaded kernel modules",
         ),
     ) {
         p.compte = Some(bi!("{} source(s) lue(s)", "{} source(s) read", f.lues));
     }
     p
+}
+
+/// Le gestionnaire systemd du système (ou de l'utilisateur) lu par D-Bus dans la feuille : fichiers d'unités et leur
+/// état (ListUnitFiles), unités chargées (ListUnits), minuteries (Timer). Rend les noms des fichiers d'unités lus ;
+/// `None` : illisible, et c'est écrit (sous sudo, le gestionnaire de l'utilisateur n'est pas joignable : un manque,
+/// pas « aucune unité »).
+fn releve_systemd(f: &mut Feuille, utilisateur: bool) -> Option<Vec<String>> {
+    use crate::machine::linux::{connexions::date, unites};
+    let qui = if utilisateur { "--user" } else { "système / system" };
+    f.section(&format!(
+        "systemd {qui} : ListUnitFiles, ListUnits, Timer (lu par Vanguard / read by Vanguard)"
+    ));
+    let lu = unites::bus(utilisateur).and_then(|mut b| {
+        let fichiers = unites::fichiers(&mut b)?;
+        let chargees = unites::unites(&mut b)?;
+        let minuteries = unites::minuteries(&mut b)?;
+        Ok((fichiers, chargees, minuteries))
+    });
+    let (fichiers, chargees, minuteries) = match lu {
+        Ok(l) => l,
+        Err(e) => {
+            f.ajouter(&Raison::Erreur(e.to_string()).note());
+            if utilisateur {
+                f.manques.push(Manque {
+                    quoi: Bi::new("Unités de systemd de l'utilisateur", "User systemd units"),
+                    raison: Raison::Erreur(e.to_string()),
+                });
+            }
+            return None;
+        }
+    };
+    let us = |t: u64| {
+        if t == 0 {
+            "-".to_string()
+        } else {
+            i64::try_from(t / 1_000_000).map(date).unwrap_or_default()
+        }
+    };
+    let mut texte = String::from("# fichiers / unit files\n");
+    for (chemin, etat) in &fichiers {
+        let _ = writeln!(texte, "{}\t{etat}\t{chemin}", unites::nom_de(chemin));
+    }
+    texte.push_str("\n# chargées / loaded\n");
+    for u in &chargees {
+        let _ = writeln!(
+            texte,
+            "{}\t{}\t{}\t{}\t{}",
+            u.nom, u.chargement, u.activite, u.sous_etat, u.description
+        );
+    }
+    texte.push_str("\n# minuteries / timers (prochain, dernier, unité, lance)\n");
+    for m in &minuteries {
+        let _ = writeln!(texte, "{}\t{}\t{}\t{}", us(m.prochain), us(m.dernier), m.nom, m.service);
+    }
+    f.ajouter(&texte);
+    f.lues += 1;
+    Some(fichiers.iter().map(|(c, _)| unites::nom_de(c).to_string()).collect())
+}
+
+/// Les fichiers d'unités vus par D-Bus et absents de la sortie de systemctl : un systemctl remplacé qui cache une
+/// unité posée pour durer.
+fn comparer_fichiers_d_unites(f: &mut Feuille, natifs: Option<&[String]>, outil: Option<&str>, nom: &str) {
+    let (Some(natifs), Some(outil)) = (natifs, outil) else {
+        return;
+    };
+    let vus: std::collections::HashSet<&str> = outil.lines().filter_map(|l| l.split_whitespace().next()).collect();
+    let mut caches: Vec<&String> = natifs.iter().filter(|n| !vus.contains(n.as_str())).collect();
+    caches.dedup();
+    if !caches.is_empty() {
+        let n = caches.len();
+        ecart(
+            f,
+            nom,
+            bi!(
+                "{n} fichiers d'unités vus par D-Bus, absents de systemctl",
+                "{n} unit files seen by D-Bus, missing from systemctl"
+            ),
+        );
+    }
 }
 
 /// Les dossiers « .wants » et « .requires » d'un dossier d'unités : un lien par service activé.
@@ -536,7 +631,7 @@ fn sessions_logind(f: &mut Feuille) -> Option<Vec<String>> {
 
 /// Un écart entre le relevé de Vanguard et l'outil qu'il remplace, pour l'écran.
 fn ecart(f: &mut Feuille, outil: &str, ce_qui: Bi) {
-    let _ = std::fmt::Write::write_fmt(&mut f.texte, format_args!("{}\n", Raison::Ecart(ce_qui.clone()).note()));
+    let _ = writeln!(f.texte, "{}", Raison::Ecart(ce_qui.clone()).note());
     f.manques.push(Manque {
         quoi: bi!("Comparaison avec « {outil} »", "Comparison with “{outil}”"),
         raison: Raison::Ecart(ce_qui),
@@ -1167,6 +1262,23 @@ mod tests {
             texte.contains("/run/utmp") && texte.contains("$ who"),
             "le relevé et son témoin"
         );
+    }
+
+    /// L'oracle du démarrage : les fichiers d'unités du système et de l'utilisateur lus par D-Bus, tous présents dans
+    /// la sortie de systemctl, sur cet ordinateur ; le relevé et son témoin sont écrits.
+    #[test]
+    fn demarrage_de_cette_machine() {
+        let dossier = crate::socle::dossier_local().join("traces-demarrage");
+        std::fs::create_dir_all(&dossier).unwrap();
+        let p = demarrage(&dossier);
+        let ecarts: Vec<_> = p
+            .manques
+            .iter()
+            .filter(|m| matches!(m.raison, Raison::Ecart(_)))
+            .collect();
+        assert!(ecarts.is_empty(), "{ecarts:?}");
+        let texte = std::fs::read_to_string(dossier.join("03-demarrage.txt")).unwrap();
+        assert!(texte.contains("ListUnitFiles") && texte.contains("$ systemctl list-unit-files"));
     }
 
     #[test]
