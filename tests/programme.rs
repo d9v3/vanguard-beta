@@ -297,6 +297,9 @@ fn sous_menu_optimiser() {
 
 #[test]
 fn logiciels_listes_sans_rien_installer() {
+    if optimiser_refuse_ici() {
+        return essais::saute(REFUS_OPTIMISER);
+    }
     let s = vanguard("fr", &["logiciels", "--liste"], "", 120);
     let t = sans_couleurs(&s.texte);
     assert_eq!(s.code, Some(0), "{}", s.erreurs);
@@ -311,6 +314,9 @@ fn logiciels_listes_sans_rien_installer() {
 
 #[test]
 fn nettoyer_mesure_puis_refus() {
+    if optimiser_refuse_ici() {
+        return essais::saute(REFUS_OPTIMISER);
+    }
     let liste = vanguard("fr", &["nettoyer", "--liste"], "", 120);
     assert_eq!(liste.code, Some(0), "{}", liste.erreurs);
     assert!(sans_couleurs(&liste.texte).contains("Rien n'a été effacé"));
@@ -456,11 +462,13 @@ fn lenteur_fiche_depanner_et_copie_sans_rien_changer() {
         fiche.get("processeur").is_some() && fiche.get("series").is_none(),
         "{fiche}"
     );
-    // Pourquoi c'est lent : la mesure et ses sections, en lecture seule.
-    let lenteur = vanguard("fr", &["lenteur"], "", 120);
-    assert_eq!(lenteur.code, Some(0), "{}", lenteur.erreurs);
-    let texte = sans_couleurs(&lenteur.texte);
-    assert!(texte.contains("EN CE MOMENT") && texte.contains("DÉMARRAGE"), "{texte}");
+    // Pourquoi c'est lent : la mesure et ses sections, en lecture seule (refusé, voulu, sur un Windows élevé avec l'UAC).
+    if !optimiser_refuse_ici() {
+        let lenteur = vanguard("fr", &["lenteur"], "", 120);
+        assert_eq!(lenteur.code, Some(0), "{}", lenteur.erreurs);
+        let texte = sans_couleurs(&lenteur.texte);
+        assert!(texte.contains("EN CE MOMENT") && texte.contains("DÉMARRAGE"), "{texte}");
+    }
     // Un sujet de dépannage inconnu : la liste des sujets, dans la langue de l'interface.
     let depanner = vanguard("en", &["troubleshoot", "nimportequoi"], "", 30);
     assert_eq!(depanner.code, Some(0), "{}", depanner.erreurs);
@@ -490,6 +498,9 @@ fn lenteur_fiche_depanner_et_copie_sans_rien_changer() {
 
 #[test]
 fn gaming_quitte_sans_rien_installer() {
+    if optimiser_refuse_ici() {
+        return essais::saute(REFUS_OPTIMISER);
+    }
     let s = vanguard("fr", &["jeux"], "\n", 120);
     let t = sans_couleurs(&s.texte);
     assert_eq!(s.code, Some(0), "{}", s.erreurs);
@@ -825,6 +836,9 @@ fn verifier_moi_en_lecture_seule() {
 /// Programmes au démarrage : la liste se montre, et Entrée sans rien décocher ne change rien.
 #[test]
 fn demarrage_sans_rien_changer() {
+    if optimiser_refuse_ici() {
+        return essais::saute(REFUS_OPTIMISER);
+    }
     let s = vanguard("fr", &["demarrage"], "\n", 60);
     assert_eq!(s.code, Some(0), "{}", s.erreurs);
     let t = sans_couleurs(&s.texte);
@@ -1917,6 +1931,85 @@ fn en_root() -> bool {
     false
 }
 
+const REFUS_OPTIMISER: &str =
+    "Windows élevé avec l'UAC : les outils d'Optimiser refusent, voulu (refus_d_optimiser_en_administrateur)";
+
+/// Les outils d'Optimiser refusés ici ? Attendu d'après Windows lui-même, pas d'après Vanguard : élevé (`windows_eleve`)
+/// avec l'UAC (`uac_actif`), le compte a aussi un jeton ordinaire. `jeux` lancé une fois doit alors refuser (code 2 et
+/// la raison), et sinon tourner : un refus à tort serait un échec, pas des essais sautés. Sous Linux, les essais ne
+/// tournent jamais en root venu de sudo (`unshare -rn` n'est pas root de l'ordinateur).
+fn optimiser_refuse_ici() -> bool {
+    static REFUSE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *REFUSE.get_or_init(|| {
+        if !windows_eleve() {
+            return false;
+        }
+        let attendu = uac_actif();
+        let s = vanguard("fr", &["jeux"], "", 60);
+        let refuse = s.code == Some(2)
+            && espaces_unis(&s.erreurs).contains("les outils d'Optimiser refusent de tourner avec tous les droits");
+        assert_eq!(
+            refuse, attendu,
+            "Windows élevé, UAC actif : {attendu} ; jeux : {:?} {}",
+            s.code, s.erreurs
+        );
+        refuse
+    })
+}
+
+/// Le texte sur une ligne : un avertissement enveloppé à la largeur de l'écran se relit comme une phrase.
+fn espaces_unis(t: &str) -> String {
+    t.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// L'UAC est-il allumé (EnableLUA ≠ 0) ? Lu par reg.exe, sans Vanguard.
+#[cfg(windows)]
+fn uac_actif() -> bool {
+    let systeme = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+    std::process::Command::new(Path::new(&systeme).join("System32").join("reg.exe"))
+        .args([
+            "query",
+            r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System",
+            "/v",
+            "EnableLUA",
+        ])
+        .output()
+        .is_ok_and(|o| !String::from_utf8_lossy(&o.stdout).contains("0x0"))
+}
+#[cfg(not(windows))]
+fn uac_actif() -> bool {
+    false
+}
+
+/// Élevé avec l'UAC, un outil d'Optimiser refuse avant tout geste : code 2, la raison sur la sortie d'erreur, rien à
+/// l'écran ; « optimiser annuler » (Tout remettre comme avant) n'est pas refusé.
+#[test]
+fn refus_d_optimiser_en_administrateur() {
+    if !optimiser_refuse_ici() {
+        return essais::saute("pas un Windows élevé avec l'UAC : rien n'est refusé ici");
+    }
+    for args in [
+        &["nettoyer", "--liste"][..],
+        &["lenteur", "--json"],
+        &["optimiser", "confort"],
+    ] {
+        let s = vanguard("en", args, "", 60);
+        assert_eq!(s.code, Some(2), "{args:?}");
+        assert!(
+            espaces_unis(&s.erreurs).contains("Optimize tools refuse to run with full administrator rights"),
+            "{args:?} : {}",
+            s.erreurs
+        );
+        assert!(!s.texte.contains("Nothing was deleted"), "{args:?} : {}", s.texte);
+    }
+    let annuler = vanguard("fr", &["optimiser", "annuler"], "n\n", 60);
+    assert!(
+        !espaces_unis(&annuler.erreurs).contains("refusent de tourner"),
+        "{}",
+        annuler.erreurs
+    );
+}
+
 /// Sous Windows, le programme tourne-t-il élevé (administrateur) ? Comme `processus::eleve` (TokenElevation) : un
 /// jeton élevé porte le niveau d'intégrité haut, S-1-16-12288, que `whoami /groups` montre quelle que soit la langue
 /// (`net session` répondait aussi sous Wine, où Vanguard ne se voit pas élevé). Pas dans `en_root` : l'autotest, lui,
@@ -2130,6 +2223,9 @@ fn diagnostic_en_json() {
 /// `lenteur --json` : la mesure de deux secondes jugée, sans le menu des outils.
 #[test]
 fn lenteur_en_json() {
+    if optimiser_refuse_ici() {
+        return essais::saute(REFUS_OPTIMISER);
+    }
     examen_en_json("lenteur", "PRO-LEN-001");
 }
 
@@ -2194,6 +2290,9 @@ fn bilan_confidentialite_en_json() {
 /// `test-connexion --json` hors ligne : rien ne part, tout est non vérifié, jamais un « bon » qu'il n'a pas mesuré.
 #[test]
 fn test_connexion_en_json() {
+    if optimiser_refuse_ici() {
+        return essais::saute(REFUS_OPTIMISER);
+    }
     let v = resultat_json(
         &["test-connexion", "--json"],
         &[("VANGUARD_HORS_LIGNE", "1")],

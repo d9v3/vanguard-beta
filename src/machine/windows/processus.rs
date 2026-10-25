@@ -211,6 +211,14 @@ pub(crate) fn eleve_ou_inconnu() -> bool {
     jeton(ELEVATION).is_none_or(|t| t.first().is_none_or(|&m| m & 0xFFFF_FFFF != 0))
 }
 
+/// Le type d'élévation du jeton (TokenElevationType) : 1, aucun jeton séparé (UAC coupé, compte Administrateur
+/// intégré : ce compte n'a pas de jeton ordinaire) ; 2, le jeton élevé d'une session qui a aussi un jeton ordinaire ;
+/// 3, ce jeton ordinaire. `None` si Windows refuse.
+pub(crate) fn type_d_elevation() -> Option<u32> {
+    const TYPE_D_ELEVATION: u32 = 18;
+    jeton(TYPE_D_ELEVATION).and_then(|t| t.first().and_then(|&m| u32::try_from(m & 0xFFFF_FFFF).ok()))
+}
+
 /// Le SID du compte de ce processus (« S-1-5-21-… »), comme « whoami /user » le donne. Seulement des chiffres et des
 /// tirets après « S-1- » : il entre tel quel dans une commande PowerShell.
 pub(crate) fn sid() -> Option<String> {

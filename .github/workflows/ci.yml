@@ -334,8 +334,14 @@ jobs:
           & $s --version
           & $s audit --json > audit.json
           Get-Content audit.json -TotalCount 40
-          & $s logiciels --liste
-          & $s nettoyer --liste
+          # Un Windows élevé avec l'UAC refuse les outils d'Optimiser (code 2, voulu) : dit, pas un échec.
+          foreach ($outil in 'logiciels', 'nettoyer') {
+            $sortie = (& $s $outil --liste 2>&1 | Out-String) -replace '\s+', ' '
+            if ($LASTEXITCODE -eq 2 -and $sortie -match 'refusent de tourner|refuse to run') {
+              "::notice::$outil --liste refusé en administrateur (UAC) : voulu"
+            } elseif ($LASTEXITCODE -ne 0) { throw "$outil --liste : code $LASTEXITCODE" } else { $sortie }
+          }
+          $global:LASTEXITCODE = 0
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -368,8 +374,14 @@ jobs:
           if (-not $bilan.constats) { throw "bilan sans constats" }
           $aide = (& $s --help | Out-String)
           if ($aide -notmatch 'Cyberdéfense') { throw "accents perdus dans l'aide (manifeste UTF-8 ?) : $aide" }
-          & $s logiciels --liste
-          & $s nettoyer --liste
+          # Un Windows élevé avec l'UAC refuse les outils d'Optimiser (code 2, voulu) : dit, pas un échec.
+          foreach ($outil in 'logiciels', 'nettoyer') {
+            $sortie = (& $s $outil --liste 2>&1 | Out-String) -replace '\s+', ' '
+            if ($LASTEXITCODE -eq 2 -and $sortie -match 'refusent de tourner|refuse to run') {
+              "::notice::$outil --liste refusé en administrateur (UAC) : voulu"
+            } elseif ($LASTEXITCODE -ne 0) { throw "$outil --liste : code $LASTEXITCODE" } else { $sortie }
+          }
+          $global:LASTEXITCODE = 0
       - uses: actions/upload-artifact@v7
         if: always()
         with:

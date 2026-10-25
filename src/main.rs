@@ -941,25 +941,123 @@ fn nommer(appareil: &str, surnom: &str) {
     }
 }
 
-/// Lancé en root (sudo) : Vanguard n'en a pas besoin, et une sortie piégée aurait tous les droits. Dit, jamais imposé :
-/// sans session graphique ni agent polkit, pkexec ne peut rien demander, et « sudo vanguard » est alors la seule façon
-/// de corriger. Sous Windows, une console administrateur est l'habitude de certains : rien d'alarmant.
-#[cfg(unix)]
-fn avertir_si_root() {
-    // SAFETY : geteuid ne prend aucun argument et ne touche aucune mémoire ; il rend l'identifiant effectif du processus.
-    if unsafe { libc::geteuid() } != 0 {
-        return;
-    }
-    for (i, ligne) in envelopper(
-        tr!(
-            "Vanguard tourne en root (sudo) : il n'en a pas besoin, chaque correction demande le mot de passe au moment voulu, et une sortie piégée aurait ici tous les droits. Relancez-le sans sudo, sauf si aucune fenêtre ne peut demander le mot de passe sur cet ordinateur (pas de session graphique) : alors continuez.",
-            "Vanguard is running as root (sudo): it does not need it, each fix asks for the password when needed, and a booby-trapped output would have every right here. Start it again without sudo, unless no window can ask for the password on this computer (no graphical session): then carry on."
-        ),
-        LARGEUR - 4,
-    )
-    .into_iter()
-    .enumerate()
+/// Vanguard lui-même en administrateur : root ou setuid (compte effectif ≠ compte réel), console administrateur
+/// sous Windows. Un jeton illisible compte pour élevé : c'est un garde-fou, il échoue fermé.
+fn processus_eleve() -> bool {
+    #[cfg(unix)]
     {
+        // SAFETY : geteuid et getuid ne prennent aucun argument, ne touchent aucune mémoire et ne peuvent pas échouer.
+        let (effectif, reel) = unsafe { (libc::geteuid(), libc::getuid()) };
+        (effectif == 0 && !root_d_un_espace_de_noms()) || effectif != reel
+    }
+    #[cfg(windows)]
+    {
+        machine::windows::processus::eleve_ou_inconnu()
+    }
+}
+
+/// Root seulement dans un espace de noms d'utilisateurs (« unshare -r », conteneur sans droits) : le compte 0 y est
+/// un compte ordinaire de l'ordinateur, sans aucun droit sur lui.
+#[cfg(unix)]
+fn root_d_un_espace_de_noms() -> bool {
+    std::fs::read_to_string("/proc/self/uid_map").is_ok_and(|t| root_hors_de_l_espace(&t) == Some(false))
+}
+
+/// Le compte 0 de cet espace est-il le root de l'ordinateur ? D'après /proc/self/uid_map (« dedans dehors nombre »
+/// par ligne) ; `None` si 0 n'y est pas.
+#[cfg(any(unix, test))]
+fn root_hors_de_l_espace(uid_map: &str) -> Option<bool> {
+    uid_map.lines().find_map(|l| {
+        let mut champs = l.split_whitespace().map(str::parse::<u64>);
+        let (Some(Ok(dedans)), Some(Ok(dehors)), Some(Ok(nombre))) = (champs.next(), champs.next(), champs.next())
+        else {
+            return None;
+        };
+        (dedans == 0 && nombre > 0).then_some(dehors == 0)
+    })
+}
+
+/// Vanguard élevé l'a-t-il été depuis un compte ordinaire, qui pourrait le relancer sans droits et ne demander les
+/// droits qu'au moment voulu ? Windows : un jeton élevé séparé par l'UAC (type 2), ou illisible (échoue fermé) ; pas
+/// sans UAC ni pour le compte Administrateur intégré, qui n'ont pas de jeton ordinaire. Ailleurs : venu de sudo, run0,
+/// pkexec ou doas, ou d'une session ouverte par un autre compte (`venu_d_un_autre_compte`) ; pas « ssh root@ » ni un
+/// conteneur où root est le seul compte.
+fn droits_demandables() -> bool {
+    #[cfg(unix)]
+    {
+        let variables = ["SUDO_UID", "PKEXEC_UID", "DOAS_USER"]
+            .iter()
+            .any(|v| std::env::var_os(v).is_some());
+        let session = std::fs::read_to_string("/proc/self/loginuid")
+            .ok()
+            .and_then(|t| t.trim().parse::<u32>().ok());
+        venu_d_un_autre_compte(variables, session)
+    }
+    #[cfg(windows)]
+    {
+        machine::windows::processus::type_d_elevation() != Some(1)
+    }
+}
+
+/// `variables` : SUDO_UID, PKEXEC_UID ou DOAS_USER présentes (run0 pose aussi SUDO_UID) ; `session` : le compte qui a
+/// ouvert la session (/proc/self/loginuid, Linux ; 4294967295 : aucun).
+#[cfg(any(unix, test))]
+fn venu_d_un_autre_compte(variables: bool, session: Option<u32>) -> bool {
+    variables || session.is_some_and(|u| u != 0 && u != u32::MAX)
+}
+
+/// Les outils d'Optimiser installent, effacent, changent des réglages ou lisent ce que le réseau leur envoie : rien
+/// de cela n'a à tourner avec tous les droits dans le processus, chaque geste d'administrateur est demandé à part.
+/// Refusés quand Vanguard est déjà élevé depuis un compte ordinaire (`droits_demandables`) ; là où ce compte n'existe
+/// pas (root seul, Windows sans UAC), le refus ne protégerait rien : l'outil tourne, avec l'avertissement.
+fn optimiser_refuse(eleve: bool, demandables: bool) -> bool {
+    eleve && demandables
+}
+
+fn texte_refus_optimiser() -> &'static str {
+    if cfg!(windows) {
+        tr!(
+            "Vanguard tourne en administrateur : les outils d'Optimiser refusent de tourner avec tous les droits (ils installent, effacent, changent des réglages ou lisent ce que le réseau envoie). Relancez Vanguard normalement (double-clic, ou une console ordinaire) : chaque outil demandera l'autorisation de Windows au moment voulu.",
+            "Vanguard is running as administrator: the Optimize tools refuse to run with full administrator rights (they install, delete, change settings or read what the network sends). Start Vanguard again normally (double-click, or an ordinary console): each tool will ask for Windows' permission when needed."
+        )
+    } else {
+        tr!(
+            "Vanguard tourne en root (sudo) : les outils d'Optimiser refusent de tourner avec tous les droits (ils installent, effacent, changent des réglages ou lisent ce que le réseau envoie). Relancez Vanguard sans sudo : chaque outil demandera le mot de passe au moment voulu.",
+            "Vanguard is running as root (sudo): the Optimize tools refuse to run with full administrator rights (they install, delete, change settings or read what the network sends). Start Vanguard again without sudo: each tool will ask for the password when needed."
+        )
+    }
+}
+
+/// Un outil d'Optimiser demandé alors qu'il est refusé (`optimiser_refuse`) : le refus est dit, et l'outil ne part pas.
+fn refuser_optimiser() -> bool {
+    if !optimiser_refuse(processus_eleve(), droits_demandables()) {
+        return false;
+    }
+    avertir(texte_refus_optimiser());
+    true
+}
+
+/// Une sous-commande d'un outil d'Optimiser (`optimiser_refuse`) ; « optimiser annuler » n'en est pas une : c'est
+/// « Tout remettre comme avant », qui doit marcher en urgence. Le test `commandes_d_optimiser` la compare à la table.
+fn commande_d_optimiser(c: &Commande) -> bool {
+    match c {
+        Commande::Optimiser { quoi } => !matches!(quoi.as_deref(), Some("annuler" | "undo")),
+        Commande::Logiciels { .. }
+        | Commande::Nettoyer { .. }
+        | Commande::Lenteur { .. }
+        | Commande::Demarrage
+        | Commande::Gaming
+        | Commande::DnsRapide
+        | Commande::Connexion { .. }
+        | Commande::Nat
+        | Commande::Canaux => true,
+        _ => false,
+    }
+}
+
+/// Un avertissement, enveloppé, sur la sortie d'erreur.
+fn avertir(texte: &str) {
+    for (i, ligne) in envelopper(texte, LARGEUR - 4).into_iter().enumerate() {
         if i == 0 {
             eprintln!("  {}⚠{RESET} {ligne}", couleur(risk::Niveau::Moyen));
         } else {
@@ -968,8 +1066,32 @@ fn avertir_si_root() {
     }
 }
 
-#[cfg(windows)]
-fn avertir_si_root() {}
+/// Lancé en administrateur : Vanguard n'en a pas besoin (chaque correction demande les droits au moment voulu, par
+/// pkexec, run0 ou sudo dans le terminal, ou l'UAC), et une sortie piégée aurait ici tous les droits. Dit, jamais
+/// imposé ; seuls les outils d'Optimiser refusent, et seulement là où un compte ordinaire existe (`optimiser_refuse`).
+fn avertir_si_eleve() {
+    if !processus_eleve() {
+        return;
+    }
+    avertir(match (cfg!(windows), droits_demandables()) {
+        (true, true) => tr!(
+            "Vanguard tourne en administrateur : il n'en a pas besoin, chaque correction demande l'autorisation de Windows au moment voulu. Les outils d'Optimiser refuseront : relancez-le normalement pour eux.",
+            "Vanguard is running as administrator: it does not need it, each fix asks for Windows' permission when needed. The Optimize tools will refuse: start it again normally for them."
+        ),
+        (true, false) => tr!(
+            "Vanguard tourne en administrateur sans contrôle de compte (UAC coupé, ou compte Administrateur intégré) : il continue ainsi, mais une sortie piégée aurait ici tous les droits. Mieux vaut un compte ordinaire, avec l'UAC.",
+            "Vanguard is running as administrator without account control (UAC off, or the built-in Administrator account): it carries on this way, but a booby-trapped output would have full administrator rights here. An ordinary account, with UAC, is better."
+        ),
+        (false, true) => tr!(
+            "Vanguard tourne en root (sudo) : il n'en a pas besoin, chaque correction demande le mot de passe au moment voulu (même sans session graphique), et une sortie piégée aurait ici tous les droits. Relancez-le sans sudo ; les outils d'Optimiser refuseront sinon.",
+            "Vanguard is running as root (sudo): it does not need it, each fix asks for the password when needed (even without a graphical session), and a booby-trapped output would have full administrator rights here. Start it again without sudo; otherwise the Optimize tools will refuse."
+        ),
+        (false, false) => tr!(
+            "Vanguard tourne en root, ouvert directement par ce compte (pas depuis un compte ordinaire) : il continue ainsi, mais une sortie piégée aurait ici tous les droits.",
+            "Vanguard is running as root, opened directly by that account (not from an ordinary account): it carries on this way, but a booby-trapped output would have full administrator rights here."
+        ),
+    });
+}
 
 /// État affiché en tête du menu : dernier bilan, dernier test de connexion, clé, surveillance, et un avis s'il y en
 /// a un (copie périmée, nouvelle version sur la clé).
@@ -1280,7 +1402,13 @@ async fn ouvrir_touche(s: &mut Session, choix: &str) -> bool {
             lancer(s, action, &chemin_de(choix)).await;
             revenir_au_menu(action);
         }
-        Some(Destination::Logiciel(place)) => logiciels::ouvrir_sur(place),
+        Some(Destination::Logiciel(place)) => {
+            if refuser_optimiser() {
+                revenir_au_menu(Action::Logiciels);
+            } else {
+                logiciels::ouvrir_sur(place);
+            }
+        }
         Some(Destination::Groupe(g)) => sous_menu(s, g).await,
         Some(Destination::Outil(action)) => {
             executer(s, action).await;
@@ -2502,6 +2630,9 @@ fn depanner_avec_ses_outils() {
 async fn executer(s: &mut Session, action: Action) {
     // Le choix de l'outil dans le menu n'est pas un « revenir » : seul compte ce qui se répond dans l'outil.
     ui::noter_retour(false);
+    if action.outil().groupe == Some(Groupe::Optimiser) && refuser_optimiser() {
+        return;
+    }
     match action {
         Action::Complet => s.complet().await,
         Action::Corriger => s.corriger(),
@@ -3324,7 +3455,7 @@ async fn main() {
     #[cfg(unix)]
     protection::cle::proteger_cle();
     protection::environnement::afficher();
-    avertir_si_root();
+    avertir_si_eleve();
     passage::au_lancement();
     // Après le passage, qui a pu déplacer l'ancien dossier avec ses droits d'avant.
     #[cfg(unix)]
@@ -3341,6 +3472,9 @@ async fn main() {
         _ => {}
     }
     let args = Args::from_arg_matches(&ligne_de_commande().get_matches()).unwrap_or_else(|e| e.exit());
+    if args.commande.as_ref().is_some_and(commande_d_optimiser) && refuser_optimiser() {
+        machine::quitter(2);
+    }
     match args.commande {
         None => menu().await,
         Some(Commande::Complet { html, texte }) => {
@@ -3674,6 +3808,69 @@ async fn main() {
 #[cfg(test)]
 mod tests_menu {
     use super::*;
+
+    /// Les sous-commandes refusées en administrateur sont exactement celles des outils d'Optimiser de la table.
+    #[test]
+    fn commandes_d_optimiser() {
+        for o in OUTILS.iter().filter(|o| !o.commande.is_empty()) {
+            let Ok(args) = Args::try_parse_from(["vanguard", o.commande]) else {
+                assert_ne!(
+                    o.groupe,
+                    Some(Groupe::Optimiser),
+                    "{} : sous-commande illisible",
+                    o.commande
+                );
+                continue;
+            };
+            let refusee = args.commande.as_ref().is_some_and(commande_d_optimiser);
+            assert_eq!(refusee, o.groupe == Some(Groupe::Optimiser), "{}", o.commande);
+        }
+        let refusee = |l: &[&str]| {
+            Args::try_parse_from(l)
+                .unwrap()
+                .commande
+                .as_ref()
+                .is_some_and(commande_d_optimiser)
+        };
+        assert!(!refusee(&["vanguard", "optimiser", "annuler"]));
+        assert!(!refusee(&["vanguard", "optimize", "undo"]));
+        assert!(refusee(&["vanguard", "optimiser", "confort"]));
+        assert!(refusee(&["vanguard", "lenteur", "--json"]));
+        assert!(refusee(&["vanguard", "nettoyer", "--liste"]));
+    }
+
+    #[test]
+    fn optimiser_refuse_seulement_eleve_depuis_un_compte_ordinaire() {
+        assert!(optimiser_refuse(true, true));
+        // Root seul (ssh root@, conteneur), Windows sans UAC : refuser ne protégerait rien.
+        assert!(!optimiser_refuse(true, false));
+        assert!(!optimiser_refuse(false, true));
+        assert!(!optimiser_refuse(false, false));
+    }
+
+    #[test]
+    fn venu_de_sudo_ou_d_une_session_ordinaire() {
+        assert!(venu_d_un_autre_compte(true, None));
+        assert!(venu_d_un_autre_compte(true, Some(0)));
+        // su ou sudo -i sans variables : la session reste celle du compte ordinaire.
+        assert!(venu_d_un_autre_compte(false, Some(1000)));
+        // ssh root@, console root, conteneur sans session.
+        assert!(!venu_d_un_autre_compte(false, Some(0)));
+        assert!(!venu_d_un_autre_compte(false, Some(u32::MAX)));
+        assert!(!venu_d_un_autre_compte(false, None));
+    }
+
+    #[test]
+    fn root_d_un_espace_de_noms_ou_de_l_ordinateur() {
+        assert_eq!(root_hors_de_l_espace("         0          0 4294967295\n"), Some(true));
+        // unshare -r : le compte 0 de l'espace est le compte 1000 de l'ordinateur.
+        assert_eq!(root_hors_de_l_espace("         0       1000          1\n"), Some(false));
+        assert_eq!(root_hors_de_l_espace("         0     100000      65536\n"), Some(false));
+        assert_eq!(root_hors_de_l_espace("      1000       1000          1\n"), None);
+        assert_eq!(root_hors_de_l_espace("0 0 0\n"), None);
+        assert_eq!(root_hors_de_l_espace(""), None);
+        assert_eq!(root_hors_de_l_espace("x y z\n"), None);
+    }
 
     /// Le menu, `--help` et le lanceur reprennent l'accroche de la vitrine (la ligne en gras du README, sans
     /// « depuis une clé USB ») : changée d'un côté seulement, les deux se contredisaient sans que rien le voie.

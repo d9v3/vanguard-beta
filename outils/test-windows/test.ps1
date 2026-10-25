@@ -124,6 +124,34 @@ function LancerAvec($fichier, [string[]]$arguments, [string]$entree) {
 
 function Sortie($fichier) { Get-Content (Join-Path $res "$fichier.out.txt") -Raw -Encoding UTF8 }
 
+# Les outils d'Optimiser refusent de tourner en administrateur quand le compte en a un jeton ordinaire (l'UAC le
+# sépare) : voulu. Ce script l'est souvent (file d'essais, SSH). Le refus est vérifié une fois, avec son message, puis
+# leurs essais sont dits sautés ; la CI Windows (administrateur sans UAC, aucun refus) les fait tourner.
+$script:optimiserRefuse = $null
+function Optimiser-Possible([string]$quoi) {
+    if ($null -eq $script:optimiserRefuse) {
+        $identite = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $uac = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -ErrorAction SilentlyContinue).EnableLUA -ne 0
+        # Le compte Administrateur intégré n'a de jeton séparé que si la stratégie FilterAdministratorToken le demande.
+        $filtre = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -ErrorAction SilentlyContinue).FilterAdministratorToken -eq 1
+        $attendu = ([Security.Principal.WindowsPrincipal]$identite).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) -and
+            $uac -and ($filtre -or -not $identite.User.Value.EndsWith('-500'))
+        $vide = Join-Path $res 'refus-optimiser.entree.txt'
+        Set-Content -LiteralPath $vide -Value ''
+        $p = Start-Process -FilePath $exe -ArgumentList @('jeux') -NoNewWindow -Wait -PassThru -RedirectStandardInput $vide `
+            -RedirectStandardOutput (Join-Path $res 'refus-optimiser.out.txt') -RedirectStandardError (Join-Path $res 'refus-optimiser.err.txt')
+        # L'avertissement est enveloppé à la largeur de l'écran : relu comme une phrase.
+        $e = (Get-Content (Join-Path $res 'refus-optimiser.err.txt') -Raw -Encoding UTF8) -replace '\s+', ' '
+        $script:optimiserRefuse = $p.ExitCode -eq 2 -and $e -match 'outils d.Optimiser refusent de tourner|Optimize tools refuse to run'
+        if ($attendu -and $script:optimiserRefuse) { Ok 'En administrateur (UAC), les outils d''Optimiser refusent : code 2, et dit' }
+        elseif ($attendu) { Bug "En administrateur (UAC), « jeux » PAS refusé (code $($p.ExitCode))" }
+        elseif ($script:optimiserRefuse) { Bug 'Outils d''Optimiser refusés sans jeton administrateur séparé (UAC coupé, Administrateur intégré ou sans droits)' }
+        else { Info 'Outils d''Optimiser lancés : pas de refus attendu ici (sans droits, ou administrateur sans UAC)' }
+    }
+    if ($script:optimiserRefuse) { Sautee "$quoi : refusé en administrateur, comme voulu (essayé par la CI Windows)" }
+    -not $script:optimiserRefuse
+}
+
 # Le début d'un script PowerShell lancé par Vanguard, d'après sa ligne de commande : sans l'en-tête commun
 # (encodage, $ErrorActionPreference) ni la fonction N des traces.
 function Script-Court([string]$ligne) {
@@ -640,30 +668,36 @@ if ($d -match 'Blue screens|Écrans bleus') { Ok 'Section des problèmes récent
 if ($d -match 'PowerShell is not responding|PowerShell ne répond pas') { Bug 'Lecture PowerShell en échec' }
 
 Etape 'Logiciels : liste et menu, rien installé'
-Lancer 'logiciels-liste' @('logiciels', '--liste')
-$l = Sortie 'logiciels-liste'
-# Une ligne par logiciel : « ✔ » (installé, en couleur) ou « · ».
-$n = ([regex]::Matches($l, '(?m)^\s+(?:\x1b\[[0-9;]*m)?[✔·](?:\x1b\[[0-9;]*m)? ')).Count
-if ($n -ge 30) { Ok "$n logiciels proposés" } else { Bug "Liste des logiciels trop courte ($n)" }
-if ($l -match 'winget, Mozilla\.Firefox') { Ok 'Firefox proposé par winget' } else { Bug 'Firefox absent de la liste' }
-if ($l -match 'PowerShell ne répond pas|PowerShell is not responding') { Bug 'Lecture des logiciels installés en échec' }
-# Windows 11 a Windows Terminal d'office : application du Store, reconnue par son paquet (pas dans le registre).
-if ([Environment]::OSVersion.Version.Build -ge 22000) {
-    if ($l -match '(?m)✔(?:\x1b\[[0-9;]*m)? Windows Terminal') { Ok 'Windows Terminal reconnu (application du Store)' } else { Bug 'Windows Terminal, présent sur Windows 11, pas reconnu' }
+if (Optimiser-Possible 'Logiciels recommandés') {
+    Lancer 'logiciels-liste' @('logiciels', '--liste')
+    $l = Sortie 'logiciels-liste'
+    # Une ligne par logiciel : « ✔ » (installé, en couleur) ou « · ».
+    $n = ([regex]::Matches($l, '(?m)^\s+(?:\x1b\[[0-9;]*m)?[✔·](?:\x1b\[[0-9;]*m)? ')).Count
+    if ($n -ge 30) { Ok "$n logiciels proposés" } else { Bug "Liste des logiciels trop courte ($n)" }
+    if ($l -match 'winget, Mozilla\.Firefox') { Ok 'Firefox proposé par winget' } else { Bug 'Firefox absent de la liste' }
+    if ($l -match 'PowerShell ne répond pas|PowerShell is not responding') { Bug 'Lecture des logiciels installés en échec' }
+    # Windows 11 a Windows Terminal d'office : application du Store, reconnue par son paquet (pas dans le registre).
+    if ([Environment]::OSVersion.Version.Build -ge 22000) {
+        if ($l -match '(?m)✔(?:\x1b\[[0-9;]*m)? Windows Terminal') { Ok 'Windows Terminal reconnu (application du Store)' } else { Bug 'Windows Terminal, présent sur Windows 11, pas reconnu' }
+    }
+    LancerAvec 'logiciels' @('logiciels') "`n"
+    if ((Sortie 'logiciels') -match 'Pack de départ|Starter pack') { Ok 'Menu des logiciels affiché' } else { Bug 'Menu des logiciels absent' }
 }
-LancerAvec 'logiciels' @('logiciels') "`n"
-if ((Sortie 'logiciels') -match 'Pack de départ|Starter pack') { Ok 'Menu des logiciels affiché' } else { Bug 'Menu des logiciels absent' }
 
 Etape 'Nettoyer le système : place à gagner, rien effacé'
-Lancer 'nettoyer-liste' @('nettoyer', '--liste')
-$n = Sortie 'nettoyer-liste'
-if ($n -match 'rien n.a été effacé|nothing was deleted') { Ok 'Liste du nettoyage affichée' } else { Bug 'Liste du nettoyage absente' }
-if ($n -match '(?m)(Vos fichiers temporaires|Your temporary files)\s+\S') { Ok 'Fichiers temporaires mesurés' } else { Bug 'Fichiers temporaires non mesurés' }
-if ($n -match 'Disque du système|System disk') { Ok 'Place libre du disque lue' } else { Bug 'Place libre du disque non lue (PowerShell)' }
+if (Optimiser-Possible 'Nettoyer le système') {
+    Lancer 'nettoyer-liste' @('nettoyer', '--liste')
+    $n = Sortie 'nettoyer-liste'
+    if ($n -match 'rien n.a été effacé|nothing was deleted') { Ok 'Liste du nettoyage affichée' } else { Bug 'Liste du nettoyage absente' }
+    if ($n -match '(?m)(Vos fichiers temporaires|Your temporary files)\s+\S') { Ok 'Fichiers temporaires mesurés' } else { Bug 'Fichiers temporaires non mesurés' }
+    if ($n -match 'Disque du système|System disk') { Ok 'Place libre du disque lue' } else { Bug 'Place libre du disque non lue (PowerShell)' }
+}
 
 Etape 'Test de connexion'
-Lancer 'connexion' @('test-connexion')
-if ((Sortie 'connexion') -match 'Mbit/s') { Ok 'Débit mesuré' } else { Bug 'Débit non mesuré' }
+if (Optimiser-Possible 'Test de connexion') {
+    Lancer 'connexion' @('test-connexion')
+    if ((Sortie 'connexion') -match 'Mbit/s') { Ok 'Débit mesuré' } else { Bug 'Débit non mesuré' }
+}
 
 Etape 'Mots de passe fuités'
 if ($Auto) { Sautee 'Sautée : il faut taper un mot de passe (test avec questions).' } else {
@@ -708,7 +742,9 @@ if ($mj -match 'search failed, offline\?|recherche impossible, hors ligne') {
     else { Info "Windows Update : Vanguard $vuesVanguard, recherche faite ici $wuNombre (la liste change d'une recherche à l'autre)" }
 } else { Bug 'Windows Update : rien dit' }
 Info 'Recherche hors ligne pas essayée : couper le réseau de la VM demande les droits d''administrateur (à la main : « impossible », jamais « à jour »).'
-LancerAvec 'gaming' @('jeux') "`n"
+if (Optimiser-Possible 'Jeux vidéo') {
+    LancerAvec 'gaming' @('jeux') "`n"
+}
 LancerAvec 'courriel' @('fuite-courriel') "test@example.com`nn`n"
 if ((Sortie 'courriel') -match 'XposedOrNot|accord|consent') { Ok 'Accord demandé avant d''envoyer l''adresse' } else { Bug 'Accord NON demandé avant l''envoi' }
 
@@ -765,10 +801,12 @@ if ($p.WaitForExit(10000)) { Ok 'Quitte quand l''entrée est fermée' }
 else { $p.Kill(); Bug 'Boucle sans fin quand l''entrée est fermée' }
 
 Etape 'Pourquoi c''est lent ? Fiche de l''ordinateur'
-LancerAvec 'lenteur' @('lenteur') "`n"
-$t = Sortie 'lenteur'
-if ($t -match "POURQUOI C'EST LENT|WHY IS IT SLOW") { Ok 'Instantané affiché' } else { Bug 'Instantané ABSENT' }
-if ($t -match 'PowerShell ne répond pas|PowerShell is not responding') { Bug 'Lecture PowerShell en échec' }
+if (Optimiser-Possible 'Pourquoi c''est lent ?') {
+    LancerAvec 'lenteur' @('lenteur') "`n"
+    $t = Sortie 'lenteur'
+    if ($t -match "POURQUOI C'EST LENT|WHY IS IT SLOW") { Ok 'Instantané affiché' } else { Bug 'Instantané ABSENT' }
+    if ($t -match 'PowerShell ne répond pas|PowerShell is not responding') { Bug 'Lecture PowerShell en échec' }
+}
 Lancer 'fiche-json' @('fiche-ordinateur', '--json')
 try {
     $f = Sortie 'fiche-json' | ConvertFrom-Json
@@ -803,11 +841,13 @@ try {
 } catch { Bug "autotest --json illisible : $($_.Exception.Message)" }
 
 Etape 'Programmes au démarrage : liste, rien retiré sans accord'
-$runAvant = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -ErrorAction SilentlyContinue | Out-String
-LancerAvec 'demarrage' @('demarrage') "q`n"
-if ((Sortie 'demarrage') -match 'Programmes au démarrage|Startup programs') { Ok 'Liste affichée' } else { Bug 'Liste ABSENTE' }
-$runApres = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -ErrorAction SilentlyContinue | Out-String
-if ($runAvant -eq $runApres) { Ok 'Rien retiré sans accord' } else { Bug 'Démarrage modifié sans accord' }
+if (Optimiser-Possible 'Programmes au démarrage') {
+    $runAvant = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -ErrorAction SilentlyContinue | Out-String
+    LancerAvec 'demarrage' @('demarrage') "q`n"
+    if ((Sortie 'demarrage') -match 'Programmes au démarrage|Startup programs') { Ok 'Liste affichée' } else { Bug 'Liste ABSENTE' }
+    $runApres = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -ErrorAction SilentlyContinue | Out-String
+    if ($runAvant -eq $runApres) { Ok 'Rien retiré sans accord' } else { Bug 'Démarrage modifié sans accord' }
+}
 
 Etape 'Entretien du mois, et ce que Vanguard a appris'
 Lancer 'entretien' @('entretien')
@@ -816,21 +856,25 @@ LancerAvec 'appris' @('appris') "`n"
 if ((Sortie 'appris') -match 'Ce que Vanguard a appris|What Vanguard has learned') { Ok 'Page « appris » affichée' } else { Bug 'Page « appris » ABSENTE' }
 
 Etape 'Réseau : Wi-Fi encombré, type de NAT, caméras, listes noires refusées'
-Lancer 'canaux' @('canaux-wifi')
-if ((Sortie 'canaux') -match 'Wi-Fi encombré|Crowded Wi-Fi') { Ok 'Wi-Fi examiné (la VM n''en a pas : la sortie doit le dire)' } else { Bug 'Wi-Fi encombré : rien affiché' }
-Lancer 'nat' @('nat')
-if ((Sortie 'nat') -match 'Type de NAT|NAT type') { Ok 'Type de NAT examiné' } else { Bug 'Type de NAT : rien affiché' }
+if (Optimiser-Possible 'Wi-Fi encombré et type de NAT') {
+    Lancer 'canaux' @('canaux-wifi')
+    if ((Sortie 'canaux') -match 'Wi-Fi encombré|Crowded Wi-Fi') { Ok 'Wi-Fi examiné (la VM n''en a pas : la sortie doit le dire)' } else { Bug 'Wi-Fi encombré : rien affiché' }
+    Lancer 'nat' @('nat')
+    if ((Sortie 'nat') -match 'Type de NAT|NAT type') { Ok 'Type de NAT examiné' } else { Bug 'Type de NAT : rien affiché' }
+}
 Lancer 'cameras' @('cameras-cachees')
 if ((Sortie 'cameras') -match 'Caméras cachées|Hidden cameras') { Ok 'Recherche de caméras faite' } else { Bug 'Caméras : rien affiché' }
 LancerAvec 'listes-noires' @('listes-noires') "n`n"
 if ((Sortie 'listes-noires') -match "Rien n'a été envoyé|Nothing was sent") { Ok 'Accord demandé, refus respecté' } else { Bug 'Refus des listes noires PAS respecté' }
 
 Etape 'DNS le plus rapide : mesuré, rien changé sans accord'
-$dnsAvant = Get-DnsClientServerAddress -AddressFamily IPv4 | Format-Table -AutoSize | Out-String
-LancerAvec 'dns-rapide' @('dns-rapide') "n`nn`n"
-if ((Sortie 'dns-rapide') -match 'DNS le plus rapide|Fastest DNS') { Ok 'DNS mesurés' } else { Bug 'DNS le plus rapide : rien affiché' }
-$dnsApres = Get-DnsClientServerAddress -AddressFamily IPv4 | Format-Table -AutoSize | Out-String
-if ($dnsAvant -eq $dnsApres) { Ok 'DNS inchangés (refusé)' } else { Bug 'DNS changés malgré le refus' }
+if (Optimiser-Possible 'DNS le plus rapide') {
+    $dnsAvant = Get-DnsClientServerAddress -AddressFamily IPv4 | Format-Table -AutoSize | Out-String
+    LancerAvec 'dns-rapide' @('dns-rapide') "n`nn`n"
+    if ((Sortie 'dns-rapide') -match 'DNS le plus rapide|Fastest DNS') { Ok 'DNS mesurés' } else { Bug 'DNS le plus rapide : rien affiché' }
+    $dnsApres = Get-DnsClientServerAddress -AddressFamily IPv4 | Format-Table -AutoSize | Out-String
+    if ($dnsAvant -eq $dnsApres) { Ok 'DNS inchangés (refusé)' } else { Bug 'DNS changés malgré le refus' }
+}
 
 Etape 'Qui parle à Internet ? Ce lien est-il dangereux ?'
 Lancer 'sortantes' @('connexions-sortantes')
@@ -1390,20 +1434,22 @@ if ($kb.Count -and $correctifs.Count) {
 Sans-PowerShell 'Dépanner › lent › depuis peu'
 
 # Lenteur : compteurs bruts par WMI lus deux fois, démarrage par le journal des performances.
-LancerSurveille 'lenteur-sans-ps' @('lenteur') "`n"
-$t = (Sortie 'lenteur-sans-ps') -replace '\x1b\[[0-9;]*m', ''
-$plat = $t -replace '\s+', ' '
-if ($plat -match '(Processor|Processeur) .{0,40}?\d+ ?% \((\d+) (threads|fils)\)') { Ok "Processeur mesuré : $($Matches[0])" } else { Bug 'Processeur PAS mesuré' }
-if ($plat -match '(Memory|Mémoire) .{0,40}?\d+ ?% \(.{1,30}? (free out of|libres sur) [^)]+\)') { Ok "Mémoire mesurée : $($Matches[0])" } else { Bug 'Mémoire PAS mesurée' }
-if ($plat -match '(Disk|Disque) .{0,40}?(busy|occupé) \d+ ?% (of the time|du temps)') { Ok "Disque mesuré : $($Matches[0])" }
-elseif ($plat -match 'activity not measurable here|activité non mesurable ici') { Bug 'Disque : activité dite non mesurable' }
-else { Bug 'Disque PAS mesuré' }
-if ($plat -match '(WHAT WEIGHS THE MOST|CE QUI PÈSE LE PLUS) .*?(Memory|Mémoire) (?!nothing notable|rien de notable)(\S+)') { Ok "Programmes : en tête de la mémoire, $($Matches[3])" }
-else { Bug 'Programmes : rien dans « ce qui pèse le plus » pour la mémoire' }
-# Le nom d'instance des compteurs (« svchost#2 ») ne doit pas sortir : un programme, un nom.
-$suffixes = @([regex]::Matches($t, '[\w.-]+#\d+\b') | ForEach-Object Value)
-if ($suffixes.Count) { Bug "Programme nommé avec un suffixe des compteurs : $($suffixes -join ', ')" } else { Ok 'Aucun nom de programme en « #2 »' }
-Sans-PowerShell 'Pourquoi c''est lent ?'
+if (Optimiser-Possible 'Pourquoi c''est lent ? (sans PowerShell)') {
+    LancerSurveille 'lenteur-sans-ps' @('lenteur') "`n"
+    $t = (Sortie 'lenteur-sans-ps') -replace '\x1b\[[0-9;]*m', ''
+    $plat = $t -replace '\s+', ' '
+    if ($plat -match '(Processor|Processeur) .{0,40}?\d+ ?% \((\d+) (threads|fils)\)') { Ok "Processeur mesuré : $($Matches[0])" } else { Bug 'Processeur PAS mesuré' }
+    if ($plat -match '(Memory|Mémoire) .{0,40}?\d+ ?% \(.{1,30}? (free out of|libres sur) [^)]+\)') { Ok "Mémoire mesurée : $($Matches[0])" } else { Bug 'Mémoire PAS mesurée' }
+    if ($plat -match '(Disk|Disque) .{0,40}?(busy|occupé) \d+ ?% (of the time|du temps)') { Ok "Disque mesuré : $($Matches[0])" }
+    elseif ($plat -match 'activity not measurable here|activité non mesurable ici') { Bug 'Disque : activité dite non mesurable' }
+    else { Bug 'Disque PAS mesuré' }
+    if ($plat -match '(WHAT WEIGHS THE MOST|CE QUI PÈSE LE PLUS) .*?(Memory|Mémoire) (?!nothing notable|rien de notable)(\S+)') { Ok "Programmes : en tête de la mémoire, $($Matches[3])" }
+    else { Bug 'Programmes : rien dans « ce qui pèse le plus » pour la mémoire' }
+    # Le nom d'instance des compteurs (« svchost#2 ») ne doit pas sortir : un programme, un nom.
+    $suffixes = @([regex]::Matches($t, '[\w.-]+#\d+\b') | ForEach-Object Value)
+    if ($suffixes.Count) { Bug "Programme nommé avec un suffixe des compteurs : $($suffixes -join ', ')" } else { Ok 'Aucun nom de programme en « #2 »' }
+    Sans-PowerShell 'Pourquoi c''est lent ?'
+}
 
 # Diagnostic : Win32_OperatingSystem, ComputerSystem, Processor, BIOS, VideoController ; les mêmes champs qu'ici.
 LancerSurveille 'diagnostic-sans-ps' @('diagnostic')
