@@ -840,7 +840,7 @@ fn fichier_voulue() -> std::path::PathBuf {
     crate::socle::dossier_local().join(VOULUE)
 }
 
-fn noter_voulue(oui: bool) {
+fn marquer(oui: bool) {
     let fichier = fichier_voulue();
     if oui {
         if let Some(parent) = fichier.parent() {
@@ -852,10 +852,24 @@ fn noter_voulue(oui: bool) {
     }
 }
 
+/// La personne allume ou coupe la surveillance par Vanguard : la marque, et l'état scellé des défenses voulues (avec le
+/// geste au journal), seul à pouvoir dire ensuite qu'elle a été coupée normalement.
+fn noter_voulue(oui: bool) {
+    marquer(oui);
+    crate::voulues::noter(crate::voulues::Defense::Surveillance, oui);
+}
+
+/// Vue en place : la marque refaite, et notée voulue si rien ne l'était (posée par une version d'avant), sans geste
+/// au journal.
+fn vue_en_place() {
+    marquer(true);
+    crate::voulues::adopter(crate::voulues::Defense::Surveillance);
+}
+
 pub fn active() -> bool {
     let active = installee();
     if active {
-        noter_voulue(true);
+        vue_en_place();
     }
     active
 }
@@ -873,19 +887,95 @@ fn installee() -> bool {
 /// Au bilan : la surveillance voulue a disparu (minuterie ou tâche retirée, ou désactivée), ou elle est là mais le
 /// programme qu'elle lance n'existe plus, ou elle a été posée par une version d'avant. Constat et proposition, rien de
 /// plus : Vanguard ne s'accroche pas, et une tâche acceptée n'est jamais changée en silence.
+///
+/// Voulue ou non, c'est l'état scellé des défenses voulues qui le dit (`voulues`) : la marque effacée avec la tâche
+/// ne fait plus passer une surveillance coupée par un autre programme pour coupée par la personne.
 pub fn constat() -> Option<crate::machine::Constat> {
-    if !fichier_voulue().is_file() {
+    use crate::voulues::{Defense, Souvenir, Verdict};
+    let marque = fichier_voulue().is_file();
+    let souvenir = crate::voulues::souvenir(Defense::Surveillance);
+    // Jamais voulue ou arrêtée par Vanguard, sans marque : rien à dire, sans interroger le planificateur (sous
+    // Windows, PowerShell en secours peut prendre des secondes).
+    if !marque && matches!(souvenir, Souvenir::Jamais | Souvenir::Arretee(_)) {
         return None;
     }
-    if !installee() {
-        return juger_disparition(true, false);
+    let installee = installee();
+    match crate::voulues::juger(marque, installee, &souvenir) {
+        Verdict::PasVoulue(_) => None,
+        Verdict::CoupeeHors(depuis) => Some(juger_coupee_hors(&depuis)),
+        Verdict::NonVerifiee(doute) => Some(juger_sans_souvenir(doute)),
+        Verdict::Voulue if !installee => juger_disparition(true, false),
+        Verdict::Voulue => {
+            if !marque || souvenir == Souvenir::Jamais {
+                vue_en_place();
+            }
+            juger_planifie(
+                Planifie::Surveillance,
+                &lire_planifie(Planifie::Surveillance),
+                reseau::cle_usb().as_deref(),
+                Path::exists,
+            )
+        }
     }
-    juger_tache(
-        Planifie::Surveillance,
-        &lire_planifie(Planifie::Surveillance),
-        reseau::cle_usb().as_deref(),
-        Path::exists,
+}
+
+/// Marque et tâche disparues alors que Vanguard a noté la surveillance voulue, sans arrêt noté depuis : coupée par un
+/// autre programme, au même niveau qu'une disparition.
+fn juger_coupee_hors(depuis: &str) -> crate::machine::Constat {
+    crate::machine::alerte(
+        "Surveillance",
+        Niveau::Eleve,
+        trf!(
+            "La surveillance horaire que vous aviez activée (le {depuis}) a été coupée sans passer par Vanguard : sa minuterie ou sa tâche planifiée a disparu avec la note de votre choix, et Vanguard n'a noté aucun arrêt. Un logiciel malveillant coupe d'abord ce qui le surveille.",
+            "The hourly monitoring you had turned on (on {depuis}) was cut without going through Vanguard: its timer or scheduled task disappeared along with the note of your choice, and Vanguard noted no stop. Malware first cuts what watches it."
+        ),
     )
+    .manuel(
+        tr!(
+            "La remettre : « vanguard surveillance on » ; si c'est vous qui l'avez coupée, « vanguard surveillance off » pour que Vanguard le note",
+            "Turn it back on: “vanguard monitor on”; if you turned it off yourself, “vanguard monitor off” so Vanguard notes it"
+        ),
+        &[],
+    )
+}
+
+/// Ni marque ni tâche, et l'état des défenses voulues ne peut pas être cru : rien ne dit que la personne l'a coupée.
+/// Jamais « coupée, comme par défaut ».
+fn juger_sans_souvenir(doute: crate::voulues::Doute) -> crate::machine::Constat {
+    crate::machine::impossible(
+        "Surveillance",
+        &trf!(
+            "surveillance horaire absente, et l'état des défenses voulues ({}) {} : rien ne dit que c'est vous qui l'avez coupée",
+            "hourly monitoring absent, and the state of wanted defenses ({}) {}: nothing tells that you turned it off",
+            crate::voulues::FICHIER,
+            doute.texte()
+        ),
+    )
+    .manuel(
+        tr!(
+            "« vanguard surveillance on » la remet ; « vanguard surveillance off » note que vous n'en voulez pas",
+            "“vanguard monitor on” turns it back on; “vanguard monitor off” notes that you do not want it"
+        ),
+        &[],
+    )
+}
+
+/// `juger_tache`, et le programme lancé comparé à celui que Vanguard a posé (`programmes_poses`) : un autre programme
+/// à la même place passe avant ce que la tâche dit d'elle-même (une version d'avant, par exemple). Seulement quand il
+/// existe : son absence se dit déjà.
+pub(crate) fn juger_planifie(
+    quoi: Planifie,
+    l: &Lecture,
+    cle: Option<&Path>,
+    existe: impl Fn(&Path) -> bool,
+) -> Option<Constat> {
+    let identite = match l {
+        Lecture::Lue { programme, .. } if programme.is_absolute() && existe(programme) => {
+            crate::programmes_poses::constat(quoi.tache(), programme)
+        }
+        _ => None,
+    };
+    identite.or_else(|| juger_tache(quoi, l, cle, existe))
 }
 
 fn juger_disparition(voulue: bool, installee: bool) -> Option<crate::machine::Constat> {
@@ -925,6 +1015,14 @@ impl Planifie {
                 crate::entretien::AGENT_MACOS,
                 crate::entretien::TACHE_WINDOWS,
             ),
+        }
+    }
+
+    /// Son nom dans la liste des programmes posés.
+    pub(crate) fn tache(self) -> crate::programmes_poses::Tache {
+        match self {
+            Planifie::Surveillance => crate::programmes_poses::Tache::Surveillance,
+            Planifie::Entretien => crate::programmes_poses::Tache::Entretien,
         }
     }
 
@@ -1231,6 +1329,7 @@ pub(crate) fn reprendre(exe: &str) -> bool {
     let ok = installer(exe, Reglages::DAvant);
     if ok {
         noter_voulue(true);
+        crate::programmes_poses::noter(crate::programmes_poses::Tache::Surveillance, Path::new(exe));
     }
     ok
 }
@@ -1271,12 +1370,22 @@ pub fn activer(oui: bool) {
     }
     let retrait = if oui { Ok(()) } else { desinstaller() };
     let reussi = if oui {
-        executable().is_some_and(|exe| installer(&exe, Reglages::Aujourdhui))
+        executable().is_some_and(|exe| {
+            let ok = installer(&exe, Reglages::Aujourdhui);
+            if ok {
+                crate::programmes_poses::noter(crate::programmes_poses::Tache::Surveillance, Path::new(&exe));
+            }
+            ok
+        })
     } else {
         retrait.is_ok()
     };
     if !oui || reussi {
         noter_voulue(oui);
+    }
+    // Un retrait raté laisse la tâche : son programme reste noté, et jugé.
+    if !oui && reussi {
+        crate::programmes_poses::oublier(crate::programmes_poses::Tache::Surveillance);
     }
     match (oui, reussi) {
         (true, true) => {
@@ -1317,6 +1426,9 @@ pub fn activer(oui: bool) {
 pub(crate) fn retirer(trouves: &[PathBuf]) -> Result<(), String> {
     let r = retirer_planifie(Planifie::Surveillance, trouves);
     noter_voulue(false);
+    if r.is_ok() {
+        crate::programmes_poses::oublier(crate::programmes_poses::Tache::Surveillance);
+    }
     r
 }
 

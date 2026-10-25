@@ -16,6 +16,13 @@ delivered just before it. Only the latest version has its download page; every v
   software versions) is sealed with its download date: its age comes from that date, no longer from the file's;
   emptied, unsealed or dated in the future, it is fetched again, and if it cannot be, “not checked” with the reason,
   never clean.
+- **Wanted defenses and started program, judged on a sealed state.** Turning the hourly monitoring, the watcher and
+  the ransomware watch on and off through Vanguard is noted in a sealed state and in the log: with their note deleted
+  along with their task, the check says the defense was cut without going through Vanguard (never again “off, as by
+  default”), and a state changed outside Vanguard is “not checked”, never green. The watcher's state is sealed, and a
+  watcher is only said to be alive if its process runs the unit's program. The program each task starts (monitoring,
+  check-up, watcher) has its path and BLAKE3 fingerprint sealed when placed and at each update by Vanguard: another
+  path or other bytes are a high alert.
 - **Windows logs: a single judge, two more rules, a place in the menu.** The check-up (WIN-JRN-003) no longer reads
   the logs itself: it takes the thirteen EVT- rules of “What happened?”, alerts at the same level, and “not verified”
   with its reason when a log is missing or restricted to administrators; the HTML report no longer shows this

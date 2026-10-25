@@ -38,6 +38,7 @@ use crate::protection::sortantes::ServeursDeCommande;
 use crate::reseau::tableau::{self, Genre};
 use crate::risk::Niveau;
 use crate::ui::{GRIS, RESET, VERT, afficher_aligne, couleur, demander, titre};
+use crate::voulues::{self, Defense};
 use crate::{tr, trf, trp};
 
 regle!(
@@ -56,7 +57,7 @@ regle!(
 pub(crate) const UNITE: &str = "vanguard-veilleur.service";
 /// L'état que le service réécrit dans le dossier de données, et la note du choix de la personne : la désinstallation
 /// les garde si le veilleur reste alors que le dossier part.
-pub(crate) const ETAT: &str = "veilleur-etat.json";
+pub(crate) const ETAT: &str = crate::sceau::VEILLEUR_ETAT;
 pub(crate) const VOULU: &str = "veilleur-voulu";
 /// La note du choix de surveiller aussi les dossiers personnels contre les rançongiciels (accord séparé, dans le même
 /// « on » que le veilleur) : présent = la veille anti-rançongiciel est voulue.
@@ -1343,17 +1344,22 @@ pub(crate) struct Etat {
 
 const DERNIERS_PARTIS: usize = 10;
 
-fn fichier_etat() -> PathBuf {
-    crate::socle::dossier_local().join(ETAT)
-}
-
 /// Le choix de la personne, noté à l'allumage : si l'unité disparaît sans qu'elle l'ait coupée, le bilan le dit.
 fn fichier_voulu() -> PathBuf {
     crate::socle::dossier_local().join(VOULU)
 }
 
+/// Le veilleur est-il voulu ? La marque, ou l'état scellé des défenses voulues (`voulues`) : la marque effacée seule
+/// ne le fait pas oublier.
 pub(crate) fn voulu() -> bool {
-    fichier_voulu().is_file()
+    fichier_voulu().is_file() || matches!(voulues::souvenir(Defense::Veilleur), voulues::Souvenir::Voulue(_))
+}
+
+fn marquer(fichier: &std::path::Path) {
+    if let Some(d) = fichier.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let _ = std::fs::write(fichier, b"");
 }
 
 /// Le fichier qui note le choix de surveiller les dossiers contre les rançongiciels.
@@ -1361,9 +1367,11 @@ fn fichier_rancon_voulu() -> PathBuf {
     crate::socle::dossier_local().join(RANCON_VOULU)
 }
 
-/// La veille anti-rançongiciel est-elle voulue ?
+/// La veille anti-rançongiciel est-elle voulue ? La marque, ou l'état scellé (`voulues`) : effacer la marque ne la
+/// coupe plus au démarrage suivant du service. Un état qui ne peut pas être cru, sans marque, ne l'allume pas (elle
+/// peut geler un programme : c'est un accord à part), mais le bilan le dit.
 pub(crate) fn rancon_voulu() -> bool {
-    fichier_rancon_voulu().is_file()
+    fichier_rancon_voulu().is_file() || matches!(voulues::souvenir(Defense::Rancongiciel), voulues::Souvenir::Voulue(_))
 }
 
 /// Parmi `pids`, ceux qui sont encore gelés (état « T ») : un PID mort ou repris par un autre processus ne l'est
@@ -1374,15 +1382,63 @@ fn encore_geles(pids: Vec<u32>) -> Vec<u32> {
         .collect()
 }
 
+/// L'état écrit par le service, s'il est tel qu'il l'a écrit (scellé, `sceau`), et sinon pourquoi il ne peut pas
+/// être cru. Forgé, il faisait passer un faux veilleur pour vivant, compteurs à zéro, et ses `pids_geles` recevaient
+/// SIGCONT : il n'est alors ni cru ni rejoué.
+fn lire_etat_dans(dossier: &std::path::Path) -> (Option<Etat>, Option<String>) {
+    use crate::sceau::Lecture as L;
+    let octets = match crate::sceau::lire_dans(dossier, ETAT) {
+        L::Absent | L::Inconnu => return (None, None),
+        L::Intact(o) => o,
+        // Accepté tel quel à la mise à jour d'une version qui l'écrivait sans sceau : écrit par le veilleur.
+        L::Adopte(o) if !crate::sceau::refaits_dans(dossier) => o,
+        L::Adopte(_) => {
+            return (
+                None,
+                Some(
+                    tr!(
+                        "son état a été accepté tel quel après des sceaux refaits",
+                        "its state was accepted as it was after seals were remade"
+                    )
+                    .to_string(),
+                ),
+            );
+        }
+        L::Falsifie(_) => {
+            return (
+                None,
+                Some(
+                    tr!(
+                        "son état a été changé hors de Vanguard",
+                        "its state was changed outside Vanguard"
+                    )
+                    .to_string(),
+                ),
+            );
+        }
+        L::Illisible(e) => {
+            return (
+                None,
+                Some(trf!("son état ne se lit pas : {e}", "its state cannot be read: {e}")),
+            );
+        }
+    };
+    match serde_json::from_slice(&octets) {
+        Ok(e) => (Some(e), None),
+        Err(e) => (
+            None,
+            Some(trf!("son état ne se lit pas : {e}", "its state cannot be read: {e}")),
+        ),
+    }
+}
+
 fn lire_etat() -> Option<Etat> {
-    // Un simple fichier, borné : un tube à sa place figeait le démarrage du veilleur.
-    let texte = crate::socle::lire_texte_ordinaire(&fichier_etat(), 1 << 20).ok()?;
-    serde_json::from_str(&texte).ok()
+    lire_etat_dans(&crate::socle::dossier_local()).0
 }
 
 fn ecrire_etat(etat: &Etat) {
     if let Ok(texte) = serde_json::to_string(etat) {
-        let _ = crate::socle::ecrire_atomique(&fichier_etat(), texte);
+        let _ = crate::sceau::ecrire(ETAT, texte);
     }
 }
 
@@ -1395,7 +1451,41 @@ fn maintenant() -> i64 {
 /// Le service tourne-t-il vraiment ? Un battement de moins de 3 minutes, et le processus noté est bien le veilleur
 /// (un numéro repris par un autre programme ne compte pas).
 fn vivant_d_apres(etat: &Etat, maintenant: i64) -> bool {
-    (0..180).contains(&maintenant.saturating_sub(etat.battement)) && en_marche(etat)
+    vivant_selon(etat, maintenant, programme_de_l_unite().as_deref())
+}
+
+/// `vivant_d_apres`, contre le programme `attendu` de l'unité : la ligne de commande s'imite, l'image lancée non.
+fn vivant_selon(etat: &Etat, maintenant: i64, attendu: Option<&std::path::Path>) -> bool {
+    frais(etat, maintenant) && en_marche(etat) && lance_le_programme(etat.pid, attendu)
+}
+
+fn frais(etat: &Etat, maintenant: i64) -> bool {
+    (0..180).contains(&maintenant.saturating_sub(etat.battement))
+}
+
+/// Le programme que lance l'unité (ExecStart=), seulement si c'est bien celle de Vanguard.
+fn programme_de_l_unite() -> Option<PathBuf> {
+    let texte = std::fs::read_to_string(fichier_unite()).ok()?;
+    if !notre_unite(&texte) {
+        return None;
+    }
+    crate::reseau::surveillance::programme_d_une_unite(&texte)
+}
+
+/// Le processus `pid` lance-t-il le programme `attendu` ? Lu dans /proc/<pid>/exe, l'image lancée : un faux veilleur
+/// qui imite la ligne de commande et réécrit l'état ne passe pas pour vivant. Un programme remplacé depuis son
+/// lancement (« … (deleted) ») ne compte pas non plus : ce n'est plus celui que le bilan juge sur le disque.
+fn lance_le_programme(pid: u32, attendu: Option<&std::path::Path>) -> bool {
+    let Some(attendu) = attendu.and_then(|a| a.canonicalize().ok()) else {
+        return false;
+    };
+    pid != 0 && std::fs::read_link(format!("/proc/{pid}/exe")).is_ok_and(|e| e == attendu)
+}
+
+/// Relance le service s'il est en marche : après une mise à jour de la copie qu'il lance (`mise_a_jour`), il
+/// garderait sinon l'ancienne en mémoire.
+pub(crate) fn relancer_si_actif() {
+    let _ = super::dbus::actions::utilisateur(super::dbus::actions::Geste::RedemarrerSiActive, UNITE);
 }
 
 /// Le processus noté dans l'état est-il encore le veilleur ?
@@ -1991,10 +2081,9 @@ fn allumer() {
         );
         return;
     }
-    if let Some(d) = fichier_voulu().parent() {
-        let _ = std::fs::create_dir_all(d);
-    }
-    let _ = std::fs::write(fichier_voulu(), b"");
+    marquer(&fichier_voulu());
+    voulues::noter(Defense::Veilleur, true);
+    crate::programmes_poses::noter(crate::programmes_poses::Tache::Veilleur, std::path::Path::new(&exe));
     std::thread::sleep(Duration::from_secs(3));
     if lire_etat().is_some_and(|e| vivant_d_apres(&e, maintenant()) && e.raison_arret.is_none()) {
         trp!(
@@ -2038,7 +2127,8 @@ fn couper() {
             "  {VERT}✔{RESET} Le veilleur est déjà coupé : rien à retirer.",
             "  {VERT}✔{RESET} The watcher is already off: nothing to remove."
         );
-        let _ = std::fs::remove_file(fichier_etat());
+        // Noté coupé par la personne : un état douteux (ou une marque effacée hors de Vanguard) ne se dit plus.
+        oublier_le_choix(&Retire::Fait, &crate::socle::dossier_local());
         return;
     }
     let a_nous = texte.as_deref().is_some_and(notre_unite);
@@ -2167,11 +2257,25 @@ pub(crate) fn retirer_sans_question(chemin: &std::path::Path, arreter_l_etranger
 /// ou activé, privé de sa note, serait dit « coupé, comme par défaut » au bilan : le retrait raté compterait comme
 /// fait. Gardés, le bilan dit l'écart (unité retirée mais voulue, service vivant). Le choix compte aussi pour la
 /// désinstallation, qui peut garder le dossier de données.
+///
+/// L'arrêt est noté dans l'état scellé des défenses voulues (`voulues`), avec le geste au journal : seul lui fait dire
+/// au bilan que le veilleur est coupé normalement. L'état du service part avec son sceau (effacé à la main, il se
+/// dirait falsifié).
 fn oublier_le_choix(issue: &Retire, dossier: &std::path::Path) {
     if !matches!(issue, Retire::Echoue(_)) {
         let _ = std::fs::remove_file(dossier.join(VOULU));
-        let _ = std::fs::remove_file(dossier.join(ETAT));
+        let _ = crate::sceau::effacer_dans(dossier, ETAT);
         let _ = std::fs::remove_file(dossier.join(RANCON_VOULU));
+        // Une défense jamais notée n'a pas d'arrêt à noter (la veille anti-rançongiciel jamais voulue).
+        for d in [Defense::Veilleur, Defense::Rancongiciel]
+            .into_iter()
+            .filter(|d| voulues::souvenir_dans(dossier, *d) != voulues::Souvenir::Jamais)
+        {
+            if let Err(e) = voulues::noter_dans(dossier, d, false, true) {
+                crate::modele::Echec::echoue("veilleur/oublier", e.to_string()).journaliser();
+            }
+        }
+        crate::programmes_poses::oublier_dans(dossier, crate::programmes_poses::Tache::Veilleur);
     }
 }
 
@@ -2247,10 +2351,8 @@ fn proposer_rancon() {
 
 /// Note le choix, propose les pièges s'il n'y en a pas, et redémarre le service pour qu'il prenne la surveillance.
 fn activer_rancon() {
-    if let Some(d) = fichier_rancon_voulu().parent() {
-        let _ = std::fs::create_dir_all(d);
-    }
-    let _ = std::fs::write(fichier_rancon_voulu(), b"");
+    marquer(&fichier_rancon_voulu());
+    voulues::noter(Defense::Rancongiciel, true);
     let _ = super::dbus::actions::utilisateur(super::dbus::actions::Geste::RedemarrerSiActive, UNITE);
     trp!(
         "  {VERT}✔{RESET} Surveillance des fichiers allumée : une rafale de chiffrement vous alerte en quelques secondes.",
@@ -2326,6 +2428,8 @@ fn commande_rancon(sous_etat: Option<&str>) {
 /// Coupe la surveillance des fichiers (dégèle ce qui restait gelé), puis redémarre le service.
 fn couper_rancon() {
     if !rancon_voulu() {
+        // Noté coupé par la personne : un état douteux ne se dit plus.
+        voulues::noter(Defense::Rancongiciel, false);
         trp!(
             "  {VERT}✔{RESET} La surveillance des fichiers est déjà coupée.",
             "  {VERT}✔{RESET} File watching is already off."
@@ -2338,6 +2442,7 @@ fn couper_rancon() {
         reponse::reprendre(&e.pids_geles);
     }
     let _ = std::fs::remove_file(fichier_rancon_voulu());
+    voulues::noter(Defense::Rancongiciel, false);
     let _ = super::dbus::actions::utilisateur(super::dbus::actions::Geste::RedemarrerSiActive, UNITE);
     trp!(
         "  {VERT}✔{RESET} Surveillance des fichiers coupée (le veilleur continue d'observer lancements et connexions).",
@@ -2362,19 +2467,65 @@ pub(crate) fn precision() -> &'static str {
 }
 
 /// Le constat du bilan.
+///
+/// Voulu ou non, c'est l'état scellé des défenses voulues qui le dit (`voulues`) ; vivant, c'est un état scellé
+/// frais, et un processus qui lance le programme de l'unité, lui-même celui que Vanguard a posé (`programmes_poses`).
 fn constat() -> Constat {
+    use crate::voulues::Souvenir;
     let activee = crate::machine::linux::natif::unite_activee(UNITE, true);
-    let etat = lire_etat();
+    let (etat, doute_etat) = lire_etat_dans(&crate::socle::dossier_local());
     let maintenant = maintenant();
-    let vivant = etat.as_ref().is_some_and(|e| vivant_d_apres(e, maintenant));
-    let mut voulu = voulu();
-    // Allumé sans la marque (un dossier de Vanguard refait) : le choix est noté, sa disparition se verra.
-    if activee == Some(true) && !voulu {
-        let _ = std::fs::write(fichier_voulu(), b"");
-        voulu = true;
+    let programme = programme_de_l_unite();
+    let vivant = etat
+        .as_ref()
+        .is_some_and(|e| vivant_selon(e, maintenant, programme.as_deref()));
+    let doute = doute_etat.or_else(|| {
+        let e = etat.as_ref().filter(|e| frais(e, maintenant) && en_marche(e))?;
+        match &programme {
+            None => Some(
+                tr!(
+                    "son unité ne se lit pas, ou n'est plus celle de Vanguard",
+                    "its unit cannot be read, or is no longer Vanguard's"
+                )
+                .to_string(),
+            ),
+            Some(p) if !lance_le_programme(e.pid, Some(p)) => Some(
+                tr!(
+                    "le processus noté ne lance pas le programme de l'unité : un autre programme, ou le veilleur d'avant une mise à jour",
+                    "the noted process does not run the unit's program: another program, or the watcher from before an update"
+                )
+                .to_string(),
+            ),
+            Some(_) => None,
+        }
+    });
+    let marque = fichier_voulu().is_file();
+    let souvenir = voulues::souvenir(Defense::Veilleur);
+    // Allumé sans la marque ou sans rien de noté (un dossier de Vanguard refait, une version d'avant) : le choix est
+    // noté, sa disparition se verra.
+    if activee == Some(true) && (!marque || souvenir == Souvenir::Jamais) {
+        marquer(&fichier_voulu());
+        voulues::adopter(Defense::Veilleur);
+    }
+    let verdict = voulues::juger(marque, activee == Some(true), &souvenir);
+    let rancon_marque = fichier_rancon_voulu().is_file();
+    let rancon = voulues::juger(rancon_marque, false, &voulues::souvenir(Defense::Rancongiciel));
+    if activee == Some(true)
+        && let Some(p) = &programme
+        && let Some(c) = crate::programmes_poses::constat(crate::programmes_poses::Tache::Veilleur, p)
+    {
+        return c;
     }
     let noyau = release_du_noyau().and_then(|r| noyau_suffisant(&r));
-    juger_etat(voulu, activee, etat.as_ref(), vivant, noyau)
+    juger_etat(
+        &verdict,
+        activee,
+        etat.as_ref(),
+        vivant,
+        noyau,
+        doute.as_deref(),
+        &rancon,
+    )
 }
 
 fn date(ts: i64) -> String {
@@ -2383,9 +2534,20 @@ fn date(ts: i64) -> String {
     })
 }
 
-/// L'état du veilleur au bilan, d'après ce qui a été lu : marque du choix, unité activée (`None` : pas de systemd de
-/// l'utilisateur), état écrit par le service, service vivant, noyau assez récent.
-fn juger_etat(voulu: bool, activee: Option<bool>, etat: Option<&Etat>, vivant: bool, noyau: Option<bool>) -> Constat {
+/// L'état du veilleur au bilan, d'après ce qui a été lu : le choix (`voulues::juger` : marque, unité activée, état
+/// scellé des défenses voulues), unité activée (`None` : pas de systemd de l'utilisateur), état écrit par le service,
+/// service vivant, noyau assez récent, pourquoi l'état ou le processus ne peuvent pas être crus, et le choix de la
+/// veille anti-rançongiciel.
+fn juger_etat(
+    voulu: &voulues::Verdict,
+    activee: Option<bool>,
+    etat: Option<&Etat>,
+    vivant: bool,
+    noyau: Option<bool>,
+    doute: Option<&str>,
+    rancon: &voulues::Verdict,
+) -> Constat {
+    use voulues::Verdict as V;
     const CAT: &str = "Surveillance";
     let Some(activee) = activee else {
         return impossible(
@@ -2397,12 +2559,18 @@ fn juger_etat(voulu: bool, activee: Option<bool>, etat: Option<&Etat>, vivant: b
         );
     };
     match (activee, voulu, etat.filter(|_| vivant)) {
-        (false, false, _) => {
-            let mut texte = tr!(
-                "Veilleur des lancements et des connexions : coupé, comme par défaut ; « vanguard veilleur on » l'allume (Linux 6.6 et plus).",
-                "Watcher of launches and connections: off, as by default; “vanguard watcher on” turns it on (Linux 6.6 and later)."
-            )
-            .to_string();
+        (false, V::PasVoulue(quand), _) => {
+            let mut texte = match quand {
+                None => tr!(
+                    "Veilleur des lancements et des connexions : coupé, comme par défaut ; « vanguard veilleur on » l'allume (Linux 6.6 et plus).",
+                    "Watcher of launches and connections: off, as by default; “vanguard watcher on” turns it on (Linux 6.6 and later)."
+                )
+                .to_string(),
+                Some(q) => trf!(
+                    "Veilleur des lancements et des connexions : coupé par Vanguard le {q} ; « vanguard veilleur on » le rallume.",
+                    "Watcher of launches and connections: turned off by Vanguard on {q}; “vanguard watcher on” turns it back on."
+                ),
+            };
             if noyau == Some(false) {
                 texte.push(' ');
                 texte.push_str(tr!(
@@ -2412,7 +2580,38 @@ fn juger_etat(voulu: bool, activee: Option<bool>, etat: Option<&Etat>, vivant: b
             }
             ok(CAT, texte)
         }
-        (false, true, _) => alerte(
+        (false, V::CoupeeHors(depuis), _) => alerte(
+            CAT,
+            Niveau::Eleve,
+            trf!(
+                "Le veilleur que vous aviez allumé (le {depuis}) a été coupé sans passer par Vanguard : son unité est retirée ou désactivée, la note de votre choix a disparu, et Vanguard n'a noté aucun arrêt. Un logiciel malveillant coupe d'abord ce qui le surveille.",
+                "The watcher you had turned on (on {depuis}) was cut without going through Vanguard: its unit is removed or disabled, the note of your choice disappeared, and Vanguard noted no stop. Malware first cuts what watches it."
+            ),
+        )
+        .manuel(
+            tr!(
+                "Le rallumer : vanguard veilleur on ; si c'est vous qui l'avez coupé, vanguard veilleur off pour que Vanguard le note",
+                "Turn it back on: vanguard watcher on; if you turned it off yourself, vanguard watcher off so Vanguard notes it"
+            ),
+            &["vanguard veilleur on"],
+        ),
+        (false, V::NonVerifiee(d), _) => impossible(
+            CAT,
+            &trf!(
+                "veilleur coupé, et l'état des défenses voulues ({}) {} : rien ne dit que c'est vous qui l'avez coupé",
+                "watcher off, and the state of wanted defenses ({}) {}: nothing tells that you turned it off",
+                voulues::FICHIER,
+                d.texte()
+            ),
+        )
+        .manuel(
+            tr!(
+                "vanguard veilleur on le rallume ; vanguard veilleur off note que vous n'en voulez pas",
+                "vanguard watcher on turns it back on; vanguard watcher off notes that you do not want it"
+            ),
+            &[],
+        ),
+        (false, V::Voulue, _) => alerte(
             CAT,
             Niveau::Eleve,
             tr!(
@@ -2439,6 +2638,7 @@ fn juger_etat(voulu: bool, activee: Option<bool>, etat: Option<&Etat>, vivant: b
                 e.non_lus,
                 e.prises
             );
+            let (mut rancon_manque, mut rancon_doute) = (false, false);
             let mut ajouter = |t: String| {
                 texte.push(' ');
                 texte.push_str(&t);
@@ -2508,6 +2708,24 @@ fn juger_etat(voulu: bool, activee: Option<bool>, etat: Option<&Etat>, vivant: b
                     "Veille anti-rançongiciel voulue mais inactive : {r}.",
                     "Ransomware watch wanted but inactive: {r}."
                 ));
+            } else if matches!(rancon, V::Voulue | V::CoupeeHors(_)) {
+                // Voulue, notée, et pourtant pas en marche : le service a démarré sans la voir voulue (sa note effacée
+                // hors de Vanguard, par exemple). Jamais tu : c'est elle qui arrête un rançongiciel.
+                rancon_manque = true;
+                ajouter(
+                    tr!(
+                        "Veille anti-rançongiciel voulue, mais pas en marche dans le veilleur : sa note a pu être effacée hors de Vanguard. systemctl --user restart vanguard-veilleur la reprend.",
+                        "Ransomware watch wanted, but not running in the watcher: its note may have been deleted outside Vanguard. systemctl --user restart vanguard-veilleur resumes it."
+                    )
+                    .to_string(),
+                );
+            } else if let V::NonVerifiee(d) = rancon {
+                rancon_doute = true;
+                ajouter(trf!(
+                    "Veille anti-rançongiciel coupée, et l'état des défenses voulues {} : rien ne dit que c'est vous qui l'avez coupée (vanguard veilleur rancongiciel on la rallume, off le note).",
+                    "Ransomware watch off, and the state of wanted defenses {}: nothing tells that you turned it off (vanguard watcher ransomware on turns it back on, off notes it).",
+                    d.texte()
+                ));
             }
             if !e.pids_geles.is_empty() {
                 ajouter(trf!(
@@ -2518,15 +2736,22 @@ fn juger_etat(voulu: bool, activee: Option<bool>, etat: Option<&Etat>, vivant: b
             }
             // En pause, sans fins de prises, avec des pertes ou des listes manquantes : une partie n'est pas vérifiée.
             // Le signe n'est donc pas vert (la note ne change pas), comme pour la protection en temps réel coupée.
-            if e.en_pause || e.sans_prises.is_some() || e.perdus > 0 || e.listes.is_some() {
+            if rancon_manque {
+                alerte(CAT, Niveau::Moyen, texte)
+            } else if rancon_doute {
+                Constat {
+                    verifie: false,
+                    ..alerte(CAT, Niveau::Info, texte)
+                }
+            } else if e.en_pause || e.sans_prises.is_some() || e.perdus > 0 || e.listes.is_some() {
                 alerte(CAT, Niveau::Info, texte)
             } else {
                 ok(CAT, texte)
             }
         }
         (true, _, None) => {
-            let raison = etat
-                .and_then(|e| e.raison_arret.as_deref())
+            let raison = doute
+                .or_else(|| etat.and_then(|e| e.raison_arret.as_deref()))
                 .map(|r| format!(" ({r})"))
                 .unwrap_or_default();
             Constat {
@@ -3277,6 +3502,182 @@ mod tests {
         }
     }
 
+    /// `juger_etat` d'avant les défenses voulues : voulu ou jamais voulu, rien de douteux, pas de veille des fichiers.
+    fn juger_bool(
+        voulu: bool,
+        activee: Option<bool>,
+        etat: Option<&Etat>,
+        vivant: bool,
+        noyau: Option<bool>,
+    ) -> Constat {
+        let v = if voulu {
+            voulues::Verdict::Voulue
+        } else {
+            voulues::Verdict::PasVoulue(None)
+        };
+        juger_etat(
+            &v,
+            activee,
+            etat,
+            vivant,
+            noyau,
+            None,
+            &voulues::Verdict::PasVoulue(None),
+        )
+    }
+
+    /// Le veilleur voulu un jour, sa marque effacée avec son unité : coupé hors de Vanguard, jamais « comme par
+    /// défaut » ; l'état des défenses voulues forgé : non vérifié, jamais vert ; arrêté par Vanguard : coupé, dit.
+    #[test]
+    fn veilleur_coupe_hors_de_vanguard() {
+        use voulues::{Doute, Verdict as V};
+        let pas = V::PasVoulue(None);
+        let c = juger_etat(
+            &V::CoupeeHors("2026-10-01".into()),
+            Some(false),
+            None,
+            false,
+            Some(true),
+            None,
+            &pas,
+        );
+        assert_eq!(c.probleme, Some(Niveau::Eleve), "{}", c.message);
+        assert!(c.message.contains("sans passer par Vanguard"), "{}", c.message);
+        let c = juger_etat(
+            &V::NonVerifiee(Doute::HorsVanguard),
+            Some(false),
+            None,
+            false,
+            Some(true),
+            None,
+            &pas,
+        );
+        assert!(!c.verifie && c.probleme.is_some(), "{}", c.message);
+        let c = juger_etat(
+            &V::PasVoulue(Some("2026-10-02".into())),
+            Some(false),
+            None,
+            false,
+            Some(true),
+            None,
+            &pas,
+        );
+        assert!(
+            c.verifie && c.probleme.is_none() && c.message.contains("2026-10-02"),
+            "{}",
+            c.message
+        );
+        assert!(!c.message.contains("comme par défaut"), "{}", c.message);
+        // Le dossier jetable : marque effacée, unité absente, état scellé « voulu » → coupé hors de Vanguard.
+        let d = crate::socle::dossier_local().join("veilleur-coupe-hors");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        voulues::noter_dans(&d, Defense::Veilleur, true, false).unwrap();
+        let v = voulues::juger(
+            d.join(VOULU).is_file(),
+            false,
+            &voulues::souvenir_dans(&d, Defense::Veilleur),
+        );
+        assert!(matches!(v, V::CoupeeHors(_)), "{v:?}");
+        // Arrêté par Vanguard (« off ») : noté, coupé normalement.
+        oublier_le_choix(&Retire::Fait, &d);
+        let v = voulues::juger(false, false, &voulues::souvenir_dans(&d, Defense::Veilleur));
+        assert!(matches!(v, V::PasVoulue(Some(_))), "{v:?}");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// La veille anti-rançongiciel voulue et notée, mais absente du veilleur (sa note effacée avant un redémarrage) :
+    /// dite, jamais tue ; l'état douteux : pas de signe vert.
+    #[test]
+    fn veille_rancon_voulue_mais_absente() {
+        use voulues::{Doute, Verdict as V};
+        let e = etat_vivant();
+        let c = juger_etat(
+            &V::Voulue,
+            Some(true),
+            Some(&e),
+            true,
+            Some(true),
+            None,
+            &V::CoupeeHors("2026-10-01".into()),
+        );
+        assert_eq!(c.probleme, Some(Niveau::Moyen), "{}", c.message);
+        let c = juger_etat(
+            &V::Voulue,
+            Some(true),
+            Some(&e),
+            true,
+            Some(true),
+            None,
+            &V::NonVerifiee(Doute::Inconnu),
+        );
+        assert!(!c.verifie, "{}", c.message);
+        let en_marche = Etat {
+            rancon_actif: true,
+            ..e
+        };
+        let c = juger_etat(
+            &V::Voulue,
+            Some(true),
+            Some(&en_marche),
+            true,
+            Some(true),
+            None,
+            &V::Voulue,
+        );
+        assert!(c.verifie && c.probleme.is_none(), "{}", c.message);
+    }
+
+    /// Un état réécrit sans sceau (faux veilleur) n'est pas cru : ni vivant, ni ses programmes gelés rejoués.
+    #[test]
+    fn etat_forge_pas_cru() {
+        let d = crate::socle::dossier_local().join("veilleur-etat-forge");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let vrai = serde_json::to_vec(&etat_vivant()).unwrap();
+        crate::sceau::ecrire_dans(&d, ETAT, &vrai).unwrap();
+        let (lu, doute) = lire_etat_dans(&d);
+        assert!(lu.is_some() && doute.is_none());
+        let faux = Etat {
+            pids_geles: vec![1],
+            ..etat_vivant()
+        };
+        std::fs::write(d.join(ETAT), serde_json::to_vec(&faux).unwrap()).unwrap();
+        let (lu, doute) = lire_etat_dans(&d);
+        assert!(lu.is_none() && doute.is_some(), "{doute:?}");
+        // Au bilan : allumé mais non vérifié, avec la raison.
+        let c = juger_etat(
+            &voulues::Verdict::Voulue,
+            Some(true),
+            None,
+            false,
+            Some(true),
+            doute.as_deref(),
+            &voulues::Verdict::PasVoulue(None),
+        );
+        assert!(!c.verifie && c.message.contains("hors de Vanguard"), "{}", c.message);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// Le processus noté doit lancer le programme de l'unité : celui de ce test lance son propre programme, pas un
+    /// autre ; sans unité de Vanguard, rien n'est cru.
+    #[test]
+    fn processus_juge_sur_son_image() {
+        let moi = std::process::id();
+        let exe = std::env::current_exe().unwrap();
+        assert!(lance_le_programme(moi, Some(&exe)));
+        assert!(!lance_le_programme(moi, Some(std::path::Path::new("/bin/sh"))));
+        assert!(!lance_le_programme(moi, None));
+        assert!(!lance_le_programme(0, Some(&exe)));
+        // Battement frais et ligne de commande imitée ne suffisent pas sans l'image.
+        let e = Etat {
+            pid: moi,
+            battement: maintenant(),
+            ..Etat::default()
+        };
+        assert!(!vivant_selon(&e, maintenant(), Some(std::path::Path::new("/bin/sh"))));
+    }
+
     /// Un retrait raté garde la note du choix et l'état : le bilan dit alors l'écart, jamais « coupé ». Réussi ou
     /// seulement non confirmé, ils partent. Dans un dossier à lui, pas celui des autres tests.
     #[test]
@@ -3292,7 +3693,7 @@ mod tests {
         oublier_le_choix(&Retire::Echoue("toujours en marche (processus 4242)".into()), &d);
         assert!(d.join(VOULU).is_file() && d.join(ETAT).is_file());
         // La note gardée, l'unité retirée : le bilan le dit, au lieu de « coupé, comme par défaut ».
-        let ecart = juger_etat(d.join(VOULU).is_file(), Some(false), None, false, Some(true));
+        let ecart = juger_bool(d.join(VOULU).is_file(), Some(false), None, false, Some(true));
         assert!(ecart.probleme.is_some(), "{}", ecart.message);
         for issue in [Retire::Fait, Retire::NonVerifie("pas de réponse".into())] {
             poser();
@@ -3305,17 +3706,17 @@ mod tests {
     #[test]
     fn cinq_etats_au_bilan() {
         let e = etat_vivant();
-        let sans_systemd = juger_etat(false, None, None, false, Some(true));
+        let sans_systemd = juger_bool(false, None, None, false, Some(true));
         assert!(!sans_systemd.verifie);
-        let coupe = juger_etat(false, Some(false), None, false, Some(false));
+        let coupe = juger_bool(false, Some(false), None, false, Some(false));
         assert!(
             coupe.verifie && coupe.probleme.is_none() && coupe.message.contains("plus ancien"),
             "{}",
             coupe.message
         );
-        let disparu = juger_etat(true, Some(false), None, false, Some(true));
+        let disparu = juger_bool(true, Some(false), None, false, Some(true));
         assert_eq!(disparu.probleme, Some(Niveau::Eleve));
-        let allume = juger_etat(true, Some(true), Some(&e), true, Some(true));
+        let allume = juger_bool(true, Some(true), Some(&e), true, Some(true));
         assert!(allume.verifie && allume.probleme.is_none(), "{}", allume.message);
         assert!(!allume.message.contains("autre compte"), "{}", allume.message);
         assert!(
@@ -3330,7 +3731,7 @@ mod tests {
             listes: Some("liste de ThreatFox non vérifiée".into()),
             ..e.clone()
         };
-        let pause = juger_etat(true, Some(true), Some(&en_pause), true, Some(true));
+        let pause = juger_bool(true, Some(true), Some(&en_pause), true, Some(true));
         assert!(
             pause.message.contains("En pause") && pause.message.contains("ThreatFox"),
             "{}",
@@ -3354,7 +3755,7 @@ mod tests {
                 ..e.clone()
             },
         ] {
-            let c = juger_etat(true, Some(true), Some(&partiel), true, Some(true));
+            let c = juger_bool(true, Some(true), Some(&partiel), true, Some(true));
             assert_eq!(c.probleme, Some(Niveau::Info), "{}", c.message);
         }
         // Les programmes d'un autre compte, lus par leur ligne seule, sont dits à part.
@@ -3362,13 +3763,13 @@ mod tests {
             sans_programme: 9,
             ..e.clone()
         };
-        let c = juger_etat(true, Some(true), Some(&autres), true, Some(true));
+        let c = juger_bool(true, Some(true), Some(&autres), true, Some(true));
         assert!(c.message.contains("9 d'un autre compte"), "{}", c.message);
         let arrete = Etat {
             raison_arret: Some("erreur de lecture du noyau".into()),
             ..e
         };
-        let a_l_arret = juger_etat(true, Some(true), Some(&arrete), false, Some(true));
+        let a_l_arret = juger_bool(true, Some(true), Some(&arrete), false, Some(true));
         assert!(!a_l_arret.verifie && a_l_arret.probleme == Some(Niveau::Moyen));
         assert!(a_l_arret.message.contains("erreur de lecture"), "{}", a_l_arret.message);
         assert!(a_l_arret.correctif.is_some());

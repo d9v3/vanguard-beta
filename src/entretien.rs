@@ -241,12 +241,12 @@ pub fn active() -> bool {
 /// Au bilan, si l'entretien est planifié : le programme qu'il lance existe-t-il encore ? Une tâche qui lance un
 /// programme effacé est là sans plus rien faire.
 pub fn constat() -> Option<crate::machine::Constat> {
-    use crate::reseau::surveillance::{Planifie, juger_tache, lire_planifie};
+    use crate::reseau::surveillance::{Planifie, juger_planifie, lire_planifie};
     // Pas planifié (ou le planificateur muet) : rien à dire, plutôt qu'un « non vérifié » pour un entretien absent.
     if !active() {
         return None;
     }
-    juger_tache(
+    juger_planifie(
         Planifie::Entretien,
         &lire_planifie(Planifie::Entretien),
         crate::reseau::cle_usb().as_deref(),
@@ -258,6 +258,9 @@ pub fn constat() -> Option<crate::machine::Constat> {
 /// fichiers, là où la désinstallation les a trouvés. Rend la raison d'un échec, jamais un succès supposé.
 pub(crate) fn retirer(trouves: &[std::path::PathBuf]) -> Result<(), String> {
     let r = crate::reseau::surveillance::retirer_planifie(crate::reseau::surveillance::Planifie::Entretien, trouves);
+    if r.is_ok() {
+        crate::programmes_poses::oublier(crate::programmes_poses::Tache::Entretien);
+    }
     ETAT.store(0, Ordering::Relaxed);
     r
 }
@@ -269,6 +272,9 @@ fn desinstaller() -> Result<(), String> {
 /// Reprise d'un entretien actif sous l'ancien nom (`passage`).
 pub(crate) fn reprendre(exe: &str) -> bool {
     let ok = installer(exe);
+    if ok {
+        crate::programmes_poses::noter(crate::programmes_poses::Tache::Entretien, std::path::Path::new(exe));
+    }
     ETAT.store(0, Ordering::Relaxed);
     ok
 }
@@ -276,10 +282,19 @@ pub(crate) fn reprendre(exe: &str) -> bool {
 pub fn activer(oui: bool) {
     let retrait = if oui { Ok(()) } else { desinstaller() };
     let reussi = if oui {
-        executable().is_some_and(|exe| installer(&exe))
+        executable().is_some_and(|exe| {
+            let ok = installer(&exe);
+            if ok {
+                crate::programmes_poses::noter(crate::programmes_poses::Tache::Entretien, std::path::Path::new(&exe));
+            }
+            ok
+        })
     } else {
         retrait.is_ok()
     };
+    if !oui && reussi {
+        crate::programmes_poses::oublier(crate::programmes_poses::Tache::Entretien);
+    }
     ETAT.store(0, Ordering::Relaxed);
     match (oui, reussi) {
         (true, true) => trp!(

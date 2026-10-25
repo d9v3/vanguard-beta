@@ -97,6 +97,10 @@ pub(crate) const BLUETOOTH: &str = "bluetooth.json";
 /// d'une clé piégée une clé connue.
 pub(crate) const CLES_CONNUES: &str = "cles-connues.json";
 
+/// L'état écrit par le service du veilleur (`machine::linux::veilleur`) : forgé, un faux veilleur passait pour vivant,
+/// compteurs à zéro.
+pub(crate) const VEILLEUR_ETAT: &str = "veilleur-etat.json";
+
 /// Au-delà, ce n'est pas un fichier d'état de Vanguard (le plus gros fait quelques dizaines de Kio) : il n'est pas
 /// chargé.
 const TAILLE_MAX: u64 = 4 << 20;
@@ -134,6 +138,8 @@ const TARDIFS: &[&str] = &[
     // Écrits sans sceau jusqu'à la 0.87 : adoptés une fois, mais jamais un feu vert (`plugins::reglages::lire_juge`).
     crate::plugins::reglages::SCELLE,
     crate::plugins::APPROUVES_SCELLE,
+    // Écrit sans sceau par le veilleur jusqu'à la 0.87 (Linux seulement, mais le nom est le même partout).
+    VEILLEUR_ETAT,
 ];
 
 const REGISTRE: &str = "sceaux.json";

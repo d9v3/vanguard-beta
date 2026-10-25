@@ -438,6 +438,18 @@ fn installer(octets: &[u8], cible: &Path, attendue: Version, essai: Essai) -> Re
     })();
     if ecrite.is_err() {
         let _ = std::fs::remove_file(&provisoire);
+    } else {
+        // Posée par Vanguard : chaque tâche qui la lance garde un sceau juste (`programmes_poses`), sans quoi le bilan
+        // la dirait remplacée hors de Vanguard.
+        let touchees = crate::programmes_poses::copie_posee(cible, octets);
+        // Le veilleur tourne sans s'arrêter : relancé, il prend la copie posée au lieu de garder l'ancienne en mémoire,
+        // que plus rien sur le disque ne reconnaît.
+        #[cfg(target_os = "linux")]
+        if touchees.contains(&crate::programmes_poses::Tache::Veilleur) {
+            crate::machine::linux::veilleur::relancer_si_actif();
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = touchees;
     }
     ecrite
 }

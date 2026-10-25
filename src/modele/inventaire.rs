@@ -114,6 +114,13 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     local(crate::modele::resultat::EXAMENS, "modele::resultat"),
     // Le travail sans Internet, l'autodiagnostic et les versions des logiciels s'y coupent.
     scelle(crate::parametres::PARAMETRES, "parametres"),
+    // Les défenses voulues (surveillance, veilleur, anti-rançongiciel) : effacées avec leur tâche, une défense coupée
+    // se disait « coupée, comme par défaut ».
+    scelle(crate::voulues::FICHIER, "voulues"),
+    // Le programme que lance chaque tâche de Vanguard, et son empreinte : une unité pointée ailleurs restait verte.
+    scelle(crate::programmes_poses::FICHIER, "programmes_poses"),
+    // L'état du service du veilleur : forgé, un faux veilleur passait pour vivant.
+    scelle(sceau::VEILLEUR_ETAT, "machine::linux::veilleur"),
     local("passage-restes", "passage"),
     local("reprise-version-d-avant", "passage"),
     local("bin", "mise_a_jour"),
@@ -140,7 +147,6 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     local("corrections", "machine::windows"),
     local("accessibilite", "machine::windows::portes"),
     local("loldrivers", "machine::windows::pilotes"),
-    local("veilleur-etat.json", "machine::linux::veilleur"),
     local("veilleur-voulu", "machine::linux::veilleur"),
     local("veilleur-oublier-le-choix", "machine::linux::veilleur"),
     local("rancongiciel-voulu", "machine::linux::veilleur"),

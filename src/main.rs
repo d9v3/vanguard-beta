@@ -56,6 +56,7 @@ mod pe;
 mod plist;
 mod plugins;
 mod prediction;
+mod programmes_poses;
 mod protection;
 mod raccourci;
 mod rapport;
@@ -72,6 +73,7 @@ mod sqlite;
 mod traces;
 mod ui;
 mod verifier_cle;
+mod voulues;
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
