@@ -382,13 +382,16 @@ fail2ban, sshguard ou CrowdSec bloque déjà les adresses qui insistent.
   signes d'un rootkit : processus cachés, programmes qui tournent sans fichier (memfd, effacés, lancés depuis /tmp),
   module du noyau qui se cache ou modules non signés inconnus, carte réseau en mode promiscuité (elle écoute tout le
   réseau).
-- Journaux d'événements de Windows, sur les 7 derniers jours : rafales de mots de passe faux venues du réseau (Bureau
-  à distance, partages), journal de sécurité effacé, comptes créés, services installés depuis un dossier temporaire
-  ou qui lancent un interpréteur. Le journal de sécurité ne se lit qu'en administrateur : sans ce droit, c'est dit.
-  « Que s'est-il passé ? » (`vanguard journaux-windows`) : les règles EVT- lues par Vanguard lui-même, sur ce Windows
-  ou sur un dossier de .evtx depuis Linux ou macOS (disque monté depuis la clé de secours), puis les alertes dans
-  l'ordre du temps, avec la période vraiment lue par journal ; reprises dans le rapport et dans CHRONOLOGIE.txt des
-  traces.
+- Journaux d'événements de Windows, sur les 7 derniers jours, au bilan et dans « Que s'est-il passé ? » (menu Bloquer
+  et réagir › Journaux de Windows, `vanguard journaux-windows`) : treize règles EVT- lues par Vanguard lui-même, un
+  seul juge. Traces effacées, administrateur de plus, mots de passe devinés, Bureau à distance depuis l'extérieur,
+  service ou tâche planifiée qui lance un interpréteur ou un programme d'un dossier temporaire, processus suspects
+  (outils d'attaque, commande encodée, téléchargement par certutil, bitsadmin, mshta…), PowerShell malveillant,
+  Defender désarmé, BITS, WMI, politique d'audit. Ce que Windows ne journalise pas d'origine (tâches, lignes de
+  commande) est dit « non vérifié », avec le réglage à allumer ; le journal de sécurité ne se lit qu'en
+  administrateur : sans ce droit, c'est dit. Sur ce Windows, ou sur un dossier de .evtx depuis Linux ou macOS (disque
+  monté depuis la clé de secours), puis les alertes dans l'ordre du temps, avec la période vraiment lue par journal ;
+  reprises dans le rapport et dans CHRONOLOGIE.txt des traces.
 - Antivirus : ClamAV (Linux, macOS) ou Microsoft Defender (Windows), sur l'ordinateur ou sur une clé USB / un dossier
   choisi, avec les pièges des vers de clé (raccourci qui imite un dossier, autorun.inf, scripts).
 - Intégrité des fichiers critiques (comptes, sudo, SSH, PAM, cron, services, démarrage automatique) : empreintes
@@ -785,9 +788,9 @@ Chaque entrée du menu existe aussi en commande.
 | `vanguard changements` | ce que Vanguard a changé : chaque correction lancée ici, sa date et son résultat ; une correction marquée « annulable » s'y annule, puis l'état d'avant est relu |
 | `vanguard annuler` | tout remettre comme avant : défait ce que Vanguard a changé (réglages, corrections, jeux, blocages, Wi-Fi public), après accord ; comme `optimiser annuler` |
 | `vanguard signaler [--incident id] [--outil id] [--programme nom] [--langue fr\|en] [--json] [--effacer]` | préparer un signalement à un éditeur (MSRC, Google, Chrome, Mozilla, Apple, avis GHSA, CERT/CC, CERT-FR, Vanguard) : trié d'abord, brouillon au format du programme, ce qui est personnel retiré, écrit sur cet ordinateur et montré en entier ; rien n'est jamais envoyé |
+| `vanguard journaux-windows [--dossier D] [--jours N] [--json]` | que s'est-il passé ? Les règles EVT- sur les journaux de Windows, de cet ordinateur (Windows) ou d'un dossier de .evtx (tout système : `winevt\Logs` d'un disque monté, dossier de `depanner traces`) : le verdict de chaque règle (« non vérifié » et pourquoi quand un journal manque), les alertes dans l'ordre du temps avec compte, programme et adresse, la période vraiment lue par journal ; 7 jours par défaut (lecture seule) |
 | `vanguard veilleur [on\|off]` | veilleur (Linux 6.6 et plus) : programmes lancés et connexions fermées, vus sur le moment ; `rancongiciel on\|off` : les dossiers personnels surveillés en direct contre les rançongiciels ; coupé par défaut |
 | `vanguard protection [oui\|non] [--pendant 1h\|4h] [--json]` | l'état de chaque interrupteur de protection en un écran (`--json` : sans rien changer) ; `oui` ou `non` agit sur la protection en temps réel |
-| `vanguard journaux-windows [--dossier D] [--jours N] [--json]` | que s'est-il passé ? Les règles EVT- sur les journaux de Windows, de cet ordinateur (Windows) ou d'un dossier de .evtx (tout système : `winevt\Logs` d'un disque monté, dossier de `depanner traces`) : le verdict de chaque règle (« non vérifié » et pourquoi quand un journal manque), les alertes dans l'ordre du temps avec compte, programme et adresse, la période vraiment lue par journal ; 7 jours par défaut (lecture seule) |
 | **9 Données et sauvegardes** | |
 | `vanguard copier-fichiers [destination]` | copier mes fichiers vers un disque externe, copie vérifiée |
 | `vanguard sauvegarde-auto [--annuler]` | sauvegarde automatique vers un disque externe, avec l'outil du système |

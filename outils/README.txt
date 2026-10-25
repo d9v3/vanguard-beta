@@ -122,7 +122,11 @@ highlighted one, Esc clears it. In the main menu, it also finds each tool of the
          the previous value is put back (vanguard optimize undo)
        8.9 Report a flaw to a vendor: a draft in the program's format (MSRC, Mozilla, GHSA advisory…), what is
          personal removed; nothing is ever sent (vanguard disclose)
-       8.10 Watcher (Linux): programs started and connections closed seen as they happen, off by default
+       8.10 Windows logs, what happened? The EVT- rules (cleared traces, one more administrator, guessed
+         password, attack service or scheduled task, suspicious processes, PowerShell, Defender…) on this
+         Windows' logs; on Linux and macOS, on a folder of .evtx it asks for (winevt\Logs of a disk mounted
+         from the drive). The alerts in time order (read-only; vanguard windows-logs)
+       8.11 Watcher (Linux): programs started and connections closed seen as they happen, off by default
          (vanguard watcher on); and, on request, personal folders watched live against ransomware: an alert
          within seconds, freeze then stop of an almost-certain case only with active protection
          (vanguard watcher ransomware on)

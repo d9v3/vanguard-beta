@@ -9,6 +9,15 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 
 ## Prochaine version
 
+- **Journaux de Windows : un seul juge, deux règles de plus, une place au menu.** Le bilan (WIN-JRN-003) ne lit plus
+  les journaux lui-même : il reprend les treize règles EVT- de « Que s'est-il passé ? », alertes au même niveau, et
+  « non vérifié » avec sa raison quand un journal manque ou est réservé à l'administrateur ; le rapport HTML ne montre
+  plus deux fois les journaux de cet ordinateur. Nouvelles règles : EVT-TAC-001, tâche planifiée créée ou changée
+  pour lancer un interpréteur, une commande encodée ou un programme d'un dossier temporaire (audit des tâches, ou
+  historique du Planificateur) ; EVT-PRC-001, processus suspects (outils d'attaque connus, commande encodée,
+  téléchargement par certutil, bitsadmin, mshta, regsvr32 ou rundll32), si la ligne de commande est journalisée.
+  Coupés d'origine, ces réglages sont nommés quand ils manquent. Menu Bloquer et réagir › Journaux de Windows : ce
+  Windows, ou un dossier de .evtx sous Linux et macOS.
 - **macOS maintenu, sans nouveautés propres.** Le programme macOS reste publié et testé automatiquement sur un Mac
   de GitHub ; il n'a jamais été essayé sur un vrai Mac, et la page, les README et les notices le disent.
 - **Optimiser refusé en administrateur.** Les outils d'Optimiser (logiciels, nettoyage, réglages, jeux, mesures du

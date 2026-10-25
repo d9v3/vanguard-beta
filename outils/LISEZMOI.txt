@@ -128,7 +128,11 @@ Entrée ouvre celle en surbrillance, Échap efface. Au menu principal, elle trou
          blocages et le mode Wi-Fi public ; la valeur d'avant est remise (vanguard optimiser annuler)
        8.9 Signaler une faille à un éditeur : brouillon au format du programme (MSRC, Mozilla, avis GHSA…),
          ce qui est personnel retiré ; rien n'est jamais envoyé (vanguard signaler)
-       8.10 Veilleur (Linux) : programmes lancés et connexions fermées vus sur le moment, coupé par défaut
+       8.10 Journaux de Windows, que s'est-il passé ? Les règles EVT- (traces effacées, administrateur de plus,
+         mot de passe deviné, service ou tâche planifiée d'attaque, processus suspects, PowerShell, Defender…)
+         sur les journaux de ce Windows ; sous Linux et macOS, sur un dossier de .evtx demandé (winevt\Logs d'un
+         disque monté depuis la clé). Les alertes dans l'ordre du temps (lecture seule ; vanguard journaux-windows)
+       8.11 Veilleur (Linux) : programmes lancés et connexions fermées vus sur le moment, coupé par défaut
          (vanguard veilleur on) ; et, sur demande, les dossiers personnels surveillés en direct contre les
          rançongiciels : alerte en quelques secondes, gel puis arrêt d'un cas quasi certain seulement avec la
          protection active (vanguard veilleur rancongiciel on)
