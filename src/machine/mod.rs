@@ -392,8 +392,7 @@ fn en_parallele_mesure(
             })
             .collect()
     });
-    // Un effacement de journal n'est dit qu'une fois : COM-JRN-001 cède à WIN-JRN-003 ce que celui-ci a lu.
-    journaux::ceder_au_bilan_des_journaux(&mut constats, journaux::systeme_lu(bilan), JOURS_DES_JOURNAUX);
+    apres_les_regles(&mut constats, bilan);
     (constats, durees)
 }
 
@@ -413,6 +412,7 @@ pub(crate) fn essai_des_regles(
     if !une_par_une {
         return en_parallele_mesure(choisies.into_iter().map(regles::verification).collect());
     }
+    let bilan = bilan_en_cours();
     let mut constats = Vec::new();
     let mut durees = Vec::new();
     for r in choisies {
@@ -420,6 +420,7 @@ pub(crate) fn essai_des_regles(
         constats.extend(regles::verification(r)());
         durees.push((r.id, debut.elapsed()));
     }
+    apres_les_regles(&mut constats, bilan);
     (constats, durees)
 }
 
@@ -439,15 +440,33 @@ fn audit(systeme: &'static str) -> Audit {
 /// Le numéro du bilan en cours : ce que `ParBilan` a gardé d'un bilan précédent est périmé.
 static BILAN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Les jours que lit WIN-JRN-003 (sans lui, rien n'est cédé : la valeur ne sert pas).
-#[cfg(windows)]
-const JOURS_DES_JOURNAUX: u32 = windows::evenements::JOURS;
-#[cfg(not(windows))]
-const JOURS_DES_JOURNAUX: u32 = 7;
-
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn bilan_en_cours() -> u64 {
+fn bilan_en_cours() -> u64 {
     BILAN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+std::thread_local! {
+    /// Le numéro du bilan dont une vérification de règle fait partie, posé dans son fil par `regles::verification`
+    /// quand elle est créée : une règle qui note quelque chose pour la suite de son bilan le note sous ce numéro-là,
+    /// jamais sous le compteur relu, qu'un autre bilan a pu avancer entre-temps.
+    static BILAN_DU_FIL: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Le bilan dont fait partie la règle qui tourne dans ce fil ; rien hors d'une vérification de règle.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn bilan_du_fil() -> Option<u64> {
+    BILAN_DU_FIL.with(std::cell::Cell::get)
+}
+
+/// Pose le bilan de ce fil ; rend celui d'avant, à remettre.
+fn poser_bilan_du_fil(bilan: Option<u64>) -> Option<u64> {
+    BILAN_DU_FIL.with(|b| b.replace(bilan))
+}
+
+/// Ce que le bilan `bilan` fait de l'ensemble de ses constats, une fois toutes ses règles rendues, quel que soit le
+/// chemin (en même temps ou une par une) : un effacement de journal n'est dit qu'une fois, COM-JRN-001 cédant à
+/// WIN-JRN-003 ceux que celui-ci a lus.
+fn apres_les_regles(constats: &mut Vec<Constat>, bilan: u64) {
+    journaux::ceder_au_bilan_des_journaux(constats, journaux::systeme_lu(bilan));
 }
 
 /// Ce que plusieurs règles d'un bilan demandent en même temps (le pare-feu, l'adresse sur le réseau local) : la

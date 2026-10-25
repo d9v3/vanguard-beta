@@ -322,19 +322,26 @@ fn sous_delai<'a>(r: &'static Regle, delai: std::time::Duration) -> Verification
     use std::sync::mpsc::RecvTimeoutError;
     // L'interrupteur de lecture seule de l'autotest suit la règle dans son fil (il vaut par fil sous `cargo test`).
     let lecture_seule = crate::autotest::lecture_seule::heritage();
+    // Le bilan dont cette vérification fait partie : celui en cours quand elle est créée, posé dans son fil.
+    let bilan = super::bilan_en_cours();
     Box::new(move || {
         let (envoi, reception) = std::sync::mpsc::channel();
         let lance = std::thread::Builder::new()
             .name(format!("regle {}", r.id))
             .spawn(move || {
                 lecture_seule.poser_ici();
+                super::poser_bilan_du_fil(Some(bilan));
                 // Le bilan peut être déjà reparti : un envoi qui ne trouve personne ne dit rien.
                 let _ = envoi.send(crate::journal::rattraper(r.verifier));
             });
-        let rendu = match lance {
-            Ok(_) => reception.recv_timeout(delai),
+        let rendu = if lance.is_ok() {
+            reception.recv_timeout(delai)
+        } else {
             // Plus de fil possible (limite du système) : la règle tourne ici, sans délai, plutôt que pas du tout.
-            Err(_) => Ok(crate::journal::rattraper(r.verifier)),
+            let avant = super::poser_bilan_du_fil(Some(bilan));
+            let rendu = crate::journal::rattraper(r.verifier);
+            super::poser_bilan_du_fil(avant);
+            Ok(rendu)
         };
         let mut constats = match rendu {
             Ok(Ok(constats)) => constats,
@@ -632,6 +639,38 @@ mod tests {
                 "{id} n'existe plus : la retirer de MUETTES_TOLEREES"
             );
         }
+    }
+
+    /// Une règle lit dans son fil le numéro du bilan dont sa vérification fait partie : celui d'à sa création, même
+    /// si un autre bilan avance le compteur avant qu'elle tourne (WIN-JRN-003 y note sa lecture de System, que
+    /// COM-JRN-001 ne reprend que pour ce bilan-là). Hors d'une vérification, aucun.
+    #[test]
+    fn numero_du_bilan_recu_par_la_regle() {
+        // u64::MAX : la règle n'a lu aucun numéro dans son fil.
+        static VU: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let regle: &'static Regle = Box::leak(Box::new(Regle {
+            id: "LNX-TST-002",
+            systeme: Os::actuel(),
+            rang: 1,
+            sujet: ("essai", "test"),
+            references: &[],
+            verifier: || {
+                VU.store(
+                    super::super::bilan_du_fil().unwrap_or(u64::MAX),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                vec![super::super::ok("Audit", "essai")]
+            },
+        }));
+        let avant = super::super::bilan_en_cours();
+        let v = verification(regle);
+        let cree = super::super::bilan_en_cours();
+        super::super::BILAN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        v();
+        let vu = VU.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(avant <= vu && vu <= cree, "{avant} ≤ {vu} ≤ {cree}");
+        assert!(vu < super::super::bilan_en_cours());
+        assert_eq!(super::super::bilan_du_fil(), None);
     }
 
     /// Chaque règle de ce système, mise à l'épreuve : si elle ne rendait rien, son constat dirait « non vérifié

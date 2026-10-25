@@ -1782,6 +1782,8 @@ fn tache_mise_a_jour_dite_en_information() {
     let t = trouvailles(&js, "EVT-TAC-001");
     assert_eq!(t.len(), 1, "{t:?}");
     assert_eq!((t[0].gravite, t[0].nombre), (Gravite::Info, 2));
+    // Préfixé : jamais le même objet (donc la même normale) qu'un lancement (200) ou une création (4698).
+    assert_eq!(t[0].objet, "maj|\\exemple\\sauvegarde");
     let corps = resultat::corps(&t[0]);
     assert!(corps.contains("mise à jour"), "{corps}");
     assert!(
@@ -2077,6 +2079,7 @@ fn analyse(js: Vec<Jugement>) -> Analyse {
         etats: Vec::new(),
         manques_source: Vec::new(),
         services_ordinaires: Vec::new(),
+        debut_systeme: None,
     }
 }
 
@@ -2093,6 +2096,7 @@ fn constats_du_bilan() {
         etats: Vec::new(),
         manques_source: Vec::new(),
         services_ordinaires: Vec::new(),
+        debut_systeme: None,
     };
     // Tout lu : une alerte, puis un seul constat sain qui nomme les treize règles.
     let a = vivant(juger(&[processus(
@@ -2190,6 +2194,12 @@ fn services_ordinaires_listes_au_bilan() {
         resultat::noter_service(&mut services, &e);
     }
     assert_eq!(services, ["Sauvegarde", "Imprimante"]);
+    // Le même nom que juge EVT-SRV-001, espaces autour compris : un service d'attaque déguisé est une alerte, et
+    // n'est pas listé ; jamais ni l'un ni l'autre.
+    let deguise = service(" PSEXESVC ", "C:\\Program Files\\Outil\\outil.exe");
+    resultat::noter_service(&mut services, &deguise);
+    assert_eq!(services, ["Sauvegarde", "Imprimante"]);
+    assert_eq!(gravites(&juger(&[deguise]), "EVT-SRV-001").len(), 1);
     let vivant = |services_ordinaires: Vec<String>| Analyse {
         source: Source::Vivant,
         jugements: Vec::new(),
@@ -2197,6 +2207,7 @@ fn services_ordinaires_listes_au_bilan() {
         etats: Vec::new(),
         manques_source: Vec::new(),
         services_ordinaires,
+        debut_systeme: None,
     };
     let jamais = |_: &str| false;
     let c = resultat::constats_du_bilan(&vivant(services), &jamais);
@@ -2235,6 +2246,7 @@ fn journal_system_lu_en_entier() {
         etats,
         manques_source,
         services_ordinaires: Vec::new(),
+        debut_systeme: None,
     };
     assert!(resultat::systeme_lu_en_entier(&avec(tout_lu(), Vec::new())));
     // Lu en partie (délai, borne), refusé, désactivé, absent, ou la source incomplète : non.
@@ -2508,6 +2520,7 @@ fn constats_de_la_source_vivante() {
         etats,
         manques_source: Vec::new(),
         services_ordinaires: Vec::new(),
+        debut_systeme: None,
     };
     let (constats, couverture) = resultat::constats(&a, &|_| false);
     assert!(couverture.non_verifies.iter().any(|n| n.starts_with("EVT-MDP-001")));

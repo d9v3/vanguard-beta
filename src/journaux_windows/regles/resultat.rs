@@ -48,6 +48,10 @@ pub(crate) struct Analyse {
     /// Les services ordinaires installés pendant la période (`jeu::service_ordinaire`), une fois chacun, au plus
     /// `SERVICES_MONTRES` + 1 : le bilan les liste (WIN-JRN-003), le dernier dit seulement qu'il y en a d'autres.
     pub services_ordinaires: Vec<String>,
+    /// L'instant où la lecture du journal System de cet ordinateur a commencé (source vivante) : un événement écrit
+    /// après a pu ne pas être lu.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub debut_systeme: Option<DateTime<Utc>>,
 }
 
 /// Les services ordinaires nommés au plus par le bilan.
@@ -282,6 +286,7 @@ pub(crate) fn analyser_dossier_borne(
         etats,
         manques_source,
         services_ordinaires,
+        debut_systeme: None,
     })
 }
 
@@ -377,7 +382,11 @@ pub(crate) fn analyser_vivant(options: &Options, fin: std::time::Instant) -> Ana
     let mut moteur = Moteur::nouveau(REGLES, options.clone(), BornesMoteur::default());
     let mut etats = Vec::new();
     let mut services_ordinaires = Vec::new();
+    let mut debut_systeme = None;
     for journal in JOURNAUX {
+        if *journal == "System" {
+            debut_systeme = Some(Utc::now());
+        }
         let filtre = Filtre {
             journaux: vec![(*journal).to_string()],
             depuis: options.depuis,
@@ -421,6 +430,7 @@ pub(crate) fn analyser_vivant(options: &Options, fin: std::time::Instant) -> Ana
         etats,
         manques_source: Vec::new(),
         services_ordinaires,
+        debut_systeme,
     }
 }
 

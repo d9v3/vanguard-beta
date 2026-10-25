@@ -18,7 +18,8 @@ delivered just before it. Only the latest version has its download page; every v
   rundll32), if the command line is logged. Off by default, these settings are named when they are missing. An
   updated task (Task Scheduler event 140) is reported as information. The check-up also lists the ordinary services
   installed over the period (five names at most), and a cleared log is no longer reported twice: COM-JRN-001 leaves
-  to WIN-JRN-003 those it read, and only reports them itself when the System log could not be read. Block and
+  to WIN-JRN-003 those it read, and reports the others itself, each on its own (an alert declared normal no longer
+  silences another). Block and
   respond › Windows logs menu: this Windows, or a folder of .evtx on Linux and macOS.
 - **macOS maintained, without Mac-specific new features.** The macOS program is still published and tested
   automatically on a GitHub Mac; it has never been tried on a real Mac, and the page, READMEs and key notes say so.

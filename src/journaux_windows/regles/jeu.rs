@@ -549,8 +549,10 @@ pub(crate) fn service_ordinaire(e: &EvenementWindows) -> Option<String> {
     {
         return None;
     }
-    let nom = champ(e, "ServiceName").trim();
-    (rempli(nom) && service_suspect(nom, champ(e, "ImagePath")).is_none()).then(|| nom.to_string())
+    // Jugé exactement comme par `service_installe` (même champ, mêmes valeurs) : un service est soit une alerte,
+    // soit listé, jamais ni l'un ni l'autre.
+    let nom = champ(e, "ServiceName");
+    (rempli(nom) && service_installe(e).is_none()).then(|| nom.to_string())
 }
 
 fn journal_des_evenements_change(e: &EvenementWindows) -> Option<Indice> {
@@ -2329,7 +2331,8 @@ fn tache_inscrite(e: &EvenementWindows) -> Option<Indice> {
 fn tache_mise_a_jour(e: &EvenementWindows) -> Option<Indice> {
     let nom = champ(e, "TaskName");
     indice(
-        format!("{}|mise-a-jour", nom.to_lowercase()),
+        // « maj| » devant : aucun objet d'un 106, d'un 200 ou d'un 4698 (« nom|… ») ne peut lui ressembler.
+        format!("maj|{}", nom.to_lowercase()),
         Gravite::Info,
         (
             "une tâche planifiée a été mise à jour (ce journal ne dit pas ce qu'elle lance : son lancement le dira)",

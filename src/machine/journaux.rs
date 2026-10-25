@@ -4,6 +4,8 @@
 //! Aucun programme local ne peut empêcher l'administrateur d'agir : seule une copie hors de la machine le peut.
 
 use super::{Constat, alerte, ok};
+use chrono::{DateTime, Utc};
+
 use crate::modele::Objet;
 use crate::risk::Niveau;
 use crate::{tr, trf};
@@ -67,93 +69,132 @@ pub fn journaux() -> Vec<Constat> {
     vec![juger_journald(persistant, scelle)]
 }
 
-/// Un effacement dit : récent (moins de 30 jours) ou non.
+/// Un journal effacé, relevé par Windows (événement 104) : le jour (AAAA-MM-JJ, à l'heure de l'ordinateur), l'instant
+/// exact (UTC, s'il est lisible) et le détail (compte qui a effacé, journal), prêts à montrer.
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(not(windows), allow(dead_code))]
-fn effacement_dit(date: &str, detail: &str, aujourdhui: chrono::NaiveDate) -> Constat {
-    let recent = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_ok_and(|d| (aujourdhui - d).num_days() <= 30);
-    alerte(
-        CAT,
-        if recent { Niveau::Moyen } else { Niveau::Info },
-        trf!(
-            "Journal d'événements effacé le {date} ({detail}). Si ce n'est pas vous, quelqu'un a pu effacer ses traces.",
-            "Event log cleared on {date} ({detail}). If it was not you, someone may have erased their tracks."
-        ),
-    )
+struct Effacement {
+    jour: String,
+    instant: Option<DateTime<Utc>>,
+    detail: String,
 }
 
-/// L'objet du constat de l'effacement le plus récent des `jours` derniers jours : ceux que WIN-JRN-003 lit aussi.
-const DANS_LA_PERIODE: &str = "dans-la-periode";
+/// Le genre de l'objet d'un effacement : sa clé porte son instant et son détail, propre à lui (une normale apprise sur
+/// un effacement n'en tait pas un autre), et `ceder_au_bilan_des_journaux` y relit l'instant.
+const GENRE: &str = "effacement";
 
-/// Effacements de journaux relevés par Windows : (date AAAA-MM-JJ, détail), les plus récents d'abord. Le plus récent
-/// des `jours` derniers jours (ceux que WIN-JRN-003 lit aussi, par EVT-EFF-001) a son constat à lui, que
-/// `ceder_au_bilan_des_journaux` remplace si WIN-JRN-003 a lu le journal System en entier : l'événement n'est dit
-/// qu'une fois. Le plus récent d'avant, que WIN-JRN-003 ne lit pas, garde le sien. Une date illisible compte comme
-/// d'avant : elle reste dite ici.
+/// Chaque effacement relevé (Windows en rend 5 au plus, les plus récents d'abord), un constat chacun : récent (moins
+/// de 30 jours) ou non. Ceux que WIN-JRN-003 a lus aussi lui sont cédés au bilan (`ceder_au_bilan_des_journaux`).
 #[cfg_attr(not(windows), allow(dead_code))]
-fn juger_effacements(effacements: &[(String, String)], aujourdhui: chrono::NaiveDate, jours: u32) -> Vec<Constat> {
+fn juger_effacements(effacements: &[Effacement], aujourdhui: chrono::NaiveDate) -> Vec<Constat> {
     if effacements.is_empty() {
         return vec![ok(
             CAT,
             tr!("Aucun journal d'événements effacé.", "No event log cleared."),
         )];
     }
-    // Le jour d'il y a `jours` - 1 jours, minuit compris, est toujours dans les `jours` × 24 h que lit WIN-JRN-003.
-    let dans_la_periode = |date: &str| {
-        chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
-            .is_ok_and(|d| d <= aujourdhui && (aujourdhui - d).num_days() < i64::from(jours))
+    effacements
+        .iter()
+        .map(|e| {
+            let (date, detail) = (&e.jour, &e.detail);
+            let recent = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+                .is_ok_and(|d| (aujourdhui - d).num_days() <= 30);
+            let instant = e
+                .instant
+                .map_or_else(|| date.clone(), |i| i.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+            let detail_court: String = detail.chars().take(64).collect();
+            alerte(
+                CAT,
+                if recent { Niveau::Moyen } else { Niveau::Info },
+                trf!(
+                    "Journal d'événements effacé le {date} ({detail}). Si ce n'est pas vous, quelqu'un a pu effacer ses traces.",
+                    "Event log cleared on {date} ({detail}). If it was not you, someone may have erased their tracks."
+                ),
+            )
+            .avec_objet(Objet::de(GENRE, &format!("{instant}|{detail_court}")))
+        })
+        .collect()
+}
+
+/// L'instant d'un effacement, relu dans l'objet de son constat ; rien pour un autre constat, ou un instant illisible.
+fn instant_de(c: &Constat) -> Option<DateTime<Utc>> {
+    let Objet::De(o) = &c.objet else {
+        return None;
     };
-    let mut constats = Vec::new();
-    if let Some((date, detail)) = effacements.iter().find(|(d, _)| dans_la_periode(d)) {
-        constats.push(effacement_dit(date, detail, aujourdhui).avec_objet(Objet::de("effacement", DANS_LA_PERIODE)));
-    }
-    if let Some((date, detail)) = effacements.iter().find(|(d, _)| !dans_la_periode(d)) {
-        constats.push(effacement_dit(date, detail, aujourdhui));
-    }
-    constats
+    let (instant, _) = o.strip_prefix(GENRE)?.strip_prefix(':')?.split_once('|')?;
+    DateTime::parse_from_rfc3339(instant).ok().map(|d| d.to_utc())
+}
+
+/// Ce que WIN-JRN-003 a lu du journal System, en entier, pendant un bilan : depuis quand, et l'instant où sa lecture
+/// a commencé (un effacement écrit après, il a pu ne pas le voir).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SystemeLu {
+    pub depuis: DateTime<Utc>,
+    pub debut: DateTime<Utc>,
 }
 
 /// Sous Windows, WIN-JRN-003 dit déjà, par EVT-EFF-001, chaque journal effacé (104) qu'il a lu : quand il a lu le
-/// journal System en entier pendant ce bilan (`systeme_lu`, et ses constats sont là), le constat de COM-JRN-001 sur
-/// la même période lui cède la place, pour que l'événement ne soit dit qu'une fois. S'il n'a pas pu le lire (droits,
-/// délai, journal coupé, règle en panne ou pas lancée), COM-JRN-001 le dit, comme avant.
-pub(super) fn ceder_au_bilan_des_journaux(constats: &mut [Constat], systeme_lu: bool, jours: u32) {
+/// journal System en entier pendant ce bilan (`lu`) et que ses constats sont là, chaque effacement de COM-JRN-001
+/// qu'il a forcément vu (son instant exact entre le début de la période lue et le début de la lecture) lui est cédé,
+/// pour qu'il ne soit dit qu'une fois. Les autres, et tous quand WIN-JRN-003 n'a pas pu lire (droits, délai, journal
+/// coupé, règle en panne ou pas lancée), restent dits par COM-JRN-001 : deux fois plutôt que zéro.
+pub(super) fn ceder_au_bilan_des_journaux(constats: &mut Vec<Constat>, lu: Option<SystemeLu>) {
     // Un constat vérifié de WIN-JRN-003 : une règle hors délai ne rend que son « non vérifié », et ses alertes,
-    // rendues trop tard, sont perdues ; COM-JRN-001 garde alors le sien.
-    if !systeme_lu || !constats.iter().any(|c| c.regle == BILAN_DES_JOURNAUX && c.verifie) {
+    // rendues trop tard, sont perdues ; COM-JRN-001 garde alors les siens.
+    let Some(lu) = lu else {
+        return;
+    };
+    if !constats.iter().any(|c| c.regle == BILAN_DES_JOURNAUX && c.verifie) {
         return;
     }
-    let periode = Objet::de("effacement", DANS_LA_PERIODE);
-    for c in constats.iter_mut().filter(|c| c.regle == REGLE && c.objet == periode) {
-        let mut cede = ok(
-            CAT,
-            trf!(
-                "Journaux d'événements effacés ces {jours} derniers jours : dits par {BILAN_DES_JOURNAUX} (EVT-EFF-001).",
-                "Event logs cleared over the last {jours} days: reported by {BILAN_DES_JOURNAUX} (EVT-EFF-001)."
-            ),
-        )
-        .avec_objet(periode.clone());
-        cede.regle = REGLE;
-        *c = cede;
-    }
+    // Une seconde de marge au début : la requête arrondit l'instant du début de la période.
+    let vu = |c: &Constat| {
+        c.regle == REGLE
+            && c.probleme.is_some()
+            && instant_de(c).is_some_and(|t| t > lu.depuis + chrono::Duration::seconds(1) && t < lu.debut)
+    };
+    let Some(premier) = constats.iter().position(vu) else {
+        return;
+    };
+    let mut cede = ok(
+        CAT,
+        trf!(
+            "Journaux d'événements effacés pendant la période lue par {BILAN_DES_JOURNAUX} : dits par lui (EVT-EFF-001).",
+            "Event logs cleared over the period read by {BILAN_DES_JOURNAUX}: reported by it (EVT-EFF-001)."
+        ),
+    );
+    cede.regle = REGLE;
+    let mut i = 0;
+    constats.retain(|c| {
+        let garde = i == premier || !vu(c);
+        i += 1;
+        garde
+    });
+    constats[premier] = cede;
 }
 
 /// Cette règle, et celle qui lit les journaux de Windows pour le bilan.
 const REGLE: &str = "COM-JRN-001";
 const BILAN_DES_JOURNAUX: &str = "WIN-JRN-003";
 
-/// Le numéro du bilan pendant lequel WIN-JRN-003 a lu le journal System en entier (`u64::MAX` : aucun).
-static SYSTEME_LU: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+/// Ce que WIN-JRN-003 a lu du journal System, avec le numéro du bilan pendant lequel il l'a fait : celui que la
+/// vérification de la règle a reçu en partant (`machine::bilan_du_fil`), pas le compteur relu.
+static SYSTEME_LU: std::sync::Mutex<Option<(u64, SystemeLu)>> = std::sync::Mutex::new(None);
 
 /// WIN-JRN-003 a lu le journal System en entier pendant le bilan `bilan`.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub(super) fn noter_systeme_lu(bilan: u64) {
-    SYSTEME_LU.store(bilan, std::sync::atomic::Ordering::Relaxed);
+pub(super) fn noter_systeme_lu(bilan: u64, lu: SystemeLu) {
+    *SYSTEME_LU.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((bilan, lu));
 }
 
-/// WIN-JRN-003 a-t-il lu le journal System en entier pendant le bilan `bilan` ? Un bilan lancé pendant celui-ci
-/// change le numéro : la réponse est alors non, et COM-JRN-001 garde son constat (dit deux fois plutôt que perdu).
-pub(super) fn systeme_lu(bilan: u64) -> bool {
-    SYSTEME_LU.load(std::sync::atomic::Ordering::Relaxed) == bilan
+/// Ce que WIN-JRN-003 a lu du journal System pendant le bilan `bilan`. Un autre bilan qui l'a noté depuis efface la
+/// note de celui-ci : rien alors, et COM-JRN-001 garde ses constats (dits deux fois plutôt que perdus).
+pub(super) fn systeme_lu(bilan: u64) -> Option<SystemeLu> {
+    SYSTEME_LU
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .filter(|(n, _)| *n == bilan)
+        .map(|(_, lu)| lu)
 }
 
 /// macOS : le journal unifié est géré par le système, qui le garde et ne permet pas de l'effacer simplement ;
@@ -173,32 +214,35 @@ pub fn journaux() -> Vec<Constat> {
             .chars()
             .take(10)
             .collect();
-        Some(format!("EFF|{jour}|{}", v.join(" ")))
+        Some(format!("EFF|{jour}|{}|{}", date.trim(), v.join(" ")))
     });
     let Some(sortie) = natif.map(|l| l.join("\n")).or_else(|| {
         super::windows::ps(
         "Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = 104 } -MaxEvents 5 -ErrorAction SilentlyContinue | \
-         ForEach-Object { \"EFF|$($_.TimeCreated.ToString('yyyy-MM-dd'))|$(($_.Properties | ForEach-Object { $_.Value }) -join ' ')\" }",
+         ForEach-Object { \"EFF|$($_.TimeCreated.ToString('yyyy-MM-dd'))|$($_.TimeCreated.ToUniversalTime().ToString('o'))|$(($_.Properties | ForEach-Object { $_.Value }) -join ' ')\" }",
         )
     }) else {
         return vec![super::windows::illisible(CAT)];
     };
-    juger_effacements(
-        &lire_effacements(&sortie),
-        chrono::Local::now().date_naive(),
-        super::windows::evenements::JOURS,
-    )
+    juger_effacements(&lire_effacements(&sortie), chrono::Local::now().date_naive())
 }
 
-/// Lignes « EFF|date|détail » : le détail (compte qui a effacé, journal) vient de l'événement lui-même, lu prêt à
-/// montrer.
+/// Lignes « EFF|jour|instant|détail » : l'instant en UTC (RFC 3339 ; illisible, l'effacement n'est jamais cédé), le
+/// détail (compte qui a effacé, journal) venu de l'événement lui-même, lu prêt à montrer.
 #[cfg_attr(not(windows), allow(dead_code))]
-fn lire_effacements(sortie: &str) -> Vec<(String, String)> {
+fn lire_effacements(sortie: &str) -> Vec<Effacement> {
     sortie
         .lines()
         .filter_map(|l| l.trim().strip_prefix("EFF|"))
-        .filter_map(|l| l.split_once('|'))
-        .map(|(d, x)| (crate::ui::affichable(d), crate::ui::affichable(x.trim())))
+        .filter_map(|l| {
+            let mut champs = l.splitn(3, '|');
+            Some((champs.next()?, champs.next()?, champs.next()?))
+        })
+        .map(|(jour, instant, detail)| Effacement {
+            jour: crate::ui::affichable(jour),
+            instant: DateTime::parse_from_rfc3339(instant.trim()).ok().map(|d| d.to_utc()),
+            detail: crate::ui::affichable(detail.trim()),
+        })
         .collect()
 }
 
@@ -206,12 +250,24 @@ fn lire_effacements(sortie: &str) -> Vec<(String, String)> {
 mod tests {
     use super::*;
 
-    /// Les vraies fonctions de Windows (Wine ici, où wevtapi refuse : la VM dit le reste) : un seul constat, sans
-    /// planter.
+    /// Les vraies fonctions de Windows (Wine ici, où wevtapi refuse : la VM dit le reste) : un constat par
+    /// effacement relevé (5 au plus), ou un seul, sans planter.
     #[cfg(windows)]
     #[test]
     fn effacements_lus_par_windows() {
-        assert!((1..=2).contains(&journaux().len()));
+        assert!((1..=5).contains(&journaux().len()));
+    }
+
+    fn utc(t: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(t).unwrap().to_utc()
+    }
+
+    fn effacement(jour: &str, instant: Option<&str>, detail: &str) -> Effacement {
+        Effacement {
+            jour: jour.to_string(),
+            instant: instant.map(utc),
+            detail: detail.to_string(),
+        }
     }
 
     #[test]
@@ -220,100 +276,138 @@ mod tests {
         assert_eq!(juger_journald(true, false).probleme, Some(Niveau::Info));
         assert_eq!(juger_journald(true, true).probleme, None);
         let jour = chrono::NaiveDate::from_ymd_opt(2026, 10, 17).unwrap();
-        let juger = |e: &[(String, String)]| juger_effacements(e, jour, 7);
+        let juger = |e: &[Effacement]| juger_effacements(e, jour);
         let niveaux = |c: &[Constat]| c.iter().map(|c| c.probleme).collect::<Vec<_>>();
         assert_eq!(niveaux(&juger(&[])), [None]);
-        let recent = [("2026-10-10".to_string(), "alice System".to_string())];
-        assert_eq!(niveaux(&juger(&recent)), [Some(Niveau::Moyen)]);
-        let ancien = [("2025-01-02".to_string(), "alice System".to_string())];
-        assert_eq!(niveaux(&juger(&ancien)), [Some(Niveau::Info)]);
-        // Le détail de l'événement, piégé, arrive inoffensif dans le message.
-        let lus = lire_effacements("EFF|2026-10-10|alice\x1b]52;c;eA==\x07\x1b[2K\r\u{202e} System\nautre ligne\n");
+        let recent = effacement("2026-10-10", None, "alice System");
+        let ancien = effacement("2025-01-02", None, "alice System");
+        assert_eq!(niveaux(&juger(std::slice::from_ref(&recent))), [Some(Niveau::Moyen)]);
+        assert_eq!(niveaux(&juger(std::slice::from_ref(&ancien))), [Some(Niveau::Info)]);
+        assert_eq!(
+            niveaux(&juger(&[recent, ancien])),
+            [Some(Niveau::Moyen), Some(Niveau::Info)]
+        );
+        // Le détail de l'événement, piégé, arrive inoffensif dans le message ; l'instant, en UTC.
+        let lus = lire_effacements(
+            "EFF|2026-10-10|2026-10-10T12:00:00.1234567Z|alice\x1b]52;c;eA==\x07\x1b[2K\r\u{202e} System|x\n\
+             EFF|2026-10-09|illisible|bob\nautre ligne\n",
+        );
         assert_eq!(
             lus,
-            [("2026-10-10".to_string(), "alice�]52;c;eA==��[2K�� System".to_string())]
+            [
+                Effacement {
+                    jour: "2026-10-10".to_string(),
+                    instant: Some(utc("2026-10-10T12:00:00.1234567Z")),
+                    detail: "alice�]52;c;eA==��[2K�� System|x".to_string(),
+                },
+                effacement("2026-10-09", None, "bob"),
+            ]
         );
-        assert!(!crate::ui::contient_un_piege(&juger(&lus)[0].message));
+        let c = juger(&lus);
+        assert!(!crate::ui::contient_un_piege(&c[0].message));
+        assert_eq!(instant_de(&c[0]), Some(utc("2026-10-10T12:00:00Z")));
+        assert_eq!(instant_de(&c[1]), None);
     }
 
-    /// Le même 104 n'est dit qu'une fois au bilan : COM-JRN-001 cède à WIN-JRN-003 l'effacement de la période que
-    /// celui-ci a lue, garde celui d'avant, et dit tout quand WIN-JRN-003 n'a pas pu lire le journal System.
+    /// Chaque effacement a sa clé : une normale apprise sur l'un (celui d'un désinstalleur) ne tait pas un autre,
+    /// même jour, même compte, même journal (celui d'un intrus, une heure plus tard).
+    #[test]
+    fn chaque_effacement_a_sa_cle() {
+        let jour = chrono::NaiveDate::from_ymd_opt(2026, 10, 17).unwrap();
+        let mut c = juger_effacements(
+            &[
+                effacement("2026-10-15", Some("2026-10-15T13:00:00Z"), "alice Application"),
+                effacement("2026-10-15", Some("2026-10-15T12:00:00Z"), "alice Application"),
+            ],
+            jour,
+        );
+        for c in &mut c {
+            c.regle = REGLE;
+        }
+        let (a, b) = (c[0].cle().unwrap(), c[1].cle().unwrap());
+        assert_ne!(a, b);
+        assert!(a.to_string().contains("2026-10-15T13:00:00Z"), "{a}");
+        assert_eq!(c[0].message, c[1].message);
+    }
+
+    /// Le même 104 n'est dit qu'une fois au bilan : COM-JRN-001 cède à WIN-JRN-003 les effacements que celui-ci a
+    /// forcément lus (entre le début de sa période et le début de sa lecture de System, à l'instant près), garde les
+    /// autres, et dit tout quand WIN-JRN-003 n'a pas pu lire le journal System.
     #[test]
     fn effacement_dit_une_seule_fois() {
-        let jour = chrono::NaiveDate::from_ymd_opt(2026, 10, 17).unwrap();
+        let jour = chrono::NaiveDate::from_ymd_opt(2026, 11, 6).unwrap();
+        // Québec : l'heure recule le 1er novembre 2026. Bilan le 6 novembre à 23 h 30 HNE (7 nov. 04 h 30 UTC) :
+        // WIN-JRN-003 lit 7 × 24 h, depuis le 31 octobre 00 h 30 HAE.
+        let lu = SystemeLu {
+            depuis: utc("2026-10-31T04:30:00Z"),
+            debut: utc("2026-11-07T04:30:05Z"),
+        };
         let effacements = [
-            ("2026-10-15".to_string(), "alice Application".to_string()),
-            ("2026-10-12".to_string(), "alice System".to_string()),
-            ("2026-09-30".to_string(), "alice Setup".to_string()),
-            ("date illisible".to_string(), "alice Setup".to_string()),
+            // Écrit après le début de la lecture de System (course) : WIN-JRN-003 a pu ne pas le voir.
+            effacement("2026-11-06", Some("2026-11-07T04:30:06Z"), "alice Application"),
+            effacement("2026-11-06", Some("2026-11-06T20:00:00Z"), "alice System"),
+            effacement("2026-11-01", Some("2026-11-01T12:00:00Z"), "alice Setup"),
+            // 31 octobre 00 h 15 HAE : 6 jours du calendrier avant le 6, mais avant la période lue.
+            effacement("2026-10-31", Some("2026-10-31T04:15:00Z"), "alice Setup"),
+            effacement("2026-10-30", None, "alice Setup"),
         ];
-        let bilan = |systeme_lu: bool, avec_win: bool| {
-            let mut constats: Vec<Constat> = juger_effacements(&effacements, jour, 7)
+        let win = |verifie: bool| {
+            let mut c = if verifie {
+                alerte(
+                    "Journaux d'événements",
+                    Niveau::Eleve,
+                    "EVT-EFF-001 : un journal d'événements a été effacé".to_string(),
+                )
+            } else {
+                super::super::impossible("Audit", "délai dépassé")
+            };
+            c.regle = BILAN_DES_JOURNAUX;
+            c
+        };
+        let bilan = |lu: Option<SystemeLu>, win: Option<Constat>| {
+            let mut constats: Vec<Constat> = juger_effacements(&effacements, jour)
                 .into_iter()
                 .map(|mut c| {
                     c.regle = REGLE;
                     c
                 })
                 .collect();
-            if avec_win {
-                let mut c = alerte(
-                    "Journaux d'événements",
-                    Niveau::Eleve,
-                    "EVT-EFF-001 : un journal d'événements a été effacé".to_string(),
-                );
-                c.regle = BILAN_DES_JOURNAUX;
-                constats.push(c);
-            }
-            ceder_au_bilan_des_journaux(&mut constats, systeme_lu, 7);
-            constats
-                .into_iter()
-                .filter(|c| c.regle == REGLE)
-                .map(|c| (c.probleme, c.message))
-                .collect::<Vec<_>>()
+            constats.extend(win);
+            ceder_au_bilan_des_journaux(&mut constats, lu);
+            constats.into_iter().filter(|c| c.regle == REGLE).collect::<Vec<_>>()
         };
-        let bilan_hors_delai = || {
-            let mut constats = juger_effacements(&effacements, jour, 7);
-            for c in &mut constats {
-                c.regle = REGLE;
-            }
-            let mut c = super::super::impossible("Audit", "délai dépassé");
-            c.regle = BILAN_DES_JOURNAUX;
-            constats.push(c);
-            ceder_au_bilan_des_journaux(&mut constats, true, 7);
-            constats
-                .into_iter()
-                .filter(|c| c.regle == REGLE)
-                .map(|c| (c.probleme, c.message))
-                .collect::<Vec<_>>()
-        };
-        // WIN-JRN-003 a lu System : le 15 n'est dit que par lui ; le 30 septembre, hors de sa période, reste ici.
-        let cede = bilan(true, true);
-        assert_eq!(cede.len(), 2, "{cede:?}");
-        assert_eq!(cede[0].0, None);
-        assert!(cede[0].1.contains("WIN-JRN-003"), "{}", cede[0].1);
-        assert!(
-            !cede
-                .iter()
-                .any(|(_, m)| m.contains("2026-10-15") || m.contains("2026-10-12"))
+        let instants = |c: &[Constat]| c.iter().map(instant_de).collect::<Vec<_>>();
+        // WIN-JRN-003 a lu System : les deux qu'il a forcément vus lui sont cédés, en une ligne saine à leur place.
+        let cede = bilan(Some(lu), Some(win(true)));
+        assert_eq!(cede.len(), 4);
+        assert_eq!(cede[1].probleme, None);
+        assert!(cede[1].message.contains("WIN-JRN-003"), "{}", cede[1].message);
+        assert_eq!(
+            instants(&cede),
+            [
+                Some(utc("2026-11-07T04:30:06Z")),
+                None,
+                Some(utc("2026-10-31T04:15:00Z")),
+                None
+            ]
         );
-        assert_eq!(cede[1].0, Some(Niveau::Moyen));
-        assert!(cede[1].1.contains("2026-09-30"), "{}", cede[1].1);
+        assert_eq!(cede.iter().filter(|c| c.probleme.is_some()).count(), 3);
         // Pas lu, WIN-JRN-003 absent du bilan (règle pas lancée) ou seulement non vérifié (hors délai) : COM-JRN-001
-        // dit le plus récent lui-même.
-        for garde in [bilan(false, true), bilan(true, false), bilan_hors_delai()] {
-            assert_eq!(garde[0].0, Some(Niveau::Moyen));
-            assert!(garde[0].1.contains("2026-10-15"), "{}", garde[0].1);
-            assert!(garde[1].1.contains("2026-09-30"), "{}", garde[1].1);
+        // dit chacun lui-même, et rien n'est dit cédé.
+        for garde in [
+            bilan(None, Some(win(true))),
+            bilan(Some(lu), None),
+            bilan(Some(lu), Some(win(false))),
+        ] {
+            assert_eq!(garde.len(), 5);
+            assert!(garde.iter().all(|c| c.probleme.is_some()));
+            assert!(!garde.iter().any(|c| c.message.contains("WIN-JRN-003")));
         }
-        // Le bord de la période : il y a 6 jours en est, il y a 7 non (WIN-JRN-003 lit 7 × 24 h depuis maintenant).
-        let bord = |d: &str| {
-            juger_effacements(&[(d.to_string(), "alice".to_string())], jour, 7)[0].objet
-                == Objet::de("effacement", DANS_LA_PERIODE)
-        };
-        assert!(bord("2026-10-11") && bord("2026-10-17"));
-        assert!(!bord("2026-10-10") && !bord("2026-10-18"));
-        // Le numéro du bilan pendant lequel System a été lu : un autre bilan ne s'en sert pas.
-        noter_systeme_lu(1 << 60);
-        assert!(systeme_lu(1 << 60) && !systeme_lu((1 << 60) + 1));
+        // La note d'un bilan ne sert qu'à lui : celle d'un autre bilan l'efface.
+        noter_systeme_lu(1 << 60, lu);
+        assert_eq!(systeme_lu(1 << 60), Some(lu));
+        assert_eq!(systeme_lu((1 << 60) + 1), None);
+        noter_systeme_lu((1 << 60) + 1, lu);
+        assert_eq!(systeme_lu(1 << 60), None);
     }
 }

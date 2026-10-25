@@ -318,6 +318,7 @@ mod tests {
             etats,
             manques_source: Vec::new(),
             services_ordinaires: Vec::new(),
+            debut_systeme: None,
         }
     }
 
