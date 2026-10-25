@@ -1268,6 +1268,20 @@ fn temoin_journalctl(p: &mut Partie, dossier: &Path, natifs: &[(i64, String)], d
                     "the output of journalctl over the same week (10 MB, newest first), kept as a witness of the reading",
                 ),
             });
+            // Arrêté par le délai ou en échec (ordinateur chargé, journal qui tourne) : le témoin est partiel, la
+            // comparaison dirait « caché » à tort. Seule la borne de 10 Mo, connue, se compare.
+            if ecrit.delai {
+                p.manque(titre, Raison::Delai(120));
+                return;
+            }
+            if ecrit.code != Some(0) && !ecrit.tronque {
+                let erreur = ecrit.erreurs.lines().next().unwrap_or_default().trim().to_string();
+                p.manque(
+                    titre,
+                    Raison::Erreur(format!("journalctl : code {:?} {erreur}", ecrit.code)),
+                );
+                return;
+            }
             // Borné (le témoin fait 10 Mo au plus), en simple fichier : rien de posé à sa place ne fige la collecte.
             let texte = crate::socle::lire_texte_ordinaire(&dossier.join(TEMOIN_ECRIT), 32 << 20).unwrap_or_default();
             let temoin: Vec<(i64, String)> = texte.lines().filter_map(prefixe).collect();
