@@ -17,12 +17,16 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   date, plus de celle du fichier ; vidée, sans sceau ou datée dans le futur, elle est redemandée, et si elle ne peut
   pas l'être, « non vérifiée » avec la raison, jamais saine.
 - **Défenses voulues et programme lancé, jugés sur un état scellé.** La mise en marche et l'arrêt de la surveillance
-  horaire, du veilleur et de la veille anti-rançongiciel par Vanguard sont notés dans un état scellé et au journal :
-  leur marque effacée avec leur tâche, le bilan dit la défense coupée sans passer par Vanguard (jamais plus « coupée,
-  comme par défaut »), et un état changé hors de Vanguard est « non vérifié », jamais vert. L'état du veilleur est
-  scellé, et un veilleur n'est dit vivant que si son processus lance le programme de l'unité. Le programme que lance
-  chaque tâche (surveillance, entretien, veilleur) a son chemin et son empreinte BLAKE3 scellés à la pose et à chaque
-  mise à jour par Vanguard : un autre chemin ou d'autres octets sont une alerte élevée.
+  horaire, du veilleur et de la veille anti-rançongiciel par Vanguard sont notés dans un état scellé et au journal
+  (ceux d'une version d'avant sont repris tels quels) : leur marque effacée avec leur tâche, ou cette note changée
+  hors de Vanguard, le bilan dit la défense coupée sans passer par Vanguard (jamais plus « coupée, comme par
+  défaut ») ; une note perdue avec les sceaux est « non vérifiée », jamais verte. L'état du veilleur est scellé, et un veilleur
+  n'est dit vivant que si son processus lance le programme de l'unité ; celui d'avant une mise à jour, encore en
+  marche, est dit avec le remède et relancé par la mise à jour de Vanguard. Le programme que lance chaque tâche
+  (surveillance, entretien, veilleur) et le texte de la tâche (unité et minuterie, tâche planifiée, agent) ont leur
+  empreinte BLAKE3 scellée à la pose et à chaque mise à jour par Vanguard : un autre chemin, d'autres octets ou une
+  tâche changée sont une alerte élevée ; une version publiée et signée posée hors de Vanguard est reconnue par
+  l'historique signé des versions et dite en information.
 - **Journaux de Windows : un seul juge, deux règles de plus, une place au menu.** Le bilan (WIN-JRN-003) ne lit plus
   les journaux lui-même : il reprend les treize règles EVT- de « Que s'est-il passé ? », alertes au même niveau, et
   « non vérifié » avec sa raison quand un journal manque ou est réservé à l'administrateur ; le rapport HTML ne montre

@@ -1482,6 +1482,42 @@ fn lance_le_programme(pid: u32, attendu: Option<&std::path::Path>) -> bool {
     pid != 0 && std::fs::read_link(format!("/proc/{pid}/exe")).is_ok_and(|e| e == attendu)
 }
 
+/// Les marques d'une version d'avant (veilleur, veille anti-rançongiciel) sans rien de noté dans l'état scellé :
+/// notées voulues (`voulues::adopter`, jamais par-dessus un arrêt noté ni un état douteux).
+fn adopter_les_marques() {
+    if fichier_voulu().is_file() {
+        voulues::adopter(Defense::Veilleur);
+    }
+    if fichier_rancon_voulu().is_file() {
+        voulues::adopter(Defense::Rancongiciel);
+    }
+}
+
+/// L'unité du veilleur lance-t-elle `cible` ? Une mise à jour de ce programme doit alors relancer le service, même si
+/// rien n'est encore noté pour lui (posé par une version d'avant).
+pub(crate) fn lance_la_copie(cible: &std::path::Path) -> bool {
+    programme_de_l_unite().is_some_and(|p| crate::programmes_poses::meme_chemin(&p, cible))
+}
+
+/// Le processus noté dans l'état est-il le veilleur d'avant une mise à jour ? Sa ligne de commande est celle du
+/// veilleur, et son image est le programme de l'unité, effacé depuis (« … (deleted) ») : remplacé par une mise à jour
+/// (Vanguard, gestionnaire de paquets, cargo) pendant qu'il tournait. Lu dans le fichier tel quel : le veilleur d'avant
+/// la 0.88 l'écrit sans sceau, et c'est la seule trace de son numéro. Rien n'est cru de ses compteurs.
+fn ancien_veilleur(dossier: &std::path::Path, attendu: Option<&std::path::Path>) -> Option<u32> {
+    let attendu = attendu?.canonicalize().ok()?;
+    let texte = crate::socle::lire_texte_ordinaire(&dossier.join(ETAT), 1 << 20).ok()?;
+    let e: Etat = serde_json::from_str(&texte).ok()?;
+    let image = std::fs::read_link(format!("/proc/{}/exe", e.pid)).ok()?;
+    let avant = image.to_str()?.strip_suffix(" (deleted)")?;
+    (en_marche(&e) && std::path::Path::new(avant) == attendu).then_some(e.pid)
+}
+
+/// L'état du veilleur ne se lit pas comme scellé parce que le veilleur d'avant une mise à jour l'écrit encore : pas
+/// une falsification (`sceau::constat` ne le dit pas changé hors de Vanguard ; le bilan du veilleur dit le remède).
+pub(crate) fn etat_ecrit_par_l_ancien() -> bool {
+    ancien_veilleur(&crate::socle::dossier_local(), programme_de_l_unite().as_deref()).is_some()
+}
+
 /// Relance le service s'il est en marche : après une mise à jour de la copie qu'il lance (`mise_a_jour`), il
 /// garderait sinon l'ancienne en mémoire.
 pub(crate) fn relancer_si_actif() {
@@ -1558,6 +1594,9 @@ fn servir() -> i32 {
     let mut debit = Debit::default();
     let mut fichiers = crate::protection::sources::Fichiers::recentes();
     let mut empreintes_relues = Instant::now();
+    // Allumé par une version d'avant (ses marques, rien de noté) : noté voulu dès le démarrage, sans attendre un
+    // bilan. Sa marque effacée ensuite ne le coupe plus au démarrage suivant.
+    adopter_les_marques();
     // La veille des dossiers personnels, si elle est voulue (accord séparé, dans le même « on »).
     let mut rancon = construire_veille(&mut etat);
     ecrire_etat(&etat);
@@ -2061,11 +2100,15 @@ fn allumer() {
         trp!("  ✖ {}", "  ✖ {}", raison);
         return;
     }
+    // Déjà en marche (un veilleur d'avant une mise à jour) : « enable --now » ne le relance pas, et l'ancien
+    // programme resterait en mémoire.
+    let deja_active = crate::machine::linux::natif::unite_activee(UNITE, true) == Some(true);
     let ecrit =
         chemin.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) && std::fs::write(&chemin, &texte).is_ok();
     let reussi = ecrit
         && super::dbus::actions::utilisateur(super::dbus::actions::Geste::Recharger, "")
-        && super::dbus::actions::utilisateur(super::dbus::actions::Geste::Activer { maintenant: true }, UNITE);
+        && super::dbus::actions::utilisateur(super::dbus::actions::Geste::Activer { maintenant: true }, UNITE)
+        && (!deja_active || super::dbus::actions::utilisateur(super::dbus::actions::Geste::RedemarrerSiActive, UNITE));
     crate::changements::noter(
         &[vec![
             format!("{} → {}", tr!("écrire", "write"), chemin.display()),
@@ -2083,7 +2126,11 @@ fn allumer() {
     }
     marquer(&fichier_voulu());
     voulues::noter(Defense::Veilleur, true);
-    crate::programmes_poses::noter(crate::programmes_poses::Tache::Veilleur, std::path::Path::new(&exe));
+    crate::programmes_poses::noter(
+        crate::programmes_poses::Tache::Veilleur,
+        std::path::Path::new(&exe),
+        &std::fs::read(&chemin),
+    );
     std::thread::sleep(Duration::from_secs(3));
     if lire_etat().is_some_and(|e| vivant_d_apres(&e, maintenant()) && e.raison_arret.is_none()) {
         trp!(
@@ -2428,8 +2475,10 @@ fn commande_rancon(sous_etat: Option<&str>) {
 /// Coupe la surveillance des fichiers (dégèle ce qui restait gelé), puis redémarre le service.
 fn couper_rancon() {
     if !rancon_voulu() {
-        // Noté coupé par la personne : un état douteux ne se dit plus.
-        voulues::noter(Defense::Rancongiciel, false);
+        // Noté coupé par la personne : un état douteux ne se dit plus. Jamais voulue : rien à noter.
+        if voulues::souvenir(Defense::Rancongiciel) != voulues::Souvenir::Jamais {
+            voulues::noter(Defense::Rancongiciel, false);
+        }
         trp!(
             "  {VERT}✔{RESET} La surveillance des fichiers est déjà coupée.",
             "  {VERT}✔{RESET} File watching is already off."
@@ -2473,7 +2522,8 @@ pub(crate) fn precision() -> &'static str {
 fn constat() -> Constat {
     use crate::voulues::Souvenir;
     let activee = crate::machine::linux::natif::unite_activee(UNITE, true);
-    let (etat, doute_etat) = lire_etat_dans(&crate::socle::dossier_local());
+    let dossier = crate::socle::dossier_local();
+    let (etat, doute_etat) = lire_etat_dans(&dossier);
     let maintenant = maintenant();
     let programme = programme_de_l_unite();
     let vivant = etat
@@ -2509,15 +2559,31 @@ fn constat() -> Constat {
     }
     let verdict = voulues::juger(marque, activee == Some(true), &souvenir);
     let rancon_marque = fichier_rancon_voulu().is_file();
+    // Allumée par une version d'avant : notée voulue, sa marque effacée ne la coupe plus en silence.
+    if rancon_marque {
+        voulues::adopter(Defense::Rancongiciel);
+    }
     let rancon = voulues::juger(rancon_marque, false, &voulues::souvenir(Defense::Rancongiciel));
+    // Le programme et l'unité comparés à ceux que Vanguard a posés : un autre programme ou une unité changée passe
+    // avant tout ; un « non vérifié » s'ajoute au constat, sans cacher ce que dit l'état.
+    let identite = match (activee, &programme) {
+        (Some(true), Some(p)) => crate::programmes_poses::constat(
+            crate::programmes_poses::Tache::Veilleur,
+            p,
+            &std::fs::read(fichier_unite()),
+        ),
+        _ => None,
+    };
+    if let Some(c) = identite.as_ref().filter(|c| c.probleme == Some(Niveau::Eleve)) {
+        return c.clone();
+    }
     if activee == Some(true)
-        && let Some(p) = &programme
-        && let Some(c) = crate::programmes_poses::constat(crate::programmes_poses::Tache::Veilleur, p)
+        && let Some(pid) = ancien_veilleur(&dossier, programme.as_deref())
     {
-        return c;
+        return juger_ancien(pid);
     }
     let noyau = release_du_noyau().and_then(|r| noyau_suffisant(&r));
-    juger_etat(
+    let mut c = juger_etat(
         &verdict,
         activee,
         etat.as_ref(),
@@ -2525,6 +2591,37 @@ fn constat() -> Constat {
         noyau,
         doute.as_deref(),
         &rancon,
+    );
+    if let Some(i) = identite {
+        c.message.push(' ');
+        c.message.push_str(&i.message);
+        c.verifie &= i.verifie;
+        c.probleme = c.probleme.max(i.probleme);
+    }
+    c
+}
+
+/// Le veilleur d'avant une mise à jour tourne encore (processus `pid`) : il voit toujours, mais avec l'ancien
+/// programme, et il écrit son état comme avant (sans sceau, jusqu'à la 0.87). Ni « à l'arrêt », ni « falsifié » :
+/// dit, avec le remède, jamais compté comme vérifié.
+fn juger_ancien(pid: u32) -> Constat {
+    Constat {
+        verifie: false,
+        ..alerte(
+            "Surveillance",
+            Niveau::Info,
+            trf!(
+                "Le veilleur tourne encore la version d'avant une mise à jour (processus {pid}) : il observe toujours, mais ce qu'il dit de lui n'est pas vérifié tant qu'il n'est pas relancé.",
+                "The watcher still runs the version from before an update (process {pid}): it still watches, but what it says about itself is not checked until it is restarted."
+            ),
+        )
+    }
+    .manuel(
+        tr!(
+            "Le relancer : systemctl --user restart vanguard-veilleur (ou fermer puis rouvrir la session)",
+            "Restart it: systemctl --user restart vanguard-veilleur (or sign out and back in)"
+        ),
+        &["systemctl --user restart vanguard-veilleur"],
     )
 }
 
@@ -2583,10 +2680,17 @@ fn juger_etat(
         (false, V::CoupeeHors(depuis), _) => alerte(
             CAT,
             Niveau::Eleve,
-            trf!(
-                "Le veilleur que vous aviez allumé (le {depuis}) a été coupé sans passer par Vanguard : son unité est retirée ou désactivée, la note de votre choix a disparu, et Vanguard n'a noté aucun arrêt. Un logiciel malveillant coupe d'abord ce qui le surveille.",
-                "The watcher you had turned on (on {depuis}) was cut without going through Vanguard: its unit is removed or disabled, the note of your choice disappeared, and Vanguard noted no stop. Malware first cuts what watches it."
-            ),
+            match depuis {
+                Some(depuis) => trf!(
+                    "Le veilleur que vous aviez allumé (le {depuis}) a été coupé sans passer par Vanguard : son unité est retirée ou désactivée, la trace de votre choix a disparu, et Vanguard n'a noté aucun arrêt. Un logiciel malveillant coupe d'abord ce qui le surveille.",
+                    "The watcher you had turned on (on {depuis}) was cut without going through Vanguard: its unit is removed or disabled, the record of your choice disappeared, and Vanguard noted no stop. Malware first cuts what watches it."
+                ),
+                None => tr!(
+                    "Le veilleur est coupé, et la note de Vanguard sur vos défenses a été modifiée ou effacée hors de Vanguard : un programme a pu le couper puis effacer ce qui le montrait. Un logiciel malveillant coupe d'abord ce qui le surveille.",
+                    "The watcher is off, and Vanguard's record of your defenses was changed or deleted outside Vanguard: a program may have switched it off and then erased what showed it. Malware first cuts what watches it."
+                )
+                .to_string(),
+            },
         )
         .manuel(
             tr!(
@@ -2598,8 +2702,8 @@ fn juger_etat(
         (false, V::NonVerifiee(d), _) => impossible(
             CAT,
             &trf!(
-                "veilleur coupé, et l'état des défenses voulues ({}) {} : rien ne dit que c'est vous qui l'avez coupé",
-                "watcher off, and the state of wanted defenses ({}) {}: nothing tells that you turned it off",
+                "veilleur coupé, et la note de Vanguard sur vos défenses ({}) {} : rien ne montre que c'est vous qui l'avez coupé",
+                "watcher off, and Vanguard's record of your defenses ({}) {}: nothing shows it was you who turned it off",
                 voulues::FICHIER,
                 d.texte()
             ),
@@ -2722,8 +2826,8 @@ fn juger_etat(
             } else if let V::NonVerifiee(d) = rancon {
                 rancon_doute = true;
                 ajouter(trf!(
-                    "Veille anti-rançongiciel coupée, et l'état des défenses voulues {} : rien ne dit que c'est vous qui l'avez coupée (vanguard veilleur rancongiciel on la rallume, off le note).",
-                    "Ransomware watch off, and the state of wanted defenses {}: nothing tells that you turned it off (vanguard watcher ransomware on turns it back on, off notes it).",
+                    "Veille anti-rançongiciel coupée, et la note de Vanguard sur vos défenses {} : rien ne montre que c'est vous qui l'avez coupée (vanguard veilleur rancongiciel on la rallume, off le note).",
+                    "Ransomware watch off, and Vanguard's record of your defenses {}: nothing shows it was you who turned it off (vanguard watcher ransomware on turns it back on, off notes it).",
                     d.texte()
                 ));
             }
@@ -3533,7 +3637,7 @@ mod tests {
         use voulues::{Doute, Verdict as V};
         let pas = V::PasVoulue(None);
         let c = juger_etat(
-            &V::CoupeeHors("2026-10-01".into()),
+            &V::CoupeeHors(Some("2026-10-01".into())),
             Some(false),
             None,
             false,
@@ -3599,7 +3703,7 @@ mod tests {
             true,
             Some(true),
             None,
-            &V::CoupeeHors("2026-10-01".into()),
+            &V::CoupeeHors(Some("2026-10-01".into())),
         );
         assert_eq!(c.probleme, Some(Niveau::Moyen), "{}", c.message);
         let c = juger_etat(
@@ -3657,6 +3761,59 @@ mod tests {
         );
         assert!(!c.verifie && c.message.contains("hors de Vanguard"), "{}", c.message);
         let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// Le veilleur d'avant une mise à jour : la ligne de commande du veilleur, l'image du programme de l'unité effacée
+    /// depuis (« (deleted) ») et un nouveau fichier à sa place. Reconnu, et dit en information, jamais « falsifié » ni
+    /// « à l'arrêt » ; le même processus sans image effacée ne l'est pas.
+    #[test]
+    fn veilleur_d_avant_une_mise_a_jour() {
+        let d = crate::socle::dossier_local().join("veilleur-d-avant");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let prog = d.join("vanguard");
+        std::fs::copy("/bin/sh", &prog).unwrap();
+        // « ; : » : le shell ne remplace pas son image par sleep.
+        let mut enfant = std::process::Command::new(&prog)
+            .args(["-c", "sleep 30; :", "veilleur", "--servir"])
+            .spawn()
+            .unwrap();
+        let etat = Etat {
+            pid: enfant.id(),
+            battement: maintenant(),
+            ..Etat::default()
+        };
+        std::fs::write(d.join(ETAT), serde_json::to_vec(&etat).unwrap()).unwrap();
+        // Encore le même programme : pas d'avant une mise à jour.
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(ancien_veilleur(&d, Some(&prog)), None);
+        // Mis à jour : l'ancien fichier part, un nouveau prend sa place.
+        std::fs::remove_file(&prog).unwrap();
+        std::fs::write(&prog, b"nouvelle version").unwrap();
+        assert_eq!(ancien_veilleur(&d, Some(&prog)), Some(enfant.id()));
+        assert_eq!(ancien_veilleur(&d, None), None);
+        let _ = enfant.kill();
+        let _ = enfant.wait();
+        let c = juger_ancien(42);
+        assert!(c.probleme == Some(Niveau::Info) && !c.verifie, "{}", c.message);
+        assert!(c.message.contains("avant une mise à jour"), "{}", c.message);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// Les marques d'une version d'avant (veilleur, veille anti-rançongiciel) sont adoptées : effacées ensuite, la
+    /// défense reste voulue et son service la reprend.
+    #[test]
+    fn marques_d_avant_adoptees() {
+        let marque = fichier_rancon_voulu();
+        marquer(&marque);
+        adopter_les_marques();
+        assert!(matches!(
+            voulues::souvenir(Defense::Rancongiciel),
+            voulues::Souvenir::Voulue(_)
+        ));
+        std::fs::remove_file(&marque).unwrap();
+        assert!(rancon_voulu(), "la marque effacée ne coupe plus la veille");
+        let _ = voulues::noter_dans(&crate::socle::dossier_local(), Defense::Rancongiciel, false, false);
     }
 
     /// Le processus noté doit lancer le programme de l'unité : celui de ce test lance son propre programme, pas un

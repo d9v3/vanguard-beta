@@ -444,8 +444,11 @@ fn installer(octets: &[u8], cible: &Path, attendue: Version, essai: Essai) -> Re
         let touchees = crate::programmes_poses::copie_posee(cible, octets);
         // Le veilleur tourne sans s'arrêter : relancé, il prend la copie posée au lieu de garder l'ancienne en mémoire,
         // que plus rien sur le disque ne reconnaît.
+        // Son unité suffit à le dire : posé par une version d'avant, rien n'est encore noté pour lui.
         #[cfg(target_os = "linux")]
-        if touchees.contains(&crate::programmes_poses::Tache::Veilleur) {
+        if touchees.contains(&crate::programmes_poses::Tache::Veilleur)
+            || crate::machine::linux::veilleur::lance_la_copie(cible)
+        {
             crate::machine::linux::veilleur::relancer_si_actif();
         }
         #[cfg(not(target_os = "linux"))]
@@ -803,6 +806,27 @@ fn proposer(source: &Path, cible: &Path, copie: Option<Version>, cle: Version) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Une copie posée par Vanguard (`installer`) renote l'empreinte de la tâche qui la lance : la mise à jour
+    /// légitime ne se dit pas « remplacée hors de Vanguard ».
+    #[test]
+    fn copie_posee_renote_la_tache() {
+        use crate::programmes_poses::{Tache, empreinte_notee};
+        let racine = crate::socle::dossier_local().join("essai-renote");
+        let _ = std::fs::remove_dir_all(&racine);
+        std::fs::create_dir_all(&racine).unwrap();
+        let (source, cible) = (racine.join("source"), racine.join(NOM));
+        faux_programme(&cible, None);
+        crate::programmes_poses::noter(Tache::Entretien, &cible, &Ok(b"[Service]".to_vec()));
+        let avant = empreinte_notee(Tache::Entretien).expect("notée");
+        faux_programme(&source, Some("0.81.0"));
+        poser_copie_dans(&source, &cible, SANS_ESSAI).unwrap();
+        let apres = empreinte_notee(Tache::Entretien).expect("notée");
+        assert_ne!(avant, apres);
+        assert_eq!(apres, crate::programmes_poses::empreinte_de(&cible).unwrap());
+        crate::programmes_poses::oublier(Tache::Entretien);
+        let _ = std::fs::remove_dir_all(&racine);
+    }
 
     /// En root, un programme posé dans un dossier que son compte (ou n'importe qui) peut changer n'est pas remplacé :
     /// ce compte échangerait le nouveau entre sa relecture et l'essai que root lance.

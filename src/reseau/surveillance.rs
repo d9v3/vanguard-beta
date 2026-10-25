@@ -902,7 +902,7 @@ pub fn constat() -> Option<crate::machine::Constat> {
     let installee = installee();
     match crate::voulues::juger(marque, installee, &souvenir) {
         Verdict::PasVoulue(_) => None,
-        Verdict::CoupeeHors(depuis) => Some(juger_coupee_hors(&depuis)),
+        Verdict::CoupeeHors(depuis) => Some(juger_coupee_hors(depuis.as_deref())),
         Verdict::NonVerifiee(doute) => Some(juger_sans_souvenir(doute)),
         Verdict::Voulue if !installee => juger_disparition(true, false),
         Verdict::Voulue => {
@@ -919,17 +919,22 @@ pub fn constat() -> Option<crate::machine::Constat> {
     }
 }
 
-/// Marque et tâche disparues alors que Vanguard a noté la surveillance voulue, sans arrêt noté depuis : coupée par un
-/// autre programme, au même niveau qu'une disparition.
-fn juger_coupee_hors(depuis: &str) -> crate::machine::Constat {
-    crate::machine::alerte(
-        "Surveillance",
-        Niveau::Eleve,
-        trf!(
-            "La surveillance horaire que vous aviez activée (le {depuis}) a été coupée sans passer par Vanguard : sa minuterie ou sa tâche planifiée a disparu avec la note de votre choix, et Vanguard n'a noté aucun arrêt. Un logiciel malveillant coupe d'abord ce qui le surveille.",
-            "The hourly monitoring you had turned on (on {depuis}) was cut without going through Vanguard: its timer or scheduled task disappeared along with the note of your choice, and Vanguard noted no stop. Malware first cuts what watches it."
+/// Marque et tâche disparues alors que Vanguard a noté la surveillance voulue (le jour `depuis`), sans arrêt noté
+/// depuis, ou avec sa note modifiée hors de Vanguard (`None`) : coupée par un autre programme, au même niveau qu'une
+/// disparition.
+pub(crate) fn juger_coupee_hors(depuis: Option<&str>) -> crate::machine::Constat {
+    let texte = match depuis {
+        Some(depuis) => trf!(
+            "La surveillance horaire que vous aviez activée (le {depuis}) a été coupée sans passer par Vanguard : sa minuterie ou sa tâche planifiée a disparu avec la trace de votre choix, et Vanguard n'a noté aucun arrêt. Un logiciel malveillant coupe d'abord ce qui le surveille.",
+            "The hourly monitoring you had turned on (on {depuis}) was cut without going through Vanguard: its timer or scheduled task disappeared along with the record of your choice, and Vanguard noted no stop. Malware first cuts what watches it."
         ),
-    )
+        None => tr!(
+            "La surveillance horaire est coupée, et la note de Vanguard sur vos défenses a été modifiée ou effacée hors de Vanguard : un programme a pu la couper puis effacer ce qui le montrait. Un logiciel malveillant coupe d'abord ce qui le surveille.",
+            "The hourly monitoring is off, and Vanguard's record of your defenses was changed or deleted outside Vanguard: a program may have switched it off and then erased what showed it. Malware first cuts what watches it."
+        )
+        .to_string(),
+    };
+    crate::machine::alerte("Surveillance", Niveau::Eleve, texte)
     .manuel(
         tr!(
             "La remettre : « vanguard surveillance on » ; si c'est vous qui l'avez coupée, « vanguard surveillance off » pour que Vanguard le note",
@@ -939,14 +944,14 @@ fn juger_coupee_hors(depuis: &str) -> crate::machine::Constat {
     )
 }
 
-/// Ni marque ni tâche, et l'état des défenses voulues ne peut pas être cru : rien ne dit que la personne l'a coupée.
+/// Ni marque ni tâche, et la note des défenses voulues ne peut pas être crue : rien ne dit que la personne l'a coupée.
 /// Jamais « coupée, comme par défaut ».
 fn juger_sans_souvenir(doute: crate::voulues::Doute) -> crate::machine::Constat {
     crate::machine::impossible(
         "Surveillance",
         &trf!(
-            "surveillance horaire absente, et l'état des défenses voulues ({}) {} : rien ne dit que c'est vous qui l'avez coupée",
-            "hourly monitoring absent, and the state of wanted defenses ({}) {}: nothing tells that you turned it off",
+            "surveillance horaire absente, et la note de Vanguard sur vos défenses ({}) {} : rien ne montre que c'est vous qui l'avez coupée",
+            "hourly monitoring absent, and Vanguard's record of your defenses ({}) {}: nothing shows it was you who turned it off",
             crate::voulues::FICHIER,
             doute.texte()
         ),
@@ -960,9 +965,11 @@ fn juger_sans_souvenir(doute: crate::voulues::Doute) -> crate::machine::Constat 
     )
 }
 
-/// `juger_tache`, et le programme lancé comparé à celui que Vanguard a posé (`programmes_poses`) : un autre programme
-/// à la même place passe avant ce que la tâche dit d'elle-même (une version d'avant, par exemple). Seulement quand il
-/// existe : son absence se dit déjà.
+/// `juger_tache`, et le programme lancé et le texte de la tâche comparés à ceux que Vanguard a posés
+/// (`programmes_poses`) : un autre programme, ou une tâche changée, passe avant ce que la tâche dit d'elle-même (une
+/// version d'avant, par exemple). Un programme absent garde son alerte ; un programme sans chemin (« vanguard », ou
+/// un préfixe de systemd comme « @… », « -… ») alors qu'un chemin a été posé est un autre programme, pas un
+/// « non vérifié ».
 pub(crate) fn juger_planifie(
     quoi: Planifie,
     l: &Lecture,
@@ -971,11 +978,51 @@ pub(crate) fn juger_planifie(
 ) -> Option<Constat> {
     let identite = match l {
         Lecture::Lue { programme, .. } if programme.is_absolute() && existe(programme) => {
-            crate::programmes_poses::constat(quoi.tache(), programme)
+            crate::programmes_poses::constat(quoi.tache(), programme, &texte_planifie(quoi))
+        }
+        Lecture::Lue { programme, .. } if !programme.is_absolute() => {
+            crate::programmes_poses::chemin_pose(quoi.tache())
+                .map(|pose| crate::programmes_poses::autre_chemin(quoi.tache(), programme, &pose))
         }
         _ => None,
     };
     identite.or_else(|| juger_tache(quoi, l, cle, existe))
+}
+
+/// Le texte de la tâche `quoi` tel que le système le garde, pour le comparer à celui que Vanguard a posé. Linux : le
+/// service puis la minuterie ; macOS : le plist de l'agent ; Windows : le XML de la tâche, lu par le planificateur.
+pub(crate) fn texte_planifie(quoi: Planifie) -> std::io::Result<Vec<u8>> {
+    let (nom, agent, tache) = quoi.noms();
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (agent, tache);
+        let dossier = dossier_unites_maison();
+        let mut texte = std::fs::read(dossier.join(format!("{nom}.service")))?;
+        texte.push(0);
+        match std::fs::read(dossier.join(format!("{nom}.timer"))) {
+            Ok(o) => texte.extend(o),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        Ok(texte)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (nom, tache);
+        std::fs::read(plist_agent_nomme(agent))
+    }
+    #[cfg(windows)]
+    {
+        let _ = (nom, agent);
+        crate::machine::windows::planificateur::xml(tache)
+            .map(String::into_bytes)
+            .ok_or_else(|| std::io::Error::other(tr!("planificateur non lu", "task scheduler not read")))
+    }
+}
+
+/// Vanguard vient de poser la tâche `quoi`, qui lance `exe` : le programme et le texte de la tâche sont scellés.
+pub(crate) fn noter_pose(quoi: Planifie, exe: &str) {
+    crate::programmes_poses::noter(quoi.tache(), Path::new(exe), &texte_planifie(quoi));
 }
 
 fn juger_disparition(voulue: bool, installee: bool) -> Option<crate::machine::Constat> {
@@ -1329,7 +1376,7 @@ pub(crate) fn reprendre(exe: &str) -> bool {
     let ok = installer(exe, Reglages::DAvant);
     if ok {
         noter_voulue(true);
-        crate::programmes_poses::noter(crate::programmes_poses::Tache::Surveillance, Path::new(exe));
+        noter_pose(Planifie::Surveillance, exe);
     }
     ok
 }
@@ -1373,17 +1420,18 @@ pub fn activer(oui: bool) {
         executable().is_some_and(|exe| {
             let ok = installer(&exe, Reglages::Aujourdhui);
             if ok {
-                crate::programmes_poses::noter(crate::programmes_poses::Tache::Surveillance, Path::new(&exe));
+                noter_pose(Planifie::Surveillance, &exe);
             }
             ok
         })
     } else {
         retrait.is_ok()
     };
-    if !oui || reussi {
+    // Un retrait raté laisse la tâche : le choix et son programme restent notés, et jugés au bilan. Noter l'arrêt
+    // ferait taire le bilan sur une tâche toujours là.
+    if reussi {
         noter_voulue(oui);
     }
-    // Un retrait raté laisse la tâche : son programme reste noté, et jugé.
     if !oui && reussi {
         crate::programmes_poses::oublier(crate::programmes_poses::Tache::Surveillance);
     }
@@ -1425,8 +1473,8 @@ pub fn activer(oui: bool) {
 /// supposé.
 pub(crate) fn retirer(trouves: &[PathBuf]) -> Result<(), String> {
     let r = retirer_planifie(Planifie::Surveillance, trouves);
-    noter_voulue(false);
     if r.is_ok() {
+        noter_voulue(false);
         crate::programmes_poses::oublier(crate::programmes_poses::Tache::Surveillance);
     }
     r
@@ -1953,6 +2001,18 @@ fn installer(exe: &str, r: Reglages) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Coupée hors de Vanguard, avec son jour ou avec la note modifiée hors de Vanguard : élevé, jamais muet.
+    #[test]
+    fn surveillance_coupee_hors_de_vanguard() {
+        for depuis in [Some("2026-10-01"), None] {
+            let c = juger_coupee_hors(depuis);
+            assert_eq!(c.probleme, Some(Niveau::Eleve), "{}", c.message);
+            assert!(c.verifie && c.correctif.is_some());
+        }
+        let c = juger_sans_souvenir(crate::voulues::Doute::Inconnu);
+        assert!(!c.verifie, "{}", c.message);
+    }
 
     /// Les alertes des journaux de Windows que rend le bilan (WIN-JRN-003) sont notifiées, et les parcours
     /// « infection » et « compte piraté » les montrent ; une information ne l'est pas.

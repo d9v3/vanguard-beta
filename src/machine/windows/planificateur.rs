@@ -199,6 +199,26 @@ pub(crate) fn definitions(noms: &[&str]) -> Option<Vec<(String, Definition)>> {
     })
 }
 
+/// Le XML de la tâche nommée `nom` (hors \Microsoft\), tel que le planificateur la garde : ce que Vanguard a posé,
+/// déclencheurs, réglages et actions compris (`programmes_poses` en scelle l'empreinte). `None` si le planificateur ne
+/// répond pas ou si elle n'existe pas : jamais une lecture partielle.
+pub(crate) fn xml(nom: &str) -> Option<String> {
+    let nom = nom.to_lowercase();
+    wmi::com("Tâches planifiées", "ITaskService", move || {
+        let mut trouve = None;
+        parcourir(|tache| {
+            // SAFETY : tâche vivante rendue par le planificateur, le temps de cet appel.
+            if unsafe { tache.Name() }?.to_string().to_lowercase() == nom {
+                // SAFETY : la même tâche vivante.
+                trouve = Some(unsafe { tache.Xml() }?.to_string());
+            }
+            Ok(())
+        })?;
+        Ok(trouve)
+    })
+    .flatten()
+}
+
 /// Ce que lance une tâche (sa première action qui lance un programme), si elle part dès que possible après un
 /// passage manqué, si elle a un déclencheur à l'ouverture de session, et si elle est active.
 fn definition(tache: &IRegisteredTask) -> windows::core::Result<Definition> {

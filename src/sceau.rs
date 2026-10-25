@@ -451,6 +451,28 @@ pub(crate) fn effacer_dans(dossier: &Path, nom: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Oublie des sceaux de `dossier` les fichiers qui n'y sont plus : ce que laisse une désinstallation qui efface le
+/// dossier de données sauf ce qu'une défense gardée demande encore (`desinstaller`). Les fichiers gardés restent tels
+/// que Vanguard les a écrits ; ceux qui sont partis avec le dossier ne se disent pas effacés hors de Vanguard.
+pub(crate) fn oublier_absents_dans(dossier: &Path) -> std::io::Result<()> {
+    if !crate::socle::ecriture_sure(dossier) {
+        return Err(dossier_d_un_autre());
+    }
+    let _verrou = verrou_ecriture(dossier, REGISTRE)?;
+    let Ok(Some(mut r)) = registre(dossier) else {
+        return Ok(());
+    };
+    let present = |nom: &String| std::fs::symlink_metadata(dossier.join(nom)).is_ok();
+    let avant = (r.fichiers.len(), r.adoptes.len(), r.versions.len());
+    r.fichiers.retain(|nom, _| present(nom));
+    r.adoptes.retain(present);
+    r.versions.retain(|nom, _| present(nom));
+    if avant == (r.fichiers.len(), r.adoptes.len(), r.versions.len()) {
+        return Ok(());
+    }
+    enregistrer_registre(dossier, &r)
+}
+
 fn dossier() -> PathBuf {
     crate::socle::dossier_local()
 }
@@ -676,6 +698,12 @@ pub(crate) fn constat() -> Vec<Constat> {
     let extensions = extensions_falsifiees || r.adoptes.iter().any(des_extensions);
     r.falsifies.retain(|n| !des_extensions(n));
     r.adoptes.retain(|n| !des_extensions(n));
+    // L'état du veilleur réécrit sans sceau par le veilleur d'avant une mise à jour, qui tourne encore : pas une
+    // falsification ; le bilan du veilleur dit le remède (le relancer).
+    #[cfg(target_os = "linux")]
+    if r.falsifies.contains(&VEILLEUR_ETAT) && crate::machine::linux::veilleur::etat_ecrit_par_l_ancien() {
+        r.falsifies.retain(|n| *n != VEILLEUR_ETAT);
+    }
     let mut constats: Vec<Constat> = if r.refaits {
         juger_refaits(&r.adoptes, &r.depuis, chrono::Local::now().date_naive())
             .into_iter()

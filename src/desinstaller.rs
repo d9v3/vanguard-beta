@@ -845,6 +845,16 @@ fn gardes_dans(d: &Path, actuel: bool, e: &[Element], etats: &[bool]) -> Vec<(Pa
         let mut besoins: Vec<PathBuf> = x.lance.iter().cloned().collect();
         besoins.extend(chemins(x));
         if actuel {
+            // Une défense gardée garde aussi ce qui la juge : la note des défenses voulues, son programme posé et
+            // leurs sceaux (oubliés des fichiers partis, `sceau::oublier_absents_dans`). Sans eux, le bilan la dirait
+            // « non vérifiée », ou posée par une version d'avant.
+            if matches!(x.genre, Genre::Surveillance | Genre::Entretien | Genre::Veilleur) {
+                besoins.extend([
+                    d.join(crate::voulues::FICHIER),
+                    d.join(crate::programmes_poses::FICHIER),
+                    d.join("sceaux.json"),
+                ]);
+            }
             match (&x.genre, &x.retrait) {
                 (Genre::Surveillance, _) => besoins.push(d.join(surveillance::VOULUE)),
                 (_, Retrait::Sauvegarde(Some(_), _)) => besoins.push(d.join(crate::sauvegarde::NOTES)),
@@ -1429,6 +1439,11 @@ fn retirer(e: &Element, x: &mut Execution) -> Result<String, Echec> {
             let gardes: Vec<&(PathBuf, String)> = x.gardes.iter().filter(|(p, _)| surveillance::sous(p, d)).collect();
             let fichiers: Vec<PathBuf> = gardes.iter().map(|(p, _)| p.clone()).collect();
             let restes = effacer_dossier(d, x.en_marche, &fichiers, x.cle);
+            // Les sceaux gardés oublient ce qui est parti avec le dossier : effacé par la désinstallation, pas hors de
+            // Vanguard.
+            if !gardes.is_empty() {
+                let _ = crate::sceau::oublier_absents_dans(d);
+            }
             if let Some((p, raison)) = restes.first() {
                 return Err(Echec::Echoue(trf!(
                     "{} élément(s) non effacé(s), dont {} ({raison})",
@@ -2238,6 +2253,9 @@ mod tests {
     fn dossier_de_donnees_coche_garde_ce_que_demande_un_element_garde() {
         let (r, l) = ordinateur("dependances-dossier");
         ecrire(&l.donnees.join(surveillance::VOULUE), "");
+        // La note scellée des défenses voulues, et un autre fichier scellé, qui part avec le dossier.
+        crate::voulues::noter_dans(&l.donnees, crate::voulues::Defense::Surveillance, true, false).unwrap();
+        crate::sceau::ecrire_dans(&l.donnees, crate::sceau::APPRIS, b"{}").unwrap();
         let rec = recenser(&l);
         let mut etats: Vec<bool> = rec.elements.iter().map(|e| e.coche).collect();
         // La surveillance gardée, le dossier de données coché.
@@ -2260,6 +2278,16 @@ mod tests {
             veilleur_reste: None,
         };
         let fait = retirer(&rec.elements[i], &mut x).expect("effacé");
+        // La note des défenses gardée avec ses sceaux, telle que Vanguard l'a écrite ; ce qui est parti n'est pas dit
+        // effacé hors de Vanguard.
+        assert!(matches!(
+            crate::sceau::lire_dans(&l.donnees, crate::voulues::FICHIER),
+            crate::sceau::Lecture::Intact(_)
+        ));
+        assert_eq!(
+            crate::sceau::lire_dans(&l.donnees, crate::sceau::APPRIS),
+            crate::sceau::Lecture::Absent
+        );
         // bin/vanguard reste : la surveillance gardée le lance ; le reste des données part.
         assert!(exe.is_file() && voulue.is_file());
         assert!(!l.donnees.join("appareils.json").exists() && !l.donnees.join("quarantaine").exists());

@@ -75,26 +75,33 @@ struct Fichier {
 /// Pourquoi l'état des défenses voulues ne peut pas être cru.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Doute {
+    /// Changé ou effacé hors de Vanguard : une écriture étrangère prouvée.
     HorsVanguard,
     Adopte,
     Inconnu,
     Illisible,
+    /// Hérité d'un état qui ne pouvait pas être cru, quand Vanguard l'a réécrit pour une autre défense.
+    Herite,
 }
 
 impl Doute {
-    /// La fin d'une phrase dont le sujet est l'état des défenses voulues.
+    /// La fin d'une phrase dont le sujet est une note de Vanguard au féminin (« la note de Vanguard sur vos
+    /// défenses », « la liste des programmes posés par Vanguard »), dite pour quelqu'un qui ne connaît pas les sceaux.
     pub(crate) fn texte(self) -> &'static str {
         match self {
-            Doute::HorsVanguard => tr!("a été changé hors de Vanguard", "was changed outside Vanguard"),
-            Doute::Adopte => tr!(
-                "a été accepté tel quel après des sceaux refaits",
-                "was accepted as it was after seals were remade"
+            Doute::HorsVanguard => tr!(
+                "a été modifiée ou effacée hors de Vanguard",
+                "was changed or deleted outside Vanguard"
             ),
-            Doute::Inconnu => tr!(
-                "a disparu avec les sceaux de Vanguard",
-                "disappeared along with Vanguard's seals"
+            Doute::Adopte | Doute::Inconnu => tr!(
+                "a été perdue : les sceaux de Vanguard (sceaux.json) ont été effacés ou abîmés",
+                "was lost: Vanguard's seals (sceaux.json) were deleted or damaged"
             ),
             Doute::Illisible => tr!("ne se lit pas", "cannot be read"),
+            Doute::Herite => tr!(
+                "n'a pas pu être relue après une modification hors de Vanguard",
+                "could not be read back after a change outside Vanguard"
+            ),
         }
     }
 }
@@ -119,8 +126,9 @@ pub(crate) enum Verdict {
     PasVoulue(Option<String>),
     /// Voulue : la marque ou la tâche le disent (à l'appelant de juger si elle tourne).
     Voulue,
-    /// Marque et tâche disparues alors que Vanguard l'a notée voulue le jour dit, sans arrêt noté depuis.
-    CoupeeHors(String),
+    /// Marque et tâche disparues alors que Vanguard l'a notée voulue le jour dit, sans arrêt noté depuis ; ou (`None`)
+    /// avec la note de Vanguard modifiée ou effacée hors de Vanguard, ce qui n'arrive qu'à qui veut faire oublier.
+    CoupeeHors(Option<String>),
     /// Ni marque ni tâche, et l'état ne peut pas être cru : rien ne dit qui l'a coupée.
     NonVerifiee(Doute),
 }
@@ -134,7 +142,9 @@ pub(crate) fn juger(marque: bool, installee: bool, s: &Souvenir) -> Verdict {
     match s {
         Souvenir::Jamais => Verdict::PasVoulue(None),
         Souvenir::Arretee(quand) => Verdict::PasVoulue(Some(quand.clone())),
-        Souvenir::Voulue(depuis) => Verdict::CoupeeHors(depuis.clone()),
+        Souvenir::Voulue(depuis) => Verdict::CoupeeHors(Some(depuis.clone())),
+        // Une écriture étrangère prouvée, sans rien d'autre en place : coupée hors de Vanguard, pas un simple doute.
+        Souvenir::Douteux(Doute::HorsVanguard) => Verdict::CoupeeHors(None),
         Souvenir::Douteux(d) => Verdict::NonVerifiee(*d),
     }
 }
@@ -143,9 +153,8 @@ fn lire_fichier(dossier: &Path) -> Result<Fichier, Doute> {
     let octets = match crate::sceau::lire_dans(dossier, FICHIER) {
         Lecture::Absent => return Ok(Fichier::default()),
         Lecture::Intact(o) => o,
-        // Accepté au premier usage des sceaux sans qu'ils aient été refaits (le dossier repris d'une désinstallation
-        // qui l'a gardé) : écrit par Vanguard. Après des sceaux refaits : rien ne prouve qui l'a écrit.
-        Lecture::Adopte(o) if !crate::sceau::refaits_dans(dossier) => o,
+        // Né scellé : aucune version ne l'a écrit sans sceau. Accepté tel quel, c'est que sceaux.json a disparu,
+        // refait ou pas (tout effacer d'un coup ne laisse pas de témoin) : rien ne prouve qui l'a écrit.
         Lecture::Adopte(_) => return Err(Doute::Adopte),
         Lecture::Falsifie(_) => return Err(Doute::HorsVanguard),
         Lecture::Inconnu => return Err(Doute::Inconnu),
@@ -160,7 +169,7 @@ pub(crate) fn souvenir_dans(dossier: &Path, d: Defense) -> Souvenir {
         Err(doute) => Souvenir::Douteux(doute),
         Ok(f) => match f.defenses.get(d.cle()) {
             None => Souvenir::Jamais,
-            Some(n) if n.douteuse => Souvenir::Douteux(Doute::HorsVanguard),
+            Some(n) if n.douteuse => Souvenir::Douteux(Doute::Herite),
             Some(n) if n.voulue => Souvenir::Voulue(n.quand.clone()),
             Some(n) => Souvenir::Arretee(n.quand.clone()),
         },
@@ -294,8 +303,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// L'état réécrit sans sceau (« jamais voulue », ou effacé) : douteux, jamais un feu vert. Une marque restée la fait
-    /// supposer voulue ; sans indice, « non vérifié ».
+    /// L'état réécrit sans sceau (« jamais voulue », ou effacé) : une écriture étrangère prouvée, jamais un feu vert.
+    /// Une marque restée la fait supposer voulue ; sans indice, coupée hors de Vanguard (pas un simple doute).
     #[test]
     fn etat_reecrit_sans_sceau_douteux() {
         let d = jetable("reecrit");
@@ -307,7 +316,7 @@ mod tests {
         .unwrap();
         let s = souvenir_dans(&d, Defense::Veilleur);
         assert_eq!(s, Souvenir::Douteux(Doute::HorsVanguard));
-        assert_eq!(juger(false, false, &s), Verdict::NonVerifiee(Doute::HorsVanguard));
+        assert_eq!(juger(false, false, &s), Verdict::CoupeeHors(None));
         assert_eq!(juger(true, false, &s), Verdict::Voulue);
         // Effacé : douteux aussi (Vanguard l'avait écrit).
         std::fs::remove_file(d.join(FICHIER)).unwrap();
@@ -346,6 +355,23 @@ mod tests {
         }
     }
 
+    /// Accepté tel quel sans même des sceaux refaits (sceaux.json et son verrou effacés d'un coup) : né scellé, il ne
+    /// se croit pas pour autant.
+    #[test]
+    fn adopte_sans_sceaux_refaits_pas_cru() {
+        let d = jetable("adopte-neuf");
+        noter_dans(&d, Defense::Surveillance, false, false).unwrap();
+        for f in ["sceaux.json", "sceaux.verrou"] {
+            let _ = std::fs::remove_file(d.join(f));
+        }
+        assert!(!crate::sceau::refaits_dans(&d));
+        assert_eq!(
+            souvenir_dans(&d, Defense::Surveillance),
+            Souvenir::Douteux(Doute::Adopte)
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// Réécrit par Vanguard pour une défense après un état douteux : les autres restent douteuses, et une adoption ne
     /// passe jamais par-dessus.
     #[test]
@@ -355,15 +381,13 @@ mod tests {
         std::fs::write(d.join(FICHIER), br#"{"defenses":{}}"#).unwrap();
         noter_dans(&d, Defense::Surveillance, true, false).unwrap();
         assert!(matches!(souvenir_dans(&d, Defense::Surveillance), Souvenir::Voulue(_)));
+        assert_eq!(souvenir_dans(&d, Defense::Veilleur), Souvenir::Douteux(Doute::Herite));
         assert_eq!(
-            souvenir_dans(&d, Defense::Veilleur),
-            Souvenir::Douteux(Doute::HorsVanguard)
+            juger(false, false, &Souvenir::Douteux(Doute::Herite)),
+            Verdict::NonVerifiee(Doute::Herite)
         );
         adopter_dans(&d, Defense::Veilleur);
-        assert_eq!(
-            souvenir_dans(&d, Defense::Veilleur),
-            Souvenir::Douteux(Doute::HorsVanguard)
-        );
+        assert_eq!(souvenir_dans(&d, Defense::Veilleur), Souvenir::Douteux(Doute::Herite));
         // Noté de nouveau par Vanguard (« off ») : le doute part.
         noter_dans(&d, Defense::Veilleur, false, false).unwrap();
         assert!(matches!(souvenir_dans(&d, Defense::Veilleur), Souvenir::Arretee(_)));
@@ -381,19 +405,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// Le geste va au journal des événements, sous une clé stable.
+    /// Le geste va au journal des événements, sous une clé stable, seulement quand il est demandé : compté avant et
+    /// après dans le journal de ce fil d'essai.
     #[test]
     fn geste_au_journal() {
         let d = jetable("journal");
-        noter_dans(&d, Defense::Veilleur, true, true).unwrap();
-        let lu = crate::modele::journal::lire();
-        assert!(
-            lu.evenements
+        let compter = || {
+            crate::modele::journal::lire()
+                .evenements
                 .iter()
-                .any(|e| e.cle.as_deref() == Some("defense|veilleur")),
-            "{:?}",
-            lu.evenements
-        );
+                .filter(|e| e.cle.as_deref() == Some("defense|surveillance"))
+                .count()
+        };
+        let avant = compter();
+        noter_dans(&d, Defense::Surveillance, true, false).unwrap();
+        assert_eq!(compter(), avant, "sans journal demandé, rien n'y va");
+        noter_dans(&d, Defense::Surveillance, false, true).unwrap();
+        assert_eq!(compter(), avant + 1);
+        // Déjà noté : ni réécrit, ni redit au journal.
+        noter_dans(&d, Defense::Surveillance, false, true).unwrap();
+        assert_eq!(compter(), avant + 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Le dossier d'une version d'avant (0.87) : des sceaux, mais pas encore l'état des défenses voulues. Rien n'y est
+    /// douteux : jamais notée, et une marque la fait adopter.
+    #[test]
+    fn dossier_d_une_version_d_avant() {
+        let d = jetable("avant");
+        crate::sceau::ecrire_dans(&d, crate::sceau::APPRIS, br#"{"acceptees":{}}"#).unwrap();
+        assert_eq!(souvenir_dans(&d, Defense::Surveillance), Souvenir::Jamais);
+        assert_eq!(juger(false, false, &Souvenir::Jamais), Verdict::PasVoulue(None));
+        adopter_dans(&d, Defense::Rancongiciel);
+        assert!(matches!(souvenir_dans(&d, Defense::Rancongiciel), Souvenir::Voulue(_)));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

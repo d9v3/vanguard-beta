@@ -17,12 +17,15 @@ delivered just before it. Only the latest version has its download page; every v
   emptied, unsealed or dated in the future, it is fetched again, and if it cannot be, “not checked” with the reason,
   never clean.
 - **Wanted defenses and started program, judged on a sealed state.** Turning the hourly monitoring, the watcher and
-  the ransomware watch on and off through Vanguard is noted in a sealed state and in the log: with their note deleted
-  along with their task, the check says the defense was cut without going through Vanguard (never again “off, as by
-  default”), and a state changed outside Vanguard is “not checked”, never green. The watcher's state is sealed, and a
-  watcher is only said to be alive if its process runs the unit's program. The program each task starts (monitoring,
-  check-up, watcher) has its path and BLAKE3 fingerprint sealed when placed and at each update by Vanguard: another
-  path or other bytes are a high alert.
+  the ransomware watch on and off through Vanguard is noted in a sealed state and in the log (those from an earlier
+  version are taken over as they are): with their note deleted along with their task, or that record changed outside
+  Vanguard, the check says the defense was cut without going through Vanguard (never again “off, as by default”); a
+  record lost with the seals is “not checked”, never green. The watcher's state is sealed, and a watcher is only said
+  to be alive if its process runs the unit's program; the one from before an update, still running, is reported with
+  the fix and restarted by Vanguard's update. The program each task starts (monitoring, check-up, watcher) and the
+  task's text (unit and timer, scheduled task, agent) have their BLAKE3 fingerprint sealed when placed and at each
+  update by Vanguard: another path, other bytes or a changed task are a high alert; a published and signed version
+  placed outside Vanguard is recognized by the signed version history and reported as information.
 - **Windows logs: a single judge, two more rules, a place in the menu.** The check-up (WIN-JRN-003) no longer reads
   the logs itself: it takes the thirteen EVT- rules of “What happened?”, alerts at the same level, and “not verified”
   with its reason when a log is missing or restricted to administrators; the HTML report no longer shows this

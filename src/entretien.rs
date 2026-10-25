@@ -273,7 +273,7 @@ fn desinstaller() -> Result<(), String> {
 pub(crate) fn reprendre(exe: &str) -> bool {
     let ok = installer(exe);
     if ok {
-        crate::programmes_poses::noter(crate::programmes_poses::Tache::Entretien, std::path::Path::new(exe));
+        crate::reseau::surveillance::noter_pose(crate::reseau::surveillance::Planifie::Entretien, exe);
     }
     ETAT.store(0, Ordering::Relaxed);
     ok
@@ -285,7 +285,7 @@ pub fn activer(oui: bool) {
         executable().is_some_and(|exe| {
             let ok = installer(&exe);
             if ok {
-                crate::programmes_poses::noter(crate::programmes_poses::Tache::Entretien, std::path::Path::new(&exe));
+                crate::reseau::surveillance::noter_pose(crate::reseau::surveillance::Planifie::Entretien, &exe);
             }
             ok
         })
