@@ -141,22 +141,50 @@ fn emplacement(reference: &Path) -> (PathBuf, String) {
     }
 }
 
-/// La référence est là, ou elle a été effacée hors de Vanguard (son sceau est resté) : elle a existé.
+/// La référence est là (un dossier ou un lien posé à sa place compris : il se lira illisible, donc douteux), ou elle
+/// a été effacée hors de Vanguard (son sceau est resté) : elle a existé.
 fn presente_ou_effacee(base: &Path, nom: &str) -> bool {
-    std::fs::symlink_metadata(base.join(nom)).is_ok_and(|m| m.is_file())
+    std::fs::symlink_metadata(base.join(nom)).is_ok()
         || matches!(
             crate::sceau::lire_sans_ecrire(base, nom),
             crate::sceau::Lecture::Falsifie(None)
         )
 }
 
-/// Pourquoi la référence `reference` ne peut pas être crue, s'il le faut.
-fn douteuse(reference: &Path) -> Option<crate::sceau::Doute> {
+/// Une référence qui ne peut pas être crue : pourquoi, et la version de Vanguard qu'elle porte si elle est plus
+/// ancienne que ce programme (une cause probable, jamais une preuve : le contenu n'est pas cru).
+#[derive(Debug, PartialEq, Eq)]
+struct Douteuse {
+    raison: String,
+    ancienne: Option<String>,
+}
+
+/// Pourquoi la référence `reference` ne peut pas être crue, s'il le faut. Illisible (un dossier ou un lien à sa
+/// place) ne vaut pas mieux que changée.
+fn douteuse(reference: &Path) -> Option<Douteuse> {
+    use crate::sceau::Juge;
     let (base, nom) = emplacement(reference);
-    match crate::sceau::juge_dans(&base, &nom) {
-        crate::sceau::Juge::Douteux(d, _) => Some(d),
-        _ => None,
-    }
+    let (raison, contenu) = match crate::sceau::juge_dans(&base, &nom) {
+        Juge::Douteux(d, contenu) => (d.texte().to_string(), contenu),
+        Juge::Illisible(e) => (e, None),
+        Juge::Absent | Juge::Cru(_) => return None,
+    };
+    let ancienne = contenu
+        .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o).ok())
+        .and_then(|v| v.get("version_vanguard")?.as_str().map(str::to_string))
+        .filter(|v| plus_ancienne(v, env!("CARGO_PKG_VERSION")));
+    Some(Douteuse { raison, ancienne })
+}
+
+/// `a` est-elle une version plus ancienne que `b` (« 0.87.0 » avant « 0.88.0 ») ?
+fn plus_ancienne(a: &str, b: &str) -> bool {
+    let nombres = |v: &str| -> Vec<u64> {
+        v.split(['.', '+', '-'])
+            .take(3)
+            .filter_map(|n| n.parse().ok())
+            .collect()
+    };
+    nombres(a) < nombres(b)
 }
 
 /// L'identifiant du système de fichiers de la clé (UUID que le formatage lui donne, « 1A2B-3C4D » en exFAT), d'après
@@ -206,9 +234,12 @@ fn references_par_cle(base: &Path) -> usize {
 /// sans référence n'y est plus « le premier usage ».
 pub(crate) fn a_des_references(base: &Path) -> bool {
     // Effacées hors de Vanguard, leurs sceaux disent qu'elles ont existé : une clé n'y redevient pas « la première ».
+    // Les sceaux refaits ne le savent plus : rien ne dit qu'aucune clé n'a été déployée ici, donc pas « la première »
+    // non plus.
     references_par_cle(base) > 0
         || crate::sceau::connus_sous(base, REFERENCES)
         || presente_ou_effacee(base, ANCIENNE_REFERENCE)
+        || crate::sceau::refaits_dans(base)
 }
 
 /// Une référence d'ici porte ce jeton : une clé à ce jeton y a déjà été comparée.
@@ -849,7 +880,7 @@ pub fn constat() -> Option<Constat> {
         return sans_reference(a_des_references(&base), sans);
     }
     if let Some(d) = reference(&cle).as_deref().and_then(douteuse) {
-        return Some(reference_douteuse(d));
+        return Some(reference_douteuse(&d));
     }
     Some(match comparer(&cle) {
         Err(e) => impossible(CAT, &trf!("manifeste de la clé illisible : {e}", "key manifest unreadable: {e}")),
@@ -889,18 +920,27 @@ pub fn constat() -> Option<Constat> {
 }
 
 /// La référence de la clé branchée ne peut pas être crue : rien n'est comparé, et ce n'est jamais « clé intacte ».
-fn reference_douteuse(d: crate::sceau::Doute) -> Constat {
+fn reference_douteuse(d: &Douteuse) -> Constat {
+    let mut message = trf!(
+        "La référence de cette clé VANGUARD sur cet ordinateur ne peut pas être crue (manifeste {}) : rien n'a été comparé. Un programme de votre compte a pu la réécrire pour couvrir un fichier planté sur la clé.",
+        "This VANGUARD key's reference on this computer cannot be trusted (manifest {}): nothing was compared. A program of your account may have rewritten it to cover a file planted on the key.",
+        d.raison
+    );
+    // Comme pour les autres fichiers d'état : une copie plus ancienne qui l'écrit sans sceau est la cause probable.
+    if let Some(v) = &d.ancienne {
+        message += &trf!(
+            " Cause probable : elle porte la version {v}, plus ancienne que ce programme, qui écrit sans sceau ; l'outil qui écrit la clé (deployer.sh, images-cle.sh) doit prendre un Vanguard à jour.",
+            " Likely cause: it carries version {v}, older than this program, which writes without a seal; the tool that writes the key (deployer.sh, images-cle.sh) must use an up-to-date Vanguard."
+        );
+    }
+    let niveau = if d.ancienne.is_some() {
+        Niveau::Moyen
+    } else {
+        Niveau::Eleve
+    };
     Constat {
         verifie: false,
-        ..alerte(
-            CAT,
-            Niveau::Eleve,
-            trf!(
-                "La référence de cette clé VANGUARD sur cet ordinateur ne peut pas être crue (manifeste {}) : rien n'a été comparé. Un programme de votre compte a pu la réécrire pour couvrir un fichier planté sur la clé.",
-                "This VANGUARD key's reference on this computer cannot be trusted (manifest {}): nothing was compared. A program of your account may have rewritten it to cover a file planted on the key.",
-                d.texte()
-            ),
-        )
+        ..alerte(CAT, niveau, message)
         .manuel(
             tr!(
                 "Ne lancez rien depuis cette clé ; regardez ce qui tourne sous votre compte (Protection › Qui parle à Internet ?) ; outils/deployer.sh --accepter-cle réécrit la référence une fois la clé regardée",
@@ -1075,10 +1115,10 @@ pub fn verifier_moi(autre: Option<&Path>) {
         let lue = reference(&cle).ok_or(()).and_then(|r| lire(&r).map_err(|_| ()));
         let douteuse = reference(&cle).as_deref().and_then(douteuse);
         match lue {
-            Err(()) if let Some(d) = douteuse => trp!(
+            Err(()) if let Some(d) = &douteuse => trp!(
                 "  ✖ Le manifeste de cette clé sur cet ordinateur ne peut pas être cru ({}) : rien n'a pu être comparé. Ne lancez rien depuis elle.",
                 "  ✖ This key's manifest on this computer cannot be trusted ({}): nothing could be compared. Do not run anything from it.",
-                d.texte()
+                d.raison
             ),
             // Reconnue mais sans référence : la comparaison a sauté parce que l'identifiant du volume a changé.
             Err(()) if identifiant_change => trp!(
@@ -1713,16 +1753,56 @@ mod tests {
         m.fichiers.push(entree(&racine, "autorun.inf".into(), 9, GROS));
         std::fs::write(&reference, serde_json::to_vec(&m).unwrap()).unwrap();
         assert!(lire(&reference).is_err());
-        assert_eq!(douteuse(&reference), Some(crate::sceau::Doute::HorsVanguard));
-        let c = reference_douteuse(crate::sceau::Doute::HorsVanguard);
+        let d = douteuse(&reference).unwrap();
+        assert!(d.ancienne.is_none(), "{d:?}");
+        let c = reference_douteuse(&d);
         assert_eq!((c.probleme, c.verifie), (Some(Niveau::Eleve), false));
         // Effacée hors de Vanguard : toujours la sienne (douteuse), et l'ordinateur a toujours des références.
         std::fs::remove_file(&reference).unwrap();
         assert_eq!(reference_lue(&base, Some("1A2B-3C4D")), Some(reference.clone()));
         assert!(a_des_references(&base));
-        assert_eq!(douteuse(&reference), Some(crate::sceau::Doute::HorsVanguard));
+        assert!(douteuse(&reference).is_some());
         // Le déploiement n'écrit rien d'après elle sans --forcer.
         assert!(reecriture_permise(&base, &racine, Some(&reference), GROS).is_err());
+        let _ = std::fs::remove_dir_all(&racine);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Relecture S2c (Fable 3, Fable 4, Opus 7) : une référence remplacée par un dossier est douteuse comme une
+    /// référence changée ; des sceaux refaits ne font jamais d'une clé « la première » ; une référence réécrite par un
+    /// Vanguard plus ancien le dit comme cause probable.
+    #[test]
+    fn reference_illisible_ou_d_un_vanguard_plus_ancien() {
+        let base = dossier_jetable("ref-dossier");
+        let reference = reference_ecrite(&base, Some("1A2B-3C4D"));
+        std::fs::create_dir_all(&reference).unwrap();
+        assert_eq!(reference_lue(&base, Some("1A2B-3C4D")), Some(reference.clone()));
+        assert!(douteuse(&reference).is_some());
+        let _ = std::fs::remove_dir_all(&base);
+        // Sceaux refaits (verrou resté, sceaux effacés) : la clé n'est pas « la première ».
+        let base = dossier_jetable("ref-refaits");
+        crate::sceau::ecrire_dans(&base, crate::sceau::APPRIS, b"{}").unwrap();
+        std::fs::remove_file(base.join("sceaux.json")).unwrap();
+        assert!(a_des_references(&base));
+        let _ = std::fs::remove_dir_all(&base);
+        // Réécrite sans sceau par un Vanguard plus ancien.
+        let racine = dossier_jetable("ref-ancienne-cle");
+        let base = dossier_jetable("ref-ancienne");
+        std::fs::write(racine.join("LISEZMOI.txt"), b"lis-moi").unwrap();
+        let reference = reference_ecrite(&base, Some("1A2B-3C4D"));
+        ecrire_dans(&racine, &reference, GROS, true).unwrap();
+        let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&reference).unwrap()).unwrap();
+        v["version_vanguard"] = "0.80.0".into();
+        std::fs::write(&reference, serde_json::to_vec(&v).unwrap()).unwrap();
+        let d = douteuse(&reference).unwrap();
+        assert_eq!(d.ancienne.as_deref(), Some("0.80.0"));
+        let c = reference_douteuse(&d);
+        assert!(
+            c.message.contains("0.80.0") && c.probleme == Some(Niveau::Moyen),
+            "{}",
+            c.message
+        );
+        assert!(plus_ancienne("0.87.0", "0.88.0") && !plus_ancienne("0.88.0", "0.88.0"));
         let _ = std::fs::remove_dir_all(&racine);
         let _ = std::fs::remove_dir_all(&base);
     }

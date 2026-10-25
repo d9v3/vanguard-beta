@@ -47,7 +47,8 @@ enum Etat {
 /// exactement.
 pub(crate) const LISTE: &str = crate::sceau::PIEGES;
 
-/// Pourquoi la liste des pièges ne sert pas.
+/// Pourquoi la liste des pièges ne sert pas. Illisible (un dossier ou un lien posé à sa place) ne vaut pas mieux que
+/// changée : les pièges restent attendus de la même façon.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Refus {
     /// Elle ne se lit plus.
@@ -55,6 +56,26 @@ enum Refus {
     /// Changée, effacée ou acceptée telle quelle hors de Vanguard : jamais crue.
     Douteuse(crate::sceau::Doute),
 }
+
+impl Refus {
+    fn texte(self) -> &'static str {
+        match self {
+            Refus::Douteuse(d) => d.texte(),
+            Refus::Illisible => tr!(
+                "illisible : pas un simple fichier, ou abîmé",
+                "unreadable: not a plain file, or damaged"
+            ),
+        }
+    }
+}
+
+/// Les empreintes BLAKE3 des textes des fichiers-pièges posés par les versions d'avant (le texte a changé en route) :
+/// un piège intact d'une version d'avant se reconnaît, et ne passe pas pour la trace d'un rançongiciel.
+const TEXTES_D_AVANT: [&str; 3] = [
+    "dd57d2d683d0f4eb65d6846c60a8015233133677203583b92fb723c084c7561f",
+    "a7891f1407076fd06d9ad4a86dca8928a318ce87873d93faea982710ec01ce9a",
+    "6c46cb669217790574391e66bd99c5e4a6a1d8c0d706286543971fe357f72506",
+];
 
 fn donnees() -> PathBuf {
     crate::socle::dossier_local()
@@ -103,7 +124,12 @@ fn reconnus(trouves: &[PathBuf]) -> Vec<Piege> {
         .iter()
         .map(|chemin| Piege {
             empreinte: match chemin.extension().and_then(|e| e.to_str()) {
-                Some("txt") => texte.clone(),
+                // Le texte d'une version d'avant, s'il est exactement celui-là.
+                Some("txt") => std::fs::read(chemin)
+                    .ok()
+                    .map(|o| blake3::hash(&o).to_hex().to_string())
+                    .filter(|h| TEXTES_D_AVANT.contains(&h.as_str()))
+                    .unwrap_or_else(|| texte.clone()),
                 Some("pdf") => pdf.clone(),
                 _ => String::new(),
             },
@@ -119,9 +145,9 @@ fn reconnus(trouves: &[PathBuf]) -> Vec<Piege> {
 pub(crate) fn chemins_poses() -> Vec<PathBuf> {
     match charger() {
         Ok(pieges) => pieges.into_iter().map(|p| p.chemin).collect(),
-        // Une liste vidée ou effacée hors de Vanguard ne coupe pas la veille : les pièges encore là la gardent.
-        Err(Refus::Douteuse(_)) => trouves_dans(&dossiers()),
-        Err(Refus::Illisible) => Vec::new(),
+        // Une liste vidée, effacée ou remplacée hors de Vanguard ne coupe pas la veille : les pièges encore là la
+        // gardent.
+        Err(_) => trouves_dans(&dossiers()),
     }
 }
 
@@ -481,32 +507,31 @@ fn retirer_tous(pieges: &[Piege], dossier: &Path) -> (Vec<PathBuf>, Vec<PathBuf>
 }
 
 /// Le nombre de fichiers-pièges posés, d'après la liste du dossier de données `donnees` ; `Err` si elle ne se lit plus.
-pub(crate) fn nombre_dans(donnees: &Path) -> Result<usize, ()> {
+pub(crate) fn nombre_dans(donnees: &Path) -> usize {
     // Lu sans rien écrire : la désinstallation ne crée rien dans le dossier qu'elle recense.
     match juger_liste(crate::sceau::juge_sans_ecrire_dans(donnees, LISTE)) {
-        Ok(p) => Ok(p.len()),
-        // Liste douteuse : ceux trouvés par leur nom, que seul leur contenu exact fait retirer.
-        Err(Refus::Douteuse(_)) => Ok(trouves_dans(&dossiers()).len()),
-        Err(Refus::Illisible) => Err(()),
+        Ok(p) => p.len(),
+        // Liste douteuse ou illisible : ceux trouvés par leur nom, que seul leur contenu exact fait retirer.
+        Err(_) => trouves_dans(&dossiers()).len(),
     }
 }
 
 /// Retire les fichiers-pièges sans question (la désinstallation l'a montré et fait accepter) : rend ceux qui n'ont
-/// pas pu partir, et ceux gardés comme preuves (modifiés ou renommés : la trace d'un passage). `Err` si la liste ne
-/// se lit plus.
-pub(crate) fn retirer_sans_question() -> Result<(Vec<PathBuf>, Vec<PathBuf>), ()> {
-    let pieges = a_retirer(charger()).ok_or(())?;
-    Ok(retirer_tous(&pieges, &donnees()))
+/// pas pu partir, ceux gardés (modifiés ou renommés), et si la liste ne pouvait pas être crue : ces derniers ne sont
+/// alors que des fichiers « !Vanguard » pas reconnus, à regarder, pas la preuve d'un passage.
+pub(crate) fn retirer_sans_question() -> (Vec<PathBuf>, Vec<PathBuf>, bool) {
+    let (pieges, douteuse) = a_retirer(charger());
+    let (restes, gardes) = retirer_tous(&pieges, &donnees());
+    (restes, gardes, douteuse)
 }
 
 /// Ce qu'un retrait enlève : la liste, si elle peut être crue ; sinon les pièges trouvés par leur nom, jugés sur le
 /// contenu que Vanguard pose (`reconnus`). Jamais un chemin d'une liste douteuse : un autre programme y aurait mis un
-/// fichier de la personne, avec son empreinte, pour le faire effacer. `None` : la liste ne se lit plus.
-fn a_retirer(lu: Result<Vec<Piege>, Refus>) -> Option<Vec<Piege>> {
+/// fichier de la personne, avec son empreinte, pour le faire effacer. Rend aussi si la liste était douteuse.
+fn a_retirer(lu: Result<Vec<Piege>, Refus>) -> (Vec<Piege>, bool) {
     match lu {
-        Ok(p) => Some(p),
-        Err(Refus::Douteuse(_)) => Some(reconnus(&trouves_dans(&dossiers()))),
-        Err(Refus::Illisible) => None,
+        Ok(p) => (p, false),
+        Err(_) => (reconnus(&trouves_dans(&dossiers())), true),
     }
 }
 
@@ -534,8 +559,7 @@ fn constat_de(probleme: Option<Niveau>, message: String, conseil: Option<&str>) 
 pub fn constat() -> Option<Constat> {
     let pieges = match charger() {
         Ok(p) => p,
-        Err(Refus::Douteuse(d)) => return constat_douteux(d, trouves_dans(&dossiers()).len()),
-        Err(Refus::Illisible) => return Some(illisible()),
+        Err(refus) => return constat_douteux(refus, trouves_dans(&dossiers()).len()),
     };
     if pieges.is_empty() {
         return None;
@@ -544,32 +568,16 @@ pub fn constat() -> Option<Constat> {
     Some(juger(&etats))
 }
 
-/// La liste ne se lit plus : rien n'est vérifié, et c'est dit.
-fn illisible() -> Constat {
-    Constat {
-        verifie: false,
-        ..constat_de(
-            Some(Niveau::Info),
-            trf!(
-                "Impossible de vérifier ({}).",
-                "Could not check ({}).",
-                tr!("liste des fichiers-pièges illisible", "decoy file list unreadable")
-            ),
-            None,
-        )
-    }
-}
-
 /// La liste ne peut pas être crue (`trouves` : les fichiers « !Vanguard » encore dans les dossiers). Jamais muet : un
 /// rançongiciel qui vide ou efface la liste ne coupe pas les pièges en silence. Muet seulement si les sceaux refaits
 /// ne savent plus qu'elle a existé et qu'aucun piège n'est là (rien ne dit qu'il y en a eu ; les sceaux refaits sont
 /// dits au bilan).
-fn constat_douteux(d: crate::sceau::Doute, trouves: usize) -> Option<Constat> {
+fn constat_douteux(refus: Refus, trouves: usize) -> Option<Constat> {
     use crate::sceau::Doute;
-    if d == Doute::Inconnu && trouves == 0 {
+    if refus == Refus::Douteuse(Doute::Inconnu) && trouves == 0 {
         return None;
     }
-    let niveau = if d == Doute::HorsVanguard {
+    let niveau = if refus == Refus::Douteuse(Doute::HorsVanguard) {
         Niveau::Eleve
     } else {
         Niveau::Moyen
@@ -581,7 +589,7 @@ fn constat_douteux(d: crate::sceau::Doute, trouves: usize) -> Option<Constat> {
             trf!(
                 "La liste des fichiers-pièges ne peut pas être crue (pieges.json {}) : Vanguard ne s'y fie plus, et ne peut pas dire si les pièges sont intacts ; {} fichier(s) « !Vanguard » trouvé(s) dans vos dossiers. Un rançongiciel vide ou efface parfois cette liste pour passer inaperçu.",
                 "The decoy file list cannot be trusted (pieges.json {}): Vanguard no longer relies on it, and cannot tell whether the decoys are intact; {} “!Vanguard” file(s) found in your folders. Ransomware sometimes empties or deletes this list to go unnoticed.",
-                d.texte(),
+                refus.texte(),
                 trouves
             ),
             Some(tr!(
@@ -690,23 +698,15 @@ pub fn menu() {
     ));
     let pieges = match charger() {
         Ok(p) => p,
-        Err(Refus::Illisible) => {
-            trp!(
-                "  ✖ La liste des fichiers-pièges ne se lit plus : {}",
-                "  ✖ The decoy file list can no longer be read: {}",
-                fichier().display()
-            );
-            return;
-        }
-        Err(Refus::Douteuse(d)) => {
+        Err(refus) => {
             let trouves = trouves_dans(&dossiers());
-            if let Some(c) = constat_douteux(d, trouves.len()) {
-                dire(&format!("✖ {}", c.message));
+            if let Some(c) = constat_douteux(refus, trouves.len()) {
+                dire(&format!("✖ {} ({})", c.message, chemin_affichable(&fichier())));
             }
             if trouves.is_empty() {
                 poser();
             } else {
-                retirer(&reconnus(&trouves), false);
+                retirer(&reconnus(&trouves), false, true);
             }
             return;
         }
@@ -742,7 +742,7 @@ pub fn menu() {
                 dire(&k.action);
             }
         }
-        retirer(&pieges, false);
+        retirer(&pieges, false, false);
     }
 }
 
@@ -829,8 +829,9 @@ fn poser() {
     }
 }
 
-/// Propose de retirer les fichiers-pièges ; `force` : sans question (ligne de commande « --retirer »).
-fn retirer(pieges: &[Piege], force: bool) {
+/// Propose de retirer les fichiers-pièges ; `force` : sans question (ligne de commande « --retirer ») ; `douteuse` :
+/// la liste ne pouvait pas être crue, un fichier gardé n'est alors qu'un « !Vanguard » pas reconnu.
+fn retirer(pieges: &[Piege], force: bool, douteuse: bool) {
     if !force
         && !demander(tr!(
             "\n  Retirer les fichiers-pièges ? [o/N] : ",
@@ -856,11 +857,19 @@ fn retirer(pieges: &[Piege], force: bool) {
         }
     }
     for p in &preuves {
-        trp!(
-            "  ⚠ Gardé, c'est la preuve d'un passage : {}",
-            "  ⚠ Kept, it is the evidence of an attack: {}",
-            chemin_affichable(p)
-        );
+        if douteuse {
+            trp!(
+                "  ⚠ Pas reconnu, laissé : regardez-le vous-même : {}",
+                "  ⚠ Not recognized, left in place: look at it yourself: {}",
+                chemin_affichable(p)
+            );
+        } else {
+            trp!(
+                "  ⚠ Gardé, c'est la preuve d'un passage : {}",
+                "  ⚠ Kept, it is the evidence of an attack: {}",
+                chemin_affichable(p)
+            );
+        }
     }
 }
 
@@ -871,13 +880,8 @@ pub fn commande(retirer_seulement: bool) {
         return;
     }
     match a_retirer(charger()) {
-        Some(p) if p.is_empty() => trp!("  Aucun fichier-piège posé.", "  No decoy file placed."),
-        Some(p) => retirer(&p, true),
-        None => trp!(
-            "  ✖ La liste des fichiers-pièges ne se lit plus : {}",
-            "  ✖ The decoy file list can no longer be read: {}",
-            fichier().display()
-        ),
+        (p, _) if p.is_empty() => trp!("  Aucun fichier-piège posé.", "  No decoy file placed."),
+        (p, douteuse) => retirer(&p, true, douteuse),
     }
 }
 
@@ -1109,7 +1113,7 @@ mod tests {
         // Les pièges restent attendus : trouvés par leur nom, et seuls ceux au contenu exact se retirent.
         let trouves = trouves_dans(std::slice::from_ref(&maison));
         assert_eq!(trouves.len(), 2);
-        let c = constat_douteux(crate::sceau::Doute::HorsVanguard, trouves.len()).unwrap();
+        let c = constat_douteux(Refus::Douteuse(crate::sceau::Doute::HorsVanguard), trouves.len()).unwrap();
         assert_eq!((c.probleme, c.verifie), (Some(Niveau::Eleve), false));
         assert!(c.message.contains("pieges.json"), "{}", c.message);
         let (restes, preuves) = retirer_tous(&reconnus(&trouves), &d);
@@ -1128,8 +1132,54 @@ mod tests {
         let (_, preuves) = retirer_tous(&reconnus(&trouves_dans(std::slice::from_ref(&maison))), &d);
         assert_eq!(preuves, [pieges[0].chemin.clone()]);
         // Inconnue (sceaux refaits) sans aucun piège : rien à dire de plus que les sceaux refaits.
-        assert!(constat_douteux(crate::sceau::Doute::Inconnu, 0).is_none());
-        assert!(constat_douteux(crate::sceau::Doute::Inconnu, 1).is_some());
+        assert!(constat_douteux(Refus::Douteuse(crate::sceau::Doute::Inconnu), 0).is_none());
+        assert!(constat_douteux(Refus::Douteuse(crate::sceau::Doute::Inconnu), 1).is_some());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Relecture S2c (Opus 4) : les textes des versions d'avant se reconnaissent (le texte d'aujourd'hui recalculé
+    /// prouve la façon de les calculer), et un piège intact d'avant se retire, au lieu de passer pour une preuve.
+    #[test]
+    fn pieges_d_une_version_d_avant_reconnus() {
+        assert_eq!(
+            blake3::hash(texte().as_bytes()).to_hex().as_str(),
+            "66217d85c929ee6359347ef1a9746a4bb31f9a0438d5a5d3d42f62f728504db0",
+            "le texte a changé : ajoutez l'empreinte de l'ancien à TEXTES_D_AVANT"
+        );
+        let d = dossier_jetable("d-avant");
+        let ancien = d.join("!Vanguard - fichier-piège 3f9a.txt");
+        // Le texte de la 0.77 (« Vanguard t'alerte », menu Antivirus et protection).
+        let mut t = String::from(
+            "Fichier-piège de Vanguard : ne le modifie pas, ne le déplace pas, ne le supprime pas.\n\
+             Il sert à repérer un rançongiciel : s'il change, Vanguard t'alerte.\n\
+             Pour le retirer : Vanguard, menu Antivirus et protection › Fichiers-pièges, ou « vanguard pieges --retirer ».\n\n\
+             Vanguard decoy file: do not modify, move or delete it.\n\
+             It is there to catch ransomware: if it changes, Vanguard warns you.\n\
+             To remove it: Vanguard, Antivirus and protection menu › Decoy files, or “vanguard decoys --remove”.\n\n",
+        );
+        for i in 1..=250 {
+            let _ = writeln!(t, "{i:03}  rien d'important ici / nothing important here");
+        }
+        std::fs::write(&ancien, &t).unwrap();
+        let (restes, gardes) = retirer_tous(&reconnus(std::slice::from_ref(&ancien)), &d);
+        assert!(restes.is_empty() && gardes.is_empty(), "{gardes:?}");
+        assert!(!ancien.exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Relecture S2c (Fable 4) : un dossier posé à la place de la liste ne coupe pas plus la veille qu'une liste changée.
+    #[test]
+    fn liste_remplacee_par_un_dossier_ne_coupe_rien() {
+        let d = dossier_jetable("liste-dossier");
+        let (pieges, _) = poser_dans(std::slice::from_ref(&d));
+        enregistrer(&pieges, &d).unwrap();
+        std::fs::remove_file(d.join(LISTE)).unwrap();
+        std::fs::create_dir(d.join(LISTE)).unwrap();
+        let lu = charger_dans(&d);
+        assert_eq!(lu, Err(Refus::Illisible));
+        let c = constat_douteux(Refus::Illisible, 2).unwrap();
+        assert_eq!((c.probleme, c.verifie), (Some(Niveau::Moyen), false));
+        assert!(a_retirer(lu).1);
         let _ = std::fs::remove_dir_all(&d);
     }
 }

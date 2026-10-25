@@ -369,6 +369,10 @@ fn sauvegarde(l: &Lieux, r: &mut Recensement) {
     let precision = tr!("retirée, vos copies restent", "removed, your copies stay").to_string();
     let montre: Vec<String> = unites.iter().map(|p| chemin_affichable(p)).collect();
     let rsync_texte = tr!("Sauvegarde automatique (rsync)", "Automatic backup (rsync)").to_string();
+    // Une note qui ne peut pas être crue ne fait rien défaire (Time Machine, Déjà Dup) : c'est dit, avec quoi faire.
+    if let Some(t) = crate::sauvegarde::note_douteuse_de(&l.donnees) {
+        r.a_faire.push(t);
+    }
     let element = match crate::sauvegarde::mise_en_place_de(&l.donnees) {
         Some(m @ MiseEnPlace::Systemd { .. }) => {
             let MiseEnPlace::Systemd { destination, .. } = &m else {
@@ -520,8 +524,8 @@ pub(crate) fn recenser(l: &Lieux) -> Recensement {
     }
 
     match crate::protection::pieges::nombre_dans(&l.donnees) {
-        Ok(0) => {}
-        Ok(n) => r.elements.push(Element {
+        0 => {}
+        n => r.elements.push(Element {
             genre: Genre::Pieges,
             texte: tr!(
                 "Fichiers-pièges (Documents, Images, Bureau)",
@@ -538,11 +542,6 @@ pub(crate) fn recenser(l: &Lieux) -> Recensement {
             lance: None,
             retrait: Retrait::Pieges,
         }),
-        Err(()) => r.non_verifie.push(trf!(
-            "La liste des fichiers-pièges ne se lit plus ({}) : ils ne peuvent pas être retirés exactement. Les fichiers « !Vanguard » de Documents, Images et Bureau se suppriment à la main.",
-            "The decoy file list can no longer be read ({}): they cannot be removed exactly. The “!Vanguard” files in Documents, Pictures and Desktop can be deleted by hand.",
-            chemin_affichable(&l.donnees.join("pieges.json"))
-        )),
     }
 
     if let Some(p) = &l.raccourci {
@@ -1337,16 +1336,24 @@ fn retirer(e: &Element, x: &mut Execution) -> Result<String, Echec> {
             tr!("le veilleur est de Linux seulement", "the watcher is Linux only").to_string(),
         )),
         Retrait::Pieges => match crate::protection::pieges::retirer_sans_question() {
-            Err(()) => Err(Echec::Echoue(
-                tr!("leur liste ne se lit plus", "their list can no longer be read").to_string(),
-            )),
-            Ok((restes, _)) if !restes.is_empty() => Err(Echec::Echoue(trf!(
+            (restes, _, _) if !restes.is_empty() => Err(Echec::Echoue(trf!(
                 "{} non retiré(s), dont {}",
                 "{} not removed, including {}",
                 restes.len(),
                 chemin_affichable(&restes[0])
             ))),
-            Ok((_, preuves)) if !preuves.is_empty() => Ok(trf!(
+            // Liste qui ne pouvait pas être crue : des « !Vanguard » pas reconnus, laissés, pas des preuves.
+            (_, gardes, true) if !gardes.is_empty() => Ok(trf!(
+                "{} ; pas reconnus, laissés (regardez-les vous-même) : {}",
+                "{}; not recognized, left in place (look at them yourself): {}",
+                e.texte,
+                gardes
+                    .iter()
+                    .map(|p| chemin_affichable(p))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+            (_, preuves, _) if !preuves.is_empty() => Ok(trf!(
                 "{} ; gardés, preuve d'un passage : {}",
                 "{}; kept, evidence of an attack: {}",
                 e.texte,
@@ -1356,7 +1363,7 @@ fn retirer(e: &Element, x: &mut Execution) -> Result<String, Echec> {
                     .collect::<Vec<_>>()
                     .join(", ")
             )),
-            Ok(_) => Ok(e.texte.clone()),
+            _ => Ok(e.texte.clone()),
         },
         Retrait::Raccourci(p) => {
             let faits = crate::raccourci::retirer(p);

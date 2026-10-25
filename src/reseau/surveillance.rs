@@ -795,7 +795,20 @@ async fn passe() {
             );
         }
     }
-    for h in r.hotes.iter().filter(|h| h.nouvelle) {
+    // Le carnet de cet ordinateur ne pouvait pas être cru : une notification qui le dit et donne le geste, pas un
+    // « Nouvel appareil » par appareil.
+    if let Some(t) = &r.carnet_non_cru {
+        alerter_cle(
+            Genre::Appareil,
+            "carnet|non-cru",
+            tr!(
+                "Carnet des appareils non cru : appareils redits",
+                "Device record not trusted: devices reported again"
+            ),
+            t,
+        );
+    }
+    for h in r.hotes.iter().filter(|h| h.nouvelle && r.carnet_non_cru.is_none()) {
         let qui = if h.titre().is_empty() {
             tr!("appareil inconnu", "unknown device").into()
         } else {

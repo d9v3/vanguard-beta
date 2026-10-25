@@ -1396,6 +1396,7 @@ mod tests {
             score: 95,
         };
         let r = Rapport {
+            carnet_non_cru: None,
             reseau: "10.0.0.0/24".into(),
             nom_reseau: Some("<i>wifi</i>".into()),
             absents: vec![],
@@ -1468,6 +1469,7 @@ mod tests {
             duree_s: 1.0,
         };
         let r = Rapport {
+            carnet_non_cru: None,
             reseau: "10.0.0.0/24".into(),
             nom_reseau: Some("Salon".into()),
             absents: vec![],
@@ -1563,6 +1565,7 @@ mod tests {
             score: 100,
         };
         let r = Rapport {
+            carnet_non_cru: None,
             reseau: "10.0.0.0/24".into(),
             nom_reseau: None,
             absents: vec![crate::reseau::Absent {

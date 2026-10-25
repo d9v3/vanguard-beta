@@ -164,6 +164,10 @@ pub struct Rapport {
     /// Empoisonneurs de noms du réseau local (Responder…), scan du réseau local seulement.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub empoisonnement: Option<crate::reseau::empoisonnement::Rapport>,
+    /// Le carnet de cet ordinateur ne pouvait pas être cru : ce qu'en dit le scan (une notification, pas une par
+    /// appareil).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub carnet_non_cru: Option<String>,
 }
 
 /// Délai par port de la revérification d'un appareil en veille (ms) : trois fois celui d'un scan.
@@ -204,9 +208,9 @@ struct Base {
     appareils: BTreeMap<String, AppareilConnu>,
     /// Le carnet de cet ordinateur ne pouvait pas être cru (changé, effacé ou accepté tel quel hors de Vanguard,
     /// illisible), et c'est de lui que vient la base : vide, elle n'est jamais un premier scan muet, chaque appareil
-    /// est redit.
+    /// est redit. Le pourquoi.
     #[serde(skip)]
-    douteux: bool,
+    douteux: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -333,14 +337,29 @@ impl Base {
             Juge::Douteux(d, _) => d.texte().to_string(),
             Juge::Illisible(e) => e,
         };
-        tre!(
-            "Attention : carnet des appareils de cet ordinateur non cru ({pourquoi}) : chaque appareil vu est redit nouveau.",
-            "Warning: this computer's device record not trusted ({pourquoi}): every device seen is reported as new again."
-        );
         Base {
-            douteux: true,
+            douteux: Some(pourquoi),
             ..Base::default()
         }
+    }
+
+    /// Seul le carnet de la clé se chiffre (`chiffrement`) : une enveloppe ou un carnet chiffré dans le dossier de cet
+    /// ordinateur ne viennent pas de Vanguard. Ils feraient lire un carnet que le sceau ne juge pas : ignorés, et dits.
+    fn dire_chiffre_local(dossier: &std::path::Path) {
+        let chiffre = format!("{}.vanguard", crate::sceau::APPAREILS);
+        if !crate::chiffrement::protegee(dossier) && std::fs::symlink_metadata(dossier.join(&chiffre)).is_err() {
+            return;
+        }
+        tre!(
+            "Attention : une enveloppe ou un carnet chiffré est posé dans le dossier de Vanguard de cet ordinateur ({}) : Vanguard n'en chiffre jamais là, il est ignoré.",
+            "Warning: an envelope or encrypted record was placed in Vanguard's folder on this computer ({}): Vanguard never encrypts there, it is ignored.",
+            chemin_affichable(dossier)
+        );
+        crate::modele::Echec::echoue(
+            "reseau/carnet",
+            "enveloppe ou carnet chiffré dans le dossier local, ignoré",
+        )
+        .journaliser();
     }
 
     fn lire(p: &std::path::Path) -> Base {
@@ -432,8 +451,10 @@ impl Base {
             Some((racine, true)) => racine.join("donnees"),
             _ => dossier_local.clone(),
         };
-        // Le carnet en clair de cet ordinateur se lit sous son sceau ; celui de la clé, par `cles_connues`.
-        let carnet = if donnees == dossier_local && !crate::chiffrement::protegee(&donnees) {
+        // Le carnet de cet ordinateur se lit toujours sous son sceau, jamais par une enveloppe posée à côté ; celui de
+        // la clé, par `cles_connues`.
+        let carnet = if donnees == dossier_local {
+            Base::dire_chiffre_local(&donnees);
             Some(Base::lire_local(&donnees))
         } else {
             Base::ouvrir_carnet(&donnees)
@@ -455,7 +476,9 @@ impl Base {
         if local != chemin_cle || !ouvert {
             // Douteux, il n'ajoute rien : la base vient d'ailleurs (la clé), ou de lui seul, et alors elle est douteuse.
             let sienne = Base::lire_local(&dossier_local);
-            base.douteux |= sienne.douteux && !ouvert;
+            if !ouvert && base.douteux.is_none() {
+                base.douteux.clone_from(&sienne.douteux);
+            }
             base.absorber(sienne);
         }
         (base, [chemin_cle, local])
@@ -510,18 +533,22 @@ impl Base {
         let json = serde_json::to_string_pretty(self).unwrap_or_default();
         let [cle, local] = chemins;
         for p in chemins {
-            // Le carnet d'une clé protégée s'écrit chiffré ; jamais en clair à côté.
-            let ecrit = match p.parent().filter(|d| crate::chiffrement::protegee(d)) {
-                Some(donnees) => crate::chiffrement::ecrire_carnet(donnees, &json),
-                // Le carnet de cet ordinateur, scellé ; un carnet qui ne pouvait pas être cru est d'abord mis de côté.
-                None if p == local => p.parent().map_or_else(
+            // Le carnet de cet ordinateur, toujours scellé, jamais chiffré (une enveloppe posée à côté n'y fait rien) ;
+            // un carnet qui ne pouvait pas être cru est d'abord mis de côté. Celui d'une clé protégée s'écrit chiffré,
+            // jamais en clair à côté.
+            let ecrit = if p == local {
+                p.parent().map_or_else(
                     || ecrire_atomique(p, &json),
                     |d| {
                         mettre_de_cote_si_douteux(d);
                         crate::sceau::ecrire_dans(d, crate::sceau::APPAREILS, json.as_bytes())
                     },
-                ),
-                None => ecrire_atomique(p, &json),
+                )
+            } else {
+                match p.parent().filter(|d| crate::chiffrement::protegee(d)) {
+                    Some(donnees) => crate::chiffrement::ecrire_carnet(donnees, &json),
+                    None => ecrire_atomique(p, &json),
+                }
             };
             match ecrit {
                 Err(e) => tre!(
@@ -544,12 +571,12 @@ impl Base {
 
 /// Le carnet en clair de `dossier`, s'il ne pouvait pas être cru, renommé tel quel (« appareils.illisible-<date>.json »)
 /// avant d'être réécrit : des surnoms donnés par la personne y sont peut-être.
-fn mettre_de_cote_si_douteux(dossier: &std::path::Path) {
+fn mettre_de_cote_si_douteux(dossier: &std::path::Path) -> Option<PathBuf> {
     if !matches!(
         crate::sceau::juge_dans(dossier, crate::sceau::APPAREILS),
         crate::sceau::Juge::Douteux(_, Some(_)) | crate::sceau::Juge::Illisible(_)
     ) {
-        return;
+        return None;
     }
     let p = dossier.join(crate::sceau::APPAREILS);
     let copie = p.with_extension(format!(
@@ -557,13 +584,31 @@ fn mettre_de_cote_si_douteux(dossier: &std::path::Path) {
         chrono::Local::now().format("%Y%m%d-%H%M%S")
     ));
     // Renommé, pas copié : un lien reste un lien, rien n'est suivi ni relu.
-    if std::fs::rename(&p, &copie).is_ok() {
-        tre!(
-            "Ancien carnet des appareils, non cru, gardé : {}",
-            "Old device record, not trusted, kept: {}",
-            copie.display()
+    std::fs::rename(&p, &copie).ok()?;
+    tre!(
+        "Ancien carnet des appareils, non cru, gardé : {}",
+        "Old device record, not trusted, kept: {}",
+        copie.display()
+    );
+    Some(copie)
+}
+
+/// Ce que dit le scan d'un réseau quand le carnet de cet ordinateur ne pouvait pas être cru : une seule phrase, au
+/// lieu d'un « Nouvel appareil » par appareil, avec le geste qui reprend l'ancien carnet s'il est bien celui de la
+/// personne (ses surnoms y sont).
+fn texte_carnet_non_cru(pourquoi: &str, redits: usize, copie: Option<&std::path::Path>) -> String {
+    let mut t = trf!(
+        "Le carnet des appareils de cet ordinateur n'a pas été cru ({pourquoi}) : {redits} appareil(s) redit(s) nouveau(x), à regarder.",
+        "This computer's device record was not trusted ({pourquoi}): {redits} device(s) reported as new again, to look at."
+    );
+    if let Some(c) = copie {
+        t += &trf!(
+            " L'ancien carnet est gardé ; s'il est bien le vôtre (vos surnoms y sont) : vanguard importer {}",
+            " The old record is kept; if it really is yours (your nicknames are in it): vanguard importer {}",
+            c.display()
         );
     }
+    t
 }
 
 /// Les appareils du carnet de ce réseau (son dernier scan gardé) et le nom du réseau, pour `objets` : rien n'est
@@ -1158,6 +1203,11 @@ fn afficher(r: &Rapport) {
         }
     }
     println!("  {}", resume.join(&format!(" {GRIS}·{RESET} ")));
+    if let Some(t) = &r.carnet_non_cru {
+        println!();
+        let marque = format!("{}⚠{RESET}", couleur(Niveau::Moyen));
+        afficher_marque("  ", &marque, t, LARGEUR - 6);
+    }
     if let Some((boite, mac, autre)) = usurpation_arp(r) {
         println!();
         let marque = format!("{}✖{RESET}", couleur(Niveau::Critique));
@@ -1425,7 +1475,8 @@ pub async fn executer(o: Options) -> Result<Rapport, String> {
         .and_then(|g| arp.get(&g).cloned())
         .unwrap_or_else(|| trf!("plage {cible}", "range {cible}"));
     let nom_reseau = scan::nom_wifi();
-    let douteux = base.douteux;
+    let pourquoi_douteux = base.douteux.clone();
+    let douteux = pourquoi_douteux.is_some();
     let histo = base.reseaux.entry(id_reseau.clone()).or_default();
     for (cle, a) in std::mem::take(&mut base.appareils) {
         histo.appareils.entry(cle).or_insert(a);
@@ -1556,6 +1607,7 @@ pub async fn executer(o: Options) -> Result<Rapport, String> {
     hotes.sort_by_key(|h| h.ip);
 
     let mut absents = Vec::new();
+    let mut carnet_non_cru = None;
     // On ne mémorise que les scans du réseau complet avec les ports par défaut, pour comparer ce qui est comparable.
     if scan_comparable {
         let presents: BTreeSet<String> = hotes.iter().map(|h| cle(h.ip, &h.mac)).collect();
@@ -1601,6 +1653,12 @@ pub async fn executer(o: Options) -> Result<Rapport, String> {
             histo.nom.clone_from(&nom_reseau);
         }
         histo.udp |= avec_udp;
+        // Douteux : l'ancien carnet mis de côté d'abord, pour dire où il est.
+        if let Some(pourquoi) = &pourquoi_douteux {
+            let copie = chemins[1].parent().and_then(mettre_de_cote_si_douteux);
+            let redits = hotes.iter().filter(|h| h.nouvelle).count();
+            carnet_non_cru = Some(texte_carnet_non_cru(pourquoi, redits, copie.as_deref()));
+        }
         base.enregistrer_sous(&chemins, verrou.as_ref());
     }
     // Écrite : la base n'est plus tenue pendant ce qui suit (UPnP, empoisonnement, affichage).
@@ -1625,6 +1683,7 @@ pub async fn executer(o: Options) -> Result<Rapport, String> {
             None if reseau_local => Some(crate::reseau::empoisonnement::Rapport::SansReseauLocal),
             None => None,
         },
+        carnet_non_cru,
     };
 
     if o.json {
@@ -1657,6 +1716,7 @@ mod tests {
 
     fn rapport(hotes: Vec<Hote>) -> Rapport {
         Rapport {
+            carnet_non_cru: None,
             reseau: "10.0.0.0/24".into(),
             nom_reseau: Some("Maison".into()),
             absents: Vec::new(),
@@ -1772,7 +1832,7 @@ mod tests {
                 },
             )]),
             appareils: BTreeMap::new(),
-            douteux: false,
+            douteux: None,
         };
         assert!(
             !serde_json::to_value(&migre)
@@ -1796,16 +1856,16 @@ mod tests {
         let chemins = [d.join(crate::sceau::APPAREILS), d.join(crate::sceau::APPAREILS)];
         base.enregistrer(&chemins);
         let (lue, _) = Base::charger_depuis(None, &d);
-        assert!(!lue.douteux && lue.reseaux.contains_key("3c:22:fb:00:00:01"));
+        assert!(lue.douteux.is_none() && lue.reseaux.contains_key("3c:22:fb:00:00:01"));
         // Un autre programme y inscrit d'avance son appareil.
         let forge = r#"{"reseaux":{"3c:22:fb:00:00:01":{"nom":"Salon","appareils":{"3c:22:fb:66:66:66":{"ip":"192.168.1.66","nom":null,"fabricant":null,"ports":[]}}}}}"#;
         std::fs::write(d.join(crate::sceau::APPAREILS), forge).unwrap();
         let (lue, chemins) = Base::charger_depuis(None, &d);
-        assert!(lue.douteux && lue.reseaux.is_empty());
+        assert!(lue.douteux.is_some() && lue.reseaux.is_empty());
         assert!(crate::modele::inventaire::scelles().any(|n| n == crate::sceau::APPAREILS));
         // Effacé hors de Vanguard : douteux aussi, jamais un premier scan.
         std::fs::remove_file(d.join(crate::sceau::APPAREILS)).unwrap();
-        assert!(Base::charger_depuis(None, &d).0.douteux);
+        assert!(Base::charger_depuis(None, &d).0.douteux.is_some());
         std::fs::write(d.join(crate::sceau::APPAREILS), forge).unwrap();
         lue.enregistrer(&chemins);
         let copies = std::fs::read_dir(&d)
@@ -1813,8 +1873,45 @@ mod tests {
             .filter(|f| f.as_ref().unwrap().file_name().to_string_lossy().contains("illisible"))
             .count();
         assert_eq!(copies, 1);
-        assert!(!Base::charger_depuis(None, &d).0.douteux);
+        assert!(Base::charger_depuis(None, &d).0.douteux.is_none());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Relecture S2c (Fable 1) : une enveloppe, une clé de données et un carnet chiffré posés dans le dossier de cet
+    /// ordinateur ne font pas lire un carnet que le sceau ne juge pas ; le carnet scellé reste celui qui décide, et il
+    /// n'est ni effacé ni chiffré à la réécriture.
+    #[test]
+    fn enveloppe_posee_dans_le_dossier_local_ignoree() {
+        let d = std::env::temp_dir().join(format!("vanguard-carnet-enveloppe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let vrai = r#"{"reseaux":{"3c:22:fb:00:00:01":{"nom":"Salon","appareils":{}}}}"#;
+        let base: Base = serde_json::from_str(vrai).unwrap();
+        let chemins = [d.join(crate::sceau::APPAREILS), d.join(crate::sceau::APPAREILS)];
+        base.enregistrer(&chemins);
+        // Un autre programme y pose de quoi faire croire le dossier protégé par une phrase.
+        std::fs::write(d.join(crate::chiffrement::ENVELOPPE), b"VANGENV1 enveloppe forgee").unwrap();
+        std::fs::write(d.join("appareils.json.vanguard"), b"carnet forge").unwrap();
+        assert!(crate::chiffrement::protegee(&d));
+        let (lue, chemins) = Base::charger_depuis(None, &d);
+        assert!(lue.douteux.is_none() && lue.reseaux.contains_key("3c:22:fb:00:00:01"));
+        lue.enregistrer(&chemins);
+        assert!(matches!(
+            crate::sceau::lire_dans(&d, crate::sceau::APPAREILS),
+            crate::sceau::Lecture::Intact(_)
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Relecture S2c (Opus 3) : un carnet non cru se dit en une phrase, avec la copie gardée et le geste qui la reprend.
+    #[test]
+    fn carnet_non_cru_dit_une_fois_avec_le_geste() {
+        let t = texte_carnet_non_cru("changé", 30, Some(std::path::Path::new("/home/alice/x.json")));
+        assert!(
+            t.contains("30") && t.contains("vanguard importer /home/alice/x.json"),
+            "{t}"
+        );
+        assert!(!texte_carnet_non_cru("changé", 2, None).contains("importer"));
     }
 
     #[test]

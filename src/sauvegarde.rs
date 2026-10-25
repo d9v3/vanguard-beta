@@ -83,7 +83,8 @@ fn juger_notes(lu: crate::sceau::Juge) -> Result<Notes, crate::sceau::Doute> {
     }
 }
 
-/// La note, ou aucune si elle ne peut pas être crue.
+/// La note, ou aucune si elle ne peut pas être crue (les essais).
+#[cfg(test)]
 fn charger_de(dossier: &Path) -> Notes {
     charger_dans(dossier).unwrap_or_default()
 }
@@ -517,7 +518,12 @@ pub fn constats() -> Vec<Constat> {
 /// La minuterie rsync de Vanguard en place, mais rsync parti (paquet désinstallé) : elle échoue chaque jour en silence.
 #[cfg(target_os = "linux")]
 fn rsync_disparu() -> Option<Constat> {
-    let Some(MiseEnPlace::Systemd { .. }) = charger_de(&dossier_notes()).mise_en_place else {
+    let notes = match charger_dans(&dossier_notes()) {
+        Ok(n) => n,
+        // Rien n'est vérifié d'après une note qui ne peut pas être crue : c'est dit, jamais « rien en place ».
+        Err(d) => return Some(crate::machine::impossible("Sauvegardes", &note_douteuse(d))),
+    };
+    let Some(MiseEnPlace::Systemd { .. }) = notes.mise_en_place else {
         return None;
     };
     let texte = std::fs::read_to_string(dossier_unites().join(SERVICE)).ok()?;
@@ -545,6 +551,19 @@ fn juger_rsync(rsync: &Path, existe: bool) -> Option<Constat> {
             &[],
         )
     })
+}
+
+/// Ce que la désinstallation doit dire quand la note de `donnees` ne peut pas être crue : rien n'est défait d'après
+/// elle, elle part avec le dossier, et la personne retire la sauvegarde elle-même si elle n'en veut plus.
+pub(crate) fn note_douteuse_de(donnees: &Path) -> Option<String> {
+    let d = juger_notes(crate::sceau::juge_sans_ecrire_dans(donnees, NOTES)).err()?;
+    Some(
+        note_douteuse(d)
+            + tr!(
+                " Elle part avec le dossier de données : Vanguard ne pourra plus rien en défaire.",
+                " It goes with the data folder: Vanguard will no longer be able to undo anything from it."
+            ),
+    )
 }
 
 /// Ce que Vanguard a mis en place, d'après la note du dossier de données `donnees`.
@@ -1428,7 +1447,13 @@ fn sources_actuelles() -> Vec<(String, PathBuf)> {
 pub fn verifier_sauvegarde() {
     println!();
     titre(tr!("Vérifier la sauvegarde automatique", "Check the automatic backup"));
-    let mise_en_place = charger_de(&dossier_notes()).mise_en_place;
+    let mise_en_place = match charger_dans(&dossier_notes()) {
+        Ok(n) => n.mise_en_place,
+        Err(d) => {
+            mauvais(&note_douteuse(d));
+            return;
+        }
+    };
     let Some(MiseEnPlace::Systemd { destination, date, .. }) = mise_en_place else {
         let texte = match mise_en_place {
             Some(MiseEnPlace::DejaDup { .. }) => tr!(
@@ -1887,9 +1912,13 @@ mod tests {
         assert_eq!(charger_dans(&f), Err(crate::sceau::Doute::HorsVanguard));
         assert_eq!(mise_en_place_de(&f), None);
         assert!(note_douteuse(crate::sceau::Doute::HorsVanguard).contains("sauvegarde.json"));
+        // Relecture S2c (Opus 5) : la désinstallation le dit, avec quoi faire.
+        assert!(note_douteuse_de(&f).is_some_and(|t| t.contains("sauvegarde.json")));
         // Effacée hors de Vanguard : pas crue non plus (rien n'est dit « en place » d'après elle).
         std::fs::remove_file(f.join(NOTES)).unwrap();
         assert!(charger_dans(&f).is_err());
+        let vide = std::env::temp_dir().join(format!("vanguard-sauvegarde-sans-note-{}", std::process::id()));
+        assert!(note_douteuse_de(&vide).is_none());
         let _ = std::fs::remove_dir_all(&f);
     }
 

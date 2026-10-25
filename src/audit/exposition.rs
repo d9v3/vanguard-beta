@@ -697,6 +697,7 @@ mod tests {
     /// Le réseau « Salon » : la box, cet ordinateur, une caméra, un NAS ; une imprimante absente aujourd'hui.
     fn rapport(upnp: Option<Etat>) -> Rapport {
         Rapport {
+            carnet_non_cru: None,
             reseau: "10.0.0.0/24".into(),
             nom_reseau: Some("Salon".into()),
             absents: vec![Absent {
