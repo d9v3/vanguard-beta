@@ -52,7 +52,8 @@ on a real Windows; a study of a graphical interface. Releases signed twice (Ed25
 decision. Next: live observation on Linux with eBPF; known vulnerabilities of the other Linux distributions. Always
 defensive: Vanguard never attacks any device.
 
-**What Vanguard protects, and what it does not**: the [threat model](MODELE-DE-MENACE.en.md).
+**What Vanguard protects, and what it does not**: the [threat model](MODELE-DE-MENACE.en.md). **What its rules see,
+technique by technique**: the [MITRE ATT&CK coverage map](COUVERTURE-ATTACK.en.md).
 
 ## Also included
 

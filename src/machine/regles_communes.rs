@@ -17,7 +17,7 @@ regle!(
     Os::Tous,
     510,
     ("certificats racine ajoutés", "added root certificates"),
-    &["CIS Controls v8 3.10"],
+    &["CIS Controls v8 3.10", "MITRE ATT&CK T1553.004"],
     || super::certificats::certificats().into_iter().collect()
 );
 
@@ -26,7 +26,7 @@ regle!(
     Os::Tous,
     520,
     ("extensions des navigateurs", "browser extensions"),
-    &["CIS Controls v8 9.4"],
+    &["CIS Controls v8 9.4", "MITRE ATT&CK T1176.001"],
     || super::extensions::extensions().into_iter().collect()
 );
 
@@ -35,7 +35,7 @@ regle!(
     Os::Tous,
     530,
     ("réglages de sécurité des navigateurs", "browser security settings"),
-    &["CIS Controls v8 9.1"],
+    &["CIS Controls v8 9.1", "MITRE ATT&CK M1054"],
     || super::navigateur::navigateurs().into_iter().collect()
 );
 
@@ -71,7 +71,7 @@ regle!(
         "mots de passe gardés par le navigateur",
         "passwords kept by the browser"
     ),
-    &["CIS Controls v8 5.2"],
+    &["CIS Controls v8 5.2", "MITRE ATT&CK M1027"],
     || super::mots_de_passe::constats().into_iter().collect()
 );
 
@@ -80,7 +80,7 @@ regle!(
     Os::Tous,
     560,
     ("fichiers sensibles qui traînent", "sensitive files lying around"),
-    &["CIS Controls v8 3.2"],
+    &["CIS Controls v8 3.2", "MITRE ATT&CK M1047"],
     || super::sensibles::constats().into_iter().collect()
 );
 
@@ -98,7 +98,7 @@ regle!(
     Os::Tous,
     580,
     ("partages ouverts à tous", "shares open to everyone"),
-    &["CIS Controls v8 3.3"],
+    &["CIS Controls v8 3.3", "MITRE ATT&CK M1035"],
     || super::partages::partages().into_iter().collect()
 );
 
@@ -107,7 +107,7 @@ regle!(
     Os::Tous,
     590,
     ("Bluetooth", "Bluetooth"),
-    &["CIS Controls v8 4.8"],
+    &["CIS Controls v8 4.8", "MITRE ATT&CK M1042"],
     || { super::bluetooth::constats().into_iter().collect() }
 );
 
@@ -128,7 +128,11 @@ regle!(
     Os::Tous,
     600,
     ("nouveaux administrateurs", "new administrators"),
-    &["CIS Controls v8 5.4"],
+    &[
+        "CIS Controls v8 5.4",
+        "MITRE ATT&CK T1098.007",
+        "MITRE ATT&CK T1136.001"
+    ],
     || super::administrateurs::constat().into_iter().collect()
 );
 
@@ -137,7 +141,7 @@ regle!(
     Os::Tous,
     610,
     ("journaux effacés ou en erreur", "erased or failing logs"),
-    &["CIS Controls v8 8.2", "CIS Controls v8 8.3"],
+    &["CIS Controls v8 8.2", "CIS Controls v8 8.3", "MITRE ATT&CK T1685.005"],
     || super::journaux::journaux().into_iter().collect()
 );
 
@@ -155,7 +159,7 @@ regle!(
     Os::Tous,
     630,
     ("fin de support", "end of support"),
-    &["CIS Controls v8 2.2"],
+    &["CIS Controls v8 2.2", "MITRE ATT&CK M1051"],
     || super::fin_de_support::constats().into_iter().collect()
 );
 
@@ -164,7 +168,7 @@ regle!(
     Os::Tous,
     640,
     ("comptes oubliés", "forgotten accounts"),
-    &["CIS Controls v8 5.3"],
+    &["CIS Controls v8 5.3", "MITRE ATT&CK M1018"],
     || super::comptes_oublies::constats().into_iter().collect()
 );
 
@@ -175,7 +179,10 @@ regle!(
     ("intégrité des fichiers critiques", "critical file integrity"),
     &[
         "CIS Controls v8 10.7",
-        "ANSSI BP-028 (configuration d'un système GNU/Linux)"
+        "ANSSI BP-028 (configuration d'un système GNU/Linux)",
+        "MITRE ATT&CK T1556.003",
+        "MITRE ATT&CK T1053.003",
+        "MITRE ATT&CK T1543.002"
     ],
     || vec![crate::protection::integrite::constat()]
 );
@@ -185,7 +192,7 @@ regle!(
     Os::Tous,
     660,
     ("fichiers-pièges contre les rançongiciels", "ransomware decoy files"),
-    &["CIS Controls v8 10.7"],
+    &["CIS Controls v8 10.7", "MITRE ATT&CK T1486"],
     || crate::protection::pieges::constat().into_iter().collect()
 );
 
@@ -194,7 +201,7 @@ regle!(
     Os::Tous,
     670,
     ("prise de contrôle à distance", "remote takeover"),
-    &["CIS Controls v8 2.3"],
+    &["CIS Controls v8 2.3", "MITRE ATT&CK T1219.002"],
     || crate::protection::distance::constats().into_iter().collect()
 );
 
@@ -286,7 +293,7 @@ regle!(
     Os::Tous,
     710,
     ("données de la clé chiffrées", "encrypted key data"),
-    &["CIS Controls v8 3.9"],
+    &["CIS Controls v8 3.9", "MITRE ATT&CK M1041"],
     || crate::chiffrement::constat().into_iter().collect()
 );
 
@@ -307,7 +314,7 @@ regle!(
     Os::Tous,
     720,
     ("sauvegarde automatique", "automatic backup"),
-    &["CIS Controls v8 11.2"],
+    &["CIS Controls v8 11.2", "MITRE ATT&CK M1053"],
     || crate::sauvegarde::constats().into_iter().collect()
 );
 
@@ -316,7 +323,11 @@ regle!(
     Os::Tous,
     730,
     ("serveurs d'IA ouverts au réseau", "AI servers open to the network"),
-    &["CIS Controls v8 4.8", "OWASP Top 10 for LLM Applications"],
+    &[
+        "CIS Controls v8 4.8",
+        "OWASP Top 10 for LLM Applications",
+        "MITRE ATT&CK M1035"
+    ],
     super::agents_ia::exposition
 );
 
@@ -331,7 +342,8 @@ regle!(
     &[
         "CIS Controls v8 3.11",
         "OWASP Top 10 for LLM Applications",
-        "MCP Security Best Practices"
+        "MCP Security Best Practices",
+        "MITRE ATT&CK M1054"
     ],
     super::agents_ia::reglages
 );

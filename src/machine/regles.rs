@@ -618,6 +618,39 @@ mod tests {
         assert!(lues.len() >= 150, "{} règles lues seulement", lues.len());
     }
 
+    /// Lot 7b : chaque identifiant d'ATT&CK cité par une règle (bilan des trois systèmes, audit du réseau, journaux
+    /// de Windows) existe dans la version 20 : ni faute de frappe ni ancien numéro. La carte COUVERTURE-ATTACK.md
+    /// en est tirée (outils/couverture-attack.py) ; citer ATT&CK n'est pas obligatoire.
+    #[test]
+    fn identifiants_attack_connus() {
+        use crate::modele::reference::{attack_inconnu, faute_attack};
+        let mut fautes = Vec::new();
+        let mut cites = 0;
+        let lues = regles_des_sources();
+        let sources = lues
+            .iter()
+            .map(|(id, refs)| (id.as_str(), refs.iter().map(String::as_str).collect()));
+        let fiches = crate::audit::fiches::FICHES
+            .iter()
+            .map(|f| (f.id, f.references.to_vec()));
+        for (id, refs) in sources.chain(fiches) {
+            let refs: Vec<&str> = refs;
+            for r in &refs {
+                cites += usize::from(r.starts_with("MITRE ATT&CK "));
+                fautes.extend(faute_attack(r).map(|f| format!("{id} : {f}")));
+            }
+        }
+        for r in crate::journaux_windows::regles::jeu::REGLES {
+            assert!(!r.techniques.is_empty(), "{} sans technique", r.id);
+            for t in r.techniques {
+                cites += 1;
+                fautes.extend(attack_inconnu(t).map(|f| format!("{} : {f}", r.id)));
+            }
+        }
+        assert!(fautes.is_empty(), "{}", fautes.join("\n"));
+        assert!(cites >= 200, "{cites} citations d'ATT&CK seulement");
+    }
+
     /// T5 : le cliquet des muettes tolérées : rangées, une seule fois, au plus ce qu'elles étaient, toutes connues,
     /// et celles de ce système existent encore.
     #[test]

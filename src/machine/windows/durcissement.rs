@@ -788,7 +788,7 @@ inventory::submit! {
         systeme: crate::machine::regles::Os::Windows,
         rang: 251,
         sujet: ("journalisation des scripts PowerShell", "PowerShell script logging"),
-        references: &["Microsoft : about_Logging_Windows"],
+        references: &["Microsoft : about_Logging_Windows", "MITRE ATT&CK M1047"],
         verifier: || vec![juger_journal_powershell(lire_dword(JOURNAL_PS, "EnableScriptBlockLogging"))],
     }
 }
@@ -799,7 +799,7 @@ inventory::submit! {
         systeme: crate::machine::regles::Os::Windows,
         rang: 252,
         sujet: ("Sysmon, quand il est installé", "Sysmon, when installed"),
-        references: &["Microsoft Sysinternals : Sysmon"],
+        references: &["Microsoft Sysinternals : Sysmon", "MITRE ATT&CK M1047"],
         verifier: || {
             juger_sysmon(["Sysmon64", "Sysmon"].iter().any(|s| {
                 winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)

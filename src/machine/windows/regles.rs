@@ -19,7 +19,11 @@ regle!(
     Os::Windows,
     10,
     ("pare-feu", "firewall"),
-    &["CIS Controls v8 4.5", "Microsoft : Windows Firewall overview"],
+    &[
+        "CIS Controls v8 4.5",
+        "Microsoft : Windows Firewall overview",
+        "MITRE ATT&CK M1037"
+    ],
     || vec![PARE_FEU.lire(pare_feu)]
 );
 
@@ -30,7 +34,8 @@ regle!(
     ("antivirus", "antivirus"),
     &[
         "CIS Controls v8 10.1",
-        "Microsoft : Microsoft Defender Antivirus in Windows overview"
+        "Microsoft : Microsoft Defender Antivirus in Windows overview",
+        "MITRE ATT&CK M1049"
     ],
     || { antivirus().into_iter().collect() }
 );
@@ -42,7 +47,8 @@ regle!(
     ("exclusions de Defender", "Defender exclusions"),
     &[
         "CIS Controls v8 10.1",
-        "Microsoft : Exclusions for Microsoft Defender Antivirus"
+        "Microsoft : Exclusions for Microsoft Defender Antivirus",
+        "MITRE ATT&CK T1685"
     ],
     || exclusions::exclusions().into_iter().collect()
 );
@@ -59,6 +65,7 @@ regle!(
         "CIS Controls v8 10.5",
         "Microsoft : Attack surface reduction rules reference",
         "Microsoft : Turn on network protection",
+        "MITRE ATT&CK M1040",
     ],
     defender::protections_de_defender
 );
@@ -68,7 +75,7 @@ regle!(
     Os::Windows,
     120,
     ("services TCP ouverts sur le réseau", "TCP services open to the network"),
-    &["CIS Controls v8 4.8"],
+    &["CIS Controls v8 4.8", "MITRE ATT&CK M1035"],
     || {
         let actif = PARE_FEU.lire(pare_feu).probleme.is_none();
         let ip = ADRESSE.lire(adresse_locale);
@@ -81,7 +88,7 @@ regle!(
     Os::Windows,
     130,
     ("services UDP ouverts sur le réseau", "UDP services open to the network"),
-    &["CIS Controls v8 4.8"],
+    &["CIS Controls v8 4.8", "MITRE ATT&CK M1035"],
     || {
         let actif = PARE_FEU.lire(pare_feu).probleme.is_none();
         let ip = ADRESSE.lire(adresse_locale);
@@ -96,7 +103,8 @@ regle!(
     ("SMBv1", "SMBv1"),
     &[
         "CIS Controls v8 4.8",
-        "Microsoft : Detect, enable, and disable SMBv1, SMBv2, and SMBv3 in Windows"
+        "Microsoft : Detect, enable, and disable SMBv1, SMBv2, and SMBv3 in Windows",
+        "MITRE ATT&CK M1042"
     ],
     || vec![smb1()]
 );
@@ -106,7 +114,7 @@ regle!(
     Os::Windows,
     150,
     ("Bureau à distance", "Remote Desktop"),
-    &["CIS Controls v8 6.4", "CIS Controls v8 4.8"],
+    &["CIS Controls v8 6.4", "CIS Controls v8 4.8", "MITRE ATT&CK M1035"],
     || vec![bureau_distance()]
 );
 
@@ -117,7 +125,8 @@ regle!(
     ("contrôle de compte d'utilisateur (UAC)", "User Account Control (UAC)"),
     &[
         "CIS Controls v8 5.4",
-        "Microsoft : User Account Control settings and configuration"
+        "Microsoft : User Account Control settings and configuration",
+        "MITRE ATT&CK M1052"
     ],
     || vec![uac()]
 );
@@ -136,7 +145,7 @@ regle!(
     Os::Windows,
     180,
     ("Windows Update", "Windows Update"),
-    &["CIS Controls v8 7.3"],
+    &["CIS Controls v8 7.3", "MITRE ATT&CK M1051"],
     || vec![mises_a_jour()]
 );
 
@@ -145,7 +154,7 @@ regle!(
     Os::Windows,
     185,
     ("logiciels pas à jour", "outdated software"),
-    &["CIS Controls v8 7.4"],
+    &["CIS Controls v8 7.4", "MITRE ATT&CK M1051"],
     crate::protection::perimes::constats
 );
 
@@ -154,7 +163,11 @@ regle!(
     Os::Windows,
     190,
     ("chiffrement BitLocker", "BitLocker encryption"),
-    &["CIS Controls v8 3.6", "Microsoft : BitLocker overview"],
+    &[
+        "CIS Controls v8 3.6",
+        "Microsoft : BitLocker overview",
+        "MITRE ATT&CK M1041"
+    ],
     || vec![chiffrement()]
 );
 
@@ -163,7 +176,11 @@ regle!(
     Os::Windows,
     200,
     ("démarrage sécurisé (Secure Boot)", "Secure Boot"),
-    &["CIS Controls v8 4.1", "Microsoft : Secure the Windows boot process"],
+    &[
+        "CIS Controls v8 4.1",
+        "Microsoft : Secure the Windows boot process",
+        "MITRE ATT&CK M1046"
+    ],
     || durcissement::demarrage_securise().into_iter().collect()
 );
 
@@ -172,7 +189,7 @@ regle!(
     Os::Windows,
     210,
     ("comptes et administrateurs", "accounts and administrators"),
-    &["CIS Controls v8 5.4"],
+    &["CIS Controls v8 5.4", "MITRE ATT&CK M1026"],
     || comptes().into_iter().collect()
 );
 
@@ -187,7 +204,8 @@ regle!(
     &[
         "CIS Controls v8 4.10",
         "CIS Controls v8 5.2",
-        "Microsoft : Account lockout threshold"
+        "Microsoft : Account lockout threshold",
+        "MITRE ATT&CK M1027"
     ],
     || politique().into_iter().collect()
 );
@@ -197,7 +215,11 @@ regle!(
     Os::Windows,
     220,
     ("ce qui se lance tout seul", "what starts by itself"),
-    &["CIS Controls v8 2.3"],
+    &[
+        "CIS Controls v8 2.3",
+        "MITRE ATT&CK T1547.001",
+        "MITRE ATT&CK T1053.005"
+    ],
     || persistance().into_iter().collect()
 );
 
@@ -206,7 +228,7 @@ regle!(
     Os::Windows,
     230,
     ("services au chemin sans guillemets", "unquoted service paths"),
-    &["CIS Controls v8 4.1"],
+    &["CIS Controls v8 4.1", "MITRE ATT&CK T1574.009"],
     || services::services_sans_guillemets().into_iter().collect()
 );
 
@@ -219,6 +241,7 @@ regle!(
         "CIS Controls v8 4.6",
         "Microsoft : OpenSSH Server configuration for Windows",
         "Microsoft : Key-based authentication in OpenSSH for Windows",
+        "MITRE ATT&CK M1042",
     ],
     ssh::serveur
 );
@@ -230,7 +253,9 @@ regle!(
     ("clés SSH du compte", "the account's SSH keys"),
     &[
         "CIS Controls v8 3.3",
-        "Microsoft : Key-based authentication in OpenSSH for Windows"
+        "Microsoft : Key-based authentication in OpenSSH for Windows",
+        "MITRE ATT&CK M1022",
+        "MITRE ATT&CK M1027"
     ],
     ssh::cles_du_compte
 );
@@ -256,6 +281,9 @@ regle!(
         "CIS Controls v8 10.5",
         "Microsoft : Configure added LSA protection",
         "Microsoft : Credential Guard overview",
+        "MITRE ATT&CK M1043",
+        "MITRE ATT&CK M1025",
+        "MITRE ATT&CK M1050"
     ],
     durcissement::durcissement
 );
@@ -271,6 +299,7 @@ regle!(
     &[
         "CIS Controls v8 4.1",
         "Microsoft : Network security: LAN Manager authentication level",
+        "MITRE ATT&CK M1028",
     ],
     durcissement::authentification_reseau
 );
@@ -285,7 +314,8 @@ regle!(
     ),
     &[
         "CIS Controls v8 4.8",
-        "Microsoft : Overview of Server Message Block signing"
+        "Microsoft : Overview of Server Message Block signing",
+        "MITRE ATT&CK M1042"
     ],
     durcissement::partage_smb
 );
@@ -298,7 +328,11 @@ regle!(
         "accès à distance (Assistance, Registre à distance, WPAD)",
         "remote access (Assistance, Remote Registry, WPAD)"
     ),
-    &["CIS Controls v8 4.8", "Microsoft : Windows security baselines"],
+    &[
+        "CIS Controls v8 4.8",
+        "Microsoft : Windows security baselines",
+        "MITRE ATT&CK M1042"
+    ],
     durcissement::acces_distant
 );
 
@@ -312,7 +346,8 @@ regle!(
     ),
     &[
         "CIS Controls v8 2.7",
-        "Microsoft : Macros from the internet are blocked by default in Office"
+        "Microsoft : Macros from the internet are blocked by default in Office",
+        "MITRE ATT&CK M1038"
     ],
     durcissement::programmes_et_documents
 );
@@ -324,7 +359,8 @@ regle!(
     ("Windows Update coupé ou en pause", "Windows Update off or paused"),
     &[
         "CIS Controls v8 7.3",
-        "Microsoft : Manage additional Windows Update settings"
+        "Microsoft : Manage additional Windows Update settings",
+        "MITRE ATT&CK M1051"
     ],
     durcissement::windows_update_bloque
 );

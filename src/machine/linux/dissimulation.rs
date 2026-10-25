@@ -14,7 +14,7 @@ regle!(
     Os::Linux,
     271,
     ("processus cachés", "hidden processes"),
-    &["CIS Controls v8 13.2"],
+    &["CIS Controls v8 13.2", "MITRE ATT&CK T1014"],
     || vec![processus_caches()]
 );
 
@@ -26,7 +26,7 @@ regle!(
         "programmes qui tournent sans fichier",
         "programs running without a file"
     ),
-    &["CIS Controls v8 13.2"],
+    &["CIS Controls v8 13.2", "MITRE ATT&CK T1620"],
     programmes_sans_fichier
 );
 
@@ -41,7 +41,9 @@ regle!(
     &[
         "CIS Controls v8 13.2",
         "ANSSI BP-028 (configuration d'un système GNU/Linux)",
-        "kernel.org : tainted-kernels"
+        "kernel.org : tainted-kernels",
+        "MITRE ATT&CK T1547.006",
+        "MITRE ATT&CK T1014"
     ],
     modules_du_noyau
 );
@@ -54,7 +56,7 @@ regle!(
         "carte réseau qui écoute tout le trafic",
         "network card capturing all traffic"
     ),
-    &["CIS Controls v8 13.2"],
+    &["CIS Controls v8 13.2", "MITRE ATT&CK T1040"],
     || ecoute_du_reseau().into_iter().collect()
 );
 

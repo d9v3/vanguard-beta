@@ -20,7 +20,8 @@ regle!(
     &[
         "CIS Controls v8 3.10",
         "ANSSI, Recommandations pour un usage sécurisé d'(Open)SSH",
-        "OpenSSH : sshd_config(5)"
+        "OpenSSH : sshd_config(5)",
+        "MITRE ATT&CK M1054"
     ],
     || algorithmes_ssh().into_iter().collect()
 );

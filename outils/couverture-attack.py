@@ -1,0 +1,331 @@
+#!/usr/bin/env python3
+"""Écrit la carte de couverture MITRE ATT&CK de Vanguard (COUVERTURE-ATTACK.md et .en.md, à la racine du dépôt).
+
+Les règles se lisent dans les sources, pour les trois systèmes à la fois (chaque programme ne compile que les
+siennes) : celles du bilan (`regle!` et `Regle { id: … }` de src/machine), les fiches de l'audit du réseau
+(src/audit/fiches.rs) et les règles des journaux de Windows (src/journaux_windows/regles/jeu.rs, champ
+`techniques`). Une règle de détection cite la technique qu'elle voit (« MITRE ATT&CK T1547.005 »), une règle de
+durcissement la mesure d'atténuation qu'elle applique (« MITRE ATT&CK M1042 ») ; aucune n'y est obligée. Chaque
+identifiant cité doit exister dans la liste de référence (assets/attack-v20.tsv, tirée des données officielles de
+MITRE) : une faute de frappe ou un ancien numéro est refusé, avec son remplaçant quand MITRE en donne un.
+Rien n'est envoyé d'ici.
+
+    python3 outils/couverture-attack.py               refait les deux pages
+    python3 outils/couverture-attack.py --verifier    code 1 si une page n'est plus à jour ou un identifiant inconnu
+    python3 outils/couverture-attack.py --liste       les règles lues, une par ligne (identifiant, sujet, ATT&CK)
+"""
+import argparse
+import re
+import sys
+from collections import defaultdict
+from pathlib import Path
+
+RACINE = Path(__file__).resolve().parent.parent
+LISTE = RACINE / "assets/attack-v20.tsv"
+PAGES = {"fr": RACINE / "COUVERTURE-ATTACK.md", "en": RACINE / "COUVERTURE-ATTACK.en.md"}
+ID_REGLE = r"[A-Z]{3}-[A-Z]{3}-\d{3}"
+CHAINE = r'"((?:[^"\\]|\\.)*)"'
+CITATION = re.compile(r"^MITRE ATT&CK ([TM]\d{4}(?:\.\d{3})?)$")
+
+# Les noms des tactiques, traduits ici (ceux de MITRE, en anglais, restent dans la page anglaise).
+TACTIQUES_FR = {
+    "TA0043": "Reconnaissance",
+    "TA0042": "Préparation des moyens",
+    "TA0001": "Accès initial",
+    "TA0002": "Exécution",
+    "TA0003": "Persistance",
+    "TA0004": "Élévation de privilèges",
+    "TA0005": "Furtivité",
+    "TA0112": "Neutralisation des défenses",
+    "TA0006": "Accès aux identifiants",
+    "TA0007": "Découverte",
+    "TA0008": "Déplacement latéral",
+    "TA0009": "Collecte",
+    "TA0011": "Commande et contrôle",
+    "TA0010": "Exfiltration",
+    "TA0040": "Impact",
+}
+
+TEXTES = {
+    "fr": {
+        "titre": "Couverture MITRE ATT&CK de Vanguard",
+        "genere": "Page générée par `outils/couverture-attack.py` à partir des références des règles : ne pas la "
+                  "modifier à la main. `python3 outils/couverture-attack.py` la refait ; `outils/verifier.sh` "
+                  "échoue si elle n'est plus à jour. English: [COUVERTURE-ATTACK.en.md](COUVERTURE-ATTACK.en.md).",
+        "intro": "Chaque règle de Vanguard qui **détecte** quelque chose cite la technique d'ATT&CK qu'elle voit "
+                 "(T…) ; chaque règle qui **durcit** l'ordinateur cite la mesure d'atténuation qu'elle applique "
+                 "(M…). La carte range ces citations par tactique, dans la version {version} d'ATT&CK Enterprise. "
+                 "Une case « — » veut dire qu'aucune règle de Vanguard ne cite cette technique : c'est la liste des "
+                 "manques, tenue à jour par le code lui-même.",
+        "limite": "Citer une technique ne veut pas dire tout en voir : une règle peut ne voir qu'une partie des "
+                  "façons de la mener, sur un seul système. Ce que Vanguard protège et ne protège pas : "
+                  "[MODELE-DE-MENACE.md](MODELE-DE-MENACE.md).",
+        "bref": "En bref",
+        "col_tactique": "Tactique",
+        "col_vues": "Techniques citées (elles ou une sous-technique)",
+        "col_total": "Techniques d'ATT&CK",
+        "par_tactique": "Par tactique",
+        "col_technique": "Technique",
+        "col_nom": "Nom (MITRE)",
+        "col_regles": "Règles de Vanguard",
+        "sous": "{n} sous-techniques, aucune citée",
+        "sous_citees": "{c} sur {n} sous-techniques citées",
+        "mesures": "Mesures d'atténuation",
+        "mesures_intro": "Les mesures d'ATT&CK que les règles de durcissement appliquent ou vérifient.",
+        "col_mesure": "Mesure",
+        "sans": "Règles sans identifiant ATT&CK",
+        "sans_intro": "{n} règles sur {total} ne citent encore ni technique ni mesure (ce n'est pas une "
+                      "obligation : une vérification de l'état de l'ordinateur n'a pas toujours sa technique). "
+                      "Les règles par famille :",
+        "famille": {"COM": "communes et audit du réseau", "LNX": "Linux", "WIN": "Windows", "MAC": "macOS",
+                    "EVT": "journaux de Windows"},
+        "droits": "Droits",
+        "droits_texte": "Les identifiants, tactiques et noms viennent d'ATT&CK, reproduits selon les conditions "
+                        "d'utilisation de MITRE (avec leurs avertissements dans [assets/attack-v20.tsv](assets/attack-v20.tsv)) :",
+    },
+    "en": {
+        "titre": "Vanguard's MITRE ATT&CK coverage",
+        "genere": "Page generated by `outils/couverture-attack.py` from the rules' references: do not edit it by "
+                  "hand. `python3 outils/couverture-attack.py` rebuilds it; `outils/verifier.sh` fails when it is "
+                  "out of date. Français : [COUVERTURE-ATTACK.md](COUVERTURE-ATTACK.md).",
+        "intro": "Every Vanguard rule that **detects** something cites the ATT&CK technique it sees (T…); every "
+                 "rule that **hardens** the computer cites the mitigation it applies (M…). The map sorts these "
+                 "citations by tactic, in ATT&CK Enterprise version {version}. A \"—\" cell means no Vanguard rule "
+                 "cites that technique: this is the list of gaps, kept up to date by the code itself.",
+        "limite": "Citing a technique does not mean seeing all of it: a rule may see only some of the ways to "
+                  "carry it out, on a single system. What Vanguard protects and does not protect: "
+                  "[MODELE-DE-MENACE.en.md](MODELE-DE-MENACE.en.md).",
+        "bref": "At a glance",
+        "col_tactique": "Tactic",
+        "col_vues": "Techniques cited (themselves or a sub-technique)",
+        "col_total": "ATT&CK techniques",
+        "par_tactique": "By tactic",
+        "col_technique": "Technique",
+        "col_nom": "Name (MITRE)",
+        "col_regles": "Vanguard rules",
+        "sous": "{n} sub-techniques, none cited",
+        "sous_citees": "{c} of {n} sub-techniques cited",
+        "mesures": "Mitigations",
+        "mesures_intro": "The ATT&CK mitigations that the hardening rules apply or check.",
+        "col_mesure": "Mitigation",
+        "sans": "Rules without an ATT&CK identifier",
+        "sans_intro": "{n} rules out of {total} cite neither a technique nor a mitigation yet (this is not "
+                      "required: a check of the computer's state does not always have a technique). The rules by "
+                      "family:",
+        "famille": {"COM": "common and network audit", "LNX": "Linux", "WIN": "Windows", "MAC": "macOS",
+                    "EVT": "Windows event logs"},
+        "droits": "Rights",
+        "droits_texte": "Identifiers, tactics and names come from ATT&CK, reproduced under MITRE's terms of use "
+                        "(with their disclaimers in [assets/attack-v20.tsv](assets/attack-v20.tsv)):",
+    },
+}
+MENTION = ("© 2026 The MITRE Corporation. This work is reproduced and distributed with the permission of The MITRE "
+           "Corporation.")
+# La licence d'ATT&CK, à reproduire avec la mention dans toute copie (conditions d'utilisation de MITRE).
+LICENCE = ("The MITRE Corporation (MITRE) hereby grants you a non-exclusive, royalty-free license to use ATT&CK® for "
+           "research, development, and commercial purposes. Any copy you make for such purposes is authorized provided "
+           "that you reproduce MITRE's copyright designation and this license in any such copy.")
+
+
+class Liste:
+    """La liste de référence : tactiques dans l'ordre de la matrice, techniques, mesures, renvois."""
+
+    def __init__(self, chemin: Path):
+        self.version = None
+        self.tactiques: list[tuple[str, str]] = []  # (TA…, nom)
+        self.techniques: dict[str, tuple[list[str], str]] = {}  # T… → (tactiques, nom)
+        self.mesures: dict[str, str] = {}
+        self.renvois: dict[str, str] = {}
+        for ligne in chemin.read_text(encoding="utf-8").splitlines():
+            if ligne.startswith("# version "):
+                self.version = ligne.removeprefix("# version ").strip()
+            if not ligne or ligne.startswith("#"):
+                continue
+            genre, ident, champ, nom = ligne.split("\t")
+            if genre == "tactique":
+                self.tactiques.append((ident, nom))
+            elif genre == "technique":
+                self.techniques[ident] = (champ.split(","), nom)
+            elif genre == "mesure":
+                self.mesures[ident] = nom
+            elif genre == "renvoi":
+                self.renvois[ident] = champ
+            else:
+                sys.exit(f"✖ {chemin.name} : genre inconnu « {genre} »")
+        if not self.version or not self.tactiques or not self.techniques or not self.mesures:
+            sys.exit(f"✖ {chemin.name} incomplet")
+
+    def faute(self, ident: str) -> str | None:
+        """Ce qui ne va pas avec un identifiant cité, ou None."""
+        if ident in self.techniques or ident in self.mesures:
+            return None
+        if ident in self.renvois:
+            return f"{ident} n'existe plus dans ATT&CK {self.version} : citer {self.renvois[ident]}"
+        return f"{ident} inconnu d'ATT&CK {self.version}"
+
+
+def chaines(texte: str) -> list[str]:
+    return [m.group(1) for m in re.finditer(CHAINE, texte)]
+
+
+def liste_apres(texte: str, debut: int, champ: str | None = None) -> tuple[list[str], int]:
+    """Les chaînes du premier `&[ … ]` après `debut` (après `champ:` s'il est donné), et la fin du bloc."""
+    if champ:
+        m = re.compile(rf"\b{champ}:\s*&\[").search(texte, debut)
+    else:
+        m = re.compile(r"&\[").search(texte, debut)
+    if not m:
+        return [], debut
+    i, valeurs = m.end(), []
+    # Les chaînes une à une : un « ] » dans une chaîne (adresse) ne ferme pas la liste.
+    while True:
+        while texte[i] in " \t\r\n,":
+            i += 1
+        if texte[i] == "]":
+            return valeurs, i
+        s = re.compile(CHAINE).match(texte, i)
+        if not s:
+            sys.exit(f"✖ liste de références illisible : {texte[m.start():m.start() + 80]!r}")
+        valeurs.append(s.group(1))
+        i = s.end()
+
+
+def sujet_apres(texte: str, debut: int) -> str:
+    m = re.compile(r"\(\s*" + CHAINE + r"\s*,\s*" + CHAINE).search(texte, debut)
+    return m.group(1) if m else ""
+
+
+def regles() -> list[dict]:
+    """Toutes les règles lues dans les sources : identifiant, sujet (français), identifiants ATT&CK cités."""
+    lues = []
+
+    def ajouter(ident, sujet, refs, techniques=()):
+        cites = []
+        for r in refs:
+            if r.upper().startswith("MITRE") or "ATT&CK" in r.upper():
+                m = CITATION.match(r)
+                if not m:
+                    sys.exit(f"✖ {ident} : référence ATT&CK mal écrite « {r} » (attendu « MITRE ATT&CK T1234.001 »)")
+                cites.append(m.group(1))
+        cites.extend(techniques)
+        lues.append({"id": ident, "sujet": sujet, "attack": list(dict.fromkeys(cites))})
+
+    for f in sorted((RACINE / "src/machine").rglob("*.rs")):
+        texte = f.read_text(encoding="utf-8")
+        texte = texte.split("#[cfg(test)]\nmod ")[0]
+        for m in re.finditer(rf'(regle!\(\s*|\bid:\s*)"({ID_REGLE})"', texte):
+            if "TST" in m.group(2):
+                continue
+            champ = None if m.group(1).startswith("regle!") else "references"
+            sujet = sujet_apres(texte, m.end())
+            refs, _ = liste_apres(texte, m.end(), champ)
+            ajouter(m.group(2), sujet, refs)
+    texte = (RACINE / "src/audit/fiches.rs").read_text(encoding="utf-8")
+    for m in re.finditer(rf'\bid:\s*"(COM-[A-Z]{{3}}-\d{{3}})"', texte):
+        refs, _ = liste_apres(texte, m.end(), "references")
+        ajouter(m.group(1), sujet_apres(texte, m.end()), refs)
+    texte = (RACINE / "src/journaux_windows/regles/jeu.rs").read_text(encoding="utf-8").split("#[cfg(test)]\nmod ")[0]
+    for m in re.finditer(r'\bid:\s*"(EVT-[A-Z]{3}-\d{3})"', texte):
+        techniques, _ = liste_apres(texte, m.end(), "techniques")
+        ajouter(m.group(1), sujet_apres(texte, m.end()), [], techniques)
+    vus = set()
+    for r in lues:
+        if r["id"] in vus:
+            sys.exit(f"✖ {r['id']} lu deux fois dans les sources")
+        vus.add(r["id"])
+    return sorted(lues, key=lambda r: r["id"])
+
+
+def cellule(ids: list[str]) -> str:
+    return ", ".join(f"`{i}`" for i in sorted(ids)) if ids else "—"
+
+
+def page(liste: Liste, lues: list[dict], langue: str) -> str:
+    t = TEXTES[langue]
+    par_id: dict[str, list[str]] = defaultdict(list)
+    for r in lues:
+        for a in r["attack"]:
+            par_id[a].append(r["id"])
+    nom_tactique = {ta: (TACTIQUES_FR[ta] if langue == "fr" else nom) for ta, nom in liste.tactiques}
+    parents = {i: v for i, v in liste.techniques.items() if "." not in i}
+    sous: dict[str, list[str]] = defaultdict(list)
+    for i in liste.techniques:
+        if "." in i:
+            sous[i.split(".")[0]].append(i)
+
+    def citee(parent: str) -> bool:
+        return bool(par_id.get(parent)) or any(par_id.get(s) for s in sous[parent])
+
+    lignes = [f"# {t['titre']}", "", f"> {t['genere']}", "", t["intro"].format(version=liste.version), "",
+              t["limite"], "", f"## {t['bref']}", "",
+              f"| {t['col_tactique']} | {t['col_vues']} | {t['col_total']} |", "|---|---:|---:|"]
+    for ta, _ in liste.tactiques:
+        dans = [p for p, (tacs, _) in parents.items() if ta in tacs]
+        lignes.append(f"| {ta} {nom_tactique[ta]} | {sum(citee(p) for p in dans)} | {len(dans)} |")
+    lignes += ["", f"## {t['par_tactique']}"]
+    for ta, _ in liste.tactiques:
+        lignes += ["", f"### {ta} {nom_tactique[ta]}", "",
+                   f"| {t['col_technique']} | {t['col_nom']} | {t['col_regles']} |", "|---|---|---|"]
+        for p in sorted(p for p, (tacs, _) in parents.items() if ta in tacs):
+            lignes.append(f"| {p} | {parents[p][1]} | {cellule(par_id.get(p, []))} |")
+            enfants = sorted(sous[p])
+            citees = [s for s in enfants if par_id.get(s)]
+            for s in citees:
+                lignes.append(f"| ↳ {s} | {liste.techniques[s][1]} | {cellule(par_id[s])} |")
+            if enfants:
+                texte = t["sous_citees"].format(c=len(citees), n=len(enfants)) if citees \
+                    else t["sous"].format(n=len(enfants))
+                lignes.append(f"| | *{texte}* | |")
+    lignes += ["", f"## {t['mesures']}", "", t["mesures_intro"], "",
+               f"| {t['col_mesure']} | {t['col_nom']} | {t['col_regles']} |", "|---|---|---|"]
+    for m, nom in sorted(liste.mesures.items()):
+        lignes.append(f"| {m} | {nom} | {cellule(par_id.get(m, []))} |")
+    sans = [r["id"] for r in lues if not r["attack"]]
+    lignes += ["", f"## {t['sans']}", "", t["sans_intro"].format(n=len(sans), total=len(lues)), ""]
+    for famille, nom in t["famille"].items():
+        ids = [i for i in sans if i.startswith(famille)]
+        if ids:
+            lignes.append(f"- **{nom}** ({len(ids)}) : {', '.join(ids)}" if langue == "fr"
+                          else f"- **{nom}** ({len(ids)}): {', '.join(ids)}")
+    lignes += ["", f"## {t['droits']}", "", t["droits_texte"], "", f"> {LICENCE}", ">", f"> {MENTION}", ""]
+    return "\n".join(lignes)
+
+
+def fautes(liste: Liste, lues: list[dict]) -> list[str]:
+    return [f"{r['id']} : {f}" for r in lues for a in r["attack"] if (f := liste.faute(a))]
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("--verifier", action="store_true", help="ne rien écrire : dire si les pages sont à jour")
+    p.add_argument("--liste", action="store_true", help="les règles lues, une par ligne")
+    args = p.parse_args()
+    liste, lues = Liste(LISTE), regles()
+    if args.liste:
+        for r in lues:
+            print(f"{r['id']}\t{r['sujet']}\t{' '.join(r['attack'])}")
+        return 0
+    erreurs = fautes(liste, lues)
+    for e in erreurs:
+        print(f"✖ {e}", file=sys.stderr)
+    if erreurs:
+        return 1
+    attendues = {langue: page(liste, lues, langue) for langue in PAGES}
+    if args.verifier:
+        vieilles = [c.name for langue, c in PAGES.items()
+                    if not c.exists() or c.read_text(encoding="utf-8") != attendues[langue]]
+        if vieilles:
+            print(f"✖ pas à jour : {', '.join(vieilles)} (python3 outils/couverture-attack.py les refait)",
+                  file=sys.stderr)
+            return 1
+        cites = sum(bool(r["attack"]) for r in lues)
+        print(f"✔ carte ATT&CK à jour : {cites} règles sur {len(lues)} citent ATT&CK {liste.version}")
+        return 0
+    for langue, chemin in PAGES.items():
+        chemin.write_text(attendues[langue], encoding="utf-8")
+    print(f"✔ {', '.join(c.name for c in PAGES.values())} écrites")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

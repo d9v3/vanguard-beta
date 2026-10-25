@@ -54,7 +54,8 @@ lancé d'un double-clic sur un vrai Windows ; l'étude d'une interface graphique
 et ML-DSA, post-quantique) attendent une décision. Ensuite : l'observation en direct sous Linux par eBPF ; les failles
 connues des autres distributions Linux. Toujours défensif : Vanguard n'attaque aucun appareil.
 
-**Ce que Vanguard protège, et ce qu'il ne protège pas** : le [modèle de menace](MODELE-DE-MENACE.md).
+**Ce que Vanguard protège, et ce qu'il ne protège pas** : le [modèle de menace](MODELE-DE-MENACE.md). **Ce que ses
+règles voient, technique par technique** : la [carte de couverture MITRE ATT&CK](COUVERTURE-ATTACK.md).
 
 ## En plus
 

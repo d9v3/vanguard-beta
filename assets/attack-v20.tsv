@@ -1,0 +1,946 @@
+# La liste de référence de MITRE ATT&CK Enterprise : identifiants, tactiques et noms, JAMAIS les descriptions.
+# Tirée des données officielles de MITRE (STIX 2.1) le 25 octobre 2026 :
+#   https://raw.githubusercontent.com/mitre-attack/attack-stix-data/master/enterprise-attack/enterprise-attack-20.0.json
+#   sha256 81113ba98afa2928f3dcff62022539f7ce30c315c32e14422f11ff95ce534352
+# Lue par outils/couverture-attack.py (la carte COUVERTURE-ATTACK.md) et par les tests des règles : chaque identifiant
+# qu'une règle cite (« MITRE ATT&CK T1547.005 », champ `techniques` des règles EVT-) doit y être.
+# Une ligne par élément, quatre champs séparés par des tabulations :
+#   tactique   TA…   nom court   nom          dans l'ordre de la matrice Enterprise
+#   technique  T…    tactiques   nom          sans les techniques révoquées ni dépréciées
+#   mesure     M…                nom          mesures d'atténuation, sans les dépréciées
+#   renvoi     T…    T…                       technique révoquée → celle qui la remplace (refusée, remplaçante dite)
+#
+# version 20.0
+#
+# ATT&CK Terms of Use (https://attack.mitre.org/resources/legal-and-branding/terms-of-use/):
+# LICENSE
+# The MITRE Corporation (MITRE) hereby grants you a non-exclusive, royalty-free license to use ATT&CK® for research,
+# development, and commercial purposes. Any copy you make for such purposes is authorized provided that you reproduce
+# MITRE's copyright designation and this license in any such copy.
+# "© 2026 The MITRE Corporation. This work is reproduced and distributed with the permission of The MITRE
+# Corporation."
+# DISCLAIMERS
+# MITRE does not claim ATT&CK enumerates all possibilities for the types of actions and behaviors documented as part
+# of its adversary model and framework of techniques. Using the information contained within ATT&CK to address or
+# cover full categories of techniques will not guarantee full defensive coverage as there may be undisclosed
+# techniques or variations on existing techniques not documented by ATT&CK.
+# ALL DOCUMENTS AND THE INFORMATION CONTAINED THEREIN ARE PROVIDED ON AN "AS IS" BASIS AND THE CONTRIBUTOR, THE
+# ORGANIZATION HE/SHE REPRESENTS OR IS SPONSORED BY (IF ANY), THE MITRE CORPORATION, ITS BOARD OF TRUSTEES, OFFICERS,
+# AGENTS, AND EMPLOYEES, DISCLAIM ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTY THAT
+# THE USE OF THE INFORMATION THEREIN WILL NOT INFRINGE ANY RIGHTS OR ANY IMPLIED WARRANTIES OF MERCHANTABILITY OR
+# FITNESS FOR A PARTICULAR PURPOSE.
+# MITRE ATT&CK and ATT&CK are registered trademarks of The MITRE Corporation.
+tactique	TA0043	reconnaissance	Reconnaissance
+tactique	TA0042	resource-development	Resource Development
+tactique	TA0001	initial-access	Initial Access
+tactique	TA0002	execution	Execution
+tactique	TA0003	persistence	Persistence
+tactique	TA0004	privilege-escalation	Privilege Escalation
+tactique	TA0005	stealth	Stealth
+tactique	TA0112	defense-impairment	Defense Impairment
+tactique	TA0006	credential-access	Credential Access
+tactique	TA0007	discovery	Discovery
+tactique	TA0008	lateral-movement	Lateral Movement
+tactique	TA0009	collection	Collection
+tactique	TA0011	command-and-control	Command and Control
+tactique	TA0010	exfiltration	Exfiltration
+tactique	TA0040	impact	Impact
+technique	T1001	TA0011	Data Obfuscation
+technique	T1001.001	TA0011	Junk Data
+technique	T1001.002	TA0011	Steganography
+technique	T1001.003	TA0011	Protocol or Service Impersonation
+technique	T1003	TA0006	OS Credential Dumping
+technique	T1003.001	TA0006	LSASS Memory
+technique	T1003.002	TA0006	Security Account Manager
+technique	T1003.003	TA0006	NTDS
+technique	T1003.004	TA0006	LSA Secrets
+technique	T1003.005	TA0006	Cached Domain Credentials
+technique	T1003.006	TA0006	DCSync
+technique	T1003.007	TA0006	Proc Filesystem
+technique	T1003.008	TA0006	/etc/passwd and /etc/shadow
+technique	T1005	TA0009	Data from Local System
+technique	T1006	TA0005	Direct Volume Access
+technique	T1007	TA0007	System Service Discovery
+technique	T1008	TA0011	Fallback Channels
+technique	T1010	TA0007	Application Window Discovery
+technique	T1011	TA0010	Exfiltration Over Other Network Medium
+technique	T1011.001	TA0010	Exfiltration Over Bluetooth
+technique	T1012	TA0007	Query Registry
+technique	T1014	TA0005	Rootkit
+technique	T1016	TA0007	System Network Configuration Discovery
+technique	T1016.001	TA0007	Internet Connection Discovery
+technique	T1016.002	TA0007	Wi-Fi Discovery
+technique	T1018	TA0007	Remote System Discovery
+technique	T1020	TA0010	Automated Exfiltration
+technique	T1020.001	TA0010	Traffic Duplication
+technique	T1021	TA0008	Remote Services
+technique	T1021.001	TA0008	Remote Desktop Protocol
+technique	T1021.002	TA0008	SMB/Windows Admin Shares
+technique	T1021.003	TA0008	Distributed Component Object Model
+technique	T1021.004	TA0008	SSH
+technique	T1021.005	TA0008	VNC
+technique	T1021.006	TA0008	Windows Remote Management
+technique	T1021.007	TA0008	Cloud Services
+technique	T1021.008	TA0008	Direct Cloud VM Connections
+technique	T1025	TA0009	Data from Removable Media
+technique	T1027	TA0005	Obfuscated Files or Information
+technique	T1027.001	TA0005	Binary Padding
+technique	T1027.002	TA0005	Software Packing
+technique	T1027.003	TA0005	Steganography
+technique	T1027.004	TA0005	Compile After Delivery
+technique	T1027.005	TA0005	Indicator Removal from Tools
+technique	T1027.006	TA0005	HTML Smuggling
+technique	T1027.007	TA0005	Dynamic API Resolution
+technique	T1027.008	TA0005	Stripped Payloads
+technique	T1027.009	TA0005	Embedded Payloads
+technique	T1027.010	TA0005	Command Obfuscation
+technique	T1027.011	TA0005	Fileless Storage
+technique	T1027.012	TA0005	LNK Icon Smuggling
+technique	T1027.013	TA0005	Encrypted/Encoded File
+technique	T1027.014	TA0005	Polymorphic Code
+technique	T1027.015	TA0005	Compression
+technique	T1027.016	TA0005	Junk Code Insertion
+technique	T1027.017	TA0005	SVG Smuggling
+technique	T1027.018	TA0005	Invisible Unicode
+technique	T1029	TA0010	Scheduled Transfer
+technique	T1030	TA0010	Data Transfer Size Limits
+technique	T1033	TA0007	System Owner/User Discovery
+technique	T1036	TA0005	Masquerading
+technique	T1036.001	TA0005	Invalid Code Signature
+technique	T1036.002	TA0005	Right-to-Left Override
+technique	T1036.003	TA0005	Rename Legitimate Utilities
+technique	T1036.004	TA0005	Masquerade Task or Service
+technique	T1036.005	TA0005	Match Legitimate Resource Name or Location
+technique	T1036.006	TA0005	Space after Filename
+technique	T1036.007	TA0005	Double File Extension
+technique	T1036.008	TA0005	Masquerade File Type
+technique	T1036.009	TA0005	Break Process Trees
+technique	T1036.010	TA0005	Masquerade Account Name
+technique	T1036.011	TA0005	Overwrite Process Arguments
+technique	T1036.012	TA0005	Browser Fingerprint
+technique	T1037	TA0003,TA0004	Boot or Logon Initialization Scripts
+technique	T1037.001	TA0003,TA0004	Logon Script (Windows)
+technique	T1037.002	TA0003,TA0004	Login Hook
+technique	T1037.003	TA0003,TA0004	Network Logon Script
+technique	T1037.004	TA0003,TA0004	RC Scripts
+technique	T1037.005	TA0003,TA0004	Startup Items
+technique	T1039	TA0009	Data from Network Shared Drive
+technique	T1040	TA0006,TA0007	Network Sniffing
+technique	T1041	TA0010	Exfiltration Over C2 Channel
+technique	T1046	TA0007	Network Service Discovery
+technique	T1047	TA0002	Windows Management Instrumentation
+technique	T1048	TA0010	Exfiltration Over Alternative Protocol
+technique	T1048.001	TA0010	Exfiltration Over Symmetric Encrypted Non-C2 Protocol
+technique	T1048.002	TA0010	Exfiltration Over Asymmetric Encrypted Non-C2 Protocol
+technique	T1048.003	TA0010	Exfiltration Over Unencrypted Non-C2 Protocol
+technique	T1049	TA0007	System Network Connections Discovery
+technique	T1052	TA0010	Exfiltration Over Physical Medium
+technique	T1052.001	TA0010	Exfiltration over USB
+technique	T1053	TA0002,TA0003,TA0004	Scheduled Task/Job
+technique	T1053.002	TA0002,TA0003,TA0004	At
+technique	T1053.003	TA0002,TA0003,TA0004	Cron
+technique	T1053.005	TA0002,TA0003,TA0004	Scheduled Task
+technique	T1053.006	TA0002,TA0003,TA0004	Systemd Timers
+technique	T1053.007	TA0002,TA0003,TA0004	Container Orchestration Job
+technique	T1055	TA0004,TA0005	Process Injection
+technique	T1055.001	TA0004,TA0005	Dynamic-link Library Injection
+technique	T1055.002	TA0004,TA0005	Portable Executable Injection
+technique	T1055.003	TA0004,TA0005	Thread Execution Hijacking
+technique	T1055.004	TA0004,TA0005	Asynchronous Procedure Call
+technique	T1055.005	TA0004,TA0005	Thread Local Storage
+technique	T1055.008	TA0004,TA0005	Ptrace System Calls
+technique	T1055.009	TA0004,TA0005	Proc Memory
+technique	T1055.011	TA0004,TA0005	Extra Window Memory Injection
+technique	T1055.012	TA0004,TA0005	Process Hollowing
+technique	T1055.013	TA0004,TA0005	Process Doppelgänging
+technique	T1055.014	TA0004,TA0005	VDSO Hijacking
+technique	T1055.015	TA0004,TA0005	ListPlanting
+technique	T1056	TA0006,TA0009	Input Capture
+technique	T1056.001	TA0006,TA0009	Keylogging
+technique	T1056.002	TA0006,TA0009	GUI Input Capture
+technique	T1056.003	TA0006,TA0009	Web Portal Capture
+technique	T1056.004	TA0006,TA0009	Credential API Hooking
+technique	T1057	TA0007	Process Discovery
+technique	T1059	TA0002	Command and Scripting Interpreter
+technique	T1059.001	TA0002	PowerShell
+technique	T1059.002	TA0002	AppleScript
+technique	T1059.003	TA0002	Windows Command Shell
+technique	T1059.004	TA0002	Unix Shell
+technique	T1059.005	TA0002	Visual Basic
+technique	T1059.006	TA0002	Python
+technique	T1059.007	TA0002	JavaScript
+technique	T1059.008	TA0002	Network Device CLI
+technique	T1059.009	TA0002	Cloud API
+technique	T1059.010	TA0002	AutoHotKey & AutoIT
+technique	T1059.011	TA0002	Lua
+technique	T1059.012	TA0002	Hypervisor CLI
+technique	T1059.013	TA0002	Container CLI/API
+technique	T1068	TA0004	Exploitation for Privilege Escalation
+technique	T1069	TA0007	Permission Groups Discovery
+technique	T1069.001	TA0007	Local Groups
+technique	T1069.002	TA0007	Domain Groups
+technique	T1069.003	TA0007	Cloud Groups
+technique	T1070	TA0005	Indicator Removal
+technique	T1070.003	TA0005	Clear Command History
+technique	T1070.004	TA0005	File Deletion
+technique	T1070.005	TA0005	Network Share Connection Removal
+technique	T1070.006	TA0005	Timestomp
+technique	T1070.007	TA0005	Clear Network Connection History and Configurations
+technique	T1070.008	TA0005	Clear Mailbox Data
+technique	T1070.009	TA0005	Clear Persistence
+technique	T1070.010	TA0005	Relocate Malware
+technique	T1071	TA0011	Application Layer Protocol
+technique	T1071.001	TA0011	Web Protocols
+technique	T1071.002	TA0011	File Transfer Protocols
+technique	T1071.003	TA0011	Mail Protocols
+technique	T1071.004	TA0011	DNS
+technique	T1071.005	TA0011	Publish/Subscribe Protocols
+technique	T1072	TA0002,TA0008	Software Deployment Tools
+technique	T1074	TA0009	Data Staged
+technique	T1074.001	TA0009	Local Data Staging
+technique	T1074.002	TA0009	Remote Data Staging
+technique	T1078	TA0001,TA0003,TA0004,TA0005	Valid Accounts
+technique	T1078.001	TA0001,TA0003,TA0004,TA0005	Default Accounts
+technique	T1078.002	TA0001,TA0003,TA0004,TA0005	Domain Accounts
+technique	T1078.003	TA0001,TA0003,TA0004,TA0005	Local Accounts
+technique	T1078.004	TA0001,TA0003,TA0004,TA0005	Cloud Accounts
+technique	T1080	TA0008	Taint Shared Content
+technique	T1082	TA0007	System Information Discovery
+technique	T1083	TA0007	File and Directory Discovery
+technique	T1087	TA0007	Account Discovery
+technique	T1087.001	TA0007	Local Account
+technique	T1087.002	TA0007	Domain Account
+technique	T1087.003	TA0007	Email Account
+technique	T1087.004	TA0007	Cloud Account
+technique	T1090	TA0011	Proxy
+technique	T1090.001	TA0011	Internal Proxy
+technique	T1090.002	TA0011	External Proxy
+technique	T1090.003	TA0011	Multi-hop Proxy
+technique	T1090.004	TA0011	Domain Fronting
+technique	T1091	TA0001,TA0008	Replication Through Removable Media
+technique	T1092	TA0011	Communication Through Removable Media
+technique	T1095	TA0011	Non-Application Layer Protocol
+technique	T1098	TA0003,TA0004	Account Manipulation
+technique	T1098.001	TA0003,TA0004	Additional Cloud Credentials
+technique	T1098.002	TA0003,TA0004	Additional Email Delegate Permissions
+technique	T1098.003	TA0003,TA0004	Additional Cloud Roles
+technique	T1098.004	TA0003,TA0004	SSH Authorized Keys
+technique	T1098.005	TA0003,TA0004	Device Registration
+technique	T1098.006	TA0003,TA0004	Additional Container Cluster Roles
+technique	T1098.007	TA0003,TA0004	Additional Local or Domain Groups
+technique	T1102	TA0011	Web Service
+technique	T1102.001	TA0011	Dead Drop Resolver
+technique	T1102.002	TA0011	Bidirectional Communication
+technique	T1102.003	TA0011	One-Way Communication
+technique	T1104	TA0011	Multi-Stage Channels
+technique	T1105	TA0011	Ingress Tool Transfer
+technique	T1106	TA0002	Native API
+technique	T1110	TA0006	Brute Force
+technique	T1110.001	TA0006	Password Guessing
+technique	T1110.002	TA0006	Password Cracking
+technique	T1110.003	TA0006	Password Spraying
+technique	T1110.004	TA0006	Credential Stuffing
+technique	T1111	TA0006	Multi-Factor Authentication Interception
+technique	T1112	TA0003,TA0112	Modify Registry
+technique	T1113	TA0009	Screen Capture
+technique	T1114	TA0009	Email Collection
+technique	T1114.001	TA0009	Local Email Collection
+technique	T1114.002	TA0009	Remote Email Collection
+technique	T1114.003	TA0009	Email Forwarding Rule
+technique	T1115	TA0009	Clipboard Data
+technique	T1119	TA0009	Automated Collection
+technique	T1120	TA0007	Peripheral Device Discovery
+technique	T1123	TA0009	Audio Capture
+technique	T1124	TA0007	System Time Discovery
+technique	T1125	TA0009	Video Capture
+technique	T1127	TA0002,TA0005	Trusted Developer Utilities Proxy Execution
+technique	T1127.001	TA0002,TA0005	MSBuild
+technique	T1127.002	TA0002,TA0005	ClickOnce
+technique	T1127.003	TA0002,TA0005	JamPlus
+technique	T1129	TA0002	Shared Modules
+technique	T1132	TA0011	Data Encoding
+technique	T1132.001	TA0011	Standard Encoding
+technique	T1132.002	TA0011	Non-Standard Encoding
+technique	T1133	TA0001,TA0003	External Remote Services
+technique	T1134	TA0004,TA0005	Access Token Manipulation
+technique	T1134.001	TA0004,TA0005	Token Impersonation/Theft
+technique	T1134.002	TA0004,TA0005	Create Process with Token
+technique	T1134.003	TA0004,TA0005	Make and Impersonate Token
+technique	T1134.004	TA0004,TA0005	Parent PID Spoofing
+technique	T1134.005	TA0004,TA0005	SID-History Injection
+technique	T1135	TA0007	Network Share Discovery
+technique	T1136	TA0003	Create Account
+technique	T1136.001	TA0003	Local Account
+technique	T1136.002	TA0003	Domain Account
+technique	T1136.003	TA0003	Cloud Account
+technique	T1137	TA0003	Office Application Startup
+technique	T1137.001	TA0003	Office Template Macros
+technique	T1137.002	TA0003	Office Test
+technique	T1137.003	TA0003	Outlook Forms
+technique	T1137.004	TA0003	Outlook Home Page
+technique	T1137.005	TA0003	Outlook Rules
+technique	T1137.006	TA0003	Add-ins
+technique	T1140	TA0005	Deobfuscate/Decode Files or Information
+technique	T1176	TA0003	Software Extensions
+technique	T1176.001	TA0003	Browser Extensions
+technique	T1176.002	TA0003	IDE Extensions
+technique	T1185	TA0009	Browser Session Hijacking
+technique	T1187	TA0006	Forced Authentication
+technique	T1189	TA0001	Drive-by Compromise
+technique	T1190	TA0001	Exploit Public-Facing Application
+technique	T1195	TA0001	Supply Chain Compromise
+technique	T1195.001	TA0001	Compromise Software Dependencies and Development Tools
+technique	T1195.002	TA0001	Compromise Software Supply Chain
+technique	T1195.003	TA0001	Compromise Hardware Supply Chain
+technique	T1197	TA0002,TA0003,TA0005	BITS Jobs
+technique	T1199	TA0001	Trusted Relationship
+technique	T1200	TA0001	Hardware Additions
+technique	T1201	TA0007	Password Policy Discovery
+technique	T1202	TA0005	Indirect Command Execution
+technique	T1203	TA0002	Exploitation for Client Execution
+technique	T1204	TA0002	User Execution
+technique	T1204.001	TA0002	Malicious Link
+technique	T1204.002	TA0002	Malicious File
+technique	T1204.003	TA0002	Malicious Image
+technique	T1204.004	TA0002	Malicious Copy and Paste
+technique	T1204.005	TA0002	Malicious Library
+technique	T1205	TA0003,TA0005,TA0011	Traffic Signaling
+technique	T1205.001	TA0003,TA0005,TA0011	Port Knocking
+technique	T1205.002	TA0003,TA0005,TA0011	Socket Filters
+technique	T1207	TA0112	Rogue Domain Controller
+technique	T1210	TA0008	Exploitation of Remote Services
+technique	T1211	TA0005	Exploitation for Stealth
+technique	T1212	TA0006	Exploitation for Credential Access
+technique	T1213	TA0009	Data from Information Repositories
+technique	T1213.001	TA0009	Confluence
+technique	T1213.002	TA0009	Sharepoint
+technique	T1213.003	TA0009	Code Repositories
+technique	T1213.004	TA0009	Customer Relationship Management Software
+technique	T1213.005	TA0009	Messaging Applications
+technique	T1213.006	TA0009	Databases
+technique	T1216	TA0005	System Script Proxy Execution
+technique	T1216.001	TA0005	PubPrn
+technique	T1216.002	TA0005	SyncAppvPublishingServer
+technique	T1217	TA0007	Browser Information Discovery
+technique	T1218	TA0005	System Binary Proxy Execution
+technique	T1218.001	TA0005	Compiled HTML File
+technique	T1218.002	TA0005	Control Panel
+technique	T1218.003	TA0005	CMSTP
+technique	T1218.004	TA0005	InstallUtil
+technique	T1218.005	TA0005	Mshta
+technique	T1218.007	TA0005	Msiexec
+technique	T1218.008	TA0005	Odbcconf
+technique	T1218.009	TA0005	Regsvcs/Regasm
+technique	T1218.010	TA0005	Regsvr32
+technique	T1218.011	TA0005	Rundll32
+technique	T1218.012	TA0005	Verclsid
+technique	T1218.013	TA0005	Mavinject
+technique	T1218.014	TA0005	MMC
+technique	T1218.015	TA0005	Electron Applications
+technique	T1219	TA0011	Remote Access Tools
+technique	T1219.001	TA0011	IDE Tunneling
+technique	T1219.002	TA0011	Remote Desktop Software
+technique	T1219.003	TA0011	Remote Access Hardware
+technique	T1220	TA0005	XSL Script Processing
+technique	T1221	TA0005	Template Injection
+technique	T1222	TA0112	File and Directory Permissions Modification
+technique	T1222.001	TA0112	Windows Permissions
+technique	T1222.002	TA0112	Linux and Mac Permissions
+technique	T1480	TA0005	Execution Guardrails
+technique	T1480.001	TA0005	Environmental Keying
+technique	T1480.002	TA0005	Mutual Exclusion
+technique	T1482	TA0007	Domain Trust Discovery
+technique	T1484	TA0004,TA0112	Domain or Tenant Policy Modification
+technique	T1484.001	TA0004,TA0112	Group Policy Modification
+technique	T1484.002	TA0004,TA0112	Trust Modification
+technique	T1485	TA0040	Data Destruction
+technique	T1485.001	TA0040	Lifecycle-Triggered Deletion
+technique	T1486	TA0040	Data Encrypted for Impact
+technique	T1489	TA0040	Service Stop
+technique	T1490	TA0040	Inhibit System Recovery
+technique	T1491	TA0040	Defacement
+technique	T1491.001	TA0040	Internal Defacement
+technique	T1491.002	TA0040	External Defacement
+technique	T1495	TA0040	Firmware Corruption
+technique	T1496	TA0040	Resource Hijacking
+technique	T1496.001	TA0040	Compute Hijacking
+technique	T1496.002	TA0040	Bandwidth Hijacking
+technique	T1496.003	TA0040	SMS Pumping
+technique	T1496.004	TA0040	Cloud Service Hijacking
+technique	T1497	TA0005,TA0007	Virtualization/Sandbox Evasion
+technique	T1497.001	TA0005,TA0007	System Checks
+technique	T1497.002	TA0005,TA0007	User Activity Based Checks
+technique	T1497.003	TA0005,TA0007	Time Based Checks
+technique	T1498	TA0040	Network Denial of Service
+technique	T1498.001	TA0040	Direct Network Flood
+technique	T1498.002	TA0040	Reflection Amplification
+technique	T1499	TA0040	Endpoint Denial of Service
+technique	T1499.001	TA0040	OS Exhaustion Flood
+technique	T1499.002	TA0040	Service Exhaustion Flood
+technique	T1499.003	TA0040	Application Exhaustion Flood
+technique	T1499.004	TA0040	Application or System Exploitation
+technique	T1505	TA0003	Server Software Component
+technique	T1505.001	TA0003	SQL Stored Procedures
+technique	T1505.002	TA0003	Transport Agent
+technique	T1505.003	TA0003	Web Shell
+technique	T1505.004	TA0003	IIS Components
+technique	T1505.005	TA0003	Terminal Services DLL
+technique	T1505.006	TA0003	vSphere Installation Bundles
+technique	T1518	TA0007	Software Discovery
+technique	T1518.001	TA0007	Security Software Discovery
+technique	T1518.002	TA0007	Backup Software Discovery
+technique	T1525	TA0003	Implant Internal Image
+technique	T1526	TA0007	Cloud Service Discovery
+technique	T1528	TA0006	Steal Application Access Token
+technique	T1529	TA0040	System Shutdown/Reboot
+technique	T1530	TA0009	Data from Cloud Storage
+technique	T1531	TA0040	Account Access Removal
+technique	T1534	TA0008	Internal Spearphishing
+technique	T1535	TA0005	Unused/Unsupported Cloud Regions
+technique	T1537	TA0010	Transfer Data to Cloud Account
+technique	T1538	TA0007	Cloud Service Dashboard
+technique	T1539	TA0006	Steal Web Session Cookie
+technique	T1542	TA0003,TA0005	Pre-OS Boot
+technique	T1542.001	TA0003,TA0005	System Firmware
+technique	T1542.002	TA0003,TA0005	Component Firmware
+technique	T1542.003	TA0003,TA0005	Bootkit
+technique	T1542.004	TA0003,TA0005	ROMMONkit
+technique	T1542.005	TA0003,TA0005	TFTP Boot
+technique	T1543	TA0003,TA0004	Create or Modify System Process
+technique	T1543.001	TA0003,TA0004	Launch Agent
+technique	T1543.002	TA0003,TA0004	Systemd Service
+technique	T1543.003	TA0003,TA0004	Windows Service
+technique	T1543.004	TA0003,TA0004	Launch Daemon
+technique	T1543.005	TA0003,TA0004	Container Service
+technique	T1546	TA0003,TA0004	Event Triggered Execution
+technique	T1546.001	TA0003,TA0004	Change Default File Association
+technique	T1546.002	TA0003,TA0004	Screensaver
+technique	T1546.003	TA0003,TA0004	Windows Management Instrumentation Event Subscription
+technique	T1546.004	TA0003,TA0004	Unix Shell Configuration Modification
+technique	T1546.005	TA0003,TA0004	Trap
+technique	T1546.006	TA0003,TA0004	LC_LOAD_DYLIB Addition
+technique	T1546.007	TA0003,TA0004	Netsh Helper DLL
+technique	T1546.008	TA0003,TA0004	Accessibility Features
+technique	T1546.009	TA0003,TA0004	AppCert DLLs
+technique	T1546.010	TA0003,TA0004	AppInit DLLs
+technique	T1546.011	TA0003,TA0004	Application Shimming
+technique	T1546.012	TA0003,TA0004	Image File Execution Options Injection
+technique	T1546.013	TA0003,TA0004	PowerShell Profile
+technique	T1546.014	TA0003,TA0004	Emond
+technique	T1546.015	TA0003,TA0004	Component Object Model Hijacking
+technique	T1546.016	TA0003,TA0004	Installer Packages
+technique	T1546.017	TA0003,TA0004	Udev Rules
+technique	T1546.018	TA0003,TA0004	Python Startup Hooks
+technique	T1547	TA0003,TA0004	Boot or Logon Autostart Execution
+technique	T1547.001	TA0003,TA0004	Registry Run Keys / Startup Folder
+technique	T1547.002	TA0003,TA0004	Authentication Package
+technique	T1547.003	TA0003,TA0004	Time Providers
+technique	T1547.004	TA0003,TA0004	Winlogon Helper DLL
+technique	T1547.005	TA0003,TA0004	Security Support Provider
+technique	T1547.006	TA0003,TA0004	Kernel Modules and Extensions
+technique	T1547.007	TA0003,TA0004	Re-opened Applications
+technique	T1547.008	TA0003,TA0004	LSASS Driver
+technique	T1547.009	TA0003,TA0004	Shortcut Modification
+technique	T1547.010	TA0003,TA0004	Port Monitors
+technique	T1547.012	TA0003,TA0004	Print Processors
+technique	T1547.013	TA0003,TA0004	XDG Autostart Entries
+technique	T1547.014	TA0003,TA0004	Active Setup
+technique	T1547.015	TA0003,TA0004	Login Items
+technique	T1548	TA0004	Abuse Elevation Control Mechanism
+technique	T1548.001	TA0004	Setuid and Setgid
+technique	T1548.002	TA0004	Bypass User Account Control
+technique	T1548.003	TA0004	Sudo and Sudo Caching
+technique	T1548.004	TA0004	Elevated Execution with Prompt
+technique	T1548.005	TA0004	Temporary Elevated Cloud Access
+technique	T1548.006	TA0004	TCC Manipulation
+technique	T1550	TA0008	Use Alternate Authentication Material
+technique	T1550.001	TA0008	Application Access Token
+technique	T1550.002	TA0008	Pass the Hash
+technique	T1550.003	TA0008	Pass the Ticket
+technique	T1550.004	TA0008	Web Session Cookie
+technique	T1552	TA0006	Unsecured Credentials
+technique	T1552.001	TA0006	Credentials In Files
+technique	T1552.002	TA0006	Credentials in Registry
+technique	T1552.003	TA0006	Shell History
+technique	T1552.004	TA0006	Private Keys
+technique	T1552.005	TA0006	Cloud Instance Metadata API
+technique	T1552.006	TA0006	Group Policy Preferences
+technique	T1552.007	TA0006	Container API
+technique	T1552.008	TA0006	Chat Messages
+technique	T1553	TA0112	Subvert Trust Controls
+technique	T1553.001	TA0112	Gatekeeper Bypass
+technique	T1553.002	TA0112	Code Signing
+technique	T1553.003	TA0112	SIP and Trust Provider Hijacking
+technique	T1553.004	TA0112	Install Root Certificate
+technique	T1553.005	TA0112	Mark-of-the-Web Bypass
+technique	T1553.006	TA0112	Code Signing Policy Modification
+technique	T1554	TA0003	Compromise Host Software Binary
+technique	T1555	TA0006	Credentials from Password Stores
+technique	T1555.001	TA0006	Keychain
+technique	T1555.002	TA0006	Securityd Memory
+technique	T1555.003	TA0006	Credentials from Web Browsers
+technique	T1555.004	TA0006	Windows Credential Manager
+technique	T1555.005	TA0006	Password Managers
+technique	T1555.006	TA0006	Cloud Secrets Management Stores
+technique	T1556	TA0003,TA0112,TA0006	Modify Authentication Process
+technique	T1556.001	TA0003,TA0112,TA0006	Domain Controller Authentication
+technique	T1556.002	TA0003,TA0112,TA0006	Password Filter DLL
+technique	T1556.003	TA0003,TA0112,TA0006	Pluggable Authentication Modules
+technique	T1556.004	TA0003,TA0112,TA0006	Network Device Authentication
+technique	T1556.005	TA0003,TA0112,TA0006	Reversible Encryption
+technique	T1556.006	TA0003,TA0112,TA0006	Multi-Factor Authentication
+technique	T1556.007	TA0003,TA0112,TA0006	Hybrid Identity
+technique	T1556.008	TA0003,TA0112,TA0006	Network Provider DLL
+technique	T1556.009	TA0003,TA0112,TA0006	Conditional Access Policies
+technique	T1557	TA0006,TA0009	Adversary-in-the-Middle
+technique	T1557.001	TA0006,TA0009	Name Resolution Poisoning and SMB Relay
+technique	T1557.002	TA0006,TA0009	ARP Cache Poisoning
+technique	T1557.003	TA0006,TA0009	DHCP Spoofing
+technique	T1557.004	TA0006,TA0009	Evil Twin
+technique	T1558	TA0006	Steal or Forge Kerberos Tickets
+technique	T1558.001	TA0006	Golden Ticket
+technique	T1558.002	TA0006	Silver Ticket
+technique	T1558.003	TA0006	Kerberoasting
+technique	T1558.004	TA0006	AS-REP Roasting
+technique	T1558.005	TA0006	Ccache Files
+technique	T1559	TA0002	Inter-Process Communication
+technique	T1559.001	TA0002	Component Object Model
+technique	T1559.002	TA0002	Dynamic Data Exchange
+technique	T1559.003	TA0002	XPC Services
+technique	T1560	TA0009	Archive Collected Data
+technique	T1560.001	TA0009	Archive via Utility
+technique	T1560.002	TA0009	Archive via Library
+technique	T1560.003	TA0009	Archive via Custom Method
+technique	T1561	TA0040	Disk Wipe
+technique	T1561.001	TA0040	Disk Content Wipe
+technique	T1561.002	TA0040	Disk Structure Wipe
+technique	T1563	TA0008	Remote Service Session Hijacking
+technique	T1563.001	TA0008	SSH Hijacking
+technique	T1563.002	TA0008	RDP Hijacking
+technique	T1564	TA0005	Hide Artifacts
+technique	T1564.001	TA0005	Hidden Files and Directories
+technique	T1564.002	TA0005	Hidden Users
+technique	T1564.003	TA0005	Hidden Window
+technique	T1564.004	TA0005	NTFS File Attributes
+technique	T1564.005	TA0005	Hidden File System
+technique	T1564.006	TA0005	Run Virtual Instance
+technique	T1564.007	TA0005	VBA Stomping
+technique	T1564.008	TA0005	Email Hiding Rules
+technique	T1564.009	TA0005	Resource Forking
+technique	T1564.010	TA0005	Process Argument Spoofing
+technique	T1564.011	TA0005	Ignore Process Interrupts
+technique	T1564.012	TA0005	File/Path Exclusions
+technique	T1564.013	TA0005	Bind Mounts
+technique	T1564.014	TA0005	Extended Attributes
+technique	T1565	TA0040	Data Manipulation
+technique	T1565.001	TA0040	Stored Data Manipulation
+technique	T1565.002	TA0040	Transmitted Data Manipulation
+technique	T1565.003	TA0040	Runtime Data Manipulation
+technique	T1566	TA0001	Phishing
+technique	T1566.001	TA0001	Spearphishing Attachment
+technique	T1566.002	TA0001	Spearphishing Link
+technique	T1566.003	TA0001	Spearphishing via Service
+technique	T1566.004	TA0001	Spearphishing Voice
+technique	T1567	TA0010	Exfiltration Over Web Service
+technique	T1567.001	TA0010	Exfiltration to Code Repository
+technique	T1567.002	TA0010	Exfiltration to Cloud Storage
+technique	T1567.003	TA0010	Exfiltration to Text Storage Sites
+technique	T1567.004	TA0010	Exfiltration Over Webhook
+technique	T1568	TA0011	Dynamic Resolution
+technique	T1568.001	TA0011	Fast Flux DNS
+technique	T1568.002	TA0011	Domain Generation Algorithms
+technique	T1568.003	TA0011	DNS Calculation
+technique	T1569	TA0002	System Services
+technique	T1569.001	TA0002	Launchctl
+technique	T1569.002	TA0002	Service Execution
+technique	T1569.003	TA0002	Systemctl
+technique	T1570	TA0008	Lateral Tool Transfer
+technique	T1571	TA0011	Non-Standard Port
+technique	T1572	TA0011	Protocol Tunneling
+technique	T1573	TA0011	Encrypted Channel
+technique	T1573.001	TA0011	Symmetric Cryptography
+technique	T1573.002	TA0011	Asymmetric Cryptography
+technique	T1574	TA0002,TA0005	Hijack Execution Flow
+technique	T1574.001	TA0002,TA0005	DLL
+technique	T1574.004	TA0002,TA0005	Dylib Hijacking
+technique	T1574.005	TA0002,TA0005	Executable Installer File Permissions Weakness
+technique	T1574.006	TA0002,TA0005	Dynamic Linker Hijacking
+technique	T1574.007	TA0002,TA0005	Path Interception by PATH Environment Variable
+technique	T1574.008	TA0002,TA0005	Path Interception by Search Order Hijacking
+technique	T1574.009	TA0002,TA0005	Path Interception by Unquoted Path
+technique	T1574.010	TA0002,TA0005	Services File Permissions Weakness
+technique	T1574.011	TA0002,TA0005	Services Registry Permissions Weakness
+technique	T1574.012	TA0002,TA0005	COR_PROFILER
+technique	T1574.013	TA0002,TA0005	KernelCallbackTable
+technique	T1574.014	TA0002,TA0005	AppDomainManager
+technique	T1578	TA0112	Modify Cloud Compute Infrastructure
+technique	T1578.001	TA0112	Create Snapshot
+technique	T1578.002	TA0112	Create Cloud Instance
+technique	T1578.003	TA0112	Delete Cloud Instance
+technique	T1578.004	TA0112	Revert Cloud Instance
+technique	T1578.005	TA0112	Modify Cloud Compute Configurations
+technique	T1580	TA0007	Cloud Infrastructure Discovery
+technique	T1583	TA0042	Acquire Infrastructure
+technique	T1583.001	TA0042	Domains
+technique	T1583.002	TA0042	DNS Server
+technique	T1583.003	TA0042	Virtual Private Server
+technique	T1583.004	TA0042	Server
+technique	T1583.005	TA0042	Botnet
+technique	T1583.006	TA0042	Web Services
+technique	T1583.007	TA0042	Serverless
+technique	T1583.008	TA0042	Malvertising
+technique	T1584	TA0042	Compromise Infrastructure
+technique	T1584.001	TA0042	Domains
+technique	T1584.002	TA0042	DNS Server
+technique	T1584.003	TA0042	Virtual Private Server
+technique	T1584.004	TA0042	Server
+technique	T1584.005	TA0042	Botnet
+technique	T1584.006	TA0042	Web Services
+technique	T1584.007	TA0042	Serverless
+technique	T1584.008	TA0042	Network Devices
+technique	T1585	TA0042	Establish Accounts
+technique	T1585.001	TA0042	Social Media Accounts
+technique	T1585.002	TA0042	Email Accounts
+technique	T1585.003	TA0042	Cloud Accounts
+technique	T1586	TA0042	Compromise Accounts
+technique	T1586.001	TA0042	Social Media Accounts
+technique	T1586.002	TA0042	Email Accounts
+technique	T1586.003	TA0042	Cloud Accounts
+technique	T1587	TA0042	Develop Capabilities
+technique	T1587.001	TA0042	Malware
+technique	T1587.002	TA0042	Code Signing Certificates
+technique	T1587.003	TA0042	Digital Certificates
+technique	T1587.004	TA0042	Exploits
+technique	T1588	TA0042	Obtain Capabilities
+technique	T1588.001	TA0042	Malware
+technique	T1588.002	TA0042	Tool
+technique	T1588.003	TA0042	Code Signing Certificates
+technique	T1588.004	TA0042	Digital Certificates
+technique	T1588.005	TA0042	Exploits
+technique	T1588.006	TA0042	Vulnerabilities
+technique	T1588.007	TA0042	Artificial Intelligence
+technique	T1589	TA0043	Gather Victim Identity Information
+technique	T1589.001	TA0043	Credentials
+technique	T1589.002	TA0043	Email Addresses
+technique	T1589.003	TA0043	Employee Names
+technique	T1590	TA0043	Gather Victim Network Information
+technique	T1590.001	TA0043	Domain Properties
+technique	T1590.002	TA0043	DNS
+technique	T1590.003	TA0043	Network Trust Dependencies
+technique	T1590.004	TA0043	Network Topology
+technique	T1590.005	TA0043	IP Addresses
+technique	T1590.006	TA0043	Network Security Appliances
+technique	T1591	TA0043	Gather Victim Org Information
+technique	T1591.001	TA0043	Determine Physical Locations
+technique	T1591.002	TA0043	Business Relationships
+technique	T1591.003	TA0043	Identify Business Tempo
+technique	T1591.004	TA0043	Identify Roles
+technique	T1592	TA0043	Gather Victim Host Information
+technique	T1592.001	TA0043	Hardware
+technique	T1592.002	TA0043	Software
+technique	T1592.003	TA0043	Firmware
+technique	T1592.004	TA0043	Client Configurations
+technique	T1593	TA0043	Search Open Websites/Domains
+technique	T1593.001	TA0043	Social Media
+technique	T1593.002	TA0043	Search Engines
+technique	T1593.003	TA0043	Code Repositories
+technique	T1594	TA0043	Search Victim-Owned Websites
+technique	T1595	TA0043	Active Scanning
+technique	T1595.001	TA0043	Scanning IP Blocks
+technique	T1595.002	TA0043	Vulnerability Scanning
+technique	T1595.003	TA0043	Wordlist Scanning
+technique	T1596	TA0043	Search Open Technical Databases
+technique	T1596.001	TA0043	DNS/Passive DNS
+technique	T1596.002	TA0043	WHOIS
+technique	T1596.003	TA0043	Digital Certificates
+technique	T1596.004	TA0043	CDNs
+technique	T1596.005	TA0043	Scan Databases
+technique	T1597	TA0043	Search Closed Sources
+technique	T1597.001	TA0043	Threat Intel Vendors
+technique	T1597.002	TA0043	Purchase Technical Data
+technique	T1598	TA0043	Phishing for Information
+technique	T1598.001	TA0043	Spearphishing Service
+technique	T1598.002	TA0043	Spearphishing Attachment
+technique	T1598.003	TA0043	Spearphishing Link
+technique	T1598.004	TA0043	Spearphishing Voice
+technique	T1599	TA0112	Network Boundary Bridging
+technique	T1599.001	TA0112	Network Address Translation Traversal
+technique	T1600	TA0112	Weaken Encryption
+technique	T1600.001	TA0112	Reduce Key Space
+technique	T1600.002	TA0112	Disable Crypto Hardware
+technique	T1601	TA0112	Modify System Image
+technique	T1601.001	TA0112	Patch System Image
+technique	T1601.002	TA0112	Downgrade System Image
+technique	T1602	TA0009	Data from Configuration Repository
+technique	T1602.001	TA0009	SNMP (MIB Dump)
+technique	T1602.002	TA0009	Network Device Configuration Dump
+technique	T1606	TA0006	Forge Web Credentials
+technique	T1606.001	TA0006	Web Cookies
+technique	T1606.002	TA0006	SAML Tokens
+technique	T1608	TA0042	Stage Capabilities
+technique	T1608.001	TA0042	Upload Malware
+technique	T1608.002	TA0042	Upload Tool
+technique	T1608.003	TA0042	Install Digital Certificate
+technique	T1608.004	TA0042	Drive-by Target
+technique	T1608.005	TA0042	Link Target
+technique	T1608.006	TA0042	SEO Poisoning
+technique	T1608.007	TA0042	AI Result Poisoning
+technique	T1609	TA0002	Container Administration Command
+technique	T1610	TA0002	Deploy Container
+technique	T1611	TA0004	Escape to Host
+technique	T1612	TA0005	Build Image on Host
+technique	T1613	TA0007	Container and Resource Discovery
+technique	T1614	TA0007	System Location Discovery
+technique	T1614.001	TA0007	System Language Discovery
+technique	T1615	TA0007	Group Policy Discovery
+technique	T1619	TA0007	Cloud Storage Object Discovery
+technique	T1620	TA0005	Reflective Code Loading
+technique	T1621	TA0006	Multi-Factor Authentication Request Generation
+technique	T1622	TA0005,TA0007	Debugger Evasion
+technique	T1647	TA0112	Plist File Modification
+technique	T1648	TA0002	Serverless Execution
+technique	T1649	TA0006	Steal or Forge Authentication Certificates
+technique	T1650	TA0042	Acquire Access
+technique	T1651	TA0002	Cloud Administration Command
+technique	T1652	TA0007	Device Driver Discovery
+technique	T1653	TA0003	Power Settings
+technique	T1654	TA0007	Log Enumeration
+technique	T1657	TA0040	Financial Theft
+technique	T1659	TA0001,TA0011	Content Injection
+technique	T1665	TA0011	Hide Infrastructure
+technique	T1666	TA0112	Modify Cloud Resource Hierarchy
+technique	T1667	TA0040	Email Bombing
+technique	T1668	TA0003	Exclusive Control
+technique	T1669	TA0001	Wi-Fi Networks
+technique	T1671	TA0003	Cloud Application Integration
+technique	T1673	TA0007	Virtual Machine Discovery
+technique	T1674	TA0002	Input Injection
+technique	T1675	TA0002	ESXi Administration Command
+technique	T1677	TA0002	Poisoned Pipeline Execution
+technique	T1678	TA0005	Delay Execution
+technique	T1679	TA0005	Selective Exclusion
+technique	T1680	TA0007	Local Storage Discovery
+technique	T1681	TA0043	Search Threat Vendor Data
+technique	T1682	TA0043	Query Public AI Services
+technique	T1683	TA0042	Generate Content
+technique	T1683.001	TA0042	Written Content
+technique	T1683.002	TA0042	Audio-Visual Content
+technique	T1684	TA0005	Social Engineering
+technique	T1684.001	TA0005	Impersonation
+technique	T1684.002	TA0005	Email Spoofing
+technique	T1685	TA0112	Disable or Modify Tools
+technique	T1685.001	TA0112	Disable or Modify Windows Event Log
+technique	T1685.002	TA0112	Disable or Modify Cloud Log
+technique	T1685.003	TA0112	Modify or Spoof Tool UI
+technique	T1685.004	TA0112	Disable or Modify Linux Audit System Log
+technique	T1685.005	TA0112	Clear Windows Event Logs
+technique	T1685.006	TA0112	Clear Linux or Mac System Logs
+technique	T1685.007	TA0112	Impair Autonomous Defenses
+technique	T1686	TA0112	Disable or Modify System Firewall
+technique	T1686.001	TA0112	Cloud Firewall
+technique	T1686.002	TA0112	Network Device Firewall
+technique	T1686.003	TA0112	Windows Host Firewall
+technique	T1687	TA0112	Exploitation for Defense Impairment
+technique	T1688	TA0112	Safe Mode Boot
+technique	T1689	TA0112	Downgrade Attack
+technique	T1690	TA0112	Prevent Command History Logging
+technique	T1696	TA0005	Anti-Automation Evasion
+technique	T1696.001	TA0005	Automate CAPTCHA Completion
+technique	T1696.002	TA0005	Avoid CAPTCHA
+technique	T1697	TA0006	Steal Application Specific Passwords
+technique	T1698	TA0002	Indirect Prompt Injection
+technique	T1699	TA0002	Direct Prompt Injection
+technique	T1700	TA0010	AI-Enabled Exfiltration
+mesure	M1013		Application Developer Guidance
+mesure	M1015		Active Directory Configuration
+mesure	M1016		Vulnerability Scanning
+mesure	M1017		User Training
+mesure	M1018		User Account Management
+mesure	M1019		Threat Intelligence Program
+mesure	M1020		SSL/TLS Inspection
+mesure	M1021		Restrict Web-Based Content
+mesure	M1022		Restrict File and Directory Permissions
+mesure	M1024		Restrict Registry Permissions
+mesure	M1025		Privileged Process Integrity
+mesure	M1026		Privileged Account Management
+mesure	M1027		Password Policies
+mesure	M1028		Operating System Configuration
+mesure	M1029		Remote Data Storage
+mesure	M1030		Network Segmentation
+mesure	M1031		Network Intrusion Prevention
+mesure	M1032		Multi-factor Authentication
+mesure	M1033		Limit Software Installation
+mesure	M1034		Limit Hardware Installation
+mesure	M1035		Limit Access to Resource Over Network
+mesure	M1036		Account Use Policies
+mesure	M1037		Filter Network Traffic
+mesure	M1038		Execution Prevention
+mesure	M1039		Environment Variable Permissions
+mesure	M1040		Behavior Prevention on Endpoint
+mesure	M1041		Encrypt Sensitive Information
+mesure	M1042		Disable or Remove Feature or Program
+mesure	M1043		Credential Access Protection
+mesure	M1044		Restrict Library Loading
+mesure	M1045		Code Signing
+mesure	M1046		Boot Integrity
+mesure	M1047		Audit
+mesure	M1048		Application Isolation and Sandboxing
+mesure	M1049		Antivirus/Antimalware
+mesure	M1050		Exploit Protection
+mesure	M1051		Update Software
+mesure	M1052		User Account Control
+mesure	M1053		Data Backup
+mesure	M1054		Software Configuration
+mesure	M1055		Do Not Mitigate
+mesure	M1056		Pre-compromise
+mesure	M1057		Data Loss Prevention
+mesure	M1060		Out-of-Band Communications Channel
+renvoi	T1002	T1560	
+renvoi	T1004	T1547.004	
+renvoi	T1009	T1027.001	
+renvoi	T1013	T1547.010	
+renvoi	T1015	T1546.008	
+renvoi	T1017	T1072	
+renvoi	T1019	T1542.001	
+renvoi	T1022	T1560	
+renvoi	T1023	T1547.009	
+renvoi	T1024	T1573	
+renvoi	T1028	T1021.006	
+renvoi	T1031	T1543.003	
+renvoi	T1032	T1573	
+renvoi	T1035	T1569.002	
+renvoi	T1038	T1574.001	
+renvoi	T1042	T1546.001	
+renvoi	T1044	T1574.010	
+renvoi	T1045	T1027.002	
+renvoi	T1050	T1543.003	
+renvoi	T1053.001	T1053.002	
+renvoi	T1054	T1685	
+renvoi	T1058	T1574.011	
+renvoi	T1060	T1547.001	
+renvoi	T1063	T1518.001	
+renvoi	T1065	T1571	
+renvoi	T1066	T1027.005	
+renvoi	T1067	T1542.003	
+renvoi	T1070.001	T1685.005	
+renvoi	T1070.002	T1685.006	
+renvoi	T1073	T1574.002	
+renvoi	T1075	T1550.002	
+renvoi	T1076	T1021.001	
+renvoi	T1077	T1021.002	
+renvoi	T1079	T1573	
+renvoi	T1081	T1552.001	
+renvoi	T1084	T1546.003	
+renvoi	T1085	T1218.011	
+renvoi	T1086	T1059.001	
+renvoi	T1088	T1548.002	
+renvoi	T1089	T1685	
+renvoi	T1093	T1055.012	
+renvoi	T1094	T1095	
+renvoi	T1096	T1564.004	
+renvoi	T1097	T1550.003	
+renvoi	T1099	T1070.006	
+renvoi	T1100	T1505.003	
+renvoi	T1101	T1547.005	
+renvoi	T1103	T1546.010	
+renvoi	T1107	T1070.004	
+renvoi	T1109	T1542.002	
+renvoi	T1116	T1553.002	
+renvoi	T1117	T1218.010	
+renvoi	T1118	T1218.004	
+renvoi	T1121	T1218.009	
+renvoi	T1122	T1546.015	
+renvoi	T1126	T1070.005	
+renvoi	T1128	T1546.007	
+renvoi	T1130	T1553.004	
+renvoi	T1131	T1547.002	
+renvoi	T1138	T1546.011	
+renvoi	T1139	T1552.003	
+renvoi	T1141	T1056.002	
+renvoi	T1142	T1555.001	
+renvoi	T1143	T1564.003	
+renvoi	T1144	T1553.001	
+renvoi	T1145	T1552.004	
+renvoi	T1146	T1070.003	
+renvoi	T1147	T1564.002	
+renvoi	T1148	T1690	
+renvoi	T1150	T1547.011	
+renvoi	T1151	T1036.006	
+renvoi	T1152	T1569.001	
+renvoi	T1154	T1546.005	
+renvoi	T1155	T1059.002	
+renvoi	T1156	T1546.004	
+renvoi	T1157	T1574.004	
+renvoi	T1158	T1564.001	
+renvoi	T1159	T1543.001	
+renvoi	T1160	T1543.004	
+renvoi	T1161	T1546.006	
+renvoi	T1162	T1547.011	
+renvoi	T1163	T1037.004	
+renvoi	T1164	T1547.007	
+renvoi	T1165	T1037.005	
+renvoi	T1166	T1548.001	
+renvoi	T1167	T1555.002	
+renvoi	T1168	T1053	
+renvoi	T1169	T1548.003	
+renvoi	T1170	T1218.005	
+renvoi	T1171	T1557.001	
+renvoi	T1172	T1090.004	
+renvoi	T1173	T1559.002	
+renvoi	T1174	T1556.002	
+renvoi	T1177	T1547.008	
+renvoi	T1178	T1134.005	
+renvoi	T1179	T1056.004	
+renvoi	T1180	T1546.002	
+renvoi	T1181	T1055.011	
+renvoi	T1182	T1546.009	
+renvoi	T1183	T1546.012	
+renvoi	T1184	T1563.001	
+renvoi	T1186	T1055.013	
+renvoi	T1188	T1090.003	
+renvoi	T1191	T1218.003	
+renvoi	T1192	T1566.002	
+renvoi	T1193	T1566.001	
+renvoi	T1194	T1566.003	
+renvoi	T1196	T1218.002	
+renvoi	T1198	T1553.003	
+renvoi	T1206	T1548.003	
+renvoi	T1208	T1558.003	
+renvoi	T1209	T1547.003	
+renvoi	T1214	T1552.002	
+renvoi	T1215	T1547.006	
+renvoi	T1223	T1218.001	
+renvoi	T1483	T1568.002	
+renvoi	T1487	T1561.002	
+renvoi	T1488	T1561.001	
+renvoi	T1492	T1565.001	
+renvoi	T1493	T1565.002	
+renvoi	T1494	T1565.003	
+renvoi	T1500	T1027.004	
+renvoi	T1501	T1543.002	
+renvoi	T1502	T1134.004	
+renvoi	T1503	T1555.003	
+renvoi	T1504	T1546.013	
+renvoi	T1506	T1550.004	
+renvoi	T1514	T1548.004	
+renvoi	T1519	T1546.014	
+renvoi	T1522	T1552.005	
+renvoi	T1527	T1550.001	
+renvoi	T1536	T1578.004	
+renvoi	T1547.011	T1647	
+renvoi	T1562	T1685	
+renvoi	T1562.001	T1685	
+renvoi	T1562.002	T1685.001	
+renvoi	T1562.003	T1690	
+renvoi	T1562.004	T1686	
+renvoi	T1562.006	T1685	
+renvoi	T1562.007	T1686.001	
+renvoi	T1562.008	T1685.002	
+renvoi	T1562.009	T1688	
+renvoi	T1562.010	T1689	
+renvoi	T1562.011	T1685.003	
+renvoi	T1562.012	T1685.004	
+renvoi	T1562.013	T1686.002	
+renvoi	T1574.002	T1574.001	
+renvoi	T1656	T1684.001	
+renvoi	T1672	T1684.002	

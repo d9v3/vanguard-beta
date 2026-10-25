@@ -3,8 +3,9 @@
 # Linux et Windows (sous Wine, avec le lanceur de la clé : outils/essais-lanceur.sh), les tests Linux refaits sans
 # Internet, scripts PowerShell, shell et Python, essais des outils de la clé (outils/essais-cle.sh), de la signature
 # des versions (outils/essais-signature.sh) et de ce script même sous --seulement (outils/essais-verifier.sh), liens
-# internes, textes français et anglais (outils/textes.py), dépendances (cargo deny) et leurs failles connues (cargo
-# audit), banc de fuzzing compilé et passé quelques secondes par cible.
+# internes, carte de couverture ATT&CK à jour (outils/couverture-attack.py), textes français et anglais
+# (outils/textes.py), dépendances (cargo deny) et leurs failles connues (cargo audit), banc de fuzzing compilé et
+# passé quelques secondes par cible.
 # La CI lance ce même script (.github/workflows/ci.yml) : une seule logique, ici.
 # Chaque cible de compilation a sa chaîne (clippy, puis ses tests) et les quatre tournent en même temps : cargo garde
 # un dossier par cible, elles ne s'attendent presque pas. À la fin, une ligne par étape ; le code de sortie dit si tout
@@ -304,6 +305,7 @@ if [[ $MODE != --rapide ]]; then
   etape extensions extensions &
   etape python scripts_python &
   etape liens python3 outils/liens.py --hors-ligne &
+  etape carte-attack python3 outils/couverture-attack.py --verifier &
   etape textes textes &
   etape dependances dependances &
   etape failles-connues failles_connues &
@@ -410,6 +412,7 @@ if [[ $MODE != --rapide ]]; then
   ligne extensions "extensions (sdk, exemple Rust)"
   ligne python "scripts Python"
   ligne liens "liens internes"
+  ligne carte-attack "carte ATT&CK à jour (COUVERTURE-ATTACK.md)"
   ligne textes "textes FR/EN"
   [[ -f $TRAVAIL/textes.log ]] && grep -E '^(perdues|nouvelles) : \[[^]]' "$TRAVAIL/textes.log" | cut -c1-200 | sed 's/^/      /'
   ligne dependances "dépendances (cargo deny)"

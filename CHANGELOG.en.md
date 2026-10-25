@@ -39,6 +39,11 @@ delivered just before it. Only the latest version has its download page; every v
   package installed outside the official repositories, without asking (rule LNX-MAJ-006, and AUR updates when yay or
   paru is there). A new setting, Settings › AUR packages (13th, off by default), gives this consent; without it,
   nothing is sent and these packages are reported as not checked.
+- **MITRE ATT&CK coverage map.** Rules cite the ATT&CK technique they detect (T…) or the mitigation they apply
+  (M…) in their references, like CIS: 160 rules out of 206. A generated page,
+  [COUVERTURE-ATTACK.en.md](COUVERTURE-ATTACK.en.md), sorts them by tactic (ATT&CK version 20) and shows the
+  techniques no rule sees yet: the list of gaps, kept up to date by the code. A test rejects an identifier that does
+  not exist, or no longer exists, in ATT&CK, and `outils/verifier.sh` a map that is out of date.
 - **Threat model.** A page says what Vanguard protects, against whom, what it does not protect (an attacker who is
   already administrator, the kernel, a threat still without a signature…) and what it assumes
   ([MODELE-DE-MENACE.en.md](MODELE-DE-MENACE.en.md)); the README and `vanguard --help` point to it.
