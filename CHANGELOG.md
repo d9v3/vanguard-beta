@@ -35,6 +35,9 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   par la signature de son projet), Windows 11 et la récupération de macOS. Une ligne `CLE_SECOURS=non` dans
   `~/.config/vanguard/images-cle.conf` la coupe sur un ordinateur (la clé ne porte alors que le programme) ; Kali Linux
   reste en option (`IMAGES_EN_PLUS="kali"`). Le démarrage de la clé sur un vrai ordinateur n'a pas encore été essayé.
+- **Modèle de menace.** Une page dit ce que Vanguard protège, contre qui, ce qu'il ne protège pas (un attaquant
+  déjà administrateur, le noyau, une menace encore sans signature…) et ce qu'il suppose
+  ([MODELE-DE-MENACE.md](MODELE-DE-MENACE.md)) ; le README et `vanguard --help` y renvoient.
 - **Argument qui n'est pas de l'UTF-8.** Une erreur notée au journal de la clé pendant une commande dont un argument
   n'est pas de l'UTF-8 (un nom de fichier) ne fait plus avorter Vanguard : la commande y est écrite avec « � » à la
   place des octets illisibles.
