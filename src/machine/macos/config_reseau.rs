@@ -487,16 +487,21 @@ mod oracles {
                 (numero == "*" || numero.parse::<u32>().is_ok()).then(|| (numero != "*", nom.to_string()))
             })
             .collect();
-        // Un service lu en plus n'est admis que si networksetup lui-même ne le reconnaît pas (Mac virtuels de
-        // GitHub : « Ethernet Adapter (en1) », dans l'ordre du jeu, carte présente, absent de sa liste) : ce que
-        // networksetup cache ainsi reste à comprendre sur un vrai Mac.
+        // Un service lu en plus doit être reconnu par networksetup (son DNS est comparé plus bas) : les Mac virtuels
+        // de GitHub ont « Ethernet Adapter (en1) », que networksetup règle mais ne montre pas dans cette liste.
+        for s in natifs.iter().filter(|s| !attendus.iter().any(|(_, n)| *n == s.nom)) {
+            let texte = outil("networksetup", &["-getdnsservers", &s.nom]);
+            assert!(
+                texte
+                    .as_deref()
+                    .is_some_and(|t| !t.contains("not a recognized network service")),
+                "{} : inconnu de networksetup",
+                s.nom
+            );
+        }
         let lus: Vec<(bool, String)> = natifs
             .iter()
-            .filter(|s| {
-                attendus.iter().any(|(_, n)| *n == s.nom)
-                    || outil("networksetup", &["-getdnsservers", &s.nom])
-                        .is_some_and(|t| !t.contains("not a recognized network service"))
-            })
+            .filter(|s| attendus.iter().any(|(_, n)| *n == s.nom))
             .map(|s| (s.actif, s.nom.clone()))
             .collect();
         let detail: Vec<String> = natifs
@@ -504,7 +509,7 @@ mod oracles {
             .map(|s| format!("{} {:?} {}", s.id, s.carte, s.nom))
             .collect();
         assert_eq!(lus, attendus, "{ordre}\n{detail:#?}");
-        for s in natifs.iter().filter(|s| attendus.iter().any(|(_, n)| *n == s.nom)) {
+        for s in &natifs {
             let texte = outil("networksetup", &["-getdnsservers", &s.nom]).unwrap_or_default();
             let attendu: Vec<IpAddr> = texte.lines().filter_map(|l| l.trim().parse().ok()).collect();
             assert_eq!(s.dns, attendu, "{}", s.nom);
