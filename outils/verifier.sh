@@ -4,9 +4,9 @@
 # Internet, scripts PowerShell, shell et Python, essais des outils de la clé (outils/essais-cle.sh), de la signature
 # des versions (outils/essais-signature.sh) et de ce script même sous --seulement (outils/essais-verifier.sh), liens
 # internes, carte de couverture ATT&CK à jour (outils/couverture-attack.py), documentation du code sans avertissement
-# (cargo doc), textes français et anglais
-# (outils/textes.py), régression de détection (le corpus de src/modele/corpus.rs), dépendances (cargo deny) et leurs failles connues (cargo audit), banc de fuzzing compilé et
-# passé quelques secondes par cible.
+# (cargo doc), textes français et anglais (outils/textes.py), régression de détection (le corpus de
+# src/modele/corpus.rs, Linux et Wine), dépendances (cargo deny) et leurs failles connues (cargo audit), banc de
+# fuzzing compilé et passé quelques secondes par cible.
 # La CI lance ce même script (.github/workflows/ci.yml) : une seule logique, ici.
 # Chaque cible de compilation a sa chaîne (clippy, puis ses tests) et les quatre tournent en même temps : cargo garde
 # un dossier par cible, elles ne s'attendent presque pas. À la fin, une ligne par étape ; le code de sortie dit si tout
@@ -88,30 +88,37 @@ clippy() {
   esac
 }
 
-# La régression de détection (src/modele/corpus.rs) : le corpus seul, sous Linux puis sous Wine, pour que sa ligne
-# se voie au résumé à côté des passes complètes. Chaque cas fabriqué doit faire tirer sa règle, chaque cas propre la
-# laisser muette, et la liste fermée tenir. Sans Wine (ou en --rapide, --sans-wine, --ci), Linux seulement, dit.
-regression_detection() {
-  cargo test -q modele::corpus:: -- --nocapture || return 1
-  if [[ $MODE == --rapide || $MODE == --sans-wine || $MODE == --ci ]]; then
-    echo "Windows : non lancé ($MODE)"
-    return 0
-  fi
-  [[ -x $WINE ]] || { echo "Windows : non lancé, Wine absent ($WINE)"; return 0; }
+# La régression de détection (src/modele/corpus.rs) : le corpus seul, pour que sa ligne se voie au résumé à côté des
+# passes complètes. Chaque cas fabriqué doit faire tirer sa règle, chaque cas propre la laisser muette, et la liste
+# fermée tenir. Le code 0 de cargo ne suffit pas (un filtre qui ne trouve aucun test rend 0) : la ligne du corpus de
+# ce système est exigée. Sous Wine, dans le préfixe des tests Windows, juste après eux ; sans Wine, sautée et dite.
+corpus() {
+  local systeme=$1 cible=()
+  [[ $systeme == windows ]] && cible=(--target x86_64-pc-windows-gnu)
+  shift
+  "$@" cargo test -q --bin vanguard "${cible[@]}" modele::corpus:: -- --nocapture >"$TRAVAIL/corpus-$systeme.txt" 2>&1
+  local code=$?
+  cat "$TRAVAIL/corpus-$systeme.txt"
+  ((code == 0)) || return 1
+  grep -q "corpus de détection ($systeme) : [0-9]* règles tirent" "$TRAVAIL/corpus-$systeme.txt" ||
+    { echo "✖ la ligne du corpus ($systeme) manque : le corpus n'a pas tourné"; return 1; }
+}
+regression_linux() { corpus linux env; }
+regression_windows() {
+  [[ -x $WINE ]] || { echo "Wine absent ($WINE ; VANGUARD_WINE pour un autre)"; return "$SAUTEE"; }
   local prefixe resultat
   prefixe=$(mktemp -d "$TRAVAIL/wine-corpus.XXXX")
-  DBUS_SYSTEM_BUS_ADDRESS=unix:path=/nonexistent WINEPREFIX=$prefixe WINEDEBUG=-all \
-    CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=$WINE cargo test -q --target x86_64-pc-windows-gnu modele::corpus:: -- --nocapture
+  corpus windows env DBUS_SYSTEM_BUS_ADDRESS=unix:path=/nonexistent \
+    WINEPREFIX="$prefixe" WINEDEBUG=-all CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER="$WINE"
   resultat=$?
   WINEPREFIX=$prefixe "${WINE%/*}/wineserver" -k 2>/dev/null
   WINEPREFIX=$prefixe "${WINE%/*}/wineserver" -w 2>/dev/null
   return "$resultat"
 }
 
-# Les cas du corpus qui tirent, par système, lus dans le journal de l'étape : « linux 26, windows 32 ».
+# Les cas du corpus qui tirent sur un système, et le reste du compte, lus dans le journal de son étape.
 cas_qui_tirent() {
-  sed -nE 's/^.*corpus de détection \(([a-z]+)\) : ([0-9]+) règles tirent.*/\1 \2/p' "$TRAVAIL/regression-detection.log" 2>/dev/null |
-    paste -sd, | sed 's/,/, /g'
+  sed -nE 's/^.*corpus de détection \([a-z]+\) : ([0-9]+) règles tirent.*/\1/p' "$TRAVAIL/$1.log" 2>/dev/null | head -n1
 }
 
 # Les compilateurs C qu'il faut ici, dits d'emblée plutôt qu'au milieu d'une compilation.
@@ -316,13 +323,17 @@ fi
 # Pas d'exigence du veilleur dans la passe sans Internet, où le connecteur de processus n'existe pas.
 {
   etape clippy-linux clippy x86_64-unknown-linux-musl && etape tests-linux tests_linux &&
+    etape regression-detection regression_linux &&
     if [[ $MODE != --rapide ]]; then etape tests-hors-ligne hors_ligne; fi
 } &
 if [[ $MODE != --rapide ]]; then
   if [[ $MODE == --sans-wine || $MODE == --ci ]]; then
     etape clippy-windows clippy x86_64-pc-windows-gnu &
   else
-    { etape clippy-windows clippy x86_64-pc-windows-gnu && etape tests-windows tests_wine; } &
+    {
+      etape clippy-windows clippy x86_64-pc-windows-gnu && etape tests-windows tests_wine &&
+        etape regression-detection-windows regression_windows
+    } &
   fi
   etape clippy-macos-arm clippy aarch64-apple-darwin &
   etape clippy-macos-intel clippy x86_64-apple-darwin &
@@ -344,8 +355,6 @@ if [[ $MODE != --rapide ]]; then
   etape fuzzing fuzzing &
 fi
 wait
-# Après les passes complètes : leurs compilations servent, et sous Wine le corpus a les mêmes programmes de test.
-etape regression-detection regression_detection
 
 # Les tests laissent chacun un dossier jetable (socle::dossier_local sous cfg(test)) : ceux dont le processus est fini
 # partent.
@@ -426,7 +435,7 @@ ligne mise-en-forme "mise en forme"
 ligne clippy-linux "clippy Linux"
 ligne tests-linux "tests Linux ($(passes tests-linux))"
 raisons_des_sautes tests-linux
-ligne regression-detection "régression de détection ($(cas_qui_tirent))"
+ligne regression-detection "régression de détection Linux ($(cas_qui_tirent regression-detection) règles)"
 [[ -f $TRAVAIL/regression-detection.log ]] && grep -m1 -oE '[0-9]+ exemptées, [0-9]+ en attente de S3b, [0-9]+ de S3c' "$TRAVAIL/regression-detection.log" | sed 's/^/      /'
 if [[ $MODE != --rapide ]]; then
   ligne tests-hors-ligne "tests Linux sans Internet ($(passes tests-hors-ligne))"
@@ -435,6 +444,9 @@ if [[ $MODE != --rapide ]]; then
   if [[ $MODE != --sans-wine && $MODE != --ci ]]; then
     ligne tests-windows "tests Windows sous Wine ($(passes tests-windows))"
     raisons_des_sautes tests-windows
+    ligne regression-detection-windows "régression de détection Windows ($(cas_qui_tirent regression-detection-windows) règles)"
+  elif [[ -z $SEULEMENT ]]; then
+    printf '  · %-34s non lancé (%s) : le vrai Windows de la CI fait tourner son cargo test\n' "régression de détection Windows" "$MODE" | tee -a "$RESUME"
   fi
   ligne clippy-macos-arm "clippy macOS Apple Silicon"
   ligne clippy-macos-intel "clippy macOS Intel"

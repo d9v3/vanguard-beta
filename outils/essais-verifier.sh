@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Essais de outils/verifier.sh lui-même, sur ce que lance l'audit de nuit de la CI (--seulement) : un vert qui n'a
 # rien vérifié y passerait inaperçu chaque nuit, sans personne devant l'écran.
-#   1. Une étape demandée qui se dit sautée (ici Wine absent) fait échouer, avec sa raison.
+#   1. Une étape demandée qui se dit sautée (ici Wine absent : tests Windows, corpus de détection sous Wine) fait
+#      échouer, avec sa raison.
 #   2. Une étape demandée qui ne tourne jamais sous --seulement (la mise en forme) fait échouer.
 #   3. Un nom d'étape inconnu (mal écrit, ou renommé sans suivre ci.yml) est refusé, code 2.
 #   4. Une étape demandée qui réussit (scripts Python) donne bien « Tout est vert ».
@@ -25,6 +26,13 @@ if ((CODE == 1)) && grep -q '✖ tests Windows.*sautée, rien vérifié : Wine a
   ok "étape demandée et sautée : un échec, avec sa raison"
 else
   ko "étape demandée et sautée (code $CODE) : $(tail -n 2 <<<"$SORTIE")"
+fi
+
+lancer env VANGUARD_WINE=/inexistant/wine bash outils/verifier.sh --seulement regression-detection-windows
+if ((CODE == 1)) && grep -q '✖ régression de détection Windows.*sautée, rien vérifié : Wine absent' <<<"$SORTIE"; then
+  ok "corpus de détection demandé sous Wine, Wine absent : un échec, avec sa raison"
+else
+  ko "corpus de détection demandé sous Wine, Wine absent (code $CODE) : $(tail -n 2 <<<"$SORTIE")"
 fi
 
 lancer bash outils/verifier.sh --seulement mise-en-forme
