@@ -771,6 +771,19 @@ async fn passe() {
             .collect(),
     )
     .await;
+    for (genre, cle, titre, texte) in alertes_du_scan(&r) {
+        match cle {
+            Some(cle) => alerter_cle(genre, &cle, &titre, &texte),
+            None => alerter(genre, &titre, &texte),
+        }
+    }
+}
+
+/// Les alertes que le scan fait naître (genre, clé de répétition, titre, texte), dans l'ordre où la passe les envoie :
+/// empoisonneur de noms, carnet non cru, appareils nouveaux, ports nouvellement ouverts. Séparées de l'envoi pour que
+/// le corpus de détection les exerce sur un scan fabriqué ; `None` comme clé : envoyée sans clé (`alerter`).
+fn alertes_du_scan(r: &reseau::Rapport) -> Vec<(Genre, Option<String>, String, String)> {
+    let mut alertes = Vec::new();
     // Empoisonneur de noms (Responder…) : la sonde est déjà faite pendant le scan du réseau local, elle ne coûte
     // rien de plus ici. Sans réseau local (VPN seul), le scan n'aurait pas tourné : rien à signaler.
     if let Some(reseau::empoisonnement::Rapport::Teste(empoisonneurs)) = &r.empoisonnement {
@@ -781,32 +794,35 @@ async fn passe() {
                 .find(|h| h.ip == e.ip)
                 .map(reseau::Hote::titre)
                 .filter(|t| !t.is_empty());
-            alerter(
+            alertes.push((
                 Genre::Empoisonneur,
+                None,
                 tr!(
                     "Vanguard : empoisonneur de noms sur le réseau",
                     "Vanguard: name poisoner on the network"
-                ),
-                &trf!(
+                )
+                .to_string(),
+                trf!(
                     "{} répond à des noms qui n'existent pas : un outil comme Responder vole les mots de passe Windows. Débranchez-le.",
                     "{} answers names that do not exist: a tool like Responder steals Windows passwords. Unplug it.",
                     titre.map_or_else(|| e.ip.to_string(), |t| format!("{} ({t})", e.ip))
                 ),
-            );
+            ));
         }
     }
     // Le carnet de cet ordinateur ne pouvait pas être cru : une notification qui le dit et donne le geste, pas un
     // « Nouvel appareil » par appareil.
     if let Some(t) = &r.carnet_non_cru {
-        alerter_cle(
+        alertes.push((
             Genre::Appareil,
-            "carnet|non-cru",
+            Some("carnet|non-cru".to_string()),
             tr!(
                 "Carnet des appareils non cru : appareils redits",
                 "Device record not trusted: devices reported again"
-            ),
-            t,
-        );
+            )
+            .to_string(),
+            t.clone(),
+        ));
     }
     for h in r.hotes.iter().filter(|h| h.nouvelle && r.carnet_non_cru.is_none()) {
         let qui = if h.titre().is_empty() {
@@ -819,12 +835,12 @@ async fn passe() {
             "appareil|{}",
             h.mac.as_deref().map_or_else(|| h.ip.to_string(), str::to_lowercase)
         );
-        alerter_cle(
+        alertes.push((
             Genre::Appareil,
-            &cle,
-            tr!("Nouvel appareil sur votre réseau", "New device on your network"),
-            &format!("{} — {qui} {}", h.ip, h.mac.as_deref().unwrap_or("")),
-        );
+            Some(cle),
+            tr!("Nouvel appareil sur votre réseau", "New device on your network").to_string(),
+            format!("{} — {qui} {}", h.ip, h.mac.as_deref().unwrap_or("")),
+        ));
     }
     for h in r.hotes.iter().filter(|h| !h.nouvelle) {
         for p in h.ports.iter().filter(|p| p.nouveau && p.niveau >= Niveau::Eleve) {
@@ -833,14 +849,15 @@ async fn passe() {
                 h.mac.as_deref().map_or_else(|| h.ip.to_string(), str::to_lowercase),
                 p.port
             );
-            alerter_cle(
+            alertes.push((
                 Genre::Port,
-                &cle,
-                &trf!("Port {} nouvellement ouvert", "Port {} newly opened", p.port),
-                &format!("{} ({}) : {} — {}", h.ip, h.titre(), p.service, p.conseil),
-            );
+                Some(cle),
+                trf!("Port {} nouvellement ouvert", "Port {} newly opened", p.port),
+                format!("{} ({}) : {} — {}", h.ip, h.titre(), p.service, p.conseil),
+            ));
         }
     }
+    alertes
 }
 
 /// Le choix de la personne, noté quand la surveillance est activée (ou vue active) : si la minuterie ou la tâche
