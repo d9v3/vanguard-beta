@@ -1112,7 +1112,11 @@ fn lecture(
     }
     // Les journaux qui écrivent sans cesse sur un ordinateur en marche : leur plus ancien événement après le début
     // demandé dit qu'il manque le début. Un journal calme (BITS, WMI) peut n'avoir simplement rien écrit avant.
-    let actif = journal.eq_ignore_ascii_case("Security") || journal.eq_ignore_ascii_case("System");
+    // L'historique du Planificateur, une fois allumé, écrit à chaque lancement de tâche : un historique qui ne couvre
+    // que quelques heures ne peut pas vérifier une semaine (il suffit seul à EVT-TAC-001).
+    let actif = journal.eq_ignore_ascii_case("Security")
+        || journal.eq_ignore_ascii_case("System")
+        || journal.eq_ignore_ascii_case("Microsoft-Windows-TaskScheduler/Operational");
     if lu && stat.evenements == 0 {
         m.push(if actif {
             Manque::Vide(journal.to_string())

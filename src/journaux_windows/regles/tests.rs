@@ -1793,6 +1793,18 @@ fn taches_verifiees_par_l_une_ou_l_autre_source() {
     let j = regle(&juger_avec(&[], &etats, options()), "EVT-TAC-001").clone();
     assert!(j.manques.contains(&Manque::Desactive(TACHES.into())), "{:?}", j.manques);
     assert!(j.manques.iter().any(|m| matches!(m, Manque::NonAudite { .. })));
+    // Sans audit prouvé, un historique qui ne couvre que la fin de la période demandée ne suffit pas.
+    let mut depuis = options();
+    depuis.depuis = Some(t0() - Duration::days(7));
+    let j = regle(&juger_avec(&[], &tout_lu(), depuis), "EVT-TAC-001").clone();
+    assert!(!j.verifie());
+    assert!(
+        j.manques
+            .iter()
+            .any(|m| matches!(m, Manque::PeriodeCourte { journal, .. } if journal == TACHES)),
+        "{:?}",
+        j.manques
+    );
     // Une source lue en partie ne suffit pas.
     let mut etats = sans_historique.clone();
     etats.iter_mut().find(|e| e.nom == "Security").unwrap().lecture = Lecture::Lu(vec!["3 textes coupés".into()]);
