@@ -7,7 +7,8 @@
   Vanguard hardens computers and detects vulnerabilities and intrusions, on each machine and across the network;<br>
   it blocks the threats found on the computer and collects the evidence of an incident.<br>
   Every finding is explained, and nothing is changed without consent. Troubleshooting tools are included as well.<br>
-  Linux, Windows and macOS, nothing to install, in English and French.
+  Linux, Windows and macOS, nothing to install, in English and French.<br>
+  It complements the system's antivirus (Microsoft Defender, XProtect, ClamAV): it does not replace it.
 </p>
 
 <p align="center"><b>In active development · all in Rust (under way) · defensive</b></p>
@@ -45,7 +46,7 @@
   personally: Vanguard sends nothing.
 
 **Where Vanguard is going.** In progress: everything an AI agent can run; Windows event logs analyzed by Vanguard itself
-(home-made .evtx reader, then its rules); a home-made antivirus;
+(home-made .evtx reader, then its rules); a home-made scanning engine, as a second opinion (Defender stays the main antivirus);
 every fix made by Vanguard itself, in Rust, without scripts; a test bench on the USB key, started with a double-click
 on a real Windows; a study of a graphical interface. Releases signed twice (Ed25519 and ML-DSA, post-quantum) await a
 decision. Next: live observation on Linux with eBPF; known vulnerabilities of the other Linux distributions. Always
@@ -101,7 +102,7 @@ certificate, scams, spyware and other privacy intrusions.
 | **Exposure to the Internet** | The network audit in six grades (exposure, Wi-Fi, device separation, DNS and certificates, connected devices, computers); the ports the router opens to the Internet (UPnP), this computer's open ports and firewall, the public Internet address on a blocklist, the router's admin page over HTTP only. |
 | **Intruders on the Wi-Fi** | Every device on the network, its manufacturer, its open ports and its risks; newcomers flagged every hour, with a dashboard in the browser; the Wi-Fi's protection (WEP, WPA2, WPA3), the fake access point copying its name, Bluetooth devices paired recently; public Wi-Fi mode, which closes the computer to the network of a café, a hotel or an airport and puts it back as it was when you leave. |
 | **Connected devices** | The router and the devices on the network (cameras, printers, NAS, TVs, smart home…) recognized, with their default password to change; hidden cameras, in a rental or at someone's place. |
-| **Infected computer** | Antivirus, 308 YARA rules and the fingerprints of known malware from MalwareBazaar (free abuse.ch key), the memory of running programs (on demand), live threat hunting (guessed password, suspicious running programs), threat blocking, with one click or by itself for clear-cut threats (active protection), with the evidence recorded before each action and a sealed event log, decoy files and the ransomware watcher (Linux), Windows Defender blocking, what starts in secret, backdoors, Windows' hidden doors and vulnerable drivers, rootkit signs, suspicious event logs, connections to known botnet servers, a password thief like Responder unmasked, overly permissive AI agents, integrity of critical files, flaws in Docker images (trivy, when installed), reversible quarantine, and the traces collected before cleaning up, with the incident timeline; a draft report prepared for the vendor when a program misbehaves, never sent. |
+| **Infected computer** | Antivirus scan as a second opinion (Defender or ClamAV), 308 YARA rules and the fingerprints of known malware from MalwareBazaar (free abuse.ch key), the memory of running programs (on demand), live threat hunting (guessed password, suspicious running programs), threat blocking, with one click or by itself for clear-cut threats (active protection), with the evidence recorded before each action and a sealed event log, decoy files and the ransomware watcher (Linux), Windows Defender blocking, what starts in secret, backdoors, Windows' hidden doors and vulnerable drivers, rootkit signs, suspicious event logs, connections to known botnet servers, a password thief like Responder unmasked, overly permissive AI agents, integrity of critical files, flaws in Docker images (trivy, when installed), reversible quarantine, and the traces collected before cleaning up, with the incident timeline; a draft report prepared for the vendor when a program misbehaves, never sent. |
 | **Hijacked DNS and certificates** | The DNS really in use (and made-up answers), added root certificates (HTTPS interception), a forced proxy and sites redirected by the hosts file, automatic proxy discovery (WPAD), browser extensions that read every site. |
 | **Scams and remote control** | Tech-support scam (remote control tools), dangerous links checked without opening them, downloaded files checked, leaked passwords and email addresses, hacked account, a sandbox for an unknown program. |
 | **Privacy and secrets** | Spyware planted by someone close (known servers, programs reading the keyboard, monitoring permissions, known monitoring software), privacy check (who can access location, contacts, camera and microphone), camera and microphone, browser passwords without protection, sensitive files left in clear text, secrets forgotten in git project history, key data protected by a passphrase. |

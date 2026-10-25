@@ -8,6 +8,7 @@ post-quantique), bloque les menaces trouvées, collecte les traces d'un incident
 le signalement d'une faille à son éditeur.
 Chaque constat est expliqué ; rien n'est modifié sans accord. En plus : le dépannage, l'optimisation, les
 données et la sauvegarde ; en développement, des images qui démarrent un ordinateur en panne (dossier ISO).
+Vanguard complète l'antivirus du système (Microsoft Defender, XProtect, ClamAV) : il ne le remplace pas.
 
 Cette clé contient le programme pour Linux, Windows et macOS, sa base de données et son code source.
 

@@ -7,6 +7,7 @@ threat hunting, YARA scan, logs, spyware, outdated software, post-quantum key ex
 finds, collects the evidence of an incident and prepares, without ever sending it, the report of a flaw to its
 vendor. Every finding is explained; nothing is changed without consent. Also included: troubleshooting,
 optimization, data and backup; in development, images that start a computer that no longer boots (ISO folder).
+Vanguard complements the system's antivirus (Microsoft Defender, XProtect, ClamAV): it does not replace it.
 
 This USB key holds the program for Linux, Windows and macOS, its database and its source code.
 
