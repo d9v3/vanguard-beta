@@ -7,7 +7,7 @@ une seule publication par jour, qui regroupe le travail de la journée ; le 21 o
 la 0.84 au soir, qui reprend la 0.83 livrée juste avant elle. Seule la dernière version a sa page de téléchargement ;
 chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par exemple), pour être recompilée au besoin.
 
-## Prochaine version
+## 24 octobre 2026 : version 0.87
 
 - **Sécurité de la clé et de la publication** (campagne d'attaque n° 3). Au branchement, la clé est comparée à sa
   référence avant toute écriture : un fichier planté en voyage (raccourci, image, menu de Ventoy, archive tldr) ne

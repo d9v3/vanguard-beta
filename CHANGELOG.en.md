@@ -7,7 +7,7 @@ a day, gathering the day's work; October 21 had two, 0.82 in the morning and 0.8
 delivered just before it. Only the latest version has its download page; every version keeps its tag in the repository
 (`git checkout v0.62.0`, for example), to be rebuilt if needed.
 
-## Next version
+## October 24, 2026: version 0.87
 
 - **USB key and release security** (third attack campaign). When the key is plugged in, it is compared with its
   reference before anything is written: a file planted while it traveled (shortcut, image, Ventoy menu, tldr archive)
