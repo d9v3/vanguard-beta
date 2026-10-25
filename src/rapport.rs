@@ -762,19 +762,29 @@ fn examens_html(h: &mut String, examens: &[crate::modele::resultat::Resultat]) {
     h.push_str("</div>");
 }
 
+/// La règle du bilan qui juge les journaux de Windows de cet ordinateur par le moteur des règles `EVT-`.
+const JOURNAUX_DU_BILAN: &str = "WIN-JRN-003";
+
 /// Les alertes des journaux de Windows montrées au plus dans la chronologie du rapport : les plus récentes.
 const ALERTES_JOURNAUX: usize = 25;
 
 /// « Journaux de Windows », quand un examen PRO-EVT-001 a été versé (`vanguard journaux-windows`) : le verdict de
 /// chaque règle, puis les alertes dans l'ordre du temps, à l'heure de cet ordinateur. Tout texte est échappé : les
 /// messages reprennent des champs des journaux (comptes, chemins), déjà nettoyés des caractères piégés.
-fn journaux_windows_html(h: &mut String, examens: &[crate::modele::resultat::Resultat]) {
+///
+/// Un seul endroit pour les journaux de cet ordinateur : quand le bilan du rapport les a jugés (`bilan_les_a` :
+/// WIN-JRN-003, le même moteur, au moment du bilan), ils sont dans « Cet ordinateur », et l'examen de cet ordinateur
+/// (plus ancien, ou du même jour) ne les répète pas. L'examen d'un dossier, qui parle d'un autre Windows, reste.
+fn journaux_windows_html(h: &mut String, examens: &[crate::modele::resultat::Resultat], bilan_les_a: bool) {
     let Some(r) = examens
         .iter()
         .find(|r| r.outil == crate::journaux_windows::regles::resultat::ID)
     else {
         return;
     };
+    if bilan_les_a && r.dossier.is_none() {
+        return;
+    }
     let locale = |d: &str| {
         chrono::DateTime::parse_from_rfc3339(d)
             .map(|d| {
@@ -966,7 +976,9 @@ fn html(audit: Option<&Audit>, reseau: Option<&Rapport>, audit_reseau: Option<&A
 
     let examens = crate::modele::resultat::derniers();
     examens_html(&mut h, &examens);
-    journaux_windows_html(&mut h, &examens);
+    // WIN-JRN-003 juge les journaux de cet ordinateur dans le bilan : la section des journaux ne les répète pas.
+    let bilan_les_a = audit.is_some_and(|a| a.constats.iter().any(|c| c.regle == JOURNAUX_DU_BILAN));
+    journaux_windows_html(&mut h, &examens, bilan_les_a);
     h += &connexions(&crate::reseau::connexion::historique());
 
     if let Some(a) = audit {
@@ -1181,7 +1193,7 @@ mod tests {
         let mut h = String::new();
         examens_html(&mut h, std::slice::from_ref(&r));
         assert_eq!(h, "", "pas deux fois");
-        journaux_windows_html(&mut h, std::slice::from_ref(&r));
+        journaux_windows_html(&mut h, std::slice::from_ref(&r), false);
         assert!(h.contains("<h2>Journaux de Windows</h2>"), "{h}");
         assert!(h.contains("&lt;script&gt;") && !h.contains("<script>"), "{h}");
         let (eff, srv) = (
@@ -1198,12 +1210,20 @@ mod tests {
             .push("résultat accepté tel quel au premier sceau".into());
         r2.constats[2].etat = "sain".into();
         let mut h2 = String::new();
-        journaux_windows_html(&mut h2, &[r2]);
+        journaux_windows_html(&mut h2, &[r2], false);
         assert!(h2.contains("pas de cet ordinateur : /mnt/&lt;disque&gt;"), "{h2}");
         assert!(!h2.contains(&badge(None)), "{h2}");
         let mut vide = String::new();
-        journaux_windows_html(&mut vide, &[]);
+        journaux_windows_html(&mut vide, &[], false);
         assert_eq!(vide, "");
+        // Le bilan a jugé les journaux de cet ordinateur (WIN-JRN-003) : l'examen de cet ordinateur ne les répète
+        // pas ; celui d'un dossier, qui parle d'un autre Windows, reste.
+        let mut une_fois = String::new();
+        journaux_windows_html(&mut une_fois, std::slice::from_ref(&r), true);
+        assert_eq!(une_fois, "", "pas deux fois");
+        r.dossier = Some("/mnt/disque".into());
+        journaux_windows_html(&mut une_fois, &[r], true);
+        assert!(une_fois.contains("<h2>Journaux de Windows</h2>"), "{une_fois}");
     }
 
     #[test]

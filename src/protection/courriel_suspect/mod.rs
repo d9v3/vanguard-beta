@@ -753,7 +753,7 @@ fn pourcents(v: &str) -> Vec<u8> {
 
 /// Le chemin tapé ou glissé : sans guillemets ; « file:// » d'un terminal qui dépose une URI, avec ses « %20 » et
 /// accents codés décodés ; « ~/ » développé.
-fn chemin_saisi(r: &str) -> Option<PathBuf> {
+pub(crate) fn chemin_saisi(r: &str) -> Option<PathBuf> {
     let r = r.trim().trim_matches(['"', '\'']);
     let r = match r.strip_prefix("file://") {
         Some(uri) => String::from_utf8_lossy(&pourcents(uri)).into_owned(),

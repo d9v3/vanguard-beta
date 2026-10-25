@@ -1,4 +1,4 @@
-//! Les onze premières règles `EVT-`, écrites d'après la documentation de Microsoft de chaque événement (noms des
+//! Les règles `EVT-`, écrites d'après la documentation de Microsoft de chaque événement (noms des
 //! champs, sens des valeurs, politique d'audit d'origine d'un Windows 10 ou 11) et la technique d'ATT&CK qu'il
 //! trahit ; vérifiées sur les échantillons publics (`VANGUARD_EVTX_ECHANTILLONS`). Rien n'est repris d'un autre jeu
 //! de règles.
@@ -1921,6 +1921,383 @@ fn powershell_2(e: &EvenementWindows) -> Option<Indice> {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
+// Lignes de commande : EVT-PRC-001 (processus), EVT-TAC-001 (tâches planifiées)
+// ---------------------------------------------------------------------------------------------------------------
+
+/// Des programmes d'attaque publiés, par le nom de leur fichier (sans extension, en minuscules) : vol de mots de
+/// passe et de tickets, reconnaissance d'un domaine, recherche d'une élévation. Ils n'ont pas d'autre usage. Masqué
+/// (`crate::masque`) : ces noms sont exactement ce qu'une signature d'antivirus cherche.
+static PROGRAMMES_OFFENSIFS: LazyLock<Vec<String>> = liste_masquee![
+    "mimikatz",
+    "safetykatz",
+    "rubeus",
+    "lazagne",
+    "sharphound",
+    "nanodump",
+    "winpeas",
+    "winpeasx64",
+    "winpeasany",
+    "kerbrute",
+    "pypykatz",
+];
+
+/// Les programmes de PowerShell.
+const POWERSHELLS: &[&str] = &["powershell", "pwsh", "powershell_ise"];
+
+/// Les mots d'une ligne de commande (sans guillemets autour), au plus `MOTS_MAX` : une ligne hostile de 32 Kio
+/// n'en fait pas des milliers.
+const MOTS_MAX: usize = 64;
+
+fn mots(ligne_bas: &str) -> Vec<&str> {
+    ligne_bas
+        .split_whitespace()
+        .take(MOTS_MAX)
+        .map(|m| m.trim_matches(['"', '\'']))
+        .collect()
+}
+
+/// Un texte en base64 assez long pour cacher une commande.
+fn base64_long(m: &str) -> bool {
+    m.len() >= 16
+        && m.bytes()
+            .all(|o| o.is_ascii_alphanumeric() || o == b'+' || o == b'/' || o == b'=')
+}
+
+/// PowerShell lancé avec une commande encodée : « -EncodedCommand », ou l'une de ses abréviations que PowerShell
+/// accepte (« -e », « -en », « -enc », « -ec »), suivie d'un texte en base64 ; ou un décodage de base64 dans la
+/// commande même.
+fn commande_encodee(nom: &str, ligne_bas: &str) -> bool {
+    if !POWERSHELLS.contains(&nom) {
+        return false;
+    }
+    if ligne_bas.contains("frombase64string") {
+        return true;
+    }
+    let m = mots(ligne_bas);
+    m.windows(2).any(|p| {
+        let option = p[0]
+            .strip_prefix('-')
+            .or_else(|| p[0].strip_prefix('/'))
+            .unwrap_or_default();
+        !option.is_empty() && ("encodedcommand".starts_with(option) || option == "ec") && base64_long(p[1])
+    })
+}
+
+/// Un programme d'attaque publié, par son nom ou celui d'un fichier de sa ligne, ou une commande d'un outil
+/// d'attaque (`OUTILS_OFFENSIFS`) dans la ligne.
+fn outil_offensif(nom: &str, ligne_bas: &str) -> bool {
+    let nomme = |n: &str| PROGRAMMES_OFFENSIFS.iter().any(|o| o == n);
+    nomme(nom)
+        || mots(ligne_bas).iter().any(|m| nomme(&nom_programme(m)))
+        || OUTILS_OFFENSIFS.iter().any(|o| ligne_bas.contains(o.as_str()))
+}
+
+/// La mémoire de LSASS vidée par un programme de Windows ou de Sysinternals : rundll32 et la fonction MiniDump de
+/// comsvcs.dll, ou ProcDump visant lsass.
+fn vidage_lsass(nom: &str, ligne_bas: &str) -> bool {
+    (nom == "rundll32" && ligne_bas.contains("comsvcs") && ligne_bas.contains("minidump"))
+        || (nom.starts_with("procdump") && ligne_bas.contains("lsass"))
+}
+
+/// Une adresse web dans une ligne de commande, ses « / » ramenés ou non à « \ » (`chemin_bas`).
+fn adresse_web(ligne_bas: &str) -> bool {
+    ["http://", "https://", "ftp://", "http:\\\\", "https:\\\\", "ftp:\\\\"]
+        .iter()
+        .any(|p| ligne_bas.contains(p))
+}
+
+/// Un programme de Windows détourné pour télécharger ou lancer du code d'ailleurs (ATT&CK T1105, T1218) : certutil
+/// qui télécharge ou décode, bitsadmin qui transfère, mshta, regsvr32 ou rundll32 qui chargent une adresse web ou
+/// un script.
+fn telechargement_systeme(nom: &str, ligne_bas: &str) -> bool {
+    match nom {
+        "certutil" => {
+            ((ligne_bas.contains("urlcache") || ligne_bas.contains("verifyctl")) && adresse_web(ligne_bas))
+                || ligne_bas.contains("-decode")
+                || ligne_bas.contains("/decode")
+        }
+        "bitsadmin" => ["/transfer", "/addfile", "/download"]
+            .iter()
+            .any(|o| ligne_bas.contains(o)),
+        "mshta" => adresse_web(ligne_bas) || ligne_bas.contains("javascript:") || ligne_bas.contains("vbscript:"),
+        "regsvr32" => ligne_bas.contains("scrobj") || (ligne_bas.contains(":http") && ligne_bas.contains("/i")),
+        "rundll32" => ligne_bas.contains("javascript:") || adresse_web(ligne_bas),
+        _ => false,
+    }
+}
+
+/// Ce qu'une ligne de commande a de suspect, quel que soit ce qui la lance (un processus, une tâche) : (catégorie,
+/// gravité, pourquoi). `programme` : le programme lancé ; `ligne` : la ligne entière (le programme compris, ou ses
+/// seuls arguments). Rien pour une ligne ordinaire.
+pub(crate) fn ligne_suspecte(programme: &str, ligne: &str) -> Option<(&'static str, Gravite, Texte)> {
+    let nom = nom_programme(&decouper(programme).0);
+    // Les « / » gardés : ce sont aussi ceux des options (« /transfer », « /i: »).
+    let bas = ligne.trim().to_lowercase();
+    if outil_offensif(&nom, &bas) {
+        return Some((
+            "outil",
+            Gravite::Critique,
+            (
+                "un programme d'attaque connu a été lancé (vol de mots de passe ou de tickets, reconnaissance du réseau)",
+                "a known attack program was run (password or ticket theft, network reconnaissance)",
+            ),
+        ));
+    }
+    if vidage_lsass(&nom, &bas) {
+        return Some((
+            "lsass",
+            Gravite::Critique,
+            (
+                "la mémoire de LSASS a été vidée par un programme de Windows : la façon de prendre les identifiants des sessions",
+                "LSASS memory was dumped with a Windows program: how session credentials get taken",
+            ),
+        ));
+    }
+    if commande_encodee(&nom, &bas) {
+        return Some((
+            "encode",
+            Gravite::Alerte,
+            (
+                "PowerShell a été lancé avec une commande encodée, qui cache ce qu'elle fait",
+                "PowerShell was started with an encoded command, which hides what it does",
+            ),
+        ));
+    }
+    if telechargement_systeme(&nom, &bas) {
+        return Some((
+            "systeme",
+            Gravite::Alerte,
+            (
+                "un programme de Windows a été détourné pour télécharger, décoder ou lancer du code d'ailleurs (certutil, bitsadmin, mshta, regsvr32, rundll32)",
+                "a Windows program was misused to download, decode or run code from elsewhere (certutil, bitsadmin, mshta, regsvr32, rundll32)",
+            ),
+        ));
+    }
+    if POWERSHELLS.contains(&nom.as_str())
+        && let Some((categorie, gravite, pourquoi)) = script_suspect(ligne)
+    {
+        return Some((categorie, gravite, pourquoi));
+    }
+    None
+}
+
+fn processus_cree(e: &EvenementWindows) -> Option<Indice> {
+    let programme = champ(e, "NewProcessName");
+    let ligne = champ(e, "CommandLine");
+    // Sans la ligne de commande (stratégie coupée, la valeur d'origine), le nom du programme seul se juge encore.
+    let ligne_jugee = if rempli(ligne) { ligne } else { programme };
+    let (categorie, gravite, pourquoi) = ligne_suspecte(programme, ligne_jugee)?;
+    indice(
+        format!(
+            "{categorie}|{}|{:016x}",
+            nom_programme(programme),
+            empreinte(&chemin_bas(ligne_jugee))
+        ),
+        gravite,
+        pourquoi,
+        vec![
+            (Libelle::Programme, programme.to_string()),
+            (Libelle::Commande, ligne.to_string()),
+            (Libelle::Parent, champ(e, "ParentProcessName").to_string()),
+            (Libelle::Auteur, auteur(e)),
+        ],
+    )
+}
+
+/// Les actions « Exec » d'une tâche (son XML, `TaskContent` du 4698, `TaskContentNew` du 4702) : (programme,
+/// arguments), au plus `ACTIONS_MAX` (le Planificateur en admet 32). Les entités XML courantes sont défaites.
+const ACTIONS_MAX: usize = 32;
+
+pub(crate) fn actions_de_tache(xml: &str) -> Vec<(String, String)> {
+    // En minuscules ASCII seulement : les balises le sont, et les indices de `bas` restent ceux de `xml` (une lettre
+    // dont la minuscule change de longueur, posée exprès dans la tâche, ne décale rien).
+    let bas = xml.to_ascii_lowercase();
+    let valeur = |debut: usize, balise: &str| -> Option<(String, usize)> {
+        let ouvre = format!("<{balise}>");
+        let ferme = format!("</{balise}>");
+        let i = bas[debut..].find(&ouvre)? + debut + ouvre.len();
+        let j = bas[i..].find(&ferme)? + i;
+        Some((entites(&xml[i..j]), j + ferme.len()))
+    };
+    let mut actions = Vec::new();
+    let mut depuis = 0;
+    while actions.len() < ACTIONS_MAX {
+        let Some(i) = bas[depuis..].find("<exec>").map(|i| i + depuis) else {
+            break;
+        };
+        let fin = bas[i..].find("</exec>").map_or(bas.len(), |j| j + i);
+        let Some((commande, _)) = valeur(i, "command").filter(|(_, apres)| *apres <= fin) else {
+            depuis = i + "<exec>".len();
+            continue;
+        };
+        let arguments = valeur(i, "arguments")
+            .filter(|(_, apres)| *apres <= fin)
+            .map(|(a, _)| a)
+            .unwrap_or_default();
+        actions.push((commande, arguments));
+        depuis = fin.max(i + 1);
+    }
+    actions
+}
+
+/// Les entités XML d'une valeur (« &quot; », « &amp; »…), défaites une fois.
+fn entites(t: &str) -> String {
+    t.replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+        .trim()
+        .to_string()
+}
+
+/// Le dossier des versions de la plateforme de Defender, que Defender protège lui-même : ses tâches d'analyse y
+/// lancent MpCmdRun, et chaque mise à jour de la plateforme les récrit.
+fn plateforme_de_defender(programme_bas: &str) -> bool {
+    ["c:\\programdata\\", "%programdata%\\"].iter().any(|p| {
+        programme_bas
+            .strip_prefix(p)
+            .is_some_and(|r| r.starts_with("microsoft\\windows defender\\platform\\"))
+    }) && !programme_bas.contains("\\..\\")
+}
+
+/// Ce que l'action d'une tâche a de suspect : (gravité, pourquoi) ; rien pour une action ordinaire.
+pub(crate) fn tache_suspecte(commande: &str, arguments: &str) -> Option<(Gravite, Texte)> {
+    let programme_bas = sans_prefixe(&chemin_bas(&decouper(commande).0));
+    let nom = nom_programme(&programme_bas);
+    let ligne = format!("{commande} {arguments}");
+    if let Some((_, gravite, pourquoi)) = ligne_suspecte(commande, &ligne) {
+        return Some((gravite, pourquoi));
+    }
+    if plateforme_de_defender(&programme_bas) {
+        return None;
+    }
+    // rundll32 n'alerte que s'il va chercher ailleurs que dans Windows (des tâches de Windows le lancent sur une
+    // bibliothèque du système : « rundll32.exe /d acproxy.dll,PerformAutochkOperations »).
+    let ailleurs = |t: &str| INSCRIPTIBLES.iter().chain(DOUTEUX).any(|d| t.contains(d)) || adresse_web(t);
+    let arguments_bas = chemin_bas(arguments);
+    if (est_interprete(&nom) && nom != "rundll32")
+        || (nom == "rundll32" && ailleurs(&arguments_bas))
+        || est_autre_interprete(&nom)
+        || chemin_bas(commande).contains("%comspec%")
+    {
+        return Some((
+            Gravite::Alerte,
+            (
+                "la tâche lance un interpréteur de commandes ou de scripts, comme les programmes malveillants qui se relancent à chaque démarrage (des outils d'administration le font aussi)",
+                "the task runs a command or script interpreter, like malware that restarts itself at every startup (administration tools do too)",
+            ),
+        ));
+    }
+    if TEMPORAIRES.iter().chain(DOUTEUX).any(|d| programme_bas.contains(d))
+        || [
+            "\\windows\\tasks\\",
+            "\\windows\\tracing\\",
+            "\\spool\\drivers\\color\\",
+        ]
+        .iter()
+        .any(|d| programme_bas.contains(d))
+    {
+        return Some((
+            Gravite::Alerte,
+            (
+                "la tâche lance un programme d'un dossier temporaire, des téléchargements ou public, où rien ne s'installe",
+                "the task runs a program from a temporary, downloads or public folder, where nothing gets installed",
+            ),
+        ));
+    }
+    if INSCRIPTIBLES.iter().any(|d| programme_bas.contains(d)) {
+        return Some((
+            Gravite::Info,
+            (
+                "la tâche lance un programme rangé dans un profil, où le compte écrit lui-même (OneDrive, Teams ou Zoom s'y installent ; un programme malveillant aussi)",
+                "the task runs a program stored in a profile, where the account itself writes (OneDrive, Teams or Zoom install there; malware too)",
+            ),
+        ));
+    }
+    if programme_bas.contains("\\programdata\\") || programme_bas.starts_with("%programdata%") {
+        return Some((
+            Gravite::Info,
+            (
+                "la tâche lance un programme rangé dans ProgramData, où tout compte peut créer des dossiers",
+                "the task runs a program stored in ProgramData, where any account can create folders",
+            ),
+        ));
+    }
+    None
+}
+
+/// 4698 (tâche créée) et 4702 (tâche changée) : chaque action de la tâche jugée ; une tâche créée sans rien de
+/// suspect reste une information, une tâche changée sans rien de suspect ne dit rien (Windows récrit les siennes à
+/// chaque mise à jour).
+fn tache_auditee(e: &EvenementWindows) -> Option<Indice> {
+    let nom = champ(e, "TaskName");
+    let contenu = e
+        .champ("TaskContent")
+        .or_else(|| e.champ("TaskContentNew"))
+        .unwrap_or_default();
+    let actions = actions_de_tache(contenu);
+    let pire = actions
+        .iter()
+        .filter_map(|(programme, arguments)| {
+            tache_suspecte(programme, arguments).map(|(gravite, pourquoi)| (gravite, pourquoi, programme, arguments))
+        })
+        .max_by_key(|(gravite, ..)| *gravite);
+    let (gravite, pourquoi, commande) = match pire {
+        Some((gravite, pourquoi, programme, arguments)) => (gravite, pourquoi, format!("{programme} {arguments}")),
+        None if e.id == 4698 => (
+            Gravite::Info,
+            ("une tâche planifiée a été créée", "a scheduled task was created"),
+            actions.first().map(|(c, a)| format!("{c} {a}")).unwrap_or_default(),
+        ),
+        None => return None,
+    };
+    indice(
+        format!("{}|{}", nom.to_lowercase(), chemin_bas(&commande)),
+        gravite,
+        pourquoi,
+        vec![
+            (Libelle::Tache, nom.to_string()),
+            (Libelle::Commande, commande.trim().to_string()),
+            (Libelle::Auteur, auteur(e)),
+        ],
+    )
+}
+
+/// TaskScheduler/Operational 106 (tâche inscrite) : ce journal ne dit pas ce qu'elle lance, une information.
+fn tache_inscrite(e: &EvenementWindows) -> Option<Indice> {
+    let nom = champ(e, "TaskName");
+    indice(
+        format!("{}|inscrite", nom.to_lowercase()),
+        Gravite::Info,
+        (
+            "une tâche planifiée a été créée (ce journal ne dit pas ce qu'elle lance : son lancement le dira)",
+            "a scheduled task was created (this log does not say what it runs: its launch will)",
+        ),
+        vec![
+            (Libelle::Tache, nom.to_string()),
+            (Libelle::Compte, champ(e, "UserContext").to_string()),
+        ],
+    )
+}
+
+/// TaskScheduler/Operational 200 (action lancée) : le programme de l'action, sans ses arguments.
+fn tache_lancee(e: &EvenementWindows) -> Option<Indice> {
+    let nom = champ(e, "TaskName");
+    let programme = champ(e, "ActionName");
+    let (gravite, pourquoi) = tache_suspecte(programme, "")?;
+    indice(
+        format!("{}|{}", nom.to_lowercase(), chemin_bas(programme)),
+        gravite,
+        pourquoi,
+        vec![
+            (Libelle::Tache, nom.to_string()),
+            (Libelle::Programme, programme.to_string()),
+        ],
+    )
+}
+
+// ---------------------------------------------------------------------------------------------------------------
 // Les règles
 // ---------------------------------------------------------------------------------------------------------------
 
@@ -1960,6 +2337,8 @@ const fn securite(
 const LOGON: &str = "{0cce9215-69ae-11d9-bed3-505054503030}";
 const COMPTES: &str = "{0cce9235-69ae-11d9-bed3-505054503030}";
 const GROUPES: &str = "{0cce9237-69ae-11d9-bed3-505054503030}";
+const PROCESSUS: &str = "{0cce922b-69ae-11d9-bed3-505054503030}";
+const AUTRES_OBJETS: &str = "{0cce9227-69ae-11d9-bed3-505054503030}";
 
 /// L'audit des ouvertures de session : un poste allumé écrit sans cesse des 4624 ; sans un seul 4624, 4625 ou
 /// 4648 vu, rien ne prouve que la sous-catégorie écrit encore.
@@ -2009,7 +2388,28 @@ const BITS: &str = "Microsoft-Windows-Bits-Client/Operational";
 const WMI: &str = "Microsoft-Windows-WMI-Activity/Operational";
 const LSM: &str = "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational";
 const RCM: &str = "Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational";
+const TACHES: &str = "Microsoft-Windows-TaskScheduler/Operational";
 const DEFENDER_P: &[&str] = &["Microsoft-Windows-Windows Defender"];
+const TACHES_P: &[&str] = &["Microsoft-Windows-TaskScheduler"];
+
+/// L'audit des tâches planifiées (« Autres événements d'accès à l'objet », coupé d'origine) : sans un seul de ses
+/// événements vu, rien ne prouve qu'il est allumé.
+const AUDIT_TACHES: Audit = Audit::Preuve {
+    preuve: &[4671, 4691, 4698, 4699, 4700, 4701, 4702, 5148, 5149, 5888, 5889, 5890],
+    quoi: (
+        "aucune tâche planifiée journalisée : allumer l'audit « Auditer d'autres événements d'accès à l'objet » (succès), ou l'historique du Planificateur de tâches (« Activer l'historique de toutes les tâches »)",
+        "no scheduled task recorded: turn on the “Audit Other Object Access Events” auditing (success), or the Task Scheduler history (“Enable All Tasks History”)",
+    ),
+};
+
+/// L'audit de la création de processus et la ligne de commande dans ses événements, coupés d'origine.
+const AUDIT_PROCESSUS: Audit = Audit::PreuveChamp {
+    champ: "CommandLine",
+    quoi: (
+        "aucune ligne de commande journalisée : allumer l'audit « Auditer la création du processus » (succès) et la stratégie « Inclure la ligne de commande dans les événements de création de processus »",
+        "no command line recorded: turn on the “Audit Process Creation” auditing (success) and the “Include command line in process creation events” policy",
+    ),
+};
 
 /// Les journaux que lisent les règles.
 pub(crate) const JOURNAUX: &[&str] = &[
@@ -2023,6 +2423,7 @@ pub(crate) const JOURNAUX: &[&str] = &[
     WMI,
     LSM,
     RCM,
+    TACHES,
 ];
 
 /// Les règles.
@@ -2059,6 +2460,7 @@ pub(crate) static REGLES: &[Regle] = &[
             "a record changed or replaced without changing its number cannot be seen, nor a log that stops writing (service turned off in the registry) without leaving a gap",
         )),
         defender: false,
+        un_journal_suffit: false,
     },
     Regle {
         id: "EVT-SRV-001",
@@ -2088,6 +2490,7 @@ pub(crate) static REGLES: &[Regle] = &[
             "a service changed directly in the registry (ImagePath, Start) writes neither 7045 nor 7040",
         )),
         defender: false,
+        un_journal_suffit: false,
     },
     Regle {
         id: "EVT-ADM-001",
@@ -2112,6 +2515,7 @@ pub(crate) static REGLES: &[Regle] = &[
         ],
         limite: None,
         defender: false,
+        un_journal_suffit: false,
     },
     Regle {
         id: "EVT-MDP-001",
@@ -2169,6 +2573,7 @@ pub(crate) static REGLES: &[Regle] = &[
         ],
         limite: None,
         defender: false,
+        un_journal_suffit: false,
     },
     Regle {
         id: "EVT-RDP-001",
@@ -2209,6 +2614,7 @@ pub(crate) static REGLES: &[Regle] = &[
         ],
         limite: None,
         defender: false,
+        un_journal_suffit: false,
     },
     Regle {
         id: "EVT-IDE-001",
@@ -2230,6 +2636,7 @@ pub(crate) static REGLES: &[Regle] = &[
             "“Run as” and the like go through the Secondary Logon service, indistinguishable from the ordinary",
         )),
         defender: false,
+        un_journal_suffit: false,
     },
     Regle {
         id: "EVT-PSH-001",
@@ -2272,6 +2679,7 @@ pub(crate) static REGLES: &[Regle] = &[
             "without the “Turn on Script Block Logging” policy, PowerShell only writes by default the blocks it judges suspicious itself; PowerShell 7 only writes to its log once registered; a long script is judged part by part",
         )),
         defender: false,
+        un_journal_suffit: false,
     },
     Regle {
         id: "EVT-DEF-001",
@@ -2301,6 +2709,7 @@ pub(crate) static REGLES: &[Regle] = &[
         ],
         limite: None,
         defender: true,
+        un_journal_suffit: false,
     },
     Regle {
         id: "EVT-BIT-001",
@@ -2325,6 +2734,7 @@ pub(crate) static REGLES: &[Regle] = &[
             "a redirect followed by BITS cannot be seen: only the starting address is written",
         )),
         defender: false,
+        un_journal_suffit: false,
     },
     Regle {
         id: "EVT-WMI-001",
@@ -2346,6 +2756,7 @@ pub(crate) static REGLES: &[Regle] = &[
         )],
         limite: None,
         defender: false,
+        un_journal_suffit: false,
     },
     Regle {
         id: "EVT-AUD-001",
@@ -2359,5 +2770,62 @@ pub(crate) static REGLES: &[Regle] = &[
         volets: &[chacun(SECURITY, AUDIT, &[4719], Condition::Toujours, audit_change)],
         limite: None,
         defender: false,
+        un_journal_suffit: false,
+    },
+    Regle {
+        id: "EVT-TAC-001",
+        sujet: (
+            "tâche planifiée créée ou changée pour lancer un interpréteur ou un programme d'un dossier inscriptible",
+            "scheduled task created or changed to run an interpreter or a program from a writable folder",
+        ),
+        techniques: &["T1053.005"],
+        references: &[
+            "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4698",
+            "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4702",
+            "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/audit-other-object-access-events",
+            "https://attack.mitre.org/techniques/T1053/005/",
+        ],
+        // Deux sources de rechange : l'audit (4698, 4702, avec le contenu de la tâche), coupé d'origine, ou
+        // l'historique du Planificateur (106, 200 : le nom et le programme lancé), coupé d'origine lui aussi.
+        volets: &[
+            Volet {
+                audit: AUDIT_TACHES,
+                ..securite(&[4698, 4702], Condition::Toujours, tache_auditee, AUTRES_OBJETS)
+            },
+            chacun(TACHES, TACHES_P, &[106], Condition::Toujours, tache_inscrite),
+            chacun(TACHES, TACHES_P, &[200], Condition::Toujours, tache_lancee),
+        ],
+        limite: Some((
+            "une tâche écrite directement dans le registre ou dans System32\\Tasks n'écrit aucun de ces événements ; l'historique du Planificateur ne dit pas les arguments",
+            "a task written directly into the registry or System32\\Tasks writes none of these events; the Task Scheduler history does not record the arguments",
+        )),
+        defender: false,
+        un_journal_suffit: true,
+    },
+    Regle {
+        id: "EVT-PRC-001",
+        sujet: (
+            "processus suspect : outil d'attaque, commande encodée, téléchargement par un programme de Windows",
+            "suspicious process: attack tool, encoded command, download by a Windows program",
+        ),
+        techniques: &["T1059", "T1027.010", "T1105", "T1218"],
+        references: &[
+            "https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4688",
+            "https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/component-updates/command-line-process-auditing",
+            "https://attack.mitre.org/techniques/T1059/",
+            "https://attack.mitre.org/techniques/T1027/010/",
+            "https://attack.mitre.org/techniques/T1105/",
+            "https://attack.mitre.org/techniques/T1218/",
+        ],
+        volets: &[Volet {
+            audit: AUDIT_PROCESSUS,
+            ..securite(&[4688], Condition::Toujours, processus_cree, PROCESSUS)
+        }],
+        limite: Some((
+            "un programme renommé, ou lancé autrement qu'en processus (une bibliothèque chargée, du code en mémoire), ne se voit pas à sa ligne de commande",
+            "a renamed program, or one started other than as a process (a loaded library, code in memory), cannot be seen from its command line",
+        )),
+        defender: false,
+        un_journal_suffit: false,
     },
 ];

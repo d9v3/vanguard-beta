@@ -160,6 +160,8 @@ pub(crate) enum Libelle {
     Serveur,
     Installation,
     PremiereSession,
+    Parent,
+    Tache,
 }
 
 impl Libelle {
@@ -189,6 +191,8 @@ impl Libelle {
             Libelle::Serveur => ("serveur", "server"),
             Libelle::Installation => ("Windows installé le", "Windows installed on"),
             Libelle::PremiereSession => ("première session le", "first sign-in on"),
+            Libelle::Parent => ("lancé par", "started by"),
+            Libelle::Tache => ("tâche", "task"),
         }
     }
 }
@@ -246,6 +250,10 @@ pub(crate) enum Audit {
     /// Dépend d'une sous-catégorie de la politique d'audit qu'un réglage peut couper sans que rien ne le dise dans
     /// le journal lu : sans un événement de `preuve` vu (vérifié) dans ce journal, la règle n'est pas vérifiée.
     Preuve { preuve: &'static [u32], quoi: Texte },
+    /// Comme `Preuve`, mais la preuve est un événement du volet lui-même (ses numéros, son journal, ses
+    /// fournisseurs), vérifié, dont `champ` est rempli : un réglage à part décide si Windows écrit ce champ (la ligne
+    /// de commande du 4688, vide d'origine), et seul un événement qui le porte prouve qu'il est allumé.
+    PreuveChamp { champ: &'static str, quoi: Texte },
 }
 
 /// Une partie d'une règle : un journal, des numéros d'événements, une forme.
@@ -281,6 +289,10 @@ pub(crate) struct Regle {
     pub limite: Option<Texte>,
     /// La règle juge Microsoft Defender : sans objet quand il n'est pas l'antivirus de l'ordinateur.
     pub defender: bool,
+    /// Ses journaux sont des sources de rechange (la politique d'audit, ou l'historique du Planificateur de tâches) :
+    /// un seul lu en entier, et prouvé, suffit à la vérifier ; ce qui manque aux autres n'est alors pas dit. Faux :
+    /// chacun doit l'être.
+    pub un_journal_suffit: bool,
 }
 
 /// Une réserve sur une trouvaille.
@@ -532,6 +544,8 @@ struct EtatRegle {
     au_dela_pire: Option<Gravite>,
     rafales: HashMap<usize, Rafales>,
     examines: u64,
+    /// Les volets `Audit::PreuveChamp` dont la preuve a été vue.
+    prouves: HashSet<usize>,
 }
 
 /// Le jugement d'une règle.
@@ -713,6 +727,16 @@ impl Moteur {
                 continue;
             }
             let etat = &mut self.etats[r];
+            if let Audit::PreuveChamp { champ, .. } = volet.audit
+                && e.verifie
+                && !b
+                && e.champ(champ).is_some_and(|v| {
+                    let v = v.trim();
+                    !v.is_empty() && v != "-"
+                })
+            {
+                etat.prouves.insert(v);
+            }
             match volet.forme {
                 Forme::Chacun(juger) => {
                     if !volet.quand.vrai(e) {
@@ -767,34 +791,52 @@ impl Moteur {
             }
             let plus_recent = self.journaux.values().filter_map(|s| s.dernier).max();
             let mut stats = Vec::new();
-            let mut vus: HashSet<String> = HashSet::new();
-            for volet in regle.volets.iter().filter(|v| !v.journal.is_empty()) {
+            // Ce qui manque à chaque journal de la règle, dans l'ordre de ses volets : une règle à sources de rechange
+            // (`Regle::un_journal_suffit`) est vérifiée dès que l'un d'eux n'a rien qui manque.
+            let mut par_journal: Vec<(String, Vec<Manque>)> = Vec::new();
+            for (v, volet) in regle.volets.iter().enumerate().filter(|(_, v)| !v.journal.is_empty()) {
                 let cle = cle_journal(volet.journal);
                 let stat = self.journaux.get(&cle).cloned().unwrap_or_else(|| StatJournal {
                     nom: volet.journal.to_string(),
                     ..StatJournal::default()
                 });
-                if vus.insert(cle.clone()) {
-                    manques.extend(lecture(volet.journal, journaux, &stat, &self.options, plus_recent));
+                let i = if let Some(i) = par_journal.iter().position(|(c, _)| *c == cle) {
+                    i
+                } else {
+                    let m = lecture(volet.journal, journaux, &stat, &self.options, plus_recent);
                     stats.push(stat.clone());
-                }
+                    par_journal.push((cle, m));
+                    par_journal.len() - 1
+                };
+                let siens = &mut par_journal[i].1;
+                let mut noter = |m: Manque| {
+                    if !siens.contains(&m) {
+                        siens.push(m);
+                    }
+                };
                 if let Some(sc) = volet.sous_categorie
                     && self.audit_reduit.contains(sc)
                 {
-                    let m = Manque::AuditReduit {
+                    noter(Manque::AuditReduit {
                         journal: volet.journal.to_string(),
-                    };
-                    if !manques.contains(&m) {
-                        manques.push(m);
-                    }
+                    });
                 }
-                if let Audit::Preuve { preuve, quoi } = volet.audit {
-                    let prouve = preuve.iter().any(|id| stat.ids_vus.contains(id));
-                    let m = Manque::NonAudite {
-                        journal: volet.journal.to_string(),
-                        quoi,
-                    };
-                    if !prouve && !manques.contains(&m) {
+                let non_audite = |quoi| Manque::NonAudite {
+                    journal: volet.journal.to_string(),
+                    quoi,
+                };
+                match volet.audit {
+                    Audit::Preuve { preuve, quoi } if !preuve.iter().any(|id| stat.ids_vus.contains(id)) => {
+                        noter(non_audite(quoi));
+                    }
+                    Audit::PreuveChamp { quoi, .. } if !etat.prouves.contains(&v) => noter(non_audite(quoi)),
+                    _ => {}
+                }
+            }
+            let un_suffit = regle.un_journal_suffit && par_journal.iter().any(|(_, m)| m.is_empty());
+            if !un_suffit {
+                for m in par_journal.into_iter().flat_map(|(_, m)| m) {
+                    if !manques.contains(&m) {
                         manques.push(m);
                     }
                 }

@@ -5,7 +5,7 @@
 //! - `moteur` : les formes de règles (un événement à la fois, rafale dans une fenêtre de temps, rafale puis réussite),
 //!   les conditions sur les champs, et ce que vaut la lecture de chaque journal (lu, partiel, absent, refusé,
 //!   désactivé, non audité d'origine) : une règle qui n'a pas pu tout lire est « non vérifiée », jamais « rien vu » ;
-//! - `jeu` : les onze premières règles, des données ;
+//! - `jeu` : les règles, des données ;
 //! - `resultat` : le jugement changé en constats et en couverture (`modele::resultat::Resultat`), et les deux points
 //!   d'entrée, un dossier de .evtx ou l'ordinateur vivant.
 //!

@@ -756,6 +756,90 @@ fn constats_dates(
     (constats, dates, couverture)
 }
 
+/// Les constats d'une analyse pour le bilan (WIN-JRN-003, un client du moteur parmi d'autres) : chaque alerte, son
+/// identifiant `EVT-` devant (le bilan pose le sien sur tous ses constats) ; les règles vérifiées en un seul constat
+/// sain ; les règles non vérifiées regroupées par ce qui leur a manqué (un journal de sécurité refusé en rend huit non
+/// vérifiées d'un coup), chacune avec sa raison typée : jamais un sain pour ce qui n'a pas été lu.
+pub(crate) fn constats_du_bilan(a: &Analyse, est_normale: &dyn Fn(&str) -> bool) -> Vec<Constat> {
+    let (tous, _) = constats(a, est_normale);
+    let couverture = Objet::de("evt", "couverture");
+    let mut sortie: Vec<Constat> = tous
+        .into_iter()
+        .filter(|c| c.objet != couverture)
+        .map(|mut c| {
+            c.message = crate::trf!("{} : {}", "{}: {}", c.regle, c.message);
+            c
+        })
+        .collect();
+    let mut verifiees: Vec<&str> = Vec::new();
+    let mut sans: Vec<&str> = Vec::new();
+    // (ce qui a manqué, sa raison, les règles) : une entrée par manque identique.
+    let mut non_verifiees: Vec<(String, Raison, Vec<String>)> = Vec::new();
+    for c in &a.manques_source {
+        non_verifiees.push((c.clone(), Raison::Illisible(c.clone()), Vec::new()));
+    }
+    for j in &a.jugements {
+        let r = j.regle;
+        if j.sans_objet && j.manques.is_empty() {
+            sans.push(r.id);
+            continue;
+        }
+        if j.verifie() {
+            verifiees.push(r.id);
+            continue;
+        }
+        let textes: Vec<(String, Raison)> = j.manques.iter().map(|m| manque(&a.source, m)).collect();
+        let mut liste: Vec<String> = Vec::new();
+        for (t, _) in &textes {
+            if !liste.contains(t) {
+                liste.push(t.clone());
+            }
+        }
+        let cle = liste.join(" ; ");
+        let raison = textes.into_iter().next().map_or(Raison::NonPrecisee, |(_, r)| r);
+        let regle = format!("{} ({})", r.id, texte(r.sujet));
+        match non_verifiees.iter_mut().find(|(c, x, _)| *c == cle && *x == raison) {
+            Some((_, _, regles)) => regles.push(regle),
+            None => non_verifiees.push((cle, raison, vec![regle])),
+        }
+    }
+    if !verifiees.is_empty() {
+        sortie.push(ok(
+            CAT,
+            crate::trf!(
+                "Journaux d'événements lus en entier pour {} règle(s) : {}.",
+                "Event logs read in full for {} rule(s): {}.",
+                verifiees.len(),
+                verifiees.join(", ")
+            ),
+        ));
+    }
+    if !sans.is_empty() {
+        sortie.push(sans_objet(
+            CAT,
+            Absence::Logiciel,
+            crate::trf!(
+                "{} : Microsoft Defender n'est pas l'antivirus de cet ordinateur.",
+                "{}: Microsoft Defender is not this computer's antivirus.",
+                sans.join(", ")
+            ),
+        ));
+    }
+    for (manque, raison, regles) in non_verifiees {
+        let message = if regles.is_empty() {
+            crate::trf!("Non vérifié : {manque}.", "Not verified: {manque}.")
+        } else {
+            crate::trf!(
+                "Non vérifié — {manque} : {}.",
+                "Not verified — {manque}: {}.",
+                regles.join(" ; ")
+            )
+        };
+        sortie.push(impossible_par(CAT, raison, message));
+    }
+    sortie
+}
+
 /// Le résultat commun d'une analyse commencée à `debut`.
 pub(crate) fn resultat(
     a: &Analyse,

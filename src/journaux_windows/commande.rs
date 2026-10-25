@@ -63,47 +63,84 @@ fn analyser(dossier: Option<&Path>, jours: u32) -> Result<Analyse, Refus> {
     }
 }
 
+/// Pourquoi l'analyse n'a pas commencé, dans la langue du moment.
+fn texte_refus(r: &Refus) -> String {
+    match r {
+        Refus::SansDossier => trf!(
+            "  ✖ Sans --dossier, Vanguard lit les journaux du Windows en marche : ici, il n'y en a pas. Donnez-lui un dossier de journaux .evtx, par exemple Windows\\System32\\winevt\\Logs d'un disque de Windows monté depuis la clé de secours, ou le dossier laissé par « vanguard depanner traces » sous Windows :\n    vanguard {NOM} --dossier /run/media/alice/Windows/Windows/System32/winevt/Logs",
+            "  ✖ Without --dossier, Vanguard reads the logs of the running Windows: there is none here. Give it a folder of .evtx logs, for example Windows\\System32\\winevt\\Logs of a Windows disk mounted from the rescue drive, or the folder left by “vanguard troubleshoot evidence” on Windows:\n    vanguard windows-logs --folder /run/media/alice/Windows/Windows/System32/winevt/Logs"
+        ),
+        Refus::Dossier(d, e) => trf!(
+            "  ✖ Le dossier {} ne se lit pas ({e}) : rien n'a été analysé.",
+            "  ✖ The folder {} cannot be read ({e}): nothing was analysed.",
+            chemin_affichable(d)
+        ),
+    }
+}
+
 /// Dit pourquoi l'analyse n'a pas commencé, sur la sortie d'erreur (rien sur la sortie, même sous `--json`), et
 /// quitte : 2 pour un appel à refaire autrement, 1 pour un dossier illisible.
 fn refuser(r: &Refus) -> ! {
-    match r {
-        Refus::SansDossier => {
-            eprintln!(
-                "{}",
-                mettre_en_lignes(&trf!(
-                    "  ✖ Sans --dossier, Vanguard lit les journaux du Windows en marche : ici, il n'y en a pas. Donnez-lui un dossier de journaux .evtx, par exemple Windows\\System32\\winevt\\Logs d'un disque de Windows monté depuis la clé de secours, ou le dossier laissé par « vanguard depanner traces » sous Windows :\n    vanguard {NOM} --dossier /run/media/alice/Windows/Windows/System32/winevt/Logs",
-                    "  ✖ Without --dossier, Vanguard reads the logs of the running Windows: there is none here. Give it a folder of .evtx logs, for example Windows\\System32\\winevt\\Logs of a Windows disk mounted from the rescue drive, or the folder left by “vanguard troubleshoot evidence” on Windows:\n    vanguard windows-logs --folder /run/media/alice/Windows/Windows/System32/winevt/Logs"
-                ))
-            );
-            crate::machine::quitter(2);
-        }
-        Refus::Dossier(d, e) => {
-            eprintln!(
-                "{}",
-                mettre_en_lignes(&trf!(
-                    "  ✖ Le dossier {} ne se lit pas ({e}) : rien n'a été analysé.",
-                    "  ✖ The folder {} cannot be read ({e}): nothing was analysed.",
-                    chemin_affichable(d)
-                ))
-            );
-            crate::machine::quitter(1);
-        }
-    }
+    eprintln!("{}", mettre_en_lignes(&texte_refus(r)));
+    crate::machine::quitter(match r {
+        Refus::SansDossier => 2,
+        Refus::Dossier(..) => 1,
+    });
 }
 
 /// La commande. `jours` : 1 et plus (clap refuse 0 et les nombres négatifs).
 pub(crate) fn executer(dossier: Option<&Path>, jours: u32, json: bool) {
+    if let Err(r) = lancer(dossier, jours, json) {
+        refuser(&r);
+    }
+}
+
+/// Les jours lus depuis le menu : ceux de la commande sans `--jours`.
+const JOURS_DU_MENU: u32 = 7;
+
+/// Menu Bloquer et réagir › Journaux de Windows : sous Windows, les journaux de cet ordinateur ; ailleurs, un dossier
+/// de .evtx demandé (`winevt\Logs` d'un disque de Windows monté depuis la clé de secours, des journaux rapportés).
+/// Rien ne quitte le menu : un dossier illisible est dit, et l'on revient.
+pub(crate) fn menu() {
+    let dossier = if cfg!(windows) {
+        None
+    } else {
+        // Le cadre « Que s'est-il passé ? » vient avec l'analyse (`entete`) : ici, seulement ce qu'il faut donner.
+        println!();
+        afficher_aligne(
+            "  ",
+            tr!(
+                "Il n'y a pas de Windows en marche ici : Vanguard lit un dossier de journaux .evtx, par exemple Windows\\System32\\winevt\\Logs d'un disque de Windows monté depuis la clé de secours, ou des journaux rapportés d'un autre ordinateur. Rien n'y est changé.",
+                "There is no running Windows here: Vanguard reads a folder of .evtx logs, for example Windows\\System32\\winevt\\Logs of a Windows disk mounted from the rescue drive, or logs brought from another computer. Nothing in it is changed."
+            ),
+            2,
+            GRIS,
+        );
+        let reponse = demander(tr!(
+            "\n  Dossier des journaux (glissez-le ici, ou tapez son chemin ; Entrée pour revenir) : ",
+            "\n  Log folder (drag it here, or type its path; Enter to go back): "
+        ));
+        let Some(d) = crate::protection::courriel_suspect::chemin_saisi(&reponse) else {
+            noter_retour(true);
+            return;
+        };
+        Some(d)
+    };
+    if let Err(r) = lancer(dossier.as_deref(), JOURS_DU_MENU, false) {
+        println!("{}", mettre_en_lignes(&texte_refus(&r)));
+    }
+}
+
+/// L'analyse, son versement et son écran (ou son JSON) ; `Err` : elle n'a pas pu commencer.
+fn lancer(dossier: Option<&Path>, jours: u32, json: bool) -> Result<(), Refus> {
     let debut = (Utc::now(), std::time::Instant::now());
     if dossier.is_none() && !cfg!(windows) {
-        refuser(&Refus::SansDossier);
+        return Err(Refus::SansDossier);
     }
     if !json {
         entete(dossier, jours);
     }
-    let a = match analyser(dossier, jours) {
-        Ok(a) => a,
-        Err(r) => refuser(&r),
-    };
+    let a = analyser(dossier, jours)?;
     let est_normale = |cle: &str| crate::protection::normales::est_normale(cle);
     let mut r = resultat::resultat(&a, debut, &est_normale);
     if let Some(d) = dossier {
@@ -116,9 +153,10 @@ pub(crate) fn executer(dossier: Option<&Path>, jours: u32, json: bool) {
     }
     if json {
         println!("{}", crate::modele::resultat::json(&r));
-        return;
+        return Ok(());
     }
     afficher(&a, &r, &c, options(jours).depuis.unwrap_or(debut.0));
+    Ok(())
 }
 
 /// Les alertes de cet ordinateur au journal des événements, avec leur clé : « Ce que Vanguard a appris » les propose

@@ -1,27 +1,21 @@
-//! Journaux d'événements de Windows, les 7 derniers jours : rafales d'échecs de connexion (quelqu'un essaie des mots
-//! de passe), journal de sécurité effacé, comptes créés, services installés. Une seule lecture PowerShell, bornée en
-//! nombre d'événements et en temps. L'effacement des autres journaux (événement 104 du journal Système) est déjà dit
-//! par la règle commune des journaux (journaux.rs) : pas deux fois.
+//! Journaux d'événements de Windows : WIN-JRN-003, les 7 derniers jours jugés par le moteur des règles `EVT-`
+//! (`journaux_windows::regles`, un seul juge), et ce que d'autres outils lisent eux-mêmes par les fonctions de Windows
+//! (wevtapi) : les échecs et réussites de connexion de la chasse (mot de passe deviné), le 104 de la règle commune des
+//! journaux, les événements du diagnostic et des traces.
 
 use std::collections::HashMap;
 
-use chrono::{NaiveDateTime, TimeDelta};
+use chrono::NaiveDateTime;
 
-use super::persistance::lancement_suspect;
-use super::portes::INTERPRETES;
 use super::*;
-use crate::commande::decouper_commande;
 use crate::machine::regles::{Os, regle};
-use crate::ui::{affichable, couper};
 
 const JOURS: u32 = 7;
-/// À partir de tant d'échecs de connexion en une heure, ce n'est plus une faute de frappe.
-const RAFALE: usize = 20;
 /// Les échecs lus au plus : assez pour voir une rafale, sans faire durer le bilan quand un robot en envoie des
 /// milliers par jour.
 const MAX_ECHECS: usize = 2000;
 
-/// Une lecture d'un journal : sa section (ECH, SEC, SRV), le journal, les événements voulus, combien au plus.
+/// Une lecture d'un journal : sa section, le journal, les événements voulus, combien au plus.
 struct Lecture {
     section: &'static str,
     journal: &'static str,
@@ -29,28 +23,14 @@ struct Lecture {
     max: usize,
 }
 
-/// ECH (4625, échecs de connexion), SEC (1102 journal de sécurité effacé ; 4720 compte créé) : journal Security, lisible
-/// seulement en administrateur. SRV (7045 service installé) : journal System.
-const LECTURES: [Lecture; 3] = [
-    Lecture {
-        section: "ECH",
-        journal: "Security",
-        evenements: "EventID=4625",
-        max: MAX_ECHECS,
-    },
-    Lecture {
-        section: "SEC",
-        journal: "Security",
-        evenements: "EventID=1102 or EventID=4720",
-        max: 100,
-    },
-    Lecture {
-        section: "SRV",
-        journal: "System",
-        evenements: "EventID=7045",
-        max: 200,
-    },
-];
+/// ECH (4625, échecs de connexion) : journal Security, lisible seulement en administrateur ; la chasse les lit (mot
+/// de passe deviné).
+const ECHECS: Lecture = Lecture {
+    section: "ECH",
+    journal: "Security",
+    evenements: "EventID=4625",
+    max: MAX_ECHECS,
+};
 
 /// Un événement lu dans son XML (celui que montre l'Observateur d'événements) : son numéro, sa date (UTC, ISO 8601) et
 /// ses valeurs dans l'ordre (EventData/Data, ou les champs sous UserData pour le 1102) : les « Properties » que
@@ -163,11 +143,6 @@ fn ligne(section: &str, id: u32, date: &str, p: &[String]) -> Option<String> {
     Some(match (section, id) {
         // Type de connexion, adresse d'origine, compte visé.
         ("ECH", 4625) => format!("{date}|{}|{}|{}", champ(p.get(10)), champ(p.get(19)), champ(p.get(5))),
-        ("SEC", 1102) => format!("1102|{date}|{}", champ(p.get(1))),
-        // Auteur, nouveau compte.
-        ("SEC", 4720) => format!("4720|{date}|{}|{}", champ(p.get(4)), champ(p.first())),
-        // Nom et programme du service.
-        ("SRV", 7045) => format!("{date}|{}|{}", champ(p.first()), champ(p.get(1))),
         _ => return None,
     })
 }
@@ -405,32 +380,9 @@ pub(crate) fn lire_rendus(
     }
 }
 
-/// Les journaux lus par les fonctions de Windows (wevtapi), sans PowerShell, dans la forme que `juger_evenements` lit :
-/// une section par lecture (« NOM|… », puis « NOM_FIN ») ; une section sans fin quand le journal a refusé. Bornée à
-/// 30 s en tout : au-delà, le service des journaux est bloqué.
-fn lire_journaux() -> String {
-    use std::fmt::Write as _;
-    let fin = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let mut texte = format!(
-        "ADM|{}\nADM_FIN\n",
-        if super::processus::eleve() { "True" } else { "False" }
-    );
-    for lecture in &LECTURES {
-        if let Some(lignes) = lire(lecture, fin) {
-            for l in lignes {
-                let _ = writeln!(texte, "{}|{l}", lecture.section);
-            }
-            let _ = writeln!(texte, "{}_FIN", lecture.section);
-        }
-    }
-    texte
-}
-
 /// Un échec de connexion (4625).
 struct Echec {
     quand: NaiveDateTime,
-    /// Par le réseau : partage ou connexion réseau (3), mot de passe en clair (8), Bureau à distance (10).
-    reseau: bool,
     adresse: String,
     compte: String,
 }
@@ -444,275 +396,16 @@ fn lire_echecs(lignes: &[&str]) -> Vec<Echec> {
         .iter()
         .filter_map(|l| {
             let c: Vec<&str> = l.splitn(4, '|').collect();
-            let [quand, type_, adresse, compte] = c[..] else {
+            let [quand, _type, adresse, compte] = c[..] else {
                 return None;
             };
             Some(Echec {
                 quand: date(quand)?,
-                reseau: matches!(type_.trim(), "3" | "8" | "10"),
                 adresse: adresse.trim().to_string(),
                 compte: compte.trim().to_string(),
             })
         })
         .collect()
-}
-
-/// Le plus grand nombre d'événements tombés dans une même heure (fenêtre glissante).
-fn plus_forte_rafale(mut heures: Vec<NaiveDateTime>) -> usize {
-    heures.sort_unstable();
-    let (mut debut, mut plus) = (0, 0);
-    for fin in 0..heures.len() {
-        while heures[fin] - heures[debut] >= TimeDelta::hours(1) {
-            debut += 1;
-        }
-        plus = plus.max(fin - debut + 1);
-    }
-    plus
-}
-
-/// Les `n` valeurs les plus fréquentes, montrées inoffensives, avec leur nombre : « 203.0.113.5 (40) ». Les valeurs
-/// vides, « - » et la machine elle-même ne disent rien de l'origine.
-fn plus_frequents<'a>(valeurs: impl Iterator<Item = &'a str>, n: usize) -> Vec<String> {
-    let mut nombres: HashMap<&str, usize> = HashMap::new();
-    for v in valeurs {
-        if !matches!(v, "" | "-" | "127.0.0.1" | "::1") {
-            *nombres.entry(v).or_default() += 1;
-        }
-    }
-    let mut tries: Vec<(&str, usize)> = nombres.into_iter().collect();
-    tries.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-    tries
-        .into_iter()
-        .take(n)
-        .map(|(v, k)| format!("{} ({k})", affichable(v)))
-        .collect()
-}
-
-/// Tous les échecs par le réseau viennent-ils d'une seule adresse du réseau local, pour un seul compte ? C'est le
-/// portrait d'un appareil de la maison qui répète un mot de passe périmé, pas celui d'une attaque (plusieurs origines,
-/// plusieurs comptes, souvent depuis Internet). L'adresse et le compte, sinon rien. Le réseau de la maison seul
-/// (portée `Locale`, comme `reseau::nmap`) : 100.64/10 (CGNAT) est celui d'autres abonnés, pas la maison.
-fn appareil_qui_insiste(echecs: &[Echec]) -> Option<(String, String)> {
-    use crate::socle::adresses::{Portee, portee};
-    let mut reseau = echecs.iter().filter(|e| e.reseau);
-    let premier = reseau.next()?;
-    let locale = portee(premier.adresse.parse::<std::net::IpAddr>().ok()?) == Portee::Locale;
-    let meme = |e: &&Echec| e.adresse == premier.adresse && e.compte.eq_ignore_ascii_case(&premier.compte);
-    (locale && !premier.compte.is_empty() && reseau.all(|e| meme(&e)))
-        .then(|| (premier.adresse.clone(), premier.compte.clone()))
-}
-
-fn juger_echecs(echecs: &[Echec]) -> Constat {
-    let total = echecs.len();
-    if total == 0 {
-        return ok(
-            "Comptes",
-            trf!(
-                "Aucun échec de connexion ces {JOURS} derniers jours.",
-                "No failed sign-in over the last {JOURS} days."
-            ),
-        );
-    }
-    let rafale_reseau = plus_forte_rafale(echecs.iter().filter(|e| e.reseau).map(|e| e.quand).collect());
-    let rafale = plus_forte_rafale(echecs.iter().map(|e| e.quand).collect());
-    if rafale < RAFALE {
-        return ok(
-            "Comptes",
-            trf!(
-                "{total} échec(s) de connexion ces {JOURS} derniers jours, sans rafale.",
-                "{total} failed sign-in(s) over the last {JOURS} days, no burst."
-            ),
-        );
-    }
-    let total = if total >= MAX_ECHECS {
-        trf!("au moins {total}", "at least {total}")
-    } else {
-        total.to_string()
-    };
-    let comptes = plus_frequents(echecs.iter().map(|e| e.compte.as_str()), 3).join(", ");
-    if rafale_reseau >= RAFALE
-        && let Some((adresse, compte)) = appareil_qui_insiste(echecs)
-    {
-        return alerte(
-            "Comptes",
-            Niveau::Moyen,
-            trf!(
-                "{rafale_reseau} échecs de connexion en une heure, tous depuis {} sur le réseau local et pour le seul compte {} ({total} en {JOURS} jours) : sans doute un appareil de votre domicile (NAS, imprimante, autre ordinateur) qui garde un vieux mot de passe pour un partage. Si vous ne le reconnaissez pas, c'est peut-être quelqu'un sur votre réseau.",
-                "{rafale_reseau} failed sign-ins within an hour, all from {} on the local network and for the single account {} ({total} in {JOURS} days): most likely a device at home (NAS, printer, another computer) keeping an old password for a share. If you do not recognize it, it may be someone on your network.",
-                affichable(&adresse),
-                affichable(&compte)
-            ),
-        )
-        .manuel(
-            tr!(
-                "Sur cet appareil, remettez le mot de passe actuel du partage, ou retirez le partage enregistré",
-                "On that device, enter the share's current password again, or remove the saved share"
-            ),
-            &[],
-        );
-    }
-    if rafale_reseau >= RAFALE {
-        let origines = plus_frequents(echecs.iter().filter(|e| e.reseau).map(|e| e.adresse.as_str()), 3);
-        let origines = if origines.is_empty() {
-            tr!("non notées par Windows", "not recorded by Windows").to_string()
-        } else {
-            origines.join(", ")
-        };
-        return alerte(
-            "Comptes",
-            Niveau::Eleve,
-            trf!(
-                "{rafale_reseau} échecs de connexion en une heure depuis le réseau (Bureau à distance, partages), {total} en {JOURS} jours : quelqu'un essaie des mots de passe. Origines : {origines} ; comptes visés : {comptes}.",
-                "{rafale_reseau} failed sign-ins within an hour from the network (Remote Desktop, shares), {total} in {JOURS} days: someone is trying passwords. Sources: {origines}; accounts targeted: {comptes}."
-            ),
-        )
-        .manuel(
-            tr!(
-                "Si ce n'est pas vous : des mots de passe longs, le blocage après des essais ratés, et le Bureau à distance coupé s'il ne sert pas",
-                "If it is not you: long passwords, lockout after failed attempts, and Remote Desktop turned off if it is not used"
-            ),
-            &["Start-Process ms-settings:remotedesktop"],
-        );
-    }
-    alerte(
-        "Comptes",
-        Niveau::Moyen,
-        trf!(
-            "{rafale} échecs de connexion en une heure sur cet ordinateur, {total} en {JOURS} jours : quelqu'un a essayé des mots de passe au clavier, ou un programme garde un mot de passe périmé. Comptes visés : {comptes}.",
-            "{rafale} failed sign-ins within an hour on this computer, {total} in {JOURS} days: someone tried passwords at the keyboard, or a program keeps an outdated password. Accounts targeted: {comptes}."
-        ),
-    )
-}
-
-/// Lignes « 1102|date|compte » et « 4720|date|auteur|nouveau compte », les plus récentes d'abord.
-fn juger_securite(lignes: &[&str]) -> Vec<Constat> {
-    let mut constats = Vec::new();
-    let effacements: Vec<(&str, &str)> = lignes
-        .iter()
-        .filter_map(|l| l.strip_prefix("1102|")?.split_once('|'))
-        .collect();
-    if let Some((quand, compte)) = effacements.first() {
-        let (quand, compte) = (affichable(quand), affichable(compte));
-        let autres = effacements.len() - 1;
-        let autres = if autres > 0 {
-            trf!(" et {autres} autre(s) fois", " and {autres} more time(s)")
-        } else {
-            String::new()
-        };
-        constats.push(alerte(
-            "Journaux",
-            Niveau::Eleve,
-            trf!(
-                "Le journal de sécurité a été effacé le {quand} (compte {compte}){autres} : si ce n'est pas vous, quelqu'un a pu effacer les traces d'une intrusion.",
-                "The security log was cleared on {quand} (account {compte}){autres}: if it was not you, someone may have erased the traces of an intrusion."
-            ),
-        ));
-    }
-    let crees: Vec<String> = lignes
-        .iter()
-        .filter_map(|l| {
-            let c: Vec<&str> = l.strip_prefix("4720|")?.splitn(3, '|').collect();
-            let [quand, auteur, nom] = c[..] else {
-                return None;
-            };
-            let (quand, auteur, nom) = (affichable(quand), affichable(auteur), affichable(nom));
-            Some(trf!(
-                "« {nom} » le {quand} (par {auteur})",
-                "“{nom}” on {quand} (by {auteur})"
-            ))
-        })
-        .collect();
-    if !crees.is_empty() {
-        constats.push(alerte(
-            "Comptes",
-            Niveau::Info,
-            trf!(
-                "Compte(s) créé(s) ces {JOURS} derniers jours : {}. Si l'un vous est inconnu, quelqu'un s'est fait une entrée.",
-                "Account(s) created over the last {JOURS} days: {}. If one is unknown to you, someone made themselves a way in.",
-                resume(&crees, 5, ", ")
-            ),
-        ));
-    }
-    constats
-}
-
-/// Pourquoi ce service installé ressemble à une attaque, avec la gravité, ou `None`. Un service qui lance un
-/// interpréteur de commandes (cmd, PowerShell…) est la façon de faire des outils d'attaque qui s'installent à distance ;
-/// un pilote ou un service rangé dans un dossier temporaire ou du profil est moins sûr : quelques outils de diagnostic
-/// du matériel posent ainsi leur pilote le temps d'une lecture.
-fn service_suspect(chemin: &str) -> Option<(Niveau, &'static str)> {
-    let (exe, args) = decouper_commande(chemin);
-    let bas = chemin.to_lowercase().replace('/', "\\");
-    let exe_bas = exe.trim().trim_matches('"').to_lowercase().replace('/', "\\");
-    let programme = exe_bas.rsplit('\\').next().unwrap_or(&exe_bas).trim_end_matches(".exe");
-    if bas.contains("%comspec%") || INTERPRETES.contains(&programme) {
-        return Some((
-            Niveau::Eleve,
-            lancement_suspect(&exe, &args).unwrap_or(tr!(
-                "le service lance un interpréteur de commandes, comme les outils d'attaque qui s'installent à distance",
-                "the service runs a command interpreter, like attack tools that install themselves remotely"
-            )),
-        ));
-    }
-    let dossier_douteux = ["\\users\\", "\\appdata\\", "%temp%", "%tmp%", "\\windows\\temp\\"]
-        .iter()
-        .any(|d| bas.contains(d));
-    dossier_douteux.then_some((
-        Niveau::Moyen,
-        tr!(
-            "rangé dans un dossier temporaire ou du profil, où rien ne s'installe normalement",
-            "stored in a temporary or profile folder, where nothing is normally installed"
-        ),
-    ))
-}
-
-/// Lignes « date|nom|chemin » des services installés, les plus récents d'abord ; un nom repris n'est compté qu'une fois.
-fn juger_services(lignes: &[&str]) -> Vec<Constat> {
-    let mut vus = std::collections::HashSet::new();
-    let mut constats = Vec::new();
-    let mut ordinaires = Vec::new();
-    for l in lignes {
-        let c: Vec<&str> = l.splitn(3, '|').collect();
-        let [quand, nom, chemin] = c[..] else {
-            continue;
-        };
-        if !vus.insert(nom.to_lowercase()) {
-            continue;
-        }
-        let (quand, montre, chemin_montre) = (affichable(quand), affichable(nom), couper(&affichable(chemin), 160));
-        match service_suspect(chemin) {
-            Some((niveau, raison)) => constats.push(
-                alerte(
-                    "Persistance",
-                    niveau,
-                    trf!(
-                        "Service installé le {quand}, « {montre} » : {raison} ({chemin_montre}).",
-                        "Service installed on {quand}, “{montre}”: {raison} ({chemin_montre})."
-                    ),
-                )
-                .manuel(
-                    tr!(
-                        "Si vous ne l'avez pas installé vous-même : le regarder dans Services, puis lancer une analyse antivirus complète",
-                        "If you did not install it yourself: look at it in Services, then run a full antivirus scan"
-                    ),
-                    &["Start-Process services.msc"],
-                ),
-            ),
-            None => ordinaires.push(montre),
-        }
-    }
-    if !ordinaires.is_empty() {
-        constats.push(alerte(
-            "Persistance",
-            Niveau::Info,
-            trf!(
-                "Service(s) installé(s) ces {JOURS} derniers jours : {}. Rien d'anormal dans leur chemin ; si l'un vous est inconnu, regardez-le dans Services.",
-                "Service(s) installed over the last {JOURS} days: {}. Nothing odd in their path; if one is unknown to you, look at it in Services.",
-                resume(&ordinaires, 5, ", ")
-            ),
-        ));
-    }
-    constats
 }
 
 /// Pourquoi le journal Security a refusé. `admin` : Vanguard tourne-t-il en administrateur ? Sans, c'est la raison, et
@@ -740,7 +433,7 @@ fn raison_de_securite(admin: Option<bool>) -> crate::modele::Raison {
 
 /// « Impossible de vérifier (…) », avec sa raison typée : l'autotest compte sinon le constat parmi les « non
 /// vérifiés » sans raison.
-pub(crate) fn impossible_type(categorie: &'static str, quoi: &str, raison: crate::modele::Raison) -> Constat {
+fn impossible_type(categorie: &'static str, quoi: &str, raison: crate::modele::Raison) -> Constat {
     crate::machine::impossible_par(
         categorie,
         raison,
@@ -748,34 +441,21 @@ pub(crate) fn impossible_type(categorie: &'static str, quoi: &str, raison: crate
     )
 }
 
-fn juger_evenements(sortie: Option<&str>) -> Vec<Constat> {
-    let Some(sortie) = sortie else {
-        return vec![illisible("Journaux")];
+/// Le temps laissé à la lecture des journaux pour le bilan : au-delà, les plus anciens ne sont pas lus, et c'est dit
+/// (non vérifié). Celui de `vanguard journaux-windows`.
+const DELAI_JOURNAUX: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// WIN-JRN-003 : le moteur des règles `EVT-` sur les journaux de cet ordinateur, les `JOURS` derniers jours ; ses
+/// trouvailles deviennent les constats du bilan (`resultat::constats_du_bilan`). Une alerte déclarée normale
+/// (« Ce que Vanguard a appris », clé des journaux de Windows) y est tue comme dans `vanguard journaux-windows`.
+fn juger_par_les_regles() -> Vec<Constat> {
+    use crate::journaux_windows::regles::{moteur::Options, resultat};
+    let options = Options {
+        depuis: Some(chrono::Utc::now() - chrono::Duration::days(i64::from(JOURS))),
+        ..Options::default()
     };
-    let s = |nom: &str| section(Some(sortie), nom);
-    let mut constats = Vec::new();
-    if let (Some(echecs), Some(securite)) = (s("ECH"), s("SEC")) {
-        constats.push(juger_echecs(&lire_echecs(&echecs)));
-        constats.extend(juger_securite(&securite));
-    } else {
-        let admin = s("ADM").and_then(|l| l.first().map(|v| v.trim().eq_ignore_ascii_case("true")));
-        constats.push(impossible_type(
-            "Journaux",
-            refus_de_securite(admin),
-            raison_de_securite(admin),
-        ));
-    }
-    if let Some(services) = s("SRV") {
-        constats.extend(juger_services(&services));
-    } else {
-        let quoi = tr!("journal Système illisible", "System log unreadable");
-        constats.push(impossible_type(
-            "Journaux",
-            quoi,
-            crate::modele::Raison::Illisible(quoi.to_string()),
-        ));
-    }
-    constats
+    let a = resultat::analyser_vivant(&options, std::time::Instant::now() + DELAI_JOURNAUX);
+    resultat::constats_du_bilan(&a, &crate::protection::normales::est_normale)
 }
 
 regle!(
@@ -783,18 +463,19 @@ regle!(
     Os::Windows,
     253,
     (
-        "journaux d'événements des 7 derniers jours (connexions, comptes, services)",
-        "event logs of the last 7 days (sign-ins, accounts, services)"
+        "journaux d'événements des 7 derniers jours (règles EVT- : traces effacées, comptes, connexions, services, tâches, processus, PowerShell, Defender)",
+        "event logs of the last 7 days (EVT- rules: cleared traces, accounts, sign-ins, services, tasks, processes, PowerShell, Defender)"
     ),
     &[
         "CIS Controls v8 8.11",
         "MITRE ATT&CK T1110",
-        "MITRE ATT&CK T1070.001",
+        "MITRE ATT&CK T1685.005",
         "MITRE ATT&CK T1136.001",
-        "MITRE ATT&CK T1543.003"
+        "MITRE ATT&CK T1543.003",
+        "MITRE ATT&CK T1053.005",
+        "MITRE ATT&CK T1059"
     ],
-    // 30 s : la lecture est bornée ; au-delà, PowerShell ou le service des journaux est bloqué.
-    || juger_evenements(Some(&lire_journaux()))
+    juger_par_les_regles
 );
 
 // ───────────────────────────── Mot de passe deviné ─────────────────────────────
@@ -1051,7 +732,6 @@ fn echecs_et_reussites_ssh(lignes: &[String]) -> (Vec<Echec>, Vec<Echec>) {
     for (quand, t) in crate::machine::chasse::tentatives_ssh_datees(&datees) {
         let e = Echec {
             quand,
-            reseau: true,
             adresse: t.adresse.to_string(),
             compte: t.compte,
         };
@@ -1077,7 +757,7 @@ pub(crate) fn tentatives_lues() -> Result<(Vec<crate::machine::chasse::Tentative
             raison_de_securite(admin),
         ))
     };
-    let Some(lignes) = lire(&LECTURES[0], fin) else {
+    let Some(lignes) = lire(&ECHECS, fin) else {
         return Err(if std::time::Instant::now() >= fin {
             Box::new(impossible_type(
                 "Comptes",
@@ -1151,110 +831,22 @@ mod tests {
     }
 
     #[test]
-    fn rafales_d_echecs() {
-        let lignes = |v: &[String]| lire_echecs(&v.iter().map(String::as_str).collect::<Vec<_>>());
-        assert!(juger_echecs(&[]).probleme.is_none());
-        // Quelques fautes de frappe, et des échecs étalés sur la semaine : pas de rafale.
-        let etales: Vec<String> = (0..30)
-            .map(|i| format!("2026-10-{:02} {:02}:00|2|-|alice", 12 + i % 7, i % 24))
-            .collect();
-        let c = juger_echecs(&lignes(&etales));
-        assert!(c.probleme.is_none(), "{}", c.message);
-        // Depuis le réseau (Bureau à distance) : élevé, avec les origines les plus fréquentes.
-        let mut reseau = rafale(25, "10", "203.0.113.7");
-        reseau.extend(rafale(5, "3", "192.0.2.44"));
-        let c = juger_echecs(&lignes(&reseau));
-        assert_eq!(c.probleme, Some(Niveau::Eleve));
-        assert!(c.message.contains("203.0.113.7 (25), 192.0.2.44 (5)"), "{}", c.message);
-        assert!(c.message.contains("alice (30)"), "{}", c.message);
-        // Un NAS de la maison qui répète un vieux mot de passe (une adresse locale, un compte) : moyen, expliqué.
-        let c = juger_echecs(&lignes(&rafale(40, "3", "192.168.1.20")));
-        assert_eq!(c.probleme, Some(Niveau::Moyen));
-        assert!(
-            c.message.contains("192.168.1.20") && c.message.contains("NAS"),
-            "{}",
-            c.message
-        );
-        // Une seule adresse du réseau partagé du fournisseur (CGNAT, 100.64/10), un seul compte : un autre abonné,
-        // pas un appareil de la maison. Toujours élevé.
-        let cgnat = lignes(&rafale(25, "10", "100.72.3.4"));
-        assert_eq!(appareil_qui_insiste(&cgnat), None);
-        assert_eq!(juger_echecs(&cgnat).probleme, Some(Niveau::Eleve));
-        assert!(appareil_qui_insiste(&lignes(&rafale(25, "10", "192.168.1.20"))).is_some());
-        // Deux adresses locales, ou une adresse d'Internet : toujours élevé.
-        let mut deux = rafale(25, "3", "192.168.1.20");
-        deux.extend(rafale(5, "3", "192.168.1.21"));
-        assert_eq!(juger_echecs(&lignes(&deux)).probleme, Some(Niveau::Eleve));
-        assert_eq!(
-            juger_echecs(&lignes(&rafale(25, "3", "203.0.113.9"))).probleme,
-            Some(Niveau::Eleve)
-        );
-        // Au clavier : moyen.
-        let c = juger_echecs(&lignes(&rafale(22, "2", "-")));
-        assert_eq!(c.probleme, Some(Niveau::Moyen));
+    fn echecs_lus() {
         // Une ligne mal formée est ignorée, sans tout faire tomber.
         assert_eq!(
             lire_echecs(&["n'importe quoi", "2026-10-18 10:00|3|192.0.2.1|alice"]).len(),
             1
         );
-    }
-
-    #[test]
-    fn rafale_glissante() {
-        let h = |t: &str| date(t).unwrap();
-        // 10:50 → 11:40 : six dans la même heure, même à cheval sur deux heures pleines.
-        let heures = ["10:50", "11:00", "11:10", "11:20", "11:30", "11:40", "13:00"]
-            .iter()
-            .map(|t| h(&format!("2026-10-18 {t}")))
-            .collect();
-        assert_eq!(plus_forte_rafale(heures), 6);
-        assert_eq!(plus_forte_rafale(Vec::new()), 0);
-    }
-
-    #[test]
-    fn journal_efface_et_comptes_crees() {
-        let c = juger_securite(&[
-            "1102|2026-10-18 03:12|alice",
-            "1102|2026-10-15 22:40|alice",
-            "4720|2026-10-17 09:00|alice|bob",
-        ]);
-        assert_eq!(c.len(), 2);
-        assert_eq!(c[0].probleme, Some(Niveau::Eleve));
-        assert!(c[0].message.contains("2026-10-18 03:12"));
-        assert_eq!(c[1].probleme, Some(Niveau::Info));
-        assert!(c[1].message.contains("bob"));
-        assert!(juger_securite(&[]).is_empty());
-        // Un nom de compte piégé arrive inoffensif.
-        let c = juger_securite(&["4720|2026-10-17 09:00|alice|x\x1b]52;c;eA==\x07\x1b[2K\r\u{202e}"]);
-        assert!(!crate::ui::contient_un_piege(&c[0].message));
-    }
-
-    #[test]
-    fn services_installes() {
         assert_eq!(
-            service_suspect(r"%COMSPEC% /b /c start /b /min powershell -nop -w hidden -enc SQBFAFgA").map(|s| s.0),
-            Some(Niveau::Eleve)
+            lire_echecs(
+                &rafale(3, "10", "203.0.113.7")
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+            )
+            .len(),
+            3
         );
-        assert_eq!(
-            service_suspect(r"cmd.exe /c echo abcd > \\.\pipe\abcd").map(|s| s.0),
-            Some(Niveau::Eleve)
-        );
-        assert_eq!(
-            service_suspect(r"\??\C:\Users\alice\AppData\Local\Temp\cpuz_x64.sys").map(|s| s.0),
-            Some(Niveau::Moyen)
-        );
-        assert!(service_suspect(r#""C:\Program Files\Mozilla Maintenance Service\maintenanceservice.exe""#).is_none());
-        assert!(service_suspect(r"\SystemRoot\System32\drivers\wd\WdNisDrv.sys").is_none());
-        let c = juger_services(&[
-            r"2026-10-18 10:00|abcdef|%COMSPEC% /c powershell -enc SQBFAFgA",
-            r"2026-10-17 10:00|Mozilla Maintenance Service|C:\Program Files\Mozilla Maintenance Service\maintenanceservice.exe",
-            r"2026-10-16 10:00|Mozilla Maintenance Service|C:\Program Files\Mozilla Maintenance Service\maintenanceservice.exe",
-        ]);
-        assert_eq!(c.len(), 2);
-        assert_eq!(c[0].probleme, Some(Niveau::Eleve));
-        assert!(!c[0].correctif.as_ref().unwrap().automatique);
-        assert_eq!(c[1].probleme, Some(Niveau::Info));
-        assert_eq!(c[1].message.matches("Mozilla").count(), 1, "{}", c[1].message);
     }
 
     #[test]
@@ -1279,16 +871,11 @@ mod tests {
             ligne("ECH", id, "2026-10-18 10:05", &valeurs).as_deref(),
             Some("2026-10-18 10:05|3|192.0.2.10|alice&bob")
         );
-        let efface = "<Event><System><EventID>1102</EventID><TimeCreated SystemTime='2026-10-18T14:05:09Z'/></System>\
-             <UserData><LogFileCleared xmlns='http://manifests.microsoft.com/win/2004/08/windows/eventlog'>\
-             <SubjectUserSid>S-1-5-21-1</SubjectUserSid><SubjectUserName>bob</SubjectUserName>\
-             <SubjectDomainName>SALON</SubjectDomainName><SubjectLogonId>0x1</SubjectLogonId></LogFileCleared></UserData></Event>";
-        let (id, _, valeurs) = lire_xml(efface).unwrap();
-        assert_eq!(ligne("SEC", id, "d", &valeurs).as_deref(), Some("1102|d|bob"));
         // Un nom piégé ne casse pas la ligne : le séparateur et les retours deviennent des espaces.
-        let p = vec!["a|b\r\nc".to_string(), "C:\\x.exe".to_string()];
-        assert_eq!(ligne("SRV", 7045, "d", &p).as_deref(), Some("d|a b c|C:\\x.exe"));
-        assert_eq!(ligne("SRV", 4625, "d", &p), None);
+        let mut p = valeurs.clone();
+        p[5] = "a|b\r\nc".to_string();
+        assert_eq!(ligne("ECH", 4625, "d", &p).as_deref(), Some("d|3|192.0.2.10|a b c"));
+        assert_eq!(ligne("SRV", 7045, "d", &p), None);
         assert!(lire_xml("<Event><System><EventID>x</EventID></System></Event>").is_none());
         assert!(lire_xml("pas du xml <").is_none());
         let demarrage = "<Event><System><EventID>100</EventID></System><EventData>\
@@ -1301,12 +888,22 @@ mod tests {
         assert_eq!(date_locale("pas une date"), None);
     }
 
-    /// Les vraies fonctions de Windows (Wine ici, la VM ensuite) : rien ne plante, et chaque section lue est complète.
+    /// Les vraies fonctions de Windows (Wine ici, la VM ensuite) : rien ne plante ; WIN-JRN-003 rend un verdict pour
+    /// chaque règle `EVT-` (vérifiée, sans objet ou non vérifiée avec sa raison), jamais un silence.
     #[test]
     fn journaux_lus_par_windows() {
-        let texte = lire_journaux();
-        assert!(texte.starts_with("ADM|"), "{texte}");
-        let _ = juger_evenements(Some(&texte));
+        let constats = juger_par_les_regles();
+        assert!(!constats.is_empty());
+        for c in constats.iter().filter(|c| !c.verifie) {
+            assert!(
+                !matches!(
+                    c.etat(),
+                    crate::modele::Etat::NonVerifie(crate::modele::Raison::NonPrecisee)
+                ),
+                "{}",
+                c.message
+            );
+        }
         // Lu, ou refusé avec sa raison (Wine, sans droits d'administrateur).
         if let Err(refus) = tentatives_lues() {
             assert!(!refus.verifie);
@@ -1552,35 +1149,6 @@ mod tests {
             c.message
         );
     }
-
-    #[test]
-    fn lecture_complete_ou_non() {
-        let complet = "ADM|True\nADM_FIN\nECH|2026-10-18 10:00|3|192.0.2.10|alice\nECH_FIN\nSEC_FIN\nSRV_FIN";
-        let c = juger_evenements(Some(complet));
-        assert!(
-            c.len() == 1 && c[0].verifie && c[0].probleme.is_none(),
-            "{}",
-            c[0].message
-        );
-        // Sans droits : le journal Security refusé, dit et jamais compté comme sain ; le journal Système lu quand même.
-        let sans_droits = "ADM|False\nADM_FIN\nSRV|2026-10-18 10:00|abcdef|cmd.exe /c whoami\nSRV_FIN";
-        let c = juger_evenements(Some(sans_droits));
-        assert_eq!(c.len(), 2);
-        assert!(!c[0].verifie && c[0].message.contains(tr!("administrateur", "administrator")));
-        assert_eq!(
-            c[0].etat(),
-            crate::modele::Etat::NonVerifie(crate::modele::Raison::Droits)
-        );
-        assert_eq!(c[1].probleme, Some(Niveau::Eleve));
-        assert!(!juger_evenements(None)[0].verifie);
-        let illisibles = juger_evenements(Some("ADM|True\nADM_FIN"));
-        assert!(illisibles.iter().all(|c| !c.verifie));
-        // Administrateur et pourtant refusé, journal Système illisible : chacun avec sa raison.
-        assert!(illisibles.iter().all(|c| matches!(
-            c.etat(),
-            crate::modele::Etat::NonVerifie(crate::modele::Raison::Illisible(_))
-        )));
-    }
 }
 
 /// Les champs d'un événement viennent souvent d'ailleurs : le compte tenté et l'adresse d'un échec de connexion par
@@ -1697,11 +1265,9 @@ mod entrees_hostiles {
         fn lignes_aux_champs_fixes(p in prop::collection::vec(valeur(), 0..22), date in prop_oneof![valeur(), Just("2026-10-20T13:46:40.1234567Z".to_string())]) {
             // La date passe d'abord par date_locale, comme dans la vraie lecture.
             let date = date_locale(&date).unwrap_or_default();
-            for (section, id, separateurs) in [("ECH", 4625, 3), ("SEC", 1102, 2), ("SEC", 4720, 3), ("SRV", 7045, 2)] {
-                let l = ligne(section, id, &date, &p).unwrap();
-                prop_assert_eq!(l.matches('|').count(), separateurs, "{:?}", l);
-                prop_assert!(!l.contains(['\r', '\n']));
-            }
+            let l = ligne("ECH", 4625, &date, &p).unwrap();
+            prop_assert_eq!(l.matches('|').count(), 3, "{:?}", l);
+            prop_assert!(!l.contains(['\r', '\n']));
             // Un échec écrit puis relu : son adresse et son compte, entiers.
             let l = ligne("ECH", 4625, "2026-10-20 09:46", &p).unwrap();
             let echecs = lire_echecs(&[l.as_str()]);

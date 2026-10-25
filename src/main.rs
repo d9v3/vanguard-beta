@@ -1825,6 +1825,7 @@ enum Action {
     Changements,
     OptimiserAnnuler,
     Signaler,
+    JournauxWindows,
     Veilleur,
     CopierFichiers,
     SauvegardeAuto,
@@ -2114,6 +2115,12 @@ const OUTILS: &[Outil] = &[
         precision: ["rien n'est envoyé, vous relisez", "nothing is sent, you review"],
         mots: "signaler disclose signalement report divulgation disclosure faille vulnerability bogue bug éditeur \
                vendor msrc microsoft google chrome mozilla bugzilla apple ghsa github cert prime bounty" },
+    // Avant le veilleur, propre à Linux : les lignes communes gardent leur place sous les trois systèmes.
+    Outil { action: Action::JournauxWindows, commande: "journaux-windows", groupe: Some(Groupe::Reagir), lettre: "",
+        titre: ["Journaux de Windows", "Windows logs"],
+        precision: ["que s'est-il passé ?", "what happened?"],
+        mots: "journaux logs windows événements events evtx observateur viewer que s'est-il passé what happened \
+               chronologie timeline effacé cleared tâche task processus process attaque attack" },
     Outil { action: Action::Veilleur, commande: "veilleur", groupe: Some(Groupe::Reagir), lettre: "",
         titre: ["Veilleur : lancements, connexions", "Watcher: launches, connections"], precision: ["", ""],
         mots: "veilleur watcher lancements launches processus processes connexions connections brèves brief \
@@ -2747,6 +2754,7 @@ async fn executer(s: &mut Session, action: Action) {
         // Le parcours 11.11, avec son conseil (avant de nettoyer, et où ranger le dossier).
         Action::Traces => depanner::executer("traces"),
         Action::Evenements => evenements::afficher(false, None),
+        Action::JournauxWindows => journaux_windows::commande::menu(),
         Action::Demarrage => optimiser::programmes_au_demarrage(),
         Action::Regles => machine::regles::afficher(),
         Action::VerifierMoi => protection::manifeste::verifier_moi(None),
@@ -3188,8 +3196,6 @@ fn ligne_de_commande() -> clap::Command {
 /// elles vont.
 const RUBRIQUE_DES_AUTRES: &[(&str, Groupe)] = &[
     ("protection", Groupe::Reagir),
-    // Sa place au menu se décide avec le lot E5.
-    ("journaux-windows", Groupe::Reagir),
     ("importer", Groupe::Vanguard),
     ("plugins", Groupe::Vanguard),
     ("labo", Groupe::Vanguard),
@@ -4317,10 +4323,6 @@ mod tests_menu {
             "le menu Vanguard › Exporter ou importer les réglages propose aussi l'import",
         ),
         ("plugins", "le menu Extensions les liste et les lance"),
-        (
-            "journaux-windows",
-            "sa place au menu se décide au lot E5 ; la recherche la trouve par le guide",
-        ),
         ("labo", "le menu Extensions les liste et les lance"),
         (
             "protection",
