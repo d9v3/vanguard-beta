@@ -391,6 +391,7 @@ const FILS: &[(&str, &[(&str, &str)])] = &[
         "WIN-PRS-011",
         &[
             ("machine/windows/ancrages.rs", "catalogue_winsock"),
+            ("machine/windows/ancrages.rs", "juger_winsock"),
             ("machine/windows/ancrages.rs", "juger_dlls"),
         ],
     ),
@@ -428,7 +429,7 @@ const RECOPIES: &[(&str, &str, &str, &str)] = &[
     (
         "WIN-PRS-011",
         "machine/windows/ancrages.rs",
-        "catalogue_winsock",
+        "juger_winsock",
         "Niveau::Info",
     ),
 ];

@@ -970,10 +970,22 @@ fn ssh_echecs() -> Option<Constat> {
         Ok(journal) => journal,
         Err(constat) => return Some(constat),
     };
-    let (tentatives, adresses) = echecs_ssh(&journal);
-    let internet = adresses.iter().filter(|ip| d_internet(ip)).count();
     // Configuration illisible : on suppose les mots de passe permis (la valeur par défaut de sshd).
     let mots_de_passe = configuration_sshd().is_none_or(|c| mots_de_passe_sshd(&c));
+    juger_echecs_ssh(&journal, mots_de_passe, || {
+        BLOQUEURS.into_iter().find(|s| service_actif(s))
+    })
+}
+
+/// Le jugement du journal de sshd des dernières 24 h : `mots_de_passe`, sshd les accepte ; `bloqueur`, le service
+/// qui bloque déjà les adresses qui insistent (demandé seulement s'il y a quelque chose à dire, comme avant).
+pub(super) fn juger_echecs_ssh(
+    journal: &str,
+    mots_de_passe: bool,
+    bloqueur: impl FnOnce() -> Option<&'static str>,
+) -> Option<Constat> {
+    let (tentatives, adresses) = echecs_ssh(journal);
+    let internet = adresses.iter().filter(|ip| d_internet(ip)).count();
     let niveau = niveau_echecs_ssh(tentatives, internet > 0, mots_de_passe)?;
     let n = adresses.len();
     let origine = if internet > 0 {
@@ -995,7 +1007,7 @@ fn ssh_echecs() -> Option<Constat> {
             "{tentatives} failed SSH login attempt(s) in 24 h, from {n} address(es){origine}. Harmless as long as only keys are accepted."
         )
     };
-    let bloqueur = BLOQUEURS.into_iter().find(|s| service_actif(s));
+    let bloqueur = bloqueur();
     let texte = match bloqueur {
         Some(b) => format!(
             "{texte} {}",
@@ -1383,6 +1395,11 @@ fn comptes() -> Constat {
     let Ok(passwd) = std::fs::read_to_string("/etc/passwd") else {
         return impossible("Comptes", tr!("/etc/passwd illisible", "/etc/passwd unreadable"));
     };
+    juger_comptes(&passwd)
+}
+
+/// Le jugement de /etc/passwd : un compte autre que root à l'UID 0.
+pub(super) fn juger_comptes(passwd: &str) -> Constat {
     let uid0: Vec<&str> = passwd
         .lines()
         .filter_map(|l| {

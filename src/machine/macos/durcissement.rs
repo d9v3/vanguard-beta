@@ -259,9 +259,15 @@ pub(super) fn extensions_tierces() -> Constat {
             ),
         );
     };
-    let tierces: Vec<String> = extensions_noyau(&noyau)
+    juger_extensions(&noyau, &systeme)
+}
+
+/// Le jugement des sorties de « kmutil showloaded » (`noyau`) et « systemextensionsctl list » (`systeme`) : séparé de
+/// leur lecture pour que le corpus de détection l'exerce.
+pub(super) fn juger_extensions(noyau: &str, systeme: &str) -> Constat {
+    let tierces: Vec<String> = extensions_noyau(noyau)
         .into_iter()
-        .chain(extensions_systeme(&systeme))
+        .chain(extensions_systeme(systeme))
         .collect();
     if tierces.is_empty() {
         return ok(

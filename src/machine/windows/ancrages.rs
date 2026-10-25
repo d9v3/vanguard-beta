@@ -415,10 +415,8 @@ fn catalogue_winsock() -> Vec<Constat> {
             let Ok(k) = cle.open_subkey(&nom) else {
                 continue;
             };
-            let dll = k.get_value::<String, _>("LibraryPath").ok().or_else(|| {
-                k.get_raw_value("PackedCatalogItem")
-                    .ok()
-                    .and_then(|v| chemin_du_catalogue(&v.bytes))
+            let dll = dll_du_catalogue(k.get_value::<String, _>("LibraryPath").ok(), || {
+                k.get_raw_value("PackedCatalogItem").ok().map(|v| v.bytes.into_owned())
             });
             if let Some(dll) = dll {
                 entrees.push((nom, dll));
@@ -428,12 +426,19 @@ fn catalogue_winsock() -> Vec<Constat> {
     if lues == 0 {
         return vec![registre_illisible(CAT)];
     }
-    // Des logiciels installés (machines virtuelles, Bluetooth, VPN) y posent leurs DLL : dit en information.
-    vec![juger_dlls(
-        ("Catalogue Winsock", "Winsock catalog"),
-        &entrees,
-        Niveau::Info,
-    )]
+    vec![juger_winsock(&entrees)]
+}
+
+/// La DLL d'une entrée du catalogue : son LibraryPath, sinon le chemin au début de son PackedCatalogItem (lu
+/// seulement s'il le faut).
+fn dll_du_catalogue(library: Option<String>, packed: impl FnOnce() -> Option<Vec<u8>>) -> Option<String> {
+    library.or_else(|| packed().and_then(|octets| chemin_du_catalogue(&octets)))
+}
+
+/// Le jugement du catalogue Winsock : des logiciels installés (machines virtuelles, Bluetooth, VPN) y posent leurs
+/// DLL, dit en information ; une DLL d'un dossier suspect, élevé.
+fn juger_winsock(entrees: &[(String, String)]) -> Constat {
+    juger_dlls(("Catalogue Winsock", "Winsock catalog"), entrees, Niveau::Info)
 }
 
 /// WIN-PRS-007 au corpus de détection : `lsa|valeur|paquet,paquet…`.
@@ -482,13 +487,20 @@ pub(super) fn corpus_fournisseurs(e: &crate::modele::corpus::Entree) -> Vec<Cons
     )]
 }
 
+/// WIN-PRS-011 : `catalogue|entrée|LibraryPath|PackedCatalogItem` (le second en texte, terminé par un zéro comme
+/// Windows l'écrit ; vide : absent), passés par la même lecture que le registre.
 #[cfg(test)]
 pub(super) fn corpus_winsock(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
-    vec![juger_dlls(
-        ("Catalogue Winsock", "Winsock catalog"),
-        &entrees_du_cas(e),
-        Niveau::Info,
-    )]
+    let entrees: Vec<(String, String)> = e
+        .de("catalogue")
+        .iter()
+        .filter_map(|c| {
+            let library = (!c[1].is_empty()).then(|| c[1].to_string());
+            let packed = (!c[2].is_empty()).then(|| [c[2].as_bytes(), b"\0\0\x01"].concat());
+            Some((c[0].to_string(), dll_du_catalogue(library, || packed)?))
+        })
+        .collect();
+    vec![juger_winsock(&entrees)]
 }
 
 #[cfg(test)]
@@ -647,5 +659,16 @@ mod tests {
         );
         assert_eq!(chemin_du_catalogue(b"\0abc"), None);
         assert_eq!(chemin_du_catalogue(b"sans fin"), None);
+        // LibraryPath d'abord, et PackedCatalogItem n'est alors pas lu ; sinon le chemin au début de celui-ci, comme
+        // avant l'extraction de cette lecture.
+        assert_eq!(
+            dll_du_catalogue(Some("a.dll".into()), || panic!("PackedCatalogItem lu pour rien")),
+            Some("a.dll".into())
+        );
+        assert_eq!(
+            dll_du_catalogue(None, || Some(b"%SystemRoot%\\system32\\mswsock.dll\0\0\x01".to_vec())),
+            chemin_du_catalogue(b"%SystemRoot%\\system32\\mswsock.dll\0\0\x01")
+        );
+        assert_eq!(dll_du_catalogue(None, || None), None);
     }
 }

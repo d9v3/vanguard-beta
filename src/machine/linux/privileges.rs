@@ -65,10 +65,15 @@ fn groupes_a_risque(groupes: &str) -> Vec<&str> {
 }
 
 pub(super) fn sudo_sans_mot_de_passe() -> Vec<Constat> {
-    super::super::unix::sudo_sans_mot_de_passe(tr!(
+    super::super::unix::sudo_sans_mot_de_passe(tout_permis())
+}
+
+/// Ce que risque ce système quand une règle sudo donne tout sans mot de passe.
+pub(super) fn tout_permis() -> &'static str {
+    tr!(
         "sudo sans mot de passe pour TOUTES les commandes : n'importe quel programme lancé par vous peut devenir root.",
         "sudo without a password for ALL commands: any program you run can become root."
-    ))
+    )
 }
 
 /// Les dossiers où root cherche ses commandes : le `secure_path` de sudo des grandes distributions.

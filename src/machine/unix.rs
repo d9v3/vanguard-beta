@@ -171,8 +171,13 @@ pub(super) fn sudo_sans_mot_de_passe(tout_permis: &str) -> Vec<Constat> {
     let Some(liste) = sortie("sudo", &["-n", "-l"]) else {
         return Vec::new();
     };
-    let (totales, limitees) = regles_nopasswd(&liste);
-    let (jamais_demande, delai) = defauts_sudo(&liste);
+    juger_sudo(&liste, tout_permis)
+}
+
+/// Le jugement de la sortie de `sudo -n -l` : séparé de sa lecture pour que le corpus de détection l'exerce.
+pub(super) fn juger_sudo(liste: &str, tout_permis: &str) -> Vec<Constat> {
+    let (totales, limitees) = regles_nopasswd(liste);
+    let (jamais_demande, delai) = defauts_sudo(liste);
     let mut constats = Vec::new();
     if jamais_demande {
         constats.push(

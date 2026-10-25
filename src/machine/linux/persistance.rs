@@ -221,9 +221,28 @@ fn objet_des_lancements(mut sources: Vec<String>) -> crate::modele::Objet {
 /// Lancements automatiques détournés : bibliothèque préchargée dans tous les programmes, services et démarrage
 /// de session qui lancent un shell inversé ou un programme caché, services système ajoutés à la main.
 pub(super) fn persistance() -> Vec<Constat> {
+    persistance_dans(
+        Path::new("/"),
+        Path::new(&home()),
+        |var| std::env::var_os(var),
+        sortie("crontab", &["-l"]),
+        Paquets::detecter(),
+    )
+}
+
+/// La persistance lue sous `racine` (« / » au bilan ; une arborescence fabriquée pour le corpus de détection), le
+/// dossier personnel `maison`, les variables de cette session (`variable`), la crontab du compte et le gestionnaire
+/// de paquets donnés : la même lecture et le même jugement, sans rien toucher hors de la racine.
+pub(super) fn persistance_dans(
+    racine: &Path,
+    maison: &Path,
+    variable: impl Fn(&str) -> Option<std::ffi::OsString>,
+    crontab: Option<String>,
+    gestion: Option<Paquets>,
+) -> Vec<Constat> {
     const CAT: &str = "Persistance";
-    let h = std::path::PathBuf::from(home());
-    let gestion = Paquets::detecter();
+    let h = maison.to_path_buf();
+    let etc = |chemin: &str| racine.join(chemin);
     let mut critiques = Vec::new();
     let mut suspects = Vec::new();
     // D'où vient chaque ligne signalée et l'empreinte de son texte (`source_de`), sans langue ni numéro de ligne :
@@ -233,7 +252,7 @@ pub(super) fn persistance() -> Vec<Constat> {
 
     // /etc/ld.so.preload : chaque bibliothèque listée est chargée dans TOUS les programmes, root compris.
     // Technique classique des rootkits ; presque aucun système normal n'en a.
-    if let Ok(texte) = std::fs::read_to_string("/etc/ld.so.preload") {
+    if let Ok(texte) = std::fs::read_to_string(etc("etc/ld.so.preload")) {
         for lib in texte
             .lines()
             .filter(|l| !commentaire(l))
@@ -257,7 +276,7 @@ pub(super) fn persistance() -> Vec<Constat> {
         }
     }
     for var in ["LD_PRELOAD", "LD_AUDIT"] {
-        if let Some(v) = std::env::var_os(var).filter(|v| !v.is_empty()) {
+        if let Some(v) = variable(var).filter(|v| !v.is_empty()) {
             sources.push(source_de(&format!("env:{var}"), &v.to_string_lossy()));
             suspects.push(trf!(
                 "{var}={} est défini pour cette session",
@@ -268,17 +287,17 @@ pub(super) fn persistance() -> Vec<Constat> {
     }
 
     let mut configuration: Vec<std::path::PathBuf> = [
-        "/etc/environment",
-        "/etc/profile",
-        "/etc/bash.bashrc",
-        "/etc/zsh/zshenv",
-        "/etc/zsh/zprofile",
+        "etc/environment",
+        "etc/profile",
+        "etc/bash.bashrc",
+        "etc/zsh/zshenv",
+        "etc/zsh/zprofile",
     ]
     .iter()
-    .map(std::path::PathBuf::from)
+    .map(|c| etc(c))
     .collect();
-    configuration.extend(fichiers_de(Path::new("/etc/profile.d"), &["sh", "zsh"]));
-    configuration.extend(fichiers_de(Path::new("/etc/environment.d"), &["conf"]));
+    configuration.extend(fichiers_de(&etc("etc/profile.d"), &["sh", "zsh"]));
+    configuration.extend(fichiers_de(&etc("etc/environment.d"), &["conf"]));
     configuration.extend(
         [
             ".profile",
@@ -306,7 +325,7 @@ pub(super) fn persistance() -> Vec<Constat> {
 
     // Fichiers dont des lignes lancent des programmes.
     let mut demarrage = fichiers_de(
-        Path::new("/etc/systemd/system"),
+        &etc("etc/systemd/system"),
         &["service", "timer", "socket", "path", "conf"],
     );
     demarrage.retain(|p| !p.is_symlink());
@@ -315,7 +334,7 @@ pub(super) fn persistance() -> Vec<Constat> {
         &["service", "timer", "socket", "path", "conf"],
     ));
     demarrage.extend(fichiers_de(&h.join(".config/autostart"), &["desktop"]));
-    demarrage.extend(fichiers_de(Path::new("/etc/xdg/autostart"), &["desktop"]));
+    demarrage.extend(fichiers_de(&etc("etc/xdg/autostart"), &["desktop"]));
     let hypr = fichiers_de(&h.join(".config/hypr"), &["conf", "lua"]);
     demarrage.extend(hypr.iter().cloned());
     configuration.extend(hypr);
@@ -354,14 +373,14 @@ pub(super) fn persistance() -> Vec<Constat> {
         }
     }
     // crontab de l'utilisateur et du système : chaque ligne est une commande.
-    let mut cron: Vec<(String, String)> = sortie("crontab", &["-l"])
+    let mut cron: Vec<(String, String)> = crontab
         .unwrap_or_default()
         .lines()
         .map(|l| ("crontab".to_string(), l.to_string()))
         .collect();
-    let mut fichiers_cron = vec![std::path::PathBuf::from("/etc/crontab")];
+    let mut fichiers_cron = vec![etc("etc/crontab")];
     fichiers_cron.extend(
-        std::fs::read_dir("/etc/cron.d")
+        std::fs::read_dir(etc("etc/cron.d"))
             .into_iter()
             .flatten()
             .flatten()
@@ -423,9 +442,10 @@ pub(super) fn persistance() -> Vec<Constat> {
     // Services système ajoutés à la main : souvent les tiens (scripts maison), parfois une persistance root.
     // On les nomme pour que tu les reconnaisses, sans baisser la note.
     if let Some(gestion) = gestion {
-        let mut maison: Vec<String> = fichiers_de(Path::new("/etc/systemd/system"), &["service", "timer"])
+        let systeme = etc("etc/systemd/system");
+        let mut maison: Vec<String> = fichiers_de(&systeme, &["service", "timer"])
             .into_iter()
-            .filter(|p| p.parent() == Some(Path::new("/etc/systemd/system")) && !p.is_symlink())
+            .filter(|p| p.parent() == Some(systeme.as_path()) && !p.is_symlink())
             .filter(|p| !gestion.possede(p))
             .filter_map(|p| p.file_name().map(|n| crate::ui::affichable(&n.to_string_lossy())))
             .collect();
@@ -484,7 +504,6 @@ pub(super) fn fichiers_suspects() -> Vec<Constat> {
         }
     }
     use std::os::unix::fs::MetadataExt;
-    let mut constats = Vec::new();
     // Propriétaire du processus, lu sur /proc/self (sans dépendance à la libc).
     let moi = std::fs::metadata("/proc/self").map_or(u32::MAX, |m| m.uid());
     // Dans un dossier temporaire ou personnel, un setuid à soi ne donne aucun droit de plus ; un setuid à un autre
@@ -589,14 +608,62 @@ pub(super) fn fichiers_suspects() -> Vec<Constat> {
             }
         }
     }
+    let reinstaller = {
+        let mut paquets: Vec<&str> = modifies.iter().map(|(_, p)| p.as_str()).collect();
+        paquets.dedup();
+        gestion.map(|g| g.reinstaller(&paquets.join(" "))).unwrap_or_default()
+    };
+    let path = std::env::var("PATH").unwrap_or_default();
+    let path_dangereux = path_dangereux(&path, |d| std::fs::metadata(d).ok().map(|m| m.permissions().mode()));
+    juger_fichiers_suspects(&Releve {
+        modifies,
+        anormaux,
+        systeme: systeme.len(),
+        gestion: gestion.is_some(),
+        non_verifies,
+        capacites_lues: capacites.is_some(),
+        path_dangereux,
+        reinstaller,
+    })
+}
+
+/// Ce que la lecture des programmes privilégiés a relevé, pour son jugement (séparé pour le corpus de détection).
+pub(super) struct Releve {
+    /// Programmes privilégiés changés depuis leur installation : (chemin montré, paquet).
+    pub modifies: Vec<(String, String)>,
+    /// Hors paquet, ou dans un dossier temporaire.
+    pub anormaux: Vec<std::path::PathBuf>,
+    /// Combien de programmes privilégiés dans les dossiers du système.
+    pub systeme: usize,
+    /// Le gestionnaire de paquets est reconnu.
+    pub gestion: bool,
+    pub non_verifies: usize,
+    /// getcap a répondu.
+    pub capacites_lues: bool,
+    /// Les dossiers du PATH où d'autres peuvent écrire.
+    pub path_dangereux: Vec<String>,
+    /// La commande qui remet les paquets des programmes modifiés.
+    pub reinstaller: String,
+}
+
+pub(super) fn juger_fichiers_suspects(r: &Releve) -> Vec<Constat> {
+    let Releve {
+        modifies,
+        anormaux,
+        systeme: n,
+        gestion,
+        non_verifies,
+        capacites_lues,
+        path_dangereux: dangereux,
+        reinstaller,
+    } = r;
+    let (n, non_verifies) = (*n, *non_verifies);
+    let mut constats = Vec::new();
     if !modifies.is_empty() {
         let liste: Vec<String> = modifies
             .iter()
             .map(|(f, p)| trf!("{f} (paquet {p})", "{f} (package {p})"))
             .collect();
-        let mut paquets: Vec<&str> = modifies.iter().map(|(_, p)| p.as_str()).collect();
-        paquets.dedup();
-        let reinstaller = gestion.map(|g| g.reinstaller(&paquets.join(" "))).unwrap_or_default();
         constats.push(
             alerte(
                 "Fichiers suspects",
@@ -608,7 +675,7 @@ pub(super) fn fichiers_suspects() -> Vec<Constat> {
             )
             .manuel(
                 tr!("Ne pas le lancer. Remettre l'original depuis les dépôts, puis lancer l'antivirus et changer vos mots de passe", "Do not run it. Restore the original from the repositories, then run the antivirus and change your passwords"),
-                &[&reinstaller],
+                &[reinstaller],
             ),
         );
     }
@@ -636,26 +703,25 @@ pub(super) fn fichiers_suspects() -> Vec<Constat> {
         );
     }
     if modifies.is_empty() && anormaux.is_empty() {
-        let n = systeme.len();
         let mut message = match (gestion, non_verifies) {
-            (None, _) => trf!(
+            (false, _) => trf!(
                 "Aucun programme privilégié dans les dossiers temporaires ; les {n} du système n'ont pas pu être \
                  rapprochés d'un paquet (gestionnaire de paquets non reconnu).",
                 "No privileged program in temporary folders; the {n} system ones could not be \
                  matched to a package (package manager not recognized)."
             ),
-            (Some(_), 0) => trf!(
+            (true, 0) => trf!(
                 "Aucun programme privilégié inhabituel : {n} setuid, setgid ou à capacités, tous d'un paquet et intacts.",
                 "No unusual privileged program: {n} setuid, setgid or capability programs, all from a package and intact."
             ),
-            (Some(_), k) => trf!(
+            (true, k) => trf!(
                 "Aucun programme privilégié inhabituel : {n} setuid, setgid ou à capacités, tous d'un paquet ; \
                  {k} illisible(s), donc non comparé(s) à l'original.",
                 "No unusual privileged program: {n} setuid, setgid or capability programs, all from a package; \
                  {k} unreadable, so not compared to the original."
             ),
         };
-        if capacites.is_none() {
+        if !capacites_lues {
             message.push_str(tr!(
                 " Capacités non vérifiées (getcap absent).",
                 " Capabilities not checked (getcap missing)."
@@ -663,8 +729,6 @@ pub(super) fn fichiers_suspects() -> Vec<Constat> {
         }
         constats.push(ok("Fichiers suspects", message));
     }
-    let path = std::env::var("PATH").unwrap_or_default();
-    let dangereux = path_dangereux(&path, |d| std::fs::metadata(d).ok().map(|m| m.permissions().mode()));
     if !dangereux.is_empty() {
         constats.push(
             alerte(

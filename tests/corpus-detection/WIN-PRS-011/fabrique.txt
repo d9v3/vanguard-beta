@@ -1,1 +1,1 @@
-entree|000000000099|C:\Users\Public\corpus-winsock.dll
+catalogue|000000000099||C:\Users\Public\corpus-winsock.dll

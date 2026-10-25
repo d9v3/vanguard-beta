@@ -156,7 +156,7 @@ pub fn persistance() -> Vec<Constat> {
 }
 
 /// Le bilan pour ces dossiers d'agents (le booléen : dossier du système, que `sudo` seul corrige).
-fn persistance_dans(dossiers: impl IntoIterator<Item = (PathBuf, bool)>) -> Vec<Constat> {
+pub(super) fn persistance_dans(dossiers: impl IntoIterator<Item = (PathBuf, bool)>) -> Vec<Constat> {
     let mut constats = Vec::new();
     let mut tiers = Vec::new();
     let mut interdits = 0usize;
