@@ -37,6 +37,8 @@ pub(super) const CATEGORIES: &[&str] = &[
     "Persistance",
     "Accès à distance",
     "Comptes",
+    // Les traces que les journaux de Windows gardent (WIN-JRN-003 : service, tâche, processus, compte, effacement).
+    "Journaux d'événements",
     "Intégrité",
     "Fichiers suspects",
     "Rançongiciels",

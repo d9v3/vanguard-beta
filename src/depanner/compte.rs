@@ -32,6 +32,8 @@ impl Sorte {
 pub(super) const CATEGORIES: &[&str] = &[
     "Persistance",
     "Accès à distance",
+    // Connexions et comptes vus par les journaux de Windows (WIN-JRN-003).
+    "Journaux d'événements",
     "Extensions",
     "Navigateur",
     "Certificats",

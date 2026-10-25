@@ -180,6 +180,8 @@ const CATEGORIES_SURVEILLEES: &[&str] = &[
     "Bluetooth",
     "Fin de support",
     "Durcissement",
+    // Les alertes des règles EVT- que le bilan rend (WIN-JRN-003), leur règle devant le message.
+    "Journaux d'événements",
     // Un fichier d'état réécrit hors de Vanguard : ce qu'un programme du compte ferait pour faire taire son alerte.
     "État de Vanguard",
 ];
@@ -1839,6 +1841,23 @@ fn installer(exe: &str, r: Reglages) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Les alertes des journaux de Windows que rend le bilan (WIN-JRN-003) sont notifiées, et les parcours
+    /// « infection » et « compte piraté » les montrent ; une information ne l'est pas.
+    #[test]
+    fn alertes_des_journaux_surveillees() {
+        use crate::journaux_windows::regles::resultat::CAT;
+        let mut c = crate::machine::alerte(CAT, Niveau::Critique, "EVT-SRV-001 : service essai");
+        c.regle = "WIN-JRN-003";
+        assert!(machine_surveillee(&c));
+        c.probleme = Some(Niveau::Info);
+        assert!(!machine_surveillee(&c));
+        assert!(
+            crate::depanner::categories_des_parcours()
+                .iter()
+                .all(|l| l.contains(&CAT))
+        );
+    }
 
     /// Sur cet ordinateur, chaque minuterie de l'utilisateur activée ou non selon systemctl l'est aussi
     /// d'après ses liens. Les états à part (static, indirect, generated…) ne se comparent pas : nos

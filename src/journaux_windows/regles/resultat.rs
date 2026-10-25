@@ -27,7 +27,7 @@ use crate::risk::Niveau;
 /// L'identifiant de l'analyse des journaux (`modele::registre::OUTILS`) : le résultat commun de ses règles.
 pub(crate) const ID: &str = "PRO-EVT-001";
 
-const CAT: &str = "Journaux d'événements";
+pub(crate) const CAT: &str = "Journaux d'événements";
 
 /// D'où viennent les événements.
 #[derive(Debug, Clone, PartialEq, Eq)]

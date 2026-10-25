@@ -260,6 +260,12 @@ fn proposer_outil(question: &str, outil: fn()) {
     }
 }
 
+/// Les catégories du bilan que lisent les parcours « infection » et « compte piraté » (pour les essais).
+#[cfg(test)]
+pub(crate) fn categories_des_parcours() -> [&'static [&'static str]; 2] {
+    [infection::CATEGORIES, compte::CATEGORIES]
+}
+
 /// Le bilan de cette machine, réduit aux catégories qui comptent pour ce parcours, affiché puis rendu (pour en tirer
 /// une conclusion, l'état du chiffrement par exemple). Les vérifications impossibles restent dites, jamais comptées
 /// comme saines.
