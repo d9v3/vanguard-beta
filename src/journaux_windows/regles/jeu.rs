@@ -2108,16 +2108,34 @@ fn processus_cree(e: &EvenementWindows) -> Option<Indice> {
 /// arguments), au plus `ACTIONS_MAX` (le Planificateur en admet 32). Les entités XML courantes sont défaites.
 const ACTIONS_MAX: usize = 32;
 
-pub(crate) fn actions_de_tache(xml: &str) -> Vec<(String, String)> {
+/// Le XML d'une tâche lu au plus : une vraie tâche en fait quelques Kio ; un champ forgé peut en faire un Mio.
+const XML_TACHE_MAX: usize = 64 * 1024;
+
+/// Les actions de la tâche, et si son XML dépassait `XML_TACHE_MAX` (lu jusque-là seulement). Linéaire : chaque
+/// recherche reste dans le bloc `<exec>…</exec>` qu'elle lit, et la suivante reprend après lui (un XML forgé fait de
+/// milliers de `<exec>` sans fin ne fait plus relire tout le texte à chacun).
+pub(crate) fn actions_de_tache(xml: &str) -> (Vec<(String, String)>, bool) {
+    let tronque = xml.len() > XML_TACHE_MAX;
+    let xml = if tronque {
+        let mut fin = XML_TACHE_MAX;
+        while !xml.is_char_boundary(fin) {
+            fin -= 1;
+        }
+        &xml[..fin]
+    } else {
+        xml
+    };
     // En minuscules ASCII seulement : les balises le sont, et les indices de `bas` restent ceux de `xml` (une lettre
     // dont la minuscule change de longueur, posée exprès dans la tâche, ne décale rien).
     let bas = xml.to_ascii_lowercase();
-    let valeur = |debut: usize, balise: &str| -> Option<(String, usize)> {
+    // La valeur d'une balise dans le bloc `debut..fin`.
+    let valeur = |debut: usize, fin: usize, balise: &str| -> Option<String> {
         let ouvre = format!("<{balise}>");
         let ferme = format!("</{balise}>");
-        let i = bas[debut..].find(&ouvre)? + debut + ouvre.len();
-        let j = bas[i..].find(&ferme)? + i;
-        Some((entites(&xml[i..j]), j + ferme.len()))
+        let bloc = &bas[debut..fin];
+        let i = bloc.find(&ouvre)? + ouvre.len();
+        let j = bloc[i..].find(&ferme)? + i;
+        Some(entites(&xml[debut + i..debut + j]))
     };
     let mut actions = Vec::new();
     let mut depuis = 0;
@@ -2125,19 +2143,17 @@ pub(crate) fn actions_de_tache(xml: &str) -> Vec<(String, String)> {
         let Some(i) = bas[depuis..].find("<exec>").map(|i| i + depuis) else {
             break;
         };
-        let fin = bas[i..].find("</exec>").map_or(bas.len(), |j| j + i);
-        let Some((commande, _)) = valeur(i, "command").filter(|(_, apres)| *apres <= fin) else {
-            depuis = i + "<exec>".len();
-            continue;
+        // Un bloc sans fin : rien d'autre à lire après lui.
+        let Some(fin) = bas[i..].find("</exec>").map(|j| j + i) else {
+            break;
         };
-        let arguments = valeur(i, "arguments")
-            .filter(|(_, apres)| *apres <= fin)
-            .map(|(a, _)| a)
-            .unwrap_or_default();
-        actions.push((commande, arguments));
-        depuis = fin.max(i + 1);
+        if let Some(commande) = valeur(i, fin, "command") {
+            let arguments = valeur(i, fin, "arguments").unwrap_or_default();
+            actions.push((commande, arguments));
+        }
+        depuis = fin + "</exec>".len();
     }
-    actions
+    (actions, tronque)
 }
 
 /// Les entités XML d'une valeur (« &quot; », « &amp; »…), défaites une fois.
@@ -2236,7 +2252,7 @@ fn tache_auditee(e: &EvenementWindows) -> Option<Indice> {
         .champ("TaskContent")
         .or_else(|| e.champ("TaskContentNew"))
         .unwrap_or_default();
-    let actions = actions_de_tache(contenu);
+    let (actions, tronque) = actions_de_tache(contenu);
     let pire = actions
         .iter()
         .filter_map(|(programme, arguments)| {
@@ -2245,12 +2261,24 @@ fn tache_auditee(e: &EvenementWindows) -> Option<Indice> {
         .max_by_key(|(gravite, ..)| *gravite);
     let (gravite, pourquoi, commande) = match pire {
         Some((gravite, pourquoi, programme, arguments)) => (gravite, pourquoi, format!("{programme} {arguments}")),
-        None if e.id == 4698 => (
+        None if e.id == 4698 || tronque => (
             Gravite::Info,
             ("une tâche planifiée a été créée", "a scheduled task was created"),
             actions.first().map(|(c, a)| format!("{c} {a}")).unwrap_or_default(),
         ),
         None => return None,
+    };
+    // Une tâche démesurée n'a été lue qu'en partie : ce qui suit peut cacher une action.
+    let (gravite, pourquoi) = if tronque && gravite < Gravite::Alerte {
+        (
+            Gravite::Alerte,
+            (
+                "le contenu de la tâche est démesuré (plus de 64 Kio, ce qu'aucune tâche ordinaire n'atteint) : il n'a été lu qu'en partie",
+                "the task content is oversized (more than 64 KiB, which no ordinary task reaches): it was only partly read",
+            ),
+        )
+    } else {
+        (gravite, pourquoi)
     };
     indice(
         format!("{}|{}", nom.to_lowercase(), chemin_bas(&commande)),

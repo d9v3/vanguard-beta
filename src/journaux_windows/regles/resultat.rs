@@ -191,8 +191,18 @@ fn etats_du_dossier(fichiers: &[BilanFichier]) -> Vec<EtatJournal> {
 }
 
 /// Analyse un dossier de journaux .evtx. `Err` : le dossier lui-même ne se lit pas.
+/// Le temps laissé au jugement d'un dossier : au-delà, les événements suivants sont lus sans être jugés, comptés, et
+/// chaque règle est non vérifiée (un dossier forgé ne fige pas le menu).
+const DELAI_DOSSIER: std::time::Duration = std::time::Duration::from_secs(600);
+
 pub(crate) fn analyser_dossier(dossier: &Path, options: &Options) -> std::io::Result<Analyse> {
-    analyser_dossier_borne(dossier, options, &BornesFichiers::default(), BornesMoteur::default())
+    analyser_dossier_borne(
+        dossier,
+        options,
+        &BornesFichiers::default(),
+        BornesMoteur::default(),
+        std::time::Instant::now() + DELAI_DOSSIER,
+    )
 }
 
 pub(crate) fn analyser_dossier_borne(
@@ -200,13 +210,21 @@ pub(crate) fn analyser_dossier_borne(
     options: &Options,
     bornes: &BornesFichiers,
     bornes_moteur: BornesMoteur,
+    fin: std::time::Instant,
 ) -> std::io::Result<Analyse> {
     let mut moteur = Moteur::nouveau(REGLES, options.clone(), bornes_moteur);
     let filtre = Filtre {
         depuis: options.depuis,
         ..Filtre::default()
     };
-    let bilan = fichiers::lire_dossier(dossier, &filtre, bornes, |e| moteur.recevoir(&e))?;
+    let mut hors_delai = 0u64;
+    let bilan = fichiers::lire_dossier(dossier, &filtre, bornes, |e| {
+        if std::time::Instant::now() < fin {
+            moteur.recevoir(&e);
+        } else {
+            hors_delai += 1;
+        }
+    })?;
     let etats = etats_du_dossier(&bilan.fichiers);
     let mut manques_source = Vec::new();
     if bilan.hors_borne > 0 {
@@ -214,6 +232,12 @@ pub(crate) fn analyser_dossier_borne(
             "{} fichiers .evtx au-delà des bornes, pas lus",
             "{} .evtx files beyond the limits, not read",
             bilan.hors_borne
+        ));
+    }
+    if hors_delai > 0 {
+        manques_source.push(crate::trf!(
+            "délai dépassé : {hors_delai} événements lus sans être jugés",
+            "time limit exceeded: {hors_delai} events read without being judged"
         ));
     }
     if bilan.entrees_illisibles > 0 {

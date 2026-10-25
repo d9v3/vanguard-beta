@@ -1686,7 +1686,7 @@ fn actions_d_une_tache_hostile() {
     let x = "<EXEC><COMMAND>a.exe</COMMAND></EXEC><Exec><Arguments>x</Arguments></Exec><Exec><Command>b.exe\
              </Command><Arguments>-y</Arguments></Exec><Exec><Command>c.exe";
     assert_eq!(
-        actions_de_tache(x),
+        actions_de_tache(x).0,
         vec![
             ("a.exe".to_string(), String::new()),
             ("b.exe".to_string(), "-y".to_string())
@@ -1694,10 +1694,36 @@ fn actions_d_une_tache_hostile() {
     );
     // Une lettre dont la minuscule change de longueur ne décale pas la lecture.
     let x = "<Exec><Command>İİİ\\cmd.exe</Command></Exec>";
-    assert_eq!(actions_de_tache(x)[0].0, "İİİ\\cmd.exe");
+    assert_eq!(actions_de_tache(x).0[0].0, "İİİ\\cmd.exe");
     // Des milliers d'actions : au plus 32.
-    let x = "<Exec><Command>a.exe</Command></Exec>".repeat(5000);
-    assert_eq!(actions_de_tache(&x).len(), 32);
+    let x = "<Exec><Command>a.exe</Command></Exec>".repeat(1000);
+    assert_eq!(actions_de_tache(&x).0.len(), 32);
+}
+
+/// Un champ forgé d'un Mio (des blocs sans commande, ou sans fin) se lit vite, et seulement jusqu'à sa borne : la
+/// tâche ainsi démesurée est une alerte, même changée (4702), jamais un silence.
+#[test]
+fn tache_demesuree_lue_vite() {
+    let debut = std::time::Instant::now();
+    for x in [
+        "<exec>".repeat((1 << 20) / 6),
+        "<exec><arguments>x</arguments></exec>".repeat((1 << 20) / 37),
+        "<exec><command>".repeat((1 << 20) / 15),
+    ] {
+        let (actions, tronque) = actions_de_tache(&x);
+        assert!(actions.is_empty() && tronque);
+    }
+    assert!(
+        debut.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        debut.elapsed()
+    );
+    let mut x = xml_tache("C:\\Program Files\\App\\app.exe", "");
+    x.push_str(&" ".repeat(70 * 1024));
+    let mut e = tache(4702, "\\Essai", "", "");
+    e.champs.retain(|(n, _)| n != "TaskContentNew");
+    e.champs.push(("TaskContentNew".into(), x));
+    assert_eq!(gravites(&juger(&[e]), "EVT-TAC-001"), [Gravite::Alerte]);
 }
 
 #[test]
@@ -1930,7 +1956,7 @@ proptest! {
     ) {
         let _ = ligne_suspecte(&programme, &ligne);
         let _ = tache_suspecte(&programme, &ligne);
-        let actions = actions_de_tache(&ligne);
+        let (actions, _) = actions_de_tache(&ligne);
         prop_assert!(actions.len() <= 32);
         let js = juger(&[processus(&programme, &ligne), tache(4698, &programme, &programme, &ligne)]);
         for id in ["EVT-PRC-001", "EVT-TAC-001"] {
@@ -2023,6 +2049,30 @@ fn constats_du_bilan() {
             .iter()
             .all(|c| c.probleme.is_none())
     );
+}
+
+/// Un dossier dont le jugement dépasse son délai : les événements suivants ne sont pas jugés, et c'est dit.
+#[test]
+fn dossier_hors_delai() {
+    let dossier = crate::socle::dossier_local().join("essai-delai-des-journaux");
+    std::fs::create_dir_all(&dossier).unwrap();
+    let f = crate::journaux_windows::evtx::tests::fichier(&[crate::journaux_windows::evtx::tests::morceau_type(1)]);
+    std::fs::write(dossier.join("System.evtx"), f).unwrap();
+    let deja = std::time::Instant::now();
+    let a = resultat::analyser_dossier_borne(
+        &dossier,
+        &Options::default(),
+        &crate::journaux_windows::fichiers::BornesFichiers::default(),
+        BornesMoteur::default(),
+        deja,
+    )
+    .unwrap();
+    assert!(
+        a.manques_source.iter().any(|m| m.contains("jug")),
+        "{:?}",
+        a.manques_source
+    );
+    assert!(a.jugements.iter().all(|j| !j.verifie()));
 }
 
 #[test]
