@@ -41,6 +41,9 @@ pub fn exe_d_origine() -> Option<PathBuf> {
             };
             match origine_crue(Path::new(&designee), image_qui_tourne()) {
                 Ok(chemin) => Some(chemin),
+                // Hors de la copie temporaire, la variable n'est qu'héritée (un Vanguard lancé par celui de la clé) ou
+                // posée par un autre programme : ignorée sans bruit, elle ne sert à rien. Dans la copie, l'écart se dit.
+                Err(_) if !std::env::current_exe().is_ok_and(|e| est_une_copie(&e)) => courant(),
                 Err(raison) => {
                     tre!(
                         "Attention : VANGUARD_ORIGINE désigne {}, qui n'est pas le programme qui tourne ({raison}) : ignorée.",
@@ -58,6 +61,10 @@ pub fn exe_d_origine() -> Option<PathBuf> {
 /// L'empreinte du programme qui tourne : son image (/proc/self/exe sous Linux, lisible même effacée), sinon son
 /// fichier.
 fn image_qui_tourne() -> Option<String> {
+    // Déjà lue par les programmes posés : pas une seconde lecture du programme.
+    if let Some(soi) = crate::programmes_poses::soi() {
+        return Some(soi.to_string());
+    }
     #[cfg(target_os = "linux")]
     let image = PathBuf::from("/proc/self/exe");
     #[cfg(not(target_os = "linux"))]

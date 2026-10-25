@@ -116,7 +116,7 @@ pub(crate) fn empreinte_de(chemin: &Path) -> Result<String, String> {
 
 /// L'empreinte de l'image du programme qui tourne (Linux seulement, voir l'en-tête), lue une fois. Jamais pendant
 /// les tests : le programme des essais n'est pas Vanguard.
-fn soi() -> Option<&'static str> {
+pub(crate) fn soi() -> Option<&'static str> {
     static SOI: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     if cfg!(test) || !cfg!(target_os = "linux") {
         return None;

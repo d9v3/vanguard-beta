@@ -1367,11 +1367,12 @@ fn fichier_rancon_voulu() -> PathBuf {
     crate::socle::dossier_local().join(RANCON_VOULU)
 }
 
-/// La veille anti-rançongiciel est-elle voulue ? La marque, ou l'état scellé (`voulues`) : effacer la marque ne la
-/// coupe plus au démarrage suivant du service. Un état qui ne peut pas être cru, sans marque, ne l'allume pas (elle
-/// peut geler un programme : c'est un accord à part), mais le bilan le dit.
+/// La veille anti-rançongiciel est-elle voulue ? L'état scellé seul (`voulues`) : effacer la marque ne la coupe pas,
+/// et la poser ne l'allume pas (elle peut geler un programme : c'est un accord à part, donné par le geste). La marque
+/// d'une version d'avant est reprise une fois, à la mise à jour (`adopter_les_marques`). Un état qui ne peut pas
+/// être cru ne l'allume pas, mais le bilan le dit.
 pub(crate) fn rancon_voulu() -> bool {
-    fichier_rancon_voulu().is_file() || matches!(voulues::souvenir(Defense::Rancongiciel), voulues::Souvenir::Voulue(_))
+    matches!(voulues::souvenir(Defense::Rancongiciel), voulues::Souvenir::Voulue(_))
 }
 
 /// Parmi `pids`, ceux qui sont encore gelés (état « T ») : un PID mort ou repris par un autre processus ne l'est
@@ -1489,7 +1490,7 @@ fn adopter_les_marques() {
         voulues::adopter(Defense::Veilleur);
     }
     if fichier_rancon_voulu().is_file() {
-        voulues::adopter(Defense::Rancongiciel);
+        voulues::adopter_d_avant_dans(&crate::socle::dossier_local(), Defense::Rancongiciel);
     }
 }
 
@@ -2564,7 +2565,7 @@ fn constat() -> Constat {
     let rancon_marque = fichier_rancon_voulu().is_file();
     // Allumée par une version d'avant : notée voulue, sa marque effacée ne la coupe plus en silence.
     if rancon_marque {
-        voulues::adopter(Defense::Rancongiciel);
+        voulues::adopter_d_avant_dans(&crate::socle::dossier_local(), Defense::Rancongiciel);
     }
     let rancon = voulues::juger(rancon_marque, false, &voulues::souvenir(Defense::Rancongiciel));
     // Le programme et l'unité comparés à ceux que Vanguard a posés : un autre programme ou une unité changée passe
@@ -3803,20 +3804,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(d);
     }
 
-    /// Les marques d'une version d'avant (veilleur, veille anti-rançongiciel) sont adoptées : effacées ensuite, la
-    /// défense reste voulue et son service la reprend.
+    /// La marque de la veille anti-rançongiciel d'une version d'avant est adoptée à la mise à jour (rien encore de
+    /// noté) : effacée ensuite, la veille reste voulue. Posée par un autre programme une fois l'état tenu, elle
+    /// n'allume rien : la veille qui gèle ne s'allume que par le geste (relecture S2c, Fable 6).
     #[test]
     fn marques_d_avant_adoptees() {
-        let marque = fichier_rancon_voulu();
-        marquer(&marque);
-        adopter_les_marques();
+        let d = std::env::temp_dir().join(format!("vanguard-marques-d-avant-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        voulues::adopter_d_avant_dans(&d, Defense::Rancongiciel);
         assert!(matches!(
-            voulues::souvenir(Defense::Rancongiciel),
+            voulues::souvenir_dans(&d, Defense::Rancongiciel),
             voulues::Souvenir::Voulue(_)
         ));
-        std::fs::remove_file(&marque).unwrap();
-        assert!(rancon_voulu(), "la marque effacée ne coupe plus la veille");
-        let _ = voulues::noter_dans(&crate::socle::dossier_local(), Defense::Rancongiciel, false, false);
+        let d2 = d.join("ensuite");
+        std::fs::create_dir_all(&d2).unwrap();
+        voulues::noter_dans(&d2, Defense::Surveillance, true, false).unwrap();
+        voulues::adopter_d_avant_dans(&d2, Defense::Rancongiciel);
+        assert_eq!(
+            voulues::souvenir_dans(&d2, Defense::Rancongiciel),
+            voulues::Souvenir::Jamais
+        );
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Le processus noté doit lancer le programme de l'unité : celui de ce test lance son propre programme, pas un

@@ -465,7 +465,8 @@ mod tests {
         ("verifier-sauvegarde-tube", "dossier jetable d'un essai seulement"),
         (
             "cle-donnees",
-            "clé du carnet chiffré de la clé USB : confidentialité, pas une défense",
+            "clé du carnet chiffré de la clé USB : elle ne sert qu'au carnet de la clé, que cles_connues juge ; dans le \
+             dossier de cet ordinateur, aucune enveloppe n'est suivie",
         ),
         ("cle-donnees-enveloppe-retiree", "dossier jetable d'un essai seulement"),
         (
@@ -496,7 +497,8 @@ mod tests {
         ("veilleur-oublier-le-choix", "dossier jetable d'un essai seulement"),
         (
             "rancongiciel-voulu",
-            "indice seulement, comme veilleur-voulu (defenses-voulues.json décide)",
+            "indice pour le bilan : la veille ne s'allume que par defenses-voulues.json (scellé) ; celle d'une version \
+             d'avant n'est reprise qu'à la mise à jour",
         ),
         (
             "blocage",
@@ -541,7 +543,11 @@ mod tests {
             "signalements",
             "brouillons de signalement : rien ne part (aucun code réseau)",
         ),
-        ("appareils.json.vanguard", "carnet chiffré par la phrase de la personne"),
+        (
+            "appareils.json.vanguard",
+            "carnet chiffré : seul celui de la clé se lit ; trouvé dans le dossier de cet ordinateur, il est ignoré et \
+             dit",
+        ),
         ("appareils.verrou", "verrou, sans contenu"),
         ("appareils.lock", "verrou, sans contenu"),
         ("alertes.verrou", "verrou, sans contenu"),
@@ -611,125 +617,333 @@ mod tests {
         ("traces", "traces relevées après un incident : copiées, jamais jugées"),
     ];
 
-    /// Les chemins vers un fichier scellé construits hors du sceau (fichier source, nom, raison) : aucun n'en lit le
-    /// contenu pour juger. Liste fermée, comme `NON_SCELLES`.
-    const CHEMINS_HORS_DU_SCEAU: &[(&str, &str, &str)] = &[
+    /// Chaque endroit du code (hors `sceau.rs`, cet inventaire et les essais) où paraît le nom d'un fichier scellé
+    /// ailleurs qu'en argument d'une fonction de `sceau` : (fichier source, nom, nombre d'endroits, raison). Liste
+    /// fermée, au compte près : un endroit de plus (une nouvelle lecture sans le sceau, un chemin construit) ou de moins
+    /// fait échouer `chaque_lecture_passe_par_le_sceau`.
+    const HORS_DU_SCEAU: &[(&str, &str, usize, &str)] = &[
         (
             "apprentissage.rs",
             "appris.json",
+            1,
             "chemin montré dans les messages ; la liste se lit par sceau::juge",
         ),
         (
             "autotest/mod.rs",
             "surveillance-passe.txt",
+            1,
             "date du fichier seulement, qui rend au plus la preuve « non concluante » ; le contenu se lit par le sceau",
         ),
         (
             "changements.rs",
             "changements.jsonl",
-            "chemin passé aux lecteurs du relevé, qui le relisent par le sceau (dossier et nom tirés du chemin)",
+            2,
+            "chemin passé aux lecteurs du relevé, qui en tirent dossier et nom pour le sceau",
         ),
         (
             "chiffrement.rs",
             "appareils.json",
-            "le carnet de la clé USB (racine/donnees), chiffré par la phrase et jugé par cles_connues : pas celui de cet ordinateur",
+            8,
+            "le carnet de la clé USB (racine/donnees) seulement, chiffré par la phrase et jugé par cles_connues : celui de cet ordinateur se lit toujours sous son sceau (reseau, lire_local)",
         ),
         (
             "desinstaller.rs",
             "changements.jsonl",
-            "relevé copié tel quel pour la personne avant l'effacement du dossier : rien n'y est jugé",
+            2,
+            "relevé copié tel quel pour la personne avant l'effacement du dossier, et nommé dans le message : rien n'y est jugé",
         ),
         (
             "desinstaller.rs",
             "defenses-voulues.json",
-            "gardé par la désinstallation pour une défense gardée : chemin comparé, jamais lu",
+            1,
+            "gardé pour une défense gardée : chemin comparé, jamais lu",
         ),
         (
             "desinstaller.rs",
             "pieges.json",
-            "gardé pour des pièges gardés, et montré dans un message : jamais lu",
+            1,
+            "gardé pour des pièges gardés : chemin comparé, jamais lu",
         ),
         (
             "desinstaller.rs",
             "programmes-planifies.json",
-            "gardé par la désinstallation pour une défense gardée : chemin comparé, jamais lu",
+            1,
+            "gardé pour une défense gardée : chemin comparé, jamais lu",
         ),
         (
             "desinstaller.rs",
             "sauvegarde.json",
+            2,
             "gardé pour une sauvegarde gardée : chemin comparé, jamais lu",
+        ),
+        (
+            "desinstaller.rs",
+            "veilleur-etat.json",
+            1,
+            "gardé pour un veilleur gardé : chemin comparé, jamais lu",
+        ),
+        (
+            "machine/linux/veilleur.rs",
+            "defenses-voulues.json",
+            1,
+            "nommé dans un message",
         ),
         (
             "machine/linux/veilleur.rs",
             "veilleur-etat.json",
+            1,
             "le numéro du veilleur d'avant une mise à jour, qui l'écrit sans sceau : rien n'est cru de ses compteurs, le processus est revérifié par son image",
         ),
         (
             "modele/journal.rs",
             "evenements.tete",
-            "plafond des lectures qui ne jugent pas la tête (traces en administrateur) : elles ne disent rien d'intact",
+            2,
+            "plafond des lectures qui ne jugent pas la tête (traces en administrateur, elles ne disent rien d'intact), et la liste des fichiers du journal que les traces recopient",
         ),
         (
             "optimiser/mod.rs",
             "reglages.json",
+            1,
             "mis de côté (renommé) quand il ne se lit pas ou a été changé : jamais lu pour juger",
         ),
         (
             "parametres.rs",
             "parametres.json",
-            "chemin passé à charger_juge, qui le relit par le sceau",
+            3,
+            "chemin passé à charger_juge, qui en tire dossier et nom pour le sceau",
+        ),
+        (
+            "passage.rs",
+            "appareils.json",
+            1,
+            "présence seulement : les fichiers qui disent les données d'une version d'avant",
+        ),
+        (
+            "passage.rs",
+            "parametres.json",
+            1,
+            "présence seulement : les fichiers qui disent les données d'une version d'avant",
+        ),
+        (
+            "passage.rs",
+            "reglages.json",
+            1,
+            "présence seulement : les fichiers qui disent les données d'une version d'avant",
+        ),
+        (
+            "plugins/mod.rs",
+            "reglages.json",
+            1,
+            "celui des extensions, que lire_scelle relit par le sceau sous plugins/reglages.json",
         ),
         (
             "plugins/reglages.rs",
             "reglages.json",
-            "celui des extensions (sous plugins/, scellé sous plugins/reglages.json), mis de côté (renommé) quand il est ignoré : jamais lu",
+            3,
+            "celui des extensions : relu et écrit par le sceau sous plugins/reglages.json, ou mis de côté (renommé)",
         ),
         (
             "protection/blocage/mod.rs",
             "blocage.json",
+            1,
             "mis de côté quand il ne se lit pas : jamais lu pour juger",
         ),
         (
             "protection/blocage/parametres.rs",
             "blocage.json",
-            "chemin passé au lecteur, qui le relit par le sceau",
+            3,
+            "chemin passé au lecteur, qui en tire dossier et nom pour le sceau",
+        ),
+        (
+            "protection/cles_connues.rs",
+            "appareils.json",
+            1,
+            "l'empreinte du carnet de la clé USB, sa référence (pas celui de cet ordinateur)",
         ),
         (
             "protection/cles_connues.rs",
             "cles-connues.json",
+            1,
             "mis de côté quand il a été changé : le contenu se lit par le sceau",
         ),
         (
             "protection/manifeste.rs",
             "manifeste-cle.json",
+            3,
             "l'ancienne référence : sa présence (sans la lire) et son chemin, que le lecteur relit par le sceau",
         ),
         (
             "protection/pieges.rs",
             "pieges.json",
+            1,
             "chemin montré dans les messages ; la liste se lit par sceau::juge",
         ),
         (
             "protection/sortantes.rs",
             "surveillance-botnets.txt",
+            1,
             "date du fichier seulement, pour le tableau ; le contenu se lit par le sceau",
         ),
         (
             "protection/temps_reel.rs",
             "temps-reel.json",
-            "chemin passé au lecteur, qui le relit par le sceau (dossier et nom tirés du chemin)",
+            2,
+            "chemin passé au lecteur, qui en tire dossier et nom pour le sceau",
         ),
         (
             "reseau/mod.rs",
             "appareils.json",
-            "le carnet de la clé USB (jugé par cles_connues) ; celui de cet ordinateur, par le sceau, ou mis de côté avant d'être réécrit ; et la lecture qui retire ses noms du journal des erreurs, qui ne décide de rien",
+            8,
+            "le carnet de la clé USB (jugé par cles_connues) ; celui de cet ordinateur, par le sceau, ou mis de côté avant d'être réécrit ; la lecture qui retire ses noms du journal des erreurs, qui ne décide de rien ; et un message",
+        ),
+        (
+            "reseau/surveillance.rs",
+            "defenses-voulues.json",
+            1,
+            "nommé dans un message",
         ),
         (
             "reseau/tableau.rs",
             "surveillance-machine.json",
+            1,
             "date du fichier seulement, quand la passe n'a jamais été notée (passes d'avant le tableau)",
         ),
+        (
+            "traces/vanguard.rs",
+            "changements.jsonl",
+            1,
+            "traces après incident : relevé recopié et relu pour lister les gestes, rien n'y est jugé ni rejoué",
+        ),
+        (
+            "voulues.rs",
+            "defenses-voulues.json",
+            1,
+            "présence seulement : rien encore de noté, c'est une mise à jour d'une version d'avant",
+        ),
     ];
+
+    /// Le code sans ses commentaires (remplacés par des espaces, les positions gardées), et ses littéraux de texte
+    /// (position, valeur), le contenu des littéraux blanchi dans le code rendu.
+    #[allow(clippy::many_single_char_names)] // un lexeur : i, j, c, n, o se lisent mieux courts
+    fn lexer(code: &str) -> (String, Vec<(usize, String)>) {
+        let o: Vec<char> = code.chars().collect();
+        let mut sortie: Vec<char> = Vec::with_capacity(o.len());
+        let mut litteraux = Vec::new();
+        let mut i = 0;
+        while i < o.len() {
+            let c = o[i];
+            let suivant = o.get(i + 1).copied();
+            if c == '/' && suivant == Some('/') {
+                while i < o.len() && o[i] != '\n' {
+                    sortie.push(' ');
+                    i += 1;
+                }
+            } else if c == '/' && suivant == Some('*') {
+                while i < o.len() && !(o[i] == '*' && o.get(i + 1) == Some(&'/')) {
+                    sortie.push(if o[i] == '\n' { '\n' } else { ' ' });
+                    i += 1;
+                }
+                sortie.extend([' ', ' ']);
+                i += 2;
+            } else if c == 'r'
+                && (suivant == Some('"') || suivant == Some('#'))
+                && !i.checked_sub(1).is_some_and(|k| o[k].is_alphanumeric() || o[k] == '_')
+            {
+                // Texte brut : r"…", r#"…"#.
+                let mut j = i + 1;
+                let mut dieses = 0;
+                while o.get(j) == Some(&'#') {
+                    dieses += 1;
+                    j += 1;
+                }
+                if o.get(j) != Some(&'"') {
+                    sortie.push(c);
+                    i += 1;
+                    continue;
+                }
+                let debut = sortie.len();
+                let fin: String = std::iter::once('"').chain(std::iter::repeat_n('#', dieses)).collect();
+                let reste: String = o[j + 1..].iter().collect();
+                let n = reste
+                    .find(&fin)
+                    .map_or(reste.chars().count(), |k| reste[..k].chars().count());
+                let valeur: String = o[j + 1..j + 1 + n].iter().collect();
+                litteraux.push((debut, valeur));
+                let total = (j + 1 + n + fin.chars().count()).min(o.len()) - i;
+                sortie.extend(o[i..i + total].iter().map(|&c| if c == '\n' { '\n' } else { ' ' }));
+                i += total;
+            } else if c == '"' {
+                let debut = sortie.len();
+                let mut valeur = String::new();
+                let mut j = i + 1;
+                while j < o.len() && o[j] != '"' {
+                    if o[j] == '\\' {
+                        valeur.push(o[j]);
+                        j += 1;
+                    }
+                    if j < o.len() {
+                        valeur.push(o[j]);
+                    }
+                    j += 1;
+                }
+                litteraux.push((debut, valeur));
+                let total = (j + 1).min(o.len()) - i;
+                sortie.extend(o[i..i + total].iter().map(|&c| if c == '\n' { '\n' } else { ' ' }));
+                i += total;
+            } else if c == '\'' {
+                // Un caractère ('"', '\'', '\n') ou une durée de vie ('a) : seul le premier se saute.
+                let fin = if suivant == Some('\\') {
+                    (i + 2..(i + 12).min(o.len())).find(|&k| o[k] == '\'')
+                } else {
+                    (o.get(i + 2) == Some(&'\'')).then_some(i + 2)
+                };
+                if let Some(f) = fin {
+                    sortie.extend(std::iter::repeat_n(' ', f + 1 - i));
+                    i = f + 1;
+                } else {
+                    sortie.push(c);
+                    i += 1;
+                }
+            } else {
+                sortie.push(c);
+                i += 1;
+            }
+        }
+        (sortie.into_iter().collect(), litteraux)
+    }
+
+    /// Les instructions `use` d'un code, sans espaces (« crate::sceau::{APPRIS,BOTNETS} »).
+    fn imports(code: &str) -> Vec<String> {
+        code.match_indices("use ")
+            .filter(|(i, _)| *i == 0 || code[..*i].ends_with(['\n', ' ', '{', ';']))
+            .filter_map(|(i, _)| {
+                let reste = &code[i + 4..];
+                Some(
+                    reste[..reste.find(';')?]
+                        .chars()
+                        .filter(|c| !c.is_whitespace())
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// Le chemin complet d'un nom importé par `use` (« APPRIS » → « crate::sceau::APPRIS »).
+    fn importe(code: &str, nom: &str) -> Option<String> {
+        imports(code).into_iter().find_map(|u| {
+            if let Some((prefixe, liste)) = u.split_once('{') {
+                let liste = liste.trim_end_matches('}');
+                let module = prefixe.trim_end_matches("::");
+                // `use a::b::{self, …}` importe le module b lui-même.
+                if module.rsplit("::").next() == Some(nom) && liste.split(',').any(|n| n == "self") {
+                    return Some(module.to_string());
+                }
+                liste.split(',').any(|n| n == nom).then(|| format!("{prefixe}{nom}"))
+            } else {
+                (u.rsplit("::").next() == Some(nom)).then_some(u)
+            }
+        })
+    }
 
     /// Le code d'un fichier sans ce qui ne compile que pour les essais : ses modules de tests, et chaque élément
     /// précédé de `#[cfg(test)]` (jusqu'à sa fin : `;` ou son bloc).
@@ -765,8 +979,8 @@ mod tests {
         sortie
     }
 
-    /// Les sources de src par chemin relatif (« protection/pieges.rs »), sans les essais ; les fichiers de tests
-    /// entiers (« plugins/tests.rs ») n'y sont pas.
+    /// Les sources de src par chemin relatif (« protection/pieges.rs »), sans les commentaires ni les essais ; les
+    /// fichiers de tests entiers (« plugins/tests.rs ») n'y sont pas.
     fn sources_sans_essais() -> BTreeMap<String, String> {
         let racine = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         sources()
@@ -778,9 +992,26 @@ mod tests {
                     .to_string_lossy()
                     .replace('\\', "/");
                 let nom = relatif.rsplit('/').next().unwrap_or_default();
-                (nom != "tests.rs" && nom != "essais.rs").then(|| (relatif, sans_essais(&code)))
+                // Les commentaires retirés d'abord : un `#[cfg(test)]` cité dans un commentaire n'enlève rien.
+                let sans_commentaires = lexer_commentaires(&code);
+                (nom != "tests.rs" && nom != "essais.rs").then(|| (relatif, sans_essais(&sans_commentaires)))
             })
             .collect()
+    }
+
+    /// Le code sans ses commentaires, ses littéraux gardés.
+    fn lexer_commentaires(code: &str) -> String {
+        let (blanchi, litteraux) = lexer(code);
+        let mut sortie: Vec<char> = blanchi.chars().collect();
+        for (pos, valeur) in litteraux {
+            let texte: Vec<char> = format!("\"{valeur}\"").chars().collect();
+            for (k, c) in texte.into_iter().enumerate() {
+                if let Some(place) = sortie.get_mut(pos + k) {
+                    *place = c;
+                }
+            }
+        }
+        sortie.into_iter().collect()
     }
 
     /// Le fichier d'un module désigné depuis `fichier` (« crate::sauvegarde », « parametres », « super »).
@@ -799,7 +1030,7 @@ mod tests {
         for seg in segments {
             if seg == "super" {
                 dossier.pop();
-            } else {
+            } else if seg != "self" {
                 dossier.push(seg);
             }
         }
@@ -810,40 +1041,119 @@ mod tests {
             .find(|f| sources.contains_key(f))
     }
 
-    /// La valeur d'une constante `&str` vue depuis `fichier` (« NOM », « sceau::NOM », « crate::x::NOM ») : un littéral,
-    /// ou une autre constante qu'elle reprend.
-    fn valeur(fichier: &str, chemin: &str, sources: &BTreeMap<String, String>, profondeur: usize) -> Option<String> {
-        if profondeur > 4 {
-            return None;
+    /// Ce que vaut une constante vue depuis `fichier` (« NOM », « sceau::NOM », « crate::x::NOM », ou un nom importé) :
+    /// `Ok(Some(texte))` pour une constante `&str` (un littéral, ou une autre constante qu'elle reprend), `Ok(None)` pour
+    /// une constante d'un autre type, `Err` si elle ne se trouve pas.
+    fn valeur(
+        fichier: &str,
+        chemin: &str,
+        sources: &BTreeMap<String, String>,
+        profondeur: usize,
+    ) -> Result<Option<String>, String> {
+        if profondeur > 6 {
+            return Err(format!("{fichier} : {chemin} (trop de détours)"));
         }
-        let segments: Vec<&str> = chemin.split("::").collect();
-        let (nom, module) = segments.split_last()?;
+        let segments: Vec<&str> = chemin.split("::").filter(|s| !s.is_empty()).collect();
+        let Some((nom, module)) = segments.split_last() else {
+            return Err(format!("{fichier} : chemin vide"));
+        };
         let ou = if module.is_empty() {
             fichier.to_string()
         } else if module.last() == Some(&"sceau") {
             "sceau.rs".to_string()
         } else {
-            fichier_du_module(fichier, module, sources)?
+            // Un module importé par `use` (« use crate::reseau::surveillance; ») : son chemin complet.
+            let importe_ici = sources.get(fichier).and_then(|c| importe(c, module[0]));
+            let complet: Vec<String> = importe_ici.map_or_else(
+                || vec![module[0].to_string()],
+                |p| p.split("::").map(str::to_string).collect::<Vec<_>>(),
+            );
+            let complet: Vec<&str> = complet
+                .iter()
+                .map(String::as_str)
+                .chain(module[1..].iter().copied())
+                .collect();
+            fichier_du_module(fichier, module, sources)
+                .or_else(|| fichier_du_module(fichier, &complet, sources))
+                .ok_or_else(|| format!("{fichier} : module de {chemin}"))?
         };
-        let code = sources.get(&ou)?;
-        let debut = code.find(&format!("const {nom}: &str = "))?;
-        let apres = code[debut..].split_once('=')?.1.trim_start();
+        let code = sources.get(&ou).ok_or_else(|| format!("{ou} introuvable"))?;
+        let definition = [format!("const {nom}: "), format!("static {nom}: ")]
+            .iter()
+            .find_map(|d| code.find(d.as_str()));
+        let Some(debut) = definition else {
+            // Importé dans ce fichier (`use …::NOM`), sinon pas une constante d'ici.
+            if module.is_empty()
+                && let Some(complet) = importe(code, nom)
+                && complet != chemin
+            {
+                return valeur(&ou, &complet, sources, profondeur + 1);
+            }
+            return Err(format!("{fichier} : {chemin} introuvable"));
+        };
+        let (genre, apres) = code[debut..]
+            .split_once(':')
+            .unwrap_or_default()
+            .1
+            .split_once('=')
+            .unwrap_or_default();
+        if genre.trim() != "&str" && genre.trim() != "&'static str" {
+            return Ok(None);
+        }
+        let apres = apres.trim_start();
         if let Some(dedans) = apres.strip_prefix('"') {
-            return Some(dedans[..dedans.find('"')?].to_string());
+            return Ok(Some(dedans[..dedans.find('"').unwrap_or(0)].to_string()));
         }
         let autre: String = apres
             .chars()
             .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == ':')
             .collect();
+        // Calculée (`if cfg!(…)`, un appel) : pas un nom de fichier d'état qui se suive ici.
+        if !autre
+            .rsplit("::")
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c == '_')
+        {
+            return Ok(None);
+        }
         valeur(&ou, &autre, sources, profondeur + 1)
     }
 
-    /// T14 (S2c) : chaque fichier du dossier de données de Vanguard est lu par le sceau (`sceau::lire`, ou un juge qui
-    /// l'utilise), sauf ceux de `NON_SCELLES` ; et aucun chemin vers un fichier scellé n'est construit hors du sceau
-    /// (un chemin est ce qu'il faut pour le lire sans lui), sauf ceux de `CHEMINS_HORS_DU_SCEAU`. Ce que la lecture
-    /// voit : chaque `.join(…)` du code (hors essais) dont l'argument est un littéral ou une constante (du fichier,
-    /// de `sceau`, ou d'un module nommé) qui vaut le nom d'un fichier scellé. Une exception qui ne sert plus fait aussi
-    /// échouer le test.
+    /// Le nom de la fonction dont `code[..pos]` est dans les arguments (« crate::sceau::juge_dans »), s'il y en a une.
+    fn appel_englobant(code: &str, pos: usize) -> Option<&str> {
+        let mut profondeur = 0;
+        for (i, c) in code[..pos].char_indices().rev() {
+            match c {
+                ')' | ']' | '}' => profondeur += 1,
+                '(' if profondeur == 0 => {
+                    let avant = &code[..i];
+                    let debut = avant
+                        .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
+                        .map_or(0, |k| k + 1);
+                    return Some(&avant[debut..]);
+                }
+                '(' | '[' | '{' if profondeur > 0 => profondeur -= 1,
+                '[' | '{' | ';' => return None,
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Le texte de la ligne de `code` jusqu'à `pos`.
+    fn debut_de_ligne(code: &str, pos: usize) -> &str {
+        let debut = code[..pos].rfind('\n').map_or(0, |k| k + 1);
+        &code[debut..pos]
+    }
+
+    /// T14 (S2c) : chaque fichier du dossier de données de Vanguard est scellé, sauf ceux de `NON_SCELLES` (avec leur
+    /// raison) ; et le nom d'un fichier scellé (un littéral, ou une constante qui le vaut, même importée ou reprise
+    /// d'un autre module) ne paraît dans le code qu'en argument d'une fonction de `sceau`, ou dans la définition d'une
+    /// constante, sauf aux endroits de `HORS_DU_SCEAU`, comptés. Un nom qui paraît ailleurs, c'est un chemin construit
+    /// ou un fichier lu sans le sceau. Ce qu'il ne voit pas : un nom écrit en morceaux (`format!`), ou passé par une
+    /// variable d'un fichier à l'autre sans que son nom y paraisse. Une exception qui ne sert plus fait aussi échouer.
     #[test]
     fn chaque_lecture_passe_par_le_sceau() {
         // 1. Les fichiers non scellés : tous dans la liste fermée, et rien d'autre.
@@ -856,62 +1166,106 @@ mod tests {
         let sans_raison: Vec<_> = non_scelles.difference(&listes).collect();
         assert!(
             sans_raison.is_empty(),
-            "fichiers d'état ni scellés (sceau) ni dans NON_SCELLES avec leur raison : {sans_raison:?}"
+            "fichiers d'état ni scellés ni excusés : scellez-les (`scelle(…)` dans INVENTAIRE, src/modele/inventaire.rs) \
+             ou ajoutez-les à NON_SCELLES, dans le même fichier, avec la raison : {sans_raison:?}"
         );
         let morts: Vec<_> = listes.difference(&non_scelles).collect();
         assert!(
             morts.is_empty(),
-            "NON_SCELLES nomme des fichiers scellés ou hors de l'inventaire : {morts:?}"
+            "NON_SCELLES (src/modele/inventaire.rs) nomme des fichiers scellés ou hors de l'inventaire : {morts:?}"
         );
         assert!(NON_SCELLES.iter().all(|(_, r)| !r.is_empty()));
-        // 2. Aucun chemin vers un fichier scellé hors du sceau, sauf la liste fermée.
+        // 2. Chaque endroit où paraît un nom scellé hors du sceau.
         let scelles: BTreeSet<&str> = scelles().collect();
         let sources = sources_sans_essais();
-        let mut vus: BTreeSet<(String, String)> = BTreeSet::new();
+        let mut vus: BTreeMap<(String, String), usize> = BTreeMap::new();
+        let mut introuvables = Vec::new();
+        let permis = |code: &str, pos: usize| {
+            let ligne = debut_de_ligne(code, pos).trim_start();
+            // Dans la définition d'une constante (même sur plusieurs lignes) : un nom, pas un usage.
+            let dans_definition = ["const ", "static "]
+                .iter()
+                .filter_map(|m| code[..pos].rfind(m))
+                .max()
+                .is_some_and(|d| {
+                    let morceau = &code[d..pos];
+                    !morceau.starts_with("const fn")
+                        && morceau.find('=').is_none_or(|eq| !morceau[eq..].contains([';', '{']))
+                });
+            ligne.starts_with("use ")
+                || dans_definition
+                || appel_englobant(code, pos).is_some_and(|f| f.split("::").any(|s| s == "sceau"))
+        };
         for (fichier, code) in &sources {
-            if fichier == "sceau.rs" {
+            if fichier == "sceau.rs" || fichier == "modele/inventaire.rs" {
                 continue;
             }
-            for (i, _) in code.match_indices(".join(") {
-                let arg = code[i + ".join(".len()..].trim_start();
-                let nom = if let Some(dedans) = arg.strip_prefix('"') {
-                    dedans.find('"').map(|f| dedans[..f].to_string())
-                } else {
-                    let chemin: String = arg
-                        .trim_start_matches('&')
-                        .chars()
-                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == ':')
-                        .collect();
-                    let dernier = chemin.rsplit("::").next().unwrap_or_default();
-                    (!dernier.is_empty() && dernier.chars().all(|c| c.is_ascii_uppercase() || c == '_'))
-                        .then(|| valeur(fichier, &chemin, &sources, 0))
-                        .flatten()
-                };
-                if let Some(nom) = nom.filter(|n| scelles.contains(n.as_str())) {
-                    vus.insert((fichier.clone(), nom));
+            let (blanchi, litteraux) = lexer(code);
+            for (pos, texte) in &litteraux {
+                if scelles.contains(texte.as_str()) && !permis(&blanchi, *pos) {
+                    *vus.entry((fichier.clone(), texte.clone())).or_default() += 1;
                 }
+            }
+            // Les constantes en majuscules (« NOM », « crate::sceau::NOM »), chacune résolue.
+            let octets = blanchi.as_bytes();
+            let mut i = 0;
+            while i < octets.len() {
+                let c = octets[i] as char;
+                let colle = i > 0 && {
+                    let p = octets[i - 1] as char;
+                    p.is_ascii_alphanumeric() || p == '_' || p == ':'
+                };
+                if !(c.is_ascii_alphabetic() || c == '_') || colle {
+                    i += 1;
+                    continue;
+                }
+                let fin = blanchi[i..]
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
+                    .map_or(blanchi.len(), |k| i + k);
+                let chemin = blanchi[i..fin].trim_end_matches(':');
+                let dernier = chemin.rsplit("::").next().unwrap_or_default();
+                let majuscules = dernier.len() > 1
+                    && dernier
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                    && dernier.chars().any(|c| c.is_ascii_uppercase());
+                if majuscules && !permis(&blanchi, i) {
+                    match valeur(fichier, chemin, &sources, 0) {
+                        Ok(Some(v)) if scelles.contains(v.as_str()) => {
+                            *vus.entry((fichier.clone(), v)).or_default() += 1;
+                        }
+                        // Une constante qui ne se trouve pas, en argument d'un `.join` : on ne sait pas ce qu'il joint.
+                        Err(e) if blanchi[..i].trim_end().ends_with(".join(") => introuvables.push(e),
+                        Ok(_) | Err(_) => {}
+                    }
+                }
+                i = fin.max(i + 1);
             }
         }
         assert!(
+            introuvables.is_empty(),
+            "constantes jointes à un chemin que le test ne sait pas résoudre : {introuvables:?}"
+        );
+        assert!(
             vus.len() >= 10,
-            "{} chemins seulement : la lecture des sources ne trouve plus rien",
+            "{} endroits seulement : la lecture des sources ne trouve plus rien",
             vus.len()
         );
-        let permis: BTreeSet<(String, String)> = CHEMINS_HORS_DU_SCEAU
+        let attendus: BTreeMap<(String, String), usize> = HORS_DU_SCEAU
             .iter()
-            .map(|(f, n, _)| ((*f).to_string(), (*n).to_string()))
+            .map(|(f, n, k, _)| (((*f).to_string(), (*n).to_string()), *k))
             .collect();
-        let hors: Vec<_> = vus.difference(&permis).collect();
+        let hors: Vec<_> = vus.iter().filter(|(k, n)| attendus.get(*k) != Some(n)).collect();
         assert!(
             hors.is_empty(),
-            "chemins vers un fichier scellé construits hors du sceau (lisez-le par sceau::lire ou sceau::juge, ou \
-             ajoutez-le à CHEMINS_HORS_DU_SCEAU avec la raison) : {hors:?}"
+            "noms de fichiers scellés hors du sceau, (fichier, nom) → nombre d'endroits : lisez-les par sceau::lire ou \
+             sceau::juge, ou mettez à jour HORS_DU_SCEAU (src/modele/inventaire.rs) avec la raison : {hors:?}"
         );
-        let morts: Vec<_> = permis.difference(&vus).collect();
+        let morts: Vec<_> = attendus.keys().filter(|k| !vus.contains_key(*k)).collect();
         assert!(
             morts.is_empty(),
-            "CHEMINS_HORS_DU_SCEAU nomme des chemins que le code ne construit plus : {morts:?}"
+            "HORS_DU_SCEAU nomme des endroits que le code n'a plus : {morts:?}"
         );
-        assert!(CHEMINS_HORS_DU_SCEAU.iter().all(|(_, _, r)| !r.is_empty()));
+        assert!(HORS_DU_SCEAU.iter().all(|(_, _, _, r)| !r.is_empty()));
     }
 }

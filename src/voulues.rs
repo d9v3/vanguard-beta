@@ -256,6 +256,16 @@ pub(crate) fn adopter(d: Defense) {
     adopter_dans(&crate::socle::dossier_local(), d);
 }
 
+/// `adopter_dans`, seulement à la mise à jour d'une version d'avant cet état (rien n'y est encore noté, pour aucune
+/// défense) : pour ce qui ne s'allume que par un accord à part (la veille anti-rançongiciel, qui peut geler un
+/// programme), une marque posée ensuite par un autre programme n'allume rien.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn adopter_d_avant_dans(dossier: &Path, d: Defense) {
+    if std::fs::symlink_metadata(dossier.join(FICHIER)).is_err() {
+        adopter_dans(dossier, d);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

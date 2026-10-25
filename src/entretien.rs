@@ -38,7 +38,7 @@ struct Etat {
     /// L'état d'avant ne pouvait pas être cru (changé, effacé ou accepté tel quel hors de Vanguard, illisible) : vide,
     /// tout y est nouveau, et c'est dit.
     #[serde(skip)]
-    douteux: bool,
+    douteux: Option<String>,
 }
 
 struct Examen {
@@ -166,23 +166,26 @@ fn lire_etat_dans(dossier: &std::path::Path) -> Option<Etat> {
     match crate::sceau::juge_dans(dossier, crate::sceau::ENTRETIEN) {
         Juge::Absent => None,
         Juge::Cru(o) => serde_json::from_slice(&o).ok(),
-        Juge::Douteux(..) | Juge::Illisible(_) => Some(Etat {
+        Juge::Douteux(d, _) => Some(Etat {
             textes: TEXTES,
-            douteux: true,
+            douteux: Some(d.texte().to_string()),
+            ..Etat::default()
+        }),
+        Juge::Illisible(e) => Some(Etat {
+            textes: TEXTES,
+            douteux: Some(e),
             ..Etat::default()
         }),
     }
 }
 
-/// Ce qui suit les lignes de l'entretien quand l'état du mois d'avant ne pouvait pas être cru.
+/// La première ligne de l'entretien quand l'état du mois d'avant ne pouvait pas être cru.
 fn ligne_douteux(avant: Option<&Etat>) -> Option<String> {
-    avant.filter(|a| a.douteux).map(|_| {
-        tr!(
-            "La note de l'entretien d'avant a été changée hors de Vanguard : tous les problèmes sont dits nouveaux.",
-            "The previous check-up's note was changed outside Vanguard: every problem is reported as new."
-        )
-        .to_string()
-    })
+    let pourquoi = avant?.douteux.as_deref()?;
+    Some(trf!(
+        "La note de l'entretien d'avant ne peut pas être crue ({pourquoi}) : tous les problèmes sont dits nouveaux.",
+        "The previous check-up's note cannot be trusted ({pourquoi}): every problem is reported as new."
+    ))
 }
 
 /// Appelé par le planificateur : examen silencieux, notification, puis l'état est gardé pour le mois suivant.
@@ -191,14 +194,17 @@ pub fn entretenir() {
     let avant = lire_etat();
     let nouvelles = avant.as_ref().map(|a| nouvelles(a, &examen.alertes));
     let (titre, mut lignes) = rediger(&examen, nouvelles.as_deref());
-    lignes.extend(ligne_douteux(avant.as_ref()));
+    // En tête : une notification longue est coupée par le bureau.
+    if let Some(l) = ligne_douteux(avant.as_ref()) {
+        lignes.insert(0, l);
+    }
     crate::reseau::surveillance::notifier(titre, &lignes.join("\n"));
     let etat = Etat {
         date: chrono::Local::now().format("%Y-%m-%d").to_string(),
         score: examen.score,
         alertes: examen.alertes,
         textes: TEXTES,
-        douteux: false,
+        douteux: None,
     };
     if let Ok(t) = serde_json::to_string(&etat)
         && let Err(e) = crate::sceau::ecrire(crate::sceau::ENTRETIEN, t)
@@ -221,7 +227,10 @@ pub fn maintenant() {
     let avant = lire_etat();
     let nouvelles = avant.as_ref().map(|a| nouvelles(a, &examen.alertes));
     let (_, mut lignes) = rediger(&examen, nouvelles.as_deref());
-    lignes.extend(ligne_douteux(avant.as_ref()));
+    // En tête : une notification longue est coupée par le bureau.
+    if let Some(l) = ligne_douteux(avant.as_ref()) {
+        lignes.insert(0, l);
+    }
     println!();
     for ligne in &lignes {
         for (i, morceau) in envelopper(ligne, LARGEUR - 4).iter().enumerate() {
@@ -477,18 +486,23 @@ mod tests {
         )
         .unwrap();
         let avant = lire_etat_dans(&d).unwrap();
-        assert!(!avant.douteux && ligne_douteux(Some(&avant)).is_none());
+        assert!(avant.douteux.is_none() && ligne_douteux(Some(&avant)).is_none());
         let forge = format!(r#"{{"date":"2026-09-25","score":80,"alertes":["{alerte}"],"textes":{TEXTES}}}"#);
         std::fs::write(d.join(crate::sceau::ENTRETIEN), forge).unwrap();
         let avant = lire_etat_dans(&d).unwrap();
-        assert!(avant.douteux);
+        assert!(avant.douteux.is_some());
         assert_eq!(
             nouvelles(&avant, std::slice::from_ref(&alerte)),
             std::slice::from_ref(&alerte)
         );
-        assert!(ligne_douteux(Some(&avant)).is_some());
+        // Relecture S2c (Fable 7, Opus 8) : la raison dite est la vraie.
+        assert!(
+            ligne_douteux(Some(&avant)).is_some_and(|l| l.contains(crate::sceau::Doute::HorsVanguard.texte())),
+            "{:?}",
+            ligne_douteux(Some(&avant))
+        );
         std::fs::remove_file(d.join(crate::sceau::ENTRETIEN)).unwrap();
-        assert!(lire_etat_dans(&d).is_some_and(|a| a.douteux));
+        assert!(lire_etat_dans(&d).is_some_and(|a| a.douteux.is_some()));
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -507,7 +521,7 @@ mod tests {
             score: None,
             alertes,
             textes,
-            douteux: false,
+            douteux: None,
         };
         // Le disque, avec d'autres nombres, n'est pas nouveau ; le pare-feu réglé n'apparaît pas.
         assert_eq!(
