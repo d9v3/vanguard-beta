@@ -93,7 +93,7 @@ pub(crate) enum Type {
     MachOUniversel,
     ClasseJava,
     Zip,
-    /// Un zip avec [Content_Types].xml : document Office (docx, xlsx, pptx et leurs formes à macros).
+    /// Un zip avec `[Content_Types].xml` : document Office (docx, xlsx, pptx et leurs formes à macros).
     Ooxml,
     /// Un zip OpenDocument (odt, ods, odp).
     OpenDocument,

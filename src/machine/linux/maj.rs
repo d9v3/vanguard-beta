@@ -631,7 +631,7 @@ fn fichier_d_unite(unite: &str) -> Option<PathBuf> {
 
 /// Les paquets des programmes joignables depuis un autre appareil (même critère que « Ports en écoute »), avec un
 /// de leurs ports. Le programme quand il
-/// est de ce compte (/proc/<pid>/exe) ; sinon, sans root, le fichier de son service systemd, posé par le même paquet
+/// est de ce compte (`/proc/<pid>/exe`) ; sinon, sans root, le fichier de son service systemd, posé par le même paquet
 /// (php-fpm.service par php-fpm). Une bibliothèque qu'un serveur charge (openssl) n'est pas vue ici.
 fn paquets_exposes(gestion: Paquets) -> HashMap<String, u16> {
     let Some(prises) = super::ecoute::prises_ou_ss() else {
@@ -893,8 +893,8 @@ pub(super) fn redemarrage() -> Constat {
 
 const DKMS: &str = "/var/lib/dkms";
 
-/// Le texte de « dkms status », refait d'après son arbre : /var/lib/dkms/<module>/<version>/source pour un module
-/// ajouté, <version>/<noyau>/<arch> une fois compilé pour ce noyau, et le lien <module>/kernel-<noyau>-<arch> vers
+/// Le texte de « dkms status », refait d'après son arbre : `/var/lib/dkms/<module>/<version>/source` pour un module
+/// ajouté, `<version>/<noyau>/<arch>` une fois compilé pour ce noyau, et le lien `<module>/kernel-<noyau>-<arch>` vers
 /// ce dossier quand il est installé (c'est ce lien que dkms consulte). « original_module » garde les modules du
 /// noyau remplacés : ce n'est pas une version. `None` si l'arbre ne se lit pas.
 fn status_dkms_dans(racine: &Path) -> Option<String> {
@@ -1282,7 +1282,7 @@ fn etrangers(locaux: &[(String, String)], fournis: &std::collections::HashSet<St
         .collect()
 }
 
-/// Les dépôts de pacman.conf : chaque section sauf [options]. Les seules bases à compter : une base restée dans
+/// Les dépôts de pacman.conf : chaque section sauf `[options]`. Les seules bases à compter : une base restée dans
 /// sync/ après qu'on a retiré son dépôt (offline.db d'une installation, community.db d'avant la fusion) ne fournit
 /// plus rien pour pacman, et la compter cacherait des paquets étrangers.
 fn depots_configures(conf: &str) -> Vec<String> {
@@ -2037,7 +2037,7 @@ mod tests {
 /// sous Fedora. Ailleurs (Arch, openSUSE, systèmes atomiques), rien à dire : la mise à jour se fait autrement, ou
 /// l'outil met déjà le système entier à jour. Une information, avec la commande pour l'activer.
 /// dnf-automatic installe-t-il vraiment ? Le minuteur « -install » toujours ; le minuteur ordinaire seulement si
-/// automatic.conf dit « apply_updates = yes » dans [commands] (sinon il télécharge, sans rien installer : le réglage
+/// automatic.conf dit « apply_updates = yes » dans `[commands]` (sinon il télécharge, sans rien installer : le réglage
 /// livré par Fedora).
 pub(super) fn juger_dnf_auto(minuteur_install: bool, minuteur: bool, conf: &str) -> bool {
     minuteur_install

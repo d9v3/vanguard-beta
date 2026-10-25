@@ -153,7 +153,7 @@ fn present(cmd: &str) -> bool {
     crate::machine::linux::natif::present(cmd)
 }
 
-/// « vanguard isoler <fichier> » : lance le programme dans un bac à sable.
+/// « vanguard isoler `<fichier>` » : lance le programme dans un bac à sable.
 pub fn isoler(fichier: &Path) {
     titre(tr!("Bac à sable", "Sandbox"));
     // Le programme à isoler porte le nom que son auteur a choisi : montré, il est rendu inoffensif.

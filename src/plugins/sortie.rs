@@ -1,6 +1,6 @@
 //! Ce qu'un plugin écrit : des lignes ordinaires, montrées telles quelles (filtrées), et, s'il le veut, des constats.
 //! Protocole : une ligne qui est un objet JSON `{"vanguard":1,"niveau":"info|moyen|eleve|critique|ok",
-//! "categorie":"…","message":"…"}` devient un constat, affiché comme ceux du bilan et marqué « plugin <nom> ». Un
+//! "categorie":"…","message":"…"}` devient un constat, affiché comme ceux du bilan et marqué « plugin `<nom>` ». Un
 //! constat de plugin ne compte jamais dans la note : il n'entre ni dans l'audit ni dans l'historique.
 
 use std::path::Path;
@@ -103,7 +103,7 @@ pub fn analyser(sortie: &str) -> Lu {
 }
 
 /// Montre ce que le plugin a écrit, ses erreurs, ses constats (comme ceux du bilan, marqués `marque` : « plugin
-/// <nom> », « labo <fichier> »), puis comment il a fini.
+/// `<nom>` », « labo `<fichier>` »), puis comment il a fini.
 pub fn afficher(marque: &str, titre_de: &str, delai: u64, b: &Borne, lu: &Lu) {
     if !lu.lignes.is_empty() {
         println!();

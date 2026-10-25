@@ -259,7 +259,7 @@ pub fn proteger_cle() {
     }
 }
 
-/// Où faire la copie temporaire, dans l'ordre essayé. Linux : d'abord /run/user/<uid>, réservé à la personne (/tmp
+/// Où faire la copie temporaire, dans l'ordre essayé. Linux : d'abord `/run/user/<uid>`, réservé à la personne (/tmp
 /// est partagé par tous les comptes de l'ordinateur) ; macOS : son dossier temporaire, déjà personnel.
 fn dossiers_temporaires() -> Vec<PathBuf> {
     std::env::var_os("XDG_RUNTIME_DIR")
@@ -270,7 +270,7 @@ fn dossiers_temporaires() -> Vec<PathBuf> {
         .collect()
 }
 
-/// `exe` est-il une copie faite par `relancer_depuis_une_copie` (<dossier temporaire>/vanguard-<…>/vanguard) ?
+/// `exe` est-il une copie faite par `relancer_depuis_une_copie` (`<dossier` temporaire>/vanguard-<…>/vanguard) ?
 /// La variable VANGUARD_ORIGINE ne suffit pas : tout programme lancé depuis la copie en hérite, et un Vanguard
 /// relancé de là effacerait sinon son propre programme.
 fn est_une_copie(exe: &Path) -> bool {

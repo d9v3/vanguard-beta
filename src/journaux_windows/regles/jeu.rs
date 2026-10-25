@@ -912,7 +912,7 @@ fn rdp_authentifie(e: &EvenementWindows) -> Option<Indice> {
 /// (msoobe, CloudExperienceHostBroker), et le spouleur d'impression (une imprimante réseau) ; vus sur un Windows 11
 /// installé le jour même : UserOOBEBroker (la mise en route, qui connecte le compte Microsoft) et le serveur OpenSSH
 /// de Windows (System32\OpenSSH, une fonctionnalité facultative de Windows : chaque connexion SSH par mot de passe
-/// passe par un 4648 de sshd, sous SYSTEM, pour le compte qui se connecte ou pour son compte virtuel « sshd_<pid> »).
+/// passe par un 4648 de sshd, sous SYSTEM, pour le compte qui se connecte ou pour son compte virtuel « `sshd_<pid>` »).
 /// Une connexion SSH elle-même se juge ailleurs (échecs en rafale : EVT-MDP-001). Ailleurs, rien de
 /// Windows ne le fait : un programme inhabituel l'a fait. Ce que la règle ne voit pas : « Exécuter en tant que »
 /// et ses semblables passent par le service d'ouverture de session secondaire (svchost), qu'elle ne peut pas

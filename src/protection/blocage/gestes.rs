@@ -399,7 +399,7 @@ fn comptes(pid: u32) -> Option<(u32, u32)> {
     comptes_status(&status)
 }
 
-/// D'après la ligne « Uid: réel effectif sauvé fs » de /proc/<pid>/status.
+/// D'après la ligne « Uid: réel effectif sauvé fs » de `/proc/<pid>/status`.
 #[cfg(any(target_os = "linux", test))]
 fn comptes_status(status: &str) -> Option<(u32, u32)> {
     let mut champs = status.lines().find_map(|l| l.strip_prefix("Uid:"))?.split_whitespace();
@@ -1052,7 +1052,7 @@ pub(crate) fn remettre_copie(fichier: &Path, copie: &Path, empreinte: &str) -> R
 }
 
 /// La note de copie a la forme que `Faire::Permissions` écrit : la copie, un fichier ordinaire (pas un lien), dans
-/// blocage/copies du dossier de Vanguard, nommée « <id>-<nom du fichier> » ; le fichier, un settings.json ou
+/// blocage/copies du dossier de Vanguard, nommée « `<id>-<nom` du fichier> » ; le fichier, un settings.json ou
 /// settings.local.json ordinaire d'un dossier .claude. changements.jsonl, même scellé, s'écrit depuis le compte (le
 /// sceau le dit après coup) : sans cela, un programme du compte y noterait une « copie » à lui de /etc/passwd ou du
 /// fichier hosts, que Vanguard lancé en administrateur

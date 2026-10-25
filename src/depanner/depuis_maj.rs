@@ -13,7 +13,7 @@ pub(super) struct Maj {
     pub quoi: String,
 }
 
-/// pacman.log : « [2026-10-18T21:40:23-0400] [ALPM] upgraded mise-bin (2026.10.12-1 -> 2026.10.13-1) », les plus
+/// pacman.log : « [2026-10-18T21:40:23-0400] `[ALPM]` upgraded mise-bin (2026.10.12-1 -> 2026.10.13-1) », les plus
 /// récentes en tête, au plus `n`.
 #[cfg(any(target_os = "linux", test))]
 fn lire_pacman(journal: &str, n: usize) -> Vec<Maj> {

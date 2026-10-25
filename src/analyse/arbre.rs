@@ -692,7 +692,7 @@ impl Etat<'_> {
         }
     }
 
-    /// Ce que les parties d'un document OOXML disent sur lui ([Content_Types].xml, relations).
+    /// Ce que les parties d'un document OOXML disent sur lui (`[Content_Types].xml`, relations).
     fn office_dans_zip(&mut self, i: usize, nom: &str, contenu: &[u8]) {
         if !matches!(self.parties[i].type_, Type::Ooxml) {
             return;

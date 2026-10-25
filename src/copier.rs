@@ -956,7 +956,7 @@ fn choisir_disque() -> Option<PathBuf> {
     liste.into_iter().nth(i).map(|d| d.racine)
 }
 
-/// « vanguard copier-fichiers [destination] » ; sans destination, le disque se choisit parmi ceux qui sont branchés.
+/// « vanguard copier-fichiers `[destination]` » ; sans destination, le disque se choisit parmi ceux qui sont branchés.
 pub fn commande(destination: Option<&Path>) {
     println!();
     cadre(

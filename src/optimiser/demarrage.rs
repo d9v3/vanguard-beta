@@ -187,7 +187,7 @@ pub(super) fn valeur_desactivee(quand: std::time::SystemTime) -> String {
 
 /// Le script PowerShell de la fenêtre administrateur qui écrit (ou retire, `None`) la valeur d'un programme de toute
 /// la machine dans StartupApproved. Par le registre de .NET : le -Name de Remove-ItemProperty accepte des jokers, un
-/// nom comme « App[1] » y viserait d'autres valeurs ; CreateSubKey garde ce que la clé contient déjà.
+/// nom comme « `App[1]` » y viserait d'autres valeurs ; CreateSubKey garde ce que la clé contient déjà.
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(super) fn script_machine(liste: &str, nom: &str, valeur: Option<&str>) -> Option<String> {
     let cle = crate::commande::ps_texte(&format!(r"{APPROUVES}\{}", liste_approuvee(liste)?));
@@ -235,8 +235,8 @@ pub(super) fn etats_launchd(texte: &str) -> std::collections::HashMap<String, bo
         .collect()
 }
 
-/// La valeur d'une clé extraite par `plutil -extract <clé> xml1` : le premier élément sous `<plist …>` (« <true/> »,
-/// « <dict> »…).
+/// La valeur d'une clé extraite par `plutil -extract <clé> xml1` : le premier élément sous `<plist …>` (« `<true/>` »,
+/// « `<dict>` »…).
 fn valeur_plist(xml: &str) -> Option<&str> {
     let apres = &xml[xml.find("<plist")?..];
     let apres = apres[apres.find('>')? + 1..].trim_start();

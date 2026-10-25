@@ -1,6 +1,6 @@
 //! Les listes d'abuse.ch et la clé de la personne. MalwareBazaar (empreintes de logiciels malveillants), URLhaus (liens
 //! piégés) et ThreatFox (serveurs de botnets) ont fermé leurs exports publics le 21 oct. 2026 (410 Gone) : leurs listes
-//! ne se téléchargent plus qu'avec la clé gratuite d'un compte (https://auth.abuse.ch/). Une seule clé sert aux trois,
+//! ne se téléchargent plus qu'avec la clé gratuite d'un compte (<https://auth.abuse.ch/>). Une seule clé sert aux trois,
 //! et à l'API de ThreatFox ; Feodo Tracker reste ouvert sans clé.
 //!
 //! La clé reste sur cet ordinateur : dans le dossier de Vanguard du compte (jamais sur la clé USB), lisible par ce

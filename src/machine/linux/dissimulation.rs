@@ -125,8 +125,8 @@ pub(crate) fn pids_listes() -> Option<BTreeSet<u32>> {
     )
 }
 
-/// Le groupe (Tgid) et le nom d'un processus, d'après /proc/<pid>/status. Un fil d'exécution (thread) répond lui
-/// aussi en /proc/<tid> sans être listé : son Tgid est celui du processus qui le porte.
+/// Le groupe (Tgid) et le nom d'un processus, d'après `/proc/<pid>/status`. Un fil d'exécution (thread) répond lui
+/// aussi en `/proc/<tid>` sans être listé : son Tgid est celui du processus qui le porte.
 pub(super) fn tgid_et_nom(status: &str) -> Option<(u32, String)> {
     let mut tgid = None;
     let mut nom = None;
@@ -218,7 +218,7 @@ fn compter_les_fils() -> Option<u32> {
 }
 
 /// Les PID de 1 à `borne` qui répondent sans être dans `listes` et qui mènent leur groupe (Tgid égal au PID, pas un
-/// simple fil d'exécution), d'après `fiche` (le texte de /proc/<pid>/status). `assez` dit quand le temps est écoulé :
+/// simple fil d'exécution), d'après `fiche` (le texte de `/proc/<pid>/status`). `assez` dit quand le temps est écoulé :
 /// rend aussi le dernier PID essayé.
 pub(super) fn sonder(
     listes: &BTreeSet<u32>,
@@ -396,7 +396,7 @@ fn dans_un_temporaire(chemin: &str, montages: &str) -> bool {
         && !crate::protection::sortantes::appimage(chemin, montages)
 }
 
-/// Le jugement du lien /proc/<pid>/exe d'un programme. `remplace` : un fichier existe encore au chemin d'origine (vu
+/// Le jugement du lien `/proc/<pid>/exe` d'un programme. `remplace` : un fichier existe encore au chemin d'origine (vu
 /// depuis la racine du programme) ; `montages` : /proc/self/mounts, pour reconnaître une AppImage. `None` : rien à dire.
 pub(crate) fn juger_exe(lien: &str, remplace: bool, montages: &str) -> Option<SansFichier> {
     if let Some(nom) = lien.strip_prefix("/memfd:") {
@@ -498,7 +498,7 @@ pub(super) fn juger_sans_fichier(
     constats
 }
 
-/// Programmes qui tournent sans fichier : le lien /proc/<pid>/exe de chacun, lisible sans droits pour ceux du compte
+/// Programmes qui tournent sans fichier : le lien `/proc/<pid>/exe` de chacun, lisible sans droits pour ceux du compte
 /// seulement. Ce qui est repéré est relu : runc ne passe par la mémoire qu'un instant.
 pub(super) fn programmes_sans_fichier() -> Vec<Constat> {
     let Some(pids) = pids_listes() else {
@@ -761,7 +761,7 @@ pub(super) fn modules_du_noyau() -> Vec<Constat> {
 #[derive(Debug)]
 pub(super) struct Carte {
     pub nom: String,
-    /// /sys/class/net/<if>/flags (« 0x1103 »), lu en nombre.
+    /// `/sys/class/net/<if>/flags` (« 0x1103 »), lu en nombre.
     pub drapeaux: u32,
     /// Liée à un vrai périphérique (lien « device ») : pas une interface virtuelle.
     pub materielle: bool,

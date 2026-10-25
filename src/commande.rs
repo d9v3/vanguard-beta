@@ -473,7 +473,7 @@ pub(crate) fn descendants(liste: &[(u32, u32)], racine: u32) -> Vec<u32> {
     vus.split_off(1)
 }
 
-/// Les (processus, parent) de Linux, lus dans /proc/<pid>/stat : « 4242 (nom) S 4200 … ». Le nom peut contenir des
+/// Les (processus, parent) de Linux, lus dans `/proc/<pid>/stat` : « 4242 (nom) S 4200 … ». Le nom peut contenir des
 /// espaces et des parenthèses : le parent se lit après la dernière.
 #[cfg(any(target_os = "linux", all(test, unix)))]
 fn parent_linux(stat: &str) -> Option<(u32, u32)> {

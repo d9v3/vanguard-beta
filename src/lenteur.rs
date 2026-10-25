@@ -744,7 +744,7 @@ pub fn menu() {
 
 // ───────────────────────────── Linux ─────────────────────────────
 
-/// Le nom d'un processus : son programme (lien /proc/<pid>/exe, lisible pour nos propres processus), sauf quand ce
+/// Le nom d'un processus : son programme (lien `/proc/<pid>/exe`, lisible pour nos propres processus), sauf quand ce
 /// programme est un interpréteur ou un moteur partagé (python, electron…) : son nom court dit alors mieux qui il est.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn nom_de_processus(exe: Option<&str>, comm: &str) -> String {
@@ -758,7 +758,7 @@ fn nom_de_processus(exe: Option<&str>, comm: &str) -> String {
     }
 }
 
-/// /proc/<pid>/stat : (temps processeur en tops d'horloge, mémoire résidente en pages). Le nom (2e champ) peut
+/// `/proc/<pid>/stat` : (temps processeur en tops d'horloge, mémoire résidente en pages). Le nom (2e champ) peut
 /// contenir des espaces et des parenthèses : on repart de la dernière « ) ».
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn stat_processus(texte: &str) -> Option<(u64, u64)> {

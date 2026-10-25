@@ -3,7 +3,7 @@
 //!
 //! Deux sources, comme dpkg (src/main/verify.c) : `info/<paquet>.md5sums` (ou `<paquet>:<arch>.md5sums` pour un
 //! paquet Multi-Arch: same), une ligne « md5, deux espaces, chemin sans / initial » par fichier ; et le champ
-//! Conffiles du paquet dans `status` (« /etc/x <md5> [obsolete] [remove-on-upgrade] »), les fichiers de
+//! Conffiles du paquet dans `status` (« /etc/x `<md5>` `[obsolete]` [remove-on-upgrade] »), les fichiers de
 //! configuration, que md5sums ne couvre pas : les oublier ferait passer une configuration modifiée pour intacte.
 
 use std::collections::HashMap;

@@ -25,7 +25,7 @@ pub(crate) fn comptes_de(passwd: &str) -> HashMap<u32, String> {
         .collect()
 }
 
-/// Le parent, le compte (numéro réel) et le nom d'un processus, d'après /proc/<pid>/status.
+/// Le parent, le compte (numéro réel) et le nom d'un processus, d'après `/proc/<pid>/status`.
 pub(crate) fn lire_status(status: &str) -> (Option<u32>, Option<u32>, String) {
     let valeur = |cle: &str| {
         status
@@ -38,7 +38,7 @@ pub(crate) fn lire_status(status: &str) -> (Option<u32>, Option<u32>, String) {
     (ppid, uid, valeur("Name:").unwrap_or_default())
 }
 
-/// L'heure de démarrage d'un processus (secondes depuis 1970) d'après /proc/<pid>/stat : son 22e champ compte les
+/// L'heure de démarrage d'un processus (secondes depuis 1970) d'après `/proc/<pid>/stat` : son 22e champ compte les
 /// tops d'horloge depuis le démarrage de l'ordinateur (`btime` de /proc/stat). Le nom, entre parenthèses, est choisi
 /// par le programme et peut contenir espaces et parenthèses : les champs se comptent après la dernière.
 pub(crate) fn debut_du_processus(stat: &str, btime: u64, tops: u64) -> Option<u64> {
@@ -79,7 +79,7 @@ fn heure_locale(secondes: u64) -> String {
         .unwrap_or_default()
 }
 
-/// Les processus, lus dans /proc sans rien lancer. Le programme de chacun se lit par /proc/<pid>/exe, même effacé du
+/// Les processus, lus dans /proc sans rien lancer. Le programme de chacun se lit par `/proc/<pid>/exe`, même effacé du
 /// disque ou chargé en mémoire seulement : c'est ce qu'il faut à un spécialiste, et son empreinte se cherche sur
 /// VirusTotal. Ceux des autres comptes ne se lisent qu'en root.
 pub(super) fn processus(dossier: &Path) -> Partie {
@@ -1122,7 +1122,7 @@ const PREFIXES_GARDES: usize = 200_000;
 struct JournalNatif {
     octets: u64,
     coupe: bool,
-    /// (heure en secondes, « date hôte identifiant[pid] ») des premières entrées écrites, pour le témoin.
+    /// (heure en secondes, « date hôte `identifiant[pid]` ») des premières entrées écrites, pour le témoin.
     prefixes: Vec<(i64, String)>,
     /// Le début de la lecture (secondes) : ce qui s'est écrit ensuite n'y est pas, et ne se compare pas.
     debut: i64,

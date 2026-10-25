@@ -569,7 +569,7 @@ impl Base {
     }
 }
 
-/// Le carnet en clair de `dossier`, s'il ne pouvait pas être cru, renommé tel quel (« appareils.illisible-<date>.json »)
+/// Le carnet en clair de `dossier`, s'il ne pouvait pas être cru, renommé tel quel (« `appareils.illisible-<date>.json` »)
 /// avant d'être réécrit : des surnoms donnés par la personne y sont peut-être.
 fn mettre_de_cote_si_douteux(dossier: &std::path::Path) -> Option<PathBuf> {
     if !matches!(
@@ -825,8 +825,8 @@ pub const TEMOIN_CLE: &str = "vanguard.cle";
 /// n'importe quel ordinateur a pu poser un tube, un lien vers /dev/zero ou un fichier creux de plusieurs Gio.
 pub(crate) const CARNET_MAX: u64 = 256 << 20;
 
-/// Volumes montés pour l'utilisateur, un sous-dossier par clé : /run/media/<utilisateur> (Arch, Fedora, openSUSE…)
-/// et /media/<utilisateur> (Debian, Ubuntu, Mint), où udisks range les clés selon la distribution.
+/// Volumes montés pour l'utilisateur, un sous-dossier par clé : `/run/media/<utilisateur>` (Arch, Fedora, openSUSE…)
+/// et `/media/<utilisateur>` (Debian, Ubuntu, Mint), où udisks range les clés selon la distribution.
 #[cfg(target_os = "linux")]
 pub fn cles_montees() -> Vec<PathBuf> {
     std::env::var("USER")

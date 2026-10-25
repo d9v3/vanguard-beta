@@ -102,7 +102,7 @@ fn composant(
     ))
 }
 
-/// Dépôt multilib d'Arch (paquets 32 bits) : section [multilib] présente et non commentée.
+/// Dépôt multilib d'Arch (paquets 32 bits) : section `[multilib]` présente et non commentée.
 fn multilib_actif(pacman_conf: &str) -> bool {
     pacman_conf.lines().any(|l| l.trim() == "[multilib]")
 }

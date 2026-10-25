@@ -27,7 +27,7 @@ fn decouper(fichier: &str) -> Option<(String, String, String)> {
 }
 
 /// Les dossiers du cache d'après pacman.conf (CacheDir, une ou plusieurs valeurs) ; /var/cache/pacman/pkg/ sinon.
-/// `None` : pacman.conf illisible, ou un Include dans [options] que ce lecteur ne suit pas (paccache demande à
+/// `None` : pacman.conf illisible, ou un Include dans `[options]` que ce lecteur ne suit pas (paccache demande à
 /// pacman-conf, qui le suit).
 fn dossiers(conf: &str) -> Option<Vec<PathBuf>> {
     let mut dans_options = false;

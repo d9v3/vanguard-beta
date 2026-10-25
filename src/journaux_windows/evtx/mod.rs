@@ -8,7 +8,7 @@
 //!   <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-even6/e6fc7c72-b8c0-475b-aef7-25eaf1a64530>
 //! - [MS-DTYP] « Windows Data Types », Microsoft : FILETIME, SYSTEMTIME, GUID, SID.
 //!   <https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-dtyp/cca27429-5689-4a16-b2b4-9325d93e4ba2>
-//! - [libyal] « Windows XML Event Log (EVTX) format », J. Metz (documentation du format, prose et tableaux, GFDL) :
+//! - `[libyal]` « Windows XML Event Log (EVTX) format », J. Metz (documentation du format, prose et tableaux, GFDL) :
 //!   en-tête du fichier, morceaux, enregistrements, CRC32, et ce que le fichier change au BinXml de [MS-EVEN6]
 //!   (noms et gabarits désignés par leur position dans le morceau).
 //!   <https://github.com/libyal/libevtx/blob/main/documentation/Windows%20XML%20Event%20Log%20%28EVTX%29.asciidoc>
@@ -195,7 +195,7 @@ pub(crate) struct Bilan {
     /// Enregistrements d'un morceau lu, laissés au-delà de `Bornes::enregistrements`.
     pub enregistrements_hors_borne: u64,
     /// Enregistrements entiers (signature, taille et copie justes) trouvés après la place libre d'un morceau lu, donc
-    /// pas lus, comme Windows ne les lit pas : d'ordinaire d'anciennes versions d'enregistrements ([libyal]
+    /// pas lus, comme Windows ne les lit pas : d'ordinaire d'anciennes versions d'enregistrements (`[libyal]`
     /// « Recovery » ; 1 051 dans les 28 échantillons publics de la crate evtx), mais aussi ce qu'une place libre
     /// reculée à la main cacherait. Dits, sans compter dans `complet` : ce n'est pas une perte de lecture.
     pub enregistrements_apres_place_libre: u64,
@@ -214,7 +214,7 @@ pub(crate) struct Bilan {
     pub morceaux: Vec<RecapMorceau>,
     /// Morceaux au-delà de `MAX_RECAPS`, sans récapitulatif.
     pub morceaux_sans_recap: u64,
-    /// Le prochain numéro d'enregistrement qu'annonce l'en-tête du fichier (octet 24, [libyal] « Next record
+    /// Le prochain numéro d'enregistrement qu'annonce l'en-tête du fichier (octet 24, `[libyal]` « Next record
     /// identifier »), quand cet en-tête est juste. Dans un fichier fermé proprement, c'est le plus grand numéro plus
     /// un (vu sur chaque échantillon public propre) : les derniers enregistrements ôtés s'y voient. Dans un fichier
     /// sale, il retarde.
@@ -636,7 +636,7 @@ fn lire_morceau(
     bilan.substitutions_manquantes += lecteur.compteurs.substitutions_manquantes;
 }
 
-/// Le nombre d'enregistrements que l'en-tête du morceau annonce : dernier numéro moins premier, plus un ([libyal]
+/// Le nombre d'enregistrements que l'en-tête du morceau annonce : dernier numéro moins premier, plus un (`[libyal]`
 /// « Normal behavior »). Rien si l'en-tête ne se tient pas (dernier avant le premier, ou plus qu'un morceau ne peut
 /// en contenir) : il ne servirait qu'à inventer des pertes.
 fn annonces(morceau: &[u8]) -> u64 {
@@ -650,7 +650,7 @@ fn annonces(morceau: &[u8]) -> u64 {
 }
 
 /// La plage d'identifiants d'enregistrements (premier, dernier) qu'annonce l'en-tête du morceau (octets 24 et 32,
-/// [libyal] « First / Last event record identifier » : les numéros que portent les enregistrements eux-mêmes ;
+/// `[libyal]` « First / Last event record identifier » : les numéros que portent les enregistrements eux-mêmes ;
 /// ceux des octets 8 et 16 repartent de 1 après un effacement). Rien si elle ne se tient pas, comme `annonces`.
 fn plage_annoncee(morceau: &[u8]) -> Option<(u64, u64)> {
     let (premier, dernier) = (u64_a(morceau, 24)?, u64_a(morceau, 32)?);

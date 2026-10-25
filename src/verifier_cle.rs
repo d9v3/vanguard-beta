@@ -744,7 +744,7 @@ fn identifiant_d_essai() -> u64 {
     u64::from_le_bytes(octets)
 }
 
-/// « vanguard verifier-cle [dossier] » : sans dossier, la clé se choisit parmi celles qui sont branchées.
+/// « vanguard verifier-cle `[dossier]` » : sans dossier, la clé se choisit parmi celles qui sont branchées.
 pub fn commande(dossier: Option<&Path>) {
     println!();
     cadre(

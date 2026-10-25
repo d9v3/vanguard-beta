@@ -98,7 +98,7 @@ pub(crate) fn juger_releves(releves: &[Releve], rafale: &HashSet<PathBuf>, octet
     candidats(&liste, octets_rafale, un_illisible)
 }
 
-/// Les compteurs d'entrées-sorties d'un processus (Linux : /proc/<pid>/io). `None` : illisible (non dumpable, hidepid,
+/// Les compteurs d'entrées-sorties d'un processus (Linux : `/proc/<pid>/io`). `None` : illisible (non dumpable, hidepid,
 /// parti) — l'appelant en fait un « candidat inconnu ».
 #[cfg(target_os = "linux")]
 pub(crate) fn compteurs_io(pid: u32) -> Option<ComptesIo> {
@@ -113,7 +113,7 @@ pub(crate) struct ComptesIo {
     pub ecrits: u64,
 }
 
-/// Lit `read_bytes` et `write_bytes` du texte de /proc/<pid>/io. Testable sans /proc.
+/// Lit `read_bytes` et `write_bytes` du texte de `/proc/<pid>/io`. Testable sans /proc.
 #[cfg(any(target_os = "linux", test))]
 pub(crate) fn lire_compteurs(texte: &str) -> Option<ComptesIo> {
     let champ = |cle: &str| {
@@ -127,7 +127,7 @@ pub(crate) fn lire_compteurs(texte: &str) -> Option<ComptesIo> {
     })
 }
 
-/// Les fichiers que le processus tient ouverts en écriture (Linux : /proc/<pid>/fd et fdinfo), en chemins absolus.
+/// Les fichiers que le processus tient ouverts en écriture (Linux : `/proc/<pid>/fd` et fdinfo), en chemins absolus.
 /// Vide si rien ne se lit : un processus parti ou illisible n'a rien à montrer.
 #[cfg(target_os = "linux")]
 pub(crate) fn ouverts_en_ecriture(pid: u32) -> HashSet<PathBuf> {

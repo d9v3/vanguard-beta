@@ -706,7 +706,7 @@ fn remote_play_steam() -> Option<bool> {
     (!valeurs.is_empty()).then(|| valeurs.iter().any(|v| *v))
 }
 
-/// Valeur de « EnableStreaming » dans un fichier de réglages Steam (format VDF : "clé"<tab>"valeur").
+/// Valeur de « EnableStreaming » dans un fichier de réglages Steam (format VDF : "`clé"<tab>"valeur`").
 fn enable_streaming(vdf: &str) -> Option<bool> {
     vdf.lines().find_map(|l| {
         let mut champs = l.split('"').filter(|c| !c.trim().is_empty());
@@ -1270,7 +1270,7 @@ fn proprietaire_dpkg(fichiers: &[&Path]) -> Option<HashMap<PathBuf, String>> {
     proprietaire_dpkg_dans(Path::new(DPKG_INFO), fichiers)
 }
 
-/// Une liste « <paquet>.list » ou « <paquet>:<architecture>.list » par paquet, un chemin par ligne. Le nom est
+/// Une liste « `<paquet>.list` » ou « `<paquet>:<architecture>.list` » par paquet, un chemin par ligne. Le nom est
 /// gardé avec son architecture, comme dpkg -S l'écrit (« libc6:amd64 ») : quand libc6:i386 est là aussi (Steam
 /// sur Ubuntu), « dpkg --verify libc6 » serait ambigu et la vérification du fichier perdue.
 fn proprietaire_dpkg_dans(info: &Path, fichiers: &[&Path]) -> Option<HashMap<PathBuf, String>> {
@@ -1298,7 +1298,7 @@ fn proprietaire_dpkg_dans(info: &Path, fichiers: &[&Path]) -> Option<HashMap<Pat
 
 const PACMAN_LOCAL: &str = "/var/lib/pacman/local";
 
-/// Le mtree d'un paquet installé (ses empreintes SHA-256). Son dossier est « <nom>-<version> », la version lue
+/// Le mtree d'un paquet installé (ses empreintes SHA-256). Son dossier est « `<nom>-<version>` », la version lue
 /// dans sa fiche ; pacman -Q seulement si la base ne se lit pas à l'endroit habituel (DBPath changé dans
 /// pacman.conf), zcat seulement pour un fichier qui n'est pas du gzip.
 fn mtree_pacman(paquet: &str) -> Option<String> {

@@ -1239,7 +1239,7 @@ impl DossiersUnites {
 /// « masked », « enabled » ou « disabled », les seuls états qu'un réglage remet ; `activee` est la lecture de
 /// natif (un lien d'activation). `None` pour le reste, que systemctl nomme : un masque de ce démarrage seulement
 /// (« masked-runtime »), un fichier d'unité introuvable, un lien (« linked », « alias »), une unité sans
-/// [Install] (« static ») ou qui n'y cite que d'autres unités (« indirect »).
+/// `[Install]` (« static ») ou qui n'y cite que d'autres unités (« indirect »).
 fn etat_unite_selon(dossiers: &DossiersUnites, nom: &str, activee: Option<bool>) -> Option<&'static str> {
     for (d, ce_demarrage) in &dossiers.configuration {
         if std::fs::read_link(d.join(nom)).is_ok_and(|c| c == Path::new("/dev/null")) {
@@ -1275,7 +1275,7 @@ fn etat_unite_selon(dossiers: &DossiersUnites, nom: &str, activee: Option<bool>)
     installable(&std::fs::read_to_string(&fichier).ok()?).then_some("disabled")
 }
 
-/// La section [Install] dit à `systemctl enable` quoi poser : une cible qui la veut, ou un autre nom.
+/// La section `[Install]` dit à `systemctl enable` quoi poser : une cible qui la veut, ou un autre nom.
 fn installable(unite: &str) -> bool {
     let mut dans_install = false;
     unite.lines().map(str::trim).any(|l| {

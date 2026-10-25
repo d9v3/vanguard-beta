@@ -6,7 +6,7 @@ use crate::reseau::{Hote, Rapport};
 use crate::risk::Niveau;
 use crate::ui::*;
 
-/// Propose chaque correction automatique, puis liste celles à faire soi-même. « [t]out » applique la correction
+/// Propose chaque correction automatique, puis liste celles à faire soi-même. « `[t]out` » applique la correction
 /// en cours et toutes les suivantes en une seule exécution : une seule fenêtre administrateur sous Windows.
 /// Retourne les catégories des corrections appliquées. `contexte` nomme le point de restauration créé
 /// automatiquement avant la première correction appliquée (« corrections », « mises à jour »).

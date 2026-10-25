@@ -15,7 +15,7 @@
 //! Il observe seulement : rien n'est arrêté ni envoyé. Les programmes sont jugés par la voie des sources de menaces
 //! (`protection::sources` : les empreintes récentes de MalwareBazaar, puis les fonctions de COM-PRG-001), les connexions par les serveurs de commande des listes déjà téléchargées ; ce qui
 //! est grave va au journal du tableau de bord et en notification, à débit borné. Il ne lit, de chaque processus, que
-//! /proc/<pid>/exe, cmdline et status : jamais les fichiers des agents d'IA (conversations, history.jsonl,
+//! `/proc/<pid>/exe`, cmdline et status : jamais les fichiers des agents d'IA (conversations, history.jsonl,
 //! shell-snapshots), ni rien d'autre de leur dossier.
 //!
 //! Le service est une unité systemd de l'utilisateur, Type=simple, coupée par défaut et posée seulement après accord
@@ -248,7 +248,7 @@ fn release_du_noyau() -> Option<String> {
         .map(|r| r.trim().to_string())
 }
 
-/// La ligne de commande de /proc/<pid>/cmdline : ses morceaux séparés par NUL, joints par une espace, comme la chasse
+/// La ligne de commande de `/proc/<pid>/cmdline` : ses morceaux séparés par NUL, joints par une espace, comme la chasse
 /// les lit. `None` : vide (processus terminé, ou fil du noyau).
 fn ligne_de_commande(octets: &[u8]) -> Option<String> {
     let ligne = octets
@@ -907,7 +907,7 @@ fn mon_programme() -> Option<String> {
     })
 }
 
-/// /proc/<pid>/exe, cmdline (bornée) et status, lus aussitôt et dans cet ordre : le programme part vite.
+/// `/proc/<pid>/exe`, cmdline (bornée) et status, lus aussitôt et dans cet ordre : le programme part vite.
 fn lire_proc(pid: u32) -> Lecture {
     let racine = PathBuf::from(format!("/proc/{pid}"));
     let exe = std::fs::read_link(racine.join("exe"))
@@ -921,7 +921,7 @@ fn lire_proc(pid: u32) -> Lecture {
     lecture_de(pid, exe, cmdline.as_deref(), status.as_deref())
 }
 
-/// Le texte de /proc/<pid>/status, lu en octets : le noyau y écrit le nom court tel quel (seuls \n et \\ sont
+/// Le texte de `/proc/<pid>/status`, lu en octets : le noyau y écrit le nom court tel quel (seuls \n et \\ sont
 /// échappés), et un seul octet qui n'est pas de l'UTF-8 ferait perdre tout le fichier, nom, parent et état compris.
 fn status_lisible(octets: &[u8]) -> String {
     String::from_utf8_lossy(octets).into_owned()
@@ -1473,7 +1473,7 @@ fn programme_de_l_unite() -> Option<PathBuf> {
     crate::reseau::surveillance::programme_d_une_unite(&texte)
 }
 
-/// Le processus `pid` lance-t-il le programme `attendu` ? Lu dans /proc/<pid>/exe, l'image lancée : un faux veilleur
+/// Le processus `pid` lance-t-il le programme `attendu` ? Lu dans `/proc/<pid>/exe`, l'image lancée : un faux veilleur
 /// qui imite la ligne de commande et réécrit l'état ne passe pas pour vivant. Un programme remplacé depuis son
 /// lancement (« … (deleted) ») ne compte pas non plus : ce n'est plus celui que le bilan juge sur le disque.
 fn lance_le_programme(pid: u32, attendu: Option<&std::path::Path>) -> bool {

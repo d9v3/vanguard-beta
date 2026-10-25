@@ -1,6 +1,6 @@
 //! Les ordres du blocage : la liste fermée des gestes que Vanguard fait avec les droits d'administrateur, chacun
 //! avec des paramètres typés (une adresse, un port, un numéro de processus et son programme, une valeur d'avant).
-//! Une ligne « vanguard:<verbe> <paramètres> » les porte du Vanguard qui demande à celui qui agit en administrateur
+//! Une ligne « `vanguard:<verbe>` <paramètres> » les porte du Vanguard qui demande à celui qui agit en administrateur
 //! (l'assistant élevé de Linux et macOS, `machine::assistant` ; le processus élevé de Windows,
 //! `machine::windows::eleve`), ou à lui-même quand il l'est déjà. Celui qui agit relit chaque ligne (forme exacte,
 //! paramètres reparsés, rien d'autre accepté), puis REJUGE chaque geste avec ses propres yeux : les garde-fous du
@@ -379,7 +379,7 @@ fn ancetres(pid: u32) -> Vec<u32> {
     liste
 }
 
-/// Le parent dans /proc/<pid>/stat : le 2e champ après la parenthèse fermante du nom (qui peut contenir « ) »).
+/// Le parent dans `/proc/<pid>/stat` : le 2e champ après la parenthèse fermante du nom (qui peut contenir « ) »).
 #[cfg(any(target_os = "linux", test))]
 fn parent_du_stat(stat: &str) -> Option<u32> {
     stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()
@@ -650,7 +650,7 @@ mod linux {
         }
     }
 
-    /// « ufw prepend|delete deny out to <adresse> », l'adresse sous sa forme IPv4 quand elle en est une.
+    /// « ufw prepend|delete deny out to `<adresse>` », l'adresse sous sa forme IPv4 quand elle en est une.
     pub(super) fn ufw_args(verbe: &str, sens: &str, ip: std::net::IpAddr) -> Vec<String> {
         vec![
             verbe.into(),

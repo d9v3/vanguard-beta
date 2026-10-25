@@ -332,7 +332,7 @@ pub(super) fn securite_plateforme() -> Constat {
     juger_plateforme(json.as_deref().and_then(lire_attributs).as_deref())
 }
 
-/// Le verrouillage du noyau (« [none] integrity confidentiality ») et la signature obligatoire des modules (« Y »).
+/// Le verrouillage du noyau (« `[none]` integrity confidentiality ») et la signature obligatoire des modules (« Y »).
 /// `None` : un noyau sans l'un ni l'autre, rien à dire.
 pub(super) fn juger_verrouillage(lockdown: Option<&str>, signature: Option<&str>) -> Option<Constat> {
     let mode = lockdown

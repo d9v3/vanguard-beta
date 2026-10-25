@@ -37,7 +37,7 @@ const BORNE_ETAT: u64 = 5 << 20;
 /// Une chose vue ou faite par Vanguard, datée : pour les fils et la chronologie.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Fait {
-    /// « AAAA-MM-JJ HH:MM[:SS] », heure de cet ordinateur.
+    /// « AAAA-MM-JJ `HH:MM[:SS]` », heure de cet ordinateur.
     pub date: String,
     /// La clé de ce dont il parle (alerte, menace) ; vide : rien à relier.
     pub cle: String,
@@ -145,7 +145,7 @@ fn faits_des_gestes(gestes: &[(String, bool, crate::changements::Blocage)]) -> V
         .collect()
 }
 
-/// Une date locale du journal (« AAAA-MM-JJ HH:MM[:SS] ») en secondes depuis 1970.
+/// Une date locale du journal (« AAAA-MM-JJ `HH:MM[:SS]` ») en secondes depuis 1970.
 fn secondes(date: &str) -> Option<i64> {
     let n = chrono::NaiveDateTime::parse_from_str(date, "%Y-%m-%d %H:%M:%S")
         .or_else(|_| chrono::NaiveDateTime::parse_from_str(date, "%Y-%m-%d %H:%M"))

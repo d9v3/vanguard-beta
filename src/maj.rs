@@ -1,5 +1,5 @@
 //! Mises à jour : système, programmes, pilotes et firmware vérifiés d'un coup, puis installés après accord
-//! (mêmes étapes que « vanguard corriger » ; « [t]out » passe par une seule fenêtre administrateur sous Windows).
+//! (mêmes étapes que « vanguard corriger » ; « `[t]out` » passe par une seule fenêtre administrateur sous Windows).
 
 use crate::machine::{self, Constat};
 use crate::ui::*;

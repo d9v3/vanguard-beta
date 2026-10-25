@@ -264,7 +264,7 @@ impl<'a> Morceau<'a> {
     // ---- Noms ----
 
     /// Un nom (élément, attribut, entité, instruction) : sa position dans le morceau ; s'il est rangé juste là, le
-    /// curseur le saute ([libyal] « Name » : 4 octets inconnus, empreinte, nombre de caractères, UTF-16, zéro final).
+    /// curseur le saute (`[libyal]` « Name » : 4 octets inconnus, empreinte, nombre de caractères, UTF-16, zéro final).
     fn nom(&mut self, c: &mut Curseur) -> R<Arc<str>> {
         let decalage = self.double_mot(c)?;
         let pos = self.position(decalage).ok_or(ErreurBinxml::Nom)?;
@@ -399,7 +399,7 @@ impl<'a> Morceau<'a> {
 
     /// Le DependencyId est facultatif dans la grammaire ([MS-EVEN6] 2.2.12, « 0*1DependencyId ») sans rien qui
     /// l'annonce : dans un .evtx, il est là dans les définitions de gabarits, pas dans un fragment porté par une
-    /// valeur BinXml ([libyal] « Element start », note). Le contexte décide ; seul un cas net le contredit : la
+    /// valeur BinXml (`[libyal]` « Element start », note). Le contexte décide ; seul un cas net le contredit : la
     /// position du nom n'est plausible (nom rangé juste après, ou plus haut dans le morceau) que d'une des deux façons.
     fn dependance_presente(&self, c: &Curseur, gabarit: bool) -> bool {
         let plausible = |ou: usize| {
@@ -489,7 +489,7 @@ impl<'a> Morceau<'a> {
 
     // ---- Gabarits ----
 
-    /// Une instance de gabarit ([MS-EVEN6] 2.2.12, TemplateInstance ; [libyal] « Template instance ») : un octet
+    /// Une instance de gabarit ([MS-EVEN6] 2.2.12, TemplateInstance ; `[libyal]` « Template instance ») : un octet
     /// inconnu, 4 octets d'identifiant, la position de la définition (rangée juste là la première fois, désignée
     /// ensuite), puis les valeurs : leur nombre, leurs descripteurs (taille, type), leurs octets.
     fn instance(&mut self, c: &mut Curseur, profondeur: usize) -> R<Instance> {
@@ -579,7 +579,7 @@ impl<'a> Morceau<'a> {
         lu.map_err(|_| ErreurBinxml::Gabarit)
     }
 
-    /// Une définition de gabarit ([libyal] « Template definition ») : 4 octets (définition suivante), GUID, taille
+    /// Une définition de gabarit (`[libyal]` « Template definition ») : 4 octets (définition suivante), GUID, taille
     /// du corps, puis le corps, un fragment. Lue sans le contexte de qui la désigne : le résultat ne dépend que de
     /// sa position, il peut être gardé.
     fn lire_gabarit(&mut self, pos: usize) -> R<Rc<Gabarit>> {

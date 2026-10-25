@@ -272,7 +272,7 @@ fn illisible(cible: &Path, echecs: &[PathBuf]) -> Option<String> {
     ))
 }
 
-/// Le début du nom d'une correspondance par empreinte : « MalwareBazaar sha256:<empreinte> ».
+/// Le début du nom d'une correspondance par empreinte : « MalwareBazaar `sha256:<empreinte>` ».
 const MALWAREBAZAAR: &str = "MalwareBazaar sha256:";
 
 /// La famille d'une règle de ReversingLabs, lue dans son nom (« ByteCode_MSIL_Ransomware_Apis »).

@@ -187,7 +187,7 @@ const TARDIFS: &[&str] = &[
 /// écrit est adopté une fois, puis un fichier posé sans sceau y est falsifié.
 const TARDIFS_DOSSIERS: &[&str] = &[MANIFESTES_CLE];
 
-/// Les fichiers déjà là dans les dossiers de `TARDIFS_DOSSIERS` (« manifestes-cle/<id>.json »), de simples fichiers
+/// Les fichiers déjà là dans les dossiers de `TARDIFS_DOSSIERS` (« `manifestes-cle/<id>.json` »), de simples fichiers
 /// seulement.
 fn presents_tardifs(dossier: &Path, sous: &str) -> Vec<String> {
     let Ok(lus) = std::fs::read_dir(dossier.join(sous)) else {
@@ -1021,7 +1021,7 @@ pub(crate) fn sceaux_d_une_version_d_avant(dossier: &Path) {
     std::fs::write(dossier.join(REGISTRE), br#"{"depuis":"2026-10-01","fichiers":{}}"#).unwrap();
 }
 
-/// Les fichiers repris sous `sous` (« manifestes-cle/<id>.json »).
+/// Les fichiers repris sous `sous` (« `manifestes-cle/<id>.json` »).
 fn reprises_sous(dossier: &Path, sous: &str) -> Vec<String> {
     let prefixe = format!("{sous}/");
     registre(dossier).ok().flatten().map_or_else(Vec::new, |r| {

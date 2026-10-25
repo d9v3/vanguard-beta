@@ -863,7 +863,7 @@ fn maintenance_de_windows(chemin: &str) -> bool {
     forme && MAINTENANCE.contains(&fichier)
 }
 
-/// Le dossier temporaire d'un compte sous macOS : /private/var/folders/<xx>/<…>/T/ (« C » et « X », à côté, sont des
+/// Le dossier temporaire d'un compte sous macOS : `/private/var/folders/<xx>/<…>/T/` (« C » et « X », à côté, sont des
 /// caches où Chrome, par exemple, range une copie de lui-même).
 fn temporaire_du_compte_macos(c: &str) -> bool {
     let morceaux: Vec<&str> = c.trim_start_matches("/private").split('/').collect();

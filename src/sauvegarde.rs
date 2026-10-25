@@ -419,7 +419,7 @@ pub(crate) fn nouvel_identifiant(avant: &[String], apres: &[String]) -> Option<S
 
 // ───────────────────────────── Windows : Historique des fichiers ─────────────────────────────
 
-/// Le nom du lecteur cible dans Config1.xml de l'Historique des fichiers (« <TargetName>… »).
+/// Le nom du lecteur cible dans Config1.xml de l'Historique des fichiers (« `<TargetName>…` »).
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn cible_historique(xml: &str) -> Option<String> {
     let debut = xml.find("<TargetName>")? + "<TargetName>".len();

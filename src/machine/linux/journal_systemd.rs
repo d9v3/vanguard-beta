@@ -257,7 +257,7 @@ pub(crate) const CHAMPS_COURTS: &[&str] = &[
 ];
 
 /// Une entrée écrite comme `journalctl -o short-iso` l'écrit (logs-show.c) : « 2026-10-24T06:36:34-04:00 hôte
-/// identifiant[pid]: message ». L'heure est celle de la source (_SOURCE_REALTIME_TIMESTAMP), sinon celle de
+/// `identifiant[pid]`: message ». L'heure est celle de la source (_SOURCE_REALTIME_TIMESTAMP), sinon celle de
 /// l'entrée ; l'identifiant SYSLOG_IDENTIFIER, sinon _COMM ; le processus _PID, sinon SYSLOG_PID ; un message sur
 /// plusieurs lignes continue sous le premier, décalé. `None` : une entrée sans MESSAGE, que journalctl ne montre pas
 /// dans ce format. Les caractères de contrôle restent : l'appelant les neutralise.

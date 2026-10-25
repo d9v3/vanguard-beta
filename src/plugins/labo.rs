@@ -342,7 +342,7 @@ fn bandeau(fichier: &str) {
     );
 }
 
-/// Lance et montre : bandeau, sortie, constats marqués « labo <fichier> ». Rend le code de sortie.
+/// Lance et montre : bandeau, sortie, constats marqués « labo `<fichier>` ». Rend le code de sortie.
 pub fn executer(racine: &Path, fichier: &str, arguments: &[String], facon: Facon) -> i32 {
     bandeau(fichier);
     match lancer(racine, fichier, arguments, facon, |q| demander(q).oui()) {

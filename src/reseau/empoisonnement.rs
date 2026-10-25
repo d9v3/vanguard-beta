@@ -86,7 +86,7 @@ fn requete_llmnr(id: u16, nom: &str) -> Vec<u8> {
     p
 }
 
-/// Requête mDNS (RFC 6762) pour « <nom>.local », type A : le bit de poids fort de la classe demande une réponse en
+/// Requête mDNS (RFC 6762) pour « `<nom>.local` », type A : le bit de poids fort de la classe demande une réponse en
 /// unicast (QU), qui revient sur notre port au lieu d'être diffusée.
 fn requete_mdns(id: u16, nom: &str) -> Vec<u8> {
     let mut p = entete(id);

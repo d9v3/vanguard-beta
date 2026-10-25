@@ -564,7 +564,7 @@ fn plus_gros_dossiers() -> Vec<(String, u64)> {
     tailles
 }
 
-/// Les parcours, pour la recherche d'un menu (« <cle>.3 » : le 3e parcours).
+/// Les parcours, pour la recherche d'un menu (« `<cle>.3` » : le 3e parcours).
 pub fn lignes_de_recherche(cle: &str) -> Vec<Ligne> {
     let chemin = format!("{} ›", tr!("Dépanner pas à pas", "Step-by-step troubleshooting"));
     PARCOURS
@@ -691,7 +691,7 @@ fn trouver(sujet: &str) -> Option<&'static Parcours> {
     })
 }
 
-/// « vanguard depanner [sujet] » : sans sujet, les parcours seuls (main.rs ouvre le menu avec les autres outils du
+/// « vanguard depanner `[sujet]` » : sans sujet, les parcours seuls (main.rs ouvre le menu avec les autres outils du
 /// groupe) ; sinon le parcours désigné.
 pub fn executer(sujet: &str) {
     if sujet.trim().is_empty() {

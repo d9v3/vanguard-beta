@@ -1008,7 +1008,7 @@ pub(crate) fn gamemode_actif() -> Option<bool> {
         .map(|n| n > 0)
 }
 
-/// Le programme désigné (le lien /proc/<pid>/exe d'un processus) est-il gamemoded installé par le système : nommé
+/// Le programme désigné (le lien `/proc/<pid>/exe` d'un processus) est-il gamemoded installé par le système : nommé
 /// ainsi, à root, que personne d'autre ne peut réécrire ? Un faux service est lancé par le compte, depuis un fichier
 /// du compte (ou par un interpréteur, qui ne s'appelle pas gamemoded).
 fn programme_gamemoded(exe: &std::path::Path) -> bool {

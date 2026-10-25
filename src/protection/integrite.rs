@@ -125,7 +125,7 @@ fn fichiers(cibles: &[PathBuf]) -> Vec<PathBuf> {
     liste
 }
 
-/// Empreinte d'un fichier : « b3:<BLAKE3> » s'il est lisible, sinon « meta:<taille>:<date> ».
+/// Empreinte d'un fichier : « `b3:<BLAKE3>` » s'il est lisible, sinon « `meta:<taille>:<date>` ».
 fn empreinte(f: &Path) -> Option<String> {
     if let Ok(octets) = std::fs::read(f) {
         return Some(format!("b3:{}", blake3::hash(&octets).to_hex()));

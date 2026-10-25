@@ -848,7 +848,7 @@ fn unites_activees_dans(dossiers: &[PathBuf], masques: &[PathBuf], recherche: &[
 }
 
 /// Le nom sous lequel systemctl range un lien d'activation. Une instance d'un modèle (« modele@instance »
-/// suivi du suffixe de l'unité) compte pour le modèle quand elle est son instance par défaut (DefaultInstance= de [Install], comme pour les
+/// suivi du suffixe de l'unité) compte pour le modèle quand elle est son instance par défaut (DefaultInstance= de `[Install]`, comme pour les
 /// consoles) ; une autre instance garde son nom : systemctl dit alors le modèle « indirect », mais elle démarre
 /// bien, et ne pas la montrer cacherait un lancement automatique.
 #[cfg(target_os = "linux")]

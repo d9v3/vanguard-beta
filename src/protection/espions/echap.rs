@@ -1,4 +1,4 @@
-//! La liste d'indicateurs de logiciels espions de l'association Échap (https://echap.eu.org), sous licence CC-BY 4.0 :
+//! La liste d'indicateurs de logiciels espions de l'association Échap (<https://echap.eu.org>), sous licence CC-BY 4.0 :
 //! pour chaque logiciel espion vendu au grand public (TheTruthSpy, mSpy, FlexiSpy…), ses noms, les sites où il se
 //! vend et où se consulte ce qu'il a volé, et ses serveurs de commande. Téléchargée à l'usage depuis son dépôt, gardée
 //! un jour comme les listes d'abuse.ch, jamais intégrée au programme (rien n'est redistribué ; la mention est faite à
@@ -86,7 +86,7 @@ fn partage(d: &str) -> bool {
 
 /// Les adresses d'entrée de Cloudflare, partagées par des millions de sites : une adresse de la liste prise là
 /// accuserait Steam, Discord ou pacman de parler à un logiciel espion. Plages publiées par Cloudflare
-/// (https://www.cloudflare.com/ips-v4 et https://www.cloudflare.com/ips-v6) : (adresse, longueur du préfixe).
+/// (<https://www.cloudflare.com/ips-v4> et <https://www.cloudflare.com/ips-v6>) : (adresse, longueur du préfixe).
 const PLAGES_PARTAGEES: &[(&str, u8)] = &[
     ("173.245.48.0", 20),
     ("103.21.244.0", 22),
@@ -459,7 +459,7 @@ fn adresse(texte: &str) -> Option<IpAddr> {
     (crate::socle::adresses::sur_internet(ip) && !partagee(ip)).then_some(ip)
 }
 
-/// L'hôte d'une ligne de distribution : une adresse (« https://github.com/x/y ») ou un nom nu ; schéma, chemin,
+/// L'hôte d'une ligne de distribution : une adresse (« <https://github.com/x/y> ») ou un nom nu ; schéma, chemin,
 /// compte (« user@ ») et port retirés.
 fn hote(ligne: &str) -> &str {
     let sans_schema = ligne.split_once("://").map_or(ligne, |(_, r)| r);

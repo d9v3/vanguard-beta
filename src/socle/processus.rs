@@ -30,7 +30,7 @@ pub(crate) fn pids_dans(proc: &Path) -> Option<Vec<u32>> {
     Some(pids)
 }
 
-/// Le nom court du processus (/proc/<pid>/comm : 15 octets au plus, choisi par le programme lui-même, donc à rendre
+/// Le nom court du processus (`/proc/<pid>/comm` : 15 octets au plus, choisi par le programme lui-même, donc à rendre
 /// inoffensif avant de l'afficher). `None` : parti entre-temps, ou illisible.
 #[cfg(target_os = "linux")]
 pub(crate) fn nom_court(pid: u32) -> Option<String> {
@@ -38,7 +38,7 @@ pub(crate) fn nom_court(pid: u32) -> Option<String> {
     Some(nom.trim_end_matches('\n').to_string())
 }
 
-/// Le programme que le processus fait tourner. Linux : /proc/<pid>/exe, lisible pour les processus de son compte
+/// Le programme que le processus fait tourner. Linux : `/proc/<pid>/exe`, lisible pour les processus de son compte
 /// seulement (ceux des autres comptes, en root) ; un programme effacé du disque garde son chemin suivi de
 /// « (deleted) ». macOS : demandé au noyau.
 pub(crate) fn programme(pid: u32) -> Option<PathBuf> {
@@ -57,7 +57,7 @@ pub(crate) fn programme(pid: u32) -> Option<PathBuf> {
     }
 }
 
-/// Les arguments du processus (/proc/<pid>/cmdline, séparés par des octets nuls), lus avec pertes s'ils ne sont pas
+/// Les arguments du processus (`/proc/<pid>/cmdline`, séparés par des octets nuls), lus avec pertes s'ils ne sont pas
 /// de l'UTF-8 ; vide : processus du noyau, parti, ou illisible.
 #[cfg(target_os = "linux")]
 pub(crate) fn arguments(pid: u32) -> Vec<String> {
@@ -122,7 +122,7 @@ pub(crate) fn reprendre(pid: u32) -> bool {
     envoyer_signal(pid, libc::SIGCONT)
 }
 
-/// Un processus est-il gelé ? (son état est « T » dans /proc/<pid>/stat) : sert à regeler ce qu'un SIGCONT d'un tiers
+/// Un processus est-il gelé ? (son état est « T » dans `/proc/<pid>/stat`) : sert à regeler ce qu'un SIGCONT d'un tiers
 /// aurait repris. `None` : parti ou illisible.
 #[cfg(target_os = "linux")]
 pub(crate) fn est_gele(pid: u32) -> Option<bool> {
@@ -130,7 +130,7 @@ pub(crate) fn est_gele(pid: u32) -> Option<bool> {
     etat_du_stat(&stat).map(|e| e == 'T' || e == 't')
 }
 
-/// Le champ « état » de /proc/<pid>/stat (3e champ), après le nom entre parenthèses — qui peut contenir des espaces
+/// Le champ « état » de `/proc/<pid>/stat` (3e champ), après le nom entre parenthèses — qui peut contenir des espaces
 /// et des parenthèses, d'où la recherche de la DERNIÈRE « ) ».
 #[cfg(target_os = "linux")]
 pub(crate) fn etat_du_stat(stat: &str) -> Option<char> {

@@ -777,7 +777,7 @@ mod linux {
     }
 
     /// Le metadata et ses surcharges réunis comme Flatpak le fait, en un texte que `lire_flatpak_statiques` lit.
-    /// Dans [Context], chaque clé est une liste (« sockets=x11;pulseaudio; ») : une surcharge ajoute ses valeurs, et
+    /// Dans `[Context]`, chaque clé est une liste (« sockets=x11;pulseaudio; ») : une surcharge ajoute ses valeurs, et
     /// « !valeur » en retire une (« !home » retire aussi « home:ro »). Dans les politiques de bus, la dernière valeur
     /// d'un nom l'emporte (« none » retire l'accès).
     pub(super) fn fusionner(metadata: &str, surcharges: &[String]) -> String {

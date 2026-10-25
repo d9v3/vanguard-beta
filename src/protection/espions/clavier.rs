@@ -1,6 +1,6 @@
 //! Linux : qui lit le clavier ? Sous Wayland, un programme ordinaire ne voit pas les touches tapées ailleurs ; pour les
 //! épier, un enregistreur de frappe ouvre directement le clavier, /dev/input/eventN (en root, ou depuis un compte du
-//! groupe « input »). Les fichiers ouverts de chaque processus (/proc/<pid>/fd) le montrent, et /sys dit lesquels de
+//! groupe « input »). Les fichiers ouverts de chaque processus (`/proc/<pid>/fd`) le montrent, et /sys dit lesquels de
 //! ces périphériques sont des claviers. Le compositeur, systemd-logind et les outils de remappage des touches en
 //! tiennent aussi : reconnus et montrés, jamais cachés. Tout est lu dans /proc et /sys, sans lancer de commande.
 
@@ -79,7 +79,7 @@ fn interprete(exe: &str) -> bool {
     ["python", "perl", "ruby"].iter().any(|p| bas.starts_with(p)) || bas == "node"
 }
 
-/// Modules du noyau qui enregistrent les frappes : keysniffer (https://github.com/jarun/keysniffer).
+/// Modules du noyau qui enregistrent les frappes : keysniffer (<https://github.com/jarun/keysniffer>).
 const MODULES_ESPIONS: &[&str] = &["keysniffer"];
 
 /// Un bit d'un masque de capacités de /sys (« 120013 », « 4057ff febeffdfffefffff fffffffffffffffe ») : des mots
@@ -103,7 +103,7 @@ pub(super) fn est_clavier(ev: &str, key: &str) -> bool {
     bits(ev)(EV_KEY) && touches.into_iter().all(a)
 }
 
-/// « event12 » pour un lien vers /dev/input/event12 ; rien pour un autre fichier ou une prise (« socket:[1] »).
+/// « event12 » pour un lien vers /dev/input/event12 ; rien pour un autre fichier ou une prise (« `socket:[1]` »).
 pub(super) fn evenement(lien: &str) -> Option<&str> {
     let nom = lien.strip_prefix("/dev/input/")?;
     (nom.starts_with("event") && nom[5..].bytes().all(|o| o.is_ascii_digit()) && nom.len() > 5).then_some(nom)

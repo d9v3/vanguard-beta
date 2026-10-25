@@ -42,7 +42,7 @@ pub(crate) enum Langage {
     Html,
     /// XML, dont les fichiers de script Windows (.wsf).
     Xml,
-    /// [InternetShortcut] : un raccourci .url.
+    /// `[InternetShortcut]` : un raccourci .url.
     RaccourciInternet,
     /// Un autre interpréteur nommé par « #! ».
     AutreInterpreteur,

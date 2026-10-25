@@ -4,7 +4,7 @@ use super::*;
 
 /// Ports de conteneurs joignables depuis le réseau, dans la colonne « Ports » de `docker ps` : tout sauf la
 /// boucle locale (127.x, ::1). Une IP du réseau local (`-p 10.0.0.5:8080:80`) est aussi exposée.
-/// Ex. « 0.0.0.0:8080->80/tcp, [::]:8080->80/tcp, 127.0.0.1:3389->3389/tcp » → [« 8080/tcp »], prêts à montrer
+/// Ex. « 0.0.0.0:8080->80/tcp, `[::]:8080->80/tcp`, 127.0.0.1:3389->3389/tcp » → [« 8080/tcp »], prêts à montrer
 /// (un port mal formé reste du texte : rendu inoffensif, comme le nom d'un conteneur).
 pub(super) fn ports_docker_exposes(colonne: &str) -> Vec<String> {
     let mut ports: Vec<String> = colonne

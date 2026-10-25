@@ -56,7 +56,7 @@ pub(crate) fn serveur_ia(p: &Prise) -> Option<String> {
 }
 
 /// Les ports que Vanguard a fermés en entrée : sa note (« 11434/tcp », ufw) et, sous Windows, ses règles « Vanguard :
-/// bloquer <port> » relues dans le pare-feu.
+/// bloquer `<port>` » relues dans le pare-feu.
 pub(crate) fn ports_fermes() -> HashSet<u16> {
     let notes = super::ports_bloques();
     let fermes = notes.iter().filter_map(|p| p.strip_suffix("/tcp")?.parse::<u16>().ok());

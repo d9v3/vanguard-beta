@@ -119,7 +119,7 @@ fn lire_proc_net(texte: &str) -> Vec<(IpAddr, u16, u64)> {
         .collect()
 }
 
-/// Le programme de chaque prise réseau : /proc/<pid>/fd/* pointe vers « socket:[inode] ». Sans droits root, seuls
+/// Le programme de chaque prise réseau : `/proc/<pid>/fd/*` pointe vers « `socket:[inode]` ». Sans droits root, seuls
 /// les programmes de ce compte se lisent, comme avec ss : ceux des autres comptes restent sans nom.
 #[cfg(target_os = "linux")]
 pub(crate) fn proprietaires() -> HashMap<u64, u32> {
@@ -504,7 +504,7 @@ pub(crate) fn dossier_risque(chemin: &str, montages: &str) -> Option<&'static st
     None
 }
 
-/// Linux : une AppImage tourne depuis son image, montée dans « /tmp/.mount_<nom><code> » le temps qu'elle tourne. Un
+/// Linux : une AppImage tourne depuis son image, montée dans « `/tmp/.mount_<nom><code>` » le temps qu'elle tourne. Un
 /// simple dossier de ce nom ne suffit pas : il faut qu'il soit monté (`montages` : le contenu de /proc/self/mounts).
 pub(crate) fn appimage(chemin: &str, montages: &str) -> bool {
     let Some(reste) = chemin.strip_prefix("/tmp/.mount_") else {
@@ -516,7 +516,7 @@ pub(crate) fn appimage(chemin: &str, montages: &str) -> bool {
         .any(|l| l.split_whitespace().nth(1) == Some(point.as_str()))
 }
 
-/// L'image d'où tourne une AppImage, d'après son environnement (/proc/<pid>/environ : « APPIMAGE=…\0 »).
+/// L'image d'où tourne une AppImage, d'après son environnement (`/proc/<pid>/environ` : « APPIMAGE=…\0 »).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn image_appimage(environ: &[u8]) -> Option<String> {
     environ

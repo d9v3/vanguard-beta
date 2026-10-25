@@ -17,7 +17,7 @@ use super::{
 use crate::selection::{Case, cocher};
 use crate::ui::*;
 
-/// Devant l'id d'une correction du bilan notée (« bilan:<id unique> ») : chacune a sa note, même appliquée deux fois.
+/// Devant l'id d'une correction du bilan notée (« `bilan:<id` unique> ») : chacune a sa note, même appliquée deux fois.
 pub(crate) const BILAN: &str = "bilan:";
 /// Devant l'id d'un réglage pour jouer (« jeux:hags ») : une note par réglage, la plus ancienne gardée.
 pub(crate) const JEUX: &str = "jeux:";
@@ -222,7 +222,7 @@ pub(crate) fn relever(id: String, titre: &str, gestes: &[Geste]) -> Result<Relev
     })
 }
 
-/// Regroupe les relevés d'un lot (« [t]out appliquer ») qui touchent la même chose : tous pris avant d'appliquer,
+/// Regroupe les relevés d'un lot (« `[t]out` appliquer ») qui touchent la même chose : tous pris avant d'appliquer,
 /// ils notent le même état d'avant, qui n'existe qu'une fois. Chacun sa note, en annuler une remettait cet état et
 /// défaisait les autres sans le dire, qui restaient annoncées « annulables ». Regroupés, ils n'ont qu'une note, dont
 /// l'annulation marque défaites toutes les corrections qui y sont liées. Rend les relevés à noter (les regroupés

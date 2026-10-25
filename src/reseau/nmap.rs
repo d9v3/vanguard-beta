@@ -1,5 +1,5 @@
 //! Les versions des services d'un appareil, par nmap quand il est installé : au scan approfondi d'un appareil
-//! (« vanguard appareils <ip> -p tous »), seulement sur les ports TCP que Vanguard y a déjà trouvés ouverts, et seulement
+//! (« vanguard appareils `<ip>` -p tous »), seulement sur les ports TCP que Vanguard y a déjà trouvés ouverts, et seulement
 //! sur le réseau local. nmap -sV interroge chaque service pour reconnaître le logiciel et sa version : un service
 //! ancien se repère ainsi. Ce que les appareils répondent est neutralisé avant d'être montré (`ui::affichable`).
 

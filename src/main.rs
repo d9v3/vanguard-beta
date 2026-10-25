@@ -686,11 +686,11 @@ enum Commande {
     },
     /// Dépanner pas à pas : pas d'Internet, Wi-Fi qui coupe, ordinateur lent, pas de son, imprimante, disque plein ;
     /// après une infection, nouvel ordinateur, ordinateur qui part (vente, don), compte piraté, collecter les traces
-    /// (« traces [dossier] » : processus, connexions, démarrage, comptes, journaux, fichiers récents et chronologie,
+    /// (« traces `[dossier]` » : processus, connexions, démarrage, comptes, journaux, fichiers récents et chronologie,
     /// dans un dossier daté ; lecture seule), ordinateur d'un proche.
     #[command(visible_alias = "troubleshoot")]
     Depanner {
-        /// Le sujet : internet, wifi, lent, son, imprimante, disque, infection, nouveau, depart, compte, traces [dossier],
+        /// Le sujet : internet, wifi, lent, son, imprimante, disque, infection, nouveau, depart, compte, traces `[dossier]`,
         /// proche (ou des mots qui le décrivent).
         sujet: Vec<String>,
     },
@@ -733,22 +733,22 @@ enum Commande {
         etape: deploiement::Etape,
     },
     /// Plugins : des programmes à vous ajoutés à Vanguard sans changer son code (essais, outils expérimentaux), chacun
-    /// dans un dossier avec un plugin.toml. « ajouter <dossier> » le copie et l'approuve (empreintes SHA-256),
-    /// « approuver <nom> » après un changement, « liste », « retirer <nom> », ou « <nom> [arguments] » pour le
+    /// dans un dossier avec un plugin.toml. « ajouter `<dossier>` » le copie et l'approuve (empreintes SHA-256),
+    /// « approuver `<nom>` » après un changement, « liste », « retirer `<nom>` », ou « `<nom>` `[arguments]` » pour le
     /// lancer (« --rapport » : ses constats dans le rapport HTML) ; sans argument, la liste à choisir. Jamais en
     /// administrateur ; hors de la note.
     #[command(name = "plugins")]
     Plugin {
-        /// ajouter <dossier>, approuver <nom>, liste, retirer <nom>, ou <nom> [--rapport] [arguments].
+        /// ajouter `<dossier>`, approuver `<nom>`, liste, retirer `<nom>`, ou `<nom>` [--rapport] `[arguments]`.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         quoi: Vec<String>,
     },
     /// Laboratoire : un script posé tel quel dans le dossier du labo (.sh, .bash, .ps1, .py ou un programme), pour
     /// essayer une idée hors du programme de Vanguard. Sans argument : la liste à choisir ; « ouvrir » : le dossier ;
-    /// « <fichier> [arguments] » le lance (approuvé par son empreinte au premier lancement). Jamais en administrateur.
+    /// « `<fichier>` `[arguments]` » le lance (approuvé par son empreinte au premier lancement). Jamais en administrateur.
     #[command(visible_alias = "lab")]
     Labo {
-        /// ouvrir, liste, ou <fichier> [arguments].
+        /// ouvrir, liste, ou `<fichier>` `[arguments]`.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         quoi: Vec<String>,
     },

@@ -4,7 +4,7 @@
 //! - Excel 97-2003 ([MS-XLS] 2.1.4, enregistrements : type et taille sur 16 bits) : FilePass (47) pour un classeur
 //!   chiffré, BoundSheet8 (133) pour chaque feuille, son état masqué (hsState) et sa sorte (dt = 1 : feuille de
 //!   macros Excel 4.0, « XLM »), lus dans le premier sous-flux (jusqu'à EOF, 10) ;
-//! - OOXML ([MS-OFFMACRO2], ECMA-376) : dans [Content_Types].xml, les parties de macros (vbaProject,
+//! - OOXML ([MS-OFFMACRO2], ECMA-376) : dans `[Content_Types].xml`, les parties de macros (vbaProject,
 //!   macroEnabled, macrosheet) et d'ActiveX ; dans les relations (.rels), celles qui sortent du document
 //!   (TargetMode="External" : un modèle ou un objet chargé depuis ailleurs à l'ouverture).
 //!
@@ -85,7 +85,7 @@ pub(crate) fn classeur(flux: &[u8]) -> Classeur {
     c
 }
 
-/// Ce que dit un [Content_Types].xml.
+/// Ce que dit un `[Content_Types].xml`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct TypesDeContenu {
     pub projet_vba: bool,

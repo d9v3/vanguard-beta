@@ -326,7 +326,7 @@ impl Douteux {
 }
 
 /// Le dossier des sceaux et le nom scellé d'un fichier des extensions : le parent de `racine` (le dossier de
-/// Vanguard) et « plugins/<fichier> » (`modele::inventaire`).
+/// Vanguard) et « `plugins/<fichier>` » (`modele::inventaire`).
 fn lieu_scelle(racine: &Path, fichier: &str) -> Result<(PathBuf, String), crate::modele::Echec> {
     let parent = racine.parent().filter(|p| !p.as_os_str().is_empty());
     let nom = racine.file_name().and_then(|n| n.to_str());

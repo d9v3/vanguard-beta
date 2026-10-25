@@ -21,7 +21,7 @@ pub(crate) const WTMPDB: &str = "/var/lib/wtmpdb/wtmp.db";
 
 /// Taille d'un enregistrement utmp (glibc, x86_64 : `__WORDSIZE_TIME64_COMPAT32`, bits/utmp.h).
 pub(crate) const TAILLE_UTMP: usize = 384;
-/// Taille d'une entrée de lastlog (ll_time u32, ll_line[32], ll_host[256]).
+/// Taille d'une entrée de lastlog (ll_time u32, `ll_line[32]`, `ll_host[256]`).
 const TAILLE_LASTLOG: u64 = 292;
 /// Une base SQLite de connexions plus grosse n'est pas lue (une vraie fait quelques Mo, même sur un serveur).
 const BASE_MAX: u64 = 64 << 20;

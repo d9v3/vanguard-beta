@@ -194,7 +194,7 @@ mod systeme {
         Some(affichable(nom.trim())).filter(|s| !s.is_empty())
     }
 
-    /// Source d'une ligne du journal (« Oct 17 15:29:32 portable NetworkManager[1334]: … » → « NetworkManager »). Une
+    /// Source d'une ligne du journal (« Oct 17 15:29:32 portable `NetworkManager[1334]`: … » → « NetworkManager »). Une
     /// ligne en retrait continue l'entrée d'avant (la pile d'un programme planté) : elle n'en est pas une autre. Tout
     /// programme choisit le nom sous lequel il écrit au journal : lu prêt à montrer.
     pub(super) fn source_journal(l: &str) -> Option<String> {
@@ -318,7 +318,7 @@ mod systeme {
         Some(tampon)
     }
 
-    /// Le nom d'un vidage : « core.<programme>.<compte>.<démarrage>.<processus>.<µs depuis 1970> », puis la
+    /// Le nom d'un vidage : « `core.<programme>.<compte>.<démarrage>.<processus>.<µs` depuis 1970> », puis la
     /// compression (« .zst », « .xz », « .lz4 ») ou rien. systemd y écrit les points, barres obliques et espaces du
     /// nom en « \x2e », « \x2f », « \x20 ». Ce nom est celui du fil qui a planté, coupé à 15 octets : on n'en
     /// garde que l'heure et le numéro du processus (le programme vient de l'attribut « user.coredump.exe »).

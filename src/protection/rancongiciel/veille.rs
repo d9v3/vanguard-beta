@@ -517,7 +517,7 @@ fn illisibles_du_compte() -> HashSet<(u32, u64)> {
         .collect()
 }
 
-/// L'heure de départ d'un processus (22e champ de /proc/<pid>/stat, en tops depuis le démarrage) : avec le pid, elle
+/// L'heure de départ d'un processus (22e champ de `/proc/<pid>/stat`, en tops depuis le démarrage) : avec le pid, elle
 /// distingue un processus d'un autre qui aurait repris son numéro.
 fn depart(pid: u32) -> Option<u64> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
@@ -555,7 +555,7 @@ fn euid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
-/// Le compte propriétaire d'un processus (champ « Uid: » de /proc/<pid>/status). `None` : illisible.
+/// Le compte propriétaire d'un processus (champ « Uid: » de `/proc/<pid>/status`). `None` : illisible.
 fn proprietaire(pid: u32) -> Option<u32> {
     let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
     status
@@ -567,14 +567,14 @@ fn proprietaire(pid: u32) -> Option<u32> {
         .ok()
 }
 
-/// Le parent d'un processus (PPID, 4e champ de /proc/<pid>/stat, après le nom entre parenthèses).
+/// Le parent d'un processus (PPID, 4e champ de `/proc/<pid>/stat`, après le nom entre parenthèses).
 fn lire_ppid(pid: u32) -> Option<u32> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let apres = &stat[stat.rfind(')')? + 1..];
     apres.split_whitespace().nth(1)?.parse().ok()
 }
 
-/// Le nom court d'un processus (/proc/<pid>/comm).
+/// Le nom court d'un processus (`/proc/<pid>/comm`).
 fn comm(pid: u32) -> Option<String> {
     Some(
         std::fs::read_to_string(format!("/proc/{pid}/comm"))

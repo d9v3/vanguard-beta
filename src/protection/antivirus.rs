@@ -169,7 +169,7 @@ fn volumes_amovibles_sous(racine: &std::path::Path, mountinfo: &str) -> Vec<(Pat
         .collect()
 }
 
-/// Un périphérique bloc (/sys/class/block/<nom>) est-il sur un disque amovible ? Une partition regarde son disque
+/// Un périphérique bloc (`/sys/class/block/<nom>`) est-il sur un disque amovible ? Une partition regarde son disque
 /// (le dossier parent dans sysfs), un volume device-mapper les périphériques dessous (« slaves »).
 #[cfg(target_os = "linux")]
 fn bloc_amovible(racine: &std::path::Path, bloc: &std::path::Path, profondeur: u8) -> bool {

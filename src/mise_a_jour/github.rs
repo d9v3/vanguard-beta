@@ -120,7 +120,7 @@ pub(super) struct Publiee {
     revoque: bool,
 }
 
-/// Le manifeste : « version 0.79.0+1792540000 », puis une ligne par système, « linux-x86_64 <sha256> <taille> ». Le
+/// Le manifeste : « version 0.79.0+1792540000 », puis une ligne par système, « linux-x86_64 `<sha256>` `<taille>` ». Le
 /// moindre écart de forme le fait refuser.
 fn lire_manifeste(texte: &str, systeme: &str) -> Option<(Version, [u8; 32], u64)> {
     let mut lignes = texte.lines();

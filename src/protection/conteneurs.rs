@@ -21,7 +21,7 @@ const TRIVY: Externe = Externe {
     site: "https://trivy.dev",
 };
 
-/// Les images d'un `image ls --format '{{.Repository}}:{{.Tag}}'`. Celles sans nom (« <none> », restes d'une
+/// Les images d'un `image ls --format '{{.Repository}}:{{.Tag}}'`. Celles sans nom (« `<none>` », restes d'une
 /// construction) sont sautées ; un nom qui commencerait par « - » aussi, qui passerait pour une option.
 pub(crate) fn images(sortie: &str) -> Vec<String> {
     let mut images: Vec<String> = sortie

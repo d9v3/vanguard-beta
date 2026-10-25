@@ -81,7 +81,7 @@ pub(crate) fn sortante(pf: PareFeu, ip: IpAddr) -> Regle {
 }
 
 /// La règle qui ferme un port TCP en entrée, sauf depuis cet ordinateur. Sous Windows, la règle porte le nom que le
-/// bilan reconnaît déjà (« Vanguard : bloquer <port> »). `None` : pas de règle entrante ici (pf).
+/// bilan reconnaît déjà (« Vanguard : bloquer `<port>` »). `None` : pas de règle entrante ici (pf).
 pub(crate) fn entrante(pf: PareFeu, port: u16) -> Option<Regle> {
     let limite = match pf {
         PareFeu::Pf => return None,

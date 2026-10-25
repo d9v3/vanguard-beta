@@ -239,7 +239,7 @@ pub(crate) fn source_sans_code(source: &str) -> bool {
     })
 }
 
-/// Le nom d'une procédure déclarée sur `ligne` (« [Public|Private|Friend] [Static] Sub|Function Nom(… »).
+/// Le nom d'une procédure déclarée sur `ligne` (« [Public|Private|Friend] `[Static]` Sub|Function Nom(… »).
 fn procedure_declaree(ligne: &str) -> Option<&str> {
     let mut mots = ligne.split_whitespace().peekable();
     let mut mot = mots.next()?;

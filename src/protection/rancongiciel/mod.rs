@@ -5,7 +5,7 @@
 //!
 //! Palier 1 : sans root, sans administrateur, sans nouvelle crate. « Quoi » (les changements de fichiers) par la
 //! crate `notify` déjà présente (inotify sous Linux, ReadDirectoryChangesW sous Windows) ; « qui » par les compteurs
-//! d'écriture des processus (/proc/<pid>/io et fd sous Linux, GetProcessIoCounters sous Windows), relevés seulement au
+//! d'écriture des processus (`/proc/<pid>/io` et fd sous Linux, GetProcessIoCounters sous Windows), relevés seulement au
 //! début d'une rafale. fanotify (root), Aya (eBPF) et ETW (Windows) sont des paliers suivants, qui attendent un
 //! service privilégié et la signature du code.
 //!

@@ -17,7 +17,7 @@ pub(crate) struct Ecoute {
     pub udp: bool,
     pub adresse: IpAddr,
     pub port: u16,
-    /// Le numéro de la prise (« socket:[inode] » dans /proc/<pid>/fd).
+    /// Le numéro de la prise (« `socket:[inode]` » dans `/proc/<pid>/fd`).
     pub inode: u64,
     /// Le chemin du groupe de contrôle (« /system.slice/cups.service »), quand le noyau l'a donné.
     pub groupe: Option<String>,

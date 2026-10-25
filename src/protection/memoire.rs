@@ -259,7 +259,7 @@ pub(crate) fn entetes_pe_concordent(memoire: &[u8], fichier: &[u8]) -> Option<bo
     Some(champs(memoire)? == champs(fichier)?)
 }
 
-/// Une entrée de /proc/<pid>/smaps : l'en-tête (celui de maps) et le champ « Anonymous » (pages privées, copiées à
+/// Une entrée de `/proc/<pid>/smaps` : l'en-tête (celui de maps) et le champ « Anonymous » (pages privées, copiées à
 /// l'écriture ou jamais adossées à un fichier).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq)]
@@ -312,7 +312,7 @@ fn entete_linux(ligne: &str) -> Option<Mappage> {
     })
 }
 
-/// Les systèmes de fichiers de /proc/<pid>/mountinfo dont le contenu ne vient pas d'un disque local, par numéro de
+/// Les systèmes de fichiers de `/proc/<pid>/mountinfo` dont le contenu ne vient pas d'un disque local, par numéro de
 /// périphérique : en mémoire (tmpfs, ramfs : le scan de fichiers ne couvre ni /dev/shm, ni /tmp, ni /run/user), servis
 /// par un programme (FUSE, qu'un compte monte lui-même et qui peut rendre un contenu au chargeur et un autre à une
 /// lecture ultérieure) ou par le réseau. Une image qui y est mappée se lit en mémoire.
@@ -336,7 +336,7 @@ pub(crate) fn en_memoire_linux(mountinfo: &str) -> Vec<(u32, u32)> {
         .collect()
 }
 
-/// Les blocs à lire d'après /proc/<pid>/smaps. Retenus : les régions anonymes (tas, piles, mmap sans fichier) ; une
+/// Les blocs à lire d'après `/proc/<pid>/smaps`. Retenus : les régions anonymes (tas, piles, mmap sans fichier) ; une
 /// région de fichier dont des pages sont privées (« Anonymous » non nul : modifiée en mémoire, même si le fichier
 /// sur le disque est sain) ; et, lues en entier, recollées à leur position dans le fichier, les images d'un fichier
 /// effacé (« (deleted) », memfd), posé sur un système de fichiers en mémoire (`en_memoire`), ou dont une région
@@ -629,8 +629,8 @@ mod plateforme {
         (texte.len() as u64 <= PROC_MAX).then_some(texte)
     }
 
-    /// /proc/<pid>/smaps pour les régions (et leurs pages privées), mountinfo pour les systèmes de fichiers en
-    /// mémoire, /proc/<pid>/mem pour les lire : le noyau refuse l'ouverture de `mem` et de `smaps` sans le droit de
+    /// `/proc/<pid>/smaps` pour les régions (et leurs pages privées), mountinfo pour les systèmes de fichiers en
+    /// mémoire, `/proc/<pid>/mem` pour les lire : le noyau refuse l'ouverture de `mem` et de `smaps` sans le droit de
     /// tracer le processus (autre compte, ou Yama ptrace_scope ≥ 1 hors de ses descendants).
     pub(super) fn ouvrir(pid: u32) -> Acces {
         let Some(cartes) = lire_proc(&format!("/proc/{pid}/smaps")) else {

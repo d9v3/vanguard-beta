@@ -263,7 +263,7 @@ fn bail_dhclient(texte: &str) -> Option<Bail> {
     (bail.adresse.is_some() || bail.serveur.is_some()).then_some(bail)
 }
 
-/// `DNSOverTLS=` et `DNSSEC=` d'un resolved.conf (section [Resolve]) ; la dernière valeur écrite gagne.
+/// `DNSOverTLS=` et `DNSSEC=` d'un resolved.conf (section `[Resolve]`) ; la dernière valeur écrite gagne.
 #[cfg(any(target_os = "linux", test))]
 fn resolved_conf(texte: &str, r: &mut Resolved) {
     let mut dans_resolve = false;

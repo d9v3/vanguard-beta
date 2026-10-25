@@ -7,8 +7,8 @@
 //!
 //! Rien de personnel, ni sur la personne ni sur les gens que Vanguard a croisés : le journal finit en tickets sur
 //! GitHub. Avant l'écriture, le dossier personnel devient « ~ » ; le nom du compte, celui de la machine et ce que la
-//! base des appareils garde (réseaux, appareils, surnoms) deviennent « <utilisateur> », « <machine> », « <réseau> »,
-//! « <appareil> » ; les dossiers des autres comptes, les courriels, les numéros de série, les SID de Windows, les noms
+//! base des appareils garde (réseaux, appareils, surnoms) deviennent « `<utilisateur>` », « `<machine>` », « <réseau> »,
+//! « `<appareil>` » ; les dossiers des autres comptes, les courriels, les numéros de série, les SID de Windows, les noms
 //! du réseau local et du Wi-Fi sont masqués ; une adresse MAC ne garde que le préfixe du fabricant, une adresse IP
 //! publique devient une adresse de documentation.
 
@@ -296,7 +296,7 @@ fn longueur_sans_casse(texte: &str, nom: &str) -> Option<usize> {
     (lus > 0).then_some(lus)
 }
 
-/// Dossiers personnels des autres comptes (« C:\Users\Zoé », « /home/bob ») : le nom devient « <compte> ». Les
+/// Dossiers personnels des autres comptes (« C:\Users\Zoé », « /home/bob ») : le nom devient « `<compte>` ». Les
 /// dossiers communs (Public, Default, Shared…) ne nomment personne.
 fn masquer_comptes(texte: &str) -> String {
     let mut sortie = String::with_capacity(texte.len());
@@ -380,7 +380,7 @@ fn compte_commun(nom: &str) -> bool {
         || COMMUNS.iter().any(|c| nom.eq_ignore_ascii_case(c))
 }
 
-/// Adresses courriel (une recherche de fuites, une identité Git…) : « <courriel> ».
+/// Adresses courriel (une recherche de fuites, une identité Git…) : « `<courriel>` ».
 fn masquer_courriels(texte: &str) -> String {
     let b = texte.as_bytes();
     let locale = |c: u8| c.is_ascii_alphanumeric() || b"._%+-".contains(&c);
@@ -409,7 +409,7 @@ fn masquer_courriels(texte: &str) -> String {
     sortie
 }
 
-/// Identifiants de comptes Windows (SID « S-1-5-21-<machine>-<compte> ») : la partie propre à la machine devient
+/// Identifiants de comptes Windows (SID « `S-1-5-21-<machine>-<compte>` ») : la partie propre à la machine devient
 /// 0-0-0 ; le numéro du compte (500 : Administrateur, 1001 : premier compte…) reste, il aide à comprendre.
 fn masquer_sid(texte: &str) -> String {
     const DEBUT: &str = "S-1-5-21-";
@@ -536,7 +536,7 @@ fn entre_guillemets(ligne: &str, ouvrant: &str, fermant: &str, par: &str) -> Str
     sortie
 }
 
-/// Noms d'appareils du réseau local (« iPhone-de-Zoé.local », « nas.lan ») : le nom devient « <appareil> ».
+/// Noms d'appareils du réseau local (« iPhone-de-Zoé.local », « nas.lan ») : le nom devient « `<appareil>` ».
 fn masquer_noms_locaux(texte: &str) -> String {
     const SUFFIXES: [&str; 5] = [".home.arpa", ".internal", ".local", ".home", ".lan"];
     let nom = |c: char| c.is_alphanumeric() || "-_.".contains(c);
@@ -793,7 +793,7 @@ fn ipv4_commune(ip: Ipv4Addr) -> bool {
 }
 
 /// La commande lancée, pour le journal : le surnom donné par « vanguard nommer » nomme souvent quelqu'un
-/// (« tablette de Zoé ») ; il ne reste que « <surnom> ».
+/// (« tablette de Zoé ») ; il ne reste que « `<surnom>` ».
 fn commande_anonyme(args: &[String]) -> String {
     let mut args = args.to_vec();
     if let Some(k) = args.iter().position(|a| a == "nommer" || a == "name")

@@ -5,14 +5,14 @@
 //! L'élévation, dans cet ordre : pkexec (Linux, s'il y a une session graphique : la fenêtre de l'agent polkit ; sans
 //! agent, pkexec rend 127 et le suivant est essayé), run0 (Linux, systemd 256 et plus : son propre agent dans le
 //! terminal), sudo (dans le terminal ; use_pty, la règle par défaut depuis sudo 1.9.14, passe nos tubes tels quels),
-//! sinon c'est dit et rien n'est fait. Le programme lancé est, sous Linux, /proc/<pid>/exe de ce Vanguard : ce lien
+//! sinon c'est dit et rien n'est fait. Le programme lancé est, sous Linux, `/proc/<pid>/exe` de ce Vanguard : ce lien
 //! désigne l'image qui tourne, même si le fichier est remplacé entre-temps (sudo et run0 l'exécutent tel quel).
 //! pkexec, lui, le résout en chemin réel avant de l'exécuter (realpath dans pkexec.c), et macOS n'a pas de /proc :
 //! par chemin, seulement un programme que le compte ne peut pas remplacer (à root, dossiers compris) ; sinon pkexec
 //! est sauté (run0 ou sudo prennent la suite), et sous macOS c'est dit.
 //!
 //! Pendant le dialogue, le parent n'est plus « dumpable » : un autre processus du compte ne peut ni ouvrir ses tubes
-//! par /proc/<pid>/fd ni s'y attacher, donc ni glisser une autre liste au fils, ni répondre à sa place.
+//! par `/proc/<pid>/fd` ni s'y attacher, donc ni glisser une autre liste au fils, ni répondre à sa place.
 //!
 //! Le canal : l'entrée et la sortie standard du fils, deux tubes que seul ce processus tient (pkexec, run0 et sudo
 //! les passent tels quels). Le fils dit d'abord qu'il est prêt (il tourne en root), lit la liste jusqu'à « fin »,
@@ -101,7 +101,7 @@ fn methodes(graphique: bool, terminal: bool, existe: impl Fn(&str) -> bool) -> V
 
 /// Le programme et tous ses dossiers appartiennent-ils à root, sans écriture pour le groupe ni les autres ? Alors
 /// personne d'autre que root ne peut le remplacer entre l'accord et son lancement par chemin (macOS, ou pkexec qui
-/// résout /proc/<pid>/exe en chemin réel avant de l'exécuter). Un programme dans un dossier du compte
+/// résout `/proc/<pid>/exe` en chemin réel avant de l'exécuter). Un programme dans un dossier du compte
 /// (Téléchargements, la clé) ne l'est pas.
 fn chemin_sur(chemin: &std::path::Path) -> bool {
     use std::os::unix::fs::MetadataExt;

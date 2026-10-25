@@ -1746,7 +1746,7 @@ pub fn collecter(argument: Option<&Path>) -> Option<PathBuf> {
     Some(dossier)
 }
 
-/// « vanguard depanner traces [dossier] » : faux si le dossier n'a pas pu être créé.
+/// « vanguard depanner traces `[dossier]` » : faux si le dossier n'a pas pu être créé.
 pub fn commande(dossier: Option<&Path>) -> bool {
     collecter(dossier).is_some()
 }

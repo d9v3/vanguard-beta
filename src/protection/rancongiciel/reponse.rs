@@ -21,7 +21,7 @@ pub(crate) struct Cible {
     pub fichier: Option<PathBuf>,
     /// Ce qui l'a désigné, gardé avec le fichier en quarantaine.
     pub detection: String,
-    /// La clé stable « rancongiciel:<chemin> », qui relie l'alerte, la preuve et le geste.
+    /// La clé stable « `rancongiciel:<chemin>` », qui relie l'alerte, la preuve et le geste.
     pub cle: String,
 }
 

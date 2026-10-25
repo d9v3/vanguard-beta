@@ -343,8 +343,8 @@ fn profils(racine: &Path) -> Vec<PathBuf> {
     p
 }
 
-/// Les exceptions d'un cert_override.txt : une ligne par hôte, « hôte:port[:attributs]<tab>OID<tab>empreinte<tab>
-/// drapeaux<tab>clé » ; les lignes « # » sont des commentaires.
+/// Les exceptions d'un cert_override.txt : une ligne par hôte, « `hôte:port[:attributs]<tab>OID<tab>empreinte<tab>`
+/// `drapeaux<tab>clé` » ; les lignes « # » sont des commentaires.
 fn lire_exceptions(texte: &str) -> Vec<(String, u16, String)> {
     let mut liste = Vec::new();
     for ligne in texte.lines() {

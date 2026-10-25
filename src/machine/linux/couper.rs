@@ -1,4 +1,4 @@
-//! Couper les connexions déjà ouvertes vers une adresse, à la place de « ss -K dst <adresse> » : la liste des prises
+//! Couper les connexions déjà ouvertes vers une adresse, à la place de « ss -K dst `<adresse>` » : la liste des prises
 //! par sock_diag (SOCK_DIAG_BY_FAMILY), filtrée ici sur la destination, puis un SOCK_DESTROY par prise, avec son
 //! identifiant complet (ports, adresses, interface et témoin, pour ne jamais viser une autre prise venue entre-temps)
 //! et son accusé lu. Il faut CAP_NET_ADMIN et un noyau avec CONFIG_INET_DIAG_DESTROY : sinon, c'est dit (la

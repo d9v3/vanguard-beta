@@ -196,7 +196,7 @@ pub(crate) fn processus_nomme(nom: &str) -> bool {
     processus_nomme_sous(Path::new(RACINE), nom)
 }
 
-/// Le noyau coupe le nom court (/proc/<pid>/comm) à 15 octets : un nom plus long se compare coupé, sinon il ne
+/// Le noyau coupe le nom court (`/proc/<pid>/comm`) à 15 octets : un nom plus long se compare coupé, sinon il ne
 /// serait jamais trouvé.
 fn processus_nomme_sous(racine: &Path, nom: &str) -> bool {
     let mut fin = nom.len().min(15);
@@ -224,11 +224,11 @@ pub(crate) fn services_actifs(services: &[&str]) -> Option<Vec<bool>> {
     services_actifs_sous(Path::new(RACINE), services)
 }
 
-/// Un service tourne quand un processus est dans son groupe de contrôle, « /system.slice/<nom>.service », ce que
-/// /proc/<pid>/cgroup dit à tous les comptes. Le nom du processus ne suffit pas : n'importe quel compte peut
+/// Un service tourne quand un processus est dans son groupe de contrôle, « `/system.slice/<nom>.service` », ce que
+/// `/proc/<pid>/cgroup` dit à tous les comptes. Le nom du processus ne suffit pas : n'importe quel compte peut
 /// appeler un programme « nextdns », un tunnel cloudflared lancé à la main ou dans un conteneur n'est pas le DNS
 /// de la machine, ni le dnsmasq que libvirt ou NetworkManager lancent pour eux. Seul systemd, donc root, place
-/// un processus dans system.slice ; un conteneur est sous « /system.slice/docker-<id>.scope », la session sous
+/// un processus dans system.slice ; un conteneur est sous « `/system.slice/docker-<id>.scope` », la session sous
 /// user.slice. Le processus 1 doit se lire : sinon /proc cache les autres comptes et « aucun » serait faux.
 fn services_actifs_sous(racine: &Path, services: &[&str]) -> Option<Vec<bool>> {
     let proc = sous(racine, "/proc");
@@ -321,7 +321,7 @@ fn paquets_pacman_sous(racine: &Path) -> Option<Vec<(String, String)>> {
     Some(paquets)
 }
 
-/// Le dossier d'un paquet installé : seuls ceux qui commencent par « <nom>- » sont ouverts, puis le nom est vérifié
+/// Le dossier d'un paquet installé : seuls ceux qui commencent par « `<nom>-` » sont ouverts, puis le nom est vérifié
 /// dans « desc » (« linux-6.1-1 » commence aussi par « linux- » pour le paquet « linux-firmware »).
 fn dossier_pacman(racine: &Path, nom: &str) -> Option<(PathBuf, HashMap<String, Vec<String>>)> {
     let prefixe = format!("{nom}-");
@@ -559,7 +559,7 @@ fn flatpak_metadata_dans(installations: &[PathBuf], id: &str) -> Option<String> 
         .find_map(|i| lire_borne(&i.join("app").join(id).join("current/active/metadata"), 1 << 20))
 }
 
-/// Les clés d'une section d'un fichier INI comme metadata (« [Context] » : sockets=…;devices=…), dans l'ordre.
+/// Les clés d'une section d'un fichier INI comme metadata (« `[Context]` » : sockets=…;devices=…), dans l'ordre.
 pub(crate) fn section_ini<'a>(texte: &'a str, section: &str) -> Vec<(&'a str, &'a str)> {
     let entete = format!("[{section}]");
     let mut dedans = false;
@@ -594,7 +594,7 @@ pub(crate) fn snaps() -> Option<Vec<Snap>> {
     snaps_sous(Path::new(RACINE))
 }
 
-/// Les révisions viennent des fichiers /var/lib/snapd/snaps/<nom>_<révision>.snap : un nom de snap n'a jamais de
+/// Les révisions viennent des fichiers `/var/lib/snapd/snaps/<nom>_<révision>.snap` : un nom de snap n'a jamais de
 /// « _ » (lettres, chiffres et tirets), le dernier sépare donc la révision. Le lien « current » est dans /snap
 /// (ou /var/lib/snapd/snap sur Fedora et Arch, où /snap n'existe pas toujours).
 fn snaps_sous(racine: &Path) -> Option<Vec<Snap>> {
@@ -917,7 +917,7 @@ fn nom_du_groupe(gid: libc::gid_t) -> Option<String> {
 // ---------------------------------------------------------------------------------------------------------------
 // Constantes du système
 
-/// Les tics d'horloge par seconde (`getconf CLK_TCK`), l'unité des temps de /proc/<pid>/stat ; 100 s'il ne se lit
+/// Les tics d'horloge par seconde (`getconf CLK_TCK`), l'unité des temps de `/proc/<pid>/stat` ; 100 s'il ne se lit
 /// pas, la valeur de tous les noyaux courants.
 pub(crate) fn tics() -> u64 {
     // SAFETY : sysconf lit une constante du système, sans toucher à la mémoire du programme.
@@ -927,7 +927,7 @@ pub(crate) fn tics() -> u64 {
         .unwrap_or(100)
 }
 
-/// La taille d'une page de mémoire (`getconf PAGESIZE`), l'unité de /proc/<pid>/statm ; 4096 s'il ne se lit pas.
+/// La taille d'une page de mémoire (`getconf PAGESIZE`), l'unité de `/proc/<pid>/statm` ; 4096 s'il ne se lit pas.
 pub(crate) fn taille_page() -> u64 {
     // SAFETY : sysconf lit une constante du système, sans toucher à la mémoire du programme.
     u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })

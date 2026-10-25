@@ -112,7 +112,7 @@ pub(crate) fn conteneurs_sur(prise: &Path) -> Result<Vec<(String, Vec<String>)>,
 }
 
 /// Les images étiquetées (« dépôt:étiquette »), comme `docker image ls --format {{.Repository}}:{{.Tag}}` sans
-/// les « <none> ».
+/// les « `<none>` ».
 pub(crate) fn images_sur(prise: &Path) -> Result<Vec<String>, Echec> {
     let prefixe = version(prise)?;
     let liste = get_json(prise, &format!("{prefixe}/images/json"))?;

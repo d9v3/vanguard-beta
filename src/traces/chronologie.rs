@@ -731,7 +731,7 @@ pub(crate) fn quand_de_ligne<Tz: TimeZone>(ligne: &str, maintenant: chrono::Naiv
 }
 
 /// Une ligne d'un journal texte : l'événement de la chronologie qu'elle raconte, s'il en est un. Après la date,
-/// « hôte programme[pid]: message ». `maintenant` (heure locale) : l'année des dates qui n'en ont pas.
+/// « hôte `programme[pid]`: message ». `maintenant` (heure locale) : l'année des dates qui n'en ont pas.
 #[cfg(any(unix, test))]
 pub(crate) fn lire_ligne_journal<Tz: TimeZone>(
     ligne: &str,

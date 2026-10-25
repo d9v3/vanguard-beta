@@ -166,7 +166,7 @@ fn compter(avant: &str, apres: &str, d: &mut Decompte) {
 
 /// Une adresse web sans ce qui peut la rattacher à quelqu'un : la requête (« ?session=… ») et le fragment toujours
 /// retirés (jetons de session), le nom et le mot de passe (« alice:secret@ ») aussi, et l'hôte remplacé par
-/// « <site> » quand c'est un nom : un site visité dit qui on est. Une adresse IP reste pour `anonymiser`, qui masque
+/// « `<site>` » quand c'est un nom : un site visité dit qui on est. Une adresse IP reste pour `anonymiser`, qui masque
 /// les publiques et garde les locales (les mêmes chez tout le monde). La personne remet ce qu'il faut pour
 /// reproduire dans le fichier, après l'avoir vu.
 pub(crate) fn masquer_url(texte: &str) -> String {
@@ -250,7 +250,7 @@ fn dossier_personnel(chemin: &str, maisons: &[String]) -> Option<usize> {
 
 /// Un chemin de fichier tel qu'il entre dans le brouillon : les dossiers du système restent (`/usr/bin/curl`,
 /// `C:\Windows\System32\…`, qui aident à reproduire) ; sous un dossier personnel, ni les dossiers ni le nom ne
-/// restent (« ~/…/<fichier>.pdf »), seulement l'extension, qui dit la sorte de fichier.
+/// restent (« `~/…/<fichier>.pdf` »), seulement l'extension, qui dit la sorte de fichier.
 pub(crate) fn reduire_chemin(chemin: &str, maisons: &[String]) -> String {
     if dossier_personnel(chemin, maisons).is_none() {
         return chemin.to_string();
@@ -394,7 +394,7 @@ fn reduire_morceau(morceau: &str, maisons: &[String]) -> String {
 }
 
 /// Les comptes du système, qui ne nomment personne : gardés tels quels dans la preuve. Tout autre compte devient
-/// « <compte> » : `anonymiser` ne masque que celui de la personne, et le compte d'un proche sur le même ordinateur
+/// « `<compte>` » : `anonymiser` ne masque que celui de la personne, et le compte d'un proche sur le même ordinateur
 /// (« bob ») passait en clair.
 pub(crate) fn compte(nom: &str) -> String {
     const SYSTEME: &[&str] = &[

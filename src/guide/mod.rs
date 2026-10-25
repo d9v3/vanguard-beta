@@ -777,8 +777,8 @@ fn pages() -> Vec<Page> {
     pages
 }
 
-/// Ce que la recherche d'un menu trouve dans le guide : chaque système (« <cle>.3 »), chaque programme
-/// (« <cle>.3.1 » : Fedora, 1er programme) et chaque commande (« <cle>.3.1.2 »), ceux de cet ordinateur d'abord.
+/// Ce que la recherche d'un menu trouve dans le guide : chaque système (« `<cle>.3` »), chaque programme
+/// (« `<cle>.3.1` » : Fedora, 1er programme) et chaque commande (« `<cle>.3.1.2` »), ceux de cet ordinateur d'abord.
 /// `cle` : la touche du guide dans ce menu, vide dans le menu du guide lui-même (« 3.1.2 »).
 pub fn lignes_de_recherche(cle: &str) -> Vec<Ligne> {
     let guide = tr!("Guide", "Guide");
@@ -1442,7 +1442,7 @@ fn programmes_nommes(tape: &str) -> Vec<(Systeme, &'static Programme)> {
         .collect()
 }
 
-/// « vanguard guide [quoi] » : sans rien, le menu ; un système, toutes ses commandes ; un programme, les siennes ;
+/// « vanguard guide `[quoi]` » : sans rien, le menu ; un système, toutes ses commandes ; un programme, les siennes ;
 /// sinon, la recherche de ces mots.
 pub fn executer(quoi: &str, sommaire: bool) {
     let quoi = quoi.trim();

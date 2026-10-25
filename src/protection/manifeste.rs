@@ -125,7 +125,7 @@ const ANCIENNE_REFERENCE: &str = crate::sceau::MANIFESTE_CLE;
 /// Une référence par clé depuis la 0.60, nommée par l'identifiant du volume.
 const REFERENCES: &str = crate::sceau::MANIFESTES_CLE;
 
-/// Le dossier de Vanguard et le nom sous lequel le sceau connaît la référence `reference` (« manifestes-cle/<id>.json »
+/// Le dossier de Vanguard et le nom sous lequel le sceau connaît la référence `reference` (« `manifestes-cle/<id>.json` »
 /// ou l'ancienne, à la racine).
 fn emplacement(reference: &Path) -> (PathBuf, String) {
     let fichier = reference
@@ -1052,7 +1052,7 @@ fn programme() -> Option<PathBuf> {
 }
 
 /// « vanguard verifier-moi » : version, date, empreinte SHA-256, et le manifeste sur la clé du propriétaire ; après
-/// accord, l'historique signé des versions publiées. « vanguard verifier-moi <programme> » : une autre copie de
+/// accord, l'historique signé des versions publiées. « vanguard verifier-moi `<programme>` » : une autre copie de
 /// Vanguard (celle d'une autre clé, une version d'avant), par son empreinte et l'historique.
 pub fn verifier_moi(autre: Option<&Path>) {
     if let Some(copie) = autre {

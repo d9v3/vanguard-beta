@@ -478,7 +478,7 @@ fn valeur<'a>(lignes: &[(String, &'a str)], cle: &str) -> Option<&'a str> {
     lignes.iter().find(|(k, _)| k == cle).map(|(_, v)| *v)
 }
 
-/// Un fichier de wg-quick (/etc/wireguard/<nom>.conf) : une section [Peer] par pair, PresharedKey facultative.
+/// Un fichier de wg-quick (`/etc/wireguard/<nom>.conf`) : une section `[Peer]` par pair, PresharedKey facultative.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // fichiers lus sous Linux seulement
 pub(crate) fn pairs_wg_quick(texte: &str) -> Pairs {
     let mut p = Pairs::default();

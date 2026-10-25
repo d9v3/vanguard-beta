@@ -75,7 +75,7 @@ fn lire_empreinte(saisie: &str) -> Option<(Algo, String)> {
 }
 
 /// L'empreinte d'un fichier dans une liste d'empreintes : lignes « empreinte  nom », « empreinte *nom »,
-/// « SHA256 (nom) = empreinte », ou une empreinte seule si `seule_permise` (fichier « <nom>.sha256 » d'un seul
+/// « SHA256 (nom) = empreinte », ou une empreinte seule si `seule_permise` (fichier « `<nom>.sha256` » d'un seul
 /// fichier ; dans une liste commune, une empreinte sans nom peut être celle de n'importe quel fichier du dossier).
 fn chercher_dans_liste(texte: &str, nom: &str, seule_permise: bool) -> Option<(Algo, String)> {
     let lignes: Vec<&str> = texte

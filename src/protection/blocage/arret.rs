@@ -2,7 +2,7 @@
 //! élevé), sans shell ni kill externe. Entre le moment où le programme est relu et celui où le signal part, le
 //! numéro ne doit pas pouvoir passer à un autre programme :
 //! - Linux (noyau 5.3 et plus) : un pidfd ouvert d'abord (pidfd_open) désigne CE processus ; le programme est relu
-//!   (/proc/<pid>/exe), puis un signal 0 par le pidfd vérifie que le même processus vit encore (tant qu'il vit, même
+//!   (`/proc/<pid>/exe`), puis un signal 0 par le pidfd vérifie que le même processus vit encore (tant qu'il vit, même
 //!   zombie, son numéro ne peut pas être repris), et SIGKILL part par le même pidfd. Sa fin se lit sur le pidfd
 //!   (lisible à la mort). Noyau plus ancien : kill(2) juste après la relecture, la fenêtre de course reste, très courte.
 //! - macOS : pas de pidfd. L'heure de démarrage du processus (proc_pidinfo, PROC_PIDTBSDINFO) est lue avant et après
