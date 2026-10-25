@@ -128,7 +128,7 @@ A security flaw? No public issue or pull request: report it privately, see [SECU
 | `assets/banniere-blanche.png`, `assets/banniere-noire.png`, `assets/icones/`, `assets/vanguard.ico` | the banner (no background, one per GitHub theme) and the icon (the V), drawn cell by cell in the terminal banner's lettering by `outils/icone.py` |
 | `LICENCES-TIERCES.txt` | license notices of the included libraries (`outils/licences-tierces.py`) |
 | `src/commande.rs` | runs system commands with a maximum delay (`commande::lancer`), outputs read in the background: a tool that stops answering never freezes Vanguard |
-| `src/http.rs` | Vanguard's HTTPS requests (reqwest, instead of curl), bounded in size and time; an API key never goes through another program's command line |
+| `src/http.rs`, `src/http/envois.rs` | Vanguard's HTTPS requests (reqwest, instead of curl), bounded in size and time, to a closed list of hosts that the `envois` test compares with the threat model; an API key never goes through another program's command line |
 | `src/journal.rs` | error log, anonymized, on the key's VANGUARDLOG partition or in Vanguard's folder; brought back by `outils/deployer.sh` |
 | `src/diagnostic.rs` | computer diagnostic: hardware, system, recent errors and crashes; a text copy saved |
 | `src/fenetre.rs` | the terminal window sized to each menu, centered on the screen |

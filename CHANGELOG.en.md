@@ -39,6 +39,11 @@ delivered just before it. Only the latest version has its download page; every v
   package installed outside the official repositories, without asking (rule LNX-MAJ-006, and AUR updates when yay or
   paru is there). A new setting, Settings › AUR packages (13th, off by default), gives this consent; without it,
   nothing is sent and these packages are reported as not checked.
+- **Closed list of what leaves.** Vanguard now reaches over HTTPS only a closed list of sites, even at the end of a
+  redirect (only rdap.org may forward to a domain's registry, and on GitHub only the repositories read are allowed); the threat model names them all, with the direct
+  connections (DNS, STUN, blocklists) and what leaves towards each. A test fails if a destination written in the
+  code is missing from the page. The age of an examined link's domain is read again (rdap.org's redirect to the
+  registry was refused); the DNS check's made-up name no longer names Vanguard and no longer leaves offline.
 - **MITRE ATT&CK coverage map.** Rules cite the ATT&CK technique they detect (T…) or the mitigation they apply
   (M…) in their references, like CIS: 160 rules out of 206. A generated page,
   [COUVERTURE-ATTACK.en.md](COUVERTURE-ATTACK.en.md), sorts them by tactic (ATT&CK version 20) and shows the

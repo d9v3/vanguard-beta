@@ -129,7 +129,7 @@ Une faille de sécurité ? Pas de ticket ni de demande de fusion publics : signa
 | `assets/banniere-blanche.png`, `assets/banniere-noire.png`, `assets/icones/`, `assets/vanguard.ico` | la bannière (sans fond, une par thème de GitHub) et l'icône (le V), dessinées case par case dans l'écriture de la bannière du terminal par `outils/icone.py` |
 | `LICENCES-TIERCES.txt` | avis de licence des bibliothèques incluses (`outils/licences-tierces.py`) |
 | `src/commande.rs` | lancement des commandes du système avec un délai maximal (`commande::lancer`), sorties lues en fond : un outil qui ne répond plus ne fige jamais Vanguard |
-| `src/http.rs` | les demandes HTTPS de Vanguard (reqwest, à la place de curl), bornées en taille et en durée ; une clé d'API ne passe jamais par la ligne de commande d'un autre programme |
+| `src/http.rs`, `src/http/envois.rs` | les demandes HTTPS de Vanguard (reqwest, à la place de curl), bornées en taille et en durée, vers une liste fermée d'hôtes que le test `envois` compare au modèle de menace ; une clé d'API ne passe jamais par la ligne de commande d'un autre programme |
 | `src/journal.rs` | journal des erreurs, anonymisé, sur la partition VANGUARDLOG de la clé ou dans le dossier de Vanguard ; rapatrié par `outils/deployer.sh` |
 | `src/diagnostic.rs` | diagnostic de l'ordinateur : matériel, système, erreurs et plantages récents ; une copie texte enregistrée |
 | `src/fenetre.rs` | la fenêtre du terminal à la taille de chaque menu, centrée sur l'écran |

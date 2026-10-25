@@ -615,7 +615,8 @@ fn sans_blocage(s: &Serveurs) -> Option<Constat> {
     )
 }
 
-/// Un nom qui ne peut pas exister (16 chiffres hexadécimaux au hasard) : un DNS honnête répond « inconnu ».
+/// Un nom qui ne peut pas exister (16 chiffres hexadécimaux au hasard) : un DNS honnête répond « inconnu ». Rien n'y
+/// nomme Vanguard : le DNS du fournisseur voit passer chaque question.
 fn nom_inexistant() -> String {
     let graine = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -623,7 +624,7 @@ fn nom_inexistant() -> String {
             d.as_secs().wrapping_mul(1_000_000_007) ^ u64::from(d.subsec_nanos())
         })
         ^ u64::from(std::process::id());
-    format!("vanguard-{graine:016x}.com")
+    format!("x{graine:016x}.com")
 }
 
 /// Le DNS invente-t-il des réponses ? Il en donne une pour un site qui n'existe pas : fournisseur qui redirige les
@@ -648,7 +649,9 @@ fn reponse_inventee() -> Option<IpAddr> {
 pub fn dns() -> Vec<Constat> {
     // Le nom inventé se demande pendant la lecture des serveurs (un PowerShell sous Windows) : l'un n'attend plus
     // l'autre.
-    let inventee = std::thread::spawn(reponse_inventee);
+    // Hors ligne, rien ne part, même une question au DNS du fournisseur.
+    let hors_ligne = crate::parametres::hors_ligne();
+    let inventee = (!hors_ligne).then(|| std::thread::spawn(reponse_inventee));
     let mut constats = Vec::new();
     match serveurs() {
         Some(s) => {
@@ -662,7 +665,16 @@ pub fn dns() -> Vec<Constat> {
         )),
     }
     // Réponse pour un nom inexistant, sauf si le résolveur bloque en renvoyant 0.0.0.0 (listes de blocage).
-    if let Some(ip) = inventee.join().ok().flatten()
+    if hors_ligne {
+        constats.push(super::impossible(
+            CAT,
+            tr!(
+                "hors ligne : réponses inventées par le DNS non vérifiées",
+                "offline: answers invented by the DNS not checked"
+            ),
+        ));
+    }
+    if let Some(ip) = inventee.and_then(|f| f.join().ok()).flatten()
         && !ip.is_unspecified()
     {
         constats.push(alerte(
@@ -900,6 +912,10 @@ mod tests {
         );
         // Un service connu réglé à la main : un choix, pas un problème.
         assert_eq!(constat_serveurs(&s(vec![(ip("1.1.1.1"), true)])).probleme, None);
-        assert!(nom_inexistant().starts_with("vanguard-"));
+        let nom = nom_inexistant();
+        assert!(
+            nom.len() == 21 && nom.strip_suffix(".com").is_some() && !nom.contains("vanguard"),
+            "{nom}"
+        );
     }
 }

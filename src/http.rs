@@ -2,11 +2,119 @@
 //! distributions minimales et sur de vieux Windows), le même comportement partout, et une clé d'API qui ne passe
 //! jamais par la ligne de commande d'un autre programme, que la liste des processus montrerait.
 //!
+//! Les hôtes joignables forment une liste fermée (`HOTES`), la même que celle du modèle de menace.
+//!
 //! Chaque demande tourne sur son propre fil, avec son propre moteur tokio : elle s'appelle de la même façon depuis un
 //! code ordinaire ou depuis la surveillance, déjà asynchrone (reqwest refuse qu'un moteur en bloque un autre).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+/// Les seuls hôtes d'Internet que Vanguard joint en HTTPS : une adresse de départ ou une redirection vers un autre est
+/// refusée avant toute connexion, même construite par `format!`. La même liste est écrite dans MODELE-DE-MENACE.md
+/// (« Ce qui sort de l'ordinateur »), avec ce qui part vers chacun ; le test `envois` vérifie qu'elles ne divergent pas.
+const HOTES: &[&str] = &[
+    // Fuites de mots de passe et d'adresses courriel.
+    "api.pwnedpasswords.com",
+    "api.xposedornot.com",
+    "haveibeenpwned.com",
+    // Listes de menaces.
+    "feodotracker.abuse.ch",
+    "mb-api.abuse.ch",
+    "threatfox-api.abuse.ch",
+    "urlhaus-api.abuse.ch",
+    "raw.githubusercontent.com",
+    "www.cisa.gov",
+    "www.loldrivers.io",
+    // Dernières versions des logiciels et failles connues.
+    "armmf.adobe.com",
+    "aur.archlinux.org",
+    "clients.config.office.net",
+    "codeload.github.com",
+    "edgeupdates.microsoft.com",
+    "endoflife.date",
+    "formulae.brew.sh",
+    "product-details.mozilla.org",
+    "res.public.onecdn.static.microsoft",
+    "slack.com",
+    "versionhistory.googleapis.com",
+    "versions.brave.com",
+    // Mise à jour de Vanguard et pages tldr : GitHub renvoie ses téléchargements vers ses serveurs de fichiers.
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+    // Âge d'un domaine (voir `RDAP`).
+    "rdap.org",
+    // Débit de la connexion, adresse publique, HTTPS intercepté.
+    "1.1.1.1",
+    "speed.cloudflare.com",
+];
+
+/// rdap.org renvoie chaque domaine vers le registre de son extension (Verisign pour .com, l'ACEI pour .ca…), une
+/// liste qui change sans Vanguard : depuis lui seul, et pour un seul saut, une redirection peut mener à un hôte hors
+/// de `HOTES` (en HTTPS, sur le port habituel, sans nom de compte). Ce qui part est le même nom de domaine, déjà donné
+/// à rdap.org.
+const RDAP: &str = "rdap.org";
+
+/// Le saut de rdap.org vers un registre : le premier, en HTTPS, sur le port habituel, sans nom de compte.
+fn vers_un_registre(depart: Option<&str>, sauts: usize, adresse: &reqwest::Url) -> bool {
+    depart == Some(RDAP)
+        && sauts == 1
+        && adresse.scheme() == "https"
+        && adresse.port().is_none()
+        && adresse.username().is_empty()
+        && adresse.password().is_none()
+        // Un nom de registre, jamais une adresse IP (écrite entre crochets en IPv6).
+        && adresse
+            .host_str()
+            .is_some_and(|h| !h.starts_with('[') && h.parse::<std::net::IpAddr>().is_err())
+}
+
+/// Les hôtes de `HOTES` qui servent les fichiers de n'importe qui (GitHub) : seuls les dépôts lus par Vanguard y sont
+/// permis, pour que l'hôte seul ne laisse pas passer une demande vers le dépôt d'un autre.
+const CHEMINS: &[(&str, &[&str])] = &[
+    (
+        "github.com",
+        &["/d9v3/vanguard-update/releases/", "/tldr-pages/tldr/releases/"],
+    ),
+    ("raw.githubusercontent.com", &["/AssoEchap/stalkerware-indicators/"]),
+    ("codeload.github.com", &["/mozilla/foundation-security-advisories/"]),
+];
+
+/// Le chemin est-il permis sur cet hôte ? Toujours, sauf sur un hôte de `CHEMINS`. Le chemin est déjà ramené à sa
+/// forme simple (« .. » et « %2e » résolus) par la lecture de l'adresse.
+fn chemin_permis(hote: &str, chemin: &str) -> bool {
+    CHEMINS
+        .iter()
+        .find(|(h, _)| *h == hote)
+        .is_none_or(|(_, prefixes)| prefixes.iter().any(|p| chemin.starts_with(p)))
+}
+
+/// L'adresse est-elle permise ? HTTPS vers un hôte de `HOTES` (et un chemin de `CHEMINS`), sur le port habituel et
+/// sans nom de compte ; en clair, seulement vers cette machine, dans les tests.
+fn permise(adresse: &reqwest::Url) -> bool {
+    if !adresse.username().is_empty() || adresse.password().is_some() {
+        return false;
+    }
+    match adresse.scheme() {
+        // Une adresse IPv6 s'écrit entre crochets dans l'adresse, sans eux dans `HOTES`.
+        "https" => {
+            adresse.port().is_none()
+                && adresse
+                    .host_str()
+                    .map(|h| h.trim_start_matches('[').trim_end_matches(']'))
+                    .is_some_and(|h| HOTES.contains(&h) && chemin_permis(h, adresse.path()))
+        }
+        // Le petit serveur local des tests ; jamais dans le programme livré.
+        "http" => cfg!(test) && adresse.host_str() == Some("127.0.0.1"),
+        _ => false,
+    }
+}
+
+/// `adresse` lue, si elle est permise (voir `permise`).
+fn lire_permise(adresse: &str) -> Option<reqwest::Url> {
+    reqwest::Url::parse(adresse).ok().filter(permise)
+}
 
 /// Le nom donné aux services : certains refusent une demande sans nom (Have I Been Pwned l'exige).
 const AGENT: &str = "vanguard";
@@ -20,7 +128,7 @@ pub(crate) struct Demande<'a> {
     /// Au-delà, la réponse est abandonnée (`None`) : une archive ne doit pas remplir le disque.
     pub taille_max: u64,
     /// Jamais de redirection vers un autre hôte, même sans en-tête : l'adresse porte un secret (la clé d'abuse.ch dans
-    /// le chemin de ses exports). Toujours le cas avec des en-têtes.
+    /// le chemin de ses exports). Toujours le cas avec un en-tête autre que « Accept ».
     pub meme_hote: bool,
 }
 
@@ -83,8 +191,10 @@ fn fournisseur() {
 fn client(delai: Duration, meme_hote: bool, certificat: bool) -> Option<reqwest::Client> {
     fournisseur();
     let redirections = reqwest::redirect::Policy::custom(move |essai| {
-        let autre_hote = essai.previous().first().and_then(|u| u.host_str()) != essai.url().host_str();
-        if essai.previous().len() >= 10 || essai.url().scheme() != "https" || (meme_hote && autre_hote) {
+        let depart = essai.previous().first().and_then(|u| u.host_str());
+        let autre_hote = depart != essai.url().host_str();
+        let hors_liste = !permise(essai.url()) && !vers_un_registre(depart, essai.previous().len(), essai.url());
+        if essai.previous().len() >= 10 || essai.url().scheme() != "https" || hors_liste || (meme_hote && autre_hote) {
             essai.stop()
         } else {
             essai.follow()
@@ -101,8 +211,8 @@ fn client(delai: Duration, meme_hote: bool, certificat: bool) -> Option<reqwest:
         .ok()
 }
 
-/// Envoie la demande et reçoit la réponse entière. `None` : pas de réponse (hors ligne, délai dépassé, certificat
-/// refusé) ou réponse trop grosse.
+/// Envoie la demande et reçoit la réponse entière. `None` : adresse hors de `HOTES`, pas de réponse (hors ligne, délai
+/// dépassé, certificat refusé) ou réponse trop grosse.
 pub(crate) fn envoyer(demande: Demande) -> Option<Reponse> {
     let Demande {
         adresse,
@@ -112,17 +222,18 @@ pub(crate) fn envoyer(demande: Demande) -> Option<Reponse> {
         taille_max,
         meme_hote,
     } = demande;
-    // HTTPS seulement, dès l'adresse de départ ; en clair, seulement vers cette machine (les tests).
-    if !(adresse.starts_with("https://") || adresse.starts_with("http://127.0.0.1:")) {
-        return None;
-    }
-    let adresse = adresse.to_string();
+    // HTTPS seulement, vers un hôte de la liste, dès l'adresse de départ ; en clair, seulement vers cette machine (les
+    // tests).
+    let adresse = lire_permise(adresse)?;
     let entetes: Vec<(String, String)> = entetes.into_iter().map(|(n, v)| (n.to_string(), v)).collect();
     a_part(async move {
-        let client = client(delai, meme_hote || !entetes.is_empty(), false)?;
+        // Un en-tête peut porter un secret (une clé d'API), que reqwest garderait sur un autre hôte ; « Accept » n'en
+        // porte jamais, et rdap.org doit pouvoir renvoyer au registre une demande qui le porte.
+        let secret = entetes.iter().any(|(n, _)| !n.eq_ignore_ascii_case("accept"));
+        let client = client(delai, meme_hote || secret, false)?;
         let mut requete = match corps {
-            Some(corps) => client.post(&adresse).body(corps),
-            None => client.get(&adresse),
+            Some(corps) => client.post(adresse).body(corps),
+            None => client.get(adresse),
         };
         for (nom, valeur) in &entetes {
             requete = requete.header(nom.as_str(), valeur.as_str());
@@ -161,7 +272,8 @@ pub(crate) enum Refus {
     /// La connexion a été refusée à cause du certificat présenté (autorité inconnue du système, nom qui ne
     /// correspond pas, certificat expiré) : le texte de l'erreur, tel que le vérificateur l'a dit.
     Certificat(String),
-    /// Pas de réponse : hors ligne, délai, adresse qui n'est pas en HTTPS, ou réponse sans certificat.
+    /// Pas de réponse : hors ligne, délai, adresse qui n'est pas en HTTPS ou hors de `HOTES`, ou réponse sans
+    /// certificat.
     Reseau,
 }
 
@@ -189,13 +301,12 @@ fn cause_certificat(erreur: &reqwest::Error) -> Option<String> {
 /// du site demandé) et rend le certificat que le serveur a présenté, accepté par le vérificateur du système, avec
 /// le code de sa réponse ; le corps n'est pas lu. `Err(Refus::Certificat)` : le système l'a refusé.
 pub(crate) fn certificat_presente(adresse: &str, delai: Duration) -> Result<Presente, Refus> {
-    if !adresse.starts_with("https://") {
+    let Some(adresse) = lire_permise(adresse).filter(|a| a.scheme() == "https") else {
         return Err(Refus::Reseau);
-    }
-    let adresse = adresse.to_string();
+    };
     a_part(async move {
         let client = client(delai, true, true)?;
-        let reponse = match client.get(&adresse).send().await {
+        let reponse = match client.get(adresse).send().await {
             Ok(r) => r,
             Err(e) => return Some(Err(cause_certificat(&e).map_or(Refus::Reseau, Refus::Certificat))),
         };
@@ -217,6 +328,9 @@ pub(crate) fn certificat_presente(adresse: &str, delai: Duration) -> Result<Pres
 /// la réponse, `fin` ou `arret`. `false` : rien n'est arrivé.
 pub(crate) fn recevoir_en_comptant(adresse: &str, fin: Instant, octets: &AtomicU64, arret: &AtomicBool) -> bool {
     let reste = fin.saturating_duration_since(Instant::now());
+    let Some(adresse) = lire_permise(adresse) else {
+        return false;
+    };
     if reste.is_zero() {
         return false;
     }
@@ -227,7 +341,7 @@ pub(crate) fn recevoir_en_comptant(adresse: &str, fin: Instant, octets: &AtomicU
                 .build()
                 .ok()?;
             let resultat = moteur.block_on(async {
-                let mut reponse = client(reste, false, false)?.get(adresse).send().await.ok()?;
+                let mut reponse = client(reste, false, false)?.get(adresse.clone()).send().await.ok()?;
                 let mut recus = 0u64;
                 while Instant::now() < fin && !arret.load(Ordering::Relaxed) {
                     let Ok(Some(morceau)) = reponse.chunk().await else {
@@ -249,13 +363,16 @@ pub(crate) fn recevoir_en_comptant(adresse: &str, fin: Instant, octets: &AtomicU
 }
 
 #[cfg(test)]
+mod envois;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{Read, Write};
 
     /// Un petit serveur HTTP local (sans Internet, comme le veut la vérification hors ligne) : il répond `reponse` à
     /// la première demande et rend ce qu'il a reçu.
-    fn serveur(reponse: &'static [u8]) -> (String, std::thread::JoinHandle<String>) {
+    pub(super) fn serveur(reponse: &'static [u8]) -> (String, std::thread::JoinHandle<String>) {
         let ecoute = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let adresse = format!("http://{}/", ecoute.local_addr().unwrap());
         let fil = std::thread::spawn(move || {

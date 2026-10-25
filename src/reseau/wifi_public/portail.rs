@@ -69,13 +69,20 @@ pub(crate) fn adresse() -> Option<String> {
 pub(crate) fn ouvrir_et_attendre(fin: Option<std::time::Instant>) -> bool {
     match adresse() {
         Some(url) => {
+            // L'adresse est montrée avant l'accord : sous Linux, elle vient de la configuration de NetworkManager.
+            trp!(
+                "  {}Page de la sonde du système : {url}{}",
+                "  {}System probe page: {url}{}",
+                GRIS,
+                RESET
+            );
             if demander(tr!(
                 "  Ouvrir la page de connexion du réseau dans le navigateur ? [o/N] : ",
                 "  Open the network's login page in the browser? [y/N]: "
             ))
             .oui()
             {
-                trp!("  {}Page ouverte : {url}{}", "  {}Page opened: {url}{}", GRIS, RESET);
+                trp!("  {}Page ouverte.{}", "  {}Page opened.{}", GRIS, RESET);
                 crate::machine::ouvrir(&url);
             }
         }

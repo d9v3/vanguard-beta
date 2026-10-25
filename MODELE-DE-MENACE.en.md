@@ -94,3 +94,57 @@ itself:
 - **In public Wi-Fi mode**: DNS queries, to CIRA's Canadian Shield.
 - **The update check**: a request to GitHub.
 - A vulnerability report prepared by Vanguard is never sent by it: the person reads it and sends it themselves.
+
+This list is closed: Vanguard refuses to reach over HTTPS a host that is not in the first table (even at the end of
+a redirect), and a test in the repository fails if the code names a destination missing from these tables, or if a
+table names one the code no longer reaches. A proxy set in the system receives Vanguard's HTTPS connections (the
+encryption stays end to end up to the site); the public address judged by the blocklists is then that of its exit.
+
+### Sites reached over HTTPS
+
+| Site | What for | What leaves |
+|---|---|---|
+| `api.pwnedpasswords.com` | Checked password | 5 characters of its hash |
+| `haveibeenpwned.com`, `api.xposedornot.com` | Leaks of an email address, after consent (the first with a key) | The email address; the Have I Been Pwned key |
+| `mb-api.abuse.ch`, `threatfox-api.abuse.ch`, `urlhaus-api.abuse.ch` | MalwareBazaar, ThreatFox and URLhaus lists | The abuse.ch key |
+| `feodotracker.abuse.ch` | Botnet servers | Nothing |
+| `raw.githubusercontent.com` | Stalkerware indicators (Échap) | Nothing |
+| `www.cisa.gov` | Exploited vulnerabilities (KEV) | Nothing |
+| `www.loldrivers.io` | Vulnerable drivers | Nothing |
+| `armmf.adobe.com`, `clients.config.office.net`, `edgeupdates.microsoft.com`, `res.public.onecdn.static.microsoft`, `product-details.mozilla.org`, `versionhistory.googleapis.com`, `versions.brave.com`, `slack.com`, `formulae.brew.sh`, `endoflife.date`, `codeload.github.com` | Latest software versions and security advisories, whole lists | Nothing |
+| `aur.archlinux.org` | AUR packages, after consent | The names of the packages installed outside the official repositories |
+| `github.com`, `release-assets.githubusercontent.com`, `objects.githubusercontent.com` | Vanguard update, tldr help pages | Nothing |
+| `rdap.org` | Age of an examined link's domain, after consent | The domain name; rdap.org forwards the request to the domain's registry (a single hop, over HTTPS), the only redirect allowed outside this table |
+| `1.1.1.1` | Public Internet address (blocklists), presented certificate (intercepted HTTPS) | Nothing |
+| `speed.cloudflare.com` | Connection speed, on request | Bytes without content, received then sent: about 500 MB at most each way |
+
+### Direct connections
+
+| Destination | What for | What leaves |
+|---|---|---|
+| `1.1.1.1`, `1.0.0.1`, `2606:4700:4700::1111`, `2606:4700:4700::1001` (Cloudflare), `9.9.9.9`, `149.112.112.112`, `2620:fe::fe`, `2620:fe::9` (Quad9), `8.8.8.8`, `8.8.4.4`, `2001:4860:4860::8888`, `2001:4860:4860::8844` (Google), `94.140.14.14`, `94.140.15.15`, `2a10:50c0::ad1:ff`, `2a10:50c0::ad2:ff` (AdGuard), `149.112.121.20`, `149.112.122.20`, `2620:10a:80bb::20`, `2620:10a:80bc::20` (Canadian Shield) | Fastest DNS (DNS questions); DNS audit and “No Internet” (Cloudflare, Quad9, Google): does a TCP 443 connection open? connection quality and post-quantum probe to `1.1.1.1` | Common names, the same for everyone; the public Internet address, as to any site |
+| `www.amazon.com`, `www.apple.com`, `www.google.com`, `www.microsoft.com`, `www.wikipedia.org`, `www.youtube.com`, `www.example.com` | Names asked to measure or check DNS | The name, to the DNS |
+| `one.one.one.one`, `dns.google`, `dns.quad9.net`, `internetsociety.org`, `dnssec-failed.org` | DNS audit: known answers, DNSSEC | The name, to the DNS in use |
+| `stun.cloudflare.com`, `stun.l.google.com`, `stun1.l.google.com` | NAT type, and address seen from the Internet at each full network audit (never offline) | The public Internet address and port, as to any site |
+| `zen.spamhaus.org`, `bl.spamcop.net`, `dnsbl.dronebl.org`, `psbl.surriel.com` | Address blocklists, after consent | The public Internet address, in a DNS question |
+| `dbl.spamhaus.org`, `multi.surbl.org`, `dbltest.com`, `test.surbl.org` | Domain blocklists, for an examined link, after consent (and their test name) | The domain name, in a DNS question |
+
+The check also asks the system DNS for a random name under .com, which does not name Vanguard (does the DNS
+invent answers?), except offline. The names of the sites in these tables go through the system DNS, as for any
+program; in public Wi-Fi mode (and after consent in “Fastest DNS”), that DNS becomes the Canadian Shield or the
+chosen DNS, for the whole computer. The list of outgoing connections asks that DNS for the reverse name of each
+remote address. The other direct connections stay on the local network: the router (UPnP, SSH and HTTPS probes), printers, cameras,
+the device scan, LLMNR and mDNS.
+
+### Programs run by Vanguard
+
+During the check, without separate consent, Vanguard asks the system's tools for pending updates, and they query
+their repositories: checkupdates, dnf, apt, zypper, flatpak, snap, fwupdmgr (firmware, LVFS), softwareupdate and mas
+(Apple); yay or paru only with the AUR consent. On request or after consent, it runs programs that reach their own
+servers: the package manager (pacman, apt, dnf, winget), flatpak (`dl.flathub.org`), Homebrew and its installer
+(`brew.sh`, script fetched from raw.githubusercontent.com), freshclam for ClamAV, the Defender signature update, trivy
+for containers (its vulnerability database), the Rosetta installation; nmap only queries devices on the local
+network. A page opened in the browser after consent (“Report” pages, public Wi-Fi portal: the system probe's address,
+NetworkManager's on Linux, shown first) is reached by the browser. An extension added by the person has the
+computer's network, unless run isolated (Linux, macOS). These destinations depend on those programs, not on
+Vanguard.

@@ -95,3 +95,58 @@ envoie lui-même :
 - **En mode Wi-Fi public** : les requêtes DNS, au Bouclier canadien de l'ACEI.
 - **La recherche de mise à jour** : une demande à GitHub.
 - Un rapport de faille préparé par Vanguard n'est jamais envoyé par lui : la personne le relit et l'envoie elle-même.
+
+Cette liste est fermée : Vanguard refuse de joindre en HTTPS un hôte qui n'est pas dans le premier tableau (même au
+bout d'une redirection), et un test du dépôt échoue si le code nomme une destination absente de ces tableaux, ou si
+un tableau en nomme une que le code ne joint plus. Un proxy réglé dans le système reçoit les connexions HTTPS de
+Vanguard (le chiffrement reste de bout en bout jusqu'au site) ; l'adresse publique jugée par les listes noires est
+alors celle de sa sortie.
+
+### Sites joints en HTTPS
+
+| Site | Pour quoi | Ce qui part |
+|---|---|---|
+| `api.pwnedpasswords.com` | Mot de passe vérifié | 5 caractères de son empreinte |
+| `haveibeenpwned.com`, `api.xposedornot.com` | Fuites d'une adresse courriel, après accord (le premier avec une clé) | L'adresse courriel ; la clé de Have I Been Pwned |
+| `mb-api.abuse.ch`, `threatfox-api.abuse.ch`, `urlhaus-api.abuse.ch` | Listes de MalwareBazaar, ThreatFox et URLhaus | La clé abuse.ch |
+| `feodotracker.abuse.ch` | Serveurs de botnets | Rien |
+| `raw.githubusercontent.com` | Indicateurs de logiciels espions (Échap) | Rien |
+| `www.cisa.gov` | Failles exploitées (KEV) | Rien |
+| `www.loldrivers.io` | Pilotes vulnérables | Rien |
+| `armmf.adobe.com`, `clients.config.office.net`, `edgeupdates.microsoft.com`, `res.public.onecdn.static.microsoft`, `product-details.mozilla.org`, `versionhistory.googleapis.com`, `versions.brave.com`, `slack.com`, `formulae.brew.sh`, `endoflife.date`, `codeload.github.com` | Dernières versions des logiciels et avis de sécurité, listes entières | Rien |
+| `aur.archlinux.org` | Paquets de l'AUR, après accord | Le nom des paquets installés hors des dépôts officiels |
+| `github.com`, `release-assets.githubusercontent.com`, `objects.githubusercontent.com` | Mise à jour de Vanguard, pages d'aide tldr | Rien |
+| `rdap.org` | Âge du domaine d'un lien examiné, après accord | Le nom de domaine ; rdap.org renvoie la demande au registre du domaine (un seul saut, en HTTPS), seule redirection permise hors de ce tableau |
+| `1.1.1.1` | Adresse Internet publique (listes noires), certificat présenté (HTTPS intercepté) | Rien |
+| `speed.cloudflare.com` | Débit de la connexion, sur demande | Des octets sans contenu, reçus puis envoyés : environ 500 Mo au plus dans chaque sens |
+
+### Connexions directes
+
+| Destination | Pour quoi | Ce qui part |
+|---|---|---|
+| `1.1.1.1`, `1.0.0.1`, `2606:4700:4700::1111`, `2606:4700:4700::1001` (Cloudflare), `9.9.9.9`, `149.112.112.112`, `2620:fe::fe`, `2620:fe::9` (Quad9), `8.8.8.8`, `8.8.4.4`, `2001:4860:4860::8888`, `2001:4860:4860::8844` (Google), `94.140.14.14`, `94.140.15.15`, `2a10:50c0::ad1:ff`, `2a10:50c0::ad2:ff` (AdGuard), `149.112.121.20`, `149.112.122.20`, `2620:10a:80bb::20`, `2620:10a:80bc::20` (Bouclier canadien) | DNS le plus rapide (questions DNS) ; audit DNS et « Pas d'Internet » (Cloudflare, Quad9, Google) : la connexion s'établit-elle, en TCP 443 ? qualité de la connexion et sonde post-quantique vers `1.1.1.1` | Des noms courants, les mêmes pour tous ; l'adresse Internet publique, comme à tout site |
+| `www.amazon.com`, `www.apple.com`, `www.google.com`, `www.microsoft.com`, `www.wikipedia.org`, `www.youtube.com`, `www.example.com` | Noms demandés pour mesurer ou vérifier le DNS | Le nom, au DNS |
+| `one.one.one.one`, `dns.google`, `dns.quad9.net`, `internetsociety.org`, `dnssec-failed.org` | Audit DNS : réponses connues, DNSSEC | Le nom, au DNS utilisé |
+| `stun.cloudflare.com`, `stun.l.google.com`, `stun1.l.google.com` | Type de NAT, et adresse vue d'Internet à chaque audit complet du réseau (jamais hors ligne) | L'adresse Internet publique et le port, comme à tout site |
+| `zen.spamhaus.org`, `bl.spamcop.net`, `dnsbl.dronebl.org`, `psbl.surriel.com` | Listes noires d'adresses, après accord | L'adresse Internet publique, dans une question DNS |
+| `dbl.spamhaus.org`, `multi.surbl.org`, `dbltest.com`, `test.surbl.org` | Listes noires de domaines, pour un lien examiné, après accord (et leur nom de test) | Le nom de domaine, dans une question DNS |
+
+Le bilan demande aussi au DNS du système un nom tiré au hasard sous .com, qui ne nomme pas Vanguard (le DNS
+invente-t-il des réponses ?), sauf hors ligne. Les noms des sites de ces tableaux passent par le DNS du système,
+comme pour tout programme ; en mode Wi-Fi public (et après accord dans « DNS le plus rapide »), ce DNS devient le
+Bouclier canadien ou le DNS choisi, pour tout l'ordinateur. La liste des connexions sortantes demande à ce DNS le
+nom inverse de chaque adresse distante. Le reste des connexions directes reste sur le réseau local : la box (UPnP, sondes SSH et HTTPS), les imprimantes,
+les caméras, le balayage des appareils, LLMNR et mDNS.
+
+### Programmes lancés par Vanguard
+
+Pendant le bilan, sans accord à part, Vanguard demande les mises à jour en attente aux outils du système, qui
+interrogent leurs dépôts : checkupdates, dnf, apt, zypper, flatpak, snap, fwupdmgr (micrologiciels, LVFS),
+softwareupdate et mas (Apple) ; yay ou paru seulement avec l'accord pour l'AUR. Sur demande ou après accord, il lance
+des programmes qui joignent leurs propres serveurs : le gestionnaire de paquets (pacman, apt, dnf, winget), flatpak
+(`dl.flathub.org`), Homebrew et son installation (`brew.sh`, script tiré de raw.githubusercontent.com), freshclam
+pour ClamAV, la mise à jour des signatures de Defender, trivy pour les conteneurs (sa base de failles), l'installation
+de Rosetta ; nmap, lui, n'interroge que les appareils du réseau local. Une page ouverte dans le navigateur après
+accord (pages de « Signaler », portail du Wi-Fi public : l'adresse de la sonde du système, celle de NetworkManager
+sous Linux, montrée avant) est jointe par le navigateur. Une extension ajoutée par la personne a le réseau de
+l'ordinateur, sauf lancée isolée (Linux, macOS). Ces destinations dépendent de ces programmes, pas de Vanguard.

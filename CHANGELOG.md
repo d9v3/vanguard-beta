@@ -39,6 +39,11 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   nom de chaque paquet installé hors des dépôts officiels, sans le demander (règle LNX-MAJ-006, et les mises à jour de
   l'AUR quand yay ou paru est là). Un nouveau réglage, Paramètres › Paquets de l'AUR (13ᵉ, coupé par défaut), donne
   cet accord ; sans lui, rien n'est envoyé et ces paquets sont dits non vérifiés.
+- **Liste fermée de ce qui sort.** Vanguard ne joint plus en HTTPS qu'une liste fermée de sites, même au bout d'une
+  redirection (seul rdap.org peut renvoyer au registre d'un domaine, et sur GitHub seuls les dépôts lus sont permis) ; le modèle de menace les nomme tous, avec les
+  connexions directes (DNS, STUN, listes noires) et ce qui part vers chacun. Un test échoue si une destination écrite
+  dans le code manque à la page. L'âge du domaine d'un lien examiné se lit de nouveau (la redirection de rdap.org
+  vers le registre était refusée) ; le nom inventé du bilan DNS ne nomme plus Vanguard et ne part plus hors ligne.
 - **Carte de couverture MITRE ATT&CK.** Les règles citent la technique d'ATT&CK qu'elles détectent (T…) ou la
   mesure d'atténuation qu'elles appliquent (M…) dans leurs références, comme le CIS : 160 règles sur 206. Une page
   générée, [COUVERTURE-ATTACK.md](COUVERTURE-ATTACK.md), les range par tactique (version 20 d'ATT&CK) et montre les
