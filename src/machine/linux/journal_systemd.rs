@@ -1175,7 +1175,11 @@ mod tests {
                 .filter(|l| l.as_bytes().first().is_some_and(u8::is_ascii_digit))
                 .collect()
         };
-        let natives = entrees(&natives);
+        // journalctl affiche une tabulation du message en 8 espaces (gamemoded en écrit) ; Vanguard la garde.
+        let natives: Vec<String> = entrees(&natives)
+            .into_iter()
+            .map(|l| l.replace('\t', "        "))
+            .collect();
         let outil = entrees(&sortie.sortie.lines().map(String::from).collect::<Vec<_>>());
         // Les 10 dernières secondes avant le départ peuvent différer (des entrées écrites entre les deux lectures).
         let limite = chrono::DateTime::from_timestamp(i64::try_from((depart - 10_000_000) / 1_000_000).unwrap(), 0)
