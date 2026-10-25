@@ -75,17 +75,9 @@ impl Echec {
                 "unreadable answer (format changed, or a Wi-Fi portal page?)"
             )
             .into(),
-            // Les mots restent neutres : ce variant sert à toutes les sources du cache (CISA, GitHub, abuse.ch…).
-            Echec::CopieRefusee(refus, Some(code)) => trf!(
-                "copie gardée refusée ({}), et la redemande a reçu la réponse {code}",
-                "kept copy refused ({}), and asking again got answer {code}",
-                refus.raison()
-            ),
-            Echec::CopieRefusee(refus, None) => trf!(
-                "copie gardée refusée ({}), et la redemande est restée sans réponse (pas d'Internet ?)",
-                "kept copy refused ({}), and asking again got no answer (no Internet?)",
-                refus.raison()
-            ),
+            // Les mots restent neutres : ces variants servent à toutes les sources du cache (CISA, GitHub, abuse.ch…).
+            Echec::HorsLigne => crate::parametres::raison_hors_ligne().to_string(),
+            Echec::CopieRefusee(refus, redemande) => crate::socle::cache::texte_copie_refusee(refus, redemande),
         }
     }
 }
@@ -97,16 +89,17 @@ impl Echec {
 pub(crate) type Export = ((Vec<u8>, Duration), Option<Echec>);
 
 /// Un export d'abuse.ch, avec la clé de la personne : `fichier` (son nom chez abuse.ch) gardé dans `lieu`
-/// (sous-dossier, nom), comme `liste`. Sans clé, rien n'est demandé. Le rafraîchissement manqué ne se lit ici que
-/// par l'âge de la copie : `export_et_manque` le dit aussi.
+/// (sous-dossier, nom), comme `liste`. Sans clé, rien n'est demandé. Seule une réponse que `valide` accepte remplace
+/// la copie gardée (une page de portail reçue avec un 200 la remplaçait, et la liste restait illisible des heures).
+/// Le rafraîchissement manqué ne se lit ici que par l'âge de la copie : `export_et_manque` le dit aussi.
 pub(crate) fn export(
     service: Service,
     fichier: &str,
     lieu: (&str, &str),
-    fraiche: Duration,
-    delai: Duration,
+    (fraiche, delai): (Duration, Duration),
+    valide: fn(&[u8]) -> bool,
 ) -> Result<(Vec<u8>, Duration), Echec> {
-    export_et_manque(service, fichier, lieu, fraiche, delai, |_| true).map(|(copie, _)| copie)
+    export_et_manque(service, fichier, lieu, fraiche, delai, valide).map(|(copie, _)| copie)
 }
 
 /// `export`, avec la raison d'un rafraîchissement manqué quand la copie d'avant sert : pour une liste sans limite
@@ -220,7 +213,13 @@ fn enregistrer_dans(chemin: &Path, cle: &str) -> std::io::Result<()> {
 fn oublier_de(chemin: &Path) {
     let _ = std::fs::remove_file(chemin);
     if let Some(dossier) = chemin.parent() {
-        let _ = std::fs::remove_file(dossier.join(FICHIER_API));
+        // La réponse de l'API part avec son sceau (`socle::cache::oublier`) : effacée seule, elle se lirait effacée
+        // hors de Vanguard. Ailleurs que dans le dossier de Vanguard (les tests), le fichier seul.
+        if dossier == crate::socle::dossier_local().join("threatfox") {
+            let _ = crate::socle::cache::oublier(("threatfox", FICHIER_API));
+        } else {
+            let _ = std::fs::remove_file(dossier.join(FICHIER_API));
+        }
     }
 }
 

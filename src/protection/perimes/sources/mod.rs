@@ -618,7 +618,7 @@ fn obtenir(source: &Source, adresse: &str, mode: &Mode) -> Result<Copie, String>
         Mode::CopieSeule(pourquoi) => {
             // Âge et contenu d'après le sceau de la copie : changée ou datée dans le futur, elle ne sert pas.
             let (brut, age) = crate::socle::cache::gardee(lieu, crate::socle::cache::LISTE_MAX)
-                .map_err(|refus| format!("{pourquoi} ; {}", refus.texte()))?
+                .map_err(|refus| trf!("{pourquoi} ; {}", "{pourquoi}; {}", refus.texte()))?
                 .ok_or_else(|| pourquoi.clone())?;
             let manque = (age >= FRAICHE).then(|| pourquoi.clone());
             (brut, age, manque)
@@ -927,8 +927,12 @@ mod tests {
         vieillir(31);
         let refus = obtenir(&ESSAI, &adresse, &Mode::CopieSeule("coupé".into())).unwrap_err();
         assert!(refus.contains("31"), "{refus}");
+        // Effacée sous son sceau : refusée, et dit.
         std::fs::remove_file(dossier.join(ESSAI.id)).unwrap();
-        // Aucune copie : la raison de la coupure.
+        let refus = obtenir(&ESSAI, &adresse, &Mode::CopieSeule("coupé".into())).unwrap_err();
+        assert!(refus.contains(crate::socle::cache::Refus::Effacee.raison()), "{refus}");
+        // Oubliée par Vanguard (copie et sceau) : aucune copie, la raison de la coupure.
+        crate::socle::cache::oublier((SOUS_DOSSIER, ESSAI.id)).unwrap();
         assert_eq!(
             obtenir(&ESSAI, &adresse, &Mode::CopieSeule("coupé".into())).unwrap_err(),
             "coupé"

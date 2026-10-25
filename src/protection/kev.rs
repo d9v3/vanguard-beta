@@ -45,7 +45,7 @@ pub(crate) fn catalogue() -> Result<Vec<Exploitee>, String> {
 pub(crate) fn catalogue_selon(coupure: Option<&str>) -> Result<Vec<Exploitee>, String> {
     use crate::protection::abuse_ch::Echec;
     let (octets, age) = match coupure {
-        None => crate::socle::cache::liste(demande(), LIEU, FRAICHE, |_| true)
+        None => crate::socle::cache::liste(demande(), LIEU, FRAICHE, |o| analyser(o).is_some())
             .resultat(false)
             .map_err(|e| match e {
                 Echec::Reponse(code) => trf!("la CISA a répondu {code}", "CISA answered {code}"),
@@ -56,7 +56,7 @@ pub(crate) fn catalogue_selon(coupure: Option<&str>) -> Result<Vec<Exploitee>, S
         Some(pourquoi) => match crate::socle::cache::gardee(LIEU, crate::socle::cache::LISTE_MAX) {
             Ok(Some(copie)) => copie,
             Ok(None) => return Err(pourquoi.to_string()),
-            Err(refus) => return Err(format!("{pourquoi} ; {}", refus.texte())),
+            Err(refus) => return Err(trf!("{pourquoi} ; {}", "{pourquoi}; {}", refus.texte())),
         },
     };
     if age > TROP_VIEILLE {

@@ -162,13 +162,6 @@ fn dossier() -> PathBuf {
     crate::socle::dossier_local().join("malwarebazaar")
 }
 
-fn age(chemin: &Path) -> Option<Duration> {
-    std::fs::symlink_metadata(chemin)
-        .and_then(|m| m.modified())
-        .ok()
-        .map(|t| t.elapsed().unwrap_or_default())
-}
-
 /// Les empreintes chargées, ou pourquoi il n'y en a pas.
 pub(crate) type Chargees = Result<&'static Empreintes, &'static String>;
 
@@ -205,12 +198,13 @@ pub(crate) fn recentes_gardees() -> Option<Empreintes> {
 
 fn charger(telecharger: bool) -> Result<Empreintes, String> {
     let d = dossier();
-    let complete = d.join("complete.zip");
     // Sans clé, rien ne se rafraîchit, même quand on ne voulait rien télécharger : la copie vieillit, c'est dit.
     let mut echec = abuse_ch::cle().is_none().then_some(Echec::Manquante);
     if telecharger && echec.is_none() && !cfg!(test) && !crate::parametres::hors_ligne() {
         let _ = std::fs::create_dir_all(&d);
-        if age(&complete).is_none_or(|a| a > SEMAINE) {
+        // L'âge d'après le sceau de la copie, comme le téléchargement qui suit : la date du fichier faisait taire
+        // l'annonce d'une copie sans sceau (ou datée dans le futur), retéléchargée quand même.
+        if crate::socle::cache::age(("malwarebazaar", "complete.zip")).is_none_or(|a| a > SEMAINE) {
             trp!(
                 "  {GRIS}Empreintes de MalwareBazaar : liste complète (environ 43 Mo, une fois par semaine)…{RESET}",
                 "  {GRIS}MalwareBazaar fingerprints: full list (about 43 MB, once a week)…{RESET}"
@@ -254,10 +248,7 @@ fn charger(telecharger: bool) -> Result<Empreintes, String> {
     ));
     triees.sort_unstable();
     triees.dedup();
-    // Le refus d'une copie passe avant l'échec du téléchargement : c'est lui qui dit pourquoi elle ne compte pas.
-    let raison = refus
-        .map(crate::socle::cache::Refus::texte)
-        .or_else(|| echec.map(Echec::raison));
+    let raison = raison_des_copies(echec, refus);
     if triees.is_empty() {
         return Err(match raison {
             Some(r) => trf!("non vérifiées : {r}", "not checked: {r}"),
@@ -273,6 +264,20 @@ fn charger(telecharger: bool) -> Result<Empreintes, String> {
     Ok(Empreintes { triees, avertissement })
 }
 
+/// Ce qui a manqué aux copies : la clé manquante d'abord (sans elle, rien ne se retélécharge jamais), puis le refus
+/// d'une copie et ce qui la retélécharge, sinon l'échec du téléchargement.
+fn raison_des_copies(echec: Option<Echec>, refus: Option<crate::socle::cache::Refus>) -> Option<String> {
+    match (echec, refus) {
+        (Some(Echec::Manquante), Some(r)) => Some(trf!("{} ; {}", "{}; {}", Echec::Manquante.raison(), r.texte())),
+        (_, Some(r)) => Some(trf!(
+            "{} (une analyse YARA, vanguard yara, la retélécharge)",
+            "{} (a YARA scan, vanguard yara, downloads it again)",
+            r.texte()
+        )),
+        (e, None) => e.map(Echec::raison),
+    }
+}
+
 /// Ce qui a manqué à un export : son échec, ou, quand la copie d'avant a servi, pourquoi elle n'a pas été
 /// rafraîchie. La liste des empreintes n'a pas de limite d'âge : sans cette raison, elle vieillirait sans le dire.
 fn manque(rendu: &Result<Export, Echec>) -> Option<Echec> {
@@ -282,11 +287,11 @@ fn manque(rendu: &Result<Export, Echec>) -> Option<Echec> {
     }
 }
 
-/// L'avertissement montré à côté du résultat quand la copie gardée a servi.
+/// L'avertissement montré à côté du résultat quand une copie gardée a servi, ou qu'une des deux manque.
 fn avertissement(raison: &str) -> String {
     trf!(
-        "empreintes de MalwareBazaar non rafraîchies, la copie gardée a servi : {}",
-        "MalwareBazaar fingerprints not refreshed, the saved copy was used: {}",
+        "empreintes de MalwareBazaar pas à jour ou incomplètes, ce qui reste a servi : {}",
+        "MalwareBazaar fingerprints not up to date or incomplete, what is left was used: {}",
         raison
     )
 }
@@ -333,6 +338,35 @@ pub(crate) fn connus(empreintes: &Empreintes, fichiers: &[PathBuf]) -> Vec<(Path
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// La liste complète effacée sous son sceau intact (un programme du compte qui voulait réduire l'antivirus aux
+    /// empreintes des 48 dernières heures) : les empreintes restantes servent, mais jamais sans le dire.
+    #[test]
+    fn complete_effacee_sous_son_sceau_jamais_en_silence() {
+        let lieu = |nom| ("malwarebazaar", nom);
+        let _ = std::fs::remove_dir_all(dossier());
+        let e = "9edfda3b77b3973f37708add497130d44cd88374c85812926f7974687006e3e5";
+        crate::socle::cache::garder(lieu("recentes.txt"), format!("# MalwareBazaar\n{e}\n").as_bytes()).unwrap();
+        crate::socle::cache::garder(lieu("complete.zip"), b"PK archive d'essai").unwrap();
+        std::fs::remove_file(dossier().join("complete.zip")).unwrap();
+        let chargees = charger(false).unwrap();
+        assert_eq!(chargees.triees.len(), 1);
+        let avertissement = chargees.avertissement.expect("la liste amputée doit se dire");
+        let refus = crate::socle::cache::Refus::Effacee.raison();
+        assert!(avertissement.contains(refus), "{avertissement}");
+        // Sans promesse d'un téléchargement qui ne viendra pas : sans clé, la clé manquante est dite d'abord ; avec,
+        // la commande qui retélécharge.
+        let manquante = Echec::Manquante.raison();
+        assert!(
+            avertissement.contains(&manquante) || avertissement.contains("vanguard yara"),
+            "{avertissement}"
+        );
+        // Les deux effacées : non vérifiées, jamais une liste vide.
+        std::fs::remove_file(dossier().join("recentes.txt")).unwrap();
+        let echec = charger(false).err().unwrap();
+        assert!(echec.contains(refus), "{echec}");
+        let _ = std::fs::remove_dir_all(dossier());
+    }
 
     /// Un rafraîchissement manqué avec la clé (404 d'un nom changé, 429, pas d'Internet) se dit même quand la copie
     /// d'avant sert ; une copie rafraîchie, rien.

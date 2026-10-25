@@ -155,7 +155,13 @@ fn lire_fichier(fichier: &Path) -> Fichier {
 }
 
 /// `liste` : les empreintes connues, `None` si la liste manque.
-fn juger_pilotes(pilotes: &[(Pilote, Fichier)], liste: Option<&HashSet<[u8; 32]>>) -> Vec<Constat> {
+/// `refus` : pourquoi la copie gardée de la liste ne sert pas (changée hors de Vanguard…), dit au lieu d'un simple
+/// « indisponible ».
+fn juger_pilotes(
+    pilotes: &[(Pilote, Fichier)],
+    liste: Option<&HashSet<[u8; 32]>>,
+    refus: Option<&str>,
+) -> Vec<Constat> {
     let mut constats = Vec::new();
     let suspects: Vec<String> = pilotes
         .iter()
@@ -188,14 +194,24 @@ fn juger_pilotes(pilotes: &[(Pilote, Fichier)], liste: Option<&HashSet<[u8; 32]>
     let Some(liste) = liste else {
         // Typée : un Windows tout juste installé, sans Internet ou hors ligne, n'a pas encore de copie de la liste ;
         // l'autotest compte sinon ce constat parmi les « non vérifiés sans raison ».
-        constats.push(crate::machine::impossible_par(
-            CAT,
-            crate::modele::Raison::Introuvable,
-            tr!(
-                "Impossible de vérifier (pilotes vulnérables connus : liste LOLDrivers indisponible, sans Internet ?).",
-                "Could not check (known vulnerable drivers: LOLDrivers list unavailable, no Internet?)."
+        constats.push(match refus {
+            Some(r) => crate::machine::impossible_par(
+                CAT,
+                crate::modele::Raison::Falsifie,
+                trf!(
+                    "Impossible de vérifier (pilotes vulnérables connus : liste LOLDrivers, {r}).",
+                    "Could not check (known vulnerable drivers: LOLDrivers list, {r})."
+                ),
             ),
-        ));
+            None => crate::machine::impossible_par(
+                CAT,
+                crate::modele::Raison::Introuvable,
+                tr!(
+                    "Impossible de vérifier (pilotes vulnérables connus : liste LOLDrivers indisponible, sans Internet ?).",
+                    "Could not check (known vulnerable drivers: LOLDrivers list unavailable, no Internet?)."
+                ),
+            ),
+        });
         return constats;
     };
     let vulnerables: Vec<String> = pilotes
@@ -263,25 +279,32 @@ fn lire_pilotes() -> Option<Vec<Pilote>> {
 /// La liste LOLDrivers, rafraîchie une fois par semaine ; la copie d'avant sert hors ligne. Seule une réponse qui
 /// contient des empreintes la remplace : une page de maintenance ou d'erreur reçue avec un 200 effaçait la bonne
 /// copie, et la semaine d'attente laissait la vérification des pilotes vulnérables tomber sept jours.
-fn liste_loldrivers() -> Option<HashSet<[u8; 32]>> {
+/// Rend aussi pourquoi la copie gardée ne sert pas, quand elle est refusée (`socle::cache::Refus`).
+fn liste_loldrivers() -> (Option<HashSet<[u8; 32]>>, Option<String>) {
     let lieu = ("loldrivers", "drivers.csv");
-    let octets = if cfg!(test) || crate::parametres::hors_ligne() {
-        // La copie scellée seule : changée hors de Vanguard, elle ne sert pas (les pilotes ne sont pas dits sains).
+    // Les tests ne téléchargent jamais la vraie liste ; hors ligne, le cache lui-même n'envoie rien.
+    let copie = if cfg!(test) {
         crate::socle::cache::gardee(lieu, LISTE_MAX)
-            .ok()
-            .flatten()
-            .map(|(o, _)| o)
+            .map(|c| c.map(|(o, _)| o))
+            .map_err(crate::socle::cache::Refus::texte)
     } else {
         let demande = crate::http::Demande {
             taille_max: LISTE_MAX,
             ..crate::http::Demande::get(LOLDRIVERS, Duration::from_secs(120))
         };
-        crate::socle::cache::liste(demande, lieu, SEMAINE, liste_valide)
-            .copie
-            .map(|(o, _)| o)
+        match crate::socle::cache::liste(demande, lieu, SEMAINE, liste_valide).resultat(false) {
+            Ok((o, _)) => Ok(Some(o)),
+            Err(e @ crate::socle::cache::Echec::CopieRefusee(..)) => Err(e.raison()),
+            Err(_) => Ok(None),
+        }
     };
-    let liste = empreintes_de_la_liste(&String::from_utf8_lossy(&octets?));
-    (!liste.is_empty()).then_some(liste)
+    match copie {
+        Ok(octets) => {
+            let liste = octets.map(|o| empreintes_de_la_liste(&String::from_utf8_lossy(&o)));
+            (liste.filter(|l| !l.is_empty()), None)
+        }
+        Err(raison) => (None, Some(raison)),
+    }
 }
 
 /// Une réponse qui est bien la liste : au moins une empreinte SHA-256.
@@ -300,7 +323,8 @@ fn pilotes() -> Vec<Constat> {
             (p, f)
         })
         .collect();
-    juger_pilotes(&avec, liste_loldrivers().as_ref())
+    let (liste, refus) = liste_loldrivers();
+    juger_pilotes(&avec, liste.as_ref(), refus.as_deref())
 }
 
 #[cfg(test)]
@@ -429,7 +453,7 @@ mod tests {
             p("disque", r"C:\Windows\System32\drivers\disque.sys"),
             Fichier::Lu([1; 32]),
         )];
-        let c = juger_pilotes(&sains, Some(&liste));
+        let c = juger_pilotes(&sains, Some(&liste), None);
         assert!(c.iter().all(|c| c.probleme.is_none() && c.verifie));
         let vieux = [
             (
@@ -439,17 +463,20 @@ mod tests {
             (p("vieuxoutil", r"C:\Program Files\Vieux\outil.sys"), Fichier::Lu(e)),
             (p("absent", r"C:\Windows\System32\drivers\absent.sys"), Fichier::Absent),
         ];
-        let c = juger_pilotes(&vieux, Some(&liste));
+        let c = juger_pilotes(&vieux, Some(&liste), None);
         assert!(c[1].probleme == Some(Niveau::Eleve) && c[1].message.contains("vieuxoutil"));
         let cache = [(
             p("cache", r"C:\Users\alice\AppData\Local\Temp\x.sys"),
             Fichier::Lu([2; 32]),
         )];
-        assert_eq!(juger_pilotes(&cache, Some(&liste))[0].probleme, Some(Niveau::Eleve));
+        assert_eq!(
+            juger_pilotes(&cache, Some(&liste), None)[0].probleme,
+            Some(Niveau::Eleve)
+        );
         // Présent mais illisible (droits refusés par l'attaquant ou par le profil d'un autre compte) : toujours jugé
         // sur son emplacement, et dit non comparé à la liste.
         for f in [r"C:\Users\bob\AppData\Local\x.sys", r"C:\Windows\Temp\x.sys"] {
-            let c = juger_pilotes(&[(p("cache", f), Fichier::Illisible)], Some(&liste));
+            let c = juger_pilotes(&[(p("cache", f), Fichier::Illisible)], Some(&liste), None);
             assert_eq!(c[0].probleme, Some(Niveau::Eleve), "{f}");
             assert!(c.iter().any(|c| !c.verifie), "{f}");
             // Avec sa raison : l'autotest compte les « non vérifiés » sans raison typée.
@@ -465,10 +492,19 @@ mod tests {
         let c = juger_pilotes(
             &[(p("absent", r"C:\Windows\Temp\x.sys"), Fichier::Absent)],
             Some(&liste),
+            None,
         );
         assert!(c.iter().all(|c| c.probleme.is_none() && c.verifie));
+        // La copie gardée refusée (changée hors de Vanguard) : non vérifié, et la raison dite, pas « sans Internet ».
+        let refus = crate::socle::cache::Refus::HorsVanguard.texte();
+        let c = juger_pilotes(&sains, None, Some(&refus));
+        assert!(!c[1].verifie && c[1].message.contains(&refus), "{}", c[1].message);
+        assert_eq!(
+            c[1].etat(),
+            crate::modele::Etat::NonVerifie(crate::modele::Raison::Falsifie)
+        );
         // Sans la liste : dit non vérifié, jamais sain.
-        let c = juger_pilotes(&sains, None);
+        let c = juger_pilotes(&sains, None, None);
         assert!(!c[1].verifie);
         // Hors ligne sur un Windows tout juste installé (aucune copie de la liste) : non vérifié avec sa raison.
         assert_eq!(

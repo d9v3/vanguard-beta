@@ -540,7 +540,13 @@ pub(crate) fn indicateurs(telecharger: bool, age_max: Duration) -> Result<(Indic
             })?
     } else {
         copie_gardee()
-            .map_err(crate::socle::cache::Refus::texte)?
+            .map_err(|r| {
+                trf!(
+                    "{} (vanguard logiciels-espions la retélécharge)",
+                    "{} (vanguard spyware downloads it again)",
+                    r.texte()
+                )
+            })?
             .ok_or_else(|| {
                 if telecharger {
                     tr!(

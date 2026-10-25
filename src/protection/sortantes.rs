@@ -634,8 +634,8 @@ pub(crate) fn demande_feodo() -> crate::http::Demande<'static> {
     }
 }
 
-/// La liste de Feodo Tracker se lit-elle comme le programme l'attend ? (canaris de la veille de nuit)
-#[cfg(test)]
+/// La liste de Feodo Tracker se lit-elle comme le programme l'attend ? Avant de remplacer la copie gardée, et pour
+/// les canaris de la veille de nuit.
 pub(crate) fn feodo_lisible(octets: &[u8]) -> bool {
     analyser_feodo(&String::from_utf8_lossy(octets)).is_some()
 }
@@ -903,8 +903,12 @@ fn botnets() -> (Botnets, Vec<String>) {
     let cle = abuse_ch::cle();
     let (feodo, export, api) = std::thread::scope(|s| {
         let feodo = s.spawn(|| {
-            let liste =
-                crate::socle::cache::liste(demande_feodo(), ("feodo", "botnets.txt"), URLHAUS_FRAICHE, |_| true);
+            let liste = crate::socle::cache::liste(
+                demande_feodo(),
+                ("feodo", "botnets.txt"),
+                URLHAUS_FRAICHE,
+                feodo_lisible,
+            );
             verifiee("Feodo Tracker", liste.resultat(false), en_texte(analyser_feodo_datee))
         });
         let api = s.spawn(|| {
@@ -919,7 +923,7 @@ fn botnets() -> (Botnets, Vec<String>) {
                     demande,
                     ("threatfox", abuse_ch::FICHIER_API),
                     THREATFOX_CLE_FRAICHE,
-                    |_| true,
+                    |o| analyser_threatfox_api(&String::from_utf8_lossy(o)).is_some(),
                 );
                 verifiee(
                     tr!("ThreatFox (7 jours)", "ThreatFox (7 days)"),
@@ -934,8 +938,8 @@ fn botnets() -> (Botnets, Vec<String>) {
                 Service::ThreatFox,
                 "full.csv.zip",
                 ("threatfox", "export.zip"),
-                URLHAUS_FRAICHE,
-                Duration::from_secs(120),
+                (URLHAUS_FRAICHE, Duration::from_secs(120)),
+                |o| analyser_export_threatfox(o).is_some(),
             ),
             analyser_export_threatfox,
         );
@@ -1007,10 +1011,28 @@ impl ServeursDeCommande {
 
 /// Les listes déjà téléchargées par la surveillance ou le bilan, relues sans réseau : le veilleur tourne dans une
 /// unité qui n'a pas le droit d'ouvrir une prise Internet (RestrictAddressFamilies), et ces listes sont déjà
-/// rafraîchies par les autres. Leur âge est celui du fichier ; jugées comme à la passe (`verifiee`), et ce qui ne sert
-/// pas est dit, jamais compté comme sain.
+/// rafraîchies par les autres. Leur âge est celui de leur sceau ; jugées comme à la passe (`verifiee`), et ce qui ne
+/// sert pas est dit, jamais compté comme sain. Le refus de la copie des empreintes récentes de MalwareBazaar, que le
+/// veilleur relit à part (`protection::sources`), est dit ici aussi : c'est la ligne des listes de son état.
 #[cfg(target_os = "linux")]
 pub(crate) fn serveurs_gardes() -> (ServeursDeCommande, Vec<String>) {
+    let (serveurs, mut absentes) = serveurs_gardes_dans("feodo", "threatfox");
+    if let Err(refus) = crate::socle::cache::gardee(
+        ("malwarebazaar", "recentes.txt"),
+        crate::protection::empreintes::TEXTE_MAX as u64,
+    ) {
+        absentes.push(trf!(
+            "empreintes récentes de MalwareBazaar non vérifiées : {}",
+            "recent MalwareBazaar fingerprints not checked: {}",
+            refus.texte()
+        ));
+    }
+    (serveurs, absentes)
+}
+
+/// `serveurs_gardes`, les listes lues sous `feodo` et `threatfox` (des dossiers à eux dans les tests).
+#[cfg(target_os = "linux")]
+fn serveurs_gardes_dans(feodo: &str, threatfox: &str) -> (ServeursDeCommande, Vec<String>) {
     // L'âge et le contenu d'après le sceau de la copie (`socle::cache::gardee`) : une liste vidée et datée dans le
     // futur par un autre programme ne passe plus pour vérifiée.
     let garde = |sous_dossier: &str, nom: &str| {
@@ -1024,8 +1046,8 @@ pub(crate) fn serveurs_gardes() -> (ServeursDeCommande, Vec<String>) {
     };
     let refusee = |nom: &str, refus: crate::socle::cache::Refus| {
         trf!(
-            "liste de {nom} non vérifiée : {}",
-            "{nom} list not checked: {}",
+            "liste de {nom} non vérifiée : {} (la surveillance ou le bilan la retéléchargent)",
+            "{nom} list not checked: {} (the monitoring or the check downloads it again)",
             refus.texte()
         )
     };
@@ -1033,7 +1055,7 @@ pub(crate) fn serveurs_gardes() -> (ServeursDeCommande, Vec<String>) {
     let mut botnets = Botnets::default();
     let mut absentes = Vec::new();
     let mut figee = None;
-    match garde("feodo", "botnets.txt") {
+    match garde(feodo, "botnets.txt") {
         Ok(Some(copie)) => match verifiee("Feodo Tracker", Ok(copie), en_texte(analyser_feodo_datee)) {
             Ok((liste, depuis)) => (botnets.feodo, figee) = (liste, depuis),
             Err(raison) => absentes.push(raison),
@@ -1042,7 +1064,7 @@ pub(crate) fn serveurs_gardes() -> (ServeursDeCommande, Vec<String>) {
         Err(refus) => absentes.push(refusee("Feodo Tracker", refus)),
     }
     if avec_cle {
-        match garde("threatfox", "export.zip") {
+        match garde(threatfox, "export.zip") {
             Ok(Some(copie)) => match verifiee("ThreatFox", Ok(copie), analyser_export_threatfox) {
                 Ok((serveurs, domaines)) => {
                     botnets.threatfox.extend(serveurs);
@@ -1054,7 +1076,7 @@ pub(crate) fn serveurs_gardes() -> (ServeursDeCommande, Vec<String>) {
             Err(refus) => absentes.push(refusee("ThreatFox", refus)),
         }
         let api = tr!("ThreatFox (7 jours)", "ThreatFox (7 days)");
-        match garde("threatfox", crate::protection::abuse_ch::FICHIER_API) {
+        match garde(threatfox, crate::protection::abuse_ch::FICHIER_API) {
             Ok(Some(copie)) => match verifiee(api, Ok(copie), en_texte(analyser_threatfox_api)) {
                 Ok(serveurs) => botnets.threatfox.extend(serveurs),
                 Err(raison) => absentes.push(raison),
@@ -2550,11 +2572,12 @@ mod tests {
     }
 
     /// Le veilleur relit les listes gardées sans réseau : une liste de Feodo Tracker posée sans sceau (vidée par un
-    /// autre programme, datée dans le futur) n'est jamais crue vide, et c'est dit.
+    /// autre programme, datée dans le futur), ou effacée sous son sceau, n'est jamais crue vide, et c'est dit.
     #[cfg(target_os = "linux")]
     #[test]
     fn liste_gardee_forgee_dite_non_verifiee() {
-        let d = crate::socle::dossier_local().join("feodo");
+        let (feodo, threatfox) = ("essai-feodo-gardee", "essai-threatfox-gardee");
+        let d = crate::socle::dossier_local().join(feodo);
         std::fs::create_dir_all(&d).unwrap();
         let fichier = d.join("botnets.txt");
         std::fs::write(&fichier, b"# Feodo Tracker\n").unwrap();
@@ -2564,7 +2587,7 @@ mod tests {
             .unwrap()
             .set_modified(std::time::SystemTime::now() + Duration::from_hours(24 * 365))
             .unwrap();
-        let (serveurs, absentes) = serveurs_gardes();
+        let (serveurs, absentes) = serveurs_gardes_dans(feodo, threatfox);
         assert!(serveurs.0.feodo.is_empty());
         let refus = crate::socle::cache::Refus::SansSceau.raison();
         assert!(
@@ -2573,6 +2596,12 @@ mod tests {
                 .any(|a| a.contains("Feodo Tracker") && a.contains(refus)),
             "{absentes:?}"
         );
+        // Scellée par Vanguard puis effacée : pas « pas encore téléchargée », une copie effacée.
+        crate::socle::cache::garder((feodo, "botnets.txt"), b"# Feodo Tracker\n").unwrap();
+        std::fs::remove_file(&fichier).unwrap();
+        let (_, absentes) = serveurs_gardes_dans(feodo, threatfox);
+        let refus = crate::socle::cache::Refus::Effacee.raison();
+        assert!(absentes.iter().any(|a| a.contains(refus)), "{absentes:?}");
         let _ = std::fs::remove_dir_all(&d);
     }
 }

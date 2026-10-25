@@ -919,13 +919,32 @@ pub(crate) const URLHAUS_TROP_VIEILLE: Duration = Duration::from_hours(7 * 24);
 /// son âge.
 fn liste_urlhaus(fichier: &str, nom: &str) -> Result<(Vec<u8>, Duration), crate::protection::abuse_ch::Echec> {
     use crate::protection::abuse_ch;
+    // Validée avant de remplacer la copie : chaque liste par sa propre forme.
+    let valide: fn(&[u8]) -> bool = if fichier == "hostfile.txt" {
+        |o| analyser_hotes(&String::from_utf8_lossy(o)).is_some()
+    } else {
+        liens_lisibles
+    };
     abuse_ch::export(
         abuse_ch::Service::Urlhaus,
         fichier,
         ("urlhaus", nom),
-        URLHAUS_FRAICHE,
-        Duration::from_secs(40),
+        (URLHAUS_FRAICHE, Duration::from_secs(40)),
+        valide,
     )
+}
+
+/// La liste des liens d'URLhaus se lit-elle comme une liste de liens ? Au moins un, et les premières lignes qui ne
+/// sont pas des commentaires sont toutes des adresses web : une page de portail Wi-Fi ou d'erreur n'en est pas une.
+fn liens_lisibles(octets: &[u8]) -> bool {
+    let texte = String::from_utf8_lossy(octets);
+    let mut lignes = texte
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .take(100)
+        .peekable();
+    lignes.peek().is_some() && lignes.all(|l| l.starts_with("http://") || l.starts_with("https://"))
 }
 
 /// Les hôtes d'URLhaus consacrés aux logiciels malveillants, en minuscules, pour les comparer aux noms que l'ordinateur
@@ -1927,6 +1946,16 @@ mod tests {
         // Dangereux reste dangereux.
         let danger = verdict(Some(Niveau::Critique), &EnLigne::Aucune);
         assert!(danger.starts_with("Dangereux") || danger.starts_with("Dangerous"));
+    }
+
+    /// Une page de portail ou d'erreur reçue avec un 200 ne remplace pas la liste des liens gardée.
+    #[test]
+    fn liens_d_urlhaus_valides_avant_d_etre_gardes() {
+        assert!(liens_lisibles(
+            b"# URLhaus\nhttp://exemple.test/a.exe\nhttps://exemple.test/b\n"
+        ));
+        assert!(!liens_lisibles(b"<html>Connexion requise</html>"));
+        assert!(!liens_lisibles(b"# URLhaus\n"));
     }
 
     #[test]
