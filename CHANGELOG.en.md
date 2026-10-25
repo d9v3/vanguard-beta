@@ -9,6 +9,13 @@ delivered just before it. Only the latest version has its download page; every v
 
 ## Next version
 
+- **Extensions and downloaded lists sealed.** Extension settings (“no restrictions”, “mine”, running with the
+  check-up or monitoring) and their approvals are sealed: changed outside Vanguard, or accepted as they were (seals
+  remade, earlier version), they no longer grant anything, nothing runs on its own, and the menu and the check-up say
+  so (COM-ETA-001). Each downloaded list (Feodo Tracker, ThreatFox, URLhaus, MalwareBazaar, KEV, Échap, LOLDrivers,
+  software versions) is sealed with its download date: its age comes from that date, no longer from the file's;
+  emptied, unsealed or dated in the future, it is fetched again, and if it cannot be, “not checked” with the reason,
+  never clean.
 - **Windows logs: a single judge, two more rules, a place in the menu.** The check-up (WIN-JRN-003) no longer reads
   the logs itself: it takes the thirteen EVT- rules of “What happened?”, alerts at the same level, and “not verified”
   with its reason when a log is missing or restricted to administrators; the HTML report no longer shows this

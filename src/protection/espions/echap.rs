@@ -539,20 +539,22 @@ pub(crate) fn indicateurs(telecharger: bool, age_max: Duration) -> Result<(Indic
                 autre => autre.raison(),
             })?
     } else {
-        copie_gardee().ok_or_else(|| {
-            if telecharger {
-                tr!(
-                    "hors ligne demandé, et aucune copie gardée",
-                    "offline mode requested, and no saved copy"
-                )
-            } else {
-                tr!(
-                    "aucune copie récente (vanguard logiciels-espions la télécharge)",
-                    "no recent copy (vanguard spyware downloads it)"
-                )
-            }
-            .to_string()
-        })?
+        copie_gardee()
+            .map_err(crate::socle::cache::Refus::texte)?
+            .ok_or_else(|| {
+                if telecharger {
+                    tr!(
+                        "hors ligne demandé, et aucune copie gardée",
+                        "offline mode requested, and no saved copy"
+                    )
+                } else {
+                    tr!(
+                        "aucune copie récente (vanguard logiciels-espions la télécharge)",
+                        "no recent copy (vanguard spyware downloads it)"
+                    )
+                }
+                .to_string()
+            })?
     };
     if age > age_max {
         return Err(if telecharger {
@@ -603,19 +605,10 @@ pub(crate) fn comptes(octets: &[u8]) -> Option<[usize; 4]> {
     du_fichier(octets).map(|i| [i.entrees, i.serveurs.len(), i.ips.len(), i.sites.len()])
 }
 
-/// La copie gardée par un téléchargement d'avant, et son âge.
-fn copie_gardee() -> Option<(Vec<u8>, Duration)> {
-    let fichier = crate::socle::dossier_local().join("echap").join("ioc.yaml");
-    let age = std::fs::symlink_metadata(&fichier)
-        .ok()?
-        .modified()
-        .ok()?
-        .elapsed()
-        .unwrap_or_default();
-    Some((
-        crate::socle::lire_ordinaire(&fichier, crate::socle::cache::LISTE_MAX).ok()?,
-        age,
-    ))
+/// La copie gardée par un téléchargement d'avant, et son âge d'après son sceau (`socle::cache::gardee`) ; `Err` : la
+/// raison de son refus (changée hors de Vanguard, datée dans le futur…), jamais une liste crue.
+fn copie_gardee() -> Result<Option<(Vec<u8>, Duration)>, crate::socle::cache::Refus> {
+    crate::socle::cache::gardee(("echap", "ioc.yaml"), crate::socle::cache::LISTE_MAX)
 }
 
 /// L'âge par défaut au-delà duquel `vanguard logiciels-espions` ne se sert plus d'une copie.

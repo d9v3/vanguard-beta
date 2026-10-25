@@ -1011,18 +1011,10 @@ impl ServeursDeCommande {
 /// pas est dit, jamais compté comme sain.
 #[cfg(target_os = "linux")]
 pub(crate) fn serveurs_gardes() -> (ServeursDeCommande, Vec<String>) {
+    // L'âge et le contenu d'après le sceau de la copie (`socle::cache::gardee`) : une liste vidée et datée dans le
+    // futur par un autre programme ne passe plus pour vérifiée.
     let garde = |sous_dossier: &str, nom: &str| {
-        let fichier = crate::socle::dossier_local().join(sous_dossier).join(nom);
-        let age = std::fs::symlink_metadata(&fichier)
-            .and_then(|m| m.modified())
-            .ok()?
-            .elapsed()
-            .unwrap_or_default();
-        // Un simple fichier, borné : un tube posé à sa place figeait le veilleur.
-        Some((
-            crate::socle::lire_ordinaire(&fichier, crate::socle::cache::LISTE_MAX).ok()?,
-            age,
-        ))
+        crate::socle::cache::gardee((sous_dossier, nom), crate::socle::cache::LISTE_MAX)
     };
     let pas_encore = |nom: &str| {
         trf!(
@@ -1030,35 +1022,45 @@ pub(crate) fn serveurs_gardes() -> (ServeursDeCommande, Vec<String>) {
             "{nom} list not downloaded yet: the monitoring or the check fetches it"
         )
     };
+    let refusee = |nom: &str, refus: crate::socle::cache::Refus| {
+        trf!(
+            "liste de {nom} non vérifiée : {}",
+            "{nom} list not checked: {}",
+            refus.texte()
+        )
+    };
     let avec_cle = crate::protection::abuse_ch::cle().is_some();
     let mut botnets = Botnets::default();
     let mut absentes = Vec::new();
     let mut figee = None;
     match garde("feodo", "botnets.txt") {
-        Some(copie) => match verifiee("Feodo Tracker", Ok(copie), en_texte(analyser_feodo_datee)) {
+        Ok(Some(copie)) => match verifiee("Feodo Tracker", Ok(copie), en_texte(analyser_feodo_datee)) {
             Ok((liste, depuis)) => (botnets.feodo, figee) = (liste, depuis),
             Err(raison) => absentes.push(raison),
         },
-        None => absentes.push(pas_encore("Feodo Tracker")),
+        Ok(None) => absentes.push(pas_encore("Feodo Tracker")),
+        Err(refus) => absentes.push(refusee("Feodo Tracker", refus)),
     }
     if avec_cle {
         match garde("threatfox", "export.zip") {
-            Some(copie) => match verifiee("ThreatFox", Ok(copie), analyser_export_threatfox) {
+            Ok(Some(copie)) => match verifiee("ThreatFox", Ok(copie), analyser_export_threatfox) {
                 Ok((serveurs, domaines)) => {
                     botnets.threatfox.extend(serveurs);
                     botnets.domaines = Some(domaines);
                 }
                 Err(raison) => absentes.push(raison),
             },
-            None => absentes.push(pas_encore("ThreatFox")),
+            Ok(None) => absentes.push(pas_encore("ThreatFox")),
+            Err(refus) => absentes.push(refusee("ThreatFox", refus)),
         }
         let api = tr!("ThreatFox (7 jours)", "ThreatFox (7 days)");
         match garde("threatfox", crate::protection::abuse_ch::FICHIER_API) {
-            Some(copie) => match verifiee(api, Ok(copie), en_texte(analyser_threatfox_api)) {
+            Ok(Some(copie)) => match verifiee(api, Ok(copie), en_texte(analyser_threatfox_api)) {
                 Ok(serveurs) => botnets.threatfox.extend(serveurs),
                 Err(raison) => absentes.push(raison),
             },
-            None => absentes.push(pas_encore(api)),
+            Ok(None) => absentes.push(pas_encore(api)),
+            Err(refus) => absentes.push(refusee(api, refus)),
         }
     } else {
         // Sans clé, comme à la passe : la copie d'une ancienne clé ne sert pas, et c'est dit une fois.
@@ -2545,6 +2547,33 @@ mod tests {
         assert!(marque(None, true).contains('✔'));
         assert!(marque(None, false).contains('?') && !marque(None, false).contains('✔'));
         assert!(marque(Some(Niveau::Eleve), false).contains('✖'));
+    }
+
+    /// Le veilleur relit les listes gardées sans réseau : une liste de Feodo Tracker posée sans sceau (vidée par un
+    /// autre programme, datée dans le futur) n'est jamais crue vide, et c'est dit.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn liste_gardee_forgee_dite_non_verifiee() {
+        let d = crate::socle::dossier_local().join("feodo");
+        std::fs::create_dir_all(&d).unwrap();
+        let fichier = d.join("botnets.txt");
+        std::fs::write(&fichier, b"# Feodo Tracker\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&fichier)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() + Duration::from_hours(24 * 365))
+            .unwrap();
+        let (serveurs, absentes) = serveurs_gardes();
+        assert!(serveurs.0.feodo.is_empty());
+        let refus = crate::socle::cache::Refus::SansSceau.raison();
+        assert!(
+            absentes
+                .iter()
+                .any(|a| a.contains("Feodo Tracker") && a.contains(refus)),
+            "{absentes:?}"
+        );
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
 

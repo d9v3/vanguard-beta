@@ -52,19 +52,12 @@ pub(crate) fn catalogue_selon(coupure: Option<&str>) -> Result<Vec<Exploitee>, S
                 Echec::SansReponse => tr!("pas d'Internet ?", "no Internet?").to_string(),
                 autre => autre.raison(),
             })?,
-        Some(pourquoi) => {
-            let fichier = crate::socle::dossier_local().join(LIEU.0).join(LIEU.1);
-            let age = std::fs::symlink_metadata(&fichier)
-                .and_then(|m| m.modified())
-                .map(|t| t.elapsed().unwrap_or_default());
-            match (
-                crate::socle::lire_ordinaire(&fichier, crate::socle::cache::LISTE_MAX),
-                age,
-            ) {
-                (Ok(octets), Ok(age)) => (octets, age),
-                _ => return Err(pourquoi.to_string()),
-            }
-        }
+        // L'âge vient du sceau de la copie, pas de la date du fichier (`socle::cache::gardee`).
+        Some(pourquoi) => match crate::socle::cache::gardee(LIEU, crate::socle::cache::LISTE_MAX) {
+            Ok(Some(copie)) => copie,
+            Ok(None) => return Err(pourquoi.to_string()),
+            Err(refus) => return Err(format!("{pourquoi} ; {}", refus.texte())),
+        },
     };
     if age > TROP_VIEILLE {
         return Err(tr!(

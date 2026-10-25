@@ -50,13 +50,38 @@ pub struct Confiance {
     pub surveillance: bool,
 }
 
-/// Les réglages ; absent, ceux par défaut ; `Err` (la raison) si le fichier est là mais ne se lit plus.
+/// Le nom scellé du fichier sous le dossier de Vanguard (`modele::inventaire`, `sceau`).
+pub(crate) const SCELLE: &str = "plugins/reglages.json";
+
+/// Les réglages ; absent, ceux par défaut ; `Err` (la raison) si le fichier est là mais ne se lit plus. Changé hors
+/// de Vanguard ou accepté tel quel par les sceaux : les défauts aussi (`lire_juge`).
 pub fn lire(racine: &Path) -> Result<Reglages, String> {
-    let chemin = racine.join(FICHIER);
-    if std::fs::symlink_metadata(&chemin).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
-        return Ok(Reglages::default());
-    }
-    serde_json::from_slice(&super::lire_sur(&chemin, 64 << 10)?).map_err(|e| e.to_string())
+    lire_juge(racine).map(|(r, _)| r).map_err(String::from)
+}
+
+/// Les réglages relus sous leur sceau, et pourquoi ceux du fichier ont été ignorés quand ils levaient quelque chose.
+/// Un programme du compte qui écrivait `{"sans_restrictions":true}`, ou une confiance « à moi » avec le bilan et la
+/// surveillance pour son propre plugin, faisait tourner son code sans accord, chaque heure, sous le nom de Vanguard.
+/// Changé hors de Vanguard, ou accepté tel quel (après des sceaux refaits, ou repris d'une version d'avant le sceau :
+/// rien ne prouve que la personne l'a décidé), le fichier ne vaut que les défauts, les plus protecteurs : restrictions
+/// actives, aucune confiance, l'accord de la coupure redemandé. Comme `parametres::charger_juge`, du côté qui ne coupe
+/// rien, et dit (`douteux`, et au bilan par le sceau).
+pub(crate) fn lire_juge(racine: &Path) -> Result<(Reglages, Option<super::Douteux>), crate::modele::Echec> {
+    let Some((octets, douteux)) = super::lire_scelle(racine, FICHIER, 64 << 10)? else {
+        return Ok((Reglages::default(), None));
+    };
+    let r: Reglages = serde_json::from_slice(&octets)
+        .map_err(|e| crate::modele::Echec::new("plugins/reglages", crate::modele::Raison::Illisible(e.to_string())))?;
+    let Some(d) = douteux else {
+        return Ok((r, None));
+    };
+    let levait = r != Reglages::default();
+    Ok((Reglages::default(), levait.then_some(d)))
+}
+
+/// Pourquoi les réglages du fichier sont ignorés, s'ils levaient quelque chose.
+pub(crate) fn douteux(racine: &Path) -> Option<super::Douteux> {
+    lire_juge(racine).ok().and_then(|(_, d)| d)
 }
 
 /// Les réglages ; un fichier illisible laisse les restrictions actives.
@@ -64,12 +89,12 @@ pub fn charger(racine: &Path) -> Reglages {
     lire(racine).unwrap_or_default()
 }
 
-/// Écrit les réglages. Un fichier qui ne se lit plus n'est jamais écrasé en silence (les confiances « à moi » y sont,
-/// et `charger` en a rendu les défauts) : il est d'abord mis de côté, tel quel, et c'est dit ; s'il ne peut pas
-/// l'être, rien n'est écrit.
+/// Écrit les réglages, scellés. Un fichier qui ne se lit plus, ou ignoré (changé hors de Vanguard, accepté tel quel),
+/// n'est jamais écrasé en silence (des confiances « à moi » y sont peut-être, et `charger` en a rendu les défauts) :
+/// il est d'abord mis de côté, tel quel, et c'est dit ; s'il ne peut pas l'être, rien n'est écrit.
 pub fn enregistrer(racine: &Path, r: &Reglages) -> Result<(), String> {
     let chemin = racine.join(FICHIER);
-    if lire(racine).is_err() {
+    if lire_juge(racine).is_err() || douteux(racine).is_some() {
         let copie = chemin.with_extension(format!(
             "illisible-{}.json",
             chrono::Local::now().format("%Y%m%d-%H%M%S")
@@ -77,19 +102,28 @@ pub fn enregistrer(racine: &Path, r: &Reglages) -> Result<(), String> {
         // Renommé, pas copié : un lien reste un lien, rien n'est suivi ni relu.
         std::fs::rename(&chemin, &copie).map_err(|e| {
             trf!(
-                "Réglage non écrit : l'ancien fichier, illisible, n'a pas pu être mis de côté ({e}).",
-                "Setting not written: the old, unreadable file could not be set aside ({e})."
+                "Réglage non écrit : l'ancien fichier, illisible ou ignoré, n'a pas pu être mis de côté ({e}).",
+                "Setting not written: the old, unreadable or ignored file could not be set aside ({e})."
             )
         })?;
         trp!(
-            "  {GRIS}Ancien fichier des réglages, illisible, gardé : {}{RESET}",
-            "  {GRIS}Old settings file, unreadable, kept: {}{RESET}",
+            "  {GRIS}Ancien fichier des réglages, illisible ou ignoré, gardé : {}{RESET}",
+            "  {GRIS}Old settings file, unreadable or ignored, kept: {}{RESET}",
             chemin_affichable(&copie)
         );
     }
     let texte = serde_json::to_string_pretty(r).map_err(|e| e.to_string())?;
-    crate::socle::ecrire_atomique(&chemin, texte)
+    super::ecrire_scelle(racine, FICHIER, texte.as_bytes())
         .map_err(|e| trf!("Réglage impossible à écrire : {e}", "Could not write the setting: {e}"))
+}
+
+/// reglages.json et approuves.json d'une version d'avant le sceau, acceptés tels quels à la mise à jour : rescellés
+/// seulement s'ils n'accordent rien (`sceau::resceller_si`) ; sinon ils restent ignorés, et le bilan le dit.
+pub(crate) fn resceller_d_avant() {
+    crate::sceau::resceller_si(SCELLE, |o| {
+        serde_json::from_slice::<Reglages>(o).is_ok_and(|r| r == Reglages::default())
+    });
+    crate::sceau::resceller_si(super::APPROUVES_SCELLE, super::n_approuve_rien);
 }
 
 impl Reglages {
@@ -218,11 +252,19 @@ pub fn basculer_element(
 mod tests {
     use super::*;
 
+    /// Un dossier des extensions jetable : « plugins » sous un dossier à lui, qui garde les sceaux comme celui de
+    /// Vanguard.
+    fn jetable(nom: &str) -> std::path::PathBuf {
+        let parent = std::env::temp_dir().join(format!("vanguard-reglages-{nom}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        let d = parent.join("plugins");
+        super::super::creer_prive(&d).unwrap();
+        d
+    }
+
     #[test]
     fn couper_demande_une_fois_remettre_jamais() {
-        let d = std::env::temp_dir().join(format!("vanguard-reglages-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        super::super::creer_prive(&d).unwrap();
+        let d = jetable("bascule");
         // Refusé : rien ne change.
         assert!(!basculer(&d, |_| false).unwrap());
         assert_eq!(charger(&d), Reglages::default());
@@ -246,7 +288,7 @@ mod tests {
         );
         oublier(&d, false, "salon").unwrap();
         assert!(charger(&d).plugin_a_moi("salon", "a1").is_none());
-        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(d.parent().unwrap());
     }
 
     /// Un fichier qui ne se lit plus n'est jamais écrasé en silence : couper (menu Extensions, Paramètres,
@@ -254,9 +296,7 @@ mod tests {
     /// illisible, les restrictions restent actives, et couper redemande l'accord.
     #[test]
     fn fichier_illisible_mis_de_cote() {
-        let d = std::env::temp_dir().join(format!("vanguard-reglages-illisible-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        super::super::creer_prive(&d).unwrap();
+        let d = jetable("illisible");
         assert_eq!(lire(&d), Ok(Reglages::default()), "absent : les défauts, sans erreur");
         let abime = r#"{"coupure_confirmee": true, "plugins_a_moi": [{"nom": "salon", "empreinte": "a1"}] pas du json"#;
         std::fs::write(d.join(FICHIER), abime).unwrap();
@@ -293,6 +333,6 @@ mod tests {
         assert!(!basculer(&d, |_| panic!("remettre ne demande rien")).unwrap());
         assert_eq!(charger(&d).plugins_a_moi.len(), 1);
         assert_eq!(mis_de_cote(), gardes);
-        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(d.parent().unwrap());
     }
 }

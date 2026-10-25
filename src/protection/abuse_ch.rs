@@ -75,6 +75,17 @@ impl Echec {
                 "unreadable answer (format changed, or a Wi-Fi portal page?)"
             )
             .into(),
+            // Les mots restent neutres : ce variant sert à toutes les sources du cache (CISA, GitHub, abuse.ch…).
+            Echec::CopieRefusee(refus, Some(code)) => trf!(
+                "copie gardée refusée ({}), et la redemande a reçu la réponse {code}",
+                "kept copy refused ({}), and asking again got answer {code}",
+                refus.raison()
+            ),
+            Echec::CopieRefusee(refus, None) => trf!(
+                "copie gardée refusée ({}), et la redemande est restée sans réponse (pas d'Internet ?)",
+                "kept copy refused ({}), and asking again got no answer (no Internet?)",
+                refus.raison()
+            ),
         }
     }
 }
@@ -500,8 +511,7 @@ mod tests {
         let lieu = ("essai-manque-abuse-ch", "liste.txt");
         let dossier = crate::socle::dossier_local().join(lieu.0);
         let _ = std::fs::remove_dir_all(&dossier);
-        std::fs::create_dir_all(&dossier).unwrap();
-        std::fs::write(dossier.join(lieu.1), b"# d'avant\n").unwrap();
+        crate::socle::cache::garder(lieu, b"# d'avant\n").unwrap();
         let due = (Duration::ZERO, Duration::from_secs(5));
         for (reponse, attendu) in [
             (
@@ -580,8 +590,7 @@ mod tests {
         let lieu = ("essai-illisible-abuse-ch", "liste.txt");
         let dossier = crate::socle::dossier_local().join(lieu.0);
         let _ = std::fs::remove_dir_all(&dossier);
-        std::fs::create_dir_all(&dossier).unwrap();
-        std::fs::write(dossier.join(lieu.1), b"# d'avant\n").unwrap();
+        crate::socle::cache::garder(lieu, b"# d'avant\n").unwrap();
         let (base, fil) =
             serveur(b"HTTP/1.1 200 OK\r\nContent-Length: 21\r\nConnection: close\r\n\r\n<html>Bloque</html>\r\n");
         let adresse = format!("{base}liste.txt");

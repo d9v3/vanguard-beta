@@ -10,6 +10,21 @@ pub mod adresses;
 pub mod cache {
     pub(crate) use crate::protection::abuse_ch::{Echec, Liste, liste};
     pub(crate) const LISTE_MAX: u64 = 1 << 30;
+
+    /// Pourquoi une copie gardée est refusée : le fuzzing n'en garde aucune.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum Refus {}
+
+    impl Refus {
+        pub(crate) fn texte(self) -> String {
+            match self {}
+        }
+    }
+
+    /// Aucune copie gardée : « absente ».
+    pub(crate) fn gardee(_lieu: (&str, &str), _max: u64) -> Result<Option<(Vec<u8>, std::time::Duration)>, Refus> {
+        Ok(None)
+    }
 }
 
 /// Le fuzzing ne lit aucun fichier d'état : « absent ».

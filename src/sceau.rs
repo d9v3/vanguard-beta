@@ -131,6 +131,9 @@ const TARDIFS: &[&str] = &[
     crate::changements::RELEVE,
     crate::parametres::PARAMETRES,
     crate::protection::blocage::parametres::BLOCAGE,
+    // Écrits sans sceau jusqu'à la 0.87 : adoptés une fois, mais jamais un feu vert (`plugins::reglages::lire_juge`).
+    crate::plugins::reglages::SCELLE,
+    crate::plugins::APPROUVES_SCELLE,
 ];
 
 const REGISTRE: &str = "sceaux.json";
@@ -654,6 +657,7 @@ pub(crate) fn constat() -> Vec<Constat> {
     crate::parametres::resceller_d_avant();
     crate::protection::blocage::parametres::resceller_d_avant();
     crate::changements::resceller_d_avant();
+    crate::plugins::reglages::resceller_d_avant();
     // Les déjà vus et les clés connues : accepté lors d'une mise à jour, un fichier y vaut comme écrit par Vanguard.
     for nom in [ADMINISTRATEURS, BLUETOOTH, CLES_CONNUES] {
         resceller_si(nom, |_| true);

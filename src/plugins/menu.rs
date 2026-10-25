@@ -266,6 +266,7 @@ pub fn extensions() {
     let mut dernier = String::from("1");
     loop {
         print!("\x1b[2J\x1b[H");
+        super::dire_douteux(&racine);
         let sans = super::reglages::charger(&racine).sans_restrictions;
         let lignes = lignes_extensions(super::inventaire(&racine).len(), labo::scripts(&racine).len(), sans);
         let Some(c) = choix(&lignes, &dernier) else { return };
@@ -299,6 +300,7 @@ pub fn plugins(racine: &Path) {
     let mut dernier = String::from("1");
     loop {
         print!("\x1b[2J\x1b[H");
+        super::dire_douteux(racine);
         let liste = super::inventaire(racine);
         let reglages = super::reglages::charger(racine);
         let Some(c) = choix(&lignes_plugins(&liste, &reglages), &dernier) else {

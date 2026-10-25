@@ -616,7 +616,10 @@ fn obtenir(source: &Source, adresse: &str, mode: &Mode) -> Result<Copie, String>
             (brut, age, manque)
         }
         Mode::CopieSeule(pourquoi) => {
-            let (brut, age) = gardee(lieu).ok_or_else(|| pourquoi.clone())?;
+            // Âge et contenu d'après le sceau de la copie : changée ou datée dans le futur, elle ne sert pas.
+            let (brut, age) = crate::socle::cache::gardee(lieu, crate::socle::cache::LISTE_MAX)
+                .map_err(|refus| format!("{pourquoi} ; {}", refus.texte()))?
+                .ok_or_else(|| pourquoi.clone())?;
             let manque = (age >= FRAICHE).then(|| pourquoi.clone());
             (brut, age, manque)
         }
@@ -649,20 +652,6 @@ pub(crate) fn demande<'a>(source: &Source, adresse: &'a str) -> crate::http::Dem
         demande.entetes.push(("Accept-Encoding", "gzip".to_string()));
     }
     demande
-}
-
-/// La copie gardée et son âge, sans rien demander.
-fn gardee((sous_dossier, nom): (&str, &str)) -> Option<(Vec<u8>, Duration)> {
-    let fichier = crate::socle::dossier_local().join(sous_dossier).join(nom);
-    let age = std::fs::symlink_metadata(&fichier)
-        .and_then(|m| m.modified())
-        .ok()?
-        .elapsed()
-        .unwrap_or_default();
-    Some((
-        crate::socle::lire_ordinaire(&fichier, crate::socle::cache::LISTE_MAX).ok()?,
-        age,
-    ))
 }
 
 /// Le contenu d'une réponse ou d'une copie, décompressé s'il le faut, et seulement s'il a la forme attendue.
@@ -901,13 +890,9 @@ mod tests {
             &std::fs::read(dossier.join(ESSAI.id)).unwrap()
         ));
         // Une copie de moins d'un jour n'est pas redemandée : vieillie pour que la suite le soit.
+        // L'âge vient du sceau de la copie : c'est lui qui est vieilli.
         let vieillir = |jours: u64| {
-            std::fs::File::options()
-                .write(true)
-                .open(dossier.join(ESSAI.id))
-                .unwrap()
-                .set_modified(std::time::SystemTime::now() - Duration::from_hours(24 * jours))
-                .unwrap();
+            crate::socle::cache::vieillir_pour_essai((SOUS_DOSSIER, ESSAI.id), Duration::from_hours(24 * jours));
         };
         vieillir(2);
         // Une page de portail Wi-Fi : la copie d'avant sert, le manque est dit.

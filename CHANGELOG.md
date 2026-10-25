@@ -9,6 +9,13 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 
 ## Prochaine version
 
+- **Extensions et listes téléchargées scellées.** Les réglages des extensions (« sans restrictions », « à moi »,
+  lancement avec le bilan ou la surveillance) et leurs approbations sont scellés : changés hors de Vanguard, ou
+  acceptés tels quels (sceaux refaits, version d'avant), ils n'accordent plus rien, rien ne tourne tout seul, et c'est
+  dit au menu et au bilan (COM-ETA-001). Chaque liste téléchargée (Feodo Tracker, ThreatFox, URLhaus, MalwareBazaar,
+  KEV, Échap, LOLDrivers, versions des logiciels) est scellée avec sa date de téléchargement : son âge vient de cette
+  date, plus de celle du fichier ; vidée, sans sceau ou datée dans le futur, elle est redemandée, et si elle ne peut
+  pas l'être, « non vérifiée » avec la raison, jamais saine.
 - **Journaux de Windows : un seul juge, deux règles de plus, une place au menu.** Le bilan (WIN-JRN-003) ne lit plus
   les journaux lui-même : il reprend les treize règles EVT- de « Que s'est-il passé ? », alertes au même niveau, et
   « non vérifié » avec sa raison quand un journal manque ou est réservé à l'administrateur ; le rapport HTML ne montre

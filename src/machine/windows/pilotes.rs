@@ -266,7 +266,11 @@ fn lire_pilotes() -> Option<Vec<Pilote>> {
 fn liste_loldrivers() -> Option<HashSet<[u8; 32]>> {
     let lieu = ("loldrivers", "drivers.csv");
     let octets = if cfg!(test) || crate::parametres::hors_ligne() {
-        crate::socle::lire_ordinaire(&crate::socle::dossier_local().join(lieu.0).join(lieu.1), LISTE_MAX).ok()
+        // La copie scellée seule : changée hors de Vanguard, elle ne sert pas (les pilotes ne sont pas dits sains).
+        crate::socle::cache::gardee(lieu, LISTE_MAX)
+            .ok()
+            .flatten()
+            .map(|(o, _)| o)
     } else {
         let demande = crate::http::Demande {
             taille_max: LISTE_MAX,

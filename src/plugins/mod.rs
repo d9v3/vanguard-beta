@@ -38,6 +38,8 @@ const SIGNATURE: &str = "plugin.sig";
 /// Ce qui précède l'empreinte dans le message signé : une signature faite pour autre chose ne vaut pas ici.
 const DOMAINE_PLUGIN: &str = "vanguard-plugin 1";
 const APPROUVES: &str = "approuves.json";
+/// Le nom scellé des approbations sous le dossier de Vanguard (`modele::inventaire`, `sceau`).
+pub(crate) const APPROUVES_SCELLE: &str = "plugins/approuves.json";
 /// Les constats gardés par `--rapport`, un fichier par plugin, repris par le rapport HTML.
 pub(crate) const CONSTATS: &str = ".constats";
 /// Ce qu'un plugin peut écrire (chaque sortie) avant d'être arrêté, et la taille d'un programme.
@@ -231,17 +233,147 @@ struct Approbation {
 /// Les fichiers d'un plugin : chemin relatif (séparateur « / ») → SHA-256.
 pub(crate) type Fichiers = BTreeMap<String, String>;
 
-/// Les approbations ; un fichier illisible n'approuve rien (tout est alors refusé, jamais tout permis).
+/// Les approbations ; un fichier illisible n'approuve rien (tout est alors refusé, jamais tout permis), ni un fichier
+/// changé hors de Vanguard ou accepté tel quel par les sceaux (`approbations_jugees`).
 fn approbations(racine: &Path) -> Approbations {
-    lire_sur(&racine.join(APPROUVES), 1 << 20)
-        .ok()
-        .and_then(|o| serde_json::from_slice(&o).ok())
-        .unwrap_or_default()
+    approbations_jugees(racine).0
+}
+
+/// Les approbations, et pourquoi celles du fichier ont été ignorées quand il en portait. approuves.json est scellé
+/// (`sceau`) : un programme du compte qui y inscrivait l'empreinte de son propre plugin le faisait lancer sans
+/// question. Changé hors de Vanguard, ou accepté tel quel (après des sceaux refaits, ou repris d'une version d'avant
+/// le sceau : rien ne prouve que la personne l'a donné), il n'approuve rien ; chaque extension est redemandée, et
+/// c'est dit (`douteux`).
+fn approbations_jugees(racine: &Path) -> (Approbations, Option<Douteux>) {
+    match lire_scelle(racine, APPROUVES, 1 << 20) {
+        Ok(Some((o, douteux))) => {
+            let a: Approbations = serde_json::from_slice(&o).unwrap_or_default();
+            match douteux {
+                None => (a, None),
+                Some(d) => {
+                    let portait = !a.plugins.is_empty() || !a.labo.is_empty();
+                    (Approbations::default(), portait.then_some(d))
+                }
+            }
+        }
+        Ok(None) | Err(_) => (Approbations::default(), None),
+    }
+}
+
+/// Des approbations qui n'approuvent rien (lisibles et vides) : les resceller ne donne aucun accord.
+fn n_approuve_rien(o: &[u8]) -> bool {
+    serde_json::from_slice::<Approbations>(o).is_ok_and(|a| a.plugins.is_empty() && a.labo.is_empty())
+}
+
+/// Pourquoi un fichier des extensions (réglages, approbations) n'est pas cru.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Douteux {
+    /// Accepté tel quel par les sceaux : une version d'avant le sceau, ou des sceaux refaits.
+    Adopte,
+    /// Changé hors de Vanguard.
+    HorsVanguard,
+}
+
+impl Douteux {
+    pub(crate) fn texte(self) -> &'static str {
+        match self {
+            Douteux::Adopte => tr!(
+                "accepté tel quel, sans sceau d'avant (version d'avant, ou sceaux refaits)",
+                "accepted as it was, without an earlier seal (earlier version, or seals remade)"
+            ),
+            Douteux::HorsVanguard => tr!("changé hors de Vanguard", "changed outside Vanguard"),
+        }
+    }
+}
+
+/// Le dossier des sceaux et le nom scellé d'un fichier des extensions : le parent de `racine` (le dossier de
+/// Vanguard) et « plugins/<fichier> » (`modele::inventaire`).
+fn lieu_scelle(racine: &Path, fichier: &str) -> Result<(PathBuf, String), crate::modele::Echec> {
+    let parent = racine.parent().filter(|p| !p.as_os_str().is_empty());
+    let nom = racine.file_name().and_then(|n| n.to_str());
+    match (parent, nom) {
+        (Some(p), Some(n)) => Ok((p.to_path_buf(), format!("{n}/{fichier}"))),
+        _ => Err(crate::modele::Echec::refuse(
+            "plugins/sceau",
+            trf!(
+                "{} : pas un dossier des extensions",
+                "{}: not an extensions folder",
+                chemin_affichable(racine)
+            ),
+        )),
+    }
+}
+
+/// Un fichier scellé lu : son contenu, et pourquoi il n'est pas cru (`None` : tel que Vanguard l'a écrit).
+pub(crate) type Lu = (Vec<u8>, Option<Douteux>);
+
+/// Un fichier scellé du dossier des extensions, `max` octets au plus : `Ok(None)` s'il n'y est pas (ou effacé hors de
+/// Vanguard : rien n'est alors accordé), le contenu et, s'il n'est pas tel que Vanguard l'a écrit, pourquoi. Le
+/// fichier doit d'abord être à soi et fermé aux autres comptes (`ouvrir_sur`), comme avant le sceau.
+pub(crate) fn lire_scelle(racine: &Path, fichier: &str, max: usize) -> Result<Option<Lu>, crate::modele::Echec> {
+    use crate::modele::{Echec, Raison};
+    use crate::sceau::Lecture;
+    const OU: &str = "plugins/lire";
+    let chemin = racine.join(fichier);
+    if std::fs::symlink_metadata(&chemin).is_ok() {
+        ouvrir_sur(&chemin).map_err(|e| Echec::refuse(OU, e))?;
+    }
+    let (dossier, nom) = lieu_scelle(racine, fichier)?;
+    let (octets, douteux) = match crate::sceau::lire_dans(&dossier, &nom) {
+        Lecture::Absent | Lecture::Inconnu | Lecture::Falsifie(None) => return Ok(None),
+        Lecture::Illisible(e) => return Err(Echec::new(OU, Raison::Illisible(e))),
+        Lecture::Intact(o) => (o, None),
+        // Jamais un feu vert : repris d'une version d'avant le sceau, il a pu être écrit par n'importe quel
+        // programme du compte, comme après des sceaux refaits.
+        Lecture::Adopte(o) => (o, Some(Douteux::Adopte)),
+        Lecture::Falsifie(Some(o)) => (o, Some(Douteux::HorsVanguard)),
+    };
+    if octets.len() > max {
+        return Err(Echec::refuse(
+            OU,
+            trf!("{} : trop gros", "{}: too large", chemin_affichable(&chemin)),
+        ));
+    }
+    Ok(Some((octets, douteux)))
+}
+
+/// Écrit un fichier du dossier des extensions, et son sceau.
+pub(crate) fn ecrire_scelle(racine: &Path, fichier: &str, octets: &[u8]) -> Result<(), crate::modele::Echec> {
+    let (dossier, nom) = lieu_scelle(racine, fichier)?;
+    crate::sceau::ecrire_dans(&dossier, &nom, octets).map_err(|e| crate::modele::Echec::ecriture("plugins/ecrire", &e))
+}
+
+/// Ce que la personne doit savoir des réglages et des approbations ignorés (menu Extensions, `vanguard plugins`).
+pub(crate) fn douteux(racine: &Path) -> Vec<String> {
+    let mut dit = Vec::new();
+    if let Some(d) = reglages::douteux(racine) {
+        dit.push(trf!(
+            "Réglages des extensions ({}) ignorés : aucune restriction coupée, aucun élément « à moi », rien ne tourne tout seul. Réglez-les de nouveau ici si c'était vous.",
+            "Extension settings ({}) ignored: no restriction lifted, no item “mine”, nothing runs on its own. Set them again here if it was you.",
+            d.texte()
+        ));
+    }
+    if let Some(d) = approbations_jugees(racine).1 {
+        dit.push(trf!(
+            "Approbations des extensions ({}) ignorées : chaque extension est redemandée (« vanguard plugins approuver <nom> »).",
+            "Extension approvals ({}) ignored: each extension is asked again (“vanguard plugins approve <name>”).",
+            d.texte()
+        ));
+    }
+    dit
+}
+
+/// Montre ce que `douteux` a à dire, en alerte.
+pub(crate) fn dire_douteux(racine: &Path) {
+    for texte in douteux(racine) {
+        let marque = format!("  {}✖{RESET} ", couleur(crate::risk::Niveau::Eleve));
+        afficher_aligne(&marque, &texte, 4, GRAS);
+    }
 }
 
 fn enregistrer(racine: &Path, a: &Approbations) -> Result<(), String> {
     let texte = serde_json::to_string_pretty(a).map_err(|e| e.to_string())?;
-    crate::socle::ecrire_atomique(&racine.join(APPROUVES), texte).map_err(|e| {
+    ecrire_scelle(racine, APPROUVES, texte.as_bytes()).map_err(|e| {
         trf!(
             "Approbation impossible à écrire : {e}",
             "Could not write the approval: {e}"
@@ -1525,10 +1657,20 @@ pub fn lancer(racine: &Path, nom: &str, arguments: &[String], facon: Facon) -> R
                 Some(true) => false,
                 Some(false) => return Err(refuse_change()),
                 None => {
-                    return Err(trf!(
+                    let mut refus = trf!(
                         "Le plugin « {nom} » n'est pas approuvé : « vanguard plugins approuver {nom} » montre ce qu'il lancera.",
                         "The plugin “{nom}” is not approved: “vanguard plugins approve {nom}” shows what it will run."
-                    ));
+                    );
+                    // Une approbation ignorée (fichier changé hors de Vanguard) : dite, pour que la personne sache
+                    // pourquoi on la redemande.
+                    if let Some(d) = approbations_jugees(racine).1 {
+                        refus += &trf!(
+                            " Les approbations ont été ignorées : {}.",
+                            " The approvals were ignored: {}.",
+                            d.texte()
+                        );
+                    }
+                    return Err(refus);
                 }
             },
         };
@@ -1682,6 +1824,7 @@ fn liste(racine: &Path) {
         4,
         GRIS,
     );
+    dire_douteux(racine);
     let plugins = inventaire(racine);
     if plugins.is_empty() {
         aide_ajout();

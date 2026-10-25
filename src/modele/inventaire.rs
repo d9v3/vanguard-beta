@@ -128,6 +128,10 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     local("cle-donnees-enveloppe-retiree", "reseau"),
     local("jeux.json", "gaming::annulation"),
     local("plugins", "plugins::sortie"),
+    // Les restrictions des extensions et leurs approbations : « sans restrictions », « à moi » et une approbation font
+    // tourner du code sans question.
+    scelle(crate::plugins::reglages::SCELLE, "plugins::reglages"),
+    scelle(crate::plugins::APPROUVES_SCELLE, "plugins"),
     local("tldr", "guide::tldr"),
     // Machine.
     scelle(sceau::ADMINISTRATEURS, "machine::administrateurs"),

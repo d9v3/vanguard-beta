@@ -545,6 +545,106 @@ mod unix {
         assert!(issue.borne.delai && issue.borne.sortie == "debut\n");
         assert!(debut.elapsed() < std::time::Duration::from_secs(10));
     }
+
+    /// Les réglages et les approbations sont scellés : réécrits par un autre programme du compte (« sans
+    /// restrictions », la confiance « à moi » avec le bilan, une approbation), ou acceptés tels quels après des sceaux
+    /// effacés, ils n'accordent rien : rien ne tourne tout seul ni sans question, et c'est dit. Réécrits par Vanguard
+    /// (la personne qui approuve de nouveau), ils valent de nouveau.
+    #[test]
+    fn reglages_et_approbations_forges_n_accordent_rien() {
+        if en_root() {
+            return crate::essais::saute("en root : extensions refusées");
+        }
+        let j = Jetable::nouveau();
+        ecrire_source(&j, 20, "echo confiance\n");
+        let m = manifeste(20).replace(
+            "delai = 20",
+            "delai = 20\ndans_le_bilan = true\ndans_la_surveillance = true",
+        );
+        std::fs::write(j.source().join(MANIFESTE), m).unwrap();
+        let racine = j.racine();
+        let auto = |quand| Facon {
+            isole: false,
+            auto: Some(quand),
+        };
+        ajouter(&racine, &j.source(), |_| true).unwrap();
+        let empreinte = inventaire(&racine)[0].empreinte.clone().unwrap();
+        reglages::accorder(&racine, false, "salon", &empreinte, true, true).unwrap();
+        assert!(lancer(&racine, "salon", &[], auto(Auto::Bilan)).is_ok());
+        assert_eq!(douteux(&racine), Vec::<String>::new());
+        let reglages_json = racine.join("reglages.json");
+        let approuves_json = racine.join(APPROUVES);
+        // Les réglages réécrits à côté de Vanguard, avec la coupure générale en plus.
+        let vrais = std::fs::read_to_string(&reglages_json).unwrap();
+        let forges = vrais.replacen("\"sans_restrictions\": false", "\"sans_restrictions\": true", 1);
+        assert_ne!(vrais, forges);
+        std::fs::write(&reglages_json, &forges).unwrap();
+        assert_eq!(reglages::charger(&racine), reglages::Reglages::default());
+        assert!(lancer(&racine, "salon", &[], auto(Auto::Bilan)).is_err());
+        assert!(lancer(&racine, "salon", &[], auto(Auto::Surveillance)).is_err());
+        let dit = douteux(&racine);
+        assert_eq!(dit.len(), 1, "{dit:?}");
+        assert!(
+            dit[0].contains("hors de Vanguard") || dit[0].contains("outside Vanguard"),
+            "{dit:?}"
+        );
+        // Approuvé par Vanguard, il tourne encore à la main, restreint (la confiance forgée ne vaut rien).
+        assert!(lancer(&racine, "salon", &[], Facon::default()).is_ok());
+        // L'approbation réécrite à côté (le même contenu, un espace de plus) : plus rien n'est approuvé.
+        let mut a = std::fs::read(&approuves_json).unwrap();
+        a.push(b' ');
+        std::fs::write(&approuves_json, &a).unwrap();
+        assert_eq!(inventaire(&racine)[0].etat, Etat::NonApprouve);
+        let refus = lancer(&racine, "salon", &[], Facon::default()).err().unwrap();
+        assert!(refus.contains("pas approuvé") && refus.contains("ignorées"), "{refus}");
+        assert_eq!(douteux(&racine).len(), 2);
+        // Le bilan le dit comme les autres falsifications (COM-ETA-001), par l'inventaire des fichiers scellés.
+        let sceaux = racine.parent().unwrap();
+        for nom in [reglages::SCELLE, APPROUVES_SCELLE] {
+            assert!(
+                matches!(
+                    crate::sceau::lire_dans(sceaux, nom),
+                    crate::sceau::Lecture::Falsifie(Some(_))
+                ),
+                "{nom}"
+            );
+            assert!(crate::modele::inventaire::scelles().any(|n| n == nom), "{nom}");
+        }
+        // Les sceaux effacés : les deux fichiers sont acceptés tels quels, mais jamais crus.
+        std::fs::remove_file(sceaux.join("sceaux.json")).unwrap();
+        assert!(matches!(
+            crate::sceau::lire_dans(sceaux, APPROUVES_SCELLE),
+            crate::sceau::Lecture::Adopte(_)
+        ));
+        assert_eq!(reglages::charger(&racine), reglages::Reglages::default());
+        assert!(lancer(&racine, "salon", &[], Facon::default()).is_err());
+        assert!(lancer(&racine, "salon", &[], auto(Auto::Bilan)).is_err());
+        let dit = douteux(&racine).join(" ");
+        assert!(dit.contains("tel quel") || dit.contains("as it was"), "{dit}");
+        // Couper les restrictions redemande l'accord (la confirmation forgée ne compte pas), et l'ancien fichier
+        // est gardé à côté, pas écrasé en silence.
+        let mut demande = false;
+        assert!(
+            reglages::basculer(&racine, |_| {
+                demande = true;
+                true
+            })
+            .unwrap()
+        );
+        assert!(demande);
+        assert!(
+            std::fs::read_dir(&racine)
+                .unwrap()
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().starts_with("reglages.illisible-"))
+        );
+        assert!(reglages::charger(&racine).sans_restrictions);
+        // Approuvé de nouveau par la personne : il tourne.
+        reglages::basculer(&racine, |_| true).unwrap();
+        approuver(&racine, "salon", |_| true).unwrap();
+        assert!(lancer(&racine, "salon", &[], Facon::default()).is_ok());
+        assert_eq!(douteux(&racine), Vec::<String>::new());
+    }
 }
 
 #[cfg(unix)]

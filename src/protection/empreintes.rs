@@ -192,8 +192,9 @@ pub(crate) fn gardees() -> Chargees {
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn recentes_gardees() -> Option<Empreintes> {
     // Borné comme une liste : le veilleur tient en 128 Mo, un fichier creux de plusieurs Gio ne s'y charge pas.
-    let texte = crate::socle::lire_texte_ordinaire(&dossier().join("recentes.txt"), TEXTE_MAX as u64).ok()?;
-    let mut triees = lire_texte(&texte);
+    // La copie scellée seule (`socle::cache::gardee`) : changée hors de Vanguard, aucune liste, jamais une liste vide.
+    let (octets, _) = crate::socle::cache::gardee(("malwarebazaar", "recentes.txt"), TEXTE_MAX as u64).ok()??;
+    let mut triees = lire_texte(&String::from_utf8_lossy(&octets));
     triees.sort_unstable();
     triees.dedup();
     (!triees.is_empty()).then_some(Empreintes {
@@ -204,7 +205,7 @@ pub(crate) fn recentes_gardees() -> Option<Empreintes> {
 
 fn charger(telecharger: bool) -> Result<Empreintes, String> {
     let d = dossier();
-    let (complete, recentes) = (d.join("complete.zip"), d.join("recentes.txt"));
+    let complete = d.join("complete.zip");
     // Sans clé, rien ne se rafraîchit, même quand on ne voulait rien télécharger : la copie vieillit, c'est dit.
     let mut echec = abuse_ch::cle().is_none().then_some(Echec::Manquante);
     if telecharger && echec.is_none() && !cfg!(test) && !crate::parametres::hors_ligne() {
@@ -234,19 +235,32 @@ fn charger(telecharger: bool) -> Result<Empreintes, String> {
             }
         }
     }
-    let mut triees = crate::socle::lire_ordinaire(&complete, crate::socle::cache::LISTE_MAX)
-        .ok()
+    // Les copies scellées seules (`socle::cache::gardee`) : une copie vidée ou datée dans le futur par un autre
+    // programme ne compte pas, et son refus est dit comme un rafraîchissement manqué.
+    let mut refus = None;
+    let mut gardee = |nom: &str, max: u64| match crate::socle::cache::gardee(("malwarebazaar", nom), max) {
+        Ok(copie) => copie.map(|(o, _)| o),
+        Err(r) => {
+            refus.get_or_insert(r);
+            None
+        }
+    };
+    let mut triees = gardee("complete.zip", crate::socle::cache::LISTE_MAX)
         .and_then(|a| premier_fichier_zip(&a, TEXTE_MAX))
         .map(|t| lire_octets(&t))
         .unwrap_or_default();
     triees.extend(lire_octets(
-        &crate::socle::lire_ordinaire(&recentes, TEXTE_MAX as u64).unwrap_or_default(),
+        &gardee("recentes.txt", TEXTE_MAX as u64).unwrap_or_default(),
     ));
     triees.sort_unstable();
     triees.dedup();
+    // Le refus d'une copie passe avant l'échec du téléchargement : c'est lui qui dit pourquoi elle ne compte pas.
+    let raison = refus
+        .map(crate::socle::cache::Refus::texte)
+        .or_else(|| echec.map(Echec::raison));
     if triees.is_empty() {
-        return Err(match echec {
-            Some(e) => trf!("non vérifiées : {}", "not checked: {}", e.raison()),
+        return Err(match raison {
+            Some(r) => trf!("non vérifiées : {r}", "not checked: {r}"),
             None if telecharger => tr!("hors ligne, et aucune copie gardée", "offline, and no saved copy").into(),
             None => tr!(
                 "absentes : une analyse YARA (vanguard yara) les télécharge",
@@ -255,7 +269,7 @@ fn charger(telecharger: bool) -> Result<Empreintes, String> {
             .into(),
         });
     }
-    let avertissement = echec.map(avertissement);
+    let avertissement = raison.map(|r| avertissement(&r));
     Ok(Empreintes { triees, avertissement })
 }
 
@@ -269,11 +283,11 @@ fn manque(rendu: &Result<Export, Echec>) -> Option<Echec> {
 }
 
 /// L'avertissement montré à côté du résultat quand la copie gardée a servi.
-fn avertissement(e: Echec) -> String {
+fn avertissement(raison: &str) -> String {
     trf!(
         "empreintes de MalwareBazaar non rafraîchies, la copie gardée a servi : {}",
         "MalwareBazaar fingerprints not refreshed, the saved copy was used: {}",
-        e.raison()
+        raison
     )
 }
 
@@ -335,7 +349,7 @@ mod tests {
             Some(Echec::SansReponse)
         );
         assert_eq!(manque(&Err(Echec::Refusee)), Some(Echec::Refusee));
-        let a = avertissement(Echec::Reponse(404));
+        let a = avertissement(&Echec::Reponse(404).raison());
         assert!(a.contains("404") && a.contains("MalwareBazaar"), "{a}");
     }
 
