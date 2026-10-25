@@ -368,11 +368,6 @@ pub(crate) fn services() -> Option<Vec<Service>> {
         let Some(nom) = nom.filter(|n| !n.is_empty()) else {
             continue;
         };
-        // Un service hors de l'ordre du jeu courant : networksetup ne le montre pas et refuse de le régler (vu sur
-        // un Mac de GitHub : « Ethernet Adapter (en1) », carte présente). Sans ordre réglé, tous comptent.
-        if !ordre.is_empty() && !ordre.contains(&id) {
-            continue;
-        }
         services.push(Service {
             id,
             nom,
@@ -492,13 +487,24 @@ mod oracles {
                 (numero == "*" || numero.parse::<u32>().is_ok()).then(|| (numero != "*", nom.to_string()))
             })
             .collect();
-        let lus: Vec<(bool, String)> = natifs.iter().map(|s| (s.actif, s.nom.clone())).collect();
+        // Un service lu en plus n'est admis que si networksetup lui-même ne le reconnaît pas (Mac virtuels de
+        // GitHub : « Ethernet Adapter (en1) », dans l'ordre du jeu, carte présente, absent de sa liste) : ce que
+        // networksetup cache ainsi reste à comprendre sur un vrai Mac.
+        let lus: Vec<(bool, String)> = natifs
+            .iter()
+            .filter(|s| {
+                attendus.iter().any(|(_, n)| *n == s.nom)
+                    || outil("networksetup", &["-getdnsservers", &s.nom])
+                        .is_some_and(|t| !t.contains("not a recognized network service"))
+            })
+            .map(|s| (s.actif, s.nom.clone()))
+            .collect();
         let detail: Vec<String> = natifs
             .iter()
             .map(|s| format!("{} {:?} {}", s.id, s.carte, s.nom))
             .collect();
         assert_eq!(lus, attendus, "{ordre}\n{detail:#?}");
-        for s in &natifs {
+        for s in natifs.iter().filter(|s| attendus.iter().any(|(_, n)| *n == s.nom)) {
             let texte = outil("networksetup", &["-getdnsservers", &s.nom]).unwrap_or_default();
             let attendu: Vec<IpAddr> = texte.lines().filter_map(|l| l.trim().parse().ok()).collect();
             assert_eq!(s.dns, attendu, "{}", s.nom);
