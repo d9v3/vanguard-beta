@@ -72,6 +72,12 @@ Le détail de chaque menace, menu par menu : [Ce que fait Vanguard](README.md#ce
 - **Les listes et les outils tiers sont justes.** Les listes de menaces, de versions et de failles (abuse.ch, CISA,
   éditeurs) et les outils que Vanguard lance sans les avoir écrits (ClamAV, trivy, gitleaks) sont crus tels quels ;
   une liste trop vieille est dite non vérifiée.
+- **Les programmes de votre compte ne visent pas Vanguard lui-même.** Vanguard garde son état (ce qu'il a déjà vu,
+  ce que vous avez réglé, les défenses que vous avez allumées) dans un dossier de votre compte. Un programme
+  malveillant qui tourne sous votre compte peut donc fausser cet état. Vanguard voit et dit la falsification simple
+  (un fichier changé, effacé ou daté dans le futur) et ne s'y fie plus : aucune défense ne se coupe, aucune alerte ne
+  se tait. Il ne voit pas celle d'un programme écrit exprès pour tromper ce mécanisme. La vraie parade, un service
+  qui tourne sous un autre compte que le vôtre, viendra avec la version installée.
 - **La personne décide.** Rien n'est modifié sans son accord. Ce qu'elle accepte s'annule une correction à la fois,
   sauf ce qui rallume une protection et l'arrêt d'un programme ; une correction dont l'état d'avant ne se relève pas
   est dite « non annulable » avant d'être appliquée.

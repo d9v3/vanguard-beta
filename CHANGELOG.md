@@ -9,6 +9,14 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 
 ## Prochaine version
 
+- **Autres fichiers d'état scellés, un seul juge.** La liste des fichiers-pièges, les ports bloqués, le carnet des
+  appareils de cet ordinateur, les références de la clé VANGUARD, l'entretien du mois, la note de la sauvegarde et la
+  dernière passe de la surveillance sont scellés : changés, effacés ou acceptés tels quels après des sceaux refaits,
+  ils ne coupent plus rien (un piège reste attendu, un port exposé est redit, chaque appareil est redit nouveau, la
+  clé n'est jamais dite intacte, rien n'est annulé d'après une note forgée), et c'est dit. Tous les lecteurs suivent
+  le même juge, et un test vérifie qu'aucun fichier du dossier de données n'est lu sans lui ; VANGUARD_ORIGINE n'est
+  crue qu'aux octets du programme qui tourne. Le modèle de menace dit la limite : un programme écrit exprès pour
+  tromper ce mécanisme n'est pas vu.
 - **Extensions et listes téléchargées scellées.** Les réglages des extensions (« sans restrictions », « à moi »,
   lancement avec le bilan ou la surveillance) et leurs approbations sont scellés : changés hors de Vanguard, ou
   acceptés tels quels (sceaux refaits, version d'avant), ils n'accordent plus rien, rien ne tourne tout seul, et c'est

@@ -70,6 +70,12 @@ Each threat in detail, menu by menu: [What Vanguard does](README.en.md#what-vang
 - **The lists and third-party tools are right.** The threat, version and vulnerability lists (abuse.ch, CISA,
   vendors) and the tools Vanguard runs without having written them (ClamAV, trivy, gitleaks) are trusted as they
   are; a list that is too old is reported as not checked.
+- **The programs of your account do not target Vanguard itself.** Vanguard keeps its state (what it has already
+  seen, what you have set, the defenses you have turned on) in a folder of your account. A malicious program running
+  under your account can therefore tamper with that state. Vanguard sees and reports simple tampering (a file
+  changed, deleted or dated in the future) and no longer relies on it: no defense is turned off, no alert is
+  silenced. It does not see tampering by a program written on purpose to fool this mechanism. The real answer, a
+  service running under an account other than yours, will come with the installed version.
 - **The person decides.** Nothing is changed without their consent. What they accept can be undone one fix at a
   time, except what turns a protection back on and the stopping of a program; a fix whose previous state cannot be
   read is reported as “not undoable” before it is applied.
