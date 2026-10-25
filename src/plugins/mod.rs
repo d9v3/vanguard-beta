@@ -250,8 +250,10 @@ fn approbations_jugees(racine: &Path) -> (Approbations, Option<Douteux>) {
             let a: Approbations = serde_json::from_slice(&o).unwrap_or_default();
             match douteux {
                 None => (a, None),
+                // Dit seulement si une approbation ignorée vaudrait encore pour un plugin ou un script présent :
+                // celle d'un plugin retiré n'accorde plus rien.
                 Some(d) => {
-                    let portait = !a.plugins.is_empty() || !a.labo.is_empty();
+                    let portait = !approuves_presents(racine, &a).is_empty();
                     (Approbations::default(), portait.then_some(d))
                 }
             }
@@ -260,9 +262,46 @@ fn approbations_jugees(racine: &Path) -> (Approbations, Option<Douteux>) {
     }
 }
 
-/// Des approbations qui n'approuvent rien (lisibles et vides) : les resceller ne donne aucun accord.
-fn n_approuve_rien(o: &[u8]) -> bool {
-    serde_json::from_slice::<Approbations>(o).is_ok_and(|a| a.plugins.is_empty() && a.labo.is_empty())
+/// Les plugins et scripts du labo encore là que ces approbations approuvent.
+fn approuves_presents(racine: &Path, a: &Approbations) -> Vec<String> {
+    let plugins = a.plugins.keys().filter(|n| racine.join(n).is_dir());
+    let labo = a.labo.keys().filter(|f| racine.join(labo::DOSSIER).join(f).is_file());
+    plugins.chain(labo).cloned().collect()
+}
+
+/// Les éléments à qui un fichier ignoré accordait encore quelque chose (« à moi », approbation) : pour dire à la
+/// personne quoi refaire. Le contenu ignoré se lit encore ; il n'accorde rien, il nomme seulement.
+pub(crate) fn a_refaire(racine: &Path) -> Vec<String> {
+    let mut noms = std::collections::BTreeSet::new();
+    if let Ok(Some((o, Some(_)))) = lire_scelle(racine, reglages::FICHIER, 64 << 10)
+        && let Ok(r) = serde_json::from_slice::<reglages::Reglages>(&o)
+    {
+        noms.extend(r.plugins_a_moi.into_iter().chain(r.labo_a_moi).map(|k| k.nom));
+    }
+    if let Ok(Some((o, Some(_)))) = lire_scelle(racine, APPROUVES, 1 << 20)
+        && let Ok(a) = serde_json::from_slice::<Approbations>(&o)
+    {
+        noms.extend(approuves_presents(racine, &a));
+    }
+    noms.into_iter().map(|n| affichable(&n)).collect()
+}
+
+/// approuves.json d'une version d'avant le sceau (sous `dossier`, celui des sceaux), accepté tel quel à la mise à
+/// jour : rescellé s'il n'approuve rien
+/// qui soit encore là (vide, ou seulement des plugins retirés depuis), réécrit vide pour qu'aucune approbation
+/// d'un plugin remis plus tard n'en revienne. Jamais après l'effacement des sceaux.
+pub(crate) fn resceller_dans(dossier: &Path) {
+    let racine = dossier.join("plugins");
+    if crate::sceau::refaits_dans(dossier) {
+        return;
+    }
+    if let crate::sceau::Lecture::Adopte(o) = crate::sceau::lire_dans(dossier, APPROUVES_SCELLE)
+        && let Ok(a) = serde_json::from_slice::<Approbations>(&o)
+        && approuves_presents(&racine, &a).is_empty()
+        && let Ok(texte) = serde_json::to_string_pretty(&Approbations::default())
+    {
+        let _ = crate::sceau::ecrire_dans(dossier, APPROUVES_SCELLE, texte.as_bytes());
+    }
 }
 
 /// Pourquoi un fichier des extensions (réglages, approbations) n'est pas cru.
@@ -278,10 +317,10 @@ impl Douteux {
     pub(crate) fn texte(self) -> &'static str {
         match self {
             Douteux::Adopte => tr!(
-                "accepté tel quel, sans sceau d'avant (version d'avant, ou sceaux refaits)",
-                "accepted as it was, without an earlier seal (earlier version, or seals remade)"
+                "fichier repris tel quel d'une version d'avant de Vanguard, ou après l'effacement de ses sceaux",
+                "file taken as it was from an earlier version of Vanguard, or after its seals were deleted"
             ),
-            Douteux::HorsVanguard => tr!("changé hors de Vanguard", "changed outside Vanguard"),
+            Douteux::HorsVanguard => tr!("fichier changé hors de Vanguard", "file changed outside Vanguard"),
         }
     }
 }
@@ -343,24 +382,67 @@ pub(crate) fn ecrire_scelle(racine: &Path, fichier: &str, octets: &[u8]) -> Resu
     crate::sceau::ecrire_dans(&dossier, &nom, octets).map_err(|e| crate::modele::Echec::ecriture("plugins/ecrire", &e))
 }
 
-/// Ce que la personne doit savoir des réglages et des approbations ignorés (menu Extensions, `vanguard plugins`).
+/// Ce que la personne doit savoir des réglages et des approbations ignorés (menu Extensions, `vanguard plugins`,
+/// bilan complet) : pourquoi, ce que ça coupe, quoi taper, et les éléments à refaire.
 pub(crate) fn douteux(racine: &Path) -> Vec<String> {
     let mut dit = Vec::new();
     if let Some(d) = reglages::douteux(racine) {
         dit.push(trf!(
-            "Réglages des extensions ({}) ignorés : aucune restriction coupée, aucun élément « à moi », rien ne tourne tout seul. Réglez-les de nouveau ici si c'était vous.",
-            "Extension settings ({}) ignored: no restriction lifted, no item “mine”, nothing runs on its own. Set them again here if it was you.",
+            "Réglages des extensions ignorés : {}. Aucune restriction n'est coupée, aucun élément n'est « à moi », rien ne tourne tout seul. Si c'était vous, refaites-les dans le menu Extensions (« vanguard extensions »).",
+            "Extension settings ignored: {}. No restriction is lifted, no item is “mine”, nothing runs on its own. If it was you, set them again in the Extensions menu (“vanguard extensions”).",
             d.texte()
         ));
     }
     if let Some(d) = approbations_jugees(racine).1 {
         dit.push(trf!(
-            "Approbations des extensions ({}) ignorées : chaque extension est redemandée (« vanguard plugins approuver <nom> »).",
-            "Extension approvals ({}) ignored: each extension is asked again (“vanguard plugins approve <name>”).",
+            "Approbations des extensions ignorées : {}. Chaque extension est redemandée : « vanguard plugins approuver <nom> ».",
+            "Extension approvals ignored: {}. Each extension is asked again: “vanguard plugins approve <name>”.",
             d.texte()
         ));
     }
+    let noms = a_refaire(racine);
+    if !dit.is_empty() && !noms.is_empty() {
+        dit.push(trf!("À refaire : {}.", "To redo: {}.", noms.join(", ")));
+    }
     dit
+}
+
+/// Le constat du bilan (COM-ETA-001) pour les fichiers des extensions changés hors de Vanguard ou acceptés tels
+/// quels, à la place du constat commun des sceaux, dont le « à faire » (Ce que Vanguard a appris, la référence des
+/// fichiers critiques) ne les réécrit pas. Rien s'ils n'accordaient rien (rescellés, ou ignorés sans rien couper).
+pub(crate) fn constat_sceaux(falsifies: bool) -> Option<crate::machine::Constat> {
+    use crate::risk::Niveau;
+    // Lu aussi en administrateur (rien n'y est écrit : `sceau::lire_dans` ne note rien dans le dossier d'un autre).
+    let local = crate::socle::dossier_local();
+    if !local.is_absolute() {
+        return None;
+    }
+    let mut dit = douteux(&local.join("plugins"));
+    let niveau = match (dit.is_empty(), falsifies) {
+        (false, true) => Niveau::Eleve,
+        (false, false) => Niveau::Moyen,
+        // Changé hors de Vanguard sans rien accorder : rien n'est coupé, mais c'est une falsification, dite.
+        (true, true) => {
+            dit.push(
+                tr!(
+                    "Les réglages ou les approbations des extensions ont été changés hors de Vanguard ; ils n'accordaient rien, et ils sont ignorés.",
+                    "Extension settings or approvals were changed outside Vanguard; they granted nothing, and they are ignored."
+                )
+                .to_string(),
+            );
+            Niveau::Moyen
+        }
+        (true, false) => return None,
+    };
+    Some(
+        crate::machine::alerte(crate::sceau::CAT, niveau, dit.join(" ")).manuel(
+            tr!(
+                "Menu Extensions (« vanguard extensions »), ou « vanguard plugins approuver <nom> » pour chaque extension à refaire",
+                "Extensions menu (“vanguard extensions”), or “vanguard plugins approve <name>” for each extension to redo"
+            ),
+            &[],
+        ),
+    )
 }
 
 /// Montre ce que `douteux` a à dire, en alerte.
@@ -1930,6 +2012,11 @@ fn opt_in(surveillance: bool) -> Vec<(Manifeste, Vec<sortie::ConstatPlugin>)> {
 
 /// Avec le bilan complet : les plugins qui l'ont demandé, et leurs constats, à part et hors de la note.
 pub fn avec_le_bilan() {
+    // Des extensions qui ne tournent plus avec le bilan parce que leurs réglages sont ignorés : dit ici aussi, là où
+    // on les attendait.
+    if let Ok(racine) = dossier() {
+        dire_douteux(&racine);
+    }
     for (m, constats) in opt_in(false) {
         sortie::afficher_constats(&format!("extension {}", m.nom), m.titre(), &constats);
     }

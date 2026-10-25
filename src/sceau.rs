@@ -662,7 +662,14 @@ pub(crate) fn constat() -> Vec<Constat> {
     for nom in [ADMINISTRATEURS, BLUETOOTH, CLES_CONNUES] {
         resceller_si(nom, |_| true);
     }
-    let r = falsifies_dans(&dossier());
+    let mut r = falsifies_dans(&dossier());
+    // Les fichiers des extensions ont leur propre constat, avec ce qu'il faut refaire (`plugins::constat_sceaux`) : le
+    // « à faire » commun ne les réécrit pas.
+    let des_extensions = |n: &&str| n.starts_with("plugins/");
+    let extensions_falsifiees = r.falsifies.iter().any(des_extensions);
+    let extensions = extensions_falsifiees || r.adoptes.iter().any(des_extensions);
+    r.falsifies.retain(|n| !des_extensions(n));
+    r.adoptes.retain(|n| !des_extensions(n));
     let mut constats: Vec<Constat> = if r.refaits {
         juger_refaits(&r.adoptes, &r.depuis, chrono::Local::now().date_naive())
             .into_iter()
@@ -676,6 +683,9 @@ pub(crate) fn constat() -> Vec<Constat> {
             r.illisibles,
             crate::mise_a_jour::copie_plus_ancienne(),
         ));
+    }
+    if extensions {
+        constats.extend(crate::plugins::constat_sceaux(extensions_falsifiees));
     }
     constats
 }

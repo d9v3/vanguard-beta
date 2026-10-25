@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::ui::{GRIS, RESET, chemin_affichable};
 use crate::{tr, trf, trp};
 
-const FICHIER: &str = "reglages.json";
+pub(super) const FICHIER: &str = "reglages.json";
 
 /// Bornes très larges des extensions sans restrictions : elles ne servent qu'à ne jamais figer Vanguard pour de bon.
 pub const DELAI_LIBRE: u64 = 6 * 3600;
@@ -75,8 +75,7 @@ pub(crate) fn lire_juge(racine: &Path) -> Result<(Reglages, Option<super::Douteu
     let Some(d) = douteux else {
         return Ok((r, None));
     };
-    let levait = r != Reglages::default();
-    Ok((Reglages::default(), levait.then_some(d)))
+    Ok((Reglages::default(), r.accorde().then_some(d)))
 }
 
 /// Pourquoi les réglages du fichier sont ignorés, s'ils levaient quelque chose.
@@ -117,16 +116,33 @@ pub fn enregistrer(racine: &Path, r: &Reglages) -> Result<(), String> {
         .map_err(|e| trf!("Réglage impossible à écrire : {e}", "Could not write the setting: {e}"))
 }
 
-/// reglages.json et approuves.json d'une version d'avant le sceau, acceptés tels quels à la mise à jour : rescellés
-/// seulement s'ils n'accordent rien (`sceau::resceller_si`) ; sinon ils restent ignorés, et le bilan le dit.
+/// reglages.json et approuves.json d'une version d'avant le sceau, acceptés tels quels à la mise à jour : réécrits,
+/// scellés, s'ils n'accordent rien ; sinon ils restent ignorés, et le bilan dit quoi refaire. Réécrit à ses défauts,
+/// pas tel quel : la confirmation de la coupure qu'il porte peut-être (la personne a coupé puis remis les
+/// restrictions) n'est pas prouvée, elle sera redemandée. Jamais après l'effacement des sceaux.
 pub(crate) fn resceller_d_avant() {
-    crate::sceau::resceller_si(SCELLE, |o| {
-        serde_json::from_slice::<Reglages>(o).is_ok_and(|r| r == Reglages::default())
-    });
-    crate::sceau::resceller_si(super::APPROUVES_SCELLE, super::n_approuve_rien);
+    resceller_dans(&crate::socle::dossier_local());
+}
+
+/// `resceller_d_avant` dans `dossier` (celui des sceaux, parent du dossier des extensions).
+pub(crate) fn resceller_dans(dossier: &Path) {
+    if !crate::sceau::refaits_dans(dossier)
+        && let crate::sceau::Lecture::Adopte(o) = crate::sceau::lire_dans(dossier, SCELLE)
+        && serde_json::from_slice::<Reglages>(&o).is_ok_and(|r| !r.accorde())
+        && let Ok(texte) = serde_json::to_string_pretty(&Reglages::default())
+    {
+        let _ = crate::sceau::ecrire_dans(dossier, SCELLE, texte.as_bytes());
+    }
+    super::resceller_dans(dossier);
 }
 
 impl Reglages {
+    /// Ces réglages accordent-ils quelque chose (les restrictions coupées, un élément « à moi ») ? La confirmation de
+    /// la coupure seule n'accorde rien : elle évite seulement une question.
+    pub(crate) fn accorde(&self) -> bool {
+        self.sans_restrictions || !self.plugins_a_moi.is_empty() || !self.labo_a_moi.is_empty()
+    }
+
     /// La confiance accordée à ce plugin, s'il est encore exactement ce qu'il était.
     pub fn plugin_a_moi(&self, nom: &str, empreinte: &str) -> Option<&Confiance> {
         self.plugins_a_moi

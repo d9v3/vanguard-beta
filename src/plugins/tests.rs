@@ -583,11 +583,13 @@ mod unix {
         assert!(lancer(&racine, "salon", &[], auto(Auto::Bilan)).is_err());
         assert!(lancer(&racine, "salon", &[], auto(Auto::Surveillance)).is_err());
         let dit = douteux(&racine);
-        assert_eq!(dit.len(), 1, "{dit:?}");
+        assert_eq!(dit.len(), 2, "{dit:?}");
         assert!(
             dit[0].contains("hors de Vanguard") || dit[0].contains("outside Vanguard"),
             "{dit:?}"
         );
+        // Ce qu'il faut refaire est nommé.
+        assert!(dit[1].contains("salon"), "{dit:?}");
         // Approuvé par Vanguard, il tourne encore à la main, restreint (la confiance forgée ne vaut rien).
         assert!(lancer(&racine, "salon", &[], Facon::default()).is_ok());
         // L'approbation réécrite à côté (le même contenu, un espace de plus) : plus rien n'est approuvé.
@@ -597,7 +599,7 @@ mod unix {
         assert_eq!(inventaire(&racine)[0].etat, Etat::NonApprouve);
         let refus = lancer(&racine, "salon", &[], Facon::default()).err().unwrap();
         assert!(refus.contains("pas approuvé") && refus.contains("ignorées"), "{refus}");
-        assert_eq!(douteux(&racine).len(), 2);
+        assert_eq!(douteux(&racine).len(), 3);
         // Le bilan le dit comme les autres falsifications (COM-ETA-001), par l'inventaire des fichiers scellés.
         let sceaux = racine.parent().unwrap();
         for nom in [reglages::SCELLE, APPROUVES_SCELLE] {
@@ -621,6 +623,7 @@ mod unix {
         assert!(lancer(&racine, "salon", &[], auto(Auto::Bilan)).is_err());
         let dit = douteux(&racine).join(" ");
         assert!(dit.contains("tel quel") || dit.contains("as it was"), "{dit}");
+        assert!(dit.contains("vanguard extensions") && dit.contains("salon"), "{dit}");
         // Couper les restrictions redemande l'accord (la confirmation forgée ne compte pas), et l'ancien fichier
         // est gardé à côté, pas écrasé en silence.
         let mut demande = false;
@@ -644,6 +647,73 @@ mod unix {
         approuver(&racine, "salon", |_| true).unwrap();
         assert!(lancer(&racine, "salon", &[], Facon::default()).is_ok());
         assert_eq!(douteux(&racine), Vec::<String>::new());
+    }
+
+    /// Les fichiers des extensions d'une version d'avant le sceau, repris à la mise à jour : n'accordant rien (les
+    /// restrictions coupées puis remises, une approbation d'un plugin retiré), ils sont réécrits scellés, sans alerte,
+    /// la confirmation de la coupure redemandée ; accordant encore quelque chose, ils restent ignorés, et ce qu'il faut
+    /// refaire est dit, avec la commande.
+    #[test]
+    fn fichiers_d_une_version_d_avant() {
+        if en_root() {
+            return crate::essais::saute("en root : extensions refusées");
+        }
+        let j = Jetable::nouveau();
+        let racine = j.racine();
+        let sceaux = racine.parent().unwrap();
+        // La 0.87 : la coupure confirmée puis les restrictions remises, et l'approbation d'un plugin retiré depuis.
+        std::fs::write(
+            racine.join("reglages.json"),
+            r#"{"sans_restrictions":false,"coupure_confirmee":true}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            racine.join(APPROUVES),
+            r#"{"plugins":{"ancien":{"arbre":"a1","fichiers":{},"le":"2026-10-01 10:00"}}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            crate::sceau::lire_dans(sceaux, reglages::SCELLE),
+            crate::sceau::Lecture::Adopte(_)
+        ));
+        // Rien d'accordé : aucune alerte, et rescellés.
+        assert_eq!(douteux(&racine), Vec::<String>::new());
+        reglages::resceller_dans(sceaux);
+        for nom in [reglages::SCELLE, APPROUVES_SCELLE] {
+            assert!(
+                matches!(crate::sceau::lire_dans(sceaux, nom), crate::sceau::Lecture::Intact(_)),
+                "{nom}"
+            );
+        }
+        // Réécrits à leurs défauts : la confirmation reprise n'évite pas la question.
+        assert!(!reglages::charger(&racine).coupure_confirmee);
+        let mut demande = false;
+        reglages::basculer(&racine, |_| {
+            demande = true;
+            false
+        })
+        .unwrap();
+        assert!(demande);
+        // Un élément « à moi » repris d'avant : ignoré, rien rescellé, et dit avec son nom et la commande.
+        let j = Jetable::nouveau();
+        let racine = j.racine();
+        let sceaux = racine.parent().unwrap();
+        std::fs::write(
+            racine.join("reglages.json"),
+            r#"{"plugins_a_moi":[{"nom":"salon","empreinte":"a1","bilan":true}]}"#,
+        )
+        .unwrap();
+        reglages::resceller_dans(sceaux);
+        assert!(matches!(
+            crate::sceau::lire_dans(sceaux, reglages::SCELLE),
+            crate::sceau::Lecture::Adopte(_)
+        ));
+        assert_eq!(reglages::charger(&racine), reglages::Reglages::default());
+        let dit = douteux(&racine).join(" ");
+        assert!(
+            dit.contains("version d'avant") && dit.contains("vanguard extensions") && dit.contains("salon"),
+            "{dit}"
+        );
     }
 }
 
