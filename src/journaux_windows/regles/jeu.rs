@@ -2296,7 +2296,7 @@ fn tache_auditee(e: &EvenementWindows) -> Option<Indice> {
 fn tache_inscrite(e: &EvenementWindows) -> Option<Indice> {
     let nom = champ(e, "TaskName");
     indice(
-        format!("{}|inscrite", nom.to_lowercase()),
+        format!("{}|inscrite|{}", nom.to_lowercase(), instant(e)),
         Gravite::Info,
         (
             "une tâche planifiée a été créée (ce journal ne dit pas ce qu'elle lance : son lancement le dira)",

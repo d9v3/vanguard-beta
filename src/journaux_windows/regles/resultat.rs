@@ -816,6 +816,16 @@ pub(crate) fn constats_du_bilan(a: &Analyse, est_normale: &dyn Fn(&str) -> bool)
         .collect();
     let mut verifiees: Vec<&str> = Vec::new();
     let mut sans: Vec<&str> = Vec::new();
+    // Les alertes déclarées normales, tues : dites, pour que le silence ne passe pas pour l'absence.
+    let tues = a
+        .jugements
+        .iter()
+        .flat_map(|j| {
+            j.trouvailles
+                .iter()
+                .filter(|t| taisable(j.regle.id, t) && est_normale(&cle_normale(j.regle.id, &t.objet)))
+        })
+        .count();
     // (ce qui a manqué, sa raison, les règles) : une entrée par manque identique.
     let mut non_verifiees: Vec<(String, Raison, Vec<String>)> = Vec::new();
     for c in &a.manques_source {
@@ -847,15 +857,20 @@ pub(crate) fn constats_du_bilan(a: &Analyse, est_normale: &dyn Fn(&str) -> bool)
         }
     }
     if !verifiees.is_empty() {
-        sortie.push(ok(
-            CAT,
-            crate::trf!(
-                "Journaux d'événements lus en entier pour {} règle(s) : {}.",
-                "Event logs read in full for {} rule(s): {}.",
-                verifiees.len(),
-                verifiees.join(", ")
-            ),
-        ));
+        let mut m = crate::trf!(
+            "Journaux d'événements lus en entier pour {} règle(s) : {}.",
+            "Event logs read in full for {} rule(s): {}.",
+            verifiees.len(),
+            verifiees.join(", ")
+        );
+        if tues > 0 {
+            m.push(' ');
+            m.push_str(&crate::trf!(
+                "{tues} alertes déclarées normales, tues.",
+                "{tues} alerts declared normal, silenced."
+            ));
+        }
+        sortie.push(ok(CAT, m));
     }
     if !sans.is_empty() {
         sortie.push(sans_objet(

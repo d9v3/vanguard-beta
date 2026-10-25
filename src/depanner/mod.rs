@@ -271,8 +271,8 @@ pub(crate) fn categories_des_parcours() -> [&'static [&'static str]; 2] {
 /// comme saines.
 fn bilan(categories: &[&str]) -> Vec<crate::machine::Constat> {
     trp!(
-        "  {GRIS}Bilan en cours (quelques secondes ; jusqu'à une minute sous Windows)…{RESET}",
-        "  {GRIS}Checking (a few seconds; up to a minute on Windows)…{RESET}"
+        "  {GRIS}Bilan en cours (quelques secondes ; jusqu'à deux minutes sous Windows)…{RESET}",
+        "  {GRIS}Checking (a few seconds; up to two minutes on Windows)…{RESET}"
     );
     let mut constats = crate::machine::auditer(false).constats;
     constats.retain(|c| categories.contains(&c.categorie));

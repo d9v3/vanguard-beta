@@ -2097,11 +2097,15 @@ fn constats_du_bilan() {
         &[("TargetUserName", "bob"), ("SubjectUserName", "alice")],
     )]));
     let toujours = |_: &str| true;
-    assert!(
-        resultat::constats_du_bilan(&a, &toujours)
-            .iter()
-            .all(|c| c.probleme.is_none())
-    );
+    let c = resultat::constats_du_bilan(&a, &toujours);
+    assert!(c.iter().all(|c| c.probleme.is_none()));
+    assert!(c.iter().any(|c| c.message.contains("1 ")), "le nombre de tues est dit");
+    let critique = vivant(juger(&[processus(
+        "C:\\Users\\alice\\Downloads\\mimikatz.exe",
+        "mimikatz.exe",
+    )]));
+    let c = resultat::constats_du_bilan(&critique, &toujours);
+    assert!(c.iter().any(|c| c.probleme == Some(crate::risk::Niveau::Critique)));
 }
 
 /// Un dossier dont le jugement dépasse son délai : les événements suivants ne sont pas jugés, et c'est dit.

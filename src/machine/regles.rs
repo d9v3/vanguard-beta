@@ -262,7 +262,6 @@ pub(crate) const MUETTES_TOLEREES: &[&str] = &[
     "WIN-CPT-002",
     "WIN-DEM-001",
     "WIN-JRN-002",
-    "WIN-JRN-003",
     "WIN-MAJ-002",
     "WIN-PRS-001",
     "WIN-PRS-002",
@@ -282,7 +281,7 @@ pub(crate) const MUETTES_TOLEREES: &[&str] = &[
 
 /// Le plafond du cliquet : baisser ce nombre quand une règle sort de la liste, jamais le monter.
 #[cfg(test)]
-const MUETTES_TOLEREES_AU_PLUS: usize = 96;
+const MUETTES_TOLEREES_AU_PLUS: usize = 95;
 
 /// Les vérifications du bilan pour ce système, une par règle, dans l'ordre des rangs.
 pub(super) fn verifications<'a>() -> Vec<Verification<'a>> {
