@@ -177,10 +177,7 @@ regle!(
     "MAC-DIS-001",
     Os::MacOs,
     240,
-    (
-        "partage d'écran et gestion à distance",
-        "screen sharing and remote management"
-    ),
+    ("gestion à distance (MDM)", "remote management (MDM)"),
     &["CIS Controls v8 4.8"],
     || gestion_a_distance().into_iter().collect()
 );
