@@ -246,7 +246,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
         <h1>Durcir chaque machine, détecter les intrusions, bloquer les menaces.</h1>
         <p class="chapeau">Depuis une clé USB, Vanguard durcit les ordinateurs et détecte les failles, les mauvais réglages et les intrusions, sur chaque machine comme sur le réseau. Il met en tête les failles activement exploitées, repère les logiciels pas à jour et les logiciels espions, ferme l'ordinateur sur un Wi-Fi public, écarte les sites dangereux, examine un courriel suspect sans l'ouvrir, repère les agents d'IA trop permissifs, dit où manque l'échange de clés post-quantique, bloque les menaces trouvées, arrête un rançongiciel en pleine rafale et collecte les traces d'un incident ; le rapport d'une faille se prépare pour l'éditeur, sans jamais être envoyé. Chaque constat est expliqué ; rien n'est modifié sans accord, et chaque correction s'annule. Le dépannage, l'optimisation et la sauvegarde viennent en plus.</p>
         <p class="statut">En développement actif · tout en Rust (en cours) · défensif</p>
-        <p class="cap"><b>Où va Vanguard.</b> En cours : tout ce qu'un agent d'IA peut exécuter, les journaux de Windows analysés par Hayabusa, le reste du programme réécrit en Rust (pare-feu Linux compris), un banc d'essai sur la clé et l'étude d'une interface graphique ; les versions signées aussi en ML-DSA attendent une décision. <a href="#feuille-de-route">La feuille de route ↓</a></p>
+        <p class="cap"><b>Où va Vanguard.</b> En cours : tout ce qu'un agent d'IA peut exécuter, le reste du programme réécrit en Rust (pare-feu Linux compris), un banc d'essai sur la clé et l'étude d'une interface graphique ; les versions signées aussi en ML-DSA attendent une décision. <a href="#feuille-de-route">La feuille de route ↓</a></p>
         <div class="systemes">
           <span class="systeme">Windows 10 · 11</span><span class="systeme">Linux</span><span class="systeme">macOS</span><span class="systeme">Français · English</span>
         </div>
@@ -325,12 +325,12 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
           <li><b>Accès à distance</b> : SSH et ses algorithmes faibles, Bureau à distance, partages ouverts à tous, proxy détourné (WPAD).</li>
           <li><b>Ce qui se cache</b> : portes dérobées de Windows, signes d'un rootkit sous Linux, journaux d'événements suspects.</li>
           <li><b>Failles activement exploitées en tête</b> (Linux) : les failles des paquets installés comparées au catalogue KEV de la CISA, téléchargé en entier (la liste des logiciels ne sort pas de l'ordinateur) ; une faille dans un programme qui écoute le réseau passe devant ; <code>vanguard dernieres-failles</code> donne les plus récentes, et la surveillance horaire prévient d'une faille critique nouvelle.</li>
-          <li><b>Logiciels pas à jour</b> (Windows, macOS) : navigateurs, Office, Acrobat, Java, 7-Zip, PuTTY, Slack comparés à leur dernière version, d'après des listes publiques téléchargées en entier (la liste des logiciels ne sort pas de l'ordinateur) ; pour Firefox et Edge, chaque faille exploitée vérifiée contre la version installée. <span class="nouveau">nouveau</span></li>
-          <li><b>Règles nouvelles</b> : serveur OpenSSH et clés SSH sous Windows, protections de Defender relues, règle des mots de passe, sécurité du démarrage et persistance sous macOS, logiciels installés depuis le dernier bilan ; chaque règle cite sa référence (CIS, Microsoft ou ANSSI). <span class="nouveau">nouveau</span></li>
-          <li><b>Bilan post-quantique</b>, en lecture seule : serveur et client SSH (d'après la version d'OpenSSH et les algorithmes retenus), navigateurs (X25519MLKEM768 coupé ou version trop ancienne), pairs WireGuard sans clé pré-partagée ; l'audit du réseau y ajoute l'administration du routeur et le chemin vers Internet. <span class="nouveau">nouveau</span></li>
+          <li><b>Logiciels pas à jour</b> (Windows, macOS) : navigateurs, Office, Acrobat, Java, 7-Zip, PuTTY, Slack comparés à leur dernière version, d'après des listes publiques téléchargées en entier (la liste des logiciels ne sort pas de l'ordinateur) ; pour Firefox et Edge, chaque faille exploitée vérifiée contre la version installée.</li>
+          <li><b>Règles nouvelles</b> : serveur OpenSSH et clés SSH sous Windows, protections de Defender relues, règle des mots de passe, sécurité du démarrage et persistance sous macOS, logiciels installés depuis le dernier bilan ; chaque règle cite sa référence (CIS, Microsoft ou ANSSI).</li>
+          <li><b>Bilan post-quantique</b>, en lecture seule : serveur et client SSH (d'après la version d'OpenSSH et les algorithmes retenus), navigateurs (X25519MLKEM768 coupé ou version trop ancienne), pairs WireGuard sans clé pré-partagée ; l'audit du réseau y ajoute l'administration du routeur et le chemin vers Internet.</li>
           <li><b>Chaque problème</b> expliqué avec sa correction, appliquée après accord ; sous Windows, les réglages de durcissement faits par Vanguard lui-même, relancé en administrateur, sans PowerShell.</li>
-          <li><b>Chaque correction s'annule</b>, une par une : l'état d'avant est relevé et scellé, puis remis et relu ; ce qui rallume une protection ne se défait jamais, et « Tout remettre comme avant » défait tout ce que Vanguard a changé. <span class="nouveau">nouveau</span></li>
-          <li><b>Autodiagnostic</b> : chaque règle essayée sans rien changer (lecture seule prouvée par empreintes), les lectures de Vanguard comparées aux outils du système (pacman, systemd, ss ; pare-feu, Defender, BitLocker sous Windows), la durée de chaque règle mesurée ; refait chaque semaine par la surveillance. <span class="nouveau">nouveau</span></li>
+          <li><b>Chaque correction s'annule</b>, une par une : l'état d'avant est relevé et scellé, puis remis et relu ; ce qui rallume une protection ne se défait jamais, et « Tout remettre comme avant » défait tout ce que Vanguard a changé.</li>
+          <li><b>Autodiagnostic</b> : chaque règle essayée sans rien changer (lecture seule prouvée par empreintes), les lectures de Vanguard comparées aux outils du système (pacman, systemd, ss ; pare-feu, Defender, BitLocker sous Windows), la durée de chaque règle mesurée ; refait chaque semaine par la surveillance.</li>
         </ul>
       </article>
       <article class="domaine" id="exposition">
@@ -347,7 +347,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
           <li><b>Chaque appareil du réseau</b> : fabricant, ports ouverts, risques ; les nouveaux venus signalés toutes les heures, avec un tableau de bord dans le navigateur.</li>
           <li><b>La protection du Wi-Fi</b> lue dans les balises du routeur : WEP ou TKIP, WPS allumé (le code PIN cassable), plusieurs émetteurs pour le même nom (faux point d'accès).</li>
           <li><b>Les réseaux ouverts</b> qui se reconnectent seuls, les appareils Bluetooth appairés depuis peu.</li>
-          <li><b>Mode Wi-Fi public</b> pour un café, un hôtel ou un aéroport : plus aucune connexion acceptée de ce réseau, partage et annonce du nom coupés, DNS protecteur ; chaque valeur d'avant notée et scellée, tout remis en partant, même après un redémarrage. <span class="nouveau">nouveau</span></li>
+          <li><b>Mode Wi-Fi public</b> pour un café, un hôtel ou un aéroport : plus aucune connexion acceptée de ce réseau, partage et annonce du nom coupés, DNS protecteur ; chaque valeur d'avant notée et scellée, tout remis en partant, même après un redémarrage.</li>
         </ul>
       </article>
       <article class="domaine" id="objets">
@@ -361,18 +361,19 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
       <article class="domaine" id="infection">
         <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8 11h6M11 8v6"/></svg></span><div><h3>Poste infecté</h3><span class="touche">menu 6 · 8 · vanguard blocage · evenements · yara · depanner traces · signaler</span></div></header>
         <ul>
-          <li><b>Antivirus, 308 règles YARA et les empreintes</b> de logiciels malveillants connus de MalwareBazaar (clé abuse.ch gratuite ; la dernière copie sert hors ligne) ; quarantaine réversible.</li>
+          <li><b>Antivirus, 308 règles YARA et les empreintes</b> de logiciels malveillants connus de MalwareBazaar (clé abuse.ch gratuite ; la dernière copie sert hors ligne) ; quarantaine réversible. Moteur YARA écrit pour Vanguard ; programmes, documents Office et leurs macros, raccourcis, scripts et archives lus par Vanguard lui-même, ce qu'il ne sait pas lire dit non vérifié. <span class="nouveau">nouveau</span></li>
+          <li><b>Que s'est-il passé ?</b> Les journaux de Windows (.evtx) lus par Vanguard lui-même, sur ce Windows ou depuis un dossier sous n'importe quel système : onze règles (traces effacées, administrateur de plus, mot de passe deviné, Bureau à distance depuis Internet, PowerShell malveillant, Defender désarmé, persistance WMI…) et les alertes dans l'ordre du temps. <span class="nouveau">nouveau</span></li>
           <li><b>Blocage des menaces</b> d'un clic : programme arrêté et mis en quarantaine, connexion fermée au pare-feu, lancement retiré, tout annulable sauf l'arrêt ; la <b>protection active</b>, une fois mise en marche, bloque toute seule ce qui ne fait aucun doute et prévient.</li>
-          <li><b>La preuve avant le geste</b> : programme, ligne de commande, parent, compte, empreinte, connexions, relevés avant chaque arrêt, quarantaine ou blocage ; un <b>journal des événements</b> scellé relie l'alerte, la preuve, le geste et son annulation. <span class="nouveau">nouveau</span></li>
+          <li><b>La preuve avant le geste</b> : programme, ligne de commande, parent, compte, empreinte, connexions, relevés avant chaque arrêt, quarantaine ou blocage ; un <b>journal des événements</b> scellé relie l'alerte, la preuve, le geste et son annulation.</li>
           <li><b>Chasse aux menaces en direct</b> : un mot de passe deviné (une connexion réussie juste après une rafale d'échecs), un outil d'attaque en marche, une commande qui télécharge ce qu'elle lance.</li>
           <li><b>Le veilleur</b> (Linux) : chaque programme lancé et chaque connexion fermée vus sur le moment, même de quelques millisecondes ; il observe et n'arrête rien ; coupé par défaut.</li>
-          <li><b>Veilleur anti-rançongiciel</b> (Linux) : les dossiers personnels surveillés en direct ; une rafale de chiffrement (fichiers réécrits, contenu devenu illisible, note de rançon, piège touché, copies de secours effacées) alerte en quelques secondes, « Bloquer » proposé au bilan suivant ; gel puis arrêt automatiques seulement avec la protection active et une quasi-certitude ; coupé par défaut. <span class="nouveau">nouveau</span></li>
+          <li><b>Veilleur anti-rançongiciel</b> (Linux) : les dossiers personnels surveillés en direct ; une rafale de chiffrement (fichiers réécrits, contenu devenu illisible, note de rançon, piège touché, copies de secours effacées) alerte en quelques secondes, « Bloquer » proposé au bilan suivant ; gel puis arrêt automatiques seulement avec la protection active et une quasi-certitude ; coupé par défaut.</li>
           <li><b>La mémoire des programmes</b> qui tournent, passée aux règles YARA à la demande : un logiciel malveillant « sans fichier » ne vit que là.</li>
           <li><b>Ce qui se lance en cachette</b>, portes dérobées, rootkit, connexions vers des serveurs de botnets, voleur de mots de passe (Responder) démasqué sur le réseau.</li>
           <li><b>Portes cachées de Windows</b> (paquets de LSA, moniteurs d'impression, Winsock…) et <b>pilotes vulnérables</b> du noyau, d'après la liste LOLDrivers.</li>
           <li><b>Fichiers-pièges</b> contre les rançongiciels, blocages de Defender, intégrité des fichiers critiques, failles des images Docker ; <b>agents d'IA</b> trop permissifs (serveur ouvert au réseau, agent qui fait tout sans demander).</li>
           <li><b>Les traces collectées</b> avant de nettoyer, avec la <b>chronologie de l'incident</b> ; Internet coupé d'abord en cas d'urgence.</li>
-          <li><b>Signaler une faille à un éditeur</b> : trié d'abord, puis un brouillon au format du programme choisi (MSRC, Google, Mozilla, Apple, avis GHSA, CERT…), ce qui est personnel retiré et compté ; la personne relit et envoie elle-même, Vanguard n'envoie jamais rien. <span class="nouveau">nouveau</span></li>
+          <li><b>Signaler une faille à un éditeur</b> : trié d'abord, puis un brouillon au format du programme choisi (MSRC, Google, Mozilla, Apple, avis GHSA, CERT…), ce qui est personnel retiré et compté ; la personne relit et envoie elle-même, Vanguard n'envoie jamais rien.</li>
         </ul>
       </article>
       <article class="domaine" id="dns">
@@ -397,7 +398,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
       <article class="domaine" id="vie-privee">
         <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><div><h3>Vie privée et secrets</h3><span class="touche">menu 6 · 7 · vanguard logiciels-espions · bilan-confidentialite · secrets</span></div></header>
         <ul>
-          <li><b>Logiciels espions</b> posés par un proche : serveurs et sites connus (liste d'Échap), logiciels de surveillance, programmes qui lisent le clavier, autorisations de surveillance sous macOS ; en lecture seule, car celui qui l'a posé pourrait le voir. <span class="nouveau">nouveau</span></li>
+          <li><b>Logiciels espions</b> posés par un proche : serveurs et sites connus (liste d'Échap), logiciels de surveillance, programmes qui lisent le clavier, autorisations de surveillance sous macOS ; en lecture seule, car celui qui l'a posé pourrait le voir.</li>
           <li><b>Bilan de confidentialité</b> : qui a accès à la position, aux contacts, à la caméra et au micro.</li>
           <li><b>Mots de passe du navigateur</b> comptés sans jamais être lus, secrets oubliés dans git, fichiers sensibles laissés en clair.</li>
         </ul>
@@ -424,7 +425,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
         <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 18l4-6"/></svg></span><div><h3>Optimiser, logiciels et jeu</h3><span class="touche">menu 12 · vanguard test-connexion</span></div></header>
         <ul>
           <li><b>Réglages</b> de confidentialité et de performance qui s'annulent exactement ; nettoyage à cocher ; programmes du démarrage.</li>
-          <li><b>Tout remettre comme avant</b> : les corrections du bilan, Optimiser, Gaming, les blocages et le mode Wi-Fi public défaits du plus récent au plus ancien, en une demande administrateur. <span class="nouveau">nouveau</span></li>
+          <li><b>Tout remettre comme avant</b> : les corrections du bilan, Optimiser, Gaming, les blocages et le mode Wi-Fi public défaits du plus récent au plus ancien, en une demande administrateur.</li>
           <li><b>Les meilleurs logiciels</b> en 10 catégories, depuis leur source officielle ; les mises à jour de tout d'un coup.</li>
           <li><b>Connexion pour le jeu</b> : ping, gigue, pertes, débit, bufferbloat ; Wi-Fi encombré, type de NAT, DNS le plus rapide.</li>
         </ul>
@@ -440,12 +441,12 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
         <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19V5M9 8h6M9 12h6"/></svg></span><div><h3>Suivi, outils et clé USB</h3><span class="touche">menu 10 · 13 · vanguard guide · parametres · extensions · verifier-cle</span></div></header>
         <ul>
           <li><b>Rapport HTML</b> avec la courbe des notes, entretien du mois, apprentissage, ce que Vanguard a changé.</li>
-          <li><b>Menus au clavier</b> : → entre, ← revient ; la fenêtre ouverte pour Vanguard prend la taille du menu et se centre. <span class="nouveau">nouveau</span></li>
+          <li><b>Menus au clavier</b> : → entre, ← revient ; la fenêtre ouverte pour Vanguard prend la taille du menu et se centre.</li>
           <li><b>Paramètres</b> au même endroit : langue, travail sans Internet, protection en temps réel, surveillance, entretien, blocage, restrictions des extensions ; « s » au menu principal.</li>
           <li><b>Extensions personnelles</b> dans Vanguard, sans toucher à son code : un plugin (un dossier avec <code>plugin.toml</code>, ajouté depuis un dossier ou une archive .zip) ou un script du labo posé tel quel ; leurs constats à part, hors de la note.</li>
           <li><b>Vérifiées avant de tourner</b> : tout le dossier analysé (YARA, MalwareBazaar) et approuvé par ses empreintes SHA-256 ; c'est la copie vérifiée qui tourne, sans terminal, bornée, jamais toute seule en administrateur ; un plugin en Rust s'écrit avec la bibliothèque <code>extensions/sdk</code>.</li>
           <li><b>{{COMMANDES}} commandes expliquées</b> pour Omarchy, Arch, Fedora, Debian, Ubuntu, Windows et macOS, plus de 30 000 exemples.</li>
-          <li><b>La clé USB</b> : protégée en écriture ailleurs que sur l'ordinateur du propriétaire ; Vanguard mis à jour depuis la clé ou depuis GitHub (versions signées par l'auteur, avec une seconde clé de signature, gardée hors ligne, qui peut révoquer la principale, et jamais de retour à une version plus ancienne). <span class="nouveau">nouveau</span> Une clé qui démarre aussi les ordinateurs en panne (Omarchy, SystemRescue, Windows 11…) est en développement.</li>
+          <li><b>La clé USB</b> : protégée en écriture ailleurs que sur l'ordinateur du propriétaire ; Vanguard mis à jour depuis la clé ou depuis GitHub (versions signées par l'auteur, avec une seconde clé de signature, gardée hors ligne, qui peut révoquer la principale, et jamais de retour à une version plus ancienne). Une clé qui démarre aussi les ordinateurs en panne (Omarchy, SystemRescue, Windows 11…) est en développement.</li>
           <li><b>Retirer Vanguard</b> de cet ordinateur : tout ce qu'il a posé, retrouvé, montré puis coché ; les données gardées sauf accord à part, la clé jamais touchée.</li>
         </ul>
       </article>
@@ -593,24 +594,19 @@ vanguard yara --complet</pre>
     <div class="tete-section">
       <p class="surtitre">Nouveautés de la version {{VERSION_COURTE}}</p>
       <h2>Ce qui vient d'arriver</h2>
-      <p>Les logiciels espions, les logiciels pas à jour, le mode Wi-Fi public, le veilleur anti-rançongiciel, le bilan post-quantique, le signalement d'une faille à un éditeur, l'autodiagnostic, des corrections qui s'annulent toutes, la preuve et le journal des événements, une chaîne de mise à jour durcie.</p>
+      <p>Les journaux de Windows lus par Vanguard lui-même, un moteur YARA et un lecteur de fichiers maison, un nouveau menu qui met la défense d'abord, le blocage sans script, moins de programmes externes, et une troisième campagne d'attaque contre Vanguard.</p>
     </div>
     <ul class="nouveautes">
-      <li><b>Logiciels espions</b><span><code>vanguard logiciels-espions</code> cherche les signes d'un logiciel espion posé par un proche : connexions vers les serveurs connus (liste d'Échap), logiciels de surveillance, programmes qui lisent le clavier, autorisations de surveillance sous macOS. Lecture seule, et le verdict n'est jamais « aucun logiciel espion ».</span></li>
-      <li><b>Logiciels pas à jour</b><span><code>vanguard logiciels-perimes</code>, sous Windows et macOS : navigateurs, Office, Acrobat, Java, 7-Zip, PuTTY et Slack comparés à leur dernière version ; pour Firefox et Edge, chaque faille exploitée vérifiée contre la version installée. La liste des logiciels ne sort jamais de l'ordinateur.</span></li>
-      <li><b>Mode Wi-Fi public</b><span><code>vanguard wifi-public</code> ferme l'ordinateur au réseau d'un café, d'un hôtel ou d'un aéroport : plus aucune connexion entrante, partage et annonce du nom coupés, DNS protecteur. Chaque valeur d'avant est notée et scellée ; tout est remis en partant, même après un redémarrage.</span></li>
-      <li><b>Veilleur anti-rançongiciel</b><span>Sous Linux, <code>vanguard veilleur rancongiciel on</code> surveille en direct les dossiers personnels : une rafale de chiffrement alerte en quelques secondes au lieu d'attendre la vérification horaire. Avec la protection active et un cas quasi certain, le programme est gelé, la preuve relevée, puis il est arrêté et mis en quarantaine. Coupé par défaut, sans droits d'administrateur.</span></li>
-      <li><b>Bilan post-quantique</b><span>Un trafic capté aujourd'hui peut se lire demain : le bilan dit où l'échange de clés post-quantique manque, pour SSH, les navigateurs (X25519MLKEM768) et WireGuard, et l'audit du réseau pour le routeur. Lecture seule, sans bibliothèque ajoutée.</span></li>
-      <li><b>Signaler une faille</b><span><code>vanguard signaler</code> trie d'abord (faille connue, logiciel malveillant, hameçonnage), puis prépare le brouillon au format de l'éditeur, ce qui est personnel retiré en trois couches. Le texte est montré en entier ; rien n'est jamais envoyé.</span></li>
-      <li><b>Autodiagnostic</b><span><code>vanguard autotest</code> fait tourner chaque règle du bilan sans rien changer, compare les lectures de Vanguard à celles des outils du système et mesure leur durée ; la surveillance le refait chaque semaine, et une lecture contredite est dite.</span></li>
-      <li><b>Chaque correction s'annule</b><span>Les corrections du bilan relèvent l'état d'avant et s'annulent une par une dans « Ce que Vanguard a changé » ; « Tout remettre comme avant » défait le bilan, Optimiser, Gaming, les blocages et le mode Wi-Fi public. Annuler ne rouvre jamais ce qu'une correction a fermé.</span></li>
-      <li><b>La preuve, puis le geste</b><span>Avant chaque arrêt, quarantaine ou blocage, Vanguard relève ce que le geste va effacer : programme, ligne de commande, empreinte, connexions. Les traces d'incident reprennent ce que Vanguard a vu et fait.</span></li>
-      <li><b>Journal des événements scellé</b><span><code>vanguard evenements</code> relie l'alerte, la preuve, le geste et son annulation ; chaque ligne porte l'empreinte de la précédente : une ligne retirée ou changée se voit.</span></li>
-      <li><b>« C'est normal », partout</b><span>Une alerte de la surveillance, du veilleur ou du blocage se déclare normale pour 90 jours ; le choix porte sur ce dont parle l'alerte, plus sur son texte, et une menace certaine ne se tait jamais.</span></li>
-      <li><b>Règles du bilan</b><span>Le serveur OpenSSH et les clés SSH sous Windows, les protections de Defender relues, la règle des mots de passe, la sécurité du démarrage et la persistance sous macOS ; chaque règle cite sa référence (CIS, Microsoft ou ANSSI) et a son délai ; les logiciels installés depuis le dernier bilan sont dits.</span></li>
-      <li><b>Mises à jour mieux gardées</b><span>Une seconde clé de signature, gardée hors ligne, peut révoquer la clé principale volée ; Vanguard refuse un retour à une version plus ancienne et dit « non vérifié » quand le manifeste est trop vieux. L'état de Vanguard est scellé : réécrit par un autre programme, il ne fait rien taire.</span></li>
-      <li><b>Menus au clavier</b><span>→ entre, ← revient ; la fenêtre ouverte pour Vanguard se met à la taille du menu et se centre.</span></li>
-      <li><b>Deux campagnes d'attaque</b><span>Vanguard attaqué lui-même, deux fois : 30 faiblesses corrigées, et 10 contournements de ces corrections, chacune avec son essai.</span></li>
+      <li><b>Que s'est-il passé ?</b><span><code>vanguard journaux-windows</code> lit les journaux de Windows avec un lecteur .evtx écrit pour Vanguard : onze règles, les alertes dans l'ordre du temps, la période vraiment lue. Sur ce Windows ou sur un dossier de journaux, depuis n'importe quel système ; essayé sur un vrai Windows 11 sans fausse alerte.</span></li>
+      <li><b>YARA maison</b><span>Les 308 règles de ReversingLabs appliquées par un moteur écrit pour Vanguard ; une règle qu'il ne comprend pas rend l'analyse incomplète, jamais saine. Le programme Windows passe de 34 à 18 Mo.</span></li>
+      <li><b>Antivirus maison, première brique</b><span>Programmes, documents Office et leurs macros, raccourcis, scripts, archives zip, gzip et tar lus par Vanguard lui-même, bornés contre les fichiers piégés ; 7z, RAR, PDF ou chiffré : dit non vérifié.</span></li>
+      <li><b>Nouveau menu</b><span>La défense d'abord : Bilan (1 à 3), Cyberdéfense (4 à 8), En plus (9 à 13). Aucun écran ne défile ; un mot tapé au menu trouve chaque outil, page du guide ou parcours.</span></li>
+      <li><b>Blocage sans script</b><span>Chaque geste fait en administrateur est un ordre d'une liste fermée, à paramètres typés, revérifié avant d'être fait.</span></li>
+      <li><b>Le système lu directement</b><span>Wi-Fi, Bluetooth, systemd, NetworkManager, processus et réseau de macOS : lus par Vanguard lui-même, sans programme intermédiaire.</span></li>
+      <li><b>Logiciels proposés</b><span>Sept de plus, dont Ente Auth pour la double authentification ; Bitwarden par Flathub sous Arch.</span></li>
+      <li><b>Vouvoiement</b><span>Tout ce que Vanguard affiche en français vouvoie : menus, messages, aide, guide.</span></li>
+      <li><b>Troisième campagne d'attaque</b><span>La clé comparée à sa référence avant toute écriture, l'état de Vanguard scellé et lu en simple fichier, les données piégées (archives, mémoire, Wi-Fi jumeau) bornées.</span></li>
+      <li><b>Moins de fausses alertes de l'antivirus</b><span>Les noms d'outils d'attaque que Vanguard reconnaît ne sont plus en clair dans le programme, pour qu'un antivirus ne le prenne pas pour l'outil qu'il traque.</span></li>
     </ul>
   </section>
 
@@ -618,12 +614,11 @@ vanguard yara --complet</pre>
     <div class="tete-section">
       <p class="surtitre">Feuille de route</p>
       <h2>Ce qui se prépare</h2>
-      <p>Les travaux en cours, puis ceux qui suivent, dans l'ordre. Chacun passe par les mêmes règles : écrit en Rust, défensif, annulable, relu et testé avant d'entrer dans une version. Les logiciels espions, les logiciels pas à jour, le mode Wi-Fi public, le signalement d'une faille, l'autodiagnostic, le veilleur anti-rançongiciel et le bilan post-quantique sont arrivés avec la 0.86.</p>
+      <p>Les travaux en cours, puis ceux qui suivent, dans l'ordre. Chacun passe par les mêmes règles : écrit en Rust, défensif, annulable, relu et testé avant d'entrer dans une version. Les journaux de Windows, le moteur YARA et le nouveau menu sont arrivés avec la 0.87.</p>
     </div>
     <h3 class="sous-titre">En cours</h3>
     <div class="audit">
       <div><b>Agents d'IA</b><span>Tout ce qu'un agent de code peut exécuter (crochets, serveurs MCP, skills, réglages de Claude Code, Codex, Gemini, VS Code), leurs versions vulnérables, et ce qui a changé depuis leur approbation.</span><span class="k">en cours</span></div>
-      <div><b>Journaux de Windows</b><span>Analysés par Hayabusa et ses règles Sigma : téléchargé à part, vérifié par des empreintes épinglées, lancé sans réseau.</span><span class="k">en cours</span></div>
       <div><b>Tout en Rust</b><span>Le blocage sans script ; un pare-feu Linux piloté directement (nf_tables), écrit pour Vanguard ; les dernières lectures du système sous Linux et macOS ; les outils de publication et la signature des versions.</span><span class="k">en cours</span></div>
       <div><b>Banc d'essai sur la clé</b><span>Un double-clic sur un vrai Windows lance les essais de Vanguard et range les résultats sur la clé.</span><span class="k">en cours</span></div>
       <div><b>Interface graphique</b><span>Étude d'une fenêtre graphique qui garde le terminal à côté.</span><span class="k">étude</span></div>
@@ -632,7 +627,7 @@ vanguard yara --complet</pre>
     <h3 class="sous-titre">Plus tard</h3>
     <ul class="nouveautes">
       <li><b>Windows tout en Rust</b><span>Les corrections faites par un programme élevé qui revérifie chaque geste, sans script.</span></li>
-      <li><b>Menus et textes</b><span>La défense d'abord dans les menus, le reste rangé « en plus » ; les textes du programme au vouvoiement.</span></li>
+      <li><b>Journaux de Windows, la suite</b><span>Un menu pour « Que s'est-il passé ? » et de nouvelles règles, chacune provoquée dans une machine virtuelle.</span></li>
       <li><b>Observation du noyau Linux</b><span>Les programmes eBPF cachés d'un rootkit, puis l'observation en direct, sans jamais rien bloquer dans le noyau.</span></li>
       <li><b>Clé de secours</b><span>Une clé qui démarre un ordinateur en panne et y lance Vanguard, sans écrire dans les comptes de Windows.</span></li>
       <li><b>Agents d'IA, la suite</b><span>Les consignes cachées dans les fichiers (caractères invisibles), puis un secret-piège.</span></li>
