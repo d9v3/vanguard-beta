@@ -27,7 +27,7 @@
 - **Detect.** Known vulnerabilities (missing security updates, Linux distribution security advisories, actively
   exploited flaws from CISA's catalog, end of support), outdated software on Windows and macOS and misconfigurations,
   graded from A to F; a six-grade network audit, with every device inventoried and newcomers flagged; live threat
-  hunting; spyware planted by someone close; 308 YARA rules and MalwareBazaar hashes (with a free abuse.ch key);
+  hunting; spyware planted by someone close; over 300 YARA rules and MalwareBazaar hashes (with a free abuse.ch key);
   Windows event logs and failed SSH login attempts; post-quantum key exchange missing from SSH, browsers and
   WireGuard. The self-test compares Vanguard's readings with those of the system's tools, without changing anything.
 - **Block and respond.** Each threat found can be blocked with one click: program stopped and quarantined, connection
@@ -45,12 +45,18 @@
   GitHub advisory, CERT…), sorted first and stripped of anything personal, which the user reviews and sends
   personally: Vanguard sends nothing.
 
-**Where Vanguard is going.** In progress: everything an AI agent can run; Windows event logs analyzed by Vanguard itself
-(home-made .evtx reader, then its rules); a home-made scanning engine, as a second opinion (Defender stays the main antivirus);
-every fix made by Vanguard itself, in Rust, without scripts; a test bench on the USB key, started with a double-click
-on a real Windows; a study of a graphical interface. Releases signed twice (Ed25519 and ML-DSA, post-quantum) await a
-decision. Next: live observation on Linux with eBPF; known vulnerabilities of the other Linux distributions. Always
-defensive: Vanguard never attacks any device.
+**Where Vanguard is going.** In progress: detection regression testing (a corpus of harmless cases proves that every
+rule still fires); every fix made by Vanguard itself, in Rust, without scripts. Next, in order and without dates: alerts
+marked "normal on this computer" kept across versions; a step-by-step incident guide; a Vanguard that watches itself
+(its files, program and state checked, a log where each line is chained to the previous one, local learning that can
+only make it more attentive, never less); observing the Linux kernel; later, a separate, local defensive AI app. 1.0:
+the whole scope integrated, tested, documented in French and English, and green on Windows, Linux and macOS. Always:
+written in Rust, small parts built in-house, no new dependency without a decision, audited cryptography only, nothing
+leaves without your consent, defensive only: Vanguard never attacks any device.
+
+**What leaves the computer**: Vanguard only connects to a closed list of sites, each named in the threat model; a test
+fails if the code adds one the page does not name. Its state (extension settings, downloaded lists, defenses turned on,
+tasks) is sealed: changed outside Vanguard, it grants nothing and turns nothing off, and says so.
 
 **What Vanguard protects, and what it does not**: the [threat model](MODELE-DE-MENACE.en.md). **What its rules see,
 technique by technique**: the [MITRE ATT&CK coverage map](COUVERTURE-ATTACK.en.md).
@@ -106,7 +112,7 @@ certificate, scams, spyware and other privacy intrusions.
 | **Exposure to the Internet** | The network audit in six grades (exposure, Wi-Fi, device separation, DNS and certificates, connected devices, computers); the ports the router opens to the Internet (UPnP), this computer's open ports and firewall, the public Internet address on a blocklist, the router's admin page over HTTP only. |
 | **Intruders on the Wi-Fi** | Every device on the network, its manufacturer, its open ports and its risks; newcomers flagged every hour, with a dashboard in the browser; the Wi-Fi's protection (WEP, WPA2, WPA3), the fake access point copying its name, Bluetooth devices paired recently; public Wi-Fi mode, which closes the computer to the network of a café, a hotel or an airport and puts it back as it was when you leave. |
 | **Connected devices** | The router and the devices on the network (cameras, printers, NAS, TVs, smart home…) recognized, with their default password to change; hidden cameras, in a rental or at someone's place. |
-| **Infected computer** | Antivirus scan as a second opinion (Defender or ClamAV), 308 YARA rules and the fingerprints of known malware from MalwareBazaar (free abuse.ch key), the memory of running programs (on demand), live threat hunting (guessed password, suspicious running programs), threat blocking, with one click or by itself for clear-cut threats (active protection), with the evidence recorded before each action and a sealed event log, decoy files and the ransomware watcher (Linux), Windows Defender blocking, what starts in secret, backdoors, Windows' hidden doors and vulnerable drivers, rootkit signs, suspicious event logs, connections to known botnet servers, a password thief like Responder unmasked, overly permissive AI agents, integrity of critical files, flaws in Docker images (trivy, when installed), reversible quarantine, and the traces collected before cleaning up, with the incident timeline; a draft report prepared for the vendor when a program misbehaves, never sent. |
+| **Infected computer** | Antivirus scan as a second opinion (Defender or ClamAV), over 300 YARA rules and the fingerprints of known malware from MalwareBazaar (free abuse.ch key), the memory of running programs (on demand), live threat hunting (guessed password, suspicious running programs), threat blocking, with one click or by itself for clear-cut threats (active protection), with the evidence recorded before each action and a sealed event log, decoy files and the ransomware watcher (Linux), Windows Defender blocking, what starts in secret, backdoors, Windows' hidden doors and vulnerable drivers, rootkit signs, suspicious event logs, connections to known botnet servers, a password thief like Responder unmasked, overly permissive AI agents, integrity of critical files, flaws in Docker images (trivy, when installed), reversible quarantine, and the traces collected before cleaning up, with the incident timeline; a draft report prepared for the vendor when a program misbehaves, never sent. |
 | **Hijacked DNS and certificates** | The DNS really in use (and made-up answers), added root certificates (HTTPS interception), a forced proxy and sites redirected by the hosts file, automatic proxy discovery (WPAD), browser extensions that read every site. |
 | **Scams and remote control** | Tech-support scam (remote control tools), dangerous links checked without opening them, downloaded files checked, leaked passwords and email addresses, hacked account, a sandbox for an unknown program. |
 | **Privacy and secrets** | Spyware planted by someone close (known servers, programs reading the keyboard, monitoring permissions, known monitoring software), privacy check (who can access location, contacts, camera and microphone), camera and microphone, browser passwords without protection, sensitive files left in clear text, secrets forgotten in git project history, key data protected by a passphrase. |
@@ -246,7 +252,7 @@ video stream, ONVIF), without turning anything off or watching anything.
 
 **Against ransomware and malware** — decoy files: a decoy text file and PDF in Documents, Pictures and Desktop,
 which nobody has a reason to touch. Ransomware that encrypts or renames them triggers a critical alert, at each
-check and hourly through monitoring, with what to do; placed and removed after your consent. And a YARA scan: 308
+check and hourly through monitoring, with what to do; placed and removed after your consent. And a YARA scan: over 300
 ReversingLabs rules that recognize whole families (ransomware, password stealers, trojans, backdoors…), alongside
 the antivirus, applied by Vanguard's own YARA engine: nothing to install. Each file read is also compared with
 the SHA-256 fingerprints of known malware from MalwareBazaar (abuse.ch): there, it is that very
@@ -297,7 +303,7 @@ LISEZMOI.txt, in French and English, tells what each file holds and what could n
 their fingerprints (`sha256sum -c MANIFESTE.txt`). Read-only: nothing is stopped, moved or sent. The folder holds
 personal data, to hand only to someone you trust. It is also the first step of “After an infection”, ticked by
 default: cutting the network or cleaning up erases these traces. With ransomware or a remote control still connected to
-the Internet, cutting comes first: every minute counts. Since 0.83, an incident timeline (CHRONOLOGIE.txt) puts
+the Internet, cutting comes first: every minute counts. An incident timeline (CHRONOLOGIE.txt) puts
 everything in time order, oldest first: accepted or refused sign-ins, created accounts, added services and tasks,
 cleared logs, Defender detections, recent files that matter (programs, scripts, hidden files). The traces also
 include what Vanguard saw and did (07-vanguard.txt): its alerts, its blocks with their evidence.
@@ -361,7 +367,7 @@ sshguard or CrowdSec already blocks the addresses that keep trying.
   /tmp), a kernel module that hides or unknown unsigned modules, a network card in promiscuous mode (it listens to
   the whole network).
 - Windows event logs, over the last 7 days, in the check-up and in “What happened?” (Block and respond › Windows logs
-  menu, `vanguard windows-logs`): thirteen EVT- rules read by Vanguard itself, a single judge. Cleared traces, one
+  menu, `vanguard windows-logs`): the EVT- rules read by Vanguard itself, a single judge. Cleared traces, one
   more administrator, guessed passwords, Remote Desktop from outside, a service or scheduled task that runs an
   interpreter or a program from a temporary folder, suspicious processes (attack tools, encoded command, download by
   certutil, bitsadmin, mshta…), malicious PowerShell, Defender disarmed, BITS, WMI, audit policy. What Windows does
@@ -725,7 +731,7 @@ Each menu entry is also a command.
 | `vanguard public-wifi [on\|off\|portal]` | public Wi-Fi mode (café, hotel, airport): incoming connections closed, sharing and name announcement off, protective DNS, after your consent; `off` puts everything back exactly, `portal` reopens the network's sign-in page |
 | **6 Viruses and spyware** | |
 | `vanguard antivirus [--full] [folder]` | antivirus scan (computer, or a key / a folder) |
-| `vanguard yara [--full] [folder]` | YARA scan: 308 rules for malware families, and MalwareBazaar's fingerprints |
+| `vanguard yara [--full] [folder]` | YARA scan: over 300 rules for malware families, and MalwareBazaar's fingerprints |
 | `vanguard spyware` | spyware: known servers and sites (Échap list), programs reading the keyboard, monitoring permissions, known monitoring software (read-only) |
 | `vanguard outbound-connections [--json]` | who talks to the Internet: each program's connections (read-only) |
 | `vanguard memory` | YARA scan of the memory of running programs (fileless malware), on demand; LSASS and protected processes: their memory is never read |

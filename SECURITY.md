@@ -73,6 +73,8 @@ Par exemple :
   [Fedora](https://fedoraproject.org/wiki/Security_Bugs) ou [Arch Linux](https://security.archlinux.org/).
 - Les failles d'un outil que Vanguard lance sans l'avoir écrit (trivy, ClamAV…) : à signaler à son projet.
 - Les problèmes que Vanguard trouve sur ton ordinateur : c'est son travail, le bilan les explique.
+- Ce que le [modèle de menace](MODELE-DE-MENACE.md) dit hors de portée de Vanguard (par exemple un attaquant déjà
+  administrateur, ou le noyau compromis) : une limite écrite, pas une faille, sauf si Vanguard prétend le contraire.
 - L'avertissement de SmartScreen ou d'un antivirus sur le programme : il n'a pas de certificat de signature de code.
   Son intégrité se vérifie autrement, voir plus bas.
 
@@ -165,6 +167,8 @@ For example:
   [Fedora](https://fedoraproject.org/wiki/Security_Bugs) or [Arch Linux](https://security.archlinux.org/).
 - Flaws in a tool Vanguard runs without having written it (trivy, ClamAV…): report them to its project.
 - The problems Vanguard finds on your computer: that is its job, the check explains them.
+- What the [threat model](MODELE-DE-MENACE.en.md) puts out of Vanguard's reach (for example an attacker who is already
+  an administrator, or a compromised kernel): a written limit, not a flaw, unless Vanguard claims otherwise.
 - The SmartScreen or antivirus warning about the program: it has no code signing certificate. Its integrity is checked
   another way, see below.
 

@@ -28,7 +28,7 @@
 - **Détecter.** Les failles connues (mises à jour de sécurité manquantes, avis de sécurité des distributions Linux,
   failles activement exploitées du catalogue de la CISA, fin de support), les logiciels pas à jour sous Windows et
   macOS et les mauvais réglages, notés de A à F ; l'audit du réseau en six notes, chaque appareil inventorié et les
-  nouveaux venus signalés ; la chasse aux menaces en direct ; les logiciels espions posés par un proche ; 308 règles
+  nouveaux venus signalés ; la chasse aux menaces en direct ; les logiciels espions posés par un proche ; plus de 300 règles
   YARA et les empreintes de MalwareBazaar (avec une clé abuse.ch gratuite) ; les journaux d'événements de Windows et
   les tentatives de connexion SSH ratées ; l'échange de clés post-quantique absent de SSH, des navigateurs et de
   WireGuard. L'autodiagnostic compare les lectures de Vanguard à celles des outils du système, sans rien changer.
@@ -48,11 +48,20 @@
   Apple, avis GitHub, CERT…), trié d'abord et débarrassé de ce qui est personnel, que l'utilisateur relit et envoie
   lui-même : Vanguard n'envoie rien.
 
-**Où va Vanguard.** En cours : tout ce qu'un agent d'IA peut exécuter ; les journaux de Windows analysés par
-Vanguard lui-même (lecteur maison des .evtx, puis ses règles) ; un moteur d'analyse maison, en second avis (Defender reste l'antivirus principal) ; toutes les corrections faites par Vanguard lui-même, en Rust, sans script ; un banc d'essai sur la clé,
-lancé d'un double-clic sur un vrai Windows ; l'étude d'une interface graphique. Les versions signées deux fois (Ed25519
-et ML-DSA, post-quantique) attendent une décision. Ensuite : l'observation en direct sous Linux par eBPF ; les failles
-connues des autres distributions Linux. Toujours défensif : Vanguard n'attaque aucun appareil.
+**Où va Vanguard.** En cours : la régression de détection (un corpus de cas inoffensifs prouve que chaque règle tire
+encore) ; toutes les corrections faites par Vanguard lui-même, en Rust, sans script. Ensuite, dans l'ordre et sans
+date : les alertes déclarées « normales sur cet ordinateur » gardées d'une version à l'autre ; un guide d'incident pas
+à pas ; un Vanguard qui se surveille lui-même (ses fichiers, son programme et son état vérifiés, un journal dont chaque
+ligne est liée à la précédente, un apprentissage local qui ne peut que le rendre plus attentif, jamais moins) ;
+l'observation du noyau Linux ; plus tard, une application d'IA défensive locale et séparée. La 1.0 : tout ce périmètre
+intégré, testé, documenté en français et en anglais, et vert sur Windows, Linux et macOS. Toujours : écrit en Rust,
+petites briques faites maison, aucune dépendance nouvelle sans décision, cryptographie auditée seulement, rien ne sort
+sans votre accord, défensif seulement : Vanguard n'attaque aucun appareil.
+
+**Ce qui sort de l'ordinateur** : Vanguard ne joint qu'une liste fermée de sites, chacun nommé dans le modèle de
+menace ; un test échoue si le code en ajoute un que la page ne nomme pas. Son état (réglages des extensions, listes
+téléchargées, défenses mises en marche, tâches) est scellé : changé hors de Vanguard, il n'accorde plus rien et ne
+coupe plus rien, et c'est dit.
 
 **Ce que Vanguard protège, et ce qu'il ne protège pas** : le [modèle de menace](MODELE-DE-MENACE.md). **Ce que ses
 règles voient, technique par technique** : la [carte de couverture MITRE ATT&CK](COUVERTURE-ATTACK.md).
@@ -113,7 +122,7 @@ détourné, les arnaques, un logiciel espion et les autres atteintes à la vie p
 | **Exposition vers Internet** | L'audit du réseau en six notes (exposition, Wi-Fi, séparation des appareils, DNS et certificats, objets connectés, ordinateurs) ; les ports que le routeur ouvre vers Internet (UPnP), les ports ouverts et le pare-feu de cet ordinateur, l'adresse Internet publique sur liste noire, la page d'administration du routeur en HTTP seul. |
 | **Intrus sur le Wi-Fi** | Chaque appareil du réseau, son fabricant, ses ports ouverts et ses risques ; les nouveaux venus signalés toutes les heures, avec un tableau de bord dans le navigateur ; la protection du Wi-Fi (WEP, WPA2, WPA3), le faux point d'accès qui copie son nom, les appareils Bluetooth appairés depuis peu ; le mode Wi-Fi public, qui ferme l'ordinateur au réseau d'un café, d'un hôtel ou d'un aéroport et le remet comme avant en partant. |
 | **Objets connectés** | Le routeur et les objets du réseau (caméras, imprimantes, NAS, télés, domotique…) reconnus, avec leur mot de passe d'origine à changer ; les caméras cachées, dans une location ou chez quelqu'un. |
-| **Poste infecté** | Analyse antivirus en second avis (Defender ou ClamAV), 308 règles YARA et les empreintes de logiciels malveillants connus de MalwareBazaar (clé abuse.ch gratuite), la mémoire des programmes qui tournent (à la demande), la chasse aux menaces en direct (mot de passe deviné, programmes en marche suspects), le blocage des menaces, d'un clic ou tout seul pour ce qui ne fait aucun doute (protection active), avec la preuve relevée avant chaque geste et un journal des événements scellé, fichiers-pièges et veilleur anti-rançongiciel (Linux), blocages de Windows Defender, ce qui se lance en cachette, portes dérobées, portes cachées de Windows et pilotes vulnérables, signes de rootkit, journaux d'événements suspects, connexions vers des serveurs de botnets connus, un voleur de mots de passe comme Responder démasqué, agents d'IA trop permissifs, intégrité des fichiers critiques, failles des images Docker (trivy, s'il est installé), quarantaine réversible, et les traces collectées avant de nettoyer, avec la chronologie de l'incident ; un brouillon de signalement préparé pour l'éditeur quand un logiciel se comporte mal, jamais envoyé. |
+| **Poste infecté** | Analyse antivirus en second avis (Defender ou ClamAV), plus de 300 règles YARA et les empreintes de logiciels malveillants connus de MalwareBazaar (clé abuse.ch gratuite), la mémoire des programmes qui tournent (à la demande), la chasse aux menaces en direct (mot de passe deviné, programmes en marche suspects), le blocage des menaces, d'un clic ou tout seul pour ce qui ne fait aucun doute (protection active), avec la preuve relevée avant chaque geste et un journal des événements scellé, fichiers-pièges et veilleur anti-rançongiciel (Linux), blocages de Windows Defender, ce qui se lance en cachette, portes dérobées, portes cachées de Windows et pilotes vulnérables, signes de rootkit, journaux d'événements suspects, connexions vers des serveurs de botnets connus, un voleur de mots de passe comme Responder démasqué, agents d'IA trop permissifs, intégrité des fichiers critiques, failles des images Docker (trivy, s'il est installé), quarantaine réversible, et les traces collectées avant de nettoyer, avec la chronologie de l'incident ; un brouillon de signalement préparé pour l'éditeur quand un logiciel se comporte mal, jamais envoyé. |
 | **DNS et certificats détournés** | Le DNS réellement utilisé (et les réponses inventées), les certificats racine ajoutés (interception du HTTPS), le proxy imposé et les sites redirigés par le fichier hosts, la recherche automatique du proxy (WPAD), les extensions de navigateur qui lisent tous les sites. |
 | **Arnaques et prise de contrôle** | Faux technicien (logiciels de prise de contrôle à distance), liens dangereux examinés sans les ouvrir, fichiers téléchargés vérifiés, mots de passe et adresses courriel fuités, compte piraté, bac à sable pour un programme inconnu. |
 | **Vie privée et secrets** | Logiciels espions posés par un proche (serveurs connus, programmes qui lisent le clavier, autorisations de surveillance, logiciels de surveillance connus), bilan de confidentialité (qui a accès à la position, aux contacts, à la caméra et au micro), caméra et micro, mots de passe du navigateur sans protection, fichiers sensibles laissés en clair, secrets oubliés dans l'historique des projets git, données de la clé protégées par une phrase. |
@@ -264,7 +273,7 @@ puisque n'importe qui sur le réseau peut alors le lire.
 **Contre les rançongiciels et les logiciels malveillants** — des fichiers-pièges : un texte et un PDF leurres
 dans Documents, Images et Bureau, que personne n'a de raison de toucher. Un rançongiciel qui les chiffre ou les
 renomme déclenche une alerte critique, au bilan et toutes les heures par la surveillance, avec la marche à suivre ;
-posés et retirés après accord. Et une analyse YARA : 308 règles de ReversingLabs qui reconnaissent des familles
+posés et retirés après accord. Et une analyse YARA : plus de 300 règles de ReversingLabs qui reconnaissent des familles
 entières (rançongiciels, voleurs de mots de passe, chevaux de Troie, portes dérobées…), en complément de
 l'antivirus, appliquées par le moteur YARA de Vanguard, écrit pour lui : rien à installer. Chaque fichier lu est aussi comparé
 aux empreintes SHA-256 de logiciels malveillants connus de MalwareBazaar (abuse.ch) : là, c'est ce
@@ -318,7 +327,7 @@ n'a pas pu être lu, MANIFESTE.txt donne leurs empreintes (`sha256sum -c MANIFES
 arrêté, déplacé ni envoyé. Le dossier contient des données personnelles, à ne confier qu'à quelqu'un de confiance.
 C'est aussi la première étape d'« Après une infection », cochée d'office : couper le réseau ou nettoyer efface ces
 traces. Devant un rançongiciel ou une prise de contrôle encore reliés à Internet, la coupure passe d'abord : chaque
-minute compte. Depuis la 0.83, une chronologie de l'incident (CHRONOLOGIE.txt) remet tout dans l'ordre du temps,
+minute compte. Une chronologie de l'incident (CHRONOLOGIE.txt) remet tout dans l'ordre du temps,
 du plus ancien au plus récent : connexions acceptées ou refusées, comptes créés, services et tâches ajoutés,
 journaux effacés, détections de Defender, fichiers récents qui parlent (programmes, scripts, fichiers cachés). Les
 traces reprennent aussi ce que Vanguard a vu et fait (07-vanguard.txt) : ses alertes, ses blocages avec leur preuve.
@@ -386,7 +395,7 @@ fail2ban, sshguard ou CrowdSec bloque déjà les adresses qui insistent.
   module du noyau qui se cache ou modules non signés inconnus, carte réseau en mode promiscuité (elle écoute tout le
   réseau).
 - Journaux d'événements de Windows, sur les 7 derniers jours, au bilan et dans « Que s'est-il passé ? » (menu Bloquer
-  et réagir › Journaux de Windows, `vanguard journaux-windows`) : treize règles EVT- lues par Vanguard lui-même, un
+  et réagir › Journaux de Windows, `vanguard journaux-windows`) : les règles EVT- lues par Vanguard lui-même, un
   seul juge. Traces effacées, administrateur de plus, mots de passe devinés, Bureau à distance depuis l'extérieur,
   service ou tâche planifiée qui lance un interpréteur ou un programme d'un dossier temporaire, processus suspects
   (outils d'attaque, commande encodée, téléchargement par certutil, bitsadmin, mshta…), PowerShell malveillant,
@@ -768,7 +777,7 @@ Chaque entrée du menu existe aussi en commande.
 | `vanguard wifi-public [on\|off\|portail]` | mode Wi-Fi public (café, hôtel, aéroport) : entrées fermées, partage et annonce du nom coupés, DNS protecteur, après accord ; `off` remet tout exactement, `portail` rouvre la page de connexion du réseau |
 | **6 Virus et logiciels espions** | |
 | `vanguard antivirus [--complet] [dossier]` | analyse antivirus (ordinateur, ou une clé / un dossier) |
-| `vanguard yara [--complet] [dossier]` | analyse YARA : 308 règles de familles de logiciels malveillants, et les empreintes de MalwareBazaar |
+| `vanguard yara [--complet] [dossier]` | analyse YARA : plus de 300 règles de familles de logiciels malveillants, et les empreintes de MalwareBazaar |
 | `vanguard logiciels-espions` | logiciels espions : serveurs et sites connus (liste d'Échap), programmes qui lisent le clavier, autorisations de surveillance, logiciels de surveillance connus (lecture seule) |
 | `vanguard connexions-sortantes [--json]` | qui parle à Internet : les connexions de chaque programme (lecture seule) |
 | `vanguard memoire` | analyse YARA de la mémoire des programmes qui tournent (malware sans fichier), à la demande ; LSASS et processus protégés : leur mémoire n'est jamais lue |

@@ -187,6 +187,17 @@ JSON. Les vérifications d'avant le registre sont déclarées dans `regles.rs` d
 `src/machine/regles_communes.rs` ; une nouvelle se déclare plutôt à côté de sa vérification, avec la macro `regle!`.
 Le jugement s'écrit à part (`juger_…`, sans rien lire du système), pour se tester sur des données inventées.
 
+## Règles d'une contribution
+
+- Tout en Rust ; les petites briques faites maison ; aucune nouvelle dépendance sans décision de l'auteur ;
+  cryptographie auditée seulement, jamais écrite pour Vanguard.
+- Une nouvelle destination réseau : une ligne dans « Ce qui sort de l'ordinateur » de MODELE-DE-MENACE.md (et .en.md),
+  sinon le test `envois` échoue.
+- Une nouvelle règle : sa technique MITRE ATT&CK (détection) ou sa mesure d'atténuation (durcissement) dans ses
+  références, puis `python3 outils/couverture-attack.py` pour refaire la carte.
+- Un fichier d'état que Vanguard relit : scellé, et une valeur changée hors de Vanguard ne coupe aucune défense ni ne
+  donne aucun accord.
+
 ## Compiler, tester, déployer
 
 Prérequis : `rustup target add x86_64-unknown-linux-musl x86_64-pc-windows-gnu`, `musl` (musl-gcc), `mingw-w64-gcc`

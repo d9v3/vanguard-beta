@@ -180,6 +180,10 @@ Restrictions **coupées** :
 
 La première coupure demande une confirmation, une seule fois ; remettre les restrictions est immédiat.
 
+Ces choix (restrictions coupées, « à moi », lancement avec le bilan ou la surveillance) et les approbations sont
+**scellés** par Vanguard : changés hors de Vanguard, ou repris d'une version d'avant sans sceau, ils n'accordent plus
+rien et rien ne tourne tout seul ; le menu et le bilan le disent (COM-ETA-001). Il suffit de les redonner dans le menu.
+
 **En administrateur**, rien de ce qui est dans le dossier des extensions ne lève une garde (sous Windows, tout
 programme du compte peut l'écrire, même sans élévation) : aucune extension ne tourne avec le bilan, la
 surveillance ou l'entretien, et chaque lancement à la main est montré avec son empreinte et demandé, à chaque fois.

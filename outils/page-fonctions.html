@@ -361,8 +361,8 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
       <article class="domaine" id="infection">
         <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8 11h6M11 8v6"/></svg></span><div><h3>Poste infecté</h3><span class="touche">menu 6 · 8 · vanguard blocage · evenements · yara · depanner traces · signaler</span></div></header>
         <ul>
-          <li><b>Analyse antivirus en second avis (Defender ou ClamAV), 308 règles YARA et les empreintes</b> de logiciels malveillants connus de MalwareBazaar (clé abuse.ch gratuite ; la dernière copie sert hors ligne) ; quarantaine réversible. Moteur YARA écrit pour Vanguard ; programmes, documents Office et leurs macros, raccourcis, scripts et archives lus par Vanguard lui-même, ce qu'il ne sait pas lire dit non vérifié. <span class="nouveau">nouveau</span></li>
-          <li><b>Que s'est-il passé ?</b> Les journaux de Windows (.evtx) lus par Vanguard lui-même, sur ce Windows ou depuis un dossier sous n'importe quel système : treize règles (traces effacées, administrateur de plus, mot de passe deviné, Bureau à distance depuis Internet, tâche planifiée ou processus suspects, PowerShell malveillant, Defender désarmé, persistance WMI…) et les alertes dans l'ordre du temps ; au bilan comme au menu Bloquer et réagir. <span class="nouveau">nouveau</span></li>
+          <li><b>Analyse antivirus en second avis (Defender ou ClamAV), plus de 300 règles YARA et les empreintes</b> de logiciels malveillants connus de MalwareBazaar (clé abuse.ch gratuite ; la dernière copie sert hors ligne) ; quarantaine réversible. Moteur YARA écrit pour Vanguard ; programmes, documents Office et leurs macros, raccourcis, scripts et archives lus par Vanguard lui-même, ce qu'il ne sait pas lire dit non vérifié. <span class="nouveau">nouveau</span></li>
+          <li><b>Que s'est-il passé ?</b> Les journaux de Windows (.evtx) lus par Vanguard lui-même, sur ce Windows ou depuis un dossier sous n'importe quel système : des règles (traces effacées, administrateur de plus, mot de passe deviné, Bureau à distance depuis Internet, tâche planifiée ou processus suspects, PowerShell malveillant, Defender désarmé, persistance WMI…) et les alertes dans l'ordre du temps ; au bilan comme au menu Bloquer et réagir. <span class="nouveau">nouveau</span></li>
           <li><b>Blocage des menaces</b> d'un clic : programme arrêté et mis en quarantaine, connexion fermée au pare-feu, lancement retiré, tout annulable sauf l'arrêt ; la <b>protection active</b>, une fois mise en marche, bloque toute seule ce qui ne fait aucun doute et prévient.</li>
           <li><b>La preuve avant le geste</b> : programme, ligne de commande, parent, compte, empreinte, connexions, relevés avant chaque arrêt, quarantaine ou blocage ; un <b>journal des événements</b> scellé relie l'alerte, la preuve, le geste et son annulation.</li>
           <li><b>Chasse aux menaces en direct</b> : un mot de passe deviné (une connexion réussie juste après une rafale d'échecs), un outil d'attaque en marche, une commande qui télécharge ce qu'elle lance.</li>
@@ -519,7 +519,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
           <li><b>Lecteur SQLite maison</b> : les autorisations de confidentialité (TCC) lues sans <code>sqlite3</code>, pour le bilan de confidentialité et les logiciels espions.</li>
           <li><b>Lecteur de plist maison</b> (XML et binaire, borné contre un fichier piégé) : préférences, agents de launchd, version, à la place de <code>defaults</code> et <code>plutil</code>.</li>
           <li><b>XProtect</b> et profils de configuration hors gestion d'entreprise ; comptes, sudo sans mot de passe, SSH, Time Machine.</li>
-          <li><b>Testé</b> sur un vrai Mac de GitHub à chaque version.</li>
+          <li><b>Testé</b> automatiquement sur un Mac de GitHub à chaque version ; jamais essayé sur un vrai Mac.</li>
         </ul>
       </article>
     </div>
@@ -552,7 +552,7 @@ details.cli[open] summary { border-bottom: 1px solid var(--trait); }
     <h3 class="sous-titre">Sources de menaces</h3>
     <div class="sources">
       <div class="source"><b>MalwareBazaar</b><span>Empreintes SHA-256 de logiciels malveillants connus, comparées à chaque fichier lu par l'analyse YARA.</span><span class="k">clé abuse.ch gratuite · complète chaque semaine · 48 h chaque jour</span></div>
-      <div class="source"><b>ReversingLabs</b><span>308 règles YARA par famille (rançongiciels, voleurs, portes dérobées), appliquées par le moteur YARA de Vanguard sur 4 fils, aux fichiers et, à la demande, à la mémoire des programmes.</span><span class="k">intégrées au programme</span></div>
+      <div class="source"><b>ReversingLabs</b><span>plus de 300 règles YARA par famille (rançongiciels, voleurs, portes dérobées), appliquées par le moteur YARA de Vanguard sur 4 fils, aux fichiers et, à la demande, à la mémoire des programmes.</span><span class="k">intégrées au programme</span></div>
       <div class="source"><b>LOLDrivers</b><span>Pilotes vulnérables ou malveillants connus, comparés par empreinte aux pilotes du noyau de Windows : signés, ils servent à désarmer l'antivirus.</span><span class="k">chaque semaine · Apache-2.0</span></div>
       <div class="source"><b>ThreatFox · Feodo Tracker</b><span>Serveurs de commande de botnets, comparés aux connexions de chaque programme et à la mémoire DNS.</span><span class="k">abuse.ch · clé gratuite pour ThreatFox</span></div>
       <div class="source"><b>URLhaus · Spamhaus DBL · SURBL</b><span>Liens dangereux ; le domaine seulement sort, jamais le lien entier. Âge du domaine par RDAP.</span><span class="k">après accord · clé abuse.ch pour URLhaus</span></div>
@@ -594,19 +594,16 @@ vanguard yara --complet</pre>
     <div class="tete-section">
       <p class="surtitre">Nouveautés de la version {{VERSION_COURTE}}</p>
       <h2>Ce qui vient d'arriver</h2>
-      <p>Les journaux de Windows lus par Vanguard lui-même, un moteur YARA et un lecteur de fichiers maison, un nouveau menu qui met la défense d'abord, le blocage sans script, moins de programmes externes, et une troisième campagne d'attaque contre Vanguard.</p>
+      <p>Une version de confiance : ce qui sort de l'ordinateur tient dans une liste fermée, l'état de Vanguard est scellé, ce qu'il protège est écrit, et chaque règle est reliée à MITRE ATT&amp;CK.</p>
     </div>
     <ul class="nouveautes">
-      <li><b>Que s'est-il passé ?</b><span><code>vanguard journaux-windows</code> lit les journaux de Windows avec un lecteur .evtx écrit pour Vanguard : treize règles, un seul juge pour le bilan et le menu, les alertes dans l'ordre du temps, la période vraiment lue. Sur ce Windows ou sur un dossier de journaux, depuis n'importe quel système ; essayé sur un vrai Windows 11 sans fausse alerte.</span></li>
-      <li><b>YARA maison</b><span>Les 308 règles de ReversingLabs appliquées par un moteur écrit pour Vanguard ; une règle qu'il ne comprend pas rend l'analyse incomplète, jamais saine. Le programme Windows passe de 34 à 18 Mo.</span></li>
-      <li><b>Moteur d'analyse maison (second avis), première brique</b><span>Programmes, documents Office et leurs macros, raccourcis, scripts, archives zip, gzip et tar lus par Vanguard lui-même, bornés contre les fichiers piégés ; 7z, RAR, PDF ou chiffré : dit non vérifié.</span></li>
-      <li><b>Nouveau menu</b><span>La défense d'abord : Bilan (1 à 3), Cyberdéfense (4 à 8), En plus (9 à 13). Aucun écran ne défile ; un mot tapé au menu trouve chaque outil, page du guide ou parcours.</span></li>
-      <li><b>Blocage sans script</b><span>Chaque geste fait en administrateur est un ordre d'une liste fermée, à paramètres typés, revérifié avant d'être fait.</span></li>
-      <li><b>Le système lu directement</b><span>Wi-Fi, Bluetooth, systemd, NetworkManager, processus et réseau de macOS : lus par Vanguard lui-même, sans programme intermédiaire.</span></li>
-      <li><b>Logiciels proposés</b><span>Sept de plus, dont Ente Auth pour la double authentification ; Bitwarden par Flathub sous Arch.</span></li>
-      <li><b>Vouvoiement</b><span>Tout ce que Vanguard affiche en français vouvoie : menus, messages, aide, guide.</span></li>
-      <li><b>Troisième campagne d'attaque</b><span>La clé comparée à sa référence avant toute écriture, l'état de Vanguard scellé et lu en simple fichier, les données piégées (archives, mémoire, Wi-Fi jumeau) bornées.</span></li>
-      <li><b>Moins de fausses alertes de l'antivirus</b><span>Les noms d'outils d'attaque que Vanguard reconnaît ne sont plus en clair dans le programme, pour qu'un antivirus ne le prenne pas pour l'outil qu'il traque.</span></li>
+      <li><b>Liste fermée de ce qui sort</b><span>Vanguard ne joint qu'une liste fermée de sites, chacun nommé dans le modèle de menace ; un test échoue si le code en ajoute un que la page ne nomme pas.</span></li>
+      <li><b>État scellé</b><span>Réglages des extensions, listes téléchargées, défenses mises en marche, tâches et fichiers d'état : changés hors de Vanguard, ils n'accordent plus rien et ne coupent plus rien, et c'est dit.</span></li>
+      <li><b>Modèle de menace</b><span>Une page dit ce que Vanguard protège, ce qu'il ne protège pas et ce qui sort de l'ordinateur.</span></li>
+      <li><b>Carte MITRE ATT&amp;CK</b><span>Les règles citent la technique qu'elles détectent ou la mesure qu'elles appliquent ; la carte, générée, montre aussi les cases vides.</span></li>
+      <li><b>Journaux de Windows, un seul juge</b><span>Le bilan reprend les règles de « Que s'est-il passé ? » ; deux règles de plus (tâches planifiées, processus suspects) et une place au menu.</span></li>
+      <li><b>Paquets de l'AUR avec accord</b><span>Sous Arch Linux, les noms des paquets hors des dépôts officiels ne partent plus qu'avec un réglage donné exprès.</span></li>
+      <li><b>Optimiser refusé en administrateur</b><span>Ses outils ne tournent pas quand Vanguard a été élevé depuis un compte ordinaire ; « Tout remettre comme avant » reste permis.</span></li>
     </ul>
   </section>
 
@@ -614,25 +611,24 @@ vanguard yara --complet</pre>
     <div class="tete-section">
       <p class="surtitre">Feuille de route</p>
       <h2>Ce qui se prépare</h2>
-      <p>Les travaux en cours, puis ceux qui suivent, dans l'ordre. Chacun passe par les mêmes règles : écrit en Rust, défensif, annulable, relu et testé avant d'entrer dans une version. Les journaux de Windows, le moteur YARA et le nouveau menu sont arrivés avec la 0.87.</p>
+      <p>Les travaux en cours, puis ceux qui suivent, dans l'ordre, sans date. Chacun passe par les mêmes règles : écrit en Rust, petites briques faites maison, aucune dépendance nouvelle sans décision, cryptographie auditée seulement, défensif, annulable, relu et testé avant d'entrer dans une version.</p>
     </div>
     <h3 class="sous-titre">En cours</h3>
     <div class="audit">
-      <div><b>Agents d'IA</b><span>Tout ce qu'un agent de code peut exécuter (crochets, serveurs MCP, skills, réglages de Claude Code, Codex, Gemini, VS Code), leurs versions vulnérables, et ce qui a changé depuis leur approbation.</span><span class="k">en cours</span></div>
-      <div><b>Tout en Rust</b><span>Le blocage sans script ; un pare-feu Linux piloté directement (nf_tables), écrit pour Vanguard ; les dernières lectures du système sous Linux et macOS ; les outils de publication et la signature des versions.</span><span class="k">en cours</span></div>
-      <div><b>Banc d'essai sur la clé</b><span>Un double-clic sur un vrai Windows lance les essais de Vanguard et range les résultats sur la clé.</span><span class="k">en cours</span></div>
-      <div><b>Interface graphique</b><span>Étude d'une fenêtre graphique qui garde le terminal à côté.</span><span class="k">étude</span></div>
-      <div><b>Versions signées deux fois</b><span>Ed25519 et ML-DSA (FIPS 204, post-quantique), par une bibliothèque reconnue : la signature hybride des versions attend une décision.</span><span class="k">en attente</span></div>
+      <div><b>Régression de détection</b><span>Un corpus de cas inoffensifs prouve à chaque version que chaque règle tire encore.</span><span class="k">en cours</span></div>
+      <div><b>Tout en Rust</b><span>Les corrections sous Windows, Linux et macOS faites par un programme élevé qui revérifie chaque geste, sans script ; les outils de publication.</span><span class="k">en cours</span></div>
+      <div><b>Documentation du code</b><span>Chaque fonction publique dit son contrat ; les longues fonctions découpées, comportement inchangé.</span><span class="k">en cours</span></div>
     </div>
     <h3 class="sous-titre">Plus tard</h3>
     <ul class="nouveautes">
-      <li><b>Windows tout en Rust</b><span>Les corrections faites par un programme élevé qui revérifie chaque geste, sans script.</span></li>
-      <li><b>Journaux de Windows, la suite</b><span>Un menu pour « Que s'est-il passé ? » et de nouvelles règles, chacune provoquée dans une machine virtuelle.</span></li>
-      <li><b>Observation du noyau Linux</b><span>Les programmes eBPF cachés d'un rootkit, puis l'observation en direct, sans jamais rien bloquer dans le noyau.</span></li>
-      <li><b>Clé de secours</b><span>Une clé qui démarre un ordinateur en panne et y lance Vanguard, sans écrire dans les comptes de Windows.</span></li>
-      <li><b>Agents d'IA, la suite</b><span>Les consignes cachées dans les fichiers (caractères invisibles), puis un secret-piège.</span></li>
-      <li><b>Failles des autres distributions</b><span>Debian, Ubuntu et Fedora avec leurs numéros de faille (CVE) ; un DNS local qui bloque les sites dangereux.</span></li>
-      <li><b>Signature du code</b><span>Prévue : le programme signé, puis une version installée avec surveillance par le système.</span></li>
+      <li><b>« Normal chez moi » qui tient</b><span>Une alerte déclarée normale sur cet ordinateur le reste d'une version à l'autre, et suit l'export des réglages.</span></li>
+      <li><b>Guide d'incident</b><span>Après une alerte : quoi faire, dans quel ordre, et comment vérifier que c'est réglé.</span></li>
+      <li><b>Vanguard se surveille lui-même</b><span>Ses fichiers, son programme et son état vérifiés en continu ; un journal dont chaque ligne est liée à la précédente ; un apprentissage local qui ne peut que le rendre plus attentif, jamais moins.</span></li>
+      <li><b>Antivirus maison, la suite</b><span>Signatures de la base ClamAV installée et heuristiques, en second avis ; Defender reste principal sous Windows.</span></li>
+      <li><b>Observation du noyau Linux</b><span>L'audit du noyau, puis les programmes eBPF cachés d'un rootkit, sans jamais rien bloquer dans le noyau.</span></li>
+      <li><b>IA défensive locale</b><span>Une application à part, sur la carte graphique, qui explique et priorise sans jamais agir ni rien envoyer.</span></li>
+      <li><b>Signature du code</b><span>Le programme signé, puis une version installée avec surveillance par le système.</span></li>
+      <li><b>1.0</b><span>Tout ce périmètre intégré, testé, documenté en français et en anglais, et vert sur Windows, Linux et macOS.</span></li>
     </ul>
   </section>
 
@@ -645,7 +641,7 @@ vanguard yara --complet</pre>
       <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Rien sans accord</b><span>Chaque changement est montré avant d'être fait ; la protection active, une fois mise en marche, ne bloque seule que ce qui ne fait aucun doute, et prévient.</span></div></div>
       <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Jamais « sain » par défaut</b><span>Ce qui n'a pas pu être vérifié est dit clairement.</span></div></div>
       <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Jamais d'attaque</b><span>Il observe et mesure le réseau ; aucun exploit, aucun mot de passe essayé sur un appareil (seule la lecture SNMP « public », annoncée).</span></div></div>
-      <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Rien d'envoyé en cachette</b><span>Le journal des erreurs est anonymisé ; rien ne part sans le dire.</span></div></div>
+      <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Rien d'envoyé en cachette</b><span>Ce qui sort tient dans une liste fermée, écrite dans le <a href="https://github.com/d9v3/vanguard-beta/blob/master/MODELE-DE-MENACE.md">modèle de menace</a> ; le journal des erreurs est anonymisé. Les règles sont reliées à la <a href="https://github.com/d9v3/vanguard-beta/blob/master/COUVERTURE-ATTACK.md">carte MITRE ATT&amp;CK</a>.</span></div></div>
     </div>
   </section>
 
@@ -660,7 +656,7 @@ vanguard yara --complet</pre>
       <div class="chiffre"><b>{{TESTS_WINE}}</b><span>tests sous Windows (Wine)</span></div>
       <div class="chiffre"><b>{{VM}}</b><span>vérifications sur un vrai Windows</span></div>
     </div>
-    <p class="note">Chaque version passe par des relectures de sécurité indépendantes, par un vrai Windows qui se teste tout seul et par un vrai Mac. Cette page est refaite par le script de publication à chaque version.</p>
+    <p class="note">Chaque version passe par des relectures de sécurité indépendantes, par un vrai Windows qui se teste tout seul et par un Mac de GitHub. Cette page est refaite par le script de publication à chaque version.</p>
   </section>
   <section id="installer">
     <div class="tete-section">

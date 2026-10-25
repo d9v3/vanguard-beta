@@ -3316,8 +3316,8 @@ fn aide_longue() -> String {
         }
     }
     t += tr!(
-        "\nDétail d'une commande : vanguard <commande> --help.\nNoms changés depuis la 0.86 : dans l'historique des versions (CHANGELOG.md).\nCe que Vanguard protège ou non : MODELE-DE-MENACE.md, dans le dépôt.\n",
-        "\nDetail of a command: vanguard <command> --help.\nNames changed since 0.86: in the version history (CHANGELOG.en.md).\nWhat Vanguard protects or not: MODELE-DE-MENACE.en.md, in the repository.\n"
+        "\nDétail d'une commande : vanguard <commande> --help.\nAnciens noms de commandes : dans l'historique des versions (CHANGELOG.md).\nCe que Vanguard protège ou non : MODELE-DE-MENACE.md, dans le dépôt.\nCe que voient ses règles : COUVERTURE-ATTACK.md.\n",
+        "\nDetail of a command: vanguard <command> --help.\nFormer command names: in the version history (CHANGELOG.en.md).\nWhat Vanguard protects or not: MODELE-DE-MENACE.en.md, in the repository.\nWhat its rules see: COUVERTURE-ATTACK.en.md.\n"
     );
     t
 }

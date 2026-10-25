@@ -187,6 +187,17 @@ from before the registry are declared in their system's `regles.rs` and in `src/
 is better declared next to its check, with the `regle!` macro.
 The judgment is written separately (`juger_…`, reading nothing from the system), to be tested on made-up data.
 
+## Contribution rules
+
+- Everything in Rust; small parts built in-house; no new dependency without the author's decision; audited
+  cryptography only, never written for Vanguard.
+- A new network destination: a line in "What leaves the computer" of MODELE-DE-MENACE.en.md (and the French page),
+  otherwise the `envois` test fails.
+- A new rule: its MITRE ATT&CK technique (detection) or mitigation (hardening) in its references, then
+  `python3 outils/couverture-attack.py` to rebuild the map.
+- A state file that Vanguard reads back: sealed, and a value changed outside Vanguard turns no defense off and grants
+  no consent.
+
 ## Build, test, deploy
 
 Requirements: `rustup target add x86_64-unknown-linux-musl x86_64-pc-windows-gnu`, `musl` (musl-gcc), `mingw-w64-gcc`
