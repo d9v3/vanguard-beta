@@ -2030,6 +2030,129 @@ fn installer(exe: &str, r: Reglages) -> bool {
     true
 }
 
+/// SUR-APP-001, SUR-PRT-001 et SUR-EMP-001 au corpus de détection, sur un scan fabriqué du réseau « Salon » :
+/// `hote|adresse|mac|nouvel appareil (oui, non)|port nouvellement ouvert`, `empoisonneur|adresse`. Seules restent
+/// les alertes du genre du cas (appareil, port, empoisonneur), en notifications.
+#[cfg(test)]
+pub(crate) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    let id = e.dossier.file_name().unwrap().to_string_lossy().into_owned();
+    let genre = match id.as_str() {
+        "SUR-APP-001" => Genre::Appareil,
+        "SUR-PRT-001" => Genre::Port,
+        "SUR-EMP-001" => Genre::Empoisonneur,
+        autre => panic!("{autre} : pas un cas de la surveillance du scan"),
+    };
+    let hotes = e
+        .de("hote")
+        .iter()
+        .map(|c| {
+            let ports = c[3]
+                .split(',')
+                .filter(|p| !p.is_empty())
+                .map(|p| reseau::PortOuvert {
+                    nouveau: true,
+                    ..crate::audit::appareils::tests::port(p.parse().unwrap(), false)
+                })
+                .collect();
+            reseau::Hote {
+                mac: Some(c[1].into()),
+                nouvelle: c[2] == "oui",
+                ports,
+                ..crate::audit::appareils::tests::hote(c[0], None, None, &[])
+            }
+        })
+        .collect();
+    let empoisonneurs = e
+        .de("empoisonneur")
+        .iter()
+        .map(|c| reseau::empoisonnement::Empoisonneur {
+            ip: c[0].parse().unwrap(),
+            protocoles: vec!["LLMNR"],
+        })
+        .collect();
+    let r = reseau::Rapport {
+        carnet_non_cru: None,
+        reseau: "192.168.50.0/24".into(),
+        nom_reseau: Some("Salon".into()),
+        absents: Vec::new(),
+        duree_s: 1.0,
+        score_global: 100,
+        note: "A",
+        hotes,
+        upnp: None,
+        empoisonnement: Some(reseau::empoisonnement::Rapport::Teste(empoisonneurs)),
+    };
+    let alertes: Vec<Constat> = alertes_du_scan(&r)
+        .into_iter()
+        .filter(|(g, ..)| *g == genre)
+        .map(|(_, _, titre, texte)| crate::modele::corpus::notification(&titre, &texte))
+        .collect();
+    if alertes.is_empty() {
+        return vec![crate::machine::ok("Surveillance", "aucune alerte")];
+    }
+    alertes
+}
+
+/// SUR-PAS-001 au corpus de détection : `avant|réseau|nom|adresse|mac` (la box notée) et `apres|…` (celle du scan).
+#[cfg(test)]
+pub(crate) fn corpus_passerelle(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    let lire = |genre: &str| {
+        e.de(genre).first().map(|c| Passerelle {
+            reseau: c[0].into(),
+            nom: Some(c[1].into()),
+            ip: c[2].parse().unwrap(),
+            mac: c[3].into(),
+        })
+    };
+    let (avant, apres) = (lire("avant").unwrap(), lire("apres").unwrap());
+    vec![match mac_changee(&avant, &apres) {
+        Some((ancienne, nouvelle)) => {
+            crate::modele::corpus::notification("adresse MAC du routeur changée", &format!("{ancienne} → {nouvelle}"))
+        }
+        None => crate::machine::ok("Surveillance", "routeur inchangé"),
+    }]
+}
+
+/// SUR-WIF-001 au corpus de détection : `avant|règle|niveau|message` et `apres|…`, les constats de l'audit suivis aux
+/// deux passages (niveau : info, moyen, eleve, critique).
+#[cfg(test)]
+pub(crate) fn corpus_audit(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    let niveau = |t: &str| match t {
+        "info" => Niveau::Info,
+        "moyen" => Niveau::Moyen,
+        "eleve" => Niveau::Eleve,
+        _ => Niveau::Critique,
+    };
+    let constats = |genre: &str| -> Vec<Constat> {
+        e.de(genre)
+            .iter()
+            .map(|c| Constat {
+                regle: if c[0] == "COM-WIF-001" {
+                    "COM-WIF-001"
+                } else {
+                    "COM-WIF-002"
+                },
+                ..crate::machine::alerte("Wi-Fi", niveau(c[1]), c[2].to_string())
+            })
+            .collect()
+    };
+    let etat = |cs: &[Constat]| EtatAudit {
+        textes: TEXTES,
+        redirections: Some(Vec::new()),
+        constats: cs.iter().filter(|c| surveille(c)).map(cle_constat).collect(),
+    };
+    let (avant, apres) = (constats("avant"), constats("apres"));
+    let vus: Vec<&Constat> = apres.iter().collect();
+    let alertes: Vec<Constat> = nouveautes_audit(&etat(&avant), &etat(&apres), &[], &vus)
+        .into_iter()
+        .map(|(titre, texte, _)| crate::modele::corpus::notification(&titre, &texte))
+        .collect();
+    if alertes.is_empty() {
+        return vec![crate::machine::ok("Surveillance", "aucune alerte")];
+    }
+    alertes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

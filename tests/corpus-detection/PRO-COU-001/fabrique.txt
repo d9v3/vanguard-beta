@@ -1,0 +1,8 @@
+From: "Banque Corpus" <avis@banque-corpus.example>
+Reply-To: noreply@gmail.com
+To: alice@example.com
+Subject: Votre compte
+MIME-Version: 1.0
+Content-Type: text/html
+
+<a href="http://203.0.113.9/connexion">https://www.banque-corpus.example</a>

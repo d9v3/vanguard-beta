@@ -1,0 +1,2 @@
+entree|CorpusEspion|c2.corpus-espion.example
+demande|www.example.org

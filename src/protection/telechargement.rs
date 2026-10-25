@@ -790,6 +790,46 @@ fn empreinte_par<D: sha2::Digest>(fichier: &Path) -> std::io::Result<String> {
     Ok(crate::socle::hachage::hexa(&calcul.finalize()))
 }
 
+/// PRO-TEL-001 au corpus de détection : `fichier|nom|premiers octets` (en texte), jugés par leur nom et leur début.
+#[cfg(test)]
+pub(crate) fn corpus_nature(e: &crate::modele::corpus::Entree) -> Vec<crate::machine::Constat> {
+    let mut constats = Vec::new();
+    for c in e.de("fichier") {
+        for (niveau, texte) in nature(c[0], c[1].as_bytes()) {
+            constats.push(crate::machine::alerte(
+                "Fichiers suspects",
+                niveau,
+                format!("{} : {texte}", c[0]),
+            ));
+        }
+    }
+    if constats.is_empty() {
+        constats.push(crate::machine::ok(
+            "Fichiers suspects",
+            "rien à dire du nom ni du début",
+        ));
+    }
+    constats
+}
+
+/// SUR-TEL-001 au corpus de détection : `fichier|nom|premiers octets`, arrivés après le passage d'avant.
+#[cfg(test)]
+pub(crate) fn corpus_signalements(e: &crate::modele::corpus::Entree) -> Vec<crate::machine::Constat> {
+    let fichiers: Vec<(String, u64, Vec<u8>)> = e
+        .de("fichier")
+        .iter()
+        .map(|c| (c[0].to_string(), 100, c[1].as_bytes().to_vec()))
+        .collect();
+    let mut constats: Vec<_> = a_signaler(&fichiers, 50)
+        .iter()
+        .map(|(titre, texte)| crate::modele::corpus::notification(titre, texte))
+        .collect();
+    if constats.is_empty() {
+        constats.push(crate::machine::ok("Fichiers suspects", "rien à signaler"));
+    }
+    constats
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

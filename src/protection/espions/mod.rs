@@ -748,6 +748,37 @@ fn constats_de(r: &Releve) -> Vec<Constat> {
         .collect()
 }
 
+/// PRO-ESP-001 au corpus de détection : `entree|nom|domaine` (une entrée inventée de la liste des logiciels espions,
+/// complétée des entrées que la liste exige) et `demande|nom` (les noms demandés par l'ordinateur).
+#[cfg(test)]
+pub(crate) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    let mut entrees: Vec<echap::Entree> = e
+        .de("entree")
+        .iter()
+        .map(|c| echap::Entree {
+            nom: c[0].into(),
+            domaines: vec![c[1].into()],
+            ..echap::Entree::default()
+        })
+        .collect();
+    for i in 0..30 {
+        entrees.push(echap::Entree {
+            nom: format!("Remplissage{i}"),
+            domaines: (0..2).map(|j| format!("r{i}-{j}.example.net")).collect(),
+            ..echap::Entree::default()
+        });
+    }
+    let ind = echap::indicateurs_de(&entrees).unwrap();
+    let noms: Vec<String> = e.de("demande").iter().map(|c| c[0].to_string()).collect();
+    let mut r = Releve {
+        verifies: 1,
+        dns_lu: true,
+        ..Releve::default()
+    };
+    memoire_espions(&mut r, &ind, &noms);
+    constats_de(&r)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

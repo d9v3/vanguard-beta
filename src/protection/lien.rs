@@ -1634,6 +1634,26 @@ pub fn json(adresse: &str, internet: bool) {
     println!("{}", crate::modele::resultat::json(&r));
 }
 
+/// PRO-LIE-001 au corpus de détection : une adresse par ligne, examinée sans être ouverte (rien en ligne).
+#[cfg(test)]
+pub(crate) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<crate::machine::Constat> {
+    let mut constats = Vec::new();
+    for adresse in e.lignes() {
+        let lien = decouper(&nettoyer(adresse)).unwrap_or_else(|| panic!("{adresse} : pas un lien"));
+        for s in examiner(&lien) {
+            constats.push(crate::machine::alerte(
+                "Surveillance",
+                s.niveau,
+                format!("{adresse} : {}", s.texte),
+            ));
+        }
+    }
+    if constats.is_empty() {
+        constats.push(crate::machine::ok("Surveillance", "aucun signe sur ces liens"));
+    }
+    constats
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

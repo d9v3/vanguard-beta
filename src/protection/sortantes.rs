@@ -1917,6 +1917,39 @@ pub fn json() {
     println!("{}", crate::modele::resultat::json(&res));
 }
 
+/// SUR-BOT-001 au corpus de détection : `feodo|adresse` (la liste de Feodo Tracker, en-tête compris) et
+/// `connexion|programme|adresse|port` (les connexions du moment).
+#[cfg(test)]
+pub(crate) fn corpus_botnets(e: &crate::modele::corpus::Entree) -> Vec<crate::machine::Constat> {
+    let liste: String = std::iter::once("# Feodo Tracker (corpus)".to_string())
+        .chain(e.de("feodo").iter().map(|c| c[0].to_string()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let botnets = Botnets {
+        feodo: analyser_feodo(&liste).unwrap(),
+        ..Botnets::default()
+    };
+    let mut constats: Vec<_> = e
+        .de("connexion")
+        .iter()
+        .filter_map(|c| {
+            let connexion = Connexion {
+                programme: Some(c[0].to_string()),
+                ..Connexion::vers(c[1].parse().unwrap(), c[2].parse().unwrap())
+            };
+            let serveur = botnets.serveur(&connexion)?;
+            Some(crate::modele::corpus::notification(
+                "programme relié à un botnet",
+                &format!("{} → {serveur}", c[0]),
+            ))
+        })
+        .collect();
+    if constats.is_empty() {
+        constats.push(crate::machine::ok("Programmes", "aucun serveur de commande connu"));
+    }
+    constats
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

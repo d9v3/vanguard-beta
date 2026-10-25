@@ -1,0 +1,2 @@
+avant|COM-WIF-001|info|Wi-Fi Salon-corpus chiffré
+apres|COM-WIF-001|eleve|Wi-Fi Salon-corpus ouvert, sans chiffrement

@@ -1,0 +1,5 @@
+# SUR-PAS-001 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "eleve"
+mots = ["e4:5d:51:99:88:77"]
+propre = "aucun"
+systemes = ["linux", "windows", "macos"]

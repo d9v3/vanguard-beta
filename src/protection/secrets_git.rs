@@ -625,6 +625,21 @@ pub fn analyser() {
     }
 }
 
+/// PRO-GIT-001 au corpus de détection : des lignes ajoutées dans l'historique d'un dépôt. Une fuite n'a pas de niveau
+/// à l'écran : le corpus la compte comme une notification.
+#[cfg(test)]
+pub(crate) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<crate::machine::Constat> {
+    let mut constats: Vec<_> = e
+        .lignes()
+        .into_iter()
+        .filter_map(|l| secret(l).map(|genre| crate::modele::corpus::notification(genre, &crate::ui::affichable(l))))
+        .collect();
+    if constats.is_empty() {
+        constats.push(crate::machine::ok("Surveillance", "aucun secret dans ces lignes"));
+    }
+    constats
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

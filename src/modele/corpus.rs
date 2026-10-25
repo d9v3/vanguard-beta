@@ -101,6 +101,16 @@ impl Drop for Jetable {
     }
 }
 
+/// Le niveau donné à une notification de la surveillance (ou d'un outil qui signale sans niveau, comme une fuite de
+/// secret) quand un cas en fait un constat : elle n'en a pas à l'écran, et une notification est une alerte que la
+/// personne voit sur-le-champ. Fixé ici une fois, pour tous les cas.
+pub(crate) const NIVEAU_D_UNE_NOTIFICATION: Niveau = Niveau::Eleve;
+
+/// Une notification (titre, texte) en constat, au niveau fixé ci-dessus.
+pub(crate) fn notification(titre: &str, texte: &str) -> Constat {
+    crate::machine::alerte("Surveillance", NIVEAU_D_UNE_NOTIFICATION, format!("{titre} : {texte}"))
+}
+
 /// L'adaptateur d'une règle : ses données fabriquées données à sa fonction de jugement.
 pub(crate) type Juge = fn(&Entree) -> Vec<Constat>;
 
@@ -127,8 +137,29 @@ fn tous_les_cas() -> Vec<(&'static str, Juge)> {
     cas.extend_from_slice(crate::machine::macos::corpus::CAS);
     cas.extend_from_slice(crate::journaux_windows::regles::corpus::CAS);
     cas.extend_from_slice(crate::audit::corpus::CAS);
+    cas.extend_from_slice(CAS_DES_OUTILS);
     cas
 }
+
+/// Les cas des outils et des surveillances du registre (modele/registre.rs), dont les adaptateurs sont dans leur
+/// module.
+const CAS_DES_OUTILS: &[(&str, Juge)] = &[
+    ("PRO-TEL-001", crate::protection::telechargement::corpus_nature),
+    ("SUR-TEL-001", crate::protection::telechargement::corpus_signalements),
+    ("PRO-LIE-001", crate::protection::lien::corpus),
+    ("PRO-COU-001", crate::protection::courriel_suspect::corpus),
+    ("PRO-ESP-001", crate::protection::espions::corpus),
+    #[cfg(unix)]
+    ("PRO-DIS-001", crate::protection::distance::corpus),
+    ("PRO-GIT-001", crate::protection::secrets_git::corpus),
+    ("SUR-BOT-001", crate::protection::sortantes::corpus_botnets),
+    ("SUR-FIC-001", crate::protection::integrite::corpus_signaler),
+    ("SUR-PAS-001", crate::reseau::surveillance::corpus_passerelle),
+    ("SUR-WIF-001", crate::reseau::surveillance::corpus_audit),
+    ("SUR-APP-001", crate::reseau::surveillance::corpus),
+    ("SUR-PRT-001", crate::reseau::surveillance::corpus),
+    ("SUR-EMP-001", crate::reseau::surveillance::corpus),
+];
 
 // ───────────────────────────── La liste fermée ─────────────────────────────
 
@@ -170,6 +201,46 @@ const EXEMPTEES: &[(&str, &str)] = &[
         "PRO-PER-001",
         "les failles exploitées viennent du catalogue KEV, lu en ligne",
     ),
+    (
+        "PRO-YAR-001",
+        "ses règles intégrées sont des signatures de logiciels malveillants réels : un fichier qui en touche une en reprendrait le contenu ; le moteur YARA maison est comparé à YARA-X par ses propres tests",
+    ),
+    (
+        "PRO-MEM-001",
+        "les mêmes règles que PRO-YAR-001, appliquées à la mémoire des processus",
+    ),
+    (
+        "VEI-RAN-001",
+        "surveillance comportementale en direct, hors du corpus de données fabriquées ; ses propres tests la gardent",
+    ),
+    (
+        "VEI-RAN-002",
+        "surveillance comportementale en direct, hors du corpus de données fabriquées ; ses propres tests la gardent",
+    ),
+    (
+        "VEI-RAN-003",
+        "surveillance comportementale en direct, hors du corpus de données fabriquées ; ses propres tests la gardent",
+    ),
+    (
+        "VEI-EXF-001",
+        "surveillance comportementale en direct, hors du corpus de données fabriquées ; ses propres tests la gardent",
+    ),
+    (
+        "VEI-PRG-001",
+        "le veilleur du noyau (Linux) juge en direct ce qu'il voit passer, hors du corpus ; ses propres tests le gardent",
+    ),
+    (
+        "VEI-CNX-001",
+        "le veilleur du noyau (Linux) juge en direct ce qu'il voit passer, hors du corpus ; ses propres tests le gardent",
+    ),
+    (
+        "SUR-BLO-001",
+        "la protection active agit (arrêt, blocage) : son jugement n'est pas séparé de ses gestes ; ses propres tests la gardent",
+    ),
+    (
+        "PRO-SOR-001",
+        "la liste des programmes qui parlent à Internet est un inventaire montré, sans jugement à part ; ses listes de serveurs de commande sont exercées par SUR-BOT-001",
+    ),
 ];
 
 /// Les cas dont le propre ne peut rendre aucun constat vérifié, avec leur raison : la règle dit toujours ce qu'elle ne
@@ -185,33 +256,9 @@ const PROPRES_SANS_VERIFIE: &[(&str, &str)] = &[(
 /// nouvelle, dont le jugement n'est pas encore à part, s'y inscrive avec sa raison. Une entrée qui a son cas fait échouer.
 const EN_ATTENTE_S3B: &[(&str, &str)] = &[];
 
-/// Les outils et surveillances qui attendent leur cas (lot S3c). S3c vide cette liste.
-const EN_ATTENTE_S3C: &[&str] = &[
-    "PRO-YAR-001",
-    "PRO-MEM-001",
-    "PRO-TEL-001",
-    "SUR-TEL-001",
-    "PRO-COU-001",
-    "PRO-LIE-001",
-    "PRO-ESP-001",
-    "PRO-DIS-001",
-    "PRO-SOR-001",
-    "PRO-GIT-001",
-    "SUR-BOT-001",
-    "SUR-EMP-001",
-    "SUR-FIC-001",
-    "SUR-PAS-001",
-    "SUR-APP-001",
-    "SUR-PRT-001",
-    "SUR-WIF-001",
-    "SUR-BLO-001",
-    "VEI-RAN-001",
-    "VEI-RAN-002",
-    "VEI-RAN-003",
-    "VEI-EXF-001",
-    "VEI-PRG-001",
-    "VEI-CNX-001",
-];
+/// Les outils et surveillances qui attendent leur cas : vidée par le lot S3c, gardée pour un outil nouveau qui s'y
+/// inscrit le temps d'avoir le sien. Une entrée qui a son cas fait échouer.
+const EN_ATTENTE_S3C: &[&str] = &[];
 
 /// Le fil de chaque règle du bilan qui a un cas, de son `regle!` au jugement que son adaptateur appelle : la première
 /// fonction est nommée dans le bloc `regle!`, chacune appelle la suivante (fichier sous src/, nom). Plusieurs
@@ -552,6 +599,102 @@ const FILS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("reseau/surveillance.rs", "veiller_passerelle"),
             ("reseau/mod.rs", "usurpation_arp"),
+        ],
+    ),
+    // Les outils du registre n'ont pas de regle! : leur fil part d'une fonction de leur module (modele/registre.rs).
+    (
+        "PRO-TEL-001",
+        &[
+            ("protection/telechargement.rs", "verifier"),
+            ("protection/telechargement.rs", "nature"),
+        ],
+    ),
+    (
+        "SUR-TEL-001",
+        &[
+            ("protection/telechargement.rs", "nouveaux_a_signaler"),
+            ("protection/telechargement.rs", "a_signaler"),
+        ],
+    ),
+    (
+        "PRO-LIE-001",
+        &[("protection/lien.rs", "verifier"), ("protection/lien.rs", "examiner")],
+    ),
+    (
+        "PRO-COU-001",
+        &[
+            ("protection/courriel_suspect/mod.rs", "verifier"),
+            ("protection/courriel_suspect/mod.rs", "examiner"),
+        ],
+    ),
+    (
+        "PRO-ESP-001",
+        &[
+            ("protection/espions/mod.rs", "constats_avec"),
+            ("protection/espions/mod.rs", "constats_de"),
+        ],
+    ),
+    (
+        "PRO-DIS-001",
+        &[
+            ("protection/distance.rs", "constats"),
+            ("protection/distance.rs", "juger"),
+        ],
+    ),
+    (
+        "PRO-GIT-001",
+        &[
+            ("protection/secrets_git.rs", "lire_historique"),
+            ("protection/secrets_git.rs", "secret"),
+        ],
+    ),
+    (
+        "SUR-BOT-001",
+        &[
+            ("protection/sortantes.rs", "botnets_en_cours"),
+            ("protection/sortantes.rs", "serveur"),
+        ],
+    ),
+    (
+        "SUR-FIC-001",
+        &[
+            ("protection/integrite.rs", "changements_a_signaler"),
+            ("protection/integrite.rs", "a_notifier"),
+        ],
+    ),
+    (
+        "SUR-PAS-001",
+        &[
+            ("reseau/surveillance.rs", "veiller_passerelle"),
+            ("reseau/surveillance.rs", "mac_changee"),
+        ],
+    ),
+    (
+        "SUR-WIF-001",
+        &[
+            ("reseau/surveillance.rs", "veiller_audit"),
+            ("reseau/surveillance.rs", "nouveautes_audit"),
+        ],
+    ),
+    (
+        "SUR-APP-001",
+        &[
+            ("reseau/surveillance.rs", "passe"),
+            ("reseau/surveillance.rs", "alertes_du_scan"),
+        ],
+    ),
+    (
+        "SUR-PRT-001",
+        &[
+            ("reseau/surveillance.rs", "passe"),
+            ("reseau/surveillance.rs", "alertes_du_scan"),
+        ],
+    ),
+    (
+        "SUR-EMP-001",
+        &[
+            ("reseau/surveillance.rs", "passe"),
+            ("reseau/surveillance.rs", "alertes_du_scan"),
         ],
     ),
 ];
@@ -1133,6 +1276,23 @@ fn chaque_regle_du_corpus_mene_a_son_jugement() {
             }
             // Une fiche de l'audit, ou l'usurpation de la box (scan et surveillance) : pas de regle!.
             None if fiches.contains(&format!("Fiche {{ id: \"{id}\"")) || *id == "COM-ARP-001" => {}
+            // Un outil du registre : son fil doit partir de son module.
+            None if super::registre::OUTILS.iter().any(|o| o.id == *id) => {
+                let module = super::registre::OUTILS
+                    .iter()
+                    .find(|o| o.id == *id)
+                    .map_or("", |o| o.module);
+                let dossier = module.replace("::", "/");
+                // Une surveillance (SUR-) dont la notification se forme dans la passe de la surveillance du réseau
+                // (empoisonneur, appareils, ports) peut partir de là.
+                let passe = id.starts_with("SUR-") && fil[0].0 == "reseau/surveillance.rs";
+                if !fil[0].0.starts_with(&dossier) && !passe {
+                    fautes.push(format!(
+                        "{id} : son fil part de {}, hors de son module {module}",
+                        fil[0].0
+                    ));
+                }
+            }
             None => fautes.push(format!(
                 "{id} : ni bloc regle! dans src/, ni fiche dans audit/fiches.rs"
             )),

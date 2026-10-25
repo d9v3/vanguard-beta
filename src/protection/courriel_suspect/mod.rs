@@ -944,6 +944,30 @@ fn texte_refus(r: &Refus) -> String {
     .to_string()
 }
 
+/// PRO-COU-001 au corpus de détection : un courriel (.eml) fabriqué, examiné sur l'ordinateur seulement (ni moteurs
+/// ni recherche en ligne). Le constat porte le pire signe et les textes des signes vus.
+#[cfg(test)]
+pub(crate) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<crate::machine::Constat> {
+    let m = mime::lire(e.texte.as_bytes());
+    let (c, _) = examiner(&m);
+    let signes: Vec<&str> = c
+        .expediteur
+        .iter()
+        .chain(&c.authentification)
+        .chain(&c.structure)
+        .chain(&c.liens.trompeurs)
+        .chain(&c.html)
+        .chain(c.pieces.iter().flat_map(|p| &p.signes))
+        .filter(|(n, _)| *n > Niveau::Info)
+        .map(|(_, t)| t.as_str())
+        .collect();
+    let message = format!("{} {}", verdict(c.pire(), &c.manques), signes.join(" ; "));
+    vec![match c.pire() {
+        Some(n) => crate::machine::alerte("Surveillance", n, message),
+        None => crate::machine::ok("Surveillance", message),
+    }]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -581,6 +581,26 @@ pub(crate) fn corpus(e: &crate::modele::corpus::Entree) -> Constat {
     constat_de(Reference::Valable(etat("reference")), || etat("actuel"))
 }
 
+/// SUR-FIC-001 au corpus de détection : la même référence et le même état que COM-INT-001, rien de signalé avant.
+#[cfg(test)]
+pub(crate) fn corpus_signaler(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    let etat = |genre: &str| -> Etat {
+        e.de(genre)
+            .iter()
+            .map(|c| (c[0].to_string(), c[1].to_string()))
+            .collect()
+    };
+    let (reference, actuel) = (etat("reference"), etat("actuel"));
+    let (fichiers, _) = a_notifier(&comparer(&reference, &actuel), &actuel, &BTreeMap::new());
+    if fichiers.is_empty() {
+        return vec![crate::machine::ok(CAT, "rien à signaler")];
+    }
+    vec![crate::modele::corpus::notification(
+        "fichiers critiques modifiés",
+        &fichiers.join(", "),
+    )]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
