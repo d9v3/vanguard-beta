@@ -35,6 +35,9 @@ delivered just before it. Only the latest version has its download page; every v
   signature), Windows 11 and macOS recovery. A `CLE_SECOURS=non` line in `~/.config/vanguard/images-cle.conf` turns it
   off on a computer (the key then only carries the program); Kali Linux stays optional (`IMAGES_EN_PLUS="kali"`).
   Booting the key on a real computer has not been tried yet.
+- **Argument that is not UTF-8.** An error logged to the key's journal during a command with an argument that is not
+  UTF-8 (a file name) no longer aborts Vanguard: the command is written there with “�” in place of the unreadable
+  bytes.
 
 ## October 24, 2026: version 0.87
 

@@ -805,6 +805,12 @@ fn commande_anonyme(args: &[String]) -> String {
     args.join(" ")
 }
 
+/// Les arguments en texte, les octets qui ne sont pas de l'UTF-8 remplacés par « � » : `std::env::args()` panique
+/// sur un tel argument (un nom de fichier), et ici, appelé depuis le crochet de panique, il faisait avorter Vanguard.
+fn arguments_lisibles(args: impl IntoIterator<Item = std::ffi::OsString>) -> Vec<String> {
+    args.into_iter().map(|a| a.to_string_lossy().into_owned()).collect()
+}
+
 /// Ajoute une erreur au journal de la clé. Sans clé branchée, ou si l'écriture échoue : rien, en silence (le
 /// journal ne doit jamais gêner le programme).
 pub fn erreur(contexte: &str, detail: &str) {
@@ -817,7 +823,7 @@ pub fn erreur(contexte: &str, detail: &str) {
     if std::fs::symlink_metadata(&chemin).is_ok_and(|m| !m.file_type().is_file() || m.len() > TAILLE_MAX) {
         return;
     }
-    let commande = commande_anonyme(&std::env::args().skip(1).collect::<Vec<_>>());
+    let commande = commande_anonyme(&arguments_lisibles(std::env::args_os().skip(1)));
     let mut detail = anonymiser(detail.trim());
     if detail.len() > DETAIL_MAX {
         let coupe = (0..=DETAIL_MAX)
@@ -1205,6 +1211,17 @@ mod tests {
             commande_anonyme(&args("reseau 192.168.1.0/24")),
             "reseau 192.168.1.0/24"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn argument_qui_n_est_pas_de_l_utf8() {
+        use std::os::unix::ffi::OsStringExt;
+        let args = [
+            std::ffi::OsString::from("verifier-fichier"),
+            std::ffi::OsString::from_vec(b"a\xff".to_vec()),
+        ];
+        assert_eq!(arguments_lisibles(args), ["verifier-fichier", "a\u{fffd}"]);
     }
 
     #[test]
