@@ -193,7 +193,7 @@ fn fichiers_d_etat_piegees_ne_figent_rien() {
     ];
     for piege in ["tube", "zero"] {
         let maison = maison_jetable();
-        let donnees = maison.join("donnees").join("vanguard");
+        let donnees = dossier_vanguard(&maison);
         std::fs::create_dir_all(&donnees).unwrap();
         for nom in ETAT {
             let chemin = donnees.join(nom);
@@ -221,7 +221,7 @@ fn fichiers_d_etat_piegees_ne_figent_rien() {
 #[test]
 fn parametres_changes_hors_de_vanguard_dits_sans_rien_couper() {
     let maison = maison_jetable();
-    let donnees = maison.join("donnees").join("vanguard");
+    let donnees = dossier_vanguard(&maison);
     std::fs::create_dir_all(&donnees).unwrap();
     std::fs::write(
         donnees.join("sceaux.json"),
