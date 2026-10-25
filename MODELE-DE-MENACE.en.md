@@ -84,8 +84,9 @@ itself:
 
 - **On Windows and macOS**, the list of installed software does not leave: their versions are judged against these
   lists.
-- **On Arch Linux**, the check sends aur.archlinux.org the names of the packages installed outside the official
-  repositories (rule LNX-MAJ-006), to learn their latest version.
+- **On Arch Linux, after consent** (Settings › AUR packages, off by default): the names of the packages installed
+  outside the official repositories, to aur.archlinux.org, to learn their latest version (rule LNX-MAJ-006 and AUR
+  updates); without this consent, these packages are not checked, which is said.
 - **After consent**: the email address to the services that look up its leaks, the public Internet address to the
   four blocklists (Spamhaus, SpamCop, DroneBL, PSBL), the domain name of an examined link.
 - **A checked password**: only 5 characters of its hash, to Have I Been Pwned; never the password.

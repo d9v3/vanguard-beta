@@ -35,6 +35,10 @@ delivered just before it. Only the latest version has its download page; every v
   signature), Windows 11 and macOS recovery. A `CLE_SECOURS=non` line in `~/.config/vanguard/images-cle.conf` turns it
   off on a computer (the key then only carries the program); Kali Linux stays optional (`IMAGES_EN_PLUS="kali"`).
   Booting the key on a real computer has not been tried yet.
+- **AUR packages sent only with your consent.** On Arch Linux, the check sent aur.archlinux.org the name of every
+  package installed outside the official repositories, without asking (rule LNX-MAJ-006, and AUR updates when yay or
+  paru is there). A new setting, Settings › AUR packages (13th, off by default), gives this consent; without it,
+  nothing is sent and these packages are reported as not checked.
 - **Threat model.** A page says what Vanguard protects, against whom, what it does not protect (an attacker who is
   already administrator, the kernel, a threat still without a signature…) and what it assumes
   ([MODELE-DE-MENACE.en.md](MODELE-DE-MENACE.en.md)); the README and `vanguard --help` point to it.

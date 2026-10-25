@@ -598,10 +598,11 @@ a appris » montre tout et permet d'oublier.
 
 **Paramètres** (Vanguard › Paramètres, « s » au menu principal, `vanguard parametres`) — tous les réglages au même
 endroit : langue, emojis, travail sans Internet, protection en temps réel, surveillance horaire, entretien du mois,
-alertes apprises, blocage des menaces, restrictions des extensions et clé abuse.ch. Chaque changement montre la valeur
-d'avant et la commande pour la remettre ; les alertes apprises et le blocage ouvrent leur propre écran (« Ce que
-Vanguard a appris », Blocage des menaces). La langue, les emojis et le travail sans Internet restent choisis d'un
-lancement à l'autre (VANGUARD_LANG, VANGUARD_EMOJI et VANGUARD_HORS_LIGNE l'emportent toujours).
+alertes apprises, blocage des menaces, restrictions des extensions, clé abuse.ch, versions des logiciels, autodiagnostic
+de la semaine et paquets de l'AUR (Arch Linux : coupé par défaut, aucun nom de paquet n'est envoyé à l'AUR sans lui).
+Chaque changement montre la valeur d'avant et la commande pour la remettre ; les alertes apprises et le blocage ouvrent
+leur propre écran (« Ce que Vanguard a appris », Blocage des menaces). La langue, les emojis et le travail sans Internet
+restent choisis d'un lancement à l'autre (VANGUARD_LANG, VANGUARD_EMOJI et VANGUARD_HORS_LIGNE l'emportent toujours).
 
 **Protection en temps réel** (Paramètres, `vanguard parametres temps-reel non [--pendant 1h|4h]`) — coupe d'un coup,
 après accord et la liste de ce qui s'arrête, ce que Vanguard fait tout seul en continu : la surveillance horaire (et
@@ -817,7 +818,7 @@ Chaque entrée du menu existe aussi en commande.
 | `vanguard nat` | type de NAT pour le jeu : ouvert, modéré ou strict |
 | `vanguard canaux-wifi` | Wi-Fi encombré : les réseaux voisins par canal, et le canal le plus libre |
 | **13 Vanguard** | |
-| `vanguard parametres [réglage valeur]` | paramètres (aussi « s » au menu principal) : langue, emojis, travail sans Internet, protection en temps réel (`temps-reel non --pendant 1h\|4h`, ou jusqu'à reprise), surveillance, entretien du mois, alertes apprises, blocage, restrictions des extensions, clé abuse.ch (masquée) ; la valeur d'avant est montrée pour revenir |
+| `vanguard parametres [réglage valeur]` | paramètres (aussi « s » au menu principal) : langue, emojis, travail sans Internet, protection en temps réel (`temps-reel non --pendant 1h\|4h`, ou jusqu'à reprise), surveillance, entretien du mois, alertes apprises, blocage, restrictions des extensions, clé abuse.ch (masquée), versions des logiciels, autodiagnostic de la semaine, paquets de l'AUR (Arch Linux, coupé par défaut) ; la valeur d'avant est montrée pour revenir |
 | `vanguard appris` | ce que Vanguard a appris : les habitudes et les choix notés, et les oublier |
 | `vanguard se-mettre-a-jour` | mettre Vanguard à jour sur cet ordinateur, depuis la clé ou depuis GitHub (versions signées par l'auteur) |
 | `vanguard verifier-moi [programme]` | vérifier Vanguard lui-même : version, date de compilation, empreinte SHA-256 à comparer à la page de la version ; sur la clé du propriétaire, le manifeste de la clé ; après accord, l'historique signé des versions publiées, qui vérifie aussi une autre copie (`programme`), même une version d'avant |

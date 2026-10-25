@@ -501,8 +501,8 @@ enum Commande {
     Conteneurs,
     /// Paramètres : tous les réglages de Vanguard (langue, emojis, travail sans Internet, protection en temps réel,
     /// surveillance, entretien, alertes apprises, blocage, restrictions des extensions, clé abuse.ch, versions des
-    /// logiciels, autodiagnostic de la semaine). Sans argument : leur état ; avec un réglage et une valeur : le change, la valeur d'avant montrée
-    /// pour revenir. « temps-reel non --pendant 1h|4h » coupe la protection en temps réel de Vanguard pour ce temps
+    /// logiciels, autodiagnostic de la semaine, paquets de l'AUR). Sans argument : leur état ; avec un réglage et une
+    /// valeur : le change, la valeur d'avant montrée pour revenir. « temps-reel non --pendant 1h|4h » coupe la protection en temps réel de Vanguard pour ce temps
     /// (sans --pendant : jusqu'à reprise), après accord ; jamais Defender, le pare-feu ni l'UAC.
     #[command(visible_alias = "settings")]
     Parametres {
@@ -2934,7 +2934,8 @@ const AIDES_EN: &[(&str, &str)] = &[
     ("conteneurs", "Known flaws in this computer's Docker or Podman images, by trivy if installed. Read-only"),
     ("parametres", "Settings: all of Vanguard's settings (language, emojis, working without the Internet, real-time \
                     protection, monitoring, monthly check-up, learned alerts, blocking, extension restrictions, \
-                    abuse.ch key, software versions, weekly self-test). No argument: their state; with a setting and a value: changes it, showing the \
+                    abuse.ch key, software versions, weekly self-test, AUR packages). \
+                    No argument: their state; with a setting and a value: changes it, showing the \
                     previous value to go back. “real-time no --for 1h|4h” turns Vanguard's real-time protection off \
                     for that long (without --for: until turned back on), after your consent; never Defender, the \
                     firewall or UAC"),
@@ -3163,8 +3164,8 @@ const OPTIONS_EN: &[(&str, &str, &str)] = &[
                                          with all your rights); off: back on. The extensions folder must stay yours \
                                          alone"),
     ("parametres", "quoi", "A setting (language, emojis, offline, real-time, monitoring, maintenance, learned, \
-                              blocking, restrictions, abuse.ch, software-versions, autotest) and its value; real-time no also \
-                              takes --for 1h or 4h"),
+                              blocking, restrictions, abuse.ch, software-versions, autotest, aur-packages) and its \
+                              value; real-time no also takes --for 1h or 4h"),
     ("blocage", "quoi", "“search”, “undo”, “status”, “auto” or “click” (active protection), or a category (programs, \
                            connections, startup, agents) followed by a mode (off, click, auto)"),
     ("optimiser", "quoi", "recommended, privacy, performance, comfort or undo"),

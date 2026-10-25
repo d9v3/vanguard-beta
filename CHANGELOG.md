@@ -35,6 +35,10 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   par la signature de son projet), Windows 11 et la récupération de macOS. Une ligne `CLE_SECOURS=non` dans
   `~/.config/vanguard/images-cle.conf` la coupe sur un ordinateur (la clé ne porte alors que le programme) ; Kali Linux
   reste en option (`IMAGES_EN_PLUS="kali"`). Le démarrage de la clé sur un vrai ordinateur n'a pas encore été essayé.
+- **Paquets de l'AUR envoyés seulement avec votre accord.** Sous Arch Linux, le bilan envoyait à aur.archlinux.org le
+  nom de chaque paquet installé hors des dépôts officiels, sans le demander (règle LNX-MAJ-006, et les mises à jour de
+  l'AUR quand yay ou paru est là). Un nouveau réglage, Paramètres › Paquets de l'AUR (13ᵉ, coupé par défaut), donne
+  cet accord ; sans lui, rien n'est envoyé et ces paquets sont dits non vérifiés.
 - **Modèle de menace.** Une page dit ce que Vanguard protège, contre qui, ce qu'il ne protège pas (un attaquant
   déjà administrateur, le noyau, une menace encore sans signature…) et ce qu'il suppose
   ([MODELE-DE-MENACE.md](MODELE-DE-MENACE.md)) ; le README et `vanguard --help` y renvoient.

@@ -276,6 +276,13 @@ pub const PROGRAMMES: &[Programme] = &[
                 false,
             ),
             traduite(
+                "vanguard parametres paquets-aur oui",
+                "vanguard settings aur-packages yes",
+                "Arch Linux : le bilan peut envoyer à l'AUR le nom des paquets hors des dépôts, pour les vérifier.",
+                "Arch Linux: the check may send the AUR the names of packages outside the repositories, to check them.",
+                true,
+            ),
+            traduite(
                 "vanguard blocage",
                 "vanguard blocking",
                 "Bloquer les menaces : d'un clic, ou tout seul pour le certain (protection active) ; chaque blocage s'annule.",

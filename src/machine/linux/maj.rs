@@ -88,10 +88,13 @@ pub(super) fn autres_mises_a_jour() -> Vec<Constat> {
                     .map(|l| l.lines().filter(|x| !x.trim().is_empty()).count().saturating_sub(1))
             })
         });
-        // L'assistant AUR ne sert plus qu'à nommer la commande proposée : la liste vient de l'AUR lui-même.
-        let aur = ["yay", "paru"]
-            .into_iter()
-            .find(|c| present(c))
+        // L'assistant AUR ne sert plus qu'à nommer la commande proposée : la liste vient de l'AUR lui-même, qui reçoit
+        // les noms des paquets étrangers, donc seulement avec l'accord donné dans Paramètres. Sans lui, rien ici :
+        // la règle des paquets AUR (LNX-MAJ-006) dit seule, une fois, qu'ils ne sont pas vérifiés.
+        let assistant_aur = ["yay", "paru"].into_iter().find(|c| present(c));
+        let aur_permis = crate::parametres::paquets_aur();
+        let aur = assistant_aur
+            .filter(|_| aur_permis)
             .map(|c| (c, portee.spawn(aur_a_mettre_a_jour)));
         // fwupd par D-Bus d'abord ; fwupdmgr en secours si le bus ne répond pas.
         let firmware = present("fwupdmgr").then(|| {
@@ -1346,9 +1349,21 @@ fn depots_pacman_lus() -> bool {
         .any(|f| f.path().extension().is_some_and(|e| e == "db"))
 }
 
+/// Pourquoi les paquets étrangers ne sont pas vérifiés sans l'accord.
+fn sans_accord_aur() -> &'static str {
+    tr!(
+        "les noms des paquets hors des dépôts ne sont envoyés à aur.archlinux.org qu'avec votre accord (Paramètres › Paquets de l'AUR)",
+        "the names of the packages outside the repositories are sent to aur.archlinux.org only with your consent (Settings › AUR packages)"
+    )
+}
+
 /// Les fiches de ces paquets dans l'AUR. Même requête que yay ou paru : seuls les noms partent vers
 /// aur.archlinux.org, par lots de 100 pour ne pas dépasser la longueur maximale d'une adresse. `None` : injoignable.
 fn fiches_aur(installes: &[&str]) -> Option<Vec<serde_json::Value>> {
+    // Le travail sans Internet coupe ce que Vanguard demande à Internet de lui-même : cette requête aussi.
+    if crate::parametres::hors_ligne() {
+        return None;
+    }
     let mut resultats = Vec::new();
     for lot in installes.chunks(100) {
         let requete = format!(
@@ -1383,6 +1398,10 @@ pub(super) fn paquets_aur() -> Option<Constat> {
     let installes: Vec<&str> = liste.iter().map(String::as_str).collect();
     if installes.is_empty() {
         return None;
+    }
+    // Leurs noms sont une partie de la liste des logiciels : ils ne sortent qu'avec l'accord donné dans Paramètres.
+    if !crate::parametres::paquets_aur() {
+        return Some(impossible("Paquets AUR", sans_accord_aur()));
     }
     let Some(resultats) = fiches_aur(&installes) else {
         return Some(impossible(

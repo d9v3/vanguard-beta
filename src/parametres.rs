@@ -24,6 +24,7 @@ use crate::ui::*;
 /// Ce que garde parametres.json : les réglages du lancement, lus une fois, et celui du téléchargement des versions
 /// des logiciels, lu à chaque usage (`versions_logiciels`).
 #[derive(Serialize, Deserialize, Default, Clone, PartialEq, Eq, Debug)]
+#[allow(clippy::struct_excessive_bools)] // des réglages, chacun pour lui-même
 struct Fichier {
     /// « fr » ou « en » ; absente : la langue du système.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -40,6 +41,10 @@ struct Fichier {
     /// Ne plus faire l'autodiagnostic de la semaine avec la surveillance (fait par défaut).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     sans_autotest: bool,
+    /// Envoyer à aur.archlinux.org le nom des paquets installés hors des dépôts (non par défaut : sans cet accord, la
+    /// règle LNX-MAJ-006 n'est pas vérifiée).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    paquets_aur: bool,
 }
 
 /// Au-delà, ce n'est pas le fichier de Vanguard : il n'est pas lu (le processus élevé de Windows le lit aussi).
@@ -58,8 +63,8 @@ fn charger_de(chemin: &Path) -> Result<Fichier, crate::modele::Echec> {
 }
 
 /// Le fichier relu sous son sceau, et s'il n'est pas tel que Vanguard l'a écrit : la raison, quand des réglages qui
-/// coupent une défense (travail sans Internet, autodiagnostic de la semaine, versions des logiciels) y étaient et
-/// ont été ignorés. Un programme du compte qui écrivait `{"hors_ligne":true}` coupait les mises à jour, les listes
+/// coupent une défense (travail sans Internet, autodiagnostic de la semaine, versions des logiciels) ou donnent un
+/// accord (paquets de l'AUR : leurs noms sortent de l'ordinateur) y étaient et ont été ignorés. Un programme du compte qui écrivait `{"hors_ligne":true}` coupait les mises à jour, les listes
 /// de menaces et l'épreuve du DNS, sous un simple « pas d'Internet ». Changé hors de Vanguard, ou accepté tel quel
 /// après des sceaux refaits (rien ne prouve qui l'a écrit ; repris d'une version d'avant à la mise à jour, il vaut,
 /// lui) : ces réglages valent leur défaut, le plus protecteur,
@@ -94,10 +99,12 @@ fn charger_juge(chemin: &Path) -> Result<(Fichier, Option<Douteux>), crate::mode
     let Some(raison) = douteux else {
         return Ok((f, None));
     };
-    let coupait = f.hors_ligne || f.sans_autotest || f.sans_versions;
+    let coupait = f.hors_ligne || f.sans_autotest || f.sans_versions || f.paquets_aur;
     f.hors_ligne = false;
     f.sans_autotest = false;
     f.sans_versions = false;
+    // Un accord ne se donne pas à la place de la personne : écrit hors de Vanguard, il ne vaut pas.
+    f.paquets_aur = false;
     Ok((f, coupait.then_some(raison)))
 }
 
@@ -214,6 +221,13 @@ pub(crate) fn versions_logiciels() -> bool {
     !charger_de(&fichier()).unwrap_or_default().sans_versions
 }
 
+/// Envoyer à l'AUR le nom des paquets installés hors des dépôts ? Non par défaut : c'est une partie de la liste des
+/// logiciels qui sort de l'ordinateur. Lu à chaque usage, comme les versions.
+#[cfg(target_os = "linux")]
+pub(crate) fn paquets_aur() -> bool {
+    charger_de(&fichier()).unwrap_or_default().paquets_aur
+}
+
 /// L'autodiagnostic de la semaine, avec la surveillance ? Oui par défaut ; lu à chaque usage, comme les versions.
 pub(crate) fn autotest_hebdomadaire() -> bool {
     !charger_de(&fichier()).unwrap_or_default().sans_autotest
@@ -257,10 +271,11 @@ enum Reglage {
     CleAbuseCh,
     VersionsLogiciels,
     Autotest,
+    PaquetsAur,
 }
 
 impl Reglage {
-    const TOUS: [Reglage; 12] = [
+    const TOUS: [Reglage; 13] = [
         Reglage::Langue,
         Reglage::Emojis,
         Reglage::HorsLigne,
@@ -273,6 +288,7 @@ impl Reglage {
         Reglage::CleAbuseCh,
         Reglage::VersionsLogiciels,
         Reglage::Autotest,
+        Reglage::PaquetsAur,
     ];
 
     /// Le mot de la ligne de commande.
@@ -290,6 +306,7 @@ impl Reglage {
             Reglage::CleAbuseCh => "abuse.ch",
             Reglage::VersionsLogiciels => tr!("versions-logiciels", "software-versions"),
             Reglage::Autotest => "autotest",
+            Reglage::PaquetsAur => tr!("paquets-aur", "aur-packages"),
         }
     }
 
@@ -318,6 +335,7 @@ impl Reglage {
                 Some(Reglage::VersionsLogiciels)
             }
             "autotest" | "self-test" | "autodiagnostic" | "selftest" => Some(Reglage::Autotest),
+            "paquets-aur" | "aur-packages" | "aur" | "paquets_aur" => Some(Reglage::PaquetsAur),
             _ => None,
         }
     }
@@ -336,6 +354,7 @@ impl Reglage {
             Reglage::CleAbuseCh => tr!("Clé abuse.ch", "abuse.ch key"),
             Reglage::VersionsLogiciels => tr!("Versions des logiciels", "Software versions"),
             Reglage::Autotest => tr!("Autodiagnostic de la semaine", "Weekly self-test"),
+            Reglage::PaquetsAur => tr!("Paquets de l'AUR", "AUR packages"),
         }
     }
 
@@ -364,6 +383,7 @@ impl Reglage {
             | Reglage::Restrictions
             | Reglage::VersionsLogiciels
             | Reglage::Autotest
+            | Reglage::PaquetsAur
                 if anglais =>
             {
                 &["yes", "no"]
@@ -374,7 +394,8 @@ impl Reglage {
             | Reglage::Entretien
             | Reglage::Restrictions
             | Reglage::VersionsLogiciels
-            | Reglage::Autotest => &["oui", "non"],
+            | Reglage::Autotest
+            | Reglage::PaquetsAur => &["oui", "non"],
             Reglage::Appris | Reglage::Blocage | Reglage::CleAbuseCh => &[],
         }
     }
@@ -450,6 +471,12 @@ fn changer_dans(f: &mut Fichier, r: Reglage, valeur: &str) -> Result<(String, St
             f.sans_autotest = !nouveau;
             Ok((avant, mot_oui_non(!f.sans_autotest).to_string()))
         }
+        Reglage::PaquetsAur => {
+            let nouveau = oui_non(valeur).ok_or(())?;
+            let avant = mot_oui_non(f.paquets_aur).to_string();
+            f.paquets_aur = nouveau;
+            Ok((avant, mot_oui_non(f.paquets_aur).to_string()))
+        }
         _ => Err(()),
     }
 }
@@ -472,6 +499,7 @@ fn valeur(r: Reglage) -> String {
         Reglage::HorsLigne => mot_oui_non(fichier.hors_ligne).to_string(),
         Reglage::VersionsLogiciels => mot_oui_non(!fichier.sans_versions).to_string(),
         Reglage::Autotest => mot_oui_non(!fichier.sans_autotest).to_string(),
+        Reglage::PaquetsAur => mot_oui_non(fichier.paquets_aur).to_string(),
         Reglage::TempsReel => crate::protection::temps_reel::valeur(),
         Reglage::Surveillance => mot_oui_non(crate::reseau::surveillance::active()).to_string(),
         Reglage::Entretien => mot_oui_non(crate::entretien::active()).to_string(),
@@ -729,7 +757,12 @@ fn changer(r: Reglage, saisie: &str) -> bool {
         false
     };
     let (avant, apres) = match r {
-        Reglage::Langue | Reglage::Emojis | Reglage::HorsLigne | Reglage::VersionsLogiciels | Reglage::Autotest => {
+        Reglage::Langue
+        | Reglage::Emojis
+        | Reglage::HorsLigne
+        | Reglage::VersionsLogiciels
+        | Reglage::Autotest
+        | Reglage::PaquetsAur => {
             let chemin = fichier();
             let lu = charger_de(&chemin);
             let mut f = lu.clone().unwrap_or_default();
@@ -889,6 +922,10 @@ fn explication(r: Reglage) -> &'static str {
         Reglage::Autotest => tr!(
             "Oui : une fois par semaine, avec la surveillance, Vanguard compare ses propres lectures (logiciels installés, services, ports, comptes, pare-feu) à ce qu'en disent les outils du système, et note ce qui ralentit. Rien n'est changé, rien n'est envoyé, aucune notification ; reporté pendant un jeu. « vanguard autotest » le fait à la main.",
             "Yes: once a week, with the monitoring, Vanguard compares its own readings (installed software, services, ports, accounts, firewall) with what the system's tools say, and notes what slows down. Nothing is changed, nothing is sent, no notification; postponed during a game. “vanguard autotest” does it by hand."
+        ),
+        Reglage::PaquetsAur => tr!(
+            "Arch Linux : oui, le bilan envoie à aur.archlinux.org le nom des paquets installés hors des dépôts officiels, pour dire ceux qui ne sont plus mis à jour (règle LNX-MAJ-006). Non : rien n'est envoyé, et ces paquets ne sont pas vérifiés, ce qui est dit.",
+            "Arch Linux: yes, the check sends aur.archlinux.org the names of the packages installed outside the official repositories, to tell which ones no longer get updates (rule LNX-MAJ-006). No: nothing is sent, and these packages are not checked, which is said."
         ),
         Reglage::TempsReel => tr!(
             "Coupe d'un coup ce que Vanguard fait tout seul en continu : la surveillance horaire et la protection active du blocage, pendant 1 heure, 4 heures ou jusqu'à ce que vous la remettiez. Les réglages de chacun ne changent pas : à la reprise, chacun retrouve son état d'avant. Jamais Defender, le pare-feu ni l'UAC.",
@@ -1082,6 +1119,7 @@ mod tests {
             hors_ligne: true,
             sans_versions: true,
             sans_autotest: true,
+            paquets_aur: true,
         };
         enregistrer_dans(&voulu, &f).unwrap();
         assert_eq!(charger_de(&f).unwrap(), voulu);
@@ -1120,6 +1158,25 @@ mod tests {
         // Le message de mise à jour dit que c'est un réglage, jamais « pas d'Internet ».
         let r = raison_hors_ligne();
         assert!(!r.contains("pas d'Internet") && !r.contains("no Internet"), "{r}");
+        let _ = std::fs::remove_dir_all(f.parent().unwrap());
+    }
+
+    /// Un programme du compte écrit `{"paquets_aur":true}` : l'accord n'est pas donné, la raison est rendue ; donné
+    /// par Vanguard lui-même, il vaut.
+    #[test]
+    fn accord_aur_ecrit_hors_de_vanguard_ignore() {
+        let f = jetable("accord-aur");
+        crate::sceau::ecrire_dans(f.parent().unwrap(), crate::sceau::APPRIS, b"{}").unwrap();
+        std::fs::write(&f, r#"{"paquets_aur":true}"#).unwrap();
+        let (lu, raison) = charger_juge(&f).unwrap();
+        assert_eq!(raison, Some(Douteux::HorsVanguard));
+        assert!(!lu.paquets_aur, "{lu:?}");
+        let voulu = Fichier {
+            paquets_aur: true,
+            ..lu
+        };
+        enregistrer_dans(&voulu, &f).unwrap();
+        assert_eq!(charger_juge(&f).unwrap(), (voulu, None));
         let _ = std::fs::remove_dir_all(f.parent().unwrap());
     }
 
@@ -1277,6 +1334,13 @@ mod tests {
     fn le_guide_nomme_chaque_reglage() {
         let (fr, en) = crate::guide::explication_vanguard("vanguard parametres").expect("vanguard parametres au guide");
         for r in Reglage::TOUS {
+            if r == Reglage::PaquetsAur {
+                // La ligne est pleine : celui-ci a sa propre ligne au guide, qui dit ce qu'il envoie et où.
+                let (fr, en) = crate::guide::explication_vanguard("vanguard parametres paquets-aur oui")
+                    .expect("paquets-aur au guide");
+                assert!(fr.contains("AUR") && en.contains("AUR"), "{r:?} : {fr} / {en}");
+                continue;
+            }
             let (nom_fr, nom_en) = match r {
                 Reglage::Langue => ("langue", "language"),
                 Reglage::Emojis => ("emojis", "emojis"),
@@ -1291,6 +1355,7 @@ mod tests {
                 Reglage::CleAbuseCh => ("clé abuse.ch", "abuse.ch key"),
                 Reglage::VersionsLogiciels => ("versions", "software versions"),
                 Reglage::Autotest => ("autotest", "self-test"),
+                Reglage::PaquetsAur => unreachable!("vérifié plus haut"),
             };
             // Sans tenir compte des majuscules : la phrase du guide commence par l'un d'eux.
             assert!(

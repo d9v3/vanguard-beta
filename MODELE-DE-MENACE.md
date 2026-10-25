@@ -85,8 +85,9 @@ Les listes de menaces, de versions et de failles sont téléchargées en entier,
 envoie lui-même :
 
 - **Sous Windows et macOS**, la liste des logiciels installés ne sort pas : leurs versions sont jugées sur ces listes.
-- **Sous Arch Linux**, le bilan envoie à aur.archlinux.org le nom des paquets installés hors des dépôts officiels
-  (règle LNX-MAJ-006), pour connaître leur dernière version.
+- **Sous Arch Linux, après accord** (Paramètres › Paquets de l'AUR, coupé par défaut) : le nom des paquets
+  installés hors des dépôts officiels, à aur.archlinux.org, pour connaître leur dernière version (règle LNX-MAJ-006
+  et mises à jour de l'AUR) ; sans cet accord, ces paquets ne sont pas vérifiés, ce qui est dit.
 - **Après accord** : l'adresse courriel aux services qui cherchent ses fuites, l'adresse Internet publique aux quatre
   listes noires (Spamhaus, SpamCop, DroneBL, PSBL), le nom du domaine d'un lien examiné.
 - **Un mot de passe vérifié** : seuls 5 caractères de son empreinte, à Have I Been Pwned ; jamais le mot de passe.

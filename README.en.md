@@ -557,9 +557,10 @@ silenced. Each connection test is compared with the usual measurements on the sa
 suddenly seems all closed (asleep) is checked again more patiently. "What Vanguard has learned" shows everything and
 lets you forget.
 
-**Settings** (Vanguard › Settings, "s" in the main menu, `vanguard settings`) — every setting in one place:
-language, emojis, working without the Internet, real-time protection, hourly monitoring, monthly check-up, learned
-alerts, threat blocking, extension restrictions and the abuse.ch key. Each change shows the previous value and the
+**Settings** (Vanguard › Settings, "s" in the main menu, `vanguard settings`) — every setting in one place: language,
+emojis, working without the Internet, real-time protection, hourly monitoring, monthly check-up, learned alerts, threat
+blocking, extension restrictions, the abuse.ch key, software versions, the weekly self-test and AUR packages (Arch
+Linux: off by default, no package name is sent to the AUR without it). Each change shows the previous value and the
 command to put it back; learned alerts and blocking open their own screen ("What Vanguard has learned", Threat
 blocking). Language, emojis and working without the Internet stay chosen from one launch to the next (VANGUARD_LANG,
 VANGUARD_EMOJI and VANGUARD_HORS_LIGNE always win).
@@ -774,7 +775,7 @@ Each menu entry is also a command.
 | `vanguard nat` | NAT type for gaming: open, moderate or strict |
 | `vanguard wifi-channels` | crowded Wi-Fi: nearby networks by channel, and the freest channel |
 | **13 Vanguard** | |
-| `vanguard settings [setting value]` | settings (also “s” in the main menu): language, emojis, working without the Internet, real-time protection (`real-time no --for 1h\|4h`, or until turned back on), monitoring, monthly check-up, learned alerts, blocking, extension restrictions, abuse.ch key (masked); the previous value is shown to go back |
+| `vanguard settings [setting value]` | settings (also “s” in the main menu): language, emojis, working without the Internet, real-time protection (`real-time no --for 1h\|4h`, or until turned back on), monitoring, monthly check-up, learned alerts, blocking, extension restrictions, abuse.ch key (masked), software versions, weekly self-test, AUR packages (Arch Linux, off by default); the previous value is shown to go back |
 | `vanguard learned` | what Vanguard has learned: the habits and choices recorded, and forgetting them |
 | `vanguard self-update` | update Vanguard on this computer, from the key or from GitHub (versions signed by the author) |
 | `vanguard self-check [program]` | check Vanguard itself: version, build date, SHA-256 checksum to compare with the release page; on the owner's key, the key manifest; after your consent, the signed history of published versions, which also checks another copy (`program`), even an earlier version |
