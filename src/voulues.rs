@@ -364,7 +364,6 @@ mod tests {
         for f in ["sceaux.json", "sceaux.verrou"] {
             let _ = std::fs::remove_file(d.join(f));
         }
-        assert!(!crate::sceau::refaits_dans(&d));
         assert_eq!(
             souvenir_dans(&d, Defense::Surveillance),
             Souvenir::Douteux(Doute::Adopte)

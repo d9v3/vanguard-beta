@@ -661,6 +661,7 @@ mod unix {
         let j = Jetable::nouveau();
         let racine = j.racine();
         let sceaux = racine.parent().unwrap();
+        crate::sceau::sceaux_d_une_version_d_avant(sceaux);
         // La 0.87 : la coupure confirmée puis les restrictions remises, et l'approbation d'un plugin retiré depuis.
         std::fs::write(
             racine.join("reglages.json"),

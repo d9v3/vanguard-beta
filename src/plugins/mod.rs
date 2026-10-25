@@ -292,7 +292,7 @@ pub(crate) fn a_refaire(racine: &Path) -> Vec<String> {
 /// d'un plugin remis plus tard n'en revienne. Jamais après l'effacement des sceaux.
 pub(crate) fn resceller_dans(dossier: &Path) {
     let racine = dossier.join("plugins");
-    if crate::sceau::refaits_dans(dossier) {
+    if !crate::sceau::repris_dans(dossier, APPROUVES_SCELLE) {
         return;
     }
     if let crate::sceau::Lecture::Adopte(o) = crate::sceau::lire_dans(dossier, APPROUVES_SCELLE)

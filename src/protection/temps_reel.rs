@@ -211,7 +211,7 @@ fn lire_de(chemin: &Path, maintenant: i64) -> Etat {
     // écrit.
     let (dossier, nom) = dossier_et_nom(chemin);
     let lu = crate::sceau::lire_dans(dossier, nom);
-    let octets = match crate::sceau::juger_lecture(lu, || crate::sceau::refaits_dans(dossier)) {
+    let octets = match crate::sceau::juger_lecture(lu, || crate::sceau::repris_dans(dossier, nom)) {
         Juge::Absent | Juge::Douteux(Doute::Inconnu | Doute::HorsVanguard, None) => return Etat::EnMarche,
         Juge::Cru(o) => o,
         Juge::Douteux(d, _) => return Etat::Illisible(d.texte().to_string()),

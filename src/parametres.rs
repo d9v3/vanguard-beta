@@ -86,7 +86,7 @@ fn charger_juge(chemin: &Path) -> Result<(Fichier, Option<Douteux>), crate::mode
         Lecture::Intact(o) => (o, None),
         // Accepté tel quel lors de la mise à jour d'une version d'avant le sceau : les réglages de la personne,
         // gardés. Accepté parce que les sceaux ont été refaits : rien ne prouve qui l'a écrit.
-        Lecture::Adopte(o) if !crate::sceau::refaits_dans(dossier) => (o, None),
+        Lecture::Adopte(o) if crate::sceau::repris_dans(dossier, nom) => (o, None),
         Lecture::Adopte(o) => (o, Some(Douteux::Adopte)),
         Lecture::Falsifie(Some(o)) => (o, Some(Douteux::HorsVanguard)),
     };
@@ -1185,6 +1185,7 @@ mod tests {
     #[test]
     fn mise_a_jour_gardee_sceaux_refaits_ignores() {
         let f = jetable("adopte");
+        crate::sceau::sceaux_d_une_version_d_avant(f.parent().unwrap());
         std::fs::write(&f, r#"{"hors_ligne":true}"#).unwrap();
         let (lu, raison) = charger_juge(&f).unwrap();
         assert!(lu.hors_ligne && raison.is_none(), "{lu:?} {raison:?}");

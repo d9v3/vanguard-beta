@@ -126,7 +126,7 @@ pub(crate) fn resceller_d_avant() {
 
 /// `resceller_d_avant` dans `dossier` (celui des sceaux, parent du dossier des extensions).
 pub(crate) fn resceller_dans(dossier: &Path) {
-    if !crate::sceau::refaits_dans(dossier)
+    if crate::sceau::repris_dans(dossier, SCELLE)
         && let crate::sceau::Lecture::Adopte(o) = crate::sceau::lire_dans(dossier, SCELLE)
         && serde_json::from_slice::<Reglages>(&o).is_ok_and(|r| !r.accorde())
         && let Ok(texte) = serde_json::to_string_pretty(&Reglages::default())

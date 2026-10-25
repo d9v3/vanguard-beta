@@ -252,7 +252,7 @@ fn charger_de(chemin: &Path) -> Result<(Parametres, Option<&'static str>), Echec
         Lecture::Intact(o) => (o, None),
         // Repris d'une version d'avant à la mise à jour : le choix de la personne, gardé. Après des sceaux refaits :
         // rien ne prouve qui l'a écrit.
-        Lecture::Adopte(o) if !crate::sceau::refaits_dans(dossier) => (o, None),
+        Lecture::Adopte(o) if crate::sceau::repris_dans(dossier, nom) => (o, None),
         Lecture::Adopte(o) => (
             o,
             Some(tr!(

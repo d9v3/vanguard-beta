@@ -481,7 +481,7 @@ fn lire_de(chemin: &std::path::Path) -> Vec<Changement> {
         Lecture::Intact(o) => (o, None),
         // Repris d'une version d'avant le sceau à la mise à jour ; accepté après des sceaux refaits, il vient peut-être
         // de qui les a effacés : comme changé hors de Vanguard.
-        Lecture::Adopte(o) if !crate::sceau::refaits_dans(dossier) => (o, Some(Origine::Avant)),
+        Lecture::Adopte(o) if crate::sceau::repris_dans(dossier, nom) => (o, Some(Origine::Avant)),
         Lecture::Adopte(o) | Lecture::Falsifie(Some(o)) => (o, Some(Origine::HorsVanguard)),
         Lecture::Absent | Lecture::Inconnu | Lecture::Falsifie(None) | Lecture::Illisible(_) => return Vec::new(),
     };
@@ -994,6 +994,7 @@ mod tests {
     #[test]
     fn releve_d_avant_le_sceau_rejoue_seulement_ce_qui_se_rejuge() {
         let f = releve("avant");
+        crate::sceau::sceaux_d_une_version_d_avant(f.parent().unwrap());
         let lignes: Vec<Changement> = [
             ("regle", Some(regle("203.0.113.7"))),
             (

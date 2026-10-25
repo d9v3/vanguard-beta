@@ -1391,7 +1391,7 @@ fn lire_etat_dans(dossier: &std::path::Path) -> (Option<Etat>, Option<String>) {
         L::Absent | L::Inconnu => return (None, None),
         L::Intact(o) => o,
         // Accepté tel quel à la mise à jour d'une version qui l'écrivait sans sceau : écrit par le veilleur.
-        L::Adopte(o) if !crate::sceau::refaits_dans(dossier) => o,
+        L::Adopte(o) if crate::sceau::repris_dans(dossier, ETAT) => o,
         L::Adopte(_) => {
             return (
                 None,

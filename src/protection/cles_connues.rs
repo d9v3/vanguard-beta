@@ -116,7 +116,7 @@ fn lire_dans(base: &Path) -> BTreeMap<String, CleConnue> {
     let fichier = chemin(base);
     let octets = match crate::sceau::lire_dans(base, FICHIER) {
         Lecture::Intact(o) => Some(o),
-        Lecture::Adopte(o) if !crate::sceau::refaits_dans(base) => Some(o),
+        Lecture::Adopte(o) if crate::sceau::repris_dans(base, FICHIER) => Some(o),
         Lecture::Adopte(_) | Lecture::Falsifie(Some(_)) => None,
         Lecture::Absent | Lecture::Inconnu | Lecture::Falsifie(None) | Lecture::Illisible(_) => {
             return BTreeMap::new();
