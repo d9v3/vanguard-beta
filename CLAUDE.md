@@ -39,8 +39,9 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
   nuit ; ses dépendances passent à cargo deny (`fuzz/deny.toml`).
 - Chaîne Rust épinglée (`rust-toolchain.toml`, à monter à la main après un verifier.sh vert) ; programmes publiés
   compilés par `outils/compiler-version.sh` (chemins retirés : deux dossiers, même programme).
-- Tests Windows sous Wine (pas de PowerShell sous Wine ; le registre, lui, marche) :
-  `WINEPREFIX=<dossier jetable> WINEDEBUG=-all CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=~/.local/share/Steam/compatibilitytools.d/GE-Proton11-9-x86_64/files/bin/wine cargo test --target x86_64-pc-windows-gnu`
+- Tests Windows sous Wine (pas de PowerShell sous Wine ; le registre, lui, marche ; sans le bus système, les disques
+  montés, dont la vraie clé, ne deviennent pas des lecteurs du préfixe) :
+  `DBUS_SYSTEM_BUS_ADDRESS=unix:path=/nonexistent WINEPREFIX=<dossier jetable> WINEDEBUG=-all CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=~/.local/share/Steam/compatibilitytools.d/GE-Proton11-9-x86_64/files/bin/wine cargo test --target x86_64-pc-windows-gnu`
 - macOS : compilé et testé sur un Mac de GitHub (`.github/workflows/macos.yml`), à chaque publication et la nuit si
   le code a changé ; ici, clippy seulement.
 - CI (`.github/workflows/ci.yml`) : à chaque envoi sur master, `outils/verifier.sh --ci` (tout sauf Wine), vraies

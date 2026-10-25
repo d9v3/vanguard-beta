@@ -108,6 +108,9 @@ tests_wine() {
   local prefixe resultat
   [[ -x $WINE ]] || { echo "Wine absent ($WINE ; VANGUARD_WINE pour un autre)"; return "$SAUTEE"; }
   prefixe=$(mktemp -d "$TRAVAIL/wine.XXXX")
+  # Sans le bus système, Wine ne demande pas à udisks les disques montés : sinon le préfixe en fait des lecteurs
+  # (la vraie clé VANGUARD branchée devient E:) et les tests qui parcourent D: à Z: la lisent.
+  local -x DBUS_SYSTEM_BUS_ADDRESS=unix:path=/nonexistent
   # Le fichier des sauts sous son nom pour Windows : Wine montre la racine de Linux comme le lecteur Z:.
   local f
   f=$(sautes tests-windows)

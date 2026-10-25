@@ -19,6 +19,8 @@ T=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-lanceur.XXXX") || exit 1
 # Le préfixe donné par verifier.sh (VANGUARD_PREFIXE_LANCEUR), seulement s'il est un banc jetable de vanguard-dev :
 # son powershell.exe y est remplacé puis retiré. Jamais le WINEPREFIX hérité (un préfixe de jeu, ~/.wine).
 PROPRE=
+# Aucun disque monté de l'ordinateur en lecteur du préfixe (la vraie clé VANGUARD), comme dans verifier.sh.
+export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/nonexistent
 P=${VANGUARD_PREFIXE_LANCEUR:-}
 if [[ -n $P ]]; then
   P=$(realpath -e -- "$P") && [[ $P == "$(realpath -e -- "$HOME/.cache/vanguard-dev")"/verifier.*/wine.* ]] ||
