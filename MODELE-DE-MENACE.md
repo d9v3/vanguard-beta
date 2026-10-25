@@ -76,8 +76,10 @@ Le détail de chaque menace, menu par menu : [Ce que fait Vanguard](README.md#ce
   ce que vous avez réglé, les défenses que vous avez allumées) dans un dossier de votre compte. Un programme
   malveillant qui tourne sous votre compte peut donc fausser cet état. Vanguard voit et dit la falsification simple
   (un fichier changé, effacé ou daté dans le futur) et ne s'y fie plus : aucune défense ne se coupe, aucune alerte ne
-  se tait. Il ne voit pas celle d'un programme écrit exprès pour tromper ce mécanisme. La vraie parade, un service
-  qui tourne sous un autre compte que le vôtre, viendra avec la version installée.
+  se tait. Deux limites : le dossier de Vanguard effacé en entier le ramène à son premier usage, où il réapprend
+  sans rien dire ; et un programme qui vise exprès ce mécanisme (il réécrit aussi les sceaux de Vanguard, ou les
+  efface avec leurs témoins) n'est pas vu. La vraie parade, un service qui tourne sous un autre compte que le vôtre
+  (administrateur), est prévue pour une version à venir.
 - **La personne décide.** Rien n'est modifié sans son accord. Ce qu'elle accepte s'annule une correction à la fois,
   sauf ce qui rallume une protection et l'arrêt d'un programme ; une correction dont l'état d'avant ne se relève pas
   est dite « non annulable » avant d'être appliquée.

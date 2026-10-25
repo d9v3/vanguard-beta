@@ -74,8 +74,10 @@ Each threat in detail, menu by menu: [What Vanguard does](README.en.md#what-vang
   seen, what you have set, the defenses you have turned on) in a folder of your account. A malicious program running
   under your account can therefore tamper with that state. Vanguard sees and reports simple tampering (a file
   changed, deleted or dated in the future) and no longer relies on it: no defense is turned off, no alert is
-  silenced. It does not see tampering by a program written on purpose to fool this mechanism. The real answer, a
-  service running under an account other than yours, will come with the installed version.
+  silenced. Two limits: Vanguard's folder deleted as a whole brings it back to its first use, where it learns again
+  without saying anything; and a program that targets this mechanism on purpose (it also rewrites Vanguard's seals,
+  or deletes them along with their witnesses) is not seen. The real answer, a service running under an account
+  other than yours (administrator), is planned for a future version.
 - **The person decides.** Nothing is changed without their consent. What they accept can be undone one fix at a
   time, except what turns a protection back on and the stopping of a program; a fix whose previous state cannot be
   read is reported as “not undoable” before it is applied.
