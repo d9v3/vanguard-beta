@@ -22,6 +22,7 @@ pub(crate) const CAS: &[(&str, Juge)] = &[
     ("EVT-EFF-001", evenements),
     ("EVT-IDE-001", evenements),
     ("EVT-MDP-001", evenements),
+    ("EVT-PRC-001", evenements),
     ("EVT-PSH-001", evenements),
     ("EVT-RDP-001", evenements),
     ("EVT-SRV-001", evenements),

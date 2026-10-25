@@ -1,1 +1,1 @@
-entree|CorpusTemps|C:\Users\Public\corpus-temps.dll
+entree|CorpusTemps|C:\Program Files\Corpus\corpus-temps.dll

@@ -14,13 +14,21 @@
 //! Les règles de durcissement (une mesure M… : pare-feu allumé, chiffrement du disque, réglage du noyau) restent hors
 //! du corpus : elles lisent un réglage, pas une attaque, et `toute_regle_muette_ou_plantee_dit_non_verifie` les garde.
 //!
-//! Un dossier de cas : `attendu.toml` (gravité minimale, mots attendus, ce que le cas propre peut dire au plus,
-//! systèmes où il tourne), `fabrique.txt` et `propre.txt` (les données, au format que lit l'adaptateur de la règle).
+//! Le cas juge, il ne suit pas la règle jusqu'à son jugement : une règle dont le `regle!` n'appellerait plus ce
+//! jugement passerait. `chaque_regle_du_corpus_mene_a_son_jugement` tient ce fil dans le texte des sources (`FILS`),
+//! grossièrement mais sûrement ; le suivre en vrai, sur une racine fabriquée, est l'affaire de S3b.
+//!
+//! Où tournent les cas : Linux ici et dans la CI, Windows sous Wine (verifier.sh complet) et sur le vrai Windows de
+//! la CI (cargo test de ci.yml), macOS sur le Mac de GitHub (macos.yml). En `--ci`, verifier.sh ne lance pas Wine.
+//!
+//! Un dossier de cas : `attendu.toml` (la gravité exacte du cas fabriqué, mots attendus, ce que le cas propre peut
+//! dire au plus, systèmes où il tourne), `fabrique.txt` et `propre.txt` (les données, au format que lit l'adaptateur de la règle).
 //! Les adaptateurs sont près des règles (une table `CAS` par système, dans `machine::…::corpus`), là où le jugement
 //! est visible. Rien qui ressemble à une signature (EICAR, motif YARA) n'y est écrit d'un bloc : assemblé à
 //! l'exécution, comme dans analyse/tests.rs.
 
 use std::collections::BTreeSet;
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 
 use crate::machine::Constat;
@@ -103,30 +111,27 @@ fn tous_les_cas() -> Vec<(&'static str, Juge)> {
 
 // ───────────────────────────── La liste fermée ─────────────────────────────
 
-/// Les outils et surveillances qui détectent sans citer de technique (modele/registre.rs) : eux aussi doivent avoir
-/// leur cas, ou leur raison.
-const OUTILS_QUI_DETECTENT: &[&str] = &[
-    "PRO-YAR-001",
-    "PRO-MEM-001",
-    "PRO-TEL-001",
-    "SUR-TEL-001",
-    "PRO-COU-001",
-    "PRO-LIE-001",
-    "PRO-ESP-001",
-    "PRO-DIS-001",
-    "SUR-BOT-001",
-    "SUR-EMP-001",
-    "SUR-FIC-001",
-    "VEI-RAN-001",
-    "VEI-RAN-002",
-    "VEI-RAN-003",
-    "VEI-EXF-001",
-    "VEI-PRG-001",
-    "VEI-CNX-001",
-    "PRO-ANV-001",
-    "PRO-CTN-001",
-    "PRO-LNO-001",
-    "PRO-PER-001",
+/// Les outils du registre (modele/registre.rs) qui ne détectent rien, avec leur raison : tous les autres doivent avoir
+/// leur cas, leur exemption ou leur attente. Un nouvel outil doit choisir.
+const NE_DETECTENT_PAS: &[(&str, &str)] = &[
+    (
+        "PRO-CAM-001",
+        "inventaire : montre qui se sert de la caméra et du micro, sans juger",
+    ),
+    ("PRO-ACC-001", "inventaire des accès des applications à la vie privée"),
+    ("PRO-DIA-001", "diagnostic du matériel et du système"),
+    ("PRO-LEN-001", "ce qui rend l'ordinateur lent"),
+    ("PRO-CNX-001", "test de connexion pour le jeu"),
+    ("PRO-OBJ-001", "inventaire du dernier scan du réseau"),
+    (
+        "PRO-EVT-001",
+        "le moteur des règles EVT-, dont chaque règle a sa ligne ici",
+    ),
+    (
+        "SUR-MAC-001",
+        "reprend les constats du bilan, que les cas de leurs règles gardent",
+    ),
+    ("AUT-VAN-001", "autodiagnostic de Vanguard lui-même"),
 ];
 
 /// Les règles de détection qu'aucun cas n'exerce, pour de bon, avec leur raison.
@@ -143,10 +148,6 @@ const EXEMPTEES: &[(&str, &str)] = &[
     (
         "PRO-PER-001",
         "les failles exploitées viennent du catalogue KEV, lu en ligne",
-    ),
-    (
-        "EVT-PRC-001",
-        "ses déclencheurs sont des noms d'outils d'attaque, masqués dans le source (src/masque.rs), et des lignes de commande d'attaque : les écrire en clair dans le corpus irait contre le masquage ; journaux_windows/regles/tests.rs (processus_suspects) l'exerce déjà",
     ),
 ];
 
@@ -189,15 +190,247 @@ const EN_ATTENTE_S3C: &[&str] = &[
     "PRO-LIE-001",
     "PRO-ESP-001",
     "PRO-DIS-001",
+    "PRO-SOR-001",
+    "PRO-GIT-001",
     "SUR-BOT-001",
     "SUR-EMP-001",
     "SUR-FIC-001",
+    "SUR-PAS-001",
+    "SUR-APP-001",
+    "SUR-PRT-001",
+    "SUR-WIF-001",
+    "SUR-BLO-001",
     "VEI-RAN-001",
     "VEI-RAN-002",
     "VEI-RAN-003",
     "VEI-EXF-001",
     "VEI-PRG-001",
     "VEI-CNX-001",
+];
+
+/// Le fil de chaque règle du bilan qui a un cas, de son `regle!` au jugement que son adaptateur appelle : la première
+/// fonction est nommée dans le bloc `regle!`, chacune appelle la suivante (fichier sous src/, nom). Plusieurs
+/// fonctions du même nom dans le fichier (une par système) : l'une d'elles suffit.
+const FILS: &[(&str, &[(&str, &str)])] = &[
+    (
+        "COM-CPT-001",
+        &[
+            ("machine/administrateurs.rs", "constat"),
+            ("machine/administrateurs.rs", "juger"),
+        ],
+    ),
+    (
+        "COM-CPT-003",
+        &[
+            ("machine/chasse.rs", "connexion_forcee"),
+            ("machine/chasse.rs", "juger_intrusions"),
+        ],
+    ),
+    (
+        "COM-CRT-001",
+        &[
+            ("machine/certificats.rs", "certificats"),
+            ("machine/certificats.rs", "juger"),
+        ],
+    ),
+    (
+        "COM-DIS-001",
+        &[
+            ("protection/distance.rs", "constats"),
+            ("protection/distance.rs", "juger"),
+        ],
+    ),
+    (
+        "COM-INT-002",
+        &[("protection/pieges.rs", "constat"), ("protection/pieges.rs", "juger")],
+    ),
+    (
+        "COM-JRN-001",
+        &[
+            ("machine/journaux.rs", "journaux"),
+            ("machine/journaux.rs", "juger_effacements"),
+        ],
+    ),
+    (
+        "COM-NAV-001",
+        &[
+            ("machine/extensions.rs", "extensions"),
+            ("machine/extensions.rs", "juger"),
+        ],
+    ),
+    (
+        "COM-PRG-001",
+        &[
+            ("machine/chasse.rs", "programmes_suspects"),
+            ("machine/chasse.rs", "juger_programmes"),
+        ],
+    ),
+    (
+        "LNX-PRV-004",
+        &[
+            ("machine/linux/privileges.rs", "dossiers_de_commandes"),
+            ("machine/unix.rs", "dossiers_de_commandes"),
+            ("machine/unix.rs", "juger_dossiers_de_commandes"),
+        ],
+    ),
+    (
+        "MAC-PRV-004",
+        &[
+            ("machine/macos/privileges.rs", "dossiers_de_commandes"),
+            ("machine/unix.rs", "dossiers_de_commandes"),
+            ("machine/unix.rs", "juger_dossiers_de_commandes"),
+        ],
+    ),
+    (
+        "LNX-PRS-003",
+        &[
+            ("machine/linux/dissimulation.rs", "processus_caches"),
+            ("machine/linux/dissimulation.rs", "juger_processus_caches"),
+        ],
+    ),
+    (
+        "LNX-PRS-004",
+        &[
+            ("machine/linux/dissimulation.rs", "programmes_sans_fichier"),
+            ("machine/linux/dissimulation.rs", "juger_sans_fichier"),
+        ],
+    ),
+    (
+        "LNX-NOY-006",
+        &[
+            ("machine/linux/dissimulation.rs", "modules_du_noyau"),
+            ("machine/linux/dissimulation.rs", "juger_modules"),
+        ],
+    ),
+    (
+        "LNX-RES-002",
+        &[
+            ("machine/linux/dissimulation.rs", "ecoute_du_reseau"),
+            ("machine/linux/dissimulation.rs", "juger_ecoute"),
+        ],
+    ),
+    (
+        "MAC-PRS-002",
+        &[
+            ("machine/macos/parite.rs", "elements_d_ouverture"),
+            ("machine/macos/parite.rs", "juger_btm"),
+        ],
+    ),
+    (
+        "MAC-PRS-003",
+        &[
+            ("machine/macos/parite.rs", "crochets_et_extensions"),
+            ("machine/macos/parite.rs", "juger_crochets"),
+        ],
+    ),
+    (
+        "WIN-ANV-002",
+        &[
+            ("machine/windows/exclusions.rs", "exclusions"),
+            ("machine/windows/exclusions.rs", "juger"),
+        ],
+    ),
+    (
+        "WIN-PRS-002",
+        &[
+            ("machine/windows/portes.rs", "ifeo"),
+            ("machine/windows/portes.rs", "juger_ifeo"),
+        ],
+    ),
+    (
+        "WIN-PRS-003",
+        &[
+            ("machine/windows/portes.rs", "programmes_remplaces"),
+            ("machine/windows/portes.rs", "juger_remplaces"),
+        ],
+    ),
+    (
+        "WIN-PRS-004",
+        &[
+            ("machine/windows/portes.rs", "winlogon"),
+            ("machine/windows/portes.rs", "juger_winlogon"),
+        ],
+    ),
+    (
+        "WIN-PRS-005",
+        &[
+            ("machine/windows/portes.rs", "appinit"),
+            ("machine/windows/portes.rs", "juger_appinit"),
+        ],
+    ),
+    ("WIN-PRS-006", &[("machine/windows/portes.rs", "juger_wmi")]),
+    (
+        "WIN-PRS-007",
+        &[
+            ("machine/windows/ancrages.rs", "lsa"),
+            ("machine/windows/ancrages.rs", "juger_lsa"),
+        ],
+    ),
+    (
+        "WIN-PRS-008",
+        &[
+            ("machine/windows/ancrages.rs", "appcert"),
+            ("machine/windows/ancrages.rs", "juger_appcert"),
+        ],
+    ),
+    (
+        "WIN-PRS-009",
+        &[
+            ("machine/windows/ancrages.rs", "moniteurs_impression"),
+            ("machine/windows/ancrages.rs", "juger_dlls"),
+        ],
+    ),
+    (
+        "WIN-PRS-010",
+        &[
+            ("machine/windows/ancrages.rs", "fournisseurs_de_temps"),
+            ("machine/windows/ancrages.rs", "juger_dlls"),
+        ],
+    ),
+    (
+        "WIN-PRS-011",
+        &[
+            ("machine/windows/ancrages.rs", "catalogue_winsock"),
+            ("machine/windows/ancrages.rs", "juger_dlls"),
+        ],
+    ),
+    (
+        "WIN-PRS-012",
+        &[
+            ("machine/windows/pilotes.rs", "pilotes"),
+            ("machine/windows/pilotes.rs", "juger_pilotes"),
+        ],
+    ),
+    (
+        "WIN-SRV-001",
+        &[
+            ("machine/windows/services.rs", "services_sans_guillemets"),
+            ("machine/windows/services.rs", "juger"),
+        ],
+    ),
+];
+
+/// Ce que l'adaptateur recopie de la règle, parce que la règle le donne en appelant un jugement commun : le texte
+/// doit en rester dans le corps de sa vérification (fichier, fonction, texte), sinon l'adaptateur jugerait autre chose.
+const RECOPIES: &[(&str, &str, &str, &str)] = &[
+    (
+        "WIN-PRS-009",
+        "machine/windows/ancrages.rs",
+        "moniteurs_impression",
+        "Niveau::Moyen",
+    ),
+    (
+        "WIN-PRS-010",
+        "machine/windows/ancrages.rs",
+        "fournisseurs_de_temps",
+        "Niveau::Moyen",
+    ),
+    (
+        "WIN-PRS-011",
+        "machine/windows/ancrages.rs",
+        "catalogue_winsock",
+        "Niveau::Info",
+    ),
 ];
 
 /// Les règles qui citent une technique d'ATT&CK (T…), lues dans la carte que outils/couverture-attack.py tire des
@@ -238,21 +471,26 @@ impl From<&str> for Refus {
     }
 }
 
-impl From<String> for Refus {
-    fn from(t: String) -> Refus {
-        Refus(t)
-    }
+/// Ce que le cas propre doit rendre.
+#[derive(Debug, PartialEq, Eq)]
+enum Propre {
+    /// Au moins un constat, tous vérifiés, au plus ce niveau (`None` : aucun problème).
+    AuPlus(Option<Niveau>),
+    /// Rien du tout : la règle se tait sans constat quand tout va bien, au bilan aussi (son jugement rend `None`).
+    Rien,
 }
 
 #[derive(Debug)]
 struct Attendu {
-    /// La gravité au moins du constat que le cas fabriqué doit faire tirer.
+    /// La gravité exacte du constat que le cas fabriqué doit faire tirer : la plus haute qu'il rend.
     gravite: Niveau,
     /// Des mots des données fabriquées, que ce constat doit nommer (sans la casse) : il tire pour ce cas, pas par
     /// hasard. Jamais un mot du message traduit, qui changerait avec la langue.
     mots: Vec<String>,
-    /// Le plus que le cas propre peut dire : `None`, rien (« aucun ») ; sinon une information au plus.
-    propre: Option<Niveau>,
+    propre: Propre,
+    /// Pourquoi le cas propre n'a pas de données, quand l'état sain est l'absence même (une clé que Windows laisse
+    /// vide) ; sans elle, `propre.txt` doit en avoir.
+    propre_vide: Option<String>,
     systemes: Vec<String>,
 }
 
@@ -266,23 +504,54 @@ fn niveau(texte: &str) -> Option<Niveau> {
     })
 }
 
-/// Une valeur `"texte"` ou `["a", "b"]` : le peu de TOML dont un cas a besoin, sans dépendance de plus.
+/// Une valeur `"texte"` ou `["a", "b"]` : le peu de TOML dont un cas a besoin, sans dépendance de plus. Les textes
+/// se lisent jusqu'au guillemet suivant (une virgule y reste) ; rien d'autre n'est admis, pas même un commentaire.
 fn valeurs(v: &str) -> Result<Vec<String>, Refus> {
-    let texte = |t: &str| -> Result<String, Refus> {
-        t.trim()
-            .strip_prefix('"')
-            .and_then(|t| t.strip_suffix('"'))
-            .map(str::to_string)
-            .ok_or_else(|| Refus(format!("« {t} » : un texte entre guillemets attendu")))
+    let (liste, mut reste) = match v.strip_prefix('[') {
+        Some(r) => (
+            true,
+            r.strip_suffix(']').ok_or_else(|| {
+                Refus(format!(
+                    "« {v} » : une liste se ferme par « ] » (pas de commentaire en fin de ligne)"
+                ))
+            })?,
+        ),
+        None => (false, v),
     };
-    match v.strip_prefix('[').and_then(|v| v.strip_suffix(']')) {
-        Some(liste) => liste.split(',').filter(|t| !t.trim().is_empty()).map(texte).collect(),
-        None => Ok(vec![texte(v)?]),
+    let mut sortie = Vec::new();
+    loop {
+        reste = reste.trim_start();
+        if reste.is_empty() {
+            break;
+        }
+        let r = reste
+            .strip_prefix('"')
+            .ok_or_else(|| Refus(format!("« {v} » : un texte entre guillemets attendu")))?;
+        let fin = r
+            .find('"')
+            .ok_or_else(|| Refus(format!("« {v} » : guillemet fermant manquant")))?;
+        sortie.push(r[..fin].to_string());
+        reste = r[fin + 1..].trim_start();
+        if !reste.is_empty() {
+            if !liste {
+                return Err(Refus(format!(
+                    "« {v} » : rien après le texte (pas de commentaire en fin de ligne)"
+                )));
+            }
+            reste = reste
+                .strip_prefix(',')
+                .ok_or_else(|| Refus(format!("« {v} » : une virgule entre les textes")))?;
+        }
     }
+    if sortie.is_empty() && !liste {
+        return Err(Refus(format!("« {v} » : un texte entre guillemets attendu")));
+    }
+    Ok(sortie)
 }
 
 fn lire_attendu(texte: &str) -> Result<Attendu, Refus> {
-    let (mut gravite, mut mots, mut propre, mut systemes) = (None, Vec::new(), None, Vec::new());
+    let (mut gravite, mut mots, mut propre, mut propre_vide, mut systemes) = (None, Vec::new(), None, None, Vec::new());
+    let mut vues = BTreeSet::new();
     for ligne in texte
         .lines()
         .map(str::trim)
@@ -291,18 +560,24 @@ fn lire_attendu(texte: &str) -> Result<Attendu, Refus> {
         let (cle, v) = ligne
             .split_once('=')
             .ok_or_else(|| Refus(format!("« {ligne} » : « clé = valeur » attendu")))?;
+        let cle = cle.trim();
+        if !vues.insert(cle.to_string()) {
+            return Err(Refus(format!("clé en double : {cle}")));
+        }
         let v = valeurs(v.trim())?;
         let seul = || v.first().cloned().unwrap_or_default();
-        match cle.trim() {
+        match cle {
             "gravite" => gravite = Some(niveau(&seul()).ok_or("gravite : info, moyen, eleve ou critique")?),
             "mots" => mots = v,
             "propre" => {
                 propre = Some(match seul().as_str() {
-                    "aucun" => None,
-                    "info" => Some(Niveau::Info),
-                    _ => return Err("propre : aucun ou info".into()),
+                    "aucun" => Propre::AuPlus(None),
+                    "info" => Propre::AuPlus(Some(Niveau::Info)),
+                    "rien" => Propre::Rien,
+                    _ => return Err("propre : aucun, info ou rien".into()),
                 });
             }
+            "propre_vide" => propre_vide = Some(seul()).filter(|r| !r.trim().is_empty()),
             "systemes" => systemes = v,
             autre => return Err(Refus(format!("clé inconnue : {autre}"))),
         }
@@ -311,7 +586,7 @@ fn lire_attendu(texte: &str) -> Result<Attendu, Refus> {
     if gravite == Niveau::Info {
         return Err("gravite : une information ne prouve pas qu'une règle de détection tire".into());
     }
-    if mots.is_empty() {
+    if mots.is_empty() || mots.iter().any(|m| m.trim().is_empty()) {
         return Err("mots manque : le constat doit nommer ce que le cas a fabriqué".into());
     }
     let propre = propre.ok_or("propre manque")?;
@@ -326,6 +601,7 @@ fn lire_attendu(texte: &str) -> Result<Attendu, Refus> {
         gravite,
         mots,
         propre,
+        propre_vide,
         systemes,
     })
 }
@@ -336,6 +612,21 @@ fn montrer(constats: &[Constat]) -> String {
         .map(|c| format!("  {:?} vérifié={} : {}", c.probleme, c.verifie, c.message))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// L'adaptateur sur un fichier du cas ; une panique (une ligne mal formée : un champ qui manque, un nombre qui ne se
+/// lit pas) devient une faute qui nomme le cas, sans arrêter les autres.
+fn juger_le_fichier(id: &str, fichier: &str, juge: Juge, entree: &Entree) -> Result<Vec<Constat>, Refus> {
+    std::panic::catch_unwind(AssertUnwindSafe(|| juge(entree))).map_err(|p| {
+        let pourquoi = p
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| p.downcast_ref::<&str>().map(|s| (*s).to_string()))
+            .unwrap_or_default();
+        Refus(format!(
+            "{id}/{fichier} : ligne mal formée ({pourquoi}) ; le format des lignes est dit dans la documentation de l'adaptateur de {id}"
+        ))
+    })
 }
 
 /// Le cas `id` jugé : ce qui ne va pas, ou `None`.
@@ -357,7 +648,10 @@ fn faute_du_cas(id: &str, juge: Juge) -> Option<String> {
         (Ok(f), Ok(p)) => (f, p),
         (Err(e), _) | (_, Err(e)) => return Some(e),
     };
-    let tires = juge(&fabrique);
+    let tires = match juger_le_fichier(id, "fabrique.txt", juge, &fabrique) {
+        Ok(t) => t,
+        Err(e) => return Some(e.0),
+    };
     let nomme = |c: &Constat| {
         let m = c.message.to_lowercase();
         attendu.mots.iter().all(|mot| m.contains(&mot.to_lowercase()))
@@ -373,10 +667,33 @@ fn faute_du_cas(id: &str, juge: Juge) -> Option<String> {
             montrer(&tires)
         ));
     }
-    let muets = juge(&propre);
-    if muets.iter().any(|c| !c.verifie || c.probleme > attendu.propre) {
+    // La gravité attendue est la plus haute rendue : une baisse (élevé devenu moyen) se voit aussi.
+    let pire = tires.iter().filter_map(|c| c.probleme).max();
+    if pire > Some(attendu.gravite) {
         return Some(format!(
-            "{id} tire sur son cas propre (au plus {:?} attendu, tout vérifié)\n{}",
+            "{id}/attendu.toml : gravite trop basse, le cas rend {pire:?} : la relever, pour qu'une baisse se voie"
+        ));
+    }
+    match (&attendu.propre_vide, propre.lignes().is_empty()) {
+        (None, true) => {
+            return Some(format!(
+                "{id}/propre.txt sans données : un cas propre doit montrer des données saines (ou propre_vide = \"raison\" quand l'état sain est l'absence même)"
+            ));
+        }
+        (Some(_), false) => return Some(format!("{id} : propre.txt a des données, propre_vide est de trop")),
+        _ => {}
+    }
+    let muets = match juger_le_fichier(id, "propre.txt", juge, &propre) {
+        Ok(m) => m,
+        Err(e) => return Some(e.0),
+    };
+    let juste = match attendu.propre {
+        Propre::Rien => muets.is_empty(),
+        Propre::AuPlus(plafond) => !muets.is_empty() && muets.iter().all(|c| c.verifie && c.probleme <= plafond),
+    };
+    if !juste {
+        return Some(format!(
+            "{id} : son cas propre devait rendre {:?} (au moins un constat, tous vérifiés, sauf « rien »)\n{}",
             attendu.propre,
             montrer(&muets)
         ));
@@ -400,12 +717,20 @@ fn chaque_cas_du_corpus_tire() {
         }
     }
     // Chaque cas qui dit tourner ici a son adaptateur ici, et aucun adaptateur ne tourne là où son cas ne le dit pas.
+    // Un attendu.toml qui ne se lit pas est une faute, jamais un cas couvert.
     for d in dossiers_de_cas() {
-        let systemes = std::fs::read_to_string(racine_du_corpus().join(&d).join("attendu.toml"))
-            .ok()
-            .and_then(|t| lire_attendu(&t).ok())
-            .map(|a| a.systemes)
-            .unwrap_or_default();
+        let attendu = std::fs::read_to_string(racine_du_corpus().join(&d).join("attendu.toml"))
+            .map_err(|e| e.to_string())
+            .and_then(|t| lire_attendu(&t).map_err(|e| e.0));
+        let systemes = match attendu {
+            Ok(a) => a.systemes,
+            Err(e) => {
+                if !vus.contains(d.as_str()) {
+                    fautes.push(format!("{d}/attendu.toml : {e}"));
+                }
+                continue;
+            }
+        };
         let ici_attendu = systemes.iter().any(|s| s == ici);
         match (ici_attendu, vus.contains(d.as_str())) {
             (true, false) => fautes.push(format!("{d} : son cas dit {ici}, aucun adaptateur ici")),
@@ -419,7 +744,7 @@ fn chaque_cas_du_corpus_tire() {
         }
     }
     assert!(fautes.is_empty(), "corpus de détection :\n{}", fautes.join("\n"));
-    // La ligne que verifier.sh montre au résumé (étape « régression de détection »).
+    // La ligne que verifier.sh exige et montre au résumé (étape « régression de détection »).
     println!(
         "corpus de détection ({ici}) : {} règles tirent, {} exemptées, {} en attente de S3b, {} de S3c",
         vus.len(),
@@ -431,9 +756,21 @@ fn chaque_cas_du_corpus_tire() {
 
 #[test]
 fn chaque_regle_de_detection_a_son_cas() {
+    let outils: Vec<&str> = super::registre::OUTILS.iter().map(|o| o.id).collect();
+    let mut fautes = Vec::new();
+    for (id, _) in NE_DETECTENT_PAS {
+        if !outils.contains(id) {
+            fautes.push(format!("{id} (NE_DETECTENT_PAS) n'est plus un outil du registre"));
+        }
+    }
     let detectent: BTreeSet<String> = regles_qui_detectent()
         .into_iter()
-        .chain(OUTILS_QUI_DETECTENT.iter().map(|s| (*s).to_string()))
+        .chain(
+            outils
+                .iter()
+                .filter(|id| !NE_DETECTENT_PAS.iter().any(|(n, _)| n == *id))
+                .map(|s| (*s).to_string()),
+        )
         .collect();
     // La carte doit compter : un format changé qui ne rendrait plus rien viderait la liste sans bruit.
     assert!(regles_qui_detectent().len() >= 60, "carte ATT&CK mal lue");
@@ -453,13 +790,12 @@ fn chaque_regle_de_detection_a_son_cas() {
             (!mots.any(|m| m == "retire")).then_some(id)
         })
         .collect();
-    let mut fautes = Vec::new();
     for id in &detectent {
         let ou: Vec<&str> = mises_a_part.iter().filter(|(i, _)| i == id).map(|(_, l)| *l).collect();
         match (cas.contains(id), ou.as_slice()) {
             (true, []) | (false, [_]) => {}
             (false, []) => fautes.push(format!(
-                "{id} détecte sans cas : poser tests/corpus-detection/{id}/, ou le mettre dans EXEMPTEES avec sa raison"
+                "{id} détecte sans cas : poser tests/corpus-detection/{id}/, ou le mettre dans EXEMPTEES avec sa raison (un outil qui ne détecte pas : NE_DETECTENT_PAS)"
             )),
             (true, l) => fautes.push(format!("{id} a son cas : le retirer de {}", l.join(", "))),
             (false, l) => fautes.push(format!("{id} deux fois : {}", l.join(", "))),
@@ -484,7 +820,7 @@ fn chaque_regle_de_detection_a_son_cas() {
             fautes.push(format!("{id} absent de tests/regles-connues.txt, ou retiré"));
         }
     }
-    for (id, raison) in EXEMPTEES.iter().chain(EN_ATTENTE_S3B) {
+    for (id, raison) in EXEMPTEES.iter().chain(EN_ATTENTE_S3B).chain(NE_DETECTENT_PAS) {
         if raison.trim().is_empty() {
             fautes.push(format!("{id} sans raison"));
         }
@@ -492,16 +828,141 @@ fn chaque_regle_de_detection_a_son_cas() {
     assert!(fautes.is_empty(), "liste fermée du corpus :\n{}", fautes.join("\n"));
 }
 
+/// Le texte de src/<fichier>.
+fn source(fichier: &str) -> String {
+    std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(fichier))
+        .unwrap_or_else(|e| panic!("src/{fichier} : {e}"))
+}
+
+/// Les corps des fonctions `nom` d'un texte source (après leur accolade ouvrante, jusqu'à l'accolade fermante en
+/// début de ligne ou au même retrait) : grossier, mais le code passe par rustfmt.
+fn corps(texte: &str, nom: &str) -> Vec<String> {
+    let mut sortie = Vec::new();
+    let signature = format!("fn {nom}(");
+    for (i, _) in texte.match_indices(&signature) {
+        let avant = &texte[..i];
+        let debut_ligne = avant.rfind('\n').map_or(0, |n| n + 1);
+        let retrait = texte[debut_ligne..].len() - texte[debut_ligne..].trim_start().len();
+        let fin_attendue = format!("\n{}}}", " ".repeat(retrait));
+        let Some(ouvre) = texte[i..].find('{') else { continue };
+        let corps = &texte[i + ouvre + 1..];
+        let fin = corps.find(&fin_attendue).unwrap_or(corps.len());
+        sortie.push(corps[..fin].to_string());
+    }
+    sortie
+}
+
+/// `nom` appelé ou nommé comme mot entier dans `texte` (pas une partie d'un nom plus long).
+fn nomme(texte: &str, nom: &str) -> bool {
+    let mot = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    texte
+        .match_indices(nom)
+        .any(|(i, _)| !mot(texte[..i].chars().next_back()) && !mot(texte[i + nom.len()..].chars().next()))
+}
+
+/// Les blocs `regle!` de tout src/machine et de protection, par identifiant.
+fn blocs_regle() -> Vec<(String, String)> {
+    let mut fichiers = Vec::new();
+    let mut a_voir = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    while let Some(d) = a_voir.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                a_voir.push(p);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                fichiers.push(p);
+            }
+        }
+    }
+    let mut blocs = Vec::new();
+    for f in fichiers {
+        let texte = std::fs::read_to_string(&f).unwrap();
+        for (i, _) in texte.match_indices("\nregle!(") {
+            let bloc = &texte[i..];
+            let bloc = &bloc[..bloc[1..].find("\n);").map_or(bloc.len(), |f| f + 1)];
+            if let Some(id) = bloc.split('"').nth(1) {
+                blocs.push((id.to_string(), bloc.to_string()));
+            }
+        }
+    }
+    blocs
+}
+
+#[test]
+fn chaque_regle_du_corpus_mene_a_son_jugement() {
+    let blocs = blocs_regle();
+    let mut fautes = Vec::new();
+    for (id, fil) in FILS {
+        let Some((_, bloc)) = blocs.iter().find(|(i, _)| i == id) else {
+            fautes.push(format!("{id} : aucun bloc regle! dans src/"));
+            continue;
+        };
+        let (_, premiere) = fil[0];
+        if !nomme(bloc, premiere) {
+            fautes.push(format!("{id} : son regle! ne nomme plus {premiere}"));
+        }
+        for paire in fil.windows(2) {
+            let ((fichier, appelant), (fichier_appele, appele)) = (paire[0], paire[1]);
+            let texte = source(fichier);
+            let appelants = corps(&texte, appelant);
+            if appelants.is_empty() {
+                fautes.push(format!("{id} : pas de fonction {appelant} dans src/{fichier}"));
+            } else if !appelants.iter().any(|c| nomme(c, appele)) {
+                fautes.push(format!("{id} : {appelant} (src/{fichier}) n'appelle plus {appele}"));
+            }
+            if corps(&source(fichier_appele), appele).is_empty() {
+                fautes.push(format!("{id} : pas de fonction {appele} dans src/{fichier_appele}"));
+            }
+        }
+    }
+    for (id, fichier, fonction, texte) in RECOPIES {
+        if !corps(&source(fichier), fonction).iter().any(|c| c.contains(texte)) {
+            fautes.push(format!(
+                "{id} : {fonction} (src/{fichier}) ne donne plus {texte} au jugement : l'adaptateur le recopie, à suivre"
+            ));
+        }
+    }
+    // Chaque règle du bilan qui a un cas a son fil ; les règles EVT- passent par le vrai jeu (REGLES), sans fil.
+    for d in dossiers_de_cas().iter().filter(|d| !d.starts_with("EVT-")) {
+        if !FILS.iter().any(|(i, _)| i == d) {
+            fautes.push(format!(
+                "{d} : un cas sans fil dans FILS (de son regle! à son jugement)"
+            ));
+        }
+    }
+    assert!(fautes.is_empty(), "fil des règles du corpus :\n{}", fautes.join("\n"));
+}
+
+#[test]
+fn le_fil_voit_une_regle_debranchee() {
+    let bloc = "\nregle!(\n    \"COM-XXX-001\",\n    Os::Tous,\n    1,\n    (\"a\", \"b\"),\n    &[],\n    || vec![ok(\"x\", \"rien\")]\n);";
+    assert!(!nomme(bloc, "connexion_forcee"));
+    assert!(nomme("    connexion_forcee\n", "connexion_forcee"));
+    assert!(!nomme("juger_programmes(x)", "juger"));
+    let texte = "fn a() {\n    b();\n}\n\nfn c() {\n    d();\n}\n";
+    assert_eq!(corps(texte, "a").len(), 1);
+    assert!(nomme(&corps(texte, "a")[0], "b") && !nomme(&corps(texte, "a")[0], "d"));
+}
+
 #[test]
 fn lecture_de_ce_qu_un_cas_attend() {
     let a = lire_attendu(
-        "# un cas\ngravite = \"eleve\"\nmots = [\"outil-corpus\", \"/tmp\"]\npropre = \"info\"\nsystemes = [\"linux\"]\n",
+        "# un cas\ngravite = \"eleve\"\nmots = [\"outil-corpus\", \"a,b\"]\npropre = \"info\"\nsystemes = [\"linux\"]\n",
     )
     .unwrap();
     assert_eq!(a.gravite, Niveau::Eleve);
-    assert_eq!(a.mots, ["outil-corpus", "/tmp"]);
-    assert_eq!(a.propre, Some(Niveau::Info));
+    assert_eq!(a.mots, ["outil-corpus", "a,b"]);
+    assert_eq!(a.propre, Propre::AuPlus(Some(Niveau::Info)));
     assert_eq!(a.systemes, ["linux"]);
+    assert_eq!(a.propre_vide, None);
+    let a = lire_attendu(
+        "gravite = \"moyen\"\nmots = \"x\"\npropre = \"rien\"\npropre_vide = \"vide d'origine\"\nsystemes = \"windows\"",
+    )
+    .unwrap();
+    assert_eq!(
+        (a.propre, a.propre_vide.as_deref()),
+        (Propre::Rien, Some("vide d'origine"))
+    );
     // Ce qui ne prouverait rien, ou se lirait de travers, est refusé.
     for faux in [
         "gravite = \"info\"\nmots = \"x\"\npropre = \"aucun\"\nsystemes = \"linux\"",
@@ -510,7 +971,31 @@ fn lecture_de_ce_qu_un_cas_attend() {
         "gravite = \"eleve\"\nmots = \"x\"\npropre = \"aucun\"\nsystemes = \"bsd\"",
         "gravite = \"eleve\"\nmots = \"x\"\npropre = \"aucun\"\nsystemes = \"linux\"\nautre = \"y\"",
         "gravite = eleve\nmots = \"x\"\npropre = \"aucun\"\nsystemes = \"linux\"",
+        "gravite = \"eleve\"\ngravite = \"moyen\"\nmots = \"x\"\npropre = \"aucun\"\nsystemes = \"linux\"",
+        "gravite = \"eleve\" # commentaire\nmots = \"x\"\npropre = \"aucun\"\nsystemes = \"linux\"",
+        "gravite = \"eleve\"\nmots = [\"x\" \"y\"]\npropre = \"aucun\"\nsystemes = \"linux\"",
+        "gravite = \"eleve\"\nmots = [\"\"]\npropre = \"aucun\"\nsystemes = \"linux\"",
     ] {
         assert!(lire_attendu(faux).is_err(), "{faux}");
     }
+}
+
+#[test]
+fn une_ligne_mal_formee_nomme_son_cas() {
+    let entree = Entree {
+        dossier: PathBuf::from("corpus"),
+        texte: "champ-seul".into(),
+    };
+    let juge: Juge = |e| {
+        let _ = e.champs()[0][3];
+        Vec::new()
+    };
+    let faute = juger_le_fichier("COM-XXX-001", "fabrique.txt", juge, &entree)
+        .err()
+        .unwrap()
+        .0;
+    assert!(
+        faute.starts_with("COM-XXX-001/fabrique.txt : ligne mal formée"),
+        "{faute}"
+    );
 }

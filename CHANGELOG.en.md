@@ -9,7 +9,10 @@ delivered just before it. Only the latest version has its download page; every v
 
 ## Next version
 
-- **Detection regression.** A corpus of harmless fabricated cases (tests/corpus-detection) proves that 42 detection rules still fire, and that a clean case leaves them silent; every rule citing an ATT&CK technique has its case or its reason, and verifier.sh runs it as a step (Linux and Wine).
+- **Detection regression.** A corpus of harmless fabricated cases (tests/corpus-detection) proves that 43 detection
+  rules still fire (depending on the system: each runs where it exists), at their exact severity, and that a clean
+  case leaves them silent; every rule citing an ATT&CK technique, and every tool that detects, has its case or its
+  reason, each rule's path to its judgement is kept, and verifier.sh runs it as two steps (Linux and Wine).
 - **Other state files sealed, a single judge.** The decoy file list, the blocked ports, this computer's device
   record, the VANGUARD key references, the monthly check-up, the backup note and the monitoring's last run are
   sealed: changed, deleted or accepted as they were after the seals were remade, they no longer turn anything off (a

@@ -1,0 +1,5 @@
+# EVT-PRC-001 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "eleve"
+mots = ["encode|powershell"]
+propre = "aucun"
+systemes = ["linux", "windows", "macos"]

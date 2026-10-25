@@ -1,1 +1,1 @@
-# AppCertDlls vide, comme Windows la laisse.
+# Windows laisse AppCertDlls vide : toute entrée est dite.

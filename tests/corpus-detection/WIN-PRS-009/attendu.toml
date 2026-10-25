@@ -1,5 +1,6 @@
 # WIN-PRS-009 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
-gravite = "eleve"
+# Une DLL d'un logiciel installé : le niveau que la règle donne à cet ancrage (moyen), recopié de sa vérification et gardé par RECOPIES.
+gravite = "moyen"
 mots = ["corpus-moniteur.dll"]
 propre = "aucun"
 systemes = ["windows"]

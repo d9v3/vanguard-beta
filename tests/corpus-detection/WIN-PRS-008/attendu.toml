@@ -2,4 +2,5 @@
 gravite = "eleve"
 mots = ["corpus-cert.dll"]
 propre = "aucun"
+propre_vide = "AppCertDlls vide est son état d'origine : toute entrée y est dite"
 systemes = ["windows"]

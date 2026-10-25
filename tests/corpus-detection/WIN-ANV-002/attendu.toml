@@ -1,5 +1,6 @@
 # WIN-ANV-002 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+# « C:\ » : la règle vise justement la racine du disque ; le propre (D:\SteamLibrary) doit rester muet, ce qui tient le mot court.
 gravite = "eleve"
 mots = ["C:\"]
-propre = "aucun"
+propre = "rien"
 systemes = ["windows"]

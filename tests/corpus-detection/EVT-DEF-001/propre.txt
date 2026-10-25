@@ -1,1 +1,1 @@
-# Defender n'a rien écrit : rien à dire.
+Microsoft-Windows-Windows Defender/Operational|Microsoft-Windows-Windows Defender|1000|0

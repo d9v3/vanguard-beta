@@ -1,1 +1,1 @@
-# Aucun effacement.
+System|Microsoft-Windows-Eventlog|6005|0

@@ -2,4 +2,5 @@
 gravite = "moyen"
 mots = ["corpus-hook.sh"]
 propre = "aucun"
+propre_vide = "sans crochet ni extension de tiers, l'état d'origine : tout crochet est dit"
 systemes = ["macos"]

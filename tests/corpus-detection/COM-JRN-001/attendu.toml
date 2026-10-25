@@ -1,5 +1,5 @@
 # COM-JRN-001 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
 gravite = "moyen"
 mots = ["2026-10-19"]
-propre = "aucun"
+propre = "info"
 systemes = ["linux", "windows", "macos"]

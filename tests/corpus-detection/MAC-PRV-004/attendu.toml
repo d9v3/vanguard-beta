@@ -1,5 +1,5 @@
 # MAC-PRV-004 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
 gravite = "moyen"
 mots = ["/opt/corpus/bin"]
-propre = "aucun"
+propre = "rien"
 systemes = ["linux", "macos"]

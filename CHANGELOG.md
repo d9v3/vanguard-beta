@@ -9,7 +9,11 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 
 ## Prochaine version
 
-- **Régression de détection.** Un corpus de cas fabriqués et inoffensifs (tests/corpus-detection) prouve que 42 règles de détection tirent encore, et qu'un cas propre les laisse muettes ; chaque règle qui cite une technique d'ATT&CK a son cas ou sa raison, et verifier.sh en fait une étape (Linux et Wine).
+- **Régression de détection.** Un corpus de cas fabriqués et inoffensifs (tests/corpus-detection) prouve que 43 règles
+  de détection tirent encore (selon le système : chacune tourne là où elle existe), à leur gravité exacte, et qu'un
+  cas propre les laisse muettes ; chaque règle qui cite une technique d'ATT&CK, et chaque outil qui détecte, a son cas
+  ou sa raison, le fil de chaque règle jusqu'à son jugement est tenu, et verifier.sh en fait deux étapes (Linux et
+  Wine).
 - **Autres fichiers d'état scellés, un seul juge.** La liste des fichiers-pièges, les ports bloqués, le carnet des
   appareils de cet ordinateur, les références de la clé VANGUARD, l'entretien du mois, la note de la sauvegarde et la
   dernière passe de la surveillance sont scellés : changés, effacés ou acceptés tels quels après des sceaux refaits,
