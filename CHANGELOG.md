@@ -7,6 +7,14 @@ une seule publication par jour, qui regroupe le travail de la journée ; le 21 o
 la 0.84 au soir, qui reprend la 0.83 livrée juste avant elle. Seule la dernière version a sa page de téléchargement ;
 chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par exemple), pour être recompilée au besoin.
 
+## Prochaine version
+
+- **Clé USB : les images de secours de nouveau par défaut.** Les outils du dépôt refont la clé de secours partout :
+  Ventoy, les images d'installation et de réparation (SystemRescue, Arch, Omarchy, Debian, Fedora, chacune vérifiée
+  par la signature de son projet), Windows 11 et la récupération de macOS. Une ligne `CLE_SECOURS=non` dans
+  `~/.config/vanguard/images-cle.conf` la coupe sur un ordinateur (la clé ne porte alors que le programme) ; Kali Linux
+  reste en option (`IMAGES_EN_PLUS="kali"`). Le démarrage de la clé sur un vrai ordinateur n'a pas encore été essayé.
+
 ## 24 octobre 2026 : version 0.87
 
 - **Sécurité de la clé et de la publication** (campagne d'attaque n° 3). Au branchement, la clé est comparée à sa

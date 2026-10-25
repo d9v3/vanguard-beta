@@ -3,9 +3,10 @@
 # Arch Linux, Debian et Fedora en installateurs par Internet, SystemRescue (réparer, sauver des fichiers, tester la
 # mémoire) ; en option, Kali Linux en live complète (ses outils de sécurité, sans rien installer ; publiée en torrent
 # seulement : aria2c la télécharge, puis elle est vérifiée comme les autres par la liste signée du projet).
-# PAR DÉFAUT, AUCUNE : une clé préparée par les outils du dépôt ne porte que le programme. Seul le réglage local de
-# l'ordinateur, hors du dépôt, fait la clé de secours : CLE_SECOURS=oui dans ~/.config/vanguard/images-cle.conf, et
-# au besoin IMAGES="…" et IMAGES_EN_PLUS="kali" (le détail plus bas, à TENUES).
+# PAR DÉFAUT, LA CLÉ DE SECOURS : les cinq images Linux (Kali seulement si le réglage local la demande). Le réglage
+# local de l'ordinateur, hors du dépôt (~/.config/vanguard/images-cle.conf), la coupe (CLE_SECOURS=non : la clé ne
+# porte alors que le programme) ou choisit les images (IMAGES="…", IMAGES_EN_PLUS="kali") ; le détail plus bas, à
+# TENUES.
 #   outils/images-cle.sh --chercher     dernières versions téléchargées dans le cache et vérifiées (minuterie
 #                                       vanguard-images.timer, le 1er et le 15 du mois, qui les copie ensuite sur la
 #                                       clé si elle est branchée) ; une image mal signée est effacée
@@ -42,12 +43,13 @@ CLES=$PWD/outils/cles-images
 MIO=$((1024 * 1024))
 # Place gardée sur la clé pour Vanguard, sa base et ses rapports.
 MARGE_MIO=512
-# La clé de secours (ces images, Ventoy pour les démarrer, les partitions WIN11 et MACOS de cle-secours.sh) ne se fait
-# que sur un ordinateur dont le réglage local la demande. Sans lui, une clé préparée par les outils du dépôt ne porte
-# que le programme (Vanguard, sa base, ses rapports, VANGUARDLOG) : rien n'est cherché, copié, importé ni proposé, les
-# commandes qui poseraient une image refusent en disant comment l'allumer, et les minuteries de recopie ne font rien.
+# La clé de secours (ces images, Ventoy pour les démarrer, les partitions WIN11 et MACOS de cle-secours.sh) se fait
+# par défaut. Un ordinateur dont le réglage local la coupe (CLE_SECOURS=non) ne prépare qu'une clé qui porte le
+# programme seul (Vanguard, sa base, ses rapports, VANGUARDLOG) : rien n'est cherché, copié, importé ni proposé, les
+# commandes qui poseraient une image refusent en disant comment la rallumer, et les minuteries de recopie ne font rien.
 # Le réglage, hors du dépôt, dans ~/.config/vanguard/images-cle.conf, une ligne par valeur (la dernière compte) :
-#   CLE_SECOURS=oui                                        la clé de secours sur cet ordinateur (seul « oui » l'allume)
+#   CLE_SECOURS=non                                        la clé de secours coupée sur cet ordinateur (seul « non »
+#                                                          la coupe ; « oui » ou rien : faite)
 #   IMAGES="systemrescue arch omarchy debian fedora"        les images Linux tenues ; sans cette ligne, ces cinq-là
 #   IMAGES_EN_PLUS="kali"                                   des images en plus de celles d'IMAGES (Kali Linux, 16 Gio)
 # Espaces ou virgules entre les noms ; « # » commence un commentaire. Lu, jamais sourcé : rien de ce fichier ne
@@ -58,8 +60,8 @@ TENUES=(systemrescue arch omarchy debian fedora kali)
 PAR_DEFAUT="systemrescue arch omarchy debian fedora"
 EN_OPTION="kali"
 REGLAGE=${XDG_CONFIG_HOME:-$HOME/.config}/vanguard/images-cle.conf
-ALLUMER="Pour la faire sur cet ordinateur : une ligne CLE_SECOURS=oui dans $REGLAGE (le détail : en-tête de \
-outils/images-cle.sh)."
+ALLUMER="Pour la rallumer sur cet ordinateur : retirer la ligne CLE_SECOURS=non de $REGLAGE (le détail : en-tête \
+de outils/images-cle.sh)."
 # Les lignes « NOM=… » du réglage, sans commentaire ni guillemets ; rien si le nom n'y est pas.
 reglage() { # nom
   [[ -r $REGLAGE ]] || return 0
@@ -68,12 +70,19 @@ reglage() { # nom
 }
 SECOURS=""
 SORTES=()
-if [[ $(reglage CLE_SECOURS | tail -1 | tr -d '[:space:]') == oui ]]; then
+choix=$(reglage CLE_SECOURS | tail -1 | tr -d '[:space:]')
+case $choix in
+  '' | oui | non) ;;
+  *) echo "· $REGLAGE : CLE_SECOURS=$choix n'est ni « oui » ni « non » : la clé de secours reste faite (seul « non » \
+la coupe)." >&2 ;;
+esac
+if [[ $choix != non ]]; then
   SECOURS=oui
   voulues=$PAR_DEFAUT
   # La ligne IMAGES présente, même vide : elle seule dit les images (vide : aucune image Linux, WIN11 et MACOS
   # restent).
-  [[ -z $(sed -n 's/\r//g; s/#.*//; /^[[:space:]]*IMAGES[[:space:]]*=/p' "$REGLAGE") ]] || voulues=$(reglage IMAGES | tail -1)
+  [[ ! -r $REGLAGE || -z $(sed -n 's/\r//g; s/#.*//; /^[[:space:]]*IMAGES[[:space:]]*=/p' "$REGLAGE") ]] ||
+    voulues=$(reglage IMAGES | tail -1)
   voulues+=" $(reglage IMAGES_EN_PLUS | tail -1)"
   # Lus par read, pas développés par le shell : un « * » du réglage reste un mot inconnu.
   read -ra liste <<<"$voulues"
@@ -87,12 +96,12 @@ if [[ $(reglage CLE_SECOURS | tail -1 | tr -d '[:space:]') == oui ]]; then
     [[ $voulues != *" $s "* ]] || SORTES+=("$s")
   done
 elif [[ -n $(reglage IMAGES)$(reglage IMAGES_EN_PLUS) ]]; then
-  echo "· $REGLAGE : des images demandées sans CLE_SECOURS=oui, ignorées (la clé ne porte que le programme)." >&2
+  echo "· $REGLAGE : des images demandées avec CLE_SECOURS=non, ignorées (la clé ne porte que le programme)." >&2
 fi
-# La clé de secours n'est pas demandée : dit, et code 1 (les fonctions qui poseraient une image s'arrêtent là).
+# La clé de secours est coupée : dit, et code 1 (les fonctions qui poseraient une image s'arrêtent là).
 secours_demandee() { # ce qui n'est pas fait
   [[ -z $SECOURS ]] || return 0
-  echo "· Clé de secours pas demandée sur cet ordinateur : $1 La clé ne porte que le programme. $ALLUMER"
+  echo "· Clé de secours coupée sur cet ordinateur : $1 La clé ne porte que le programme. $ALLUMER"
   return 1
 }
 # Facultatives : leur absence du cache n'empêche pas de faire une clé (cle-secours.sh --ecrire vérifie le cache).

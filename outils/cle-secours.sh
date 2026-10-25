@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Clé de secours : la clé VANGUARD démarre aussi les ordinateurs, pour réparer ou réinstaller Linux, Windows et macOS.
-# SEULEMENT SUR UN ORDINATEUR QUI LA DEMANDE : par défaut, une clé préparée par les outils du dépôt ne porte que le
-# programme (outils/preparer-cle.sh : VANGUARD et VANGUARDLOG, ni images, ni Ventoy, ni WIN11, ni MACOS). Le réglage
-# local, hors du dépôt : une ligne CLE_SECOURS=oui dans ~/.config/vanguard/images-cle.conf (le détail : en-tête de
-# outils/images-cle.sh). Sans lui, chaque commande ci-dessous refuse en le disant, sauf --a-jour (appelée au
-# branchement et chaque jour), qui ne fait rien, et --ventoy-publie, qui ne fait que lire GitHub (--racine, la partie
-# root, ne part que de --ecrire).
+# FAITE PAR DÉFAUT, sauf sur un ordinateur dont le réglage local la coupe : une ligne CLE_SECOURS=non dans
+# ~/.config/vanguard/images-cle.conf (le détail : en-tête de outils/images-cle.sh). Là, une clé ne porte que le
+# programme (outils/preparer-cle.sh : VANGUARD et VANGUARDLOG, ni images, ni Ventoy, ni WIN11, ni MACOS), et chaque
+# commande ci-dessous refuse en le disant, sauf --a-jour (appelée au branchement et chaque jour), qui ne fait rien, et
+# --ventoy-publie, qui ne fait que lire GitHub (--racine, la partie root, ne part que de --ecrire).
 #   1 VANGUARD     partition de Ventoy, exFAT : Vanguard comme avant (témoin vanguard.cle), et ses images dans ISO/ :
 #                 Omarchy (installateur complet), Arch Linux, Debian et Fedora en installateurs par Internet, SystemRescue
 #                 (réparer, sauver des fichiers, tester la mémoire), puis, s'il reste la place, Windows 11 en
@@ -1195,8 +1194,8 @@ a_jour() { # point de la clé (facultatif)
 
 # Lu par outils/essais-cle.sh (source) : les fonctions seulement, rien n'est lancé.
 [[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
-# La clé de secours ne se fait que sur un ordinateur dont le réglage local la demande (CLE_SECOURS=oui, lu par
-# images-cle.sh, le seul à lire ce fichier) : sans lui, une clé ne porte que le programme. La partie root (--racine)
+# La clé de secours se fait partout, sauf sur un ordinateur dont le réglage local la coupe (CLE_SECOURS=non, lu par
+# images-cle.sh, le seul à lire ce fichier) : là, une clé ne porte que le programme. La partie root (--racine)
 # n'est pas gardée ici : pkexec la lance avec le dossier de root, sans ce réglage, et seulement depuis --ecrire, qui
 # l'a été ; --ventoy-publie ne fait que lire GitHub.
 # images-cle.sh en panne (ni « oui » ni « non ») n'est pas un réglage qui dit non : c'est dit, code 1, même pour --a-jour.
@@ -1213,13 +1212,14 @@ case ${1:-} in
   --plan | --essai | --telecharger | --verifier | --ecrire | --windows | --ventoy-maj | --installer-racine | \
     --accepter-vtoyefi)
     secours_ici ||
-      erreur "clé de secours pas demandée sur cet ordinateur : rien n'est préparé (ni images, ni Ventoy, ni WIN11, \
-ni MACOS) ; la clé ne porte que le programme (outils/preparer-cle.sh). Pour la faire ici : une ligne CLE_SECOURS=oui \
-dans ${XDG_CONFIG_HOME:-$HOME/.config}/vanguard/images-cle.conf (le détail : en-tête de outils/images-cle.sh)."
+      erreur "clé de secours coupée sur cet ordinateur : rien n'est préparé (ni images, ni Ventoy, ni WIN11, ni \
+MACOS) ; la clé ne porte que le programme (outils/preparer-cle.sh). Pour la rallumer ici : retirer la ligne \
+CLE_SECOURS=non de ${XDG_CONFIG_HOME:-$HOME/.config}/vanguard/images-cle.conf (le détail : en-tête de \
+outils/images-cle.sh)."
     ;;
   --a-jour)
     if ! secours_ici; then
-      echo "· Clé de secours pas demandée sur cet ordinateur : ni Ventoy ni Windows 11 à tenir à jour."
+      echo "· Clé de secours coupée sur cet ordinateur : ni Ventoy ni Windows 11 à tenir à jour."
       exit 0
     fi
     ;;

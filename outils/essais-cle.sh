@@ -156,8 +156,8 @@ printf '#!/bin/sh\nexit 0\n' >"$BANC/faux/udevadm"
 chmod +x "$BANC"/faux/*
 export PATH=$BANC/faux:$BANC/bin
 
-# Le réglage local de la clé de secours (lu par images-cle.sh, jamais sourcé) : allumé pour les essais de la clé de
-# secours, retiré pour ceux de la clé par défaut, qui ne porte que le programme.
+# Le réglage local de la clé de secours (lu par images-cle.sh, jamais sourcé) : « oui » pour les essais de la clé de
+# secours, « non » pour ceux de la clé coupée, qui ne porte que le programme ; sans lui, la clé de secours par défaut.
 REGLAGE=$BANC/config/vanguard/images-cle.conf
 mkdir -p "${REGLAGE%/*}"
 reglage() { printf '%s\n' "$@" >"$REGLAGE"; } # lignes…
@@ -593,10 +593,19 @@ voir "--etat sans /run/media/\$USER : « pas branchée », sans erreur" \
   eval '((code == 0)) && dit "$BANC/sortie" "pas branchée"' || montrer "$BANC/sortie"
 
 sortes() { bash outils/images-cle.sh --sortes 2>"$BANC/sortie-erreurs"; }
-# La clé par défaut, sans réglage local : le programme seul. Aucune image cherchée, copiée, importée ni proposée, ni
-# menu de Ventoy ; les commandes qui en poseraient refusent en disant comment allumer la clé de secours, et celles des
-# services (--chercher, --cle, --a-jour) ne font rien, sans erreur.
+# Sans réglage local : la clé de secours, avec les cinq images par défaut (Kali coupée).
 rm -f "$REGLAGE"
+voir "sans réglage : clé de secours par défaut, cinq images, Kali coupée ; « --secours » dit oui" \
+  eval '[[ $(sortes) == "systemrescue arch omarchy debian fedora" && $(bash outils/images-cle.sh --secours) == oui ]] &&
+    [[ ! -s $BANC/sortie-erreurs ]]' || montrer "$BANC/sortie-erreurs"
+reglage CLE_SECOURS=peut-etre
+voir "CLE_SECOURS ni « oui » ni « non » : dit, et la clé de secours reste faite" \
+  eval '[[ $(sortes) == "systemrescue arch omarchy debian fedora" ]] && dit "$BANC/sortie-erreurs" "seul « non »"' ||
+  montrer "$BANC/sortie-erreurs"
+# La clé coupée (CLE_SECOURS=non) : le programme seul. Aucune image cherchée, copiée, importée ni proposée, ni menu de
+# Ventoy ; les commandes qui en poseraient refusent en disant comment rallumer la clé de secours, et celles des
+# services (--chercher, --cle, --a-jour) ne font rien, sans erreur.
+reglage CLE_SECOURS=non
 mkdir -p "$BANC/cache0" "$BANC/cle0/ISO"
 IMAGE0=$BANC/cache0/systemrescue-12.03-amd64.iso
 echo sr >"$IMAGE0"
@@ -606,7 +615,7 @@ echo ancienne >"$BANC/cle0/ISO/systemrescue-12.02-amd64.iso"
 rm -f "$BANC/aria2c.log" "$BANC/notifications.log" "$BANC/pkexec.log"
 images0() { VANGUARD_IMAGES=$BANC/cache0 bash outils/images-cle.sh "$@" >>"$BANC/sortie0" 2>&1; }
 : >"$BANC/sortie0"
-voir "sans réglage : aucune sorte d'image tenue, « --secours » dit non" \
+voir "CLE_SECOURS=non : aucune sorte d'image tenue, « --secours » dit non" \
   eval '[[ -z $(sortes) && $(bash outils/images-cle.sh --secours) == non ]] && ! bash outils/images-cle.sh --secours >/dev/null' ||
   montrer "$BANC/sortie-erreurs"
 (
@@ -626,16 +635,16 @@ images0 --menu "$BANC/cle0"
 c5=$?
 VANGUARD_IMAGES=$BANC/cache0 bash outils/images-cle.sh --verifier >"$BANC/sortie0-verifier" 2>&1
 c6=$?
-voir "sans réglage : rien cherché ni copié ni importé, ni menu de Ventoy (0 pour les services, 1 à la main)" \
+voir "CLE_SECOURS=non : rien cherché ni copié ni importé, ni menu de Ventoy (0 pour les services, 1 à la main)" \
   eval '((c1 == 0 && c2 == 0 && c3 == 1 && c4 == 1 && c5 == 1 && c6 == 0)) && [[ ! -e $BANC/derniere0 ]] &&
     [[ ! -s $BANC/aria2c.log && ! -e $BANC/cle0/ISO/${IMAGE0##*/} && ! -e $BANC/cle0/ventoy ]] &&
     [[ -f $BANC/cle0/ISO/systemrescue-12.02-amd64.iso && ! -s $BANC/notifications.log ]] &&
-    dit "$BANC/sortie0" "pas demandée sur cet ordinateur : aucune image n'"'"'est cherchée" &&
-    dit "$BANC/sortie0" "pas demandée sur cet ordinateur : aucune image n'"'"'est copiée" &&
-    dit "$BANC/sortie0" "pas demandée sur cet ordinateur : le menu de Ventoy n'"'"'est pas écrit" &&
-    dit "$BANC/sortie0-import" "pas demandée sur cet ordinateur : rien n'"'"'est importé." &&
-    dit "$BANC/sortie0-verifier" "pas demandée sur cet ordinateur : aucune image à vérifier." &&
-    dit "$BANC/sortie0" "CLE_SECOURS=oui dans"' ||
+    dit "$BANC/sortie0" "coupée sur cet ordinateur : aucune image n'"'"'est cherchée" &&
+    dit "$BANC/sortie0" "coupée sur cet ordinateur : aucune image n'"'"'est copiée" &&
+    dit "$BANC/sortie0" "coupée sur cet ordinateur : le menu de Ventoy n'"'"'est pas écrit" &&
+    dit "$BANC/sortie0-import" "coupée sur cet ordinateur : rien n'"'"'est importé." &&
+    dit "$BANC/sortie0-verifier" "coupée sur cet ordinateur : aucune image à vérifier." &&
+    dit "$BANC/sortie0" "retirer la ligne CLE_SECOURS=non de"' ||
   { echo "      codes $c1 $c2 $c3 $c4 $c5 $c6"; montrer "$BANC/sortie0"; montrer "$BANC/sortie0-import"
     montrer "$BANC/sortie0-verifier"; }
 : >"$BANC/sortie0"
@@ -646,9 +655,9 @@ for c in "--plan /dev/sdz" "--telecharger $BANC/dossier0" "--ecrire /dev/sdz $BA
 done
 bash outils/cle-secours.sh --a-jour "$BANC/cle0" >>"$BANC/sortie0" 2>&1
 c1=$?
-voir "sans réglage : cle-secours.sh refuse tout (images, Ventoy, WIN11, MACOS) et le dit ; --a-jour ne fait rien" \
+voir "CLE_SECOURS=non : cle-secours.sh refuse tout (images, Ventoy, WIN11, MACOS) et le dit ; --a-jour ne fait rien" \
   eval '((c1 == 0)) && pas_dit "$BANC/sortie0" ACCEPTÉE &&
-    [[ $(grep -c "clé de secours pas demandée sur cet ordinateur : rien n" "$BANC/sortie0") == 8 ]] &&
+    [[ $(grep -c "clé de secours coupée sur cet ordinateur : rien n" "$BANC/sortie0") == 8 ]] &&
     dit "$BANC/sortie0" "ni Ventoy ni Windows 11 à tenir à jour" && [[ ! -e $BANC/dossier0 ]] &&
     [[ ! -s $BANC/pkexec.log && ! -s $BANC/notifications.log ]]' || montrer "$BANC/sortie0"
 # images-cle.sh en panne (ni « oui » ni « non ») : pas pris pour un réglage qui dit non.
@@ -659,18 +668,19 @@ printf '#!/bin/sh\nexit 2\n' >"$P/outils/images-cle.sh"
 chmod +x "$P/outils/images-cle.sh"
 bash "$P/outils/cle-secours.sh" --a-jour "$BANC/cle0" >"$BANC/sortie0" 2>&1
 c1=$?
-voir "images-cle.sh en panne : --a-jour le dit, code 1 (pas « pas demandée »)" \
-  eval '((c1 == 1)) && dit "$BANC/sortie0" "ne répond pas" && pas_dit "$BANC/sortie0" "pas demandée"' ||
+voir "images-cle.sh en panne : --a-jour le dit, code 1 (pas « coupée »)" \
+  eval '((c1 == 1)) && dit "$BANC/sortie0" "ne répond pas" && pas_dit "$BANC/sortie0" "coupée"' ||
   montrer "$BANC/sortie0"
 printf 'CLE_SECOURS=oui\r\nIMAGES="arch debian"\r\nIMAGES_EN_PLUS="kali"\r\n' >"$REGLAGE"
 voir "réglage aux fins de ligne de Windows : lu comme les autres" \
   eval '[[ $(sortes) == "arch debian kali" && ! -s $BANC/sortie-erreurs ]]' || montrer "$BANC/sortie-erreurs"
 reglage 'IMAGES="arch debian"' 'IMAGES_EN_PLUS="kali"'
-voir "des images demandées sans CLE_SECOURS=oui : ignorées, et dit" \
-  eval '[[ -z $(sortes) ]] && dit "$BANC/sortie-erreurs" "sans CLE_SECOURS=oui, ignorées"' ||
-  montrer "$BANC/sortie-erreurs"
+voir "des images choisies sans CLE_SECOURS : celles-là (la clé de secours par défaut)" \
+  eval '[[ $(sortes) == "arch debian kali" && ! -s $BANC/sortie-erreurs ]]' || montrer "$BANC/sortie-erreurs"
 reglage CLE_SECOURS=non 'IMAGES="arch"'
-voir "CLE_SECOURS autre que « oui » : clé de secours éteinte" eval '[[ -z $(sortes) ]]' || montrer "$BANC/sortie-erreurs"
+voir "des images demandées avec CLE_SECOURS=non : ignorées, et dit" \
+  eval '[[ -z $(sortes) ]] && dit "$BANC/sortie-erreurs" "avec CLE_SECOURS=non, ignorées"' ||
+  montrer "$BANC/sortie-erreurs"
 reglage CLE_SECOURS=oui 'IMAGES="fedora, arch"'
 voir "CLE_SECOURS=oui et IMAGES : seulement celles-là, dans l'ordre de copie (la plus utile d'abord)" \
   eval '[[ $(sortes) == "arch fedora" && ! -s $BANC/sortie-erreurs ]]' || montrer "$BANC/sortie-erreurs"
@@ -1020,13 +1030,14 @@ code=$?
 voir "programme raté pour une autre raison : la notification du jour le dit" \
   eval '((code == 1)) && dit "$BANC/notifications.log" "mise à jour du jour incomplète|Raté : programme."' ||
   { montrer "$BANC/sortie"; montrer "$BANC/notifications.log"; }
-# Sans le réglage de la clé de secours : le vrai images-cle.sh le dit, et ni les images ni le démarrage ne passent.
+# La clé de secours coupée : le vrai images-cle.sh le dit, et ni les images ni le démarrage ne passent.
 cp outils/images-cle.sh "$M/outils/"
 printf '#!/bin/sh\necho "$*" >>"$BANC/maj0.log"\nexit 0\n' >"$M/outils/cle-secours.sh"
-rm -f "$REGLAGE" "$BANC/notifications.log" "$BANC/maj0.log"
+reglage CLE_SECOURS=non
+rm -f "$BANC/notifications.log" "$BANC/maj0.log"
 ESSAI_DEPLOYER=ok bash "$M/outils/maj-cle.sh" >"$BANC/sortie" 2>&1
 code=$?
-voir "mise à jour du jour sans clé de secours : le programme seul, ni images ni démarrage ; code 0" \
+voir "mise à jour du jour, clé de secours coupée : le programme seul, ni images ni démarrage ; code 0" \
   eval '((code == 0)) && [[ ! -e $BANC/maj0.log && ! -s $BANC/notifications.log ]] &&
     pas_dit "$BANC/sortie" "== images" && dit "$BANC/sortie" "ni images ni démarrage"' ||
   { montrer "$BANC/sortie"; montrer "$BANC/notifications.log"; }

@@ -5,7 +5,7 @@ Description=Vanguard : mettre à jour la clé VANGUARD restée branchée
 # et si c'est bien la clé VANGUARD (son témoin) : sinon le service est sauté, sans erreur. Après les unités du
 # branchement, si les deux partent ensemble ; le verrou de deployer.sh empêche de toute façon deux écritures de la clé
 # à la fois.
-# Sans le réglage local de la clé de secours (CLE_SECOURS=oui, voir images-cle.sh), le programme seulement.
+# Le réglage local qui coupe la clé de secours (CLE_SECOURS=non, voir images-cle.sh) : le programme seulement.
 ConditionPathIsMountPoint=/run/media/%u/VANGUARD
 ConditionPathExists=/run/media/%u/VANGUARD/vanguard.cle
 After=network-online.target run-media-%u-VANGUARD.mount vanguard-cle.service vanguard-images-cle.service

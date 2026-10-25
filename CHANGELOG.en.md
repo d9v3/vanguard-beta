@@ -7,6 +7,14 @@ a day, gathering the day's work; October 21 had two, 0.82 in the morning and 0.8
 delivered just before it. Only the latest version has its download page; every version keeps its tag in the repository
 (`git checkout v0.62.0`, for example), to be rebuilt if needed.
 
+## Next version
+
+- **USB key: rescue images back by default.** The repository tools make the rescue key everywhere again: Ventoy, the
+  installation and repair images (SystemRescue, Arch, Omarchy, Debian, Fedora, each checked against its project's
+  signature), Windows 11 and macOS recovery. A `CLE_SECOURS=non` line in `~/.config/vanguard/images-cle.conf` turns it
+  off on a computer (the key then only carries the program); Kali Linux stays optional (`IMAGES_EN_PLUS="kali"`).
+  Booting the key on a real computer has not been tried yet.
+
 ## October 24, 2026: version 0.87
 
 - **USB key and release security** (third attack campaign). When the key is plugged in, it is compared with its

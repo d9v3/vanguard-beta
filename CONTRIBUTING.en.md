@@ -335,10 +335,10 @@ The key has two partitions: `VANGUARD`, read-only everywhere except on its owner
 Windows; on Linux and macOS, Vanguard remounts it read-only itself), and `VANGUARDLOG`, which only receives the error
 log, anonymized. `outils/preparer-cle.sh` prepares a new key.
 
-In preparation, a rescue key that also boots computers: `outils/cle-secours.sh`, only on a computer whose local
-setting asks for it (`CLE_SECOURS=oui` in `~/.config/vanguard/images-cle.conf`, read without being run; details at the
-top of `outils/images-cle.sh`). Without it, the key only carries the program: no images, no Ventoy, no `WIN11` or
-`MACOS`; the commands that would add them refuse and say so, and the timers copy nothing. Ventoy boots the Omarchy
+In preparation, a rescue key that also boots computers: `outils/cle-secours.sh`, made by default, except on a computer
+whose local setting turns it off (`CLE_SECOURS=non` in `~/.config/vanguard/images-cle.conf`, read without being run;
+details at the top of `outils/images-cle.sh`). There, the key only carries the program: no images, no Ventoy, no
+`WIN11` or `MACOS`; the commands that would add them refuse and say so, and the timers copy nothing. Ventoy boots the Omarchy
 installer, Arch, Debian and Fedora as network installers, SystemRescue and Windows 11 as a fallback, kept up to date by
 `outils/images-cle.sh` (each project's signature checked, timer on the 1st and 15th of the month that copies right away
 to a plugged-in key, copy on plug-in, a notification when each download starts and when nothing is new; an image
