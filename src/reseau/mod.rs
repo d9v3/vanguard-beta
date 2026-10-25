@@ -1695,25 +1695,18 @@ pub async fn executer(o: Options) -> Result<Rapport, String> {
 }
 
 /// COM-ARP-001 au corpus de détection : `hote|adresse|mac|rôle` d'un scan fabriqué (rôle « passerelle » pour la
-/// box, vide sinon). Le scan et la surveillance montrent l'usurpation en rouge (✖, critique) : le constat du cas
-/// porte ce niveau et le message même qu'ils affichent.
+/// box, vide sinon). Cette règle n'a pas de constat en production : le scan et la surveillance montrent l'usurpation
+/// en rouge (✖, critique). Le constat du cas est donc fabriqué ici, avec ce niveau et le message même qu'ils
+/// affichent : le cas tient le jugement (`usurpation_arp`) et le texte ; le niveau, lui, n'est tenu que par RECOPIES
+/// (modele/corpus.rs), qui exige « Niveau::Critique » dans `afficher`.
 #[cfg(test)]
 pub(crate) fn corpus_usurpation(e: &crate::modele::corpus::Entree) -> Vec<crate::machine::Constat> {
     let hotes = e
         .de("hote")
         .iter()
         .map(|c| Hote {
-            ip: c[0].parse().unwrap(),
-            nom: None,
             mac: Some(c[1].into()),
-            fabricant: None,
-            surnom: None,
-            premier_vu: None,
-            role: (c[2] == "passerelle").then_some("passerelle"),
-            nouvelle: false,
-            ports: Vec::new(),
-            alertes: Vec::new(),
-            score: 100,
+            ..crate::audit::appareils::tests::hote(c[0], None, (c[2] == "passerelle").then_some("passerelle"), &[])
         })
         .collect();
     let r = Rapport {

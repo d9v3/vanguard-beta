@@ -66,8 +66,9 @@ impl Entree {
     }
 
     /// Un dossier jetable à ce cas, vide, hors du dépôt : pour les jugements qui lisent des fichiers posés exprès.
+    /// Effacé quand il n'est plus tenu, même si le jugement panique.
     #[cfg(unix)]
-    pub(crate) fn jetable(&self, nom: &str) -> PathBuf {
+    pub(crate) fn jetable(&self, nom: &str) -> Jetable {
         let cas = self
             .dossier
             .file_name()
@@ -77,7 +78,26 @@ impl Entree {
         let d = std::env::temp_dir().join(format!("vanguard-corpus-{}-{cas}-{nom}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
-        d
+        Jetable(d)
+    }
+}
+
+/// Un dossier jetable, effacé à la fin de sa portée (`Entree::jetable`).
+#[cfg(unix)]
+pub(crate) struct Jetable(PathBuf);
+
+#[cfg(unix)]
+impl std::ops::Deref for Jetable {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Jetable {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -151,6 +171,15 @@ const EXEMPTEES: &[(&str, &str)] = &[
         "les failles exploitées viennent du catalogue KEV, lu en ligne",
     ),
 ];
+
+/// Les cas dont le propre ne peut rendre aucun constat vérifié, avec leur raison : la règle dit toujours ce qu'elle ne
+/// lit pas, et rien d'autre quand tout est sain. Leur propre doit quand même rendre quelque chose (jamais rien), sous
+/// réserve ; leur cas fabriqué, lui, prouve que la règle tire. Une entrée sans `reserve` dans son attendu.toml, ou
+/// sans cas, fait échouer.
+const PROPRES_SANS_VERIFIE: &[(&str, &str)] = &[(
+    "COM-TLS-003",
+    "sans politique de Firefox qui ajoute un certificat, la règle ne rend que « magasin des navigateurs non lisible sans NSS », non vérifié ; un constat sain demanderait de changer la production",
+)];
 
 /// Les règles qui attendent l'extraction de leur jugement : vidée par le lot S3b, gardée pour qu'une règle de détection
 /// nouvelle, dont le jugement n'est pas encore à part, s'y inscrive avec sa raison. Une entrée qui a son cas fait échouer.
@@ -818,7 +847,9 @@ fn faute_du_cas(id: &str, juge: Juge) -> Option<String> {
     let juste = match attendu.propre {
         Propre::Rien => muets.is_empty(),
         Propre::AuPlus(plafond) => {
-            (attendu.reserve.is_some() || muets.iter().any(|c| c.verifie))
+            let sans_verifie = PROPRES_SANS_VERIFIE.iter().any(|(i, _)| *i == id);
+            !muets.is_empty()
+                && (sans_verifie || muets.iter().any(|c| c.verifie))
                 && muets.iter().all(|c| {
                     if c.verifie {
                         c.probleme <= plafond
@@ -957,7 +988,23 @@ fn chaque_regle_de_detection_a_son_cas() {
             fautes.push(format!("{id} absent de tests/regles-connues.txt, ou retiré"));
         }
     }
-    for (id, raison) in EXEMPTEES.iter().chain(EN_ATTENTE_S3B).chain(NE_DETECTENT_PAS) {
+    for (id, _) in PROPRES_SANS_VERIFIE {
+        let reserve = std::fs::read_to_string(racine_du_corpus().join(id).join("attendu.toml"))
+            .ok()
+            .and_then(|t| lire_attendu(&t).ok())
+            .and_then(|a| a.reserve);
+        if reserve.is_none() {
+            fautes.push(format!(
+                "{id} (PROPRES_SANS_VERIFIE) : sans cas, ou sans reserve dans son attendu.toml"
+            ));
+        }
+    }
+    for (id, raison) in EXEMPTEES
+        .iter()
+        .chain(EN_ATTENTE_S3B)
+        .chain(NE_DETECTENT_PAS)
+        .chain(PROPRES_SANS_VERIFIE)
+    {
         if raison.trim().is_empty() {
             fautes.push(format!("{id} sans raison"));
         }
@@ -974,6 +1021,7 @@ fn source(fichier: &str) -> String {
 /// Les corps des fonctions `nom` d'un texte source (après leur accolade ouvrante, jusqu'à l'accolade fermante en
 /// début de ligne ou au même retrait) : grossier, mais le code passe par rustfmt.
 fn corps(texte: &str, nom: &str) -> Vec<String> {
+    let texte = &code(texte);
     let mut sortie = Vec::new();
     let signature = format!("fn {nom}(");
     for (i, _) in texte.match_indices(&signature) {
@@ -985,6 +1033,51 @@ fn corps(texte: &str, nom: &str) -> Vec<String> {
         let corps = &texte[i + ouvre + 1..];
         let fin = corps.find(&fin_attendue).unwrap_or(corps.len());
         sortie.push(corps[..fin].to_string());
+    }
+    sortie
+}
+
+/// Le code d'un texte source, sans ses commentaires « // » ni ses chaînes (leur contenu effacé, les guillemets
+/// gardés) : un nom dans un commentaire ou un message ne prouve pas un appel. Les caractères « 'x' » et « '\\x' » sont
+/// sautés en entier, pour qu'un « '\"' » n'ouvre pas une chaîne.
+fn code(texte: &str) -> String {
+    let c: Vec<char> = texte.chars().collect();
+    let mut sortie = String::with_capacity(texte.len());
+    let mut i = 0;
+    while i < c.len() {
+        match c[i] {
+            '/' if c.get(i + 1) == Some(&'/') => {
+                while i < c.len() && c[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            '"' => {
+                // Une chaîne brute (r"…", r#"…"#) n'a pas d'échappement : elle finit au guillemet suivi de ses dièses.
+                let dieses = sortie.chars().rev().take_while(|&d| d == '#').count();
+                let brute = sortie.chars().rev().nth(dieses) == Some('r');
+                sortie.push('"');
+                i += 1;
+                while i < c.len() {
+                    if c[i] == '"' && (!brute || (1..=dieses).all(|k| c.get(i + k) == Some(&'#'))) {
+                        i += if brute { dieses } else { 0 };
+                        break;
+                    }
+                    i += if !brute && c[i] == '\\' { 2 } else { 1 };
+                }
+                sortie.push('"');
+            }
+            '\'' if c.get(i + 2) == Some(&'\'') => {
+                sortie.push_str("' '");
+                i += 2;
+            }
+            '\'' if c.get(i + 1) == Some(&'\\') && c.get(i + 3) == Some(&'\'') => {
+                sortie.push_str("' '");
+                i += 3;
+            }
+            autre => sortie.push(autre),
+        }
+        i += 1;
     }
     sortie
 }
@@ -1034,7 +1127,7 @@ fn chaque_regle_du_corpus_mene_a_son_jugement() {
         match blocs.iter().find(|(i, _)| i == id) {
             Some((_, bloc)) => {
                 let (_, premiere) = fil[0];
-                if !nomme(bloc, premiere) {
+                if !nomme(&code(bloc), premiere) {
                     fautes.push(format!("{id} : son regle! ne nomme plus {premiere}"));
                 }
             }
@@ -1060,6 +1153,7 @@ fn chaque_regle_du_corpus_mene_a_son_jugement() {
     }
     for (id, fichier, fonction, texte) in RECOPIES {
         if !corps(&source(fichier), fonction).iter().any(|c| c.contains(texte)) {
+            // `corps` ne garde que le code : un « Niveau::Critique » dans un commentaire ne compte pas.
             fautes.push(format!(
                 "{id} : {fonction} (src/{fichier}) ne donne plus {texte} au jugement : l'adaptateur le recopie, à suivre"
             ));
@@ -1082,6 +1176,21 @@ fn le_fil_voit_une_regle_debranchee() {
     assert!(!nomme(bloc, "connexion_forcee"));
     assert!(nomme("    connexion_forcee\n", "connexion_forcee"));
     assert!(!nomme("juger_programmes(x)", "juger"));
+    // Débranchée, avec le nom du jugement dans un commentaire ou un message : ce n'est pas un appel.
+    let debranchee =
+        "fn persistance() -> Vec<Constat> {\n    // persistance_dans\n    vec![ok(\"x\", \"persistance_dans\")]\n}\n";
+    assert!(!nomme(&corps(debranchee, "persistance")[0], "persistance_dans"));
+    let bloc_doc =
+        "\nregle!(\n    \"COM-XXX-001\",\n    // connexion_forcee\n    || vec![ok(\"x\", \"connexion_forcee\")]\n);";
+    assert!(!nomme(&code(bloc_doc), "connexion_forcee"));
+    assert!(
+        !corps("fn v() {\n    // Niveau::Critique\n    f(Niveau::Info, '\"')\n}\n", "v")[0]
+            .contains("Niveau::Critique")
+    );
+    assert!(corps("fn v() {\n    f(Niveau::Critique, '\\'')\n}\n", "v")[0].contains("Niveau::Critique"));
+    // Une chaîne brute qui finit par une barre inverse ne cache pas la suite.
+    assert!(nomme(&code("let a = r\"C:\\\";\njuger(a);\n"), "juger"));
+    assert!(nomme(&code("let a = r#\"x\"y\"#;\njuger(a);\n"), "juger"));
     let texte = "fn a() {\n    b();\n}\n\nfn c() {\n    d();\n}\n";
     assert_eq!(corps(texte, "a").len(), 1);
     assert!(nomme(&corps(texte, "a")[0], "b") && !nomme(&corps(texte, "a")[0], "d"));

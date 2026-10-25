@@ -8,7 +8,7 @@ use crate::machine::Constat;
 use crate::machine::wifi::elements::Protection;
 use crate::machine::wifi::{Balise, Bande, Borne, Connexion};
 use crate::modele::corpus::{Entree, Juge};
-use crate::reseau::{Hote, empoisonnement};
+use crate::reseau::empoisonnement;
 
 pub(crate) const CAS: &[(&str, Juge)] = &[
     ("COM-ARP-002", segmentation),
@@ -28,7 +28,7 @@ pub(crate) fn fiche(e: &Entree) -> String {
     e.dossier.file_name().unwrap().to_string_lossy().into_owned()
 }
 
-fn de_la_fiche(e: &Entree, constats: Vec<Constat>) -> Vec<Constat> {
+pub(crate) fn de_la_fiche(e: &Entree, constats: Vec<Constat>) -> Vec<Constat> {
     let id = fiche(e);
     constats.into_iter().filter(|c| c.regle == id).collect()
 }
@@ -88,22 +88,6 @@ fn segmentation(e: &Entree) -> Vec<Constat> {
     de_la_fiche(e, constats)
 }
 
-fn hote(ip: Ipv4Addr, role: Option<&'static str>) -> Hote {
-    Hote {
-        ip,
-        nom: None,
-        mac: None,
-        fabricant: None,
-        surnom: None,
-        premier_vu: None,
-        role,
-        nouvelle: false,
-        ports: Vec::new(),
-        alertes: Vec::new(),
-        score: 100,
-    }
-}
-
 /// COM-PST-003 : `empoisonneur|adresse|protocole,…` (LLMNR, NetBIOS, mDNS), ce que la sonde des faux noms a trouvé ;
 /// sans ligne, la sonde a tourné sans réponse.
 fn postes(e: &Entree) -> Vec<Constat> {
@@ -125,7 +109,12 @@ fn postes(e: &Entree) -> Vec<Constat> {
         .collect();
     let rapport = empoisonnement::Rapport::Teste(trouves);
     let passerelle = Ipv4Addr::new(192, 168, 50, 1);
-    let hotes = [hote(passerelle, Some("passerelle"))];
+    let hotes = [super::appareils::tests::hote(
+        "192.168.50.1",
+        None,
+        Some("passerelle"),
+        &[],
+    )];
     let entree = super::postes::Entree {
         hotes: &hotes,
         machine: &[],

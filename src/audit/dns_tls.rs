@@ -1908,8 +1908,7 @@ fn entree_du_corpus() -> Entree {
 
 #[cfg(test)]
 fn constats_du_corpus(e: &crate::modele::corpus::Entree, entree: &Entree) -> Vec<Constat> {
-    let id = crate::audit::corpus::fiche(e);
-    constats(entree).into_iter().filter(|c| c.regle == id).collect()
+    crate::audit::corpus::de_la_fiche(e, constats(entree))
 }
 
 /// COM-DNS-004 au corpus de détection : `reponse|nom stable|adresse` (ce que le DNS utilisé répond) ; un nom stable

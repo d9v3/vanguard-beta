@@ -17,9 +17,7 @@ pub(crate) const CAS: &[(&str, Juge)] = &[
 fn agents(e: &Entree) -> Vec<Constat> {
     let dossier = e.jetable("LaunchAgents");
     std::fs::write(dossier.join("com.exemple.corpus.plist"), &e.texte).unwrap();
-    let constats = super::persistance::persistance_dans([(dossier.clone(), false)]);
-    let _ = std::fs::remove_dir_all(&dossier);
-    constats
+    super::persistance::persistance_dans([(dossier.to_path_buf(), false)])
 }
 
 /// MAC-PRV-002 : la sortie de « sudo -n -l ».

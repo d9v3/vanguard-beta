@@ -97,8 +97,9 @@ fn ecoute(e: &Entree) -> Vec<Constat> {
 }
 
 /// LNX-PRS-001 : `anormal|chemin` (privilégié hors paquet ou dans un dossier temporaire), `modifie|chemin|paquet`,
-/// `systeme|nombre` (programmes privilégiés du système), `path|dossier` (ouvert à d'autres) ; le gestionnaire de
-/// paquets reconnu, getcap présent.
+/// `systeme|nombre` (programmes privilégiés du système), `path|dossier` (ouvert à d'autres), `non_verifies|nombre`,
+/// `gestion|absent` (gestionnaire de paquets non reconnu) et `getcap|absent`. Les parcours, getcap et la
+/// vérification des paquets restent hors du corpus : ils lisent le vrai système.
 fn fichiers_suspects(e: &Entree) -> Vec<Constat> {
     let releve = super::persistance::Releve {
         modifies: e
@@ -108,9 +109,9 @@ fn fichiers_suspects(e: &Entree) -> Vec<Constat> {
             .collect(),
         anormaux: e.de("anormal").iter().map(|c| std::path::PathBuf::from(c[0])).collect(),
         systeme: e.de("systeme").first().map_or(0, |c| c[0].parse().unwrap()),
-        gestion: true,
-        non_verifies: 0,
-        capacites_lues: true,
+        gestion: !e.de("gestion").iter().any(|c| c[0] == "absent"),
+        non_verifies: e.de("non_verifies").first().map_or(0, |c| c[0].parse().unwrap()),
+        capacites_lues: !e.de("getcap").iter().any(|c| c[0] == "absent"),
         path_dangereux: e.de("path").iter().map(|c| c[0].to_string()).collect(),
         reinstaller: "sudo pacman -S --noconfirm corpus".into(),
     };
@@ -119,7 +120,8 @@ fn fichiers_suspects(e: &Entree) -> Vec<Constat> {
 
 /// LNX-PRS-002 : `fichier|chemin sous la racine|contenu` (« \n » pour un saut de ligne), posés dans une racine
 /// jetable que la persistance lit comme « / » ; le dossier personnel y est home/alice. Ni variable de session, ni
-/// crontab, ni gestionnaire de paquets.
+/// crontab, ni gestionnaire de paquets : la branche « bibliothèque d'un paquet » et les services ajoutés hors paquet
+/// demanderaient un gestionnaire fabriqué, qui n'existe pas encore (hors corpus).
 fn persistance(e: &Entree) -> Vec<Constat> {
     let racine = e.jetable("racine");
     for c in e.de("fichier") {
@@ -129,9 +131,7 @@ fn persistance(e: &Entree) -> Vec<Constat> {
     }
     let maison = racine.join("home/alice");
     std::fs::create_dir_all(&maison).unwrap();
-    let constats = super::persistance::persistance_dans(&racine, &maison, |_| None, None, None);
-    let _ = std::fs::remove_dir_all(&racine);
-    constats
+    super::persistance::persistance_dans(&racine, &maison, |_| None, None, None)
 }
 
 /// LNX-CPT-001 : le texte de /etc/passwd.
@@ -139,9 +139,19 @@ fn comptes(e: &Entree) -> Vec<Constat> {
     vec![super::juger_comptes(&e.texte)]
 }
 
-/// LNX-SSH-002 : des lignes du journal de sshd des dernières 24 h ; mots de passe permis, aucun service qui bloque.
+/// LNX-SSH-002 : des lignes du journal de sshd des dernières 24 h, et `mots_de_passe|non` quand sshd n'accepte que
+/// les clés (sans elle, permis : la valeur d'origine de sshd) ; aucun service qui bloque. La lecture de sshd_config
+/// et la recherche du service qui bloque restent hors du corpus.
 fn echecs_ssh(e: &Entree) -> Vec<Constat> {
-    super::juger_echecs_ssh(&e.texte, true, || None).into_iter().collect()
+    let mots_de_passe = !e.de("mots_de_passe").iter().any(|c| c[0] == "non");
+    let journal: Vec<&str> = e
+        .lignes()
+        .into_iter()
+        .filter(|l| !l.starts_with("mots_de_passe|"))
+        .collect();
+    super::juger_echecs_ssh(&journal.join("\n"), mots_de_passe, || None)
+        .into_iter()
+        .collect()
 }
 
 /// LNX-PRV-003 : la sortie de « sudo -n -l ».

@@ -1589,8 +1589,7 @@ pub(crate) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
         std::fs::write(dossier.join(c[0]), b"").unwrap();
     }
     let mut trouvailles = Vec::new();
-    assert!(fichiers_poses(&mut trouvailles, std::slice::from_ref(&dossier)));
-    let _ = std::fs::remove_dir_all(&dossier);
+    assert!(fichiers_poses(&mut trouvailles, &[dossier.to_path_buf()]));
     juger(&trouvailles, aujourd_hui())
 }
 
