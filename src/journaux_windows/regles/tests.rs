@@ -1947,6 +1947,47 @@ fn processus_sans_ligne_de_commande() {
     );
 }
 
+/// La ligne de commande coupée après coup (un réglage du registre, sans trace dans le journal) : les processus
+/// suivants n'en ont plus, la règle n'est plus vérifiée ; une preuve trop ancienne non plus. Les processus du noyau
+/// (sans dossier), sans ligne même réglage allumé, ne comptent pas.
+#[test]
+fn ligne_de_commande_coupee_apres_coup() {
+    let a_la = |mut e: EvenementWindows, s: i64| {
+        e.date = Some(t0() + Duration::seconds(s));
+        e
+    };
+    let avec = processus("C:\\Windows\\System32\\notepad.exe", "notepad.exe");
+    let sans = processus("C:\\Windows\\System32\\notepad.exe", "");
+    let noyau = processus("Registry", "");
+    let prc = |evs: &[EvenementWindows]| regle(&juger_nu(evs, &tout_lu(), options()), "EVT-PRC-001").clone();
+    assert!(prc(&[a_la(avec.clone(), 0), a_la(noyau, 60)]).verifie());
+    let j = prc(&[a_la(avec.clone(), 0), a_la(sans, 3600)]);
+    assert!(
+        j.manques.iter().any(|m| matches!(m, Manque::ChampCoupe { .. })),
+        "{:?}",
+        j.manques
+    );
+    // Trois jours de journal après la dernière ligne de commande vue.
+    let plus_tard = sec(4624, 3 * 86_400, &[("LogonType", "5")]);
+    let j = prc(&[a_la(avec, 0), plus_tard]);
+    assert!(
+        j.manques.iter().any(|m| matches!(m, Manque::ChampCoupe { .. })),
+        "{:?}",
+        j.manques
+    );
+}
+
+/// D'un dossier, la preuve tirée des fichiers eux-mêmes est dite.
+#[test]
+fn preuve_d_un_dossier_avec_reserve() {
+    let jamais = |_: &str| false;
+    let (c, _) = resultat::constats(&analyse(juger(&[])), &jamais);
+    let prc = c.iter().find(|c| c.regle == "EVT-PRC-001" && c.verifie).unwrap();
+    assert!(prc.message.contains(crate::tr!("Réserve", "Caveat")), "{}", prc.message);
+    let tac = c.iter().find(|c| c.regle == "EVT-TAC-001").unwrap();
+    assert!(!tac.message.contains(crate::tr!("Réserve", "Caveat")));
+}
+
 proptest! {
     /// Des lignes, des tâches et des chemins hostiles : jamais de panique, et des textes gardés bornés.
     #[test]

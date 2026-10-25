@@ -252,8 +252,15 @@ pub(crate) enum Audit {
     Preuve { preuve: &'static [u32], quoi: Texte },
     /// Comme `Preuve`, mais la preuve est un événement du volet lui-même (ses numéros, son journal, ses
     /// fournisseurs), vérifié, dont `champ` est rempli : un réglage à part décide si Windows écrit ce champ (la ligne
-    /// de commande du 4688, vide d'origine), et seul un événement qui le porte prouve qu'il est allumé.
-    PreuveChamp { champ: &'static str, quoi: Texte },
+    /// de commande du 4688, vide d'origine), et seul un événement qui le porte prouve qu'il est allumé. La preuve doit
+    /// être récente : le plus récent de ces événements la porte (un réglage coupé ensuite, sans trace dans le journal,
+    /// laisse les suivants vides), et il date du dernier jour du journal. `vide_permis` : les événements où le champ
+    /// est vide même réglage allumé (les processus du noyau, sans ligne de commande), qui ne comptent pas.
+    PreuveChamp {
+        champ: &'static str,
+        quoi: Texte,
+        vide_permis: fn(&EvenementWindows) -> bool,
+    },
 }
 
 /// Une partie d'une règle : un journal, des numéros d'événements, une forme.
@@ -382,6 +389,13 @@ pub(crate) enum Manque {
     NonVerifies { journal: String, nombre: u64 },
     /// La sous-catégorie d'audit qui écrit ces événements n'a laissé aucune preuve qu'elle est active.
     NonAudite { journal: String, quoi: Texte },
+    /// Le champ d'une `Audit::PreuveChamp` a été écrit, puis ne l'est plus depuis cette date (réglage coupé), ou sa
+    /// dernière preuve est trop ancienne.
+    ChampCoupe {
+        journal: String,
+        depuis: DateTime<Utc>,
+        quoi: Texte,
+    },
     /// Le journal ne remonte qu'à cette date, après le début de la période demandée : plus ancien écrasé (journal
     /// plein qui tourne), effacé, ou rien écrit.
     PeriodeCourte { journal: String, debut: DateTime<Utc> },
@@ -535,6 +549,9 @@ struct Rafales {
     exemples: HashMap<u32, Exemple>,
 }
 
+/// Le plus récent événement qui porte le champ d'une `Audit::PreuveChamp`, et le plus récent qui ne le porte pas.
+type Preuves = (Option<DateTime<Utc>>, Option<DateTime<Utc>>);
+
 /// Ce que le moteur garde d'une règle.
 #[derive(Debug, Default)]
 struct EtatRegle {
@@ -544,8 +561,9 @@ struct EtatRegle {
     au_dela_pire: Option<Gravite>,
     rafales: HashMap<usize, Rafales>,
     examines: u64,
-    /// Les volets `Audit::PreuveChamp` dont la preuve a été vue.
-    prouves: HashSet<usize>,
+    /// Par volet `Audit::PreuveChamp` : le plus récent de ses événements vérifiés et datés qui porte le champ, et le
+    /// plus récent qui ne le porte pas (hors `vide_permis`).
+    prouves: HashMap<usize, Preuves>,
 }
 
 /// Le jugement d'une règle.
@@ -727,15 +745,21 @@ impl Moteur {
                 continue;
             }
             let etat = &mut self.etats[r];
-            if let Audit::PreuveChamp { champ, .. } = volet.audit
+            if let Audit::PreuveChamp { champ, vide_permis, .. } = volet.audit
                 && e.verifie
                 && !b
-                && e.champ(champ).is_some_and(|v| {
-                    let v = v.trim();
-                    !v.is_empty() && v != "-"
-                })
+                && let Some(d) = e.date
             {
-                etat.prouves.insert(v);
+                let rempli = e.champ(champ).is_some_and(|x| {
+                    let x = x.trim();
+                    !x.is_empty() && x != "-"
+                });
+                let (avec, sans) = etat.prouves.entry(v).or_default();
+                if rempli {
+                    *avec = Some(avec.map_or(d, |a| a.max(d)));
+                } else if !vide_permis(e) {
+                    *sans = Some(sans.map_or(d, |a| a.max(d)));
+                }
             }
             match volet.forme {
                 Forme::Chacun(juger) => {
@@ -829,7 +853,24 @@ impl Moteur {
                     Audit::Preuve { preuve, quoi } if !preuve.iter().any(|id| stat.ids_vus.contains(id)) => {
                         noter(non_audite(quoi));
                     }
-                    Audit::PreuveChamp { quoi, .. } if !etat.prouves.contains(&v) => noter(non_audite(quoi)),
+                    Audit::PreuveChamp { quoi, .. } => match etat.prouves.get(&v).copied().unwrap_or_default() {
+                        (None, _) => noter(non_audite(quoi)),
+                        // Des événements sans le champ après le dernier qui le portait : coupé depuis.
+                        (Some(avec), Some(sans)) if sans > avec => noter(Manque::ChampCoupe {
+                            journal: volet.journal.to_string(),
+                            depuis: avec,
+                            quoi,
+                        }),
+                        // La dernière preuve plus d'un jour avant la fin du journal : plus rien ne la tient.
+                        (Some(avec), _) if stat.dernier.is_some_and(|d| d - avec > chrono::Duration::days(1)) => {
+                            noter(Manque::ChampCoupe {
+                                journal: volet.journal.to_string(),
+                                depuis: avec,
+                                quoi,
+                            });
+                        }
+                        _ => {}
+                    },
                     _ => {}
                 }
             }

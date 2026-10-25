@@ -2430,9 +2430,16 @@ const AUDIT_TACHES: Audit = Audit::Preuve {
     ),
 };
 
+/// Un processus que le noyau crée sans programme sur le disque (Registry, MemCompression : un nom sans dossier) : sa
+/// ligne de commande est vide même quand elle est journalisée.
+fn processus_du_noyau(e: &EvenementWindows) -> bool {
+    !champ(e, "NewProcessName").contains('\\')
+}
+
 /// L'audit de la création de processus et la ligne de commande dans ses événements, coupés d'origine.
 const AUDIT_PROCESSUS: Audit = Audit::PreuveChamp {
     champ: "CommandLine",
+    vide_permis: processus_du_noyau,
     quoi: (
         "aucune ligne de commande journalisée : allumer l'audit « Auditer la création du processus » (succès) et la stratégie « Inclure la ligne de commande dans les événements de création de processus »",
         "no command line recorded: turn on the “Audit Process Creation” auditing (success) and the “Include command line in process creation events” policy",

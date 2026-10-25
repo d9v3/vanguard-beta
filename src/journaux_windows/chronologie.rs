@@ -59,6 +59,7 @@ fn journal_du_manque(m: &Manque) -> Option<&str> {
         | Manque::AuditReduit { journal }
         | Manque::NonVerifies { journal, .. }
         | Manque::NonAudite { journal, .. }
+        | Manque::ChampCoupe { journal, .. }
         | Manque::TrousIllisibles { journal, .. }
         | Manque::SuiteNonProuvee { journal, .. }
         | Manque::TrousAuDela { journal, .. } => Some(journal),

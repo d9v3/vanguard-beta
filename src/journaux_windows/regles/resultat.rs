@@ -13,7 +13,7 @@ use chrono::{DateTime, Utc};
 
 use super::jeu::{JOURNAUX, REGLES};
 use super::moteur::{
-    BornesMoteur, EtatJournal, Gravite, Jugement, Lecture, Manque, Moteur, Options, Reserve, StatJournal, Texte,
+    Audit, BornesMoteur, EtatJournal, Gravite, Jugement, Lecture, Manque, Moteur, Options, Reserve, StatJournal, Texte,
     Trouvaille,
 };
 use crate::journaux_windows::evenement::Filtre;
@@ -515,6 +515,15 @@ pub(crate) fn manque(source: &Source, m: &Manque) -> (String, Raison) {
             );
             (t.clone(), Raison::Echoue(t))
         }
+        Manque::ChampCoupe { journal, depuis, quoi } => {
+            let q = texte(*quoi);
+            let t = crate::trf!(
+                "{journal} : plus rien ne prouve ces événements depuis le {} ({q})",
+                "{journal}: nothing proves these events since {} ({q})",
+                date(*depuis)
+            );
+            (t.clone(), Raison::Echoue(t))
+        }
         Manque::PeriodeCourte { journal, debut } => (
             crate::trf!(
                 "journal {journal} lu seulement depuis le {} : plus ancien écrasé, effacé, ou rien écrit",
@@ -736,6 +745,16 @@ fn constats_dates(
             if let Some(l) = r.limite {
                 m.push(' ');
                 m.push_str(&crate::trf!("Limite : {}.", "Limit: {}.", texte(l)));
+            }
+            // Un réglage prouvé par un champ du fichier lui-même : un fichier rapporté se fabrique.
+            if matches!(a.source, Source::Dossier(_))
+                && r.volets.iter().any(|v| matches!(v.audit, Audit::PreuveChamp { .. }))
+            {
+                m.push(' ');
+                m.push_str(crate::tr!(
+                    "Réserve : la preuve que ce réglage est allumé vient des fichiers lus, qui ne prouvent pas leur origine.",
+                    "Caveat: the proof that this setting is on comes from the files read, which do not prove their origin."
+                ));
             }
             if tues > 0 {
                 m.push(' ');
