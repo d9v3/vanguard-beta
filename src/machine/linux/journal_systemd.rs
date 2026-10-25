@@ -1195,7 +1195,10 @@ mod tests {
         };
         let (a, b) = (anciennes(&natives), anciennes(&outil));
         let n = a.len().min(b.len()).saturating_sub(50);
-        let differentes = a.iter().zip(&b).take(n).filter(|(x, y)| x != y).count();
+        // journalctl montre « [44B blob data] » un message qu'il juge non imprimable (un sélecteur de variante U+FE0E,
+        // vu le 25 oct.) ; Vanguard, lui, en garde le texte : ce n'est pas un écart de lecture.
+        let blob = |y: &str| y.ends_with(" blob data]");
+        let differentes = a.iter().zip(&b).take(n).filter(|(x, y)| x != y && !blob(y)).count();
         eprintln!(
             "parcours : {} entrées en {duree:?}, coupé {} ; comparées {n}, différentes {differentes}",
             parcours.entrees, parcours.coupe
