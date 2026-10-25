@@ -304,15 +304,6 @@ fn dns_du_service(service: sc::SCNetworkServiceRef) -> Vec<IpAddr> {
 
 /// Les services réseau du jeu en cours, dans l'ordre de priorité (`networksetup -listnetworkserviceorder`), ceux
 /// qui manquent à l'ordre à la fin. `None` : réglages illisibles.
-/// La carte BSD existe-t-elle sur cette machine ?
-fn carte_presente(nom: &str) -> bool {
-    let Ok(c) = std::ffi::CString::new(nom) else {
-        return false;
-    };
-    // SAFETY : if_nametoindex lit un nom C terminé par un zéro, à nous et vivant pendant l'appel ; 0 dit l'absence.
-    unsafe { libc::if_nametoindex(c.as_ptr()) != 0 }
-}
-
 pub(crate) fn services() -> Option<Vec<Service>> {
     let nom = CFString::from_static_string(NOM);
     // SAFETY : allocateur nul = celui par défaut, identifiant nul = les réglages du système ; à libérer (« Create »).
@@ -377,9 +368,9 @@ pub(crate) fn services() -> Option<Vec<Service>> {
         let Some(nom) = nom.filter(|n| !n.is_empty()) else {
             continue;
         };
-        // Un service dont la carte n'est pas branchée (adaptateur retiré) : networksetup ne le montre pas et refuse
-        // de le régler (vu sur un Mac de GitHub : « Ethernet Adapter (en1) » sans en1).
-        if carte.as_deref().is_some_and(|c| !carte_presente(c)) {
+        // Un service hors de l'ordre du jeu courant : networksetup ne le montre pas et refuse de le régler (vu sur
+        // un Mac de GitHub : « Ethernet Adapter (en1) », carte présente). Sans ordre réglé, tous comptent.
+        if !ordre.is_empty() && !ordre.contains(&id) {
             continue;
         }
         services.push(Service {
