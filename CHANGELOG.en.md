@@ -9,15 +9,18 @@ delivered just before it. Only the latest version has its download page; every v
 
 ## Next version
 
-- **Detection regression.** A corpus of harmless fabricated cases (tests/corpus-detection) proves that 63 detection
-  rules still fire (depending on the system: each runs where it exists), at their exact severity, and that a clean
-  case leaves them silent. For this, the 21 rules whose reading and judgement were mixed (Linux persistence and
+- **Detection regression.** A corpus of harmless fabricated cases (tests/corpus-detection) proves that 77 detection
+  rules and tools still fire (depending on the system: each runs where it exists), at their exact severity, and that a
+  clean case leaves them silent. For this, the 21 rules whose reading and judgement were mixed (Linux persistence and
   privileged programs, accounts, SSH, sudo, integrity, macOS agents and extensions, Windows startup and event logs,
   network audit checks) have their judgement apart, with the same behaviour. Every rule citing an ATT&CK technique,
   and every tool that detects, has its case or its reason; each rule's path to its judgement is kept, and verifier.sh
   runs it as two steps (Linux and Wine). A rule that only gives information is proven by a silent clean case, and a
   rule that always reports a part as unchecked (a store unreadable without a tool) also does so in its clean case,
-  next to at least one checked result, except one, named with its reason.
+  next to at least one checked result, except one, named with its reason. Tools and monitoring alerts (downloaded
+  file, link, email, spyware, remote control, leaked secret, command server, critical files, router, Wi-Fi, new device
+  or port, name poisoner) have theirs too; the YARA analyses, the live watchers and the active protection are exempted
+  with their reason.
 - **Other state files sealed, a single judge.** The decoy file list, the blocked ports, this computer's device
   record, the VANGUARD key references, the monthly check-up, the backup note and the monitoring's last run are
   sealed: changed, deleted or accepted as they were after the seals were remade, they no longer turn anything off (a
