@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vanguard 0.86</title>
+<title>Vanguard 0.87</title>
 <meta name="description" content="Vanguard : cyberdéfense portable des postes et des réseaux, depuis une clé USB. Durcissement, détection, blocage et réponse aux incidents pour Windows, Linux et macOS ; le dépannage en plus. Fonctions, fiche technique et commandes.">
 <meta name="theme-color" content="#0b1220">
 <meta name="claude:viewport-fit-sides" content="cover">
@@ -202,7 +202,7 @@ main { gap: 3.5rem; padding-block: 3rem; }
 <a class="marque" href="#haut" id="haut">
 <span class="plaque" aria-hidden="true"><svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><path fill="#ffffff" d="M8 12h22l20 52 20-52h22L60 90H40z"/><path fill="#0d0f12" d="M30 12h6l14 37 14-37h6L50 66z"/></svg></span>
 <b>VANGUARD</b>
-<span class="version">0.86.0</span>
+<span class="version">0.87.0</span>
 </a>
 <nav class="nav" aria-label="Sections">
 <a href="#comment">Comment ça marche</a>
@@ -219,7 +219,7 @@ main { gap: 3.5rem; padding-block: 3rem; }
 <h1>Durcir chaque machine, détecter les intrusions, bloquer les menaces.</h1>
 <p class="chapeau">Depuis une clé USB, Vanguard durcit les ordinateurs et détecte les failles, les mauvais réglages et les intrusions, sur chaque machine comme sur le réseau. Il met en tête les failles activement exploitées, repère les logiciels pas à jour et les logiciels espions, ferme l'ordinateur sur un Wi-Fi public, écarte les sites dangereux, examine un courriel suspect sans l'ouvrir, repère les agents d'IA trop permissifs, dit où manque l'échange de clés post-quantique, bloque les menaces trouvées, arrête un rançongiciel en pleine rafale et collecte les traces d'un incident ; le rapport d'une faille se prépare pour l'éditeur, sans jamais être envoyé. Chaque constat est expliqué ; rien n'est modifié sans accord, et chaque correction s'annule. Le dépannage, l'optimisation et la sauvegarde viennent en plus.</p>
 <p class="statut">En développement actif · tout en Rust (en cours) · défensif</p>
-<p class="cap"><b>Où va Vanguard.</b> En cours : tout ce qu'un agent d'IA peut exécuter, les journaux de Windows analysés par Hayabusa, le reste du programme réécrit en Rust (pare-feu Linux compris), un banc d'essai sur la clé et l'étude d'une interface graphique ; les versions signées aussi en ML-DSA attendent une décision. <a href="#feuille-de-route">La feuille de route ↓</a></p>
+<p class="cap"><b>Où va Vanguard.</b> En cours : tout ce qu'un agent d'IA peut exécuter, le reste du programme réécrit en Rust (pare-feu Linux compris), un banc d'essai sur la clé et l'étude d'une interface graphique ; les versions signées aussi en ML-DSA attendent une décision. <a href="#feuille-de-route">La feuille de route ↓</a></p>
 <div class="systemes">
 <span class="systeme">Windows 10 · 11</span><span class="systeme">Linux</span><span class="systeme">macOS</span><span class="systeme">Français · English</span>
 </div>
@@ -235,33 +235,36 @@ main { gap: 3.5rem; padding-block: 3rem; }
 </div>
 <div class="fenetre" role="navigation" aria-label="Menu principal de Vanguard">
 <div class="titre-fenetre"><i></i><i></i><i></i><span>vanguard</span></div>
-<pre><span class="boite">  <b>VANGUARD 0.86          </b>Cyberdéfense portable des postes et des réseaux</span>
+<pre><span class="boite">  <b>VANGUARD 0.87          </b>Cyberdéfense portable des postes et des réseaux</span>
 
   <span class="filet">BILAN DE SÉCURITÉ</span>
- <span class="c">►</span>  1  <a href="#bilan">Bilan complet : machine + réseau</a>     <span class="c">← commencer ici</span>
-    2  <a href="#bilan">Corriger les problèmes trouvés</a>
-    3  <a href="#bilan">Rapport détaillé dans le navigateur</a>
-  <span class="filet">OUTILS</span>
-    4  <a href="#depannage">Cette machine ›</a>                      <span class="g">audit, mises à jour, réparer…</span>
-    5  <a href="#audit">Réseau et Internet ›</a>                 <span class="g">appareils, surveillance, débit</span>
-    6  <a href="#infection">Antivirus et protection ›</a>            <span class="g">analyses, clé USB, fuites…</span>
-    7  <a href="#optimiser">Installer et jouer ›</a>                 <span class="g">logiciels libres, gaming</span>
-    8  <a href="#optimiser">Optimiser ›</a>                          <span class="g">nettoyer, confidentialité…</span>
-    9  <a href="#donnees">Données ›</a>                            <span class="g">sauvegarder, copier mes fichiers</span>
+ <span class="c">►</span>  1  <a href="#bilan">Bilan de sécurité complet</a>            <span class="c">← commencer ici</span>
+    2  <a href="#bilan">Corriger les problèmes trouvés</a>       <span class="g">un à un, avec votre accord</span>
+    3  <a href="#bilan">Rapport détaillé</a>                     <span class="g">dans le navigateur</span>
+  <span class="filet">CYBERDÉFENSE</span>
+    4  <a href="#bilan">Cet ordinateur ›</a>                     <span class="g">failles, mises à jour, intégrité</span>
+    5  <a href="#audit">Réseau et Internet ›</a>                 <span class="g">routeur, Wi-Fi, objets connectés</span>
+    6  <a href="#infection">Virus et logiciels espions ›</a>         <span class="g">antivirus, espions, rançongiciels</span>
+    7  <a href="#arnaques">Arnaques et vie privée ›</a>             <span class="g">liens, courriels, mots de passe</span>
+    8  <a href="#infection">Bloquer et réagir ›</a>                  <span class="g">blocage, incident, tout annuler</span>
+  <span class="filet">EN PLUS</span>
+    9  <a href="#donnees">Données et sauvegardes ›</a>             <span class="g">copier, sauvegarder, vérifier</span>
    10  <a href="#suivi">Guide des commandes ›</a>                <span class="g">Linux, Windows, macOS, pas à pas</span>
-   11  <a href="#depannage">Dépanner pas à pas ›</a>                 <span class="g">Internet, son, imprimante…</span>
-   12  <a href="#suivi">Extensions ›</a>                         <span class="g">plugins et labo, hors Vanguard</span>
-    q  Quitter                              <span class="g">s : paramètres</span></pre>
+   11  <a href="#depannage">Dépanner pas à pas ›</a>                 <span class="g">Internet, son, lenteur, réparer</span>
+   12  <a href="#optimiser">Optimiser et installer ›</a>             <span class="g">logiciels, nettoyage, réglages</span>
+   13  <a href="#suivi">Vanguard ›</a>                           <span class="g">réglages, mise à jour, extensions</span></pre>
 <ul class="menu-court">
-<li><a href="#bilan"><span class="n">1</span><span>Bilan complet : machine + réseau</span></a></li>
-<li><a href="#depannage"><span class="n">4</span><span>Cette machine</span></a></li>
+<li><a href="#bilan"><span class="n">1</span><span>Bilan de sécurité complet</span></a></li>
+<li><a href="#bilan"><span class="n">4</span><span>Cet ordinateur</span></a></li>
 <li><a href="#audit"><span class="n">5</span><span>Réseau et Internet</span></a></li>
-<li><a href="#infection"><span class="n">6</span><span>Antivirus et protection</span></a></li>
-<li><a href="#optimiser"><span class="n">8</span><span>Optimiser</span></a></li>
-<li><a href="#donnees"><span class="n">9</span><span>Données</span></a></li>
+<li><a href="#infection"><span class="n">6</span><span>Virus et logiciels espions</span></a></li>
+<li><a href="#arnaques"><span class="n">7</span><span>Arnaques et vie privée</span></a></li>
+<li><a href="#infection"><span class="n">8</span><span>Bloquer et réagir</span></a></li>
+<li><a href="#donnees"><span class="n">9</span><span>Données et sauvegardes</span></a></li>
 <li><a href="#suivi"><span class="n">10</span><span>Guide des commandes</span></a></li>
 <li><a href="#depannage"><span class="n">11</span><span>Dépanner pas à pas</span></a></li>
-<li><a href="#suivi"><span class="n">12</span><span>Extensions</span></a></li>
+<li><a href="#optimiser"><span class="n">12</span><span>Optimiser et installer</span></a></li>
+<li><a href="#suivi"><span class="n">13</span><span>Vanguard</span></a></li>
 </ul>
 </div>
 </div>
@@ -287,22 +290,22 @@ main { gap: 3.5rem; padding-block: 3rem; }
 </div>
 <div class="domaines">
 <article class="domaine" id="bilan">
-<header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8.1-8 9-4.6-.9-8-4.5-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg></span><div><h3>Le bilan, noté de A à F</h3><span class="touche">menu 1 · 2 · 3 · vanguard complet · logiciels-perimes · dernieres-failles · autotest</span></div></header>
+<header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.4 8.1-8 9-4.6-.9-8-4.5-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg></span><div><h3>Le bilan, noté de A à F</h3><span class="touche">menu 1 · 2 · 3 · vanguard bilan · logiciels-perimes · dernieres-failles · autotest</span></div></header>
 <ul>
 <li><b>Les bases</b> : pare-feu, mises à jour et failles connues, chiffrement du disque, antivirus, comptes et mots de passe, heure, fin de support.</li>
 <li><b>Accès à distance</b> : SSH et ses algorithmes faibles, Bureau à distance, partages ouverts à tous, proxy détourné (WPAD).</li>
 <li><b>Ce qui se cache</b> : portes dérobées de Windows, signes d'un rootkit sous Linux, journaux d'événements suspects.</li>
 <li><b>Failles activement exploitées en tête</b> (Linux) : les failles des paquets installés comparées au catalogue KEV de la CISA, téléchargé en entier (la liste des logiciels ne sort pas de l'ordinateur) ; une faille dans un programme qui écoute le réseau passe devant ; <code>vanguard dernieres-failles</code> donne les plus récentes, et la surveillance horaire prévient d'une faille critique nouvelle.</li>
-<li><b>Logiciels pas à jour</b> (Windows, macOS) : navigateurs, Office, Acrobat, Java, 7-Zip, PuTTY, Slack comparés à leur dernière version, d'après des listes publiques téléchargées en entier (la liste des logiciels ne sort pas de l'ordinateur) ; pour Firefox et Edge, chaque faille exploitée vérifiée contre la version installée. <span class="nouveau">nouveau</span></li>
-<li><b>Règles nouvelles</b> : serveur OpenSSH et clés SSH sous Windows, protections de Defender relues, règle des mots de passe, sécurité du démarrage et persistance sous macOS, logiciels installés depuis le dernier bilan ; chaque règle cite sa référence (CIS, Microsoft ou ANSSI). <span class="nouveau">nouveau</span></li>
-<li><b>Bilan post-quantique</b>, en lecture seule : serveur et client SSH (d'après la version d'OpenSSH et les algorithmes retenus), navigateurs (X25519MLKEM768 coupé ou version trop ancienne), pairs WireGuard sans clé pré-partagée ; l'audit du réseau y ajoute l'administration du routeur et le chemin vers Internet. <span class="nouveau">nouveau</span></li>
+<li><b>Logiciels pas à jour</b> (Windows, macOS) : navigateurs, Office, Acrobat, Java, 7-Zip, PuTTY, Slack comparés à leur dernière version, d'après des listes publiques téléchargées en entier (la liste des logiciels ne sort pas de l'ordinateur) ; pour Firefox et Edge, chaque faille exploitée vérifiée contre la version installée.</li>
+<li><b>Règles nouvelles</b> : serveur OpenSSH et clés SSH sous Windows, protections de Defender relues, règle des mots de passe, sécurité du démarrage et persistance sous macOS, logiciels installés depuis le dernier bilan ; chaque règle cite sa référence (CIS, Microsoft ou ANSSI).</li>
+<li><b>Bilan post-quantique</b>, en lecture seule : serveur et client SSH (d'après la version d'OpenSSH et les algorithmes retenus), navigateurs (X25519MLKEM768 coupé ou version trop ancienne), pairs WireGuard sans clé pré-partagée ; l'audit du réseau y ajoute l'administration du routeur et le chemin vers Internet.</li>
 <li><b>Chaque problème</b> expliqué avec sa correction, appliquée après accord ; sous Windows, les réglages de durcissement faits par Vanguard lui-même, relancé en administrateur, sans PowerShell.</li>
-<li><b>Chaque correction s'annule</b>, une par une : l'état d'avant est relevé et scellé, puis remis et relu ; ce qui rallume une protection ne se défait jamais, et « Tout remettre comme avant » défait tout ce que Vanguard a changé. <span class="nouveau">nouveau</span></li>
-<li><b>Autodiagnostic</b> : chaque règle essayée sans rien changer (lecture seule prouvée par empreintes), les lectures de Vanguard comparées aux outils du système (pacman, systemd, ss ; pare-feu, Defender, BitLocker sous Windows), la durée de chaque règle mesurée ; refait chaque semaine par la surveillance. <span class="nouveau">nouveau</span></li>
+<li><b>Chaque correction s'annule</b>, une par une : l'état d'avant est relevé et scellé, puis remis et relu ; ce qui rallume une protection ne se défait jamais, et « Tout remettre comme avant » défait tout ce que Vanguard a changé.</li>
+<li><b>Autodiagnostic</b> : chaque règle essayée sans rien changer (lecture seule prouvée par empreintes), les lectures de Vanguard comparées aux outils du système (pacman, systemd, ss ; pare-feu, Defender, BitLocker sous Windows), la durée de chaque règle mesurée ; refait chaque semaine par la surveillance.</li>
 </ul>
 </article>
 <article class="domaine" id="exposition">
-<header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg></span><div><h3>Exposition vers Internet</h3><span class="touche">vanguard audit-reseau · reseau</span></div></header>
+<header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18"/></svg></span><div><h3>Exposition vers Internet</h3><span class="touche">vanguard audit-reseau · appareils</span></div></header>
 <ul>
 <li><b>Les ports que le routeur ouvre vers Internet</b>, demandés au routeur lui-même (UPnP) : une caméra ou un bureau à distance joignable de n'importe où, c'est critique.</li>
 <li><b>UPnP actif</b> : n'importe quel programme du réseau local peut ouvrir un port ; CGNAT ou double NAT reconnus.</li>
@@ -315,11 +318,11 @@ main { gap: 3.5rem; padding-block: 3rem; }
 <li><b>Chaque appareil du réseau</b> : fabricant, ports ouverts, risques ; les nouveaux venus signalés toutes les heures, avec un tableau de bord dans le navigateur.</li>
 <li><b>La protection du Wi-Fi</b> lue dans les balises du routeur : WEP ou TKIP, WPS allumé (le code PIN cassable), plusieurs émetteurs pour le même nom (faux point d'accès).</li>
 <li><b>Les réseaux ouverts</b> qui se reconnectent seuls, les appareils Bluetooth appairés depuis peu.</li>
-<li><b>Mode Wi-Fi public</b> pour un café, un hôtel ou un aéroport : plus aucune connexion acceptée de ce réseau, partage et annonce du nom coupés, DNS protecteur ; chaque valeur d'avant notée et scellée, tout remis en partant, même après un redémarrage. <span class="nouveau">nouveau</span></li>
+<li><b>Mode Wi-Fi public</b> pour un café, un hôtel ou un aéroport : plus aucune connexion acceptée de ce réseau, partage et annonce du nom coupés, DNS protecteur ; chaque valeur d'avant notée et scellée, tout remis en partant, même après un redémarrage.</li>
 </ul>
 </article>
 <article class="domaine" id="objets">
-<header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4M7 9h4M7 13h2"/></svg></span><div><h3>Objets connectés</h3><span class="touche">vanguard objets · cameras</span></div></header>
+<header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4M7 9h4M7 13h2"/></svg></span><div><h3>Objets connectés</h3><span class="touche">vanguard objets-connectes · cameras-cachees</span></div></header>
 <ul>
 <li><b>Le routeur et les objets reconnus</b> : caméras, imprimantes, NAS, télés, enceintes, consoles, domotique, avec ce que le routeur annonce (modèle, logiciel).</li>
 <li><b>Mot de passe d'origine à changer</b>, administration en HTTP seul ou en telnet : un conseil clair, jamais un essai de mot de passe.</li>
@@ -327,20 +330,21 @@ main { gap: 3.5rem; padding-block: 3rem; }
 </ul>
 </article>
 <article class="domaine" id="infection">
-<header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8 11h6M11 8v6"/></svg></span><div><h3>Poste infecté</h3><span class="touche">menu 6 · vanguard blocage · evenements · yara · traces · signaler</span></div></header>
+<header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8 11h6M11 8v6"/></svg></span><div><h3>Poste infecté</h3><span class="touche">menu 6 · 8 · vanguard blocage · evenements · yara · depanner traces · signaler</span></div></header>
 <ul>
-<li><b>Antivirus, 308 règles YARA et les empreintes</b> de logiciels malveillants connus de MalwareBazaar (clé abuse.ch gratuite ; la dernière copie sert hors ligne) ; quarantaine réversible.</li>
+<li><b>Antivirus, 308 règles YARA et les empreintes</b> de logiciels malveillants connus de MalwareBazaar (clé abuse.ch gratuite ; la dernière copie sert hors ligne) ; quarantaine réversible. Moteur YARA écrit pour Vanguard ; programmes, documents Office et leurs macros, raccourcis, scripts et archives lus par Vanguard lui-même, ce qu'il ne sait pas lire dit non vérifié. <span class="nouveau">nouveau</span></li>
+<li><b>Que s'est-il passé ?</b> Les journaux de Windows (.evtx) lus par Vanguard lui-même, sur ce Windows ou depuis un dossier sous n'importe quel système : onze règles (traces effacées, administrateur de plus, mot de passe deviné, Bureau à distance depuis Internet, PowerShell malveillant, Defender désarmé, persistance WMI…) et les alertes dans l'ordre du temps. <span class="nouveau">nouveau</span></li>
 <li><b>Blocage des menaces</b> d'un clic : programme arrêté et mis en quarantaine, connexion fermée au pare-feu, lancement retiré, tout annulable sauf l'arrêt ; la <b>protection active</b>, une fois mise en marche, bloque toute seule ce qui ne fait aucun doute et prévient.</li>
-<li><b>La preuve avant le geste</b> : programme, ligne de commande, parent, compte, empreinte, connexions, relevés avant chaque arrêt, quarantaine ou blocage ; un <b>journal des événements</b> scellé relie l'alerte, la preuve, le geste et son annulation. <span class="nouveau">nouveau</span></li>
+<li><b>La preuve avant le geste</b> : programme, ligne de commande, parent, compte, empreinte, connexions, relevés avant chaque arrêt, quarantaine ou blocage ; un <b>journal des événements</b> scellé relie l'alerte, la preuve, le geste et son annulation.</li>
 <li><b>Chasse aux menaces en direct</b> : un mot de passe deviné (une connexion réussie juste après une rafale d'échecs), un outil d'attaque en marche, une commande qui télécharge ce qu'elle lance.</li>
 <li><b>Le veilleur</b> (Linux) : chaque programme lancé et chaque connexion fermée vus sur le moment, même de quelques millisecondes ; il observe et n'arrête rien ; coupé par défaut.</li>
-<li><b>Veilleur anti-rançongiciel</b> (Linux) : les dossiers personnels surveillés en direct ; une rafale de chiffrement (fichiers réécrits, contenu devenu illisible, note de rançon, piège touché, copies de secours effacées) alerte en quelques secondes, « Bloquer » proposé au bilan suivant ; gel puis arrêt automatiques seulement avec la protection active et une quasi-certitude ; coupé par défaut. <span class="nouveau">nouveau</span></li>
+<li><b>Veilleur anti-rançongiciel</b> (Linux) : les dossiers personnels surveillés en direct ; une rafale de chiffrement (fichiers réécrits, contenu devenu illisible, note de rançon, piège touché, copies de secours effacées) alerte en quelques secondes, « Bloquer » proposé au bilan suivant ; gel puis arrêt automatiques seulement avec la protection active et une quasi-certitude ; coupé par défaut.</li>
 <li><b>La mémoire des programmes</b> qui tournent, passée aux règles YARA à la demande : un logiciel malveillant « sans fichier » ne vit que là.</li>
 <li><b>Ce qui se lance en cachette</b>, portes dérobées, rootkit, connexions vers des serveurs de botnets, voleur de mots de passe (Responder) démasqué sur le réseau.</li>
 <li><b>Portes cachées de Windows</b> (paquets de LSA, moniteurs d'impression, Winsock…) et <b>pilotes vulnérables</b> du noyau, d'après la liste LOLDrivers.</li>
 <li><b>Fichiers-pièges</b> contre les rançongiciels, blocages de Defender, intégrité des fichiers critiques, failles des images Docker ; <b>agents d'IA</b> trop permissifs (serveur ouvert au réseau, agent qui fait tout sans demander).</li>
 <li><b>Les traces collectées</b> avant de nettoyer, avec la <b>chronologie de l'incident</b> ; Internet coupé d'abord en cas d'urgence.</li>
-<li><b>Signaler une faille à un éditeur</b> : trié d'abord, puis un brouillon au format du programme choisi (MSRC, Google, Mozilla, Apple, avis GHSA, CERT…), ce qui est personnel retiré et compté ; la personne relit et envoie elle-même, Vanguard n'envoie jamais rien. <span class="nouveau">nouveau</span></li>
+<li><b>Signaler une faille à un éditeur</b> : trié d'abord, puis un brouillon au format du programme choisi (MSRC, Google, Mozilla, Apple, avis GHSA, CERT…), ce qui est personnel retiré et compté ; la personne relit et envoie elle-même, Vanguard n'envoie jamais rien.</li>
 </ul>
 </article>
 <article class="domaine" id="dns">
@@ -353,7 +357,7 @@ main { gap: 3.5rem; padding-block: 3rem; }
 </ul>
 </article>
 <article class="domaine" id="arnaques">
-<header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v12H8l-4 4z"/><path d="M12 7v4M12 13.5h.01"/></svg></span><div><h3>Arnaques et prise de contrôle</h3><span class="touche">vanguard distance · lien · courriel-suspect · verifier-fichier</span></div></header>
+<header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h16v12H8l-4 4z"/><path d="M12 7v4M12 13.5h.01"/></svg></span><div><h3>Arnaques et prise de contrôle</h3><span class="touche">menu 7 · vanguard acces-a-distance · lien · courriel-suspect · verifier-fichier</span></div></header>
 <ul>
 <li><b>Faux technicien</b> : AnyDesk, TeamViewer, RustDesk… installés, lancés ou téléchargés, retirés après accord.</li>
 <li><b>Ce courriel est-il une arnaque ?</b> Un courriel enregistré, lu sans rien ouvrir : vrai expéditeur, SPF, DKIM et DMARC du fournisseur, chaque lien, les pièces jointes passées à YARA et à l'antivirus ; le verdict n'est jamais « sûr ».</li>
@@ -363,9 +367,9 @@ main { gap: 3.5rem; padding-block: 3rem; }
 </ul>
 </article>
 <article class="domaine" id="vie-privee">
-<header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><div><h3>Vie privée et secrets</h3><span class="touche">menu 6 · vanguard logiciels-espions · acces · secrets</span></div></header>
+<header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><div><h3>Vie privée et secrets</h3><span class="touche">menu 6 · 7 · vanguard logiciels-espions · bilan-confidentialite · secrets</span></div></header>
 <ul>
-<li><b>Logiciels espions</b> posés par un proche : serveurs et sites connus (liste d'Échap), logiciels de surveillance, programmes qui lisent le clavier, autorisations de surveillance sous macOS ; en lecture seule, car celui qui l'a posé pourrait le voir. <span class="nouveau">nouveau</span></li>
+<li><b>Logiciels espions</b> posés par un proche : serveurs et sites connus (liste d'Échap), logiciels de surveillance, programmes qui lisent le clavier, autorisations de surveillance sous macOS ; en lecture seule, car celui qui l'a posé pourrait le voir.</li>
 <li><b>Bilan de confidentialité</b> : qui a accès à la position, aux contacts, à la caméra et au micro.</li>
 <li><b>Mots de passe du navigateur</b> comptés sans jamais être lus, secrets oubliés dans git, fichiers sensibles laissés en clair.</li>
 </ul>
@@ -380,7 +384,7 @@ main { gap: 3.5rem; padding-block: 3rem; }
 </div>
 <div class="domaines">
 <article class="domaine" id="depannage">
-<header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 6.5a4 4 0 0 0-5.3 5.3L3.5 17.5l3 3 5.7-5.7a4 4 0 0 0 5.3-5.3l-2.3 2.3-2.4-.6-.6-2.4z"/></svg></span><div><h3>Dépannage</h3><span class="touche">menu 4 · 11 · vanguard depanner · proche</span></div></header>
+<header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 6.5a4 4 0 0 0-5.3 5.3L3.5 17.5l3 3 5.7-5.7a4 4 0 0 0 5.3-5.3l-2.3 2.3-2.4-.6-.6-2.4z"/></svg></span><div><h3>Dépannage</h3><span class="touche">menu 11 · vanguard depanner · depanner proche</span></div></header>
 <ul>
 <li><b>Pas à pas</b> : Internet, Wi-Fi, lenteur, son, imprimante, disque plein, une question à la fois.</li>
 <li><b>Ordinateur d'un proche</b> : trois questions, un résumé en mots simples, une page à laisser avec des conseils choisis pour la personne.</li>
@@ -388,11 +392,11 @@ main { gap: 3.5rem; padding-block: 3rem; }
 </ul>
 </article>
 <article class="domaine" id="optimiser">
-<header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 18l4-6"/></svg></span><div><h3>Optimiser, logiciels et jeu</h3><span class="touche">menu 7 · 8 · vanguard connexion</span></div></header>
+<header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 18l4-6"/></svg></span><div><h3>Optimiser, logiciels et jeu</h3><span class="touche">menu 12 · vanguard test-connexion</span></div></header>
 <ul>
 <li><b>Réglages</b> de confidentialité et de performance qui s'annulent exactement ; nettoyage à cocher ; programmes du démarrage.</li>
-<li><b>Tout remettre comme avant</b> : les corrections du bilan, Optimiser, Gaming, les blocages et le mode Wi-Fi public défaits du plus récent au plus ancien, en une demande administrateur. <span class="nouveau">nouveau</span></li>
-<li><b>Les meilleurs logiciels</b> en 8 catégories, depuis leur source officielle ; les mises à jour de tout d'un coup.</li>
+<li><b>Tout remettre comme avant</b> : les corrections du bilan, Optimiser, Gaming, les blocages et le mode Wi-Fi public défaits du plus récent au plus ancien, en une demande administrateur.</li>
+<li><b>Les meilleurs logiciels</b> en 10 catégories, depuis leur source officielle ; les mises à jour de tout d'un coup.</li>
 <li><b>Connexion pour le jeu</b> : ping, gigue, pertes, débit, bufferbloat ; Wi-Fi encombré, type de NAT, DNS le plus rapide.</li>
 </ul>
 </article>
@@ -404,15 +408,15 @@ main { gap: 3.5rem; padding-block: 3rem; }
 </ul>
 </article>
 <article class="domaine" id="suivi">
-<header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19V5M9 8h6M9 12h6"/></svg></span><div><h3>Suivi, outils et clé USB</h3><span class="touche">menu 10 · 12 · vanguard guide · parametres · extensions · verifier-cle</span></div></header>
+<header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19V5M9 8h6M9 12h6"/></svg></span><div><h3>Suivi, outils et clé USB</h3><span class="touche">menu 10 · 13 · vanguard guide · parametres · extensions · verifier-cle</span></div></header>
 <ul>
 <li><b>Rapport HTML</b> avec la courbe des notes, entretien du mois, apprentissage, ce que Vanguard a changé.</li>
-<li><b>Menus au clavier</b> : → entre, ← revient ; la fenêtre ouverte pour Vanguard prend la taille du menu et se centre. <span class="nouveau">nouveau</span></li>
+<li><b>Menus au clavier</b> : → entre, ← revient ; la fenêtre ouverte pour Vanguard prend la taille du menu et se centre.</li>
 <li><b>Paramètres</b> au même endroit : langue, travail sans Internet, protection en temps réel, surveillance, entretien, blocage, restrictions des extensions ; « s » au menu principal.</li>
 <li><b>Extensions personnelles</b> dans Vanguard, sans toucher à son code : un plugin (un dossier avec <code>plugin.toml</code>, ajouté depuis un dossier ou une archive .zip) ou un script du labo posé tel quel ; leurs constats à part, hors de la note.</li>
 <li><b>Vérifiées avant de tourner</b> : tout le dossier analysé (YARA, MalwareBazaar) et approuvé par ses empreintes SHA-256 ; c'est la copie vérifiée qui tourne, sans terminal, bornée, jamais toute seule en administrateur ; un plugin en Rust s'écrit avec la bibliothèque <code>extensions/sdk</code>.</li>
-<li><b>1 093 commandes expliquées</b> pour Omarchy, Arch, Fedora, Debian, Ubuntu, Windows et macOS, plus de 30 000 exemples.</li>
-<li><b>La clé USB</b> : protégée en écriture ailleurs que sur l'ordinateur du propriétaire ; Vanguard mis à jour depuis la clé ou depuis GitHub (versions signées par l'auteur, avec une seconde clé de signature, gardée hors ligne, qui peut révoquer la principale, et jamais de retour à une version plus ancienne). <span class="nouveau">nouveau</span> Une clé qui démarre aussi les ordinateurs en panne (Omarchy, SystemRescue, Windows 11…) est en développement.</li>
+<li><b>1 176 commandes expliquées</b> pour Omarchy, Arch, Fedora, Debian, Ubuntu, Windows et macOS, plus de 30 000 exemples.</li>
+<li><b>La clé USB</b> : protégée en écriture ailleurs que sur l'ordinateur du propriétaire ; Vanguard mis à jour depuis la clé ou depuis GitHub (versions signées par l'auteur, avec une seconde clé de signature, gardée hors ligne, qui peut révoquer la principale, et jamais de retour à une version plus ancienne). Une clé qui démarre aussi les ordinateurs en panne (Omarchy, SystemRescue, Windows 11…) est en développement.</li>
 <li><b>Retirer Vanguard</b> de cet ordinateur : tout ce qu'il a posé, retrouvé, montré puis coché ; les données gardées sauf accord à part, la clé jamais touchée.</li>
 </ul>
 </article>
@@ -441,11 +445,11 @@ main { gap: 3.5rem; padding-block: 3rem; }
 <p>Pour qui veut connaître le fonctionnement interne : les règles du bilan, les interfaces du système lues directement en Rust, les sources de menaces, la chaîne de confiance des mises à jour, et chaque commande.</p>
 </div>
 <dl class="specs">
-<div><dt>Langage</dt><dd>Rust, édition 2024 · ≈ 200 500 lignes ; aucun programme externe pour lire le système ; calculs vérifiés contre les dépassements dans la version publiée</dd></div>
+<div><dt>Langage</dt><dd>Rust, édition 2024 · ≈ 249 300 lignes ; aucun programme externe pour lire le système ; calculs vérifiés contre les dépassements dans la version publiée</dd></div>
 <div><dt>Programme</dt><dd>Un seul exécutable, rien à installer : Linux x86_64 (statique, musl), Windows x86_64, macOS Apple Silicon et Intel</dd></div>
 <div><dt>Règles du bilan</dt><dd>171 règles à identifiant stable (<code>LNX-SSH-006</code>) : 94 sous Linux, 82 sous Windows, 71 sous macOS, communes comprises ; 34 fiches d'audit du réseau</dd></div>
-<div><dt>Interface</dt><dd>Menu au clavier, ou 80 commandes en ligne ; sorties <code>--json</code>, rapport HTML ou Markdown</dd></div>
-<div><dt>Moteurs intégrés</dt><dd>YARA-X 1.22 (règles YARA), reqwest + rustls/ring (HTTPS sans OpenSSL), tokio (scan asynchrone), lecteur de plist et client UPnP maison ; chaque bibliothèque vérifiée par cargo deny (failles connues, licences, provenance)</dd></div>
+<div><dt>Interface</dt><dd>Menu au clavier, ou 83 commandes en ligne ; sorties <code>--json</code>, rapport HTML ou Markdown</dd></div>
+<div><dt>Moteurs intégrés</dt><dd>moteur YARA maison (règles YARA, YARA-X en oracle des tests), reqwest + rustls/ring (HTTPS sans OpenSSL), tokio (scan asynchrone), lecteur de plist et client UPnP maison ; chaque bibliothèque vérifiée par cargo deny (failles connues, licences, provenance)</dd></div>
 <div><dt>Cryptographie</dt><dd>Ed25519 (versions signées, clé principale et clé de secours), SHA-256, BLAKE3 (intégrité, état de Vanguard et journal des événements scellés), XChaCha20-Poly1305 + Argon2 (carnet chiffré)</dd></div>
 <div><dt>Blocage</dt><dd>Par les outils du système, montrés avant d'agir : ufw ou une table nftables sous Linux, le Pare-feu Windows par PowerShell, une ancre pf sous macOS ; le programme revérifié dans la commande même de l'arrêt ; la liste des pilotes vulnérables de Microsoft écrite par Vanguard lui-même</dd></div>
 <div><dt>Hors ligne</dt><dd>Tout ce qui demande Internet s'arrête seul en moins d'une minute et le dit ; listes gardées en cache</dd></div>
@@ -512,7 +516,7 @@ main { gap: 3.5rem; padding-block: 3rem; }
 <h3 class="sous-titre">Sources de menaces</h3>
 <div class="sources">
 <div class="source"><b>MalwareBazaar</b><span>Empreintes SHA-256 de logiciels malveillants connus, comparées à chaque fichier lu par l'analyse YARA.</span><span class="k">clé abuse.ch gratuite · complète chaque semaine · 48 h chaque jour</span></div>
-<div class="source"><b>ReversingLabs</b><span>308 règles YARA par famille (rançongiciels, voleurs, portes dérobées), appliquées par YARA-X sur 4 fils, aux fichiers et, à la demande, à la mémoire des programmes.</span><span class="k">intégrées au programme</span></div>
+<div class="source"><b>ReversingLabs</b><span>308 règles YARA par famille (rançongiciels, voleurs, portes dérobées), appliquées par le moteur YARA de Vanguard sur 4 fils, aux fichiers et, à la demande, à la mémoire des programmes.</span><span class="k">intégrées au programme</span></div>
 <div class="source"><b>LOLDrivers</b><span>Pilotes vulnérables ou malveillants connus, comparés par empreinte aux pilotes du noyau de Windows : signés, ils servent à désarmer l'antivirus.</span><span class="k">chaque semaine · Apache-2.0</span></div>
 <div class="source"><b>ThreatFox · Feodo Tracker</b><span>Serveurs de commande de botnets, comparés aux connexions de chaque programme et à la mémoire DNS.</span><span class="k">abuse.ch · clé gratuite pour ThreatFox</span></div>
 <div class="source"><b>URLhaus · Spamhaus DBL · SURBL</b><span>Liens dangereux ; le domaine seulement sort, jamais le lien entier. Âge du domaine par RDAP.</span><span class="k">après accord · clé abuse.ch pour URLhaus</span></div>
@@ -535,47 +539,51 @@ main { gap: 3.5rem; padding-block: 3rem; }
 </ol>
 <h3 class="sous-titre">Toutes les commandes</h3>
 <details class="cli">
-<summary>80 commandes en ligne <span>· le nom anglais marche aussi · sans argument, le menu · liste tirée de <code>vanguard --help</code></span></summary>
+<summary>83 commandes en ligne <span>· le nom anglais marche aussi · sans argument, le menu · liste tirée de <code>vanguard --help</code></span></summary>
 <dl class="cli-liste">
-<div><dt>complet <i>full</i></dt><dd>Bilan complet : cette machine puis le réseau</dd></div>
-<div><dt>machine <i>audit</i></dt><dd>Audit de cette machine (pare-feu, ports, SSH, mises à jour, chiffrement…)</dd></div>
-<div><dt>corriger <i>fix</i></dt><dd>Audit de la machine puis application guidée des correctifs</dd></div>
-<div><dt>reseau <i>network</i></dt><dd>Scan du réseau : appareils, ports ouverts, risques, nouveautés depuis les scans précédents</dd></div>
+<div><dt>bilan <i>check</i></dt><dd>Bilan complet : cet ordinateur puis le réseau</dd></div>
+<div><dt>audit</dt><dd>Audit de cet ordinateur (pare-feu, ports, SSH, mises à jour, chiffrement…)</dd></div>
+<div><dt>corriger <i>fix</i></dt><dd>Audit de l&#x27;ordinateur puis application guidée des correctifs</dd></div>
+<div><dt>chercher <i>search</i></dt><dd>Chercher un outil, une page du guide, un logiciel ou un réglage : les dix meilleurs résultats, avec leur…</dd></div>
+<div><dt>rapport <i>report</i></dt><dd>Rapport détaillé dans le navigateur : le bilan de cette session s&#x27;il y en a un, sinon un bilan complet d&#x27;abord</dd></div>
+<div><dt>annuler <i>undo</i></dt><dd>Tout remettre comme avant : défait ce que Vanguard a changé (réglages d&#x27;Optimiser, corrections du bilan,…</dd></div>
+<div><dt>protection</dt><dd>Protection : l&#x27;état de chaque interrupteur (temps réel, surveillance, entretien, blocage, veilleur, sites…</dd></div>
+<div><dt>appareils <i>devices</i></dt><dd>Scan du réseau : appareils, ports ouverts, risques, nouveautés depuis les scans précédents</dd></div>
 <div><dt>audit-reseau <i>network-audit</i></dt><dd>Audit du réseau par domaine : six notes (exposition à Internet, Wi-Fi, segmentation, DNS et TLS, objets…</dd></div>
 <div><dt>antivirus</dt><dd>Recherche de malwares : ClamAV (Linux, macOS) ou Microsoft Defender (Windows)</dd></div>
 <div><dt>surveillance <i>monitor</i></dt><dd>Active ou désactive la surveillance horaire du réseau (notification si appareil inconnu)</dd></div>
-<div><dt>tableau <i>dashboard</i></dt><dd>Tableau de bord de la surveillance dans le navigateur : son état, les alertes jour par jour, les nouveaux…</dd></div>
+<div><dt>tableau-de-bord <i>dashboard</i></dt><dd>Tableau de bord de la surveillance dans le navigateur : son état, les alertes jour par jour, les nouveaux…</dd></div>
 <div><dt>dernieres-failles <i>latest-flaws</i></dt><dd>Dernières failles exploitées : celles que la CISA a ajoutées à son catalogue (attaques réelles connues) ces…</dd></div>
 <div><dt>sites-dangereux <i>dangerous-sites</i></dt><dd>Sites dangereux bloqués par le fichier hosts : ceux d&#x27;URLhaus et les serveurs de commande de ThreatFox (clé…</dd></div>
 <div><dt>veilleur <i>watcher</i></dt><dd>Veilleur (Linux 6.6 et plus) : chaque programme lancé et chaque connexion fermée, vus sur le moment et…</dd></div>
 <div><dt>entretien <i>maintenance</i></dt><dd>Entretien du mois : une fois par mois, en silence, la note, les mises à jour en attente, la place à libérer…</dd></div>
-<div><dt>maj <i>update</i></dt><dd>Mises à jour : système, programmes, pilotes et firmware vérifiés d&#x27;un coup, puis installés après accord</dd></div>
+<div><dt>mises-a-jour <i>updates</i></dt><dd>Mises à jour : système, programmes, pilotes et firmware vérifiés d&#x27;un coup, puis installés après accord</dd></div>
 <div><dt>reparer <i>repair</i></dt><dd>Réparations courantes : réseau, navigation détournée, pare-feu, antivirus, fichiers système, disque, place,…</dd></div>
-<div><dt>gaming</dt><dd>Gaming : composants pour les jeux (Windows : Visual C++, DirectX… ; Linux : Steam, Vulkan, GameMode, Wine……</dd></div>
-<div><dt>diagnostic <i>diag</i></dt><dd>Diagnostic de l&#x27;ordinateur : matériel, système et problèmes récents (plantages, erreurs).</dd></div>
-<div><dt>logiciels <i>apps</i></dt><dd>Logiciels : les meilleurs, libres pour la plupart (navigateurs, mots de passe, bureautique, vidéo,…</dd></div>
+<div><dt>jeux <i>gaming</i></dt><dd>Gaming : composants pour les jeux (Windows : Visual C++, DirectX… ; Linux : Steam, Vulkan, GameMode, Wine……</dd></div>
+<div><dt>diagnostic <i>diagnostics</i></dt><dd>Diagnostic de l&#x27;ordinateur : matériel, système et problèmes récents (plantages, erreurs).</dd></div>
+<div><dt>logiciels <i>software</i></dt><dd>Logiciels : les meilleurs, libres pour la plupart (navigateurs, mots de passe, bureautique, vidéo,…</dd></div>
 <div><dt>nettoyer <i>clean</i></dt><dd>Nettoyer le système : caches, fichiers temporaires, paquets téléchargés, vieux journaux, corbeille… La…</dd></div>
 <div><dt>optimiser <i>optimize</i></dt><dd>Optimiser : les réglages recommandés, ceux de confidentialité, de performance (sauf macOS) et de confort,…</dd></div>
 <div><dt>appris <i>learned</i></dt><dd>Ce que Vanguard a appris sur cet ordinateur : les alertes déclarées normales, et les oublier</dd></div>
-<div><dt>connexion <i>connection</i></dt><dd>Test de connexion pour le jeu : ping, gigue, pertes, débit et bufferbloat</dd></div>
-<div><dt>listes-noires <i>blocklists</i></dt><dd>L&#x27;adresse Internet de la maison est-elle sur une liste noire (Spamhaus, SpamCop, DroneBL, PSBL) ?</dd></div>
-<div><dt>canaux <i>channels</i></dt><dd>Wi-Fi encombré : les réseaux voisins par canal, et le canal le plus libre à régler sur la box.</dd></div>
+<div><dt>test-connexion <i>connection-test</i></dt><dd>Test de connexion pour le jeu : ping, gigue, pertes, débit et bufferbloat</dd></div>
+<div><dt>listes-noires <i>blocklists</i></dt><dd>L&#x27;adresse Internet publique est-elle sur une liste noire (Spamhaus, SpamCop, DroneBL, PSBL) ?</dd></div>
+<div><dt>canaux-wifi <i>wifi-channels</i></dt><dd>Wi-Fi encombré : les réseaux voisins par canal, et le canal le plus libre à régler sur le routeur.</dd></div>
 <div><dt>nat</dt><dd>Type de NAT pour le jeu (ouvert, modéré ou strict), d&#x27;après deux serveurs publics (STUN).</dd></div>
-<div><dt>cameras</dt><dd>Caméras cachées : sur le réseau d&#x27;une location ou de quelqu&#x27;un, les appareils qui ressemblent à des caméras.</dd></div>
-<div><dt>objets <i>iot</i></dt><dd>Box et objets connectés d&#x27;après le dernier scan gardé : ce que la box annonce (modèle, logiciel), son…</dd></div>
+<div><dt>cameras-cachees <i>hidden-cameras</i></dt><dd>Caméras cachées : sur le réseau d&#x27;une location ou de quelqu&#x27;un, les appareils qui ressemblent à des caméras.</dd></div>
+<div><dt>objets-connectes <i>smart-devices</i></dt><dd>Routeur et objets connectés d&#x27;après le dernier scan gardé : ce que le routeur annonce (modèle, logiciel),…</dd></div>
 <div><dt>dns-rapide <i>fast-dns</i></dt><dd>DNS le plus rapide : mesure le DNS actuel et des DNS publics, puis propose le plus rapide, annulable.</dd></div>
 <div><dt>wifi-public <i>public-wifi</i></dt><dd>Mode Wi-Fi public (café, hôtel, aéroport) : entrées fermées sur ce réseau, partage de fichiers et annonce…</dd></div>
 <div><dt>integrite <i>integrity</i></dt><dd>Intégrité des fichiers critiques : référence d&#x27;empreintes BLAKE3, puis ce qui a changé depuis</dd></div>
 <div><dt>pieges <i>decoys</i></dt><dd>Fichiers-pièges contre les rançongiciels : les poser (après accord), voir s&#x27;ils sont intacts, ou les retirer</dd></div>
-<div><dt>durcir <i>harden</i></dt><dd>Blocages de Windows Defender : règles ASR, protection réseau, logiciels indésirables, accès contrôlé aux…</dd></div>
+<div><dt>defender</dt><dd>Blocages de Windows Defender : règles ASR, protection réseau, logiciels indésirables, accès contrôlé aux…</dd></div>
 <div><dt>yara</dt><dd>Analyse YARA : 308 règles de familles de logiciels malveillants (ReversingLabs) et les empreintes de…</dd></div>
 <div><dt>memoire <i>memory</i></dt><dd>Mémoire des processus en marche passée aux 308 règles YARA : un logiciel malveillant sans fichier ne vit…</dd></div>
 <div><dt>isoler <i>sandbox</i></dt><dd>Lance un programme inconnu dans un bac à sable : pas de réseau, dossier personnel invisible</dd></div>
-<div><dt>courriel <i>email</i></dt><dd>Fuites d&#x27;adresse courriel : l&#x27;adresse est envoyée au service de recherche, après ton accord</dd></div>
-<div><dt>motdepasse <i>password</i></dt><dd>Vérifie si des mots de passe ont fuité (Have I Been Pwned) ; seuls 5 caractères de leur empreinte partent</dd></div>
-<div><dt>navigateurs <i>browser-passwords</i></dt><dd>Mots de passe enregistrés dans les navigateurs : combien et comment protégés (comptés, jamais lus), où…</dd></div>
-<div><dt>sortantes <i>outbound</i></dt><dd>Qui parle à Internet ?</dd></div>
-<div><dt>distance <i>remote-access</i></dt><dd>Quelqu&#x27;un contrôle mon ordinateur ?</dd></div>
+<div><dt>fuite-courriel <i>email-leak</i></dt><dd>Fuites d&#x27;adresse courriel : l&#x27;adresse est envoyée au service de recherche, après votre accord</dd></div>
+<div><dt>fuite-mot-de-passe <i>password-leak</i></dt><dd>Vérifie si des mots de passe ont fuité (Have I Been Pwned) ; seuls 5 caractères de leur empreinte partent</dd></div>
+<div><dt>mots-de-passe-navigateurs <i>browser-passwords</i></dt><dd>Mots de passe enregistrés dans les navigateurs : combien et comment protégés (comptés, jamais lus), où…</dd></div>
+<div><dt>connexions-sortantes <i>outbound-connections</i></dt><dd>Qui parle à Internet ?</dd></div>
+<div><dt>acces-a-distance <i>remote-access</i></dt><dd>Mon ordinateur est-il contrôlé ?</dd></div>
 <div><dt>lien <i>link</i></dt><dd>Ce lien est-il dangereux ?</dd></div>
 <div><dt>verifier-fichier <i>check-file</i></dt><dd>Vérifier un fichier téléchargé : empreinte comparée à celle du site, nom et contenu, YARA et antivirus</dd></div>
 <div><dt>courriel-suspect <i>suspicious-email</i></dt><dd>Ce courriel est-il une arnaque ?</dd></div>
@@ -583,26 +591,27 @@ main { gap: 3.5rem; padding-block: 3rem; }
 <div><dt>logiciels-perimes <i>outdated-software</i></dt><dd>Logiciels pas à jour (Windows, macOS) : navigateurs, Office, Acrobat, Java, 7-Zip, PuTTY, Slack comparés à…</dd></div>
 <div><dt>signaler <i>disclose</i></dt><dd>Préparer un signalement à un éditeur (MSRC, Google, Chrome, Mozilla, Apple, avis GHSA, CERT/CC, CERT-FR,…</dd></div>
 <div><dt>camera-micro <i>camera-mic</i></dt><dd>Caméra et micro : qui s&#x27;en sert ?</dd></div>
-<div><dt>acces <i>permissions</i></dt><dd>Bilan de confidentialité : les applications qui ont accès à la position, aux contacts, à la caméra et au…</dd></div>
+<div><dt>bilan-confidentialite <i>privacy-review</i></dt><dd>Bilan de confidentialité : les applications qui ont accès à la position, aux contacts, à la caméra et au…</dd></div>
 <div><dt>quarantaine <i>quarantine</i></dt><dd>Quarantaine : les fichiers isolés par l&#x27;antivirus ou YARA, à remettre à leur place (faux positif) ou à…</dd></div>
 <div><dt>secrets</dt><dd>Secrets dans l&#x27;historique des projets git du dossier personnel (mots de passe, clés d&#x27;API, jetons),…</dd></div>
 <div><dt>conteneurs <i>containers</i></dt><dd>Failles connues des images Docker ou Podman de cet ordinateur, par trivy s&#x27;il est installé.</dd></div>
 <div><dt>parametres <i>settings</i></dt><dd>Paramètres : tous les réglages de Vanguard (langue, emojis, travail sans Internet, protection en temps…</dd></div>
 <div><dt>blocage <i>blocking</i></dt><dd>Blocage des menaces : chaque menace trouvée propose « Bloquer » (le geste montré, accepté, noté, annulable)…</dd></div>
-<div><dt>sauvegarder <i>backup</i></dt><dd>Sauvegarde la base des appareils et l&#x27;état de la surveillance dans un fichier JSON</dd></div>
-<div><dt>restaurer <i>restore</i></dt><dd>Ajoute une sauvegarde (ou un appareils.json) à la base actuelle, sans rien effacer</dd></div>
+<div><dt>exporter <i>export</i></dt><dd>Sauvegarde la base des appareils et l&#x27;état de la surveillance dans un fichier JSON</dd></div>
+<div><dt>importer <i>import</i></dt><dd>Ajoute une sauvegarde (ou un appareils.json) à la base actuelle, sans rien effacer</dd></div>
 <div><dt>nommer <i>name</i></dt><dd>Donne un surnom à un appareil de la base (« imprimante HP »), désigné par son IP ou sa MAC</dd></div>
 <div><dt>guide</dt><dd>Guide des commandes : celles d&#x27;Omarchy, d&#x27;Arch, de Fedora, de Debian, des autres Linux, de Windows, de…</dd></div>
 <div><dt>lenteur <i>slow</i></dt><dd>Pourquoi c&#x27;est lent ?</dd></div>
 <div><dt>demarrage <i>startup</i></dt><dd>Programmes au démarrage : ceux qui se lancent à l&#x27;ouverture de session, à retirer ou à remettre après accord.</dd></div>
-<div><dt>fiche <i>specs</i></dt><dd>Fiche de l&#x27;ordinateur : modèle, carte mère, processeur, mémoire, carte graphique, disques, système.</dd></div>
+<div><dt>fiche-ordinateur <i>specs</i></dt><dd>Fiche de l&#x27;ordinateur : modèle, carte mère, processeur, mémoire, carte graphique, disques, système.</dd></div>
 <div><dt>copier-fichiers <i>copy-files</i></dt><dd>Copier mes fichiers (Documents, Images, Bureau, Vidéos, Musique) vers un disque externe : copie vérifiée,…</dd></div>
 <div><dt>verifier-copie <i>check-copy</i></dt><dd>Vérifier une copie faite par « Copier mes fichiers » (test de restauration) : des fichiers répartis sur…</dd></div>
 <div><dt>verifier-sauvegarde <i>check-backup</i></dt><dd>Vérifier ma sauvegarde : la sauvegarde mise en place par Vanguard relue pour de vrai, des fichiers répartis…</dd></div>
 <div><dt>verifier-cle <i>check-drive</i></dt><dd>Vérifier ma clé : capacité réelle (fausses clés), vitesses et blocs en erreur d&#x27;une clé USB ou d&#x27;un disque…</dd></div>
-<div><dt>a-laisser <i>handout</i></dt><dd>Rapport à laisser : une page simple pour la personne qu&#x27;on vient de dépanner (note, ce qu&#x27;il lui reste à…</dd></div>
+<div><dt>rapport-a-laisser <i>handout</i></dt><dd>Rapport à laisser : une page simple pour la personne qu&#x27;on vient de dépanner (note, ce qu&#x27;il lui reste à…</dd></div>
 <div><dt>changements <i>changes</i></dt><dd>Ce que Vanguard a changé : chaque correction lancée sur cet ordinateur, sa date et son résultat</dd></div>
 <div><dt>evenements <i>events</i></dt><dd>Le journal des événements : alertes, preuves relevées avant un geste, gestes, annulations, alertes…</dd></div>
+<div><dt>journaux-windows <i>windows-logs</i></dt><dd>Journaux de Windows : que s&#x27;est-il passé ?</dd></div>
 <div><dt>sauvegarde-auto <i>auto-backup</i></dt><dd>Sauvegarde automatique : mise en place avec l&#x27;outil du système (Déjà Dup ou rsync chaque jour, Time…</dd></div>
 <div><dt>raccourci <i>shortcut</i></dt><dd>Raccourci sur cet ordinateur : Vanguard copié ici et lancé d&#x27;un clic (menu des applications sous Linux,…</dd></div>
 <div><dt>ordinateurs <i>computers</i></dt><dd>Mes ordinateurs : ceux où la clé VANGUARD a fait un bilan, leur note et leurs problèmes restants (sur la…</dd></div>
@@ -610,56 +619,48 @@ main { gap: 3.5rem; padding-block: 3rem; }
 <div><dt>desinstaller <i>uninstall</i></dt><dd>Retirer Vanguard de cet ordinateur : ce qu&#x27;il y a posé (surveillance, entretien, sauvegarde automatique,…</dd></div>
 <div><dt>regles <i>rules</i></dt><dd>Les règles du bilan déclarées pour ce système : identifiant stable, sujet, références de durcissement</dd></div>
 <div><dt>autotest <i>self-test</i></dt><dd>Autodiagnostic : Vanguard vérifie ses propres lectures sur cet ordinateur.</dd></div>
-<div><dt>traces <i>evidence</i></dt><dd>Collecter les traces après une infection, avant de nettoyer : processus, connexions, ce qui se lance tout…</dd></div>
 <div><dt>depanner <i>troubleshoot</i></dt><dd>Dépanner pas à pas : pas d&#x27;Internet, Wi-Fi qui coupe, ordinateur lent, pas de son, imprimante, disque plein…</dd></div>
-<div><dt>proche <i>relative</i></dt><dd>Ordinateur d&#x27;un proche : trois questions (qui s&#x27;en sert, pourquoi on te l&#x27;a confié, son réseau), le bilan,…</dd></div>
 <div><dt>verifier-moi <i>self-check</i></dt><dd>Vérifier Vanguard lui-même : version, date de compilation, empreinte SHA-256 du programme (à comparer à la…</dd></div>
-<div><dt>plugin</dt><dd>Plugins : des programmes à toi ajoutés à Vanguard sans changer son code (essais, outils expérimentaux),…</dd></div>
+<div><dt>plugins</dt><dd>Plugins : des programmes à vous ajoutés à Vanguard sans changer son code (essais, outils expérimentaux),…</dd></div>
 <div><dt>labo <i>lab</i></dt><dd>Laboratoire : un script posé tel quel dans le dossier du labo (.sh, .bash, .ps1, .py ou un programme), pour…</dd></div>
-<div><dt>extensions <i>ext</i></dt><dd>Extensions : le menu des plugins et des scripts du labo, à choisir et lancer</dd></div>
+<div><dt>extensions</dt><dd>Extensions : le menu des plugins et des scripts du labo, à choisir et lancer</dd></div>
 </dl>
 </details>
 <pre class="exemple"><span class="g"># l'audit du réseau, lisible par un script</span>
 vanguard audit-reseau --json &gt; audit.json
 <span class="g"># le bilan de cet ordinateur, sans menu ni question</span>
-vanguard machine --json &gt; bilan.json
+vanguard audit --json &gt; bilan.json
 <span class="g"># tout le dossier personnel, règles YARA et empreintes</span>
 vanguard yara --complet</pre>
 </section>
 <section id="nouveautes">
 <div class="tete-section">
-<p class="surtitre">Nouveautés de la version 0.86</p>
+<p class="surtitre">Nouveautés de la version 0.87</p>
 <h2>Ce qui vient d'arriver</h2>
-<p>Les logiciels espions, les logiciels pas à jour, le mode Wi-Fi public, le veilleur anti-rançongiciel, le bilan post-quantique, le signalement d'une faille à un éditeur, l'autodiagnostic, des corrections qui s'annulent toutes, la preuve et le journal des événements, une chaîne de mise à jour durcie.</p>
+<p>Les journaux de Windows lus par Vanguard lui-même, un moteur YARA et un lecteur de fichiers maison, un nouveau menu qui met la défense d'abord, le blocage sans script, moins de programmes externes, et une troisième campagne d'attaque contre Vanguard.</p>
 </div>
 <ul class="nouveautes">
-<li><b>Logiciels espions</b><span><code>vanguard logiciels-espions</code> cherche les signes d'un logiciel espion posé par un proche : connexions vers les serveurs connus (liste d'Échap), logiciels de surveillance, programmes qui lisent le clavier, autorisations de surveillance sous macOS. Lecture seule, et le verdict n'est jamais « aucun logiciel espion ».</span></li>
-<li><b>Logiciels pas à jour</b><span><code>vanguard logiciels-perimes</code>, sous Windows et macOS : navigateurs, Office, Acrobat, Java, 7-Zip, PuTTY et Slack comparés à leur dernière version ; pour Firefox et Edge, chaque faille exploitée vérifiée contre la version installée. La liste des logiciels ne sort jamais de l'ordinateur.</span></li>
-<li><b>Mode Wi-Fi public</b><span><code>vanguard wifi-public</code> ferme l'ordinateur au réseau d'un café, d'un hôtel ou d'un aéroport : plus aucune connexion entrante, partage et annonce du nom coupés, DNS protecteur. Chaque valeur d'avant est notée et scellée ; tout est remis en partant, même après un redémarrage.</span></li>
-<li><b>Veilleur anti-rançongiciel</b><span>Sous Linux, <code>vanguard veilleur rancongiciel on</code> surveille en direct les dossiers personnels : une rafale de chiffrement alerte en quelques secondes au lieu d'attendre la vérification horaire. Avec la protection active et un cas quasi certain, le programme est gelé, la preuve relevée, puis il est arrêté et mis en quarantaine. Coupé par défaut, sans droits d'administrateur.</span></li>
-<li><b>Bilan post-quantique</b><span>Un trafic capté aujourd'hui peut se lire demain : le bilan dit où l'échange de clés post-quantique manque, pour SSH, les navigateurs (X25519MLKEM768) et WireGuard, et l'audit du réseau pour le routeur. Lecture seule, sans bibliothèque ajoutée.</span></li>
-<li><b>Signaler une faille</b><span><code>vanguard signaler</code> trie d'abord (faille connue, logiciel malveillant, hameçonnage), puis prépare le brouillon au format de l'éditeur, ce qui est personnel retiré en trois couches. Le texte est montré en entier ; rien n'est jamais envoyé.</span></li>
-<li><b>Autodiagnostic</b><span><code>vanguard autotest</code> fait tourner chaque règle du bilan sans rien changer, compare les lectures de Vanguard à celles des outils du système et mesure leur durée ; la surveillance le refait chaque semaine, et une lecture contredite est dite.</span></li>
-<li><b>Chaque correction s'annule</b><span>Les corrections du bilan relèvent l'état d'avant et s'annulent une par une dans « Ce que Vanguard a changé » ; « Tout remettre comme avant » défait le bilan, Optimiser, Gaming, les blocages et le mode Wi-Fi public. Annuler ne rouvre jamais ce qu'une correction a fermé.</span></li>
-<li><b>La preuve, puis le geste</b><span>Avant chaque arrêt, quarantaine ou blocage, Vanguard relève ce que le geste va effacer : programme, ligne de commande, empreinte, connexions. Les traces d'incident reprennent ce que Vanguard a vu et fait.</span></li>
-<li><b>Journal des événements scellé</b><span><code>vanguard evenements</code> relie l'alerte, la preuve, le geste et son annulation ; chaque ligne porte l'empreinte de la précédente : une ligne retirée ou changée se voit.</span></li>
-<li><b>« C'est normal », partout</b><span>Une alerte de la surveillance, du veilleur ou du blocage se déclare normale pour 90 jours ; le choix porte sur ce dont parle l'alerte, plus sur son texte, et une menace certaine ne se tait jamais.</span></li>
-<li><b>Règles du bilan</b><span>Le serveur OpenSSH et les clés SSH sous Windows, les protections de Defender relues, la règle des mots de passe, la sécurité du démarrage et la persistance sous macOS ; chaque règle cite sa référence (CIS, Microsoft ou ANSSI) et a son délai ; les logiciels installés depuis le dernier bilan sont dits.</span></li>
-<li><b>Mises à jour mieux gardées</b><span>Une seconde clé de signature, gardée hors ligne, peut révoquer la clé principale volée ; Vanguard refuse un retour à une version plus ancienne et dit « non vérifié » quand le manifeste est trop vieux. L'état de Vanguard est scellé : réécrit par un autre programme, il ne fait rien taire.</span></li>
-<li><b>Menus au clavier</b><span>→ entre, ← revient ; la fenêtre ouverte pour Vanguard se met à la taille du menu et se centre.</span></li>
-<li><b>Deux campagnes d'attaque</b><span>Vanguard attaqué lui-même, deux fois : 30 faiblesses corrigées, et 10 contournements de ces corrections, chacune avec son essai.</span></li>
+<li><b>Que s'est-il passé ?</b><span><code>vanguard journaux-windows</code> lit les journaux de Windows avec un lecteur .evtx écrit pour Vanguard : onze règles, les alertes dans l'ordre du temps, la période vraiment lue. Sur ce Windows ou sur un dossier de journaux, depuis n'importe quel système ; essayé sur un vrai Windows 11 sans fausse alerte.</span></li>
+<li><b>YARA maison</b><span>Les 308 règles de ReversingLabs appliquées par un moteur écrit pour Vanguard ; une règle qu'il ne comprend pas rend l'analyse incomplète, jamais saine. Le programme Windows passe de 34 à 18 Mo.</span></li>
+<li><b>Antivirus maison, première brique</b><span>Programmes, documents Office et leurs macros, raccourcis, scripts, archives zip, gzip et tar lus par Vanguard lui-même, bornés contre les fichiers piégés ; 7z, RAR, PDF ou chiffré : dit non vérifié.</span></li>
+<li><b>Nouveau menu</b><span>La défense d'abord : Bilan (1 à 3), Cyberdéfense (4 à 8), En plus (9 à 13). Aucun écran ne défile ; un mot tapé au menu trouve chaque outil, page du guide ou parcours.</span></li>
+<li><b>Blocage sans script</b><span>Chaque geste fait en administrateur est un ordre d'une liste fermée, à paramètres typés, revérifié avant d'être fait.</span></li>
+<li><b>Le système lu directement</b><span>Wi-Fi, Bluetooth, systemd, NetworkManager, processus et réseau de macOS : lus par Vanguard lui-même, sans programme intermédiaire.</span></li>
+<li><b>Logiciels proposés</b><span>Sept de plus, dont Ente Auth pour la double authentification ; Bitwarden par Flathub sous Arch.</span></li>
+<li><b>Vouvoiement</b><span>Tout ce que Vanguard affiche en français vouvoie : menus, messages, aide, guide.</span></li>
+<li><b>Troisième campagne d'attaque</b><span>La clé comparée à sa référence avant toute écriture, l'état de Vanguard scellé et lu en simple fichier, les données piégées (archives, mémoire, Wi-Fi jumeau) bornées.</span></li>
+<li><b>Moins de fausses alertes de l'antivirus</b><span>Les noms d'outils d'attaque que Vanguard reconnaît ne sont plus en clair dans le programme, pour qu'un antivirus ne le prenne pas pour l'outil qu'il traque.</span></li>
 </ul>
 </section>
 <section id="feuille-de-route">
 <div class="tete-section">
 <p class="surtitre">Feuille de route</p>
 <h2>Ce qui se prépare</h2>
-<p>Les travaux en cours, puis ceux qui suivent, dans l'ordre. Chacun passe par les mêmes règles : écrit en Rust, défensif, annulable, relu et testé avant d'entrer dans une version. Les logiciels espions, les logiciels pas à jour, le mode Wi-Fi public, le signalement d'une faille, l'autodiagnostic, le veilleur anti-rançongiciel et le bilan post-quantique sont arrivés avec la 0.86.</p>
+<p>Les travaux en cours, puis ceux qui suivent, dans l'ordre. Chacun passe par les mêmes règles : écrit en Rust, défensif, annulable, relu et testé avant d'entrer dans une version. Les journaux de Windows, le moteur YARA et le nouveau menu sont arrivés avec la 0.87.</p>
 </div>
 <h3 class="sous-titre">En cours</h3>
 <div class="audit">
 <div><b>Agents d'IA</b><span>Tout ce qu'un agent de code peut exécuter (crochets, serveurs MCP, skills, réglages de Claude Code, Codex, Gemini, VS Code), leurs versions vulnérables, et ce qui a changé depuis leur approbation.</span><span class="k">en cours</span></div>
-<div><b>Journaux de Windows</b><span>Analysés par Hayabusa et ses règles Sigma : téléchargé à part, vérifié par des empreintes épinglées, lancé sans réseau.</span><span class="k">en cours</span></div>
 <div><b>Tout en Rust</b><span>Le blocage sans script ; un pare-feu Linux piloté directement (nf_tables), écrit pour Vanguard ; les dernières lectures du système sous Linux et macOS ; les outils de publication et la signature des versions.</span><span class="k">en cours</span></div>
 <div><b>Banc d'essai sur la clé</b><span>Un double-clic sur un vrai Windows lance les essais de Vanguard et range les résultats sur la clé.</span><span class="k">en cours</span></div>
 <div><b>Interface graphique</b><span>Étude d'une fenêtre graphique qui garde le terminal à côté.</span><span class="k">étude</span></div>
@@ -668,7 +669,7 @@ vanguard yara --complet</pre>
 <h3 class="sous-titre">Plus tard</h3>
 <ul class="nouveautes">
 <li><b>Windows tout en Rust</b><span>Les corrections faites par un programme élevé qui revérifie chaque geste, sans script.</span></li>
-<li><b>Menus et textes</b><span>La défense d'abord dans les menus, le reste rangé « en plus » ; les textes du programme au vouvoiement.</span></li>
+<li><b>Journaux de Windows, la suite</b><span>Un menu pour « Que s'est-il passé ? » et de nouvelles règles, chacune provoquée dans une machine virtuelle.</span></li>
 <li><b>Observation du noyau Linux</b><span>Les programmes eBPF cachés d'un rootkit, puis l'observation en direct, sans jamais rien bloquer dans le noyau.</span></li>
 <li><b>Clé de secours</b><span>Une clé qui démarre un ordinateur en panne et y lance Vanguard, sans écrire dans les comptes de Windows.</span></li>
 <li><b>Agents d'IA, la suite</b><span>Les consignes cachées dans les fichiers (caractères invisibles), puis un secret-piège.</span></li>
@@ -694,9 +695,9 @@ vanguard yara --complet</pre>
 <h2>Écrit en Rust, testé à chaque version</h2>
 </div>
 <div class="chiffres">
-<div class="chiffre"><b>≈ 200 500</b><span>lignes de code Rust</span></div>
-<div class="chiffre"><b>1 894</b><span>tests sous Linux</span></div>
-<div class="chiffre"><b>1 621</b><span>tests sous Windows (Wine)</span></div>
+<div class="chiffre"><b>≈ 249 300</b><span>lignes de code Rust</span></div>
+<div class="chiffre"><b>2 361</b><span>tests sous Linux</span></div>
+<div class="chiffre"><b>2 018</b><span>tests sous Windows (Wine)</span></div>
 <div class="chiffre"><b>211</b><span>vérifications sur un vrai Windows</span></div>
 </div>
 <p class="note">Chaque version passe par des relectures de sécurité indépendantes, par un vrai Windows qui se teste tout seul et par un vrai Mac. Cette page est refaite par le script de publication à chaque version.</p>
@@ -704,7 +705,7 @@ vanguard yara --complet</pre>
 <section id="installer">
 <div class="tete-section">
 <p class="surtitre">Télécharger et installer</p>
-<h2>Avant de télécharger</h2>
+<h2>Télécharger, vérifier, installer</h2>
 <p>Les liens sont en bas de page à dessein : un outil de sécurité se télécharge en sachant ce qu'il fait.</p>
 </div>
 <div class="audit">
@@ -713,8 +714,15 @@ vanguard yara --complet</pre>
 <div><b>Ce qu'il demande</b><span>Les droits d'administrateur seulement pour certaines corrections, par la fenêtre du système (UAC sous Windows, polkit sous Linux).</span></div>
 <div><b>Pourquoi un avertissement</b><span>Le programme n'est pas encore signé ; la signature est prévue. D'ici là, comparer son empreinte SHA-256 à celle de la page de la version.</span></div>
 </div>
-<h3 class="sous-titre">Télécharger</h3>
-<p class="note">La <a href="https://github.com/d9v3/vanguard-beta/releases/latest">page de la dernière version</a> donne les notes et les empreintes SHA-256. Programmes : <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-windows-x86_64.exe">Windows</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-linux-x86_64">Linux</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-macos">macOS</a>. Rien à installer : un seul exécutable.</p>
+<h3 class="sous-titre">Le chemin principal : Vanguard sur votre ordinateur</h3>
+<ol class="chaine">
+<li><b>Télécharger</b>Sur la <a href="https://github.com/d9v3/vanguard-beta/releases/latest">page de la dernière version</a>, le programme de votre système : <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-windows-x86_64.exe">Windows</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-linux-x86_64">Linux</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-macos">macOS</a>. Un seul exécutable, rien à installer pour le lancer.</li>
+<li><b>Vérifier l'empreinte</b>Avec <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/SHA256SUMS.txt">SHA256SUMS.txt</a>, posé à côté : <code>sha256sum -c --ignore-missing SHA256SUMS.txt</code> sous Linux ; ailleurs, <code>Get-FileHash</code> (Windows) ou <code>shasum -a 256</code> (macOS), à comparer à sa ligne. Une empreinte différente : ne pas le lancer.</li>
+<li><b>Le mettre sur l'ordinateur</b><code>vanguard raccourci</code> le copie dans son dossier sur cet ordinateur et le lance d'un clic (menu des applications sous Linux, Bureau sous Windows et macOS), après accord.</li>
+<li><b>Le tenir à jour</b><code>vanguard se-mettre-a-jour</code> prend la dernière version publiée, signée par l'auteur et vérifiée ; toujours sur accord, jamais une version plus ancienne.</li>
+<li><b>Ce qui protège au quotidien</b>Installé, il peut veiller seul, chaque fonction allumée avec votre accord : la surveillance horaire du réseau (<code>vanguard surveillance on</code>), la protection active, qui bloque seule ce qui ne fait aucun doute (<code>vanguard blocage auto</code>), l'entretien du mois (<code>vanguard entretien on</code>).</li>
+</ol>
+<h3 class="sous-titre">Lancer la première fois</h3>
 <div class="os">
 <article>
 <h4>Windows <span>10 · 11</span></h4>
@@ -737,6 +745,8 @@ vanguard yara --complet</pre>
 </ul>
 </article>
 </div>
+<h3 class="sous-titre">En option, pour dépanner : le programme seul sur une clé USB</h3>
+<p class="note">Pour l'ordinateur d'un proche ou une machine qu'on ne veut pas toucher, la clé VANGUARD porte le programme (Windows et Linux, et macOS quand sa compilation sur GitHub a pu être reprise), sa base et ses rapports, et marche sans Internet (ce qui en a besoin le dit). Ailleurs que sur l'ordinateur de son propriétaire, elle est en lecture seule (Windows la monte ainsi de lui-même ; sous Linux et macOS, Vanguard la remonte ainsi en démarrant) : seule sa petite partition à part reçoit le journal des erreurs, anonymisé, et le tableau de « Mes ordinateurs ». Elle se prépare sous Linux, depuis le code source : <code>outils/preparer-cle.sh /dev/sdX</code> efface la clé, après avoir sauvegardé son contenu, puis y copie le programme déjà compilé (<code>outils/deployer.sh</code> le compile). Sur la clé : <code>Windows/vanguard.exe</code>, <code>Linux/vanguard</code>, ou <code>Lancer Vanguard.command</code> sous macOS. Elle ne porte pas d'images d'installation ni de quoi démarrer un ordinateur.</p>
 <h3 class="sous-titre">Vérifier, puis prendre en main</h3>
 <ol class="chaine">
 <li><b>Empreinte</b>Comparer la sortie de <code>sha256sum</code> (ou <code>Get-FileHash</code>) à la page de la version.</li>
@@ -745,10 +755,21 @@ vanguard yara --complet</pre>
 <li><b>Premier bilan</b>Lancer <code>vanguard</code>, choisir 1 (bilan complet), puis 2 pour corriger, après accord.</li>
 <li><b>Au clavier</b>Flèches et Entrée pour choisir ; Échap ou Retour arrière pour revenir ; <code>--json</code> pour un script.</li>
 </ol>
+<div lang="en">
+<h3 class="sous-titre">In English: download, check, install</h3>
+<ol class="chaine">
+<li><b>Download</b>From the <a href="https://github.com/d9v3/vanguard-beta/releases/latest">latest release page</a>, the program for your system: <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-windows-x86_64.exe">Windows</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-linux-x86_64">Linux</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-macos">macOS</a>. A single executable, nothing to install to run it.</li>
+<li><b>Check the checksum</b>With <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/SHA256SUMS.txt">SHA256SUMS.txt</a> next to it: <code>sha256sum -c --ignore-missing SHA256SUMS.txt</code> on Linux; elsewhere, <code>Get-FileHash</code> (Windows) or <code>shasum -a 256</code> (macOS), compared to its line. A different checksum: do not run it.</li>
+<li><b>Put it on the computer</b><code>vanguard shortcut</code> copies it to its folder on this computer and launches it in one click (applications menu on Linux, Desktop on Windows and macOS), after your consent.</li>
+<li><b>Keep it up to date</b><code>vanguard self-update</code> takes the latest published version, signed by the author and checked; always with your consent, never an older version.</li>
+<li><b>What protects every day</b>Installed, it can watch on its own, each feature turned on with your consent: hourly network monitoring (<code>vanguard monitor on</code>), active protection, which blocks on its own what leaves no doubt (<code>vanguard blocking auto</code>), the monthly maintenance (<code>vanguard maintenance on</code>).</li>
+</ol>
+<p class="note"><b>Optional, for troubleshooting: the program alone on a USB key.</b> For a relative's computer or a machine you do not want to touch, the VANGUARD key carries the program (Windows and Linux, and macOS when its GitHub build could be fetched), its database and its reports, and works without Internet (what needs it says so). Anywhere but its owner's computer it is read-only (Windows mounts it that way by itself; on Linux and macOS, Vanguard remounts it that way on start): only its small separate partition receives the anonymized error log and the “My computers” table. It is prepared on Linux, from the source code: <code>outils/preparer-cle.sh /dev/sdX</code> erases the key, after saving its contents, then copies the already built program onto it (<code>outils/deployer.sh</code> builds it). On the key: <code>Windows/vanguard.exe</code>, <code>Linux/vanguard</code>, or <code>Lancer Vanguard.command</code> on macOS. It carries no installation images and nothing to boot a computer.</p>
+</div>
 </section>
 </main>
 <footer>
-<div class="cadre"><span>Vanguard 0.86.0 · 23 octobre 2026</span><span><a href="https://github.com/d9v3/vanguard-beta">Logiciel libre · GPL-3.0-or-later</a></span></div>
+<div class="cadre"><span>Vanguard 0.87.0 · 24 octobre 2026</span><span><a href="https://github.com/d9v3/vanguard-beta">Logiciel libre · GPL-3.0-or-later</a></span></div>
 </footer>
 </body>
 </html>
