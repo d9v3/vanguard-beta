@@ -1694,6 +1694,48 @@ pub async fn executer(o: Options) -> Result<Rapport, String> {
     Ok(rapport)
 }
 
+/// COM-ARP-001 au corpus de détection : `hote|adresse|mac|rôle` d'un scan fabriqué (rôle « passerelle » pour la
+/// box, vide sinon). Le scan et la surveillance montrent l'usurpation en rouge (✖, critique) : le constat du cas
+/// porte ce niveau et le message même qu'ils affichent.
+#[cfg(test)]
+pub(crate) fn corpus_usurpation(e: &crate::modele::corpus::Entree) -> Vec<crate::machine::Constat> {
+    let hotes = e
+        .de("hote")
+        .iter()
+        .map(|c| Hote {
+            ip: c[0].parse().unwrap(),
+            nom: None,
+            mac: Some(c[1].into()),
+            fabricant: None,
+            surnom: None,
+            premier_vu: None,
+            role: (c[2] == "passerelle").then_some("passerelle"),
+            nouvelle: false,
+            ports: Vec::new(),
+            alertes: Vec::new(),
+            score: 100,
+        })
+        .collect();
+    let r = Rapport {
+        carnet_non_cru: None,
+        reseau: "192.168.50.0/24".into(),
+        nom_reseau: Some("Salon".into()),
+        absents: Vec::new(),
+        duree_s: 1.0,
+        score_global: 100,
+        note: "A",
+        hotes,
+        upnp: None,
+        empoisonnement: None,
+    };
+    vec![match usurpation_arp(&r) {
+        Some((boite, mac, autre)) => {
+            crate::machine::alerte("Réseau local", Niveau::Critique, message_usurpation(boite, &mac, autre))
+        }
+        None => crate::machine::ok("Réseau local", "aucun autre appareil ne répond avec la MAC de la box"),
+    }]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

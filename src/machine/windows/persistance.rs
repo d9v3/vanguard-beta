@@ -725,6 +725,27 @@ fn juger_persistance(taches: &[&str], run: &[ValeurRun], demarrage: &[&str]) -> 
     constats
 }
 
+/// WIN-PRS-001 au corpus de détection : `tache|dossier|nom|programme|arguments` (comme les lit le Planificateur),
+/// `run|nom|valeur` (sous la clé Run du compte) et `demarrage|ligne` (raccourcis des dossiers Démarrage).
+#[cfg(test)]
+pub(super) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    let taches: Vec<String> = e.de("tache").iter().map(|c| c.join("|")).collect();
+    let taches: Vec<&str> = taches.iter().map(String::as_str).collect();
+    let run: Vec<ValeurRun> = e
+        .de("run")
+        .iter()
+        .map(|c| ValeurRun {
+            cle: CLES_RUN[0],
+            nom: c[0].to_string(),
+            mots: None,
+            valeur: c[1].to_string(),
+        })
+        .collect();
+    let demarrage: Vec<String> = e.de("demarrage").iter().map(|c| c.join("|")).collect();
+    let demarrage: Vec<&str> = demarrage.iter().map(String::as_str).collect();
+    juger_persistance(&taches, &run, &demarrage)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

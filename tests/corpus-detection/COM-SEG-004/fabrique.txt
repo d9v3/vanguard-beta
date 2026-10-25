@@ -1,0 +1,2 @@
+appareil|1|e4:5d:51:10:20:30|Sagemcom Broadband SAS|box|80,443
+dhcp|192.168.50.66

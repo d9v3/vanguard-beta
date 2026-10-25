@@ -1,0 +1,5 @@
+# LNX-PRV-003 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "eleve"
+mots = ["sudo"]
+propre = "aucun"
+systemes = ["linux"]

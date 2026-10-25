@@ -1,0 +1,5 @@
+# MAC-PRS-001 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "eleve"
+mots = ["/Users/Shared/corpus-maj"]
+propre = "aucun"
+systemes = ["macos"]

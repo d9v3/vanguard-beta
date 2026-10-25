@@ -1,0 +1,2 @@
+reference|/etc/corpus-critique|b3:aa
+actuel|/etc/corpus-critique|b3:aa

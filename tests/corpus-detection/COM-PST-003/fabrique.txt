@@ -1,0 +1,1 @@
+empoisonneur|192.168.50.66|LLMNR,NetBIOS

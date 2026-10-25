@@ -1,0 +1,2 @@
+reponse|one.one.one.one|203.0.113.66
+reponse|dns.google|203.0.113.66

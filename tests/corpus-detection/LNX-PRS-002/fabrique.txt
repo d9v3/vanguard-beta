@@ -1,0 +1,2 @@
+# Une bibliothèque préchargée hors paquet.
+fichier|etc/ld.so.preload|/usr/lib/corpus-precharge.so\n

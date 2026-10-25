@@ -1893,6 +1893,105 @@ pub fn constats(e: &Entree) -> Vec<Constat> {
     constats
 }
 
+/// Une entrée du corpus de détection : en ligne, le DNS utilisé 203.0.113.53, réglé par le système, le reste vide.
+#[cfg(test)]
+fn entree_du_corpus() -> Entree {
+    let mut e = Entree::vide(false);
+    let serveur: IpAddr = "203.0.113.53".parse().unwrap();
+    e.utilise = Some(Utilise {
+        serveurs: vec![(serveur, false)],
+        chiffre: Some(false),
+        resolveur_local: None,
+    });
+    e
+}
+
+#[cfg(test)]
+fn constats_du_corpus(e: &crate::modele::corpus::Entree, entree: &Entree) -> Vec<Constat> {
+    let id = crate::audit::corpus::fiche(e);
+    constats(entree).into_iter().filter(|c| c.regle == id).collect()
+}
+
+/// COM-DNS-004 au corpus de détection : `reponse|nom stable|adresse` (ce que le DNS utilisé répond) ; un nom stable
+/// sans ligne reçoit sa vraie adresse. Les résolveurs publics répondent juste.
+#[cfg(test)]
+pub(crate) fn corpus_divergence(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    let reponse = |adresse: Ipv4Addr| Reponse {
+        rcode: 0,
+        ad: false,
+        ra: true,
+        tc: false,
+        enregistrements: vec![dns_client::Enregistrement {
+            nom: "x".into(),
+            ttl: 60,
+            donnees: Donnees::A(adresse),
+        }],
+    };
+    let lues = e.de("reponse");
+    let reponses = |fabriquees: bool| -> Vec<(&'static str, Option<Reponse>)> {
+        NOMS_STABLES
+            .iter()
+            .map(|(nom, attendues)| {
+                let adresse = lues
+                    .iter()
+                    .find(|c| fabriquees && c[0] == *nom)
+                    .map_or(attendues[0], |c| c[1].parse().unwrap());
+                (*nom, Some(reponse(adresse)))
+            })
+            .collect()
+    };
+    let mesure = |role, serveur: &str, fabriquees| Mesure {
+        role,
+        serveur: serveur.parse().unwrap(),
+        reponses: reponses(fabriquees),
+        // Un nom inventé : « n'existe pas », sans adresse.
+        inexistant: Some(Reponse {
+            rcode: 3,
+            enregistrements: Vec::new(),
+            ..reponse(Ipv4Addr::UNSPECIFIED)
+        }),
+    };
+    let mut entree = entree_du_corpus();
+    entree.mesures = vec![
+        mesure(Role::Utilise, "203.0.113.53", true),
+        mesure(Role::Public("Cloudflare"), "1.1.1.1", false),
+        mesure(Role::Public("Quad9"), "9.9.9.9", false),
+    ];
+    constats_du_corpus(e, &entree)
+}
+
+/// COM-TLS-001 au corpus de détection : `emetteur|organisation|noms de l'émetteur` du certificat que le site de
+/// référence présente.
+#[cfg(test)]
+pub(crate) fn corpus_certificat(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    let mut entree = entree_du_corpus();
+    if let Some(c) = e.de("emetteur").first() {
+        entree.tls = Tls::Presente {
+            emetteur: Some(c[0].to_string()),
+            noms: Some(c[1].to_string()),
+            sujet: Some("site de référence du corpus".into()),
+            code: 200,
+        };
+    }
+    constats_du_corpus(e, &entree)
+}
+
+/// COM-TLS-003 au corpus de détection : le fichier policies.json d'un Firefox fabriqué, lu comme au bilan.
+#[cfg(test)]
+pub(crate) fn corpus_racines(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    let mut entree = entree_du_corpus();
+    entree.profils_firefox = 1;
+    entree.politiques = lire_politique(&e.texte)
+        .map(|(certificats, racines_du_systeme)| Politique {
+            fichier: "/etc/firefox/policies/policies.json".into(),
+            certificats,
+            racines_du_systeme,
+        })
+        .into_iter()
+        .collect();
+    constats_du_corpus(e, &entree)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

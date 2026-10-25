@@ -1,0 +1,5 @@
+# WIN-PRS-001 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "eleve"
+mots = ["corpus-maj.exe"]
+propre = "aucun"
+systemes = ["windows"]

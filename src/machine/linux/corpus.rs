@@ -15,6 +15,11 @@ pub(crate) const CAS: &[(&str, Juge)] = &[
     ("LNX-PRS-004", sans_fichier),
     ("LNX-NOY-006", modules),
     ("LNX-RES-002", ecoute),
+    ("LNX-PRS-001", fichiers_suspects),
+    ("LNX-PRS-002", persistance),
+    ("LNX-CPT-001", comptes),
+    ("LNX-SSH-002", echecs_ssh),
+    ("LNX-PRV-003", sudo),
 ];
 
 /// LNX-PRS-003 : `liste|pid,pid…` (ce que montre /proc) et `fiche|pid|nom|tgid` (ce qui répond au noyau).
@@ -89,4 +94,57 @@ fn ecoute(e: &Entree) -> Vec<Constat> {
         })
         .collect();
     juger_ecoute(&cartes).into_iter().collect()
+}
+
+/// LNX-PRS-001 : `anormal|chemin` (privilégié hors paquet ou dans un dossier temporaire), `modifie|chemin|paquet`,
+/// `systeme|nombre` (programmes privilégiés du système), `path|dossier` (ouvert à d'autres) ; le gestionnaire de
+/// paquets reconnu, getcap présent.
+fn fichiers_suspects(e: &Entree) -> Vec<Constat> {
+    let releve = super::persistance::Releve {
+        modifies: e
+            .de("modifie")
+            .iter()
+            .map(|c| (c[0].to_string(), c[1].to_string()))
+            .collect(),
+        anormaux: e.de("anormal").iter().map(|c| std::path::PathBuf::from(c[0])).collect(),
+        systeme: e.de("systeme").first().map_or(0, |c| c[0].parse().unwrap()),
+        gestion: true,
+        non_verifies: 0,
+        capacites_lues: true,
+        path_dangereux: e.de("path").iter().map(|c| c[0].to_string()).collect(),
+        reinstaller: "sudo pacman -S --noconfirm corpus".into(),
+    };
+    super::persistance::juger_fichiers_suspects(&releve)
+}
+
+/// LNX-PRS-002 : `fichier|chemin sous la racine|contenu` (« \n » pour un saut de ligne), posés dans une racine
+/// jetable que la persistance lit comme « / » ; le dossier personnel y est home/alice. Ni variable de session, ni
+/// crontab, ni gestionnaire de paquets.
+fn persistance(e: &Entree) -> Vec<Constat> {
+    let racine = e.jetable("racine");
+    for c in e.de("fichier") {
+        let chemin = racine.join(c[0]);
+        std::fs::create_dir_all(chemin.parent().unwrap()).unwrap();
+        std::fs::write(&chemin, c[1].replace("\\n", "\n")).unwrap();
+    }
+    let maison = racine.join("home/alice");
+    std::fs::create_dir_all(&maison).unwrap();
+    let constats = super::persistance::persistance_dans(&racine, &maison, |_| None, None, None);
+    let _ = std::fs::remove_dir_all(&racine);
+    constats
+}
+
+/// LNX-CPT-001 : le texte de /etc/passwd.
+fn comptes(e: &Entree) -> Vec<Constat> {
+    vec![super::juger_comptes(&e.texte)]
+}
+
+/// LNX-SSH-002 : des lignes du journal de sshd des dernières 24 h ; mots de passe permis, aucun service qui bloque.
+fn echecs_ssh(e: &Entree) -> Vec<Constat> {
+    super::juger_echecs_ssh(&e.texte, true, || None).into_iter().collect()
+}
+
+/// LNX-PRV-003 : la sortie de « sudo -n -l ».
+fn sudo(e: &Entree) -> Vec<Constat> {
+    crate::machine::unix::juger_sudo(&e.texte, super::privileges::tout_permis())
 }

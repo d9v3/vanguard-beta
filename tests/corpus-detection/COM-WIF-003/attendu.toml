@@ -1,0 +1,5 @@
+# COM-WIF-003 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "moyen"
+mots = ["00:11:22:aa:bb:01"]
+propre = "aucun"
+systemes = ["linux", "windows", "macos"]

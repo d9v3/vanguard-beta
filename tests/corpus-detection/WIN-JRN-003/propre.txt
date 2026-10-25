@@ -1,0 +1,1 @@
+Security|Microsoft-Windows-Security-Auditing|4624|0|LogonType=5|TargetUserName=SYSTEM

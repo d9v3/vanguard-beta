@@ -1,0 +1,1 @@
+noyau|  150    0 0xffffff7f8 0x1000 0x1000 com.exemple.corpus.pilote (1.0) 1A2B <8 6 5 3>

@@ -1,0 +1,5 @@
+# COM-ARP-004 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "info"
+mots = ["192.168.50.21"]
+propre = "aucun"
+systemes = ["linux", "windows", "macos"]

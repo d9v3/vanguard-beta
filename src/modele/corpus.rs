@@ -106,6 +106,7 @@ fn tous_les_cas() -> Vec<(&'static str, Juge)> {
     #[cfg(target_os = "macos")]
     cas.extend_from_slice(crate::machine::macos::corpus::CAS);
     cas.extend_from_slice(crate::journaux_windows::regles::corpus::CAS);
+    cas.extend_from_slice(crate::audit::corpus::CAS);
     cas
 }
 
@@ -151,34 +152,9 @@ const EXEMPTEES: &[(&str, &str)] = &[
     ),
 ];
 
-/// Les règles qui attendent l'extraction de leur jugement (lot S3b) : la lecture et le jugement y sont encore mêlés.
-/// S3b vide cette liste ; une entrée qui a reçu son cas fait échouer.
-const EN_ATTENTE_S3B: &[(&str, &str)] = &[
-    ("LNX-PRS-001", "persistance lue sous / seulement"),
-    ("LNX-PRS-002", "persistance lue sous / seulement"),
-    ("LNX-CPT-001", "jugement mêlé à la lecture"),
-    ("LNX-SSH-002", "jugement mêlé à la lecture"),
-    (
-        "LNX-PRV-003",
-        "le constat se forme après « sudo -n -l », dans la même fonction",
-    ),
-    ("COM-INT-001", "jugement mêlé à la lecture"),
-    ("MAC-PRS-001", "jugement mêlé à la lecture"),
-    ("MAC-PRV-002", "jugement mêlé à la lecture"),
-    ("MAC-SYS-003", "jugement mêlé à la lecture"),
-    ("WIN-PRS-001", "juger_persistance à vérifier"),
-    ("WIN-JRN-003", "relie les règles EVT- au bilan"),
-    ("COM-ARP-001", "fiche de l'audit du réseau, sans point d'entrée unique"),
-    ("COM-ARP-002", "fiche de l'audit du réseau, sans point d'entrée unique"),
-    ("COM-ARP-004", "fiche de l'audit du réseau, sans point d'entrée unique"),
-    ("COM-DNS-004", "fiche de l'audit du réseau, sans point d'entrée unique"),
-    ("COM-PST-003", "fiche de l'audit du réseau, sans point d'entrée unique"),
-    ("COM-SEG-004", "fiche de l'audit du réseau, sans point d'entrée unique"),
-    ("COM-SEG-005", "fiche de l'audit du réseau, sans point d'entrée unique"),
-    ("COM-TLS-001", "fiche de l'audit du réseau, sans point d'entrée unique"),
-    ("COM-TLS-003", "fiche de l'audit du réseau, sans point d'entrée unique"),
-    ("COM-WIF-003", "fiche de l'audit du réseau, sans point d'entrée unique"),
-];
+/// Les règles qui attendent l'extraction de leur jugement : vidée par le lot S3b, gardée pour qu'une règle de détection
+/// nouvelle, dont le jugement n'est pas encore à part, s'y inscrive avec sa raison. Une entrée qui a son cas fait échouer.
+const EN_ATTENTE_S3B: &[(&str, &str)] = &[];
 
 /// Les outils et surveillances qui attendent leur cas (lot S3c). S3c vide cette liste.
 const EN_ATTENTE_S3C: &[&str] = &[
@@ -409,6 +385,146 @@ const FILS: &[(&str, &[(&str, &str)])] = &[
             ("machine/windows/services.rs", "juger"),
         ],
     ),
+    (
+        "WIN-PRS-001",
+        &[
+            ("machine/windows/persistance.rs", "persistance"),
+            ("machine/windows/persistance.rs", "juger_persistance"),
+        ],
+    ),
+    (
+        "WIN-JRN-003",
+        &[
+            ("machine/windows/evenements.rs", "juger_par_les_regles"),
+            ("journaux_windows/regles/resultat.rs", "constats_du_bilan"),
+        ],
+    ),
+    (
+        "LNX-PRS-001",
+        &[
+            ("machine/linux/persistance.rs", "fichiers_suspects"),
+            ("machine/linux/persistance.rs", "juger_fichiers_suspects"),
+        ],
+    ),
+    (
+        "LNX-PRS-002",
+        &[
+            ("machine/linux/persistance.rs", "persistance"),
+            ("machine/linux/persistance.rs", "persistance_dans"),
+        ],
+    ),
+    (
+        "LNX-CPT-001",
+        &[
+            ("machine/linux/mod.rs", "comptes"),
+            ("machine/linux/mod.rs", "juger_comptes"),
+        ],
+    ),
+    (
+        "LNX-SSH-002",
+        &[
+            ("machine/linux/mod.rs", "ssh_echecs"),
+            ("machine/linux/mod.rs", "juger_echecs_ssh"),
+        ],
+    ),
+    (
+        "LNX-PRV-003",
+        &[
+            ("machine/linux/privileges.rs", "sudo_sans_mot_de_passe"),
+            ("machine/unix.rs", "sudo_sans_mot_de_passe"),
+            ("machine/unix.rs", "juger_sudo"),
+        ],
+    ),
+    (
+        "MAC-PRV-002",
+        &[
+            ("machine/macos/privileges.rs", "sudo_sans_mot_de_passe"),
+            ("machine/unix.rs", "sudo_sans_mot_de_passe"),
+            ("machine/unix.rs", "juger_sudo"),
+        ],
+    ),
+    (
+        "MAC-PRS-001",
+        &[
+            ("machine/macos/persistance.rs", "persistance"),
+            ("machine/macos/persistance.rs", "persistance_dans"),
+        ],
+    ),
+    (
+        "MAC-SYS-003",
+        &[
+            ("machine/macos/durcissement.rs", "extensions_tierces"),
+            ("machine/macos/durcissement.rs", "juger_extensions"),
+        ],
+    ),
+    (
+        "COM-INT-001",
+        &[
+            ("protection/integrite.rs", "constat"),
+            ("protection/integrite.rs", "constat_de"),
+        ],
+    ),
+    // Les fiches de l'audit du réseau n'ont pas de regle! : leur fil part du `constats` de leur domaine, et la fiche
+    // doit être déclarée dans audit/fiches.rs.
+    (
+        "COM-ARP-002",
+        &[("audit/arp.rs", "constats"), ("audit/arp.rs", "mac_de_la_box_changee")],
+    ),
+    (
+        "COM-ARP-004",
+        &[
+            ("audit/arp.rs", "constats"),
+            ("audit/arp.rs", "mac_pour_plusieurs_adresses"),
+        ],
+    ),
+    (
+        "COM-SEG-004",
+        &[
+            ("audit/segmentation.rs", "constats"),
+            ("audit/segmentation.rs", "serveur_dhcp"),
+        ],
+    ),
+    (
+        "COM-SEG-005",
+        &[
+            ("audit/segmentation.rs", "constats"),
+            ("audit/segmentation.rs", "deux_routeurs_ipv6"),
+        ],
+    ),
+    (
+        "COM-PST-003",
+        &[("audit/postes.rs", "constats"), ("audit/postes.rs", "empoisonneur")],
+    ),
+    (
+        "COM-WIF-003",
+        &[("audit/wifi.rs", "constats"), ("audit/wifi.rs", "emetteurs")],
+    ),
+    (
+        "COM-DNS-004",
+        &[
+            ("audit/dns_tls.rs", "constats"),
+            ("audit/dns_tls.rs", "constats_divergence"),
+        ],
+    ),
+    (
+        "COM-TLS-001",
+        &[("audit/dns_tls.rs", "constats"), ("audit/dns_tls.rs", "constat_tls")],
+    ),
+    (
+        "COM-TLS-003",
+        &[
+            ("audit/dns_tls.rs", "constats"),
+            ("audit/dns_tls.rs", "constats_racines_navigateurs"),
+        ],
+    ),
+    // L'usurpation de la box se dit au scan et à la surveillance, pas par une fiche jugée de l'audit.
+    (
+        "COM-ARP-001",
+        &[
+            ("reseau/surveillance.rs", "veiller_passerelle"),
+            ("reseau/mod.rs", "usurpation_arp"),
+        ],
+    ),
 ];
 
 /// Ce que l'adaptateur recopie de la règle, parce que la règle le donne en appelant un jugement commun : le texte
@@ -432,6 +548,7 @@ const RECOPIES: &[(&str, &str, &str, &str)] = &[
         "juger_winsock",
         "Niveau::Info",
     ),
+    ("COM-ARP-001", "reseau/mod.rs", "afficher", "Niveau::Critique"),
 ];
 
 /// Les règles qui citent une technique d'ATT&CK (T…), lues dans la carte que outils/couverture-attack.py tire des
@@ -492,6 +609,9 @@ struct Attendu {
     /// Pourquoi le cas propre n'a pas de données, quand l'état sain est l'absence même (une clé que Windows laisse
     /// vide) ; sans elle, `propre.txt` doit en avoir.
     propre_vide: Option<String>,
+    /// Ce que la règle dit toujours ne pas pouvoir lire (un magasin illisible sans outil) : le cas propre peut alors
+    /// rendre aussi des constats non vérifiés, à côté des autres ; sans elle, tout doit y être vérifié.
+    reserve: Option<String>,
     systemes: Vec<String>,
 }
 
@@ -552,6 +672,7 @@ fn valeurs(v: &str) -> Result<Vec<String>, Refus> {
 
 fn lire_attendu(texte: &str) -> Result<Attendu, Refus> {
     let (mut gravite, mut mots, mut propre, mut propre_vide, mut systemes) = (None, Vec::new(), None, None, Vec::new());
+    let mut reserve = None;
     let mut vues = BTreeSet::new();
     for ligne in texte
         .lines()
@@ -579,18 +700,23 @@ fn lire_attendu(texte: &str) -> Result<Attendu, Refus> {
                 });
             }
             "propre_vide" => propre_vide = Some(seul()).filter(|r| !r.trim().is_empty()),
+            "reserve" => reserve = Some(seul()).filter(|r| !r.trim().is_empty()),
             "systemes" => systemes = v,
             autre => return Err(Refus(format!("clé inconnue : {autre}"))),
         }
     }
     let gravite = gravite.ok_or("gravite manque")?;
-    if gravite == Niveau::Info {
-        return Err("gravite : une information ne prouve pas qu'une règle de détection tire".into());
-    }
     if mots.is_empty() || mots.iter().any(|m| m.trim().is_empty()) {
         return Err("mots manque : le constat doit nommer ce que le cas a fabriqué".into());
     }
     let propre = propre.ok_or("propre manque")?;
+    // Le cas propre doit dire moins que le cas fabriqué, sinon rien ne distingue les deux : une règle qui ne rend
+    // qu'une information (à reconnaître) se prouve par un propre muet.
+    if let Propre::AuPlus(Some(plafond)) = propre
+        && plafond >= gravite
+    {
+        return Err("propre : il doit rester sous la gravité du cas fabriqué".into());
+    }
     if systemes.is_empty()
         || systemes
             .iter()
@@ -603,6 +729,7 @@ fn lire_attendu(texte: &str) -> Result<Attendu, Refus> {
         mots,
         propre,
         propre_vide,
+        reserve,
         systemes,
     })
 }
@@ -690,7 +817,16 @@ fn faute_du_cas(id: &str, juge: Juge) -> Option<String> {
     };
     let juste = match attendu.propre {
         Propre::Rien => muets.is_empty(),
-        Propre::AuPlus(plafond) => !muets.is_empty() && muets.iter().all(|c| c.verifie && c.probleme <= plafond),
+        Propre::AuPlus(plafond) => {
+            (attendu.reserve.is_some() || muets.iter().any(|c| c.verifie))
+                && muets.iter().all(|c| {
+                    if c.verifie {
+                        c.probleme <= plafond
+                    } else {
+                        attendu.reserve.is_some()
+                    }
+                })
+        }
     };
     if !juste {
         return Some(format!(
@@ -892,15 +1028,21 @@ fn blocs_regle() -> Vec<(String, String)> {
 #[test]
 fn chaque_regle_du_corpus_mene_a_son_jugement() {
     let blocs = blocs_regle();
+    let fiches = source("audit/fiches.rs");
     let mut fautes = Vec::new();
     for (id, fil) in FILS {
-        let Some((_, bloc)) = blocs.iter().find(|(i, _)| i == id) else {
-            fautes.push(format!("{id} : aucun bloc regle! dans src/"));
-            continue;
-        };
-        let (_, premiere) = fil[0];
-        if !nomme(bloc, premiere) {
-            fautes.push(format!("{id} : son regle! ne nomme plus {premiere}"));
+        match blocs.iter().find(|(i, _)| i == id) {
+            Some((_, bloc)) => {
+                let (_, premiere) = fil[0];
+                if !nomme(bloc, premiere) {
+                    fautes.push(format!("{id} : son regle! ne nomme plus {premiere}"));
+                }
+            }
+            // Une fiche de l'audit, ou l'usurpation de la box (scan et surveillance) : pas de regle!.
+            None if fiches.contains(&format!("Fiche {{ id: \"{id}\"")) || *id == "COM-ARP-001" => {}
+            None => fautes.push(format!(
+                "{id} : ni bloc regle! dans src/, ni fiche dans audit/fiches.rs"
+            )),
         }
         for paire in fil.windows(2) {
             let ((fichier, appelant), (fichier_appele, appele)) = (paire[0], paire[1]);
@@ -966,7 +1108,7 @@ fn lecture_de_ce_qu_un_cas_attend() {
     );
     // Ce qui ne prouverait rien, ou se lirait de travers, est refusé.
     for faux in [
-        "gravite = \"info\"\nmots = \"x\"\npropre = \"aucun\"\nsystemes = \"linux\"",
+        "gravite = \"info\"\nmots = \"x\"\npropre = \"info\"\nsystemes = \"linux\"",
         "gravite = \"eleve\"\npropre = \"aucun\"\nsystemes = \"linux\"",
         "gravite = \"eleve\"\nmots = \"x\"\nsystemes = \"linux\"",
         "gravite = \"eleve\"\nmots = \"x\"\npropre = \"aucun\"\nsystemes = \"bsd\"",

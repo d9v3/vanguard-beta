@@ -1,0 +1,5 @@
+# LNX-SSH-002 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "eleve"
+mots = ["6"]
+propre = "rien"
+systemes = ["linux"]

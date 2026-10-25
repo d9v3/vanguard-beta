@@ -568,6 +568,19 @@ pub fn temps_reel() {
     }
 }
 
+/// COM-INT-001 au corpus de détection : `reference|fichier|empreinte` (la référence scellée) et
+/// `actuel|fichier|empreinte` (ce qui se lit maintenant).
+#[cfg(test)]
+pub(crate) fn corpus(e: &crate::modele::corpus::Entree) -> Constat {
+    let etat = |genre: &str| -> Etat {
+        e.de(genre)
+            .iter()
+            .map(|c| (c[0].to_string(), c[1].to_string()))
+            .collect()
+    };
+    constat_de(Reference::Valable(etat("reference")), || etat("actuel"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

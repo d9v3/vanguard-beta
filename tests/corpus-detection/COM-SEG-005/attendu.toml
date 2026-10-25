@@ -1,0 +1,5 @@
+# COM-SEG-005 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "moyen"
+mots = ["fe80::2"]
+propre = "aucun"
+systemes = ["linux", "windows", "macos"]

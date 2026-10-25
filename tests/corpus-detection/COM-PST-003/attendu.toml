@@ -1,0 +1,7 @@
+# COM-PST-003 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "eleve"
+mots = ["192.168.50.66"]
+propre = "aucun"
+systemes = ["linux", "windows", "macos"]
+propre_vide = "la sonde a tourné sans réponse : l'état sain est l'absence même"
+reserve = "les connexions de cet ordinateur et la liste noire ne se lisent pas ici : non vérifiés, dits"

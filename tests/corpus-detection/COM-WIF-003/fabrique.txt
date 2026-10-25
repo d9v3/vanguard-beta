@@ -1,0 +1,3 @@
+borne|Salon|00:11:22:aa:bb:01|36|oui
+borne|Salon|00:11:22:aa:bb:01|6|non
+connexion|Salon|00:11:22:aa:bb:01

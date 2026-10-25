@@ -28,7 +28,24 @@ pub(crate) const CAS: &[(&str, Juge)] = &[
     ("EVT-SRV-001", evenements),
     ("EVT-TAC-001", evenements),
     ("EVT-WMI-001", evenements),
+    ("WIN-JRN-003", bilan),
 ];
+
+/// WIN-JRN-003 : le bilan tire ses constats des trouvailles du moteur (`resultat::constats_du_bilan`), comme sur un
+/// ordinateur vivant ; rien n'y est déclaré normal.
+fn bilan(e: &Entree) -> Vec<Constat> {
+    let (jugements, etats) = juger_le_cas(e);
+    let analyse = super::resultat::Analyse {
+        source: super::resultat::Source::Vivant,
+        jugements,
+        journaux: Vec::new(),
+        etats,
+        manques_source: Vec::new(),
+        services_ordinaires: Vec::new(),
+        debut_systeme: None,
+    };
+    super::resultat::constats_du_bilan(&analyse, &|_| false)
+}
 
 fn lire(e: &Entree) -> Vec<EvenementWindows> {
     let t0: DateTime<Utc> = DateTime::parse_from_rfc3339("2026-10-18T14:00:00Z").unwrap().to_utc();
@@ -68,9 +85,8 @@ fn lire(e: &Entree) -> Vec<EvenementWindows> {
     evenements
 }
 
-/// La règle du cas (le nom de son dossier) jugée sur ses événements, tous les journaux lus en entier.
-fn evenements(e: &Entree) -> Vec<Constat> {
-    let id = e.dossier.file_name().unwrap().to_string_lossy().into_owned();
+/// Le moteur sur les événements du cas, tous les journaux lus en entier.
+fn juger_le_cas(e: &Entree) -> (Vec<super::moteur::Jugement>, Vec<EtatJournal>) {
     let options = Options {
         depuis: None,
         defender_antivirus: Some(true),
@@ -90,8 +106,14 @@ fn evenements(e: &Entree) -> Vec<Constat> {
             suites: Vec::new(),
         })
         .collect();
-    let jugement = moteur
-        .conclure(&journaux)
+    (moteur.conclure(&journaux), journaux)
+}
+
+/// La règle du cas (le nom de son dossier) jugée sur ses événements.
+fn evenements(e: &Entree) -> Vec<Constat> {
+    let id = e.dossier.file_name().unwrap().to_string_lossy().into_owned();
+    let jugement = juger_le_cas(e)
+        .0
         .into_iter()
         .find(|j| j.regle.id == id)
         .unwrap_or_else(|| panic!("{id} : pas une règle du jeu"));

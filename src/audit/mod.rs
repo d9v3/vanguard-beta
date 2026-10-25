@@ -25,6 +25,8 @@ use crate::ui::*;
 pub mod appareils;
 pub mod arp;
 pub mod bail;
+#[cfg(test)]
+pub(crate) mod corpus;
 pub mod dns_client;
 pub mod dns_tls;
 pub mod exposition;

@@ -411,6 +411,16 @@ mod tests {
     fn aucune_ecriture_directe_dans_les_regles() {
         const EXCEPTIONS: &[(&str, usize, &str)] = &[
             (
+                "machine/macos/corpus.rs",
+                1,
+                "module de tests (cfg(test)) : pose le fichier d'agent fabriqué d'un cas du corpus dans un dossier jetable",
+            ),
+            (
+                "machine/linux/corpus.rs",
+                1,
+                "module de tests (cfg(test)) : pose l'arborescence fabriquée d'un cas du corpus dans un dossier jetable",
+            ),
+            (
                 "machine/mod.rs",
                 1,
                 "ports bloqués : après une correction acceptée, hors bilan",

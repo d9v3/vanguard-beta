@@ -6,6 +6,7 @@ use crate::modele::corpus::{Entree, Juge};
 
 pub(crate) const CAS: &[(&str, Juge)] = &[
     ("WIN-ANV-002", exclusions),
+    ("WIN-PRS-001", super::persistance::corpus),
     ("WIN-PRS-002", super::portes::corpus_ifeo),
     ("WIN-PRS-003", super::portes::corpus_remplaces),
     ("WIN-PRS-004", super::portes::corpus_winlogon),

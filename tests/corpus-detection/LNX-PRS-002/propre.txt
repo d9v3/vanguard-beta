@@ -1,0 +1,1 @@
+fichier|home/alice/.bashrc|alias ll='ls -l'\n

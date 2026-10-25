@@ -1,0 +1,1 @@
+tache|\Microsoft\Windows\|Corpus|C:\Windows\System32\notepad.exe|

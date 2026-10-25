@@ -1,0 +1,6 @@
+# WIN-JRN-003 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "critique"
+mots = ["aide-corpus$"]
+propre = "aucun"
+systemes = ["linux", "windows", "macos"]
+reserve = "le bilan des journaux dit toujours les journaux restés vides, non vérifiés"

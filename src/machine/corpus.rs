@@ -14,6 +14,7 @@ pub(crate) const CAS: &[(&str, Juge)] = &[
     ("COM-CRT-001", super::certificats::corpus),
     #[cfg(unix)]
     ("COM-DIS-001", crate::protection::distance::corpus),
+    ("COM-INT-001", integrite),
     ("COM-INT-002", crate::protection::pieges::corpus),
     ("COM-JRN-001", super::journaux::corpus),
     ("COM-NAV-001", super::extensions::corpus),
@@ -76,4 +77,9 @@ fn dossiers_de_root(e: &Entree) -> Vec<Constat> {
 #[cfg(unix)]
 fn dossiers_du_mac(e: &Entree) -> Vec<Constat> {
     dossiers_de_commandes(e, false)
+}
+
+/// COM-INT-001 : la référence et l'état actuel des fichiers critiques (protection/integrite.rs).
+fn integrite(e: &Entree) -> Vec<Constat> {
+    vec![crate::protection::integrite::corpus(e)]
 }
