@@ -1,0 +1,1 @@
+Security|Microsoft-Windows-Security-Auditing|4648|0|ProcessName=C:\Users\Public\outil-corpus.exe|TargetUserName=carole|TargetServerName=localhost|SubjectUserName=bob

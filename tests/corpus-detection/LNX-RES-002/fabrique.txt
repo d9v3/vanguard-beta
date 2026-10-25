@@ -1,0 +1,1 @@
+carte|eth0|0x1103|oui|non

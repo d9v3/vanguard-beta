@@ -12,6 +12,8 @@ use crate::risk::{Niveau, info_port};
 use crate::{tr, trf};
 
 pub(crate) mod config_reseau;
+#[cfg(test)]
+pub(crate) mod corpus;
 mod durcissement;
 mod maj;
 pub(crate) mod noyau;

@@ -436,6 +436,61 @@ fn catalogue_winsock() -> Vec<Constat> {
     )]
 }
 
+/// WIN-PRS-007 au corpus de détection : `lsa|valeur|paquet,paquet…`.
+#[cfg(test)]
+pub(super) fn corpus_lsa(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    let lues: Vec<(&str, Vec<String>)> = e
+        .de("lsa")
+        .iter()
+        .map(|c| (c[0], c[1].split(',').map(str::to_string).collect()))
+        .collect();
+    vec![juger_lsa(&lues, &[])]
+}
+
+/// Les entrées `entree|nom|DLL` d'un cas.
+#[cfg(test)]
+fn entrees_du_cas(e: &crate::modele::corpus::Entree) -> Vec<(String, String)> {
+    e.de("entree")
+        .iter()
+        .map(|c| (c[0].to_string(), c[1].to_string()))
+        .collect()
+}
+
+/// WIN-PRS-008 : les valeurs de AppCertDlls.
+#[cfg(test)]
+pub(super) fn corpus_appcert(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    vec![juger_appcert(&entrees_du_cas(e))]
+}
+
+/// WIN-PRS-009, 010 et 011 : le jugement commun des DLL, avec le niveau que chaque règle lui donne (moniteurs
+/// d'impression et fournisseurs de temps : moyen ; catalogue Winsock : information).
+#[cfg(test)]
+pub(super) fn corpus_moniteurs(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    vec![juger_dlls(
+        ("Moniteurs d'impression", "Print monitors"),
+        &entrees_du_cas(e),
+        Niveau::Moyen,
+    )]
+}
+
+#[cfg(test)]
+pub(super) fn corpus_fournisseurs(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    vec![juger_dlls(
+        ("Fournisseurs de temps", "Time providers"),
+        &entrees_du_cas(e),
+        Niveau::Moyen,
+    )]
+}
+
+#[cfg(test)]
+pub(super) fn corpus_winsock(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    vec![juger_dlls(
+        ("Catalogue Winsock", "Winsock catalog"),
+        &entrees_du_cas(e),
+        Niveau::Info,
+    )]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

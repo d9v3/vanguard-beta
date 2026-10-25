@@ -1,0 +1,5 @@
+{"addons":[
+ {"id":"lecteur@exemple.invalid","type":"extension","location":"app-profile","active":true,"signedState":2,
+  "defaultLocale":{"name":"Lecteur Corpus"},"userPermissions":{"permissions":["storage"],"origins":[]},
+  "installTelemetryInfo":{"source":"amo"}}
+]}

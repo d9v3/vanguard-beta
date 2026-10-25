@@ -1,0 +1,2 @@
+chemin|D:\SteamLibrary
+processus|jeu-corpus.exe

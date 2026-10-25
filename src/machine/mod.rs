@@ -16,6 +16,8 @@ mod bluetooth;
 pub(crate) mod certificats;
 pub(crate) mod chasse;
 mod comptes_oublies;
+#[cfg(test)]
+pub(crate) mod corpus;
 #[cfg(any(target_os = "macos", test))]
 pub(crate) mod darwin;
 pub(crate) mod dns;

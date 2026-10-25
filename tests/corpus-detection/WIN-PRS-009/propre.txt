@@ -1,0 +1,2 @@
+entree|Local Port|localspl.dll
+entree|NtpClient|%SystemRoot%\System32\w32time.dll

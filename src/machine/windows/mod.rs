@@ -14,6 +14,8 @@ pub(crate) mod cartes;
 mod chargement;
 pub(crate) mod comptes;
 pub(crate) mod connexions;
+#[cfg(test)]
+pub(crate) mod corpus;
 pub(crate) mod correctifs;
 pub(crate) mod corrections;
 mod croisees;

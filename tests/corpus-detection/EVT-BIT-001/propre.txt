@@ -1,0 +1,1 @@
+Microsoft-Windows-Bits-Client/Operational|Microsoft-Windows-Bits-Client|59|0|name=maj-locale|url=http://192.168.1.10/maj.bin

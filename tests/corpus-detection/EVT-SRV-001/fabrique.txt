@@ -1,0 +1,1 @@
+System|Service Control Manager|7040|0|param1=Journal d’événements Windows|param2=démarrage automatique|param3=désactivé|param4=EventLog

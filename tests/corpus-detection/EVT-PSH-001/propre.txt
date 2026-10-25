@@ -1,0 +1,1 @@
+Windows PowerShell|PowerShell|400|0|Donnees=NewEngineState=Available\nEngineVersion=5.1.19041.1\nHostApplication=powershell.exe

@@ -1,0 +1,1 @@
+Microsoft-Windows-Bits-Client/Operational|Microsoft-Windows-Bits-Client|59|0|name=maj-corpus|url=http://203.0.113.7/maj-corpus.bin

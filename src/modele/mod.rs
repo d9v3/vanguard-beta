@@ -6,6 +6,8 @@
 //! texte traduit, si bien qu'un changement de langue faisait revenir les alertes acceptées et voir des « nouveaux »
 //! problèmes. Ce module n'importe rien de l'interface : ce qu'il décide ne dépend jamais de la langue.
 
+#[cfg(test)]
+pub(crate) mod corpus;
 pub(crate) mod etat;
 pub(crate) mod evenement;
 pub(crate) mod id;

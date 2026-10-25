@@ -15,6 +15,8 @@ use crate::{tr, trf, trw};
 mod algorithmes_ssh;
 pub(crate) mod cache_pacman;
 pub(crate) mod connexions;
+#[cfg(test)]
+pub(crate) mod corpus;
 pub(crate) mod couper;
 mod croisees;
 pub(crate) mod dbus;

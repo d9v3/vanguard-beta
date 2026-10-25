@@ -1,0 +1,9 @@
+ADM|True
+ADM_FIN
+FLT|corpus-filtre|SELECT * FROM __InstanceModificationEvent WITHIN 60
+FLT_FIN
+CMD|corpus-conso|C:\Windows\System32\notepad.exe|notepad.exe
+CMD_FIN
+SCR_FIN
+LIE|corpus-filtre|CommandLineEventConsumer|corpus-conso
+LIE_FIN

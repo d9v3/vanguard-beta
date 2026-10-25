@@ -399,6 +399,15 @@ pub fn certificats() -> Vec<Constat> {
     constats
 }
 
+/// COM-CRT-001 au corpus de détection : une ligne par sujet de certificat racine ajouté.
+#[cfg(test)]
+pub(super) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    e.lignes()
+        .into_iter()
+        .map(|nom| juger(nom, "corpus", false, &[]))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,0 +1,1 @@
+Microsoft-Windows-WMI-Activity/Operational|Microsoft-Windows-WMI-Activity|5861|0|Namespace=//./root/subscription|CONSUMER=CommandLineEventConsumer="corpus"|PossibleCause=notepad.exe

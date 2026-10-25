@@ -1,0 +1,2 @@
+# Le fichier-piège a changé depuis sa pose : son empreinte est celle de temoin.txt.
+piege|temoin-touche.txt|5eb18a4c25df1fbd7f99f15424660b4cbf31aa9fb03cd64ac19345e6805c9dd7

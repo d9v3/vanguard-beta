@@ -1,0 +1,2 @@
+verifies|4
+remplace|sethc.exe|cmd.exe

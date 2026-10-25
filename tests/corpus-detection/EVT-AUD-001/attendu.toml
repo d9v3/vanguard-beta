@@ -1,0 +1,5 @@
+# EVT-AUD-001 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "eleve"
+mots = ["%%8448"]
+propre = "info"
+systemes = ["linux", "windows", "macos"]

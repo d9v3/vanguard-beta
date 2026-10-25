@@ -1,0 +1,1 @@
+Security|Microsoft-Windows-Security-Auditing|4624|0|LogonType=10|IpAddress=203.0.113.20|TargetUserName=alice

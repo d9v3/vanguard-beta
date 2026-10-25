@@ -1,0 +1,2 @@
+# Un dossier de root ouvert en écriture à tous.
+/usr/local/bin|40777|0|oui

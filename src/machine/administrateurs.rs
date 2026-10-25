@@ -221,6 +221,19 @@ fn avant_de(lu: Result<Option<Vec<u8>>, ()>) -> (Option<Vus>, bool) {
     }
 }
 
+/// COM-CPT-001 au corpus de détection : `vu|compte|date` (déjà vus), `admin|compte` (lus aujourd'hui, le 20 oct. 2026).
+#[cfg(test)]
+pub(super) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    let vus = e
+        .de("vu")
+        .iter()
+        .map(|c| (c[0].to_string(), c.get(1).copied().unwrap_or_default().to_string()))
+        .collect();
+    let admins: Vec<String> = e.de("admin").iter().map(|c| c[0].to_string()).collect();
+    let jour = NaiveDate::from_ymd_opt(2026, 10, 20).unwrap();
+    vec![juger(&admins, Some(&Vus { vus }), jour).0]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

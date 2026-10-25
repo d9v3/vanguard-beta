@@ -1,0 +1,1 @@
+Security|Microsoft-Windows-Security-Auditing|4720|0|TargetUserName=carole|TargetSid=S-1-5-21-1-2-3-1006|SubjectUserName=bob

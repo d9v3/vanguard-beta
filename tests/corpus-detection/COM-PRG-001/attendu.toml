@@ -1,0 +1,5 @@
+# COM-PRG-001 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "moyen"
+mots = ["maj-corpus"]
+propre = "aucun"
+systemes = ["linux", "windows", "macos"]

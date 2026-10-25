@@ -1,0 +1,5 @@
+# WIN-ANV-002 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "eleve"
+mots = ["C:\"]
+propre = "aucun"
+systemes = ["windows"]

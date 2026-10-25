@@ -1,0 +1,5 @@
+# WIN-PRS-010 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "eleve"
+mots = ["corpus-temps.dll"]
+propre = "aucun"
+systemes = ["windows"]

@@ -1,0 +1,5 @@
+# COM-CRT-001 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "moyen"
+mots = ["Corpus mitmproxy CA"]
+propre = "info"
+systemes = ["linux", "windows", "macos"]

@@ -1,0 +1,5 @@
+# WIN-PRS-006 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "eleve"
+mots = ["corpus-conso"]
+propre = "aucun"
+systemes = ["windows"]

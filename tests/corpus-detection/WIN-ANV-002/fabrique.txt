@@ -1,0 +1,2 @@
+chemin|C:\
+chemin|D:\SteamLibrary

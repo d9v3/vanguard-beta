@@ -1,0 +1,1 @@
+Security|Microsoft-Windows-Security-Auditing|4719|0|SubcategoryGuid={0CCE9215-69AE-11D9-BED3-505054503030}|AuditPolicyChanges=%%8448|SubjectUserName=bob

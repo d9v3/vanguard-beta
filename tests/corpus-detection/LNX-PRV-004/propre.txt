@@ -1,0 +1,1 @@
+/usr/local/bin|40755|0|oui

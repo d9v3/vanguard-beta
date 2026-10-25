@@ -1,0 +1,1 @@
+System|Service Control Manager|7040|0|param1=Background Intelligent Transfer Service|param2=demand start|param3=auto start|param4=BITS

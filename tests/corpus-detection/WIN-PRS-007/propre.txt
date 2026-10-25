@@ -1,0 +1,2 @@
+lsa|Security Packages|kerberos,msv1_0
+lsa|Notification Packages|scecli

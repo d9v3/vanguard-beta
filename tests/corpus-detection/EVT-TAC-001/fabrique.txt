@@ -1,0 +1,1 @@
+Microsoft-Windows-TaskScheduler/Operational|Microsoft-Windows-TaskScheduler|200|0|TaskName=\tache-corpus|ActionName=C:\Users\alice\AppData\Local\Temp\maj-corpus.exe

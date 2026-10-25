@@ -1,0 +1,5 @@
+# EVT-ADM-001 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "critique"
+mots = ["aide-corpus$"]
+propre = "info"
+systemes = ["linux", "windows", "macos"]

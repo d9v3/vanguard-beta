@@ -246,6 +246,21 @@ fn lire_effacements(sortie: &str) -> Vec<Effacement> {
         .collect()
 }
 
+/// COM-JRN-001 au corpus de détection : `effacement|jour|détail`, jugés le 20 oct. 2026.
+#[cfg(test)]
+pub(super) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    let effacements: Vec<Effacement> = e
+        .de("effacement")
+        .iter()
+        .map(|c| Effacement {
+            jour: c[0].to_string(),
+            instant: None,
+            detail: c.get(1).copied().unwrap_or_default().to_string(),
+        })
+        .collect();
+    juger_effacements(&effacements, chrono::NaiveDate::from_ymd_opt(2026, 10, 20).unwrap())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -410,6 +410,12 @@ pub fn extensions() -> Vec<Constat> {
     constats
 }
 
+/// COM-NAV-001 au corpus de détection : le fichier extensions.json d'un profil Firefox fabriqué.
+#[cfg(test)]
+pub(super) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    juger("Firefox", &lire_firefox(&e.texte))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

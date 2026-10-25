@@ -1,0 +1,4 @@
+# Déjà vu depuis longtemps, puis un administrateur de plus aujourd'hui.
+vu|alice|2025-01-10
+admin|alice
+admin|corpus-nouveau

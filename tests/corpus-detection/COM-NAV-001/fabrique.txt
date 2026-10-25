@@ -1,0 +1,5 @@
+{"addons":[
+ {"id":"corpus@exemple.invalid","type":"extension","location":"app-profile","active":true,"signedState":2,
+  "defaultLocale":{"name":"Extension Corpus"},"userPermissions":{"permissions":["storage"],"origins":[]},
+  "installTelemetryInfo":{"source":"app-profile","method":"sideload"}}
+]}

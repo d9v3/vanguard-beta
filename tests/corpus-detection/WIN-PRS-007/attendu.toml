@@ -1,0 +1,5 @@
+# WIN-PRS-007 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "moyen"
+mots = ["corpus-filtre"]
+propre = "aucun"
+systemes = ["windows"]

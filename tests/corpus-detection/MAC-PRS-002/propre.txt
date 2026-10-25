@@ -1,0 +1,13 @@
+========================
+ Records for UID 501 : 0A1B
+========================
+
+ Items:
+
+ #1:
+                 UUID: 1
+                 Name: Sauvegarde
+       Developer Name: Exemple Logiciels
+                 Type: app (0x2)
+          Disposition: [enabled, allowed, visible, notified] (0xb)
+      Executable Path: /Applications/Sauvegarde.app/Contents/MacOS/Sauvegarde

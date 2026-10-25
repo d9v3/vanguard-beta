@@ -1580,6 +1580,20 @@ pub fn json() {
     println!("{}", crate::modele::resultat::json(&r));
 }
 
+/// COM-DIS-001 au corpus de détection : `fichier|nom`, posés vides dans un dossier jetable (un Téléchargements
+/// fabriqué), relevés et jugés comme au bilan.
+#[cfg(all(test, unix))]
+pub(crate) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    let dossier = e.jetable("telechargements");
+    for c in e.de("fichier") {
+        std::fs::write(dossier.join(c[0]), b"").unwrap();
+    }
+    let mut trouvailles = Vec::new();
+    assert!(fichiers_poses(&mut trouvailles, std::slice::from_ref(&dossier)));
+    let _ = std::fs::remove_dir_all(&dossier);
+    juger(&trouvailles, aujourd_hui())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

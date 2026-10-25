@@ -885,6 +885,21 @@ pub fn commande(retirer_seulement: bool) {
     }
 }
 
+/// COM-INT-002 au corpus de détection : `piege|fichier du cas|empreinte BLAKE3 notée à la pose`.
+#[cfg(test)]
+pub(crate) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    let pieges: Vec<Piege> = e
+        .de("piege")
+        .iter()
+        .map(|c| Piege {
+            chemin: e.dossier.join(c[0]),
+            empreinte: c.get(1).copied().unwrap_or_default().to_string(),
+        })
+        .collect();
+    let etats: Vec<(&Piege, Etat)> = pieges.iter().map(|p| (p, etat(p))).collect();
+    vec![juger(&etats)]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

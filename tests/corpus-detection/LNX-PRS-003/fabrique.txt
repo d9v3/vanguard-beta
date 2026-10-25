@@ -1,0 +1,6 @@
+liste|1,2,3
+fiche|1|systemd|1
+fiche|2|kthreadd|2
+fiche|3|bash|3
+# Répond au noyau, manque à la liste.
+fiche|4|corpus-cache|4

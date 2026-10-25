@@ -1,0 +1,1 @@
+Security|Microsoft-Windows-Security-Auditing|4648|0|ProcessName=C:\Windows\System32\svchost.exe|TargetUserName=carole|TargetServerName=localhost|SubjectUserName=bob

@@ -12,6 +12,8 @@
 //! `moteur` et `jeu` sont autonomes (aucun `crate::`, aucun texte traduit : leurs textes sont des paires français,
 //! anglais) : le banc de fuzzing les inclut par leur chemin, avec le lecteur.
 
+#[cfg(test)]
+pub(crate) mod corpus;
 pub(crate) mod jeu;
 pub(crate) mod moteur;
 pub(crate) mod resultat;

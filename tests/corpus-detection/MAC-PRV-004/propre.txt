@@ -1,0 +1,1 @@
+/opt/corpus/bin|40755|501|non

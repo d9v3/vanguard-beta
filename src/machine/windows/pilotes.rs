@@ -327,6 +327,34 @@ fn pilotes() -> Vec<Constat> {
     juger_pilotes(&avec, liste.as_ref(), refus.as_deref())
 }
 
+/// WIN-PRS-012 au corpus de détection : `pilote|nom|fichier|empreinte SHA-256` et `liste|texte de la liste LOLDrivers`
+/// (une empreinte suffit).
+#[cfg(test)]
+pub(super) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    let hexa = |h: &str| -> [u8; 32] {
+        let mut o = [0; 32];
+        for (i, b) in o.iter_mut().enumerate() {
+            *b = u8::from_str_radix(&h[2 * i..2 * i + 2], 16).unwrap();
+        }
+        o
+    };
+    let pilotes: Vec<(Pilote, Fichier)> = e
+        .de("pilote")
+        .iter()
+        .map(|c| {
+            (
+                Pilote {
+                    nom: c[0].to_string(),
+                    fichier: PathBuf::from(c[1]),
+                },
+                Fichier::Lu(hexa(c[2])),
+            )
+        })
+        .collect();
+    let liste = empreintes_de_la_liste(&e.de("liste").iter().map(|c| c[0]).collect::<Vec<_>>().join("\n"));
+    juger_pilotes(&pilotes, Some(&liste), None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

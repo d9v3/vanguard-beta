@@ -1,0 +1,5 @@
+# WIN-PRS-009 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "eleve"
+mots = ["corpus-moniteur.dll"]
+propre = "aucun"
+systemes = ["windows"]

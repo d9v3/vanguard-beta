@@ -1,0 +1,5 @@
+# COM-INT-002 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "critique"
+mots = ["temoin-touche.txt"]
+propre = "aucun"
+systemes = ["linux", "windows", "macos"]

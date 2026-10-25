@@ -1,0 +1,5 @@
+# COM-DIS-001 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "moyen"
+mots = ["AnyDesk"]
+propre = "aucun"
+systemes = ["linux", "macos"]

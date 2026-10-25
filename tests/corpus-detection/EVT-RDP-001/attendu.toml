@@ -1,0 +1,5 @@
+# EVT-RDP-001 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "eleve"
+mots = ["203.0.113.20"]
+propre = "aucun"
+systemes = ["linux", "windows", "macos"]

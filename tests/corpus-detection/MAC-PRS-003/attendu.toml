@@ -1,0 +1,5 @@
+# MAC-PRS-003 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "moyen"
+mots = ["corpus-hook.sh"]
+propre = "aucun"
+systemes = ["macos"]

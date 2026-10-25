@@ -1,0 +1,5 @@
+# WIN-PRS-011 : données fabriquées et inoffensives, jugées par la fonction de jugement de la règle (src/modele/corpus.rs).
+gravite = "eleve"
+mots = ["corpus-winsock.dll"]
+propre = "aucun"
+systemes = ["windows"]

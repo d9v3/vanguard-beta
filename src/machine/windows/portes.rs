@@ -916,6 +916,72 @@ regle!(
     || juger_wmi(Some(&abonnements()))
 );
 
+/// WIN-PRS-002 au corpus de détection : `ifeo|programme|débogueur|GlobalFlag` (vides : absents) et
+/// `moniteur|programme|processus` (SilentProcessExit).
+#[cfg(test)]
+pub(super) fn corpus_ifeo(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    let rien = |v: &str| (!v.is_empty()).then(|| v.to_string());
+    let reglages: Vec<Reglage> = e
+        .de("ifeo")
+        .iter()
+        .map(|c| Reglage {
+            cle: format!(r"HKLM:\{}\{}", IFEO[0], c[0]),
+            programme: c[0].to_string(),
+            debogueur: rien(c[1]),
+            drapeaux: rien(c[2]).and_then(|d| lire_drapeaux(&d)),
+        })
+        .collect();
+    let moniteurs: Vec<Moniteur> = e
+        .de("moniteur")
+        .iter()
+        .map(|c| Moniteur {
+            cle: format!(r"HKLM:\corpus\{}", c[0]),
+            programme: c[0].to_string(),
+            processus: c[1].to_string(),
+        })
+        .collect();
+    juger_ifeo(reglages.len(), &reglages, &moniteurs)
+}
+
+/// WIN-PRS-003 : `verifies|nombre`, `remplace|programme|ce qu'il copie`, `illisible|programme`.
+#[cfg(test)]
+pub(super) fn corpus_remplaces(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    let verifies = e.de("verifies").first().map_or(0, |c| c[0].parse().unwrap());
+    let remplaces: Vec<(&str, &str)> = e.de("remplace").iter().map(|c| (c[0], c[1])).collect();
+    let illisibles: Vec<&str> = e.de("illisible").iter().map(|c| c[0]).collect();
+    juger_remplaces(verifies, &remplaces, &illisibles)
+}
+
+/// WIN-PRS-004 : `shell|…`, `userinit|…`, `shell_du_compte|…` (absents : pas de valeur), dossier de Windows C:\Windows.
+#[cfg(test)]
+pub(super) fn corpus_winlogon(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    let valeur = |nom: &str| e.de(nom).first().map(|c| c.join("|"));
+    juger_winlogon(
+        valeur("shell").as_deref(),
+        valeur("userinit").as_deref(),
+        valeur("shell_du_compte").as_deref(),
+        r"C:\Windows",
+        r"HKCU:\corpus",
+    )
+}
+
+/// WIN-PRS-005 : `appinit|LoadAppInit_DLLs|AppInit_DLLs`, pour la clé 64 bits.
+#[cfg(test)]
+pub(super) fn corpus_appinit(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    let lues: Vec<(&str, Option<u32>, Option<String>)> = e
+        .de("appinit")
+        .iter()
+        .map(|c| (APPINIT[0], c[0].parse().ok(), Some(c[1].to_string())))
+        .collect();
+    juger_appinit(&lues)
+}
+
+/// WIN-PRS-006 : la sortie du script WMI telle quelle (sections ADM, FLT, CMD, SCR, LIE).
+#[cfg(test)]
+pub(super) fn corpus_wmi(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    juger_wmi(Some(&e.texte))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

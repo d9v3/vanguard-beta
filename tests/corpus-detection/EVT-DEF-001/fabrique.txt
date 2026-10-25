@@ -1,0 +1,1 @@
+Microsoft-Windows-Windows Defender/Operational|Microsoft-Windows-Windows Defender|5001|0
