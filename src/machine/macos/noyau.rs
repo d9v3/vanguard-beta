@@ -703,16 +703,12 @@ mod oracles {
         );
     }
 
-    /// pgrep -x et la recherche native par nom court disent la même chose ; les enfants de launchd aussi.
+    /// La recherche native par nom court trouve launchd et pas un nom absent ; les enfants de launchd comme pgrep.
     #[test]
     fn noms_et_enfants_contre_pgrep() {
-        for nom in ["launchd", "nexistepasvanguard"] {
-            let pgrep = crate::commande::lancer(Command::new("pgrep").args(["-x", nom]), 20)
-                .unwrap()
-                .code
-                == Some(0);
-            assert_eq!(en_marche(nom), Some(pgrep), "{nom}");
-        }
+        // launchd (PID 1) tourne toujours, mais le pgrep des Mac de GitHub ne le trouve pas : jugé sans pgrep.
+        assert_eq!(en_marche("launchd"), Some(true));
+        assert_eq!(en_marche("nexistepasvanguard"), Some(false));
         let natifs: Vec<u32> = enfants(1).expect("enfants de launchd");
         let pgrep: Vec<u32> = outil("pgrep", &["-P", "1"])
             .unwrap()

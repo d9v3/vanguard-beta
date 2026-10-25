@@ -1332,6 +1332,8 @@ mod tests {
         // Une copie de sleep hors des dossiers du système : un programme du système n'est jamais arrêté.
         let dossier = std::env::temp_dir().join(format!("vanguard-arret-compte-{}", std::process::id()));
         std::fs::create_dir_all(&dossier).unwrap();
+        // Le chemin réel : sous macOS, /var/folders est un lien vers /private/var/folders, que le système rend.
+        let dossier = dossier.canonicalize().unwrap();
         let copie = dossier.join("dormeur");
         let sleep = ["/usr/bin/sleep", "/bin/sleep"]
             .into_iter()

@@ -1028,8 +1028,11 @@ mod tests {
     #[test]
     fn un_refus_arrete_son_groupe_seulement() {
         let juge = Juge::essai(None, HashSet::new());
+        // Le pare-feu de ce système : un autre serait refusé avant la lecture des sessions que l'essai attend.
         let pf = if cfg!(windows) {
             PareFeu::Windows
+        } else if cfg!(target_os = "macos") {
+            PareFeu::Pf
         } else {
             PareFeu::Nftables
         };

@@ -304,6 +304,15 @@ fn dns_du_service(service: sc::SCNetworkServiceRef) -> Vec<IpAddr> {
 
 /// Les services réseau du jeu en cours, dans l'ordre de priorité (`networksetup -listnetworkserviceorder`), ceux
 /// qui manquent à l'ordre à la fin. `None` : réglages illisibles.
+/// La carte BSD existe-t-elle sur cette machine ?
+fn carte_presente(nom: &str) -> bool {
+    let Ok(c) = std::ffi::CString::new(nom) else {
+        return false;
+    };
+    // SAFETY : if_nametoindex lit un nom C terminé par un zéro, à nous et vivant pendant l'appel ; 0 dit l'absence.
+    unsafe { libc::if_nametoindex(c.as_ptr()) != 0 }
+}
+
 pub(crate) fn services() -> Option<Vec<Service>> {
     let nom = CFString::from_static_string(NOM);
     // SAFETY : allocateur nul = celui par défaut, identifiant nul = les réglages du système ; à libérer (« Create »).
@@ -368,6 +377,11 @@ pub(crate) fn services() -> Option<Vec<Service>> {
         let Some(nom) = nom.filter(|n| !n.is_empty()) else {
             continue;
         };
+        // Un service dont la carte n'est pas branchée (adaptateur retiré) : networksetup ne le montre pas et refuse
+        // de le régler (vu sur un Mac de GitHub : « Ethernet Adapter (en1) » sans en1).
+        if carte.as_deref().is_some_and(|c| !carte_presente(c)) {
+            continue;
+        }
         services.push(Service {
             id,
             nom,
@@ -441,7 +455,38 @@ mod oracles {
         };
         let natif = proxy_comme_scutil().expect("SCDynamicStoreCopyProxies");
         let scutil = outil("scutil", &["--proxy"]).unwrap();
-        assert_eq!(lignes(&natif), lignes(&scutil), "{natif}\n---\n{scutil}");
+        // Les scutil récents n'écrivent plus le bloc par carte (__SCOPED__), que Vanguard garde : comparé sans lui.
+        let natif_compare = if scutil.contains("__SCOPED__") {
+            natif.clone()
+        } else {
+            sans_bloc(&natif, "__SCOPED__ :")
+        };
+        assert_eq!(lignes(&natif_compare), lignes(&scutil), "{natif}\n---\n{scutil}");
+    }
+
+    /// Le texte sans le bloc qui commence par `debut` (jusqu'à son « } », à la même marge).
+    fn sans_bloc(texte: &str, debut: &str) -> String {
+        let mut sortie = Vec::new();
+        let mut marge: Option<usize> = None;
+        for l in texte.lines() {
+            let retrait = l.len() - l.trim_start().len();
+            match marge {
+                Some(m) => {
+                    if retrait == m && l.trim() == "}" {
+                        marge = None;
+                    }
+                }
+                None if l.trim_start().starts_with(debut) => marge = Some(retrait),
+                None => sortie.push(l),
+            }
+        }
+        sortie.join("\n")
+    }
+
+    #[test]
+    fn sans_bloc_retire_le_bloc_imbrique() {
+        let t = "<dictionary> {\n  A : 1\n  __SCOPED__ : <dictionary> {\n    en0 : <dictionary> {\n      A : 1\n    }\n  }\n  B : 2\n}";
+        assert_eq!(sans_bloc(t, "__SCOPED__ :"), "<dictionary> {\n  A : 1\n  B : 2\n}");
     }
 
     /// Les services : mêmes noms, même ordre, mêmes actifs que networksetup ; même DNS réglé à la main.
@@ -457,7 +502,11 @@ mod oracles {
             })
             .collect();
         let lus: Vec<(bool, String)> = natifs.iter().map(|s| (s.actif, s.nom.clone())).collect();
-        assert_eq!(lus, attendus, "{ordre}");
+        let detail: Vec<String> = natifs
+            .iter()
+            .map(|s| format!("{} {:?} {}", s.id, s.carte, s.nom))
+            .collect();
+        assert_eq!(lus, attendus, "{ordre}\n{detail:#?}");
         for s in &natifs {
             let texte = outil("networksetup", &["-getdnsservers", &s.nom]).unwrap_or_default();
             let attendu: Vec<IpAddr> = texte.lines().filter_map(|l| l.trim().parse().ok()).collect();
