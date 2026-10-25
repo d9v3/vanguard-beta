@@ -598,10 +598,32 @@ rm -f "$REGLAGE"
 voir "sans réglage : clé de secours par défaut, cinq images, Kali coupée ; « --secours » dit oui" \
   eval '[[ $(sortes) == "systemrescue arch omarchy debian fedora" && $(bash outils/images-cle.sh --secours) == oui ]] &&
     [[ ! -s $BANC/sortie-erreurs ]]' || montrer "$BANC/sortie-erreurs"
-reglage CLE_SECOURS=peut-etre
-voir "CLE_SECOURS ni « oui » ni « non » : dit, et la clé de secours reste faite" \
-  eval '[[ $(sortes) == "systemrescue arch omarchy debian fedora" ]] && dit "$BANC/sortie-erreurs" "seul « non »"' ||
+for valeur in peut-etre no ""; do
+  reglage "CLE_SECOURS=$valeur"
+  voir "CLE_SECOURS=« $valeur » : coupée par prudence, et dit" \
+    eval '[[ -z $(sortes) ]] && dit "$BANC/sortie-erreurs" "coupée par prudence"' || montrer "$BANC/sortie-erreurs"
+done
+printf '\xEF\xBB\xBFCLE_SECOURS=non\r\n' >"$REGLAGE"
+voir "réglage du Bloc-notes (marque d'ordre des octets, fins de ligne de Windows) : « non » lu, coupée" \
+  eval '[[ -z $(sortes) && ! -s $BANC/sortie-erreurs ]]' || montrer "$BANC/sortie-erreurs"
+reglage CLE_SECOURS=NON
+voir "« NON » : la casse ne compte pas, coupée sans autre message" \
+  eval '[[ -z $(sortes) && ! -s $BANC/sortie-erreurs ]]' || montrer "$BANC/sortie-erreurs"
+reglage "export CLE_SECOURS=non"
+voir "« export CLE_SECOURS=non » : coupée" eval '[[ -z $(sortes) ]]' || montrer "$BANC/sortie-erreurs"
+reglage CLE_SECOURS=Oui
+voir "« Oui » : la casse ne compte pas, faite" \
+  eval '[[ $(sortes) == "systemrescue arch omarchy debian fedora" && ! -s $BANC/sortie-erreurs ]]' ||
   montrer "$BANC/sortie-erreurs"
+reglage CLE_SECOURS=oui
+chmod 000 "$REGLAGE"
+if [[ -r $REGLAGE ]]; then
+  echo "      (réglage illisible pas essayé : le fichier reste lisible ici malgré chmod 000)"
+else
+  voir "réglage illisible : coupée par prudence, et dit" \
+    eval '[[ -z $(sortes) ]] && dit "$BANC/sortie-erreurs" "illisible"' || montrer "$BANC/sortie-erreurs"
+fi
+chmod 600 "$REGLAGE"
 # La clé coupée (CLE_SECOURS=non) : le programme seul. Aucune image cherchée, copiée, importée ni proposée, ni menu de
 # Ventoy ; les commandes qui en poseraient refusent en disant comment rallumer la clé de secours, et celles des
 # services (--chercher, --cle, --a-jour) ne font rien, sans erreur.
@@ -679,7 +701,7 @@ voir "des images choisies sans CLE_SECOURS : celles-là (la clé de secours par 
   eval '[[ $(sortes) == "arch debian kali" && ! -s $BANC/sortie-erreurs ]]' || montrer "$BANC/sortie-erreurs"
 reglage CLE_SECOURS=non 'IMAGES="arch"'
 voir "des images demandées avec CLE_SECOURS=non : ignorées, et dit" \
-  eval '[[ -z $(sortes) ]] && dit "$BANC/sortie-erreurs" "avec CLE_SECOURS=non, ignorées"' ||
+  eval '[[ -z $(sortes) ]] && dit "$BANC/sortie-erreurs" "avec la clé de secours coupée, ignorées"' ||
   montrer "$BANC/sortie-erreurs"
 reglage CLE_SECOURS=oui 'IMAGES="fedora, arch"'
 voir "CLE_SECOURS=oui et IMAGES : seulement celles-là, dans l'ordre de copie (la plus utile d'abord)" \

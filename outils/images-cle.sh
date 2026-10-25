@@ -48,8 +48,8 @@ MARGE_MIO=512
 # programme seul (Vanguard, sa base, ses rapports, VANGUARDLOG) : rien n'est cherché, copié, importé ni proposé, les
 # commandes qui poseraient une image refusent en disant comment la rallumer, et les minuteries de recopie ne font rien.
 # Le réglage, hors du dépôt, dans ~/.config/vanguard/images-cle.conf, une ligne par valeur (la dernière compte) :
-#   CLE_SECOURS=non                                        la clé de secours coupée sur cet ordinateur (seul « non »
-#                                                          la coupe ; « oui » ou rien : faite)
+#   CLE_SECOURS=non                                        la clé de secours coupée sur cet ordinateur (« oui », ou
+#                                                          pas de ligne : faite ; toute autre valeur la coupe aussi)
 #   IMAGES="systemrescue arch omarchy debian fedora"        les images Linux tenues ; sans cette ligne, ces cinq-là
 #   IMAGES_EN_PLUS="kali"                                   des images en plus de celles d'IMAGES (Kali Linux, 16 Gio)
 # Espaces ou virgules entre les noms ; « # » commence un commentaire. Lu, jamais sourcé : rien de ce fichier ne
@@ -62,21 +62,29 @@ EN_OPTION="kali"
 REGLAGE=${XDG_CONFIG_HOME:-$HOME/.config}/vanguard/images-cle.conf
 ALLUMER="Pour la rallumer sur cet ordinateur : retirer la ligne CLE_SECOURS=non de $REGLAGE (le détail : en-tête \
 de outils/images-cle.sh)."
-# Les lignes « NOM=… » du réglage, sans commentaire ni guillemets ; rien si le nom n'y est pas.
+# Les lignes « NOM=… » du réglage (« export NOM=… » aussi), sans commentaire ni guillemets ; rien si le nom n'y est
+# pas. Fichier écrit sous Windows (Bloc-notes, ou recopié de la clé) : fins de ligne « \r » et marque d'ordre des
+# octets du début retirées, sinon elles colleraient au dernier nom ou cacheraient le premier.
 reglage() { # nom
   [[ -r $REGLAGE ]] || return 0
-  # Fins de ligne de Windows (un fichier écrit là-bas, ou recopié de la clé) : le « \r » collerait au dernier nom.
-  sed -n "s/\r//g; s/#.*//; s/^[[:space:]]*$1[[:space:]]*=//p" "$REGLAGE" | tr -d "\"'" | tr ',' ' '
+  sed -n "1s/^\xEF\xBB\xBF//; s/\r//g; s/#.*//; s/^[[:space:]]*\(export[[:space:]]\+\)\?$1[[:space:]]*=//p" "$REGLAGE" |
+    tr -d "\"'" | tr ',' ' '
 }
 SECOURS=""
 SORTES=()
-choix=$(reglage CLE_SECOURS | tail -1 | tr -d '[:space:]')
-case $choix in
-  '' | oui | non) ;;
-  *) echo "· $REGLAGE : CLE_SECOURS=$choix n'est ni « oui » ni « non » : la clé de secours reste faite (seul « non » \
-la coupe)." >&2 ;;
-esac
-if [[ $choix != non ]]; then
+# Seuls « oui » et l'absence de la ligne font la clé de secours (plusieurs Go téléchargés, Ventoy, la clé réécrite) ;
+# un réglage illisible ou une autre valeur (« NON », « no », vide) la coupent, en le disant : dans le doute, rien.
+if [[ -e $REGLAGE && ! -r $REGLAGE ]]; then
+  choix=illisible
+  echo "· $REGLAGE illisible : clé de secours coupée par prudence." >&2
+elif [[ -n $(reglage CLE_SECOURS) || -n $(grep -s -E '^[[:space:]]*(export[[:space:]]+)?CLE_SECOURS[[:space:]]*=' "$REGLAGE") ]]; then
+  choix=$(reglage CLE_SECOURS | tail -1 | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+  [[ $choix == oui || $choix == non ]] ||
+    echo "· $REGLAGE : CLE_SECOURS=${choix:-(vide)} n'est ni « oui » ni « non » : clé de secours coupée par prudence." >&2
+else
+  choix=oui
+fi
+if [[ $choix == oui ]]; then
   SECOURS=oui
   voulues=$PAR_DEFAUT
   # La ligne IMAGES présente, même vide : elle seule dit les images (vide : aucune image Linux, WIN11 et MACOS
@@ -96,7 +104,7 @@ if [[ $choix != non ]]; then
     [[ $voulues != *" $s "* ]] || SORTES+=("$s")
   done
 elif [[ -n $(reglage IMAGES)$(reglage IMAGES_EN_PLUS) ]]; then
-  echo "· $REGLAGE : des images demandées avec CLE_SECOURS=non, ignorées (la clé ne porte que le programme)." >&2
+  echo "· $REGLAGE : des images demandées avec la clé de secours coupée, ignorées (la clé ne porte que le programme)." >&2
 fi
 # La clé de secours est coupée : dit, et code 1 (les fonctions qui poseraient une image s'arrêtent là).
 secours_demandee() { # ce qui n'est pas fait
