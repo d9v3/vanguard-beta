@@ -45,6 +45,25 @@ pub(crate) struct Analyse {
     pub journaux: Vec<StatJournal>,
     pub etats: Vec<EtatJournal>,
     pub manques_source: Vec<String>,
+    /// Les services ordinaires installés pendant la période (`jeu::service_ordinaire`), une fois chacun, au plus
+    /// `SERVICES_MONTRES` + 1 : le bilan les liste (WIN-JRN-003), le dernier dit seulement qu'il y en a d'autres.
+    pub services_ordinaires: Vec<String>,
+}
+
+/// Les services ordinaires nommés au plus par le bilan.
+const SERVICES_MONTRES: usize = 5;
+
+/// Garde le nom d'un service ordinaire installé, une fois, jusqu'à la borne : un journal forgé de mille services n'en
+/// fait pas mille.
+pub(crate) fn noter_service(services: &mut Vec<String>, e: &crate::journaux_windows::evenement::EvenementWindows) {
+    if services.len() > SERVICES_MONTRES {
+        return;
+    }
+    if let Some(nom) = super::jeu::service_ordinaire(e)
+        && !services.iter().any(|s| s.eq_ignore_ascii_case(&nom))
+    {
+        services.push(nom);
+    }
 }
 
 pub(crate) fn texte(t: Texte) -> &'static str {
@@ -218,9 +237,11 @@ pub(crate) fn analyser_dossier_borne(
         ..Filtre::default()
     };
     let mut hors_delai = 0u64;
+    let mut services_ordinaires = Vec::new();
     let bilan = fichiers::lire_dossier(dossier, &filtre, bornes, |e| {
         if std::time::Instant::now() < fin {
             moteur.recevoir(&e);
+            noter_service(&mut services_ordinaires, &e);
         } else {
             hors_delai += 1;
         }
@@ -260,6 +281,7 @@ pub(crate) fn analyser_dossier_borne(
         journaux,
         etats,
         manques_source,
+        services_ordinaires,
     })
 }
 
@@ -354,13 +376,17 @@ pub(crate) fn analyser_vivant(options: &Options, fin: std::time::Instant) -> Ana
     }
     let mut moteur = Moteur::nouveau(REGLES, options.clone(), BornesMoteur::default());
     let mut etats = Vec::new();
+    let mut services_ordinaires = Vec::new();
     for journal in JOURNAUX {
         let filtre = Filtre {
             journaux: vec![(*journal).to_string()],
             depuis: options.depuis,
             ..Filtre::default()
         };
-        let lu = vivant::lire_journal(journal, &filtre, &BornesVivant::default(), fin, |e| moteur.recevoir(&e));
+        let lu = vivant::lire_journal(journal, &filtre, &BornesVivant::default(), fin, |e| {
+            moteur.recevoir(&e);
+            noter_service(&mut services_ordinaires, &e);
+        });
         etats.push(match lu {
             Ok(b) => EtatJournal {
                 nom: (*journal).to_string(),
@@ -394,6 +420,7 @@ pub(crate) fn analyser_vivant(options: &Options, fin: std::time::Instant) -> Ana
         journaux,
         etats,
         manques_source: Vec::new(),
+        services_ordinaires,
     }
 }
 
@@ -895,7 +922,56 @@ pub(crate) fn constats_du_bilan(a: &Analyse, est_normale: &dyn Fn(&str) -> bool)
         };
         sortie.push(impossible_par(CAT, raison, message));
     }
+    if let Some(c) = services_installes(&a.services_ordinaires) {
+        sortie.push(c);
+    }
     sortie
+}
+
+/// Les services ordinaires installés pendant la période, en une information : au plus `SERVICES_MONTRES` noms, puis
+/// « … ». Rien dans leur chemin ne les rend suspects (EVT-SRV-001 dit les autres), mais un service inconnu se regarde.
+fn services_installes(services: &[String]) -> Option<Constat> {
+    if services.is_empty() {
+        return None;
+    }
+    let mut noms: Vec<String> = services
+        .iter()
+        .take(SERVICES_MONTRES)
+        .map(|n| nom_sans_piege(n, 64))
+        .collect();
+    if services.len() > SERVICES_MONTRES {
+        noms.push("…".to_string());
+    }
+    let noms = noms.join(", ");
+    Some(
+        alerte(
+            CAT,
+            Niveau::Info,
+            crate::trf!(
+                "Service(s) installé(s) pendant la période lue : {noms}. Rien d'anormal dans leur chemin ; si l'un vous est inconnu, regardez-le dans Services.",
+                "Service(s) installed over the period read: {noms}. Nothing odd in their path; if one is unknown to you, look at it in Services."
+            ),
+        )
+        .manuel(
+            crate::tr!(
+                "Si l'un vous est inconnu : le regarder dans Services",
+                "If one is unknown to you: look at it in Services"
+            ),
+            &["Start-Process services.msc"],
+        )
+        .avec_objet(Objet::de("evt", "services-installes")),
+    )
+}
+
+/// Le journal System a-t-il été lu en entier sur la période : ni refusé, ni coupé, ni arrêté par une borne ou le
+/// délai (rien de « lu en partie »). Alors chaque journal effacé (104) de la période est une alerte d'EVT-EFF-001, et
+/// la règle commune des journaux (COM-JRN-001) n'a pas à le redire.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn systeme_lu_en_entier(a: &Analyse) -> bool {
+    let mut systeme = a.etats.iter().filter(|e| e.nom == "System");
+    let lu =
+        |e: &EtatJournal| matches!(&e.lecture, Lecture::Lu(manques) if manques.is_empty()) && e.active != Some(false);
+    a.manques_source.is_empty() && systeme.clone().next().is_some() && systeme.all(lu)
 }
 
 /// Le résultat commun d'une analyse commencée à `debut`.

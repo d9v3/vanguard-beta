@@ -317,6 +317,7 @@ mod tests {
             journaux,
             etats,
             manques_source: Vec::new(),
+            services_ordinaires: Vec::new(),
         }
     }
 

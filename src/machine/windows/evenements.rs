@@ -10,7 +10,8 @@ use chrono::NaiveDateTime;
 use super::*;
 use crate::machine::regles::{Os, regle};
 
-const JOURS: u32 = 7;
+/// Les jours que lit WIN-JRN-003 ; COM-JRN-001 lui cède les effacements de cette période.
+pub(crate) const JOURS: u32 = 7;
 /// Les échecs lus au plus : assez pour voir une rafale, sans faire durer le bilan quand un robot en envoie des
 /// milliers par jour.
 const MAX_ECHECS: usize = 2000;
@@ -450,11 +451,15 @@ const DELAI_JOURNAUX: std::time::Duration = std::time::Duration::from_secs(120);
 /// (« Ce que Vanguard a appris », clé des journaux de Windows) y est tue comme dans `vanguard journaux-windows`.
 fn juger_par_les_regles() -> Vec<Constat> {
     use crate::journaux_windows::regles::{moteur::Options, resultat};
+    let bilan = crate::machine::bilan_en_cours();
     let options = Options {
         depuis: Some(chrono::Utc::now() - chrono::Duration::days(i64::from(JOURS))),
         ..Options::default()
     };
     let a = resultat::analyser_vivant(&options, std::time::Instant::now() + DELAI_JOURNAUX);
+    if resultat::systeme_lu_en_entier(&a) {
+        crate::machine::journaux::noter_systeme_lu(bilan);
+    }
     resultat::constats_du_bilan(&a, &crate::protection::normales::est_normale)
 }
 

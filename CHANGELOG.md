@@ -16,8 +16,11 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   pour lancer un interpréteur, une commande encodée ou un programme d'un dossier temporaire (audit des tâches, ou
   historique du Planificateur) ; EVT-PRC-001, processus suspects (outils d'attaque connus, commande encodée,
   téléchargement par certutil, bitsadmin, mshta, regsvr32 ou rundll32), si la ligne de commande est journalisée.
-  Coupés d'origine, ces réglages sont nommés quand ils manquent. Menu Bloquer et réagir › Journaux de Windows : ce
-  Windows, ou un dossier de .evtx sous Linux et macOS.
+  Coupés d'origine, ces réglages sont nommés quand ils manquent. Une tâche mise à jour (événement 140 du
+  Planificateur) est dite en information. Le bilan liste aussi les services ordinaires installés pendant la période
+  (cinq noms au plus), et un journal effacé n'y est plus dit deux fois : COM-JRN-001 laisse à WIN-JRN-003 ceux qu'il a
+  lus, et ne les dit lui-même que si le journal System n'a pas pu l'être. Menu Bloquer et réagir › Journaux de
+  Windows : ce Windows, ou un dossier de .evtx sous Linux et macOS.
 - **macOS maintenu, sans nouveautés propres.** Le programme macOS reste publié et testé automatiquement sur un Mac
   de GitHub ; il n'a jamais été essayé sur un vrai Mac, et la page, les README et les notices le disent.
 - **Optimiser refusé en administrateur.** Les outils d'Optimiser (logiciels, nettoyage, réglages, jeux, mesures du

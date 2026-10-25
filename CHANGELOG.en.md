@@ -15,8 +15,11 @@ delivered just before it. Only the latest version has its download page; every v
   computer's logs twice. New rules: EVT-TAC-001, a scheduled task created or changed to run an interpreter, an
   encoded command or a program from a temporary folder (task auditing, or the Task Scheduler history); EVT-PRC-001,
   suspicious processes (known attack tools, encoded command, download by certutil, bitsadmin, mshta, regsvr32 or
-  rundll32), if the command line is logged. Off by default, these settings are named when they are missing. Block
-  and respond › Windows logs menu: this Windows, or a folder of .evtx on Linux and macOS.
+  rundll32), if the command line is logged. Off by default, these settings are named when they are missing. An
+  updated task (Task Scheduler event 140) is reported as information. The check-up also lists the ordinary services
+  installed over the period (five names at most), and a cleared log is no longer reported twice: COM-JRN-001 leaves
+  to WIN-JRN-003 those it read, and only reports them itself when the System log could not be read. Block and
+  respond › Windows logs menu: this Windows, or a folder of .evtx on Linux and macOS.
 - **macOS maintained, without Mac-specific new features.** The macOS program is still published and tested
   automatically on a GitHub Mac; it has never been tried on a real Mac, and the page, READMEs and key notes say so.
 - **Optimize refused as administrator.** The Optimize tools (software, cleanup, settings, gaming, network

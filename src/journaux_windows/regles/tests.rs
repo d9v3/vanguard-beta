@@ -1762,6 +1762,50 @@ fn historique_du_planificateur() {
     assert_eq!(gravites(&js, "EVT-TAC-001"), [Gravite::Alerte, Gravite::Info]);
 }
 
+/// 140 (tâche mise à jour) : une information avec le nom de la tâche et le compte, jamais une alerte ; une tâche mise
+/// à jour plusieurs fois fait une seule ligne ; mille tâches forgées tiennent dans les bornes de la règle.
+#[test]
+fn tache_mise_a_jour_dite_en_information() {
+    let mise_a_jour = |s: i64, nom: &str| {
+        ev(
+            TACHES,
+            "Microsoft-Windows-TaskScheduler",
+            140,
+            s,
+            &[("TaskName", nom), ("UserName", "alice")],
+        )
+    };
+    let js = juger(&[
+        mise_a_jour(0, "\\Exemple\\Sauvegarde"),
+        mise_a_jour(60, "\\Exemple\\Sauvegarde"),
+    ]);
+    let t = trouvailles(&js, "EVT-TAC-001");
+    assert_eq!(t.len(), 1, "{t:?}");
+    assert_eq!((t[0].gravite, t[0].nombre), (Gravite::Info, 2));
+    let corps = resultat::corps(&t[0]);
+    assert!(corps.contains("mise à jour"), "{corps}");
+    assert!(
+        corps.contains("\\Exemple\\Sauvegarde") && corps.contains("alice"),
+        "{corps}"
+    );
+    // Même nommée comme un programme d'attaque, la tâche mise à jour ne dit rien de ce qu'elle lance : information.
+    let js = juger(&[mise_a_jour(0, "\\Temp\\powershell.exe -enc AAAA")]);
+    assert_eq!(gravites(&js, "EVT-TAC-001"), [Gravite::Info]);
+    // Bornée comme les autres volets : au-delà, comptée.
+    let bornes = BornesMoteur {
+        trouvailles: 3,
+        ..BornesMoteur::default()
+    };
+    let mut m = Moteur::nouveau(REGLES, options(), bornes);
+    for i in 0..1000 {
+        m.recevoir(&mise_a_jour(i, &format!("\\Exemple\\T{i}")));
+    }
+    let js = m.conclure(&tout_lu());
+    let tac = regle(&js, "EVT-TAC-001");
+    assert_eq!((tac.trouvailles.len(), tac.au_dela), (3, 997));
+    assert_eq!(tac.au_dela_pire, Some(Gravite::Info));
+}
+
 /// Deux sources de rechange : l'une lue et prouvée suffit ; aucune, non vérifiée, avec le réglage à allumer.
 #[test]
 fn taches_verifiees_par_l_une_ou_l_autre_source() {
@@ -2032,6 +2076,7 @@ fn analyse(js: Vec<Jugement>) -> Analyse {
         journaux: Vec::new(),
         etats: Vec::new(),
         manques_source: Vec::new(),
+        services_ordinaires: Vec::new(),
     }
 }
 
@@ -2047,6 +2092,7 @@ fn constats_du_bilan() {
         journaux: Vec::new(),
         etats: Vec::new(),
         manques_source: Vec::new(),
+        services_ordinaires: Vec::new(),
     };
     // Tout lu : une alerte, puis un seul constat sain qui nomme les treize règles.
     let a = vivant(juger(&[processus(
@@ -2106,6 +2152,103 @@ fn constats_du_bilan() {
     )]));
     let c = resultat::constats_du_bilan(&critique, &toujours);
     assert!(c.iter().any(|c| c.probleme == Some(crate::risk::Niveau::Critique)));
+}
+
+/// Le bilan liste les services ordinaires installés pendant la période (B7) : une information, au plus cinq noms puis
+/// « … », avec où les regarder ; un service d'attaque n'y est pas (EVT-SRV-001 en fait une alerte), un nom repris ou
+/// un événement non vérifié non plus, et la liste gardée reste bornée.
+#[test]
+fn services_ordinaires_listes_au_bilan() {
+    let service = |nom: &str, chemin: &str| {
+        ev(
+            "System",
+            SCM,
+            7045,
+            0,
+            &[
+                ("ServiceName", nom),
+                ("ImagePath", chemin),
+                ("StartType", "auto start"),
+                ("AccountName", "LocalSystem"),
+            ],
+        )
+    };
+    let ordinaire = |nom: &str| service(nom, &format!("C:\\Program Files\\{nom}\\{nom}.exe"));
+    let mut abime = ordinaire("Abime");
+    abime.verifie = false;
+    let mut autre_journal = ordinaire("Ailleurs");
+    autre_journal.journal = "Application".into();
+    let mut services = Vec::new();
+    for e in [
+        ordinaire("Sauvegarde"),
+        ordinaire("sauvegarde"),
+        service("PSEXESVC", "%SystemRoot%\\PSEXESVC.exe"),
+        abime,
+        autre_journal,
+        ordinaire("Imprimante"),
+    ] {
+        resultat::noter_service(&mut services, &e);
+    }
+    assert_eq!(services, ["Sauvegarde", "Imprimante"]);
+    let vivant = |services_ordinaires: Vec<String>| Analyse {
+        source: Source::Vivant,
+        jugements: Vec::new(),
+        journaux: Vec::new(),
+        etats: Vec::new(),
+        manques_source: Vec::new(),
+        services_ordinaires,
+    };
+    let jamais = |_: &str| false;
+    let c = resultat::constats_du_bilan(&vivant(services), &jamais);
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].probleme, Some(crate::risk::Niveau::Info));
+    assert!(c[0].message.contains("Sauvegarde, Imprimante."), "{}", c[0].message);
+    assert!(c[0].message.contains("regardez-le dans Services"), "{}", c[0].message);
+    assert!(
+        c[0].correctif
+            .as_ref()
+            .is_some_and(|k| k.commandes.iter().any(|x| x.contains("services.msc")))
+    );
+    // Mille services : six gardés, cinq nommés puis « … ».
+    let mut services = Vec::new();
+    for i in 0..1000 {
+        resultat::noter_service(&mut services, &ordinaire(&format!("Svc{i}")));
+    }
+    assert_eq!(services.len(), 6);
+    let c = resultat::constats_du_bilan(&vivant(services), &jamais);
+    assert!(
+        c[0].message.contains("Svc0, Svc1, Svc2, Svc3, Svc4, …."),
+        "{}",
+        c[0].message
+    );
+    // Aucun : rien à dire.
+    assert!(resultat::constats_du_bilan(&vivant(Vec::new()), &jamais).is_empty());
+}
+
+/// COM-JRN-001 ne cède ses effacements à WIN-JRN-003 que si celui-ci a lu le journal System en entier.
+#[test]
+fn journal_system_lu_en_entier() {
+    let avec = |etats: Vec<EtatJournal>, manques_source: Vec<String>| Analyse {
+        source: Source::Vivant,
+        jugements: Vec::new(),
+        journaux: Vec::new(),
+        etats,
+        manques_source,
+        services_ordinaires: Vec::new(),
+    };
+    assert!(resultat::systeme_lu_en_entier(&avec(tout_lu(), Vec::new())));
+    // Lu en partie (délai, borne), refusé, désactivé, absent, ou la source incomplète : non.
+    let mut partiel = tout_lu();
+    partiel.iter_mut().find(|e| e.nom == "System").unwrap().lecture = Lecture::Lu(vec!["délai dépassé".into()]);
+    let mut refuse = tout_lu();
+    refuse.iter_mut().find(|e| e.nom == "System").unwrap().lecture = Lecture::Refuse;
+    let mut coupe = tout_lu();
+    coupe.iter_mut().find(|e| e.nom == "System").unwrap().active = Some(false);
+    let absent: Vec<EtatJournal> = tout_lu().into_iter().filter(|e| e.nom != "System").collect();
+    for etats in [partiel, refuse, coupe, absent] {
+        assert!(!resultat::systeme_lu_en_entier(&avec(etats, Vec::new())));
+    }
+    assert!(!resultat::systeme_lu_en_entier(&avec(tout_lu(), vec!["manque".into()])));
 }
 
 /// Un dossier dont le jugement dépasse son délai : les événements suivants ne sont pas jugés, et c'est dit.
@@ -2364,6 +2507,7 @@ fn constats_de_la_source_vivante() {
         journaux: Vec::new(),
         etats,
         manques_source: Vec::new(),
+        services_ordinaires: Vec::new(),
     };
     let (constats, couverture) = resultat::constats(&a, &|_| false);
     assert!(couverture.non_verifies.iter().any(|n| n.starts_with("EVT-MDP-001")));

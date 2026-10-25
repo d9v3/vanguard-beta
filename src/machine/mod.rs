@@ -358,7 +358,8 @@ fn en_parallele_mesure(
     // VANGUARD_CHRONO : chaque vérification dit son temps sur la sortie d'erreur, pour trouver ce qui ralentit le bilan.
     let chrono = std::env::var_os("VANGUARD_CHRONO").is_some();
     let mut durees = Vec::new();
-    let constats = std::thread::scope(|s| {
+    let bilan = bilan_en_cours();
+    let mut constats: Vec<Constat> = std::thread::scope(|s| {
         let fils: Vec<_> = verifications
             .into_iter()
             .map(|v| {
@@ -391,6 +392,8 @@ fn en_parallele_mesure(
             })
             .collect()
     });
+    // Un effacement de journal n'est dit qu'une fois : COM-JRN-001 cède à WIN-JRN-003 ce que celui-ci a lu.
+    journaux::ceder_au_bilan_des_journaux(&mut constats, journaux::systeme_lu(bilan), JOURS_DES_JOURNAUX);
     (constats, durees)
 }
 
@@ -435,6 +438,17 @@ fn audit(systeme: &'static str) -> Audit {
 
 /// Le numéro du bilan en cours : ce que `ParBilan` a gardé d'un bilan précédent est périmé.
 static BILAN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Les jours que lit WIN-JRN-003 (sans lui, rien n'est cédé : la valeur ne sert pas).
+#[cfg(windows)]
+const JOURS_DES_JOURNAUX: u32 = windows::evenements::JOURS;
+#[cfg(not(windows))]
+const JOURS_DES_JOURNAUX: u32 = 7;
+
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn bilan_en_cours() -> u64 {
+    BILAN.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// Ce que plusieurs règles d'un bilan demandent en même temps (le pare-feu, l'adresse sur le réseau local) : la
 /// première le lit, les autres l'attendent et le reprennent. Deux lectures pourraient se contredire si l'état change

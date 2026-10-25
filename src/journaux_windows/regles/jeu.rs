@@ -539,6 +539,20 @@ fn service_installe(e: &EvenementWindows) -> Option<Indice> {
     )
 }
 
+/// Un service installé (7045 du gestionnaire de services, journal System) que rien ne rend suspect : son nom, que le
+/// bilan liste en une information (WIN-JRN-003). Seulement d'un événement vérifié : un morceau abîmé n'ajoute rien.
+pub(crate) fn service_ordinaire(e: &EvenementWindows) -> Option<String> {
+    if e.id != 7045
+        || !e.verifie
+        || !e.journal.eq_ignore_ascii_case(SYSTEM)
+        || !SCM.iter().any(|f| f.eq_ignore_ascii_case(e.fournisseur.trim()))
+    {
+        return None;
+    }
+    let nom = champ(e, "ServiceName").trim();
+    (rempli(nom) && service_suspect(nom, champ(e, "ImagePath")).is_none()).then(|| nom.to_string())
+}
+
 fn journal_des_evenements_change(e: &EvenementWindows) -> Option<Indice> {
     indice(
         format!("eventlog|{}", instant(e)),
@@ -2309,6 +2323,25 @@ fn tache_inscrite(e: &EvenementWindows) -> Option<Indice> {
     )
 }
 
+/// TaskScheduler/Operational 140 (tâche mise à jour) : ce journal ne dit pas ce qu'elle lance désormais, une
+/// information, jamais une alerte (Windows et les programmes récrivent leurs tâches à chaque mise à jour). Une tâche
+/// mise à jour plusieurs fois fait une seule ligne, comptée.
+fn tache_mise_a_jour(e: &EvenementWindows) -> Option<Indice> {
+    let nom = champ(e, "TaskName");
+    indice(
+        format!("{}|mise-a-jour", nom.to_lowercase()),
+        Gravite::Info,
+        (
+            "une tâche planifiée a été mise à jour (ce journal ne dit pas ce qu'elle lance : son lancement le dira)",
+            "a scheduled task was updated (this log does not say what it runs: its launch will)",
+        ),
+        vec![
+            (Libelle::Tache, nom.to_string()),
+            (Libelle::Compte, champ(e, "UserName").to_string()),
+        ],
+    )
+}
+
 /// TaskScheduler/Operational 200 (action lancée) : le programme de l'action, sans ses arguments.
 fn tache_lancee(e: &EvenementWindows) -> Option<Indice> {
     let nom = champ(e, "TaskName");
@@ -2821,13 +2854,14 @@ pub(crate) static REGLES: &[Regle] = &[
             "https://attack.mitre.org/techniques/T1053/005/",
         ],
         // Deux sources de rechange : l'audit (4698, 4702, avec le contenu de la tâche), coupé d'origine, ou
-        // l'historique du Planificateur (106, 200 : le nom et le programme lancé), coupé d'origine lui aussi.
+        // l'historique du Planificateur (106, 140, 200 : le nom et le programme lancé), coupé d'origine lui aussi.
         volets: &[
             Volet {
                 audit: AUDIT_TACHES,
                 ..securite(&[4698, 4702], Condition::Toujours, tache_auditee, AUTRES_OBJETS)
             },
             chacun(TACHES, TACHES_P, &[106], Condition::Toujours, tache_inscrite),
+            chacun(TACHES, TACHES_P, &[140], Condition::Toujours, tache_mise_a_jour),
             chacun(TACHES, TACHES_P, &[200], Condition::Toujours, tache_lancee),
         ],
         limite: Some((
