@@ -2111,7 +2111,8 @@ fn constats_du_bilan() {
 /// Un dossier dont le jugement dépasse son délai : les événements suivants ne sont pas jugés, et c'est dit.
 #[test]
 fn dossier_hors_delai() {
-    let dossier = crate::socle::dossier_local().join("essai-delai-des-journaux");
+    // Un dossier d'essai, pas un fichier d'état de Vanguard : hors du dossier des données, retiré à la fin.
+    let dossier = std::env::temp_dir().join(format!("vanguard-essai-delai-{}", std::process::id()));
     std::fs::create_dir_all(&dossier).unwrap();
     let f = crate::journaux_windows::evtx::tests::fichier(&[crate::journaux_windows::evtx::tests::morceau_type(1)]);
     std::fs::write(dossier.join("System.evtx"), f).unwrap();
@@ -2124,6 +2125,7 @@ fn dossier_hors_delai() {
         deja,
     )
     .unwrap();
+    let _ = std::fs::remove_dir_all(&dossier);
     assert!(
         a.manques_source.iter().any(|m| m.contains("jug")),
         "{:?}",
