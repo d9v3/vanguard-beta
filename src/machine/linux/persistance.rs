@@ -443,15 +443,15 @@ pub(super) fn persistance_dans(
     // On les nomme pour que tu les reconnaisses, sans baisser la note.
     if let Some(gestion) = gestion {
         let systeme = etc("etc/systemd/system");
-        let mut maison: Vec<String> = fichiers_de(&systeme, &["service", "timer"])
+        let mut ajoutes: Vec<String> = fichiers_de(&systeme, &["service", "timer"])
             .into_iter()
             .filter(|p| p.parent() == Some(systeme.as_path()) && !p.is_symlink())
             .filter(|p| !gestion.possede(p))
             .filter_map(|p| p.file_name().map(|n| crate::ui::affichable(&n.to_string_lossy())))
             .collect();
-        maison.sort();
-        if !maison.is_empty() {
-            let premier = maison[0].clone();
+        ajoutes.sort();
+        if !ajoutes.is_empty() {
+            let premier = ajoutes[0].clone();
             constats.push(
                 alerte(
                     CAT,
@@ -459,11 +459,11 @@ pub(super) fn persistance_dans(
                     trf!(
                         "{} service(s) système ajouté(s) à la main, hors paquet : {}. À reconnaître.",
                         "{} system service(s) added by hand, not from a package: {}. Check that you recognize them.",
-                        maison.len(),
-                        maison.join(", ")
+                        ajoutes.len(),
+                        ajoutes.join(", ")
                     ),
                 )
-                .avec_objet(crate::modele::Objet::de("services", &maison.join(",")))
+                .avec_objet(crate::modele::Objet::de("services", &ajoutes.join(",")))
                 .manuel(
                     tr!(
                         "Si vous n'en reconnaissez pas un, lisez ce qu'il lance avant de le désactiver",
