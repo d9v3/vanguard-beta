@@ -9,6 +9,8 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 
 ## Prochaine version
 
+- **macOS maintenu, sans nouveautés propres.** Le programme macOS reste publié et testé automatiquement sur un Mac
+  de GitHub ; il n'a jamais été essayé sur un vrai Mac, et la page, les README et les notices le disent.
 - **Optimiser refusé en administrateur.** Les outils d'Optimiser (logiciels, nettoyage, réglages, jeux, mesures du
   réseau) refusent de tourner quand Vanguard a été élevé depuis un compte ordinaire (`sudo vanguard`, console
   administrateur avec l'UAC) : ils installent, effacent ou lisent ce que le réseau envoie, et chaque geste

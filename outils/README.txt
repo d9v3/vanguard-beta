@@ -15,7 +15,8 @@ This USB key holds the program for Linux, Windows and macOS, its database and it
                         Double-click autorun.sh, or in a terminal (outside the key):  <key>/Linux/vanguard
   Windows/vanguard.exe  Windows 10/11: double-click (or "Lancer Vanguard.bat" at the root).
   macOS/vanguard        macOS 12 and later (Apple Silicon and Intel): double-click "Lancer Vanguard.command" at the
-                        root (Terminal opens).
+                        root (Terminal opens). Tested on a GitHub Mac, never on a real Mac; maintained, without
+                        Mac-specific new features.
   autorun.sh            Linux: GNOME offers to run it when the key is plugged in; otherwise double-click or ./autorun.sh
   donnees/              Device database (one notebook per network: the owner's, each friend's) and the latest
                         report (rapport.html, and rapport.md as plain text, readable without a browser). It travels with the key: any Vanguard that sees the key plugged in uses it. On another

@@ -702,6 +702,7 @@ vanguard yara --complet</pre>
         <h4>macOS <span>12 et plus</span></h4>
         <ul>
           <li><b>Lancer</b> : copié depuis Internet, il est bloqué la première fois : <code>xattr -d com.apple.quarantine vanguard-macos</code>, puis <code>./vanguard-macos</code> dans le Terminal.</li>
+          <li><b>État</b> : testé automatiquement sur un Mac de GitHub, jamais essayé sur un vrai Mac ; maintenu, sans nouveautés propres au Mac.</li>
         </ul>
       </article>
     </div>
@@ -718,7 +719,7 @@ vanguard yara --complet</pre>
     <div lang="en">
       <h3 class="sous-titre">In English: download, check, install</h3>
       <ol class="chaine">
-        <li><b>Download</b>From the <a href="https://github.com/d9v3/vanguard-beta/releases/latest">latest release page</a>, the program for your system: <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-windows-x86_64.exe">Windows</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-linux-x86_64">Linux</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-macos">macOS</a>. A single executable, nothing to install to run it.</li>
+        <li><b>Download</b>From the <a href="https://github.com/d9v3/vanguard-beta/releases/latest">latest release page</a>, the program for your system: <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-windows-x86_64.exe">Windows</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-linux-x86_64">Linux</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-macos">macOS</a> (tested automatically on a GitHub Mac, never tried on a real Mac; maintained, without Mac-specific new features). A single executable, nothing to install to run it.</li>
         <li><b>Check the checksum</b>With <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/SHA256SUMS.txt">SHA256SUMS.txt</a> next to it: <code>sha256sum -c --ignore-missing SHA256SUMS.txt</code> on Linux; elsewhere, <code>Get-FileHash</code> (Windows) or <code>shasum -a 256</code> (macOS), compared to its line. A different checksum: do not run it.</li>
         <li><b>Put it on the computer</b><code>vanguard shortcut</code> copies it to its folder on this computer and launches it in one click (applications menu on Linux, Desktop on Windows and macOS), after your consent.</li>
         <li><b>Keep it up to date</b><code>vanguard self-update</code> takes the latest published version, signed by the author and checked; always with your consent, never an older version.</li>

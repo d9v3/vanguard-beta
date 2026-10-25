@@ -9,6 +9,8 @@ delivered just before it. Only the latest version has its download page; every v
 
 ## Next version
 
+- **macOS maintained, without Mac-specific new features.** The macOS program is still published and tested
+  automatically on a GitHub Mac; it has never been tried on a real Mac, and the page, READMEs and key notes say so.
 - **Optimize refused as administrator.** The Optimize tools (software, cleanup, settings, gaming, network
   measurements) refuse to run when Vanguard was elevated from an ordinary account (`sudo vanguard`, administrator
   console with UAC): they install, delete or read what the network sends, and each administrator action is already

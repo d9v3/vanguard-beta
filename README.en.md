@@ -76,7 +76,8 @@ defensive: Vanguard never attacks any device.
 - **Linux**: `chmod +x vanguard-linux-x86_64`, then `./vanguard-linux-x86_64` in a terminal (any distribution, nothing
   to install).
 - **macOS**: copied from the Internet, the program is blocked the first time: `xattr -d com.apple.quarantine
-  vanguard-macos`, then `./vanguard-macos` in Terminal.
+  vanguard-macos`, then `./vanguard-macos` in Terminal. Tested automatically on a GitHub Mac, never tried on a real
+  Mac; maintained, without Mac-specific new features.
 - **From the USB key**: `Windows/vanguard.exe`, `Linux/vanguard`, or `Lancer Vanguard.command` on macOS; the key's guide
   is in `README.txt`.
 

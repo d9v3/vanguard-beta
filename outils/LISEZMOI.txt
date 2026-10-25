@@ -16,7 +16,8 @@ Cette clé contient le programme pour Linux, Windows et macOS, sa base de donné
                         Double-cliquer autorun.sh, ou dans un terminal (hors de la clé) :  <clé>/Linux/vanguard
   Windows/vanguard.exe  Windows 10/11 : double-cliquer (ou « Lancer Vanguard.bat » à la racine).
   macOS/vanguard        macOS 12 et plus récents (Apple Silicon et Intel) : double-cliquer « Lancer Vanguard.command »
-                        à la racine (le Terminal s'ouvre).
+                        à la racine (le Terminal s'ouvre). Testé sur un Mac de GitHub, jamais sur un vrai Mac ;
+                        maintenu, sans nouveautés propres au Mac.
   autorun.sh            Linux : GNOME propose de le lancer au branchement ; sinon, double-clic ou ./autorun.sh
   donnees/              Base des appareils (un carnet par réseau : celui du propriétaire, celui de chaque ami)
                         et dernier rapport (rapport.html, et rapport.md en texte simple, lisible sans navigateur). Elle voyage avec la clé : tout Vanguard qui voit la clé branchée l'utilise. Sur un autre

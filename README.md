@@ -81,7 +81,8 @@ version : [historique](CHANGELOG.md).
 - **Linux** : `chmod +x vanguard-linux-x86_64`, puis `./vanguard-linux-x86_64` dans un terminal (toutes les
   distributions, rien à installer).
 - **macOS** : copié depuis Internet, le programme est bloqué la première fois : `xattr -d com.apple.quarantine
-  vanguard-macos`, puis `./vanguard-macos` dans le Terminal.
+  vanguard-macos`, puis `./vanguard-macos` dans le Terminal. Testé automatiquement sur un Mac de GitHub, jamais essayé
+  sur un vrai Mac ; maintenu, sans nouveautés propres au Mac.
 - **Depuis la clé USB** : `Windows/vanguard.exe`, `Linux/vanguard`, ou `Lancer Vanguard.command` sous macOS ; le guide
   de la clé est dans `LISEZMOI.txt`.
 
