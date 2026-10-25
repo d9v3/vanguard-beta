@@ -11,7 +11,7 @@
 //! - [libyal] « Windows XML Event Log (EVTX) format », J. Metz (documentation du format, prose et tableaux, GFDL) :
 //!   en-tête du fichier, morceaux, enregistrements, CRC32, et ce que le fichier change au BinXml de [MS-EVEN6]
 //!   (noms et gabarits désignés par leur position dans le morceau).
-//!   <https://github.com/libyal/libevtx/blob/main/documentation/Windows%20XML%20Event%20Log%20(EVTX).asciidoc>
+//!   <https://github.com/libyal/libevtx/blob/main/documentation/Windows%20XML%20Event%20Log%20%28EVTX%29.asciidoc>
 //! - RFC 1952 (§ 8) pour le CRC32. <https://www.rfc-editor.org/rfc/rfc1952>
 //!
 //! Le fichier : un en-tête de 4 096 octets (« ElfFile\0 », CRC32 de ses 120 premiers octets à 124), puis des

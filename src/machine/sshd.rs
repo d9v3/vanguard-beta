@@ -252,6 +252,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn version_de_l_openssh_de_windows() {
+        // Les textes du sshd.exe d'OpenSSH 9.5p2 livré avec Windows 11 : la version, son préfixe court, la même
+        // en UTF-16 (ignorée) et les motifs de compatibilité des vieux clients.
+        let mut programme = b"..OpenSSH_for_Windows_9.5p2\0..OpenSSH_for_Windows_9.5\0".to_vec();
+        programme.extend("OpenSSH_9.5p2 for Windows".encode_utf16().flat_map(u16::to_le_bytes));
+        programme.extend_from_slice(b"\0OpenSSH_2.*,OpenSSH_3.0*\0OpenSSH_7.6*\0");
+        assert_eq!(version_dans_le_programme(&programme), Some((9, 5)));
+    }
+
+    #[test]
     fn versions_et_capacites() {
         assert_eq!(pq_selon_version((7, 4)), Pq::Aucun);
         assert_eq!(pq_selon_version((8, 5)), Pq::Sntrup);

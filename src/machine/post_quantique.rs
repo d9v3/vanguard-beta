@@ -790,7 +790,9 @@ fn lire_serveur() -> Lecture<Serveur> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Lecture::Illisible(crate::modele::Echec::io("bilan/pqc-sshd", &e).raison),
     };
+    // REG_EXPAND_SZ : « %SystemRoot%\System32\OpenSSH\sshd.exe » sur un Windows ordinaire, à développer.
     let programme: Option<String> = super::windows::registre(HKEY_LOCAL_MACHINE, cle, "ImagePath");
+    let programme = programme.and_then(|p| super::windows::installes::developper(&p, &|v| std::env::var(v).ok()));
     let programme = programme.map_or_else(
         || {
             std::env::var_os("SystemRoot").map_or_else(|| r"C:\Windows".into(), |s| s.to_string_lossy().into_owned())
