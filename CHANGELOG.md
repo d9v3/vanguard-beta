@@ -9,15 +9,15 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 
 ## Prochaine version
 
-- **Régression de détection, sans attente.** Les 21 règles dont la lecture et le jugement étaient mêlés (persistance
-  et programmes privilégiés de Linux, comptes, SSH, sudo, intégrité, agents et extensions de macOS, démarrage et
-  journaux de Windows, fiches de l'audit du réseau) ont leur jugement à part, au même comportement, et leur cas : 63
-  règles tirent dans le corpus (selon le système).
-- **Régression de détection.** Un corpus de cas fabriqués et inoffensifs (tests/corpus-detection) prouve que 43 règles
+- **Régression de détection.** Un corpus de cas fabriqués et inoffensifs (tests/corpus-detection) prouve que 63 règles
   de détection tirent encore (selon le système : chacune tourne là où elle existe), à leur gravité exacte, et qu'un
-  cas propre les laisse muettes ; chaque règle qui cite une technique d'ATT&CK, et chaque outil qui détecte, a son cas
-  ou sa raison, le fil de chaque règle jusqu'à son jugement est tenu, et verifier.sh en fait deux étapes (Linux et
-  Wine).
+  cas propre les laisse muettes. Pour cela, les 21 règles dont la lecture et le jugement étaient mêlés (persistance et
+  programmes privilégiés de Linux, comptes, SSH, sudo, intégrité, agents et extensions de macOS, démarrage et journaux
+  de Windows, fiches de l'audit du réseau) ont leur jugement à part, au même comportement. Chaque règle qui cite une
+  technique d'ATT&CK, et chaque outil qui détecte, a son cas ou sa raison ; le fil de chaque règle jusqu'à son
+  jugement est tenu, et verifier.sh en fait deux étapes (Linux et Wine). Une règle qui ne rend qu'une information se
+  prouve par un cas propre muet, et une règle qui dit toujours une partie non vérifiée (un magasin illisible sans
+  outil) le dit aussi dans son cas propre, à côté d'au moins un constat vérifié, sauf une, nommée avec sa raison.
 - **Autres fichiers d'état scellés, un seul juge.** La liste des fichiers-pièges, les ports bloqués, le carnet des
   appareils de cet ordinateur, les références de la clé VANGUARD, l'entretien du mois, la note de la sauvegarde et la
   dernière passe de la surveillance sont scellés : changés, effacés ou acceptés tels quels après des sceaux refaits,
