@@ -79,3 +79,15 @@ protege https://www.microsoft.com/en-us/wdsi/
 essai https://bugzilla.mozilla.org/enter_bug.cgi https://bugzilla.mozilla.org/enter_bug.cgi?product=Firefox
 # Exemple d'adresse dans un commentaire de src/protection/espions/echap.rs (forme d'une ligne de distribution), jamais ouvert.
 ignorer https://github.com/x/y
+
+# Adresses d'exemple des essais des journaux de Windows (src/journaux_windows/) : téléchargements BITS jugés par
+# leur forme, domaines trompeurs, espaces de noms des manifestes d'événements ; jamais ouvertes.
+ignorer http://download.windowsupdate.com/c/msdownload/update/x.cab
+ignorer http://evilmicrosoft.com/
+ignorer http://manifests.microsoft.com/
+ignorer https://dl.google.com/update2/1.3.36/GoogleUpdateSetup.exe
+ignorer https://drive.google.com/uc?export=download&id=1
+ignorer https://onedrive.live.com/download?cid=1
+ignorer https://raw.githubusercontent.com/x/y/
+# Documentation de libyal : liens.py coupe l'adresse à sa parenthèse « (EVTX) » ; la page existe (vérifiée le 24 oct.).
+ignorer https://github.com/libyal/libevtx/blob/main/documentation/
