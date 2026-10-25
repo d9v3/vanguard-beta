@@ -9,6 +9,13 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 
 ## Prochaine version
 
+- **Optimiser refusé en administrateur.** Les outils d'Optimiser (logiciels, nettoyage, réglages, jeux, mesures du
+  réseau) refusent de tourner quand Vanguard a été élevé depuis un compte ordinaire (`sudo vanguard`, console
+  administrateur avec l'UAC) : ils installent, effacent ou lisent ce que le réseau envoie, et chaque geste
+  d'administrateur se demande déjà au moment voulu. « Tout remettre comme avant » n'est jamais refusé ; root seul et
+  Windows sans UAC gardent les outils, avec l'avertissement.
+- **Post-quantique sous Windows.** La version du serveur OpenSSH de Windows est lue (son chemin `%SystemRoot%\…` est
+  développé) : COM-PQC-001 ne la dit plus illisible.
 - **Clé USB : les images de secours de nouveau par défaut.** Les outils du dépôt refont la clé de secours partout :
   Ventoy, les images d'installation et de réparation (SystemRescue, Arch, Omarchy, Debian, Fedora, chacune vérifiée
   par la signature de son projet), Windows 11 et la récupération de macOS. Une ligne `CLE_SECOURS=non` dans

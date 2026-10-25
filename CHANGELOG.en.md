@@ -9,6 +9,13 @@ delivered just before it. Only the latest version has its download page; every v
 
 ## Next version
 
+- **Optimize refused as administrator.** The Optimize tools (software, cleanup, settings, gaming, network
+  measurements) refuse to run when Vanguard was elevated from an ordinary account (`sudo vanguard`, administrator
+  console with UAC): they install, delete or read what the network sends, and each administrator action is already
+  asked for when needed. “Undo everything” is never refused; root alone and Windows without UAC keep the tools, with
+  the warning.
+- **Post-quantum on Windows.** The version of Windows' OpenSSH server is read (its `%SystemRoot%\…` path is
+  expanded): COM-PQC-001 no longer calls it unreadable.
 - **USB key: rescue images back by default.** The repository tools make the rescue key everywhere again: Ventoy, the
   installation and repair images (SystemRescue, Arch, Omarchy, Debian, Fedora, each checked against its project's
   signature), Windows 11 and macOS recovery. A `CLE_SECOURS=non` line in `~/.config/vanguard/images-cle.conf` turns it
