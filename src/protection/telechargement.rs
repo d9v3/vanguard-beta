@@ -702,14 +702,18 @@ struct EtatSurveillance {
 /// Depuis quand regarder, d'après les sceaux. Absent : le premier passage, muet. Intact ou adopté : l'heure notée.
 /// Changé hors de Vanguard, inconnu ou illisible : depuis toujours, rien n'est tu (`a_signaler` plafonne à trois
 /// notes) ; un « depuis » posé dans le futur taisait sinon tout fichier arrivé.
-fn depuis_lu(lu: crate::sceau::Lecture) -> Option<u64> {
-    use crate::sceau::Lecture;
+/// Accepté tel quel après des sceaux refaits, comme changé (`sceau::juge`) ; une heure postérieure à `maintenant`
+/// (horloge reculée, ou écrite ainsi) ne tait rien non plus.
+fn depuis_lu(lu: crate::sceau::Juge, maintenant: u64) -> Option<u64> {
+    use crate::sceau::Juge;
     match lu {
-        Lecture::Absent => None,
-        Lecture::Intact(o) | Lecture::Adopte(o) => {
-            Some(serde_json::from_slice::<EtatSurveillance>(&o).map_or(0, |e| e.depuis))
-        }
-        Lecture::Falsifie(_) | Lecture::Inconnu | Lecture::Illisible(_) => Some(0),
+        Juge::Absent => None,
+        Juge::Cru(o) => Some(
+            serde_json::from_slice::<EtatSurveillance>(&o)
+                .map_or(0, |e| e.depuis)
+                .min(maintenant),
+        ),
+        Juge::Douteux(..) | Juge::Illisible(_) => Some(0),
     }
 }
 
@@ -722,7 +726,7 @@ pub fn nouveaux_a_signaler() -> Vec<(String, String)> {
     let maintenant = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let avant = depuis_lu(crate::sceau::lire(crate::sceau::TELECHARGEMENTS));
+    let avant = depuis_lu(crate::sceau::juge(crate::sceau::TELECHARGEMENTS), maintenant);
     let notes = avant.map_or_else(Vec::new, |depuis| {
         let fichiers: Vec<(String, u64, Vec<u8>)> = std::fs::read_dir(&dossier)
             .into_iter()
@@ -1042,13 +1046,19 @@ mod tests {
     fn depuis_futur_pose_hors_de_vanguard_ne_tait_rien() {
         let d = std::env::temp_dir().join(format!("vanguard-telechargements-sceau-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        let lu = || crate::sceau::lire_dans(&d, crate::sceau::TELECHARGEMENTS);
-        assert_eq!(depuis_lu(lu()), None);
+        let lu = || crate::sceau::juge_dans(&d, crate::sceau::TELECHARGEMENTS);
+        let maintenant = 1_000;
+        assert_eq!(depuis_lu(lu(), maintenant), None);
         crate::sceau::ecrire_dans(&d, crate::sceau::TELECHARGEMENTS, br#"{"depuis":150}"#).unwrap();
-        assert_eq!(depuis_lu(lu()), Some(150));
+        assert_eq!(depuis_lu(lu(), maintenant), Some(150));
+        // Écrit par Vanguard, mais après « maintenant » (horloge reculée) : jamais au-delà de maintenant.
+        assert_eq!(depuis_lu(lu(), 100), Some(100));
         std::fs::write(d.join(crate::sceau::TELECHARGEMENTS), br#"{"depuis":99999999999}"#).unwrap();
-        let depuis = depuis_lu(lu()).unwrap();
+        let depuis = depuis_lu(lu(), maintenant).unwrap();
         assert_eq!(depuis, 0);
+        // S2c : accepté tel quel après des sceaux refaits, il ne tait rien non plus.
+        std::fs::remove_file(d.join("sceaux.json")).unwrap();
+        assert_eq!(depuis_lu(lu(), maintenant), Some(0));
         let arrive = [("setup.exe".to_string(), 200, b"MZ\x90\0".to_vec())];
         assert_eq!(a_signaler(&arrive, depuis).len(), 1);
         let _ = std::fs::remove_dir_all(&d);

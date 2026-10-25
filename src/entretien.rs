@@ -35,10 +35,10 @@ struct Etat {
     /// La génération des textes (`surveillance::TEXTES`) ; 0 dans l'état d'une version d'avant.
     #[serde(default)]
     textes: u32,
-}
-
-fn fichier_etat() -> std::path::PathBuf {
-    crate::socle::dossier_local().join("entretien.json")
+    /// L'état d'avant ne pouvait pas être cru (changé, effacé ou accepté tel quel hors de Vanguard, illisible) : vide,
+    /// tout y est nouveau, et c'est dit.
+    #[serde(skip)]
+    douteux: bool,
 }
 
 struct Examen {
@@ -155,7 +155,34 @@ fn categories(noms: &[impl AsRef<str>]) -> String {
 }
 
 fn lire_etat() -> Option<Etat> {
-    serde_json::from_str(&crate::socle::lire_texte_ordinaire(&fichier_etat(), 1 << 20).ok()?).ok()
+    lire_etat_dans(&crate::socle::dossier_local())
+}
+
+/// L'état du mois d'avant, scellé (`sceau::ENTRETIEN`) : une alerte inscrite d'avance par un autre programme du compte
+/// n'était jamais dite nouvelle. `None` : le premier entretien. Douteux, jamais un premier passage muet : tout est
+/// nouveau.
+fn lire_etat_dans(dossier: &std::path::Path) -> Option<Etat> {
+    use crate::sceau::Juge;
+    match crate::sceau::juge_dans(dossier, crate::sceau::ENTRETIEN) {
+        Juge::Absent => None,
+        Juge::Cru(o) => serde_json::from_slice(&o).ok(),
+        Juge::Douteux(..) | Juge::Illisible(_) => Some(Etat {
+            textes: TEXTES,
+            douteux: true,
+            ..Etat::default()
+        }),
+    }
+}
+
+/// Ce qui suit les lignes de l'entretien quand l'état du mois d'avant ne pouvait pas être cru.
+fn ligne_douteux(avant: Option<&Etat>) -> Option<String> {
+    avant.filter(|a| a.douteux).map(|_| {
+        tr!(
+            "La note de l'entretien d'avant a été changée hors de Vanguard : tous les problèmes sont dits nouveaux.",
+            "The previous check-up's note was changed outside Vanguard: every problem is reported as new."
+        )
+        .to_string()
+    })
 }
 
 /// Appelé par le planificateur : examen silencieux, notification, puis l'état est gardé pour le mois suivant.
@@ -163,17 +190,20 @@ pub fn entretenir() {
     let examen = examiner();
     let avant = lire_etat();
     let nouvelles = avant.as_ref().map(|a| nouvelles(a, &examen.alertes));
-    let (titre, lignes) = rediger(&examen, nouvelles.as_deref());
+    let (titre, mut lignes) = rediger(&examen, nouvelles.as_deref());
+    lignes.extend(ligne_douteux(avant.as_ref()));
     crate::reseau::surveillance::notifier(titre, &lignes.join("\n"));
     let etat = Etat {
         date: chrono::Local::now().format("%Y-%m-%d").to_string(),
         score: examen.score,
         alertes: examen.alertes,
         textes: TEXTES,
+        douteux: false,
     };
-    if let Ok(t) = serde_json::to_string(&etat) {
-        let _ = std::fs::create_dir_all(crate::socle::dossier_local());
-        let _ = std::fs::write(fichier_etat(), t);
+    if let Ok(t) = serde_json::to_string(&etat)
+        && let Err(e) = crate::sceau::ecrire(crate::sceau::ENTRETIEN, t)
+    {
+        crate::modele::Echec::echoue("entretien/etat", e.to_string()).journaliser();
     }
     // Sans surveillance, l'entretien du mois garde les exemples du guide à jour.
     crate::guide::renouveler_exemples();
@@ -190,7 +220,8 @@ pub fn maintenant() {
     let examen = examiner();
     let avant = lire_etat();
     let nouvelles = avant.as_ref().map(|a| nouvelles(a, &examen.alertes));
-    let (_, lignes) = rediger(&examen, nouvelles.as_deref());
+    let (_, mut lignes) = rediger(&examen, nouvelles.as_deref());
+    lignes.extend(ligne_douteux(avant.as_ref()));
     println!();
     for ligne in &lignes {
         for (i, morceau) in envelopper(ligne, LARGEUR - 4).iter().enumerate() {
@@ -430,6 +461,37 @@ mod tests {
         }
     }
 
+    /// S2c : une alerte inscrite d'avance dans l'état du mois d'avant (ou cet état effacé) ne fait jamais dire « aucun
+    /// problème nouveau » : tout est nouveau, et c'est dit.
+    #[test]
+    fn etat_forge_ne_tait_rien() {
+        let d = std::env::temp_dir().join(format!("vanguard-entretien-forge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        assert!(lire_etat_dans(&d).is_none());
+        let alerte = "Pare-feu : Pare-feu inactif.".to_string();
+        crate::sceau::ecrire_dans(
+            &d,
+            crate::sceau::ENTRETIEN,
+            br#"{"date":"2026-09-25","score":80,"alertes":[]}"#,
+        )
+        .unwrap();
+        let avant = lire_etat_dans(&d).unwrap();
+        assert!(!avant.douteux && ligne_douteux(Some(&avant)).is_none());
+        let forge = format!(r#"{{"date":"2026-09-25","score":80,"alertes":["{alerte}"],"textes":{TEXTES}}}"#);
+        std::fs::write(d.join(crate::sceau::ENTRETIEN), forge).unwrap();
+        let avant = lire_etat_dans(&d).unwrap();
+        assert!(avant.douteux);
+        assert_eq!(
+            nouvelles(&avant, std::slice::from_ref(&alerte)),
+            std::slice::from_ref(&alerte)
+        );
+        assert!(ligne_douteux(Some(&avant)).is_some());
+        std::fs::remove_file(d.join(crate::sceau::ENTRETIEN)).unwrap();
+        assert!(lire_etat_dans(&d).is_some_and(|a| a.douteux));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn problemes_nouveaux_du_mois() {
         let avant = vec![
@@ -445,6 +507,7 @@ mod tests {
             score: None,
             alertes,
             textes,
+            douteux: false,
         };
         // Le disque, avec d'autres nombres, n'est pas nouveau ; le pare-feu réglé n'apparaît pas.
         assert_eq!(

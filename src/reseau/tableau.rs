@@ -167,10 +167,6 @@ fn fichier_journal() -> PathBuf {
     crate::socle::dossier_local().join("surveillance-alertes.jsonl")
 }
 
-fn fichier_passe() -> PathBuf {
-    crate::socle::dossier_local().join("surveillance-passe.txt")
-}
-
 fn fichier_reseau() -> PathBuf {
     crate::socle::dossier_local().join("surveillance-reseau-non-verifie.txt")
 }
@@ -341,7 +337,9 @@ pub(crate) fn noter_passe() {
     // Une mise à jour se lit dans le journal des événements à la première passe qui suit, pas à la prochaine alerte.
     crate::modele::journal::noter_version();
     let maintenant = chrono::Local::now().format(FORMAT_DATE).to_string();
-    let _ = crate::socle::ecrire_atomique(&fichier_passe(), maintenant);
+    // Scellée : forgée par un autre programme du compte, elle disait la surveillance passée il y a cinq minutes alors
+    // qu'elle était coupée.
+    let _ = crate::sceau::ecrire(crate::sceau::SURVEILLANCE_PASSE, maintenant);
 }
 
 /// Le scan du réseau de cette passe n'a pas pu se faire (`Some(raison)`), ou il s'est fait (`None`). La passe est
@@ -379,12 +377,20 @@ fn lire_reseau(fichier: &Path) -> Option<(String, String)> {
 }
 
 /// La dernière passe : notée par `noter_passe`, sinon (passes d'avant le tableau) la date de l'état de la machine,
-/// que chaque passe réécrit.
+/// que chaque passe réécrit. Une note qui ne peut pas être crue (changée, effacée, acceptée telle quelle hors de
+/// Vanguard) ne dit aucune passe : jamais une passe récente inventée.
 fn derniere_passe() -> Option<String> {
-    let notee = crate::socle::lire_texte_ordinaire(&fichier_passe(), 4 << 10)
-        .ok()
-        .map(|t| t.trim().to_string())
-        .filter(|t| NaiveDateTime::parse_from_str(t, FORMAT_DATE).is_ok());
+    derniere_passe_lue(crate::sceau::juge(crate::sceau::SURVEILLANCE_PASSE))
+}
+
+fn derniere_passe_lue(lu: crate::sceau::Juge) -> Option<String> {
+    use crate::sceau::Juge;
+    let notee = match lu {
+        Juge::Cru(o) => Some(String::from_utf8_lossy(&o).trim().to_string())
+            .filter(|t| NaiveDateTime::parse_from_str(t, FORMAT_DATE).is_ok()),
+        Juge::Absent => None,
+        Juge::Douteux(..) | Juge::Illisible(_) => return None,
+    };
     notee.or_else(|| {
         let date = std::fs::metadata(crate::socle::dossier_local().join("surveillance-machine.json"))
             .and_then(|m| m.modified())
@@ -871,6 +877,24 @@ pub fn ouvrir(sans_ouvrir: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S2c : une dernière passe forgée (ou effacée) ne fait jamais dire au tableau que la surveillance vient de passer.
+    #[test]
+    fn passe_forgee_jamais_dite() {
+        use crate::sceau::{Doute, Juge};
+        let notee = b"2026-10-25 10:00:00".to_vec();
+        assert_eq!(
+            derniere_passe_lue(Juge::Cru(notee.clone())).as_deref(),
+            Some("2026-10-25 10:00:00")
+        );
+        assert_eq!(
+            derniere_passe_lue(Juge::Douteux(Doute::HorsVanguard, Some(notee.clone()))),
+            None
+        );
+        assert_eq!(derniere_passe_lue(Juge::Douteux(Doute::Adopte, Some(notee))), None);
+        assert_eq!(derniere_passe_lue(Juge::Douteux(Doute::HorsVanguard, None)), None);
+        assert!(crate::modele::inventaire::scelles().any(|n| n == crate::sceau::SURVEILLANCE_PASSE));
+    }
 
     fn date(texte: &str) -> NaiveDateTime {
         NaiveDateTime::parse_from_str(texte, FORMAT_DATE).unwrap()

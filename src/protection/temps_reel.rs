@@ -202,19 +202,20 @@ fn dossier_et_nom(chemin: &Path) -> (&Path, &str) {
 }
 
 fn lire_de(chemin: &Path, maintenant: i64) -> Etat {
-    use crate::sceau::Lecture;
+    use crate::sceau::{Doute, Juge};
     // Lu par les sceaux : un simple fichier (ni lien, ni tube, ni périphérique, qu'un Vanguard en administrateur
     // lirait sinon sans fin, ou avec ses droits), tel que Vanguard l'a écrit. Écrit hors de Vanguard, il ne coupe
     // rien : un programme du compte ne coupe pas la surveillance en posant ce fichier. Sous sudo, le dossier du
     // compte n'est que lu (`socle::ecriture_sure`).
+    // Accepté tel quel après des sceaux refaits (`sceau::juge`), il ne coupe rien non plus : rien ne prouve qui l'a
+    // écrit.
     let (dossier, nom) = dossier_et_nom(chemin);
-    let octets = match crate::sceau::lire_dans(dossier, nom) {
-        Lecture::Absent | Lecture::Inconnu | Lecture::Falsifie(None) => return Etat::EnMarche,
-        Lecture::Intact(o) | Lecture::Adopte(o) => o,
-        Lecture::Falsifie(Some(_)) => {
-            return Etat::Illisible(tr!("changé hors de Vanguard", "changed outside Vanguard").to_string());
-        }
-        Lecture::Illisible(e) => return Etat::Illisible(e),
+    let lu = crate::sceau::lire_dans(dossier, nom);
+    let octets = match crate::sceau::juger_lecture(lu, || crate::sceau::refaits_dans(dossier)) {
+        Juge::Absent | Juge::Douteux(Doute::Inconnu | Doute::HorsVanguard, None) => return Etat::EnMarche,
+        Juge::Cru(o) => o,
+        Juge::Douteux(d, _) => return Etat::Illisible(d.texte().to_string()),
+        Juge::Illisible(e) => return Etat::Illisible(e),
     };
     if octets.len() as u64 > TAILLE_MAX {
         return Etat::Illisible(trf!("plus de {} Kio", "over {} KiB", TAILLE_MAX >> 10));
@@ -672,6 +673,14 @@ mod tests {
         // Noté par Vanguard : cru.
         crate::sceau::ecrire_dans(&d, crate::sceau::TEMPS_REEL_RAPPEL, (MIDI - 30).to_string().as_bytes()).unwrap();
         assert_eq!(dernier_rappel(&d), Some(MIDI - 30));
+        // S2c : les sceaux effacés avec le réglage posé (accepté tel quel) : rien n'est coupé non plus.
+        std::fs::write(&f, format!("{{\"coupee_le\": {}}}", MIDI - 60)).unwrap();
+        std::fs::remove_file(d.join("sceaux.json")).unwrap();
+        assert!(matches!(
+            crate::sceau::lire_dans(&d, crate::sceau::TEMPS_REEL),
+            crate::sceau::Lecture::Adopte(_)
+        ));
+        assert!(lire_de(&f, MIDI).coupure().is_none(), "{:?}", lire_de(&f, MIDI));
         let _ = std::fs::remove_dir_all(&d);
     }
 

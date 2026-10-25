@@ -2310,10 +2310,9 @@ pub(crate) fn retirer_sans_question(chemin: &std::path::Path, arreter_l_etranger
 /// dirait falsifié).
 fn oublier_le_choix(issue: &Retire, dossier: &std::path::Path) {
     if !matches!(issue, Retire::Echoue(_)) {
-        let _ = std::fs::remove_file(dossier.join(VOULU));
-        let _ = crate::sceau::effacer_dans(dossier, ETAT);
-        let _ = std::fs::remove_file(dossier.join(RANCON_VOULU));
-        // Une défense jamais notée n'a pas d'arrêt à noter (la veille anti-rançongiciel jamais voulue).
+        // L'arrêt d'abord, puis les marques : interrompu entre les deux, il reste une marque de trop (le veilleur se
+        // dit voulu et absent), jamais des marques effacées sans arrêt noté. Une défense jamais notée n'a pas d'arrêt
+        // à noter (la veille anti-rançongiciel jamais voulue).
         for d in [Defense::Veilleur, Defense::Rancongiciel]
             .into_iter()
             .filter(|d| voulues::souvenir_dans(dossier, *d) != voulues::Souvenir::Jamais)
@@ -2322,6 +2321,9 @@ fn oublier_le_choix(issue: &Retire, dossier: &std::path::Path) {
                 crate::modele::Echec::echoue("veilleur/oublier", e.to_string()).journaliser();
             }
         }
+        let _ = std::fs::remove_file(dossier.join(VOULU));
+        let _ = crate::sceau::effacer_dans(dossier, ETAT);
+        let _ = std::fs::remove_file(dossier.join(RANCON_VOULU));
         crate::programmes_poses::oublier_dans(dossier, crate::programmes_poses::Tache::Veilleur);
     }
 }
@@ -2490,8 +2492,9 @@ fn couper_rancon() {
     {
         reponse::reprendre(&e.pids_geles);
     }
-    let _ = std::fs::remove_file(fichier_rancon_voulu());
+    // L'arrêt noté avant que la marque ne parte (voir `oublier_le_choix`).
     voulues::noter(Defense::Rancongiciel, false);
+    let _ = std::fs::remove_file(fichier_rancon_voulu());
     let _ = super::dbus::actions::utilisateur(super::dbus::actions::Geste::RedemarrerSiActive, UNITE);
     trp!(
         "  {VERT}✔{RESET} Surveillance des fichiers coupée (le veilleur continue d'observer lancements et connexions).",

@@ -202,6 +202,11 @@ struct Base {
     /// Ancien format (avant les carnets par réseau) : repris dans le réseau courant au prochain scan.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     appareils: BTreeMap<String, AppareilConnu>,
+    /// Le carnet de cet ordinateur ne pouvait pas être cru (changé, effacé ou accepté tel quel hors de Vanguard,
+    /// illisible), et c'est de lui que vient la base : vide, elle n'est jamais un premier scan muet, chaque appareil
+    /// est redit.
+    #[serde(skip)]
+    douteux: bool,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -316,10 +321,42 @@ impl Base {
         }
     }
 
+    /// Le carnet en clair de cet ordinateur (le dossier de données `dossier`), scellé (`sceau::APPAREILS`) : un
+    /// appareil inscrit d'avance par un autre programme du compte n'était jamais dit « Nouvel appareil ». Changé,
+    /// effacé, accepté tel quel après des sceaux refaits ou illisible, il n'est pas cru : la base est vide et
+    /// douteuse (tout est redit), et c'est dit ; il est mis de côté, tel quel, avant d'être réécrit.
+    fn lire_local(dossier: &std::path::Path) -> Base {
+        use crate::sceau::Juge;
+        let pourquoi = match crate::sceau::juge_dans(dossier, crate::sceau::APPAREILS) {
+            Juge::Absent => return Base::default(),
+            Juge::Cru(o) => return Base::depuis_texte(&String::from_utf8_lossy(&o), dossier, crate::sceau::APPAREILS),
+            Juge::Douteux(d, _) => d.texte().to_string(),
+            Juge::Illisible(e) => e,
+        };
+        tre!(
+            "Attention : carnet des appareils de cet ordinateur non cru ({pourquoi}) : chaque appareil vu est redit nouveau.",
+            "Warning: this computer's device record not trusted ({pourquoi}): every device seen is reported as new again."
+        );
+        Base {
+            douteux: true,
+            ..Base::default()
+        }
+    }
+
     fn lire(p: &std::path::Path) -> Base {
         let Ok(texte) = crate::socle::lire_texte_ordinaire(p, CARNET_MAX) else {
             return Base::default();
         };
+        let (dossier, nom) = (
+            p.parent().unwrap_or(std::path::Path::new(".")),
+            p.file_name().and_then(|n| n.to_str()).unwrap_or("appareils.json"),
+        );
+        Base::depuis_texte(&texte, dossier, nom)
+    }
+
+    /// La base d'un texte lu dans `dossier`/`nom` ; illisible, ce fichier est mis de côté, intact.
+    fn depuis_texte(texte: &str, dossier: &std::path::Path, nom: &str) -> Base {
+        let p = dossier.join(nom);
         // Le Bloc-notes et PowerShell 5.1 ajoutent une marque d'ordre des octets (BOM) en tête.
         match serde_json::from_str::<Base>(texte.trim_start_matches('\u{feff}')) {
             Ok(mut base) => {
@@ -332,7 +369,7 @@ impl Base {
                     "illisible-{}.json",
                     chrono::Local::now().format("%Y%m%d-%H%M%S")
                 ));
-                let _ = std::fs::copy(p, &copie);
+                let _ = std::fs::copy(&p, &copie);
                 tre!(
                     "Attention : base des appareils illisible ({e}). Copie gardée : {}",
                     "Warning: device database unreadable ({e}). Copy kept: {}",
@@ -390,11 +427,17 @@ impl Base {
                 }
             }
         });
+        let dossier_local = local.parent().map(PathBuf::from).unwrap_or_default();
         let donnees = match &cle {
             Some((racine, true)) => racine.join("donnees"),
-            _ => local.parent().map(PathBuf::from).unwrap_or_default(),
+            _ => dossier_local.clone(),
         };
-        let carnet = Base::ouvrir_carnet(&donnees);
+        // Le carnet en clair de cet ordinateur se lit sous son sceau ; celui de la clé, par `cles_connues`.
+        let carnet = if donnees == dossier_local && !crate::chiffrement::protegee(&donnees) {
+            Some(Base::lire_local(&donnees))
+        } else {
+            Base::ouvrir_carnet(&donnees)
+        };
         // Carnet chiffré pas ouvert : il n'est pas réécrit, tout reste sur cet ordinateur.
         let chemin_cle = if carnet.is_some() {
             donnees.join("appareils.json")
@@ -410,7 +453,10 @@ impl Base {
             base.absorber(sienne);
         }
         if local != chemin_cle || !ouvert {
-            base.absorber(Base::lire(&local));
+            // Douteux, il n'ajoute rien : la base vient d'ailleurs (la clé), ou de lui seul, et alors elle est douteuse.
+            let sienne = Base::lire_local(&dossier_local);
+            base.douteux |= sienne.douteux && !ouvert;
+            base.absorber(sienne);
         }
         (base, [chemin_cle, local])
     }
@@ -467,6 +513,14 @@ impl Base {
             // Le carnet d'une clé protégée s'écrit chiffré ; jamais en clair à côté.
             let ecrit = match p.parent().filter(|d| crate::chiffrement::protegee(d)) {
                 Some(donnees) => crate::chiffrement::ecrire_carnet(donnees, &json),
+                // Le carnet de cet ordinateur, scellé ; un carnet qui ne pouvait pas être cru est d'abord mis de côté.
+                None if p == local => p.parent().map_or_else(
+                    || ecrire_atomique(p, &json),
+                    |d| {
+                        mettre_de_cote_si_douteux(d);
+                        crate::sceau::ecrire_dans(d, crate::sceau::APPAREILS, json.as_bytes())
+                    },
+                ),
                 None => ecrire_atomique(p, &json),
             };
             match ecrit {
@@ -485,6 +539,30 @@ impl Base {
                 Ok(()) => {}
             }
         }
+    }
+}
+
+/// Le carnet en clair de `dossier`, s'il ne pouvait pas être cru, renommé tel quel (« appareils.illisible-<date>.json »)
+/// avant d'être réécrit : des surnoms donnés par la personne y sont peut-être.
+fn mettre_de_cote_si_douteux(dossier: &std::path::Path) {
+    if !matches!(
+        crate::sceau::juge_dans(dossier, crate::sceau::APPAREILS),
+        crate::sceau::Juge::Douteux(_, Some(_)) | crate::sceau::Juge::Illisible(_)
+    ) {
+        return;
+    }
+    let p = dossier.join(crate::sceau::APPAREILS);
+    let copie = p.with_extension(format!(
+        "illisible-{}.json",
+        chrono::Local::now().format("%Y%m%d-%H%M%S")
+    ));
+    // Renommé, pas copié : un lien reste un lien, rien n'est suivi ni relu.
+    if std::fs::rename(&p, &copie).is_ok() {
+        tre!(
+            "Ancien carnet des appareils, non cru, gardé : {}",
+            "Old device record, not trusted, kept: {}",
+            copie.display()
+        );
     }
 }
 
@@ -1347,11 +1425,13 @@ pub async fn executer(o: Options) -> Result<Rapport, String> {
         .and_then(|g| arp.get(&g).cloned())
         .unwrap_or_else(|| trf!("plage {cible}", "range {cible}"));
     let nom_reseau = scan::nom_wifi();
+    let douteux = base.douteux;
     let histo = base.reseaux.entry(id_reseau.clone()).or_default();
     for (cle, a) in std::mem::take(&mut base.appareils) {
         histo.appareils.entry(cle).or_insert(a);
     }
-    let premier_scan = histo.appareils.is_empty();
+    // Un carnet qui ne pouvait pas être cru n'est pas un premier scan : chaque appareil y est nouveau.
+    let premier_scan = histo.appareils.is_empty() && !douteux;
     let udp_deja_vu = histo.udp;
     // Seul un scan du réseau entier sur les ports courants se compare aux précédents, et rien n'est « nouveau » au
     // premier scan d'un réseau.
@@ -1692,6 +1772,7 @@ mod tests {
                 },
             )]),
             appareils: BTreeMap::new(),
+            douteux: false,
         };
         assert!(
             !serde_json::to_value(&migre)
@@ -1700,6 +1781,40 @@ mod tests {
                 .unwrap()
                 .contains_key("appareils")
         );
+    }
+
+    /// S2c : un appareil inscrit hors de Vanguard dans le carnet de cet ordinateur ne fait pas taire « Nouvel
+    /// appareil » : le carnet n'est pas cru, la base est douteuse (jamais un premier scan muet), et c'est dit ; réécrit,
+    /// l'ancien est gardé de côté puis le nouveau scellé.
+    #[test]
+    fn carnet_local_forge_ne_tait_rien() {
+        let d = std::env::temp_dir().join(format!("vanguard-carnet-forge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let carnet = r#"{"reseaux":{"3c:22:fb:00:00:01":{"nom":"Salon","appareils":{}}}}"#;
+        let base: Base = serde_json::from_str(carnet).unwrap();
+        let chemins = [d.join(crate::sceau::APPAREILS), d.join(crate::sceau::APPAREILS)];
+        base.enregistrer(&chemins);
+        let (lue, _) = Base::charger_depuis(None, &d);
+        assert!(!lue.douteux && lue.reseaux.contains_key("3c:22:fb:00:00:01"));
+        // Un autre programme y inscrit d'avance son appareil.
+        let forge = r#"{"reseaux":{"3c:22:fb:00:00:01":{"nom":"Salon","appareils":{"3c:22:fb:66:66:66":{"ip":"192.168.1.66","nom":null,"fabricant":null,"ports":[]}}}}}"#;
+        std::fs::write(d.join(crate::sceau::APPAREILS), forge).unwrap();
+        let (lue, chemins) = Base::charger_depuis(None, &d);
+        assert!(lue.douteux && lue.reseaux.is_empty());
+        assert!(crate::modele::inventaire::scelles().any(|n| n == crate::sceau::APPAREILS));
+        // Effacé hors de Vanguard : douteux aussi, jamais un premier scan.
+        std::fs::remove_file(d.join(crate::sceau::APPAREILS)).unwrap();
+        assert!(Base::charger_depuis(None, &d).0.douteux);
+        std::fs::write(d.join(crate::sceau::APPAREILS), forge).unwrap();
+        lue.enregistrer(&chemins);
+        let copies = std::fs::read_dir(&d)
+            .unwrap()
+            .filter(|f| f.as_ref().unwrap().file_name().to_string_lossy().contains("illisible"))
+            .count();
+        assert_eq!(copies, 1);
+        assert!(!Base::charger_depuis(None, &d).0.douteux);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

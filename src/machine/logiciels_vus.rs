@@ -320,18 +320,19 @@ fn juger(lus: &[(String, String)], avant: Option<&Vus>, aujourd_hui: NaiveDate) 
 
 /// L'inventaire d'avant selon la lecture de son fichier, et s'il a été changé hors de Vanguard. `None` : premier
 /// passage, ce qui est là est connu d'avant.
-fn depart(lecture: crate::sceau::Lecture) -> (Option<Vus>, bool) {
-    use crate::sceau::Lecture;
+fn depart(lecture: crate::sceau::Juge) -> (Option<Vus>, bool) {
+    use crate::sceau::{Doute, Juge};
     match lecture {
         // Scellé mais qui ne se relit pas : un état vide aussi, pas un premier passage qui tairait tout.
-        Lecture::Intact(o) | Lecture::Adopte(o) => (Some(serde_json::from_slice::<Vus>(&o).unwrap_or_default()), false),
+        Juge::Cru(o) => (Some(serde_json::from_slice::<Vus>(&o).unwrap_or_default()), false),
         // Le seul vrai premier passage : ce qui est là est connu d'avant.
-        Lecture::Absent => (None, false),
-        // Les sceaux refaits sans lui : peut-être effacé pour taire un nouveau venu. Un état vide, jamais un premier
-        // passage : tout ce qui est installé est daté du jour et redit (sceau.rs le demande à chaque lecteur).
-        Lecture::Inconnu => (Some(Vus::default()), false),
+        Juge::Absent => (None, false),
+        // Les sceaux refaits sans lui (peut-être effacé pour taire un nouveau venu), ou avec lui accepté tel quel (un
+        // nouveau venu inscrit d'avance) : un état vide, jamais un premier passage ; tout ce qui est installé est daté
+        // du jour et redit, et le bilan dit les sceaux refaits.
+        Juge::Douteux(Doute::Inconnu | Doute::Adopte, _) => (Some(Vus::default()), false),
         // Falsifié ou illisible : rien n'est cru, et rien n'est tu non plus.
-        _ => (Some(Vus::default()), true),
+        Juge::Douteux(Doute::HorsVanguard, _) | Juge::Illisible(_) => (Some(Vus::default()), true),
     }
 }
 
@@ -377,7 +378,7 @@ fn constat_de(lu: Option<Lu>) -> Constat {
             ),
         );
     }
-    let (avant, falsifie) = depart(crate::sceau::lire(crate::sceau::LOGICIELS));
+    let (avant, falsifie) = depart(crate::sceau::juge(crate::sceau::LOGICIELS));
     let (c, apres) = juger(&lus, avant.as_ref(), chrono::Local::now().date_naive());
     if avant.as_ref() != Some(&apres)
         && let Ok(texte) = serde_json::to_vec(&apres)
@@ -463,12 +464,24 @@ mod tests {
     /// illisible, l'inventaire repart vide et tout ce qui est installé est redit.
     #[test]
     fn seul_l_absent_est_un_premier_passage() {
-        use crate::sceau::Lecture;
-        assert_eq!(depart(Lecture::Absent), (None, false));
-        assert_eq!(depart(Lecture::Inconnu), (Some(Vus::default()), false));
-        assert_eq!(depart(Lecture::Falsifie(None)), (Some(Vus::default()), true));
-        assert_eq!(depart(Lecture::Illisible("x".into())), (Some(Vus::default()), true));
-        assert_eq!(depart(Lecture::Intact(b"{".to_vec())), (Some(Vus::default()), false));
+        use crate::sceau::{Doute, Juge};
+        assert_eq!(depart(Juge::Absent), (None, false));
+        assert_eq!(
+            depart(Juge::Douteux(Doute::Inconnu, None)),
+            (Some(Vus::default()), false)
+        );
+        assert_eq!(
+            depart(Juge::Douteux(Doute::HorsVanguard, None)),
+            (Some(Vus::default()), true)
+        );
+        assert_eq!(depart(Juge::Illisible("x".into())), (Some(Vus::default()), true));
+        assert_eq!(depart(Juge::Cru(b"{".to_vec())), (Some(Vus::default()), false));
+        // S2c : un inventaire accepté tel quel après des sceaux refaits ne tait aucun nouveau venu.
+        let forge = br#"{"logiciels":{"moniteur":{"date":"2026-01-01"}}}"#.to_vec();
+        assert_eq!(
+            depart(Juge::Douteux(Doute::Adopte, Some(forge))),
+            (Some(Vus::default()), false)
+        );
     }
 
     #[test]

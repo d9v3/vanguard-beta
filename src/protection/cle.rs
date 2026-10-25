@@ -24,12 +24,67 @@ const DOSSIER_PROGRAMME: &str = "Linux";
 #[cfg(target_os = "macos")]
 const DOSSIER_PROGRAMME: &str = "macOS";
 
-/// Le programme tel que lancé par la personne (sur la clé), même quand c'est sa copie temporaire qui tourne.
+/// Le programme tel que lancé par la personne (sur la clé), même quand c'est sa copie temporaire qui tourne. Décidé
+/// une fois par lancement (la copie temporaire s'efface au démarrage, `proteger_cle` le demande avant).
+///
+/// `VANGUARD_ORIGINE` n'est qu'une variable d'environnement, que tout programme du compte peut poser : elle faisait
+/// installer, poser en tâche ou dire vérifié un autre programme que Vanguard. Elle n'est donc crue que si le fichier
+/// qu'elle désigne a exactement les octets du programme qui tourne ; sinon elle est ignorée, l'écart est dit (et noté
+/// au journal des erreurs), et c'est le programme qui tourne qui compte : rien n'est installé depuis elle.
 pub fn exe_d_origine() -> Option<PathBuf> {
-    std::env::var_os(ORIGINE)
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_exe().ok())
-        .and_then(|e| e.canonicalize().ok())
+    static DECIDE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    DECIDE
+        .get_or_init(|| {
+            let courant = || std::env::current_exe().ok().and_then(|e| e.canonicalize().ok());
+            let Some(designee) = std::env::var_os(ORIGINE) else {
+                return courant();
+            };
+            match origine_crue(Path::new(&designee), image_qui_tourne()) {
+                Ok(chemin) => Some(chemin),
+                Err(raison) => {
+                    tre!(
+                        "Attention : VANGUARD_ORIGINE désigne {}, qui n'est pas le programme qui tourne ({raison}) : ignorée.",
+                        "Warning: VANGUARD_ORIGINE points to {}, which is not the running program ({raison}): ignored.",
+                        chemin_affichable(Path::new(&designee))
+                    );
+                    crate::journal::erreur("origine du programme", &format!("VANGUARD_ORIGINE ignorée : {raison}"));
+                    courant()
+                }
+            }
+        })
+        .clone()
+}
+
+/// L'empreinte du programme qui tourne : son image (/proc/self/exe sous Linux, lisible même effacée), sinon son
+/// fichier.
+fn image_qui_tourne() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    let image = PathBuf::from("/proc/self/exe");
+    #[cfg(not(target_os = "linux"))]
+    let image = std::env::current_exe().ok()?;
+    crate::programmes_poses::empreinte_de(&image).ok()
+}
+
+/// Le fichier `designee`, s'il a exactement les octets du programme qui tourne (`soi` : leur empreinte) ; sinon
+/// pourquoi il n'est pas cru.
+fn origine_crue(designee: &Path, soi: Option<String>) -> Result<PathBuf, crate::modele::Echec> {
+    const OU: &str = "cle/origine";
+    let chemin = designee.canonicalize().map_err(|e| crate::modele::Echec::io(OU, &e))?;
+    let lu = crate::programmes_poses::empreinte_de(&chemin).map_err(|e| crate::modele::Echec::refuse(OU, e))?;
+    let soi = soi.ok_or_else(|| {
+        crate::modele::Echec::refuse(OU, tr!("programme qui tourne illisible", "running program unreadable"))
+    })?;
+    if lu == soi {
+        Ok(chemin)
+    } else {
+        Err(crate::modele::Echec::refuse(
+            OU,
+            tr!(
+                "ses octets ne sont pas ceux du programme qui tourne",
+                "its bytes are not those of the running program"
+            ),
+        ))
+    }
 }
 
 /// Périphérique et état (lecture seule ou non) du point de montage `dossier`, d'après /proc/self/mountinfo.
@@ -126,6 +181,8 @@ fn empreinte_attendue(cle: &Path) -> String {
 
 /// Au démarrage : sur un ordinateur qui n'est pas celui du propriétaire, remonte la clé en lecture seule.
 pub fn proteger_cle() {
+    // L'origine se décide avant que la copie temporaire ne s'efface : sans elle, rien ne se compare plus (macOS).
+    let _ = exe_d_origine();
     // Copie temporaire relancée : elle supprime son fichier (Linux le garde lisible jusqu'à la fin du programme).
     if std::env::var_os(ORIGINE).is_some()
         && let Ok(copie) = std::env::current_exe()
@@ -269,6 +326,28 @@ fn relancer_depuis_une_copie(exe: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S2c : VANGUARD_ORIGINE n'est crue que si le fichier désigné a les octets du programme qui tourne ; un autre
+    /// programme, un fichier absent ou un programme illisible : ignorée, avec la raison.
+    #[test]
+    fn origine_crue_seulement_aux_memes_octets() {
+        let d = std::env::temp_dir().join(format!("vanguard-origine-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let vrai = d.join("vanguard");
+        let autre = d.join("autre");
+        std::fs::write(&vrai, b"programme de vanguard").unwrap();
+        std::fs::write(&autre, b"programme d'un autre").unwrap();
+        let soi = crate::programmes_poses::empreinte_de(&vrai).ok();
+        assert_eq!(
+            origine_crue(&vrai, soi.clone()).ok(),
+            Some(vrai.canonicalize().unwrap())
+        );
+        assert!(origine_crue(&autre, soi.clone()).is_err());
+        assert!(origine_crue(&d.join("absent"), soi).is_err());
+        assert!(origine_crue(&vrai, None).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn montage_de_la_racine() {

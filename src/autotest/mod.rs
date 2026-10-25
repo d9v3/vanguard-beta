@@ -295,9 +295,13 @@ fn dossiers() -> Vec<std::path::PathBuf> {
 
 /// Le moment de la dernière passe de la surveillance, d'après son fichier (`reseau::tableau`).
 fn passe() -> (Option<Vec<u8>>, Option<std::time::SystemTime>) {
-    let chemin = crate::socle::dossier_local().join("surveillance-passe.txt");
-    let contenu = crate::socle::lire_ordinaire(&chemin, 4096).ok();
-    let quand = std::fs::symlink_metadata(&chemin).and_then(|m| m.modified()).ok();
+    let dossier = crate::socle::dossier_local();
+    // Le contenu sous son sceau (une note forgée ne prouve aucune passe) ; la date du fichier ne rend au plus la preuve
+    // que « non concluante », jamais « rien n'a changé ».
+    let contenu = crate::sceau::juge_sans_ecrire_dans(&dossier, crate::sceau::SURVEILLANCE_PASSE).cru();
+    let quand = std::fs::symlink_metadata(dossier.join(crate::sceau::SURVEILLANCE_PASSE))
+        .and_then(|m| m.modified())
+        .ok();
     (contenu, quand)
 }
 
@@ -655,10 +659,8 @@ fn contredites(croisees: &[(&'static Croisee, Comparaison)], quand: &str, avant:
 
 /// Le dernier autotest relu, s'il est tel que Vanguard l'a écrit (un fichier changé hors de Vanguard ne vaut rien).
 fn dernier() -> Option<Dernier> {
-    match crate::sceau::lire(DERNIER) {
-        crate::sceau::Lecture::Intact(o) | crate::sceau::Lecture::Adopte(o) => serde_json::from_slice(&o).ok(),
-        _ => None,
-    }
+    // Accepté tel quel après des sceaux refaits, il ne repousse pas l'autotest de la semaine (`sceau::juge`).
+    serde_json::from_slice(&crate::sceau::juge(DERNIER).cru()?).ok()
 }
 
 fn date(quand: &str) -> Option<chrono::DateTime<chrono::Utc>> {

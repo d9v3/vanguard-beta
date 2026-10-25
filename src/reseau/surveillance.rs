@@ -852,11 +852,13 @@ fn marquer(oui: bool) {
     }
 }
 
-/// La personne allume ou coupe la surveillance par Vanguard : la marque, et l'état scellé des défenses voulues (avec le
-/// geste au journal), seul à pouvoir dire ensuite qu'elle a été coupée normalement.
+/// La personne allume ou coupe la surveillance par Vanguard : l'état scellé des défenses voulues (avec le geste au
+/// journal), seul à pouvoir dire ensuite qu'elle a été coupée normalement, puis la marque. L'arrêt est noté avant
+/// que la marque ne parte : interrompu entre les deux, Vanguard laisse une marque de trop (la défense se dit voulue,
+/// et son absence se voit), jamais une défense coupée sans arrêt noté.
 fn noter_voulue(oui: bool) {
-    marquer(oui);
     crate::voulues::noter(crate::voulues::Defense::Surveillance, oui);
+    marquer(oui);
 }
 
 /// Vue en place : la marque refaite, et notée voulue si rien ne l'était (posée par une version d'avant), sans geste

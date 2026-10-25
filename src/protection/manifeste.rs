@@ -25,6 +25,10 @@
 //! clé VANGUARD sans référence, là où d'autres clés ont la leur, reste un avertissement moyen : changer aussi le
 //! jeton (un simple fichier texte) la fait passer pour une autre clé, et rien n'a été comparé.
 //!
+//! Les références sont scellées (`sceau`) : une référence réécrite sur cet ordinateur avec l'empreinte d'un fichier
+//! planté sur la clé disait « clé intacte ». Changée, effacée ou acceptée telle quelle après des sceaux refaits, elle
+//! ne sert à rien comparer : le bilan le dit (élevé), rien n'est vérifié, et le déploiement n'écrit rien d'après elle.
+//!
 //! Et « Vérifier Vanguard lui-même » : version, date de compilation (celle du dernier commit, jamais l'horloge : un
 //! même code donne le même programme), empreinte SHA-256 du programme par l'outil du système, comme pour un fichier
 //! téléchargé, à comparer à la page de la version ; sur la clé du propriétaire, au manifeste. Une barrière, pas un
@@ -117,9 +121,43 @@ impl Ecart {
 }
 
 /// L'unique référence des 0.59 : une seule clé connue, et une deuxième clé VANGUARD paraissait tout entière changée.
-const ANCIENNE_REFERENCE: &str = "manifeste-cle.json";
+const ANCIENNE_REFERENCE: &str = crate::sceau::MANIFESTE_CLE;
 /// Une référence par clé depuis la 0.60, nommée par l'identifiant du volume.
-const REFERENCES: &str = "manifestes-cle";
+const REFERENCES: &str = crate::sceau::MANIFESTES_CLE;
+
+/// Le dossier de Vanguard et le nom sous lequel le sceau connaît la référence `reference` (« manifestes-cle/<id>.json »
+/// ou l'ancienne, à la racine).
+fn emplacement(reference: &Path) -> (PathBuf, String) {
+    let fichier = reference
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let parent = reference.parent().unwrap_or(Path::new("."));
+    if parent.file_name().is_some_and(|n| n == REFERENCES) {
+        let base = parent.parent().unwrap_or(Path::new(".")).to_path_buf();
+        (base, format!("{REFERENCES}/{fichier}"))
+    } else {
+        (parent.to_path_buf(), fichier)
+    }
+}
+
+/// La référence est là, ou elle a été effacée hors de Vanguard (son sceau est resté) : elle a existé.
+fn presente_ou_effacee(base: &Path, nom: &str) -> bool {
+    std::fs::symlink_metadata(base.join(nom)).is_ok_and(|m| m.is_file())
+        || matches!(
+            crate::sceau::lire_sans_ecrire(base, nom),
+            crate::sceau::Lecture::Falsifie(None)
+        )
+}
+
+/// Pourquoi la référence `reference` ne peut pas être crue, s'il le faut.
+fn douteuse(reference: &Path) -> Option<crate::sceau::Doute> {
+    let (base, nom) = emplacement(reference);
+    match crate::sceau::juge_dans(&base, &nom) {
+        crate::sceau::Juge::Douteux(d, _) => Some(d),
+        _ => None,
+    }
+}
 
 /// L'identifiant du système de fichiers de la clé (UUID que le formatage lui donne, « 1A2B-3C4D » en exFAT), d'après
 /// le périphérique monté et /dev/disk/by-uuid. Sous Windows et macOS, aucun : le déploiement, qui écrit les
@@ -167,7 +205,10 @@ fn references_par_cle(base: &Path) -> usize {
 /// Cet ordinateur a déjà déployé au moins une clé (une référence par clé, ou l'unique des 0.59) : une clé VANGUARD
 /// sans référence n'y est plus « le premier usage ».
 pub(crate) fn a_des_references(base: &Path) -> bool {
-    references_par_cle(base) > 0 || base.join(ANCIENNE_REFERENCE).is_file()
+    // Effacées hors de Vanguard, leurs sceaux disent qu'elles ont existé : une clé n'y redevient pas « la première ».
+    references_par_cle(base) > 0
+        || crate::sceau::connus_sous(base, REFERENCES)
+        || presente_ou_effacee(base, ANCIENNE_REFERENCE)
 }
 
 /// Une référence d'ici porte ce jeton : une clé à ce jeton y a déjà été comparée.
@@ -194,14 +235,14 @@ fn identifiant_change(base: &Path, cle: &Path) -> bool {
 /// La référence de la clé `id` : la sienne ; sinon l'ancienne référence unique, tant qu'aucune clé n'a la sienne
 /// (avant le premier déploiement en 0.60). `None` : cette clé n'a pas de référence ici.
 fn reference_lue(base: &Path, id: Option<&str>) -> Option<PathBuf> {
-    if let Some(id) = id {
-        let propre = base.join(REFERENCES).join(format!("{id}.json"));
-        if propre.is_file() {
-            return Some(propre);
-        }
+    // Effacée hors de Vanguard, la référence reste la sienne : elle se lit alors douteuse, jamais « pas de référence ».
+    if let Some(id) = id
+        && presente_ou_effacee(base, &format!("{REFERENCES}/{id}.json"))
+    {
+        return Some(reference_ecrite(base, Some(id)));
     }
-    let ancienne = base.join(ANCIENNE_REFERENCE);
-    (ancienne.is_file() && (id.is_none() || references_par_cle(base) == 0)).then_some(ancienne)
+    (presente_ou_effacee(base, ANCIENNE_REFERENCE) && (id.is_none() || references_par_cle(base) == 0))
+        .then(|| reference_ecrite(base, None))
 }
 
 /// Où écrire la référence de la clé `id`.
@@ -472,9 +513,11 @@ fn ecrire_dans(racine: &Path, reference: &Path, gros: u64, garder_differentes: b
     Ok(manifeste.fichiers.len())
 }
 
+/// La référence, scellée.
 fn enregistrer(reference: &Path, manifeste: &Manifeste) -> std::io::Result<()> {
     let texte = serde_json::to_string_pretty(manifeste).map_err(std::io::Error::other)?;
-    crate::socle::ecrire_atomique(reference, texte)
+    let (base, nom) = emplacement(reference);
+    crate::sceau::ecrire_dans(&base, &nom, texte.as_bytes())
 }
 
 /// Redit à la référence les images et le menu qu'outils/images-cle.sh vient de poser sur la clé, après avoir vérifié
@@ -558,15 +601,31 @@ pub fn ecrire(racine: &Path, forcer: bool) -> Result<(usize, PathBuf), PasEcrit>
     let chemin = reference_ecrite(&base, id.as_deref());
     let n = ecrire_dans(racine, &chemin, GROS, !forcer).map_err(PasEcrit::Erreur)?;
     if id.is_some() {
-        let _ = std::fs::remove_file(base.join(ANCIENNE_REFERENCE));
+        let _ = crate::sceau::effacer_dans(&base, ANCIENNE_REFERENCE);
     }
     // Déployée ici, la clé est reconnue de cet ordinateur, et son carnet tel qu'il est devient la référence.
     crate::protection::cles_connues::noter(racine);
     Ok((n, chemin))
 }
 
+/// La référence, d'après son sceau : changée, effacée ou acceptée telle quelle après des sceaux refaits, elle ne vaut
+/// rien (`Err`, le pourquoi), jamais « clé intacte ».
 fn lire(reference: &Path) -> Result<Manifeste, String> {
-    let texte = crate::socle::lire_texte_ordinaire(reference, 64 << 20).map_err(|e| e.to_string())?;
+    use crate::sceau::Juge;
+    let (base, nom) = emplacement(reference);
+    let octets = match crate::sceau::juge_dans(&base, &nom) {
+        Juge::Cru(o) => o,
+        Juge::Absent => return Err(tr!("aucune référence", "no reference").to_string()),
+        Juge::Douteux(d, _) => {
+            return Err(trf!(
+                "manifeste de la clé {} : rien n'est comparé",
+                "key manifest {}: nothing is compared",
+                d.texte()
+            ));
+        }
+        Juge::Illisible(e) => return Err(e),
+    };
+    let texte = String::from_utf8(octets).map_err(|e| e.to_string())?;
     let mut valeur: serde_json::Value =
         serde_json::from_str(texte.trim_start_matches('\u{feff}')).map_err(|e| e.to_string())?;
     // Manifeste écrit avant le changement de nom (`passage`).
@@ -789,6 +848,9 @@ pub fn constat() -> Option<Constat> {
         };
         return sans_reference(a_des_references(&base), sans);
     }
+    if let Some(d) = reference(&cle).as_deref().and_then(douteuse) {
+        return Some(reference_douteuse(d));
+    }
     Some(match comparer(&cle) {
         Err(e) => impossible(CAT, &trf!("manifeste de la clé illisible : {e}", "key manifest unreadable: {e}")),
         Ok(ecart) if ecart.vide() && ecart.images => ok(
@@ -824,6 +886,29 @@ pub fn constat() -> Option<Constat> {
             &[],
         ),
     })
+}
+
+/// La référence de la clé branchée ne peut pas être crue : rien n'est comparé, et ce n'est jamais « clé intacte ».
+fn reference_douteuse(d: crate::sceau::Doute) -> Constat {
+    Constat {
+        verifie: false,
+        ..alerte(
+            CAT,
+            Niveau::Eleve,
+            trf!(
+                "La référence de cette clé VANGUARD sur cet ordinateur ne peut pas être crue (manifeste {}) : rien n'a été comparé. Un programme de votre compte a pu la réécrire pour couvrir un fichier planté sur la clé.",
+                "This VANGUARD key's reference on this computer cannot be trusted (manifest {}): nothing was compared. A program of your account may have rewritten it to cover a file planted on the key.",
+                d.texte()
+            ),
+        )
+        .manuel(
+            tr!(
+                "Ne lancez rien depuis cette clé ; regardez ce qui tourne sous votre compte (Protection › Qui parle à Internet ?) ; outils/deployer.sh --accepter-cle réécrit la référence une fois la clé regardée",
+                "Do not run anything from this key; look at what runs under your account (Protection › Who talks to the Internet?); outils/deployer.sh --accepter-cle rewrites the reference once the key has been looked at"
+            ),
+            &[],
+        )
+    }
 }
 
 /// Pourquoi une clé VANGUARD n'a pas de référence ici.
@@ -987,7 +1072,14 @@ pub fn verifier_moi(autre: Option<&Path>) {
         let relatif = relatif.to_string_lossy().replace('\\', "/");
         let base = crate::socle::dossier_local();
         let identifiant_change = identifiant_change(&base, &cle);
-        match reference(&cle).ok_or(()).and_then(|r| lire(&r).map_err(|_| ())) {
+        let lue = reference(&cle).ok_or(()).and_then(|r| lire(&r).map_err(|_| ()));
+        let douteuse = reference(&cle).as_deref().and_then(douteuse);
+        match lue {
+            Err(()) if let Some(d) = douteuse => trp!(
+                "  ✖ Le manifeste de cette clé sur cet ordinateur ne peut pas être cru ({}) : rien n'a pu être comparé. Ne lancez rien depuis elle.",
+                "  ✖ This key's manifest on this computer cannot be trusted ({}): nothing could be compared. Do not run anything from it.",
+                d.texte()
+            ),
             // Reconnue mais sans référence : la comparaison a sauté parce que l'identifiant du volume a changé.
             Err(()) if identifiant_change => trp!(
                 "  ✖ Jeton d'une clé déployée ici, mais son identifiant de volume ne correspond plus à son manifeste : rien n'a pu être comparé. Possible piège : ne lancez rien depuis elle, réécrivez-la (outils/deployer.sh).",
@@ -1578,7 +1670,9 @@ mod tests {
         let forcee = lire(&reference).unwrap();
         assert!(comparer_avec(&racine, &forcee, 10).vide());
         assert!(forcee.fichiers.iter().all(|e| !e.differente));
-        std::fs::write(&reference, sauvegarde).unwrap();
+        // Remise telle que Vanguard l'avait écrite (scellée), comme l'aurait fait images-cle.sh.
+        let (base, nom) = emplacement(&reference);
+        crate::sceau::ecrire_dans(&base, &nom, &sauvegarde).unwrap();
         let nom = ecart.modifies[0].rsplit('/').next().unwrap().to_string();
         rafraichir_images_dans(&racine, &reference, &[(nom, Some(SHA.into()))], 10).unwrap();
         assert!(comparer_avec(&racine, &lire(&reference).unwrap(), 10).vide());
@@ -1600,6 +1694,37 @@ mod tests {
         assert!(image_et_empreinte("").is_err());
         let _ = std::fs::remove_dir_all(&racine);
         let _ = std::fs::remove_dir_all(reference.parent().unwrap());
+    }
+
+    /// S2c : une référence réécrite hors de Vanguard (pour couvrir un fichier planté sur la clé) ou effacée ne dit
+    /// jamais « clé intacte » : rien n'est comparé, le bilan le dit (élevé), et une clé sans elle n'est pas « la
+    /// première ».
+    #[test]
+    fn reference_forgee_jamais_cle_intacte() {
+        let racine = dossier_jetable("forgee-cle");
+        let base = dossier_jetable("forgee-ref");
+        std::fs::write(racine.join("LISEZMOI.txt"), b"lis-moi").unwrap();
+        let reference = reference_ecrite(&base, Some("1A2B-3C4D"));
+        ecrire_dans(&racine, &reference, GROS, true).unwrap();
+        assert!(lire(&reference).is_ok() && douteuse(&reference).is_none());
+        // Un fichier planté sur la clé, et la référence réécrite pour l'y mettre.
+        std::fs::write(racine.join("autorun.inf"), b"[autorun]").unwrap();
+        let mut m = lire(&reference).unwrap();
+        m.fichiers.push(entree(&racine, "autorun.inf".into(), 9, GROS));
+        std::fs::write(&reference, serde_json::to_vec(&m).unwrap()).unwrap();
+        assert!(lire(&reference).is_err());
+        assert_eq!(douteuse(&reference), Some(crate::sceau::Doute::HorsVanguard));
+        let c = reference_douteuse(crate::sceau::Doute::HorsVanguard);
+        assert_eq!((c.probleme, c.verifie), (Some(Niveau::Eleve), false));
+        // Effacée hors de Vanguard : toujours la sienne (douteuse), et l'ordinateur a toujours des références.
+        std::fs::remove_file(&reference).unwrap();
+        assert_eq!(reference_lue(&base, Some("1A2B-3C4D")), Some(reference.clone()));
+        assert!(a_des_references(&base));
+        assert_eq!(douteuse(&reference), Some(crate::sceau::Doute::HorsVanguard));
+        // Le déploiement n'écrit rien d'après elle sans --forcer.
+        assert!(reecriture_permise(&base, &racine, Some(&reference), GROS).is_err());
+        let _ = std::fs::remove_dir_all(&racine);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

@@ -881,11 +881,17 @@ fn base64_decoder(texte: &str) -> Option<Vec<u8>> {
     Some(sortie)
 }
 
-/// Ports que Vanguard a bloqués dans le pare-feu de cet ordinateur, un par ligne (« 8080/tcp »).
-/// Un port bloqué écoute toujours : sans ce registre, l'alerte et la même correction revenaient à chaque audit.
-/// Sous Linux, les règles ufw ne sont pas lisibles sans root ; Windows, lui, relit ses règles directement.
-fn fichier_blocages() -> std::path::PathBuf {
-    crate::socle::dossier_local().join("ports-bloques.txt")
+/// Ports que Vanguard a bloqués dans le pare-feu de cet ordinateur, un par ligne (« 8080/tcp »), dans un fichier
+/// scellé (`sceau::PORTS_BLOQUES`). Un port bloqué écoute toujours : sans ce registre, l'alerte et la même correction
+/// revenaient à chaque audit. Sous Linux, les règles ufw ne sont pas lisibles sans root ; Windows, lui, relit ses
+/// règles directement. Un port inscrit hors de Vanguard taisait un port exposé ou un serveur d'IA ouvert : changée,
+/// effacée ou acceptée telle quelle après des sceaux refaits, la note ne vaut rien (tout port est rejugé), et le
+/// bilan dit qu'elle a été changée (COM-ETA-001).
+fn blocages_dans(dossier: &std::path::Path) -> std::collections::HashSet<String> {
+    crate::sceau::juge_dans(dossier, crate::sceau::PORTS_BLOQUES)
+        .cru()
+        .map(|o| lire_blocages(&String::from_utf8_lossy(&o)))
+        .unwrap_or_default()
 }
 
 fn lire_blocages(texte: &str) -> std::collections::HashSet<String> {
@@ -900,7 +906,7 @@ fn lire_blocages(texte: &str) -> std::collections::HashSet<String> {
 /// Les ports que Vanguard a bloqués en entrée, d'après sa note (« 11434/tcp ») : le bilan (Linux) et le blocage ne
 /// les reproposent pas.
 pub(crate) fn ports_bloques() -> std::collections::HashSet<String> {
-    lire_blocages(&crate::socle::lire_texte_ordinaire(&fichier_blocages(), 1 << 20).unwrap_or_default())
+    blocages_dans(&crate::socle::dossier_local())
 }
 
 /// À appeler après une correction réussie : retient le port qu'elle a bloqué.
@@ -952,18 +958,27 @@ pub(crate) fn oublier_port(port: &str) {
 }
 
 fn changer_blocages(changer: impl FnOnce(&mut std::collections::HashSet<String>) -> bool) {
-    let chemin = fichier_blocages();
-    let mut deja = lire_blocages(&crate::socle::lire_texte_ordinaire(&chemin, 1 << 20).unwrap_or_default());
+    changer_blocages_dans(&crate::socle::dossier_local(), changer);
+}
+
+/// La note de `dossier` changée, puis scellée. Une note douteuse repart de rien : ses ports inscrits hors de Vanguard
+/// n'y passent pas (un vrai blocage se reproposera, jamais l'inverse).
+fn changer_blocages_dans(
+    dossier: &std::path::Path,
+    changer: impl FnOnce(&mut std::collections::HashSet<String>) -> bool,
+) {
+    let mut deja = blocages_dans(dossier);
     if changer(&mut deja) {
         let mut lignes: Vec<_> = deja.into_iter().collect();
         lignes.sort();
-        let _ = std::fs::create_dir_all(chemin.parent().unwrap_or(&chemin));
         let texte = if lignes.is_empty() {
             String::new()
         } else {
             lignes.join("\n") + "\n"
         };
-        let _ = std::fs::write(&chemin, texte);
+        if let Err(e) = crate::sceau::ecrire_dans(dossier, crate::sceau::PORTS_BLOQUES, texte.as_bytes()) {
+            crate::modele::Echec::echoue("machine/ports-bloques", e.to_string()).journaliser();
+        }
     }
 }
 
@@ -1392,6 +1407,28 @@ pub fn executer(json: bool) -> Audit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S2c : un port inscrit hors de Vanguard dans la note des blocages ne tait ni un port exposé ni un serveur d'IA
+    /// ouvert ; la note changée est dite au bilan (fichier scellé, COM-ETA-001).
+    #[test]
+    fn note_des_ports_forgee_ne_tait_rien() {
+        let d = std::env::temp_dir().join(format!("vanguard-ports-bloques-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        changer_blocages_dans(&d, |deja| deja.insert("11434/tcp".into()));
+        assert_eq!(blocages_dans(&d), ["11434/tcp".to_string()].into());
+        std::fs::write(d.join(crate::sceau::PORTS_BLOQUES), "11434/tcp\n4444/tcp\n").unwrap();
+        assert!(blocages_dans(&d).is_empty());
+        assert!(matches!(
+            crate::sceau::lire_dans(&d, crate::sceau::PORTS_BLOQUES),
+            crate::sceau::Lecture::Falsifie(Some(_))
+        ));
+        assert!(crate::modele::inventaire::scelles().any(|n| n == crate::sceau::PORTS_BLOQUES));
+        // Réécrite par Vanguard, elle repart de rien : le port forgé n'y entre pas.
+        changer_blocages_dans(&d, |deja| deja.insert("8080/tcp".into()));
+        assert_eq!(blocages_dans(&d), ["8080/tcp".to_string()].into());
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn noms_entiers_de_lsof() {

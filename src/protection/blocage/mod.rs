@@ -700,12 +700,11 @@ fn alerter_blocage(m: &Menace, titre: &str, texte: &str) {
 /// Les menaces déjà signalées comme non bloquées, d'après les sceaux : intactes ou adoptées, leurs clés ; changées
 /// hors de Vanguard, inconnues ou illisibles, aucune, pour que tout soit redit (une clé ajoutée par un programme du
 /// compte taisait l'échec de son propre blocage).
-fn signalees_lues(lu: crate::sceau::Lecture) -> BTreeSet<String> {
-    use crate::sceau::Lecture;
-    match lu {
-        Lecture::Intact(o) | Lecture::Adopte(o) => String::from_utf8_lossy(&o).lines().map(str::to_string).collect(),
-        _ => BTreeSet::new(),
-    }
+fn signalees_lues(lu: crate::sceau::Juge) -> BTreeSet<String> {
+    // Acceptées telles quelles après des sceaux refaits, elles ne taisent rien non plus (`sceau::juge`).
+    lu.cru()
+        .map(|o| String::from_utf8_lossy(&o).lines().map(str::to_string).collect())
+        .unwrap_or_default()
 }
 
 /// Dans la surveillance horaire : le certain des catégories automatiques seulement, sans jamais rien demander ; chaque
@@ -729,7 +728,7 @@ pub(crate) fn en_surveillance() {
         .collect();
     let t = menaces::chercher(&categories, p.effectif(Categorie::Programmes) == Mode::Automatique);
     let ctx = Contexte::lire(t.intouchables.clone(), false);
-    let avant = signalees_lues(crate::sceau::lire(crate::sceau::BLOCAGE_SIGNALEES));
+    let avant = signalees_lues(crate::sceau::juge(crate::sceau::BLOCAGE_SIGNALEES));
     let mut maintenant = BTreeSet::new();
     for m in t
         .menaces
@@ -1019,7 +1018,7 @@ mod tests {
     fn cle_ajoutee_hors_de_vanguard_ne_tait_plus_l_echec() {
         let d = std::env::temp_dir().join(format!("vanguard-blocage-signalees-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        let lu = || signalees_lues(crate::sceau::lire_dans(&d, crate::sceau::BLOCAGE_SIGNALEES));
+        let lu = || signalees_lues(crate::sceau::juge_dans(&d, crate::sceau::BLOCAGE_SIGNALEES));
         crate::sceau::ecrire_dans(&d, crate::sceau::BLOCAGE_SIGNALEES, b"fichier:/home/alice/a").unwrap();
         assert!(lu().contains("fichier:/home/alice/a"));
         std::fs::write(
@@ -1027,6 +1026,9 @@ mod tests {
             "fichier:/home/alice/a\nfichier:/home/alice/.local/bin/x",
         )
         .unwrap();
+        assert!(lu().is_empty());
+        // S2c : acceptée telle quelle après des sceaux refaits, elle ne tait rien non plus.
+        std::fs::remove_file(d.join("sceaux.json")).unwrap();
         assert!(lu().is_empty());
         let _ = std::fs::remove_dir_all(&d);
     }

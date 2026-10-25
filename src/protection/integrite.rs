@@ -160,12 +160,16 @@ enum Reference {
 }
 
 fn reference() -> Reference {
-    reference_lue(crate::sceau::lire(crate::sceau::INTEGRITE))
+    reference_lue(crate::sceau::lire(crate::sceau::INTEGRITE), crate::sceau::refaits)
 }
 
-fn reference_lue(lu: crate::sceau::Lecture) -> Reference {
+/// `refaits` : les sceaux ont-ils été refaits ? Une référence acceptée telle quelle lors de la mise à jour d'une
+/// version d'avant les sceaux sert (dite adoptée) ; acceptée après des sceaux refaits, elle a pu être réécrite par qui
+/// les a effacés, avec le ~/.bashrc qu'il vient de changer : douteuse, elle ne sert à rien juger (`sceau::juge`).
+fn reference_lue(lu: crate::sceau::Lecture, refaits: impl FnOnce() -> bool) -> Reference {
     use crate::sceau::Lecture;
     match lu {
+        Lecture::Adopte(_) if refaits() => Reference::Douteuse(crate::sceau::Doute::Adopte.texte().to_string()),
         Lecture::Absent => Reference::Absente,
         Lecture::Intact(o) => serde_json::from_slice(&o).map_or_else(
             |_| Reference::Douteuse(tr!("elle ne se lit plus", "it can no longer be read").into()),
@@ -622,10 +626,10 @@ mod tests {
         assert!(matches!(reference(), Reference::Absente));
         // Acceptée telle quelle mais abîmée : douteuse.
         let lu = crate::sceau::Lecture::Adopte(b"pas du json".to_vec());
-        assert!(matches!(reference_lue(lu), Reference::Douteuse(_)));
+        assert!(matches!(reference_lue(lu, || false), Reference::Douteuse(_)));
         // Manquante alors que les sceaux ont été refaits : douteuse, jamais « pas encore de référence ».
         assert!(matches!(
-            reference_lue(crate::sceau::Lecture::Inconnu),
+            reference_lue(crate::sceau::Lecture::Inconnu, || true),
             Reference::Douteuse(_)
         ));
     }
@@ -642,7 +646,10 @@ mod tests {
         .into_iter()
         .collect();
         let lu = crate::sceau::Lecture::Adopte(serde_json::to_vec(&etat).unwrap());
-        assert!(matches!(reference_lue(lu), Reference::Adoptee(ref r) if *r == etat));
+        assert!(matches!(reference_lue(lu, || false), Reference::Adoptee(ref r) if *r == etat));
+        // S2c : acceptée telle quelle après des sceaux refaits (réécrite par qui les a effacés), elle ne sert pas.
+        let lu = crate::sceau::Lecture::Adopte(serde_json::to_vec(&etat).unwrap());
+        assert!(matches!(reference_lue(lu, || true), Reference::Douteuse(_)));
         let c = constat_de(Reference::Adoptee(etat.clone()), || etat.clone());
         assert_eq!((c.probleme, c.verifie), (None, true), "{}", c.message);
         assert!(

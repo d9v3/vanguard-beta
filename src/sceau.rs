@@ -22,6 +22,14 @@
 //! que les sceaux ont été refaits. Effacer d'un coup les sceaux et l'état de la machine ne fait donc plus taire la
 //! passe suivante.
 //!
+//! Un seul juge pour tous les lecteurs (`juge`, sur le modèle de `parametres::charger_juge`) : seul ce que Vanguard a
+//! écrit, ou ce qu'il a repris tel quel d'une version d'avant lors de sa mise à jour, est cru ; un fichier changé,
+//! effacé, ou accepté tel quel après des sceaux refaits ne vaut jamais un feu vert (aucune défense coupée, aucune
+//! alerte tue, aucun accord donné). Depuis le lot S2 : aussi la liste des fichiers-pièges, les ports bloqués, le carnet
+//! des appareils de cet ordinateur, les références de la clé VANGUARD, l'état de l'entretien, la note de la sauvegarde
+//! et la dernière passe de la surveillance. Un test relit le code pour qu'aucun fichier du dossier de données ne soit
+//! lu sans lui (`modele::inventaire`, T14).
+//!
 //! Un fichier d'état n'est lu que s'il est un simple fichier de taille raisonnable (`socle::lire_ordinaire`) : un tube
 //! nommé posé à sa place figeait la surveillance pour toujours. En root, les sceaux ne s'écrivent que dans un dossier
 //! à root (`socle::ecriture_sure`).
@@ -101,6 +109,29 @@ pub(crate) const CLES_CONNUES: &str = "cles-connues.json";
 /// compteurs à zéro.
 pub(crate) const VEILLEUR_ETAT: &str = "veilleur-etat.json";
 
+/// La liste des fichiers-pièges posés (`protection::pieges`) : vidée ou effacée, les pièges n'étaient plus vérifiés ;
+/// une empreinte réécrite faisait passer un piège chiffré pour intact.
+pub(crate) const PIEGES: &str = "pieges.json";
+/// Les ports que Vanguard a bloqués en entrée (`machine`) : un port inscrit d'avance taisait un port exposé, ou un
+/// serveur d'IA ouvert.
+pub(crate) const PORTS_BLOQUES: &str = "ports-bloques.txt";
+/// Le carnet des appareils de cet ordinateur (`reseau`), en clair : un appareil inscrit d'avance n'était jamais dit
+/// « Nouvel appareil ».
+pub(crate) const APPAREILS: &str = "appareils.json";
+/// L'unique référence de la clé VANGUARD des 0.59 (`protection::manifeste`).
+pub(crate) const MANIFESTE_CLE: &str = "manifeste-cle.json";
+/// Les références de chaque clé VANGUARD (`protection::manifeste`), une par identifiant de volume : réécrite avec
+/// l'empreinte d'un fichier planté sur la clé, elle disait « clé intacte ».
+pub(crate) const MANIFESTES_CLE: &str = "manifestes-cle";
+/// L'état de l'entretien du mois d'avant (`entretien`) : une alerte inscrite d'avance n'était jamais dite nouvelle.
+pub(crate) const ENTRETIEN: &str = "entretien.json";
+/// La note de la sauvegarde automatique mise en place (`sauvegarde`) : forgée, son annulation coupait Time Machine ou
+/// remettait des réglages de Déjà Dup choisis par un autre programme.
+pub(crate) const SAUVEGARDE: &str = "sauvegarde.json";
+/// La dernière passe de la surveillance (`reseau::tableau`) : forgée, le tableau la disait passée il y a cinq
+/// minutes alors qu'elle était coupée.
+pub(crate) const SURVEILLANCE_PASSE: &str = "surveillance-passe.txt";
+
 /// Au-delà, ce n'est pas un fichier d'état de Vanguard (le plus gros fait quelques dizaines de Kio) : il n'est pas
 /// chargé.
 const TAILLE_MAX: u64 = 4 << 20;
@@ -140,7 +171,38 @@ const TARDIFS: &[&str] = &[
     crate::plugins::APPROUVES_SCELLE,
     // Écrit sans sceau par le veilleur jusqu'à la 0.87 (Linux seulement, mais le nom est le même partout).
     VEILLEUR_ETAT,
+    // Écrits sans sceau jusqu'à la 0.87 : adoptés une fois à la mise à jour, jamais un feu vert après des sceaux
+    // refaits (`juge`).
+    PIEGES,
+    PORTS_BLOQUES,
+    APPAREILS,
+    MANIFESTE_CLE,
+    ENTRETIEN,
+    SAUVEGARDE,
+    SURVEILLANCE_PASSE,
 ];
+
+/// Les dossiers dont chaque fichier est protégé tard, sous un nom que le code ne connaît pas d'avance (la référence de
+/// chaque clé VANGUARD, nommée par l'identifiant de son volume) : comme `TARDIFS`, ce qu'une version d'avant y a
+/// écrit est adopté une fois, puis un fichier posé sans sceau y est falsifié.
+const TARDIFS_DOSSIERS: &[&str] = &[MANIFESTES_CLE];
+
+/// Les fichiers déjà là dans les dossiers de `TARDIFS_DOSSIERS` (« manifestes-cle/<id>.json »), de simples fichiers
+/// seulement.
+fn presents_tardifs(dossier: &Path, sous: &str) -> Vec<String> {
+    let Ok(lus) = std::fs::read_dir(dossier.join(sous)) else {
+        return Vec::new();
+    };
+    let mut noms: Vec<String> = lus
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| Path::new(n).extension().is_some_and(|x| x == "json"))
+        .map(|n| format!("{sous}/{n}"))
+        .collect();
+    noms.sort();
+    noms
+}
 
 const REGISTRE: &str = "sceaux.json";
 const VERROU: &str = "sceaux.verrou";
@@ -259,9 +321,23 @@ fn dossier_d_un_autre() -> std::io::Error {
     )
 }
 
+/// Les références des clés VANGUARD relèvent chaque fichier de la clé (une image ISO comptée par sa taille) : quelques
+/// centaines de Kio d'ordinaire, jusqu'à 64 Mio lues par `protection::manifeste`.
+const TAILLE_MAX_REFERENCE: u64 = 64 << 20;
+
+/// La taille au-delà de laquelle `chemin` n'est pas lu.
+fn taille_max(chemin: &Path) -> u64 {
+    let nom = |p: Option<&Path>| p.and_then(Path::file_name).and_then(|n| n.to_str()).map(str::to_string);
+    if nom(Some(chemin)).as_deref() == Some(MANIFESTE_CLE) || nom(chemin.parent()).as_deref() == Some(MANIFESTES_CLE) {
+        TAILLE_MAX_REFERENCE
+    } else {
+        TAILLE_MAX
+    }
+}
+
 /// Le contenu d'un fichier d'état, `Ok(None)` s'il n'existe pas.
 fn contenu(chemin: &Path) -> Result<Option<Vec<u8>>, String> {
-    match crate::socle::lire_ordinaire(chemin, TAILLE_MAX) {
+    match crate::socle::lire_ordinaire(chemin, taille_max(chemin)) {
         Ok(o) => Ok(Some(o)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.to_string()),
@@ -312,7 +388,13 @@ fn adopter_si(dossier: &Path, deja_scelle: bool, ecrire: bool) -> Registre {
             _ => {}
         }
     }
-    r.vus = TARDIFS.iter().map(|n| (*n).to_string()).collect();
+    for nom in TARDIFS_DOSSIERS.iter().flat_map(|d| presents_tardifs(dossier, d)) {
+        if let Ok(Some(o)) = contenu(&dossier.join(&nom)) {
+            r.fichiers.insert(nom.clone(), empreinte(&nom, &o));
+            r.adoptes.insert(nom);
+        }
+    }
+    r.vus = tous_les_tardifs();
     if ecrire {
         let _ = enregistrer_registre(dossier, &r);
     }
@@ -323,6 +405,15 @@ fn adopter_si(dossier: &Path, deja_scelle: bool, ecrire: bool) -> Registre {
 /// est adopté tel quel (il vient de cette version), une fois pour toutes.
 fn rattraper(dossier: &Path, r: Registre) -> Registre {
     rattraper_si(dossier, r, true)
+}
+
+/// Ce que des sceaux neufs ont déjà « vu » des fichiers et dossiers protégés tard : tout.
+fn tous_les_tardifs() -> BTreeSet<String> {
+    TARDIFS
+        .iter()
+        .chain(TARDIFS_DOSSIERS)
+        .map(|n| (*n).to_string())
+        .collect()
 }
 
 /// `rattraper`, et seulement s'il le faut (`ecrire`), noté dans les sceaux.
@@ -339,6 +430,21 @@ fn rattraper_si(dossier: &Path, mut r: Registre, ecrire: bool) -> Registre {
             r.adoptes.insert(nom.to_string());
         }
         r.vus.insert(nom.to_string());
+        change = true;
+    }
+    for sous in TARDIFS_DOSSIERS.iter().copied() {
+        if r.vus.contains(sous) {
+            continue;
+        }
+        for nom in presents_tardifs(dossier, sous) {
+            if !r.fichiers.contains_key(&nom)
+                && let Ok(Some(o)) = contenu(&dossier.join(&nom))
+            {
+                r.fichiers.insert(nom.clone(), empreinte(&nom, &o));
+                r.adoptes.insert(nom);
+            }
+        }
+        r.vus.insert(sous.to_string());
         change = true;
     }
     if change && ecrire {
@@ -414,7 +520,7 @@ pub(crate) fn ecrire_dans(dossier: &Path, nom: &str, octets: &[u8]) -> std::io::
         // inconnus.
         Err(()) => Registre {
             depuis: chrono::Local::now().format("%Y-%m-%d").to_string(),
-            vus: TARDIFS.iter().map(|n| (*n).to_string()).collect(),
+            vus: tous_les_tardifs(),
             refaits: true,
             inconnus: proteges().map(str::to_string).collect(),
             ..Registre::default()
@@ -727,6 +833,96 @@ pub(crate) fn constat() -> Vec<Constat> {
 /// Ce fichier d'état a-t-il été accepté tel quel au premier usage, sans être réécrit depuis ?
 pub(crate) fn adopte(nom: &str) -> bool {
     matches!(lire(nom), Lecture::Adopte(_))
+}
+
+/// Pourquoi un fichier d'état ne peut pas être cru (`juge`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Doute {
+    /// Changé ou effacé hors de Vanguard.
+    HorsVanguard,
+    /// Accepté tel quel après des sceaux refaits : rien ne prouve qui l'a écrit.
+    Adopte,
+    /// Absent alors que les sceaux ont été refaits : peut-être effacé.
+    Inconnu,
+}
+
+impl Doute {
+    /// La raison, au masculin (« le fichier … »), pour quelqu'un qui ne connaît pas les sceaux.
+    pub(crate) fn texte(self) -> &'static str {
+        match self {
+            Doute::HorsVanguard => tr!(
+                "changé ou effacé hors de Vanguard",
+                "changed or deleted outside Vanguard"
+            ),
+            Doute::Adopte => tr!(
+                "accepté tel quel après l'effacement des sceaux de Vanguard (sceaux.json)",
+                "accepted as it was after Vanguard's seals (sceaux.json) were deleted"
+            ),
+            Doute::Inconnu => tr!(
+                "peut-être effacé : les sceaux de Vanguard (sceaux.json) ont été refaits",
+                "perhaps deleted: Vanguard's seals (sceaux.json) were remade"
+            ),
+        }
+    }
+}
+
+/// Ce qu'un lecteur peut croire d'un fichier d'état : le juge commun à tous (celui de `parametres::charger_juge`).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Juge {
+    /// Jamais écrit, ou oublié par Vanguard lui-même.
+    Absent,
+    /// Tel que Vanguard l'a écrit, ou repris tel quel d'une version d'avant le sceau lors de sa mise à jour.
+    Cru(Vec<u8>),
+    /// Ne vaut jamais un feu vert : rien de ce qu'il dit ne coupe une défense, ne tait une alerte ni ne donne un
+    /// accord. Le contenu actuel, s'il y en a un, seulement pour le montrer ou le mettre de côté.
+    Douteux(Doute, Option<Vec<u8>>),
+    /// Là, mais il ne se lit pas : le pourquoi. Pas plus cru qu'un douteux.
+    Illisible(String),
+}
+
+impl Juge {
+    /// Le contenu, seulement s'il peut être cru.
+    pub(crate) fn cru(self) -> Option<Vec<u8>> {
+        match self {
+            Juge::Cru(o) => Some(o),
+            _ => None,
+        }
+    }
+}
+
+/// Le jugement d'une lecture : `refaits` dit si les sceaux ont été refaits (un fichier adopté vient alors peut-être de
+/// qui les a effacés ; sinon, de la version d'avant mise à jour). Seul un fichier adopté le demande.
+pub(crate) fn juger_lecture(lu: Lecture, refaits: impl FnOnce() -> bool) -> Juge {
+    match lu {
+        Lecture::Absent => Juge::Absent,
+        Lecture::Intact(o) => Juge::Cru(o),
+        Lecture::Adopte(o) if !refaits() => Juge::Cru(o),
+        Lecture::Adopte(o) => Juge::Douteux(Doute::Adopte, Some(o)),
+        Lecture::Falsifie(o) => Juge::Douteux(Doute::HorsVanguard, o),
+        Lecture::Inconnu => Juge::Douteux(Doute::Inconnu, None),
+        Lecture::Illisible(e) => Juge::Illisible(e),
+    }
+}
+
+/// Un fichier d'état de `dossier`, jugé (`juger_lecture`).
+pub(crate) fn juge_dans(dossier: &Path, nom: &str) -> Juge {
+    juger_lecture(lire_dans(dossier, nom), || refaits_dans(dossier))
+}
+
+/// `juge_dans`, sans rien écrire ni créer (`lire_sans_ecrire`).
+pub(crate) fn juge_sans_ecrire_dans(dossier: &Path, nom: &str) -> Juge {
+    juger_lecture(lire_sans_ecrire(dossier, nom), || refaits_dans(dossier))
+}
+
+pub(crate) fn juge(nom: &str) -> Juge {
+    juge_dans(&dossier(), nom)
+}
+
+/// Les sceaux de `dossier` connaissent-ils un fichier sous `sous` (« manifestes-cle ») ? Un fichier effacé hors de
+/// Vanguard y garde son sceau : il a existé. Lu sans rien écrire.
+pub(crate) fn connus_sous(dossier: &Path, sous: &str) -> bool {
+    let prefixe = format!("{sous}/");
+    registre(dossier).is_ok_and(|r| r.is_some_and(|r| r.fichiers.keys().any(|n| n.starts_with(&prefixe))))
 }
 
 #[cfg(test)]
@@ -1059,6 +1255,73 @@ mod tests {
         // Ce que protège le sceau, c'est l'inventaire qui le dit.
         assert_eq!(proteges().count(), crate::modele::inventaire::scelles().count());
         assert!(proteges().any(|n| n == WIFI_PUBLIC));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Le juge commun : adopté lors d'une mise à jour, cru ; adopté après des sceaux refaits, changé, effacé ou
+    /// inconnu, jamais cru.
+    #[test]
+    fn le_juge_ne_croit_que_ce_que_vanguard_a_ecrit() {
+        let d = jetable("juge");
+        assert_eq!(juge_dans(&d, PIEGES), Juge::Absent);
+        ecrire_dans(&d, PIEGES, b"[]").unwrap();
+        assert_eq!(juge_dans(&d, PIEGES), Juge::Cru(b"[]".to_vec()));
+        std::fs::write(d.join(PIEGES), b"[1]").unwrap();
+        assert_eq!(
+            juge_dans(&d, PIEGES),
+            Juge::Douteux(Doute::HorsVanguard, Some(b"[1]".to_vec()))
+        );
+        std::fs::remove_file(d.join(PIEGES)).unwrap();
+        assert_eq!(juge_dans(&d, PIEGES), Juge::Douteux(Doute::HorsVanguard, None));
+        // Les sceaux effacés : le fichier forgé est adopté, jamais cru ; l'absent est inconnu.
+        std::fs::write(d.join(PIEGES), b"[2]").unwrap();
+        ecrire_dans(&d, ENTRETIEN, b"{}").unwrap();
+        std::fs::remove_file(d.join(ENTRETIEN)).unwrap();
+        std::fs::remove_file(d.join(REGISTRE)).unwrap();
+        assert_eq!(
+            juge_dans(&d, PIEGES),
+            Juge::Douteux(Doute::Adopte, Some(b"[2]".to_vec()))
+        );
+        assert_eq!(juge_dans(&d, ENTRETIEN), Juge::Douteux(Doute::Inconnu, None));
+        assert_ne!(Doute::Adopte.texte(), "");
+        let _ = std::fs::remove_dir_all(&d);
+        // Une version d'avant les sceaux mise à jour : ses fichiers adoptés sont crus.
+        let d = jetable("juge-avant");
+        std::fs::write(d.join(PIEGES), b"[]").unwrap();
+        assert_eq!(juge_dans(&d, PIEGES), Juge::Cru(b"[]".to_vec()));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Les références des clés, nommées par leur volume : adoptées une fois à la mise à jour (des sceaux d'avant qui
+    /// ne les connaissaient pas), puis une référence posée sans sceau est falsifiée ; effacée, son sceau dit qu'elle
+    /// a existé.
+    #[test]
+    fn un_dossier_protege_tard_est_adopte_une_fois() {
+        let d = jetable("tardif-dossier");
+        ecrire_dans(&d, APPRIS, b"{}").unwrap();
+        let mut r = registre(&d).unwrap().unwrap();
+        r.vus.clear();
+        enregistrer_registre(&d, &r).unwrap();
+        std::fs::create_dir_all(d.join(MANIFESTES_CLE)).unwrap();
+        let ref_a = format!("{MANIFESTES_CLE}/1A2B-3C4D.json");
+        std::fs::write(d.join(&ref_a), b"{}").unwrap();
+        assert_eq!(lire_dans(&d, &ref_a), Lecture::Adopte(b"{}".to_vec()));
+        assert_eq!(juge_dans(&d, &ref_a), Juge::Cru(b"{}".to_vec()));
+        let ref_b = format!("{MANIFESTES_CLE}/5E6F-7A8B.json");
+        std::fs::write(d.join(&ref_b), b"{}").unwrap();
+        assert!(matches!(lire_dans(&d, &ref_b), Lecture::Falsifie(Some(_))));
+        assert!(connus_sous(&d, MANIFESTES_CLE));
+        std::fs::remove_file(d.join(&ref_a)).unwrap();
+        assert_eq!(lire_dans(&d, &ref_a), Lecture::Falsifie(None));
+        let _ = std::fs::remove_dir_all(&d);
+        // Au tout premier usage, celles déjà là sont adoptées, et une nouvelle posée ensuite sans sceau est falsifiée.
+        let d = jetable("tardif-dossier-premier");
+        std::fs::create_dir_all(d.join(MANIFESTES_CLE)).unwrap();
+        std::fs::write(d.join(&ref_a), b"{}").unwrap();
+        assert_eq!(lire_dans(&d, &ref_a), Lecture::Adopte(b"{}".to_vec()));
+        std::fs::write(d.join(&ref_b), b"{}").unwrap();
+        assert!(matches!(lire_dans(&d, &ref_b), Lecture::Falsifie(Some(_))));
+        assert!(!connus_sous(&jetable("tardif-vide"), MANIFESTES_CLE));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

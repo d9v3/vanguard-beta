@@ -59,25 +59,49 @@ struct Notes {
     mise_en_place: Option<MiseEnPlace>,
 }
 
-/// La note de ce qui a été mis en place, dans le dossier de données.
-pub(crate) const NOTES: &str = "sauvegarde.json";
+/// La note de ce qui a été mis en place, dans le dossier de données, scellée (`sceau::SAUVEGARDE`) : écrite par un
+/// autre programme du compte, son annulation coupait Time Machine (`deja_actif` faux) ou remettait des réglages de
+/// Déjà Dup choisis par lui.
+pub(crate) const NOTES: &str = crate::sceau::SAUVEGARDE;
 
-fn fichier_notes() -> PathBuf {
-    crate::socle::dossier_local().join(NOTES)
+fn dossier_notes() -> PathBuf {
+    crate::socle::dossier_local()
 }
 
-fn charger_de(chemin: &Path) -> Notes {
-    crate::socle::lire_texte_ordinaire(chemin, 16 << 20)
-        .ok()
-        .and_then(|t| serde_json::from_str(t.trim_start_matches('\u{feff}')).ok())
-        .unwrap_or_default()
+/// La note de `dossier` ; `Err` si elle ne peut pas être crue (changée, effacée ou acceptée telle quelle hors de
+/// Vanguard) : rien ne s'annule ni ne se dit en place d'après elle. Illisible ou abîmée : aucune note.
+fn charger_dans(dossier: &Path) -> Result<Notes, crate::sceau::Doute> {
+    juger_notes(crate::sceau::juge_dans(dossier, NOTES))
+}
+
+fn juger_notes(lu: crate::sceau::Juge) -> Result<Notes, crate::sceau::Doute> {
+    use crate::sceau::Juge;
+    match lu {
+        Juge::Cru(o) => Ok(serde_json::from_slice(&o).unwrap_or_default()),
+        Juge::Douteux(d, _) => Err(d),
+        Juge::Absent | Juge::Illisible(_) => Ok(Notes::default()),
+    }
+}
+
+/// La note, ou aucune si elle ne peut pas être crue.
+fn charger_de(dossier: &Path) -> Notes {
+    charger_dans(dossier).unwrap_or_default()
+}
+
+/// Ce qui se dit quand la note ne peut pas être crue : rien n'est annulé d'après elle.
+fn note_douteuse(d: crate::sceau::Doute) -> String {
+    trf!(
+        "La note de ce que Vanguard a mis en place (sauvegarde.json) ne peut pas être crue ({}) : rien n'est annulé ni vérifié d'après elle. Si une sauvegarde automatique ne vous sert plus, retirez-la avec l'outil du système (Time Machine, Déjà Dup, minuterie de systemd).",
+        "The note of what Vanguard set up (sauvegarde.json) cannot be trusted ({}): nothing is undone or checked from it. If an automatic backup is no longer useful to you, remove it with the system's tool (Time Machine, Déjà Dup, systemd timer).",
+        d.texte()
+    )
 }
 
 /// Note ce qui vient d'être mis en place, pour pouvoir l'annuler ; dit si la note n'a pas pu s'écrire.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn noter(m: &MiseEnPlace) {
     if let Err(e) = ecrire_dans(
-        &fichier_notes(),
+        &dossier_notes(),
         &Notes {
             mise_en_place: Some(m.clone()),
         },
@@ -93,7 +117,9 @@ fn noter(m: &MiseEnPlace) {
 /// « Annuler » les retire encore.
 #[cfg(target_os = "linux")]
 pub(crate) fn reprendre_note(timer: &str, service: &str) {
-    let mut notes = charger_de(&fichier_notes());
+    let Ok(mut notes) = charger_dans(&dossier_notes()) else {
+        return;
+    };
     if let Some(MiseEnPlace::Systemd {
         empreinte_timer,
         empreinte_service,
@@ -102,15 +128,17 @@ pub(crate) fn reprendre_note(timer: &str, service: &str) {
     {
         *empreinte_timer = empreinte(timer);
         *empreinte_service = empreinte(service);
-        let _ = ecrire_dans(&fichier_notes(), &notes);
+        let _ = ecrire_dans(&dossier_notes(), &notes);
     }
 }
 
-fn ecrire_dans(chemin: &Path, notes: &Notes) -> std::io::Result<()> {
-    if let Some(parent) = chemin.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(chemin, serde_json::to_string_pretty(notes).unwrap_or_default())
+/// La note de `dossier`, scellée.
+fn ecrire_dans(dossier: &Path, notes: &Notes) -> std::io::Result<()> {
+    crate::sceau::ecrire_dans(
+        dossier,
+        NOTES,
+        serde_json::to_string_pretty(notes).unwrap_or_default().as_bytes(),
+    )
 }
 
 #[cfg_attr(windows, allow(dead_code))]
@@ -489,7 +517,7 @@ pub fn constats() -> Vec<Constat> {
 /// La minuterie rsync de Vanguard en place, mais rsync parti (paquet désinstallé) : elle échoue chaque jour en silence.
 #[cfg(target_os = "linux")]
 fn rsync_disparu() -> Option<Constat> {
-    let Some(MiseEnPlace::Systemd { .. }) = charger_de(&fichier_notes()).mise_en_place else {
+    let Some(MiseEnPlace::Systemd { .. }) = charger_de(&dossier_notes()).mise_en_place else {
         return None;
     };
     let texte = std::fs::read_to_string(dossier_unites().join(SERVICE)).ok()?;
@@ -521,7 +549,10 @@ fn juger_rsync(rsync: &Path, existe: bool) -> Option<Constat> {
 
 /// Ce que Vanguard a mis en place, d'après la note du dossier de données `donnees`.
 pub(crate) fn mise_en_place_de(donnees: &Path) -> Option<MiseEnPlace> {
-    charger_de(&donnees.join(NOTES)).mise_en_place
+    // Lu sans rien écrire : la désinstallation ne crée rien dans le dossier qu'elle recense.
+    juger_notes(crate::sceau::juge_sans_ecrire_dans(donnees, NOTES))
+        .unwrap_or_default()
+        .mise_en_place
 }
 
 /// Retire ce que Vanguard a mis en place, sans question (la désinstallation l'a montré et fait accepter), puis oublie
@@ -531,7 +562,7 @@ pub(crate) fn mise_en_place_de(donnees: &Path) -> Option<MiseEnPlace> {
 pub(crate) fn annuler_sans_question(m: &MiseEnPlace) -> (bool, Vec<PathBuf>) {
     let (ok, gardees) = annuler_mise_en_place(m);
     if ok && gardees.is_empty() {
-        let _ = ecrire_dans(&fichier_notes(), &Notes::default());
+        let _ = ecrire_dans(&dossier_notes(), &Notes::default());
     }
     (ok, gardees)
 }
@@ -1107,8 +1138,14 @@ fn annuler_mise_en_place(m: &MiseEnPlace) -> (bool, Vec<PathBuf>) {
 
 /// « vanguard sauvegarde-auto --annuler » : retire ce que Vanguard a mis en place, après accord.
 pub fn annuler() {
-    let chemin = fichier_notes();
-    let notes = charger_de(&chemin);
+    let chemin = dossier_notes();
+    let notes = match charger_dans(&chemin) {
+        Ok(n) => n,
+        Err(d) => {
+            mauvais(&note_douteuse(d));
+            return;
+        }
+    };
     let Some(m) = &notes.mise_en_place else {
         info(tr!(
             "Vanguard n'a rien mis en place à annuler.",
@@ -1170,8 +1207,15 @@ pub fn menu() {
         2,
         GRIS,
     );
-    let chemin = fichier_notes();
-    let notes = charger_de(&chemin);
+    let chemin = dossier_notes();
+    let notes = match charger_dans(&chemin) {
+        Ok(n) => n,
+        Err(d) => {
+            println!();
+            mauvais(&note_douteuse(d));
+            Notes::default()
+        }
+    };
     println!();
     match &notes.mise_en_place {
         Some(m) => {
@@ -1384,7 +1428,7 @@ fn sources_actuelles() -> Vec<(String, PathBuf)> {
 pub fn verifier_sauvegarde() {
     println!();
     titre(tr!("Vérifier la sauvegarde automatique", "Check the automatic backup"));
-    let mise_en_place = charger_de(&fichier_notes()).mise_en_place;
+    let mise_en_place = charger_de(&dossier_notes()).mise_en_place;
     let Some(MiseEnPlace::Systemd { destination, date, .. }) = mise_en_place else {
         let texte = match mise_en_place {
             Some(MiseEnPlace::DejaDup { .. }) => tr!(
@@ -1771,8 +1815,9 @@ mod tests {
 
     #[test]
     fn notes_ecrites_et_relues() {
-        let f = std::env::temp_dir().join(format!("vanguard-sauvegarde-{}.json", std::process::id()));
-        let _ = std::fs::remove_file(&f);
+        let f = std::env::temp_dir().join(format!("vanguard-sauvegarde-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&f);
+        std::fs::create_dir_all(&f).unwrap();
         assert_eq!(charger_de(&f), Notes::default());
         let m = MiseEnPlace::Systemd {
             date: "2026-10-18".into(),
@@ -1804,9 +1849,48 @@ mod tests {
         .unwrap();
         assert_eq!(charger_de(&f).mise_en_place, Some(t));
         // Un fichier abîmé : rien, jamais une erreur.
-        std::fs::write(&f, "{abîmé").unwrap();
+        std::fs::write(f.join(NOTES), "{abîmé").unwrap();
         assert_eq!(charger_de(&f), Notes::default());
-        let _ = std::fs::remove_file(&f);
+        let _ = std::fs::remove_dir_all(&f);
+    }
+
+    /// S2c : une note forgée (Time Machine « pas actif avant », réglages de Déjà Dup choisis) ne fait rien annuler :
+    /// elle n'est pas crue, et c'est dit.
+    #[test]
+    fn note_forgee_ne_fait_rien_annuler() {
+        let f = std::env::temp_dir().join(format!("vanguard-sauvegarde-forgee-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&f);
+        std::fs::create_dir_all(&f).unwrap();
+        let vraie = MiseEnPlace::TimeMachine {
+            date: "2026-10-18".into(),
+            destination: "/Volumes/Externe".into(),
+            identifiant: None,
+            deja_actif: true,
+        };
+        ecrire_dans(
+            &f,
+            &Notes {
+                mise_en_place: Some(vraie.clone()),
+            },
+        )
+        .unwrap();
+        assert_eq!(charger_dans(&f).unwrap().mise_en_place, Some(vraie));
+        let forgee = Notes {
+            mise_en_place: Some(MiseEnPlace::TimeMachine {
+                date: "2026-10-18".into(),
+                destination: "/Volumes/Externe".into(),
+                identifiant: None,
+                deja_actif: false,
+            }),
+        };
+        std::fs::write(f.join(NOTES), serde_json::to_vec(&forgee).unwrap()).unwrap();
+        assert_eq!(charger_dans(&f), Err(crate::sceau::Doute::HorsVanguard));
+        assert_eq!(mise_en_place_de(&f), None);
+        assert!(note_douteuse(crate::sceau::Doute::HorsVanguard).contains("sauvegarde.json"));
+        // Effacée hors de Vanguard : pas crue non plus (rien n'est dit « en place » d'après elle).
+        std::fs::remove_file(f.join(NOTES)).unwrap();
+        assert!(charger_dans(&f).is_err());
+        let _ = std::fs::remove_dir_all(&f);
     }
 
     #[test]

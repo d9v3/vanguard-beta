@@ -52,9 +52,10 @@ impl Reglages {
     /// (« non vérifié = dit » : un réglage falsifié n'ouvre pas de dossier en silence).
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn charger() -> Reglages {
-        match sceau::lire(REGLAGES) {
-            sceau::Lecture::Intact(o) | sceau::Lecture::Adopte(o) => serde_json::from_slice(&o).unwrap_or_default(),
-            _ => Reglages::default(),
-        }
+        // Acceptés tels quels après des sceaux refaits, pas plus crus que changés (`sceau::juge`).
+        sceau::juge(REGLAGES)
+            .cru()
+            .and_then(|o| serde_json::from_slice(&o).ok())
+            .unwrap_or_default()
     }
 }

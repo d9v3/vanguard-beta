@@ -54,15 +54,15 @@ enum Refus {
 /// choix n'est appliqué (les alertes se montrent comme d'habitude, jamais l'inverse) et rien ne l'écrase : les choix
 /// d'avant ne se perdent pas en silence.
 fn charger() -> Result<Appris, Refus> {
-    use crate::sceau::Lecture;
-    match crate::sceau::lire(crate::sceau::APPRIS) {
+    use crate::sceau::{Doute, Juge};
+    match crate::sceau::juge(crate::sceau::APPRIS) {
         // Inconnue (sceaux refaits) : une liste vide ne tait rien.
-        Lecture::Absent | Lecture::Inconnu => Ok(Appris::default()),
-        // Adoptée au premier usage : appliquée comme avant les sceaux, mais le bilan le dit (COM-ETA-001) et le menu
-        // propose de la garder.
-        Lecture::Intact(o) | Lecture::Adopte(o) => serde_json::from_slice(&o).map_err(|_| Refus::Illisible),
-        Lecture::Falsifie(o) => Err(Refus::Falsifiee(o.and_then(|o| serde_json::from_slice(&o).ok()))),
-        Lecture::Illisible(_) => Err(Refus::Illisible),
+        Juge::Absent | Juge::Douteux(Doute::Inconnu, _) => Ok(Appris::default()),
+        // Adoptée lors de la mise à jour d'une version d'avant les sceaux : appliquée comme alors. Adoptée après des
+        // sceaux refaits, elle ne tait rien (`sceau::juge`) : le menu propose de la reprendre ou de l'oublier.
+        Juge::Cru(o) => serde_json::from_slice(&o).map_err(|_| Refus::Illisible),
+        Juge::Douteux(_, o) => Err(Refus::Falsifiee(o.and_then(|o| serde_json::from_slice(&o).ok()))),
+        Juge::Illisible(_) => Err(Refus::Illisible),
     }
 }
 
