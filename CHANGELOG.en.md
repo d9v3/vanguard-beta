@@ -9,6 +9,10 @@ delivered just before it. Only the latest version has its download page; every v
 
 ## Next version
 
+- **Detection regression, nothing waiting.** The 21 rules whose reading and judgement were mixed (Linux persistence
+  and privileged programs, accounts, SSH, sudo, integrity, macOS agents and extensions, Windows startup and event
+  logs, network audit checks) have their judgement apart, with the same behaviour, and their case: 63 rules fire in
+  the corpus (depending on the system).
 - **Detection regression.** A corpus of harmless fabricated cases (tests/corpus-detection) proves that 43 detection
   rules still fire (depending on the system: each runs where it exists), at their exact severity, and that a clean
   case leaves them silent; every rule citing an ATT&CK technique, and every tool that detects, has its case or its

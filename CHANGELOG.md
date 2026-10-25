@@ -9,6 +9,10 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 
 ## Prochaine version
 
+- **Régression de détection, sans attente.** Les 21 règles dont la lecture et le jugement étaient mêlés (persistance
+  et programmes privilégiés de Linux, comptes, SSH, sudo, intégrité, agents et extensions de macOS, démarrage et
+  journaux de Windows, fiches de l'audit du réseau) ont leur jugement à part, au même comportement, et leur cas : 63
+  règles tirent dans le corpus (selon le système).
 - **Régression de détection.** Un corpus de cas fabriqués et inoffensifs (tests/corpus-detection) prouve que 43 règles
   de détection tirent encore (selon le système : chacune tourne là où elle existe), à leur gravité exacte, et qu'un
   cas propre les laisse muettes ; chaque règle qui cite une technique d'ATT&CK, et chaque outil qui détecte, a son cas
