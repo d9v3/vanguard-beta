@@ -38,7 +38,6 @@ pub(crate) enum Objet {
     #[default]
     NonMigre,
     /// La règle ne rend qu'un constat, qui ne dépend d'aucune valeur variable : la règle seule suffit.
-    #[cfg_attr(not(test), allow(dead_code))] // posé règle par règle, au fil de la migration (E2 et après)
     Seul,
     /// « genre:valeur » : ce qui distingue ce constat des autres de sa règle (port, chemin normalisé, paquet…).
     De(String),
@@ -66,7 +65,7 @@ impl Objet {
     }
 
     /// Un fichier ou un dossier, son chemin normalisé (`chemin`).
-    #[cfg_attr(not(test), allow(dead_code))] // posé règle par règle, au fil de la migration (E2 et après)
+    #[cfg_attr(not(any(test, target_os = "macos")), allow(dead_code))] // les règles de macOS (parite.rs) et les tests
     pub(crate) fn fichier(chemin_brut: &str) -> Objet {
         Objet::de("fichier", &chemin(chemin_brut))
     }
@@ -112,7 +111,7 @@ impl Cle {
 
     /// Relit une clé écrite par `Display`. La règle ne contient jamais « | » ; l'objet, s'il en contient, reste
     /// entier.
-    #[cfg_attr(not(test), allow(dead_code))] // les fichiers comparent le texte de la clé ; relire sert aux tests
+    #[cfg(test)] // les fichiers comparent le texte de la clé ; relire sert aux tests
     pub(crate) fn lire(texte: &str) -> Option<Cle> {
         let (regle, objet) = texte.split_once('|').unwrap_or((texte, ""));
         bien_forme(regle).then(|| Cle {

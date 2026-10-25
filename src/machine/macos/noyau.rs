@@ -578,7 +578,7 @@ pub(crate) fn options_demarrage_en_cours() -> Option<String> {
 
 /// L'identifiant de l'ordinateur (gethostuuid), écrit comme l'IOPlatformUUID d'ioreg. Pas encore employé pour
 /// l'empreinte de la machine : le test d'oracle de macos.yml doit d'abord prouver l'égalité des deux chaînes.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(not(test), allow(dead_code))] // l'oracle de macos.yml seulement, comme darwin::uuid_comme_ioreg
 pub(crate) fn uuid_machine() -> Option<String> {
     let mut id = [0u8; 16];
     let delai = libc::timespec { tv_sec: 5, tv_nsec: 0 };

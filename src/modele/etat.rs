@@ -11,10 +11,8 @@ pub(crate) enum Absence {
     /// Le matériel n'existe pas ici (pas de carte Wi-Fi).
     Materiel,
     /// Le logiciel jugé n'est pas installé.
-    #[cfg_attr(not(test), allow(dead_code))] // posée règle par règle, au fil de la migration
     Logiciel,
     /// Le système ne l'a pas (version, édition).
-    #[cfg_attr(not(test), allow(dead_code))] // posée règle par règle, au fil de la migration
     Plateforme,
     /// Il existe mais ne sert pas en ce moment (Wi-Fi présent, aucun réseau connecté).
     Inactif,

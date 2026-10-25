@@ -29,7 +29,6 @@ pub(crate) const JEUX: &str = "jeux:";
 pub(crate) struct Geste(pub(crate) String);
 
 #[cfg(target_os = "linux")]
-#[cfg_attr(not(test), allow(dead_code))]
 impl Geste {
     /// Un service de systemd (son état : enabled, disabled…).
     pub(crate) fn unite(nom: &str) -> Geste {
@@ -63,7 +62,6 @@ impl Geste {
 }
 
 #[cfg(unix)]
-#[cfg_attr(not(test), allow(dead_code))]
 impl Geste {
     /// Les droits d'un fichier du dossier personnel.
     pub(crate) fn droits(chemin: &Path) -> Geste {
@@ -72,7 +70,6 @@ impl Geste {
 }
 
 #[cfg(windows)]
-#[cfg_attr(not(test), allow(dead_code))]
 impl Geste {
     /// Une correction native de la liste fermée (« wdigest-coupe ») : sa valeur DWORD sous HKLM.
     pub(crate) fn natif(id: &str) -> Geste {
@@ -104,7 +101,6 @@ impl Geste {
 }
 
 #[cfg(target_os = "macos")]
-#[cfg_attr(not(test), allow(dead_code))]
 impl Geste {
     /// Une préférence de texte de la liste fermée (`defaults`).
     pub(crate) fn preference(domaine: &str, cle: &str) -> Geste {

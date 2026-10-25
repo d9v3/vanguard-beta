@@ -10,7 +10,7 @@ use crate::sceau;
 
 /// Où vit un fichier d'état.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))] // lu par les tests ; l'export du journal (E3) s'en servira
+#[cfg_attr(not(test), allow(dead_code))] // lu par les tests du sceau (T14), pas encore par le programme
 pub(crate) enum Lieu {
     /// Le dossier de données de cet ordinateur (`reseau::dossier_local`).
     Local,
@@ -21,7 +21,7 @@ pub(crate) enum Lieu {
 }
 
 /// Un fichier (ou un sous-dossier) d'état.
-#[cfg_attr(not(test), allow(dead_code))] // `module` et `lieu` : lus par les tests et l'export à venir
+#[cfg_attr(not(test), allow(dead_code))] // `module` et `lieu` : lus par les tests du sceau (T14) seulement
 pub(crate) struct FichierEtat {
     /// Son nom sous le dossier, tel que le code le joint (« historique.json », « versions/plus-haute-vue.txt »).
     pub nom: &'static str,

@@ -69,7 +69,7 @@ pub(crate) fn relever_pour_le_test() {
 /// L'état de l'interrupteur, à reprendre dans un fil lancé pour une règle. Sans effet hors des tests, où
 /// l'interrupteur vaut pour tout le processus.
 #[derive(Clone, Copy)]
-pub(crate) struct Heritage(#[cfg_attr(not(test), allow(dead_code))] bool);
+pub(crate) struct Heritage(#[cfg_attr(not(test), allow(dead_code))] bool); // lu sous cfg(test) seulement, voulu (voir plus haut)
 
 pub(crate) fn heritage() -> Heritage {
     Heritage(active())

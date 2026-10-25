@@ -43,7 +43,7 @@ pub(crate) const PREFIXES: &[(&str, (&str, &str))] = &[
 pub(crate) struct Outil {
     pub id: &'static str,
     /// Le module qui le porte.
-    #[cfg_attr(not(test), allow(dead_code))] // lu par les tests ; le journal (E3) s'en servira
+    #[cfg_attr(not(test), allow(dead_code))] // lu par les tests du registre seulement
     pub module: &'static str,
     pub sujet: (&'static str, &'static str),
 }

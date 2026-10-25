@@ -1308,7 +1308,7 @@ pub(crate) fn alertes(evenements: &[Evenement]) -> impl Iterator<Item = (&Evenem
 }
 
 /// Les gestes encore en place : une Action réussie qu'aucune Annulation ne vise.
-#[cfg_attr(not(test), allow(dead_code))] // le lot 6 (anti-rançongiciel) s'en servira pour ce qu'il a posé
+#[cfg(test)] // le lot 6 (anti-rançongiciel) ne s'en sert pas : outil des tests du journal
 pub(crate) fn en_place(evenements: &[Evenement]) -> Vec<&Evenement> {
     let annules: std::collections::BTreeSet<&str> = evenements
         .iter()

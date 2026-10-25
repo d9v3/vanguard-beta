@@ -98,6 +98,7 @@ pub(crate) fn attributs(octets: &[u8]) -> impl Iterator<Item = (u16, &[u8])> {
 pub(crate) struct Recu<'a> {
     pub genre: u16,
     #[cfg_attr(not(test), allow(dead_code))]
+    // décodé pour les tests du décodage ; le programme ne suit pas les numéros
     pub sequence: u32,
     pub corps: &'a [u8],
 }

@@ -13,7 +13,6 @@
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Raison {
     /// Réservé à root ou à l'administrateur.
-    #[cfg_attr(not(test), allow(dead_code))] // posée au fil de la migration des règles (E5)
     Droits,
     /// L'outil qui lit n'est pas sur cet ordinateur (son nom).
     Absente(String),
