@@ -10,6 +10,7 @@
 
 use std::fmt::Write as _;
 use std::io::{IsTerminal, Write};
+use std::ops::ControlFlow;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal;
@@ -511,6 +512,80 @@ pub fn choisir_au_sommet(lignes: &[Ligne], invite: &str, depart: &str, echap: &s
     choix
 }
 
+/// Les trois lignes d'aide d'un menu ou d'une liste : sans recherche, pendant une recherche, et quand une fin de mot
+/// est proposée.
+struct Aides {
+    menu: String,
+    recherche: String,
+    prediction: String,
+}
+
+fn aides_du_menu(gauche_revient: bool, echap: &str) -> Aides {
+    let menu = if gauche_revient {
+        trf!(
+            "  {GRIS}↑ ↓ choisir · Entrée/→ lancer · un mot : chercher · Échap/← {echap}{RESET}",
+            "  {GRIS}↑ ↓ select · Enter/→ run · a word: search · Esc/← {echap}{RESET}"
+        )
+    } else {
+        // Le menu principal : « s » (Paramètres) et « q » n'y ont plus de ligne à eux.
+        trf!(
+            "  {GRIS}↑ ↓ choisir · Entrée ouvrir · un mot : chercher · s réglages · q quitter{RESET}",
+            "  {GRIS}↑ ↓ select · Enter open · a word: search · s settings · q quit{RESET}"
+        )
+    };
+    Aides {
+        menu,
+        recherche: trf!(
+            "  {GRIS}↑ ↓ choisir · Entrée/→ lancer · Échap/← effacer la recherche{RESET}",
+            "  {GRIS}↑ ↓ select · Enter/→ run · Esc/← clear the search{RESET}"
+        ),
+        prediction: trf!(
+            "  {GRIS}↑ ↓ choisir · Tab/→ compléter · Entrée lancer · Échap effacer la recherche{RESET}",
+            "  {GRIS}↑ ↓ select · Tab/→ complete · Enter run · Esc clear the search{RESET}"
+        ),
+    }
+}
+
+/// L'en-tête (cadre, titre, état) qui reste en place pendant la recherche, et sa hauteur en rangées. Sans le
+/// sous-titre ni la ligne vide qui annonçaient la première section (« BILAN DE SÉCURITÉ ») : les lignes trouvées
+/// viennent de partout.
+fn entete_de_recherche(lignes: &[Ligne], colonne: usize) -> (Vec<String>, usize) {
+    let mut entete: Vec<String> = lignes
+        .iter()
+        .take_while(|l| matches!(l, Ligne::Texte(_)))
+        .filter_map(|l| texte(l, colonne, false))
+        .collect();
+    while entete.last().is_some_and(|t| {
+        let t = simplement_affiche(t);
+        t.trim().is_empty() || t.trim_start().starts_with("── ")
+    }) {
+        entete.pop();
+    }
+    entete.push(String::new());
+    let hauteur: usize = entete.iter().map(|t| 1 + t.matches('\n').count()).sum();
+    (entete, hauteur)
+}
+
+/// Où en est un menu au clavier, d'une touche à l'autre.
+struct EtatMenu {
+    en_cours: usize,
+    /// La ligne en surbrillance parmi celles que la recherche a trouvées.
+    en_cours_trouve: usize,
+    /// Première rangée montrée de la liste, quand le menu défile.
+    haut: usize,
+    /// Ce qui est tapé au clavier : un raccourci validé par Entrée, comme avant, ou des mots à chercher.
+    tape: String,
+}
+
+/// Ce que la recherche en cours a trouvé (vide hors d'une recherche).
+struct Trouvailles<'b, 'a> {
+    trouves: Vec<&'b Choisissable<'a>>,
+    corrections: Vec<(String, String)>,
+    partiels: bool,
+    /// La fin du mot le plus probable, montrée en gris.
+    suite: Option<String>,
+}
+
 fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_revient: bool) -> Option<String> {
     let choix = choisissables(lignes);
     let touches: Vec<&str> = choix.iter().map(|c| c.touche).collect();
@@ -529,171 +604,53 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
         return Some(par_ligne(&choix, &touches, invite));
     };
 
-    let mut en_cours = visibles
-        .iter()
-        .position(|t| t.eq_ignore_ascii_case(depart))
-        .unwrap_or(0);
-    // La ligne en surbrillance parmi celles que la recherche a trouvées.
-    let mut en_cours_trouve = 0;
-    // Première rangée montrée de la liste, quand le menu défile.
-    let mut haut = 0;
-    // Ce qui est tapé au clavier : un raccourci validé par Entrée, comme avant, ou des mots à chercher.
-    let mut tape = String::new();
-    let aide = if gauche_revient {
-        trf!(
-            "  {GRIS}↑ ↓ choisir · Entrée/→ lancer · un mot : chercher · Échap/← {echap}{RESET}",
-            "  {GRIS}↑ ↓ select · Enter/→ run · a word: search · Esc/← {echap}{RESET}"
-        )
-    } else {
-        // Le menu principal : « s » (Paramètres) et « q » n'y ont plus de ligne à eux.
-        trf!(
-            "  {GRIS}↑ ↓ choisir · Entrée ouvrir · un mot : chercher · s réglages · q quitter{RESET}",
-            "  {GRIS}↑ ↓ select · Enter open · a word: search · s settings · q quit{RESET}"
-        )
+    let mut etat = EtatMenu {
+        en_cours: visibles
+            .iter()
+            .position(|t| t.eq_ignore_ascii_case(depart))
+            .unwrap_or(0),
+        en_cours_trouve: 0,
+        haut: 0,
+        tape: String::new(),
     };
-    let aide_recherche = trf!(
-        "  {GRIS}↑ ↓ choisir · Entrée/→ lancer · Échap/← effacer la recherche{RESET}",
-        "  {GRIS}↑ ↓ select · Enter/→ run · Esc/← clear the search{RESET}"
-    );
-    let aide_prediction = trf!(
-        "  {GRIS}↑ ↓ choisir · Tab/→ compléter · Entrée lancer · Échap effacer la recherche{RESET}",
-        "  {GRIS}↑ ↓ select · Tab/→ complete · Enter run · Esc clear the search{RESET}"
-    );
+    let aides = aides_du_menu(gauche_revient, echap);
     // Les mots du menu, lus à la première recherche seulement : pour la fin de mot proposée, et pour corriger une faute.
     let mut vocabulaire: Option<Vocabulaire> = None;
     let mut mots_du_menu: Option<Vec<String>> = None;
-    // L'en-tête (cadre, titre, état) reste en place pendant la recherche, sans le sous-titre ni la ligne vide qui
-    // annonçaient la première section (« BILAN DE SÉCURITÉ ») : les lignes trouvées viennent de partout.
-    let mut entete: Vec<String> = lignes
-        .iter()
-        .take_while(|l| matches!(l, Ligne::Texte(_)))
-        .filter_map(|l| texte(l, colonne, false))
-        .collect();
-    while entete.last().is_some_and(|t| {
-        let t = simplement_affiche(t);
-        t.trim().is_empty() || t.trim_start().starts_with("── ")
-    }) {
-        entete.pop();
-    }
-    entete.push(String::new());
-    let hauteur_entete: usize = entete.iter().map(|t| 1 + t.matches('\n').count()).sum();
+    let (entete, hauteur_entete) = entete_de_recherche(lignes, colonne);
     let mut sortie = std::io::stdout();
     let _ = sortie.write_all(b"\x1b[2J");
     loop {
         // La grille avant de dessiner : si elle change ensuite, sans que le terminal le dise, le menu se redessine.
         let grille = terminal::size().ok();
-        let recherche = est_une_recherche(&tape, &touches);
+        let recherche = est_une_recherche(&etat.tape, &touches);
         let (trouves, corrections, partiels): (Vec<&Choisissable>, Vec<(String, String)>, bool) = if recherche {
             let mots = mots_du_menu
                 .get_or_insert_with(|| crate::recherche::vocabulaire(choix.iter().map(|c| c.cherche.as_str())));
-            trier(&choix, &tape, mots)
+            trier(&choix, &etat.tape, mots)
         } else {
             (Vec::new(), Vec::new(), false)
         };
-        en_cours_trouve = en_cours_trouve.min(trouves.len().saturating_sub(1));
+        etat.en_cours_trouve = etat.en_cours_trouve.min(trouves.len().saturating_sub(1));
         let suite = if recherche {
             vocabulaire
                 .get_or_insert_with(|| Vocabulaire::nouveau(&textes_du_menu(lignes)))
-                .suite(&tape, |q| choix.iter().any(|c| correspond(q, &c.cherche)))
+                .suite(&etat.tape, |q| choix.iter().any(|c| correspond(q, &c.cherche)))
         } else {
             None
+        };
+        let trouvailles = Trouvailles {
+            trouves,
+            corrections,
+            partiels,
+            suite,
         };
         // En mode clavier, le terminal ne revient plus seul au début de la ligne : d'où les « \r\n ».
         let mut ecran = String::from("\x1b[H");
         if recherche {
-            // L'en-tête reste au-dessus de la recherche s'il laisse au moins trois lignes trouvées à l'écran.
-            let rangees = terminal::size().map_or(24, |(_, r)| usize::from(r));
-            let montre_entete = hauteur_entete + 4 + 3 <= rangees;
-            if montre_entete {
-                for t in &entete {
-                    ecran += &t.replace('\n', "\x1b[K\r\n");
-                    ecran += "\x1b[K\r\n";
-                }
-            }
-            ecran += &ligne_section(&titre_de_recherche(&tape, &corrections, partiels));
-            ecran += "\x1b[K\r\n";
-            // Ce qui tient sous l'en-tête, au-dessus de l'aide et de la saisie ; au-delà, une ligne le dit.
-            let au_dessus = if montre_entete { hauteur_entete } else { 0 };
-            let mut place = rangees.saturating_sub(au_dessus + 4).max(1);
-            if trouves.len() > place {
-                place = place.saturating_sub(1).max(1);
-            }
-            let debut = (en_cours_trouve + 1).saturating_sub(place);
-            let largeur = largeur_des_touches(trouves.iter().copied());
-            for (i, c) in trouves.iter().enumerate().skip(debut).take(place) {
-                ecran += &rendu_trouve(c, largeur, i == en_cours_trouve);
-                ecran += "\x1b[K\r\n";
-            }
-            if trouves.is_empty() {
-                let _ = write!(
-                    ecran,
-                    "  {GRIS}{}{RESET}\x1b[K\r\n",
-                    tr!(
-                        "Rien ne correspond : Retour arrière pour corriger, Échap pour effacer.",
-                        "Nothing matches: Backspace to correct, Esc to clear."
-                    )
-                );
-            } else if trouves.len() > place {
-                let _ = write!(
-                    ecran,
-                    "  {GRIS}{}{RESET}\x1b[K\r\n",
-                    trf!(
-                        "… {} en tout : ajoutez un mot pour préciser.",
-                        "… {} in all: add a word to narrow it down.",
-                        trouves.len()
-                    )
-                );
-            }
-            let aide = if suite.is_some() {
-                &aide_prediction
-            } else {
-                &aide_recherche
-            };
-            let (gris, recul) = fantome(suite.as_deref());
-            let _ = write!(
-                ecran,
-                "{aide}\x1b[K\r\n  {ACCENT}›{RESET} {tape}{gris}\x1b[K\x1b[J{recul}"
-            );
+            ecran += &ecran_de_recherche(&etat, &entete, hauteur_entete, &trouvailles, &aides);
         } else {
-            // Les rangées du menu ; l'en-tête est ce qui précède la première ligne de choix.
-            let mut rangees: Vec<String> = Vec::new();
-            let (mut n, mut rangee_en_cours, mut entete_menu) = (0, 0, None);
-            for l in lignes {
-                let ligne_de_choix = matches!(l, Ligne::Choix { .. });
-                if ligne_de_choix {
-                    entete_menu.get_or_insert(rangees.len());
-                    if n == en_cours {
-                        rangee_en_cours = rangees.len();
-                    }
-                }
-                if let Some(t) = texte(l, colonne, ligne_de_choix && n == en_cours) {
-                    rangees.extend(t.split('\n').map(String::from));
-                }
-                n += usize::from(ligne_de_choix);
-            }
-            // L'en-tête fixe s'arrête avant le titre de la première section et sa ligne vide : ils défilent avec la
-            // liste, qu'ils annoncent.
-            let mut entete_menu = entete_menu.unwrap_or(0);
-            while entete_menu > 0 && {
-                let t = simplement_affiche(&rangees[entete_menu - 1]);
-                t.trim().is_empty() || t.trim_start().starts_with("── ")
-            } {
-                entete_menu -= 1;
-            }
-            // Première ou dernière ligne : la liste montre son début ou sa fin, titres compris.
-            if en_cours == 0 {
-                haut = 0;
-            } else if en_cours + 1 == visibles.len() {
-                haut = usize::MAX;
-            }
-            // L'aide et la saisie restent sous le menu ; la fenêtre se fait à sa hauteur.
-            crate::fenetre::epouser(rangees.len() + 2);
-            let place = terminal::size().map_or(24, |(_, r)| usize::from(r)).saturating_sub(2);
-            for t in fenetre(&rangees, entete_menu, rangee_en_cours, place, &mut haut) {
-                ecran += &t;
-                ecran += "\x1b[K\r\n";
-            }
-            let _ = write!(ecran, "{aide}\x1b[K\r\n  {ACCENT}›{RESET} {tape}\x1b[K\x1b[J");
+            ecran += &ecran_du_menu(lignes, colonne, visibles.len(), &mut etat, &aides.menu);
         }
         let _ = sortie.write_all(ecran.as_bytes());
         let _ = sortie.flush();
@@ -705,86 +662,216 @@ fn choisir_ou(lignes: &[Ligne], invite: &str, depart: &str, echap: &str, gauche_
         if k.kind == KeyEventKind::Release {
             continue;
         }
-        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        // Tab ou → prennent la prédiction : le mot se complète, suivi d'une espace pour taper le suivant.
-        if let Some(s) = &suite
-            && matches!(k.code, KeyCode::Tab | KeyCode::Right)
+        if let ControlFlow::Break(choisi) =
+            touche_du_menu(k, &mut etat, &trouvailles, recherche, &visibles, gauche_revient)
         {
-            tape.push_str(s);
-            tape.push(' ');
-            en_cours_trouve = 0;
-            continue;
-        }
-        // Les flèches parcourent les lignes trouvées pendant une recherche, celles du menu sinon.
-        let nombre = if recherche { trouves.len() } else { visibles.len() };
-        let actuelle = if recherche { en_cours_trouve } else { en_cours };
-        let derniere = nombre.saturating_sub(1);
-        let deplacement = match k.code {
-            KeyCode::Up | KeyCode::BackTab => Some(actuelle.checked_sub(1).unwrap_or(derniere)),
-            KeyCode::Down | KeyCode::Tab => Some(if actuelle >= derniere { 0 } else { actuelle + 1 }),
-            KeyCode::Home | KeyCode::PageUp => Some(0),
-            KeyCode::End | KeyCode::PageDown => Some(derniere),
-            _ => None,
-        };
-        // Ctrl-J ou Ctrl-M : le saut de ligne que certains terminaux envoient pour Entrée. → entre aussi (quand il ne
-        // complète pas une prédiction, plus haut) et ← revient, comme Échap.
-        let entree =
-            matches!(k.code, KeyCode::Enter | KeyCode::Right) || (ctrl && matches!(k.code, KeyCode::Char('j' | 'm')));
-        if let Some(i) = deplacement {
-            if recherche {
-                en_cours_trouve = i;
-            } else {
-                en_cours = i;
-                tape.clear();
-            }
-        } else if entree {
-            if recherche {
-                // Rien de trouvé : Entrée ne lance rien, on corrige ou on efface.
-                let Some(c) = trouves.get(en_cours_trouve) else {
-                    continue;
-                };
-                let _ = sortie.write_all(b"\r\n");
-                return Some(c.touche.to_string());
-            }
             let _ = sortie.write_all(b"\r\n");
-            return Some(if tape.is_empty() {
-                visibles[en_cours].to_string()
-            } else {
-                tape
-            });
-        } else if ctrl && matches!(k.code, KeyCode::Char('c' | 'd')) {
-            // Ctrl-C arrête Vanguard ; Ctrl-D (fin de l'entrée) le quitte, comme avant.
-            let _ = terminal::disable_raw_mode();
-            println!();
-            crate::machine::quitter(if k.code == KeyCode::Char('c') { 130 } else { 0 });
-        } else if matches!(k.code, KeyCode::Esc | KeyCode::Left) || (k.code == KeyCode::Backspace && tape.is_empty()) {
-            // Retour arrière sans rien de tapé : revient en arrière, comme Échap.
-            if tape.is_empty() {
-                if k.code == KeyCode::Left && !gauche_revient {
-                    continue;
-                }
-                let _ = sortie.write_all(b"\r\n");
-                return None;
-            }
-            // Échap pendant une recherche l'efface : le menu revient en entier.
-            tape.clear();
-            en_cours_trouve = 0;
-        } else {
-            match k.code {
-                KeyCode::Backspace => {
-                    tape.pop();
-                }
-                KeyCode::Char(c) if !ctrl => tape.push(c),
-                _ => continue,
-            }
-            // Chaque lettre change ce qui est trouvé : la surbrillance repart du premier.
-            en_cours_trouve = 0;
-            // La surbrillance suit la touche tapée.
-            if let Some(i) = visibles.iter().position(|t| t.eq_ignore_ascii_case(&tape)) {
-                en_cours = i;
-            }
+            return choisi;
         }
     }
+}
+
+/// L'écran d'une recherche : l'en-tête s'il laisse au moins trois lignes trouvées, le titre de la recherche, les
+/// lignes trouvées, puis l'aide et la saisie.
+fn ecran_de_recherche(
+    etat: &EtatMenu,
+    entete: &[String],
+    hauteur_entete: usize,
+    t: &Trouvailles<'_, '_>,
+    aides: &Aides,
+) -> String {
+    let mut ecran = String::new();
+    let rangees = terminal::size().map_or(24, |(_, r)| usize::from(r));
+    let montre_entete = hauteur_entete + 4 + 3 <= rangees;
+    if montre_entete {
+        for l in entete {
+            ecran += &l.replace('\n', "\x1b[K\r\n");
+            ecran += "\x1b[K\r\n";
+        }
+    }
+    ecran += &ligne_section(&titre_de_recherche(&etat.tape, &t.corrections, t.partiels));
+    ecran += "\x1b[K\r\n";
+    // Ce qui tient sous l'en-tête, au-dessus de l'aide et de la saisie ; au-delà, une ligne le dit.
+    let au_dessus = if montre_entete { hauteur_entete } else { 0 };
+    let mut place = rangees.saturating_sub(au_dessus + 4).max(1);
+    if t.trouves.len() > place {
+        place = place.saturating_sub(1).max(1);
+    }
+    let debut = (etat.en_cours_trouve + 1).saturating_sub(place);
+    let largeur = largeur_des_touches(t.trouves.iter().copied());
+    for (i, c) in t.trouves.iter().enumerate().skip(debut).take(place) {
+        ecran += &rendu_trouve(c, largeur, i == etat.en_cours_trouve);
+        ecran += "\x1b[K\r\n";
+    }
+    if t.trouves.is_empty() {
+        let _ = write!(
+            ecran,
+            "  {GRIS}{}{RESET}\x1b[K\r\n",
+            tr!(
+                "Rien ne correspond : Retour arrière pour corriger, Échap pour effacer.",
+                "Nothing matches: Backspace to correct, Esc to clear."
+            )
+        );
+    } else if t.trouves.len() > place {
+        let _ = write!(
+            ecran,
+            "  {GRIS}{}{RESET}\x1b[K\r\n",
+            trf!(
+                "… {} en tout : ajoutez un mot pour préciser.",
+                "… {} in all: add a word to narrow it down.",
+                t.trouves.len()
+            )
+        );
+    }
+    let aide = if t.suite.is_some() {
+        &aides.prediction
+    } else {
+        &aides.recherche
+    };
+    let (gris, recul) = fantome(t.suite.as_deref());
+    let tape = &etat.tape;
+    let _ = write!(
+        ecran,
+        "{aide}\x1b[K\r\n  {ACCENT}›{RESET} {tape}{gris}\x1b[K\x1b[J{recul}"
+    );
+    ecran
+}
+
+/// L'écran du menu entier : ses rangées dans la fenêtre (l'en-tête fixe, la liste qui défile), puis l'aide et la
+/// saisie. Garde `etat.haut` d'un affichage à l'autre.
+fn ecran_du_menu(lignes: &[Ligne], colonne: usize, nombre_visibles: usize, etat: &mut EtatMenu, aide: &str) -> String {
+    let en_cours = etat.en_cours;
+    // Les rangées du menu ; l'en-tête est ce qui précède la première ligne de choix.
+    let mut rangees: Vec<String> = Vec::new();
+    let (mut n, mut rangee_en_cours, mut entete_menu) = (0, 0, None);
+    for l in lignes {
+        let ligne_de_choix = matches!(l, Ligne::Choix { .. });
+        if ligne_de_choix {
+            entete_menu.get_or_insert(rangees.len());
+            if n == en_cours {
+                rangee_en_cours = rangees.len();
+            }
+        }
+        if let Some(t) = texte(l, colonne, ligne_de_choix && n == en_cours) {
+            rangees.extend(t.split('\n').map(String::from));
+        }
+        n += usize::from(ligne_de_choix);
+    }
+    // L'en-tête fixe s'arrête avant le titre de la première section et sa ligne vide : ils défilent avec la
+    // liste, qu'ils annoncent.
+    let mut entete_menu = entete_menu.unwrap_or(0);
+    while entete_menu > 0 && {
+        let t = simplement_affiche(&rangees[entete_menu - 1]);
+        t.trim().is_empty() || t.trim_start().starts_with("── ")
+    } {
+        entete_menu -= 1;
+    }
+    // Première ou dernière ligne : la liste montre son début ou sa fin, titres compris.
+    if en_cours == 0 {
+        etat.haut = 0;
+    } else if en_cours + 1 == nombre_visibles {
+        etat.haut = usize::MAX;
+    }
+    // L'aide et la saisie restent sous le menu ; la fenêtre se fait à sa hauteur.
+    crate::fenetre::epouser(rangees.len() + 2);
+    let place = terminal::size().map_or(24, |(_, r)| usize::from(r)).saturating_sub(2);
+    let mut ecran = String::new();
+    for t in fenetre(&rangees, entete_menu, rangee_en_cours, place, &mut etat.haut) {
+        ecran += &t;
+        ecran += "\x1b[K\r\n";
+    }
+    let tape = &etat.tape;
+    let _ = write!(ecran, "{aide}\x1b[K\r\n  {ACCENT}›{RESET} {tape}\x1b[K\x1b[J");
+    ecran
+}
+
+/// Ce que fait une touche dans un menu : `Continue` pour continuer (le menu se redessine), `Break(choix)` pour le
+/// quitter avec ce choix (`Break(None)` : Échap ou ←).
+fn touche_du_menu(
+    k: event::KeyEvent,
+    etat: &mut EtatMenu,
+    t: &Trouvailles<'_, '_>,
+    recherche: bool,
+    visibles: &[&str],
+    gauche_revient: bool,
+) -> ControlFlow<Option<String>> {
+    let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+    // Tab ou → prennent la prédiction : le mot se complète, suivi d'une espace pour taper le suivant.
+    if let Some(s) = &t.suite
+        && matches!(k.code, KeyCode::Tab | KeyCode::Right)
+    {
+        etat.tape.push_str(s);
+        etat.tape.push(' ');
+        etat.en_cours_trouve = 0;
+        return ControlFlow::Continue(());
+    }
+    // Les flèches parcourent les lignes trouvées pendant une recherche, celles du menu sinon.
+    let nombre = if recherche { t.trouves.len() } else { visibles.len() };
+    let actuelle = if recherche { etat.en_cours_trouve } else { etat.en_cours };
+    let derniere = nombre.saturating_sub(1);
+    let deplacement = match k.code {
+        KeyCode::Up | KeyCode::BackTab => Some(actuelle.checked_sub(1).unwrap_or(derniere)),
+        KeyCode::Down | KeyCode::Tab => Some(if actuelle >= derniere { 0 } else { actuelle + 1 }),
+        KeyCode::Home | KeyCode::PageUp => Some(0),
+        KeyCode::End | KeyCode::PageDown => Some(derniere),
+        _ => None,
+    };
+    // Ctrl-J ou Ctrl-M : le saut de ligne que certains terminaux envoient pour Entrée. → entre aussi (quand il ne
+    // complète pas une prédiction, plus haut) et ← revient, comme Échap.
+    let entree =
+        matches!(k.code, KeyCode::Enter | KeyCode::Right) || (ctrl && matches!(k.code, KeyCode::Char('j' | 'm')));
+    if let Some(i) = deplacement {
+        if recherche {
+            etat.en_cours_trouve = i;
+        } else {
+            etat.en_cours = i;
+            etat.tape.clear();
+        }
+    } else if entree {
+        if recherche {
+            // Rien de trouvé : Entrée ne lance rien, on corrige ou on efface.
+            let Some(c) = t.trouves.get(etat.en_cours_trouve) else {
+                return ControlFlow::Continue(());
+            };
+            return ControlFlow::Break(Some(c.touche.to_string()));
+        }
+        return ControlFlow::Break(Some(if etat.tape.is_empty() {
+            visibles[etat.en_cours].to_string()
+        } else {
+            std::mem::take(&mut etat.tape)
+        }));
+    } else if ctrl && matches!(k.code, KeyCode::Char('c' | 'd')) {
+        // Ctrl-C arrête Vanguard ; Ctrl-D (fin de l'entrée) le quitte, comme avant.
+        let _ = terminal::disable_raw_mode();
+        println!();
+        crate::machine::quitter(if k.code == KeyCode::Char('c') { 130 } else { 0 });
+    } else if matches!(k.code, KeyCode::Esc | KeyCode::Left) || (k.code == KeyCode::Backspace && etat.tape.is_empty()) {
+        // Retour arrière sans rien de tapé : revient en arrière, comme Échap.
+        if etat.tape.is_empty() {
+            if k.code == KeyCode::Left && !gauche_revient {
+                return ControlFlow::Continue(());
+            }
+            return ControlFlow::Break(None);
+        }
+        // Échap pendant une recherche l'efface : le menu revient en entier.
+        etat.tape.clear();
+        etat.en_cours_trouve = 0;
+    } else {
+        match k.code {
+            KeyCode::Backspace => {
+                etat.tape.pop();
+            }
+            KeyCode::Char(c) if !ctrl => etat.tape.push(c),
+            _ => return ControlFlow::Continue(()),
+        }
+        // Chaque lettre change ce qui est trouvé : la surbrillance repart du premier.
+        etat.en_cours_trouve = 0;
+        // La surbrillance suit la touche tapée.
+        if let Some(i) = visibles.iter().position(|v| v.eq_ignore_ascii_case(&etat.tape)) {
+            etat.en_cours = i;
+        }
+    }
+    ControlFlow::Continue(())
 }
 
 /// Le prochain événement du clavier ou du terminal, ou `None` quand la grille n'est plus `grille`, celle du dessin :
@@ -1016,117 +1103,101 @@ pub fn cocher(titre: &[String], cases: &[Case]) -> Option<Vec<bool>> {
     etats
 }
 
+/// Lignes de l'explication sous une liste à cocher, toujours le même nombre : l'écran ne saute pas.
+const LIGNES_DETAIL: usize = 3;
+/// Sous la liste : une ligne vide, l'explication de la ligne en cours, l'aide.
+const DESSOUS_LISTE: usize = 1 + LIGNES_DETAIL + 1;
+
+/// Une liste à cocher et ce que sa recherche lit : le texte, l'état et l'explication de chaque ligne, simplifiés une
+/// fois pour toutes.
+struct Liste<'a> {
+    titre: &'a [String],
+    cases: &'a [Case],
+    colonne: usize,
+    cherche: Vec<String>,
+}
+
+impl Liste<'_> {
+    fn filtrer(&self, recherche: &str) -> Vec<usize> {
+        lignes_trouvees(recherche, &self.cherche)
+    }
+}
+
+/// Où en est une liste à cocher au clavier, d'une touche à l'autre.
+struct EtatListe {
+    etats: Vec<bool>,
+    en_cours: usize,
+    haut: usize,
+    /// Pendant une recherche, ce qui est tapé : seules les lignes qui le contiennent restent à l'écran.
+    recherche: Option<String>,
+}
+
 fn cocher_ou_revenir(titre: &[String], cases: &[Case]) -> Option<Vec<bool>> {
-    let mut etats: Vec<bool> = cases.iter().map(|c| c.cochee).collect();
+    let etats: Vec<bool> = cases.iter().map(|c| c.cochee).collect();
     if cases.is_empty() {
         return Some(etats);
     }
-    let colonne = cases
-        .iter()
-        .map(|c| largeur_affichee(&c.texte) + 2)
-        .max()
-        .unwrap_or(0)
-        .clamp(30, 44);
-    // Ce que lit la recherche : le texte, l'état et l'explication de chaque ligne, simplifiés une fois pour toutes.
-    let cherche: Vec<String> = cases
-        .iter()
-        .map(|c| simplifier(&format!("{} {} {}", c.texte, c.precision, c.detail)))
-        .collect();
-    let filtrer = |recherche: &str| -> Vec<usize> { lignes_trouvees(recherche, &cherche) };
-    let lignes_detail = 3;
-    // Sous la liste : une ligne vide, l'explication de la ligne en cours, l'aide.
-    let dessous = 1 + lignes_detail + 1;
+    let liste = Liste {
+        titre,
+        cases,
+        colonne: cases
+            .iter()
+            .map(|c| largeur_affichee(&c.texte) + 2)
+            .max()
+            .unwrap_or(0)
+            .clamp(30, 44),
+        cherche: cases
+            .iter()
+            .map(|c| simplifier(&format!("{} {} {}", c.texte, c.precision, c.detail)))
+            .collect(),
+    };
     // Une liste plus haute que la fenêtre défile ; une fenêtre minuscule lit la réponse ligne par ligne.
     let tient = terminal::size().is_ok_and(|(largeur, rangees)| {
-        usize::from(largeur) > LARGEUR && usize::from(rangees) >= RANGEES_MINIMUM + dessous - 2
+        usize::from(largeur) > LARGEUR && usize::from(rangees) >= RANGEES_MINIMUM + DESSOUS_LISTE - 2
     });
     let clavier = std::io::stdin().is_terminal() && std::io::stdout().is_terminal() && tient;
     let Some(_mode) = clavier.then(ModeClavier::activer).flatten() else {
-        for l in titre {
-            println!("{l}");
-        }
-        for (i, c) in cases.iter().enumerate() {
-            println!("{}", rendu_case(i + 1, c, c.cochee, colonne, false));
-        }
-        loop {
-            let reponse = demander(tr!(
-                "\n  Numéros à (dé)cocher (ex. 1 4), r = recommandés, un mot = chercher.\n  Entrée = valider, q = revenir : ",
-                "\n  Numbers to check or uncheck (e.g. 1 4), r = recommended, a word = search.\n  Enter = confirm, q = back: "
-            ));
-            if reponse.eq_ignore_ascii_case("q") {
-                return None;
-            }
-            let mots: Vec<&str> = reponse
-                .split(|c: char| c == ',' || c.is_whitespace())
-                .filter(|m| !m.is_empty())
-                .collect();
-            // Autre chose que des numéros et « r » : des mots à chercher. Les lignes trouvées s'affichent avec leur
-            // numéro, et la question revient.
-            if mots
-                .iter()
-                .any(|m| m.parse::<usize>().is_err() && !m.eq_ignore_ascii_case("r"))
-            {
-                let trouves = filtrer(&reponse);
-                if trouves.is_empty() {
-                    trp!(
-                        "  Rien ne correspond à « {reponse} ».",
-                        "  Nothing matches “{reponse}”."
-                    );
-                }
-                for i in trouves {
-                    println!("{}", rendu_case(i + 1, &cases[i], etats[i], colonne, false));
-                }
-                continue;
-            }
-            for mot in mots {
-                if mot.eq_ignore_ascii_case("r") {
-                    for (e, c) in etats.iter_mut().zip(cases) {
-                        *e |= c.recommandee && !c.fixe;
-                    }
-                } else if let Some(i) = mot
-                    .parse::<usize>()
-                    .ok()
-                    .and_then(|n| n.checked_sub(1))
-                    .filter(|&i| cases.get(i).is_some_and(|c| !c.fixe))
-                {
-                    etats[i] = !etats[i];
-                }
-            }
-            return Some(etats);
-        }
+        return cocher_par_ligne(&liste, etats);
     };
 
-    let aide = trf!(
-        "  {GRIS}↑ ↓  Espace cocher · R recommandés · / chercher · Entrée OK · Échap retour{RESET}",
-        "  {GRIS}↑ ↓  Space check · R recommended · / search · Enter confirm · Esc back{RESET}"
-    );
-    let aide_recherche = trf!(
-        "  {GRIS}↑ ↓ choisir · Espace cocher · Entrée ou Échap : fin de la recherche{RESET}",
-        "  {GRIS}↑ ↓ select · Space check · Enter or Esc: end the search{RESET}"
-    );
-    let aide_prediction = trf!(
-        "  {GRIS}↑ ↓ choisir · Tab compléter · Espace cocher · Entrée ou Échap : fin{RESET}",
-        "  {GRIS}↑ ↓ select · Tab complete · Space check · Enter or Esc: done{RESET}"
-    );
+    let aides = Aides {
+        menu: trf!(
+            "  {GRIS}↑ ↓  Espace cocher · R recommandés · / chercher · Entrée OK · Échap retour{RESET}",
+            "  {GRIS}↑ ↓  Space check · R recommended · / search · Enter confirm · Esc back{RESET}"
+        ),
+        recherche: trf!(
+            "  {GRIS}↑ ↓ choisir · Espace cocher · Entrée ou Échap : fin de la recherche{RESET}",
+            "  {GRIS}↑ ↓ select · Space check · Enter or Esc: end the search{RESET}"
+        ),
+        prediction: trf!(
+            "  {GRIS}↑ ↓ choisir · Tab compléter · Espace cocher · Entrée ou Échap : fin{RESET}",
+            "  {GRIS}↑ ↓ select · Tab complete · Space check · Enter or Esc: done{RESET}"
+        ),
+    };
     // Les mots de la liste, lus à la première recherche seulement.
     let mut vocabulaire: Option<Vocabulaire> = None;
-    let mut en_cours = 0;
-    let mut haut = 0;
-    // Pendant une recherche, ce qui est tapé : seules les lignes qui le contiennent restent à l'écran.
-    let mut recherche: Option<String> = None;
+    let mut etat = EtatListe {
+        etats,
+        en_cours: 0,
+        haut: 0,
+        recherche: None,
+    };
     let mut sortie = std::io::stdout();
     let _ = sortie.write_all(b"\x1b[2J");
     loop {
         let grille = terminal::size().ok();
-        let montrees: Vec<usize> = recherche.as_deref().map_or_else(|| (0..cases.len()).collect(), filtrer);
+        let montrees: Vec<usize> = etat
+            .recherche
+            .as_deref()
+            .map_or_else(|| (0..cases.len()).collect(), |r| liste.filtrer(r));
         // La ligne en cours reste la même si la recherche la montre encore ; sinon, la première trouvée.
-        if !montrees.contains(&en_cours)
+        if !montrees.contains(&etat.en_cours)
             && let Some(&i) = montrees.first()
         {
-            en_cours = i;
+            etat.en_cours = i;
         }
-        let rang = montrees.iter().position(|&i| i == en_cours);
-        let suite = recherche.as_deref().and_then(|t| {
+        let rang = montrees.iter().position(|&i| i == etat.en_cours);
+        let suite = etat.recherche.as_deref().and_then(|t| {
             vocabulaire
                 .get_or_insert_with(|| {
                     let textes: Vec<String> = cases
@@ -1135,68 +1206,9 @@ fn cocher_ou_revenir(titre: &[String], cases: &[Case]) -> Option<Vec<bool>> {
                         .collect();
                     Vocabulaire::nouveau(&textes)
                 })
-                .suite(t, |q| cherche.iter().any(|c| correspond(q, c)))
+                .suite(t, |q| liste.cherche.iter().any(|c| correspond(q, c)))
         });
-        let mut ecran = String::from("\x1b[H");
-        let mut rangees: Vec<String> = titre.iter().flat_map(|l| l.split('\n').map(String::from)).collect();
-        let entete = rangees.len();
-        rangees.extend(
-            montrees
-                .iter()
-                .map(|&i| rendu_case(i + 1, &cases[i], etats[i], colonne, i == en_cours)),
-        );
-        if montrees.is_empty() {
-            rangees.push(format!(
-                "  {GRIS}{}{RESET}",
-                tr!(
-                    "Rien ne correspond : Retour arrière pour corriger, Échap pour finir.",
-                    "Nothing matches: Backspace to correct, Esc to finish."
-                )
-            ));
-        }
-        let rang_ecran = rang.unwrap_or(0);
-        if rang_ecran == 0 {
-            haut = 0;
-        } else if rang_ecran + 1 == montrees.len() {
-            haut = usize::MAX;
-        }
-        // La fenêtre se fait à la hauteur de la liste entière ; une recherche, qui la raccourcit, n'y change rien.
-        if recherche.is_none() {
-            crate::fenetre::epouser(rangees.len() + dessous);
-        }
-        // Pendant une recherche, la saisie prend une ligne de plus sous l'aide.
-        let place = terminal::size()
-            .map_or(24, |(_, r)| usize::from(r))
-            .saturating_sub(dessous + usize::from(recherche.is_some()));
-        for t in fenetre(&rangees, entete, entete + rang_ecran, place, &mut haut) {
-            ecran += &t;
-            ecran += "\x1b[K\r\n";
-        }
-        ecran += "\x1b[K\r\n";
-        // L'explication de la ligne en cours, toujours sur le même nombre de lignes : l'écran ne saute pas.
-        let explication = rang.map_or("", |_| cases[en_cours].detail.as_str());
-        let mut detail = envelopper(explication, LARGEUR - 4);
-        detail.resize(lignes_detail, String::new());
-        for l in detail.iter().take(lignes_detail) {
-            let _ = write!(ecran, "  {GRIS}{l}{RESET}\x1b[K\r\n");
-        }
-        match &recherche {
-            Some(t) => {
-                let aide = if suite.is_some() {
-                    &aide_prediction
-                } else {
-                    &aide_recherche
-                };
-                let (gris, recul) = fantome(suite.as_deref());
-                let _ = write!(
-                    ecran,
-                    "{aide}\x1b[K\r\n  {ACCENT}›{RESET} /{t}{gris}\x1b[K\x1b[J{recul}"
-                );
-            }
-            None => {
-                let _ = write!(ecran, "{aide}\x1b[K\x1b[J");
-            }
-        }
+        let ecran = ecran_de_la_liste(&liste, &mut etat, &montrees, rang, suite.as_deref(), &aides);
         let _ = sortie.write_all(ecran.as_bytes());
         let _ = sortie.flush();
 
@@ -1206,79 +1218,224 @@ fn cocher_ou_revenir(titre: &[String], cases: &[Case]) -> Option<Vec<bool>> {
         if k.kind == KeyEventKind::Release {
             continue;
         }
-        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        // Tab ou → prennent la prédiction ; pas d'espace après : Espace coche.
-        if let (Some(t), Some(s)) = (&mut recherche, &suite)
-            && matches!(k.code, KeyCode::Tab | KeyCode::Right)
-        {
-            t.push_str(s);
-            continue;
-        }
-        // Les flèches parcourent les lignes montrées : toute la liste, ou celles que la recherche a trouvées.
-        let derniere = montrees.len().saturating_sub(1);
-        let deplacement = match k.code {
-            KeyCode::Up | KeyCode::BackTab => Some(rang_ecran.checked_sub(1).unwrap_or(derniere)),
-            KeyCode::Down | KeyCode::Tab => Some(if rang_ecran >= derniere { 0 } else { rang_ecran + 1 }),
-            KeyCode::Home | KeyCode::PageUp => Some(0),
-            KeyCode::End | KeyCode::PageDown => Some(derniere),
-            _ => None,
-        };
-        if let Some(r) = deplacement {
-            if let Some(&i) = montrees.get(r) {
-                en_cours = i;
-            }
-            continue;
-        }
-        if ctrl && matches!(k.code, KeyCode::Char('c' | 'd')) {
-            let _ = terminal::disable_raw_mode();
-            println!();
-            crate::machine::quitter(if k.code == KeyCode::Char('c') { 130 } else { 0 });
-        }
-        // Ctrl-J ou Ctrl-M : le saut de ligne que certains terminaux envoient pour Entrée.
-        let entree = k.code == KeyCode::Enter || (ctrl && matches!(k.code, KeyCode::Char('j' | 'm')));
-        if k.code == KeyCode::Char(' ') {
-            if rang.is_some() && !cases[en_cours].fixe {
-                etats[en_cours] = !etats[en_cours];
-            }
-        } else if let Some(t) = &mut recherche {
-            // Entrée ou Échap finissent la recherche : toute la liste revient, la ligne en cours gardée. Entrée ne
-            // valide pas la liste ici : on la valide en la voyant entière.
-            if entree
-                || matches!(k.code, KeyCode::Esc | KeyCode::Left)
-                || (k.code == KeyCode::Backspace && t.is_empty())
-            {
-                recherche = None;
-            } else if k.code == KeyCode::Backspace {
-                t.pop();
-            } else if let KeyCode::Char(c) = k.code
-                && !ctrl
-            {
-                t.push(c);
-            }
-        } else if entree {
+        if let ControlFlow::Break(fin) = touche_de_la_liste(k, &mut etat, cases, &montrees, rang, suite.as_deref()) {
             let _ = sortie.write_all(b"\r\n");
-            return Some(etats);
-        } else {
-            match k.code {
-                KeyCode::Char('r' | 'R') if !ctrl => {
-                    for (e, c) in etats.iter_mut().zip(cases) {
-                        *e |= c.recommandee && !c.fixe;
-                    }
-                }
-                KeyCode::Char('/') => recherche = Some(String::new()),
-                // Une lettre ou un chiffre commence aussi une recherche ; « r » reste les recommandés (« / » d'abord
-                // pour chercher un mot en r).
-                KeyCode::Char(c) if !ctrl && c.is_alphanumeric() => recherche = Some(c.to_string()),
-                // Retour arrière ou ←, sans rien de tapé, reviennent en arrière comme Échap. → ne valide pas : une
-                // liste à cocher lance souvent des changements (nettoyer, désinstaller), Entrée seule les confirme.
-                KeyCode::Esc | KeyCode::Backspace | KeyCode::Left => {
-                    let _ = sortie.write_all(b"\r\n");
-                    return None;
-                }
-                _ => {}
-            }
+            return fin;
         }
     }
+}
+
+/// La liste sans terminal (réponses envoyées par un tube, fenêtre minuscule) : les numéros à inverser se tapent sur
+/// une ligne, et un mot cherche.
+fn cocher_par_ligne(liste: &Liste<'_>, mut etats: Vec<bool>) -> Option<Vec<bool>> {
+    let (cases, colonne) = (liste.cases, liste.colonne);
+    for l in liste.titre {
+        println!("{l}");
+    }
+    for (i, c) in cases.iter().enumerate() {
+        println!("{}", rendu_case(i + 1, c, c.cochee, colonne, false));
+    }
+    loop {
+        let reponse = demander(tr!(
+            "\n  Numéros à (dé)cocher (ex. 1 4), r = recommandés, un mot = chercher.\n  Entrée = valider, q = revenir : ",
+            "\n  Numbers to check or uncheck (e.g. 1 4), r = recommended, a word = search.\n  Enter = confirm, q = back: "
+        ));
+        if reponse.eq_ignore_ascii_case("q") {
+            return None;
+        }
+        let mots: Vec<&str> = reponse
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|m| !m.is_empty())
+            .collect();
+        // Autre chose que des numéros et « r » : des mots à chercher. Les lignes trouvées s'affichent avec leur
+        // numéro, et la question revient.
+        if mots
+            .iter()
+            .any(|m| m.parse::<usize>().is_err() && !m.eq_ignore_ascii_case("r"))
+        {
+            let trouves = liste.filtrer(&reponse);
+            if trouves.is_empty() {
+                trp!(
+                    "  Rien ne correspond à « {reponse} ».",
+                    "  Nothing matches “{reponse}”."
+                );
+            }
+            for i in trouves {
+                println!("{}", rendu_case(i + 1, &cases[i], etats[i], colonne, false));
+            }
+            continue;
+        }
+        for mot in mots {
+            if mot.eq_ignore_ascii_case("r") {
+                for (e, c) in etats.iter_mut().zip(cases) {
+                    *e |= c.recommandee && !c.fixe;
+                }
+            } else if let Some(i) = mot
+                .parse::<usize>()
+                .ok()
+                .and_then(|n| n.checked_sub(1))
+                .filter(|&i| cases.get(i).is_some_and(|c| !c.fixe))
+            {
+                etats[i] = !etats[i];
+            }
+        }
+        return Some(etats);
+    }
+}
+
+/// L'écran d'une liste à cocher : le titre et les lignes montrées dans la fenêtre, l'explication de la ligne en cours,
+/// puis l'aide (et la saisie pendant une recherche). Garde `etat.haut` d'un affichage à l'autre.
+fn ecran_de_la_liste(
+    liste: &Liste<'_>,
+    etat: &mut EtatListe,
+    montrees: &[usize],
+    rang: Option<usize>,
+    suite: Option<&str>,
+    aides: &Aides,
+) -> String {
+    let cases = liste.cases;
+    let mut ecran = String::from("\x1b[H");
+    let mut rangees: Vec<String> = liste
+        .titre
+        .iter()
+        .flat_map(|l| l.split('\n').map(String::from))
+        .collect();
+    let entete = rangees.len();
+    rangees.extend(
+        montrees
+            .iter()
+            .map(|&i| rendu_case(i + 1, &cases[i], etat.etats[i], liste.colonne, i == etat.en_cours)),
+    );
+    if montrees.is_empty() {
+        rangees.push(format!(
+            "  {GRIS}{}{RESET}",
+            tr!(
+                "Rien ne correspond : Retour arrière pour corriger, Échap pour finir.",
+                "Nothing matches: Backspace to correct, Esc to finish."
+            )
+        ));
+    }
+    let rang_ecran = rang.unwrap_or(0);
+    if rang_ecran == 0 {
+        etat.haut = 0;
+    } else if rang_ecran + 1 == montrees.len() {
+        etat.haut = usize::MAX;
+    }
+    // La fenêtre se fait à la hauteur de la liste entière ; une recherche, qui la raccourcit, n'y change rien.
+    if etat.recherche.is_none() {
+        crate::fenetre::epouser(rangees.len() + DESSOUS_LISTE);
+    }
+    // Pendant une recherche, la saisie prend une ligne de plus sous l'aide.
+    let place = terminal::size()
+        .map_or(24, |(_, r)| usize::from(r))
+        .saturating_sub(DESSOUS_LISTE + usize::from(etat.recherche.is_some()));
+    for t in fenetre(&rangees, entete, entete + rang_ecran, place, &mut etat.haut) {
+        ecran += &t;
+        ecran += "\x1b[K\r\n";
+    }
+    ecran += "\x1b[K\r\n";
+    // L'explication de la ligne en cours, toujours sur le même nombre de lignes : l'écran ne saute pas.
+    let explication = rang.map_or("", |_| cases[etat.en_cours].detail.as_str());
+    let mut detail = envelopper(explication, LARGEUR - 4);
+    detail.resize(LIGNES_DETAIL, String::new());
+    for l in detail.iter().take(LIGNES_DETAIL) {
+        let _ = write!(ecran, "  {GRIS}{l}{RESET}\x1b[K\r\n");
+    }
+    if let Some(t) = &etat.recherche {
+        let aide = if suite.is_some() {
+            &aides.prediction
+        } else {
+            &aides.recherche
+        };
+        let (gris, recul) = fantome(suite);
+        let _ = write!(
+            ecran,
+            "{aide}\x1b[K\r\n  {ACCENT}›{RESET} /{t}{gris}\x1b[K\x1b[J{recul}"
+        );
+    } else {
+        let aide = &aides.menu;
+        let _ = write!(ecran, "{aide}\x1b[K\x1b[J");
+    }
+    ecran
+}
+
+/// Ce que fait une touche dans une liste à cocher : `Continue` pour continuer (la liste se redessine), `Break(fin)`
+/// pour la quitter (`Break(Some(états))` : Entrée ; `Break(None)` : Échap, ← ou Retour arrière).
+fn touche_de_la_liste(
+    k: event::KeyEvent,
+    etat: &mut EtatListe,
+    cases: &[Case],
+    montrees: &[usize],
+    rang: Option<usize>,
+    suite: Option<&str>,
+) -> ControlFlow<Option<Vec<bool>>> {
+    let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+    // Tab ou → prennent la prédiction ; pas d'espace après : Espace coche.
+    if let (Some(t), Some(s)) = (&mut etat.recherche, suite)
+        && matches!(k.code, KeyCode::Tab | KeyCode::Right)
+    {
+        t.push_str(s);
+        return ControlFlow::Continue(());
+    }
+    // Les flèches parcourent les lignes montrées : toute la liste, ou celles que la recherche a trouvées.
+    let rang_ecran = rang.unwrap_or(0);
+    let derniere = montrees.len().saturating_sub(1);
+    let deplacement = match k.code {
+        KeyCode::Up | KeyCode::BackTab => Some(rang_ecran.checked_sub(1).unwrap_or(derniere)),
+        KeyCode::Down | KeyCode::Tab => Some(if rang_ecran >= derniere { 0 } else { rang_ecran + 1 }),
+        KeyCode::Home | KeyCode::PageUp => Some(0),
+        KeyCode::End | KeyCode::PageDown => Some(derniere),
+        _ => None,
+    };
+    if let Some(r) = deplacement {
+        if let Some(&i) = montrees.get(r) {
+            etat.en_cours = i;
+        }
+        return ControlFlow::Continue(());
+    }
+    if ctrl && matches!(k.code, KeyCode::Char('c' | 'd')) {
+        let _ = terminal::disable_raw_mode();
+        println!();
+        crate::machine::quitter(if k.code == KeyCode::Char('c') { 130 } else { 0 });
+    }
+    // Ctrl-J ou Ctrl-M : le saut de ligne que certains terminaux envoient pour Entrée.
+    let entree = k.code == KeyCode::Enter || (ctrl && matches!(k.code, KeyCode::Char('j' | 'm')));
+    if k.code == KeyCode::Char(' ') {
+        if rang.is_some() && !cases[etat.en_cours].fixe {
+            etat.etats[etat.en_cours] = !etat.etats[etat.en_cours];
+        }
+    } else if let Some(t) = &mut etat.recherche {
+        // Entrée ou Échap finissent la recherche : toute la liste revient, la ligne en cours gardée. Entrée ne
+        // valide pas la liste ici : on la valide en la voyant entière.
+        if entree || matches!(k.code, KeyCode::Esc | KeyCode::Left) || (k.code == KeyCode::Backspace && t.is_empty()) {
+            etat.recherche = None;
+        } else if k.code == KeyCode::Backspace {
+            t.pop();
+        } else if let KeyCode::Char(c) = k.code
+            && !ctrl
+        {
+            t.push(c);
+        }
+    } else if entree {
+        return ControlFlow::Break(Some(std::mem::take(&mut etat.etats)));
+    } else {
+        match k.code {
+            KeyCode::Char('r' | 'R') if !ctrl => {
+                for (e, c) in etat.etats.iter_mut().zip(cases) {
+                    *e |= c.recommandee && !c.fixe;
+                }
+            }
+            KeyCode::Char('/') => etat.recherche = Some(String::new()),
+            // Une lettre ou un chiffre commence aussi une recherche ; « r » reste les recommandés (« / » d'abord
+            // pour chercher un mot en r).
+            KeyCode::Char(c) if !ctrl && c.is_alphanumeric() => etat.recherche = Some(c.to_string()),
+            // Retour arrière ou ←, sans rien de tapé, reviennent en arrière comme Échap. → ne valide pas : une
+            // liste à cocher lance souvent des changements (nettoyer, désinstaller), Entrée seule les confirme.
+            KeyCode::Esc | KeyCode::Backspace | KeyCode::Left => return ControlFlow::Break(None),
+            _ => {}
+        }
+    }
+    ControlFlow::Continue(())
 }
 
 /// Les lignes (leur rang) dont le texte simplifié contient tous les mots de `recherche` ; toutes si rien n'est tapé.
