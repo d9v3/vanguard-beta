@@ -1364,8 +1364,10 @@ fn jetons_cfg(t: &str) -> Vec<String> {
     jetons
 }
 
-/// Un prédicat de `cfg` à partir de `jetons[*pos]`, pour `systeme` : `all`, `any`, `not`, `windows`, `unix`,
-/// `target_os = "…"`, `test` (faux) ; un autre (une fonctionnalité) est tenu pour vrai : la fonction compte.
+/// Un prédicat de `cfg` à partir de `jetons[*pos]`, pour `systeme`, tel que le programme publié se compile : `all`,
+/// `any`, `not`, `windows`, `unix`, `target_os = "…"` ; faux pour `test` et `fuzzing` (les essais, le banc de
+/// fuzzing), `debug_assertions` (le programme publié se compile en version optimisée) et `feature = "…"` (Cargo.toml
+/// n'en déclare aucune). Un autre nom, inconnu, est tenu pour vrai : la fonction compte, et doit appeler la suivante.
 fn cfg_vrai(jetons: &[String], pos: &mut usize, systeme: &str) -> bool {
     let Some(mot) = jetons.get(*pos).cloned() else {
         return true;
@@ -1394,12 +1396,13 @@ fn cfg_vrai(jetons: &[String], pos: &mut usize, systeme: &str) -> bool {
             match mot.as_str() {
                 "target_os" => valeur == systeme,
                 "target_family" => valeur == if systeme == "windows" { "windows" } else { "unix" },
+                "feature" => false,
                 _ => true,
             }
         }
         "windows" => systeme == "windows",
         "unix" => systeme != "windows",
-        "test" => false,
+        "test" | "fuzzing" | "debug_assertions" => false,
         _ => true,
     }
 }
@@ -1664,6 +1667,14 @@ fn le_fil_voit_une_regle_debranchee() {
     assert!(nomme(&corps_de("lire@linux")[0], "a"));
     assert_eq!(corps_de("lire@macos").len(), 2);
     assert!(corps_de("lire").iter().all(|c| !nomme(c, "c")));
+    // Ce qui ne se compile pas dans le programme publié (banc de fuzzing, mode débogage, fonctionnalité de Cargo)
+    // n'est pas une version ; son contraire en est une, et un nom inconnu compte.
+    let publie = "#[cfg(fuzzing)]\nfn lire() {\n    f();\n}\n\n#[cfg(debug_assertions)]\nfn lire() {\n    g();\n}\n\n\
+                  #[cfg(feature = \"x\")]\nfn lire() {\n    h();\n}\n\n#[cfg(not(debug_assertions))]\nfn lire() {\n    i();\n}\n\n\
+                  #[cfg(inconnu)]\nfn lire() {\n    j();\n}\n";
+    let corps: Vec<String> = homonymes(publie, "lire").into_iter().map(|(_, c)| c).collect();
+    assert_eq!(corps.len(), 2, "{corps:?}");
+    assert!(nomme(&corps[0], "i") && nomme(&corps[1], "j"), "{corps:?}");
 }
 
 #[test]
