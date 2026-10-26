@@ -17,6 +17,8 @@
 #      pas un bloc que la principale, peut-être volée, a ajouté après lui ; sans point sûr, elle refuse un historique
 #      signé par la principale ; la principale refuse un historique tronqué ou à une version inconnue d'ici ; avec un
 #      point sûr, ni repli sur derniere.txt ni --premier. Jamais le vrai point sûr : VANGUARD_HISTORIQUE_PUBLIE.
+#   7b. Le point sûr réécrit lui aussi avec la principale volée (campagne d'attaque n° 4) : la clé de secours montre
+#      ses versions et ne contresigne rien sans « contresigner » tapé.
 #   8. Les programmes publiés sont les octets que outils/compiler-version.sh a relevés pour leur commit
 #      (publier-version.sh, verifier_compilation, dans un dépôt git jetable) : remplacés, compilés d'un arbre modifié,
 #      d'un commit au code changé depuis, ou à la date gravée d'un autre commit, ils sont refusés ; un commit qui ne
@@ -179,7 +181,7 @@ if command -v script >/dev/null; then
     2>/dev/null
   # Le point sûr : l'historique que la principale avait publié (v88), que la clé de secours reprend.
   poser_point "$T/v88/historique.txt"
-  printf 'essai\n' | VANGUARD_CLE_SECOURS=$T/secours-chiffree.pem script -qec \
+  printf 'essai\ncontresigner\n' | VANGUARD_CLE_SECOURS=$T/secours-chiffree.pem script -qec \
     "bash '$T/nouveau88/outils/signer-versions.sh' --secours --revoquer '$T/v91'" /dev/null >"$T/v91.log" 2>&1
   retirer_point
   if [[ -f $T/v91/derniere.txt.sig ]] && [[ $(tail -n 1 "$T/v91/derniere.txt") == "revoque principale" ]]; then
@@ -199,8 +201,8 @@ if command -v script >/dev/null; then
     ko "--secours --revoquer : $(tail -n 2 "$T/v91.log")"
   fi
   # 7. Le voleur de la principale ajoute au dépôt un bloc forgé (un programme Linux inventé), signé par elle.
-  secours_signe() { # dossier ; la sortie dans dossier.log
-    printf 'essai\n' | VANGUARD_CLE_SECOURS=$T/secours-chiffree.pem script -qec \
+  secours_signe() { # dossier [réponse à la confirmation du point sûr] ; la sortie dans dossier.log
+    printf 'essai\n%s\n' "${2-contresigner}" | VANGUARD_CLE_SECOURS=$T/secours-chiffree.pem script -qec \
       "bash '$T/nouveau88/outils/signer-versions.sh' --secours --revoquer '$1'" /dev/null >"$1.log" 2>&1
   }
   forger() { # dossier : avant/historique.txt = le bloc forgé puis l'historique v88, signé par la principale
@@ -220,6 +222,18 @@ if command -v script >/dev/null; then
     ok "secours : le bloc que la principale a signé après le point sûr est écarté, et nommé"
   else
     ko "secours : bloc forgé repris ou historique faux ($(tail -n 2 "$T/v92.log"))"
+  fi
+  # 7b. Le voleur réécrit aussi le point sûr (le même historique forgé, signé par la principale) : la clé de secours
+  # le montre, bloc forgé compris, et ne contresigne rien sans « contresigner » tapé.
+  programmes "$T/v95" 0.88.0+1793500000
+  forger "$T/v95"
+  poser_point "$T/v95/avant/historique.txt"
+  secours_signe "$T/v95" non
+  if [[ ! -e $T/v95/historique.txt.sig ]] && grep -q "0.87.5+1792999999 (2026-" "$T/v95.log" &&
+    grep -q "non confirmé" "$T/v95.log"; then
+    ok "secours : un point sûr de la principale est montré, rien n'est contresigné sans confirmation tapée"
+  else
+    ko "secours : point sûr forgé contresigné sans confirmation ($(tail -n 2 "$T/v95.log"))"
   fi
   retirer_point
   programmes "$T/v93" 0.88.0+1793300000

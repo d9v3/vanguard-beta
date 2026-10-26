@@ -95,6 +95,10 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 - **Modèle de menace.** Une page dit ce que Vanguard protège, contre qui, ce qu'il ne protège pas (un attaquant
   déjà administrateur, le noyau, une menace encore sans signature…) et ce qu'il suppose
   ([MODELE-DE-MENACE.md](MODELE-DE-MENACE.md)) ; le README et `vanguard --help` y renvoient.
+- **Publication des versions** (campagne d'attaque n° 4). Le point sûr que la clé de secours ne dépasse pas se forge
+  lui aussi avec la clé principale volée : signé par elle, ses versions (date et début des empreintes) sont montrées à
+  l'auteur, et la clé de secours ne contresigne rien sans « contresigner » tapé. Seul l'auteur sait ce qu'il a publié :
+  une version forgée sous un numéro qu'il reconnaît, sans date ni empreinte qu'il remarque, passe encore.
 - **Argument qui n'est pas de l'UTF-8.** Une erreur notée au journal de la clé pendant une commande dont un argument
   n'est pas de l'UTF-8 (un nom de fichier) ne fait plus avorter Vanguard : la commande y est écrite avec « � » à la
   place des octets illisibles.

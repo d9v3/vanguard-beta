@@ -93,6 +93,10 @@ delivered just before it. Only the latest version has its download page; every v
 - **Threat model.** A page says what Vanguard protects, against whom, what it does not protect (an attacker who is
   already administrator, the kernel, a threat still without a signature…) and what it assumes
   ([MODELE-DE-MENACE.en.md](MODELE-DE-MENACE.en.md)); the README and `vanguard --help` point to it.
+- **Release publishing** (attack campaign no. 4). The safe point the backup key never goes past can also be forged
+  with the stolen main key: when it is signed by that key, its versions (date and start of the checksums) are shown to
+  the author, and the backup key countersigns nothing until “contresigner” is typed. Only the author knows what they
+  published: a forged version under a number they recognize, with no date or checksum they notice, still gets through.
 - **Argument that is not UTF-8.** An error logged to the key's journal during a command with an argument that is not
   UTF-8 (a file name) no longer aborts Vanguard: the command is written there with “�” in place of the unreadable
   bytes.
