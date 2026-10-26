@@ -471,108 +471,9 @@ fn ecrire_dans(
     let reelles = lignes(&octets);
     let fin_reelle = reelles.last().map(|l| empreinte_ligne(l));
 
-    let mut rupture = None;
-    let mut tete = match lue {
-        TeteLue::Lue(mut t, _) => {
-            // Ce qui est là est jugé avant d'écrire : seule la fin de la tête, ou celle qu'elle annonçait, est de
-            // Vanguard. Toute autre (des lignes ajoutées sans toucher la tête, une fin retirée) est une rupture
-            // notée, et la tête repart du disque sans rien adopter en silence.
-            match fin_trouvee(&t, dernier.as_deref(), reelles.len(), fin_reelle.as_deref()) {
-                Fin::DeLaTete => {}
-                Fin::Annoncee => {
-                    // Un arrêt entre l'ajout et la tête : l'ajout annoncé est le nôtre, la tête le rattrape (et le
-                    // mois qu'il closait, s'il est bien tel qu'annoncé).
-                    let a = t
-                        .annonce
-                        .clone()
-                        .unwrap_or_else(|| unreachable!("fin annoncée sans annonce"));
-                    if let Some((m, c)) = a.clos {
-                        let pareil = presents.iter().find(|(p, _)| *p == m).is_some_and(|(_, chemin)| {
-                            crate::socle::lire_ordinaire(chemin, SEGMENT_MAX).is_ok_and(|o| {
-                                empreinte_segment(&o) == c.empreinte && lignes(&o).len() as u64 == c.lignes
-                            })
-                        });
-                        if pareil {
-                            t.clos.insert(m, c);
-                        } else {
-                            rupture = Some((
-                                format!("{m} : mois clos annoncé / announced closed month"),
-                                format!("{} segment(s)", presents.len()),
-                            ));
-                        }
-                    }
-                    t.segment = a.segment;
-                    t.lignes = a.lignes;
-                    t.derniere = a.derniere;
-                }
-                Fin::Autre => {
-                    rupture = Some((
-                        format!("{} #{} {}", t.segment, t.lignes, t.derniere),
-                        format!(
-                            "{} #{} {}",
-                            dernier.as_deref().unwrap_or("-"),
-                            reelles.len(),
-                            fin_reelle.as_deref().unwrap_or("-")
-                        ),
-                    ));
-                }
-            }
-            t.annonce = None;
-            *t
-        }
-        TeteLue::Absente if presents.is_empty() => Tete::default(),
-        TeteLue::Absente => {
-            rupture = Some((
-                "tête absente / head missing".into(),
-                format!("{} segment(s)", presents.len()),
-            ));
-            Tete::default()
-        }
-        TeteLue::Falsifiee => {
-            rupture = Some((TETE_FALSIFIEE.into(), format!("{} segment(s)", presents.len())));
-            Tete::default()
-        }
-        TeteLue::Douteuse(raison) => {
-            rupture = Some((raison, format!("{} segment(s)", presents.len())));
-            Tete::default()
-        }
-    };
-    if rupture.is_some() {
-        // La tête repart de ce qui est sur le disque : la rupture, elle, reste écrite.
-        tete.clos.clear();
-        for (m, chemin) in presents.iter().take(presents.len().saturating_sub(1)) {
-            if let Ok(o) = crate::socle::lire_ordinaire(chemin, SEGMENT_MAX) {
-                tete.clos.insert(
-                    m.clone(),
-                    Clos {
-                        lignes: lignes(&o).len() as u64,
-                        empreinte: empreinte_segment(&o),
-                    },
-                );
-            }
-        }
-        tete.ancre = presents
-            .first()
-            .and_then(|(_, c)| crate::socle::lire_ordinaire(c, SEGMENT_MAX).ok())
-            .and_then(|o| lignes(&o).first().and_then(|l| precedent_de(l)))
-            .unwrap_or_default();
-    }
+    let (mut tete, rupture) = juger_la_tete(lue, &presents, dernier.as_deref(), &reelles, fin_reelle.as_deref());
 
-    let mut a_ecrire = Vec::new();
-    if let Some((attendu, trouve)) = rupture {
-        a_ecrire.push(Evenement::nouveau(Source::Vanguard, Genre::Rupture { attendu, trouve }).gravite(Niveau::Eleve));
-    }
-    let version = env!("CARGO_PKG_VERSION");
-    if tete.version != version {
-        a_ecrire.push(Evenement::nouveau(
-            Source::Vanguard,
-            Genre::Version {
-                de: Some(tete.version.clone()).filter(|v| !v.is_empty()),
-                vers: version.to_string(),
-            },
-        ));
-    }
-    a_ecrire.extend(evs);
+    let a_ecrire = evenements_a_ecrire(rupture, &tete, evs);
     if a_ecrire.is_empty() {
         return Ok(());
     }
@@ -649,7 +550,7 @@ fn ecrire_dans(
     if let Some((m, c)) = clos_ici {
         tete.clos.insert(m, c);
     }
-    tete.version = version.to_string();
+    tete.version = env!("CARGO_PKG_VERSION").to_string();
     tete.segment.clone_from(&mois);
     tete.lignes = n_courant;
     tete.derniere = precedent;
@@ -662,6 +563,129 @@ fn ecrire_dans(
         &serde_json::to_vec(&tete).map_err(std::io::Error::other)?,
     )
     .map_err(|e| std::io::Error::other(ApresAjout(e)))
+}
+
+/// Juge la tête lue contre ce qui est sur le disque, avant d'écrire : la tête à reprendre, et la rupture à noter
+/// (attendu, trouvé) s'il y en a une.
+fn juger_la_tete(
+    lue: TeteLue,
+    presents: &[(String, PathBuf)],
+    dernier: Option<&str>,
+    reelles: &[&[u8]],
+    fin_reelle: Option<&str>,
+) -> (Tete, Option<(String, String)>) {
+    let mut rupture = None;
+    let mut tete = match lue {
+        TeteLue::Lue(mut t, _) => {
+            // Ce qui est là est jugé avant d'écrire : seule la fin de la tête, ou celle qu'elle annonçait, est de
+            // Vanguard. Toute autre (des lignes ajoutées sans toucher la tête, une fin retirée) est une rupture
+            // notée, et la tête repart du disque sans rien adopter en silence.
+            match fin_trouvee(&t, dernier, reelles.len(), fin_reelle) {
+                Fin::DeLaTete => {}
+                Fin::Annoncee => {
+                    // Un arrêt entre l'ajout et la tête : l'ajout annoncé est le nôtre, la tête le rattrape (et le
+                    // mois qu'il closait, s'il est bien tel qu'annoncé).
+                    let a = t
+                        .annonce
+                        .clone()
+                        .unwrap_or_else(|| unreachable!("fin annoncée sans annonce"));
+                    if let Some((m, c)) = a.clos {
+                        let pareil = presents.iter().find(|(p, _)| *p == m).is_some_and(|(_, chemin)| {
+                            crate::socle::lire_ordinaire(chemin, SEGMENT_MAX).is_ok_and(|o| {
+                                empreinte_segment(&o) == c.empreinte && lignes(&o).len() as u64 == c.lignes
+                            })
+                        });
+                        if pareil {
+                            t.clos.insert(m, c);
+                        } else {
+                            rupture = Some((
+                                format!("{m} : mois clos annoncé / announced closed month"),
+                                format!("{} segment(s)", presents.len()),
+                            ));
+                        }
+                    }
+                    t.segment = a.segment;
+                    t.lignes = a.lignes;
+                    t.derniere = a.derniere;
+                }
+                Fin::Autre => {
+                    rupture = Some((
+                        format!("{} #{} {}", t.segment, t.lignes, t.derniere),
+                        format!(
+                            "{} #{} {}",
+                            dernier.unwrap_or("-"),
+                            reelles.len(),
+                            fin_reelle.unwrap_or("-")
+                        ),
+                    ));
+                }
+            }
+            t.annonce = None;
+            *t
+        }
+        TeteLue::Absente if presents.is_empty() => Tete::default(),
+        TeteLue::Absente => {
+            rupture = Some((
+                "tête absente / head missing".into(),
+                format!("{} segment(s)", presents.len()),
+            ));
+            Tete::default()
+        }
+        TeteLue::Falsifiee => {
+            rupture = Some((TETE_FALSIFIEE.into(), format!("{} segment(s)", presents.len())));
+            Tete::default()
+        }
+        TeteLue::Douteuse(raison) => {
+            rupture = Some((raison, format!("{} segment(s)", presents.len())));
+            Tete::default()
+        }
+    };
+    if rupture.is_some() {
+        // La tête repart de ce qui est sur le disque : la rupture, elle, reste écrite.
+        refaire_du_disque(&mut tete, presents);
+    }
+    (tete, rupture)
+}
+
+/// Les mois clos et l'ancre de la tête, refaits des segments présents (le dernier, en cours, n'est pas clos).
+fn refaire_du_disque(tete: &mut Tete, presents: &[(String, PathBuf)]) {
+    tete.clos.clear();
+    for (m, chemin) in presents.iter().take(presents.len().saturating_sub(1)) {
+        if let Ok(o) = crate::socle::lire_ordinaire(chemin, SEGMENT_MAX) {
+            tete.clos.insert(
+                m.clone(),
+                Clos {
+                    lignes: lignes(&o).len() as u64,
+                    empreinte: empreinte_segment(&o),
+                },
+            );
+        }
+    }
+    tete.ancre = presents
+        .first()
+        .and_then(|(_, c)| crate::socle::lire_ordinaire(c, SEGMENT_MAX).ok())
+        .and_then(|o| lignes(&o).first().and_then(|l| precedent_de(l)))
+        .unwrap_or_default();
+}
+
+/// Ce qui s'écrit, dans l'ordre : la rupture, le passage d'une autre version, puis les événements demandés.
+fn evenements_a_ecrire(rupture: Option<(String, String)>, tete: &Tete, evs: Vec<Evenement>) -> Vec<Evenement> {
+    let mut a_ecrire = Vec::new();
+    if let Some((attendu, trouve)) = rupture {
+        a_ecrire.push(Evenement::nouveau(Source::Vanguard, Genre::Rupture { attendu, trouve }).gravite(Niveau::Eleve));
+    }
+    let version = env!("CARGO_PKG_VERSION");
+    if tete.version != version {
+        a_ecrire.push(Evenement::nouveau(
+            Source::Vanguard,
+            Genre::Version {
+                de: Some(tete.version.clone()).filter(|v| !v.is_empty()),
+                vers: version.to_string(),
+            },
+        ));
+    }
+    a_ecrire.extend(evs);
+    a_ecrire
 }
 
 /// Un échec après l'ajout : les lignes sont écrites, seule la tête n'a pas suivi.
