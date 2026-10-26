@@ -18,7 +18,7 @@
 #      signé par la principale ; la principale refuse un historique tronqué ou à une version inconnue d'ici ; avec un
 #      point sûr, ni repli sur derniere.txt ni --premier. Jamais le vrai point sûr : VANGUARD_HISTORIQUE_PUBLIE.
 #   7b. Le point sûr réécrit lui aussi avec la principale volée (campagne d'attaque n° 4) : la clé de secours montre
-#      ses versions et ne contresigne rien sans « contresigner » tapé.
+#      ses versions et ne contresigne rien sans « contresigner » tapé ; sans terminal, elle refuse (7c).
 #   8. Les programmes publiés sont les octets que outils/compiler-version.sh a relevés pour leur commit
 #      (publier-version.sh, verifier_compilation, dans un dépôt git jetable) : remplacés, compilés d'un arbre modifié,
 #      d'un commit au code changé depuis, ou à la date gravée d'un autre commit, ils sont refusés ; un commit qui ne
@@ -238,6 +238,21 @@ if command -v script >/dev/null; then
     ok "secours : un point sûr de la principale est montré, rien n'est contresigné sans confirmation tapée"
   else
     ko "secours : point sûr forgé contresigné sans confirmation ($(tail -n 2 "$T/v95.log"))"
+  fi
+  # 7c. Sans terminal (une tâche, un script) : la phrase de la clé vient de zenity, mais la confirmation, elle, ne se
+  # demande qu'au terminal ; rien n'est signé, ni l'historique ni derniere.txt.
+  programmes "$T/v96" 0.88.0+1793600000
+  forger "$T/v96"
+  mkdir -p "$T/faux-zenity"
+  printf '#!/bin/sh\necho essai\n' >"$T/faux-zenity/zenity"
+  chmod +x "$T/faux-zenity/zenity"
+  PATH="$T/faux-zenity:$PATH" WAYLAND_DISPLAY=essai VANGUARD_CLE_SECOURS=$T/secours-chiffree.pem \
+    bash "$T/nouveau88/outils/signer-versions.sh" --secours --revoquer "$T/v96" </dev/null >"$T/v96.log" 2>&1
+  if [[ ! -e $T/v96/historique.txt.sig && ! -e $T/v96/derniere.txt.sig ]] &&
+    grep -q "pas de terminal pour confirmer le point sûr" "$T/v96.log"; then
+    ok "secours sans terminal : un point sûr de la principale n'est jamais contresigné"
+  else
+    ko "secours sans terminal : point sûr contresigné ($(tail -n 2 "$T/v96.log"))"
   fi
   retirer_point
   programmes "$T/v93" 0.88.0+1793300000
