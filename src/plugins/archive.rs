@@ -126,7 +126,19 @@ pub fn lire(archive: &[u8], echeance: std::time::Instant) -> Result<Vec<Entree>,
         occupes.push(local..fin_donnees);
         let contenu = match methode {
             0 => brut.to_vec(),
-            8 => crate::archives::deflate::entier_avant(brut, decompresse, echeance).ok_or_else(illisible)?,
+            // Rien rendu : un flux invalide, ou l'échéance passée en le décompressant (dit comme tel : l'archive
+            // n'est peut-être pas abîmée, seulement trop lente à décompresser ici).
+            8 => crate::archives::deflate::entier_avant(brut, decompresse, echeance).ok_or_else(|| {
+                if std::time::Instant::now() >= echeance {
+                    tr!(
+                        "archive .zip : délai de décompression dépassé",
+                        ".zip archive: decompression time limit exceeded"
+                    )
+                    .to_string()
+                } else {
+                    illisible()
+                }
+            })?,
             _ => return Err(refus(tr!("compression inconnue", "unknown compression"))),
         };
         if contenu.len() != decompresse {
@@ -302,8 +314,8 @@ pub(crate) mod tests {
         let bonne = zip_brut(&[entree("a.sh", &flux, false), entree("b.sh", &flux, false)]);
         let e = lire(&bonne, loin).unwrap();
         assert!(e.len() == 2 && e.iter().all(|e| e.contenu.as_deref() == Some(&texte[..])));
-        // Une échéance passée : refusée au lieu d'être lue jusqu'au bout.
-        assert!(lire(&bonne, std::time::Instant::now()).is_err());
+        // Une échéance passée : refusée au lieu d'être lue jusqu'au bout, et dite comme telle.
+        assert!(lire(&bonne, std::time::Instant::now()).err().unwrap().contains("délai"));
         // Mêmes octets pour deux entrées, ou même nom (à la casse près) : refusée.
         let partagee = zip_brut(&[entree("a.sh", &flux, false), entree("b.sh", &flux, true)]);
         assert!(lire(&partagee, loin).err().unwrap().contains("autre entrée"));
@@ -311,6 +323,7 @@ pub(crate) mod tests {
         assert!(lire(&double, loin).err().unwrap().contains("double"));
         // Des blocs vides que la taille annoncée ne justifie pas : refusée sans être décodée.
         let gonfle = crate::archives::deflate::tests::vides_puis(2 * texte.len(), &texte);
-        assert!(lire(&zip_brut(&[entree("a.sh", &gonfle, false)]), loin).is_err());
+        let e = lire(&zip_brut(&[entree("a.sh", &gonfle, false)]), loin).err().unwrap();
+        assert!(e.contains("illisible"), "{e}");
     }
 }
