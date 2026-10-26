@@ -513,6 +513,13 @@ awk '/^  claude:/ { c = 1 } c && /name: Rust à jour/ { rust = NR } c && /^     
   END { exit !(rust && rust < v && v < a && a < d && ref == 2 && s == 2) }' "$Y" &&
   ok "claude.yml : le verrou et la relecture juste avant Claude, déverrouillé en dernier, script de la branche principale" ||
   ko "claude.yml : ordre des étapes du verrou faux, ou script du fil pris ailleurs"
+# Un seul Claude à la fois par fil : le groupe porte le numéro du ticket ou de la demande, et un second @claude attend
+# sans annuler le premier (relecture adverse du 26 octobre : sinon le premier déverrouille le fil sous le second).
+awk '/^  claude:/ { c = 1 } c && /^    concurrency:$/ { k = 1; next }
+  k && /^      group: .*\$\{\{ github.event.issue.number \|\| github.event.pull_request.number \}\}$/ { g = 1 }
+  k && /^      cancel-in-progress: false$/ { f = 1 } k && !/^      / { k = 0 } END { exit !(c && g && f) }' "$Y" &&
+  ok "claude.yml : un seul Claude à la fois par fil, le second attend sans annuler le premier" ||
+  ko "claude.yml : deux Claude sur un même fil en même temps (concurrency absente, mal groupée ou qui annule)"
 # Le ticket ou la demande eux-mêmes écrits par le propriétaire, pas seulement le commentaire qui appelle Claude.
 awk '/^  garde:/ { g = 1 } g && /^  claude:/ { exit }
   g && /issue_comment.*@claude/ { e = "ic" } g && /pull_request_review_comment.*@claude/ { e = "prc" }

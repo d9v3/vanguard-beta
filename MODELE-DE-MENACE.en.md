@@ -69,9 +69,10 @@ Each threat in detail, menu by menu: [What Vanguard does](README.en.md#what-vang
   the repository and runs cargo build and cargo test, to check what it fixes. It starts only for the owner, on a
   thread (an issue or a pull request from the repository itself, never from a fork) whose every comment, review and
   review comment is from the owner or from the Claude and GitHub Actions bots. Just before Claude, the thread is
-  locked, then read again the same way, and it stays locked until the job ends. What remains: people with write access
-  to the repository, who can still write on a locked thread; what it reads outside the thread (a linked issue, a page,
-  someone else's text copied by the owner); and the repository's own code, which cargo build and cargo test run.
+  locked, then read again the same way, and it stays locked until the job ends; a second `@claude` on the same thread
+  waits for the first to end. What remains: people with write access to the repository, who can still write on a
+  locked thread; what it reads outside the thread (a linked issue, a page, someone else's text copied by the owner);
+  and the repository's own code, which cargo build and cargo test run.
 - **The system answers truthfully at the time of the check.** A computer already compromised at the administrator
   level can deceive all of its readings (see above).
 - **The lists and third-party tools are right.** The threat, version and vulnerability lists (abuse.ch, CISA,

@@ -116,7 +116,8 @@ delivered just before it. Only the latest version has its download page; every v
   GitHub no longer starts on an issue or pull request written by anyone but the owner, nor on a thread where someone
   else commented or reviewed, nor on an issue from the key's log (written from any computer): it would read them as
   instructions. Just before Claude, the thread is locked and read again, which closes the minutes between this check
-  and Claude reading it. The threat model states what remains.
+  and Claude reading it; a second `@claude` on the same thread waits for the first to end, which would otherwise
+  unlock it under the second. The threat model states what remains.
 - **Argument that is not UTF-8.** An error logged to the key's journal during a command with an argument that is not
   UTF-8 (a file name) no longer aborts Vanguard: the command is written there with “�” in place of the unreadable
   bytes.

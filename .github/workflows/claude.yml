@@ -89,6 +89,13 @@ jobs:
     needs: garde
     # Le garde a déjà vérifié le propriétaire et l'origine de la demande ; sauté ou refusé, rien ne se lance.
     if: needs.garde.outputs.permis == 'oui'
+    # Un seul Claude à la fois par fil (ticket ou demande, même numéro) : deux @claude coup sur coup, le premier
+    # déverrouillait le fil à sa fin sous le second, encore au travail, et un autre pouvait y écrire avant qu'il le
+    # lise. Le second attend, jamais annulé par le premier ; un troisième arrivé pendant cette attente prend sa place
+    # (GitHub ne garde qu'un travail en attente par groupe) : le second est alors annulé, visible dans Actions.
+    concurrency:
+      group: claude-fil-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
