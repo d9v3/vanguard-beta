@@ -1153,6 +1153,45 @@ fn nom_affiche(h: &Hote) -> String {
 }
 
 fn afficher(r: &Rapport) {
+    afficher_entete(r);
+    afficher_appareils(r);
+    afficher_a_regarder(r);
+    afficher_autres_ports(r);
+    let objets: Vec<objets::Appareil> = r
+        .hotes
+        .iter()
+        .filter(|h| h.role != Some("cette machine"))
+        .map(Hote::objet)
+        .collect();
+    objets::afficher(&objets, false);
+
+    if let Some(e) = &r.empoisonnement {
+        crate::reseau::empoisonnement::afficher(e, &r.hotes);
+    }
+
+    afficher_absents(r);
+    // Ce que la maison montre à Internet, d'après ce scan du réseau local (l'UPnP n'est demandé à la box que pour
+    // lui) : les ports que la box renvoie, son adresse, l'IPv6, ses services. Rien n'est demandé à Internet ici.
+    if r.upnp.is_some() {
+        let entree = crate::audit::exposition::Entree::du_scan(r);
+        crate::audit::exposition::afficher_section(&crate::audit::exposition::constats(&entree));
+    }
+    // Chemins du menu depuis la 0.43 (groupe 5 « Réseau et Internet »), et la même chose en ligne de commande.
+    println!();
+    afficher_aligne(
+        "  ",
+        tr!(
+            "Astuce : menu 5.3 pour nommer un appareil (vanguard nommer <ip> <surnom>), 5.1.2 pour scanner tous ses ports (vanguard appareils <ip> -p tous).",
+            "Tip: menu 5.3 to name a device (vanguard name <ip> <nickname>), 5.1.2 to scan all its ports (vanguard devices <ip> -p all)."
+        ),
+        2,
+        DISCRET,
+    );
+}
+
+/// Le cadre, la note du réseau, le résumé des comptes et les alertes qui valent pour tout le réseau (carnet pas
+/// cru, usurpation de la box).
+fn afficher_entete(r: &Rapport) {
     let nom = r
         .nom_reseau
         .as_deref()
@@ -1213,7 +1252,10 @@ fn afficher(r: &Rapport) {
         let marque = format!("{}✖{RESET}", couleur(Niveau::Critique));
         afficher_marque("  ", &marque, &message_usurpation(boite, &mac, autre), LARGEUR - 6);
     }
+}
 
+/// Une ligne par appareil : pastille, adresse, nom, étiquette, nombre de ports, note.
+fn afficher_appareils(r: &Rapport) {
     section(&trf!("APPAREILS ({})", "DEVICES ({})", r.hotes.len()));
     for h in &r.hotes {
         let etiquette = if h.nouvelle {
@@ -1245,8 +1287,10 @@ fn afficher(r: &Rapport) {
             etiquette_note(h.score)
         );
     }
+}
 
-    // Détail des appareils qui demandent une action, le plus exposé d'abord.
+/// Détail des appareils qui demandent une action, le plus exposé d'abord.
+fn afficher_a_regarder(r: &Rapport) {
     let mut a_regarder: Vec<&Hote> = r
         .hotes
         .iter()
@@ -1297,8 +1341,10 @@ fn afficher(r: &Rapport) {
             }
         }
     }
+}
 
-    // Ports sans danger particulier (diffusion, découverte) : une ligne par appareil suffit.
+/// Ports sans danger particulier (diffusion, découverte) : une ligne par appareil suffit.
+fn afficher_autres_ports(r: &Rapport) {
     let autres: Vec<&Hote> = r
         .hotes
         .iter()
@@ -1325,19 +1371,10 @@ fn afficher(r: &Rapport) {
             );
         }
     }
+}
 
-    let objets: Vec<objets::Appareil> = r
-        .hotes
-        .iter()
-        .filter(|h| h.role != Some("cette machine"))
-        .map(Hote::objet)
-        .collect();
-    objets::afficher(&objets, false);
-
-    if let Some(e) = &r.empoisonnement {
-        crate::reseau::empoisonnement::afficher(e, &r.hotes);
-    }
-
+/// Les appareils déjà vus sur ce réseau et absents de ce scan.
+fn afficher_absents(r: &Rapport) {
     if !r.absents.is_empty() {
         section(&trf!("ABSENTS AUJOURD'HUI ({})", "ABSENT TODAY ({})", r.absents.len()));
         for a in &r.absents {
@@ -1353,23 +1390,6 @@ fn afficher(r: &Rapport) {
             );
         }
     }
-    // Ce que la maison montre à Internet, d'après ce scan du réseau local (l'UPnP n'est demandé à la box que pour
-    // lui) : les ports que la box renvoie, son adresse, l'IPv6, ses services. Rien n'est demandé à Internet ici.
-    if r.upnp.is_some() {
-        let entree = crate::audit::exposition::Entree::du_scan(r);
-        crate::audit::exposition::afficher_section(&crate::audit::exposition::constats(&entree));
-    }
-    // Chemins du menu depuis la 0.43 (groupe 5 « Réseau et Internet »), et la même chose en ligne de commande.
-    println!();
-    afficher_aligne(
-        "  ",
-        tr!(
-            "Astuce : menu 5.3 pour nommer un appareil (vanguard nommer <ip> <surnom>), 5.1.2 pour scanner tous ses ports (vanguard appareils <ip> -p tous).",
-            "Tip: menu 5.3 to name a device (vanguard name <ip> <nickname>), 5.1.2 to scan all its ports (vanguard devices <ip> -p all)."
-        ),
-        2,
-        DISCRET,
-    );
 }
 
 /// Lance le scan réseau et retourne le rapport.

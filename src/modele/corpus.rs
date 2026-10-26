@@ -723,7 +723,7 @@ const RECOPIES: &[(&str, &str, &str, &str)] = &[
         "juger_winsock",
         "Niveau::Info",
     ),
-    ("COM-ARP-001", "reseau/mod.rs", "afficher", "Niveau::Critique"),
+    ("COM-ARP-001", "reseau/mod.rs", "afficher_entete", "Niveau::Critique"),
 ];
 
 /// Les règles qui citent une technique d'ATT&CK (T…), lues dans la carte que outils/couverture-attack.py tire des
