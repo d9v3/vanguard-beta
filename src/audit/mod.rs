@@ -466,7 +466,12 @@ fn constats_du_domaine(d: Domaine, c: &Contexte) -> Vec<Constat> {
             adresse_locale: c.adresse_locale,
         }),
     }));
-    let constats = constats.unwrap_or_else(|_| vec![erreur_interne(d)]);
+    ou_non_verifie(d, constats)
+}
+
+/// Le garde-fou de chaque domaine : un domaine qui a planté ou n'a rien rendu est dit non vérifié, jamais sain.
+fn ou_non_verifie(d: Domaine, resultat: std::thread::Result<Vec<Constat>>) -> Vec<Constat> {
+    let constats = resultat.unwrap_or_else(|_| vec![erreur_interne(d)]);
     if constats.is_empty() {
         return vec![non_verifie(
             d.categorie(),
@@ -744,6 +749,24 @@ mod tests {
         assert_eq!(pare_feu_local(&[coupe]), Some(false));
         assert_eq!(pare_feu_local(&[inconnu, actif]), None);
         assert_eq!(pare_feu_local(&[furtif]), None);
+    }
+
+    /// Un domaine qui plante ou ne rend rien : un seul constat, non vérifié, qui le nomme ; sinon ses constats tels quels.
+    #[test]
+    fn domaine_plante_ou_muet_non_verifie() {
+        for d in Domaine::TOUS {
+            let plante: std::thread::Result<Vec<Constat>> = Err(Box::new("panique"));
+            for r in [ou_non_verifie(d, plante), ou_non_verifie(d, Ok(Vec::new()))] {
+                assert_eq!(r.len(), 1);
+                assert!(!r[0].verifie, "{}", r[0].message);
+                assert_eq!(r[0].categorie, d.categorie());
+                assert!(r[0].message.contains(d.titre()), "{}", r[0].message);
+            }
+            let sain = crate::machine::ok(d.categorie(), "Rien à signaler.");
+            let r = ou_non_verifie(d, Ok(vec![sain]));
+            assert_eq!(r.len(), 1);
+            assert!(r[0].verifie && r[0].message == "Rien à signaler.");
+        }
     }
 
     #[test]

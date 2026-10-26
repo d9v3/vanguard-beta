@@ -679,6 +679,73 @@ fn verifier_fichier_absent_ou_dossier() {
 }
 
 #[test]
+fn verifier_fichier_verdicts() {
+    // Wine calcule les empreintes par Windows, qu'il n'a pas : sous Wine, tout serait « impossible à calculer ».
+    if sous_wine() {
+        return;
+    }
+    let dossier = maison_jetable();
+    let notes = dossier.join("notes.txt");
+    std::fs::write(&notes, "bonjour\n").unwrap();
+    let sha256 = "9cec0af545144159bac85c7b908d5e0b9b0ef961497401c5ad8da26f065ad926";
+    let verifier = |langue: &str, fichier: &Path, empreinte: Option<&str>| {
+        let mut args = vec!["verifier-fichier", fichier.to_str().unwrap()];
+        args.extend(empreinte);
+        let s = vanguard(langue, &args, "", 120);
+        assert_eq!(s.code, Some(0), "{}", s.erreurs);
+        // Les phrases longues sont coupées en lignes à l'écran : remises bout à bout.
+        sans_couleurs(&s.texte).split_whitespace().collect::<Vec<_>>().join(" ")
+    };
+    // La bonne empreinte SHA-256, collée : c'est le fichier publié.
+    let t = verifier("fr", &notes, Some(sha256));
+    assert!(
+        t.contains("L'empreinte SHA-256 (collée) correspond : c'est bien le fichier publié"),
+        "{t}"
+    );
+    assert!(!t.contains("Ne l'ouvrez pas"), "{t}");
+    let t = verifier("en", &notes, Some(sha256));
+    assert!(
+        t.contains("The SHA-256 checksum (pasted) matches: it is the published file"),
+        "{t}"
+    );
+    // Une autre : le fichier a été abîmé ou remplacé, et le verdict le dit.
+    let t = verifier("fr", &notes, Some(&"0".repeat(64)));
+    assert!(
+        t.contains("ne correspond pas : le fichier a été abîmé ou remplacé"),
+        "{t}"
+    );
+    assert!(
+        t.contains("Ne l'ouvrez pas : ce fichier n'est pas ce qu'il prétend être"),
+        "{t}"
+    );
+    // MD5 : il prouve que le fichier n'est pas abîmé, pas que personne ne l'a remplacé ; le verdict n'est pas « conforme ».
+    let t = verifier("fr", &notes, Some("94baaad4d1347ec6e15ae35c88ee8bc8"));
+    assert!(t.contains("MD5 se falsifie"), "{t}");
+    assert!(
+        t.contains("l'empreinte n'a pas prouvé que c'est le fichier publié"),
+        "{t}"
+    );
+    // Un texte qui n'est pas une empreinte est dit, et rien n'est conclu de lui.
+    let t = verifier("fr", &notes, Some("voir le site"));
+    assert!(t.contains("« voir le site » n'est pas une empreinte reconnue"), "{t}");
+    assert!(t.contains("Pas d'empreinte à comparer"), "{t}");
+    // Sans empreinte donnée, celle d'un SHA256SUMS posé à côté.
+    std::fs::write(dossier.join("SHA256SUMS"), format!("{sha256}  notes.txt\n")).unwrap();
+    let t = verifier("fr", &notes, None);
+    assert!(t.contains("(lue dans SHA256SUMS) correspond"), "{t}");
+    // Un programme Windows déguisé en document, sous une double extension.
+    let piege = dossier.join("facture.pdf.exe");
+    std::fs::write(&piege, b"MZ\x90\x00").unwrap();
+    let t = verifier("fr", &piege, None);
+    assert!(t.contains("Double extension « .pdf.exe »"), "{t}");
+    assert!(
+        t.contains("Ne l'ouvrez pas : ce fichier n'est pas ce qu'il prétend être"),
+        "{t}"
+    );
+    let _ = std::fs::remove_dir_all(&dossier);
+}
+
+#[test]
 fn sortantes_en_lecture_seule() {
     let s = vanguard("fr", &["connexions-sortantes"], "", 90);
     assert_eq!(s.code, Some(0), "{}", s.erreurs);

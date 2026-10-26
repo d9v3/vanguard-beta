@@ -773,6 +773,25 @@ mod tests {
         constats.iter().filter(|c| c.regle == regle).collect()
     }
 
+    /// Les redirections que l'audit retient du scan : lues, aucune quand UPnP est absent, rien de cru sinon.
+    #[test]
+    fn redirections_du_scan() {
+        use crate::audit::redirections_du_scan as du_scan;
+        let une = vec![redirection("TCP", 3389, "10.0.0.10", 3389, "Bureau")];
+        assert_eq!(
+            du_scan(&rapport(Some(Etat::Actif(lecture(une, None))))).map(|l| l.len()),
+            Some(1)
+        );
+        assert_eq!(du_scan(&rapport(Some(Etat::Absent))).map(|l| l.len()), Some(0));
+        // Refusées par la box, outil absent, box usurpée, pas de lecture : non lues, pas « aucune ».
+        let mut refusees = lecture(vec![redirection("TCP", 22, "10.0.0.50", 22, "")], None);
+        refusees.lues = false;
+        assert!(du_scan(&rapport(Some(Etat::Actif(refusees)))).is_none());
+        assert!(du_scan(&rapport(Some(Etat::OutilAbsent))).is_none());
+        assert!(du_scan(&rapport(Some(Etat::Usurpee(vec![Ipv4Addr::new(10, 0, 0, 66)])))).is_none());
+        assert!(du_scan(&rapport(None)).is_none());
+    }
+
     #[test]
     fn redirections_jugees() {
         let r = rapport(Some(Etat::Actif(lecture(

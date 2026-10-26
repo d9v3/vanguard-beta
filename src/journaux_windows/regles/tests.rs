@@ -235,6 +235,21 @@ fn journal_efface_par_104() {
     assert_eq!(trouvailles(&juger(&[autre]), "EVT-EFF-001"), []);
 }
 
+#[test]
+fn journal_de_securite_plein() {
+    // Un 1104 : le journal de sécurité est plein et n'écrase rien ; Windows n'y écrit plus.
+    let e = ev("Security", "Microsoft-Windows-Eventlog", 1104, 0, &[]);
+    let js = juger(&[e]);
+    let t = trouvailles(&js, "EVT-EFF-001");
+    assert_eq!(t.len(), 1);
+    assert_eq!(t[0].gravite, Gravite::Alerte);
+    assert_eq!(t[0].objet, "plein|2026-10-18T14:00:00");
+    // Le même numéro sous un autre fournisseur, ou dans un autre journal, n'est pas celui de Windows.
+    let faux = ev("Security", "Faux", 1104, 0, &[]);
+    let ailleurs = ev("System", "Microsoft-Windows-Eventlog", 1104, 0, &[]);
+    assert_eq!(trouvailles(&juger(&[faux, ailleurs]), "EVT-EFF-001"), []);
+}
+
 fn suite(trous: Vec<Trou>, non_verifies: u64) -> Suite {
     Suite {
         numerotation: Numerotation::Journal,
