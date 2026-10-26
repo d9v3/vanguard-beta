@@ -30,15 +30,11 @@ pub struct Entree {
 /// mêmes octets les feraient décoder 500 fois.
 const DELAI: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Les entrées de l'archive, lues par son répertoire central. `Err` dit pourquoi elle est refusée.
-pub fn lire(archive: &[u8]) -> Result<Vec<Entree>, String> {
-    lire_avant(archive, std::time::Instant::now() + DELAI)
-}
-
-/// `lire`, toute l'archive décompressée avant `echeance`. Chaque entrée a ses propres octets (deux entrées qui se
+/// Les entrées de l'archive, lues par son répertoire central, toute l'archive décompressée avant `echeance`. `Err`
+/// dit pourquoi elle est refusée. Chaque entrée a ses propres octets (deux entrées qui se
 /// chevauchent, ou deux fois le même nom, et l'archive est refusée) et des octets compressés plausibles pour la taille
 /// qu'elle annonce : une archive ne fait décoder que ce qu'elle contient, une fois.
-fn lire_avant(archive: &[u8], echeance: std::time::Instant) -> Result<Vec<Entree>, String> {
+pub fn lire(archive: &[u8], echeance: std::time::Instant) -> Result<Vec<Entree>, String> {
     let illisible = || tr!("archive .zip illisible", "unreadable .zip archive").to_string();
     let debut = archive.len().saturating_sub(22 + 0xffff);
     let fin = (debut..archive.len().saturating_sub(21))
@@ -163,7 +159,7 @@ pub fn deplier(archive: &Path, vers: &Path) -> Result<(), String> {
     if octets.len() > OCTETS_MAX {
         return Err(refus());
     }
-    for e in lire(&octets)? {
+    for e in lire(&octets, std::time::Instant::now() + DELAI)? {
         let cible = e.chemin.split('/').fold(vers.to_path_buf(), |c, p| c.join(p));
         let parent = if e.contenu.is_none() {
             Some(cible.as_path())
@@ -264,10 +260,14 @@ pub(crate) mod tests {
         a
     }
 
+    fn loin() -> std::time::Instant {
+        std::time::Instant::now() + DELAI
+    }
+
     #[test]
     fn une_archive_ne_sort_jamais_de_son_dossier() {
         let bonne = zip(&[("salon/", b"", 0o40_755), ("salon/essai.sh", b"echo un\n", 0o100_644)]);
-        let e = lire(&bonne).unwrap();
+        let e = lire(&bonne, loin()).unwrap();
         assert_eq!(e.len(), 2);
         assert_eq!(e[1].contenu.as_deref(), Some(&b"echo un\n"[..]));
         for (nom, droits, attendu) in [
@@ -277,10 +277,10 @@ pub(crate) mod tests {
             ("C:/x", 0o100_644, "hors du dossier"),
             ("lien", 0o120_777, "lien"),
         ] {
-            let e = lire(&zip(&[(nom, b"x", droits)])).err().unwrap();
+            let e = lire(&zip(&[(nom, b"x", droits)]), loin()).err().unwrap();
             assert!(e.contains(attendu), "{nom} : {e}");
         }
-        assert!(lire(b"pas une archive").is_err());
+        assert!(lire(b"pas une archive", loin()).is_err());
     }
 
     /// Une archive ne fait décoder que ce qu'elle contient, une fois : des entrées qui partagent leurs octets, un nom
@@ -300,17 +300,17 @@ pub(crate) mod tests {
         };
         let loin = std::time::Instant::now() + std::time::Duration::from_secs(600);
         let bonne = zip_brut(&[entree("a.sh", &flux, false), entree("b.sh", &flux, false)]);
-        let e = lire_avant(&bonne, loin).unwrap();
+        let e = lire(&bonne, loin).unwrap();
         assert!(e.len() == 2 && e.iter().all(|e| e.contenu.as_deref() == Some(&texte[..])));
         // Une échéance passée : refusée au lieu d'être lue jusqu'au bout.
-        assert!(lire_avant(&bonne, std::time::Instant::now()).is_err());
+        assert!(lire(&bonne, std::time::Instant::now()).is_err());
         // Mêmes octets pour deux entrées, ou même nom (à la casse près) : refusée.
         let partagee = zip_brut(&[entree("a.sh", &flux, false), entree("b.sh", &flux, true)]);
-        assert!(lire_avant(&partagee, loin).err().unwrap().contains("autre entrée"));
+        assert!(lire(&partagee, loin).err().unwrap().contains("autre entrée"));
         let double = zip_brut(&[entree("a.sh", &flux, false), entree("A.sh", &flux, false)]);
-        assert!(lire_avant(&double, loin).err().unwrap().contains("double"));
+        assert!(lire(&double, loin).err().unwrap().contains("double"));
         // Des blocs vides que la taille annoncée ne justifie pas : refusée sans être décodée.
         let gonfle = crate::archives::deflate::tests::vides_puis(2 * texte.len(), &texte);
-        assert!(lire_avant(&zip_brut(&[entree("a.sh", &gonfle, false)]), loin).is_err());
+        assert!(lire(&zip_brut(&[entree("a.sh", &gonfle, false)]), loin).is_err());
     }
 }
