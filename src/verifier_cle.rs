@@ -746,26 +746,7 @@ fn identifiant_d_essai() -> u64 {
 
 /// « vanguard verifier-cle `[dossier]` » : sans dossier, la clé se choisit parmi celles qui sont branchées.
 pub fn commande(dossier: Option<&Path>) {
-    println!();
-    cadre(
-        &format!("{ACCENT}{}{RESET}", tr!("VÉRIFIER MA CLÉ", "CHECK MY DRIVE")),
-        &format!(
-            "{GRIS}{}{RESET}",
-            tr!(
-                "écrit dans le libre, puis efface",
-                "writes in the free space, then erases"
-            )
-        ),
-    );
-    afficher_aligne(
-        "  ",
-        tr!(
-            "Une fausse clé annonce 1 To et n'en a que 16 Go : elle accepte tout et rend n'importe quoi au-delà. Vanguard écrit dans l'espace libre un contenu qu'il saura reconnaître, relit tout en contournant la mémoire de l'ordinateur, mesure les vitesses, puis efface tout. Vos fichiers ne sont pas touchés.",
-            "A fake drive claims 1 TB and has only 16 GB: it accepts everything and returns garbage beyond that. Vanguard writes recognizable content into the free space, reads it all back bypassing the computer's memory, measures the speeds, then erases everything. Your files are not touched."
-        ),
-        2,
-        GRIS,
-    );
+    presenter();
     let disque = match dossier.map(disque_de) {
         None => choisir_disque(),
         Some(d) => d.inspect_err(|e| mauvais(e)).ok(),
@@ -773,24 +754,7 @@ pub fn commande(dossier: Option<&Path>) {
     let Some(disque) = disque else { return };
     let racine = disque.racine.clone();
     println!();
-    // Ce qu'un essai interrompu (débranchement, fermeture) a laissé : à nous, repris avant de compter la place.
-    let restes = restes(&racine);
-    if !restes.is_empty() {
-        let noms: Vec<String> = restes.iter().map(|r| chemin_affichable(r)).collect();
-        info(&trf!(
-            "Un essai interrompu a laissé ses fichiers sur ce disque : {}.",
-            "An interrupted check left its files on this disk: {}.",
-            noms.join(", ")
-        ));
-        if demander(tr!("  Les effacer ? [o/N] : ", "  Erase them? [y/N]: ")).oui() {
-            for r in &restes {
-                match nettoyer(r) {
-                    Ok(()) => bon(&trf!("{} effacé.", "{} erased.", chemin_affichable(r))),
-                    Err(e) => mauvais(&trf!("{} : {e}", "{}: {e}", chemin_affichable(r))),
-                }
-            }
-        }
-    }
+    proposer_d_effacer_les_restes(&racine);
     let Some((libre, total)) = place(&racine) else {
         mauvais(tr!(
             "Place libre illisible sur ce disque.",
@@ -811,8 +775,76 @@ pub fn commande(dossier: Option<&Path>) {
     };
     let p = Parametres::REELS;
     let Some(plan) = plan(libre, mode, &p) else { return };
+    if !annoncer(&disque, mode, &plan, &p, libre, total) {
+        return;
+    }
+    let essai = identifiant_d_essai();
+    let dossier = racine.join(format!("{PREFIXE_DOSSIER}{essai:016x}"));
+    if let Err(e) = std::fs::create_dir(&dossier) {
+        mauvais(&trf!(
+            "Impossible de créer le dossier de l'essai : {e}",
+            "Could not create the check folder: {e}"
+        ));
+        return;
+    }
+    println!();
+    let (ecriture, lecture) = essayer(&dossier, &plan, &p, essai);
+    let menage = nettoyer(&dossier);
+    annoncer_le_resultat(mode, plan.octets, occupe, total, &ecriture, &lecture);
+    annoncer_le_menage(&menage, &dossier);
+}
+
+/// Le titre et ce que fait la vérification, avant de choisir le disque.
+fn presenter() {
+    println!();
+    cadre(
+        &format!("{ACCENT}{}{RESET}", tr!("VÉRIFIER MA CLÉ", "CHECK MY DRIVE")),
+        &format!(
+            "{GRIS}{}{RESET}",
+            tr!(
+                "écrit dans le libre, puis efface",
+                "writes in the free space, then erases"
+            )
+        ),
+    );
+    afficher_aligne(
+        "  ",
+        tr!(
+            "Une fausse clé annonce 1 To et n'en a que 16 Go : elle accepte tout et rend n'importe quoi au-delà. Vanguard écrit dans l'espace libre un contenu qu'il saura reconnaître, relit tout en contournant la mémoire de l'ordinateur, mesure les vitesses, puis efface tout. Vos fichiers ne sont pas touchés.",
+            "A fake drive claims 1 TB and has only 16 GB: it accepts everything and returns garbage beyond that. Vanguard writes recognizable content into the free space, reads it all back bypassing the computer's memory, measures the speeds, then erases everything. Your files are not touched."
+        ),
+        2,
+        GRIS,
+    );
+}
+
+/// Ce qu'un essai interrompu (débranchement, fermeture) a laissé : à nous, repris avant de compter la place.
+fn proposer_d_effacer_les_restes(racine: &Path) {
+    let restes = restes(racine);
+    if restes.is_empty() {
+        return;
+    }
+    let noms: Vec<String> = restes.iter().map(|r| chemin_affichable(r)).collect();
+    info(&trf!(
+        "Un essai interrompu a laissé ses fichiers sur ce disque : {}.",
+        "An interrupted check left its files on this disk: {}.",
+        noms.join(", ")
+    ));
+    if demander(tr!("  Les effacer ? [o/N] : ", "  Erase them? [y/N]: ")).oui() {
+        for r in &restes {
+            match nettoyer(r) {
+                Ok(()) => bon(&trf!("{} effacé.", "{} erased.", chemin_affichable(r))),
+                Err(e) => mauvais(&trf!("{} : {e}", "{}: {e}", chemin_affichable(r))),
+            }
+        }
+    }
+}
+
+/// Ce qui va être écrit, où, combien de temps ça prendra ; `true` si la personne accepte de commencer.
+fn annoncer(disque: &crate::copier::Disque, mode: Mode, plan: &Plan, p: &Parametres, libre: u64, total: u64) -> bool {
+    let occupe = total.saturating_sub(libre);
     section(tr!("CE QUE VANGUARD VA FAIRE", "WHAT VANGUARD WILL DO"));
-    let genre = crate::copier::genre_du_volume(&racine).unwrap_or_default();
+    let genre = crate::copier::genre_du_volume(&disque.racine).unwrap_or_default();
     afficher_aligne(
         "  ",
         &trf!(
@@ -853,41 +885,34 @@ pub fn commande(dossier: Option<&Path>) {
     if crate::copier::limite_4_go(&genre) && p.fichier >= 4 * GIO {
         info(tr!("FAT32 : fichiers de 1 Go.", "FAT32: 1 GB files."));
     }
-    if !demander(tr!("\n  Commencer ? [o/N] : ", "\n  Start? [y/N]: ")).oui() {
-        return;
-    }
-    let essai = identifiant_d_essai();
-    let dossier = racine.join(format!("{PREFIXE_DOSSIER}{essai:016x}"));
-    if let Err(e) = std::fs::create_dir(&dossier) {
-        mauvais(&trf!(
-            "Impossible de créer le dossier de l'essai : {e}",
-            "Could not create the check folder: {e}"
-        ));
-        return;
-    }
-    println!();
-    let (ecriture, lecture) = {
-        let clavier = Clavier::prendre();
-        let mut avancement = Avancement::nouveau();
-        let mut controle = |phase: Phase, fait: u64, total: u64| {
-            avancement.montrer(phase, fait, total);
-            clavier.arret_demande()
-        };
-        let ecriture = ecrire(&dossier, plan.octets, &p, essai, &mut controle);
-        let lecture = if ecriture.arretee {
-            Lecture {
-                arretee: true,
-                ..Lecture::default()
-            }
-        } else {
-            relire(&ecriture.fichiers, &p, essai, &mut controle)
-        };
-        avancement.finir();
-        (ecriture, lecture)
+    demander(tr!("\n  Commencer ? [o/N] : ", "\n  Start? [y/N]: ")).oui()
+}
+
+/// L'écriture puis la relecture, avec l'avancement à l'écran ; Échap ou Ctrl-C arrêtent l'une ou l'autre.
+fn essayer(dossier: &Path, plan: &Plan, p: &Parametres, essai: u64) -> (Ecriture, Lecture) {
+    let clavier = Clavier::prendre();
+    let mut avancement = Avancement::nouveau();
+    let mut controle = |phase: Phase, fait: u64, total: u64| {
+        avancement.montrer(phase, fait, total);
+        clavier.arret_demande()
     };
-    let menage = nettoyer(&dossier);
+    let ecriture = ecrire(dossier, plan.octets, p, essai, &mut controle);
+    let lecture = if ecriture.arretee {
+        Lecture {
+            arretee: true,
+            ..Lecture::default()
+        }
+    } else {
+        relire(&ecriture.fichiers, p, essai, &mut controle)
+    };
+    avancement.finir();
+    (ecriture, lecture)
+}
+
+/// Le verdict de l'essai, puis ce qui l'a arrêté et les vitesses mesurées.
+fn annoncer_le_resultat(mode: Mode, prevu: u64, occupe: u64, total: u64, ecriture: &Ecriture, lecture: &Lecture) {
     section(tr!("RÉSULTAT", "RESULT"));
-    match conclure(mode, plan.octets, occupe, total, &ecriture, &lecture) {
+    match conclure(mode, prevu, occupe, total, ecriture, lecture) {
         Conclusion::Prouvee { verifie, occupe } => bon(&trf!(
             "Capacité confirmée : {} écrits et relus sans une erreur ({} déjà occupés par vos fichiers, non vérifiés).",
             "Capacity confirmed: {} written and read back without a single error ({} already used by your files, not checked).",
@@ -954,6 +979,10 @@ pub fn commande(dossier: Option<&Path>) {
             debit(lecture.octets, lecture.duree)
         ));
     }
+}
+
+/// Ce que dit le ménage : la clé est comme avant, ou le dossier de l'essai est à effacer à la main.
+fn annoncer_le_menage(menage: &std::io::Result<()>, dossier: &Path) {
     match menage {
         Ok(()) => bon(tr!(
             "Tout ce que Vanguard a écrit est effacé ; la clé est comme avant.",
@@ -962,7 +991,7 @@ pub fn commande(dossier: Option<&Path>) {
         Err(e) => mauvais(&trf!(
             "Le dossier de l'essai n'a pas pu être effacé ({e}) : supprimez {} vous-même.",
             "The check folder could not be erased ({e}): delete {} yourself.",
-            chemin_affichable(&dossier)
+            chemin_affichable(dossier)
         )),
     }
 }
