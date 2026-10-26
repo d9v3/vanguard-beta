@@ -452,27 +452,56 @@ fn depose_par_le_deploiement(chemin: &str) -> bool {
 /// la clé, pour qu'il le repose, au lieu d'être seulement écarté de la comparaison. Écarté, un fichier qu'il ne
 /// réécrit pas à coup sûr (macOS/vanguard sans compilation Mac, archive tldr déjà rafraîchie dans la journée, fichier
 /// de source/ à la même taille et à la même date que rsync saute) entrait tel quel dans la référence (campagne
-/// d'attaque n° 4). Le jeton reste comparé : le déploiement le garde, ne le repose pas. Rend l'écart qui reste et les
-/// chemins retirés.
-fn retirer_le_suspens(racine: &Path, mut ecart: Ecart) -> std::io::Result<(Ecart, Vec<String>)> {
-    let mut retires = Vec::new();
-    for liste in [&mut ecart.nouveaux, &mut ecart.modifies] {
-        let mut garde = Vec::new();
-        for c in liste.drain(..) {
-            if c == crate::protection::cles_connues::JETON || !depose_par_le_deploiement(&c) {
-                garde.push(c);
-                continue;
-            }
-            match std::fs::remove_file(racine.join(&c)) {
-                Ok(()) => retires.push(c),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(std::io::Error::new(e.kind(), format!("{c} : {e}"))),
-            }
-        }
-        *liste = garde;
+/// d'attaque n° 4). Le jeton reste comparé : le déploiement le garde, ne le repose pas. Rien n'est retiré tant qu'un
+/// autre écart demeure : le déploiement sera refusé de toute façon, et la clé garde la preuve de ce qui a changé
+/// (relecture adverse de la campagne 4). Rend l'écart qui reste (l'écart entier si rien n'est retiré) et les chemins
+/// retirés.
+fn retirer_le_suspens(racine: &Path, ecart: Ecart) -> std::io::Result<(Ecart, Vec<String>)> {
+    let suspect = |c: &String| c != crate::protection::cles_connues::JETON && depose_par_le_deploiement(c);
+    // D'abord le reste, sans toucher à la clé.
+    let reste = Ecart {
+        verifies: ecart.verifies,
+        nouveaux: ecart.nouveaux.iter().filter(|c| !suspect(c)).cloned().collect(),
+        modifies: ecart.modifies.iter().filter(|c| !suspect(c)).cloned().collect(),
+        disparus: ecart
+            .disparus
+            .iter()
+            .filter(|c| !depose_par_le_deploiement(c))
+            .cloned()
+            .collect(),
+        images: ecart.images,
+    };
+    if !reste.vide() {
+        return Ok((ecart, Vec::new()));
     }
-    ecart.disparus.retain(|c| !depose_par_le_deploiement(c));
-    Ok((ecart, retires))
+    let mut retires = Vec::new();
+    for c in ecart.nouveaux.iter().chain(&ecart.modifies).filter(|c| suspect(c)) {
+        match std::fs::remove_file(racine.join(c)) {
+            Ok(()) => retires.push(c.clone()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(std::io::Error::new(e.kind(), format!("{c} : {e}"))),
+        }
+    }
+    Ok((reste, retires))
+}
+
+/// Ce que le déploiement fera du chemin `c` retiré à la reprise : il ne repose pas à coup sûr le programme macOS
+/// (seulement si une compilation Mac de GitHub est récupérée) ni les archives tldr (seulement s'il peut les
+/// télécharger).
+fn sera_repose(c: &str) -> &'static str {
+    if c.starts_with("macOS/") {
+        tr!(
+            "le déploiement le repose s'il récupère une compilation Mac ; sinon la clé reste sans lui",
+            "the deployment puts it back if it gets a Mac build; otherwise the key stays without it"
+        )
+    } else if c.starts_with("tldr/") {
+        tr!(
+            "le déploiement le repose s'il peut le télécharger ; hors ligne, la clé reste sans lui",
+            "the deployment puts it back if it can download it; offline, the key stays without it"
+        )
+    } else {
+        tr!("le déploiement le repose", "the deployment puts it back")
+    }
 }
 
 /// L'écart, sans ce que le déploiement pose lui-même (`depose_par_le_deploiement`).
@@ -740,7 +769,7 @@ pub fn comparer(racine: &Path) -> Result<Ecart, String> {
 
 /// Avant que le déploiement n'écrive quoi que ce soit sur la clé `racine` (`vanguard deploiement comparer-cle`) :
 /// elle doit être exactement sa référence (`reprise`, après un déploiement arrêté en route : ce que le déploiement pose
-/// lui-même et qui diffère est retiré de la clé, `retirer_le_suspens`). `Ok` : le nombre de fichiers vérifiés. Sinon le code de sortie et ce
+/// lui-même et qui diffère est retiré de la clé, `retirer_le_suspens`, si rien d'autre ne diffère). `Ok` : le nombre de fichiers vérifiés. Sinon le code de sortie et ce
 /// qu'il faut dire : 2, la clé a changé (l'écart) ; 3, pas de référence pour elle ici.
 pub(crate) fn avant_deploiement(racine: &Path, reprise: bool) -> Result<usize, (i32, String)> {
     let base = crate::socle::dossier_local();
@@ -774,8 +803,9 @@ fn comparer_avant_deploiement(racine: &Path, m: &Manifeste, reprise: bool, gros:
             eprintln!(
                 "{}",
                 trf!(
-                    "Reprise : {c} différait de la référence, retiré de la clé (le déploiement le repose)",
-                    "Resume: {c} differed from the reference, removed from the key (the deployment puts it back)"
+                    "Reprise : {c} différait de la référence, retiré de la clé ({})",
+                    "Resume: {c} differed from the reference, removed from the key ({})",
+                    sera_repose(&c)
                 )
             );
         }
@@ -1767,6 +1797,19 @@ mod tests {
             Err(2)
         );
         assert!(racine.join("Linux/libpiege.so").exists());
+        // Relecture adverse : un autre écart demeure (libpiege.so), donc la reprise sera refusée ; ce que le
+        // déploiement pose et qui diffère reste sur la clé, preuve de ce qui a changé, au lieu d'être effacé.
+        std::fs::write(racine.join("Linux/vanguard"), "programme piege").unwrap();
+        let refus = comparer_avant_deploiement(&racine, &m, true, 100).unwrap_err();
+        assert_eq!(refus.0, 2);
+        assert!(racine.join("Linux/vanguard").exists(), "preuve effacée avant le refus");
+        assert!(refus.1.contains("Linux/vanguard"), "{}", refus.1);
+        // Le message dit ce qui ne sera peut-être pas reposé.
+        assert!(sera_repose("macOS/vanguard").contains("Mac"));
+        assert!(
+            sera_repose("tldr/tldr-pages.en.zip").contains("hors ligne") || sera_repose("tldr/x").contains("offline")
+        );
+        assert!(!sera_repose("Linux/vanguard").contains("sinon"));
         let _ = std::fs::remove_dir_all(&base);
         let _ = std::fs::remove_dir_all(&racine);
     }
