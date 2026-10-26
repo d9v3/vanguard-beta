@@ -6,6 +6,7 @@
 #[path = "../../src/archives/crc32.rs"]
 mod crc32;
 
+#[allow(dead_code)]
 #[path = "../../src/archives/deflate.rs"]
 mod deflate;
 

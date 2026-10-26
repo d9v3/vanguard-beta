@@ -118,6 +118,15 @@ fn mot32(o: &[u8], i: usize) -> Option<usize> {
 /// vraies tailles même quand l'en-tête local les laisse à zéro. Compression « deflate » (8) ou aucune (0) ; au-delà de
 /// `max` octets décompressés, rien. `None` : ce n'est pas une archive lisible.
 pub(crate) fn premier_fichier_zip(archive: &[u8], max: usize) -> Option<Vec<u8>> {
+    premier_fichier_zip_avant(archive, max, std::time::Instant::now() + DELAI_ZIP)
+}
+
+/// Le temps de décompresser la liste complète : une vraie (≈ 100 Mio de texte) se lit en moins d'une seconde ; des
+/// blocs deflate vides coûtent ≈ 1,2 s de processeur par Mio compressé sans rien produire.
+const DELAI_ZIP: Duration = Duration::from_secs(60);
+
+/// `premier_fichier_zip`, décompressé avant `echeance`.
+fn premier_fichier_zip_avant(archive: &[u8], max: usize, echeance: std::time::Instant) -> Option<Vec<u8>> {
     // La fin du répertoire central : 22 octets, au plus 64 Kio de commentaire après.
     let debut = archive.len().saturating_sub(22 + 0xffff);
     let fin = (debut..archive.len().saturating_sub(21))
@@ -137,14 +146,13 @@ pub(crate) fn premier_fichier_zip(archive: &[u8], max: usize) -> Option<Vec<u8>>
     let donnees = local + 30 + mot16(archive, local + 26)? + mot16(archive, local + 28)?;
     let brut = archive.get(donnees..donnees.checked_add(compresse)?)?;
     // Décompressé jusqu'à la taille annoncée, pas jusqu'à `max` : une archive qui annonce 1 octet et en contient
-    // un milliard s'arrête au premier ; et le résultat doit faire exactement la taille annoncée (comme
-    // plugins/archive.rs).
-    let contenu = match methode {
-        0 => brut.to_vec(),
-        8 => miniz_oxide::inflate::decompress_to_vec_with_limit(brut, decompresse).ok()?,
-        _ => return None,
-    };
-    (contenu.len() == decompresse).then_some(contenu)
+    // un milliard s'arrête au premier ; le résultat doit faire exactement la taille annoncée, d'octets compressés
+    // plausibles pour elle, lus avant l'échéance (comme plugins/archive.rs).
+    match methode {
+        0 => (brut.len() == decompresse).then(|| brut.to_vec()),
+        8 => crate::archives::deflate::entier_avant(brut, decompresse, echeance),
+        _ => None,
+    }
 }
 
 /// La liste complète reçue est-elle la liste ? Une archive lisible, de taille raisonnable une fois ouverte, avec
@@ -427,6 +435,10 @@ mod tests {
             } else {
                 contenu.to_vec()
             };
+            archive_de(&donnees, contenu.len(), methode)
+        }
+        /// L'archive d'octets déjà compressés (`donnees`), qui annonce `taille` octets une fois décompressée.
+        fn archive_de(donnees: &[u8], taille: usize, methode: u16) -> Vec<u8> {
             let nom = b"full_sha256.txt";
             let mut z = b"PK\x03\x04".to_vec();
             z.extend_from_slice(&[20, 0, 8, 0]); // version, drapeaux (bit 3 : tailles plus loin)
@@ -435,14 +447,14 @@ mod tests {
             z.extend_from_slice(&u16::try_from(nom.len()).unwrap().to_le_bytes());
             z.extend_from_slice(&[0, 0]);
             z.extend_from_slice(nom);
-            z.extend_from_slice(&donnees);
+            z.extend_from_slice(donnees);
             let central = z.len();
             z.extend_from_slice(b"PK\x01\x02");
             z.extend_from_slice(&[20, 0, 20, 0, 8, 0]);
             z.extend_from_slice(&methode.to_le_bytes());
             z.extend_from_slice(&[0; 8]);
             z.extend_from_slice(&u32::try_from(donnees.len()).unwrap().to_le_bytes());
-            z.extend_from_slice(&u32::try_from(contenu.len()).unwrap().to_le_bytes());
+            z.extend_from_slice(&u32::try_from(taille).unwrap().to_le_bytes());
             z.extend_from_slice(&u16::try_from(nom.len()).unwrap().to_le_bytes());
             z.extend_from_slice(&[0; 12]);
             z.extend_from_slice(&0u32.to_le_bytes()); // l'en-tête local, au début
@@ -483,6 +495,22 @@ mod tests {
         let plus = u32::try_from(texte.len() + 1).unwrap();
         menteuse[central + 24..central + 28].copy_from_slice(&plus.to_le_bytes());
         assert!(premier_fichier_zip(&menteuse, TEXTE_MAX).is_none());
+        // Des blocs deflate vides devant le vrai contenu : lus à une échéance lointaine, refusés à une échéance
+        // passée ; plus nombreux que la taille annoncée ne le permet, refusés sans être décodés.
+        let long = texte.repeat(300);
+        let flux = crate::archives::deflate::tests::vides_puis(256 << 10, long.as_bytes());
+        let lente = archive_de(&flux, long.len(), 8);
+        let loin = std::time::Instant::now() + Duration::from_secs(600);
+        assert!(premier_fichier_zip_avant(&lente, TEXTE_MAX, loin).is_some_and(|c| c == long.as_bytes()));
+        assert!(premier_fichier_zip_avant(&lente, TEXTE_MAX, std::time::Instant::now()).is_none());
+        let gonflee = archive_de(
+            &crate::archives::deflate::tests::vides_puis(2 * long.len(), long.as_bytes()),
+            long.len(),
+            8,
+        );
+        assert!(premier_fichier_zip_avant(&gonflee, TEXTE_MAX, loin).is_none());
+        // Stockée : la taille annoncée doit être celle des octets.
+        assert!(premier_fichier_zip(&archive_de(texte.as_bytes(), texte.len() - 1, 0), TEXTE_MAX).is_none());
         // La validation à la réception : une archive presque vide, ou une bombe, ne remplace pas la copie gardée.
         assert!(!complete_valide(&archive(texte.as_bytes(), 8)));
         assert!(!complete_valide(&bombe));

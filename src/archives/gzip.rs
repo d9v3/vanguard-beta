@@ -44,9 +44,20 @@ pub(crate) fn debut_du_flux(octets: &[u8], debut: usize) -> Option<usize> {
 /// ou s'il dépasse la limite. La fin du membre (CRC, taille) n'est pas lue : un fichier de cet ordinateur, que le
 /// système de fichiers garde entier.
 pub(crate) fn degzip(octets: &[u8], limite: usize) -> Option<Vec<u8>> {
-    let pos = debut_du_flux(octets, 0)?;
-    miniz_oxide::inflate::decompress_to_vec_with_limit(octets.get(pos..)?, limite).ok()
+    degzip_avant(octets, limite, std::time::Instant::now() + DELAI)
 }
+
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))] // bases de pacman, mtree
+/// `degzip`, lu avant `echeance`.
+fn degzip_avant(octets: &[u8], limite: usize, echeance: std::time::Instant) -> Option<Vec<u8>> {
+    let pos = debut_du_flux(octets, 0)?;
+    inflater(octets.get(pos..)?, limite, echeance).map(|(contenu, _)| contenu)
+}
+
+/// Le temps d'une lecture entière. Une vraie base de 256 Mio se lit en moins d'une seconde ; des blocs deflate vides
+/// coûtent ≈ 1,2 s de processeur par Mio compressé sans rien produire, et la seule borne de la sortie ne les arrête
+/// pas.
+const DELAI: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[cfg_attr(not(any(windows, target_os = "macos", test)), allow(dead_code))] // logiciels pas à jour
 /// Le contenu d'un gzip téléchargé, au plus `limite` octets en tout : chaque membre (un serveur peut en mettre
@@ -54,11 +65,17 @@ pub(crate) fn degzip(octets: &[u8], limite: usize) -> Option<Vec<u8>> {
 /// du gzip, coupé, abîmé, plus grand que la limite (une « bombe » de quelques Kio qui en donnerait des Go s'arrête à
 /// la limite), ou suivi d'autre chose qu'un membre.
 pub(crate) fn degzip_controle(octets: &[u8], limite: usize) -> Option<Vec<u8>> {
+    degzip_controle_avant(octets, limite, std::time::Instant::now() + DELAI)
+}
+
+#[cfg_attr(not(any(windows, target_os = "macos", test)), allow(dead_code))] // logiciels pas à jour
+/// `degzip_controle`, tous les membres lus avant `echeance`.
+fn degzip_controle_avant(octets: &[u8], limite: usize, echeance: std::time::Instant) -> Option<Vec<u8>> {
     let mut contenu = Vec::new();
     let mut debut = 0usize;
     loop {
         let flux = debut_du_flux(octets, debut)?;
-        let (membre, lus) = inflater(octets.get(flux..)?, limite - contenu.len())?;
+        let (membre, lus) = inflater(octets.get(flux..)?, limite - contenu.len(), echeance)?;
         let fin = flux.checked_add(lus)?;
         let crc = u32::from_le_bytes(octets.get(fin..fin + 4)?.try_into().ok()?);
         let taille = u32::from_le_bytes(octets.get(fin + 4..fin + 8)?.try_into().ok()?);
@@ -75,12 +92,12 @@ pub(crate) fn degzip_controle(octets: &[u8], limite: usize) -> Option<Vec<u8>> {
     }
 }
 
-#[cfg_attr(not(any(windows, target_os = "macos", test)), allow(dead_code))] // logiciels pas à jour
 /// Le flux deflate de `flux`, au plus `limite` octets, et le nombre d'octets qu'il occupe (pour trouver la fin du
-/// membre, qui le suit) : la lecture commune (`deflate::inflater`), entière seulement.
-fn inflater(flux: &[u8], limite: usize) -> Option<(Vec<u8>, usize)> {
-    let lu = super::deflate::inflater(flux, limite);
-    (lu.fin == super::deflate::Fin::Complet).then_some((lu.contenu, lu.lus))
+/// membre, qui le suit) : la lecture commune (`deflate::inflater_avant`), entière et finie avant `echeance` seulement.
+/// Une place de plus que la limite : un flux qui finit pile à la limite est entier, un qui la dépasse se voit.
+fn inflater(flux: &[u8], limite: usize, echeance: std::time::Instant) -> Option<(Vec<u8>, usize)> {
+    let lu = super::deflate::inflater_avant(flux, limite.saturating_add(1), Some(echeance));
+    (lu.fin == super::deflate::Fin::Complet && lu.contenu.len() <= limite).then_some((lu.contenu, lu.lus))
 }
 
 #[cfg(test)]
@@ -171,6 +188,29 @@ mod tests {
         deux.extend(membre(&gros[..1 << 20], &SIMPLE));
         assert_eq!(degzip_controle(&deux, (2 << 20) - 1), None);
         assert_eq!(degzip_controle(&deux, 2 << 20).map(|v| v.len()), Some(2 << 20));
+    }
+
+    /// Un membre de blocs deflate vides devant un vrai contenu : lu entier sans échéance proche, refusé par les deux
+    /// lectures quand l'échéance passe avant sa fin.
+    #[test]
+    fn blocs_vides_arretes_a_l_echeance() {
+        let contenu = vec![b'a'; 1 << 16];
+        let mut gz = SIMPLE.to_vec();
+        gz.extend(super::super::deflate::tests::vides_puis(256 << 10, &contenu));
+        gz.extend(crc32(&contenu).to_le_bytes());
+        gz.extend(u32::try_from(contenu.len()).unwrap().to_le_bytes());
+        let loin = std::time::Instant::now() + std::time::Duration::from_secs(600);
+        assert_eq!(degzip_avant(&gz, 1 << 20, loin).as_deref(), Some(&contenu[..]));
+        assert_eq!(degzip_controle_avant(&gz, 1 << 20, loin).as_deref(), Some(&contenu[..]));
+        let passee = std::time::Instant::now();
+        assert_eq!(degzip_avant(&gz, 1 << 20, passee), None);
+        assert_eq!(degzip_controle_avant(&gz, 1 << 20, passee), None);
+        // Pile à la limite : entier.
+        assert_eq!(
+            degzip_controle(&gz, contenu.len()).map(|c| c.len()),
+            Some(contenu.len())
+        );
+        assert_eq!(degzip(&gz, contenu.len() - 1), None);
     }
 
     proptest::proptest! {
