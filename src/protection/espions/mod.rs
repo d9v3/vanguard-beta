@@ -752,6 +752,9 @@ fn constats_de(r: &Releve) -> Vec<Constat> {
 /// complétée des entrées que la liste exige) et `demande|nom` (les noms demandés par l'ordinateur).
 #[cfg(test)]
 pub(crate) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
+    // `indicateurs_de` refuse une liste trop petite pour être celle d'Échap : elle est complétée d'entrées de
+    // remplissage, au-delà du seuil.
+    const REMPLISSAGE: usize = 30;
     let mut entrees: Vec<echap::Entree> = e
         .de("entree")
         .iter()
@@ -761,14 +764,14 @@ pub(crate) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
             ..echap::Entree::default()
         })
         .collect();
-    for i in 0..30 {
+    for i in 0..REMPLISSAGE {
         entrees.push(echap::Entree {
             nom: format!("Remplissage{i}"),
             domaines: (0..2).map(|j| format!("r{i}-{j}.example.net")).collect(),
             ..echap::Entree::default()
         });
     }
-    let ind = echap::indicateurs_de(&entrees).unwrap();
+    let ind = echap::indicateurs_de(&entrees).expect("liste trop petite pour indicateurs_de : relever REMPLISSAGE");
     let noms: Vec<String> = e.de("demande").iter().map(|c| c[0].to_string()).collect();
     let mut r = Releve {
         verifies: 1,

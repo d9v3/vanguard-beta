@@ -1,0 +1,5 @@
+# PRO-COU-001, cas 2 : une autre branche de la même règle, données inventées et inoffensives.
+gravite = "eleve"
+mots = ["facture-corpus.pdf.exe"]
+propre = "aucun"
+systemes = ["linux", "windows", "macos"]

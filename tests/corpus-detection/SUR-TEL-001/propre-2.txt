@@ -1,0 +1,4 @@
+# Caché, arrivé avant la passe d'avant, encore en cours : rien.
+fichier|.facture-corpus.pdf.exe|MZ
+fichier|facture-corpus.pdf.exe|MZ|10
+fichier|facture-corpus.pdf.exe.part|MZ

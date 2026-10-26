@@ -1,1 +1,2 @@
-hote|192.168.50.20|00:11:22:aa:bb:20|non|
+# Un port nouveau moyen (80) et un port ancien critique (23) : rien à notifier.
+hote|192.168.50.20|00:11:22:aa:bb:20|non|80,23:ancien

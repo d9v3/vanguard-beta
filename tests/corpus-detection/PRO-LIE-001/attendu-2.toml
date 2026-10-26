@@ -1,0 +1,5 @@
+# PRO-LIE-001, cas 2 : une autre branche de la même règle, données inventées et inoffensives.
+gravite = "critique"
+mots = ["javascript:void(0)"]
+propre = "aucun"
+systemes = ["linux", "windows", "macos"]

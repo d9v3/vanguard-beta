@@ -812,13 +812,17 @@ pub(crate) fn corpus_nature(e: &crate::modele::corpus::Entree) -> Vec<crate::mac
     constats
 }
 
-/// SUR-TEL-001 au corpus de détection : `fichier|nom|premiers octets`, arrivés après le passage d'avant.
+/// SUR-TEL-001 au corpus de détection : `fichier|nom|premiers octets|arrivée` ; le passage d'avant est à 50,
+/// l'arrivée vaut 100 sans quatrième champ.
 #[cfg(test)]
 pub(crate) fn corpus_signalements(e: &crate::modele::corpus::Entree) -> Vec<crate::machine::Constat> {
     let fichiers: Vec<(String, u64, Vec<u8>)> = e
         .de("fichier")
         .iter()
-        .map(|c| (c[0].to_string(), 100, c[1].as_bytes().to_vec()))
+        .map(|c| {
+            let arrivee = c.get(2).map_or(100, |a| a.parse().unwrap());
+            (c[0].to_string(), arrivee, c[1].as_bytes().to_vec())
+        })
         .collect();
     let mut constats: Vec<_> = a_signaler(&fichiers, 50)
         .iter()

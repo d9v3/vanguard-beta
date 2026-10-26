@@ -1,0 +1,17 @@
+From: Alice <alice@example.com>
+To: bob@example.org
+Subject: Document
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="b"
+
+--b
+Content-Type: text/plain
+
+Voici le document.
+--b
+Content-Type: application/octet-stream; name="facture-corpus.pdf.exe"
+Content-Disposition: attachment; filename="facture-corpus.pdf.exe"
+Content-Transfer-Encoding: base64
+
+TVo=
+--b--

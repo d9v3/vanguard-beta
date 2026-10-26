@@ -1,0 +1,4 @@
+# Signalé sous b3:bb, rechangé depuis en b3:cc.
+reference|/etc/corpus-critique|b3:aa
+actuel|/etc/corpus-critique|b3:cc
+signale|/etc/corpus-critique|b3:bb

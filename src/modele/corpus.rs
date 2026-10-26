@@ -103,7 +103,9 @@ impl Drop for Jetable {
 
 /// Le niveau donné à une notification de la surveillance (ou d'un outil qui signale sans niveau, comme une fuite de
 /// secret) quand un cas en fait un constat : elle n'en a pas à l'écran, et une notification est une alerte que la
-/// personne voit sur-le-champ. Fixé ici une fois, pour tous les cas.
+/// personne voit sur-le-champ. Fixé ici une fois, pour tous les cas. Pour ces cas (SUR-…, PRO-GIT-001), la « gravité
+/// exacte » ne garde donc rien : le corpus prouve que l'alerte part, pas son niveau, et c'est le cas propre (posé
+/// juste sous le seuil) qui tient les seuils internes.
 pub(crate) const NIVEAU_D_UNE_NOTIFICATION: Niveau = Niveau::Eleve;
 
 /// Une notification (titre, texte) en constat, au niveau fixé ci-dessus.
@@ -202,14 +204,6 @@ const EXEMPTEES: &[(&str, &str)] = &[
         "les failles exploitées viennent du catalogue KEV, lu en ligne",
     ),
     (
-        "PRO-YAR-001",
-        "ses règles intégrées sont des signatures de logiciels malveillants réels : un fichier qui en touche une en reprendrait le contenu ; le moteur YARA maison est comparé à YARA-X par ses propres tests",
-    ),
-    (
-        "PRO-MEM-001",
-        "les mêmes règles que PRO-YAR-001, appliquées à la mémoire des processus",
-    ),
-    (
         "VEI-RAN-001",
         "surveillance comportementale en direct, hors du corpus de données fabriquées ; ses propres tests la gardent",
     ),
@@ -230,16 +224,24 @@ const EXEMPTEES: &[(&str, &str)] = &[
         "le veilleur du noyau (Linux) juge en direct ce qu'il voit passer, hors du corpus ; ses propres tests le gardent",
     ),
     (
-        "VEI-CNX-001",
-        "le veilleur du noyau (Linux) juge en direct ce qu'il voit passer, hors du corpus ; ses propres tests le gardent",
-    ),
-    (
         "SUR-BLO-001",
         "la protection active agit (arrêt, blocage) : son jugement n'est pas séparé de ses gestes ; ses propres tests la gardent",
     ),
     (
+        "PRO-YAR-001",
+        "laissé hors du corpus après deux arrêts du filtre de sécurité ; le moteur YARA est comparé à YARA-X par ses tests",
+    ),
+    (
+        "PRO-MEM-001",
+        "laissé hors du corpus après deux arrêts du filtre de sécurité ; le moteur YARA est comparé à YARA-X par ses tests",
+    ),
+    (
+        "VEI-CNX-001",
+        "laissé hors du corpus après deux arrêts du filtre de sécurité ; ses propres tests le gardent",
+    ),
+    (
         "PRO-SOR-001",
-        "la liste des programmes qui parlent à Internet est un inventaire montré, sans jugement à part ; ses listes de serveurs de commande sont exercées par SUR-BOT-001",
+        "ses jugements hors botnets (dossier à risque, port suspect) n'ont pas d'identifiant de règle à eux ; les serveurs de commande sont exercés par SUR-BOT-001",
     ),
 ];
 
@@ -1322,7 +1324,9 @@ fn chaque_regle_du_corpus_mene_a_son_jugement() {
                 let dossier = module.replace("::", "/");
                 // Une surveillance (SUR-) dont la notification se forme dans la passe de la surveillance du réseau
                 // (empoisonneur, appareils, ports) peut partir de là.
-                let passe = id.starts_with("SUR-") && fil[0].0 == "reseau/surveillance.rs";
+                let passe = id.starts_with("SUR-")
+                    && fil[0] == ("reseau/surveillance.rs", "passe")
+                    && fil.last() == Some(&("reseau/surveillance.rs", "alertes_du_scan"));
                 if !fil[0].0.starts_with(&dossier) && !passe {
                     fautes.push(format!(
                         "{id} : son fil part de {}, hors de son module {module}",

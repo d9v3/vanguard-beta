@@ -1,0 +1,5 @@
+# EVT-RDP-001, cas 2 : une autre branche de la même règle, données inventées et inoffensives.
+gravite = "info"
+mots = ["100.64.1.1"]
+propre = "aucun"
+systemes = ["linux", "windows", "macos"]

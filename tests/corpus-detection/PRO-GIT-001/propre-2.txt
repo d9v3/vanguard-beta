@@ -1,0 +1,2 @@
+# Un identifiant sans mot de passe : pas un secret.
+url = https://alice@git.exemple.invalid/depot.git

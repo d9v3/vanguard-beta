@@ -1,0 +1,2 @@
+# Une information nouvelle ne se notifie pas.
+apres|COM-WIF-002|info|Salon-corpus annonce WPS sans le permettre

@@ -1,0 +1,5 @@
+# PRO-GIT-001, cas 2 : une autre branche de la même règle, données inventées et inoffensives.
+gravite = "eleve"
+mots = ["git.exemple.invalid"]
+propre = "aucun"
+systemes = ["linux", "windows", "macos"]

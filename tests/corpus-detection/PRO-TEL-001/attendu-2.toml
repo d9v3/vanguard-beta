@@ -1,0 +1,5 @@
+# PRO-TEL-001, cas 2 : une autre branche de la même règle, données inventées et inoffensives.
+gravite = "eleve"
+mots = ["releve-corpus.pdf", "Windows"]
+propre = "info"
+systemes = ["linux", "windows", "macos"]

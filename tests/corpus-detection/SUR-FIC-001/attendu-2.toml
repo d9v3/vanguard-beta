@@ -1,0 +1,5 @@
+# SUR-FIC-001, cas 2 : une autre branche de la même règle, données inventées et inoffensives.
+gravite = "eleve"
+mots = ["/etc/corpus-critique"]
+propre = "aucun"
+systemes = ["linux", "windows", "macos"]

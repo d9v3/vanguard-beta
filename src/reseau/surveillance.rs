@@ -2031,7 +2031,8 @@ fn installer(exe: &str, r: Reglages) -> bool {
 }
 
 /// SUR-APP-001, SUR-PRT-001 et SUR-EMP-001 au corpus de détection, sur un scan fabriqué du réseau « Salon » :
-/// `hote|adresse|mac|nouvel appareil (oui, non)|port nouvellement ouvert`, `empoisonneur|adresse`. Seules restent
+/// `hote|adresse|mac|nouvel appareil (oui, non)|ports|surnom`, `empoisonneur|adresse`. Un port est nouvellement
+/// ouvert, sauf écrit `23:ancien` ; le surnom est facultatif. Seules restent
 /// les alertes du genre du cas (appareil, port, empoisonneur), en notifications.
 #[cfg(test)]
 pub(crate) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
@@ -2049,14 +2050,18 @@ pub(crate) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
             let ports = c[3]
                 .split(',')
                 .filter(|p| !p.is_empty())
-                .map(|p| reseau::PortOuvert {
-                    nouveau: true,
-                    ..crate::audit::appareils::tests::port(p.parse().unwrap(), false)
+                .map(|p| {
+                    let (numero, ancien) = p.split_once(':').map_or((p, false), |(n, a)| (n, a == "ancien"));
+                    reseau::PortOuvert {
+                        nouveau: !ancien,
+                        ..crate::audit::appareils::tests::port(numero.parse().unwrap(), false)
+                    }
                 })
                 .collect();
             reseau::Hote {
                 mac: Some(c[1].into()),
                 nouvelle: c[2] == "oui",
+                surnom: c.get(4).filter(|s| !s.is_empty()).map(|s| (*s).to_string()),
                 ports,
                 ..crate::audit::appareils::tests::hote(c[0], None, None, &[])
             }
@@ -2094,6 +2099,8 @@ pub(crate) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
 }
 
 /// SUR-PAS-001 au corpus de détection : `avant|réseau|nom|adresse|mac` (la box notée) et `apres|…` (celle du scan).
+/// Le titre de la notification est écrit ici : le cas tient `mac_changee` et les deux adresses, pas le texte que la
+/// surveillance envoie.
 #[cfg(test)]
 pub(crate) fn corpus_passerelle(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
     let lire = |genre: &str| {

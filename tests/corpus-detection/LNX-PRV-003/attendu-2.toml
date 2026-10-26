@@ -1,0 +1,5 @@
+# LNX-PRV-003, cas 2 : une autre branche de la même règle, données inventées et inoffensives.
+gravite = "eleve"
+mots = ["!authenticate"]
+propre = "aucun"
+systemes = ["linux"]

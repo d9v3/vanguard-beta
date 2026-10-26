@@ -1,0 +1,5 @@
+Matching Defaults entries for alice on poste:
+    env_reset, timestamp_timeout=10
+
+User alice may run the following commands on poste:
+    (ALL) ALL

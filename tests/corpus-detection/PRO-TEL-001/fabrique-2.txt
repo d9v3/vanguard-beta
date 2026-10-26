@@ -1,0 +1,2 @@
+# Un programme déguisé en .pdf, sans double extension : l'en-tête MZ le trahit.
+fichier|releve-corpus.pdf|MZ

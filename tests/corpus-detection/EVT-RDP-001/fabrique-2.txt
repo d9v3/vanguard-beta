@@ -1,0 +1,2 @@
+# Une adresse partagée (CGNAT, ou un réseau privé comme Tailscale) : à savoir.
+Security|Microsoft-Windows-Security-Auditing|4624|0|LogonType=10|IpAddress=100.64.1.1|TargetUserName=alice

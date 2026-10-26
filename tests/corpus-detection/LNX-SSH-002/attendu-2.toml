@@ -1,0 +1,5 @@
+# LNX-SSH-002, cas 2 : une autre branche de la même règle, données inventées et inoffensives.
+gravite = "info"
+mots = ["6"]
+propre = "rien"
+systemes = ["linux"]
