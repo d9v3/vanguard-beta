@@ -47,8 +47,10 @@ pub(crate) enum Gravite {
     Critique,
 }
 
+// La grammaire des règles : des tests l'exercent en entier, même ce que jeu.rs n'emploie pas encore.
 /// Une comparaison sur la valeur d'un champ (rognée de ses blancs, comme Windows en laisse au bout de certains).
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum Test {
     Egal(&'static str),
     Commence(&'static str),
@@ -66,6 +68,7 @@ pub(crate) enum Test {
 
 /// Une condition sur un événement.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum Condition {
     Toujours,
     /// Sans égard à la casse : Windows ne la distingue ni dans les noms de comptes, ni dans les chemins, ni dans les
@@ -289,7 +292,9 @@ pub(crate) struct Regle {
     /// Les techniques d'ATT&CK (« T1685.005 »), dans la numérotation de la version 20 (T1070.001 y est devenue
     /// T1685.005, T1562.001 T1685, T1562.002 T1685.001 : les anciennes ne sont plus que des renvois).
     pub techniques: &'static [&'static str],
+    // Lues par les tests, qui exigent la documentation de Microsoft et la page d'ATT&CK.
     /// La documentation de Microsoft de ses événements, puis la page d'ATT&CK.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub references: &'static [&'static str],
     pub volets: &'static [Volet],
     /// Ce que la règle ne peut pas voir, même tout lu (dit avec son verdict).
@@ -419,7 +424,10 @@ pub(crate) enum Manque {
 pub(crate) enum Lecture {
     /// Lu ; vide quand tout a été lu et jugé, sinon ce qui manque (dans la langue du moment).
     Lu(Vec<String>),
+    // Seule la source vivante (Windows) ne trouve pas ou se voit refuser un journal.
+    #[cfg_attr(not(windows), allow(dead_code))]
     Absent,
+    #[cfg_attr(not(windows), allow(dead_code))]
     Refuse,
     Illisible(String),
 }
@@ -578,7 +586,9 @@ pub(crate) struct Jugement {
     /// La plus grave des trouvailles laissées.
     pub au_dela_pire: Option<Gravite>,
     pub manques: Vec<Manque>,
+    // Lu par les tests et le banc de fuzzing.
     /// Événements que la règle a examinés (de ses journaux, numéros et fournisseurs).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub examines: u64,
     /// Les journaux de la règle, et ce qu'ils ont donné.
     pub journaux: Vec<StatJournal>,

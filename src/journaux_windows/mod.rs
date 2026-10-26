@@ -13,9 +13,6 @@
 //! - `chronologie` : les alertes remises dans l'ordre du temps, et la période lue par journal (sans écran) ;
 //! - `commande` : `vanguard journaux-windows`, l'écran « Que s'est-il passé ? » et `--json`.
 
-// Le lecteur et la source vivante gardent des fonctions que seuls les tests et le banc de fuzzing appellent.
-#![cfg_attr(not(test), allow(dead_code))]
-
 pub(crate) mod chronologie;
 pub(crate) mod commande;
 pub(crate) mod evenement;

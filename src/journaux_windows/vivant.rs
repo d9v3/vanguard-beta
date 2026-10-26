@@ -100,7 +100,9 @@ pub(crate) struct BilanVivant {
 }
 
 impl BilanVivant {
+    // Pour les tests.
     /// Tout ce que la requête demandait a été lu et jugé.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn complet(&self) -> bool {
         !self.borne_atteinte
             && !self.delai

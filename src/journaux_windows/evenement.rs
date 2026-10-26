@@ -18,7 +18,9 @@ use super::evtx::Enregistrement;
 /// D'où vient un événement : de quoi le retrouver et dire ce que vaut son numéro.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Origine {
+    // Seule la source vivante (Windows) en rend.
     /// Rendu par le service des journaux de cet ordinateur.
+    #[cfg_attr(not(windows), allow(dead_code))]
     Vivant,
     /// Lu dans un fichier .evtx : son chemin (partagé entre tous ses événements) et le numéro de l'enregistrement
     /// dans le fichier (en-tête de l'enregistrement), qui diffère de l'EventRecordID dans un fichier exporté

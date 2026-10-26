@@ -33,6 +33,8 @@ pub(crate) const CAT: &str = "Journaux d'événements";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Source {
     Dossier(PathBuf),
+    // La source vivante est celle de Windows.
+    #[cfg_attr(not(windows), allow(dead_code))]
     Vivant,
 }
 
@@ -45,8 +47,10 @@ pub(crate) struct Analyse {
     pub journaux: Vec<StatJournal>,
     pub etats: Vec<EtatJournal>,
     pub manques_source: Vec<String>,
+    // Lu par le bilan de Windows (WIN-JRN-003), comme `constats_du_bilan`.
     /// Les services ordinaires installés pendant la période (`jeu::service_ordinaire`), une fois chacun, au plus
     /// `SERVICES_MONTRES` + 1 : le bilan les liste (WIN-JRN-003), le dernier dit seulement qu'il y en a d'autres.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub services_ordinaires: Vec<String>,
     /// L'instant où la lecture du journal System de cet ordinateur a commencé (source vivante) : un événement écrit
     /// après a pu ne pas être lu.
@@ -840,6 +844,7 @@ fn constats_dates(
 /// identifiant `EVT-` devant (le bilan pose le sien sur tous ses constats) ; les règles vérifiées en un seul constat
 /// sain ; les règles non vérifiées regroupées par ce qui leur a manqué (un journal de sécurité refusé en rend huit non
 /// vérifiées d'un coup), chacune avec sa raison typée : jamais un sain pour ce qui n'a pas été lu.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn constats_du_bilan(a: &Analyse, est_normale: &dyn Fn(&str) -> bool) -> Vec<Constat> {
     let (tous, _) = constats(a, est_normale);
     let couverture = Objet::de("evt", "couverture");
@@ -940,6 +945,7 @@ pub(crate) fn constats_du_bilan(a: &Analyse, est_normale: &dyn Fn(&str) -> bool)
 
 /// Les services ordinaires installés pendant la période, en une information : au plus `SERVICES_MONTRES` noms, puis
 /// « … ». Rien dans leur chemin ne les rend suspects (EVT-SRV-001 dit les autres), mais un service inconnu se regarde.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn services_installes(services: &[String]) -> Option<Constat> {
     if services.is_empty() {
         return None;

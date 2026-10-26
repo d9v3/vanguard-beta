@@ -7,6 +7,9 @@
 //! aucune récursion, aucune panique ; un XML mal formé ou démesuré est illisible, et compté par l'appelant. Module
 //! autonome (aucun `crate::`) : le banc de fuzzing l'inclut par son chemin.
 
+// La source vivante est celle de Windows : ailleurs, seuls les tests et le banc de fuzzing s'en servent.
+#![cfg_attr(not(windows), allow(dead_code))]
+
 use std::sync::Arc;
 
 use quick_xml::events::{BytesStart, Event};

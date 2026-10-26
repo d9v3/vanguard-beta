@@ -278,10 +278,12 @@ pub(crate) struct RecapMorceau {
 }
 
 impl Bilan {
+    // Pour les tests (le programme juge par `fichiers::BilanFichier`).
     /// Tout ce que le fichier contenait a été lu et rendu exactement (les morceaux vides ne contiennent rien). Les
     /// enregistrements laissés après la place libre (`enregistrements_apres_place_libre`) n'y comptent pas, comme
     /// Windows ne les lit pas : un appelant qui juge un journal doit les regarder à part (une place libre reculée à
     /// la main, CRC recalculés, laisse `complet` vrai et ne se voit que là).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn complet(&self) -> bool {
         !self.en_tete_abime
             && self.morceaux_illisibles == 0
@@ -296,8 +298,10 @@ impl Bilan {
     }
 }
 
+// Pour les tests et le banc de fuzzing, comme `lire_fichier` et `lire_octets`.
 /// Les événements d'un fichier et le bilan de sa lecture.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct Lecture {
     pub enregistrements: Vec<Enregistrement>,
     pub bilan: Bilan,
@@ -319,16 +323,19 @@ impl From<std::io::Error> for Erreur {
 }
 
 /// Lit un fichier .evtx.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn lire_fichier(chemin: &Path, bornes: &Bornes) -> Result<Lecture, Erreur> {
     let fichier = std::fs::File::open(chemin)?;
     lire(std::io::BufReader::new(fichier), bornes)
 }
 
 /// Lit un journal .evtx déjà en mémoire.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn lire_octets(octets: &[u8], bornes: &Bornes) -> Result<Lecture, Erreur> {
     lire(std::io::Cursor::new(octets), bornes)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn lire<R: Read + Seek>(source: R, bornes: &Bornes) -> Result<Lecture, Erreur> {
     let mut enregistrements = Vec::new();
     let bilan = parcourir(source, bornes, |e| enregistrements.push(e))?;

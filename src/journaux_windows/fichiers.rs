@@ -91,8 +91,10 @@ pub(crate) struct BilanFichier {
 }
 
 impl BilanFichier {
+    // Pour les tests, comme `BilanDossier::complet`.
     /// Le fichier a été lu en entier, et chaque événement donné ou écarté exprès : rien n'est resté sans jugement.
     /// Comme pour `Bilan::complet`, les enregistrements rangés après la place libre n'y comptent pas.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn complet(&self) -> bool {
         self.lecture.as_ref().is_ok_and(Bilan::complet) && self.sans_date == 0 && self.sans_identifiant == 0
     }
@@ -115,6 +117,7 @@ pub(crate) struct BilanDossier {
 
 impl BilanDossier {
     /// Tout le dossier a été lu, et chaque fichier en entier.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn complet(&self) -> bool {
         self.hors_borne == 0 && self.entrees_illisibles == 0 && self.fichiers.iter().all(BilanFichier::complet)
     }
@@ -283,9 +286,11 @@ fn ouvrir(chemin: &Path) -> Result<std::fs::File, ErreurFichier> {
     }
 }
 
+// Pour les tests : le programme lit un dossier entier.
 /// Lit un fichier .evtx et donne à `recevoir` chaque événement que `filtre` veut ; la suite de ses numéros est jugée
 /// sur tous ses enregistrements, voulus ou non, quel que soit leur journal (un journal renommé dans les
 /// enregistrements ne fait pas taire la suite).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn lire_fichier(
     chemin: &Path,
     filtre: &Filtre,
