@@ -559,7 +559,9 @@ pub(crate) fn releve_linux(
             continue;
         }
         // Sans région exécutable : une donnée mappée, sauf si le début du fichier (mappé) est un en-tête ELF ou PE ;
-        // sans le début du fichier, rien n'en fait une image.
+        // sans le début du fichier, rien n'en fait une image. Laissée sans être comptée, comme le début mappé sans
+        // droit de lecture (PROT_NONE, `est_du_code` ne le lit pas) : rien ne s'exécute d'une page sans « x », et le
+        // jour où le processus la rend exécutable, le relevé suivant la lit comme une image.
         let entete_a_verifier = if groupe.iter().any(|m| m.executable) {
             None
         } else if let Some(m) = groupe.iter().find(|m| m.decalage == 0) {
