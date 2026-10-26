@@ -930,25 +930,62 @@ fn juger_le_fichier(id: &str, fichier: &str, juge: Juge, entree: &Entree) -> Res
 }
 
 /// Le cas `id` jugé : ce qui ne va pas, ou `None`.
+/// Le cas `id` jugé, chacune de ses variantes : le cas même (`attendu.toml`, `fabrique.txt`, `propre.txt`), puis
+/// `attendu-2.toml`, `fabrique-2.txt`, `propre-2.txt`, et ainsi de suite. Une règle a souvent plusieurs branches : un
+/// cas par branche les tient toutes. Une variante à moitié posée est une faute.
 fn faute_du_cas(id: &str, juge: Juge) -> Option<String> {
     let dossier = racine_du_corpus().join(id);
+    let mut fautes = Vec::new();
+    for n in variantes(&dossier) {
+        if let Some(f) = faute_de_la_variante(id, juge, &n) {
+            fautes.push(f);
+        }
+    }
+    (!fautes.is_empty()).then(|| fautes.join("\n"))
+}
+
+/// Les suffixes des variantes d'un dossier de cas : « » pour le cas même, puis « -2 », « -3 »… d'après les fichiers
+/// présents (attendu, fabrique ou propre : un seul suffit à la déclarer, les deux autres manquants feront la faute).
+fn variantes(dossier: &Path) -> Vec<String> {
+    let mut n: BTreeSet<u32> = BTreeSet::new();
+    for e in std::fs::read_dir(dossier).into_iter().flatten().flatten() {
+        let nom = e.file_name().to_string_lossy().into_owned();
+        let base = nom
+            .strip_suffix(".toml")
+            .or_else(|| nom.strip_suffix(".txt"))
+            .unwrap_or("");
+        if let Some((genre, chiffre)) = base.rsplit_once('-')
+            && ["attendu", "fabrique", "propre"].contains(&genre)
+            && let Ok(k) = chiffre.parse::<u32>()
+        {
+            n.insert(k);
+        }
+    }
+    std::iter::once(String::new())
+        .chain(n.into_iter().map(|k| format!("-{k}")))
+        .collect()
+}
+
+fn faute_de_la_variante(id: &str, juge: Juge, n: &str) -> Option<String> {
+    let dossier = racine_du_corpus().join(id);
     let lire = |f: &str| std::fs::read_to_string(dossier.join(f)).map_err(|e| format!("{id}/{f} : {e}"));
-    let attendu =
-        match lire("attendu.toml").and_then(|t| lire_attendu(&t).map_err(|e| format!("{id}/attendu.toml : {}", e.0))) {
-            Ok(a) => a,
-            Err(e) => return Some(e),
-        };
+    let attendu = match lire(&format!("attendu{n}.toml"))
+        .and_then(|t| lire_attendu(&t).map_err(|e| format!("{id}/attendu{n}.toml : {}", e.0)))
+    {
+        Ok(a) => a,
+        Err(e) => return Some(e),
+    };
     let entree = |f: &str| {
         lire(f).map(|texte| Entree {
             dossier: dossier.clone(),
             texte,
         })
     };
-    let (fabrique, propre) = match (entree("fabrique.txt"), entree("propre.txt")) {
+    let (fabrique, propre) = match (entree(&format!("fabrique{n}.txt")), entree(&format!("propre{n}.txt"))) {
         (Ok(f), Ok(p)) => (f, p),
         (Err(e), _) | (_, Err(e)) => return Some(e),
     };
-    let tires = match juger_le_fichier(id, "fabrique.txt", juge, &fabrique) {
+    let tires = match juger_le_fichier(id, &format!("fabrique{n}.txt"), juge, &fabrique) {
         Ok(t) => t,
         Err(e) => return Some(e.0),
     };
@@ -983,7 +1020,7 @@ fn faute_du_cas(id: &str, juge: Juge) -> Option<String> {
         (Some(_), false) => return Some(format!("{id} : propre.txt a des données, propre_vide est de trop")),
         _ => {}
     }
-    let muets = match juger_le_fichier(id, "propre.txt", juge, &propre) {
+    let muets = match juger_le_fichier(id, &format!("propre{n}.txt"), juge, &propre) {
         Ok(m) => m,
         Err(e) => return Some(e.0),
     };
@@ -1390,6 +1427,24 @@ fn lecture_de_ce_qu_un_cas_attend() {
     ] {
         assert!(lire_attendu(faux).is_err(), "{faux}");
     }
+}
+
+#[test]
+fn variantes_d_un_cas() {
+    let d = std::env::temp_dir().join(format!("vanguard-corpus-variantes-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    for f in [
+        "attendu.toml",
+        "fabrique.txt",
+        "propre.txt",
+        "fabrique-2.txt",
+        "attendu-3.toml",
+        "notes.txt",
+    ] {
+        std::fs::write(d.join(f), "").unwrap();
+    }
+    assert_eq!(variantes(&d), ["", "-2", "-3"]);
+    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
