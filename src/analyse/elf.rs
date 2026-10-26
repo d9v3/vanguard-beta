@@ -128,7 +128,6 @@ pub(crate) fn lire(octets: &[u8]) -> Option<Elf> {
     let mut shnum = usize::from(o.u16(octets, apres + 12)?);
     let mut shstrndx = usize::from(o.u16(octets, apres + 14)?);
     let taille_sh = if bits64 { 64 } else { 40 };
-    let taille_entree_ph = if bits64 { 56 } else { 32 };
     // Les comptes étendus, dans la section 0 (elf(5)).
     let entete_zero = (shoff != 0 && shentsize >= taille_sh)
         .then(|| usize::try_from(shoff).ok())
@@ -141,7 +140,6 @@ pub(crate) fn lire(octets: &[u8]) -> Option<Elf> {
             o.u32(octets, s.checked_add(decalage32)?).map(u64::from)
         }
     };
-    let mut sections_illisibles = false;
     if phnum == usize::from(PN_XNUM) {
         // sh_info de la section 0 (32 bits dans les deux formes).
         match entete_zero.and_then(|s| o.u32(octets, s.checked_add(if bits64 { 44 } else { 28 })?)) {
@@ -161,6 +159,69 @@ pub(crate) fn lire(octets: &[u8]) -> Option<Elf> {
     }
     let mut fin_des_donnees = u64::from(ehsize).min(octets.len() as u64);
     // Les segments.
+    let (segments, segments_illisibles) = lire_segments(
+        octets,
+        o,
+        bits64,
+        Table {
+            debut: phoff,
+            nombre: phnum,
+            taille_entree: phentsize,
+        },
+        &mut fin_des_donnees,
+    );
+    let (interpreteur, pile_executable) = lire_programme(octets, &segments, &mut fin_des_donnees);
+    // Les sections et leurs noms.
+    let (sections, sections_illisibles) = lire_sections(
+        octets,
+        o,
+        bits64,
+        Table {
+            debut: shoff,
+            nombre: shnum,
+            taille_entree: shentsize,
+        },
+        shstrndx,
+        &mut fin_des_donnees,
+    );
+    Some(Elf {
+        bits64,
+        gros_boutiste,
+        type_,
+        machine,
+        point_entree: entree,
+        segments,
+        sections,
+        interpreteur,
+        pile_executable,
+        segments_illisibles,
+        sections_illisibles,
+        fin_des_donnees,
+    })
+}
+
+/// Une table de l'en-tête (segments ou sections) : sa position, son nombre d'entrées et la taille d'une entrée.
+#[derive(Clone, Copy)]
+struct Table {
+    debut: u64,
+    nombre: usize,
+    taille_entree: usize,
+}
+
+/// Les segments (table des programmes) et `true` si elle est illisible ; la fin des données s'étend à ce qui est lu.
+fn lire_segments(
+    octets: &[u8],
+    o: Ordre,
+    bits64: bool,
+    table: Table,
+    fin_des_donnees: &mut u64,
+) -> (Vec<Segment>, bool) {
+    let Table {
+        debut: phoff,
+        nombre: phnum,
+        taille_entree: phentsize,
+    } = table;
+    let taille_entree_ph = if bits64 { 56 } else { 32 };
     let mut segments = Vec::new();
     let mut segments_illisibles = false;
     if phoff != 0 && phnum > 0 {
@@ -205,15 +266,21 @@ pub(crate) fn lire(octets: &[u8]) -> Option<Elf> {
                 segments.push(segment);
             }
             let fin_table = phoff.saturating_add((phnum as u64).saturating_mul(phentsize as u64));
-            fin_des_donnees = fin_des_donnees.max(fin_table.min(octets.len() as u64));
+            *fin_des_donnees = (*fin_des_donnees).max(fin_table.min(octets.len() as u64));
         }
     }
+    (segments, segments_illisibles)
+}
+
+/// L'interpréteur demandé (PT_INTERP) et la pile exécutable ou non (PT_GNU_STACK) ; la fin des données s'étend aux
+/// segments contenus dans le fichier.
+fn lire_programme(octets: &[u8], segments: &[Segment], fin_des_donnees: &mut u64) -> (Option<String>, Option<bool>) {
     let mut interpreteur = None;
     let mut pile_executable = None;
-    for s in &segments {
+    for s in segments {
         let fin = s.position.saturating_add(s.taille_fichier);
         if s.taille_fichier > 0 && fin <= octets.len() as u64 {
-            fin_des_donnees = fin_des_donnees.max(fin);
+            *fin_des_donnees = (*fin_des_donnees).max(fin);
         }
         match s.type_ {
             PT_INTERP if interpreteur.is_none() => {
@@ -228,7 +295,26 @@ pub(crate) fn lire(octets: &[u8]) -> Option<Elf> {
             _ => {}
         }
     }
-    // Les sections et leurs noms.
+    (interpreteur, pile_executable)
+}
+
+/// Les sections, nommées par la table des noms `shstrndx`, et `true` si elles sont illisibles ; la fin des données
+/// s'étend à ce qui est lu.
+fn lire_sections(
+    octets: &[u8],
+    o: Ordre,
+    bits64: bool,
+    table: Table,
+    shstrndx: usize,
+    fin_des_donnees: &mut u64,
+) -> (Vec<SectionElf>, bool) {
+    let Table {
+        debut: shoff,
+        nombre: shnum,
+        taille_entree: shentsize,
+    } = table;
+    let taille_sh = if bits64 { 64 } else { 40 };
+    let mut sections_illisibles = false;
     let mut sections = Vec::new();
     if shoff != 0 && shnum > 0 {
         if shentsize < taille_sh || shnum > SECTIONS_MAX {
@@ -272,7 +358,7 @@ pub(crate) fn lire(octets: &[u8]) -> Option<Elf> {
             }
             let fin_table = shoff.saturating_add((shnum as u64).saturating_mul(shentsize as u64));
             if fin_table <= octets.len() as u64 {
-                fin_des_donnees = fin_des_donnees.max(fin_table);
+                *fin_des_donnees = (*fin_des_donnees).max(fin_table);
             }
             let noms = brutes.get(shstrndx).copied();
             if noms.is_none() && !brutes.is_empty() {
@@ -292,7 +378,7 @@ pub(crate) fn lire(octets: &[u8]) -> Option<Elf> {
                 let fin = position.saturating_add(taille);
                 if type_ != SHT_NOBITS && taille > 0 {
                     if fin <= octets.len() as u64 {
-                        fin_des_donnees = fin_des_donnees.max(fin);
+                        *fin_des_donnees = (*fin_des_donnees).max(fin);
                     } else {
                         sections_illisibles = true;
                     }
@@ -307,20 +393,7 @@ pub(crate) fn lire(octets: &[u8]) -> Option<Elf> {
             }
         }
     }
-    Some(Elf {
-        bits64,
-        gros_boutiste,
-        type_,
-        machine,
-        point_entree: entree,
-        segments,
-        sections,
-        interpreteur,
-        pile_executable,
-        segments_illisibles,
-        sections_illisibles,
-        fin_des_donnees,
-    })
+    (sections, sections_illisibles)
 }
 
 #[cfg(test)]
