@@ -454,7 +454,7 @@ fn depose_par_le_deploiement(chemin: &str) -> bool {
 /// de source/ à la même taille et à la même date que rsync saute) entrait tel quel dans la référence (campagne
 /// d'attaque n° 4). Le jeton reste comparé : le déploiement le garde, ne le repose pas. Rend l'écart qui reste et les
 /// chemins retirés.
-fn retirer_le_suspens(racine: &Path, mut ecart: Ecart) -> Result<(Ecart, Vec<String>), String> {
+fn retirer_le_suspens(racine: &Path, mut ecart: Ecart) -> std::io::Result<(Ecart, Vec<String>)> {
     let mut retires = Vec::new();
     for liste in [&mut ecart.nouveaux, &mut ecart.modifies] {
         let mut garde = Vec::new();
@@ -466,7 +466,7 @@ fn retirer_le_suspens(racine: &Path, mut ecart: Ecart) -> Result<(Ecart, Vec<Str
             match std::fs::remove_file(racine.join(&c)) {
                 Ok(()) => retires.push(c),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(format!("{c} : {e}")),
+                Err(e) => return Err(std::io::Error::new(e.kind(), format!("{c} : {e}"))),
             }
         }
         *liste = garde;
@@ -768,7 +768,7 @@ fn comparer_avant_deploiement(racine: &Path, m: &Manifeste, reprise: bool, gros:
     // La reprise d'un déploiement arrêté en route (clé retirée, rsync en échec) : ce qu'il pose lui-même a pu rester
     // à moitié écrit ; ce qui diffère en est retiré, et il le repose. Un fichier qu'il ne pose pas compte toujours.
     if reprise {
-        let (reste, retires) = retirer_le_suspens(racine, ecart).map_err(|e| (1, e))?;
+        let (reste, retires) = retirer_le_suspens(racine, ecart).map_err(|e| (1, e.to_string()))?;
         ecart = reste;
         for c in retires {
             eprintln!(
