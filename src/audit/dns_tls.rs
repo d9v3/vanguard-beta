@@ -1074,140 +1074,160 @@ fn constats_divergence(e: &Entree) -> Vec<Constat> {
         .filter(|m| matches!(m.role, Role::Public(_)))
         .all(|m| m.reponses.iter().all(|(_, r)| r.is_none()));
     for role in [Role::Utilise, Role::Bail] {
-        let Some(m) = e.mesures.iter().find(|m| m.role == role) else {
-            if let Some(&(_, ip)) = e.interrompues.iter().find(|(r, _)| *r == role) {
-                let message = if role == Role::Bail {
-                    trf!(
-                        "DNS que le routeur distribue ({ip}) : mesure interrompue par une erreur interne, réponses non comparées",
-                        "DNS the router hands out ({ip}): measurement interrupted by an internal error, answers not compared"
-                    )
-                } else {
-                    trf!(
-                        "DNS utilisé ({ip}) : mesure interrompue par une erreur interne, réponses non comparées",
-                        "DNS in use ({ip}): measurement interrupted by an internal error, answers not compared"
-                    )
-                };
-                constats.push(regle(impossible(CAT_DNS, &message), ID));
-            } else if role == Role::Utilise {
-                constats.push(regle(
-                    impossible(
-                        CAT_DNS,
-                        tr!(
-                            "DNS utilisé non interrogeable d'ici (configuration illisible ou adresse de lien local)",
-                            "DNS in use cannot be queried from here (unreadable configuration or link-local address)"
-                        ),
-                    ),
-                    ID,
-                ));
-            }
-            continue;
+        let constat = match e.mesures.iter().find(|m| m.role == role) {
+            Some(m) => Some(constat_du_resolveur(m, role, e, publics_muets)),
+            None => constat_sans_mesure(role, e),
         };
-        let serveur = nommer(m.serveur, e);
-        let b = bilan(m, e);
-        let total = m.reponses.len();
-        let constat = if b.muets == total {
-            impossible(
-                CAT_DNS,
-                &if publics_muets {
-                    trf!(
-                        "{serveur} ne répond pas d'ici, les résolveurs publics non plus : hors ligne, ou port 53 fermé",
-                        "{serveur} does not answer from here, nor do public resolvers: offline, or port 53 closed"
-                    )
-                } else {
-                    trf!("{serveur} ne répond pas d'ici", "{serveur} does not answer from here")
-                },
-            )
-        } else if b.divergents.len() >= 2 {
-            let (nom, vu, attendu) = b.divergents[0];
-            let meme = b.divergents.iter().all(|(_, v, _)| *v == vu);
-            let qui = if role == Role::Bail {
-                tr!(
-                    "Le DNS que le routeur distribue à tout le réseau local",
-                    "The DNS the router hands out to the whole household"
-                )
-            } else {
-                tr!("Votre DNS", "Your DNS")
-            };
-            let message = if meme {
-                trf!(
-                    "{qui} ({serveur}) renvoie tous les noms vers la même adresse ({vu}, au lieu de {attendu} pour {nom}) : un portail Wi-Fi (hôtel, café) ou un détournement complet. Chez vous, c'est un détournement.",
-                    "{qui} ({serveur}) sends every name to the same address ({vu} instead of {attendu} for {nom}): a Wi-Fi portal (hotel, café) or a complete hijack. At home, it is a hijack."
-                )
-            } else {
-                trf!(
-                    "{qui} ({serveur}) répond autre chose que l'adresse connue de {nom} ({vu} au lieu de {attendu}) : quelque chose entre vous et Internet réécrit les réponses DNS.",
-                    "{qui} ({serveur}) answers something other than the known address of {nom} ({vu} instead of {attendu}): something between you and the Internet rewrites DNS answers."
-                )
-            };
-            alerte(CAT_DNS, Niveau::Eleve, message).manuel(
-                tr!(
-                    "Remettez le DNS en automatique ou sur un service connu sur cet ordinateur ET dans le routeur ; changez le mot de passe du routeur ; relancez Vanguard. Si ça revient, le routeur est à mettre à jour ou à remplacer",
-                    "Set DNS back to automatic or to a known service on this computer AND in the router; change the router password; run Vanguard again. If it comes back, the router needs an update or a replacement"
-                ),
-                &[],
-            )
-        } else if let Some((nom, vu, attendu)) = b.divergents.first() {
-            alerte(
-                CAT_DNS,
-                Niveau::Info,
-                trf!(
-                    "{serveur} répond {vu} pour {nom} au lieu de {attendu} ; les autres noms sont justes. Un seul écart : à revoir au prochain audit avant d'y croire.",
-                    "{serveur} answers {vu} for {nom} instead of {attendu}; the other names are right. A single gap: check again at the next audit before believing it."
-                ),
-            )
-        } else if let Some(vues) = m
-            .inexistant
-            .as_ref()
-            .map(Reponse::adresses_v4)
-            .filter(|v| !v.is_empty())
-        {
-            alerte(
-                CAT_DNS,
-                Niveau::Moyen,
-                trf!(
-                    "{serveur} donne une adresse ({}) à un nom inventé à l'instant, qui n'existe pas : il réécrit les noms inexistants (page de publicité du fournisseur, ou détournement). Une faute de frappe mène alors chez lui.",
-                    "{serveur} gives an address ({}) to a name made up just now, which does not exist: it rewrites nonexistent names (provider ad page, or hijack). A typo then leads to it.",
-                    vues[0]
-                ),
-            )
-            .manuel(
-                tr!(
-                    "Choisissez un DNS qui ne réécrit rien (Quad9, Cloudflare, Bouclier canadien), sur cet ordinateur ou dans le routeur",
-                    "Pick a DNS that rewrites nothing (Quad9, Cloudflare, Canadian Shield), on this computer or in the router"
-                ),
-                &[],
-            )
-        } else if !b.filtres.is_empty() {
-            let noms = b.filtres.join(", ");
-            alerte(
-                CAT_DNS,
-                Niveau::Info,
-                trf!(
-                    "{serveur} bloque les autres résolveurs ({noms}) : filtre volontaire (NextDNS, AdGuard, Pi-hole) ou blocage par le routeur. Normal si vous l'avez choisi.",
-                    "{serveur} blocks the other resolvers ({noms}): a deliberate filter (NextDNS, AdGuard, Pi-hole) or a block by the router. Normal if you chose it."
-                ),
-            )
-        } else {
-            let n = b.conformes;
-            let reference = if publics_muets {
-                tr!(
-                    " (les résolveurs publics ne répondent pas d'ici : comparé aux adresses connues seulement)",
-                    " (public resolvers do not answer from here: compared with the known addresses only)"
-                )
-            } else {
-                ""
-            };
-            ok(
-                CAT_DNS,
-                trf!(
-                    "{serveur} répond les adresses connues pour {n} noms stables, et « n'existe pas » pour un nom inventé : aucune réécriture visible sur les noms testés{reference}.",
-                    "{serveur} answers the known addresses for {n} stable names, and “does not exist” for a made-up name: no rewriting visible on the names tested{reference}."
-                ),
-            )
-        };
-        constats.push(regle(constat, ID));
+        constats.extend(constat.map(|c| regle(c, ID)));
     }
     constats
+}
+
+/// Le résolveur de ce rôle n'a pas de mesure : interrompue par une erreur interne, ou (pour celui qu'utilise cet
+/// ordinateur) pas interrogeable d'ici. Rien pour un bail sans mesure : la box distribue le même DNS.
+fn constat_sans_mesure(role: Role, e: &Entree) -> Option<Constat> {
+    if let Some(&(_, ip)) = e.interrompues.iter().find(|(r, _)| *r == role) {
+        let message = if role == Role::Bail {
+            trf!(
+                "DNS que le routeur distribue ({ip}) : mesure interrompue par une erreur interne, réponses non comparées",
+                "DNS the router hands out ({ip}): measurement interrupted by an internal error, answers not compared"
+            )
+        } else {
+            trf!(
+                "DNS utilisé ({ip}) : mesure interrompue par une erreur interne, réponses non comparées",
+                "DNS in use ({ip}): measurement interrupted by an internal error, answers not compared"
+            )
+        };
+        Some(impossible(CAT_DNS, &message))
+    } else if role == Role::Utilise {
+        Some(impossible(
+            CAT_DNS,
+            tr!(
+                "DNS utilisé non interrogeable d'ici (configuration illisible ou adresse de lien local)",
+                "DNS in use cannot be queried from here (unreadable configuration or link-local address)"
+            ),
+        ))
+    } else {
+        None
+    }
+}
+
+/// Le constat d'un résolveur mesuré : muet, réponses détournées (plusieurs noms, ou un seul), noms inexistants
+/// réécrits, autres résolveurs bloqués, ou tout juste.
+fn constat_du_resolveur(m: &Mesure, role: Role, e: &Entree, publics_muets: bool) -> Constat {
+    let serveur = nommer(m.serveur, e);
+    let b = bilan(m, e);
+    let total = m.reponses.len();
+    if b.muets == total {
+        impossible(
+            CAT_DNS,
+            &if publics_muets {
+                trf!(
+                    "{serveur} ne répond pas d'ici, les résolveurs publics non plus : hors ligne, ou port 53 fermé",
+                    "{serveur} does not answer from here, nor do public resolvers: offline, or port 53 closed"
+                )
+            } else {
+                trf!("{serveur} ne répond pas d'ici", "{serveur} does not answer from here")
+            },
+        )
+    } else if b.divergents.len() >= 2 {
+        alerte_divergence(&b.divergents, role, &serveur)
+    } else if let Some((nom, vu, attendu)) = b.divergents.first() {
+        alerte(
+            CAT_DNS,
+            Niveau::Info,
+            trf!(
+                "{serveur} répond {vu} pour {nom} au lieu de {attendu} ; les autres noms sont justes. Un seul écart : à revoir au prochain audit avant d'y croire.",
+                "{serveur} answers {vu} for {nom} instead of {attendu}; the other names are right. A single gap: check again at the next audit before believing it."
+            ),
+        )
+    } else if let Some(vues) = m
+        .inexistant
+        .as_ref()
+        .map(Reponse::adresses_v4)
+        .filter(|v| !v.is_empty())
+    {
+        alerte(
+            CAT_DNS,
+            Niveau::Moyen,
+            trf!(
+                "{serveur} donne une adresse ({}) à un nom inventé à l'instant, qui n'existe pas : il réécrit les noms inexistants (page de publicité du fournisseur, ou détournement). Une faute de frappe mène alors chez lui.",
+                "{serveur} gives an address ({}) to a name made up just now, which does not exist: it rewrites nonexistent names (provider ad page, or hijack). A typo then leads to it.",
+                vues[0]
+            ),
+        )
+        .manuel(
+            tr!(
+                "Choisissez un DNS qui ne réécrit rien (Quad9, Cloudflare, Bouclier canadien), sur cet ordinateur ou dans le routeur",
+                "Pick a DNS that rewrites nothing (Quad9, Cloudflare, Canadian Shield), on this computer or in the router"
+            ),
+            &[],
+        )
+    } else if !b.filtres.is_empty() {
+        let noms = b.filtres.join(", ");
+        alerte(
+            CAT_DNS,
+            Niveau::Info,
+            trf!(
+                "{serveur} bloque les autres résolveurs ({noms}) : filtre volontaire (NextDNS, AdGuard, Pi-hole) ou blocage par le routeur. Normal si vous l'avez choisi.",
+                "{serveur} blocks the other resolvers ({noms}): a deliberate filter (NextDNS, AdGuard, Pi-hole) or a block by the router. Normal if you chose it."
+            ),
+        )
+    } else {
+        constat_conforme(&serveur, b.conformes, publics_muets)
+    }
+}
+
+/// Au moins deux noms stables détournés : tous vers une même adresse (portail Wi-Fi ou détournement complet), ou
+/// des réponses réécrites entre cet ordinateur et Internet.
+fn alerte_divergence(divergents: &[(&'static str, Ipv4Addr, Ipv4Addr)], role: Role, serveur: &str) -> Constat {
+    let (nom, vu, attendu) = divergents[0];
+    let meme = divergents.iter().all(|(_, v, _)| *v == vu);
+    let qui = if role == Role::Bail {
+        tr!(
+            "Le DNS que le routeur distribue à tout le réseau local",
+            "The DNS the router hands out to the whole household"
+        )
+    } else {
+        tr!("Votre DNS", "Your DNS")
+    };
+    let message = if meme {
+        trf!(
+            "{qui} ({serveur}) renvoie tous les noms vers la même adresse ({vu}, au lieu de {attendu} pour {nom}) : un portail Wi-Fi (hôtel, café) ou un détournement complet. Chez vous, c'est un détournement.",
+            "{qui} ({serveur}) sends every name to the same address ({vu} instead of {attendu} for {nom}): a Wi-Fi portal (hotel, café) or a complete hijack. At home, it is a hijack."
+        )
+    } else {
+        trf!(
+            "{qui} ({serveur}) répond autre chose que l'adresse connue de {nom} ({vu} au lieu de {attendu}) : quelque chose entre vous et Internet réécrit les réponses DNS.",
+            "{qui} ({serveur}) answers something other than the known address of {nom} ({vu} instead of {attendu}): something between you and the Internet rewrites DNS answers."
+        )
+    };
+    alerte(CAT_DNS, Niveau::Eleve, message).manuel(
+        tr!(
+            "Remettez le DNS en automatique ou sur un service connu sur cet ordinateur ET dans le routeur ; changez le mot de passe du routeur ; relancez Vanguard. Si ça revient, le routeur est à mettre à jour ou à remplacer",
+            "Set DNS back to automatic or to a known service on this computer AND in the router; change the router password; run Vanguard again. If it comes back, the router needs an update or a replacement"
+        ),
+        &[],
+    )
+}
+
+/// Tout est juste : les adresses connues des noms stables, et « n'existe pas » pour un nom inventé.
+fn constat_conforme(serveur: &str, n: usize, publics_muets: bool) -> Constat {
+    let reference = if publics_muets {
+        tr!(
+            " (les résolveurs publics ne répondent pas d'ici : comparé aux adresses connues seulement)",
+            " (public resolvers do not answer from here: compared with the known addresses only)"
+        )
+    } else {
+        ""
+    };
+    ok(
+        CAT_DNS,
+        trf!(
+            "{serveur} répond les adresses connues pour {n} noms stables, et « n'existe pas » pour un nom inventé : aucune réécriture visible sur les noms testés{reference}.",
+            "{serveur} answers the known addresses for {n} stable names, and “does not exist” for a made-up name: no rewriting visible on the names tested{reference}."
+        ),
+    )
 }
 
 /// COM-DNS-005 : DNSSEC validé ou non par le résolveur utilisé.
