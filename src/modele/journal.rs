@@ -386,6 +386,9 @@ fn tete_lue(dossier: &Path) -> TeteLue {
     }
 }
 
+/// Des sceaux d'une forme d'avant qui n'ont pas pu être jugés et réécrits : le journal n'y crée rien encore.
+const SCEAUX_D_AVANT: &str = "sceaux d'avant pas encore réécrits / earlier seals not yet rewritten";
+
 const TETE_FALSIFIEE: &str = "tête changée hors de Vanguard / head changed outside Vanguard";
 
 /// Ajoute un segment à la fin d'un fichier, sans suivre de lien, réservé à son compte.
@@ -455,6 +458,11 @@ fn ecrire_dans(
     // Pendant un autotest, seul son propre événement d'essai s'écrit (`autotest::lecture_seule`).
     if crate::autotest::lecture_seule::active() && (evs.is_empty() || evs.iter().any(|e| !e.essai)) {
         return Err(crate::autotest::lecture_seule::refus());
+    }
+    // Les sceaux d'avant jugés avant que le verrou et le dossier du journal n'existent (`sceau::forme_d_avant`) ; sans
+    // cela, rien n'est créé : gardé pour plus tard, comme un verrou tenu ailleurs.
+    if !crate::sceau::forme_jugee_avant_le_journal(dossier) {
+        return Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, SCEAUX_D_AVANT));
     }
     let _verrou =
         crate::socle::Verrou::prendre_compatible(dossier, VERROU, false, attente).map_err(|e| e.erreur(VERROU))?;
@@ -919,7 +927,12 @@ const SCEAUX_TENUS: &str = "verrou des sceaux tenu ailleurs, ce qui devait s'y n
 /// garderait le verrou pour taire une falsification se voit. Un verrou qui ne s'ouvre pas (dossier posé à
 /// sa place, ou absent là où le lecteur n'écrit pas) n'est tenu par aucun écrivain : la lecture juge.
 fn lire_tenu(dossier: &Path, attente: std::time::Duration) -> Lu {
-    let tenu = crate::socle::Verrou::prendre_compatible(dossier, VERROU, true, attente);
+    // Le verrou partagé crée son fichier : pas avant que des sceaux d'avant soient jugés (`ecrire_dans`).
+    let tenu = if crate::sceau::forme_jugee_avant_le_journal(dossier) {
+        crate::socle::Verrou::prendre_compatible(dossier, VERROU, true, attente)
+    } else {
+        Err(crate::socle::SansVerrou::Impossible(SCEAUX_D_AVANT.into()))
+    };
     let mut lu = lire_borne(dossier, BORNES);
     // La tête lue sans le verrou des sceaux, gardé ailleurs : ce qui devait s'écrire n'a pas pu l'être, la fin lue
     // n'est donc pas forcément la dernière. Pas « intact » ; le bilan le dit avec les sceaux (`sceau::constat`).
@@ -1153,6 +1166,9 @@ fn lire_sans_juger_borne(dossier: &Path, bornes: Bornes) -> (Vec<Evenement>, Vec
 /// Le verrou partagé du journal de `dossier`, tenu le temps de recopier ses fichiers tels quels (les traces) ; sans
 /// rien créer dans le dossier d'un autre compte. `None` : copiés sans lui.
 pub(crate) fn tenir_pour_copie(dossier: &Path) -> Option<crate::socle::Verrou> {
+    if !crate::sceau::forme_jugee_avant_le_journal(dossier) {
+        return None;
+    }
     crate::socle::Verrou::prendre_compatible(dossier, VERROU, true, crate::socle::ATTENTE_LECTURE).ok()
 }
 
@@ -1612,6 +1628,46 @@ mod tests {
 
     fn segment(d: &Path, mois: &str) -> PathBuf {
         d.join(DOSSIER).join(format!("{mois}.jsonl"))
+    }
+
+    /// F4 (relecture du delta, bloquante) : des sceaux d'une 0.86 ou d'une 0.87 qui n'avait rien noté au journal. Le
+    /// premier passage du journal (le passage de version au début du menu et du bilan, un événement, une lecture, une
+    /// copie pour les traces) prenait son verrou et créait son dossier avant que les sceaux soient jugés : ses propres
+    /// traces les faisaient dire refaits (élevé). Jugés d'abord, ils se disent « sans journal ».
+    #[test]
+    fn le_journal_ne_fait_pas_refaire_des_sceaux_d_avant_sans_journal() {
+        type Passage = fn(&Path);
+        let passages: [(&str, Passage); 5] = [
+            ("version", |d| {
+                ecrire_dans(d, Vec::new(), le("2026-10-23T10:00:00Z"), std::time::Duration::ZERO).unwrap();
+            }),
+            ("evenement", |d| remplir(d, 1, "2026-10-23T10:00:00Z")),
+            ("lecture", |d| {
+                let _ = lire_dans(d);
+            }),
+            ("copie", |d| {
+                let _ = tenir_pour_copie(d);
+            }),
+            ("noter_version", |_| noter_version()),
+        ];
+        for (nom, passer) in passages {
+            let d = if nom == "noter_version" {
+                let d = dossier_du_journal();
+                std::fs::create_dir_all(&d).unwrap();
+                d
+            } else {
+                dossier(&format!("sceaux-d-avant-{nom}"))
+            };
+            std::fs::write(d.join("sceaux.json"), br#"{"depuis":"2026-10-01","fichiers":{}}"#).unwrap();
+            std::fs::write(d.join(crate::parametres::PARAMETRES), br#"{"langue":"en"}"#).unwrap();
+            passer(&d);
+            let r: serde_json::Value = serde_json::from_slice(&std::fs::read(d.join("sceaux.json")).unwrap()).unwrap();
+            assert!(
+                r.get("refaits").is_none() && r["sans_journal"].is_string(),
+                "{nom} : {r}"
+            );
+            let _ = std::fs::remove_dir_all(&d);
+        }
     }
 
     #[test]

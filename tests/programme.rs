@@ -264,6 +264,35 @@ fn sceaux_ramenes_a_une_forme_d_avant_ne_font_rien_croire() {
     let _ = std::fs::remove_dir_all(&maison);
 }
 
+/// F4 (relecture du delta, bloquante) : une 0.86 ou une 0.87 qui n'avait rien noté au journal, mise à jour, puis le
+/// menu ouvert et quitté. Le journal prenait son verrou et créait son dossier avant que les sceaux d'avant soient
+/// jugés : ses propres traces les faisaient dire refaits (élevé). Jugés d'abord : « sans journal », rien de refait.
+#[cfg(unix)]
+#[test]
+fn une_version_d_avant_sans_journal_ne_se_dit_pas_refaite_au_menu() {
+    let maison = maison_jetable();
+    let donnees = dossier_vanguard(&maison);
+    std::fs::create_dir_all(&donnees).unwrap();
+    std::fs::write(donnees.join("sceaux.json"), r#"{"depuis":"2026-10-01","fichiers":{}}"#).unwrap();
+    std::fs::write(donnees.join("parametres.json"), r#"{"langue":"en"}"#).unwrap();
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let s = vanguard_dans_env(
+        programme,
+        &maison,
+        "en",
+        &[],
+        "q\n",
+        60,
+        &[("VANGUARD_HORS_LIGNE", "1")],
+    );
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    let sceaux: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(donnees.join("sceaux.json")).unwrap()).unwrap();
+    assert_ne!(sceaux["refaits"], serde_json::Value::Bool(true), "{sceaux}");
+    assert!(sceaux["sans_journal"].is_string(), "{sceaux}");
+    let _ = std::fs::remove_dir_all(&maison);
+}
+
 /// F4 (E-M2) : sceaux.verrou gardé par un autre programme du compte : la commande n'attend plus chaque prise du verrou
 /// (il en fallait des minutes), mais une seule fois, puis une seconde en tout ; `--version` ne l'attend pas. Ce qui
 /// devait se noter et ne l'a pas pu n'est pas perdu en silence : le verrou rendu, le journal se lit « incomplet ».

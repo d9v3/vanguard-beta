@@ -673,6 +673,25 @@ fn sans_trace_du_journal(dossier: &Path, r: &Registre) -> bool {
             .all(|n| std::fs::symlink_metadata(dossier.join(n)).is_err())
 }
 
+/// Des sceaux d'une forme d'avant jugés (`forme_d_avant`) et réécrits dans celle-ci AVANT que le journal des événements
+/// laisse dans `dossier` sa première trace : il prenait son verrou et créait son dossier avant de lire sa tête, et
+/// c'est cette lecture qui jugeait les sceaux ; ses propres traces faisaient alors prendre une 0.86 ou une 0.87 qui
+/// n'avait rien noté pour un journal effacé, des sceaux refaits (élevé). Appelé par chaque chemin du journal qui crée
+/// quelque chose. `false` : ils restent d'une forme d'avant, faute de pouvoir les réécrire (verrou des sceaux tenu
+/// ailleurs, autotest) ; le journal n'y crée alors rien, pour que le jugement reste juste à la prochaine fois.
+pub(crate) fn forme_jugee_avant_le_journal(dossier: &Path) -> bool {
+    let d_avant = || matches!(registre(dossier), Ok(Some(r)) if r.format < FORMAT);
+    // Le dossier d'un autre compte : ni les sceaux ni le journal n'y écrivent.
+    if !d_avant() || !crate::socle::ecriture_sure(dossier) {
+        return true;
+    }
+    let (_verrou, ecrire) = verrou_lecture(dossier, true);
+    if ecrire && let Ok(Some(r)) = registre(dossier) {
+        let _ = rattraper_si(dossier, r, true);
+    }
+    !d_avant()
+}
+
 /// Le jugement d'un fichier d'après les sceaux (`None` : ils ne se lisent plus, rien ne peut être cru).
 fn juger(nom: &str, lu: Result<Option<Vec<u8>>, String>, sceaux: Option<&Registre>) -> Lecture {
     let lu = match lu {
