@@ -62,6 +62,20 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   (cinq noms au plus), et un journal effacé n'y est plus dit deux fois : COM-JRN-001 laisse à WIN-JRN-003 ceux qu'il a
   lus, et dit lui-même les autres, chacun à part (une alerte déclarée normale n'en tait plus un autre). Menu Bloquer et réagir › Journaux de
   Windows : ce Windows, ou un dossier de .evtx sous Linux et macOS.
+- **Lectures et preuves resserrées (quatrième campagne d'attaque).** Journaux de Windows : une action de tâche écrite
+  avec des attributs (`<Exec id="…">`) ou un blanc avant « > » est lue (EVT-TAC-001), et une action présente mais
+  illisible donne une alerte au lieu d'un silence ; les tirets typographiques que PowerShell accepte pour ses options
+  (« –enc ») sont ramenés à « - » avant le jugement (EVT-PRC-001, EVT-TAC-001, services, blocs de script). Mémoire :
+  une image chargée dont le code est mappé loin de son en-tête se lit en un seul morceau, et l'analyse est dite
+  incomplète plutôt que saine ; une image intacte hors des dossiers du système (un programme lancé de ~/.cache ou de
+  /var/tmp) est lue en mémoire au lieu d'être « laissée au scan de fichiers », qui ne la lisait pas ; seules les
+  images des dossiers du système restent non lues, et c'est dit. Sous Windows, ce dernier changement n'a pas encore
+  été essayé sur un vrai Windows. Corpus de détection : chaque version par système d'une fonction du fil d'une règle
+  doit appeler la suivante, et le bilan et le corpus passent par le même juge pour les connexions forcées
+  (COM-CPT-003). Décompression : l'archive d'une extension, la liste complète de MalwareBazaar et les fichiers gzip
+  (bases de pacman, listes téléchargées) se lisent avant une échéance et, quand leur taille est annoncée, avec des
+  octets compressés plausibles pour elle : des blocs deflate vides ne tiennent plus le processeur des minutes. L'archive
+  d'une extension refuse aussi deux entrées aux mêmes octets, et deux fois le même nom.
 - **macOS maintenu, sans nouveautés propres.** Le programme macOS reste publié et testé automatiquement sur un Mac
   de GitHub ; il n'a jamais été essayé sur un vrai Mac, et la page, les README et les notices le disent.
 - **Optimiser refusé en administrateur.** Les outils d'Optimiser (logiciels, nettoyage, réglages, jeux, mesures du

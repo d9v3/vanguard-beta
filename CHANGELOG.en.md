@@ -60,6 +60,19 @@ delivered just before it. Only the latest version has its download page; every v
   to WIN-JRN-003 those it read, and reports the others itself, each on its own (an alert declared normal no longer
   silences another). Block and
   respond › Windows logs menu: this Windows, or a folder of .evtx on Linux and macOS.
+- **Tighter reading and proofs (fourth attack campaign).** Windows logs: a task action written with attributes
+  (`<Exec id="…">`) or a blank before “>” is read (EVT-TAC-001), and an action that is present but unreadable gives
+  an alert instead of silence; the typographic dashes PowerShell accepts for its options (“–enc”) are turned into
+  “-” before judging (EVT-PRC-001, EVT-TAC-001, services, script blocks). Memory: a loaded image whose code is mapped
+  far from its header is read in one piece, and the scan is said to be incomplete rather than clean; an intact image
+  outside the system folders (a program started from ~/.cache or /var/tmp) is read in memory instead of being “left
+  to the file scan”, which did not read it; only images from the system folders stay unread, and that is said. On
+  Windows, this last change has not been tried on a real Windows yet. Detection corpus: every per-system version of a
+  function in a rule's chain must call the next one, and the check-up and the corpus go through the same judge for
+  forced logins (COM-CPT-003). Decompression: an extension's archive, the full MalwareBazaar list and gzip files
+  (pacman databases, downloaded lists) are read before a deadline and, when their size is announced, with compressed
+  bytes plausible for it: empty deflate blocks no longer hold the processor for minutes. An extension's archive also
+  refuses two entries sharing the same bytes, and the same name twice.
 - **macOS maintained, without Mac-specific new features.** The macOS program is still published and tested
   automatically on a GitHub Mac; it has never been tried on a real Mac, and the page, READMEs and key notes say so.
 - **Optimize refused as administrator.** The Optimize tools (software, cleanup, settings, gaming, network
