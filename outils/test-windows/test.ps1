@@ -952,11 +952,16 @@ if ($y -match '(?:ni aux|or the) ([0-9]+) (?:empreintes de MalwareBazaar|Malware
 elseif ($y -match 'MalwareBazaar non vérifiées : clé abuse\.ch manquante|MalwareBazaar fingerprints not checked: abuse\.ch key missing') { Ok 'Sans clé abuse.ch : empreintes de MalwareBazaar dites non vérifiées, les 308 règles seules' }
 elseif ($y -match '(?:Empreintes de MalwareBazaar|MalwareBazaar fingerprints) (.+?) ?: (?:seules les 308|only the 308)') { Bug "Empreintes de MalwareBazaar pas utilisées : $($Matches[1])" }
 else { Bug 'Empreintes de MalwareBazaar : rien dit' }
-Etape 'Empreintes de MalwareBazaar : un fichier d''essai reconnu par son empreinte exacte, hors ligne, quarantaine refusée'
-# L'empreinte du fichier d'essai dans la copie gardée des 48 dernières heures, puis l'analyse hors ligne : il doit être
-# reconnu sans aucune règle. Sans clé, Vanguard ne télécharge rien mais lit cette copie : posée pour l'essai si elle
-# manque, puis retirée ; sinon complétée, puis remise telle quelle, heure comprise (Vanguard la rafraîchit d'après
-# cette heure).
+Etape 'Empreintes de MalwareBazaar : une copie gardée changée hors de Vanguard refusée, rien mis en quarantaine'
+# Depuis le lot S2a, une copie gardée ne compte que sous le sceau que Vanguard écrit en la téléchargeant
+# (src/socle/cache.rs, sceau_de et gardee) : aucune variable ni aucun fichier ne fait reconnaître une empreinte d'essai
+# hors ligne sans forger ce sceau, ce que l'essai ne fait pas. Il plante donc l'empreinte du fichier d'essai dans la
+# copie des 48 dernières heures (posée si elle manque : sans sceau ; complétée sinon : changée sous son sceau) et
+# vérifie que l'analyse hors ligne la refuse en le disant, sans rien reconnaître ni mettre en quarantaine. La copie est
+# ensuite retirée, ou remise telle quelle, heure comprise. La reconnaissance par empreinte exacte reste prouvée par les
+# essais unitaires : yara.rs analyse_d_un_dossier et l_empreinte_ne_depend_pas_des_regles, empreintes.rs
+# fichier_connu_retrouve et complete_effacee_sous_son_sceau_jamais_en_silence (copie scellée relue) ; le refus par
+# cache.rs copie_forgee_refusee.
 $recentes = Join-Path $env:LOCALAPPDATA 'vanguard\malwarebazaar\recentes.txt'
 $dossierRecentes = Split-Path -Parent $recentes
 $avaitRecentes = Test-Path -LiteralPath $recentes -PathType Leaf
@@ -990,9 +995,10 @@ try {
     }
 }
 $ye = (Sortie 'yara-empreinte') -replace '\x1b\[[0-9;]*m', '' -replace '\s+', ' '
-if ($ye -match 'facture\.pdf\.exe' -and $ye -match 'empreinte exacte|exact fingerprint') { Ok 'Fichier d''essai reconnu par son empreinte exacte' } else { Bug 'Fichier d''essai PAS reconnu par son empreinte' }
-if ($ye -match "Rien n'a été fait|Nothing was done") { Ok 'Quarantaine refusée : rien fait' } else { Bug 'Refus de la quarantaine PAS respecté' }
-if (Test-Path -LiteralPath $essaiEmpreinte) { Ok 'Fichier d''essai laissé en place' } else { Bug 'Fichier d''essai déplacé malgré le refus' }
+if ($ye -match 'copie gardée refusée|kept copy refused') { Ok 'Copie gardée refusée : l''empreinte plantée hors de Vanguard ne compte pas, et c''est dit' } else { Bug 'Copie des empreintes changée hors de Vanguard PAS dite refusée' }
+if ($ye -match 'empreinte exacte|exact fingerprint') { Bug 'Fichier d''essai reconnu par une empreinte plantée hors de Vanguard' } else { Ok 'Aucune empreinte de la copie refusée n''a servi' }
+if ($ye -match 'quarantaine|quarantine') { Bug 'Quarantaine proposée ou faite sur une copie refusée' } else { Ok 'Aucune quarantaine' }
+if (Test-Path -LiteralPath $essaiEmpreinte) { Ok 'Fichier d''essai laissé en place' } else { Bug 'Fichier d''essai déplacé alors que rien ne l''a reconnu' }
 if ($avaitRecentes) {
     $memeContenu = (Get-FileHash -LiteralPath $recentes).Hash -eq (Get-FileHash -InputStream ([IO.MemoryStream]::new($copieRecentes))).Hash
     $memeHeure = (Get-Item -LiteralPath $recentes).LastWriteTimeUtc -eq $heureRecentes
