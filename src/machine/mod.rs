@@ -1397,6 +1397,9 @@ pub fn afficher_constats(constats: &[Constat]) {
 }
 
 pub fn executer(json: bool) -> Audit {
+    // La tête du journal notée dès le bilan, même sans rien d'autre à noter : c'est la preuve qu'une prochaine mise à
+    // jour lira (`sceau::forme_d_avant`) ; sans elle, ce qu'elle reprendrait ne serait pas cru.
+    crate::modele::journal::noter_version();
     let a = auditer(!json);
     if json {
         println!("{}", serde_json::to_string_pretty(&a).unwrap_or_default());

@@ -28,15 +28,20 @@ delivered just before it. Only the latest version has its download page; every v
   still expected, an exposed port is reported again, every device is reported new again, the key is never called
   intact, nothing is undone from a forged note), and this is said. Every reader follows the same judge; only a file
   taken over by a known update is trusted as it is. An update is trusted only on proof: the head of the event log,
-  sealed, written by the earlier version; without it (log deleted, head rewritten), seals set back to an earlier form
-  only accept what is there as it is, without trusting it, and the summary says the seals were remade. An older
-  version that ran here again (a drive or a Mac left behind) is reported one level lower, and takes nothing over. A
-  seals lock held by another program now causes only one wait, one second in all, and is reported in the summary;
-  vanguard --version waits for nothing; events that could not be noted are counted and reported in the summary once
-  the lock is released (if Vanguard is killed before, its pending events are lost uncounted), and “seals remade” goes
-  away once said. A test reads the code so that each sealed file name appears only where it is allowed, exceptions
-  stated; VANGUARD_ORIGINE is trusted only if it has the bytes of the running program. The threat model states the
-  limits: the folder deleted as a whole, and a program that targets this mechanism on purpose.
+  sealed, written by the earlier version. This proof stops the seals' cleartext field from being set back by hand;
+  sealed like the rest, it can be recomputed by a program that targets this mechanism on purpose (a limit in the
+  threat model). Without it (log deleted, head rewritten), seals set back to an earlier form only accept what is there
+  as it is, without trusting it, and the summary says the seals were remade; with no trace of the log at all (an
+  earlier version that had not noted anything yet, or everything deleted), nothing is taken over either, and the
+  summary says so one level lower, with both causes. The summary and the menu note the head of the log as they start,
+  for the next update. An older version that ran here again (a drive or a Mac left behind) is reported one level
+  lower, and takes nothing over. A seals lock held by another program now causes only one wait, one second in all, and
+  is reported in the summary; vanguard --version waits for nothing; events that could not be noted are counted and
+  reported in the summary once the lock is released (if Vanguard is killed before, its pending events are lost
+  uncounted), and “seals remade” goes away once said. A test reads the code so that each sealed file name appears only
+  where it is allowed, exceptions stated; VANGUARD_ORIGINE is trusted only if it has the bytes of the running program.
+  The threat model states the limits: the folder deleted as a whole, and a program that targets this mechanism on
+  purpose.
 - **Extensions and downloaded lists sealed.** Extension settings (“no restrictions”, “mine”, running with the
   check-up or monitoring) and their approvals are sealed: changed outside Vanguard, or accepted as they were (seals
   remade, earlier version), they no longer grant anything, nothing runs on its own, and the menu and the check-up say

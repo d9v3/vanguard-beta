@@ -1726,6 +1726,8 @@ fn avis_du_nouveau_menu_vu() {
 }
 
 async fn menu() {
+    // La tête du journal notée dès l'ouverture du menu (preuve d'une prochaine mise à jour, `sceau::forme_d_avant`).
+    crate::modele::journal::noter_version();
     let mut s = Session::default();
     let nouveau_menu = premiere_ouverture_du_nouveau_menu();
     // La ligne en surbrillance au retour dans le menu : la dernière choisie.

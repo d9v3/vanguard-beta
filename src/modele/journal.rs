@@ -30,7 +30,7 @@ pub(crate) const DOSSIER: &str = "evenements";
 /// La tête scellée du journal.
 pub(crate) const TETE: &str = "evenements.tete";
 /// Le verrou des écritures : la surveillance, le veilleur et le menu écrivent chacun.
-const VERROU: &str = "evenements.verrou";
+pub(crate) const VERROU: &str = "evenements.verrou";
 /// Mois gardés : un an entier, plus le mois en cours.
 const MOIS_GARDES: i32 = 13;
 /// Taille gardée en tout : on garde les décisions, pas la télémétrie ; au-delà, les plus vieux mois partent.
@@ -1395,7 +1395,8 @@ pub(crate) fn lire() -> Lu {
 }
 
 /// Note le passage de version s'il y en a un, sans autre événement : appelé au début de chaque passe de la
-/// surveillance, pour qu'une mise à jour se lise à son heure et non à la prochaine alerte.
+/// surveillance, du bilan et du menu, pour qu'une mise à jour se lise à son heure et non à la prochaine alerte, et que
+/// la tête existe pour la prochaine (`sceau::forme_d_avant`).
 pub(crate) fn noter_version() {
     let dossier = dossier_du_journal();
     if !crate::socle::ecriture_sure(&dossier) {

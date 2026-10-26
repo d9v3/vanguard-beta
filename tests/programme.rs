@@ -348,6 +348,38 @@ fn menu_quitte_par_q_et_par_la_fin_de_l_entree() {
     assert_eq!(ferme.code, Some(0));
 }
 
+/// F4 (relecture du delta) : ouvrir le menu, sans rien d'autre, note la tête du journal ; c'est la preuve d'une vraie
+/// mise à jour que lira la version suivante (sans elle, ce qu'elle reprendrait ne serait pas cru).
+#[test]
+fn le_menu_note_la_tete_du_journal() {
+    let maison = maison_jetable();
+    let s = vanguard_dans(Path::new(env!("CARGO_BIN_EXE_vanguard")), &maison, "fr", &[], "q\n", 60);
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    let tete = dossier_vanguard(&maison).join("evenements.tete");
+    let lu = std::fs::read_to_string(&tete).unwrap_or_default();
+    assert!(lu.contains(env!("CARGO_PKG_VERSION")), "{tete:?} : {lu}");
+    let _ = std::fs::remove_dir_all(&maison);
+}
+
+/// Le bilan aussi note la tête du journal, dès son début (même raison que le menu).
+#[test]
+fn le_bilan_note_la_tete_du_journal() {
+    let maison = maison_jetable();
+    let s = vanguard_dans(
+        Path::new(env!("CARGO_BIN_EXE_vanguard")),
+        &maison,
+        "fr",
+        &["audit", "--json"],
+        "",
+        300,
+    );
+    assert!(s.code.is_some(), "{}", s.erreurs);
+    let tete = dossier_vanguard(&maison).join("evenements.tete");
+    let lu = std::fs::read_to_string(&tete).unwrap_or_default();
+    assert!(lu.contains(env!("CARGO_PKG_VERSION")), "{tete:?} : {lu}");
+    let _ = std::fs::remove_dir_all(&maison);
+}
+
 #[test]
 fn sous_menu_optimiser() {
     // 12 : le groupe Optimiser et installer ; Entrée : revenir ; q : quitter.
