@@ -761,8 +761,8 @@ fn noter_perdus(dossier: &Path, n: usize) {
     }
 }
 
-/// Les comptes pris par une écriture du journal et pas encore effacés (`PERDUS` renommé, « evenements.perdus.<pid>-…
-/// » : celle-ci, ou une d'avant arrêtée en route).
+/// Les comptes pris par une écriture du journal et pas encore effacés (`PERDUS` renommé, `evenements.perdus.<pid>-…` :
+/// celle-ci, ou une d'avant arrêtée en route).
 fn perdus_pris(dossier: &Path) -> Vec<PathBuf> {
     let prefixe = format!("{PERDUS}.");
     let mut f: Vec<PathBuf> = std::fs::read_dir(dossier)
