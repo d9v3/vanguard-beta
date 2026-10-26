@@ -753,14 +753,46 @@ fn ecart(f: &mut Feuille, outil: &str, ce_qui: Bi) {
 /// wtmp ou wtmpdb, lastlog2.db et lastlog, btmp en root), la sortie de who, loginctl, last, wtmpdb, lastlog2,
 /// lastlog et lastb gardée à côté comme témoin quand l'outil est là. Un écart entre les deux est signalé.
 pub(super) fn comptes(dossier: &Path) -> Partie {
-    use crate::machine::linux::connexions as cx;
     let mut p = Partie::new(Bi::new("Comptes", "Accounts"));
     let mut f = Feuille::new(&p.titre);
     f.fichier(Path::new("/etc/passwd"), true);
     f.fichier(Path::new("/etc/group"), true);
     let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
+    sessions_ouvertes(&mut f);
+    sessions_systemd(&mut f);
+    let (wtmp, last) = connexions_wtmp(&mut f);
+    let (wtmpdb, wtmpdb_outil) = connexions_wtmpdb(&mut f);
+    derniers_passages(&mut f, &passwd);
+    connexions_ratees(&mut f);
+    let n = passwd.lines().filter(|l| l.contains(':')).count();
+    p.manques.append(&mut f.manques);
+    p.evenements = evenements_des_connexions(&mut p, wtmp.as_deref(), wtmpdb.as_deref(), last, wtmpdb_outil);
+    // Et la date des fichiers des comptes, changée par chaque compte créé ou modifié.
+    p.evenements.extend(f.dates.iter().filter_map(|(c, t)| {
+        Some(chronologie::Evenement::new(
+            chronologie::secondes(*t)?,
+            chronologie::Source::Compte,
+            chronologie::Genre::FichierDesComptes,
+            c.clone(),
+        ))
+    }));
+    if p.ecrire(
+        dossier,
+        "04-comptes.txt",
+        &f.texte,
+        Bi::new(
+            "comptes et groupes (passwd, group), sessions ouvertes et dernières connexions lues par Vanguard (utmp, logind, wtmp ou wtmpdb, lastlog2, lastlog), avec la sortie de who, loginctl, last, lastlog2 à côté en témoin, et connexions ratées (btmp et lastb, en root)",
+            "accounts and groups (passwd, group), open sessions and last logins read by Vanguard (utmp, logind, wtmp or wtmpdb, lastlog2, lastlog), with the output of who, loginctl, last, lastlog2 alongside as a witness, and failed logins (btmp and lastb, as root)",
+        ),
+    ) {
+        p.compte = Some(bi!("{n} comptes", "{n} accounts"));
+    }
+    p
+}
 
-    // Sessions ouvertes : /run/utmp, puis who en témoin.
+/// Sessions ouvertes : /run/utmp, puis who en témoin.
+fn sessions_ouvertes(f: &mut Feuille) {
+    use crate::machine::linux::connexions as cx;
     f.section(&format!(
         "{} (sessions ouvertes / open sessions, lu par Vanguard / read by Vanguard)",
         cx::UTMP
@@ -792,7 +824,7 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
         // Seulement des sessions qui manquent à who (un who construit avec logind peut en montrer davantage).
         if outil < n {
             ecart(
-                &mut f,
+                f,
                 "who",
                 bi!(
                     "{n} sessions dans utmp, {outil} pour who",
@@ -801,9 +833,11 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
             );
         }
     }
+}
 
-    // Sessions de systemd : logind par D-Bus, puis loginctl en témoin.
-    let ids = sessions_logind(&mut f);
+/// Sessions de systemd : logind par D-Bus, puis loginctl en témoin.
+fn sessions_systemd(f: &mut Feuille) {
+    let ids = sessions_logind(f);
     let loginctl = f.commande(
         Command::new("loginctl").args(["list-sessions", "--no-pager", "--no-legend"]),
         10,
@@ -814,7 +848,7 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
         let cachees = ids.iter().filter(|id| !outil.contains(&id.as_str())).count();
         if cachees > 0 {
             ecart(
-                &mut f,
+                f,
                 "loginctl",
                 bi!(
                     "{cachees} sessions de logind absentes de loginctl",
@@ -823,10 +857,18 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
             );
         }
     }
+}
 
-    // Dernières connexions : wtmp (ou wtmpdb sans lui), puis last et wtmpdb en témoin. Les dates en anglais, quelle
-    // que soit la langue de l'ordinateur.
-    let wtmp = releve_utmp(&mut f, cx::WTMP, "connexions et démarrages / logins and boots");
+/// Dernières connexions : wtmp, puis last en témoin (les dates en anglais, quelle que soit la langue de
+/// l'ordinateur). Rend les enregistrements lus et la sortie de last.
+fn connexions_wtmp(
+    f: &mut Feuille,
+) -> (
+    Option<Vec<crate::machine::linux::connexions::Enregistrement>>,
+    Option<String>,
+) {
+    use crate::machine::linux::connexions as cx;
+    let wtmp = releve_utmp(f, cx::WTMP, "connexions et démarrages / logins and boots");
     let last = f.commande(
         Command::new("last")
             .args(["-F", "-w", "-n", "1000"])
@@ -838,7 +880,7 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
         let absentes = absentes_de_last(n, &dates_de_last(l), 1000);
         if absentes > 0 {
             ecart(
-                &mut f,
+                f,
                 "last",
                 bi!(
                     "{absentes} connexions de wtmp absentes de last",
@@ -847,6 +889,12 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
             );
         }
     }
+    (wtmp, last)
+}
+
+/// Les sessions de wtmpdb (sans wtmp), puis « wtmpdb last » en témoin.
+fn connexions_wtmpdb(f: &mut Feuille) -> (Option<Vec<crate::machine::linux::connexions::Session>>, Option<String>) {
+    use crate::machine::linux::connexions as cx;
     let wtmpdb = match cx::base(Path::new(cx::WTMPDB)) {
         Err(cx::PasLue::Absente) => None,
         lue => {
@@ -881,8 +929,12 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
         }
     };
     let wtmpdb_outil = f.commande(Command::new("wtmpdb").arg("last").env("LC_ALL", "C.UTF-8"), 20, false);
+    (wtmpdb, wtmpdb_outil)
+}
 
-    // lastlog2.db et lastlog, puis les outils en témoin.
+/// lastlog2.db et lastlog, lus par Vanguard, puis les outils en témoin.
+fn derniers_passages(f: &mut Feuille, passwd: &str) {
+    use crate::machine::linux::connexions as cx;
     match cx::base(Path::new(cx::LASTLOG2)) {
         Err(cx::PasLue::Absente) => {}
         lue => {
@@ -919,7 +971,7 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
             cx::LASTLOG
         ));
         let mut lignes = Vec::new();
-        for (uid, nom) in comptes_de(&passwd) {
+        for (uid, nom) in comptes_de(passwd) {
             match cx::lastlog_de(Path::new(cx::LASTLOG), uid) {
                 Ok(Some((t, terminal, hote))) => {
                     lignes.push(format!("{nom}\t{}\t{terminal}\t{hote}", cx::date(i64::from(t))));
@@ -937,10 +989,13 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
     }
     f.commande(&mut Command::new("lastlog2"), 20, false);
     f.commande(&mut Command::new("lastlog"), 20, false);
+}
 
-    // Connexions ratées : btmp, réservé à root.
+/// Connexions ratées : btmp, réservé à root.
+fn connexions_ratees(f: &mut Feuille) {
+    use crate::machine::linux::connexions as cx;
     if super::privilegie() {
-        releve_utmp(&mut f, cx::BTMP, "connexions ratées / failed logins");
+        releve_utmp(f, cx::BTMP, "connexions ratées / failed logins");
         f.commande(Command::new("lastb").args(["-F", "-w", "-n", "1000"]), 20, false);
     } else {
         f.section(&format!("{} / lastb", cx::BTMP));
@@ -950,13 +1005,20 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
             raison: Raison::Droits,
         });
     }
-    let n = passwd.lines().filter(|l| l.contains(':')).count();
-    p.manques.append(&mut f.manques);
-    // Pour la chronologie : démarrages et sessions depuis le réseau, lus par Vanguard (wtmp, sinon wtmpdb) ; la
-    // sortie de last ou de wtmpdb seulement quand ni l'un ni l'autre ne s'est lu. Et la date des fichiers des
-    // comptes, changée par chaque compte créé ou modifié.
+}
+
+/// Pour la chronologie : démarrages et sessions depuis le réseau, lus par Vanguard (wtmp, sinon wtmpdb) ; la sortie
+/// de last ou de wtmpdb seulement quand ni l'un ni l'autre ne s'est lu (et c'est dit dans `p` s'il n'y a rien).
+fn evenements_des_connexions(
+    p: &mut Partie,
+    wtmp: Option<&[crate::machine::linux::connexions::Enregistrement]>,
+    wtmpdb: Option<&[crate::machine::linux::connexions::Session]>,
+    last: Option<String>,
+    wtmpdb_outil: Option<String>,
+) -> Vec<chronologie::Evenement> {
+    use crate::machine::linux::connexions as cx;
     let wtmpdb_absente = !Path::new(cx::WTMPDB).exists();
-    p.evenements = match (&wtmp, &wtmpdb) {
+    match (wtmp, wtmpdb) {
         (Some(n), _) if !n.is_empty() => evenements_wtmp(n),
         (_, Some(s)) => evenements_wtmpdb(s),
         // wtmp vide et pas de wtmpdb : vraiment rien.
@@ -978,27 +1040,7 @@ pub(super) fn comptes(dossier: &Path) -> Partie {
             }
             chronologie::lire_last(&sessions, chrono::Local::now().naive_local(), &chrono::Local)
         }
-    };
-    p.evenements.extend(f.dates.iter().filter_map(|(c, t)| {
-        Some(chronologie::Evenement::new(
-            chronologie::secondes(*t)?,
-            chronologie::Source::Compte,
-            chronologie::Genre::FichierDesComptes,
-            c.clone(),
-        ))
-    }));
-    if p.ecrire(
-        dossier,
-        "04-comptes.txt",
-        &f.texte,
-        Bi::new(
-            "comptes et groupes (passwd, group), sessions ouvertes et dernières connexions lues par Vanguard (utmp, logind, wtmp ou wtmpdb, lastlog2, lastlog), avec la sortie de who, loginctl, last, lastlog2 à côté en témoin, et connexions ratées (btmp et lastb, en root)",
-            "accounts and groups (passwd, group), open sessions and last logins read by Vanguard (utmp, logind, wtmp or wtmpdb, lastlog2, lastlog), with the output of who, loginctl, last, lastlog2 alongside as a witness, and failed logins (btmp and lastb, as root)",
-        ),
-    ) {
-        p.compte = Some(bi!("{n} comptes", "{n} accounts"));
     }
-    p
 }
 
 /// Le journal de systemd des 7 derniers jours, du plus récent au plus ancien, 50 Mo au plus ; sans systemd ou sans
