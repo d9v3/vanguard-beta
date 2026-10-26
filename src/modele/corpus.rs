@@ -282,6 +282,32 @@ const FILS: &[(&str, &[(&str, &str)])] = &[
             ("machine/chasse.rs", "juger_intrusions"),
         ],
     ),
+    // Le lecteur du même fil, une version par système : chacune doit mener à sa lecture du journal.
+    (
+        "COM-CPT-003",
+        &[
+            ("machine/chasse.rs", "connexion_forcee"),
+            ("machine/chasse.rs", "tentatives_lues@linux"),
+            ("machine/linux/mod.rs", "tentatives_ssh_lues"),
+            ("machine/linux/mod.rs", "tentatives_ssh"),
+        ],
+    ),
+    (
+        "COM-CPT-003",
+        &[
+            ("machine/chasse.rs", "connexion_forcee"),
+            ("machine/chasse.rs", "tentatives_lues@windows"),
+            ("machine/windows/evenements.rs", "tentatives_lues"),
+        ],
+    ),
+    (
+        "COM-CPT-003",
+        &[
+            ("machine/chasse.rs", "connexion_forcee"),
+            ("machine/chasse.rs", "tentatives_lues@macos"),
+            ("machine/chasse.rs", "tentatives_sans_journal"),
+        ],
+    ),
     (
         "COM-CRT-001",
         &[
@@ -1208,8 +1234,7 @@ fn source(fichier: &str) -> String {
 fn corps(texte: &str, nom: &str) -> Vec<String> {
     let texte = &code(texte);
     let mut sortie = Vec::new();
-    let signature = format!("fn {nom}(");
-    for (i, _) in texte.match_indices(&signature) {
+    for i in signatures(texte, nom) {
         let avant = &texte[..i];
         let debut_ligne = avant.rfind('\n').map_or(0, |n| n + 1);
         let retrait = texte[debut_ligne..].len() - texte[debut_ligne..].trim_start().len();
@@ -1222,33 +1247,26 @@ fn corps(texte: &str, nom: &str) -> Vec<String> {
     sortie
 }
 
-/// Les fonctions `nom` d'un texte source hors des essais (ni dans un module `#[cfg(test)]`, ni marquées
-/// `#[cfg(test)]`), chacune avec ses attributs `#[cfg…]`, lus dans le texte (pour la nommer), et son corps (`corps`).
-/// `nom@système` (« journaux@windows ») ne garde que celles dont un attribut nomme ce système : la version qu'un fil
-/// suit quand les autres versions jugent une autre règle.
+/// Les fonctions `nom` d'un texte source hors des essais (ni dans un module d'essais, ni réservées aux essais par
+/// leur `#[cfg]`), chacune avec ses attributs `#[cfg(…)]`, lus dans le texte (pour la nommer), et son corps (`corps`).
+/// `nom@système` (« journaux@windows ») ne garde que celles que leur `#[cfg]` compile pour ce système : la version
+/// qu'un fil suit quand les autres versions jugent une autre règle.
 fn homonymes(texte: &str, nom: &str) -> Vec<(String, String)> {
     let (nom, systeme) = nom.split_once('@').map_or((nom, None), |(n, s)| (n, Some(s)));
     let lignes: Vec<&str> = texte.lines().collect();
     let texte = &code(texte);
-    let fin_du_code = texte.find("\n#[cfg(test)]\nmod ").unwrap_or(texte.len());
-    let signature = format!("fn {nom}(");
+    let essais = modules_d_essais(texte, &lignes);
     let mut sortie = Vec::new();
-    for (i, _) in texte[..fin_du_code].match_indices(&signature) {
-        // Les lignes d'attributs juste au-dessus de la signature, dans le texte (le code n'a plus ses chaînes), en
-        // passant les commentaires.
-        let debut_ligne = texte[..i].rfind('\n').map_or(0, |n| n + 1);
-        let ligne = texte[..i].matches('\n').count();
-        let attributs: Vec<&str> = lignes[..ligne.min(lignes.len())]
-            .iter()
-            .rev()
-            .map(|l| l.trim())
-            .take_while(|l| l.starts_with("#[") || l.starts_with("//"))
-            .filter(|l| l.starts_with("#[cfg"))
-            .collect();
-        if attributs.iter().any(|a| a.replace(' ', "") == "#[cfg(test)]") {
+    for i in signatures(texte, nom) {
+        if essais.iter().any(|r| r.contains(&i)) {
             continue;
         }
-        if systeme.is_some_and(|s| !attributs.iter().any(|a| nomme(a, s))) {
+        let debut_ligne = texte[..i].rfind('\n').map_or(0, |n| n + 1);
+        let attributs = cfg_au_dessus(&lignes, texte[..i].matches('\n').count());
+        if !SYSTEMES.iter().any(|s| compile_pour(&attributs, s)) {
+            continue;
+        }
+        if systeme.is_some_and(|s| attributs.is_empty() || !compile_pour(&attributs, s)) {
             continue;
         }
         let Some(c) = corps(&texte[debut_ligne..], nom).into_iter().next() else {
@@ -1259,6 +1277,168 @@ fn homonymes(texte: &str, nom: &str) -> Vec<(String, String)> {
             cfg.push(' ');
         }
         sortie.push((cfg, c));
+    }
+    sortie
+}
+
+/// Les systèmes pour lesquels Vanguard se compile.
+const SYSTEMES: [&str; 3] = ["linux", "windows", "macos"];
+
+/// Les débuts des signatures `fn nom(` ou `fn nom<…>(` (générique) dans le code.
+fn signatures(texte: &str, nom: &str) -> Vec<usize> {
+    let signature = format!("fn {nom}");
+    texte
+        .match_indices(&signature)
+        .filter(|(i, _)| matches!(texte.as_bytes().get(i + signature.len()), Some(b'(' | b'<')))
+        .filter(|(i, _)| !texte[..*i].ends_with(|c: char| c.is_alphanumeric() || c == '_'))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Les attributs `#[cfg(…)]` posés sur l'élément de la ligne `ligne` (indice dans `lignes`), commentaires passés ;
+/// un attribut que rustfmt étale sur plusieurs lignes est rejoint en une seule.
+fn cfg_au_dessus(lignes: &[&str], ligne: usize) -> Vec<String> {
+    let mut attributs = Vec::new();
+    let mut k = ligne.min(lignes.len());
+    while k > 0 {
+        k -= 1;
+        // Un commentaire en bout de ligne (« #[allow(…)] // pourquoi ») retiré.
+        let l = lignes[k].trim();
+        let l = l.split_once(" //").map_or(l, |(avant, _)| avant).trim_end();
+        if l.starts_with("//") || (l.starts_with("#[") && l.ends_with(']')) {
+            if l.starts_with("#[") {
+                attributs.push(l.to_string());
+            }
+            continue;
+        }
+        // La dernière ligne d'un attribut étalé (« ))] ») : remonter jusqu'à son « #[ », dix lignes au plus.
+        let Some(debut) = l
+            .ends_with(']')
+            .then(|| {
+                (k.saturating_sub(10)..k)
+                    .rev()
+                    .find(|&j| lignes[j].trim().starts_with("#["))
+            })
+            .flatten()
+        else {
+            break;
+        };
+        let morceaux: Vec<&str> = lignes[debut..=k].iter().map(|m| m.trim()).collect();
+        attributs.push(morceaux.join(" ").replace("( ", "(").replace(" )", ")"));
+        k = debut;
+    }
+    attributs.retain(|a| a.starts_with("#[cfg("));
+    attributs
+}
+
+/// Les attributs `#[cfg(…)]` tous vrais pour `systeme`, hors essais (`test` faux).
+fn compile_pour(attributs: &[String], systeme: &str) -> bool {
+    attributs.iter().all(|a| {
+        let dedans = a.trim_start_matches("#[cfg(").trim_end_matches(']');
+        let dedans = dedans.strip_suffix(')').unwrap_or(dedans);
+        let jetons = jetons_cfg(dedans);
+        let mut pos = 0;
+        cfg_vrai(&jetons, &mut pos, systeme)
+    })
+}
+
+/// Les jetons d'un prédicat de `cfg` : noms, chaînes (sans leurs guillemets), « ( », « ) », « , », « = ».
+fn jetons_cfg(t: &str) -> Vec<String> {
+    let mut jetons = Vec::new();
+    let mut c = t.chars().peekable();
+    while let Some(x) = c.next() {
+        match x {
+            '(' | ')' | ',' | '=' => jetons.push(x.to_string()),
+            '"' => jetons.push(c.by_ref().take_while(|&y| y != '"').collect()),
+            y if y.is_alphanumeric() || y == '_' => {
+                let mut mot = y.to_string();
+                while let Some(&z) = c.peek().filter(|z| z.is_alphanumeric() || **z == '_') {
+                    mot.push(z);
+                    c.next();
+                }
+                jetons.push(mot);
+            }
+            _ => {}
+        }
+    }
+    jetons
+}
+
+/// Un prédicat de `cfg` à partir de `jetons[*pos]`, pour `systeme` : `all`, `any`, `not`, `windows`, `unix`,
+/// `target_os = "…"`, `test` (faux) ; un autre (une fonctionnalité) est tenu pour vrai : la fonction compte.
+fn cfg_vrai(jetons: &[String], pos: &mut usize, systeme: &str) -> bool {
+    let Some(mot) = jetons.get(*pos).cloned() else {
+        return true;
+    };
+    *pos += 1;
+    match mot.as_str() {
+        "all" | "any" | "not" => {
+            *pos += 1; // « ( »
+            let mut valeurs = Vec::new();
+            while jetons.get(*pos).is_some_and(|j| j != ")") {
+                valeurs.push(cfg_vrai(jetons, pos, systeme));
+                if jetons.get(*pos).is_some_and(|j| j == ",") {
+                    *pos += 1;
+                }
+            }
+            *pos += 1; // « ) »
+            match mot.as_str() {
+                "all" => valeurs.iter().all(|&v| v),
+                "any" => valeurs.iter().any(|&v| v),
+                _ => !valeurs.first().copied().unwrap_or(true),
+            }
+        }
+        _ if jetons.get(*pos).is_some_and(|j| j == "=") => {
+            let valeur = jetons.get(*pos + 1).cloned().unwrap_or_default();
+            *pos += 2;
+            match mot.as_str() {
+                "target_os" => valeur == systeme,
+                "target_family" => valeur == if systeme == "windows" { "windows" } else { "unix" },
+                _ => true,
+            }
+        }
+        "windows" => systeme == "windows",
+        "unix" => systeme != "windows",
+        "test" => false,
+        _ => true,
+    }
+}
+
+/// Les étendues (dans le code) des modules d'essais écrits en ligne : `mod nom {` dont le `#[cfg]` ne se compile
+/// qu'avec les essais, jusqu'à son accolade fermante. Un essai placé n'importe où dans le fichier (pas seulement en
+/// fin) n'est pas pris pour une version de la fonction.
+fn modules_d_essais(texte: &str, lignes: &[&str]) -> Vec<std::ops::Range<usize>> {
+    let mut sortie = Vec::new();
+    let mut debut_ligne = 0;
+    for (n, ligne) in texte.split('\n').enumerate() {
+        let l = ligne.trim_start();
+        let l = l
+            .strip_prefix("pub(crate) ")
+            .or_else(|| l.strip_prefix("pub "))
+            .unwrap_or(l);
+        if l.starts_with("mod ") && l.trim_end().ends_with('{') {
+            let attributs = cfg_au_dessus(lignes, n);
+            if !attributs.is_empty() && !SYSTEMES.iter().any(|s| compile_pour(&attributs, s)) {
+                let ouvre = debut_ligne + ligne.rfind('{').unwrap_or(0);
+                let mut profondeur = 0usize;
+                let mut fin = texte.len();
+                for (k, c) in texte[ouvre..].char_indices() {
+                    match c {
+                        '{' => profondeur += 1,
+                        '}' => {
+                            profondeur -= 1;
+                            if profondeur == 0 {
+                                fin = ouvre + k;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                sortie.push(ouvre..fin);
+            }
+        }
+        debut_ligne += ligne.len() + 1;
     }
     sortie
 }
@@ -1466,6 +1646,24 @@ fn le_fil_voit_une_regle_debranchee() {
         "#[cfg(target_os = \"linux\")] "
     );
     assert_eq!(homonymes(deux, "certificats@macos"), []);
+    // Deuxième passe : `not(windows)` n'est pas Windows ; un cfg étalé sur plusieurs lignes est lu ; une fonction
+    // générique est une version ; un module d'essais au milieu du fichier, même sous `all(test, …)`, ne compte pas.
+    let etales = "#[cfg(not(windows))]\nfn lire() {\n    a();\n}\n\n\
+                  #[cfg(all(\n    windows,\n    not(target_os = \"linux\")\n))]\nfn lire() {\n    b();\n}\n\n\
+                  #[cfg(all(test, windows))]\nmod essais {\n    fn lire() {\n        c();\n    }\n}\n\n\
+                  #[cfg(target_os = \"macos\")]\npub(crate) fn lire<T: Copy>(x: T) {\n    d(x);\n}\n";
+    let corps_de = |s: &str| -> Vec<String> { homonymes(etales, s).into_iter().map(|(_, c)| c).collect() };
+    assert_eq!(homonymes(etales, "lire").len(), 3, "{:?}", homonymes(etales, "lire"));
+    assert!(
+        corps_de("lire@windows").iter().all(|c| nomme(c, "b")),
+        "{:?}",
+        corps_de("lire@windows")
+    );
+    assert_eq!(corps_de("lire@windows").len(), 1);
+    assert_eq!(corps_de("lire@linux").len(), 1);
+    assert!(nomme(&corps_de("lire@linux")[0], "a"));
+    assert_eq!(corps_de("lire@macos").len(), 2);
+    assert!(corps_de("lire").iter().all(|c| !nomme(c, "c")));
 }
 
 #[test]
