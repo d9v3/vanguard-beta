@@ -550,6 +550,9 @@ fn rattraper_si(dossier: &Path, mut r: Registre, ecrire: bool) -> Registre {
         Some(Avant::Recule) => {
             r.refaits = true;
             r.depuis = aujourd_hui();
+            // « Refaits » dit déjà tout, et plus haut : une version plus ancienne constatée avant ne se redit pas.
+            r.ancienne = None;
+            r.sans_journal = None;
         }
         // Aucune trace du journal : une 0.86 ou une 0.87 qui n'avait encore rien noté, ou des sceaux ramenés en arrière
         // avec le journal effacé. Rien ne prouve la mise à jour, rien n'est repris ; dit moyen, avec les deux causes.
@@ -1073,16 +1076,38 @@ fn apaiser_refaits_dans(dossier: &Path, aujourd_hui: chrono::NaiveDate) {
     let Ok(Some(r)) = registre(dossier) else {
         return;
     };
-    let jours = chrono::NaiveDate::parse_from_str(&r.depuis, "%Y-%m-%d")
-        .map_or(0, |d| aujourd_hui.signed_duration_since(d).num_days());
-    if !r.refaits || jours <= REFAITS_JOURS || r.adoptes.iter().any(|n| !r.repris.contains(n)) {
+    let passe = |jour: &str| {
+        chrono::NaiveDate::parse_from_str(jour, "%Y-%m-%d")
+            .map_or(0, |d| aujourd_hui.signed_duration_since(d).num_days())
+            > REFAITS_JOURS
+    };
+    let tous_crus = |r: &Registre| r.adoptes.iter().all(|n| r.repris.contains(n));
+    // Ce qui retombe : « refaits », « version plus ancienne » et « sans journal », chacun passé son mois.
+    let apaiser = |r: &mut Registre| {
+        let mut change = false;
+        if tous_crus(r) {
+            if r.refaits && passe(&r.depuis) {
+                r.refaits = false;
+                change = true;
+            }
+            for jour in [&mut r.ancienne, &mut r.sans_journal] {
+                if jour.as_deref().is_some_and(passe) {
+                    *jour = None;
+                    change = true;
+                }
+            }
+        }
+        change
+    };
+    if !apaiser(&mut r.clone()) {
         return;
     }
     let Ok(_verrou) = verrou_ecriture(dossier, REGISTRE) else {
         return;
     };
-    if let Ok(Some(mut r)) = registre(dossier) {
-        r.refaits = false;
+    if let Ok(Some(mut r)) = registre(dossier)
+        && apaiser(&mut r)
+    {
         let _ = enregistrer_registre(dossier, &r);
     }
 }
@@ -1984,6 +2009,51 @@ mod tests {
             assert!(rel.refaits && rel.sans_journal.is_none(), "{nom} : {rel:?}");
             let _ = std::fs::remove_dir_all(&d);
         }
+    }
+
+    /// F4 (relecture du delta) : « une version plus ancienne a servi ici » ne reste pas pour toujours. Des sceaux
+    /// refaits ensuite l'effacent (ils disent déjà tout, plus haut) ; sinon il retombe passé son mois, une fois chaque
+    /// fichier accepté tel quel réécrit, comme « sans journal ».
+    #[test]
+    fn une_version_plus_ancienne_ne_se_dit_pas_toujours() {
+        // Refaits après : effacée.
+        let d = sceaux_d_avant_sans_journal("ancienne-puis-refaits");
+        std::fs::write(d.join(crate::modele::journal::VERROU), b"").unwrap();
+        let mut r: serde_json::Value = serde_json::from_slice(&std::fs::read(d.join(REGISTRE)).unwrap()).unwrap();
+        r["ancienne"] = "2026-09-01".into();
+        r["sans_journal"] = "2026-09-01".into();
+        std::fs::write(d.join(REGISTRE), serde_json::to_vec(&r).unwrap()).unwrap();
+        let _ = juge_dans(&d, crate::parametres::PARAMETRES);
+        let rel = falsifies_dans(&d);
+        assert!(
+            rel.refaits && rel.ancienne.is_none() && rel.sans_journal.is_none(),
+            "{rel:?}"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+        // Passé le mois : retombée, mais pas tant qu'un fichier accepté tel quel n'est pas réécrit.
+        let d = jetable("ancienne-apaisee");
+        let mut r = Registre {
+            format: FORMAT,
+            depuis: "2026-08-01".into(),
+            ancienne: Some("2026-08-01".into()),
+            sans_journal: Some("2026-08-01".into()),
+            ..Registre::default()
+        };
+        r.adoptes.insert(APPRIS.to_string());
+        std::fs::write(d.join(REGISTRE), serde_json::to_vec(&r).unwrap()).unwrap();
+        let jour = chrono::NaiveDate::from_ymd_opt(2026, 8, 15).unwrap();
+        apaiser_refaits_dans(&d, jour + chrono::Days::new(60));
+        let lu = registre(&d).unwrap().unwrap();
+        assert!(lu.ancienne.is_some() && lu.sans_journal.is_some());
+        r.adoptes.clear();
+        std::fs::write(d.join(REGISTRE), serde_json::to_vec(&r).unwrap()).unwrap();
+        apaiser_refaits_dans(&d, jour);
+        let lu = registre(&d).unwrap().unwrap();
+        assert!(lu.ancienne.is_some() && lu.sans_journal.is_some());
+        apaiser_refaits_dans(&d, jour + chrono::Days::new(30));
+        let lu = registre(&d).unwrap().unwrap();
+        assert!(lu.ancienne.is_none() && lu.sans_journal.is_none());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// F4 (E-M2) : le verrou des sceaux gardé par un autre programme ne fait plus attendre chaque écriture toute
