@@ -85,8 +85,8 @@ pub enum Defaire {
 }
 
 impl Correctif {
-    /// Comment cette correction se défait. Sous Windows, une correction faite tout entière de corrections natives
-    /// (DWORD sous HKLM) se défait d'elle-même, sauf celles qui rallument l'UAC.
+    /// Comment cette correction se défait. Sous Windows, une correction native (DWORD sous HKLM : WDigest, NLA,
+    /// LSA, UAC…) est une protection : Vanguard ne la défait pas, la personne peut la changer dans Windows.
     pub(crate) fn comment_defaire(&self) -> Defaire {
         #[cfg(windows)]
         if self.defaire == Defaire::Inconnu && !self.commandes.is_empty() {

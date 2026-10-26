@@ -355,7 +355,7 @@ enum Commande {
         retirer: bool,
     },
     /// Blocages de Windows Defender : règles ASR, protection réseau, logiciels indésirables, accès contrôlé aux
-    /// dossiers. Chacun s'active après accord et s'annule exactement (Windows seulement).
+    /// dossiers. Chacun s'active après accord ; une protection, que Vanguard ne défait pas (Windows seulement).
     #[command(name = "defender")]
     Durcir,
     /// Analyse YARA : 308 règles de familles de logiciels malveillants (ReversingLabs) et les empreintes de
@@ -2958,7 +2958,7 @@ const AIDES_EN: &[(&str, &str)] = &[
     ("pieges", "Decoy files against ransomware: place them (after your consent), see whether they are intact, or \
                 remove them"),
     ("defender", "Windows Defender blocking: ASR rules, network protection, unwanted software, controlled folder access. \
-                Each one is turned on after your consent and undoes exactly (Windows only)"),
+                Each one is turned on after your consent; a protection Vanguard does not undo (Windows only)"),
     ("isoler", "Run an unknown program in a sandbox: no network, home folder hidden"),
     ("fuite-courriel", "Email address leaks: the address is sent to the search service, after your consent"),
     ("integrite", "Critical file integrity: BLAKE3 fingerprint reference, then what changed since"),

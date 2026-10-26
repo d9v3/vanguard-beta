@@ -72,6 +72,12 @@ delivered just before it. Only the latest version has its download page; every v
   safe value, nor removes the 99-vanguard.conf file; those from 0.86 and 0.87, which stayed listed as undoable
   forever, are removed once, and this is said. A reglages.json accepted without an earlier seal (outside a
   Vanguard update) is no longer replayed as administrator, like public Wi-Fi mode and the backup.
+- **Windows hardening and Defender protections are no longer undone.** The fourteen Windows hardening settings
+  (WDigest, NLA, LSA, UAC…) and Defender's protections (ASR rules, network protection, unwanted software, controlled
+  folders), whether set by the check or by Optimize, are now protections: “Put everything back” no longer undoes
+  them, and a forged undo note can no longer lower them as administrator. The person can still change them in
+  Windows. Their notes from 0.86 and 0.87 are removed once; Vanguard only remembers that it set a Defender
+  protection, so the check can say more loudly that it was turned off afterwards. To be proven in the Windows VM.
 - **Post-quantum on Windows.** The version of Windows' OpenSSH server is read (its `%SystemRoot%\…` path is
   expanded): COM-PQC-001 no longer calls it unreadable.
 - **USB key: rescue images back by default.** The repository tools make the rescue key everywhere again: Ventoy, the

@@ -75,6 +75,13 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   0.87, qui restaient dites annulables à vie, sont retirées une fois, et c'est dit. Un reglages.json accepté
   sans sceau d'avant (hors d'une mise à jour de Vanguard) n'est plus rejoué en administrateur, comme le mode Wi-Fi
   public et la sauvegarde.
+- **Le durcissement de Windows et les protections de Defender ne s'annulent plus.** Les quatorze réglages de
+  durcissement de Windows (WDigest, NLA, LSA, UAC…) et les protections de Defender (règles ASR, protection réseau,
+  logiciels indésirables, dossiers contrôlés), que le bilan ou Optimiser les pose, sont désormais des protections :
+  « Tout remettre comme avant » ne les défait plus, et une note d'annulation forgée ne peut plus les faire baisser
+  en administrateur. La personne peut toujours les changer dans Windows. Leurs notes de la 0.86 et de la 0.87 sont
+  retirées une fois ; Vanguard retient seulement qu'il a posé une protection de Defender, pour dire plus fort au
+  bilan qu'elle a été coupée ensuite. À prouver dans la VM Windows.
 - **Post-quantique sous Windows.** La version du serveur OpenSSH de Windows est lue (son chemin `%SystemRoot%\…` est
   développé) : COM-PQC-001 ne la dit plus illisible.
 - **Clé USB : les images de secours de nouveau par défaut.** Les outils du dépôt refont la clé de secours partout :

@@ -5,8 +5,9 @@
 //!
 //! Proposées au bilan : les blocages de base (Microsoft les dit sans revers), la protection réseau et les logiciels
 //! indésirables. Celles qui peuvent gêner un programme légitime (documents piégés, dossiers contrôlés) ne le sont
-//! que si Vanguard les avait posées et qu'elles ont été coupées depuis. Chaque correction note la valeur d'avant
-//! (`annulables`), comme dans Optimiser.
+//! que si Vanguard les avait posées et qu'elles ont été coupées depuis. Ce sont des protections : Vanguard ne les
+//! défait pas (une note forgée ne peut donc pas les faire couper) ; la personne peut les changer dans Windows. Il
+//! retient seulement qu'il les a posées (`optimiser::retenir_protection`), pour dire plus fort une coupure.
 
 use super::{Constat, alerte, ok};
 use crate::machine::sans_objet;
@@ -71,28 +72,22 @@ fn en_place(etat: &Etat, p: &Protection) -> bool {
     p.prefs.iter().all(|pref| etat.valeur(*pref).as_deref() == Some("mp:1"))
 }
 
-/// La correction qui la remet en blocage, avec ses gestes : la valeur d'avant de chaque préférence est relevée
-/// juste avant (une règle ASR jamais réglée sera retirée à l'annulation, pas mise à « coupée »).
+/// La correction qui la remet en blocage : une protection, que Vanguard ne défait pas.
 fn remettre(c: Constat, p: &Protection) -> Constat {
     let commandes: Vec<String> = p
         .prefs
         .iter()
         .filter_map(|pref| defender::commande(*pref, Some("mp:1")))
         .collect();
-    let gestes = p
-        .prefs
-        .iter()
-        .map(|pref| Geste::defender(defender::cle(*pref)))
-        .collect();
     c.corriger(
         trf!(
-            "Activer « {} » dans Defender (annulable dans « Ce que Vanguard a changé »)",
-            "Turn on “{}” in Defender (can be undone in “What Vanguard changed”)",
+            "Activer « {} » dans Defender (une protection : Vanguard ne la défait pas, Windows le peut)",
+            "Turn on “{}” in Defender (a protection: Vanguard does not undo it, Windows can)",
             nom(p)
         ),
         &commandes,
     )
-    .annulable(gestes)
+    .protection()
 }
 
 /// Le jugement, d'après l'état lu (`None` : Defender n'a pas répondu) et les réglages dont Vanguard garde la note.
@@ -202,6 +197,7 @@ pub(super) fn protections_de_defender() -> Vec<Constat> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::machine::Defaire;
     use crate::modele::Etat as EtatConstat;
 
     fn lu(texte: &str) -> Etat {
@@ -263,7 +259,8 @@ mod tests {
         assert_eq!(a.probleme, Some(Niveau::Eleve));
     }
 
-    /// Jamais posées : les trois sans revers proposées (information, sans pénalité), avec leur correction annulable ;
+    /// Jamais posées : les trois sans revers proposées (information, sans pénalité), avec leur correction, une
+    /// protection que Vanguard ne défait pas ;
     /// les deux autres seulement citées.
     #[test]
     fn jamais_posees_proposees_sans_penalite() {
@@ -275,7 +272,7 @@ mod tests {
             assert_eq!(a.probleme, Some(Niveau::Info));
             let k = a.correctif.as_ref().unwrap();
             assert!(k.automatique && !k.commandes.is_empty());
-            assert!(k.pourquoi_pas().is_none(), "{}", k.action);
+            assert_eq!(k.comment_defaire(), Defaire::Protection, "{}", k.action);
             assert!(matches!(a.objet, Objet::De(_)) && a.coherent());
         }
         let base = alertes.iter().find(|a| a.message.contains("ASR")).unwrap();
@@ -306,24 +303,26 @@ mod tests {
         assert!(c.iter().any(|c| c.probleme == Some(Niveau::Eleve)));
     }
 
-    /// Les gestes des corrections sont ceux de la liste fermée (`relever` refuse tout autre geste avant même de le
-    /// lire) ; un nom hors de la liste, ou mal formé, est refusé.
+    /// Ses gestes ne sont plus dans la liste fermée : une note forgée « defender|np » à « mp:0 » ne se rebâtit pas,
+    /// elle n'est qu'une marque (`systeme::geste_de_protection`).
     #[test]
-    fn gestes_admis_par_la_liste_fermee() {
+    fn gestes_hors_de_la_liste_fermee() {
         use crate::optimiser::annulables::{PourquoiPas, relever};
-        let hors_liste = |g: &str| {
-            matches!(
-                relever("bilan:essai".into(), "essai", &[Geste(g.into())]),
-                Err(PourquoiPas::HorsListe(_))
-            )
-        };
         for p in protections() {
+            assert!(crate::optimiser::reglage_protege(p.reglage), "{}", p.reglage);
             for pref in &p.prefs {
                 let g = Geste::defender(defender::cle(*pref));
-                assert!(!hors_liste(&g.0), "{}", g.0);
+                assert!(
+                    matches!(
+                        relever("bilan:essai".into(), "essai", std::slice::from_ref(&g)),
+                        Err(PourquoiPas::HorsListe(_))
+                    ),
+                    "{}",
+                    g.0
+                );
+                assert!(crate::optimiser::geste_de_protection(&g.0), "{}", g.0);
             }
         }
-        assert!(hors_liste("defender|b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4"));
-        assert!(hors_liste("defender|np|x"));
+        assert!(!crate::optimiser::geste_de_protection("defender|np|x"));
     }
 }

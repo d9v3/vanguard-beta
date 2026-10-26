@@ -295,8 +295,8 @@ impl Changement {
         }
     }
 
-    /// Le changement que désigne un geste noté (`annulables::Geste`), s'il vise une cible de la liste fermée : une
-    /// correction native de la table (DWORD sous HKLM), un service de `SERVICES`, une valeur des réglages pour jouer.
+    /// Le changement que désigne un geste noté (`annulables::Geste`), s'il vise une cible de la liste fermée : un
+    /// service de `SERVICES`, une valeur des réglages pour jouer, le mode d'alimentation.
     pub fn depuis_geste(geste: &str) -> Option<Changement> {
         let mut morceaux = geste.split('|');
         match (
@@ -306,29 +306,6 @@ impl Changement {
             morceaux.next(),
             morceaux.next(),
         ) {
-            ("natif", Some(id), None, None, None) => {
-                let c = crate::machine::windows::corrections::analyser(&format!(
-                    "{}{id}",
-                    crate::machine::windows::corrections::PREFIXE
-                ))?;
-                // Une note qui viserait l'UAC ne vient pas de Vanguard, qui ne la défait jamais : la remettre
-                // l'éteindrait, en administrateur.
-                if crate::machine::windows::corrections::PROTECTIONS.contains(&c.id) {
-                    return None;
-                }
-                match c.geste {
-                    crate::machine::windows::corrections::Geste::Dword { cle, valeur, donnee } => {
-                        Some(Changement::Registre {
-                            racine: Racine::Hklm,
-                            chemin: cle,
-                            nom: valeur,
-                            cible: Val::Dword(donnee),
-                            defaut: None,
-                        })
-                    }
-                    crate::machine::windows::corrections::Geste::PointDeRestauration => None,
-                }
-            }
             ("service", Some(nom), None, None, None) => {
                 SERVICES.iter().find(|s| **s == nom).map(|nom| Changement::Service {
                     nom,
@@ -356,10 +333,8 @@ impl Changement {
                     defaut: None,
                 }),
             ("alimentation", None, None, None, None) => Some(Changement::Alimentation),
-            // Une protection de Defender remise par une correction du bilan (machine::windows::defender).
-            ("defender", Some(cle), None, None, None) => {
-                defender::pref_de(cle).map(|pref| Changement::Defender { pref, cible: 1 })
-            }
+            // Les corrections natives (« natif|… ») et les protections de Defender (« defender|… ») n'y sont plus :
+            // ce sont des protections, que Vanguard ne défait pas (`geste_de_protection`).
             _ => None,
         }
     }
@@ -850,9 +825,23 @@ pub fn ecrire_avec(lots: &[Vec<(&Changement, Valeur)>], en_plus: &[Vec<String>])
     (resultats, plus)
 }
 
-/// Un geste d'une correction devenue une protection : sa note d'annulation est retirée au chargement.
-pub fn geste_de_protection(_geste: &str) -> bool {
-    false
+/// Un geste d'une correction devenue une protection, tel que la 0.86 et la 0.87 le notaient : une correction native
+/// de la table (« natif|wdigest-coupe ») ou une préférence de Defender (« defender|np »). Sa note d'annulation est
+/// retirée au chargement (`annulables::retirer_protections`).
+pub fn geste_de_protection(geste: &str) -> bool {
+    use crate::machine::windows::corrections;
+    match geste.split_once('|') {
+        Some(("natif", id)) => corrections::analyser(&format!("{}{id}", corrections::PREFIXE)).is_some(),
+        Some(("defender", cle)) => defender::pref_de(cle).is_some(),
+        _ => false,
+    }
+}
+
+/// Un réglage du catalogue qui est une protection (celles de Defender) : posé, Vanguard ne le défait plus, ni en le
+/// décochant ni par « Tout remettre comme avant ». Une note forgée le coupait en administrateur. Seul le fait qu'il
+/// a été posé par Vanguard est retenu, pour que le bilan voie une protection coupée ensuite.
+pub fn reglage_protege(id: &str) -> bool {
+    protection().iter().any(|r| r.id == id)
 }
 
 /// Après coup : l'Explorateur relit ses réglages à son prochain démarrage ; on propose de le relancer.
@@ -1469,8 +1458,8 @@ fn protection() -> Vec<Reglage> {
                 "Word, Excel, PowerPoint, Outlook and Adobe Reader can no longer launch programs, create executables or inject code; executables received by email and scripts that launch a download are blocked. That is the usual path of booby-trapped attachments."
             ),
             prudence: Some(tr!(
-                "Une macro ou un module Office qui lance un programme sera bloqué, avec une notification de Windows ; décocher ce réglage remet tout comme avant.",
-                "An Office macro or add-in that launches a program will be blocked, with a Windows notification; unchecking this setting puts everything back."
+                "Une macro ou un module Office qui lance un programme sera bloqué, avec une notification de Windows. Une protection : Vanguard ne la retire pas ensuite, un administrateur le peut (Remove-MpPreference).",
+                "An Office macro or add-in that launches a program will be blocked, with a Windows notification. A protection: Vanguard does not remove it afterwards, an administrator can (Remove-MpPreference)."
             )),
             recommande: false,
             changements: defender::ASR_BUREAUTIQUE

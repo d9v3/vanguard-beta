@@ -243,6 +243,11 @@ pub fn geste_de_protection(geste: &str) -> bool {
     })
 }
 
+/// Aucun réglage du catalogue n'est une protection ici.
+pub fn reglage_protege(_id: &str) -> bool {
+    false
+}
+
 /// La valeur d'une clé de sysctl, espaces normalisés (« 4096 87380 6291456 ») ; `None` : illisible.
 fn sysctl_lu(cle: &str) -> Option<String> {
     let t = std::fs::read_to_string(Path::new("/proc/sys").join(cle)).ok()?;

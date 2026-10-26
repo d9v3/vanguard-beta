@@ -23,7 +23,7 @@ program, the USB key or the update) belong on another page: [SECURITY.md](SECURI
 |---|---|
 | Known malware on the computer | The system antivirus as a second opinion, YARA rules, MalwareBazaar hashes, program memory, startup entries, signs of a rootkit; blocking after consent, or on its own for what leaves no doubt (active protection). |
 | Ransomware | Trap files checked every hour; on Linux, once turned on, a live watcher that stops a near-certain case when active protection is on. |
-| A weak setting or an unpatched vulnerability | A security check graded A to F, missing updates, actively exploited vulnerabilities from the CISA catalog, end of support; every fix after consent, undoable except one that turns a protection back on (firewall, antivirus, encryption, UAC, SELinux, kernel hardening on Linux). |
+| A weak setting or an unpatched vulnerability | A security check graded A to F, missing updates, actively exploited vulnerabilities from the CISA catalog, end of support; every fix after consent, undoable except one that turns a protection back on (firewall, antivirus, encryption, UAC, SELinux, kernel hardening on Linux, Windows hardening and Defender protections). |
 | Exposure to the Internet | Ports the router opens (asked of the router itself, UPnP openings included), public IPv6 without a firewall; in the logs, guessed passwords and Remote Desktop connections from outside. |
 | An intruder on the local network or the Wi-Fi | Inventory of the devices and of newcomers, fake access point, hijacked DNS and certificates; public Wi-Fi mode when traveling. |
 | Someone close who spies on the person | Spyware, remote control (fake technician). |
@@ -81,7 +81,8 @@ Each threat in detail, menu by menu: [What Vanguard does](README.en.md#what-vang
 - **The person decides.** Nothing is changed without their consent. What they accept can be undone one fix at a
   time, except what turns a protection back on (kernel hardening on Linux included) and the stopping of a program; a
   fix whose previous state cannot be read is reported as “not undoable” before it is applied. Windows hardening
-  settings (WDigest, NLA…) can be undone: their previous value comes back. An undo note accepted without an earlier
+  settings (WDigest, NLA…) and Defender protections are protections too: Vanguard does not undo them, and a forged
+  note can no longer lower them; the person can still change them in Windows (to be proven in the Windows VM). An undo note accepted without an earlier
   seal (outside a Vanguard update) is never put back.
 - **Testing has its limits.** Vanguard is tested on the author's computer, a Windows VM, a second Windows PC and
   GitHub's machines (Windows, Mac, real Linux distributions). It has never run on a real Mac; other cases are still to

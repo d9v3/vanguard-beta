@@ -140,6 +140,14 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Vec<&'static str> {
             for ((c, k), reussi) in lot.iter().zip(resultats) {
                 if reussi {
                     machine::retenir_blocage(k);
+                    // Une protection de Defender n'a pas de note d'annulation : seule la marque qu'il l'a posée
+                    // reste, pour que le bilan dise plus fort qu'elle a été coupée ensuite.
+                    #[cfg(windows)]
+                    if let crate::modele::Objet::De(o) = &c.objet
+                        && let Some(id) = o.strip_prefix("defender:")
+                    {
+                        crate::optimiser::retenir_protection(id);
+                    }
                     appliquees.push(c.categorie);
                 }
                 let cat = crate::langue::categorie(c.categorie);

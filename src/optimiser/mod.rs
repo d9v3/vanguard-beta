@@ -27,6 +27,8 @@ pub(crate) use linux::OLLAMA_VANGUARD;
 use linux as systeme;
 #[cfg(target_os = "macos")]
 use macos as systeme;
+#[cfg(all(windows, test))]
+pub(crate) use systeme::{geste_de_protection, reglage_protege};
 #[cfg(windows)]
 use windows as systeme;
 
@@ -104,6 +106,11 @@ struct Historique {
     /// reprendre le scellerait comme si Vanguard l'avait noté.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     jeux_repris: bool,
+    /// Les protections que Vanguard a posées (l'id d'un réglage de Defender, ou le geste « defender|np » noté par la
+    /// 0.87) : sans valeur d'avant, elles ne se défont pas. Seul le bilan s'en sert, pour dire plus fort une
+    /// protection coupée ensuite ; une marque forgée ne fait que cela.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    protections: std::collections::BTreeSet<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default, Clone, Debug, PartialEq)]
@@ -157,10 +164,11 @@ fn charger_dans(dossier: &std::path::Path) -> Historique {
     }
 }
 
-/// Les réglages dont Vanguard garde la note (posés par lui, pas encore défaits), lus sans rien écrire ni rien dire :
-/// les id du catalogue et les gestes des autres notes. Le bilan s'en sert pour voir une protection coupée après
-/// coup : une correction du bilan est notée « bilan:<id> », seul son geste (« defender|np ») dit ce qu'elle a posé.
-/// Des notes falsifiées ou illisibles ne comptent pas : COM-ETA-001 le dit déjà.
+/// Les réglages et les protections que Vanguard a posés, lus sans rien écrire ni rien dire : les id des notes, leurs
+/// gestes, et les marques des protections (`Historique::protections`). Le bilan s'en sert pour voir une protection
+/// coupée après coup. Des notes falsifiées ou illisibles ne comptent pas : COM-ETA-001 le dit déjà. Un fichier
+/// adopté compte, même hors d'une mise à jour (contrairement à `lire_dans`) : ce qu'on y lit ne fait jamais rien
+/// remettre, au pire une alerte plus forte sur une protection de Defender coupée, dont la correction la rallume.
 #[cfg(windows)]
 pub(crate) fn reglages_poses() -> Vec<String> {
     use crate::sceau::Lecture;
@@ -171,11 +179,30 @@ pub(crate) fn reglages_poses() -> Vec<String> {
                     h.reglages
                         .into_iter()
                         .flat_map(|(id, a)| std::iter::once(id).chain(a.gestes))
+                        .chain(h.protections)
                         .collect()
                 })
                 .unwrap_or_default()
         }
         _ => Vec::new(),
+    }
+}
+
+/// Retient que Vanguard a posé cette protection de Defender (une correction du bilan, `machine::windows::defender`) :
+/// une marque, sans valeur d'avant, pour que le bilan dise plus fort qu'elle a été coupée ensuite.
+#[cfg(windows)]
+pub(crate) fn retenir_protection(id: &str) {
+    retenir_protection_dans(id, &crate::reseau::dossier_local());
+}
+
+#[cfg(windows)]
+fn retenir_protection_dans(id: &str, dossier: &std::path::Path) {
+    if !systeme::reglage_protege(id) {
+        return;
+    }
+    let mut h = charger_dans(dossier);
+    if h.protections.insert(id.to_string()) {
+        sauver_dans(&h, dossier);
     }
 }
 
@@ -341,6 +368,10 @@ fn executer_avec(
     // Valeurs d'avant notées avant de toucher à quoi que ce soit : la plus ancienne reste, pour revenir à l'état
     // d'origine même après plusieurs passages.
     for r in a_faire {
+        // Une protection n'a pas de note : elle ne se défait pas, seule sa marque est retenue une fois posée.
+        if systeme::reglage_protege(&r.id) {
+            continue;
+        }
         // Une note refusée (forme inattendue) ne garde pas sa place : celle de maintenant la remplace.
         if note_admise(r, h).is_none() {
             h.reglages.remove(r.id.as_ref());
@@ -351,11 +382,20 @@ fn executer_avec(
             ..Avant::default()
         });
     }
+    // Jamais une protection défaite, même demandée : seule une valeur notée se remet, et une protection n'en a pas.
+    // Elle compte comme non remise, à sa place dans ce que l'appelant a demandé.
+    let demandes = a_annuler;
+    let a_annuler: Vec<&Reglage> = a_annuler
+        .iter()
+        .copied()
+        .filter(|r| !systeme::reglage_protege(&r.id))
+        .collect();
+    let a_annuler = a_annuler.as_slice();
     // Sans valeurs d'avant notées, un réglage ne pourrait plus s'annuler exactement : rien n'est changé.
     if !a_faire.is_empty() && !sauver_dans(h, dossier) {
         return (
             vec![false; a_faire.len()],
-            vec![false; a_annuler.len()],
+            vec![false; demandes.len()],
             vec![false; en_plus.len()],
         );
     }
@@ -370,7 +410,12 @@ fn executer_avec(
     let (faits, annules) = resultats.split_at(a_faire.len().min(resultats.len()));
     // Échec sans aucun changement : la note n'a pas lieu d'être (en partie fait, elle reste pour pouvoir annuler).
     for (r, ok) in a_faire.iter().zip(faits) {
-        if !*ok && etat(r) == Etat::AFaire {
+        let pose = *ok || etat(r) != Etat::AFaire;
+        if systeme::reglage_protege(&r.id) {
+            if pose {
+                h.protections.insert(r.id.to_string());
+            }
+        } else if !pose {
             h.reglages.remove(r.id.as_ref());
         }
     }
@@ -398,6 +443,11 @@ fn executer_avec(
         h.reglages.remove(r.id.as_ref());
     }
     sauver_dans(h, dossier);
+    let mut remis = remis.into_iter();
+    let remis = demandes
+        .iter()
+        .map(|r| !systeme::reglage_protege(&r.id) && remis.next().unwrap_or(false))
+        .collect();
     (faits.to_vec(), remis, plus)
 }
 
@@ -561,14 +611,19 @@ pub fn menu(categorie: Categorie) {
         .zip(&etats)
         .map(|(r, e)| Case {
             texte: r.titre.to_string(),
-            precision: libelle(*e, h.reglages.contains_key(r.id.as_ref())).to_string(),
+            precision: libelle(
+                *e,
+                h.reglages.contains_key(r.id.as_ref()) || h.protections.contains(r.id.as_ref()),
+            )
+            .to_string(),
             detail: match r.prudence {
                 Some(p) => format!("{} ⚠ {p}", r.effet),
                 None => r.effet.to_string(),
             },
             cochee: *e == Etat::Fait,
             recommandee: r.recommande,
-            fixe: false,
+            // Une protection en place ne se décoche pas : Vanguard ne la défait pas (`reglage_protege`).
+            fixe: *e == Etat::Fait && systeme::reglage_protege(&r.id),
         })
         .collect();
     let Some(voulu) = cocher(&entete(categorie), &cases) else {

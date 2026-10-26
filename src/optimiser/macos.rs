@@ -528,6 +528,11 @@ pub fn geste_de_protection(_geste: &str) -> bool {
     false
 }
 
+/// Aucun réglage du catalogue n'est une protection ici.
+pub fn reglage_protege(_id: &str) -> bool {
+    false
+}
+
 /// Le Finder relit ses préférences à son démarrage : on le relance si l'une d'elles a changé.
 pub fn apres(touches: &[&Reglage]) {
     if touches

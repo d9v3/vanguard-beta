@@ -23,7 +23,7 @@
   comme avant » défait tout ce que Vanguard a changé. Sous Windows, quatorze réglages de durcissement d'une liste
   fermée sont appliqués par Vanguard lui-même, sans script, quand ils ne sont pas mêlés à d'autres corrections ; les
   protections de Microsoft Defender (réduction de la surface d'attaque, accès contrôlé aux dossiers) s'activent après
-  accord et s'annulent exactement. En déplacement, le mode Wi-Fi public ferme l'ordinateur au réseau d'un café, d'un
+  accord. Ces deux-là sont des protections : Vanguard ne les défait pas, la personne peut les changer dans Windows. En déplacement, le mode Wi-Fi public ferme l'ordinateur au réseau d'un café, d'un
   hôtel ou d'un aéroport.
 - **Détecter.** Les failles connues (mises à jour de sécurité manquantes, avis de sécurité des distributions Linux,
   failles activement exploitées du catalogue de la CISA, fin de support), les logiciels pas à jour sous Windows et
@@ -176,13 +176,13 @@ détourné, les arnaques, un logiciel espion et les autres atteintes à la vie p
   le système le permet (snapper ou timeshift configuré sous Linux, point de restauration Windows, instantané Time
   Machine sous macOS). Sous Windows, quatorze réglages de durcissement d'une liste fermée (WDigest, NLA du Bureau à
   distance, NTLMv2 seul, LLMNR, WPAD, UAC…) sont appliqués par Vanguard lui-même, relancé en administrateur : la
-  fenêtre de Windows le nomme, et la valeur d'avant est notée pour annuler exactement ; seuls Entrée ou oui les
-  appliquent. Le blocage des menaces y ajoute, de la même façon, la liste de Microsoft qui bloque les pilotes
+  fenêtre de Windows le nomme ; seuls Entrée ou oui les appliquent. Ce sont des protections : Vanguard ne les défait
+  pas, la personne peut les changer dans Windows. Le blocage des menaces y ajoute, de la même façon, la liste de Microsoft qui bloque les pilotes
   vulnérables. Les autres corrections, ou celles choisies avec elles, passent par un script lisible.
 - Chaque correction relève d'abord l'état d'avant de ce qu'elle change, noté et scellé : « Ce que Vanguard a changé »
   l'annule, puis relit l'état. Une correction dont l'état d'avant ne se relève pas est dite « non annulable » avant
   d'être appliquée, et celle qui rallume une protection (pare-feu, antivirus, BitLocker, UAC, SELinux, Gatekeeper,
-  durcissement du noyau sous Linux) ne se défait jamais ; annuler ne remet qu'une valeur notée de la forme attendue,
+  durcissement du noyau sous Linux, durcissement de Windows et protections de Defender) ne se défait jamais ; annuler ne remet qu'une valeur notée de la forme attendue,
   jamais une clé du noyau sous sa valeur sûre ni une directive de sshd affaiblie.
 
 **Logiciels pas à jour** (`vanguard logiciels-perimes`, Windows et macOS, et au bilan) — la version installée des
@@ -316,7 +316,8 @@ une chaîne rompue est dite au bilan. `--incident <id>` suit le fil d'un inciden
 depuis son noyau et protège contre la désactivation. Règles de réduction de la surface d'attaque (vol des mots de
 passe en mémoire, pilotes vulnérables, documents Office et pièces jointes piégés), protection réseau contre les
 sites dangereux, logiciels indésirables, accès contrôlé aux dossiers contre les rançongiciels. Chaque règle est
-nommée avant l'accord et s'annule exactement ; celles qui bloqueraient Vanguard sur sa clé ou le dépannage ne sont
+nommée avant l'accord ; ce sont des protections, que Vanguard ne défait pas (la personne peut les changer dans
+Windows) ; celles qui bloqueraient Vanguard sur sa clé ou le dépannage ne sont
 jamais activées, et rien n'est proposé si un autre antivirus remplace Defender.
 
 **Collecter les traces** — après une infection, avant de nettoyer ou de réinstaller : ce qu'un spécialiste voudra
@@ -765,7 +766,7 @@ Chaque entrée du menu existe aussi en commande.
 | `vanguard secrets` | secrets oubliés dans l'historique des projets git (et gitleaks, s'il est installé ; lecture seule) |
 | `vanguard conteneurs` | failles connues des images Docker ou Podman (trivy, s'il est installé ; lecture seule) |
 | `vanguard logiciels-perimes` | logiciels pas à jour (Windows, macOS) : navigateurs, Office, Acrobat, Java, 7-Zip, PuTTY, Slack comparés à leur dernière version ; failles exploitées (lecture seule) |
-| `vanguard defender` | blocages de Windows Defender : règles ASR, protection réseau, logiciels indésirables, accès contrôlé aux dossiers ; chacun après accord, annulable (Windows) |
+| `vanguard defender` | blocages de Windows Defender : règles ASR, protection réseau, logiciels indésirables, accès contrôlé aux dossiers ; chacun après accord, une protection que Vanguard ne défait pas (Windows) |
 | **5 Réseau et Internet** | |
 | `vanguard appareils [cible] [-p courants\|tous\|22,80,8000-8100] [--json]` | scan du réseau ou d'un appareil |
 | `vanguard audit-reseau [--json] [--html] [--invite]` | audit du réseau par domaine : six notes (exposition, Wi-Fi, séparation des appareils, DNS et certificats, objets connectés, ordinateurs), sans rien attaquer ; `--invite` : sur le réseau invité, vérifie qu'il est bien séparé du réseau principal |

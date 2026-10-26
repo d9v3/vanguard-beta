@@ -1,7 +1,8 @@
 //! Protections de Microsoft Defender qui bloquent elles-mêmes les attaques : règles de réduction de la surface
 //! d'attaque (ASR), protection réseau, applications potentiellement indésirables, accès contrôlé aux dossiers.
 //! Vanguard ne bloque rien lui-même : il active, après accord, ce que Windows applique depuis son noyau et protège
-//! contre la désactivation. Chaque préférence s'annule exactement, comme tout réglage (valeur d'avant notée).
+//! contre la désactivation. Ce sont des protections : Vanguard ne les défait pas (`systeme::reglage_protege`), la
+//! personne peut les changer dans Windows.
 //!
 //! Écartées, parce qu'elles bloqueraient Vanguard ou l'administration de la machine : processus non signés lancés
 //! depuis une clé USB (Vanguard sur la clé), exécutables sans réputation suffisante et protection avancée contre les

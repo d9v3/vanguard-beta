@@ -22,7 +22,8 @@
   state and can be undone one by one, except those that turn a protection back on; “Put everything back” undoes
   everything Vanguard changed. On Windows, fourteen hardening settings from a fixed allowlist are applied by Vanguard
   itself, without scripts, when they are not mixed with other fixes; Microsoft Defender's protections (attack surface
-  reduction, controlled folder access) are turned on after consent and can be reverted exactly. On the go, public
+  reduction, controlled folder access) are turned on after consent. Both are protections: Vanguard does not undo
+  them, the person can change them in Windows. On the go, public
   Wi-Fi mode closes the computer to the network of a café, a hotel or an airport.
 - **Detect.** Known vulnerabilities (missing security updates, Linux distribution security advisories, actively
   exploited flaws from CISA's catalog, end of support), outdated software on Windows and macOS and misconfigurations,
@@ -161,13 +162,13 @@ certificate, scams, spyware and other privacy intrusions.
 - Fixes applied only after confirmation, with a restore point created automatically beforehand when the system
   allows one (snapper or timeshift configured on Linux, Windows restore point, Time Machine snapshot on macOS). On
   Windows, fourteen hardening settings from a fixed allowlist (WDigest, Remote Desktop NLA, NTLMv2 only, LLMNR, WPAD,
-  UAC…) are applied by Vanguard itself, relaunched as administrator: Windows' prompt names it, and the previous value
-  is recorded to undo exactly; only Enter or yes applies them. Threat blocking adds, the same way, Microsoft's
+  UAC…) are applied by Vanguard itself, relaunched as administrator: Windows' prompt names it; only Enter or yes
+  applies them. They are protections: Vanguard does not undo them, the person can change them in Windows. Threat blocking adds, the same way, Microsoft's
   vulnerable driver blocklist. The other fixes, or those chosen along with them, go through a readable script.
 - Each fix first records the previous state of what it changes, noted and sealed: “What Vanguard changed” undoes it,
   then reads the state back. A fix whose previous state cannot be read is called “not undoable” before it is applied,
   and one that turns a protection back on (firewall, antivirus, BitLocker, UAC, SELinux, Gatekeeper, kernel hardening
-  on Linux) is never undone; undoing only puts back a noted value of the expected form, never a kernel key below its
+  on Linux, Windows hardening and Defender protections) is never undone; undoing only puts back a noted value of the expected form, never a kernel key below its
   safe value nor a weakened sshd directive.
 
 **Outdated software** (`vanguard outdated-software`, Windows and macOS, and in the check) — the installed version of
@@ -292,8 +293,8 @@ undo.
 **Windows Defender blocking** — on top of its own blocking, Vanguard turns on, after your consent, what Windows blocks
 from its kernel and protects against being turned off. Attack surface reduction rules (password theft from memory,
 vulnerable drivers, booby-trapped Office documents and attachments), network protection against dangerous sites,
-unwanted software, controlled folder access against ransomware. Each rule is named before you agree and can be
-reverted exactly; those that would block Vanguard on its USB drive or troubleshooting are never turned on, and
+unwanted software, controlled folder access against ransomware. Each rule is named before you agree; they are
+protections, which Vanguard does not undo (the person can change them in Windows); those that would block Vanguard on its USB drive or troubleshooting are never turned on, and
 nothing is offered when another antivirus replaces Defender.
 
 **Collect the traces** — after an infection, before cleaning up or reinstalling: what a specialist will want to
@@ -719,7 +720,7 @@ Each menu entry is also a command.
 | `vanguard secrets` | secrets forgotten in the history of git projects (and gitleaks, if installed; read-only) |
 | `vanguard containers` | known flaws in Docker or Podman images (trivy, if installed; read-only) |
 | `vanguard outdated-software` | outdated software (Windows, macOS): browsers, Office, Acrobat, Java, 7-Zip, PuTTY, Slack compared with their latest version; exploited flaws (read-only) |
-| `vanguard defender` | Windows Defender blocking: ASR rules, network protection, unwanted software, controlled folder access; each after your consent, undoable (Windows) |
+| `vanguard defender` | Windows Defender blocking: ASR rules, network protection, unwanted software, controlled folder access; each after your consent, a protection Vanguard does not undo (Windows) |
 | **5 Network and Internet** | |
 | `vanguard devices [target] [-p common\|all\|22,80,8000-8100] [--json]` | scan the network or one device |
 | `vanguard network-audit [--json] [--html] [--guest]` | network audit by domain: six grades (exposure, Wi-Fi, device separation, DNS and certificates, connected devices, computers), attacking nothing; `--guest`: on the guest network, checks that it is really separated from the main one |

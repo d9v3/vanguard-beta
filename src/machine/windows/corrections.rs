@@ -257,21 +257,16 @@ pub(crate) fn analyser(ligne: &str) -> Option<&'static Correction> {
     TABLE.iter().find(|c| c.id == court)
 }
 
-/// Les corrections natives qui remettent en marche une protection de base (l'UAC) : Vanguard ne les défait jamais,
-/// et une note qui en viserait une ne vient pas de lui.
-pub(crate) const PROTECTIONS: [&str; 2] = ["uac-active", "uac-demande"];
-
-/// Comment se défait une correction faite de ces commandes : faite tout entière de corrections natives (des DWORD
-/// sous HKLM, relus avant d'appliquer), elle se défait valeur par valeur ; l'UAC rallumée ne s'éteint jamais ; le
-/// reste (PowerShell) n'est pas relevé.
+/// Comment se défait une correction faite de ces commandes : une correction native (un DWORD sous HKLM) durcit
+/// Windows (WDigest, NLA, Lsa, UAC…) ; c'est une protection, que Vanguard ne défait jamais. Défaite d'après une note de
+/// reglages.json, que tout programme du compte peut réécrire, elle remettait en administrateur la valeur qu'une
+/// note forgée choisissait (UseLogonCredential = 1). La personne peut toujours la changer elle-même dans Windows. Le
+/// reste (PowerShell, le point de restauration seul) n'est pas relevé.
 pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
     use crate::machine::Defaire;
     let natives: Option<Vec<&Correction>> = commandes.iter().map(|l| analyser(l)).collect();
     match natives {
-        Some(n) if n.iter().any(|c| PROTECTIONS.contains(&c.id)) => Defaire::Protection,
-        Some(n) if !n.is_empty() && n.iter().all(|c| matches!(c.geste, Geste::Dword { .. })) => {
-            Defaire::Gestes(n.iter().map(|c| crate::optimiser::Geste::natif(c.id)).collect())
-        }
+        Some(n) if n.iter().any(|c| matches!(c.geste, Geste::Dword { .. })) => Defaire::Protection,
         _ => Defaire::Inconnu,
     }
 }

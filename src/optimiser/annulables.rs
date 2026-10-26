@@ -66,11 +66,6 @@ impl Geste {
 
 #[cfg(windows)]
 impl Geste {
-    /// Une correction native de la liste fermée (« wdigest-coupe ») : sa valeur DWORD sous HKLM.
-    pub(crate) fn natif(id: &str) -> Geste {
-        Geste(format!("natif|{id}"))
-    }
-
     /// Le type de démarrage d'un service.
     pub(crate) fn service(nom: &str) -> Geste {
         Geste(format!("service|{nom}"))
@@ -84,7 +79,8 @@ impl Geste {
         ))
     }
 
-    /// Une préférence de Defender réglée par Vanguard (« np », « pua », « cfa » ou une règle ASR de sa liste).
+    /// Une préférence de Defender réglée par Vanguard (« np », « pua », « cfa » ou une règle ASR de sa liste) : plus
+    /// une note d'annulation (c'est une protection), mais la marque qu'il l'a posée, telle que la 0.87 la notait.
     pub(crate) fn defender(cle: &str) -> Geste {
         Geste(format!("defender|{cle}"))
     }
@@ -700,8 +696,10 @@ pub(crate) fn remettre_jeux() {
     }
 }
 
-/// Retire les notes du bilan d'une correction devenue une protection (`systeme::geste_de_protection` : le durcissement
-/// du noyau noté par la 0.86 et la 0.87). Vanguard ne les défait plus et ne les rebâtit plus : restées, elles étaient
+/// Retire les notes d'une correction ou d'un réglage devenus des protections (`systeme::geste_de_protection` : le
+/// durcissement du noyau, les corrections natives de Windows et Defender, notés par la 0.86 et la 0.87 ;
+/// `systeme::reglage_protege` : les réglages de Defender d'Optimiser). Vanguard ne les défait plus et ne les rebâtit
+/// plus ; de ceux de Defender, il garde seulement la marque qu'il les a posés (`Historique::protections`). Restées, elles étaient
 /// dites « annulables » à vie, listées dans « Annuler une correction », refusées à chaque « Tout remettre comme
 /// avant » et comptées à la désinstallation. Le retrait s'enregistre scellé et se dit une fois ; dans un historique
 /// adopté (`ecrire` faux), il ne se fait qu'en mémoire, pour ne pas le resceller (COM-ETA-001 le dit).
@@ -710,7 +708,8 @@ pub(super) fn retirer_protections(h: &mut Historique, dossier: &Path, ecrire: bo
         .reglages
         .iter()
         .filter(|(id, a)| {
-            id.starts_with(BILAN) && !a.gestes.is_empty() && a.gestes.iter().all(|g| systeme::geste_de_protection(g))
+            (id.starts_with(BILAN) && !a.gestes.is_empty() && a.gestes.iter().all(|g| systeme::geste_de_protection(g)))
+                || systeme::reglage_protege(id)
         })
         .map(|(id, _)| id.clone())
         .collect();
@@ -718,7 +717,13 @@ pub(super) fn retirer_protections(h: &mut Historique, dossier: &Path, ecrire: bo
         return;
     }
     for id in &anciennes {
-        h.reglages.remove(id);
+        let Some(a) = h.reglages.remove(id) else { continue };
+        // La marque que Vanguard l'a posée reste, sans valeur d'avant : le bilan voit une protection coupée ensuite.
+        if systeme::reglage_protege(id) {
+            h.protections.insert(id.clone());
+        }
+        h.protections
+            .extend(a.gestes.into_iter().filter(|g| g.starts_with("defender|")));
     }
     if ecrire && sauver_dans(h, dossier) {
         tre!(
@@ -819,6 +824,7 @@ mod tests {
         Historique {
             reglages: notes.into_iter().collect(),
             jeux_repris: false,
+            protections: std::collections::BTreeSet::default(),
         }
     }
 
@@ -1475,15 +1481,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// Aller-retour des corrections natives de Windows et des réglages pour jouer : la note relue rebâtit la valeur
-    /// du registre de la liste fermée ; une valeur du compte se remet pour de vrai, dans le registre (celui de Wine,
-    /// jetable, en essai).
+    /// Aller-retour des services et des réglages pour jouer de Windows : la note relue rebâtit la valeur de la liste
+    /// fermée ; une valeur du compte se remet pour de vrai, dans le registre (celui de Wine, jetable, en essai).
     #[cfg(windows)]
     #[test]
     fn aller_retour_windows() {
         let dossier_essai = dossier("windows");
         let h = historique(vec![
-            note("bilan:w", "", &["natif|wdigest-coupe"], &[Some("dword:1")]),
             note("bilan:s", "", &["service|SSDPSRV"], &[Some("start:3")]),
             note(
                 "jeux:a",
@@ -1495,12 +1499,7 @@ mod tests {
         for r in rebatis(&h) {
             assert!(note_admise(&r, &h).is_some(), "{}", r.id);
         }
-        let wdigest = rebatis(&h).into_iter().find(|r| r.id == "bilan:w").unwrap();
-        assert!(
-            wdigest.changements[0]
-                .decrire(Some("dword:1"))
-                .contains("UseLogonCredential = 1")
-        );
+        assert_eq!(rebatis(&h).len(), 2);
         let piege = historique(vec![note("bilan:p", "", &["service|SSDPSRV"], &[Some("start:9")])]);
         assert!(note_admise(&rebatis(&piege)[0], &piege).is_none());
         // Une valeur du compte (souris), remise pour de vrai.
@@ -1520,23 +1519,70 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dossier_essai);
     }
 
-    /// Une correction faite tout entière de corrections natives se défait d'elle-même ; celle qui rallume l'UAC ne
-    /// se défait jamais ; une commande PowerShell n'est pas relevée.
+    /// Une correction native (DWORD sous HKLM) est une protection, UAC comprise : jamais défaite ; une commande
+    /// PowerShell n'est pas relevée.
     #[cfg(windows)]
     #[test]
-    fn natives_defaites_sauf_l_uac() {
+    fn natives_sont_des_protections() {
         use crate::machine::Defaire;
         use crate::machine::windows::corrections::{comment_defaire, id};
-        assert_eq!(
-            comment_defaire(&[id("wdigest-coupe"), id("lmhash-coupe")]),
-            Defaire::Gestes(vec![Geste::natif("wdigest-coupe"), Geste::natif("lmhash-coupe")])
-        );
-        assert_eq!(comment_defaire(&[id("uac-active")]), Defaire::Protection);
+        for ids in [
+            &[id("wdigest-coupe"), id("lmhash-coupe")][..],
+            &[id("uac-active")],
+            &[id("rdp-nla")],
+        ] {
+            assert_eq!(comment_defaire(ids), Defaire::Protection, "{ids:?}");
+        }
         assert_eq!(comment_defaire(&["Set-Service x".into()]), Defaire::Inconnu);
         assert_eq!(
             comment_defaire(&[id("wdigest-coupe"), "Set-Service x".into()]),
             Defaire::Inconnu
         );
+        for g in ["natif|wdigest-coupe", "defender|np", "defender|pua"] {
+            assert!(systeme::Changement::depuis_geste(g).is_none(), "{g}");
+        }
+    }
+
+    /// Une note forgée (le sceau se recalcule) ne fait plus baisser une protection de Windows : la correction
+    /// native « UseLogonCredential = 1 », le réglage de Defender d'Optimiser et le geste de Defender du bilan sont
+    /// retirés au chargement, rien ne se rebâtit ni ne se défait. Seule la marque de Defender reste, pour le bilan.
+    #[cfg(windows)]
+    #[test]
+    fn note_forgee_n_affaiblit_pas_windows() {
+        let d = dossier("windows-forgee");
+        let h = historique(vec![
+            note(
+                "bilan:w",
+                "2026-10-20 09:00",
+                &["natif|wdigest-coupe"],
+                &[Some("dword:1")],
+            ),
+            note("bilan:d", "2026-10-20 09:01", &["defender|np"], &[Some("mp:0")]),
+            note("defender_reseau", "2026-10-20 09:02", &["defender|np"], &[Some("mp:0")]),
+            note("bilan:s", "2026-10-20 09:03", &["service|SSDPSRV"], &[Some("start:3")]),
+        ]);
+        assert!(super::super::sauver_dans(&h, &d));
+        let relu = charger_dans(&d);
+        assert_eq!(relu.reglages.keys().collect::<Vec<_>>(), ["bilan:s"]);
+        assert!(rebatis(&relu).iter().all(|r| r.id == "bilan:s"));
+        assert_eq!(
+            relu.protections.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["defender_reseau", "defender|np"]
+        );
+        // Demandées quand même : rien n'est fait.
+        let ids = ["bilan:w".to_string(), "bilan:d".into(), "defender_reseau".into()];
+        let (issues, _) = defaire_dans(&ids, &[], false, &d);
+        assert!(issues.iter().all(|(_, i)| !matches!(i, Issue::Revenu)), "{issues:?}");
+        // Enregistré : relu brut, les notes n'y sont plus, les marques si.
+        let brut = super::super::lire_dans(&d).expect("intact").0;
+        assert_eq!(brut.reglages.len(), 1);
+        assert_eq!(brut.protections.len(), 2);
+        // Une correction du bilan retient sa marque ; un id hors des protections, non.
+        super::super::retenir_protection_dans("defender_dossiers", &d);
+        super::super::retenir_protection_dans("bilan:s", &d);
+        let relu = charger_dans(&d);
+        assert!(relu.protections.contains("defender_dossiers") && !relu.protections.contains("bilan:s"));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Les textes de ce module tiennent dans `LARGEUR` colonnes, dans les deux langues.
