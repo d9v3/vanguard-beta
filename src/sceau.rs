@@ -300,19 +300,27 @@ fn verrou_ecriture(dossier: &Path, nom: &str) -> std::io::Result<crate::socle::V
     })
 }
 
-/// Les dossiers dont le verrou des sceaux a été refusé à ce processus au-delà de toute l'attente, et pas rendu depuis.
-/// Un `flock` gardé par un programme du compte (ou par un enfant oublié) faisait attendre 30 s chaque écriture scellée
-/// et 10 s chaque lecture : une commande durait des minutes, ce qu'elle devait noter se perdait, et le bilan n'en
-/// disait rien. Passé un premier refus, plus que `ATTENTE_APRES_REFUS` ; et le bilan le dit (`constat_verrou`).
-static TENUS: std::sync::Mutex<BTreeSet<PathBuf>> = std::sync::Mutex::new(BTreeSet::new());
+/// Les dossiers dont le verrou des sceaux a été refusé à ce processus au-delà de toute l'attente, et pas rendu depuis,
+/// avec ce qu'il lui reste à l'attendre. Un `flock` gardé par un programme du compte (ou par un enfant oublié) faisait
+/// attendre 30 s chaque écriture scellée et 10 s chaque lecture : une commande durait des minutes, ce qu'elle devait
+/// noter se perdait, et le bilan n'en disait rien. Passé un premier refus, plus que `ATTENTE_APRES_REFUS` en tout
+/// pour ce processus, quel que soit le nombre de prises ; et le bilan le dit (`constat_verrou`).
+static TENUS: std::sync::Mutex<BTreeMap<PathBuf, std::time::Duration>> = std::sync::Mutex::new(BTreeMap::new());
 
-/// L'attente d'un verrou déjà refusé à ce processus : un Vanguard qui écrit le rend en quelques millisecondes.
+/// Ce qu'un processus attend encore, en tout, un verrou déjà refusé : un Vanguard qui écrit le rend en quelques
+/// millisecondes ; épuisé, chaque prise n'est plus qu'un essai.
 const ATTENTE_APRES_REFUS: std::time::Duration = std::time::Duration::from_secs(1);
 
 // Les essais attendent moins le verrou que le programme (`verrou_tenu_…`).
 #[cfg(test)]
 thread_local! {
     static ATTENTE_ESSAI: std::cell::Cell<Option<std::time::Duration>> = const { std::cell::Cell::new(None) };
+}
+
+/// Pour les essais d'autres modules : l'attente du verrou des sceaux sur ce fil.
+#[cfg(test)]
+pub(crate) fn attendre_en_essai(attente: std::time::Duration) {
+    ATTENTE_ESSAI.with(|a| a.set(Some(attente)));
 }
 
 /// Le verrou des sceaux de `dossier`, attendu au plus `attente`, ou bien moins s'il a déjà été refusé ici (`TENUS`).
@@ -324,18 +332,17 @@ fn prendre_verrou(
     #[cfg(test)]
     let attente = ATTENTE_ESSAI.with(std::cell::Cell::get).unwrap_or(attente);
     let tenus = || TENUS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let attente = if tenus().contains(dossier) {
-        attente.min(ATTENTE_APRES_REFUS)
-    } else {
-        attente
-    };
+    let reste = tenus().get(dossier).copied();
+    let attente = reste.map_or(attente, |r| attente.min(r));
+    let debut = std::time::Instant::now();
     let v = crate::socle::Verrou::prendre(dossier, VERROU, partage, attente);
     match &v {
         Ok(_) => {
             tenus().remove(dossier);
         }
         Err(crate::socle::SansVerrou::Occupe) => {
-            tenus().insert(dossier.to_path_buf());
+            let reste = reste.map_or(ATTENTE_APRES_REFUS, |r| r.saturating_sub(debut.elapsed()));
+            tenus().insert(dossier.to_path_buf(), reste);
         }
         Err(crate::socle::SansVerrou::Impossible(_)) => {}
     }
@@ -348,7 +355,7 @@ pub(crate) fn verrou_tenu_dans(dossier: &Path) -> bool {
     TENUS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .contains(dossier)
+        .contains_key(dossier)
 }
 
 /// Au bilan : le verrou des sceaux tenu ailleurs, comme celui du journal (`modele::journal`).
@@ -1873,14 +1880,14 @@ mod tests {
         assert!(ecrire_dans(&d, APPRIS, b"{\"x\":1}").is_err());
         assert!(debut.elapsed() >= std::time::Duration::from_secs(3));
         assert!(verrou_tenu_dans(&d) && constat_verrou(&d).is_some());
-        // Déjà refusé : les suivants n'attendent plus toute l'attente.
+        // Déjà refusé : les suivants n'attendent plus, tous ensemble, que `ATTENTE_APRES_REFUS`.
         let debut = std::time::Instant::now();
-        for _ in 0..3 {
+        for _ in 0..5 {
             assert!(ecrire_dans(&d, APPRIS, b"{\"x\":1}").is_err());
             assert!(matches!(lire_dans(&d, APPRIS), Lecture::Intact(_)));
         }
         assert!(
-            debut.elapsed() < std::time::Duration::from_secs(9),
+            debut.elapsed() < ATTENTE_APRES_REFUS + std::time::Duration::from_secs(1),
             "{:?}",
             debut.elapsed()
         );

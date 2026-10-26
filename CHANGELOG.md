@@ -33,10 +33,12 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   tête réécrite), des sceaux ramenés à une forme d'avant n'acceptent ce qui est là que tel quel, sans le croire, et le
   bilan dit les sceaux refaits. Une version plus ancienne repassée ici (une clé ou un Mac restés en arrière) se dit au
   bilan un cran plus bas, sans rien faire reprendre. Un verrou des sceaux gardé par un autre programme ne fait plus
-  attendre chaque écriture et se dit au bilan, et « sceaux refaits » retombe une fois dit. Un test relit le code pour
-  que chaque nom de fichier scellé n'y paraisse que là où il est permis, exceptions dites ; VANGUARD_ORIGINE n'est
-  crue qu'aux octets du programme qui tourne. Le modèle de menace dit les limites : le dossier effacé en entier, et un
-  programme qui vise exprès ce mécanisme.
+  attendre qu'une fois, une seconde en tout, et se dit au bilan ; vanguard --version n'attend rien ; les événements
+  qui n'ont pu être notés sont comptés et dits au bilan une fois le verrou rendu (si Vanguard est tué avant, ses
+  événements en attente se perdent sans compte), et « sceaux refaits » retombe une fois dit. Un test relit le code
+  pour que chaque nom de fichier scellé n'y paraisse que là où il est permis, exceptions dites ; VANGUARD_ORIGINE
+  n'est crue qu'aux octets du programme qui tourne. Le modèle de menace dit les limites : le dossier effacé en entier,
+  et un programme qui vise exprès ce mécanisme.
 - **Extensions et listes téléchargées scellées.** Les réglages des extensions (« sans restrictions », « à moi »,
   lancement avec le bilan ou la surveillance) et leurs approbations sont scellés : changés hors de Vanguard, ou
   acceptés tels quels (sceaux refaits, version d'avant), ils n'accordent plus rien, rien ne tourne tout seul, et c'est

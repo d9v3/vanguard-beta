@@ -478,7 +478,11 @@ fn ecrire_dans(
 
     let (mut tete, rupture) = juger_la_tete(lue, &presents, dernier.as_deref(), &reelles, fin_reelle.as_deref());
 
-    let a_ecrire = evenements_a_ecrire(rupture, &tete, evs);
+    let mut a_ecrire = evenements_a_ecrire(rupture, &tete, evs);
+    let perdus = perdus_dans(dossier);
+    if let Some(n) = perdus {
+        a_ecrire.insert(0, rupture_des_perdus(n));
+    }
     if a_ecrire.is_empty() {
         return Ok(());
     }
@@ -541,6 +545,10 @@ fn ecrire_dans(
         &serde_json::to_vec(&tete).map_err(std::io::Error::other)?,
     )?;
     ajouter(&rep.join(format!("{mois}.jsonl")), &a_ajouter)?;
+    // Dits dans la chaîne : la marque n'a plus rien à porter.
+    if perdus.is_some() {
+        let _ = std::fs::remove_file(dossier.join(PERDUS));
+    }
     #[cfg(test)]
     if ARRET_APRES_AJOUT.with(std::cell::Cell::get) {
         return Ok(());
@@ -692,6 +700,70 @@ fn evenements_a_ecrire(rupture: Option<(String, String)>, tete: &Tete, evs: Vec<
     }
     a_ecrire.extend(evs);
     a_ecrire
+}
+
+/// Les événements perdus faute d'avoir pu les écrire (le verrou du journal ou des sceaux tenu ailleurs jusqu'à la fin
+/// du processus, des différés abandonnés au-delà de `DIFFERES_MAX`) : comptés à part, sans verrou ni sceau (ce qui les
+/// a perdus les refuserait aussi), puis dits dans la chaîne, comme une rupture, à la prochaine écriture. Sans cela,
+/// une fois le verrou rendu, plus rien ne disait qu'il manquait des événements. Un processus tué, lui, perd ses
+/// différés sans rien compter.
+pub(crate) const PERDUS: &str = "evenements.perdus";
+
+/// L'« attendu » de la rupture qui dit des événements perdus : la fin d'avant reste vérifiée, rien n'y a été touché.
+const PERDUS_ATTENDU: &str = "événements notés / events noted";
+
+/// Compte `n` événements perdus, à dire à la prochaine écriture (`PERDUS`).
+fn noter_perdus(dossier: &Path, n: usize) {
+    if n == 0
+        || crate::autotest::lecture_seule::active()
+        || !crate::socle::ecriture_sure(dossier)
+        || std::fs::create_dir_all(dossier).is_err()
+    {
+        return;
+    }
+    let ligne = format!("{} {n}\n", chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ"));
+    if let Err(e) = ajouter(&dossier.join(PERDUS), ligne.as_bytes()) {
+        super::Echec::io("evenements/perdus", &e).journaliser();
+    }
+}
+
+/// Le nombre d'événements perdus comptés et pas encore dits (`None` : aucun). Là mais illisible : 0, « des ».
+fn perdus_dans(dossier: &Path) -> Option<u64> {
+    match crate::socle::lire_ordinaire(&dossier.join(PERDUS), 1 << 16) {
+        Ok(o) => Some(
+            String::from_utf8_lossy(&o)
+                .lines()
+                .filter_map(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+                .fold(0u64, u64::saturating_add),
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => Some(0),
+    }
+}
+
+/// Ce que dit la chaîne de `n` événements perdus (0 : un nombre qui ne se lit plus).
+fn texte_perdus(n: u64) -> String {
+    if n == 0 {
+        "des événements non notés / events not noted".into()
+    } else {
+        format!("{n} événement(s) non noté(s) / {n} event(s) not noted")
+    }
+}
+
+fn rupture_des_perdus(n: u64) -> Evenement {
+    Evenement::nouveau(
+        Source::Vanguard,
+        Genre::Rupture {
+            attendu: PERDUS_ATTENDU.into(),
+            trouve: texte_perdus(n),
+        },
+    )
+    .gravite(Niveau::Moyen)
+}
+
+/// Une rupture qui ne dit que des événements perdus (`PERDUS_ATTENDU`) ?
+fn de_perdus(e: &Evenement) -> bool {
+    matches!(&e.quoi, Genre::Rupture { attendu, .. } if attendu == PERDUS_ATTENDU)
 }
 
 /// Un échec après l'ajout : les lignes sont écrites, seule la tête n'a pas suivi.
@@ -848,12 +920,24 @@ fn lire_borne(dossier: &Path, bornes: Bornes) -> Lu {
             "{illisibles} ligne(s) illisible(s) / unreadable line(s)"
         )));
     }
-    let derniere_rupture = evenements.iter().rposition(|e| matches!(e.quoi, Genre::Rupture { .. }));
+    let derniere_rupture = evenements
+        .iter()
+        .rposition(|e| matches!(e.quoi, Genre::Rupture { .. }) && !de_perdus(e));
     if let Some(r) = derniere_rupture.map(|i| &evenements[i]) {
         lecture = lecture.pire(Lecture::Incomplet(format!(
             "rupture notée le / break recorded on {}",
             r.date_locale().unwrap_or_default()
         )));
+    }
+    // Des événements perdus : ce qui est là reste vérifié, mais il en manque.
+    if let Some(r) = evenements.iter().rev().find(|e| de_perdus(e)) {
+        lecture = lecture.pire(Lecture::Incomplet(format!(
+            "événements non notés le / events not noted on {}",
+            r.date_locale().unwrap_or_default()
+        )));
+    }
+    if let Some(n) = perdus_dans(dossier) {
+        lecture = lecture.pire(Lecture::Incomplet(texte_perdus(n)));
     }
     let verifies_des = if tete_crue && !matches!(lecture, Lecture::Falsifie(_)) {
         derniere_rupture.map_or(0, |i| i + 1)
@@ -1017,6 +1101,9 @@ pub(crate) fn fichiers(dossier: &Path) -> Vec<String> {
         .map(|(mois, _)| format!("{DOSSIER}/{mois}.jsonl"))
         .collect();
     f.push(TETE.to_string());
+    if dossier.join(PERDUS).exists() {
+        f.push(PERDUS.to_string());
+    }
     f
 }
 
@@ -1072,6 +1159,7 @@ pub(crate) fn noter(ev: Evenement) -> Option<String> {
         // par ce verrou.
         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
             let perdus = differer(&dossier, evs);
+            noter_perdus(&dossier, perdus);
             super::Echec::echoue("evenements/noter", remis(&e, perdus)).journaliser();
             Some(id)
         }
@@ -1080,6 +1168,7 @@ pub(crate) fn noter(ev: Evenement) -> Option<String> {
         Err(e) => {
             evs.truncate(avant);
             let perdus = differer(&dossier, evs);
+            noter_perdus(&dossier, perdus);
             let mut echec = super::Echec::io("evenements/noter", &e);
             if perdus > 0 {
                 echec = echec.detail(trf!(
@@ -1125,6 +1214,7 @@ pub(crate) fn ecrire_differes() {
     if let Err(e) = ecrire_dans(&dossier, evs, chrono::Utc::now(), attente_noter())
         && !apres_ajout(&e)
     {
+        noter_perdus(&dossier, n);
         super::Echec::io("evenements/noter", &e)
             .detail(trf!("{} différé(s) perdu(s)", "{} put-off one(s) lost", n))
             .journaliser();
@@ -1174,7 +1264,37 @@ fn differer(dossier: &Path, evs: Vec<Evenement>) -> usize {
 /// dire.
 pub(crate) fn constat() -> Option<crate::machine::Constat> {
     let lu = lire();
-    constat_de(&lu.lecture).or_else(|| constat_de_rupture(&lu.evenements, chrono::Utc::now()))
+    constat_de(&lu.lecture)
+        .or_else(|| constat_de_rupture(&lu.evenements, chrono::Utc::now()))
+        .or_else(|| perdus_dans(&dossier_du_journal()).map(|n| constat_de_perdus(n, None)))
+}
+
+/// Des événements qui n'ont pas pu être notés (`PERDUS`) : dits au bilan, une fois le verrou rendu, comme une rupture
+/// (un mois), mais un cran plus bas : rien de ce qui est écrit n'a été touché, il en manque.
+fn constat_de_perdus(n: u64, quand: Option<&str>) -> crate::machine::Constat {
+    let quand = quand.map_or_else(String::new, |q| trf!(" (noté le {})", " (recorded on {})", q));
+    let combien = if n == 0 {
+        tr!("en nombre inconnu", "number unknown").to_string()
+    } else {
+        trf!("{} au moins", "at least {}", n)
+    };
+    crate::machine::alerte(
+        crate::sceau::CAT,
+        Niveau::Moyen,
+        trf!(
+            "Des événements n'ont pas pu être notés au journal des événements ({}){} : son verrou ou celui des sceaux était tenu ailleurs jusqu'à la fin de Vanguard (un Vanguard figé, ou un autre programme qui le garde). Ce qu'ils disaient manque au journal ; ce qui y est écrit reste vérifié.",
+            "Some events could not be noted in the event log ({}){}: its lock or the seals lock was held elsewhere until Vanguard ended (a frozen Vanguard, or another program keeping it). What they said is missing from the log; what is written there is still verified.",
+            combien,
+            quand
+        ),
+    )
+    .manuel(
+        tr!(
+            "« vanguard evenements » montre où ils manquent ; si cela revient, regardez ce qui tourne sous votre compte (Protection › Qui parle à Internet ?)",
+            "“vanguard events” shows where they are missing; if it happens again, look at what runs under your account (Protection › Who talks to the Internet?)"
+        ),
+        &[],
+    )
 }
 
 /// Une rupture se dit au bilan un mois : la tête est repartie du disque, et ce qui la précède (des lignes ajoutées,
@@ -1191,10 +1311,21 @@ fn constat_de_rupture(
         .to_string();
     // Jamais après maintenant : une rupture datée de l'avenir (horloge avancée) ne tiendrait l'alerte que plus longtemps.
     let apres = maintenant.format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let r = evenements
-        .iter()
-        .rev()
-        .find(|e| matches!(e.quoi, Genre::Rupture { .. }) && e.quand >= limite && e.quand <= apres)?;
+    let dans_le_mois =
+        |e: &&Evenement| matches!(e.quoi, Genre::Rupture { .. }) && e.quand >= limite && e.quand <= apres;
+    // Une vraie rupture d'abord : des événements perdus ne la cachent pas.
+    let Some(r) = evenements.iter().rev().filter(dans_le_mois).find(|e| !de_perdus(e)) else {
+        let p = evenements.iter().rev().find(dans_le_mois)?;
+        let Genre::Rupture { trouve, .. } = &p.quoi else {
+            return None;
+        };
+        let n = trouve
+            .split_whitespace()
+            .next()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0);
+        return Some(constat_de_perdus(n, p.date_locale().as_deref()));
+    };
     let quand = r.date_locale().unwrap_or_default();
     Some(
         crate::machine::alerte(
@@ -1940,6 +2071,44 @@ mod tests {
         assert_eq!(lu.lecture, Lecture::Intact);
         let titres: Vec<&str> = alertes(&lu.evenements).map(|(_, _, titre, _)| titre).collect();
         assert_eq!(titres, ["alerte 1", "alerte 2"]);
+    }
+
+    /// F4 (relecture) : le verrou des sceaux gardé ailleurs jusqu'à la fin du processus, l'événement différé se perd,
+    /// mais plus en silence. Le verrou rendu, le bilan le dit, avant toute écriture puis par la rupture que la
+    /// suivante écrit ; ce qui était écrit avant reste vérifié.
+    #[test]
+    fn evenements_perdus_dits_une_fois_le_verrou_rendu() {
+        let d = dossier_du_journal();
+        let q = "2026-10-23T10:00:00Z";
+        noter(alerte(1, q)).unwrap();
+        crate::sceau::attendre_en_essai(std::time::Duration::from_millis(200));
+        let tenu = crate::socle::Verrou::prendre(&d, "sceaux.verrou", false, std::time::Duration::ZERO).unwrap();
+        assert!(noter(alerte(2, q)).is_some());
+        // La fin du processus : le différé ne s'écrit pas, il est compté.
+        ecrire_differes();
+        drop(tenu);
+        assert_eq!(perdus_dans(&d), Some(1));
+        let c = constat().unwrap();
+        assert_eq!(c.probleme, Some(Niveau::Moyen));
+        assert!(
+            c.message.contains("1 au moins") || c.message.contains("at least 1"),
+            "{}",
+            c.message
+        );
+        noter(alerte(3, q)).unwrap();
+        assert_eq!(perdus_dans(&d), None);
+        let lu = lire_dans(&d);
+        assert!(matches!(lu.lecture, Lecture::Incomplet(_)), "{:?}", lu.lecture);
+        assert_eq!(lu.verifies_des, 0);
+        let titres: Vec<&str> = alertes(&lu.evenements).map(|(_, _, titre, _)| titre).collect();
+        assert_eq!(titres, ["alerte 1", "alerte 3"]);
+        let c = constat().unwrap();
+        assert_eq!(c.probleme, Some(Niveau::Moyen));
+        assert!(
+            c.message.contains("1 au moins") || c.message.contains("at least 1"),
+            "{}",
+            c.message
+        );
     }
 
     /// Une ligne coupée par un arrêt : elle reste dans la chaîne, illisible ; la ligne suivante commence sur une

@@ -3426,6 +3426,13 @@ async fn main() {
     // active ENABLE_VIRTUAL_TERMINAL_PROCESSING, le même appel que faisait une crate à part pour cela seul.
     #[cfg(windows)]
     let _ = crossterm::ansi_support::supports_ansi();
+    // « vanguard --version » (ou -V) seul : la version, rien d'autre. Ni réglages, ni journal, ni sceaux : un verrou
+    // des sceaux gardé ailleurs le faisait attendre des secondes pour une ligne connue d'avance.
+    if let [v] = std::env::args_os().skip(1).collect::<Vec<_>>().as_slice()
+        && (v == "--version" || v == "-V")
+    {
+        return println!("vanguard {}", env!("CARGO_PKG_VERSION"));
+    }
     // Le processus élevé ne fait que sa liste : rien d'autre ne doit tourner avec le jeton administrateur (journal,
     // passage, reconnaissance de la clé écrivent dans des dossiers que le compte contrôle).
     if std::env::args_os().nth(1).is_some_and(|a| a == "appliquer-eleve") {

@@ -72,14 +72,18 @@ Le détail de chaque menace, menu par menu : [Ce que fait Vanguard](README.md#ce
 - **Les listes et les outils tiers sont justes.** Les listes de menaces, de versions et de failles (abuse.ch, CISA,
   éditeurs) et les outils que Vanguard lance sans les avoir écrits (ClamAV, trivy, gitleaks) sont crus tels quels ;
   une liste trop vieille est dite non vérifiée.
-- **Les programmes de votre compte ne visent pas Vanguard lui-même.** Vanguard garde son état (ce qu'il a déjà vu,
-  ce que vous avez réglé, les défenses que vous avez allumées) dans un dossier de votre compte. Un programme
-  malveillant qui tourne sous votre compte peut donc fausser cet état. Vanguard voit et dit la falsification simple
-  (un fichier changé, effacé ou daté dans le futur) et ne s'y fie plus : aucune défense ne se coupe, aucune alerte ne
-  se tait. Deux limites : le dossier de Vanguard effacé en entier le ramène à son premier usage, où il réapprend
-  sans rien dire ; et un programme qui vise exprès ce mécanisme (il réécrit aussi les sceaux de Vanguard, ou les
-  efface avec leurs témoins) n'est pas vu. La vraie parade, un service qui tourne sous un autre compte que le vôtre
-  (administrateur), est prévue pour une version à venir.
+- **Les programmes de votre compte ne visent pas Vanguard lui-même.** Vanguard garde son état (ce qu'il a déjà vu, ce
+  que vous avez réglé, les défenses que vous avez allumées) dans un dossier de votre compte. Un programme malveillant
+  qui tourne sous votre compte peut donc fausser cet état. Vanguard voit et dit la falsification simple (un fichier
+  changé, effacé ou daté dans le futur) et ne s'y fie plus : aucune défense ne se coupe, aucune alerte ne se tait.
+  Deux limites : le dossier de Vanguard effacé en entier le ramène à son premier usage, où il réapprend sans rien
+  dire ; et un programme qui vise exprès ce mécanisme (il réécrit aussi les sceaux de Vanguard, ou les efface avec
+  leurs témoins) n'est pas vu. Un programme qui garde le verrou des sceaux (sceaux.verrou) empêche Vanguard d'écrire
+  son état et son journal des événements tant qu'il le garde : Vanguard ne l'attend qu'une fois, puis une seconde en
+  tout, le dit au bilan, et compte les événements qu'il n'a pas pu noter pour les dire une fois le verrou rendu. Ceux
+  d'un Vanguard tué pendant ce temps se perdent sans être comptés, et ce compte, écrit sans sceau, peut être effacé.
+  La vraie parade, un service qui tourne sous un autre compte que le vôtre (administrateur), est prévue pour une
+  version à venir.
 - **La personne décide.** Rien n'est modifié sans son accord. Ce qu'elle accepte s'annule une correction à la fois,
   sauf ce qui rallume une protection et l'arrêt d'un programme ; une correction dont l'état d'avant ne se relève pas
   est dite « non annulable » avant d'être appliquée.

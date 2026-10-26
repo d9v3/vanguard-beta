@@ -264,8 +264,9 @@ fn sceaux_ramenes_a_une_forme_d_avant_ne_font_rien_croire() {
     let _ = std::fs::remove_dir_all(&maison);
 }
 
-/// F4 (E-M2) : sceaux.verrou gardé par un autre programme du compte : la commande n'attend plus chaque écriture
-/// scellée toute l'attente (il en fallait des minutes), et le journal des événements ne se lit plus « intact ».
+/// F4 (E-M2) : sceaux.verrou gardé par un autre programme du compte : la commande n'attend plus chaque prise du verrou
+/// (il en fallait des minutes), mais une seule fois, puis une seconde en tout ; `--version` ne l'attend pas. Ce qui
+/// devait se noter et ne l'a pas pu n'est pas perdu en silence : le verrou rendu, le journal se lit « incomplet ».
 #[cfg(unix)]
 #[test]
 fn verrou_des_sceaux_garde_ailleurs_court_et_dit() {
@@ -273,48 +274,32 @@ fn verrou_des_sceaux_garde_ailleurs_court_et_dit() {
     let donnees = dossier_vanguard(&maison);
     let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
     let hors_ligne = [("VANGUARD_HORS_LIGNE", "1")];
-    let s = vanguard_dans_env(
-        programme,
-        &maison,
-        "en",
-        &["lien", "https://example.com", "--json"],
-        "",
-        60,
-        &hors_ligne,
-    );
+    let lien = ["lien", "https://example.com", "--json"];
+    let s = vanguard_dans_env(programme, &maison, "en", &lien, "", 60, &hors_ligne);
     assert_eq!(s.code, Some(0), "{}", s.erreurs);
     let verrou = std::fs::File::open(donnees.join("sceaux.verrou")).unwrap();
     verrou.lock().unwrap();
     let debut = std::time::Instant::now();
-    let s = vanguard_dans_env(
-        programme,
-        &maison,
-        "en",
-        &["lien", "https://example.com", "--json"],
-        "",
-        120,
-        &hors_ligne,
-    );
+    let s = vanguard_dans_env(programme, &maison, "en", &["--version"], "", 30, &[]);
     assert_eq!(s.code, Some(0), "{}", s.erreurs);
-    let s = vanguard_dans_env(
-        programme,
-        &maison,
-        "en",
-        &["evenements", "--json"],
-        "",
-        120,
-        &hors_ligne,
-    );
-    assert!(s.texte.contains(r#""etat": "incomplet""#), "{}", s.texte);
-    // Avant : 140 s pour le seul `lien`.
     assert!(
-        debut.elapsed() < std::time::Duration::from_secs(60),
+        debut.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        debut.elapsed()
+    );
+    let debut = std::time::Instant::now();
+    let s = vanguard_dans_env(programme, &maison, "en", &lien, "", 120, &hors_ligne);
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    // Avant : 140 s pour ce seul `lien` ; une attente, puis une seconde en tout.
+    assert!(
+        debut.elapsed() < std::time::Duration::from_secs(45),
         "{:?}",
         debut.elapsed()
     );
     verrou.unlock().unwrap();
     let s = vanguard_dans_env(programme, &maison, "en", &["evenements", "--json"], "", 60, &hors_ligne);
-    assert!(!s.texte.contains(r#""etat": "incomplet""#), "{}", s.texte);
+    assert!(s.texte.contains(r#""etat": "incomplet""#), "{}", s.texte);
+    assert!(s.texte.contains("not noted"), "{}", s.texte);
     let _ = std::fs::remove_dir_all(&maison);
 }
 
