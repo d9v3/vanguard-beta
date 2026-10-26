@@ -448,6 +448,33 @@ fn depose_par_le_deploiement(chemin: &str) -> bool {
     })
 }
 
+/// La reprise d'un déploiement arrêté en route : ce qu'il pose lui-même et qui diffère de la référence est retiré de
+/// la clé, pour qu'il le repose, au lieu d'être seulement écarté de la comparaison. Écarté, un fichier qu'il ne
+/// réécrit pas à coup sûr (macOS/vanguard sans compilation Mac, archive tldr déjà rafraîchie dans la journée, fichier
+/// de source/ à la même taille et à la même date que rsync saute) entrait tel quel dans la référence (campagne
+/// d'attaque n° 4). Le jeton reste comparé : le déploiement le garde, ne le repose pas. Rend l'écart qui reste et les
+/// chemins retirés.
+fn retirer_le_suspens(racine: &Path, mut ecart: Ecart) -> Result<(Ecart, Vec<String>), String> {
+    let mut retires = Vec::new();
+    for liste in [&mut ecart.nouveaux, &mut ecart.modifies] {
+        let mut garde = Vec::new();
+        for c in liste.drain(..) {
+            if c == crate::protection::cles_connues::JETON || !depose_par_le_deploiement(&c) {
+                garde.push(c);
+                continue;
+            }
+            match std::fs::remove_file(racine.join(&c)) {
+                Ok(()) => retires.push(c),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("{c} : {e}")),
+            }
+        }
+        *liste = garde;
+    }
+    ecart.disparus.retain(|c| !depose_par_le_deploiement(c));
+    Ok((ecart, retires))
+}
+
 /// L'écart, sans ce que le déploiement pose lui-même (`depose_par_le_deploiement`).
 fn hors_deploiement(mut ecart: Ecart) -> Ecart {
     for liste in [&mut ecart.nouveaux, &mut ecart.modifies, &mut ecart.disparus] {
@@ -712,8 +739,8 @@ pub fn comparer(racine: &Path) -> Result<Ecart, String> {
 }
 
 /// Avant que le déploiement n'écrive quoi que ce soit sur la clé `racine` (`vanguard deploiement comparer-cle`) :
-/// elle doit être exactement sa référence (`reprise` : sauf ce que le déploiement pose lui-même, après un déploiement
-/// arrêté en route). `Ok` : le nombre de fichiers vérifiés. Sinon le code de sortie et ce
+/// elle doit être exactement sa référence (`reprise`, après un déploiement arrêté en route : ce que le déploiement pose
+/// lui-même et qui diffère est retiré de la clé, `retirer_le_suspens`). `Ok` : le nombre de fichiers vérifiés. Sinon le code de sortie et ce
 /// qu'il faut dire : 2, la clé a changé (l'écart) ; 3, pas de référence pour elle ici.
 pub(crate) fn avant_deploiement(racine: &Path, reprise: bool) -> Result<usize, (i32, String)> {
     let base = crate::socle::dossier_local();
@@ -732,11 +759,26 @@ pub(crate) fn avant_deploiement(racine: &Path, reprise: bool) -> Result<usize, (
         return Err((3, pourquoi.to_string()));
     };
     let m = lire(&reference).map_err(|e| (1, e))?;
-    let mut ecart = comparer_avec(racine, &m, GROS);
+    comparer_avant_deploiement(racine, &m, reprise, GROS)
+}
+
+/// `avant_deploiement`, la référence lue.
+fn comparer_avant_deploiement(racine: &Path, m: &Manifeste, reprise: bool, gros: u64) -> Result<usize, (i32, String)> {
+    let mut ecart = comparer_avec(racine, m, gros);
     // La reprise d'un déploiement arrêté en route (clé retirée, rsync en échec) : ce qu'il pose lui-même a pu rester
-    // à moitié écrit, et il va le réécrire ; un fichier qu'il ne pose pas compte toujours.
+    // à moitié écrit ; ce qui diffère en est retiré, et il le repose. Un fichier qu'il ne pose pas compte toujours.
     if reprise {
-        ecart = hors_deploiement(ecart);
+        let (reste, retires) = retirer_le_suspens(racine, ecart).map_err(|e| (1, e))?;
+        ecart = reste;
+        for c in retires {
+            eprintln!(
+                "{}",
+                trf!(
+                    "Reprise : {c} différait de la référence, retiré de la clé (le déploiement le repose)",
+                    "Resume: {c} differed from the reference, removed from the key (the deployment puts it back)"
+                )
+            );
+        }
     }
     if ecart.vide() {
         Ok(ecart.verifies)
@@ -1658,6 +1700,73 @@ mod tests {
         assert!(!depose_par_le_deploiement("source/.claude/worktrees/a/b"));
         assert!(!depose_par_le_deploiement("tldr/tldr-pages.piege.zip"));
         assert!(depose_par_le_deploiement("tldr/tldr-pages.en.zip"));
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// Campagne 4 : la reprise d'un déploiement arrêté en route écartait ce qu'il pose de la comparaison, puis
+    /// `--ecrire` le reprenait tel quel, même ce qu'il ne réécrit pas à coup sûr (macOS/vanguard sans compilation Mac,
+    /// un fichier de source/ que rsync saute). Ce qui diffère en est retiré de la clé ; le reste compte toujours.
+    #[test]
+    fn reprise_retire_ce_qui_differe_au_lieu_de_le_reprendre() {
+        let base = dossier_jetable("reprise-base");
+        let racine = dossier_jetable("reprise-cle");
+        let reference = reference_ecrite(&base, Some("1A2B-3C4D"));
+        for d in ["Linux", "macOS", "source/src", "tldr"] {
+            std::fs::create_dir_all(racine.join(d)).unwrap();
+        }
+        for (f, o) in [
+            ("vanguard.cle", "temoin"),
+            ("vanguard.jeton", "0123456789abcdef0123456789abcdef"),
+            ("Linux/vanguard", "programme"),
+            ("macOS/vanguard", "programme mac"),
+            ("source/src/main.rs", "fn main() {}"),
+            ("tldr/tldr-pages.en.zip", "zip"),
+        ] {
+            std::fs::write(racine.join(f), o).unwrap();
+        }
+        std::fs::create_dir_all(reference.parent().unwrap()).unwrap();
+        ecrire_dans(&racine, &reference, 100, true).unwrap();
+        let m = lire(&reference).unwrap();
+        // Pendant l'arrêt : un programme Mac, un fichier source (même taille) et une archive changés, un fichier
+        // source ajouté.
+        std::fs::write(racine.join("macOS/vanguard"), "piege du mac").unwrap();
+        std::fs::write(racine.join("source/src/main.rs"), "fn piege(){}").unwrap();
+        std::fs::write(racine.join("source/src/x.rs"), "piege").unwrap();
+        std::fs::write(racine.join("tldr/tldr-pages.en.zip"), "pas zip").unwrap();
+        // Sans reprise : refusé.
+        assert_eq!(
+            comparer_avant_deploiement(&racine, &m, false, 100).map_err(|e| e.0),
+            Err(2)
+        );
+        // En reprise : permis, mais rien de ce qui diffère ne reste sur la clé pour entrer dans la référence.
+        assert!(comparer_avant_deploiement(&racine, &m, true, 100).is_ok());
+        for f in [
+            "macOS/vanguard",
+            "source/src/main.rs",
+            "source/src/x.rs",
+            "tldr/tldr-pages.en.zip",
+        ] {
+            assert!(!racine.join(f).exists(), "{f} resté sur la clé");
+        }
+        assert!(racine.join("Linux/vanguard").exists());
+        ecrire_dans(&racine, &reference, 100, true).unwrap();
+        let m = lire(&reference).unwrap();
+        assert!(m.fichiers.iter().all(|e| !e.chemin.starts_with("macOS/")));
+        // Le jeton, que le déploiement garde : changé, il compte encore ; et un fichier qu'il ne pose pas aussi.
+        std::fs::write(racine.join("vanguard.jeton"), "fedcba9876543210fedcba9876543210").unwrap();
+        assert_eq!(
+            comparer_avant_deploiement(&racine, &m, true, 100).map_err(|e| e.0),
+            Err(2)
+        );
+        assert!(racine.join("vanguard.jeton").exists());
+        std::fs::write(racine.join("vanguard.jeton"), "0123456789abcdef0123456789abcdef").unwrap();
+        std::fs::write(racine.join("Linux/libpiege.so"), "piege").unwrap();
+        assert_eq!(
+            comparer_avant_deploiement(&racine, &m, true, 100).map_err(|e| e.0),
+            Err(2)
+        );
+        assert!(racine.join("Linux/libpiege.so").exists());
         let _ = std::fs::remove_dir_all(&base);
         let _ = std::fs::remove_dir_all(&racine);
     }
