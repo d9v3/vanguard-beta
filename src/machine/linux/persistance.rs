@@ -240,6 +240,13 @@ pub(super) fn persistance_dans(
     crontab: Option<String>,
     gestion: Option<Paquets>,
 ) -> Vec<Constat> {
+    // Une racine relative (« » au lieu de « / ») ferait lire ld.so.preload, profile.d, cron.d… sous le dossier
+    // courant : rien n'y serait, et le verdict serait « sain » (campagne n° 4, M6).
+    debug_assert!(
+        racine.is_absolute(),
+        "racine de la persistance relative : {}",
+        racine.display()
+    );
     let mut t = Lancements::default();
     lire_prechargement(racine, &variable, gestion, &mut t);
     let (demarrage, hypr) = fichiers_de_demarrage(racine, maison);
@@ -836,6 +843,13 @@ pub(super) fn juger_fichiers_suspects(r: &Releve) -> Vec<Constat> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Le bilan lit la persistance depuis la vraie racine : une racine relative fait échouer `persistance_dans`
+    /// (essais compilés avec les assertions de débogage), que le corpus, qui lui donne sa propre racine, ne verrait pas.
+    #[test]
+    fn le_bilan_lit_depuis_la_racine() {
+        let _ = persistance();
+    }
 
     /// Une seconde ligne suspecte dans un fichier déjà signalé change la clé (avant, seul le fichier y était) ;
     /// l'ordre de lecture et une ligne lue deux fois, non.

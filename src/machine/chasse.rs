@@ -221,7 +221,13 @@ pub(crate) fn juger_intrusions(intrusions: &[Intrusion], systeme: Os, partiel: O
 }
 
 /// Les tentatives lues dans un journal, et ce que la lecture n'a pas pu voir, quand elle a atteint une borne.
-type Lues = (Vec<Tentative>, Option<String>);
+pub(crate) type Lues = (Vec<Tentative>, Option<String>);
+
+/// Les tentatives lues, jugées : le maillon que le bilan et le corpus de détection traversent tous deux, pour qu'une
+/// donnée perdue entre la lecture et le jugement fasse rougir le corpus.
+pub(crate) fn juger_lues((tentatives, partiel): &Lues, systeme: Os) -> Constat {
+    juger_intrusions(&intrusions(tentatives), systeme, partiel.as_deref())
+}
 
 /// La vérification : les tentatives lues dans le journal du système, jugées. Rien sans serveur à surveiller ; un
 /// journal qui ne se lit pas le dit (non vérifié, jamais sain).
@@ -229,11 +235,7 @@ fn connexion_forcee() -> Vec<Constat> {
     match tentatives_lues() {
         None => Vec::new(),
         Some(Err(refus)) => vec![refus],
-        Some(Ok((tentatives, partiel))) => vec![juger_intrusions(
-            &intrusions(&tentatives),
-            Os::actuel(),
-            partiel.as_deref(),
-        )],
+        Some(Ok(lues)) => vec![juger_lues(&lues, Os::actuel())],
     }
 }
 

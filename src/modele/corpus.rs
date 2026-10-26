@@ -264,7 +264,8 @@ const EN_ATTENTE_S3C: &[&str] = &[];
 
 /// Le fil de chaque règle du bilan qui a un cas, de son `regle!` au jugement que son adaptateur appelle : la première
 /// fonction est nommée dans le bloc `regle!`, chacune appelle la suivante (fichier sous src/, nom). Plusieurs
-/// fonctions du même nom dans le fichier (une par système) : l'une d'elles suffit.
+/// fonctions du même nom dans le fichier (une par système) : chacune, hors des essais, doit appeler la suivante ; la
+/// version d'un système débranchée resterait sinon verte grâce à celle d'un autre.
 const FILS: &[(&str, &[(&str, &str)])] = &[
     (
         "COM-CPT-001",
@@ -277,6 +278,7 @@ const FILS: &[(&str, &[(&str, &str)])] = &[
         "COM-CPT-003",
         &[
             ("machine/chasse.rs", "connexion_forcee"),
+            ("machine/chasse.rs", "juger_lues"),
             ("machine/chasse.rs", "juger_intrusions"),
         ],
     ),
@@ -301,7 +303,7 @@ const FILS: &[(&str, &[(&str, &str)])] = &[
     (
         "COM-JRN-001",
         &[
-            ("machine/journaux.rs", "journaux"),
+            ("machine/journaux.rs", "journaux@windows"),
             ("machine/journaux.rs", "juger_effacements"),
         ],
     ),
@@ -1220,6 +1222,47 @@ fn corps(texte: &str, nom: &str) -> Vec<String> {
     sortie
 }
 
+/// Les fonctions `nom` d'un texte source hors des essais (ni dans un module `#[cfg(test)]`, ni marquées
+/// `#[cfg(test)]`), chacune avec ses attributs `#[cfg…]`, lus dans le texte (pour la nommer), et son corps (`corps`).
+/// `nom@système` (« journaux@windows ») ne garde que celles dont un attribut nomme ce système : la version qu'un fil
+/// suit quand les autres versions jugent une autre règle.
+fn homonymes(texte: &str, nom: &str) -> Vec<(String, String)> {
+    let (nom, systeme) = nom.split_once('@').map_or((nom, None), |(n, s)| (n, Some(s)));
+    let lignes: Vec<&str> = texte.lines().collect();
+    let texte = &code(texte);
+    let fin_du_code = texte.find("\n#[cfg(test)]\nmod ").unwrap_or(texte.len());
+    let signature = format!("fn {nom}(");
+    let mut sortie = Vec::new();
+    for (i, _) in texte[..fin_du_code].match_indices(&signature) {
+        // Les lignes d'attributs juste au-dessus de la signature, dans le texte (le code n'a plus ses chaînes), en
+        // passant les commentaires.
+        let debut_ligne = texte[..i].rfind('\n').map_or(0, |n| n + 1);
+        let ligne = texte[..i].matches('\n').count();
+        let attributs: Vec<&str> = lignes[..ligne.min(lignes.len())]
+            .iter()
+            .rev()
+            .map(|l| l.trim())
+            .take_while(|l| l.starts_with("#[") || l.starts_with("//"))
+            .filter(|l| l.starts_with("#[cfg"))
+            .collect();
+        if attributs.iter().any(|a| a.replace(' ', "") == "#[cfg(test)]") {
+            continue;
+        }
+        if systeme.is_some_and(|s| !attributs.iter().any(|a| nomme(a, s))) {
+            continue;
+        }
+        let Some(c) = corps(&texte[debut_ligne..], nom).into_iter().next() else {
+            continue;
+        };
+        let mut cfg = attributs.join(" ");
+        if !cfg.is_empty() {
+            cfg.push(' ');
+        }
+        sortie.push((cfg, c));
+    }
+    sortie
+}
+
 /// Le code d'un texte source, sans ses commentaires « // » ni ses chaînes (leur contenu effacé, les guillemets
 /// gardés) : un nom dans un commentaire ou un message ne prouve pas un appel. Les caractères « 'x' » et « '\\x' » sont
 /// sautés en entier, pour qu'un « '\"' » n'ouvre pas une chaîne.
@@ -1241,12 +1284,15 @@ fn code(texte: &str) -> String {
                 let brute = sortie.chars().rev().nth(dieses) == Some('r');
                 sortie.push('"');
                 i += 1;
+                // Les sauts de ligne de la chaîne sont gardés : les lignes du code restent celles du texte.
                 while i < c.len() {
                     if c[i] == '"' && (!brute || (1..=dieses).all(|k| c.get(i + k) == Some(&'#'))) {
                         i += if brute { dieses } else { 0 };
                         break;
                     }
-                    i += if !brute && c[i] == '\\' { 2 } else { 1 };
+                    let pas = if !brute && c[i] == '\\' { 2 } else { 1 };
+                    sortie.extend(c[i..(i + pas).min(c.len())].iter().filter(|&&x| x == '\n'));
+                    i += pas;
                 }
                 sortie.push('"');
             }
@@ -1310,7 +1356,7 @@ fn chaque_regle_du_corpus_mene_a_son_jugement() {
         match blocs.iter().find(|(i, _)| i == id) {
             Some((_, bloc)) => {
                 let (_, premiere) = fil[0];
-                if !nomme(&code(bloc), premiere) {
+                if !nomme(&code(bloc), premiere.split('@').next().unwrap_or(premiere)) {
                     fautes.push(format!("{id} : son regle! ne nomme plus {premiere}"));
                 }
             }
@@ -1342,13 +1388,18 @@ fn chaque_regle_du_corpus_mene_a_son_jugement() {
         for paire in fil.windows(2) {
             let ((fichier, appelant), (fichier_appele, appele)) = (paire[0], paire[1]);
             let texte = source(fichier);
-            let appelants = corps(&texte, appelant);
+            let appelants = homonymes(&texte, appelant);
             if appelants.is_empty() {
                 fautes.push(format!("{id} : pas de fonction {appelant} dans src/{fichier}"));
-            } else if !appelants.iter().any(|c| nomme(c, appele)) {
-                fautes.push(format!("{id} : {appelant} (src/{fichier}) n'appelle plus {appele}"));
             }
-            if corps(&source(fichier_appele), appele).is_empty() {
+            for (cfg, c) in &appelants {
+                if !nomme(c, appele.split('@').next().unwrap_or(appele)) {
+                    fautes.push(format!(
+                        "{id} : {appelant} {cfg}(src/{fichier}) n'appelle plus {appele}"
+                    ));
+                }
+            }
+            if homonymes(&source(fichier_appele), appele).is_empty() {
                 fautes.push(format!("{id} : pas de fonction {appele} dans src/{fichier_appele}"));
             }
         }
@@ -1396,6 +1447,25 @@ fn le_fil_voit_une_regle_debranchee() {
     let texte = "fn a() {\n    b();\n}\n\nfn c() {\n    d();\n}\n";
     assert_eq!(corps(texte, "a").len(), 1);
     assert!(nomme(&corps(texte, "a")[0], "b") && !nomme(&corps(texte, "a")[0], "d"));
+    // Campagne n° 4 (M5) : deux homonymes, un par système, dont un seul appelle le jugement : l'autre est vu
+    // débranché, et nommé par son cfg. Une version d'essai (`#[cfg(test)]`, ou dans le module des essais) ne compte pas.
+    let deux = "#[cfg(target_os = \"linux\")]\npub fn certificats() -> Vec<Constat> {\n    juger(lire())\n}\n\n\
+                /// Windows.\n#[cfg(windows)]\npub fn certificats() -> Vec<Constat> {\n    let _ = lire();\n    Vec::new()\n}\n\n\
+                #[cfg(test)]\nfn certificats() -> Vec<Constat> {\n    Vec::new()\n}\n\n\
+                #[cfg(test)]\nmod tests {\n    fn certificats() {\n        rien();\n    }\n}\n";
+    let vus = homonymes(deux, "certificats");
+    assert_eq!(vus.len(), 2, "{vus:?}");
+    let coupes: Vec<&str> = vus
+        .iter()
+        .filter(|(_, c)| !nomme(c, "juger"))
+        .map(|(a, _)| a.as_str())
+        .collect();
+    assert_eq!(coupes, ["#[cfg(windows)] "]);
+    assert_eq!(
+        homonymes(deux, "certificats@linux")[0].0,
+        "#[cfg(target_os = \"linux\")] "
+    );
+    assert_eq!(homonymes(deux, "certificats@macos"), []);
 }
 
 #[test]

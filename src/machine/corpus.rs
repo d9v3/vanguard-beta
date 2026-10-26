@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 
 use super::Constat;
-use super::chasse::{EnMarche, intrusions, juger_intrusions, juger_programmes, tentatives_ssh_datees};
+use super::chasse::{EnMarche, juger_lues, juger_programmes, tentatives_ssh_datees};
 use super::regles::Os;
 use crate::modele::corpus::{Entree, Juge};
 
@@ -29,7 +29,7 @@ pub(crate) const CAS: &[(&str, Juge)] = &[
 fn connexion_forcee(e: &Entree) -> Vec<Constat> {
     let lignes: Vec<((), &str)> = e.lignes().into_iter().map(|l| ((), l)).collect();
     let tentatives: Vec<_> = tentatives_ssh_datees(&lignes).into_iter().map(|((), t)| t).collect();
-    vec![juger_intrusions(&intrusions(&tentatives), Os::Linux, None)]
+    vec![juger_lues(&(tentatives, None), Os::Linux)]
 }
 
 /// COM-PRG-001 : `pid|nom|chemin|ligne de commande`.
