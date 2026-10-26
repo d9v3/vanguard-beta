@@ -392,22 +392,36 @@ awk '/^  garde:/ { g = 1 } g && /^  claude:/ { exit } g && /^        run: \|/ { 
   "$Y" >"$T/garde.sh"
 mkdir -p "$T/faux-gh-garde"
 # Le faux gh : d'où vient la demande, puis les auteurs du fil autres que le propriétaire (ESSAI_FIL pour les
-# commentaires du ticket, ESSAI_REVUES pour les revues et commentaires de revue), ou une panne (ESSAI_PANNE).
+# commentaires du ticket, ESSAI_REVUES pour les revues et commentaires de revue), ou une panne de leur lecture
+# (ESSAI_PANNE) ; le fil déjà verrouillé ou non (ESSAI_VERROUILLE), et chaque verrouillage noté dans gh.appels.
 cat >"$T/faux-gh-garde/gh" <<'FAUX'
 #!/bin/sh
-case "$2" in
-  */issues/*/comments) printf '%s' "$ESSAI_FIL" ;;
-  */pulls/*/reviews | */pulls/*/comments) printf '%s' "$ESSAI_REVUES" ;;
-  *) echo "$ESSAI_TETE" ;;
+methode=GET
+chemin=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -X) methode=$2; shift ;;
+    repos/*) chemin=$1 ;;
+  esac
+  shift
+done
+case "$methode $chemin" in
+  "GET "*/issues/*/comments) printf '%s' "$ESSAI_FIL"; [ -z "$ESSAI_PANNE" ] ;;
+  "GET "*/pulls/*/reviews | "GET "*/pulls/*/comments) printf '%s' "$ESSAI_REVUES"; [ -z "$ESSAI_PANNE" ] ;;
+  "GET "*/pulls/*) echo "$ESSAI_TETE" ;;
+  "GET "*/issues/*) echo "${ESSAI_VERROUILLE:-false}" ;;
+  *) echo "$methode $chemin" >>"$ESSAI_APPELS" ;;
 esac
-[ -z "$ESSAI_PANNE" ]
 FAUX
 chmod +x "$T/faux-gh-garde/gh"
+# Le script commun, là où les deux étapes le prennent (extrait de la branche principale dans .garde).
+mkdir -p "$T/fil/.garde/outils"
+cp "$DEPOT/outils/fil-du-proprietaire.sh" "$T/fil/.garde/outils/"
 garde() { # numéro de la demande, dépôt d'où elle vient [, étiquettes] : la sortie « permis=… » du garde
   : >"$T/garde.sortie"
-  PATH="$T/faux-gh-garde:$PATH" GITHUB_OUTPUT=$T/garde.sortie GITHUB_REPOSITORY=d9v3/vanguard-beta DEMANDE=$1 \
-    NUMERO=${1:-7} ESSAI_TETE=$2 ETIQUETTES=${3:-,} ESSAI_FIL=${ESSAI_FIL-} ESSAI_REVUES=${ESSAI_REVUES-} \
-    ESSAI_PANNE=${ESSAI_PANNE-} sh "$T/garde.sh" >/dev/null 2>&1
+  (cd "$T/fil" && PATH="$T/faux-gh-garde:$PATH" GITHUB_OUTPUT=$T/garde.sortie GITHUB_REPOSITORY=d9v3/vanguard-beta \
+    DEMANDE=$1 NUMERO=${1:-7} ESSAI_TETE=$2 ETIQUETTES=${3:-,} ESSAI_FIL=${ESSAI_FIL-} ESSAI_REVUES=${ESSAI_REVUES-} \
+    ESSAI_PANNE=${ESSAI_PANNE-} ESSAI_APPELS=$T/gh.appels sh "$T/garde.sh" >/dev/null 2>&1)
   cat "$T/garde.sortie"
 }
 if [[ -s $T/garde.sh ]] && [[ $(garde 12 pirate/vanguard-beta) == permis=non ]] &&
@@ -440,7 +454,7 @@ else
 fi
 # Le filtre du garde, sur une vraie réponse de l'API : le propriétaire et les robots passent, un autre non.
 if command -v jq >/dev/null; then
-  filtre=$(sed -n "s/.*--jq '\(.*\)'); then\$/\1/p" "$T/garde.sh")
+  filtre=$(sed -n "s/.*--jq '\(.*\)'); then\$/\1/p" "$DEPOT/outils/fil-du-proprietaire.sh")
   fil='[{"id":1,"author_association":"OWNER","user":{"login":"d9v3"}},
     {"id":2,"author_association":"NONE","user":{"login":"passant"}},
     {"id":3,"author_association":"NONE","user":{"login":"claude[bot]"}},
@@ -451,6 +465,39 @@ if command -v jq >/dev/null; then
 else
   echo "  (sauté : jq absent, filtre des auteurs du fil non rejoué)"
 fi
+# Juste avant Claude : le fil verrouillé (s'il ne l'était pas déjà), puis relu par le même script que le garde ; un
+# autre auteur arrivé entre-temps, ou un fil illisible, fait échouer l'étape, et le fil se déverrouille à la fin
+# seulement si c'est ce travail qui l'a verrouillé (relecture adverse du 26 octobre : des minutes séparent les deux).
+awk '/^      - id: verrou$/ { v = 1; next } v && /^        run: \|/ { r = 1; next } r && !/^          / { exit }
+  r { sub(/^          /, ""); print }' "$Y" >"$T/verrou.sh"
+verrou() { # numéro de la demande : « code sortie appels »
+  : >"$T/verrou.sortie"
+  : >"$T/gh.appels"
+  (cd "$T/fil" && rm -rf .garde && mkdir -p .garde/outils && cp "$DEPOT/outils/fil-du-proprietaire.sh" .garde/outils/ &&
+    PATH="$T/faux-gh-garde:$PATH" GITHUB_OUTPUT=$T/verrou.sortie GITHUB_REPOSITORY=d9v3/vanguard-beta DEMANDE=$1 \
+    NUMERO=${1:-7} ESSAI_FIL=${ESSAI_FIL-} ESSAI_REVUES=${ESSAI_REVUES-} ESSAI_PANNE=${ESSAI_PANNE-} \
+    ESSAI_VERROUILLE=${ESSAI_VERROUILLE-} ESSAI_APPELS=$T/gh.appels sh -e "$T/verrou.sh" >/dev/null 2>&1)
+  echo "$? $(cat "$T/verrou.sortie") $(paste -sd, "$T/gh.appels")"
+}
+mkdir -p "$T/fil/.garde/outils"
+if [[ -s $T/verrou.sh && $(verrou "") == "0 verrouille=oui PUT repos/d9v3/vanguard-beta/issues/7/lock" &&
+  $(ESSAI_FIL=4242 verrou "") == "1 verrouille=oui PUT repos/d9v3/vanguard-beta/issues/7/lock" &&
+  $(ESSAI_REVUES=4242 verrou 12) == "1 verrouille=oui PUT repos/d9v3/vanguard-beta/issues/12/lock" &&
+  $(ESSAI_PANNE=1 verrou "") == "2 verrouille=oui PUT repos/d9v3/vanguard-beta/issues/7/lock" &&
+  $(ESSAI_VERROUILLE=true verrou "") == "0  " ]]; then
+  ok "claude.yml : juste avant Claude, le fil est verrouillé puis relu ; un autre auteur arrivé entre-temps l'arrête"
+else
+  ko "claude.yml : fil pas verrouillé ou pas relu avant Claude ($(ESSAI_FIL=4242 verrou ""))"
+fi
+# L'ordre : Rust, puis le verrou et la relecture, puis Claude aussitôt ; le déverrouillage en dernier, toujours, et
+# seulement si ce travail a verrouillé. Les deux relectures prennent le script de la branche principale.
+awk '/^  claude:/ { c = 1 } c && /name: Rust à jour/ { rust = NR } c && /^      - id: verrou$/ { v = NR }
+  c && /claude-code-action@/ { a = NR } c && /if: always\(\) && steps.verrou.outputs.verrouille == .oui.$/ { d = NR }
+  /ref: \$\{\{ github.event.repository.default_branch \}\}/ { ref++ }
+  /sh .garde\/outils\/fil-du-proprietaire.sh/ { s++ }
+  END { exit !(rust && rust < v && v < a && a < d && ref == 2 && s == 2) }' "$Y" &&
+  ok "claude.yml : le verrou et la relecture juste avant Claude, déverrouillé en dernier, script de la branche principale" ||
+  ko "claude.yml : ordre des étapes du verrou faux, ou script du fil pris ailleurs"
 # Le ticket ou la demande eux-mêmes écrits par le propriétaire, pas seulement le commentaire qui appelle Claude.
 awk '/^  garde:/ { g = 1 } g && /^  claude:/ { exit }
   g && /issue_comment.*@claude/ { e = "ic" } g && /pull_request_review_comment.*@claude/ { e = "prc" }

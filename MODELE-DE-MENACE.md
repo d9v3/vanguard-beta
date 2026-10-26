@@ -70,10 +70,11 @@ Le détail de chaque menace, menu par menu : [Ce que fait Vanguard](README.md#ce
 - **Personne d'autre ne pilote Claude sur le dépôt du code.** Claude sur GitHub (.github/workflows/claude.yml) peut
   écrire dans le dépôt et lance cargo build et cargo test, pour vérifier ce qu'il corrige. Il ne se lance que pour le
   propriétaire, sur un fil (ticket ou demande de fusion du dépôt lui-même, jamais d'un fork) dont chaque commentaire,
-  revue et commentaire de revue est du propriétaire ou des robots de Claude et de GitHub Actions. Restent : un
-  commentaire posté dans les secondes entre ce contrôle et la lecture du fil par Claude ; ce qu'il lit ailleurs que
-  dans le fil (un ticket lié, une page, un texte d'un autre recopié par le propriétaire) ; et le code du dépôt
-  lui-même, que cargo build et cargo test exécutent.
+  revue et commentaire de revue est du propriétaire ou des robots de Claude et de GitHub Actions. Juste avant Claude,
+  le fil est verrouillé, puis relu de la même façon, et il le reste jusqu'à la fin du travail. Restent : ceux qui ont
+  un accès en écriture au dépôt, qui peuvent écrire même sur un fil verrouillé ; ce qu'il lit ailleurs que dans le fil
+  (un ticket lié, une page, un texte d'un autre recopié par le propriétaire) ; et le code du dépôt lui-même, que cargo
+  build et cargo test exécutent.
 - **Le système répond juste au moment du bilan.** Un poste déjà compromis en administrateur peut tromper toutes ses
   lectures (voir plus haut).
 - **Les listes et les outils tiers sont justes.** Les listes de menaces, de versions et de failles (abuse.ch, CISA,

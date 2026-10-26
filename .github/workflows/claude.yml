@@ -43,11 +43,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      contents: read
       pull-requests: read
       issues: read
     outputs:
       permis: ${{ steps.origine.outputs.permis }}
     steps:
+      # Seulement le script qui relit le fil, pris de la branche principale : jamais celui d'une demande de fusion.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: .garde
+          sparse-checkout: outils/fil-du-proprietaire.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
       - id: origine
         env:
           GH_TOKEN: ${{ github.token }}
@@ -71,22 +80,10 @@ jobs:
             fi
           fi
           # Tout le fil : un auteur autre que le propriétaire (ou les robots de Claude et d'Actions) et rien ne se lance.
-          chemins="repos/$GITHUB_REPOSITORY/issues/$NUMERO/comments"
-          if [ -n "$DEMANDE" ]; then
-            chemins="$chemins repos/$GITHUB_REPOSITORY/pulls/$DEMANDE/reviews repos/$GITHUB_REPOSITORY/pulls/$DEMANDE/comments"
+          if ! sh .garde/outils/fil-du-proprietaire.sh; then
+            echo "permis=non" >>"$GITHUB_OUTPUT"
+            exit 0
           fi
-          for chemin in $chemins; do
-            if ! autres=$(gh api "$chemin" --paginate --jq '.[] | select(.author_association != "OWNER" and .user.login != "claude[bot]" and .user.login != "github-actions[bot]") | .id'); then
-              echo "::warning::Fil illisible ($chemin) : Claude n'y est pas lancé."
-              echo "permis=non" >>"$GITHUB_OUTPUT"
-              exit 0
-            fi
-            if [ -n "$autres" ]; then
-              echo "::warning::Ce fil a des commentaires d'un autre que le propriétaire : Claude n'y est pas lancé."
-              echo "permis=non" >>"$GITHUB_OUTPUT"
-              exit 0
-            fi
-          done
           echo "permis=oui" >>"$GITHUB_OUTPUT"
   claude:
     needs: garde
@@ -115,8 +112,39 @@ jobs:
           # musl-gcc : YARA-X compile un petit fichier C pour la cible musl.
           sudo apt-get update -qq
           sudo apt-get install -y -qq musl-tools
+      # Des minutes ont passé depuis le garde (machine, Rust, apt-get) : un autre a pu commenter entre-temps. Le fil
+      # est verrouillé (seuls le propriétaire et ceux qui ont accès au dépôt y écrivent encore), puis relu par le même
+      # script que le garde, juste avant Claude ; un autre auteur, ou un fil illisible, et rien ne se lance. Déverrouillé
+      # à la fin, quoi qu'il arrive, seulement si c'est ce travail qui l'a verrouillé.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: .garde
+          sparse-checkout: outils/fil-du-proprietaire.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - id: verrou
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEMANDE: ${{ github.event.pull_request.number || (github.event.issue.pull_request && github.event.issue.number) || '' }}
+          NUMERO: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: |
+          fil="repos/$GITHUB_REPOSITORY/issues/$NUMERO"
+          verrouille=$(gh api "$fil" --jq .locked)
+          if [ "$verrouille" != true ]; then
+            gh api -X PUT "$fil/lock" -f lock_reason=resolved >/dev/null
+            echo "verrouille=oui" >>"$GITHUB_OUTPUT"
+          fi
+          sh .garde/outils/fil-du-proprietaire.sh
+          rm -rf .garde
       - uses: anthropics/claude-code-action@5eb090f3c3afd701a0672cd32981197ca27688f6 # v1.0.253
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: |
             --allowedTools "Bash(cargo build:*),Bash(cargo test:*),Bash(cargo clippy:*),Bash(cargo fmt:*)"
+      - name: Fil déverrouillé
+        if: always() && steps.verrou.outputs.verrouille == 'oui'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMERO: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$NUMERO/lock"
