@@ -969,8 +969,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// Une note adoptée (sceaux effacés) dont une valeur n'a pas la forme du geste, ou dont un geste sort de la
-    /// liste fermée, est refusée : rien n'est remis.
+    /// Une note dont une valeur n'a pas la forme du geste, ou dont un geste sort de la liste fermée, est refusée :
+    /// rien n'est remis.
     #[cfg(unix)]
     #[test]
     fn note_d_une_forme_inattendue_refusee() {
@@ -983,11 +983,34 @@ mod tests {
             note("bilan:2", "2026-10-23 10:01", &["fichier|/etc/shadow"], &[None]),
         ]);
         assert!(sauver_dans(&h, &d));
-        std::fs::remove_file(d.join("sceaux.json")).unwrap();
         let notes = notes_de(&charger_dans(&d), None);
         assert!(notes.iter().all(|n| !n.admise), "{notes:?}");
         let (issues, _) = defaire_dans(&["bilan:1".into(), "bilan:2".into()], &[], false, &d);
         assert!(issues.iter().all(|(_, i)| matches!(i, Issue::Refuse(_))), "{issues:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Une note bien formée, mais adoptée (sceaux.json effacé, puis reglages.json posé par un autre programme) : rien
+    /// n'en est remis, comme pour wifi-public.json et sauvegarde.json ; aucune commande ne part.
+    #[cfg(unix)]
+    #[test]
+    fn note_adoptee_jamais_remise() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dossier("adoptee");
+        let f = d.join("cles-alice");
+        std::fs::write(&f, "x").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let geste = format!("droits|{}", f.display());
+        let h = historique(vec![note("bilan:1", "2026-10-23 10:00", &[&geste], &[Some("0644")])]);
+        assert!(sauver_dans(&h, &d));
+        std::fs::remove_file(d.join("sceaux.json")).unwrap();
+        assert!(matches!(
+            crate::sceau::lire_dans(&d, crate::sceau::REGLAGES),
+            crate::sceau::Lecture::Adopte(_)
+        ));
+        let (issues, _) = defaire_dans(&["bilan:1".into()], &[], false, &d);
+        assert_eq!(issues, [("bilan:1".to_string(), Issue::Absent)]);
+        assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o7777, 0o600);
         let _ = std::fs::remove_dir_all(&d);
     }
 

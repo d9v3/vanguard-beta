@@ -132,12 +132,12 @@ fn mettre_de_cote(chemin: &std::path::Path, genre: &str) -> std::path::PathBuf {
 
 /// L'historique du dossier `dossier`, d'après son sceau (`sceau::REGLAGES`) : ses valeurs sont remises en
 /// administrateur, et tout programme du compte peut réécrire le fichier. Changé hors de Vanguard, il ne vaut rien
-/// (aucune valeur n'en est remise, il est mis de côté et c'est dit) ; accepté tel quel au premier usage des sceaux
-/// (une version d'avant), il sert, puisque chaque valeur est de toute façon validée à la remise (`note_admise`),
-/// mais il n'est jamais rescellé à la lecture : il reste « adopté », et le bilan le dit (COM-ETA-001), jusqu'à ce
-/// que Vanguard écrive lui-même une note. Rescellé, un fichier posé après l'effacement de sceaux.json (une adresse
-/// de DNS bien formée, mais choisie par un autre) perdait cette marque, et sa valeur était remise en administrateur
-/// sans que rien ne le signale. Les tests ont chacun leur dossier : l'un réécrirait sinon celui qu'un autre lit
+/// (aucune valeur n'en est remise, il est mis de côté et c'est dit). Accepté tel quel, il ne sert que s'il a été
+/// repris d'une version d'avant par une mise à jour connue (`sceau::repris_dans`), et il n'est jamais rescellé à la
+/// lecture : il reste « adopté », et le bilan le dit (COM-ETA-001), jusqu'à ce que Vanguard écrive lui-même une note.
+/// Toute autre adoption (premier usage, sceaux.json effacé) ne vaut rien, comme pour wifi-public.json et
+/// sauvegarde.json : un fichier posé là par un autre programme ferait remettre ses valeurs en administrateur.
+/// Les tests ont chacun leur dossier : l'un réécrirait sinon celui qu'un autre lit
 /// (sous Windows, un fichier ouvert ne se remplace pas).
 fn charger_dans(dossier: &std::path::Path) -> Historique {
     // Les notes de Gaming d'avant (jeux.json) sont reprises ici, une fois : seulement dans un historique cru, jamais
@@ -186,7 +186,16 @@ fn lire_dans(dossier: &std::path::Path) -> Option<(Historique, bool)> {
         // Disparu (Inconnu) : rien à remettre, et rien de faux non plus ; la disparition est dite par les sceaux.
         Lecture::Absent | Lecture::Inconnu => return Some((Historique::default(), false)),
         Lecture::Intact(o) => (o, false),
-        Lecture::Adopte(o) => (o, true),
+        Lecture::Adopte(o) if crate::sceau::repris_dans(dossier, crate::sceau::REGLAGES) => (o, true),
+        Lecture::Adopte(_) => {
+            let copie = mettre_de_cote(&chemin, "adopte");
+            tre!(
+                "Attention : valeurs d'avant des réglages acceptées sans sceau d'avant : aucune n'est remise. Copie gardée : {}",
+                "Warning: previous setting values accepted without an earlier seal: none is restored. Copy kept: {}",
+                copie.display()
+            );
+            return None;
+        }
         Lecture::Falsifie(_) => {
             let copie = mettre_de_cote(&chemin, "falsifie");
             tre!(
@@ -983,8 +992,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dossier);
     }
 
-    /// sceaux.json effacé, puis reglages.json posé par un programme du compte (une note de DNS bien formée) : il
-    /// sert, mais il n'est pas rescellé à la lecture ; il reste « adopté », et le bilan continue de le dire.
+    /// sceaux.json effacé, puis reglages.json posé par un programme du compte (une note de DNS bien formée) : rien
+    /// n'en est remis (il est mis de côté, intact), et il n'est pas rescellé à la lecture ; il reste « adopté », et le
+    /// bilan continue de le dire.
     #[test]
     fn historique_adopte_jamais_rescelle_a_la_lecture() {
         let dossier = dossier_jetable("adopte");
@@ -993,11 +1003,28 @@ mod tests {
         // La forme exacte d'une note de DNS sous Linux (connexion, puis DNS IPv4 et IPv6) : admise à la remise.
         let note = r#"{"reglages":{"dns_rapide":{"date":"2026-10-18 01:00","valeurs":["0b6e5c1a-2f3d-4e8f-9a0b-1c2d3e4f5a6b\n203.0.113.66|yes||yes"]}}}"#;
         std::fs::write(dossier.join(crate::sceau::REGLAGES), note).unwrap();
-        assert_eq!(charger_dans(&dossier).reglages.len(), 1);
+        assert!(
+            charger_dans(&dossier).reglages.is_empty(),
+            "une note adoptée n'est jamais remise"
+        );
+        assert!(copies(&dossier, "reglages.adopte-") >= 1);
         assert!(matches!(
             crate::sceau::lire_dans(&dossier, crate::sceau::REGLAGES),
             crate::sceau::Lecture::Adopte(_)
         ));
+        let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// reglages.json repris tel quel d'une version d'avant par une mise à jour connue : il vient de Vanguard, ses notes
+    /// servent (sans rescellement à la lecture).
+    #[test]
+    fn historique_repris_d_une_version_d_avant_sert() {
+        let dossier = dossier_jetable("repris");
+        crate::sceau::sceaux_d_une_version_d_avant(&dossier);
+        let note = r#"{"reglages":{"dns_rapide":{"date":"2026-10-18 01:00","valeurs":["0b6e5c1a-2f3d-4e8f-9a0b-1c2d3e4f5a6b\n203.0.113.66|yes||yes"]}}}"#;
+        std::fs::write(dossier.join(crate::sceau::REGLAGES), note).unwrap();
+        assert_eq!(charger_dans(&dossier).reglages.len(), 1);
+        assert_eq!(copies(&dossier, "reglages.adopte-"), 0);
         let _ = std::fs::remove_dir_all(&dossier);
     }
 
