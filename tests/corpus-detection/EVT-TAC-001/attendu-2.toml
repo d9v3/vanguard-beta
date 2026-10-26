@@ -1,0 +1,6 @@
+# EVT-TAC-001, action écrite avec un attribut (`<Exec id="…">`, admis par le schéma des tâches) : elle se lit comme
+# une autre, sa commande est nommée (campagne n° 4, M1).
+gravite = "eleve"
+mots = ["tache-corpus-attribut", "maj-corpus.exe"]
+propre = "info"
+systemes = ["linux", "windows", "macos"]

@@ -1,0 +1,1 @@
+Security|Microsoft-Windows-Security-Auditing|4698|0|TaskName=\tache-corpus-attribut|TaskContent=<Task version="1.2"><Actions Context="Author"><Exec id="corpus"><Command id="c">C:\Program Files\Corpus\maj.exe</Command></Exec ></Actions></Task>|SubjectUserName=alice

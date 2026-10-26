@@ -44,6 +44,21 @@ fn chemin_bas(t: &str) -> String {
     t.trim().to_lowercase().replace('/', "\\")
 }
 
+/// Une ligne de commande aux tirets ramenés à « - » : PowerShell prend aussi les tirets typographiques (U+2010 à
+/// U+2015) et le signe moins (U+2212) pour annoncer une option, et « –enc » cachait ainsi la commande encodée aux
+/// règles, qui ne cherchent que « -enc ».
+fn tirets(t: &str) -> String {
+    t.chars()
+        .map(|c| {
+            if matches!(c, '\u{2010}'..='\u{2015}' | '\u{2212}') {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
 /// L'instant d'un événement, pour l'objet d'un événement ponctuel (un journal effacé, une protection coupée) :
 /// déclarer normal celui-là ne fait pas taire les suivants.
 fn instant(e: &EvenementWindows) -> String {
@@ -374,7 +389,7 @@ fn dans_windows(chemin: &str) -> Option<&str> {
 pub(crate) fn service_suspect(nom: &str, image: &str) -> Option<(Gravite, Texte, bool)> {
     let (programme, arguments) = decouper(image);
     let programme_bas = sans_prefixe(&chemin_bas(&programme));
-    let arguments_bas = chemin_bas(&arguments);
+    let arguments_bas = tirets(&chemin_bas(&arguments));
     let nom_prog = nom_programme(&programme_bas);
     // Le programme lui-même, ou ce que ses arguments lancent : pas le nom d'un dossier (« PowerShell Universal »).
     if est_interprete(&nom_prog)
@@ -1003,7 +1018,7 @@ fn autres_identifiants(e: &EvenementWindows) -> Option<Indice> {
 /// concaténations de chaînes qui coupent un mot en deux (« 'Down'+'loadString' »). Le texte est déjà borné par la
 /// lecture.
 fn script_bas(texte: &str) -> String {
-    let mut s: String = texte.to_lowercase().chars().filter(|&c| c != '`').collect();
+    let mut s: String = tirets(&texte.to_lowercase()).chars().filter(|&c| c != '`').collect();
     for coupure in ["'+'", "\"+\"", "' + '", "\" + \"", "'+\"", "\"+'", "')+('", "\")+(\""] {
         if s.contains(coupure) {
             s = s.replace(coupure, "");
@@ -2048,7 +2063,7 @@ fn telechargement_systeme(nom: &str, ligne_bas: &str) -> bool {
 pub(crate) fn ligne_suspecte(programme: &str, ligne: &str) -> Option<(&'static str, Gravite, Texte)> {
     let nom = nom_programme(&decouper(programme).0);
     // Les « / » gardés : ce sont aussi ceux des options (« /transfer », « /i: »).
-    let bas = ligne.trim().to_lowercase();
+    let bas = tirets(&ligne.trim().to_lowercase());
     if outil_offensif(&nom, &bas) {
         return Some((
             "outil",
@@ -2146,30 +2161,82 @@ pub(crate) fn actions_de_tache(xml: &str) -> (Vec<(String, String)>, bool) {
     let bas = xml.to_ascii_lowercase();
     // La valeur d'une balise dans le bloc `debut..fin`.
     let valeur = |debut: usize, fin: usize, balise: &str| -> Option<String> {
-        let ouvre = format!("<{balise}>");
-        let ferme = format!("</{balise}>");
         let bloc = &bas[debut..fin];
-        let i = bloc.find(&ouvre)? + ouvre.len();
-        let j = bloc[i..].find(&ferme)? + i;
+        let (i, vide) = balise_ouvrante(bloc, 0, balise).map(|(_, i, vide)| (i, vide))?;
+        if vide {
+            return Some(String::new());
+        }
+        let (j, _) = balise_fermante(bloc, i, balise)?;
         Some(entites(&xml[debut + i..debut + j]))
     };
     let mut actions = Vec::new();
     let mut depuis = 0;
     while actions.len() < ACTIONS_MAX {
-        let Some(i) = bas[depuis..].find("<exec>").map(|i| i + depuis) else {
+        let Some((_, i, vide)) = balise_ouvrante(&bas, depuis, "exec") else {
             break;
         };
+        if vide {
+            depuis = i;
+            continue;
+        }
         // Un bloc sans fin : rien d'autre à lire après lui.
-        let Some(fin) = bas[i..].find("</exec>").map(|j| j + i) else {
+        let Some((fin, apres)) = balise_fermante(&bas, i, "exec") else {
             break;
         };
         if let Some(commande) = valeur(i, fin, "command") {
             let arguments = valeur(i, fin, "arguments").unwrap_or_default();
             actions.push((commande, arguments));
         }
-        depuis = fin + "</exec>".len();
+        depuis = apres;
     }
     (actions, tronque)
+}
+
+/// La prochaine balise ouvrante `<nom…>` de `bas` à partir de `depuis` : (son début, la fin de son « > », vide :
+/// écrite `<nom/>`). Le schéma des tâches admet des attributs (`<Exec id="a">`) et XML des blancs avant « > » : les
+/// chercher au seul littéral `<exec>` laissait une action ainsi écrite invisible. `<executable>` n'est pas `<exec>`.
+fn balise_ouvrante(bas: &str, mut depuis: usize, nom: &str) -> Option<(usize, usize, bool)> {
+    let ouvre = format!("<{nom}");
+    loop {
+        let i = bas[depuis..].find(&ouvre)? + depuis;
+        let apres = i + ouvre.len();
+        match bas.as_bytes().get(apres) {
+            Some(b'>') => return Some((i, apres + 1, false)),
+            Some(o) if o.is_ascii_whitespace() || *o == b'/' => {
+                // Les attributs, jusqu'au « > » hors de leurs valeurs entre guillemets, où XML admet « > » et « / » :
+                // `<Exec id="a/">` n'est pas une action vide.
+                let mut guillemet = None;
+                for (k, &c) in bas.as_bytes()[apres..].iter().enumerate() {
+                    match (guillemet, c) {
+                        (None, b'"' | b'\'') => guillemet = Some(c),
+                        (Some(g), _) if c == g => guillemet = None,
+                        (None, b'>') => {
+                            let j = apres + k;
+                            return Some((i, j + 1, bas[..j].trim_end().ends_with('/')));
+                        }
+                        _ => {}
+                    }
+                }
+                return None;
+            }
+            _ => depuis = apres,
+        }
+    }
+}
+
+/// La prochaine balise fermante `</nom>` (des blancs admis avant « > ») à partir de `depuis` : (son début, la fin de
+/// son « > »).
+fn balise_fermante(bas: &str, mut depuis: usize, nom: &str) -> Option<(usize, usize)> {
+    let ferme = format!("</{nom}");
+    loop {
+        let i = bas[depuis..].find(&ferme)? + depuis;
+        let apres = i + ferme.len();
+        let blancs = bas[apres..].len() - bas[apres..].trim_start_matches(|c: char| c.is_ascii_whitespace()).len();
+        if bas.as_bytes().get(apres + blancs) == Some(&b'>') {
+            return Some((i, apres + blancs + 1));
+        }
+        depuis = apres;
+    }
 }
 
 /// Les entités XML d'une valeur (« &quot; », « &amp; »…), défaites une fois.
@@ -2269,6 +2336,9 @@ fn tache_auditee(e: &EvenementWindows) -> Option<Indice> {
         .or_else(|| e.champ("TaskContentNew"))
         .unwrap_or_default();
     let (actions, tronque) = actions_de_tache(contenu);
+    // Une action est là mais rien n'en a été lu (une commande écrite autrement que le lecteur ne l'attend) : la
+    // tâche n'est pas jugée, elle ne passe pas pour une simple création.
+    let non_lue = actions.is_empty() && balise_ouvrante(&contenu.to_ascii_lowercase(), 0, "exec").is_some();
     let pire = actions
         .iter()
         .filter_map(|(programme, arguments)| {
@@ -2277,7 +2347,7 @@ fn tache_auditee(e: &EvenementWindows) -> Option<Indice> {
         .max_by_key(|(gravite, ..)| *gravite);
     let (gravite, pourquoi, commande) = match pire {
         Some((gravite, pourquoi, programme, arguments)) => (gravite, pourquoi, format!("{programme} {arguments}")),
-        None if e.id == 4698 || tronque => (
+        None if e.id == 4698 || tronque || non_lue => (
             Gravite::Info,
             ("une tâche planifiée a été créée", "a scheduled task was created"),
             actions.first().map(|(c, a)| format!("{c} {a}")).unwrap_or_default(),
@@ -2291,6 +2361,14 @@ fn tache_auditee(e: &EvenementWindows) -> Option<Indice> {
             (
                 "le contenu de la tâche est démesuré (plus de 64 Kio, ce qu'aucune tâche ordinaire n'atteint) : il n'a été lu qu'en partie",
                 "the task content is oversized (more than 64 KiB, which no ordinary task reaches): it was only partly read",
+            ),
+        )
+    } else if non_lue && gravite < Gravite::Alerte {
+        (
+            Gravite::Alerte,
+            (
+                "la tâche a une action dont la commande n'a pas pu être lue : ce qu'elle lance n'est pas vérifié",
+                "the task has an action whose command could not be read: what it runs is not verified",
             ),
         )
     } else {

@@ -1,0 +1,2 @@
+# La commande encodée ne dit que : Write-Output "corpus de détection Vanguard".
+Security|Microsoft-Windows-Security-Auditing|4688|0|NewProcessName=C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe|CommandLine=powershell.exe –EncodedCommand VwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIAAiAGMAbwByAHAAdQBzACAAZABlACAAZADpAHQAZQBjAHQAaQBvAG4AIABWAGEAbgBnAHUAYQByAGQAIgA=|ParentProcessName=C:\Windows\explorer.exe|SubjectUserName=alice

