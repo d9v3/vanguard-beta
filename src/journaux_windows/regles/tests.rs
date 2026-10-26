@@ -3714,3 +3714,49 @@ fn tirets_de_powershell() {
         None
     );
 }
+
+/// L'option d'encodage d'Out-File, Get-Content ou certutil n'est pas une commande encodée : un nom d'encodage, un
+/// numéro de page de codes, un mot ordinaire après « -e » ne font rien tirer, même dans un script qui nomme
+/// PowerShell ; le vrai base64 d'UTF-16, « -EncodedCommand » en entier et une variable passée à PowerShell, si.
+#[test]
+fn commande_encodee_jugee_sur_sa_valeur() {
+    let b64 = "VwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIAAxAA==";
+    for script in [
+        "gc $f -enc byte",
+        "Get-Content $f -Enc:UTF8",
+        "certutil -encode in.txt out.txt",
+        "& certutil '/encode' in.txt out.txt",
+        "Start-Process powershell; Get-Process | Out-File x.txt -en BigEndianUnicode",
+        "powershell -c \"gc a.txt -encoding utf8 | Out-File b.txt -enc 65001\"",
+        "powershell -c \"git grep -e LongPatternHere12\"",
+        "powershell -c \"docker run -e CLE=valeurassezlongue img\"",
+        "powershell -c \"robocopy /e /mnt/partage/dossier\"",
+        "powershell -c \"Get-Content x -en utf8\"",
+    ] {
+        assert_eq!(script_suspect(script).map(|x| x.0), None, "{script}");
+    }
+    for script in [
+        format!("powershell -e {b64}"),
+        "Start-Process powershell -ArgumentList '-NoP','-Enc',$b".to_string(),
+        "$a = '-EncodedCommand ' + $x".to_string(),
+        format!("Start-Process powershell.exe -ArgumentList \"-EncodedCommand:{b64}\""),
+        format!("$p = '-enc {b64}'"),
+    ] {
+        assert_eq!(script_suspect(&script).map(|x| x.0), Some("encode"), "{script}");
+    }
+    // Le même base64 mis en minuscules ne décode plus en UTF-16 : la casse compte, « -e » seul ne suffit pas.
+    assert_eq!(
+        script_suspect(&format!("powershell -e {}", b64.to_lowercase())).map(|x| x.0),
+        None
+    );
+    // Le processus PowerShell lui-même : un nom d'encodage n'est pas une commande, le base64 si.
+    let ps = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+    assert_eq!(
+        ligne_suspecte(ps, "powershell.exe -c \"gci | Out-File a -en BigEndianUnicode\"").map(|x| x.0),
+        None
+    );
+    assert_eq!(
+        ligne_suspecte(ps, &format!("powershell.exe -en {b64}")).map(|x| x.0),
+        Some("encode")
+    );
+}

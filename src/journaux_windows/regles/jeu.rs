@@ -1019,7 +1019,12 @@ fn autres_identifiants(e: &EvenementWindows) -> Option<Indice> {
 /// concaténations de chaînes qui coupent un mot en deux (« 'Down'+'loadString' »). Le texte est déjà borné par la
 /// lecture.
 fn script_bas(texte: &str) -> String {
-    let mut s: String = tirets(&texte.to_lowercase()).chars().filter(|&c| c != '`').collect();
+    script_net(&texte.to_lowercase())
+}
+
+/// Un bloc de script nettoyé comme `script_bas`, sa casse gardée : celle d'une valeur en base64 compte.
+fn script_net(texte: &str) -> String {
+    let mut s: String = tirets(texte).chars().filter(|&c| c != '`').collect();
     for coupure in ["'+'", "\"+\"", "' + '", "\" + \"", "'+\"", "\"+'", "')+('", "\")+(\""] {
         if s.contains(coupure) {
             s = s.replace(coupure, "");
@@ -1462,7 +1467,7 @@ pub(crate) fn script_suspect(texte: &str) -> Option<(&'static str, Gravite, Text
             ),
         ));
     }
-    if script_encode(&s.bas) {
+    if script_encode(&script_net(texte)) {
         return Some((
             "encode",
             Gravite::Alerte,
@@ -1475,21 +1480,107 @@ pub(crate) fn script_suspect(texte: &str) -> Option<(&'static str, Gravite, Text
     None
 }
 
-/// Un script qui lance PowerShell avec une commande encodée (`option_encodee`) : « -enc », « --enc », « '-enc' »,
-/// « -enc:… » ; les formes courtes (« -e », « -en ») seulement suivies d'un texte en base64 dans un script qui nomme
-/// PowerShell (« -e » sert à bien d'autres commandes). Tous les mots du script, pas seulement les premiers, coupés aux
-/// blancs, virgules et points-virgules (« '-nop','-enc',$b ») ; ce qui les entoure (guillemets, parenthèses) est
-/// retiré.
-fn script_encode(bas: &str) -> bool {
-    let mots: Vec<&str> = bas
+/// Un script qui lance PowerShell avec une commande encodée (`option_encodee`, « -enc », « --enc », « '-enc' »,
+/// « -enc:… »), jugée sur sa valeur (collée après « : », sinon le mot suivant) : un texte en base64 d'UTF-16
+/// (`base64_de_commande`, la forme que PowerShell attend), « -EncodedCommand » écrit en entier, ou une variable
+/// (« '-nop','-enc',$b ») dans un script qui nomme PowerShell. Les formes courtes (« -e », « -en ») seulement avec
+/// le base64 et PowerShell nommé : « -e » sert à bien d'autres commandes (« git grep -e », « docker run -e »). Un
+/// nom d'encodage en valeur (« gc $f -enc byte », « Out-File -en BigEndianUnicode ») n'en est jamais une, ni
+/// « certutil -encode a b ». Tous les mots du script, pas seulement les premiers, coupés aux blancs, virgules et
+/// points-virgules ; ce qui les entoure (guillemets, parenthèses) est retiré. `net` : le script de `script_net`.
+fn script_encode(net: &str) -> bool {
+    let mots: Vec<&str> = net
         .split(|c: char| c.is_whitespace() || c == ',' || c == ';')
         .map(|m| m.trim_matches(['"', '\'', '(', ')', '[', ']', '{', '}', '@']))
         .filter(|m| !m.is_empty())
         .collect();
+    let bas = net.to_lowercase();
     let powershell = bas.contains("powershell") || bas.contains("pwsh");
-    mots.iter()
-        .any(|m| option_encodee(m).is_some_and(|(option, _)| option.len() >= 3 || option == "ec"))
-        || (powershell && option_encodee_dans(&mots))
+    mots.iter().enumerate().any(|(i, m)| {
+        let Some((option, colle)) = option_encodee(m) else {
+            return false;
+        };
+        let valeur = if colle.is_empty() {
+            mots.get(i + 1).copied().unwrap_or_default()
+        } else {
+            colle.as_str()
+        };
+        if nom_d_encodage(valeur) {
+            return false;
+        }
+        let longue = option.len() >= 3 || option == "ec";
+        (base64_de_commande(valeur) && (longue || powershell))
+            || option == "encodedcommand"
+            || (longue && powershell && valeur.starts_with('$'))
+    })
+}
+
+/// Un nom d'encodage de PowerShell (`-Encoding`, abrégé « -en » ou « -enc » par Out-File, Get-Content,
+/// Set-Content…) ou un numéro de page de codes : la valeur d'une option d'encodage, pas une commande encodée.
+fn nom_d_encodage(valeur: &str) -> bool {
+    const NOMS: &[&str] = &[
+        "ascii",
+        "ansi",
+        "bigendianunicode",
+        "bigendianutf32",
+        "byte",
+        "default",
+        "latin1",
+        "oem",
+        "string",
+        "unicode",
+        "unknown",
+        "utf7",
+        "utf8",
+        "utf8bom",
+        "utf8nobom",
+        "utf32",
+    ];
+    let bas = valeur.to_ascii_lowercase();
+    NOMS.contains(&bas.as_str()) || (!bas.is_empty() && bas.bytes().all(|o| o.is_ascii_digit()))
+}
+
+/// Une valeur en base64 d'un texte UTF-16 petit-boutiste, la forme de « -EncodedCommand » : au moins 8 caractères
+/// (« IEX » en fait 8), décodée par blocs de 4 (un reste tronqué ignoré), et au moins trois quarts de ses
+/// caractères ASCII imprimables. Un mot ordinaire qui s'écrit en base64 (« BigEndianUnicode », « LongPatternHere »)
+/// décode en octets quelconques : le hasard n'y met pas un octet nul sur deux.
+fn base64_de_commande(valeur: &str) -> bool {
+    let chiffre = |o: u8| -> Option<u32> {
+        Some(u32::from(match o {
+            b'A'..=b'Z' => o - b'A',
+            b'a'..=b'z' => o - b'a' + 26,
+            b'0'..=b'9' => o - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        }))
+    };
+    let utiles = valeur.trim_end_matches('=');
+    if utiles.len() < 8 || valeur.len() - utiles.len() > 2 || utiles.bytes().any(|o| chiffre(o).is_none()) {
+        return false;
+    }
+    let octets: Vec<u8> = utiles
+        .as_bytes()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|bloc| {
+            let n = bloc.iter().fold(0, |n, &o| n << 6 | chiffre(o).unwrap_or(0));
+            let [_, a, b, c] = n.to_be_bytes();
+            [a, b, c]
+        })
+        .collect();
+    let unites: Vec<u16> = octets
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&p| u16::from_le_bytes(p))
+        .collect();
+    let lisibles = unites
+        .iter()
+        .filter(|&&u| u == 9 || u == 10 || u == 13 || (0x20..0x7f).contains(&u))
+        .count();
+    !unites.is_empty() && lisibles * 4 >= unites.len() * 3
 }
 
 /// Le niveau Avertissement (3) : PowerShell écrit lui-même d'origine, même sans la journalisation des blocs, ceux
@@ -2014,8 +2105,8 @@ fn base64_long(m: &str) -> bool {
 
 /// L'option de commande encodée de PowerShell dans un mot (en minuscules) : « -EncodedCommand » ou l'une de ses
 /// abréviations que PowerShell accepte (« -e », « -en », « -enc », « -ec »), annoncée par un tiret, deux (pwsh prend
-/// « --enc ») ou « / », les « ^ » de cmd retirés (« -e^nc »). Rend l'option sans son tiret et la valeur collée
-/// après « : » (« -enc:… »), vide s'il n'y en a pas. `None` : un autre mot.
+/// « --enc ») ou « / », les « ^ » de cmd retirés (« -e^nc »). Rend l'option sans son tiret, en minuscules, et la
+/// valeur collée après « : » (« -enc:… »), dans sa casse, vide s'il n'y en a pas. `None` : un autre mot.
 fn option_encodee(mot: &str) -> Option<(String, String)> {
     let mot: String = mot.chars().filter(|&c| c != '^').collect();
     let sans = mot
@@ -2023,15 +2114,17 @@ fn option_encodee(mot: &str) -> Option<(String, String)> {
         .or_else(|| mot.strip_prefix('-'))
         .or_else(|| mot.strip_prefix('/'))?;
     let (option, colle) = sans.split_once(':').unwrap_or((sans, ""));
-    (!option.is_empty() && ("encodedcommand".starts_with(option) || option == "ec"))
-        .then(|| (option.to_string(), colle.trim_matches(['"', '\'']).to_string()))
+    let option = option.to_ascii_lowercase();
+    (!option.is_empty() && ("encodedcommand".starts_with(&option) || option == "ec"))
+        .then(|| (option, colle.trim_matches(['"', '\'']).to_string()))
 }
 
-/// Une option de commande encodée parmi `mots` suivie d'un texte en base64, collé après « : » ou mot suivant.
+/// Une option de commande encodée parmi `mots` suivie d'un texte en base64, collé après « : » ou mot suivant, qui
+/// n'est pas un nom d'encodage (« -en BigEndianUnicode » s'écrit en base64).
 fn option_encodee_dans(mots: &[&str]) -> bool {
+    let commande = |v: &str| base64_long(v) && !nom_d_encodage(v);
     mots.iter().enumerate().any(|(i, m)| {
-        option_encodee(m)
-            .is_some_and(|(_, colle)| base64_long(&colle) || mots.get(i + 1).is_some_and(|v| base64_long(v)))
+        option_encodee(m).is_some_and(|(_, colle)| commande(&colle) || mots.get(i + 1).is_some_and(|v| commande(v)))
     })
 }
 
