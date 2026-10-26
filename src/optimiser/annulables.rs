@@ -1100,6 +1100,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// Un historique venu d'une version sans sceaux (0.85 ou avant) : sceaux.json absent, reglages.json là. Il n'est
+    /// pas rejoué ; sa copie est faite une fois par contenu, et dite une fois, même relu à chaque menu.
+    #[test]
+    fn historique_sans_sceaux_ni_rejoue_ni_recopie() {
+        let d = dossier("sans-sceaux-085");
+        let h = historique(vec![note("telemetrie", "2025-06-01 10:00", &[], &[Some("1")])]);
+        std::fs::write(d.join(crate::sceau::REGLAGES), serde_json::to_string(&h).unwrap()).unwrap();
+        assert!(!d.join("sceaux.json").exists());
+        let copies = || {
+            std::fs::read_dir(&d)
+                .unwrap()
+                .filter(|e| {
+                    let n = e.as_ref().unwrap().file_name().to_string_lossy().into_owned();
+                    n.contains(".adopte-") || n.contains(".falsifie-")
+                })
+                .count()
+        };
+        assert!(charger_dans(&d).reglages.is_empty());
+        assert!(charger_dans(&d).reglages.is_empty());
+        assert_eq!(copies(), 1);
+        // Déjà dite dans ce processus : plus un mot.
+        assert!(super::super::mettre_de_cote(&d.join(crate::sceau::REGLAGES), "adopte").is_none());
+        // Un autre contenu a sa propre copie (falsifié : le premier contenu est désormais celui du sceau).
+        std::fs::write(d.join(crate::sceau::REGLAGES), "{}").unwrap();
+        assert!(charger_dans(&d).reglages.is_empty());
+        assert_eq!(copies(), 2);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// Les notes se listent de la plus récente à la plus ancienne ; une note plus récente qui touche la même chose
     /// doit être défaite d'abord.
     #[test]

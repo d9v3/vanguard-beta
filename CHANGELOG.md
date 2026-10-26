@@ -73,8 +73,10 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   de /tmp…) est désormais une protection, comme le pare-feu : elle ne se défait plus. Une note d'annulation ne remet
   jamais une clé du noyau sous sa valeur sûre, ni ne retire le fichier 99-vanguard.conf ; celles de la 0.86 et de la
   0.87, qui restaient dites annulables à vie, sont retirées une fois, et c'est dit. Un reglages.json accepté
-  sans sceau d'avant (hors d'une mise à jour de Vanguard) n'est plus rejoué en administrateur, comme le mode Wi-Fi
-  public et la sauvegarde.
+  sans sceau d'avant (hors d'une mise à jour depuis une version qui scelle déjà, 0.86 ou plus) n'est plus rejoué en
+  administrateur, comme le mode Wi-Fi public et la sauvegarde. Un historique venu d'une version sans sceaux (0.85 ou
+  avant) n'est donc plus rejoué : ses réglages d'Optimiser ne s'annulent plus par Vanguard ; sa copie est gardée à
+  côté (reglages.adopte-….json), une seule par contenu, et c'est dit une fois.
 - **Le durcissement de Windows et les protections de Defender ne s'annulent plus.** Les quatorze réglages de
   durcissement de Windows (WDigest, NLA, LSA, UAC…) et les protections de Defender (règles ASR, protection réseau,
   logiciels indésirables, dossiers contrôlés), que le bilan ou Optimiser les pose, sont désormais des protections :

@@ -82,8 +82,9 @@ Each threat in detail, menu by menu: [What Vanguard does](README.en.md#what-vang
   time, except what turns a protection back on (kernel hardening on Linux included) and the stopping of a program; a
   fix whose previous state cannot be read is reported as “not undoable” before it is applied. Windows hardening
   settings (WDigest, NLA…) and Defender protections are protections too: Vanguard does not undo them, and a forged
-  note can no longer lower them; the person can still change them in Windows (to be proven in the Windows VM). An undo note accepted without an earlier
-  seal (outside a Vanguard update) is never put back.
+  note can no longer lower them; the person can still change them in Windows (to be proven in the Windows VM). An
+  undo note accepted without an earlier seal (outside an update from a version that already seals, 0.86 or later)
+  is never put back.
 - **Testing has its limits.** Vanguard is tested on the author's computer, a Windows VM, a second Windows PC and
   GitHub's machines (Windows, Mac, real Linux distributions). It has never run on a real Mac; other cases are still to
   be tried on real hardware (other distributions, a real UPnP router, booting the key).

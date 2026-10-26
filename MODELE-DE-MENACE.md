@@ -86,7 +86,8 @@ Le détail de chaque menace, menu par menu : [Ce que fait Vanguard](README.md#ce
   durcissement de Windows (WDigest, NLA…) et les protections de Defender sont, eux aussi, des protections : Vanguard
   ne les défait pas, et une note forgée ne peut plus les faire baisser ; la personne peut toujours les changer dans
   Windows (à prouver dans la VM Windows). Une note d'annulation
-  acceptée sans sceau d'avant (hors d'une mise à jour de Vanguard) n'est jamais remise.
+  acceptée sans sceau d'avant (hors d'une mise à jour depuis une version qui scelle déjà, 0.86 ou plus) n'est jamais
+  remise.
 - **Les essais ont leurs limites.** Vanguard est essayé sur l'ordinateur de l'auteur, une VM Windows, un second PC
   Windows et les machines de GitHub (Windows, Mac, vraies distributions Linux). Il n'a jamais tourné sur un vrai Mac ;
   d'autres cas restent à essayer sur du vrai matériel (autres distributions, vrai routeur UPnP, démarrage de la clé).

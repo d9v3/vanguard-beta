@@ -130,11 +130,21 @@ fn charger() -> Historique {
     charger_dans(&crate::reseau::dossier_local())
 }
 
-/// Met de côté, intact, un fichier de valeurs d'avant qu'on ne relit pas : jamais écrasé en silence.
-fn mettre_de_cote(chemin: &std::path::Path, genre: &str) -> std::path::PathBuf {
-    let copie = chemin.with_extension(format!("{genre}-{}.json", chrono::Local::now().format("%Y%m%d-%H%M%S")));
-    let _ = std::fs::copy(chemin, &copie);
-    copie
+/// Met de côté, intact, un fichier de valeurs d'avant qu'on ne relit pas : jamais écrasé en silence. Une copie par
+/// contenu (son nom vient de l'empreinte) : le fichier est relu à chaque menu, et une copie datée à chaque lecture
+/// remplissait le dossier. Rend la copie la première fois dans ce processus, pour ne la dire qu'une fois ; `None`
+/// ensuite.
+fn mettre_de_cote(chemin: &std::path::Path, genre: &str) -> Option<std::path::PathBuf> {
+    static DITES: std::sync::Mutex<std::collections::BTreeSet<std::path::PathBuf>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    let octets = std::fs::read(chemin).unwrap_or_default();
+    let empreinte = blake3::hash(&octets).to_hex();
+    let copie = chemin.with_extension(format!("{genre}-{}.json", &empreinte[..16]));
+    if !copie.exists() {
+        let _ = std::fs::write(&copie, &octets);
+    }
+    let mut dites = DITES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    dites.insert(copie.clone()).then_some(copie)
 }
 
 /// L'historique du dossier `dossier`, d'après son sceau (`sceau::REGLAGES`) : ses valeurs sont remises en
@@ -217,21 +227,23 @@ fn lire_dans(dossier: &std::path::Path) -> Option<(Historique, bool)> {
         Lecture::Intact(o) => (o, false),
         Lecture::Adopte(o) if crate::sceau::repris_dans(dossier, crate::sceau::REGLAGES) => (o, true),
         Lecture::Adopte(_) => {
-            let copie = mettre_de_cote(&chemin, "adopte");
-            tre!(
-                "Attention : valeurs d'avant des réglages acceptées sans sceau d'avant : aucune n'est remise. Copie gardée : {}",
-                "Warning: previous setting values accepted without an earlier seal: none is restored. Copy kept: {}",
-                copie.display()
-            );
+            if let Some(copie) = mettre_de_cote(&chemin, "adopte") {
+                tre!(
+                    "Attention : valeurs d'avant des réglages acceptées sans sceau d'avant : aucune n'est remise. Copie gardée : {}",
+                    "Warning: previous setting values accepted without an earlier seal: none is restored. Copy kept: {}",
+                    copie.display()
+                );
+            }
             return None;
         }
         Lecture::Falsifie(_) => {
-            let copie = mettre_de_cote(&chemin, "falsifie");
-            tre!(
-                "Attention : valeurs d'avant des réglages changées hors de Vanguard : aucune n'est remise. Copie gardée : {}",
-                "Warning: previous setting values changed outside Vanguard: none is restored. Copy kept: {}",
-                copie.display()
-            );
+            if let Some(copie) = mettre_de_cote(&chemin, "falsifie") {
+                tre!(
+                    "Attention : valeurs d'avant des réglages changées hors de Vanguard : aucune n'est remise. Copie gardée : {}",
+                    "Warning: previous setting values changed outside Vanguard: none is restored. Copy kept: {}",
+                    copie.display()
+                );
+            }
             return None;
         }
         Lecture::Illisible(e) => {
@@ -247,12 +259,13 @@ fn lire_dans(dossier: &std::path::Path) -> Option<(Historique, bool)> {
         Ok(h) => Some((h, adopte)),
         Err(e) => {
             // Jamais écraser des valeurs d'avant qu'on ne sait pas relire : le fichier est mis de côté, intact.
-            let copie = mettre_de_cote(&chemin, "illisible");
-            tre!(
-                "Attention : valeurs d'avant des réglages illisibles ({e}). Copie gardée : {}",
-                "Warning: previous setting values unreadable ({e}). Copy kept: {}",
-                copie.display()
-            );
+            if let Some(copie) = mettre_de_cote(&chemin, "illisible") {
+                tre!(
+                    "Attention : valeurs d'avant des réglages illisibles ({e}). Copie gardée : {}",
+                    "Warning: previous setting values unreadable ({e}). Copy kept: {}",
+                    copie.display()
+                );
+            }
             None
         }
     }
