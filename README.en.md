@@ -166,8 +166,9 @@ certificate, scams, spyware and other privacy intrusions.
   vulnerable driver blocklist. The other fixes, or those chosen along with them, go through a readable script.
 - Each fix first records the previous state of what it changes, noted and sealed: “What Vanguard changed” undoes it,
   then reads the state back. A fix whose previous state cannot be read is called “not undoable” before it is applied,
-  and one that turns a protection back on (firewall, antivirus, BitLocker, UAC, SELinux, Gatekeeper) is never undone;
-  undoing never puts back a value that would reopen what the fix closed.
+  and one that turns a protection back on (firewall, antivirus, BitLocker, UAC, SELinux, Gatekeeper, kernel hardening
+  on Linux) is never undone; undoing only puts back a noted value of the expected form, never a kernel key below its
+  safe value nor a weakened sshd directive.
 
 **Outdated software** (`vanguard outdated-software`, Windows and macOS, and in the check) — the installed version of
 browsers (Chrome, Edge, Firefox, Brave), Office, Acrobat and Reader, Java, 7-Zip, PuTTY and Slack, read in the file

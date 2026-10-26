@@ -69,6 +69,11 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   administrateur avec l'UAC) : ils installent, effacent ou lisent ce que le réseau envoie, et chaque geste
   d'administrateur se demande déjà au moment voulu. « Tout remettre comme avant » n'est jamais refusé ; root seul et
   Windows sans UAC gardent les outils, avec l'avertissement.
+- **Le durcissement du noyau ne s'annule plus.** Sous Linux, la correction qui durcit le noyau (ASLR, ptrace, liens
+  de /tmp…) est désormais une protection, comme le pare-feu : elle ne se défait plus. Une note d'annulation ne remet
+  jamais une clé du noyau sous sa valeur sûre, ni ne retire le fichier 99-vanguard.conf ; un reglages.json accepté
+  sans sceau d'avant (hors d'une mise à jour de Vanguard) n'est plus rejoué en administrateur, comme le mode Wi-Fi
+  public et la sauvegarde.
 - **Post-quantique sous Windows.** La version du serveur OpenSSH de Windows est lue (son chemin `%SystemRoot%\…` est
   développé) : COM-PQC-001 ne la dit plus illisible.
 - **Clé USB : les images de secours de nouveau par défaut.** Les outils du dépôt refont la clé de secours partout :

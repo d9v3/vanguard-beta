@@ -67,6 +67,10 @@ delivered just before it. Only the latest version has its download page; every v
   console with UAC): they install, delete or read what the network sends, and each administrator action is already
   asked for when needed. “Undo everything” is never refused; root alone and Windows without UAC keep the tools, with
   the warning.
+- **Kernel hardening is no longer undone.** On Linux, the fix that hardens the kernel (ASLR, ptrace, /tmp links…) is
+  now a protection, like the firewall: it is no longer undone. An undo note never puts a kernel key back below its
+  safe value, nor removes the 99-vanguard.conf file; a reglages.json accepted without an earlier seal (outside a
+  Vanguard update) is no longer replayed as administrator, like public Wi-Fi mode and the backup.
 - **Post-quantum on Windows.** The version of Windows' OpenSSH server is read (its `%SystemRoot%\…` path is
   expanded): COM-PQC-001 no longer calls it unreadable.
 - **USB key: rescue images back by default.** The repository tools make the rescue key everywhere again: Ventoy, the

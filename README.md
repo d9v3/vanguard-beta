@@ -181,8 +181,9 @@ détourné, les arnaques, un logiciel espion et les autres atteintes à la vie p
   vulnérables. Les autres corrections, ou celles choisies avec elles, passent par un script lisible.
 - Chaque correction relève d'abord l'état d'avant de ce qu'elle change, noté et scellé : « Ce que Vanguard a changé »
   l'annule, puis relit l'état. Une correction dont l'état d'avant ne se relève pas est dite « non annulable » avant
-  d'être appliquée, et celle qui rallume une protection (pare-feu, antivirus, BitLocker, UAC, SELinux, Gatekeeper) ne
-  se défait jamais ; annuler ne remet jamais une valeur qui rouvrirait ce que la correction a fermé.
+  d'être appliquée, et celle qui rallume une protection (pare-feu, antivirus, BitLocker, UAC, SELinux, Gatekeeper,
+  durcissement du noyau sous Linux) ne se défait jamais ; annuler ne remet qu'une valeur notée de la forme attendue,
+  jamais une clé du noyau sous sa valeur sûre ni une directive de sshd affaiblie.
 
 **Logiciels pas à jour** (`vanguard logiciels-perimes`, Windows et macOS, et au bilan) — la version installée des
 navigateurs (Chrome, Edge, Firefox, Brave), d'Office, d'Acrobat et Reader, de Java, de 7-Zip, de PuTTY et de Slack,
