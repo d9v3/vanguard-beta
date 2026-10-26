@@ -608,6 +608,7 @@ const FILS: &[(&str, &[(&str, &str)])] = &[
         "PRO-TEL-001",
         &[
             ("protection/telechargement.rs", "verifier"),
+            ("protection/telechargement.rs", "verifier_le_nom"),
             ("protection/telechargement.rs", "nature"),
         ],
     ),

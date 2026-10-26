@@ -288,6 +288,43 @@ fn ligne(niveau: Option<Niveau>, texte: &str) {
 pub fn verifier(fichier: Option<&Path>, empreinte: Option<&str>) {
     titre(tr!("Vérifier un fichier téléchargé", "Check a downloaded file"));
     let interactif = fichier.is_none();
+    let Some((chemin, meta)) = fichier_a_verifier(fichier) else {
+        return;
+    };
+    // Le nom tel quel sert à juger (un caractère qui retourne la fin du nom est justement le piège à trouver) ; montré,
+    // il est rendu inoffensif, comme le dossier.
+    let nom = chemin
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    montrer_le_fichier(&chemin, &nom, &meta);
+    let mut v = Verification::default();
+    // 1. L'empreinte : celle collée, sinon celle posée à côté, sinon on la demande (menu).
+    let attendue = empreinte_attendue(&chemin, empreinte, interactif);
+    verifier_l_empreinte(&chemin, attendue.as_ref(), &mut v);
+    // 2. Le nom et les premiers octets.
+    verifier_le_nom(&chemin, &nom, &mut v);
+    // 3. Les moteurs : YARA, puis l'antivirus du système.
+    analyser(&chemin, &mut v);
+    montrer_le_verdict(&v);
+}
+
+/// Ce que la vérification d'un fichier a trouvé, d'une étape à l'autre.
+#[derive(Default)]
+struct Verification {
+    /// Le pire signe trouvé.
+    pire: Option<Niveau>,
+    /// Ce qui n'a pas pu être vérifié.
+    incomplet: Vec<&'static str>,
+    /// L'empreinte publiée (d'un algorithme solide) correspond.
+    conforme: bool,
+    /// Un moteur a reconnu un logiciel malveillant.
+    detecte: bool,
+}
+
+/// Le fichier à vérifier, donné ou demandé, son chemin réel et ses métadonnées ; `None` (et c'est dit) s'il est
+/// introuvable, illisible ou n'est pas un fichier.
+fn fichier_a_verifier(fichier: Option<&Path>) -> Option<(PathBuf, std::fs::Metadata)> {
     let chemin = if let Some(f) = fichier {
         f.to_path_buf()
     } else {
@@ -297,7 +334,7 @@ pub fn verifier(fichier: Option<&Path>, empreinte: Option<&str>) {
         ));
         let reponse = reponse.trim().trim_matches(['"', '\'']);
         if reponse.is_empty() {
-            return;
+            return None;
         }
         PathBuf::from(reponse)
     };
@@ -306,30 +343,29 @@ pub fn verifier(fichier: Option<&Path>, empreinte: Option<&str>) {
         .map(|c| PathBuf::from(sans_prefixe_etendu(&c.to_string_lossy())))
     else {
         trp!("  ✖ Introuvable : {}", "  ✖ Not found: {}", chemin_affichable(&chemin));
-        return;
+        return None;
     };
     let Ok(meta) = std::fs::metadata(&chemin) else {
         trp!("  ✖ Illisible : {}", "  ✖ Unreadable: {}", chemin_affichable(&chemin));
-        return;
+        return None;
     };
     if !meta.is_file() {
         trp!(
             "  ✖ Ce n'est pas un fichier (un dossier s'analyse avec l'antivirus ou YARA).",
             "  ✖ This is not a file (a folder is scanned with the antivirus or YARA)."
         );
-        return;
+        return None;
     }
-    // Le nom tel quel sert à juger (un caractère qui retourne la fin du nom est justement le piège à trouver) ; montré,
-    // il est rendu inoffensif, comme le dossier.
-    let nom = chemin
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
+    Some((chemin, meta))
+}
+
+/// Le nom, la taille et le dossier du fichier, rendus inoffensifs.
+fn montrer_le_fichier(chemin: &Path, nom: &str, meta: &std::fs::Metadata) {
     println!();
     println!(
         "  {GRIS}{}{RESET} {} {GRIS}({}){RESET}",
         ajuster(tr!("Fichier", "File"), 8),
-        affichable(&nom),
+        affichable(nom),
         taille(meta.len())
     );
     afficher_aligne(
@@ -338,18 +374,21 @@ pub fn verifier(fichier: Option<&Path>, empreinte: Option<&str>) {
         11,
         "",
     );
+}
 
-    // 1. L'empreinte : celle collée, sinon celle posée à côté, sinon on la demande (menu).
+/// L'empreinte publiée : (algorithme, valeur, d'où elle vient). Celle donnée, sinon celle d'un fichier posé à côté,
+/// sinon demandée (menu) ; un texte qui n'en est pas une est dit.
+fn empreinte_attendue(chemin: &Path, empreinte: Option<&str>, interactif: bool) -> Option<(Algo, String, String)> {
     let saisie = match empreinte {
         Some(e) => Some(e.to_string()),
-        None if interactif && empreinte_a_cote(&chemin).is_none() => Some(demander(tr!(
+        None if interactif && empreinte_a_cote(chemin).is_none() => Some(demander(tr!(
             "  Empreinte publiée par le site (SHA-256 ; Entrée si vous ne l'avez pas) : ",
             "  Checksum published by the site (SHA-256; Enter if you do not have it): "
         )))
         .filter(|e| !e.trim().is_empty()),
         None => None,
     };
-    let attendue = match &saisie {
+    match &saisie {
         Some(s) => {
             let lue = lire_empreinte(s).map(|(a, e)| (a, e, tr!("collée", "pasted").to_string()));
             if lue.is_none() {
@@ -362,24 +401,24 @@ pub fn verifier(fichier: Option<&Path>, empreinte: Option<&str>) {
             }
             lue
         }
-        None => empreinte_a_cote(&chemin).map(|(a, e, f)| {
+        None => empreinte_a_cote(chemin).map(|(a, e, f)| {
             let source = f
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
             (a, e, trf!("lue dans {source}", "read from {source}"))
         }),
-    };
+    }
+}
 
+/// L'empreinte calculée, comparée à celle publiée.
+fn verifier_l_empreinte(chemin: &Path, attendue: Option<&(Algo, String, String)>, v: &mut Verification) {
     section(tr!("Empreinte", "Checksum"));
     trp!(
         "  {GRIS}Calcul de l'empreinte…{RESET}",
         "  {GRIS}Computing the checksum…{RESET}"
     );
-    let mut pire: Option<Niveau> = None;
-    let mut incomplet = Vec::new();
-    let mut conforme = false;
-    let sha256 = calculer(&chemin, Algo::Sha256);
+    let sha256 = calculer(chemin, Algo::Sha256);
     match &sha256 {
         Ok(sha256) => println!("  {GRIS}SHA-256{RESET}  {sha256}"),
         Err(e) => {
@@ -390,10 +429,10 @@ pub fn verifier(fichier: Option<&Path>, empreinte: Option<&str>) {
                     "SHA-256 could not be computed: {e}"
                 ),
             );
-            incomplet.push(tr!("l'empreinte", "the checksum"));
+            v.incomplet.push(tr!("l'empreinte", "the checksum"));
         }
     }
-    match &attendue {
+    match attendue {
         None => ligne(
             Some(Niveau::Info),
             tr!(
@@ -405,10 +444,10 @@ pub fn verifier(fichier: Option<&Path>, empreinte: Option<&str>) {
         Some((algo, valeur, source)) => match if *algo == Algo::Sha256 {
             sha256.clone()
         } else {
-            calculer(&chemin, *algo)
+            calculer(chemin, *algo)
         } {
             Ok(calculee) if calculee == *valeur => {
-                conforme = !algo.faible();
+                v.conforme = !algo.faible();
                 ligne(
                     if algo.faible() { Some(Niveau::Info) } else { None },
                     &if algo.faible() {
@@ -428,7 +467,7 @@ pub fn verifier(fichier: Option<&Path>, empreinte: Option<&str>) {
                 );
             }
             Ok(calculee) => {
-                pire = Some(Niveau::Critique);
+                v.pire = Some(Niveau::Critique);
                 ligne(
                     Some(Niveau::Critique),
                     &trf!(
@@ -447,18 +486,20 @@ pub fn verifier(fichier: Option<&Path>, empreinte: Option<&str>) {
                         algo.nom()
                     ),
                 );
-                incomplet.push(tr!("l'empreinte", "the checksum"));
+                v.incomplet.push(tr!("l'empreinte", "the checksum"));
             }
         },
     }
+}
 
-    // 2. Le nom et les premiers octets.
+/// Le nom et les premiers octets : un nom ou un contenu qui trompe sur ce qu'est le fichier.
+fn verifier_le_nom(chemin: &Path, nom: &str, v: &mut Verification) {
     section(tr!("Nom et contenu", "Name and content"));
     let mut debut = [0_u8; 4];
-    let lus = std::fs::File::open(&chemin)
+    let lus = std::fs::File::open(chemin)
         .and_then(|mut f| std::io::Read::read(&mut f, &mut debut))
         .unwrap_or(0);
-    let signes = nature(&nom, &debut[..lus]);
+    let signes = nature(nom, &debut[..lus]);
     if signes.is_empty() {
         ligne(
             None,
@@ -471,30 +512,31 @@ pub fn verifier(fichier: Option<&Path>, empreinte: Option<&str>) {
     for (niveau, texte) in &signes {
         ligne(Some(*niveau), texte);
         if *niveau > Niveau::Info {
-            pire = pire.max(Some(*niveau));
+            v.pire = v.pire.max(Some(*niveau));
         }
     }
+}
 
-    // 3. Les moteurs : YARA, puis l'antivirus du système.
+/// YARA, puis l'antivirus du système.
+fn analyser(chemin: &Path, v: &mut Verification) {
     section(tr!("Analyse", "Scan"));
     let antivirus = if cfg!(windows) { "Defender" } else { "ClamAV" };
-    let mut detecte = false;
     for (moteur, examen) in [
-        ("YARA", crate::protection::yara::examiner(&chemin)),
-        (antivirus, crate::protection::antivirus::examiner(&chemin)),
+        ("YARA", crate::protection::yara::examiner(chemin)),
+        (antivirus, crate::protection::antivirus::examiner(chemin)),
     ] {
         match examen {
             Examen::Sain => ligne(None, &trf!("{moteur} : rien trouvé.", "{moteur}: nothing found.")),
             Examen::Trouve(noms) => {
-                detecte = true;
-                pire = Some(Niveau::Critique);
+                v.detecte = true;
+                v.pire = Some(Niveau::Critique);
                 ligne(
                     Some(Niveau::Critique),
                     &trf!("{moteur} : {}", "{moteur}: {}", resume(&noms, 3, ", ")),
                 );
             }
             Examen::Impossible(raison) => {
-                incomplet.push(moteur);
+                v.incomplet.push(moteur);
                 ligne(
                     Some(Niveau::Moyen),
                     &trf!(
@@ -505,8 +547,17 @@ pub fn verifier(fichier: Option<&Path>, empreinte: Option<&str>) {
             }
         }
     }
+}
 
-    // Le verdict.
+/// Le verdict, en couleur, et ce qui n'a pas pu être vérifié.
+fn montrer_le_verdict(v: &Verification) {
+    let Verification {
+        pire,
+        incomplet,
+        conforme,
+        detecte,
+    } = v;
+    let (pire, conforme, detecte) = (*pire, *conforme, *detecte);
     println!();
     let verdict = if detecte {
         tr!(
@@ -549,7 +600,7 @@ pub fn verifier(fichier: Option<&Path>, empreinte: Option<&str>) {
         println!("  {couleur_verdict}{l}{RESET}");
     }
     if !incomplet.is_empty() && !detecte {
-        let quoi = resume(&incomplet, 3, ", ");
+        let quoi = resume(incomplet, 3, ", ");
         for l in envelopper(
             &trf!(
                 "Vérification incomplète ({quoi}) : rien n'est conclu pour ce qui n'a pas pu être vérifié.",
