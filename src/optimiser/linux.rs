@@ -217,18 +217,30 @@ fn directive_sshd_posee(d: &str, v: &str) -> bool {
     }
 }
 
-/// Une clé de sysctl qu'une correction ou un réglage pour jouer change : celles du durcissement, la limite de mémoire
-/// des jeux, et les redirections IPv6 de chaque interface. Celles du durcissement ne se remettent qu'à leur valeur
-/// sûre (`valeur_admise`) : une note d'une version d'avant, qui les rabaisserait, est refusée.
+/// La seule clé de sysctl qu'une note peut faire remettre par `sysctl -w` : la limite de mémoire des jeux. Celles du
+/// durcissement n'y sont plus : c'est une protection, que Vanguard ne défait pas, et une note forgée ne doit pas
+/// pouvoir y poser une valeur, même plus sûre (« ptrace_scope = 3 » en root bloquerait tout débogueur jusqu'au
+/// redémarrage).
 fn cle_sysctl_connue(cle: &str) -> bool {
-    if cle == "vm/max_map_count" || crate::machine::linux::cle_durcie(cle) {
-        return true;
+    cle == "vm/max_map_count"
+}
+
+/// Un geste du durcissement du noyau tel que la 0.86 et la 0.87 le notaient (son fichier, sous son nom d'aujourd'hui
+/// ou d'avant, une clé du durcissement, la redirection IPv6 d'une interface) : c'est une protection désormais, et
+/// sa note d'annulation est retirée au chargement (`annulables::retirer_protections`).
+pub fn geste_de_protection(geste: &str) -> bool {
+    if let Some(chemin) = geste.strip_prefix("fichier|") {
+        return crate::passage::les_deux(crate::machine::linux::SYSCTL_VANGUARD)
+            .iter()
+            .any(|n| n == chemin);
     }
-    cle.strip_prefix("net/ipv6/conf/")
-        .and_then(|r| r.strip_suffix("/accept_redirects"))
-        .is_some_and(|i| {
-            !i.is_empty() && i.len() <= 15 && i.chars().all(|c| c.is_ascii_alphanumeric() || "._-@".contains(c))
-        })
+    geste.strip_prefix("sysctl|").is_some_and(|cle| {
+        crate::machine::linux::cle_durcie(cle)
+            || cle
+                .strip_prefix("net/ipv6/conf/")
+                .and_then(|r| r.strip_suffix("/accept_redirects"))
+                .is_some_and(|i| !i.is_empty() && !i.contains('/'))
+    })
 }
 
 /// La valeur d'une clé de sysctl, espaces normalisés (« 4096 87380 6291456 ») ; `None` : illisible.

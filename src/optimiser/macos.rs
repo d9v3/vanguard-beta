@@ -523,6 +523,11 @@ fn en_xml(v: Option<&crate::plist::Valeur>) -> Option<String> {
     ))
 }
 
+/// Aucune correction de macOS n'est devenue une protection : aucune note à retirer.
+pub fn geste_de_protection(_geste: &str) -> bool {
+    false
+}
+
 /// Le Finder relit ses préférences à son démarrage : on le relance si l'une d'elles a changé.
 pub fn apres(touches: &[&Reglage]) {
     if touches

@@ -23,7 +23,7 @@ pub(crate) const BILAN: &str = "bilan:";
 pub(crate) const JEUX: &str = "jeux:";
 
 /// Ce qu'une correction ou un réglage pour jouer change, désigné pour en relever la valeur d'avant puis la remettre :
-/// « genre|cible » (« unite|cups-browsed », « fichier|/etc/sysctl.d/99-vanguard.conf »). Noté tel quel ; relu, il ne
+/// « genre|cible » (« unite|cups-browsed », « fichier|/etc/sysctl.d/80-vanguard-jeux.conf »). Noté tel quel ; relu, il ne
 /// vaut que s'il désigne une cible de la liste fermée de son système (`systeme::Changement::depuis_geste`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Geste(pub(crate) String);
@@ -700,6 +700,35 @@ pub(crate) fn remettre_jeux() {
     }
 }
 
+/// Retire les notes du bilan d'une correction devenue une protection (`systeme::geste_de_protection` : le durcissement
+/// du noyau noté par la 0.86 et la 0.87). Vanguard ne les défait plus et ne les rebâtit plus : restées, elles étaient
+/// dites « annulables » à vie, listées dans « Annuler une correction », refusées à chaque « Tout remettre comme
+/// avant » et comptées à la désinstallation. Le retrait s'enregistre scellé et se dit une fois ; dans un historique
+/// adopté (`ecrire` faux), il ne se fait qu'en mémoire, pour ne pas le resceller (COM-ETA-001 le dit).
+pub(super) fn retirer_protections(h: &mut Historique, dossier: &Path, ecrire: bool) {
+    let anciennes: Vec<String> = h
+        .reglages
+        .iter()
+        .filter(|(id, a)| {
+            id.starts_with(BILAN) && !a.gestes.is_empty() && a.gestes.iter().all(|g| systeme::geste_de_protection(g))
+        })
+        .map(|(id, _)| id.clone())
+        .collect();
+    if anciennes.is_empty() {
+        return;
+    }
+    for id in &anciennes {
+        h.reglages.remove(id);
+    }
+    if ecrire && sauver_dans(h, dossier) {
+        tre!(
+            "Le durcissement du système est désormais une protection, que Vanguard ne défait plus : {} note(s) d'annulation d'avant retirée(s).",
+            "System hardening is now a protection, which Vanguard no longer undoes: {} earlier undo note(s) removed.",
+            anciennes.len()
+        );
+    }
+}
+
 /// Une note de Gaming d'avant dans la forme d'Optimiser, si chacune de ses valeurs a la forme que son geste écrit.
 fn convertie(id: &str, a: &crate::gaming::NoteDAvant) -> Option<Vec<(Geste, Option<String>)>> {
     crate::gaming::convertir_note(id, &a.valeurs).filter(|l| {
@@ -904,26 +933,77 @@ mod tests {
     #[test]
     fn note_forgee_n_affaiblit_pas_le_noyau() {
         let d = dossier("noyau-forge");
-        let h = historique(vec![note(
-            "bilan:x",
-            "2026-10-26 10:00",
-            &["sysctl|kernel/yama/ptrace_scope", "sysctl|kernel/randomize_va_space"],
-            &[Some("0"), Some("0")],
-        )]);
-        assert!(super::super::sauver_dans(&h, &d));
-        let r = rebatis(&h).pop().expect("rebâtie : les clés sont de la liste");
-        assert_eq!(r.changements[0].commande(Some("0")), None);
-        assert_eq!(commandes(&h, "bilan:x"), Vec::<String>::new());
-        let (issues, plus) = defaire_dans(&["bilan:x".to_string()], &[], false, &d);
+        let h = historique(vec![
+            // Avec un geste qui n'est pas du noyau, elle n'est pas retirée au chargement : refusée à l'annulation.
+            note(
+                "bilan:x",
+                "2026-10-26 10:00",
+                &["sysctl|kernel/yama/ptrace_scope", "sysctl|vm/max_map_count"],
+                &[Some("0"), Some("65530")],
+            ),
+            // Plus sûre que la valeur posée, elle n'est pas remise non plus : la protection ne bouge pas.
+            note(
+                "bilan:y",
+                "2026-10-26 10:01",
+                &["sysctl|kernel/yama/ptrace_scope"],
+                &[Some("3")],
+            ),
+        ]);
         assert!(
-            matches!(&issues[..], [(id, Issue::Refuse(_))] if id == "bilan:x"),
+            rebatis(&h).is_empty(),
+            "les clés du durcissement ne se rebâtissent plus"
+        );
+        assert!(super::super::sauver_dans(&h, &d));
+        let ids = ["bilan:x".to_string(), "bilan:y".to_string()];
+        let (issues, plus) = defaire_dans(&ids, &[], false, &d);
+        assert!(
+            matches!(&issues[..], [(x, Issue::Refuse(_)), (y, Issue::Absent)] if x == "bilan:x" && y == "bilan:y"),
             "{issues:?}"
         );
         assert_eq!(plus, Vec::<bool>::new());
+        let relu = charger_dans(&d);
+        assert!(relu.reglages.contains_key("bilan:x"), "rien n'est remis");
         assert!(
-            charger_dans(&d).reglages.contains_key("bilan:x"),
-            "la note reste, rien n'est remis"
+            !relu.reglages.contains_key("bilan:y"),
+            "retirée au chargement, jamais remise"
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Une vraie note de la 0.87 (le fichier, une clé du durcissement, la redirection IPv6 d'une interface) : le
+    /// durcissement du noyau est une protection, elle ne se rebâtit plus. Restée, elle était dite annulable à vie et
+    /// refusée à chaque « Tout remettre » ; elle part au chargement, une fois, enregistrée scellée. Les autres restent.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn notes_du_noyau_d_avant_retirees() {
+        let d = dossier("noyau-087");
+        for fichier in crate::passage::les_deux(crate::machine::linux::SYSCTL_VANGUARD) {
+            let h = historique(vec![
+                note(
+                    "bilan:20261020-0900-1",
+                    "2026-10-20 09:00",
+                    &[
+                        &format!("fichier|{fichier}"),
+                        "sysctl|kernel/kptr_restrict",
+                        "sysctl|net/ipv6/conf/wlan0/accept_redirects",
+                    ],
+                    &[None, Some("0"), Some("1")],
+                ),
+                note("bilan:ntp", "2026-10-20 09:01", &["ntp"], &[Some("no")]),
+            ]);
+            assert!(super::super::sauver_dans(&h, &d));
+            let relu = charger_dans(&d);
+            assert!(notes_de(&relu, None).iter().all(|n| n.id != "bilan:20261020-0900-1"));
+            assert_eq!(
+                notes_de(&relu, Some(Origine::Bilan)).len(),
+                1,
+                "la note de l'heure reste"
+            );
+            // Enregistré : relu brut, sans repasser par le retrait, la note n'y est plus.
+            let brut = super::super::lire_dans(&d).expect("intact").0;
+            assert!(!brut.reglages.contains_key("bilan:20261020-0900-1"));
+            assert!(brut.reglages.contains_key("bilan:ntp"));
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -1055,15 +1135,6 @@ mod tests {
             note("bilan:unite", "", &["unite|cups-browsed"], &[Some("enabled")]),
             note("bilan:auditd", "", &["unite|auditd"], &[Some("disabled")]),
             note("bilan:ntp", "", &["ntp"], &[Some("no")]),
-            note(
-                "bilan:noyau",
-                "",
-                &[
-                    "sysctl|kernel/kptr_restrict",
-                    "sysctl|net/ipv6/conf/wlan0/accept_redirects",
-                ],
-                &[Some("2"), Some("0")],
-            ),
             note("bilan:sshd", "", &[&sshd], &[Some("PermitRootLogin no\n")]),
             note("bilan:sshd-absent", "", &[&sshd], &[None]),
             note("bilan:ollama", "", &[&ollama], &[None]),
@@ -1081,13 +1152,6 @@ mod tests {
         );
         assert_eq!(commandes(&h, "bilan:auditd"), ["sudo systemctl disable --now auditd"]);
         assert_eq!(commandes(&h, "bilan:ntp"), ["sudo timedatectl set-ntp false"]);
-        assert_eq!(
-            commandes(&h, "bilan:noyau"),
-            [
-                "sudo sysctl -w 'kernel/kptr_restrict=2' >/dev/null",
-                "sudo sysctl -w 'net/ipv6/conf/wlan0/accept_redirects=0' >/dev/null",
-            ]
-        );
         assert_eq!(
             commandes(&h, "bilan:sshd"),
             [format!(
@@ -1115,7 +1179,7 @@ mod tests {
         }
         // Des valeurs d'avant piégées : refusées par `note_admise`, elles n'entrent dans aucune commande.
         let pieges = historique(vec![
-            note("bilan:1", "", &["sysctl|kernel/kptr_restrict"], &[Some("0; rm -rf ~")]),
+            note("jeux:1", "", &["sysctl|vm/max_map_count"], &[Some("65530; rm -rf ~")]),
             note("bilan:2", "", &[&jeux], &[Some("kernel.core_pattern = |/tmp/x\n")]),
             note("bilan:3", "", &[&sshd], &[Some("Match all\nForceCommand /tmp/x\n")]),
             note("bilan:4", "", &[&ollama], &[Some("[Service]\nExecStart=/tmp/x\n")]),
@@ -1146,17 +1210,6 @@ mod tests {
             ),
             note("bilan:14", "", &[&sshd], &[Some("Ciphers +arcfour\n")]),
             note("bilan:15", "", &[&sshd], &[Some("MaxAuthTries 99\n")]),
-            // Une clé du durcissement remise sous sa valeur sûre par `sysctl -w`, en root : la protection tomberait
-            // jusqu'au redémarrage (le fichier, lui, la refusait déjà).
-            note("bilan:16", "", &["sysctl|kernel/yama/ptrace_scope"], &[Some("0")]),
-            note("bilan:17", "", &["sysctl|kernel/randomize_va_space"], &[Some("0")]),
-            note("bilan:18", "", &["sysctl|fs/protected_symlinks"], &[Some("0")]),
-            note(
-                "bilan:19",
-                "",
-                &["sysctl|net/ipv6/conf/wlan0/accept_redirects"],
-                &[Some("1")],
-            ),
             note("jeux:20", "", &["sysctl|vm/max_map_count"], &[Some("1024")]),
         ]);
         assert_eq!(

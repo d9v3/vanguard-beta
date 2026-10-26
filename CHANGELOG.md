@@ -71,7 +71,8 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   Windows sans UAC gardent les outils, avec l'avertissement.
 - **Le durcissement du noyau ne s'annule plus.** Sous Linux, la correction qui durcit le noyau (ASLR, ptrace, liens
   de /tmp…) est désormais une protection, comme le pare-feu : elle ne se défait plus. Une note d'annulation ne remet
-  jamais une clé du noyau sous sa valeur sûre, ni ne retire le fichier 99-vanguard.conf ; un reglages.json accepté
+  jamais une clé du noyau sous sa valeur sûre, ni ne retire le fichier 99-vanguard.conf ; celles de la 0.86 et de la
+  0.87, qui restaient dites annulables à vie, sont retirées une fois, et c'est dit. Un reglages.json accepté
   sans sceau d'avant (hors d'une mise à jour de Vanguard) n'est plus rejoué en administrateur, comme le mode Wi-Fi
   public et la sauvegarde.
 - **Post-quantique sous Windows.** La version du serveur OpenSSH de Windows est lue (son chemin `%SystemRoot%\…` est

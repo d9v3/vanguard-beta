@@ -48,7 +48,7 @@ pub(crate) mod zstd;
 pub(crate) use algorithmes_ssh::{liste_sure, sshd_dans_l_ordre, sshd_en_marche, version_ssh, version_sshd};
 use docker::*;
 use durcissement::*;
-pub(crate) use durcissement::{cle_durcie, valeur_durcie};
+pub(crate) use durcissement::{SYSCTL_VANGUARD, cle_durcie, valeur_durcie};
 pub use maj::mises_a_jour_completes;
 
 /// Les CVE qui touchent les paquets de cet ordinateur (Arch) : pour marquer les dernières failles exploitées.

@@ -69,7 +69,8 @@ delivered just before it. Only the latest version has its download page; every v
   the warning.
 - **Kernel hardening is no longer undone.** On Linux, the fix that hardens the kernel (ASLR, ptrace, /tmp links…) is
   now a protection, like the firewall: it is no longer undone. An undo note never puts a kernel key back below its
-  safe value, nor removes the 99-vanguard.conf file; a reglages.json accepted without an earlier seal (outside a
+  safe value, nor removes the 99-vanguard.conf file; those from 0.86 and 0.87, which stayed listed as undoable
+  forever, are removed once, and this is said. A reglages.json accepted without an earlier seal (outside a
   Vanguard update) is no longer replayed as administrator, like public Wi-Fi mode and the backup.
 - **Post-quantum on Windows.** The version of Windows' OpenSSH server is read (its `%SystemRoot%\…` path is
   expanded): COM-PQC-001 no longer calls it unreadable.

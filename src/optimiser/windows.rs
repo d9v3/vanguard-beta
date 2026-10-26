@@ -850,6 +850,11 @@ pub fn ecrire_avec(lots: &[Vec<(&Changement, Valeur)>], en_plus: &[Vec<String>])
     (resultats, plus)
 }
 
+/// Un geste d'une correction devenue une protection : sa note d'annulation est retirée au chargement.
+pub fn geste_de_protection(_geste: &str) -> bool {
+    false
+}
+
 /// Après coup : l'Explorateur relit ses réglages à son prochain démarrage ; on propose de le relancer.
 pub fn apres(touches: &[&Reglage]) {
     const EXPLORATEUR: [&str; 6] = [

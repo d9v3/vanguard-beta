@@ -143,12 +143,14 @@ fn charger_dans(dossier: &std::path::Path) -> Historique {
     // Les notes de Gaming d'avant (jeux.json) sont reprises ici, une fois : seulement dans un historique cru, jamais
     // par-dessus un fichier falsifié ou illisible.
     // Jamais par-dessus un fichier adopté non plus : l'enregistrement de la reprise le rescellerait, et il perdrait
-    // la marque que le bilan dit (COM-ETA-001).
+    // la marque que le bilan dit (COM-ETA-001). Les notes des corrections devenues des protections partent aussi
+    // (`retirer_protections`) : en mémoire seulement dans un fichier adopté.
     match lire_dans(dossier) {
         Some((mut h, adopte)) => {
             if !adopte {
                 annulables::reprendre_jeux(&mut h, dossier);
             }
+            annulables::retirer_protections(&mut h, dossier, !adopte);
             h
         }
         None => Historique::default(),
