@@ -267,6 +267,11 @@ pub(super) fn durcissement_noyau(groupe: Groupe) -> Constat {
         };
         faibles.push((REDIRECTIONS_IPV6, 1, 0, role));
     }
+    juger_noyau(groupe, &faibles, ipv6)
+}
+
+/// Le constat d'après les réglages faibles lus (et les redirections IPv6 suivies) : à part pour l'essayer sans /proc.
+fn juger_noyau(groupe: Groupe, faibles: &[(&str, i64, i64, &str)], ipv6: bool) -> Constat {
     if faibles.is_empty() {
         return ok("Noyau durci", groupe.sain());
     }
@@ -289,9 +294,11 @@ pub(super) fn durcissement_noyau(groupe: Groupe) -> Constat {
             "Appliquer les valeurs sûres (fichier /etc/sysctl.d/99-vanguard.conf, gardé au redémarrage)",
             "Apply the safe values (file /etc/sysctl.d/99-vanguard.conf, kept after restart)"
         ),
-        &commandes_noyau(&faibles, ipv6),
+        &commandes_noyau(faibles, ipv6),
     )
-    .annulable(gestes_noyau(&faibles, &interfaces))
+    // Une protection, comme le pare-feu ou SELinux : l'annuler rouvrirait ce qu'elle ferme (ptrace, ASLR, liens
+    // de /tmp), et une note de reglages.json, que tout programme du compte peut réécrire, n'en décide pas.
+    .protection()
 }
 
 /// Les commandes d'une correction du noyau. Ses lignes sont ajoutées au fichier, jamais le fichier réécrit : deux
@@ -311,26 +318,6 @@ fn commandes_noyau(faibles: &[(&str, i64, i64, &str)], ipv6: bool) -> Vec<String
         "sudo sh -c 'for f in /proc/sys/net/ipv6/conf/*/accept_redirects; do echo 0 > \"$f\"; done'".to_string()
     }))
     .collect()
-}
-
-/// Ce que la correction du noyau change, pour la défaire : son fichier, chaque réglage faible, et la redirection IPv6
-/// de chaque interface qui la suit (le motif « * » du fichier, une clé par interface au noyau).
-fn gestes_noyau(faibles: &[(&str, i64, i64, &str)], interfaces: &[(String, i64)]) -> Vec<crate::optimiser::Geste> {
-    use crate::optimiser::Geste;
-    let mut g = vec![Geste::fichier(SYSCTL_VANGUARD)];
-    for (cle, ..) in faibles {
-        if *cle == REDIRECTIONS_IPV6 {
-            g.extend(
-                interfaces
-                    .iter()
-                    .filter(|(_, v)| *v == 1)
-                    .map(|(i, _)| Geste::sysctl_chemin(&format!("net/ipv6/conf/{i}/accept_redirects"))),
-            );
-        } else {
-            g.push(Geste::sysctl_chemin(cle));
-        }
-    }
-    g
 }
 
 /// Module de sécurité obligatoire (AppArmor, SELinux) : actif par défaut sur Ubuntu, Debian et Fedora.
@@ -405,6 +392,26 @@ pub(super) fn module_securite() -> Constat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Le durcissement du noyau est une protection : jamais défait, comme le pare-feu (le modèle de menace le dit).
+    /// Annulable, sa note remettait en root « ptrace_scope = 0 » ou l'ASLR coupée.
+    #[test]
+    fn noyau_durci_jamais_defait() {
+        for (groupe, faibles, ipv6) in [
+            (Groupe::Memoire, vec![("kernel/yama/ptrace_scope", 0, 1, "x")], false),
+            (Groupe::Memoire, vec![("kernel/randomize_va_space", 0, 2, "x")], false),
+            (
+                Groupe::FichiersPartages,
+                vec![("fs/protected_symlinks", 0, 1, "x")],
+                false,
+            ),
+            (Groupe::Reseau, vec![(REDIRECTIONS_IPV6, 1, 0, "x")], true),
+        ] {
+            let c = juger_noyau(groupe, &faibles, ipv6);
+            let k = c.correctif.expect("une correction");
+            assert_eq!(k.comment_defaire(), crate::machine::Defaire::Protection, "{faibles:?}");
+        }
+    }
 
     #[test]
     fn reglages_du_noyau() {

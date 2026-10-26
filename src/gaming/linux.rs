@@ -565,7 +565,7 @@ mod tests {
     fn notes_d_avant_converties() {
         assert_eq!(
             convertir("vm.max_map_count", Some("65530")),
-            Some((Geste::sysctl_chemin("vm/max_map_count"), Some("65530".into())))
+            Some((Geste::sysctl("vm.max_map_count"), Some("65530".into())))
         );
         assert_eq!(convertir("ntsync", None), Some((Geste::module("ntsync"), None)));
         let ancien = crate::passage::les_deux(SYSCTL_JEUX)[1].clone();

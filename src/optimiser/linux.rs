@@ -97,12 +97,9 @@ pub(crate) const OLLAMA_CONTENU: &str = "[Service]\nEnvironment=OLLAMA_HOST=127.
 pub(crate) const OLLAMA_VANGUARD: &str = "/etc/systemd/system/ollama.service.d/vanguard.conf";
 
 /// La liste fermée des fichiers que Vanguard pose et sait remettre : une note ne peut en désigner aucun autre.
-static POSES: [FichierPose; 5] = [
-    FichierPose {
-        chemin: crate::machine::linux::SYSCTL_VANGUARD,
-        forme: Forme::Sysctl,
-        apres: "",
-    },
+/// Le fichier du durcissement du noyau (`SYSCTL_VANGUARD`) n'y est pas : c'est une protection, que Vanguard ne défait
+/// pas ; une note qui le retirerait ou le viderait affaiblirait le noyau au prochain démarrage.
+static POSES: [FichierPose; 4] = [
     FichierPose {
         chemin: crate::machine::linux::SSHD_VANGUARD,
         forme: Forme::Sshd,
@@ -183,12 +180,12 @@ fn contenu_admis(forme: Forme, t: &str) -> bool {
     }
 }
 
-/// Une ligne de sysctl que Vanguard écrit dans ses fichiers : la limite de mémoire des jeux, ou une clé du
-/// durcissement à sa valeur sûre. Ces fichiers sont lus en root à chaque démarrage : une clé libre ou une valeur
-/// affaiblie viendrait d'ailleurs que de Vanguard.
 /// La plus petite limite de mémoire des jeux remise : celle du noyau par défaut.
 const MAX_MAP_COUNT_MIN: u64 = 65_530;
 
+/// Une ligne de sysctl que Vanguard écrit dans ses fichiers, ou remet par `sysctl -w` : la limite de mémoire des
+/// jeux, ou une clé du durcissement à sa valeur sûre. Ces fichiers sont lus en root à chaque démarrage, et la remise
+/// se fait en root : une clé libre ou une valeur affaiblie viendrait d'ailleurs que de Vanguard.
 fn ligne_sysctl_posee(cle: &str, v: &str) -> bool {
     match cle {
         // Un plancher : la valeur par défaut du noyau (65 530). Plus bas, plus aucun programme ne démarre.
@@ -221,7 +218,8 @@ fn directive_sshd_posee(d: &str, v: &str) -> bool {
 }
 
 /// Une clé de sysctl qu'une correction ou un réglage pour jouer change : celles du durcissement, la limite de mémoire
-/// des jeux, et les redirections IPv6 de chaque interface.
+/// des jeux, et les redirections IPv6 de chaque interface. Celles du durcissement ne se remettent qu'à leur valeur
+/// sûre (`valeur_admise`) : une note d'une version d'avant, qui les rabaisserait, est refusée.
 fn cle_sysctl_connue(cle: &str) -> bool {
     if cle == "vm/max_map_count" || crate::machine::linux::cle_durcie(cle) {
         return true;
@@ -712,11 +710,14 @@ impl Changement {
                 Entree::Autostart(_) => v == "-" || (v.starts_with('+') && v.len() <= 64 << 10 && !v.contains('\0')),
                 Entree::Service(_) => ETATS_UNITE.contains(&v),
             },
+            // Remise en root par `sysctl -w` : le même plancher que dans les fichiers posés (`contenu_admis`). Une
+            // clé du durcissement ne revient jamais sous sa valeur sûre : « ptrace_scope = 0 » ou l'ASLR coupée
+            // viendraient d'une note forgée, jamais de Vanguard, qui ne défait pas cette protection.
             Changement::Sysctl { cle } => {
                 v.len() <= 64
                     && !v.is_empty()
                     && v.chars().all(|c| c.is_ascii_digit() || " -".contains(c))
-                    && (cle != "vm/max_map_count" || ligne_sysctl_posee(cle, v.trim()))
+                    && ligne_sysctl_posee(cle, v.trim())
             }
             Changement::Pose { fichier, .. } => contenu_admis(fichier.forme, v),
             Changement::Module { .. } => v == "charge",

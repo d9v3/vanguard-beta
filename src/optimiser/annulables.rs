@@ -40,11 +40,6 @@ impl Geste {
         Geste(format!("sysctl|{}", cle.replace('.', "/")))
     }
 
-    /// Une clé de sysctl déjà en chemin (un nom d'interface peut contenir un point).
-    pub(crate) fn sysctl_chemin(cle: &str) -> Geste {
-        Geste(format!("sysctl|{cle}"))
-    }
-
     /// Un fichier que Vanguard pose dans /etc.
     pub(crate) fn fichier(chemin: &str) -> Geste {
         Geste(format!("fichier|{chemin}"))
@@ -820,6 +815,8 @@ mod tests {
             "inconnu|x",
             "fichier|/etc/shadow",
             "fichier|/etc/sysctl.d/99-vanguard.conf.bak",
+            // Le fichier du durcissement du noyau : une protection, jamais retirée ni vidée par une note.
+            "fichier|/etc/sysctl.d/99-vanguard.conf",
             "unite|sshd",
             "sysctl|kernel/core_pattern",
             "sysctl|net/ipv6/conf/../../kernel/core_pattern/accept_redirects",
@@ -898,6 +895,35 @@ mod tests {
         let (issues, _) = defaire_dans(std::slice::from_ref(&r.id), &[], false, &d);
         assert_eq!(issues, [(r.id.clone(), Issue::Absent)]);
         assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o7777, 0o640);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Une note forgée (scellée par un programme du compte, puisque le sceau se recalcule) qui remettrait en root une
+    /// clé du durcissement sous sa valeur sûre : refusée en entier, et rien n'est lancé (pas même sudo).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn note_forgee_n_affaiblit_pas_le_noyau() {
+        let d = dossier("noyau-forge");
+        let h = historique(vec![note(
+            "bilan:x",
+            "2026-10-26 10:00",
+            &["sysctl|kernel/yama/ptrace_scope", "sysctl|kernel/randomize_va_space"],
+            &[Some("0"), Some("0")],
+        )]);
+        assert!(super::super::sauver_dans(&h, &d));
+        let r = rebatis(&h).pop().expect("rebâtie : les clés sont de la liste");
+        assert_eq!(r.changements[0].commande(Some("0")), None);
+        assert_eq!(commandes(&h, "bilan:x"), Vec::<String>::new());
+        let (issues, plus) = defaire_dans(&["bilan:x".to_string()], &[], false, &d);
+        assert!(
+            matches!(&issues[..], [(id, Issue::Refuse(_))] if id == "bilan:x"),
+            "{issues:?}"
+        );
+        assert_eq!(plus, Vec::<bool>::new());
+        assert!(
+            charger_dans(&d).reglages.contains_key("bilan:x"),
+            "la note reste, rien n'est remis"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -998,9 +1024,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn aller_retour_de_chaque_genre_linux() {
-        use crate::machine::linux::{RECHARGER_SSHD, SSHD_VANGUARD, SYSCTL_VANGUARD};
+        use crate::machine::linux::{RECHARGER_SSHD, SSHD_VANGUARD};
         let sshd = format!("fichier|{SSHD_VANGUARD}");
-        let noyau = format!("fichier|{SYSCTL_VANGUARD}");
         let jeux = format!("fichier|{}", crate::gaming::linux::SYSCTL_JEUX);
         let ollama = format!("fichier|{}", super::super::OLLAMA_VANGUARD);
         let h = historique(vec![
@@ -1011,11 +1036,10 @@ mod tests {
                 "bilan:noyau",
                 "",
                 &[
-                    &noyau,
                     "sysctl|kernel/kptr_restrict",
                     "sysctl|net/ipv6/conf/wlan0/accept_redirects",
                 ],
-                &[None, Some("0"), Some("1")],
+                &[Some("2"), Some("0")],
             ),
             note("bilan:sshd", "", &[&sshd], &[Some("PermitRootLogin no\n")]),
             note("bilan:sshd-absent", "", &[&sshd], &[None]),
@@ -1037,9 +1061,8 @@ mod tests {
         assert_eq!(
             commandes(&h, "bilan:noyau"),
             [
-                format!("sudo rm -f '{SYSCTL_VANGUARD}'"),
-                "sudo sysctl -w 'kernel/kptr_restrict=0' >/dev/null".to_string(),
-                "sudo sysctl -w 'net/ipv6/conf/wlan0/accept_redirects=1' >/dev/null".to_string(),
+                "sudo sysctl -w 'kernel/kptr_restrict=2' >/dev/null",
+                "sudo sysctl -w 'net/ipv6/conf/wlan0/accept_redirects=0' >/dev/null",
             ]
         );
         assert_eq!(
@@ -1070,18 +1093,18 @@ mod tests {
         // Des valeurs d'avant piégées : refusées par `note_admise`, elles n'entrent dans aucune commande.
         let pieges = historique(vec![
             note("bilan:1", "", &["sysctl|kernel/kptr_restrict"], &[Some("0; rm -rf ~")]),
-            note("bilan:2", "", &[&noyau], &[Some("kernel.core_pattern = |/tmp/x\n")]),
+            note("bilan:2", "", &[&jeux], &[Some("kernel.core_pattern = |/tmp/x\n")]),
             note("bilan:3", "", &[&sshd], &[Some("Match all\nForceCommand /tmp/x\n")]),
             note("bilan:4", "", &[&ollama], &[Some("[Service]\nExecStart=/tmp/x\n")]),
             note("bilan:5", "", &["unite|cups-browsed"], &[Some("enabled; reboot")]),
             note("bilan:6", "", &["ntp"], &[Some("peut-être")]),
             note("jeux:7", "", &["module|ntsync"], &[Some("charge && reboot")]),
             // Des fichiers lus en root, aux clés de la liste mais affaiblies, ou hors de la liste.
-            note("bilan:8", "", &[&noyau], &[Some("kernel.yama.ptrace_scope = 0\n")]),
+            note("bilan:8", "", &[&jeux], &[Some("kernel.yama.ptrace_scope = 0\n")]),
             note(
                 "bilan:9",
                 "",
-                &[&noyau],
+                &[&jeux],
                 &[Some("fs.protected_symlinks = 0\nvm.mmap_min_addr = 0\n")],
             ),
             note(
@@ -1100,7 +1123,24 @@ mod tests {
             ),
             note("bilan:14", "", &[&sshd], &[Some("Ciphers +arcfour\n")]),
             note("bilan:15", "", &[&sshd], &[Some("MaxAuthTries 99\n")]),
+            // Une clé du durcissement remise sous sa valeur sûre par `sysctl -w`, en root : la protection tomberait
+            // jusqu'au redémarrage (le fichier, lui, la refusait déjà).
+            note("bilan:16", "", &["sysctl|kernel/yama/ptrace_scope"], &[Some("0")]),
+            note("bilan:17", "", &["sysctl|kernel/randomize_va_space"], &[Some("0")]),
+            note("bilan:18", "", &["sysctl|fs/protected_symlinks"], &[Some("0")]),
+            note(
+                "bilan:19",
+                "",
+                &["sysctl|net/ipv6/conf/wlan0/accept_redirects"],
+                &[Some("1")],
+            ),
+            note("jeux:20", "", &["sysctl|vm/max_map_count"], &[Some("1024")]),
         ]);
+        assert_eq!(
+            rebatis(&pieges).len(),
+            pieges.reglages.len(),
+            "chaque piège est rebâti, puis refusé"
+        );
         for r in rebatis(&pieges) {
             assert!(note_admise(&r, &pieges).is_none(), "{}", r.id);
             assert_eq!(commandes(&pieges, &r.id), Vec::<String>::new(), "{}", r.id);
@@ -1108,9 +1148,9 @@ mod tests {
         // Ce que Vanguard écrit lui-même dans ces fichiers reste admis.
         let bons = historique(vec![
             note(
-                "bilan:noyau",
+                "jeux:noyau",
                 "",
-                &[&noyau],
+                &[&jeux],
                 &[Some(
                     "kernel.yama.ptrace_scope = 1\nkernel.kptr_restrict = 2\nkernel.sysrq = 176\nnet.ipv6.conf.*.accept_redirects = 0\n",
                 )],
