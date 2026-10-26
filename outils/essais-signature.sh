@@ -230,7 +230,9 @@ if command -v script >/dev/null; then
   forger "$T/v95"
   poser_point "$T/v95/avant/historique.txt"
   secours_signe "$T/v95" non
-  if [[ ! -e $T/v95/historique.txt.sig ]] && grep -q "0.87.5+1792999999 (2026-" "$T/v95.log" &&
+  # Ni l'historique ni derniere.txt signés : un derniere.txt.sig seul se publierait sans confirmation.
+  if [[ ! -e $T/v95/historique.txt.sig && ! -e $T/v95/derniere.txt.sig ]] &&
+    grep -q "0.87.5+1792999999 (2026-" "$T/v95.log" &&
     grep -q "non confirmé" "$T/v95.log"; then
     ok "secours : un point sûr de la principale est montré, rien n'est contresigné sans confirmation tapée"
   else

@@ -103,10 +103,11 @@ delivered just before it. Only the latest version has its download page; every v
   (a Mac program without a retrieved build, or the tldr examples offline, do not come back); if anything else differs,
   nothing is removed and the resume is refused, the key keeping the evidence. The safe point the backup key never goes
   past can also be forged with the stolen main key: when it is signed by that key, its versions (date and start of the
-  checksums) are shown to the author, and the backup key countersigns nothing until “contresigner” is typed. Only the
-  author knows what they published: a forged version under a number they recognize, with no date or checksum they
-  notice, still gets through. Claude on GitHub no longer starts on an issue or pull request written by anyone but the
-  owner, nor on an issue from the key's log (written from any computer): it would read them as instructions.
+  checksums) are shown to the author, and the backup key signs nothing, not even the release manifest, until
+  “contresigner” is typed in a terminal (without a terminal, it refuses). Only the author knows what they published: a
+  forged version under a number they recognize, with no date or checksum they notice, still gets through. Claude on
+  GitHub no longer starts on an issue or pull request written by anyone but the owner, nor on an issue from the key's
+  log (written from any computer): it would read them as instructions.
 - **Argument that is not UTF-8.** An error logged to the key's journal during a command with an argument that is not
   UTF-8 (a file name) no longer aborts Vanguard: the command is written there with “�” in place of the unreadable
   bytes.
