@@ -1461,7 +1461,7 @@ pub(crate) fn script_suspect(texte: &str) -> Option<(&'static str, Gravite, Text
             ),
         ));
     }
-    if s.bas.contains("-encodedcommand") || s.bas.contains(" -enc ") || s.bas.contains(" -ec ") {
+    if script_encode(&s.bas) {
         return Some((
             "encode",
             Gravite::Alerte,
@@ -1472,6 +1472,23 @@ pub(crate) fn script_suspect(texte: &str) -> Option<(&'static str, Gravite, Text
         ));
     }
     None
+}
+
+/// Un script qui lance PowerShell avec une commande encodée (`option_encodee`) : « -enc », « --enc », « '-enc' »,
+/// « -enc:… » ; les formes courtes (« -e », « -en ») seulement suivies d'un texte en base64 dans un script qui nomme
+/// PowerShell (« -e » sert à bien d'autres commandes). Tous les mots du script, pas seulement les premiers, coupés aux
+/// blancs, virgules et points-virgules (« '-nop','-enc',$b ») ; ce qui les entoure (guillemets, parenthèses) est
+/// retiré.
+fn script_encode(bas: &str) -> bool {
+    let mots: Vec<&str> = bas
+        .split(|c: char| c.is_whitespace() || c == ',' || c == ';')
+        .map(|m| m.trim_matches(['"', '\'', '(', ')', '[', ']', '{', '}', '@']))
+        .filter(|m| !m.is_empty())
+        .collect();
+    let powershell = bas.contains("powershell") || bas.contains("pwsh");
+    mots.iter()
+        .any(|m| option_encodee(m).is_some_and(|(option, _)| option.len() >= 3 || option == "ec"))
+        || (powershell && option_encodee_dans(&mots))
 }
 
 /// Le niveau Avertissement (3) : PowerShell écrit lui-même d'origine, même sans la journalisation des blocs, ceux
@@ -1994,24 +2011,36 @@ fn base64_long(m: &str) -> bool {
             .all(|o| o.is_ascii_alphanumeric() || o == b'+' || o == b'/' || o == b'=')
 }
 
-/// PowerShell lancé avec une commande encodée : « -EncodedCommand », ou l'une de ses abréviations que PowerShell
-/// accepte (« -e », « -en », « -enc », « -ec »), suivie d'un texte en base64 ; ou un décodage de base64 dans la
-/// commande même.
+/// L'option de commande encodée de PowerShell dans un mot (en minuscules) : « -EncodedCommand » ou l'une de ses
+/// abréviations que PowerShell accepte (« -e », « -en », « -enc », « -ec »), annoncée par un tiret, deux (pwsh prend
+/// « --enc ») ou « / », les « ^ » de cmd retirés (« -e^nc »). Rend l'option sans son tiret et la valeur collée
+/// après « : » (« -enc:… »), vide s'il n'y en a pas. `None` : un autre mot.
+fn option_encodee(mot: &str) -> Option<(String, String)> {
+    let mot: String = mot.chars().filter(|&c| c != '^').collect();
+    let sans = mot
+        .strip_prefix("--")
+        .or_else(|| mot.strip_prefix('-'))
+        .or_else(|| mot.strip_prefix('/'))?;
+    let (option, colle) = sans.split_once(':').unwrap_or((sans, ""));
+    (!option.is_empty() && ("encodedcommand".starts_with(option) || option == "ec"))
+        .then(|| (option.to_string(), colle.trim_matches(['"', '\'']).to_string()))
+}
+
+/// Une option de commande encodée parmi `mots` suivie d'un texte en base64, collé après « : » ou mot suivant.
+fn option_encodee_dans(mots: &[&str]) -> bool {
+    mots.iter().enumerate().any(|(i, m)| {
+        option_encodee(m)
+            .is_some_and(|(_, colle)| base64_long(&colle) || mots.get(i + 1).is_some_and(|v| base64_long(v)))
+    })
+}
+
+/// PowerShell lancé avec une commande encodée (`option_encodee`) suivie d'un texte en base64 ; ou un décodage de
+/// base64 dans la commande même.
 fn commande_encodee(nom: &str, ligne_bas: &str) -> bool {
     if !POWERSHELLS.contains(&nom) {
         return false;
     }
-    if ligne_bas.contains("frombase64string") {
-        return true;
-    }
-    let m = mots(ligne_bas);
-    m.windows(2).any(|p| {
-        let option = p[0]
-            .strip_prefix('-')
-            .or_else(|| p[0].strip_prefix('/'))
-            .unwrap_or_default();
-        !option.is_empty() && ("encodedcommand".starts_with(option) || option == "ec") && base64_long(p[1])
-    })
+    ligne_bas.contains("frombase64string") || option_encodee_dans(&mots(ligne_bas))
 }
 
 /// Un programme d'attaque publié, par son nom ou celui d'un fichier de sa ligne, ou une commande d'un outil

