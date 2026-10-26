@@ -238,6 +238,32 @@ fn parametres_changes_hors_de_vanguard_dits_sans_rien_couper() {
     let _ = std::fs::remove_dir_all(&maison);
 }
 
+/// F4 (E-M1) : sceaux.json ramené à une forme d'avant (`format` absent) et parametres.json retiré de ses `vus`, alors
+/// qu'il porte la marque de cette forme-ci (un fichier qu'aucune version d'avant ne connaissait) : rien n'est repris
+/// d'une « mise à jour », le parametres.json forgé reste dit changé hors de Vanguard.
+#[cfg(unix)]
+#[test]
+fn sceaux_ramenes_a_une_forme_d_avant_ne_font_rien_croire() {
+    let maison = maison_jetable();
+    let donnees = dossier_vanguard(&maison);
+    std::fs::create_dir_all(&donnees).unwrap();
+    std::fs::write(
+        donnees.join("sceaux.json"),
+        r#"{"depuis":"2026-10-01","fichiers":{},"vus":["pieges.json"]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        donnees.join("parametres.json"),
+        r#"{"langue":"en","hors_ligne":true,"sans_autotest":true}"#,
+    )
+    .unwrap();
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let s = vanguard_dans_env(programme, &maison, "en", &["parametres"], "", 30, &[]);
+    let texte = sans_couleurs(&s.texte);
+    assert!(texte.contains("changed outside Vanguard"), "{texte}");
+    let _ = std::fs::remove_dir_all(&maison);
+}
+
 #[test]
 fn aide_dans_les_deux_langues() {
     let fr = vanguard("fr", &["--help"], "", 30);

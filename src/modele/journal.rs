@@ -85,6 +85,11 @@ struct Tete {
     /// suivante, puis lues « intactes ».
     #[serde(default, skip_serializing_if = "Option::is_none")]
     annonce: Option<Annonce>,
+    /// La forme des sceaux de la version qui a écrit en dernier (`sceau::FORMAT`), 0 avant elle : le témoin, scellé
+    /// avec la tête, qu'une version de cette forme a servi ici. Des sceaux qui se disent ensuite d'une forme d'avant
+    /// ont été ramenés en arrière hors de Vanguard (`sceau::rattraper_si`).
+    #[serde(default)]
+    sceaux: u32,
 }
 
 /// La fin qu'une écriture annonce avant d'ajouter ses lignes : le segment, son nombre de lignes et l'empreinte de sa
@@ -551,6 +556,7 @@ fn ecrire_dans(
         tete.clos.insert(m, c);
     }
     tete.version = env!("CARGO_PKG_VERSION").to_string();
+    tete.sceaux = crate::sceau::FORMAT;
     tete.segment.clone_from(&mois);
     tete.lignes = n_courant;
     tete.derniere = precedent;

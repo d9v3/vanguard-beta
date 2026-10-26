@@ -27,10 +27,11 @@ delivered just before it. Only the latest version has its download page; every v
   sealed: changed, deleted or accepted as they were after the seals were remade, they no longer turn anything off (a
   decoy is still expected, an exposed port is reported again, every device is reported new again, the key is never
   called intact, nothing is undone from a forged note), and this is said. Every reader follows the same judge; only a
-  file taken over by a known update is trusted as it is, and “seals remade” goes away once said. A test reads the
-  code so that each sealed file name appears only where it is allowed, exceptions stated; VANGUARD_ORIGINE is
-  trusted only if it has the bytes of the running program. The threat model states the limits: the folder deleted as
-  a whole, and a program that targets this mechanism on purpose.
+  file taken over by a known update is trusted as it is (seals set back to an earlier form take nothing over, and
+  this is said), and “seals remade” goes away once said. A test reads the code so that each sealed file name appears
+  only where it is allowed, exceptions stated; VANGUARD_ORIGINE is trusted only if it has the bytes of the running
+  program. The threat model states the limits: the folder deleted as a whole, and a program that targets this
+  mechanism on purpose.
 - **Extensions and downloaded lists sealed.** Extension settings (“no restrictions”, “mine”, running with the
   check-up or monitoring) and their approvals are sealed: changed outside Vanguard, or accepted as they were (seals
   remade, earlier version), they no longer grant anything, nothing runs on its own, and the menu and the check-up say

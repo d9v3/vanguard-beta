@@ -166,6 +166,7 @@ const TARDIFS: &[&str] = &[
     crate::changements::RELEVE,
     crate::parametres::PARAMETRES,
     crate::protection::blocage::parametres::BLOCAGE,
+    // Jusqu'ici, ceux que connaissaient les versions de la forme 0 (`TARDIFS_D_AVANT`).
     // Écrits sans sceau jusqu'à la 0.87 : adoptés une fois, mais jamais un feu vert (`plugins::reglages::lire_juge`).
     crate::plugins::reglages::SCELLE,
     crate::plugins::APPROUVES_SCELLE,
@@ -181,6 +182,10 @@ const TARDIFS: &[&str] = &[
     SAUVEGARDE,
     SURVEILLANCE_PASSE,
 ];
+
+/// Les premiers `TARDIFS`, ceux que connaissaient les versions de la forme 0 (jusqu'à la 0.87) : les seuls noms que
+/// leurs sceaux ont pu mettre dans leurs `vus`.
+const TARDIFS_D_AVANT: usize = 18;
 
 /// Les dossiers dont chaque fichier est protégé tard, sous un nom que le code ne connaît pas d'avance (la référence de
 /// chaque clé VANGUARD, nommée par l'identifiant de son volume) : comme `TARDIFS`, ce qu'une version d'avant y a
@@ -243,7 +248,7 @@ struct Registre {
 
 /// La forme des sceaux écrits par ce programme. Un fichier de `TARDIFS` absent des `vus` de sceaux de cette forme n'a
 /// pas pu être repris d'une mise à jour (cette forme le connaissait déjà) : posé sans sceau, il est falsifié.
-const FORMAT: u32 = 2;
+pub(crate) const FORMAT: u32 = 2;
 
 /// Ce que Vanguard retrouve d'un de ses fichiers.
 #[derive(Debug, PartialEq, Eq)]
@@ -444,7 +449,17 @@ fn tous_les_tardifs() -> BTreeSet<String> {
 /// (`FORMAT`) font reprendre un fichier : dans ceux de cette forme, un nom retiré des `vus` n'est pas une mise à jour.
 fn rattraper_si(dossier: &Path, mut r: Registre, ecrire: bool) -> Registre {
     let mut change = false;
-    let mise_a_jour = r.format < FORMAT;
+    // Des sceaux qui se disent d'une forme d'avant alors que celle-ci a déjà servi ici : ramenés en arrière hors de
+    // Vanguard (le champ `format` est en clair), pour faire reprendre un fichier posé sans sceau. Rien n'est repris,
+    // et le bilan le dit comme des sceaux refaits.
+    let recule = r.format < FORMAT && forme_recule(dossier, &r);
+    let mise_a_jour = r.format < FORMAT && !recule;
+    if recule {
+        r.refaits = true;
+        r.depuis = chrono::Local::now().format("%Y-%m-%d").to_string();
+        r.format = FORMAT;
+        change = true;
+    }
     if mise_a_jour {
         // Les adoptions des sceaux d'avant : ceux qui n'ont pas été refaits les croyaient (repris d'une version d'avant
         // les sceaux, ou d'une mise à jour) ; refaits, rien ne dit d'où elles viennent.
@@ -491,6 +506,27 @@ fn rattraper_si(dossier: &Path, mut r: Registre, ecrire: bool) -> Registre {
         let _ = enregistrer_registre(dossier, &r);
     }
     r
+}
+
+/// Des sceaux d'une forme d'avant (`format < FORMAT`) qui portent la marque de cette forme-ci : ce que seule elle
+/// écrit (`repris`, un nom de `vus` qu'aucune version d'avant ne connaissait), ou la tête du journal des événements
+/// qu'elle a écrite (`modele::journal`, qui note la forme des sceaux). Une vraie mise à jour depuis la 0.86 ou la 0.87
+/// n'en laisse aucune. Retirer ces marques du registre ne suffit pas : la tête est scellée, la changer la fait lire
+/// falsifiée. Retour à une version d'avant puis remise à jour : dit aussi, comme des sceaux refaits.
+fn forme_recule(dossier: &Path, r: &Registre) -> bool {
+    let d_avant = &TARDIFS[..TARDIFS_D_AVANT];
+    let forme_du_journal = || {
+        let Ok(Some(o)) = contenu(&dossier.join(crate::modele::journal::TETE)) else {
+            return 0;
+        };
+        serde_json::from_slice::<serde_json::Value>(&o)
+            .ok()
+            .and_then(|v| v.get("sceaux")?.as_u64())
+            .unwrap_or(0)
+    };
+    !r.repris.is_empty()
+        || r.vus.iter().any(|n| !d_avant.contains(&n.as_str()))
+        || forme_du_journal() >= u64::from(FORMAT)
 }
 
 /// Le jugement d'un fichier d'après les sceaux (`None` : ils ne se lisent plus, rien ne peut être cru).
@@ -1495,5 +1531,79 @@ mod tests {
         assert!(matches!(lire_dans(&d2, PORTS_BLOQUES), Lecture::Adopte(_)));
         let _ = std::fs::remove_dir_all(&d);
         let _ = std::fs::remove_dir_all(&d2);
+    }
+
+    /// F4 (E-M1) : une vraie mise à jour depuis une 0.87 reprend ce qu'elle ne scellait pas encore, et le croit.
+    #[test]
+    fn une_vraie_mise_a_jour_depuis_une_087_reprend() {
+        assert_eq!(
+            TARDIFS[TARDIFS_D_AVANT - 1],
+            crate::protection::blocage::parametres::BLOCAGE
+        );
+        let d = jetable("vraie-087");
+        ecrire_dans(&d, crate::parametres::PARAMETRES, br#"{"hors_ligne":false}"#).unwrap();
+        // Sa tête de journal, écrite par elle : sans forme des sceaux.
+        ecrire_dans(
+            &d,
+            crate::modele::journal::TETE,
+            br#"{"version":"0.87.0","segment":"2026-10"}"#,
+        )
+        .unwrap();
+        // Ses sceaux : forme 0, ses fichiers protégés tard vus.
+        let mut r = registre(&d).unwrap().unwrap();
+        r.format = 0;
+        r.vus = TARDIFS[..TARDIFS_D_AVANT].iter().map(|n| (*n).to_string()).collect();
+        std::fs::write(d.join(REGISTRE), serde_json::to_vec(&r).unwrap()).unwrap();
+        std::fs::write(d.join(PIEGES), b"[]").unwrap();
+        assert_eq!(juge_dans(&d, PIEGES), Juge::Cru(b"[]".to_vec()));
+        assert!(repris_dans(&d, PIEGES) && !refaits_dans(&d));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// F4 (E-M1) : `format` ramené à 0 dans sceaux.json et `parametres.json` retiré des `vus` et des `fichiers` ne font
+    /// plus reprendre un `parametres.json` forgé : falsifié, et le bilan dit les sceaux abîmés. Que le registre garde
+    /// la marque de cette forme (ses `vus`) ou qu'on la lui retire, la tête du journal la garde.
+    #[test]
+    fn un_format_qui_recule_ne_fait_rien_reprendre() {
+        for marques_retirees in [false, true] {
+            let d = jetable(&format!("recule-{marques_retirees}"));
+            ecrire_dans(&d, crate::parametres::PARAMETRES, br#"{"hors_ligne":false}"#).unwrap();
+            if marques_retirees {
+                crate::modele::journal::noter_dans(
+                    &d,
+                    crate::modele::evenement::Evenement::action(
+                        crate::modele::evenement::Source::Blocage,
+                        "bloqué",
+                        true,
+                        &[],
+                    ),
+                    chrono::Utc::now(),
+                )
+                .unwrap();
+            }
+            let mut r = registre(&d).unwrap().unwrap();
+            r.format = 0;
+            r.refaits = false;
+            r.vus.remove(crate::parametres::PARAMETRES);
+            r.fichiers.remove(crate::parametres::PARAMETRES);
+            if marques_retirees {
+                r.vus.retain(|n| TARDIFS[..TARDIFS_D_AVANT].contains(&n.as_str()));
+            }
+            std::fs::write(d.join(REGISTRE), serde_json::to_vec(&r).unwrap()).unwrap();
+            let forge = br#"{"hors_ligne":true,"sans_autotest":true}"#;
+            std::fs::write(d.join(crate::parametres::PARAMETRES), forge).unwrap();
+            assert!(!repris_dans(&d, crate::parametres::PARAMETRES));
+            assert_eq!(
+                lire_dans(&d, crate::parametres::PARAMETRES),
+                Lecture::Falsifie(Some(forge.to_vec()))
+            );
+            let rel = falsifies_dans(&d);
+            assert!(
+                rel.refaits && rel.falsifies.contains(&crate::parametres::PARAMETRES),
+                "{rel:?}"
+            );
+            assert!(registre(&d).unwrap().unwrap().repris.is_empty());
+            let _ = std::fs::remove_dir_all(&d);
+        }
     }
 }
