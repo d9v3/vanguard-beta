@@ -502,9 +502,23 @@ pub(crate) fn recenser(l: &Lieux) -> Recensement {
     if let Some(p) = &l.veilleur {
         veilleur(p, &mut r);
     }
+    let (copies_d_avant, donnees_d_avant) = restes_d_avant(l, &mut r);
+    pieges(l, &mut r);
+    if let Some(p) = &l.raccourci {
+        raccourci(l, p, &mut r);
+    }
+    copie_du_programme(l, copies_d_avant, &mut r);
+    programme_en_marche(l, &mut r);
+    dossiers_de_donnees(l, donnees_d_avant, &mut r);
+    if let Some(cle) = l.cle.as_deref() {
+        ecarter_la_cle(cle, &mut r);
+    }
+    r
+}
 
-    // Les restes d'une version d'avant : la copie du programme d'avant va avec bin/, l'ancien dossier de données avec
-    // les données ; le reste à part.
+/// Les restes d'une version d'avant. Rend à part la copie du programme d'avant (elle va avec bin/) et l'ancien
+/// dossier de données (il va avec les données) ; les autres restes deviennent chacun un élément.
+fn restes_d_avant(l: &Lieux, r: &mut Recensement) -> (Vec<PathBuf>, Option<PathBuf>) {
     let mut copies_d_avant = Vec::new();
     let mut donnees_d_avant = None;
     for (reste, montre) in passage::restes(l) {
@@ -522,7 +536,11 @@ pub(crate) fn recenser(l: &Lieux) -> Recensement {
             }),
         }
     }
+    (copies_d_avant, donnees_d_avant)
+}
 
+/// Les fichiers-pièges posés dans les dossiers de l'utilisateur : un élément s'il en reste au moins un.
+fn pieges(l: &Lieux, r: &mut Recensement) {
     match crate::protection::pieges::nombre_dans(&l.donnees) {
         0 => {}
         n => r.elements.push(Element {
@@ -543,78 +561,83 @@ pub(crate) fn recenser(l: &Lieux) -> Recensement {
             retrait: Retrait::Pieges,
         }),
     }
+}
 
-    if let Some(p) = &l.raccourci {
-        let present = std::fs::symlink_metadata(p).is_ok();
-        let a_lui = present && crate::raccourci::de_vanguard(p);
-        let icone = crate::raccourci::icone(p).filter(|i| {
-            std::fs::symlink_metadata(i).is_ok_and(|m| m.is_file())
-                && std::fs::read(i).is_ok_and(|o| crate::raccourci::icone_de_vanguard(&o))
+/// Le raccourci `p` (Bureau ou menu des applications) : retiré s'il porte la marque de Vanguard, gardé et dit
+/// sinon ; une icône de Vanguard restée sans son raccourci, reconnue à son empreinte, est retirée seule.
+fn raccourci(l: &Lieux, p: &Path, r: &mut Recensement) {
+    let present = std::fs::symlink_metadata(p).is_ok();
+    let a_lui = present && crate::raccourci::de_vanguard(p);
+    let icone = crate::raccourci::icone(p).filter(|i| {
+        std::fs::symlink_metadata(i).is_ok_and(|m| m.is_file())
+            && std::fs::read(i).is_ok_and(|o| crate::raccourci::icone_de_vanguard(&o))
+    });
+    let menu = p.extension().is_some_and(|e| e == "desktop");
+    if a_lui {
+        // Un .lnk ne se lit pas comme du texte : il vise la copie de bin/ que `raccourci::poser` lui donne
+        // (`executable`). Au pire, cette copie est gardée sans nécessité, et c'est dit.
+        let lance = programme_du_raccourci(p).or_else(|| {
+            p.extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("lnk"))
+                .then(|| l.donnees.join("bin").join(crate::mise_a_jour::NOM))
         });
-        let menu = p.extension().is_some_and(|e| e == "desktop");
-        if a_lui {
-            // Un .lnk ne se lit pas comme du texte : il vise la copie de bin/ que `raccourci::poser` lui donne
-            // (`executable`). Au pire, cette copie est gardée sans nécessité, et c'est dit.
-            let lance = programme_du_raccourci(p).or_else(|| {
-                p.extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("lnk"))
-                    .then(|| l.donnees.join("bin").join(crate::mise_a_jour::NOM))
-            });
-            let avec = icone
-                .as_deref()
-                .map(|i| trf!(" et son icône {}", " and its icon {}", chemin_affichable(i)))
-                .unwrap_or_default();
-            r.elements.push(Element {
-                genre: Genre::Raccourci,
-                texte: if menu {
-                    tr!("Raccourci : menu des applications", "Shortcut: applications menu")
-                } else {
-                    tr!("Raccourci sur le Bureau", "Shortcut on the Desktop")
-                }
-                .to_string(),
-                precision: if icone.is_some() {
-                    tr!("retiré, avec son icône", "removed, with its icon")
-                } else {
-                    tr!("retiré", "removed")
-                }
-                .to_string(),
-                detail: trf!(
-                    "Efface {}{avec}. Il lance : {}",
-                    "Erases {}{avec}. It starts: {}",
-                    chemin_affichable(p),
-                    lance
-                        .as_deref()
-                        .map_or_else(|| tr!("non lu", "not read").to_string(), chemin_affichable)
-                ),
-                coche: true,
-                lance,
-                retrait: Retrait::Raccourci(p.clone()),
-            });
-        } else if present {
-            // Le même nom, sans la marque : posé par quelqu'un d'autre, qui peut aussi se servir de l'icône.
-            r.pas_a_lui.push(trf!(
-                "Un raccourci au nom de Vanguard ({}) n'a pas été posé par Vanguard : il reste, avec son icône.",
-                "A shortcut named Vanguard ({}) was not placed by Vanguard: it stays, with its icon.",
-                chemin_affichable(p)
-            ));
-        } else if let Some(i) = &icone {
-            r.elements.push(Element {
-                genre: Genre::Icone,
-                texte: tr!("Icône du menu des applications", "Applications menu icon").to_string(),
-                precision: tr!("retirée (celle de Vanguard)", "removed (Vanguard's own)").to_string(),
-                detail: trf!(
-                    "Efface {}, restée sans son raccourci : reconnue à son empreinte.",
-                    "Erases {}, left without its shortcut: recognised by its fingerprint.",
-                    chemin_affichable(i)
-                ),
-                coche: true,
-                lance: None,
-                retrait: Retrait::Raccourci(p.clone()),
-            });
-        }
+        let avec = icone
+            .as_deref()
+            .map(|i| trf!(" et son icône {}", " and its icon {}", chemin_affichable(i)))
+            .unwrap_or_default();
+        r.elements.push(Element {
+            genre: Genre::Raccourci,
+            texte: if menu {
+                tr!("Raccourci : menu des applications", "Shortcut: applications menu")
+            } else {
+                tr!("Raccourci sur le Bureau", "Shortcut on the Desktop")
+            }
+            .to_string(),
+            precision: if icone.is_some() {
+                tr!("retiré, avec son icône", "removed, with its icon")
+            } else {
+                tr!("retiré", "removed")
+            }
+            .to_string(),
+            detail: trf!(
+                "Efface {}{avec}. Il lance : {}",
+                "Erases {}{avec}. It starts: {}",
+                chemin_affichable(p),
+                lance
+                    .as_deref()
+                    .map_or_else(|| tr!("non lu", "not read").to_string(), chemin_affichable)
+            ),
+            coche: true,
+            lance,
+            retrait: Retrait::Raccourci(p.to_path_buf()),
+        });
+    } else if present {
+        // Le même nom, sans la marque : posé par quelqu'un d'autre, qui peut aussi se servir de l'icône.
+        r.pas_a_lui.push(trf!(
+            "Un raccourci au nom de Vanguard ({}) n'a pas été posé par Vanguard : il reste, avec son icône.",
+            "A shortcut named Vanguard ({}) was not placed by Vanguard: it stays, with its icon.",
+            chemin_affichable(p)
+        ));
+    } else if let Some(i) = &icone {
+        r.elements.push(Element {
+            genre: Genre::Icone,
+            texte: tr!("Icône du menu des applications", "Applications menu icon").to_string(),
+            precision: tr!("retirée (celle de Vanguard)", "removed (Vanguard's own)").to_string(),
+            detail: trf!(
+                "Efface {}, restée sans son raccourci : reconnue à son empreinte.",
+                "Erases {}, left without its shortcut: recognised by its fingerprint.",
+                chemin_affichable(i)
+            ),
+            coche: true,
+            lance: None,
+            retrait: Retrait::Raccourci(p.to_path_buf()),
+        });
     }
+}
 
-    // La copie du programme : bin/vanguard, les restes d'une mise à jour, la copie d'avant ; rien d'autre de bin/.
+/// La copie du programme : bin/vanguard, les restes d'une mise à jour, la copie d'avant (`copies_d_avant`) ; rien
+/// d'autre de bin/. Sous Windows, la copie en marche est laissée et dite dans « à faire ».
+fn copie_du_programme(l: &Lieux, copies_d_avant: Vec<PathBuf>, r: &mut Recensement) {
     let bin = l.donnees.join("bin");
     let nom = crate::mise_a_jour::NOM;
     let mut fichiers: Vec<PathBuf> = [nom.to_string(), format!("{nom}.ancien"), format!("{nom}.nouveau")]
@@ -636,52 +659,61 @@ pub(crate) fn recenser(l: &Lieux) -> Recensement {
             chemin_affichable(&bin)
         ));
     }
-    if !fichiers.is_empty() {
-        let liste: Vec<String> = fichiers.iter().map(|f| chemin_affichable(f)).collect();
-        // La copie en marche reste (dit dans « à faire ») : l'élément ne nomme que ce qui part vraiment.
-        let (texte, precision) = if garde.is_some() {
-            (
-                tr!("Restes du programme (bin/)", "Program leftovers (bin/)"),
-                tr!("effacés, sauf la copie en marche", "erased, except the running copy"),
-            )
-        } else {
-            (
-                tr!("Copie du programme (bin/)", "Program copy (bin/)"),
-                tr!("effacée", "erased"),
-            )
-        };
-        r.elements.push(Element {
-            genre: Genre::Programme,
-            texte: texte.to_string(),
-            precision: precision.to_string(),
-            detail: trf!(
-                "Efface {} ; le dossier bin/ part s'il est vide ensuite, rien d'autre de bin/ n'est touché.",
-                "Erases {}; the bin/ folder goes if it is empty afterwards, nothing else in bin/ is touched.",
-                liste.join(", ")
-            ),
-            coche: true,
-            lance: None,
-            retrait: Retrait::Fichiers(fichiers),
-        });
+    if fichiers.is_empty() {
+        return;
     }
+    let liste: Vec<String> = fichiers.iter().map(|f| chemin_affichable(f)).collect();
+    // La copie en marche reste (dit dans « à faire ») : l'élément ne nomme que ce qui part vraiment.
+    let (texte, precision) = if garde.is_some() {
+        (
+            tr!("Restes du programme (bin/)", "Program leftovers (bin/)"),
+            tr!("effacés, sauf la copie en marche", "erased, except the running copy"),
+        )
+    } else {
+        (
+            tr!("Copie du programme (bin/)", "Program copy (bin/)"),
+            tr!("effacée", "erased"),
+        )
+    };
+    r.elements.push(Element {
+        genre: Genre::Programme,
+        texte: texte.to_string(),
+        precision: precision.to_string(),
+        detail: trf!(
+            "Efface {} ; le dossier bin/ part s'il est vide ensuite, rien d'autre de bin/ n'est touché.",
+            "Erases {}; the bin/ folder goes if it is empty afterwards, nothing else in bin/ is touched.",
+            liste.join(", ")
+        ),
+        coche: true,
+        lance: None,
+        retrait: Retrait::Fichiers(fichiers),
+    });
+}
 
-    if let Some(p) = en_marche {
-        let dans_les_donnees = p.starts_with(&l.donnees) || l.donnees.canonicalize().is_ok_and(|d| p.starts_with(d));
-        if l.cle.as_deref().is_some_and(|c| sur_la_cle(p, c)) {
-            r.pas_a_lui.push(trf!(
-                "Le programme de la clé ({}) reste sur la clé : Vanguard n'efface jamais la clé.",
-                "The key's program ({}) stays on the key: Vanguard never erases the key.",
-                chemin_affichable(p)
-            ));
-        } else if !dans_les_donnees {
-            r.pas_a_lui.push(trf!(
-                "Le programme lancé ({}) n'a pas été posé par Vanguard : il reste. Supprimez-le vous-même si vous n'en voulez plus.",
-                "The running program ({}) was not placed by Vanguard: it stays. Delete it yourself if you no longer want it.",
-                chemin_affichable(p)
-            ));
-        }
+/// Le programme lancé, s'il n'est pas sous les données : celui de la clé ou un autre, jamais retiré, dit.
+fn programme_en_marche(l: &Lieux, r: &mut Recensement) {
+    let Some(p) = l.programme.as_deref() else {
+        return;
+    };
+    let dans_les_donnees = p.starts_with(&l.donnees) || l.donnees.canonicalize().is_ok_and(|d| p.starts_with(d));
+    if l.cle.as_deref().is_some_and(|c| sur_la_cle(p, c)) {
+        r.pas_a_lui.push(trf!(
+            "Le programme de la clé ({}) reste sur la clé : Vanguard n'efface jamais la clé.",
+            "The key's program ({}) stays on the key: Vanguard never erases the key.",
+            chemin_affichable(p)
+        ));
+    } else if !dans_les_donnees {
+        r.pas_a_lui.push(trf!(
+            "Le programme lancé ({}) n'a pas été posé par Vanguard : il reste. Supprimez-le vous-même si vous n'en voulez plus.",
+            "The running program ({}) was not placed by Vanguard: it stays. Delete it yourself if you no longer want it.",
+            chemin_affichable(p)
+        ));
     }
+}
 
+/// Les dossiers de données, en dernier : l'ancien (`donnees_d_avant`, pas repris) puis l'actuel ; un dossier au
+/// nom d'une version d'avant sans rien de Vanguard est gardé et dit.
+fn dossiers_de_donnees(l: &Lieux, donnees_d_avant: Option<PathBuf>, r: &mut Recensement) {
     if let Some(d) = donnees_d_avant {
         r.elements.push(dossier_de_donnees(
             &d,
@@ -713,22 +745,22 @@ pub(crate) fn recenser(l: &Lieux) -> Recensement {
             &mut r.pas_a_lui,
         ));
     }
+}
 
-    // La clé n'est jamais touchée, quoi qu'on ait trouvé : un chemin qui y mène est écarté, et c'est dit.
-    if let Some(cle) = l.cle.as_deref() {
-        r.elements.retain(|e| {
-            let sur = chemins(e).iter().any(|p| sur_la_cle(p, cle));
-            if sur {
-                r.pas_a_lui.push(trf!(
-                    "{} : sur la clé, jamais touché.",
-                    "{}: on the key, never touched.",
-                    e.texte
-                ));
-            }
-            !sur
-        });
-    }
-    r
+/// La clé n'est jamais touchée, quoi qu'on ait trouvé : un élément dont un chemin mène à `cle` est écarté, et
+/// c'est dit.
+fn ecarter_la_cle(cle: &Path, r: &mut Recensement) {
+    r.elements.retain(|e| {
+        let sur = chemins(e).iter().any(|p| sur_la_cle(p, cle));
+        if sur {
+            r.pas_a_lui.push(trf!(
+                "{} : sur la clé, jamais touché.",
+                "{}: on the key, never touched.",
+                e.texte
+            ));
+        }
+        !sur
+    });
 }
 
 /// La cible d'un dossier de données qui est un lien (déplacé sur un autre disque, un lien laissé à sa place) : seul
