@@ -1,6 +1,6 @@
 {
   "_lisez-moi": "Page du dépôt sur GitHub, appliquée par outils/github.py après chaque envoi. La version (Cargo.toml) s'ajoute seule au bout de la description ; le nom du dépôt suit celui du programme.",
-  "description": "Cyber defense for endpoints and networks, from a USB key; complements antivirus. Hardens PCs (undoable fixes), audits the network, ranks exploited flaws first, finds outdated software, spyware and intrusions, spots ransomware, secures public Wi-Fi, blocks threats, collects evidence; never attacks. Windows · Linux · macOS · FR/EN",
+  "description": "A personal project I share: a security and repair toolkit on a USB key. It checks your PC and network, explains each problem in plain words and fixes things only with your consent; every fix can be undone. Soon: the same key will also boot official public ISOs for repair and recovery. Windows · Linux · macOS · FR/EN",
   "accueil": "https://claude.ai/code/artifact/d0b6d00e-38d4-4d9d-ad29-75dbdbecf37f",
   "sujets": [
     "security",
