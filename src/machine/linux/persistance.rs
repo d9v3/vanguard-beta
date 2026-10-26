@@ -247,6 +247,8 @@ pub(super) fn persistance_dans(
         "racine de la persistance relative : {}",
         racine.display()
     );
+    #[cfg(test)]
+    tests::RACINE_LUE.with(|r| *r.borrow_mut() = Some(racine.to_path_buf()));
     let mut t = Lancements::default();
     lire_prechargement(racine, &variable, gestion, &mut t);
     let (demarrage, hypr) = fichiers_de_demarrage(racine, maison);
@@ -844,11 +846,22 @@ pub(super) fn juger_fichiers_suspects(r: &Releve) -> Vec<Constat> {
 mod tests {
     use super::*;
 
-    /// Le bilan lit la persistance depuis la vraie racine : une racine relative fait échouer `persistance_dans`
-    /// (essais compilés avec les assertions de débogage), que le corpus, qui lui donne sa propre racine, ne verrait pas.
+    std::thread_local! {
+        /// La dernière racine que `persistance_dans` a lue, sur ce fil d'essai.
+        pub(super) static RACINE_LUE: std::cell::RefCell<Option<std::path::PathBuf>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// Le bilan lit la persistance depuis la vraie racine « / » : une autre (relative, ou absolue comme « /x »), le
+    /// corpus, qui donne la sienne à `persistance_dans`, ne la verrait pas ; la racine lue est comparée à « / ».
     #[test]
     fn le_bilan_lit_depuis_la_racine() {
+        RACINE_LUE.with(|r| *r.borrow_mut() = None);
         let _ = persistance();
+        assert_eq!(
+            RACINE_LUE.with(|r| r.borrow().clone()),
+            Some(std::path::PathBuf::from("/"))
+        );
     }
 
     /// Une seconde ligne suspecte dans un fichier déjà signalé change la clé (avant, seul le fichier y était) ;
