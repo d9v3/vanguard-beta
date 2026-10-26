@@ -1763,6 +1763,56 @@ fn changements_restants(a: &Annulables, donnees_effacees: bool) -> Vec<String> {
 
 /// `vanguard desinstaller [--liste]` et le menu Données › Retirer Vanguard de cet ordinateur.
 pub fn commande(liste: bool) {
+    presenter(liste);
+    let lieux = match Lieux::de_cet_ordinateur() {
+        Ok(l) => l,
+        Err(e) => {
+            afficher_aligne("  ", &e, 4, "");
+            return;
+        }
+    };
+    let rec = recenser(&lieux);
+    montrer_ce_qui_reste_hors_liste(&rec);
+    if rec.elements.is_empty() {
+        dire_qu_il_n_y_a_rien(&rec);
+        return;
+    }
+    if liste {
+        montrer_la_liste(&rec);
+        return;
+    }
+    defaire_d_abord(false);
+    // Défaire un changement a pu toucher au dossier de données (une note, la quarantaine) : la liste est refaite.
+    let rec = recenser(&lieux);
+    if rec.elements.is_empty() {
+        trp!("  Rien n'a été retiré.", "  Nothing was removed.");
+        return;
+    }
+    let Some(mut etats) = cocher_ce_qui_part(&rec) else {
+        trp!("  Rien n'a été retiré.", "  Nothing was removed.");
+        return;
+    };
+    annoncer_le_retrait(&rec, &etats);
+    let a = annulables();
+    let gardes = confirmer_les_donnees(&rec, &mut etats, &a);
+    if !etats.contains(&true) {
+        trp!("  Rien n'a été retiré.", "  Nothing was removed.");
+        return;
+    }
+    if !demander(tr!(
+        "\n  Retirer ce qui est coché ? [o/N] : ",
+        "\n  Remove what is checked? [y/N]: "
+    ))
+    .oui()
+    {
+        trp!("  Rien n'a été retiré.", "  Nothing was removed.");
+        return;
+    }
+    retirer_et_conclure(&lieux, &rec, &etats, gardes, &a);
+}
+
+/// Le titre, ce que fait la désinstallation, et le Wi-Fi public éteint d'abord s'il est allumé.
+fn presenter(liste: bool) {
     titre(tr!(
         "Retirer Vanguard de cet ordinateur",
         "Remove Vanguard from this computer"
@@ -1780,14 +1830,10 @@ pub fn commande(liste: bool) {
     if !liste {
         crate::reseau::wifi_public::proposer_d_eteindre();
     }
-    let lieux = match Lieux::de_cet_ordinateur() {
-        Ok(l) => l,
-        Err(e) => {
-            afficher_aligne("  ", &e, 4, "");
-            return;
-        }
-    };
-    let rec = recenser(&lieux);
+}
+
+/// Ce qui n'est pas à Vanguard, ce qui n'a pas pu être cherché, et la protection active qui part avec la surveillance.
+fn montrer_ce_qui_reste_hors_liste(rec: &Recensement) {
     println!();
     for m in &rec.pas_a_lui {
         afficher_aligne("  • ", m, 4, "");
@@ -1806,67 +1852,65 @@ pub fn commande(liste: bool) {
             "",
         );
     }
-    if rec.elements.is_empty() {
-        // Ce qui n'a pas pu être cherché n'est jamais compté comme absent.
-        let fin = if rec.non_verifie.is_empty() {
-            tr!(
-                "Vanguard n'a rien posé sur cet ordinateur, ou tout a déjà été retiré.",
-                "Vanguard placed nothing on this computer, or everything was already removed."
-            )
-            .to_string()
-        } else {
-            trf!(
-                "Rien de Vanguard n'a été trouvé, mais {} point(s) n'ont pas pu être cherchés (ci-dessus) : ce qu'ils couvrent peut encore être là.",
-                "Nothing of Vanguard was found, but {} point(s) could not be looked for (above): what they cover may still be there.",
-                rec.non_verifie.len()
-            )
-        };
-        afficher_aligne("  ", &fin, 2, "");
-        for x in &rec.a_faire {
-            afficher_aligne("  → ", x, 4, "");
-        }
-        return;
+}
+
+/// Rien de Vanguard trouvé : le dire, sans compter comme absent ce qui n'a pas pu être cherché.
+fn dire_qu_il_n_y_a_rien(rec: &Recensement) {
+    let fin = if rec.non_verifie.is_empty() {
+        tr!(
+            "Vanguard n'a rien posé sur cet ordinateur, ou tout a déjà été retiré.",
+            "Vanguard placed nothing on this computer, or everything was already removed."
+        )
+        .to_string()
+    } else {
+        trf!(
+            "Rien de Vanguard n'a été trouvé, mais {} point(s) n'ont pas pu être cherchés (ci-dessus) : ce qu'ils couvrent peut encore être là.",
+            "Nothing of Vanguard was found, but {} point(s) could not be looked for (above): what they cover may still be there.",
+            rec.non_verifie.len()
+        )
+    };
+    afficher_aligne("  ", &fin, 2, "");
+    for x in &rec.a_faire {
+        afficher_aligne("  → ", x, 4, "");
     }
-    if liste {
-        section(tr!("Ce que Vanguard a posé ici", "What Vanguard placed here"));
-        for (i, e) in rec.elements.iter().enumerate() {
-            let coche = if e.coche {
-                ""
-            } else {
-                tr!(" (pas coché d'office)", " (not checked by default)")
-            };
-            afficher_aligne(
-                &format!("  {TOUCHE}{:>2}{RESET} ", i + 1),
-                &format!("{}{coche}", e.texte),
-                5,
-                "",
-            );
-            afficher_aligne("     → ", &e.precision, 7, GRIS);
-            afficher_aligne("       ", &e.detail, 7, GRIS);
-        }
-        defaire_d_abord(true);
-        for x in &rec.a_faire {
-            afficher_aligne("  → ", x, 4, "");
-        }
-        println!();
+}
+
+/// « --liste » : ce que Vanguard a posé ici, ce qui serait coché d'office, sans rien retirer.
+fn montrer_la_liste(rec: &Recensement) {
+    section(tr!("Ce que Vanguard a posé ici", "What Vanguard placed here"));
+    for (i, e) in rec.elements.iter().enumerate() {
+        let coche = if e.coche {
+            ""
+        } else {
+            tr!(" (pas coché d'office)", " (not checked by default)")
+        };
         afficher_aligne(
-            "  ",
-            tr!(
-                "Rien n'a été retiré : « vanguard desinstaller » sans --liste propose de le faire.",
-                "Nothing was removed: “vanguard uninstall” without --list offers to do it."
-            ),
-            2,
+            &format!("  {TOUCHE}{:>2}{RESET} ", i + 1),
+            &format!("{}{coche}", e.texte),
+            5,
             "",
         );
-        return;
+        afficher_aligne("     → ", &e.precision, 7, GRIS);
+        afficher_aligne("       ", &e.detail, 7, GRIS);
     }
-    defaire_d_abord(false);
-    // Défaire un changement a pu toucher au dossier de données (une note, la quarantaine) : la liste est refaite.
-    let rec = recenser(&lieux);
-    if rec.elements.is_empty() {
-        trp!("  Rien n'a été retiré.", "  Nothing was removed.");
-        return;
+    defaire_d_abord(true);
+    for x in &rec.a_faire {
+        afficher_aligne("  → ", x, 4, "");
     }
+    println!();
+    afficher_aligne(
+        "  ",
+        tr!(
+            "Rien n'a été retiré : « vanguard desinstaller » sans --liste propose de le faire.",
+            "Nothing was removed: “vanguard uninstall” without --list offers to do it."
+        ),
+        2,
+        "",
+    );
+}
+
+/// La liste à cocher, puis ce que les éléments gardés retiennent ; `None` si rien ne doit partir.
+fn cocher_ce_qui_part(rec: &Recensement) -> Option<Vec<bool>> {
     let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     let mut entete = vec![
         String::new(),
@@ -1884,20 +1928,18 @@ pub fn commande(liste: bool) {
         .map(|l| format!("  {GRIS}{l}{RESET}")),
     );
     entete.push(String::new());
-    let Some(mut etats) = cocher(&entete, &cases(&rec.elements, terminal)) else {
-        trp!("  Rien n'a été retiré.", "  Nothing was removed.");
-        return;
-    };
+    let mut etats = cocher(&entete, &cases(&rec.elements, terminal))?;
     for m in garder_les_dependances(&rec.elements, &mut etats) {
         afficher_aligne("  ", &m, 2, "");
     }
-    if !etats.contains(&true) {
-        trp!("  Rien n'a été retiré.", "  Nothing was removed.");
-        return;
-    }
+    etats.contains(&true).then_some(etats)
+}
+
+/// « Sera retiré : » et, pour chaque élément coché, ce qui lui arrivera.
+fn annoncer_le_retrait(rec: &Recensement, etats: &[bool]) {
     println!();
     trp!("  Sera retiré :", "  Will be removed:");
-    for (e, _) in rec.elements.iter().zip(&etats).filter(|(_, c)| **c) {
+    for (e, _) in rec.elements.iter().zip(etats).filter(|(_, c)| **c) {
         let action = if matches!(e.genre, Genre::Donnees | Genre::DonneesAvant) {
             tr!("effacé après une seconde question", "erased after a second question")
         } else {
@@ -1905,13 +1947,17 @@ pub fn commande(liste: bool) {
         };
         afficher_aligne("  • ", &format!("{} → {action}", e.texte), 4, "");
     }
-    let a = annulables();
+}
+
+/// La seconde question pour chaque dossier de données coché (décoché si elle est refusée) ; rend ce que des éléments
+/// gardés y demandent encore, à garder à l'effacement.
+fn confirmer_les_donnees(rec: &Recensement, etats: &mut [bool], a: &Annulables) -> Vec<(PathBuf, String)> {
     // Ce que des éléments gardés demandent encore dans les dossiers de données : vu à la seconde question, gardé à
     // l'effacement.
     let mut gardes: Vec<(PathBuf, String)> = Vec::new();
     for e in &rec.elements {
         if let (Genre::Donnees | Genre::DonneesAvant, Retrait::Dossier(d)) = (e.genre, &e.retrait) {
-            gardes.extend(gardes_dans(d, e.genre == Genre::Donnees, &rec.elements, &etats));
+            gardes.extend(gardes_dans(d, e.genre == Genre::Donnees, &rec.elements, etats));
         }
     }
     for (i, e) in rec.elements.iter().enumerate() {
@@ -1924,24 +1970,22 @@ pub fn commande(liste: bool) {
             .filter(|(p, _)| surveillance::sous(p, d))
             .cloned()
             .collect();
-        if !accord_donnees(e, &a, &les_siens) {
+        if !accord_donnees(e, a, &les_siens) {
             etats[i] = false;
             trp!("  Dossier de données gardé.", "  Data folder kept.");
         }
     }
-    if !etats.contains(&true) {
-        trp!("  Rien n'a été retiré.", "  Nothing was removed.");
-        return;
-    }
-    if !demander(tr!(
-        "\n  Retirer ce qui est coché ? [o/N] : ",
-        "\n  Remove what is checked? [y/N]: "
-    ))
-    .oui()
-    {
-        trp!("  Rien n'a été retiré.", "  Nothing was removed.");
-        return;
-    }
+    gardes
+}
+
+/// Retire ce qui est coché, montre le bilan, et ferme Vanguard si son dossier de données vient de partir.
+fn retirer_et_conclure(
+    lieux: &Lieux,
+    rec: &Recensement,
+    etats: &[bool],
+    gardes: Vec<(PathBuf, String)>,
+    a: &Annulables,
+) {
     let mut x = Execution {
         donnees: &lieux.donnees,
         en_marche: if cfg!(windows) {
@@ -1957,7 +2001,7 @@ pub fn commande(liste: bool) {
     let mut bilan = Bilan::default();
     let mut donnees_touchees = false;
     println!();
-    for (e, &coche) in rec.elements.iter().zip(&etats) {
+    for (e, &coche) in rec.elements.iter().zip(etats) {
         if !coche {
             bilan.garde.push(e.texte.clone());
             continue;
@@ -1984,7 +2028,7 @@ pub fn commande(liste: bool) {
     bilan.garde.extend(rec.pas_a_lui.iter().cloned());
     bilan.a_faire.extend(rec.a_faire.iter().cloned());
     bilan.a_faire.append(&mut x.a_faire);
-    bilan.a_faire.extend(changements_restants(&a, donnees_touchees));
+    bilan.a_faire.extend(changements_restants(a, donnees_touchees));
     bilan.non_verifie.extend(rec.non_verifie.iter().cloned());
     for l in rediger_bilan(&bilan) {
         imprimer(&l);
