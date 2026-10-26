@@ -358,13 +358,46 @@ pub(crate) fn juger(
     contexte: &Contexte,
     max_trous: usize,
 ) -> Suite {
-    // Un numéro vu vérifié et non vérifié : le vérifié l'emporte.
+    let doublons = dedoublonner(&mut presents);
+    let etendues = etendues(&presents, contexte.morceaux);
+    let zones_nv = zones_non_verifiees(&presents, contexte.morceaux);
+    ecarter_non_verifies(&mut presents, &etendues, &zones_nv);
+    let non_verifies = presents.iter().filter(|p| !p.verifie).count() as u64;
+    let (premier, dernier, incoherences) = bornes(&presents, &etendues, contexte);
+    let mut suite = Suite {
+        numerotation,
+        premier,
+        dernier,
+        presents: presents.len() as u64,
+        doublons,
+        incoherences,
+        trous: Vec::new(),
+        trous_au_dela: 0,
+        non_verifies,
+    };
+    let (Some(lo), Some(hi)) = (premier, dernier) else {
+        return suite;
+    };
+    // Les numéros manquants, découpés aux paliers : (de, a, classe).
+    let paliers = paliers(&etendues, contexte.morceaux, &zones_nv);
+    let segments = segments_manquants(&presents, lo, hi, &paliers);
+    ranger_les_trous(&mut suite, segments, contexte, max_trous);
+    dater_les_trous(&mut suite, &presents);
+    suite
+}
+
+/// Trie les présents par numéro et n'en garde qu'un par numéro (un numéro vu vérifié et non vérifié : le vérifié
+/// l'emporte) ; rend le nombre de doublons retirés.
+fn dedoublonner(presents: &mut Vec<Present>) -> u64 {
     presents.sort_unstable_by_key(|p| (p.numero, !p.verifie));
     let avant_dedoublonnage = presents.len();
     presents.dedup_by_key(|p| p.numero);
-    let doublons = (avant_dedoublonnage - presents.len()) as u64;
-    let etendues = etendues(&presents, contexte.morceaux);
-    let zones_nv = zones_non_verifiees(&presents, contexte.morceaux);
+    (avant_dedoublonnage - presents.len()) as u64
+}
+
+/// Retire des présents les enregistrements non vérifiés qui ne prouvent rien : ceux qu'un morceau vérifié réclame, et
+/// les vieux restes isolés d'avant la suite.
+fn ecarter_non_verifies(presents: &mut Vec<Present>, etendues: &[Option<(u64, u64)>], zones_nv: &[(u64, u64)]) {
     // Un numéro qu'un morceau vérifié réclame ne se comble pas par un enregistrement non vérifié (un faux morceau au
     // CRC faux ajouté au fichier, qui porterait les numéros retirés) : il reste manquant. Ailleurs, l'enregistrement
     // non vérifié existe dans le fichier, son numéro est présent ; la suite le compte (`Suite::non_verifies`).
@@ -392,10 +425,18 @@ pub(crate) fn juger(
         .chain(etendues.iter().flatten().map(|e| e.0))
         .min();
     if let Some(mut lo) = plus_ancien_verifie {
-        lo = debut_rejoint(lo, &zones_nv);
+        lo = debut_rejoint(lo, zones_nv);
         presents.retain(|p| p.verifie || p.numero >= lo);
     }
-    let non_verifies = presents.iter().filter(|p| !p.verifie).count() as u64;
+}
+
+/// Le premier et le dernier numéro de la suite (présents, réclamés par un morceau lu, ou attendus d'après l'en-tête
+/// du fichier) et le nombre d'incohérences : morceaux à l'en-tête incohérent, prochain numéro annoncé en retard.
+fn bornes(
+    presents: &[Present],
+    etendues: &[Option<(u64, u64)>],
+    contexte: &Contexte,
+) -> (Option<u64>, Option<u64>, u64) {
     let mut premier = presents
         .first()
         .map(|p| p.numero)
@@ -422,22 +463,16 @@ pub(crate) fn juger(
             None => {}
         }
     }
-    let mut suite = Suite {
-        numerotation,
-        premier,
-        dernier,
-        presents: presents.len() as u64,
-        doublons,
-        incoherences,
-        trous: Vec::new(),
-        trous_au_dela: 0,
-        non_verifies,
-    };
-    let (Some(lo), Some(hi)) = (premier, dernier) else {
-        return suite;
-    };
-    // Les numéros manquants, découpés aux paliers : (de, a, classe).
-    let paliers = paliers(&etendues, contexte.morceaux, &zones_nv);
+    (premier, dernier, incoherences)
+}
+
+/// Les numéros qui manquent entre `lo` et `hi`, découpés aux `paliers` : (de, a, classe), dans l'ordre.
+fn segments_manquants(
+    presents: &[Present],
+    lo: u64,
+    hi: u64,
+    paliers: &[(u64, Option<usize>, bool)],
+) -> Vec<(u64, u64, Classe)> {
     let mut segments: Vec<(u64, u64, Classe)> = Vec::new();
     let mut k = 0usize;
     let mut decouper = |de: u64, a: u64, segments: &mut Vec<(u64, u64, Classe)>| {
@@ -467,7 +502,7 @@ pub(crate) fn juger(
     };
     // Le prochain numéro attendu ; rien quand le dernier possible est passé.
     let mut attendu = Some(lo);
-    for p in &presents {
+    for p in presents {
         if let Some(x) = attendu
             && p.numero > x
         {
@@ -480,7 +515,12 @@ pub(crate) fn juger(
     {
         decouper(x, hi, &mut segments);
     }
-    // Ce qui manque à chaque morceau lu, contre ce qu'il n'a pas rendu ; les plages libres contre les pertes.
+    segments
+}
+
+/// Chaque segment devient un trou de sa nature (ce qui manque à un morceau contre ce qu'il n'a pas rendu, les plages
+/// libres contre les pertes) ; les segments voisins de même nature se rejoignent ; au-delà de `max_trous`, comptés.
+fn ranger_les_trous(suite: &mut Suite, segments: Vec<(u64, u64, Classe)>, contexte: &Contexte, max_trous: usize) {
     let mut manque_au_morceau = vec![0u64; contexte.morceaux.len()];
     let mut libres = Vec::new();
     for &(de, a, classe) in &segments {
@@ -521,13 +561,15 @@ pub(crate) fn juger(
             }),
         }
     }
-    // Les dates autour de chaque trou : celles des présents voisins.
+}
+
+/// Les dates autour de chaque trou : celles des présents voisins.
+fn dater_les_trous(suite: &mut Suite, presents: &[Present]) {
     for t in &mut suite.trous {
         let i = presents.partition_point(|p| p.numero < t.de);
         t.avant = i.checked_sub(1).and_then(|j| presents.get(j)).and_then(|p| p.date);
         t.apres = presents.get(i).and_then(|p| p.date);
     }
-    suite
 }
 
 #[cfg(test)]
