@@ -87,14 +87,37 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
             }
         }
     }
+    // La suite des numéros de chaque journal, jugée sur les événements reçus (`trous::juger`) : les règles qui
+    // croisent les trous avec les arrêts et les effacements les lisent, comme sur un vrai Windows.
     let etats: Vec<moteur::EtatJournal> = jeu::JOURNAUX
         .iter()
-        .map(|j| moteur::EtatJournal {
-            nom: (*j).to_string(),
-            lecture: moteur::Lecture::Lu(Vec::new()),
-            active: None,
-            principal: true,
-            suites: Vec::new(),
+        .map(|j| {
+            let presents = tous
+                .iter()
+                .filter(|e| e.journal.eq_ignore_ascii_case(j))
+                .filter_map(|e| {
+                    Some(trous::Present {
+                        numero: e.numero?,
+                        date: e.date,
+                        morceau: None,
+                        verifie: e.verifie,
+                    })
+                })
+                .collect();
+            let suite = trous::juger(
+                trous::Numerotation::Journal,
+                presents,
+                &trous::Contexte::nu(trous::Nature::Absents),
+                8,
+            );
+            assert!(suite.trous.len() <= 8 && suite.non_verifies <= suite.presents);
+            moteur::EtatJournal {
+                nom: (*j).to_string(),
+                lecture: moteur::Lecture::Lu(Vec::new()),
+                active: None,
+                principal: true,
+                suites: vec![suite],
+            }
         })
         .collect();
     // Les mêmes événements à l'envers (la source vivante lit les plus récents d'abord) : sans borne atteinte, les
