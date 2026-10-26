@@ -5,6 +5,7 @@
 //! Reconnu : commentaires `#`, clés nues, chaînes "…" (échappements \" \\ \n \t \r \uXXXX \UXXXXXXXX) et '…', entiers,
 //! tableaux de chaînes (sur plusieurs lignes, virgule finale permise), sections `[linux]`, `[windows]`, `[macos]`.
 
+use crate::modele::Echec;
 use crate::{tr, trf};
 
 /// Taille, lignes, longueur d'une chaîne et d'un tableau au plus : un manifeste en fait une fraction.
@@ -401,117 +402,35 @@ impl Lecteur {
     }
 }
 
+/// Le contexte des refus du manifeste (`Echec`), rendus en texte par `construire`.
+const CONTEXTE: &str = "plugins/manifeste";
+
+/// Le texte d'une clé obligatoire qui manque.
+fn manque(cle: &str) -> String {
+    trf!("« {cle} » manque", "“{cle}” is missing")
+}
+
+/// Ce que les paires disent, avant les vérifications d'ensemble.
+#[derive(Default)]
+struct Lus {
+    nom: Option<String>,
+    titre: [Option<String>; 2],
+    description: [Option<String>; 2],
+    systemes: Option<Vec<String>>,
+    delai: Option<i64>,
+    auteur: Option<String>,
+    source: Option<String>,
+    cle_auteur: Option<[u8; 32]>,
+    confiance_totale: bool,
+    dans_le_bilan: bool,
+    dans_la_surveillance: bool,
+    commandes: Vec<CommandeLue>,
+}
+
 /// Les paires lues, vérifiées une à une, en manifeste.
 fn construire(paires: Vec<Paire>) -> Result<Manifeste, String> {
-    let mut vues: Vec<(Option<String>, String)> = Vec::new();
-    let (mut nom, mut titre, mut description) = (None, [None, None], [None, None]);
-    let (mut systemes, mut delai) = (None, None);
-    let (mut auteur, mut source, mut cle_auteur) = (None, None, None);
-    let (mut confiance_totale, mut dans_le_bilan, mut dans_la_surveillance) = (false, false, false);
-    let mut commandes: Vec<CommandeLue> = Vec::new();
-    for (section, cle, valeur, ligne) in paires {
-        let erreur = |quoi: &str| trf!("ligne {ligne} : {quoi}", "line {ligne}: {quoi}");
-        if vues.contains(&(section.clone(), cle.clone())) {
-            return Err(erreur(&trf!("« {cle} » en double", "“{cle}” given twice")));
-        }
-        vues.push((section.clone(), cle.clone()));
-        let systeme = match &section {
-            None => None,
-            Some(s) => Some(Systeme::depuis(s).ok_or_else(|| {
-                erreur(&trf!(
-                    "section inconnue « {s} » (linux, windows ou macos)",
-                    "unknown section “{s}” (linux, windows or macos)"
-                ))
-            })?),
-        };
-        let place = if let Some(i) = commandes.iter().position(|(s, _, _)| *s == systeme) {
-            i
-        } else {
-            commandes.push((systeme, None, None));
-            commandes.len() - 1
-        };
-        let chaine = |v: Valeur| match v {
-            Valeur::Chaine(s) => Ok(s),
-            _ => Err(erreur(&trf!(
-                "« {cle} » doit être une chaîne",
-                "“{cle}” must be a string"
-            ))),
-        };
-        match (systeme.is_some(), cle.as_str()) {
-            (_, "commande") => commandes[place].1 = Some(chaine(valeur)?),
-            (_, "arguments") => match valeur {
-                Valeur::Tableau(t) => commandes[place].2 = Some(t),
-                _ => {
-                    return Err(erreur(tr!(
-                        "« arguments » doit être un tableau de chaînes",
-                        "“arguments” must be an array of strings"
-                    )));
-                }
-            },
-            (false, "nom") => nom = Some(chaine(valeur)?),
-            (false, "titre_fr") => titre[0] = Some(chaine(valeur)?),
-            (false, "titre_en") => titre[1] = Some(chaine(valeur)?),
-            (false, "description_fr") => description[0] = Some(chaine(valeur)?),
-            (false, "description_en") => description[1] = Some(chaine(valeur)?),
-            (false, "confiance") => match chaine(valeur)?.as_str() {
-                "totale" => confiance_totale = true,
-                "normale" => confiance_totale = false,
-                _ => {
-                    return Err(erreur(tr!(
-                        "« confiance » : \"totale\" ou \"normale\"",
-                        "“confiance”: \"totale\" or \"normale\""
-                    )));
-                }
-            },
-            (false, cle @ ("dans_le_bilan" | "dans_la_surveillance")) => {
-                let Valeur::Booleen(b) = valeur else {
-                    return Err(erreur(&trf!("« {cle} » : true ou false", "“{cle}”: true or false")));
-                };
-                if cle == "dans_le_bilan" {
-                    dans_le_bilan = b;
-                } else {
-                    dans_la_surveillance = b;
-                }
-            }
-            (false, "auteur") => auteur = Some(chaine(valeur)?),
-            (false, "source") => source = Some(chaine(valeur)?),
-            (false, "cle_auteur") => {
-                let hex = chaine(valeur)?;
-                let mut cle = [0u8; 32];
-                let lue = hex.len() == 64
-                    && cle.iter_mut().enumerate().all(|(i, o)| {
-                        hex.get(2 * i..2 * i + 2)
-                            .and_then(|h| u8::from_str_radix(h, 16).ok())
-                            .map(|v| *o = v)
-                            .is_some()
-                    });
-                if !lue {
-                    return Err(erreur(tr!(
-                        "« cle_auteur » : la clé publique Ed25519, en 64 chiffres hexadécimaux",
-                        "“cle_auteur”: the Ed25519 public key, as 64 hexadecimal digits"
-                    )));
-                }
-                cle_auteur = Some(cle);
-            }
-            (false, "systemes") => match valeur {
-                Valeur::Tableau(t) => systemes = Some(t),
-                _ => {
-                    return Err(erreur(tr!(
-                        "« systemes » doit être un tableau",
-                        "“systemes” must be an array"
-                    )));
-                }
-            },
-            (false, "delai") => match valeur {
-                Valeur::Entier(n) => delai = Some(n),
-                _ => return Err(erreur(tr!("« delai » doit être un nombre", "“delai” must be a number"))),
-            },
-            _ => return Err(erreur(&trf!("clé inconnue « {cle} »", "unknown key “{cle}”"))),
-        }
-    }
-
-    let manque = |cle: &str| trf!("« {cle} » manque", "“{cle}” is missing");
-    let nom = nom.ok_or_else(|| manque("nom"))?;
+    let lus = lire_paires(paires)?;
+    let nom = lus.nom.ok_or_else(|| manque("nom"))?;
     if !nom_valide(&nom) {
         return Err(trf!(
             "nom « {} » refusé : 1 à 32 lettres minuscules, chiffres ou tirets, commençant par une lettre",
@@ -519,15 +438,203 @@ fn construire(paires: Vec<Paire>) -> Result<Manifeste, String> {
             crate::ui::affichable(&nom)
         ));
     }
+    let (titre, description) = textes_lus(lus.titre, lus.description, lus.auteur.as_ref(), lus.source.as_ref())?;
+    let systemes = systemes_lus(lus.systemes)?;
+    let delai = delai_lu(lus.delai)?;
+    let (commune, par_systeme) = commandes_lues(lus.commandes)?;
+    let m = Manifeste {
+        nom,
+        titre,
+        description,
+        systemes,
+        delai,
+        confiance_totale: lus.confiance_totale,
+        dans_le_bilan: lus.dans_le_bilan,
+        dans_la_surveillance: lus.dans_la_surveillance,
+        auteur: lus.auteur,
+        source: lus.source,
+        cle_auteur: lus.cle_auteur,
+        commune,
+        par_systeme,
+    };
+    if let Some(s) = m.systemes.iter().find(|s| m.commande(**s).is_none()) {
+        return Err(trf!("aucune commande pour {}", "no command for {}", s.nom()));
+    }
+    Ok(m)
+}
+
+/// Chaque paire rangée à sa place : une clé en double, une section ou une clé inconnue, une valeur du mauvais type
+/// sont refusées, avec leur ligne.
+fn lire_paires(paires: Vec<Paire>) -> Result<Lus, Echec> {
+    let mut vues: Vec<(Option<String>, String)> = Vec::new();
+    let mut lus = Lus::default();
+    for (section, cle, valeur, ligne) in paires {
+        let erreur = |quoi: &str| trf!("ligne {ligne} : {quoi}", "line {ligne}: {quoi}");
+        if vues.contains(&(section.clone(), cle.clone())) {
+            return Err(Echec::refuse(
+                CONTEXTE,
+                erreur(&trf!("« {cle} » en double", "“{cle}” given twice")),
+            ));
+        }
+        vues.push((section.clone(), cle.clone()));
+        let systeme = match &section {
+            None => None,
+            Some(s) => Some(Systeme::depuis(s).ok_or_else(|| {
+                Echec::refuse(
+                    CONTEXTE,
+                    erreur(&trf!(
+                        "section inconnue « {s} » (linux, windows ou macos)",
+                        "unknown section “{s}” (linux, windows or macos)"
+                    )),
+                )
+            })?),
+        };
+        let place = if let Some(i) = lus.commandes.iter().position(|(s, _, _)| *s == systeme) {
+            i
+        } else {
+            lus.commandes.push((systeme, None, None));
+            lus.commandes.len() - 1
+        };
+        ranger(&mut lus, systeme.is_some(), &cle, valeur, place)
+            .map_err(|quoi| Echec::refuse(CONTEXTE, erreur(&String::from(quoi))))?;
+    }
+    Ok(lus)
+}
+
+/// Une paire à sa place dans `lus` (`place` : la commande de sa section) ; l'erreur sans sa ligne.
+fn ranger(lus: &mut Lus, dans_une_section: bool, cle: &str, valeur: Valeur, place: usize) -> Result<(), Echec> {
+    let chaine = |v: Valeur| match v {
+        Valeur::Chaine(s) => Ok(s),
+        _ => Err(Echec::refuse(
+            CONTEXTE,
+            trf!("« {cle} » doit être une chaîne", "“{cle}” must be a string"),
+        )),
+    };
+    match (dans_une_section, cle) {
+        (_, "commande") => lus.commandes[place].1 = Some(chaine(valeur)?),
+        (_, "arguments") => match valeur {
+            Valeur::Tableau(t) => lus.commandes[place].2 = Some(t),
+            _ => {
+                return Err(Echec::refuse(
+                    CONTEXTE,
+                    tr!(
+                        "« arguments » doit être un tableau de chaînes",
+                        "“arguments” must be an array of strings"
+                    )
+                    .to_string(),
+                ));
+            }
+        },
+        (false, "nom") => lus.nom = Some(chaine(valeur)?),
+        (false, "titre_fr") => lus.titre[0] = Some(chaine(valeur)?),
+        (false, "titre_en") => lus.titre[1] = Some(chaine(valeur)?),
+        (false, "description_fr") => lus.description[0] = Some(chaine(valeur)?),
+        (false, "description_en") => lus.description[1] = Some(chaine(valeur)?),
+        (false, "confiance") => match chaine(valeur)?.as_str() {
+            "totale" => lus.confiance_totale = true,
+            "normale" => lus.confiance_totale = false,
+            _ => {
+                return Err(Echec::refuse(
+                    CONTEXTE,
+                    tr!(
+                        "« confiance » : \"totale\" ou \"normale\"",
+                        "“confiance”: \"totale\" or \"normale\""
+                    )
+                    .to_string(),
+                ));
+            }
+        },
+        (false, cle @ ("dans_le_bilan" | "dans_la_surveillance")) => {
+            let Valeur::Booleen(b) = valeur else {
+                return Err(Echec::refuse(
+                    CONTEXTE,
+                    trf!("« {cle} » : true ou false", "“{cle}”: true or false"),
+                ));
+            };
+            if cle == "dans_le_bilan" {
+                lus.dans_le_bilan = b;
+            } else {
+                lus.dans_la_surveillance = b;
+            }
+        }
+        (false, "auteur") => lus.auteur = Some(chaine(valeur)?),
+        (false, "source") => lus.source = Some(chaine(valeur)?),
+        (false, "cle_auteur") => lus.cle_auteur = Some(cle_publique(&chaine(valeur)?)?),
+        (false, "systemes") => match valeur {
+            Valeur::Tableau(t) => lus.systemes = Some(t),
+            _ => {
+                return Err(Echec::refuse(
+                    CONTEXTE,
+                    tr!("« systemes » doit être un tableau", "“systemes” must be an array").to_string(),
+                ));
+            }
+        },
+        (false, "delai") => match valeur {
+            Valeur::Entier(n) => lus.delai = Some(n),
+            _ => {
+                return Err(Echec::refuse(
+                    CONTEXTE,
+                    tr!("« delai » doit être un nombre", "“delai” must be a number").to_string(),
+                ));
+            }
+        },
+        _ => {
+            return Err(Echec::refuse(
+                CONTEXTE,
+                trf!("clé inconnue « {cle} »", "unknown key “{cle}”"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// La clé publique Ed25519 de l'auteur, en 64 chiffres hexadécimaux.
+fn cle_publique(hex: &str) -> Result<[u8; 32], Echec> {
+    let mut cle = [0u8; 32];
+    let lue = hex.len() == 64
+        && cle.iter_mut().enumerate().all(|(i, o)| {
+            hex.get(2 * i..2 * i + 2)
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+                .map(|v| *o = v)
+                .is_some()
+        });
+    if lue {
+        Ok(cle)
+    } else {
+        Err(Echec::refuse(
+            CONTEXTE,
+            tr!(
+                "« cle_auteur » : la clé publique Ed25519, en 64 chiffres hexadécimaux",
+                "“cle_auteur”: the Ed25519 public key, as 64 hexadecimal digits"
+            )
+            .to_string(),
+        ))
+    }
+}
+
+/// Les titres et descriptions dans les deux langues, présents et pas trop longs ; l'auteur et la source pas trop
+/// longs non plus.
+fn textes_lus(
+    titre: [Option<String>; 2],
+    description: [Option<String>; 2],
+    auteur: Option<&String>,
+    source: Option<&String>,
+) -> Result<([String; 2], [String; 2]), Echec> {
     let [Some(titre_fr), Some(titre_en)] = titre else {
-        return Err(manque(if titre[0].is_none() { "titre_fr" } else { "titre_en" }));
+        return Err(Echec::refuse(
+            CONTEXTE,
+            manque(if titre[0].is_none() { "titre_fr" } else { "titre_en" }),
+        ));
     };
     let [Some(description_fr), Some(description_en)] = description else {
-        return Err(manque(if description[0].is_none() {
-            "description_fr"
-        } else {
-            "description_en"
-        }));
+        return Err(Echec::refuse(
+            CONTEXTE,
+            manque(if description[0].is_none() {
+                "description_fr"
+            } else {
+                "description_en"
+            }),
+        ));
     };
     for (cle, texte, max) in [
         ("titre_fr", &titre_fr, 60),
@@ -536,27 +643,41 @@ fn construire(paires: Vec<Paire>) -> Result<Manifeste, String> {
         ("description_en", &description_en, 300),
     ] {
         if texte.trim().is_empty() || texte.chars().count() > max {
-            return Err(trf!(
-                "« {cle} » vide ou de plus de {max} caractères",
-                "“{cle}” empty or longer than {max} characters"
+            return Err(Echec::refuse(
+                CONTEXTE,
+                trf!(
+                    "« {cle} » vide ou de plus de {max} caractères",
+                    "“{cle}” empty or longer than {max} characters"
+                ),
             ));
         }
     }
-    for (cle, texte, max) in [("auteur", &auteur, 100), ("source", &source, 300)] {
-        if texte.as_ref().is_some_and(|t| t.chars().count() > max) {
-            return Err(trf!(
-                "« {cle} » de plus de {max} caractères",
-                "“{cle}” longer than {max} characters"
+    for (cle, texte, max) in [("auteur", auteur, 100), ("source", source, 300)] {
+        if texte.is_some_and(|t| t.chars().count() > max) {
+            return Err(Echec::refuse(
+                CONTEXTE,
+                trf!(
+                    "« {cle} » de plus de {max} caractères",
+                    "“{cle}” longer than {max} characters"
+                ),
             ));
         }
     }
+    Ok(([titre_fr, titre_en], [description_fr, description_en]))
+}
+
+/// Les systèmes nommés, connus, sans doublon, au moins un.
+fn systemes_lus(systemes: Option<Vec<String>>) -> Result<Vec<Systeme>, Echec> {
     let mut liste = Vec::new();
-    for s in systemes.ok_or_else(|| manque("systemes"))? {
+    for s in systemes.ok_or_else(|| Echec::refuse(CONTEXTE, manque("systemes")))? {
         let s = Systeme::depuis(&s).ok_or_else(|| {
-            trf!(
-                "système inconnu « {} » (linux, windows ou macos)",
-                "unknown system “{}” (linux, windows or macos)",
-                crate::ui::affichable(&s)
+            Echec::refuse(
+                CONTEXTE,
+                trf!(
+                    "système inconnu « {} » (linux, windows ou macos)",
+                    "unknown system “{}” (linux, windows or macos)",
+                    crate::ui::affichable(&s)
+                ),
             )
         })?;
         if !liste.contains(&s) {
@@ -564,34 +685,56 @@ fn construire(paires: Vec<Paire>) -> Result<Manifeste, String> {
         }
     }
     if liste.is_empty() {
-        return Err(tr!("« systemes » est vide", "“systemes” is empty").to_string());
+        return Err(Echec::refuse(
+            CONTEXTE,
+            tr!("« systemes » est vide", "“systemes” is empty").to_string(),
+        ));
     }
-    let delai = match delai {
-        None => DELAI_DEFAUT,
+    Ok(liste)
+}
+
+/// Le délai donné (de 1 à `DELAI_MAX` secondes), ou celui par défaut.
+fn delai_lu(delai: Option<i64>) -> Result<u64, Echec> {
+    match delai {
+        None => Ok(DELAI_DEFAUT),
         Some(n) => u64::try_from(n)
             .ok()
             .filter(|n| (1..=DELAI_MAX).contains(n))
             .ok_or_else(|| {
-                trf!(
-                    "« delai » : de 1 à {DELAI_MAX} secondes",
-                    "“delai”: from 1 to {DELAI_MAX} seconds"
+                Echec::refuse(
+                    CONTEXTE,
+                    trf!(
+                        "« delai » : de 1 à {DELAI_MAX} secondes",
+                        "“delai”: from 1 to {DELAI_MAX} seconds"
+                    ),
                 )
-            })?,
-    };
+            }),
+    }
+}
+
+/// La commande commune, et celles propres à un système.
+type Commandes = (Option<Commande>, Vec<(Systeme, Commande)>);
+
+/// La commande commune et celles de chaque système : un chemin relatif au dossier du plugin, sans « .. » ; des
+/// arguments sans commande sont refusés.
+fn commandes_lues(commandes: Vec<CommandeLue>) -> Result<Commandes, Echec> {
     let mut commune = None;
     let mut par_systeme = Vec::new();
     for (systeme, programme, arguments) in commandes {
         let Some(programme) = programme else {
             if arguments.is_some() {
-                return Err(manque("commande"));
+                return Err(Echec::refuse(CONTEXTE, manque("commande")));
             }
             continue;
         };
         if !chemin_valide(&programme) {
-            return Err(trf!(
-                "commande « {} » refusée : un chemin relatif au dossier du plugin, sans « .. »",
-                "command “{}” refused: a path relative to the plugin's folder, without “..”",
-                crate::ui::affichable(&programme)
+            return Err(Echec::refuse(
+                CONTEXTE,
+                trf!(
+                    "commande « {} » refusée : un chemin relatif au dossier du plugin, sans « .. »",
+                    "command “{}” refused: a path relative to the plugin's folder, without “..”",
+                    crate::ui::affichable(&programme)
+                ),
             ));
         }
         let c = Commande {
@@ -603,25 +746,7 @@ fn construire(paires: Vec<Paire>) -> Result<Manifeste, String> {
             Some(s) => par_systeme.push((s, c)),
         }
     }
-    let m = Manifeste {
-        nom,
-        titre: [titre_fr, titre_en],
-        description: [description_fr, description_en],
-        systemes: liste,
-        delai,
-        confiance_totale,
-        dans_le_bilan,
-        dans_la_surveillance,
-        auteur,
-        source,
-        cle_auteur,
-        commune,
-        par_systeme,
-    };
-    if let Some(s) = m.systemes.iter().find(|s| m.commande(**s).is_none()) {
-        return Err(trf!("aucune commande pour {}", "no command for {}", s.nom()));
-    }
-    Ok(m)
+    Ok((commune, par_systeme))
 }
 
 #[cfg(test)]
