@@ -61,17 +61,25 @@ delivered just before it. Only the latest version has its download page; every v
   silences another). Block and
   respond › Windows logs menu: this Windows, or a folder of .evtx on Linux and macOS.
 - **Tighter reading and proofs (fourth attack campaign).** Windows logs: a task action written with attributes
-  (`<Exec id="…">`) or a blank before “>” is read (EVT-TAC-001), and an action that is present but unreadable gives
-  an alert instead of silence; the typographic dashes PowerShell accepts for its options (“–enc”) are turned into
-  “-” before judging (EVT-PRC-001, EVT-TAC-001, services, script blocks). Memory: a loaded image whose code is mapped
-  far from its header is read in one piece, and the scan is said to be incomplete rather than clean; an intact image
-  outside the system folders (a program started from ~/.cache or /var/tmp) is read in memory instead of being “left
-  to the file scan”, which did not read it; only images from the system folders stay unread, and that is said. On
-  Windows, this last change has not been tried on a real Windows yet. Detection corpus: every per-system version of a
-  function in a rule's chain must call the next one, and the check-up and the corpus go through the same judge for
-  forced logins (COM-CPT-003). Decompression: an extension's archive, the full MalwareBazaar list and gzip files
-  (pacman databases, downloaded lists) are read before a deadline and, when their size is announced, with compressed
-  bytes plausible for it: empty deflate blocks no longer hold the processor for minutes. An extension's archive also
+  (`<Exec id="…">`), a namespace prefix (`<task:Exec>`), a blank before “>”, a CDATA section or numeric references
+  (`&#112;`) is read (EVT-TAC-001), an empty `<Command/>` tag no longer hides the next one, and any action tag opened
+  beyond the actions read gives an alert instead of silence; PowerShell's encoded command is recognized in all its
+  forms (`-e`, `-enc`, `--enc`, `-EncodedCommand:…`, `-e^nc`, typographic dashes “–enc”) in processes, tasks,
+  services and script blocks (EVT-PRC-001, EVT-TAC-001). Memory: a loaded image whose code is mapped far from its
+  header is read in one piece, and the scan is said to be incomplete rather than clean; an intact image outside the
+  system folders (a program started from ~/.cache or /var/tmp) is read in memory instead of being “left to the file
+  scan”, which did not read it, once for all processes that load it, but counted as read only after a process read in
+  full (a decoy process that fills its share no longer makes it skipped elsewhere); it is named by its file (Linux:
+  device, inode and dates; Windows: volume, file ID and write date). A mapped data file without code (a systemd
+  journal) is neither read nor called fragmented, unless it starts with an ELF or PE header; the host libraries seen
+  by Steam games (/run/host/usr) are recognized as system ones. Only images from the system folders stay unread, and
+  that is said. On Windows, these changes have not been tried on a real Windows yet. Detection corpus: every
+  per-system version of a function in a rule's chain (its `cfg` conditions evaluated, tests excluded) must call the
+  next one, including the login-attempt reader on each system, and the check-up and the corpus go through the same
+  judge for forced logins (COM-CPT-003). Decompression: an extension's archive, the full MalwareBazaar list and gzip
+  files (pacman databases, downloaded lists) are read before a deadline and, when their size is announced, with
+  compressed bytes plausible for it: empty deflate blocks no longer hold the processor for minutes; an extension
+  archive that is too slow is reported as “time limit exceeded”, not “unreadable”. An extension's archive also
   refuses two entries sharing the same bytes, and the same name twice.
 - **macOS maintained, without Mac-specific new features.** The macOS program is still published and tested
   automatically on a GitHub Mac; it has never been tried on a real Mac, and the page, READMEs and key notes say so.
