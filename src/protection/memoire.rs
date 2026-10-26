@@ -159,12 +159,23 @@ pub(crate) fn recoller_image(morceaux: Vec<(Region, u64)>, chargee: bool) -> (Ve
 
 /// Une image chargée hors des dossiers du système, intacte (son fichier est là, rien n'y a changé en mémoire) : aucun
 /// scan de fichiers ne la couvre forcément (un programme lancé de ~/.cache ou de /var/tmp), elle se lit donc en
-/// mémoire, une seule fois pour tous les processus qui la chargent (même fichier, mêmes pages) : `cle` la nomme.
+/// mémoire, une seule fois pour tous les processus qui la chargent (même fichier, mêmes pages) : `cle` la nomme
+/// (Linux : périphérique, inode, chemin, dates de modification et de changement ; Windows : volume, identifiant du
+/// fichier, date d'écriture), `None` quand le fichier ne se confirme pas : elle se lit alors dans chaque processus.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ImageHorsSysteme {
-    pub cle: String,
+    pub cle: Option<String>,
     pub blocs: Vec<Bloc>,
     pub morcelee: bool,
+    /// Linux, un fichier mappé sans aucune région exécutable : une donnée (un journal, une archive lue par mmap)
+    /// tant que le début de cette région (le mappage du début du fichier) n'est pas un en-tête ELF ou PE ; elle n'est
+    /// alors ni lue ni dite morcelée. `None` : une image de code.
+    pub entete_a_verifier: Option<Region>,
+}
+
+/// Un en-tête d'exécutable : ELF ou PE (« MZ »).
+fn entete_de_code(octets: &[u8]) -> bool {
+    octets.starts_with(b"\x7fELF") || octets.starts_with(b"MZ")
 }
 
 /// Ce que le relevé des régions d'un processus a retenu : les blocs à lire, et les images chargées qui n'ont pas pu
@@ -183,15 +194,32 @@ pub(crate) struct Releve {
 }
 
 impl Releve {
-    /// Ajoute aux blocs à lire les images hors du système que `vues` n'a pas encore (et les y met), en comptant les
-    /// morcelées.
-    fn prendre_hors_systeme(&mut self, vues: &mut std::collections::HashSet<String>) {
+    /// Ajoute aux blocs à lire les images hors du système que `vues` n'a pas encore, en comptant les morcelées ; une
+    /// donnée mappée (`entete_a_verifier`, dont `est_du_code` ne voit pas l'en-tête) est laissée. Rend les clés
+    /// prises : `vues` ne les reçoit qu'une fois le processus lu en entier (`lire_processus`), sans quoi un processus
+    /// leurre qui mappe la même image et atteint sa borne la ferait passer pour lue dans tous les autres.
+    fn prendre_hors_systeme(
+        &mut self,
+        vues: &std::collections::HashSet<String>,
+        mut est_du_code: impl FnMut(&Region) -> bool,
+    ) -> Vec<String> {
+        let mut prises = Vec::new();
         for image in std::mem::take(&mut self.hors_systeme) {
-            if vues.insert(image.cle) {
-                self.blocs.extend(image.blocs);
-                self.images_morcelees += usize::from(image.morcelee);
+            if image
+                .cle
+                .as_ref()
+                .is_some_and(|c| vues.contains(c) || prises.contains(c))
+            {
+                continue;
             }
+            if image.entete_a_verifier.is_some_and(|r| !est_du_code(&r)) {
+                continue;
+            }
+            self.blocs.extend(image.blocs);
+            self.images_morcelees += usize::from(image.morcelee);
+            prises.extend(image.cle);
         }
+        prises
     }
 }
 
@@ -456,10 +484,16 @@ pub(crate) fn en_memoire_linux(mountinfo: &str) -> Vec<(u32, u32)> {
 /// effacé (« (deleted) », memfd), posé sur un système de fichiers en mémoire (`en_memoire`), ou dont une région
 /// exécutable a des pages privées (code réécrit). Vdso, vvar et vsyscall sont au noyau. `en_memoire` : `None` si
 /// mountinfo ne s'est pas lu, et une image de fichier qui n'est pas retenue pour une autre raison est alors non
-/// vérifiée, jamais écartée. Une image intacte d'un disque n'est laissée que si `systeme` (chemin, inode) la dit
-/// dans un dossier du système (`fichier_du_systeme_linux`) ; ailleurs, elle se lit (`ImageHorsSysteme`).
+/// vérifiée, jamais écartée. Une image intacte d'un disque n'est laissée que si `disque` (chemin, inode) la dit
+/// dans un dossier du système (`fichier_linux`) ; ailleurs, elle se lit (`ImageHorsSysteme`) si elle a du code : une
+/// région exécutable, ou un en-tête ELF ou PE au début du fichier ; un fichier de données mappé (un journal) ne se
+/// lit pas et n'est jamais dit morcelé.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(crate) fn releve_linux(smaps: &str, en_memoire: Option<&[(u32, u32)]>, systeme: fn(&str, u64) -> bool) -> Releve {
+pub(crate) fn releve_linux(
+    smaps: &str,
+    en_memoire: Option<&[(u32, u32)]>,
+    disque: fn(&str, u64) -> SurLeDisque,
+) -> Releve {
     let mut mappages: Vec<Mappage> = Vec::new();
     for ligne in smaps.lines() {
         if let Some(m) = entete_linux(ligne) {
@@ -517,19 +551,34 @@ pub(crate) fn releve_linux(smaps: &str, en_memoire: Option<&[(u32, u32)]>, syste
         );
         if hors_disque.is_none() {
             releve.images_non_verifiees += 1;
-        } else if systeme(&premier.chemin, premier.inode) {
-            releve.images_laissees += 1;
-        } else {
-            let (blocs, morcelee) = recoller_image(morceaux(), false);
-            releve.hors_systeme.push(ImageHorsSysteme {
-                cle: format!(
-                    "{}:{}:{}:{}",
-                    premier.peripherique.0, premier.peripherique.1, premier.inode, premier.chemin
-                ),
-                blocs,
-                morcelee,
-            });
+            continue;
         }
+        let fichier = disque(&premier.chemin, premier.inode);
+        if fichier.du_systeme {
+            releve.images_laissees += 1;
+            continue;
+        }
+        // Sans région exécutable : une donnée mappée, sauf si le début du fichier (mappé) est un en-tête ELF ou PE ;
+        // sans le début du fichier, rien n'en fait une image.
+        let entete_a_verifier = if groupe.iter().any(|m| m.executable) {
+            None
+        } else if let Some(m) = groupe.iter().find(|m| m.decalage == 0) {
+            Some(m.region)
+        } else {
+            continue;
+        };
+        let (blocs, morcelee) = recoller_image(morceaux(), false);
+        releve.hors_systeme.push(ImageHorsSysteme {
+            cle: fichier.dates.map(|(modification, changement)| {
+                format!(
+                    "{}:{}:{}:{modification}:{changement}:{}",
+                    premier.peripherique.0, premier.peripherique.1, premier.inode, premier.chemin
+                )
+            }),
+            blocs,
+            morcelee,
+            entete_a_verifier,
+        });
     }
     releve
 }
@@ -554,21 +603,52 @@ fn image_du_systeme_linux(chemin: &str) -> bool {
     DOSSIERS.iter().any(|d| chemin.starts_with(d)) && !chemin.split('/').any(|p| p == ".." || p == ".")
 }
 
-/// L'image (chemin et inode, d'après smaps) est-elle un fichier d'un dossier du système (`image_du_systeme_linux`), et
-/// ce chemin, vu d'ici, mène-t-il bien à ce fichier ? Un processus dans son propre espace de noms peut monter un
-/// fichier de son compte sur /usr/lib/… : son chemin y ment, mais l'inode ne concorde pas avec le vrai. Le numéro de
-/// périphérique ne se compare pas : sur btrfs, smaps donne celui du système de fichiers, stat celui du sous-volume.
+/// Ce que le disque dit du fichier d'une image (`fichier_linux`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct SurLeDisque {
+    /// Un fichier d'un dossier du système (`image_du_systeme_linux`), confirmé par son inode.
+    pub du_systeme: bool,
+    /// Ses dates de modification et de changement (en nanosecondes), quand le chemin mène bien au fichier mappé :
+    /// elles entrent dans la clé d'une image hors du système, qu'un fichier réécrit sur place ne reprenne pas.
+    pub dates: Option<(i128, i128)>,
+}
+
+/// L'image (chemin et inode, d'après smaps) : son chemin, vu d'ici, mène-t-il bien à ce fichier, et dans un dossier
+/// du système ? Un processus dans son propre espace de noms peut monter un fichier de son compte sur /usr/lib/… : son
+/// chemin y ment, mais l'inode ne concorde pas avec le vrai. Le numéro de périphérique ne se compare pas : sur btrfs,
+/// smaps donne celui du système de fichiers, stat celui du sous-volume. « /run/host/… » est la racine de l'hôte que
+/// le bac à sable de Steam (pressure-vessel) montre à ses jeux : « /run/host/usr/lib/x » est « /usr/lib/x » d'ici,
+/// s'il en a l'inode.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn fichier_du_systeme_linux(chemin: &str, inode: u64) -> bool {
+fn fichier_linux(chemin: &str, inode: u64) -> SurLeDisque {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        image_du_systeme_linux(chemin) && std::fs::metadata(chemin).is_ok_and(|m| m.is_file() && m.ino() == inode)
+        let confirme = |c: &str| {
+            std::fs::metadata(c)
+                .ok()
+                .filter(|m| m.is_file() && m.ino() == inode)
+                .map(|m| {
+                    let ns = |s: i64, n: i64| i128::from(s) * 1_000_000_000 + i128::from(n);
+                    (ns(m.mtime(), m.mtime_nsec()), ns(m.ctime(), m.ctime_nsec()))
+                })
+        };
+        if let Some(dates) = confirme(chemin) {
+            return SurLeDisque {
+                du_systeme: image_du_systeme_linux(chemin),
+                dates: Some(dates),
+            };
+        }
+        let hote = chemin.strip_prefix("/run/host").filter(|c| image_du_systeme_linux(c));
+        SurLeDisque {
+            du_systeme: hote.is_some_and(|c| confirme(c).is_some()),
+            dates: None,
+        }
     }
     #[cfg(not(unix))]
     {
         let _ = (chemin, inode);
-        false
+        SurLeDisque::default()
     }
 }
 
@@ -748,6 +828,32 @@ fn analyser_regions(
     lecture
 }
 
+/// Les blocs d'un processus lus (`analyser_regions`), avec les images hors du système que `vues` n'a pas encore
+/// (`Releve::prendre_hors_systeme`, leur en-tête lu par `lire` quand il faut le voir) ; leurs clés n'entrent dans
+/// `vues` que si tout a été lu. `depuis` : ce qui a déjà été lu, et le départ de l'analyse.
+fn lire_processus(
+    regles: &Regles,
+    releve: &mut Releve,
+    vues: &mut std::collections::HashSet<String>,
+    tampon: &mut [u8],
+    mut lire: impl FnMut(&Region, &mut [u8]) -> usize,
+    (lu_total, debut): (u64, Instant),
+) -> Lecture {
+    let prises = releve.prendre_hors_systeme(vues, |r| {
+        let mut entete = [0u8; 4];
+        let debut = Region {
+            debut: r.debut,
+            taille: 4,
+        };
+        lire(&debut, &mut entete) == entete.len() && entete_de_code(&entete)
+    });
+    let lecture = analyser_regions(regles, &releve.blocs, tampon, &mut lire, lu_total, debut);
+    if !lecture.incomplete() && !lecture.arret {
+        vues.extend(prises);
+    }
+    lecture
+}
+
 /// Comment un processus s'est ouvert.
 enum Acces {
     /// Protégé par Windows (PPL) ou niveau illisible : exclu par choix, jamais lu.
@@ -764,7 +870,7 @@ mod plateforme {
     use std::fs::File;
     use std::os::unix::fs::FileExt;
 
-    use super::{Acces, Processus, Region, Releve, en_memoire_linux, fichier_du_systeme_linux, releve_linux};
+    use super::{Acces, Processus, Region, Releve, en_memoire_linux, fichier_linux, releve_linux};
 
     /// Les processus de /proc, nom d'après `comm` (choisi par le programme : rendu inoffensif).
     pub(super) fn processus() -> Vec<Processus> {
@@ -805,7 +911,7 @@ mod plateforme {
         match File::open(format!("/proc/{pid}/mem")) {
             Ok(fichier) => Acces::Ouvert(Lecteur {
                 fichier,
-                releve: releve_linux(&cartes, en_memoire.as_deref(), fichier_du_systeme_linux),
+                releve: releve_linux(&cartes, en_memoire.as_deref(), fichier_linux),
             }),
             Err(_) => Acces::Refuse,
         }
@@ -1063,14 +1169,13 @@ fn parcourir(regles: &Regles) -> Bilan {
             Acces::Refuse => bilan.non_lus += 1,
             Acces::Ouvert(lecteur) => {
                 let mut releve = lecteur.regions();
-                releve.prendre_hors_systeme(&mut vues);
-                let lecture = analyser_regions(
+                let lecture = lire_processus(
                     regles,
-                    &releve.blocs,
+                    &mut releve,
+                    &mut vues,
                     &mut tampon.0,
                     |r, z| lecteur.lire(r, z),
-                    lu_total,
-                    debut,
+                    (lu_total, debut),
                 );
                 lu_total += lecture.octets;
                 bilan.lus += 1;
@@ -1303,9 +1408,13 @@ pub fn analyser() {
 mod tests {
     use super::*;
 
-    /// Le tri des images de `releve_linux` pour les essais : le chemin seul, sans rien demander au disque.
-    fn systeme(chemin: &str, _inode: u64) -> bool {
-        image_du_systeme_linux(chemin)
+    /// Le tri des images de `releve_linux` pour les essais : le chemin seul, sans rien demander au disque ; le fichier
+    /// est toujours confirmé, aux mêmes dates.
+    fn systeme(chemin: &str, _inode: u64) -> SurLeDisque {
+        SurLeDisque {
+            du_systeme: image_du_systeme_linux(chemin),
+            dates: Some((1, 2)),
+        }
     }
 
     /// Sous Linux et macOS, le nom (comm, ps) est choisi par le programme : un maliciel qui s'appelle « lsass » ou
@@ -1745,6 +1854,93 @@ mod tests {
         assert_eq!(verdict(&bilan), Verdict::Sain);
     }
 
+    /// Campagne n° 4, deuxième relecture (M4) : un processus leurre qui mappe la même image qu'un autre et remplit
+    /// sa part avant elle (les images hors du système se lisent en dernier) ne la fait pas passer pour lue : elle
+    /// n'est comptée vue qu'après un processus lu en entier, et se lit dans le suivant.
+    #[test]
+    fn image_hors_du_systeme_apres_un_leurre() {
+        let image = [
+            smaps(
+                "5600000000-5600001000 r--p 00000000 103:02 77   /home/alice/.cache/agent",
+                0,
+            ),
+            smaps(
+                "5600001000-5600002000 r-xp 00001000 103:02 77   /home/alice/.cache/agent",
+                0,
+            ),
+        ]
+        .concat();
+        let region = TAILLE_REGION_MAX as u64;
+        let pleines = PAR_PROCESSUS_MAX / region;
+        let mut leurre = image.clone();
+        for i in 0..pleines {
+            let debut = 0x7f00_0000_0000 + i * region;
+            leurre += &smaps(&format!("{debut:x}-{:x} rw-p 00000000 00:00 0 ", debut + region), 4);
+        }
+        let rien = regles("rule Rien { condition: false }");
+        let mut tampon = Tampon::nouveau(TAILLE_REGION_MAX);
+        let mut vues = std::collections::HashSet::new();
+        let tout = |_: &Region, z: &mut [u8]| z.len();
+        let mut a = releve_linux(&leurre, Some(&[]), systeme);
+        let lecture = lire_processus(&rien, &mut a, &mut vues, &mut tampon.0, tout, (0, Instant::now()));
+        assert!(lecture.incomplete(), "{lecture:?}");
+        assert_eq!(vues.len(), 0);
+        let mut b = releve_linux(&image, Some(&[]), systeme);
+        let lecture = lire_processus(&rien, &mut b, &mut vues, &mut tampon.0, tout, (0, Instant::now()));
+        assert_eq!((b.blocs.len(), lecture.octets, vues.len()), (1, 0x2000, 1));
+        // Le même chemin, réécrit sur place (autres dates) : une autre clé, relu.
+        let reecrit = |_: &str, _: u64| SurLeDisque {
+            du_systeme: false,
+            dates: Some((3, 4)),
+        };
+        let mut c = releve_linux(&image, Some(&[]), reecrit);
+        lire_processus(&rien, &mut c, &mut vues, &mut tampon.0, tout, (0, Instant::now()));
+        assert_eq!((c.blocs.len(), vues.len()), (1, 2));
+        // Sans dates (le chemin ne mène plus au fichier mappé) : pas de clé, lu dans chaque processus.
+        let perdu = |_: &str, _: u64| SurLeDisque::default();
+        for _ in 0..2 {
+            let mut d = releve_linux(&image, Some(&[]), perdu);
+            lire_processus(&rien, &mut d, &mut vues, &mut tampon.0, tout, (0, Instant::now()));
+            assert_eq!((d.blocs.len(), vues.len()), (1, 2));
+        }
+    }
+
+    /// Campagne n° 4, deuxième relecture (M3, M4) : un fichier de données mappé hors du système, sans région
+    /// exécutable (un journal de systemd, lu par fenêtres), n'est ni lu ni dit morcelé ; avec un en-tête ELF ou PE au
+    /// début du fichier, c'est une image (chargée sans x, ou à l'exécution retirée) : elle se lit.
+    #[test]
+    fn donnees_mappees_hors_du_systeme() {
+        let journal = "/var/log/journal/a/system.journal";
+        let fenetres = [
+            smaps(&format!("7f00000000-7f00800000 r--s 00000000 103:02 9   {journal}"), 0),
+            smaps(&format!("7f10000000-7f10800000 r--s 05000000 103:02 9   {journal}"), 0),
+        ]
+        .concat();
+        let rien = regles("rule Rien { condition: false }");
+        let mut tampon = Tampon::nouveau(TAILLE_REGION_MAX);
+        let mut vues = std::collections::HashSet::new();
+        let entetes: [(&[u8], usize); 4] = [(b"LPKSHHRH", 0), (b"\x7fELF\x02", 1), (b"MZ\x90\0", 1), (b"", 0)];
+        for (entete, lus) in entetes {
+            let mut releve = releve_linux(&fenetres, Some(&[]), systeme);
+            assert_eq!(releve.hors_systeme.len(), 1, "{releve:x?}");
+            let lire = |r: &Region, z: &mut [u8]| {
+                if r.debut == 0x7f_0000_0000 && z.len() == 4 {
+                    let n = entete.len().min(4);
+                    z[..n].copy_from_slice(&entete[..n]);
+                    return n;
+                }
+                z.len()
+            };
+            let lecture = lire_processus(&rien, &mut releve, &mut vues, &mut tampon.0, lire, (0, Instant::now()));
+            assert_eq!((releve.blocs.len(), releve.images_morcelees), (lus, lus), "{entete:?}");
+            assert_eq!(lecture.octets > 0, lus > 0, "{entete:?}");
+            vues.clear();
+        }
+        // Sans le début du fichier, rien n'en fait une image : laissé sans lecture.
+        let milieu = smaps(&format!("7f10000000-7f10800000 r--s 05000000 103:02 9   {journal}"), 0);
+        assert_eq!(releve_linux(&milieu, Some(&[]), systeme).hors_systeme.len(), 0);
+    }
+
     /// Campagne n° 4 (M4) : une image intacte hors des dossiers du système (un programme lancé de ~/.cache) était
     /// « laissée au scan de fichiers », que rien ne faisait. Elle se lit maintenant en mémoire, une fois pour tous les
     /// processus qui la chargent ; une bibliothèque de /usr, intacte, reste seule laissée.
@@ -1763,13 +1959,17 @@ mod tests {
             (0, 1),
             "{releve:x?}"
         );
+        let rien = regles("rule Rien { condition: false }");
+        let mut tampon = Tampon::nouveau(0x4000);
         let mut vues = std::collections::HashSet::new();
-        releve.prendre_hors_systeme(&mut vues);
+        let tout = |_: &Region, z: &mut [u8]| z.len();
+        let lecture = lire_processus(&rien, &mut releve, &mut vues, &mut tampon.0, tout, (0, Instant::now()));
         assert_eq!(releve.blocs.len(), 1);
         assert_eq!(releve.blocs[0].morceaux.len(), 2);
+        assert_eq!((lecture.octets, vues.len()), (0x2000, 1));
         // Le même fichier dans un autre processus : déjà lu.
         let mut autre = releve_linux(&image("/home/alice/.cache/agent"), Some(&[]), systeme);
-        autre.prendre_hors_systeme(&mut vues);
+        lire_processus(&rien, &mut autre, &mut vues, &mut tampon.0, tout, (0, Instant::now()));
         assert_eq!(autre.blocs.len(), 0);
         let libc = releve_linux(&image("/usr/lib/libc.so.6"), Some(&[]), systeme);
         assert_eq!(
@@ -1809,8 +2009,16 @@ mod tests {
             return crate::essais::saute("aucun programme de /usr/bin");
         };
         let inode = std::fs::metadata(chemin).unwrap().ino();
-        assert!(fichier_du_systeme_linux(chemin, inode));
-        assert!(!fichier_du_systeme_linux(chemin, inode ^ 1));
+        assert!(fichier_linux(chemin, inode).du_systeme);
+        assert!(fichier_linux(chemin, inode).dates.is_some());
+        assert!(!fichier_linux(chemin, inode ^ 1).du_systeme);
+        assert_eq!(fichier_linux(chemin, inode ^ 1).dates, None);
+        // Le bac à sable de Steam montre l'hôte sous /run/host : le même fichier, s'il en a l'inode, sans dates (la
+        // clé ne se confirme pas d'ici : l'image se lirait dans chaque processus si elle n'était pas du système).
+        let hote = format!("/run/host{chemin}");
+        assert!(fichier_linux(&hote, inode).du_systeme);
+        assert!(!fichier_linux(&hote, inode ^ 1).du_systeme);
+        assert!(!fichier_linux("/run/host/home/alice/x.so", inode).du_systeme);
     }
 
     /// Windows : seuls les dossiers du système, sur le volume du système, sont laissés ; leurs sous-dossiers que tout

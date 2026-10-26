@@ -38,6 +38,7 @@ unsafe extern "system" {
     fn K32QueryWorkingSetEx(processus: *mut c_void, pages: *mut PageEx, taille: u32) -> i32;
     fn K32GetMappedFileNameW(processus: *mut c_void, adresse: *const c_void, nom: *mut u16, taille: u32) -> u32;
     fn GetFileAttributesW(nom: *const u16) -> u32;
+    fn GetFileInformationByHandle(fichier: *mut c_void, information: *mut InformationFichier) -> i32;
     fn GetLastError() -> u32;
 }
 
@@ -48,6 +49,21 @@ unsafe extern "system" {
 struct PageEx {
     adresse: *mut c_void,
     attributs: usize,
+}
+
+/// BY_HANDLE_FILE_INFORMATION (fileapi.h) : treize ULONG, les dates (FILETIME) en deux moitiés.
+#[repr(C)]
+#[derive(Default)]
+struct InformationFichier {
+    attributs: u32,
+    creation: [u32; 2],
+    acces: [u32; 2],
+    ecriture: [u32; 2],
+    volume: u32,
+    taille: [u32; 2],
+    liens: u32,
+    index_haut: u32,
+    index_bas: u32,
 }
 
 const MEM_IMAGE: u32 = 0x100_0000;
@@ -267,10 +283,15 @@ impl Lecteur {
                 (Some(false), _) => {
                     let (blocs, morcelee) = recoller_image(morceaux(), true);
                     let cle = match &fichier {
-                        Fichier::Present(chemin) => chemin.to_lowercase(),
-                        _ => format!("{base:#x}"),
+                        Fichier::Present(chemin) => identite_du_fichier(chemin),
+                        _ => None,
                     };
-                    releve.hors_systeme.push(ImageHorsSysteme { cle, blocs, morcelee });
+                    releve.hors_systeme.push(ImageHorsSysteme {
+                        cle,
+                        blocs,
+                        morcelee,
+                        entete_a_verifier: None,
+                    });
                 }
                 (None, _) => releve.images_non_verifiees += 1,
             }
@@ -415,5 +436,57 @@ impl Drop for Lecteur {
         unsafe {
             let _ = CloseHandle(self.0);
         }
+    }
+}
+
+/// Ce qui nomme le fichier d'une image hors du système (`ImageHorsSysteme::cle`) : le numéro de série du volume,
+/// l'identifiant du fichier sur ce volume et sa date de dernière écriture (GetFileInformationByHandle). Un chemin ne
+/// suffit pas : le même chemin peut mener à un autre fichier (remplacé, ou vu d'un autre lecteur réseau), et un même
+/// fichier a plusieurs chemins (liens). `None` : le fichier ne s'ouvre pas, l'image se lit dans chaque processus.
+fn identite_du_fichier(chemin: &str) -> Option<String> {
+    use std::os::windows::io::AsRawHandle;
+    let fichier = std::fs::File::open(chemin).ok()?;
+    let mut info = InformationFichier::default();
+    // SAFETY : la poignée vient d'un fichier ouvert qui vit jusqu'à la fin de la fonction ; `info` est une
+    // BY_HANDLE_FILE_INFORMATION à nous, que l'appel remplit sans en sortir.
+    if unsafe { GetFileInformationByHandle(fichier.as_raw_handle(), &raw mut info) } == 0 {
+        return None;
+    }
+    Some(cle_de_fichier(&info))
+}
+
+fn cle_de_fichier(info: &InformationFichier) -> String {
+    format!(
+        "{:08x}:{:08x}{:08x}:{:08x}{:08x}",
+        info.volume, info.index_haut, info.index_bas, info.ecriture[1], info.ecriture[0]
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::identite_du_fichier;
+
+    /// Campagne n° 4, deuxième relecture (M4) : une image hors du système est nommée par son fichier (volume,
+    /// identifiant, date d'écriture), pas par son chemin : un autre fichier au même chemin, ou réécrit, se relit ; un
+    /// lien vers le même fichier ne se relit pas ; un fichier qui ne s'ouvre pas n'a pas de nom.
+    #[test]
+    fn identite_d_une_image_hors_du_systeme() {
+        let d = std::env::temp_dir().join(format!("vanguard-identite-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let (a, b, lien) = (d.join("a.dll"), d.join("b.dll"), d.join("lien.dll"));
+        std::fs::write(&a, b"MZ a").unwrap();
+        std::fs::write(&b, b"MZ b").unwrap();
+        let cle = |p: &std::path::Path| identite_du_fichier(p.to_str().unwrap());
+        let premiere = cle(&a).unwrap();
+        assert_eq!(cle(&a).as_ref(), Some(&premiere));
+        assert_ne!(cle(&b).as_ref(), Some(&premiere));
+        if std::fs::hard_link(&a, &lien).is_ok() {
+            assert_eq!(cle(&lien).as_ref(), Some(&premiere));
+        }
+        std::fs::remove_file(&a).unwrap();
+        std::fs::rename(&b, &a).unwrap();
+        assert_ne!(cle(&a).as_ref(), Some(&premiere));
+        assert_eq!(cle(&d.join("absent.dll")), None);
+        std::fs::remove_dir_all(&d).unwrap();
     }
 }
