@@ -1319,35 +1319,7 @@ fn retirer(e: &Element, x: &mut Execution) -> Result<String, Echec> {
         Retrait::Entretien(trouves) => crate::entretien::retirer(trouves)
             .map(|()| e.texte.clone())
             .map_err(Echec::Echoue),
-        Retrait::Sauvegarde(Some(m), _) => {
-            let (ok, laissees) = crate::sauvegarde::annuler_sans_question(m);
-            if !ok {
-                return Err(Echec::Echoue(
-                    tr!(
-                        "une étape a échoué, sa note est gardée : « vanguard sauvegarde-auto --annuler » pour réessayer",
-                        "a step failed, its note is kept: “vanguard auto-backup --undo” to try again"
-                    )
-                    .to_string(),
-                ));
-            }
-            // Une unité modifiée depuis sa pose reste, et sa note avec elle, même si le dossier de données part.
-            for u in &laissees {
-                x.a_faire.push(trf!(
-                    "{} : modifié depuis sa pose, laissé en place ; supprimez-le vous-même si vous n'en voulez plus. Sa note est gardée : « vanguard sauvegarde-auto --annuler » le retrouve.",
-                    "{}: changed since it was placed, left in place; delete it yourself if you no longer want it. Its note is kept: “vanguard auto-backup --undo” finds it.",
-                    chemin_affichable(u)
-                ));
-            }
-            if !laissees.is_empty() {
-                x.gardes
-                    .push((x.donnees.join(crate::sauvegarde::NOTES), e.texte.clone()));
-            }
-            Ok(trf!(
-                "{} (vos copies restent sur le disque)",
-                "{} (your copies stay on the disk)",
-                e.texte
-            ))
-        }
+        Retrait::Sauvegarde(Some(m), _) => retirer_sauvegarde_notee(e, m, x),
         Retrait::Sauvegarde(None, fichiers) => crate::sauvegarde::retirer_sans_note(fichiers)
             .map(|()| e.texte.clone())
             .map_err(Echec::Echoue),
@@ -1367,100 +1339,9 @@ fn retirer(e: &Element, x: &mut Execution) -> Result<String, Echec> {
         Retrait::Veilleur(_) => Err(Echec::Echoue(
             tr!("le veilleur est de Linux seulement", "the watcher is Linux only").to_string(),
         )),
-        Retrait::Pieges => match crate::protection::pieges::retirer_sans_question() {
-            (restes, _, _) if !restes.is_empty() => Err(Echec::Echoue(trf!(
-                "{} non retiré(s), dont {}",
-                "{} not removed, including {}",
-                restes.len(),
-                chemin_affichable(&restes[0])
-            ))),
-            // Liste qui ne pouvait pas être crue : des « !Vanguard » pas reconnus, laissés, pas des preuves.
-            (_, gardes, true) if !gardes.is_empty() => Ok(trf!(
-                "{} ; pas reconnus, laissés (regardez-les vous-même) : {}",
-                "{}; not recognized, left in place (look at them yourself): {}",
-                e.texte,
-                gardes
-                    .iter()
-                    .map(|p| chemin_affichable(p))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )),
-            (_, preuves, _) if !preuves.is_empty() => Ok(trf!(
-                "{} ; gardés, preuve d'un passage : {}",
-                "{}; kept, evidence of an attack: {}",
-                e.texte,
-                preuves
-                    .iter()
-                    .map(|p| chemin_affichable(p))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )),
-            _ => Ok(e.texte.clone()),
-        },
-        Retrait::Raccourci(p) => {
-            let faits = crate::raccourci::retirer(p);
-            let echecs: Vec<String> = faits
-                .iter()
-                .filter_map(|(f, x)| match x {
-                    crate::raccourci::Fait::Echec(raison) => Some(format!("{} ({raison})", chemin_affichable(f))),
-                    _ => None,
-                })
-                .collect();
-            if !echecs.is_empty() {
-                return Err(Echec::Echoue(echecs.join(", ")));
-            }
-            Ok(match faits.iter().find(|(_, x)| *x == crate::raccourci::Fait::Garde) {
-                Some((i, _)) => trf!(
-                    "{} ; icône gardée ({}) : ce n'est pas celle de Vanguard",
-                    "{}; icon kept ({}): it is not Vanguard's",
-                    e.texte,
-                    chemin_affichable(i)
-                ),
-                None => e.texte.clone(),
-            })
-        }
-        Retrait::Fichiers(fichiers) => {
-            // La copie que lance un veilleur resté en marche reste : redémarré, il lancerait un programme effacé.
-            let (lancees, fichiers): (Vec<&PathBuf>, Vec<&PathBuf>) =
-                fichiers.iter().partition(|f| match &x.veilleur_reste {
-                    None => false,
-                    Some(VeilleurReste { lance: Some(l) }) => *f == l || meme(f, l),
-                    Some(VeilleurReste { lance: None }) => e.genre == Genre::Programme,
-                });
-            let mut echecs = Vec::new();
-            for f in &fichiers {
-                if let Err(x) = std::fs::remove_file(f)
-                    && x.kind() != std::io::ErrorKind::NotFound
-                {
-                    // Sous Windows, un programme en marche (une passe de la surveillance) ne s'efface pas.
-                    let raison = if cfg!(windows) {
-                        trf!(
-                            "{x} ; la surveillance tourne peut-être encore, réessayez dans une minute",
-                            "{x}; monitoring may still be running, try again in a minute"
-                        )
-                    } else {
-                        x.to_string()
-                    };
-                    echecs.push(format!("{} ({raison})", chemin_affichable(f)));
-                }
-            }
-            // bin/ part s'il est vide ; ce que Vanguard n'y a pas mis le garde.
-            if let Some(bin) = fichiers.first().and_then(|f| f.parent()) {
-                let _ = std::fs::remove_dir(bin);
-            }
-            if let Some(l) = lancees.first() {
-                echecs.push(trf!(
-                    "copie gardée ({}) : le veilleur n'a pas pu être arrêté et la lance ; « vanguard veilleur off » puis réessayez",
-                    "copy kept ({}): the watcher could not be stopped and starts it; “vanguard watcher off” then try again",
-                    chemin_affichable(l)
-                ));
-            }
-            if echecs.is_empty() {
-                Ok(e.texte.clone())
-            } else {
-                Err(Echec::Echoue(echecs.join(", ")))
-            }
-        }
+        Retrait::Pieges => retirer_pieges(e),
+        Retrait::Raccourci(p) => retirer_raccourci(e, p),
+        Retrait::Fichiers(fichiers) => retirer_fichiers(e, fichiers, x),
         // Un veilleur resté en marche réécrit son état à chaque battement : le dossier reviendrait aussitôt effacé,
         // et le bilan le dirait retiré. Rien n'y est touché.
         Retrait::Dossier(_) if e.genre == Genre::Donnees && x.veilleur_reste.is_some() => Err(Echec::Echoue(
@@ -1473,57 +1354,193 @@ fn retirer(e: &Element, x: &mut Execution) -> Result<String, Echec> {
         Retrait::Avant(r) => passage::retirer_reste(r)
             .map(|()| e.texte.clone())
             .map_err(Echec::Echoue),
-        Retrait::Dossier(d) => {
-            let lien = lien_vers(d);
-            let gardes: Vec<&(PathBuf, String)> = x.gardes.iter().filter(|(p, _)| surveillance::sous(p, d)).collect();
-            let fichiers: Vec<PathBuf> = gardes.iter().map(|(p, _)| p.clone()).collect();
-            let restes = effacer_dossier(d, x.en_marche, &fichiers, x.cle);
-            // Les sceaux gardés oublient ce qui est parti avec le dossier : effacé par la désinstallation, pas hors de
-            // Vanguard.
-            if !gardes.is_empty() {
-                let _ = crate::sceau::oublier_absents_dans(d);
-            }
-            if let Some((p, raison)) = restes.first() {
-                return Err(Echec::Echoue(trf!(
-                    "{} élément(s) non effacé(s), dont {} ({raison})",
-                    "{} item(s) not erased, including {} ({raison})",
-                    restes.len(),
-                    chemin_affichable(p)
-                )));
-            }
-            if !gardes.is_empty() {
-                let liste: Vec<String> = gardes
-                    .iter()
-                    .map(|(p, pour)| format!("{} ({pour})", chemin_affichable(p)))
-                    .collect();
-                return Ok(trf!(
-                    "{} ; gardé, pour ce que vous gardez : {}",
-                    "{}; kept, for what you keep: {}",
-                    e.texte,
-                    liste.join(", ")
-                ));
-            }
-            // Une passe déjà lancée a pu écrire de nouveau pendant l'effacement : un dossier revenu n'est pas retiré.
-            if std::fs::symlink_metadata(d).is_ok() {
-                return Err(Echec::Echoue(
-                    tr!(
-                        "revenu pendant l'effacement : une passe de Vanguard encore en cours y a écrit ; réessayez dans une minute",
-                        "back during the erasing: a Vanguard run still in progress wrote into it; try again in a minute"
-                    )
-                    .to_string(),
-                ));
-            }
-            Ok(match lien {
-                Some(cible) => trf!(
-                    "{} (le lien seul : {} reste)",
-                    "{} (the link only: {} stays)",
-                    e.texte,
-                    chemin_affichable(&cible)
-                ),
-                None => e.texte.clone(),
-            })
+        Retrait::Dossier(d) => retirer_dossier(e, d, x),
+    }
+}
+
+/// La sauvegarde automatique, défaite comme « vanguard sauvegarde-auto --annuler » : une unité modifiée depuis sa
+/// pose reste, dite à faire soi-même, et sa note est gardée.
+fn retirer_sauvegarde_notee(e: &Element, m: &MiseEnPlace, x: &mut Execution) -> Result<String, Echec> {
+    let (ok, laissees) = crate::sauvegarde::annuler_sans_question(m);
+    if !ok {
+        return Err(Echec::Echoue(
+            tr!(
+                "une étape a échoué, sa note est gardée : « vanguard sauvegarde-auto --annuler » pour réessayer",
+                "a step failed, its note is kept: “vanguard auto-backup --undo” to try again"
+            )
+            .to_string(),
+        ));
+    }
+    // Une unité modifiée depuis sa pose reste, et sa note avec elle, même si le dossier de données part.
+    for u in &laissees {
+        x.a_faire.push(trf!(
+            "{} : modifié depuis sa pose, laissé en place ; supprimez-le vous-même si vous n'en voulez plus. Sa note est gardée : « vanguard sauvegarde-auto --annuler » le retrouve.",
+            "{}: changed since it was placed, left in place; delete it yourself if you no longer want it. Its note is kept: “vanguard auto-backup --undo” finds it.",
+            chemin_affichable(u)
+        ));
+    }
+    if !laissees.is_empty() {
+        x.gardes
+            .push((x.donnees.join(crate::sauvegarde::NOTES), e.texte.clone()));
+    }
+    Ok(trf!(
+        "{} (vos copies restent sur le disque)",
+        "{} (your copies stay on the disk)",
+        e.texte
+    ))
+}
+
+/// Les pièges : ce qui ne part pas est un échec ; ce qui reste exprès (pas reconnu, preuve d'un passage) est dit.
+fn retirer_pieges(e: &Element) -> Result<String, Echec> {
+    match crate::protection::pieges::retirer_sans_question() {
+        (restes, _, _) if !restes.is_empty() => Err(Echec::Echoue(trf!(
+            "{} non retiré(s), dont {}",
+            "{} not removed, including {}",
+            restes.len(),
+            chemin_affichable(&restes[0])
+        ))),
+        // Liste qui ne pouvait pas être crue : des « !Vanguard » pas reconnus, laissés, pas des preuves.
+        (_, gardes, true) if !gardes.is_empty() => Ok(trf!(
+            "{} ; pas reconnus, laissés (regardez-les vous-même) : {}",
+            "{}; not recognized, left in place (look at them yourself): {}",
+            e.texte,
+            gardes
+                .iter()
+                .map(|p| chemin_affichable(p))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+        (_, preuves, _) if !preuves.is_empty() => Ok(trf!(
+            "{} ; gardés, preuve d'un passage : {}",
+            "{}; kept, evidence of an attack: {}",
+            e.texte,
+            preuves
+                .iter()
+                .map(|p| chemin_affichable(p))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+        _ => Ok(e.texte.clone()),
+    }
+}
+
+/// Le raccourci et son icône ; une icône qui n'est pas celle de Vanguard reste, et c'est dit.
+fn retirer_raccourci(e: &Element, p: &Path) -> Result<String, Echec> {
+    let faits = crate::raccourci::retirer(p);
+    let echecs: Vec<String> = faits
+        .iter()
+        .filter_map(|(f, x)| match x {
+            crate::raccourci::Fait::Echec(raison) => Some(format!("{} ({raison})", chemin_affichable(f))),
+            _ => None,
+        })
+        .collect();
+    if !echecs.is_empty() {
+        return Err(Echec::Echoue(echecs.join(", ")));
+    }
+    Ok(match faits.iter().find(|(_, x)| *x == crate::raccourci::Fait::Garde) {
+        Some((i, _)) => trf!(
+            "{} ; icône gardée ({}) : ce n'est pas celle de Vanguard",
+            "{}; icon kept ({}): it is not Vanguard's",
+            e.texte,
+            chemin_affichable(i)
+        ),
+        None => e.texte.clone(),
+    })
+}
+
+/// Des fichiers posés par Vanguard (la copie du programme), puis bin/ s'il est vide.
+fn retirer_fichiers(e: &Element, fichiers: &[PathBuf], x: &Execution) -> Result<String, Echec> {
+    // La copie que lance un veilleur resté en marche reste : redémarré, il lancerait un programme effacé.
+    let (lancees, fichiers): (Vec<&PathBuf>, Vec<&PathBuf>) = fichiers.iter().partition(|f| match &x.veilleur_reste {
+        None => false,
+        Some(VeilleurReste { lance: Some(l) }) => *f == l || meme(f, l),
+        Some(VeilleurReste { lance: None }) => e.genre == Genre::Programme,
+    });
+    let mut echecs = Vec::new();
+    for f in &fichiers {
+        if let Err(x) = std::fs::remove_file(f)
+            && x.kind() != std::io::ErrorKind::NotFound
+        {
+            // Sous Windows, un programme en marche (une passe de la surveillance) ne s'efface pas.
+            let raison = if cfg!(windows) {
+                trf!(
+                    "{x} ; la surveillance tourne peut-être encore, réessayez dans une minute",
+                    "{x}; monitoring may still be running, try again in a minute"
+                )
+            } else {
+                x.to_string()
+            };
+            echecs.push(format!("{} ({raison})", chemin_affichable(f)));
         }
     }
+    // bin/ part s'il est vide ; ce que Vanguard n'y a pas mis le garde.
+    if let Some(bin) = fichiers.first().and_then(|f| f.parent()) {
+        let _ = std::fs::remove_dir(bin);
+    }
+    if let Some(l) = lancees.first() {
+        echecs.push(trf!(
+            "copie gardée ({}) : le veilleur n'a pas pu être arrêté et la lance ; « vanguard veilleur off » puis réessayez",
+            "copy kept ({}): the watcher could not be stopped and starts it; “vanguard watcher off” then try again",
+            chemin_affichable(l)
+        ));
+    }
+    if echecs.is_empty() {
+        Ok(e.texte.clone())
+    } else {
+        Err(Echec::Echoue(echecs.join(", ")))
+    }
+}
+
+/// Un dossier de données, sauf ce que des éléments gardés y demandent encore.
+fn retirer_dossier(e: &Element, d: &Path, x: &Execution) -> Result<String, Echec> {
+    let lien = lien_vers(d);
+    let gardes: Vec<&(PathBuf, String)> = x.gardes.iter().filter(|(p, _)| surveillance::sous(p, d)).collect();
+    let fichiers: Vec<PathBuf> = gardes.iter().map(|(p, _)| p.clone()).collect();
+    let restes = effacer_dossier(d, x.en_marche, &fichiers, x.cle);
+    // Les sceaux gardés oublient ce qui est parti avec le dossier : effacé par la désinstallation, pas hors de
+    // Vanguard.
+    if !gardes.is_empty() {
+        let _ = crate::sceau::oublier_absents_dans(d);
+    }
+    if let Some((p, raison)) = restes.first() {
+        return Err(Echec::Echoue(trf!(
+            "{} élément(s) non effacé(s), dont {} ({raison})",
+            "{} item(s) not erased, including {} ({raison})",
+            restes.len(),
+            chemin_affichable(p)
+        )));
+    }
+    if !gardes.is_empty() {
+        let liste: Vec<String> = gardes
+            .iter()
+            .map(|(p, pour)| format!("{} ({pour})", chemin_affichable(p)))
+            .collect();
+        return Ok(trf!(
+            "{} ; gardé, pour ce que vous gardez : {}",
+            "{}; kept, for what you keep: {}",
+            e.texte,
+            liste.join(", ")
+        ));
+    }
+    // Une passe déjà lancée a pu écrire de nouveau pendant l'effacement : un dossier revenu n'est pas retiré.
+    if std::fs::symlink_metadata(d).is_ok() {
+        return Err(Echec::Echoue(
+            tr!(
+                "revenu pendant l'effacement : une passe de Vanguard encore en cours y a écrit ; réessayez dans une minute",
+                "back during the erasing: a Vanguard run still in progress wrote into it; try again in a minute"
+            )
+            .to_string(),
+        ));
+    }
+    Ok(match lien {
+        Some(cible) => trf!(
+            "{} (le lien seul : {} reste)",
+            "{} (the link only: {} stays)",
+            e.texte,
+            chemin_affichable(&cible)
+        ),
+        None => e.texte.clone(),
+    })
 }
 
 /// Le second accord pour un dossier de données coché : ce qu'il garde (extensions, traces, quarantaine, de quoi
