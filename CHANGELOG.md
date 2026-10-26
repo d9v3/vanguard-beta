@@ -28,12 +28,15 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   dernière passe de la surveillance sont scellés : changés, effacés ou acceptés tels quels après des sceaux refaits,
   ils ne coupent plus rien (un piège reste attendu, un port exposé est redit, chaque appareil est redit nouveau, la
   clé n'est jamais dite intacte, rien n'est annulé d'après une note forgée), et c'est dit. Tous les lecteurs suivent
-  le même juge ; seul un fichier repris par une mise à jour connue se croit tel quel (des sceaux ramenés à une forme
-  d'avant ne font rien reprendre, et c'est dit), un verrou des sceaux gardé par un autre programme ne fait plus
-  attendre chaque écriture et se dit au bilan, et « sceaux refaits » retombe une fois dit. Un test relit le code
-  pour que chaque nom de fichier scellé n'y paraisse que là où il est permis, exceptions dites ; VANGUARD_ORIGINE
-  n'est crue qu'aux octets du programme qui tourne. Le modèle de menace dit les limites : le dossier effacé en entier,
-  et un programme qui vise exprès ce mécanisme.
+  le même juge ; seul un fichier repris par une mise à jour connue se croit tel quel. Une mise à jour ne se croit que
+  sur preuve : la tête du journal des événements, scellée, écrite par la version d'avant ; sans elle (journal effacé,
+  tête réécrite), des sceaux ramenés à une forme d'avant n'acceptent ce qui est là que tel quel, sans le croire, et le
+  bilan dit les sceaux refaits. Une version plus ancienne repassée ici (une clé ou un Mac restés en arrière) se dit au
+  bilan un cran plus bas, sans rien faire reprendre. Un verrou des sceaux gardé par un autre programme ne fait plus
+  attendre chaque écriture et se dit au bilan, et « sceaux refaits » retombe une fois dit. Un test relit le code pour
+  que chaque nom de fichier scellé n'y paraisse que là où il est permis, exceptions dites ; VANGUARD_ORIGINE n'est
+  crue qu'aux octets du programme qui tourne. Le modèle de menace dit les limites : le dossier effacé en entier, et un
+  programme qui vise exprès ce mécanisme.
 - **Extensions et listes téléchargées scellées.** Les réglages des extensions (« sans restrictions », « à moi »,
   lancement avec le bilan ou la surveillance) et leurs approbations sont scellés : changés hors de Vanguard, ou
   acceptés tels quels (sceaux refaits, version d'avant), ils n'accordent plus rien, rien ne tourne tout seul, et c'est

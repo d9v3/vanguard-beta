@@ -238,9 +238,9 @@ fn parametres_changes_hors_de_vanguard_dits_sans_rien_couper() {
     let _ = std::fs::remove_dir_all(&maison);
 }
 
-/// F4 (E-M1) : sceaux.json ramené à une forme d'avant (`format` absent) et parametres.json retiré de ses `vus`, alors
-/// qu'il porte la marque de cette forme-ci (un fichier qu'aucune version d'avant ne connaissait) : rien n'est repris
-/// d'une « mise à jour », le parametres.json forgé reste dit changé hors de Vanguard.
+/// F4 (E-M1) : sceaux.json ramené à une forme d'avant (`format` absent) et parametres.json retiré de ses `vus`, sans
+/// la tête du journal qui prouverait une vraie mise à jour : rien n'est repris d'une « mise à jour », le
+/// parametres.json forgé est dit accepté tel quel après des sceaux refaits, et rien de ce qu'il dit n'est appliqué.
 #[cfg(unix)]
 #[test]
 fn sceaux_ramenes_a_une_forme_d_avant_ne_font_rien_croire() {
@@ -260,7 +260,7 @@ fn sceaux_ramenes_a_une_forme_d_avant_ne_font_rien_croire() {
     let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
     let s = vanguard_dans_env(programme, &maison, "en", &["parametres"], "", 30, &[]);
     let texte = sans_couleurs(&s.texte);
-    assert!(texte.contains("changed outside Vanguard"), "{texte}");
+    assert!(texte.contains("accepted as it was after seals were remade"), "{texte}");
     let _ = std::fs::remove_dir_all(&maison);
 }
 
