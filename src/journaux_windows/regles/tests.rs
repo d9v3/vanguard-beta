@@ -3760,3 +3760,50 @@ fn commande_encodee_jugee_sur_sa_valeur() {
         Some("encode")
     );
 }
+
+/// Commentaires, instructions et CDATA d'une tâche : une balise écrite dedans n'en est pas une. Un `</Arguments>`
+/// dans une CDATA ne coupe plus la valeur, un `<Command>` en commentaire ne passe plus avant la vraie, une action en
+/// commentaire ne compte pas comme illisible.
+#[test]
+fn tache_commentaires_et_cdata() {
+    let changee = |x: &str| {
+        let mut e = tache(4702, "\\Essai", "", "");
+        e.champs.retain(|(n, _)| n != "TaskContentNew");
+        e.champs.push(("TaskContentNew".into(), x.into()));
+        gravites(&juger(&[e]), "EVT-TAC-001")
+    };
+    let cdata = "<Exec><Command>C:\\Windows\\System32\\notepad.exe</Command>\
+                 <Arguments><![CDATA[/c echo </Arguments>]]>&amp; evil.exe</Arguments></Exec>";
+    assert_eq!(
+        actions_de_tache(cdata).0,
+        vec![(
+            "C:\\Windows\\System32\\notepad.exe".to_string(),
+            "/c echo </Arguments>& evil.exe".to_string()
+        )]
+    );
+    let commentaire =
+        "<Exec><!--<Command>C:\\Windows\\System32\\notepad.exe</Command>--><Command>powershell.exe</Command></Exec>";
+    assert_eq!(actions_de_tache(commentaire).0[0].0, "powershell.exe");
+    assert_eq!(changee(commentaire), [Gravite::Alerte]);
+    let instruction =
+        "<Exec><?x <Command>C:\\Windows\\System32\\notepad.exe</Command>?><Command>cmd.exe</Command></Exec>";
+    assert_eq!(actions_de_tache(instruction).0[0].0, "cmd.exe");
+    // Un commentaire au milieu d'une valeur en est retiré.
+    assert_eq!(
+        actions_de_tache("<Exec><Command>power<!-- x -->shell.exe</Command></Exec>").0[0].0,
+        "powershell.exe"
+    );
+    // Une action anodine et une autre en commentaire : rien d'illisible, rien à dire pour une tâche changée.
+    let anodine = "<Exec><Command>C:\\Windows\\System32\\notepad.exe</Command></Exec>";
+    assert_eq!(
+        changee(&format!("{anodine}<!--<Exec><Command>x</Exec>-->")),
+        Vec::<Gravite>::new()
+    );
+    // Un commentaire sans fin couvre le reste : l'action qu'il cache n'est ni lue ni comptée.
+    assert_eq!(
+        actions_de_tache(&format!("{anodine}<!--<Exec><Command>evil.exe</Command></Exec>"))
+            .0
+            .len(),
+        1
+    );
+}

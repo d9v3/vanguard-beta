@@ -2279,9 +2279,7 @@ pub(crate) fn actions_de_tache(xml: &str) -> (Vec<(String, String)>, bool) {
     } else {
         xml
     };
-    // En minuscules ASCII seulement : les balises le sont, et les indices de `bas` restent ceux de `xml` (une lettre
-    // dont la minuscule change de longueur, posée exprès dans la tâche, ne décale rien).
-    let bas = xml.to_ascii_lowercase();
+    let bas = bas_de_tache(xml);
     // La valeur d'une balise dans le bloc `debut..fin`. Une balise vide (`<Command/>`) est sautée : une seconde,
     // pleine, qui la suit n'est pas perdue.
     let valeur = |debut: usize, fin: usize, balise: &str| -> Option<String> {
@@ -2318,6 +2316,42 @@ pub(crate) fn actions_de_tache(xml: &str) -> (Vec<(String, String)>, bool) {
         depuis = apres;
     }
     (actions, tronque)
+}
+
+/// Le XML d'une tâche où chercher les balises : en minuscules ASCII seulement (elles le sont, et les indices restent
+/// ceux du XML : une lettre dont la minuscule change de longueur, posée exprès dans la tâche, ne décale rien), ses
+/// commentaires `<!--…-->` et instructions `<?…?>` entiers et l'intérieur de ses sections `<![CDATA[…]]>` couverts
+/// d'espaces, octet pour octet. Une balise écrite là n'en est pas une pour le Planificateur : lue telle quelle, un
+/// `<Command>` en commentaire passait avant la vraie, et un `</Arguments>` dans une CDATA coupait la valeur. La
+/// CDATA reste lue dans le XML lui-même (`entites`). Un commentaire, une instruction ou une CDATA sans fin couvre
+/// tout le reste.
+fn bas_de_tache(xml: &str) -> String {
+    let mut octets = xml.to_ascii_lowercase().into_bytes();
+    let mut i = 0;
+    while let Some(k) = octets[i..].iter().position(|&o| o == b'<') {
+        let debut = i + k;
+        let suite = &octets[debut..];
+        // (début couvert, fin cherchée, fin couverte ou non)
+        let (couvert, fin, fin_couverte) = if suite.starts_with(b"<!--") {
+            (debut, &b"-->"[..], true)
+        } else if suite.starts_with(b"<?") {
+            (debut, &b"?>"[..], true)
+        } else if suite.starts_with(b"<![cdata[") {
+            (debut + b"<![cdata[".len(), &b"]]>"[..], false)
+        } else {
+            i = debut + 1;
+            continue;
+        };
+        let apres = octets[couvert..]
+            .windows(fin.len())
+            .position(|w| w == fin)
+            .map_or(octets.len(), |j| couvert + j + if fin_couverte { fin.len() } else { 0 });
+        octets[couvert..apres].fill(b' ');
+        i = apres.max(debut + 1);
+    }
+    // Les morceaux couverts commencent et finissent sur un délimiteur ASCII ou au bout du texte : l'UTF-8 reste
+    // entier.
+    String::from_utf8(octets).unwrap_or_else(|_| xml.to_ascii_lowercase())
 }
 
 /// Le nom local de la balise qui commence au « < » d'indice `i` de `bas`, son préfixe d'espace de noms retiré
@@ -2398,15 +2432,30 @@ fn balise_fermante(bas: &str, mut depuis: usize, nom: &str) -> Option<(usize, us
 
 /// Le texte d'une valeur : ses sections `<![CDATA[…]]>` déroulées telles quelles, ses entités et références
 /// numériques (« &quot; », « &#112; », « &#x70; ») défaites une fois ailleurs (`xml::deplier`, celui de la source
-/// vivante) : une commande ainsi écrite ne passe plus à côté des règles.
+/// vivante) : une commande ainsi écrite ne passe plus à côté des règles. Ses commentaires `<!--…-->` et
+/// instructions `<?…?>` retirés, comme le Planificateur les lit : « evil<!-- -->.exe » est « evil.exe ».
 fn entites(t: &str) -> String {
     let mut sortie = String::with_capacity(t.len());
     let mut reste = t;
-    while let Some(i) = reste.find("<![CDATA[") {
+    while let Some(i) = reste.find('<') {
         sortie.push_str(&xml::deplier(&reste[..i]));
-        let dedans = &reste[i + "<![CDATA[".len()..];
-        let (texte, apres) = dedans.split_once("]]>").unwrap_or((dedans, ""));
-        sortie.push_str(texte);
+        let suite = &reste[i..];
+        let (debut, fin, garde) = if suite.starts_with("<![CDATA[") {
+            ("<![CDATA[", "]]>", true)
+        } else if suite.starts_with("<!--") {
+            ("<!--", "-->", false)
+        } else if suite.starts_with("<?") {
+            ("<?", "?>", false)
+        } else {
+            sortie.push('<');
+            reste = &suite[1..];
+            continue;
+        };
+        let dedans = &suite[debut.len()..];
+        let (texte, apres) = dedans.split_once(fin).unwrap_or((dedans, ""));
+        if garde {
+            sortie.push_str(texte);
+        }
         reste = apres;
     }
     sortie.push_str(&xml::deplier(reste));
@@ -2502,7 +2551,7 @@ fn tache_auditee(e: &EvenementWindows) -> Option<Indice> {
     // Plus d'actions écrites que d'actions lues (une commande écrite autrement que le lecteur ne l'attend, un
     // guillemet jamais fermé, une action illisible à côté d'une lisible) : ce qui manque n'est pas jugé, la tâche ne
     // passe pas pour une simple création.
-    let non_lue = ouvertures(&contenu.to_ascii_lowercase(), "exec") > actions.len();
+    let non_lue = ouvertures(&bas_de_tache(contenu), "exec") > actions.len();
     let pire = actions
         .iter()
         .filter_map(|(programme, arguments)| {
