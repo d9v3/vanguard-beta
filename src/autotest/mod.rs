@@ -731,15 +731,6 @@ pub(crate) fn ligne_diagnostic() -> (String, Option<Niveau>) {
 // Écran
 
 fn afficher(r: &Rapport, croisees: &[(&'static Croisee, Comparaison)], detail: bool) {
-    let icone = |bon: bool, manque: bool| {
-        if bon {
-            format!("{VERT}✔{RESET}")
-        } else if manque {
-            format!("{}ℹ{RESET}", couleur(Niveau::Info))
-        } else {
-            format!("{}✖{RESET}", couleur(Niveau::Moyen))
-        }
-    };
     titre(tr!("Autodiagnostic de Vanguard", "Vanguard self-test"));
     afficher_aligne(
         "  ",
@@ -763,7 +754,37 @@ fn afficher(r: &Rapport, croisees: &[(&'static Croisee, Comparaison)], detail: b
         );
     }
     println!();
-    let reg = &r.regles;
+    afficher_regles(&r.regles);
+    section(tr!("Lectures croisées", "Cross-checks"));
+    afficher_croisees(r.systeme, croisees, detail);
+    section(tr!("Rien changé ?", "Nothing changed?"));
+    let p = &r.preuve;
+    afficher_aligne(
+        &format!("  {} ", icone(p.verdict == "rien-change", p.verdict != "change")),
+        &texte_preuve(p),
+        4,
+        "",
+    );
+    section(tr!("Mesures", "Timings"));
+    afficher_mesures(&r.mesures);
+    println!();
+    afficher_aligne("  ", &verdict_final(r.code), 2, "");
+}
+
+/// L'icône d'une ligne : ✔ si `bon`, ℹ si seulement `manque` (non vérifié), ✖ sinon (un écart).
+fn icone(bon: bool, manque: bool) -> String {
+    if bon {
+        format!("{VERT}✔{RESET}")
+    } else if manque {
+        format!("{}ℹ{RESET}", couleur(Niveau::Info))
+    } else {
+        format!("{}✖{RESET}", couleur(Niveau::Moyen))
+    }
+}
+
+/// Ce que les règles ont rendu : la ligne du compte, puis les plantées, hors délai, muettes, les invariants non
+/// tenus et les « non vérifié » sans raison typée.
+fn afficher_regles(reg: &Regles) {
     let bon =
         reg.plantees.is_empty() && reg.invariants.is_empty() && reg.hors_delai.is_empty() && reg.muettes.is_empty();
     let manque = reg.plantees.is_empty() && reg.invariants.is_empty();
@@ -811,9 +832,13 @@ fn afficher(r: &Rapport, croisees: &[(&'static Croisee, Comparaison)], detail: b
             GRIS,
         );
     }
-    section(tr!("Lectures croisées", "Cross-checks"));
+}
+
+/// Une ligne par lecture croisée ; aucune, c'est dit non vérifié (`systeme` : la phrase propre à macOS). Avec
+/// `detail`, les valeurs d'un écart en dessous.
+fn afficher_croisees(systeme: &str, croisees: &[(&'static Croisee, Comparaison)], detail: bool) {
     if croisees.is_empty() {
-        let texte = if r.systeme == "macos" {
+        let texte = if systeme == "macos" {
             tr!(
                 "Aucune lecture croisée n'existe encore sous macOS : ce point n'est pas vérifié.",
                 "No cross-check exists yet on macOS: this point is not checked."
@@ -838,52 +863,54 @@ fn afficher(r: &Rapport, croisees: &[(&'static Croisee, Comparaison)], detail: b
             16,
             "",
         );
-        if detail
-            && let Comparaison::Different {
-                en_plus,
-                en_moins,
-                differents,
-                ..
-            } = x
-        {
-            for (liste, fr, en) in [
-                (en_plus, "en plus chez Vanguard", "only in Vanguard's reading"),
-                (en_moins, "en moins chez Vanguard", "missing from Vanguard's reading"),
-                (differents, "différents", "different"),
-            ] {
-                if liste.is_empty() {
-                    continue;
-                }
-                let montres: Vec<String> = liste.iter().take(20).map(|v| affichable(v)).collect();
-                let reste = liste.len().saturating_sub(20);
-                let suite = if reste > 0 {
-                    trf!(" … et {reste} autres", " … and {reste} more")
-                } else {
-                    String::new()
-                };
-                afficher_aligne(
-                    "      ",
-                    &format!(
-                        "{} : {}{suite}",
-                        if crate::langue::anglais() { en } else { fr },
-                        montres.join(", ")
-                    ),
-                    6,
-                    GRIS,
-                );
-            }
+        if detail {
+            afficher_ecarts(x);
         }
     }
-    section(tr!("Rien changé ?", "Nothing changed?"));
-    let p = &r.preuve;
-    afficher_aligne(
-        &format!("  {} ", icone(p.verdict == "rien-change", p.verdict != "change")),
-        &texte_preuve(p),
-        4,
-        "",
-    );
-    section(tr!("Mesures", "Timings"));
-    let m = &r.mesures;
+}
+
+/// Les valeurs d'un écart (`--detail`) : en plus, en moins, différentes, 20 au plus par liste. Rien pour une
+/// comparaison qui n'est pas un écart.
+fn afficher_ecarts(x: &Comparaison) {
+    let Comparaison::Different {
+        en_plus,
+        en_moins,
+        differents,
+        ..
+    } = x
+    else {
+        return;
+    };
+    for (liste, fr, en) in [
+        (en_plus, "en plus chez Vanguard", "only in Vanguard's reading"),
+        (en_moins, "en moins chez Vanguard", "missing from Vanguard's reading"),
+        (differents, "différents", "different"),
+    ] {
+        if liste.is_empty() {
+            continue;
+        }
+        let montres: Vec<String> = liste.iter().take(20).map(|v| affichable(v)).collect();
+        let reste = liste.len().saturating_sub(20);
+        let suite = if reste > 0 {
+            trf!(" … et {reste} autres", " … and {reste} more")
+        } else {
+            String::new()
+        };
+        afficher_aligne(
+            "      ",
+            &format!(
+                "{} : {}{suite}",
+                if crate::langue::anglais() { en } else { fr },
+                montres.join(", ")
+            ),
+            6,
+            GRIS,
+        );
+    }
+}
+
+/// Le verdict des mesures, puis les règles lentes et celles qui frôlent leur délai.
+fn afficher_mesures(m: &mesures::Verdict) {
     match m.verdict {
         "pas-assez" => afficher_aligne(
             &format!("  {} ", icone(false, true)),
@@ -934,8 +961,11 @@ fn afficher(r: &Rapport, croisees: &[(&'static Croisee, Comparaison)], detail: b
             "",
         );
     }
-    println!();
-    let verdict = match r.code {
+}
+
+/// La phrase de fin, d'après le code de sortie : 0 tout bon, 1 écart, autre chose : du non vérifié.
+fn verdict_final(code: i32) -> String {
+    match code {
         0 => format!(
             "{VERT}{}{RESET}",
             tr!(
@@ -956,8 +986,7 @@ fn afficher(r: &Rapport, croisees: &[(&'static Croisee, Comparaison)], detail: b
             "Nothing wrong, but not everything could be checked (see above)."
         )
         .to_string(),
-    };
-    afficher_aligne("  ", &verdict, 2, "");
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
