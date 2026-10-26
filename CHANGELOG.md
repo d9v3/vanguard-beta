@@ -63,28 +63,36 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   lus, et dit lui-même les autres, chacun à part (une alerte déclarée normale n'en tait plus un autre). Menu Bloquer et réagir › Journaux de
   Windows : ce Windows, ou un dossier de .evtx sous Linux et macOS.
 - **Lectures et preuves resserrées (quatrième campagne d'attaque).** Journaux de Windows : une action de tâche écrite
-  avec des attributs (`<Exec id="…">`), un préfixe d'espace de noms (`<task:Exec>`), un blanc avant « > », une
-  section CDATA ou des références numériques (`&#112;`) est lue (EVT-TAC-001), une balise `<Command/>` vide n'efface
-  plus la suivante, et toute balise d'action ouverte de plus que les actions lues donne une alerte au lieu d'un
-  silence ; la commande encodée de PowerShell est reconnue sous toutes ses formes (`-e`, `-enc`, `--enc`,
-  `-EncodedCommand:…`, `-e^nc`, tirets typographiques « –enc ») dans les processus, les tâches, les services et les
-  blocs de script (EVT-PRC-001, EVT-TAC-001). Mémoire : une image chargée dont le code est mappé loin de son en-tête
-  se lit en un seul morceau, et l'analyse est dite incomplète plutôt que saine ; une image intacte hors des dossiers
-  du système (un programme lancé de ~/.cache ou de /var/tmp) est lue en mémoire au lieu d'être « laissée au scan de
-  fichiers », qui ne la lisait pas, une fois pour tous les processus qui la chargent, mais comptée lue seulement
-  après un processus lu en entier (un processus leurre qui remplit sa part ne la fait plus sauter ailleurs) ; elle
-  est nommée par son fichier (Linux : périphérique, inode et dates ; Windows : volume, identifiant du fichier et date
-  d'écriture). Un fichier de données mappé sans code (un journal de systemd) n'est ni lu ni dit morcelé, sauf s'il
-  commence par un en-tête ELF ou PE ; les bibliothèques de l'hôte vues par les jeux de Steam (/run/host/usr) sont
-  reconnues comme celles du système. Seules les images des dossiers du système restent non lues, et c'est dit. Sous
-  Windows, ces changements n'ont pas encore été essayés sur un vrai Windows. Corpus de détection : chaque version par
-  système d'une fonction du fil d'une règle (ses conditions `cfg` évaluées, les essais exclus) doit appeler la
-  suivante, y compris le lecteur des tentatives de connexion sur chaque système, et le bilan et le corpus passent par
-  le même juge pour les connexions forcées (COM-CPT-003). Décompression : l'archive d'une extension, la liste
-  complète de MalwareBazaar et les fichiers gzip (bases de pacman, listes téléchargées) se lisent avant une échéance
-  et, quand leur taille est annoncée, avec des octets compressés plausibles pour elle : des blocs deflate vides ne
-  tiennent plus le processeur des minutes ; une archive d'extension trop lente est dite « délai dépassé », pas
-  « illisible ». L'archive d'une extension refuse aussi deux entrées aux mêmes octets, et deux fois le même nom.
+  avec des attributs (`<Exec id="…">`), un préfixe d'espace de noms (`<task:Exec>`), un blanc avant « > », une section
+  CDATA ou des références numériques (`&#112;`) est lue (EVT-TAC-001), une balise écrite dans un commentaire, une
+  instruction ou une CDATA n'en est pas une (un `</Arguments>` dans une CDATA ne coupe plus la valeur, un `<Command>`
+  en commentaire ne passe plus avant la vraie), une balise `<Command/>` vide n'efface plus la suivante, et toute balise
+  d'action ouverte de plus que les actions lues donne une alerte au lieu d'un silence ; la commande encodée de
+  PowerShell est reconnue sous toutes ses formes (`-e`, `-enc`, `--enc`, `-EncodedCommand:…`, `-e^nc`, tirets
+  typographiques « –enc ») dans les processus, les tâches, les services et les blocs de script (EVT-PRC-001,
+  EVT-TAC-001), et jugée sur sa valeur : un nom d'encodage ou un numéro de page de codes (« gc $f -enc byte »,
+  « Out-File -en BigEndianUnicode ») n'en est pas une, ni « certutil -encode » ; dans un script, il faut un base64 qui
+  décode en texte UTF-16 lisible, « -EncodedCommand » en entier, ou une variable passée à PowerShell nommé. Mémoire :
+  une image chargée dont le code est mappé loin de son en-tête se lit en un seul morceau, et l'analyse est dite
+  incomplète plutôt que saine ; une image intacte hors des dossiers du système (un programme lancé de ~/.cache ou de
+  /var/tmp) est lue en mémoire au lieu d'être « laissée au scan de fichiers », qui ne la lisait pas, une fois pour tous
+  les processus qui la chargent, mais comptée lue seulement après un processus lu en entier (un processus leurre qui
+  remplit sa part ne la fait plus sauter ailleurs) ; elle est nommée par son fichier (Linux : périphérique, inode et
+  dates ; Windows : volume, identifiant du fichier et date d'écriture, qu'un programme peut remettre à l'ancienne après
+  avoir récrit le fichier : une fenêtre étroite, pendant une même analyse). Un fichier de données mappé sans code (un
+  journal de systemd) n'est ni lu ni dit morcelé, sauf s'il commence par un en-tête ELF ou PE, et un fichier mappé sans
+  code dont le début n'est pas mappé ou pas lisible est laissé sans être compté (rien ne s'exécute d'une page sans
+  « x ») ; les bibliothèques de l'hôte vues par les jeux de Steam (/run/host/usr) sont reconnues comme celles du
+  système. Seules les images des dossiers du système restent non lues, et c'est dit. Sous Windows, ces changements
+  n'ont pas encore été essayés sur un vrai Windows. Corpus de détection : chaque version par système d'une fonction du
+  fil d'une règle (ses conditions `cfg` évaluées comme pour le programme publié : essais, banc de fuzzing, mode
+  débogage et fonctionnalités exclus) doit appeler la suivante, y compris le lecteur des tentatives de connexion sur
+  chaque système, et le bilan et le corpus passent par le même juge pour les connexions forcées (COM-CPT-003).
+  Décompression : l'archive d'une extension, la liste complète de MalwareBazaar et les fichiers gzip (bases de pacman,
+  listes téléchargées) se lisent avant une échéance et, quand leur taille est annoncée, avec des octets compressés
+  plausibles pour elle : des blocs deflate vides ne tiennent plus le processeur des minutes ; une archive d'extension
+  trop lente est dite « délai dépassé », pas « illisible ». L'archive d'une extension refuse aussi deux entrées aux
+  mêmes octets, et deux fois le même nom.
 - **macOS maintenu, sans nouveautés propres.** Le programme macOS reste publié et testé automatiquement sur un Mac
   de GitHub ; il n'a jamais été essayé sur un vrai Mac, et la page, les README et les notices le disent.
 - **Optimiser refusé en administrateur.** Les outils d'Optimiser (logiciels, nettoyage, réglages, jeux, mesures du
