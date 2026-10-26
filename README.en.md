@@ -168,8 +168,9 @@ certificate, scams, spyware and other privacy intrusions.
 - Each fix first records the previous state of what it changes, noted and sealed: “What Vanguard changed” undoes it,
   then reads the state back. A fix whose previous state cannot be read is called “not undoable” before it is applied,
   and one that turns a protection back on (firewall, antivirus, BitLocker, UAC, SELinux, Gatekeeper, kernel hardening
-  on Linux, Windows hardening and Defender protections) is never undone; undoing only puts back a noted value of the expected form, never a kernel key below its
-  safe value nor a weakened sshd directive.
+  on Linux, Windows hardening and Defender protections) is never undone; undoing only puts back a noted value of the
+  expected form, never a kernel key below its safe value nor a weakened sshd directive in its file (a forged note can
+  still have that file, set by Vanguard, removed: sshd then goes back to its earlier settings).
 
 **Outdated software** (`vanguard outdated-software`, Windows and macOS, and in the check) — the installed version of
 browsers (Chrome, Edge, Firefox, Brave), Office, Acrobat and Reader, Java, 7-Zip, PuTTY and Slack, read in the file

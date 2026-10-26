@@ -72,7 +72,8 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 - **Le durcissement du noyau ne s'annule plus.** Sous Linux, la correction qui durcit le noyau (ASLR, ptrace, liens
   de /tmp…) est désormais une protection, comme le pare-feu : elle ne se défait plus. Une note d'annulation ne remet
   jamais une clé du noyau sous sa valeur sûre, ni ne retire le fichier 99-vanguard.conf ; celles de la 0.86 et de la
-  0.87, qui restaient dites annulables à vie, sont retirées une fois, et c'est dit. Un reglages.json accepté
+  0.87, qui restaient dites annulables à vie, sont retirées une fois, et c'est dit. S'il gêne (un routeur, un VPN),
+  retirer Vanguard dit comment le défaire à la main : retirer sa ligne du fichier, puis `sudo sysctl --system`. Un reglages.json accepté
   sans sceau d'avant (hors d'une mise à jour depuis une version qui scelle déjà, 0.86 ou plus) n'est plus rejoué en
   administrateur, comme le mode Wi-Fi public et la sauvegarde. Un historique venu d'une version sans sceaux (0.85 ou
   avant) n'est donc plus rejoué : ses réglages d'Optimiser ne s'annulent plus par Vanguard ; sa copie est gardée à

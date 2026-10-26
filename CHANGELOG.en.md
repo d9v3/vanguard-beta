@@ -70,7 +70,8 @@ delivered just before it. Only the latest version has its download page; every v
 - **Kernel hardening is no longer undone.** On Linux, the fix that hardens the kernel (ASLR, ptrace, /tmp links…) is
   now a protection, like the firewall: it is no longer undone. An undo note never puts a kernel key back below its
   safe value, nor removes the 99-vanguard.conf file; those from 0.86 and 0.87, which stayed listed as undoable
-  forever, are removed once, and this is said. A reglages.json accepted without an earlier seal (outside an update
+  forever, are removed once, and this is said. If it gets in the way (a router, a VPN), removing Vanguard says how to
+  undo it by hand: remove its line from the file, then `sudo sysctl --system`. A reglages.json accepted without an earlier seal (outside an update
   from a version that already seals, 0.86 or later) is no longer replayed as administrator, like public Wi-Fi mode
   and the backup. A history from a version without seals (0.85 or earlier) is therefore no longer replayed: its
   Optimize settings can no longer be undone by Vanguard; its copy is kept next to it (reglages.adopte-….json), only

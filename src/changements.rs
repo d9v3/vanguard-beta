@@ -599,12 +599,32 @@ pub(crate) fn a_defaire_a_la_main() -> Vec<(String, String)> {
         .into_iter()
         .map(|n| n.id)
         .collect();
-    lire()
-        .into_iter()
+    a_la_main_de(lire(), &notes)
+}
+
+fn a_la_main_de(tous: Vec<Changement>, notes: &std::collections::HashSet<String>) -> Vec<(String, String)> {
+    tous.into_iter()
         .filter(|c| c.reussi && c.blocage.is_none())
         .filter(|c| c.annulable.as_ref().is_none_or(|id| !notes.contains(id)) && c.defaite.is_none())
-        .map(|c| (c.date, c.commandes.into_iter().next().unwrap_or_default()))
+        .map(|c| (c.date, avec_inverse(c.commandes.into_iter().next().unwrap_or_default())))
         .collect()
+}
+
+/// La commande, et comment la défaire quand l'inverse n'est pas évident. Le durcissement du noyau est une protection
+/// (réseau compris : rp_filter, accept_redirects, sysrq), que Vanguard ne défait plus ; s'il gêne (un routeur, un
+/// VPN), la personne retire sa ligne du fichier, puis recharge les réglages.
+fn avec_inverse(commande: String) -> String {
+    #[cfg(target_os = "linux")]
+    if let Some(fichier) = crate::passage::les_deux(crate::machine::linux::SYSCTL_VANGUARD)
+        .into_iter()
+        .find(|f| commande.contains(f.as_str()))
+    {
+        return trf!(
+            "{commande} (une protection ; à défaire à la main : retirer sa ligne de {fichier}, puis sudo sysctl --system)",
+            "{commande} (a protection; to undo by hand: remove its line from {fichier}, then sudo sysctl --system)"
+        );
+    }
+    commande
 }
 
 /// Pour le rapport HTML : (corrections notées, réussies, date de la dernière). Les commandes n'y vont pas : le rapport
@@ -768,6 +788,27 @@ fn annuler_des_corrections() {
 
 #[cfg(test)]
 mod tests {
+    /// Le durcissement du noyau, devenu une protection, dit comment se défaire à la main ; une autre commande reste
+    /// telle quelle.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn noyau_a_defaire_a_la_main_explique() {
+        for fichier in crate::passage::les_deux(crate::machine::linux::SYSCTL_VANGUARD) {
+            let ligne = serde_json::json!({
+                "date": "2026-10-20 09:00",
+                "commandes": [format!("printf 'net.ipv4.conf.all.rp_filter = 1\\n' | sudo tee -a {fichier} >/dev/null")],
+                "reussi": true,
+            });
+            let a = a_la_main_de(lire_texte(&format!("{ligne}\n")), &std::collections::HashSet::new());
+            let c = &a[0].1;
+            assert!(
+                c.contains("sudo sysctl --system") && c.ends_with(&format!("{fichier}, puis sudo sysctl --system)")),
+                "{c}"
+            );
+        }
+        assert_eq!(avec_inverse("ufw enable".into()), "ufw enable");
+    }
+
     use super::*;
 
     /// Le relevé d'un essai, dans son propre dossier jetable (ses sceaux à côté) : d'autres tests lancent des

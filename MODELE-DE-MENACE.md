@@ -24,7 +24,7 @@ clé USB ou de la mise à jour) relèvent d'une autre page : [SECURITY.md](SECUR
 |---|---|
 | Un logiciel malveillant connu sur l'ordinateur | Antivirus du système en second avis, règles YARA, empreintes de MalwareBazaar, mémoire des programmes, lancements au démarrage, signes d'un rootkit ; blocage après accord, ou de lui-même pour ce qui ne fait aucun doute (protection active). |
 | Un rançongiciel | Fichiers-pièges vérifiés chaque heure ; sous Linux, une fois allumé, un veilleur en direct qui arrête un cas quasi certain avec la protection active. |
-| Une faiblesse de réglage ou une faille non corrigée | Bilan noté de A à F, mises à jour manquantes, failles activement exploitées du catalogue de la CISA, fin de support ; chaque correction après accord, annulable sauf celle qui rallume une protection (pare-feu, antivirus, chiffrement, UAC, SELinux, durcissement du noyau sous Linux, durcissement de Windows et protections de Defender). |
+| Une faiblesse de réglage ou une faille non corrigée | Bilan noté de A à F, mises à jour manquantes, failles activement exploitées du catalogue de la CISA, fin de support ; chaque correction après accord, annulable sauf celle qui rallume une protection (pare-feu, antivirus, chiffrement, UAC, SELinux, Gatekeeper, durcissement du noyau sous Linux, durcissement de Windows et protections de Defender). |
 | Une exposition vers Internet | Ports que le routeur ouvre (demandés au routeur lui-même, ouvertures UPnP comprises), IPv6 publique sans pare-feu ; dans les journaux, les mots de passe devinés et les connexions au Bureau à distance depuis l'extérieur. |
 | Un intrus sur le réseau local ou le Wi-Fi | Inventaire des appareils et des nouveaux venus, faux point d'accès, DNS et certificats détournés ; mode Wi-Fi public en déplacement. |
 | Un proche qui surveille la personne | Logiciels espions, prise de contrôle à distance (faux technicien). |
@@ -85,9 +85,10 @@ Le détail de chaque menace, menu par menu : [Ce que fait Vanguard](README.md#ce
   correction dont l'état d'avant ne se relève pas est dite « non annulable » avant d'être appliquée. Les réglages de
   durcissement de Windows (WDigest, NLA…) et les protections de Defender sont, eux aussi, des protections : Vanguard
   ne les défait pas, et une note forgée ne peut plus les faire baisser ; la personne peut toujours les changer dans
-  Windows (à prouver dans la VM Windows). Une note d'annulation
-  acceptée sans sceau d'avant (hors d'une mise à jour depuis une version qui scelle déjà, 0.86 ou plus) n'est jamais
-  remise.
+  Windows (à prouver dans la VM Windows). Une note d'annulation acceptée sans sceau d'avant (hors d'une mise à jour
+  depuis une version qui scelle déjà, 0.86 ou plus) n'est pas remise : c'est une barrière contre un fichier posé par
+  un autre programme, pas une porte fermée, puisqu'un programme qui réécrit aussi les sceaux de Vanguard n'est pas vu
+  (voir plus haut). C'est pourquoi les protections ne se défont plus du tout.
 - **Les essais ont leurs limites.** Vanguard est essayé sur l'ordinateur de l'auteur, une VM Windows, un second PC
   Windows et les machines de GitHub (Windows, Mac, vraies distributions Linux). Il n'a jamais tourné sur un vrai Mac ;
   d'autres cas restent à essayer sur du vrai matériel (autres distributions, vrai routeur UPnP, démarrage de la clé).
