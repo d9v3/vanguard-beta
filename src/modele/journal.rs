@@ -422,10 +422,17 @@ pub(crate) fn noter_dans(
 #[cfg(test)]
 const RALENTIR: &str = "essai-ralentir";
 
+/// Un autre processus simulé par les essais pendant une écriture (`PENDANT_LES_PERDUS`).
+#[cfg(test)]
+type Autre = fn(&Path, &[PathBuf], u8);
+
 // Les essais arrêtent l'écriture juste après l'ajout, comme un arrêt net du programme (`arret_entre_ajout_…`).
 #[cfg(test)]
 thread_local! {
     static ARRET_APRES_AJOUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    // Un autre processus qui perd des événements pendant l'écriture : juste après la lecture des comptes (1), puis
+    // juste avant leur effacement (2).
+    static PENDANT_LES_PERDUS: std::cell::Cell<Option<Autre>> = const { std::cell::Cell::new(None) };
 }
 
 /// L'écriture elle-même, des événements `evs` dans l'ordre ; sans événement, seuls une rupture et un passage de
@@ -479,9 +486,16 @@ fn ecrire_dans(
     let (mut tete, rupture) = juger_la_tete(lue, &presents, dernier.as_deref(), &reelles, fin_reelle.as_deref());
 
     let mut a_ecrire = evenements_a_ecrire(rupture, &tete, evs);
-    let perdus = perdus_dans(dossier);
+    // Le compte pris à part avant d'être lu : un processus qui en perd d'autres pendant cette écriture (sans verrou)
+    // les ajoute à un nouveau compte, que l'effacement qui suit ne touche pas.
+    let pris = prendre_perdus(dossier);
+    let perdus = compter_perdus(&pris);
     if let Some(n) = perdus {
         a_ecrire.insert(0, rupture_des_perdus(n));
+    }
+    #[cfg(test)]
+    if let Some(autre) = PENDANT_LES_PERDUS.with(std::cell::Cell::get) {
+        autre(dossier, &pris, 1);
     }
     if a_ecrire.is_empty() {
         return Ok(());
@@ -545,9 +559,21 @@ fn ecrire_dans(
         &serde_json::to_vec(&tete).map_err(std::io::Error::other)?,
     )?;
     ajouter(&rep.join(format!("{mois}.jsonl")), &a_ajouter)?;
-    // Dits dans la chaîne : la marque n'a plus rien à porter.
-    if perdus.is_some() {
-        let _ = std::fs::remove_file(dossier.join(PERDUS));
+    // Dits dans la chaîne : les comptes pris n'ont plus rien à porter. Ce qu'un processus y a ajouté entre la prise et
+    // ici (il l'avait ouvert juste avant) n'est pas perdu : remis au compte suivant. Avant la seconde tête : une
+    // erreur sur elle (`ApresAjout`) n'est jamais remise, rien de ce qui est écrit ici ne se redit.
+    if let Some(n) = perdus {
+        let apres = compter_perdus(&pris).unwrap_or(n);
+        #[cfg(test)]
+        if let Some(autre) = PENDANT_LES_PERDUS.with(std::cell::Cell::get) {
+            autre(dossier, &pris, 2);
+        }
+        for f in &pris {
+            let _ = std::fs::remove_file(f);
+        }
+        if apres > n {
+            noter_perdus(dossier, usize::try_from(apres - n).unwrap_or(usize::MAX));
+        }
     }
     #[cfg(test)]
     if ARRET_APRES_AJOUT.with(std::cell::Cell::get) {
@@ -727,18 +753,57 @@ fn noter_perdus(dossier: &Path, n: usize) {
     }
 }
 
-/// Le nombre d'événements perdus comptés et pas encore dits (`None` : aucun). Là mais illisible : 0, « des ».
-fn perdus_dans(dossier: &Path) -> Option<u64> {
-    match crate::socle::lire_ordinaire(&dossier.join(PERDUS), 1 << 16) {
-        Ok(o) => Some(
-            String::from_utf8_lossy(&o)
+/// Les comptes pris par une écriture du journal et pas encore effacés (`PERDUS` renommé, « evenements.perdus.<pid>-…
+/// » : celle-ci, ou une d'avant arrêtée en route).
+fn perdus_pris(dossier: &Path) -> Vec<PathBuf> {
+    let prefixe = format!("{PERDUS}.");
+    let mut f: Vec<PathBuf> = std::fs::read_dir(dossier)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with(&prefixe))
+        .map(|e| e.path())
+        .collect();
+    f.sort();
+    f
+}
+
+/// Sous le verrou du journal : le compte en cours renommé à un nom à soi, puis tous les comptes pris (ceux d'une
+/// écriture arrêtée en route compris). Les lire et les effacer ensuite ne touche plus un compte que d'autres
+/// continuent d'écrire, sans verrou : avant, ce qui y était ajouté entre la lecture et l'effacement se perdait.
+fn prendre_perdus(dossier: &Path) -> Vec<PathBuf> {
+    let a_soi = dossier.join(format!(
+        "{PERDUS}.{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    let _ = std::fs::rename(dossier.join(PERDUS), a_soi);
+    perdus_pris(dossier)
+}
+
+/// Le total de ces comptes (`None` : aucun). Là mais illisible : 0, « des ».
+fn compter_perdus(fichiers: &[PathBuf]) -> Option<u64> {
+    let mut total = None;
+    for f in fichiers {
+        let n = match crate::socle::lire_ordinaire(f, 1 << 16) {
+            Ok(o) => String::from_utf8_lossy(&o)
                 .lines()
                 .filter_map(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
                 .fold(0u64, u64::saturating_add),
-        ),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(_) => Some(0),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => 0,
+        };
+        total = Some(total.unwrap_or(0u64).saturating_add(n));
     }
+    total
+}
+
+/// Le nombre d'événements perdus comptés et pas encore dits (`None` : aucun), sans rien prendre : le compte en cours
+/// et ceux qu'une écriture a pris sans avoir fini.
+fn perdus_dans(dossier: &Path) -> Option<u64> {
+    let mut f = vec![dossier.join(PERDUS)];
+    f.extend(perdus_pris(dossier));
+    compter_perdus(&f)
 }
 
 /// Ce que dit la chaîne de `n` événements perdus (0 : un nombre qui ne se lit plus).
@@ -1104,6 +1169,11 @@ pub(crate) fn fichiers(dossier: &Path) -> Vec<String> {
     if dossier.join(PERDUS).exists() {
         f.push(PERDUS.to_string());
     }
+    f.extend(
+        perdus_pris(dossier)
+            .iter()
+            .filter_map(|p| Some(p.file_name()?.to_string_lossy().into_owned())),
+    );
     f
 }
 
@@ -2110,6 +2180,44 @@ mod tests {
             "{}",
             c.message
         );
+    }
+
+    /// F4 (relecture du delta) : un autre processus perd des événements pendant qu'une écriture dit les perdus. Ceux
+    /// qu'il compte à côté (nouveau compte), ou dans le compte que l'écriture vient de prendre (il l'avait ouvert juste
+    /// avant), restent comptés pour la suivante ; avant, l'effacement après lecture les perdait. Chaque compte n'est
+    /// dit qu'une fois dans la chaîne.
+    #[test]
+    fn perdus_comptes_pendant_une_ecriture_ne_se_perdent_pas() {
+        let d = dossier("perdus-pendant");
+        let q = "2026-10-23T10:00:00Z";
+        noter_perdus(&d, 2);
+        PENDANT_LES_PERDUS.with(|p| {
+            p.set(Some(|d, pris, moment| {
+                if moment == 1 {
+                    ajouter(&pris[0], b"2026-10-23T10:00:01Z 3\n").unwrap();
+                } else {
+                    noter_perdus(d, 5);
+                }
+            }));
+        });
+        let ecrit = noter_dans(&d, alerte(1, q), le(q));
+        PENDANT_LES_PERDUS.with(|p| p.set(None));
+        ecrit.unwrap();
+        assert_eq!(perdus_dans(&d), Some(8));
+        assert_eq!(perdus_pris(&d), Vec::<PathBuf>::new());
+        noter_dans(&d, alerte(2, q), le(q)).unwrap();
+        assert_eq!(perdus_dans(&d), None);
+        let dits: Vec<String> = lire_dans(&d)
+            .evenements
+            .iter()
+            .filter(|e| de_perdus(e))
+            .filter_map(|e| match &e.quoi {
+                Genre::Rupture { trouve, .. } => Some(trouve.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dits, [texte_perdus(2), texte_perdus(8)]);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Une ligne coupée par un arrêt : elle reste dans la chaîne, illisible ; la ligne suivante commence sur une
