@@ -19,6 +19,7 @@ mod markdown;
 mod programmes;
 mod tri;
 
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 
 use brouillon::{Brouillon, Contexte, Kev, Masque, Reponses};
@@ -444,115 +445,10 @@ fn interactif(lu: &Lu, sujet: &Sujet, programme: Option<Programme>, langue: Opti
     }
     let mut r = Reponses::default();
     let mut programme = programme;
-    let mut kev_lu = None;
     println!();
-    match &tri {
-        Tri::FailleConnue(cves) => {
-            let liste = if cves.is_empty() {
-                tr!("logiciel pas à jour", "outdated software").to_string()
-            } else {
-                cves.join(", ")
-            };
-            afficher_aligne(
-                "  ",
-                &trf!(
-                    "Cette faille est déjà connue ({}). Pas besoin de la signaler : une mise à jour la corrige.",
-                    "This flaw is already known ({}). No need to report it: an update fixes it.",
-                    liste
-                ),
-                2,
-                "",
-            );
-            let k = kev(cves);
-            match &k {
-                Kev::Exploitees(dans) if !dans.is_empty() => afficher_aligne(
-                    "  ",
-                    &trf!(
-                        "Exploitée selon le catalogue de la CISA : {}. Mettez à jour d'abord.",
-                        "Exploited according to CISA's catalog: {}. Update first.",
-                        dans.join(", ")
-                    ),
-                    2,
-                    GRIS,
-                ),
-                Kev::Exploitees(_) => {}
-                Kev::NonVerifie(raison) => afficher_aligne(
-                    "  ",
-                    &trf!(
-                        "Catalogue de la CISA : non vérifié ({}).",
-                        "CISA's catalog: not checked ({}).",
-                        affichable(raison)
-                    ),
-                    2,
-                    GRIS,
-                ),
-            }
-            if !crate::langue::oui(&demander(tr!(
-                "\n  La mise à jour ne la corrige pas ? Préparer quand même un brouillon (ce sera noté dedans) ? [o/N] : ",
-                "\n  The update does not fix it? Prepare a draft anyway (it will be noted in it)? [y/N]: "
-            ))) {
-                return Ok(());
-            }
-            r.outre_connue = if cves.is_empty() {
-                vec!["CVE ?".into()]
-            } else {
-                cves.clone()
-            };
-            kev_lu = Some(k);
-        }
-        Tri::Malveillant | Tri::DetectionRatee => {
-            afficher_aligne(
-                "  ",
-                &trf!(
-                    "Un logiciel malveillant ou une détection ratée n'est pas une faille de l'éditeur. Pour aider les antivirus, vous pouvez envoyer le fichier vous-même à {}. Vanguard ne prépare rien : un fichier envoyé peut contenir vos données, et il y est gardé longtemps.",
-                    "Malware or a missed detection is not a flaw in the vendor's product. To help antivirus engines, you can send the file yourself to {}. Vanguard prepares nothing: a submitted file can hold your data, and it is kept there a long time.",
-                    WDSI
-                ),
-                2,
-                "",
-            );
-            afficher_aligne(
-                "  ",
-                &trf!("Un incident vécu au Canada : {}", "An incident in Canada: {}", CCCS),
-                2,
-                GRIS,
-            );
-            return Ok(());
-        }
-        Tri::Hameconnage => {
-            afficher_aligne(
-                "  ",
-                &trf!(
-                    "Un lien ou un courriel d'hameçonnage n'est pas une faille de l'éditeur. Vous pouvez signaler le site vous-même : {}",
-                    "A phishing link or email is not a flaw in the vendor's product. You can report the site yourself: {}",
-                    HAMECONNAGE
-                ),
-                2,
-                "",
-            );
-            afficher_aligne(
-                "  ",
-                &trf!("Un incident vécu au Canada : {}", "An incident in Canada: {}", CCCS),
-                2,
-                GRIS,
-            );
-            return Ok(());
-        }
-        Tri::Contournement => {
-            afficher_aligne(
-                "  ",
-                tr!(
-                    "Microsoft ne corrige pas par défaut le contournement d'une protection « en profondeur » (AppLocker, accès contrôlé aux dossiers, Exploit Guard). Vous pouvez continuer : ce sera dit dans le brouillon.",
-                    "Microsoft does not fix by default the bypass of a “defense-in-depth” protection (AppLocker, controlled folder access, Exploit Guard). You can go on: the draft will say so."
-                ),
-                2,
-                GRIS,
-            );
-            r.contournement = true;
-        }
-        Tri::Vanguard => programme = Some(Programme::Vanguard),
-        Tri::AEcrire => {}
-    }
+    let ControlFlow::Continue(kev_lu) = selon_le_tri(&tri, &mut r, &mut programme) else {
+        return Ok(());
+    };
 
     r.produit = question(tr!(
         "Quel logiciel, et sa version ? (ex. Firefox 132.0)",
@@ -567,6 +463,130 @@ fn interactif(lu: &Lu, sujet: &Sujet, programme: Option<Programme>, langue: Opti
     };
     let fiche = programme.fiche();
     let langue = langue.or(fiche.langue).unwrap_or_else(Langue::de_l_interface);
+    questions_du_programme(fiche, &mut r);
+
+    let b = assembler(fiche, langue, sujet, &r, &contexte(lu, sujet, kev_lu));
+    let texte = finaliser(&b, &garde::connues()).map_err(|s| refus(&s))?;
+    montrer_le_brouillon(&texte, &b);
+    ecrire_le_brouillon(programme, sujet, &texte)
+}
+
+/// Ce que dit le tri avant les questions. `Break` : le parcours s'arrête là (pas une faille de l'éditeur, ou la
+/// personne renonce) ; `Continue` : on poursuit, avec ce que le catalogue KEV a dit d'une faille connue. Peut
+/// imposer le programme (Vanguard) et noter dans `r` ce que le brouillon devra dire.
+fn selon_le_tri(tri: &Tri, r: &mut Reponses, programme: &mut Option<Programme>) -> ControlFlow<(), Option<Kev>> {
+    match tri {
+        Tri::FailleConnue(cves) => {
+            return match faille_connue(cves, r) {
+                ControlFlow::Continue(k) => ControlFlow::Continue(Some(k)),
+                ControlFlow::Break(()) => ControlFlow::Break(()),
+            };
+        }
+        Tri::Malveillant | Tri::DetectionRatee => {
+            pas_une_faille(&trf!(
+                "Un logiciel malveillant ou une détection ratée n'est pas une faille de l'éditeur. Pour aider les antivirus, vous pouvez envoyer le fichier vous-même à {}. Vanguard ne prépare rien : un fichier envoyé peut contenir vos données, et il y est gardé longtemps.",
+                "Malware or a missed detection is not a flaw in the vendor's product. To help antivirus engines, you can send the file yourself to {}. Vanguard prepares nothing: a submitted file can hold your data, and it is kept there a long time.",
+                WDSI
+            ));
+            return ControlFlow::Break(());
+        }
+        Tri::Hameconnage => {
+            pas_une_faille(&trf!(
+                "Un lien ou un courriel d'hameçonnage n'est pas une faille de l'éditeur. Vous pouvez signaler le site vous-même : {}",
+                "A phishing link or email is not a flaw in the vendor's product. You can report the site yourself: {}",
+                HAMECONNAGE
+            ));
+            return ControlFlow::Break(());
+        }
+        Tri::Contournement => {
+            afficher_aligne(
+                "  ",
+                tr!(
+                    "Microsoft ne corrige pas par défaut le contournement d'une protection « en profondeur » (AppLocker, accès contrôlé aux dossiers, Exploit Guard). Vous pouvez continuer : ce sera dit dans le brouillon.",
+                    "Microsoft does not fix by default the bypass of a “defense-in-depth” protection (AppLocker, controlled folder access, Exploit Guard). You can go on: the draft will say so."
+                ),
+                2,
+                GRIS,
+            );
+            r.contournement = true;
+        }
+        Tri::Vanguard => *programme = Some(Programme::Vanguard),
+        Tri::AEcrire => {}
+    }
+    ControlFlow::Continue(None)
+}
+
+/// Une faille déjà connue (`cves`, vide si seule la règle des logiciels pas à jour l'a vue) : dit qu'une mise à
+/// jour la corrige et ce qu'en dit le catalogue KEV ; un brouillon seulement si la personne le demande, noté dans
+/// `r`. `Continue` rend ce que le catalogue a dit.
+fn faille_connue(cves: &[String], r: &mut Reponses) -> ControlFlow<(), Kev> {
+    let liste = if cves.is_empty() {
+        tr!("logiciel pas à jour", "outdated software").to_string()
+    } else {
+        cves.join(", ")
+    };
+    afficher_aligne(
+        "  ",
+        &trf!(
+            "Cette faille est déjà connue ({}). Pas besoin de la signaler : une mise à jour la corrige.",
+            "This flaw is already known ({}). No need to report it: an update fixes it.",
+            liste
+        ),
+        2,
+        "",
+    );
+    let k = kev(cves);
+    match &k {
+        Kev::Exploitees(dans) if !dans.is_empty() => afficher_aligne(
+            "  ",
+            &trf!(
+                "Exploitée selon le catalogue de la CISA : {}. Mettez à jour d'abord.",
+                "Exploited according to CISA's catalog: {}. Update first.",
+                dans.join(", ")
+            ),
+            2,
+            GRIS,
+        ),
+        Kev::Exploitees(_) => {}
+        Kev::NonVerifie(raison) => afficher_aligne(
+            "  ",
+            &trf!(
+                "Catalogue de la CISA : non vérifié ({}).",
+                "CISA's catalog: not checked ({}).",
+                affichable(raison)
+            ),
+            2,
+            GRIS,
+        ),
+    }
+    if !crate::langue::oui(&demander(tr!(
+        "\n  La mise à jour ne la corrige pas ? Préparer quand même un brouillon (ce sera noté dedans) ? [o/N] : ",
+        "\n  The update does not fix it? Prepare a draft anyway (it will be noted in it)? [y/N]: "
+    ))) {
+        return ControlFlow::Break(());
+    }
+    r.outre_connue = if cves.is_empty() {
+        vec!["CVE ?".into()]
+    } else {
+        cves.to_vec()
+    };
+    ControlFlow::Continue(k)
+}
+
+/// Ce n'est pas une faille de l'éditeur : `texte` dit où s'adresser, suivi du centre canadien pour un incident vécu.
+fn pas_une_faille(texte: &str) {
+    afficher_aligne("  ", texte, 2, "");
+    afficher_aligne(
+        "  ",
+        &trf!("Un incident vécu au Canada : {}", "An incident in Canada: {}", CCCS),
+        2,
+        GRIS,
+    );
+}
+
+/// Les questions du brouillon, dans `r` : toujours ce qui a été fait, vu et attendu ; la preuve de concept et
+/// l'impact seulement si le programme de `fiche` les demande.
+fn questions_du_programme(fiche: &Fiche, r: &mut Reponses) {
     afficher_aligne(
         "  ",
         tr!(
@@ -594,9 +614,10 @@ fn interactif(lu: &Lu, sujet: &Sujet, programme: Option<Programme>, langue: Opti
             "The impact, if you know it (otherwise Enter):"
         ));
     }
+}
 
-    let b = assembler(fiche, langue, sujet, &r, &contexte(lu, sujet, kev_lu));
-    let texte = finaliser(&b, &garde::connues()).map_err(|s| refus(&s))?;
+/// Le brouillon `texte` montré en entier, avec ce qui a été masqué et ce qui manque à `b`.
+fn montrer_le_brouillon(texte: &str, b: &Brouillon) {
     titre(tr!("BROUILLON", "DRAFT"));
     for l in texte.lines() {
         afficher_aligne("  ", &affichable(l), 2, "");
@@ -625,6 +646,12 @@ fn interactif(lu: &Lu, sujet: &Sujet, programme: Option<Programme>, langue: Opti
             couleur(crate::risk::Niveau::Moyen),
         );
     }
+}
+
+/// Après accord, `texte` écrit dans le dossier local, le geste noté au journal (jamais le texte), puis la page du
+/// programme ouverte si la personne le demande. Rien n'est envoyé.
+fn ecrire_le_brouillon(programme: Programme, sujet: &Sujet, texte: &str) -> Result<(), Echec> {
+    let fiche = programme.fiche();
     let ecrire = demander(tr!(
         "\n  Écrire ce brouillon sur cet ordinateur ? [O/n] : ",
         "\n  Write this draft on this computer? [Y/n]: "
@@ -637,7 +664,7 @@ fn interactif(lu: &Lu, sujet: &Sujet, programme: Option<Programme>, langue: Opti
     let chemin = ecrire_dans(
         &dossier,
         &nom_de_fichier(chrono::Local::now(), fiche),
-        &texte,
+        texte,
         crate::socle::ecriture_sure(&dossier),
     )?;
     let ecrit = if fiche.compte_verifie() {
