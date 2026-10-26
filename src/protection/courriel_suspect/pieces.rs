@@ -206,58 +206,7 @@ pub(crate) fn juger(nom: &str, type_declare: &str, contenu: &[u8]) -> (Vec<Signe
         .collect();
     signes.extend(nature);
     let ext = extension(nom);
-    match classe(&ext) {
-        Some(Classe::Programme) => signes.push((
-            Niveau::Eleve,
-            trf!(
-                "{montre} : un programme en pièce jointe. Aucun service sérieux n'en envoie ; ne l'ouvrez pas.",
-                "{montre}: a program as an attachment. No serious service sends one; do not open it."
-            ),
-        )),
-        Some(Classe::ImageDisque) => signes.push((
-            Niveau::Eleve,
-            trf!(
-                "{montre} : image disque. Ouverte, elle échappe à l'avertissement « fichier venu d'Internet » ; une ruse courante.",
-                "{montre}: disk image. Once opened, it escapes the “file from the Internet” warning; a common trick."
-            ),
-        )),
-        Some(Classe::Raccourci) => signes.push((
-            Niveau::Eleve,
-            trf!(
-                "{montre} : un raccourci, qui peut lancer n'importe quel programme.",
-                "{montre}: a shortcut, which can start any program."
-            ),
-        )),
-        Some(Classe::OneNote) => signes.push((
-            Niveau::Eleve,
-            trf!(
-                "{montre} : bloc-notes OneNote, souvent piégé d'un bouton qui lance un programme.",
-                "{montre}: OneNote notebook, often trapped with a button that starts a program."
-            ),
-        )),
-        Some(Classe::PageWeb) => signes.push((
-            Niveau::Eleve,
-            trf!(
-                "{montre} : page web en pièce jointe, souvent une fausse page de connexion qui s'ouvre depuis votre ordinateur.",
-                "{montre}: web page as an attachment, often a fake login page that opens from your computer."
-            ),
-        )),
-        Some(Classe::Macros) => signes.push((
-            Niveau::Eleve,
-            trf!(
-                "{montre} : document à macros ; n'activez jamais le contenu qu'il demande.",
-                "{montre}: macro-enabled document; never enable the content it asks for."
-            ),
-        )),
-        Some(Classe::Archive) => signes.push((
-            Niveau::Moyen,
-            trf!(
-                "{montre} : archive ; ce qu'elle contient se juge avant de l'ouvrir.",
-                "{montre}: archive; what it contains must be judged before opening it."
-            ),
-        )),
-        None => {}
-    }
+    signes.extend(signe_du_nom(classe(&ext), &montre));
     // Un SVG est une image qui peut porter du script : ouvert (« noname » chez Gmail, « Part 1.2 » chez Thunderbird),
     // il s'exécute dans le navigateur. Sans nom, rien d'autre ne le dit.
     if classe(&ext) != Some(Classe::PageWeb)
@@ -299,93 +248,7 @@ pub(crate) fn juger(nom: &str, type_declare: &str, contenu: &[u8]) -> (Vec<Signe
         ));
     }
 
-    if contenu.starts_with(b"PK\x03\x04") || contenu.starts_with(b"PK\x05\x06") {
-        if let Ok((noms, coupe)) = noms_zip(contenu, ZIP_ENTREES) {
-            if noms.iter().any(|(_, chiffre)| *chiffre) {
-                signes.push((
-                    Niveau::Eleve,
-                    trf!(
-                        "{montre} : archive à mot de passe ; les antivirus ne voient pas dedans, le mot de passe est souvent dans le message.",
-                        "{montre}: password-protected archive; antivirus cannot see inside, the password is often in the message."
-                    ),
-                ));
-            }
-            if noms
-                .iter()
-                .any(|(n, _)| n.to_ascii_lowercase().ends_with("vbaproject.bin"))
-            {
-                signes.push((
-                    Niveau::Eleve,
-                    trf!(
-                        "{montre} : contient des macros (du code qui tourne à l'ouverture).",
-                        "{montre}: contains macros (code that runs when opened)."
-                    ),
-                ));
-            }
-            let dangereux: Vec<String> = noms
-                .iter()
-                .map(|(n, _)| n.rsplit(['/', '\\']).next().unwrap_or(n).to_string())
-                .filter(|n| {
-                    matches!(
-                        classe(&extension(n)),
-                        Some(Classe::Programme | Classe::Raccourci | Classe::ImageDisque | Classe::OneNote)
-                    ) || !telechargement::nature(n, b"").is_empty()
-                })
-                .map(|n| crate::ui::affichable(&n))
-                .collect();
-            if !dangereux.is_empty() {
-                signes.push((
-                    Niveau::Eleve,
-                    trf!(
-                        "{montre} contient un programme ou un raccourci : {}.",
-                        "{montre} contains a program or a shortcut: {}.",
-                        crate::ui::resume(&dangereux, 3, ", ")
-                    ),
-                ));
-            }
-            if coupe {
-                manques.push(trf!("le contenu complet de {montre}", "the full content of {montre}"));
-            }
-        } else {
-            signes.push((
-                Niveau::Info,
-                trf!(
-                    "{montre} : archive illisible, son contenu n'a pas été examiné.",
-                    "{montre}: unreadable archive, its content was not examined."
-                ),
-            ));
-            manques.push(trf!("le contenu de {montre}", "the content of {montre}"));
-        }
-    } else if contenu.starts_with(OLE) {
-        if trouve(contenu, &utf16("__substg1.0_")) {
-            signes.push((
-                Niveau::Info,
-                trf!(
-                    "{montre} : message Outlook joint (.msg), pas lu par Vanguard.",
-                    "{montre}: attached Outlook message (.msg), not read by Vanguard."
-                ),
-            ));
-            manques.push(trf!("le message joint {montre}", "the attached message {montre}"));
-        } else if trouve(contenu, &utf16("_VBA_PROJECT")) {
-            signes.push((
-                Niveau::Eleve,
-                trf!(
-                    "{montre} : contient des macros (du code qui tourne à l'ouverture).",
-                    "{montre}: contains macros (code that runs when opened)."
-                ),
-            ));
-        }
-    } else if contenu.starts_with(b"%PDF") {
-        signes.extend(signes_pdf(contenu, &montre));
-    } else if contenu.starts_with(b"{\\rtf") && (trouve(contenu, b"\\object") || trouve(contenu, b"\\objdata")) {
-        signes.push((
-            Niveau::Moyen,
-            trf!(
-                "{montre} : document RTF avec un objet intégré, une façon connue de lancer du code.",
-                "{montre}: RTF document with an embedded object, a known way to run code."
-            ),
-        ));
-    }
+    regarder_le_contenu(contenu, &montre, &mut signes, &mut manques);
     let bas = nom.to_ascii_lowercase();
     if bas == "winmail.dat" || type_declare == "application/ms-tnef" {
         signes.push((
@@ -408,6 +271,158 @@ pub(crate) fn juger(nom: &str, type_declare: &str, contenu: &[u8]) -> (Vec<Signe
         signes.retain(|(n, t)| *n != Niveau::Info || !conseils.contains(t));
     }
     (signes, manques)
+}
+
+/// Ce que dit le nom seul, d'après sa classe d'extension.
+fn signe_du_nom(classe: Option<Classe>, montre: &str) -> Option<Signe> {
+    match classe {
+        Some(Classe::Programme) => Some((
+            Niveau::Eleve,
+            trf!(
+                "{montre} : un programme en pièce jointe. Aucun service sérieux n'en envoie ; ne l'ouvrez pas.",
+                "{montre}: a program as an attachment. No serious service sends one; do not open it."
+            ),
+        )),
+        Some(Classe::ImageDisque) => Some((
+            Niveau::Eleve,
+            trf!(
+                "{montre} : image disque. Ouverte, elle échappe à l'avertissement « fichier venu d'Internet » ; une ruse courante.",
+                "{montre}: disk image. Once opened, it escapes the “file from the Internet” warning; a common trick."
+            ),
+        )),
+        Some(Classe::Raccourci) => Some((
+            Niveau::Eleve,
+            trf!(
+                "{montre} : un raccourci, qui peut lancer n'importe quel programme.",
+                "{montre}: a shortcut, which can start any program."
+            ),
+        )),
+        Some(Classe::OneNote) => Some((
+            Niveau::Eleve,
+            trf!(
+                "{montre} : bloc-notes OneNote, souvent piégé d'un bouton qui lance un programme.",
+                "{montre}: OneNote notebook, often trapped with a button that starts a program."
+            ),
+        )),
+        Some(Classe::PageWeb) => Some((
+            Niveau::Eleve,
+            trf!(
+                "{montre} : page web en pièce jointe, souvent une fausse page de connexion qui s'ouvre depuis votre ordinateur.",
+                "{montre}: web page as an attachment, often a fake login page that opens from your computer."
+            ),
+        )),
+        Some(Classe::Macros) => Some((
+            Niveau::Eleve,
+            trf!(
+                "{montre} : document à macros ; n'activez jamais le contenu qu'il demande.",
+                "{montre}: macro-enabled document; never enable the content it asks for."
+            ),
+        )),
+        Some(Classe::Archive) => Some((
+            Niveau::Moyen,
+            trf!(
+                "{montre} : archive ; ce qu'elle contient se juge avant de l'ouvrir.",
+                "{montre}: archive; what it contains must be judged before opening it."
+            ),
+        )),
+        None => None,
+    }
+}
+
+/// Ce que montre le contenu selon sa nature : archive zip, document OLE, PDF ou RTF ; et ce qui n'a pas pu être lu.
+fn regarder_le_contenu(contenu: &[u8], montre: &str, signes: &mut Vec<Signe>, manques: &mut Vec<String>) {
+    if contenu.starts_with(b"PK\x03\x04") || contenu.starts_with(b"PK\x05\x06") {
+        regarder_le_zip(contenu, montre, signes, manques);
+    } else if contenu.starts_with(OLE) {
+        if trouve(contenu, &utf16("__substg1.0_")) {
+            signes.push((
+                Niveau::Info,
+                trf!(
+                    "{montre} : message Outlook joint (.msg), pas lu par Vanguard.",
+                    "{montre}: attached Outlook message (.msg), not read by Vanguard."
+                ),
+            ));
+            manques.push(trf!("le message joint {montre}", "the attached message {montre}"));
+        } else if trouve(contenu, &utf16("_VBA_PROJECT")) {
+            signes.push((
+                Niveau::Eleve,
+                trf!(
+                    "{montre} : contient des macros (du code qui tourne à l'ouverture).",
+                    "{montre}: contains macros (code that runs when opened)."
+                ),
+            ));
+        }
+    } else if contenu.starts_with(b"%PDF") {
+        signes.extend(signes_pdf(contenu, montre));
+    } else if contenu.starts_with(b"{\\rtf") && (trouve(contenu, b"\\object") || trouve(contenu, b"\\objdata")) {
+        signes.push((
+            Niveau::Moyen,
+            trf!(
+                "{montre} : document RTF avec un objet intégré, une façon connue de lancer du code.",
+                "{montre}: RTF document with an embedded object, a known way to run code."
+            ),
+        ));
+    }
+}
+
+/// Les noms d'une archive zip : chiffrés, à macros, ou qui cachent un programme ; une archive illisible ou coupée est dite.
+fn regarder_le_zip(contenu: &[u8], montre: &str, signes: &mut Vec<Signe>, manques: &mut Vec<String>) {
+    if let Ok((noms, coupe)) = noms_zip(contenu, ZIP_ENTREES) {
+        if noms.iter().any(|(_, chiffre)| *chiffre) {
+            signes.push((
+                Niveau::Eleve,
+                trf!(
+                    "{montre} : archive à mot de passe ; les antivirus ne voient pas dedans, le mot de passe est souvent dans le message.",
+                    "{montre}: password-protected archive; antivirus cannot see inside, the password is often in the message."
+                ),
+            ));
+        }
+        if noms
+            .iter()
+            .any(|(n, _)| n.to_ascii_lowercase().ends_with("vbaproject.bin"))
+        {
+            signes.push((
+                Niveau::Eleve,
+                trf!(
+                    "{montre} : contient des macros (du code qui tourne à l'ouverture).",
+                    "{montre}: contains macros (code that runs when opened)."
+                ),
+            ));
+        }
+        let dangereux: Vec<String> = noms
+            .iter()
+            .map(|(n, _)| n.rsplit(['/', '\\']).next().unwrap_or(n).to_string())
+            .filter(|n| {
+                matches!(
+                    classe(&extension(n)),
+                    Some(Classe::Programme | Classe::Raccourci | Classe::ImageDisque | Classe::OneNote)
+                ) || !telechargement::nature(n, b"").is_empty()
+            })
+            .map(|n| crate::ui::affichable(&n))
+            .collect();
+        if !dangereux.is_empty() {
+            signes.push((
+                Niveau::Eleve,
+                trf!(
+                    "{montre} contient un programme ou un raccourci : {}.",
+                    "{montre} contains a program or a shortcut: {}.",
+                    crate::ui::resume(&dangereux, 3, ", ")
+                ),
+            ));
+        }
+        if coupe {
+            manques.push(trf!("le contenu complet de {montre}", "the full content of {montre}"));
+        }
+    } else {
+        signes.push((
+            Niveau::Info,
+            trf!(
+                "{montre} : archive illisible, son contenu n'a pas été examiné.",
+                "{montre}: unreadable archive, its content was not examined."
+            ),
+        ));
+        manques.push(trf!("le contenu de {montre}", "the content of {montre}"));
+    }
 }
 
 /// Les mots d'un PDF qui lancent quelque chose. Leur absence ne prouve rien : un PDF peut les cacher dans des objets
