@@ -770,6 +770,10 @@ pub(crate) fn lire_dans(dossier: &Path) -> Lu {
 /// Le début de la raison d'un journal lu sans son verrou, tenu ailleurs (`lire_tenu`).
 const PAS_JUGE: &str = "pas jugé : ";
 
+/// La raison d'un journal lu alors que le verrou des sceaux est gardé ailleurs (`lire_tenu`) : dite au bilan par les
+/// sceaux, pas une seconde fois ici.
+const SCEAUX_TENUS: &str = "verrou des sceaux tenu ailleurs, ce qui devait s'y noter attend / seals lock held elsewhere, what had to be noted waits";
+
 /// La lecture se fait sous le verrou, partagé : entre les étapes d'une écriture (tête annoncée, ajout, tête finale,
 /// mois élagués), le disque montre un état que la lecture prendrait pour une fin écrite sans sa tête, voire pour des
 /// lignes ajoutées ou un mois retiré, donc falsifié. Tenu au-delà de `attente` (un Vanguard figé au milieu d'une
@@ -780,6 +784,12 @@ const PAS_JUGE: &str = "pas jugé : ";
 fn lire_tenu(dossier: &Path, attente: std::time::Duration) -> Lu {
     let tenu = crate::socle::Verrou::prendre_compatible(dossier, VERROU, true, attente);
     let mut lu = lire_borne(dossier, BORNES);
+    // La tête lue sans le verrou des sceaux, gardé ailleurs : ce qui devait s'écrire n'a pas pu l'être, la fin lue
+    // n'est donc pas forcément la dernière. Pas « intact » ; le bilan le dit avec les sceaux (`sceau::constat`).
+    if crate::sceau::verrou_tenu_dans(dossier) && !matches!(lu.lecture, Lecture::Falsifie(_)) {
+        lu.lecture = Lecture::Incomplet(SCEAUX_TENUS.into());
+        lu.verifies_des = lu.evenements.len();
+    }
     if matches!(tenu, Err(crate::socle::SansVerrou::Occupe))
         && matches!(lu.lecture, Lecture::Falsifie(_) | Lecture::Incomplet(_))
     {

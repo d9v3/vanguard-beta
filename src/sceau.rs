@@ -289,11 +289,86 @@ fn empreinte(nom: &str, octets: &[u8]) -> String {
 /// n'attendent rien de l'écriture.
 fn verrou_ecriture(dossier: &Path, nom: &str) -> std::io::Result<crate::socle::Verrou> {
     std::fs::create_dir_all(dossier)?;
-    crate::socle::Verrou::prendre(dossier, VERROU, false, crate::socle::ATTENTE_ECRITURE).map_err(|e| {
+    prendre_verrou(dossier, false, crate::socle::ATTENTE_ECRITURE).map_err(|e| {
         let e = e.erreur(VERROU);
         crate::modele::Echec::echoue("sceau/ecrire", format!("{nom} : {e}")).journaliser();
         e
     })
+}
+
+/// Les dossiers dont le verrou des sceaux a été refusé à ce processus au-delà de toute l'attente, et pas rendu depuis.
+/// Un `flock` gardé par un programme du compte (ou par un enfant oublié) faisait attendre 30 s chaque écriture scellée
+/// et 10 s chaque lecture : une commande durait des minutes, ce qu'elle devait noter se perdait, et le bilan n'en
+/// disait rien. Passé un premier refus, plus que `ATTENTE_APRES_REFUS` ; et le bilan le dit (`constat_verrou`).
+static TENUS: std::sync::Mutex<BTreeSet<PathBuf>> = std::sync::Mutex::new(BTreeSet::new());
+
+/// L'attente d'un verrou déjà refusé à ce processus : un Vanguard qui écrit le rend en quelques millisecondes.
+const ATTENTE_APRES_REFUS: std::time::Duration = std::time::Duration::from_secs(1);
+
+// Les essais attendent moins le verrou que le programme (`verrou_tenu_…`).
+#[cfg(test)]
+thread_local! {
+    static ATTENTE_ESSAI: std::cell::Cell<Option<std::time::Duration>> = const { std::cell::Cell::new(None) };
+}
+
+/// Le verrou des sceaux de `dossier`, attendu au plus `attente`, ou bien moins s'il a déjà été refusé ici (`TENUS`).
+fn prendre_verrou(
+    dossier: &Path,
+    partage: bool,
+    attente: std::time::Duration,
+) -> Result<crate::socle::Verrou, crate::socle::SansVerrou> {
+    #[cfg(test)]
+    let attente = ATTENTE_ESSAI.with(std::cell::Cell::get).unwrap_or(attente);
+    let tenus = || TENUS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let attente = if tenus().contains(dossier) {
+        attente.min(ATTENTE_APRES_REFUS)
+    } else {
+        attente
+    };
+    let v = crate::socle::Verrou::prendre(dossier, VERROU, partage, attente);
+    match &v {
+        Ok(_) => {
+            tenus().remove(dossier);
+        }
+        Err(crate::socle::SansVerrou::Occupe) => {
+            tenus().insert(dossier.to_path_buf());
+        }
+        Err(crate::socle::SansVerrou::Impossible(_)) => {}
+    }
+    v
+}
+
+/// Le verrou des sceaux de `dossier` a-t-il été refusé à ce processus, tenu ailleurs au-delà de l'attente, et pas
+/// rendu depuis ? Ce qui devait s'écrire sous lui (réglages, déjà-vus, tête du journal des événements) ne l'a pas été.
+pub(crate) fn verrou_tenu_dans(dossier: &Path) -> bool {
+    TENUS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains(dossier)
+}
+
+/// Au bilan : le verrou des sceaux tenu ailleurs, comme celui du journal (`modele::journal`).
+fn constat_verrou(dossier: &Path) -> Option<Constat> {
+    if !verrou_tenu_dans(dossier) {
+        return None;
+    }
+    Some(
+        crate::machine::alerte(
+            CAT,
+            Niveau::Moyen,
+            tr!(
+                "Les sceaux de l'état de Vanguard n'ont pas pu être tenus : leur verrou (sceaux.verrou) est gardé depuis trop longtemps (un Vanguard figé, ou un autre programme qui le garde). Ce que Vanguard devait y noter (réglages, déjà-vus, journal des événements) n'a pas été écrit, et le journal n'est pas tenu pour vérifié.",
+                "The seals of Vanguard's state could not be held: their lock (sceaux.verrou) has been kept too long (a frozen Vanguard, or another program keeping it). What Vanguard had to note there (settings, already-seen lists, event log) was not written, and the log is not taken as verified."
+            ),
+        )
+        .manuel(
+            tr!(
+                "Fermez les autres Vanguard ouverts, puis relancez le bilan ; si cela reste, regardez ce qui tourne sous votre compte",
+                "Close the other open Vanguard windows, then run the check-up again; if it stays, look at what runs under your account"
+            ),
+            &[],
+        ),
+    )
 }
 
 /// Le verrou d'un lecteur. Exclusif là où il peut écrire : au premier usage ou pour un fichier protégé tard, la lecture
@@ -303,7 +378,7 @@ fn verrou_ecriture(dossier: &Path, nom: &str) -> std::io::Result<crate::socle::V
 /// dire « pas jugé » laisserait sinon n'importe quel programme qui le garde faire taire les falsifications.
 fn verrou_lecture(dossier: &Path, ecrire: bool) -> (Option<crate::socle::Verrou>, bool) {
     let ecrire = ecrire && crate::socle::ecriture_sure(dossier);
-    match crate::socle::Verrou::prendre(dossier, VERROU, !ecrire, crate::socle::ATTENTE_LECTURE) {
+    match prendre_verrou(dossier, !ecrire, crate::socle::ATTENTE_LECTURE) {
         Ok(v) => (Some(v), ecrire),
         Err(_) => (None, false),
     }
@@ -957,6 +1032,8 @@ pub(crate) fn constat() -> Vec<Constat> {
     if extensions {
         constats.extend(crate::plugins::constat_sceaux(extensions_falsifiees));
     }
+    // Après les lectures du bilan, qui ont essayé de le prendre.
+    constats.extend(constat_verrou(&dossier()));
     constats
 }
 
@@ -1605,5 +1682,50 @@ mod tests {
             assert!(registre(&d).unwrap().unwrap().repris.is_empty());
             let _ = std::fs::remove_dir_all(&d);
         }
+    }
+
+    /// F4 (E-M2) : le verrou des sceaux gardé par un autre programme ne fait plus attendre chaque écriture toute
+    /// l'attente (un refus, puis presque rien), et il se dit : au bilan, et au journal des événements, qui n'est plus
+    /// lu « intact ». Rendu, tout repart.
+    #[test]
+    fn verrou_tenu_ailleurs_court_et_dit() {
+        let d = jetable("verrou-tenu");
+        ecrire_dans(&d, APPRIS, b"{}").unwrap();
+        crate::modele::journal::noter_dans(
+            &d,
+            crate::modele::evenement::Evenement::action(crate::modele::evenement::Source::Blocage, "bloqué", true, &[]),
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        assert!(matches!(
+            crate::modele::journal::lire_dans(&d).lecture,
+            crate::modele::journal::Lecture::Intact
+        ));
+        ATTENTE_ESSAI.with(|a| a.set(Some(std::time::Duration::from_secs(3))));
+        let tenu = crate::socle::Verrou::prendre(&d, VERROU, false, std::time::Duration::ZERO).unwrap();
+        let debut = std::time::Instant::now();
+        assert!(ecrire_dans(&d, APPRIS, b"{\"x\":1}").is_err());
+        assert!(debut.elapsed() >= std::time::Duration::from_secs(3));
+        assert!(verrou_tenu_dans(&d) && constat_verrou(&d).is_some());
+        // Déjà refusé : les suivants n'attendent plus toute l'attente.
+        let debut = std::time::Instant::now();
+        for _ in 0..3 {
+            assert!(ecrire_dans(&d, APPRIS, b"{\"x\":1}").is_err());
+            assert!(matches!(lire_dans(&d, APPRIS), Lecture::Intact(_)));
+        }
+        assert!(
+            debut.elapsed() < std::time::Duration::from_secs(9),
+            "{:?}",
+            debut.elapsed()
+        );
+        assert!(!matches!(
+            crate::modele::journal::lire_dans(&d).lecture,
+            crate::modele::journal::Lecture::Intact
+        ));
+        drop(tenu);
+        ecrire_dans(&d, APPRIS, b"{\"x\":1}").unwrap();
+        assert!(!verrou_tenu_dans(&d) && constat_verrou(&d).is_none());
+        ATTENTE_ESSAI.with(|a| a.set(None));
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

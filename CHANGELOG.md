@@ -29,7 +29,8 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   ils ne coupent plus rien (un piège reste attendu, un port exposé est redit, chaque appareil est redit nouveau, la
   clé n'est jamais dite intacte, rien n'est annulé d'après une note forgée), et c'est dit. Tous les lecteurs suivent
   le même juge ; seul un fichier repris par une mise à jour connue se croit tel quel (des sceaux ramenés à une forme
-  d'avant ne font rien reprendre, et c'est dit), et « sceaux refaits » retombe une fois dit. Un test relit le code
+  d'avant ne font rien reprendre, et c'est dit), un verrou des sceaux gardé par un autre programme ne fait plus
+  attendre chaque écriture et se dit au bilan, et « sceaux refaits » retombe une fois dit. Un test relit le code
   pour que chaque nom de fichier scellé n'y paraisse que là où il est permis, exceptions dites ; VANGUARD_ORIGINE
   n'est crue qu'aux octets du programme qui tourne. Le modèle de menace dit les limites : le dossier effacé en entier,
   et un programme qui vise exprès ce mécanisme.
