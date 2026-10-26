@@ -16,7 +16,7 @@ pub mod tableau;
 pub mod upnp;
 pub mod wifi_public;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -1428,16 +1428,7 @@ pub async fn executer(o: Options) -> Result<Rapport, String> {
     });
 
     if bavard {
-        tre!(
-            "{GRAS}Scan réseau{RESET} — {cible} ({} adresse(s), {} ports chacune)",
-            "{GRAS}Network scan{RESET} — {cible} ({} address(es), {} ports each)",
-            ips.len(),
-            ports.len()
-        );
-        tre!(
-            "{GRIS}Découverte des appareils…{RESET}",
-            "{GRIS}Discovering devices…{RESET}"
-        );
+        annoncer_le_scan(&cible, &ips, &ports);
     }
     let mut vivantes = if ips.len() == 1 {
         ips.clone()
@@ -1451,22 +1442,7 @@ pub async fn executer(o: Options) -> Result<Rapport, String> {
     }
 
     if bavard {
-        tre!(
-            "{GRIS}{} appareil(s) trouvé(s). Scan des ports…{RESET}",
-            "{GRIS}{} device(s) found. Scanning ports…{RESET}",
-            vivantes.len()
-        );
-        // La seule demande qui porte un identifiant par défaut est dite (lecture seule ; choix de l'auteur).
-        tre!(
-            "{GRIS}SNMP : une demande « décris-toi », mot de passe de lecture d'usine « public ».{RESET}",
-            "{GRIS}SNMP: one “describe yourself” request, factory read password “public”.{RESET}"
-        );
-        if ips.iter().all(std::net::Ipv4Addr::is_loopback) {
-            tre!(
-                "{GRIS}Note : 127.0.0.1 montre aussi les services réservés à cet ordinateur. Pour ce qui est vraiment exposé au réseau : vanguard audit.{RESET}",
-                "{GRIS}Note: 127.0.0.1 also shows services reserved for this computer. For what is really exposed to the network: vanguard audit.{RESET}"
-            );
-        }
+        annoncer_les_trouves(&vivantes, &ips);
     }
     // Listes nommées, en français ou en anglais (comme parse_ports).
     let courants = matches!(o.ports.as_str(), "courants" | "common");
@@ -1508,171 +1484,47 @@ pub async fn executer(o: Options) -> Result<Rapport, String> {
     // premier scan d'un réseau.
     let scan_comparable = ips.len() > 1 && courants;
     let nouveautes = scan_comparable && !premier_scan;
-    // Un port hors de la liste courante n'a jamais pu être vu par les scans précédents : pas de faux « nouveau ».
-    let comparable = |port: u16| PORTS_COURANTS.contains(&port);
-    // Une machine est reconnue par sa MAC (l'IP DHCP peut changer), sinon par son IP.
-    let cle = |ip: Ipv4Addr, mac: &Option<String>| mac.clone().unwrap_or_else(|| ip.to_string());
     // Pour cette machine (ou 127.0.0.1), on sait quel programme tient chaque port.
     let programmes = crate::machine::programmes_en_ecoute();
     // Ce que Vanguard a appris des scans d'avant : un appareil connu qui paraît soudain tout fermé est souvent en
     // veille, lent à répondre. Ses ports déjà vus sont revérifiés avec plus de patience : quelques essais ajoutés,
     // aucun retiré.
     if scan_comparable {
-        let a_revoir = silencieux_a_revoir(
-            &resultats,
-            &histo.appareils,
-            |ip| cle(ip, &arp.get(&ip).cloned()),
-            &ports,
-        );
-        if bavard && !a_revoir.is_empty() {
-            tre!(
-                "{GRIS}{} appareil(s) connu(s) silencieux : leurs ports déjà vus sont revérifiés plus patiemment (veille ?).{RESET}",
-                "{GRIS}{} known device(s) silent: their ports seen before are checked again more patiently (asleep?).{RESET}",
-                a_revoir.len()
-            );
-        }
-        for (ip, connus) in a_revoir {
-            let trouves = scan::scanner_ports(&[ip], &connus, Duration::from_millis(DELAI_PATIENT), parallele).await;
-            if let Some(ouverts) = trouves.get(&ip).filter(|o| !o.is_empty()) {
-                resultats.insert(ip, ouverts.clone());
-            }
-        }
+        revoir_les_silencieux(&mut resultats, &histo.appareils, &arp, &ports, parallele, bavard).await;
     }
 
     // Scan approfondi d'un seul appareil : les versions de ses services par nmap, s'il est installé, sur les ports
     // déjà trouvés ouverts (rien d'autre n'est sondé).
-    let mut versions: BTreeMap<Ipv4Addr, BTreeMap<u16, String>> = BTreeMap::new();
-    if ips.len() == 1 && tous && nmap::disponible() {
-        for (ip, ouverts) in &resultats {
-            let ports: Vec<u16> = ouverts.iter().map(|(p, _)| *p).collect();
-            if !ports.is_empty() && nmap::locale(*ip) {
-                if bavard {
-                    tre!(
-                        "{GRIS}Versions des services de {ip} par nmap -sV ({} port(s))…{RESET}",
-                        "{GRIS}Service versions of {ip} with nmap -sV ({} port(s))…{RESET}",
-                        ports.len()
-                    );
-                }
-                versions.insert(*ip, nmap::versions(*ip, &ports));
-            }
-        }
-    }
-    let mut hotes: Vec<Hote> =
-        resultats
-            .into_iter()
-            .zip(noms)
-            .map(|((ip, ouverts), nom)| {
-                let mac = arp.get(&ip).cloned();
-                let connu = histo.appareils.get(&cle(ip, &mac));
-                let ports: Vec<PortOuvert> = ouverts
-                .into_iter()
-                .map(|(port, banniere)| {
-                    // La version donnée par nmap passe devant ce que Vanguard a lu, plus court.
-                    let banniere = versions.get(&ip).and_then(|v| v.get(&port)).cloned().or(banniere);
-                    // Port non répertorié : on se fie à ce que le service annonce (SSH sur 2222, web sur 9999…).
-                    let type_port = if info_port(port).service == crate::risk::inconnu() {
-                        banniere.as_deref().and_then(identifier).unwrap_or(port)
-                    } else {
-                        port
-                    };
-                    let i = info_port(type_port);
-                    let nouveau = nouveautes && comparable(port) && !connu.is_some_and(|c| c.ports.contains(&port));
-                    let programme = (Some(ip) == moi || ip.is_loopback())
-                        .then(|| programmes.get(&port).cloned())
-                        .flatten();
-                    // Ports dynamiques RPC ouverts par Windows lui-même (vu en test dans la VM : 49664 et suivants,
-                    // tenus par lsass, wininit, services, svchost, spoolsv) : normaux, pas « inconnus moyens ».
-                    if i.service == crate::risk::inconnu() && rpc_dynamique_windows(port, programme.as_deref()) {
-                        let rpc = crate::risk::InfoPort {
-                            service: tr!("RPC de Windows", "Windows RPC"),
-                            niveau: Niveau::Info,
-                            conseil: tr!(
-                                "Port dynamique ouvert par Windows pour ses services : normal, filtré par le pare-feu.",
-                                "Dynamic port opened by Windows for its services: normal, filtered by the firewall."
-                            ),
-                        };
-                        return PortOuvert::decrit(port, &rpc, banniere, nouveau, programme, false);
-                    }
-                    PortOuvert::decrit(port, &i, banniere, nouveau, programme, false)
-                })
-                .chain(resultats_udp.remove(&ip).unwrap_or_default().into_iter().map(|(port, banniere)| {
-                    let nouveau = nouveautes && udp_deja_vu && !connu.is_some_and(|c| c.ports_udp.contains(&port));
-                    PortOuvert::decrit(port, &info_udp(port), banniere, nouveau, None, true)
-                }))
-                .collect();
-                let role = if Some(ip) == gw {
-                    Some("passerelle")
-                } else if Some(ip) == moi {
-                    Some("cette machine")
-                } else {
-                    None
-                };
-                let alertes = alertes(role, &ports);
-                let score = 100u32.saturating_sub(alertes.iter().map(|(n, _)| n.penalite()).sum());
-                Hote {
-                    ip,
-                    nom,
-                    fabricant: mac.as_deref().and_then(scan::fabricant),
-                    surnom: connu.and_then(|c| c.surnom.clone()),
-                    premier_vu: connu.and_then(|c| c.premier_vu.clone()),
-                    mac,
-                    role,
-                    nouvelle: nouveautes && connu.is_none(),
-                    ports,
-                    alertes,
-                    score,
-                }
-            })
-            .collect();
+    let versions = if ips.len() == 1 && tous && nmap::disponible() {
+        versions_nmap(&resultats, bavard)
+    } else {
+        BTreeMap::new()
+    };
+    let contexte = Contexte {
+        arp: &arp,
+        appareils: &histo.appareils,
+        versions: &versions,
+        programmes: &programmes,
+        moi,
+        gw,
+        nouveautes,
+        udp_deja_vu,
+    };
+    let mut hotes: Vec<Hote> = resultats
+        .into_iter()
+        .zip(noms)
+        .map(|((ip, ouverts), nom)| {
+            let udp = resultats_udp.remove(&ip).unwrap_or_default();
+            decrire_hote(ip, ouverts, nom, udp, &contexte)
+        })
+        .collect();
     hotes.sort_by_key(|h| h.ip);
 
     let mut absents = Vec::new();
     let mut carnet_non_cru = None;
     // On ne mémorise que les scans du réseau complet avec les ports par défaut, pour comparer ce qui est comparable.
     if scan_comparable {
-        let presents: BTreeSet<String> = hotes.iter().map(|h| cle(h.ip, &h.mac)).collect();
-        absents = histo
-            .appareils
-            .iter()
-            .filter(|(k, _)| !presents.contains(*k))
-            .map(|(_, a)| Absent {
-                ip: a.ip,
-                titre: a.titre(),
-                dernier_vu: a.dernier_vu.clone(),
-            })
-            .collect();
-        let jour = chrono::Local::now().format("%Y-%m-%d").to_string();
-        for h in &hotes {
-            let a = histo
-                .appareils
-                .entry(cle(h.ip, &h.mac))
-                .or_insert_with(|| AppareilConnu {
-                    ip: h.ip,
-                    nom: None,
-                    fabricant: None,
-                    ports: BTreeSet::new(),
-                    ports_udp: BTreeSet::new(),
-                    surnom: None,
-                    surnom_le: None,
-                    premier_vu: Some(jour.clone()),
-                    dernier_vu: None,
-                    annonce: None,
-                });
-            a.ip = h.ip;
-            a.nom = h.nom.clone().or(a.nom.take());
-            a.fabricant.clone_from(&h.fabricant);
-            a.ports.extend(h.ports.iter().filter(|p| !p.udp).map(|p| p.port));
-            a.ports_udp.extend(h.ports.iter().filter(|p| p.udp).map(|p| p.port));
-            a.premier_vu.get_or_insert_with(|| jour.clone());
-            a.dernier_vu = Some(jour.clone());
-            if let Some(annonce) = objets::annonces(&h.ports).into_iter().next() {
-                a.annonce = Some(annonce);
-            }
-        }
-        if nom_reseau.is_some() {
-            histo.nom.clone_from(&nom_reseau);
-        }
-        histo.udp |= avec_udp;
+        absents = memoriser(histo, &hotes, nom_reseau.as_ref(), avec_udp);
         // Douteux : l'ancien carnet mis de côté d'abord, pour dire où il est.
         if let Some(pourquoi) = &pourquoi_douteux {
             let copie = chemins[1].parent().and_then(mettre_de_cote_si_douteux);
@@ -1712,6 +1564,238 @@ pub async fn executer(o: Options) -> Result<Rapport, String> {
         afficher(&rapport);
     }
     Ok(rapport)
+}
+
+/// Ce que le scan va faire, dit avant de commencer.
+fn annoncer_le_scan(cible: &str, ips: &[Ipv4Addr], ports: &[u16]) {
+    tre!(
+        "{GRAS}Scan réseau{RESET} — {cible} ({} adresse(s), {} ports chacune)",
+        "{GRAS}Network scan{RESET} — {cible} ({} address(es), {} ports each)",
+        ips.len(),
+        ports.len()
+    );
+    tre!(
+        "{GRIS}Découverte des appareils…{RESET}",
+        "{GRIS}Discovering devices…{RESET}"
+    );
+}
+
+/// Ce que la découverte a trouvé, et ce que le scan des ports va demander.
+fn annoncer_les_trouves(vivantes: &[Ipv4Addr], ips: &[Ipv4Addr]) {
+    tre!(
+        "{GRIS}{} appareil(s) trouvé(s). Scan des ports…{RESET}",
+        "{GRIS}{} device(s) found. Scanning ports…{RESET}",
+        vivantes.len()
+    );
+    // La seule demande qui porte un identifiant par défaut est dite (lecture seule ; choix de l'auteur).
+    tre!(
+        "{GRIS}SNMP : une demande « décris-toi », mot de passe de lecture d'usine « public ».{RESET}",
+        "{GRIS}SNMP: one “describe yourself” request, factory read password “public”.{RESET}"
+    );
+    if ips.iter().all(std::net::Ipv4Addr::is_loopback) {
+        tre!(
+            "{GRIS}Note : 127.0.0.1 montre aussi les services réservés à cet ordinateur. Pour ce qui est vraiment exposé au réseau : vanguard audit.{RESET}",
+            "{GRIS}Note: 127.0.0.1 also shows services reserved for this computer. For what is really exposed to the network: vanguard audit.{RESET}"
+        );
+    }
+}
+
+/// Une machine est reconnue par sa MAC (l'IP DHCP peut changer), sinon par son IP.
+fn cle_appareil(ip: Ipv4Addr, mac: Option<&String>) -> String {
+    mac.cloned().unwrap_or_else(|| ip.to_string())
+}
+
+/// Ce que Vanguard a appris des scans d'avant : un appareil connu qui paraît soudain tout fermé est souvent en
+/// veille, lent à répondre. Ses ports déjà vus sont revérifiés avec plus de patience : quelques essais ajoutés,
+/// aucun retiré.
+async fn revoir_les_silencieux(
+    resultats: &mut BTreeMap<Ipv4Addr, Vec<(u16, Option<String>)>>,
+    appareils: &BTreeMap<String, AppareilConnu>,
+    arp: &HashMap<Ipv4Addr, String>,
+    ports: &[u16],
+    parallele: usize,
+    bavard: bool,
+) {
+    let a_revoir = silencieux_a_revoir(resultats, appareils, |ip| cle_appareil(ip, arp.get(&ip)), ports);
+    if bavard && !a_revoir.is_empty() {
+        tre!(
+            "{GRIS}{} appareil(s) connu(s) silencieux : leurs ports déjà vus sont revérifiés plus patiemment (veille ?).{RESET}",
+            "{GRIS}{} known device(s) silent: their ports seen before are checked again more patiently (asleep?).{RESET}",
+            a_revoir.len()
+        );
+    }
+    for (ip, connus) in a_revoir {
+        let trouves = scan::scanner_ports(&[ip], &connus, Duration::from_millis(DELAI_PATIENT), parallele).await;
+        if let Some(ouverts) = trouves.get(&ip).filter(|o| !o.is_empty()) {
+            resultats.insert(ip, ouverts.clone());
+        }
+    }
+}
+
+/// Scan approfondi d'un seul appareil : les versions de ses services par nmap, sur les ports déjà trouvés ouverts
+/// (rien d'autre n'est sondé).
+fn versions_nmap(
+    resultats: &BTreeMap<Ipv4Addr, Vec<(u16, Option<String>)>>,
+    bavard: bool,
+) -> BTreeMap<Ipv4Addr, BTreeMap<u16, String>> {
+    let mut versions: BTreeMap<Ipv4Addr, BTreeMap<u16, String>> = BTreeMap::new();
+    for (ip, ouverts) in resultats {
+        let ports: Vec<u16> = ouverts.iter().map(|(p, _)| *p).collect();
+        if !ports.is_empty() && nmap::locale(*ip) {
+            if bavard {
+                tre!(
+                    "{GRIS}Versions des services de {ip} par nmap -sV ({} port(s))…{RESET}",
+                    "{GRIS}Service versions of {ip} with nmap -sV ({} port(s))…{RESET}",
+                    ports.len()
+                );
+            }
+            versions.insert(*ip, nmap::versions(*ip, &ports));
+        }
+    }
+    versions
+}
+
+/// Ce qu'un hôte décrit doit savoir du reste du scan.
+#[derive(Clone, Copy)]
+struct Contexte<'a> {
+    arp: &'a HashMap<Ipv4Addr, String>,
+    appareils: &'a BTreeMap<String, AppareilConnu>,
+    versions: &'a BTreeMap<Ipv4Addr, BTreeMap<u16, String>>,
+    programmes: &'a HashMap<u16, String>,
+    moi: Option<Ipv4Addr>,
+    gw: Option<Ipv4Addr>,
+    nouveautes: bool,
+    udp_deja_vu: bool,
+}
+
+/// Un hôte trouvé : ses ports TCP et UDP décrits, son rôle, ses alertes et sa note.
+fn decrire_hote(
+    ip: Ipv4Addr,
+    ouverts: Vec<(u16, Option<String>)>,
+    nom: Option<String>,
+    udp: Vec<(u16, Option<String>)>,
+    contexte: &Contexte,
+) -> Hote {
+    let Contexte {
+        arp,
+        appareils,
+        versions,
+        programmes,
+        moi,
+        gw,
+        nouveautes,
+        udp_deja_vu,
+    } = *contexte;
+    // Un port hors de la liste courante n'a jamais pu être vu par les scans précédents : pas de faux « nouveau ».
+    let comparable = |port: u16| PORTS_COURANTS.contains(&port);
+    let mac = arp.get(&ip).cloned();
+    let connu = appareils.get(&cle_appareil(ip, mac.as_ref()));
+    let ports: Vec<PortOuvert> = ouverts
+        .into_iter()
+        .map(|(port, banniere)| {
+            // La version donnée par nmap passe devant ce que Vanguard a lu, plus court.
+            let banniere = versions.get(&ip).and_then(|v| v.get(&port)).cloned().or(banniere);
+            // Port non répertorié : on se fie à ce que le service annonce (SSH sur 2222, web sur 9999…).
+            let type_port = if info_port(port).service == crate::risk::inconnu() {
+                banniere.as_deref().and_then(identifier).unwrap_or(port)
+            } else {
+                port
+            };
+            let i = info_port(type_port);
+            let nouveau = nouveautes && comparable(port) && !connu.is_some_and(|c| c.ports.contains(&port));
+            let programme = (Some(ip) == moi || ip.is_loopback())
+                .then(|| programmes.get(&port).cloned())
+                .flatten();
+            // Ports dynamiques RPC ouverts par Windows lui-même (vu en test dans la VM : 49664 et suivants,
+            // tenus par lsass, wininit, services, svchost, spoolsv) : normaux, pas « inconnus moyens ».
+            if i.service == crate::risk::inconnu() && rpc_dynamique_windows(port, programme.as_deref()) {
+                let rpc = crate::risk::InfoPort {
+                    service: tr!("RPC de Windows", "Windows RPC"),
+                    niveau: Niveau::Info,
+                    conseil: tr!(
+                        "Port dynamique ouvert par Windows pour ses services : normal, filtré par le pare-feu.",
+                        "Dynamic port opened by Windows for its services: normal, filtered by the firewall."
+                    ),
+                };
+                return PortOuvert::decrit(port, &rpc, banniere, nouveau, programme, false);
+            }
+            PortOuvert::decrit(port, &i, banniere, nouveau, programme, false)
+        })
+        .chain(udp.into_iter().map(|(port, banniere)| {
+            let nouveau = nouveautes && udp_deja_vu && !connu.is_some_and(|c| c.ports_udp.contains(&port));
+            PortOuvert::decrit(port, &info_udp(port), banniere, nouveau, None, true)
+        }))
+        .collect();
+    let role = if Some(ip) == gw {
+        Some("passerelle")
+    } else if Some(ip) == moi {
+        Some("cette machine")
+    } else {
+        None
+    };
+    let alertes = alertes(role, &ports);
+    let score = 100u32.saturating_sub(alertes.iter().map(|(n, _)| n.penalite()).sum());
+    Hote {
+        ip,
+        nom,
+        fabricant: mac.as_deref().and_then(scan::fabricant),
+        surnom: connu.and_then(|c| c.surnom.clone()),
+        premier_vu: connu.and_then(|c| c.premier_vu.clone()),
+        mac,
+        role,
+        nouvelle: nouveautes && connu.is_none(),
+        ports,
+        alertes,
+        score,
+    }
+}
+
+/// Le carnet du réseau mis à jour par ce scan ; rend les appareils connus qui n'y sont pas.
+fn memoriser(histo: &mut ReseauConnu, hotes: &[Hote], nom_reseau: Option<&String>, avec_udp: bool) -> Vec<Absent> {
+    let presents: BTreeSet<String> = hotes.iter().map(|h| cle_appareil(h.ip, h.mac.as_ref())).collect();
+    let absents = histo
+        .appareils
+        .iter()
+        .filter(|(k, _)| !presents.contains(*k))
+        .map(|(_, a)| Absent {
+            ip: a.ip,
+            titre: a.titre(),
+            dernier_vu: a.dernier_vu.clone(),
+        })
+        .collect();
+    let jour = chrono::Local::now().format("%Y-%m-%d").to_string();
+    for h in hotes {
+        let a = histo
+            .appareils
+            .entry(cle_appareil(h.ip, h.mac.as_ref()))
+            .or_insert_with(|| AppareilConnu {
+                ip: h.ip,
+                nom: None,
+                fabricant: None,
+                ports: BTreeSet::new(),
+                ports_udp: BTreeSet::new(),
+                surnom: None,
+                surnom_le: None,
+                premier_vu: Some(jour.clone()),
+                dernier_vu: None,
+                annonce: None,
+            });
+        a.ip = h.ip;
+        a.nom = h.nom.clone().or(a.nom.take());
+        a.fabricant.clone_from(&h.fabricant);
+        a.ports.extend(h.ports.iter().filter(|p| !p.udp).map(|p| p.port));
+        a.ports_udp.extend(h.ports.iter().filter(|p| p.udp).map(|p| p.port));
+        a.premier_vu.get_or_insert_with(|| jour.clone());
+        a.dernier_vu = Some(jour.clone());
+        if let Some(annonce) = objets::annonces(&h.ports).into_iter().next() {
+            a.annonce = Some(annonce);
+        }
+    }
+    if let Some(n) = nom_reseau {
+        histo.nom = Some(n.clone());
+    }
+    histo.udp |= avec_udp;
+    absents
 }
 
 /// COM-ARP-001 au corpus de détection : `hote|adresse|mac|rôle` d'un scan fabriqué (rôle « passerelle » pour la
