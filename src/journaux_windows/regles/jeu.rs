@@ -21,6 +21,7 @@ use crate::{liste_masquee, mot_masque};
 
 use super::evenement::EvenementWindows;
 use super::moteur::{Audit, Condition, Forme, Gravite, Indice, Libelle, Regle, Test, Texte, Volet, couper, nombre};
+use super::xml;
 
 /// Le fournisseur des événements de sécurité.
 const AUDIT: &[&str] = &["Microsoft-Windows-Security-Auditing"];
@@ -2188,15 +2189,20 @@ pub(crate) fn actions_de_tache(xml: &str) -> (Vec<(String, String)>, bool) {
     // En minuscules ASCII seulement : les balises le sont, et les indices de `bas` restent ceux de `xml` (une lettre
     // dont la minuscule change de longueur, posée exprès dans la tâche, ne décale rien).
     let bas = xml.to_ascii_lowercase();
-    // La valeur d'une balise dans le bloc `debut..fin`.
+    // La valeur d'une balise dans le bloc `debut..fin`. Une balise vide (`<Command/>`) est sautée : une seconde,
+    // pleine, qui la suit n'est pas perdue.
     let valeur = |debut: usize, fin: usize, balise: &str| -> Option<String> {
         let bloc = &bas[debut..fin];
-        let (i, vide) = balise_ouvrante(bloc, 0, balise).map(|(_, i, vide)| (i, vide))?;
-        if vide {
-            return Some(String::new());
+        let mut depuis = 0;
+        loop {
+            let (_, i, vide) = balise_ouvrante(bloc, depuis, balise)?;
+            if vide {
+                depuis = i;
+                continue;
+            }
+            let (j, _) = balise_fermante(bloc, i, balise)?;
+            return Some(entites(&xml[debut + i..debut + j]));
         }
-        let (j, _) = balise_fermante(bloc, i, balise)?;
-        Some(entites(&xml[debut + i..debut + j]))
     };
     let mut actions = Vec::new();
     let mut depuis = 0;
@@ -2221,14 +2227,30 @@ pub(crate) fn actions_de_tache(xml: &str) -> (Vec<(String, String)>, bool) {
     (actions, tronque)
 }
 
+/// Le nom local de la balise qui commence au « < » d'indice `i` de `bas`, son préfixe d'espace de noms retiré
+/// (`<task:Exec>` est `exec`), et l'indice qui le suit. Le nom s'arrête au premier blanc, « > », « / » ou « < » :
+/// chaque « < » n'est lu qu'une fois, la recherche reste linéaire.
+fn nom_de_balise(bas: &str, i: usize) -> (&str, usize) {
+    let debut = i + 1;
+    let fin = bas[debut..]
+        .find(|c: char| c.is_ascii_whitespace() || matches!(c, '>' | '/' | '<'))
+        .map_or(bas.len(), |k| debut + k);
+    let nom = &bas[debut..fin];
+    (nom.rsplit_once(':').map_or(nom, |(_, local)| local), fin)
+}
+
 /// La prochaine balise ouvrante `<nom…>` de `bas` à partir de `depuis` : (son début, la fin de son « > », vide :
-/// écrite `<nom/>`). Le schéma des tâches admet des attributs (`<Exec id="a">`) et XML des blancs avant « > » : les
-/// chercher au seul littéral `<exec>` laissait une action ainsi écrite invisible. `<executable>` n'est pas `<exec>`.
+/// écrite `<nom/>`). Le schéma des tâches admet des attributs (`<Exec id="a">`), XML des blancs avant « > » et un
+/// préfixe d'espace de noms (`<task:Exec>`) : les chercher au seul littéral `<exec>` laissait une action ainsi écrite
+/// invisible. `<executable>` n'est pas `<exec>`.
 fn balise_ouvrante(bas: &str, mut depuis: usize, nom: &str) -> Option<(usize, usize, bool)> {
-    let ouvre = format!("<{nom}");
     loop {
-        let i = bas[depuis..].find(&ouvre)? + depuis;
-        let apres = i + ouvre.len();
+        let i = bas[depuis..].find('<')? + depuis;
+        let (local, apres) = nom_de_balise(bas, i);
+        if local != nom {
+            depuis = i + 1;
+            continue;
+        }
         match bas.as_bytes().get(apres) {
             Some(b'>') => return Some((i, apres + 1, false)),
             Some(o) if o.is_ascii_whitespace() || *o == b'/' => {
@@ -2253,30 +2275,49 @@ fn balise_ouvrante(bas: &str, mut depuis: usize, nom: &str) -> Option<(usize, us
     }
 }
 
-/// La prochaine balise fermante `</nom>` (des blancs admis avant « > ») à partir de `depuis` : (son début, la fin de
-/// son « > »).
+/// Les balises ouvrantes `<nom` de `bas` (préfixe d'espace de noms admis), comptées sans lire leurs attributs : ce
+/// que le lecteur aurait dû trouver, même là où il n'a rien pu lire (un guillemet jamais fermé, une commande écrite
+/// autrement).
+fn ouvertures(bas: &str, nom: &str) -> usize {
+    let mut compte = 0;
+    let mut depuis = 0;
+    while let Some(k) = bas[depuis..].find('<') {
+        let (local, apres) = nom_de_balise(bas, depuis + k);
+        compte += usize::from(local == nom);
+        depuis = apres.max(depuis + k + 1);
+    }
+    compte
+}
+
+/// La prochaine balise fermante `</nom>` (préfixe d'espace de noms et blancs avant « > » admis) à partir de
+/// `depuis` : (son début, la fin de son « > »).
 fn balise_fermante(bas: &str, mut depuis: usize, nom: &str) -> Option<(usize, usize)> {
-    let ferme = format!("</{nom}");
     loop {
-        let i = bas[depuis..].find(&ferme)? + depuis;
-        let apres = i + ferme.len();
+        let i = bas[depuis..].find("</")? + depuis;
+        let (local, apres) = nom_de_balise(bas, i + 1);
         let blancs = bas[apres..].len() - bas[apres..].trim_start_matches(|c: char| c.is_ascii_whitespace()).len();
-        if bas.as_bytes().get(apres + blancs) == Some(&b'>') {
+        if local == nom && bas.as_bytes().get(apres + blancs) == Some(&b'>') {
             return Some((i, apres + blancs + 1));
         }
-        depuis = apres;
+        depuis = i + 2;
     }
 }
 
-/// Les entités XML d'une valeur (« &quot; », « &amp; »…), défaites une fois.
+/// Le texte d'une valeur : ses sections `<![CDATA[…]]>` déroulées telles quelles, ses entités et références
+/// numériques (« &quot; », « &#112; », « &#x70; ») défaites une fois ailleurs (`xml::deplier`, celui de la source
+/// vivante) : une commande ainsi écrite ne passe plus à côté des règles.
 fn entites(t: &str) -> String {
-    t.replace("&quot;", "\"")
-        .replace("&apos;", "'")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&amp;", "&")
-        .trim()
-        .to_string()
+    let mut sortie = String::with_capacity(t.len());
+    let mut reste = t;
+    while let Some(i) = reste.find("<![CDATA[") {
+        sortie.push_str(&xml::deplier(&reste[..i]));
+        let dedans = &reste[i + "<![CDATA[".len()..];
+        let (texte, apres) = dedans.split_once("]]>").unwrap_or((dedans, ""));
+        sortie.push_str(texte);
+        reste = apres;
+    }
+    sortie.push_str(&xml::deplier(reste));
+    sortie.trim().to_string()
 }
 
 /// Le dossier des versions de la plateforme de Defender, que Defender protège lui-même : ses tâches d'analyse y
@@ -2365,9 +2406,10 @@ fn tache_auditee(e: &EvenementWindows) -> Option<Indice> {
         .or_else(|| e.champ("TaskContentNew"))
         .unwrap_or_default();
     let (actions, tronque) = actions_de_tache(contenu);
-    // Une action est là mais rien n'en a été lu (une commande écrite autrement que le lecteur ne l'attend) : la
-    // tâche n'est pas jugée, elle ne passe pas pour une simple création.
-    let non_lue = actions.is_empty() && balise_ouvrante(&contenu.to_ascii_lowercase(), 0, "exec").is_some();
+    // Plus d'actions écrites que d'actions lues (une commande écrite autrement que le lecteur ne l'attend, un
+    // guillemet jamais fermé, une action illisible à côté d'une lisible) : ce qui manque n'est pas jugé, la tâche ne
+    // passe pas pour une simple création.
+    let non_lue = ouvertures(&contenu.to_ascii_lowercase(), "exec") > actions.len();
     let pire = actions
         .iter()
         .filter_map(|(programme, arguments)| {

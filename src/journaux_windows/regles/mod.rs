@@ -19,9 +19,10 @@ pub(crate) mod moteur;
 pub(crate) mod resultat;
 
 // Les modules voisins, sous le même nom que dans le banc de fuzzing (qui inclut tout à la racine) : `moteur` et `jeu`
-// les nomment `super::evenement` et `super::trous` dans les deux cas.
+// les nomment `super::evenement`, `super::trous` et `super::xml` dans les deux cas.
 use super::evenement;
 use super::trous;
+use super::xml;
 
 #[cfg(test)]
 mod tests;

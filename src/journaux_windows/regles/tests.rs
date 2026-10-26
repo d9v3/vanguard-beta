@@ -3583,8 +3583,56 @@ fn action_de_tache_avec_attributs() {
     assert_eq!(gravites(&juger(&[e]), "EVT-TAC-001"), [Gravite::Alerte]);
 }
 
+/// Une action écrite autrement que Windows ne l'exporte, mais que le Planificateur lit : préfixe d'espace de noms,
+/// CDATA, références numériques, `<Command/>` vide avant la vraie. Elle se lit ; et ce qui ne se lit pas (un
+/// guillemet jamais fermé, une action illisible à côté d'une lisible) alerte au lieu de se taire.
+#[test]
+fn action_de_tache_ecrite_autrement() {
+    let attendu = |c: &str, a: &str| vec![(c.to_string(), a.to_string())];
+    let changee = |x: &str| {
+        let mut e = tache(4702, "\\Essai", "", "");
+        e.champs.retain(|(n, _)| n != "TaskContentNew");
+        e.champs.push(("TaskContentNew".into(), x.into()));
+        gravites(&juger(&[e]), "EVT-TAC-001")
+    };
+    let espace = "<task:Task xmlns:task=\"http://schemas.microsoft.com/windows/2004/02/mit/task\"><task:Actions>\
+                  <task:Exec><task:Command>powershell.exe</task:Command><task:Arguments>-nop</task:Arguments >\
+                  </task:Exec></task:Actions></task:Task>";
+    assert_eq!(actions_de_tache(espace).0, attendu("powershell.exe", "-nop"));
+    assert_eq!(changee(espace), [Gravite::Alerte]);
+    for x in [
+        "<Exec><Command><![CDATA[powershell.exe]]></Command><Arguments>-a <![CDATA[<&b>]]></Arguments></Exec>",
+        "<Exec><Command>&#112;owershell.exe</Command><Arguments>-a &lt;&amp;b&gt;</Arguments></Exec>",
+        "<Exec><Command>&#x70;owershell.exe</Command><Arguments>-a &#60;&amp;b></Arguments></Exec>",
+        "<Exec><Command/><Command>powershell.exe</Command><Arguments/><Arguments>-a <![CDATA[<&b>]]></Arguments></Exec>",
+    ] {
+        assert_eq!(actions_de_tache(x).0, attendu("powershell.exe", "-a <&b>"), "{x}");
+        assert_eq!(changee(x), [Gravite::Alerte], "{x}");
+    }
+    // Défaites une fois : « &amp;lt; » reste « &lt; ».
+    assert_eq!(
+        actions_de_tache("<Exec><Command>a&amp;lt;.exe</Command></Exec>").0,
+        attendu("a&lt;.exe", "")
+    );
+    // Une action anodine lue, une autre illisible (guillemet jamais fermé) : la tâche changée alerte.
+    let anodine = "<Exec><Command>C:\\Windows\\System32\\notepad.exe</Command></Exec>";
+    assert_eq!(changee(anodine), Vec::<Gravite>::new());
+    let mixte = format!("{anodine}<Exec><Command id=\"x>evil.exe</Command></Exec>");
+    assert_eq!(actions_de_tache(&mixte).0.len(), 1);
+    assert_eq!(changee(&mixte), [Gravite::Alerte]);
+    // Le guillemet jamais fermé sur l'action elle-même : rien lu, une alerte.
+    let ouverte = "<Exec id=\"a><Command>powershell.exe</Command></Exec>";
+    assert_eq!(actions_de_tache(ouverte).0, Vec::<(String, String)>::new());
+    assert_eq!(changee(ouverte), [Gravite::Alerte]);
+    // Une action d'un espace de noms inconnu du lecteur reste comptée : `<x:Exec>` sans commande lisible alerte.
+    assert_eq!(
+        changee("<x:Exec><x:Commande>evil.exe</x:Commande></x:Exec>"),
+        [Gravite::Alerte]
+    );
+}
+
 /// PowerShell prend les tirets typographiques (–, —, ―) et le signe moins pour un « - » d'option : « –enc » est la
-/// commande encodée, « –urlcache » le téléchargement de certutil, dans un processus, une tâche ou un service.
+/// commande encodée, dans un processus, une tâche, un service ou un script.
 #[test]
 fn tirets_de_powershell() {
     let b64 = "SQBFAFgAIAAoAE4AZQB3AC0ATwBi";
