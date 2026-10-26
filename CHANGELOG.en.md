@@ -106,8 +106,9 @@ delivered just before it. Only the latest version has its download page; every v
   checksums) are shown to the author, and the backup key signs nothing, not even the release manifest, until
   “contresigner” is typed in a terminal (without a terminal, it refuses). Only the author knows what they published: a
   forged version under a number they recognize, with no date or checksum they notice, still gets through. Claude on
-  GitHub no longer starts on an issue or pull request written by anyone but the owner, nor on an issue from the key's
-  log (written from any computer): it would read them as instructions.
+  GitHub no longer starts on an issue or pull request written by anyone but the owner, nor on a thread where someone
+  else commented or reviewed, nor on an issue from the key's log (written from any computer): it would read them as
+  instructions. The threat model states what remains.
 - **Argument that is not UTF-8.** An error logged to the key's journal during a command with an argument that is not
   UTF-8 (a file name) no longer aborts Vanguard: the command is written there with “�” in place of the unreadable
   bytes.

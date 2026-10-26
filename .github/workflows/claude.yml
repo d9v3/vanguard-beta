@@ -1,8 +1,8 @@
 # Claude sur GitHub : écrire @claude dans un ticket, une demande de fusion (PR) ou un commentaire pour lui poser une
 # question ou lui demander une correction ; il suit CLAUDE.md. Seul le propriétaire du dépôt le déclenche : vérifié
 # ici avant même de démarrer (un dépôt public reçoit des commentaires de n'importe qui), puis par l'action elle-même.
-# Jamais sur une demande de fusion venue d'un fork, ni sur un ticket qu'il n'a pas écrit lui-même, ni sur un ticket du
-# journal de la clé (le travail « garde »).
+# Jamais sur une demande de fusion venue d'un fork, ni sur un ticket qu'il n'a pas écrit lui-même, ni sur un fil où un
+# autre a commenté, ni sur un ticket du journal de la clé (le travail « garde »).
 # Activation, une fois : /install-github-app dans Claude Code (application GitHub + secret CLAUDE_CODE_OAUTH_TOKEN,
 # le jeton de l'abonnement Claude, que donne `claude setup-token`).
 name: Claude
@@ -23,7 +23,11 @@ jobs:
   # Claude lit tout le ticket ou la demande, pas seulement le commentaire qui l'appelle : écrits par un autre que le
   # propriétaire, ils seraient des consignes pour un agent qui a ces droits. De même un ticket « journal » : la
   # partition VANGUARDLOG s'écrit sur n'importe quel ordinateur, et outils/journal-vers-github.py en fait des tickets
-  # sous le compte du propriétaire (campagne d'attaque n° 4).
+  # sous le compte du propriétaire (campagne d'attaque n° 4). Et sur un dépôt public, n'importe qui commente le ticket
+  # ou la demande du propriétaire : Claude lirait ce commentaire comme le reste du fil. Le garde relit donc tout le fil
+  # (commentaires, et pour une demande ses revues et commentaires de revue) et refuse s'il y trouve un auteur autre
+  # que le propriétaire ou les robots de Claude et de GitHub Actions, que personne d'autre ne peut faire écrire ici
+  # (relecture adverse de la campagne 4). Un fil illisible (panne de l'API) est refusé, pas supposé propre.
   garde:
     if: |
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')
@@ -40,6 +44,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       pull-requests: read
+      issues: read
     outputs:
       permis: ${{ steps.origine.outputs.permis }}
     steps:
@@ -47,6 +52,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           DEMANDE: ${{ github.event.pull_request.number || (github.event.issue.pull_request && github.event.issue.number) || '' }}
+          NUMERO: ${{ github.event.issue.number || github.event.pull_request.number }}
           ETIQUETTES: ${{ join(github.event.issue.labels.*.name, ',') }},${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: |
           case ",$ETIQUETTES," in
@@ -56,17 +62,32 @@ jobs:
               exit 0
               ;;
           esac
-          if [ -z "$DEMANDE" ]; then
-            echo "permis=oui" >>"$GITHUB_OUTPUT"
-            exit 0
+          if [ -n "$DEMANDE" ]; then
+            tete=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$DEMANDE" --jq .head.repo.full_name) || tete=
+            if [ "$tete" != "$GITHUB_REPOSITORY" ]; then
+              echo "::warning::Demande de fusion venue de « ${tete:-un dépôt supprimé} » : Claude n'y est pas lancé."
+              echo "permis=non" >>"$GITHUB_OUTPUT"
+              exit 0
+            fi
           fi
-          tete=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$DEMANDE" --jq .head.repo.full_name)
-          if [ "$tete" = "$GITHUB_REPOSITORY" ]; then
-            echo "permis=oui" >>"$GITHUB_OUTPUT"
-          else
-            echo "::warning::Demande de fusion venue de « ${tete:-un dépôt supprimé} » : Claude n'y est pas lancé."
-            echo "permis=non" >>"$GITHUB_OUTPUT"
+          # Tout le fil : un auteur autre que le propriétaire (ou les robots de Claude et d'Actions) et rien ne se lance.
+          chemins="repos/$GITHUB_REPOSITORY/issues/$NUMERO/comments"
+          if [ -n "$DEMANDE" ]; then
+            chemins="$chemins repos/$GITHUB_REPOSITORY/pulls/$DEMANDE/reviews repos/$GITHUB_REPOSITORY/pulls/$DEMANDE/comments"
           fi
+          for chemin in $chemins; do
+            if ! autres=$(gh api "$chemin" --paginate --jq '.[] | select(.author_association != "OWNER" and .user.login != "claude[bot]" and .user.login != "github-actions[bot]") | .id'); then
+              echo "::warning::Fil illisible ($chemin) : Claude n'y est pas lancé."
+              echo "permis=non" >>"$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ -n "$autres" ]; then
+              echo "::warning::Ce fil a des commentaires d'un autre que le propriétaire : Claude n'y est pas lancé."
+              echo "permis=non" >>"$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "permis=oui" >>"$GITHUB_OUTPUT"
   claude:
     needs: garde
     # Le garde a déjà vérifié le propriétaire et l'origine de la demande ; sauté ou refusé, rien ne se lance.

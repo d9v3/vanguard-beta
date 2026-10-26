@@ -110,7 +110,8 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   version, sans « contresigner » tapé dans un terminal (sans terminal, elle refuse). Seul l'auteur sait ce qu'il a
   publié : une version forgée sous un numéro qu'il reconnaît, sans date ni empreinte qu'il remarque, passe encore.
   Claude sur GitHub ne se lance plus sur un ticket ou une demande de fusion écrits par un autre que le propriétaire,
-  ni sur un ticket du journal de la clé (écrit depuis n'importe quel ordinateur) : il les lirait comme des consignes.
+  ni sur un fil où un autre a commenté ou relu, ni sur un ticket du journal de la clé (écrit depuis n'importe quel
+  ordinateur) : il les lirait comme des consignes. Le modèle de menace dit ce qui reste.
 - **Argument qui n'est pas de l'UTF-8.** Une erreur notée au journal de la clé pendant une commande dont un argument
   n'est pas de l'UTF-8 (un nom de fichier) ne fait plus avorter Vanguard : la commande y est écrite avec « � » à la
   place des octets illisibles.

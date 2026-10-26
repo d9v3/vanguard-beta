@@ -25,7 +25,8 @@
 #      touche que .github/hors-code.txt (captures, documentation) les laisse valoir.
 #   9. .github/workflows/claude.yml ne lance jamais Claude (cargo build et test, droit d'écrire, jeton de
 #      l'abonnement) sur une demande de fusion venue d'un fork : son garde, rejoué ici avec un faux gh. Ni sur un
-#      ticket « journal », ni sur un ticket ou une demande qu'un autre que le propriétaire a écrits.
+#      ticket « journal », ni sur un ticket ou une demande qu'un autre que le propriétaire a écrits, ni sur un fil où
+#      un autre a commenté ou relu (et un fil illisible est refusé).
 #   6. Le programme Mac que la clé signe vient d'une exécution de master : publier-version.sh (sa fonction
 #      avec_programme, face à un faux gh) écarte celle d'une autre branche, même plus récente et du même commit ; et
 #      macos.yml ne reprend aucun cache sur master. Sans jq, cet essai est sauté et dit.
@@ -390,12 +391,23 @@ Y=$DEPOT/.github/workflows/claude.yml
 awk '/^  garde:/ { g = 1 } g && /^  claude:/ { exit } g && /^        run: \|/ { r = 1; next } r { sub(/^          /, ""); print }' \
   "$Y" >"$T/garde.sh"
 mkdir -p "$T/faux-gh-garde"
-printf '#!/bin/sh\necho "$ESSAI_TETE"\n' >"$T/faux-gh-garde/gh"
+# Le faux gh : d'où vient la demande, puis les auteurs du fil autres que le propriétaire (ESSAI_FIL pour les
+# commentaires du ticket, ESSAI_REVUES pour les revues et commentaires de revue), ou une panne (ESSAI_PANNE).
+cat >"$T/faux-gh-garde/gh" <<'FAUX'
+#!/bin/sh
+case "$2" in
+  */issues/*/comments) printf '%s' "$ESSAI_FIL" ;;
+  */pulls/*/reviews | */pulls/*/comments) printf '%s' "$ESSAI_REVUES" ;;
+  *) echo "$ESSAI_TETE" ;;
+esac
+[ -z "$ESSAI_PANNE" ]
+FAUX
 chmod +x "$T/faux-gh-garde/gh"
 garde() { # numéro de la demande, dépôt d'où elle vient [, étiquettes] : la sortie « permis=… » du garde
   : >"$T/garde.sortie"
   PATH="$T/faux-gh-garde:$PATH" GITHUB_OUTPUT=$T/garde.sortie GITHUB_REPOSITORY=d9v3/vanguard-beta DEMANDE=$1 \
-    ESSAI_TETE=$2 ETIQUETTES=${3:-,} sh "$T/garde.sh" >/dev/null 2>&1
+    NUMERO=${1:-7} ESSAI_TETE=$2 ETIQUETTES=${3:-,} ESSAI_FIL=${ESSAI_FIL-} ESSAI_REVUES=${ESSAI_REVUES-} \
+    ESSAI_PANNE=${ESSAI_PANNE-} sh "$T/garde.sh" >/dev/null 2>&1
   cat "$T/garde.sortie"
 }
 if [[ -s $T/garde.sh ]] && [[ $(garde 12 pirate/vanguard-beta) == permis=non ]] &&
@@ -416,6 +428,28 @@ if [[ $(garde "" "" "journal,") == permis=non && $(garde "" "" "bogue,journal,au
   ok "claude.yml : un ticket « journal » est refusé"
 else
   ko "claude.yml : un ticket « journal » passe le garde"
+fi
+# Un fil où un autre que le propriétaire a commenté (ticket ou demande), ou a laissé une revue ou un commentaire de
+# revue (demande) : refusé ; un fil illisible aussi (relecture adverse de la campagne 4).
+if [[ $(ESSAI_FIL=4242 garde "" "") == permis=non && $(ESSAI_FIL=4242 garde 12 d9v3/vanguard-beta) == permis=non &&
+  $(ESSAI_REVUES=4242 garde 12 d9v3/vanguard-beta) == permis=non && $(ESSAI_PANNE=1 garde "" "") == permis=non &&
+  $(ESSAI_REVUES=4242 garde "" "") == permis=oui ]]; then
+  ok "claude.yml : un fil où un autre a commenté ou relu est refusé, un fil illisible aussi"
+else
+  ko "claude.yml : un fil commenté par un autre passe le garde"
+fi
+# Le filtre du garde, sur une vraie réponse de l'API : le propriétaire et les robots passent, un autre non.
+if command -v jq >/dev/null; then
+  filtre=$(sed -n "s/.*--jq '\(.*\)'); then\$/\1/p" "$T/garde.sh")
+  fil='[{"id":1,"author_association":"OWNER","user":{"login":"d9v3"}},
+    {"id":2,"author_association":"NONE","user":{"login":"passant"}},
+    {"id":3,"author_association":"NONE","user":{"login":"claude[bot]"}},
+    {"id":4,"author_association":"CONTRIBUTOR","user":{"login":"autre"}}]'
+  [[ -n $filtre && $(jq -r "$filtre" <<<"$fil" | paste -sd' ') == "2 4" ]] &&
+    ok "claude.yml : le filtre des auteurs du fil ne laisse que le propriétaire et les robots" ||
+    ko "claude.yml : filtre des auteurs du fil faux ($filtre)"
+else
+  echo "  (sauté : jq absent, filtre des auteurs du fil non rejoué)"
 fi
 # Le ticket ou la demande eux-mêmes écrits par le propriétaire, pas seulement le commentaire qui appelle Claude.
 awk '/^  garde:/ { g = 1 } g && /^  claude:/ { exit }

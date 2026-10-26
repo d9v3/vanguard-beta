@@ -65,6 +65,12 @@ Each threat in detail, menu by menu: [What Vanguard does](README.en.md#what-vang
 - **The program is the real one.** Check its SHA-256 checksum when downloading (`SHA256SUMS.txt`); every update is
   signed with Ed25519 and refused if it is badly signed, older, or if its size or checksum does not match. The
   program does not have a code signing certificate yet.
+- **No one else drives Claude on the code repository.** Claude on GitHub (.github/workflows/claude.yml) can write to
+  the repository and runs cargo build and cargo test, to check what it fixes. It starts only for the owner, on a
+  thread (an issue or a pull request from the repository itself, never from a fork) whose every comment, review and
+  review comment is from the owner or from the Claude and GitHub Actions bots. What remains: a comment posted in the
+  seconds between this check and Claude reading the thread; what it reads outside the thread (a linked issue, a page,
+  someone else's text copied by the owner); and the repository's own code, which cargo build and cargo test run.
 - **The system answers truthfully at the time of the check.** A computer already compromised at the administrator
   level can deceive all of its readings (see above).
 - **The lists and third-party tools are right.** The threat, version and vulnerability lists (abuse.ch, CISA,
