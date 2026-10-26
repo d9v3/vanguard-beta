@@ -402,6 +402,11 @@ if [[ -s $T/garde.sh ]] && [[ $(garde 12 pirate/vanguard-beta) == permis=non ]] 
 else
   ko "claude.yml : garde absent ou qui laisse passer un fork ($(garde 12 pirate/vanguard-beta))"
 fi
+# publier-version.sh ne passe --premier que tapé par l'auteur, jamais d'après un dépôt des versions vide.
+awk '/PREMIER=\(--premier\)/ { n++; if ($0 !~ /\$PREMIERE/) l = 1 } /^\[\[ \$\{1:-\} == --premier \]\] && PREMIERE=1$/ { t = 1 }
+  END { exit !(n == 1 && !l && t) }' "$DEPOT/outils/publier-version.sh" &&
+  ok "publier : --premier seulement tapé, jamais déduit d'un dépôt des versions vide" ||
+  ko "publier : --premier passé sans que l'auteur l'ait tapé"
 # Un ticket du journal de la clé (écrit depuis n'importe quel ordinateur) : refusé, seul ou parmi d'autres étiquettes,
 # ticket ou demande ; « journaux » n'est pas « journal ».
 if [[ $(garde "" "" "journal,") == permis=non && $(garde "" "" "bogue,journal,autotest,") == permis=non &&
