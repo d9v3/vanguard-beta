@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vanguard 0.87</title>
-<meta name="description" content="Vanguard : cyberdéfense portable des postes et des réseaux, depuis une clé USB. Durcissement, détection, blocage et réponse aux incidents pour Windows, Linux et macOS ; le dépannage en plus. Fonctions, fiche technique et commandes.">
+<title>Vanguard 0.88</title>
+<meta name="description" content="Vanguard est un projet personnel et libre : un outil de sécurité et de dépannage lancé depuis une clé USB. Il fait le bilan de l'ordinateur et du réseau, explique chaque problème en mots simples et le répare seulement avec votre accord. Pour Windows, Linux et macOS.">
 <meta name="theme-color" content="#0b1220">
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -65,9 +65,11 @@ h1, h2, h3 { font-family: var(--titre); text-wrap: balance; margin: 0; }
 .heros { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.08fr); gap: 3rem; align-items: center; padding-block: 2.5rem 4rem; }
 .heros h1 { font-size: clamp(2.2rem, 4.6vw, 3.5rem); line-height: 1.05; font-weight: 700; }
 .heros .chapeau { color: var(--nuit-doux); font-size: 1.1rem; margin: 1.1rem 0 0; max-width: 34rem; }
-.heros .statut { font-family: var(--mono); font-size: .78rem; letter-spacing: .04em; color: var(--nuit-texte); margin: 1.1rem 0 0; }
 .heros .cap { color: var(--nuit-doux); font-size: .95rem; margin: .7rem 0 0; max-width: 34rem; }
 .heros .cap b { color: var(--nuit-texte); }
+.heros .points { color: var(--nuit-doux); font-size: 1rem; margin: 1rem 0 0; padding-left: 1.3rem; max-width: 34rem; }
+.heros .points li { margin: .35rem 0 0; }
+.heros .points b { color: var(--nuit-texte); }
 .systemes { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1.6rem; }
 .systeme { font-family: var(--mono); font-size: .76rem; color: var(--nuit-texte); background: var(--nuit-trait); border-radius: .4rem; padding: .3rem .6rem; }
 .boutons { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: 1.4rem; }
@@ -202,7 +204,7 @@ main { gap: 3.5rem; padding-block: 3rem; }
 <a class="marque" href="#haut" id="haut">
 <span class="plaque" aria-hidden="true"><svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><path fill="#ffffff" d="M8 12h22l20 52 20-52h22L60 90H40z"/><path fill="#0d0f12" d="M30 12h6l14 37 14-37h6L50 66z"/></svg></span>
 <b>VANGUARD</b>
-<span class="version">0.87.0</span>
+<span class="version">0.88.0</span>
 </a>
 <nav class="nav" aria-label="Sections">
 <a href="#comment">Comment ça marche</a>
@@ -215,11 +217,17 @@ main { gap: 3.5rem; padding-block: 3rem; }
 </div>
 <div class="heros">
 <div>
-<p class="surtitre">Cyberdéfense portable des postes et des réseaux</p>
-<h1>Durcir chaque machine, détecter les intrusions, bloquer les menaces.</h1>
-<p class="chapeau">Depuis une clé USB, Vanguard durcit les ordinateurs et détecte les failles, les mauvais réglages et les intrusions, sur chaque machine comme sur le réseau. Il met en tête les failles activement exploitées, repère les logiciels pas à jour et les logiciels espions, ferme l'ordinateur sur un Wi-Fi public, écarte les sites dangereux, examine un courriel suspect sans l'ouvrir, repère les agents d'IA trop permissifs, dit où manque l'échange de clés post-quantique, bloque les menaces trouvées, arrête un rançongiciel en pleine rafale et collecte les traces d'un incident ; le rapport d'une faille se prépare pour l'éditeur, sans jamais être envoyé. Chaque constat est expliqué ; rien n'est modifié sans accord, et chaque correction s'annule. Le dépannage, l'optimisation et la sauvegarde viennent en plus.</p>
-<p class="statut">En développement actif · tout en Rust (en cours) · défensif</p>
-<p class="cap"><b>Où va Vanguard.</b> En cours : tout ce qu'un agent d'IA peut exécuter, le reste du programme réécrit en Rust (pare-feu Linux compris), un banc d'essai sur la clé et l'étude d'une interface graphique ; les versions signées aussi en ML-DSA attendent une décision. <a href="#feuille-de-route">La feuille de route ↓</a></p>
+<p class="surtitre">Projet personnel · sécurité et dépannage</p>
+<h1>Un outil de sécurité et de dépannage, sur une clé USB.</h1>
+<p class="chapeau">Vanguard se lance depuis une clé USB, sans rien installer, sous Windows, Linux ou macOS. Il fait le tour de votre ordinateur et de votre réseau, comme un garagiste ferait l'inspection d'une voiture, puis vous dit en mots simples ce qui ne va pas, pourquoi c'est un risque et comment le corriger.</p>
+<ol class="points">
+<li><b>Il fait le bilan.</b> Réglages de sécurité, mises à jour qui manquent, pare-feu, Wi-Fi et routeur : chaque problème expliqué, et une note de A à F pour l'ordinateur.</li>
+<li><b>Il cherche ce qui ne devrait pas être là.</b> Logiciels espions, programmes lancés en cachette, traces d'intrusion, rançongiciels ; un courriel ou un lien douteux examiné sans être ouvert.</li>
+<li><b>Il répare, si vous êtes d'accord.</b> Chaque correction est montrée avant d'être faite et se défait ensuite. Une menace trouvée se bloque, ses traces gardées pour comprendre ce qui s'est passé.</li>
+<li><b>Il dépanne.</b> Pas à pas quand Internet, le son ou l'ordinateur ne marchent plus comme avant ; les sauvegardes et le ménage en plus.</li>
+</ol>
+<p class="cap"><b>Bientôt, une clé de secours complète.</b> La même clé portera aussi des systèmes publics et gratuits, prêts à démarrer (Windows 11, Debian, Fedora, Arch Linux, Omarchy, SystemRescue, Kali Linux au choix) : les images officielles, téléchargées depuis le site de chaque projet et vérifiées, pour réparer, réinstaller ou récupérer des fichiers quand l'ordinateur ne démarre plus.</p>
+<p class="cap"><b>Un projet personnel.</b> Fait par une seule personne, bénévolement, sur son temps libre : ni une entreprise ni un produit commercial. Le code est ouvert (GPL), donc chacun peut voir ce que fait le programme, et chaque version est signée, ce qui prouve d'où elle vient. Vanguard évolue souvent : lisez ce que fait chaque correction avant de l'accepter.</p>
 <div class="systemes">
 <span class="systeme">Windows 10 · 11</span><span class="systeme">Linux</span><span class="systeme">macOS</span><span class="systeme">Français · English</span>
 </div>
@@ -235,7 +243,7 @@ main { gap: 3.5rem; padding-block: 3rem; }
 </div>
 <div class="fenetre" role="navigation" aria-label="Menu principal de Vanguard">
 <div class="titre-fenetre"><i></i><i></i><i></i><span>vanguard</span></div>
-<pre><span class="boite">  <b>VANGUARD 0.87          </b>Cyberdéfense portable des postes et des réseaux</span>
+<pre><span class="boite">  <b>VANGUARD 0.88          </b>Cyberdéfense portable des postes et des réseaux</span>
 
   <span class="filet">BILAN DE SÉCURITÉ</span>
  <span class="c">►</span>  1  <a href="#bilan">Bilan de sécurité complet</a>            <span class="c">← commencer ici</span>
@@ -332,8 +340,8 @@ main { gap: 3.5rem; padding-block: 3rem; }
 <article class="domaine" id="infection">
 <header><span class="icone"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4M8 11h6M11 8v6"/></svg></span><div><h3>Poste infecté</h3><span class="touche">menu 6 · 8 · vanguard blocage · evenements · yara · depanner traces · signaler</span></div></header>
 <ul>
-<li><b>Antivirus, 308 règles YARA et les empreintes</b> de logiciels malveillants connus de MalwareBazaar (clé abuse.ch gratuite ; la dernière copie sert hors ligne) ; quarantaine réversible. Moteur YARA écrit pour Vanguard ; programmes, documents Office et leurs macros, raccourcis, scripts et archives lus par Vanguard lui-même, ce qu'il ne sait pas lire dit non vérifié. <span class="nouveau">nouveau</span></li>
-<li><b>Que s'est-il passé ?</b> Les journaux de Windows (.evtx) lus par Vanguard lui-même, sur ce Windows ou depuis un dossier sous n'importe quel système : onze règles (traces effacées, administrateur de plus, mot de passe deviné, Bureau à distance depuis Internet, PowerShell malveillant, Defender désarmé, persistance WMI…) et les alertes dans l'ordre du temps. <span class="nouveau">nouveau</span></li>
+<li><b>Analyse antivirus en second avis (Defender ou ClamAV), plus de 300 règles YARA et les empreintes</b> de logiciels malveillants connus de MalwareBazaar (clé abuse.ch gratuite ; la dernière copie sert hors ligne) ; quarantaine réversible. Moteur YARA écrit pour Vanguard ; programmes, documents Office et leurs macros, raccourcis, scripts et archives lus par Vanguard lui-même, ce qu'il ne sait pas lire dit non vérifié. <span class="nouveau">nouveau</span></li>
+<li><b>Que s'est-il passé ?</b> Les journaux de Windows (.evtx) lus par Vanguard lui-même, sur ce Windows ou depuis un dossier sous n'importe quel système : des règles (traces effacées, administrateur de plus, mot de passe deviné, Bureau à distance depuis Internet, tâche planifiée ou processus suspects, PowerShell malveillant, Defender désarmé, persistance WMI…) et les alertes dans l'ordre du temps ; au bilan comme au menu Bloquer et réagir. <span class="nouveau">nouveau</span></li>
 <li><b>Blocage des menaces</b> d'un clic : programme arrêté et mis en quarantaine, connexion fermée au pare-feu, lancement retiré, tout annulable sauf l'arrêt ; la <b>protection active</b>, une fois mise en marche, bloque toute seule ce qui ne fait aucun doute et prévient.</li>
 <li><b>La preuve avant le geste</b> : programme, ligne de commande, parent, compte, empreinte, connexions, relevés avant chaque arrêt, quarantaine ou blocage ; un <b>journal des événements</b> scellé relie l'alerte, la preuve, le geste et son annulation.</li>
 <li><b>Chasse aux menaces en direct</b> : un mot de passe deviné (une connexion réussie juste après une rafale d'échecs), un outil d'attaque en marche, une commande qui télécharge ce qu'elle lance.</li>
@@ -415,7 +423,7 @@ main { gap: 3.5rem; padding-block: 3rem; }
 <li><b>Paramètres</b> au même endroit : langue, travail sans Internet, protection en temps réel, surveillance, entretien, blocage, restrictions des extensions ; « s » au menu principal.</li>
 <li><b>Extensions personnelles</b> dans Vanguard, sans toucher à son code : un plugin (un dossier avec <code>plugin.toml</code>, ajouté depuis un dossier ou une archive .zip) ou un script du labo posé tel quel ; leurs constats à part, hors de la note.</li>
 <li><b>Vérifiées avant de tourner</b> : tout le dossier analysé (YARA, MalwareBazaar) et approuvé par ses empreintes SHA-256 ; c'est la copie vérifiée qui tourne, sans terminal, bornée, jamais toute seule en administrateur ; un plugin en Rust s'écrit avec la bibliothèque <code>extensions/sdk</code>.</li>
-<li><b>1 176 commandes expliquées</b> pour Omarchy, Arch, Fedora, Debian, Ubuntu, Windows et macOS, plus de 30 000 exemples.</li>
+<li><b>1 177 commandes expliquées</b> pour Omarchy, Arch, Fedora, Debian, Ubuntu, Windows et macOS, plus de 30 000 exemples.</li>
 <li><b>La clé USB</b> : protégée en écriture ailleurs que sur l'ordinateur du propriétaire ; Vanguard mis à jour depuis la clé ou depuis GitHub (versions signées par l'auteur, avec une seconde clé de signature, gardée hors ligne, qui peut révoquer la principale, et jamais de retour à une version plus ancienne). Une clé qui démarre aussi les ordinateurs en panne (Omarchy, SystemRescue, Windows 11…) est en développement.</li>
 <li><b>Retirer Vanguard</b> de cet ordinateur : tout ce qu'il a posé, retrouvé, montré puis coché ; les données gardées sauf accord à part, la clé jamais touchée.</li>
 </ul>
@@ -445,7 +453,7 @@ main { gap: 3.5rem; padding-block: 3rem; }
 <p>Pour qui veut connaître le fonctionnement interne : les règles du bilan, les interfaces du système lues directement en Rust, les sources de menaces, la chaîne de confiance des mises à jour, et chaque commande.</p>
 </div>
 <dl class="specs">
-<div><dt>Langage</dt><dd>Rust, édition 2024 · ≈ 249 300 lignes ; aucun programme externe pour lire le système ; calculs vérifiés contre les dépassements dans la version publiée</dd></div>
+<div><dt>Langage</dt><dd>Rust, édition 2024 · ≈ 262 700 lignes ; aucun programme externe pour lire le système ; calculs vérifiés contre les dépassements dans la version publiée</dd></div>
 <div><dt>Programme</dt><dd>Un seul exécutable, rien à installer : Linux x86_64 (statique, musl), Windows x86_64, macOS Apple Silicon et Intel</dd></div>
 <div><dt>Règles du bilan</dt><dd>171 règles à identifiant stable (<code>LNX-SSH-006</code>) : 94 sous Linux, 82 sous Windows, 71 sous macOS, communes comprises ; 34 fiches d'audit du réseau</dd></div>
 <div><dt>Interface</dt><dd>Menu au clavier, ou 83 commandes en ligne ; sorties <code>--json</code>, rapport HTML ou Markdown</dd></div>
@@ -485,7 +493,7 @@ main { gap: 3.5rem; padding-block: 3rem; }
 <li><b>Lecteur SQLite maison</b> : les autorisations de confidentialité (TCC) lues sans <code>sqlite3</code>, pour le bilan de confidentialité et les logiciels espions.</li>
 <li><b>Lecteur de plist maison</b> (XML et binaire, borné contre un fichier piégé) : préférences, agents de launchd, version, à la place de <code>defaults</code> et <code>plutil</code>.</li>
 <li><b>XProtect</b> et profils de configuration hors gestion d'entreprise ; comptes, sudo sans mot de passe, SSH, Time Machine.</li>
-<li><b>Testé</b> sur un vrai Mac de GitHub à chaque version.</li>
+<li><b>Testé</b> automatiquement sur un Mac de GitHub à chaque version ; jamais essayé sur un vrai Mac.</li>
 </ul>
 </article>
 </div>
@@ -516,7 +524,7 @@ main { gap: 3.5rem; padding-block: 3rem; }
 <h3 class="sous-titre">Sources de menaces</h3>
 <div class="sources">
 <div class="source"><b>MalwareBazaar</b><span>Empreintes SHA-256 de logiciels malveillants connus, comparées à chaque fichier lu par l'analyse YARA.</span><span class="k">clé abuse.ch gratuite · complète chaque semaine · 48 h chaque jour</span></div>
-<div class="source"><b>ReversingLabs</b><span>308 règles YARA par famille (rançongiciels, voleurs, portes dérobées), appliquées par le moteur YARA de Vanguard sur 4 fils, aux fichiers et, à la demande, à la mémoire des programmes.</span><span class="k">intégrées au programme</span></div>
+<div class="source"><b>ReversingLabs</b><span>plus de 300 règles YARA par famille (rançongiciels, voleurs, portes dérobées), appliquées par le moteur YARA de Vanguard sur 4 fils, aux fichiers et, à la demande, à la mémoire des programmes.</span><span class="k">intégrées au programme</span></div>
 <div class="source"><b>LOLDrivers</b><span>Pilotes vulnérables ou malveillants connus, comparés par empreinte aux pilotes du noyau de Windows : signés, ils servent à désarmer l'antivirus.</span><span class="k">chaque semaine · Apache-2.0</span></div>
 <div class="source"><b>ThreatFox · Feodo Tracker</b><span>Serveurs de commande de botnets, comparés aux connexions de chaque programme et à la mémoire DNS.</span><span class="k">abuse.ch · clé gratuite pour ThreatFox</span></div>
 <div class="source"><b>URLhaus · Spamhaus DBL · SURBL</b><span>Liens dangereux ; le domaine seulement sort, jamais le lien entier. Âge du domaine par RDAP.</span><span class="k">après accord · clé abuse.ch pour URLhaus</span></div>
@@ -635,46 +643,43 @@ vanguard yara --complet</pre>
 </section>
 <section id="nouveautes">
 <div class="tete-section">
-<p class="surtitre">Nouveautés de la version 0.87</p>
+<p class="surtitre">Nouveautés de la version 0.88</p>
 <h2>Ce qui vient d'arriver</h2>
-<p>Les journaux de Windows lus par Vanguard lui-même, un moteur YARA et un lecteur de fichiers maison, un nouveau menu qui met la défense d'abord, le blocage sans script, moins de programmes externes, et une troisième campagne d'attaque contre Vanguard.</p>
+<p>Une version de confiance : ce qui sort de l'ordinateur tient dans une liste fermée, l'état de Vanguard est scellé, ce qu'il protège est écrit, et chaque règle est reliée à MITRE ATT&amp;CK.</p>
 </div>
 <ul class="nouveautes">
-<li><b>Que s'est-il passé ?</b><span><code>vanguard journaux-windows</code> lit les journaux de Windows avec un lecteur .evtx écrit pour Vanguard : onze règles, les alertes dans l'ordre du temps, la période vraiment lue. Sur ce Windows ou sur un dossier de journaux, depuis n'importe quel système ; essayé sur un vrai Windows 11 sans fausse alerte.</span></li>
-<li><b>YARA maison</b><span>Les 308 règles de ReversingLabs appliquées par un moteur écrit pour Vanguard ; une règle qu'il ne comprend pas rend l'analyse incomplète, jamais saine. Le programme Windows passe de 34 à 18 Mo.</span></li>
-<li><b>Antivirus maison, première brique</b><span>Programmes, documents Office et leurs macros, raccourcis, scripts, archives zip, gzip et tar lus par Vanguard lui-même, bornés contre les fichiers piégés ; 7z, RAR, PDF ou chiffré : dit non vérifié.</span></li>
-<li><b>Nouveau menu</b><span>La défense d'abord : Bilan (1 à 3), Cyberdéfense (4 à 8), En plus (9 à 13). Aucun écran ne défile ; un mot tapé au menu trouve chaque outil, page du guide ou parcours.</span></li>
-<li><b>Blocage sans script</b><span>Chaque geste fait en administrateur est un ordre d'une liste fermée, à paramètres typés, revérifié avant d'être fait.</span></li>
-<li><b>Le système lu directement</b><span>Wi-Fi, Bluetooth, systemd, NetworkManager, processus et réseau de macOS : lus par Vanguard lui-même, sans programme intermédiaire.</span></li>
-<li><b>Logiciels proposés</b><span>Sept de plus, dont Ente Auth pour la double authentification ; Bitwarden par Flathub sous Arch.</span></li>
-<li><b>Vouvoiement</b><span>Tout ce que Vanguard affiche en français vouvoie : menus, messages, aide, guide.</span></li>
-<li><b>Troisième campagne d'attaque</b><span>La clé comparée à sa référence avant toute écriture, l'état de Vanguard scellé et lu en simple fichier, les données piégées (archives, mémoire, Wi-Fi jumeau) bornées.</span></li>
-<li><b>Moins de fausses alertes de l'antivirus</b><span>Les noms d'outils d'attaque que Vanguard reconnaît ne sont plus en clair dans le programme, pour qu'un antivirus ne le prenne pas pour l'outil qu'il traque.</span></li>
+<li><b>Liste fermée de ce qui sort</b><span>Vanguard ne joint qu'une liste fermée de sites, chacun nommé dans le modèle de menace ; un test échoue si le code en ajoute un que la page ne nomme pas.</span></li>
+<li><b>État scellé</b><span>Réglages des extensions, listes téléchargées, défenses mises en marche, tâches et fichiers d'état : changés hors de Vanguard, ils n'accordent plus rien et ne coupent plus rien, et c'est dit.</span></li>
+<li><b>Modèle de menace</b><span>Une page dit ce que Vanguard protège, ce qu'il ne protège pas et ce qui sort de l'ordinateur.</span></li>
+<li><b>Carte MITRE ATT&amp;CK</b><span>Les règles citent la technique qu'elles détectent ou la mesure qu'elles appliquent ; la carte, générée, montre aussi les cases vides.</span></li>
+<li><b>Journaux de Windows, un seul juge</b><span>Le bilan reprend les règles de « Que s'est-il passé ? » ; deux règles de plus (tâches planifiées, processus suspects) et une place au menu.</span></li>
+<li><b>Paquets de l'AUR avec accord</b><span>Sous Arch Linux, les noms des paquets hors des dépôts officiels ne partent plus qu'avec un réglage donné exprès.</span></li>
+<li><b>Optimiser refusé en administrateur</b><span>Ses outils ne tournent pas quand Vanguard a été élevé depuis un compte ordinaire ; « Tout remettre comme avant » reste permis.</span></li>
 </ul>
 </section>
 <section id="feuille-de-route">
 <div class="tete-section">
 <p class="surtitre">Feuille de route</p>
 <h2>Ce qui se prépare</h2>
-<p>Les travaux en cours, puis ceux qui suivent, dans l'ordre. Chacun passe par les mêmes règles : écrit en Rust, défensif, annulable, relu et testé avant d'entrer dans une version. Les journaux de Windows, le moteur YARA et le nouveau menu sont arrivés avec la 0.87.</p>
+<p>Les travaux en cours, puis ceux qui suivent, dans l'ordre, sans date. Chacun passe par les mêmes règles : écrit en Rust, petites briques faites maison, aucune dépendance nouvelle sans décision, cryptographie auditée seulement, défensif, annulable, relu et testé avant d'entrer dans une version.</p>
 </div>
+<p><b>Où va Vanguard.</b> En cours : tout ce qu'un agent d'IA peut exécuter, le reste du programme réécrit en Rust (pare-feu Linux compris), un banc d'essai sur la clé et l'étude d'une interface graphique ; les versions signées aussi en ML-DSA attendent une décision.</p>
 <h3 class="sous-titre">En cours</h3>
 <div class="audit">
-<div><b>Agents d'IA</b><span>Tout ce qu'un agent de code peut exécuter (crochets, serveurs MCP, skills, réglages de Claude Code, Codex, Gemini, VS Code), leurs versions vulnérables, et ce qui a changé depuis leur approbation.</span><span class="k">en cours</span></div>
-<div><b>Tout en Rust</b><span>Le blocage sans script ; un pare-feu Linux piloté directement (nf_tables), écrit pour Vanguard ; les dernières lectures du système sous Linux et macOS ; les outils de publication et la signature des versions.</span><span class="k">en cours</span></div>
-<div><b>Banc d'essai sur la clé</b><span>Un double-clic sur un vrai Windows lance les essais de Vanguard et range les résultats sur la clé.</span><span class="k">en cours</span></div>
-<div><b>Interface graphique</b><span>Étude d'une fenêtre graphique qui garde le terminal à côté.</span><span class="k">étude</span></div>
-<div><b>Versions signées deux fois</b><span>Ed25519 et ML-DSA (FIPS 204, post-quantique), par une bibliothèque reconnue : la signature hybride des versions attend une décision.</span><span class="k">en attente</span></div>
+<div><b>Régression de détection</b><span>Un corpus de cas inoffensifs prouve à chaque version que chaque règle tire encore.</span><span class="k">en cours</span></div>
+<div><b>Tout en Rust</b><span>Les corrections sous Windows, Linux et macOS faites par un programme élevé qui revérifie chaque geste, sans script ; les outils de publication.</span><span class="k">en cours</span></div>
+<div><b>Documentation du code</b><span>Chaque fonction publique dit son contrat ; les longues fonctions découpées, comportement inchangé.</span><span class="k">en cours</span></div>
 </div>
 <h3 class="sous-titre">Plus tard</h3>
 <ul class="nouveautes">
-<li><b>Windows tout en Rust</b><span>Les corrections faites par un programme élevé qui revérifie chaque geste, sans script.</span></li>
-<li><b>Journaux de Windows, la suite</b><span>Un menu pour « Que s'est-il passé ? » et de nouvelles règles, chacune provoquée dans une machine virtuelle.</span></li>
-<li><b>Observation du noyau Linux</b><span>Les programmes eBPF cachés d'un rootkit, puis l'observation en direct, sans jamais rien bloquer dans le noyau.</span></li>
-<li><b>Clé de secours</b><span>Une clé qui démarre un ordinateur en panne et y lance Vanguard, sans écrire dans les comptes de Windows.</span></li>
-<li><b>Agents d'IA, la suite</b><span>Les consignes cachées dans les fichiers (caractères invisibles), puis un secret-piège.</span></li>
-<li><b>Failles des autres distributions</b><span>Debian, Ubuntu et Fedora avec leurs numéros de faille (CVE) ; un DNS local qui bloque les sites dangereux.</span></li>
-<li><b>Signature du code</b><span>Prévue : le programme signé, puis une version installée avec surveillance par le système.</span></li>
+<li><b>« Normal chez moi » qui tient</b><span>Une alerte déclarée normale sur cet ordinateur le reste d'une version à l'autre, et suit l'export des réglages.</span></li>
+<li><b>Guide d'incident</b><span>Après une alerte : quoi faire, dans quel ordre, et comment vérifier que c'est réglé.</span></li>
+<li><b>Vanguard se surveille lui-même</b><span>Ses fichiers, son programme et son état vérifiés en continu ; un journal dont chaque ligne est liée à la précédente ; un apprentissage local qui ne peut que le rendre plus attentif, jamais moins.</span></li>
+<li><b>Antivirus maison, la suite</b><span>Signatures de la base ClamAV installée et heuristiques, en second avis ; Defender reste principal sous Windows.</span></li>
+<li><b>Observation du noyau Linux</b><span>L'audit du noyau, puis les programmes eBPF cachés d'un rootkit, sans jamais rien bloquer dans le noyau.</span></li>
+<li><b>IA défensive locale</b><span>Une application à part, sur la carte graphique, qui explique et priorise sans jamais agir ni rien envoyer.</span></li>
+<li><b>Signature du code</b><span>Le programme signé, puis une version installée avec surveillance par le système.</span></li>
+<li><b>1.0</b><span>Tout ce périmètre intégré, testé, documenté en français et en anglais, et vert sur Windows, Linux et macOS.</span></li>
 </ul>
 </section>
 <section id="principes">
@@ -686,7 +691,7 @@ vanguard yara --complet</pre>
 <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Rien sans accord</b><span>Chaque changement est montré avant d'être fait ; la protection active, une fois mise en marche, ne bloque seule que ce qui ne fait aucun doute, et prévient.</span></div></div>
 <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Jamais « sain » par défaut</b><span>Ce qui n'a pas pu être vérifié est dit clairement.</span></div></div>
 <div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Jamais d'attaque</b><span>Il observe et mesure le réseau ; aucun exploit, aucun mot de passe essayé sur un appareil (seule la lecture SNMP « public », annoncée).</span></div></div>
-<div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Rien d'envoyé en cachette</b><span>Le journal des erreurs est anonymisé ; rien ne part sans le dire.</span></div></div>
+<div class="principe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg><div><b>Rien d'envoyé en cachette</b><span>Ce qui sort tient dans une liste fermée, écrite dans le <a href="https://github.com/d9v3/vanguard-beta/blob/master/MODELE-DE-MENACE.md">modèle de menace</a> ; le journal des erreurs est anonymisé. Les règles sont reliées à la <a href="https://github.com/d9v3/vanguard-beta/blob/master/COUVERTURE-ATTACK.md">carte MITRE ATT&amp;CK</a>.</span></div></div>
 </div>
 </section>
 <section id="chiffres">
@@ -695,12 +700,12 @@ vanguard yara --complet</pre>
 <h2>Écrit en Rust, testé à chaque version</h2>
 </div>
 <div class="chiffres">
-<div class="chiffre"><b>≈ 249 300</b><span>lignes de code Rust</span></div>
-<div class="chiffre"><b>2 361</b><span>tests sous Linux</span></div>
-<div class="chiffre"><b>2 018</b><span>tests sous Windows (Wine)</span></div>
-<div class="chiffre"><b>211</b><span>vérifications sur un vrai Windows</span></div>
+<div class="chiffre"><b>≈ 262 700</b><span>lignes de code Rust</span></div>
+<div class="chiffre"><b>2 502</b><span>tests sous Linux</span></div>
+<div class="chiffre"><b>2 136</b><span>tests sous Windows (Wine)</span></div>
+<div class="chiffre"><b>221</b><span>vérifications sur un vrai Windows</span></div>
 </div>
-<p class="note">Chaque version passe par des relectures de sécurité indépendantes, par un vrai Windows qui se teste tout seul et par un vrai Mac. Cette page est refaite par le script de publication à chaque version.</p>
+<p class="note">Chaque version passe par des relectures de sécurité indépendantes, par un vrai Windows qui se teste tout seul et par un Mac de GitHub. Cette page est refaite par le script de publication à chaque version.</p>
 </section>
 <section id="installer">
 <div class="tete-section">
@@ -742,11 +747,12 @@ vanguard yara --complet</pre>
 <h4>macOS <span>12 et plus</span></h4>
 <ul>
 <li><b>Lancer</b> : copié depuis Internet, il est bloqué la première fois : <code>xattr -d com.apple.quarantine vanguard-macos</code>, puis <code>./vanguard-macos</code> dans le Terminal.</li>
+<li><b>État</b> : testé automatiquement sur un Mac de GitHub, jamais essayé sur un vrai Mac ; maintenu, sans nouveautés propres au Mac.</li>
 </ul>
 </article>
 </div>
-<h3 class="sous-titre">En option, pour dépanner : le programme seul sur une clé USB</h3>
-<p class="note">Pour l'ordinateur d'un proche ou une machine qu'on ne veut pas toucher, la clé VANGUARD porte le programme (Windows et Linux, et macOS quand sa compilation sur GitHub a pu être reprise), sa base et ses rapports, et marche sans Internet (ce qui en a besoin le dit). Ailleurs que sur l'ordinateur de son propriétaire, elle est en lecture seule (Windows la monte ainsi de lui-même ; sous Linux et macOS, Vanguard la remonte ainsi en démarrant) : seule sa petite partition à part reçoit le journal des erreurs, anonymisé, et le tableau de « Mes ordinateurs ». Elle se prépare sous Linux, depuis le code source : <code>outils/preparer-cle.sh /dev/sdX</code> efface la clé, après avoir sauvegardé son contenu, puis y copie le programme déjà compilé (<code>outils/deployer.sh</code> le compile). Sur la clé : <code>Windows/vanguard.exe</code>, <code>Linux/vanguard</code>, ou <code>Lancer Vanguard.command</code> sous macOS. Elle ne porte pas d'images d'installation ni de quoi démarrer un ordinateur.</p>
+<h3 class="sous-titre">Pour dépanner : la clé USB VANGUARD</h3>
+<p class="note">Pour l'ordinateur d'un proche ou une machine qu'on ne veut pas toucher, la clé VANGUARD porte le programme (Windows et Linux, et macOS quand sa compilation sur GitHub a pu être reprise), sa base et ses rapports, et marche sans Internet (ce qui en a besoin le dit). Ailleurs que sur l'ordinateur de son propriétaire, elle est en lecture seule (Windows la monte ainsi de lui-même ; sous Linux et macOS, Vanguard la remonte ainsi en démarrant) : seule sa petite partition à part reçoit le journal des erreurs, anonymisé, et le tableau de « Mes ordinateurs ». Elle se prépare sous Linux, depuis le code source : <code>outils/preparer-cle.sh /dev/sdX</code> efface la clé, après avoir sauvegardé son contenu, puis y copie le programme déjà compilé (<code>outils/deployer.sh</code> le compile). Sur la clé : <code>Windows/vanguard.exe</code>, <code>Linux/vanguard</code>, ou <code>Lancer Vanguard.command</code> sous macOS. Par défaut, <code>outils/cle-secours.sh --ecrire /dev/sdX DOSSIER</code> en fait aussi une clé de secours : Ventoy, les images d'installation et de réparation (SystemRescue, Arch, Omarchy, Debian, Fedora), chacune vérifiée par la signature de son projet, Windows 11 et la récupération de macOS ; son démarrage sur un vrai ordinateur n'a pas encore été essayé. Une ligne <code>CLE_SECOURS=non</code> dans <code>~/.config/vanguard/images-cle.conf</code> la coupe sur un ordinateur.</p>
 <h3 class="sous-titre">Vérifier, puis prendre en main</h3>
 <ol class="chaine">
 <li><b>Empreinte</b>Comparer la sortie de <code>sha256sum</code> (ou <code>Get-FileHash</code>) à la page de la version.</li>
@@ -758,18 +764,18 @@ vanguard yara --complet</pre>
 <div lang="en">
 <h3 class="sous-titre">In English: download, check, install</h3>
 <ol class="chaine">
-<li><b>Download</b>From the <a href="https://github.com/d9v3/vanguard-beta/releases/latest">latest release page</a>, the program for your system: <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-windows-x86_64.exe">Windows</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-linux-x86_64">Linux</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-macos">macOS</a>. A single executable, nothing to install to run it.</li>
+<li><b>Download</b>From the <a href="https://github.com/d9v3/vanguard-beta/releases/latest">latest release page</a>, the program for your system: <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-windows-x86_64.exe">Windows</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-linux-x86_64">Linux</a> · <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/vanguard-macos">macOS</a> (tested automatically on a GitHub Mac, never tried on a real Mac; maintained, without Mac-specific new features). A single executable, nothing to install to run it.</li>
 <li><b>Check the checksum</b>With <a href="https://github.com/d9v3/vanguard-beta/releases/latest/download/SHA256SUMS.txt">SHA256SUMS.txt</a> next to it: <code>sha256sum -c --ignore-missing SHA256SUMS.txt</code> on Linux; elsewhere, <code>Get-FileHash</code> (Windows) or <code>shasum -a 256</code> (macOS), compared to its line. A different checksum: do not run it.</li>
 <li><b>Put it on the computer</b><code>vanguard shortcut</code> copies it to its folder on this computer and launches it in one click (applications menu on Linux, Desktop on Windows and macOS), after your consent.</li>
 <li><b>Keep it up to date</b><code>vanguard self-update</code> takes the latest published version, signed by the author and checked; always with your consent, never an older version.</li>
 <li><b>What protects every day</b>Installed, it can watch on its own, each feature turned on with your consent: hourly network monitoring (<code>vanguard monitor on</code>), active protection, which blocks on its own what leaves no doubt (<code>vanguard blocking auto</code>), the monthly maintenance (<code>vanguard maintenance on</code>).</li>
 </ol>
-<p class="note"><b>Optional, for troubleshooting: the program alone on a USB key.</b> For a relative's computer or a machine you do not want to touch, the VANGUARD key carries the program (Windows and Linux, and macOS when its GitHub build could be fetched), its database and its reports, and works without Internet (what needs it says so). Anywhere but its owner's computer it is read-only (Windows mounts it that way by itself; on Linux and macOS, Vanguard remounts it that way on start): only its small separate partition receives the anonymized error log and the “My computers” table. It is prepared on Linux, from the source code: <code>outils/preparer-cle.sh /dev/sdX</code> erases the key, after saving its contents, then copies the already built program onto it (<code>outils/deployer.sh</code> builds it). On the key: <code>Windows/vanguard.exe</code>, <code>Linux/vanguard</code>, or <code>Lancer Vanguard.command</code> on macOS. It carries no installation images and nothing to boot a computer.</p>
+<p class="note"><b>For troubleshooting: the VANGUARD USB key.</b> For a relative's computer or a machine you do not want to touch, the VANGUARD key carries the program (Windows and Linux, and macOS when its GitHub build could be fetched), its database and its reports, and works without Internet (what needs it says so). Anywhere but its owner's computer it is read-only (Windows mounts it that way by itself; on Linux and macOS, Vanguard remounts it that way on start): only its small separate partition receives the anonymized error log and the “My computers” table. It is prepared on Linux, from the source code: <code>outils/preparer-cle.sh /dev/sdX</code> erases the key, after saving its contents, then copies the already built program onto it (<code>outils/deployer.sh</code> builds it). On the key: <code>Windows/vanguard.exe</code>, <code>Linux/vanguard</code>, or <code>Lancer Vanguard.command</code> on macOS. By default, <code>outils/cle-secours.sh --ecrire /dev/sdX FOLDER</code> also makes it a rescue key: Ventoy, the installation and repair images (SystemRescue, Arch, Omarchy, Debian, Fedora), each checked against its project's signature, Windows 11 and macOS recovery; booting it on a real computer has not been tried yet. A <code>CLE_SECOURS=non</code> line in <code>~/.config/vanguard/images-cle.conf</code> turns it off on a computer.</p>
 </div>
 </section>
 </main>
 <footer>
-<div class="cadre"><span>Vanguard 0.87.0 · 24 octobre 2026</span><span><a href="https://github.com/d9v3/vanguard-beta">Logiciel libre · GPL-3.0-or-later</a></span></div>
+<div class="cadre"><span>Vanguard 0.88.0 · 26 octobre 2026</span><span><a href="https://github.com/d9v3/vanguard-beta">Logiciel libre · GPL-3.0-or-later</a></span></div>
 </footer>
 </body>
 </html>
