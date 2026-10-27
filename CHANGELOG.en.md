@@ -7,7 +7,7 @@ a day, gathering the day's work; October 21 had two, 0.82 in the morning and 0.8
 delivered just before it. Only the latest version has its download page; every version keeps its tag in the repository
 (`git checkout v0.62.0`, for example), to be rebuilt if needed.
 
-## Next version
+## October 26, 2026: version 0.88
 
 - **Detection regression.** A corpus of harmless fabricated cases (tests/corpus-detection) proves through 77 cases
   (part of them per system) that the detection rules and tools still fire (depending on the system: each runs where it
