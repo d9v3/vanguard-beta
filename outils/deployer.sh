@@ -457,8 +457,9 @@ T_CLE=$SECONDS
 # vidé, ni manifeste), jusqu'à l'accord de l'auteur (--accepter-cle). Sans cela, la référence réécrite après la copie
 # les reprenait, et le bilan disait « la clé n'a pas changé » (campagne d'attaque n° 3).
 # Un déploiement arrêté en route (clé retirée, rsync ou copie en échec) laisse son repère, au jeton de la clé : le
-# suivant ne compte pas ce que le déploiement pose lui-même et a pu laisser à moitié écrit (il le réécrit), tout le
-# reste si. Retiré une fois la référence réécrite.
+# suivant retire de la clé ce que le déploiement pose lui-même et qui diffère de la référence (il le repose ; ce qu'il
+# ne repose pas, un programme Mac sans compilation, n'y revient pas), tout le reste compte. Retiré une fois la
+# référence réécrite.
 REPRISE=${XDG_STATE_HOME:-$HOME/.local/state}/vanguard/deploiement-en-cours-$(jeton_du_volume "$CLE")
 REPRENDRE=()
 [[ -f $REPRISE && $REPRISE != */deploiement-en-cours- ]] && REPRENDRE=(--reprise)

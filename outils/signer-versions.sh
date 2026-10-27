@@ -31,7 +31,11 @@
 #     ordinateur n'a pas publiée, c'est la principale entre d'autres mains) ; sinon refusé ;
 #   - clé de secours : un historique d'avant signé par la principale n'est jamais repris au-delà du point sûr : ses
 #     blocs sont ceux du point sûr, les autres écartés et nommés ; sans point sûr, refusé (--point-sur une copie
-#     gardée ailleurs, une sauvegarde) ; signé par le secours lui-même, il est repris ;
+#     gardée ailleurs, une sauvegarde) ; signé par le secours lui-même, il est repris. Un point sûr signé par la
+#     principale se forge avec elle (campagne d'attaque n° 4) : ses versions, leur date et le début de leur empreinte
+#     sont montrés, et rien n'est contresigné sans « contresigner » tapé dans le terminal par l'auteur, qui seul sait
+#     ce qu'il a publié : --secours sur un tel point sûr, sans terminal (une tâche, un tube), refuse donc toujours,
+#     et ne laisse aucune signature, pas même celle de derniere.txt ;
 #   - avec un point sûr, ni le repli sur derniere.txt ni --premier : l'historique publié a disparu, il ne repart pas.
 #   outils/signer-versions.sh --cle [--secours]   la clé publique, sous la forme que github.rs grave
 # La clé privée ne quitte jamais cet ordinateur : ni GitHub, ni la clé USB. Chiffrée (« BEGIN ENCRYPTED PRIVATE KEY »,
@@ -173,6 +177,8 @@ done
 cargo=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 [[ ${version%%+*} == "$cargo" ]] || erreur "version gravée $version, Cargo.toml dit $cargo"
 
+# Les signatures d'un passage d'avant, s'il en reste, ne survivent pas à un refus de celui-ci.
+rm -f "$D/derniere.txt.sig" "$D/historique.txt.sig"
 {
   echo "version $version"
   for systeme in linux-x86_64 windows-x86_64 macos; do
@@ -182,16 +188,6 @@ cargo=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
   [[ -z $REVOQUER ]] || echo "revoque principale"
 } >"$D/derniere.txt"
 
-message=$(mktemp "$D/.message.XXXX")
-publique_pem=$(mktemp "$D/.publique.XXXX")
-trap 'rm -f "$message" "$publique_pem"' EXIT
-{ printf '%s\n' "$DOMAINE"; cat "$D/derniere.txt"; } >"$message"
-printf '%s\n' "$PUBLIQUE_PEM" >"$publique_pem"
-avec_cle openssl pkeyutl -sign -inkey "$CLE" -rawin -in "$message" -out "$D/derniere.txt.sig"
-# Revérifiée avec la clé publique seule, comme le fera Vanguard.
-openssl pkeyutl -verify -pubin -inkey "$publique_pem" -rawin -in "$message" \
-  -sigfile "$D/derniere.txt.sig" >/dev/null || erreur "la signature ne se vérifie pas"
-echo "Version $version signée ($GRAVEE) : $D/derniere.txt et derniere.txt.sig"
 
 # --- L'historique des versions ---------------------------------------------------------------------------------------
 
@@ -241,11 +237,30 @@ versions_de() { cut -d'|' -f1 <<<"$1" | sed 's/^version //' | paste -sd' '; }
 
 # Le point sûr (en-tête) : signé par une clé gravée, sinon rien ne se signe sur une référence douteuse.
 POINT=""
+POINT_PAR=""
 if [[ -f $POINT_SUR ]]; then
-  signe_par_une_gravee "$POINT_SUR" "$DOMAINE_HISTORIQUE" >/dev/null ||
+  POINT_PAR=$(signe_par_une_gravee "$POINT_SUR" "$DOMAINE_HISTORIQUE") ||
     erreur "point sûr mal signé ($POINT_SUR) : rien n'est signé sur une référence douteuse"
   POINT=$(blocs "$POINT_SUR")
 fi
+# Ce que la clé de secours va contresigner d'après un point sûr de la principale, montré à l'auteur : une version par
+# ligne, sa date gravée et le début de l'empreinte de chaque programme. Le voleur de la principale réécrit le point
+# sûr aussi bien que l'historique : seul l'auteur reconnaît ce qu'il a publié. Rien sans « contresigner » tapé.
+confirmer_point() { # blocs
+  local bloc v date
+  echo "La clé de secours va contresigner ces versions, d'après un point sûr signé par la clé principale ($POINT_SUR)."
+  echo "La principale volée le réécrit aussi : ne confirmez que si chacune est bien une version que vous avez publiée."
+  while IFS= read -r bloc; do
+    [[ -n $bloc ]] || continue
+    v=$(cut -d'|' -f1 <<<"$bloc" | sed 's/^version //')
+    date=$(date -ud "@${v##*+}" +%F 2>/dev/null || echo "date illisible")
+    echo "  $v ($date) $(cut -d'|' -f2- <<<"$bloc" | tr '|' '\n' | awk '{ printf "%s %.12s  ", $1, $2 }')"
+  done <<<"$1"
+  [[ -t 0 ]] || erreur "pas de terminal pour confirmer le point sûr signé par la clé principale : rien n'est signé"
+  local reponse
+  read -r -p "Tapez « contresigner » pour continuer : " reponse
+  [[ $reponse == contresigner ]] || erreur "non confirmé : rien n'est signé"
+}
 
 AVANT=$D/avant
 anciens=""
@@ -261,6 +276,7 @@ historique publié gardé ailleurs (sauvegarde)."
     ecartes=$(absents "$avant" "$POINT")
     [[ -z $ecartes ]] || echo "⚠ Écartées de l'historique (signées par la clé principale après le point sûr) : \
 $(versions_de "$ecartes")."
+    [[ $POINT_PAR == CLE_SECOURS ]] || confirmer_point "$POINT"
     anciens=$POINT
   else
     if [[ -n $POINT && -z $SECOURS ]]; then
@@ -288,6 +304,18 @@ point sûr ($POINT_SUR) : la clé de secours ne le contresigne pas (--point-sur 
 else
   echo "Pas d'historique d'avant : il commence à cette version."
 fi
+# Signé seulement ici, une fois l'historique d'avant jugé et le point sûr confirmé : un refus plus haut ne laisse
+# aucun derniere.txt.sig, que publier-version.sh pourrait publier seul (relecture adverse de la campagne 4).
+message=$(mktemp "$D/.message.XXXX")
+publique_pem=$(mktemp "$D/.publique.XXXX")
+trap 'rm -f "$message" "$publique_pem"' EXIT
+{ printf '%s\n' "$DOMAINE"; cat "$D/derniere.txt"; } >"$message"
+printf '%s\n' "$PUBLIQUE_PEM" >"$publique_pem"
+avec_cle openssl pkeyutl -sign -inkey "$CLE" -rawin -in "$message" -out "$D/derniere.txt.sig"
+# Revérifiée avec la clé publique seule, comme le fera Vanguard.
+openssl pkeyutl -verify -pubin -inkey "$publique_pem" -rawin -in "$message" \
+  -sigfile "$D/derniere.txt.sig" >/dev/null || erreur "la signature ne se vérifie pas"
+echo "Version $version signée ($GRAVEE) : $D/derniere.txt et derniere.txt.sig"
 anciens=$(tr '|' '\n' <<<"$anciens")
 {
   grep -v '^revoque ' "$D/derniere.txt"

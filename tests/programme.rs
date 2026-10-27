@@ -238,6 +238,100 @@ fn parametres_changes_hors_de_vanguard_dits_sans_rien_couper() {
     let _ = std::fs::remove_dir_all(&maison);
 }
 
+/// F4 (E-M1) : sceaux.json ramené à une forme d'avant (`format` absent) et parametres.json retiré de ses `vus`, sans
+/// la tête du journal qui prouverait une vraie mise à jour : rien n'est repris d'une « mise à jour », le
+/// parametres.json forgé est dit accepté tel quel après des sceaux refaits, et rien de ce qu'il dit n'est appliqué.
+#[cfg(unix)]
+#[test]
+fn sceaux_ramenes_a_une_forme_d_avant_ne_font_rien_croire() {
+    let maison = maison_jetable();
+    let donnees = dossier_vanguard(&maison);
+    std::fs::create_dir_all(&donnees).unwrap();
+    std::fs::write(
+        donnees.join("sceaux.json"),
+        r#"{"depuis":"2026-10-01","fichiers":{},"vus":["pieges.json"]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        donnees.join("parametres.json"),
+        r#"{"langue":"en","hors_ligne":true,"sans_autotest":true}"#,
+    )
+    .unwrap();
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let s = vanguard_dans_env(programme, &maison, "en", &["parametres"], "", 30, &[]);
+    let texte = sans_couleurs(&s.texte);
+    assert!(texte.contains("accepted as it was after seals were remade"), "{texte}");
+    let _ = std::fs::remove_dir_all(&maison);
+}
+
+/// F4 (relecture du delta, bloquante) : une 0.86 ou une 0.87 qui n'avait rien noté au journal, mise à jour, puis le
+/// menu ouvert et quitté. Le journal prenait son verrou et créait son dossier avant que les sceaux d'avant soient
+/// jugés : ses propres traces les faisaient dire refaits (élevé). Jugés d'abord : « sans journal », rien de refait.
+#[cfg(unix)]
+#[test]
+fn une_version_d_avant_sans_journal_ne_se_dit_pas_refaite_au_menu() {
+    let maison = maison_jetable();
+    let donnees = dossier_vanguard(&maison);
+    std::fs::create_dir_all(&donnees).unwrap();
+    std::fs::write(donnees.join("sceaux.json"), r#"{"depuis":"2026-10-01","fichiers":{}}"#).unwrap();
+    std::fs::write(donnees.join("parametres.json"), r#"{"langue":"en"}"#).unwrap();
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let s = vanguard_dans_env(
+        programme,
+        &maison,
+        "en",
+        &[],
+        "q\n",
+        60,
+        &[("VANGUARD_HORS_LIGNE", "1")],
+    );
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    let sceaux: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(donnees.join("sceaux.json")).unwrap()).unwrap();
+    assert_ne!(sceaux["refaits"], serde_json::Value::Bool(true), "{sceaux}");
+    assert!(sceaux["sans_journal"].is_string(), "{sceaux}");
+    let _ = std::fs::remove_dir_all(&maison);
+}
+
+/// F4 (E-M2) : sceaux.verrou gardé par un autre programme du compte : la commande n'attend plus chaque prise du verrou
+/// (il en fallait des minutes), mais une seule fois, puis une seconde en tout ; `--version` ne l'attend pas. Ce qui
+/// devait se noter et ne l'a pas pu n'est pas perdu en silence : le verrou rendu, le journal se lit « incomplet ».
+#[cfg(unix)]
+#[test]
+fn verrou_des_sceaux_garde_ailleurs_court_et_dit() {
+    let maison = maison_jetable();
+    let donnees = dossier_vanguard(&maison);
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let hors_ligne = [("VANGUARD_HORS_LIGNE", "1")];
+    let lien = ["lien", "https://example.com", "--json"];
+    let s = vanguard_dans_env(programme, &maison, "en", &lien, "", 60, &hors_ligne);
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    let verrou = std::fs::File::open(donnees.join("sceaux.verrou")).unwrap();
+    verrou.lock().unwrap();
+    let debut = std::time::Instant::now();
+    let s = vanguard_dans_env(programme, &maison, "en", &["--version"], "", 30, &[]);
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    assert!(
+        debut.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        debut.elapsed()
+    );
+    let debut = std::time::Instant::now();
+    let s = vanguard_dans_env(programme, &maison, "en", &lien, "", 120, &hors_ligne);
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    // Avant : 140 s pour ce seul `lien` ; une attente, puis une seconde en tout.
+    assert!(
+        debut.elapsed() < std::time::Duration::from_secs(45),
+        "{:?}",
+        debut.elapsed()
+    );
+    verrou.unlock().unwrap();
+    let s = vanguard_dans_env(programme, &maison, "en", &["evenements", "--json"], "", 60, &hors_ligne);
+    assert!(s.texte.contains(r#""etat": "incomplet""#), "{}", s.texte);
+    assert!(s.texte.contains("not noted"), "{}", s.texte);
+    let _ = std::fs::remove_dir_all(&maison);
+}
+
 #[test]
 fn aide_dans_les_deux_langues() {
     let fr = vanguard("fr", &["--help"], "", 30);
@@ -281,6 +375,38 @@ fn menu_quitte_par_q_et_par_la_fin_de_l_entree() {
     // Entrée fermée sans réponse (script, tâche planifiée) : le menu s'en va au lieu d'attendre.
     let ferme = vanguard("fr", &[], "", 60);
     assert_eq!(ferme.code, Some(0));
+}
+
+/// F4 (relecture du delta) : ouvrir le menu, sans rien d'autre, note la tête du journal ; c'est la preuve d'une vraie
+/// mise à jour que lira la version suivante (sans elle, ce qu'elle reprendrait ne serait pas cru).
+#[test]
+fn le_menu_note_la_tete_du_journal() {
+    let maison = maison_jetable();
+    let s = vanguard_dans(Path::new(env!("CARGO_BIN_EXE_vanguard")), &maison, "fr", &[], "q\n", 60);
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    let tete = dossier_vanguard(&maison).join("evenements.tete");
+    let lu = std::fs::read_to_string(&tete).unwrap_or_default();
+    assert!(lu.contains(env!("CARGO_PKG_VERSION")), "{tete:?} : {lu}");
+    let _ = std::fs::remove_dir_all(&maison);
+}
+
+/// Le bilan aussi note la tête du journal, dès son début (même raison que le menu).
+#[test]
+fn le_bilan_note_la_tete_du_journal() {
+    let maison = maison_jetable();
+    let s = vanguard_dans(
+        Path::new(env!("CARGO_BIN_EXE_vanguard")),
+        &maison,
+        "fr",
+        &["audit", "--json"],
+        "",
+        300,
+    );
+    assert!(s.code.is_some(), "{}", s.erreurs);
+    let tete = dossier_vanguard(&maison).join("evenements.tete");
+    let lu = std::fs::read_to_string(&tete).unwrap_or_default();
+    assert!(lu.contains(env!("CARGO_PKG_VERSION")), "{tete:?} : {lu}");
+    let _ = std::fs::remove_dir_all(&maison);
 }
 
 #[test]

@@ -166,6 +166,7 @@ const TARDIFS: &[&str] = &[
     crate::changements::RELEVE,
     crate::parametres::PARAMETRES,
     crate::protection::blocage::parametres::BLOCAGE,
+    // Jusqu'ici, ceux que connaissaient les versions de la forme 0 (`TARDIFS_D_AVANT`).
     // Écrits sans sceau jusqu'à la 0.87 : adoptés une fois, mais jamais un feu vert (`plugins::reglages::lire_juge`).
     crate::plugins::reglages::SCELLE,
     crate::plugins::APPROUVES_SCELLE,
@@ -181,6 +182,10 @@ const TARDIFS: &[&str] = &[
     SAUVEGARDE,
     SURVEILLANCE_PASSE,
 ];
+
+/// Les premiers `TARDIFS`, ceux que connaissaient les versions de la forme 0 (jusqu'à la 0.87) : les seuls noms que
+/// leurs sceaux ont pu mettre dans leurs `vus`.
+const TARDIFS_D_AVANT: usize = 18;
 
 /// Les dossiers dont chaque fichier est protégé tard, sous un nom que le code ne connaît pas d'avance (la référence de
 /// chaque clé VANGUARD, nommée par l'identifiant de son volume) : comme `TARDIFS`, ce qu'une version d'avant y a
@@ -239,11 +244,19 @@ struct Registre {
     /// sceaux ont été refaits un jour. Toute autre adoption (premier usage, témoins effacés) ne se croit pas.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     repris: BTreeSet<String>,
+    /// Le jour (AAAA-MM-JJ) où des sceaux réécrits par une version plus ancienne de Vanguard ont été retrouvés ici,
+    /// après cette forme-ci (`rattraper_si`) : rien n'en a été repris, et le bilan le dit un mois.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ancienne: Option<String>,
+    /// Le jour (AAAA-MM-JJ) où des sceaux d'une forme d'avant ont été retrouvés sans aucune trace du journal des
+    /// événements (`Avant::SansJournal`) : ce qui était là a été adopté sans être repris, et le bilan le dit un mois.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sans_journal: Option<String>,
 }
 
 /// La forme des sceaux écrits par ce programme. Un fichier de `TARDIFS` absent des `vus` de sceaux de cette forme n'a
 /// pas pu être repris d'une mise à jour (cette forme le connaissait déjà) : posé sans sceau, il est falsifié.
-const FORMAT: u32 = 2;
+pub(crate) const FORMAT: u32 = 2;
 
 /// Ce que Vanguard retrouve d'un de ses fichiers.
 #[derive(Debug, PartialEq, Eq)]
@@ -284,11 +297,93 @@ fn empreinte(nom: &str, octets: &[u8]) -> String {
 /// n'attendent rien de l'écriture.
 fn verrou_ecriture(dossier: &Path, nom: &str) -> std::io::Result<crate::socle::Verrou> {
     std::fs::create_dir_all(dossier)?;
-    crate::socle::Verrou::prendre(dossier, VERROU, false, crate::socle::ATTENTE_ECRITURE).map_err(|e| {
+    prendre_verrou(dossier, false, crate::socle::ATTENTE_ECRITURE).map_err(|e| {
         let e = e.erreur(VERROU);
         crate::modele::Echec::echoue("sceau/ecrire", format!("{nom} : {e}")).journaliser();
         e
     })
+}
+
+/// Les dossiers dont le verrou des sceaux a été refusé à ce processus au-delà de toute l'attente, et pas rendu depuis,
+/// avec ce qu'il lui reste à l'attendre. Un `flock` gardé par un programme du compte (ou par un enfant oublié) faisait
+/// attendre 30 s chaque écriture scellée et 10 s chaque lecture : une commande durait des minutes, ce qu'elle devait
+/// noter se perdait, et le bilan n'en disait rien. Passé un premier refus, plus que `ATTENTE_APRES_REFUS` en tout
+/// pour ce processus, quel que soit le nombre de prises ; et le bilan le dit (`constat_verrou`).
+static TENUS: std::sync::Mutex<BTreeMap<PathBuf, std::time::Duration>> = std::sync::Mutex::new(BTreeMap::new());
+
+/// Ce qu'un processus attend encore, en tout, un verrou déjà refusé : un Vanguard qui écrit le rend en quelques
+/// millisecondes ; épuisé, chaque prise n'est plus qu'un essai.
+const ATTENTE_APRES_REFUS: std::time::Duration = std::time::Duration::from_secs(1);
+
+// Les essais attendent moins le verrou que le programme (`verrou_tenu_…`).
+#[cfg(test)]
+thread_local! {
+    static ATTENTE_ESSAI: std::cell::Cell<Option<std::time::Duration>> = const { std::cell::Cell::new(None) };
+}
+
+/// Pour les essais d'autres modules : l'attente du verrou des sceaux sur ce fil.
+#[cfg(test)]
+pub(crate) fn attendre_en_essai(attente: std::time::Duration) {
+    ATTENTE_ESSAI.with(|a| a.set(Some(attente)));
+}
+
+/// Le verrou des sceaux de `dossier`, attendu au plus `attente`, ou bien moins s'il a déjà été refusé ici (`TENUS`).
+fn prendre_verrou(
+    dossier: &Path,
+    partage: bool,
+    attente: std::time::Duration,
+) -> Result<crate::socle::Verrou, crate::socle::SansVerrou> {
+    #[cfg(test)]
+    let attente = ATTENTE_ESSAI.with(std::cell::Cell::get).unwrap_or(attente);
+    let tenus = || TENUS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let reste = tenus().get(dossier).copied();
+    let attente = reste.map_or(attente, |r| attente.min(r));
+    let debut = std::time::Instant::now();
+    let v = crate::socle::Verrou::prendre(dossier, VERROU, partage, attente);
+    match &v {
+        Ok(_) => {
+            tenus().remove(dossier);
+        }
+        Err(crate::socle::SansVerrou::Occupe) => {
+            let reste = reste.map_or(ATTENTE_APRES_REFUS, |r| r.saturating_sub(debut.elapsed()));
+            tenus().insert(dossier.to_path_buf(), reste);
+        }
+        Err(crate::socle::SansVerrou::Impossible(_)) => {}
+    }
+    v
+}
+
+/// Le verrou des sceaux de `dossier` a-t-il été refusé à ce processus, tenu ailleurs au-delà de l'attente, et pas
+/// rendu depuis ? Ce qui devait s'écrire sous lui (réglages, déjà-vus, tête du journal des événements) ne l'a pas été.
+pub(crate) fn verrou_tenu_dans(dossier: &Path) -> bool {
+    TENUS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains_key(dossier)
+}
+
+/// Au bilan : le verrou des sceaux tenu ailleurs, comme celui du journal (`modele::journal`).
+fn constat_verrou(dossier: &Path) -> Option<Constat> {
+    if !verrou_tenu_dans(dossier) {
+        return None;
+    }
+    Some(
+        crate::machine::alerte(
+            CAT,
+            Niveau::Moyen,
+            tr!(
+                "Les sceaux de l'état de Vanguard n'ont pas pu être tenus : leur verrou (sceaux.verrou) est gardé depuis trop longtemps (un Vanguard figé, ou un autre programme qui le garde). Ce que Vanguard devait y noter (réglages, déjà-vus, journal des événements) n'a pas été écrit, et le journal n'est pas tenu pour vérifié.",
+                "The seals of Vanguard's state could not be held: their lock (sceaux.verrou) has been kept too long (a frozen Vanguard, or another program keeping it). What Vanguard had to note there (settings, already-seen lists, event log) was not written, and the log is not taken as verified."
+            ),
+        )
+        .manuel(
+            tr!(
+                "Fermez les autres Vanguard ouverts, puis relancez le bilan ; si cela reste, regardez ce qui tourne sous votre compte",
+                "Close the other open Vanguard windows, then run the check-up again; if it stays, look at what runs under your account"
+            ),
+            &[],
+        ),
+    )
 }
 
 /// Le verrou d'un lecteur. Exclusif là où il peut écrire : au premier usage ou pour un fichier protégé tard, la lecture
@@ -298,7 +393,7 @@ fn verrou_ecriture(dossier: &Path, nom: &str) -> std::io::Result<crate::socle::V
 /// dire « pas jugé » laisserait sinon n'importe quel programme qui le garde faire taire les falsifications.
 fn verrou_lecture(dossier: &Path, ecrire: bool) -> (Option<crate::socle::Verrou>, bool) {
     let ecrire = ecrire && crate::socle::ecriture_sure(dossier);
-    match crate::socle::Verrou::prendre(dossier, VERROU, !ecrire, crate::socle::ATTENTE_LECTURE) {
+    match prendre_verrou(dossier, !ecrire, crate::socle::ATTENTE_LECTURE) {
         Ok(v) => (Some(v), ecrire),
         Err(_) => (None, false),
     }
@@ -441,32 +536,62 @@ fn tous_les_tardifs() -> BTreeSet<String> {
 }
 
 /// `rattraper`, et seulement s'il le faut (`ecrire`), noté dans les sceaux. Seuls des sceaux d'une forme d'avant
-/// (`FORMAT`) font reprendre un fichier : dans ceux de cette forme, un nom retiré des `vus` n'est pas une mise à jour.
+/// (`FORMAT`) font reprendre un fichier, et seulement sur la preuve d'une vraie mise à jour (`Avant::MiseAJour`) : dans
+/// ceux de cette forme, un nom retiré des `vus` n'est pas une mise à jour.
 fn rattraper_si(dossier: &Path, mut r: Registre, ecrire: bool) -> Registre {
     let mut change = false;
-    let mise_a_jour = r.format < FORMAT;
-    if mise_a_jour {
+    let avant = (r.format < FORMAT).then(|| forme_d_avant(dossier, &r));
+    let aujourd_hui = || chrono::Local::now().format("%Y-%m-%d").to_string();
+    match avant {
+        None => {}
+        // Rien ne prouve la mise à jour : des sceaux ramenés en arrière hors de Vanguard (le champ `format` est en
+        // clair), pour faire reprendre un fichier posé sans sceau. Ce qui est là est adopté sans être repris (rien
+        // ne s'y fie), et le bilan le dit comme des sceaux refaits.
+        Some(Avant::Recule) => {
+            r.refaits = true;
+            r.depuis = aujourd_hui();
+            // « Refaits » dit déjà tout, et plus haut : une version plus ancienne constatée avant ne se redit pas.
+            r.ancienne = None;
+            r.sans_journal = None;
+        }
+        // Aucune trace du journal : une 0.86 ou une 0.87 qui n'avait encore rien noté, ou des sceaux ramenés en arrière
+        // avec le journal effacé. Rien ne prouve la mise à jour, rien n'est repris ; dit moyen, avec les deux causes.
+        Some(Avant::SansJournal) => r.sans_journal = Some(aujourd_hui()),
         // Les adoptions des sceaux d'avant : ceux qui n'ont pas été refaits les croyaient (repris d'une version d'avant
         // les sceaux, ou d'une mise à jour) ; refaits, rien ne dit d'où elles viennent.
-        if !r.refaits {
-            let adoptes = r.adoptes.clone();
-            r.repris.extend(adoptes);
+        Some(Avant::MiseAJour) => {
+            if !r.refaits {
+                let adoptes = r.adoptes.clone();
+                r.repris.extend(adoptes);
+            }
         }
+        // Une version plus ancienne a servi ici après celle-ci : rien n'est repris, rien de ce qu'elle a laissé hors
+        // des sceaux n'est adopté, et le bilan le dit sans parler de sceaux abîmés.
+        Some(Avant::Ancienne) => r.ancienne = Some(aujourd_hui()),
+    }
+    if avant.is_some() {
         r.format = FORMAT;
         change = true;
     }
+    let adopter = matches!(avant, Some(Avant::MiseAJour | Avant::Recule | Avant::SansJournal));
+    let reprendre = avant == Some(Avant::MiseAJour);
+    let adopter_tel_quel = |r: &mut Registre, nom: String| {
+        if adopter
+            && !r.fichiers.contains_key(&nom)
+            && let Ok(Some(o)) = contenu(&dossier.join(&nom))
+        {
+            r.fichiers.insert(nom.clone(), empreinte(&nom, &o));
+            r.adoptes.insert(nom.clone());
+            if reprendre {
+                r.repris.insert(nom);
+            }
+        }
+    };
     for nom in TARDIFS.iter().copied() {
         if r.vus.contains(nom) {
             continue;
         }
-        if mise_a_jour
-            && !r.fichiers.contains_key(nom)
-            && let Ok(Some(o)) = contenu(&dossier.join(nom))
-        {
-            r.fichiers.insert(nom.to_string(), empreinte(nom, &o));
-            r.adoptes.insert(nom.to_string());
-            r.repris.insert(nom.to_string());
-        }
+        adopter_tel_quel(&mut r, nom.to_string());
         r.vus.insert(nom.to_string());
         change = true;
     }
@@ -475,14 +600,7 @@ fn rattraper_si(dossier: &Path, mut r: Registre, ecrire: bool) -> Registre {
             continue;
         }
         for nom in presents_tardifs(dossier, sous) {
-            if mise_a_jour
-                && !r.fichiers.contains_key(&nom)
-                && let Ok(Some(o)) = contenu(&dossier.join(&nom))
-            {
-                r.fichiers.insert(nom.clone(), empreinte(&nom, &o));
-                r.adoptes.insert(nom.clone());
-                r.repris.insert(nom);
-            }
+            adopter_tel_quel(&mut r, nom);
         }
         r.vus.insert(sous.to_string());
         change = true;
@@ -491,6 +609,87 @@ fn rattraper_si(dossier: &Path, mut r: Registre, ecrire: bool) -> Registre {
         let _ = enregistrer_registre(dossier, &r);
     }
     r
+}
+
+/// Ce que sont des sceaux d'une forme d'avant (`format < FORMAT`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Avant {
+    /// Une vraie mise à jour depuis la 0.86 ou la 0.87 : ce qu'elle ne scellait pas encore est repris, et cru.
+    MiseAJour,
+    /// Une version plus ancienne a servi ici après celle-ci (une clé ou un Mac restés en arrière) : rien n'est repris.
+    Ancienne,
+    /// Rien ne le prouve : ramenés en arrière hors de Vanguard, rien n'est repris et c'est dit comme des sceaux refaits.
+    Recule,
+    /// Aucune trace du journal (ni tête, ni segment, ni verrou) : une version d'avant qui n'avait rien noté, ou tout
+    /// effacé avec des sceaux ramenés en arrière. Rien n'est repris ; dit moyen, sans parler de sceaux refaits.
+    SansJournal,
+}
+
+/// La preuve, positive, de ce que sont des sceaux d'une forme d'avant : la tête du journal des événements
+/// (`modele::journal`), présente et scellée telle quelle dans ces sceaux, note la forme des sceaux de qui l'a écrite.
+/// Écrite par une version d'avant (sans cette forme) et sans aucune marque de cette forme-ci dans le registre (`repris`,
+/// un nom de `vus` qu'aucune version d'avant ne connaissait) : une mise à jour. Avec une marque de cette forme, ou
+/// écrite par elle : une version plus ancienne est repassée après elle (elle réécrit les sceaux sans leur forme). Tête
+/// absente, effacée avec le journal, réécrite ou retirée des sceaux : rien ne prouve rien, tout ce qu'effacer ou
+/// ramener en arrière des champs en clair pourrait faire croire est refusé.
+fn forme_d_avant(dossier: &Path, r: &Registre) -> Avant {
+    let tete = crate::modele::journal::TETE;
+    let Ok(Some(o)) = contenu(&dossier.join(tete)) else {
+        return if sans_trace_du_journal(dossier, r) {
+            Avant::SansJournal
+        } else {
+            Avant::Recule
+        };
+    };
+    if r.fichiers.get(tete) != Some(&empreinte(tete, &o)) {
+        return Avant::Recule;
+    }
+    let Some(forme) = serde_json::from_slice::<serde_json::Value>(&o)
+        .ok()
+        .map(|v| v.get("sceaux").and_then(serde_json::Value::as_u64).unwrap_or(0))
+    else {
+        return Avant::Recule;
+    };
+    let d_avant = &TARDIFS[..TARDIFS_D_AVANT];
+    let marque = !r.repris.is_empty() || r.vus.iter().any(|n| !d_avant.contains(&n.as_str()));
+    if forme >= u64::from(FORMAT) || marque {
+        Avant::Ancienne
+    } else {
+        Avant::MiseAJour
+    }
+}
+
+/// Aucune trace du journal des événements : ni tête (sur le disque ou dans les sceaux), ni segment, ni verrou (celui
+/// de Vanguard ou celui du système, que chaque écriture du journal laisse). Ce que laisse une version d'avant qui n'a
+/// encore rien noté ; un journal effacé hors de Vanguard en laisse sinon presque toujours une.
+fn sans_trace_du_journal(dossier: &Path, r: &Registre) -> bool {
+    use crate::modele::journal::{DOSSIER, TETE, VERROU};
+    let verrou_systeme = format!("{}.lock", VERROU.strip_suffix(".verrou").unwrap_or(VERROU));
+    !r.fichiers
+        .keys()
+        .any(|n| n == TETE || n.starts_with(&format!("{DOSSIER}/")))
+        && [TETE, DOSSIER, VERROU, verrou_systeme.as_str()]
+            .iter()
+            .all(|n| std::fs::symlink_metadata(dossier.join(n)).is_err())
+}
+
+/// Des sceaux d'une forme d'avant jugés (`forme_d_avant`) et réécrits dans celle-ci AVANT que le journal des événements
+/// laisse dans `dossier` sa première trace : il prenait son verrou et créait son dossier avant de lire sa tête, et
+/// c'est cette lecture qui jugeait les sceaux ; ses propres traces faisaient alors prendre une 0.86 ou une 0.87 qui
+/// n'avait rien noté pour un journal effacé, des sceaux refaits (élevé). Appelé par chaque chemin du journal qui crée
+/// quelque chose. `false` : ils restent d'une forme d'avant, faute de pouvoir les réécrire (verrou des sceaux tenu
+/// ailleurs, autotest) ; le journal n'y crée alors rien, pour que le jugement reste juste à la prochaine fois.
+pub(crate) fn forme_jugee_avant_le_journal(dossier: &Path) -> bool {
+    let d_avant = || matches!(registre(dossier), Ok(Some(r)) if r.format < FORMAT);
+    // Le dossier d'un autre compte : ni les sceaux ni le journal n'y écrivent.
+    if !d_avant() || !crate::socle::ecriture_sure(dossier) {
+        return true;
+    }
+    let (_verrou, ecrire) = verrou_lecture(dossier, true);
+    if ecrire && let Ok(Some(r)) = registre(dossier) {
+        let _ = rattraper_si(dossier, r, true);
+    }
+    !d_avant()
 }
 
 /// Le jugement d'un fichier d'après les sceaux (`None` : ils ne se lisent plus, rien ne peut être cru).
@@ -652,6 +851,10 @@ struct Releve {
     depuis: String,
     /// Ce premier usage a refait des sceaux effacés ou illisibles, alors que Vanguard avait déjà servi ici.
     refaits: bool,
+    /// Le jour où une version plus ancienne de Vanguard s'est retrouvée avoir servi ici (`Registre::ancienne`).
+    ancienne: Option<String>,
+    /// Le jour où des sceaux d'avant ont été retrouvés sans trace du journal (`Registre::sans_journal`).
+    sans_journal: Option<String>,
 }
 
 fn falsifies_dans(dossier: &Path) -> Releve {
@@ -676,7 +879,73 @@ fn falsifies_dans(dossier: &Path) -> Releve {
         r.refaits = s.refaits;
         r.depuis = s.depuis;
     }
+    if let Ok(Some(s)) = registre(dossier) {
+        r.ancienne = s.ancienne;
+        r.sans_journal = s.sans_journal;
+    }
     r
+}
+
+/// Une version plus ancienne de Vanguard a servi ici après celle-ci (une clé ou un Mac restés en arrière, un retour
+/// à une version d'avant) : elle a réécrit les sceaux à sa façon. Pas des sceaux abîmés hors de Vanguard, mais rien
+/// de ce qu'elle a laissé n'est repris : ce qu'elle a accepté tel quel se redit, un mois.
+fn juger_ancienne(adoptes: &[&str], jour: &str, aujourd_hui: chrono::NaiveDate) -> Option<Constat> {
+    let jours = chrono::NaiveDate::parse_from_str(jour, "%Y-%m-%d")
+        .map_or(0, |d| aujourd_hui.signed_duration_since(d).num_days());
+    if adoptes.is_empty() && jours > REFAITS_JOURS {
+        return None;
+    }
+    let mut message = trf!(
+        "Une version plus ancienne de Vanguard a servi sur cet ordinateur après celle-ci (constaté le {jour}) : elle a réécrit les sceaux de l'état de Vanguard (sceaux.json) à sa façon. Rien de ce qu'elle a laissé n'est repris tel quel.",
+        "An older version of Vanguard ran on this computer after this one (noticed on {jour}): it rewrote the seals of Vanguard's state (sceaux.json) its own way. Nothing it left behind is taken over as it is."
+    );
+    if !adoptes.is_empty() {
+        let liste = adoptes.join(", ");
+        message += &trf!(
+            " Fichiers qui ne sont plus crus jusqu'à ce que Vanguard les réécrive : {liste}.",
+            " Files no longer trusted until Vanguard rewrites them: {liste}."
+        );
+    }
+    Some(
+        crate::machine::alerte(CAT, Niveau::Moyen, message).manuel(
+            tr!(
+                "Mettez à jour la copie restée en arrière (une clé de secours, un autre ordinateur) ; si aucune version plus ancienne n'a servi ici, regardez ce qui tourne sous votre compte",
+                "Update the copy left behind (a rescue drive, another computer); if no older version ran here, look at what runs under your account"
+            ),
+            &[],
+        ),
+    )
+}
+
+/// Des sceaux d'une forme d'avant sans aucune trace du journal (`Avant::SansJournal`) : une 0.86 ou une 0.87 qui
+/// n'avait encore rien noté, ou des sceaux ramenés en arrière avec le journal effacé. Rien ne permet de trancher :
+/// rien n'est repris, et ce qui a été accepté tel quel se dit, un mois ou tant qu'il n'est pas réécrit.
+fn juger_sans_journal(adoptes: &[&str], jour: &str, aujourd_hui: chrono::NaiveDate) -> Option<Constat> {
+    let jours = chrono::NaiveDate::parse_from_str(jour, "%Y-%m-%d")
+        .map_or(0, |d| aujourd_hui.signed_duration_since(d).num_days());
+    if adoptes.is_empty() && jours > REFAITS_JOURS {
+        return None;
+    }
+    let mut message = trf!(
+        "Vanguard n'avait rien noté à son journal avant cette mise à jour, ou les sceaux de son état (sceaux.json) ont été ramenés en arrière (constaté le {jour}) : rien ne prouve la mise à jour, donc rien de ce qui était là n'est repris tel quel.",
+        "Vanguard had noted nothing in its log before this update, or the seals of its state (sceaux.json) were rolled back (noticed on {jour}): nothing proves the update, so nothing that was there is taken over as it is."
+    );
+    if !adoptes.is_empty() {
+        let liste = adoptes.join(", ");
+        message += &trf!(
+            " Fichiers qui ne sont pas crus jusqu'à ce que Vanguard les réécrive : {liste}.",
+            " Files not trusted until Vanguard rewrites them: {liste}."
+        );
+    }
+    Some(
+        crate::machine::alerte(CAT, Niveau::Moyen, message).manuel(
+            tr!(
+                "Si Vanguard vient d'être mis à jour, Ce que Vanguard a appris propose de garder vos choix ; sinon, regardez ce qui tourne sous votre compte",
+                "If Vanguard was just updated, What Vanguard has learned offers to keep your choices; otherwise, look at what runs under your account"
+            ),
+            &[],
+        ),
+    )
 }
 
 /// Des sceaux refaits se disent tant qu'un fichier adopté n'a pas été réécrit, et au moins un mois.
@@ -826,16 +1095,38 @@ fn apaiser_refaits_dans(dossier: &Path, aujourd_hui: chrono::NaiveDate) {
     let Ok(Some(r)) = registre(dossier) else {
         return;
     };
-    let jours = chrono::NaiveDate::parse_from_str(&r.depuis, "%Y-%m-%d")
-        .map_or(0, |d| aujourd_hui.signed_duration_since(d).num_days());
-    if !r.refaits || jours <= REFAITS_JOURS || r.adoptes.iter().any(|n| !r.repris.contains(n)) {
+    let passe = |jour: &str| {
+        chrono::NaiveDate::parse_from_str(jour, "%Y-%m-%d")
+            .map_or(0, |d| aujourd_hui.signed_duration_since(d).num_days())
+            > REFAITS_JOURS
+    };
+    let tous_crus = |r: &Registre| r.adoptes.iter().all(|n| r.repris.contains(n));
+    // Ce qui retombe : « refaits », « version plus ancienne » et « sans journal », chacun passé son mois.
+    let apaiser = |r: &mut Registre| {
+        let mut change = false;
+        if tous_crus(r) {
+            if r.refaits && passe(&r.depuis) {
+                r.refaits = false;
+                change = true;
+            }
+            for jour in [&mut r.ancienne, &mut r.sans_journal] {
+                if jour.as_deref().is_some_and(passe) {
+                    *jour = None;
+                    change = true;
+                }
+            }
+        }
+        change
+    };
+    if !apaiser(&mut r.clone()) {
         return;
     }
     let Ok(_verrou) = verrou_ecriture(dossier, REGISTRE) else {
         return;
     };
-    if let Ok(Some(mut r)) = registre(dossier) {
-        r.refaits = false;
+    if let Ok(Some(mut r)) = registre(dossier)
+        && apaiser(&mut r)
+    {
         let _ = enregistrer_registre(dossier, &r);
     }
 }
@@ -904,10 +1195,13 @@ pub(crate) fn constat() -> Vec<Constat> {
     if r.falsifies.contains(&VEILLEUR_ETAT) && crate::machine::linux::veilleur::etat_ecrit_par_l_ancien() {
         r.falsifies.retain(|n| *n != VEILLEUR_ETAT);
     }
+    let aujourd_hui = chrono::Local::now().date_naive();
     let mut constats: Vec<Constat> = if r.refaits {
-        juger_refaits(&r.adoptes, &r.depuis, chrono::Local::now().date_naive())
-            .into_iter()
-            .collect()
+        juger_refaits(&r.adoptes, &r.depuis, aujourd_hui).into_iter().collect()
+    } else if let Some(jour) = &r.ancienne {
+        juger_ancienne(&r.adoptes, jour, aujourd_hui).into_iter().collect()
+    } else if let Some(jour) = &r.sans_journal {
+        juger_sans_journal(&r.adoptes, jour, aujourd_hui).into_iter().collect()
     } else {
         juger_adoptes(&r.adoptes, &r.depuis).into_iter().collect()
     };
@@ -921,6 +1215,8 @@ pub(crate) fn constat() -> Vec<Constat> {
     if extensions {
         constats.extend(crate::plugins::constat_sceaux(extensions_falsifiees));
     }
+    // Après les lectures du bilan, qui ont essayé de le prendre.
+    constats.extend(constat_verrou(&dossier()));
     constats
 }
 
@@ -1013,12 +1309,17 @@ pub(crate) fn juge(nom: &str) -> Juge {
     juge_dans(&dossier(), nom)
 }
 
-/// Des sceaux tels que les laissait une version d'avant le lot S2c (forme 0, sans `vus`) : ce qui est déjà là sera
-/// repris par la mise à jour. Pour les essais qui rejouent une mise à jour.
+/// Des sceaux tels que les laissait une version d'avant le lot S2c (forme 0, sans `vus`), avec la tête du journal
+/// qu'elle a écrite et scellée (sans forme des sceaux) : ce qui est déjà là sera repris par la mise à jour. Pour les
+/// essais qui rejouent une mise à jour.
 #[cfg(test)]
 pub(crate) fn sceaux_d_une_version_d_avant(dossier: &Path) {
     std::fs::create_dir_all(dossier).unwrap();
-    std::fs::write(dossier.join(REGISTRE), br#"{"depuis":"2026-10-01","fichiers":{}}"#).unwrap();
+    let tete = crate::modele::journal::TETE;
+    let o = br#"{"version":"0.87.0","segment":"2026-10","lignes":0,"derniere":""}"#;
+    std::fs::write(dossier.join(tete), o).unwrap();
+    let r = serde_json::json!({"depuis": "2026-10-01", "fichiers": {tete: empreinte(tete, o)}});
+    std::fs::write(dossier.join(REGISTRE), serde_json::to_vec(&r).unwrap()).unwrap();
 }
 
 /// Les fichiers repris sous `sous` (« `manifestes-cle/<id>.json` »).
@@ -1420,6 +1721,7 @@ mod tests {
     fn un_dossier_protege_tard_est_adopte_une_fois() {
         let d = jetable("tardif-dossier");
         ecrire_dans(&d, APPRIS, b"{}").unwrap();
+        ecrire_dans(&d, crate::modele::journal::TETE, br#"{"version":"0.87.0"}"#).unwrap();
         let mut r = registre(&d).unwrap().unwrap();
         r.vus.clear();
         r.format = 0;
@@ -1471,11 +1773,11 @@ mod tests {
     fn une_mise_a_jour_apres_des_sceaux_refaits_un_jour() {
         let d = jetable("refaits-un-jour");
         std::fs::write(d.join(VERROU), b"").unwrap();
-        std::fs::write(
-            d.join(REGISTRE),
-            br#"{"depuis":"2026-08-01","fichiers":{},"refaits":true}"#,
-        )
-        .unwrap();
+        sceaux_d_une_version_d_avant(&d);
+        let mut r: serde_json::Value = serde_json::from_slice(&std::fs::read(d.join(REGISTRE)).unwrap()).unwrap();
+        r["depuis"] = "2026-08-01".into();
+        r["refaits"] = true.into();
+        std::fs::write(d.join(REGISTRE), serde_json::to_vec(&r).unwrap()).unwrap();
         std::fs::write(d.join(PORTS_BLOQUES), b"11434/tcp\n").unwrap();
         assert_eq!(juge_dans(&d, PORTS_BLOQUES), Juge::Cru(b"11434/tcp\n".to_vec()));
         let r = falsifies_dans(&d);
@@ -1495,5 +1797,326 @@ mod tests {
         assert!(matches!(lire_dans(&d2, PORTS_BLOQUES), Lecture::Adopte(_)));
         let _ = std::fs::remove_dir_all(&d);
         let _ = std::fs::remove_dir_all(&d2);
+    }
+
+    /// F4 (E-M1) : une vraie mise à jour depuis une 0.87 reprend ce qu'elle ne scellait pas encore, et le croit.
+    #[test]
+    fn une_vraie_mise_a_jour_depuis_une_087_reprend() {
+        assert_eq!(
+            TARDIFS[TARDIFS_D_AVANT - 1],
+            crate::protection::blocage::parametres::BLOCAGE
+        );
+        let d = jetable("vraie-087");
+        ecrire_dans(&d, crate::parametres::PARAMETRES, br#"{"hors_ligne":false}"#).unwrap();
+        // Sa tête de journal, écrite par elle : sans forme des sceaux.
+        ecrire_dans(
+            &d,
+            crate::modele::journal::TETE,
+            br#"{"version":"0.87.0","segment":"2026-10"}"#,
+        )
+        .unwrap();
+        // Ses sceaux : forme 0, ses fichiers protégés tard vus.
+        let mut r = registre(&d).unwrap().unwrap();
+        r.format = 0;
+        r.vus = TARDIFS[..TARDIFS_D_AVANT].iter().map(|n| (*n).to_string()).collect();
+        std::fs::write(d.join(REGISTRE), serde_json::to_vec(&r).unwrap()).unwrap();
+        std::fs::write(d.join(PIEGES), b"[]").unwrap();
+        assert_eq!(juge_dans(&d, PIEGES), Juge::Cru(b"[]".to_vec()));
+        assert!(repris_dans(&d, PIEGES) && !refaits_dans(&d));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Un dossier où cette forme-ci a servi (un réglage écrit, un événement noté), dont les sceaux sont ramenés à une
+    /// forme d'avant comme le ferait qui veut faire reprendre un `parametres.json` forgé : `format` à 0, plus de
+    /// `repris`, `parametres.json` retiré des `vus` et des `fichiers`, et seulement les `vus` d'avant.
+    fn ramene(nom: &str, abimer: impl FnOnce(&Path, &mut Registre)) -> PathBuf {
+        let d = jetable(nom);
+        ecrire_dans(&d, crate::parametres::PARAMETRES, br#"{"hors_ligne":false}"#).unwrap();
+        crate::modele::journal::noter_dans(
+            &d,
+            crate::modele::evenement::Evenement::action(crate::modele::evenement::Source::Blocage, "bloqué", true, &[]),
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        let mut r = registre(&d).unwrap().unwrap();
+        r.format = 0;
+        r.refaits = false;
+        r.repris.clear();
+        r.vus.remove(crate::parametres::PARAMETRES);
+        r.fichiers.remove(crate::parametres::PARAMETRES);
+        r.vus.retain(|n| TARDIFS[..TARDIFS_D_AVANT].contains(&n.as_str()));
+        abimer(&d, &mut r);
+        std::fs::write(d.join(REGISTRE), serde_json::to_vec(&r).unwrap()).unwrap();
+        d
+    }
+
+    const FORGE: &[u8] = br#"{"hors_ligne":true,"sans_autotest":true}"#;
+
+    /// F4 (E-M1) : des sceaux ramenés à une forme d'avant sans la preuve d'une vraie mise à jour (la tête du journal,
+    /// présente, scellée telle quelle, écrite par une version d'avant) ne font rien reprendre : le `parametres.json`
+    /// forgé est accepté tel quel sans être cru, et le bilan dit les sceaux refaits. Tête effacée avec le journal,
+    /// tête réécrite sans sa forme, tête retirée des sceaux : aucune ne le fait passer.
+    #[test]
+    fn un_format_qui_recule_ne_fait_rien_reprendre() {
+        type Abimer = fn(&Path, &mut Registre);
+        let cas: [(&str, Abimer); 4] = [
+            ("journal-efface", |d, r| {
+                std::fs::remove_file(d.join(crate::modele::journal::TETE)).unwrap();
+                std::fs::remove_dir_all(d.join(crate::modele::journal::DOSSIER)).unwrap();
+                r.fichiers.retain(|n, _| !n.starts_with("evenements"));
+            }),
+            ("tete-effacee", |d, _| {
+                std::fs::remove_file(d.join(crate::modele::journal::TETE)).unwrap();
+            }),
+            ("tete-sans-forme", |d, _| {
+                std::fs::write(
+                    d.join(crate::modele::journal::TETE),
+                    br#"{"version":"0.87.0","segment":"2026-10"}"#,
+                )
+                .unwrap();
+            }),
+            ("tete-hors-des-sceaux", |d, r| {
+                std::fs::write(
+                    d.join(crate::modele::journal::TETE),
+                    br#"{"version":"0.87.0","segment":"2026-10"}"#,
+                )
+                .unwrap();
+                r.fichiers.remove(crate::modele::journal::TETE);
+            }),
+        ];
+        for (nom, abimer) in cas {
+            let d = ramene(&format!("recule-{nom}"), abimer);
+            std::fs::write(d.join(crate::parametres::PARAMETRES), FORGE).unwrap();
+            assert!(!repris_dans(&d, crate::parametres::PARAMETRES), "{nom}");
+            assert_eq!(
+                juge_dans(&d, crate::parametres::PARAMETRES),
+                Juge::Douteux(Doute::Adopte, Some(FORGE.to_vec())),
+                "{nom}"
+            );
+            let rel = falsifies_dans(&d);
+            assert!(
+                rel.refaits && rel.adoptes.contains(&crate::parametres::PARAMETRES),
+                "{nom} : {rel:?}"
+            );
+            assert!(registre(&d).unwrap().unwrap().repris.is_empty(), "{nom}");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    /// F4 (E-M1) : le seul champ `format` ramené à 0, la tête du journal intacte et écrite par cette forme : comme une
+    /// version plus ancienne repassée ici, rien n'est repris ni adopté, le `parametres.json` forgé reste falsifié.
+    #[test]
+    fn un_format_seul_ramene_ne_fait_rien_reprendre() {
+        let d = ramene("format-seul", |_, _| {});
+        std::fs::write(d.join(crate::parametres::PARAMETRES), FORGE).unwrap();
+        assert!(!repris_dans(&d, crate::parametres::PARAMETRES));
+        assert_eq!(
+            lire_dans(&d, crate::parametres::PARAMETRES),
+            Lecture::Falsifie(Some(FORGE.to_vec()))
+        );
+        let rel = falsifies_dans(&d);
+        assert!(rel.falsifies.contains(&crate::parametres::PARAMETRES), "{rel:?}");
+        assert!(!rel.refaits && rel.ancienne.is_some(), "{rel:?}");
+        assert!(registre(&d).unwrap().unwrap().repris.is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// F4 (relecture) : 0.87, puis cette version, puis la 0.87 de nouveau (une clé ou un Mac restés en arrière), puis
+    /// cette version : la 0.87 a réécrit la tête du journal et les sceaux à sa façon (sans leur forme ni `repris`).
+    /// Pas « sceaux effacés ou abîmés hors de Vanguard » (élevé) : une version plus ancienne a servi ici, dit moyen,
+    /// et rien de ce qu'elle a laissé n'est repris.
+    #[test]
+    fn une_version_plus_ancienne_repassee_se_dit_sans_rien_reprendre() {
+        let d = jetable("ancienne-repassee");
+        ecrire_dans(&d, crate::parametres::PARAMETRES, br#"{"hors_ligne":false}"#).unwrap();
+        // La 0.87 de retour : elle réécrit, scellées, sa tête de journal (sans forme des sceaux) et un fichier qu'elle
+        // connaît, et ses sceaux perdent les champs qu'elle ne connaît pas.
+        ecrire_dans(
+            &d,
+            crate::modele::journal::TETE,
+            br#"{"version":"0.87.0","segment":"2026-10"}"#,
+        )
+        .unwrap();
+        ecrire_dans(&d, APPRIS, b"{}").unwrap();
+        let mut r = registre(&d).unwrap().unwrap();
+        r.format = 0;
+        r.repris.clear();
+        r.adoptes.insert(APPRIS.to_string());
+        std::fs::write(d.join(REGISTRE), serde_json::to_vec(&r).unwrap()).unwrap();
+        // Un fichier qu'elle ne scelle pas, posé hors des sceaux : pas adopté pour autant.
+        std::fs::write(d.join(PIEGES), b"[]").unwrap();
+        assert!(!repris_dans(&d, APPRIS));
+        assert!(matches!(lire_dans(&d, PIEGES), Lecture::Falsifie(_)));
+        assert_eq!(
+            juge_dans(&d, APPRIS),
+            Juge::Douteux(Doute::Adopte, Some(b"{}".to_vec()))
+        );
+        let rel = falsifies_dans(&d);
+        assert!(!rel.refaits && rel.ancienne.is_some(), "{rel:?}");
+        assert_eq!(rel.adoptes, vec![APPRIS]);
+        let r = registre(&d).unwrap().unwrap();
+        assert!(r.repris.is_empty() && !r.refaits && r.format == FORMAT);
+        let jour = chrono::Local::now().date_naive();
+        let c = juger_ancienne(&rel.adoptes, rel.ancienne.as_deref().unwrap(), jour).unwrap();
+        assert_eq!(c.probleme, Some(Niveau::Moyen));
+        assert!(c.message.contains(APPRIS), "{}", c.message);
+        // Un mois plus tard, sans plus rien d'accepté tel quel : plus rien à dire.
+        assert!(juger_ancienne(&[], rel.ancienne.as_deref().unwrap(), jour + chrono::Days::new(31)).is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Des sceaux d'une 0.87 qui n'avait encore rien noté au journal (ni tête, ni segment, ni verrou), avec un
+    /// `parametres.json` qu'elle ne scellait pas.
+    fn sceaux_d_avant_sans_journal(nom: &str) -> PathBuf {
+        let d = jetable(nom);
+        std::fs::write(d.join(REGISTRE), br#"{"depuis":"2026-10-01","fichiers":{}}"#).unwrap();
+        std::fs::write(d.join(crate::parametres::PARAMETRES), FORGE).unwrap();
+        d
+    }
+
+    /// F4 (relecture du delta) : une 0.86 ou une 0.87 qui n'avait rien noté au journal, mise à jour. Rien n'est repris
+    /// (rien ne prouve la mise à jour), mais ce n'est pas « sceaux effacés ou abîmés » (élevé) : dit moyen, avec les
+    /// deux causes possibles, un mois ou tant qu'un fichier accepté n'est pas réécrit. La moindre trace du journal
+    /// (tête scellée, segment, verrou de Vanguard ou du système) le refait dire comme des sceaux refaits.
+    #[test]
+    fn des_sceaux_d_avant_sans_journal_se_disent_moyen_sans_rien_reprendre() {
+        type Trace = fn(&Path);
+        let d = sceaux_d_avant_sans_journal("sans-journal");
+        assert!(!repris_dans(&d, crate::parametres::PARAMETRES));
+        assert_eq!(
+            juge_dans(&d, crate::parametres::PARAMETRES),
+            Juge::Douteux(Doute::Adopte, Some(FORGE.to_vec()))
+        );
+        let rel = falsifies_dans(&d);
+        assert!(!rel.refaits && rel.ancienne.is_none(), "{rel:?}");
+        assert!(rel.sans_journal.is_some(), "{rel:?}");
+        assert_eq!(rel.adoptes, vec![crate::parametres::PARAMETRES]);
+        assert!(registre(&d).unwrap().unwrap().repris.is_empty());
+        let jour = chrono::Local::now().date_naive();
+        let c = juger_sans_journal(&rel.adoptes, rel.sans_journal.as_deref().unwrap(), jour).unwrap();
+        assert_eq!(c.probleme, Some(Niveau::Moyen));
+        assert!(
+            c.message.contains(crate::parametres::PARAMETRES) && c.message.contains("ramenés en arrière"),
+            "{}",
+            c.message
+        );
+        assert!(juger_sans_journal(&[], rel.sans_journal.as_deref().unwrap(), jour + chrono::Days::new(31)).is_none());
+        let _ = std::fs::remove_dir_all(&d);
+        let traces: [(&str, Trace); 4] = [
+            ("segment", |d| {
+                std::fs::create_dir(d.join(crate::modele::journal::DOSSIER)).unwrap();
+            }),
+            ("verrou", |d| {
+                std::fs::write(d.join(crate::modele::journal::VERROU), b"").unwrap();
+            }),
+            ("verrou-systeme", |d| {
+                std::fs::write(d.join("evenements.lock"), b"").unwrap();
+            }),
+            ("tete-scellee", |d| {
+                let mut r: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(d.join(REGISTRE)).unwrap()).unwrap();
+                r["fichiers"][crate::modele::journal::TETE] = "0".repeat(64).into();
+                std::fs::write(d.join(REGISTRE), serde_json::to_vec(&r).unwrap()).unwrap();
+            }),
+        ];
+        for (nom, laisser) in traces {
+            let d = sceaux_d_avant_sans_journal(&format!("trace-{nom}"));
+            laisser(&d);
+            assert!(!repris_dans(&d, crate::parametres::PARAMETRES), "{nom}");
+            let _ = juge_dans(&d, crate::parametres::PARAMETRES);
+            let rel = falsifies_dans(&d);
+            assert!(rel.refaits && rel.sans_journal.is_none(), "{nom} : {rel:?}");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    /// F4 (relecture du delta) : « une version plus ancienne a servi ici » ne reste pas pour toujours. Des sceaux
+    /// refaits ensuite l'effacent (ils disent déjà tout, plus haut) ; sinon il retombe passé son mois, une fois chaque
+    /// fichier accepté tel quel réécrit, comme « sans journal ».
+    #[test]
+    fn une_version_plus_ancienne_ne_se_dit_pas_toujours() {
+        // Refaits après : effacée.
+        let d = sceaux_d_avant_sans_journal("ancienne-puis-refaits");
+        std::fs::write(d.join(crate::modele::journal::VERROU), b"").unwrap();
+        let mut r: serde_json::Value = serde_json::from_slice(&std::fs::read(d.join(REGISTRE)).unwrap()).unwrap();
+        r["ancienne"] = "2026-09-01".into();
+        r["sans_journal"] = "2026-09-01".into();
+        std::fs::write(d.join(REGISTRE), serde_json::to_vec(&r).unwrap()).unwrap();
+        let _ = juge_dans(&d, crate::parametres::PARAMETRES);
+        let rel = falsifies_dans(&d);
+        assert!(
+            rel.refaits && rel.ancienne.is_none() && rel.sans_journal.is_none(),
+            "{rel:?}"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+        // Passé le mois : retombée, mais pas tant qu'un fichier accepté tel quel n'est pas réécrit.
+        let d = jetable("ancienne-apaisee");
+        let mut r = Registre {
+            format: FORMAT,
+            depuis: "2026-08-01".into(),
+            ancienne: Some("2026-08-01".into()),
+            sans_journal: Some("2026-08-01".into()),
+            ..Registre::default()
+        };
+        r.adoptes.insert(APPRIS.to_string());
+        std::fs::write(d.join(REGISTRE), serde_json::to_vec(&r).unwrap()).unwrap();
+        let jour = chrono::NaiveDate::from_ymd_opt(2026, 8, 15).unwrap();
+        apaiser_refaits_dans(&d, jour + chrono::Days::new(60));
+        let lu = registre(&d).unwrap().unwrap();
+        assert!(lu.ancienne.is_some() && lu.sans_journal.is_some());
+        r.adoptes.clear();
+        std::fs::write(d.join(REGISTRE), serde_json::to_vec(&r).unwrap()).unwrap();
+        apaiser_refaits_dans(&d, jour);
+        let lu = registre(&d).unwrap().unwrap();
+        assert!(lu.ancienne.is_some() && lu.sans_journal.is_some());
+        apaiser_refaits_dans(&d, jour + chrono::Days::new(30));
+        let lu = registre(&d).unwrap().unwrap();
+        assert!(lu.ancienne.is_none() && lu.sans_journal.is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// F4 (E-M2) : le verrou des sceaux gardé par un autre programme ne fait plus attendre chaque écriture toute
+    /// l'attente (un refus, puis presque rien), et il se dit : au bilan, et au journal des événements, qui n'est plus
+    /// lu « intact ». Rendu, tout repart.
+    #[test]
+    fn verrou_tenu_ailleurs_court_et_dit() {
+        let d = jetable("verrou-tenu");
+        ecrire_dans(&d, APPRIS, b"{}").unwrap();
+        crate::modele::journal::noter_dans(
+            &d,
+            crate::modele::evenement::Evenement::action(crate::modele::evenement::Source::Blocage, "bloqué", true, &[]),
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        assert!(matches!(
+            crate::modele::journal::lire_dans(&d).lecture,
+            crate::modele::journal::Lecture::Intact
+        ));
+        ATTENTE_ESSAI.with(|a| a.set(Some(std::time::Duration::from_secs(3))));
+        let tenu = crate::socle::Verrou::prendre(&d, VERROU, false, std::time::Duration::ZERO).unwrap();
+        let debut = std::time::Instant::now();
+        assert!(ecrire_dans(&d, APPRIS, b"{\"x\":1}").is_err());
+        assert!(debut.elapsed() >= std::time::Duration::from_secs(3));
+        assert!(verrou_tenu_dans(&d) && constat_verrou(&d).is_some());
+        // Déjà refusé : les suivants n'attendent plus, tous ensemble, que `ATTENTE_APRES_REFUS`.
+        let debut = std::time::Instant::now();
+        for _ in 0..5 {
+            assert!(ecrire_dans(&d, APPRIS, b"{\"x\":1}").is_err());
+            assert!(matches!(lire_dans(&d, APPRIS), Lecture::Intact(_)));
+        }
+        assert!(
+            debut.elapsed() < ATTENTE_APRES_REFUS + std::time::Duration::from_secs(1),
+            "{:?}",
+            debut.elapsed()
+        );
+        assert!(!matches!(
+            crate::modele::journal::lire_dans(&d).lecture,
+            crate::modele::journal::Lecture::Intact
+        ));
+        drop(tenu);
+        ecrire_dans(&d, APPRIS, b"{\"x\":1}").unwrap();
+        assert!(!verrou_tenu_dans(&d) && constat_verrou(&d).is_none());
+        ATTENTE_ESSAI.with(|a| a.set(None));
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

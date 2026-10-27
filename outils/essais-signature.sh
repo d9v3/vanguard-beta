@@ -17,12 +17,16 @@
 #      pas un bloc que la principale, peut-être volée, a ajouté après lui ; sans point sûr, elle refuse un historique
 #      signé par la principale ; la principale refuse un historique tronqué ou à une version inconnue d'ici ; avec un
 #      point sûr, ni repli sur derniere.txt ni --premier. Jamais le vrai point sûr : VANGUARD_HISTORIQUE_PUBLIE.
+#   7b. Le point sûr réécrit lui aussi avec la principale volée (campagne d'attaque n° 4) : la clé de secours montre
+#      ses versions et ne contresigne rien sans « contresigner » tapé ; sans terminal, elle refuse (7c).
 #   8. Les programmes publiés sont les octets que outils/compiler-version.sh a relevés pour leur commit
 #      (publier-version.sh, verifier_compilation, dans un dépôt git jetable) : remplacés, compilés d'un arbre modifié,
 #      d'un commit au code changé depuis, ou à la date gravée d'un autre commit, ils sont refusés ; un commit qui ne
 #      touche que .github/hors-code.txt (captures, documentation) les laisse valoir.
 #   9. .github/workflows/claude.yml ne lance jamais Claude (cargo build et test, droit d'écrire, jeton de
-#      l'abonnement) sur une demande de fusion venue d'un fork : son garde, rejoué ici avec un faux gh.
+#      l'abonnement) sur une demande de fusion venue d'un fork : son garde, rejoué ici avec un faux gh. Ni sur un
+#      ticket « journal », ni sur un ticket ou une demande qu'un autre que le propriétaire a écrits, ni sur un fil où
+#      un autre a commenté ou relu (et un fil illisible est refusé).
 #   6. Le programme Mac que la clé signe vient d'une exécution de master : publier-version.sh (sa fonction
 #      avec_programme, face à un faux gh) écarte celle d'une autre branche, même plus récente et du même commit ; et
 #      macos.yml ne reprend aucun cache sur master. Sans jq, cet essai est sauté et dit.
@@ -179,7 +183,7 @@ if command -v script >/dev/null; then
     2>/dev/null
   # Le point sûr : l'historique que la principale avait publié (v88), que la clé de secours reprend.
   poser_point "$T/v88/historique.txt"
-  printf 'essai\n' | VANGUARD_CLE_SECOURS=$T/secours-chiffree.pem script -qec \
+  printf 'essai\ncontresigner\n' | VANGUARD_CLE_SECOURS=$T/secours-chiffree.pem script -qec \
     "bash '$T/nouveau88/outils/signer-versions.sh' --secours --revoquer '$T/v91'" /dev/null >"$T/v91.log" 2>&1
   retirer_point
   if [[ -f $T/v91/derniere.txt.sig ]] && [[ $(tail -n 1 "$T/v91/derniere.txt") == "revoque principale" ]]; then
@@ -199,8 +203,8 @@ if command -v script >/dev/null; then
     ko "--secours --revoquer : $(tail -n 2 "$T/v91.log")"
   fi
   # 7. Le voleur de la principale ajoute au dépôt un bloc forgé (un programme Linux inventé), signé par elle.
-  secours_signe() { # dossier ; la sortie dans dossier.log
-    printf 'essai\n' | VANGUARD_CLE_SECOURS=$T/secours-chiffree.pem script -qec \
+  secours_signe() { # dossier [réponse à la confirmation du point sûr] ; la sortie dans dossier.log
+    printf 'essai\n%s\n' "${2-contresigner}" | VANGUARD_CLE_SECOURS=$T/secours-chiffree.pem script -qec \
       "bash '$T/nouveau88/outils/signer-versions.sh' --secours --revoquer '$1'" /dev/null >"$1.log" 2>&1
   }
   forger() { # dossier : avant/historique.txt = le bloc forgé puis l'historique v88, signé par la principale
@@ -220,6 +224,35 @@ if command -v script >/dev/null; then
     ok "secours : le bloc que la principale a signé après le point sûr est écarté, et nommé"
   else
     ko "secours : bloc forgé repris ou historique faux ($(tail -n 2 "$T/v92.log"))"
+  fi
+  # 7b. Le voleur réécrit aussi le point sûr (le même historique forgé, signé par la principale) : la clé de secours
+  # le montre, bloc forgé compris, et ne contresigne rien sans « contresigner » tapé.
+  programmes "$T/v95" 0.88.0+1793500000
+  forger "$T/v95"
+  poser_point "$T/v95/avant/historique.txt"
+  secours_signe "$T/v95" non
+  # Ni l'historique ni derniere.txt signés : un derniere.txt.sig seul se publierait sans confirmation.
+  if [[ ! -e $T/v95/historique.txt.sig && ! -e $T/v95/derniere.txt.sig ]] &&
+    grep -q "0.87.5+1792999999 (2026-" "$T/v95.log" &&
+    grep -q "non confirmé" "$T/v95.log"; then
+    ok "secours : un point sûr de la principale est montré, rien n'est contresigné sans confirmation tapée"
+  else
+    ko "secours : point sûr forgé contresigné sans confirmation ($(tail -n 2 "$T/v95.log"))"
+  fi
+  # 7c. Sans terminal (une tâche, un script) : la phrase de la clé vient de zenity, mais la confirmation, elle, ne se
+  # demande qu'au terminal ; rien n'est signé, ni l'historique ni derniere.txt.
+  programmes "$T/v96" 0.88.0+1793600000
+  forger "$T/v96"
+  mkdir -p "$T/faux-zenity"
+  printf '#!/bin/sh\necho essai\n' >"$T/faux-zenity/zenity"
+  chmod +x "$T/faux-zenity/zenity"
+  PATH="$T/faux-zenity:$PATH" WAYLAND_DISPLAY=essai VANGUARD_CLE_SECOURS=$T/secours-chiffree.pem \
+    bash "$T/nouveau88/outils/signer-versions.sh" --secours --revoquer "$T/v96" </dev/null >"$T/v96.log" 2>&1
+  if [[ ! -e $T/v96/historique.txt.sig && ! -e $T/v96/derniere.txt.sig ]] &&
+    grep -q "pas de terminal pour confirmer le point sûr" "$T/v96.log"; then
+    ok "secours sans terminal : un point sûr de la principale n'est jamais contresigné"
+  else
+    ko "secours sans terminal : point sûr contresigné ($(tail -n 2 "$T/v96.log"))"
   fi
   retirer_point
   programmes "$T/v93" 0.88.0+1793300000
@@ -373,12 +406,37 @@ Y=$DEPOT/.github/workflows/claude.yml
 awk '/^  garde:/ { g = 1 } g && /^  claude:/ { exit } g && /^        run: \|/ { r = 1; next } r { sub(/^          /, ""); print }' \
   "$Y" >"$T/garde.sh"
 mkdir -p "$T/faux-gh-garde"
-printf '#!/bin/sh\necho "$ESSAI_TETE"\n' >"$T/faux-gh-garde/gh"
+# Le faux gh : d'où vient la demande, puis les auteurs du fil autres que le propriétaire (ESSAI_FIL pour les
+# commentaires du ticket, ESSAI_REVUES pour les revues et commentaires de revue), ou une panne de leur lecture
+# (ESSAI_PANNE) ; le fil déjà verrouillé ou non (ESSAI_VERROUILLE), et chaque verrouillage noté dans gh.appels.
+cat >"$T/faux-gh-garde/gh" <<'FAUX'
+#!/bin/sh
+methode=GET
+chemin=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -X) methode=$2; shift ;;
+    repos/*) chemin=$1 ;;
+  esac
+  shift
+done
+case "$methode $chemin" in
+  "GET "*/issues/*/comments) printf '%s' "$ESSAI_FIL"; [ -z "$ESSAI_PANNE" ] ;;
+  "GET "*/pulls/*/reviews | "GET "*/pulls/*/comments) printf '%s' "$ESSAI_REVUES"; [ -z "$ESSAI_PANNE" ] ;;
+  "GET "*/pulls/*) echo "$ESSAI_TETE" ;;
+  "GET "*/issues/*) echo "${ESSAI_VERROUILLE:-false}" ;;
+  *) echo "$methode $chemin" >>"$ESSAI_APPELS" ;;
+esac
+FAUX
 chmod +x "$T/faux-gh-garde/gh"
-garde() { # numéro de la demande, dépôt d'où elle vient : la sortie « permis=… » du garde
+# Le script commun, là où les deux étapes le prennent (extrait de la branche principale dans .garde).
+mkdir -p "$T/fil/.garde/outils"
+cp "$DEPOT/outils/fil-du-proprietaire.sh" "$T/fil/.garde/outils/"
+garde() { # numéro de la demande, dépôt d'où elle vient [, étiquettes] : la sortie « permis=… » du garde
   : >"$T/garde.sortie"
-  PATH="$T/faux-gh-garde:$PATH" GITHUB_OUTPUT=$T/garde.sortie GITHUB_REPOSITORY=d9v3/vanguard-beta DEMANDE=$1 \
-    ESSAI_TETE=$2 sh "$T/garde.sh" >/dev/null 2>&1
+  (cd "$T/fil" && PATH="$T/faux-gh-garde:$PATH" GITHUB_OUTPUT=$T/garde.sortie GITHUB_REPOSITORY=d9v3/vanguard-beta \
+    DEMANDE=$1 NUMERO=${1:-7} ESSAI_TETE=$2 ETIQUETTES=${3:-,} ESSAI_FIL=${ESSAI_FIL-} ESSAI_REVUES=${ESSAI_REVUES-} \
+    ESSAI_PANNE=${ESSAI_PANNE-} ESSAI_APPELS=$T/gh.appels sh "$T/garde.sh" >/dev/null 2>&1)
   cat "$T/garde.sortie"
 }
 if [[ -s $T/garde.sh ]] && [[ $(garde 12 pirate/vanguard-beta) == permis=non ]] &&
@@ -387,6 +445,91 @@ if [[ -s $T/garde.sh ]] && [[ $(garde 12 pirate/vanguard-beta) == permis=non ]] 
 else
   ko "claude.yml : garde absent ou qui laisse passer un fork ($(garde 12 pirate/vanguard-beta))"
 fi
+# publier-version.sh ne passe --premier que tapé par l'auteur, jamais d'après un dépôt des versions vide.
+awk '/PREMIER=\(--premier\)/ { n++; if ($0 !~ /\$PREMIERE/) l = 1 } /^\[\[ \$\{1:-\} == --premier \]\] && PREMIERE=1$/ { t = 1 }
+  END { exit !(n == 1 && !l && t) }' "$DEPOT/outils/publier-version.sh" &&
+  ok "publier : --premier seulement tapé, jamais déduit d'un dépôt des versions vide" ||
+  ko "publier : --premier passé sans que l'auteur l'ait tapé"
+# Un ticket du journal de la clé (écrit depuis n'importe quel ordinateur) : refusé, seul ou parmi d'autres étiquettes,
+# ticket ou demande ; « journaux » n'est pas « journal ».
+if [[ $(garde "" "" "journal,") == permis=non && $(garde "" "" "bogue,journal,autotest,") == permis=non &&
+  $(garde 12 d9v3/vanguard-beta ",journal") == permis=non && $(garde "" "" "journaux,") == permis=oui ]]; then
+  ok "claude.yml : un ticket « journal » est refusé"
+else
+  ko "claude.yml : un ticket « journal » passe le garde"
+fi
+# Un fil où un autre que le propriétaire a commenté (ticket ou demande), ou a laissé une revue ou un commentaire de
+# revue (demande) : refusé ; un fil illisible aussi (relecture adverse de la campagne 4).
+if [[ $(ESSAI_FIL=4242 garde "" "") == permis=non && $(ESSAI_FIL=4242 garde 12 d9v3/vanguard-beta) == permis=non &&
+  $(ESSAI_REVUES=4242 garde 12 d9v3/vanguard-beta) == permis=non && $(ESSAI_PANNE=1 garde "" "") == permis=non &&
+  $(ESSAI_REVUES=4242 garde "" "") == permis=oui ]]; then
+  ok "claude.yml : un fil où un autre a commenté ou relu est refusé, un fil illisible aussi"
+else
+  ko "claude.yml : un fil commenté par un autre passe le garde"
+fi
+# Le filtre du garde, sur une vraie réponse de l'API : le propriétaire et les robots passent, un autre non.
+if command -v jq >/dev/null; then
+  filtre=$(sed -n "s/.*--jq '\(.*\)'); then\$/\1/p" "$DEPOT/outils/fil-du-proprietaire.sh")
+  fil='[{"id":1,"author_association":"OWNER","user":{"login":"d9v3"}},
+    {"id":2,"author_association":"NONE","user":{"login":"passant"}},
+    {"id":3,"author_association":"NONE","user":{"login":"claude[bot]"}},
+    {"id":4,"author_association":"CONTRIBUTOR","user":{"login":"autre"}}]'
+  [[ -n $filtre && $(jq -r "$filtre" <<<"$fil" | paste -sd' ') == "2 4" ]] &&
+    ok "claude.yml : le filtre des auteurs du fil ne laisse que le propriétaire et les robots" ||
+    ko "claude.yml : filtre des auteurs du fil faux ($filtre)"
+else
+  echo "  (sauté : jq absent, filtre des auteurs du fil non rejoué)"
+fi
+# Juste avant Claude : le fil verrouillé (s'il ne l'était pas déjà), puis relu par le même script que le garde ; un
+# autre auteur arrivé entre-temps, ou un fil illisible, fait échouer l'étape, et le fil se déverrouille à la fin
+# seulement si c'est ce travail qui l'a verrouillé (relecture adverse du 26 octobre : des minutes séparent les deux).
+awk '/^      - id: verrou$/ { v = 1; next } v && /^        run: \|/ { r = 1; next } r && !/^          / { exit }
+  r { sub(/^          /, ""); print }' "$Y" >"$T/verrou.sh"
+verrou() { # numéro de la demande : « code sortie appels »
+  : >"$T/verrou.sortie"
+  : >"$T/gh.appels"
+  (cd "$T/fil" && rm -rf .garde && mkdir -p .garde/outils && cp "$DEPOT/outils/fil-du-proprietaire.sh" .garde/outils/ &&
+    PATH="$T/faux-gh-garde:$PATH" GITHUB_OUTPUT=$T/verrou.sortie GITHUB_REPOSITORY=d9v3/vanguard-beta DEMANDE=$1 \
+    NUMERO=${1:-7} ESSAI_FIL=${ESSAI_FIL-} ESSAI_REVUES=${ESSAI_REVUES-} ESSAI_PANNE=${ESSAI_PANNE-} \
+    ESSAI_VERROUILLE=${ESSAI_VERROUILLE-} ESSAI_APPELS=$T/gh.appels sh -e "$T/verrou.sh" >/dev/null 2>&1)
+  echo "$? $(cat "$T/verrou.sortie") $(paste -sd, "$T/gh.appels")"
+}
+mkdir -p "$T/fil/.garde/outils"
+if [[ -s $T/verrou.sh && $(verrou "") == "0 verrouille=oui PUT repos/d9v3/vanguard-beta/issues/7/lock" &&
+  $(ESSAI_FIL=4242 verrou "") == "1 verrouille=oui PUT repos/d9v3/vanguard-beta/issues/7/lock" &&
+  $(ESSAI_REVUES=4242 verrou 12) == "1 verrouille=oui PUT repos/d9v3/vanguard-beta/issues/12/lock" &&
+  $(ESSAI_PANNE=1 verrou "") == "2 verrouille=oui PUT repos/d9v3/vanguard-beta/issues/7/lock" &&
+  $(ESSAI_VERROUILLE=true verrou "") == "0  " ]]; then
+  ok "claude.yml : juste avant Claude, le fil est verrouillé puis relu ; un autre auteur arrivé entre-temps l'arrête"
+else
+  ko "claude.yml : fil pas verrouillé ou pas relu avant Claude ($(ESSAI_FIL=4242 verrou ""))"
+fi
+# L'ordre : Rust, puis le verrou et la relecture, puis Claude aussitôt ; le déverrouillage en dernier, toujours, et
+# seulement si ce travail a verrouillé. Les deux relectures prennent le script de la branche principale.
+awk '/^  claude:/ { c = 1 } c && /name: Rust à jour/ { rust = NR } c && /^      - id: verrou$/ { v = NR }
+  c && /claude-code-action@/ { a = NR } c && /if: always\(\) && steps.verrou.outputs.verrouille == .oui.$/ { d = NR }
+  /ref: \$\{\{ github.event.repository.default_branch \}\}/ { ref++ }
+  /sh .garde\/outils\/fil-du-proprietaire.sh/ { s++ }
+  END { exit !(rust && rust < v && v < a && a < d && ref == 2 && s == 2) }' "$Y" &&
+  ok "claude.yml : le verrou et la relecture juste avant Claude, déverrouillé en dernier, script de la branche principale" ||
+  ko "claude.yml : ordre des étapes du verrou faux, ou script du fil pris ailleurs"
+# Un seul Claude à la fois par fil : le groupe porte le numéro du ticket ou de la demande, et un second @claude attend
+# sans annuler le premier (relecture adverse du 26 octobre : sinon le premier déverrouille le fil sous le second).
+awk '/^  claude:/ { c = 1 } c && /^    concurrency:$/ { k = 1; next }
+  k && /^      group: .*\$\{\{ github.event.issue.number \|\| github.event.pull_request.number \}\}$/ { g = 1 }
+  k && /^      cancel-in-progress: false$/ { f = 1 } k && !/^      / { k = 0 } END { exit !(c && g && f) }' "$Y" &&
+  ok "claude.yml : un seul Claude à la fois par fil, le second attend sans annuler le premier" ||
+  ko "claude.yml : deux Claude sur un même fil en même temps (concurrency absente, mal groupée ou qui annule)"
+# Le ticket ou la demande eux-mêmes écrits par le propriétaire, pas seulement le commentaire qui appelle Claude.
+awk '/^  garde:/ { g = 1 } g && /^  claude:/ { exit }
+  g && /issue_comment.*@claude/ { e = "ic" } g && /pull_request_review_comment.*@claude/ { e = "prc" }
+  g && /pull_request_review.*review.body/ { e = "pr" }
+  e == "ic" && /github.event.issue.author_association == .OWNER./ { ic = 1 }
+  e == "prc" && /github.event.pull_request.author_association == .OWNER./ { prc = 1 }
+  e == "pr" && /github.event.pull_request.author_association == .OWNER./ { pr = 1 }
+  END { exit !(ic && prc && pr) }' "$Y" &&
+  ok "claude.yml : seulement un ticket ou une demande du propriétaire" ||
+  ko "claude.yml : un ticket ou une demande d'un autre passe le garde"
 awk '/^  claude:/ { c = 1 } c && /needs: garde/ { n = 1 } c && /if: needs.garde.outputs.permis == .oui.$/ { i = 1 }
   c && /persist-credentials: false/ { p = 1 } END { exit !(n && i && p) }' "$Y" &&
   ok "claude.yml : Claude attend le garde, et le jeton de l'extraction n'est pas gardé" ||

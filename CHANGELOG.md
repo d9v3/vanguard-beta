@@ -28,10 +28,24 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   dernière passe de la surveillance sont scellés : changés, effacés ou acceptés tels quels après des sceaux refaits,
   ils ne coupent plus rien (un piège reste attendu, un port exposé est redit, chaque appareil est redit nouveau, la
   clé n'est jamais dite intacte, rien n'est annulé d'après une note forgée), et c'est dit. Tous les lecteurs suivent
-  le même juge ; seul un fichier repris par une mise à jour connue se croit tel quel, et « sceaux refaits » retombe
-  une fois dit. Un test relit le code pour que chaque nom de fichier scellé n'y paraisse que là où il est permis,
-  exceptions dites ; VANGUARD_ORIGINE n'est crue qu'aux octets du programme qui tourne. Le modèle de menace dit les
-  limites : le dossier effacé en entier, et un programme qui vise exprès ce mécanisme.
+  le même juge ; seul un fichier repris par une mise à jour connue se croit tel quel. Une mise à jour ne se croit que
+  sur preuve : la tête du journal des événements, scellée, écrite par la version d'avant. Cette preuve ferme le champ
+  en clair des sceaux ramené en arrière à la main ; scellée comme le reste, elle peut être recalculée par un programme
+  qui vise exprès ce mécanisme (limite du modèle de menace). Sans elle (journal effacé, tête réécrite), des sceaux
+  ramenés à une forme d'avant n'acceptent ce qui est là que tel quel, sans le croire, et le bilan dit les sceaux
+  refaits ; sans aucune trace du journal (une version d'avant qui n'avait encore rien noté, ou tout effacé), rien
+  n'est repris non plus, et le bilan le dit un cran plus bas avec ces deux causes. Le bilan et le menu notent la tête
+  du journal dès leur début, pour la prochaine mise à jour. Ces sceaux d'avant sont jugés avant que le journal laisse
+  sa moindre trace (verrou, dossier) : les siennes ne les font plus dire refaits. Une version plus ancienne repassée
+  ici (une clé ou un Mac restés en arrière) se dit au bilan un cran plus bas, sans rien faire reprendre, un mois ou
+  tant qu'un fichier qu'elle a laissé n'est pas réécrit. Un verrou des sceaux gardé par un autre programme ne fait
+  plus attendre qu'une fois, une seconde en tout, et se dit au bilan ; vanguard --version n'attend rien ; les
+  événements qui n'ont pu être notés sont comptés et dits au bilan une fois le verrou rendu, même s'il en manque
+  d'autres pendant qu'il les dit (si Vanguard est tué avant, ses événements en attente se perdent sans compte ; ce
+  compte, écrit sans sceau, peut être effacé), et « sceaux refaits » retombe une fois dit. Un test relit le code pour
+  que chaque nom de fichier scellé n'y paraisse que là où il est permis, exceptions dites ; VANGUARD_ORIGINE n'est
+  crue qu'aux octets du programme qui tourne. Le modèle de menace dit les limites : le dossier effacé en entier, et un
+  programme qui vise exprès ce mécanisme.
 - **Extensions et listes téléchargées scellées.** Les réglages des extensions (« sans restrictions », « à moi »,
   lancement avec le bilan ou la surveillance) et leurs approbations sont scellés : changés hors de Vanguard, ou
   acceptés tels quels (sceaux refaits, version d'avant), ils n'accordent plus rien, rien ne tourne tout seul, et c'est
@@ -109,6 +123,20 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 - **Modèle de menace.** Une page dit ce que Vanguard protège, contre qui, ce qu'il ne protège pas (un attaquant
   déjà administrateur, le noyau, une menace encore sans signature…) et ce qu'il suppose
   ([MODELE-DE-MENACE.md](MODELE-DE-MENACE.md)) ; le README et `vanguard --help` y renvoient.
+- **Publication des versions et clé** (campagne d'attaque n° 4). La reprise d'un déploiement arrêté en route ne fait
+  plus entrer dans la référence de la clé ce qui y a changé entre-temps : si rien d'autre ne diffère, ce que le
+  déploiement pose et qui diffère est retiré de la clé, puis reposé, et chaque fichier retiré est dit avec ce qui le
+  reposera (un programme Mac sans compilation récupérée, ou les exemples tldr hors ligne, n'y reviennent pas) ; si
+  autre chose diffère, rien n'est retiré et la reprise est refusée, la clé gardant la preuve. Le point sûr que la clé
+  de secours ne dépasse pas se forge lui aussi avec la clé principale volée : signé par elle, ses versions (date et
+  début des empreintes) sont montrées à l'auteur, et la clé de secours ne signe rien, pas même le manifeste de la
+  version, sans « contresigner » tapé dans un terminal (sans terminal, elle refuse). Seul l'auteur sait ce qu'il a
+  publié : une version forgée sous un numéro qu'il reconnaît, sans date ni empreinte qu'il remarque, passe encore.
+  Claude sur GitHub ne se lance plus sur un ticket ou une demande de fusion écrits par un autre que le propriétaire,
+  ni sur un fil où un autre a commenté ou relu, ni sur un ticket du journal de la clé (écrit depuis n'importe quel
+  ordinateur) : il les lirait comme des consignes. Juste avant Claude, le fil est verrouillé et relu, ce qui ferme les
+  minutes entre ce contrôle et sa lecture ; un second `@claude` sur le même fil attend la fin du premier, qui sinon le
+  déverrouillait sous lui. Le modèle de menace dit ce qui reste.
 - **Argument qui n'est pas de l'UTF-8.** Une erreur notée au journal de la clé pendant une commande dont un argument
   n'est pas de l'UTF-8 (un nom de fichier) ne fait plus avorter Vanguard : la commande y est écrite avec « � » à la
   place des octets illisibles.

@@ -6,6 +6,7 @@
 # la page précédente : une version intermédiaire (VANGUARD_INTERMEDIAIRE) n'a pas la sienne.
 #   outils/publier-version.sh           publier la version de Cargo.toml
 #   outils/publier-version.sh --notes   montrer les notes qu'elle aurait, sans rien publier
+#   outils/publier-version.sh --premier la toute première version du dépôt des versions (l'historique y commence)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -71,6 +72,10 @@ info” then “Run anyway”), \`vanguard-linux-x86_64\` (any distribution: \`c
 \`vanguard-macos\` (Apple Silicon and Intel: \`xattr -d com.apple.quarantine vanguard-macos\`, then run it in Terminal).
 SHA-256 checksums: \`SHA256SUMS.txt\`. What earlier versions brought: \`CHANGELOG.en.md\` in the repository."
 
+# Jamais déduit d'un dépôt des versions vide : vidé par qui tient le compte GitHub (et le point sûr effacé), il ferait
+# repartir l'historique de zéro (campagne d'attaque n° 4). Tapé par l'auteur, une seule fois.
+PREMIERE=
+[[ ${1:-} == --premier ]] && PREMIERE=1
 if [[ ${1:-} == --notes ]]; then
   git fetch -q --tags origin 2>/dev/null || true
   notes
@@ -282,13 +287,16 @@ else
   # L'historique signé de la version d'avant (ou, la première fois, son manifeste signé) : signer-versions.sh le
   # revérifie (et le compare au point sûr, le dernier historique publié d'ici), y ajoute cette version et le signe ;
   # publié avec elle, il permet de vérifier une copie qui n'est pas la dernière, une fois les pages d'avant retirées.
-  # Un téléchargement raté (réseau, limite de l'API, jeton expiré) n'est permis que si le dépôt n'a encore aucune
-  # version : sinon l'historique repartirait de zéro, et la boucle plus bas effacerait les pages d'avant. API muette :
-  # sortie vide, pas « 0 », donc rien de publié.
+  # Un téléchargement raté (réseau, limite de l'API, jeton expiré) n'est permis qu'avec --premier tapé, et si le dépôt
+  # n'a encore aucune version : sinon l'historique repartirait de zéro, et la boucle plus bas effacerait les pages
+  # d'avant. API muette : sortie vide, pas « 0 », donc rien de publié.
   PREMIER=()
   if ! gh release download -R "$DEPOT_VERSIONS" -D "$DOSSIER/avant" -p 'historique.txt*' -p 'derniere.txt*' \
     >/dev/null 2>&1; then
-    [[ $(gh api "repos/$DEPOT_VERSIONS/releases?per_page=1" --jq length 2>/dev/null) == 0 ]] && PREMIER=(--premier)
+    if [[ $(gh api "repos/$DEPOT_VERSIONS/releases?per_page=1" --jq length 2>/dev/null) == 0 ]]; then
+      [[ -n $PREMIERE ]] && PREMIER=(--premier) || echo "⚠ Dépôt des versions vide : s'il n'a jamais rien eu, \
+outils/publier-version.sh --premier ; sinon, il a été vidé, et l'historique ne repart pas de zéro."
+    fi
   fi
   outils/signer-versions.sh "${PREMIER[@]}" "$DOSSIER" ||
     { echo "✖ Signature refusée (voir ci-dessus) : rien de publié, ni page ni mise à jour."; exit 1; }

@@ -30,7 +30,7 @@ pub(crate) const DOSSIER: &str = "evenements";
 /// La tête scellée du journal.
 pub(crate) const TETE: &str = "evenements.tete";
 /// Le verrou des écritures : la surveillance, le veilleur et le menu écrivent chacun.
-const VERROU: &str = "evenements.verrou";
+pub(crate) const VERROU: &str = "evenements.verrou";
 /// Mois gardés : un an entier, plus le mois en cours.
 const MOIS_GARDES: i32 = 13;
 /// Taille gardée en tout : on garde les décisions, pas la télémétrie ; au-delà, les plus vieux mois partent.
@@ -85,6 +85,11 @@ struct Tete {
     /// suivante, puis lues « intactes ».
     #[serde(default, skip_serializing_if = "Option::is_none")]
     annonce: Option<Annonce>,
+    /// La forme des sceaux de la version qui a écrit en dernier (`sceau::FORMAT`), 0 avant elle : le témoin, scellé
+    /// avec la tête, qu'une version de cette forme a servi ici. Des sceaux qui se disent ensuite d'une forme d'avant
+    /// ont été ramenés en arrière hors de Vanguard (`sceau::rattraper_si`).
+    #[serde(default)]
+    sceaux: u32,
 }
 
 /// La fin qu'une écriture annonce avant d'ajouter ses lignes : le segment, son nombre de lignes et l'empreinte de sa
@@ -381,6 +386,9 @@ fn tete_lue(dossier: &Path) -> TeteLue {
     }
 }
 
+/// Des sceaux d'une forme d'avant qui n'ont pas pu être jugés et réécrits : le journal n'y crée rien encore.
+const SCEAUX_D_AVANT: &str = "sceaux d'avant pas encore réécrits / earlier seals not yet rewritten";
+
 const TETE_FALSIFIEE: &str = "tête changée hors de Vanguard / head changed outside Vanguard";
 
 /// Ajoute un segment à la fin d'un fichier, sans suivre de lien, réservé à son compte.
@@ -417,10 +425,17 @@ pub(crate) fn noter_dans(
 #[cfg(test)]
 const RALENTIR: &str = "essai-ralentir";
 
+/// Un autre processus simulé par les essais pendant une écriture (`PENDANT_LES_PERDUS`).
+#[cfg(test)]
+type Autre = fn(&Path, &[PathBuf], u8);
+
 // Les essais arrêtent l'écriture juste après l'ajout, comme un arrêt net du programme (`arret_entre_ajout_…`).
 #[cfg(test)]
 thread_local! {
     static ARRET_APRES_AJOUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    // Un autre processus qui perd des événements pendant l'écriture : juste après la lecture des comptes (1), puis
+    // juste avant leur effacement (2).
+    static PENDANT_LES_PERDUS: std::cell::Cell<Option<Autre>> = const { std::cell::Cell::new(None) };
 }
 
 /// L'écriture elle-même, des événements `evs` dans l'ordre ; sans événement, seuls une rupture et un passage de
@@ -443,6 +458,11 @@ fn ecrire_dans(
     // Pendant un autotest, seul son propre événement d'essai s'écrit (`autotest::lecture_seule`).
     if crate::autotest::lecture_seule::active() && (evs.is_empty() || evs.iter().any(|e| !e.essai)) {
         return Err(crate::autotest::lecture_seule::refus());
+    }
+    // Les sceaux d'avant jugés avant que le verrou et le dossier du journal n'existent (`sceau::forme_d_avant`) ; sans
+    // cela, rien n'est créé : gardé pour plus tard, comme un verrou tenu ailleurs.
+    if !crate::sceau::forme_jugee_avant_le_journal(dossier) {
+        return Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, SCEAUX_D_AVANT));
     }
     let _verrou =
         crate::socle::Verrou::prendre_compatible(dossier, VERROU, false, attente).map_err(|e| e.erreur(VERROU))?;
@@ -473,7 +493,18 @@ fn ecrire_dans(
 
     let (mut tete, rupture) = juger_la_tete(lue, &presents, dernier.as_deref(), &reelles, fin_reelle.as_deref());
 
-    let a_ecrire = evenements_a_ecrire(rupture, &tete, evs);
+    let mut a_ecrire = evenements_a_ecrire(rupture, &tete, evs);
+    // Le compte pris à part avant d'être lu : un processus qui en perd d'autres pendant cette écriture (sans verrou)
+    // les ajoute à un nouveau compte, que l'effacement qui suit ne touche pas.
+    let pris = prendre_perdus(dossier);
+    let perdus = compter_perdus(&pris);
+    if let Some(n) = perdus {
+        a_ecrire.insert(0, rupture_des_perdus(n));
+    }
+    #[cfg(test)]
+    if let Some(autre) = PENDANT_LES_PERDUS.with(std::cell::Cell::get) {
+        autre(dossier, &pris, 1);
+    }
     if a_ecrire.is_empty() {
         return Ok(());
     }
@@ -536,6 +567,22 @@ fn ecrire_dans(
         &serde_json::to_vec(&tete).map_err(std::io::Error::other)?,
     )?;
     ajouter(&rep.join(format!("{mois}.jsonl")), &a_ajouter)?;
+    // Dits dans la chaîne : les comptes pris n'ont plus rien à porter. Ce qu'un processus y a ajouté entre la prise et
+    // ici (il l'avait ouvert juste avant) n'est pas perdu : remis au compte suivant. Avant la seconde tête : une
+    // erreur sur elle (`ApresAjout`) n'est jamais remise, rien de ce qui est écrit ici ne se redit.
+    if let Some(n) = perdus {
+        let apres = compter_perdus(&pris).unwrap_or(n);
+        #[cfg(test)]
+        if let Some(autre) = PENDANT_LES_PERDUS.with(std::cell::Cell::get) {
+            autre(dossier, &pris, 2);
+        }
+        for f in &pris {
+            let _ = std::fs::remove_file(f);
+        }
+        if apres > n {
+            noter_perdus(dossier, usize::try_from(apres - n).unwrap_or(usize::MAX));
+        }
+    }
     #[cfg(test)]
     if ARRET_APRES_AJOUT.with(std::cell::Cell::get) {
         return Ok(());
@@ -551,6 +598,7 @@ fn ecrire_dans(
         tete.clos.insert(m, c);
     }
     tete.version = env!("CARGO_PKG_VERSION").to_string();
+    tete.sceaux = crate::sceau::FORMAT;
     tete.segment.clone_from(&mois);
     tete.lignes = n_courant;
     tete.derniere = precedent;
@@ -688,6 +736,109 @@ fn evenements_a_ecrire(rupture: Option<(String, String)>, tete: &Tete, evs: Vec<
     a_ecrire
 }
 
+/// Les événements perdus faute d'avoir pu les écrire (le verrou du journal ou des sceaux tenu ailleurs jusqu'à la fin
+/// du processus, des différés abandonnés au-delà de `DIFFERES_MAX`) : comptés à part, sans verrou ni sceau (ce qui les
+/// a perdus les refuserait aussi), puis dits dans la chaîne, comme une rupture, à la prochaine écriture. Sans cela,
+/// une fois le verrou rendu, plus rien ne disait qu'il manquait des événements. Un processus tué, lui, perd ses
+/// différés sans rien compter.
+pub(crate) const PERDUS: &str = "evenements.perdus";
+
+/// L'« attendu » de la rupture qui dit des événements perdus : la fin d'avant reste vérifiée, rien n'y a été touché.
+const PERDUS_ATTENDU: &str = "événements notés / events noted";
+
+/// Compte `n` événements perdus, à dire à la prochaine écriture (`PERDUS`).
+fn noter_perdus(dossier: &Path, n: usize) {
+    if n == 0
+        || crate::autotest::lecture_seule::active()
+        || !crate::socle::ecriture_sure(dossier)
+        || std::fs::create_dir_all(dossier).is_err()
+    {
+        return;
+    }
+    let ligne = format!("{} {n}\n", chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ"));
+    if let Err(e) = ajouter(&dossier.join(PERDUS), ligne.as_bytes()) {
+        super::Echec::io("evenements/perdus", &e).journaliser();
+    }
+}
+
+/// Les comptes pris par une écriture du journal et pas encore effacés (`PERDUS` renommé, `evenements.perdus.<pid>-…` :
+/// celle-ci, ou une d'avant arrêtée en route).
+fn perdus_pris(dossier: &Path) -> Vec<PathBuf> {
+    let prefixe = format!("{PERDUS}.");
+    let mut f: Vec<PathBuf> = std::fs::read_dir(dossier)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with(&prefixe))
+        .map(|e| e.path())
+        .collect();
+    f.sort();
+    f
+}
+
+/// Sous le verrou du journal : le compte en cours renommé à un nom à soi, puis tous les comptes pris (ceux d'une
+/// écriture arrêtée en route compris). Les lire et les effacer ensuite ne touche plus un compte que d'autres
+/// continuent d'écrire, sans verrou : avant, ce qui y était ajouté entre la lecture et l'effacement se perdait.
+fn prendre_perdus(dossier: &Path) -> Vec<PathBuf> {
+    let a_soi = dossier.join(format!(
+        "{PERDUS}.{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    let _ = std::fs::rename(dossier.join(PERDUS), a_soi);
+    perdus_pris(dossier)
+}
+
+/// Le total de ces comptes (`None` : aucun). Là mais illisible : 0, « des ».
+fn compter_perdus(fichiers: &[PathBuf]) -> Option<u64> {
+    let mut total = None;
+    for f in fichiers {
+        let n = match crate::socle::lire_ordinaire(f, 1 << 16) {
+            Ok(o) => String::from_utf8_lossy(&o)
+                .lines()
+                .filter_map(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+                .fold(0u64, u64::saturating_add),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => 0,
+        };
+        total = Some(total.unwrap_or(0u64).saturating_add(n));
+    }
+    total
+}
+
+/// Le nombre d'événements perdus comptés et pas encore dits (`None` : aucun), sans rien prendre : le compte en cours
+/// et ceux qu'une écriture a pris sans avoir fini.
+fn perdus_dans(dossier: &Path) -> Option<u64> {
+    let mut f = vec![dossier.join(PERDUS)];
+    f.extend(perdus_pris(dossier));
+    compter_perdus(&f)
+}
+
+/// Ce que dit la chaîne de `n` événements perdus (0 : un nombre qui ne se lit plus).
+fn texte_perdus(n: u64) -> String {
+    if n == 0 {
+        "des événements non notés / events not noted".into()
+    } else {
+        format!("{n} événement(s) non noté(s) / {n} event(s) not noted")
+    }
+}
+
+fn rupture_des_perdus(n: u64) -> Evenement {
+    Evenement::nouveau(
+        Source::Vanguard,
+        Genre::Rupture {
+            attendu: PERDUS_ATTENDU.into(),
+            trouve: texte_perdus(n),
+        },
+    )
+    .gravite(Niveau::Moyen)
+}
+
+/// Une rupture qui ne dit que des événements perdus (`PERDUS_ATTENDU`) ?
+fn de_perdus(e: &Evenement) -> bool {
+    matches!(&e.quoi, Genre::Rupture { attendu, .. } if attendu == PERDUS_ATTENDU)
+}
+
 /// Un échec après l'ajout : les lignes sont écrites, seule la tête n'a pas suivi.
 #[derive(Debug)]
 struct ApresAjout(std::io::Error);
@@ -764,6 +915,10 @@ pub(crate) fn lire_dans(dossier: &Path) -> Lu {
 /// Le début de la raison d'un journal lu sans son verrou, tenu ailleurs (`lire_tenu`).
 const PAS_JUGE: &str = "pas jugé : ";
 
+/// La raison d'un journal lu alors que le verrou des sceaux est gardé ailleurs (`lire_tenu`) : dite au bilan par les
+/// sceaux, pas une seconde fois ici.
+const SCEAUX_TENUS: &str = "verrou des sceaux tenu ailleurs, ce qui devait s'y noter attend / seals lock held elsewhere, what had to be noted waits";
+
 /// La lecture se fait sous le verrou, partagé : entre les étapes d'une écriture (tête annoncée, ajout, tête finale,
 /// mois élagués), le disque montre un état que la lecture prendrait pour une fin écrite sans sa tête, voire pour des
 /// lignes ajoutées ou un mois retiré, donc falsifié. Tenu au-delà de `attente` (un Vanguard figé au milieu d'une
@@ -772,8 +927,19 @@ const PAS_JUGE: &str = "pas jugé : ";
 /// garderait le verrou pour taire une falsification se voit. Un verrou qui ne s'ouvre pas (dossier posé à
 /// sa place, ou absent là où le lecteur n'écrit pas) n'est tenu par aucun écrivain : la lecture juge.
 fn lire_tenu(dossier: &Path, attente: std::time::Duration) -> Lu {
-    let tenu = crate::socle::Verrou::prendre_compatible(dossier, VERROU, true, attente);
+    // Le verrou partagé crée son fichier : pas avant que des sceaux d'avant soient jugés (`ecrire_dans`).
+    let tenu = if crate::sceau::forme_jugee_avant_le_journal(dossier) {
+        crate::socle::Verrou::prendre_compatible(dossier, VERROU, true, attente)
+    } else {
+        Err(crate::socle::SansVerrou::Impossible(SCEAUX_D_AVANT.into()))
+    };
     let mut lu = lire_borne(dossier, BORNES);
+    // La tête lue sans le verrou des sceaux, gardé ailleurs : ce qui devait s'écrire n'a pas pu l'être, la fin lue
+    // n'est donc pas forcément la dernière. Pas « intact » ; le bilan le dit avec les sceaux (`sceau::constat`).
+    if crate::sceau::verrou_tenu_dans(dossier) && !matches!(lu.lecture, Lecture::Falsifie(_)) {
+        lu.lecture = Lecture::Incomplet(SCEAUX_TENUS.into());
+        lu.verifies_des = lu.evenements.len();
+    }
     if matches!(tenu, Err(crate::socle::SansVerrou::Occupe))
         && matches!(lu.lecture, Lecture::Falsifie(_) | Lecture::Incomplet(_))
     {
@@ -832,12 +998,24 @@ fn lire_borne(dossier: &Path, bornes: Bornes) -> Lu {
             "{illisibles} ligne(s) illisible(s) / unreadable line(s)"
         )));
     }
-    let derniere_rupture = evenements.iter().rposition(|e| matches!(e.quoi, Genre::Rupture { .. }));
+    let derniere_rupture = evenements
+        .iter()
+        .rposition(|e| matches!(e.quoi, Genre::Rupture { .. }) && !de_perdus(e));
     if let Some(r) = derniere_rupture.map(|i| &evenements[i]) {
         lecture = lecture.pire(Lecture::Incomplet(format!(
             "rupture notée le / break recorded on {}",
             r.date_locale().unwrap_or_default()
         )));
+    }
+    // Des événements perdus : ce qui est là reste vérifié, mais il en manque.
+    if let Some(r) = evenements.iter().rev().find(|e| de_perdus(e)) {
+        lecture = lecture.pire(Lecture::Incomplet(format!(
+            "événements non notés le / events not noted on {}",
+            r.date_locale().unwrap_or_default()
+        )));
+    }
+    if let Some(n) = perdus_dans(dossier) {
+        lecture = lecture.pire(Lecture::Incomplet(texte_perdus(n)));
     }
     let verifies_des = if tete_crue && !matches!(lecture, Lecture::Falsifie(_)) {
         derniere_rupture.map_or(0, |i| i + 1)
@@ -988,6 +1166,9 @@ fn lire_sans_juger_borne(dossier: &Path, bornes: Bornes) -> (Vec<Evenement>, Vec
 /// Le verrou partagé du journal de `dossier`, tenu le temps de recopier ses fichiers tels quels (les traces) ; sans
 /// rien créer dans le dossier d'un autre compte. `None` : copiés sans lui.
 pub(crate) fn tenir_pour_copie(dossier: &Path) -> Option<crate::socle::Verrou> {
+    if !crate::sceau::forme_jugee_avant_le_journal(dossier) {
+        return None;
+    }
     crate::socle::Verrou::prendre_compatible(dossier, VERROU, true, crate::socle::ATTENTE_LECTURE).ok()
 }
 
@@ -1001,6 +1182,14 @@ pub(crate) fn fichiers(dossier: &Path) -> Vec<String> {
         .map(|(mois, _)| format!("{DOSSIER}/{mois}.jsonl"))
         .collect();
     f.push(TETE.to_string());
+    if dossier.join(PERDUS).exists() {
+        f.push(PERDUS.to_string());
+    }
+    f.extend(
+        perdus_pris(dossier)
+            .iter()
+            .filter_map(|p| Some(p.file_name()?.to_string_lossy().into_owned())),
+    );
     f
 }
 
@@ -1056,6 +1245,7 @@ pub(crate) fn noter(ev: Evenement) -> Option<String> {
         // par ce verrou.
         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
             let perdus = differer(&dossier, evs);
+            noter_perdus(&dossier, perdus);
             super::Echec::echoue("evenements/noter", remis(&e, perdus)).journaliser();
             Some(id)
         }
@@ -1064,6 +1254,7 @@ pub(crate) fn noter(ev: Evenement) -> Option<String> {
         Err(e) => {
             evs.truncate(avant);
             let perdus = differer(&dossier, evs);
+            noter_perdus(&dossier, perdus);
             let mut echec = super::Echec::io("evenements/noter", &e);
             if perdus > 0 {
                 echec = echec.detail(trf!(
@@ -1109,6 +1300,7 @@ pub(crate) fn ecrire_differes() {
     if let Err(e) = ecrire_dans(&dossier, evs, chrono::Utc::now(), attente_noter())
         && !apres_ajout(&e)
     {
+        noter_perdus(&dossier, n);
         super::Echec::io("evenements/noter", &e)
             .detail(trf!("{} différé(s) perdu(s)", "{} put-off one(s) lost", n))
             .journaliser();
@@ -1158,7 +1350,37 @@ fn differer(dossier: &Path, evs: Vec<Evenement>) -> usize {
 /// dire.
 pub(crate) fn constat() -> Option<crate::machine::Constat> {
     let lu = lire();
-    constat_de(&lu.lecture).or_else(|| constat_de_rupture(&lu.evenements, chrono::Utc::now()))
+    constat_de(&lu.lecture)
+        .or_else(|| constat_de_rupture(&lu.evenements, chrono::Utc::now()))
+        .or_else(|| perdus_dans(&dossier_du_journal()).map(|n| constat_de_perdus(n, None)))
+}
+
+/// Des événements qui n'ont pas pu être notés (`PERDUS`) : dits au bilan, une fois le verrou rendu, comme une rupture
+/// (un mois), mais un cran plus bas : rien de ce qui est écrit n'a été touché, il en manque.
+fn constat_de_perdus(n: u64, quand: Option<&str>) -> crate::machine::Constat {
+    let quand = quand.map_or_else(String::new, |q| trf!(" (noté le {})", " (recorded on {})", q));
+    let combien = if n == 0 {
+        tr!("en nombre inconnu", "number unknown").to_string()
+    } else {
+        trf!("{} au moins", "at least {}", n)
+    };
+    crate::machine::alerte(
+        crate::sceau::CAT,
+        Niveau::Moyen,
+        trf!(
+            "Des événements n'ont pas pu être notés au journal des événements ({}){} : son verrou ou celui des sceaux était tenu ailleurs jusqu'à la fin de Vanguard (un Vanguard figé, ou un autre programme qui le garde). Ce qu'ils disaient manque au journal ; ce qui y est écrit reste vérifié.",
+            "Some events could not be noted in the event log ({}){}: its lock or the seals lock was held elsewhere until Vanguard ended (a frozen Vanguard, or another program keeping it). What they said is missing from the log; what is written there is still verified.",
+            combien,
+            quand
+        ),
+    )
+    .manuel(
+        tr!(
+            "« vanguard evenements » montre où ils manquent ; si cela revient, regardez ce qui tourne sous votre compte (Protection › Qui parle à Internet ?)",
+            "“vanguard events” shows where they are missing; if it happens again, look at what runs under your account (Protection › Who talks to the Internet?)"
+        ),
+        &[],
+    )
 }
 
 /// Une rupture se dit au bilan un mois : la tête est repartie du disque, et ce qui la précède (des lignes ajoutées,
@@ -1175,10 +1397,21 @@ fn constat_de_rupture(
         .to_string();
     // Jamais après maintenant : une rupture datée de l'avenir (horloge avancée) ne tiendrait l'alerte que plus longtemps.
     let apres = maintenant.format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let r = evenements
-        .iter()
-        .rev()
-        .find(|e| matches!(e.quoi, Genre::Rupture { .. }) && e.quand >= limite && e.quand <= apres)?;
+    let dans_le_mois =
+        |e: &&Evenement| matches!(e.quoi, Genre::Rupture { .. }) && e.quand >= limite && e.quand <= apres;
+    // Une vraie rupture d'abord : des événements perdus ne la cachent pas.
+    let Some(r) = evenements.iter().rev().filter(dans_le_mois).find(|e| !de_perdus(e)) else {
+        let p = evenements.iter().rev().find(dans_le_mois)?;
+        let Genre::Rupture { trouve, .. } = &p.quoi else {
+            return None;
+        };
+        let n = trouve
+            .split_whitespace()
+            .next()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0);
+        return Some(constat_de_perdus(n, p.date_locale().as_deref()));
+    };
     let quand = r.date_locale().unwrap_or_default();
     Some(
         crate::machine::alerte(
@@ -1248,7 +1481,8 @@ pub(crate) fn lire() -> Lu {
 }
 
 /// Note le passage de version s'il y en a un, sans autre événement : appelé au début de chaque passe de la
-/// surveillance, pour qu'une mise à jour se lise à son heure et non à la prochaine alerte.
+/// surveillance, du bilan et du menu, pour qu'une mise à jour se lise à son heure et non à la prochaine alerte, et que
+/// la tête existe pour la prochaine (`sceau::forme_d_avant`).
 pub(crate) fn noter_version() {
     let dossier = dossier_du_journal();
     if !crate::socle::ecriture_sure(&dossier) {
@@ -1394,6 +1628,46 @@ mod tests {
 
     fn segment(d: &Path, mois: &str) -> PathBuf {
         d.join(DOSSIER).join(format!("{mois}.jsonl"))
+    }
+
+    /// F4 (relecture du delta, bloquante) : des sceaux d'une 0.86 ou d'une 0.87 qui n'avait rien noté au journal. Le
+    /// premier passage du journal (le passage de version au début du menu et du bilan, un événement, une lecture, une
+    /// copie pour les traces) prenait son verrou et créait son dossier avant que les sceaux soient jugés : ses propres
+    /// traces les faisaient dire refaits (élevé). Jugés d'abord, ils se disent « sans journal ».
+    #[test]
+    fn le_journal_ne_fait_pas_refaire_des_sceaux_d_avant_sans_journal() {
+        type Passage = fn(&Path);
+        let passages: [(&str, Passage); 5] = [
+            ("version", |d| {
+                ecrire_dans(d, Vec::new(), le("2026-10-23T10:00:00Z"), std::time::Duration::ZERO).unwrap();
+            }),
+            ("evenement", |d| remplir(d, 1, "2026-10-23T10:00:00Z")),
+            ("lecture", |d| {
+                let _ = lire_dans(d);
+            }),
+            ("copie", |d| {
+                let _ = tenir_pour_copie(d);
+            }),
+            ("noter_version", |_| noter_version()),
+        ];
+        for (nom, passer) in passages {
+            let d = if nom == "noter_version" {
+                let d = dossier_du_journal();
+                std::fs::create_dir_all(&d).unwrap();
+                d
+            } else {
+                dossier(&format!("sceaux-d-avant-{nom}"))
+            };
+            std::fs::write(d.join("sceaux.json"), br#"{"depuis":"2026-10-01","fichiers":{}}"#).unwrap();
+            std::fs::write(d.join(crate::parametres::PARAMETRES), br#"{"langue":"en"}"#).unwrap();
+            passer(&d);
+            let r: serde_json::Value = serde_json::from_slice(&std::fs::read(d.join("sceaux.json")).unwrap()).unwrap();
+            assert!(
+                r.get("refaits").is_none() && r["sans_journal"].is_string(),
+                "{nom} : {r}"
+            );
+            let _ = std::fs::remove_dir_all(&d);
+        }
     }
 
     #[test]
@@ -1924,6 +2198,82 @@ mod tests {
         assert_eq!(lu.lecture, Lecture::Intact);
         let titres: Vec<&str> = alertes(&lu.evenements).map(|(_, _, titre, _)| titre).collect();
         assert_eq!(titres, ["alerte 1", "alerte 2"]);
+    }
+
+    /// F4 (relecture) : le verrou des sceaux gardé ailleurs jusqu'à la fin du processus, l'événement différé se perd,
+    /// mais plus en silence. Le verrou rendu, le bilan le dit, avant toute écriture puis par la rupture que la
+    /// suivante écrit ; ce qui était écrit avant reste vérifié.
+    #[test]
+    fn evenements_perdus_dits_une_fois_le_verrou_rendu() {
+        let d = dossier_du_journal();
+        let q = "2026-10-23T10:00:00Z";
+        noter(alerte(1, q)).unwrap();
+        crate::sceau::attendre_en_essai(std::time::Duration::from_millis(200));
+        let tenu = crate::socle::Verrou::prendre(&d, "sceaux.verrou", false, std::time::Duration::ZERO).unwrap();
+        assert!(noter(alerte(2, q)).is_some());
+        // La fin du processus : le différé ne s'écrit pas, il est compté.
+        ecrire_differes();
+        drop(tenu);
+        assert_eq!(perdus_dans(&d), Some(1));
+        let c = constat().unwrap();
+        assert_eq!(c.probleme, Some(Niveau::Moyen));
+        assert!(
+            c.message.contains("1 au moins") || c.message.contains("at least 1"),
+            "{}",
+            c.message
+        );
+        noter(alerte(3, q)).unwrap();
+        assert_eq!(perdus_dans(&d), None);
+        let lu = lire_dans(&d);
+        assert!(matches!(lu.lecture, Lecture::Incomplet(_)), "{:?}", lu.lecture);
+        assert_eq!(lu.verifies_des, 0);
+        let titres: Vec<&str> = alertes(&lu.evenements).map(|(_, _, titre, _)| titre).collect();
+        assert_eq!(titres, ["alerte 1", "alerte 3"]);
+        let c = constat().unwrap();
+        assert_eq!(c.probleme, Some(Niveau::Moyen));
+        assert!(
+            c.message.contains("1 au moins") || c.message.contains("at least 1"),
+            "{}",
+            c.message
+        );
+    }
+
+    /// F4 (relecture du delta) : un autre processus perd des événements pendant qu'une écriture dit les perdus. Ceux
+    /// qu'il compte à côté (nouveau compte), ou dans le compte que l'écriture vient de prendre (il l'avait ouvert juste
+    /// avant), restent comptés pour la suivante ; avant, l'effacement après lecture les perdait. Chaque compte n'est
+    /// dit qu'une fois dans la chaîne.
+    #[test]
+    fn perdus_comptes_pendant_une_ecriture_ne_se_perdent_pas() {
+        let d = dossier("perdus-pendant");
+        let q = "2026-10-23T10:00:00Z";
+        noter_perdus(&d, 2);
+        PENDANT_LES_PERDUS.with(|p| {
+            p.set(Some(|d, pris, moment| {
+                if moment == 1 {
+                    ajouter(&pris[0], b"2026-10-23T10:00:01Z 3\n").unwrap();
+                } else {
+                    noter_perdus(d, 5);
+                }
+            }));
+        });
+        let ecrit = noter_dans(&d, alerte(1, q), le(q));
+        PENDANT_LES_PERDUS.with(|p| p.set(None));
+        ecrit.unwrap();
+        assert_eq!(perdus_dans(&d), Some(8));
+        assert_eq!(perdus_pris(&d), Vec::<PathBuf>::new());
+        noter_dans(&d, alerte(2, q), le(q)).unwrap();
+        assert_eq!(perdus_dans(&d), None);
+        let dits: Vec<String> = lire_dans(&d)
+            .evenements
+            .iter()
+            .filter(|e| de_perdus(e))
+            .filter_map(|e| match &e.quoi {
+                Genre::Rupture { trouve, .. } => Some(trouve.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dits, [texte_perdus(2), texte_perdus(8)]);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Une ligne coupée par un arrêt : elle reste dans la chaîne, illisible ; la ligne suivante commence sur une

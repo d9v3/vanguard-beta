@@ -108,6 +108,8 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     // L'empreinte de chacune de ses lignes : un relevé changé garde les lignes que Vanguard a écrites.
     scelle(crate::changements::LIGNES, "changements"),
     local(crate::modele::journal::DOSSIER, "modele::journal"),
+    // Les événements qui n'ont pas pu être notés, comptés sans verrou ni sceau, dits à la prochaine écriture.
+    local(crate::modele::journal::PERDUS, "modele::journal"),
     local("evenements.verrou", "modele::journal"),
     // Le verrou du système du journal (`socle::Verrou::prendre_compatible`), à côté de celui des versions d'avant.
     local("evenements.lock", "modele::journal"),
@@ -427,6 +429,10 @@ mod tests {
             "les sceaux eux-mêmes : effacés ou abîmés, ils se voient (refaits, COM-ETA-001)",
         ),
         ("sceaux.verrou", "verrou, sans contenu"),
+        (
+            "evenements.perdus",
+            "compte des événements perdus faute de verrou, écrit justement sans lui : il ne fait qu'ajouter une rupture au journal, jamais en retirer",
+        ),
         (
             "historique.json",
             "sa propre chaîne d'empreintes (rompue : alerte) ; jusqu'à 64 Mio, au-delà de ce que lit le sceau ; tendance \
