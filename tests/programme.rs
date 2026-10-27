@@ -817,7 +817,9 @@ fn verifier_fichier_verdicts() {
     let verifier = |langue: &str, fichier: &Path, empreinte: Option<&str>| {
         let mut args = vec!["verifier-fichier", fichier.to_str().unwrap()];
         args.extend(empreinte);
-        let s = vanguard(langue, &args, "", 120);
+        // Sans ClamAV (Mac de GitHub, CI), Vanguard propose de l'installer : « non », sinon la fin de l'entrée le fait
+        // quitter avant le verdict.
+        let s = vanguard(langue, &args, "n\n", 120);
         assert_eq!(s.code, Some(0), "{}", s.erreurs);
         // Les phrases longues sont coupées en lignes à l'écran : remises bout à bout.
         sans_couleurs(&s.texte).split_whitespace().collect::<Vec<_>>().join(" ")
