@@ -1,0 +1,6 @@
+# Les règles anti-panique de Cargo.toml ([lints.clippy]) visent le programme ; dans les tests, planter est la façon
+# d'échouer.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true

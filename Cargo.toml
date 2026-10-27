@@ -122,6 +122,15 @@ pedantic = { level = "warn", priority = -1 }
 doc_markdown = "allow"
 too_many_lines = "allow"
 wildcard_imports = "allow"
+# Aucune panique sur une donnée hostile (paquet, journal, fichier PE, archive…) : ni `unwrap()`, ni `expect()`, ni
+# `panic!`, ni accès direct `v[i]` / `&v[a..b]`, qui plantent le programme sur une entrée piégée (déni de service).
+# `.get()`, `split_at_checked`, `chunks_exact`, les motifs de tranche ou une erreur rendue à la place ; un invariant
+# vraiment prouvé garde son accès sous `#[expect(clippy::…, reason = "…")]`. Les tests en sont exemptés
+# (clippy.toml) : y planter est la façon d'échouer ; build.rs aussi, qui tourne à la compilation.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+indexing_slicing = "warn"
 
 # `fuzzing` : posé par cargo-fuzz pour le banc de fuzz/, qui inclut des modules de src/ par leur chemin (sqlite.rs
 # y ouvre sa lecture des colonnes, réservée à macOS ailleurs). Déclaré pour que la compilation de Vanguard ne le

@@ -2,6 +2,10 @@
 //! allégées, et, pour Windows, la fiche d'identité de vanguard.exe (onglet « Détails » des propriétés du fichier), son
 //! icône et son manifeste.
 
+// Un build.rs qui ne peut pas lire ses données ou écrire sa sortie doit arrêter la compilation : expect() y est la
+// bonne réponse, et ses tableaux sont fabriqués ici même (voir les règles anti-panique de Cargo.toml).
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;

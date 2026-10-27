@@ -4,6 +4,10 @@
 //! testent dans leur propre module : un programme n'a pas de bibliothèque que ce dossier pourrait appeler.
 //! Rien ici ne change le système : listes, menus quittés, refus aux questions, scan de 127.0.0.1 seulement.
 
+// Les aides de ce fichier ne sont pas dans un #[test] : l'exemption des tests de clippy.toml ne les couvre pas, et y
+// planter reste la façon d'échouer (voir les règles anti-panique de Cargo.toml).
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
+
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
