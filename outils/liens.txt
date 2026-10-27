@@ -91,3 +91,10 @@ ignorer https://onedrive.live.com/download?cid=1
 ignorer https://raw.githubusercontent.com/x/y/
 # Documentation de libyal : liens.py coupe l'adresse à sa parenthèse « (EVTX) » ; la page existe (vérifiée le 24 oct.).
 ignorer https://github.com/libyal/libevtx/blob/main/documentation/
+
+# Adresses inventées des essais de la liste fermée de ce qui sort (src/http/envois.rs) : refusées ou acceptées par la
+# garde, jamais ouvertes.
+ignorer https://WWW.CISA.GOV/x
+ignorer https://github.com/alice/fuite
+ignorer https://raw.githubusercontent.com/alice/fuite
+ignorer https://codeload.github.com/alice/fuite
