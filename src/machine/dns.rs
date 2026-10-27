@@ -837,15 +837,36 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn resolved_comme_resolvectl() {
-        let natif = match resolved_par_dbus() {
-            Ok(r) => r,
-            Err(e) => return crate::essais::saute(&format!("resolved injoignable par D-Bus ({e})")),
+        // Deux lectures à des instants différents : des serveurs qui changent entre elles (bail DHCP, la CI de GitHub :
+        // 1 par D-Bus, 0 par resolvectl) ne disent rien. D-Bus relu après resolvectl ; à l'identique, la comparaison vaut.
+        let lire = || {
+            resolved_par_dbus().map(|r| {
+                let mut liste = r.serveurs.clone();
+                liste.sort();
+                liste.dedup();
+                (liste, r)
+            })
         };
-        let (Some(status), Some(dns)) = (
-            super::super::sortie("resolvectl", &["status"]),
-            super::super::sortie("resolvectl", &["dns"]),
-        ) else {
-            return crate::essais::saute("resolvectl absent");
+        let mut stable = None;
+        for _ in 0..5 {
+            let (avant, natif) = match lire() {
+                Ok(l) => l,
+                Err(e) => return crate::essais::saute(&format!("resolved injoignable par D-Bus ({e})")),
+            };
+            let (Some(status), Some(dns)) = (
+                super::super::sortie("resolvectl", &["status"]),
+                super::super::sortie("resolvectl", &["dns"]),
+            ) else {
+                return crate::essais::saute("resolvectl absent");
+            };
+            if lire().is_ok_and(|(apres, _)| apres == avant) {
+                stable = Some((natif, status, dns));
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        let Some((natif, status, dns)) = stable else {
+            return crate::essais::saute("serveurs DNS changés pendant chaque lecture");
         };
         let outil_chiffre = status.contains("+DNSOverTLS");
         if natif.chiffre == Some(true) {

@@ -2130,7 +2130,7 @@ const REFUS_OPTIMISER: &str =
     "Windows élevé avec l'UAC : les outils d'Optimiser refusent, voulu (refus_d_optimiser_en_administrateur)";
 
 /// Les outils d'Optimiser refusés ici ? Attendu d'après Windows lui-même, pas d'après Vanguard : élevé (`windows_eleve`)
-/// avec l'UAC (`uac_actif`), le compte a aussi un jeton ordinaire. `jeux` lancé une fois doit alors refuser (code 2 et
+/// avec un jeton ordinaire à côté (`jeton_ordinaire_a_cote`). `jeux` lancé une fois doit alors refuser (code 2 et
 /// la raison), et sinon tourner : un refus à tort serait un échec, pas des essais sautés. Sous Linux, les essais ne
 /// tournent jamais en root venu de sudo (`unshare -rn` n'est pas root de l'ordinateur).
 fn optimiser_refuse_ici() -> bool {
@@ -2139,13 +2139,13 @@ fn optimiser_refuse_ici() -> bool {
         if !windows_eleve() {
             return false;
         }
-        let attendu = uac_actif();
+        let attendu = jeton_ordinaire_a_cote();
         let s = vanguard("fr", &["jeux"], "", 60);
         let refuse = s.code == Some(2)
             && espaces_unis(&s.erreurs).contains("les outils d'Optimiser refusent de tourner avec tous les droits");
         assert_eq!(
             refuse, attendu,
-            "Windows élevé, UAC actif : {attendu} ; jeux : {:?} {}",
+            "Windows élevé, jeton ordinaire à côté : {attendu} ; jeux : {:?} {}",
             s.code, s.erreurs
         );
         refuse
@@ -2157,22 +2157,39 @@ fn espaces_unis(t: &str) -> String {
     t.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// L'UAC est-il allumé (EnableLUA ≠ 0) ? Lu par reg.exe, sans Vanguard.
+/// L'élévation a-t-elle un jeton ordinaire à côté (TokenElevationType ≠ 1) ? Lu à Windows lui-même, sans Vanguard.
+/// EnableLUA ne suffit pas : un processus lancé par un service (la CI de GitHub) est élevé sans jeton ordinaire, UAC
+/// allumé ou pas, et rien ne refuse alors. Illisible : compté avec jeton ordinaire, comme le refus, qui échoue fermé.
 #[cfg(windows)]
-fn uac_actif() -> bool {
-    let systeme = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
-    std::process::Command::new(Path::new(&systeme).join("System32").join("reg.exe"))
-        .args([
-            "query",
-            r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System",
-            "/v",
-            "EnableLUA",
-        ])
-        .output()
-        .is_ok_and(|o| !String::from_utf8_lossy(&o.stdout).contains("0x0"))
+fn jeton_ordinaire_a_cote() -> bool {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::{
+        GetTokenInformation, TOKEN_ELEVATION_TYPE, TOKEN_QUERY, TokenElevationType, TokenElevationTypeDefault,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    let mut poignee = HANDLE::default();
+    let mut genre = TOKEN_ELEVATION_TYPE::default();
+    let mut taille = 0u32;
+    // SAFETY : GetCurrentProcess rend une pseudo-poignée ; le jeton ouvert est fermé une seule fois. Windows écrit au
+    // plus 4 octets, la taille exacte de TOKEN_ELEVATION_TYPE (il refuse un tampon plus grand), dans `genre`.
+    unsafe {
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut poignee).is_err() {
+            return true;
+        }
+        let lu = GetTokenInformation(
+            poignee,
+            TokenElevationType,
+            Some((&raw mut genre).cast()),
+            u32::try_from(size_of::<TOKEN_ELEVATION_TYPE>()).unwrap(),
+            &raw mut taille,
+        )
+        .is_ok();
+        let _ = CloseHandle(poignee);
+        !lu || genre != TokenElevationTypeDefault
+    }
 }
 #[cfg(not(windows))]
-fn uac_actif() -> bool {
+fn jeton_ordinaire_a_cote() -> bool {
     false
 }
 
