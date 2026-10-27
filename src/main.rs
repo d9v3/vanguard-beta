@@ -4276,8 +4276,14 @@ mod tests_menu {
             "{:?}",
             trois("gimp")
         );
-        assert!(
+        // Proton VPN et Mullvad VPN n'ont de paquet que sous Arch (et winget, Homebrew) : ailleurs, la recherche ne
+        // propose pas un logiciel qu'elle ne saurait installer (`pour_ce_systeme`), la CI Ubuntu comprise.
+        let vpn_ici = lignes.iter().any(|l| {
+            matches!(l, Ligne::Cachee { touche, texte, .. } if touche.starts_with(&logiciels) && texte.contains("VPN"))
+        });
+        assert_eq!(
             trois("vpn").iter().any(|t| t.starts_with(&logiciels)),
+            vpn_ici,
             "{:?}",
             trois("vpn")
         );
