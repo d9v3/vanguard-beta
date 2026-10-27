@@ -36,6 +36,7 @@ pub(crate) struct Inflate {
 
 /// Le flux deflate brut `flux`, au plus `limite` octets produits. Le tampon grandit par doublement depuis une taille
 /// tirée de l'entrée (jamais de la taille annoncée par un en-tête), plafonnée à `limite`.
+#[cfg(test)] // toute lecture du programme a son échéance (`inflater_avant`)
 pub(crate) fn inflater(flux: &[u8], limite: usize) -> Inflate {
     inflater_avant(flux, limite, None)
 }
@@ -88,6 +89,25 @@ pub(crate) fn inflater_avant(flux: &[u8], limite: usize, echeance: Option<std::t
             fin,
         };
     }
+}
+
+/// Les octets compressés qu'un contenu de `taille` octets peut plausiblement occuper. Deflate n'agrandit jamais
+/// beaucoup : au pire des symboles de 9 bits pour 8 (bloc fixe), plus les en-têtes de blocs. Des octets compressés
+/// bien plus nombreux que leur contenu ne sont que des blocs vides, coûteux à décoder et qui ne produisent rien.
+pub(crate) fn compresse_plausible(taille: usize) -> usize {
+    taille.saturating_add(taille / 8).saturating_add(4096)
+}
+
+/// Le contenu d'une entrée d'archive dont la taille est annoncée : entier et exactement de `taille` octets, ou rien.
+/// Le flux doit être plausible pour cette taille (`compresse_plausible`) et lu avant `echeance` : une entrée de blocs
+/// vides ne tient pas le processeur, que sa taille annoncée soit vraie ou non.
+pub(crate) fn entier_avant(flux: &[u8], taille: usize, echeance: std::time::Instant) -> Option<Vec<u8>> {
+    if flux.len() > compresse_plausible(taille) {
+        return None;
+    }
+    // Une place de plus que la taille : un flux qui la dépasse se voit (`Complet` d'une autre longueur, ou `Limite`).
+    let lu = inflater_avant(flux, taille.saturating_add(1), Some(echeance));
+    (lu.fin == Fin::Complet && lu.contenu.len() == taille).then_some(lu.contenu)
 }
 
 #[cfg(test)]
@@ -179,6 +199,35 @@ pub(crate) mod tests {
         let lu = inflater_avant(&gros, 10, Some(debut));
         assert_eq!(lu.fin, Fin::Delai);
         assert!(lu.lus <= TRANCHE && lu.contenu.is_empty());
+    }
+
+    /// Des blocs vides (non finaux, alignés sur l'octet) puis `contenu` compressé : un flux valide, lent à lire.
+    pub(crate) fn vides_puis(vides: usize, contenu: &[u8]) -> Vec<u8> {
+        let mut flux = blocs_vides(vides);
+        flux.truncate(flux.len() - 6);
+        flux.extend(miniz_oxide::deflate::compress_to_vec(contenu, 6));
+        flux
+    }
+
+    /// Une entrée d'archive : lue entière à sa taille ; refusée si ses octets compressés ne sont pas plausibles pour
+    /// elle, ou si l'échéance passe avant la fin.
+    #[test]
+    fn entree_entiere_plausible_et_a_l_heure() {
+        let loin = std::time::Instant::now() + std::time::Duration::from_secs(600);
+        let contenu = vec![7u8; 64 << 10];
+        let flux = vides_puis(16 << 10, &contenu);
+        assert_eq!(entier_avant(&flux, contenu.len(), loin), Some(contenu.clone()));
+        assert_eq!(entier_avant(&flux, contenu.len() - 1, loin), None);
+        assert_eq!(entier_avant(&flux, contenu.len() + 1, loin), None);
+        // Plus de blocs vides que la taille ne le permet : refusé sans décoder.
+        let trop = vides_puis(128 << 10, &contenu);
+        assert_eq!(entier_avant(&trop, contenu.len(), loin), None);
+        // Plausible pour sa taille (1 Mio), mais l'échéance passe : arrêté après la première tranche.
+        let gros = vec![7u8; 1 << 20];
+        let lent = vides_puis(4 * TRANCHE, &gros);
+        assert!(lent.len() <= compresse_plausible(gros.len()));
+        assert_eq!(entier_avant(&lent, gros.len(), loin).map(|c| c.len()), Some(gros.len()));
+        assert_eq!(entier_avant(&lent, gros.len(), std::time::Instant::now()), None);
     }
 
     proptest::proptest! {

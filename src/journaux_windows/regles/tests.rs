@@ -3538,3 +3538,272 @@ fn vidage_et_usurpation_sans_le_geste_complet() {
         assert_eq!(script_suspect(texte).map(|x| x.0), attendu, "{texte}");
     }
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Campagne n° 4 : actions de tâche à attributs, tirets typographiques
+// ---------------------------------------------------------------------------------------------------------------
+
+/// Le schéma des tâches admet un attribut `id` sur une action, et XML des blancs avant « > » : ainsi écrite, l'action
+/// se lit comme une autre (4698 et 4702 alertent), et une action qu'on ne sait pas lire n'est pas un silence.
+#[test]
+fn action_de_tache_avec_attributs() {
+    let avec = |exec: &str, ferme: &str| {
+        format!(
+            "<Task><Actions Context=\"Author\">{exec}<Command id=\"b\">powershell.exe</Command><Arguments >-nop -w hidden\
+             </Arguments ></Exec{ferme}</Actions></Task>"
+        )
+    };
+    for x in [
+        avec("<Exec id=\"a\">", ">"),
+        avec("<Exec\tid='a'>", " >"),
+        avec("<Exec id=\"a/>b\" >", ">"),
+        avec("<Exec >", "\n>"),
+    ] {
+        assert_eq!(
+            actions_de_tache(&x).0,
+            vec![("powershell.exe".to_string(), "-nop -w hidden".to_string())],
+            "{x}"
+        );
+        for id in [4698, 4702] {
+            let mut e = tache(id, "\\Essai", "", "");
+            let champ = if id == 4702 { "TaskContentNew" } else { "TaskContent" };
+            e.champs.retain(|(n, _)| n != champ);
+            e.champs.push((champ.into(), x.clone()));
+            assert_eq!(gravites(&juger(&[e]), "EVT-TAC-001"), [Gravite::Alerte], "{id} {x}");
+        }
+    }
+    // Une action vide, puis une vraie : la vraie est lue ; « <Executable> » n'est pas une action.
+    let x = "<Exec/><Executable><Command>x.exe</Command></Executable><Exec><Command>a.exe</Command></Exec>";
+    assert_eq!(actions_de_tache(x).0, vec![("a.exe".to_string(), String::new())]);
+    // Une action dont la commande ne se lit pas : une alerte, même changée (4702), jamais un silence.
+    let mut e = tache(4702, "\\Essai", "", "");
+    e.champs.retain(|(n, _)| n != "TaskContentNew");
+    e.champs
+        .push(("TaskContentNew".into(), "<Task><Actions><Exec><Command>cmd.exe".into()));
+    assert_eq!(gravites(&juger(&[e]), "EVT-TAC-001"), [Gravite::Alerte]);
+}
+
+/// Une action écrite autrement que Windows ne l'exporte, mais que le Planificateur lit : préfixe d'espace de noms,
+/// CDATA, références numériques, `<Command/>` vide avant la vraie. Elle se lit ; et ce qui ne se lit pas (un
+/// guillemet jamais fermé, une action illisible à côté d'une lisible) alerte au lieu de se taire.
+#[test]
+fn action_de_tache_ecrite_autrement() {
+    let attendu = |c: &str, a: &str| vec![(c.to_string(), a.to_string())];
+    let changee = |x: &str| {
+        let mut e = tache(4702, "\\Essai", "", "");
+        e.champs.retain(|(n, _)| n != "TaskContentNew");
+        e.champs.push(("TaskContentNew".into(), x.into()));
+        gravites(&juger(&[e]), "EVT-TAC-001")
+    };
+    let espace = "<task:Task xmlns:task=\"http://schemas.microsoft.com/windows/2004/02/mit/task\"><task:Actions>\
+                  <task:Exec><task:Command>powershell.exe</task:Command><task:Arguments>-nop</task:Arguments >\
+                  </task:Exec></task:Actions></task:Task>";
+    assert_eq!(actions_de_tache(espace).0, attendu("powershell.exe", "-nop"));
+    assert_eq!(changee(espace), [Gravite::Alerte]);
+    for x in [
+        "<Exec><Command><![CDATA[powershell.exe]]></Command><Arguments>-a <![CDATA[<&b>]]></Arguments></Exec>",
+        "<Exec><Command>&#112;owershell.exe</Command><Arguments>-a &lt;&amp;b&gt;</Arguments></Exec>",
+        "<Exec><Command>&#x70;owershell.exe</Command><Arguments>-a &#60;&amp;b></Arguments></Exec>",
+        "<Exec><Command/><Command>powershell.exe</Command><Arguments/><Arguments>-a <![CDATA[<&b>]]></Arguments></Exec>",
+    ] {
+        assert_eq!(actions_de_tache(x).0, attendu("powershell.exe", "-a <&b>"), "{x}");
+        assert_eq!(changee(x), [Gravite::Alerte], "{x}");
+    }
+    // Défaites une fois : « &amp;lt; » reste « &lt; ».
+    assert_eq!(
+        actions_de_tache("<Exec><Command>a&amp;lt;.exe</Command></Exec>").0,
+        attendu("a&lt;.exe", "")
+    );
+    // Une action anodine lue, une autre illisible (guillemet jamais fermé) : la tâche changée alerte.
+    let anodine = "<Exec><Command>C:\\Windows\\System32\\notepad.exe</Command></Exec>";
+    assert_eq!(changee(anodine), Vec::<Gravite>::new());
+    let mixte = format!("{anodine}<Exec><Command id=\"x>evil.exe</Command></Exec>");
+    assert_eq!(actions_de_tache(&mixte).0.len(), 1);
+    assert_eq!(changee(&mixte), [Gravite::Alerte]);
+    // Le guillemet jamais fermé sur l'action elle-même : rien lu, une alerte.
+    let ouverte = "<Exec id=\"a><Command>powershell.exe</Command></Exec>";
+    assert_eq!(actions_de_tache(ouverte).0, Vec::<(String, String)>::new());
+    assert_eq!(changee(ouverte), [Gravite::Alerte]);
+    // Une action d'un espace de noms inconnu du lecteur reste comptée : `<x:Exec>` sans commande lisible alerte.
+    assert_eq!(
+        changee("<x:Exec><x:Commande>evil.exe</x:Commande></x:Exec>"),
+        [Gravite::Alerte]
+    );
+}
+
+/// PowerShell prend les tirets typographiques (–, —, ―) et le signe moins pour un « - » d'option : « –enc » est la
+/// commande encodée, dans un processus, une tâche, un service ou un script.
+#[test]
+fn tirets_de_powershell() {
+    let b64 = "SQBFAFgAIAAoAE4AZQB3AC0ATwBi";
+    for tiret in ["-", "/", "\u{2010}", "\u{2013}", "\u{2014}", "\u{2015}", "\u{2212}"] {
+        for option in ["enc", "ec", "e", "EncodedCommand"] {
+            let ligne = format!("powershell.exe {tiret}{option} {b64}");
+            assert_eq!(
+                ligne_suspecte("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", &ligne).map(|x| x.0),
+                Some("encode"),
+                "{ligne}"
+            );
+            let js = juger(&[tache(
+                4702,
+                "\\Essai",
+                "powershell.exe",
+                &format!("{tiret}{option} {b64}"),
+            )]);
+            assert_eq!(gravites(&js, "EVT-TAC-001"), [Gravite::Alerte], "{ligne}");
+        }
+        if tiret == "/" {
+            continue;
+        }
+        // Deux tirets (pwsh prend « --enc »), la valeur collée après « : », un « ^ » de cmd au milieu.
+        for option in [
+            format!("{tiret}{tiret}enc {b64}"),
+            format!("{tiret}enc:{b64}"),
+            format!("{tiret}EncodedCommand:\"{b64}\""),
+            format!("{tiret}e^nc {b64}"),
+        ] {
+            let ligne = format!("pwsh.exe -nop {option}");
+            assert_eq!(
+                ligne_suspecte("C:\\Program Files\\PowerShell\\7\\pwsh.exe", &ligne).map(|x| x.0),
+                Some("encode"),
+                "{ligne}"
+            );
+        }
+        // Le même mot sans son tiret n'est pas une option : seul le tiret fait le verdict.
+        assert_eq!(
+            ligne_suspecte(
+                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                &format!("powershell.exe xenc {b64}")
+            )
+            .map(|x| x.0),
+            None
+        );
+        for script in [
+            format!("Start-Process powershell -ArgumentList '-nop {tiret}enc SQBFAFgA'"),
+            format!("Start-Process pwsh -ArgumentList '-nop','{tiret}{tiret}enc',$b"),
+            format!("powershell {tiret}e {b64}"),
+            format!("& powershell.exe {tiret}EncodedCommand:{b64}"),
+        ] {
+            assert_eq!(script_suspect(&script).map(|x| x.0), Some("encode"), "{script}");
+        }
+        assert_eq!(
+            script_suspect(&format!("Select-String {tiret}e motif")).map(|x| x.0),
+            None
+        );
+        assert_eq!(
+            script_suspect(&format!(
+                "Start-Process powershell -ArgumentList '-nop {tiret}enc SQBFAFgA'"
+            ))
+            .map(|x| x.0),
+            Some("encode"),
+            "{tiret}"
+        );
+        assert_eq!(
+            service_suspect("x", &format!("C:\\x\\a.exe {tiret}enc {b64}")).map(|x| x.0),
+            Some(Gravite::Critique),
+            "{tiret}"
+        );
+    }
+    // Un tiret dans un nom de fichier ordinaire ne fait rien tirer.
+    assert_eq!(
+        ligne_suspecte(
+            "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            "powershell.exe -File C:\\Rapports\\juin–juillet.ps1"
+        )
+        .map(|x| x.0),
+        None
+    );
+}
+
+/// L'option d'encodage d'Out-File, Get-Content ou certutil n'est pas une commande encodée : un nom d'encodage, un
+/// numéro de page de codes, un mot ordinaire après « -e » ne font rien tirer, même dans un script qui nomme
+/// PowerShell ; le vrai base64 d'UTF-16, « -EncodedCommand » en entier et une variable passée à PowerShell, si.
+#[test]
+fn commande_encodee_jugee_sur_sa_valeur() {
+    let b64 = "VwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIAAxAA==";
+    for script in [
+        "gc $f -enc byte",
+        "Get-Content $f -Enc:UTF8",
+        "certutil -encode in.txt out.txt",
+        "& certutil '/encode' in.txt out.txt",
+        "Start-Process powershell; Get-Process | Out-File x.txt -en BigEndianUnicode",
+        "powershell -c \"gc a.txt -encoding utf8 | Out-File b.txt -enc 65001\"",
+        "powershell -c \"git grep -e LongPatternHere12\"",
+        "powershell -c \"docker run -e CLE=valeurassezlongue img\"",
+        "powershell -c \"robocopy /e /mnt/partage/dossier\"",
+        "powershell -c \"Get-Content x -en utf8\"",
+    ] {
+        assert_eq!(script_suspect(script).map(|x| x.0), None, "{script}");
+    }
+    for script in [
+        format!("powershell -e {b64}"),
+        "Start-Process powershell -ArgumentList '-NoP','-Enc',$b".to_string(),
+        "$a = '-EncodedCommand ' + $x".to_string(),
+        format!("Start-Process powershell.exe -ArgumentList \"-EncodedCommand:{b64}\""),
+        format!("$p = '-enc {b64}'"),
+    ] {
+        assert_eq!(script_suspect(&script).map(|x| x.0), Some("encode"), "{script}");
+    }
+    // Le même base64 mis en minuscules ne décode plus en UTF-16 : la casse compte, « -e » seul ne suffit pas.
+    assert_eq!(
+        script_suspect(&format!("powershell -e {}", b64.to_lowercase())).map(|x| x.0),
+        None
+    );
+    // Le processus PowerShell lui-même : un nom d'encodage n'est pas une commande, le base64 si.
+    let ps = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+    assert_eq!(
+        ligne_suspecte(ps, "powershell.exe -c \"gci | Out-File a -en BigEndianUnicode\"").map(|x| x.0),
+        None
+    );
+    assert_eq!(
+        ligne_suspecte(ps, &format!("powershell.exe -en {b64}")).map(|x| x.0),
+        Some("encode")
+    );
+}
+
+/// Commentaires, instructions et CDATA d'une tâche : une balise écrite dedans n'en est pas une. Un `</Arguments>`
+/// dans une CDATA ne coupe plus la valeur, un `<Command>` en commentaire ne passe plus avant la vraie, une action en
+/// commentaire ne compte pas comme illisible.
+#[test]
+fn tache_commentaires_et_cdata() {
+    let changee = |x: &str| {
+        let mut e = tache(4702, "\\Essai", "", "");
+        e.champs.retain(|(n, _)| n != "TaskContentNew");
+        e.champs.push(("TaskContentNew".into(), x.into()));
+        gravites(&juger(&[e]), "EVT-TAC-001")
+    };
+    let cdata = "<Exec><Command>C:\\Windows\\System32\\notepad.exe</Command>\
+                 <Arguments><![CDATA[/c echo </Arguments>]]>&amp; evil.exe</Arguments></Exec>";
+    assert_eq!(
+        actions_de_tache(cdata).0,
+        vec![(
+            "C:\\Windows\\System32\\notepad.exe".to_string(),
+            "/c echo </Arguments>& evil.exe".to_string()
+        )]
+    );
+    let commentaire =
+        "<Exec><!--<Command>C:\\Windows\\System32\\notepad.exe</Command>--><Command>powershell.exe</Command></Exec>";
+    assert_eq!(actions_de_tache(commentaire).0[0].0, "powershell.exe");
+    assert_eq!(changee(commentaire), [Gravite::Alerte]);
+    let instruction =
+        "<Exec><?x <Command>C:\\Windows\\System32\\notepad.exe</Command>?><Command>cmd.exe</Command></Exec>";
+    assert_eq!(actions_de_tache(instruction).0[0].0, "cmd.exe");
+    // Un commentaire au milieu d'une valeur en est retiré.
+    assert_eq!(
+        actions_de_tache("<Exec><Command>power<!-- x -->shell.exe</Command></Exec>").0[0].0,
+        "powershell.exe"
+    );
+    // Une action anodine et une autre en commentaire : rien d'illisible, rien à dire pour une tâche changée.
+    let anodine = "<Exec><Command>C:\\Windows\\System32\\notepad.exe</Command></Exec>";
+    assert_eq!(
+        changee(&format!("{anodine}<!--<Exec><Command>x</Exec>-->")),
+        Vec::<Gravite>::new()
+    );
+    // Un commentaire sans fin couvre le reste : l'action qu'il cache n'est ni lue ni comptée.
+    assert_eq!(
+        actions_de_tache(&format!("{anodine}<!--<Exec><Command>evil.exe</Command></Exec>"))
+            .0
+            .len(),
+        1
+    );
+}

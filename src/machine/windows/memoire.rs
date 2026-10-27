@@ -14,7 +14,8 @@ use windows::Win32::System::Threading::{
 };
 
 use crate::protection::memoire::{
-    Region, Releve, entetes_pe_concordent, image_windows, lisible_windows, region_windows, regrouper,
+    ImageHorsSysteme, Region, Releve, entetes_pe_concordent, image_du_systeme_windows, image_windows, lisible_windows,
+    recoller_image, region_windows, regrouper,
 };
 
 #[link(name = "kernel32")]
@@ -33,9 +34,11 @@ unsafe extern "system" {
         lus: *mut usize,
     ) -> i32;
     fn GetSystemDirectoryW(tampon: *mut u16, taille: u32) -> u32;
+    fn QueryDosDeviceW(nom: *const u16, cible: *mut u16, taille: u32) -> u32;
     fn K32QueryWorkingSetEx(processus: *mut c_void, pages: *mut PageEx, taille: u32) -> i32;
     fn K32GetMappedFileNameW(processus: *mut c_void, adresse: *const c_void, nom: *mut u16, taille: u32) -> u32;
     fn GetFileAttributesW(nom: *const u16) -> u32;
+    fn GetFileInformationByHandle(fichier: *mut c_void, information: *mut InformationFichier) -> i32;
     fn GetLastError() -> u32;
 }
 
@@ -46,6 +49,21 @@ unsafe extern "system" {
 struct PageEx {
     adresse: *mut c_void,
     attributs: usize,
+}
+
+/// BY_HANDLE_FILE_INFORMATION (fileapi.h) : treize ULONG, les dates (FILETIME) en deux moitiés.
+#[repr(C)]
+#[derive(Default)]
+struct InformationFichier {
+    attributs: u32,
+    creation: [u32; 2],
+    acces: [u32; 2],
+    ecriture: [u32; 2],
+    volume: u32,
+    taille: [u32; 2],
+    liens: u32,
+    index_haut: u32,
+    index_bas: u32,
 }
 
 const MEM_IMAGE: u32 = 0x100_0000;
@@ -100,6 +118,31 @@ pub(crate) fn system32() -> Option<String> {
     let ecrits = unsafe { GetSystemDirectoryW(tampon.as_mut_ptr(), taille) };
     let ecrits = usize::try_from(ecrits).ok()?;
     (ecrits > 0 && ecrits < tampon.len()).then(|| String::from_utf16_lossy(&tampon[..ecrits]))
+}
+
+/// Le volume du système sous ses deux formes ouvrables (« \\?\C: », « \\?\GLOBALROOT\Device\HarddiskVolume3 ») et
+/// le dossier de Windows sur ce volume (« \WINDOWS »), d'après System32 (`system32`) et QueryDosDeviceW, pour
+/// `image_du_systeme_windows`. `None` s'ils ne se lisent pas : aucune image n'est alors dite du système.
+fn volume_du_systeme() -> Option<(Vec<String>, String)> {
+    let dossier = system32()?;
+    let lettre = dossier.get(..2).filter(|l| l.ends_with(':'))?;
+    let windows = dossier.get(2..)?.rsplit_once('\\')?.0.to_string();
+    let nom: Vec<u16> = lettre.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut cible = [0u16; 1024];
+    let taille = u32::try_from(cible.len()).ok()?;
+    // SAFETY : `nom` est terminé par un zéro et lu seulement ; `cible` fait `taille` caractères, QueryDosDeviceW n'écrit
+    // pas au-delà et rend le nombre écrit (une liste de chaînes finie par deux zéros), 0 en cas d'échec.
+    let ecrits = unsafe { QueryDosDeviceW(nom.as_ptr(), cible.as_mut_ptr(), taille) };
+    let ecrits = usize::try_from(ecrits).ok().filter(|&n| n > 0 && n <= cible.len())?;
+    let fin = cible[..ecrits].iter().position(|&c| c == 0).unwrap_or(ecrits);
+    let peripherique = String::from_utf16_lossy(&cible[..fin]);
+    if !peripherique.starts_with(r"\Device\") || windows.is_empty() {
+        return None;
+    }
+    Some((
+        vec![format!(r"\\?\{lettre}"), format!(r"\\?\GLOBALROOT{peripherique}")],
+        windows,
+    ))
 }
 
 /// Un processus ouvert pour lire sa mémoire, et rien d'autre (PROCESS_VM_READ) ; refermé avec lui.
@@ -178,8 +221,10 @@ impl Lecteur {
     }
 
     /// Les blocs à lire : les régions privées ou mappées exécutables (`region_windows`), et les images chargées que
-    /// `image_windows` retient, chaque allocation recollée depuis sa base (positions = RVA pour une image).
+    /// `image_windows` retient, chaque allocation recollée depuis sa base (positions = RVA pour une image) ; une image
+    /// intacte hors des dossiers du système (`image_du_systeme_windows`) se lit aussi, une fois pour tous.
     pub(crate) fn regions(&self) -> Releve {
+        let systeme = volume_du_systeme();
         let brutes = self.brutes();
         let mut releve = Releve::default();
         let mut i = 0;
@@ -221,12 +266,34 @@ impl Lecteur {
                 Fichier::Absent => Some(false),
                 Fichier::Inconnu => None,
             };
-            match image_windows(present, self.pages_privees(&code), rwx) {
-                Some(true) => releve
-                    .blocs
-                    .extend(regrouper(image.iter().map(|b| place(b)).collect(), true)),
-                Some(false) => releve.images_laissees += 1,
-                None => releve.images_non_verifiees += 1,
+            let morceaux = || image.iter().map(|b| place(b)).collect();
+            match (image_windows(present, self.pages_privees(&code), rwx), &fichier) {
+                (Some(true), _) => {
+                    let (blocs, morcelee) = recoller_image(morceaux(), true);
+                    releve.blocs.extend(blocs);
+                    releve.images_morcelees += usize::from(morcelee);
+                }
+                (Some(false), Fichier::Present(chemin))
+                    if systeme
+                        .as_ref()
+                        .is_some_and(|(racines, windows)| image_du_systeme_windows(chemin, racines, windows)) =>
+                {
+                    releve.images_laissees += 1;
+                }
+                (Some(false), _) => {
+                    let (blocs, morcelee) = recoller_image(morceaux(), true);
+                    let cle = match &fichier {
+                        Fichier::Present(chemin) => identite_du_fichier(chemin),
+                        _ => None,
+                    };
+                    releve.hors_systeme.push(ImageHorsSysteme {
+                        cle,
+                        blocs,
+                        morcelee,
+                        entete_a_verifier: None,
+                    });
+                }
+                (None, _) => releve.images_non_verifiees += 1,
             }
         }
         releve
@@ -369,5 +436,57 @@ impl Drop for Lecteur {
         unsafe {
             let _ = CloseHandle(self.0);
         }
+    }
+}
+
+/// Ce qui nomme le fichier d'une image hors du système (`ImageHorsSysteme::cle`) : le numéro de série du volume,
+/// l'identifiant du fichier sur ce volume et sa date de dernière écriture (GetFileInformationByHandle). Un chemin ne
+/// suffit pas : le même chemin peut mener à un autre fichier (remplacé, ou vu d'un autre lecteur réseau), et un même
+/// fichier a plusieurs chemins (liens). `None` : le fichier ne s'ouvre pas, l'image se lit dans chaque processus.
+fn identite_du_fichier(chemin: &str) -> Option<String> {
+    use std::os::windows::io::AsRawHandle;
+    let fichier = std::fs::File::open(chemin).ok()?;
+    let mut info = InformationFichier::default();
+    // SAFETY : la poignée vient d'un fichier ouvert qui vit jusqu'à la fin de la fonction ; `info` est une
+    // BY_HANDLE_FILE_INFORMATION à nous, que l'appel remplit sans en sortir.
+    if unsafe { GetFileInformationByHandle(fichier.as_raw_handle(), &raw mut info) } == 0 {
+        return None;
+    }
+    Some(cle_de_fichier(&info))
+}
+
+fn cle_de_fichier(info: &InformationFichier) -> String {
+    format!(
+        "{:08x}:{:08x}{:08x}:{:08x}{:08x}",
+        info.volume, info.index_haut, info.index_bas, info.ecriture[1], info.ecriture[0]
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::identite_du_fichier;
+
+    /// Campagne n° 4, deuxième relecture (M4) : une image hors du système est nommée par son fichier (volume,
+    /// identifiant, date d'écriture), pas par son chemin : un autre fichier au même chemin, ou réécrit, se relit ; un
+    /// lien vers le même fichier ne se relit pas ; un fichier qui ne s'ouvre pas n'a pas de nom.
+    #[test]
+    fn identite_d_une_image_hors_du_systeme() {
+        let d = std::env::temp_dir().join(format!("vanguard-identite-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let (a, b, lien) = (d.join("a.dll"), d.join("b.dll"), d.join("lien.dll"));
+        std::fs::write(&a, b"MZ a").unwrap();
+        std::fs::write(&b, b"MZ b").unwrap();
+        let cle = |p: &std::path::Path| identite_du_fichier(p.to_str().unwrap());
+        let premiere = cle(&a).unwrap();
+        assert_eq!(cle(&a).as_ref(), Some(&premiere));
+        assert_ne!(cle(&b).as_ref(), Some(&premiere));
+        if std::fs::hard_link(&a, &lien).is_ok() {
+            assert_eq!(cle(&lien).as_ref(), Some(&premiere));
+        }
+        std::fs::remove_file(&a).unwrap();
+        std::fs::rename(&b, &a).unwrap();
+        assert_ne!(cle(&a).as_ref(), Some(&premiere));
+        assert_eq!(cle(&d.join("absent.dll")), None);
+        std::fs::remove_dir_all(&d).unwrap();
     }
 }

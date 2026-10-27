@@ -188,10 +188,7 @@ fn forme<'a>(octets: &'a [u8], bornes: &Bornes, stricte: bool) -> Result<Vec<Ent
         if !hors_bornes {
             total += taille;
         }
-        // Deflate n'agrandit jamais beaucoup : au pire des symboles de 9 bits pour 8 (bloc fixe), plus les en-têtes
-        // de blocs. Des octets compressés bien plus nombreux que leur contenu ne sont que des blocs vides, coûteux à
-        // décoder et qui ne produisent rien.
-        if !hors_bornes && methode == 8 && compresse > taille + taille / 8 + 4096 {
+        if !hors_bornes && methode == 8 && compresse > super::deflate::compresse_plausible(taille) {
             return Err(Defaut::Demesuree);
         }
         // Le nom de l'en-tête local doit être celui du répertoire central, comme le veut zipfile.

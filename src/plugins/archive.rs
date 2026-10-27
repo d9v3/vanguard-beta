@@ -1,6 +1,7 @@
 //! Une archive .zip de plugin (celui d'un autre, téléchargé), dépliée en Rust avec miniz_oxide (déjà là pour les
 //! empreintes de MalwareBazaar), sans programme externe. Une archive vient de n'importe qui : rien n'est écrit hors du
-//! dossier de dépliage (chemin absolu, lecteur, « .. », lien : refusés), et elle est bornée en taille et en nombre.
+//! dossier de dépliage (chemin absolu, lecteur, « .. », lien : refusés), et elle est bornée en taille, en nombre et
+//! en temps.
 
 use std::path::Path;
 
@@ -24,8 +25,16 @@ pub struct Entree {
     pub contenu: Option<Vec<u8>>,
 }
 
-/// Les entrées de l'archive, lues par son répertoire central. `Err` dit pourquoi elle est refusée.
-pub fn lire(archive: &[u8]) -> Result<Vec<Entree>, String> {
+/// Le temps de décompresser toute l'archive. Une vraie extension de 50 Mo se lit en moins d'une seconde ; des blocs
+/// deflate vides coûtent ≈ 1,2 s de processeur par Mio compressé sans rien produire, et 500 entrées qui désignent les
+/// mêmes octets les feraient décoder 500 fois.
+const DELAI: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Les entrées de l'archive, lues par son répertoire central, toute l'archive décompressée avant `echeance`. `Err`
+/// dit pourquoi elle est refusée. Chaque entrée a ses propres octets (deux entrées qui se
+/// chevauchent, ou deux fois le même nom, et l'archive est refusée) et des octets compressés plausibles pour la taille
+/// qu'elle annonce : une archive ne fait décoder que ce qu'elle contient, une fois.
+pub fn lire(archive: &[u8], echeance: std::time::Instant) -> Result<Vec<Entree>, String> {
     let illisible = || tr!("archive .zip illisible", "unreadable .zip archive").to_string();
     let debut = archive.len().saturating_sub(22 + 0xffff);
     let fin = (debut..archive.len().saturating_sub(21))
@@ -42,6 +51,10 @@ pub fn lire(archive: &[u8]) -> Result<Vec<Entree>, String> {
     let mut central = mot32(archive, fin + 16).ok_or_else(illisible)?;
     let mut entrees = Vec::new();
     let mut total = 0usize;
+    // Les octets de chaque fichier lu (en-tête local et données), et les noms vus (en minuscules : deux noms qui ne
+    // diffèrent que par la casse sont un seul fichier sous Windows et macOS).
+    let mut occupes: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut noms = std::collections::HashSet::new();
     for _ in 0..nombre {
         if archive.get(central..central + 4) != Some(b"PK\x01\x02") {
             return Err(illisible());
@@ -73,6 +86,9 @@ pub fn lire(archive: &[u8]) -> Result<Vec<Entree>, String> {
                 "path outside the folder (absolute, drive or “..”)"
             )));
         }
+        if !noms.insert(chemin.to_lowercase()) {
+            return Err(refus(tr!("en double", "duplicated")));
+        }
         // Les droits Unix sont dans les 16 bits hauts des attributs externes : 0o120000, un lien symbolique.
         if (externes >> 16) & 0o170_000 == 0o120_000 {
             return Err(refus(tr!("un lien : refusé", "a link: refused")));
@@ -99,12 +115,30 @@ pub fn lire(archive: &[u8]) -> Result<Vec<Entree>, String> {
             + 30
             + mot16(archive, local + 26).ok_or_else(illisible)?
             + mot16(archive, local + 28).ok_or_else(illisible)?;
-        let brut = archive
-            .get(donnees..donnees.checked_add(compresse).ok_or_else(illisible)?)
-            .ok_or_else(illisible)?;
+        let fin_donnees = donnees.checked_add(compresse).ok_or_else(illisible)?;
+        let brut = archive.get(donnees..fin_donnees).ok_or_else(illisible)?;
+        if occupes.iter().any(|o| o.start < fin_donnees && local < o.end) {
+            return Err(refus(tr!(
+                "ses octets sont ceux d'une autre entrée",
+                "its bytes are those of another entry"
+            )));
+        }
+        occupes.push(local..fin_donnees);
         let contenu = match methode {
             0 => brut.to_vec(),
-            8 => miniz_oxide::inflate::decompress_to_vec_with_limit(brut, decompresse).map_err(|_| illisible())?,
+            // Rien rendu : un flux invalide, ou l'échéance passée en le décompressant (dit comme tel : l'archive
+            // n'est peut-être pas abîmée, seulement trop lente à décompresser ici).
+            8 => crate::archives::deflate::entier_avant(brut, decompresse, echeance).ok_or_else(|| {
+                if std::time::Instant::now() >= echeance {
+                    tr!(
+                        "archive .zip : délai de décompression dépassé",
+                        ".zip archive: decompression time limit exceeded"
+                    )
+                    .to_string()
+                } else {
+                    illisible()
+                }
+            })?,
             _ => return Err(refus(tr!("compression inconnue", "unknown compression"))),
         };
         if contenu.len() != decompresse {
@@ -137,7 +171,7 @@ pub fn deplier(archive: &Path, vers: &Path) -> Result<(), String> {
     if octets.len() > OCTETS_MAX {
         return Err(refus());
     }
-    for e in lire(&octets)? {
+    for e in lire(&octets, std::time::Instant::now() + DELAI)? {
         let cible = e.chemin.split('/').fold(vers.to_path_buf(), |c, p| c.join(p));
         let parent = if e.contenu.is_none() {
             Some(cible.as_path())
@@ -165,23 +199,58 @@ pub(crate) mod tests {
 
     /// Une archive .zip sans compression, écrite à la main : (chemin, contenu, droits Unix).
     pub(crate) fn zip(entrees: &[(&str, &[u8], u32)]) -> Vec<u8> {
+        let entrees: Vec<_> = entrees
+            .iter()
+            .map(|&(nom, contenu, droits)| Brute {
+                nom,
+                donnees: contenu,
+                methode: 0,
+                taille: contenu.len(),
+                droits,
+                partagee: false,
+            })
+            .collect();
+        zip_brut(&entrees)
+    }
+
+    /// Une entrée écrite telle quelle : ses octets (compressés si `methode` vaut 8), la taille qu'elle annonce, et
+    /// `partagee` pour désigner les octets de l'entrée précédente au lieu d'en écrire.
+    struct Brute<'a> {
+        nom: &'a str,
+        donnees: &'a [u8],
+        methode: u16,
+        taille: usize,
+        droits: u32,
+        partagee: bool,
+    }
+
+    fn zip_brut(entrees: &[Brute]) -> Vec<u8> {
         let mut a = Vec::new();
         let mut central = Vec::new();
-        for (nom, contenu, droits) in entrees {
-            let local = u32::try_from(a.len()).unwrap();
-            let taille = u32::try_from(contenu.len()).unwrap();
+        let mut local = 0u32;
+        for e in entrees {
+            let (nom, droits) = (e.nom, e.droits);
+            let compresse = u32::try_from(e.donnees.len()).unwrap();
+            let taille = u32::try_from(e.taille).unwrap();
             let n = u16::try_from(nom.len()).unwrap();
-            a.extend(b"PK\x03\x04");
-            a.extend([20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-            a.extend(taille.to_le_bytes());
-            a.extend(taille.to_le_bytes());
-            a.extend(n.to_le_bytes());
-            a.extend([0, 0]);
-            a.extend(nom.as_bytes());
-            a.extend(*contenu);
+            if !e.partagee {
+                local = u32::try_from(a.len()).unwrap();
+                a.extend(b"PK\x03\x04");
+                a.extend([20, 0, 0, 0]);
+                a.extend(e.methode.to_le_bytes());
+                a.extend([0, 0, 0, 0, 0, 0, 0, 0]);
+                a.extend(compresse.to_le_bytes());
+                a.extend(taille.to_le_bytes());
+                a.extend(n.to_le_bytes());
+                a.extend([0, 0]);
+                a.extend(nom.as_bytes());
+                a.extend(e.donnees);
+            }
             central.extend(b"PK\x01\x02");
-            central.extend([20, 3, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-            central.extend(taille.to_le_bytes());
+            central.extend([20, 3, 20, 0, 0, 0]);
+            central.extend(e.methode.to_le_bytes());
+            central.extend([0, 0, 0, 0, 0, 0, 0, 0]);
+            central.extend(compresse.to_le_bytes());
             central.extend(taille.to_le_bytes());
             central.extend(n.to_le_bytes());
             central.extend([0, 0, 0, 0, 0, 0, 0, 0]);
@@ -203,10 +272,14 @@ pub(crate) mod tests {
         a
     }
 
+    fn loin() -> std::time::Instant {
+        std::time::Instant::now() + DELAI
+    }
+
     #[test]
     fn une_archive_ne_sort_jamais_de_son_dossier() {
         let bonne = zip(&[("salon/", b"", 0o40_755), ("salon/essai.sh", b"echo un\n", 0o100_644)]);
-        let e = lire(&bonne).unwrap();
+        let e = lire(&bonne, loin()).unwrap();
         assert_eq!(e.len(), 2);
         assert_eq!(e[1].contenu.as_deref(), Some(&b"echo un\n"[..]));
         for (nom, droits, attendu) in [
@@ -216,9 +289,41 @@ pub(crate) mod tests {
             ("C:/x", 0o100_644, "hors du dossier"),
             ("lien", 0o120_777, "lien"),
         ] {
-            let e = lire(&zip(&[(nom, b"x", droits)])).err().unwrap();
+            let e = lire(&zip(&[(nom, b"x", droits)]), loin()).err().unwrap();
             assert!(e.contains(attendu), "{nom} : {e}");
         }
-        assert!(lire(b"pas une archive").is_err());
+        assert!(lire(b"pas une archive", loin()).is_err());
+    }
+
+    /// Une archive ne fait décoder que ce qu'elle contient, une fois : des entrées qui partagent leurs octets, un nom
+    /// en double, des blocs deflate vides plus nombreux que la taille annoncée, ou une lecture plus longue que
+    /// l'échéance, et elle est refusée.
+    #[test]
+    fn une_archive_ne_tient_pas_le_processeur() {
+        let texte = b"echo un\n".repeat(20_000);
+        let flux = crate::archives::deflate::tests::vides_puis(128 << 10, &texte);
+        let entree = |nom, donnees, partagee| Brute {
+            nom,
+            donnees,
+            methode: 8,
+            taille: texte.len(),
+            droits: 0o100_644,
+            partagee,
+        };
+        let loin = std::time::Instant::now() + std::time::Duration::from_secs(600);
+        let bonne = zip_brut(&[entree("a.sh", &flux, false), entree("b.sh", &flux, false)]);
+        let e = lire(&bonne, loin).unwrap();
+        assert!(e.len() == 2 && e.iter().all(|e| e.contenu.as_deref() == Some(&texte[..])));
+        // Une échéance passée : refusée au lieu d'être lue jusqu'au bout, et dite comme telle.
+        assert!(lire(&bonne, std::time::Instant::now()).err().unwrap().contains("délai"));
+        // Mêmes octets pour deux entrées, ou même nom (à la casse près) : refusée.
+        let partagee = zip_brut(&[entree("a.sh", &flux, false), entree("b.sh", &flux, true)]);
+        assert!(lire(&partagee, loin).err().unwrap().contains("autre entrée"));
+        let double = zip_brut(&[entree("a.sh", &flux, false), entree("A.sh", &flux, false)]);
+        assert!(lire(&double, loin).err().unwrap().contains("double"));
+        // Des blocs vides que la taille annoncée ne justifie pas : refusée sans être décodée.
+        let gonfle = crate::archives::deflate::tests::vides_puis(2 * texte.len(), &texte);
+        let e = lire(&zip_brut(&[entree("a.sh", &gonfle, false)]), loin).err().unwrap();
+        assert!(e.contains("illisible"), "{e}");
     }
 }

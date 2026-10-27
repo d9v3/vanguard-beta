@@ -131,6 +131,8 @@ fn persistance(e: &Entree) -> Vec<Constat> {
     }
     let maison = racine.join("home/alice");
     std::fs::create_dir_all(&maison).unwrap();
+    // Sans gestionnaire de paquets (`None`) : les services ajoutés hors paquet et la bibliothèque préchargée connue
+    // d'un paquet ne sont pas exercés ici : `Paquets` lance pacman ou dpkg, sans imitation possible (reste déclaré).
     super::persistance::persistance_dans(&racine, &maison, |_| None, None, None)
 }
 

@@ -1,0 +1,6 @@
+# EVT-PRC-001, option écrite avec un tiret typographique (« –EncodedCommand »), que PowerShell prend pour « - »
+# (campagne n° 4, M2).
+gravite = "eleve"
+mots = ["encode|powershell"]
+propre = "aucun"
+systemes = ["linux", "windows", "macos"]

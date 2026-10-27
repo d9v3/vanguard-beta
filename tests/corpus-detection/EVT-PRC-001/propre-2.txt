@@ -1,0 +1,1 @@
+Security|Microsoft-Windows-Security-Auditing|4688|0|NewProcessName=C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe|CommandLine=powershell.exe –NoProfile –File C:\Rapports\juin–juillet.ps1|ParentProcessName=C:\Windows\explorer.exe|SubjectUserName=alice

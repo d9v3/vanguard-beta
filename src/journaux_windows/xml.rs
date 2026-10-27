@@ -143,7 +143,7 @@ fn reference(nom: &str) -> char {
 /// La valeur d'un attribut, ses références dépliées, sans la normalisation des blancs de XML (§ 3.3.3) : le lecteur
 /// .evtx garde tabulations et fins de ligne, la source vivante doit rendre la même valeur. Un « & » sans « ; » dans
 /// les 32 caractères qui suivent reste tel quel.
-fn deplier(brut: &str) -> String {
+pub(crate) fn deplier(brut: &str) -> String {
     let mut sortie = String::with_capacity(brut.len());
     let mut reste = brut;
     while let Some(i) = reste.find('&') {

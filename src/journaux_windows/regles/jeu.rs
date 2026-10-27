@@ -21,6 +21,7 @@ use crate::{liste_masquee, mot_masque};
 
 use super::evenement::EvenementWindows;
 use super::moteur::{Audit, Condition, Forme, Gravite, Indice, Libelle, Regle, Test, Texte, Volet, couper, nombre};
+use super::xml;
 
 /// Le fournisseur des événements de sécurité.
 const AUDIT: &[&str] = &["Microsoft-Windows-Security-Auditing"];
@@ -42,6 +43,21 @@ fn rempli(v: &str) -> bool {
 /// Un chemin ou une ligne de commande comparable : minuscules, « / » ramené à « \ ».
 fn chemin_bas(t: &str) -> String {
     t.trim().to_lowercase().replace('/', "\\")
+}
+
+/// Une ligne de commande aux tirets ramenés à « - » : PowerShell prend aussi les tirets typographiques (U+2010 à
+/// U+2015) et le signe moins (U+2212) pour annoncer une option, et « –enc » cachait ainsi la commande encodée aux
+/// règles, qui ne cherchent que « -enc ».
+fn tirets(t: &str) -> String {
+    t.chars()
+        .map(|c| {
+            if matches!(c, '\u{2010}'..='\u{2015}' | '\u{2212}') {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 /// L'instant d'un événement, pour l'objet d'un événement ponctuel (un journal effacé, une protection coupée) :
@@ -374,7 +390,7 @@ fn dans_windows(chemin: &str) -> Option<&str> {
 pub(crate) fn service_suspect(nom: &str, image: &str) -> Option<(Gravite, Texte, bool)> {
     let (programme, arguments) = decouper(image);
     let programme_bas = sans_prefixe(&chemin_bas(&programme));
-    let arguments_bas = chemin_bas(&arguments);
+    let arguments_bas = tirets(&chemin_bas(&arguments));
     let nom_prog = nom_programme(&programme_bas);
     // Le programme lui-même, ou ce que ses arguments lancent : pas le nom d'un dossier (« PowerShell Universal »).
     if est_interprete(&nom_prog)
@@ -1003,7 +1019,12 @@ fn autres_identifiants(e: &EvenementWindows) -> Option<Indice> {
 /// concaténations de chaînes qui coupent un mot en deux (« 'Down'+'loadString' »). Le texte est déjà borné par la
 /// lecture.
 fn script_bas(texte: &str) -> String {
-    let mut s: String = texte.to_lowercase().chars().filter(|&c| c != '`').collect();
+    script_net(&texte.to_lowercase())
+}
+
+/// Un bloc de script nettoyé comme `script_bas`, sa casse gardée : celle d'une valeur en base64 compte.
+fn script_net(texte: &str) -> String {
+    let mut s: String = tirets(texte).chars().filter(|&c| c != '`').collect();
     for coupure in ["'+'", "\"+\"", "' + '", "\" + \"", "'+\"", "\"+'", "')+('", "\")+(\""] {
         if s.contains(coupure) {
             s = s.replace(coupure, "");
@@ -1446,7 +1467,7 @@ pub(crate) fn script_suspect(texte: &str) -> Option<(&'static str, Gravite, Text
             ),
         ));
     }
-    if s.bas.contains("-encodedcommand") || s.bas.contains(" -enc ") || s.bas.contains(" -ec ") {
+    if script_encode(&script_net(texte)) {
         return Some((
             "encode",
             Gravite::Alerte,
@@ -1457,6 +1478,109 @@ pub(crate) fn script_suspect(texte: &str) -> Option<(&'static str, Gravite, Text
         ));
     }
     None
+}
+
+/// Un script qui lance PowerShell avec une commande encodée (`option_encodee`, « -enc », « --enc », « '-enc' »,
+/// « -enc:… »), jugée sur sa valeur (collée après « : », sinon le mot suivant) : un texte en base64 d'UTF-16
+/// (`base64_de_commande`, la forme que PowerShell attend), « -EncodedCommand » écrit en entier, ou une variable
+/// (« '-nop','-enc',$b ») dans un script qui nomme PowerShell. Les formes courtes (« -e », « -en ») seulement avec
+/// le base64 et PowerShell nommé : « -e » sert à bien d'autres commandes (« git grep -e », « docker run -e »). Un
+/// nom d'encodage en valeur (« gc $f -enc byte », « Out-File -en BigEndianUnicode ») n'en est jamais une, ni
+/// « certutil -encode a b ». Tous les mots du script, pas seulement les premiers, coupés aux blancs, virgules et
+/// points-virgules ; ce qui les entoure (guillemets, parenthèses) est retiré. `net` : le script de `script_net`.
+fn script_encode(net: &str) -> bool {
+    let mots: Vec<&str> = net
+        .split(|c: char| c.is_whitespace() || c == ',' || c == ';')
+        .map(|m| m.trim_matches(['"', '\'', '(', ')', '[', ']', '{', '}', '@']))
+        .filter(|m| !m.is_empty())
+        .collect();
+    let bas = net.to_lowercase();
+    let powershell = bas.contains("powershell") || bas.contains("pwsh");
+    mots.iter().enumerate().any(|(i, m)| {
+        let Some((option, colle)) = option_encodee(m) else {
+            return false;
+        };
+        let valeur = if colle.is_empty() {
+            mots.get(i + 1).copied().unwrap_or_default()
+        } else {
+            colle.as_str()
+        };
+        if nom_d_encodage(valeur) {
+            return false;
+        }
+        let longue = option.len() >= 3 || option == "ec";
+        (base64_de_commande(valeur) && (longue || powershell))
+            || option == "encodedcommand"
+            || (longue && powershell && valeur.starts_with('$'))
+    })
+}
+
+/// Un nom d'encodage de PowerShell (`-Encoding`, abrégé « -en » ou « -enc » par Out-File, Get-Content,
+/// Set-Content…) ou un numéro de page de codes : la valeur d'une option d'encodage, pas une commande encodée.
+fn nom_d_encodage(valeur: &str) -> bool {
+    const NOMS: &[&str] = &[
+        "ascii",
+        "ansi",
+        "bigendianunicode",
+        "bigendianutf32",
+        "byte",
+        "default",
+        "latin1",
+        "oem",
+        "string",
+        "unicode",
+        "unknown",
+        "utf7",
+        "utf8",
+        "utf8bom",
+        "utf8nobom",
+        "utf32",
+    ];
+    let bas = valeur.to_ascii_lowercase();
+    NOMS.contains(&bas.as_str()) || (!bas.is_empty() && bas.bytes().all(|o| o.is_ascii_digit()))
+}
+
+/// Une valeur en base64 d'un texte UTF-16 petit-boutiste, la forme de « -EncodedCommand » : au moins 8 caractères
+/// (« IEX » en fait 8), décodée par blocs de 4 (un reste tronqué ignoré), et au moins trois quarts de ses
+/// caractères ASCII imprimables. Un mot ordinaire qui s'écrit en base64 (« BigEndianUnicode », « LongPatternHere »)
+/// décode en octets quelconques : le hasard n'y met pas un octet nul sur deux.
+fn base64_de_commande(valeur: &str) -> bool {
+    let chiffre = |o: u8| -> Option<u32> {
+        Some(u32::from(match o {
+            b'A'..=b'Z' => o - b'A',
+            b'a'..=b'z' => o - b'a' + 26,
+            b'0'..=b'9' => o - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        }))
+    };
+    let utiles = valeur.trim_end_matches('=');
+    if utiles.len() < 8 || valeur.len() - utiles.len() > 2 || utiles.bytes().any(|o| chiffre(o).is_none()) {
+        return false;
+    }
+    let octets: Vec<u8> = utiles
+        .as_bytes()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|bloc| {
+            let n = bloc.iter().fold(0, |n, &o| n << 6 | chiffre(o).unwrap_or(0));
+            let [_, a, b, c] = n.to_be_bytes();
+            [a, b, c]
+        })
+        .collect();
+    let unites: Vec<u16> = octets
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&p| u16::from_le_bytes(p))
+        .collect();
+    let lisibles = unites
+        .iter()
+        .filter(|&&u| u == 9 || u == 10 || u == 13 || (0x20..0x7f).contains(&u))
+        .count();
+    !unites.is_empty() && lisibles * 4 >= unites.len() * 3
 }
 
 /// Le niveau Avertissement (3) : PowerShell écrit lui-même d'origine, même sans la journalisation des blocs, ceux
@@ -1979,24 +2103,38 @@ fn base64_long(m: &str) -> bool {
             .all(|o| o.is_ascii_alphanumeric() || o == b'+' || o == b'/' || o == b'=')
 }
 
-/// PowerShell lancé avec une commande encodée : « -EncodedCommand », ou l'une de ses abréviations que PowerShell
-/// accepte (« -e », « -en », « -enc », « -ec »), suivie d'un texte en base64 ; ou un décodage de base64 dans la
-/// commande même.
+/// L'option de commande encodée de PowerShell dans un mot (en minuscules) : « -EncodedCommand » ou l'une de ses
+/// abréviations que PowerShell accepte (« -e », « -en », « -enc », « -ec »), annoncée par un tiret, deux (pwsh prend
+/// « --enc ») ou « / », les « ^ » de cmd retirés (« -e^nc »). Rend l'option sans son tiret, en minuscules, et la
+/// valeur collée après « : » (« -enc:… »), dans sa casse, vide s'il n'y en a pas. `None` : un autre mot.
+fn option_encodee(mot: &str) -> Option<(String, String)> {
+    let mot: String = mot.chars().filter(|&c| c != '^').collect();
+    let sans = mot
+        .strip_prefix("--")
+        .or_else(|| mot.strip_prefix('-'))
+        .or_else(|| mot.strip_prefix('/'))?;
+    let (option, colle) = sans.split_once(':').unwrap_or((sans, ""));
+    let option = option.to_ascii_lowercase();
+    (!option.is_empty() && ("encodedcommand".starts_with(&option) || option == "ec"))
+        .then(|| (option, colle.trim_matches(['"', '\'']).to_string()))
+}
+
+/// Une option de commande encodée parmi `mots` suivie d'un texte en base64, collé après « : » ou mot suivant, qui
+/// n'est pas un nom d'encodage (« -en BigEndianUnicode » s'écrit en base64).
+fn option_encodee_dans(mots: &[&str]) -> bool {
+    let commande = |v: &str| base64_long(v) && !nom_d_encodage(v);
+    mots.iter().enumerate().any(|(i, m)| {
+        option_encodee(m).is_some_and(|(_, colle)| commande(&colle) || mots.get(i + 1).is_some_and(|v| commande(v)))
+    })
+}
+
+/// PowerShell lancé avec une commande encodée (`option_encodee`) suivie d'un texte en base64 ; ou un décodage de
+/// base64 dans la commande même.
 fn commande_encodee(nom: &str, ligne_bas: &str) -> bool {
     if !POWERSHELLS.contains(&nom) {
         return false;
     }
-    if ligne_bas.contains("frombase64string") {
-        return true;
-    }
-    let m = mots(ligne_bas);
-    m.windows(2).any(|p| {
-        let option = p[0]
-            .strip_prefix('-')
-            .or_else(|| p[0].strip_prefix('/'))
-            .unwrap_or_default();
-        !option.is_empty() && ("encodedcommand".starts_with(option) || option == "ec") && base64_long(p[1])
-    })
+    ligne_bas.contains("frombase64string") || option_encodee_dans(&mots(ligne_bas))
 }
 
 /// Un programme d'attaque publié, par son nom ou celui d'un fichier de sa ligne, ou une commande d'un outil
@@ -2048,7 +2186,7 @@ fn telechargement_systeme(nom: &str, ligne_bas: &str) -> bool {
 pub(crate) fn ligne_suspecte(programme: &str, ligne: &str) -> Option<(&'static str, Gravite, Texte)> {
     let nom = nom_programme(&decouper(programme).0);
     // Les « / » gardés : ce sont aussi ceux des options (« /transfer », « /i: »).
-    let bas = ligne.trim().to_lowercase();
+    let bas = tirets(&ligne.trim().to_lowercase());
     if outil_offensif(&nom, &bas) {
         return Some((
             "outil",
@@ -2141,46 +2279,187 @@ pub(crate) fn actions_de_tache(xml: &str) -> (Vec<(String, String)>, bool) {
     } else {
         xml
     };
-    // En minuscules ASCII seulement : les balises le sont, et les indices de `bas` restent ceux de `xml` (une lettre
-    // dont la minuscule change de longueur, posée exprès dans la tâche, ne décale rien).
-    let bas = xml.to_ascii_lowercase();
-    // La valeur d'une balise dans le bloc `debut..fin`.
+    let bas = bas_de_tache(xml);
+    // La valeur d'une balise dans le bloc `debut..fin`. Une balise vide (`<Command/>`) est sautée : une seconde,
+    // pleine, qui la suit n'est pas perdue.
     let valeur = |debut: usize, fin: usize, balise: &str| -> Option<String> {
-        let ouvre = format!("<{balise}>");
-        let ferme = format!("</{balise}>");
         let bloc = &bas[debut..fin];
-        let i = bloc.find(&ouvre)? + ouvre.len();
-        let j = bloc[i..].find(&ferme)? + i;
-        Some(entites(&xml[debut + i..debut + j]))
+        let mut depuis = 0;
+        loop {
+            let (_, i, vide) = balise_ouvrante(bloc, depuis, balise)?;
+            if vide {
+                depuis = i;
+                continue;
+            }
+            let (j, _) = balise_fermante(bloc, i, balise)?;
+            return Some(entites(&xml[debut + i..debut + j]));
+        }
     };
     let mut actions = Vec::new();
     let mut depuis = 0;
     while actions.len() < ACTIONS_MAX {
-        let Some(i) = bas[depuis..].find("<exec>").map(|i| i + depuis) else {
+        let Some((_, i, vide)) = balise_ouvrante(&bas, depuis, "exec") else {
             break;
         };
+        if vide {
+            depuis = i;
+            continue;
+        }
         // Un bloc sans fin : rien d'autre à lire après lui.
-        let Some(fin) = bas[i..].find("</exec>").map(|j| j + i) else {
+        let Some((fin, apres)) = balise_fermante(&bas, i, "exec") else {
             break;
         };
         if let Some(commande) = valeur(i, fin, "command") {
             let arguments = valeur(i, fin, "arguments").unwrap_or_default();
             actions.push((commande, arguments));
         }
-        depuis = fin + "</exec>".len();
+        depuis = apres;
     }
     (actions, tronque)
 }
 
-/// Les entités XML d'une valeur (« &quot; », « &amp; »…), défaites une fois.
+/// Le XML d'une tâche où chercher les balises : en minuscules ASCII seulement (elles le sont, et les indices restent
+/// ceux du XML : une lettre dont la minuscule change de longueur, posée exprès dans la tâche, ne décale rien), ses
+/// commentaires `<!--…-->` et instructions `<?…?>` entiers et l'intérieur de ses sections `<![CDATA[…]]>` couverts
+/// d'espaces, octet pour octet. Une balise écrite là n'en est pas une pour le Planificateur : lue telle quelle, un
+/// `<Command>` en commentaire passait avant la vraie, et un `</Arguments>` dans une CDATA coupait la valeur. La
+/// CDATA reste lue dans le XML lui-même (`entites`). Un commentaire, une instruction ou une CDATA sans fin couvre
+/// tout le reste.
+fn bas_de_tache(xml: &str) -> String {
+    let mut octets = xml.to_ascii_lowercase().into_bytes();
+    let mut i = 0;
+    while let Some(k) = octets[i..].iter().position(|&o| o == b'<') {
+        let debut = i + k;
+        let suite = &octets[debut..];
+        // (début couvert, fin cherchée, fin couverte ou non)
+        let (couvert, fin, fin_couverte) = if suite.starts_with(b"<!--") {
+            (debut, &b"-->"[..], true)
+        } else if suite.starts_with(b"<?") {
+            (debut, &b"?>"[..], true)
+        } else if suite.starts_with(b"<![cdata[") {
+            (debut + b"<![cdata[".len(), &b"]]>"[..], false)
+        } else {
+            i = debut + 1;
+            continue;
+        };
+        let apres = octets[couvert..]
+            .windows(fin.len())
+            .position(|w| w == fin)
+            .map_or(octets.len(), |j| couvert + j + if fin_couverte { fin.len() } else { 0 });
+        octets[couvert..apres].fill(b' ');
+        i = apres.max(debut + 1);
+    }
+    // Les morceaux couverts commencent et finissent sur un délimiteur ASCII ou au bout du texte : l'UTF-8 reste
+    // entier.
+    String::from_utf8(octets).unwrap_or_else(|_| xml.to_ascii_lowercase())
+}
+
+/// Le nom local de la balise qui commence au « < » d'indice `i` de `bas`, son préfixe d'espace de noms retiré
+/// (`<task:Exec>` est `exec`), et l'indice qui le suit. Le nom s'arrête au premier blanc, « > », « / » ou « < » :
+/// chaque « < » n'est lu qu'une fois, la recherche reste linéaire.
+fn nom_de_balise(bas: &str, i: usize) -> (&str, usize) {
+    let debut = i + 1;
+    let fin = bas[debut..]
+        .find(|c: char| c.is_ascii_whitespace() || matches!(c, '>' | '/' | '<'))
+        .map_or(bas.len(), |k| debut + k);
+    let nom = &bas[debut..fin];
+    (nom.rsplit_once(':').map_or(nom, |(_, local)| local), fin)
+}
+
+/// La prochaine balise ouvrante `<nom…>` de `bas` à partir de `depuis` : (son début, la fin de son « > », vide :
+/// écrite `<nom/>`). Le schéma des tâches admet des attributs (`<Exec id="a">`), XML des blancs avant « > » et un
+/// préfixe d'espace de noms (`<task:Exec>`) : les chercher au seul littéral `<exec>` laissait une action ainsi écrite
+/// invisible. `<executable>` n'est pas `<exec>`.
+fn balise_ouvrante(bas: &str, mut depuis: usize, nom: &str) -> Option<(usize, usize, bool)> {
+    loop {
+        let i = bas[depuis..].find('<')? + depuis;
+        let (local, apres) = nom_de_balise(bas, i);
+        if local != nom {
+            depuis = i + 1;
+            continue;
+        }
+        match bas.as_bytes().get(apres) {
+            Some(b'>') => return Some((i, apres + 1, false)),
+            Some(o) if o.is_ascii_whitespace() || *o == b'/' => {
+                // Les attributs, jusqu'au « > » hors de leurs valeurs entre guillemets, où XML admet « > » et « / » :
+                // `<Exec id="a/">` n'est pas une action vide.
+                let mut guillemet = None;
+                for (k, &c) in bas.as_bytes()[apres..].iter().enumerate() {
+                    match (guillemet, c) {
+                        (None, b'"' | b'\'') => guillemet = Some(c),
+                        (Some(g), _) if c == g => guillemet = None,
+                        (None, b'>') => {
+                            let j = apres + k;
+                            return Some((i, j + 1, bas[..j].trim_end().ends_with('/')));
+                        }
+                        _ => {}
+                    }
+                }
+                return None;
+            }
+            _ => depuis = apres,
+        }
+    }
+}
+
+/// Les balises ouvrantes `<nom` de `bas` (préfixe d'espace de noms admis), comptées sans lire leurs attributs : ce
+/// que le lecteur aurait dû trouver, même là où il n'a rien pu lire (un guillemet jamais fermé, une commande écrite
+/// autrement).
+fn ouvertures(bas: &str, nom: &str) -> usize {
+    let mut compte = 0;
+    let mut depuis = 0;
+    while let Some(k) = bas[depuis..].find('<') {
+        let (local, apres) = nom_de_balise(bas, depuis + k);
+        compte += usize::from(local == nom);
+        depuis = apres.max(depuis + k + 1);
+    }
+    compte
+}
+
+/// La prochaine balise fermante `</nom>` (préfixe d'espace de noms et blancs avant « > » admis) à partir de
+/// `depuis` : (son début, la fin de son « > »).
+fn balise_fermante(bas: &str, mut depuis: usize, nom: &str) -> Option<(usize, usize)> {
+    loop {
+        let i = bas[depuis..].find("</")? + depuis;
+        let (local, apres) = nom_de_balise(bas, i + 1);
+        let blancs = bas[apres..].len() - bas[apres..].trim_start_matches(|c: char| c.is_ascii_whitespace()).len();
+        if local == nom && bas.as_bytes().get(apres + blancs) == Some(&b'>') {
+            return Some((i, apres + blancs + 1));
+        }
+        depuis = i + 2;
+    }
+}
+
+/// Le texte d'une valeur : ses sections `<![CDATA[…]]>` déroulées telles quelles, ses entités et références
+/// numériques (« &quot; », « &#112; », « &#x70; ») défaites une fois ailleurs (`xml::deplier`, celui de la source
+/// vivante) : une commande ainsi écrite ne passe plus à côté des règles. Ses commentaires `<!--…-->` et
+/// instructions `<?…?>` retirés, comme le Planificateur les lit : « evil<!-- -->.exe » est « evil.exe ».
 fn entites(t: &str) -> String {
-    t.replace("&quot;", "\"")
-        .replace("&apos;", "'")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&amp;", "&")
-        .trim()
-        .to_string()
+    let mut sortie = String::with_capacity(t.len());
+    let mut reste = t;
+    while let Some(i) = reste.find('<') {
+        sortie.push_str(&xml::deplier(&reste[..i]));
+        let suite = &reste[i..];
+        let (debut, fin, garde) = if suite.starts_with("<![CDATA[") {
+            ("<![CDATA[", "]]>", true)
+        } else if suite.starts_with("<!--") {
+            ("<!--", "-->", false)
+        } else if suite.starts_with("<?") {
+            ("<?", "?>", false)
+        } else {
+            sortie.push('<');
+            reste = &suite[1..];
+            continue;
+        };
+        let dedans = &suite[debut.len()..];
+        let (texte, apres) = dedans.split_once(fin).unwrap_or((dedans, ""));
+        if garde {
+            sortie.push_str(texte);
+        }
+        reste = apres;
+    }
+    sortie.push_str(&xml::deplier(reste));
+    sortie.trim().to_string()
 }
 
 /// Le dossier des versions de la plateforme de Defender, que Defender protège lui-même : ses tâches d'analyse y
@@ -2269,6 +2548,10 @@ fn tache_auditee(e: &EvenementWindows) -> Option<Indice> {
         .or_else(|| e.champ("TaskContentNew"))
         .unwrap_or_default();
     let (actions, tronque) = actions_de_tache(contenu);
+    // Plus d'actions écrites que d'actions lues (une commande écrite autrement que le lecteur ne l'attend, un
+    // guillemet jamais fermé, une action illisible à côté d'une lisible) : ce qui manque n'est pas jugé, la tâche ne
+    // passe pas pour une simple création.
+    let non_lue = ouvertures(&bas_de_tache(contenu), "exec") > actions.len();
     let pire = actions
         .iter()
         .filter_map(|(programme, arguments)| {
@@ -2277,7 +2560,7 @@ fn tache_auditee(e: &EvenementWindows) -> Option<Indice> {
         .max_by_key(|(gravite, ..)| *gravite);
     let (gravite, pourquoi, commande) = match pire {
         Some((gravite, pourquoi, programme, arguments)) => (gravite, pourquoi, format!("{programme} {arguments}")),
-        None if e.id == 4698 || tronque => (
+        None if e.id == 4698 || tronque || non_lue => (
             Gravite::Info,
             ("une tâche planifiée a été créée", "a scheduled task was created"),
             actions.first().map(|(c, a)| format!("{c} {a}")).unwrap_or_default(),
@@ -2291,6 +2574,14 @@ fn tache_auditee(e: &EvenementWindows) -> Option<Indice> {
             (
                 "le contenu de la tâche est démesuré (plus de 64 Kio, ce qu'aucune tâche ordinaire n'atteint) : il n'a été lu qu'en partie",
                 "the task content is oversized (more than 64 KiB, which no ordinary task reaches): it was only partly read",
+            ),
+        )
+    } else if non_lue && gravite < Gravite::Alerte {
+        (
+            Gravite::Alerte,
+            (
+                "la tâche a une action dont la commande n'a pas pu être lue : ce qu'elle lance n'est pas vérifié",
+                "the task has an action whose command could not be read: what it runs is not verified",
             ),
         )
     } else {
