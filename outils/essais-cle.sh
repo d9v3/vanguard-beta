@@ -488,6 +488,39 @@ compte accepter_vtoyefi
 compte verifier_ventoy "$BANC/point"
 voir "--accepter-vtoyefi : la partition telle qu'elle est devient la référence" \
   dit "$BANC/sortie" "identique à sa référence" || montrer "$BANC/sortie"
+# Rendue illisible ou sans sa ligne de version, une partition déjà relevée n'est pas « pas comparée » en silence
+# (campagne d'attaque n° 4, C-B1).
+if ((EUID != 0)); then
+  chmod 000 "$BANC/vtoyefi/grub/grubx64.efi"
+  : >"$BANC/notifications.log"
+  compte verifier_ventoy "$BANC/point"
+  code=$?
+  voir "VTOYEFI relevée puis un fichier illisible : alerte, code 1, rien de noté" \
+    eval '((code == 1)) && dit "$BANC/notifications.log" "démarrage (VTOYEFI) illisible" &&
+      [[ $(cut -d" " -f2 "$BANC/etat/vanguard/vtoyefi/SERIE-A") != illisible ]]' || montrer "$BANC/sortie"
+  compte accepter_vtoyefi
+  voir "--accepter-vtoyefi refuse une partition illisible" dit "$BANC/sortie" "VTOYEFI illisible : rien n'est noté" ||
+    montrer "$BANC/sortie"
+  chmod 644 "$BANC/vtoyefi/grub/grubx64.efi"
+else
+  echo "  (sauté : en root, un fichier sans droit de lecture se lit quand même)"
+fi
+: >"$BANC/notifications.log"
+VANGUARD_VTOYEFI=$BANC/vtoyefi-absente compte verifier_ventoy "$BANC/point"
+code=$?
+voir "VTOYEFI relevée puis introuvable (renommée, pas montée) : alerte, code 1" \
+  eval '((code == 1)) && dit "$BANC/notifications.log" "démarrage (VTOYEFI) illisible"' || montrer "$BANC/sortie"
+cp "$BANC/vtoyefi/grub/grub.cfg" "$BANC/grub.cfg.avant"
+sed -i '/VENTOY_VERSION/d' "$BANC/vtoyefi/grub/grub.cfg"
+: >"$BANC/notifications.log"
+compte verifier_ventoy "$BANC/point"
+code=$?
+voir "VTOYEFI sans sa ligne de version : comparée quand même, alerte, code 1" \
+  eval '((code == 1)) && dit "$BANC/notifications.log" "démarrage (VTOYEFI) modifié"' || montrer "$BANC/sortie"
+cp "$BANC/grub.cfg.avant" "$BANC/vtoyefi/grub/grub.cfg"
+compte verifier_ventoy "$BANC/point"
+voir "VTOYEFI remise : de nouveau identique à sa référence" dit "$BANC/sortie" "identique à sa référence" ||
+  montrer "$BANC/sortie"
 
 cle_simulee 1.1.10
 ESSAI_CLIC=default VANGUARD_RACINE=$BANC/absente/ventoy-racine compte verifier_ventoy "$BANC/point"

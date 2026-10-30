@@ -800,26 +800,33 @@ version_ventoy() { # dossier
 }
 
 # L'empreinte du contenu d'un dossier VTOYEFI : le SHA-256 de la liste de ses fichiers, chacun avec le sien (32 Mio en
-# tout, lus en une seconde). Rien s'il est illisible.
+# tout, lus en une seconde). « illisible » si un seul fichier ou dossier ne se lit pas, ou s'il est vide : un fichier
+# rendu illisible ne doit pas faire taire la comparaison (campagne d'attaque n° 4, C-B1).
 empreinte_vtoyefi() { # dossier
   local liste
-  liste=$(cd "$1" 2>/dev/null && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum) || return 0
-  [[ -n $liste ]] && sha256sum <<<"$liste" | cut -d' ' -f1
-  return 0
+  if liste=$(cd "$1" 2>/dev/null && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum 2>/dev/null) &&
+    [[ -n $liste ]]; then
+    sha256sum <<<"$liste" | cut -d' ' -f1
+  else
+    echo illisible
+  fi
 }
 
 # Version de Ventoy d'une clé et empreinte de sa partition de démarrage (« version empreinte »), lues sans rien
-# écrire : sa partition VTOYEFI, montée par le bureau, sinon montée en lecture seule le temps de lire.
+# écrire : sa partition VTOYEFI, montée par le bureau, sinon montée en lecture seule le temps de lire. Jamais un mot
+# vide (read décalerait l'empreinte à la place de la version) : « ? » pour une version pas lue, « illisible » pour une
+# partition introuvable, renommée, pas montée ou aux fichiers illisibles.
 # VANGUARD_VTOYEFI : un dossier lu à sa place (essais).
 vtoyefi_de() { # disque
-  local p2 point montee="" version="" empreinte=""
+  local p2 point montee="" version="" empreinte=illisible
   if [[ -n ${VANGUARD_VTOYEFI:-} ]]; then
-    echo "$(version_ventoy "$VANGUARD_VTOYEFI") $(empreinte_vtoyefi "$VANGUARD_VTOYEFI")"
+    version=$(version_ventoy "$VANGUARD_VTOYEFI")
+    echo "${version:-?} $(empreinte_vtoyefi "$VANGUARD_VTOYEFI")"
     return 0
   fi
-  [[ -n $1 ]] || return 0
+  if [[ -z $1 ]]; then echo "? illisible"; return 0; fi
   p2=$(partition "$1" 2)
-  [[ -b $p2 && $(lsblk -dno LABEL "$p2" 2>/dev/null) == VTOYEFI ]] || return 0
+  if [[ ! -b $p2 || $(lsblk -dno LABEL "$p2" 2>/dev/null) != VTOYEFI ]]; then echo "? illisible"; return 0; fi
   point=$(findmnt -nro TARGET -S "$p2" 2>/dev/null | head -1 || true)
   if [[ -z $point ]] && command -v udisksctl >/dev/null && udisksctl mount -b "$p2" -o ro >/dev/null 2>&1; then
     montee=1
@@ -830,13 +837,13 @@ vtoyefi_de() { # disque
     empreinte=$(empreinte_vtoyefi "$point")
   fi
   if [[ -n $montee ]]; then udisksctl unmount -b "$p2" >/dev/null 2>&1 || true; fi
-  echo "$version $empreinte"
+  echo "${version:-?} $empreinte"
 }
 
-ventoy_de() { # disque : la version seule
+ventoy_de() { # disque : la version seule, rien si elle n'a pas été lue
   local version _
   read -r version _ <<<"$(vtoyefi_de "$1")"
-  echo "$version"
+  [[ $version == "?" ]] || echo "$version"
 }
 
 # La partition de démarrage VTOYEFI (le chargeur que tout ordinateur exécute avant même Ventoy) comparée à sa
@@ -854,15 +861,28 @@ reference_vtoyefi() { # disque : le chemin de sa référence, ou rien (numéro d
 noter_vtoyefi() { # disque version empreinte
   local ref
   ref=$(reference_vtoyefi "$1")
-  [[ -n $ref && -n $3 ]] || return 0
+  [[ -n $ref && -n $3 && $3 != illisible ]] || return 0
   mkdir -p "$REFERENCES_VTOYEFI" && printf '%s %s\n' "$2" "$3" >"$ref"
 }
-controler_vtoyefi() { # disque version empreinte : 1 si elle a changé (dit)
+controler_vtoyefi() { # disque version empreinte : 1 si elle a changé ou ne se lit plus (dit)
   local ref
   ref=$(reference_vtoyefi "$1")
-  if [[ -z $ref || -z $3 ]]; then
-    echo "· Démarrage de la clé (VTOYEFI) : pas comparé (numéro de série ou fichiers illisibles)."
+  if [[ -z $ref ]]; then
+    echo "· Démarrage de la clé (VTOYEFI) : pas comparé (numéro de série de la clé illisible)."
     return 0
+  fi
+  if [[ $3 == illisible && ! -s $ref ]]; then
+    echo "· Démarrage de la clé (VTOYEFI) : pas comparé (partition ou fichiers illisibles, aucune référence ici)."
+    return 0
+  fi
+  # Relevée ici, elle se lisait : illisible aujourd'hui, elle n'est plus comparée, ce qui est en soi un écart.
+  if [[ $3 == illisible ]]; then
+    echo "✖ Démarrage de la clé (VTOYEFI) illisible (fichier sans droit de lecture, partition renommée ou pas montée) :"
+    echo "  impossible de le comparer à sa référence. À ne démarrer nulle part avant d'avoir compris pourquoi."
+    avertir "Clé VANGUARD : démarrage (VTOYEFI) illisible" "Sa partition de démarrage ne se lit plus comme à sa \
+dernière relève ici : rien ne dit qu'elle est intacte. Ne démarrez aucun ordinateur sur cette clé avant d'avoir \
+compris pourquoi."
+    return 1
   fi
   if [[ ! -s $ref ]]; then
     noter_vtoyefi "$@"
@@ -886,9 +906,9 @@ accepter_vtoyefi() { # la clé branchée : sa partition de démarrage telle qu'e
   [[ -n $point ]] || erreur "Clé VANGUARD non branchée (ou au jeton inconnu de cet ordinateur)."
   disque=$(disque_de "$point")
   read -r version empreinte <<<"$(vtoyefi_de "$disque")"
-  [[ -n $empreinte && -n $(reference_vtoyefi "$disque") ]] || erreur "VTOYEFI illisible : rien n'est noté."
+  [[ $empreinte != illisible && -n $(reference_vtoyefi "$disque") ]] || erreur "VTOYEFI illisible : rien n'est noté."
   noter_vtoyefi "$disque" "$version" "$empreinte"
-  echo "✔ Démarrage de la clé (VTOYEFI, Ventoy ${version:-?}) pris pour référence."
+  echo "✔ Démarrage de la clé (VTOYEFI, Ventoy $version) pris pour référence."
 }
 
 # L'archive de Ventoy épinglée, rangée avec les images (téléchargée au besoin), vérifiée par son empreinte : son chemin,
@@ -971,11 +991,12 @@ verifier_ventoy() { # point de la clé
   local point=$1 disque version empreinte raison commande serie octets reponse
   disque=$(disque_de "$point")
   read -r version empreinte <<<"$(vtoyefi_de "$disque")"
-  if [[ -z $version ]]; then
+  # Comparée avant la version : une ligne VENTOY_VERSION retirée de grub.cfg ne fait pas sauter la comparaison.
+  controler_vtoyefi "$disque" "$version" "$empreinte" || return 1
+  if [[ $version == "?" ]]; then
     echo "· Ventoy : version pas lue (VTOYEFI introuvable ou illisible) : non vérifié."
     return 0
   fi
-  controler_vtoyefi "$disque" "$version" "$empreinte" || return 1
   if ! plus_ancienne "$version" "$VENTOY"; then
     echo "✔ Ventoy $version sur la clé (épinglé ici : $VENTOY)."
     return 0
@@ -1089,6 +1110,7 @@ ventoy_maj() { # disque serie octets (facultatifs : la clé branchée, relevée 
   flock -u 9
   local empreinte_apres
   read -r apres empreinte_apres <<<"$(vtoyefi_de "$disque")"
+  [[ $apres != "?" ]] || apres=""
   echo "Ventoy lu sur la clé après la mise à jour : ${apres:-pas lu}." | tee -a "$journal"
   if ((code == 0)) && [[ $apres == "$VENTOY" ]]; then
     # Ce que la partie root vient d'écrire, depuis l'archive épinglée : la nouvelle référence du démarrage.
