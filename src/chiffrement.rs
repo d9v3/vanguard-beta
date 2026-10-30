@@ -33,6 +33,14 @@ pub(crate) const PARAMETRES: (u32, u32, u32) = (64 * 1024, 3, 1);
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Cle([u8; 32]);
 
+// La clé effacée dès qu'elle ne sert plus : une mémoire relue plus tard (fichier d'échange, vidage après un
+// plantage) ne la rend pas. Les copies faites en route (tableaux sur la pile, état du chiffreur) ne le sont pas.
+impl Drop for Cle {
+    fn drop(&mut self) {
+        crate::socle::effacer(&mut self.0);
+    }
+}
+
 impl std::fmt::Debug for Cle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Cle(…)")

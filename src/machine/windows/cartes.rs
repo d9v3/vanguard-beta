@@ -81,7 +81,9 @@ pub(crate) fn cartes() -> Option<Vec<Carte>> {
         };
         match code {
             0 => {
-                let base = tampon.as_ptr() as usize;
+                // L'adresse du tampon, un nombre et jamais un pointeur : les liens que Windows y a écrits (adresses
+                // absolues) deviennent des positions dans la copie, bornées par `dans_le_tampon`, sans être suivis.
+                let base = tampon.as_ptr().addr();
                 let octets: Vec<u8> = tampon.iter().flat_map(|m| m.to_ne_bytes()).collect();
                 return Some(lire(&octets, base));
             }

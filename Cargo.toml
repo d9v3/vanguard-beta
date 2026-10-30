@@ -136,6 +136,9 @@ indexing_slicing = "warn"
 # posé sur du code sûr est refusé aussi : il ferait croire à une garantie qui n'existe pas.
 undocumented_unsafe_blocks = "warn"
 unnecessary_safety_comment = "warn"
+# `mem::forget` laisse une ressource sans propriétaire (règle MEM-FORGET-LINT du guide de l'ANSSI) :
+# `ManuallyDrop` ou `Box::leak` disent à la place, et à la lecture, que l'oubli est voulu.
+mem_forget = "warn"
 
 # `fuzzing` : posé par cargo-fuzz pour le banc de fuzz/, qui inclut des modules de src/ par leur chemin (sqlite.rs
 # y ouvre sa lecture des colonnes, réservée à macOS ailleurs). Déclaré pour que la compilation de Vanguard ne le

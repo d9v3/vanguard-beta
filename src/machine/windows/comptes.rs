@@ -630,14 +630,28 @@ pub(super) fn lecture_native() -> Option<String> {
     Some(sections_comptes(&comptes, moi.as_deref(), lbp, Some(&admins)))
 }
 
+/// Une structure de lmaccess.h et le niveau de NetUserModalsGet qui la rend. Le lien entre les deux est écrit une
+/// fois, ici : `modales` ne peut pas lire un bloc dans un type qui ne le reproduit pas.
+trait NiveauModales: Copy {
+    const NIVEAU: u32;
+}
+
+impl NiveauModales for Modales0 {
+    const NIVEAU: u32 = 0;
+}
+
+impl NiveauModales for Modales3 {
+    const NIVEAU: u32 = 3;
+}
+
 /// Un niveau de NetUserModalsGet sur cet ordinateur ; `None` si Windows refuse.
-fn modales<T: Copy>(niveau: u32) -> Option<T> {
+fn modales<T: NiveauModales>() -> Option<T> {
     let mut tampon: *mut u8 = std::ptr::null_mut();
     // SAFETY: NetUserModalsGet (serveur nul : cet ordinateur) écrit dans `tampon` un bloc alloué par Windows au format
-    // du niveau demandé, que `T` reproduit (repr(C), champs de lmaccess.h) ; il est copié tant qu'il vit, puis rendu
+    // du niveau `T::NIVEAU`, que `T` reproduit (repr(C), champs de lmaccess.h, trait `NiveauModales`) ; il est copié tant qu'il vit, puis rendu
     // une seule fois par NetApiBufferFree. Code non nul : rien n'a été alloué.
     unsafe {
-        if NetUserModalsGet(std::ptr::null(), niveau, &raw mut tampon) != 0 || tampon.is_null() {
+        if NetUserModalsGet(std::ptr::null(), T::NIVEAU, &raw mut tampon) != 0 || tampon.is_null() {
             return None;
         }
         let valeur = std::ptr::read_unaligned(tampon.cast::<T>());
@@ -651,8 +665,8 @@ fn modales<T: Copy>(niveau: u32) -> Option<T> {
 /// jamais bloqué). ADSI (« WinNT://<nom de l'ordinateur> ») ne convient pas : sur un vrai Windows, ce nom désigne
 /// l'objet ordinateur, qui n'a pas ces réglages (vu dans la VM de test le 20 octobre).
 fn lire_politique() -> Option<(u32, u32)> {
-    let longueur = modales::<Modales0>(0)?.longueur_min;
-    let seuil = modales::<Modales3>(3)?.seuil;
+    let longueur = modales::<Modales0>()?.longueur_min;
+    let seuil = modales::<Modales3>()?.seuil;
     Some((longueur, seuil))
 }
 

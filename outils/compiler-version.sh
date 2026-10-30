@@ -26,6 +26,10 @@ cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
 RACINE=$PWD
 CARGO_DOSSIER=$(cd "${CARGO_HOME:-$HOME/.cargo}" && pwd)
+# Ce qui changerait en silence le programme publié, venu de l'environnement (règle DENV-CARGO-ENVVARS du guide de
+# l'ANSSI) : un autre compilateur que celui de rust-toolchain.toml, un programme intercalé, des options qui passent
+# avant RUSTFLAGS. cargo auditable pose lui-même son intercalaire, après ceci.
+unset RUSTC RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER CARGO_ENCODED_RUSTFLAGS
 export RUSTFLAGS="--remap-path-prefix=$RACINE=/vanguard --remap-path-prefix=$CARGO_DOSSIER=/cargo"
 # Le C (ring) : ses chemins aussi, pour les messages d'assertion qu'il garde même dans un programme allégé.
 for cible in x86_64_unknown_linux_musl x86_64_pc_windows_gnu; do

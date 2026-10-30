@@ -64,7 +64,8 @@ téléchargées, défenses mises en marche, tâches) est scellé : changé hors 
 coupe plus rien, et c'est dit.
 
 **Ce que Vanguard protège, et ce qu'il ne protège pas** : le [modèle de menace](MODELE-DE-MENACE.md). **Ce que ses
-règles voient, technique par technique** : la [carte de couverture MITRE ATT&CK](COUVERTURE-ATTACK.md).
+règles voient, technique par technique** : la [carte de couverture MITRE ATT&CK](COUVERTURE-ATTACK.md). **Comment son
+code est écrit** : sa [relecture selon le guide Rust de l'ANSSI](CONFORMITE-ANSSI.md).
 
 ## En plus
 

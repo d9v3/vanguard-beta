@@ -170,11 +170,15 @@ pub(crate) fn compte(uid: u32) -> Option<String> {
 /// Les comptes et les sessions lus au plus : `comptes` et `sessions_ouvertes` disent si la liste est coupée.
 pub(crate) const ENTREES_MAX: usize = 10_000;
 
+/// getpwent et getutxent ne sont pas réentrants : tout parcours de la base des comptes, ou de celle des sessions,
+/// les prend, ici comme dans `comptes_oublies`.
+pub(crate) static VERROU_COMPTES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static VERROU_SESSIONS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Les comptes de l'annuaire local (getpwent) : (nom, numéro), `ENTREES_MAX` au plus, et si la liste est coupée (une
 /// liste coupée n'est jamais prise pour complète). getpwent n'est pas réentrant : un seul fil à la fois, par un verrou.
 pub(crate) fn comptes() -> (Vec<(String, u32)>, bool) {
-    static VERROU: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _garde = VERROU.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _garde = VERROU_COMPTES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut liste = Vec::new();
     let mut coupee = false;
     // SAFETY: setpwent, getpwent et endpwent dans ce seul fil (verrou) ; l'entrée rendue reste valable jusqu'à
@@ -212,8 +216,9 @@ pub(crate) struct Session {
 /// Les sessions ouvertes (getutxent, USER_PROCESS), ce que liste `who`, `ENTREES_MAX` au plus, et si la liste est
 /// coupée.
 pub(crate) fn sessions_ouvertes() -> (Vec<Session>, bool) {
-    static VERROU: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _garde = VERROU.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _garde = VERROU_SESSIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let texte = |c: &[c_char]| {
         // SAFETY: un c_char a la taille et l'alignement d'un octet.
         let o: &[u8] = unsafe { std::slice::from_raw_parts(c.as_ptr().cast(), c.len()) };
@@ -504,7 +509,7 @@ pub(crate) fn sip() -> Option<u32> {
 }
 
 mod iokit {
-    use std::ffi::c_char;
+    use std::ffi::{c_char, c_int, c_uint};
 
     use system_configuration::core_foundation::base::{CFAllocatorRef, CFTypeRef};
     use system_configuration::core_foundation::string::CFStringRef;
@@ -512,17 +517,17 @@ mod iokit {
     #[link(name = "IOKit", kind = "framework")]
     unsafe extern "C" {
         /// IOKitLib.h : `io_registry_entry_t IORegistryEntryFromPath(mach_port_t, const io_string_t)`.
-        pub(super) fn IORegistryEntryFromPath(main_port: u32, path: *const c_char) -> u32;
+        pub(super) fn IORegistryEntryFromPath(main_port: c_uint, path: *const c_char) -> c_uint;
         /// IOKitLib.h : `CFTypeRef IORegistryEntryCreateCFProperty(io_registry_entry_t, CFStringRef, CFAllocatorRef,
         /// IOOptionBits)`, à libérer par CFRelease.
         pub(super) fn IORegistryEntryCreateCFProperty(
-            entry: u32,
+            entry: c_uint,
             key: CFStringRef,
             allocator: CFAllocatorRef,
             options: u32,
         ) -> CFTypeRef;
         /// IOKitLib.h : `kern_return_t IOObjectRelease(io_object_t)`.
-        pub(super) fn IOObjectRelease(object: u32) -> i32;
+        pub(super) fn IOObjectRelease(object: c_uint) -> c_int;
     }
 }
 

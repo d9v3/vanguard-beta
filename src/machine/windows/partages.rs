@@ -120,7 +120,7 @@ fn acces() -> Option<Vec<String>> {
         ) == 0
             && !tampon.is_null()
         {
-            let liste = std::slice::from_raw_parts(tampon.cast::<Partage502>(), usize::try_from(lus).ok()?);
+            let liste = std::slice::from_raw_parts(tampon.cast::<Partage502>(), usize::try_from(lus).unwrap_or(0));
             for p in liste.iter().filter(|p| p.sorte & SPECIAL == 0) {
                 let (nom, chemin) = (texte(p.nom), texte(p.chemin));
                 match droits(p.securite) {
@@ -142,7 +142,7 @@ fn acces() -> Option<Vec<String>> {
             ) == 0
             && !tampon.is_null()
         {
-            let liste = std::slice::from_raw_parts(tampon.cast::<Partage1>(), usize::try_from(lus).ok()?);
+            let liste = std::slice::from_raw_parts(tampon.cast::<Partage1>(), usize::try_from(lus).unwrap_or(0));
             for p in liste.iter().filter(|p| p.sorte & SPECIAL == 0) {
                 lignes.push(format!("ACC|{}||?|?|?|?", texte(p.nom)));
             }

@@ -62,7 +62,8 @@ pub(crate) fn empreinte(fichier: &Path, algo: &str, taille: usize) -> Option<Str
                 Err(_) => lu = false,
             }
         }
-        lu = lu && BCryptFinishHash(calcul, resultat.as_mut_ptr(), u32::try_from(taille).ok()?, 0) == 0;
+        // Pas de `?` ici : le fournisseur et le calcul doivent encore être rendus.
+        lu = lu && u32::try_from(taille).is_ok_and(|t| BCryptFinishHash(calcul, resultat.as_mut_ptr(), t, 0) == 0);
         if !calcul.is_null() {
             BCryptDestroyHash(calcul);
         }

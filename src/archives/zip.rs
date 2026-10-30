@@ -197,14 +197,13 @@ fn forme<'a>(octets: &'a [u8], bornes: &Bornes, stricte: bool) -> Result<Vec<Ent
             return Err(Defaut::Illisible(n));
         }
         let donnees = donnees_locales(octets, local, compresse).ok_or(Defaut::Illisible(n))?;
-        let depart = donnees.as_ptr() as usize - octets.as_ptr() as usize;
         entrees.push(Entree {
             nom,
             methode,
             crc,
             taille,
             local,
-            donnees: depart..depart + compresse,
+            donnees,
             hors_bornes,
         });
     }
@@ -246,10 +245,11 @@ fn entree_centrale(octets: &[u8], i: usize) -> Option<(u16, usize, usize, usize,
 }
 
 /// Les données d'un fichier, après son en-tête local.
-fn donnees_locales(octets: &[u8], local: usize, compresse: usize) -> Option<&[u8]> {
+fn donnees_locales(octets: &[u8], local: usize, compresse: usize) -> Option<std::ops::Range<usize>> {
     (u32_a(octets, local)? == 0x0403_4b50).then_some(())?;
     let depart = local + 30 + usize::from(u16_a(octets, local + 26)?) + usize::from(u16_a(octets, local + 28)?);
-    octets.get(depart..depart.checked_add(compresse)?)
+    let fin = depart.checked_add(compresse)?;
+    (fin <= octets.len()).then_some(depart..fin)
 }
 
 // --- Parcours entrée par entrée, pour l'analyse des fichiers (`analyse/`) ---

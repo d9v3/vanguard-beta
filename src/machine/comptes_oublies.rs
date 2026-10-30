@@ -212,8 +212,11 @@ fn comptes_macos(
 fn base_des_comptes() -> Vec<(String, u32, std::path::PathBuf)> {
     const ENTREES_MAX: usize = 10_000;
     let mut comptes = Vec::new();
-    // SAFETY: setpwent, getpwent et endpwent s'enchaînent dans ce seul fil, et rien d'autre dans le programme ne
-    // parcourt la base des comptes ; la struct passwd rendue reste valable jusqu'à l'appel suivant et elle est lue
+    let _garde = crate::machine::macos::noyau::VERROU_COMPTES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // SAFETY: setpwent, getpwent et endpwent s'enchaînent dans ce seul fil, sous le verrou que prend tout autre
+    // parcours de la base des comptes (noyau::comptes) ; la struct passwd rendue reste valable jusqu'à l'appel suivant et elle est lue
     // tout de suite ; pw_name et pw_dir sont des chaînes C terminées par un nul, ou nuls (vérifié avant la lecture).
     unsafe {
         libc::setpwent();
@@ -260,7 +263,11 @@ unsafe extern "C" {
 fn dernieres_sessions() -> std::collections::HashMap<String, chrono::NaiveDate> {
     const ENTREES_MAX: usize = 100_000;
     let mut sessions = std::collections::HashMap::new();
-    // SAFETY: chaque lecteur est ouvert, parcouru puis refermé dans ce seul fil ; l'entrée rendue reste valable
+    let _garde = crate::machine::macos::noyau::VERROU_SESSIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // SAFETY: chaque lecteur est ouvert, parcouru puis refermé dans ce seul fil, sous le verrou que prend tout autre
+    // parcours des sessions (noyau::sessions_ouvertes) ; l'entrée rendue reste valable
     // jusqu'à l'appel suivant, et elle est lue tout de suite (un pointeur non nul, vérifié, vers une struct utmpx
     // entière) ; ut_user est un tableau de taille fixe, lu jusqu'au premier nul ou à sa fin, jamais au-delà.
     unsafe {

@@ -14,8 +14,8 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::System::Ole::{SafeArrayGetDim, SafeArrayGetElement, SafeArrayGetLBound, SafeArrayGetUBound};
 use windows::Win32::System::Variant::{
-    VARENUM, VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_ARRAY, VT_BOOL, VT_BSTR, VT_I1, VT_I2, VT_I4, VT_I8,
-    VT_INT, VT_UI1, VT_UI2, VT_UI4, VT_UI8, VT_UINT, VariantClear,
+    VARENUM, VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_ARRAY, VT_BOOL, VT_BSTR, VT_BYREF, VT_I1, VT_I2, VT_I4,
+    VT_I8, VT_INT, VT_UI1, VT_UI2, VT_UI4, VT_UI8, VT_UINT, VariantClear,
 };
 use windows::Win32::System::Wmi::{
     IWbemLocator, WBEM_FLAG_FORWARD_ONLY, WBEM_FLAG_RETURN_IMMEDIATELY, WBEM_GENERIC_FLAG_TYPE, WBEM_INFINITE,
@@ -333,6 +333,10 @@ unsafe fn lire(v: &VARIANT) -> Valeur {
         let interne = &v.Anonymous.Anonymous;
         let vt = interne.vt;
         let u = &interne.Anonymous;
+        // Par référence, le membre est un pointeur (pparray, plVal…) : jamais lu comme la valeur elle-même.
+        if vt.0 & VT_BYREF.0 != 0 {
+            return Valeur::Nul;
+        }
         if vt.0 & VT_ARRAY.0 != 0 {
             return lire_liste(u.parray, VARENUM(vt.0 & !VT_ARRAY.0));
         }

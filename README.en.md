@@ -60,7 +60,8 @@ fails if the code adds one the page does not name. Its state (extension settings
 tasks) is sealed: changed outside Vanguard, it grants nothing and turns nothing off, and says so.
 
 **What Vanguard protects, and what it does not**: the [threat model](MODELE-DE-MENACE.en.md). **What its rules see,
-technique by technique**: the [MITRE ATT&CK coverage map](COUVERTURE-ATTACK.en.md).
+technique by technique**: the [MITRE ATT&CK coverage map](COUVERTURE-ATTACK.en.md). **How its code is
+written**: its [review against ANSSI's Secure Rust Guidelines](CONFORMITE-ANSSI.en.md).
 
 ## Also included
 

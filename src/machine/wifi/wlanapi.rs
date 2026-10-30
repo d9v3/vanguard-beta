@@ -515,6 +515,8 @@ mod natif {
         }
 
         /// Une liste à en-tête (nombre, index) : copiée sur l'en-tête et ses éléments, bornés.
+        /// SAFETY exigée de l'appelant : `bloc` vient d'une fonction WLAN qui a réussi et rend une liste à en-tête
+        /// (8 octets) suivie d'éléments de `taille_element` octets.
         unsafe fn prendre_liste(&self, bloc: *mut c_void, taille_element: usize) -> Vec<u8> {
             // SAFETY: l'API garantit l'en-tête et `n` éléments entiers dans le bloc.
             unsafe {

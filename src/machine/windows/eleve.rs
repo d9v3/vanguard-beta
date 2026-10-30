@@ -427,8 +427,6 @@ fn dll_a_cote(dossier: &std::path::Path) -> Option<String> {
 
 /// Le processus lancé élevé, à attendre.
 struct Fils(OwnedHandle);
-// SAFETY: une poignée de processus se partage entre fils d'exécution (c'est un objet noyau, pas un état local).
-unsafe impl Send for Fils {}
 
 impl Fils {
     fn pid(&self) -> u32 {
@@ -493,6 +491,8 @@ impl Serveur {
         let sid = super::processus::sid()?;
         let sddl = large(&format!("D:P(A;;GA;;;{sid})(A;;GA;;;SY)(A;;GA;;;BA)"));
         let nom = large(&nom_du_tube(canal));
+        // Avant l'allocation du descripteur : un `?` plus bas le laisserait à Windows.
+        let taille = u32::try_from(std::mem::size_of::<Securite>()).ok()?;
         let mut descripteur: *mut c_void = std::ptr::null_mut();
         // SAFETY: le descripteur alloué par Windows (vérifié non nul) vit pendant CreateNamedPipeW, puis est rendu
         // une seule fois par LocalFree. La poignée du tube (vérifiée) est fermée une seule fois, par OwnedHandle.
@@ -508,7 +508,7 @@ impl Serveur {
                 return None;
             }
             let securite = Securite {
-                taille: u32::try_from(std::mem::size_of::<Securite>()).ok()?,
+                taille,
                 descripteur,
                 heritable: 0,
             };
@@ -565,10 +565,9 @@ impl Serveur {
         if !self.attendre_le_fils(pid) {
             return None;
         }
-        // SAFETY: la poignée reste à `self` (fermée par lui seul) : le File est oublié sans la fermer.
-        let fichier = unsafe { std::fs::File::from_raw_handle(self.tube.as_raw_handle()) };
-        let fichier = std::mem::ManuallyDrop::new(fichier);
-        let mut ecrivain = &*fichier;
+        // Une copie de la poignée (DuplicateHandle), fermée par le File : chacune a un seul propriétaire.
+        let fichier = std::fs::File::from(self.tube.try_clone().ok()?);
+        let mut ecrivain = &fichier;
         let envoi: String = lignes
             .iter()
             .map(|l| format!("{l}\n"))
@@ -577,7 +576,7 @@ impl Serveur {
         ecrivain.write_all(envoi.as_bytes()).ok()?;
         ecrivain.flush().ok()?;
         let mut reponses = Vec::with_capacity(lignes.len());
-        for ligne in lire_lignes(&*fichier)? {
+        for ligne in lire_lignes(&fichier)? {
             reponses.push(lire_reponse(&ligne));
         }
         (reponses.len() == lignes.len()).then_some(reponses)

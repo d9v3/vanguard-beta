@@ -461,7 +461,7 @@ fn dossier_des_tests() -> PathBuf {
         static CROCHET: std::sync::Once = std::sync::Once::new();
         CROCHET.call_once(|| {
             unsafe extern "C" {
-                fn atexit(f: extern "C" fn()) -> i32;
+                fn atexit(f: extern "C" fn()) -> std::ffi::c_int;
             }
             extern "C" fn retirer() {
                 let _ = std::fs::remove_dir_all(

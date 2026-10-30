@@ -87,6 +87,8 @@ Par exemple :
 - **cargo vet**, à chaque vérification : chaque version de chaque dépendance a une relecture publiée par Google,
   Mozilla, Bytecode Alliance, Zcash ou ISRG, ou une exemption écrite à son numéro exact
   ([supply-chain/](supply-chain/config.toml)). Une version nouvelle sans l'une ou l'autre fait échouer la vérification.
+- **Guide Rust de l'ANSSI** : le code est confronté point par point à ses 60 règles et recommandations, dans
+  [CONFORMITE-ANSSI.md](CONFORMITE-ANSSI.md) ; ce qui manque y est dit, avec sa suite.
 - **cargo auditable** : chaque programme publié porte la liste de ses dépendances, versions comprises. N'importe qui
   peut la comparer aux failles connues sur le programme téléchargé, avec `cargo audit bin` (voir la section
   [Développer](README.md#développer) du README) ; `outils/failles-programmes.sh` le fait avant chaque publication.
@@ -192,6 +194,8 @@ For example:
 - **cargo vet**, at every verification: each version of each dependency has a review published by Google, Mozilla,
   Bytecode Alliance, Zcash or ISRG, or a written exemption at its exact number
   ([supply-chain/](supply-chain/config.toml)). A new version with neither fails the verification.
+- **ANSSI's Secure Rust Guidelines**: the code is checked point by point against its 60 rules and recommendations,
+  in [CONFORMITE-ANSSI.en.md](CONFORMITE-ANSSI.en.md); what is missing is said there, with what comes next.
 - **cargo auditable**: every published program carries the list of its dependencies, versions included. Anyone can
   check it against known vulnerabilities on the downloaded program, with `cargo audit bin` (see the README's
   [Development](README.en.md#development) section); `outils/failles-programmes.sh` does it before each release.

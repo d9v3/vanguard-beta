@@ -649,9 +649,7 @@ struct Efface(Vec<u8>);
 
 impl Drop for Efface {
     fn drop(&mut self) {
-        self.0.fill(0);
-        // Les zéros écrits juste avant la libération ne doivent pas être jugés inutiles par le compilateur.
-        std::hint::black_box(&self.0);
+        crate::socle::effacer(&mut self.0);
     }
 }
 

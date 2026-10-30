@@ -24,3 +24,18 @@ pub(crate) use fichiers::{
 #[cfg(unix)]
 pub use personnel::volume;
 pub use personnel::{maison, taille_lisible};
+
+/// Remet chaque octet à zéro par des écritures que le compilateur ne peut pas retirer : un simple `fill(0)` juste
+/// avant la libération est une écriture sans lecteur, qu'il a le droit de supprimer.
+pub(crate) fn effacer(octets: &mut [u8]) {
+    let (blocs, reste) = octets.as_chunks_mut::<64>();
+    for bloc in blocs {
+        // SAFETY: `bloc` vient d'une référence exclusive : adresse valide, alignée (octets), initialisée, à nous seuls.
+        unsafe { std::ptr::write_volatile(bloc, [0; 64]) };
+    }
+    for octet in reste {
+        // SAFETY: comme plus haut, un seul octet.
+        unsafe { std::ptr::write_volatile(octet, 0) };
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+}

@@ -722,23 +722,8 @@ impl Tampon {
 
 impl Drop for Tampon {
     fn drop(&mut self) {
-        effacer(&mut self.0);
+        crate::socle::effacer(&mut self.0);
     }
-}
-
-/// Remet chaque octet à zéro par des écritures que le compilateur ne peut pas retirer : un simple `fill(0)` juste
-/// avant la libération est une écriture sans lecteur, qu'il a le droit de supprimer.
-fn effacer(octets: &mut [u8]) {
-    let (blocs, reste) = octets.as_chunks_mut::<64>();
-    for bloc in blocs {
-        // SAFETY: `bloc` vient d'une référence exclusive : adresse valide, alignée (octets), initialisée, à nous seuls.
-        unsafe { std::ptr::write_volatile(bloc, [0; 64]) };
-    }
-    for octet in reste {
-        // SAFETY: comme plus haut, un seul octet.
-        unsafe { std::ptr::write_volatile(octet, 0) };
-    }
-    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
 }
 
 /// Lit les blocs par `lire`, région par région, chacune à sa place dans le début de `tampon` (jamais agrandi : un
@@ -2346,10 +2331,10 @@ mod tests {
         assert!(lecture.incomplete());
         assert_eq!(lecture.trouves, [("Ancien".to_string(), regions[0].region())]);
         assert_eq!(tampon.0.len(), 100);
-        effacer(&mut tampon.0);
+        crate::socle::effacer(&mut tampon.0);
         assert!(tampon.0.iter().all(|&o| o == 0));
         let mut impair = vec![0xA5u8; 64 * 3 + 7];
-        effacer(&mut impair);
+        crate::socle::effacer(&mut impair);
         assert!(impair.iter().all(|&o| o == 0));
     }
 

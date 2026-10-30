@@ -121,12 +121,16 @@ fn lire() -> Result<Vec<String>, String> {
     }
 
     const A_PLAT: u32 = 0;
+    // Bien au-delà de ce que garde d'ordinaire la mémoire DNS de Windows : une borne contre une boucle, pas un tri.
+    const MAILLONS: usize = 65_536;
     let mut entree: *mut Entree = std::ptr::null_mut();
     let mut noms = Vec::new();
     // SAFETY: DnsGetCacheDataTable (fonction de dnsapi sans documentation publique, la même depuis Windows XP, que
     // ipconfig /displaydns emploie) rend une liste chaînée allouée par Windows, ou rien. Chaque entrée est lue une fois,
     // son nom (chaîne terminée par un zéro) copié, puis le nom et l'entrée rendus par DnsFree, comme le font les outils
-    // qui l'emploient ; la suivante est lue avant de rendre l'entrée.
+    // qui l'emploient ; la suivante est lue avant de rendre l'entrée. Un nom n'est lu qu'à 1 024 caractères au plus,
+    // la borne testée avant chaque caractère ; la liste à MAILLONS au plus, comme celle des cartes réseau : une
+    // boucle dans la liste ne fige plus la lecture (les maillons au-delà restent à Windows, non rendus).
     unsafe {
         if DnsGetCacheDataTable(&raw mut entree) == 0 {
             return Err(crate::tr!(
@@ -135,12 +139,14 @@ fn lire() -> Result<Vec<String>, String> {
             )
             .to_string());
         }
-        while !entree.is_null() {
+        let mut maillons = 0;
+        while !entree.is_null() && maillons < MAILLONS {
+            maillons += 1;
             let suivante = (*entree).suivante;
             let nom = (*entree).nom;
             if !nom.is_null() {
                 let mut fin = 0;
-                while *nom.add(fin) != 0 && fin < 1024 {
+                while fin < 1024 && *nom.add(fin) != 0 {
                     fin += 1;
                 }
                 noms.push(String::from_utf16_lossy(std::slice::from_raw_parts(nom, fin)));
