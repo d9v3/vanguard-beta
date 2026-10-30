@@ -84,9 +84,11 @@ Par exemple :
   des dépendances (base RustSec), licences permises, crates.io comme seule source. Un avis admis l'est avec sa preuve,
   dans [deny.toml](deny.toml).
 - **cargo audit**, chaque nuit sur GitHub, sur la même base RustSec.
-- **cargo vet**, à chaque vérification : chaque version de chaque dépendance a une relecture publiée par Google,
-  Mozilla, Bytecode Alliance, Zcash ou ISRG, ou une exemption écrite à son numéro exact
-  ([supply-chain/](supply-chain/config.toml)). Une version nouvelle sans l'une ou l'autre fait échouer la vérification.
+- **cargo vet**, à chaque vérification : chaque version de chaque dépendance du programme et de ses essais a une
+  relecture publiée par Google, Mozilla, Bytecode Alliance, Zcash ou ISRG, ou une exemption écrite à son numéro exact
+  ([supply-chain/](supply-chain/config.toml)). Une version nouvelle sans l'une ou l'autre fait échouer la vérification ;
+  avec Internet, les relectures importées sont retéléchargées de leurs registres, pour qu'une entrée inventée ne
+  compte pas. Le banc de fuzzing et la bibliothèque des extensions n'y sont pas encore (cargo deny seulement).
 - **Guide Rust de l'ANSSI** : le code est confronté point par point à ses 60 règles et recommandations, dans
   [CONFORMITE-ANSSI.md](CONFORMITE-ANSSI.md) ; ce qui manque y est dit, avec sa suite.
 - **cargo auditable** : chaque programme publié porte la liste de ses dépendances, versions comprises. N'importe qui
@@ -191,9 +193,11 @@ For example:
   dependencies (RustSec database), allowed licenses, crates.io as the only source. An accepted advisory comes with its
   proof, in [deny.toml](deny.toml).
 - **cargo audit**, every night on GitHub, on the same RustSec database.
-- **cargo vet**, at every verification: each version of each dependency has a review published by Google, Mozilla,
-  Bytecode Alliance, Zcash or ISRG, or a written exemption at its exact number
-  ([supply-chain/](supply-chain/config.toml)). A new version with neither fails the verification.
+- **cargo vet**, at every verification: each version of each dependency of the program and its tests has a review
+  published by Google, Mozilla, Bytecode Alliance, Zcash or ISRG, or a written exemption at its exact number
+  ([supply-chain/](supply-chain/config.toml)). A new version with neither fails the verification; with Internet, the
+  imported reviews are downloaded again from their registries, so that a made-up entry does not count. The fuzzing
+  bench and the extensions library are not covered yet (cargo deny only).
 - **ANSSI's Secure Rust Guidelines**: the code is checked point by point against its 60 rules and recommendations,
   in [CONFORMITE-ANSSI.en.md](CONFORMITE-ANSSI.en.md); what is missing is said there, with what comes next.
 - **cargo auditable**: every published program carries the list of its dependencies, versions included. Anyone can

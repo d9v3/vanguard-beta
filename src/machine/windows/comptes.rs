@@ -632,15 +632,21 @@ pub(super) fn lecture_native() -> Option<String> {
 
 /// Une structure de lmaccess.h et le niveau de NetUserModalsGet qui la rend. Le lien entre les deux est écrit une
 /// fois, ici : `modales` ne peut pas lire un bloc dans un type qui ne le reproduit pas.
-trait NiveauModales: Copy {
+///
+/// # Safety
+/// `Self` reproduit exactement (repr(C), mêmes champs, même taille) le bloc que NetUserModalsGet rend au niveau
+/// `NIVEAU` : `modales` en copie `size_of::<Self>()` octets.
+unsafe trait NiveauModales: Copy {
     const NIVEAU: u32;
 }
 
-impl NiveauModales for Modales0 {
+// SAFETY: Modales0 reproduit USER_MODALS_INFO_0 (repr(C), cinq u32 ; taille vérifiée par les tests).
+unsafe impl NiveauModales for Modales0 {
     const NIVEAU: u32 = 0;
 }
 
-impl NiveauModales for Modales3 {
+// SAFETY: Modales3 reproduit USER_MODALS_INFO_3 (repr(C), trois u32 ; taille vérifiée par les tests).
+unsafe impl NiveauModales for Modales3 {
     const NIVEAU: u32 = 3;
 }
 
@@ -648,8 +654,8 @@ impl NiveauModales for Modales3 {
 fn modales<T: NiveauModales>() -> Option<T> {
     let mut tampon: *mut u8 = std::ptr::null_mut();
     // SAFETY: NetUserModalsGet (serveur nul : cet ordinateur) écrit dans `tampon` un bloc alloué par Windows au format
-    // du niveau `T::NIVEAU`, que `T` reproduit (repr(C), champs de lmaccess.h, trait `NiveauModales`) ; il est copié tant qu'il vit, puis rendu
-    // une seule fois par NetApiBufferFree. Code non nul : rien n'a été alloué.
+    // du niveau `T::NIVEAU`, que `T` reproduit (contrat de `unsafe trait NiveauModales`) ; il est copié tant qu'il vit,
+    // puis rendu une seule fois par NetApiBufferFree. Code non nul : rien n'a été alloué.
     unsafe {
         if NetUserModalsGet(std::ptr::null(), T::NIVEAU, &raw mut tampon) != 0 || tampon.is_null() {
             return None;

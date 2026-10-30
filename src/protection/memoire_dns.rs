@@ -121,7 +121,7 @@ fn lire() -> Result<Vec<String>, String> {
     }
 
     const A_PLAT: u32 = 0;
-    // Bien au-delà de ce que garde d'ordinaire la mémoire DNS de Windows : une borne contre une boucle, pas un tri.
+    // Bien au-delà de ce que garde d'ordinaire la mémoire DNS de Windows : une borne de durée, pas un tri.
     const MAILLONS: usize = 65_536;
     let mut entree: *mut Entree = std::ptr::null_mut();
     let mut noms = Vec::new();
@@ -129,8 +129,10 @@ fn lire() -> Result<Vec<String>, String> {
     // ipconfig /displaydns emploie) rend une liste chaînée allouée par Windows, ou rien. Chaque entrée est lue une fois,
     // son nom (chaîne terminée par un zéro) copié, puis le nom et l'entrée rendus par DnsFree, comme le font les outils
     // qui l'emploient ; la suivante est lue avant de rendre l'entrée. Un nom n'est lu qu'à 1 024 caractères au plus,
-    // la borne testée avant chaque caractère ; la liste à MAILLONS au plus, comme celle des cartes réseau : une
-    // boucle dans la liste ne fige plus la lecture (les maillons au-delà restent à Windows, non rendus).
+    // la borne testée avant chaque caractère. Une boucle dans la liste ramènerait à une entrée déjà rendue : chaque
+    // adresse est notée, et la lecture s'arrête avant d'en relire une, sans la toucher (toute la liste est allouée
+    // avant la lecture : une entrée rendue ne peut pas reparaître sous une adresse neuve). Au-delà de MAILLONS, ou
+    // après une boucle, le reste de la liste reste à Windows, non rendu.
     unsafe {
         if DnsGetCacheDataTable(&raw mut entree) == 0 {
             return Err(crate::tr!(
@@ -139,9 +141,8 @@ fn lire() -> Result<Vec<String>, String> {
             )
             .to_string());
         }
-        let mut maillons = 0;
-        while !entree.is_null() && maillons < MAILLONS {
-            maillons += 1;
+        let mut vues = std::collections::HashSet::new();
+        while !entree.is_null() && vues.len() < MAILLONS && vues.insert(entree.addr()) {
             let suivante = (*entree).suivante;
             let nom = (*entree).nom;
             if !nom.is_null() {

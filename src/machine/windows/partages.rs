@@ -120,6 +120,7 @@ fn acces() -> Option<Vec<String>> {
         ) == 0
             && !tampon.is_null()
         {
+            // u32 → usize n'échoue pas sous Windows (usize de 64 bits) : `unwrap_or(0)` n'y est jamais pris.
             let liste = std::slice::from_raw_parts(tampon.cast::<Partage502>(), usize::try_from(lus).unwrap_or(0));
             for p in liste.iter().filter(|p| p.sorte & SPECIAL == 0) {
                 let (nom, chemin) = (texte(p.nom), texte(p.chemin));

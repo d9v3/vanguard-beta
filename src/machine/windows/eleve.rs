@@ -565,7 +565,8 @@ impl Serveur {
         if !self.attendre_le_fils(pid) {
             return None;
         }
-        // Une copie de la poignée (DuplicateHandle), fermée par le File : chacune a un seul propriétaire.
+        // Une copie de la poignée (DuplicateHandle), fermée par le File : chacune a un seul propriétaire. Si la copie
+        // échoue, le Serveur lâché ferme le tube et le fils lit une fin de flux : la correction échoue, sans blocage.
         let fichier = std::fs::File::from(self.tube.try_clone().ok()?);
         let mut ecrivain = &fichier;
         let envoi: String = lignes

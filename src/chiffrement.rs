@@ -34,7 +34,9 @@ pub(crate) const PARAMETRES: (u32, u32, u32) = (64 * 1024, 3, 1);
 pub(crate) struct Cle([u8; 32]);
 
 // La clé effacée dès qu'elle ne sert plus : une mémoire relue plus tard (fichier d'échange, vidage après un
-// plantage) ne la rend pas. Les copies faites en route (tableaux sur la pile, état du chiffreur) ne le sont pas.
+// plantage) ne la rend pas. Les copies faites en route (tableaux sur la pile, état du chiffreur) ne le sont pas, ni
+// l'exemplaire de la session (`cle_pour`) : gardé jusqu'à la fin du programme pour ne demander la phrase qu'une fois,
+// il n'est jamais détruit.
 impl Drop for Cle {
     fn drop(&mut self) {
         crate::socle::effacer(&mut self.0);
@@ -176,10 +178,11 @@ pub(crate) fn ouvrir(enveloppe: &[u8], phrase: &str) -> Result<Cle, Refus> {
         .ok_or(Refus::Format)?;
     let chiffre = reste.get(12 + TAILLE_SEL + 32..).ok_or(Refus::Format)?;
     let enveloppante = deriver(phrase, sel, parametres)?;
-    let octets: [u8; 32] = dechiffrer(&enveloppante, identifiant, chiffre)?
-        .try_into()
-        .map_err(|_| Refus::Format)?;
-    let cle = Cle(octets);
+    // La clé en clair passe par un tampon du tas : effacé avant d'être rendu.
+    let mut clair = dechiffrer(&enveloppante, identifiant, chiffre)?;
+    let octets: Option<[u8; 32]> = clair.as_slice().try_into().ok();
+    crate::socle::effacer(&mut clair);
+    let cle = Cle(octets.ok_or(Refus::Format)?);
     if cle.identifiant() == identifiant {
         Ok(cle)
     } else {
@@ -199,8 +202,10 @@ fn chemin_local() -> PathBuf {
 }
 
 pub(crate) fn lire_cle_locale(chemin: &Path) -> Option<Cle> {
-    let octets: [u8; 32] = crate::socle::lire_ordinaire(chemin, 32).ok()?.try_into().ok()?;
-    Some(Cle(octets))
+    let mut lu = crate::socle::lire_ordinaire(chemin, 32).ok()?;
+    let octets: Option<[u8; 32]> = lu.as_slice().try_into().ok();
+    crate::socle::effacer(&mut lu);
+    octets.map(Cle)
 }
 
 /// Écrite lisible par le compte seul (0600 sous Linux et macOS ; le dossier local de Windows est déjà au compte).

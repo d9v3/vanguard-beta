@@ -160,14 +160,14 @@ unsafe fn lire_config(service: *mut c_void) -> Option<Config> {
     {
         return None;
     }
-    let debut = tampon.as_ptr() as usize;
+    let debut = tampon.as_ptr().addr();
     let fin = debut + octets;
     // SAFETY: l'appel a réussi, le tampon (aligné sur 8, vérifié plus grand que la structure) commence par elle.
     let c = unsafe { &*tampon.as_ptr().cast::<ConfigDuService>() };
     // Un texte de la réponse : son pointeur doit tomber dans le tampon, aligné, et la lecture s'arrête au premier
     // zéro ou à la fin du tampon, jamais au-delà.
     let texte = |p: *const u16| -> String {
-        let a = p as usize;
+        let a = p.addr();
         if p.is_null() || a < debut || a >= fin || !a.is_multiple_of(2) {
             return String::new();
         }

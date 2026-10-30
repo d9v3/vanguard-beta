@@ -249,8 +249,10 @@ duplicates; `extensions/deny.toml` for the extensions library and the Rust examp
 copies), in `outils/verifier.sh` (skipped without the tool, cargo audit also without Internet) and every night in CI.
 `cargo vet` (`supply-chain/`) also requires, at every verification and offline, an imported review (Google, Mozilla,
 Bytecode Alliance, Zcash, ISRG) or an exemption at the exact number for each version: after a `cargo update`,
-`cargo vet` (with Internet) reads the registries again, then `cargo vet regenerate exemptions` and `cargo vet prune`
-write what remains, to be read in the diff of `supply-chain/config.toml`.
+`cargo vet` (with Internet) reads the registries again and names what is missing; each remaining version gets its
+exemption one by one, with its reason (`cargo vet add-exemption <crate> <version> --criteria … --notes "…"`), never
+through `cargo vet regenerate exemptions`, which would exempt in one go an unknown dependency that came in with the
+others; `cargo vet prune` removes what is no longer needed, and the diff of `supply-chain/config.toml` is read.
 The list only keeps permissive licenses (MIT, Apache-2.0, BSD, ISC…), compatible with the GPL-3.0-or-later and with
 a possible dual license of Vanguard: any other, even free and GPL-compatible (MPL, LGPL), first needs the author's
 approval.

@@ -33,7 +33,9 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
   sans échouer ; une faille admise l'est avec sa preuve ; `extensions/deny.toml` pour la bibliothèque des extensions
   et l'exemple en Rust) ; étape de verifier.sh, sautée sans `cargo-deny`. Relectures : `cargo vet --locked --frozen`
   (`supply-chain/`, cargo-vet 0.10.3 : relectures importées ou exemption au numéro exact) ; après un `cargo update`,
-  `cargo vet`, `cargo vet regenerate exemptions`, `cargo vet prune`, et le diff de `supply-chain/` relu.
+  `cargo vet` (Internet), puis pour chaque crate manquant `cargo vet add-exemption <crate> <version> --criteria …
+  --notes "<pourquoi>"`, nommément (jamais `regenerate exemptions`, qui exempterait d'un coup tout ce qui est
+  nouveau) ; `cargo vet prune` ne fait que retirer ; le diff de `supply-chain/` relu.
 - Failles connues : `cargo audit`, second avis, jugé comme `outils/failles-programmes.sh` (abandon, code défaillant,
   notice refusés) ; seules exceptions celles de deny.toml (`outils/exceptions-rustsec.py`), que `.cargo/audit.toml`
   recopie à l'identique ; étape de verifier.sh, sautée sans `cargo-audit` ou sans Internet.

@@ -28,8 +28,22 @@ RACINE=$PWD
 CARGO_DOSSIER=$(cd "${CARGO_HOME:-$HOME/.cargo}" && pwd)
 # Ce qui changerait en silence le programme publié, venu de l'environnement (règle DENV-CARGO-ENVVARS du guide de
 # l'ANSSI) : un autre compilateur que celui de rust-toolchain.toml, un programme intercalé, des options qui passent
-# avant RUSTFLAGS. cargo auditable pose lui-même son intercalaire, après ceci.
-unset RUSTC RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER CARGO_ENCODED_RUSTFLAGS
+# avant RUSTFLAGS, les mêmes réglages sous leur nom de configuration (CARGO_BUILD_…), un profil release changé
+# (CARGO_PROFILE_…), un autre éditeur de liens (CARGO_TARGET_…_LINKER). cargo auditable pose lui-même son
+# intercalaire, après ceci.
+unset RUSTUP_TOOLCHAIN RUSTC RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER CARGO_ENCODED_RUSTFLAGS
+while read -r variable; do
+  unset "$variable"
+done < <(compgen -e | grep -E '^CARGO_(BUILD_|PROFILE_|TARGET_[A-Z0-9_]+_(LINKER|RUSTFLAGS|RUNNER)$)' || true)
+# De même pour le C de ring (cc-rs) : un autre compilateur, archiveur ou option, pour toutes les cibles ou une seule.
+# Les CFLAGS de chaque cible sont reposés plus bas.
+while read -r variable; do
+  unset "$variable"
+done < <(compgen -e | grep -E '^((TARGET_|HOST_)?(CC|CXX|AR|CFLAGS|CXXFLAGS|CRATE_CC_NO_DEFAULTS))(_.+)?$' || true)
+# Une chaîne posée pour ce dossier (rustup override) passe aussi avant rust-toolchain.toml : refusée.
+CHAINE=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+[[ $(rustc --version) == "rustc $CHAINE "* ]] ||
+  { echo "rustc n'est pas celui de rust-toolchain.toml ($CHAINE) : $(rustc --version)" >&2; exit 1; }
 export RUSTFLAGS="--remap-path-prefix=$RACINE=/vanguard --remap-path-prefix=$CARGO_DOSSIER=/cargo"
 # Le C (ring) : ses chemins aussi, pour les messages d'assertion qu'il garde même dans un programme allégé.
 for cible in x86_64_unknown_linux_musl x86_64_pc_windows_gnu; do

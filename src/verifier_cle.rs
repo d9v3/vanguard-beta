@@ -131,7 +131,7 @@ fn juger(tampon: &[u8], essai: u64, fichier: u32, bloc: u32) -> Verdict {
 /// Un tampon de `taille` octets aligné sur `ALIGNEMENT` : (mémoire, début de la partie alignée).
 fn tampon(taille: usize) -> (Vec<u8>, usize) {
     let v = vec![0u8; taille + ALIGNEMENT];
-    let debut = (ALIGNEMENT - (v.as_ptr() as usize % ALIGNEMENT)) % ALIGNEMENT;
+    let debut = (ALIGNEMENT - (v.as_ptr().addr() % ALIGNEMENT)) % ALIGNEMENT;
     (v, debut)
 }
 

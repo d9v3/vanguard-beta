@@ -333,16 +333,28 @@ workflows() {
 # aucune des trois fait échouer : la changer est une décision écrite, pas un `cargo update` passé inaperçu.
 # --frozen : jamais de réseau, le verdict ne bouge pas avec les registres ; `cargo vet` sans option les relit, à la
 # main, quand une dépendance change. Il lit les sources de crates.io (cargo metadata) : `cargo fetch` les pose avant,
-# sans quoi une CI neuve échouerait faute de les avoir. Sautée sans cargo-vet, sauf en CI (install-action, comme
-# zizmor).
+# sans quoi une CI neuve échouerait faute de les avoir. Sautée sans cargo-vet 0.10.3, sauf en CI (install-action,
+# comme zizmor). Mais --frozen croit imports.lock sur parole : une relecture écrite à la main, attribuée à Mozilla
+# ou à Google, y passe pour vraie (relecture adverse du 30 oct. 2026). Avec Internet, la même vérification
+# recommence donc sur une copie de supply-chain/ dont les relectures importées sont retéléchargées de leurs
+# registres : une entrée qu'ils n'ont pas disparaît, et sa dépendance échoue.
 relectures() {
-  if ! command -v cargo-vet >/dev/null; then
-    echo "cargo-vet absent (cargo install --locked cargo-vet@0.10.3)"
+  if ! command -v cargo-vet >/dev/null || [[ $(cargo vet --version) != "cargo-vet 0.10.3" ]]; then
+    echo "cargo-vet 0.10.3 absent (cargo install --locked cargo-vet@0.10.3)"
     [[ $MODE == --ci ]] && return 1
     return "$SAUTEE"
   fi
   cargo vet --version
-  cargo fetch --locked -q && cargo vet --locked --frozen
+  cargo fetch --locked -q && cargo vet --locked --frozen || return 1
+  if ! internet; then
+    echo "relectures importées pas confrontées à leurs registres (hors ligne)"
+    [[ $MODE == --ci ]] && return 1
+    return 0
+  fi
+  local copie=$TRAVAIL/supply-chain-relu
+  rm -rf "$copie" && cp -r supply-chain "$copie" || return 1
+  echo "relectures importées retéléchargées de leurs registres :"
+  cargo vet --store-path "$copie"
 }
 
 # Les nomenclatures (SBOM) des programmes publiés (outils/sbom.sh), faites deux fois : elles doivent sortir, sans
@@ -529,7 +541,7 @@ if [[ $MODE != --rapide ]]; then
   ligne dependances "dépendances (cargo deny)"
   remarques_dependances
   ligne failles-connues "failles connues (cargo audit)"
-  ligne relectures "dépendances relues (cargo vet)"
+  ligne relectures "dépendances tracées (cargo vet)"
   [[ -f $TRAVAIL/relectures.log ]] && grep -m1 -oE '[0-9]+ fully audited.*exempted' "$TRAVAIL/relectures.log" | sed 's/^/      /'
   ligne fuzzing "banc de fuzzing ($(awk '/^  ✔/ { n++ } END { print n + 0 }' "$TRAVAIL/fuzzing.log" 2>/dev/null) cibles)"
 fi
