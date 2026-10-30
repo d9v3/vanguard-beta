@@ -382,8 +382,8 @@ pub(crate) fn etablies_proc(texte: &str, moi: u32, noms: &std::collections::Hash
 /// de 24 octets, MIB_TCP6ROW_OWNER_PID de 56. → (port local, adresse distante, port distant, processus).
 #[cfg(any(windows, test))]
 pub(crate) fn etablies_table(octets: &[u8], ipv6: bool) -> Vec<(u16, IpAddr, u16, u32)> {
-    let mot = |o: &[u8], i: usize| o.get(i..i + 4).map(|m| u32::from_ne_bytes([m[0], m[1], m[2], m[3]]));
-    let port = |o: &[u8], i: usize| o.get(i..i + 2).map(|m| u16::from_be_bytes([m[0], m[1]]));
+    let mot = |o: &[u8], i: usize| o.get(i..)?.first_chunk::<4>().map(|m| u32::from_ne_bytes(*m));
+    let port = |o: &[u8], i: usize| o.get(i..)?.first_chunk::<2>().map(|m| u16::from_be_bytes(*m));
     let (taille, port_local, adresse, port_distant, etat, processus) = if ipv6 {
         (56, 20, 24, 44, 48, 52)
     } else {

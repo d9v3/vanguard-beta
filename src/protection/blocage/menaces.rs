@@ -148,7 +148,7 @@ fn absolu(chemin: &str) -> bool {
     let o = chemin.as_bytes();
     chemin.starts_with('/')
         || chemin.starts_with(r"\\")
-        || (o.len() > 2 && o[0].is_ascii_alphabetic() && o[1] == b':' && matches!(o[2], b'\\' | b'/'))
+        || matches!(o, [lettre, b':', b'\\' | b'/', ..] if lettre.is_ascii_alphabetic())
 }
 
 /// Le fichier à mettre en quarantaine pour ce processus : son programme, sauf un interpréteur ou un shell. Pour
@@ -339,8 +339,7 @@ pub(crate) fn fichier_de_commande(commande: &str, os: Os) -> Option<String> {
     let complet = match os {
         Os::Windows => {
             let o = fichier.as_bytes();
-            fichier.starts_with(r"\\")
-                || (o.len() > 2 && o[0].is_ascii_alphabetic() && o[1] == b':' && matches!(o[2], b'\\' | b'/'))
+            fichier.starts_with(r"\\") || matches!(o, [lettre, b':', b'\\' | b'/', ..] if lettre.is_ascii_alphabetic())
         }
         _ => fichier.starts_with('/'),
     };

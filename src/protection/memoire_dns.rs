@@ -22,15 +22,17 @@ pub(crate) fn noms() -> Result<Vec<String>, String> {
 #[cfg(any(target_os = "linux", test))]
 fn lire_dump(reponse: &str) -> Option<Result<Vec<String>, String>> {
     let v: serde_json::Value = serde_json::from_str(reponse).ok()?;
-    if let Some(erreur) = v["error"].as_str() {
+    if let Some(erreur) = v.get("error").and_then(serde_json::Value::as_str) {
         return Some(Err(erreur.to_string()));
     }
-    let noms = v["parameters"]["dump"]
+    let noms = v
+        .get("parameters")?
+        .get("dump")?
         .as_array()?
         .iter()
-        .filter_map(|interface| interface["cache"].as_array())
+        .filter_map(|interface| interface.get("cache")?.as_array())
         .flatten()
-        .filter_map(|entree| entree["key"]["name"].as_str().map(String::from))
+        .filter_map(|entree| entree.get("key")?.get("name")?.as_str().map(String::from))
         .collect();
     Some(Ok(noms))
 }
@@ -73,7 +75,11 @@ fn lire() -> Result<Vec<String>, String> {
     while !reponse.ends_with(&[0]) && reponse.len() < 32 << 20 {
         match prise.read(&mut morceau) {
             Ok(0) | Err(_) => break,
-            Ok(n) => reponse.extend_from_slice(&morceau[..n]),
+            // Plus que le morceau donné : une lecture fausse, la réponse s'arrête là (et se relit incomplète).
+            Ok(n) => match morceau.get(..n) {
+                Some(lu) => reponse.extend_from_slice(lu),
+                None => break,
+            },
         }
     }
     let texte = String::from_utf8_lossy(reponse.strip_suffix(&[0]).unwrap_or(&reponse)).into_owned();

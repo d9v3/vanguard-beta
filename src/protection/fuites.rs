@@ -113,11 +113,12 @@ fn encoder(adresse: &str) -> String {
 /// (aucune fuite). `None` : réponse illisible. Les noms, écrits par le service, sont lus prêts à montrer.
 fn lire_xposedornot(texte: &str) -> Option<Vec<String>> {
     let v: serde_json::Value = serde_json::from_str(texte).ok()?;
-    if v["Error"] == "Not found" {
+    if v.get("Error").is_some_and(|e| e == "Not found") {
         return Some(Vec::new());
     }
     Some(
-        v["breaches"][0]
+        v.get("breaches")?
+            .get(0)?
             .as_array()?
             .iter()
             .filter_map(|n| n.as_str().map(affichable))

@@ -220,15 +220,16 @@ fn isoler_dans(chemin: &Path, detection: &str, dossier: &Path, sha256: Option<St
         std::fs::set_permissions(&dest, p)?;
     }
     let mut r = charger(dossier);
-    r.fichiers.push(Entree {
+    let entree = Entree {
         nom,
         origine: chemin.to_string_lossy().into_owned(),
         detection: detection.to_string(),
         date: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
         mode,
         sha256,
-    });
-    noter_journal(dossier, r.fichiers.last().expect("ajoutée"));
+    };
+    noter_journal(dossier, &entree);
+    r.fichiers.push(entree);
     enregistrer(dossier, &r)?;
     Ok(dest)
 }

@@ -36,7 +36,8 @@ impl Version {
             {
                 return None;
             }
-            champs[n] = morceau.parse().ok()?;
+            // `n` < CHAMPS_MAX, vérifié juste au-dessus.
+            *champs.get_mut(n)? = morceau.parse().ok()?;
             n += 1;
         }
         Some(Version {
@@ -47,6 +48,10 @@ impl Version {
 
     /// Les champs écrits.
     pub(crate) fn champs(&self) -> &[u32] {
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "n ≤ CHAMPS_MAX : lire, tronquee et depuis, seules à faire une Version, le garantissent"
+        )]
         &self.champs[..usize::from(self.n)]
     }
 
@@ -63,7 +68,9 @@ impl Version {
     pub(crate) fn tronquee(&self, n: usize) -> Version {
         let n = n.clamp(1, usize::from(self.n));
         let mut champs = [0u32; CHAMPS_MAX];
-        champs[..n].copy_from_slice(&self.champs[..n]);
+        for (d, &s) in champs.iter_mut().zip(&self.champs).take(n) {
+            *d = s;
+        }
         Version {
             champs,
             n: u8::try_from(n).unwrap_or(1),
@@ -76,7 +83,9 @@ impl Version {
             return None;
         }
         let mut champs = [0u32; CHAMPS_MAX];
-        champs[..nombres.len()].copy_from_slice(nombres);
+        for (d, &s) in champs.iter_mut().zip(nombres) {
+            *d = s;
+        }
         Some(Version {
             champs,
             n: u8::try_from(nombres.len()).ok()?,
@@ -183,8 +192,10 @@ pub(crate) fn java_eol(texte: &str, forme: FormeJava) -> Option<Version> {
     };
     let v = Version::lire(base)?;
     // Corretto 8 : « 8.504.05.1 » = Java 8, mise à jour 504.
-    if forme == FormeJava::Corretto && v.majeur() == 8 && v.longueur() == 4 {
-        return Version::depuis(&[8, 0, v.champs()[1]]);
+    if forme == FormeJava::Corretto
+        && let [8, mise, _, _] = *v.champs()
+    {
+        return Version::depuis(&[8, 0, mise]);
     }
     trois_champs(v)
 }
@@ -193,7 +204,7 @@ pub(crate) fn java_eol(texte: &str, forme: FormeJava) -> Option<Version> {
 fn trois_champs(v: Version) -> Option<Version> {
     let c = v.tronquee(3);
     Version::depuis(&[
-        c.champs()[0],
+        c.champs().first().copied()?,
         c.champs().get(1).copied().unwrap_or(0),
         c.champs().get(2).copied().unwrap_or(0),
     ])
@@ -215,9 +226,9 @@ pub(crate) fn adobe(texte: &str) -> Option<Version> {
 /// La forme « 198.60 » (CFBundleVersion selon des tiers) est ambiguë : `None`.
 pub(crate) fn brave(texte: &str) -> Option<Version> {
     let v = Version::lire(texte)?;
-    match v.longueur() {
-        3 => Some(v),
-        4 if v.champs()[0] > v.champs()[1] => Version::depuis(&v.champs()[1..]),
+    match *v.champs() {
+        [_, _, _] => Some(v),
+        [chromium, b, m, p] if chromium > b => Version::depuis(&[b, m, p]),
         _ => None,
     }
 }

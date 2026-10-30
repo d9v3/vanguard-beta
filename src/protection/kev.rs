@@ -89,7 +89,8 @@ pub(crate) fn analyser(octets: &[u8]) -> Option<Vec<Exploitee>> {
     let v: serde_json::Value = serde_json::from_slice(octets).ok()?;
     let texte =
         |e: &serde_json::Value, champ: &str| crate::ui::affichable(e[champ].as_str().unwrap_or_default().trim());
-    let liste: Vec<Exploitee> = v["vulnerabilities"]
+    let liste: Vec<Exploitee> = v
+        .get("vulnerabilities")?
         .as_array()?
         .iter()
         .filter_map(|e| {

@@ -116,23 +116,35 @@ fn trouve(meule: &[u8], aiguille: &[u8]) -> bool {
     if aiguille.is_empty() {
         return true;
     }
-    let mut repli = vec![0_usize; aiguille.len()];
+    // `repli[j]` : la longueur du plus long bord de `aiguille[..=j]` ; poussé dans l'ordre, si bien qu'au tour de
+    // l'octet `i`, `repli` a `i` cases et `k` < `i`.
+    let mut repli = Vec::with_capacity(aiguille.len());
+    repli.push(0_usize);
     let mut k = 0;
-    for i in 1..aiguille.len() {
-        while k > 0 && aiguille[i] != aiguille[k] {
+    for &c in aiguille.iter().skip(1) {
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "k < i = repli.len() < aiguille.len() : voir plus haut"
+        )]
+        while k > 0 && c != aiguille[k] {
             k = repli[k - 1];
         }
-        if aiguille[i] == aiguille[k] {
+        if aiguille.get(k) == Some(&c) {
             k += 1;
         }
-        repli[i] = k;
+        repli.push(k);
     }
     let mut k = 0;
     for &o in meule {
+        // `k` < `aiguille.len()` = `repli.len()` : il revient avant d'atteindre la longueur (return plus bas).
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "0 < k < aiguille.len() = repli.len() : voir plus haut"
+        )]
         while k > 0 && o != aiguille[k] {
             k = repli[k - 1];
         }
-        if o == aiguille[k] {
+        if aiguille.get(k) == Some(&o) {
             k += 1;
             if k == aiguille.len() {
                 return true;
@@ -148,12 +160,15 @@ fn utf16(t: &str) -> Vec<u8> {
 }
 
 fn mot16(o: &[u8], i: usize) -> Option<usize> {
-    o.get(i..i + 2).map(|b| usize::from(u16::from_le_bytes([b[0], b[1]])))
+    o.get(i..)?
+        .first_chunk::<2>()
+        .map(|b| usize::from(u16::from_le_bytes(*b)))
 }
 
 fn mot32(o: &[u8], i: usize) -> Option<usize> {
-    o.get(i..i + 4)
-        .and_then(|b| usize::try_from(u32::from_le_bytes([b[0], b[1], b[2], b[3]])).ok())
+    o.get(i..)?
+        .first_chunk::<4>()
+        .and_then(|b| usize::try_from(u32::from_le_bytes(*b)).ok())
 }
 
 /// Les noms d'une archive zip (et s'ils sont chiffrés), lus dans son répertoire central seul : rien n'est décompressé.
@@ -163,7 +178,7 @@ fn noms_zip(o: &[u8], max: usize) -> Result<(Vec<(String, bool)>, bool), ()> {
     let debut_recherche = o.len().saturating_sub(65_557);
     let fin = (debut_recherche..o.len().saturating_sub(21))
         .rev()
-        .find(|&i| o[i..].starts_with(b"PK\x05\x06"))
+        .find(|&i| o.get(i..).is_some_and(|r| r.starts_with(b"PK\x05\x06")))
         .ok_or(())?;
     let total = mot16(o, fin + 10).ok_or(())?;
     let mut i = mot32(o, fin + 16).ok_or(())?;
@@ -195,7 +210,7 @@ pub(crate) fn juger(nom: &str, type_declare: &str, contenu: &[u8]) -> (Vec<Signe
     let mut manques = Vec::new();
     let montre = crate::ui::affichable(nom);
     let montre = crate::ui::couper(&montre, 60);
-    let debut = &contenu[..contenu.len().min(8)];
+    let debut = contenu.get(..8).unwrap_or(contenu);
     let nature = telechargement::nature(nom, debut);
     // Le conseil de `nature` pour un programme téléchargé (« ne le lance que s'il vient du site officiel ») contredirait
     // ici un « ne l'ouvre pas » : retiré plus bas quand un signe plus grave le dit.

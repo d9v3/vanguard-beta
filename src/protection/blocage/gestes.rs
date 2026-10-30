@@ -1111,24 +1111,27 @@ fn chaines(texte: &str) -> Vec<(usize, usize)> {
     let o = texte.as_bytes();
     let mut trouvees = Vec::new();
     let mut i = 0;
-    while i < o.len() {
-        match o[i] {
+    while let Some(&c) = o.get(i) {
+        match c {
             b'"' => {
                 let debut = i;
                 i += 1;
-                while i < o.len() && o[i] != b'"' {
-                    i += if o[i] == b'\\' { 2 } else { 1 };
+                while let Some(&x) = o.get(i)
+                    && x != b'"'
+                {
+                    i += if x == b'\\' { 2 } else { 1 };
                 }
                 trouvees.push((debut, (i + 1).min(o.len())));
             }
             b'/' if o.get(i + 1) == Some(&b'/') => {
-                while i < o.len() && o[i] != b'\n' {
+                while o.get(i).is_some_and(|&x| x != b'\n') {
                     i += 1;
                 }
             }
             b'/' if o.get(i + 1) == Some(&b'*') => {
                 i += 2;
-                while i + 1 < o.len() && !(o[i] == b'*' && o[i + 1] == b'/') {
+                // Jusqu'au « */ » ; `get` vaut `None` quand il ne reste plus deux octets.
+                while o.get(i..i + 2).is_some_and(|d| d != b"*/") {
                     i += 1;
                 }
                 i += 1;
@@ -1147,8 +1150,7 @@ pub(crate) fn sans_contournement(texte: &str) -> Option<String> {
     let lire = |t: &str| serde_json::from_str::<String>(t).ok();
     let cs = chaines(texte);
     let mut remplacer = Vec::new();
-    for paire in cs.windows(2) {
-        let ((cd, cf), (vd, vf)) = (paire[0], paire[1]);
+    for &[(cd, cf), (vd, vf)] in cs.array_windows::<2>() {
         if lire(texte.get(cd..cf)?).as_deref() == Some("defaultMode")
             && texte.get(cf..vd)?.trim() == ":"
             && lire(texte.get(vd..vf)?).as_deref() == Some("bypassPermissions")

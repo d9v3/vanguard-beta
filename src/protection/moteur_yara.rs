@@ -111,7 +111,7 @@ impl Regles {
                 });
             }
             regle_du_motif.clear();
-            Recherche::nouvelle(Vec::new()).expect("automate vide")
+            Recherche::vide()
         });
         Regles {
             liste: regles,
@@ -138,8 +138,10 @@ impl Regles {
         &self.refus
     }
 
+    /// Le nom d'une règle trouvée (un rang que rend l'analyse). Un rang inconnu reste une trouvaille : il n'est
+    /// jamais tu, seulement mal nommé.
     pub(crate) fn nom(&self, regle: usize) -> &str {
-        &self.liste[regle].nom
+        self.liste.get(regle).map_or("?", |r| r.nom.as_str())
     }
 
     #[cfg(test)]
@@ -148,8 +150,8 @@ impl Regles {
     }
 
     #[allow(dead_code)] // pour le constat commun des analyses (lot suivant) : auteur, référence
-    pub(crate) fn meta(&self, regle: usize) -> &Meta {
-        &self.liste[regle].meta
+    pub(crate) fn meta(&self, regle: usize) -> Option<&Meta> {
+        self.liste.get(regle).map(|r| &r.meta)
     }
 
     /// Les états de l'automate, pour la mesure.
@@ -215,13 +217,18 @@ impl Regles {
         if !possibles.iter().any(|p| *p) {
             return Ok(Vec::new());
         }
-        let utile: Vec<bool> = self.regle_du_motif.iter().map(|&r| possibles[r]).collect();
+        // Un motif d'une règle inconnue est cherché quand même : chercher de trop ne fait rien conclure.
+        let utile: Vec<bool> = self
+            .regle_du_motif
+            .iter()
+            .map(|&r| possibles.get(r).copied().unwrap_or(true))
+            .collect();
         if utile.iter().any(|u| *u) {
             ctx.acces.chercher(&self.recherche, &mut ctx.vus, &utile, echeance)?;
         }
         let mut trouvees = Vec::new();
-        for (k, r) in self.liste.iter().enumerate() {
-            if possibles[k] && ctx.evaluer(&r.condition, &r.chaines, &self.recherche)? == Some(true) {
+        for (k, (r, &possible)) in self.liste.iter().zip(&possibles).enumerate() {
+            if possible && ctx.evaluer(&r.condition, &r.chaines, &self.recherche)? == Some(true) {
                 trouvees.push(k);
             }
         }
@@ -263,7 +270,7 @@ impl Acces for Tampon<'_> {
         };
         self.donnees
             .get(debut..)
-            .map_or_else(Vec::new, |r| r[..n.min(r.len())].to_vec())
+            .map_or_else(Vec::new, |r| r.iter().take(n).copied().collect())
     }
 
     fn chercher(
@@ -419,14 +426,13 @@ impl<A: Acces> Contexte<'_, A> {
                 let p = u64::try_from(self.entier(position)?).ok()?;
                 let n = usize::from(*octets);
                 let lu = self.acces.lire(p, n);
-                if lu.len() < n {
-                    return None;
-                }
-                let mut valeur = 0u64;
-                for k in 0..n {
-                    let o = if *gros { lu[k] } else { lu[n - 1 - k] };
-                    valeur = (valeur << 8) | u64::from(o);
-                }
+                let lu = lu.get(..n)?;
+                let empiler = |v: u64, o: &u8| (v << 8) | u64::from(*o);
+                let valeur = if *gros {
+                    lu.iter().fold(0u64, empiler)
+                } else {
+                    lu.iter().rev().fold(0u64, empiler)
+                };
                 if *signe {
                     // Étendre le signe de la largeur lue (1 à 4 octets).
                     let decalage = 64 - 8 * u32::from(*octets);
@@ -511,9 +517,15 @@ impl<A: Acces> Contexte<'_, A> {
         })
     }
 
-    /// La chaîne (ses formes) a-t-elle été trouvée ?
-    fn trouvee(&self, motifs: &[usize]) -> bool {
-        motifs.iter().any(|&m| self.vus[m])
+    /// La chaîne `c` (une de ses formes) a-t-elle été trouvée ? Une chaîne ou un motif inconnus ne concluent rien :
+    /// erreur, jamais « pas trouvée ».
+    fn trouvee(&self, chaines: &[Vec<usize>], c: usize) -> Result<bool, Echec> {
+        for &m in chaines.get(c).ok_or(Echec::Lecture)? {
+            if *self.vus.get(m).ok_or(Echec::Lecture)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// La condition : `Some(vrai/faux)`, ou `None` si indéfinie.
@@ -521,7 +533,7 @@ impl<A: Acces> Contexte<'_, A> {
         Ok(match e {
             Expr::Vrai => Some(true),
             Expr::Faux => Some(false),
-            Expr::Chaine(c) => Some(self.trouvee(&chaines[*c])),
+            Expr::Chaine(c) => Some(self.trouvee(chaines, *c)?),
             Expr::ChaineA(c, position) => {
                 let Some(p) = self.entier(position) else {
                     return Ok(None);
@@ -530,8 +542,8 @@ impl<A: Acces> Contexte<'_, A> {
                     return Ok(Some(false));
                 };
                 let mut trouve = false;
-                for &m in &chaines[*c] {
-                    let motif = &recherche.motifs()[m];
+                for &m in chaines.get(*c).ok_or(Echec::Lecture)? {
+                    let motif = recherche.motifs().get(m).ok_or(Echec::Lecture)?;
                     let morceau = self.acces.lire(p, motif.longueur_max() as usize);
                     if motif.commence_ici(&morceau) {
                         trouve = true;
@@ -541,7 +553,10 @@ impl<A: Acces> Contexte<'_, A> {
                 Some(trouve)
             }
             Expr::Ensemble(quantite, rangs) => {
-                let n = rangs.iter().filter(|&&c| self.trouvee(&chaines[c])).count() as u64;
+                let mut n = 0u64;
+                for &c in rangs {
+                    n += u64::from(self.trouvee(chaines, c)?);
+                }
                 Some(match quantite {
                     Quantite::Toutes => n == rangs.len() as u64,
                     Quantite::AuMoins(k) => n >= *k,
@@ -609,37 +624,39 @@ const TABLE_PAR_LECTURE: u64 = 1024;
 /// nulle part, un nombre de sections d'au moins 0xFF00, une entrée qui déborde 64 bits avant la bonne : indéfini.
 pub(crate) fn entree_elf<S: Read + Seek>(source: &mut S, taille: u64) -> Option<u64> {
     let ident = morceau(source, taille, 0, 16)?;
-    if &ident[..4] != b"\x7fELF" {
+    if !ident.starts_with(b"\x7fELF") {
         return None;
     }
-    let large = match ident[4] {
+    let large = match ident.get(4)? {
         1 => false,
         2 => true,
         _ => return None,
     };
-    let gros = match ident[5] {
+    let gros = match ident.get(5)? {
         1 => false,
         2 => true,
         _ => return None,
     };
     let entete = morceau(source, taille, 0, if large { 64 } else { 52 })?;
-    let lire = |o: &[u8], a: usize, n: usize| -> u64 {
-        let mut v = 0u64;
-        for k in 0..n {
-            let x = if gros { o[a + k] } else { o[a + n - 1 - k] };
-            v = (v << 8) | u64::from(x);
-        }
-        v
+    // Les champs sont tous dans l'en-tête ou l'entrée lus à leur taille de la norme : `None` ne vient jamais.
+    let lire = |o: &[u8], a: usize, n: usize| -> Option<u64> {
+        let champ = o.get(a..a + n)?;
+        let empiler = |v: u64, x: &u8| (v << 8) | u64::from(*x);
+        Some(if gros {
+            champ.iter().fold(0u64, empiler)
+        } else {
+            champ.iter().rev().fold(0u64, empiler)
+        })
     };
     let mot = if large { 8 } else { 4 };
-    let sorte = lire(&entete, 16, 2);
-    let entree = lire(&entete, 24, mot);
+    let sorte = lire(&entete, 16, 2)?;
+    let entree = lire(&entete, 24, mot)?;
     if entree == 0 {
         return None;
     }
-    let (table_segments, table_sections) = (lire(&entete, 24 + mot, mot), lire(&entete, 24 + 2 * mot, mot));
+    let (table_segments, table_sections) = (lire(&entete, 24 + mot, mot)?, lire(&entete, 24 + 2 * mot, mot)?);
     let nombres = 24 + 3 * mot + 4 + 2;
-    let (segments, sections) = (lire(&entete, nombres + 2, 2), lire(&entete, nombres + 6, 2));
+    let (segments, sections) = (lire(&entete, nombres + 2, 2)?, lire(&entete, nombres + 6, 2)?);
     // Un nombre de sections dans la plage réservée (SHN_LORESERVE, 0xFF00, et au-delà) : indéfini, quel que soit le type
     // (vérifié en boîte noire contre YARA-X).
     if sections >= 0xFF00 {
@@ -661,10 +678,10 @@ pub(crate) fn entree_elf<S: Read + Seek>(source: &mut S, taille: u64) -> Option<
         let octets = morceau(source, taille, debut + k * pas, usize::try_from(lot * pas).ok()?)?;
         for e in octets.chunks_exact(usize::try_from(pas).ok()?) {
             let (genre, adresse, position, etendue) = match (par_segments, large) {
-                (true, true) => (lire(e, 0, 4), lire(e, 16, 8), lire(e, 8, 8), lire(e, 40, 8)),
-                (true, false) => (lire(e, 0, 4), lire(e, 8, 4), lire(e, 4, 4), lire(e, 20, 4)),
-                (false, true) => (lire(e, 4, 4), lire(e, 16, 8), lire(e, 24, 8), lire(e, 32, 8)),
-                (false, false) => (lire(e, 4, 4), lire(e, 12, 4), lire(e, 16, 4), lire(e, 20, 4)),
+                (true, true) => (lire(e, 0, 4)?, lire(e, 16, 8)?, lire(e, 8, 8)?, lire(e, 40, 8)?),
+                (true, false) => (lire(e, 0, 4)?, lire(e, 8, 4)?, lire(e, 4, 4)?, lire(e, 20, 4)?),
+                (false, true) => (lire(e, 4, 4)?, lire(e, 16, 8)?, lire(e, 24, 8)?, lire(e, 32, 8)?),
+                (false, false) => (lire(e, 4, 4)?, lire(e, 12, 4)?, lire(e, 16, 4)?, lire(e, 20, 4)?),
             };
             if !par_segments && (genre == 0 || genre == 8) {
                 continue;

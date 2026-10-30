@@ -795,6 +795,10 @@ mod linux {
                     contexte.push((cle.to_string(), Vec::new()));
                     contexte.len() - 1
                 });
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "i vient de `position` sur `contexte`, ou est la case qu'on vient d'y pousser"
+                )]
                 let liste = &mut contexte[i].1;
                 for v in valeur.split(';').map(str::trim).filter(|v| !v.is_empty()) {
                     if let Some(retire) = v.strip_prefix('!') {
@@ -883,46 +887,48 @@ fn lire_tcc(octets: &[u8]) -> Option<Vec<Acces>> {
         "access",
         &["service", "client", "auth_value", "allowed", "last_modified"],
     )?;
-    Some(
-        lignes
-            .into_iter()
-            .filter_map(|l| {
-                let permission = match l[0].texte()? {
-                    "kTCCServiceCamera" => Permission::Camera,
-                    "kTCCServiceMicrophone" => Permission::Micro,
-                    "kTCCServiceAddressBook" => Permission::Contacts,
-                    _ => return None,
-                };
-                // Lus comme tccd les lit : un texte rangé dans une colonne d'entiers compte par son début
-                // numérique ; un nombre à virgule ou un blob (`Autre`) compte comme autorisé, jamais sauté.
-                let auth = if l[2] == crate::sqlite::Valeur::Autre {
-                    Some(2)
-                } else {
-                    l[2].entier_lu()
-                };
-                let source = match auth.or_else(|| l[3].entier_lu().map(|a| a.saturating_mul(2)))? {
-                    2 => tr!("autorisée", "allowed"),
-                    3 => tr!("autorisée en partie", "partly allowed"),
-                    _ => return None,
-                };
-                let quand = l[4]
-                    .entier()
-                    .filter(|s| *s > 0)
-                    .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
-                    .map(|d| {
-                        let jour = d.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string();
-                        trf!("réglée le {jour}", "set on {jour}")
-                    });
-                Some(Acces {
-                    permission,
-                    application: l[1].texte().unwrap_or_default().to_string(),
-                    source: source.to_string(),
-                    quand,
-                    en_cours: false,
-                })
-            })
-            .collect(),
-    )
+    let mut acces = Vec::new();
+    for l in lignes {
+        // `lignes` rend une valeur par colonne demandée : une autre forme serait une base mal lue, dite illisible
+        // plutôt qu'une ligne sautée sans rien dire.
+        let [service, client, valeur, permis, modifiee] = l.as_slice() else {
+            return None;
+        };
+        let permission = match service.texte() {
+            Some("kTCCServiceCamera") => Permission::Camera,
+            Some("kTCCServiceMicrophone") => Permission::Micro,
+            Some("kTCCServiceAddressBook") => Permission::Contacts,
+            _ => continue,
+        };
+        // Lus comme tccd les lit : un texte rangé dans une colonne d'entiers compte par son début
+        // numérique ; un nombre à virgule ou un blob (`Autre`) compte comme autorisé, jamais sauté.
+        let auth = if *valeur == crate::sqlite::Valeur::Autre {
+            Some(2)
+        } else {
+            valeur.entier_lu()
+        };
+        let source = match auth.or_else(|| permis.entier_lu().map(|a| a.saturating_mul(2))) {
+            Some(2) => tr!("autorisée", "allowed"),
+            Some(3) => tr!("autorisée en partie", "partly allowed"),
+            _ => continue,
+        };
+        let quand = modifiee
+            .entier()
+            .filter(|s| *s > 0)
+            .and_then(|s| chrono::DateTime::from_timestamp(s, 0))
+            .map(|d| {
+                let jour = d.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string();
+                trf!("réglée le {jour}", "set on {jour}")
+            });
+        acces.push(Acces {
+            permission,
+            application: client.texte().unwrap_or_default().to_string(),
+            source: source.to_string(),
+            quand,
+            en_cours: false,
+        });
+    }
+    Some(acces)
 }
 
 #[cfg(target_os = "macos")]

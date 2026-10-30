@@ -87,9 +87,14 @@ pub fn choisir() {
     if reponse.is_empty() {
         return;
     }
-    let cible = match reponse.parse::<usize>() {
-        Ok(n) if (1..=volumes.len()).contains(&n) => volumes[n - 1].0.clone(),
-        _ => PathBuf::from(reponse.trim_matches(['"', '\''])),
+    // Un numéro de la liste (compté depuis 1), sinon un chemin.
+    let cible = match reponse
+        .parse::<usize>()
+        .ok()
+        .and_then(|n| volumes.get(n.checked_sub(1)?))
+    {
+        Some((chemin, _)) => chemin.clone(),
+        None => PathBuf::from(reponse.trim_matches(['"', '\''])),
     };
     analyser(Portee::Dossier(cible));
 }
@@ -244,15 +249,15 @@ fn sans_hex(t: &str) -> String {
     let o = t.as_bytes();
     let mut sortie = Vec::with_capacity(o.len());
     let mut i = 0;
-    while i < o.len() {
-        if o[i] == b'\\'
+    while let Some(&c) = o.get(i) {
+        if c == b'\\'
             && o.get(i + 1) == Some(&b'x')
             && let Some(h) = t.get(i + 2..i + 4).and_then(|h| u8::from_str_radix(h, 16).ok())
         {
             sortie.push(h);
             i += 4;
         } else {
-            sortie.push(o[i]);
+            sortie.push(c);
             i += 1;
         }
     }
@@ -267,10 +272,15 @@ fn taille_lsblk(octets: u64) -> String {
     if octets < 1024 {
         return format!("{octets}B");
     }
-    let mut exposant = 10;
-    while exposant < 60 && octets >> (exposant + 10) > 0 {
-        exposant += 10;
-    }
+    // La plus grande unité (de 2^10 à 2^60) que la taille atteint ; K au moins, puisque `octets` ≥ 1024.
+    let Some((exposant, lettre)) = (10..)
+        .step_by(10)
+        .zip(LETTRES)
+        .take_while(|&(e, _)| e == 10 || octets >> e > 0)
+        .last()
+    else {
+        return format!("{octets}B");
+    };
     let mut entier = octets >> exposant;
     // Le reste en millièmes de l'unité (tronqués), puis arrondi au dixième.
     let reste = u128::from(octets & ((1u64 << exposant) - 1));
@@ -280,7 +290,6 @@ fn taille_lsblk(octets: u64) -> String {
         entier += 1;
         dixiemes = 0;
     }
-    let lettre = LETTRES[exposant / 10 - 1];
     if dixiemes == 0 {
         format!("{entier}{lettre}")
     } else {
@@ -333,8 +342,9 @@ fn tailles_des_volumes() -> std::collections::HashMap<PathBuf, u64> {
     // nombre.
     let lus = unsafe { libc::getfsstat(tampon.as_mut_ptr(), taille, libc::MNT_NOWAIT) };
     let lus = usize::try_from(lus).unwrap_or(0).min(tampon.len());
-    tampon[..lus]
+    tampon
         .iter()
+        .take(lus)
         .map(|f| {
             // f_mntonname : un nom C terminé par un zéro dans un tableau de 1024 octets.
             let octets: Vec<u8> = f

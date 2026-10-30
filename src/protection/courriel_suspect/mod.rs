@@ -387,7 +387,7 @@ fn est_un_courriel(m: &Message, octets: &[u8]) -> bool {
         "delivered-to",
         "reply-to",
     ];
-    !octets[..octets.len().min(1024)].contains(&0) && m.entetes.iter().any(|e| CONNUS.contains(&e.nom.as_str()))
+    !octets.get(..1024).unwrap_or(octets).contains(&0) && m.entetes.iter().any(|e| CONNUS.contains(&e.nom.as_str()))
 }
 
 /// Le verdict, prudent : jamais « sûr ». Ce qui n'a pas pu être vérifié est dit à la suite.
@@ -737,14 +737,14 @@ fn pourcents(v: &str) -> Vec<u8> {
     let o = v.as_bytes();
     let mut s = Vec::with_capacity(o.len());
     let mut i = 0;
-    while i < o.len() {
-        if o[i] == b'%'
+    while let Some(&c) = o.get(i) {
+        if c == b'%'
             && let Some(h) = v.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
         {
             s.push(h);
             i += 3;
         } else {
-            s.push(o[i]);
+            s.push(c);
             i += 1;
         }
     }

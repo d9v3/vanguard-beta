@@ -737,7 +737,7 @@ fn lignes_threatfox<T>(texte: &str, genre: &str, lire: impl Fn(&str) -> Option<T
         .position(|l| noms(l).is_some_and(|n| n.iter().any(|c| c == "ioc_type")));
     let places = match entete {
         Some(i) => {
-            let noms = noms(lignes[i])?;
+            let noms = noms(lignes.get(i).copied()?)?;
             let mut places = [0; 5];
             for (place, possibles) in places.iter_mut().zip(COLONNES_THREATFOX) {
                 *place = noms.iter().position(|n| possibles.contains(&n.as_str()))?;
@@ -758,9 +758,10 @@ fn lignes_threatfox<T>(texte: &str, genre: &str, lire: impl Fn(&str) -> Option<T
             illisibles += 1;
             continue;
         };
-        let lu = |k: usize| champs.get(places[k]).map(String::as_str);
+        let lu = |place: usize| champs.get(place).map(String::as_str);
+        let [p0, p1, p2, p3, p4] = places;
         let (Some(valeur), Some(genre_lu), Some(menace), Some(famille), Some(confiance)) =
-            (lu(0), lu(1), lu(2), lu(3), lu(4))
+            (lu(p0), lu(p1), lu(p2), lu(p3), lu(p4))
         else {
             illisibles += 1;
             continue;
@@ -820,12 +821,12 @@ fn garder_threatfox(
 fn analyser_threatfox_api(texte: &str) -> Option<HashMap<(IpAddr, u16), String>> {
     let reponse: serde_json::Value = serde_json::from_str(texte).ok()?;
     let mut serveurs = HashMap::new();
-    match reponse["query_status"].as_str()? {
+    match reponse.get("query_status")?.as_str()? {
         "no_result" => return Some(serveurs),
         "ok" => {}
         _ => return None,
     }
-    for ioc in reponse["data"].as_array()? {
+    for ioc in reponse.get("data")?.as_array()? {
         if ioc["ioc_type"] != "ip:port" {
             continue;
         }

@@ -67,7 +67,8 @@ impl Produit {
 
     /// Son nom dans la langue de l'interface.
     pub(crate) fn nom(self) -> &'static str {
-        self.noms()[usize::from(crate::langue::anglais())]
+        let [fr, en] = self.noms();
+        if crate::langue::anglais() { en } else { fr }
     }
 
     /// Sa fiche ; Java a une seule fiche pour toutes ses distributions.
@@ -76,7 +77,11 @@ impl Produit {
             Produit::Java(_) => Produit::Java(Distribution::Autre),
             autre => autre,
         };
-        FICHES.iter().find(|f| f.produit == cherche).unwrap_or(&FICHES[0])
+        let trouvee = FICHES.iter().find(|f| f.produit == cherche);
+        // Repli jamais pris : l'essai `chaque_produit_a_son_nom` vérifie que chaque produit a sa fiche.
+        #[expect(clippy::indexing_slicing, reason = "FICHES est une constante non vide")]
+        let repli = &FICHES[0];
+        trouvee.unwrap_or(repli)
     }
 }
 
@@ -405,6 +410,13 @@ mod tests {
             let [fr, en] = p.noms();
             assert!(!fr.is_empty() && !en.is_empty(), "{p:?}");
             assert_eq!(p.nom(), fr);
+            // Sa propre fiche (Java : la commune), jamais le repli de `fiche`.
+            let attendu = if matches!(p, Produit::Java(_)) {
+                Produit::Java(Autre)
+            } else {
+                p
+            };
+            assert!(FICHES.iter().any(|f| f.produit == attendu), "{p:?} sans fiche");
         }
         assert_ne!(Produit::Java(Autre).noms()[0], Produit::Java(Autre).noms()[1]);
     }

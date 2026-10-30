@@ -615,12 +615,10 @@ fn changements_de(evenement: &notify::Event) -> Vec<Changement> {
             .map(|p| Changement::nouveau(p.clone(), Sorte::Ecrit))
             .collect(),
         // Un renommage complet : l'ancien chemin d'abord, le nouveau ensuite.
-        EventKind::Modify(ModifyKind::Name(RenameMode::Both)) if evenement.paths.len() == 2 => {
+        EventKind::Modify(ModifyKind::Name(RenameMode::Both)) if let [ancien, nouveau] = evenement.paths.as_slice() => {
             vec![Changement::nouveau(
-                evenement.paths[1].clone(),
-                Sorte::Renomme {
-                    ancien: evenement.paths[0].clone(),
-                },
+                nouveau.clone(),
+                Sorte::Renomme { ancien: ancien.clone() },
             )]
         }
         _ => Vec::new(),

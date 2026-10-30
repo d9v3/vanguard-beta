@@ -228,8 +228,10 @@ fn ligne(j: &Juge) -> String {
             "{nom} : la faille exploitée {cve} (catalogue de la CISA) est corrigée dans {court} {z}, et votre version est antérieure.",
             "{nom}: the exploited flaw {cve} (CISA catalog) is fixed in {court} {z}, and your version is older."
         );
-        if j.failles.len() > 1 {
-            let autres: Vec<&str> = j.failles[1..].iter().map(|(c, _)| c.as_str()).collect();
+        if let [_, autres @ ..] = j.failles.as_slice()
+            && !autres.is_empty()
+        {
+            let autres: Vec<&str> = autres.iter().map(|(c, _)| c.as_str()).collect();
             t += &trf!(" Et aussi : {}.", " Also: {}.", resume(&autres, 4, ", "));
         }
         return t;

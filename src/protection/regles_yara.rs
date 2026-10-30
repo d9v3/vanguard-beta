@@ -164,27 +164,31 @@ fn jetons(source: &str) -> Vec<(J, usize)> {
     let mut i = 0;
     let mut ligne = 1;
     let apres_egal = |liste: &Vec<(J, usize)>| liste.last().is_some_and(|(j, _)| *j == J::Signe("="));
-    while i < c.len() {
+    // Ce qui reste à lire depuis `k` : rien au-delà de la fin (un commentaire ou une expression non fermés y
+    // mènent, et la lecture s'y arrête de toute façon).
+    let suite = |k: usize| c.get(k..).unwrap_or_default();
+    // L'octet `k` est-il un caractère de nom ?
+    let de_nom = |k: usize| c.get(k).is_some_and(|o| o.is_ascii_alphanumeric() || *o == b'_');
+    while let Some(&x) = c.get(i) {
         if liste.len() >= JETONS_MAX {
             // La suite n'est pas lue : dit, à sa ligne.
             liste.push((J::Illisible("trop de jetons"), ligne));
             break;
         }
-        let x = c[i];
         if x == b'\n' {
             ligne += 1;
             i += 1;
         } else if x.is_ascii_whitespace() {
             i += 1;
-        } else if c[i..].starts_with(b"//") {
-            while i < c.len() && c[i] != b'\n' {
+        } else if suite(i).starts_with(b"//") {
+            while c.get(i).is_some_and(|&o| o != b'\n') {
                 i += 1;
             }
-        } else if c[i..].starts_with(b"/*") {
+        } else if suite(i).starts_with(b"/*") {
             let debut = ligne;
             i += 2;
-            while i < c.len() && !c[i..].starts_with(b"*/") {
-                if c[i] == b'\n' {
+            while let Some(&o) = c.get(i).filter(|_| !suite(i).starts_with(b"*/")) {
+                if o == b'\n' {
                     ligne += 1;
                 }
                 i += 1;
@@ -254,30 +258,30 @@ fn jetons(source: &str) -> Vec<(J, usize)> {
             i += 1;
             let mut dedans = String::new();
             let mut ferme = false;
-            while i < c.len() {
-                if c[i] == b'}' {
+            while let Some(&o) = c.get(i) {
+                if o == b'}' {
                     ferme = true;
                     i += 1;
                     break;
                 }
-                if c[i..].starts_with(b"//") {
-                    while i < c.len() && c[i] != b'\n' {
+                if suite(i).starts_with(b"//") {
+                    while c.get(i).is_some_and(|&o| o != b'\n') {
                         i += 1;
                     }
                     continue;
                 }
-                if c[i..].starts_with(b"/*") {
+                if suite(i).starts_with(b"/*") {
                     i += 2;
-                    while i < c.len() && !c[i..].starts_with(b"*/") {
-                        ligne += usize::from(c[i] == b'\n');
+                    while let Some(&o) = c.get(i).filter(|_| !suite(i).starts_with(b"*/")) {
+                        ligne += usize::from(o == b'\n');
                         i += 1;
                     }
                     i += 2;
                     dedans.push(' ');
                     continue;
                 }
-                ligne += usize::from(c[i] == b'\n');
-                dedans.push(char::from(c[i]));
+                ligne += usize::from(o == b'\n');
+                dedans.push(char::from(o));
                 i += 1;
             }
             liste.push((if ferme { J::Hex(dedans) } else { J::Illisible("}") }, debut));
@@ -285,17 +289,17 @@ fn jetons(source: &str) -> Vec<(J, usize)> {
             // Une expression régulière : refusée, mais sautée entière pour que la suite se lise.
             let debut = ligne;
             i += 1;
-            while i < c.len() && c[i] != b'/' && c[i] != b'\n' {
-                i += if c[i] == b'\\' { 2 } else { 1 };
+            while let Some(&o) = c.get(i).filter(|&&o| o != b'/' && o != b'\n') {
+                i += if o == b'\\' { 2 } else { 1 };
             }
             i += 1;
-            while i < c.len() && c[i].is_ascii_alphabetic() {
+            while c.get(i).is_some_and(u8::is_ascii_alphabetic) {
                 i += 1;
             }
             liste.push((J::Regex, debut));
         } else if x.is_ascii_digit() {
             let debut = i;
-            while i < c.len() && (c[i].is_ascii_alphanumeric() || c[i] == b'_') {
+            while de_nom(i) {
                 i += 1;
             }
             let mot = &source[debut..i];
@@ -306,7 +310,7 @@ fn jetons(source: &str) -> Vec<(J, usize)> {
             liste.push((valeur.map_or(J::Illisible("nombre"), J::Nombre), ligne));
         } else if x.is_ascii_alphabetic() || x == b'_' {
             let debut = i;
-            while i < c.len() && (c[i].is_ascii_alphanumeric() || c[i] == b'_') {
+            while de_nom(i) {
                 i += 1;
             }
             liste.push((J::Mot(source[debut..i].to_string()), ligne));
@@ -315,7 +319,7 @@ fn jetons(source: &str) -> Vec<(J, usize)> {
         {
             let debut = i;
             i += 1;
-            while i < c.len() && (c[i].is_ascii_alphanumeric() || c[i] == b'_') {
+            while de_nom(i) {
                 i += 1;
             }
             if x == b'$' && c.get(i) == Some(&b'*') {
@@ -323,7 +327,7 @@ fn jetons(source: &str) -> Vec<(J, usize)> {
             }
             let nom = source[debut..i].to_string();
             liste.push((if x == b'$' { J::Var(nom) } else { J::Compte(nom) }, ligne));
-        } else if let Some(s) = SIGNES.iter().find(|s| c[i..].starts_with(s.as_bytes())) {
+        } else if let Some(s) = SIGNES.iter().find(|s| suite(i).starts_with(s.as_bytes())) {
             liste.push((J::Signe(s), ligne));
             i += s.len();
         } else {
@@ -524,8 +528,8 @@ impl Lecteur<'_> {
         // Une chaîne que la condition ne cite pas : YARA et YARA-X refusent la règle, le moteur aussi.
         let mut citees = vec![false; chaines.len()];
         citer(&condition, &mut citees);
-        if let Some(k) = citees.iter().position(|c| !c) {
-            return Err(Raison::Nom(chaines[k].nom.clone()));
+        if let Some((c, _)) = chaines.iter().zip(&citees).find(|(_, citee)| !**citee) {
+            return Err(Raison::Nom(c.nom.clone()));
         }
         Ok(Regle {
             nom,
@@ -797,9 +801,9 @@ impl Lecteur<'_> {
             self.i += 1;
             if let Some(prefixe) = nom.strip_suffix('*') {
                 let mut un = false;
-                for (k, c) in chaines.iter().enumerate() {
+                for (c, d) in chaines.iter().zip(dedans.iter_mut()) {
                     if c.nom.starts_with(prefixe) {
-                        dedans[k] = true;
+                        *d = true;
                         un = true;
                     }
                 }
@@ -807,7 +811,8 @@ impl Lecteur<'_> {
                     return Err(Raison::Nom(nom));
                 }
             } else {
-                dedans[Self::rang(chaines, &nom)?] = true;
+                let k = Self::rang(chaines, &nom)?;
+                *dedans.get_mut(k).ok_or(Raison::Nom(nom))? = true;
             }
             if self.signe(",") {
                 self.i += 1;
@@ -816,7 +821,7 @@ impl Lecteur<'_> {
             break;
         }
         self.attendre_signe(")")?;
-        Ok((0..chaines.len()).filter(|&k| dedans[k]).collect())
+        Ok(dedans.iter().enumerate().filter(|(_, d)| **d).map(|(k, _)| k).collect())
     }
 
     fn module(&mut self, module: &'static str) -> R<Entier> {
@@ -955,8 +960,15 @@ impl Lecteur<'_> {
 /// Marque les chaînes que cite une condition.
 fn citer(e: &Expr, citees: &mut [bool]) {
     match e {
-        Expr::Chaine(c) | Expr::ChaineA(c, _) => citees[*c] = true,
-        Expr::Ensemble(_, rangs) => rangs.iter().for_each(|c| citees[*c] = true),
+        // Un rang hors des chaînes ne marque rien : il ne cite aucune chaîne de la règle.
+        Expr::Chaine(c) | Expr::ChaineA(c, _) => citees.get_mut(*c).into_iter().for_each(|x| *x = true),
+        Expr::Ensemble(_, rangs) => {
+            for c in rangs {
+                if let Some(x) = citees.get_mut(*c) {
+                    *x = true;
+                }
+            }
+        }
         Expr::Et(t) | Expr::Ou(t) => t.iter().for_each(|x| citer(x, citees)),
         Expr::Non(x) => citer(x, citees),
         Expr::Vrai | Expr::Faux | Expr::Comparer(..) | Expr::SignaturePresente => {}
@@ -1023,8 +1035,8 @@ fn suite_hex(c: &[char], i: &mut usize, profondeur: usize) -> R<Vec<Element>> {
         return Err(Raison::Borne("choix imbriqués"));
     }
     let mut elements = Vec::new();
-    while *i < c.len() {
-        match c[*i] {
+    while let Some(&x) = c.get(*i) {
+        match x {
             ' ' => *i += 1,
             '|' | ')' => break,
             '(' => {
@@ -1044,8 +1056,17 @@ fn suite_hex(c: &[char], i: &mut usize, profondeur: usize) -> R<Vec<Element>> {
                 elements.push(Element::Choix(suites));
             }
             '[' => {
-                let fin = c[*i..].iter().position(|x| *x == ']').ok_or(Raison::Syntaxe("]"))? + *i;
-                let dedans: String = c[*i + 1..fin].iter().filter(|x| **x != ' ').collect();
+                let fin = c
+                    .get(*i..)
+                    .and_then(|r| r.iter().position(|x| *x == ']'))
+                    .ok_or(Raison::Syntaxe("]"))?
+                    + *i;
+                let dedans: String = c
+                    .get(*i + 1..fin)
+                    .ok_or(Raison::Syntaxe("]"))?
+                    .iter()
+                    .filter(|x| **x != ' ')
+                    .collect();
                 *i = fin + 1;
                 let nombre = |s: &str| -> R<u32> {
                     if s.is_empty() || !s.bytes().all(|o| o.is_ascii_digit()) {
@@ -1169,9 +1190,9 @@ pub(crate) fn lire(source: &str) -> Fichier {
     let mut imports: Vec<String> = Vec::new();
     let mut noms: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut i = 0;
-    while i < j.len() {
-        let ligne = j[i].1;
-        match &j[i].0 {
+    while let Some((jeton, ligne)) = j.get(i) {
+        let ligne = *ligne;
+        match jeton {
             J::Mot(m) if m == "import" => {
                 if let Some((J::Texte(t), _)) = j.get(i + 1) {
                     imports.push(String::from_utf8_lossy(t).into_owned());
@@ -1198,8 +1219,9 @@ pub(crate) fn lire(source: &str) -> Fichier {
                 };
             }
             J::Mot(m) if m == "rule" || m == "private" || m == "global" => {
-                let nom = j[i..]
+                let nom = j
                     .iter()
+                    .skip(i)
                     .skip_while(|(t, _)| *t != J::Mot("rule".into()))
                     .nth(1)
                     .and_then(|(t, _)| match t {
@@ -1212,14 +1234,17 @@ pub(crate) fn lire(source: &str) -> Fichier {
                     Err(Raison::Syntaxe("}"))
                 } else if fichier.regles.len() >= REGLES_MAX {
                     Err(Raison::Borne("règles"))
-                } else {
+                } else if let Some(morceau) = j.get(i..bout) {
                     let mut l = Lecteur {
-                        j: &j[i..bout],
+                        j: morceau,
                         i: 0,
                         imports: &imports,
                         profondeur: 0,
                     };
                     l.regle()
+                } else {
+                    // Une fin de règle hors des jetons : la règle est refusée, jamais lue de travers.
+                    Err(Raison::Syntaxe("}"))
                 };
                 match resultat {
                     Ok(r) if !noms.insert(r.nom.clone()) => fichier.refus.push(Refus {
@@ -1244,9 +1269,9 @@ pub(crate) fn lire(source: &str) -> Fichier {
                     raison: Raison::Syntaxe("rule"),
                 });
                 i += 1;
-                while i < j.len()
-                    && !matches!(&j[i].0, J::Mot(m) if ["rule", "private", "global", "import", "include"].contains(&m.as_str()))
-                {
+                while j.get(i).is_some_and(|(t, _)| {
+                    !matches!(t, J::Mot(m) if ["rule", "private", "global", "import", "include"].contains(&m.as_str()))
+                }) {
                     i += 1;
                 }
             }

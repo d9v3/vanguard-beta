@@ -28,7 +28,12 @@ pub(crate) fn entropie(octets: &[u8]) -> f32 {
     }
     let mut compte = [0u32; 256];
     for &o in octets {
-        compte[o as usize] += 1;
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "un u8 vaut au plus 255 : toujours une case de [_; 256]"
+        )]
+        let case = &mut compte[usize::from(o)];
+        *case += 1;
     }
     let total = octets.len() as f32;
     let mut h = 0.0f32;
@@ -82,13 +87,13 @@ pub(crate) fn format_attendu(extension: &str) -> Option<Signature> {
 /// Les octets correspondent-ils à la signature ? Lit au plus les premiers octets ; un fichier trop court ne
 /// correspond pas.
 fn correspond(signature: Signature, octets: &[u8]) -> bool {
-    let debute = |prefixe: &[u8]| octets.len() >= prefixe.len() && &octets[..prefixe.len()] == prefixe;
+    let debute = |prefixe: &[u8]| octets.starts_with(prefixe);
     match signature {
         Signature::Pdf => debute(b"%PDF-"),
         Signature::Png => debute(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]),
         Signature::Jpeg => debute(&[0xff, 0xd8, 0xff]),
         Signature::Zip => debute(b"PK\x03\x04") || debute(b"PK\x05\x06") || debute(b"PK\x07\x08"),
-        Signature::Mp4 => octets.len() >= 8 && &octets[4..8] == b"ftyp",
+        Signature::Mp4 => octets.get(4..8).is_some_and(|m| m == b"ftyp"),
         Signature::Gif => debute(b"GIF87a") || debute(b"GIF89a"),
         Signature::Riff => debute(b"RIFF"),
         Signature::Ogg => debute(b"OggS"),
@@ -122,14 +127,11 @@ fn tout_texte(octets: &[u8]) -> bool {
     }
     // Coupe les quelques derniers octets d'un éventuel caractère tronqué par l'échantillonnage.
     let fin = (0..4).find_map(|n| {
-        let bout = octets.len().checked_sub(n)?;
-        std::str::from_utf8(&octets[..bout]).ok().map(|_| bout)
+        let debut = octets.get(..octets.len().checked_sub(n)?)?;
+        std::str::from_utf8(debut).ok().map(|_| debut)
     });
-    let Some(bout) = fin else { return false };
-    octets[..bout]
-        .iter()
-        .all(|&o| o >= 0x20 || matches!(o, b'\t' | b'\n' | b'\r'))
-        && std::str::from_utf8(&octets[..bout]).is_ok()
+    let Some(debut) = fin else { return false };
+    debut.iter().all(|&o| o >= 0x20 || matches!(o, b'\t' | b'\n' | b'\r')) && std::str::from_utf8(debut).is_ok()
 }
 
 /// Seuil d'entropie au-delà duquel un échantillon ressemble à du chiffrement ou de la compression (bits par octet).
@@ -244,9 +246,12 @@ fn echantillons_de<L: Read + Seek>(lecteur: &mut L, taille: u64) -> std::io::Res
 /// Lit autant que possible pour remplir `tampon` (un seul `read` peut en rendre moins) ; rend le nombre d'octets lus.
 fn lire_plein<L: Read>(lecteur: &mut L, tampon: &mut [u8]) -> std::io::Result<usize> {
     let mut total = 0;
-    while total < tampon.len() {
-        match lecteur.read(&mut tampon[total..]) {
+    while let Some(reste) = tampon.get_mut(total..).filter(|r| !r.is_empty()) {
+        let place = reste.len();
+        match lecteur.read(reste) {
             Ok(0) => break,
+            // Un lecteur qui dit avoir lu plus que la place donnée : une erreur, pas un compte qui déborde.
+            Ok(n) if n > place => return Err(std::io::Error::other("lecture plus longue que le tampon")),
             Ok(n) => total += n,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e),

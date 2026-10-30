@@ -208,7 +208,7 @@ pub(crate) fn nature(nom: &str, debut: &[u8]) -> Vec<(Niveau, String)> {
         .len()
         .checked_sub(2)
         .filter(|_| morceaux.len() > 2)
-        .map(|i| morceaux[i].clone());
+        .and_then(|i| morceaux.get(i).cloned());
     if let Some(avant) = avant.filter(|a| DOCUMENTS.contains(&a.as_str()))
         && PROGRAMMES.contains(&extension.as_str())
     {
@@ -499,7 +499,9 @@ fn verifier_le_nom(chemin: &Path, nom: &str, v: &mut Verification) {
     let lus = std::fs::File::open(chemin)
         .and_then(|mut f| std::io::Read::read(&mut f, &mut debut))
         .unwrap_or(0);
-    let signes = nature(nom, &debut[..lus]);
+    // Les octets lus (au plus 4), sans dépasser le tampon.
+    let lu: Vec<u8> = debut.iter().take(lus).copied().collect();
+    let signes = nature(nom, &lu);
     if signes.is_empty() {
         ligne(
             None,
@@ -798,7 +800,7 @@ pub fn nouveaux_a_signaler() -> Vec<(String, String)> {
                 Some((
                     e.file_name().to_string_lossy().into_owned(),
                     arrivee,
-                    debut[..lus].to_vec(),
+                    debut.iter().take(lus).copied().collect(),
                 ))
             })
             .collect();
@@ -833,7 +835,12 @@ fn empreinte_par<D: sha2::Digest>(fichier: &Path) -> std::io::Result<String> {
     loop {
         match f.read(&mut tampon) {
             Ok(0) => break,
-            Ok(n) => calcul.update(&tampon[..n]),
+            // Un lecteur qui dit avoir lu plus que le tampon : une erreur, pas une empreinte inventée.
+            Ok(n) => calcul.update(
+                tampon
+                    .get(..n)
+                    .ok_or_else(|| std::io::Error::other("lecture plus longue que le tampon"))?,
+            ),
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e),
         }

@@ -61,6 +61,8 @@ struct Marque {
     nom: &'static str,
     mots: Vec<&'static str>,
     domaines: Vec<&'static str>,
+    /// Le premier des vrais domaines : une marque sans domaine n'est pas lue.
+    conseille: &'static str,
 }
 
 /// Les marques souvent imitées, une par ligne : nom | mots de ses noms de domaine | ses vrais domaines.
@@ -129,10 +131,14 @@ fn marques() -> &'static [Marque] {
             .lines()
             .filter_map(|l| {
                 let mut champs = l.split('|').map(str::trim);
+                let nom = champs.next()?;
+                let mots = champs.next()?.split_whitespace().collect();
+                let domaines: Vec<&'static str> = champs.next()?.split_whitespace().collect();
                 Some(Marque {
-                    nom: champs.next()?,
-                    mots: champs.next()?.split_whitespace().collect(),
-                    domaines: champs.next()?.split_whitespace().collect(),
+                    nom,
+                    mots,
+                    conseille: domaines.first().copied()?,
+                    domaines,
                 })
             })
             .collect()
@@ -362,8 +368,10 @@ pub(crate) fn domaine_enregistrable(hote: &str) -> String {
         .map(|s| s.matches('.').count() + 1)
         .max()
         .unwrap_or(1);
-    let garde = (suffixe + 1).min(etiquettes.len());
-    etiquettes[etiquettes.len() - garde..].join(".")
+    // Les `suffixe + 1` dernières étiquettes, ou toutes s'il y en a moins.
+    let mut garde: Vec<&str> = etiquettes.iter().rev().take(suffixe + 1).copied().collect();
+    garde.reverse();
+    garde.join(".")
 }
 
 /// La lettre latine qu'imite un caractère d'un autre alphabet (cyrillique, grec, arménien, latin rare ou accentué,
@@ -446,10 +454,17 @@ fn confondues(a: char, b: char) -> bool {
 /// perdue (« gooogle », « paypall ») ; n'importe quelle lettre en trop ou en moins pour les mots longs.
 fn une_retouche(a: &[char], b: &[char], long: bool) -> bool {
     if a.len() == b.len() {
-        let ecarts: Vec<usize> = (0..a.len()).filter(|&i| a[i] != b[i]).collect();
+        // (place, lettre de `a`, lettre de `b`) de chaque écart.
+        let ecarts: Vec<(usize, char, char)> = a
+            .iter()
+            .zip(b)
+            .enumerate()
+            .filter(|(_, (x, y))| x != y)
+            .map(|(i, (x, y))| (i, *x, *y))
+            .collect();
         return match ecarts[..] {
-            [i] => confondues(a[i], b[i]),
-            [i, j] => j == i + 1 && a[i] == b[j] && a[j] == b[i],
+            [(_, x, y)] => confondues(x, y),
+            [(i, ai, bi), (j, aj, bj)] => j == i + 1 && ai == bj && aj == bi,
             _ => false,
         };
     }
@@ -457,11 +472,18 @@ fn une_retouche(a: &[char], b: &[char], long: bool) -> bool {
         return false;
     }
     let (court, longue) = if a.len() < b.len() { (a, b) } else { (b, a) };
-    let i = (0..court.len()).find(|&i| court[i] != longue[i]).unwrap_or(court.len());
-    if court[i..] != longue[i + 1..] {
+    let i = court
+        .iter()
+        .zip(longue)
+        .position(|(x, y)| x != y)
+        .unwrap_or(court.len());
+    // `longue` a une lettre de plus que `court` : les deux restes existent toujours.
+    if court.get(i..) != longue.get(i + 1..) {
         return false;
     }
-    long || (i > 0 && longue[i] == longue[i - 1]) || (i + 1 < longue.len() && longue[i] == longue[i + 1])
+    // La lettre en trop est-elle celle de la place `k` (une lettre doublée) ?
+    let doublee = |k: usize| longue.get(i).is_some_and(|l| longue.get(k) == Some(l));
+    long || (i > 0 && doublee(i - 1)) || doublee(i + 1)
 }
 
 /// `mot` imite-t-il la marque `cle` sans l'être ? (« paypa1 », « arnazon », « micros0ft », « gooogle »). Les clés
@@ -693,7 +715,11 @@ fn examiner_marques_de(hote: &str, domaine: &str, dire_officiel: bool) -> Vec<Si
     let mut signes = Vec::new();
     let etiquettes: Vec<&str> = hote.split('.').collect();
     let n_domaine = domaine.split('.').count();
-    let sous_domaine = &etiquettes[..etiquettes.len().saturating_sub(n_domaine)];
+    let sous_domaine: Vec<&str> = etiquettes
+        .iter()
+        .take(etiquettes.len().saturating_sub(n_domaine))
+        .copied()
+        .collect();
     let principal = domaine.split('.').next().unwrap_or(domaine);
     let sous = sous_domaine.join(".");
     let mut marque_imitee = false;
@@ -712,7 +738,7 @@ fn examiner_marques_de(hote: &str, domaine: &str, dire_officiel: bool) -> Vec<Si
             ));
             continue;
         }
-        let vrai = marque.domaines[0];
+        let vrai = marque.conseille;
         // Sous-domaine trompeur : « paypal.com.exemple.xyz » commence par un vrai domaine.
         if marque
             .domaines
@@ -730,8 +756,9 @@ fn examiner_marques_de(hote: &str, domaine: &str, dire_officiel: bool) -> Vec<Si
             marque_imitee = true;
             continue;
         }
-        let mentionnee = etiquettes[..etiquettes.len().saturating_sub(1)]
+        let mentionnee = etiquettes
             .iter()
+            .take(etiquettes.len().saturating_sub(1))
             .any(|e| marque.mots.iter().any(|m| parle_de(e, m)));
         let imitee = marque.mots.iter().any(|m| ressemble(principal, m));
         if mentionnee || imitee {
@@ -1478,7 +1505,7 @@ fn marque_dans(texte: &str, lu: bool) -> Option<(&'static str, &'static str)> {
             };
             nom_present || m.mots.iter().any(|cle| present(&mots, &minuscules, cle))
         })
-        .map(|m| (m.nom, m.domaines[0]))
+        .map(|m| (m.nom, m.conseille))
 }
 
 /// Un mot parmi `mots` ; une clé courte seulement écrite en majuscules.

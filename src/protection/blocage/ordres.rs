@@ -246,7 +246,7 @@ fn chemin_absolu(c: &str) -> bool {
     let o = c.as_bytes();
     c.starts_with('/')
         || c.starts_with(r"\\?\")
-        || (o.len() >= 3 && o[0].is_ascii_alphabetic() && o[1] == b':' && o[2] == b'\\')
+        || matches!(o, [lettre, b':', b'\\', ..] if lettre.is_ascii_alphabetic())
 }
 
 /// La ligne est-elle un ordre de cette liste (et non une commande ou une correction native) ?

@@ -75,9 +75,9 @@ fn lire_octets(octets: &[u8]) -> Vec<[u8; 32]> {
     let blanc = |b: &u8| b.is_ascii_whitespace();
     octets
         .split(|&b| b == b'\n')
-        .map(|l| {
-            let debut = l.iter().position(|b| !blanc(b)).unwrap_or(l.len());
-            &l[debut..]
+        .map(|l| match l.iter().position(|b| !blanc(b)) {
+            Some(debut) => l.split_at(debut).1,
+            None => &[],
         })
         .filter(|l| !l.starts_with(b"#"))
         .filter_map(|l| {
@@ -91,14 +91,15 @@ fn lire_octets(octets: &[u8]) -> Vec<[u8; 32]> {
         })
         .map(|l| {
             let mut e = [0u8; 32];
-            for (i, o) in e.iter_mut().enumerate() {
+            // 64 chiffres (filtrés plus haut) : 32 paires, une par octet.
+            for (o, &[fort, faible]) in e.iter_mut().zip(l.as_chunks::<2>().0) {
                 let chiffre = |b: u8| {
                     char::from(b)
                         .to_digit(16)
                         .and_then(|d| u8::try_from(d).ok())
                         .unwrap_or(0)
                 };
-                *o = (chiffre(l[2 * i]) << 4) | chiffre(l[2 * i + 1]);
+                *o = (chiffre(fort) << 4) | chiffre(faible);
             }
             e
         })
@@ -106,12 +107,15 @@ fn lire_octets(octets: &[u8]) -> Vec<[u8; 32]> {
 }
 
 fn mot16(o: &[u8], i: usize) -> Option<usize> {
-    o.get(i..i + 2).map(|m| usize::from(u16::from_le_bytes([m[0], m[1]])))
+    o.get(i..)?
+        .first_chunk::<2>()
+        .map(|m| usize::from(u16::from_le_bytes(*m)))
 }
 
 fn mot32(o: &[u8], i: usize) -> Option<usize> {
-    o.get(i..i + 4)
-        .and_then(|m| usize::try_from(u32::from_le_bytes([m[0], m[1], m[2], m[3]])).ok())
+    o.get(i..)?
+        .first_chunk::<4>()
+        .and_then(|m| usize::try_from(u32::from_le_bytes(*m)).ok())
 }
 
 /// Le premier fichier d'une archive zip, décompressé : lu par son répertoire central (fin de l'archive), qui donne les
@@ -327,7 +331,8 @@ pub(crate) fn sha256_de(mut f: impl std::io::Read) -> Option<[u8; 32]> {
         if n == 0 {
             break;
         }
-        h.update(&tampon[..n]);
+        // Un lecteur qui dit avoir lu plus que le tampon : illisible plutôt qu'une empreinte inventée.
+        h.update(tampon.get(..n)?);
     }
     Some(h.finalize().into())
 }

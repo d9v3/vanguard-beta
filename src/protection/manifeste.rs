@@ -876,22 +876,22 @@ fn relire_image_dans(
             empreintes.iter().find(|(n, _)| n == nom).and_then(|(_, h)| h.clone())
         })
     };
-    let Some(i) = m
+    let Some(e) = m
         .fichiers
-        .iter()
-        .enumerate()
-        .filter(|(_, e)| e.chemin.starts_with("ISO/") && e.blake3.is_none() && attendue(e).is_some())
-        .min_by(|(_, a), (_, b)| a.relue.cmp(&b.relue))
-        .map(|(i, _)| i)
+        .iter_mut()
+        .filter(|e| e.chemin.starts_with("ISO/") && e.blake3.is_none() && attendue(e).is_some())
+        .min_by(|a, b| a.relue.cmp(&b.relue))
     else {
         return Ok(Relecture::Rien);
     };
-    let sha = attendue(&m.fichiers[i]).unwrap_or_default();
-    let chemin = m.fichiers[i].chemin.clone();
+    // Choisie parce qu'elle a une empreinte attendue : la relire sans elle ne prouverait rien.
+    let Some(sha) = attendue(e) else {
+        return Ok(Relecture::Rien);
+    };
+    let chemin = e.chemin.clone();
     let Some(lue) = lire_sha256(&racine.join(&chemin)).map(|h| h.to_ascii_lowercase()) else {
         return Ok(Relecture::Illisible(chemin));
     };
-    let e = &mut m.fichiers[i];
     let resultat = if lue == sha {
         e.sha256 = Some(sha);
         e.relue = Some(maintenant());

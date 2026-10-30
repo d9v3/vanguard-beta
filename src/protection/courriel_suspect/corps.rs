@@ -63,6 +63,14 @@ impl Balise {
     }
 }
 
+/// Les octets de `h` qui vérifient `garder` à partir de `i`, et l'indice qui les suit. Au-delà de la fin, il n'y a
+/// plus rien à lire : rien n'est pris.
+fn prendre(h: &[u8], i: usize, garder: impl Fn(u8) -> bool) -> (&[u8], usize) {
+    let reste = h.get(i..).unwrap_or_default();
+    let n = reste.iter().take_while(|&&o| garder(o)).count();
+    (reste.get(..n).unwrap_or(reste), i + n)
+}
+
 /// Lit la balise qui commence à `debut` (sur « < ») ; rend la balise et l'indice qui suit « > ».
 fn lire_balise(h: &[u8], debut: usize) -> (Option<Balise>, usize) {
     let mut i = debut + 1;
@@ -70,56 +78,42 @@ fn lire_balise(h: &[u8], debut: usize) -> (Option<Balise>, usize) {
     if fermante {
         i += 1;
     }
-    let d = i;
-    while i < h.len() && (h[i].is_ascii_alphanumeric() || h[i] == b'-' || h[i] == b':') {
-        i += 1;
-    }
-    if i == d {
+    let (nom, suite) = prendre(h, i, |o| o.is_ascii_alphanumeric() || o == b'-' || o == b':');
+    if nom.is_empty() {
         // « < » seul dans le texte : pas une balise.
         return (None, debut + 1);
     }
-    let nom = String::from_utf8_lossy(&h[d..i]).to_ascii_lowercase();
+    let nom = String::from_utf8_lossy(nom).to_ascii_lowercase();
+    i = suite;
     let mut attributs = Vec::new();
     loop {
-        while i < h.len() && (h[i].is_ascii_whitespace() || h[i] == b'/') {
+        i = prendre(h, i, |o| o.is_ascii_whitespace() || o == b'/').1;
+        let Some(&o) = h.get(i) else {
+            break;
+        };
+        if o == b'>' {
             i += 1;
-        }
-        if i >= h.len() {
             break;
         }
-        if h[i] == b'>' {
-            i += 1;
-            break;
-        }
-        let d = i;
-        while i < h.len() && !h[i].is_ascii_whitespace() && !matches!(h[i], b'=' | b'>' | b'/') {
-            i += 1;
-        }
-        let nom_attr = String::from_utf8_lossy(&h[d..i]).to_ascii_lowercase();
-        if i == d {
+        let (nom_attr, suite) = prendre(h, i, |o| !o.is_ascii_whitespace() && !matches!(o, b'=' | b'>' | b'/'));
+        if nom_attr.is_empty() {
             i += 1;
             continue;
         }
-        while i < h.len() && h[i].is_ascii_whitespace() {
-            i += 1;
-        }
+        let nom_attr = String::from_utf8_lossy(nom_attr).to_ascii_lowercase();
+        i = prendre(h, suite, |o| o.is_ascii_whitespace()).1;
         let mut valeur = String::new();
         if h.get(i) == Some(&b'=') {
-            i += 1;
-            while i < h.len() && h[i].is_ascii_whitespace() {
-                i += 1;
-            }
+            i = prendre(h, i + 1, |o| o.is_ascii_whitespace()).1;
             if let Some(&q @ (b'"' | b'\'')) = h.get(i) {
-                let d = i + 1;
-                let fin = h[d..].iter().position(|&c| c == q).map_or(h.len(), |p| d + p);
-                valeur = String::from_utf8_lossy(&h[d..fin]).into_owned();
+                // Jusqu'au guillemet qui ferme, ou la fin.
+                let (v, fin) = prendre(h, i + 1, |o| o != q);
+                valeur = String::from_utf8_lossy(v).into_owned();
                 i = (fin + 1).min(h.len());
             } else {
-                let d = i;
-                while i < h.len() && !h[i].is_ascii_whitespace() && h[i] != b'>' {
-                    i += 1;
-                }
-                valeur = String::from_utf8_lossy(&h[d..i]).into_owned();
+                let (v, fin) = prendre(h, i, |o| !o.is_ascii_whitespace() && o != b'>');
+                valeur = String::from_utf8_lossy(v).into_owned();
+                i = fin;
             }
         }
         if attributs.len() < 50 {
@@ -141,7 +135,7 @@ fn chercher_casse(h: &[u8], debut: usize, aiguille: &[u8]) -> Option<usize> {
     if aiguille.is_empty() || debut >= h.len() {
         return None;
     }
-    h[debut..]
+    h.get(debut..)?
         .windows(aiguille.len())
         .position(|w| w.eq_ignore_ascii_case(aiguille))
         .map(|p| debut + p)
@@ -162,11 +156,12 @@ fn adresse_attribut(v: &str) -> String {
 /// Lit le HTML d'une partie (au plus `HTML_MAX` octets, `max_liens` liens).
 pub(crate) fn lire_html(html: &str, max_liens: usize, source: &Source) -> Html {
     let mut r = Html::default();
-    let h = if html.len() > HTML_MAX {
-        r.coupe = true;
-        &html.as_bytes()[..HTML_MAX]
-    } else {
-        html.as_bytes()
+    let h = match html.as_bytes().split_at_checked(HTML_MAX) {
+        Some((lu, reste)) if !reste.is_empty() => {
+            r.coupe = true;
+            lu
+        }
+        _ => html.as_bytes(),
     };
     // Le lien ouvert (son adresse, et le texte qu'il montre).
     let mut ouvert: Option<(String, Vec<u8>)> = None;
@@ -176,26 +171,25 @@ pub(crate) fn lire_html(html: &str, max_liens: usize, source: &Source) -> Html {
             pousser(r, cible, Some(texte_affiche(&texte)), source, max_liens);
         }
     };
-    while i < h.len() {
-        if h[i] != b'<' {
-            let fin = h[i..].iter().position(|&c| c == b'<').map_or(h.len(), |p| i + p);
-            let morceau = &h[i..fin];
+    while let Some(ici) = h.get(i..).filter(|ici| !ici.is_empty()) {
+        if !ici.starts_with(b"<") {
+            let (morceau, fin) = prendre(h, i, |c| c != b'<');
             r.texte_visible += morceau.iter().filter(|c| !c.is_ascii_whitespace()).count();
             if let Some((_, texte)) = &mut ouvert
                 && texte.len() < AFFICHE_MAX
             {
-                texte.extend_from_slice(&morceau[..morceau.len().min(AFFICHE_MAX - texte.len())]);
+                texte.extend(morceau.iter().take(AFFICHE_MAX - texte.len()));
             }
             i = fin;
             continue;
         }
         // Commentaire : un lien qu'il contient n'est pas cliquable.
-        if h[i..].starts_with(b"<!--") {
+        if ici.starts_with(b"<!--") {
             i = chercher_casse(h, i + 4, b"-->").map_or(h.len(), |p| p + 3);
             continue;
         }
-        if h[i..].starts_with(b"<!") || h[i..].starts_with(b"<?") {
-            i = h[i..].iter().position(|&c| c == b'>').map_or(h.len(), |p| i + p + 1);
+        if ici.starts_with(b"<!") || ici.starts_with(b"<?") {
+            i = ici.iter().position(|&c| c == b'>').map_or(h.len(), |p| i + p + 1);
             continue;
         }
         let (balise, suite) = lire_balise(h, i);
@@ -409,17 +403,17 @@ pub(crate) fn liens_texte(texte: &str, max: usize, source: &Source) -> Vec<LienT
     // « www. » ne doit pas être relu à chaque lien trouvé.
     let mut prochains = [0_usize; 5];
     let chercher = |depuis: usize, prochains: &mut [usize; 5]| {
-        for (k, m) in DEBUTS.iter().enumerate() {
-            if prochains[k] != usize::MAX && prochains[k] < depuis {
-                prochains[k] = bas[depuis..].find(m).map_or(usize::MAX, |p| depuis + p);
+        for (m, prochain) in DEBUTS.iter().zip(prochains.iter_mut()) {
+            if *prochain != usize::MAX && *prochain < depuis {
+                *prochain = bas[depuis..].find(m).map_or(usize::MAX, |p| depuis + p);
             }
         }
         prochains.iter().copied().min().filter(|p| *p != usize::MAX)
     };
     let mut i = 0;
     // Le premier tour cherche depuis 0 : les places valent 0, « dépassées » seulement après.
-    for (k, m) in DEBUTS.iter().enumerate() {
-        prochains[k] = bas.find(m).unwrap_or(usize::MAX);
+    for (m, prochain) in DEBUTS.iter().zip(prochains.iter_mut()) {
+        *prochain = bas.find(m).unwrap_or(usize::MAX);
     }
     while i < bas.len() && liens.len() < max {
         let Some(debut) = chercher(i, &mut prochains) else {
@@ -545,15 +539,15 @@ fn pourcents(v: &str) -> Vec<u8> {
     let o = v.as_bytes();
     let mut s = Vec::with_capacity(o.len());
     let mut i = 0;
-    while i < o.len() {
-        if o[i] == b'%'
+    while let Some(&c) = o.get(i) {
+        if c == b'%'
             && let Some(h) = v.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
         {
             s.push(h);
             i += 3;
             continue;
         }
-        s.push(if o[i] == b'+' { b' ' } else { o[i] });
+        s.push(if c == b'+' { b' ' } else { c });
         i += 1;
     }
     s
@@ -676,21 +670,17 @@ pub(crate) fn examiner_liens(liens: &[LienTrouve], max_sites: usize) -> ExamenLi
         } else {
             site.clone()
         };
-        let place = r.par_site.iter().position(|(s, _, _, _)| *s == cle);
-        match place {
-            Some(i) => {
-                let existants = &mut r.par_site[i].3;
-                for s in signes {
-                    if !existants.contains(&s) {
-                        existants.push(s);
-                    }
+        if let Some((_, _, _, existants)) = r.par_site.iter_mut().find(|(s, _, _, _)| *s == cle) {
+            for s in signes {
+                if !existants.contains(&s) {
+                    existants.push(s);
                 }
             }
-            None if r.par_site.len() < max_sites => r.par_site.push((cle, cible.clone(), l.source.clone(), signes)),
-            None => {
-                hors_borne.insert(cle);
-                r.non_examines = hors_borne.len();
-            }
+        } else if r.par_site.len() < max_sites {
+            r.par_site.push((cle, cible.clone(), l.source.clone(), signes));
+        } else {
+            hors_borne.insert(cle);
+            r.non_examines = hors_borne.len();
         }
         // Le texte montré : caractères invisibles retirés avant de comparer (« pay​pal.com » coupé par U+200B reste
         // « paypal.com »).

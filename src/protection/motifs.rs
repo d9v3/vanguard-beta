@@ -189,29 +189,23 @@ fn choisir_atome(elements: &[Element]) -> Option<(usize, usize)> {
         _ => 0,
     };
     let mut meilleur: Option<(u32, usize, usize)> = None;
-    let mut i = 0;
-    while i < elements.len() {
-        if !connu(&elements[i]) {
-            i += 1;
-            continue;
-        }
-        let mut fin = i;
-        while fin < elements.len() && connu(&elements[fin]) {
-            fin += 1;
-        }
-        for debut in i..fin {
-            let n = (fin - debut).min(ATOME_MAX);
-            let fenetre: Vec<u8> = elements[debut..debut + n].iter().map(octet).collect();
-            let mut distincts = fenetre.clone();
-            distincts.sort_unstable();
-            distincts.dedup();
-            let note =
-                fenetre.iter().map(|o| rarete(*o)).sum::<u32>() + 2 * u32::try_from(distincts.len() - 1).unwrap_or(0);
-            if meilleur.is_none_or(|(m, _, _)| note > m) {
-                meilleur = Some((note, debut, n));
+    // Les suites d'éléments tous connus ou tous inconnus, et la position de chacune.
+    let mut position = 0;
+    for suite in elements.chunk_by(|a, b| connu(a) == connu(b)) {
+        if suite.first().is_some_and(connu) {
+            for decalage in 0..suite.len() {
+                let fenetre: Vec<u8> = suite.iter().skip(decalage).take(ATOME_MAX).map(octet).collect();
+                let mut distincts = fenetre.clone();
+                distincts.sort_unstable();
+                distincts.dedup();
+                let note = fenetre.iter().map(|o| rarete(*o)).sum::<u32>()
+                    + 2 * u32::try_from(distincts.len().saturating_sub(1)).unwrap_or(0);
+                if meilleur.is_none_or(|(m, _, _)| note > m) {
+                    meilleur = Some((note, position + decalage, fenetre.len()));
+                }
             }
         }
-        i = fin;
+        position += suite.len();
     }
     meilleur.map(|(_, d, n)| (d, n))
 }
@@ -236,15 +230,19 @@ impl Motif {
             return Err(Refus::TropLong);
         }
         let (debut, n) = choisir_atome(&elements).ok_or(Refus::SansAtome)?;
-        let atome = elements[debut..debut + n]
+        // L'atome a été choisi dans `elements` : la coupe ne peut manquer, mais si elle manquait, la chaîne serait
+        // refusée, jamais cherchée de travers.
+        let (avant, reste) = elements.split_at_checked(debut).ok_or(Refus::SansAtome)?;
+        let (atome, apres) = reste.split_at_checked(n).ok_or(Refus::SansAtome)?;
+        let atome = atome
             .iter()
             .map(|e| match e {
                 Element::Octet { valeur, .. } => *valeur,
                 _ => 0,
             })
             .collect();
-        let avant = retourner(&elements[..debut]);
-        let apres = elements[debut + n..].to_vec();
+        let avant = retourner(avant);
+        let apres = apres.to_vec();
         // Les trois longueurs tiennent dans LONGUEUR_MAX, contrôlé plus haut.
         let borne = |n: u64| u32::try_from(n).unwrap_or(LONGUEUR_MAX);
         let avant_max = borne(longueurs(&avant).1);
@@ -374,51 +372,74 @@ impl Automate {
     /// L'automate des atomes `atomes[i]` (le motif `i`). `None` : plus de `ETATS_MAX` états.
     fn construire(atomes: &[&[u8]]) -> Option<Automate> {
         let mut noeuds = vec![Noeud::default()];
+        // Les états ne sont jamais lus par un index : un état hors de `noeuds` (impossible, chacun y est poussé avant
+        // d'être noté) refuserait l'automate au lieu de faire planter l'analyse.
         for (i, atome) in atomes.iter().enumerate() {
             let mut etat = 0usize;
             for &o in *atome {
-                etat = match noeuds[etat].fils.binary_search_by_key(&o, |f| f.0) {
-                    Ok(k) => noeuds[etat].fils[k].1 as usize,
+                let compte = noeuds.len();
+                let noeud = noeuds.get_mut(etat)?;
+                etat = match noeud.fils.binary_search_by_key(&o, |f| f.0) {
+                    Ok(k) => noeud.fils.get(k)?.1 as usize,
                     Err(k) => {
-                        if noeuds.len() >= ETATS_MAX {
+                        if compte >= ETATS_MAX {
                             return None;
                         }
-                        let nouveau = u32::try_from(noeuds.len()).ok()?;
-                        noeuds[etat].fils.insert(k, (o, nouveau));
+                        let nouveau = u32::try_from(compte).ok()?;
+                        noeud.fils.insert(k, (o, nouveau));
                         noeuds.push(Noeud::default());
                         nouveau as usize
                     }
                 };
             }
-            noeuds[etat].sorties.push(u32::try_from(i).ok()?);
+            noeuds.get_mut(etat)?.sorties.push(u32::try_from(i).ok()?);
         }
         // Liens d'échec, en largeur : l'échec d'un état est le plus long suffixe de son chemin qui soit aussi un état.
-        let mut file = std::collections::VecDeque::new();
-        for &(_, f) in &noeuds[0].fils.clone() {
-            file.push_back(f);
-        }
+        let mut file: std::collections::VecDeque<u32> = noeuds.first()?.fils.iter().map(|f| f.1).collect();
         while let Some(etat) = file.pop_front() {
-            for (o, fils) in noeuds[etat as usize].fils.clone() {
-                let mut e = noeuds[etat as usize].echec;
+            let courant = noeuds.get(etat as usize)?;
+            let depart = courant.echec;
+            for (o, fils) in courant.fils.clone() {
+                let mut e = depart;
                 let echec = loop {
-                    if let Ok(k) = noeuds[e as usize].fils.binary_search_by_key(&o, |f| f.0) {
-                        break noeuds[e as usize].fils[k].1;
+                    let n = noeuds.get(e as usize)?;
+                    if let Some(&(_, f)) = n
+                        .fils
+                        .binary_search_by_key(&o, |f| f.0)
+                        .ok()
+                        .and_then(|k| n.fils.get(k))
+                    {
+                        break f;
                     }
                     if e == 0 {
                         break 0;
                     }
-                    e = noeuds[e as usize].echec;
+                    e = n.echec;
                 };
-                let n = &mut noeuds[fils as usize];
-                n.echec = echec;
-                file.push_back(fils);
-                let suivante = if noeuds[echec as usize].sorties.is_empty() {
-                    noeuds[echec as usize].sortie_suivante
+                let cible = noeuds.get(echec as usize)?;
+                let suivante = if cible.sorties.is_empty() {
+                    cible.sortie_suivante
                 } else {
                     echec
                 };
-                noeuds[fils as usize].sortie_suivante = suivante;
+                let n = noeuds.get_mut(fils as usize)?;
+                n.echec = echec;
+                n.sortie_suivante = suivante;
+                file.push_back(fils);
             }
+        }
+        // Tout état noté (transition, échec, sortie suivante, et les sorties : des motifs) existe : `noeud` s'y fie
+        // pendant l'analyse, sans rien vérifier par octet lu.
+        let compte = u32::try_from(noeuds.len()).ok()?;
+        let motifs = u32::try_from(atomes.len()).ok()?;
+        let valide = |n: &Noeud| {
+            n.echec < compte
+                && n.sortie_suivante < compte
+                && n.fils.iter().all(|f| f.1 < compte)
+                && n.sorties.iter().all(|&m| m < motifs)
+        };
+        if !noeuds.iter().all(valide) {
+            return None;
         }
         let mut automate = Automate { noeuds, table: None };
         if automate.noeuds.len() <= ETATS_TABLE {
@@ -433,11 +454,25 @@ impl Automate {
         Some(automate)
     }
 
+    /// L'état `etat`, qui vient toujours de l'automate lui-même.
+    fn noeud(&self, etat: u32) -> &Noeud {
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "construire refuse l'automate si un état noté sort de `noeuds`, et rien ne le change ensuite"
+        )]
+        &self.noeuds[etat as usize]
+    }
+
     fn suivant_par_echecs(&self, mut etat: u32, o: u8) -> u32 {
         loop {
-            let n = &self.noeuds[etat as usize];
-            if let Ok(k) = n.fils.binary_search_by_key(&o, |f| f.0) {
-                return n.fils[k].1;
+            let n = self.noeud(etat);
+            if let Some(&(_, f)) = n
+                .fils
+                .binary_search_by_key(&o, |f| f.0)
+                .ok()
+                .and_then(|k| n.fils.get(k))
+            {
+                return f;
             }
             if etat == 0 {
                 return 0;
@@ -454,17 +489,22 @@ impl Automate {
     fn avancer(&self, etat: &mut u32, octets: &[u8], mut trouve: impl FnMut(usize, u32)) {
         let mut e = *etat;
         for (i, &o) in octets.iter().enumerate() {
+            // La table a 256 cases par état (construire) ; hors d'elle, la même transition se calcule par les échecs.
             e = match &self.table {
-                Some(t) => t[e as usize * 256 + o as usize],
+                Some(t) => t
+                    .get(e as usize * 256 + o as usize)
+                    .copied()
+                    .unwrap_or_else(|| self.suivant_par_echecs(e, o)),
                 None => self.suivant_par_echecs(e, o),
             };
-            let mut s = if self.noeuds[e as usize].sorties.is_empty() {
-                self.noeuds[e as usize].sortie_suivante
+            let courant = self.noeud(e);
+            let mut s = if courant.sorties.is_empty() {
+                courant.sortie_suivante
             } else {
                 e
             };
             while s != AUCUN {
-                let n = &self.noeuds[s as usize];
+                let n = self.noeud(s);
                 for &m in &n.sorties {
                     trouve(i, m);
                 }
@@ -508,6 +548,18 @@ impl Recherche {
         })
     }
 
+    /// Aucun motif : l'automate n'a que sa racine, sans rien qui puisse manquer.
+    pub(crate) fn vide() -> Recherche {
+        Recherche {
+            motifs: Vec::new(),
+            automate: Automate {
+                noeuds: vec![Noeud::default()],
+                table: None,
+            },
+            garde: 0,
+        }
+    }
+
     pub(crate) fn motifs(&self) -> &[Motif] {
         &self.motifs
     }
@@ -527,28 +579,36 @@ impl Recherche {
     ) -> Result<(), Echec> {
         let mut etat = 0;
         let mut travail = 0u64;
-        let mut depasse = false;
+        let mut arret: Option<Echec> = None;
         for (k, morceau) in donnees.chunks(BLOC).enumerate() {
             if echeance.is_some_and(|e| Instant::now() >= e) {
                 return Err(Echec::Delai);
             }
             let base = k * BLOC;
             self.automate.avancer(&mut etat, morceau, |i, m| {
+                if arret.is_some() {
+                    return;
+                }
                 let m = m as usize;
-                if vus[m] || !utile[m] || depasse {
+                // Un motif que `vus` ou `utile` ne connaissent pas : rien n'est conclu, plutôt qu'un motif tu.
+                let (Some(motif), Some(vu), Some(&sert)) = (self.motifs.get(m), vus.get_mut(m), utile.get(m)) else {
+                    arret = Some(Echec::Lecture);
+                    return;
+                };
+                if *vu || !sert {
                     return;
                 }
-                if delai_passe(&mut travail, self.motifs[m].cout, echeance) {
-                    depasse = true;
+                if delai_passe(&mut travail, motif.cout, echeance) {
+                    arret = Some(Echec::Delai);
                     return;
                 }
-                let atome = base + i + 1 - self.motifs[m].atome.len();
-                if self.motifs[m].autour(donnees, atome) {
-                    vus[m] = true;
+                let atome = base + i + 1 - motif.atome.len();
+                if motif.autour(donnees, atome) {
+                    *vu = true;
                 }
             });
-            if depasse {
-                return Err(Echec::Delai);
+            if let Some(e) = arret {
+                return Err(e);
             }
         }
         Ok(())
@@ -575,7 +635,7 @@ impl Recherche {
         // (motif, position absolue du début de l'atome) : ce qui suit l'atome n'est pas encore lu.
         let mut attente: Vec<(u32, u64)> = Vec::new();
         let mut travail = 0u64;
-        let mut depasse = false;
+        let mut arret: Option<Echec> = None;
         loop {
             if echeance.is_some_and(|e| Instant::now() >= e) {
                 return Err(Echec::Delai);
@@ -583,56 +643,56 @@ impl Recherche {
             let ancien = fenetre.len();
             let voulu = usize::try_from(limite - lus).map_or(bloc, |reste| reste.min(bloc));
             fenetre.resize(ancien + voulu, 0);
-            let mut n = 0;
-            while n < voulu {
-                match source.read(&mut fenetre[ancien + n..ancien + voulu]) {
-                    Ok(0) => break,
-                    Ok(k) => n += k,
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                    Err(_) => return Err(Echec::Lecture),
-                }
-            }
+            let n = remplir(source, fenetre.get_mut(ancien..).ok_or(Echec::Lecture)?)?;
             fenetre.truncate(ancien + n);
             lus += n as u64;
             let fin = n < voulu || lus >= limite;
             let debut_neuf = base + ancien as u64;
             let bout = base + fenetre.len() as u64;
             // Ce qui précède l'atome est encore dans la fenêtre (voir la coupe plus bas) : avant son début, il n'y a que
-            // ce qui précéderait le début des données, qui n'existe pas. La position relative suffit.
-            let verifier = |m: u32, atome: u64, vus: &mut [bool], travail: &mut u64| -> bool {
-                let motif = &self.motifs[m as usize];
+            // ce qui précéderait le début des données, qui n'existe pas. La position relative suffit. Un motif inconnu
+            // de `self.motifs` ou de `vus` n'est jamais tu : rien n'est conclu.
+            let verifier = |m: u32, atome: u64, vus: &mut [bool], travail: &mut u64| -> Result<(), Echec> {
+                let motif = self.motifs.get(m as usize).ok_or(Echec::Lecture)?;
                 if delai_passe(travail, motif.cout, echeance) {
-                    return false;
+                    return Err(Echec::Delai);
                 }
                 debug_assert!(atome.saturating_sub(u64::from(motif.avant_max)) >= base || base == 0);
                 if usize::try_from(atome - base).is_ok_and(|relatif| motif.autour(&fenetre, relatif)) {
-                    vus[m as usize] = true;
+                    *vus.get_mut(m as usize).ok_or(Echec::Lecture)? = true;
                 }
-                true
+                Ok(())
             };
             // Un atome dont tout ce qui suit est déjà dans la fenêtre est vérifié tout de suite : seuls attendent ceux
             // des derniers octets du bloc, si bien que l'attente reste bornée par la garde, quelles que soient les
             // données (un atome que partagent des dizaines de motifs, répété sur tout un bloc).
-            self.automate.avancer(&mut etat, &fenetre[ancien..], |i, m| {
-                let mi = m as usize;
-                if vus[mi] || !utile[mi] || depasse {
+            let neuf = fenetre.get(ancien..).ok_or(Echec::Lecture)?;
+            self.automate.avancer(&mut etat, neuf, |i, m| {
+                if arret.is_some() {
                     return;
                 }
-                let motif = &self.motifs[mi];
+                let mi = m as usize;
+                let (Some(motif), Some(&vu), Some(&sert)) = (self.motifs.get(mi), vus.get(mi), utile.get(mi)) else {
+                    arret = Some(Echec::Lecture);
+                    return;
+                };
+                if vu || !sert {
+                    return;
+                }
                 let atome = debut_neuf + i as u64 + 1 - motif.atome.len() as u64;
                 if atome + motif.atome.len() as u64 + u64::from(motif.apres_max) > bout && !fin {
                     attente.push((m, atome));
-                } else if !verifier(m, atome, vus, &mut travail) {
-                    depasse = true;
+                } else if let Err(e) = verifier(m, atome, vus, &mut travail) {
+                    arret = Some(e);
                 }
             });
-            if depasse {
-                return Err(Echec::Delai);
+            if let Some(e) = arret {
+                return Err(e);
             }
             let mut restantes = Vec::new();
             for (m, atome) in attente.drain(..) {
-                let motif = &self.motifs[m as usize];
-                if vus[m as usize] {
+                let motif = self.motifs.get(m as usize).ok_or(Echec::Lecture)?;
+                if vus.get(m as usize).copied().ok_or(Echec::Lecture)? {
                     continue;
                 }
                 let besoin = atome + motif.atome.len() as u64 + u64::from(motif.apres_max);
@@ -640,9 +700,7 @@ impl Recherche {
                     restantes.push((m, atome));
                     continue;
                 }
-                if !verifier(m, atome, vus, &mut travail) {
-                    return Err(Echec::Delai);
-                }
+                verifier(m, atome, vus, &mut travail)?;
             }
             attente = restantes;
             if fin {
@@ -652,13 +710,32 @@ impl Recherche {
             // et tout ce que les vérifications en attente liront.
             let mut coupe = bout.saturating_sub(self.garde as u64 + ATOME_MAX as u64);
             for (m, atome) in &attente {
-                coupe = coupe.min(atome.saturating_sub(u64::from(self.motifs[*m as usize].avant_max)));
+                let avant_max = self.motifs.get(*m as usize).ok_or(Echec::Lecture)?.avant_max;
+                coupe = coupe.min(atome.saturating_sub(u64::from(avant_max)));
             }
             let coupe = coupe.max(base);
             fenetre.drain(..usize::try_from(coupe - base).unwrap_or(fenetre.len()));
             base = coupe;
         }
     }
+}
+
+/// Remplit `tampon` depuis `source`, jusqu'à la fin des données : le nombre d'octets lus.
+fn remplir(source: &mut impl Read, mut tampon: &mut [u8]) -> Result<usize, Echec> {
+    let mut n = 0;
+    while !tampon.is_empty() {
+        match source.read(tampon) {
+            Ok(0) => break,
+            // Une source qui dit avoir lu plus que le tampon ne se croit pas.
+            Ok(k) => {
+                tampon = std::mem::take(&mut tampon).get_mut(k..).ok_or(Echec::Lecture)?;
+                n += k;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return Err(Echec::Lecture),
+        }
+    }
+    Ok(n)
 }
 
 #[cfg(test)]

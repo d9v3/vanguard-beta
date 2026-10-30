@@ -432,8 +432,10 @@ fn entete_linux(ligne: &str) -> Option<Mappage> {
     let (debut, fin) = adresses.split_once('-')?;
     let (debut, fin) = (u64::from_str_radix(debut, 16).ok()?, u64::from_str_radix(fin, 16).ok()?);
     let (majeur, mineur) = peripherique.split_once(':')?;
-    let droits = droits.as_bytes();
-    if droits.len() != 4 || fin <= debut {
+    let &[lis, _, exec, _] = droits.as_bytes() else {
+        return None;
+    };
+    if fin <= debut {
         return None;
     }
     Some(Mappage {
@@ -441,8 +443,8 @@ fn entete_linux(ligne: &str) -> Option<Mappage> {
             debut,
             taille: fin - debut,
         },
-        lisible: droits[0] == b'r',
-        executable: droits[2] == b'x',
+        lisible: lis == b'r',
+        executable: exec == b'x',
         decalage: u64::from_str_radix(decalage, 16).ok()?,
         peripherique: (
             u32::from_str_radix(majeur, 16).ok()?,
@@ -529,10 +531,17 @@ pub(crate) fn releve_linux(
             images.push(Vec::new());
             images.len() - 1
         });
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "k vient de `rang`, qui ne garde que des indices de `images` au moment où il les pousse ; `images` ne fait que grandir"
+        )]
         images[k].push(m);
     }
     for groupe in images {
-        let premier = &groupe[0];
+        // Un groupe naît avec sa première région : jamais vide, et un groupe vide n'aurait rien à analyser.
+        let Some(premier) = groupe.first() else {
+            continue;
+        };
         let efface = premier.chemin.ends_with(" (deleted)") || premier.chemin.starts_with("/memfd:");
         let hors_disque = en_memoire.map(|e| e.contains(&premier.peripherique));
         let reecrit = groupe.iter().any(|m| m.executable && m.anonyme_ko > 0);
@@ -791,7 +800,7 @@ fn analyser_regions(
                     if n < dest.len() {
                         entier = false;
                         if recolle {
-                            dest[n..].fill(0);
+                            dest.iter_mut().skip(n).for_each(|o| *o = 0);
                         }
                     }
                     lus += n;
@@ -806,7 +815,11 @@ fn analyser_regions(
                 }
                 lecture.octets += lus as u64;
                 let echeance = Instant::now() + DELAI_PAR_REGION;
-                let zone = if recolle { &zone[..] } else { &zone[..fin] };
+                // `fin` ne dépasse pas la fin d'une place prise dans `zone` ; sinon le bloc serait compté sauté.
+                let Some(zone) = (if recolle { Some(&*zone) } else { zone.get(..fin) }) else {
+                    lecture.sautees += 1;
+                    continue;
+                };
                 match crate::journal::rattraper(std::panic::AssertUnwindSafe(|| {
                     let tel_quel = regles.analyser_tampon(zone, Some(echeance))?;
                     // Une allocation qui commence par « MZ » peut garder un PE chargé (sections à leur RVA) ou tel
@@ -939,8 +952,8 @@ mod plateforme {
         /// analysé.
         pub(super) fn lire(&self, region: &Region, zone: &mut [u8]) -> usize {
             let mut fait = 0usize;
-            while fait < zone.len() {
-                match self.fichier.read_at(&mut zone[fait..], region.debut + fait as u64) {
+            while let Some(reste) = zone.get_mut(fait..).filter(|r| !r.is_empty()) {
+                match self.fichier.read_at(reste, region.debut + fait as u64) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => fait += n,
                 }

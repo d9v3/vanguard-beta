@@ -69,11 +69,14 @@ fn produit_corrige(element: &str) -> Option<(bool, Version)> {
 /// Une CVE de la forme `CVE-AAAA-NNNN…` (4 à 7 chiffres) au début de `octets` : sa longueur.
 fn longueur_cve(octets: &[u8]) -> Option<usize> {
     let reste = octets.strip_prefix(b"CVE-")?;
-    let annee = reste.get(..5)?;
-    if !annee[..4].iter().all(u8::is_ascii_digit) || annee[4] != b'-' {
+    let (annee, suite) = reste.split_first_chunk::<5>()?;
+    let [chiffres @ .., b'-'] = annee else {
+        return None;
+    };
+    if !chiffres.iter().all(u8::is_ascii_digit) {
         return None;
     }
-    let n = reste[5..].iter().take(8).take_while(|o| o.is_ascii_digit()).count();
+    let n = suite.iter().take(8).take_while(|o| o.is_ascii_digit()).count();
     (4..=7).contains(&n).then_some(4 + 5 + n)
 }
 
@@ -82,11 +85,14 @@ fn longueur_cve(octets: &[u8]) -> Option<usize> {
 fn cves_du_texte(texte: &str, cves: &mut Vec<String>) {
     let octets = texte.as_bytes();
     let mut i = 0;
-    while let Some(pos) = octets[i..].windows(4).position(|w| w == b"CVE-") {
+    while let Some(pos) = octets.get(i..).and_then(|r| r.windows(4).position(|w| w == b"CVE-")) {
         let debut = i + pos;
-        let precede = debut > 0 && octets[debut - 1].is_ascii_alphanumeric();
+        let precede = debut
+            .checked_sub(1)
+            .and_then(|k| octets.get(k))
+            .is_some_and(u8::is_ascii_alphanumeric);
         if !precede
-            && let Some(n) = longueur_cve(&octets[debut..])
+            && let Some(n) = octets.get(debut..).and_then(longueur_cve)
             && !octets.get(debut + n).is_some_and(u8::is_ascii_digit)
         {
             ajouter_cve(cves, &texte[debut..debut + n]);
@@ -187,7 +193,7 @@ pub(crate) fn avis(nom: &str, octets: &[u8]) -> Option<Avis> {
                 return None;
             }
             let fin = lignes.iter().skip(1).position(|l| l.trim_end() == "---")? + 1;
-            lire_entete(&lignes[1..fin], &mut a);
+            lire_entete(lignes.get(1..fin)?, &mut a);
             cves_du_texte(texte, &mut a.cves);
         }
     }

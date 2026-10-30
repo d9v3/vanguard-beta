@@ -256,16 +256,21 @@ pub(crate) fn refuse_en_premier(status: &str, port: u16) -> bool {
         let Some(i) = mots.iter().position(|m| actions.contains(m)) else {
             continue;
         };
+        // `i` vient de `position` : l'action y est toujours.
+        let Some((avant, &[action, ref suite @ ..])) = mots.split_at_checked(i) else {
+            continue;
+        };
         // « ALLOW OUT » : une règle de sortie ne dit rien de l'entrée.
-        if mots.get(i + 1) == Some(&"OUT") {
+        if suite.first() == Some(&"OUT") {
             continue;
         }
-        let destination = mots[..i].join(" ");
+        let destination = avant.join(" ");
         if !vise_le_port(&destination, port) {
             continue;
         }
-        let famille = usize::from(l.contains("(v6)"));
-        decision[famille].get_or_insert(matches!(mots[i], "DENY" | "REJECT"));
+        let [v4, v6] = &mut decision;
+        let famille = if l.contains("(v6)") { v6 } else { v4 };
+        famille.get_or_insert(matches!(action, "DENY" | "REJECT"));
     }
     decision[0] == Some(true) && decision[1] != Some(false)
 }

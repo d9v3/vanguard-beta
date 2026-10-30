@@ -1437,7 +1437,8 @@ pub fn menu() {
     };
     let visibles: Vec<&Trouvaille> = trouvailles
         .iter()
-        .filter(|t| !LOGICIELS[t.logiciel].integre || matches!(t.trace, Trace::EnCours { .. }))
+        // Un rang hors de la liste (jamais : il vient d'elle) reste visible plutôt que d'être tu.
+        .filter(|t| LOGICIELS.get(t.logiciel).is_none_or(|l| !l.integre) || matches!(t.trace, Trace::EnCours { .. }))
         .collect();
     if visibles.is_empty() {
         afficher_aligne(
@@ -1457,15 +1458,13 @@ pub fn menu() {
         }
         return;
     }
-    let presents: Vec<usize> = (0..LOGICIELS.len())
-        .filter(|&i| visibles.iter().any(|t| t.logiciel == i))
+    let presents: Vec<(usize, &Logiciel)> = LOGICIELS
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| visibles.iter().any(|t| t.logiciel == i))
         .collect();
-    for &i in &presents {
-        println!(
-            "  {}⚠{RESET} {GRAS}{}{RESET}",
-            couleur(Niveau::Eleve),
-            LOGICIELS[i].nom()
-        );
+    for &(i, logiciel) in &presents {
+        println!("  {}⚠{RESET} {GRAS}{}{RESET}", couleur(Niveau::Eleve), logiciel.nom());
         for t in visibles.iter().filter(|t| t.logiciel == i) {
             afficher_aligne("      ", &decrire(t, aujourd_hui), 6, "");
         }
@@ -1515,8 +1514,8 @@ pub fn menu() {
     }
     let mut correctifs: Vec<Vec<String>> = Vec::new();
     let mut noms: Vec<&str> = Vec::new();
-    for &i in &presents {
-        let nom = LOGICIELS[i].nom();
+    for &(i, logiciel) in &presents {
+        let nom = logiciel.nom();
         let siens: Vec<&Trouvaille> = visibles.iter().copied().filter(|t| t.logiciel == i).collect();
         let en_cours = siens.iter().any(|t| matches!(t.trace, Trace::EnCours { .. }));
         let mut commandes = Vec::new();
@@ -1586,7 +1585,8 @@ pub fn json() {
 pub(crate) fn corpus(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
     let dossier = e.jetable("telechargements");
     for c in e.de("fichier") {
-        std::fs::write(dossier.join(c[0]), b"").unwrap();
+        let pose = c.first().map(|nom| std::fs::write(dossier.join(nom), b""));
+        assert!(matches!(pose, Some(Ok(()))), "corpus : fichier {c:?} non posé");
     }
     let mut trouvailles = Vec::new();
     assert!(fichiers_poses(&mut trouvailles, &[dossier.to_path_buf()]));

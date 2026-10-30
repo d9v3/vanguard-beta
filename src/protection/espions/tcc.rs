@@ -81,8 +81,8 @@ const APPLE_ATTENDUES: &[&str] = &[
 /// Une autorisation accordée.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Autorisation {
-    /// Indice dans `SERVICES`.
-    pub service: usize,
+    /// Sa ligne dans `SERVICES` : l'identifiant TCC et le nom affiché (plutôt qu'un indice à relire).
+    pub service: &'static (&'static str, [&'static str; 2]),
     /// Identifiant d'application (« com.example.App ») ou chemin d'un programme.
     pub client: String,
     pub chemin: bool,
@@ -91,7 +91,7 @@ pub(super) struct Autorisation {
 impl Autorisation {
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(super) fn service(&self) -> &'static str {
-        let [fr, en] = SERVICES[self.service].1;
+        let [fr, en] = self.service.1;
         if crate::langue::anglais() { en } else { fr }
     }
 }
@@ -104,26 +104,32 @@ pub(super) fn autorisations(octets: &[u8]) -> Option<Vec<Autorisation>> {
         "access",
         &["service", "client", "client_type", "auth_value", "allowed"],
     )?;
-    Some(
-        lignes
-            .into_iter()
-            .filter_map(|l| {
-                let service = SERVICES.iter().position(|(s, _)| Some(*s) == l[0].texte())?;
-                // Lus comme tccd les lit (un texte rangé dans une colonne d'entiers compte par son début numérique) :
-                // une autorisation rangée en texte ne disparaît pas du bilan.
-                // Un nombre à virgule ou un blob (`Autre`), que tccd lirait aussi comme un entier : compté accordé
-                // plutôt que sauté, une autorisation forgée ne disparaît jamais du bilan.
-                let autre = l[3] == crate::sqlite::Valeur::Autre;
-                let accordee =
-                    autre || l[3].entier_lu() == Some(2) || (l[3].entier_lu().is_none() && l[4].entier_lu() == Some(1));
-                accordee.then(|| Autorisation {
-                    service,
-                    client: crate::ui::affichable(l[1].texte().unwrap_or_default()),
-                    chemin: l[2].entier_lu() == Some(1),
-                })
-            })
-            .collect(),
-    )
+    let mut accordees = Vec::new();
+    for l in lignes {
+        // `lignes` rend une valeur par colonne demandée : une autre forme serait une base mal lue, dite illisible
+        // plutôt qu'une ligne sautée sans rien dire.
+        let [nom, client, type_client, valeur, permis] = l.as_slice() else {
+            return None;
+        };
+        let Some(service) = SERVICES.iter().find(|(s, _)| Some(*s) == nom.texte()) else {
+            continue;
+        };
+        // Lus comme tccd les lit (un texte rangé dans une colonne d'entiers compte par son début numérique) :
+        // une autorisation rangée en texte ne disparaît pas du bilan.
+        // Un nombre à virgule ou un blob (`Autre`), que tccd lirait aussi comme un entier : compté accordé
+        // plutôt que sauté, une autorisation forgée ne disparaît jamais du bilan.
+        let autre = *valeur == crate::sqlite::Valeur::Autre;
+        let accordee =
+            autre || valeur.entier_lu() == Some(2) || (valeur.entier_lu().is_none() && permis.entier_lu() == Some(1));
+        if accordee {
+            accordees.push(Autorisation {
+                service,
+                client: crate::ui::affichable(client.texte().unwrap_or_default()),
+                chemin: type_client.entier_lu() == Some(1),
+            });
+        }
+    }
+    Some(accordees)
 }
 
 /// Ce qu'une autorisation dit.
@@ -250,7 +256,7 @@ pub(super) fn relever(r: &mut super::Releve, ind: Option<&Indicateurs>) {
                         }
                         Jugement::ADistance => r.renvoyer(&a.client),
                         Jugement::Signe(niveau, quoi) => {
-                            let objet = format!("tcc:{}/{}", SERVICES[a.service].0, a.client);
+                            let objet = format!("tcc:{}/{}", a.service.0, a.client);
                             r.signe(super::Section::Systeme, niveau, &objet, &format!("{} — {quoi}", a.client), ou);
                         }
                     }
@@ -402,8 +408,8 @@ mod tests {
 
     #[test]
     fn autorisations_jugees() {
-        let a = |service, client: &str, chemin| Autorisation {
-            service,
+        let a = |service: usize, client: &str, chemin| Autorisation {
+            service: &SERVICES[service],
             client: client.into(),
             chemin,
         };

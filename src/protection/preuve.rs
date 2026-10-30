@@ -378,7 +378,10 @@ fn lire_processus(pr: &mut Processus) -> Option<(&'static str, &'static str)> {
 fn nom_du_compte(uid: u32, passwd: &str) -> String {
     let nom = passwd.lines().find_map(|l| {
         let c: Vec<&str> = l.split(':').collect();
-        (c.get(2) == Some(&uid.to_string().as_str())).then(|| c[0].to_string())
+        match c.as_slice() {
+            [nom, _, u, ..] if *u == uid.to_string() => Some((*nom).to_string()),
+            _ => None,
+        }
     });
     nom.map_or_else(|| uid.to_string(), |n| format!("{n} ({uid})"))
 }
