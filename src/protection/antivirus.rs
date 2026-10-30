@@ -647,22 +647,54 @@ pub(crate) fn examiner(fichier: &std::path::Path) -> Examen {
 
 // ───────────────────────────── Linux : ClamAV ─────────────────────────────
 
+/// Les configurations de freshclam : Debian et Arch, Fedora, Homebrew (Apple Silicon, puis Intel).
+#[cfg(unix)]
+const CONFS_FRESHCLAM: [&str; 4] = [
+    "/etc/clamav/freshclam.conf",
+    "/etc/freshclam.conf",
+    "/opt/homebrew/etc/clamav/freshclam.conf",
+    "/usr/local/etc/clamav/freshclam.conf",
+];
+
 #[cfg(unix)]
 fn base_presente() -> bool {
-    // Homebrew : /opt/homebrew (Apple Silicon) ou /usr/local (Intel).
-    [
-        "/var/lib/clamav",
-        "/opt/homebrew/var/lib/clamav",
-        "/usr/local/var/lib/clamav",
-    ]
-    .iter()
-    .any(|dossier| {
-        std::fs::read_dir(dossier).is_ok_and(|d| {
-            d.flatten().any(|f| {
-                std::path::Path::new(&f.file_name())
-                    .extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("cvd") || e.eq_ignore_ascii_case("cld"))
-            })
+    // Le dossier choisi dans freshclam.conf d'abord : une base ailleurs faisait reproposer le téléchargement.
+    CONFS_FRESHCLAM
+        .iter()
+        .filter_map(|c| crate::socle::lire_texte_ordinaire(std::path::Path::new(c), 1 << 16).ok())
+        .filter_map(|t| dossier_de_la_base(&t))
+        .chain(
+            // Homebrew : /opt/homebrew (Apple Silicon) ou /usr/local (Intel).
+            [
+                "/var/lib/clamav",
+                "/opt/homebrew/var/lib/clamav",
+                "/usr/local/var/lib/clamav",
+            ]
+            .map(PathBuf::from),
+        )
+        .any(|d| base_dans(&d))
+}
+
+/// Le `DatabaseDirectory` d'une configuration de freshclam, s'il y en a un (la dernière ligne l'emporte).
+#[cfg(unix)]
+fn dossier_de_la_base(conf: &str) -> Option<PathBuf> {
+    conf.lines()
+        .rev()
+        .find_map(|l| {
+            let mut mots = l.split_whitespace();
+            (mots.next()? == "DatabaseDirectory").then(|| mots.next()).flatten()
+        })
+        .map(|d| PathBuf::from(d.trim_matches('"')))
+}
+
+/// `dossier` contient-il des signatures (.cvd, .cld) ?
+#[cfg(unix)]
+fn base_dans(dossier: &std::path::Path) -> bool {
+    std::fs::read_dir(dossier).is_ok_and(|d| {
+        d.flatten().any(|f| {
+            std::path::Path::new(&f.file_name())
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("cvd") || e.eq_ignore_ascii_case("cld"))
         })
     })
 }
@@ -691,7 +723,8 @@ fn outil_clamav(nom: &str) -> String {
     nom.to_string()
 }
 
-/// Installe ClamAV et télécharge les signatures si besoin. Retourne `false` si l'utilisateur refuse.
+/// Installe ClamAV et télécharge les signatures si besoin. Retourne `false` si l'utilisateur refuse. Chaque commande
+/// est montrée avant la question qui l'accepte (comme `outil::proposer`) : on dit oui à ce qu'on a vu.
 #[cfg(unix)]
 fn preparer() -> bool {
     // Linux : le PATH parcouru sur le disque, sans lancer de shell.
@@ -705,33 +738,14 @@ fn preparer() -> bool {
             "  ClamAV (antivirus open source) n'est pas installé.",
             "  ClamAV (open source antivirus) is not installed."
         );
+        let Some(installation) = commande_d_installation() else {
+            return false;
+        };
+        println!("  {GRIS}{installation}{RESET}");
         // Sans réponse (`vanguard verifier-fichier f < /dev/null`, un script) : « non », et le fichier a son verdict.
         if !demander_ou_defaut(tr!("  L'installer maintenant ? [o/N] : ", "  Install it now? [y/N]: ")).oui() {
             return false;
         }
-        // Fedora sépare le moteur et l'outil de mise à jour des signatures.
-        #[cfg(target_os = "linux")]
-        let installation = match crate::machine::linux::Paquets::detecter() {
-            Some(g @ crate::machine::linux::Paquets::Dnf) => g.installer("clamav clamav-update"),
-            Some(g) => g.installer("clamav"),
-            None => {
-                trp!(
-                    "  Gestionnaire de paquets non reconnu : installez ClamAV avec l'outil de votre distribution.",
-                    "  Package manager not recognized: install ClamAV with your distribution's tool."
-                );
-                return false;
-            }
-        };
-        #[cfg(target_os = "macos")]
-        let Some(brew) = crate::machine::macos::homebrew() else {
-            trp!(
-                "  Homebrew est nécessaire pour installer ClamAV : https://brew.sh",
-                "  Homebrew is needed to install ClamAV: https://brew.sh"
-            );
-            return false;
-        };
-        #[cfg(target_os = "macos")]
-        let installation = format!("{brew} install clamav");
         // Par le lanceur des corrections : l'installation est notée dans « Ce que Vanguard a changé ».
         if !crate::machine::appliquer(&[installation]) {
             trp!("  Installation impossible.", "  Installation failed.");
@@ -743,6 +757,10 @@ fn preparer() -> bool {
             "  Les signatures de virus de ClamAV manquent (~300 Mo, une seule fois).",
             "  ClamAV's virus signatures are missing (~300 MB, only once)."
         );
+        let (telechargement, service) = commandes_des_signatures();
+        for c in std::iter::once(&telechargement).chain(&service) {
+            println!("  {GRIS}{c}{RESET}");
+        }
         // Le téléchargement passe par sudo et active leur mise à jour automatique : pas sans accord.
         if !demander_ou_defaut(tr!(
             "  Les télécharger maintenant ? [o/N] : ",
@@ -756,33 +774,75 @@ fn preparer() -> bool {
             "  Téléchargement des signatures de virus…",
             "  Downloading the virus signatures…"
         );
+        // Le téléchargement ne change rien à noter sous Linux ; le service activé pour de bon, si. Sous macOS, la
+        // configuration posée est notée, comme toute correction.
         #[cfg(target_os = "linux")]
-        // Sur Debian/Ubuntu/Mint, le service tourne déjà et verrouille la base : on l'arrête le temps du premier téléchargement.
-        // Le téléchargement ne change rien à noter ; le service activé pour de bon, si.
-        let ok = crate::machine::appliquer_sans_noter(&[
-            "sudo systemctl stop clamav-freshclam.service 2>/dev/null; sudo freshclam".to_string(),
-        ])
-        .0 && crate::machine::appliquer(&["sudo systemctl enable --now clamav-freshclam.service".to_string()]);
-        // Homebrew livre seulement un modèle de configuration (« Example » à retirer) ; pas besoin de sudo.
+        let ok = crate::machine::appliquer_sans_noter(&[telechargement]).0
+            && service.is_none_or(|s| crate::machine::appliquer(&[s]));
         #[cfg(target_os = "macos")]
-        let ok = {
-            let freshclam = outil_clamav("freshclam");
-            let prefixe = std::path::Path::new(&freshclam)
-                .parent()
-                .and_then(std::path::Path::parent)
-                .map(|p| p.display().to_string())
-                .unwrap_or_default();
-            // La configuration posée est notée, comme toute correction.
-            crate::machine::appliquer(&[format!(
-                "C='{prefixe}/etc/clamav/freshclam.conf'; [ -f \"$C\" ] || sed '/^Example/d' \"$C.sample\" > \"$C\"; {}",
-                commande_freshclam(&freshclam)
-            )])
-        };
+        let ok = crate::machine::appliquer(&[telechargement]);
         if !ok {
             return false;
         }
     }
     true
+}
+
+/// La commande qui installe ClamAV, ou `None` (et pourquoi, à l'écran) faute d'outil pour l'installer.
+#[cfg(target_os = "linux")]
+fn commande_d_installation() -> Option<String> {
+    // Fedora sépare le moteur et l'outil de mise à jour des signatures.
+    match crate::machine::linux::Paquets::detecter() {
+        Some(g @ crate::machine::linux::Paquets::Dnf) => Some(g.installer("clamav clamav-update")),
+        Some(g) => Some(g.installer("clamav")),
+        None => {
+            trp!(
+                "  Gestionnaire de paquets non reconnu : installez ClamAV avec l'outil de votre distribution.",
+                "  Package manager not recognized: install ClamAV with your distribution's tool."
+            );
+            None
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn commande_d_installation() -> Option<String> {
+    let Some(brew) = crate::machine::macos::homebrew() else {
+        trp!(
+            "  Homebrew est nécessaire pour installer ClamAV : https://brew.sh",
+            "  Homebrew is needed to install ClamAV: https://brew.sh"
+        );
+        return None;
+    };
+    Some(format!("{brew} install clamav"))
+}
+
+/// Les commandes du premier téléchargement des signatures, puis celle qui active leur mise à jour (Linux seulement).
+#[cfg(target_os = "linux")]
+fn commandes_des_signatures() -> (String, Option<String>) {
+    // Sur Debian/Ubuntu/Mint, le service tourne déjà et verrouille la base : on l'arrête le temps du premier téléchargement.
+    (
+        "sudo systemctl stop clamav-freshclam.service 2>/dev/null; sudo freshclam".to_string(),
+        Some("sudo systemctl enable --now clamav-freshclam.service".to_string()),
+    )
+}
+
+/// Homebrew livre seulement un modèle de configuration (« Example » à retirer) ; pas besoin de sudo.
+#[cfg(target_os = "macos")]
+fn commandes_des_signatures() -> (String, Option<String>) {
+    let freshclam = outil_clamav("freshclam");
+    let prefixe = std::path::Path::new(&freshclam)
+        .parent()
+        .and_then(std::path::Path::parent)
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    (
+        format!(
+            "C='{prefixe}/etc/clamav/freshclam.conf'; [ -f \"$C\" ] || sed '/^Example/d' \"$C.sample\" > \"$C\"; {}",
+            commande_freshclam(&freshclam)
+        ),
+        None,
+    )
 }
 
 /// Les endroits à risque du dossier personnel sous Linux et macOS : là où arrivent les menaces (téléchargements,
@@ -1510,6 +1570,26 @@ mod tests {
     #[test]
     fn exclusions_en_expression_reguliere() {
         assert_eq!(regex_echappe(".steam"), "/\\.steam(/|$)");
+    }
+
+    /// E5-I1 (campagne 5) : le dossier des signatures choisi dans freshclam.conf est lu ; une ligne mise en
+    /// commentaire ne compte pas, la dernière l'emporte.
+    #[cfg(unix)]
+    #[test]
+    fn base_dans_le_dossier_de_freshclam_conf() {
+        let d = std::env::temp_dir().join(format!("vanguard-base-clamav-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let conf = format!(
+            "# DatabaseDirectory /var/lib/ailleurs\nDatabaseMirror database.clamav.net\nDatabaseDirectory /nulle/part\n  DatabaseDirectory \"{}\"\n",
+            d.display()
+        );
+        assert_eq!(dossier_de_la_base(&conf), Some(d.clone()));
+        assert_eq!(dossier_de_la_base("#DatabaseDirectory /x\nUpdateLogFile /y\n"), None);
+        assert!(!base_dans(&d));
+        std::fs::write(d.join("main.cvd"), b"").unwrap();
+        assert!(base_dans(&d));
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
 

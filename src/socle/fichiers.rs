@@ -242,6 +242,18 @@ const MARQUE_ANCIEN: &[u8] = b"vanguard: verrou du systeme / system lock\n";
 /// Au-delà, un fichier de l'ancien protocole sans marque est tenu pour abandonné : la règle des versions d'avant.
 const ANCIEN_ABANDONNE: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Le fichier sur lequel `Verrou::prendre_compatible` pose le verrou du système : `<nom sans .verrou>.lock`.
+pub(crate) fn nom_systeme(nom: &str) -> String {
+    format!("{}.lock", nom.strip_suffix(".verrou").unwrap_or(nom))
+}
+
+/// `nom` est-il dans `dossier` sous une autre forme qu'un simple fichier (un dossier, un lien, un tube) ? Un verrou
+/// ainsi remplacé ne se prend plus (`SansVerrou::Impossible`), et rien ne s'écrit sous lui : aucune version de Vanguard
+/// ne le pose ainsi, c'est donc un autre programme, à dire plutôt qu'à taire.
+pub(crate) fn verrou_remplace(dossier: &std::path::Path, nom: &str) -> bool {
+    std::fs::symlink_metadata(dossier.join(nom)).is_ok_and(|m| !m.file_type().is_file())
+}
+
 impl Verrou {
     /// Le verrou exclusif `nom` (« evenements.verrou ») dans `dossier`, attendu au plus `ATTENTE_ECRITURE`. `None` :
     /// pas tenu, et l'appelant n'écrit pas. Voir `prendre_compatible`.
@@ -263,8 +275,12 @@ impl Verrou {
         attente: std::time::Duration,
     ) -> Result<Verrou, SansVerrou> {
         let debut = std::time::Instant::now();
-        let systeme = format!("{}.lock", nom.strip_suffix(".verrou").unwrap_or(nom));
-        let mut v = Self::prendre(dossier, &systeme, partage, attente)?;
+        let systeme = nom_systeme(nom);
+        // Le fichier en cause est nommé : l'appelant ne connaît que `nom` (`SansVerrou::erreur`).
+        let mut v = Self::prendre(dossier, &systeme, partage, attente).map_err(|e| match e {
+            SansVerrou::Impossible(r) => SansVerrou::Impossible(format!("{systeme} : {r}")),
+            occupe @ SansVerrou::Occupe => occupe,
+        })?;
         let chemin = dossier.join(nom);
         let fin = debut + attente;
         loop {
@@ -277,7 +293,7 @@ impl Verrou {
                         return Ok(v);
                     }
                     Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => {
-                        return Err(SansVerrou::Impossible(e.to_string()));
+                        return Err(SansVerrou::Impossible(format!("{nom} : {e}")));
                     }
                     Err(_) => {}
                 }
@@ -287,9 +303,10 @@ impl Verrou {
                 Err(_) => {}
                 // Un dossier, un tube ou un lien posé à sa place ne se retire pas comme un verrou abandonné.
                 Ok(m) if !m.file_type().is_file() => {
-                    return Err(SansVerrou::Impossible(
-                        tr!("pas un simple fichier", "not a plain file").to_string(),
-                    ));
+                    return Err(SansVerrou::Impossible(format!(
+                        "{nom} : {}",
+                        tr!("pas un simple fichier", "not a plain file")
+                    )));
                 }
                 Ok(m) => {
                     let marque = lire_ordinaire(&chemin, 256).is_ok_and(|o| o == MARQUE_ANCIEN);
@@ -600,6 +617,23 @@ mod tests {
             "{:?}",
             debut.elapsed()
         );
+        // E5-M1 et E5-I2 (campagne 5) : le remplacement se voit sous ses trois formes, jamais un simple fichier ni un
+        // nom absent ; l'échec nomme le fichier en cause, pas celui que l'appelant connaît.
+        std::os::unix::fs::symlink(dossier.join("ailleurs"), dossier.join("sceaux.verrou")).unwrap();
+        std::fs::write(dossier.join("appareils.verrou"), b"").unwrap();
+        for nom in ["evenements.verrou", "alertes.verrou", "sceaux.verrou"] {
+            assert!(verrou_remplace(&dossier, nom), "{nom}");
+        }
+        assert!(!verrou_remplace(&dossier, "appareils.verrou"));
+        assert!(!verrou_remplace(&dossier, "absent.verrou"));
+        std::fs::create_dir(dossier.join("journal.lock")).unwrap();
+        let Err(SansVerrou::Impossible(r)) =
+            Verrou::prendre_compatible(&dossier, "journal.verrou", false, ATTENTE_ECRITURE)
+        else {
+            panic!("pris malgré un dossier à la place de journal.lock");
+        };
+        assert!(r.starts_with("journal.lock"), "{r}");
+        assert!(!dossier.join("ailleurs").exists());
         std::fs::remove_dir_all(&dossier).unwrap();
     }
 

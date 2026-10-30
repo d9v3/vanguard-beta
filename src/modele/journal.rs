@@ -398,10 +398,11 @@ const TETE_FALSIFIEE: &str = "tête changée hors de Vanguard / head changed out
 fn ajouter(chemin: &Path, octets: &[u8]) -> std::io::Result<()> {
     let mut o = std::fs::OpenOptions::new();
     o.create(true).append(true);
+    // Ni lien suivi, ni tube attendu : un tube posé à la place du compte des perdus figeait open() sans lecteur.
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        o.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        o.mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     let mut f = o.open(chemin)?;
     if !f.metadata()?.file_type().is_file() {
@@ -943,6 +944,16 @@ fn lire_tenu(dossier: &Path, attente: std::time::Duration) -> Lu {
         lu.lecture = Lecture::Incomplet(SCEAUX_TENUS.into());
         lu.verifies_des = lu.evenements.len();
     }
+    // Un verrou de l'état remplacé (dossier, lien, tube) : plus rien ne s'écrit, la fin lue n'est pas la dernière.
+    // Dit au bilan par les sceaux (`sceau::constat`), comme un verrou tenu.
+    let remplaces = crate::sceau::verrous_remplaces(dossier);
+    if !remplaces.is_empty() && !matches!(lu.lecture, Lecture::Falsifie(_)) {
+        let noms = remplaces.join(", ");
+        lu.lecture = Lecture::Incomplet(format!(
+            "verrou remplacé par autre chose qu'un fichier ({noms}), rien ne s'écrit / lock replaced by something other than a file ({noms}), nothing is written"
+        ));
+        lu.verifies_des = lu.evenements.len();
+    }
     if matches!(tenu, Err(crate::socle::SansVerrou::Occupe))
         && matches!(lu.lecture, Lecture::Falsifie(_) | Lecture::Incomplet(_))
     {
@@ -1253,11 +1264,13 @@ pub(crate) fn noter(ev: Evenement) -> Option<String> {
             Some(id)
         }
         // Rien d'écrit, pour une raison qui tient à cet événement ou au journal (mois plein, autotest, verrou
-        // inutilisable) : les différés d'avant lui sont gardés, lui non.
+        // inutilisable) : les différés d'avant lui sont gardés, lui non. Il est compté perdu, comme eux : un verrou
+        // remplacé par un dossier jetait sinon chaque événement sans que rien ne le dise (`noter_perdus` n'écrit
+        // rien pendant un autotest).
         Err(e) => {
             evs.truncate(avant);
             let perdus = differer(&dossier, evs);
-            noter_perdus(&dossier, perdus);
+            noter_perdus(&dossier, perdus + 1);
             let mut echec = super::Echec::io("evenements/noter", &e);
             if perdus > 0 {
                 echec = echec.detail(trf!(
@@ -2239,6 +2252,34 @@ mod tests {
             "{}",
             c.message
         );
+    }
+
+    /// E5-M1 (campagne 5) : un dossier posé à la place du verrou du journal. Le verrou ne se prend plus ; l'événement
+    /// jeté est compté perdu, la lecture ne dit plus « intact », et les sceaux nomment le verrou en cause.
+    #[test]
+    fn verrou_remplace_ne_fait_pas_taire_le_journal() {
+        let d = dossier_du_journal();
+        let q = "2026-10-23T10:00:00Z";
+        noter(alerte(1, q)).unwrap();
+        assert_eq!(lire_dans(&d).lecture, Lecture::Intact);
+        let systeme = d.join(crate::socle::nom_systeme(VERROU));
+        std::fs::remove_file(&systeme).unwrap();
+        std::fs::create_dir(&systeme).unwrap();
+        assert!(noter(alerte(2, q)).is_none());
+        assert_eq!(perdus_dans(&d), Some(1));
+        let lu = lire_dans(&d);
+        assert!(
+            matches!(&lu.lecture, Lecture::Incomplet(r) if r.contains("evenements.lock")),
+            "{:?}",
+            lu.lecture
+        );
+        assert_eq!(lu.verifies(), []);
+        assert_eq!(crate::sceau::verrous_remplaces(&d), ["evenements.lock"]);
+        std::fs::remove_dir(&systeme).unwrap();
+        noter(alerte(3, q)).unwrap();
+        let lu = lire_dans(&d);
+        let titres: Vec<&str> = alertes(&lu.evenements).map(|(_, _, titre, _)| titre).collect();
+        assert_eq!(titres, ["alerte 1", "alerte 3"]);
     }
 
     /// F4 (relecture du delta) : un autre processus perd des événements pendant qu'une écriture dit les perdus. Ceux

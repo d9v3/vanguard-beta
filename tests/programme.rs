@@ -899,6 +899,12 @@ fn verifier_fichier_sans_clamav_ni_reponse() {
     assert_eq!(s.code, Some(0), "{}", s.erreurs);
     let t = sans_couleurs(&s.texte).split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(t.contains("L'installer maintenant ?"), "{t}");
+    // B1 (campagne 5) : la commande d'installation est montrée avant la question qui l'accepte.
+    #[cfg(target_os = "linux")]
+    {
+        let avant = t.split("L'installer maintenant ?").next().unwrap_or_default();
+        assert!(avant.contains(" clamav"), "{t}");
+    }
     assert!(t.contains("ClamAV : impossible à vérifier"), "{t}");
     assert!(t.contains("Vérification incomplète (ClamAV)"), "{t}");
     let _ = std::fs::remove_dir_all(&maison);

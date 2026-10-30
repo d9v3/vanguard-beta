@@ -362,8 +362,47 @@ pub(crate) fn verrou_tenu_dans(dossier: &Path) -> bool {
         .contains_key(dossier)
 }
 
-/// Au bilan : le verrou des sceaux tenu ailleurs, comme celui du journal (`modele::journal`).
+/// Les verrous de l'état (les sceaux, le journal des événements et son verrou du système) que `dossier` montre
+/// remplacés par autre chose qu'un simple fichier (`socle::verrou_remplace`) : rien ne s'écrit sous eux.
+pub(crate) fn verrous_remplaces(dossier: &Path) -> Vec<String> {
+    let journal = crate::modele::journal::VERROU;
+    [
+        VERROU.to_string(),
+        journal.to_string(),
+        crate::socle::nom_systeme(journal),
+    ]
+    .into_iter()
+    .filter(|n| crate::socle::verrou_remplace(dossier, n))
+    .collect()
+}
+
+/// Au bilan : le verrou des sceaux tenu ailleurs, comme celui du journal (`modele::journal`). Avant cela, un verrou
+/// de l'état remplacé par un dossier, un lien ou un tube : ce verrou ne se prend plus, pour personne, et sans ce
+/// constat rien ne disait que plus rien ne s'écrivait (ni réglages, ni déjà-vus, ni journal des événements).
 fn constat_verrou(dossier: &Path) -> Option<Constat> {
+    let remplaces = verrous_remplaces(dossier);
+    if !remplaces.is_empty() {
+        let noms = remplaces.join(", ");
+        return Some(
+            crate::machine::alerte(
+                CAT,
+                Niveau::Eleve,
+                trf!(
+                    "Un verrou de l'état de Vanguard n'est plus un simple fichier ({}) : un autre programme a mis un dossier, un lien ou un tube à sa place. Plus rien ne s'écrit sous lui : ni réglages, ni déjà-vus, ni journal des événements.",
+                    "A lock of Vanguard's state is no longer a plain file ({}): another program put a folder, a link or a pipe in its place. Nothing is written under it any more: no settings, no already-seen lists, no event log.",
+                    noms
+                ),
+            )
+            .manuel(
+                trf!(
+                    "Regardez ce qui tourne sous votre compte (Protection › Qui parle à Internet ?), puis retirez {} du dossier de données de Vanguard : aucune version de Vanguard ne le pose ainsi",
+                    "Look at what runs under your account (Protection › Who talks to the Internet?), then remove {} from Vanguard's data folder: no version of Vanguard puts it there like that",
+                    noms
+                ),
+                &[],
+            ),
+        );
+    }
     if !verrou_tenu_dans(dossier) {
         return None;
     }
@@ -570,8 +609,9 @@ fn adopter_si(dossier: &Path, deja_scelle: bool, ecrire: bool) -> Registre {
         }
     }
     r.vus = tous_les_tardifs();
-    if ecrire {
-        let _ = enregistrer_registre(dossier, &r);
+    // Un registre qui ne s'écrit pas (disque plein, quota) laisse le verrou sans sceaux : dit au journal des erreurs.
+    if ecrire && let Err(e) = enregistrer_registre(dossier, &r) {
+        crate::modele::Echec::io("sceau/adopter", &e).journaliser();
     }
     r
 }
@@ -844,6 +884,13 @@ pub(crate) fn effacer_dans(dossier: &Path, nom: &str) -> std::io::Result<()> {
     if !crate::socle::ecriture_sure(dossier) {
         return Err(dossier_d_un_autre());
     }
+    // Ni le fichier ni des sceaux : rien à effacer ni à oublier. Le verrou créé ici sur un dossier neuf (le mode
+    // Wi-Fi public, avant tout autre usage) témoignait deux minutes plus tard de sceaux qui n'avaient jamais existé,
+    // et le bilan les disait refaits (`deja_scelle`).
+    let absent = |n: &str| std::fs::symlink_metadata(dossier.join(n)).is_err();
+    if absent(nom) && absent(REGISTRE) {
+        return Ok(());
+    }
     let _verrou = verrou_ecriture(dossier, nom)?;
     match std::fs::remove_file(dossier.join(nom)) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
@@ -867,6 +914,10 @@ pub(crate) fn effacer_dans(dossier: &Path, nom: &str) -> std::io::Result<()> {
 pub(crate) fn oublier_absents_dans(dossier: &Path) -> std::io::Result<()> {
     if !crate::socle::ecriture_sure(dossier) {
         return Err(dossier_d_un_autre());
+    }
+    // Sans sceaux, rien à oublier, et pas de verrou créé pour rien (`effacer_dans`).
+    if std::fs::symlink_metadata(dossier.join(REGISTRE)).is_err() {
+        return Ok(());
     }
     let _verrou = verrou_ecriture(dossier, REGISTRE)?;
     let Ok(Some(mut r)) = registre(dossier) else {
@@ -1408,6 +1459,42 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// E5-M1 (campagne 5) : un dossier à la place de `sceaux.verrou`. Rien ne s'écrit, et le bilan le dit (élevé) en
+    /// nommant le verrou ; la lecture, elle, juge encore : un fichier changé à côté reste dit changé.
+    #[test]
+    fn verrou_remplace_dit_au_bilan() {
+        let d = jetable("remplace");
+        ecrire_dans(&d, APPRIS, b"{}").unwrap();
+        assert!(constat_verrou(&d).is_none());
+        std::fs::remove_file(d.join(VERROU)).unwrap();
+        std::fs::create_dir(d.join(VERROU)).unwrap();
+        assert!(ecrire_dans(&d, APPRIS, br#"{"acceptees":{}}"#).is_err());
+        let c = constat_verrou(&d).unwrap();
+        assert_eq!(c.probleme, Some(Niveau::Eleve));
+        assert!(c.message.contains(VERROU), "{}", c.message);
+        std::fs::write(d.join(APPRIS), br#"{"acceptees":{"x":1}}"#).unwrap();
+        assert!(matches!(lire_dans(&d, APPRIS), Lecture::Falsifie(_)));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// E5-B1 (campagne 5) : effacer ou oublier dans un dossier neuf ne laisse pas de verrou seul, qui, deux minutes
+    /// plus tard, faisait dire refaits des sceaux qui n'avaient jamais existé.
+    #[test]
+    fn effacer_dans_un_dossier_neuf_ne_laisse_pas_de_verrou() {
+        verrou_d_avant_en_essai();
+        let d = jetable("neuf");
+        effacer_dans(&d, APPRIS).unwrap();
+        oublier_absents_dans(&d).unwrap();
+        assert!(!d.join(VERROU).exists());
+        assert!(!deja_scelle(&d));
+        // Avec des sceaux, l'effacement se fait toujours sous le verrou, et le sceau part avec le fichier.
+        ecrire_dans(&d, APPRIS, b"{}").unwrap();
+        effacer_dans(&d, APPRIS).unwrap();
+        assert!(d.join(VERROU).is_file());
+        assert_eq!(lire_dans(&d, APPRIS), Lecture::Absent);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
