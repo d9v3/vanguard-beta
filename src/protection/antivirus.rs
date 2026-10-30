@@ -630,6 +630,7 @@ pub(crate) fn examiner(fichier: &std::path::Path) -> Examen {
     let Some(r) = crate::commande::lancer(
         Command::new(outil_clamav("clamscan"))
             .args(["-i", "--max-filesize=200M", "--max-scansize=400M"])
+            .args(option_base())
             .arg(fichier),
         900,
     ) else {
@@ -658,21 +659,39 @@ const CONFS_FRESHCLAM: [&str; 4] = [
 
 #[cfg(unix)]
 fn base_presente() -> bool {
+    dossier_de_base().is_some()
+}
+
+/// `--database=<dossier>` pour clamscan : il ne lit pas freshclam.conf, et une base rangée ailleurs que dans son
+/// dossier compilé (`DatabaseDirectory`) le faisait échouer, faute de signatures.
+#[cfg(unix)]
+fn option_base() -> Option<String> {
+    dossier_de_base().map(|d| format!("--database={}", d.display()))
+}
+
+/// Le dossier qui contient les signatures de ClamAV.
+#[cfg(unix)]
+fn dossier_de_base() -> Option<PathBuf> {
+    // Homebrew : /opt/homebrew (Apple Silicon) ou /usr/local (Intel).
+    dossier_de_base_parmi(
+        &CONFS_FRESHCLAM,
+        &[
+            "/var/lib/clamav",
+            "/opt/homebrew/var/lib/clamav",
+            "/usr/local/var/lib/clamav",
+        ],
+    )
+}
+
+#[cfg(unix)]
+fn dossier_de_base_parmi(confs: &[&str], fixes: &[&str]) -> Option<PathBuf> {
     // Le dossier choisi dans freshclam.conf d'abord : une base ailleurs faisait reproposer le téléchargement.
-    CONFS_FRESHCLAM
+    confs
         .iter()
         .filter_map(|c| crate::socle::lire_texte_ordinaire(std::path::Path::new(c), 1 << 16).ok())
         .filter_map(|t| dossier_de_la_base(&t))
-        .chain(
-            // Homebrew : /opt/homebrew (Apple Silicon) ou /usr/local (Intel).
-            [
-                "/var/lib/clamav",
-                "/opt/homebrew/var/lib/clamav",
-                "/usr/local/var/lib/clamav",
-            ]
-            .map(PathBuf::from),
-        )
-        .any(|d| base_dans(&d))
+        .chain(fixes.iter().map(PathBuf::from))
+        .find(|d| base_dans(d))
 }
 
 /// Le `DatabaseDirectory` d'une configuration de freshclam, s'il y en a un (la dernière ligne l'emporte).
@@ -936,6 +955,7 @@ fn clamav(portee: &Portee) {
     let mut cmd = Command::new(outil_clamav("clamscan"));
     // Le bilan final (fichiers analysés, infectés, erreurs) sert à juger si l'analyse a vraiment eu lieu.
     cmd.args(["-r", "-i", "--max-filesize=200M", "--max-scansize=400M"]);
+    cmd.args(option_base());
     for e in exclusions {
         cmd.arg(format!("--exclude-dir={}", regex_echappe(e)));
     }
@@ -1589,6 +1609,16 @@ mod tests {
         assert!(!base_dans(&d));
         std::fs::write(d.join("main.cvd"), b"").unwrap();
         assert!(base_dans(&d));
+        // La configuration l'emporte sur un dossier fixe qui a aussi une base ; sans elle, le dossier fixe.
+        let fixe = d.join("fixe");
+        std::fs::create_dir(&fixe).unwrap();
+        std::fs::write(fixe.join("daily.cld"), b"").unwrap();
+        let chemin_conf = d.join("freshclam.conf");
+        std::fs::write(&chemin_conf, &conf).unwrap();
+        let (c, f) = (chemin_conf.to_str().unwrap(), fixe.to_str().unwrap());
+        assert_eq!(dossier_de_base_parmi(&[c], &[f]), Some(d.clone()));
+        assert_eq!(dossier_de_base_parmi(&["/nulle/part.conf"], &[f]), Some(fixe.clone()));
+        assert_eq!(dossier_de_base_parmi(&[], &["/nulle/part"]), None);
         let _ = std::fs::remove_dir_all(&d);
     }
 }

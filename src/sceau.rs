@@ -383,16 +383,22 @@ fn constat_verrou(dossier: &Path) -> Option<Constat> {
     let remplaces = verrous_remplaces(dossier);
     if !remplaces.is_empty() {
         let noms = remplaces.join(", ");
-        return Some(
-            crate::machine::alerte(
-                CAT,
-                Niveau::Eleve,
-                trf!(
-                    "Un verrou de l'état de Vanguard n'est plus un simple fichier ({}) : un autre programme a mis un dossier, un lien ou un tube à sa place. Plus rien ne s'écrit sous lui : ni réglages, ni déjà-vus, ni journal des événements.",
-                    "A lock of Vanguard's state is no longer a plain file ({}): another program put a folder, a link or a pipe in its place. Nothing is written under it any more: no settings, no already-seen lists, no event log.",
-                    noms
-                ),
+        // Le verrou des sceaux arrête tout l'état, journal compris (sa tête est scellée) ; ceux du journal, lui seul.
+        let message = if remplaces.iter().any(|n| n == VERROU) {
+            trf!(
+                "Un verrou de l'état de Vanguard n'est plus un simple fichier ({}) : un autre programme a mis un dossier, un lien ou un tube à sa place. Plus rien ne s'écrit sous lui : ni réglages, ni déjà-vus, ni journal des événements.",
+                "A lock of Vanguard's state is no longer a plain file ({}): another program put a folder, a link or a pipe in its place. Nothing is written under it any more: no settings, no already-seen lists, no event log.",
+                noms
             )
+        } else {
+            trf!(
+                "Le verrou du journal des événements de Vanguard n'est plus un simple fichier ({}) : un autre programme a mis un dossier, un lien ou un tube à sa place. Le journal des événements ne s'écrit plus.",
+                "The lock of Vanguard's event log is no longer a plain file ({}): another program put a folder, a link or a pipe in its place. The event log is no longer written.",
+                noms
+            )
+        };
+        return Some(
+            crate::machine::alerte(CAT, Niveau::Eleve, message)
             .manuel(
                 trf!(
                     "Regardez ce qui tourne sous votre compte (Protection › Qui parle à Internet ?), puis retirez {} du dossier de données de Vanguard : aucune version de Vanguard ne le pose ainsi",
@@ -1474,6 +1480,22 @@ mod tests {
         let c = constat_verrou(&d).unwrap();
         assert_eq!(c.probleme, Some(Niveau::Eleve));
         assert!(c.message.contains(VERROU), "{}", c.message);
+        assert!(
+            c.message.contains("ni réglages") || c.message.contains("no settings"),
+            "{}",
+            c.message
+        );
+        // Seul le verrou du journal remplacé : le constat ne dit arrêté que le journal.
+        std::fs::remove_dir(d.join(VERROU)).unwrap();
+        std::fs::create_dir(d.join("evenements.lock")).unwrap();
+        let c = constat_verrou(&d).unwrap();
+        assert!(c.message.contains("evenements.lock"), "{}", c.message);
+        assert!(
+            !c.message.contains("ni réglages") && !c.message.contains("no settings"),
+            "{}",
+            c.message
+        );
+        std::fs::remove_dir(d.join("evenements.lock")).unwrap();
         std::fs::write(d.join(APPRIS), br#"{"acceptees":{"x":1}}"#).unwrap();
         assert!(matches!(lire_dans(&d, APPRIS), Lecture::Falsifie(_)));
         let _ = std::fs::remove_dir_all(&d);

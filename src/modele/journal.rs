@@ -750,12 +750,18 @@ pub(crate) const PERDUS: &str = "evenements.perdus";
 /// L'« attendu » de la rupture qui dit des événements perdus : la fin d'avant reste vérifiée, rien n'y a été touché.
 const PERDUS_ATTENDU: &str = "événements notés / events noted";
 
+/// La taille d'un compte des perdus, au plus (environ 40 000 lignes). Un verrou du journal remplacé fait perdre chaque
+/// événement sans que le compte soit jamais pris : sans borne, il grossissait sans fin. Plein, il ne grossit plus et
+/// ne se lit plus (`compter_perdus`) : la rupture dit « des » événements perdus, sans nombre faux.
+const PERDUS_MAX: u64 = 1 << 20;
+
 /// Compte `n` événements perdus, à dire à la prochaine écriture (`PERDUS`).
 fn noter_perdus(dossier: &Path, n: usize) {
     if n == 0
         || crate::autotest::lecture_seule::active()
         || !crate::socle::ecriture_sure(dossier)
         || std::fs::create_dir_all(dossier).is_err()
+        || std::fs::symlink_metadata(dossier.join(PERDUS)).is_ok_and(|m| m.len() >= PERDUS_MAX)
     {
         return;
     }
@@ -797,7 +803,7 @@ fn prendre_perdus(dossier: &Path) -> Vec<PathBuf> {
 fn compter_perdus(fichiers: &[PathBuf]) -> Option<u64> {
     let mut total = None;
     for f in fichiers {
-        let n = match crate::socle::lire_ordinaire(f, 1 << 16) {
+        let n = match crate::socle::lire_ordinaire(f, PERDUS_MAX - 1) {
             Ok(o) => String::from_utf8_lossy(&o)
                 .lines()
                 .filter_map(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
@@ -2252,6 +2258,24 @@ mod tests {
             "{}",
             c.message
         );
+    }
+
+    /// Le compte des perdus jamais pris (verrou remplacé) se lit en entier bien au-delà de 64 Kio, puis, plein, ne
+    /// grossit plus et dit « des » événements, sans nombre faux.
+    #[test]
+    fn compte_des_perdus_borne() {
+        let d = dossier_du_journal();
+        std::fs::create_dir_all(&d).unwrap();
+        let ligne = "2026-10-30T10:00:00Z 1\n";
+        std::fs::write(d.join(PERDUS), ligne.repeat(3_000)).unwrap();
+        noter_perdus(&d, 2);
+        assert_eq!(perdus_dans(&d), Some(3_002));
+        let plein = ligne.repeat(usize::try_from(PERDUS_MAX).unwrap() / ligne.len() + 1);
+        std::fs::write(d.join(PERDUS), &plein).unwrap();
+        noter_perdus(&d, 1);
+        assert_eq!(std::fs::metadata(d.join(PERDUS)).unwrap().len(), plein.len() as u64);
+        assert_eq!(perdus_dans(&d), Some(0));
+        assert_eq!(texte_perdus(0), "des événements non notés / events not noted");
     }
 
     /// E5-M1 (campagne 5) : un dossier posé à la place du verrou du journal. Le verrou ne se prend plus ; l'événement
