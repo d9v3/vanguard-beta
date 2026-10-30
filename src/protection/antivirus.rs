@@ -573,9 +573,40 @@ pub(crate) fn examiner(fichier: &std::path::Path) -> Examen {
     ) else {
         return Examen::Impossible(tr!("Defender n'a pas pu aller au bout", "Defender could not finish").into());
     };
-    match r.code {
+    lire_mpcmdrun(r.code, &r.sortie, std::fs::symlink_metadata(fichier).is_ok())
+}
+
+/// Le code 2 de MpCmdRun ne veut pas toujours dire « menace » : un fichier exclu de Defender (« was skipped ») le
+/// rend aussi, sans rien analyser. Seul ce cas-là, reconnu à sa phrase et au fichier resté en place, devient
+/// « impossible » ; toute autre réponse 2 reste une menace (fausse alerte plutôt que silence), avec la dernière
+/// ligne de MpCmdRun quand il ne nomme rien.
+#[cfg(any(windows, test))]
+fn lire_mpcmdrun(code: Option<i32>, sortie: &str, encore_la: bool) -> Examen {
+    match code {
         Some(0) => Examen::Sain,
-        Some(2) => Examen::Trouve(menaces_mpcmdrun(&r.sortie)),
+        Some(2) => {
+            let noms = menaces_mpcmdrun(sortie);
+            if !noms.is_empty() {
+                Examen::Trouve(noms)
+            } else if encore_la && sortie.lines().any(|l| l.contains("was skipped")) {
+                Examen::Impossible(
+                    tr!(
+                        "Defender a sauté ce fichier (exclu de l'analyse ?)",
+                        "Defender skipped this file (excluded from scanning?)"
+                    )
+                    .into(),
+                )
+            } else {
+                let generique = tr!("menace reconnue par Defender", "threat recognized by Defender");
+                Examen::Trouve(vec![match sortie.lines().map(str::trim).rfind(|l| !l.is_empty()) {
+                    Some(l) => {
+                        let l = affichable(l);
+                        trf!("{generique} (MpCmdRun : « {l} »)", "{generique} (MpCmdRun: \"{l}\")")
+                    }
+                    None => generique.to_string(),
+                }])
+            }
+        }
         _ => Examen::Impossible(
             tr!(
                 "Defender n'a pas pu analyser (antivirus tiers actif ?)",
@@ -590,19 +621,14 @@ pub(crate) fn examiner(fichier: &std::path::Path) -> Examen {
 /// montrer.
 #[cfg(any(windows, test))]
 fn menaces_mpcmdrun(sortie: &str) -> Vec<String> {
-    let noms: Vec<String> = sortie
+    sortie
         .lines()
         .filter_map(|l| {
             let (cle, valeur) = l.split_once(':')?;
             (cle.trim() == "Threat").then(|| affichable(valeur.trim()))
         })
         .filter(|v| !v.is_empty())
-        .collect();
-    if noms.is_empty() {
-        vec![tr!("menace reconnue par Defender", "threat recognized by Defender").to_string()]
-    } else {
-        noms
-    }
+        .collect()
 }
 
 /// Un seul fichier, pour « Vérifier un fichier téléchargé » : le résultat de ClamAV, sans rien déplacer.
@@ -1533,8 +1559,31 @@ mod tests_cle {
                       Threat                  : Virus:DOS/EICAR_Test_File\n\
                       Resources               : 1 total\n";
         assert_eq!(menaces_mpcmdrun(sortie), ["Virus:DOS/EICAR_Test_File"]);
-        // Sortie inattendue : la menace est quand même dite.
-        assert_eq!(menaces_mpcmdrun("").len(), 1);
+        assert_eq!(
+            lire_mpcmdrun(Some(2), sortie, false),
+            Examen::Trouve(vec!["Virus:DOS/EICAR_Test_File".into()])
+        );
+        // Nommée, la menace l'emporte même sur une phrase « skipped » ailleurs dans la sortie.
+        assert!(matches!(
+            lire_mpcmdrun(Some(2), &format!("{sortie}Scanning C:\\autre was skipped.\n"), true),
+            Examen::Trouve(_)
+        ));
+        // Fichier exclu de Defender : code 2, rien d'analysé, ce n'est pas une menace (CI de GitHub).
+        let saute = "Scan starting...\nScan finished.\nScanning C:\\Users\\alice\\notes.txt was skipped.\n";
+        assert!(matches!(lire_mpcmdrun(Some(2), saute, true), Examen::Impossible(_)));
+        // Sauté mais le fichier a disparu : Defender l'a retiré, c'est une menace.
+        assert!(matches!(lire_mpcmdrun(Some(2), saute, false), Examen::Trouve(_)));
+        // Sortie inattendue : la menace est quand même dite, avec la dernière ligne de MpCmdRun pour comprendre.
+        let Examen::Trouve(noms) = lire_mpcmdrun(Some(2), "Scan starting...\nAnalyse terminée\x1b[2K\n", true) else {
+            panic!("code 2 sans nom")
+        };
+        assert_eq!(noms.len(), 1);
+        assert!(noms[0].contains("Analyse terminée�[2K"), "{noms:?}");
+        assert!(matches!(lire_mpcmdrun(Some(2), "", true), Examen::Trouve(n) if n.len() == 1));
+        assert_eq!(menaces_mpcmdrun(""), Vec::<String>::new());
+        assert_eq!(lire_mpcmdrun(Some(0), "", true), Examen::Sain);
+        assert!(matches!(lire_mpcmdrun(Some(1), "", true), Examen::Impossible(_)));
+        assert!(matches!(lire_mpcmdrun(None, "", true), Examen::Impossible(_)));
         assert_eq!(
             menaces_mpcmdrun("Threat                  : Trojan\x1b[2K\rFaux\u{202e}\n"),
             ["Trojan�[2K�Faux�"]
