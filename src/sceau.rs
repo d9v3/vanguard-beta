@@ -376,27 +376,49 @@ pub(crate) fn verrous_remplaces(dossier: &Path) -> Vec<String> {
     .collect()
 }
 
+/// Les verrous des autres bases du dossier (appareils du réseau, alertes) : rien ne les dit sinon remplacés, et leur
+/// base ne s'écrit plus sans un mot à l'écran. Au bilan seulement : ils ne touchent pas au journal des événements.
+const AUTRES_VERROUS: [&str; 2] = ["appareils.verrou", "alertes.verrou"];
+
 /// Au bilan : le verrou des sceaux tenu ailleurs, comme celui du journal (`modele::journal`). Avant cela, un verrou
-/// de l'état remplacé par un dossier, un lien ou un tube : ce verrou ne se prend plus, pour personne, et sans ce
+/// de l'état remplacé par un dossier, un lien ou un tube, ou aux droits retirés : ce verrou ne se prend plus, pour personne, et sans ce
 /// constat rien ne disait que plus rien ne s'écrivait (ni réglages, ni déjà-vus, ni journal des événements).
 fn constat_verrou(dossier: &Path) -> Option<Constat> {
-    let remplaces = verrous_remplaces(dossier);
+    let mut remplaces = verrous_remplaces(dossier);
+    remplaces.extend(
+        AUTRES_VERROUS
+            .into_iter()
+            .filter(|n| crate::socle::verrou_remplace(dossier, n))
+            .map(String::from),
+    );
     if !remplaces.is_empty() {
         let noms = remplaces.join(", ");
-        // Le verrou des sceaux arrête tout l'état, journal compris (sa tête est scellée) ; ceux du journal, lui seul.
-        let message = if remplaces.iter().any(|n| n == VERROU) {
-            trf!(
-                "Un verrou de l'état de Vanguard n'est plus un simple fichier ({}) : un autre programme a mis un dossier, un lien ou un tube à sa place. Plus rien ne s'écrit sous lui : ni réglages, ni déjà-vus, ni journal des événements.",
-                "A lock of Vanguard's state is no longer a plain file ({}): another program put a folder, a link or a pipe in its place. Nothing is written under it any more: no settings, no already-seen lists, no event log.",
-                noms
+        // Le verrou des sceaux arrête tout l'état, journal compris (sa tête est scellée) ; les autres, leur base seule.
+        let arretes = if remplaces.iter().any(|n| n == VERROU) {
+            tr!(
+                "ni réglages, ni déjà-vus, ni journal des événements",
+                "no settings, no already-seen lists, no event log"
             )
+            .to_string()
         } else {
-            trf!(
-                "Le verrou du journal des événements de Vanguard n'est plus un simple fichier ({}) : un autre programme a mis un dossier, un lien ou un tube à sa place. Le journal des événements ne s'écrit plus.",
-                "The lock of Vanguard's event log is no longer a plain file ({}): another program put a folder, a link or a pipe in its place. The event log is no longer written.",
-                noms
-            )
+            let mut bases: Vec<&str> = Vec::new();
+            if remplaces.iter().any(|n| n.starts_with("evenements.")) {
+                bases.push(tr!("le journal des événements", "the event log"));
+            }
+            if remplaces.iter().any(|n| n == AUTRES_VERROUS[0]) {
+                bases.push(tr!("la base des appareils du réseau", "the network device database"));
+            }
+            if remplaces.iter().any(|n| n == AUTRES_VERROUS[1]) {
+                bases.push(tr!("les alertes du réseau", "the network alerts"));
+            }
+            bases.join(", ")
         };
+        let message = trf!(
+            "Un verrou de l'état de Vanguard n'est plus un simple fichier qui s'ouvre ({}) : un autre programme a mis un dossier, un lien ou un tube à sa place, ou lui a retiré ses droits. Ne s'écrit plus : {}.",
+            "A lock of Vanguard's state is no longer a plain file that opens ({}): another program put a folder, a link or a pipe in its place, or removed its permissions. No longer written: {}.",
+            noms,
+            arretes
+        );
         return Some(
             crate::machine::alerte(CAT, Niveau::Eleve, message)
             .manuel(
@@ -1496,6 +1518,13 @@ mod tests {
             c.message
         );
         std::fs::remove_dir(d.join("evenements.lock")).unwrap();
+        // Le verrou des appareils remplacé : dit au bilan, sans toucher au journal des événements.
+        std::fs::create_dir(d.join("appareils.verrou")).unwrap();
+        let c = constat_verrou(&d).unwrap();
+        assert!(c.message.contains("appareils.verrou"), "{}", c.message);
+        assert!(!c.message.contains("journal des événements"), "{}", c.message);
+        assert_eq!(verrous_remplaces(&d), Vec::<String>::new());
+        std::fs::remove_dir(d.join("appareils.verrou")).unwrap();
         std::fs::write(d.join(APPRIS), br#"{"acceptees":{"x":1}}"#).unwrap();
         assert!(matches!(lire_dans(&d, APPRIS), Lecture::Falsifie(_)));
         let _ = std::fs::remove_dir_all(&d);

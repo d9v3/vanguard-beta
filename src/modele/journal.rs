@@ -950,13 +950,13 @@ fn lire_tenu(dossier: &Path, attente: std::time::Duration) -> Lu {
         lu.lecture = Lecture::Incomplet(SCEAUX_TENUS.into());
         lu.verifies_des = lu.evenements.len();
     }
-    // Un verrou de l'état remplacé (dossier, lien, tube) : plus rien ne s'écrit, la fin lue n'est pas la dernière.
+    // Un verrou de l'état remplacé (dossier, lien, tube, droits retirés) : plus rien ne s'écrit, la fin lue n'est pas la dernière.
     // Dit au bilan par les sceaux (`sceau::constat`), comme un verrou tenu.
     let remplaces = crate::sceau::verrous_remplaces(dossier);
     if !remplaces.is_empty() && !matches!(lu.lecture, Lecture::Falsifie(_)) {
         let noms = remplaces.join(", ");
         lu.lecture = Lecture::Incomplet(format!(
-            "verrou remplacé par autre chose qu'un fichier ({noms}), rien ne s'écrit / lock replaced by something other than a file ({noms}), nothing is written"
+            "verrou remplacé ou fermé ({noms}), rien ne s'écrit / lock replaced or closed ({noms}), nothing is written"
         ));
         lu.verifies_des = lu.evenements.len();
     }

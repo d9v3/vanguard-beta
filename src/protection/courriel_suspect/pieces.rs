@@ -200,8 +200,11 @@ fn noms_zip(o: &[u8], max: usize) -> Result<(Vec<(String, bool)>, bool), ()> {
         let debut = o.get(i + 46..i + 46 + n.min(1_024)).ok_or(())?;
         // La fin du nom, où sont l'extension et le dernier dossier : garder le début laissait un long chemin de
         // dossiers cacher un programme (un signe élevé devenu moyen, sans rien dire). Un nom coupé par la fin du
-        // répertoire garde son début ; l'entrée suivante manquera, et l'archive se dira incomplète.
-        let entier = o.get(i + 46..i + 46 + n).unwrap_or(debut);
+        // fichier garde son début, et l'archive se dit incomplète : même la dernière entrée, sans suivante pour le dire.
+        let Some(entier) = o.get(i + 46..i + 46 + n) else {
+            noms.push((String::from_utf8_lossy(debut).into_owned(), drapeaux & 1 != 0));
+            return Ok((noms, true));
+        };
         let nom = entier.get(entier.len().saturating_sub(1_024)..).unwrap_or(entier);
         noms.push((String::from_utf8_lossy(nom).into_owned(), drapeaux & 1 != 0));
         i += 46 + n + extra + commentaire;
@@ -664,6 +667,23 @@ mod tests {
             s.iter().any(|(n, t)| *n == Niveau::Eleve && t.contains("scan.js")),
             "{s:?}"
         );
+    }
+
+    /// La dernière entrée du répertoire annonce un nom plus long que ce qui reste du fichier : l'archive se dit
+    /// incomplète, sans entrée suivante pour le dire (relecture du lot campagne 5).
+    #[test]
+    fn dernier_nom_coupe_par_la_fin() {
+        let mut o = b"PK\x01\x02".to_vec();
+        o.resize(46, 0);
+        o[28..30].copy_from_slice(&5_000u16.to_le_bytes());
+        o.extend([b'd'; 1_100]);
+        let fin = o.len();
+        o.extend(b"PK\x05\x06");
+        o.resize(fin + 22, 0);
+        o[fin + 10..fin + 12].copy_from_slice(&1u16.to_le_bytes());
+        let (noms, coupe) = noms_zip(&o, ZIP_ENTREES).unwrap();
+        assert_eq!(noms.len(), 1);
+        assert!(coupe);
     }
 
     #[test]

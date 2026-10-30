@@ -247,11 +247,28 @@ pub(crate) fn nom_systeme(nom: &str) -> String {
     format!("{}.lock", nom.strip_suffix(".verrou").unwrap_or(nom))
 }
 
-/// `nom` est-il dans `dossier` sous une autre forme qu'un simple fichier (un dossier, un lien, un tube) ? Un verrou
-/// ainsi remplacé ne se prend plus (`SansVerrou::Impossible`), et rien ne s'écrit sous lui : aucune version de Vanguard
-/// ne le pose ainsi, c'est donc un autre programme, à dire plutôt qu'à taire.
+/// `nom` est-il dans `dossier` sous une autre forme qu'un simple fichier (un dossier, un lien, un tube), ou un fichier
+/// qui ne s'ouvre plus en écriture (droits retirés, lecture seule) ? Un verrou ainsi remplacé ne se prend plus
+/// (`SansVerrou::Impossible`), et rien ne s'écrit sous lui : aucune version de Vanguard ne le pose ainsi, c'est donc
+/// un autre programme, à dire plutôt qu'à taire.
 pub(crate) fn verrou_remplace(dossier: &std::path::Path, nom: &str) -> bool {
-    std::fs::symlink_metadata(dossier.join(nom)).is_ok_and(|m| !m.file_type().is_file())
+    let chemin = dossier.join(nom);
+    let Ok(m) = std::fs::symlink_metadata(&chemin) else {
+        return false;
+    };
+    if !m.file_type().is_file() {
+        return true;
+    }
+    // Ouvert comme `Verrou::prendre` l'ouvre, sans créer ni tronquer ni verrouiller : rien ne change.
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    #[cfg(windows)]
+    std::os::windows::fs::OpenOptionsExt::custom_flags(&mut options, 0x0020_0000);
+    options
+        .open(&chemin)
+        .is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied)
 }
 
 impl Verrou {
@@ -626,6 +643,30 @@ mod tests {
         }
         assert!(!verrou_remplace(&dossier, "appareils.verrou"));
         assert!(!verrou_remplace(&dossier, "absent.verrou"));
+        // Un simple fichier aux droits retirés ne se prend pas davantage (relecture du lot campagne 5). Root ouvre
+        // tout : rien à voir alors.
+        std::fs::set_permissions(
+            dossier.join("appareils.verrou"),
+            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o400),
+        )
+        .unwrap();
+        if std::fs::OpenOptions::new()
+            .write(true)
+            .open(dossier.join("appareils.verrou"))
+            .is_err()
+        {
+            assert!(verrou_remplace(&dossier, "appareils.verrou"));
+            assert!(matches!(
+                Verrou::prendre(&dossier, "appareils.verrou", false, ATTENTE_ECRITURE),
+                Err(SansVerrou::Impossible(_))
+            ));
+        }
+        std::fs::set_permissions(
+            dossier.join("appareils.verrou"),
+            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+        )
+        .unwrap();
+        assert!(!verrou_remplace(&dossier, "appareils.verrou"));
         std::fs::create_dir(dossier.join("journal.lock")).unwrap();
         let Err(SansVerrou::Impossible(r)) =
             Verrou::prendre_compatible(&dossier, "journal.verrou", false, ATTENTE_ECRITURE)
