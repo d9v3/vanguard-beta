@@ -2021,7 +2021,7 @@ const OUTILS: &[Outil] = &[
         titre: ["Analyse rapide", "Quick scan"], precision: ["téléchargements, bureau…", "downloads, desktop…"],
         mots: "virus malware clamav defender" },
     Outil { action: Action::AntivirusComplet, commande: "antivirus", groupe: None, lettre: "",
-        titre: ["Analyse complète", "Full scan"], precision: ["tout le dossier personnel", "the whole home folder"],
+        titre: ["Analyse complète", "Full scan"], precision: ["dossier perso (Windows : tout)", "home folder (Windows: all of it)"],
         mots: "virus malware clamav defender" },
     Outil { action: Action::AntivirusDossier, commande: "antivirus", groupe: None, lettre: "a",
         titre: ["Clé USB ou dossier", "USB drive or folder"], precision: ["et pièges de clé USB", "and USB drive traps"],
