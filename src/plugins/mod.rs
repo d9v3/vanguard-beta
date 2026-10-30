@@ -99,7 +99,7 @@ fn creer_prive(d: &Path) -> std::io::Result<()> {
 /// Le compte de ce processus (Unix).
 #[cfg(unix)]
 fn moi() -> u32 {
-    // SAFETY : getuid ne prend aucun argument, ne touche aucune mémoire et ne peut pas échouer.
+    // SAFETY: getuid ne prend aucun argument, ne touche aucune mémoire et ne peut pas échouer.
     unsafe { libc::getuid() }
 }
 
@@ -188,7 +188,7 @@ fn dossier_sur(d: &Path) -> Result<(), String> {
 fn eleve() -> bool {
     #[cfg(unix)]
     {
-        // SAFETY : geteuid ne prend aucun argument, ne touche aucune mémoire et ne peut pas échouer.
+        // SAFETY: geteuid ne prend aucun argument, ne touche aucune mémoire et ne peut pas échouer.
         let effectif = unsafe { libc::geteuid() };
         effectif == 0 || effectif != moi()
     }
@@ -1626,7 +1626,7 @@ fn commande_de(
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        // SAFETY : entre fork et exec, seul setsid est appelé ; il est sûr dans ce contexte (async-signal-safe, il
+        // SAFETY: entre fork et exec, seul setsid est appelé ; il est sûr dans ce contexte (async-signal-safe, il
         // n'alloue rien et ne prend aucun verrou). Son échec (déjà chef de groupe) ne change rien : on continue.
         unsafe {
             c.pre_exec(|| {

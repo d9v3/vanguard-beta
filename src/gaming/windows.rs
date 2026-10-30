@@ -149,7 +149,7 @@ fn batterie() -> bool {
         fn GetSystemPowerStatus(etat: *mut Alimentation) -> i32;
     }
     let mut etat = Alimentation::default();
-    // SAFETY : la structure a la forme de SYSTEM_POWER_STATUS (4 octets puis deux u32) et vit pendant l'appel.
+    // SAFETY: la structure a la forme de SYSTEM_POWER_STATUS (4 octets puis deux u32) et vit pendant l'appel.
     (unsafe { GetSystemPowerStatus(&raw mut etat) }) != 0 && !matches!(etat.drapeaux, 128 | 255)
 }
 

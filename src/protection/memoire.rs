@@ -731,11 +731,11 @@ impl Drop for Tampon {
 fn effacer(octets: &mut [u8]) {
     let (blocs, reste) = octets.as_chunks_mut::<64>();
     for bloc in blocs {
-        // SAFETY : `bloc` vient d'une référence exclusive : adresse valide, alignée (octets), initialisée, à nous seuls.
+        // SAFETY: `bloc` vient d'une référence exclusive : adresse valide, alignée (octets), initialisée, à nous seuls.
         unsafe { std::ptr::write_volatile(bloc, [0; 64]) };
     }
     for octet in reste {
-        // SAFETY : comme plus haut, un seul octet.
+        // SAFETY: comme plus haut, un seul octet.
         unsafe { std::ptr::write_volatile(octet, 0) };
     }
     std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
@@ -2133,7 +2133,7 @@ mod tests {
         let chemin = dossier.join("essai-image");
         std::fs::write(&chemin, &contenu).unwrap();
         let fichier = std::fs::File::open(&chemin).unwrap();
-        // SAFETY : mmap d'un fichier à nous, en lecture seule et privé, sans adresse imposée ; les deux régions sont
+        // SAFETY: mmap d'un fichier à nous, en lecture seule et privé, sans adresse imposée ; les deux régions sont
         // retirées par munmap avant la fin du test, et rien ne les lit par un pointeur Rust.
         let (premiere, seconde) = unsafe {
             let premiere = libc::mmap(
@@ -2164,7 +2164,7 @@ mod tests {
         let sain = dossier.join("essai-sain");
         std::fs::write(&sain, vec![0u8; PAGE]).unwrap();
         let f = std::fs::OpenOptions::new().read(true).open(&sain).unwrap();
-        // SAFETY : comme plus haut, une page privée, écrite par son pointeur dans ses limites, puis retirée.
+        // SAFETY: comme plus haut, une page privée, écrite par son pointeur dans ses limites, puis retirée.
         let donnees = unsafe {
             let p = libc::mmap(
                 std::ptr::null_mut(),
@@ -2204,7 +2204,7 @@ mod tests {
             Instant::now(),
         );
         assert_eq!(lecture.trouves.len(), 1, "{lecture:?}");
-        // SAFETY : les régions mappées plus haut, de leurs tailles, retirées une seule fois.
+        // SAFETY: les régions mappées plus haut, de leurs tailles, retirées une seule fois.
         unsafe {
             libc::munmap(premiere, PAGE);
             libc::munmap(seconde, PAGE);

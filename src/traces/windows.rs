@@ -62,7 +62,7 @@ pub(super) fn place_libre(d: &Path) -> Option<u64> {
     }
     let large: Vec<u16> = d.as_os_str().encode_wide().chain(Some(0)).collect();
     let mut libre = 0u64;
-    // SAFETY : `large` est une chaîne terminée par un zéro, vivante pendant l'appel ; `libre` est un entier de 64 bits
+    // SAFETY: `large` est une chaîne terminée par un zéro, vivante pendant l'appel ; `libre` est un entier de 64 bits
     // à nous ; les deux autres tailles, dont on n'a pas besoin, peuvent être nulles (documentation de l'API).
     let ok = unsafe {
         GetDiskFreeSpaceExW(

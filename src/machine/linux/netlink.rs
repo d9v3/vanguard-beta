@@ -154,17 +154,17 @@ pub(crate) struct Prise(OwnedFd);
 impl Prise {
     /// Ouvre une prise sur ce protocole netlink, avec un délai de réception de 2 s : un noyau muet ne bloque jamais.
     pub(crate) fn ouvrir(protocole: i32) -> std::io::Result<Prise> {
-        // SAFETY : socket ne lit aucune mémoire ; un descripteur rendu (≥ 0) est à nous seuls, confié à OwnedFd qui le
+        // SAFETY: socket ne lit aucune mémoire ; un descripteur rendu (≥ 0) est à nous seuls, confié à OwnedFd qui le
         // fermera une seule fois.
         let fd = unsafe { libc::socket(libc::AF_NETLINK, libc::SOCK_RAW | libc::SOCK_CLOEXEC, protocole) };
         if fd < 0 {
             return Err(std::io::Error::last_os_error());
         }
-        // SAFETY : voir ci-dessus.
+        // SAFETY: voir ci-dessus.
         let prise = Prise(unsafe { OwnedFd::from_raw_fd(fd) });
         let delai = libc::timeval { tv_sec: 2, tv_usec: 0 };
         let taille = libc::socklen_t::try_from(std::mem::size_of::<libc::timeval>()).unwrap_or(0);
-        // SAFETY : `delai` est un timeval à nous, vivant pendant l'appel, de la taille annoncée.
+        // SAFETY: `delai` est un timeval à nous, vivant pendant l'appel, de la taille annoncée.
         let r = unsafe {
             libc::setsockopt(
                 prise.0.as_raw_fd(),
@@ -182,7 +182,7 @@ impl Prise {
 
     /// Envoie ces octets au noyau, d'un seul envoi (un lot de nf_tables doit arriver entier).
     pub(crate) fn envoyer(&self, octets: &[u8]) -> std::io::Result<()> {
-        // SAFETY : une adresse netlink à zéro (le noyau), de la taille exacte ; les octets vivent pendant l'appel.
+        // SAFETY: une adresse netlink à zéro (le noyau), de la taille exacte ; les octets vivent pendant l'appel.
         let envoye = unsafe {
             let mut adresse: libc::sockaddr_nl = std::mem::zeroed();
             adresse.nl_family = libc::sa_family_t::try_from(libc::AF_NETLINK).unwrap_or(16);
@@ -206,7 +206,7 @@ impl Prise {
     pub(crate) fn recevoir(&self, attendre: bool) -> std::io::Result<Vec<u8>> {
         let mut tampon = vec![0u8; 64 << 10];
         let drapeaux = if attendre { 0 } else { libc::MSG_DONTWAIT };
-        // SAFETY : le tampon est à nous, de la taille annoncée, vivant pendant l'appel.
+        // SAFETY: le tampon est à nous, de la taille annoncée, vivant pendant l'appel.
         let n = unsafe { libc::recv(self.0.as_raw_fd(), tampon.as_mut_ptr().cast(), tampon.len(), drapeaux) };
         if let Ok(n) = usize::try_from(n) {
             tampon.truncate(n);

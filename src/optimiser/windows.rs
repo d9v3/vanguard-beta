@@ -131,7 +131,7 @@ fn carte_principale() -> Option<String> {
     let mut index = 0u32;
     // Une adresse publique quelconque (ordre réseau) : sa route est celle par défaut.
     let destination = u32::from_ne_bytes([1, 1, 1, 1]);
-    // SAFETY : `index` vit pendant l'appel ; Windows n'y écrit qu'un u32.
+    // SAFETY: `index` vit pendant l'appel ; Windows n'y écrit qu'un u32.
     if unsafe { GetBestInterface(destination, &raw mut index) } != 0 {
         return Some(String::new());
     }

@@ -204,7 +204,7 @@ fn fichiers_d_etat_piegees_ne_figent_rien() {
             let chemin = donnees.join(nom);
             if piege == "tube" {
                 let c = std::ffi::CString::new(chemin.as_os_str().as_encoded_bytes()).unwrap();
-                // SAFETY : mkfifo reçoit un chemin terminé par zéro, qui vit le temps de l'appel.
+                // SAFETY: mkfifo reçoit un chemin terminé par zéro, qui vit le temps de l'appel.
                 assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "{nom}");
             } else {
                 std::os::unix::fs::symlink("/dev/zero", &chemin).unwrap();
@@ -1928,7 +1928,7 @@ mod menus_dans_un_terminal {
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
-        // SAFETY : openpty écrit deux descripteurs dans les entiers donnés ; le nom (NULL) et les réglages (NULL)
+        // SAFETY: openpty écrit deux descripteurs dans les entiers donnés ; le nom (NULL) et les réglages (NULL)
         // ne sont pas demandés, la taille est lue dans une structure valide le temps de l'appel.
         let r = unsafe {
             libc::openpty(
@@ -1940,7 +1940,7 @@ mod menus_dans_un_terminal {
             )
         };
         assert_eq!(r, 0, "openpty : {}", std::io::Error::last_os_error());
-        // SAFETY : les deux descripteurs viennent d'être ouverts par openpty et ne sont à personne d'autre.
+        // SAFETY: les deux descripteurs viennent d'être ouverts par openpty et ne sont à personne d'autre.
         unsafe { (OwnedFd::from_raw_fd(maitre), OwnedFd::from_raw_fd(esclave)) }
     }
 
@@ -2006,7 +2006,7 @@ mod menus_dans_un_terminal {
             .stdin(Stdio::from(esclave.try_clone().unwrap()))
             .stdout(Stdio::from(esclave.try_clone().unwrap()))
             .stderr(Stdio::from(esclave));
-        // SAFETY : entre fork et exec, seuls setsid et ioctl sont appelés, tous deux sûrs à cet endroit (ni
+        // SAFETY: entre fork et exec, seuls setsid et ioctl sont appelés, tous deux sûrs à cet endroit (ni
         // allocation ni verrou) : Vanguard devient chef d'une session dont le pseudo-terminal est le terminal.
         unsafe {
             commande.pre_exec(|| {
@@ -2208,7 +2208,7 @@ fn jeton_ordinaire_a_cote() -> bool {
     let mut poignee = HANDLE::default();
     let mut genre = TOKEN_ELEVATION_TYPE::default();
     let mut taille = 0u32;
-    // SAFETY : GetCurrentProcess rend une pseudo-poignée ; le jeton ouvert est fermé une seule fois. Windows écrit au
+    // SAFETY: GetCurrentProcess rend une pseudo-poignée ; le jeton ouvert est fermé une seule fois. Windows écrit au
     // plus 4 octets, la taille exacte de TOKEN_ELEVATION_TYPE (il refuse un tampon plus grand), dans `genre`.
     unsafe {
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut poignee).is_err() {

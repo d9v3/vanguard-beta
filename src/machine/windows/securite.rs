@@ -44,7 +44,7 @@ pub(crate) unsafe fn copier(descripteur: *const c_void) -> Option<Vec<u8>> {
     if descripteur.is_null() {
         return None;
     }
-    // SAFETY : le descripteur est vérifié avant que sa longueur soit demandée, et copié sur cette longueur seulement.
+    // SAFETY: le descripteur est vérifié avant que sa longueur soit demandée, et copié sur cette longueur seulement.
     unsafe {
         if IsValidSecurityDescriptor(descripteur) == 0 {
             return None;
@@ -66,7 +66,7 @@ pub(crate) fn du_fichier(chemin: &Path) -> Option<Vec<u8>> {
     let nom: Vec<u16> = chemin.as_os_str().encode_wide().chain([0]).collect();
     let mut descripteur = std::ptr::null_mut();
     let mut liste = std::ptr::null_mut();
-    // SAFETY : le nom est terminé par un zéro et vit pendant l'appel ; le descripteur alloué par Windows (code non nul :
+    // SAFETY: le nom est terminé par un zéro et vit pendant l'appel ; le descripteur alloué par Windows (code non nul :
     // rien n'est alloué) est copié puis rendu une seule fois par LocalFree.
     unsafe {
         if GetNamedSecurityInfoW(

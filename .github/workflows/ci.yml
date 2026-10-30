@@ -28,7 +28,9 @@ on:
     - cron: "43 7 * * *"
 
 # Le jeton par défaut du dépôt ne lit que le code : la vérification de nuit lit aussi les exécutions passées
-# (gh api …/actions/workflows/…/runs), sinon GitHub répond 403.
+# (gh api …/actions/workflows/…/runs), sinon GitHub répond 403. Aucune extraction ne laisse ce jeton dans
+# .git/config (persist-credentials: false) : tout ce qui tourne ensuite l'y lirait, scripts de compilation des
+# dépendances compris ; aucun travail ne pousse ni ne refait de git fetch.
 permissions:
   contents: read
   actions: read
@@ -49,6 +51,7 @@ jobs:
       # Tout l'historique : les textes affichés se comparent à master (outils/textes.py).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
       # Compilateurs C : YARA-X (par wasmtime) compile un petit fichier C pour chaque cible ; musl-gcc pour Linux, le
       # gcc de MinGW pour Windows (et le préprocesseur de windres, pour l'icône et le manifeste), clang pour les cibles
@@ -70,7 +73,7 @@ jobs:
       # version). Les outils dans la version épinglée ici, tels que leurs auteurs les publient (empreintes vérifiées).
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
-          tool: cargo-audit@0.22.2,cargo-deny@0.20.2
+          tool: cargo-audit@0.22.2,cargo-deny@0.20.2,zizmor@1.31.1
           fallback: none
       - name: cargo-fuzz
         run: outils/installer-cargo-fuzz.sh
@@ -110,6 +113,7 @@ jobs:
       # Tout l'historique : le commit d'avant l'envoi doit être là pour savoir ce qui a été envoyé.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
       # AVANT vide ou fait de zéros (branche neuve), ou disparu (historique réécrit) : les commits qu'aucune autre
       # branche de GitHub n'a déjà. Les empreintes passent par l'environnement, jamais collées dans le script.
@@ -130,6 +134,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-audit@0.22.2,cargo-deny@0.20.2
@@ -147,6 +153,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Rust et compilation musl
         run: |
           rustup toolchain install
@@ -156,9 +164,9 @@ jobs:
         run: |
           d="$RUNNER_TEMP/canaris"
           mkdir -p "$d"
-          VANGUARD_CANARIS="$d" cargo test -q --bin vanguard canaris::canaris_telecharger -- --ignored --exact
-          VANGUARD_CANARIS="$d" cargo test -q --bin vanguard canaris::canaris_kev -- --ignored --exact
-          VANGUARD_ESSAI_PERIMES="$d" VANGUARD_ESSAI_ECHAP="$d/ioc.yaml" cargo test -q --bin vanguard -- \
+          VANGUARD_CANARIS="$d" cargo test -q --locked --bin vanguard canaris::canaris_telecharger -- --ignored --exact
+          VANGUARD_CANARIS="$d" cargo test -q --locked --bin vanguard canaris::canaris_kev -- --ignored --exact
+          VANGUARD_ESSAI_PERIMES="$d" VANGUARD_ESSAI_ECHAP="$d/ioc.yaml" cargo test -q --locked --bin vanguard -- \
             vraies_copies_si_presentes vraie_copie_si_presente vrai_fichier_d_echap
 
   # Le banc de fuzzing (fuzz/), cinq minutes par cible chaque nuit, et à la demande : verifier.sh n'y passe que
@@ -177,6 +185,8 @@ jobs:
         part: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Chaîne nightly
         run: rustup toolchain install nightly --profile minimal
       - name: cargo-fuzz
@@ -210,11 +220,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           sparse-checkout: .github/hors-code.txt
           sparse-checkout-cone-mode: false
+      # Le nom de la branche passe par l'environnement, jamais collé dans le script : un nom fait de `$(…)` y
+      # deviendrait une commande (zizmor, template-injection).
       - id: verifier
         env:
           GH_TOKEN: ${{ github.token }}
+          DEPOT: ${{ github.repository }}
+          BRANCHE: ${{ github.ref_name }}
         run: |
           case "${{ github.event_name }}" in
             push|workflow_dispatch|pull_request) echo "windows=oui" >> "$GITHUB_OUTPUT"; exit 0 ;;
@@ -223,7 +238,7 @@ jobs:
           esac
           dernier=""
           for evenement in schedule workflow_dispatch push; do
-            sha=$(gh api "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?status=success&event=$evenement&branch=${{ github.ref_name }}&per_page=1" -q '.workflow_runs[0] | "\(.created_at) \(.head_sha)"' 2>/dev/null || true)
+            sha=$(gh api "repos/$DEPOT/actions/workflows/ci.yml/runs?status=success&event=$evenement&branch=$BRANCHE&per_page=1" -q '.workflow_runs[0] | "\(.created_at) \(.head_sha)"' 2>/dev/null || true)
             if [ -n "$sha" ] && [ "$sha" \> "$dernier" ]; then dernier=$sha; fi
           done
           dernier=${dernier#* }
@@ -234,7 +249,7 @@ jobs:
           windows=oui
           if [ "$dernier" = "${{ github.sha }}" ]; then
             windows=non
-          elif [ -n "$dernier" ] && fichiers=$(gh api "repos/${{ github.repository }}/compare/$dernier...${{ github.sha }}" -q '[.files[].filename] | if length < 300 then .[] else "plus de 300 fichiers" end'); then
+          elif [ -n "$dernier" ] && fichiers=$(gh api "repos/$DEPOT/compare/$dernier...${{ github.sha }}" -q '[.files[].filename] | if length < 300 then .[] else "plus de 300 fichiers" end'); then
             printf '%s\n' "$fichiers" | grep -vE -e '^$' -e "$HORS_CODE" >/dev/null || windows=non
           fi
           echo "windows=$windows" >> "$GITHUB_OUTPUT"
@@ -258,6 +273,7 @@ jobs:
       # l'ordinateur de l'auteur.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
       # gcc-mingw-w64 : l'éditeur de liens du .exe, et le préprocesseur de windres (icône et manifeste intégrés comme
       # dans le .exe livré). Avec les binutils seuls, la première nuit a échoué : « linker x86_64-w64-mingw32-gcc not
@@ -314,6 +330,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Rust (rust-toolchain.toml)
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -326,7 +344,7 @@ jobs:
       - name: Tests sur un vrai Windows
         env:
           VANGUARD_TESTS_SAUTES: ${{ runner.temp }}\sautes.txt
-        run: cargo test --target x86_64-pc-windows-msvc
+        run: cargo test --locked --target x86_64-pc-windows-msvc
       - name: Tests sautés sur le vrai Windows
         if: always()
         env:

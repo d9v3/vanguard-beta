@@ -19,7 +19,7 @@ pub(crate) fn dossier_personnel() -> Option<PathBuf> {
     let complet = |v: std::ffi::OsString| Some(PathBuf::from(v)).filter(|d| d.is_absolute());
     let home = std::env::var_os("HOME").and_then(complet);
     #[cfg(unix)]
-    // SAFETY : getuid lit le compte du processus, sans argument ni échec possible.
+    // SAFETY: getuid lit le compte du processus, sans argument ni échec possible.
     let repli = || dossier_personnel_de(unsafe { libc::getuid() }).filter(|d| d.is_absolute());
     #[cfg(windows)]
     let repli = || std::env::var_os("USERPROFILE").and_then(complet);
@@ -37,16 +37,16 @@ pub fn maison() -> PathBuf {
 pub(crate) fn dossier_personnel_de(uid: libc::uid_t) -> Option<PathBuf> {
     use std::os::unix::ffi::OsStrExt;
     let mut tampon: Vec<libc::c_char> = vec![0; 16 << 10];
-    // SAFETY : passwd n'a que des entiers et des pointeurs, valides à zéro ; getpwuid_r les remplit.
+    // SAFETY: passwd n'a que des entiers et des pointeurs, valides à zéro ; getpwuid_r les remplit.
     let mut compte: libc::passwd = unsafe { std::mem::zeroed() };
     let mut trouve: *mut libc::passwd = std::ptr::null_mut();
-    // SAFETY : `compte`, `tampon` (avec sa vraie longueur) et `trouve` vivent jusqu'à la fin de la fonction ;
+    // SAFETY: `compte`, `tampon` (avec sa vraie longueur) et `trouve` vivent jusqu'à la fin de la fonction ;
     // getpwuid_r n'écrit que dans eux.
     let r = unsafe { libc::getpwuid_r(uid, &raw mut compte, tampon.as_mut_ptr(), tampon.len(), &raw mut trouve) };
     if r != 0 || trouve.is_null() || compte.pw_dir.is_null() {
         return None;
     }
-    // SAFETY : pw_dir pointe dans `tampon`, encore vivant, et getpwuid_r l'a terminé par un zéro.
+    // SAFETY: pw_dir pointe dans `tampon`, encore vivant, et getpwuid_r l'a terminé par un zéro.
     let dossier = unsafe { std::ffi::CStr::from_ptr(compte.pw_dir) };
     Some(PathBuf::from(std::ffi::OsStr::from_bytes(dossier.to_bytes())))
 }
@@ -70,7 +70,7 @@ pub(crate) fn statvfs(chemin: &Path) -> Option<libc::statvfs> {
     use std::os::unix::ffi::OsStrExt;
     let c = std::ffi::CString::new(chemin.as_os_str().as_bytes()).ok()?;
     let mut s = std::mem::MaybeUninit::<libc::statvfs>::uninit();
-    // SAFETY : `c` est une chaîne C valide pendant tout l'appel ; statvfs remplit `s` en entier quand elle réussit
+    // SAFETY: `c` est une chaîne C valide pendant tout l'appel ; statvfs remplit `s` en entier quand elle réussit
     // (retour 0), et `s` n'est lue qu'après.
     unsafe {
         if libc::statvfs(c.as_ptr(), s.as_mut_ptr()) != 0 {

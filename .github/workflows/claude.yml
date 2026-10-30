@@ -7,7 +7,9 @@
 # le jeton de l'abonnement Claude, que donne `claude setup-token`).
 name: Claude
 on:
-  issue_comment:
+  # zizmor juge issue_comment dangereux en soi : n'importe qui commente un dépôt public. C'est le déclencheur même de
+  # @claude ; le travail « garde » ci-dessous n'accepte que le propriétaire, sur un fil qu'aucun autre n'a touché.
+  issue_comment: # zizmor: ignore[dangerous-triggers] le garde ne laisse passer que le propriétaire
     types: [created]
   pull_request_review_comment:
     types: [created]

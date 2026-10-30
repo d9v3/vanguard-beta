@@ -346,9 +346,11 @@ done
 if [[ -n $branche ]]; then
   jq -r --arg b "$branche" "[.[] | select(.headBranch == \$b)] | $q" "$(dirname "$0")/runs.json"
 else
-  # « api …/artifacts » ou « run list » sans branche : chaque passage a son programme.
+  # « api …/artifacts » ou « run list » sans branche : chaque passage a son programme ; « run view … jobs » : chacun a
+  # réussi son travail « attester ».
   case $q in
     *artifacts*) echo vanguard-macos ;;
+    *attester*) echo attester ;;
     *) jq -r "$q" "$(dirname "$0")/runs.json" ;;
   esac
 fi
@@ -360,6 +362,12 @@ GH
     ko "publier-version.sh a pris la compilation Mac « ${choisi:-aucune} » (attendu : 1, celle de master)"
   grep -q 'BRANCHE_RUN != "master schedule"' "$DEPOT/outils/publier-version.sh" &&
     ok "publier-version.sh relit la branche de l'exécution qu'il signe" || ko "branche de l'exécution signée non relue"
+  # L'attestation du programme Mac et des nomenclatures : exigée, liée à macos.yml, à master et au commit du passage.
+  awk '/gh attestation verify/ { v = 1 } /--signer-workflow "\$DEPOT_CODE\/.github\/workflows\/macos.yml"/ { w = 1 }
+    /--source-ref refs\/heads\/master --source-digest "\$SHA_RUN"/ { r = 1 } END { exit !(v && w && r) }' \
+    "$DEPOT/outils/publier-version.sh" &&
+    ok "publier-version.sh exige l'attestation du Mac et des nomenclatures (macos.yml, master, commit du passage)" ||
+    ko "publier-version.sh publie sans vérifier l'attestation de macos.yml sur master"
   # La version macOS mise sur la clé : de master aussi (campagne d'attaque n° 3), commit et empreinte relus.
   awk '/gh run list --workflow macos.yml --branch master/ { b = 1 } /select\(.headBranch == "master"/ { s = 1 }
     /EMPREINTE-VANGUARD-MACOS/ { e = 1 } END { exit !(b && s && e) }' "$DEPOT/outils/deployer.sh" &&

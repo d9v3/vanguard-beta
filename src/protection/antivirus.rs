@@ -327,18 +327,18 @@ fn volumes_amovibles() -> Vec<(PathBuf, String)> {
 #[cfg(target_os = "macos")]
 fn tailles_des_volumes() -> std::collections::HashMap<PathBuf, u64> {
     use std::os::unix::ffi::OsStrExt;
-    // SAFETY : sans tampon, getfsstat rend seulement le nombre de systèmes de fichiers montés.
+    // SAFETY: sans tampon, getfsstat rend seulement le nombre de systèmes de fichiers montés.
     let n = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) };
     let Ok(n) = usize::try_from(n) else {
         return std::collections::HashMap::new();
     };
     // Quelques places de plus : un volume monté entre les deux appels n'est pas perdu.
-    // SAFETY : statfs n'est fait que d'entiers et de tableaux d'octets, pour qui zéro est une valeur permise.
+    // SAFETY: statfs n'est fait que d'entiers et de tableaux d'octets, pour qui zéro est une valeur permise.
     let mut tampon: Vec<libc::statfs> = vec![unsafe { std::mem::zeroed() }; n + 8];
     let Ok(taille) = libc::c_int::try_from(tampon.len() * std::mem::size_of::<libc::statfs>()) else {
         return std::collections::HashMap::new();
     };
-    // SAFETY : le tampon fait `taille` octets, à nous ; getfsstat y écrit au plus autant de structures et rend leur
+    // SAFETY: le tampon fait `taille` octets, à nous ; getfsstat y écrit au plus autant de structures et rend leur
     // nombre.
     let lus = unsafe { libc::getfsstat(tampon.as_mut_ptr(), taille, libc::MNT_NOWAIT) };
     let lus = usize::try_from(lus).unwrap_or(0).min(tampon.len());

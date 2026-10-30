@@ -39,14 +39,14 @@ struct Voulue {
 }
 
 fn politique() -> windows::core::Result<INetFwPolicy2> {
-    // SAFETY : COM est initialisé dans ce fil (`wmi::com_delai`) ; NetFwPolicy2 est la classe de la politique.
+    // SAFETY: COM est initialisé dans ce fil (`wmi::com_delai`) ; NetFwPolicy2 est la classe de la politique.
     unsafe { CoCreateInstance(&NetFwPolicy2, None, CLSCTX_INPROC_SERVER) }
 }
 
 /// Le Pare-feu Windows est-il en marche pour chaque profil actif (domaine, privé, public) ? Coupé, une règle posée
 /// ne bloquerait rien : ce serait un faux « bloqué ».
 fn en_marche(p: &INetFwPolicy2) -> bool {
-    // SAFETY : objet COM valide ; chaque lecture rend une copie.
+    // SAFETY: objet COM valide ; chaque lecture rend une copie.
     unsafe {
         let Ok(actifs) = p.CurrentProfileTypes() else {
             return false;
@@ -60,14 +60,14 @@ fn en_marche(p: &INetFwPolicy2) -> bool {
 
 /// La règle de ce nom, si elle existe.
 fn trouver(r: &INetFwRules, nom: &str) -> Option<INetFwRule> {
-    // SAFETY : objet COM valide ; BSTR vivant pendant l'appel. Une erreur (règle absente) se défait dans ce fil.
+    // SAFETY: objet COM valide ; BSTR vivant pendant l'appel. Une erreur (règle absente) se défait dans ce fil.
     unsafe { r.Item(&BSTR::from(nom)) }.ok()
 }
 
 /// La règle existante est-elle exactement celle de Vanguard (bloquer, active, dans le bon sens, sur ce qu'elle vise) ?
 /// Une règle du même nom qui autoriserait, ou serait coupée, n'en est pas une : elle est remplacée.
 fn conforme(regle: &INetFwRule, v: &Voulue) -> bool {
-    // SAFETY : objet COM valide ; chaque lecture rend une copie.
+    // SAFETY: objet COM valide ; chaque lecture rend une copie.
     unsafe {
         let bloque = regle.Action().is_ok_and(|a| a == NET_FW_ACTION_BLOCK);
         let active = regle.Enabled().is_ok_and(|e| e == VARIANT_TRUE);
@@ -109,7 +109,7 @@ fn adresse_visee(relu: &str, ip: IpAddr) -> bool {
 }
 
 fn creer(r: &INetFwRules, v: &Voulue) -> windows::core::Result<()> {
-    // SAFETY : COM est initialisé dans ce fil ; NetFwRule est la classe d'une règle. Chaque réglage reçoit un BSTR
+    // SAFETY: COM est initialisé dans ce fil ; NetFwRule est la classe d'une règle. Chaque réglage reçoit un BSTR
     // vivant pendant l'appel. L'ordre compte (documentation de INetFwRule) : le protocole avant le port.
     unsafe {
         let regle: INetFwRule = CoCreateInstance(&NetFwRule, None, CLSCTX_INPROC_SERVER)?;
@@ -142,7 +142,7 @@ fn creer(r: &INetFwRules, v: &Voulue) -> windows::core::Result<()> {
 fn retirer_toutes(r: &INetFwRules, nom: &str) -> windows::core::Result<usize> {
     let mut n = 0;
     while trouver(r, nom).is_some() && n < 16 {
-        // SAFETY : objet COM valide ; BSTR vivant pendant l'appel.
+        // SAFETY: objet COM valide ; BSTR vivant pendant l'appel.
         unsafe { r.Remove(&BSTR::from(nom)) }?;
         n += 1;
     }
@@ -159,7 +159,7 @@ fn dans_com(geste: impl FnOnce(&INetFwPolicy2, &INetFwRules) -> Resultat + Send 
             // Une erreur de COM se dit en texte ici, dans son appartement (voir `wmi::dans_un_fil`).
             Ok(
                 match politique().and_then(|p| {
-                    // SAFETY : objet COM valide.
+                    // SAFETY: objet COM valide.
                     let r = unsafe { p.Rules() }?;
                     Ok((p, r))
                 }) {

@@ -90,7 +90,7 @@ unsafe fn texte(p: *const u16) -> String {
         return String::new();
     }
     let mut n = 0;
-    // SAFETY : la borne est testée avant chaque lecture ; le texte se termine par un zéro (contrat de l'appelant).
+    // SAFETY: la borne est testée avant chaque lecture ; le texte se termine par un zéro (contrat de l'appelant).
     unsafe {
         while n < 32_767 && *p.add(n) != 0 {
             n += 1;
@@ -105,7 +105,7 @@ fn acces() -> Option<Vec<String>> {
     let mut tampon: *mut c_void = std::ptr::null_mut();
     let (mut lus, mut total) = (0u32, 0u32);
     let mut lignes = Vec::new();
-    // SAFETY : NetShareEnum (serveur nul : cet ordinateur) écrit dans `tampon` `lus` structures du niveau demandé,
+    // SAFETY: NetShareEnum (serveur nul : cet ordinateur) écrit dans `tampon` `lus` structures du niveau demandé,
     // que les types repr(C) reproduisent ; elles sont lues tant que le tampon vit, puis rendu une seule fois. Code non
     // nul : rien n'a été alloué.
     unsafe {
@@ -162,7 +162,7 @@ fn droits(descripteur: *const c_void) -> Option<Vec<String>> {
     if descripteur.is_null() {
         return Some(vec!["Everyone|S-1-1-0|Allow|Full".into()]);
     }
-    // SAFETY : le descripteur vient de NetShareEnum et vit avec son tampon.
+    // SAFETY: le descripteur vient de NetShareEnum et vit avec son tampon.
     let octets = unsafe { super::securite::copier(descripteur) }?;
     let Some(regles) = regles_du_descripteur(&octets) else {
         return Some(vec!["Everyone|S-1-1-0|Allow|Full".into()]);
@@ -241,7 +241,7 @@ fn nom_du_compte(sid: &[u8]) -> String {
         .collect();
     let (mut nom, mut domaine) = (vec![0u16; 256], vec![0u16; 256]);
     let (mut taille_nom, mut taille_domaine, mut usage) = (256u32, 256u32, 0u32);
-    // SAFETY : le SID copié vit pendant l'appel ; Windows écrit au plus 256 caractères dans chaque tampon, qui les a.
+    // SAFETY: le SID copié vit pendant l'appel ; Windows écrit au plus 256 caractères dans chaque tampon, qui les a.
     let lu = unsafe {
         LookupAccountSidW(
             std::ptr::null(),
@@ -276,7 +276,7 @@ const ERROR_MORE_DATA: u32 = 234;
 /// `tampon` est nul, ou un tampon alloué par une fonction Net* et pas encore rendu.
 unsafe fn rendre(tampon: &mut *mut c_void) -> bool {
     if !tampon.is_null() {
-        // SAFETY : tampon alloué par Windows, rendu une seule fois (remis à nul aussitôt).
+        // SAFETY: tampon alloué par Windows, rendu une seule fois (remis à nul aussitôt).
         unsafe { NetApiBufferFree(*tampon) };
         *tampon = std::ptr::null_mut();
     }
@@ -290,7 +290,7 @@ fn invite() -> Option<String> {
     const DESACTIVE: u32 = 0x2;
     let mut tampon: *mut c_void = std::ptr::null_mut();
     let (mut lus, mut total, mut reprise) = (0u32, 0u32, 0u32);
-    // SAFETY : comme pour NetShareEnum : `lus` structures USER_INFO_20, lues tant que le tampon vit, rendu une fois.
+    // SAFETY: comme pour NetShareEnum : `lus` structures USER_INFO_20, lues tant que le tampon vit, rendu une fois.
     unsafe {
         let code = NetUserEnum(
             std::ptr::null(),

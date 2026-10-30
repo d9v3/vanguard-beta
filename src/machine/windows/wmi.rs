@@ -186,7 +186,7 @@ fn dans_un_fil<T: Send + 'static>(
     std::thread::Builder::new()
         .name("com".into())
         .spawn(move || {
-            // SAFETY : fil créé pour cette seule lecture ; l'appartement est rendu par `Appartement` à la sortie.
+            // SAFETY: fil créé pour cette seule lecture ; l'appartement est rendu par `Appartement` à la sortie.
             let resultat = unsafe { CoInitializeEx(None, appartement) }
                 .ok()
                 .map_err(|e| e.code())
@@ -228,7 +228,7 @@ struct Appartement;
 
 impl Drop for Appartement {
     fn drop(&mut self) {
-        // SAFETY : créé seulement après un CoInitializeEx réussi dans ce même fil.
+        // SAFETY: créé seulement après un CoInitializeEx réussi dans ce même fil.
         unsafe { CoUninitialize() };
     }
 }
@@ -243,12 +243,12 @@ impl Drop for Appartement {
 /// Win32_QuickFixEngineering, compteurs Win32_PerfRawData_*) échouaient alors ; Wine, sans mandataire, ne le montre pas.
 fn droits_d_appel<T: Interface>(objet: &T) {
     let brut = objet.as_raw();
-    // SAFETY : `brut` est le pointeur vivant de `objet`, emprunté le temps de l'appel ; toute interface COM commence
+    // SAFETY: `brut` est le pointeur vivant de `objet`, emprunté le temps de l'appel ; toute interface COM commence
     // par IUnknown. Les autres paramètres sont des constantes ou nuls.
     let Some(objet) = (unsafe { IUnknown::from_raw_borrowed(&brut) }) else {
         return;
     };
-    // SAFETY : voir plus haut.
+    // SAFETY: voir plus haut.
     let _ = unsafe {
         CoSetProxyBlanket(
             objet,
@@ -264,13 +264,13 @@ fn droits_d_appel<T: Interface>(objet: &T) {
 }
 
 fn dans_ce_fil(espace: &str, classe: &str, wql: &str, champs: &[String]) -> windows::core::Result<Vec<Ligne>> {
-    // SAFETY : COM est initialisé dans ce fil (par `com`) ; WbemLocator est la classe du localisateur WMI de Windows.
+    // SAFETY: COM est initialisé dans ce fil (par `com`) ; WbemLocator est la classe du localisateur WMI de Windows.
     let localisateur: IWbemLocator = unsafe { CoCreateInstance(&WbemLocator, None, CLSCTX_INPROC_SERVER) }?;
     let vide = BSTR::new();
-    // SAFETY : chaînes BSTR valides pendant l'appel ; utilisateur et mot de passe vides = le compte qui lance.
+    // SAFETY: chaînes BSTR valides pendant l'appel ; utilisateur et mot de passe vides = le compte qui lance.
     let services = unsafe { localisateur.ConnectServer(&BSTR::from(espace), &vide, &vide, &vide, 0, &vide, None) }?;
     droits_d_appel(&services);
-    // SAFETY : services est vivant ; requête et langage sont des BSTR valides pendant l'appel.
+    // SAFETY: services est vivant ; requête et langage sont des BSTR valides pendant l'appel.
     let instances = unsafe {
         services.ExecQuery(
             &BSTR::from("WQL"),
@@ -285,7 +285,7 @@ fn dans_ce_fil(espace: &str, classe: &str, wql: &str, champs: &[String]) -> wind
     loop {
         let mut objets = [None];
         let mut rendus = 0u32;
-        // SAFETY : un emplacement pour un objet, `rendus` dit combien ont été écrits.
+        // SAFETY: un emplacement pour un objet, `rendus` dit combien ont été écrits.
         unsafe { instances.Next(WBEM_INFINITE, &mut objets, &raw mut rendus) }.ok()?;
         let Some(objet) = objets[0].take().filter(|_| rendus == 1) else {
             break;
@@ -293,13 +293,13 @@ fn dans_ce_fil(espace: &str, classe: &str, wql: &str, champs: &[String]) -> wind
         let mut ligne = Ligne::new();
         for (champ, nom) in champs.iter().zip(&noms) {
             let mut v = VARIANT::default();
-            // SAFETY : objet est vivant, `nom` une chaîne terminée par un zéro, `v` un VARIANT vide qui reçoit la copie.
+            // SAFETY: objet est vivant, `nom` une chaîne terminée par un zéro, `v` un VARIANT vide qui reçoit la copie.
             let valeur = match unsafe { objet.Get(nom, 0, &raw mut v, None, None) } {
-                // SAFETY : `v` vient d'être rempli par Get.
+                // SAFETY: `v` vient d'être rempli par Get.
                 Ok(()) => unsafe { lire(&v) },
                 Err(_) => Valeur::Nul,
             };
-            // SAFETY : `v` est à nous (copie rendue par Get, ou vide) ; VariantClear libère ce qu'il porte.
+            // SAFETY: `v` est à nous (copie rendue par Get, ou vide) ; VariantClear libère ce qu'il porte.
             let _ = unsafe { VariantClear(&raw mut v) };
             ligne.insert(champ.clone(), valeur);
         }
@@ -309,7 +309,7 @@ fn dans_ce_fil(espace: &str, classe: &str, wql: &str, champs: &[String]) -> wind
         // Le WMI de Wine répond à une classe inconnue par une liste vide, sans erreur : sans cette preuve que la
         // classe existe, « aucune instance » pourrait passer pour sain. L'emplacement de retour est exigé par Wine.
         let mut definition = None;
-        // SAFETY : services est vivant ; le chemin est un BSTR valide pendant l'appel ; `definition` reçoit l'objet.
+        // SAFETY: services est vivant ; le chemin est un BSTR valide pendant l'appel ; `definition` reçoit l'objet.
         unsafe {
             services.GetObject(
                 &BSTR::from(classe),
@@ -328,7 +328,7 @@ fn dans_ce_fil(espace: &str, classe: &str, wql: &str, champs: &[String]) -> wind
 /// # Safety
 /// `v` est un VARIANT initialisé dont `vt` décrit le contenu (rempli par COM).
 unsafe fn lire(v: &VARIANT) -> Valeur {
-    // SAFETY : le VARIANT est initialisé (contrat de la fonction) ; on lit son en-tête puis le membre de `vt`.
+    // SAFETY: le VARIANT est initialisé (contrat de la fonction) ; on lit son en-tête puis le membre de `vt`.
     unsafe {
         let interne = &v.Anonymous.Anonymous;
         let vt = interne.vt;
@@ -361,12 +361,12 @@ unsafe fn lire(v: &VARIANT) -> Valeur {
 /// # Safety
 /// `liste` pointe sur un SAFEARRAY vivant à une dimension, `T` est le type de ses éléments.
 unsafe fn element<T: Default>(liste: *const SAFEARRAY, i: i32) -> Option<T> {
-    // SAFETY : `liste` est non nul et vivant (contrat de la fonction).
+    // SAFETY: `liste` est non nul et vivant (contrat de la fonction).
     if usize::try_from(unsafe { (*liste).cbElements }).ok()? != size_of::<T>() {
         return None;
     }
     let mut x = T::default();
-    // SAFETY : un seul indice pour une dimension ; la destination a exactement la taille d'un élément.
+    // SAFETY: un seul indice pour une dimension ; la destination a exactement la taille d'un élément.
     unsafe { SafeArrayGetElement(liste, &raw const i, (&raw mut x).cast()) }.ok()?;
     Some(x)
 }
@@ -374,7 +374,7 @@ unsafe fn element<T: Default>(liste: *const SAFEARRAY, i: i32) -> Option<T> {
 /// # Safety
 /// `liste` est nul ou pointe sur un SAFEARRAY vivant dont les éléments sont du type `vt`.
 unsafe fn lire_liste(liste: *const SAFEARRAY, vt: VARENUM) -> Valeur {
-    // SAFETY : pointeur vérifié non nul avant chaque lecture ; dimensions et bornes demandées à Windows.
+    // SAFETY: pointeur vérifié non nul avant chaque lecture ; dimensions et bornes demandées à Windows.
     unsafe {
         if liste.is_null() || SafeArrayGetDim(liste) != 1 {
             return Valeur::Nul;
@@ -430,7 +430,7 @@ mod tests {
         use windows::Win32::System::Com::{GetErrorInfo, IErrorInfo, SetErrorInfo};
         use windows::Win32::System::Ole::CreateErrorInfo;
         let r = dans_un_fil(DELAI, COINIT_MULTITHREADED, || -> windows::core::Result<()> {
-            // SAFETY : COM est initialisé dans ce fil ; l'objet créé est rendu à COM par SetErrorInfo.
+            // SAFETY: COM est initialisé dans ce fil ; l'objet créé est rendu à COM par SetErrorInfo.
             unsafe {
                 let createur = CreateErrorInfo()?;
                 createur.SetDescription(windows::core::w!("erreur d'essai"))?;
@@ -442,7 +442,7 @@ mod tests {
             Err(erreur)
         });
         assert_eq!(r, Some(Err(E_FAIL)));
-        // SAFETY : simple lecture de l'IErrorInfo de ce fil.
+        // SAFETY: simple lecture de l'IErrorInfo de ce fil.
         assert!(unsafe { GetErrorInfo(0) }.is_err());
     }
 

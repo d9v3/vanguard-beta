@@ -54,7 +54,7 @@ fn lire(nom: &str, emplacement: u32) -> Option<Vec<String>> {
     const FIN_DE_LISTE: i32 = 0x8009_2004_u32 as i32;
     let racine: Vec<u16> = "Root".encode_utf16().chain([0]).collect();
     let mut lignes = Vec::new();
-    // SAFETY : le nom du magasin est terminé par un zéro et vit pendant l'appel ; le magasin (nul : refus, vérifié) est
+    // SAFETY: le nom du magasin est terminé par un zéro et vit pendant l'appel ; le magasin (nul : refus, vérifié) est
     // fermé une seule fois. CertEnumCertificatesInStore libère le certificat précédent et rend le suivant, nul à la
     // fin ou en cas d'erreur (GetLastError les distingue) ; chaque certificat n'est passé qu'aux fonctions de crypt32, qui écrivent au plus la taille donnée dans
     // les tampons, qui l'ont.

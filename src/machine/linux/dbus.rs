@@ -860,7 +860,7 @@ impl Bus {
             reponse = self.ligne()?;
         }
         if reponse.starts_with("REJECTED") {
-            // SAFETY : geteuid ne prend rien et ne peut pas échouer.
+            // SAFETY: geteuid ne prend rien et ne peut pas échouer.
             let uid = unsafe { libc::geteuid() };
             self.ecrire(format!("AUTH EXTERNAL {}\r\n", uid_hexa(uid)).as_bytes())?;
             reponse = self.ligne()?;
@@ -1546,7 +1546,7 @@ mod tests {
         });
         let mut bus = Bus::sur(client).unwrap();
         assert_eq!(unites_en_echec(&mut bus).unwrap(), Vec::<String>::new());
-        // SAFETY : geteuid ne prend rien et ne peut pas échouer.
+        // SAFETY: geteuid ne prend rien et ne peut pas échouer.
         let uid = unsafe { libc::geteuid() };
         let attendu = format!("\0AUTH EXTERNAL\r\nAUTH EXTERNAL {}\r\nBEGIN\r\n", uid_hexa(uid));
         assert_eq!(String::from_utf8(fil.join().unwrap()).unwrap(), attendu);

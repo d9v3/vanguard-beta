@@ -44,7 +44,7 @@ pub(crate) fn lire() -> Result<Option<Lecture>, crate::modele::raison::Echec> {
 /// L'horloge de LastScan : CLOCK_BOOTTIME, en millisecondes (elle avance aussi pendant la veille).
 fn maintenant_ms() -> Option<u64> {
     let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-    // SAFETY : clock_gettime écrit dans une structure à nous, vivante pendant l'appel ; l'horloge existe depuis
+    // SAFETY: clock_gettime écrit dans une structure à nous, vivante pendant l'appel ; l'horloge existe depuis
     // Linux 2.6.39, et un échec est vérifié avant de lire.
     if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &raw mut t) } != 0 {
         return None;

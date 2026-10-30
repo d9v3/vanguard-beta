@@ -10,7 +10,7 @@ use super::*;
 /// personne de connu) : Vanguard y refuse à raison toute extension ; ces essais n'ont alors rien à montrer.
 #[cfg(unix)]
 fn en_root() -> bool {
-    // SAFETY : geteuid ne prend aucun argument, ne touche aucune mémoire et ne peut pas échouer.
+    // SAFETY: geteuid ne prend aucun argument, ne touche aucune mémoire et ne peut pas échouer.
     unsafe { libc::geteuid() == 0 }
 }
 

@@ -10,7 +10,8 @@
 # La CI lance ce même script (.github/workflows/ci.yml) : une seule logique, ici.
 # Chaque cible de compilation a sa chaîne (clippy, puis ses tests) et les quatre tournent en même temps : cargo garde
 # un dossier par cible, elles ne s'attendent presque pas. À la fin, une ligne par étape ; le code de sortie dit si tout
-# est vert.
+# est vert. Chaque cargo compile avec --locked : un Cargo.lock qui ne suit plus Cargo.toml est une erreur, jamais
+# réécrit en silence avec d'autres versions que celles que cargo deny et cargo audit ont jugées.
 #   outils/verifier.sh               tout
 #   outils/verifier.sh --rapide      mise en forme, clippy et tests Linux seulement
 #   outils/verifier.sh --sans-wine   tout, sauf les tests Windows
@@ -83,8 +84,8 @@ clippy() {
     *-apple-darwin)
       local v=${1//-/_}
       env "CC_$v=clang" "CFLAGS_$v=-ffreestanding -nostdlibinc -DRING_CORE_NOSTDLIBINC -I$PWD/outils/mac-entetes" \
-        cargo clippy -q --all-targets --target "$1" -- -D warnings ;;
-    *) cargo clippy -q --all-targets --target "$1" -- -D warnings ;;
+        cargo clippy -q --locked --all-targets --target "$1" -- -D warnings ;;
+    *) cargo clippy -q --locked --all-targets --target "$1" -- -D warnings ;;
   esac
 }
 
@@ -96,7 +97,7 @@ corpus() {
   local systeme=$1 cible=()
   [[ $systeme == windows ]] && cible=(--target x86_64-pc-windows-gnu)
   shift
-  "$@" cargo test -q --bin vanguard "${cible[@]}" modele::corpus:: -- --nocapture >"$TRAVAIL/corpus-$systeme.txt" 2>&1
+  "$@" cargo test -q --locked --bin vanguard "${cible[@]}" modele::corpus:: -- --nocapture >"$TRAVAIL/corpus-$systeme.txt" 2>&1
   local code=$?
   cat "$TRAVAIL/corpus-$systeme.txt"
   ((code == 0)) || return 1
@@ -133,9 +134,9 @@ sautes() { echo "$TRAVAIL/sautes-$1.txt"; }
 # test au lieu de le dire sauté), sauf en CI, où les runners n'ouvrent pas le connecteur de processus.
 tests_linux() {
   if [[ $MODE == --ci ]]; then
-    VANGUARD_TESTS_SAUTES=$(sautes tests-linux) cargo test -q
+    VANGUARD_TESTS_SAUTES=$(sautes tests-linux) cargo test -q --locked
   else
-    VANGUARD_TESTS_SAUTES=$(sautes tests-linux) VANGUARD_EXIGER_VEILLEUR=1 cargo test -q
+    VANGUARD_TESTS_SAUTES=$(sautes tests-linux) VANGUARD_EXIGER_VEILLEUR=1 cargo test -q --locked
   fi
 }
 
@@ -150,7 +151,7 @@ tests_wine() {
   local f
   f=$(sautes tests-windows)
   WINEPREFIX=$prefixe WINEDEBUG=-all CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=$WINE \
-    VANGUARD_TESTS_SAUTES="Z:${f//\//\\}" cargo test -q --target x86_64-pc-windows-gnu
+    VANGUARD_TESTS_SAUTES="Z:${f//\//\\}" cargo test -q --locked --target x86_64-pc-windows-gnu
   resultat=$?
   # Le lanceur de la clé dans le même préfixe, déjà prêt (son faux powershell.exe y remplace celui de Wine).
   local lanceur
@@ -221,7 +222,7 @@ EOF
 hors_ligne() {
   unshare -rn true 2>/dev/null || { echo "espaces de noms d'utilisateur indisponibles"; return 2; }
   VANGUARD_TESTS_SAUTES=$(sautes tests-hors-ligne) \
-    unshare -rn sh -c 'ip link set lo up && VANGUARD_HORS_LIGNE=1 exec cargo test -q --offline'
+    unshare -rn sh -c 'ip link set lo up && VANGUARD_HORS_LIGNE=1 exec cargo test -q --locked --offline'
 }
 
 rejeu_powershell() {
@@ -241,10 +242,10 @@ extensions() {
   local cible=${CARGO_TARGET_DIR:-$PWD/target}/extensions m
   for m in extensions/sdk/Cargo.toml extensions/exemples/rust-exemple/Cargo.toml; do
     CARGO_TARGET_DIR=$cible cargo fmt --check --manifest-path "$m" &&
-      CARGO_TARGET_DIR=$cible cargo clippy -q --all-targets --manifest-path "$m" -- -D warnings || return 1
+      CARGO_TARGET_DIR=$cible cargo clippy -q --locked --all-targets --manifest-path "$m" -- -D warnings || return 1
   done
-  CARGO_TARGET_DIR=$cible cargo test -q --manifest-path extensions/sdk/Cargo.toml &&
-    CARGO_TARGET_DIR=$cible cargo build -q --manifest-path extensions/exemples/rust-exemple/Cargo.toml
+  CARGO_TARGET_DIR=$cible cargo test -q --locked --manifest-path extensions/sdk/Cargo.toml &&
+    CARGO_TARGET_DIR=$cible cargo build -q --locked --manifest-path extensions/exemples/rust-exemple/Cargo.toml
 }
 
 scripts_shell() { find outils extensions -name '*.sh' -print0 | xargs -0 -n1 bash -n; }
@@ -310,9 +311,35 @@ textes() {
   python3 outils/textes.py
 }
 
+# Les workflows de GitHub (.github/workflows) relus par zizmor : actions non épinglées, permissions trop larges,
+# texte d'un ticket ou d'un nom de branche collé dans un script, jeton laissé dans .git/config, cache empoisonnable…
+# Tout constat fait échouer ; une exception se justifie sur sa ligne (`# zizmor: ignore[règle] raison`). Hors ligne
+# et sans jeton : sinon zizmor interroge GitHub de lui-même, et son verdict changerait avec le réseau. Sautée sans
+# zizmor (pacman -S zizmor), sauf en CI, qui le pose par install-action (version épinglée) : là, son absence échoue,
+# pour qu'une liste d'install-action changée ne laisse pas la CI verte sans rien relire.
+workflows() {
+  if ! command -v zizmor >/dev/null; then
+    echo "zizmor absent (pacman -S zizmor)"
+    [[ $MODE == --ci ]] && return 1
+    return "$SAUTEE"
+  fi
+  zizmor --version
+  env -u GH_TOKEN -u GITHUB_TOKEN -u ZIZMOR_GITHUB_TOKEN zizmor --offline --no-progress --format plain .github/workflows
+}
+
+# Les nomenclatures (SBOM) des programmes publiés (outils/sbom.sh), faites deux fois : elles doivent sortir, sans
+# chemin de cette machine, et identiques d'une fois à l'autre (le Mac de GitHub fait les mêmes octets, que
+# outils/publier-version.sh compare). Sautée sans cargo-cyclonedx 0.5.9, celui qu'épingle macos.yml.
+nomenclatures() {
+  [[ $(cargo cyclonedx --version 2>/dev/null) == *" 0.5.9" ]] ||
+    { echo "cargo-cyclonedx 0.5.9 absent (cargo install --locked cargo-cyclonedx@0.5.9)"; return "$SAUTEE"; }
+  bash outils/sbom.sh "$TRAVAIL/sbom-1" >/dev/null && bash outils/sbom.sh "$TRAVAIL/sbom-2" >/dev/null &&
+    diff -r "$TRAVAIL/sbom-1" "$TRAVAIL/sbom-2"
+}
+
 # La documentation du code (cargo doc) sans aucun avertissement : un `<pid>` pris pour une balise HTML ou un
 # `[Install]` pris pour un lien se voit ici plutôt que dans une page cassée.
-documentation() { RUSTDOCFLAGS="-D warnings" cargo doc -q --no-deps; }
+documentation() { RUSTDOCFLAGS="-D warnings" cargo doc -q --locked --no-deps; }
 
 if [[ -z $SEULEMENT ]] && ! etape mise-en-forme cargo fmt --check; then
   echo "✖ mise en forme : lancer cargo fmt"
@@ -348,6 +375,8 @@ if [[ $MODE != --rapide ]]; then
   etape python scripts_python &
   etape liens python3 outils/liens.py --hors-ligne &
   etape carte-attack python3 outils/couverture-attack.py --verifier &
+  etape workflows workflows &
+  etape nomenclatures nomenclatures &
   etape documentation documentation &
   etape textes textes &
   etape dependances dependances &
@@ -461,6 +490,8 @@ if [[ $MODE != --rapide ]]; then
   ligne python "scripts Python"
   ligne liens "liens internes"
   ligne carte-attack "carte ATT&CK à jour (COUVERTURE-ATTACK.md)"
+  ligne workflows "workflows de GitHub (zizmor)"
+  ligne nomenclatures "nomenclatures (SBOM)"
   ligne documentation "documentation du code (cargo doc)"
   ligne textes "textes FR/EN"
   [[ -f $TRAVAIL/textes.log ]] && grep -E '^(perdues|nouvelles) : \[[^]]' "$TRAVAIL/textes.log" | cut -c1-200 | sed 's/^/      /'

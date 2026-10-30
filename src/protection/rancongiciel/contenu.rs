@@ -338,7 +338,7 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         let tube = d.join("p.docx");
         let c = std::ffi::CString::new(tube.to_string_lossy().as_bytes()).unwrap();
-        // SAFETY : mkfifo lit un chemin terminé par un zéro, possédé par `c` jusqu'au retour.
+        // SAFETY: mkfifo lit un chemin terminé par un zéro, possédé par `c` jusqu'au retour.
         if unsafe { libc::mkfifo(c.as_ptr(), 0o600) } != 0 {
             let _ = std::fs::remove_dir_all(&d);
             return crate::essais::saute("mkfifo indisponible ici");

@@ -69,7 +69,7 @@ pub(crate) fn cartes() -> Option<Vec<Carte>> {
         // u64 : le tampon est aligné comme les structures que Windows y écrit.
         let mut tampon = vec![0u64; usize::try_from(taille).ok()?.div_ceil(8)];
         let mut ecrit = u32::try_from(tampon.len() * 8).ok()?;
-        // SAFETY : Windows écrit au plus `ecrit` octets dans `tampon`, qui les a ; il y met à jour `ecrit`.
+        // SAFETY: Windows écrit au plus `ecrit` octets dans `tampon`, qui les a ; il y met à jour `ecrit`.
         let code = unsafe {
             GetAdaptersAddresses(
                 0,

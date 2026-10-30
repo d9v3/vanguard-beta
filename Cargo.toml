@@ -131,6 +131,11 @@ unwrap_used = "warn"
 expect_used = "warn"
 panic = "warn"
 indexing_slicing = "warn"
+# Chaque bloc `unsafe` et chaque `unsafe impl` dit pourquoi il est sûr, par un `// SAFETY:` juste au-dessus : ce que
+# la relecture d'un bloc doit vérifier est écrit là, et un bloc ajouté sans raison ne passe plus. Un tel commentaire
+# posé sur du code sûr est refusé aussi : il ferait croire à une garantie qui n'existe pas.
+undocumented_unsafe_blocks = "warn"
+unnecessary_safety_comment = "warn"
 
 # `fuzzing` : posé par cargo-fuzz pour le banc de fuzz/, qui inclut des modules de src/ par leur chemin (sqlite.rs
 # y ouvre sa lecture des colonnes, réservée à macOS ailleurs). Déclaré pour que la compilation de Vanguard ne le

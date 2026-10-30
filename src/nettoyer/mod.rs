@@ -200,7 +200,7 @@ pub fn lectures_datees(chemin: &Path) -> bool {
         return false;
     };
     let mut s = std::mem::MaybeUninit::<libc::statfs>::uninit();
-    // SAFETY : `c` est une chaîne C valide pendant tout l'appel ; statfs remplit `s` en entier quand elle réussit
+    // SAFETY: `c` est une chaîne C valide pendant tout l'appel ; statfs remplit `s` en entier quand elle réussit
     // (retour 0), et `s` n'est lue qu'après.
     let s = unsafe {
         if libc::statfs(c.as_ptr(), s.as_mut_ptr()) != 0 {

@@ -92,6 +92,14 @@ Par exemple :
   plus ancienne, ou dont la taille ou l'empreinte diffère.
 - **Compilation reproductible** des programmes Linux et Windows, vérifiée la nuit sur GitHub quand le code a changé :
   le même code, compilé deux fois, donne exactement le même programme.
+- **Nomenclatures (SBOM) et attestation** : chaque page de version joint la nomenclature CycloneDX de chaque
+  programme (toutes les dépendances compilées, versions et licences). Le programme macOS, compilé par GitHub, et ces
+  nomenclatures y sont attestés (Sigstore), à vérifier avec la GitHub CLI connectée :
+  `gh attestation verify vanguard-macos -R d9v3/vanguard-beta --signer-workflow d9v3/vanguard-beta/.github/workflows/macos.yml --source-ref refs/heads/master`.
+  Les nomenclatures Linux et Windows décrivent leur code, pas le fichier publié ; ces deux programmes, compilés par
+  l'auteur, ne sont pas attestés : la mise à jour intégrée les vérifie par la signature Ed25519 ci-dessus.
+- **Workflows de GitHub** relus par [zizmor](https://github.com/zizmorcore/zizmor) à chaque vérification (injections
+  de gabarit, déclencheurs dangereux, jetons laissés dans les extractions), et leurs actions épinglées par commit.
 
 ---
 
@@ -186,3 +194,11 @@ For example:
   older, or whose size or checksum differs.
 - **Reproducible build** of the Linux and Windows programs, checked nightly on GitHub when the code changed: the same
   code, built twice, gives exactly the same program.
+- **SBOMs and attestation**: each release page includes the CycloneDX bill of materials of each program (every
+  compiled dependency, versions and licenses). The macOS program, built by GitHub, and these SBOMs are attested there
+  (Sigstore); check with the GitHub CLI logged in:
+  `gh attestation verify vanguard-macos -R d9v3/vanguard-beta --signer-workflow d9v3/vanguard-beta/.github/workflows/macos.yml --source-ref refs/heads/master`.
+  The Linux and Windows SBOMs describe their code, not the published file; these two programs, built by the author,
+  are not attested: the built-in update checks them with the Ed25519 signature above.
+- **GitHub workflows** checked by [zizmor](https://github.com/zizmorcore/zizmor) at every verification (template
+  injections, dangerous triggers, tokens left in checkouts), and their actions pinned by commit.

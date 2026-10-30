@@ -64,7 +64,7 @@ unsafe fn texte(p: *const u16) -> String {
         return String::new();
     }
     let mut n = 0;
-    // SAFETY : la borne est testée avant chaque lecture ; le texte se termine par un zéro (contrat de l'appelant).
+    // SAFETY: la borne est testée avant chaque lecture ; le texte se termine par un zéro (contrat de l'appelant).
     unsafe {
         while n < 32_767 && *p.add(n) != 0 {
             n += 1;
@@ -84,7 +84,7 @@ pub(crate) fn imprimantes() -> Vec<Imprimante> {
     const TRAVAIL_HORS_LIGNE: u32 = 0x400;
     let defaut = imprimante_par_defaut();
     let (mut requis, mut rendus) = (0u32, 0u32);
-    // SAFETY : premier appel sans tampon pour la taille (refus attendu) ; le second écrit au plus `taille` octets dans
+    // SAFETY: premier appel sans tampon pour la taille (refus attendu) ; le second écrit au plus `taille` octets dans
     // `tampon`, aligné pour les structures, qui les a. Les `rendus` structures sont lues seulement si elles tiennent
     // dans ce que Windows a écrit ; leurs textes vivent dans le tampon.
     unsafe {
@@ -141,7 +141,7 @@ pub(crate) fn imprimantes() -> Vec<Imprimante> {
 /// Le nom de l'imprimante par défaut de ce compte ; `None` s'il n'y en a pas.
 fn imprimante_par_defaut() -> Option<String> {
     let mut taille = 0u32;
-    // SAFETY : premier appel sans tampon pour la taille en caractères (refus attendu) ; le second écrit au plus
+    // SAFETY: premier appel sans tampon pour la taille en caractères (refus attendu) ; le second écrit au plus
     // `taille` caractères dans `nom`, qui les a.
     unsafe {
         GetDefaultPrinterW(std::ptr::null_mut(), &raw mut taille);

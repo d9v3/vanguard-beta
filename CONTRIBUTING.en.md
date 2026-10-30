@@ -225,13 +225,15 @@ the Windows virtual machine, `TESTER-VANGUARD.bat` (dropped there by `deployer.s
 
 macOS: built and tested on a GitHub Mac (`.github/workflows/macos.yml`, universal Apple Silicon + Intel binary),
 every night if the code changed or on demand (`gh workflow run macos.yml`). `deployer.sh` fetches the latest
-successful build for the key.
+successful build for the key. On master it also produces the SBOMs (CycloneDX, `outils/sbom.sh`), and a separate
+job, `attester`, attests the program and these SBOMs (actions/attest, Sigstore) without running any repository code.
 
 Continuous integration (`.github/workflows/ci.yml`): on each push to master and each pull request,
 `outils/verifier.sh --ci`, the same check as on the author's computer except Wine, then the check-up on real
 distributions; a real Windows (PowerShell, registry) on each push, each pull request, every night if the code
 changed (`.github/hors-code.txt`) and on demand (`gh workflow run ci.yml`), with the reproducible build and the
-delivered .exe (MinGW) tried on Windows. Every night: cargo audit, cargo deny, and five minutes of fuzzing per
+delivered .exe (MinGW) tried on Windows. `verifier.sh` also checks the workflows with zizmor (offline) and builds
+everything with `--locked`. Every night: cargo audit, cargo deny, and five minutes of fuzzing per
 target. The repository is public: Linux and Windows minutes do not count.
 
 Skipped tests: a test that cannot run on a computer (missing system tool, unreachable registry, root of a namespace)
@@ -319,7 +321,9 @@ a program that still contains the home folder).
 ## Publishing a version
 
 `outils/publier-version.sh` creates the version's GitHub release with the three programs
-(`vanguard-windows-x86_64.exe`, `vanguard-linux-x86_64`, `vanguard-macos`), their SHA-256 checksums and, as notes, the
+(`vanguard-windows-x86_64.exe`, `vanguard-linux-x86_64`, `vanguard-macos`), their SHA-256 checksums, their SBOMs
+(`vanguard-<system>.cdx.json`, made by `outils/sbom.sh`, which needs cargo-cyclonedx 0.5.9: identical to the GitHub
+Mac's, whose attestation is checked before publishing) and, as notes, the
 commit of each version since the previous release (title and bullets), the newest first; the README's download
 links always point to the latest one. `--notes` shows these notes without publishing anything.
 

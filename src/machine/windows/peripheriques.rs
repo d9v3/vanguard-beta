@@ -80,7 +80,7 @@ pub(crate) fn presents(classe: &Guid) -> Option<Vec<Peripherique>> {
     const PILOTE: u32 = 0x9;
     const NOM_CONVIVIAL: u32 = 0xC;
     const DEMARRE: u32 = 0x8;
-    // SAFETY : la classe vit pendant l'appel ; la liste rendue (refus = INVALID_HANDLE_VALUE, vérifié) est détruite une
+    // SAFETY: la classe vit pendant l'appel ; la liste rendue (refus = INVALID_HANDLE_VALUE, vérifié) est détruite une
     // seule fois, à la fin. Chaque `InfoAppareil` est initialisé avec sa taille, comme SetupAPI l'exige.
     unsafe {
         let liste = SetupDiGetClassDevsW(classe, std::ptr::null(), std::ptr::null_mut(), PRESENTS);
@@ -120,7 +120,7 @@ pub(crate) fn presents(classe: &Guid) -> Option<Vec<Peripherique>> {
 unsafe fn propriete(liste: *mut c_void, info: &mut InfoAppareil, propriete: u32) -> Option<String> {
     let mut requise = 0u32;
     let mut sorte = 0u32;
-    // SAFETY : premier appel sans tampon pour la taille en octets (refus attendu) ; le second écrit au plus `taille`
+    // SAFETY: premier appel sans tampon pour la taille en octets (refus attendu) ; le second écrit au plus `taille`
     // octets dans `tampon`, qui les a, alignés pour des caractères UTF-16.
     unsafe {
         SetupDiGetDeviceRegistryPropertyW(

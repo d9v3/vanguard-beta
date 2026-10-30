@@ -272,7 +272,7 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         let tube = d.join("outil");
         let c = std::ffi::CString::new(tube.as_os_str().as_encoded_bytes()).unwrap();
-        // SAFETY : `c` est une chaîne terminée par un zéro, vivante pendant l'appel ; mkfifo ne fait que la lire.
+        // SAFETY: `c` est une chaîne terminée par un zéro, vivante pendant l'appel ; mkfifo ne fait que la lire.
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
         let debut = std::time::Instant::now();
         assert_eq!(hacher_ordinaire(&tube), None);

@@ -33,12 +33,12 @@ fn hors_windows(dossier: &str) -> bool {
 }
 
 fn lire() -> windows::core::Result<Vec<String>> {
-    // SAFETY : COM est initialisé dans ce fil (par `wmi::com`) ; TaskScheduler est la classe du planificateur.
+    // SAFETY: COM est initialisé dans ce fil (par `wmi::com`) ; TaskScheduler est la classe du planificateur.
     let service: ITaskService = unsafe { CoCreateInstance(&TaskScheduler, None, CLSCTX_INPROC_SERVER) }?;
     let vide = VARIANT::default();
-    // SAFETY : VARIANT vides = cet ordinateur, le compte qui lance.
+    // SAFETY: VARIANT vides = cet ordinateur, le compte qui lance.
     unsafe { service.Connect(&vide, &vide, &vide, &vide) }?;
-    // SAFETY : service connecté ; chemin BSTR valide pendant l'appel.
+    // SAFETY: service connecté ; chemin BSTR valide pendant l'appel.
     let racine = unsafe { service.GetFolder(&BSTR::from(r"\")) }?;
     let mut lignes = Vec::new();
     let mut a_lire: Vec<ITaskFolder> = vec![racine];
@@ -49,7 +49,7 @@ fn lire() -> windows::core::Result<Vec<String>> {
         if lus > DOSSIERS_MAX {
             return Err(windows::core::Error::empty());
         }
-        // SAFETY : dossier est une interface vivante rendue par le planificateur.
+        // SAFETY: dossier est une interface vivante rendue par le planificateur.
         let chemin = unsafe { dossier.Path() }?.to_string();
         if !hors_windows(&chemin) {
             dossier_de_windows = true;
@@ -60,7 +60,7 @@ fn lire() -> windows::core::Result<Vec<String>> {
         } else {
             format!("{chemin}\\")
         };
-        // SAFETY : dossier vivant ; les collections sont indexées de 1 à Count, bornes lues avant chaque accès.
+        // SAFETY: dossier vivant ; les collections sont indexées de 1 à Count, bornes lues avant chaque accès.
         unsafe {
             let taches = dossier.GetTasks(TASK_ENUM_HIDDEN.0)?;
             for i in 1..=taches.Count()? {
@@ -109,7 +109,7 @@ pub(crate) fn lancements() -> Option<Vec<(String, String)>> {
     wmi::com("Tâches planifiées", "ITaskService", || {
         let mut lignes = Vec::new();
         parcourir(|tache| {
-            // SAFETY : tâche vivante rendue par le planificateur, le temps de cet appel ; ses actions sont indexées de
+            // SAFETY: tâche vivante rendue par le planificateur, le temps de cet appel ; ses actions sont indexées de
             // 1 à Count, lu avant.
             unsafe {
                 if tache.State()? == TASK_STATE_DISABLED {
@@ -165,7 +165,7 @@ pub(crate) fn etat(noms: &[&str]) -> Option<EtatTache> {
     wmi::com("Tâches planifiées", "ITaskService", move || {
         let mut trouve = EtatTache::Absente;
         parcourir(|tache| {
-            // SAFETY : tâche vivante rendue par le planificateur, le temps de cet appel.
+            // SAFETY: tâche vivante rendue par le planificateur, le temps de cet appel.
             let (nom, active) = unsafe { (tache.Name()?.to_string(), tache.State()? != TASK_STATE_DISABLED) };
             if noms.contains(&nom.to_lowercase()) {
                 if active {
@@ -188,7 +188,7 @@ pub(crate) fn definitions(noms: &[&str]) -> Option<Vec<(String, Definition)>> {
     wmi::com("Tâches planifiées", "ITaskService", move || {
         let mut trouvees = Vec::new();
         parcourir(|tache| {
-            // SAFETY : tâche vivante rendue par le planificateur, le temps de cet appel.
+            // SAFETY: tâche vivante rendue par le planificateur, le temps de cet appel.
             let nom = unsafe { tache.Name() }?.to_string();
             if noms.contains(&nom.to_lowercase()) {
                 trouvees.push((nom, definition(tache)?));
@@ -207,9 +207,9 @@ pub(crate) fn xml(nom: &str) -> Option<String> {
     wmi::com("Tâches planifiées", "ITaskService", move || {
         let mut trouve = None;
         parcourir(|tache| {
-            // SAFETY : tâche vivante rendue par le planificateur, le temps de cet appel.
+            // SAFETY: tâche vivante rendue par le planificateur, le temps de cet appel.
             if unsafe { tache.Name() }?.to_string().to_lowercase() == nom {
-                // SAFETY : la même tâche vivante.
+                // SAFETY: la même tâche vivante.
                 trouve = Some(unsafe { tache.Xml() }?.to_string());
             }
             Ok(())
@@ -222,7 +222,7 @@ pub(crate) fn xml(nom: &str) -> Option<String> {
 /// Ce que lance une tâche (sa première action qui lance un programme), si elle part dès que possible après un
 /// passage manqué, si elle a un déclencheur à l'ouverture de session, et si elle est active.
 fn definition(tache: &IRegisteredTask) -> windows::core::Result<Definition> {
-    // SAFETY : tâche vivante ; chaque sortie est une variable locale valide pendant l'appel ; les collections sont
+    // SAFETY: tâche vivante ; chaque sortie est une variable locale valide pendant l'appel ; les collections sont
     // indexées de 1 à Count, bornes lues avant chaque accès.
     unsafe {
         let active = tache.State()? != TASK_STATE_DISABLED;
@@ -266,12 +266,12 @@ fn definition(tache: &IRegisteredTask) -> windows::core::Result<Definition> {
 /// Chaque tâche hors \Microsoft\, cachées et désactivées comprises, donnée à `voir` ; une erreur de `voir` ou du
 /// planificateur arrête tout. Erreur aussi sans le dossier \Microsoft (voir `taches`).
 fn parcourir(mut voir: impl FnMut(&IRegisteredTask) -> windows::core::Result<()>) -> windows::core::Result<()> {
-    // SAFETY : COM est initialisé dans ce fil (par `wmi::com`) ; TaskScheduler est la classe du planificateur.
+    // SAFETY: COM est initialisé dans ce fil (par `wmi::com`) ; TaskScheduler est la classe du planificateur.
     let service: ITaskService = unsafe { CoCreateInstance(&TaskScheduler, None, CLSCTX_INPROC_SERVER) }?;
     let vide = VARIANT::default();
-    // SAFETY : VARIANT vides = cet ordinateur, le compte qui lance.
+    // SAFETY: VARIANT vides = cet ordinateur, le compte qui lance.
     unsafe { service.Connect(&vide, &vide, &vide, &vide) }?;
-    // SAFETY : service connecté ; chemin BSTR valide pendant l'appel.
+    // SAFETY: service connecté ; chemin BSTR valide pendant l'appel.
     let racine = unsafe { service.GetFolder(&BSTR::from(r"\")) }?;
     let mut a_lire: Vec<ITaskFolder> = vec![racine];
     let mut lus = 0;
@@ -281,12 +281,12 @@ fn parcourir(mut voir: impl FnMut(&IRegisteredTask) -> windows::core::Result<()>
         if lus > DOSSIERS_MAX {
             return Err(windows::core::Error::empty());
         }
-        // SAFETY : dossier est une interface vivante rendue par le planificateur.
+        // SAFETY: dossier est une interface vivante rendue par le planificateur.
         if !hors_windows(&unsafe { dossier.Path() }?.to_string()) {
             dossier_de_windows = true;
             continue;
         }
-        // SAFETY : dossier vivant ; les collections sont indexées de 1 à Count, bornes lues avant chaque accès.
+        // SAFETY: dossier vivant ; les collections sont indexées de 1 à Count, bornes lues avant chaque accès.
         unsafe {
             let taches = dossier.GetTasks(TASK_ENUM_HIDDEN.0)?;
             for i in 1..=taches.Count()? {

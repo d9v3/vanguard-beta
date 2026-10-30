@@ -54,7 +54,7 @@ fn vers_valeur(t: &CFType, profondeur: usize, compte: &mut usize, hors_bornes: &
     }
     // Un pointeur d'une liste ou d'un dictionnaire, en CFType retenu (« Get » : la liste garde le sien).
     let element = |p: *const c_void| -> Option<CFType> {
-        // SAFETY : un élément non nul d'une liste ou d'un dictionnaire de CoreFoundation, vivant tant que son
+        // SAFETY: un élément non nul d'une liste ou d'un dictionnaire de CoreFoundation, vivant tant que son
         // contenant l'est ; wrap_under_get_rule le retient pour la durée de l'enveloppe.
         (!p.is_null()).then(|| unsafe { CFType::wrap_under_get_rule(p) })
     };
@@ -120,10 +120,10 @@ fn valeur(t: &CFType) -> Option<Valeur> {
 /// Une session du magasin dynamique de configd. `None` : configd ne répond pas.
 fn magasin() -> Option<SCDynamicStore> {
     let nom = CFString::from_static_string(NOM);
-    // SAFETY : allocateur nul = celui par défaut ; sans rappel ni contexte. Le magasin rendu est à libérer : son
+    // SAFETY: allocateur nul = celui par défaut ; sans rappel ni contexte. Le magasin rendu est à libérer : son
     // enveloppe le fait (« Create »).
     let brut = unsafe { SCDynamicStoreCreate(std::ptr::null(), nom.as_concrete_TypeRef(), None, std::ptr::null_mut()) };
-    // SAFETY : non nul, créé pour nous.
+    // SAFETY: non nul, créé pour nous.
     (!brut.is_null()).then(|| unsafe { SCDynamicStore::wrap_under_create_rule(brut) })
 }
 
@@ -277,25 +277,25 @@ pub(crate) struct Service {
 
 /// Une chaîne « Get » de SystemConfiguration en texte ; `None` : pointeur nul.
 fn texte_get(p: CFStringRef) -> Option<String> {
-    // SAFETY : non nul (vérifié), une CFString que son propriétaire garde vivante ; retenue par l'enveloppe.
+    // SAFETY: non nul (vérifié), une CFString que son propriétaire garde vivante ; retenue par l'enveloppe.
     (!p.is_null()).then(|| unsafe { CFString::wrap_under_get_rule(p) }.to_string())
 }
 
 /// Les serveurs DNS réglés pour un service, d'après son protocole DNS (SCNetworkServiceCopyProtocol).
 fn dns_du_service(service: sc::SCNetworkServiceRef) -> Vec<IpAddr> {
-    // SAFETY : service vient d'une liste vivante de SCNetworkSetCopyServices ; la constante est celle du framework.
+    // SAFETY: service vient d'une liste vivante de SCNetworkSetCopyServices ; la constante est celle du framework.
     let protocole = unsafe { sc::SCNetworkServiceCopyProtocol(service, kSCNetworkProtocolTypeDNS) };
     if protocole.is_null() {
         return Vec::new();
     }
-    // SAFETY : créé pour nous (« Copy ») : l'enveloppe le libère (CFRelease) en sortant.
+    // SAFETY: créé pour nous (« Copy ») : l'enveloppe le libère (CFRelease) en sortant.
     let garde = unsafe { CFType::wrap_under_create_rule(protocole.cast()) };
-    // SAFETY : protocole est vivant (garde) ; la configuration rendue lui appartient (« Get »).
+    // SAFETY: protocole est vivant (garde) ; la configuration rendue lui appartient (« Get »).
     let config = unsafe { sc::SCNetworkProtocolGetConfiguration(protocole) };
     let v = if config.is_null() {
         None
     } else {
-        // SAFETY : non nul, un dictionnaire que le protocole garde vivant ; retenu par l'enveloppe.
+        // SAFETY: non nul, un dictionnaire que le protocole garde vivant ; retenu par l'enveloppe.
         valeur(&unsafe { CFType::wrap_under_get_rule(config.cast()) })
     };
     drop(garde);
@@ -306,26 +306,26 @@ fn dns_du_service(service: sc::SCNetworkServiceRef) -> Vec<IpAddr> {
 /// qui manquent à l'ordre à la fin. `None` : réglages illisibles.
 pub(crate) fn services() -> Option<Vec<Service>> {
     let nom = CFString::from_static_string(NOM);
-    // SAFETY : allocateur nul = celui par défaut, identifiant nul = les réglages du système ; à libérer (« Create »).
+    // SAFETY: allocateur nul = celui par défaut, identifiant nul = les réglages du système ; à libérer (« Create »).
     let prefs = unsafe { SCPreferencesCreate(std::ptr::null(), nom.as_concrete_TypeRef(), std::ptr::null()) };
     if prefs.is_null() {
         return None;
     }
-    // SAFETY : créé pour nous : libéré en sortant.
+    // SAFETY: créé pour nous : libéré en sortant.
     let _prefs = unsafe { CFType::wrap_under_create_rule(prefs.cast()) };
-    // SAFETY : prefs est vivant ; le jeu rendu est à libérer (« Copy »), nul s'il n'y en a pas.
+    // SAFETY: prefs est vivant ; le jeu rendu est à libérer (« Copy »), nul s'il n'y en a pas.
     let jeu = unsafe { sc::SCNetworkSetCopyCurrent(prefs) };
     if jeu.is_null() {
         return None;
     }
-    // SAFETY : créé pour nous : libéré en sortant.
+    // SAFETY: créé pour nous : libéré en sortant.
     let _jeu = unsafe { CFType::wrap_under_create_rule(jeu.cast()) };
-    // SAFETY : jeu est vivant ; l'ordre lui appartient (« Get »), nul s'il n'est pas réglé.
+    // SAFETY: jeu est vivant ; l'ordre lui appartient (« Get »), nul s'il n'est pas réglé.
     let ordre_brut: CFArrayRef = unsafe { sc::SCNetworkSetGetServiceOrder(jeu) };
     let ordre: Vec<String> = if ordre_brut.is_null() {
         Vec::new()
     } else {
-        // SAFETY : non nul, une liste que le jeu garde vivante ; retenue par l'enveloppe.
+        // SAFETY: non nul, une liste que le jeu garde vivante ; retenue par l'enveloppe.
         let liste = unsafe { CFType::wrap_under_get_rule(ordre_brut.cast()) };
         valeur(&liste)
             .as_ref()
@@ -336,12 +336,12 @@ pub(crate) fn services() -> Option<Vec<Service>> {
             .map(str::to_string)
             .collect()
     };
-    // SAFETY : jeu est vivant ; la liste rendue est à libérer (« Copy »).
+    // SAFETY: jeu est vivant ; la liste rendue est à libérer (« Copy »).
     let brut = unsafe { sc::SCNetworkSetCopyServices(jeu) };
     if brut.is_null() {
         return None;
     }
-    // SAFETY : créée pour nous : libérée par l'enveloppe ; ses éléments sont des SCNetworkServiceRef.
+    // SAFETY: créée pour nous : libérée par l'enveloppe ; ses éléments sont des SCNetworkServiceRef.
     let liste: CFArray = unsafe { CFArray::wrap_under_create_rule(brut) };
     let mut services: Vec<Service> = Vec::new();
     for p in liste.get_all_values().into_iter().take(1000) {
@@ -349,7 +349,7 @@ pub(crate) fn services() -> Option<Vec<Service>> {
         if s.is_null() {
             continue;
         }
-        // SAFETY : s est un élément vivant de la liste ; les chaînes et la carte rendues lui appartiennent (« Get »).
+        // SAFETY: s est un élément vivant de la liste ; les chaînes et la carte rendues lui appartiennent (« Get »).
         let (id, nom, actif, carte) = unsafe {
             let carte = sc::SCNetworkServiceGetInterface(s);
             (

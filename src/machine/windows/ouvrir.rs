@@ -74,7 +74,7 @@ pub(crate) fn ouvrir(cible: &str, parametres: Option<&str>) {
     };
     let fil = std::thread::Builder::new().name("ouvrir".into()).spawn(move || {
         let verbe: Vec<u16> = "open\0".encode_utf16().collect();
-        // SAFETY : fil créé pour cette seule ouverture ; l'appartement n'est rendu que s'il a été ouvert ici.
+        // SAFETY: fil créé pour cette seule ouverture ; l'appartement n'est rendu que s'il a été ouvert ici.
         let com =
             unsafe { CoInitializeEx(None, COINIT(COINIT_APARTMENTTHREADED.0 | COINIT_DISABLE_OLE1DDE.0)) }.is_ok();
         let mut info = InfoOuverture {
@@ -94,14 +94,14 @@ pub(crate) fn ouvrir(cible: &str, parametres: Option<&str>) {
             icone: std::ptr::null_mut(),
             processus: std::ptr::null_mut(),
         };
-        // SAFETY : la structure est à nous, de la taille qu'elle annonce ; les textes qu'elle pointe sont à ce fil,
+        // SAFETY: la structure est à nous, de la taille qu'elle annonce ; les textes qu'elle pointe sont à ce fil,
         // terminés par un zéro et vivants pendant l'appel, synchrone avec SEE_MASK_NOASYNC. Sans
         // SEE_MASK_NOCLOSEPROCESS, aucune poignée n'est rendue.
         unsafe {
             ShellExecuteExW(&raw mut info);
         }
         if com {
-            // SAFETY : rend l'appartement ouvert par le CoInitializeEx réussi de ce même fil.
+            // SAFETY: rend l'appartement ouvert par le CoInitializeEx réussi de ce même fil.
             unsafe { CoUninitialize() };
         }
     });

@@ -241,11 +241,11 @@ unsafe fn texte_large(p: *const u16, max: usize) -> String {
         return String::new();
     }
     let mut fin = 0;
-    // SAFETY : voir la fonction ; la borne est testée avant la lecture.
+    // SAFETY: voir la fonction ; la borne est testée avant la lecture.
     while fin < max && unsafe { *p.add(fin) } != 0 {
         fin += 1;
     }
-    // SAFETY : les `fin` premiers caractères viennent d'être lus.
+    // SAFETY: les `fin` premiers caractères viennent d'être lus.
     String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(p, fin) })
 }
 
@@ -259,7 +259,7 @@ fn large(texte: &str) -> Vec<u16> {
 /// `sid` est nul ou pointe vers un SID valide.
 unsafe fn sid_texte(sid: *mut std::ffi::c_void) -> Option<String> {
     let mut texte: *mut u16 = std::ptr::null_mut();
-    // SAFETY : ConvertSidToStringSidW alloue une chaîne terminée par un zéro, lue puis rendue une seule fois.
+    // SAFETY: ConvertSidToStringSidW alloue une chaîne terminée par un zéro, lue puis rendue une seule fois.
     unsafe {
         if sid.is_null() || ConvertSidToStringSidW(sid, &raw mut texte) == 0 || texte.is_null() {
             return None;
@@ -296,7 +296,7 @@ fn comptes_natifs() -> Option<Vec<Compte>> {
     const COMPTE_DISPARU: u32 = 2221;
     let mut tampon: *mut std::ffi::c_void = std::ptr::null_mut();
     let (mut lus, mut total, mut reprise) = (0u32, 0u32, 0u32);
-    // SAFETY : niveau 0 : un tableau de `lus` pointeurs vers des noms (USER_INFO_0), alloué par Windows, lu tant
+    // SAFETY: niveau 0 : un tableau de `lus` pointeurs vers des noms (USER_INFO_0), alloué par Windows, lu tant
     // qu'il vit puis rendu une seule fois. Code non nul (sauf « il en reste », 234, qu'on n'accepte pas ici) : rien.
     let noms: Vec<String> = unsafe {
         let code = NetUserEnum(
@@ -325,7 +325,7 @@ fn comptes_natifs() -> Option<Vec<Compte>> {
     for nom in noms {
         let mut info: *mut std::ffi::c_void = std::ptr::null_mut();
         let nom_large = large(&nom);
-        // SAFETY : NetUserGetInfo niveau 4 écrit un USER_INFO_4 alloué par Windows (que `Utilisateur4` reproduit) ;
+        // SAFETY: NetUserGetInfo niveau 4 écrit un USER_INFO_4 alloué par Windows (que `Utilisateur4` reproduit) ;
         // son SID est dans le même bloc, converti avant de le rendre une seule fois.
         let compte = unsafe {
             let code = NetUserGetInfo(std::ptr::null(), nom_large.as_ptr(), 4, &raw mut info);
@@ -367,7 +367,7 @@ fn nom_du_groupe_des_administrateurs() -> Option<String> {
     let mut sid: *mut std::ffi::c_void = std::ptr::null_mut();
     let (mut nom, mut domaine) = (vec![0u16; 256], vec![0u16; 256]);
     let (mut taille_nom, mut taille_domaine, mut genre) = (256u32, 256u32, 0u32);
-    // SAFETY : ConvertStringSidToSidW alloue le SID (rendu par LocalFree) ; LookupAccountSidW écrit au plus les tailles
+    // SAFETY: ConvertStringSidToSidW alloue le SID (rendu par LocalFree) ; LookupAccountSidW écrit au plus les tailles
     // données dans les deux tampons, qui les ont.
     unsafe {
         if ConvertStringSidToSidW(large("S-1-5-32-544").as_ptr(), &raw mut sid) == 0 || sid.is_null() {
@@ -393,7 +393,7 @@ fn administrateurs_natifs() -> Option<Vec<String>> {
     let groupe = nom_du_groupe_des_administrateurs()?;
     let mut tampon: *mut std::ffi::c_void = std::ptr::null_mut();
     let (mut lus, mut total, mut reprise) = (0u32, 0u32, 0usize);
-    // SAFETY : niveau 3 : un tableau de `lus` pointeurs vers « domaine\nom » (LOCALGROUP_MEMBERS_INFO_3), alloué par
+    // SAFETY: niveau 3 : un tableau de `lus` pointeurs vers « domaine\nom » (LOCALGROUP_MEMBERS_INFO_3), alloué par
     // Windows, lu tant qu'il vit puis rendu une seule fois.
     unsafe {
         let code = NetLocalGroupGetMembers(
@@ -521,7 +521,7 @@ pub(crate) fn administrateurs_des_traces(separateur: char) -> Option<Vec<String>
     let ordinateur = std::env::var("COMPUTERNAME").unwrap_or_default();
     let mut tampon: *mut std::ffi::c_void = std::ptr::null_mut();
     let (mut lus, mut total, mut reprise) = (0u32, 0u32, 0usize);
-    // SAFETY : niveau 2 : un tableau de `lus` LOCALGROUP_MEMBERS_INFO_2 (`Membre2`), alloué par Windows, lu tant qu'il
+    // SAFETY: niveau 2 : un tableau de `lus` LOCALGROUP_MEMBERS_INFO_2 (`Membre2`), alloué par Windows, lu tant qu'il
     // vit puis rendu une seule fois ; chaque nom pointe dans le même bloc.
     unsafe {
         let code = NetLocalGroupGetMembers(
@@ -633,7 +633,7 @@ pub(super) fn lecture_native() -> Option<String> {
 /// Un niveau de NetUserModalsGet sur cet ordinateur ; `None` si Windows refuse.
 fn modales<T: Copy>(niveau: u32) -> Option<T> {
     let mut tampon: *mut u8 = std::ptr::null_mut();
-    // SAFETY : NetUserModalsGet (serveur nul : cet ordinateur) écrit dans `tampon` un bloc alloué par Windows au format
+    // SAFETY: NetUserModalsGet (serveur nul : cet ordinateur) écrit dans `tampon` un bloc alloué par Windows au format
     // du niveau demandé, que `T` reproduit (repr(C), champs de lmaccess.h) ; il est copié tant qu'il vit, puis rendu
     // une seule fois par NetApiBufferFree. Code non nul : rien n'a été alloué.
     unsafe {
@@ -831,7 +831,7 @@ mod tests {
             assert!(section(Some(t.as_str()), "USR").is_some());
         }
         let texte = [u16::from(b'a'), u16::from(b'b'), u16::from(b'c')];
-        // SAFETY : trois caractères sans zéro final, lus au plus sur trois.
+        // SAFETY: trois caractères sans zéro final, lus au plus sur trois.
         assert_eq!(unsafe { texte_large(texte.as_ptr(), 3) }, "abc");
     }
 

@@ -1504,7 +1504,7 @@ mod tests {
         assert!(Gvdb::ouvrir(&d.join("gros")).is_err());
         assert!(Gvdb::ouvrir(&d).is_err(), "un dossier");
         let tube = std::ffi::CString::new(d.join("tube").into_os_string().into_encoded_bytes()).unwrap();
-        // SAFETY : chemin terminé par un zéro, valable le temps de l'appel.
+        // SAFETY: chemin terminé par un zéro, valable le temps de l'appel.
         if unsafe { libc::mkfifo(tube.as_ptr(), 0o600) } == 0 {
             assert!(Gvdb::ouvrir(&d.join("tube")).is_err(), "un tube nommé");
         }

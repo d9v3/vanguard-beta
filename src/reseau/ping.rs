@@ -72,7 +72,7 @@ mod unix {
     use std::time::{Duration, Instant};
 
     pub(super) fn echo(cible: Ipv4Addr, delai: Duration) -> Option<bool> {
-        // SAFETY : socket ne lit aucun pointeur ; le descripteur rendu est vérifié, puis confié à OwnedFd, qui le
+        // SAFETY: socket ne lit aucun pointeur ; le descripteur rendu est vérifié, puis confié à OwnedFd, qui le
         // ferme une fois.
         let prise = unsafe {
             let fd = libc::socket(libc::AF_INET, libc::SOCK_DGRAM, libc::IPPROTO_ICMP);
@@ -103,7 +103,7 @@ mod unix {
             sin_len: u8::try_from(std::mem::size_of::<libc::sockaddr_in>()).ok()?,
         };
         let taille_adresse = libc::socklen_t::try_from(std::mem::size_of::<libc::sockaddr_in>()).ok()?;
-        // SAFETY : le paquet et l'adresse sont à nous, de la taille annoncée, vivants pendant l'appel.
+        // SAFETY: le paquet et l'adresse sont à nous, de la taille annoncée, vivants pendant l'appel.
         let envoye = unsafe {
             libc::sendto(
                 prise.as_raw_fd(),
@@ -137,7 +137,7 @@ mod unix {
             let ms = libc::c_int::try_from(reste.as_millis())
                 .unwrap_or(libc::c_int::MAX)
                 .max(1);
-            // SAFETY : une seule structure pollfd, à nous et vivante pendant l'appel.
+            // SAFETY: une seule structure pollfd, à nous et vivante pendant l'appel.
             match unsafe { libc::poll(&raw mut attente, 1, ms) } {
                 0 => return Some(false),
                 n if n < 0 => match std::io::Error::last_os_error().raw_os_error() {
@@ -155,7 +155,7 @@ mod unix {
                 sin_len: 0,
             };
             let mut taille_depuis = taille_adresse;
-            // SAFETY : le tampon et l'adresse sont à nous, de la taille annoncée, vivants pendant l'appel ; recvfrom
+            // SAFETY: le tampon et l'adresse sont à nous, de la taille annoncée, vivants pendant l'appel ; recvfrom
             // écrit au plus `tampon.len()` octets et au plus `taille_depuis` octets d'adresse. MSG_DONTWAIT : poll a
             // dit qu'un message attend, rien ne bloque au-delà du délai.
             let recu = unsafe {

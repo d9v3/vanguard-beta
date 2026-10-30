@@ -317,7 +317,7 @@ fn essayer(m: Methode, groupes: &[Vec<Ordre>]) -> Issue {
 /// l'assistant élevé, une seule demande pour tous. Une réponse par ordre, dans l'ordre reçu ; une demande refusée
 /// rend tout « non fait », sans redemander.
 pub(crate) fn appliquer(groupes: &[Vec<Ordre>]) -> Vec<Vec<Resultat>> {
-    // SAFETY : geteuid ne prend aucun argument et ne touche aucune mémoire.
+    // SAFETY: geteuid ne prend aucun argument et ne touche aucune mémoire.
     if unsafe { libc::geteuid() } == 0 {
         let juge = ordres::Juge::lire(None);
         // Les gestes viennent d'être montrés (`machine::lancer_les_ordres`) : seulement leur issue.
@@ -377,9 +377,9 @@ impl Inaccessible {
     fn poser() -> Inaccessible {
         #[cfg(target_os = "linux")]
         {
-            // SAFETY : prctl sans pointeur ; PR_GET_DUMPABLE rend 0 ou 1, PR_SET_DUMPABLE prend 0 ou 1.
+            // SAFETY: prctl sans pointeur ; PR_GET_DUMPABLE rend 0 ou 1, PR_SET_DUMPABLE prend 0 ou 1.
             let avant = unsafe { libc::prctl(libc::PR_GET_DUMPABLE) } == 1;
-            // SAFETY : voir ci-dessus.
+            // SAFETY: voir ci-dessus.
             unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) };
             Inaccessible(avant)
         }
@@ -394,7 +394,7 @@ impl Drop for Inaccessible {
     fn drop(&mut self) {
         #[cfg(target_os = "linux")]
         if self.0 {
-            // SAFETY : prctl sans pointeur.
+            // SAFETY: prctl sans pointeur.
             unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 1) };
         }
     }
@@ -407,7 +407,7 @@ pub(crate) fn executer(langue: Option<&str>, parent: Option<u32>) -> i32 {
     if let Some(l) = langue {
         crate::langue::forcer(l == "en");
     }
-    // SAFETY : geteuid ne prend aucun argument et ne touche aucune mémoire.
+    // SAFETY: geteuid ne prend aucun argument et ne touche aucune mémoire.
     if unsafe { libc::geteuid() } != 0 {
         eprintln!(
             "{}",
@@ -487,7 +487,7 @@ mod tests {
         assert!(!chemin_sur(&std::env::temp_dir().join("absent-vanguard")));
         let d = std::env::temp_dir().join(format!("vanguard-chemin-sur-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
-        // SAFETY : geteuid ne prend aucun argument et ne touche aucune mémoire.
+        // SAFETY: geteuid ne prend aucun argument et ne touche aucune mémoire.
         if unsafe { libc::geteuid() } != 0 {
             assert!(!chemin_sur(&d));
         }
@@ -501,14 +501,14 @@ mod tests {
     #[test]
     #[ignore = "lancé dans un processus à part par inaccessible_le_temps_du_dialogue"]
     fn inaccessible_dedans() {
-        // SAFETY : prctl sans pointeur.
+        // SAFETY: prctl sans pointeur.
         let avant = unsafe { libc::prctl(libc::PR_GET_DUMPABLE) };
         {
             let _g = Inaccessible::poser();
-            // SAFETY : voir ci-dessus.
+            // SAFETY: voir ci-dessus.
             assert_eq!(unsafe { libc::prctl(libc::PR_GET_DUMPABLE) }, 0);
         }
-        // SAFETY : voir ci-dessus.
+        // SAFETY: voir ci-dessus.
         assert_eq!(unsafe { libc::prctl(libc::PR_GET_DUMPABLE) }, avant);
     }
 
@@ -630,7 +630,7 @@ mod tests {
     /// Sous les essais, rien n'est jamais élevé pour de vrai : tout est « non fait », dit.
     #[test]
     fn jamais_d_elevation_dans_les_essais() {
-        // SAFETY : geteuid ne prend aucun argument et ne touche aucune mémoire.
+        // SAFETY: geteuid ne prend aucun argument et ne touche aucune mémoire.
         if unsafe { libc::geteuid() } == 0 {
             return crate::essais::saute("essais lancés en root : l'ordre se ferait ici");
         }

@@ -1115,7 +1115,7 @@ mod tests {
     fn releve_tube_ou_lien_ne_fige_rien() {
         let f = releve("tube");
         let c = std::ffi::CString::new(f.as_os_str().as_encoded_bytes()).unwrap();
-        // SAFETY : mkfifo reçoit un chemin terminé par zéro, qui vit le temps de l'appel.
+        // SAFETY: mkfifo reçoit un chemin terminé par zéro, qui vit le temps de l'appel.
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
         let debut = std::time::Instant::now();
         assert_eq!(blocages_en_place_de(&f), Vec::new());

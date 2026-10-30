@@ -294,7 +294,7 @@ mod systeme {
                 .join("hypr")
                 .join(signature)
                 .join(".socket.sock");
-            // SAFETY : getppid ne lit que le numéro du processus parent ; elle ne peut pas échouer.
+            // SAFETY: getppid ne lit que le numéro du processus parent ; elle ne peut pas échouer.
             let parent = i64::from(unsafe { libc::getppid() });
             let clients: Value = serde_json::from_str(&demander(&socket, "j/clients")?).ok()?;
             // Le terminal qui a lancé Vanguard lui-même : pas un shell entre eux. Une seule fenêtre à ce processus
@@ -458,25 +458,25 @@ mod systeme {
     impl Fenetre {
         pub(super) fn trouver() -> Option<Self> {
             let mut processus = [0u32; 4];
-            // SAFETY : la liste est un tableau à nous, sa taille passée avec lui ; la fonction ne fait qu'y écrire.
+            // SAFETY: la liste est un tableau à nous, sa taille passée avec lui ; la fonction ne fait qu'y écrire.
             let n = unsafe { GetConsoleProcessList(&mut processus) };
             // Seul dans sa console : ouverte pour lui (double-clic, raccourci), pas l'invite de commandes de quelqu'un.
             if n != 1 {
                 return None;
             }
-            // SAFETY : sans argument ; rend une fenêtre nulle sans console.
+            // SAFETY: sans argument ; rend une fenêtre nulle sans console.
             let console = unsafe { GetConsoleWindow() };
             if console.is_invalid() {
                 return None;
             }
             let mut classe = [0u16; 64];
-            // SAFETY : le tampon est à nous, sa taille passée avec lui ; la fenêtre vient d'être rendue par Windows.
+            // SAFETY: le tampon est à nous, sa taille passée avec lui ; la fenêtre vient d'être rendue par Windows.
             let n = unsafe { GetClassNameW(console, &mut classe) };
             let classe = String::from_utf16_lossy(classe.get(..usize::try_from(n).ok()?)?);
             match classe.as_str() {
                 "ConsoleWindowClass" => Some(Fenetre(console)),
                 "PseudoConsoleWindow" => {
-                    // SAFETY : une fenêtre valide ; rend elle-même si elle n'a pas de propriétaire.
+                    // SAFETY: une fenêtre valide ; rend elle-même si elle n'a pas de propriétaire.
                     let vraie = unsafe { GetAncestor(console, GA_ROOTOWNER) };
                     (!vraie.is_invalid() && vraie != console).then_some(Fenetre(vraie))
                 }
@@ -486,15 +486,15 @@ mod systeme {
 
         pub(super) fn mesurer(&self) -> Option<(Mesure, Zone)> {
             let mut r = RECT::default();
-            // SAFETY : `r` est à nous ; une fenêtre fermée entre-temps fait seulement échouer l'appel.
+            // SAFETY: `r` est à nous ; une fenêtre fermée entre-temps fait seulement échouer l'appel.
             unsafe { GetWindowRect(self.0, &raw mut r) }.ok()?;
-            // SAFETY : l'écran le plus proche existe toujours (MONITOR_DEFAULTTONEAREST).
+            // SAFETY: l'écran le plus proche existe toujours (MONITOR_DEFAULTTONEAREST).
             let ecran = unsafe { MonitorFromWindow(self.0, MONITOR_DEFAULTTONEAREST) };
             let mut info = MONITORINFO {
                 cbSize: u32::try_from(std::mem::size_of::<MONITORINFO>()).ok()?,
                 ..Default::default()
             };
-            // SAFETY : `info` est à nous, sa taille déclarée dans cbSize.
+            // SAFETY: `info` est à nous, sa taille déclarée dans cbSize.
             if !unsafe { GetMonitorInfoW(ecran, &raw mut info) }.as_bool() {
                 return None;
             }
@@ -509,7 +509,7 @@ mod systeme {
         }
 
         pub(super) fn placer(&self, place: Place, _actuelle: &Mesure) {
-            // SAFETY : une fenêtre fermée entre-temps fait seulement échouer l'appel ; rien n'est lu en retour.
+            // SAFETY: une fenêtre fermée entre-temps fait seulement échouer l'appel ; rien n'est lu en retour.
             let _ = unsafe {
                 SetWindowPos(
                     self.0,

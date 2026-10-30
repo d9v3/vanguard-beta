@@ -75,7 +75,7 @@ pub(crate) fn exporter(journal: &str, requete: &str, fichier: &Path, delai: Dura
     std::thread::Builder::new()
         .name("export-journal".into())
         .spawn(move || {
-            // SAFETY : session nulle (cet ordinateur) ; les trois textes sont à ce fil, terminés par un zéro et
+            // SAFETY: session nulle (cet ordinateur) ; les trois textes sont à ce fil, terminés par un zéro et
             // vivants pendant l'appel, synchrone ; GetLastError est lu juste après, dans le même fil.
             let code = unsafe {
                 if EvtExportLog(
@@ -105,7 +105,7 @@ pub(crate) fn exporter(journal: &str, requete: &str, fichier: &Path, delai: Dura
 /// accès refusé, ou une réponse d'un autre genre.
 pub(crate) fn taille(journal: &str) -> Option<u64> {
     let canal = large(journal)?;
-    // SAFETY : session nulle ; le nom est à nous, terminé par un zéro. La poignée rendue est vérifiée non nulle et
+    // SAFETY: session nulle ; le nom est à nous, terminé par un zéro. La poignée rendue est vérifiée non nulle et
     // fermée une fois, après la dernière lecture.
     unsafe {
         let poignee = EvtOpenLog(std::ptr::null_mut(), canal.as_ptr(), CANAL);

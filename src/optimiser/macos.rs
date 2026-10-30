@@ -52,7 +52,7 @@ static TEXTES: [PrefTexte; 1] = [PrefTexte {
 /// launchctl fait foi (outil gardé, §4) : le fichier dessous, /private/var/db/com.apple.xpc.launchd/disabled.<uid>.plist,
 /// ne se lit qu'en root, et son format n'est pas documenté. Lancé sans shell.
 fn agents_etats() -> Option<std::collections::HashMap<String, bool>> {
-    // SAFETY : getuid n'a ni argument ni échec possible.
+    // SAFETY: getuid n'a ni argument ni échec possible.
     let uid = unsafe { libc::getuid() };
     let r = crate::commande::lancer(
         Command::new("launchctl").args(["print-disabled", &format!("gui/{uid}")]),

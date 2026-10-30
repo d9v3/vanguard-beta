@@ -544,7 +544,7 @@ fn sysctl(nom: &str) -> Option<Vec<u8>> {
 fn sysctl_ou_vide(nom: &str) -> Option<Vec<u8>> {
     let nom = std::ffi::CString::new(nom).ok()?;
     let mut taille: libc::size_t = 0;
-    // SAFETY : nom est une chaîne C terminée par un nul ; sans tampon (pointeur nul), sysctlbyname n'écrit que la
+    // SAFETY: nom est une chaîne C terminée par un nul ; sans tampon (pointeur nul), sysctlbyname n'écrit que la
     // taille voulue dans `taille`.
     let code = unsafe {
         libc::sysctlbyname(
@@ -562,7 +562,7 @@ fn sysctl_ou_vide(nom: &str) -> Option<Vec<u8>> {
         return Some(Vec::new());
     }
     let mut tampon = vec![0u8; taille];
-    // SAFETY : tampon de `taille` octets, vivant pendant l'appel ; le noyau n'écrit pas au-delà et redit dans
+    // SAFETY: tampon de `taille` octets, vivant pendant l'appel ; le noyau n'écrit pas au-delà et redit dans
     // `taille` ce qu'il a écrit.
     let code = unsafe {
         libc::sysctlbyname(
@@ -629,7 +629,7 @@ pub fn nom_machine(cle: &str) -> Option<String> {
 /// Nom d'hôte, ce qu'affiche `hostname` (gethostname).
 pub fn nom_hote() -> Option<String> {
     let mut tampon = [0u8; 256];
-    // SAFETY : tampon de 256 octets vivant pendant l'appel ; gethostname n'écrit pas au-delà de la taille donnée.
+    // SAFETY: tampon de 256 octets vivant pendant l'appel ; gethostname n'écrit pas au-delà de la taille donnée.
     if unsafe { libc::gethostname(tampon.as_mut_ptr().cast(), tampon.len()) } != 0 {
         return None;
     }
@@ -644,10 +644,10 @@ pub(super) fn membres_admin() -> Option<Vec<String>> {
     let mut taille = 16 * 1024;
     loop {
         let mut tampon: Vec<libc::c_char> = vec![0; taille];
-        // SAFETY : une struct group faite de nombres et de pointeurs, que getgrnam_r remplit avant toute lecture.
+        // SAFETY: une struct group faite de nombres et de pointeurs, que getgrnam_r remplit avant toute lecture.
         let mut groupe: libc::group = unsafe { std::mem::zeroed() };
         let mut trouve: *mut libc::group = std::ptr::null_mut();
-        // SAFETY : le nom est une chaîne C terminée par un nul ; tampon, groupe et trouve vivent pendant l'appel, et
+        // SAFETY: le nom est une chaîne C terminée par un nul ; tampon, groupe et trouve vivent pendant l'appel, et
         // getgrnam_r n'écrit que dans les tailles données.
         let code = unsafe {
             libc::getgrnam_r(
@@ -666,7 +666,7 @@ pub(super) fn membres_admin() -> Option<Vec<String>> {
             return None;
         }
         let mut membres = Vec::new();
-        // SAFETY : gr_mem est un tableau de chaînes C terminé par un pointeur nul, rangé dans tampon, encore vivant ;
+        // SAFETY: gr_mem est un tableau de chaînes C terminé par un pointeur nul, rangé dans tampon, encore vivant ;
         // la borne du nombre de membres arrête un tableau sans fin.
         unsafe {
             let mut p = groupe.gr_mem;

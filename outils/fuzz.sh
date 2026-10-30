@@ -66,6 +66,10 @@ COMPILATION=$FUZZ/compilation-$$.log
 # La cible de nightly, dite : sans elle, cargo-fuzz prend celle pour laquelle il a été compilé, musl pour le
 # programme que publient ses auteurs (la CI), où ni la bibliothèque standard de nightly ni AddressSanitizer ne sont.
 HOTE=$(rustc +nightly -vV | sed -n 's/^host: //p')
+# cargo fuzz n'a pas de --locked : un fuzz/Cargo.lock qui ne suit plus fuzz/Cargo.toml est refusé ici, plutôt que
+# refait en silence avec d'autres versions que celles que cargo deny a jugées.
+cargo +nightly metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null ||
+  { echo "✖ banc de fuzzing : fuzz/Cargo.lock ne suit plus fuzz/Cargo.toml"; exit 1; }
 if ! cargo +nightly fuzz build --target "$HOTE" --fuzz-dir fuzz --target-dir "$CIBLE_FUZZ" >"$COMPILATION" 2>&1; then
   echo "✖ banc de fuzzing : compilation en échec (journal : $COMPILATION)"
   grep -E '^error|^ *--> ' "$COMPILATION" | head -n 12 | sed 's/^/      /'

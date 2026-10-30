@@ -97,7 +97,7 @@ pub(crate) fn dossier_systeme() -> &'static std::path::Path {
     }
     DOSSIER.get_or_init(|| {
         let mut tampon = [0u16; 1024];
-        // SAFETY : la taille passée est celle du tampon (1024 < u32::MAX) ; Windows y écrit au plus autant de
+        // SAFETY: la taille passée est celle du tampon (1024 < u32::MAX) ; Windows y écrit au plus autant de
         // caractères et rend leur nombre, ou la taille qu'il faudrait (plus grande que le tampon), ou 0.
         let n = unsafe { GetSystemDirectoryW(tampon.as_mut_ptr(), 1024) } as usize;
         match tampon.get(..n) {
@@ -187,7 +187,7 @@ fn lire_borne(
 #[cfg(target_os = "linux")]
 fn fini_sans_recolter(pid: u32) -> bool {
     let id: libc::id_t = pid;
-    // SAFETY : siginfo_t est une structure C sans pointeur, valide remplie de zéros ; waitid l'écrit (taille connue) et
+    // SAFETY: siginfo_t est une structure C sans pointeur, valide remplie de zéros ; waitid l'écrit (taille connue) et
     // ne garde rien. P_PID vise ce seul enfant, WNOHANG ne bloque pas, WNOWAIT laisse l'enfant à récolter par wait.
     unsafe {
         let mut info: libc::siginfo_t = std::mem::zeroed();
@@ -206,7 +206,7 @@ fn fini_sans_recolter(pid: u32) -> bool {
 #[cfg(unix)]
 fn tuer_le_groupe(pid: u32) {
     if let Ok(p) = libc::pid_t::try_from(pid) {
-        // SAFETY : getpgid lit le groupe d'un processus pas encore récolté ; kill envoie SIGKILL au groupe dont il est
+        // SAFETY: getpgid lit le groupe d'un processus pas encore récolté ; kill envoie SIGKILL au groupe dont il est
         // le chef, celui que setsid a créé pour lui : aucun autre processus que les siens.
         unsafe {
             if libc::getpgid(p) == p {
@@ -545,7 +545,7 @@ pub fn arreter(enfant: &mut Child) {
     let racine = enfant.id();
     #[cfg(unix)]
     if let Ok(pid) = libc::pid_t::try_from(racine) {
-        // SAFETY : simple envoi d'un signal à un numéro de processus ; SIGKILL arrête aussi un processus suspendu.
+        // SAFETY: simple envoi d'un signal à un numéro de processus ; SIGKILL arrête aussi un processus suspendu.
         unsafe { libc::kill(pid, libc::SIGSTOP) };
     }
     for pid in descendants(&processus_et_parents(racine), racine) {
@@ -553,7 +553,7 @@ pub fn arreter(enfant: &mut Child) {
         crate::machine::windows::processus::terminer(pid);
         #[cfg(unix)]
         if let Ok(pid) = libc::pid_t::try_from(pid) {
-            // SAFETY : simple envoi d'un signal à un numéro de processus.
+            // SAFETY: simple envoi d'un signal à un numéro de processus.
             unsafe { libc::kill(pid, libc::SIGKILL) };
         }
     }
@@ -1358,7 +1358,7 @@ mod tests_lancer_borne {
             "(sleep 2; touch {}) >/dev/null 2>&1 & echo parti",
             temoin.display()
         ));
-        // SAFETY : seul setsid entre fork et exec (sûr dans ce contexte, comme pour un plugin).
+        // SAFETY: seul setsid entre fork et exec (sûr dans ce contexte, comme pour un plugin).
         unsafe {
             c.pre_exec(|| {
                 libc::setsid();

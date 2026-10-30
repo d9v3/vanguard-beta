@@ -19,7 +19,7 @@ use crate::machine::darwin::{self, Court, PriseNoyau, Route, Voisin};
 pub(crate) fn sysctl_mib(mib: &mut [c_int], taille_max: usize, marge: bool) -> Option<Vec<u8>> {
     let n = libc::c_uint::try_from(mib.len()).ok()?;
     let mut taille: libc::size_t = 0;
-    // SAFETY : mib vit pendant l'appel et compte `n` entiers ; sans tampon (pointeur nul), sysctl n'écrit que la
+    // SAFETY: mib vit pendant l'appel et compte `n` entiers ; sans tampon (pointeur nul), sysctl n'écrit que la
     // taille voulue dans `taille`.
     let code = unsafe {
         libc::sysctl(
@@ -38,7 +38,7 @@ pub(crate) fn sysctl_mib(mib: &mut [c_int], taille_max: usize, marge: bool) -> O
         taille = taille.saturating_add(taille / 8).min(taille_max);
     }
     let mut tampon = vec![0u8; taille];
-    // SAFETY : tampon de `taille` octets, vivant pendant l'appel ; le noyau n'écrit pas au-delà et redit dans
+    // SAFETY: tampon de `taille` octets, vivant pendant l'appel ; le noyau n'écrit pas au-delà et redit dans
     // `taille` ce qu'il a écrit.
     let code = unsafe {
         libc::sysctl(
@@ -63,13 +63,13 @@ pub(crate) fn sysctl_mib(mib: &mut [c_int], taille_max: usize, marge: bool) -> O
 /// suit la taille que le noyau annonce ; plein, il est agrandi, car une liste coupée cacherait les derniers venus.
 /// `None` : rien lu (Vanguard au moins tourne, donc une liste vide est un échec).
 pub(crate) fn pids() -> Option<Vec<u32>> {
-    // SAFETY : sans tampon, proc_listallpids rend seulement le nombre de processus à prévoir (avec une marge).
+    // SAFETY: sans tampon, proc_listallpids rend seulement le nombre de processus à prévoir (avec une marge).
     let annonce = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
     let mut place = usize::try_from(annonce).unwrap_or(0).max(256) + 64;
     for _ in 0..4 {
         let mut pids: Vec<c_int> = vec![0; place];
         let taille = c_int::try_from(pids.len() * size_of::<c_int>()).ok()?;
-        // SAFETY : proc_listallpids écrit au plus `taille` octets dans `pids` et rend le nombre de numéros écrits.
+        // SAFETY: proc_listallpids écrit au plus `taille` octets dans `pids` et rend le nombre de numéros écrits.
         let n = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), taille) };
         let n = usize::try_from(n).ok()?;
         if n < place {
@@ -85,7 +85,7 @@ pub(crate) fn pids() -> Option<Vec<u32>> {
 pub(crate) fn court(pid: u32) -> Option<Court> {
     let mut tampon = [0u8; size_of::<darwin::ProcBsdShortinfo>()];
     let taille = c_int::try_from(tampon.len()).ok()?;
-    // SAFETY : proc_pidinfo écrit au plus `taille` octets dans `tampon` et rend leur nombre (0 : refus ou parti).
+    // SAFETY: proc_pidinfo écrit au plus `taille` octets dans `tampon` et rend leur nombre (0 : refus ou parti).
     let lus = unsafe {
         libc::proc_pidinfo(
             c_int::try_from(pid).ok()?,
@@ -133,7 +133,7 @@ pub(crate) fn enfants(pid: u32) -> Option<Vec<u32>> {
     for _ in 0..6 {
         let mut pids: Vec<c_int> = vec![0; place];
         let taille = c_int::try_from(pids.len() * size_of::<c_int>()).ok()?;
-        // SAFETY : proc_listchildpids écrit au plus `taille` octets dans `pids` et rend le nombre de numéros écrits
+        // SAFETY: proc_listchildpids écrit au plus `taille` octets dans `pids` et rend le nombre de numéros écrits
         // (-1 : échec).
         let n = unsafe { libc::proc_listchildpids(parent, pids.as_mut_ptr().cast(), taille) };
         let n = usize::try_from(n).ok()?;
@@ -154,15 +154,15 @@ pub(crate) fn enfants(pid: u32) -> Option<Vec<u32>> {
 /// Le nom d'un compte d'après son numéro (getpwuid_r) ; `None` : inconnu (le numéro se montre alors tel quel).
 pub(crate) fn compte(uid: u32) -> Option<String> {
     let mut tampon: Vec<c_char> = vec![0; 16 * 1024];
-    // SAFETY : une struct passwd faite de nombres et de pointeurs, que getpwuid_r remplit avant toute lecture.
+    // SAFETY: une struct passwd faite de nombres et de pointeurs, que getpwuid_r remplit avant toute lecture.
     let mut entree: libc::passwd = unsafe { std::mem::zeroed() };
     let mut trouve: *mut libc::passwd = std::ptr::null_mut();
-    // SAFETY : tampon, entree et trouve vivent pendant l'appel ; getpwuid_r n'écrit que dans les tailles données.
+    // SAFETY: tampon, entree et trouve vivent pendant l'appel ; getpwuid_r n'écrit que dans les tailles données.
     let code = unsafe { libc::getpwuid_r(uid, &raw mut entree, tampon.as_mut_ptr(), tampon.len(), &raw mut trouve) };
     if code != 0 || trouve.is_null() || entree.pw_name.is_null() {
         return None;
     }
-    // SAFETY : pw_name est une chaîne C terminée par un nul, rangée dans tampon, encore vivant.
+    // SAFETY: pw_name est une chaîne C terminée par un nul, rangée dans tampon, encore vivant.
     let nom = unsafe { CStr::from_ptr(entree.pw_name) }.to_string_lossy().into_owned();
     (!nom.is_empty()).then_some(nom)
 }
@@ -177,7 +177,7 @@ pub(crate) fn comptes() -> (Vec<(String, u32)>, bool) {
     let _garde = VERROU.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut liste = Vec::new();
     let mut coupee = false;
-    // SAFETY : setpwent, getpwent et endpwent dans ce seul fil (verrou) ; l'entrée rendue reste valable jusqu'à
+    // SAFETY: setpwent, getpwent et endpwent dans ce seul fil (verrou) ; l'entrée rendue reste valable jusqu'à
     // l'appel suivant et elle est lue tout de suite (pointeur non nul vérifié, chaîne C terminée par un nul).
     unsafe {
         libc::setpwent();
@@ -215,7 +215,7 @@ pub(crate) fn sessions_ouvertes() -> (Vec<Session>, bool) {
     static VERROU: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _garde = VERROU.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let texte = |c: &[c_char]| {
-        // SAFETY : un c_char a la taille et l'alignement d'un octet.
+        // SAFETY: un c_char a la taille et l'alignement d'un octet.
         let o: &[u8] = unsafe { std::slice::from_raw_parts(c.as_ptr().cast(), c.len()) };
         // Jusqu'au premier nul, s'il y en a un.
         let o: Vec<u8> = o.iter().copied().take_while(|&x| x != 0).collect();
@@ -223,7 +223,7 @@ pub(crate) fn sessions_ouvertes() -> (Vec<Session>, bool) {
     };
     let mut liste = Vec::new();
     let mut coupee = false;
-    // SAFETY : setutxent, getutxent et endutxent dans ce seul fil (verrou) ; l'entrée rendue reste valable jusqu'à
+    // SAFETY: setutxent, getutxent et endutxent dans ce seul fil (verrou) ; l'entrée rendue reste valable jusqu'à
     // l'appel suivant, lue tout de suite (pointeur non nul vérifié) ; ses champs sont des tableaux de taille fixe,
     // lus jusqu'au premier nul ou à leur fin.
     unsafe {
@@ -344,12 +344,12 @@ pub(crate) struct Prises {
 
 /// Les descripteurs ouverts d'un processus (PROC_PIDLISTFDS), en (numéro, sorte). `None` : refusé ou parti.
 fn descripteurs(pid: c_int) -> Option<Vec<(c_int, u32)>> {
-    // SAFETY : sans tampon, proc_pidinfo rend seulement la taille à prévoir (avec une marge).
+    // SAFETY: sans tampon, proc_pidinfo rend seulement la taille à prévoir (avec une marge).
     let annonce = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDLISTFDS, 0, std::ptr::null_mut(), 0) };
     let annonce = usize::try_from(annonce).ok().filter(|&n| n > 0)?;
     let taille = annonce.min(8 << 20);
     let mut tampon = vec![0u8; taille];
-    // SAFETY : tampon de `taille` octets, vivant pendant l'appel ; proc_pidinfo n'écrit pas au-delà et rend le
+    // SAFETY: tampon de `taille` octets, vivant pendant l'appel ; proc_pidinfo n'écrit pas au-delà et rend le
     // nombre d'octets écrits.
     let lus = unsafe {
         libc::proc_pidinfo(
@@ -384,7 +384,7 @@ fn descripteurs(pid: c_int) -> Option<Vec<(c_int, u32)>> {
 fn prise(pid: c_int, fd: c_int) -> Result<Option<PriseNoyau>, ()> {
     let mut tampon = vec![0u8; size_of::<darwin::SocketFdinfo>()];
     let taille = c_int::try_from(tampon.len()).map_err(|_| ())?;
-    // SAFETY : proc_pidfdinfo écrit au plus `taille` octets dans `tampon` et rend leur nombre (0 : refus).
+    // SAFETY: proc_pidfdinfo écrit au plus `taille` octets dans `tampon` et rend leur nombre (0 : refus).
     let lus = unsafe {
         libc::proc_pidfdinfo(
             pid,
@@ -489,17 +489,17 @@ pub(crate) fn echange() -> Option<(u64, u64)> {
 /// retire. `None` : symbole absent ou appel refusé ; csrutil prend alors le relais.
 pub(crate) fn sip() -> Option<u32> {
     type CsrGetActiveConfig = unsafe extern "C" fn(*mut u32) -> c_int;
-    // SAFETY : dlsym avec RTLD_DEFAULT cherche le symbole dans les bibliothèques déjà chargées ; le nom est une chaîne
+    // SAFETY: dlsym avec RTLD_DEFAULT cherche le symbole dans les bibliothèques déjà chargées ; le nom est une chaîne
     // C terminée par un nul.
     let symbole = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"csr_get_active_config".as_ptr()) };
     if symbole.is_null() {
         return None;
     }
-    // SAFETY : csr_get_active_config(csr_config_t *) d'après sys/csr.h de XNU, csr_config_t étant un uint32_t ; le
+    // SAFETY: csr_get_active_config(csr_config_t *) d'après sys/csr.h de XNU, csr_config_t étant un uint32_t ; le
     // symbole trouvé est cette fonction de libsystem_kernel.
     let fonction = unsafe { std::mem::transmute::<*mut c_void, CsrGetActiveConfig>(symbole) };
     let mut config: u32 = 0;
-    // SAFETY : config vit pendant l'appel ; la fonction écrit un uint32_t et rend 0 en cas de succès.
+    // SAFETY: config vit pendant l'appel ; la fonction écrit un uint32_t et rend 0 en cas de succès.
     (unsafe { fonction(&raw mut config) } == 0).then_some(config)
 }
 
@@ -539,23 +539,23 @@ pub(crate) fn options_prochain_demarrage() -> Option<OptionsNvram> {
     use system_configuration::core_foundation::base::{CFType, TCFType};
     use system_configuration::core_foundation::data::CFData;
     use system_configuration::core_foundation::string::CFString;
-    // SAFETY : le chemin est une chaîne C terminée par un nul ; 0 (MACH_PORT_NULL, kIOMainPortDefault) désigne le
+    // SAFETY: le chemin est une chaîne C terminée par un nul ; 0 (MACH_PORT_NULL, kIOMainPortDefault) désigne le
     // port principal par défaut. L'entrée rendue est libérée plus bas par IOObjectRelease.
     let entree = unsafe { iokit::IORegistryEntryFromPath(0, c"IODeviceTree:/options".as_ptr()) };
     if entree == 0 {
         return None;
     }
     let cle = CFString::from_static_string("boot-args");
-    // SAFETY : entree est valide jusqu'à IOObjectRelease ; cle vit pendant l'appel ; allocateur nul = celui par
+    // SAFETY: entree est valide jusqu'à IOObjectRelease ; cle vit pendant l'appel ; allocateur nul = celui par
     // défaut, aucune option.
     let brut =
         unsafe { iokit::IORegistryEntryCreateCFProperty(entree, cle.as_concrete_TypeRef(), std::ptr::null(), 0) };
-    // SAFETY : l'entrée vient d'IORegistryEntryFromPath et n'est plus utilisée après.
+    // SAFETY: l'entrée vient d'IORegistryEntryFromPath et n'est plus utilisée après.
     unsafe { iokit::IOObjectRelease(entree) };
     if brut.is_null() {
         return Some(OptionsNvram::Absentes);
     }
-    // SAFETY : la propriété est créée pour nous (« Create ») : CFType la libère (CFRelease) quand il disparaît.
+    // SAFETY: la propriété est créée pour nous (« Create ») : CFType la libère (CFRelease) quand il disparaît.
     let valeur = unsafe { CFType::wrap_under_create_rule(brut) };
     if let Some(t) = valeur.downcast::<CFString>() {
         return Some(OptionsNvram::Posees(t.to_string()));
@@ -583,7 +583,7 @@ pub(crate) fn options_demarrage_en_cours() -> Option<String> {
 pub(crate) fn uuid_machine() -> Option<String> {
     let mut id = [0u8; 16];
     let delai = libc::timespec { tv_sec: 5, tv_nsec: 0 };
-    // SAFETY : id fait 16 octets (uuid_t), delai vit pendant l'appel.
+    // SAFETY: id fait 16 octets (uuid_t), delai vit pendant l'appel.
     (unsafe { libc::gethostuuid(id.as_mut_ptr(), &raw const delai) } == 0).then(|| darwin::uuid_comme_ioreg(&id))
 }
 
@@ -603,18 +603,18 @@ pub(crate) fn montages() -> Option<Vec<Montage>> {
     static VERROU: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _garde = VERROU.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut tableau: *mut libc::statfs = std::ptr::null_mut();
-    // SAFETY : getmntinfo fait pointer `tableau` sur un tableau qu'il garde lui-même (à ne pas libérer) et rend son
+    // SAFETY: getmntinfo fait pointer `tableau` sur un tableau qu'il garde lui-même (à ne pas libérer) et rend son
     // nombre d'éléments (0 : échec).
     let n = unsafe { libc::getmntinfo(&raw mut tableau, libc::MNT_NOWAIT) };
     let n = usize::try_from(n).ok().filter(|&n| n > 0 && n < 100_000)?;
     if tableau.is_null() {
         return None;
     }
-    // SAFETY : `n` éléments valides à partir de `tableau`, d'après getmntinfo, lus et copiés sous le verrou, avant
+    // SAFETY: `n` éléments valides à partir de `tableau`, d'après getmntinfo, lus et copiés sous le verrou, avant
     // tout autre appel de ce module qui le réécrirait.
     let liste = unsafe { std::slice::from_raw_parts(tableau, n) };
     let texte = |c: &[c_char]| {
-        // SAFETY : un c_char a la taille et l'alignement d'un octet.
+        // SAFETY: un c_char a la taille et l'alignement d'un octet.
         let o: &[u8] = unsafe { std::slice::from_raw_parts(c.as_ptr().cast(), c.len()) };
         // Jusqu'au premier nul, s'il y en a un.
         let o: Vec<u8> = o.iter().copied().take_while(|&x| x != 0).collect();

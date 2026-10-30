@@ -82,7 +82,7 @@ pub(crate) fn lecteur(racine: &Path) -> Option<Lecteur> {
     let (mut serie, mut longueur, mut drapeaux) = (0u32, 0u32, 0u32);
     let (mut disponible, mut total, mut libre) = (0u64, 0u64, 0u64);
     let mut ancien = 0u32;
-    // SAFETY : la racine est terminée par un zéro et vit pendant les appels ; Windows écrit au plus 261 caractères
+    // SAFETY: la racine est terminée par un zéro et vit pendant les appels ; Windows écrit au plus 261 caractères
     // dans chaque tampon, qui les a, et un nombre dans chaque variable. Le mode d'erreur du fil (pas de fenêtre « Il
     // n'y a pas de disque dans le lecteur ») est remis comme avant.
     let pret = unsafe {
@@ -104,7 +104,7 @@ pub(crate) fn lecteur(racine: &Path) -> Option<Lecteur> {
     if !pret {
         return None;
     }
-    // SAFETY : la racine est terminée par un zéro et vit pendant l'appel.
+    // SAFETY: la racine est terminée par un zéro et vit pendant l'appel.
     let sorte = unsafe { GetDriveTypeW(r.as_ptr()) };
     Some(Lecteur {
         racine: PathBuf::from(format!("{lettre}:\\")),
@@ -121,14 +121,14 @@ pub(crate) fn lecteur(racine: &Path) -> Option<Lecteur> {
 pub(crate) fn lecteurs() -> Vec<Lecteur> {
     const AMOVIBLE: u32 = 2;
     const FIXE: u32 = 3;
-    // SAFETY : sans paramètre ; rend un masque d'un bit par lettre.
+    // SAFETY: sans paramètre ; rend un masque d'un bit par lettre.
     let masque = unsafe { GetLogicalDrives() };
     (0u8..26)
         .filter(|i| masque & (1 << i) != 0)
         .map(|i| char::from(b'A' + i))
         .filter(|l| {
             let r = large(&format!("{l}:\\"));
-            // SAFETY : la racine est terminée par un zéro et vit pendant l'appel.
+            // SAFETY: la racine est terminée par un zéro et vit pendant l'appel.
             matches!(unsafe { GetDriveTypeW(r.as_ptr()) }, AMOVIBLE | FIXE)
         })
         .filter_map(|l| lecteur(Path::new(&format!("{l}:\\"))))
@@ -150,7 +150,7 @@ fn numero_du_disque(lettre: char) -> Option<u32> {
     let nom = large(&format!(r"\\.\{lettre}:"));
     let mut n = Numero::default();
     let mut rendus = 0u32;
-    // SAFETY : le nom vit pendant l'appel ; la poignée (INVALID_HANDLE_VALUE : refus, vérifié) est fermée une seule
+    // SAFETY: le nom vit pendant l'appel ; la poignée (INVALID_HANDLE_VALUE : refus, vérifié) est fermée une seule
     // fois ; Windows écrit au plus la taille de `n` dans `n`.
     unsafe {
         let appareil = CreateFileW(

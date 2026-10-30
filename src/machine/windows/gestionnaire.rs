@@ -53,7 +53,7 @@ pub(crate) fn etat(nom: &str) -> Option<Service> {
     const LIRE_L_ETAT: u32 = 0x4;
     const INTROUVABLE: i32 = 1060;
     let large: Vec<u16> = nom.encode_utf16().chain([0]).collect();
-    // SAFETY : le nom est terminé par un zéro et vit pendant l'appel ; chaque poignée obtenue (nulle : refus, vérifié)
+    // SAFETY: le nom est terminé par un zéro et vit pendant l'appel ; chaque poignée obtenue (nulle : refus, vérifié)
     // est fermée une seule fois ; la structure a la forme de SERVICE_STATUS (sept u32).
     unsafe {
         let gestionnaire = OpenSCManagerW(std::ptr::null(), std::ptr::null(), CONNEXION);
@@ -110,7 +110,7 @@ fn config(nom: &str) -> Option<Config> {
     const CONNEXION: u32 = 0x1;
     const LIRE_LA_CONFIG: u32 = 0x1;
     let large: Vec<u16> = nom.encode_utf16().chain([0]).collect();
-    // SAFETY : le nom est terminé par un zéro et vit pendant l'appel ; chaque poignée obtenue (nulle : refus, vérifié)
+    // SAFETY: le nom est terminé par un zéro et vit pendant l'appel ; chaque poignée obtenue (nulle : refus, vérifié)
     // est fermée une seule fois, après la lecture.
     unsafe {
         let gestionnaire = OpenSCManagerW(std::ptr::null(), std::ptr::null(), CONNEXION);
@@ -138,7 +138,7 @@ unsafe fn lire_config(service: *mut c_void) -> Option<Config> {
     // La documentation borne le tampon à 8 Ko ; au-delà, la réponse n'est pas crue.
     const TAMPON_MAX: usize = 64 * 1024;
     let mut besoin = 0u32;
-    // SAFETY : premier appel sans tampon (taille 0), qui ne rend que la taille nécessaire dans `besoin`.
+    // SAFETY: premier appel sans tampon (taille 0), qui ne rend que la taille nécessaire dans `besoin`.
     unsafe { QueryServiceConfigW(service, std::ptr::null_mut(), 0, &raw mut besoin) };
     let besoin = usize::try_from(besoin).ok()?;
     if besoin < size_of::<ConfigDuService>() || besoin > TAMPON_MAX {
@@ -148,7 +148,7 @@ unsafe fn lire_config(service: *mut c_void) -> Option<Config> {
     let mut tampon = vec![0u64; besoin.div_ceil(8)];
     let octets = tampon.len() * 8;
     let mut rendu = 0u32;
-    // SAFETY : le tampon fait `octets` octets, la taille annoncée, et vit pendant l'appel.
+    // SAFETY: le tampon fait `octets` octets, la taille annoncée, et vit pendant l'appel.
     if unsafe {
         QueryServiceConfigW(
             service,
@@ -162,7 +162,7 @@ unsafe fn lire_config(service: *mut c_void) -> Option<Config> {
     }
     let debut = tampon.as_ptr() as usize;
     let fin = debut + octets;
-    // SAFETY : l'appel a réussi, le tampon (aligné sur 8, vérifié plus grand que la structure) commence par elle.
+    // SAFETY: l'appel a réussi, le tampon (aligné sur 8, vérifié plus grand que la structure) commence par elle.
     let c = unsafe { &*tampon.as_ptr().cast::<ConfigDuService>() };
     // Un texte de la réponse : son pointeur doit tomber dans le tampon, aligné, et la lecture s'arrête au premier
     // zéro ou à la fin du tampon, jamais au-delà.
@@ -171,7 +171,7 @@ unsafe fn lire_config(service: *mut c_void) -> Option<Config> {
         if p.is_null() || a < debut || a >= fin || !a.is_multiple_of(2) {
             return String::new();
         }
-        // SAFETY : [a, fin) est dans le tampon (borne vérifiée juste au-dessus), aligné sur 2, initialisé.
+        // SAFETY: [a, fin) est dans le tampon (borne vérifiée juste au-dessus), aligné sur 2, initialisé.
         let mots = unsafe { std::slice::from_raw_parts(p, (fin - a) / 2) };
         // Jusqu'au premier zéro, ou tout le reste du tampon s'il n'y en a pas.
         String::from_utf16_lossy(mots.split(|&m| m == 0).next().unwrap_or(mots))

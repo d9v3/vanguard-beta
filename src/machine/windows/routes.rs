@@ -150,11 +150,11 @@ mod natif {
     /// Une table MIB_*_TABLE2 de `taille_ligne` octets par ligne, copiée, puis rendue à Windows.
     fn table(lire: unsafe extern "system" fn(u16, *mut *mut c_void) -> u32, taille_ligne: usize) -> Option<Vec<u8>> {
         let mut table: *mut c_void = std::ptr::null_mut();
-        // SAFETY : la fonction écrit un pointeur vers une table qu'elle alloue ; rien n'est lu si elle échoue.
+        // SAFETY: la fonction écrit un pointeur vers une table qu'elle alloue ; rien n'est lu si elle échoue.
         if unsafe { lire(super::IPV4, &raw mut table) } != 0 || table.is_null() {
             return None;
         }
-        // SAFETY : la table commence par son nombre de lignes (ULONG) et en contient autant, chacune de
+        // SAFETY: la table commence par son nombre de lignes (ULONG) et en contient autant, chacune de
         // `taille_ligne` octets à partir de l'octet 8 (netioapi.h) : ces octets sont à Windows et vivants jusqu'à
         // FreeMibTable, appelé une seule fois, après la copie.
         unsafe {
@@ -180,7 +180,7 @@ mod natif {
         ligne.0[0..2].copy_from_slice(&super::IPV4.to_ne_bytes());
         ligne.0[8..16].copy_from_slice(&luid.to_ne_bytes());
         ligne.0[16..20].copy_from_slice(&index.to_ne_bytes());
-        // SAFETY : la ligne fait les 168 octets de MIB_IPINTERFACE_ROW, alignés sur 8, à nous pendant l'appel.
+        // SAFETY: la ligne fait les 168 octets de MIB_IPINTERFACE_ROW, alignés sur 8, à nous pendant l'appel.
         if unsafe { GetIpInterfaceEntry((&raw mut ligne).cast()) } != 0 {
             return None;
         }
@@ -202,7 +202,7 @@ mod natif {
     /// Un écho ICMP vers `cible`, comme `ping -n 1` ; voir `echo_de`.
     pub(crate) fn echo(cible: Ipv4Addr, delai: Duration) -> Option<bool> {
         const INVALIDE: isize = -1;
-        // SAFETY : sans argument ; le résultat est vérifié avant tout usage.
+        // SAFETY: sans argument ; le résultat est vérifié avant tout usage.
         let poignee = unsafe { IcmpCreateFile() };
         if poignee.is_null() || poignee as isize == INVALIDE {
             return None;
@@ -213,7 +213,7 @@ mod natif {
         let mut reponse = [0u64; 16];
         let taille_reponse = u32::try_from(std::mem::size_of_val(&reponse)).ok()?;
         let delai = u32::try_from(delai.as_millis()).unwrap_or(u32::MAX);
-        // SAFETY : la poignée vient d'IcmpCreateFile ; les données et le tampon sont à nous, de la taille annoncée,
+        // SAFETY: la poignée vient d'IcmpCreateFile ; les données et le tampon sont à nous, de la taille annoncée,
         // vivants pendant l'appel (synchrone) ; IPAddr est l'adresse dans l'ordre du réseau, telle qu'en mémoire.
         let (n, erreur) = unsafe {
             let n = IcmpSendEcho(

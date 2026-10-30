@@ -90,7 +90,7 @@ fn tpm_tbs() -> Option<bool> {
     // que seule la réussite de l'appel intéresse ici.
     let mut info = [0u32; 4];
     let taille = u32::try_from(std::mem::size_of_val(&info)).ok()?;
-    // SAFETY : le nom de la DLL et celui de la fonction sont terminés par un zéro ; le pointeur rendu est vérifié non
+    // SAFETY: le nom de la DLL et celui de la fonction sont terminés par un zéro ; le pointeur rendu est vérifié non
     // nul avant d'être converti à la signature de tbs.h (UINT32, PVOID → TBS_RESULT) ; la structure est à nous, de la
     // taille annoncée, vivante pendant l'appel ; le module n'est libéré qu'une fois, après le dernier appel.
     unsafe {

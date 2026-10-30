@@ -427,16 +427,16 @@ fn dll_a_cote(dossier: &std::path::Path) -> Option<String> {
 
 /// Le processus lancé élevé, à attendre.
 struct Fils(OwnedHandle);
-// SAFETY : une poignée de processus se partage entre fils d'exécution (c'est un objet noyau, pas un état local).
+// SAFETY: une poignée de processus se partage entre fils d'exécution (c'est un objet noyau, pas un état local).
 unsafe impl Send for Fils {}
 
 impl Fils {
     fn pid(&self) -> u32 {
-        // SAFETY : la poignée est valide tant que `self` vit.
+        // SAFETY: la poignée est valide tant que `self` vit.
         unsafe { GetProcessId(self.0.as_raw_handle()) }
     }
     fn attendre(&self) {
-        // SAFETY : idem ; INFINITE, la fenêtre est visible et c'est la personne qui la ferme.
+        // SAFETY: idem ; INFINITE, la fenêtre est visible et c'est la personne qui la ferme.
         unsafe { WaitForSingleObject(self.0.as_raw_handle(), u32::MAX) };
     }
 }
@@ -467,7 +467,7 @@ fn relancer_eleve(exe: &std::path::Path, parametres: &str) -> Result<Fils, u32> 
         icone: std::ptr::null_mut(),
         processus: std::ptr::null_mut(),
     };
-    // SAFETY : la structure a la taille et la disposition de SHELLEXECUTEINFOW ; les chaînes sont terminées par un
+    // SAFETY: la structure a la taille et la disposition de SHELLEXECUTEINFOW ; les chaînes sont terminées par un
     // zéro et vivent pendant l'appel. La poignée du processus (demandée par le masque, vérifiée non nulle) est à nous
     // et fermée une seule fois, par OwnedHandle.
     unsafe {
@@ -494,7 +494,7 @@ impl Serveur {
         let sddl = large(&format!("D:P(A;;GA;;;{sid})(A;;GA;;;SY)(A;;GA;;;BA)"));
         let nom = large(&nom_du_tube(canal));
         let mut descripteur: *mut c_void = std::ptr::null_mut();
-        // SAFETY : le descripteur alloué par Windows (vérifié non nul) vit pendant CreateNamedPipeW, puis est rendu
+        // SAFETY: le descripteur alloué par Windows (vérifié non nul) vit pendant CreateNamedPipeW, puis est rendu
         // une seule fois par LocalFree. La poignée du tube (vérifiée) est fermée une seule fois, par OwnedHandle.
         unsafe {
             if ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -538,7 +538,7 @@ impl Serveur {
         let moi = std::process::id();
         for _ in 0..8 {
             let mut client = 0u32;
-            // SAFETY : la poignée du tube est valide tant que `self` vit ; `client` est un entier à nous.
+            // SAFETY: la poignée du tube est valide tant que `self` vit ; `client` est un entier à nous.
             let branche = unsafe {
                 let r = ConnectNamedPipe(self.tube.as_raw_handle(), std::ptr::null_mut());
                 (r != 0 || GetLastError() == DEJA_BRANCHE)
@@ -554,7 +554,7 @@ impl Serveur {
                 "Correction élevée",
                 &format!("un client inattendu (PID {client}) s'est branché sur le canal : débranché"),
             );
-            // SAFETY : idem.
+            // SAFETY: idem.
             unsafe { DisconnectNamedPipe(self.tube.as_raw_handle()) };
         }
         false
@@ -565,7 +565,7 @@ impl Serveur {
         if !self.attendre_le_fils(pid) {
             return None;
         }
-        // SAFETY : la poignée reste à `self` (fermée par lui seul) : le File est oublié sans la fermer.
+        // SAFETY: la poignée reste à `self` (fermée par lui seul) : le File est oublié sans la fermer.
         let fichier = unsafe { std::fs::File::from_raw_handle(self.tube.as_raw_handle()) };
         let fichier = std::mem::ManuallyDrop::new(fichier);
         let mut ecrivain = &*fichier;
@@ -619,7 +619,7 @@ fn accepte(accord: &str) -> bool {
 pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
     // Le programme tourne souvent depuis une clé USB ou Téléchargements : une DLL posée à côté de lui ne doit jamais
     // être chargée avec les droits d'administrateur. Toute charge à venir, même par une bibliothèque, ira dans System32.
-    // SAFETY : simple réglage du processus, sans pointeur.
+    // SAFETY: simple réglage du processus, sans pointeur.
     unsafe {
         SetDefaultDllDirectories(CHARGER_DE_SYSTEM32);
     }
@@ -815,7 +815,7 @@ fn ouvrir_le_canal(canal: &str, parent: u32) -> Option<std::fs::File> {
                 break;
             }
             Err(e) if e.raw_os_error() == Some(i32::try_from(OCCUPE).ok()?) => {
-                // SAFETY : chaîne terminée par un zéro, vivante pendant l'appel.
+                // SAFETY: chaîne terminée par un zéro, vivante pendant l'appel.
                 unsafe { WaitNamedPipeW(nom_large.as_ptr(), 30_000) };
             }
             Err(_) => return None,
@@ -823,7 +823,7 @@ fn ouvrir_le_canal(canal: &str, parent: u32) -> Option<std::fs::File> {
     }
     let tube = tube?;
     let mut serveur = 0u32;
-    // SAFETY : poignée valide (le File vit) ; `serveur` est un entier à nous.
+    // SAFETY: poignée valide (le File vit) ; `serveur` est un entier à nous.
     if unsafe { GetNamedPipeServerProcessId(tube.as_raw_handle(), &raw mut serveur) } == 0 || serveur != parent {
         return None;
     }
@@ -905,7 +905,7 @@ impl DescripteurCom {
         let taille_acl = u32::try_from(size_of::<[u64; 32]>()).unwrap_or(0);
         let acl: *mut ACL = (&raw mut d.acl).cast();
         let descripteur = PSECURITY_DESCRIPTOR((&raw mut d.descripteur).cast());
-        // SAFETY : chaque SID est écrit dans son propre tampon, de la taille annoncée ; la liste d'accès dans le sien,
+        // SAFETY: chaque SID est écrit dans son propre tampon, de la taille annoncée ; la liste d'accès dans le sien,
         // de la taille annoncée et aligné sur 8 octets (InitializeAcl demande 4). Tous les pointeurs viennent de
         // `&raw mut` (ou de `ptr::from_mut`, pour les SID) sur des champs de la boîte, qui ne bouge plus : le
         // descripteur absolu, qui ne garde que des pointeurs vers les SID et la liste, reste valide tant qu'elle vit.
@@ -954,7 +954,7 @@ impl DescripteurCom {
 fn initialiser_com() {
     static UNE_FOIS: Once = Once::new();
     UNE_FOIS.call_once(|| {
-        // SAFETY : sans réserve, en appartement multithread ; jamais refermé : il vaut pour tout le processus élevé.
+        // SAFETY: sans réserve, en appartement multithread ; jamais refermé : il vaut pour tout le processus élevé.
         if unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_err() {
             return;
         }
@@ -964,7 +964,7 @@ fn initialiser_com() {
         // Gardé pour toute la vie du processus : l'exemple de Microsoft libère le sien aussitôt (COM en garde une
         // copie), mais quelques centaines d'octets valent la certitude.
         let descripteur = Box::leak(descripteur);
-        // SAFETY : descripteur absolu valide (ci-dessus), qui ne sera jamais libéré ; aucune liste d'authentification,
+        // SAFETY: descripteur absolu valide (ci-dessus), qui ne sera jamais libéré ; aucune liste d'authentification,
         // pointeurs réservés nuls.
         let _ = unsafe {
             CoInitializeSecurity(
@@ -1001,7 +1001,7 @@ fn poser_le_point() -> Result<(), String> {
     let mut etat = PointEtat { statut: 0, sequence: 0 };
     initialiser_com();
     let bibliotheque = large("srclient.dll");
-    // SAFETY : la bibliothèque et la fonction sont vérifiées non nulles avant l'appel ; la signature est celle de
+    // SAFETY: la bibliothèque et la fonction sont vérifiées non nulles avant l'appel ; la signature est celle de
     // SRSetRestorePointW ; les deux structures ont la disposition attendue et vivent pendant l'appel. Un deuxième appel
     // ferme le changement (séquence rendue par le premier).
     let pose = unsafe {
@@ -1224,7 +1224,7 @@ mod tests {
         const PARTIES: u32 = 1 | 2 | 4;
         let en_sddl = |descripteur: *mut c_void| {
             let mut texte = std::ptr::null_mut();
-            // SAFETY : descripteur valide pendant l'appel ; Windows alloue le texte (terminé par un zéro), lu jusqu'au
+            // SAFETY: descripteur valide pendant l'appel ; Windows alloue le texte (terminé par un zéro), lu jusqu'au
             // zéro puis rendu par LocalFree, une seule fois.
             unsafe {
                 assert_ne!(
@@ -1249,7 +1249,7 @@ mod tests {
         let mut construit = DescripteurCom::nouveau().expect("descripteur COM");
         let attendu = large("O:BAG:BAD:(A;;0x3;;;BA)(A;;0x3;;;LS)(A;;0x3;;;NS)(A;;0x3;;;PS)(A;;0x3;;;SY)");
         let mut relatif = std::ptr::null_mut();
-        // SAFETY : chaîne terminée par un zéro ; le descripteur rendu est libéré par LocalFree, une seule fois.
+        // SAFETY: chaîne terminée par un zéro ; le descripteur rendu est libéré par LocalFree, une seule fois.
         let reference = unsafe {
             assert_ne!(
                 ConvertStringSecurityDescriptorToSecurityDescriptorW(

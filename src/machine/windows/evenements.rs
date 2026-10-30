@@ -184,7 +184,7 @@ fn rendre(evenement: *mut c_void) -> Option<String> {
     const XML: u32 = 1;
     let mut utilise = 0u32;
     let mut proprietes = 0u32;
-    // SAFETY : un premier appel sans tampon donne la taille en octets (refus attendu) ; le second écrit au plus
+    // SAFETY: un premier appel sans tampon donne la taille en octets (refus attendu) ; le second écrit au plus
     // `taille` octets dans `tampon`, qui les a, alignés pour des caractères UTF-16.
     unsafe {
         EvtRender(
@@ -337,7 +337,7 @@ pub(crate) fn lire_rendus(
     let large = |t: &str| t.encode_utf16().chain([0]).collect::<Vec<u16>>();
     let (journal, requete) = (large(journal), large(requete));
     let mut encore = !assez;
-    // SAFETY : les chaînes sont terminées par un zéro et vivent pendant l'appel ; la requête (nulle : refus, vérifié) et
+    // SAFETY: les chaînes sont terminées par un zéro et vivent pendant l'appel ; la requête (nulle : refus, vérifié) et
     // chaque événement rendu par EvtNext sont fermés une seule fois, ici. EvtNext écrit au plus `lot.len()` poignées.
     unsafe {
         let resultats = EvtQuery(

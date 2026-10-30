@@ -325,7 +325,7 @@ pub(crate) fn comptes_non_lus(maison: &Path, utilisateurs: &Path) -> usize {
 /// L'inventaire de ce Mac : en root, les applications de chaque compte aussi.
 #[cfg(target_os = "macos")]
 pub(crate) fn inventaire() -> Inventaire {
-    // SAFETY : geteuid ne prend aucun argument et ne peut pas échouer.
+    // SAFETY: geteuid ne prend aucun argument et ne peut pas échouer.
     let root = unsafe { libc::geteuid() } == 0;
     let maison = crate::socle::maison();
     let utilisateurs = Path::new("/Users");

@@ -134,7 +134,7 @@ pub(crate) fn ecriture_sure(dossier: &std::path::Path) -> bool {
     }
     #[cfg(unix)]
     {
-        // SAFETY : geteuid n'a ni pointeur ni effet de bord.
+        // SAFETY: geteuid n'a ni pointeur ni effet de bord.
         ecriture_sure_pour(unsafe { libc::geteuid() }, dossier)
     }
     #[cfg(not(unix))]
@@ -440,7 +440,7 @@ pub fn proteger_dossier_local() {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
     let dossier = dossier_local();
     let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dossier);
-    // SAFETY : getuid lit le compte du processus, sans argument ni échec possible.
+    // SAFETY: getuid lit le compte du processus, sans argument ni échec possible.
     let moi = unsafe { libc::getuid() };
     if let Ok(m) = std::fs::symlink_metadata(&dossier)
         && m.is_dir()
@@ -468,7 +468,7 @@ fn dossier_des_tests() -> PathBuf {
                     std::env::temp_dir().join(format!("vanguard-tests-{}", std::process::id())),
                 );
             }
-            // SAFETY : atexit de la bibliothèque C, présent sous Linux, Windows (msvcrt) et macOS ; il reçoit une
+            // SAFETY: atexit de la bibliothèque C, présent sous Linux, Windows (msvcrt) et macOS ; il reçoit une
             // fonction sans argument qui vit tout le programme, appelée une fois à la sortie normale du processus.
             unsafe { atexit(retirer) };
         });
@@ -558,7 +558,7 @@ mod tests {
         std::fs::create_dir_all(&dossier).unwrap();
         let tube = dossier.join("appris.json");
         let c = std::ffi::CString::new(tube.as_os_str().as_encoded_bytes()).unwrap();
-        // SAFETY : mkfifo reçoit un chemin terminé par zéro, qui vit le temps de l'appel.
+        // SAFETY: mkfifo reçoit un chemin terminé par zéro, qui vit le temps de l'appel.
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
         let debut = std::time::Instant::now();
         let e = lire_ordinaire(&tube, 1024).unwrap_err();
@@ -592,7 +592,7 @@ mod tests {
     fn en_root_seulement_un_dossier_de_root() {
         let d = std::env::temp_dir().join(format!("vanguard-sur-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
-        // SAFETY : getuid lit le compte du processus, sans argument.
+        // SAFETY: getuid lit le compte du processus, sans argument.
         if unsafe { libc::getuid() } == 0 {
             return crate::essais::saute("lancé en root : un dossier à soi est à root");
         }
@@ -618,7 +618,7 @@ mod tests {
             .unwrap();
         let tube = dossier.join("alertes.verrou");
         let c = std::ffi::CString::new(tube.as_os_str().as_encoded_bytes()).unwrap();
-        // SAFETY : mkfifo reçoit un chemin terminé par zéro, qui vit le temps de l'appel.
+        // SAFETY: mkfifo reçoit un chemin terminé par zéro, qui vit le temps de l'appel.
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
         let debut = std::time::Instant::now();
         for nom in ["evenements.verrou", "alertes.verrou"] {

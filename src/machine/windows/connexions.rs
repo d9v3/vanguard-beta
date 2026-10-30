@@ -87,7 +87,7 @@ fn table(tcp: bool, famille: u32) -> Option<Vec<u8>> {
         // Des mots de 32 bits, pour que la table (des DWORD) soit alignée comme Windows l'écrit.
         let mut tampon = vec![0u32; usize::try_from(taille.div_ceil(4)).ok()?];
         let mut ecrit = u32::try_from(tampon.len() * 4).ok()?;
-        // SAFETY : `tampon` fait `ecrit` octets, alignés sur 4 ; Windows y écrit au plus `ecrit` octets, ou rien en y
+        // SAFETY: `tampon` fait `ecrit` octets, alignés sur 4 ; Windows y écrit au plus `ecrit` octets, ou rien en y
         // mettant la taille voulue s'il en faut plus.
         let code = unsafe {
             if tcp {

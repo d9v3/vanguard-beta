@@ -91,7 +91,7 @@ fn dossiers_utilisateur(racine: &Path, maison: &Path, xdg: Option<&Path>, uid: u
 }
 
 fn uid() -> u32 {
-    // SAFETY : getuid ne peut pas échouer et ne touche à aucune mémoire du programme.
+    // SAFETY: getuid ne peut pas échouer et ne touche à aucune mémoire du programme.
     unsafe { libc::getuid() }
 }
 
@@ -874,13 +874,13 @@ fn chiffre_en(bloc: &Path, profondeur: u8) -> bool {
 /// (absent de /etc/group : le programme est lié à musl, qui ne consulte ni LDAP ni sssd) garde son numéro, comme
 /// `id` le fait ; `None` si la liste ne se lit pas.
 pub(crate) fn groupes() -> Option<Vec<String>> {
-    // SAFETY : avec 0 et un pointeur nul, getgroups ne fait que compter, sans rien écrire.
+    // SAFETY: avec 0 et un pointeur nul, getgroups ne fait que compter, sans rien écrire.
     let n = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
     let mut gids: Vec<libc::gid_t> = vec![0; usize::try_from(n).ok()?];
-    // SAFETY : `gids` a exactement `n` places ; getgroups n'en écrit pas plus, et rend -1 si la liste a grandi.
+    // SAFETY: `gids` a exactement `n` places ; getgroups n'en écrit pas plus, et rend -1 si la liste a grandi.
     let n = unsafe { libc::getgroups(n, gids.as_mut_ptr()) };
     gids.truncate(usize::try_from(n).ok()?);
-    // SAFETY : getegid ne peut pas échouer et ne touche à aucune mémoire du programme.
+    // SAFETY: getegid ne peut pas échouer et ne touche à aucune mémoire du programme.
     let principal = unsafe { libc::getegid() };
     let mut vus = HashSet::new();
     Some(
@@ -897,10 +897,10 @@ fn nom_du_groupe(gid: libc::gid_t) -> Option<String> {
     let mut taille = 1024usize;
     while taille <= 1 << 20 {
         let mut memoire = vec![0 as libc::c_char; taille];
-        // SAFETY : `group` est une structure C de pointeurs et de nombres, valide à zéro.
+        // SAFETY: `group` est une structure C de pointeurs et de nombres, valide à zéro.
         let mut groupe: libc::group = unsafe { std::mem::zeroed() };
         let mut resultat: *mut libc::group = std::ptr::null_mut();
-        // SAFETY : `groupe`, `memoire` (de `taille` octets exactement) et `resultat` sont à nous et vivent
+        // SAFETY: `groupe`, `memoire` (de `taille` octets exactement) et `resultat` sont à nous et vivent
         // jusqu'à la fin de l'appel ; getgrgid_r n'écrit que dans ces bornes.
         let code = unsafe { libc::getgrgid_r(gid, &raw mut groupe, memoire.as_mut_ptr(), taille, &raw mut resultat) };
         if code == libc::ERANGE {
@@ -910,7 +910,7 @@ fn nom_du_groupe(gid: libc::gid_t) -> Option<String> {
         if code != 0 || resultat.is_null() || groupe.gr_name.is_null() {
             return None;
         }
-        // SAFETY : gr_name pointe dans `memoire`, encore vivante, vers une chaîne terminée par un zéro.
+        // SAFETY: gr_name pointe dans `memoire`, encore vivante, vers une chaîne terminée par un zéro.
         let nom = unsafe { std::ffi::CStr::from_ptr(groupe.gr_name) };
         return Some(nom.to_string_lossy().into_owned());
     }
@@ -923,7 +923,7 @@ fn nom_du_groupe(gid: libc::gid_t) -> Option<String> {
 /// Les tics d'horloge par seconde (`getconf CLK_TCK`), l'unité des temps de `/proc/<pid>/stat` ; 100 s'il ne se lit
 /// pas, la valeur de tous les noyaux courants.
 pub(crate) fn tics() -> u64 {
-    // SAFETY : sysconf lit une constante du système, sans toucher à la mémoire du programme.
+    // SAFETY: sysconf lit une constante du système, sans toucher à la mémoire du programme.
     u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) })
         .ok()
         .filter(|&t| t > 0)
@@ -932,7 +932,7 @@ pub(crate) fn tics() -> u64 {
 
 /// La taille d'une page de mémoire (`getconf PAGESIZE`), l'unité de `/proc/<pid>/statm` ; 4096 s'il ne se lit pas.
 pub(crate) fn taille_page() -> u64 {
-    // SAFETY : sysconf lit une constante du système, sans toucher à la mémoire du programme.
+    // SAFETY: sysconf lit une constante du système, sans toucher à la mémoire du programme.
     u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
         .ok()
         .filter(|&t| t > 0)
@@ -1730,7 +1730,7 @@ mod tests {
         std::fs::write(d.join("unite.service"), "[Install]\nDefaultInstance=tty1\n").unwrap();
         std::fs::write(d.join("long"), "x".repeat(5000)).unwrap();
         let tube = std::ffi::CString::new(d.join("tube").to_str().unwrap()).unwrap();
-        // SAFETY : chemin C terminé par un zéro, vivant pendant l'appel ; mkfifo ne touche aucune mémoire du
+        // SAFETY: chemin C terminé par un zéro, vivant pendant l'appel ; mkfifo ne touche aucune mémoire du
         // programme.
         assert_eq!(unsafe { libc::mkfifo(tube.as_ptr(), 0o600) }, 0);
         symlink("/dev/zero", d.join("zero")).unwrap();

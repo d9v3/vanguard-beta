@@ -212,7 +212,7 @@ fn comptes_macos(
 fn base_des_comptes() -> Vec<(String, u32, std::path::PathBuf)> {
     const ENTREES_MAX: usize = 10_000;
     let mut comptes = Vec::new();
-    // SAFETY : setpwent, getpwent et endpwent s'enchaînent dans ce seul fil, et rien d'autre dans le programme ne
+    // SAFETY: setpwent, getpwent et endpwent s'enchaînent dans ce seul fil, et rien d'autre dans le programme ne
     // parcourt la base des comptes ; la struct passwd rendue reste valable jusqu'à l'appel suivant et elle est lue
     // tout de suite ; pw_name et pw_dir sont des chaînes C terminées par un nul, ou nuls (vérifié avant la lecture).
     unsafe {
@@ -241,7 +241,7 @@ unsafe fn chaine_c(p: *const libc::c_char) -> Option<String> {
     if p.is_null() {
         return None;
     }
-    // SAFETY : non nul (vérifié), terminé par un nul et vivant pendant la lecture (garanti par l'appelant).
+    // SAFETY: non nul (vérifié), terminé par un nul et vivant pendant la lecture (garanti par l'appelant).
     Some(unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned())
 }
 
@@ -260,7 +260,7 @@ unsafe extern "C" {
 fn dernieres_sessions() -> std::collections::HashMap<String, chrono::NaiveDate> {
     const ENTREES_MAX: usize = 100_000;
     let mut sessions = std::collections::HashMap::new();
-    // SAFETY : chaque lecteur est ouvert, parcouru puis refermé dans ce seul fil ; l'entrée rendue reste valable
+    // SAFETY: chaque lecteur est ouvert, parcouru puis refermé dans ce seul fil ; l'entrée rendue reste valable
     // jusqu'à l'appel suivant, et elle est lue tout de suite (un pointeur non nul, vérifié, vers une struct utmpx
     // entière) ; ut_user est un tableau de taille fixe, lu jusqu'au premier nul ou à sa fin, jamais au-delà.
     unsafe {

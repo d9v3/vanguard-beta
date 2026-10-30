@@ -22,7 +22,9 @@ on:
     - cron: "17 7 * * *"
 
 # Le jeton par défaut du dépôt ne lit que le code : la vérification de nuit lit aussi les exécutions passées
-# (gh api …/actions/workflows/…/runs), sinon GitHub répond 403.
+# (gh api …/actions/workflows/…/runs), sinon GitHub répond 403. Aucune extraction ne laisse ce jeton dans
+# .git/config (persist-credentials: false) : tout ce qui tourne ensuite l'y lirait, scripts de compilation des
+# dépendances compris ; aucun travail ne pousse ni ne refait de git fetch.
 permissions:
   contents: read
   actions: read
@@ -39,6 +41,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           sparse-checkout: .github/hors-code.txt
           sparse-checkout-cone-mode: false
       - id: verifier
@@ -79,6 +82,7 @@ jobs:
       # le programme, la même que gravent Linux et Windows.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
       # La chaîne de rust-toolchain.toml, avec les cibles Apple Silicon et Intel.
       - name: Rust (rust-toolchain.toml)
@@ -100,7 +104,7 @@ jobs:
       - name: Tests
         env:
           VANGUARD_TESTS_SAUTES: ${{ runner.temp }}/sautes.txt
-        run: cargo test --target aarch64-apple-darwin
+        run: cargo test --locked --target aarch64-apple-darwin
       - name: Tests sautés sur le Mac
         if: always()
         env:
@@ -115,7 +119,7 @@ jobs:
       # posés en quelques secondes après les tests : un passage en échec ne les télécharge pas.
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
-          tool: cargo-auditable@0.7.7,cargo-audit@0.22.2
+          tool: cargo-auditable@0.7.7,cargo-audit@0.22.2,cargo-cyclonedx@0.5.9
           fallback: none
       # Les deux Mac d'un seul cargo : l'optimisation finale (LTO, une seule unité de code) n'occupe qu'un cœur par
       # programme, et cargo les mène de front. L'un après l'autre, elles prenaient 140 s, soit plus de la moitié du
@@ -125,7 +129,7 @@ jobs:
         run: |
           SOURCE_DATE_EPOCH=$(bash outils/date-du-code.sh)
           export SOURCE_DATE_EPOCH
-          cargo auditable build --release --target aarch64-apple-darwin --target x86_64-apple-darwin
+          cargo auditable build --release --locked --target aarch64-apple-darwin --target x86_64-apple-darwin
           bash outils/failles-programmes.sh target/aarch64-apple-darwin/release/vanguard \
             target/x86_64-apple-darwin/release/vanguard
           lipo -create -output vanguard \
@@ -136,6 +140,10 @@ jobs:
           # L'empreinte dite dans le journal de ce passage, à part de l'artefact : outils/publier-version.sh la compare
           # au programme téléchargé avant de le signer (un artefact remplacé après coup ne la porte pas).
           echo "EMPREINTE-VANGUARD-MACOS $(shasum -a 256 vanguard | cut -d' ' -f1)"
+      # Les nomenclatures (SBOM) des programmes de la version, les mêmes octets que celles qu'outils/publier-version.sh
+      # refait chez l'auteur : il les compare avant de les joindre à la page.
+      - name: Nomenclatures (SBOM)
+        run: bash outils/sbom.sh sbom
       - name: Essai du programme sur ce Mac
         run: |
           ./vanguard audit --json > audit.json || true
@@ -169,4 +177,30 @@ jobs:
             vanguard
             commit.txt
             audit.json
+            sbom/*.cdx.json
           retention-days: 30
+
+  # L'attestation de provenance (actions/attest, Sigstore) du programme Mac et des nomenclatures : signée au nom de ce
+  # fichier, de ce dépôt et de ce commit, inscrite au registre public Rekor, que tout le monde vérifie avec
+  # « gh attestation verify ». outils/publier-version.sh l'exige avant de publier. Master seulement : c'est son
+  # programme que la clé de l'auteur signe ; ref complète, une étiquette nommée master n'en a pas.
+  # Un travail à part, qui ne lance rien du dépôt : le jeton OIDC (id-token) qui signe une attestation n'est jamais
+  # à portée des scripts de compilation des dépendances, qui sinon pourraient faire attester n'importe quel fichier.
+  attester:
+    needs: mac
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: vanguard-macos
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            vanguard
+            sbom/*.cdx.json

@@ -168,13 +168,13 @@ pub(crate) fn genre_du_volume(p: &Path) -> Option<String> {
 pub(crate) fn genre_du_volume(p: &Path) -> Option<String> {
     use std::os::unix::ffi::OsStrExt;
     let c = std::ffi::CString::new(p.as_os_str().as_bytes()).ok()?;
-    // SAFETY : `statfs` est une structure C de nombres et de tableaux de caractères, valide à zéro.
+    // SAFETY: `statfs` est une structure C de nombres et de tableaux de caractères, valide à zéro.
     let mut s: libc::statfs = unsafe { std::mem::zeroed() };
-    // SAFETY : `c` est une chaîne C terminée par un zéro, `s` une structure à nous, écrite par statfs seulement.
+    // SAFETY: `c` est une chaîne C terminée par un zéro, `s` une structure à nous, écrite par statfs seulement.
     if unsafe { libc::statfs(c.as_ptr(), &raw mut s) } != 0 {
         return None;
     }
-    // SAFETY : statfs a rempli f_fstypename, une chaîne terminée par un zéro dans son tableau.
+    // SAFETY: statfs a rempli f_fstypename, une chaîne terminée par un zéro dans son tableau.
     let nom = unsafe { std::ffi::CStr::from_ptr(s.f_fstypename.as_ptr()) };
     Some(nom.to_string_lossy().into_owned())
 }
@@ -653,7 +653,7 @@ const ALIGNEMENT_RELU: usize = 4096;
 #[cfg(target_os = "linux")]
 pub(crate) fn sans_cache(f: &File) {
     use std::os::fd::AsRawFd;
-    // SAFETY : un descripteur ouvert, gardé par `f` pendant l'appel ; posix_fadvise ne fait que conseiller le noyau
+    // SAFETY: un descripteur ouvert, gardé par `f` pendant l'appel ; posix_fadvise ne fait que conseiller le noyau
     // (retirer du cache les pages propres du fichier) et n'écrit dans aucune mémoire de ce programme.
     unsafe {
         libc::posix_fadvise(f.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
@@ -663,7 +663,7 @@ pub(crate) fn sans_cache(f: &File) {
 #[cfg(target_os = "macos")]
 pub(crate) fn sans_cache(f: &File) {
     use std::os::fd::AsRawFd;
-    // SAFETY : un descripteur ouvert, gardé par `f` pendant l'appel ; F_NOCACHE change seulement la façon dont le
+    // SAFETY: un descripteur ouvert, gardé par `f` pendant l'appel ; F_NOCACHE change seulement la façon dont le
     // système lit ce fichier, sans toucher à la mémoire de ce programme.
     unsafe {
         libc::fcntl(f.as_raw_fd(), libc::F_NOCACHE, 1);

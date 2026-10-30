@@ -313,7 +313,7 @@ fn fin(morceau: &[u8]) -> Option<bool> {
 /// noyau refuse la socket, la demande, ou ne répond pas en 3 s.
 #[cfg(target_os = "linux")]
 fn echanger(demande: &[u8]) -> Option<Vec<u8>> {
-    // SAFETY : une socket netlink ouverte ici et refermée une seule fois à la sortie ; chaque appel reçoit un pointeur
+    // SAFETY: une socket netlink ouverte ici et refermée une seule fois à la sortie ; chaque appel reçoit un pointeur
     // et la taille exacte d'un objet à nous, vivant pendant l'appel (demande, adresse, délai, tampon). Le délai de
     // réception (3 s) empêche recv de bloquer sans fin si le noyau ne répondait pas.
     unsafe {
@@ -461,7 +461,7 @@ pub(crate) fn reseau_connecte() -> Option<String> {
 #[cfg(target_os = "linux")]
 pub(crate) fn economie_d_energie(carte: &str) -> Option<bool> {
     let nom = std::ffi::CString::new(carte).ok()?;
-    // SAFETY : if_nametoindex lit un nom C terminé par un zéro, à nous et vivant pendant l'appel ; 0 dit l'échec.
+    // SAFETY: if_nametoindex lit un nom C terminé par un zéro, à nous et vivant pendant l'appel ; 0 dit l'échec.
     let index = unsafe { libc::if_nametoindex(nom.as_ptr()) };
     if index == 0 {
         return None;

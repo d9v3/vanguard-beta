@@ -272,7 +272,7 @@ fn arreter(enfant: &mut std::process::Child) {
             fn kill(pid: i32, signal: i32) -> i32;
         }
         if let Ok(groupe) = i32::try_from(enfant.id()) {
-            // SAFETY : simple envoi de SIGKILL (9) au groupe de processus créé pour ce programme (numéro négatif).
+            // SAFETY: simple envoi de SIGKILL (9) au groupe de processus créé pour ce programme (numéro négatif).
             unsafe { kill(-groupe, 9) };
         }
     }

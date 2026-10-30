@@ -811,7 +811,7 @@ mod tests {
         std::os::unix::fs::symlink(&vrai, &lien).unwrap();
         let tube = d.join("tube");
         let nom = std::ffi::CString::new(tube.to_string_lossy().as_bytes()).unwrap();
-        // SAFETY : chaîne C terminée par un zéro, à nous ; mkfifo ne la garde pas.
+        // SAFETY: chaîne C terminée par un zéro, à nous ; mkfifo ne la garde pas.
         assert_eq!(unsafe { libc::mkfifo(nom.as_ptr(), 0o600) }, 0);
         assert_eq!(examiner(&vrai), Examen::Sain);
         for cible in [&lien, &tube] {

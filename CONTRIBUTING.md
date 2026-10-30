@@ -226,13 +226,16 @@ un Mac de GitHub) et, dans la machine virtuelle Windows, `TESTER-VANGUARD.bat` (
 
 macOS : compilé et testé sur un Mac de GitHub (`.github/workflows/macos.yml`, programme universel Apple Silicon +
 Intel), chaque nuit si le code a changé ou à la demande (`gh workflow run macos.yml`). `deployer.sh` récupère la
-dernière compilation réussie pour la clé.
+dernière compilation réussie pour la clé. Sur master, il produit aussi les nomenclatures (SBOM CycloneDX,
+`outils/sbom.sh`), et un travail à part, « attester », atteste le programme et ces nomenclatures (actions/attest,
+Sigstore), sans rien lancer du dépôt.
 
 Intégration continue (`.github/workflows/ci.yml`) : à chaque envoi sur master et à chaque demande de fusion,
 `outils/verifier.sh --ci`, la même vérification que sur l'ordinateur de l'auteur sauf Wine, puis le bilan sur de
 vraies distributions ; un vrai Windows (PowerShell, registre) à chaque envoi, à chaque demande de fusion, la nuit si
 le code a changé (`.github/hors-code.txt`) et à la demande (`gh workflow run ci.yml`), avec la compilation
-reproductible et le .exe livré (MinGW) essayé sur Windows. Chaque nuit : cargo audit, cargo deny, et cinq minutes
+reproductible et le .exe livré (MinGW) essayé sur Windows. `verifier.sh` relit aussi les workflows avec zizmor (hors ligne) et
+compile tout en `--locked`. Chaque nuit : cargo audit, cargo deny, et cinq minutes
 de fuzzing par cible. Le dépôt est public : les minutes de Linux et de Windows ne comptent pas.
 
 Tests sautés : un test qui ne peut pas tourner sur un ordinateur (outil du système absent, registre inaccessible,
@@ -323,7 +326,9 @@ version, compiler avec `rustflags = ["--remap-path-prefix=/home/<compte>=~"]` da
 ## Publier une version
 
 `outils/publier-version.sh` crée la page de la version sur GitHub (Releases) avec les trois programmes
-(`vanguard-windows-x86_64.exe`, `vanguard-linux-x86_64`, `vanguard-macos`), leurs empreintes SHA-256 et, en notes, le
+(`vanguard-windows-x86_64.exe`, `vanguard-linux-x86_64`, `vanguard-macos`), leurs empreintes SHA-256, leurs
+nomenclatures (`vanguard-<système>.cdx.json`, faites par `outils/sbom.sh`, qui demande cargo-cyclonedx 0.5.9 : identiques
+à celles du Mac de GitHub, dont l'attestation est vérifiée avant de publier) et, en notes, le
 commit de chaque version depuis la page précédente (titre et puces), la plus récente en tête ; les liens de
 téléchargement du README pointent toujours vers la dernière. `--notes` montre ces notes sans rien publier.
 

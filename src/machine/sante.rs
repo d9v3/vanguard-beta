@@ -277,8 +277,9 @@ mod systeme {
             let Ok(chemin) = std::ffi::CString::new(point.as_bytes()) else {
                 continue;
             };
-            // SAFETY : statvfs remplit la structure fournie à partir d'un chemin C valide.
+            // SAFETY: statvfs est une structure C d'entiers, pour qui tout à zéro est une valeur valide.
             let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
+            // SAFETY: statvfs remplit la structure fournie à partir d'un chemin C valide, qui vit le temps de l'appel.
             if unsafe { libc::statvfs(chemin.as_ptr(), &raw mut s) } != 0 {
                 continue;
             }
@@ -467,9 +468,9 @@ mod systeme {
         } else {
             c"/"
         };
-        // SAFETY : une struct statfs faite de nombres, que statfs remplit avant toute lecture.
+        // SAFETY: une struct statfs faite de nombres, que statfs remplit avant toute lecture.
         let mut infos: libc::statfs = unsafe { std::mem::zeroed() };
-        // SAFETY : chemin C terminé par un nul, infos vit pendant l'appel.
+        // SAFETY: chemin C terminé par un nul, infos vit pendant l'appel.
         if unsafe { libc::statfs(point.as_ptr(), &raw mut infos) } != 0 {
             return Vec::new();
         }

@@ -9,7 +9,8 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
 
 - Tout vérifier en une commande : `outils/verifier.sh` (mise en forme, clippy ×4, tests Linux et Wine, la suite Linux
   refaite sans Internet, scripts PowerShell, shell et Python, extensions, essais de la clé et de la signature des
-  versions, liens internes, textes FR/EN (`outils/textes.py`), dépendances par cargo deny, banc de fuzzing ; les
+  versions, liens internes, textes FR/EN (`outils/textes.py`), dépendances par cargo deny, workflows par zizmor,
+  nomenclatures (SBOM, `outils/sbom.sh`, cargo-cyclonedx 0.5.9), banc de fuzzing ; tout cargo en `--locked` ; les
   cibles en parallèle, une ligne par étape à la fin, avec les avertissements de cargo deny). Un test qui ne peut pas
   tourner ici le dit : `return crate::essais::saute("raison");` (`src/essais.rs`), compté « sauté » par verifier.sh,
   jamais un simple `return`. `--ci` : ce que lance la CI ; `--seulement étape,étape` (une étape demandée qui se dit
@@ -43,7 +44,9 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
   montés, dont la vraie clé, ne deviennent pas des lecteurs du préfixe) :
   `DBUS_SYSTEM_BUS_ADDRESS=unix:path=/nonexistent WINEPREFIX=<dossier jetable> WINEDEBUG=-all CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=~/.local/share/Steam/compatibilitytools.d/GE-Proton11-9-x86_64/files/bin/wine cargo test --target x86_64-pc-windows-gnu`
 - macOS : compilé et testé sur un Mac de GitHub (`.github/workflows/macos.yml`), à chaque publication et la nuit si
-  le code a changé ; ici, clippy seulement.
+  le code a changé ; ici, clippy seulement. Sur master, le travail « attester » atteste le programme et les
+  nomenclatures (actions/attest) ; `publier-version.sh` refait les nomenclatures ici, les compare et vérifie
+  l'attestation avant de publier.
 - CI (`.github/workflows/ci.yml`) : à chaque envoi sur master, `outils/verifier.sh --ci` (tout sauf Wine), vraies
   distributions, vrai Windows, compilation reproductible et le .exe livré essayé sur Windows ; la nuit, les mêmes si
   le code a changé (`.github/hors-code.txt`), et toujours cargo audit, cargo deny et 5 min de fuzzing par cible. GitHub
@@ -79,7 +82,8 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
   Apache, BSD…). Toute autre, même compatible avec la GPL-3.0 (MPL, LGPL), demande d'abord l'accord de l'auteur, à
   cause de la double licence possible, puis son ajout à `deny.toml`. Ensuite `python3 outils/licences-tierces.py` et
   committer LICENCES-TIERCES.txt.
-- `unsafe` seulement avec un commentaire `// SAFETY :`.
+- `unsafe` seulement avec un commentaire `// SAFETY:` juste au-dessus (sans espace avant le deux-points : clippy,
+  `undocumented_unsafe_blocks`, ne reconnaît que cette forme et refuse un bloc ou un `unsafe impl` sans lui).
 - Le programme s'appelle Vanguard, point : aucun ancien nom dans le code, les textes, les commits ni sur GitHub. Seule
   exception : `src/passage.rs`, qui reprend ce qu'une version d'avant a posé sur un ordinateur (à retirer à la 1.0).
 - Les tests ne touchent jamais les vraies données de l'ordinateur : sous `cfg(test)`, `socle::dossier_local()` est un

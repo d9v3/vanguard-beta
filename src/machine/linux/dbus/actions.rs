@@ -129,7 +129,7 @@ fn compte_d_en_face(s: &UnixStream) -> Option<u32> {
         gid: 0,
     };
     let mut taille = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).ok()?;
-    // SAFETY : getsockopt écrit au plus `taille` octets dans `cred`, une structure à nous vivante pendant l'appel, sur
+    // SAFETY: getsockopt écrit au plus `taille` octets dans `cred`, une structure à nous vivante pendant l'appel, sur
     // une prise ouverte que `s` garde.
     let r = unsafe {
         libc::getsockopt(
@@ -169,7 +169,7 @@ fn connecter_sans_verifier(prise: &Prise, uid: u32) -> Option<UnixStream> {
 /// Le bus de la session du compte, pour ses lectures (LECTURES) et les actions de ce module. `Err` : pas de bus
 /// joignable (hors session, sous sudo, service sans DBUS_SESSION_BUS_ADDRESS ni XDG_RUNTIME_DIR), avec la raison.
 pub(crate) fn session() -> Result<Bus, Echec> {
-    // SAFETY : geteuid ne prend rien et ne peut pas échouer.
+    // SAFETY: geteuid ne prend rien et ne peut pas échouer.
     let uid = unsafe { libc::geteuid() };
     if uid == 0 {
         return Err(echec(tr!(
@@ -361,7 +361,7 @@ pub(crate) fn utilisateur(geste: Geste, unite: &str) -> bool {
     if geste != Geste::Recharger && !unite_de_vanguard(unite) {
         return false;
     }
-    // SAFETY : geteuid ne prend rien et ne peut pas échouer.
+    // SAFETY: geteuid ne prend rien et ne peut pas échouer.
     if unsafe { libc::geteuid() } == 0 {
         return false;
     }

@@ -35,7 +35,7 @@ pub async fn sonder(ip: Ipv4Addr, port: u16, delai: Duration) -> (Etat, Option<T
 /// Nombre de connexions simultanées réellement possible : chaque connexion consomme un descripteur
 /// de fichier, et certains systèmes n'en autorisent que 256 par défaut. On relève la limite si le système le permet.
 pub fn limite_connexions(demande: usize) -> usize {
-    // SAFETY : getrlimit et setrlimit lisent et écrivent la structure locale `lim`, passée par pointeur valide.
+    // SAFETY: getrlimit et setrlimit lisent et écrivent la structure locale `lim`, passée par pointeur valide.
     #[cfg(unix)]
     unsafe {
         let mut lim = libc::rlimit {
@@ -339,7 +339,7 @@ pub(crate) fn demander_voisins(famille: libc::c_int) -> Option<Vec<u8>> {
     {
         demande[16] = famille as u8;
     }
-    // SAFETY : une socket netlink ouverte ici et refermée une seule fois à la sortie ; chaque appel reçoit un pointeur
+    // SAFETY: une socket netlink ouverte ici et refermée une seule fois à la sortie ; chaque appel reçoit un pointeur
     // et la taille exacte d'un objet à nous, vivant pendant l'appel (demande, adresse, délai, tampon) ; recv écrit au
     // plus `tampon.len()` octets dans le tampon, et seuls les `n` reçus sont lus. Le délai de réception (2 s) empêche
     // recv de bloquer sans fin si le noyau ne répondait pas.

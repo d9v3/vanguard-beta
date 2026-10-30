@@ -71,7 +71,7 @@ pub(crate) fn nom_du_fichier(pid: u32, fichier: &[u16]) -> String {
 pub(crate) fn liste() -> Vec<Processus> {
     const INSTANTANE_PROCESSUS: u32 = 2;
     let mut liste = Vec::new();
-    // SAFETY : CreateToolhelp32Snapshot rend un instantané (ou INVALID_HANDLE_VALUE, -1, vérifié), refermé une seule
+    // SAFETY: CreateToolhelp32Snapshot rend un instantané (ou INVALID_HANDLE_VALUE, -1, vérifié), refermé une seule
     // fois plus bas. `entree` est une PROCESSENTRY32W dont le champ de taille est rempli, comme Windows l'exige ; il la
     // remplit à chaque appel, sans rien garder.
     unsafe {
@@ -101,7 +101,7 @@ pub(crate) fn chemin(processus: u32) -> Option<String> {
     const INFORMATION_LIMITEE: u32 = 0x1000;
     let mut tampon = vec![0u16; 32_768];
     let mut taille = u32::try_from(tampon.len()).ok()?;
-    // SAFETY : la poignée vient d'OpenProcess (nulle : refus, vérifié) et n'est refermée qu'une fois.
+    // SAFETY: la poignée vient d'OpenProcess (nulle : refus, vérifié) et n'est refermée qu'une fois.
     // QueryFullProcessImageNameW écrit au plus `taille` caractères dans `tampon`, puis le nombre écrit dans `taille`.
     unsafe {
         let poignee = OpenProcess(INFORMATION_LIMITEE, 0, processus);
@@ -119,7 +119,7 @@ pub(crate) fn chemin(processus: u32) -> Option<String> {
 /// que Vanguard a lui-même lancées. `false` : refusé ou déjà fini.
 pub(crate) fn terminer(processus: u32) -> bool {
     const ARRET: u32 = 0x0001;
-    // SAFETY : la poignée vient d'OpenProcess (nulle : refus, vérifié) et n'est refermée qu'une fois.
+    // SAFETY: la poignée vient d'OpenProcess (nulle : refus, vérifié) et n'est refermée qu'une fois.
     unsafe {
         let poignee = OpenProcess(ARRET, 0, processus);
         if poignee.is_null() {
@@ -148,7 +148,7 @@ pub(crate) fn terminer_si(processus: u32, attendu: &str) -> bool {
     const ARRET_ET_LECTURE: u32 = 0x0001 | 0x1000;
     let mut tampon = vec![0u16; 32_768];
     let mut taille = u32::try_from(tampon.len()).unwrap_or(0);
-    // SAFETY : la poignée vient d'OpenProcess (nulle : refus, vérifié) et n'est refermée qu'une fois.
+    // SAFETY: la poignée vient d'OpenProcess (nulle : refus, vérifié) et n'est refermée qu'une fois.
     // QueryFullProcessImageNameW écrit au plus `taille` caractères dans `tampon`, puis le nombre écrit dans `taille`.
     unsafe {
         let poignee = OpenProcess(ARRET_ET_LECTURE, 0, processus);
@@ -168,7 +168,7 @@ pub(crate) fn terminer_si(processus: u32, attendu: &str) -> bool {
 /// rien arrêter : le blocage le sait avant de commencer, pour ne rien faire à moitié.
 pub(crate) fn peut_terminer(processus: u32) -> bool {
     const ARRET: u32 = 0x0001;
-    // SAFETY : la poignée vient d'OpenProcess (nulle : refus, vérifié) et n'est refermée qu'une fois.
+    // SAFETY: la poignée vient d'OpenProcess (nulle : refus, vérifié) et n'est refermée qu'une fois.
     unsafe {
         let poignee = OpenProcess(ARRET, 0, processus);
         if poignee.is_null() {
@@ -183,7 +183,7 @@ pub(crate) fn peut_terminer(processus: u32) -> bool {
 fn jeton(classe: u32) -> Option<Vec<u64>> {
     const LECTURE: u32 = 0x0008;
     let mut poignee = std::ptr::null_mut();
-    // SAFETY : GetCurrentProcess rend une pseudo-poignée, sans rien à fermer. Le jeton ouvert (vérifié) est fermé une
+    // SAFETY: GetCurrentProcess rend une pseudo-poignée, sans rien à fermer. Le jeton ouvert (vérifié) est fermé une
     // seule fois. Le premier appel donne la taille ; le second écrit au plus `place` octets (la taille annoncée) dans
     // `tampon`, qui en a au moins autant, aligné sur 8 octets pour les structures qu'il contient.
     unsafe {
@@ -227,7 +227,7 @@ pub(crate) fn sid() -> Option<String> {
     const UTILISATEUR: u32 = 1;
     let tampon = jeton(UTILISATEUR)?;
     let mut texte: *mut u16 = std::ptr::null_mut();
-    // SAFETY : TOKEN_USER commence par un SID_AND_ATTRIBUTES, dont le premier champ est le pointeur vers le SID, dans le
+    // SAFETY: TOKEN_USER commence par un SID_AND_ATTRIBUTES, dont le premier champ est le pointeur vers le SID, dans le
     // même tampon (vivant pendant l'appel). ConvertSidToStringSidW alloue la chaîne (terminée par un zéro), lue puis
     // rendue une seule fois par LocalFree.
     let sid = unsafe {
@@ -254,7 +254,7 @@ pub(crate) fn compte_de(pid: u32) -> String {
         GetTokenInformation, LookupAccountSidW, SID_NAME_USE, TOKEN_QUERY, TOKEN_USER, TokenUser,
     };
     use windows::Win32::System::Threading::{OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION};
-    // SAFETY : chaque poignée ouverte est fermée une fois ; le tampon du jeton est aligné (u64) et sa taille rendue
+    // SAFETY: chaque poignée ouverte est fermée une fois ; le tampon du jeton est aligné (u64) et sa taille rendue
     // par Windows est vérifiée AVANT d'y lire le TOKEN_USER ; les tampons des noms ont la taille annoncée à Windows.
     unsafe {
         let Ok(processus) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {

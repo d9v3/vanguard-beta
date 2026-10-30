@@ -547,20 +547,20 @@ fn mhz_de(m: i32, e: i16) -> Option<u32> {
 #[cfg(target_os = "linux")]
 fn frequence_wifi(carte: &str) -> Option<u32> {
     const SIOCGIWFREQ: libc::Ioctl = 0x8B05;
-    // SAFETY : iwreq est une structure C de nombres et d'unions de nombres : tout à zéro est une valeur valide.
+    // SAFETY: iwreq est une structure C de nombres et d'unions de nombres : tout à zéro est une valeur valide.
     let mut demande: libc::iwreq = unsafe { std::mem::zeroed() };
     let nom = carte.as_bytes();
     if nom.len() >= libc::IFNAMSIZ {
         return None;
     }
-    // SAFETY : on écrit dans le seul champ de l'union, un tableau de IFNAMSIZ octets ; le nom, plus court, y
+    // SAFETY: on écrit dans le seul champ de l'union, un tableau de IFNAMSIZ octets ; le nom, plus court, y
     // laisse au moins un zéro final.
     unsafe {
         for (case, octet) in demande.ifr_ifrn.ifrn_name.iter_mut().zip(nom) {
             *case = libc::c_char::from_ne_bytes([*octet]);
         }
     }
-    // SAFETY : une socket ouverte ici et refermée une seule fois ; ioctl reçoit un pointeur vers la demande, à
+    // SAFETY: une socket ouverte ici et refermée une seule fois ; ioctl reçoit un pointeur vers la demande, à
     // nous et vivante pendant l'appel, de la taille qu'attend SIOCGIWFREQ. Lire le champ freq après coup est
     // sûr : l'union ne contient que des nombres.
     unsafe {

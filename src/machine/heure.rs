@@ -137,7 +137,7 @@ fn lire() -> Option<Etat> {
 /// `None` : le noyau refuse.
 #[cfg(target_os = "linux")]
 fn synchronisee() -> Option<bool> {
-    // SAFETY : avec `modes` à zéro, adjtimex ne change rien ; il remplit seulement la structure, à nous, passée par
+    // SAFETY: avec `modes` à zéro, adjtimex ne change rien ; il remplit seulement la structure, à nous, passée par
     // un pointeur valable pendant l'appel.
     let (etat, t) = unsafe {
         let mut t: libc::timex = std::mem::zeroed();

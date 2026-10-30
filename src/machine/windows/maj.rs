@@ -94,7 +94,7 @@ fn windows_update_com() -> Option<Recherche> {
         "IUpdateSearcher::Search",
         std::time::Duration::from_secs(180),
         || {
-            // SAFETY : COM est initialisé dans ce fil (par `wmi::com_delai`) ; les collections de Windows Update
+            // SAFETY: COM est initialisé dans ce fil (par `wmi::com_delai`) ; les collections de Windows Update
             // s'indexent de 0 à Count - 1, bornes lues avant chaque accès.
             unsafe {
                 let session: IUpdateSession = CoCreateInstance(&UpdateSession, None, CLSCTX_INPROC_SERVER)?;
@@ -264,7 +264,7 @@ fn redemarrage_com() -> Option<Vec<String>> {
     use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
     use windows::Win32::System::UpdateAgent::{ISystemInformation, SystemInformation};
     let windows_update = wmi::com("Windows Update", "ISystemInformation::RebootRequired", || {
-        // SAFETY : COM est initialisé dans ce fil (par `wmi::com`) ; SystemInformation est la classe de l'API.
+        // SAFETY: COM est initialisé dans ce fil (par `wmi::com`) ; SystemInformation est la classe de l'API.
         unsafe {
             let info: ISystemInformation = CoCreateInstance(&SystemInformation, None, CLSCTX_INPROC_SERVER)?;
             Ok(info.RebootRequired()?.as_bool())

@@ -403,7 +403,7 @@ mod natif {
 
     impl Drop for Api {
         fn drop(&mut self) {
-            // SAFETY : le module vient de LoadLibraryExW et n'est libéré qu'ici, une fois ; plus aucun pointeur de
+            // SAFETY: le module vient de LoadLibraryExW et n'est libéré qu'ici, une fois ; plus aucun pointeur de
             // fonction n'est appelé après.
             unsafe {
                 FreeLibrary(self.module);
@@ -427,7 +427,7 @@ mod natif {
             // Seulement depuis System32 : wlanapi.dll n'est pas une « KnownDLL », et un LoadLibraryW par son seul nom
             // la chercherait d'abord dans le dossier de vanguard.exe (clé USB, Téléchargements), où n'importe qui peut
             // poser une fausse DLL qui s'exécuterait dans Vanguard.
-            // SAFETY : le nom est terminé par un zéro ; chaque nom de fonction aussi ; aucun fichier n'est passé
+            // SAFETY: le nom est terminé par un zéro ; chaque nom de fonction aussi ; aucun fichier n'est passé
             // (pointeur nul permis). Un pointeur nul est vérifié avant d'être converti ; les signatures sont celles
             // de wlanapi.h. Le module est libéré par Drop.
             unsafe {
@@ -470,7 +470,7 @@ mod natif {
 
     impl Drop for Session {
         fn drop(&mut self) {
-            // SAFETY : la poignée vient de WlanOpenHandle (non nulle, vérifié) et n'est refermée qu'ici.
+            // SAFETY: la poignée vient de WlanOpenHandle (non nulle, vérifié) et n'est refermée qu'ici.
             unsafe {
                 (self.api.fermer)(self.poignee, null_mut());
             }
@@ -492,7 +492,7 @@ mod natif {
                 ));
             };
             let (mut version, mut poignee) = (0u32, null_mut());
-            // SAFETY : WlanOpenHandle écrit la version négociée et la poignée dans deux variables à nous.
+            // SAFETY: WlanOpenHandle écrit la version négociée et la poignée dans deux variables à nous.
             let code = unsafe { (api.ouvrir)(2, null_mut(), &raw mut version, &raw mut poignee) };
             if code != 0 || poignee.is_null() {
                 return Err(tr!(
@@ -506,7 +506,7 @@ mod natif {
         /// Copie un bloc rendu par l'API (`n` octets) puis le libère. SAFETY exigée de l'appelant : `bloc` vient
         /// d'une fonction WLAN qui a réussi et couvre au moins `n` octets.
         unsafe fn prendre(&self, bloc: *mut c_void, n: usize) -> Vec<u8> {
-            // SAFETY : voir ci-dessus ; le bloc n'est libéré qu'ici, une fois, par la fonction de l'API.
+            // SAFETY: voir ci-dessus ; le bloc n'est libéré qu'ici, une fois, par la fonction de l'API.
             unsafe {
                 let copie = std::slice::from_raw_parts(bloc.cast::<u8>(), n).to_vec();
                 (self.api.liberer)(bloc);
@@ -516,7 +516,7 @@ mod natif {
 
         /// Une liste à en-tête (nombre, index) : copiée sur l'en-tête et ses éléments, bornés.
         unsafe fn prendre_liste(&self, bloc: *mut c_void, taille_element: usize) -> Vec<u8> {
-            // SAFETY : l'API garantit l'en-tête et `n` éléments entiers dans le bloc.
+            // SAFETY: l'API garantit l'en-tête et `n` éléments entiers dans le bloc.
             unsafe {
                 let n = usize::try_from(std::ptr::read_unaligned(bloc.cast::<u32>()))
                     .unwrap_or(0)
@@ -527,7 +527,7 @@ mod natif {
 
         fn interfaces(&self) -> Vec<super::Interface> {
             let mut liste = null_mut();
-            // SAFETY : WlanEnumInterfaces rend une WLAN_INTERFACE_INFO_LIST (vérifiée non nulle) que `prendre_liste`
+            // SAFETY: WlanEnumInterfaces rend une WLAN_INTERFACE_INFO_LIST (vérifiée non nulle) que `prendre_liste`
             // copie et libère.
             unsafe {
                 if (self.api.enumerer)(self.poignee, null_mut(), &raw mut liste) != 0 || liste.is_null() {
@@ -541,7 +541,7 @@ mod natif {
         /// de localisation, depuis Windows 11 24H2).
         fn connexion(&self, guid: &[u8; 16]) -> Result<Option<Connexion>, u32> {
             let (mut taille, mut donnees, mut genre) = (0u32, null_mut(), 0u32);
-            // SAFETY : WlanQueryInterface écrit la taille et le bloc (vérifié non nul) ; copié sur `taille` octets,
+            // SAFETY: WlanQueryInterface écrit la taille et le bloc (vérifié non nul) ; copié sur `taille` octets,
             // au plus la structure attendue, puis libéré.
             let connexion = unsafe {
                 let code = (self.api.interroger)(
@@ -570,7 +570,7 @@ mod natif {
         /// Le canal de la connexion (wlan_intf_opcode_channel_number, un ULONG).
         fn canal(&self, guid: &[u8; 16]) -> Option<u16> {
             let (mut taille, mut donnees, mut genre) = (0u32, null_mut(), 0u32);
-            // SAFETY : comme `connexion` ; le bloc n'est lu que s'il couvre les 4 octets d'un ULONG.
+            // SAFETY: comme `connexion` ; le bloc n'est lu que s'il couvre les 4 octets d'un ULONG.
             unsafe {
                 let code = (self.api.interroger)(
                     self.poignee,
@@ -596,7 +596,7 @@ mod natif {
         /// Windows 11 24H2).
         fn balises(&self, guid: &[u8; 16]) -> Result<Vec<Balise>, u32> {
             let mut liste = null_mut();
-            // SAFETY : WlanGetNetworkBssList rend une WLAN_BSS_LIST (vérifiée non nulle) dont le premier u32 est la
+            // SAFETY: WlanGetNetworkBssList rend une WLAN_BSS_LIST (vérifiée non nulle) dont le premier u32 est la
             // taille totale du bloc : copié sur cette taille, bornée, puis libéré.
             unsafe {
                 let code = (self.api.liste_bss)(
@@ -618,7 +618,7 @@ mod natif {
 
         fn profils(&self, guid: &[u8; 16]) -> Vec<ProfilEnregistre> {
             let mut liste = null_mut();
-            // SAFETY : WlanGetProfileList rend une WLAN_PROFILE_INFO_LIST (vérifiée non nulle), copiée et libérée ;
+            // SAFETY: WlanGetProfileList rend une WLAN_PROFILE_INFO_LIST (vérifiée non nulle), copiée et libérée ;
             // WlanGetProfile rend un texte UTF-16 terminé par un zéro (vérifié non nul), lu jusqu'au zéro, au plus
             // 64 Ki caractères, puis libéré. Le nom passé est terminé par un zéro.
             unsafe {

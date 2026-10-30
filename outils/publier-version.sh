@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Publie la version de Cargo.toml sur GitHub (page « Releases ») : les trois programmes, sous des noms fixes que le
-# README relie (…/releases/latest/download/<nom>), et leurs empreintes SHA-256. À lancer après outils/deployer.sh,
-# quand la version est compilée et poussée. La version macOS vient d'un Mac de GitHub (.github/workflows/macos.yml) :
+# README relie (…/releases/latest/download/<nom>), leurs empreintes SHA-256 et leurs nomenclatures (SBOM, attestées
+# avec le programme macOS). À lancer après outils/deployer.sh, quand la version est compilée et poussée. La version macOS vient d'un Mac de GitHub (.github/workflows/macos.yml) :
 # compilée pour ce commit si elle manque, en quelques minutes. Les notes reprennent toutes les versions déployées depuis
 # la page précédente : une version intermédiaire (VANGUARD_INTERMEDIAIRE) n'a pas la sienne.
 #   outils/publier-version.sh           publier la version de Cargo.toml
@@ -63,6 +63,18 @@ TELECHARGER="Un programme par système, à télécharger :
 
 Empreintes SHA-256 : \`SHA256SUMS.txt\` (\`sha256sum -c SHA256SUMS.txt\`).
 
+Sur la page de d9v3/vanguard-beta, les nomenclatures logicielles (SBOM CycloneDX : toutes les dépendances compilées,
+versions et licences) : \`vanguard-<système>.cdx.json\`, une par programme, deux pour le Mac universel ; celles de
+Linux et Windows décrivent leur code, pas le fichier publié. Le programme macOS et ces nomenclatures sont attestés par
+GitHub, qui les a produits, à vérifier avec la GitHub CLI connectée (\`gh auth login\`), le nom du fichier changé
+pour une nomenclature :
+
+\`gh attestation verify vanguard-macos -R d9v3/vanguard-beta --signer-workflow d9v3/vanguard-beta/.github/workflows/macos.yml --source-ref refs/heads/master\`
+
+Les programmes Windows et Linux, compilés par l'auteur, ne sont pas attestés : la mise à jour intégrée de Vanguard
+les vérifie par la signature Ed25519 de l'auteur (dépôt d9v3/vanguard-update). \`SHA256SUMS.txt\` contrôle le
+téléchargement, pas l'origine.
+
 Ce qu'ont apporté les versions d'avant : \`CHANGELOG.md\` dans le dépôt.
 
 ---
@@ -70,7 +82,12 @@ Ce qu'ont apporté les versions d'avant : \`CHANGELOG.md\` dans le dépôt.
 Download the program for your system: \`vanguard-windows-x86_64.exe\` (Windows, unsigned: SmartScreen may warn, “More
 info” then “Run anyway”), \`vanguard-linux-x86_64\` (any distribution: \`chmod +x\`, then run it in a terminal),
 \`vanguard-macos\` (Apple Silicon and Intel: \`xattr -d com.apple.quarantine vanguard-macos\`, then run it in Terminal).
-SHA-256 checksums: \`SHA256SUMS.txt\`. What earlier versions brought: \`CHANGELOG.en.md\` in the repository."
+SHA-256 checksums: \`SHA256SUMS.txt\` (they check the download, not the origin). On the d9v3/vanguard-beta page,
+software bills of materials (CycloneDX SBOM): \`vanguard-<system>.cdx.json\`, one per program, two for the universal
+Mac one; the Linux and Windows ones describe their code, not the published file. The macOS program and the SBOMs are
+attested by GitHub, which built them; check with the GitHub CLI logged in (\`gh auth login\`), changing the file name
+for an SBOM: \`gh attestation verify vanguard-macos -R d9v3/vanguard-beta --signer-workflow d9v3/vanguard-beta/.github/workflows/macos.yml --source-ref refs/heads/master\`. The Windows and Linux programs, built by the author, are not attested: Vanguard's built-in
+update checks them with the author's Ed25519 signature (d9v3/vanguard-update repository). What earlier versions brought: \`CHANGELOG.en.md\` in the repository."
 
 # Jamais déduit d'un dépôt des versions vide : vidé par qui tient le compte GitHub (et le point sûr effacé), il ferait
 # repartir l'historique de zéro (campagne d'attaque n° 4). Tapé par l'auteur, une seule fois.
@@ -141,6 +158,9 @@ python3 outils/liens.py --version vanguard-windows-x86_64.exe vanguard-linux-x86
 
 DOSSIER=$(mktemp -d)
 trap 'rm -rf "$DOSSIER"' EXIT
+# Les nomenclatures (SBOM) d'ici, avant d'attendre le Mac : un cargo-cyclonedx absent ou d'une autre version
+# s'arrête maintenant, pas après dix minutes. Comparées plus bas à celles du passage Mac.
+bash outils/sbom.sh "$DOSSIER/sbom" >/dev/null || { echo "Nomenclatures (SBOM) : rien de publié."; exit 1; }
 cp "$LINUX" "$DOSSIER/vanguard-linux-x86_64"
 cp "$WINDOWS" "$DOSSIER/vanguard-windows-x86_64.exe"
 # Les copies qui partent, relues : celles-là, et pas un fichier remplacé entre la vérification et la copie.
@@ -170,7 +190,13 @@ avec_programme() {
       # Un fichier du programme a changé depuis : cette compilation-là ne vaut pas pour ce commit.
       [[ -n $HORS_CODE ]] || continue
       git diff --name-only "$sha" "$COMMIT" | grep -vqE "$HORS_CODE" && continue
+      # Ce qui fait les nomenclatures est « hors code » : changé depuis, celles d'ici ne seraient plus les siennes.
+      git diff --quiet "$sha" "$COMMIT" -- outils/sbom.sh outils/date-du-code.sh .github/hors-code.txt || continue
     fi
+    # Seulement un passage dont le travail « attester » a réussi : celui d'avant ce travail, ou d'une attestation
+    # en échec, ne se publierait pas (plus bas) ; on en compile plutôt un neuf.
+    [[ -n $(gh run view "$id" --json jobs \
+      -q '.jobs[] | select(.name == "attester" and .conclusion == "success") | .name') ]] || continue
     if [[ -n $(gh api "repos/{owner}/{repo}/actions/runs/$id/artifacts" \
       -q '.artifacts[] | select(.name == "vanguard-macos" and (.expired | not)) | .name') ]]; then
       echo "$id"
@@ -224,6 +250,29 @@ if [[ -z $ANNONCEE || $ANNONCEE != "$(sha256sum "$DOSSIER/vanguard-macos" | cut 
 fi
 outils/failles-programmes.sh "$DOSSIER/vanguard-macos" || { echo "Version macOS : rien de publié."; exit 1; }
 
+# Les nomenclatures (SBOM) faites ici (outils/sbom.sh), octet pour octet celles du passage Mac : son travail
+# « attester » (.github/workflows/macos.yml) les a attestées avec le programme Mac, et c'est ce que la page publie.
+# Puis chaque attestation vérifiée (Sigstore, registre public Rekor) : signée par macos.yml de ce dépôt, sur master, au
+# commit de ce passage, sur un runner de GitHub. Exigée depuis la 0.89 : un passage d'avant ce travail n'en a pas, et
+# rien ne se publie sans. Linux et Windows ne sont pas attestés : compilés ici, pas par GitHub ; la mise à jour
+# intégrée les vérifie par la signature Ed25519 de l'auteur (outils/signer-versions.sh), comme le disent les notes.
+DEPOT_CODE=d9v3/vanguard-beta
+RELANCE="relancer le Mac (gh workflow run macos.yml --ref master), puis outils/publier-version.sh"
+[[ -d $DOSSIER/mac/sbom ]] ||
+  { echo "Le passage Mac ($RUN) n'a pas de nomenclatures : rien de publié ; $RELANCE."; exit 1; }
+for f in "$DOSSIER/sbom/"*.cdx.json; do
+  cmp -s "$f" "$DOSSIER/mac/sbom/${f##*/}" ||
+    { echo "Nomenclature ${f##*/} différente de celle du passage Mac ($RUN) : rien de publié ; $RELANCE."; exit 1; }
+done
+[[ $(ls "$DOSSIER/mac/sbom/" | wc -l) == "$(ls "$DOSSIER/sbom/" | wc -l)" ]] ||
+  { echo "Le passage Mac ($RUN) n'a pas les mêmes nomenclatures qu'ici : rien de publié."; exit 1; }
+for f in "$DOSSIER/vanguard-macos" "$DOSSIER/sbom/"*.cdx.json; do
+  gh attestation verify "$f" -R "$DEPOT_CODE" --signer-workflow "$DEPOT_CODE/.github/workflows/macos.yml" \
+    --source-ref refs/heads/master --source-digest "$SHA_RUN" --deny-self-hosted-runners >/dev/null ||
+    { echo "Attestation de ${f##*/} absente ou invalide (passage Mac $RUN) : rien de publié."; exit 1; }
+done
+echo "✔ Programme macOS et nomenclatures attestés par GitHub (macos.yml, master, ${SHA_RUN:0:12})."
+
 # Le programme Windows publié doit être celui qu'une passe réussie de la VM a fait tourner, octet pour octet : la CI
 # teste la cible MSVC sur Windows, Wine a ses faux verts, et seule la VM essaie ce .exe-là sur un vrai Windows. Une
 # porte de qualité, pas de sécurité. Sa preuve : le verdict OK, signé par le surveillant de la file d'essais (HMAC du
@@ -264,6 +313,7 @@ else
   echo "✔ Programme Windows essayé tel quel dans la VM : ${PASSE%% ->*}"
 fi
 (cd "$DOSSIER" && sha256sum vanguard-windows-x86_64.exe vanguard-linux-x86_64 vanguard-macos >SHA256SUMS.txt)
+cp "$DOSSIER/sbom/"*.cdx.json "$DOSSIER/"
 
 NOTES=$(notes)
 
@@ -272,7 +322,7 @@ NOTES=$(notes)
 printf '%s\n' "$NOTES" | python3 outils/confidentialite.py --texte || { echo "Notes de la version : rien de publié."; exit 1; }
 printf '%s\n' "$NOTES" | python3 outils/liens.py --texte || { echo "Liens des notes : rien de publié."; exit 1; }
 python3 outils/confidentialite.py --binaire "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" \
-  "$DOSSIER/vanguard-macos" || { echo "Programmes : rien de publié."; exit 1; }
+  "$DOSSIER/vanguard-macos" "$DOSSIER/"*.cdx.json || { echo "Programmes : rien de publié."; exit 1; }
 # Les mêmes programmes, avec leur manifeste signé (outils/signer-versions.sh), dans le dépôt public des versions : la
 # mise à jour depuis GitHub les y prend (src/mise_a_jour/github.rs), le code restant privé. Seule la dernière y reste.
 # Signés AVANT la création de toute page : un contrôle de signer-versions.sh qui refuse (forme d'un programme,
@@ -303,7 +353,8 @@ outils/publier-version.sh --premier ; sinon, il a été vidé, et l'historique n
   SIGNEE=1
 fi
 gh release create "$TAG" --target "$COMPILE" --title "$NOM $VERSION" --notes "$NOTES" \
-  "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-macos" "$DOSSIER/SHA256SUMS.txt"
+  "$DOSSIER/vanguard-windows-x86_64.exe" "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-macos" "$DOSSIER/SHA256SUMS.txt" \
+  "$DOSSIER/"*.cdx.json
 echo "Version $TAG publiée : $(gh release view "$TAG" --json url -q .url)"
 PUBLIEE_SIGNEE=""
 if [[ -n $SIGNEE ]] && gh release create "$TAG" -R "$DEPOT_VERSIONS" --title "$NOM $VERSION" --notes "$NOTES" \
@@ -334,11 +385,11 @@ if [[ -z $SIGNEE || -n $PUBLIEE_SIGNEE ]]; then
   done
 fi
 command -v notify-send >/dev/null &&
-  notify-send -a Vanguard -i vanguard "$NOM $VERSION publiée sur GitHub" "Page de la version : les trois programmes et leurs empreintes." || true
+  notify-send -a Vanguard -i vanguard "$NOM $VERSION publiée sur GitHub" "Page de la version : les trois programmes, leurs empreintes et leurs nomenclatures." || true
 
 # La version macOS publiée est gardée comme une compilation récupérée (outils/deployer.sh ne la redemande pas) et
 # copiée sur la clé si elle est branchée : sinon la clé garderait celle d'avant jusqu'au déploiement suivant.
-rm -rf target/macos && mkdir -p target/macos && cp "$DOSSIER/mac/"* target/macos/
+rm -rf target/macos && mkdir -p target/macos && cp -R "$DOSSIER/mac/". target/macos/
 # Seulement la clé de cet ordinateur (jeton connu, outils/cle-commun.sh), et seulement si elle est encore sa référence :
 # comparée avant la copie, comme dans deployer.sh, pour que la réécriture du manifeste ne reprenne rien d'autre.
 # shellcheck source=outils/cle-commun.sh

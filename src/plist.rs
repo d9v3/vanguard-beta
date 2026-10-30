@@ -947,7 +947,7 @@ mod tests {
         {
             let tube = dossier.join("tube.plist");
             let c = std::ffi::CString::new(tube.as_os_str().as_encoded_bytes()).unwrap();
-            // SAFETY : chemin C valide, terminé par un nul, vivant pendant l'appel.
+            // SAFETY: chemin C valide, terminé par un nul, vivant pendant l'appel.
             assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
             assert!(lire_fichier(&tube).is_err());
         }

@@ -123,7 +123,7 @@ fn lire() -> Result<Vec<String>, String> {
     const A_PLAT: u32 = 0;
     let mut entree: *mut Entree = std::ptr::null_mut();
     let mut noms = Vec::new();
-    // SAFETY : DnsGetCacheDataTable (fonction de dnsapi sans documentation publique, la même depuis Windows XP, que
+    // SAFETY: DnsGetCacheDataTable (fonction de dnsapi sans documentation publique, la même depuis Windows XP, que
     // ipconfig /displaydns emploie) rend une liste chaînée allouée par Windows, ou rien. Chaque entrée est lue une fois,
     // son nom (chaîne terminée par un zéro) copié, puis le nom et l'entrée rendus par DnsFree, comme le font les outils
     // qui l'emploient ; la suivante est lue avant de rendre l'entrée.

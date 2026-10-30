@@ -91,7 +91,7 @@ pub(super) fn processus(dossier: &Path) -> Partie {
     };
     let comptes = comptes_de(&std::fs::read_to_string("/etc/passwd").unwrap_or_default());
     let demarrage = btime().unwrap_or(0);
-    // SAFETY : sysconf lit une constante du système, sans toucher à la mémoire du programme.
+    // SAFETY: sysconf lit une constante du système, sans toucher à la mémoire du programme.
     let tops = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) }).unwrap_or(100);
     let montages = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
     let mut empreintes: HashMap<(u64, u64), Empreinte> = HashMap::new();

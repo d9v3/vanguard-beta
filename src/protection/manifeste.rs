@@ -1434,7 +1434,7 @@ mod tests {
         std::fs::write(racine.join("vrai"), b"programme").unwrap();
         std::os::unix::fs::symlink(racine.join("vrai"), racine.join("lien")).unwrap();
         let nom = std::ffi::CString::new(racine.join("tube").to_string_lossy().as_bytes()).unwrap();
-        // SAFETY : chaîne C terminée par un zéro, à nous ; mkfifo ne la garde pas.
+        // SAFETY: chaîne C terminée par un zéro, à nous ; mkfifo ne la garde pas.
         assert_eq!(unsafe { libc::mkfifo(nom.as_ptr(), 0o600) }, 0);
         assert!(empreinte(&racine.join("vrai")).is_some());
         let (envoi, reception) = std::sync::mpsc::channel();

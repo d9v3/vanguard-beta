@@ -451,7 +451,7 @@ mod tests {
     #[test]
     fn fichier_interdit_dans_un_dossier_lisible() {
         use std::os::unix::fs::PermissionsExt;
-        // SAFETY : geteuid ne prend rien et ne peut pas échouer.
+        // SAFETY: geteuid ne prend rien et ne peut pas échouer.
         if unsafe { libc::geteuid() } == 0 {
             return;
         }

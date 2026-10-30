@@ -37,7 +37,7 @@ pub(crate) fn empreinte(fichier: &Path, algo: &str, taille: usize) -> Option<Str
     let (mut fournisseur, mut calcul) = (std::ptr::null_mut(), std::ptr::null_mut());
     let mut resultat = vec![0u8; taille];
     let mut morceau = vec![0u8; 1 << 20];
-    // SAFETY : le nom est terminé par un zéro et vit pendant l'appel ; le fournisseur et le calcul (refus : code non
+    // SAFETY: le nom est terminé par un zéro et vit pendant l'appel ; le fournisseur et le calcul (refus : code non
     // nul, vérifié avant tout usage) sont rendus une seule fois, à la fin. BCrypt lit au plus `n` octets du morceau,
     // qui les a, et écrit `taille` octets dans `resultat`, qui les a (BCrypt refuse une taille qui n'est pas celle
     // de l'algorithme).

@@ -50,7 +50,7 @@ pub(crate) fn programme(pid: u32) -> Option<PathBuf> {
     {
         let mut tampon = vec![0u8; 4096];
         let taille = u32::try_from(tampon.len()).ok()?;
-        // SAFETY : proc_pidpath écrit au plus `taille` octets dans `tampon` et rend leur nombre (0 : refus).
+        // SAFETY: proc_pidpath écrit au plus `taille` octets dans `tampon` et rend leur nombre (0 : refus).
         let lus = unsafe { libc::proc_pidpath(libc::c_int::try_from(pid).ok()?, tampon.as_mut_ptr().cast(), taille) };
         let chemin = String::from_utf8_lossy(tampon.get(..usize::try_from(lus).ok()?)?).into_owned();
         chemin.starts_with('/').then(|| PathBuf::from(chemin))
@@ -101,7 +101,7 @@ fn hidepid(montages: &str) -> bool {
 pub(crate) fn pids() -> Option<Vec<u32>> {
     let mut pids: Vec<libc::c_int> = vec![0; 8192];
     let taille = libc::c_int::try_from(pids.len() * std::mem::size_of::<libc::c_int>()).ok()?;
-    // SAFETY : proc_listallpids écrit au plus `taille` octets dans `pids` et rend le nombre de processus écrits.
+    // SAFETY: proc_listallpids écrit au plus `taille` octets dans `pids` et rend le nombre de processus écrits.
     let n = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), taille) };
     let n = usize::try_from(n).unwrap_or(0).min(pids.len());
     let liste: Vec<u32> = pids.iter().take(n).filter_map(|&p| u32::try_from(p).ok()).collect();
@@ -143,7 +143,7 @@ fn envoyer_signal(pid: u32, signal: libc::c_int) -> bool {
     let Ok(pid) = libc::pid_t::try_from(pid) else {
         return false;
     };
-    // SAFETY : kill n'envoie qu'un signal à un numéro de processus et ne touche aucune mémoire.
+    // SAFETY: kill n'envoie qu'un signal à un numéro de processus et ne touche aucune mémoire.
     unsafe { libc::kill(pid, signal) == 0 }
 }
 

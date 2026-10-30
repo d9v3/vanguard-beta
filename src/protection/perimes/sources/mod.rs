@@ -706,22 +706,26 @@ mod tests {
         static ALLOUE: Cell<usize> = const { Cell::new(0) };
     }
 
-    // SAFETY : tout est délégué à l'allocateur du système ; le compte (un `Cell` sans destructeur, initialisé à la
+    // SAFETY: tout est délégué à l'allocateur du système ; le compte (un `Cell` sans destructeur, initialisé à la
     // compilation) n'alloue rien lui-même.
     unsafe impl GlobalAlloc for Compteur {
         unsafe fn alloc(&self, l: Layout) -> *mut u8 {
             let _ = ALLOUE.try_with(|c| c.set(c.get().saturating_add(l.size())));
+            // SAFETY: les conditions de `GlobalAlloc::alloc` (taille non nulle) sont celles de l'appelant, transmises telles quelles.
             unsafe { System.alloc(l) }
         }
         unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+            // SAFETY: `p` vient de cet allocateur, donc du système, avec ce même `l` : l'appelant le garantit.
             unsafe { System.dealloc(p, l) }
         }
         unsafe fn alloc_zeroed(&self, l: Layout) -> *mut u8 {
             let _ = ALLOUE.try_with(|c| c.set(c.get().saturating_add(l.size())));
+            // SAFETY: mêmes conditions que `alloc`, transmises telles quelles par l'appelant.
             unsafe { System.alloc_zeroed(l) }
         }
         unsafe fn realloc(&self, p: *mut u8, l: Layout, taille: usize) -> *mut u8 {
             let _ = ALLOUE.try_with(|c| c.set(c.get().saturating_add(taille)));
+            // SAFETY: `p` vient du système avec `l`, et `taille` est valide : l'appelant le garantit.
             unsafe { System.realloc(p, l, taille) }
         }
     }

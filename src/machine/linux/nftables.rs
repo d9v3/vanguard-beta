@@ -620,9 +620,9 @@ fn module_liste(texte: &str) -> bool {
 }
 
 fn version_du_noyau() -> Option<String> {
-    // SAFETY : utsname est une structure de tableaux d'octets, remplie par uname ; zéro est une valeur valide.
+    // SAFETY: utsname est une structure de tableaux d'octets, remplie par uname ; zéro est une valeur valide.
     let mut u: libc::utsname = unsafe { std::mem::zeroed() };
-    // SAFETY : `u` est à nous, vivant pendant l'appel.
+    // SAFETY: `u` est à nous, vivant pendant l'appel.
     if unsafe { libc::uname(&raw mut u) } != 0 {
         return None;
     }

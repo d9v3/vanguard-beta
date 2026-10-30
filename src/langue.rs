@@ -20,7 +20,7 @@ fn langue_systeme() -> Option<String> {
     unsafe extern "system" {
         fn GetUserDefaultUILanguage() -> u16;
     }
-    // SAFETY : fonction sans argument de l'API Windows, toujours disponible.
+    // SAFETY: fonction sans argument de l'API Windows, toujours disponible.
     let id = unsafe { GetUserDefaultUILanguage() };
     // 10 bits bas = langue principale ; 0x0C = français (France, Canada, Belgique, Suisse…).
     Some(if id & 0x3ff == 0x0c { "fr" } else { "en" }.to_string())

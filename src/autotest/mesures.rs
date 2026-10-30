@@ -353,7 +353,7 @@ mod tests {
         assert_eq!(lire_dans(&d), Mesures::default());
         std::fs::remove_file(&f).unwrap();
         let c = std::ffi::CString::new(f.as_os_str().as_encoded_bytes()).unwrap();
-        // SAFETY : mkfifo reçoit un chemin terminé par zéro, qui vit le temps de l'appel.
+        // SAFETY: mkfifo reçoit un chemin terminé par zéro, qui vit le temps de l'appel.
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
         let debut = std::time::Instant::now();
         assert_eq!(lire_dans(&d), Mesures::default());

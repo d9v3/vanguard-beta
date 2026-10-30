@@ -589,7 +589,7 @@ struct Prise(i32);
 
 impl Drop for Prise {
     fn drop(&mut self) {
-        // SAFETY : le descripteur a été ouvert par `ouvrir_prise` et n'est fermé qu'ici, une fois.
+        // SAFETY: le descripteur a été ouvert par `ouvrir_prise` et n'est fermé qu'ici, une fois.
         unsafe {
             libc::close(self.0);
         }
@@ -614,7 +614,7 @@ impl Drop for Abonnement {
 const TAMPON_VOULU: i32 = 4 << 20;
 
 fn adresse_netlink(groupes: u32) -> libc::sockaddr_nl {
-    // SAFETY : sockaddr_nl est une structure C sans pointeur, valide remplie de zéros (son bourrage est privé).
+    // SAFETY: sockaddr_nl est une structure C sans pointeur, valide remplie de zéros (son bourrage est privé).
     let mut adresse: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     {
@@ -631,7 +631,7 @@ fn taille_de<T>() -> libc::socklen_t {
 /// Une prise netlink du protocole donné, abonnée aux `groupes`. On ne pose jamais NETLINK_NO_ENOBUFS : il cacherait
 /// les pertes, qu'on veut compter.
 fn ouvrir_prise(protocole: i32, groupes: u32) -> Result<Prise, Refus> {
-    // SAFETY : socket ne prend que des entiers ; le descripteur rendu est confié à `Prise`, qui le fermera.
+    // SAFETY: socket ne prend que des entiers ; le descripteur rendu est confié à `Prise`, qui le fermera.
     let fd = unsafe { libc::socket(libc::AF_NETLINK, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, protocole) };
     if fd < 0 {
         return Err(Refus::depuis_errno(errno()));
@@ -639,7 +639,7 @@ fn ouvrir_prise(protocole: i32, groupes: u32) -> Result<Prise, Refus> {
     let prise = Prise(fd);
     let adresse = adresse_netlink(groupes);
     let voulu = TAMPON_VOULU;
-    // SAFETY : chaque appel reçoit un pointeur vers une valeur à nous, vivante pendant l'appel, et sa taille exacte.
+    // SAFETY: chaque appel reçoit un pointeur vers une valeur à nous, vivante pendant l'appel, et sa taille exacte.
     let lie = unsafe {
         libc::setsockopt(
             fd,
@@ -660,7 +660,7 @@ fn ouvrir_prise(protocole: i32, groupes: u32) -> Result<Prise, Refus> {
 fn tampon_obtenu(prise: &Prise) -> usize {
     let mut taille: i32 = 0;
     let mut longueur = taille_de::<i32>();
-    // SAFETY : getsockopt écrit au plus `longueur` octets dans `taille`, à nous et vivante pendant l'appel.
+    // SAFETY: getsockopt écrit au plus `longueur` octets dans `taille`, à nous et vivante pendant l'appel.
     let r = unsafe {
         libc::getsockopt(
             prise.0,
@@ -676,7 +676,7 @@ fn tampon_obtenu(prise: &Prise) -> usize {
 /// Envoie un message au noyau (adresse netlink 0).
 fn envoyer(prise: &Prise, message: &[u8]) -> bool {
     let adresse = adresse_netlink(0);
-    // SAFETY : le message et l'adresse sont à nous, vivants pendant l'appel, passés avec leur taille exacte.
+    // SAFETY: le message et l'adresse sont à nous, vivants pendant l'appel, passés avec leur taille exacte.
     let envoye = unsafe {
         libc::sendto(
             prise.0,
@@ -700,7 +700,7 @@ enum Recu {
 }
 
 fn recevoir(prise: &Prise, tampon: &mut [u8]) -> Recu {
-    // SAFETY : recv écrit au plus `tampon.len()` octets dans le tampon, à nous ; MSG_DONTWAIT : jamais bloquant.
+    // SAFETY: recv écrit au plus `tampon.len()` octets dans le tampon, à nous ; MSG_DONTWAIT : jamais bloquant.
     let n = unsafe { libc::recv(prise.0, tampon.as_mut_ptr().cast(), tampon.len(), libc::MSG_DONTWAIT) };
     match usize::try_from(n) {
         Ok(0) => Recu::Vide,
@@ -725,7 +725,7 @@ fn attendre(prises: &[&Prise], ms: i32) -> Vec<bool> {
         })
         .collect();
     let nombre = libc::nfds_t::try_from(attentes.len()).unwrap_or(0);
-    // SAFETY : poll lit et écrit `nombre` structures du vecteur, à nous et vivant pendant l'appel.
+    // SAFETY: poll lit et écrit `nombre` structures du vecteur, à nous et vivant pendant l'appel.
     let r = unsafe { libc::poll(attentes.as_mut_ptr(), nombre, ms) };
     attentes
         .iter()
@@ -748,7 +748,7 @@ fn arret_demande() -> bool {
 /// Pose le gestionnaire de SIGTERM et SIGINT, et rend les actions d'avant (SIGTERM puis SIGINT) pour
 /// `remettre_les_signaux` : hors du service, Ctrl-C doit retrouver son effet après l'essai d'abonnement.
 fn ecouter_les_signaux() -> [libc::sigaction; 2] {
-    // SAFETY : les structures sont remplies de zéros (valides pour sigaction) puis complétées (gestionnaire, masque
+    // SAFETY: les structures sont remplies de zéros (valides pour sigaction) puis complétées (gestionnaire, masque
     // vide, aucun drapeau) ; sigaction écrit l'action d'avant dans `avant`, à nous et vivant pendant l'appel. Le
     // gestionnaire ne fait qu'écrire un booléen atomique, ce qui est sûr dans un signal.
     unsafe {
@@ -763,7 +763,7 @@ fn ecouter_les_signaux() -> [libc::sigaction; 2] {
 }
 
 fn remettre_les_signaux(avant: &[libc::sigaction; 2]) {
-    // SAFETY : les actions viennent de sigaction lui-même (`ecouter_les_signaux`) et sont lues pendant l'appel.
+    // SAFETY: les actions viennent de sigaction lui-même (`ecouter_les_signaux`) et sont lues pendant l'appel.
     unsafe {
         libc::sigaction(libc::SIGTERM, &raw const avant[0], std::ptr::null_mut());
         libc::sigaction(libc::SIGINT, &raw const avant[1], std::ptr::null_mut());
@@ -771,7 +771,7 @@ fn remettre_les_signaux(avant: &[libc::sigaction; 2]) {
 }
 
 fn root() -> bool {
-    // SAFETY : geteuid n'a ni argument ni échec possible.
+    // SAFETY: geteuid n'a ni argument ni échec possible.
     unsafe { libc::geteuid() == 0 }
 }
 

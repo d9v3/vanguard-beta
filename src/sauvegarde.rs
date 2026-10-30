@@ -1651,7 +1651,7 @@ mod tests {
         std::fs::write(sauvegarde.join("Documents/tube.txt"), "copie").unwrap();
         std::fs::write(sauvegarde.join("Documents/zero.txt"), "copie").unwrap();
         let tube = std::ffi::CString::new(maison.join("Documents/tube.txt").to_str().unwrap()).unwrap();
-        // SAFETY : chemin C terminé par un zéro, vivant pendant l'appel ; mkfifo ne touche aucune mémoire du
+        // SAFETY: chemin C terminé par un zéro, vivant pendant l'appel ; mkfifo ne touche aucune mémoire du
         // programme.
         assert_eq!(unsafe { libc::mkfifo(tube.as_ptr(), 0o600) }, 0);
         std::os::unix::fs::symlink("/dev/zero", maison.join("Documents/zero.txt")).unwrap();

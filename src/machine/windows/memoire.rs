@@ -91,7 +91,7 @@ struct Information {
 /// antimalware…), `Some(false)` aucun. `None` : le processus ne s'ouvre pas (autre compte, sans élévation) ou Windows
 /// ne dit pas son niveau (avant 8.1) ; dans les deux cas, il n'est pas lu.
 pub(crate) fn protege(pid: u32) -> Option<bool> {
-    // SAFETY : la poignée vient d'OpenProcess (Err : refus) et est refermée une seule fois ; la structure reçue a la
+    // SAFETY: la poignée vient d'OpenProcess (Err : refus) et est refermée une seule fois ; la structure reçue a la
     // taille annoncée à Windows, qui n'écrit rien au-delà.
     unsafe {
         let poignee = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
@@ -113,7 +113,7 @@ pub(crate) fn protege(pid: u32) -> Option<bool> {
 pub(crate) fn system32() -> Option<String> {
     let mut tampon = [0u16; 1024];
     let taille = u32::try_from(tampon.len()).ok()?;
-    // SAFETY : le tampon fait `taille` caractères ; GetSystemDirectoryW n'écrit pas au-delà et rend le nombre écrit
+    // SAFETY: le tampon fait `taille` caractères ; GetSystemDirectoryW n'écrit pas au-delà et rend le nombre écrit
     // (sans le zéro final), la taille qu'il lui faudrait s'il est trop petit, ou 0 en cas d'échec.
     let ecrits = unsafe { GetSystemDirectoryW(tampon.as_mut_ptr(), taille) };
     let ecrits = usize::try_from(ecrits).ok()?;
@@ -133,7 +133,7 @@ fn volume_du_systeme() -> Option<(Vec<String>, String)> {
     let nom: Vec<u16> = lettre.encode_utf16().chain(std::iter::once(0)).collect();
     let mut cible = [0u16; 1024];
     let taille = u32::try_from(cible.len()).ok()?;
-    // SAFETY : `nom` est terminé par un zéro et lu seulement ; `cible` fait `taille` caractères, QueryDosDeviceW n'écrit
+    // SAFETY: `nom` est terminé par un zéro et lu seulement ; `cible` fait `taille` caractères, QueryDosDeviceW n'écrit
     // pas au-delà et rend le nombre écrit (une liste de chaînes finie par deux zéros), 0 en cas d'échec.
     let ecrits = unsafe { QueryDosDeviceW(nom.as_ptr(), cible.as_mut_ptr(), taille) };
     let ecrits = usize::try_from(ecrits).ok().filter(|&n| n > 0 && n <= cible.len())?;
@@ -176,7 +176,7 @@ impl Lecteur {
     /// (QueryWorkingSetEx et GetMappedFileNameW le demandent, d'après leur documentation), les droits « limités »
     /// sinon : les images chargées seront alors non vérifiées, jamais écartées.
     pub(crate) fn ouvrir(pid: u32) -> Option<Lecteur> {
-        // SAFETY : OpenProcess rend une poignée valide ou Err ; elle est refermée par `Drop`, une seule fois.
+        // SAFETY: OpenProcess rend une poignée valide ou Err ; elle est refermée par `Drop`, une seule fois.
         unsafe {
             OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid)
                 .or_else(|_| OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, false, pid))
@@ -190,7 +190,7 @@ impl Lecteur {
         let mut liste = Vec::new();
         let mut adresse: usize = 0;
         loop {
-            // SAFETY : `information` est une MEMORY_BASIC_INFORMATION de la taille annoncée, que VirtualQueryEx
+            // SAFETY: `information` est une MEMORY_BASIC_INFORMATION de la taille annoncée, que VirtualQueryEx
             // remplit entièrement quand il rend autre chose que 0 ; la poignée est valide tant que `self` vit.
             let (rendu, information) = unsafe {
                 let mut information: Information = std::mem::zeroed();
@@ -305,7 +305,7 @@ impl Lecteur {
         const ERROR_ACCESS_DENIED: u32 = 5;
         let mut nom = [0u16; 1024];
         let taille = u32::try_from(nom.len()).unwrap_or(0);
-        // SAFETY : le tampon fait `taille` caractères, GetMappedFileNameW n'écrit pas au-delà et rend le nombre écrit
+        // SAFETY: le tampon fait `taille` caractères, GetMappedFileNameW n'écrit pas au-delà et rend le nombre écrit
         // (sans le zéro final), `taille` s'il est coupé, 0 en cas d'échec ; la poignée est valide tant que `self` vit.
         let (ecrits, erreur) = unsafe {
             let ecrits = K32GetMappedFileNameW(
@@ -340,7 +340,7 @@ impl Lecteur {
             return Fichier::Absent;
         };
         let large: Vec<u16> = ouvrable.encode_utf16().chain(std::iter::once(0)).collect();
-        // SAFETY : chaîne terminée par un zéro, lue seulement.
+        // SAFETY: chaîne terminée par un zéro, lue seulement.
         let attributs = unsafe { GetFileAttributesW(large.as_ptr()) };
         if attributs == u32::MAX {
             Fichier::Absent
@@ -383,7 +383,7 @@ impl Lecteur {
                 return Some(false);
             }
             let octets = u32::try_from(size_of_val(lot.as_slice())).ok()?;
-            // SAFETY : `lot` est un tableau à nous de PSAPI_WORKING_SET_EX_INFORMATION de `octets` octets, que
+            // SAFETY: `lot` est un tableau à nous de PSAPI_WORKING_SET_EX_INFORMATION de `octets` octets, que
             // QueryWorkingSetEx remplit sans en sortir ; la poignée est valide tant que `self` vit.
             if unsafe { K32QueryWorkingSetEx(self.0.0, lot.as_mut_ptr(), octets) } == 0 {
                 return None;
@@ -419,7 +419,7 @@ impl Lecteur {
             return 0;
         };
         let mut lus = 0usize;
-        // SAFETY : `zone` est une tranche à nous de `zone.len()` octets, la taille passée à ReadProcessMemory, qui
+        // SAFETY: `zone` est une tranche à nous de `zone.len()` octets, la taille passée à ReadProcessMemory, qui
         // n'écrit pas au-delà et rend le nombre écrit ; la poignée est valide tant que `self` vit.
         unsafe {
             ReadProcessMemory(
@@ -436,7 +436,7 @@ impl Lecteur {
 
 impl Drop for Lecteur {
     fn drop(&mut self) {
-        // SAFETY : la poignée vient d'OpenProcess et n'est refermée qu'ici.
+        // SAFETY: la poignée vient d'OpenProcess et n'est refermée qu'ici.
         unsafe {
             let _ = CloseHandle(self.0);
         }
@@ -451,7 +451,7 @@ fn identite_du_fichier(chemin: &str) -> Option<String> {
     use std::os::windows::io::AsRawHandle;
     let fichier = std::fs::File::open(chemin).ok()?;
     let mut info = InformationFichier::default();
-    // SAFETY : la poignée vient d'un fichier ouvert qui vit jusqu'à la fin de la fonction ; `info` est une
+    // SAFETY: la poignée vient d'un fichier ouvert qui vit jusqu'à la fin de la fonction ; `info` est une
     // BY_HANDLE_FILE_INFORMATION à nous, que l'appel remplit sans en sortir.
     if unsafe { GetFileInformationByHandle(fichier.as_raw_handle(), &raw mut info) } == 0 {
         return None;

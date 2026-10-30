@@ -67,19 +67,19 @@ mod linux {
     /// pidfd_open(2), ou l'errno.
     fn ouvrir(pid: u32) -> Result<OwnedFd, i32> {
         let pid = libc::pid_t::try_from(pid).map_err(|_| libc::EINVAL)?;
-        // SAFETY : pidfd_open ne lit aucune mémoire ; un descripteur rendu (≥ 0) est à nous seuls, confié à OwnedFd.
+        // SAFETY: pidfd_open ne lit aucune mémoire ; un descripteur rendu (≥ 0) est à nous seuls, confié à OwnedFd.
         let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0u32) };
         let fd = i32::try_from(fd).unwrap_or(-1);
         if fd < 0 {
             return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO));
         }
-        // SAFETY : voir ci-dessus.
+        // SAFETY: voir ci-dessus.
         Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     }
 
     /// pidfd_send_signal(2), ou l'errno.
     fn signal(fd: &OwnedFd, sig: i32) -> Result<(), i32> {
-        // SAFETY : un descripteur à nous, vivant ; aucune information de signal (pointeur nul permis), drapeaux nuls.
+        // SAFETY: un descripteur à nous, vivant ; aucune information de signal (pointeur nul permis), drapeaux nuls.
         let r = unsafe {
             libc::syscall(
                 libc::SYS_pidfd_send_signal,
@@ -135,7 +135,7 @@ mod linux {
             events: libc::POLLIN,
             revents: 0,
         };
-        // SAFETY : un seul pollfd à nous, vivant pendant l'appel.
+        // SAFETY: un seul pollfd à nous, vivant pendant l'appel.
         unsafe { libc::poll(&raw mut attente, 1, 5000) };
         Ok(())
     }
@@ -145,7 +145,7 @@ mod linux {
             return Err(reaffecte(pid));
         }
         let pid = libc::pid_t::try_from(pid).map_err(|_| reaffecte(0))?;
-        // SAFETY : kill ne lit aucune mémoire.
+        // SAFETY: kill ne lit aucune mémoire.
         if unsafe { libc::kill(pid, libc::SIGKILL) } == 0 {
             Ok(())
         } else {
@@ -164,10 +164,10 @@ pub(crate) mod macos {
     /// Les informations BSD d'un processus (proc_pidinfo, PROC_PIDTBSDINFO).
     pub(crate) fn infos(pid: u32) -> Option<libc::proc_bsdinfo> {
         let pid = libc::c_int::try_from(pid).ok()?;
-        // SAFETY : proc_bsdinfo n'a que des entiers et des tableaux d'octets : zéro est une valeur valide.
+        // SAFETY: proc_bsdinfo n'a que des entiers et des tableaux d'octets : zéro est une valeur valide.
         let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
         let taille = libc::c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
-        // SAFETY : `info` est à nous, de la taille annoncée, vivant pendant l'appel.
+        // SAFETY: `info` est à nous, de la taille annoncée, vivant pendant l'appel.
         let lu = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&raw mut info).cast(), taille) };
         (lu == taille).then_some(info)
     }
@@ -176,7 +176,7 @@ pub(crate) mod macos {
         let pid = libc::c_int::try_from(pid).ok()?;
         let mut tampon = vec![0u8; 4096];
         let taille = u32::try_from(tampon.len()).ok()?;
-        // SAFETY : le tampon est à nous, de la taille annoncée ; proc_pidpath y écrit au plus `taille` octets.
+        // SAFETY: le tampon est à nous, de la taille annoncée ; proc_pidpath y écrit au plus `taille` octets.
         let n = unsafe { libc::proc_pidpath(pid, tampon.as_mut_ptr().cast(), taille) };
         let n = usize::try_from(n).ok().filter(|n| *n > 0)?;
         tampon.truncate(n);
@@ -194,7 +194,7 @@ pub(crate) mod macos {
             return Err(reaffecte(pid));
         }
         let pid = libc::pid_t::try_from(pid).map_err(|_| reaffecte(0))?;
-        // SAFETY : kill ne lit aucune mémoire.
+        // SAFETY: kill ne lit aucune mémoire.
         if unsafe { libc::kill(pid, libc::SIGKILL) } == 0 {
             Ok(())
         } else {

@@ -871,7 +871,7 @@ unsafe extern "system" {
 /// reste « Console » quand le Bureau à distance reprend une session ouverte sur l'écran (vu en test réel).
 pub fn session_a_distance() -> bool {
     const SM_REMOTESESSION: i32 = 0x1000;
-    // SAFETY : GetSystemMetrics n'a ni pointeur ni effet de bord.
+    // SAFETY: GetSystemMetrics n'a ni pointeur ni effet de bord.
     let distante = unsafe { GetSystemMetrics(SM_REMOTESESSION) } != 0;
     distante || std::env::var("SESSIONNAME").is_ok_and(|s| s.to_ascii_uppercase().starts_with("RDP-"))
 }
@@ -990,7 +990,7 @@ fn protection_bitlocker() -> Option<String> {
     };
     use windows::core::w;
     wmi::com_sta("BitLocker", "System.Volume.BitLockerProtection", || {
-        // SAFETY : COM est initialisé dans ce fil (par `wmi::com_sta`) ; chaînes constantes terminées par un zéro ;
+        // SAFETY: COM est initialisé dans ce fil (par `wmi::com_sta`) ; chaînes constantes terminées par un zéro ;
         // le PROPVARIANT rendu par GetValue est à nous et libéré par PropVariantClear.
         unsafe {
             let mut cle = PROPERTYKEY::default();
@@ -1519,7 +1519,7 @@ mod tests {
 
     #[test]
     fn jamais_couper_le_bureau_a_distance_qu_on_utilise() {
-        // SAFETY (test) : variable propre au processus de test.
+        // SAFETY: variable propre au processus de test.
         unsafe { std::env::set_var("SESSIONNAME", "RDP-Tcp#3") };
         assert!(session_a_distance());
     }

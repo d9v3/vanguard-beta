@@ -551,7 +551,7 @@ pub(crate) fn lignee_de(racine: u32) -> Vec<super::reponse::Membre> {
 
 /// Le compte effectif de ce processus.
 fn euid() -> u32 {
-    // SAFETY : geteuid ne prend aucun argument et ne touche aucune mémoire.
+    // SAFETY: geteuid ne prend aucun argument et ne touche aucune mémoire.
     unsafe { libc::geteuid() }
 }
 

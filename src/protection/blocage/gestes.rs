@@ -386,7 +386,7 @@ fn arret_sans_droits(pid: u32) -> bool {
     }
     #[cfg(unix)]
     {
-        // SAFETY : geteuid ne prend aucun argument et ne touche aucune mémoire.
+        // SAFETY: geteuid ne prend aucun argument et ne touche aucune mémoire.
         let moi = unsafe { libc::geteuid() };
         moi == 0 || comptes(pid).is_some_and(|(reel, sauve)| reel == moi || sauve == moi)
     }
@@ -444,7 +444,7 @@ pub(super) fn administrateur() -> bool {
     }
     #[cfg(unix)]
     {
-        // SAFETY : geteuid ne prend aucun argument et ne touche aucune mémoire.
+        // SAFETY: geteuid ne prend aucun argument et ne touche aucune mémoire.
         unsafe { libc::geteuid() == 0 }
     }
 }
@@ -459,7 +459,7 @@ pub(super) fn administrateur_ou_inconnu() -> bool {
     }
     #[cfg(unix)]
     {
-        // SAFETY : geteuid et getuid ne prennent aucun argument et ne touchent aucune mémoire.
+        // SAFETY: geteuid et getuid ne prennent aucun argument et ne touchent aucune mémoire.
         unsafe { libc::geteuid() == 0 || libc::geteuid() != libc::getuid() }
     }
 }
@@ -476,10 +476,10 @@ fn peut_deplacer(chemin: &Path) -> bool {
         };
         let acces = |p: &Path, mode: libc::c_int| {
             std::ffi::CString::new(p.as_os_str().as_bytes())
-                // SAFETY : `c` est une chaîne terminée par un zéro, vivante pendant l'appel ; access ne fait que la lire.
+                // SAFETY: `c` est une chaîne terminée par un zéro, vivante pendant l'appel ; access ne fait que la lire.
                 .is_ok_and(|c| unsafe { libc::access(c.as_ptr(), mode) } == 0)
         };
-        // SAFETY : geteuid ne prend aucun argument et ne touche aucune mémoire.
+        // SAFETY: geteuid ne prend aucun argument et ne touche aucune mémoire.
         let moi = unsafe { libc::geteuid() };
         let (Ok(dossier), Ok(fichier)) = (std::fs::metadata(parent), std::fs::symlink_metadata(chemin)) else {
             return false;
@@ -842,7 +842,7 @@ fn processus_present(pid: u32) -> bool {
         let Ok(p) = libc::pid_t::try_from(pid) else {
             return false;
         };
-        // SAFETY : kill avec le signal 0 n'envoie rien, il dit seulement si le processus existe.
+        // SAFETY: kill avec le signal 0 n'envoie rien, il dit seulement si le processus existe.
         unsafe { libc::kill(p, 0) == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) }
     }
     #[cfg(windows)]

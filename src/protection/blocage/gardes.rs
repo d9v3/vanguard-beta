@@ -498,7 +498,7 @@ fn lire_etablies() -> Option<Vec<Etablie>> {
             Some((inode, nom.trim_end().to_string()))
         })
         .collect();
-    // SAFETY : geteuid ne prend aucun argument et ne touche aucune mémoire.
+    // SAFETY: geteuid ne prend aucun argument et ne touche aucune mémoire.
     let moi = unsafe { libc::geteuid() };
     let mut lisible = false;
     let mut etablies = Vec::new();
