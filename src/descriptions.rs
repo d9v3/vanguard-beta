@@ -8,8 +8,8 @@ impl Action {
     pub(crate) fn description(self) -> &'static str {
         match self {
             Action::Complet => tr!(
-                "Vérifie cet ordinateur puis votre réseau, et donne une note à chacun. Ne change rien : les corrections viennent ensuite, au choix 2.",
-                "Checks this computer, then your network, and grades each. Changes nothing: fixes come afterwards, with choice 2."
+                "Vérifie cet ordinateur puis votre réseau, et donne une note à chacun. Ne corrige rien (choix 2) ; seuls les blocages réglés d'avance s'appliquent.",
+                "Checks this computer, then your network, and grades each. Fixes nothing (choice 2); only blocking set up beforehand applies."
             ),
             Action::Corriger => tr!(
                 "Reprend les problèmes du dernier bilan et montre chaque correction avant de la faire. Chacune est notée ; celles qui le peuvent s'annulent.",
@@ -60,8 +60,8 @@ impl Action {
                 "If trivy is installed, lists the serious or critical flaws in the packages of each Docker or Podman image. Read-only."
             ),
             Action::LogicielsPerimes => tr!(
-                "Compare la version installée des navigateurs, d'Office, d'Acrobat et de Java à la dernière publiée. Lecture seule.",
-                "Compares the installed version of browsers, Office, Acrobat and Java with the latest release. Read-only."
+                "Compare la version installée des navigateurs, d'Office, d'Acrobat, de Java et d'autres logiciels courants à la dernière publiée. Lecture seule.",
+                "Compares the installed version of browsers, Office, Acrobat, Java and other common software with the latest release. Read-only."
             ),
             Action::Protection => tr!(
                 "Des blocages supplémentaires de Defender, appliqués après accord et annulables ; proposés seulement si Defender est l'antivirus actif.",
@@ -256,8 +256,8 @@ impl Action {
                 "Restore test: files from the copy are read back from disk, bypassing the cache, and compared. Nothing is written or deleted."
             ),
             Action::VerifierCle => tr!(
-                "Remplit l'espace libre puis le relit pour démasquer une fausse clé ou une clé qui meurt. Après accord ; tout est effacé à la fin.",
-                "Fills the free space, then reads it back to unmask a fake or dying drive. With consent; everything is erased at the end."
+                "Écrit des fichiers d'essai dans l'espace libre (tout, en mode complet) puis les relit pour démasquer une fausse clé ou une clé qui meurt. Après accord ; les fichiers d'essai sont effacés à la fin.",
+                "Writes test files to the free space (all of it, in full mode), then reads them back to unmask a fake or dying drive. With consent; the test files are deleted at the end."
             ),
             Action::Guide => tr!(
                 "Les commandes utiles de chaque système, rangées par programme et expliquées ; une commande qui ne fait que lire peut se lancer ici.",

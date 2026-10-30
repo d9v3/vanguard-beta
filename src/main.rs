@@ -1305,7 +1305,8 @@ fn lignes_du_menu(etat: Vec<String>) -> Vec<Ligne> {
         lignes.push(
             Ligne::cachee(&chemin, &ou, texte, precision)
                 .avec_mots(&mots)
-                .avec_description(a.description()),
+                .avec_description(a.description())
+                .avec_sous(a.ce_qu_il_ouvre()),
         );
     }
     // Ce qu'il y a dans les outils : les logiciels du catalogue, les réglages des Paramètres.
@@ -2364,6 +2365,19 @@ impl Action {
         ECRANS.iter().find(|(e, _)| *e == self).map_or(&[], |(_, v)| v)
     }
 
+    /// Ce que l'aperçu du menu dit qu'il ouvre, quand ce ne sont pas des lignes du menu : les variantes de son écran à
+    /// choix, les catégories des logiciels recommandés (sinon l'aperçu prendrait un logiciel de chacune pour son nom).
+    fn ce_qu_il_ouvre(self) -> Vec<String> {
+        if self == Action::Logiciels {
+            return logiciels::rubriques();
+        }
+        self.variantes()
+            .iter()
+            .filter(|v| v.disponible())
+            .map(|v| v.libelle().0.to_string())
+            .collect()
+    }
+
     /// Texte de la ligne de menu et sa précision en gris.
     fn libelle(self) -> (&'static str, &'static str) {
         let precision = match self {
@@ -2564,16 +2578,10 @@ async fn liste_d_outils(s: &mut Session, chemin: &str, resume: &str, actions: &[
                 format!("{texte} {ACCENT}›{RESET}")
             };
             // Les variantes d'un écran à choix n'ont pas de ligne ici : l'aperçu les montre.
-            let variantes = a
-                .variantes()
-                .iter()
-                .filter(|v| v.disponible())
-                .map(|v| v.libelle().0.to_string())
-                .collect();
             lignes.push(
                 Ligne::choix(&(i + 1).to_string(), &texte, precision)
                     .avec_description(a.description())
-                    .avec_sous(variantes),
+                    .avec_sous(a.ce_qu_il_ouvre()),
             );
         }
         lignes.push(Ligne::Texte(String::new()));

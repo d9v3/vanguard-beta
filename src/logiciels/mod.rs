@@ -492,6 +492,13 @@ fn pour_ce_systeme(l: &Logiciel) -> bool {
 }
 
 /// Les catégories qui ont au moins un logiciel sur ce système, dans l'ordre du menu Logiciels (2, 3… après le pack).
+/// Ce que le menu Logiciels propose ici, dans l'ordre : le pack de départ, puis les catégories (l'aperçu du menu).
+pub fn rubriques() -> Vec<String> {
+    std::iter::once(tr!("Pack de départ", "Starter pack").to_string())
+        .chain(categories_de_ce_systeme().into_iter().map(|c| c.titre().to_string()))
+        .collect()
+}
+
 fn categories_de_ce_systeme() -> Vec<Categorie> {
     Categorie::TOUTES
         .into_iter()

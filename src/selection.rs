@@ -44,6 +44,7 @@ pub enum Ligne {
         precision: String,
         mots: String,
         description: String,
+        sous: Vec<String>,
     },
 }
 
@@ -67,6 +68,7 @@ impl Ligne {
             precision: precision.into(),
             mots: String::new(),
             description: String::new(),
+            sous: Vec::new(),
         }
     }
 
@@ -79,10 +81,11 @@ impl Ligne {
         self
     }
 
-    /// Ce que la ligne ouvre, pour l'aperçu : les variantes d'un écran à choix, absentes du menu.
+    /// Ce que la ligne ouvre, pour l'aperçu, quand ce ne sont pas des lignes cachées : les variantes d'un écran à
+    /// choix, les catégories des logiciels recommandés.
     #[must_use]
     pub fn avec_sous(mut self, noms: Vec<String>) -> Self {
-        if let Ligne::Choix { sous, .. } = &mut self {
+        if let Ligne::Choix { sous, .. } | Ligne::Cachee { sous, .. } = &mut self {
             *sous = noms;
         }
         self
@@ -553,23 +556,35 @@ fn nom_seul(t: &str) -> String {
 }
 
 /// Ce que `ligne` ouvre : ses `sous`, sinon les lignes cachées du menu juste sous sa touche (« 5 » ouvre « 5.1 »,
-/// « 5.2 »…, pas « 5.1.1 »), chacune une fois (les réglages des Paramètres partagent une touche).
+/// « 5.2 »…, pas « 5.1.1 »), chacune une fois. Une ligne au chemin plus profond d'un cran que celui de `ligne` est
+/// dans un menu qu'elle ouvre, pas une entrée à elle : les réglages de « Vanguard › Paramètres › » partagent la touche
+/// de l'outil Paramètres.
 fn ce_qu_elle_ouvre(lignes: &[Ligne], ligne: &Ligne) -> Vec<String> {
-    let touche = match ligne {
-        Ligne::Choix { sous, .. } if !sous.is_empty() => return sous.iter().map(|s| nom_seul(s)).collect(),
-        Ligne::Choix { touche, .. } | Ligne::Cachee { touche, .. } => touche.as_str(),
+    let profondeur = |chemin: &str| chemin.matches('›').count();
+    let (touche, sous_elle) = match ligne {
+        Ligne::Choix { sous, .. } | Ligne::Cachee { sous, .. } if !sous.is_empty() => {
+            return sous.iter().map(|s| nom_seul(s)).collect();
+        }
+        Ligne::Choix { touche, .. } => (touche.as_str(), 1),
+        Ligne::Cachee { touche, chemin, .. } => (touche.as_str(), profondeur(chemin) + 1),
         Ligne::Texte(_) => return Vec::new(),
     };
     let mut vues: Vec<&str> = Vec::new();
     let mut noms = Vec::new();
     for l in lignes {
-        let Ligne::Cachee { touche: t, texte, .. } = l else {
+        let Ligne::Cachee {
+            touche: t,
+            chemin,
+            texte,
+            ..
+        } = l
+        else {
             continue;
         };
         let Some(suite) = t.strip_prefix(touche).and_then(|s| s.strip_prefix('.')) else {
             continue;
         };
-        if !suite.is_empty() && !suite.contains('.') && !vues.contains(&t.as_str()) {
+        if !suite.is_empty() && !suite.contains('.') && profondeur(chemin) <= sous_elle && !vues.contains(&t.as_str()) {
             vues.push(t);
             noms.push(nom_seul(texte));
         }
@@ -918,14 +933,22 @@ fn ecran_de_recherche(
         ));
     }
     // L'aperçu peut descendre sous les lignes trouvées, jusqu'à l'aide : peu de lignes trouvées ne le coupent pas.
+    // L'écran prend la hauteur du plus long aperçu des lignes trouvées, comme `ecran_du_menu` : l'aide ne saute pas
+    // d'une flèche à l'autre.
     let panneau = panneau.and_then(|largeur| {
         let c = t.trouves.get(etat.en_cours_trouve)?;
         let debut = debut_apercu(&ecran);
-        let texte = apercu(lignes, c.ligne, largeur, rangees.saturating_sub(debut + 2));
-        if ecran.len() < debut + texte.len() {
-            ecran.resize(debut + texte.len(), String::new());
+        let hauteur = rangees.saturating_sub(debut + 2);
+        let plus_long = t
+            .trouves
+            .iter()
+            .map(|c| apercu(lignes, c.ligne, largeur, hauteur).len())
+            .max()
+            .unwrap_or(0);
+        if ecran.len() < debut + plus_long {
+            ecran.resize(debut + plus_long, String::new());
         }
-        Some((texte, debut))
+        Some((apercu(lignes, c.ligne, largeur, hauteur), debut))
     });
     let mut ecran = avec_panneau(&ecran, panneau.as_ref().map(|(p, d)| (p.as_slice(), *d)));
     let aide = if t.suite.is_some() {
@@ -1905,6 +1928,8 @@ mod tests {
             Ligne::choix("6", "Virus ›", ""),
             Ligne::cachee("5.1", "Réseau ›", "Appareils du réseau ›", ""),
             Ligne::cachee("5.1.1", "Réseau › Appareils du réseau ›", "Scan du réseau", ""),
+            // Un réglage sur la touche de son outil, puis deux fois la même entrée : l'outil, une fois.
+            Ligne::cachee("5.2", "Réseau › Audit du réseau ›", "Un réglage de l'audit", ""),
             Ligne::cachee("5.2", "Réseau ›", "Audit du réseau", ""),
             Ligne::cachee("5.2", "Réseau ›", "Audit du réseau (double)", ""),
             Ligne::cachee("55.1", "Autre ›", "Pas à lui", ""),
@@ -1916,6 +1941,12 @@ mod tests {
         );
         // Une ligne cachée trouvée par la recherche montre aussi ce qu'elle ouvre.
         assert_eq!(ce_qu_elle_ouvre(&lignes, &lignes[2]), ["Scan du réseau"]);
+        // Une ligne cachée qui dit ce qu'elle ouvre passe avant ses lignes : les catégories, pas un logiciel de chacune.
+        let logiciels = [
+            Ligne::cachee("12.1", "Optimiser ›", "Logiciels", "").avec_sous(vec!["Sauvegarde".into()]),
+            Ligne::cachee("12.1.2", "Optimiser › Logiciels ›", "Déjà Dup", ""),
+        ];
+        assert_eq!(ce_qu_elle_ouvre(&logiciels, &logiciels[0]), ["Sauvegarde"]);
         // Les variantes données à la main passent avant.
         let ecran = Ligne::choix("3", "Antivirus ›", "").avec_sous(vec!["Analyse rapide".into()]);
         assert_eq!(ce_qu_elle_ouvre(&lignes, &ecran), ["Analyse rapide"]);
