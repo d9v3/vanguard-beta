@@ -50,7 +50,7 @@ jobs:
       permis: ${{ steps.origine.outputs.permis }}
     steps:
       # Seulement le script qui relit le fil, pris de la branche principale : jamais celui d'une demande de fusion.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
           path: .garde
@@ -106,7 +106,7 @@ jobs:
       actions: read
     steps:
       # Le jeton de l'extraction n'est pas laissé dans .git/config, où tout programme lancé ensuite le lirait.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -123,7 +123,7 @@ jobs:
       # est verrouillé (seuls le propriétaire et ceux qui ont accès au dépôt y écrivent encore), puis relu par le même
       # script que le garde, juste avant Claude ; un autre auteur, ou un fil illisible, et rien ne se lance. Déverrouillé
       # à la fin, quoi qu'il arrive, seulement si c'est ce travail qui l'a verrouillé.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
           path: .garde

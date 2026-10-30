@@ -29,7 +29,8 @@
 #      un autre a commenté ou relu (et un fil illisible est refusé).
 #   6. Le programme Mac que la clé signe vient d'une exécution de master : publier-version.sh (sa fonction
 #      avec_programme, face à un faux gh) écarte celle d'une autre branche, même plus récente et du même commit ; et
-#      macos.yml ne reprend aucun cache sur master. Sans jq, cet essai est sauté et dit.
+#      macos.yml ne reprend aucun cache sur master. Sans jq, cet essai est sauté et dit. Chaque action des workflows
+#      est épinglée à un commit, jamais à une étiquette qui bouge.
 # Lancé par outils/verifier.sh ; code 77 (sauté) sans la branche master ici (clone partiel) ou sans openssl.
 #   outils/essais-signature.sh
 set -uo pipefail
@@ -345,6 +346,12 @@ fi
 awk '/uses: Swatinem\/rust-cache/ { getline; exit !($0 ~ /if: github.ref_name != .master.$/) }' \
   "$DEPOT/.github/workflows/macos.yml" && ok "macos.yml : aucun cache repris sur master (branche ou étiquette)" ||
   ko "macos.yml reprend un cache sur master ou une étiquette « master » (le programme signé en sortirait)"
+# Une étiquette se déplace (« v7 » suit chaque version) : quiconque la pousse chez l'éditeur de l'action change ce
+# qui tourne avec les secrets et le programme signé. Chaque action, officielle comme tierce, à un commit nommé
+# (campagne d'attaque n° 4, U-B3), l'étiquette en commentaire pour la relire.
+mobiles=$(grep -Hn 'uses:' "$DEPOT"/.github/workflows/*.yml | grep -Ev 'uses: [^ @]+@[0-9a-f]{40} # v[0-9]')
+[[ -z $mobiles ]] && ok "workflows : chaque action épinglée par commit, pas par étiquette" ||
+  ko "workflows : action à une étiquette mobile : ${mobiles#"$DEPOT"/}"
 
 # 8. Les octets publiés, ceux de la compilation de leur commit.
 G=$T/depot-compilation

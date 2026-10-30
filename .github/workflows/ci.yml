@@ -47,7 +47,7 @@ jobs:
     timeout-minutes: 60
     steps:
       # Tout l'historique : les textes affichés se comparent à master (outils/textes.py).
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       # Compilateurs C : YARA-X (par wasmtime) compile un petit fichier C pour chaque cible ; musl-gcc pour Linux, le
@@ -90,7 +90,7 @@ jobs:
       # (exécution 39484699636) : une régression dans l'une d'elles fait échouer la CI.
       - name: Vraies distributions Linux
         run: bash outils/test-distributions.sh ./target/x86_64-unknown-linux-musl/debug/vanguard distributions
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: distributions
@@ -108,7 +108,7 @@ jobs:
     timeout-minutes: 10
     steps:
       # Tout l'historique : le commit d'avant l'envoi doit être là pour savoir ce qui a été envoyé.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       # AVANT vide ou fait de zéros (branche neuve), ou disparu (historique réécrit) : les commits qu'aucune autre
@@ -129,7 +129,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
           tool: cargo-audit@0.22.2,cargo-deny@0.20.2
@@ -146,7 +146,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Rust et compilation musl
         run: |
           rustup toolchain install
@@ -176,12 +176,12 @@ jobs:
       matrix:
         part: [1, 2, 3]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Chaîne nightly
         run: rustup toolchain install nightly --profile minimal
       - name: cargo-fuzz
         run: outils/installer-cargo-fuzz.sh
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fuzz/corpus
           # Le corpus de sa part d'abord ; à défaut (première nuit en trois parts), le dernier enregistré.
@@ -191,7 +191,7 @@ jobs:
             fuzz-corpus-
       - name: Cinq minutes par cible
         run: VANGUARD_FUZZ="$RUNNER_TEMP/fuzz" outils/fuzz.sh ${{ matrix.part }}/3 300
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: fuzz-plantages-part${{ matrix.part }}
@@ -208,7 +208,7 @@ jobs:
     outputs:
       windows: ${{ steps.verifier.outputs.windows }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: .github/hors-code.txt
           sparse-checkout-cone-mode: false
@@ -256,7 +256,7 @@ jobs:
     steps:
       # Tout l'historique : outils/compiler-version.sh grave la date du code (outils/date-du-code.sh), comme
       # l'ordinateur de l'auteur.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       # gcc-mingw-w64 : l'éditeur de liens du .exe, et le préprocesseur de windres (icône et manifeste intégrés comme
@@ -301,7 +301,7 @@ jobs:
           target/x86_64-unknown-linux-musl/release/vanguard deploiement verifier-pe target/x86_64-pc-windows-gnu/release/vanguard.exe
           bash outils/failles-programmes.sh target/x86_64-unknown-linux-musl/release/vanguard \
             target/x86_64-pc-windows-gnu/release/vanguard.exe
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vanguard-windows-livre
           path: target/x86_64-pc-windows-gnu/release/vanguard.exe
@@ -313,7 +313,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Rust (rust-toolchain.toml)
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -352,7 +352,7 @@ jobs:
             } elseif ($LASTEXITCODE -ne 0) { throw "$outil --liste : code $LASTEXITCODE" } else { $sortie }
           }
           $global:LASTEXITCODE = 0
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: essai-windows
@@ -367,7 +367,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: vanguard-windows-livre
       - name: Le .exe livré démarre, fait son bilan et répond
@@ -392,7 +392,7 @@ jobs:
             } elseif ($LASTEXITCODE -ne 0) { throw "$outil --liste : code $LASTEXITCODE" } else { $sortie }
           }
           $global:LASTEXITCODE = 0
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: essai-windows-livre
