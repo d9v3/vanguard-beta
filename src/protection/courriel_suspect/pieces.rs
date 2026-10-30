@@ -559,7 +559,8 @@ pub(crate) fn passer_aux_moteurs(
 }
 
 /// Les vrais moteurs : YARA, puis l'antivirus. Un antivirus absent n'est proposé qu'une fois (l'installer ? non) : sa
-/// réponse vaut pour les pièces suivantes, au lieu de reposer la question à chacune.
+/// réponse vaut pour les pièces suivantes, au lieu de reposer la question à chacune. Un fichier sauté par Defender
+/// (exclu), lui, ne dit rien des autres : chacune repasse.
 pub(crate) fn moteurs(
     yara: impl Fn(&Path) -> Examen,
     antivirus: impl Fn(&Path) -> Examen,
@@ -571,7 +572,9 @@ pub(crate) fn moteurs(
             Examen::Impossible(raison.clone())
         } else {
             let e = antivirus(chemin);
-            if let Examen::Impossible(raison) = &e {
+            if let Examen::Impossible(raison) = &e
+                && raison != crate::protection::antivirus::raison_sautee()
+            {
                 absent = Some(raison.clone());
             }
             e
@@ -799,5 +802,21 @@ mod tests {
         assert_eq!(appels.get(), 1);
         assert!(matches!(&deux[1].1, Examen::Impossible(r) if r == "ClamAV absent"));
         assert!(matches!(&un[0].1, Examen::Trouve(_)));
+        // Relecture Defender : une pièce sautée (exclue) ne fait pas sauter les suivantes.
+        let appels = std::cell::Cell::new(0);
+        let mut m = moteurs(
+            |_| Examen::Sain,
+            |_| {
+                appels.set(appels.get() + 1);
+                if appels.get() == 1 {
+                    Examen::Impossible(crate::protection::antivirus::raison_sautee().into())
+                } else {
+                    Examen::Trouve(vec!["Eicar".into()])
+                }
+            },
+        );
+        assert!(matches!(&m(p)[1].1, Examen::Impossible(_)));
+        assert!(matches!(&m(p)[1].1, Examen::Trouve(_)));
+        assert_eq!(appels.get(), 2);
     }
 }

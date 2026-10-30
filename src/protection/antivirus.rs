@@ -588,19 +588,14 @@ fn lire_mpcmdrun(code: Option<i32>, sortie: &str, encore_la: bool) -> Examen {
             let noms = menaces_mpcmdrun(sortie);
             if !noms.is_empty() {
                 Examen::Trouve(noms)
-            } else if encore_la && sortie.lines().any(|l| l.contains("was skipped")) {
-                Examen::Impossible(
-                    tr!(
-                        "Defender a sauté ce fichier (exclu de l'analyse ?)",
-                        "Defender skipped this file (excluded from scanning?)"
-                    )
-                    .into(),
-                )
+            } else if encore_la && saute_par_mpcmdrun(sortie) {
+                Examen::Impossible(raison_sautee().into())
             } else {
                 let generique = tr!("menace reconnue par Defender", "threat recognized by Defender");
                 Examen::Trouve(vec![match sortie.lines().map(str::trim).rfind(|l| !l.is_empty()) {
+                    // Le chemin du fichier y est, aussi long que Windows le permet : la ligne est coupée.
                     Some(l) => {
-                        let l = affichable(l);
+                        let l = couper(&affichable(l), 160);
                         trf!("{generique} (MpCmdRun : « {l} »)", "{generique} (MpCmdRun: \"{l}\")")
                     }
                     None => generique.to_string(),
@@ -615,6 +610,25 @@ fn lire_mpcmdrun(code: Option<i32>, sortie: &str, encore_la: bool) -> Examen {
             .into(),
         ),
     }
+}
+
+/// MpCmdRun a sauté le fichier : une ligne entière « Scanning <chemin> was skipped. », et aucune « found N threats ».
+/// Le chemin, lui, est choisi par qui a nommé le fichier (« facture was skipped.exe ») : la phrase n'est reconnue qu'en
+/// fin de ligne, où Windows ne laisse pas finir un nom de fichier (ni point final ni retour à la ligne).
+#[cfg(any(windows, test))]
+fn saute_par_mpcmdrun(sortie: &str) -> bool {
+    let lignes = || sortie.lines().map(str::trim);
+    lignes().any(|l| l.starts_with("Scanning ") && l.ends_with(" was skipped."))
+        && !lignes().any(|l| l.starts_with("Scanning ") && l.ends_with(" threats."))
+}
+
+/// La raison d'un fichier sauté par Defender : propre à ce fichier, jamais l'antivirus absent (`pieces::moteurs` ne
+/// la reporte pas sur les pièces suivantes). Une exclusion qu'on n'a pas posée est elle-même un signe.
+pub(crate) fn raison_sautee() -> &'static str {
+    tr!(
+        "Defender a sauté ce fichier : exclu de l'analyse, ce qui est suspect si personne ne l'a voulu",
+        "Defender skipped this file: excluded from scanning, which is suspicious if nobody meant it"
+    )
 }
 
 /// Noms des menaces dans la sortie de MpCmdRun : « Threat                  : Virus:DOS/EICAR_Test_File », prêts à
@@ -1569,8 +1583,25 @@ mod tests_cle {
             Examen::Trouve(_)
         ));
         // Fichier exclu de Defender : code 2, rien d'analysé, ce n'est pas une menace (CI de GitHub).
-        let saute = "Scan starting...\nScan finished.\nScanning C:\\Users\\alice\\notes.txt was skipped.\n";
-        assert!(matches!(lire_mpcmdrun(Some(2), saute, true), Examen::Impossible(_)));
+        let saute = "Scan starting...\nScan finished.\n  Scanning C:\\Users\\alice\\notes.txt was skipped.  \n";
+        assert!(matches!(lire_mpcmdrun(Some(2), saute, true), Examen::Impossible(r) if r == raison_sautee()));
+        // La phrase dans le nom du fichier, ou une menace comptée sans être nommée : pas un saut.
+        for piege in [
+            "Scanning C:\\Users\\alice\\facture was skipped.exe found 1 threats.\n",
+            "Scanning C:\\a was skipped. b.exe found 1 threats.\nScanning C:\\a was skipped.\n",
+            "Scan finished. was skipped.\n",
+        ] {
+            assert!(
+                matches!(lire_mpcmdrun(Some(2), piege, true), Examen::Trouve(_)),
+                "{piege}"
+            );
+        }
+        // La ligne citée a une borne, quel que soit le chemin.
+        let long = format!("Scanning C:\\{} found 1 threats.\n", "a".repeat(5000));
+        let Examen::Trouve(n) = lire_mpcmdrun(Some(2), &long, true) else {
+            panic!("long")
+        };
+        assert!(n[0].chars().count() < 300, "{}", n[0].len());
         // Sauté mais le fichier a disparu : Defender l'a retiré, c'est une menace.
         assert!(matches!(lire_mpcmdrun(Some(2), saute, false), Examen::Trouve(_)));
         // Sortie inattendue : la menace est quand même dite, avec la dernière ligne de MpCmdRun pour comprendre.
