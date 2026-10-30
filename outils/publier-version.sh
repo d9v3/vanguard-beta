@@ -153,7 +153,8 @@ if gh release view "$TAG" >/dev/null 2>&1; then
 fi
 # Aucun lien mort, avant d'attendre le Mac : les téléchargements du README (…/releases/latest/download/<nom>) visent
 # les fichiers de cette version, qui sera la dernière (outils/liens.py).
-python3 outils/liens.py --version vanguard-windows-x86_64.exe vanguard-linux-x86_64 vanguard-macos SHA256SUMS.txt ||
+python3 outils/liens.py --version vanguard-windows-x86_64.exe vanguard-linux-x86_64 vanguard-macos SHA256SUMS.txt \
+  $(bash outils/sbom.sh --noms) ||
   { echo "Liens : rien de publié."; exit 1; }
 
 DOSSIER=$(mktemp -d)

@@ -247,6 +247,10 @@ Dependencies: `cargo deny` (`deny.toml`: known RustSec vulnerabilities, licenses
 duplicates; `extensions/deny.toml` for the extensions library and the Rust example, which have no dependencies) and
 `cargo audit` (a second opinion on vulnerabilities, with only the exceptions of `deny.toml`, which `.cargo/audit.toml`
 copies), in `outils/verifier.sh` (skipped without the tool, cargo audit also without Internet) and every night in CI.
+`cargo vet` (`supply-chain/`) also requires, at every verification and offline, an imported review (Google, Mozilla,
+Bytecode Alliance, Zcash, ISRG) or an exemption at the exact number for each version: after a `cargo update`,
+`cargo vet` (with Internet) reads the registries again, then `cargo vet regenerate exemptions` and `cargo vet prune`
+write what remains, to be read in the diff of `supply-chain/config.toml`.
 The list only keeps permissive licenses (MIT, Apache-2.0, BSD, ISC…), compatible with the GPL-3.0-or-later and with
 a possible dual license of Vanguard: any other, even free and GPL-compatible (MPL, LGPL), first needs the author's
 approval.

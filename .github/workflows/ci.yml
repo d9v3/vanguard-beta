@@ -71,9 +71,9 @@ jobs:
       # Actions venues d'autres que GitHub : épinglées par leur commit. Une étiquette (v2) se déplace ; si leur dépôt était
       # piraté, une version piégée toucherait ce que compile ce travail. À mettre à jour à la main (le commentaire dit la
       # version). Les outils dans la version épinglée ici, tels que leurs auteurs les publient (empreintes vérifiées).
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      - uses: taiki-e/install-action@645d1ab48b3cb8591684a8b730b2ccf4cb3f9568 # v2.87.33
         with:
-          tool: cargo-audit@0.22.2,cargo-deny@0.20.2,zizmor@1.31.1
+          tool: cargo-audit@0.22.2,cargo-deny@0.20.2,zizmor@1.31.1,cargo-vet@0.10.3
           fallback: none
       - name: cargo-fuzz
         run: outils/installer-cargo-fuzz.sh
@@ -136,7 +136,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      - uses: taiki-e/install-action@645d1ab48b3cb8591684a8b730b2ccf4cb3f9568 # v2.87.33
         with:
           tool: cargo-audit@0.22.2,cargo-deny@0.20.2
           fallback: none
@@ -288,7 +288,7 @@ jobs:
       # cargo auditable grave dans chaque programme la liste de ses dépendances, versions comprises, que cargo audit
       # relit. Les deux outils dans la version épinglée ici, que outils/deployer.sh et outils/failles-programmes.sh
       # exigent aussi sur l'ordinateur de l'auteur ; jamais de repli sur une compilation ou un autre téléchargement.
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      - uses: taiki-e/install-action@645d1ab48b3cb8591684a8b730b2ccf4cb3f9568 # v2.87.33
         with:
           tool: cargo-auditable@0.7.7,cargo-audit@0.22.2
           fallback: none

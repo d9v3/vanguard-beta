@@ -327,6 +327,24 @@ workflows() {
   env -u GH_TOKEN -u GITHUB_TOKEN -u ZIZMOR_GITHUB_TOKEN zizmor --offline --no-progress --format plain .github/workflows
 }
 
+# Les dépendances relues selon cargo vet (supply-chain/) : chaque version de chaque bibliothèque, celles des essais
+# et des trois systèmes comprises, a une relecture importée (Google, Mozilla, Bytecode Alliance, Zcash, ISRG :
+# imports.lock), la nôtre (audits.toml) ou une exemption à son numéro exact (config.toml). Une version nouvelle sans
+# aucune des trois fait échouer : la changer est une décision écrite, pas un `cargo update` passé inaperçu.
+# --frozen : jamais de réseau, le verdict ne bouge pas avec les registres ; `cargo vet` sans option les relit, à la
+# main, quand une dépendance change. Il lit les sources de crates.io (cargo metadata) : `cargo fetch` les pose avant,
+# sans quoi une CI neuve échouerait faute de les avoir. Sautée sans cargo-vet, sauf en CI (install-action, comme
+# zizmor).
+relectures() {
+  if ! command -v cargo-vet >/dev/null; then
+    echo "cargo-vet absent (cargo install --locked cargo-vet@0.10.3)"
+    [[ $MODE == --ci ]] && return 1
+    return "$SAUTEE"
+  fi
+  cargo vet --version
+  cargo fetch --locked -q && cargo vet --locked --frozen
+}
+
 # Les nomenclatures (SBOM) des programmes publiés (outils/sbom.sh), faites deux fois : elles doivent sortir, sans
 # chemin de cette machine, et identiques d'une fois à l'autre (le Mac de GitHub fait les mêmes octets, que
 # outils/publier-version.sh compare). Sautée sans cargo-cyclonedx 0.5.9, celui qu'épingle macos.yml.
@@ -380,6 +398,7 @@ if [[ $MODE != --rapide ]]; then
   etape documentation documentation &
   etape textes textes &
   etape dependances dependances &
+  etape relectures relectures &
   etape failles-connues failles_connues &
   etape fuzzing fuzzing &
 fi
@@ -442,6 +461,17 @@ ligne() {
   fi
 }
 
+# L'unsafe de Vanguard (src/), compté à chaque passe : un bloc de plus se voit au résumé, et clippy exige son
+# `// SAFETY:`. Compté ici plutôt que par cargo-geiger, qui ne voit pas les blocs `unsafe extern` de l'édition 2024
+# (0.14.0), la forme de presque tous nos appels au système ; celui des dépendances relève de cargo vet.
+compte_unsafe() {
+  local lignes
+  lignes=$(grep -rh --include='*.rs' 'unsafe' src | grep -vE '^[[:space:]]*//')
+  forme() { grep -oE "(^|[^_[:alnum:]])$1" <<<"$lignes" | wc -l; }
+  printf '      unsafe dans src/ : %s blocs, %s blocs extern, %s fn, %s impl, %s attributs\n' \
+    "$(forme 'unsafe \{')" "$(forme 'unsafe extern')" "$(forme 'unsafe fn')" "$(forme 'unsafe impl')" "$(forme '#\[unsafe\(')"
+}
+
 # Ce que cargo deny laisse passer sans le taire : les failles admises dans deny.toml (leur raison commence par le nom
 # de la bibliothèque), les doublons, la base de failles hors ligne, et tout autre avertissement (version retirée de
 # crates.io, cible inconnue…) : l'étape reste verte, et son journal part à la fin, il ne se lirait nulle part ailleurs.
@@ -462,6 +492,7 @@ remarques_dependances() {
 echo
 ligne mise-en-forme "mise en forme"
 ligne clippy-linux "clippy Linux"
+[[ -z $SEULEMENT ]] && compte_unsafe | tee -a "$RESUME"
 ligne tests-linux "tests Linux ($(passes tests-linux))"
 raisons_des_sautes tests-linux
 ligne regression-detection "régression de détection Linux ($(cas_qui_tirent regression-detection) règles)"
@@ -498,6 +529,8 @@ if [[ $MODE != --rapide ]]; then
   ligne dependances "dépendances (cargo deny)"
   remarques_dependances
   ligne failles-connues "failles connues (cargo audit)"
+  ligne relectures "dépendances relues (cargo vet)"
+  [[ -f $TRAVAIL/relectures.log ]] && grep -m1 -oE '[0-9]+ fully audited.*exempted' "$TRAVAIL/relectures.log" | sed 's/^/      /'
   ligne fuzzing "banc de fuzzing ($(awk '/^  ✔/ { n++ } END { print n + 0 }' "$TRAVAIL/fuzzing.log" 2>/dev/null) cibles)"
 fi
 DUREE=$((SECONDS - DEBUT))

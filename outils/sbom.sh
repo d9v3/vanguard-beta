@@ -8,9 +8,18 @@
 # épinglée, et le chemin du dépôt sur la machine (dossier personnel ici, celui du Mac là-bas) ramené à « . ».
 # Tourne aussi sur le bash 3.2 de macOS.
 #   outils/sbom.sh <dossier de sortie>
+#   outils/sbom.sh --noms        les noms des fichiers, un par ligne, sans rien faire (liens.py --version)
 set -euo pipefail
 VERSION=0.5.9
-[[ $# -eq 1 ]] || { echo "usage : outils/sbom.sh <dossier de sortie>" >&2; exit 2; }
+CIBLES='linux-x86_64 x86_64-unknown-linux-musl
+windows-x86_64 x86_64-pc-windows-gnu
+macos-aarch64 aarch64-apple-darwin
+macos-x86_64 x86_64-apple-darwin'
+[[ $# -eq 1 ]] || { echo "usage : outils/sbom.sh <dossier de sortie> | --noms" >&2; exit 2; }
+if [[ $1 == --noms ]]; then
+  while read -r nom _; do echo "vanguard-$nom.cdx.json"; done <<<"$CIBLES"
+  exit 0
+fi
 mkdir -p "$1"
 SORTIE=$(cd "$1" && pwd)
 cd "$(dirname "$0")/.."
@@ -38,10 +47,5 @@ while read -r nom cible; do
     echo "sbom.sh : un chemin de cette machine reste dans vanguard-$nom.cdx.json" >&2
     exit 1
   fi
-done <<'CIBLES'
-linux-x86_64 x86_64-unknown-linux-musl
-windows-x86_64 x86_64-pc-windows-gnu
-macos-aarch64 aarch64-apple-darwin
-macos-x86_64 x86_64-apple-darwin
-CIBLES
+done <<<"$CIBLES"
 ls "$SORTIE"/vanguard-*.cdx.json

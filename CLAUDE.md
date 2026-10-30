@@ -9,9 +9,10 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
 
 - Tout vérifier en une commande : `outils/verifier.sh` (mise en forme, clippy ×4, tests Linux et Wine, la suite Linux
   refaite sans Internet, scripts PowerShell, shell et Python, extensions, essais de la clé et de la signature des
-  versions, liens internes, textes FR/EN (`outils/textes.py`), dépendances par cargo deny, workflows par zizmor,
-  nomenclatures (SBOM, `outils/sbom.sh`, cargo-cyclonedx 0.5.9), banc de fuzzing ; tout cargo en `--locked` ; les
-  cibles en parallèle, une ligne par étape à la fin, avec les avertissements de cargo deny). Un test qui ne peut pas
+  versions, liens internes, textes FR/EN (`outils/textes.py`), dépendances par cargo deny et cargo vet, workflows
+  par zizmor, nomenclatures (SBOM, `outils/sbom.sh`, cargo-cyclonedx 0.5.9), banc de fuzzing ; tout cargo en
+  `--locked` ; les cibles en parallèle, une ligne par étape à la fin, avec les avertissements de cargo deny et le
+  compte de l'unsafe de src/). Un test qui ne peut pas
   tourner ici le dit : `return crate::essais::saute("raison");` (`src/essais.rs`), compté « sauté » par verifier.sh,
   jamais un simple `return`. `--ci` : ce que lance la CI ; `--seulement étape,étape` (une étape demandée qui se dit
   sautée ou ne tourne pas y échoue, un nom inconnu est refusé : `outils/essais-verifier.sh`). Les
@@ -30,7 +31,9 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
 - Mise en forme : `cargo fmt`, toujours avant un commit.
 - Dépendances : `cargo deny check` (`deny.toml` : failles RustSec, licences permises, crates.io seulement, doublons dits
   sans échouer ; une faille admise l'est avec sa preuve ; `extensions/deny.toml` pour la bibliothèque des extensions
-  et l'exemple en Rust) ; étape de verifier.sh, sautée sans `cargo-deny`.
+  et l'exemple en Rust) ; étape de verifier.sh, sautée sans `cargo-deny`. Relectures : `cargo vet --locked --frozen`
+  (`supply-chain/`, cargo-vet 0.10.3 : relectures importées ou exemption au numéro exact) ; après un `cargo update`,
+  `cargo vet`, `cargo vet regenerate exemptions`, `cargo vet prune`, et le diff de `supply-chain/` relu.
 - Failles connues : `cargo audit`, second avis, jugé comme `outils/failles-programmes.sh` (abandon, code défaillant,
   notice refusés) ; seules exceptions celles de deny.toml (`outils/exceptions-rustsec.py`), que `.cargo/audit.toml`
   recopie à l'identique ; étape de verifier.sh, sautée sans `cargo-audit` ou sans Internet.

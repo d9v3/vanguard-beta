@@ -84,6 +84,9 @@ Par exemple :
   des dépendances (base RustSec), licences permises, crates.io comme seule source. Un avis admis l'est avec sa preuve,
   dans [deny.toml](deny.toml).
 - **cargo audit**, chaque nuit sur GitHub, sur la même base RustSec.
+- **cargo vet**, à chaque vérification : chaque version de chaque dépendance a une relecture publiée par Google,
+  Mozilla, Bytecode Alliance, Zcash ou ISRG, ou une exemption écrite à son numéro exact
+  ([supply-chain/](supply-chain/config.toml)). Une version nouvelle sans l'une ou l'autre fait échouer la vérification.
 - **cargo auditable** : chaque programme publié porte la liste de ses dépendances, versions comprises. N'importe qui
   peut la comparer aux failles connues sur le programme téléchargé, avec `cargo audit bin` (voir la section
   [Développer](README.md#développer) du README) ; `outils/failles-programmes.sh` le fait avant chaque publication.
@@ -186,6 +189,9 @@ For example:
   dependencies (RustSec database), allowed licenses, crates.io as the only source. An accepted advisory comes with its
   proof, in [deny.toml](deny.toml).
 - **cargo audit**, every night on GitHub, on the same RustSec database.
+- **cargo vet**, at every verification: each version of each dependency has a review published by Google, Mozilla,
+  Bytecode Alliance, Zcash or ISRG, or a written exemption at its exact number
+  ([supply-chain/](supply-chain/config.toml)). A new version with neither fails the verification.
 - **cargo auditable**: every published program carries the list of its dependencies, versions included. Anyone can
   check it against known vulnerabilities on the downloaded program, with `cargo audit bin` (see the README's
   [Development](README.en.md#development) section); `outils/failles-programmes.sh` does it before each release.

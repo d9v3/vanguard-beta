@@ -417,8 +417,9 @@ WIFI_CLE = re.compile(r"(?<!\w)(ssid|all user profile|profil tous les utilisateu
 LIGNE_WIFI = re.compile(r"wi-?fi|ssid|wlan|wireless|sans fil", re.IGNORECASE)
 NOM_LOCAL = re.compile(r"(?<![\w.-])[\w-][\w.-]*?(?=\.(?:home\.arpa|internal|local|home|lan)(?![\w-]))",
                        re.IGNORECASE)
-# Les licences des bibliothèques nomment leurs auteurs avec leur courriel : publics, voulus.
-TIERS = {"LICENCES-TIERCES.txt", "Cargo.lock"}
+# Les licences des bibliothèques nomment leurs auteurs avec leur courriel : publics, voulus. Les relectures importées
+# par cargo vet aussi, celui de chaque relecteur, recopiées telles quelles des registres publics de Google, Mozilla…
+TIERS = {"LICENCES-TIERCES.txt", "Cargo.lock", "supply-chain/imports.lock"}
 
 
 def comptes(texte):
@@ -618,7 +619,7 @@ def depot_entier(detecteur):
         contenu = lot[fin + 1 : fin + 1 + int(taille)]
         position = fin + 2 + int(taille)
         if genre == "blob" and b"\0" not in contenu[:8000]:
-            tiers = False if objets[sha].rsplit("/", 1)[-1] in TIERS else None
+            tiers = False if objets[sha] in TIERS or objets[sha].rsplit("/", 1)[-1] in TIERS else None
             for terme, _ in detecteur.trouver(contenu.decode(errors="replace"), tiers):
                 vus.add((f"historique : {objets[sha]}", terme))
         for terme, _ in detecteur.trouver(objets.get(sha, "")):

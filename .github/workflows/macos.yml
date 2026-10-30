@@ -117,7 +117,7 @@ jobs:
           fi
       # cargo-auditable et cargo-audit comme dans ci.yml (versions épinglées, empreintes vérifiées, aucun repli),
       # posés en quelques secondes après les tests : un passage en échec ne les télécharge pas.
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      - uses: taiki-e/install-action@645d1ab48b3cb8591684a8b730b2ccf4cb3f9568 # v2.87.33
         with:
           tool: cargo-auditable@0.7.7,cargo-audit@0.22.2,cargo-cyclonedx@0.5.9
           fallback: none

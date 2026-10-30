@@ -248,7 +248,11 @@ sauté n'a rien vérifié. La navigation dans les menus est essayée pour de vra
 Dépendances : `cargo deny` (`deny.toml` : failles connues de RustSec, licences de sa liste, crates.io seulement,
 doublons ; `extensions/deny.toml` pour la bibliothèque des extensions et l'exemple en Rust, sans dépendance) et
 `cargo audit` (second avis sur les failles, avec les seules exceptions de `deny.toml`, que `.cargo/audit.toml` recopie),
-dans `outils/verifier.sh` (sautés sans l'outil, cargo audit aussi sans Internet) et chaque nuit dans la CI. La liste
+dans `outils/verifier.sh` (sautés sans l'outil, cargo audit aussi sans Internet) et chaque nuit dans la CI. `cargo vet`
+(`supply-chain/`) exige en plus, à chaque vérification et hors ligne, une relecture importée (Google, Mozilla,
+Bytecode Alliance, Zcash, ISRG) ou une exemption au numéro exact pour chaque version : après un `cargo update`,
+`cargo vet` (avec Internet) relit les registres, puis `cargo vet regenerate exemptions` et `cargo vet prune` écrivent
+ce qui reste, à relire dans le diff de `supply-chain/config.toml`. La liste
 ne garde que des licences permissives (MIT, Apache-2.0, BSD, ISC…), compatibles avec la GPL-3.0-or-later et avec une
 double licence possible de Vanguard : toute autre, même libre et compatible avec la GPL (MPL, LGPL), demande d'abord
 l'accord de l'auteur.
