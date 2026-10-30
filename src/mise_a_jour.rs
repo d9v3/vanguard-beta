@@ -340,7 +340,9 @@ fn cibles_github() -> Vec<PathBuf> {
 /// En root, un programme ne se remplace que dans un dossier à root que ni son groupe ni les autres ne peuvent
 /// changer : le nouveau est écrit à côté, relu, essayé puis renommé par son chemin, et le compte à qui appartient le
 /// dossier (un « sudo ~/Téléchargements/vanguard ») l'aurait échangé entre la relecture et l'essai, que root lance.
-/// Hors de root : toujours (le compte ne risque que lui-même).
+/// Chaque dossier au-dessus aussi, jusqu'à « / » : un dossier à root posé dans celui d'un compte (~/bin) se renomme
+/// par ce compte, qui en met un autre à sa place sous le même chemin. Hors de root : toujours (le compte ne risque que
+/// lui-même).
 fn remplacable_ici(programme: &Path) -> bool {
     #[cfg(unix)]
     {
@@ -360,10 +362,20 @@ fn remplacable_pour(euid: libc::uid_t, programme: &Path) -> bool {
     if euid != 0 {
         return true;
     }
-    programme
-        .parent()
-        .and_then(|d| std::fs::symlink_metadata(d).ok())
-        .is_some_and(|m| m.file_type().is_dir() && m.uid() == 0 && m.mode() & 0o022 == 0)
+    // Le chemin tel qu'il sera écrit, puis le même résolu : un lien en route (« /bin » vers « usr/bin ») est sûr s'il
+    // est à root dans un dossier sûr, et ce qu'il désigne doit l'être aussi.
+    let a_root = |chemin: &Path, lien_permis: bool| {
+        chemin.ancestors().all(|d| {
+            std::fs::symlink_metadata(d).is_ok_and(|m| {
+                let genre = m.file_type();
+                m.uid() == 0 && ((genre.is_dir() && m.mode() & 0o022 == 0) || (lien_permis && genre.is_symlink()))
+            })
+        })
+    };
+    let Some(dossier) = programme.parent().filter(|d| d.is_absolute()) else {
+        return false;
+    };
+    a_root(dossier, true) && dossier.canonicalize().is_ok_and(|vrai| a_root(&vrai, false))
 }
 
 /// Le programme lancé est-il laissé de côté par la mise à jour, lancé en root depuis un dossier qui n'est pas sûr ?
@@ -839,7 +851,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn en_root_pas_de_remplacement_dans_un_dossier_d_un_compte() {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let d = std::env::temp_dir().join(format!("vanguard-cible-root-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let exe = d.join("vanguard-linux-x86_64");
@@ -853,6 +865,27 @@ mod tests {
         // SAFETY : getuid lit le compte du processus, sans argument.
         if unsafe { libc::getuid() } != 0 {
             assert!(!remplacable_pour(0, &exe));
+        }
+        // Un dossier sûr dans un dossier ouvert à tous : refusé quand même, celui du dessus se renomme. Sous
+        // `unshare -r`, les deux paraissent à root, et seul le dossier du dessus le refuse.
+        let sous = d.join("sous");
+        std::fs::create_dir_all(&sous).unwrap();
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(!remplacable_pour(0, &sous.join("vanguard-linux-x86_64")));
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Un chemin relatif ne dit rien des dossiers au-dessus : refusé.
+        assert!(!remplacable_pour(0, Path::new("vanguard-linux-x86_64")));
+        // Un vrai dossier de root (/usr/bin, peut-être par le lien /bin) : accepté, si root le possède ici (sous
+        // `unshare -r`, il paraît au compte « nobody »).
+        let systeme = Path::new("/usr/bin");
+        if std::fs::metadata(systeme).is_ok_and(|m| m.uid() == 0 && m.mode() & 0o022 == 0)
+            && std::fs::symlink_metadata("/usr").is_ok_and(|m| m.uid() == 0)
+            && std::fs::symlink_metadata("/").is_ok_and(|m| m.uid() == 0)
+        {
+            assert!(remplacable_pour(0, &systeme.join("vanguard-linux-x86_64")));
+            if std::fs::symlink_metadata("/bin").is_ok_and(|m| m.file_type().is_symlink() && m.uid() == 0) {
+                assert!(remplacable_pour(0, Path::new("/bin/vanguard-linux-x86_64")));
+            }
         }
         let _ = std::fs::remove_dir_all(&d);
     }
