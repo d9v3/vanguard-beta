@@ -656,8 +656,7 @@ pub(super) fn juger_modules(
             outils,
         ));
     }
-    if !inconnus.is_empty() {
-        let premier = inconnus[0].clone();
+    if let Some(premier) = inconnus.first().cloned() {
         // Un nom de module : lettres, chiffres et « _ » ; autre chose ne va pas dans une commande.
         let commande = format!("modinfo {premier}");
         let commandes: Vec<&str> = if premier.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {

@@ -129,8 +129,8 @@ fn id_hexa(texte: &str) -> Option<[u8; 16]> {
         return None;
     }
     let mut id = [0u8; 16];
-    for (k, o) in id.iter_mut().enumerate() {
-        *o = u8::from_str_radix(std::str::from_utf8(&chiffres[2 * k..2 * k + 2]).ok()?, 16).ok()?;
+    for (o, paire) in id.iter_mut().zip(chiffres.as_chunks::<2>().0) {
+        *o = u8::from_str_radix(std::str::from_utf8(paire).ok()?, 16).ok()?;
     }
     Some(id)
 }
@@ -438,8 +438,9 @@ fn parcourir(mut reculs: Vec<Recul>, depuis: u64, ecrire: &mut impl FnMut(&str) 
     // (heure, numéro dans le fichier, fichier, position) de l'entrée la plus récente de chaque fichier.
     let mut tas: BinaryHeap<(u64, u64, usize, u64)> = BinaryHeap::new();
     let avancer = |reculs: &mut Vec<Recul>, i: usize, tas: &mut BinaryHeap<(u64, u64, usize, u64)>| -> Option<()> {
-        if let Some(pos) = reculs[i].precedente().ok()? {
-            let (numero, quand) = reculs[i].journal.en_tete(pos)?;
+        let recul = reculs.get_mut(i)?;
+        if let Some(pos) = recul.precedente().ok()? {
+            let (numero, quand) = recul.journal.en_tete(pos)?;
             tas.push((quand, numero, i, pos));
         }
         Some(())
@@ -455,8 +456,10 @@ fn parcourir(mut reculs: Vec<Recul>, depuis: u64, ecrire: &mut impl FnMut(&str) 
             // Le plus récent de ce fichier est plus ancien que la borne : il n'a plus rien à donner.
             continue;
         }
-        if vues.insert((reculs[i].journal.suite, numero)) {
-            let e = reculs[i].journal.entree(pos, CHAMPS_COURTS, &mut caches[i])?;
+        // `i` vient du tas, rempli avec les rangs de `reculs` ; `caches` a la même longueur.
+        let (recul, cache) = (reculs.get_mut(i)?, caches.get_mut(i)?);
+        if vues.insert((recul.journal.suite, numero)) {
+            let e = recul.journal.entree(pos, CHAMPS_COURTS, cache)?;
             if let Some(l) = ligne_courte(&e) {
                 if !ecrire(&l) {
                     parcours.coupe = true;
@@ -527,7 +530,7 @@ impl Lecteur {
                 self.fichier.read_exact_at(&mut tampon, k * MORCEAU).ok()?;
                 self.morceaux.insert(k, tampon);
             }
-            let morceau = &self.morceaux[&k];
+            let morceau = self.morceaux.get(&k)?;
             let debut = usize::try_from(p - k * MORCEAU).ok()?;
             let jusqua = usize::try_from(fin.min((k + 1) * MORCEAU) - k * MORCEAU).ok()?;
             sortie.extend_from_slice(morceau.get(debut..jusqua)?);
@@ -601,7 +604,7 @@ impl Journal {
         let Some(h) = lecteur.lire(0, 208) else {
             return Some(Ouvert::Vide);
         };
-        if &h[..8] != SIGNATURE {
+        if h.first_chunk::<8>() != Some(SIGNATURE) {
             return None;
         }
         let drapeaux = u32_a(&h, 12);
@@ -617,10 +620,8 @@ impl Journal {
         if entete < 208 || cases == 0 || table < entete {
             return None;
         }
-        let mut cle = [0u8; 16];
-        cle.copy_from_slice(&h[24..40]);
-        let mut suite = [0u8; 16];
-        suite.copy_from_slice(&h[72..88]);
+        let cle: [u8; 16] = h.get(24..40)?.try_into().ok()?;
+        let suite: [u8; 16] = h.get(72..88)?.try_into().ok()?;
         let mut j = Journal {
             lecteur,
             drapeaux,
@@ -677,10 +678,13 @@ impl Journal {
         }
         let o = self.lecteur.lire(pos, 16)?;
         let taille = u64_a(&o, 8);
-        if o[0] != sorte || taille < minimum || pos.checked_add(taille)? > self.lecteur.longueur {
+        let &[sorte_lue, drapeaux, ..] = o.as_slice() else {
+            return None;
+        };
+        if sorte_lue != sorte || taille < minimum || pos.checked_add(taille)? > self.lecteur.longueur {
             return None;
         }
-        Some((o[1], taille))
+        Some((drapeaux, taille))
     }
 
     /// Un objet DATA ; avec `charge` (`Some(max)`), le champ lui-même, décompressé, s'il tient en `max` octets.
@@ -826,7 +830,7 @@ impl Journal {
             let o = self.lecteur.lire(pos, usize::try_from(taille).ok()?)?;
             let numero = u64_a(&o, 16);
             let quand = u64_a(&o, 24);
-            if r.depuis.is_some_and(|t| quand < t) || r.demarrage.is_some_and(|b| o[40..56] != b) {
+            if r.depuis.is_some_and(|t| quand < t) || r.demarrage.is_some_and(|b| o.get(40..56) != Some(&b[..])) {
                 continue;
             }
             let largeur = if self.compact() { 4 } else { 16 };
@@ -954,11 +958,12 @@ impl Journal {
         let Some(egal) = charge.iter().position(|&c| c == b'=') else {
             return Some(Champ::Autre);
         };
-        let nom = String::from_utf8_lossy(&charge[..egal]).into_owned();
+        let (nom, reste) = charge.split_at_checked(egal)?;
+        let nom = String::from_utf8_lossy(nom).into_owned();
         if !voulus.contains(&nom.as_str()) {
             return Some(Champ::Autre);
         }
-        let valeur = String::from_utf8_lossy(&charge[egal + 1..]).into_owned();
+        let valeur = String::from_utf8_lossy(reste.get(1..)?).into_owned();
         Some(Champ::Voulu(nom, valeur))
     }
 }
@@ -1005,7 +1010,7 @@ fn delz4(entree: &[u8], max: usize) -> Option<Vec<u8>> {
         }
         let depart = s.len() - recul;
         for k in 0..copie {
-            let o = s[depart + k];
+            let o = *s.get(depart + k)?;
             s.push(o);
         }
     }
@@ -1087,18 +1092,20 @@ fn hashlittle2(octets: &[u8], pc: u32, pb: u32) -> (u32, u32) {
     let (mut a, mut b, mut c) = (depart, depart, depart.wrapping_add(pb));
     let mot = |m: &[u8], k: usize| {
         let mut w = [0u8; 4];
-        for (j, o) in m.iter().skip(4 * k).take(4).enumerate() {
-            w[j] = *o;
+        for (d, o) in w.iter_mut().zip(m.iter().skip(4 * k)) {
+            *d = *o;
         }
         u32::from_le_bytes(w)
     };
     let mut reste = octets;
-    while reste.len() > 12 {
-        a = a.wrapping_add(mot(reste, 0));
-        b = b.wrapping_add(mot(reste, 1));
-        c = c.wrapping_add(mot(reste, 2));
+    while reste.len() > 12
+        && let Some((bloc, suite)) = reste.split_first_chunk::<12>()
+    {
+        a = a.wrapping_add(mot(bloc, 0));
+        b = b.wrapping_add(mot(bloc, 1));
+        c = c.wrapping_add(mot(bloc, 2));
         melange(&mut a, &mut b, &mut c);
-        reste = &reste[12..];
+        reste = suite;
     }
     if reste.is_empty() {
         return (c, b);

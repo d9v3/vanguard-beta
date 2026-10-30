@@ -501,12 +501,15 @@ pub(super) fn failles_zypper(texte: &str) -> Vec<Faille> {
         .lines()
         .filter_map(|l| {
             let c: Vec<&str> = l.split('|').map(str::trim).collect();
-            (c.len() >= 6 && c[2] == "security" && c[5].starts_with("needed")).then(|| Faille {
-                paquet: c[1].to_string(),
-                gravite: gravite(c[3]),
-                corrigee: true,
-                cves: Vec::new(),
-            })
+            match c.as_slice() {
+                [_, paquet, "security", g, _, etat, ..] if etat.starts_with("needed") => Some(Faille {
+                    paquet: (*paquet).to_string(),
+                    gravite: gravite(g),
+                    corrigee: true,
+                    cves: Vec::new(),
+                }),
+                _ => None,
+            }
         })
         .collect()
 }
@@ -958,14 +961,14 @@ pub(super) fn dkms_manquants(status: &str, noyaux: &[String]) -> Vec<(String, Ve
         if nom.is_empty() {
             continue;
         }
-        let i = modules.iter().position(|(m, _)| m == nom).unwrap_or_else(|| {
+        if !modules.iter().any(|(m, _)| m == nom) {
             modules.push((nom.to_string(), Vec::new()));
-            modules.len() - 1
-        });
+        }
         if let Some(k) = noyau
             && etat.trim_start().starts_with("installed")
+            && let Some((_, installes)) = modules.iter_mut().find(|(m, _)| m == nom)
         {
-            modules[i].1.push((*k).to_string());
+            installes.push((*k).to_string());
         }
     }
     modules
@@ -1172,48 +1175,35 @@ fn rpmvercmp(a: &str, b: &str) -> std::cmp::Ordering {
     if a == b {
         return Ordering::Equal;
     }
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    let (mut i, mut j) = (0usize, 0usize);
-    while i < a.len() && j < b.len() {
-        let (debut_i, debut_j) = (i, j);
-        while i < a.len() && !a[i].is_ascii_alphanumeric() {
-            i += 1;
-        }
-        while j < b.len() && !b[j].is_ascii_alphanumeric() {
-            j += 1;
-        }
-        if i == a.len() || j == b.len() {
+    // Les deux restes avancent segment par segment, sans indice.
+    let (mut a, mut b) = (a.as_bytes(), b.as_bytes());
+    while !a.is_empty() && !b.is_empty() {
+        let (sep_a, reste_a) = debut_tant_que(a, |o| !o.is_ascii_alphanumeric());
+        let (sep_b, reste_b) = debut_tant_que(b, |o| !o.is_ascii_alphanumeric());
+        (a, b) = (reste_a, reste_b);
+        if a.is_empty() || b.is_empty() {
             break;
         }
         // Des séparateurs de longueurs différentes décident à eux seuls.
-        if i - debut_i != j - debut_j {
-            return (i - debut_i).cmp(&(j - debut_j));
+        if sep_a.len() != sep_b.len() {
+            return sep_a.len().cmp(&sep_b.len());
         }
-        let (fin_i, fin_j, nombre) = if a[i].is_ascii_digit() {
-            (
-                i + a[i..].iter().take_while(|o| o.is_ascii_digit()).count(),
-                j + b[j..].iter().take_while(|o| o.is_ascii_digit()).count(),
-                true,
-            )
+        let nombre = a.first().is_some_and(u8::is_ascii_digit);
+        let genre = if nombre {
+            u8::is_ascii_digit
         } else {
-            (
-                i + a[i..].iter().take_while(|o| o.is_ascii_alphabetic()).count(),
-                j + b[j..].iter().take_while(|o| o.is_ascii_alphabetic()).count(),
-                false,
-            )
+            u8::is_ascii_alphabetic
         };
+        let (s1, reste_a) = debut_tant_que(a, genre);
+        let (s2, reste_b) = debut_tant_que(b, genre);
         // Deux segments de genres différents : les chiffres sont plus récents.
-        if fin_j == j {
+        if s2.is_empty() {
             return if nombre { Ordering::Greater } else { Ordering::Less };
         }
-        let (mut s1, mut s2) = (&a[i..fin_i], &b[j..fin_j]);
+        let (mut s1, mut s2) = (s1, s2);
         if nombre {
-            while s1.first() == Some(&b'0') {
-                s1 = &s1[1..];
-            }
-            while s2.first() == Some(&b'0') {
-                s2 = &s2[1..];
-            }
+            s1 = debut_tant_que(s1, |o| *o == b'0').1;
+            s2 = debut_tant_que(s2, |o| *o == b'0').1;
             if s1.len() != s2.len() {
                 return s1.len().cmp(&s2.len());
             }
@@ -1221,18 +1211,24 @@ fn rpmvercmp(a: &str, b: &str) -> std::cmp::Ordering {
         if s1 != s2 {
             return s1.cmp(s2);
         }
-        i = fin_i;
-        j = fin_j;
+        (a, b) = (reste_a, reste_b);
     }
-    if i >= a.len() && j >= b.len() {
+    if a.is_empty() && b.is_empty() {
         return Ordering::Equal;
     }
-    let lettre = |s: &[u8], k: usize| s.get(k).is_some_and(u8::is_ascii_alphabetic);
-    if (i >= a.len() && !lettre(b, j)) || lettre(a, i) {
+    let lettre = |s: &[u8]| s.first().is_some_and(u8::is_ascii_alphabetic);
+    if (a.is_empty() && !lettre(b)) || lettre(a) {
         Ordering::Less
     } else {
         Ordering::Greater
     }
+}
+
+/// Le début de `o` tant que `garder` dit oui, et ce qui suit.
+fn debut_tant_que(o: &[u8], garder: impl Fn(&u8) -> bool) -> (&[u8], &[u8]) {
+    let n = o.iter().take_while(|c| garder(c)).count();
+    // `n` compte des octets de `o` : la coupe ne manque jamais ; sans elle, tout serait le début.
+    o.split_at_checked(n).unwrap_or((o, &[]))
 }
 
 /// Les paquets installés qu'aucun dépôt de pacman.conf ne fournit, ce que liste « pacman -Qmq » : les noms de la
@@ -1375,7 +1371,8 @@ fn fiches_aur(installes: &[&str]) -> Option<Vec<serde_json::Value>> {
         );
         let json = crate::http::texte(&requete, std::time::Duration::from_secs(20))
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())?;
-        resultats.extend(json["results"].as_array().cloned().unwrap_or_default());
+        // Une réponse sans liste de résultats (une erreur de l'AUR) ne dit rien des paquets : pas « absents ».
+        resultats.extend(json.get("results")?.as_array()?.iter().cloned());
     }
     Some(resultats)
 }

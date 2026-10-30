@@ -194,7 +194,7 @@ impl Table {
             let Some(avant) = reste.checked_sub(morceau.len()) else {
                 return false;
             };
-            if cle[avant..reste] != *morceau {
+            if cle.get(avant..reste) != Some(morceau) {
                 return false;
             }
             reste = avant;
@@ -289,13 +289,13 @@ impl Table {
             let mut pile = Vec::new();
             let mut courant = i;
             let mut debut: Option<Vec<u8>> = loop {
-                match &noms[courant] {
+                match noms.get(courant)? {
                     Nom::Connu(n) => break Some(n.clone()),
                     // Une boucle de parents, ou une chaîne déjà sans issue.
                     Nom::EnCours | Nom::Aucun => break None,
                     Nom::Inconnu => {}
                 }
-                noms[courant] = Nom::EnCours;
+                *noms.get_mut(courant)? = Nom::EnCours;
                 pile.push(courant);
                 let parent = self.element(courant)?.parent;
                 if parent == u32::MAX {
@@ -319,7 +319,7 @@ impl Table {
                     }
                     _ => None,
                 };
-                noms[j] = debut.clone().map_or(Nom::Aucun, Nom::Connu);
+                *noms.get_mut(j)? = debut.clone().map_or(Nom::Aucun, Nom::Connu);
             }
         }
         let mut valeurs = Vec::new();
@@ -410,7 +410,8 @@ impl<'g> Plan<'g> {
             Genre::Simple(b'x' | b't' | b'd') => (Some(8), 8),
             Genre::Simple(_) => (None, 1),
             Genre::Variante => (None, 8),
-            Genre::Tableau(_) | Genre::Peut(_) => (None, enfants[0].alignement),
+            // Un seul enfant : son alignement est le plus grand.
+            Genre::Tableau(_) | Genre::Peut(_) => (None, enfants.iter().map(|m| m.alignement).max().unwrap_or(1)),
             Genre::Tuple(_) | Genre::Entree(..) => {
                 let alignement = enfants.iter().map(|m| m.alignement).max().unwrap_or(1);
                 (taille_membres(&enfants, alignement), alignement)
@@ -731,12 +732,12 @@ fn decoder_plan(plan: &Plan, octets: &[u8], profondeur: usize, budget: &mut usiz
     };
     Some(match plan.genre {
         Genre::Simple(c) => match c {
-            b'b' => match octets[0] {
-                0 => Variante::Booleen(false),
-                1 => Variante::Booleen(true),
+            b'b' => match octets {
+                [0] => Variante::Booleen(false),
+                [1] => Variante::Booleen(true),
                 _ => return None,
             },
-            b'y' => Variante::Octet(octets[0]),
+            b'y' => Variante::Octet(u8::from_le_bytes(octets.try_into().ok()?)),
             b'n' => Variante::Entier16(i16::from_le_bytes(octets.try_into().ok()?)),
             b'q' => Variante::Naturel16(u16::from_le_bytes(octets.try_into().ok()?)),
             b'i' => Variante::Entier32(i32::from_le_bytes(octets.try_into().ok()?)),
@@ -760,13 +761,14 @@ fn decoder_plan(plan: &Plan, octets: &[u8], profondeur: usize, budget: &mut usiz
         },
         Genre::Variante => {
             let zero = octets.iter().rposition(|&o| o == 0)?;
-            let interieur = Genre::depuis(&octets[zero + 1..])?;
+            let (valeur, apres) = octets.split_at_checked(zero)?;
+            let interieur = Genre::depuis(apres.get(1..)?)?;
             let p = Plan::de(&interieur);
             depenser(budget, p.noeuds)?;
-            Variante::Boite(Box::new(decoder_plan(&p, &octets[..zero], profondeur + 1, budget)?))
+            Variante::Boite(Box::new(decoder_plan(&p, valeur, profondeur + 1, budget)?))
         }
         Genre::Peut(e) => {
-            let pe = &plan.enfants[0];
+            let pe = plan.enfants.first()?;
             depenser(budget, pe.noeuds)?;
             let valeur = if octets.is_empty() {
                 None
@@ -782,7 +784,7 @@ fn decoder_plan(plan: &Plan, octets: &[u8], profondeur: usize, budget: &mut usiz
             Variante::Peut((**e).clone(), valeur.map(Box::new))
         }
         Genre::Tableau(e) => {
-            let pe = &plan.enfants[0];
+            let pe = plan.enfants.first()?;
             depenser(budget, pe.noeuds)?;
             Variante::Tableau((**e).clone(), elements(pe, octets, profondeur, budget)?)
         }
@@ -805,7 +807,7 @@ fn decoder_plan(plan: &Plan, octets: &[u8], profondeur: usize, budget: &mut usiz
                 if position > fin || fin > fin_decalages {
                     return None;
                 }
-                valeurs.push(decoder_plan(m, &octets[position..fin], profondeur + 1, budget)?);
+                valeurs.push(decoder_plan(m, octets.get(position..fin)?, profondeur + 1, budget)?);
                 position = fin;
             }
             match plan.genre {
@@ -833,20 +835,20 @@ fn elements(e: &Plan, octets: &[u8], profondeur: usize, budget: &mut usize) -> O
         return Some(Vec::new());
     }
     let tde = taille_decalage(octets.len());
-    let debut_decalages = lire_decalage(&octets[octets.len() - tde..])?;
+    let debut_decalages = lire_decalage(octets.get(octets.len().checked_sub(tde)?..)?)?;
     let place = octets.len().checked_sub(debut_decalages)?;
     if place % tde != 0 || place / tde > *budget {
         return None;
     }
     let mut valeurs = Vec::with_capacity(place / tde);
     let mut position = 0;
-    for mot in octets[debut_decalages..].chunks(tde) {
+    for mot in octets.get(debut_decalages..)?.chunks(tde) {
         let fin = lire_decalage(mot)?;
         position = aligner(position, e.alignement)?;
         if position > fin || fin > debut_decalages {
             return None;
         }
-        valeurs.push(decoder_plan(e, &octets[position..fin], profondeur + 1, budget)?);
+        valeurs.push(decoder_plan(e, octets.get(position..fin)?, profondeur + 1, budget)?);
         position = fin;
     }
     Some(valeurs)
@@ -858,10 +860,11 @@ fn elements(e: &Plan, octets: &[u8], profondeur: usize, budget: &mut usize) -> O
 /// L'écriture d'une valeur au format sérialisé de GVariant (celui de GLib, petit-boutiste) : ce que l'écrivain de
 /// dconf attend dans un changement (`dconf::changement`), et ce que les essais fabriquent.
 pub(crate) mod ecriture {
-    use super::{Variante, aligner, taille_decalage};
+    use super::{Variante, taille_decalage};
 
     pub(crate) fn completer(sortie: &mut Vec<u8>, alignement: usize) {
-        sortie.resize(aligner(sortie.len(), alignement).expect("taille"), 0);
+        // Un Vec ne dépasse pas isize::MAX octets : le multiple suivant (8 au plus de plus) ne déborde pas.
+        sortie.resize(sortie.len().next_multiple_of(alignement.max(1)), 0);
     }
 
     pub(crate) fn decalages(corps: &mut Vec<u8>, fins: &[usize]) {
@@ -870,7 +873,8 @@ pub(crate) mod ecriture {
             tde *= 2;
         }
         for f in fins {
-            corps.extend_from_slice(&(f.to_le_bytes())[..tde]);
+            // `tde` vaut 1, 2, 4 ou 8 (taille_decalage) : les octets de poids faible, sur sa largeur.
+            corps.extend(f.to_le_bytes().iter().take(tde));
         }
     }
 

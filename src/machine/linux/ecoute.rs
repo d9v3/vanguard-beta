@@ -132,24 +132,29 @@ fn demande_sock_diag(famille: u8, protocole: u8, etat: u8) -> [u8; 72] {
 fn lire_sock_diag(octets: &[u8], udp: bool) -> Vec<(Ecoute, Option<u64>)> {
     let mut prises = Vec::new();
     for (genre, corps) in crate::reseau::scan::messages_netlink(octets) {
-        if genre != SOCK_DIAG_BY_FAMILY || corps.len() < 72 {
+        if genre != SOCK_DIAG_BY_FAMILY {
             continue;
         }
-        let adresse = match corps[0] {
-            AF_INET => IpAddr::from(<[u8; 4]>::try_from(&corps[8..12]).unwrap_or_default()),
-            AF_INET6 => IpAddr::from(<[u8; 16]>::try_from(&corps[8..24]).unwrap_or_default()),
+        // Les 72 premiers octets en tableau : des indices constants, que le compilateur sait dans les bornes.
+        let Some(tete) = corps.first_chunk::<72>() else {
+            continue;
+        };
+        let adresse = match tete[0] {
+            AF_INET => IpAddr::from([tete[8], tete[9], tete[10], tete[11]]),
+            // Seize octets d'un tableau de 72 : la conversion ne peut pas échouer.
+            AF_INET6 => IpAddr::from(<[u8; 16]>::try_from(&tete[8..24]).unwrap_or_default()),
             _ => continue,
         };
-        let port = u16::from_be_bytes([corps[4], corps[5]]);
-        let inode = u32::from_ne_bytes([corps[68], corps[69], corps[70], corps[71]]);
+        let port = u16::from_be_bytes([tete[4], tete[5]]);
+        let inode = u32::from_ne_bytes([tete[68], tete[69], tete[70], tete[71]]);
         let mut numero = None;
         let mut pos = 72;
-        while let Some(attribut) = corps.get(pos..pos + 4) {
-            let longueur = usize::from(u16::from_ne_bytes([attribut[0], attribut[1]]));
+        while let Some(&[l0, l1, g0, g1]) = corps.get(pos..).and_then(|r| r.first_chunk::<4>()) {
+            let longueur = usize::from(u16::from_ne_bytes([l0, l1]));
             if longueur < 4 {
                 break;
             }
-            if u16::from_ne_bytes([attribut[2], attribut[3]]) == INET_DIAG_CGROUP_ID
+            if u16::from_ne_bytes([g0, g1]) == INET_DIAG_CGROUP_ID
                 && let Some(n) = corps
                     .get(pos + 4..pos + longueur)
                     .and_then(|v| <[u8; 8]>::try_from(v).ok())
@@ -215,8 +220,12 @@ pub(crate) fn demander_netlink(protocole: i32, demande: &[u8]) -> Option<Vec<u8>
                 let Ok(n @ 1..) = usize::try_from(n) else {
                     break;
                 };
-                tout.extend_from_slice(&tampon[..n]);
-                match crate::reseau::scan::fin_netlink(&tampon[..n]) {
+                // `recv` ne rend jamais plus que le tampon ; s'il le faisait, la liste ne serait pas sûre : rien.
+                let Some(lu) = tampon.get(..n) else {
+                    break;
+                };
+                tout.extend_from_slice(lu);
+                match crate::reseau::scan::fin_netlink(lu) {
                     Some(true) => {
                         resultat = Some(std::mem::take(&mut tout));
                         break;

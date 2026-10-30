@@ -189,26 +189,26 @@ fn longueur_type(sig: &[u8], profondeur: usize) -> Result<usize, String> {
     if profondeur > PROFONDEUR_MAX {
         return Err(mal_forme("signature trop imbriquée"));
     }
-    match sig.first() {
-        Some(&c) if type_de_base(c) || c == b'v' => Ok(1),
-        Some(b'a') if sig.get(1) == Some(&b'{') => {
-            if !sig.get(2).is_some_and(|&c| type_de_base(c)) {
+    match sig {
+        [c, ..] if type_de_base(*c) || *c == b'v' => Ok(1),
+        [b'a', b'{', apres @ ..] => {
+            let Some((_, reste)) = apres.split_first().filter(|(c, _)| type_de_base(**c)) else {
                 return Err(mal_forme("clé de dictionnaire"));
-            }
-            let n = longueur_type(&sig[3..], profondeur + 1)?;
-            if sig.get(3 + n) != Some(&b'}') {
+            };
+            let n = longueur_type(reste, profondeur + 1)?;
+            if reste.get(n) != Some(&b'}') {
                 return Err(mal_forme("dictionnaire"));
             }
             Ok(4 + n)
         }
-        Some(b'a') => Ok(1 + longueur_type(&sig[1..], profondeur + 1)?),
-        Some(b'(') => {
+        [b'a', reste @ ..] => Ok(1 + longueur_type(reste, profondeur + 1)?),
+        [b'(', ..] => {
             let mut i = 1;
             loop {
-                match sig.get(i) {
-                    Some(b')') if i > 1 => return Ok(i + 1),
-                    None | Some(b')') => return Err(mal_forme("structure")),
-                    _ => i += longueur_type(&sig[i..], profondeur + 1)?,
+                match sig.get(i..) {
+                    Some([b')', ..]) if i > 1 => return Ok(i + 1),
+                    None | Some([] | [b')', ..]) => return Err(mal_forme("structure")),
+                    Some(reste) => i += longueur_type(reste, profondeur + 1)?,
                 }
             }
         }
@@ -225,10 +225,26 @@ fn types(sig: &str) -> Result<Vec<&[u8]>, String> {
     let mut liste = Vec::new();
     while !reste.is_empty() {
         let n = longueur_type(reste, 0)?;
-        liste.push(&reste[..n]);
-        reste = &reste[n..];
+        let (premier, suite) = reste.split_at_checked(n).ok_or_else(|| mal_forme("signature"))?;
+        liste.push(premier);
+        reste = suite;
     }
     Ok(liste)
+}
+
+/// Le dedans d'un type composé, sans son premier ni son dernier caractère (« (ii) » → « ii », « {sv} » → « sv »).
+fn dedans(sig: &[u8]) -> Option<&[u8]> {
+    sig.get(1..sig.len().saturating_sub(1))
+}
+
+/// La clé (un type de base, un seul caractère) et la valeur d'une entrée de dictionnaire « {kv} ».
+fn cle_et_valeur(element: &[u8]) -> Option<(&[u8], &[u8])> {
+    dedans(element)?.split_at_checked(1)
+}
+
+/// La signature des membres d'une structure « (…) », à découper ensuite par `types`.
+fn membres(sig: &[u8]) -> Option<&str> {
+    std::str::from_utf8(dedans(sig)?).ok()
 }
 
 /// L'alignement d'un type, d'après son premier caractère.
@@ -295,7 +311,7 @@ impl Ecrivain {
         if profondeur > PROFONDEUR_MAX {
             return Err(mal_forme("valeur trop imbriquée"));
         }
-        let c = sig[0];
+        let &c = sig.first().ok_or_else(|| mal_forme("signature"))?;
         self.aligner(alignement(c));
         match (c, v) {
             (b'y', Valeur::Octet(n)) => self.octets.push(*n),
@@ -318,12 +334,12 @@ impl Ecrivain {
                 self.signature(s)?;
                 self.ecrire(seul, dedans, profondeur + 1)?;
             }
-            (b'(', Valeur::Structure(membres)) => {
-                let t = types(std::str::from_utf8(&sig[1..sig.len() - 1]).unwrap_or_default())?;
-                if t.len() != membres.len() {
+            (b'(', Valeur::Structure(valeurs)) => {
+                let t = types(membres(sig).ok_or_else(|| mal_forme("structure"))?)?;
+                if t.len() != valeurs.len() {
                     return Err(mal_forme("structure incomplète"));
                 }
-                for (s, m) in t.into_iter().zip(membres) {
+                for (s, m) in t.into_iter().zip(valeurs) {
                     self.ecrire(s, m, profondeur + 1)?;
                 }
             }
@@ -334,16 +350,18 @@ impl Ecrivain {
     }
 
     fn tableau(&mut self, sig: &[u8], v: &Valeur, profondeur: usize) -> Result<(), String> {
-        let element = &sig[1..];
+        let element = sig.get(1..).ok_or_else(|| mal_forme("signature"))?;
+        let &premier = element.first().ok_or_else(|| mal_forme("signature"))?;
+        // La longueur, alignée sur 4 : sa place est connue avant d'écrire, pour la remplir après.
+        self.aligner(4);
         let place = self.octets.len();
         self.u32(0);
         // Le remplissage avant le premier élément n'entre pas dans la longueur.
-        self.aligner(alignement(element[0]));
+        self.aligner(alignement(premier));
         let debut = self.octets.len();
-        match (element[0], v) {
+        match (premier, v) {
             (b'{', Valeur::Dictionnaire(entrees)) => {
-                let cle = &element[1..2];
-                let valeur = &element[2..element.len() - 1];
+                let (cle, valeur) = cle_et_valeur(element).ok_or_else(|| mal_forme("dictionnaire"))?;
                 for (k, val) in entrees {
                     self.aligner(8);
                     self.ecrire(cle, k, profondeur + 1)?;
@@ -362,7 +380,10 @@ impl Ecrivain {
             return Err(mal_forme("tableau trop long"));
         }
         let n = u32::try_from(longueur).map_err(|_| mal_forme("tableau trop long"))?;
-        self.octets[place..place + 4].copy_from_slice(&n.to_le_bytes());
+        self.octets
+            .get_mut(place..place + 4)
+            .ok_or_else(|| mal_forme("tableau"))?
+            .copy_from_slice(&n.to_le_bytes());
         Ok(())
     }
 }
@@ -380,10 +401,11 @@ struct Lecteur<'a> {
 
 impl Lecteur<'_> {
     fn prendre(&mut self, n: usize) -> Result<&[u8], String> {
-        let fin = self.pos.checked_add(n).filter(|&f| f <= self.octets.len());
-        let fin = fin.ok_or_else(|| mal_forme("message tronqué"))?;
-        let morceau = &self.octets[self.pos..fin];
-        self.pos = fin;
+        let fin = self.pos.checked_add(n);
+        let morceau = fin
+            .and_then(|f| self.octets.get(self.pos..f))
+            .ok_or_else(|| mal_forme("message tronqué"))?;
+        self.pos += n;
         Ok(morceau)
     }
 
@@ -398,8 +420,8 @@ impl Lecteur<'_> {
 
     fn fixe<const N: usize>(&mut self) -> Result<[u8; N], String> {
         self.aligner(N)?;
-        let mut t = [0; N];
-        t.copy_from_slice(self.prendre(N)?);
+        // `prendre` rend exactement N octets : la conversion ne peut pas échouer.
+        let mut t: [u8; N] = self.prendre(N)?.try_into().map_err(|_| mal_forme("message tronqué"))?;
         if self.grand_boutiste {
             t.reverse();
         }
@@ -424,7 +446,7 @@ impl Lecteur<'_> {
     }
 
     fn signature(&mut self) -> Result<String, String> {
-        let n = self.prendre(1)?[0];
+        let [n] = self.fixe::<1>()?;
         let s = self.texte(n.into())?;
         types(&s)?;
         Ok(s)
@@ -439,8 +461,11 @@ impl Lecteur<'_> {
         if self.valeurs > VALEURS_MAX {
             return Err(mal_forme("trop de valeurs"));
         }
-        Ok(match sig[0] {
-            b'y' => Valeur::Octet(self.prendre(1)?[0]),
+        let Some((&c, reste)) = sig.split_first() else {
+            return Err(mal_forme("signature"));
+        };
+        Ok(match c {
+            b'y' => Valeur::Octet(u8::from_le_bytes(self.fixe()?)),
             b'b' => match self.u32()? {
                 0 => Valeur::Booleen(false),
                 1 => Valeur::Booleen(true),
@@ -457,7 +482,7 @@ impl Lecteur<'_> {
             b's' | b'o' => {
                 let n = self.u32()? as usize;
                 let t = self.texte(n)?;
-                if sig[0] == b'o' && !chemin_valide(&t) {
+                if c == b'o' && !chemin_valide(&t) {
                     return Err(mal_forme("chemin d'objet"));
                 }
                 Valeur::Texte(t)
@@ -474,14 +499,14 @@ impl Lecteur<'_> {
             }
             b'(' => {
                 self.aligner(8)?;
-                let t = types(std::str::from_utf8(&sig[1..sig.len() - 1]).unwrap_or_default())?;
-                let mut membres = Vec::with_capacity(t.len());
+                let t = types(membres(sig).ok_or_else(|| mal_forme("structure"))?)?;
+                let mut valeurs = Vec::with_capacity(t.len());
                 for s in t {
-                    membres.push(self.lire(s, profondeur + 1)?);
+                    valeurs.push(self.lire(s, profondeur + 1)?);
                 }
-                Valeur::Structure(membres)
+                Valeur::Structure(valeurs)
             }
-            b'a' => self.tableau(&sig[1..], profondeur)?,
+            b'a' => self.tableau(reste, profondeur)?,
             _ => return Err(mal_forme("signature")),
         })
     }
@@ -491,21 +516,23 @@ impl Lecteur<'_> {
         if longueur > TABLEAU_MAX {
             return Err(mal_forme("tableau trop long"));
         }
-        self.aligner(alignement(element[0]))?;
+        let &premier = element.first().ok_or_else(|| mal_forme("signature"))?;
+        self.aligner(alignement(premier))?;
         let fin = self
             .pos
             .checked_add(longueur)
             .filter(|&f| f <= self.octets.len())
             .ok_or_else(|| mal_forme("tableau tronqué"))?;
         // Chaque élément prend au moins un octet : la boucle finit.
-        let dictionnaire = element[0] == b'{';
+        let dictionnaire = premier == b'{';
         let mut elements = Vec::new();
         let mut entrees = Vec::new();
         while self.pos < fin {
             if dictionnaire {
                 self.aligner(8)?;
-                let cle = self.lire(&element[1..2], profondeur + 1)?;
-                let valeur = self.lire(&element[2..element.len() - 1], profondeur + 1)?;
+                let (sig_cle, sig_valeur) = cle_et_valeur(element).ok_or_else(|| mal_forme("dictionnaire"))?;
+                let cle = self.lire(sig_cle, profondeur + 1)?;
+                let valeur = self.lire(sig_valeur, profondeur + 1)?;
                 entrees.push((cle, valeur));
             } else {
                 elements.push(self.lire(element, profondeur + 1)?);
@@ -697,16 +724,16 @@ impl Message {
 
 /// La longueur totale d'un message, d'après ses 16 premiers octets.
 fn longueur_totale(debut: &[u8; 16]) -> Result<usize, String> {
-    let nombre = |i: usize| {
-        let t = [debut[i], debut[i + 1], debut[i + 2], debut[i + 3]];
+    // Des indices constants dans un tableau de 16 octets : le compilateur les sait dans les bornes.
+    let nombre = |t: [u8; 4]| {
         u64::from(if debut[0] == b'B' {
             u32::from_be_bytes(t)
         } else {
             u32::from_le_bytes(t)
         })
     };
-    let entete = (16 + nombre(12)).div_ceil(8) * 8;
-    usize::try_from(entete + nombre(4))
+    let entete = (16 + nombre([debut[12], debut[13], debut[14], debut[15]])).div_ceil(8) * 8;
+    usize::try_from(entete + nombre([debut[4], debut[5], debut[6], debut[7]]))
         .ok()
         .filter(|&n| n <= TAILLE_MAX)
         .ok_or_else(|| mal_forme("message trop long"))
@@ -869,9 +896,10 @@ impl Bus {
         self.prise.set_read_timeout(Some(delai)).map_err(|e| erreur_io(&e))?;
         let mut debut = [0; 16];
         self.prise.read_exact(&mut debut).map_err(|e| erreur_io(&e))?;
+        let mut reste = vec![0; longueur_totale(&debut)?.saturating_sub(16)];
+        self.prise.read_exact(&mut reste).map_err(|e| erreur_io(&e))?;
         let mut octets = debut.to_vec();
-        octets.resize(longueur_totale(&debut)?.max(16), 0);
-        self.prise.read_exact(&mut octets[16..]).map_err(|e| erreur_io(&e))?;
+        octets.extend_from_slice(&reste);
         Ok(octets)
     }
 

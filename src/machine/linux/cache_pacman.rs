@@ -16,13 +16,16 @@ fn decouper(fichier: &str) -> Option<(String, String, String)> {
         return None;
     }
     let morceaux: Vec<&str> = fichier.split('-').collect();
-    let n = morceaux.len();
-    if n < 4 {
+    // Au moins quatre morceaux : un nom (lui-même peut contenir des « - »), la version, la révision, l'architecture.
+    let [tete @ .., ver, rel, fin] = morceaux.as_slice() else {
+        return None;
+    };
+    if tete.is_empty() {
         return None;
     }
-    let nom = morceaux[..n - 3].join("-");
-    let arch = morceaux[n - 1].split('.').next().unwrap_or_default().to_string();
-    let version = format!("{}-{}", morceaux[n - 3], morceaux[n - 2]);
+    let nom = tete.join("-");
+    let arch = fin.split('.').next().unwrap_or_default().to_string();
+    let version = format!("{ver}-{rel}");
     Some((nom, arch, version))
 }
 

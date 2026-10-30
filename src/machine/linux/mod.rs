@@ -1404,7 +1404,10 @@ pub(super) fn juger_comptes(passwd: &str) -> Constat {
         .lines()
         .filter_map(|l| {
             let c: Vec<&str> = l.split(':').collect();
-            (c.get(2) == Some(&"0") && c[0] != "root").then_some(c[0])
+            match c.as_slice() {
+                [nom, _, "0", ..] if *nom != "root" => Some(*nom),
+                _ => None,
+            }
         })
         .collect();
     if uid0.is_empty() {
@@ -1692,7 +1695,7 @@ fn verrouillage_ecran() -> Option<Constat> {
         .iter()
         .filter_map(|p| std::fs::read_to_string(p).ok())
         .filter_map(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-        .find_map(|v| v["idle"]["lock"].as_u64())
+        .find_map(|v| v.pointer("/idle/lock").and_then(serde_json::Value::as_u64))
     } else if bureau.contains("gnome") || bureau.contains("cinnamon") {
         let racine = if bureau.contains("cinnamon") {
             "org.cinnamon.desktop"
@@ -1777,9 +1780,14 @@ fn minuteries() -> Minuteries {
             continue;
         };
         for t in liste {
-            let nom = t["unit"].as_str().unwrap_or_default().to_string();
-            let service = t["activates"].as_str().unwrap_or_default().to_string();
-            toutes.push((nom, t["last"].as_u64().unwrap_or(0), service, utilisateur));
+            let champ = |c: &str| {
+                t.get(c)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            let dernier = t.get("last").and_then(serde_json::Value::as_u64).unwrap_or(0);
+            toutes.push((champ("unit"), dernier, champ("activates"), utilisateur));
         }
     }
     (toutes, non_lus)

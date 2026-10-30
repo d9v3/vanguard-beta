@@ -53,6 +53,10 @@ impl Attributs {
         f(&mut dedans);
         self.0 = dedans.0;
         let longueur = u16::try_from(self.0.len() - debut).unwrap_or(u16::MAX);
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "les deux octets en `debut` sont posés au début de cette fonction, et `f` n'a que des ajouts"
+        )]
         self.0[debut..debut + 2].copy_from_slice(&longueur.to_ne_bytes());
         self.bourrer();
     }
@@ -82,9 +86,9 @@ pub(crate) fn message(genre: u16, drapeaux: u16, sequence: u32, corps: &[u8]) ->
 pub(crate) fn attributs(octets: &[u8]) -> impl Iterator<Item = (u16, &[u8])> {
     let mut pos = 0usize;
     std::iter::from_fn(move || {
-        let entete = octets.get(pos..pos + 4)?;
-        let longueur = usize::from(u16::from_ne_bytes([entete[0], entete[1]]));
-        let genre = u16::from_ne_bytes([entete[2], entete[3]]) & !(NLA_F_NESTED | 1 << 14);
+        let &[l0, l1, g0, g1] = octets.get(pos..)?.first_chunk::<4>()?;
+        let longueur = usize::from(u16::from_ne_bytes([l0, l1]));
+        let genre = u16::from_ne_bytes([g0, g1]) & !(NLA_F_NESTED | 1 << 14);
         if longueur < 4 {
             return None;
         }
@@ -107,7 +111,8 @@ pub(crate) struct Recu<'a> {
 pub(crate) fn recus(octets: &[u8]) -> impl Iterator<Item = Recu<'_>> {
     let mut pos = 0usize;
     std::iter::from_fn(move || {
-        let entete = octets.get(pos..pos + 16)?;
+        // L'en-tête en tableau : des indices constants, que le compilateur sait dans les bornes.
+        let entete = octets.get(pos..)?.first_chunk::<16>()?;
         let longueur = usize::try_from(u32::from_ne_bytes([entete[0], entete[1], entete[2], entete[3]])).ok()?;
         if longueur < 16 {
             return None;

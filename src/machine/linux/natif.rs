@@ -245,12 +245,12 @@ fn services_actifs_sous(racine: &Path, services: &[&str]) -> Option<Vec<bool>> {
         // Une ligne par hiérarchie, « 0::/chemin » (cgroup v2) ou « 1:name=systemd:/chemin » (v1) ; le chemin
         // commence par le groupe du service, suivi de rien ou d'un sous-groupe.
         for chemin in texte.lines().filter_map(|l| l.splitn(3, ':').nth(2)) {
-            for (i, g) in groupes.iter().enumerate() {
+            for (actif, g) in actifs.iter_mut().zip(&groupes) {
                 if chemin
                     .strip_prefix(g.as_str())
                     .is_some_and(|reste| reste.is_empty() || reste.starts_with('/'))
                 {
-                    actifs[i] = true;
+                    *actif = true;
                 }
             }
         }
@@ -749,17 +749,20 @@ fn bus(bloc: &Path, udev: &HashMap<String, String>) -> String {
 /// « \xNN » remis en octet, comme le fait lsblk (udev écrit ainsi espaces et octets non imprimables) ; le
 /// reste tel quel.
 fn sans_echappements_x(texte: &str) -> String {
-    let o = texte.as_bytes();
-    let mut sortie = Vec::with_capacity(o.len());
-    let mut i = 0;
-    while i < o.len() {
-        let octet = o
-            .get(i..i + 4)
-            .filter(|e| e.starts_with(b"\\x"))
-            .and_then(|e| u8::from_str_radix(std::str::from_utf8(&e[2..]).ok()?, 16).ok());
-        let (b, pas) = octet.map_or((o[i], 1), |b| (b, 4));
-        sortie.push(b);
-        i += pas;
+    let mut reste = texte.as_bytes();
+    let mut sortie = Vec::with_capacity(reste.len());
+    while let [premier, suite @ ..] = reste {
+        if let [b'\\', b'x', h1, h2, apres @ ..] = reste
+            && let Some(b) = std::str::from_utf8(&[*h1, *h2])
+                .ok()
+                .and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            sortie.push(b);
+            reste = apres;
+        } else {
+            sortie.push(*premier);
+            reste = suite;
+        }
     }
     String::from_utf8_lossy(&sortie).into_owned()
 }

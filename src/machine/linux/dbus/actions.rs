@@ -74,17 +74,16 @@ pub(crate) fn unite_de_vanguard(nom: &str) -> bool {
 
 /// Une adresse de bus de la spécification D-Bus : `%xx` décodé dans la valeur ; `None` pour un `%` mal formé.
 fn sans_echappement(valeur: &str) -> Option<Vec<u8>> {
-    let o = valeur.as_bytes();
-    let mut r = Vec::with_capacity(o.len());
-    let mut i = 0;
-    while i < o.len() {
-        if o[i] == b'%' {
-            let h = std::str::from_utf8(o.get(i + 1..i + 3)?).ok()?;
-            r.push(u8::from_str_radix(h, 16).ok()?);
-            i += 3;
+    let mut reste = valeur.as_bytes();
+    let mut r = Vec::with_capacity(reste.len());
+    while let Some((&premier, suite)) = reste.split_first() {
+        if premier == b'%' {
+            let (hexa, apres) = suite.split_at_checked(2)?;
+            r.push(u8::from_str_radix(std::str::from_utf8(hexa).ok()?, 16).ok()?);
+            reste = apres;
         } else {
-            r.push(o[i]);
-            i += 1;
+            r.push(premier);
+            reste = suite;
         }
     }
     Some(r)

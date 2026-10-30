@@ -60,7 +60,12 @@ fn trame(entree: &[u8], sortie: &mut Vec<u8>, max: usize) -> Option<usize> {
     }
     // La taille de la fenêtre ne sert qu'à qui décode en flux : ici, tout reste en mémoire.
     let mut i = if segment_unique { 5 } else { 6 };
-    let octets_dico = [0, 1, 2, 4][usize::from(descripteur & 3)];
+    let octets_dico = match descripteur & 3 {
+        0 => 0,
+        1 => 1,
+        2 => 2,
+        _ => 4,
+    };
     if le(entree.get(i..i + octets_dico)?) != 0 {
         return None;
     }
@@ -114,7 +119,7 @@ fn trame(entree: &[u8], sortie: &mut Vec<u8>, max: usize) -> Option<usize> {
         return None;
     }
     if controle {
-        if xxh64(&sortie[debut..], 0) & 0xffff_ffff != le(entree.get(i..i + 4)?) {
+        if xxh64(sortie.get(debut..)?, 0) & 0xffff_ffff != le(entree.get(i..i + 4)?) {
             return None;
         }
         i += 4;
@@ -185,7 +190,7 @@ fn bloc_compresse(bloc: &[u8], etat: &mut Etat, sortie: &mut Vec<u8>, debut: usi
         } else {
             // La copie recouvre ce qu'elle écrit (un motif qui se répète) : octet par octet.
             for k in 0..longueur {
-                let o = sortie[depart + k];
+                let o = *sortie.get(depart + k)?;
                 sortie.push(o);
             }
         }
@@ -341,8 +346,8 @@ impl TableFse {
         for (s, &p) in probas.iter().enumerate() {
             if p == -1 {
                 haut = haut.checked_sub(1)?;
-                symboles[haut] = u8::try_from(s).ok()?;
-                suivant[s] = 1;
+                *symboles.get_mut(haut)? = u8::try_from(s).ok()?;
+                *suivant.get_mut(s)? = 1;
             }
         }
         let pas = (taille >> 1) + (taille >> 3) + 3;
@@ -352,9 +357,9 @@ impl TableFse {
             if p <= 0 {
                 continue;
             }
-            suivant[s] = u32::try_from(p).ok()?;
+            *suivant.get_mut(s)? = u32::try_from(p).ok()?;
             for _ in 0..p {
-                symboles[pos] = u8::try_from(s).ok()?;
+                *symboles.get_mut(pos)? = u8::try_from(s).ok()?;
                 loop {
                     pos = (pos + pas) & masque;
                     if pos < haut {
@@ -368,8 +373,9 @@ impl TableFse {
         }
         let mut cases = Vec::with_capacity(taille);
         for &s in &symboles {
-            let etat = suivant[usize::from(s)];
-            suivant[usize::from(s)] += 1;
+            let compte = suivant.get_mut(usize::from(s))?;
+            let etat = *compte;
+            *compte += 1;
             let nb = log.checked_sub(bit_fort(etat))?;
             let base = (u64::from(etat) << nb).checked_sub(taille as u64)?;
             cases.push((s, u8::try_from(nb).ok()?, u16::try_from(base).ok()?));
@@ -391,15 +397,17 @@ impl<'t> EtatFse<'t> {
         EtatFse { table, etat }
     }
 
-    fn symbole(&self) -> u8 {
-        self.table.cases[self.etat].0
+    // L'état reste dans la table par construction (lu sur `log` bits, puis masqué) ; `None` s'il en sortait.
+    fn symbole(&self) -> Option<u8> {
+        self.table.cases.get(self.etat).map(|c| c.0)
     }
 
-    fn suivant(&mut self, flux: &mut Arriere) {
-        let (_, nb, base) = self.table.cases[self.etat];
+    fn suivant(&mut self, flux: &mut Arriere) -> Option<()> {
+        let &(_, nb, base) = self.table.cases.get(self.etat)?;
         // base + bits lus reste sous la taille de la table, par construction.
         self.etat =
             (usize::from(base) + usize::try_from(flux.lire(u32::from(nb))).unwrap_or(0)) & (self.table.cases.len() - 1);
+        Some(())
     }
 }
 
@@ -468,15 +476,7 @@ fn lire_huffman(octets: &[u8]) -> Option<(TableHuffman, usize)> {
         // Les poids en clair, quatre bits chacun, le premier dans la moitié haute.
         let n = entete - 127;
         let flux = octets.get(1..1 + n.div_ceil(2))?;
-        let poids = (0..n)
-            .map(|k| {
-                if k.is_multiple_of(2) {
-                    flux[k / 2] >> 4
-                } else {
-                    flux[k / 2] & 0xf
-                }
-            })
-            .collect();
+        let poids = flux.iter().flat_map(|&o| [o >> 4, o & 0xf]).take(n).collect();
         (poids, 1 + n.div_ceil(2))
     };
     Some((table_huffman(poids)?, lus))
@@ -493,19 +493,19 @@ fn poids_fse(octets: &[u8]) -> Option<Vec<u8>> {
     let mut poids = Vec::new();
     // 255 poids au plus : le 256e symbole se déduit des autres.
     while poids.len() < 254 {
-        poids.push(un.symbole());
-        un.suivant(&mut flux);
+        poids.push(un.symbole()?);
+        un.suivant(&mut flux)?;
         if flux.deborde {
-            poids.push(deux.symbole());
+            poids.push(deux.symbole()?);
             return Some(poids);
         }
         if poids.len() >= 254 {
             break;
         }
-        poids.push(deux.symbole());
-        deux.suivant(&mut flux);
+        poids.push(deux.symbole()?);
+        deux.suivant(&mut flux)?;
         if flux.deborde {
-            poids.push(un.symbole());
+            poids.push(un.symbole()?);
             return Some(poids);
         }
     }
@@ -546,7 +546,7 @@ fn table_huffman(mut poids: Vec<u8>) -> Option<TableHuffman> {
 fn huffman_flux(table: &TableHuffman, octets: &[u8], n: usize, sortie: &mut Vec<u8>) -> Option<()> {
     let mut flux = Arriere::new(octets)?;
     for _ in 0..n {
-        let (s, nb) = table.cases[usize::try_from(flux.regarder(table.max_bits)).ok()?];
+        let (s, nb) = *table.cases.get(usize::try_from(flux.regarder(table.max_bits)).ok()?)?;
         flux.avancer(u32::from(nb));
         sortie.push(s);
     }
@@ -748,8 +748,8 @@ fn sequences(octets: &[u8], tables: &mut [Option<TableFse>; 3]) -> Option<Vec<Se
         ((modes >> 4) & 3, &PREDEFINI_DECALAGES, 5, 31, 8),
         ((modes >> 2) & 3, &PREDEFINI_COPIES, 6, 52, 9),
     ];
-    for (k, (mode, predefini, log_predefini, max_symbole, max_log)) in sortes.into_iter().enumerate() {
-        tables[k] = match mode {
+    for ((mode, predefini, log_predefini, max_symbole, max_log), table) in sortes.into_iter().zip(tables.iter_mut()) {
+        *table = match mode {
             0 => Some(TableFse::new(predefini, log_predefini)?),
             1 => {
                 let s = *octets.get(i)?;
@@ -765,7 +765,7 @@ fn sequences(octets: &[u8], tables: &mut [Option<TableFse>; 3]) -> Option<Vec<Se
                 Some(TableFse::new(&probas, log)?)
             }
             // « Répéter » : la table du bloc d'avant, qui doit exister.
-            _ => Some(tables[k].clone()?),
+            _ => Some(table.clone()?),
         };
     }
     let [Some(t_litteraux), Some(t_decalages), Some(t_copies)] = &*tables else {
@@ -779,9 +779,9 @@ fn sequences(octets: &[u8], tables: &mut [Option<TableFse>; 3]) -> Option<Vec<Se
     // géante sur un nombre inventé.
     let mut sortie = Vec::with_capacity(nombre.min(BLOC_MAX / 3));
     for k in 0..nombre {
-        let code_decalage = u32::from(e_decalages.symbole());
-        let (base_copie, bits_copie) = *COPIES.get(usize::from(e_copies.symbole()))?;
-        let (base_litteraux, bits_litteraux) = *LITTERAUX.get(usize::from(e_litteraux.symbole()))?;
+        let code_decalage = u32::from(e_decalages.symbole()?);
+        let (base_copie, bits_copie) = *COPIES.get(usize::from(e_copies.symbole()?))?;
+        let (base_litteraux, bits_litteraux) = *LITTERAUX.get(usize::from(e_litteraux.symbole()?))?;
         if code_decalage > 31 {
             return None;
         }
@@ -796,9 +796,9 @@ fn sequences(octets: &[u8], tables: &mut [Option<TableFse>; 3]) -> Option<Vec<Se
         });
         if k + 1 < nombre {
             // Et les états dans celui-ci : littéraux, copie, décalage.
-            e_litteraux.suivant(&mut flux);
-            e_copies.suivant(&mut flux);
-            e_decalages.suivant(&mut flux);
+            e_litteraux.suivant(&mut flux)?;
+            e_copies.suivant(&mut flux)?;
+            e_decalages.suivant(&mut flux)?;
         }
         if flux.deborde {
             return None;
@@ -835,11 +835,11 @@ fn xxh64(octets: &[u8], graine: u64) -> u64 {
             graine,
             graine.wrapping_sub(P1),
         ];
-        while reste.len() >= 32 {
-            for (k, acc) in v.iter_mut().enumerate() {
-                *acc = tour(*acc, le(&reste[8 * k..8 * k + 8]));
+        while let Some((bloc, suite)) = reste.split_first_chunk::<32>() {
+            for (acc, mot) in v.iter_mut().zip(bloc.as_chunks::<8>().0) {
+                *acc = tour(*acc, le(mot));
             }
-            reste = &reste[32..];
+            reste = suite;
         }
         let mut h = v[0]
             .rotate_left(1)
@@ -854,19 +854,16 @@ fn xxh64(octets: &[u8], graine: u64) -> u64 {
         graine.wrapping_add(P5)
     };
     h = h.wrapping_add(octets.len() as u64);
-    while reste.len() >= 8 {
-        h = (h ^ tour(0, le(&reste[..8])))
-            .rotate_left(27)
-            .wrapping_mul(P1)
-            .wrapping_add(P4);
-        reste = &reste[8..];
+    while let Some((mot, suite)) = reste.split_first_chunk::<8>() {
+        h = (h ^ tour(0, le(mot))).rotate_left(27).wrapping_mul(P1).wrapping_add(P4);
+        reste = suite;
     }
-    if reste.len() >= 4 {
-        h = (h ^ le(&reste[..4]).wrapping_mul(P1))
+    if let Some((mot, suite)) = reste.split_first_chunk::<4>() {
+        h = (h ^ le(mot).wrapping_mul(P1))
             .rotate_left(23)
             .wrapping_mul(P2)
             .wrapping_add(P3);
-        reste = &reste[4..];
+        reste = suite;
     }
     for &o in reste {
         h = (h ^ u64::from(o).wrapping_mul(P5)).rotate_left(11).wrapping_mul(P1);

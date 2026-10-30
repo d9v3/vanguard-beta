@@ -63,7 +63,11 @@ pub(crate) fn get(prise: &Path, chemin: &str) -> Result<(u16, Vec<u8>), Echec> {
         if n == 0 {
             break;
         }
-        octets.extend_from_slice(&tampon[..n]);
+        octets.extend_from_slice(
+            tampon
+                .get(..n)
+                .ok_or_else(|| echec("lecture plus longue que le tampon"))?,
+        );
         if octets.len() > REPONSE_MAX {
             return Err(echec("réponse trop grosse"));
         }
@@ -77,8 +81,11 @@ fn lire_reponse(octets: &[u8]) -> Result<(u16, Vec<u8>), Echec> {
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
         .ok_or_else(|| echec("en-tête incomplet"))?;
-    let entete = std::str::from_utf8(&octets[..fin_entete]).map_err(|_| echec("en-tête illisible"))?;
-    let corps = &octets[fin_entete + 4..];
+    let (entete, reste) = octets
+        .split_at_checked(fin_entete)
+        .ok_or_else(|| echec("en-tête incomplet"))?;
+    let entete = std::str::from_utf8(entete).map_err(|_| echec("en-tête illisible"))?;
+    let corps = reste.get(4..).ok_or_else(|| echec("en-tête incomplet"))?;
     let mut lignes = entete.split("\r\n");
     let statut = lignes.next().unwrap_or_default();
     let mut mots = statut.split(' ');
@@ -122,11 +129,12 @@ fn sans_morceaux(mut o: &[u8]) -> Result<Vec<u8>, Echec> {
             .windows(2)
             .position(|w| w == b"\r\n")
             .ok_or_else(|| echec("morceau"))?;
-        let taille = std::str::from_utf8(&o[..fin]).map_err(|_| echec("morceau"))?;
+        let (taille, reste) = o.split_at_checked(fin).ok_or_else(|| echec("morceau"))?;
+        let taille = std::str::from_utf8(taille).map_err(|_| echec("morceau"))?;
         // Des extensions (« ;nom=valeur ») peuvent suivre la taille.
         let taille = taille.split(';').next().unwrap_or_default().trim();
         let n = usize::from_str_radix(taille, 16).map_err(|_| echec("taille de morceau"))?;
-        o = &o[fin + 2..];
+        o = reste.get(2..).ok_or_else(|| echec("morceau"))?;
         if n == 0 {
             return Ok(corps);
         }

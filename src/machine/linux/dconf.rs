@@ -331,12 +331,14 @@ fn dans_les_choix(choix: &[u8], s: &str) -> Option<bool> {
     if mots > CHOIX_MOTS_MAX {
         return None;
     }
-    let mut motif = vec![0u8; 4 * mots];
-    motif[0] = 0xff;
-    motif[1..=s.len()].copy_from_slice(s.as_bytes());
-    motif[4 * mots - 1] = 0xff;
+    // `4 * mots` vaut au moins `s.len() + 3` : la chaîne et ses deux 0xff tiennent, le remplissage ne fait que grandir.
+    let mut motif = Vec::with_capacity(4 * mots);
+    motif.push(0xff);
+    motif.extend_from_slice(s.as_bytes());
+    motif.resize(4 * mots - 1, 0);
+    motif.push(0xff);
     let choix = choix.get(4..).unwrap_or_default();
-    Some((0..choix.len() / 4).any(|i| choix[4 * i..].starts_with(&motif)))
+    Some((0..choix.len() / 4).any(|i| choix.get(4 * i..).is_some_and(|r| r.starts_with(&motif))))
 }
 
 fn nombre(v: &Variante) -> Option<i128> {
@@ -383,8 +385,8 @@ fn lire_dconf(lieux: &Lieux, chemin: &str) -> Result<Option<Variante>, ()> {
     // Un verrou dans une base du système fait ignorer celles d'avant (la première, celle de l'utilisateur, ne
     // verrouille rien) : le plus profond l'emporte.
     let mut depuis = 0;
-    for i in (1..bases.len()).rev() {
-        let Some(b) = &bases[i] else {
+    for (i, b) in bases.iter().enumerate().skip(1).rev() {
+        let Some(b) = b else {
             continue;
         };
         if b.table(".locks")?.is_some_and(|v| v.contient_valeur(chemin)) {
@@ -392,7 +394,7 @@ fn lire_dconf(lieux: &Lieux, chemin: &str) -> Result<Option<Variante>, ()> {
             break;
         }
     }
-    for b in bases[depuis..].iter().flatten() {
+    for b in bases.iter().skip(depuis).flatten() {
         if b.contient_valeur(chemin) {
             return b.valeur(chemin).map(Some).ok_or(());
         }

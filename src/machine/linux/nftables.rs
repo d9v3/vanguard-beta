@@ -569,7 +569,9 @@ pub(crate) fn lire_elements(octets: &[u8], e: Ensemble) -> Vec<Element> {
                         let element = match (e, v.len()) {
                             (Ensemble::Sortie4, 4) => <[u8; 4]>::try_from(v).ok().map(|o| Element::Adresse(o.into())),
                             (Ensemble::Sortie6, 16) => <[u8; 16]>::try_from(v).ok().map(|o| Element::Adresse(o.into())),
-                            (Ensemble::Ports, 2) => Some(Element::Port(u16::from_be_bytes([v[0], v[1]]))),
+                            (Ensemble::Ports, 2) => <[u8; 2]>::try_from(v)
+                                .ok()
+                                .map(|o| Element::Port(u16::from_be_bytes(o))),
                             _ => None,
                         };
                         trouves.extend(element);

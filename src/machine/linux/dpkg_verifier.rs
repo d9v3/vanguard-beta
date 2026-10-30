@@ -81,9 +81,10 @@ fn lire_conffiles(status: &str, nom: &str, arch: Option<&str>) -> Vec<(PathBuf, 
 fn detournes(texte: &str) -> Vec<PathBuf> {
     let lignes: Vec<&str> = texte.lines().collect();
     lignes
-        .chunks(3)
-        .filter(|c| c.len() == 3)
-        .flat_map(|c| [PathBuf::from(c[0]), PathBuf::from(c[1])])
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .flat_map(|&[origine, nouvelle, _]| [PathBuf::from(origine), PathBuf::from(nouvelle)])
         .collect()
 }
 
@@ -158,7 +159,8 @@ fn md5_de(chemin: &Path) -> Option<String> {
         if n == 0 {
             break;
         }
-        h.update(&tampon[..n]);
+        // `read` ne rend jamais plus que le tampon ; s'il le faisait, l'empreinte ne serait pas sûre : rien.
+        h.update(tampon.get(..n)?);
     }
     Some(crate::socle::hachage::hexa(&h.finalize()))
 }

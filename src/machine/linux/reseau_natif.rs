@@ -116,8 +116,10 @@ fn adresse(famille: u8, o: &[u8]) -> Option<IpAddr> {
 /// 16 octets, puis uid et inode.
 fn lire_prises(octets: &[u8], udp: bool) -> Vec<Prise> {
     messages_netlink(octets)
-        .filter(|(genre, corps)| *genre == SOCK_DIAG_BY_FAMILY && corps.len() >= 72)
+        .filter(|(genre, _)| *genre == SOCK_DIAG_BY_FAMILY)
         .filter_map(|(_, c)| {
+            // Les 72 octets en tableau : des indices constants, que le compilateur sait dans les bornes.
+            let c = c.first_chunk::<72>()?;
             Some(Prise {
                 udp,
                 etat: c[1],
@@ -160,11 +162,13 @@ fn demande_route(genre: u16, taille: usize) -> Vec<u8> {
     const NLM_F_REQUEST: u16 = 1;
     const NLM_F_DUMP: u16 = 0x300;
     let n = 16 + taille;
-    let mut d = vec![0u8; n];
-    d[0..4].copy_from_slice(&u32::try_from(n).unwrap_or(0).to_ne_bytes());
-    d[4..6].copy_from_slice(&genre.to_ne_bytes());
-    d[6..8].copy_from_slice(&(NLM_F_REQUEST | NLM_F_DUMP).to_ne_bytes());
-    d[8..12].copy_from_slice(&1u32.to_ne_bytes());
+    let mut d = Vec::with_capacity(n);
+    d.extend_from_slice(&u32::try_from(n).unwrap_or(0).to_ne_bytes());
+    d.extend_from_slice(&genre.to_ne_bytes());
+    d.extend_from_slice(&(NLM_F_REQUEST | NLM_F_DUMP).to_ne_bytes());
+    d.extend_from_slice(&1u32.to_ne_bytes());
+    // Le port (0 : le noyau le choisit), puis le message de tête, à zéro.
+    d.resize(n, 0);
     d
 }
 
@@ -173,14 +177,14 @@ fn demande_route(genre: u16, taille: usize) -> Vec<u8> {
 fn attributs(corps: &[u8], debut: usize) -> HashMap<u16, &[u8]> {
     let mut a = HashMap::new();
     let mut pos = debut;
-    while let Some(t) = corps.get(pos..pos + 4) {
-        let longueur = usize::from(u16::from_ne_bytes([t[0], t[1]]));
+    while let Some(&[l0, l1, g0, g1]) = corps.get(pos..).and_then(|r| r.first_chunk::<4>()) {
+        let longueur = usize::from(u16::from_ne_bytes([l0, l1]));
         if longueur < 4 {
             break;
         }
         if let Some(v) = corps.get(pos + 4..pos + longueur) {
             // Le bit 15 (NLA_F_NESTED) et 14 ne font pas partie du type.
-            a.insert(u16::from_ne_bytes([t[2], t[3]]) & 0x3fff, v);
+            a.insert(u16::from_ne_bytes([g0, g1]) & 0x3fff, v);
         }
         pos += longueur.next_multiple_of(4);
     }
@@ -230,9 +234,11 @@ fn lire_voisins(octets: &[u8], noms: &HashMap<u32, String>) -> Vec<String> {
         (0x80, "PERMANENT"),
     ];
     messages_netlink(octets)
-        .filter(|(g, c)| *g == RTM_NEWNEIGH && c.len() >= 12)
-        .filter_map(|(_, c)| {
-            let a = attributs(c, 12);
+        .filter(|(g, _)| *g == RTM_NEWNEIGH)
+        .filter_map(|(_, corps)| {
+            // Le message de tête (ndmsg, 12 octets) en tableau : des indices constants dans les bornes.
+            let c = corps.first_chunk::<12>()?;
+            let a = attributs(corps, 12);
             let ip = adresse(c[0], a.get(&1)?)?;
             let index = u32::from_ne_bytes([c[4], c[5], c[6], c[7]]);
             let etat = u16::from_ne_bytes([c[8], c[9]]);
@@ -255,9 +261,11 @@ pub(crate) fn adresses() -> Option<Vec<String>> {
 
 fn lire_adresses(octets: &[u8], noms: &HashMap<u32, String>) -> Vec<String> {
     messages_netlink(octets)
-        .filter(|(g, c)| *g == RTM_NEWADDR && c.len() >= 8)
-        .filter_map(|(_, c)| {
-            let a = attributs(c, 8);
+        .filter(|(g, _)| *g == RTM_NEWADDR)
+        .filter_map(|(_, corps)| {
+            // Le message de tête (ifaddrmsg, 8 octets) en tableau : des indices constants dans les bornes.
+            let c = corps.first_chunk::<8>()?;
+            let a = attributs(corps, 8);
             // IFA_LOCAL est l'adresse de l'interface ; IFA_ADDRESS, celle du pair d'un lien point à point.
             let ip = adresse(c[0], a.get(&2).or_else(|| a.get(&1))?)?;
             let index = u32::from_ne_bytes([c[4], c[5], c[6], c[7]]);
@@ -293,9 +301,11 @@ fn lire_routes(octets: &[u8], noms: &HashMap<u32, String>) -> Vec<String> {
             .map(u32::from_ne_bytes)
     };
     messages_netlink(octets)
-        .filter(|(g, c)| *g == RTM_NEWROUTE && c.len() >= 12)
-        .map(|(_, c)| {
-            let a = attributs(c, 12);
+        .filter(|(g, _)| *g == RTM_NEWROUTE)
+        .filter_map(|(_, corps)| {
+            // Le message de tête (rtmsg, 12 octets) en tableau : des indices constants dans les bornes.
+            let c = corps.first_chunk::<12>()?;
+            let a = attributs(corps, 12);
             let famille = c[0];
             let destination = a
                 .get(&1)
@@ -316,7 +326,7 @@ fn lire_routes(octets: &[u8], noms: &HashMap<u32, String>) -> Vec<String> {
                 let _ = write!(l, "\tsrc {s}");
             }
             let _ = write!(l, "\tproto {} type {}", c[5], c[7]);
-            l
+            Some(l)
         })
         .collect()
 }

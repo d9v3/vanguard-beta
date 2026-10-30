@@ -521,10 +521,7 @@ fn services_ajoutes(racine: &Path, gestion: Option<Paquets>) -> Option<Constat> 
         .filter_map(|p| p.file_name().map(|n| crate::ui::affichable(&n.to_string_lossy())))
         .collect();
     ajoutes.sort();
-    if ajoutes.is_empty() {
-        return None;
-    }
-    let premier = ajoutes[0].clone();
+    let premier = ajoutes.first()?.clone();
     Some(
         alerte(
             CAT,

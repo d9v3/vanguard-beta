@@ -42,8 +42,7 @@ pub(crate) fn prises_vers(octets: &[u8], ip: IpAddr) -> Vec<(u8, [u8; 48])> {
         .filter_map(|r| {
             // inet_diag_msg : famille, état, minuterie, renvois, puis l'identifiant (48 octets) ; la destination est
             // à l'octet 20 de l'identifiant (après les deux ports et la source).
-            let famille = r.corps[0];
-            let id: [u8; 48] = r.corps[4..52].try_into().ok()?;
+            let [famille, _, _, _, id @ ..] = *r.corps.first_chunk::<52>()?;
             let destination = match famille {
                 AF_INET => IpAddr::from(<[u8; 4]>::try_from(&id[20..24]).ok()?),
                 AF_INET6 => IpAddr::from(<[u8; 16]>::try_from(&id[20..36]).ok()?).to_canonical(),

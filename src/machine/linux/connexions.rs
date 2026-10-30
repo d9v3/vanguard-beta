@@ -48,16 +48,9 @@ pub(crate) struct Enregistrement {
 
 /// Une chaîne C d'un champ de taille fixe : jusqu'au premier zéro (le champ peut aussi être plein, sans zéro).
 fn texte_c(octets: &[u8]) -> String {
-    let fin = octets.iter().position(|&o| o == 0).unwrap_or(octets.len());
-    String::from_utf8_lossy(&octets[..fin]).into_owned()
-}
-
-fn i16_le(o: &[u8], i: usize) -> i16 {
-    i16::from_le_bytes([o[i], o[i + 1]])
-}
-
-fn u32_le(o: &[u8], i: usize) -> u32 {
-    u32::from_le_bytes([o[i], o[i + 1], o[i + 2], o[i + 3]])
+    // `split` rend toujours au moins un morceau : le champ entier quand il n'a pas de zéro.
+    let texte = octets.split(|&o| o == 0).next().unwrap_or(octets);
+    String::from_utf8_lossy(texte).into_owned()
 }
 
 /// L'adresse d'ut_addr_v6 : une IPv4 dans le premier mot seul, sinon une IPv6 ; tout à zéro, aucune.
@@ -65,8 +58,9 @@ fn adresse(o: &[u8]) -> Option<IpAddr> {
     if o.iter().all(|&b| b == 0) {
         return None;
     }
-    if o[4..].iter().all(|&b| b == 0) {
-        return Some(IpAddr::from([o[0], o[1], o[2], o[3]]));
+    let (v4, reste) = o.split_first_chunk::<4>()?;
+    if reste.iter().all(|&b| b == 0) {
+        return Some(IpAddr::from(*v4));
     }
     Some(IpAddr::from(<[u8; 16]>::try_from(o).ok()?))
 }
@@ -78,14 +72,15 @@ pub(crate) fn lire_utmp(octets: &[u8]) -> Vec<Enregistrement> {
     blocs
         .iter()
         .filter_map(|b| {
-            let genre = i16_le(b, 0);
+            // Des indices constants dans un tableau de TAILLE_UTMP octets : le compilateur les sait dans les bornes.
+            let genre = i16::from_le_bytes([b[0], b[1]]);
             (genre != 0).then(|| Enregistrement {
                 genre,
                 pid: i32::from_le_bytes([b[4], b[5], b[6], b[7]]),
                 ligne: texte_c(&b[8..40]),
                 compte: texte_c(&b[44..76]),
                 hote: texte_c(&b[76..332]),
-                secondes: u32_le(b, 340),
+                secondes: u32::from_le_bytes([b[340], b[341], b[342], b[343]]),
                 adresse: adresse(&b[348..364]),
             })
         })
@@ -167,7 +162,7 @@ pub(crate) fn lastlog_de(chemin: &Path, uid: u32) -> std::io::Result<Option<(u32
 }
 
 fn lire_lastlog(b: &[u8; 292]) -> Option<(u32, String, String)> {
-    let t = u32_le(b, 0);
+    let t = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
     (t != 0).then(|| (t, texte_c(&b[4..36]), texte_c(&b[36..292])))
 }
 

@@ -130,15 +130,19 @@ fn u32_a(octets: &[u8], pos: usize) -> Option<u32> {
 fn lire_evenements_proc(octets: &[u8]) -> Vec<EvenementProc> {
     let mut evenements = Vec::new();
     for (genre, corps) in crate::reseau::scan::messages_netlink(octets) {
-        if genre != NLMSG_DONE || corps.len() < 20 {
+        if genre != NLMSG_DONE {
             continue;
         }
+        // Les 20 octets d'en-tête en tableau : des indices constants, que le compilateur sait dans les bornes.
+        let Some(tete) = corps.first_chunk::<20>() else {
+            continue;
+        };
         let (Some(idx), Some(val), Some(seq), Some(ack)) =
             (u32_a(corps, 0), u32_a(corps, 4), u32_a(corps, 8), u32_a(corps, 12))
         else {
             continue;
         };
-        let longueur = usize::from(u16::from_ne_bytes([corps[16], corps[17]]));
+        let longueur = usize::from(u16::from_ne_bytes([tete[16], tete[17]]));
         if idx != CN_IDX_PROC || val != CN_VAL_PROC {
             continue;
         }
@@ -192,37 +196,41 @@ pub(crate) struct FinPrise {
 fn lire_fins_de_prises(octets: &[u8]) -> Vec<FinPrise> {
     let mut fins = Vec::new();
     for (genre, corps) in crate::reseau::scan::messages_netlink(octets) {
-        if genre != SOCK_DIAG_BY_FAMILY || corps.len() < 72 {
+        if genre != SOCK_DIAG_BY_FAMILY {
             continue;
         }
-        let adresse = |pos: usize| -> Option<IpAddr> {
-            match corps[0] {
-                AF_INET => Some(IpAddr::from(<[u8; 4]>::try_from(&corps[pos..pos + 4]).ok()?)),
-                AF_INET6 => Some(IpAddr::from(<[u8; 16]>::try_from(&corps[pos..pos + 16]).ok()?).to_canonical()),
+        // Les 72 premiers octets en tableau : des indices constants, que le compilateur sait dans les bornes.
+        let Some(tete) = corps.first_chunk::<72>() else {
+            continue;
+        };
+        // Le champ d'adresse fait 16 octets ; une IPv4 en occupe les 4 premiers.
+        let adresse = |champ: &[u8]| -> Option<IpAddr> {
+            match tete[0] {
+                AF_INET => Some(IpAddr::from(*champ.first_chunk::<4>()?)),
+                AF_INET6 => Some(IpAddr::from(<[u8; 16]>::try_from(champ).ok()?).to_canonical()),
                 _ => None,
             }
         };
-        let (Some(source), Some(destination)) = (adresse(8), adresse(24)) else {
+        let (Some(source), Some(destination)) = (adresse(&tete[8..24]), adresse(&tete[24..40])) else {
             continue;
         };
-        let port = |pos: usize| u16::from_be_bytes([corps[pos], corps[pos + 1]]);
         let mut protocole = None;
         let mut pos = 72;
-        while let Some(attribut) = corps.get(pos..pos + 4) {
-            let longueur = usize::from(u16::from_ne_bytes([attribut[0], attribut[1]]));
+        while let Some(&[l0, l1, g0, g1]) = corps.get(pos..).and_then(|r| r.first_chunk::<4>()) {
+            let longueur = usize::from(u16::from_ne_bytes([l0, l1]));
             if longueur < 4 {
                 break;
             }
-            if u16::from_ne_bytes([attribut[2], attribut[3]]) == INET_DIAG_PROTOCOL && longueur >= 5 {
+            if u16::from_ne_bytes([g0, g1]) == INET_DIAG_PROTOCOL && longueur >= 5 {
                 protocole = corps.get(pos + 4).copied();
             }
             pos += longueur.next_multiple_of(4);
         }
         fins.push(FinPrise {
             protocole,
-            locale: SocketAddr::new(source, port(4)),
-            distante: SocketAddr::new(destination, port(6)),
-            etat: corps[1],
+            locale: SocketAddr::new(source, u16::from_be_bytes([tete[4], tete[5]])),
+            distante: SocketAddr::new(destination, u16::from_be_bytes([tete[6], tete[7]])),
+            etat: tete[1],
         });
     }
     fins
@@ -805,8 +813,9 @@ const DEMANDES_MAX: usize = 4;
 /// sans accusé après une perte, le refus est passager, jamais définitif. L'arrêt demandé se voit en 100 ms au plus.
 fn ouvrir_connecteur() -> Result<Abonnement, Refus> {
     let prise = ouvrir_prise(NETLINK_CONNECTOR, CN_IDX_PROC)?;
-    let mut jetons = vec![jeton_d_abonnement()];
-    if !envoyer(&prise, &demande_abonnement(PROC_CN_MCAST_LISTEN, jetons[0])) {
+    let premier = jeton_d_abonnement();
+    let mut jetons = vec![premier];
+    if !envoyer(&prise, &demande_abonnement(PROC_CN_MCAST_LISTEN, premier)) {
         return Err(Refus::depuis_errno(errno()));
     }
     // La demande est partie : le désabonnement est dû, quoi qu'il arrive ensuite.
@@ -818,13 +827,15 @@ fn ouvrir_connecteur() -> Result<Abonnement, Refus> {
         && !arret_demande()
     {
         let ms = i32::try_from(reste.as_millis()).unwrap_or(100).clamp(1, 100);
-        if !attendre(&[&abonnement.0], ms)[0] {
+        if attendre(&[&abonnement.0], ms).first() != Some(&true) {
             continue;
         }
         while Instant::now() < limite && !arret_demande() {
             match recevoir(&abonnement.0, &mut tampon) {
                 Recu::Octets(n) => {
-                    for e in lire_evenements_proc(&tampon[..n]) {
+                    // `recv` ne rend jamais plus que le tampon ; s'il le faisait, rien de sûr à lire : une erreur.
+                    let lu = tampon.get(..n).ok_or(Refus::Erreur(libc::EOVERFLOW))?;
+                    for e in lire_evenements_proc(lu) {
                         if let Some(err) = jetons.iter().find_map(|&j| notre_accuse(&e, j)) {
                             return resultat_de_l_accuse(err).map(|()| abonnement);
                         }
@@ -1027,7 +1038,7 @@ impl Veilleur {
             Recu::Vide => return Ok(false),
             Recu::Erreur(e) => return Err(e),
         };
-        for e in lire_evenements_proc(&self.tampon[..n]) {
+        for e in lire_evenements_proc(self.tampon.get(..n).ok_or(libc::EOVERFLOW)?) {
             match e {
                 EvenementProc::Fourche { parent, enfant } => self.table.fourche(parent, enfant, &vivant),
                 EvenementProc::Lancement { pid } => {
@@ -1049,7 +1060,11 @@ impl Veilleur {
         };
         match recevoir(prise, &mut self.tampon) {
             Recu::Octets(n) => {
-                vus.extend(lire_fins_de_prises(&self.tampon[..n]).into_iter().map(Vu::Prise));
+                vus.extend(
+                    lire_fins_de_prises(self.tampon.get(..n).ok_or(libc::EOVERFLOW)?)
+                        .into_iter()
+                        .map(Vu::Prise),
+                );
                 Ok(true)
             }
             Recu::Perdus => {
