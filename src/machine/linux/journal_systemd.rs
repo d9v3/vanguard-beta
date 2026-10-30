@@ -653,11 +653,17 @@ impl Journal {
         }
     }
 
+    /// La position de la case `case` de la table de hachage ; `None` hors de l'espace d'adresses (un en-tête forgé
+    /// dont la table et le nombre de cases débordent : une panique, avant).
+    fn case(&self, case: u64) -> Option<u64> {
+        case.checked_mul(16)?.checked_add(self.table)
+    }
+
     /// Une empreinte mal calculée ne trouverait aucun champ, et « aucune erreur » serait faux : on la vérifie d'abord
     /// sur le premier DATA de la table (sa case, son empreinte rangée).
     fn verifier_empreintes(&mut self) -> Option<()> {
         for case in 0..self.cases.min(1 << 20) {
-            let tete = u64_a(&self.lecteur.lire(self.table + case * 16, 8)?, 0);
+            let tete = u64_a(&self.lecteur.lire(self.case(case)?, 8)?, 0);
             if tete == 0 {
                 continue;
             }
@@ -729,7 +735,7 @@ impl Journal {
     /// liste qu'il tient. Aucune s'il n'est pas dans ce fichier.
     fn entrees_du_champ(&mut self, champ: &[u8]) -> Option<Vec<u64>> {
         let h = self.empreinte(champ);
-        let mut pos = u64_a(&self.lecteur.lire(self.table + (h % self.cases) * 16, 8)?, 0);
+        let mut pos = u64_a(&self.lecteur.lire(self.case(h % self.cases)?, 8)?, 0);
         // Une chaîne qui revient sur un maillon déjà vu (fichier abîmé ou hostile) rend None tout de suite ; et jamais
         // plus de maillons que d'objets possibles. Un maillon au-delà de la taille lue à l'ouverture a été écrit
         // depuis (le fichier en cours) : la chaîne s'arrête là.
@@ -850,7 +856,10 @@ impl Journal {
                     champs.insert(objet, c.clone());
                     c
                 };
+                // Une copie par entrée, comptée comme une lecture (`Lecteur::compter`) : un même long champ porté par
+                // toutes les entrées d'un petit fichier hostile rendait des centaines de Mio hors du budget.
                 if let Champ::Voulu(nom, valeur) = champ {
+                    self.lecteur.compter(nom.len() + valeur.len())?;
                     lus.push((nom, valeur));
                 }
             }
@@ -887,7 +896,9 @@ impl Journal {
                 cache.garder(objet, &c);
                 c
             };
+            // Comptée comme dans `chercher` : le cache garde des champs jusqu'à 64 Kio, copiés à chaque entrée.
             if let Champ::Voulu(nom, valeur) = champ {
+                self.lecteur.compter(nom.len() + valeur.len())?;
                 champs.push((nom, valeur));
             }
         }
@@ -1869,6 +1880,61 @@ mod tests {
         assert!(j.lecteur.lus < j.lecteur.longueur, "{} lus", j.lecteur.lus);
         j.lecteur.budget = j.lecteur.lus;
         assert_eq!(j.entrees_du_champ(b"PRIORITY=3"), None);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Un long champ porté par beaucoup d'entrées n'est lu qu'une fois, mais copié dans chacune : les copies comptent
+    /// dans le budget, dans la recherche comme dans le parcours (avant : des centaines de Mio hors du budget).
+    #[test]
+    fn copies_des_champs_dans_le_budget() {
+        let d = jetable("copies");
+        let mut e = Ecrivain::new(HACHAGE_A_CLE);
+        let long = [b"MESSAGE=".as_slice(), &[b'x'; 4_000]].concat();
+        for k in 0..200 {
+            e.entree(1_000 + k, DEMARRAGE, &[b"PRIORITY=3", &long]);
+        }
+        let positions = e.positions.clone();
+        let f = e.fichier(&d, "system.journal");
+        let copies = 200 * (long.len() as u64 - 1);
+        let requete = Requete {
+            un_de: &["PRIORITY=3"],
+            depuis: None,
+            demarrage: None,
+            champs: &["MESSAGE"],
+        };
+        let mut j = ouvert(&f);
+        assert!(j.lecteur.longueur < copies / 4, "{} octets", j.lecteur.longueur);
+        assert_eq!(j.chercher(&requete).map(|s| s.len()), Some(200));
+        assert!(j.lecteur.lus >= copies, "{} lus", j.lecteur.lus);
+        // Le budget laisse lire le fichier, pas ses copies : la recherche renonce.
+        let mut j = ouvert(&f);
+        j.lecteur.budget = j.lecteur.lus + j.lecteur.longueur * 2;
+        assert_eq!(j.chercher(&requete).map(|s| s.len()), None);
+        let mut j = ouvert(&f);
+        j.lecteur.budget = j.lecteur.lus + j.lecteur.longueur * 2;
+        let mut cache = Cache::default();
+        assert!(
+            positions
+                .iter()
+                .any(|&p| j.entree(p, &["MESSAGE"], &mut cache).is_none())
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Un en-tête dont la table de hachage et le nombre de cases débordent l'espace d'adresses : None, sans panique.
+    #[test]
+    fn table_de_hachage_qui_deborde() {
+        let d = jetable("deborde");
+        let f = journal_invente(HACHAGE_A_CLE).fichier(&d, "system.journal");
+        let mut j = ouvert(&f);
+        j.table = u64::MAX - 8;
+        assert_eq!(j.case(1), None);
+        assert_eq!(j.entrees_du_champ(b"PRIORITY=3"), None);
+        assert_eq!(j.verifier_empreintes(), None);
+        j.table = 272;
+        assert_eq!(j.case(u64::MAX / 8), None);
+        j.cases = u64::MAX;
+        assert_eq!(j.case(u64::MAX - 1), None);
         let _ = std::fs::remove_dir_all(&d);
     }
 

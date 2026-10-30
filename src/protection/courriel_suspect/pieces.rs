@@ -197,7 +197,12 @@ fn noms_zip(o: &[u8], max: usize) -> Result<(Vec<(String, bool)>, bool), ()> {
             mot16(o, i + 30).ok_or(())?,
             mot16(o, i + 32).ok_or(())?,
         );
-        let nom = o.get(i + 46..i + 46 + n.min(1_024)).ok_or(())?;
+        let debut = o.get(i + 46..i + 46 + n.min(1_024)).ok_or(())?;
+        // La fin du nom, où sont l'extension et le dernier dossier : garder le début laissait un long chemin de
+        // dossiers cacher un programme (un signe élevé devenu moyen, sans rien dire). Un nom coupé par la fin du
+        // répertoire garde son début ; l'entrée suivante manquera, et l'archive se dira incomplète.
+        let entier = o.get(i + 46..i + 46 + n).unwrap_or(debut);
+        let nom = entier.get(entier.len().saturating_sub(1_024)..).unwrap_or(entier);
         noms.push((String::from_utf8_lossy(nom).into_owned(), drapeaux & 1 != 0));
         i += 46 + n + extra + commentaire;
     }
@@ -645,6 +650,20 @@ mod tests {
         assert_eq!(pire(&juger("photo.jpg", "image/jpeg", b"\xff\xd8\xff").0), None);
         // Programme annoncé comme une image, sous un nom anodin.
         assert_eq!(pire(&juger("photo", "image/jpeg", b"MZ\x90\0").0), Some(Niveau::Eleve));
+    }
+
+    /// B1 (campagne 5) : un programme rangé sous un chemin de plus de 1 024 octets reste vu, au lieu de perdre son
+    /// extension avec la fin du nom.
+    #[test]
+    fn programme_sous_un_long_chemin() {
+        let long = format!("{}/scan.js", "dossier/".repeat(140));
+        assert!(long.len() > 1_024);
+        let z = zip(&[("lisez-moi.txt", b"x", false), (long.as_str(), b"y", false)]);
+        let (s, _) = juger("documents.zip", "application/zip", &z);
+        assert!(
+            s.iter().any(|(n, t)| *n == Niveau::Eleve && t.contains("scan.js")),
+            "{s:?}"
+        );
     }
 
     #[test]
