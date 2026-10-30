@@ -19,8 +19,8 @@
 #                                                 pour les ordinateurs qui n'auraient pas vu la première). Après les
 #                                                 lignes des programmes : les copies 0.85 trouvent la leur avant elle.
 #                                                 Jamais dans l'historique, que github.rs lit ligne par programme.
-#                                                 Refusé si PRINCIPALE_RETIREE n'est pas à true dans github.rs :
-#                                                 les programmes signés la retirent aussi de leur code.
+#                                                 Refusé si l'un des programmes n'a pas PRINCIPALE_RETIREE à true
+#                                                 (github.rs, marque gravée) : ils la retirent aussi de leur code.
 #   outils/signer-versions.sh --premier DOSSIER   sans rien d'avant : l'historique commence à cette version (la
 #                                                 toute première publication seulement ; sinon, refusé)
 #   outils/signer-versions.sh --point-sur FICHIER …   le point sûr (voir plus bas) pris dans FICHIER (et FICHIER.sig)
@@ -78,11 +78,17 @@ erreur() { echo "✖ $*" >&2; exit 1; }
 # Seule la clé de secours révoque (github.rs ne croit la ligne que d'elle) : signée par la principale, elle ne ferait
 # rien, sinon croire à une révocation qui n'a pas eu lieu.
 [[ -z $REVOQUER || -n $SECOURS ]] || erreur "--revoquer va avec --secours : la principale ne se révoque pas elle-même"
-# Ce qui retient la révocation sur un ordinateur s'efface avec ses sceaux (github.rs, principale_revoquee) : les
+# Ce qui retient la révocation sur un ordinateur s'efface avec ses sceaux (github.rs, revocation_retenue) : les
 # programmes qui révoquent retirent donc aussi la principale de leur code, et une fois installés, elle n'y revient plus.
-[[ -z $REVOQUER ]] || grep -q '^const PRINCIPALE_RETIREE: bool = true;' src/mise_a_jour/github.rs ||
-  erreur "--revoquer : PRINCIPALE_RETIREE n'est pas à true dans src/mise_a_jour/github.rs ; mettez-la, puis recompilez \
-les programmes à signer avec (outils/compiler-version.sh)"
+# Lu dans chacun (github.rs, PRINCIPALE_GRAVEE), pas dans le code source, qui a pu changer depuis ; avant la phrase de
+# la clé. Un programme absent est refusé plus bas.
+if [[ -n $REVOQUER ]]; then
+  for f in "${1:-.}"/vanguard-{linux-x86_64,windows-x86_64.exe,macos}; do
+    [[ ! -f $f ]] || grep -aq 'VANGUARD-PRINCIPALE:RETIREE;' "$f" ||
+      erreur "--revoquer : $f accepte encore la principale ; mettez PRINCIPALE_RETIREE à true dans \
+src/mise_a_jour/github.rs, puis recompilez les programmes à signer avec (outils/compiler-version.sh)"
+  done
+fi
 [[ -r $CLE ]] || erreur "clé de signature absente : $CLE"
 # La clé de secours vit hors ligne, loin de la principale : en clair, la moindre copie (instantané de /home,
 # sauvegarde) les mettrait côte à côte et un seul vol donnerait les deux. Chiffrée seulement.

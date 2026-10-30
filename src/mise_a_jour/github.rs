@@ -68,17 +68,33 @@ fn cles_acceptees(revoquee: bool) -> &'static [[u8; 32]] {
 /// ne revient plus, même là.
 const PRINCIPALE_RETIREE: bool = false;
 
-/// La clé principale a-t-elle été révoquée ici ? Retirée du programme, toujours. Sinon, le fichier là sous n'importe
-/// quelle forme (même changé ou illisible) la dit révoquée : l'effacer ou le réécrire ne la fait pas revenir. Absent,
-/// ou inconnu après des sceaux refaits, elle ne l'est pas : le croire révoquée figerait les mises à jour de tout
-/// ordinateur aux sceaux refaits tant que la principale signe. Seul compte alors le manifeste de secours qui redit la
-/// révocation, jusqu'à ce que la version qu'il apporte, qui l'a retirée, soit installée.
+/// `PRINCIPALE_RETIREE` gravée dans le fichier, pour que `signer-versions.sh --revoquer` la lise dans chaque programme
+/// à signer (`grep -a`) au lieu de croire le code source, qui a pu changer depuis leur compilation. Seule la branche
+/// prise est gravée : un programme qui garde la principale ne porte pas le texte « retirée ».
+static PRINCIPALE_GRAVEE: &str = if PRINCIPALE_RETIREE {
+    "VANGUARD-PRINCIPALE:RETIREE;"
+} else {
+    "VANGUARD-PRINCIPALE:GARDEE;"
+};
+
+/// La clé principale a-t-elle été révoquée ici ? Retirée du programme, toujours (lue dans la marque gravée,
+/// `black_box` : sans lecture, l'éditeur de liens la retirerait du programme publié). Sinon, ce qu'en retient l'état
+/// scellé (`revocation_retenue`).
 fn principale_revoquee() -> bool {
-    PRINCIPALE_RETIREE
-        || !matches!(
-            crate::sceau::lire(crate::sceau::REVOCATION),
-            crate::sceau::Lecture::Absent | crate::sceau::Lecture::Inconnu
-        )
+    std::hint::black_box(PRINCIPALE_GRAVEE).ends_with(":RETIREE;") || revocation_retenue()
+}
+
+/// La révocation retenue dans l'état scellé : le fichier là sous n'importe quelle forme (même changé ou illisible)
+/// la dit retenue, l'effacer ou le réécrire ne la fait pas revenir. Absent, ou inconnu après des sceaux refaits, elle
+/// ne l'est pas : le croire révoquée figerait les mises à jour de tout ordinateur aux sceaux refaits tant que la
+/// principale signe. Seul compte alors le manifeste de secours qui redit la révocation, jusqu'à ce que la version
+/// qu'il apporte, qui l'a retirée, soit installée. À part de `PRINCIPALE_RETIREE` : la version qui révoque doit
+/// encore retenir la révocation, et remettre à zéro le plancher des versions vues.
+fn revocation_retenue() -> bool {
+    !matches!(
+        crate::sceau::lire(crate::sceau::REVOCATION),
+        crate::sceau::Lecture::Absent | crate::sceau::Lecture::Inconnu
+    )
 }
 
 /// Le manifeste finit-il par la ligne de révocation ?
@@ -373,7 +389,7 @@ pub(super) fn oublier_versions_vues() -> std::io::Result<()> {
 /// de la principale a pu monter au plus haut pour refuser toute version d'après, repart du manifeste de secours.
 /// `Err` : non retenue (disque, dossier d'un autre compte), le manifeste n'est pas suivi.
 fn retenir_revocation() -> std::io::Result<()> {
-    if principale_revoquee() {
+    if revocation_retenue() {
         return Ok(());
     }
     crate::sceau::ecrire(crate::sceau::REVOCATION, LIGNE_REVOCATION)?;
@@ -814,18 +830,15 @@ mod tests {
         // L'état retenu : là sous n'importe quelle forme, la principale reste révoquée ; et le plancher repart.
         let _seul = ETAT_DES_VERSIONS.lock().unwrap_or_else(PoisonError::into_inner);
         crate::sceau::ecrire(crate::sceau::VERSIONS, "4294967295.0.0+1792540000").unwrap();
-        assert!(
-            !principale_revoquee(),
-            "PRINCIPALE_RETIREE à true : cet essai de l'état retenu est à revoir"
-        );
+        assert!(!revocation_retenue());
         retenir_revocation().unwrap();
-        assert!(principale_revoquee());
+        assert!(revocation_retenue() && principale_revoquee());
         assert_eq!(plus_haute_vue(), Ok(None));
         let fichier = crate::socle::dossier_local().join(crate::sceau::REVOCATION);
         std::fs::write(&fichier, "rien").unwrap();
-        assert!(principale_revoquee());
+        assert!(revocation_retenue());
         std::fs::remove_file(&fichier).unwrap();
-        assert!(principale_revoquee(), "effacée hors de Vanguard : toujours révoquée");
+        assert!(revocation_retenue(), "effacée hors de Vanguard : toujours retenue");
         crate::sceau::effacer(crate::sceau::REVOCATION).unwrap();
     }
 
@@ -835,5 +848,23 @@ mod tests {
         assert!(en_octets(&"ab".repeat(31)).is_none());
         assert!(en_octets(&"zz".repeat(32)).is_none());
         assert!(en_octets(&format!("é{}", "a".repeat(62))).is_none());
+    }
+
+    /// Le programme des tests porte la marque de `PRINCIPALE_RETIREE`, et pas l'autre : c'est elle que
+    /// `signer-versions.sh --revoquer` cherche dans chaque programme à signer.
+    #[test]
+    fn ce_programme_porte_la_marque_de_la_principale() {
+        let octets = std::fs::read(std::env::current_exe().unwrap()).unwrap();
+        let porte = |marque: &str| octets.windows(marque.len()).any(|f| f == marque.as_bytes());
+        let autre = if PRINCIPALE_RETIREE {
+            PRINCIPALE_GRAVEE.replace("RETIREE", "GARDEE")
+        } else {
+            PRINCIPALE_GRAVEE.replace("GARDEE", "RETIREE")
+        };
+        assert!(porte(PRINCIPALE_GRAVEE));
+        assert!(
+            !porte(&autre),
+            "les deux marques gravées : signer-versions.sh ne saurait plus laquelle croire"
+        );
     }
 }

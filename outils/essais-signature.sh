@@ -11,8 +11,8 @@
 #      ne repart pas de zéro avant que les pages d'avant soient effacées.
 #   5. La révocation de la clé principale (--secours --revoquer) : la ligne « revoque principale » vient après les
 #      trois programmes, que le lecteur de la 0.85.0 (refait ici en awk, comme github.rs le recopie) trouve tous
-#      avant elle ; jamais dans l'historique ; refusée sans --secours, ou sans PRINCIPALE_RETIREE à true dans
-#      github.rs. La phrase de la clé de secours d'essai (chiffrée, comme la vraie) passe par un pseudo-terminal
+#      avant elle ; jamais dans l'historique ; refusée sans --secours, ou si un programme garde la principale (sans
+#      la marque de PRINCIPALE_RETIREE à true). La phrase de la clé de secours d'essai (chiffrée, comme la vraie) passe par un pseudo-terminal
 #      (script) ; sans script, cet essai est sauté et dit.
 #   7. Le point sûr (le dernier historique publié d'ici, campagne d'attaque n° 3) : la clé de secours ne contresigne
 #      pas un bloc que la principale, peut-être volée, a ajouté après lui ; sans point sûr, elle refuse un historique
@@ -66,14 +66,14 @@ banc() { # $1 : dossier, $2 : script, $3 : version de Cargo.toml
   cp "$2" "$1/outils/signer-versions.sh"
   printf 'const CLE_PUBLIQUE: [u8; 32] = [\n    %s,\n];\nconst CLE_SECOURS: [u8; 32] = [\n    %s,\n];\n' \
     "$(gravee principale)" "$(gravee secours)" >"$1/src/mise_a_jour/github.rs"
-  echo "const PRINCIPALE_RETIREE: bool = ${RETIREE:-true};" >>"$1/src/mise_a_jour/github.rs"
   printf '[package]\nname = "vanguard"\nversion = "%s"\n' "$3" >"$1/Cargo.toml"
 }
 # Trois faux programmes à la forme attendue (ELF x86-64, PE x86-64, Mach-O universel arm64 + x86_64), avec leur
-# version gravée.
+# version gravée et la principale retirée (RETIREE=false : gardée, comme le marque github.rs).
 programmes() { # $1 : dossier, $2 : version gravée
   mkdir -p "$1"
-  local v="VANGUARD-VERSION:$2;"
+  local v="VANGUARD-VERSION:$2; VANGUARD-PRINCIPALE:RETIREE;"
+  [[ ${RETIREE:-true} == true ]] || v="VANGUARD-VERSION:$2; VANGUARD-PRINCIPALE:GARDEE;"
   { printf '\x7fELF\x02\x01'; head -c 12 /dev/zero; printf '\x3e\x00'; printf 'linux %s' "$v"; } >"$1/vanguard-linux-x86_64"
   { printf 'MZ'; head -c 58 /dev/zero; printf '\x40\x00\x00\x00'; printf 'PE\x00\x00\x64\x86'; printf 'windows %s' "$v"; } \
     >"$1/vanguard-windows-x86_64.exe"
@@ -175,14 +175,17 @@ elif grep -q -- "--revoquer va avec --secours" "$T/v91.log"; then
 else
   ko "refus pour une autre raison : $(tail -n 1 "$T/v91.log")"
 fi
-# La révocation sans la principale retirée du code : refusée avant toute signature, la clé n'est même pas lue.
-RETIREE=false banc "$T/sans-retrait" "$DEPOT/outils/signer-versions.sh" 0.88.0
-if signer "$T/sans-retrait" "$T/v91" --secours --revoquer; then
+# La révocation par des programmes qui gardent la principale (un seul suffit, ici celui de macOS, lu en dernier) :
+# refusée avant toute signature, la phrase de la clé n'est même pas demandée.
+programmes "$T/sans-retrait" 0.88.0+1793100000
+RETIREE=false programmes "$T/garde" 0.88.0+1793100000 && cp "$T/garde/vanguard-macos" "$T/sans-retrait/"
+if signer "$T/nouveau88" "$T/sans-retrait" --secours --revoquer; then
   ko "--revoquer a signé des programmes qui acceptent encore la principale"
-elif grep -q "PRINCIPALE_RETIREE n'est pas à true" "$T/v91.log" && [[ ! -e $T/v91/derniere.txt.sig ]]; then
-  ok "--revoquer sans la principale retirée du code : refusé, rien n'est signé"
+elif grep -q "vanguard-macos accepte encore la principale" "$T/sans-retrait.log" &&
+  [[ ! -e $T/sans-retrait/derniere.txt.sig ]]; then
+  ok "--revoquer avec un programme qui garde la principale : refusé, rien n'est signé"
 else
-  ko "refus pour une autre raison : $(tail -n 1 "$T/v91.log")"
+  ko "refus pour une autre raison : $(tail -n 1 "$T/sans-retrait.log")"
 fi
 # Le lecteur de la 0.85.0 (lire_manifeste) : la version en tête, puis la ligne du système cherché trouvée avant toute
 # ligne qui n'a pas trois champs.
