@@ -960,8 +960,10 @@ fn lire_tenu(dossier: &Path, attente: std::time::Duration) -> Lu {
         ));
         lu.verifies_des = lu.evenements.len();
     }
+    // Un verrou remplacé se dit plutôt qu'un « pas jugé » : c'est lui qui nomme ce qui empêche d'écrire.
     if matches!(tenu, Err(crate::socle::SansVerrou::Occupe))
-        && matches!(lu.lecture, Lecture::Falsifie(_) | Lecture::Incomplet(_))
+        && (matches!(lu.lecture, Lecture::Falsifie(_))
+            || remplaces.is_empty() && matches!(lu.lecture, Lecture::Incomplet(_)))
     {
         let s = attente.as_secs();
         lu.lecture = Lecture::Incomplet(format!(
@@ -2201,6 +2203,27 @@ mod tests {
         assert_eq!(lu.verifies(), []);
         drop(tenu);
         assert!(matches!(lire_dans(&d).lecture, Lecture::Falsifie(_)));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Relecture de la campagne 5 : le verrou du journal tenu ailleurs et celui des sceaux remplacé, la lecture
+    /// nomme le verrou remplacé au lieu de le couvrir d'un « pas jugé ».
+    #[test]
+    fn verrou_tenu_ne_tait_pas_un_verrou_remplace() {
+        let d = dossier("tenu-remplace");
+        let q = "2026-10-23T10:00:00Z";
+        remplir(&d, 2, q);
+        let court = std::time::Duration::from_millis(300);
+        let tenu = crate::socle::Verrou::prendre_nomme(&d, VERROU).unwrap();
+        let _ = std::fs::remove_file(d.join("sceaux.verrou"));
+        std::fs::create_dir(d.join("sceaux.verrou")).unwrap();
+        let lu = lire_tenu(&d, court);
+        assert!(
+            matches!(&lu.lecture, Lecture::Incomplet(r) if r.contains("sceaux.verrou") && !r.starts_with(PAS_JUGE)),
+            "{:?}",
+            lu.lecture
+        );
+        drop(tenu);
         let _ = std::fs::remove_dir_all(&d);
     }
 

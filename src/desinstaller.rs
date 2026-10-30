@@ -880,13 +880,14 @@ fn gardes_dans(d: &Path, actuel: bool, e: &[Element], etats: &[bool]) -> Vec<(Pa
         besoins.extend(chemins(x));
         if actuel {
             // Une défense gardée garde aussi ce qui la juge : la note des défenses voulues, son programme posé et
-            // leurs sceaux (oubliés des fichiers partis, `sceau::oublier_absents_dans`). Sans eux, le bilan la dirait
+            // leurs sceaux avec leur témoin (oubliés des fichiers partis, `sceau::oublier_absents_dans`). Sans eux, le bilan la dirait
             // « non vérifiée », ou posée par une version d'avant.
             if matches!(x.genre, Genre::Surveillance | Genre::Entretien | Genre::Veilleur) {
                 besoins.extend([
                     d.join(crate::voulues::FICHIER),
                     d.join(crate::programmes_poses::FICHIER),
                     d.join("sceaux.json"),
+                    d.join(crate::sceau::TEMOIN),
                 ]);
             }
             match (&x.genre, &x.retrait) {

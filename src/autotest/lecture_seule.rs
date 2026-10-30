@@ -32,12 +32,14 @@ thread_local! {
 }
 
 /// Ce que l'autotest écrit lui-même, une fois l'essai fini : son résultat, la date du dernier essai, l'événement du
-/// journal (sa tête scellée), et le registre des sceaux qui scelle ces fichiers. Rien d'autre, même exempté.
+/// journal (sa tête scellée), et le registre des sceaux qui scelle ces fichiers, avec son témoin. Rien d'autre, même
+/// exempté.
 const EXEMPTES: &[&str] = &[
     "examens/AUT-VAN-001.json",
     super::DERNIER,
     crate::modele::journal::TETE,
     "sceaux.json",
+    crate::sceau::TEMOIN,
 ];
 
 /// Pose l'interrupteur : à partir de là, aucune écriture d'état ne passe, jusqu'à la fin du processus.

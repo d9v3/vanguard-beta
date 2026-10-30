@@ -211,6 +211,10 @@ fn presents_tardifs(dossier: &Path, sous: &str) -> Vec<String> {
 
 const REGISTRE: &str = "sceaux.json";
 const VERROU: &str = "sceaux.verrou";
+/// Le témoin des sceaux (`deja_scelle`) : posé juste après le premier registre écrit, jamais avant.
+pub(crate) const TEMOIN: &str = "sceaux.temoin";
+/// Ce que dit le témoin : rien que Vanguard relise, seule sa présence compte.
+const MARQUE_TEMOIN: &[u8] = b"vanguard: sceaux poses ici / seals set here\n";
 
 /// Les sceaux : depuis quand (AAAA-MM-JJ), l'empreinte de chaque fichier tel que Vanguard l'a écrit, et ceux qui
 /// ont été scellés tels quels au premier usage, sans que Vanguard les ait écrits depuis.
@@ -486,7 +490,21 @@ fn enregistrer_registre(dossier: &Path, r: &Registre) -> std::io::Result<()> {
     crate::socle::ecrire_atomique(
         &dossier.join(REGISTRE),
         serde_json::to_vec_pretty(&r).map_err(std::io::Error::other)?,
-    )
+    )?;
+    temoigner(dossier);
+    Ok(())
+}
+
+/// Pose le témoin des sceaux (`deja_scelle`) s'il n'est pas déjà là : après un registre écrit, ou lu (celui d'une
+/// version d'avant le témoin). Un témoin qui ne s'écrit pas (disque plein) va au journal des erreurs ; le registre,
+/// lui, est là, et le prochain enregistrement le repose.
+fn temoigner(dossier: &Path) {
+    if std::fs::symlink_metadata(dossier.join(TEMOIN)).is_ok() {
+        return;
+    }
+    if let Err(e) = crate::socle::ecrire_atomique(&dossier.join(TEMOIN), MARQUE_TEMOIN) {
+        crate::modele::Echec::io("sceau/temoin", &e).journaliser();
+    }
 }
 
 /// Root n'écrit pas dans le dossier d'un compte (`socle::ecriture_sure`).
@@ -526,19 +544,21 @@ fn contenu(chemin: &Path) -> Result<Option<Vec<u8>>, String> {
     }
 }
 
-/// Une version qui scelle a déjà servi ici : seule elle crée `sceaux.verrou` (`verrou`), et rien ne l'efface. Relu
-/// avant que `verrou` ne le crée. Le verrou vit pourtant dans le même dossier, écrit par le même compte : effacé
-/// avec les sceaux et les fichiers qu'ils protégeaient, il ramenait au premier usage, où la surveillance mémorise
-/// sans rien dire. D'autres témoins, que seule une version qui scelle laisse, comptent donc autant : la tête du
-/// journal des événements (écrite par le sceau même) et ses segments. Tout effacer d'un coup, journal compris, reste
-/// possible : c'est alors le journal vide d'un ordinateur où Vanguard a servi qui le montre.
+/// Une version qui scelle a déjà servi ici : elle a écrit ses sceaux au moins une fois, et posé juste après le témoin
+/// (`TEMOIN`), que rien ne retire. Le témoin vit pourtant dans le même dossier, écrit par le même compte : effacé avec
+/// les sceaux et les fichiers qu'ils protégeaient, il ramenait au premier usage, où la surveillance mémorise sans
+/// rien dire. D'autres témoins, que seule une version qui scelle laisse, comptent donc autant : la tête du journal des
+/// événements (écrite par le sceau même) et ses segments. Tout effacer d'un coup, journal compris, reste possible :
+/// c'est alors le journal vide d'un ordinateur où Vanguard a servi qui le montre.
 ///
-/// Un verrou tout neuf ne témoigne de rien (`verrou_ancien`) : au premier usage, un autre Vanguard lancé au même moment
-/// l'a créé en l'ouvrant, sans avoir encore scellé, et le premier des deux à tenir le verrou disait les sceaux refaits
-/// (alerte élevée, sur l'ordinateur d'un nouvel utilisateur). Vu sur le Mac de GitHub, présent depuis la 0.86.
+/// Le verrou, lui, ne témoigne plus (sauf celui d'une version d'avant le témoin, `verrou_d_avant_le_temoin`) : il naît
+/// en s'ouvrant, avant tout sceau. Un autre Vanguard lancé au même moment au premier usage, un Vanguard tué entre le
+/// verrou et le registre, un registre refusé (disque plein, quota) ou un effacement sur un dossier d'avant les sceaux
+/// le laissaient seul, et le bilan disait refaits (alerte élevée) des sceaux qui n'avaient jamais existé.
 fn deja_scelle(dossier: &Path) -> bool {
     let present = |p: PathBuf| std::fs::symlink_metadata(p).is_ok();
-    verrou_ancien(&dossier.join(VERROU))
+    present(dossier.join(TEMOIN))
+        || verrou_d_avant_le_temoin(&dossier.join(VERROU))
         || present(dossier.join(crate::modele::journal::TETE))
         // Nés scellés (lot S2b) : aucune version d'avant les sceaux ne les a écrits.
         || present(dossier.join(crate::voulues::FICHIER))
@@ -547,37 +567,40 @@ fn deja_scelle(dossier: &Path) -> bool {
             .is_ok_and(|mut d| d.any(|e| e.is_ok_and(|e| e.file_name().to_string_lossy().ends_with(".jsonl"))))
 }
 
-/// L'âge en deçà duquel `sceaux.verrou` peut venir d'un Vanguard lancé en même temps : il le crée en l'ouvrant, puis
-/// attend le verrou (`ATTENTE_ECRITURE`, `ATTENTE_LECTURE`) avant de sceller. Deux minutes couvrent ces attentes ; un
-/// verrou laissé par une version qui a servi ici a des jours.
-const VERROU_JEUNE: std::time::Duration = std::time::Duration::from_secs(120);
+/// Le jour où le témoin est apparu (2026-10-30, 00:00 UTC, en secondes depuis 1970). Un verrou des sceaux né avant
+/// vient d'une version qui ne posait pas de témoin (0.86 à 0.88) : il témoigne pour elle, comme il le faisait alors.
+/// Un verrou né depuis vient d'une version qui pose le témoin, et ne dit rien de plus que lui.
+const TEMOIN_DEPUIS: u64 = 1_793_318_400;
 
-// Les essais qui simulent un verrou laissé par un usage d'avant le posent à l'instant : il est déjà « ancien » pour eux.
+// Les essais qui simulent un verrou laissé par une version d'avant le témoin le posent à l'instant : il compte pour eux
+// comme né avant.
 #[cfg(test)]
 thread_local! {
-    static VERROU_JEUNE_ESSAI: std::cell::Cell<Option<std::time::Duration>> = const { std::cell::Cell::new(None) };
+    static TEMOIN_DEPUIS_ESSAI: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
-/// Pour les essais : le verrou des sceaux qu'ils posent compte comme laissé par un usage d'avant, sur ce fil.
+/// Pour les essais : le verrou des sceaux qu'ils posent compte comme laissé par une version d'avant le témoin, sur ce
+/// fil.
 #[cfg(test)]
 pub(crate) fn verrou_d_avant_en_essai() {
-    VERROU_JEUNE_ESSAI.with(|j| j.set(Some(std::time::Duration::ZERO)));
+    TEMOIN_DEPUIS_ESSAI.with(|j| j.set(Some(u64::from(u32::MAX))));
 }
 
-/// `chemin` (le verrou des sceaux) existe et a été créé il y a plus de `VERROU_JEUNE`. Sa naissance : sous Unix, le
-/// changement d'inode (ctime ; la date de création n'est pas lue sous musl), qu'aucun programme ne ramène en arrière ;
-/// le verrou n'est jamais écrit, seulement tenu, mais un chmod, un renommage ou une copie du dossier le rajeunit.
-/// Sous Windows, la date de création. Une date qu'on ne lit pas, ou dans le futur (horloge reculée), le compte comme
-/// ancien : à tort, c'est une fausse alerte « refaits », jamais un silence. Rajeunir le verrou, exprès ou non, ne fait
-/// rien de plus que l'effacer : les autres témoins de `deja_scelle` (tête du journal, fichiers nés scellés) restent.
-fn verrou_ancien(chemin: &Path) -> bool {
+/// `chemin` (le verrou des sceaux) existe et est né avant `TEMOIN_DEPUIS`. Sa naissance : sous Unix, le dernier
+/// changement d'inode (ctime ; la date de création ne se lit pas sous musl), que le temps ne ramène jamais en arrière
+/// mais qu'un chmod, un renommage, une étiquette ou une copie du dossier avancent : le verrou rajeuni ne témoigne plus,
+/// ce qui revient à l'effacer, et `deja_scelle` a ses autres témoins. Sous Windows, la date de création (le tunneling
+/// de NTFS rend la sienne à un verrou recréé sous le même nom dans les 15 s : il paraît plus vieux, sens sûr). Une
+/// date qu'on ne lit pas le compte comme d'avant, et une horloge reculée avant ce jour aussi : à tort, c'est une fausse
+/// alerte « refaits », jamais un silence.
+fn verrou_d_avant_le_temoin(chemin: &Path) -> bool {
     let Ok(m) = std::fs::symlink_metadata(chemin) else {
         return false;
     };
     #[cfg(test)]
-    let jeune = VERROU_JEUNE_ESSAI.with(std::cell::Cell::get).unwrap_or(VERROU_JEUNE);
+    let depuis = TEMOIN_DEPUIS_ESSAI.with(std::cell::Cell::get).unwrap_or(TEMOIN_DEPUIS);
     #[cfg(not(test))]
-    let jeune = VERROU_JEUNE;
+    let depuis = TEMOIN_DEPUIS;
     #[cfg(unix)]
     let ne = {
         use std::os::unix::fs::MetadataExt as _;
@@ -587,16 +610,12 @@ fn verrou_ancien(chemin: &Path) -> bool {
     };
     #[cfg(not(unix))]
     let ne = m.created().ok();
-    ne_il_y_a_longtemps(ne, std::time::SystemTime::now(), jeune)
+    ne_avant(ne, std::time::UNIX_EPOCH + std::time::Duration::from_secs(depuis))
 }
 
-/// Le jugement de `verrou_ancien` : jeune seulement sur une naissance lue, passée, et de moins de `jeune`.
-fn ne_il_y_a_longtemps(
-    ne: Option<std::time::SystemTime>,
-    maintenant: std::time::SystemTime,
-    jeune: std::time::Duration,
-) -> bool {
-    ne.is_none_or(|t| !maintenant.duration_since(t).is_ok_and(|age| age < jeune))
+/// Le jugement de `verrou_d_avant_le_temoin` : d'après le témoin seulement sur une naissance lue, et pas avant `depuis`.
+fn ne_avant(ne: Option<std::time::SystemTime>, depuis: std::time::SystemTime) -> bool {
+    ne.is_none_or(|t| t < depuis)
 }
 
 /// Premier passage d'une version qui scelle : les fichiers déjà là sont scellés tels quels, et ce départ est daté.
@@ -637,7 +656,8 @@ fn adopter_si(dossier: &Path, deja_scelle: bool, ecrire: bool) -> Registre {
         }
     }
     r.vus = tous_les_tardifs();
-    // Un registre qui ne s'écrit pas (disque plein, quota) laisse le verrou sans sceaux : dit au journal des erreurs.
+    // Un registre qui ne s'écrit pas (disque plein, quota) laisse le verrou sans sceaux ni témoin : dit au journal des
+    // erreurs, et ce n'est pas des sceaux refaits.
     if ecrire && let Err(e) = enregistrer_registre(dossier, &r) {
         crate::modele::Echec::io("sceau/adopter", &e).journaliser();
     }
@@ -846,7 +866,13 @@ pub(crate) fn lire_dans(dossier: &Path, nom: &str) -> Lecture {
     let deja = deja_scelle(dossier);
     let (_verrou, ecrire) = verrou_lecture(dossier, true);
     let sceaux = match registre(dossier) {
-        Ok(Some(r)) => Some(rattraper_si(dossier, r, ecrire)),
+        Ok(Some(r)) => {
+            // Des sceaux d'une version d'avant le témoin : il se pose dès la première lecture qui peut écrire.
+            if ecrire {
+                temoigner(dossier);
+            }
+            Some(rattraper_si(dossier, r, ecrire))
+        }
         Ok(None) => Some(adopter_si(dossier, deja, ecrire)),
         Err(()) => None,
     };
@@ -859,7 +885,8 @@ pub(crate) fn lire_dans(dossier: &Path, nom: &str) -> Lecture {
 /// Le verrou n'est pris que s'il existe déjà.
 pub(crate) fn lire_sans_ecrire(dossier: &Path, nom: &str) -> Lecture {
     let deja = deja_scelle(dossier);
-    // Un verrou jeune ne témoigne pas (`verrou_ancien`), mais un autre Vanguard le tient peut-être : attendu aussi.
+    // Un verrou né depuis le témoin ne témoigne pas (`verrou_d_avant_le_temoin`), mais un autre Vanguard le tient
+    // peut-être : attendu aussi.
     let existe = std::fs::symlink_metadata(dossier.join(VERROU)).is_ok();
     let _verrou = if deja || existe {
         verrou_lecture(dossier, false).0
@@ -912,9 +939,9 @@ pub(crate) fn effacer_dans(dossier: &Path, nom: &str) -> std::io::Result<()> {
     if !crate::socle::ecriture_sure(dossier) {
         return Err(dossier_d_un_autre());
     }
-    // Ni le fichier ni des sceaux : rien à effacer ni à oublier. Le verrou créé ici sur un dossier neuf (le mode
-    // Wi-Fi public, avant tout autre usage) témoignait deux minutes plus tard de sceaux qui n'avaient jamais existé,
-    // et le bilan les disait refaits (`deja_scelle`).
+    // Ni le fichier ni des sceaux : rien à effacer ni à oublier, et pas de verrou créé pour rien sur un dossier neuf
+    // (le mode Wi-Fi public, avant tout autre usage). Il témoignait alors de sceaux qui n'avaient jamais existé ; c'est
+    // le témoin qui le fait maintenant (`deja_scelle`).
     let absent = |n: &str| std::fs::symlink_metadata(dossier.join(n)).is_err();
     if absent(nom) && absent(REGISTRE) {
         return Ok(());
@@ -1729,7 +1756,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// Les sceaux, leur verrou et l'état de la machine effacés d'un coup : la tête du journal (ou un de ses segments),
+    /// Les sceaux, leur verrou, leur témoin et l'état de la machine effacés d'un coup : la tête du journal (ou un de ses segments),
     /// que seule une version qui scelle écrit, dit encore que Vanguard a servi ici. Ce n'est pas un premier passage.
     #[test]
     fn verrou_efface_avec_les_sceaux_n_est_pas_un_premier_usage() {
@@ -1739,7 +1766,7 @@ mod tests {
             let t = d.join(temoin);
             std::fs::create_dir_all(t.parent().unwrap()).unwrap();
             std::fs::write(&t, b"{}").unwrap();
-            for f in [REGISTRE, VERROU, MACHINE] {
+            for f in [REGISTRE, VERROU, TEMOIN, MACHINE] {
                 std::fs::remove_file(d.join(f)).unwrap();
             }
             assert_eq!(lire_dans(&d, MACHINE), Lecture::Inconnu, "{temoin}");
@@ -1830,7 +1857,8 @@ mod tests {
 
     /// La course du premier usage, sans dépendre de l'ordre des fils : un autre Vanguard, lancé au même moment, vient
     /// de créer `sceaux.verrou` en l'ouvrant et attend de le tenir. Ce n'est pas un Vanguard qui a déjà servi ici : rien
-    /// n'est refait, rien n'est inconnu. Le même verrou laissé par un usage d'avant, lui, dit les sceaux refaits.
+    /// n'est refait, rien n'est inconnu. Le même verrou laissé par une version d'avant le témoin, lui, dit les sceaux
+    /// refaits.
     #[test]
     fn verrou_tout_neuf_d_un_autre_vanguard_n_est_pas_des_sceaux_refaits() {
         let d = jetable("verrou-neuf");
@@ -1851,44 +1879,74 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// Une naissance illisible ou dans le futur (horloge reculée) témoigne : à tort, une fausse alerte, jamais un
-    /// silence. Jeune : lue, passée, et de moins du seuil.
+    /// Seule une naissance lue et pas avant le jour du témoin ne témoigne pas : illisible, ou d'avant (une 0.88, une
+    /// horloge reculée), le verrou témoigne ; à tort, c'est une fausse alerte, jamais un silence.
     #[test]
-    fn verrou_d_age_illisible_ou_futur_temoigne() {
+    fn seul_un_verrou_d_avant_le_temoin_temoigne() {
         use std::time::Duration;
-        let maintenant = std::time::SystemTime::now();
-        let deux_minutes = Duration::from_secs(120);
-        assert!(ne_il_y_a_longtemps(None, maintenant, deux_minutes));
-        assert!(ne_il_y_a_longtemps(
-            Some(maintenant + Duration::from_secs(60)),
-            maintenant,
-            deux_minutes
-        ));
-        assert!(!ne_il_y_a_longtemps(Some(maintenant), maintenant, deux_minutes));
-        assert!(!ne_il_y_a_longtemps(
-            Some(maintenant - Duration::from_secs(119)),
-            maintenant,
-            deux_minutes
-        ));
-        assert!(ne_il_y_a_longtemps(
-            Some(maintenant - deux_minutes),
-            maintenant,
-            deux_minutes
-        ));
-        assert!(ne_il_y_a_longtemps(
-            Some(maintenant - Duration::from_hours(24)),
-            maintenant,
-            deux_minutes
-        ));
-        // Le fichier lui-même : absent ne témoigne pas, posé à l'instant non plus, sauf seuil nul.
+        let depuis = std::time::UNIX_EPOCH + Duration::from_secs(TEMOIN_DEPUIS);
+        assert!(ne_avant(None, depuis));
+        assert!(ne_avant(Some(depuis - Duration::from_secs(1)), depuis));
+        assert!(!ne_avant(Some(depuis), depuis));
+        assert!(!ne_avant(Some(depuis + Duration::from_hours(24)), depuis));
+        // Le fichier lui-même : absent ne témoigne pas, posé à l'instant non plus, sauf pour un essai qui le dit d'avant.
         let d = jetable("verrou-age");
-        assert!(!verrou_ancien(&d.join(VERROU)));
+        assert!(!verrou_d_avant_le_temoin(&d.join(VERROU)));
         std::fs::write(d.join(VERROU), b"").unwrap();
-        assert!(!verrou_ancien(&d.join(VERROU)));
-        VERROU_JEUNE_ESSAI.with(|j| j.set(Some(std::time::Duration::from_secs(3600))));
-        assert!(!verrou_ancien(&d.join(VERROU)));
+        assert!(!verrou_d_avant_le_temoin(&d.join(VERROU)));
         verrou_d_avant_en_essai();
-        assert!(verrou_ancien(&d.join(VERROU)));
+        assert!(verrou_d_avant_le_temoin(&d.join(VERROU)));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Le témoin naît avec le premier registre écrit, et c'est lui qui dit les sceaux refaits : les sceaux et leur
+    /// verrou effacés, il reste ; effacé avec eux (et sans autre témoin), c'est un premier passage.
+    #[test]
+    fn le_temoin_suit_le_premier_registre_et_temoigne() {
+        let d = jetable("temoin");
+        assert_eq!(lire_sans_ecrire(&d, APPRIS), Lecture::Absent);
+        assert!(!d.join(TEMOIN).exists(), "posé sans registre");
+        ecrire_dans(&d, APPRIS, b"{}").unwrap();
+        assert!(d.join(TEMOIN).is_file());
+        for f in [REGISTRE, VERROU] {
+            std::fs::remove_file(d.join(f)).unwrap();
+        }
+        assert!(refaits_dans(&d));
+        assert_eq!(lire_dans(&d, MACHINE), Lecture::Inconnu);
+        for f in [REGISTRE, VERROU, TEMOIN] {
+            std::fs::remove_file(d.join(f)).unwrap();
+        }
+        assert!(!refaits_dans(&d));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Des sceaux d'une version d'avant le témoin : la première lecture qui peut écrire le pose, celle qui n'écrit
+    /// rien non.
+    #[test]
+    fn le_temoin_se_pose_sur_des_sceaux_d_avant_lui() {
+        let d = jetable("temoin-d-avant");
+        ecrire_dans(&d, APPRIS, b"{}").unwrap();
+        std::fs::remove_file(d.join(TEMOIN)).unwrap();
+        assert!(matches!(lire_sans_ecrire(&d, APPRIS), Lecture::Intact(_)));
+        assert!(!d.join(TEMOIN).exists());
+        assert!(matches!(lire_dans(&d, APPRIS), Lecture::Intact(_)));
+        assert!(d.join(TEMOIN).is_file());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Relectures des sceaux et de la campagne 5 : un verrou laissé seul, sans registre (un Vanguard tué entre les
+    /// deux, un registre refusé, un effacement sur le dossier d'une version d'avant les sceaux), n'est plus des sceaux
+    /// refaits, à aucun moment : son âge n'y fait rien.
+    #[test]
+    fn un_verrou_seul_n_est_jamais_des_sceaux_refaits() {
+        let d = jetable("verrou-seul");
+        std::fs::write(d.join(APPRIS), b"{}").unwrap();
+        effacer_dans(&d, APPRIS).unwrap();
+        assert!(d.join(VERROU).is_file());
+        assert!(!d.join(REGISTRE).exists() && !d.join(TEMOIN).exists());
+        assert!(!refaits_dans(&d));
+        assert_eq!(lire_dans(&d, MACHINE), Lecture::Absent);
+        assert!(!falsifies_dans(&d).refaits);
         let _ = std::fs::remove_dir_all(&d);
     }
 

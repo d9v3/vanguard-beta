@@ -98,6 +98,7 @@ pub(crate) const INVENTAIRE: &[FichierEtat] = &[
     scelle(crate::modele::journal::TETE, "modele::journal"),
     local("sceaux.json", "sceau"),
     local("sceaux.verrou", "sceau"),
+    local(sceau::TEMOIN, "sceau"),
     // Historique des bilans : schéma 2 depuis les clés des constats et leur seconde empreinte.
     FichierEtat {
         schema: 2,
@@ -429,6 +430,10 @@ mod tests {
             "les sceaux eux-mêmes : effacés ou abîmés, ils se voient (refaits, COM-ETA-001)",
         ),
         ("sceaux.verrou", "verrou, sans contenu"),
+        (
+            sceau::TEMOIN,
+            "témoin des sceaux, posé après le premier registre écrit : seule sa présence compte, et l'effacer revient à effacer les sceaux, que les autres témoins disent encore",
+        ),
         (
             "evenements.perdus",
             "compte des événements perdus faute de verrou, écrit justement sans lui : il ne fait qu'ajouter une rupture au journal, jamais en retirer",
