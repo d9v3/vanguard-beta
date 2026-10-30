@@ -95,7 +95,7 @@ pub(crate) fn proposer(e: &Externe) -> Option<PathBuf> {
         return None;
     };
     println!("  {GRIS}{commande}{RESET}");
-    if !demander(tr!("  L'installer maintenant ? [o/N] : ", "  Install it now? [y/N]: ")).oui() {
+    if !demander_ou_defaut(tr!("  L'installer maintenant ? [o/N] : ", "  Install it now? [y/N]: ")).oui() {
         return None;
     }
     // Au premier plan : sudo ou winget peuvent poser une question. Par le lanceur des corrections sous Linux et

@@ -1933,6 +1933,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         // Sceaux refaits (verrou resté, sceaux effacés) : la clé n'est pas « la première ».
         let base = dossier_jetable("ref-refaits");
+        crate::sceau::verrou_d_avant_en_essai();
         crate::sceau::ecrire_dans(&base, crate::sceau::APPRIS, b"{}").unwrap();
         std::fs::remove_file(base.join("sceaux.json")).unwrap();
         assert!(a_des_references(&base));

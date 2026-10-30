@@ -695,13 +695,8 @@ fn preparer() -> bool {
             "  ClamAV (antivirus open source) n'est pas installé.",
             "  ClamAV (open source antivirus) is not installed."
         );
-        // Sans clavier (`vanguard verifier-fichier f < /dev/null`, un script) : la réponse par défaut, « non ». La
-        // question aurait trouvé l'entrée fermée et quitté, sans verdict pour le fichier.
-        if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-            trp!("  Sans clavier : pas d'installation.", "  No keyboard: not installing.");
-            return false;
-        }
-        if !demander(tr!("  L'installer maintenant ? [o/N] : ", "  Install it now? [y/N]: ")).oui() {
+        // Sans réponse (`vanguard verifier-fichier f < /dev/null`, un script) : « non », et le fichier a son verdict.
+        if !demander_ou_defaut(tr!("  L'installer maintenant ? [o/N] : ", "  Install it now? [y/N]: ")).oui() {
             return false;
         }
         // Fedora sépare le moteur et l'outil de mise à jour des signatures.
@@ -735,8 +730,21 @@ fn preparer() -> bool {
     }
     if !base_presente() {
         trp!(
-            "  Téléchargement des signatures de virus (~300 Mo, une seule fois)…",
-            "  Downloading the virus signatures (~300 MB, only once)…"
+            "  Les signatures de virus de ClamAV manquent (~300 Mo, une seule fois).",
+            "  ClamAV's virus signatures are missing (~300 MB, only once)."
+        );
+        // Le téléchargement passe par sudo et active leur mise à jour automatique : pas sans accord.
+        if !demander_ou_defaut(tr!(
+            "  Les télécharger maintenant ? [o/N] : ",
+            "  Download them now? [y/N]: "
+        ))
+        .oui()
+        {
+            return false;
+        }
+        trp!(
+            "  Téléchargement des signatures de virus…",
+            "  Downloading the virus signatures…"
         );
         #[cfg(target_os = "linux")]
         // Sur Debian/Ubuntu/Mint, le service tourne déjà et verrouille la base : on l'arrête le temps du premier téléchargement.

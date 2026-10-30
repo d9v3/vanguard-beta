@@ -817,9 +817,9 @@ fn verifier_fichier_verdicts() {
     let verifier = |langue: &str, fichier: &Path, empreinte: Option<&str>| {
         let mut args = vec!["verifier-fichier", fichier.to_str().unwrap()];
         args.extend(empreinte);
-        // Sans ClamAV (Mac de GitHub, CI), Vanguard propose de l'installer : « non », sinon la fin de l'entrée le fait
-        // quitter avant le verdict.
-        let s = vanguard(langue, &args, "n\n", 120);
+        // Sans ClamAV (Mac de GitHub, CI), Vanguard propose de l'installer : la fin de l'entrée vaut « non », et le
+        // verdict suit (`verifier_fichier_sans_clamav_ni_reponse`).
+        let s = vanguard(langue, &args, "", 120);
         assert_eq!(s.code, Some(0), "{}", s.erreurs);
         // Les phrases longues sont coupées en lignes à l'écran : remises bout à bout.
         sans_couleurs(&s.texte).split_whitespace().collect::<Vec<_>>().join(" ")
@@ -871,6 +871,33 @@ fn verifier_fichier_verdicts() {
         "{t}"
     );
     let _ = std::fs::remove_dir_all(&dossier);
+}
+
+/// ClamAV absent (un PATH vide) et aucune réponse : la question « L'installer maintenant ? » trouve la fin de l'entrée,
+/// qui vaut « non ». Le verdict suit, incomplet ; le programme ne quitte pas à la question, comme jusqu'à la 0.88.
+#[cfg(unix)]
+#[test]
+fn verifier_fichier_sans_clamav_ni_reponse() {
+    let maison = maison_jetable();
+    let vide = maison.join("bin-vide");
+    std::fs::create_dir_all(&vide).unwrap();
+    let notes = maison.join("notes.txt");
+    std::fs::write(&notes, "bonjour\n").unwrap();
+    let s = vanguard_dans_env(
+        Path::new(env!("CARGO_BIN_EXE_vanguard")),
+        &maison,
+        "fr",
+        &["verifier-fichier", notes.to_str().unwrap()],
+        "",
+        120,
+        &[("PATH", vide.to_str().unwrap())],
+    );
+    assert_eq!(s.code, Some(0), "{}", s.erreurs);
+    let t = sans_couleurs(&s.texte).split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(t.contains("L'installer maintenant ?"), "{t}");
+    assert!(t.contains("ClamAV : impossible à vérifier"), "{t}");
+    assert!(t.contains("Vérification incomplète (ClamAV)"), "{t}");
+    let _ = std::fs::remove_dir_all(&maison);
 }
 
 #[test]

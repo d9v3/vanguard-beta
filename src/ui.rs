@@ -509,18 +509,30 @@ pub(crate) fn vient_de_revenir() -> bool {
 
 /// Pose une question dans le terminal et retourne la réponse sans espaces autour.
 pub fn demander(question: &str) -> String {
+    // Fin de l'entrée (Ctrl-D, terminal fermé, entrée redirigée) : on quitte. Le menu reposait sinon la question
+    // sans fin, en effaçant l'écran à toute vitesse (un cœur du processeur à 100 %). Vu en test.
+    reponse(question).unwrap_or_else(|| crate::machine::quitter(0))
+}
+
+/// Comme `demander`, mais la fin de l'entrée donne la réponse vide, celle par défaut d'une question « [o/N] », au lieu
+/// de quitter : l'outil qui la pose va au bout (`vanguard verifier-fichier f < /dev/null` donne son verdict). Une
+/// réponse arrivée par un tube est lue comme au clavier.
+pub fn demander_ou_defaut(question: &str) -> String {
+    reponse(question).unwrap_or_default()
+}
+
+/// La question posée, puis la ligne lue sans espaces autour ; `None` à la fin de l'entrée.
+fn reponse(question: &str) -> Option<String> {
     use std::io::Write;
     print!("{}", question_en_lignes(question));
     let _ = std::io::stdout().flush();
     let mut s = String::new();
-    // Fin de l'entrée (Ctrl-D, terminal fermé, entrée redirigée) : on quitte. Le menu reposait sinon la question
-    // sans fin, en effaçant l'écran à toute vitesse (un cœur du processeur à 100 %). Vu en test.
     if matches!(std::io::stdin().read_line(&mut s), Ok(0) | Err(_)) {
         println!();
-        crate::machine::quitter(0);
+        return None;
     }
     noter_retour(false);
-    s.trim().to_string()
+    Some(s.trim().to_string())
 }
 
 #[cfg(test)]

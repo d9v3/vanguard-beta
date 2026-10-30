@@ -498,10 +498,11 @@ pub(crate) fn verrou_d_avant_en_essai() {
 }
 
 /// `chemin` (le verrou des sceaux) existe et a été créé il y a plus de `VERROU_JEUNE`. Sa naissance : sous Unix, le
-/// changement d'inode (ctime), qu'aucun programme ne ramène en arrière et que rien ne touche ensuite (le verrou n'est
-/// jamais écrit, seulement tenu) ; sous Windows, la date de création. Une date qu'on ne lit pas, ou dans le futur
-/// (horloge reculée), le compte comme ancien : à tort, c'est une fausse alerte « refaits », jamais un silence ; et
-/// rajeunir le verrou exprès ne donne rien de plus que de l'effacer, que `deja_scelle` sait déjà.
+/// changement d'inode (ctime ; la date de création n'est pas lue sous musl), qu'aucun programme ne ramène en arrière ;
+/// le verrou n'est jamais écrit, seulement tenu, mais un chmod, un renommage ou une copie du dossier le rajeunit.
+/// Sous Windows, la date de création. Une date qu'on ne lit pas, ou dans le futur (horloge reculée), le compte comme
+/// ancien : à tort, c'est une fausse alerte « refaits », jamais un silence. Rajeunir le verrou, exprès ou non, ne fait
+/// rien de plus que l'effacer : les autres témoins de `deja_scelle` (tête du journal, fichiers nés scellés) restent.
 fn verrou_ancien(chemin: &Path) -> bool {
     let Ok(m) = std::fs::symlink_metadata(chemin) else {
         return false;
@@ -519,8 +520,16 @@ fn verrou_ancien(chemin: &Path) -> bool {
     };
     #[cfg(not(unix))]
     let ne = m.created().ok();
-    // Jeune seulement sur un âge lu, et court.
-    ne.is_none_or(|t| !t.elapsed().is_ok_and(|age| age < jeune))
+    ne_il_y_a_longtemps(ne, std::time::SystemTime::now(), jeune)
+}
+
+/// Le jugement de `verrou_ancien` : jeune seulement sur une naissance lue, passée, et de moins de `jeune`.
+fn ne_il_y_a_longtemps(
+    ne: Option<std::time::SystemTime>,
+    maintenant: std::time::SystemTime,
+    jeune: std::time::Duration,
+) -> bool {
+    ne.is_none_or(|t| !maintenant.duration_since(t).is_ok_and(|age| age < jeune))
 }
 
 /// Premier passage d'une version qui scelle : les fichiers déjà là sont scellés tels quels, et ce départ est daté.
@@ -782,7 +791,13 @@ pub(crate) fn lire_dans(dossier: &Path, nom: &str) -> Lecture {
 /// Le verrou n'est pris que s'il existe déjà.
 pub(crate) fn lire_sans_ecrire(dossier: &Path, nom: &str) -> Lecture {
     let deja = deja_scelle(dossier);
-    let _verrou = if deja { verrou_lecture(dossier, false).0 } else { None };
+    // Un verrou jeune ne témoigne pas (`verrou_ancien`), mais un autre Vanguard le tient peut-être : attendu aussi.
+    let existe = std::fs::symlink_metadata(dossier.join(VERROU)).is_ok();
+    let _verrou = if deja || existe {
+        verrou_lecture(dossier, false).0
+    } else {
+        None
+    };
     let sceaux = match registre(dossier) {
         Ok(Some(r)) => Some(rattraper_si(dossier, r, false)),
         Ok(None) => Some(adopter_si(dossier, deja, false)),
@@ -1698,10 +1713,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// Un verrou dont l'âge ne se lit pas comme court (date dans le futur) témoigne : à tort, une fausse alerte, jamais
-    /// un silence.
+    /// Une naissance illisible ou dans le futur (horloge reculée) témoigne : à tort, une fausse alerte, jamais un
+    /// silence. Jeune : lue, passée, et de moins du seuil.
     #[test]
-    fn verrou_d_age_illisible_temoigne() {
+    fn verrou_d_age_illisible_ou_futur_temoigne() {
+        use std::time::Duration;
+        let maintenant = std::time::SystemTime::now();
+        let deux_minutes = Duration::from_secs(120);
+        assert!(ne_il_y_a_longtemps(None, maintenant, deux_minutes));
+        assert!(ne_il_y_a_longtemps(
+            Some(maintenant + Duration::from_secs(60)),
+            maintenant,
+            deux_minutes
+        ));
+        assert!(!ne_il_y_a_longtemps(Some(maintenant), maintenant, deux_minutes));
+        assert!(!ne_il_y_a_longtemps(
+            Some(maintenant - Duration::from_secs(119)),
+            maintenant,
+            deux_minutes
+        ));
+        assert!(ne_il_y_a_longtemps(
+            Some(maintenant - deux_minutes),
+            maintenant,
+            deux_minutes
+        ));
+        assert!(ne_il_y_a_longtemps(
+            Some(maintenant - Duration::from_hours(24)),
+            maintenant,
+            deux_minutes
+        ));
+        // Le fichier lui-même : absent ne témoigne pas, posé à l'instant non plus, sauf seuil nul.
         let d = jetable("verrou-age");
         assert!(!verrou_ancien(&d.join(VERROU)));
         std::fs::write(d.join(VERROU), b"").unwrap();
@@ -1713,9 +1754,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// Cinq écritures par fichier protégé, tous en même temps : assez pour que les écrivains se croisent (et, au
-    /// premier tour, pour la course du premier usage), sans faire attendre un fil au-delà de `ATTENTE_ECRITURE`. Vingt
-    /// faisaient refuser le verrou à l'un d'eux sur le Windows lent de GitHub (WouldBlock, le 27 oct. 2026).
+    /// Cinq écritures par fichier protégé, tous en même temps : assez pour que les écrivains se croisent, sans faire
+    /// attendre un fil au-delà de `ATTENTE_ECRITURE`. La course du premier usage, elle, dépend de l'ordonnancement :
+    /// `verrou_tout_neuf_d_un_autre_vanguard_n_est_pas_des_sceaux_refaits` la pose exprès. Vingt faisaient refuser le verrou à l'un d'eux sur le Windows lent de GitHub (WouldBlock, le 27 oct. 2026).
     #[test]
     fn ecritures_en_meme_temps_sans_fausse_alerte() {
         let d = jetable("ensemble");
