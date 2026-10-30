@@ -149,6 +149,7 @@ evtx = { version = "=0.13.0", default-features = false }
 # comparent les correspondances, fichier par fichier, et les champs des modules pe et elf. Jamais dans le programme
 # (`cargo tree -e normal` ne le montre pas) : il y amenait wasmtime et cranelift, 150 crates de plus, et du C à
 # compiler pour chaque cible. Seulement les modules dont les règles intégrées ont besoin (pe, elf). YARA-X 1.22.0
-# demande wasmtime 48.0.6 ou plus ; Cargo.lock retient 48.0.7, la première de la série 48 qui corrige aussi
-# RUSTSEC-2026-0379 (Cranelift, saut mal calculé sur aarch64), ce que cargo deny surveille encore.
+# demande wasmtime 48.0.6 ou plus ; Cargo.lock retient 48.0.8, qui corrige RUSTSEC-2026-0379 (Cranelift, saut mal
+# calculé sur aarch64, depuis la 48.0.7) et les trois failles publiées le 29 oct. 2026 contre la 48.0.7
+# (RUSTSEC-2026-0423, RUSTSEC-2026-0424 et une de vérification de types), ce que cargo deny surveille encore.
 yara-x = { version = "1.22.0", default-features = false, features = ["pe-module", "elf-module", "constant-folding", "exact-atoms", "fast-regexp"] }
