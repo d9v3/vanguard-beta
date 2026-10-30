@@ -1162,14 +1162,19 @@ releve() { (cd "$1" && find . -type f ! -path './donnees/*' -print0 | sort -z | 
 case "$1 ${2:-}" in
   "--version ") echo "Vanguard 0.0.0-essai" ;;
   "deploiement cle")
-    inconnu=0
+    inconnu=0 cle= jeton=
     for v in /run/media/"$USER"/*; do
       [[ -f $v/vanguard.cle ]] || continue
       j=$(tr -d '[:space:]' <"$v/vanguard.jeton" 2>/dev/null)
-      if [[ -n $j ]] && grep -qxF "$j" "$BANC/connus" 2>/dev/null; then echo "$v"; exit 0; fi
+      if [[ -n $j ]] && grep -qxF "$j" "$BANC/connus" 2>/dev/null; then
+        [[ -n $cle ]] || { cle=$v jeton=$j; continue; }
+        [[ $j != "$jeton" ]] || { echo "Volume au même jeton qu'une autre clé branchée : $v" >&2; exit 4; }
+        continue
+      fi
       inconnu=1
       echo "Volume au témoin de la clé, sans jeton connu : $v" >&2
     done
+    [[ -z $cle ]] || { echo "$cle"; exit 0; }
     exit $((inconnu * 3)) ;;
   "deploiement comparer-cle")
     [[ -f $BANC/reference ]] || { echo "aucune référence" >&2; exit 3; }
@@ -1251,6 +1256,21 @@ code=$?
 voir "--accepter-cle DOSSIER : le volume adopté (programme copié, référence forcée)" \
   eval '((code == 0)) && [[ -f $K/Linux/vanguard ]] && dit "$BANC/vanguard.log" "manifeste --ecrire $K --forcer"' ||
   montrer "$BANC/sortie"
+# Une copie de la clé (jeton compris) branchée avec elle : rien n'est écrit sur aucune, et --accepter-cle n'est pas
+# conseillé (il n'y changerait rien).
+cp -a "$K" /run/media/alice/COPIE
+rm -f /run/media/alice/COPIE/Linux/vanguard
+etat_cle "$K" >"$BANC/avant"
+etat_cle /run/media/alice/COPIE >"$BANC/avant-copie"
+: >"$BANC/notifications.log"
+deployer --sans-compiler
+code=$?
+voir "deux volumes VANGUARD au même jeton : rien n'est écrit sur aucun, notification qui le dit ; code 0" \
+  eval '((code == 0)) && cmp -s <(etat_cle "$K") "$BANC/avant" &&
+    cmp -s <(etat_cle /run/media/alice/COPIE) "$BANC/avant-copie" &&
+    dit "$BANC/notifications.log" "au même jeton" && ! grep -q -- "--accepter-cle" "$BANC/notifications.log"' ||
+  { montrer "$BANC/sortie"; montrer "$BANC/notifications.log"; }
+rm -rf /run/media/alice/COPIE
 rm -rf /run/media/alice
 # Le programme remplacé depuis sa compilation (une compilation ordinaire, un autre worktree) : rien n'est copié.
 mkdir -p "$K"

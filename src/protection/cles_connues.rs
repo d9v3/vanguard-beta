@@ -154,9 +154,18 @@ pub(crate) fn jetons() -> BTreeSet<String> {
     lire_verrouille(&crate::socle::dossier_local()).into_keys().collect()
 }
 
-/// Un volume au jeton connu de cet ordinateur ?
-pub(crate) fn connue(racine: &Path, jetons: &BTreeSet<String>) -> bool {
-    jeton_de(racine).is_some_and(|j| jetons.contains(&j))
+/// Parmi `volumes` (ceux qui portent le témoin), la clé connue : deux clés connues branchées, la première dans l'ordre
+/// des chemins (« /run/media/alice/VANGUARD » avant « …/VANGUARD1 »), la même à chaque lancement, l'autre n'est pas
+/// regardée ; deux volumes à son jeton, aucun : une copie de la clé (identifiant de volume compris) ne doit rien lire
+/// ni recevoir selon l'ordre des chemins (campagne d'attaque n° 4, C-B2). Seul le jeton de la première est cherché en
+/// double : celui d'une seconde clé connue, qu'elle ne remplace pas, ne change rien à ce qui est choisi.
+pub(crate) fn seule_connue(mut volumes: Vec<PathBuf>, jetons: &BTreeSet<String>) -> Option<PathBuf> {
+    volumes.sort();
+    let mut cles = volumes
+        .into_iter()
+        .filter_map(|d| jeton_de(&d).filter(|j| jetons.contains(j)).map(|j| (d, j)));
+    let (cle, jeton) = cles.next()?;
+    cles.all(|(_, j)| j != jeton).then_some(cle)
 }
 
 /// Au-delà, ce n'est pas un carnet des appareils.
@@ -492,7 +501,16 @@ mod tests {
         assert_eq!(cles.len(), 2);
         assert!(cles[JETON_A].carnet.is_none() && !cles[JETON_A].protege);
         let jetons: BTreeSet<String> = cles.keys().cloned().collect();
-        assert!(connue(&a, &jetons) && connue(&b, &jetons) && !connue(&sans, &jetons));
+        // Deux clés connues : la première dans l'ordre des chemins ; sans jeton, aucune.
+        assert_eq!(
+            seule_connue(vec![b.clone(), sans.clone(), a.clone()], &jetons),
+            Some(a.clone())
+        );
+        assert_eq!(seule_connue(vec![sans.clone()], &jetons), None);
+        // Une copie de la première, jeton compris : aucune des deux, quel que soit l'ordre.
+        let copie = fausse_cle("copie", Some(JETON_A));
+        assert_eq!(seule_connue(vec![copie.clone(), a.clone(), b.clone()], &jetons), None);
+        let _ = std::fs::remove_dir_all(copie);
         // Un fichier qui n'est pas le nôtre est mis de côté, pas écrasé.
         std::fs::write(chemin(&base), "{\"format\":\"autre\"}").unwrap();
         assert!(lire_dans(&base).is_empty());

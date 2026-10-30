@@ -20,11 +20,6 @@ use std::sync::OnceLock;
 /// Fichier témoin à la racine de la partition VANGUARDLOG.
 pub const TEMOIN: &str = "vanguard-journal.cle";
 
-/// La partition des journaux porte le témoin et le jeton d'une clé connue de cet ordinateur (deployer.sh y recopie
-/// celui de la clé) : un volume étranger au seul témoin ne reçoit ni le journal ni « Mes ordinateurs ».
-fn est_la_partition(dossier: &std::path::Path, connues: &std::collections::BTreeSet<String>) -> bool {
-    dossier.join(TEMOIN).is_file() && crate::protection::cles_connues::connue(dossier, connues)
-}
 pub const FICHIER: &str = "journal-erreurs.txt";
 /// Au-delà, plus rien n'est ajouté : une erreur répétée en boucle ne remplit pas la partition.
 const TAILLE_MAX: u64 = 4 * 1024 * 1024;
@@ -63,36 +58,40 @@ pub(crate) fn partition_de_la_cle() -> Option<PathBuf> {
     }
 }
 
-/// Parmi `montages`, la partition des journaux d'une clé connue ; deux : la première dans l'ordre des chemins.
-#[cfg(any(unix, test))]
-fn partition_parmi(mut montages: Vec<PathBuf>, connues: &std::collections::BTreeSet<String>) -> Option<PathBuf> {
-    montages.sort();
-    montages.into_iter().find(|d| est_la_partition(d, connues))
+/// Parmi `montages`, la partition des journaux : le témoin et le jeton d'une clé connue de cet ordinateur (deployer.sh
+/// y recopie celui de la clé), un volume étranger au seul témoin ne reçoit ni le journal ni « Mes ordinateurs ».
+/// Choisie comme la clé (`cles_connues::seule_connue`) : une copie de la partition à son jeton ne reçoit pas le journal selon l'ordre des chemins, ni ne fait la liste de
+/// « Mes ordinateurs » (campagne d'attaque n° 4, C-B2).
+fn partition_parmi(montages: Vec<PathBuf>, connues: &std::collections::BTreeSet<String>) -> Option<PathBuf> {
+    crate::protection::cles_connues::seule_connue(
+        montages.into_iter().filter(|d| d.join(TEMOIN).is_file()).collect(),
+        connues,
+    )
 }
 
 /// Lecteurs D: à Z: interrogés en même temps, 2 s au plus : un lecteur réseau déconnecté peut mettre de longues
-/// secondes à répondre, et le journal ne doit jamais faire attendre le programme.
+/// secondes à répondre, et le journal ne doit jamais faire attendre le programme. Toutes les réponses attendues (ou le
+/// délai), pas la première : une copie de la partition doit se voir, comme sous Linux (un lecteur qui répond après
+/// le délai n'est pas compté, ni comme partition, ni comme copie).
 #[cfg(windows)]
 fn lecteur_windows(connues: &std::collections::BTreeSet<String>) -> Option<PathBuf> {
     use std::time::{Duration, Instant};
     let (envoi, reception) = std::sync::mpsc::channel();
     for lettre in 'D'..='Z' {
         let envoi = envoi.clone();
-        let connues = connues.clone();
         std::thread::spawn(move || {
             let lecteur = PathBuf::from(format!("{lettre}:\\"));
-            let _ = envoi.send(est_la_partition(&lecteur, &connues).then_some(lecteur));
+            let _ = envoi.send(lecteur.join(TEMOIN).is_file().then_some(lecteur));
         });
     }
     drop(envoi);
     let limite = Instant::now() + Duration::from_secs(2);
-    // Fin : le lecteur trouvé, toutes les réponses reçues (canal fermé), ou le délai passé.
+    let mut trouves = Vec::new();
+    // Fin : toutes les réponses reçues (canal fermé), ou le délai passé.
     while let Ok(reponse) = reception.recv_timeout(limite.saturating_duration_since(Instant::now())) {
-        if reponse.is_some() {
-            return reponse;
-        }
+        trouves.extend(reponse);
     }
-    None
+    partition_parmi(trouves, connues)
 }
 
 /// Wine installe ses propres programmes dans system32 ; wineboot.exe n'existe pas sur un vrai Windows.
@@ -992,7 +991,16 @@ mod tests {
         assert_eq!(partition_parmi(volumes.clone(), &connues), Some(connue.clone()));
         assert_eq!(partition_parmi(volumes, &std::collections::BTreeSet::new()), None);
         // Sans jeton du tout : un journal d'avant n'est pas écrit sur un volume quelconque.
-        assert_eq!(partition_parmi(vec![temoin_seul], &connues), None);
+        assert_eq!(partition_parmi(vec![temoin_seul.clone()], &connues), None);
+        // Une copie de la partition, jeton compris : aucune des deux ne reçoit le journal.
+        let copie = d.join("d");
+        std::fs::create_dir_all(&copie).unwrap();
+        std::fs::write(copie.join(TEMOIN), "").unwrap();
+        std::fs::write(copie.join(crate::protection::cles_connues::JETON), jeton).unwrap();
+        assert_eq!(
+            partition_parmi(vec![connue.clone(), copie, temoin_seul], &connues),
+            None
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -439,6 +439,12 @@ if [[ -z $CLE ]]; then
     echo "source). S'il est à vous : outils/deployer.sh --accepter-cle <son dossier>."
     avertir_cle "Volume VANGUARD inconnu : rien n'y est écrit" "Ce n'est pas une clé déployée ici (jeton absent ou \
 inconnu). Si elle est à vous : outils/deployer.sh --accepter-cle <son dossier>."
+  elif ((CODE_CLE == 4)); then
+    # Une copie de la clé (jeton compris) : --accepter-cle n'y changerait rien, l'une des deux est à débrancher.
+    echo "Deux volumes VANGUARD au même jeton (une copie de la clé ?) : rien n'est écrit sur aucun. N'en branchez qu'un,"
+    echo "puis relancez le déploiement."
+    avertir_cle "Deux clés VANGUARD au même jeton : rien n'y est écrit" "Une copie de la clé est branchée avec elle \
+(ou à sa place). Débranchez celle qui n'est pas la vôtre, puis relancez le déploiement."
   elif ((CODE_CLE != 0)); then
     echo "✖ Clé VANGUARD pas cherchée (le programme ne sait pas la reconnaître : recompiler) : rien n'y est écrit."
   else
@@ -446,8 +452,9 @@ inconnu). Si elle est à vous : outils/deployer.sh --accepter-cle <son dossier>.
   fi
   publier_la_version
   dire_durees
-  # Une clé demandée (--accepter-cle) mais pas trouvée, ou pas cherchée : un échec ; un volume inconnu, non.
-  if [[ -n $ACCEPTER ]] || ((CODE_CLE != 0 && CODE_CLE != 3)); then exit 1; fi
+  # Une clé demandée (--accepter-cle) mais pas trouvée, ou pas cherchée : un échec ; un volume inconnu ou en double,
+  # non (rien n'y est écrit, et c'est dit).
+  if [[ -n $ACCEPTER ]] || ((CODE_CLE != 0 && CODE_CLE != 3 && CODE_CLE != 4)); then exit 1; fi
   exit 0
 fi
 T_CLE=$SECONDS

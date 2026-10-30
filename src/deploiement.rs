@@ -29,7 +29,8 @@ pub(crate) enum Etape {
     },
     /// La racine de la clé VANGUARD de cet ordinateur : le volume monté au témoin vanguard.cle dont le jeton est connu
     /// ici, comme le programme la reconnaît. Rien (code 0) sans volume au témoin ; code 3 quand des volumes portent le
-    /// témoin sans jeton connu (dits sur la sortie d'erreur) : rien ne doit y être écrit.
+    /// témoin sans jeton connu, 4 quand plusieurs portent le même jeton connu (une copie de la clé) ; dits sur la sortie
+    /// d'erreur : rien ne doit y être écrit.
     Cle,
     /// Avant d'écrire sur la clé : elle doit être exactement sa référence (manifeste). Code 2 : elle a changé (l'écart
     /// est dit) ; 3 : pas de référence pour elle ici.
@@ -138,7 +139,7 @@ fn cle() -> i32 {
                     )
                 );
             }
-            3
+            4
         }
         Err(PasLaCle::Inconnus(inconnus)) => {
             for v in inconnus {

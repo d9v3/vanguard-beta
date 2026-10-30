@@ -872,19 +872,10 @@ pub fn cle_usb() -> Option<PathBuf> {
     })
 }
 
-/// La clé connue parmi `volumes`. Deux clés connues branchées : la première dans l'ordre des chemins (« /run/media/
-/// alice/VANGUARD » avant « …/VANGUARD1 »), le même à chaque lancement ; l'autre n'est pas regardée. Deux volumes au
-/// même jeton : aucun, une copie de la clé ne doit pas recevoir le carnet selon l'ordre des chemins (campagne
-/// d'attaque n° 4, C-B2, comme `deploiement cle`).
-fn cle_parmi(mut volumes: Vec<PathBuf>, connues: &std::collections::BTreeSet<String>) -> Option<PathBuf> {
-    volumes.sort();
-    let mut cles = volumes.into_iter().filter(|d| est_une_cle(d)).filter_map(|d| {
-        crate::protection::cles_connues::jeton_de(&d)
-            .filter(|j| connues.contains(j))
-            .map(|j| (d, j))
-    });
-    let (cle, jeton) = cles.next()?;
-    cles.all(|(_, j)| j != jeton).then_some(cle)
+/// La clé connue parmi `volumes`, comme la choisit `cles_connues::seule_connue` (aucune quand une copie porte son
+/// jeton : elle ne doit pas recevoir le carnet ; comme `deploiement cle`).
+fn cle_parmi(volumes: Vec<PathBuf>, connues: &std::collections::BTreeSet<String>) -> Option<PathBuf> {
+    crate::protection::cles_connues::seule_connue(volumes.into_iter().filter(|d| est_une_cle(d)).collect(), connues)
 }
 
 /// Un volume branché porte le témoin sans être une clé reconnue ici.

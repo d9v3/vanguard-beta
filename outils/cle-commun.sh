@@ -23,8 +23,9 @@ programme_cle() {
 }
 
 # La racine de la clé connue de cet ordinateur sur la sortie, ou rien. Code 0 : trouvée, ou aucun volume au témoin ;
-# 3 : des volumes portent le témoin sans jeton connu (le programme les nomme sur la sortie d'erreur) ; autre : pas de
-# programme qui sache la chercher (dit), rien n'est écrit nulle part.
+# 3 : des volumes portent le témoin sans jeton connu ; 4 : plusieurs portent le même jeton connu, une copie de la clé
+# (le programme les nomme sur la sortie d'erreur) ; autre : pas de programme qui sache la chercher (dit), rien n'est
+# écrit nulle part.
 cle_connue() { # [programme]
   local programme=${1:-}
   [[ -n $programme ]] || programme=$(programme_cle)
