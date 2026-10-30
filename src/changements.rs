@@ -1014,7 +1014,7 @@ mod tests {
         assert_eq!(refus(&f)[0], ("vrai".to_string(), true));
     }
 
-    /// Le relevé réécrit puis sceaux.json effacé (son verrou gardé) : ce n'est pas une mise à jour, les lignes
+    /// Le relevé réécrit puis sceaux.json effacé (son témoin gardé) : ce n'est pas une mise à jour, les lignes
     /// acceptées alors sont comme changées hors de Vanguard, rien n'y est rejoué, et rien ne les rescelle.
     #[test]
     fn releve_accepte_apres_des_sceaux_refaits_jamais_rejoue() {

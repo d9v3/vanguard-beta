@@ -173,6 +173,7 @@ fn fichiers_d_etat_piegees_ne_figent_rien() {
         "blocage.json",
         "sceaux.json",
         "sceaux.verrou",
+        "sceaux.temoin",
         "historique.json",
         "reglages.json",
         "appris.json",
@@ -2277,8 +2278,8 @@ fn windows_eleve() -> bool {
 }
 
 /// Les fichiers d'un dossier, avec leur contenu (chemin relatif → octets), sauf ceux que l'autotest écrit lui-même
-/// (son résultat scellé, sa date, l'événement d'essai et la tête du journal, les sceaux qui les scellent) et le
-/// journal des erreurs.
+/// (son résultat scellé, sa date, l'événement d'essai et la tête du journal, les sceaux qui les scellent et leur
+/// témoin) et le journal des erreurs.
 fn contenus(dossier: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
     let mut tous = std::collections::BTreeMap::new();
     let mut a_voir = vec![dossier.to_path_buf()];
@@ -2292,6 +2293,7 @@ fn contenus(dossier: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
                 "evenements",
                 "evenements.tete",
                 "sceaux.json",
+                "sceaux.temoin",
             ]
             .iter()
             .any(|x| relatif == *x || relatif.starts_with(&format!("{x}/")))

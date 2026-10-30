@@ -366,8 +366,8 @@ mod tests {
         }
     }
 
-    /// Accepté tel quel sans même des sceaux refaits (sceaux.json, son verrou et son témoin effacés d'un coup) : né scellé, il ne
-    /// se croit pas pour autant.
+    /// Accepté tel quel sans même des sceaux refaits (sceaux.json, son verrou et son témoin effacés d'un coup) : né
+    /// scellé, il ne se croit pas pour autant.
     #[test]
     fn adopte_sans_sceaux_refaits_pas_cru() {
         let d = jetable("adopte-neuf");

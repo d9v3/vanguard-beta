@@ -1181,7 +1181,7 @@ mod tests {
     }
 
     /// Repris d'une version d'avant le sceau à la mise à jour, parametres.json vaut tel quel (le choix de la
-    /// personne) ; accepté tel quel après des sceaux effacés (leur verrou resté), il ne coupe rien.
+    /// personne) ; accepté tel quel après des sceaux effacés (leur témoin resté), il ne coupe rien.
     #[test]
     fn mise_a_jour_gardee_sceaux_refaits_ignores() {
         let f = jetable("adopte");

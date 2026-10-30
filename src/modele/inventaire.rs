@@ -432,7 +432,8 @@ mod tests {
         ("sceaux.verrou", "verrou, sans contenu"),
         (
             sceau::TEMOIN,
-            "témoin des sceaux, posé après le premier registre écrit : seule sa présence compte, et l'effacer revient à effacer les sceaux, que les autres témoins disent encore",
+            "témoin des sceaux, posé après le premier registre écrit : seule sa présence compte, et l'effacer revient \
+             à effacer les sceaux, que les autres témoins disent encore",
         ),
         (
             "evenements.perdus",

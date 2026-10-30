@@ -21,13 +21,14 @@ use crate::modele::evenement::Genre;
 /// Le fichier écrit.
 const NOM: &str = "07-vanguard.txt";
 /// Les fichiers d'état recopiés tels quels, 5 Mo au plus chacun.
-const ETATS: [&str; 9] = [
+const ETATS: [&str; 10] = [
     "surveillance-alertes.jsonl",
     crate::changements::RELEVE,
     "quarantaine/quarantaine.json",
     crate::sceau::NORMALES,
     crate::sceau::APPRIS,
     "sceaux.json",
+    crate::sceau::TEMOIN,
     "blocage.json",
     crate::sceau::BOTNETS,
     "veilleur-etat.json",

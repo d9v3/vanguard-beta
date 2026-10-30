@@ -464,7 +464,7 @@ mod tests {
         let cles = lire_verrouille(&base);
         assert!(!cles.contains_key(JETON_B), "{cles:?}");
         assert!(cles.is_empty());
-        // Le même jeton inscrit, puis sceaux.json effacé (son verrou resté) : accepté tel quel, jamais cru.
+        // Le même jeton inscrit, puis sceaux.json effacé (son témoin resté) : accepté tel quel, jamais cru.
         assert!(reconnaitre_dans(&base, &a));
         let texte = std::fs::read_to_string(chemin(&base)).unwrap().replacen(
             "\"cles\": {",
