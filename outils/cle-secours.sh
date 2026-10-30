@@ -40,7 +40,8 @@
 #                                                 pkexec ; journal dans ~/.local/state/vanguard/ventoy/)
 #   outils/cle-secours.sh --accepter-vtoyefi      la partition de démarrage VTOYEFI de la clé branchée, telle qu'elle
 #                                                 est, prise pour référence (--a-jour compare l'empreinte de ses
-#                                                 fichiers à chaque passage, et alerte sur un écart)
+#                                                 fichiers à chaque passage, et alerte sur un écart) ; partie de la
+#                                                 clé, sa référence retirée
 #   outils/cle-secours.sh --installer-racine      une fois, et après chaque changement d'épingle : la partie root de
 #                                                 --ventoy-maj (outils/ventoy-racine.sh), copiée en fichier de root
 #   outils/cle-secours.sh --ventoy-publie         (développement) GitHub a-t-il un Ventoy plus récent que l'épingle ?
@@ -814,19 +815,21 @@ empreinte_vtoyefi() { # dossier
 
 # Version de Ventoy d'une clé et empreinte de sa partition de démarrage (« version empreinte »), lues sans rien
 # écrire : sa partition VTOYEFI, montée par le bureau, sinon montée en lecture seule le temps de lire. Jamais un mot
-# vide (read décalerait l'empreinte à la place de la version) : « ? » pour une version pas lue, « illisible » pour une
-# partition introuvable, renommée, pas montée ou aux fichiers illisibles.
-# VANGUARD_VTOYEFI : un dossier lu à sa place (essais).
+# vide (read décalerait l'empreinte à la place de la version) : « ? » pour une version pas lue, « absente » pour une
+# clé sans partition VTOYEFI (introuvable ou renommée), « illisible » pour une partition pas montée ou aux fichiers
+# illisibles.
+# VANGUARD_VTOYEFI : un dossier lu à sa place (essais ; absent, la partition l'est aussi).
 vtoyefi_de() { # disque
   local p2 point montee="" version="" empreinte=illisible
   if [[ -n ${VANGUARD_VTOYEFI:-} ]]; then
+    if [[ ! -d $VANGUARD_VTOYEFI ]]; then echo "? absente"; return 0; fi
     version=$(version_ventoy "$VANGUARD_VTOYEFI")
     echo "${version:-?} $(empreinte_vtoyefi "$VANGUARD_VTOYEFI")"
     return 0
   fi
   if [[ -z $1 ]]; then echo "? illisible"; return 0; fi
   p2=$(partition "$1" 2)
-  if [[ ! -b $p2 || $(lsblk -dno LABEL "$p2" 2>/dev/null) != VTOYEFI ]]; then echo "? illisible"; return 0; fi
+  if [[ ! -b $p2 || $(lsblk -dno LABEL "$p2" 2>/dev/null) != VTOYEFI ]]; then echo "? absente"; return 0; fi
   point=$(findmnt -nro TARGET -S "$p2" 2>/dev/null | head -1 || true)
   if [[ -z $point ]] && command -v udisksctl >/dev/null && udisksctl mount -b "$p2" -o ro >/dev/null 2>&1; then
     montee=1
@@ -861,7 +864,7 @@ reference_vtoyefi() { # disque : le chemin de sa référence, ou rien (numéro d
 noter_vtoyefi() { # disque version empreinte
   local ref
   ref=$(reference_vtoyefi "$1")
-  [[ -n $ref && -n $3 && $3 != illisible ]] || return 0
+  [[ -n $ref && -n $3 && $3 != illisible && $3 != absente ]] || return 0
   mkdir -p "$REFERENCES_VTOYEFI" && printf '%s %s\n' "$2" "$3" >"$ref"
 }
 controler_vtoyefi() { # disque version empreinte : 1 si elle a changé ou ne se lit plus (dit)
@@ -871,13 +874,24 @@ controler_vtoyefi() { # disque version empreinte : 1 si elle a changé ou ne se 
     echo "· Démarrage de la clé (VTOYEFI) : pas comparé (numéro de série de la clé illisible)."
     return 0
   fi
-  if [[ $3 == illisible && ! -s $ref ]]; then
-    echo "· Démarrage de la clé (VTOYEFI) : pas comparé (partition ou fichiers illisibles, aucune référence ici)."
+  if [[ ($3 == illisible || $3 == absente) && ! -s $ref ]]; then
+    echo "· Démarrage de la clé (VTOYEFI) : pas comparé (partition absente ou illisible, aucune référence ici)."
     return 0
   fi
-  # Relevée ici, elle se lisait : illisible aujourd'hui, elle n'est plus comparée, ce qui est en soi un écart.
+  # Relevée ici, elle se lisait : absente ou illisible aujourd'hui, elle n'est plus comparée, ce qui est en soi un
+  # écart. Une clé refaite sans Ventoy, c'est voulu : --accepter-vtoyefi retire alors la référence, sans quoi l'alerte
+  # reviendrait à chaque passage.
+  if [[ $3 == absente ]]; then
+    echo "✖ Démarrage de la clé (VTOYEFI) introuvable (partition absente ou renommée) : impossible de le comparer à sa"
+    echo "  référence. À ne démarrer nulle part avant d'avoir compris pourquoi. Voulu (clé refaite sans Ventoy) :"
+    echo "  outils/cle-secours.sh --accepter-vtoyefi retire sa référence."
+    avertir "Clé VANGUARD : démarrage (VTOYEFI) introuvable" "Sa partition de démarrage n'est plus là où elle était à \
+sa dernière relève ici. Ne démarrez aucun ordinateur sur cette clé avant d'avoir compris pourquoi. Si c'est voulu : \
+outils/cle-secours.sh --accepter-vtoyefi."
+    return 1
+  fi
   if [[ $3 == illisible ]]; then
-    echo "✖ Démarrage de la clé (VTOYEFI) illisible (fichier sans droit de lecture, partition renommée ou pas montée) :"
+    echo "✖ Démarrage de la clé (VTOYEFI) illisible (fichier sans droit de lecture, partition pas montée) :"
     echo "  impossible de le comparer à sa référence. À ne démarrer nulle part avant d'avoir compris pourquoi."
     avertir "Clé VANGUARD : démarrage (VTOYEFI) illisible" "Sa partition de démarrage ne se lit plus comme à sa \
 dernière relève ici : rien ne dit qu'elle est intacte. Ne démarrez aucun ordinateur sur cette clé avant d'avoir \
@@ -901,12 +915,22 @@ mise à jour de Ventoy. Ne démarrez aucun ordinateur sur cette clé avant d'avo
   return 1
 }
 accepter_vtoyefi() { # la clé branchée : sa partition de démarrage telle qu'elle est devient la référence
-  local point disque version empreinte
+  local point disque version empreinte ref
   point=$(point_cle)
   [[ -n $point ]] || erreur "Clé VANGUARD non branchée (ou au jeton inconnu de cet ordinateur)."
   disque=$(disque_de "$point")
   read -r version empreinte <<<"$(vtoyefi_de "$disque")"
-  [[ $empreinte != illisible && -n $(reference_vtoyefi "$disque") ]] || erreur "VTOYEFI illisible : rien n'est noté."
+  ref=$(reference_vtoyefi "$disque")
+  # Plus de partition VTOYEFI : la clé n'a plus de démarrage à comparer. Sa référence retirée, et dit : la prochaine
+  # relève d'une VTOYEFI sur cette clé sera reprise comme une première.
+  if [[ $empreinte == absente && -n $ref ]]; then
+    [[ -e $ref ]] || erreur "VTOYEFI introuvable sur la clé, et aucune référence ici : rien à faire."
+    rm -f -- "$ref"
+    echo "✔ Plus de partition VTOYEFI sur la clé : sa référence est retirée. Si Ventoy y revient, sa première relève"
+    echo "  sera prise pour référence (et dite)."
+    return 0
+  fi
+  [[ $empreinte != illisible && $empreinte != absente && -n $ref ]] || erreur "VTOYEFI illisible : rien n'est noté."
   noter_vtoyefi "$disque" "$version" "$empreinte"
   echo "✔ Démarrage de la clé (VTOYEFI, Ventoy $version) pris pour référence."
 }

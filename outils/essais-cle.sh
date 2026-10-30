@@ -489,27 +489,42 @@ compte verifier_ventoy "$BANC/point"
 voir "--accepter-vtoyefi : la partition telle qu'elle est devient la référence" \
   dit "$BANC/sortie" "identique à sa référence" || montrer "$BANC/sortie"
 # Rendue illisible ou sans sa ligne de version, une partition déjà relevée n'est pas « pas comparée » en silence
-# (campagne d'attaque n° 4, C-B1).
-if ((EUID != 0)); then
-  chmod 000 "$BANC/vtoyefi/grub/grubx64.efi"
-  : >"$BANC/notifications.log"
-  compte verifier_ventoy "$BANC/point"
-  code=$?
-  voir "VTOYEFI relevée puis un fichier illisible : alerte, code 1, rien de noté" \
-    eval '((code == 1)) && dit "$BANC/notifications.log" "démarrage (VTOYEFI) illisible" &&
-      [[ $(cut -d" " -f2 "$BANC/etat/vanguard/vtoyefi/SERIE-A") != illisible ]]' || montrer "$BANC/sortie"
-  compte accepter_vtoyefi
-  voir "--accepter-vtoyefi refuse une partition illisible" dit "$BANC/sortie" "VTOYEFI illisible : rien n'est noté" ||
-    montrer "$BANC/sortie"
-  chmod 644 "$BANC/vtoyefi/grub/grubx64.efi"
-else
-  echo "  (sauté : en root, un fichier sans droit de lecture se lit quand même)"
-fi
+# (campagne d'attaque n° 4, C-B1). Le banc tourne en root dans son espace de noms, où chmod 000 n'empêche pas de
+# lire : la lecture ratée vient d'un faux sha256sum, qui refuse grubx64.efi comme le vrai un fichier sans droit.
+mkdir -p "$BANC/illisible"
+cat >"$BANC/illisible/sha256sum" <<FIN
+#!/bin/sh
+for f; do case \$f in *grubx64.efi) echo "sha256sum: \$f: Permission non accordée" >&2; exit 1 ;; esac; done
+exec $(command -v sha256sum) "\$@"
+FIN
+chmod +x "$BANC/illisible/sha256sum"
+: >"$BANC/notifications.log"
+PATH=$BANC/illisible:$PATH compte verifier_ventoy "$BANC/point"
+code=$?
+voir "VTOYEFI relevée puis un fichier illisible : alerte, code 1, rien de noté" \
+  eval '((code == 1)) && dit "$BANC/notifications.log" "démarrage (VTOYEFI) illisible" &&
+    [[ $(cut -d" " -f2 "$BANC/etat/vanguard/vtoyefi/SERIE-A") != illisible ]]' || montrer "$BANC/sortie"
+PATH=$BANC/illisible:$PATH compte accepter_vtoyefi
+voir "--accepter-vtoyefi refuse une partition illisible" dit "$BANC/sortie" "VTOYEFI illisible : rien n'est noté" ||
+  montrer "$BANC/sortie"
 : >"$BANC/notifications.log"
 VANGUARD_VTOYEFI=$BANC/vtoyefi-absente compte verifier_ventoy "$BANC/point"
 code=$?
-voir "VTOYEFI relevée puis introuvable (renommée, pas montée) : alerte, code 1" \
-  eval '((code == 1)) && dit "$BANC/notifications.log" "démarrage (VTOYEFI) illisible"' || montrer "$BANC/sortie"
+voir "VTOYEFI relevée puis introuvable (absente, renommée) : alerte, code 1, --accepter-vtoyefi conseillé si voulu" \
+  eval '((code == 1)) && dit "$BANC/notifications.log" "démarrage (VTOYEFI) introuvable" &&
+    dit "$BANC/notifications.log" "--accepter-vtoyefi"' || montrer "$BANC/sortie"
+# Voulu (clé refaite sans Ventoy) : --accepter-vtoyefi retire la référence, et l'alerte ne revient plus.
+cp "$BANC/etat/vanguard/vtoyefi/SERIE-A" "$BANC/reference-vtoyefi"
+VANGUARD_VTOYEFI=$BANC/vtoyefi-absente compte accepter_vtoyefi
+code=$?
+cp "$BANC/sortie" "$BANC/sortie-accepter"
+: >"$BANC/notifications.log"
+VANGUARD_VTOYEFI=$BANC/vtoyefi-absente compte verifier_ventoy "$BANC/point"
+voir "--accepter-vtoyefi sans VTOYEFI : sa référence retirée, et dit ; plus d'alerte ensuite" \
+  eval '((code == 0)) && [[ ! -e $BANC/etat/vanguard/vtoyefi/SERIE-A ]] &&
+    dit "$BANC/sortie-accepter" "sa référence est retirée" && dit "$BANC/sortie" "pas comparé" &&
+    [[ ! -s $BANC/notifications.log ]]' || { montrer "$BANC/sortie-accepter"; montrer "$BANC/sortie"; }
+cp "$BANC/reference-vtoyefi" "$BANC/etat/vanguard/vtoyefi/SERIE-A"
 cp "$BANC/vtoyefi/grub/grub.cfg" "$BANC/grub.cfg.avant"
 sed -i '/VENTOY_VERSION/d' "$BANC/vtoyefi/grub/grub.cfg"
 : >"$BANC/notifications.log"
