@@ -9,8 +9,8 @@
 #   outils/fuzz.sh                  toutes les cibles, 60 s chacune
 #   outils/fuzz.sh igd              une cible
 #   outils/fuzz.sh tout 600         toutes, 10 min chacune
-#   outils/fuzz.sh 2/3 300          une cible sur trois, à partir de la deuxième (la CI lance les trois parts en même
-#                                   temps : 24 cibles à 5 min ne tenaient plus dans un seul travail)
+#   outils/fuzz.sh 2/4 300          une cible sur quatre, à partir de la deuxième (la CI lance les quatre parts en même
+#                                   temps : toutes les cibles à 5 min ne tenaient plus dans un seul travail)
 # Sans cargo-fuzz ou sans la chaîne nightly : rien n'est lancé, code 77 (« sautée » pour verifier.sh).
 # Prérequis : rustup toolchain install nightly --profile minimal ; cargo install --locked cargo-fuzz.
 # Un plantage : corriger le module, ajouter un test de non-régression avec la donnée trouvée (le fichier de

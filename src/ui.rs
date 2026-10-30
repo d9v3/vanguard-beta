@@ -516,8 +516,15 @@ pub fn demander(question: &str) -> String {
 
 /// Comme `demander`, mais la fin de l'entrée donne la réponse vide, celle par défaut d'une question « [o/N] », au lieu
 /// de quitter : l'outil qui la pose va au bout (`vanguard verifier-fichier f < /dev/null` donne son verdict). Une
-/// réponse arrivée par un tube est lue comme au clavier.
+/// réponse arrivée par un tube est lue comme au clavier. Le clavier sans l'écran (`vanguard verifier-fichier f >
+/// rapport.txt`) : la question partirait dans le fichier et la commande attendrait une réponse que personne ne voit
+/// demander ; la réponse par défaut est prise, écrite avec la question (que `| tee` montre aussi, sans attendre).
 pub fn demander_ou_defaut(question: &str) -> String {
+    use std::io::IsTerminal as _;
+    if std::io::stdin().is_terminal() && !std::io::stdout().is_terminal() {
+        println!("{}", question_en_lignes(question));
+        return String::new();
+    }
     reponse(question).unwrap_or_default()
 }
 

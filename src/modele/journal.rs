@@ -952,8 +952,10 @@ fn lire_tenu(dossier: &Path, attente: std::time::Duration) -> Lu {
     }
     // Un verrou de l'état remplacé (dossier, lien, tube, droits retirés) : plus rien ne s'écrit, la fin lue n'est pas la dernière.
     // Dit au bilan par les sceaux (`sceau::constat`), comme un verrou tenu.
+    // Tenu ailleurs, une falsification lue peut n'être qu'une écriture en cours : elle cède aussi au verrou remplacé.
     let remplaces = crate::sceau::verrous_remplaces(dossier);
-    if !remplaces.is_empty() && !matches!(lu.lecture, Lecture::Falsifie(_)) {
+    let occupe = matches!(tenu, Err(crate::socle::SansVerrou::Occupe));
+    if !remplaces.is_empty() && (occupe || !matches!(lu.lecture, Lecture::Falsifie(_))) {
         let noms = remplaces.join(", ");
         lu.lecture = Lecture::Incomplet(format!(
             "verrou remplacé ou fermé ({noms}), rien ne s'écrit / lock replaced or closed ({noms}), nothing is written"
@@ -961,10 +963,7 @@ fn lire_tenu(dossier: &Path, attente: std::time::Duration) -> Lu {
         lu.verifies_des = lu.evenements.len();
     }
     // Un verrou remplacé se dit plutôt qu'un « pas jugé » : c'est lui qui nomme ce qui empêche d'écrire.
-    if matches!(tenu, Err(crate::socle::SansVerrou::Occupe))
-        && (matches!(lu.lecture, Lecture::Falsifie(_))
-            || remplaces.is_empty() && matches!(lu.lecture, Lecture::Incomplet(_)))
-    {
+    if occupe && remplaces.is_empty() && matches!(lu.lecture, Lecture::Falsifie(_) | Lecture::Incomplet(_)) {
         let s = attente.as_secs();
         lu.lecture = Lecture::Incomplet(format!(
             "{PAS_JUGE}une écriture d'un autre Vanguard dure depuis plus de {s} s / not judged: another Vanguard's write has lasted over {s} s"
@@ -2217,6 +2216,15 @@ mod tests {
         let tenu = crate::socle::Verrou::prendre_nomme(&d, VERROU).unwrap();
         let _ = std::fs::remove_file(d.join("sceaux.verrou"));
         std::fs::create_dir(d.join("sceaux.verrou")).unwrap();
+        let lu = lire_tenu(&d, court);
+        assert!(
+            matches!(&lu.lecture, Lecture::Incomplet(r) if r.contains("sceaux.verrou") && !r.starts_with(PAS_JUGE)),
+            "{:?}",
+            lu.lecture
+        );
+        // Une falsification lue pendant que le verrou est tenu peut être une écriture en cours : elle aussi nomme le
+        // verrou remplacé.
+        ajouter(&segment(&d, "2026-10"), b"{\"ajout\":1}\n").unwrap();
         let lu = lire_tenu(&d, court);
         assert!(
             matches!(&lu.lecture, Lecture::Incomplet(r) if r.contains("sceaux.verrou") && !r.starts_with(PAS_JUGE)),

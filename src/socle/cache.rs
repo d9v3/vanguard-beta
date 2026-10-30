@@ -285,6 +285,47 @@ fn verrou(lieu: (&str, &str)) -> std::io::Result<super::Verrou> {
     super::Verrou::prendre(&dossier, &nom, false, super::ATTENTE_ECRITURE).map_err(|e| e.erreur(&nom))
 }
 
+/// Les dossiers où le code garde ses copies (le premier membre de leur lieu), liste fermée : la quarantaine, elle,
+/// garde des fichiers sous le nom qu'ils avaient, aux droits retirés, et un « x.verrou » mis en quarantaine se lisait
+/// comme le verrou d'une copie remplacé. Tenue égale aux copies de l'inventaire (`modele::inventaire`, ses essais).
+pub(crate) const DOSSIERS_DES_COPIES: [&str; 9] = [
+    "echap",
+    "empreintes",
+    "feodo",
+    "kev",
+    "loldrivers",
+    "malwarebazaar",
+    "threatfox",
+    "urlhaus",
+    "versions",
+];
+
+/// Les verrous des copies (`<lieu>/<nom>.verrou`) que `dossier`, celui de Vanguard, montre remplacés
+/// (`socle::verrou_remplace`) : la copie ne se garde plus et la liste est redemandée à chaque usage, ce que seul le
+/// bilan dit (`sceau::constat`). Les dossiers des copies seulement (`DOSSIERS_DES_COPIES`) ; le parcours ne suit aucun
+/// lien et s'arrête à `BORNE` noms par dossier, pour qu'un dossier rempli exprès ne retienne pas le bilan.
+pub(crate) fn verrous_remplaces(dossier: &std::path::Path) -> Vec<String> {
+    const BORNE: usize = 4096;
+    let mut remplaces = Vec::new();
+    for lieu in DOSSIERS_DES_COPIES {
+        let chemin = dossier.join(lieu);
+        if !std::fs::symlink_metadata(&chemin).is_ok_and(|m| m.is_dir()) {
+            continue;
+        }
+        let Ok(noms) = std::fs::read_dir(&chemin) else {
+            continue;
+        };
+        for nom in noms.flatten().take(BORNE) {
+            let nom = nom.file_name().to_string_lossy().into_owned();
+            if nom.ends_with(".verrou") && super::verrou_remplace(&chemin, &nom) {
+                remplaces.push(format!("{lieu}/{nom}"));
+            }
+        }
+    }
+    remplaces.sort();
+    remplaces
+}
+
 /// Garde `octets` comme copie de `lieu`, scellée avec la date d'aujourd'hui : la copie d'abord, puis son sceau, sous
 /// le verrou de la copie. Si le sceau ne s'écrit pas, la copie se lit refusée : périmée, jamais crue.
 pub(crate) fn garder(lieu: (&str, &str), octets: &[u8]) -> std::io::Result<()> {

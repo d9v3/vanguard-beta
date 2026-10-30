@@ -197,3 +197,31 @@ path = "fuzz_targets/yara_recherche.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "dbus"
+path = "fuzz_targets/dbus.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "zstd"
+path = "fuzz_targets/zstd.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gvdb"
+path = "fuzz_targets/gvdb.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "journal_systemd"
+path = "fuzz_targets/journal_systemd.rs"
+test = false
+doc = false
+bench = false

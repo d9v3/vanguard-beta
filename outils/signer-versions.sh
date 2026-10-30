@@ -90,6 +90,16 @@ if [[ -n $REVOQUER ]]; then
 src/mise_a_jour/github.rs, puis recompilez les programmes à signer avec (outils/compiler-version.sh)"
   done
 fi
+# Signés par la principale, les programmes la gardent : un programme qui la retire, une fois installé, n'accepterait
+# plus rien de ce qu'elle signe (seule la clé de secours le mettrait encore à jour) ; un programme sans marque ne vient
+# pas de ce code. Lu dans chacun, comme pour --revoquer.
+if [[ -z $SECOURS ]]; then
+  for f in "${1:-.}"/vanguard-{linux-x86_64,windows-x86_64.exe,macos}; do
+    [[ ! -f $f ]] || { grep -aq 'VANGUARD-PRINCIPALE:GARDEE;' "$f" && ! grep -aq 'VANGUARD-PRINCIPALE:RETIREE;' "$f"; } ||
+      erreur "$f ne porte pas la seule marque de la principale gardée (VANGUARD-PRINCIPALE:GARDEE) : \
+PRINCIPALE_RETIREE à false dans src/mise_a_jour/github.rs, puis recompilez (outils/compiler-version.sh)"
+  done
+fi
 [[ -r $CLE ]] || erreur "clé de signature absente : $CLE"
 # La clé de secours vit hors ligne, loin de la principale : en clair, la moindre copie (instantané de /home,
 # sauvegarde) les mettrait côte à côte et un seul vol donnerait les deux. Chiffrée seulement.

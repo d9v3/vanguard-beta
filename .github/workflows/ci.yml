@@ -172,8 +172,9 @@ jobs:
   # Le banc de fuzzing (fuzz/), cinq minutes par cible chaque nuit, et à la demande : verifier.sh n'y passe que
   # quelques secondes. Le corpus appris d'une nuit est repris la suivante (cache de GitHub) ; une donnée qui fait
   # planter un lecteur est gardée dans les artefacts, pour en faire un test de non-régression.
-  # Trois travaux en parallèle, une cible sur trois chacun (outils/fuzz.sh N/3) : les 24 cibles d'un seul travail
-  # (2 h de fuzzing) dépassaient son délai, et GitHub l'annulait chaque nuit sans un mot dans la liste des échecs.
+  # Quatre travaux en parallèle, une cible sur quatre chacun (outils/fuzz.sh N/4) : les cibles d'un seul travail
+  # (2 h de fuzzing) dépassaient son délai, et GitHub l'annulait chaque nuit sans un mot dans la liste des échecs ;
+  # à 28 cibles, trois parts en prenaient 50 min chacune, trop près des 75.
   fuzzing:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -182,7 +183,7 @@ jobs:
       # Un plantage dans une part n'arrête pas les autres : chacune a ses propres cibles à essayer.
       fail-fast: false
       matrix:
-        part: [1, 2, 3]
+        part: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -194,13 +195,13 @@ jobs:
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fuzz/corpus
-          # Le corpus de sa part d'abord ; à défaut (première nuit en trois parts), le dernier enregistré.
+          # Le corpus de sa part d'abord ; à défaut (première nuit en quatre parts), le dernier enregistré.
           key: fuzz-corpus-part${{ matrix.part }}-${{ github.run_id }}
           restore-keys: |
             fuzz-corpus-part${{ matrix.part }}-
             fuzz-corpus-
       - name: Cinq minutes par cible
-        run: VANGUARD_FUZZ="$RUNNER_TEMP/fuzz" outils/fuzz.sh ${{ matrix.part }}/3 300
+        run: VANGUARD_FUZZ="$RUNNER_TEMP/fuzz" outils/fuzz.sh ${{ matrix.part }}/4 300
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:

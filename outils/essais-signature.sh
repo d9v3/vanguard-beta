@@ -12,8 +12,9 @@
 #   5. La révocation de la clé principale (--secours --revoquer) : la ligne « revoque principale » vient après les
 #      trois programmes, que le lecteur de la 0.85.0 (refait ici en awk, comme github.rs le recopie) trouve tous
 #      avant elle ; jamais dans l'historique ; refusée sans --secours, ou si un programme garde la principale (sans
-#      la marque de PRINCIPALE_RETIREE à true). La phrase de la clé de secours d'essai (chiffrée, comme la vraie) passe par un pseudo-terminal
-#      (script) ; sans script, cet essai est sauté et dit.
+#      la marque de PRINCIPALE_RETIREE à true) ; signés par la principale, des programmes qui la retirent ou sans
+#      marque sont refusés (5b). La phrase de la clé de secours d'essai (chiffrée, comme la vraie) passe par un
+#      pseudo-terminal (script) ; sans script, cet essai est sauté et dit.
 #   7. Le point sûr (le dernier historique publié d'ici, campagne d'attaque n° 3) : la clé de secours ne contresigne
 #      pas un bloc que la principale, peut-être volée, a ajouté après lui ; sans point sûr, elle refuse un historique
 #      signé par la principale ; la principale refuse un historique tronqué ou à une version inconnue d'ici ; avec un
@@ -69,11 +70,11 @@ banc() { # $1 : dossier, $2 : script, $3 : version de Cargo.toml
   printf '[package]\nname = "vanguard"\nversion = "%s"\n' "$3" >"$1/Cargo.toml"
 }
 # Trois faux programmes à la forme attendue (ELF x86-64, PE x86-64, Mach-O universel arm64 + x86_64), avec leur
-# version gravée et la principale retirée (RETIREE=false : gardée, comme le marque github.rs).
+# version gravée et la principale gardée, comme le marque github.rs (RETIREE=true : retirée, pour --revoquer).
 programmes() { # $1 : dossier, $2 : version gravée
   mkdir -p "$1"
-  local v="VANGUARD-VERSION:$2; VANGUARD-PRINCIPALE:RETIREE;"
-  [[ ${RETIREE:-true} == true ]] || v="VANGUARD-VERSION:$2; VANGUARD-PRINCIPALE:GARDEE;"
+  local v="VANGUARD-VERSION:$2; VANGUARD-PRINCIPALE:GARDEE;"
+  [[ ${RETIREE:-false} == false ]] || v="VANGUARD-VERSION:$2; VANGUARD-PRINCIPALE:RETIREE;"
   { printf '\x7fELF\x02\x01'; head -c 12 /dev/zero; printf '\x3e\x00'; printf 'linux %s' "$v"; } >"$1/vanguard-linux-x86_64"
   { printf 'MZ'; head -c 58 /dev/zero; printf '\x40\x00\x00\x00'; printf 'PE\x00\x00\x64\x86'; printf 'windows %s' "$v"; } \
     >"$1/vanguard-windows-x86_64.exe"
@@ -168,6 +169,8 @@ else
 fi
 
 # La révocation : refusée sans la clé de secours.
+# Les programmes que la clé de secours signe en révoquant retirent la principale (jusqu'au point 7 de la principale).
+RETIREE=true
 programmes "$T/v91" 0.88.0+1793100000
 mkdir -p "$T/v91/avant" && cp "$T/v88/historique.txt" "$T/v88/historique.txt.sig" "$T/v91/avant/"
 if signer "$T/nouveau88" "$T/v91" --revoquer; then
@@ -300,6 +303,7 @@ if command -v script >/dev/null; then
 else
   echo "  (sauté : script absent, pas de pseudo-terminal pour la phrase de la clé de secours d'essai)"
 fi
+RETIREE=false
 # 7, la principale avec un point sûr : historique tronqué, version inconnue d'ici, repli, --premier.
 poser_point "$T/v88/historique.txt"
 programmes "$T/v95" 0.88.0+1793500000
@@ -324,6 +328,18 @@ refus "$T/v98" "retiré du" "avec un point sûr, l'historique publié disparu : 
 programmes "$T/v99" 0.88.0+1793900000
 refus "$T/v99" "retiré du" "avec un point sûr : --premier refusé" --premier
 retirer_point
+# 5b. Signés par la principale, des programmes qui la retirent (une fois installés, plus rien d'elle ne passerait) ou
+# sans marque (pas compilés de ce code) : refusés avant la clé, à chaque publication.
+RETIREE=true programmes "$T/v100" 0.88.0+1794000000
+refus "$T/v100" "seule marque de la principale gardée" "principale : un programme qui la retire est refusé"
+programmes "$T/v101" 0.88.0+1794100000
+sed 's/VANGUARD-PRINCIPALE:GARDEE;//' "$T/v101/vanguard-linux-x86_64" >"$T/v101/vanguard-linux-x86_64.tmp"
+mv "$T/v101/vanguard-linux-x86_64.tmp" "$T/v101/vanguard-linux-x86_64"
+refus "$T/v101" "seule marque de la principale gardée" "principale : un programme sans marque est refusé"
+# Les deux marques (un macOS universel dont une moitié la retire) : refusé aussi, sans --secours.
+programmes "$T/v102" 0.88.0+1794200000
+printf 'VANGUARD-PRINCIPALE:RETIREE;' >>"$T/v102/vanguard-macos"
+refus "$T/v102" "seule marque de la principale gardée" "principale : un programme aux deux marques est refusé"
 
 # Le Mac signé : seulement une exécution de master. Un faux gh répond comme GitHub (jq applique les -q), avec deux
 # passages réussis du même commit : le plus récent sur une autre branche, l'autre sur master par la nuit.

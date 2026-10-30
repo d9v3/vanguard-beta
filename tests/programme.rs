@@ -900,11 +900,29 @@ fn verifier_fichier_sans_clamav_ni_reponse() {
     assert_eq!(s.code, Some(0), "{}", s.erreurs);
     let t = sans_couleurs(&s.texte).split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(t.contains("L'installer maintenant ?"), "{t}");
-    // B1 (campagne 5) : la commande d'installation est montrée avant la question qui l'accepte.
+    // B1 (campagne 5) : la commande d'installation est montrée avant la question qui l'accepte, seule entre l'annonce
+    // et la question, entière (un « clamav » n'importe où avant la question ne prouvait rien).
     #[cfg(target_os = "linux")]
     {
         let avant = t.split("L'installer maintenant ?").next().unwrap_or_default();
-        assert!(avant.contains(" clamav"), "{t}");
+        let commande = avant.rsplit("n'est pas installé.").next().unwrap_or_default().trim();
+        let paquets = commande.split(" && echo").next().unwrap_or_default();
+        assert!(
+            paquets.ends_with(" clamav") || paquets.ends_with(" clamav clamav-update"),
+            "{t}"
+        );
+        // Une seule commande, de son début (« x ; sudo pacman -S clamav » finissait bien par « clamav »).
+        assert!(
+            (paquets.starts_with("sudo ") || paquets.starts_with("omarchy pkg add "))
+                && !paquets.contains([';', '&', '|', '`', '$', '\n']),
+            "{t}"
+        );
+        assert!(
+            ["install ", "pkg add ", "pacman -S "]
+                .iter()
+                .any(|m| paquets.contains(m)),
+            "{t}"
+        );
     }
     assert!(t.contains("ClamAV : impossible à vérifier"), "{t}");
     assert!(t.contains("Vérification incomplète (ClamAV)"), "{t}");
@@ -2864,5 +2882,76 @@ fn manifeste_de_la_cle_jamais_reecrit_sur_un_ecart() {
     // Aucune clé montée pour ce compte d'essai : rien, sans erreur.
     let s = lancer(&["deploiement", "cle"]);
     assert_eq!((s.code, s.texte.trim()), (Some(0), ""), "{}", s.erreurs);
+    let _ = std::fs::remove_dir_all(&maison);
+}
+
+/// `deploiement cle` par le vrai programme, avec des volumes montés pour de faux : un espace de noms à soi
+/// (`unshare -rm`, sans root) où /run est vide et /run/media/alice (compte inventé) ne montre que les volumes de
+/// l'essai. Une copie de la clé (même jeton, autre dossier) : aucune n'est rendue, code 4 (`outils/cle-commun.sh`
+/// n'écrit alors sur rien).
+/// La même clé vue par deux chemins n'est pas une copie d'elle-même : elle est rendue.
+#[test]
+fn deploiement_cle_refuse_une_copie_pas_un_second_chemin() {
+    if !cfg!(target_os = "linux") {
+        return essais::saute("Linux seulement");
+    }
+    let maison = maison_jetable();
+    let cle = maison.join("cle");
+    std::fs::create_dir_all(&cle).unwrap();
+    std::fs::write(cle.join("vanguard.cle"), "temoin\n").unwrap();
+    std::fs::write(cle.join("vanguard.jeton"), "0123456789abcdef0123456789abcdef\n").unwrap();
+    let cle_txt = cle.to_string_lossy().into_owned();
+    let programme = env!("CARGO_BIN_EXE_vanguard");
+    let s = vanguard_dans(
+        Path::new(programme),
+        &maison,
+        "fr",
+        &["manifeste", "--ecrire", &cle_txt],
+        "",
+        120,
+    );
+    assert_eq!(s.code, Some(0), "jeton pas noté : {}{}", s.texte, s.erreurs);
+    let copie = maison.join("copie");
+    std::fs::create_dir_all(&copie).unwrap();
+    for f in ["vanguard.cle", "vanguard.jeton"] {
+        std::fs::copy(cle.join(f), copie.join(f)).unwrap();
+    }
+    // Les volumes sont des liens vers les dossiers de l'essai : un montage lié de /tmp peut être refusé (quota). Le
+    // programme est ouvert avant de cacher /run, où peuvent être ses dossiers de compilation (un disque monté là).
+    let script = r#"exec 3<"$1" && shift && mount -t tmpfs essai /run && mkdir -p /run/media/alice || exit 97
+for v in "$@"; do
+  case $v in --) shift; break ;; *) ln -s "${v#*=}" "/run/media/alice/${v%%=*}" || exit 97; shift ;; esac
+done
+export USER=alice
+exec /proc/self/fd/3 "$@""#;
+    let dans_l_espace = |volumes: &[(&str, &Path)]| {
+        let mut args: Vec<String> = ["-rm", "sh", "-c", script, "sh", programme].map(String::from).to_vec();
+        args.extend(volumes.iter().map(|(n, d)| format!("{n}={}", d.display())));
+        args.extend(["--", "deploiement", "cle"].map(String::from));
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        vanguard_dans(Path::new("unshare"), &maison, "fr", &args, "", 60)
+    };
+    let seule = dans_l_espace(&[("VANGUARD", &cle)]);
+    if seule.code == Some(97) || seule.erreurs.contains("unshare") {
+        let _ = std::fs::remove_dir_all(&maison);
+        return essais::saute("espace de noms refusé (unshare -rm)");
+    }
+    assert_eq!(
+        (seule.code, seule.texte.trim()),
+        (Some(0), "/run/media/alice/VANGUARD"),
+        "{}",
+        seule.erreurs
+    );
+    let deux = dans_l_espace(&[("VANGUARD", &cle), ("VANGUARD1", &copie)]);
+    assert_eq!((deux.code, deux.texte.trim()), (Some(4), ""), "{}", deux.erreurs);
+    assert!(deux.erreurs.contains("/run/media/alice/VANGUARD1"), "{}", deux.erreurs);
+    assert!(deux.erreurs.contains("même jeton"), "{}", deux.erreurs);
+    let meme = dans_l_espace(&[("VANGUARD", &cle), ("VANGUARD1", &cle)]);
+    assert_eq!(
+        (meme.code, meme.texte.trim()),
+        (Some(0), "/run/media/alice/VANGUARD"),
+        "{}",
+        meme.erreurs
+    );
     let _ = std::fs::remove_dir_all(&maison);
 }

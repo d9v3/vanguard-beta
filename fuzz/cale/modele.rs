@@ -42,3 +42,9 @@ impl Echec {
         Echec::new(contexte, Raison::Illisible(e.to_string()))
     }
 }
+
+/// `modele::raison::Echec`, le chemin que prennent certains modules.
+pub mod raison {
+    #[allow(unused_imports)]
+    pub use super::Echec;
+}

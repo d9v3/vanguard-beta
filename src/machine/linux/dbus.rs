@@ -17,7 +17,8 @@ use std::time::{Duration, Instant};
 use crate::{tr, trf};
 
 /// Les quelques actions de Vanguard (unités de l'utilisateur, notification, dconf), à part des lectures de ce fichier :
-/// une seconde liste fermée, sur le bus de la session seulement.
+/// une seconde liste fermée, sur le bus de la session seulement. Hors du banc de fuzzing, qui ne lit que les messages.
+#[cfg(not(fuzzing))]
 pub(crate) mod actions;
 
 /// La prise du bus système (chemin fixe de la spécification ; /var/run en est un lien).
@@ -646,7 +647,7 @@ impl Message {
     /// Comme `decoder`, mais le corps n'est décodé que si `voulu` le demande d'après l'en-tête ; sinon il reste vide.
     /// Un message qui ne répond pas à l'appel en cours (un signal que n'importe quel compte peut envoyer) est ainsi
     /// jeté sans que son corps soit lu.
-    fn decoder_si(octets: &[u8], voulu: impl FnOnce(&Message) -> bool) -> Result<Self, String> {
+    pub(crate) fn decoder_si(octets: &[u8], voulu: impl FnOnce(&Message) -> bool) -> Result<Self, String> {
         let grand_boutiste = match octets.first() {
             Some(b'l') => false,
             Some(b'B') => true,
@@ -723,7 +724,7 @@ impl Message {
 }
 
 /// La longueur totale d'un message, d'après ses 16 premiers octets.
-fn longueur_totale(debut: &[u8; 16]) -> Result<usize, String> {
+pub(crate) fn longueur_totale(debut: &[u8; 16]) -> Result<usize, String> {
     // Des indices constants dans un tableau de 16 octets : le compilateur les sait dans les bornes.
     let nombre = |t: [u8; 4]| {
         u64::from(if debut[0] == b'B' {

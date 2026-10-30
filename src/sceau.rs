@@ -396,6 +396,9 @@ fn constat_verrou(dossier: &Path) -> Option<Constat> {
             .filter(|n| crate::socle::verrou_remplace(dossier, n))
             .map(String::from),
     );
+    let copies = crate::socle::cache::verrous_remplaces(dossier);
+    let des_copies = !copies.is_empty();
+    remplaces.extend(copies);
     if !remplaces.is_empty() {
         let noms = remplaces.join(", ");
         // Le verrou des sceaux arrête tout l'état, journal compris (sa tête est scellée) ; les autres, leur base seule.
@@ -415,6 +418,12 @@ fn constat_verrou(dossier: &Path) -> Option<Constat> {
             }
             if remplaces.iter().any(|n| n == AUTRES_VERROUS[1]) {
                 bases.push(tr!("les alertes du réseau", "the network alerts"));
+            }
+            if des_copies {
+                bases.push(tr!(
+                    "les copies des listes téléchargées (redemandées à chaque usage)",
+                    "the copies of downloaded lists (fetched again at each use)"
+                ));
             }
             bases.join(", ")
         };
@@ -964,19 +973,29 @@ pub(crate) fn effacer_dans(dossier: &Path, nom: &str) -> std::io::Result<()> {
     if absent(nom) && absent(REGISTRE) {
         return Ok(());
     }
+    let deja = deja_scelle(dossier);
     let _verrou = verrou_ecriture(dossier, nom)?;
     match std::fs::remove_file(dossier.join(nom)) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
         _ => {}
     }
-    if let Ok(Some(mut r)) = registre(dossier)
-        && (r.fichiers.remove(nom).is_some()
-            | r.adoptes.remove(nom)
-            | r.repris.remove(nom)
-            | r.versions.remove(nom).is_some()
-            | r.inconnus.remove(nom))
-    {
-        enregistrer_registre(dossier, &r)?;
+    match registre(dossier) {
+        Ok(Some(mut r)) => {
+            if r.fichiers.remove(nom).is_some()
+                | r.adoptes.remove(nom)
+                | r.repris.remove(nom)
+                | r.versions.remove(nom).is_some()
+                | r.inconnus.remove(nom)
+            {
+                enregistrer_registre(dossier, &r)?;
+            }
+        }
+        // Un dossier d'avant les sceaux (un fichier d'état, pas de registre) : adopté comme à la première écriture,
+        // sinon le verrou à peine créé y resterait seul, et un verrou né avant le témoin dit les sceaux refaits.
+        Ok(None) => {
+            adopter(dossier, deja);
+        }
+        Err(()) => {}
     }
     Ok(())
 }
@@ -1570,6 +1589,20 @@ mod tests {
         assert!(!c.message.contains("journal des événements"), "{}", c.message);
         assert_eq!(verrous_remplaces(&d), Vec::<String>::new());
         std::fs::remove_dir(d.join("appareils.verrou")).unwrap();
+        // Celui d'une copie de liste aussi (relecture de la campagne 5) ; un verrou ordinaire, lui, ne dit rien.
+        std::fs::create_dir_all(d.join("kev")).unwrap();
+        std::fs::write(d.join("kev/autre.json.verrou"), b"").unwrap();
+        assert!(constat_verrou(&d).is_none());
+        std::fs::create_dir(d.join("kev/kev.json.verrou")).unwrap();
+        let c = constat_verrou(&d).unwrap();
+        assert!(c.message.contains("kev/kev.json.verrou"), "{}", c.message);
+        assert!(!c.message.contains("autre.json"), "{}", c.message);
+        std::fs::remove_dir_all(d.join("kev")).unwrap();
+        // Hors des dossiers des copies, un « .verrou » n'est le verrou de rien : un fichier mis en quarantaine sous ce
+        // nom, aux droits retirés, faisait dire remplacé un verrou qui n'existe pas.
+        std::fs::create_dir_all(d.join("quarantaine/x.json.verrou")).unwrap();
+        assert!(constat_verrou(&d).is_none());
+        std::fs::remove_dir_all(d.join("quarantaine")).unwrap();
         std::fs::write(d.join(APPRIS), br#"{"acceptees":{"x":1}}"#).unwrap();
         assert!(matches!(lire_dans(&d, APPRIS), Lecture::Falsifie(_)));
         let _ = std::fs::remove_dir_all(&d);
@@ -1590,6 +1623,20 @@ mod tests {
         effacer_dans(&d, APPRIS).unwrap();
         assert!(d.join(VERROU).is_file());
         assert_eq!(lire_dans(&d, APPRIS), Lecture::Absent);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Relecture de la campagne 5 : un dossier d'avant les sceaux dont la première action est un effacement est adopté.
+    /// Il y laissait un verrou seul, né avant le témoin, et la lecture suivante disait les sceaux refaits.
+    #[test]
+    fn effacer_dans_un_dossier_d_avant_les_sceaux_l_adopte() {
+        verrou_d_avant_en_essai();
+        let d = jetable("avant-sceaux");
+        std::fs::write(d.join(APPRIS), b"{}").unwrap();
+        effacer_dans(&d, APPRIS).unwrap();
+        assert!(matches!(registre(&d), Ok(Some(r)) if !r.refaits));
+        assert_eq!(lire_dans(&d, APPRIS), Lecture::Absent);
+        assert!(!refaits_dans(&d));
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -1982,16 +2029,15 @@ mod tests {
     }
 
     /// Relectures des sceaux et de la campagne 5 : un verrou laissé seul, sans registre (un Vanguard tué entre les
-    /// deux, un registre refusé, un effacement sur le dossier d'une version d'avant les sceaux), n'est plus des sceaux
-    /// refaits, à aucun moment : ni tout neuf, ni vieilli (date de modification reculée d'un an, comme le jugeait
-    /// l'ancien critère d'âge). Le ctime, lui, ne se recule pas sans root : `seul_un_verrou_d_avant_le_temoin_temoigne`
-    /// juge la coupure seule.
+    /// deux, un registre refusé), n'est plus des sceaux refaits, à aucun moment : ni tout neuf, ni vieilli (date de
+    /// modification reculée d'un an, comme le jugeait l'ancien critère d'âge). Le ctime, lui, ne se recule pas sans
+    /// root : `seul_un_verrou_d_avant_le_temoin_temoigne` juge la coupure seule. L'effacement sur le dossier d'une
+    /// version d'avant les sceaux ne laisse plus de verrou seul
+    /// (`effacer_dans_un_dossier_d_avant_les_sceaux_l_adopte`).
     #[test]
     fn un_verrou_seul_n_est_jamais_des_sceaux_refaits() {
         let d = jetable("verrou-seul");
-        std::fs::write(d.join(APPRIS), b"{}").unwrap();
-        effacer_dans(&d, APPRIS).unwrap();
-        assert!(d.join(VERROU).is_file());
+        std::fs::write(d.join(VERROU), b"").unwrap();
         assert!(!d.join(REGISTRE).exists() && !d.join(TEMOIN).exists());
         assert!(!refaits_dans(&d));
         let il_y_a_un_an = std::time::SystemTime::now() - std::time::Duration::from_hours(24 * 365);

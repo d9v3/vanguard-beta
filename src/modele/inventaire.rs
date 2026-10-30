@@ -398,6 +398,41 @@ mod tests {
         );
     }
 
+    /// Les dossiers dont le bilan lit les verrous des copies (`socle::cache::DOSSIERS_DES_COPIES`) sont ceux que
+    /// l'inventaire dit tenus par `socle::cache`, et chaque lieu écrit en clair dans un appel au cache (hors essais)
+    /// y range sa copie : un dossier oublié taisait son verrou remplacé.
+    #[test]
+    fn les_verrous_des_copies_sont_tous_lus() {
+        let copies: BTreeSet<&str> = crate::socle::cache::DOSSIERS_DES_COPIES.into_iter().collect();
+        let inventoriees: BTreeSet<&str> = NON_SCELLES
+            .iter()
+            .filter(|(_, r)| r.contains("par socle::cache"))
+            .map(|(n, _)| *n)
+            .collect();
+        assert_eq!(copies, inventoriees);
+        let mut vus = 0;
+        for (fichier, code) in sources_sans_essais() {
+            for appel in [
+                "cache::liste(",
+                "cache::garder(",
+                "cache::gardee(",
+                "cache::age(",
+                "cache::oublier(",
+            ] {
+                for (i, _) in code.match_indices(appel) {
+                    if let Some(lieu) = litteral(&code[i + appel.len()..]) {
+                        vus += 1;
+                        assert!(copies.contains(lieu), "{lieu} ({fichier}) hors de DOSSIERS_DES_COPIES");
+                    }
+                }
+            }
+        }
+        assert!(
+            vus >= 5,
+            "{vus} lieux seulement : la lecture des sources ne trouve plus rien"
+        );
+    }
+
     /// Un nom une seule fois ; les scellés sont dans le dossier de données (les sceaux y vivent).
     #[test]
     fn noms_uniques_et_scelles_locaux() {

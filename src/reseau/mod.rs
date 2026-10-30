@@ -845,21 +845,43 @@ pub fn cles_montees() -> Vec<PathBuf> {
 pub(crate) fn volumes_montes() -> Vec<PathBuf> {
     #[cfg(target_os = "linux")]
     {
-        cles_montees()
+        sans_doublons(cles_montees())
     }
     #[cfg(target_os = "macos")]
     {
-        std::fs::read_dir("/Volumes")
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|d| d.path())
-            .collect()
+        sans_doublons(
+            std::fs::read_dir("/Volumes")
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|d| d.path())
+                .collect(),
+        )
     }
     #[cfg(windows)]
     {
         ('D'..='Z').map(|l| PathBuf::from(format!("{l}:\\"))).collect()
     }
+}
+
+/// Un même volume vu par deux chemins (montage lié, lien dans /run/media) n'est pas une copie de lui-même : un seul
+/// chemin compte, le montage plutôt qu'un lien vers lui, sinon le premier nom, pour que le choix ne dépende pas de
+/// l'ordre de lecture du dossier. Une vraie copie est un autre fichier, sur un autre volume : elle reste comptée
+/// (`cles_connues::en_double`). Rendus dans l'ordre des noms. Sous Windows, rien d'aussi sûr ne relie deux lettres au
+/// même volume sans API instable : chaque lettre compte.
+pub(crate) fn sans_doublons(volumes: Vec<PathBuf>) -> Vec<PathBuf> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let mut volumes = volumes;
+        volumes.sort_by_cached_key(|d| (std::fs::symlink_metadata(d).is_ok_and(|m| m.is_symlink()), d.clone()));
+        let mut vus = std::collections::BTreeSet::new();
+        volumes.retain(|d| std::fs::metadata(d).map_or(true, |m| vus.insert((m.dev(), m.ino()))));
+        volumes.sort();
+        volumes
+    }
+    #[cfg(not(unix))]
+    volumes
 }
 
 /// Clé USB de Vanguard branchée : celle d'où tourne le programme ; sinon, parmi les volumes montés, une clé dont le
@@ -873,8 +895,10 @@ pub fn cle_usb() -> Option<PathBuf> {
 }
 
 /// La clé connue parmi `volumes`, comme la choisit `cles_connues::seule_connue` (aucune quand une copie porte son
-/// jeton : elle ne doit pas recevoir le carnet ; comme `deploiement cle`).
+/// jeton : elle ne doit pas recevoir le carnet ; comme `deploiement cle`). La même vue par deux chemins n'est pas une
+/// copie (`sans_doublons`).
 fn cle_parmi(volumes: Vec<PathBuf>, connues: &std::collections::BTreeSet<String>) -> Option<PathBuf> {
+    let volumes = sans_doublons(volumes);
     crate::protection::cles_connues::seule_connue(volumes.into_iter().filter(|d| est_une_cle(d)).collect(), connues)
 }
 
@@ -2204,6 +2228,21 @@ mod tests {
             cle_parmi(vec![connue_b.clone(), copie_a.clone()], &connues),
             Some(connue_b.clone())
         );
+        // La même clé vue aussi par un lien (avant elle dans la liste) : elle, par son chemin, pas le lien.
+        #[cfg(unix)]
+        {
+            let lien = connue_a.with_file_name("0-lien-vers-a");
+            std::os::unix::fs::symlink(&connue_a, &lien).unwrap();
+            assert_eq!(
+                cle_parmi(vec![lien.clone(), connue_a.clone()], &connues),
+                Some(connue_a.clone())
+            );
+            assert_eq!(
+                sans_doublons(vec![lien.clone(), connue_a.clone()]),
+                std::slice::from_ref(&connue_a)
+            );
+            std::fs::remove_file(lien).unwrap();
+        }
         for d in [sans, inconnue, connue_b, connue_a, pas_une_cle, copie_a] {
             let _ = std::fs::remove_dir_all(d);
         }

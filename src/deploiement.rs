@@ -88,10 +88,9 @@ enum PasLaCle {
 /// une clé, pas que c'est la sienne. Le jeton ne suffit pas non plus quand deux volumes le portent : une copie de la
 /// clé (identifiant de volume compris, un numéro de série exFAT se réécrit) passerait pour elle selon l'ordre des
 /// chemins (campagne d'attaque n° 4, C-B2) ; aucun des deux ne l'est alors.
-fn cle_parmi(
-    mut volumes: Vec<PathBuf>,
-    jetons: &std::collections::BTreeSet<String>,
-) -> Result<Option<PathBuf>, PasLaCle> {
+fn cle_parmi(volumes: Vec<PathBuf>, jetons: &std::collections::BTreeSet<String>) -> Result<Option<PathBuf>, PasLaCle> {
+    // La même clé vue par deux chemins n'est pas une copie d'elle-même (`reseau::sans_doublons`).
+    let mut volumes = crate::reseau::sans_doublons(volumes);
     volumes.retain(|d| d.join(crate::reseau::TEMOIN_CLE).is_file());
     volumes.sort();
     let connues: Vec<(PathBuf, String)> = volumes
@@ -682,6 +681,18 @@ mod tests {
             cle_parmi(vec![la_mienne.clone(), etrangere, copie.clone(), sans_temoin], &connus),
             Err(PasLaCle::MemeJeton(vec![copie, la_mienne.clone()]))
         );
+        // La même clé vue par deux chemins (ici un lien, rangé avant elle) n'est pas une copie d'elle-même : elle
+        // reste choisie, par son chemin.
+        #[cfg(unix)]
+        {
+            let lien = d.join("VANGUARD1-lien");
+            std::os::unix::fs::symlink(&la_mienne, &lien).unwrap();
+            assert_eq!(
+                cle_parmi(vec![lien.clone(), la_mienne.clone()], &connus),
+                Ok(Some(la_mienne.clone()))
+            );
+            std::fs::remove_file(lien).unwrap();
+        }
         // Une autre clé connue, à son propre jeton, n'est pas une copie : la première reste choisie.
         let deuxieme = "fedcba9876543210fedcba9876543210";
         let autre_cle = volume("VANGUARD3", Some(deuxieme));
