@@ -498,15 +498,17 @@ for f; do case \$f in *grubx64.efi) echo "sha256sum: \$f: Permission non accord�
 exec $(command -v sha256sum) "\$@"
 FIN
 chmod +x "$BANC/illisible/sha256sum"
+cp "$BANC/etat/vanguard/vtoyefi/SERIE-A" "$BANC/reference-vtoyefi"
 : >"$BANC/notifications.log"
 PATH=$BANC/illisible:$PATH compte verifier_ventoy "$BANC/point"
 code=$?
-voir "VTOYEFI relevée puis un fichier illisible : alerte, code 1, rien de noté" \
+voir "VTOYEFI relevée puis un fichier illisible : alerte, code 1, la référence intacte" \
   eval '((code == 1)) && dit "$BANC/notifications.log" "démarrage (VTOYEFI) illisible" &&
-    [[ $(cut -d" " -f2 "$BANC/etat/vanguard/vtoyefi/SERIE-A") != illisible ]]' || montrer "$BANC/sortie"
+    cmp -s "$BANC/etat/vanguard/vtoyefi/SERIE-A" "$BANC/reference-vtoyefi"' || montrer "$BANC/sortie"
 PATH=$BANC/illisible:$PATH compte accepter_vtoyefi
-voir "--accepter-vtoyefi refuse une partition illisible" dit "$BANC/sortie" "VTOYEFI illisible : rien n'est noté" ||
-  montrer "$BANC/sortie"
+voir "--accepter-vtoyefi refuse une partition illisible, la référence intacte" \
+  eval 'dit "$BANC/sortie" "VTOYEFI illisible : rien n'"'"'est noté" &&
+    cmp -s "$BANC/etat/vanguard/vtoyefi/SERIE-A" "$BANC/reference-vtoyefi"' || montrer "$BANC/sortie"
 : >"$BANC/notifications.log"
 VANGUARD_VTOYEFI=$BANC/vtoyefi-absente compte verifier_ventoy "$BANC/point"
 code=$?

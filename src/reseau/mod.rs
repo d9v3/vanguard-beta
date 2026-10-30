@@ -878,6 +878,15 @@ fn cle_parmi(volumes: Vec<PathBuf>, connues: &std::collections::BTreeSet<String>
     crate::protection::cles_connues::seule_connue(volumes.into_iter().filter(|d| est_une_cle(d)).collect(), connues)
 }
 
+/// Une clé connue est branchée avec une copie à son jeton : aucune n'est la clé (`cle_parmi`).
+pub(crate) fn cle_en_double() -> bool {
+    cle_du_programme().is_none()
+        && crate::protection::cles_connues::en_double(
+            volumes_montes().into_iter().filter(|d| est_une_cle(d)).collect(),
+            &crate::protection::cles_connues::jetons(),
+        )
+}
+
 /// Un volume branché porte le témoin sans être une clé reconnue ici.
 pub(crate) fn volume_inconnu() -> bool {
     cle_usb().is_none() && volumes_montes().iter().any(|d| est_une_cle(d))
@@ -890,12 +899,15 @@ pub enum EtatCle {
     ProtegeeEnEcriture,
     /// Un volume au témoin sans jeton connu : ignoré.
     Inconnue,
+    /// Deux volumes au jeton d'une clé connue (une copie) : ignorés tous les deux.
+    EnDouble,
 }
 
 pub fn etat_de_la_cle() -> EtatCle {
     match cle_usb() {
         Some(c) if modifiable(&c) => EtatCle::Branchee,
         Some(_) => EtatCle::ProtegeeEnEcriture,
+        None if cle_en_double() => EtatCle::EnDouble,
         None if volume_inconnu() => EtatCle::Inconnue,
         None => EtatCle::Aucune,
     }

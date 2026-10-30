@@ -857,22 +857,27 @@ mod tests {
         let exe = d.join("vanguard-linux-x86_64");
         // Hors de root : le compte ne risque que lui-même.
         assert!(remplacable_pour(1000, &exe));
-        // Ouvert à tous (comme /tmp) : jamais en root.
+        // Les refus qui suivent tiennent aussi au propriétaire, ici jamais root : hors de `unshare -r`, `d` est au
+        // compte des tests ; dedans, il paraît à root, mais le dossier temporaire (à root pour de vrai) paraît au
+        // compte « nobody ». Ils gardent le sens du résultat ; le droit d'écriture des autres, seul, est essayé plus
+        // bas, sur le dossier temporaire du système quand root le possède.
         std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o777)).unwrap();
         assert!(!remplacable_pour(0, &exe));
         std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
-        // Le dossier d'un compte (le nôtre, qui n'est pas root ; sous `unshare -r`, il paraît à root).
-        // SAFETY : getuid lit le compte du processus, sans argument.
-        if unsafe { libc::getuid() } != 0 {
-            assert!(!remplacable_pour(0, &exe));
-        }
-        // Un dossier sûr dans un dossier ouvert à tous : refusé quand même, celui du dessus se renomme. Sous
-        // `unshare -r`, les deux paraissent à root, et seul le dossier du dessus le refuse.
+        assert!(!remplacable_pour(0, &exe));
         let sous = d.join("sous");
         std::fs::create_dir_all(&sous).unwrap();
         std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o777)).unwrap();
         assert!(!remplacable_pour(0, &sous.join("vanguard-linux-x86_64")));
         std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Un dossier de root ouvert à tous (/tmp, 1777) : refusé pour ses seuls droits, n'importe quel compte y
+        // renommerait le programme.
+        let ouvert = Path::new("/tmp");
+        if std::fs::symlink_metadata(ouvert).is_ok_and(|m| m.is_dir() && m.uid() == 0 && m.mode() & 0o002 != 0)
+            && std::fs::symlink_metadata("/").is_ok_and(|m| m.uid() == 0 && m.mode() & 0o022 == 0)
+        {
+            assert!(!remplacable_pour(0, &ouvert.join("vanguard-linux-x86_64")));
+        }
         // Un chemin relatif ne dit rien des dossiers au-dessus : refusé.
         assert!(!remplacable_pour(0, Path::new("vanguard-linux-x86_64")));
         // Un vrai dossier de root (/usr/bin, peut-être par le lien /bin) : accepté, si root le possède ici (sous

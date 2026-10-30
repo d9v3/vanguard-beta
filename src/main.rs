@@ -1150,6 +1150,12 @@ fn etat_du_menu(surveillance_active: bool, nouveau_menu: bool) -> Vec<String> {
             couleur(risk::Niveau::Moyen),
             tr!("clé VANGUARD inconnue, ignorée", "unknown VANGUARD key, ignored")
         ),
+        // Une copie de la clé branchée avec elle : ni l'une ni l'autre n'est prise, et ce n'est pas une clé inconnue.
+        reseau::EtatCle::EnDouble => format!(
+            "{}{}{RESET}",
+            couleur(risk::Niveau::Moyen),
+            tr!("clé VANGUARD en double, ignorée", "VANGUARD key duplicated, ignored")
+        ),
         reseau::EtatCle::Aucune => format!("{GRIS}{}{RESET}", tr!("clé non branchée", "key not plugged in")),
     };
     let surveillance = if surveillance_active {

@@ -362,8 +362,11 @@ awk '/uses: Swatinem\/rust-cache/ { getline; exit !($0 ~ /if: github.ref_name !=
   ko "macos.yml reprend un cache sur master ou une étiquette « master » (le programme signé en sortirait)"
 # Une étiquette se déplace (« v7 » suit chaque version) : quiconque la pousse chez l'éditeur de l'action change ce
 # qui tourne avec les secrets et le programme signé. Chaque action, officielle comme tierce, à un commit nommé
-# (campagne d'attaque n° 4, U-B3), l'étiquette en commentaire pour la relire.
-mobiles=$(grep -Hn 'uses:' "$DEPOT"/.github/workflows/*.yml | grep -Ev 'uses: [^ @]+@[0-9a-f]{40} # v[0-9]')
+# (campagne d'attaque n° 4, U-B3), l'étiquette en commentaire pour la relire. Tout fichier que GitHub lit : .yml et
+# .yaml des workflows, et les actions du dépôt (.github/actions/*/action.yml), qui en appellent d'autres.
+mobiles=$(find "$DEPOT/.github" \( -path "$DEPOT/.github/workflows/*" -o -path "$DEPOT/.github/actions/*" \) \
+  \( -name '*.yml' -o -name '*.yaml' \) -type f -exec grep -Hn 'uses:' {} + |
+  grep -Ev 'uses: [^ @]+@[0-9a-f]{40} # v[0-9]' || true)
 [[ -z $mobiles ]] && ok "workflows : chaque action épinglée par commit, pas par étiquette" ||
   ko "workflows : action à une étiquette mobile : ${mobiles#"$DEPOT"/}"
 

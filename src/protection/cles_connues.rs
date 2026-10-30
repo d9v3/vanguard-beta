@@ -159,13 +159,25 @@ pub(crate) fn jetons() -> BTreeSet<String> {
 /// regardée ; deux volumes à son jeton, aucun : une copie de la clé (identifiant de volume compris) ne doit rien lire
 /// ni recevoir selon l'ordre des chemins (campagne d'attaque n° 4, C-B2). Seul le jeton de la première est cherché en
 /// double : celui d'une seconde clé connue, qu'elle ne remplace pas, ne change rien à ce qui est choisi.
-pub(crate) fn seule_connue(mut volumes: Vec<PathBuf>, jetons: &BTreeSet<String>) -> Option<PathBuf> {
+pub(crate) fn seule_connue(volumes: Vec<PathBuf>, jetons: &BTreeSet<String>) -> Option<PathBuf> {
+    premiere_connue(volumes, jetons).and_then(|(cle, en_double)| (!en_double).then_some(cle))
+}
+
+/// Parmi `volumes`, une clé connue a-t-elle une copie à son jeton (la règle de `seule_connue`) ? Le dire autrement
+/// qu'un volume inconnu : redéployer n'y changerait rien, c'est l'une des deux à débrancher.
+pub(crate) fn en_double(volumes: Vec<PathBuf>, jetons: &BTreeSet<String>) -> bool {
+    premiere_connue(volumes, jetons).is_some_and(|(_, en_double)| en_double)
+}
+
+/// La première clé connue dans l'ordre des chemins, et si un autre volume porte son jeton.
+fn premiere_connue(mut volumes: Vec<PathBuf>, jetons: &BTreeSet<String>) -> Option<(PathBuf, bool)> {
     volumes.sort();
     let mut cles = volumes
         .into_iter()
         .filter_map(|d| jeton_de(&d).filter(|j| jetons.contains(j)).map(|j| (d, j)));
     let (cle, jeton) = cles.next()?;
-    cles.all(|(_, j)| j != jeton).then_some(cle)
+    let en_double = cles.any(|(_, j)| j == jeton);
+    Some((cle, en_double))
 }
 
 /// Au-delà, ce n'est pas un carnet des appareils.
@@ -286,6 +298,7 @@ pub fn constats() -> Vec<Constat> {
             Ok(()) => Vec::new(),
             Err(refus) => vec![constat_refus(refus)],
         },
+        None if crate::reseau::cle_en_double() => vec![constat_en_double()],
         None if crate::reseau::volume_inconnu() => vec![constat_inconnue(
             crate::protection::manifeste::a_des_references(&crate::socle::dossier_local()),
         )],
@@ -316,6 +329,29 @@ fn constat_refus(refus: Refus) -> Constat {
         ),
         &[],
     )
+}
+
+/// Deux volumes au jeton d'une même clé connue : une copie de la clé, l'original ou non, dont rien ne dit laquelle est
+/// la vraie (campagne d'attaque n° 4, C-B2) ; aucune n'est lue ni écrite, et rien n'a été comparé.
+fn constat_en_double() -> Constat {
+    Constat {
+        verifie: false,
+        ..alerte(
+            CAT,
+            Niveau::Moyen,
+            tr!(
+                "Deux volumes branchés portent le jeton de la même clé VANGUARD : l'un est une copie de l'autre (identifiant de volume compris). Rien n'est lu ni écrit sur aucun, rien n'a été comparé.",
+                "Two plugged-in volumes carry the token of the same VANGUARD key: one is a copy of the other (volume identifier included). Nothing is read from or written to either, nothing was compared."
+            ),
+        )
+        .manuel(
+            tr!(
+                "Débranchez celle qui n'est pas votre clé ; ne lancez rien depuis elle",
+                "Unplug the one that is not your key; do not run anything from it"
+            ),
+            &[],
+        )
+    }
 }
 
 /// Un volume au témoin sans jeton connu. Là où des clés ont déjà été déployées (`deja_deployees` : une référence
@@ -380,6 +416,14 @@ mod tests {
             "{}",
             c.message
         );
+    }
+
+    /// Une copie de la clé : moyen, pas vérifié, et pas le conseil de redéployer.
+    #[test]
+    fn cle_en_double() {
+        let c = constat_en_double();
+        assert_eq!((c.probleme, c.verifie), (Some(Niveau::Moyen), false));
+        assert!(!c.message.contains("deployer"), "{}", c.message);
     }
 
     fn jetable(nom: &str) -> PathBuf {
@@ -510,6 +554,8 @@ mod tests {
         // Une copie de la première, jeton compris : aucune des deux, quel que soit l'ordre.
         let copie = fausse_cle("copie", Some(JETON_A));
         assert_eq!(seule_connue(vec![copie.clone(), a.clone(), b.clone()], &jetons), None);
+        assert!(en_double(vec![copie.clone(), a.clone(), b.clone()], &jetons));
+        assert!(!en_double(vec![a.clone(), b.clone(), sans.clone()], &jetons));
         let _ = std::fs::remove_dir_all(copie);
         // Un fichier qui n'est pas le nôtre est mis de côté, pas écrasé.
         std::fs::write(chemin(&base), "{\"format\":\"autre\"}").unwrap();
