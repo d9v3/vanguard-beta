@@ -1354,7 +1354,8 @@ fn sans_accord_aur() -> &'static str {
 }
 
 /// Les fiches de ces paquets dans l'AUR. Même requête que yay ou paru : seuls les noms partent vers
-/// aur.archlinux.org, par lots de 100 pour ne pas dépasser la longueur maximale d'une adresse. `None` : injoignable.
+/// aur.archlinux.org, par lots de 100 pour ne pas dépasser la longueur maximale d'une adresse. `None` : injoignable,
+/// ou une réponse illisible.
 fn fiches_aur(installes: &[&str]) -> Option<Vec<serde_json::Value>> {
     // Le travail sans Internet coupe ce que Vanguard demande à Internet de lui-même : cette requête aussi.
     if crate::parametres::hors_ligne() {
@@ -1403,7 +1404,10 @@ pub(super) fn paquets_aur() -> Option<Constat> {
     let Some(resultats) = fiches_aur(&installes) else {
         return Some(impossible(
             "Paquets AUR",
-            tr!("AUR injoignable, hors ligne ?", "AUR unreachable, offline?"),
+            tr!(
+                "AUR injoignable ou réponse illisible",
+                "AUR unreachable or unreadable reply"
+            ),
         ));
     };
     let (absents, orphelins) = etat_aur(&installes, &serde_json::json!({ "results": resultats }));

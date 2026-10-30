@@ -841,8 +841,9 @@ fn cases(e: &[Element], terminal: bool) -> Vec<Case> {
 fn garder_les_dependances(e: &[Element], etats: &mut [bool]) -> Vec<String> {
     let mut messages = Vec::new();
     for (i, garde_e) in e.iter().enumerate() {
-        // Un état manquant compte comme coché : rien à garder pour lui.
-        if etats.get(i).is_none_or(|&coche| coche) {
+        // Un élément coché part : rien à garder pour lui. Un état manquant compte comme gardé, le côté prudent (la
+        // copie qu'il lancerait reste).
+        if etats.get(i).is_some_and(|&coche| coche) {
             continue;
         }
         let Some(lance) = &garde_e.lance else { continue };

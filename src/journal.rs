@@ -587,13 +587,13 @@ fn masquer_mac(texte: &str) -> String {
     })
 }
 
-/// Le texte où chaque passage que `trouver` reconnaît à une position (sa fin et son remplaçant) est remplacé, de gauche
-/// à droite ; la recherche reprend après chaque passage remplacé.
 /// L'octet juste avant `i`, s'il y en a un.
 fn precedent(b: &[u8], i: usize) -> Option<u8> {
     i.checked_sub(1).and_then(|k| b.get(k)).copied()
 }
 
+/// Le texte où chaque passage que `trouver` reconnaît à une position (sa fin et son remplaçant) est remplacé, de gauche
+/// à droite ; la recherche reprend après chaque passage remplacé.
 fn remplacer_passages(texte: &str, trouver: impl Fn(&[u8], usize) -> Option<(usize, String)>) -> String {
     let b = texte.as_bytes();
     let mut sortie = String::with_capacity(texte.len());

@@ -20,35 +20,32 @@ pub(super) fn exclusions() -> Option<Constat> {
     )
     .and_then(|l| l.into_iter().next())
     {
-        // Un champ demandé mais absent de la réponse : rien à conclure, pas une liste vide (qui dirait « aucune
-        // exclusion »). Un champ nul, lui, est bien une liste vide.
-        let liste = |cle: &str| -> Option<Vec<String>> {
-            Some(
-                l.get(cle)?
-                    .liste()
-                    .iter()
-                    .filter_map(|x| x.texte().map(str::to_string))
-                    .collect(),
-            )
+        // Une liste absente de la réponse compte pour vide : à elle seule, elle ne signale rien, et les deux autres
+        // sont jugées quand même (un `None` pour toutes les trois tairait leurs exclusions).
+        let liste = |cle: &str| -> Vec<String> {
+            l.get(cle)
+                .map(|v| v.liste().iter().filter_map(|x| x.texte().map(str::to_string)).collect())
+                .unwrap_or_default()
         };
         return juger(
-            &liste("ExclusionPath")?,
-            &liste("ExclusionProcess")?,
-            &liste("ExclusionExtension")?,
+            &liste("ExclusionPath"),
+            &liste("ExclusionProcess"),
+            &liste("ExclusionExtension"),
         );
     }
     let json = ps(
         "$p = Get-MpPreference; @{c=@($p.ExclusionPath); p=@($p.ExclusionProcess); e=@($p.ExclusionExtension)} | ConvertTo-Json -Compress",
     )?;
     let v: serde_json::Value = serde_json::from_str(&json).ok()?;
-    // Le script rend toujours trois tableaux (@(…)) : autre chose, c'est une réponse illisible, pas « aucune
-    // exclusion ».
-    let liste = |cle: &str| -> Option<Vec<String>> {
-        v.get(cle)?
-            .as_array()
+    // Le script rend toujours trois tableaux (@(…)) ; un autre compte pour vide, comme plus haut : les deux autres
+    // sont jugées quand même.
+    let liste = |cle: &str| -> Vec<String> {
+        v.get(cle)
+            .and_then(serde_json::Value::as_array)
             .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+            .unwrap_or_default()
     };
-    juger(&liste("c")?, &liste("p")?, &liste("e")?)
+    juger(&liste("c"), &liste("p"), &liste("e"))
 }
 
 /// Exclusions trop larges, avec la commande qui retire chacune. `None` si aucune, ou si la liste est cachée.
