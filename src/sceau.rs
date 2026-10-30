@@ -2011,9 +2011,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// Cinq écritures par fichier protégé, tous en même temps : assez pour que les écrivains se croisent, sans faire
-    /// attendre un fil au-delà de `ATTENTE_ECRITURE`. La course du premier usage, elle, dépend de l'ordonnancement :
-    /// `verrou_tout_neuf_d_un_autre_vanguard_n_est_pas_des_sceaux_refaits` la pose exprès. Vingt faisaient refuser le verrou à l'un d'eux sur le Windows lent de GitHub (WouldBlock, le 27 oct. 2026).
+    /// Cinq écritures par fichier protégé, tous en même temps : assez pour que les écrivains se croisent. La course
+    /// du premier usage, elle, dépend de l'ordonnancement : `verrou_tout_neuf_d_un_autre_vanguard_n_est_pas_des_sceaux_refaits`
+    /// la pose exprès. Le verrou s'essaie toutes les 20 ms, sans file d'attente : sur le Windows lent de GitHub, un fil
+    /// perdait chaque essai pendant toute l'attente (WouldBlock, le 27 puis le 30 oct. 2026), et son refus faisait
+    /// échouer tous les autres (`TENUS`). Ce qui s'essaie ici, c'est qu'aucune alerte ne naisse des croisements, pas
+    /// la durée : chaque fil attend le verrou dix minutes.
     #[test]
     fn ecritures_en_meme_temps_sans_fausse_alerte() {
         let d = jetable("ensemble");
@@ -2021,6 +2024,7 @@ mod tests {
             .map(|nom| {
                 let d = d.clone();
                 std::thread::spawn(move || {
+                    attendre_en_essai(std::time::Duration::from_secs(600));
                     for i in 0..5 {
                         ecrire_dans(&d, nom, format!("{nom} {i}").as_bytes()).unwrap();
                         let lu = lire_dans(&d, nom);

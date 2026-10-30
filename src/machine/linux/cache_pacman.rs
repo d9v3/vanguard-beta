@@ -193,13 +193,19 @@ mod tests {
             if r.sortie.contains("no candidate packages found") {
                 return Some(0.0);
             }
+            // En Mio : paccache choisit son unité selon la taille (« 121.03 KiB » passait pour 121 Mio, le 30 oct.).
             r.sortie.lines().find_map(|l| {
-                l.split("disk space saved: ")
-                    .nth(1)?
-                    .split_whitespace()
-                    .next()?
-                    .parse()
-                    .ok()
+                let mut mots = l.split("disk space saved: ").nth(1)?.split_whitespace();
+                let nombre: f64 = mots.next()?.parse().ok()?;
+                let unite = match mots.next()?.trim_end_matches(')') {
+                    "B" => 1.0 / 1024.0 / 1024.0,
+                    "KiB" => 1.0 / 1024.0,
+                    "MiB" => 1.0,
+                    "GiB" => 1024.0,
+                    "TiB" => 1024.0 * 1024.0,
+                    _ => return None,
+                };
+                Some(nombre * unite)
             })
         };
         let (Some(a), Some(b)) = (simuler(&["-dk2"]), simuler(&["-duk0"])) else {
