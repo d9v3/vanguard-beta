@@ -53,7 +53,7 @@ pub(crate) fn parcourir<'a>(
     let mut nom_suivant: Option<String> = None;
     let mut taille_suivante: Option<usize> = None;
     for _ in 0..entrees {
-        let Some(entete) = pos.checked_add(512).and_then(|fin| tar.get(pos..fin)) else {
+        let Some(entete) = tar.get(pos..).and_then(<[u8]>::first_chunk::<512>) else {
             return FinTar::Coupee;
         };
         // Deux blocs nuls marquent la fin ; le premier suffit à dire qu'il n'y a plus rien à lire.
@@ -93,8 +93,8 @@ pub(crate) fn parcourir<'a>(
                 if contenu.len() > 4096 {
                     return FinTar::Illisible;
                 }
-                let fin = contenu.iter().position(|&o| o == 0).unwrap_or(contenu.len());
-                nom_suivant = Some(String::from_utf8_lossy(&contenu[..fin]).into_owned());
+                let nom = contenu.split(|&o| o == 0).next().unwrap_or(contenu);
+                nom_suivant = Some(String::from_utf8_lossy(nom).into_owned());
             }
             // L'en-tête global de git archive (le commit), le lien long de GNU : rien pour l'entrée qui suit.
             b'g' | b'K' => {}
@@ -142,14 +142,11 @@ pub(crate) fn fichiers(tar: &[u8], bornes: &Bornes, mut garder: impl FnMut(&str)
 }
 
 /// Le nom d'un en-tête : préfixe ustar (345..500) et nom (0..100), chacun jusqu'à son premier nul.
-fn nom_ustar(entete: &[u8]) -> String {
-    let champ = |de: usize, a: usize| {
-        let c = &entete[de..a];
-        String::from_utf8_lossy(&c[..c.iter().position(|&o| o == 0).unwrap_or(c.len())]).into_owned()
-    };
-    let nom = champ(0, 100);
+fn nom_ustar(entete: &[u8; 512]) -> String {
+    let champ = |c: &[u8]| String::from_utf8_lossy(c.split(|&o| o == 0).next().unwrap_or(c)).into_owned();
+    let nom = champ(&entete[0..100]);
     if &entete[257..262] == b"ustar" {
-        let prefixe = champ(345, 500);
+        let prefixe = champ(&entete[345..500]);
         if !prefixe.is_empty() {
             return format!("{prefixe}/{nom}");
         }
@@ -174,10 +171,10 @@ fn octal(champ: &[u8]) -> Option<usize> {
 fn pax(contenu: &[u8]) -> Option<(Option<String>, Option<usize>)> {
     let (mut nom, mut taille) = (None, None);
     for ligne in contenu.split(|&o| o == b'\n') {
-        let Some(espace) = ligne.iter().position(|&o| o == b' ') else {
+        // Ce qui suit la longueur et son espace.
+        let Some(enregistrement) = ligne.splitn(2, |&o| o == b' ').nth(1) else {
             continue;
         };
-        let enregistrement = &ligne[espace + 1..];
         if let Some(valeur) = enregistrement.strip_prefix(b"path=") {
             nom = Some(String::from_utf8_lossy(valeur).into_owned());
         } else if let Some(valeur) = enregistrement.strip_prefix(b"size=") {

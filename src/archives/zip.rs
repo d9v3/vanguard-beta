@@ -57,7 +57,7 @@ enum Echec {
 /// décompression : un contenu plus long se voit à sa longueur).
 fn contenu(octets: &[u8], e: &Entree, echeance: std::time::Instant) -> Result<Vec<u8>, Echec> {
     use super::deflate::Fin;
-    let donnees = &octets[e.donnees.clone()];
+    let donnees = octets.get(e.donnees.clone()).ok_or(Echec::Illisible)?;
     if e.methode == 0 {
         return (donnees.len() == e.taille)
             .then(|| donnees.to_vec())
@@ -213,11 +213,11 @@ fn forme<'a>(octets: &'a [u8], bornes: &Bornes, stricte: bool) -> Result<Vec<Ent
     }
     // Pas de chevauchement : rangées par position, chaque entrée (en-tête local et données) finit avant la suivante,
     // et la dernière avant le répertoire central.
-    let mut ordre: Vec<usize> = (0..entrees.len()).collect();
-    ordre.sort_by_key(|&k| entrees[k].local);
-    for (j, &k) in ordre.iter().enumerate() {
-        let suivante = ordre.get(j + 1).map_or(debut, |&s| entrees[s].local);
-        if entrees[k].donnees.end > suivante {
+    let mut ordre: Vec<(usize, &Entree)> = entrees.iter().enumerate().collect();
+    ordre.sort_by_key(|(_, e)| e.local);
+    for (j, &(k, e)) in ordre.iter().enumerate() {
+        let suivante = ordre.get(j + 1).map_or(debut, |(_, s)| s.local);
+        if e.donnees.end > suivante {
             return Err(Defaut::Illisible(k));
         }
     }
@@ -225,15 +225,11 @@ fn forme<'a>(octets: &'a [u8], bornes: &Bornes, stricte: bool) -> Result<Vec<Ent
 }
 
 fn u16_a(octets: &[u8], i: usize) -> Option<u16> {
-    octets
-        .get(i..i.checked_add(2)?)
-        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+    octets.get(i..)?.first_chunk::<2>().map(|b| u16::from_le_bytes(*b))
 }
 
 fn u32_a(octets: &[u8], i: usize) -> Option<u32> {
-    octets
-        .get(i..i.checked_add(4)?)
-        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    octets.get(i..)?.first_chunk::<4>().map(|b| u32::from_le_bytes(*b))
 }
 
 /// Une entrée du répertoire central : (méthode, taille compressée, taille, longueur du nom, longueur des champs qui
@@ -537,7 +533,9 @@ fn locales_seules(octets: &[u8], entrees_max: usize, p: &mut Parcours) {
     }
     let connue = |position: usize| {
         let k = fusion.partition_point(|&(debut, _)| debut <= position);
-        k > 0 && position < fusion[k - 1].1
+        k.checked_sub(1)
+            .and_then(|k| fusion.get(k))
+            .is_some_and(|&(_, fin)| position < fin)
     };
     let mut i = 0usize;
     while let Some(trouve) = octets
@@ -647,8 +645,10 @@ pub(crate) fn extraire_avant(
     let debut = vue.donnees.as_ref().map_or(0, |d| d.start);
     let (contenu, fin, reste) = match vue.methode {
         0 if vue.taille_inconnue => return Err(Refus::Illisible),
-        0 if donnees.len() > limite => (donnees[..limite].to_vec(), Fin::Limite, 0..0),
-        0 => (donnees.to_vec(), Fin::Complet, 0..0),
+        0 => match donnees.get(..limite) {
+            Some(garde) if garde.len() < donnees.len() => (garde.to_vec(), Fin::Limite, 0..0),
+            _ => (donnees.to_vec(), Fin::Complet, 0..0),
+        },
         8 => {
             let lu = super::deflate::inflater_avant(donnees, limite, echeance);
             // Une entrée locale de taille inconnue court jusqu'à la fin du fichier : son « reste » est la suite.

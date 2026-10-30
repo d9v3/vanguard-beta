@@ -230,10 +230,15 @@ fn droit(masque: u32) -> &'static str {
 fn nom_du_compte(sid: &[u8]) -> String {
     let repli = || sid_en_texte(sid).unwrap_or_default();
     // Un SID est fait de mots de 32 bits : copié dans un tampon aligné pour Windows.
-    let mut aligne = vec![0u32; sid.len().div_ceil(4)];
-    for (i, o) in sid.iter().enumerate() {
-        aligne[i / 4] |= u32::from(*o) << (8 * (i % 4));
-    }
+    // Petit-boutiste, le dernier mot complété de zéros.
+    let mut aligne: Vec<u32> = sid
+        .chunks(4)
+        .map(|mot| {
+            mot.iter()
+                .enumerate()
+                .fold(0, |a, (i, &o)| a | (u32::from(o) << (8 * i)))
+        })
+        .collect();
     let (mut nom, mut domaine) = (vec![0u16; 256], vec![0u16; 256]);
     let (mut taille_nom, mut taille_domaine, mut usage) = (256u32, 256u32, 0u32);
     // SAFETY : le SID copié vit pendant l'appel ; Windows écrit au plus 256 caractères dans chaque tampon, qui les a.
@@ -251,7 +256,9 @@ fn nom_du_compte(sid: &[u8]) -> String {
     if !lu {
         return repli();
     }
-    let lire = |t: &[u16]| String::from_utf16_lossy(&t[..t.iter().position(|&c| c == 0).unwrap_or(t.len())]);
+    // Jusqu'au premier zéro, ou tout le tampon s'il n'y en a pas.
+    let lire = |t: &[u16]| String::from_utf16_lossy(t.split(|&c| c == 0).next().unwrap_or(t));
+
     match (lire(&domaine), lire(&nom)) {
         (_, n) if n.is_empty() => repli(),
         (d, n) if d.is_empty() => n,

@@ -181,7 +181,10 @@ mod binaire {
         /// `n` octets à partir de `debut`, sans déborder sur la table des positions.
         fn tranche(&self, debut: usize, n: usize) -> Option<&'a [u8]> {
             let fin = debut.checked_add(n)?;
-            (fin <= self.table).then(|| &self.octets[debut..fin])
+            if fin > self.table {
+                return None;
+            }
+            self.octets.get(debut..fin)
         }
 
         /// Longueur d'un objet : dans la marque, ou dans l'entier qui la suit quand elle vaut 0xF. Renvoie la
@@ -226,7 +229,7 @@ mod binaire {
             }
             // Bornes vérifiées à l'ouverture : la table tient entière dans le fichier.
             let p = self.table + index * self.taille_position;
-            let debut = usize::try_from(entier(&self.octets[p..p + self.taille_position])?).ok()?;
+            let debut = usize::try_from(entier(self.octets.get(p..p + self.taille_position)?)?).ok()?;
             if debut < 8 {
                 return None;
             }
@@ -304,7 +307,7 @@ mod binaire {
     /// taille des positions et des références, le nombre d'objets, la racine et où commence la table.
     pub(super) fn lire(octets: &[u8]) -> Option<Valeur> {
         let fin = octets.len().checked_sub(32)?;
-        let queue = &octets[fin..];
+        let queue = octets.last_chunk::<32>()?;
         let taille_position = usize::from(queue[6]);
         let taille_reference = usize::from(queue[7]);
         let nombre = usize::try_from(entier(&queue[8..16])?).ok()?;

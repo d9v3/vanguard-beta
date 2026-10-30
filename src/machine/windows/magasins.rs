@@ -102,7 +102,10 @@ fn lire(nom: &str, emplacement: u32) -> Option<Vec<String>> {
             let mut tampon = vec![0u16; 512];
             let n = CertGetNameStringW(certificat, NOM_SIMPLE, 0, std::ptr::null(), tampon.as_mut_ptr(), 512);
             let n = usize::try_from(n).unwrap_or(0).min(tampon.len());
-            let nom_du_certificat = String::from_utf16_lossy(&tampon[..n.saturating_sub(1)]);
+            // Sans le zéro final que compte la longueur rendue.
+            tampon.truncate(n.saturating_sub(1));
+            let nom_du_certificat = String::from_utf16_lossy(&tampon);
+
             lignes.push(ligne(nom, cle, &empreinte, &nom_du_certificat));
         };
         CertCloseStore(magasin, 0);

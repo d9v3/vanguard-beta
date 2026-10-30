@@ -436,34 +436,36 @@ pub fn powershell_admin_chacune(correctifs: &[Vec<String>]) -> Vec<bool> {
 /// script par PowerShell prend alors le relais, comme avant).
 pub(crate) fn admin_mele(correctifs: &[Vec<String>]) -> Option<(Vec<bool>, Vec<Vec<String>>)> {
     // Les morceaux : des correctifs tout natifs (un par un), ou une suite de correctifs PowerShell (un script).
-    enum Morceau {
-        Natif(usize),
+    // Chaque correctif garde sa place dans la liste (pour ses résultats et ses notes) et ses lignes.
+    enum Morceau<'a> {
+        Natif(usize, &'a [String]),
         Script(Vec<usize>, Script),
     }
     let mut morceaux = Vec::new();
-    let mut suite: Vec<usize> = Vec::new();
-    let fermer = |suite: &mut Vec<usize>, morceaux: &mut Vec<Morceau>| -> Option<()> {
+    let mut suite: Vec<(usize, &Vec<String>)> = Vec::new();
+    let fermer = |suite: &mut Vec<(usize, &Vec<String>)>, morceaux: &mut Vec<Morceau>| -> Option<()> {
         if suite.is_empty() {
             return Some(());
         }
-        let ps = corrections::en_powershell(&suite.iter().map(|i| correctifs[*i].clone()).collect::<Vec<_>>());
+        let ps = corrections::en_powershell(&suite.iter().map(|&(_, c)| c.clone()).collect::<Vec<_>>());
         let script = ecrire_script(&ps)?;
-        morceaux.push(Morceau::Script(std::mem::take(suite), script));
+        let indices = std::mem::take(suite).into_iter().map(|(i, _)| i).collect();
+        morceaux.push(Morceau::Script(indices, script));
         Some(())
     };
     for (i, c) in correctifs.iter().enumerate() {
         if !c.is_empty() && c.iter().all(|l| corrections::native(l)) {
             fermer(&mut suite, &mut morceaux)?;
-            morceaux.push(Morceau::Natif(i));
+            morceaux.push(Morceau::Natif(i, c));
         } else {
-            suite.push(i);
+            suite.push((i, c));
         }
     }
     fermer(&mut suite, &mut morceaux)?;
     let mut lignes = Vec::new();
     for m in &morceaux {
         match m {
-            Morceau::Natif(i) => lignes.extend(correctifs[*i].iter().cloned()),
+            Morceau::Natif(_, c) => lignes.extend(c.iter().cloned()),
             Morceau::Script(_, s) => lignes.push(eleve::ligne_script(&s.empreinte, &s.chemin.display().to_string())),
         }
     }
@@ -473,9 +475,9 @@ pub(crate) fn admin_mele(correctifs: &[Vec<String>]) -> Option<(Vec<bool>, Vec<V
     let mut notes = correctifs.to_vec();
     for m in &morceaux {
         match m {
-            Morceau::Natif(i) => {
+            Morceau::Natif(i, c) => {
                 let mut reussi = true;
-                notes[*i] = correctifs[*i]
+                let note = c
                     .iter()
                     .map(|c| {
                         let r = reponses.next();
@@ -487,14 +489,21 @@ pub(crate) fn admin_mele(correctifs: &[Vec<String>]) -> Option<(Vec<bool>, Vec<V
                         }
                     })
                     .collect();
-                resultats[*i] = reussi;
+                // `i` vient de l'énumération de `correctifs`, dont `notes` et `resultats` ont la longueur : rien
+                // n'est jamais sauté ici (et un résultat non écrit resterait un échec, jamais une réussite).
+                if let (Some(n), Some(r)) = (notes.get_mut(*i), resultats.get_mut(*i)) {
+                    *n = note;
+                    *r = reussi;
+                }
             }
             Morceau::Script(indices, s) => {
                 let r = reponses.next();
                 dire_code(r.as_ref().and_then(|r| r.code));
                 let faits = resultats_du_script(s, indices.len(), r.as_ref().is_some_and(|r| r.reussi));
                 for (i, ok) in indices.iter().zip(faits) {
-                    resultats[*i] = ok;
+                    if let Some(r) = resultats.get_mut(*i) {
+                        *r = ok;
+                    }
                 }
             }
         }
@@ -654,11 +663,12 @@ fn antivirus() -> Vec<Constat> {
         }];
     };
     let v: serde_json::Value = serde_json::from_str(&json).unwrap_or_default();
-    if !v["RealTimeProtectionEnabled"].is_boolean() {
+    let champ = |cle: &str| v.get(cle).unwrap_or(&serde_json::Value::Null);
+    if !champ("RealTimeProtectionEnabled").is_boolean() {
         return vec![illisible("Antivirus")];
     }
     let mut c = Vec::new();
-    if v["RealTimeProtectionEnabled"] == false || v["AntivirusEnabled"] == false {
+    if *champ("RealTimeProtectionEnabled") == false || *champ("AntivirusEnabled") == false {
         c.push(
             alerte(
                 "Antivirus",
@@ -686,11 +696,18 @@ fn antivirus() -> Vec<Constat> {
             ),
         ));
     }
-    c.push(signatures(v["AntivirusSignatureAge"].as_u64().unwrap_or(0)));
+    // Un âge absent ou illisible n'est pas « à jour » : la vérification est dite impossible.
+    c.push(match champ("AntivirusSignatureAge").as_u64() {
+        Some(age) => signatures(age),
+        None => impossible(
+            "Signatures",
+            tr!("âge des signatures illisible", "signature age unreadable"),
+        ),
+    });
     c.extend(juger_cloud(
-        v["MAPSReporting"].as_u64().map(|n| n.to_string()).as_deref(),
+        champ("MAPSReporting").as_u64().map(|n| n.to_string()).as_deref(),
     ));
-    if v["IsTamperProtected"] == false {
+    if *champ("IsTamperProtected") == false {
         c.push(alerte("Antivirus", Niveau::Moyen, tr!("Protection contre les falsifications désactivée : un malware peut couper Defender.", "Tamper protection is off: malware can turn Defender off."))
             .manuel(tr!("Sécurité Windows > Protection contre les virus > Gérer les paramètres > Protection contre les falsifications", "Windows Security > Virus protection > Manage settings > Tamper protection"), &["Start-Process windowsdefender://threatsettings"]));
     }

@@ -67,8 +67,8 @@ fn lire_xml_nomme(xml: &str) -> Option<(u32, String, Vec<String>, Vec<String>)> 
             }
             let dans = |n: &[u8]| chemin.last().is_some_and(|p| p == n);
             // Une valeur : un Data sous EventData, ou un champ sous l'élément unique de UserData.
-            let est_valeur =
-                (dans(b"EventData") && nom == b"Data") || chemin.len() >= 2 && chemin[chemin.len() - 2] == b"UserData";
+            let est_valeur = (dans(b"EventData") && nom == b"Data")
+                || matches!(chemin.as_slice(), [.., parent, _] if parent == b"UserData");
             if est_valeur && valeur.is_none() {
                 let attribut = e.try_get_attribute("Name").ok().flatten();
                 noms.push(match attribut {
@@ -210,8 +210,10 @@ fn rendre(evenement: *mut c_void) -> Option<String> {
         {
             return None;
         }
-        let fin = tampon.iter().position(|&c| c == 0).unwrap_or(tampon.len());
-        Some(String::from_utf16_lossy(&tampon[..fin]))
+        // Jusqu'au premier zéro, ou tout le tampon s'il n'y en a pas.
+        Some(String::from_utf16_lossy(
+            tampon.split(|&c| c == 0).next().unwrap_or(&tampon),
+        ))
     }
 }
 

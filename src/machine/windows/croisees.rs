@@ -209,7 +209,11 @@ fn comparer_comptes(usr: &[&str], outil: &[serde_json::Value]) -> Comparaison {
     let outil = outil.iter().filter_map(|u| {
         Some((
             // Le SID en objet ({"Value": "S-1-5-…", …}) sous PowerShell 5.1, en texte ailleurs.
-            u["SID"]["Value"].as_str().or_else(|| u["SID"].as_str())?.to_uppercase(),
+            u.get("SID")
+                .and_then(|s| s.get("Value"))
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| u.get("SID").and_then(serde_json::Value::as_str))?
+                .to_uppercase(),
             format!("{} {}", booleen(&u["Enabled"])?, booleen(&u["PasswordRequired"])?),
         ))
     });

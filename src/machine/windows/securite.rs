@@ -118,7 +118,7 @@ pub(crate) fn aces(octets: &[u8]) -> Option<Vec<Ace>> {
             sorte,
             drapeaux,
             masque: u32_a(d + 4)?,
-            sid: octets[d + 8..d + taille_regle].to_vec(),
+            sid: octets.get(d + 8..d + taille_regle)?.to_vec(),
         });
         d += taille_regle;
     }
@@ -133,12 +133,13 @@ pub(crate) fn sid_en_texte(sid: &[u8]) -> Option<String> {
     if revision != 1 || n > 15 || sid.len() < 8 + 4 * n {
         return None;
     }
-    let autorite = sid[2..8].iter().fold(0u64, |a, &o| (a << 8) | u64::from(o));
+    let autorite = sid.get(2..8)?.iter().fold(0u64, |a, &o| (a << 8) | u64::from(o));
     let mut t = format!("S-1-{autorite}");
-    for i in 0..n {
-        let s = u32::from_le_bytes(sid[8 + 4 * i..12 + 4 * i].try_into().ok()?);
-        let _ = write!(t, "-{s}");
+    let (sous_autorites, _) = sid.get(8..8 + 4 * n)?.as_chunks::<4>();
+    for s in sous_autorites {
+        let _ = write!(t, "-{}", u32::from_le_bytes(*s));
     }
+
     Some(t)
 }
 

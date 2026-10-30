@@ -267,13 +267,13 @@ fn chemin_infos(infos: &[u8]) -> Option<String> {
 }
 
 fn octets_u32(octets: &[u8], p: usize) -> Option<u32> {
-    let b = octets.get(p..p.checked_add(4)?)?;
-    Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    let b = octets.get(p..)?.first_chunk::<4>()?;
+    Some(u32::from_le_bytes(*b))
 }
 
 fn octets_u16(octets: &[u8], p: usize) -> Option<u16> {
-    let b = octets.get(p..p.checked_add(2)?)?;
-    Some(u16::from_le_bytes([b[0], b[1]]))
+    let b = octets.get(p..)?.first_chunk::<2>()?;
+    Some(u16::from_le_bytes(*b))
 }
 
 /// La cible et les arguments d'un raccourci (.lnk), lus dans le fichier (format MS-SHLLINK) sans COM. `None` quand
@@ -334,9 +334,13 @@ fn cible_raccourci(octets: &[u8]) -> Option<(String, String)> {
         && taille >= 8
     {
         let bloc = tranche(p, taille)?;
-        if drapeaux & VARIABLES_LUES != 0 && octets_u32(bloc, 4) == Some(VARIABLES) && bloc.len() >= 8 + 260 + 520 {
-            let texte = match utf16_zero(&bloc[268..788]) {
-                t if t.is_empty() => ansi_zero(&bloc[8..268]),
+        // Le bloc : 8 octets d'en-tête, la cible en ANSI (260 octets), puis en UTF-16 (520 octets).
+        if drapeaux & VARIABLES_LUES != 0
+            && octets_u32(bloc, 4) == Some(VARIABLES)
+            && let (Some(ansi), Some(large)) = (bloc.get(8..268), bloc.get(268..788))
+        {
+            let texte = match utf16_zero(large) {
+                t if t.is_empty() => ansi_zero(ansi),
                 t => t,
             };
             if !texte.is_empty() {
@@ -565,9 +569,12 @@ fn fenetre_cachee(exe: &str, args: &str) -> bool {
         .split_whitespace()
         .map(|j| j.trim_matches('"').replacen('/', "-", 1))
         .collect();
-    jetons
-        .windows(2)
-        .any(|p| p[0].len() >= 2 && "-windowstyle".starts_with(p[0].as_str()) && (p[1] == "hidden" || p[1] == "h"))
+    jetons.windows(2).any(|p| match p {
+        [option, valeur] => {
+            option.len() >= 2 && "-windowstyle".starts_with(option.as_str()) && (valeur == "hidden" || valeur == "h")
+        }
+        _ => false,
+    })
 }
 
 /// Le constat d'information d'un lancement automatique en fenêtre cachée.

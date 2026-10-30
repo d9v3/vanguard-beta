@@ -63,7 +63,7 @@ fn large(t: &str) -> Vec<u16> {
 }
 
 fn texte(t: &[u16]) -> String {
-    String::from_utf16_lossy(&t[..t.iter().position(|&c| c == 0).unwrap_or(t.len())])
+    String::from_utf16_lossy(t.split(|&c| c == 0).next().unwrap_or(t))
 }
 
 /// Un lecteur par sa racine (« E:\ ») s'il est prêt, sinon `None` (lecteur de cartes vide, réseau coupé).

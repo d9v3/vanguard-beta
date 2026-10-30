@@ -14,16 +14,21 @@ const TABLE: [u32; 256] = {
             c = if c & 1 == 1 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
             k += 1;
         }
-        table[i as usize] = c;
+        #[expect(clippy::indexing_slicing, reason = "i < 256 par la boucle, la table en a 256")]
+        {
+            table[i as usize] = c;
+        }
         i += 1;
     }
     table
 };
 
 pub(crate) fn crc32(octets: &[u8]) -> u32 {
-    !octets
-        .iter()
-        .fold(!0u32, |c, &o| TABLE[((c ^ u32::from(o)) & 0xff) as usize] ^ (c >> 8))
+    !octets.iter().fold(!0u32, |c, &o| {
+        #[expect(clippy::indexing_slicing, reason = "indice masqué à 0xff, la table en a 256")]
+        let t = TABLE[((c ^ u32::from(o)) & 0xff) as usize];
+        t ^ (c >> 8)
+    })
 }
 
 #[cfg(test)]

@@ -411,10 +411,17 @@ fn valeur_d_avant(racine: &winreg::RegKey, cle: &str, valeur: &str) -> Result<St
     match k.get_raw_value(valeur) {
         Err(e) if e.kind() == NotFound => Ok("absent".into()),
         Err(e) => Err(format!("valeur d'avant illisible, rien changé : {e}")),
+        // Un DWORD fait 4 octets : sinon, le même refus qu'un type inattendu, jamais une valeur inventée.
         Ok(brute) if brute.vtype == RegType::REG_DWORD && brute.bytes.len() == 4 => {
-            let octets: [u8; 4] = brute.bytes[..4].try_into().unwrap_or_default();
-            Ok(u32::from_le_bytes(octets).to_string())
+            match <[u8; 4]>::try_from(&*brute.bytes) {
+                Ok(octets) => Ok(u32::from_le_bytes(octets).to_string()),
+                Err(_) => Err(format!(
+                    "valeur d'avant de type inattendu ({:?}), rien changé",
+                    brute.vtype
+                )),
+            }
         }
+
         Ok(brute) => Err(format!(
             "valeur d'avant de type inattendu ({:?}), rien changé",
             brute.vtype

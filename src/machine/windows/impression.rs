@@ -152,8 +152,7 @@ fn imprimante_par_defaut() -> Option<String> {
         if GetDefaultPrinterW(nom.as_mut_ptr(), &raw mut taille) == 0 {
             return None;
         }
-        let fin = nom.iter().position(|&c| c == 0).unwrap_or(nom.len());
-        Some(String::from_utf16_lossy(&nom[..fin]))
+        Some(String::from_utf16_lossy(nom.split(|&c| c == 0).next().unwrap_or(&nom)))
     }
 }
 

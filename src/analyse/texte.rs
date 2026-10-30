@@ -94,12 +94,15 @@ pub(crate) fn lire(octets: &[u8], limite: usize) -> Option<Texte> {
     let (texte, tronque, encodage) = match encodage {
         Encodage::Utf16Le { .. } | Encodage::Utf16Be { .. } => {
             let gros = matches!(encodage, Encodage::Utf16Be { .. });
-            let n = corps.len().min(limite.saturating_mul(2)) & !1;
-            let unites = corps[..n].as_chunks::<2>().0.iter().map(|p| {
+            // Au plus `limite` unités (l'octet impair de la fin, sans paire, n'en est pas une).
+            let paires = corps.as_chunks::<2>().0;
+            let paires = paires.get(..limite).unwrap_or(paires);
+            let n = paires.len() * 2;
+            let unites = paires.iter().map(|&p| {
                 if gros {
-                    u16::from_be_bytes([p[0], p[1]])
+                    u16::from_be_bytes(p)
                 } else {
-                    u16::from_le_bytes([p[0], p[1]])
+                    u16::from_le_bytes(p)
                 }
             });
             let texte: String = char::decode_utf16(unites)
@@ -117,13 +120,13 @@ pub(crate) fn lire(octets: &[u8], limite: usize) -> Option<Texte> {
             (texte, coupe || n < corps.len() & !1, encodage)
         }
         _ => {
-            let n = corps.len().min(limite);
-            let tranche = &corps[..n];
+            let tranche = corps.get(..limite).unwrap_or(corps);
+            let n = tranche.len();
             match std::str::from_utf8(tranche) {
                 Ok(t) => (t.to_string(), n < corps.len(), encodage),
                 // Un caractère coupé par la limite seulement : de l'UTF-8 quand même.
                 Err(e) if e.error_len().is_none() && n < corps.len() => (
-                    String::from_utf8_lossy(&tranche[..e.valid_up_to()]).into_owned(),
+                    String::from_utf8_lossy(tranche.get(..e.valid_up_to()).unwrap_or(tranche)).into_owned(),
                     true,
                     encodage,
                 ),
@@ -162,23 +165,13 @@ pub(crate) fn lire(octets: &[u8], limite: usize) -> Option<Texte> {
 
 /// De l'UTF-16 sans marque : dans les premiers octets, un octet sur deux nul (`Some(true)` : gros-boutiste).
 fn utf16_sans_marque(octets: &[u8]) -> Option<bool> {
-    let debut = &octets[..octets.len().min(1024) & !1];
-    if debut.len() < 8 {
+    let debut = octets.get(..1024).unwrap_or(octets).as_chunks::<2>().0;
+    if debut.len() < 4 {
         return None;
     }
-    let paires = debut.len() / 2;
-    let nuls_impairs = debut
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .filter(|p| p[1] == 0 && p[0] != 0)
-        .count();
-    let nuls_pairs = debut
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .filter(|p| p[0] == 0 && p[1] != 0)
-        .count();
+    let paires = debut.len();
+    let nuls_impairs = debut.iter().filter(|p| p[1] == 0 && p[0] != 0).count();
+    let nuls_pairs = debut.iter().filter(|p| p[0] == 0 && p[1] != 0).count();
     if nuls_impairs * 10 >= paires * 9 {
         Some(false)
     } else if nuls_pairs * 10 >= paires * 9 {

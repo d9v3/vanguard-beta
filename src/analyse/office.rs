@@ -59,12 +59,15 @@ pub(crate) fn classeur(flux: &[u8]) -> Classeur {
             // EOF : la fin du sous-flux global.
             0x000A => return c,
             0x002F => c.chiffre = true,
-            0x0085 if c.feuilles.len() < FEUILLES_MAX && donnees.len() >= 8 => {
-                // lbPlyPos (4), hsState (2 bits) et inutilisé, dt, puis ShortXLUnicodeString : cch, fHighByte.
-                let masquage = donnees[4] & 0b11;
-                let sorte = donnees[5];
-                let n = usize::from(donnees[6]);
-                let large = donnees[7] & 1 != 0;
+            0x0085 if c.feuilles.len() < FEUILLES_MAX => {
+                // lbPlyPos (4), hsState (2 bits) et inutilisé, dt, puis ShortXLUnicodeString : cch, fHighByte. Plus
+                // court, l'enregistrement ne dit pas de feuille.
+                let Some(&[_, _, _, _, etat, sorte, cch, haut]) = donnees.first_chunk::<8>() else {
+                    continue;
+                };
+                let masquage = etat & 0b11;
+                let n = usize::from(cch);
+                let large = haut & 1 != 0;
                 let nom = if large {
                     donnees
                         .get(8..8 + 2 * n)
@@ -211,8 +214,11 @@ fn entites(valeur: &str) -> String {
         reste = &reste[p..];
         // « ; » cherché dans les 12 octets qui suivent seulement : chercher plus loin coûtait la longueur du reste à
         // chaque « & », le carré de la taille pour un fichier fait d'esperluettes.
-        let Some(fin) = reste.as_bytes()[1..reste.len().min(13)]
+        let Some(fin) = reste
+            .as_bytes()
             .iter()
+            .take(13)
+            .skip(1)
             .position(|&b| b == b';')
             .map(|f| f + 1)
         else {

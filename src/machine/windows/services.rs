@@ -122,7 +122,8 @@ fn programme_sans_guillemets(ligne: &str) -> Option<(&str, &str)> {
 fn dossier_piege(exe: &str, modifiable: impl Fn(&std::path::Path) -> bool) -> Option<std::path::PathBuf> {
     let parties: Vec<&str> = exe.split(' ').collect();
     (1..parties.len()).find_map(|i| {
-        let debut = parties[..i].join(" ");
+        let debut = parties.get(..i)?.join(" ");
+
         let d = std::path::Path::new(&debut).parent()?;
         (!d.as_os_str().is_empty() && modifiable(d)).then(|| d.to_path_buf())
     })

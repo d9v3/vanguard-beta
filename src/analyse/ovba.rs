@@ -52,8 +52,8 @@ fn boucle(c: &[u8], limite: usize, sortie: &mut Vec<u8>) -> Result<(), Defaut> {
     let mut pos = 1usize;
     while pos < c.len() {
         let debut_morceau = pos;
-        let en_tete = match c.get(pos..pos + 2) {
-            Some(b) => u16::from_le_bytes([b[0], b[1]]),
+        let en_tete = match c.get(pos..).and_then(<[u8]>::first_chunk::<2>) {
+            Some(b) => u16::from_le_bytes(*b),
             None => return Err(Defaut::EnTete),
         };
         let taille = usize::from(en_tete & 0x0FFF) + 3;
@@ -66,9 +66,10 @@ fn boucle(c: &[u8], limite: usize, sortie: &mut Vec<u8>) -> Result<(), Defaut> {
         pos = debut_morceau + 2;
         if !compresse {
             // Un morceau brut : 4 096 octets tels quels.
-            let brut = &c[pos..c.len().min(pos + MORCEAU)];
+            let reste = c.get(pos..).ok_or(Defaut::Tronque)?;
+            let brut = reste.get(..MORCEAU).unwrap_or(reste);
             let place = limite.saturating_sub(sortie.len());
-            sortie.extend_from_slice(&brut[..brut.len().min(place)]);
+            sortie.extend_from_slice(brut.get(..place).unwrap_or(brut));
             if brut.len() > place {
                 return Err(Defaut::Limite);
             }
@@ -79,7 +80,7 @@ fn boucle(c: &[u8], limite: usize, sortie: &mut Vec<u8>) -> Result<(), Defaut> {
             continue;
         }
         while pos < fin {
-            let drapeaux = c[pos];
+            let &drapeaux = c.get(pos).ok_or(Defaut::Tronque)?;
             pos += 1;
             for indice in 0..8 {
                 if pos >= fin {
@@ -89,13 +90,17 @@ fn boucle(c: &[u8], limite: usize, sortie: &mut Vec<u8>) -> Result<(), Defaut> {
                     if sortie.len() >= limite {
                         return Err(Defaut::Limite);
                     }
-                    sortie.push(c[pos]);
+                    sortie.push(*c.get(pos).ok_or(Defaut::Tronque)?);
                     pos += 1;
                 } else {
-                    let Some(b) = c.get(pos..pos + 2).filter(|_| pos + 2 <= fin) else {
+                    let Some(b) = c
+                        .get(pos..)
+                        .and_then(<[u8]>::first_chunk::<2>)
+                        .filter(|_| pos + 2 <= fin)
+                    else {
                         return Err(Defaut::Tronque);
                     };
-                    let jeton = u16::from_le_bytes([b[0], b[1]]);
+                    let jeton = u16::from_le_bytes(*b);
                     let ecart = sortie.len() - debut_sortie;
                     if ecart == 0 {
                         // Rien avant dans ce morceau : une copie n'a rien à copier.
@@ -121,7 +126,7 @@ fn boucle(c: &[u8], limite: usize, sortie: &mut Vec<u8>) -> Result<(), Defaut> {
                     // Octet par octet : la source peut chevaucher ce qui s'écrit (une répétition).
                     let source = sortie.len() - distance;
                     for k in 0..longueur {
-                        let o = sortie[source + k];
+                        let &o = sortie.get(source + k).ok_or(Defaut::Copie)?;
                         sortie.push(o);
                     }
                     pos += 2;

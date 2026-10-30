@@ -107,7 +107,7 @@ fn index_secteur(sortie: &str) -> Option<u64> {
         .filter_map(|m| m.strip_prefix("0x"))
         .filter_map(|h| u64::from_str_radix(h, 16).ok())
         .collect();
-    valeurs.len().checked_sub(2).map(|i| valeurs[i])
+    valeurs.len().checked_sub(2).and_then(|i| valeurs.get(i)).copied()
 }
 
 #[cfg(test)]

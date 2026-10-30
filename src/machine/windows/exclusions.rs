@@ -20,30 +20,35 @@ pub(super) fn exclusions() -> Option<Constat> {
     )
     .and_then(|l| l.into_iter().next())
     {
-        let liste = |cle: &str| -> Vec<String> {
-            l[cle]
-                .liste()
-                .iter()
-                .filter_map(|x| x.texte().map(str::to_string))
-                .collect()
+        // Un champ demandé mais absent de la réponse : rien à conclure, pas une liste vide (qui dirait « aucune
+        // exclusion »). Un champ nul, lui, est bien une liste vide.
+        let liste = |cle: &str| -> Option<Vec<String>> {
+            Some(
+                l.get(cle)?
+                    .liste()
+                    .iter()
+                    .filter_map(|x| x.texte().map(str::to_string))
+                    .collect(),
+            )
         };
         return juger(
-            &liste("ExclusionPath"),
-            &liste("ExclusionProcess"),
-            &liste("ExclusionExtension"),
+            &liste("ExclusionPath")?,
+            &liste("ExclusionProcess")?,
+            &liste("ExclusionExtension")?,
         );
     }
     let json = ps(
         "$p = Get-MpPreference; @{c=@($p.ExclusionPath); p=@($p.ExclusionProcess); e=@($p.ExclusionExtension)} | ConvertTo-Json -Compress",
     )?;
     let v: serde_json::Value = serde_json::from_str(&json).ok()?;
-    let liste = |cle: &str| -> Vec<String> {
-        v[cle]
+    // Le script rend toujours trois tableaux (@(…)) : autre chose, c'est une réponse illisible, pas « aucune
+    // exclusion ».
+    let liste = |cle: &str| -> Option<Vec<String>> {
+        v.get(cle)?
             .as_array()
             .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
-            .unwrap_or_default()
     };
-    juger(&liste("c"), &liste("p"), &liste("e"))
+    juger(&liste("c")?, &liste("p")?, &liste("e")?)
 }
 
 /// Exclusions trop larges, avec la commande qui retire chacune. `None` si aucune, ou si la liste est cachée.
@@ -121,9 +126,9 @@ fn chemin_large(chemin: &str) -> bool {
                     | "systemdrive"
             );
     }
-    let parent = parties.len().checked_sub(2).map(|i| parties[i]);
+    let parent = parties.len().checked_sub(2).and_then(|i| parties.get(i)).copied();
     // Un compte entier : C:\Users\nom.
-    if parties.len() == 3 && parties[1] == "users" {
+    if matches!(parties.as_slice(), [_, "users", _]) {
         return true;
     }
     match dernier {

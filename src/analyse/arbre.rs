@@ -196,7 +196,7 @@ impl Etat<'_> {
             return None;
         }
         faits.extend(nom::examiner(&chemin).into_iter().map(Fait::Nom));
-        let profondeur = parent.map_or(0, |p| self.parties[p].profondeur + 1);
+        let profondeur = self.profondeur_enfant(parent)?;
         self.parties.push(Partie {
             parent,
             profondeur,
@@ -210,6 +210,16 @@ impl Etat<'_> {
             details: Details::Aucun,
         });
         Some(self.parties.len() - 1)
+    }
+
+    /// La profondeur d'une partie sous `parent` (0 pour la racine). `None` : un parent qui n'est pas une partie de
+    /// l'arbre, ce que seul un défaut de ce fichier produirait (les numéros viennent de `parties`, qui ne rétrécit
+    /// jamais) ; la partie n'est alors pas ajoutée plutôt que rangée à une profondeur fausse.
+    fn profondeur_enfant(&self, parent: Option<usize>) -> Option<usize> {
+        match parent {
+            None => Some(0),
+            Some(p) => Some(self.parties.get(p)?.profondeur + 1),
+        }
     }
 
     /// Les octets qu'une extraction peut encore produire : la borne d'une partie, celle du total, et le taux de
@@ -277,7 +287,7 @@ impl Etat<'_> {
         {
             faits.push(Fait::ExtensionTrompeuse(extension));
         }
-        let profondeur = parent.map_or(0, |p| self.parties[p].profondeur + 1);
+        let profondeur = self.profondeur_enfant(parent)?;
         self.parties.push(Partie {
             parent,
             profondeur,
@@ -298,7 +308,9 @@ impl Etat<'_> {
             self.lire(i, octets, type_);
             self.ancetres.pop();
         }
-        (self.visiteur)(&self.parties[i], octets);
+        if let Some(p) = self.parties.get(i) {
+            (self.visiteur)(p, octets);
+        }
         Some(i)
     }
 
@@ -312,11 +324,48 @@ impl Etat<'_> {
         faits: Vec<Fait>,
         manques: Vec<Raison>,
     ) -> Option<usize> {
-        if self.parties[i].profondeur + 1 > self.bornes.profondeur {
+        if self.trop_profond(i) {
             self.manque(i, Raison::Profondeur);
             return None;
         }
         self.partie(octets, Some(i), chemin, origine, faits, manques)
+    }
+
+    /// Un enfant de `i` dépasserait la profondeur maximale (un numéro inconnu est refusé de même).
+    fn trop_profond(&self, i: usize) -> bool {
+        self.parties
+            .get(i)
+            .is_none_or(|p| p.profondeur + 1 > self.bornes.profondeur)
+    }
+
+    /// Le type de la partie `i`, s'il en est une.
+    fn type_de(&self, i: usize) -> Option<Type> {
+        self.parties.get(i).map(|p| p.type_)
+    }
+
+    /// Les détails lus de la partie `i`.
+    fn details(&mut self, i: usize, details: Details) {
+        if let Some(p) = self.parties.get_mut(i) {
+            p.details = details;
+        }
+    }
+
+    /// Le type de la partie `i`, connu par sa lecture (noms d'entrées, flux) : plus précis que par son début.
+    fn nommer_type(&mut self, i: usize, type_: Type) {
+        if let Some(p) = self.parties.get_mut(i) {
+            p.type_ = type_;
+        }
+    }
+
+    /// Un flux ou une source au contenu propre à son application : de type `type_` s'il n'est pas reconnu, sans être
+    /// dit « format inconnu ».
+    fn connu_comme(&mut self, i: usize, type_: Type) {
+        if let Some(p) = self.parties.get_mut(i)
+            && p.type_ == Type::Inconnu
+        {
+            p.type_ = type_;
+            p.manques.retain(|r| *r != Raison::FormatInconnu);
+        }
     }
 
     fn lire(&mut self, i: usize, octets: &[u8], type_: Type) {
@@ -350,8 +399,8 @@ impl Etat<'_> {
         // Un zip collé à la fin, que lirait un extracteur qui cherche la fin de l'archive depuis la fin du fichier :
         // derrière n'importe quel fichier, sauf ceux dont il est déjà la lecture (zip, OOXML…).
         if !matches!(
-            self.parties[i].type_,
-            Type::Zip | Type::Ooxml | Type::OpenDocument | Type::Jar | Type::Apk | Type::Vide
+            self.type_de(i),
+            Some(Type::Zip | Type::Ooxml | Type::OpenDocument | Type::Jar | Type::Apk | Type::Vide)
         ) {
             self.zip_ajoute(i, octets, overlay);
         }
@@ -366,7 +415,9 @@ impl Etat<'_> {
         };
         // Dans l'image même : sa fin est écrite par le fichier (taille d'un BMP, répertoire d'un ICO), et un morceau
         // privé d'un PNG ou un commentaire d'un JPEG peut porter une archive qu'un extracteur ouvrirait.
-        self.archive_cachee(i, &octets[..fin]);
+        if let Some(image) = octets.get(..fin) {
+            self.archive_cachee(i, image);
+        }
         if fin >= octets.len() {
             return None;
         }
@@ -410,7 +461,7 @@ impl Etat<'_> {
         // UPX : ses sections (« UPX0 », « UPX1 ») ou sa marque « UPX! » dans les en-têtes, que renommer les sections
         // ne retire pas.
         if s.sections.iter().any(|x| x.nom.starts_with("UPX"))
-            || octets[..octets.len().min(4096)].windows(4).any(|f| f == b"UPX!")
+            || octets.get(..4096).unwrap_or(octets).windows(4).any(|f| f == b"UPX!")
         {
             self.manque(i, Raison::Paquete("UPX"));
         }
@@ -441,7 +492,7 @@ impl Etat<'_> {
             self.morceau(i, octets, r.clone(), &format!("#overlay@{}", r.start), Origine::Overlay);
         }
         let debut_overlay = s.overlay.first().map(|r| r.start);
-        self.parties[i].details = Details::Pe(Box::new(s));
+        self.details(i, Details::Pe(Box::new(s)));
         debut_overlay
     }
 
@@ -488,7 +539,7 @@ impl Etat<'_> {
             self.fait(i, Fait::Overlay(r.end - r.start));
             self.morceau(i, octets, r, "#overlay", Origine::Overlay);
         }
-        self.parties[i].details = Details::Elf(Box::new(e));
+        self.details(i, Details::Elf(Box::new(e)));
         debut_overlay
     }
 
@@ -521,7 +572,7 @@ impl Etat<'_> {
             self.fait(i, Fait::Overlay(r.end - r.start));
             self.morceau(i, octets, r, "#overlay", Origine::Overlay);
         }
-        self.parties[i].details = Details::MachO(Box::new(m));
+        self.details(i, Details::MachO(Box::new(m)));
         debut_overlay
     }
 
@@ -574,7 +625,7 @@ impl Etat<'_> {
         let a = |n: &str| noms.iter().any(|x| x == n);
         // Les noms des parties d'un paquet OPC ne tiennent pas compte de la casse (ECMA-376, partie 2) : Office ouvre
         // un « [content_types].xml » comme l'autre.
-        self.parties[i].type_ = if noms.iter().any(|x| x.eq_ignore_ascii_case("[Content_Types].xml")) {
+        let type_ = if noms.iter().any(|x| x.eq_ignore_ascii_case("[Content_Types].xml")) {
             Type::Ooxml
         } else if a("mimetype") && noms.iter().any(|n| n.starts_with("META-INF/")) {
             Type::OpenDocument
@@ -585,7 +636,8 @@ impl Etat<'_> {
         } else {
             Type::Zip
         };
-        if self.parties[i].type_ == Type::OpenDocument && noms.iter().any(|n| n.starts_with("Basic/")) {
+        self.nommer_type(i, type_);
+        if type_ == Type::OpenDocument && noms.iter().any(|n| n.starts_with("Basic/")) {
             self.fait(i, Fait::MacrosBasic);
         }
         let mut vus_casse: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
@@ -635,7 +687,7 @@ impl Etat<'_> {
                 continue;
             }
             locaux.insert(cle, nom.clone());
-            if self.parties[i].profondeur + 1 > self.bornes.profondeur {
+            if self.trop_profond(i) {
                 self.manque(i, Raison::Profondeur);
                 return;
             }
@@ -694,7 +746,7 @@ impl Etat<'_> {
 
     /// Ce que les parties d'un document OOXML disent sur lui (`[Content_Types].xml`, relations).
     fn office_dans_zip(&mut self, i: usize, nom: &str, contenu: &[u8]) {
-        if !matches!(self.parties[i].type_, Type::Ooxml) {
+        if self.type_de(i) != Some(Type::Ooxml) {
             return;
         }
         if nom.eq_ignore_ascii_case("[Content_Types].xml") {
@@ -720,7 +772,12 @@ impl Etat<'_> {
         // Une fin de répertoire central dans les 64 Kio de la fin, puis au moins une entrée dont l'en-tête local se
         // lit : là commence l'archive (une entrée centrale qui désigne n'importe où ne compte pas).
         let queue = octets.len().saturating_sub(65_557 + 22);
-        if !octets[queue..].windows(4).any(|f| f == b"PK\x05\x06") {
+        if !octets
+            .get(queue..)
+            .unwrap_or(octets)
+            .windows(4)
+            .any(|f| f == b"PK\x05\x06")
+        {
             return;
         }
         let p = zip::parcourir(octets, self.bornes.entrees);
@@ -779,16 +836,17 @@ impl Etat<'_> {
                 manques.push(Raison::Illisible("en-tête gzip"));
                 break;
             };
-            let lu = deflate::inflater_avant(
-                &octets[flux..],
-                limite - contenu.len(),
-                Some(self.debut + self.bornes.delai),
-            );
+            let Some(donnees) = octets.get(flux..) else {
+                manques.push(Raison::Illisible("en-tête gzip"));
+                break;
+            };
+            let lu = deflate::inflater_avant(donnees, limite - contenu.len(), Some(self.debut + self.bornes.delai));
             let fin = flux + lu.lus;
             if lu.fin == deflate::Fin::Complet {
                 let crc = octets
-                    .get(fin..fin + 4)
-                    .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+                    .get(fin..)
+                    .and_then(<[u8]>::first_chunk::<4>)
+                    .map(|b| u32::from_le_bytes(*b));
                 if crc != Some(crate::archives::crc32::crc32(&lu.contenu)) {
                     faits.push(Fait::CrcFaux);
                 }
@@ -820,7 +878,7 @@ impl Etat<'_> {
                 }
                 break;
             }
-            if !crate::archives::gzip::est_gzip(&octets[debut..]) {
+            if !octets.get(debut..).is_some_and(crate::archives::gzip::est_gzip) {
                 // Autre chose après le dernier membre : analysé à part, comme un overlay.
                 apres = Some(debut);
                 break;
@@ -867,8 +925,8 @@ impl Etat<'_> {
                     let cible = octets
                         .get(position + 157..position + 257)
                         .map(|c| {
-                            String::from_utf8_lossy(&c[..c.iter().position(|&o| o == 0).unwrap_or(c.len())])
-                                .into_owned()
+                            // Jusqu'au premier nul (le champ entier sans nul).
+                            String::from_utf8_lossy(c.split(|&o| o == 0).next().unwrap_or(c)).into_owned()
                         })
                         .unwrap_or_default();
                     self.fait(i, Fait::Lien(format!("{nom} -> {cible}")));
@@ -930,11 +988,15 @@ impl Etat<'_> {
             self.manque(i, Raison::EntreesLimitees);
         }
         let a_la_racine = |n: &str| {
-            ole.places
-                .iter()
-                .any(|p| cfb::egaux_sans_casse(&ole.entrees[p.entree].nom, n) && p.parent == 0)
+            ole.places.iter().any(|p| {
+                p.parent == 0
+                    && ole
+                        .entrees
+                        .get(p.entree)
+                        .is_some_and(|e| cfb::egaux_sans_casse(&e.nom, n))
+            })
         };
-        self.parties[i].type_ = if a_la_racine("EncryptedPackage") && a_la_racine("EncryptionInfo") {
+        let type_ = if a_la_racine("EncryptedPackage") && a_la_racine("EncryptionInfo") {
             Type::OoxmlChiffre
         } else if a_la_racine("WordDocument") {
             Type::DocWord
@@ -942,12 +1004,13 @@ impl Etat<'_> {
             Type::ClasseurExcel
         } else if a_la_racine("PowerPoint Document") {
             Type::PresentationPowerPoint
-        } else if ole.entrees[0].clsid == office::CLSID_MSI {
+        } else if ole.entrees.first().is_some_and(|r| r.clsid == office::CLSID_MSI) {
             Type::Msi
         } else {
             Type::Cfb
         };
-        match self.parties[i].type_ {
+        self.nommer_type(i, type_);
+        match type_ {
             Type::OoxmlChiffre => self.manque(i, Raison::Chiffre),
             // Le flux « PowerPoint Document » ([MS-PPT]) porte, compressés, le projet VBA et les objets embarqués :
             // il n'est pas lu.
@@ -962,7 +1025,11 @@ impl Etat<'_> {
         let stockages_vba: Vec<(usize, String)> = ole
             .places
             .iter()
-            .filter(|p| ole.entrees[p.entree].type_ == 1 && cfb::egaux_sans_casse(&ole.entrees[p.entree].nom, "VBA"))
+            .filter(|p| {
+                ole.entrees
+                    .get(p.entree)
+                    .is_some_and(|e| e.type_ == 1 && cfb::egaux_sans_casse(&e.nom, "VBA"))
+            })
             .map(|p| (p.entree, p.chemin.clone()))
             .collect();
         let mut projets = 0usize;
@@ -1022,7 +1089,7 @@ impl Etat<'_> {
                     self.manque(i, Raison::SourceVbaIllisible);
                 }
             }
-            self.parties[i].details = Details::Vba(Box::new(projet));
+            self.details(i, Details::Vba(Box::new(projet)));
         }
         // Chaque flux atteint par l'arbre, puis les orphelins. Dans un stockage VBA, sont connus les flux que
         // le projet désigne et ceux que [MS-OVBA] 2.3.4 nomme (_VBA_PROJECT, PROJECT, PROJECTwm, PROJECTlk, __SRP_n).
@@ -1033,7 +1100,8 @@ impl Etat<'_> {
             .map(|p| p.parent)
             .collect();
         let vba_nomme = |p: &cfb::Place| {
-            let nom = &ole.entrees[p.entree].nom;
+            // Une entrée hors du répertoire n'a pas de nom : pas nommée par le projet, donc lue comme un flux inconnu.
+            let nom = ole.entrees.get(p.entree).map_or("", |e| e.nom.as_str());
             (stockages_vba.iter().any(|(s, _)| p.parent == *s)
                 && (["_VBA_PROJECT", "dir"].iter().any(|n| cfb::egaux_sans_casse(n, nom))
                     || nom.to_ascii_uppercase().starts_with("__SRP_")))
@@ -1042,26 +1110,26 @@ impl Etat<'_> {
                         .iter()
                         .any(|n| cfb::egaux_sans_casse(n, nom)))
         };
-        let flux: Vec<(usize, String, bool, bool)> = ole
+        // (numéro, entrée, chemin, orpheline, nommée par le projet VBA)
+        let flux: Vec<(usize, &cfb::Entree, String, bool, bool)> = ole
             .places
             .iter()
-            .filter(|p| ole.entrees[p.entree].type_ == 2)
-            .map(|p| {
-                (
+            .filter_map(|p| {
+                let e = ole.entrees.get(p.entree).filter(|e| e.type_ == 2)?;
+                Some((
                     p.entree,
+                    e,
                     p.chemin.clone(),
                     false,
                     vba_nomme(p) || flux_du_projet.contains(&p.entree),
-                )
+                ))
             })
-            .chain(
-                ole.orphelines
-                    .iter()
-                    .filter(|&&k| ole.entrees[k].type_ == 2)
-                    .map(|&k| (k, ole.entrees[k].nom.clone(), true, false)),
-            )
+            .chain(ole.orphelines.iter().filter_map(|&k| {
+                let e = ole.entrees.get(k).filter(|e| e.type_ == 2)?;
+                Some((k, e, e.nom.clone(), true, false))
+            }))
             .collect();
-        for (k, chemin, orphelin, vba) in flux {
+        for (k, entree, chemin, orphelin, vba) in flux {
             if self.debut.elapsed() > self.bornes.delai {
                 self.manque(i, Raison::Delai);
                 return;
@@ -1084,7 +1152,7 @@ impl Etat<'_> {
             } else {
                 Origine::FluxOle
             };
-            let taille = ole.entrees[k].taille;
+            let taille = entree.taille;
             let limite = match self.budget() {
                 Ok(l) => l,
                 Err(r) => {
@@ -1105,15 +1173,14 @@ impl Etat<'_> {
                 }
             };
             self.produit(donnees.len());
-            let nom_flux = ole.entrees[k].nom.clone();
+            let nom_flux = entree.nom.clone();
             self.faits_du_flux(i, &nom_flux, &donnees);
             let connu = vba || FLUX_CONNUS.iter().any(|n| cfb::egaux_sans_casse(n, &nom_flux));
             let Some(j) = self.enfant(i, &donnees, chemin_affiche.clone(), origine, Vec::new(), Vec::new()) else {
                 continue;
             };
-            if connu && self.parties[j].type_ == Type::Inconnu {
-                self.parties[j].type_ = Type::FluxOle;
-                self.parties[j].manques.retain(|r| *r != Raison::FormatInconnu);
+            if connu {
+                self.connu_comme(j, Type::FluxOle);
             }
             for (nom_module, decalage) in modules.get(&k).cloned().unwrap_or_default() {
                 self.source_vba(j, &donnees, &nom_module, decalage, &chemin_affiche);
@@ -1191,7 +1258,7 @@ impl Etat<'_> {
             .collect();
         for f in &faits {
             // Remontée sur le fichier composé : le premier fait qu'une heuristique y cherchera.
-            if let Some(parent) = self.parties[j].parent {
+            if let Some(parent) = self.parties.get(j).and_then(|p| p.parent) {
                 self.fait(parent, f.clone());
             }
         }
@@ -1203,8 +1270,11 @@ impl Etat<'_> {
             faits,
             manques,
         ) {
-            self.parties[k].type_ = Type::SourceVba;
-            self.parties[k].manques.retain(|r| *r != Raison::FormatInconnu);
+            // Une source se lit comme du texte : son type dit d'où elle vient, quel que soit son début.
+            if let Some(p) = self.parties.get_mut(k) {
+                p.type_ = Type::SourceVba;
+                p.manques.retain(|r| *r != Raison::FormatInconnu);
+            }
         }
     }
 
@@ -1249,7 +1319,7 @@ impl Etat<'_> {
             self.fait(i, Fait::Overlay(r.end - r.start));
             self.morceau(i, octets, r, "#overlay", Origine::Overlay);
         }
-        self.parties[i].details = Details::Lnk(Box::new(l));
+        self.details(i, Details::Lnk(Box::new(l)));
         debut_overlay
     }
 
@@ -1266,11 +1336,14 @@ impl Etat<'_> {
         if t.plus_longue_ligne > LIGNE_LONGUE {
             self.fait(i, Fait::LigneLongue(t.plus_longue_ligne));
         }
-        self.parties[i].details = Details::Texte {
-            encodage: t.encodage,
-            langage: t.langage,
-            lignes: t.lignes,
-        };
+        self.details(
+            i,
+            Details::Texte {
+                encodage: t.encodage,
+                langage: t.langage,
+                lignes: t.lignes,
+            },
+        );
         // Au-delà de la limite, rien ne dit que c'est encore du texte.
         if t.tronque {
             self.manque(i, Raison::TropGros);

@@ -229,9 +229,9 @@ fn chaines_lisibles(octets: &[u8]) -> Vec<String> {
     }
     for decalage in 0..2 {
         courant.clear();
-        let mut k = decalage;
-        while k + 1 < octets.len() {
-            let (bas, haut) = (octets[k], octets[k + 1]);
+        // Les paires depuis `decalage` (moins de deux octets : aucune).
+        let paires = octets.get(decalage..).map_or(&[][..], |o| o.as_chunks::<2>().0);
+        for &[bas, haut] in paires {
             if haut == 0 && lisible(bas) {
                 courant.push(char::from(bas));
             } else {
@@ -240,7 +240,6 @@ fn chaines_lisibles(octets: &[u8]) -> Vec<String> {
                 }
                 courant.clear();
             }
-            k += 2;
         }
         if courant.len() >= 3 && !v.contains(&courant) {
             v.push(courant.clone());

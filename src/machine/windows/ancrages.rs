@@ -398,7 +398,8 @@ fn fournisseurs_de_temps() -> Vec<Constat> {
 /// Le chemin de la DLL au début d'un PackedCatalogItem (texte ANSI terminé par un zéro).
 fn chemin_du_catalogue(octets: &[u8]) -> Option<String> {
     let fin = octets.iter().position(|&o| o == 0)?;
-    let texte = String::from_utf8_lossy(&octets[..fin]).trim().to_string();
+    let texte = String::from_utf8_lossy(octets.get(..fin)?).trim().to_string();
+
     (!texte.is_empty()).then_some(texte)
 }
 

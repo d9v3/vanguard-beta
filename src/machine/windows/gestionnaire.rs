@@ -173,8 +173,8 @@ unsafe fn lire_config(service: *mut c_void) -> Option<Config> {
         }
         // SAFETY : [a, fin) est dans le tampon (borne vérifiée juste au-dessus), aligné sur 2, initialisé.
         let mots = unsafe { std::slice::from_raw_parts(p, (fin - a) / 2) };
-        let n = mots.iter().position(|&m| m == 0).unwrap_or(mots.len());
-        String::from_utf16_lossy(&mots[..n])
+        // Jusqu'au premier zéro, ou tout le reste du tampon s'il n'y en a pas.
+        String::from_utf16_lossy(mots.split(|&m| m == 0).next().unwrap_or(mots))
     };
     Some(Config {
         sorte: c.sorte,

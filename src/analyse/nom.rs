@@ -111,7 +111,7 @@ pub(crate) fn examiner(chemin: &str) -> Vec<FaitNom> {
     let octets = chemin.as_bytes();
     if chemin.starts_with('/')
         || chemin.starts_with('\\')
-        || (octets.len() >= 2 && octets[1] == b':' && octets[0].is_ascii_alphabetic())
+        || matches!(octets, [lecteur, b':', ..] if lecteur.is_ascii_alphabetic())
     {
         faits.push(FaitNom::CheminAbsolu);
     }
@@ -126,9 +126,9 @@ pub(crate) fn examiner(chemin: &str) -> Vec<FaitNom> {
     let propre = dernier.to_lowercase();
     let propre = propre.trim_end_matches(['.', ' ']);
     let morceaux: Vec<&str> = propre.split('.').collect();
-    if morceaux.len() > 2 {
-        let extension = morceaux[morceaux.len() - 1].trim();
-        let avant = morceaux[morceaux.len() - 2].trim();
+    // Au moins trois morceaux : un nom, puis les deux extensions.
+    if let [_, .., avant, extension] = morceaux.as_slice() {
+        let (avant, extension) = (avant.trim(), extension.trim());
         if DOCUMENTS.contains(&avant) && PROGRAMMES.contains(&extension) {
             faits.push(FaitNom::DoubleExtension {
                 avant: avant.to_string(),

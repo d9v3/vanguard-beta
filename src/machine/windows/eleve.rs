@@ -198,7 +198,7 @@ fn analyser_script(ligne: &str) -> Option<Element> {
         .collect();
     let chemin = String::from_utf8(octets?).ok()?;
     let o = chemin.as_bytes();
-    let complet = o.len() > 3 && o[0].is_ascii_alphabetic() && o[1] == b':' && o[2] == b'\\';
+    let complet = matches!(o, [lecteur, b':', b'\\', _, ..] if lecteur.is_ascii_alphabetic());
     // Un script de correction de Vanguard : « correction-….ps1 » dans un dossier « corrections ».
     let p = std::path::Path::new(&chemin);
     let ps1 = p
@@ -886,7 +886,7 @@ const COMPTES_COM: [WELL_KNOWN_SID_TYPE; 5] = [
 /// d'accès vivent avec lui, dans une boîte qui ne bouge plus : le descripteur absolu pointe dessus.
 struct DescripteurCom {
     /// SECURITY_MAX_SID_SIZE (68 octets) chacun, alignés sur 8.
-    sids: [[u64; 9]; 5],
+    sids: [[u64; 9]; COMPTES_COM.len()],
     /// L'en-tête (8 octets) et cinq entrées de 8 octets plus leur SID : 228 octets au plus.
     acl: [u64; 32],
     descripteur: SECURITY_DESCRIPTOR,
@@ -897,7 +897,7 @@ impl DescripteurCom {
         /// SECURITY_DESCRIPTOR_REVISION.
         const REVISION: u32 = 1;
         let mut d = Box::new(DescripteurCom {
-            sids: [[0; 9]; 5],
+            sids: [[0; 9]; COMPTES_COM.len()],
             acl: [0; 32],
             descripteur: SECURITY_DESCRIPTOR::default(),
         });
@@ -907,20 +907,27 @@ impl DescripteurCom {
         let descripteur = PSECURITY_DESCRIPTOR((&raw mut d.descripteur).cast());
         // SAFETY : chaque SID est écrit dans son propre tampon, de la taille annoncée ; la liste d'accès dans le sien,
         // de la taille annoncée et aligné sur 8 octets (InitializeAcl demande 4). Tous les pointeurs viennent de
-        // `&raw mut` sur des champs de la boîte, qui ne bouge plus : le descripteur absolu, qui ne garde que des
-        // pointeurs vers les SID et la liste, reste valide tant qu'elle vit.
+        // `&raw mut` (ou de `ptr::from_mut`, pour les SID) sur des champs de la boîte, qui ne bouge plus : le
+        // descripteur absolu, qui ne garde que des pointeurs vers les SID et la liste, reste valide tant qu'elle vit.
+
         unsafe {
-            for (i, compte) in COMPTES_COM.into_iter().enumerate() {
+            // Un tampon par compte : `sids` en a autant que COMPTES_COM, par son type.
+            for (compte, sid) in COMPTES_COM.into_iter().zip(&mut d.sids) {
                 let mut taille = taille_sid;
-                CreateWellKnownSid(compte, None, Some(PSID((&raw mut d.sids[i]).cast())), &raw mut taille)?;
+                CreateWellKnownSid(
+                    compte,
+                    None,
+                    Some(PSID(std::ptr::from_mut(sid).cast())),
+                    &raw mut taille,
+                )?;
             }
             InitializeAcl(acl, taille_acl, ACL_REVISION)?;
-            for i in 0..COMPTES_COM.len() {
+            for sid in &mut d.sids {
                 AddAccessAllowedAce(
                     acl,
                     ACL_REVISION,
                     COM_RIGHTS_EXECUTE | COM_RIGHTS_EXECUTE_LOCAL,
-                    PSID((&raw mut d.sids[i]).cast()),
+                    PSID(std::ptr::from_mut(sid).cast()),
                 )?;
             }
             let administrateurs = PSID((&raw mut d.sids[0]).cast());

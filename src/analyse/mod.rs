@@ -433,9 +433,10 @@ impl Analyse {
     pub(crate) fn chemin_complet(&self, i: usize) -> String {
         let mut morceaux = Vec::new();
         let mut k = Some(i);
-        while let Some(j) = k {
-            morceaux.push(self.parties[j].chemin.as_str());
-            k = self.parties[j].parent;
+        // Un numéro hors de l'arbre (aucun parent ne l'est) arrête la remontée.
+        while let Some(p) = k.and_then(|j| self.parties.get(j)) {
+            morceaux.push(p.chemin.as_str());
+            k = p.parent;
         }
         morceaux.reverse();
         morceaux.join(" › ")

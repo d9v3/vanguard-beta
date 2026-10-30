@@ -134,13 +134,11 @@ impl<R: Read + Seek> Lecteur<'_, R> {
     }
 
     fn u16(&mut self, position: u64) -> Option<u16> {
-        let o = self.octets(position, 2)?;
-        Some(u16::from_le_bytes([o[0], o[1]]))
+        self.octets(position, 2)?.try_into().ok().map(u16::from_le_bytes)
     }
 
     fn u32(&mut self, position: u64) -> Option<u32> {
-        let o = self.octets(position, 4)?;
-        Some(u32::from_le_bytes([o[0], o[1], o[2], o[3]]))
+        self.octets(position, 4)?.try_into().ok().map(u32::from_le_bytes)
     }
 }
 
@@ -230,12 +228,11 @@ fn entetes<R: Read + Seek>(l: &mut Lecteur<'_, R>) -> Option<Entetes> {
     let mut sections = Vec::with_capacity(usize::from(nombre_sections));
     for i in 0..u64::from(nombre_sections) {
         let s = l.octets(table + i * 40, 40)?;
-        let mot = |a: usize| u32::from_le_bytes([s[a], s[a + 1], s[a + 2], s[a + 3]]);
         sections.push(Section {
-            taille_virtuelle: mot(8),
-            adresse: mot(12),
-            taille_brute: mot(16),
-            position: mot(20),
+            taille_virtuelle: mot32_a(&s, 8)?,
+            adresse: mot32_a(&s, 12)?,
+            taille_brute: mot32_a(&s, 16)?,
+            position: mot32_a(&s, 20)?,
         });
     }
     // Les données brutes de chaque section doivent être dans le fichier.
@@ -512,42 +509,44 @@ pub(crate) fn champs_yara_chargee<R: Read + Seek>(source: &mut R, taille: u64) -
 }
 
 fn champs<R: Read + Seek>(source: &mut R, taille: u64, chargee: bool) -> Option<ChampsYara> {
+    // `morceau` rend exactement les octets demandés : les lectures de mots qui suivent sont dedans (un `None` n'y
+    // viendrait que d'un défaut d'ici, et ferait dire « pas un PE » plutôt que planter).
     let dos = morceau(source, taille, 0, 0x40)?;
-    if &dos[..2] != b"MZ" {
+    if !dos.starts_with(b"MZ") {
         return None;
     }
-    let pe = u64::from(u32::from_le_bytes([dos[0x3C], dos[0x3D], dos[0x3E], dos[0x3F]]));
+    let pe = u64::from(mot32_a(&dos, 0x3C)?);
     let coff = morceau(source, taille, pe, 24)?;
-    if &coff[..4] != b"PE\0\0" {
+    if !coff.starts_with(b"PE\0\0") {
         return None;
     }
-    let mot16 = |o: &[u8], a: usize| u16::from_le_bytes([o[a], o[a + 1]]);
-    let mot32 = |o: &[u8], a: usize| u32::from_le_bytes([o[a], o[a + 1], o[a + 2], o[a + 3]]);
-    let nombre_sections = mot16(&coff, 6);
-    let taille_facultatif = u64::from(mot16(&coff, 20));
+    let nombre_sections = mot16_a(&coff, 6)?;
+    let taille_facultatif = u64::from(mot16_a(&coff, 20)?);
     let facultatif = pe + 24;
-    let pe32_plus = morceau(source, taille, facultatif, 2).is_some_and(|m| mot16(&m, 0) == 0x20B);
+    let pe32_plus = morceau(source, taille, facultatif, 2).is_some_and(|m| mot16_a(&m, 0) == Some(0x20B));
     let forme = if pe32_plus { 112 } else { 96 };
     let (rva, alignement_sections, alignement_fichier) = match morceau(source, taille, facultatif, forme) {
-        Some(f) => (mot32(&f, 16), mot32(&f, 32), mot32(&f, 36)),
+        Some(f) => (mot32_a(&f, 16)?, mot32_a(&f, 32)?, mot32_a(&f, 36)?),
         None => (0, 0, 0),
     };
     let securite = morceau(source, taille, facultatif + forme as u64 + 8 * REPERTOIRE_SECURITE, 8)
-        .map(|r| (u64::from(mot32(&r, 0)), u64::from(mot32(&r, 4))));
+        .and_then(|r| Some((u64::from(mot32_a(&r, 0)?), u64::from(mot32_a(&r, 4)?))));
     // La table des sections suit l'en-tête facultatif de la taille qu'il annonce ; elle s'arrête à la première entrée
     // qui sort du fichier.
     let table = facultatif + taille_facultatif;
     let mut sections = Vec::new();
     for i in 0..u64::from(nombre_sections.min(SECTIONS_YARA)) {
-        let Some(s) = morceau(source, taille, table + i * 40, 40) else {
+        let Some(section) = morceau(source, taille, table + i * 40, 40).and_then(|s| {
+            Some(Section {
+                taille_virtuelle: mot32_a(&s, 8)?,
+                adresse: mot32_a(&s, 12)?,
+                taille_brute: mot32_a(&s, 16)?,
+                position: mot32_a(&s, 20)?,
+            })
+        }) else {
             break;
         };
-        sections.push(Section {
-            taille_virtuelle: mot32(&s, 8),
-            adresse: mot32(&s, 12),
-            taille_brute: mot32(&s, 16),
-            position: mot32(&s, 20),
-        });
+        sections.push(section);
     }
     if chargee {
         return Some(ChampsYara {
@@ -619,13 +618,18 @@ pub(crate) fn signature_presente<R: Read + Seek>(source: &mut R, taille: u64, ch
     let mut position = debut;
     while position < fin {
         let voulu = usize::try_from(fin - position).unwrap_or(usize::MAX).min(64 << 10);
-        if source.read_exact(&mut tampon[garde..garde + voulu]).is_err() {
+        // `garde` (moins que l'identifiant) plus un bloc tiennent dans le tampon : une zone hors de lui, défaut
+        // d'ici, se lit comme une lecture ratée.
+        let Some(zone) = tampon.get_mut(garde..garde + voulu) else {
+            return false;
+        };
+        if source.read_exact(zone).is_err() {
             return false;
         }
         let plein = garde + voulu;
-        if tampon[..plein]
-            .windows(OID_SIGNED_DATA.len())
-            .any(|w| w == OID_SIGNED_DATA)
+        if tampon
+            .get(..plein)
+            .is_some_and(|t| t.windows(OID_SIGNED_DATA.len()).any(|w| w == OID_SIGNED_DATA))
         {
             return true;
         }
@@ -753,7 +757,10 @@ pub(crate) fn entropie(octets: &[u8]) -> u16 {
     }
     let mut compte = [0u64; 256];
     for &o in octets {
-        compte[usize::from(o)] += 1;
+        #[expect(clippy::indexing_slicing, reason = "un octet indexe une table de 256 entrées")]
+        {
+            compte[usize::from(o)] += 1;
+        }
     }
     #[allow(clippy::cast_precision_loss)]
     let n = octets.len() as f64;
@@ -772,22 +779,15 @@ pub(crate) fn entropie(octets: &[u8]) -> u16 {
 }
 
 fn mot16_a(octets: &[u8], i: usize) -> Option<u16> {
-    octets
-        .get(i..i.checked_add(2)?)
-        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+    octets.get(i..)?.first_chunk::<2>().map(|b| u16::from_le_bytes(*b))
 }
 
 fn mot32_a(octets: &[u8], i: usize) -> Option<u32> {
-    octets
-        .get(i..i.checked_add(4)?)
-        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    octets.get(i..)?.first_chunk::<4>().map(|b| u32::from_le_bytes(*b))
 }
 
 fn mot64_a(octets: &[u8], i: usize) -> Option<u64> {
-    let b = octets.get(i..i.checked_add(8)?)?;
-    let mut m = [0u8; 8];
-    m.copy_from_slice(b);
-    Some(u64::from_le_bytes(m))
+    octets.get(i..)?.first_chunk::<8>().map(|b| u64::from_le_bytes(*b))
 }
 
 /// La position dans le fichier d'une RVA : dans les données brutes d'une section, ou dans les en-têtes (avant la
@@ -803,9 +803,9 @@ fn position_rva(sections: &[Section], taille_entetes: u32, rva: u32, n: u32) -> 
 fn chaine_rva(octets: &[u8], sections: &[Section], taille_entetes: u32, rva: u32) -> Option<String> {
     let debut = position_rva(sections, taille_entetes, rva, 1)?;
     let reste = octets.get(debut..)?;
-    let reste = &reste[..reste.len().min(NOM_MAX)];
+    let reste = reste.get(..NOM_MAX).unwrap_or(reste);
     let fin = reste.iter().position(|&o| o == 0)?;
-    Some(String::from_utf8_lossy(&reste[..fin]).into_owned())
+    Some(String::from_utf8_lossy(reste.get(..fin)?).into_owned())
 }
 
 /// La structure du PE `octets` (le fichier entier). `None` : pas un PE, ou des en-têtes refusés par `entetes`.
@@ -832,9 +832,10 @@ pub(crate) fn structure(octets: &[u8]) -> Option<StructurePe> {
     let mut deja: Vec<((u32, u32), u16)> = Vec::new();
     let mut budget = octets.len().saturating_mul(2).saturating_add(1 << 20);
     for (i, s) in e.sections.iter().enumerate() {
-        let entree = octets.get(table + i * 40..table + i * 40 + 40)?;
+        let entree = octets.get(table + i * 40..)?.first_chunk::<40>()?;
         let nom = &entree[..8];
-        let nom = String::from_utf8_lossy(&nom[..nom.iter().position(|&o| o == 0).unwrap_or(8)]).into_owned();
+        // Jusqu'au premier nul (les huit octets s'il n'y en a pas).
+        let nom = String::from_utf8_lossy(nom.split(|&o| o == 0).next().unwrap_or(nom)).into_owned();
         let debut = s.position as usize;
         let brut = octets.get(debut..debut + s.taille_brute as usize).unwrap_or(&[]);
         sections.push(SectionPe {
@@ -980,8 +981,9 @@ fn imports(
         if n == DLL_MAX {
             return (dlls, true);
         }
-        let champ = |a: usize| u32::from_le_bytes([d[a], d[a + 1], d[a + 2], d[a + 3]]);
-        let (recherche, nom, adresses) = (champ(0), champ(12), champ(16));
+        let (Some(recherche), Some(nom), Some(adresses)) = (mot32_a(d, 0), mot32_a(d, 12), mot32_a(d, 16)) else {
+            return (dlls, true);
+        };
         let Some(dll) = chaine_rva(octets, sections, taille_entetes, nom) else {
             return (dlls, true);
         };

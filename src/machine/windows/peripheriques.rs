@@ -155,8 +155,9 @@ unsafe fn propriete(liste: *mut c_void, info: &mut InfoAppareil, propriete: u32)
 
 /// Un texte UTF-16 arrêté au premier zéro.
 fn texte(large: &[u16]) -> String {
-    let fin = large.iter().position(|&c| c == 0).unwrap_or(large.len());
-    String::from_utf16_lossy(&large[..fin]).trim().to_string()
+    String::from_utf16_lossy(large.split(|&c| c == 0).next().unwrap_or(large))
+        .trim()
+        .to_string()
 }
 
 /// La clé du pilote d'un appareil, ouverte en lecture ; `None` sans pilote.

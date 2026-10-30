@@ -180,7 +180,10 @@ pub(crate) fn lire(octets: &[u8]) -> Option<MachO> {
             m.commandes_illisibles = true;
             break;
         }
-        let commande = &octets[p..p + taille];
+        let Some(commande) = octets.get(p..p + taille) else {
+            m.commandes_illisibles = true;
+            break;
+        };
         commande_de_chargement(o, octets, cmd, commande, &mut m);
         p += taille;
     }
@@ -268,7 +271,8 @@ fn commande_de_chargement(o: Ordre, octets: &[u8], cmd: u32, commande: &[u8], m:
 }
 
 fn nom_segment(nom: &[u8]) -> String {
-    String::from_utf8_lossy(&nom[..nom.iter().position(|&o| o == 0).unwrap_or(nom.len())]).into_owned()
+    // Jusqu'au premier nul (le champ entier sans nul).
+    String::from_utf8_lossy(nom.split(|&o| o == 0).next().unwrap_or(nom)).into_owned()
 }
 
 #[cfg(test)]

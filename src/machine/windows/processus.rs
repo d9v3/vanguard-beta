@@ -58,8 +58,8 @@ pub(crate) fn nom_du_fichier(pid: u32, fichier: &[u16]) -> String {
     if pid == 0 {
         return "Idle".into();
     }
-    let fin = fichier.iter().position(|&c| c == 0).unwrap_or(fichier.len());
-    let nom = String::from_utf16_lossy(&fichier[..fin]);
+    // Jusqu'au premier zéro, ou tout le tampon s'il n'y en a pas.
+    let nom = String::from_utf16_lossy(fichier.split(|&c| c == 0).next().unwrap_or(fichier));
     let court = match nom.len().checked_sub(4) {
         Some(i) if nom.get(i..).is_some_and(|e| e.eq_ignore_ascii_case(".exe")) => &nom[..i],
         _ => &nom,
@@ -110,7 +110,8 @@ pub(crate) fn chemin(processus: u32) -> Option<String> {
         }
         let lu = QueryFullProcessImageNameW(poignee, 0, tampon.as_mut_ptr(), &raw mut taille) != 0;
         CloseHandle(poignee);
-        lu.then(|| String::from_utf16_lossy(&tampon[..usize::try_from(taille).unwrap_or(0).min(tampon.len())]))
+        // Les `taille` caractères écrits, jamais au-delà du tampon.
+        lu.then(|| String::from_utf16_lossy(tampon.get(..usize::try_from(taille).unwrap_or(0)).unwrap_or(&tampon)))
     }
 }
 
@@ -155,7 +156,8 @@ pub(crate) fn terminer_si(processus: u32, attendu: &str) -> bool {
             return false;
         }
         let lu = QueryFullProcessImageNameW(poignee, 0, tampon.as_mut_ptr(), &raw mut taille) != 0;
-        let chemin = String::from_utf16_lossy(&tampon[..usize::try_from(taille).unwrap_or(0).min(tampon.len())]);
+        // Les `taille` caractères écrits, jamais au-delà du tampon.
+        let chemin = String::from_utf16_lossy(tampon.get(..usize::try_from(taille).unwrap_or(0)).unwrap_or(&tampon));
         let arrete = lu && chemin.eq_ignore_ascii_case(attendu) && TerminateProcess(poignee, 1) != 0;
         CloseHandle(poignee);
         arrete
@@ -295,7 +297,9 @@ pub(crate) fn compte_de(pid: u32) -> String {
         {
             return String::new();
         }
-        let texte = |t: &[u16], longueur: u32| String::from_utf16_lossy(&t[..(longueur as usize).min(t.len())]);
+        // Les `longueur` caractères rendus, jamais au-delà du tampon.
+        let texte = |t: &[u16], longueur: u32| String::from_utf16_lossy(t.get(..longueur as usize).unwrap_or(t));
+
         let (nom, domaine) = (texte(&nom, n), texte(&domaine, d));
         if domaine.is_empty() {
             nom

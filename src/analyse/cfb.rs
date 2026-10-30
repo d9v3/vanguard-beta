@@ -203,11 +203,13 @@ impl<'a> Cfb<'a> {
                 c.entrees.push(entree(e));
             }
         }
-        if c.entrees.first().map(|r| r.type_) != Some(5) {
-            return Err(Defaut::Repertoire);
-        }
+        let racine = c
+            .entrees
+            .first()
+            .filter(|r| r.type_ == 5)
+            .cloned()
+            .ok_or(Defaut::Repertoire)?;
         // La mini-FAT et le mini-flux (les données de l'entrée racine, par la FAT).
-        let racine = c.entrees[0].clone();
         match Self::chaine(premier_mini_fat, &c.fat, utiles) {
             Ok(chaine) => {
                 for s in chaine {
@@ -235,7 +237,7 @@ impl<'a> Cfb<'a> {
                 Err(_) => c.mini_illisible = true,
             }
         }
-        c.parcourir_arbre();
+        c.parcourir_arbre(racine.enfant);
         Ok(c)
     }
 
@@ -257,11 +259,12 @@ impl<'a> Cfb<'a> {
         let mut s = debut;
         while s != ENDOFCHAIN {
             let i = s as usize;
-            if s > MAXREGSECT || i >= table.len() || chaine.len() >= max || !vus.insert(s) {
+            let suivant = table.get(i).copied().ok_or(Defaut::Chaine)?;
+            if s > MAXREGSECT || chaine.len() >= max || !vus.insert(s) {
                 return Err(Defaut::Chaine);
             }
             chaine.push(s);
-            s = table[i];
+            s = suivant;
         }
         Ok(chaine)
     }
@@ -277,7 +280,8 @@ impl<'a> Cfb<'a> {
         let mut donnees = Vec::with_capacity(taille.min(chaine.len().saturating_mul(self.secteur)));
         for s in chaine {
             let d = self.secteur_brut(s).ok_or(Defaut::Chaine)?;
-            donnees.extend_from_slice(&d[..d.len().min(taille - donnees.len())]);
+            // Le dernier secteur n'est pris que jusqu'à la taille du flux (tout le secteur s'il est plus court).
+            donnees.extend_from_slice(d.get(..taille - donnees.len()).unwrap_or(d));
         }
         if donnees.len() < taille {
             return Err(Defaut::Tronque);
@@ -315,7 +319,8 @@ impl<'a> Cfb<'a> {
                 .or_else(|| self.mini_flux.get(position..))
                 .filter(|d| !d.is_empty())
                 .ok_or(Defaut::Tronque)?;
-            donnees.extend_from_slice(&d[..d.len().min(taille - donnees.len())]);
+            // Le dernier secteur n'est pris que jusqu'à la taille du flux (tout le secteur s'il est plus court).
+            donnees.extend_from_slice(d.get(..taille - donnees.len()).unwrap_or(d));
         }
         if donnees.len() < taille {
             return Err(Defaut::Tronque);
@@ -323,29 +328,31 @@ impl<'a> Cfb<'a> {
         Ok(donnees)
     }
 
-    /// L'arbre, depuis l'enfant de la racine : chaque stockage a ses entrées en arbre (frères gauche et droit), son
-    /// propre arbre sous son enfant. Une pile, un témoin.
-    fn parcourir_arbre(&mut self) {
+    /// L'arbre, depuis `enfant_racine` (l'enfant de l'entrée racine, la première) : chaque stockage a ses entrées en
+    /// arbre (frères gauche et droit), son propre arbre sous son enfant. Une pile, un témoin.
+    fn parcourir_arbre(&mut self, enfant_racine: u32) {
         let mut vus = vec![false; self.entrees.len()];
-        vus[0] = true;
+        if let Some(racine) = vus.first_mut() {
+            *racine = true;
+        }
         // (entrée, numéro du stockage qui la contient, sa place s'il en a une, profondeur)
-        let mut pile: Vec<(u32, usize, Option<usize>, usize)> = vec![(self.entrees[0].enfant, 0, None, 0)];
+        let mut pile: Vec<(u32, usize, Option<usize>, usize)> = vec![(enfant_racine, 0, None, 0)];
         while let Some((id, parent, place_parent, profondeur)) = pile.pop() {
             if id == NOSTREAM {
                 continue;
             }
             let i = id as usize;
-            if i >= self.entrees.len() {
+            // Un numéro hors du répertoire ne désigne rien.
+            let (Some(vu), Some(e)) = (vus.get_mut(i), self.entrees.get(i)) else {
                 continue;
-            }
-            if vus[i] {
+            };
+            if *vu {
                 self.arbre_boucle = true;
                 continue;
             }
-            vus[i] = true;
-            let e = &self.entrees[i];
-            let mut chemin = match place_parent {
-                Some(k) => format!("{}/{}", self.places[k].chemin, e.nom),
+            *vu = true;
+            let mut chemin = match place_parent.and_then(|k| self.places.get(k)) {
+                Some(p) => format!("{}/{}", p.chemin, e.nom),
                 None => e.nom.clone(),
             };
             if chemin.len() > CHEMIN_MAX {
@@ -375,8 +382,14 @@ impl<'a> Cfb<'a> {
                 }
             }
         }
-        self.orphelines = (1..self.entrees.len())
-            .filter(|&i| !vus[i] && matches!(self.entrees[i].type_, 1 | 2))
+        self.orphelines = self
+            .entrees
+            .iter()
+            .zip(&vus)
+            .enumerate()
+            .skip(1)
+            .filter(|(_, (e, vu))| !**vu && matches!(e.type_, 1 | 2))
+            .map(|(i, _)| i)
             .collect();
     }
 
@@ -386,8 +399,13 @@ impl<'a> Cfb<'a> {
         self.enfants
             .get(&stockage)?
             .iter()
-            .map(|&k| self.places[k].entree)
-            .find(|&e| self.entrees[e].type_ == 2 && egaux_sans_casse(&self.entrees[e].nom, nom))
+            .filter_map(|&k| self.places.get(k))
+            .map(|p| p.entree)
+            .find(|&e| {
+                self.entrees
+                    .get(e)
+                    .is_some_and(|x| x.type_ == 2 && egaux_sans_casse(&x.nom, nom))
+            })
     }
 }
 
@@ -401,8 +419,12 @@ pub(crate) fn egaux_sans_casse(a: &str, b: &str) -> bool {
 
 /// Une entrée de 128 octets : nom UTF-16 (64 octets, longueur en octets nul compris), type, frères, enfant, CLSID,
 /// premier secteur, taille.
-fn entree(e: &[u8]) -> Entree {
+fn entree(e: &[u8; 128]) -> Entree {
     let longueur = usize::from(u16le(e, 64).unwrap_or(0)).min(64);
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "longueur bornée à 64 juste au-dessus, l'entrée en fait 128"
+    )]
     let nom = utf16le(&e[..longueur.saturating_sub(2)]);
     let mut clsid = [0u8; 16];
     clsid.copy_from_slice(&e[80..96]);

@@ -65,18 +65,16 @@ pub(crate) fn lire_netstat(sortie: &str) -> Vec<(String, u16, u32, bool)> {
                 "UDP" if c.len() == 4 => false,
                 _ => return None,
             };
-            let distante = c[2];
-            if tcp && !matches!(distante, "0.0.0.0:0" | "[::]:0") {
+            // TCP : protocole, locale, distante, état, programme ; UDP : protocole, locale, distante, programme.
+            let [_, locale, distante, .., programme] = c.as_slice() else {
+                return None;
+            };
+            if tcp && !matches!(*distante, "0.0.0.0:0" | "[::]:0") {
                 return None;
             }
-            let (adresse, port) = c[1].rsplit_once(':')?;
+            let (adresse, port) = locale.rsplit_once(':')?;
             let adresse = adresse.trim_start_matches('[').trim_end_matches(']');
-            Some((
-                adresse.to_string(),
-                port.parse().ok()?,
-                c[c.len() - 1].parse().ok()?,
-                tcp,
-            ))
+            Some((adresse.to_string(), port.parse().ok()?, programme.parse().ok()?, tcp))
         })
         .collect()
 }

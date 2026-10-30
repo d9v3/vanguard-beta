@@ -149,7 +149,7 @@ pub(crate) fn deviner(octets: &[u8]) -> Type {
     if commence(b"RIFF") && (a(8, b"WAVE") || a(8, b"AVI ")) || a(4, b"ftyp") {
         return Type::Media;
     }
-    match texte::lire(&octets[..octets.len().min(ECHANTILLON_TEXTE)], ECHANTILLON_TEXTE) {
+    match texte::lire(octets.get(..ECHANTILLON_TEXTE).unwrap_or(octets), ECHANTILLON_TEXTE) {
         Some(t) if t.langage == texte::Langage::Texte => Type::Texte,
         Some(t) => Type::Script(t.langage),
         None => Type::Inconnu,
@@ -166,7 +166,7 @@ pub(crate) fn iso(octets: &[u8]) -> bool {
 
 /// Un PDF : l'en-tête peut être n'importe où dans le premier Kio (les lecteurs le cherchent là).
 pub(crate) fn pdf_au_debut(octets: &[u8]) -> bool {
-    octets[..octets.len().min(1024)].windows(5).any(|f| f == b"%PDF-")
+    octets.get(..1024).unwrap_or(octets).windows(5).any(|f| f == b"%PDF-")
 }
 
 /// La fin d'un PNG : après son morceau IEND (chaque morceau : longueur sur 32 bits gros-boutiste, type, données,
@@ -230,7 +230,7 @@ fn fin_jpeg(o: &[u8]) -> Option<usize> {
         while *o.get(p)? == 0xFF {
             p += 1;
         }
-        let code = o[p];
+        let code = *o.get(p)?;
         p += 1;
         match code {
             0xD9 => return Some(p),
@@ -325,7 +325,7 @@ pub(crate) fn archive_cachee(octets: &[u8]) -> Option<usize> {
 /// Un en-tête tar d'avant ustar : la somme de ses octets (le champ de contrôle compté en espaces) égale à la valeur
 /// octale de ce champ, et un nom non vide.
 fn tar_v7(octets: &[u8]) -> bool {
-    let Some(entete) = octets.get(..512) else {
+    let Some(entete) = octets.first_chunk::<512>() else {
         return false;
     };
     if entete[0] == 0 {

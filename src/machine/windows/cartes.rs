@@ -136,8 +136,9 @@ fn carte(octets: &[u8], base: usize, d: usize) -> Option<Carte> {
     let guid = (nom != 0)
         .then(|| {
             let debut = dans_le_tampon(nom, base, 1, octets.len())?;
-            let fin = octets[debut..].iter().position(|&o| o == 0)?;
-            Some(String::from_utf8_lossy(&octets[debut..debut + fin]).into_owned())
+            let reste = octets.get(debut..)?;
+            let fin = reste.iter().position(|&o| o == 0)?;
+            Some(String::from_utf8_lossy(reste.get(..fin)?).into_owned())
         })
         .flatten()
         .unwrap_or_default();
@@ -156,7 +157,8 @@ fn carte(octets: &[u8], base: usize, d: usize) -> Option<Carte> {
         let longueur = u32_a(octets, m + DNS_LONGUEUR).and_then(|l| usize::try_from(l).ok())?;
         if let Some(adresse) = pointeur_a(octets, m + DNS_ADRESSE)
             .and_then(|p| dans_le_tampon(p, base, longueur, octets.len()))
-            .and_then(|a| adresse_ip(&octets[a..a + longueur]))
+            .and_then(|a| octets.get(a..a + longueur))
+            .and_then(adresse_ip)
         {
             dns.push(adresse);
         }

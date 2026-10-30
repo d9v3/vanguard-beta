@@ -434,30 +434,40 @@ fn lire_winget(sortie: &str) -> Option<Vec<(String, String)>> {
         .iter()
         .position(|l| l.len() >= 10 && l.iter().all(|&c| c == '-' || c == '─'))?;
     let entete = lignes.get(tirets.checked_sub(1)?)?;
-    let debuts: Vec<usize> = (0..entete.len())
-        .filter(|&i| entete[i] != ' ' && (i == 0 || entete[i - 1] == ' '))
+    // Le début de chaque colonne : un caractère non blanc précédé d'un blanc (ou du début de la ligne).
+    let debuts: Vec<usize> = std::iter::once(&' ')
+        .chain(entete)
+        .zip(entete)
+        .enumerate()
+        .filter(|&(_, (&avant, &c))| c != ' ' && avant == ' ')
+        .map(|(i, _)| i)
         .collect();
     if debuts.len() < 4 {
         return None;
     }
-    let champ = |l: &[char], n: usize| -> String {
-        let debut = debuts[n].min(l.len());
+    // La colonne n d'une ligne, coupée à la largeur de l'en-tête ; `None` si l'en-tête n'a pas cette colonne.
+    let champ = |l: &[char], n: usize| -> Option<String> {
+        let debut = (*debuts.get(n)?).min(l.len());
         let fin = debuts.get(n + 1).map_or(l.len(), |&f| f.min(l.len()));
-        l[debut..fin]
-            .iter()
-            .filter(|&&c| c != BOUCHE_TROU)
-            .collect::<String>()
-            .trim()
-            .to_string()
+        Some(
+            l.get(debut..fin)?
+                .iter()
+                .filter(|&&c| c != BOUCHE_TROU)
+                .collect::<String>()
+                .trim()
+                .to_string(),
+        )
     };
     let mut noms = Vec::new();
-    for l in &lignes[tirets + 1..] {
-        let (id, source) = (champ(l, 1), champ(l, debuts.len() - 1));
+    for l in lignes.iter().skip(tirets + 1) {
+        let (Some(nom), Some(id), Some(source)) = (champ(l, 0), champ(l, 1), champ(l, debuts.len() - 1)) else {
+            break;
+        };
         if id.is_empty() || id.contains(' ') || source.is_empty() || source.contains(' ') {
             break;
         }
         // Le nom, choisi par l'éditeur du programme, est seulement montré ; l'identifiant sert à la mise à jour.
-        noms.push((crate::ui::affichable(&champ(l, 0)), id));
+        noms.push((crate::ui::affichable(&nom), id));
     }
     Some(noms)
 }

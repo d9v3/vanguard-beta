@@ -117,7 +117,10 @@ pub(crate) fn system32() -> Option<String> {
     // (sans le zéro final), la taille qu'il lui faudrait s'il est trop petit, ou 0 en cas d'échec.
     let ecrits = unsafe { GetSystemDirectoryW(tampon.as_mut_ptr(), taille) };
     let ecrits = usize::try_from(ecrits).ok()?;
-    (ecrits > 0 && ecrits < tampon.len()).then(|| String::from_utf16_lossy(&tampon[..ecrits]))
+    let lu = tampon
+        .get(..ecrits)
+        .filter(|l| !l.is_empty() && ecrits < tampon.len())?;
+    Some(String::from_utf16_lossy(lu))
 }
 
 /// Le volume du système sous ses deux formes ouvrables (« \\?\C: », « \\?\GLOBALROOT\Device\HarddiskVolume3 ») et
@@ -134,8 +137,9 @@ fn volume_du_systeme() -> Option<(Vec<String>, String)> {
     // pas au-delà et rend le nombre écrit (une liste de chaînes finie par deux zéros), 0 en cas d'échec.
     let ecrits = unsafe { QueryDosDeviceW(nom.as_ptr(), cible.as_mut_ptr(), taille) };
     let ecrits = usize::try_from(ecrits).ok().filter(|&n| n > 0 && n <= cible.len())?;
-    let fin = cible[..ecrits].iter().position(|&c| c == 0).unwrap_or(ecrits);
-    let peripherique = String::from_utf16_lossy(&cible[..fin]);
+    let lu = cible.get(..ecrits)?;
+    // La première chaîne de la liste : jusqu'au premier zéro.
+    let peripherique = String::from_utf16_lossy(lu.split(|&c| c == 0).next().unwrap_or(lu));
     if !peripherique.starts_with(r"\Device\") || windows.is_empty() {
         return None;
     }
@@ -227,15 +231,11 @@ impl Lecteur {
         let systeme = volume_du_systeme();
         let brutes = self.brutes();
         let mut releve = Releve::default();
-        let mut i = 0;
-        while i < brutes.len() {
-            let base = brutes[i].base;
-            let fin = brutes[i..]
-                .iter()
-                .position(|b| b.base != base)
-                .map_or(brutes.len(), |n| i + n);
-            let groupe = &brutes[i..fin];
-            i = fin;
+        // Une allocation : les régions qui se suivent avec la même base (un groupe n'est jamais vide).
+        for groupe in brutes.chunk_by(|a, b| a.base == b.base) {
+            let Some(base) = groupe.first().map(|b| b.base) else {
+                continue;
+            };
             let place = |b: &Brute| (b.region, b.region.debut.saturating_sub(base as u64));
             let autres: Vec<(Region, u64)> = groupe
                 .iter()
@@ -327,7 +327,11 @@ impl Lecteur {
         let Some(ecrits) = usize::try_from(ecrits).ok().filter(|&n| n < nom.len()) else {
             return Fichier::Absent;
         };
-        let chemin = String::from_utf16_lossy(&nom[..ecrits]);
+        let Some(lu) = nom.get(..ecrits) else {
+            return Fichier::Absent;
+        };
+        let chemin = String::from_utf16_lossy(lu);
+
         let ouvrable = if let Some(reste) = chemin.strip_prefix(r"\??\") {
             format!(r"\\?\{reste}")
         } else if chemin.starts_with(r"\Device\") {

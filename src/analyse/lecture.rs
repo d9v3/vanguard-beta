@@ -8,19 +8,21 @@ pub(crate) fn tranche(octets: &[u8], i: usize, n: usize) -> Option<&[u8]> {
     octets.get(i..i.checked_add(n)?)
 }
 
+/// Les `N` octets qui commencent en `i`, en tableau (pour les conversions d'entiers, sans indice à vérifier).
+pub(crate) fn tableau<const N: usize>(octets: &[u8], i: usize) -> Option<[u8; N]> {
+    octets.get(i..)?.first_chunk::<N>().copied()
+}
+
 pub(crate) fn u16le(octets: &[u8], i: usize) -> Option<u16> {
-    tranche(octets, i, 2).map(|b| u16::from_le_bytes([b[0], b[1]]))
+    tableau(octets, i).map(u16::from_le_bytes)
 }
 
 pub(crate) fn u32le(octets: &[u8], i: usize) -> Option<u32> {
-    tranche(octets, i, 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    tableau(octets, i).map(u32::from_le_bytes)
 }
 
 pub(crate) fn u64le(octets: &[u8], i: usize) -> Option<u64> {
-    let b = tranche(octets, i, 8)?;
-    let mut m = [0u8; 8];
-    m.copy_from_slice(b);
-    Some(u64::from_le_bytes(m))
+    tableau(octets, i).map(u64::from_le_bytes)
 }
 
 /// Un lecteur d'entiers dans l'ordre d'octets d'un fichier (ELF et Mach-O existent dans les deux).
@@ -31,8 +33,7 @@ pub(crate) struct Ordre {
 
 impl Ordre {
     pub(crate) fn u16(self, octets: &[u8], i: usize) -> Option<u16> {
-        let b = tranche(octets, i, 2)?;
-        let m = [b[0], b[1]];
+        let m = tableau(octets, i)?;
         Some(if self.gros_boutiste {
             u16::from_be_bytes(m)
         } else {
@@ -41,8 +42,7 @@ impl Ordre {
     }
 
     pub(crate) fn u32(self, octets: &[u8], i: usize) -> Option<u32> {
-        let b = tranche(octets, i, 4)?;
-        let m = [b[0], b[1], b[2], b[3]];
+        let m = tableau(octets, i)?;
         Some(if self.gros_boutiste {
             u32::from_be_bytes(m)
         } else {
@@ -51,9 +51,7 @@ impl Ordre {
     }
 
     pub(crate) fn u64(self, octets: &[u8], i: usize) -> Option<u64> {
-        let b = tranche(octets, i, 8)?;
-        let mut m = [0u8; 8];
-        m.copy_from_slice(b);
+        let m = tableau(octets, i)?;
         Some(if self.gros_boutiste {
             u64::from_be_bytes(m)
         } else {
@@ -66,9 +64,9 @@ impl Ordre {
 /// hors des octets : `None`).
 pub(crate) fn chaine_c(octets: &[u8], i: usize, max: usize) -> Option<String> {
     let reste = octets.get(i..)?;
-    let reste = &reste[..reste.len().min(max)];
+    let reste = reste.get(..max).unwrap_or(reste);
     let fin = reste.iter().position(|&o| o == 0)?;
-    Some(latin1_ou_utf8(&reste[..fin]))
+    Some(latin1_ou_utf8(reste.get(..fin)?))
 }
 
 /// Des octets d'une page de code que le format ne dit pas : UTF-8 s'ils en sont, sinon pris un par un (Latin-1),
@@ -96,9 +94,9 @@ pub(crate) fn utf16le(octets: &[u8]) -> String {
 /// L'UTF-16 petit-boutiste terminé par un nul qui commence en `i`, d'au plus `max` octets.
 pub(crate) fn chaine_utf16(octets: &[u8], i: usize, max: usize) -> Option<String> {
     let reste = octets.get(i..)?;
-    let reste = &reste[..reste.len().min(max)];
-    let fin = reste.as_chunks::<2>().0.iter().position(|p| *p == [0, 0])?;
-    Some(utf16le(&reste[..fin * 2]))
+    let paires = reste.get(..max).unwrap_or(reste).as_chunks::<2>().0;
+    let fin = paires.iter().position(|p| *p == [0, 0])?;
+    Some(utf16le(paires.get(..fin)?.as_flattened()))
 }
 
 #[cfg(test)]
