@@ -188,10 +188,11 @@ mod tests {
         let Some((k2, u0)) = recuperable() else {
             return crate::essais::saute("cache de pacman illisible ici");
         };
-        let simuler = |args: &[&str]| -> Option<f64> {
+        // La taille en Mio et ce que l'arrondi de paccache (deux décimales de son unité) peut en écarter.
+        let simuler = |args: &[&str]| -> Option<(f64, f64)> {
             let r = crate::commande::lancer_en_anglais(std::process::Command::new("paccache").args(args), 60)?;
             if r.sortie.contains("no candidate packages found") {
-                return Some(0.0);
+                return Some((0.0, 0.01));
             }
             // En Mio : paccache choisit son unité selon la taille (« 121.03 KiB » passait pour 121 Mio, le 30 oct.).
             r.sortie.lines().find_map(|l| {
@@ -205,19 +206,19 @@ mod tests {
                     "TiB" => 1024.0 * 1024.0,
                     _ => return None,
                 };
-                Some(nombre * unite)
+                Some((nombre * unite, 0.005 * unite + 0.01))
             })
         };
-        let (Some(a), Some(b)) = (simuler(&["-dk2"]), simuler(&["-duk0"])) else {
+        let (Some((a, marge_a)), Some((b, marge_b))) = (simuler(&["-dk2"]), simuler(&["-duk0"])) else {
             return crate::essais::saute("paccache absent");
         };
         #[allow(clippy::cast_precision_loss)]
         let mio = |o: u64| o as f64 / f64::from(1u32 << 20);
-        assert!((mio(k2) - a).abs() < 0.01, "-dk2 : {} contre {a}", mio(k2));
+        assert!((mio(k2) - a).abs() < marge_a, "-dk2 : {} contre {a}", mio(k2));
         // -duk0 compte aussi les vieilles versions des paquets désinstallés, que -dk2 a déjà comptées.
-        assert!(mio(u0) <= b + 0.01, "-duk0 : {} contre {b}", mio(u0));
+        assert!(mio(u0) <= b + marge_b, "-duk0 : {} contre {b}", mio(u0));
         if k2 == 0 {
-            assert!((mio(u0) - b).abs() < 0.01, "-duk0 : {} contre {b}", mio(u0));
+            assert!((mio(u0) - b).abs() < marge_b, "-duk0 : {} contre {b}", mio(u0));
         }
     }
 }
