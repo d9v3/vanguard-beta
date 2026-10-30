@@ -873,12 +873,18 @@ pub fn cle_usb() -> Option<PathBuf> {
 }
 
 /// La clé connue parmi `volumes`. Deux clés connues branchées : la première dans l'ordre des chemins (« /run/media/
-/// alice/VANGUARD » avant « …/VANGUARD1 »), le même à chaque lancement ; l'autre n'est pas regardée.
+/// alice/VANGUARD » avant « …/VANGUARD1 »), le même à chaque lancement ; l'autre n'est pas regardée. Deux volumes au
+/// même jeton : aucun, une copie de la clé ne doit pas recevoir le carnet selon l'ordre des chemins (campagne
+/// d'attaque n° 4, C-B2, comme `deploiement cle`).
 fn cle_parmi(mut volumes: Vec<PathBuf>, connues: &std::collections::BTreeSet<String>) -> Option<PathBuf> {
     volumes.sort();
-    volumes
-        .into_iter()
-        .find(|d| est_une_cle(d) && crate::protection::cles_connues::connue(d, connues))
+    let mut cles = volumes.into_iter().filter(|d| est_une_cle(d)).filter_map(|d| {
+        crate::protection::cles_connues::jeton_de(&d)
+            .filter(|j| connues.contains(j))
+            .map(|j| (d, j))
+    });
+    let (cle, jeton) = cles.next()?;
+    cles.all(|(_, j)| j != jeton).then_some(cle)
 }
 
 /// Un volume branché porte le témoin sans être une clé reconnue ici.
@@ -2185,7 +2191,17 @@ mod tests {
         assert_eq!(cle_parmi(volumes.clone(), &seule_b), Some(connue_b.clone()));
         assert_eq!(cle_parmi(volumes, &std::collections::BTreeSet::new()), None);
         assert_eq!(cle_parmi(vec![sans.clone(), inconnue.clone()], &connues), None);
-        for d in [sans, inconnue, connue_b, connue_a, pas_une_cle] {
+        // Une copie au jeton de A, avant ou après elle : aucune des deux.
+        let copie_a = fausse_cle("copie-a", Some(a));
+        assert_eq!(
+            cle_parmi(vec![connue_a.clone(), copie_a.clone(), connue_b.clone()], &connues),
+            None
+        );
+        assert_eq!(
+            cle_parmi(vec![connue_b.clone(), copie_a.clone()], &connues),
+            Some(connue_b.clone())
+        );
+        for d in [sans, inconnue, connue_b, connue_a, pas_une_cle, copie_a] {
             let _ = std::fs::remove_dir_all(d);
         }
     }

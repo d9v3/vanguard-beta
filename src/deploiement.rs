@@ -73,22 +73,48 @@ pub(crate) fn executer(etape: Etape) -> i32 {
     i32::from(!reussi)
 }
 
-/// La clé connue parmi `volumes` (`Ok(Some)`), aucune (`Ok(None)` : aucun volume ne porte le témoin), ou les
-/// volumes au témoin sans jeton connu (`Err`). La règle du programme (`reseau::cle_usb`) : le témoin dit qu'un volume
-/// est fait comme une clé, pas que c'est la sienne.
+/// Pourquoi aucun volume n'est la clé où écrire.
+#[derive(Debug, PartialEq)]
+enum PasLaCle {
+    /// Des volumes au témoin, aucun au jeton connu.
+    Inconnus(Vec<PathBuf>),
+    /// Plusieurs volumes au même jeton connu : une copie de la clé, dont rien ne dit laquelle est la vraie.
+    MemeJeton(Vec<PathBuf>),
+}
+
+/// La clé connue parmi `volumes` (`Ok(Some)`), aucune (`Ok(None)` : aucun volume ne porte le témoin), ou pourquoi
+/// aucun n'est retenu (`Err`). La règle du programme (`reseau::cle_usb`) : le témoin dit qu'un volume est fait comme
+/// une clé, pas que c'est la sienne. Le jeton ne suffit pas non plus quand deux volumes le portent : une copie de la
+/// clé (identifiant de volume compris, un numéro de série exFAT se réécrit) passerait pour elle selon l'ordre des
+/// chemins (campagne d'attaque n° 4, C-B2) ; aucun des deux ne l'est alors.
 fn cle_parmi(
     mut volumes: Vec<PathBuf>,
     jetons: &std::collections::BTreeSet<String>,
-) -> Result<Option<PathBuf>, Vec<PathBuf>> {
+) -> Result<Option<PathBuf>, PasLaCle> {
     volumes.retain(|d| d.join(crate::reseau::TEMOIN_CLE).is_file());
     volumes.sort();
-    if let Some(c) = volumes
+    let connues: Vec<(PathBuf, String)> = volumes
         .iter()
-        .find(|d| crate::protection::cles_connues::connue(d, jetons))
-    {
-        return Ok(Some(c.clone()));
+        .filter_map(|d| crate::protection::cles_connues::jeton_de(d).map(|j| (d.clone(), j)))
+        .filter(|(_, j)| jetons.contains(j))
+        .collect();
+    if let Some((c, jeton)) = connues.first() {
+        let memes: Vec<PathBuf> = connues
+            .iter()
+            .filter(|(_, j)| j == jeton)
+            .map(|(d, _)| d.clone())
+            .collect();
+        return if memes.len() > 1 {
+            Err(PasLaCle::MemeJeton(memes))
+        } else {
+            Ok(Some(c.clone()))
+        };
     }
-    if volumes.is_empty() { Ok(None) } else { Err(volumes) }
+    if volumes.is_empty() {
+        Ok(None)
+    } else {
+        Err(PasLaCle::Inconnus(volumes))
+    }
 }
 
 fn cle() -> i32 {
@@ -101,7 +127,20 @@ fn cle() -> i32 {
             0
         }
         Ok(None) => 0,
-        Err(inconnus) => {
+        Err(PasLaCle::MemeJeton(copies)) => {
+            for v in copies {
+                eprintln!(
+                    "{}",
+                    trf!(
+                        "Volume au même jeton qu'une autre clé branchée : {} (copie de la clé ? rien n'est écrit sur aucune ; n'en branchez qu'une)",
+                        "Volume with the same token as another plugged-in key: {} (copy of the key? nothing is written to either; plug in only one)",
+                        v.display()
+                    )
+                );
+            }
+            3
+        }
+        Err(PasLaCle::Inconnus(inconnus)) => {
             for v in inconnus {
                 eprintln!(
                     "{}",
@@ -621,11 +660,33 @@ mod tests {
                 vec![etrangere.clone(), autre_jeton.clone(), sans_temoin.clone()],
                 &connus
             ),
-            Err(vec![etrangere.clone(), autre_jeton.clone()])
+            Err(PasLaCle::Inconnus(vec![etrangere.clone(), autre_jeton.clone()]))
         );
         let la_mienne = volume("VANGUARD2", Some(&jeton.to_uppercase()));
         assert_eq!(
-            cle_parmi(vec![etrangere, autre_jeton, la_mienne.clone(), sans_temoin], &connus),
+            cle_parmi(
+                vec![
+                    etrangere.clone(),
+                    autre_jeton.clone(),
+                    la_mienne.clone(),
+                    sans_temoin.clone()
+                ],
+                &connus
+            ),
+            Ok(Some(la_mienne.clone()))
+        );
+        // Campagne 4, C-B2 : une copie au même jeton, triée avant ou après, ne fait choisir aucune des deux.
+        let copie = volume("VANGUARD0", Some(jeton));
+        assert_eq!(
+            cle_parmi(vec![la_mienne.clone(), etrangere, copie.clone(), sans_temoin], &connus),
+            Err(PasLaCle::MemeJeton(vec![copie, la_mienne.clone()]))
+        );
+        // Une autre clé connue, à son propre jeton, n'est pas une copie : la première reste choisie.
+        let deuxieme = "fedcba9876543210fedcba9876543210";
+        let autre_cle = volume("VANGUARD3", Some(deuxieme));
+        let deux: std::collections::BTreeSet<String> = [jeton.to_string(), deuxieme.to_string()].into();
+        assert_eq!(
+            cle_parmi(vec![autre_cle, la_mienne.clone()], &deux),
             Ok(Some(la_mienne))
         );
         let _ = std::fs::remove_dir_all(&d);
