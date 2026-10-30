@@ -19,7 +19,8 @@ A security flaw? No public issue or pull request: report it privately, see [SECU
 | `src/main.rs` | menu and subcommands |
 | `src/deploiement.rs` | steps of `outils/deployer.sh` handed to the program (`vanguard deploiement …`, hidden command): guards of vanguard.exe, key markers, the key's tldr archives |
 | `src/ui.rs` | colors, titles, frames, bars, lines wrapped and aligned within 76 columns |
-| `src/selection.rs` | keyboard menus and checklists (arrows, Enter, Esc or Backspace), word search in menus |
+| `src/selection.rs` | keyboard menus and checklists (arrows, Enter, Esc or Backspace), word search in menus, preview of the highlighted line on the right (wide enough window) |
+| `src/descriptions.rs` | what the menu preview says about each tool and each group |
 | `src/recherche.rs` | search: per-word score, synonyms ("box" → router), typos corrected; for the menu and `vanguard search` |
 | `src/prediction.rs` | prediction of the word being typed, the same in every menu: its end in grey, Tab completes it |
 | `src/langue.rs` | language choice and translation macros |

@@ -1,4 +1,4 @@
-//! La fenêtre épouse le menu : large de `LARGEUR` + 2 colonnes, assez haute pour toutes ses lignes sans dépasser
+//! La fenêtre épouse le menu : assez large pour lui et son aperçu (`COLONNES`), assez haute pour toutes ses lignes sans dépasser
 //! l'écran. Sous Hyprland, une hauteur fixe posée une fois (`RANGEES_FIXES`), au milieu de l'écran : chaque
 //! changement de taille s'anime, et la transition se voyait d'un menu à l'autre. Sous Windows, la hauteur suit
 //! chaque menu, mais la fenêtre reste là où la personne l'a mise (ramenée dans l'écran seulement si elle en sort).
@@ -20,11 +20,11 @@ use std::time::{Duration, Instant};
 
 use crossterm::terminal;
 
-use crate::ui::LARGEUR;
-
-/// Les colonnes voulues : les lignes du menu (`LARGEUR`) et la marge que demande `selection` pour le mode clavier.
+/// Les colonnes voulues : les lignes du menu (`ui::LARGEUR`) et le panneau d'aperçu à leur droite
+/// (`selection::COLONNES_AVEC_APERCU`). Un écran trop étroit borne la fenêtre (`placement`) : le panneau ne se montre
+/// pas, le menu reste lisible.
 #[allow(clippy::cast_possible_truncation)]
-const COLONNES: u16 = LARGEUR as u16 + 2;
+const COLONNES: u16 = crate::selection::COLONNES_AVEC_APERCU as u16;
 
 /// Jamais moins : sous un petit menu, les pauses et les questions des outils ont besoin de place.
 const RANGEES_MINIMUM: u16 = 12;

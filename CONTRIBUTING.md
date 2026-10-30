@@ -20,7 +20,8 @@ Une faille de sécurité ? Pas de ticket ni de demande de fusion publics : signa
 | `src/main.rs` | menu et sous-commandes |
 | `src/deploiement.rs` | étapes de `outils/deployer.sh` confiées au programme (`vanguard deploiement …`, commande cachée) : gardes du vanguard.exe, témoins de la clé, archives tldr de la clé |
 | `src/ui.rs` | couleurs, titres, cadres, barres, lignes coupées et alignées dans 76 colonnes |
-| `src/selection.rs` | menus et listes à cocher au clavier (flèches, Entrée, Échap ou Retour arrière), recherche par mot dans les menus |
+| `src/selection.rs` | menus et listes à cocher au clavier (flèches, Entrée, Échap ou Retour arrière), recherche par mot dans les menus, aperçu à droite de la ligne en surbrillance (fenêtre assez large) |
+| `src/descriptions.rs` | ce que l'aperçu des menus dit de chaque outil et de chaque groupe |
 | `src/recherche.rs` | la recherche : score par mot, synonymes (« box » → routeur), fautes de frappe corrigées ; pour le menu et `vanguard chercher` |
 | `src/prediction.rs` | prédiction du mot en cours de frappe, la même dans tous les menus : sa fin en gris, Tab la complète |
 | `src/langue.rs` | choix de la langue et macros de traduction |

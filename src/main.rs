@@ -22,6 +22,7 @@ mod copier;
 mod corriger;
 mod depanner;
 mod deploiement;
+mod descriptions;
 mod desinstaller;
 mod diagnostic;
 mod dns_rapide;
@@ -1247,7 +1248,9 @@ fn lignes_du_menu(etat: Vec<String>) -> Vec<Ligne> {
             .find(|(n, _)| *n == commande)
             .map_or("", |(_, a)| *a);
         lignes.push(
-            Ligne::choix(&(touche + 1).to_string(), texte, precision).avec_mots(&format!("{commande} {anciens}")),
+            Ligne::choix(&(touche + 1).to_string(), texte, precision)
+                .avec_mots(&format!("{commande} {anciens}"))
+                .avec_description(action.description()),
         );
     }
     for (i, groupe) in GROUPES.iter().enumerate() {
@@ -1256,11 +1259,14 @@ fn lignes_du_menu(etat: Vec<String>) -> Vec<Ligne> {
         } else if *groupe == PREMIER_EN_PLUS {
             lignes.push(Ligne::Texte(ligne_section(tr!("EN PLUS", "ALSO INCLUDED"))));
         }
-        lignes.push(Ligne::choix(
-            &(i + 4).to_string(),
-            &format!("{} {ACCENT}›{RESET}", groupe.titre()),
-            groupe.resume(),
-        ));
+        lignes.push(
+            Ligne::choix(
+                &(i + 4).to_string(),
+                &format!("{} {ACCENT}›{RESET}", groupe.titre()),
+                groupe.resume(),
+            )
+            .avec_description(groupe.description()),
+        );
     }
 
     // Ce que la recherche trouve en plus, sans l'afficher : chaque place des sous-menus (« 5.2 », « 6.1.3 », aussi
@@ -1296,7 +1302,11 @@ fn lignes_du_menu(etat: Vec<String>) -> Vec<Ligne> {
             .find(|(n, _)| *n == commande && !raccourci)
             .map_or("", |(_, a)| *a);
         let mots = format!("{} {commande} {anciens}", a.outil().mots);
-        lignes.push(Ligne::cachee(&chemin, &ou, texte, precision).avec_mots(&mots));
+        lignes.push(
+            Ligne::cachee(&chemin, &ou, texte, precision)
+                .avec_mots(&mots)
+                .avec_description(a.description()),
+        );
     }
     // Ce qu'il y a dans les outils : les logiciels du catalogue, les réglages des Paramètres.
     if let Some(cle) = touche_de(Action::Logiciels) {
@@ -2553,7 +2563,18 @@ async fn liste_d_outils(s: &mut Session, chemin: &str, resume: &str, actions: &[
             } else {
                 format!("{texte} {ACCENT}›{RESET}")
             };
-            lignes.push(Ligne::choix(&(i + 1).to_string(), &texte, precision));
+            // Les variantes d'un écran à choix n'ont pas de ligne ici : l'aperçu les montre.
+            let variantes = a
+                .variantes()
+                .iter()
+                .filter(|v| v.disponible())
+                .map(|v| v.libelle().0.to_string())
+                .collect();
+            lignes.push(
+                Ligne::choix(&(i + 1).to_string(), &texte, precision)
+                    .avec_description(a.description())
+                    .avec_sous(variantes),
+            );
         }
         lignes.push(Ligne::Texte(String::new()));
         lignes.push(Ligne::choix("↵", retour, ""));

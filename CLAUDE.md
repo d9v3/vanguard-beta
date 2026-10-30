@@ -77,7 +77,8 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
 - Une commande lancée par Vanguard passe par `commande::lancer` (délai, sorties lues en fond) ; une correction par
   `machine::appliquer` ou `appliquer_chacune` (montrée, confirmée ; sous Windows, une seule fenêtre administrateur).
 - Menus : `selection::choisir` et `selection::cocher` (flèches, Entrée, Échap ou Retour arrière ; lignes lues sans terminal). Une
-  précision de menu fait 33 caractères au plus ; tout tient dans 76 colonnes (`ui::LARGEUR`).
+  précision de menu fait 33 caractères au plus ; tout tient dans 76 colonnes (`ui::LARGEUR`). Chaque outil et groupe a
+  sa description pour l'aperçu de droite (`src/descriptions.rs`, sans `_` : un oubli ne compile pas).
 - Nouvelle dépendance : sa licence, et celles de ce qu'elle amène, parmi celles de `deny.toml` (permissives : MIT,
   Apache, BSD…). Toute autre, même compatible avec la GPL-3.0 (MPL, LGPL), demande d'abord l'accord de l'auteur, à
   cause de la double licence possible, puis son ajout à `deny.toml`. Ensuite `python3 outils/licences-tierces.py` et
