@@ -10,7 +10,8 @@
 //! suivantes passent par elle sans que les ordinateurs déjà installés perdent la mise à jour. Volée, la principale se
 //! révoque : un manifeste signé par la clé de secours qui finit par la ligne « revoque principale » est retenu dans
 //! l'état scellé (`sceau::REVOCATION`), et la principale n'est plus jamais acceptée ici, ni pour un manifeste ni pour
-//! l'historique ; la plus haute version vue, qu'un voleur a pu monter au plus haut, repart de ce manifeste. Cette
+//! l'historique ; la version qu'il apporte l'a aussi retirée de son code (`PRINCIPALE_RETIREE`), qui ne s'efface pas
+//! avec les sceaux ; la plus haute version vue, qu'un voleur a pu monter au plus haut, repart de ce manifeste. Cette
 //! ligne vient après celles des programmes : le lecteur des copies 0.85 trouve son système avant elle. Les anciens manifestes
 //! signés restent publics : quelqu'un qui tient le dépôt des versions pourrait en remettre un pour geler les mises à
 //! jour. Vanguard retient donc la plus haute version signée déjà vue et refuse tout manifeste plus vieux ; et une
@@ -61,14 +62,23 @@ fn cles_acceptees(revoquee: bool) -> &'static [[u8; 32]] {
     if revoquee { &CLES[1..] } else { &CLES }
 }
 
-/// La clé principale a-t-elle été révoquée sur cet ordinateur ? Le fichier là sous n'importe quelle forme (même
-/// changé ou illisible) la dit révoquée : l'effacer ou le réécrire ne la fait pas revenir. Absent, ou inconnu après
-/// des sceaux refaits, elle ne l'est pas : la clé de secours redit la révocation dans chaque manifeste qui suit.
+/// La principale retirée de ce programme-ci, quel que soit l'état de l'ordinateur : à mettre à `true` dans la version
+/// que la clé de secours publie en la révoquant (`signer-versions.sh --secours --revoquer` refuse de signer sans).
+/// L'état scellé qui retient la révocation s'efface avec les sceaux ; une fois cette version installée, la principale
+/// ne revient plus, même là.
+const PRINCIPALE_RETIREE: bool = false;
+
+/// La clé principale a-t-elle été révoquée ici ? Retirée du programme, toujours. Sinon, le fichier là sous n'importe
+/// quelle forme (même changé ou illisible) la dit révoquée : l'effacer ou le réécrire ne la fait pas revenir. Absent,
+/// ou inconnu après des sceaux refaits, elle ne l'est pas : le croire révoquée figerait les mises à jour de tout
+/// ordinateur aux sceaux refaits tant que la principale signe. Seul compte alors le manifeste de secours qui redit la
+/// révocation, jusqu'à ce que la version qu'il apporte, qui l'a retirée, soit installée.
 fn principale_revoquee() -> bool {
-    !matches!(
-        crate::sceau::lire(crate::sceau::REVOCATION),
-        crate::sceau::Lecture::Absent | crate::sceau::Lecture::Inconnu
-    )
+    PRINCIPALE_RETIREE
+        || !matches!(
+            crate::sceau::lire(crate::sceau::REVOCATION),
+            crate::sceau::Lecture::Absent | crate::sceau::Lecture::Inconnu
+        )
 }
 
 /// Le manifeste finit-il par la ligne de révocation ?
@@ -804,7 +814,10 @@ mod tests {
         // L'état retenu : là sous n'importe quelle forme, la principale reste révoquée ; et le plancher repart.
         let _seul = ETAT_DES_VERSIONS.lock().unwrap_or_else(PoisonError::into_inner);
         crate::sceau::ecrire(crate::sceau::VERSIONS, "4294967295.0.0+1792540000").unwrap();
-        assert!(!principale_revoquee());
+        assert!(
+            !principale_revoquee(),
+            "PRINCIPALE_RETIREE à true : cet essai de l'état retenu est à revoir"
+        );
         retenir_revocation().unwrap();
         assert!(principale_revoquee());
         assert_eq!(plus_haute_vue(), Ok(None));
