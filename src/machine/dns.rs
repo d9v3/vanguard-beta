@@ -837,6 +837,18 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn resolved_comme_resolvectl() {
+        // Un espace réseau vide (la passe « sans Internet » de verifier.sh, unshare -rn) : le resolvectl de systemd 255
+        // ne liste que les liens qu'il voit d'ici, aucun, quand D-Bus rend ceux de resolved (la CI : 1 contre 0).
+        let seulement_lo = std::fs::read_to_string("/proc/self/net/dev").is_ok_and(|t| {
+            t.lines()
+                .skip(2)
+                .all(|l| l.split(':').next().is_some_and(|n| n.trim() == "lo"))
+        });
+        if seulement_lo {
+            return crate::essais::saute(
+                "espace réseau sans interface : resolvectl n'y voit pas les liens de resolved",
+            );
+        }
         // Deux lectures à des instants différents : des serveurs qui changent entre elles (bail DHCP, la CI de GitHub :
         // 1 par D-Bus, 0 par resolvectl) ne disent rien. D-Bus relu après resolvectl ; à l'identique, la comparaison vaut.
         let lire = || {
