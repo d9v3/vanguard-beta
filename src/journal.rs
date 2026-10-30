@@ -62,6 +62,7 @@ pub(crate) fn partition_de_la_cle() -> Option<PathBuf> {
 /// y recopie celui de la clé), un volume étranger au seul témoin ne reçoit ni le journal ni « Mes ordinateurs ».
 /// Choisie comme la clé (`cles_connues::seule_connue`) : une copie de la partition à son jeton ne reçoit pas le journal selon l'ordre des chemins, ni ne fait la liste de
 /// « Mes ordinateurs » (campagne d'attaque n° 4, C-B2).
+#[cfg(any(unix, test))]
 fn partition_parmi(montages: Vec<PathBuf>, connues: &std::collections::BTreeSet<String>) -> Option<PathBuf> {
     crate::protection::cles_connues::seule_connue(
         montages.into_iter().filter(|d| d.join(TEMOIN).is_file()).collect(),
@@ -75,13 +76,19 @@ fn partition_parmi(montages: Vec<PathBuf>, connues: &std::collections::BTreeSet<
 /// le délai n'est pas compté, ni comme partition, ni comme copie).
 #[cfg(windows)]
 fn lecteur_windows(connues: &std::collections::BTreeSet<String>) -> Option<PathBuf> {
+    use crate::protection::cles_connues;
     use std::time::{Duration, Instant};
     let (envoi, reception) = std::sync::mpsc::channel();
     for lettre in 'D'..='Z' {
         let envoi = envoi.clone();
         std::thread::spawn(move || {
             let lecteur = PathBuf::from(format!("{lettre}:\\"));
-            let _ = envoi.send(lecteur.join(TEMOIN).is_file().then_some(lecteur));
+            // Le jeton lu ici aussi, sous le délai : relu après, un lecteur qui cesse de répondre figerait tout.
+            let lu = lecteur
+                .join(TEMOIN)
+                .is_file()
+                .then(|| (cles_connues::jeton_de(&lecteur), lecteur));
+            let _ = envoi.send(lu);
         });
     }
     drop(envoi);
@@ -91,7 +98,7 @@ fn lecteur_windows(connues: &std::collections::BTreeSet<String>) -> Option<PathB
     while let Ok(reponse) = reception.recv_timeout(limite.saturating_duration_since(Instant::now())) {
         trouves.extend(reponse);
     }
-    partition_parmi(trouves, connues)
+    cles_connues::seule_parmi_lus(trouves, connues)
 }
 
 /// Wine installe ses propres programmes dans system32 ; wineboot.exe n'existe pas sur un vrai Windows.

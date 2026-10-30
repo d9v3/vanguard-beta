@@ -58,7 +58,7 @@ mkdir -p "$BANC"/{bin,faux,maison,xdg-cache,etat,run,donnees,config,tmp,cache,di
 export BANC USER=alice HOME=$BANC/maison XDG_CACHE_HOME=$BANC/xdg-cache XDG_STATE_HOME=$BANC/etat \
   XDG_RUNTIME_DIR=$BANC/run XDG_DATA_HOME=$BANC/donnees XDG_CONFIG_HOME=$BANC/config TMPDIR=$BANC/tmp \
   VANGUARD_IMAGES=$BANC/cache VANGUARD_RACINE=$BANC/libexec/vanguard/ventoy-racine VANGUARD_ESSAI=1
-unset DBUS_SESSION_BUS_ADDRESS DISPLAY WAYLAND_DISPLAY VANGUARD_VTOYEFI VANGUARD_WIN11 ESSAIS_CLE_DEDANS
+unset DBUS_SESSION_BUS_ADDRESS DISPLAY WAYLAND_DISPLAY VANGUARD_VTOYEFI VANGUARD_VTOYEFI_ETIQUETTE VANGUARD_WIN11 ESSAIS_CLE_DEDANS
 
 # Les commandes du système, sauf celles qui touchent un disque, un montage, root, systemd, la session ou Internet.
 find /usr/bin -maxdepth 1 \( -type f -o -type l \) ! -name udisksctl ! -name pkexec ! -name sudo ! -name sudoedit \
@@ -512,20 +512,38 @@ voir "--accepter-vtoyefi refuse une partition illisible, la référence intacte"
 : >"$BANC/notifications.log"
 VANGUARD_VTOYEFI=$BANC/vtoyefi-absente compte verifier_ventoy "$BANC/point"
 code=$?
-voir "VTOYEFI relevée puis introuvable (absente, renommée) : alerte, code 1, --accepter-vtoyefi conseillé si voulu" \
+voir "VTOYEFI relevée puis introuvable (plus de deuxième partition) : alerte, code 1, --accepter-vtoyefi conseillé si voulu" \
   eval '((code == 1)) && dit "$BANC/notifications.log" "démarrage (VTOYEFI) introuvable" &&
     dit "$BANC/notifications.log" "--accepter-vtoyefi"' || montrer "$BANC/sortie"
-# Voulu (clé refaite sans Ventoy) : --accepter-vtoyefi retire la référence, et l'alerte ne revient plus.
+# Renommée, la partition démarre toujours : alerte, et --accepter-vtoyefi refuse de la faire taire.
 cp "$BANC/etat/vanguard/vtoyefi/SERIE-A" "$BANC/reference-vtoyefi"
+: >"$BANC/notifications.log"
+VANGUARD_VTOYEFI_ETIQUETTE=AUTRE compte verifier_ventoy "$BANC/point"
+code=$?
+cp "$BANC/sortie" "$BANC/sortie-verifier"
+VANGUARD_VTOYEFI_ETIQUETTE=AUTRE compte accepter_vtoyefi
+voir "VTOYEFI renommée : alerte, code 1 ; --accepter-vtoyefi refusé, la référence intacte" \
+  eval '((code == 1)) && dit "$BANC/notifications.log" "démarrage (VTOYEFI) introuvable" &&
+    dit "$BANC/sortie-verifier" "renommé" && dit "$BANC/sortie" "rien n'"'"'est accepté" &&
+    cmp -s "$BANC/etat/vanguard/vtoyefi/SERIE-A" "$BANC/reference-vtoyefi"' ||
+  { montrer "$BANC/sortie-verifier"; montrer "$BANC/sortie"; }
+# Voulu (clé refaite sans Ventoy) : --accepter-vtoyefi le retient, et l'alerte ne revient plus ; une VTOYEFI qui
+# revient ensuite n'est pas prise pour une première relève.
 VANGUARD_VTOYEFI=$BANC/vtoyefi-absente compte accepter_vtoyefi
 code=$?
 cp "$BANC/sortie" "$BANC/sortie-accepter"
 : >"$BANC/notifications.log"
 VANGUARD_VTOYEFI=$BANC/vtoyefi-absente compte verifier_ventoy "$BANC/point"
-voir "--accepter-vtoyefi sans VTOYEFI : sa référence retirée, et dit ; plus d'alerte ensuite" \
-  eval '((code == 0)) && [[ ! -e $BANC/etat/vanguard/vtoyefi/SERIE-A ]] &&
-    dit "$BANC/sortie-accepter" "sa référence est retirée" && dit "$BANC/sortie" "pas comparé" &&
+voir "--accepter-vtoyefi sans VTOYEFI : retenu, et dit ; plus d'alerte ensuite" \
+  eval '((code == 0)) && [[ $(cat "$BANC/etat/vanguard/vtoyefi/SERIE-A") == SANS_VTOYEFI ]] &&
+    dit "$BANC/sortie-accepter" "c'"'"'est retenu ici" && dit "$BANC/sortie" "comme accepté ici" &&
     [[ ! -s $BANC/notifications.log ]]' || { montrer "$BANC/sortie-accepter"; montrer "$BANC/sortie"; }
+compte verifier_ventoy "$BANC/point"
+code=$?
+voir "VTOYEFI revenue sur une clé acceptée sans elle : alerte, code 1, pas de première relève" \
+  eval '((code == 1)) && dit "$BANC/notifications.log" "démarrage (VTOYEFI) revenu" &&
+    pas_dit "$BANC/sortie" "première relève" &&
+    [[ $(cat "$BANC/etat/vanguard/vtoyefi/SERIE-A") == SANS_VTOYEFI ]]' || montrer "$BANC/sortie"
 cp "$BANC/reference-vtoyefi" "$BANC/etat/vanguard/vtoyefi/SERIE-A"
 cp "$BANC/vtoyefi/grub/grub.cfg" "$BANC/grub.cfg.avant"
 sed -i '/VENTOY_VERSION/d' "$BANC/vtoyefi/grub/grub.cfg"

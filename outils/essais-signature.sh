@@ -81,7 +81,9 @@ programmes() { # $1 : dossier, $2 : version gravée
     printf '\x01\x00\x00\x07'; head -c 16 /dev/zero; printf 'macos %s' "$v"; } >"$1/vanguard-macos"
 }
 signer() { # $1 : banc, $2 : dossier des programmes, puis les options ; la sortie gardée dans $2.log
-  VANGUARD_CLE_VERSIONS=$T/${CLE:-principale}.pem bash "$1/outils/signer-versions.sh" "${@:3}" "$2" </dev/null \
+  # Jamais la vraie clé de secours ni une fenêtre de phrase, même si un contrôle régresse : --secours essayé ici
+  # doit être refusé avant de lire la clé.
+  VANGUARD_CLE_SECOURS=$T/absente.pem WAYLAND_DISPLAY='' DISPLAY='' VANGUARD_CLE_VERSIONS=$T/${CLE:-principale}.pem bash "$1/outils/signer-versions.sh" "${@:3}" "$2" </dev/null \
     >"$2.log" 2>&1
 }
 # Une signature sous ce domaine, par la clé principale d'essai.
@@ -186,6 +188,17 @@ elif grep -q "vanguard-macos accepte encore la principale" "$T/sans-retrait.log"
   ok "--revoquer avec un programme qui garde la principale : refusé, rien n'est signé"
 else
   ko "refus pour une autre raison : $(tail -n 1 "$T/sans-retrait.log")"
+fi
+# Les deux marques dans un même programme (macOS universel à moitié recompilé) : refusé de même.
+programmes "$T/deux-marques" 0.88.0+1793100000
+printf 'VANGUARD-PRINCIPALE:GARDEE;' >>"$T/deux-marques/vanguard-macos"
+if signer "$T/nouveau88" "$T/deux-marques" --secours --revoquer; then
+  ko "--revoquer a signé un programme qui porte aussi la marque de la principale gardée"
+elif grep -q "vanguard-macos accepte encore la principale" "$T/deux-marques.log" &&
+  [[ ! -e $T/deux-marques/derniere.txt.sig ]]; then
+  ok "--revoquer avec un programme aux deux marques : refusé, rien n'est signé"
+else
+  ko "refus pour une autre raison : $(tail -n 1 "$T/deux-marques.log")"
 fi
 # Le lecteur de la 0.85.0 (lire_manifeste) : la version en tête, puis la ligne du système cherché trouvée avant toute
 # ligne qui n'a pas trois champs.
@@ -364,11 +377,16 @@ awk '/uses: Swatinem\/rust-cache/ { getline; exit !($0 ~ /if: github.ref_name !=
 # qui tourne avec les secrets et le programme signé. Chaque action, officielle comme tierce, à un commit nommé
 # (campagne d'attaque n° 4, U-B3), l'étiquette en commentaire pour la relire. Tout fichier que GitHub lit : .yml et
 # .yaml des workflows, et les actions du dépôt (.github/actions/*/action.yml), qui en appellent d'autres.
-mobiles=$(find "$DEPOT/.github" \( -path "$DEPOT/.github/workflows/*" -o -path "$DEPOT/.github/actions/*" \) \
-  \( -name '*.yml' -o -name '*.yaml' \) -type f -exec grep -Hn 'uses:' {} + |
-  grep -Ev 'uses: [^ @]+@[0-9a-f]{40} # v[0-9]' || true)
-[[ -z $mobiles ]] && ok "workflows : chaque action épinglée par commit, pas par étiquette" ||
-  ko "workflows : action à une étiquette mobile : ${mobiles#"$DEPOT"/}"
+# Ancré au début de la ligne : un « # uses: …@<commit> » en commentaire ne fait pas passer l'étiquette d'avant.
+if fichiers=$(find "$DEPOT/.github" \( -path "$DEPOT/.github/workflows/*" -o -path "$DEPOT/.github/actions/*" \) \
+  \( -name '*.yml' -o -name '*.yaml' \) -type f) && [[ -n $fichiers ]]; then
+  mobiles=$(xargs -d '\n' grep -Hn 'uses:' <<<"$fichiers" |
+    grep -Ev '^[^:]+:[0-9]+:\s*(-\s*)?uses:\s*[^ @]+@[0-9a-f]{40} # v[0-9]' || true)
+  [[ -z $mobiles ]] && ok "workflows : chaque action épinglée par commit, pas par étiquette" ||
+    ko "workflows : action à une étiquette mobile : ${mobiles#"$DEPOT"/}"
+else
+  ko "workflows : aucun fichier de .github/workflows lu, les épingles ne sont pas vérifiées"
+fi
 
 # 8. Les octets publiés, ceux de la compilation de leur commit.
 G=$T/depot-compilation

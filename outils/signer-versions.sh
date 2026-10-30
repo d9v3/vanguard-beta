@@ -84,7 +84,8 @@ erreur() { echo "✖ $*" >&2; exit 1; }
 # la clé. Un programme absent est refusé plus bas.
 if [[ -n $REVOQUER ]]; then
   for f in "${1:-.}"/vanguard-{linux-x86_64,windows-x86_64.exe,macos}; do
-    [[ ! -f $f ]] || grep -aq 'VANGUARD-PRINCIPALE:RETIREE;' "$f" ||
+    # Les deux marques à la fois (un programme macOS universel dont une seule moitié la retire) : refusé aussi.
+    [[ ! -f $f ]] || { grep -aq 'VANGUARD-PRINCIPALE:RETIREE;' "$f" && ! grep -aq 'VANGUARD-PRINCIPALE:GARDEE;' "$f"; } ||
       erreur "--revoquer : $f accepte encore la principale ; mettez PRINCIPALE_RETIREE à true dans \
 src/mise_a_jour/github.rs, puis recompilez les programmes à signer avec (outils/compiler-version.sh)"
   done

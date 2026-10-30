@@ -81,7 +81,22 @@ static PRINCIPALE_GRAVEE: &str = if PRINCIPALE_RETIREE {
 /// `black_box` : sans lecture, l'éditeur de liens la retirerait du programme publié). Sinon, ce qu'en retient l'état
 /// scellé (`revocation_retenue`).
 fn principale_revoquee() -> bool {
-    std::hint::black_box(PRINCIPALE_GRAVEE).ends_with(":RETIREE;") || revocation_retenue()
+    marque_retiree() || revocation_retenue()
+}
+
+/// La marque gravée dit-elle la principale retirée ? Les tests peuvent la dire retirée sans recompiler
+/// (`MARQUE_RETIREE_EN_ESSAI`, propre au fil), pour essayer la version qui révoque.
+fn marque_retiree() -> bool {
+    #[cfg(test)]
+    if MARQUE_RETIREE_EN_ESSAI.get() {
+        return true;
+    }
+    std::hint::black_box(PRINCIPALE_GRAVEE).ends_with(":RETIREE;")
+}
+
+#[cfg(test)]
+thread_local! {
+    static MARQUE_RETIREE_EN_ESSAI: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// La révocation retenue dans l'état scellé : le fichier là sous n'importe quelle forme (même changé ou illisible)
@@ -839,6 +854,19 @@ mod tests {
         assert!(revocation_retenue());
         std::fs::remove_file(&fichier).unwrap();
         assert!(revocation_retenue(), "effacée hors de Vanguard : toujours retenue");
+        crate::sceau::effacer(crate::sceau::REVOCATION).unwrap();
+        // La version qui révoque (principale retirée du programme) retient encore la révocation et remet le
+        // plancher à zéro : sans quoi un plancher monté par un voleur de la principale y resterait.
+        MARQUE_RETIREE_EN_ESSAI.set(true);
+        assert!(principale_revoquee() && !revocation_retenue());
+        crate::sceau::ecrire(crate::sceau::VERSIONS, "4294967295.0.0+1792540000").unwrap();
+        retenir_revocation().unwrap();
+        MARQUE_RETIREE_EN_ESSAI.set(false);
+        assert!(
+            revocation_retenue(),
+            "retirée du programme : la révocation est quand même retenue"
+        );
+        assert_eq!(plus_haute_vue(), Ok(None));
         crate::sceau::effacer(crate::sceau::REVOCATION).unwrap();
     }
 

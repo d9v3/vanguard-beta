@@ -170,11 +170,22 @@ pub(crate) fn en_double(volumes: Vec<PathBuf>, jetons: &BTreeSet<String>) -> boo
 }
 
 /// La première clé connue dans l'ordre des chemins, et si un autre volume porte son jeton.
-fn premiere_connue(mut volumes: Vec<PathBuf>, jetons: &BTreeSet<String>) -> Option<(PathBuf, bool)> {
-    volumes.sort();
-    let mut cles = volumes
+fn premiere_connue(volumes: Vec<PathBuf>, jetons: &BTreeSet<String>) -> Option<(PathBuf, bool)> {
+    premiere_parmi_lus(volumes.into_iter().map(|d| (jeton_de(&d), d)).collect(), jetons)
+}
+
+/// `seule_connue` sur des jetons déjà lus (`jeton_de`) : le journal sous Windows les lit dans des fils bornés dans le
+/// temps, un lecteur réseau qui cesse de répondre ne doit pas figer le programme ici.
+#[cfg(any(windows, test))]
+pub(crate) fn seule_parmi_lus(lus: Vec<(Option<String>, PathBuf)>, jetons: &BTreeSet<String>) -> Option<PathBuf> {
+    premiere_parmi_lus(lus, jetons).and_then(|(cle, en_double)| (!en_double).then_some(cle))
+}
+
+fn premiere_parmi_lus(mut lus: Vec<(Option<String>, PathBuf)>, jetons: &BTreeSet<String>) -> Option<(PathBuf, bool)> {
+    lus.sort_by(|a, b| a.1.cmp(&b.1));
+    let mut cles = lus
         .into_iter()
-        .filter_map(|d| jeton_de(&d).filter(|j| jetons.contains(j)).map(|j| (d, j)));
+        .filter_map(|(j, d)| j.filter(|j| jetons.contains(j)).map(|j| (d, j)));
     let (cle, jeton) = cles.next()?;
     let en_double = cles.any(|(_, j)| j == jeton);
     Some((cle, en_double))
@@ -423,7 +434,11 @@ mod tests {
     fn cle_en_double() {
         let c = constat_en_double();
         assert_eq!((c.probleme, c.verifie), (Some(Niveau::Moyen), false));
-        assert!(!c.message.contains("deployer"), "{}", c.message);
+        let action = |c: &Constat| c.correctif.as_ref().map(|k| k.action.clone()).unwrap_or_default();
+        let a = action(&c);
+        assert!(a.contains("Débranchez") || a.contains("Unplug"), "{a}");
+        // Le constat d'une clé inconnue, lui, conseille de redéployer : redéployer une copie ne la rendrait pas sûre.
+        assert!(!a.contains("deployer.sh") && action(&constat_inconnue(true)).contains("deployer.sh"));
     }
 
     fn jetable(nom: &str) -> PathBuf {
@@ -557,6 +572,17 @@ mod tests {
         assert!(en_double(vec![copie.clone(), a.clone(), b.clone()], &jetons));
         assert!(!en_double(vec![a.clone(), b.clone(), sans.clone()], &jetons));
         let _ = std::fs::remove_dir_all(copie);
+        // Jetons déjà lus (journal sous Windows) : la même règle, sans relire les volumes.
+        let lu = |d: &PathBuf, j: Option<&str>| (j.map(str::to_owned), d.clone());
+        let lus = vec![lu(&b, Some(JETON_B)), lu(&sans, None), lu(&a, Some(JETON_A))];
+        assert_eq!(seule_parmi_lus(lus, &jetons), Some(a.clone()));
+        let copie = PathBuf::from("/nulle-part/copie");
+        let lus = vec![lu(&copie, Some(JETON_A)), lu(&a, Some(JETON_A))];
+        assert_eq!(
+            seule_parmi_lus(lus, &jetons),
+            None,
+            "la copie n'est pas lue sur le disque"
+        );
         // Un fichier qui n'est pas le nôtre est mis de côté, pas écrasé.
         std::fs::write(chemin(&base), "{\"format\":\"autre\"}").unwrap();
         assert!(lire_dans(&base).is_empty());
