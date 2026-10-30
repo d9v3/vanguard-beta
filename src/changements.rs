@@ -1018,6 +1018,7 @@ mod tests {
     /// acceptées alors sont comme changées hors de Vanguard, rien n'y est rejoué, et rien ne les rescelle.
     #[test]
     fn releve_accepte_apres_des_sceaux_refaits_jamais_rejoue() {
+        crate::sceau::verrou_d_avant_en_essai();
         let f = releve("refaits");
         let d = f.parent().unwrap();
         noter_blocage_dans(&f, vec!["x".into()], true, blocage("vrai", Some(regle("203.0.113.7"))));

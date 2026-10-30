@@ -465,15 +465,62 @@ fn contenu(chemin: &Path) -> Result<Option<Vec<u8>>, String> {
 /// sans rien dire. D'autres témoins, que seule une version qui scelle laisse, comptent donc autant : la tête du
 /// journal des événements (écrite par le sceau même) et ses segments. Tout effacer d'un coup, journal compris, reste
 /// possible : c'est alors le journal vide d'un ordinateur où Vanguard a servi qui le montre.
+///
+/// Un verrou tout neuf ne témoigne de rien (`verrou_ancien`) : au premier usage, un autre Vanguard lancé au même moment
+/// l'a créé en l'ouvrant, sans avoir encore scellé, et le premier des deux à tenir le verrou disait les sceaux refaits
+/// (alerte élevée, sur l'ordinateur d'un nouvel utilisateur). Vu sur le Mac de GitHub, présent depuis la 0.86.
 fn deja_scelle(dossier: &Path) -> bool {
     let present = |p: PathBuf| std::fs::symlink_metadata(p).is_ok();
-    present(dossier.join(VERROU))
+    verrou_ancien(&dossier.join(VERROU))
         || present(dossier.join(crate::modele::journal::TETE))
         // Nés scellés (lot S2b) : aucune version d'avant les sceaux ne les a écrits.
         || present(dossier.join(crate::voulues::FICHIER))
         || present(dossier.join(crate::programmes_poses::FICHIER))
         || std::fs::read_dir(dossier.join(crate::modele::journal::DOSSIER))
             .is_ok_and(|mut d| d.any(|e| e.is_ok_and(|e| e.file_name().to_string_lossy().ends_with(".jsonl"))))
+}
+
+/// L'âge en deçà duquel `sceaux.verrou` peut venir d'un Vanguard lancé en même temps : il le crée en l'ouvrant, puis
+/// attend le verrou (`ATTENTE_ECRITURE`, `ATTENTE_LECTURE`) avant de sceller. Deux minutes couvrent ces attentes ; un
+/// verrou laissé par une version qui a servi ici a des jours.
+const VERROU_JEUNE: std::time::Duration = std::time::Duration::from_secs(120);
+
+// Les essais qui simulent un verrou laissé par un usage d'avant le posent à l'instant : il est déjà « ancien » pour eux.
+#[cfg(test)]
+thread_local! {
+    static VERROU_JEUNE_ESSAI: std::cell::Cell<Option<std::time::Duration>> = const { std::cell::Cell::new(None) };
+}
+
+/// Pour les essais : le verrou des sceaux qu'ils posent compte comme laissé par un usage d'avant, sur ce fil.
+#[cfg(test)]
+pub(crate) fn verrou_d_avant_en_essai() {
+    VERROU_JEUNE_ESSAI.with(|j| j.set(Some(std::time::Duration::ZERO)));
+}
+
+/// `chemin` (le verrou des sceaux) existe et a été créé il y a plus de `VERROU_JEUNE`. Sa naissance : sous Unix, le
+/// changement d'inode (ctime), qu'aucun programme ne ramène en arrière et que rien ne touche ensuite (le verrou n'est
+/// jamais écrit, seulement tenu) ; sous Windows, la date de création. Une date qu'on ne lit pas, ou dans le futur
+/// (horloge reculée), le compte comme ancien : à tort, c'est une fausse alerte « refaits », jamais un silence ; et
+/// rajeunir le verrou exprès ne donne rien de plus que de l'effacer, que `deja_scelle` sait déjà.
+fn verrou_ancien(chemin: &Path) -> bool {
+    let Ok(m) = std::fs::symlink_metadata(chemin) else {
+        return false;
+    };
+    #[cfg(test)]
+    let jeune = VERROU_JEUNE_ESSAI.with(std::cell::Cell::get).unwrap_or(VERROU_JEUNE);
+    #[cfg(not(test))]
+    let jeune = VERROU_JEUNE;
+    #[cfg(unix)]
+    let ne = {
+        use std::os::unix::fs::MetadataExt as _;
+        u64::try_from(m.ctime())
+            .ok()
+            .and_then(|s| std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(s)))
+    };
+    #[cfg(not(unix))]
+    let ne = m.created().ok();
+    // Jeune seulement sur un âge lu, et court.
+    ne.is_none_or(|t| !t.elapsed().is_ok_and(|age| age < jeune))
 }
 
 /// Premier passage d'une version qui scelle : les fichiers déjà là sont scellés tels quels, et ce départ est daté.
@@ -1463,6 +1510,7 @@ mod tests {
     /// les réécrive ; et le bilan dit que les sceaux ont été refaits, plus haut que de simples adoptés.
     #[test]
     fn sceaux_et_etat_effaces_ne_font_pas_un_premier_passage() {
+        verrou_d_avant_en_essai();
         let d = jetable("disparus");
         // Une installation toute neuve : rien n'a jamais été écrit, c'est bien un premier passage.
         assert_eq!(lire_dans(&d, MACHINE), Lecture::Absent);
@@ -1511,6 +1559,7 @@ mod tests {
     /// versions ne se tait pas) et le bilan ne dit rien de refait.
     #[test]
     fn une_version_d_avant_les_sceaux_n_est_pas_des_sceaux_refaits() {
+        verrou_d_avant_en_essai();
         let d = jetable("v085");
         std::fs::write(d.join("historique.json"), b"[]").unwrap();
         std::fs::write(d.join("surveillance-passe.txt"), b"1792540000").unwrap();
@@ -1626,6 +1675,47 @@ mod tests {
         assert!(c.message.contains("se-mettre-a-jour"), "{}", c.message);
     }
 
+    /// La course du premier usage, sans dépendre de l'ordre des fils : un autre Vanguard, lancé au même moment, vient
+    /// de créer `sceaux.verrou` en l'ouvrant et attend de le tenir. Ce n'est pas un Vanguard qui a déjà servi ici : rien
+    /// n'est refait, rien n'est inconnu. Le même verrou laissé par un usage d'avant, lui, dit les sceaux refaits.
+    #[test]
+    fn verrou_tout_neuf_d_un_autre_vanguard_n_est_pas_des_sceaux_refaits() {
+        let d = jetable("verrou-neuf");
+        std::fs::write(d.join(VERROU), b"").unwrap();
+        assert!(!refaits_dans(&d));
+        assert_eq!(lire_dans(&d, MACHINE), Lecture::Absent);
+        ecrire_dans(&d, APPRIS, b"{}").unwrap();
+        assert!(matches!(lire_dans(&d, APPRIS), Lecture::Intact(_)));
+        assert_eq!(falsifies_dans(&d), Releve::default());
+        let _ = std::fs::remove_dir_all(&d);
+
+        let d = jetable("verrou-d-avant");
+        std::fs::write(d.join(VERROU), b"").unwrap();
+        verrou_d_avant_en_essai();
+        assert!(refaits_dans(&d));
+        assert_eq!(lire_dans(&d, MACHINE), Lecture::Inconnu);
+        assert!(falsifies_dans(&d).refaits);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Un verrou dont l'âge ne se lit pas comme court (date dans le futur) témoigne : à tort, une fausse alerte, jamais
+    /// un silence.
+    #[test]
+    fn verrou_d_age_illisible_temoigne() {
+        let d = jetable("verrou-age");
+        assert!(!verrou_ancien(&d.join(VERROU)));
+        std::fs::write(d.join(VERROU), b"").unwrap();
+        assert!(!verrou_ancien(&d.join(VERROU)));
+        VERROU_JEUNE_ESSAI.with(|j| j.set(Some(std::time::Duration::from_secs(3600))));
+        assert!(!verrou_ancien(&d.join(VERROU)));
+        verrou_d_avant_en_essai();
+        assert!(verrou_ancien(&d.join(VERROU)));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Cinq écritures par fichier protégé, tous en même temps : assez pour que les écrivains se croisent (et, au
+    /// premier tour, pour la course du premier usage), sans faire attendre un fil au-delà de `ATTENTE_ECRITURE`. Vingt
+    /// faisaient refuser le verrou à l'un d'eux sur le Windows lent de GitHub (WouldBlock, le 27 oct. 2026).
     #[test]
     fn ecritures_en_meme_temps_sans_fausse_alerte() {
         let d = jetable("ensemble");
@@ -1633,7 +1723,7 @@ mod tests {
             .map(|nom| {
                 let d = d.clone();
                 std::thread::spawn(move || {
-                    for i in 0..20 {
+                    for i in 0..5 {
                         ecrire_dans(&d, nom, format!("{nom} {i}").as_bytes()).unwrap();
                         let lu = lire_dans(&d, nom);
                         assert!(matches!(lu, Lecture::Intact(_)), "{nom}, écriture {i} : {lu:?}");
@@ -1675,6 +1765,7 @@ mod tests {
     /// inconnu, jamais cru.
     #[test]
     fn le_juge_ne_croit_que_ce_que_vanguard_a_ecrit() {
+        verrou_d_avant_en_essai();
         let d = jetable("juge");
         assert_eq!(juge_dans(&d, PIEGES), Juge::Absent);
         ecrire_dans(&d, PIEGES, b"[]").unwrap();

@@ -695,6 +695,12 @@ fn preparer() -> bool {
             "  ClamAV (antivirus open source) n'est pas installé.",
             "  ClamAV (open source antivirus) is not installed."
         );
+        // Sans clavier (`vanguard verifier-fichier f < /dev/null`, un script) : la réponse par défaut, « non ». La
+        // question aurait trouvé l'entrée fermée et quitté, sans verdict pour le fichier.
+        if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            trp!("  Sans clavier : pas d'installation.", "  No keyboard: not installing.");
+            return false;
+        }
         if !demander(tr!("  L'installer maintenant ? [o/N] : ", "  Install it now? [y/N]: ")).oui() {
             return false;
         }

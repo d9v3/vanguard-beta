@@ -340,6 +340,7 @@ mod tests {
     /// Les sceaux effacés : l'état accepté tel quel, ou disparu avec eux, ne se croit plus.
     #[test]
     fn etat_adopte_ou_inconnu_apres_sceaux_refaits() {
+        crate::sceau::verrou_d_avant_en_essai();
         let d = jetable("adopte");
         noter_dans(&d, Defense::Rancongiciel, true, false).unwrap();
         std::fs::write(
