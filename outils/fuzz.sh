@@ -9,6 +9,8 @@
 #   outils/fuzz.sh                  toutes les cibles, 60 s chacune
 #   outils/fuzz.sh igd              une cible
 #   outils/fuzz.sh tout 600         toutes, 10 min chacune
+#   outils/fuzz.sh 2/3 300          une cible sur trois, à partir de la deuxième (la CI lance les trois parts en même
+#                                   temps : 24 cibles à 5 min ne tenaient plus dans un seul travail)
 # Sans cargo-fuzz ou sans la chaîne nightly : rien n'est lancé, code 77 (« sautée » pour verifier.sh).
 # Prérequis : rustup toolchain install nightly --profile minimal ; cargo install --locked cargo-fuzz.
 # Un plantage : corriger le module, ajouter un test de non-régression avec la donnée trouvée (le fichier de
@@ -33,14 +35,26 @@ CIBLE_FUZZ=$PWD/target/fuzz
 usage() {
   # "${CIBLES[*]}" joint les cibles par le premier caractère d'IFS.
   local IFS='|'
-  echo "usage : outils/fuzz.sh [tout|${CIBLES[*]}] [secondes par cible, 60 par défaut]" >&2
+  echo "usage : outils/fuzz.sh [tout|N/M|${CIBLES[*]}] [secondes par cible, 60 par défaut]" >&2
   exit 2
 }
 [[ $DUREE =~ ^[1-9][0-9]*$ ]] || usage
 case $QUOI in
   tout) liste=("${CIBLES[@]}") ;;
+  # Par rang dans fuzz/Cargo.toml (la cible i va à la part i mod M) : les parts d'un même M se partagent toute la
+  # liste, sans trou ni doublon, et une cible ajoutée en fin tombe dans l'une d'elles sans rien changer ici.
+  [1-9]/[1-9])
+    N=${QUOI%/*} M=${QUOI#*/}
+    ((N <= M)) || usage
+    liste=()
+    for i in "${!CIBLES[@]}"; do
+      ((i % M == N - 1)) && liste+=("${CIBLES[i]}")
+    done
+    ;;
   *) [[ " ${CIBLES[*]} " == *" $QUOI "* ]] || usage; liste=("$QUOI") ;;
 esac
+# Une part vide (plus de parts que de cibles) dirait « Aucun plantage » sans rien avoir fuzzé.
+((${#liste[@]})) || { echo "✖ aucune cible dans la part $QUOI (${#CIBLES[@]} cibles en tout)"; exit 1; }
 command -v cargo-fuzz >/dev/null || { echo "cargo-fuzz absent (cargo install --locked cargo-fuzz)"; exit 77; }
 rustup toolchain list | grep -q '^nightly' ||
   { echo "chaîne nightly absente (rustup toolchain install nightly --profile minimal)"; exit 77; }

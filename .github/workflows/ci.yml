@@ -164,10 +164,17 @@ jobs:
   # Le banc de fuzzing (fuzz/), cinq minutes par cible chaque nuit, et à la demande : verifier.sh n'y passe que
   # quelques secondes. Le corpus appris d'une nuit est repris la suivante (cache de GitHub) ; une donnée qui fait
   # planter un lecteur est gardée dans les artefacts, pour en faire un test de non-régression.
+  # Trois travaux en parallèle, une cible sur trois chacun (outils/fuzz.sh N/3) : les 24 cibles d'un seul travail
+  # (2 h de fuzzing) dépassaient son délai, et GitHub l'annulait chaque nuit sans un mot dans la liste des échecs.
   fuzzing:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 100
+    timeout-minutes: 75
+    strategy:
+      # Un plantage dans une part n'arrête pas les autres : chacune a ses propres cibles à essayer.
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3]
     steps:
       - uses: actions/checkout@v7
       - name: Chaîne nightly
@@ -177,14 +184,17 @@ jobs:
       - uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/fuzz/corpus
-          key: fuzz-corpus-${{ github.run_id }}
-          restore-keys: fuzz-corpus-
+          # Le corpus de sa part d'abord ; à défaut (première nuit en trois parts), le dernier enregistré.
+          key: fuzz-corpus-part${{ matrix.part }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-part${{ matrix.part }}-
+            fuzz-corpus-
       - name: Cinq minutes par cible
-        run: VANGUARD_FUZZ="$RUNNER_TEMP/fuzz" outils/fuzz.sh tout 300
+        run: VANGUARD_FUZZ="$RUNNER_TEMP/fuzz" outils/fuzz.sh ${{ matrix.part }}/3 300
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
-          name: fuzz-plantages
+          name: fuzz-plantages-part${{ matrix.part }}
           path: |
             ${{ runner.temp }}/fuzz/plantages
             ${{ runner.temp }}/fuzz/*.log

@@ -878,7 +878,11 @@ mod tests {
         a.dedup();
         b.sort();
         b.dedup();
-        assert!(a == b, "serveurs : {} par D-Bus, {} par resolvectl", a.len(), b.len());
+        // La sortie entière : sur la CI de GitHub (1 par D-Bus, 0 par resolvectl), le nombre seul ne disait pas pourquoi.
+        assert!(
+            a == b,
+            "serveurs : {a:?} par D-Bus, {b:?} par resolvectl ; `resolvectl dns` :\n{dns}"
+        );
     }
 
     /// Sur cet ordinateur, le resolv.conf amont de resolved donne les serveurs de `resolvectl dns`.
