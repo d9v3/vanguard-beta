@@ -314,12 +314,12 @@ mod systeme {
                 .as_array()?
                 .iter()
                 .find(|c| c["address"].as_str() == Some(self.adresse.as_str()))?;
-            let nombre = |v: &Value| v.as_i64().and_then(|n| i32::try_from(n).ok());
+            let nombre = |cle: &str, i: usize| client.get(cle)?.get(i)?.as_i64().and_then(|n| i32::try_from(n).ok());
             let place = (
-                nombre(&client["at"][0])?,
-                nombre(&client["at"][1])?,
-                nombre(&client["size"][0])?,
-                nombre(&client["size"][1])?,
+                nombre("at", 0)?,
+                nombre("at", 1)?,
+                nombre("size", 0)?,
+                nombre("size", 1)?,
             );
             let ecrans: Value = serde_json::from_str(&demander(&self.socket, "j/monitors")?).ok()?;
             let ecran = ecrans
@@ -367,8 +367,10 @@ mod systeme {
             (l, h)
         };
         let reserve = |i: usize| {
-            ecran["reserved"][i]
-                .as_i64()
+            ecran
+                .get("reserved")
+                .and_then(|r| r.get(i))
+                .and_then(Value::as_i64)
                 .and_then(|n| i32::try_from(n).ok())
                 .unwrap_or(0)
         };
@@ -470,7 +472,7 @@ mod systeme {
             let mut classe = [0u16; 64];
             // SAFETY : le tampon est à nous, sa taille passée avec lui ; la fenêtre vient d'être rendue par Windows.
             let n = unsafe { GetClassNameW(console, &mut classe) };
-            let classe = String::from_utf16_lossy(&classe[..usize::try_from(n).ok()?]);
+            let classe = String::from_utf16_lossy(classe.get(..usize::try_from(n).ok()?)?);
             match classe.as_str() {
                 "ConsoleWindowClass" => Some(Fenetre(console)),
                 "PseudoConsoleWindow" => {

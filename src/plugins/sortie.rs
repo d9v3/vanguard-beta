@@ -207,7 +207,8 @@ pub struct Gardes {
 
 impl Gardes {
     pub fn titre(&self) -> &str {
-        &self.titre[usize::from(crate::langue::anglais())]
+        let [fr, en] = &self.titre;
+        if crate::langue::anglais() { en } else { fr }
     }
 }
 

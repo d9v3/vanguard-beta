@@ -35,10 +35,11 @@ fn abime(pourquoi: &str) -> Echec {
 /// Lit l'identification puis le paquet KEXINIT dans `o`, tout ce que le serveur a envoyé jusqu'ici.
 pub fn lire(o: &[u8]) -> Result<Lu, Echec> {
     // Les lignes de bannière, puis « SSH-2.0-… » ; chaque ligne finit par « \n » (« \r\n » d'après la RFC).
-    let mut i = 0;
+    let mut reste = o;
     loop {
-        let Some(n) = o[i..].iter().position(|c| *c == b'\n') else {
-            return if o.len() - i > 255 {
+        let mut morceaux = reste.splitn(2, |c| *c == b'\n');
+        let (Some(ligne), Some(suite)) = (morceaux.next(), morceaux.next()) else {
+            return if reste.len() > 255 {
                 Err(abime(crate::tr!(
                     "ligne d'identification trop longue",
                     "identification line too long"
@@ -47,8 +48,7 @@ pub fn lire(o: &[u8]) -> Result<Lu, Echec> {
                 Ok(Lu::Incomplet)
             };
         };
-        let ligne = &o[i..i + n];
-        i += n + 1;
+        reste = suite;
         if ligne.starts_with(b"SSH-") {
             if !(ligne.starts_with(b"SSH-2.0-") || ligne.starts_with(b"SSH-1.99-")) {
                 return Err(abime(crate::tr!(
@@ -59,11 +59,10 @@ pub fn lire(o: &[u8]) -> Result<Lu, Echec> {
             break;
         }
     }
-    let reste = &o[i..];
-    if reste.len() < 5 {
+    let [l0, l1, l2, l3, _, ..] = *reste else {
         return Ok(Lu::Incomplet);
-    }
-    let longueur = usize::try_from(u32::from_be_bytes([reste[0], reste[1], reste[2], reste[3]])).unwrap_or(usize::MAX);
+    };
+    let longueur = usize::try_from(u32::from_be_bytes([l0, l1, l2, l3])).unwrap_or(usize::MAX);
     if !(5..=PAQUET_MAX).contains(&longueur) {
         return Err(abime(crate::tr!(
             "longueur de paquet hors des bornes",
@@ -73,7 +72,13 @@ pub fn lire(o: &[u8]) -> Result<Lu, Echec> {
     let Some(paquet) = reste.get(4..4 + longueur) else {
         return Ok(Lu::Incomplet);
     };
-    let bourrage = usize::from(paquet[0]);
+    // `longueur` >= 5 : le paquet a toujours son octet de bourrage.
+    let bourrage = usize::from(*paquet.first().ok_or_else(|| {
+        abime(crate::tr!(
+            "longueur de paquet hors des bornes",
+            "packet length out of bounds"
+        ))
+    })?);
     let charge = paquet
         .get(
             1..longueur
@@ -88,10 +93,11 @@ pub fn lire(o: &[u8]) -> Result<Lu, Echec> {
         )));
     }
     // Message, puis 16 octets de cookie, puis la liste des échanges de clés (longueur sur 4 octets).
-    let entete = charge
+    let entete: [u8; 4] = charge
         .get(17..21)
+        .and_then(|e| e.try_into().ok())
         .ok_or_else(|| abime(crate::tr!("KEXINIT tronqué", "truncated KEXINIT")))?;
-    let n = usize::try_from(u32::from_be_bytes([entete[0], entete[1], entete[2], entete[3]])).unwrap_or(usize::MAX);
+    let n = usize::try_from(u32::from_be_bytes(entete)).unwrap_or(usize::MAX);
     let liste = charge
         .get(21..21usize.saturating_add(n))
         .ok_or_else(|| abime(crate::tr!("KEXINIT tronqué", "truncated KEXINIT")))?;
@@ -151,7 +157,7 @@ pub fn kexinit(ip: Ipv4Addr, port: u16, delai: Duration) -> Result<Vec<String>, 
                     crate::tr!("connexion fermée sans réponse", "connection closed without an answer"),
                 ));
             }
-            Ok(n) => recu.extend_from_slice(&tampon[..n]),
+            Ok(n) => recu.extend(tampon.iter().take(n)),
             Err(_) => return Err(Echec::new(OU, Raison::Delai)),
         }
     }

@@ -869,18 +869,22 @@ pub(crate) fn lire_last<Tz: TimeZone>(sortie: &str, maintenant: chrono::NaiveDat
     let mut v = Vec::new();
     for l in sortie.lines() {
         let mots: Vec<&str> = l.split_whitespace().collect();
-        if mots.len() < 5 || mots[1] == "begins" {
-            continue;
-        }
-        let Some(i) = (1..mots.len() - 3).find(|&i| {
-            JOURS_SEMAINE.contains(&mots[i])
-                && mois(mots[i + 1]).is_some()
-                && mots[i + 2].parse::<u32>().is_ok()
-                && mots[i + 3].contains(':')
-        }) else {
+        let [compte, terminal, ..] = mots[..] else {
             continue;
         };
-        let (Some(m), Ok(jour)) = (mois(mots[i + 1]), mots[i + 2].parse::<u32>()) else {
+        if mots.len() < 5 || terminal == "begins" {
+            continue;
+        }
+        // La date (jour de la semaine, mois, jour, heure) à partir du deuxième mot.
+        let Some((i, m, jour, heure)) = mots.windows(4).enumerate().skip(1).find_map(|(i, w)| {
+            let &[jour_semaine, mois_ecrit, jour, heure] = w else {
+                return None;
+            };
+            if !JOURS_SEMAINE.contains(&jour_semaine) || !heure.contains(':') {
+                return None;
+            }
+            Some((i, mois(mois_ecrit)?, jour.parse::<u32>().ok()?, heure))
+        }) else {
             continue;
         };
         let annee = mots
@@ -889,21 +893,22 @@ pub(crate) fn lire_last<Tz: TimeZone>(sortie: &str, maintenant: chrono::NaiveDat
             .and_then(|a| a.parse::<i32>().ok());
         let date = match annee {
             Some(a) => chrono::NaiveDate::from_ymd_opt(a, m, jour).and_then(|d| {
-                chrono::NaiveTime::parse_from_str(mots[i + 3], "%H:%M:%S")
+                chrono::NaiveTime::parse_from_str(heure, "%H:%M:%S")
                     .ok()
                     .map(|h| d.and_time(h))
             }),
-            None => date_sans_annee(m, jour, mots[i + 3], maintenant),
+            None => date_sans_annee(m, jour, heure, maintenant),
         };
         let Some(quand) = date.and_then(|d| locale_vers_secondes(d, fuseau)) else {
             continue;
         };
-        let compte = mots[0];
         match compte {
             "reboot" => {
                 // Linux : « reboot system boot 6.17.1-arch1-1 » (la version du noyau) ; macOS : « reboot ~ ».
-                let noyau = mots[1..i]
+                let noyau = mots
                     .iter()
+                    .take(i)
+                    .skip(1)
                     .filter(|m| !["system", "boot", "~"].contains(m))
                     .copied()
                     .collect::<Vec<_>>()
@@ -918,7 +923,7 @@ pub(crate) fn lire_last<Tz: TimeZone>(sortie: &str, maintenant: chrono::NaiveDat
                         quand,
                         Source::Compte,
                         Genre::SessionReseau,
-                        format!("{compte} ← {hote} ({})", mots[1]),
+                        format!("{compte} ← {hote} ({terminal})"),
                     ));
                 }
             }

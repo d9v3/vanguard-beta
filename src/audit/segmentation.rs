@@ -426,25 +426,33 @@ pub fn routeurs_ipv6_linux(table: &str) -> Vec<RouteurIpv6> {
     let mut routeurs: Vec<RouteurIpv6> = Vec::new();
     for ligne in table.lines() {
         let c: Vec<&str> = ligne.split_whitespace().collect();
-        if c.len() < 10 || c[1] != "00" || c[0].bytes().any(|b| b != b'0') {
+        // Dix colonnes au moins : destination, longueur, …, saut (5e), …, drapeaux (9e), interface (10e).
+        let [destination, longueur, _, _, saut, _, _, _, drapeaux, interface, ..] = c[..] else {
+            continue;
+        };
+        if longueur != "00" || destination.bytes().any(|b| b != b'0') {
             continue;
         }
-        let Ok(drapeaux) = u32::from_str_radix(c[8], 16) else {
+        let Ok(drapeaux) = u32::from_str_radix(drapeaux, 16) else {
             continue;
         };
         if drapeaux & (RTF_UP | RTF_GATEWAY) != RTF_UP | RTF_GATEWAY {
             continue;
         }
-        let Ok(saut) = u128::from_str_radix(c[4], 16) else {
+        let Ok(saut) = u128::from_str_radix(saut, 16) else {
             continue;
         };
         let adresse = Ipv6Addr::from(saut);
-        if adresse.is_unspecified() || routeurs.iter().any(|r| r.adresse == adresse && r.interface == c[9]) {
+        if adresse.is_unspecified()
+            || routeurs
+                .iter()
+                .any(|r| r.adresse == adresse && r.interface == interface)
+        {
             continue;
         }
         routeurs.push(RouteurIpv6 {
             adresse,
-            interface: c[9].to_string(),
+            interface: interface.to_string(),
             mac: mac_eui64(&adresse),
         });
     }

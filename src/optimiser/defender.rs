@@ -166,6 +166,7 @@ pub fn lire_sortie(texte: &str) -> Etat {
 fn sortie_wmi() -> Option<String> {
     use crate::machine::windows::wmi::{self, Valeur};
     const DEFENDER: &str = r"root\Microsoft\Windows\Defender";
+    static NUL: Valeur = Valeur::Nul;
     let s = wmi::requete(
         DEFENDER,
         "MSFT_MpComputerStatus",
@@ -189,6 +190,9 @@ fn sortie_wmi() -> Option<String> {
     )?
     .into_iter()
     .next()?;
+    // Un champ que la ligne n'a pas se lit comme un champ que cette version de Windows n'a pas (wmi::Ligne) : nul.
+    let s = |nom: &str| s.get(nom).unwrap_or(&NUL);
+    let p = |nom: &str| p.get(nom).unwrap_or(&NUL);
     // Comme `[int]$null` : une valeur absente vaut 0 ; un booléen comme PowerShell l'écrit.
     let entier = |v: &Valeur| v.entier().unwrap_or(0);
     let booleen = |v: &Valeur| match v {
@@ -197,20 +201,20 @@ fn sortie_wmi() -> Option<String> {
         _ => "",
     };
     let mut lignes = vec![
-        format!("mode|{}", s["AMRunningMode"].texte().unwrap_or_default()),
-        format!("av|{}", booleen(&s["AntivirusEnabled"])),
-        format!("rtp|{}", booleen(&s["RealTimeProtectionEnabled"])),
-        format!("cfa|{}", entier(&p["EnableControlledFolderAccess"])),
-        format!("np|{}", entier(&p["EnableNetworkProtection"])),
-        format!("pua|{}", entier(&p["PUAProtection"])),
+        format!("mode|{}", s("AMRunningMode").texte().unwrap_or_default()),
+        format!("av|{}", booleen(s("AntivirusEnabled"))),
+        format!("rtp|{}", booleen(s("RealTimeProtectionEnabled"))),
+        format!("cfa|{}", entier(p("EnableControlledFolderAccess"))),
+        format!("np|{}", entier(p("EnableNetworkProtection"))),
+        format!("pua|{}", entier(p("PUAProtection"))),
     ];
-    let actions = p["AttackSurfaceReductionRules_Actions"].liste();
-    for (i, id) in p["AttackSurfaceReductionRules_Ids"].liste().iter().enumerate() {
+    let actions = p("AttackSurfaceReductionRules_Actions").liste();
+    for (i, id) in p("AttackSurfaceReductionRules_Ids").liste().iter().enumerate() {
         if let Some(id) = id.texte().filter(|id| !id.is_empty()) {
             lignes.push(format!("asr|{id}|{}", actions.get(i).map_or(0, entier)));
         }
     }
-    for d in p["ControlledFolderAccessProtectedFolders"].liste() {
+    for d in p("ControlledFolderAccessProtectedFolders").liste() {
         if let Some(d) = d.texte().filter(|d| !d.is_empty()) {
             lignes.push(format!("protege|{d}"));
         }

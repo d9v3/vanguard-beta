@@ -196,7 +196,7 @@ fn administrations_ouvertes(hotes: &[Hote], objets: &[Objet]) -> Vec<Constat> {
             .iter()
             .map(|(_, p)| format!("{} ({})", p.service, p.libelle()))
             .collect();
-        let (pire, port) = ouverts[0];
+        let Some(&(pire, port)) = ouverts.first() else { continue };
         constats.push(
             alerte(
                 "Appareils",

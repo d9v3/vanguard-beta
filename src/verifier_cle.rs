@@ -92,8 +92,8 @@ fn motif(essai: u64, fichier: u32, bloc: u32) -> [u8; 16] {
 
 fn remplir(tampon: &mut [u8], essai: u64, fichier: u32, bloc: u32) {
     let m = motif(essai, fichier, bloc);
-    for morceau in tampon.chunks_mut(16) {
-        morceau.copy_from_slice(&m[..morceau.len()]);
+    for (o, v) in tampon.iter_mut().zip(m.iter().cycle()) {
+        *o = *v;
     }
 }
 
@@ -112,14 +112,14 @@ enum Verdict {
 
 fn juger(tampon: &[u8], essai: u64, fichier: u32, bloc: u32) -> Verdict {
     let attendu = motif(essai, fichier, bloc);
-    if !tampon.is_empty() && tampon.chunks(16).all(|m| m == &attendu[..m.len()]) {
+    if !tampon.is_empty() && tampon.iter().zip(attendu.iter().cycle()).all(|(a, b)| a == b) {
         return Verdict::Bon;
     }
     // Un autre bloc du même essai, entier et cohérent : les 16 premiers octets le nomment, le reste doit le répéter.
-    let Some(premier) = tampon.get(..16) else {
+    let Some(premier) = tampon.first_chunk::<16>() else {
         return Verdict::Faux;
     };
-    if premier[..8] == essai.to_le_bytes() && tampon.chunks(16).all(|m| m == &premier[..m.len()]) {
+    if premier[..8] == essai.to_le_bytes() && tampon.iter().zip(premier.iter().cycle()).all(|(a, b)| a == b) {
         return Verdict::AutreBloc {
             fichier: u32::from_le_bytes(premier[8..12].try_into().unwrap_or_default()),
             bloc: u32::from_le_bytes(premier[12..].try_into().unwrap_or_default()),
@@ -237,6 +237,10 @@ fn ecrire(dossier: &Path, octets: u64, p: &Parametres, essai: u64, controle: Con
             }
             #[allow(clippy::cast_possible_truncation)]
             let taille_bloc = (taille_fichier - ecrit_ici).min(p.bloc) as usize;
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "tampon() alloue p.bloc + ALIGNEMENT octets, decalage < ALIGNEMENT, taille_bloc <= p.bloc"
+            )]
             let zone = &mut memoire[decalage..decalage + taille_bloc];
             remplir(zone, essai, numero, bloc);
             if let Err(err) = f.write_all(zone) {
@@ -289,6 +293,10 @@ fn relire(fichiers: &[(PathBuf, u64)], p: &Parametres, essai: u64, controle: Con
             }
             #[allow(clippy::cast_possible_truncation)]
             let taille_bloc = (*taille - lu_ici).min(p.bloc) as usize;
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "tampon() alloue p.bloc + ALIGNEMENT octets, decalage < ALIGNEMENT, taille_bloc <= p.bloc"
+            )]
             let zone = &mut memoire[decalage..decalage + taille_bloc];
             let lu = f
                 .as_mut()
@@ -327,8 +335,8 @@ fn relire(fichiers: &[(PathBuf, u64)], p: &Parametres, essai: u64, controle: Con
 /// Remplit `t` en entier : `Ok(false)` si le fichier finit avant.
 fn lire_exactement(f: &mut File, t: &mut [u8]) -> std::io::Result<bool> {
     let mut fait = 0;
-    while fait < t.len() {
-        match f.read(&mut t[fait..]) {
+    while let Some(reste) = t.get_mut(fait..).filter(|r| !r.is_empty()) {
+        match f.read(reste) {
             Ok(0) => return Ok(false),
             Ok(n) => fait += n,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}

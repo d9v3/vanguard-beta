@@ -603,6 +603,7 @@ mod systeme {
     }
 
     pub fn sections() -> Vec<Section> {
+        static NUL: serde_json::Value = serde_json::Value::Null;
         let mut systeme = Vec::new();
         // Une valeur d'une ligne, prête à montrer.
         let version_systeme = |cle: &str| crate::machine::macos::version_systeme(cle).map(|v| affichable(&v));
@@ -636,7 +637,9 @@ mod systeme {
                 .map(|v| affichable(v.trim()))
                 .filter(|v| !v.is_empty())
         };
-        let materiel_json = &profil["SPHardwareDataType"][0];
+        // Le premier objet d'une section, `Null` s'il manque : la même lecture que `profil[cle][0]`.
+        let premier = |cle: &str| profil.get(cle).and_then(|v| v.get(0)).unwrap_or(&NUL);
+        let materiel_json = premier("SPHardwareDataType");
         let modele = [
             champ(materiel_json, "machine_name"),
             champ(materiel_json, "machine_model"),
@@ -666,7 +669,7 @@ mod systeme {
         if let Some(total) = crate::machine::macos::sysctl_nombre("hw.memsize") {
             materiel.push(ligne(tr!("Mémoire", "Memory"), go(total)));
         }
-        if let Some(puce) = champ(&profil["SPDisplaysDataType"][0], "sppci_model") {
+        if let Some(puce) = champ(premier("SPDisplaysDataType"), "sppci_model") {
             materiel.push(ligne(tr!("Carte graphique", "Graphics card"), puce));
         }
         // diskutil en -plist, pour la même raison (« Solid State: Yes » se traduit).

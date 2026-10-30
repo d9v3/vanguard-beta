@@ -217,18 +217,27 @@ pub(crate) fn relever(id: String, titre: &str, gestes: &[Geste]) -> Result<Relev
 pub(crate) fn regrouper(mut releves: Vec<Option<Releve>>) -> (Vec<Option<Releve>>, Vec<Option<String>>) {
     let mut chef: Vec<Option<usize>> = releves.iter().enumerate().map(|(i, r)| r.as_ref().map(|_| i)).collect();
     for j in 0..releves.len() {
-        let Some(b) = releves[j].take() else { continue };
-        let touches: Vec<usize> = (0..j)
-            .filter(|&i| releves[i].as_ref().is_some_and(|a| a.touche_le_meme(&b)))
+        // `j` et les `i`, `k` ci-dessous sont tous des rangs de `releves` : chaque `get` rend quelque chose.
+        let Some(b) = releves.get_mut(j).and_then(Option::take) else {
+            continue;
+        };
+        let touches: Vec<usize> = releves
+            .iter()
+            .take(j)
+            .enumerate()
+            .filter(|(_, a)| a.as_ref().is_some_and(|a| a.touche_le_meme(&b)))
+            .map(|(i, _)| i)
             .collect();
-        let Some(&i) = touches.first() else {
-            releves[j] = Some(b);
+        let Some((&i, autres)) = touches.split_first() else {
+            if let Some(r) = releves.get_mut(j) {
+                *r = Some(b);
+            }
             continue;
         };
         // Deux notes jusque-là séparées que celle-ci relie n'en font plus qu'une.
-        for &k in &touches[1..] {
-            if let Some(autre) = releves[k].take()
-                && let Some(a) = releves[i].as_mut()
+        for &k in autres {
+            if let Some(autre) = releves.get_mut(k).and_then(Option::take)
+                && let Some(a) = releves.get_mut(i).and_then(Option::as_mut)
             {
                 a.absorber(autre);
             }
@@ -236,14 +245,16 @@ pub(crate) fn regrouper(mut releves: Vec<Option<Releve>>) -> (Vec<Option<Releve>
                 *c = Some(i);
             }
         }
-        if let Some(a) = releves[i].as_mut() {
+        if let Some(a) = releves.get_mut(i).and_then(Option::as_mut) {
             a.absorber(b);
         }
-        chef[j] = Some(i);
+        if let Some(c) = chef.get_mut(j) {
+            *c = Some(i);
+        }
     }
     let ids = chef
         .iter()
-        .map(|c| c.and_then(|i| releves[i].as_ref()).map(|r| r.id.clone()))
+        .map(|c| c.and_then(|i| releves.get(i)?.as_ref()).map(|r| r.id.clone()))
         .collect();
     (releves, ids)
 }

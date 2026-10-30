@@ -798,20 +798,23 @@ pub fn ecrire_avec(lots: &[Vec<(&Changement, Valeur)>], en_plus: &[Vec<String>])
             return (vec![false; lots.len()], vec![false; en_plus.len()]);
         }
         let reste = r.split_off(admin.len().min(r.len()));
+        // `i` vient de `lots.iter().enumerate()`, comme `resultats` : toujours une case.
         for ((i, _), ok) in admin.iter().zip(r) {
-            resultats[*i] = ok;
+            if let Some(resultat) = resultats.get_mut(*i) {
+                *resultat = ok;
+            }
         }
         for (p, ok) in plus.iter_mut().zip(reste) {
             *p = ok;
         }
     }
-    for (i, lot) in lots.iter().enumerate() {
-        if !resultats[i] {
+    for (lot, resultat) in lots.iter().zip(resultats.iter_mut()) {
+        if !*resultat {
             continue;
         }
         for (c, v) in lot.iter().filter(|(c, _)| !c.admin()) {
             println!("    {GRIS}{}{RESET}", c.decrire(v.as_deref()));
-            resultats[i] &= c.ecrire_ici(v.as_deref());
+            *resultat &= c.ecrire_ici(v.as_deref());
         }
     }
     // Defender relu à la prochaine lecture : c'est elle qui dit si le changement a pris.

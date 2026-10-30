@@ -115,8 +115,10 @@ impl Vocabulaire {
         if self.mots.get(debut).is_some_and(|m| m.simple == voulu) {
             return None;
         }
-        let mut candidats: Vec<&Mot> = self.mots[debut..]
+        let mut candidats: Vec<&Mot> = self
+            .mots
             .iter()
+            .skip(debut)
             .take_while(|m| m.simple.starts_with(voulu.as_str()))
             .filter(|m| m.simple.len() > voulu.len())
             .collect();

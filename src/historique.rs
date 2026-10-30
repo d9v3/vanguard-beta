@@ -182,7 +182,11 @@ fn verifier_v2(tous: &[Bilan]) -> Option<Chaine> {
         }
         // Le premier bilan gardé peut pointer vers un bilan retiré par la rotation ; après lui, la seconde chaîne
         // suit celle du précédent, ou repart (aucune) si le précédent n'en avait pas.
-        if indice > 0 && b.precedent_v2 != tous[indice - 1].empreinte_v2 {
+        if indice
+            .checked_sub(1)
+            .and_then(|k| tous.get(k))
+            .is_some_and(|precedent| b.precedent_v2 != precedent.empreinte_v2)
+        {
             return Some(Chaine::Rompue {
                 indice,
                 date: date(),
@@ -457,7 +461,7 @@ pub fn afficher_changements(avant: &Bilan, apres: &Bilan) {
 /// Courbe des notes (SVG intégré, couleurs du thème clair ou sombre) ; `None` s'il y a moins de deux bilans.
 /// Le réseau et son audit ne sont tracés que pour le réseau du dernier bilan.
 pub fn courbe(historique: &[Bilan]) -> Option<String> {
-    let derniers = &historique[historique.len().saturating_sub(30)..];
+    let derniers = historique.get(historique.len().saturating_sub(30)..)?;
     if derniers.len() < 2 {
         return None;
     }
@@ -548,7 +552,7 @@ pub fn courbe(historique: &[Bilan]) -> Option<String> {
         svg,
         "<text x={marge} y={} style=\"fill:var(--doux);font-size:11px\">{}</text><text x={} y={} text-anchor=end style=\"fill:var(--doux);font-size:11px\">{}</text></svg>",
         hauteur - 6.0,
-        jour(&derniers[0]),
+        jour(derniers.first()?),
         largeur - marge,
         hauteur - 6.0,
         jour(derniers.last()?)

@@ -170,10 +170,13 @@ fn compter_voisins_publics(octets: &[u8]) -> usize {
     let mut appareils = std::collections::HashSet::new();
     for (genre, corps) in crate::reseau::scan::messages_netlink(octets) {
         // ndmsg : famille (1), bourrage (3), interface (4), état (2), drapeaux (1), type (1) ; puis les attributs.
-        if genre != RTM_NEWNEIGH || corps.len() < 12 || corps[0] != AF_INET6 {
+        let [famille, _, _, _, _, _, _, _, e0, e1, _, _, ..] = *corps else {
+            continue;
+        };
+        if genre != RTM_NEWNEIGH || famille != AF_INET6 {
             continue;
         }
-        let etat = u16::from_ne_bytes([corps[8], corps[9]]);
+        let etat = u16::from_ne_bytes([e0, e1]);
         // NOARP (0x40), FAILED (0x20), INCOMPLETE (0x01) ou sans état : pas un appareil joignable.
         if etat == 0 || etat & 0x61 != 0 {
             continue;
@@ -181,9 +184,9 @@ fn compter_voisins_publics(octets: &[u8]) -> usize {
         let mut adresse = None;
         let mut materielle = None;
         let mut pos = 12;
-        while let Some(attribut) = corps.get(pos..pos + 4) {
-            let longueur = usize::from(u16::from_ne_bytes([attribut[0], attribut[1]]));
-            let genre_attribut = u16::from_ne_bytes([attribut[2], attribut[3]]);
+        while let Some(&[l0, l1, g0, g1]) = corps.get(pos..pos + 4) {
+            let longueur = usize::from(u16::from_ne_bytes([l0, l1]));
+            let genre_attribut = u16::from_ne_bytes([g0, g1]);
             if longueur < 4 {
                 break;
             }

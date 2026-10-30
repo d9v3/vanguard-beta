@@ -297,7 +297,7 @@ fn verifier_pe(fichier: &Path) -> bool {
     match &lu {
         None => manquants.push(tr!("manifeste absent ou malformé", "manifest missing or malformed").to_string()),
         Some((niveaux, pages)) => {
-            if niveaux.len() != 1 || niveaux[0] != "asInvoker" {
+            if !matches!(niveaux.as_slice(), [seul] if seul == "asInvoker") {
                 manquants.push(trf!(
                     "requestedExecutionLevel : {niveaux:?} au lieu d'un seul asInvoker",
                     "requestedExecutionLevel: {niveaux:?} instead of a single asInvoker"

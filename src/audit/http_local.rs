@@ -133,7 +133,7 @@ pub fn demander(
         match flux.read(&mut tampon) {
             Ok(0) | Err(_) => break,
             Ok(n) => {
-                brut.extend_from_slice(&tampon[..n]);
+                brut.extend(tampon.iter().take(n));
                 if brut.len() > TAILLE_MAX {
                     return None;
                 }
@@ -150,14 +150,14 @@ pub fn demander(
 /// qui garde la connexion ouverte ne doit pas faire attendre le délai entier : on s'arrête dès que la longueur
 /// annoncée (ou le dernier morceau d'une réponse envoyée par morceaux) est là.
 fn complete(brut: &[u8]) -> bool {
-    let Some(debut_corps) = fin_entetes(brut) else {
+    let Some((tete, corps)) = fin_entetes(brut).and_then(|i| brut.split_at_checked(i)) else {
         return false;
     };
-    let entetes = String::from_utf8_lossy(&brut[..debut_corps]).to_ascii_lowercase();
+    let entetes = String::from_utf8_lossy(tete).to_ascii_lowercase();
     if par_morceaux(&entetes) {
-        return brut[debut_corps..].ends_with(b"0\r\n\r\n");
+        return corps.ends_with(b"0\r\n\r\n");
     }
-    longueur_annoncee(&entetes).is_some_and(|n| brut.len() - debut_corps >= n)
+    longueur_annoncee(&entetes).is_some_and(|n| corps.len() >= n)
 }
 
 /// Position du premier octet du corps, après la ligne vide qui finit les en-têtes.
@@ -183,8 +183,8 @@ fn par_morceaux(entetes: &str) -> bool {
 /// Lit une réponse HTTP/1.1 brute : son code, puis son corps (de la longueur annoncée, recollé s'il arrive par
 /// morceaux, sinon tout ce qui suit les en-têtes).
 pub fn lire_reponse(brut: &[u8]) -> Option<Reponse> {
-    let debut_corps = fin_entetes(brut)?;
-    let entetes = String::from_utf8_lossy(&brut[..debut_corps]).to_ascii_lowercase();
+    let (tete, corps) = brut.split_at_checked(fin_entetes(brut)?)?;
+    let entetes = String::from_utf8_lossy(tete).to_ascii_lowercase();
     let code = entetes
         .lines()
         .next()?
@@ -194,7 +194,6 @@ pub fn lire_reponse(brut: &[u8]) -> Option<Reponse> {
         .next()?
         .parse()
         .ok()?;
-    let corps = &brut[debut_corps..];
     let corps = if par_morceaux(&entetes) {
         recoller(corps)
     } else {
@@ -211,7 +210,10 @@ pub fn lire_reponse(brut: &[u8]) -> Option<Reponse> {
 fn recoller(mut reste: &[u8]) -> Vec<u8> {
     let mut corps = Vec::new();
     while let Some(fin_ligne) = reste.windows(2).position(|w| w == b"\r\n") {
-        let taille = String::from_utf8_lossy(&reste[..fin_ligne]);
+        let Some(ligne) = reste.get(..fin_ligne) else {
+            break;
+        };
+        let taille = String::from_utf8_lossy(ligne);
         let taille = taille.split(';').next().unwrap_or_default().trim();
         let Ok(n) = usize::from_str_radix(taille, 16) else {
             break;

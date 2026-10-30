@@ -512,8 +512,9 @@ mod colonnes {
             .map(|c| {
                 schema
                     .iter()
-                    .position(|(n, _)| n.eq_ignore_ascii_case(c))
-                    .map(|i| (i, schema[i].1))
+                    .enumerate()
+                    .find(|(_, (n, _))| n.eq_ignore_ascii_case(c))
+                    .map(|(i, &(_, entier))| (i, entier))
             })
             .collect();
         let mut brutes = Vec::new();

@@ -119,23 +119,30 @@ fn prendre(o: &[u8], i: &mut usize, n: usize) -> Option<std::ops::Range<usize>> 
     Some(r)
 }
 
+/// Comme `prendre`, mais rend les octets eux-mêmes.
+fn prendre_octets<'a>(o: &'a [u8], i: &mut usize, n: usize) -> Option<&'a [u8]> {
+    o.get(prendre(o, i, n)?)
+}
+
 fn u16_a(o: &[u8], i: &mut usize) -> Option<u16> {
-    let r = prendre(o, i, 2)?;
-    Some(u16::from_be_bytes([o[r.start], o[r.start + 1]]))
+    Some(u16::from_be_bytes(*prendre_octets(o, i, 2)?.first_chunk::<2>()?))
 }
 
 /// La réponse du serveur : le premier enregistrement TLS reçu. `None` : il n'est pas encore entier.
 pub fn lire_reponse(o: &[u8]) -> Option<ReponsePq> {
-    if o.len() < 5 {
+    let [genre, majeur, _, l0, l1, ..] = *o else {
         return None;
-    }
-    let longueur = usize::from(u16::from_be_bytes([o[3], o[4]]));
-    if o[1] != 0x03 || longueur > TAILLE_MAX {
+    };
+    let longueur = usize::from(u16::from_be_bytes([l0, l1]));
+    if majeur != 0x03 || longueur > TAILLE_MAX {
         return Some(ReponsePq::Autre);
     }
     let corps = o.get(5..5 + longueur)?;
-    Some(match o[0] {
-        0x15 if corps.len() == 2 => ReponsePq::Refuse(corps[1]),
+    Some(match genre {
+        0x15 => match *corps {
+            [_, raison] => ReponsePq::Refuse(raison),
+            _ => ReponsePq::Autre,
+        },
         0x16 => lire_server_hello(corps).unwrap_or(ReponsePq::Autre),
         _ => ReponsePq::Autre,
     })
@@ -150,12 +157,13 @@ fn lire_server_hello(o: &[u8]) -> Option<ReponsePq> {
     }
     i += 4;
     let _version = u16_a(o, &mut i)?;
-    let random = prendre(o, &mut i, 32)?;
-    if o[random] != RANDOM_HRR {
+    if *prendre_octets(o, &mut i, 32)? != RANDOM_HRR {
         return Some(ReponsePq::Autre);
     }
-    let session = prendre(o, &mut i, 1)?;
-    prendre(o, &mut i, usize::from(o[session.start]))?;
+    let &[session] = prendre_octets(o, &mut i, 1)? else {
+        return None;
+    };
+    prendre(o, &mut i, usize::from(session))?;
     prendre(o, &mut i, 3)?;
     let total = usize::from(u16_a(o, &mut i)?);
     let fin = i.checked_add(total)?;
@@ -212,7 +220,7 @@ pub fn sonder(adresse: SocketAddr, hote: Option<&str>, delai: Duration) -> Resul
                     crate::tr!("connexion fermée sans réponse", "connection closed without an answer"),
                 ));
             }
-            Ok(n) => recu.extend_from_slice(&tampon[..n]),
+            Ok(n) => recu.extend(tampon.iter().take(n)),
             Err(_) => return Err(muet()),
         }
     }

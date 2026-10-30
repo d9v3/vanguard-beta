@@ -239,7 +239,9 @@ fn dossier_personnel(chemin: &str, maisons: &[String]) -> Option<usize> {
         }
     }
     let b = chemin.as_bytes();
-    if b.len() > 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/') {
+    if let [lecteur, b':', b'\\' | b'/', _, ..] = *b
+        && lecteur.is_ascii_alphabetic()
+    {
         let reste = &bas[3..];
         if let Some(r) = reste.strip_prefix("users\\").or_else(|| reste.strip_prefix("users/")) {
             return Some(3 + "users\\".len() + r.find(['\\', '/'])? + 1);

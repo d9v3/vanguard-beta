@@ -440,10 +440,9 @@ fn executer_avec(
     // restait, avec un faux ✖, et la réessayer ramenait l'état d'entre les deux.
     let mut remis = vec![false; a_annuler.len()];
     let mut couverts: Vec<&str> = Vec::new();
-    for i in (0..a_annuler.len()).rev() {
-        let r = a_annuler[i];
-        remis[i] = annules.get(i) == Some(&true) && remis_en_place(r, h, &couverts);
-        if remis[i] {
+    for (i, (&r, remis_r)) in a_annuler.iter().zip(remis.iter_mut()).enumerate().rev() {
+        *remis_r = annules.get(i) == Some(&true) && remis_en_place(r, h, &couverts);
+        if *remis_r {
             couverts.extend(
                 h.reglages
                     .get(r.id.as_ref())

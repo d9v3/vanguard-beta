@@ -437,18 +437,16 @@ const CLES_DEMARRAGE: [&str; 13] = [
 /// par « \\0 », le reste en hexadécimal. `genre` : son type (« REG_SZ »).
 fn texte_registre(genre: &str, octets: &[u8]) -> String {
     let utf16 = |o: &[u8]| -> String {
-        let mots: Vec<u16> = o.as_chunks::<2>().0.iter().map(|&m| u16::from_le_bytes(m)).collect();
+        let mut mots: Vec<u16> = o.as_chunks::<2>().0.iter().map(|&m| u16::from_le_bytes(m)).collect();
         let fin = mots.len() - mots.iter().rev().take_while(|&&m| m == 0).count();
-        String::from_utf16_lossy(&mots[..fin])
+        mots.truncate(fin);
+        String::from_utf16_lossy(&mots)
     };
-    match genre {
-        "REG_SZ" | "REG_EXPAND_SZ" | "REG_LINK" => utf16(octets),
-        "REG_MULTI_SZ" => utf16(octets).replace('\0', "\\0"),
-        "REG_DWORD" if octets.len() == 4 => format!(
-            "0x{:x}",
-            u32::from_le_bytes([octets[0], octets[1], octets[2], octets[3]])
-        ),
-        "REG_QWORD" if octets.len() == 8 => {
+    match (genre, octets) {
+        ("REG_SZ" | "REG_EXPAND_SZ" | "REG_LINK", _) => utf16(octets),
+        ("REG_MULTI_SZ", _) => utf16(octets).replace('\0', "\\0"),
+        ("REG_DWORD", &[a, b, c, d]) => format!("0x{:x}", u32::from_le_bytes([a, b, c, d])),
+        ("REG_QWORD", _) if octets.len() == 8 => {
             format!("0x{:x}", u64::from_le_bytes(octets.try_into().unwrap_or_default()))
         }
         _ => octets.iter().fold(String::new(), |mut t, o| {

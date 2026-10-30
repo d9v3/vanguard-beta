@@ -128,8 +128,9 @@ use Champ::{
     PreuveDeConcept, Produit, Resume, Systeme, TypeDeFaille,
 };
 
-/// La liste fermée des programmes, dans l'ordre où le menu les montre quand rien n'en propose un en premier.
-pub(crate) const PROGRAMMES: &[Fiche] = &[
+/// La liste fermée des programmes, dans l'ordre où le menu les montre quand rien n'en propose un en premier. Un
+/// tableau de taille fixe : `PROGRAMMES[0]` se vérifie à la compilation.
+pub(crate) const PROGRAMMES: &[Fiche; 9] = &[
     Fiche {
         programme: Programme::Msrc,
         id: "msrc",

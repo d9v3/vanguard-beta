@@ -227,7 +227,10 @@ fn precedent_de(ligne: &[u8]) -> Option<String> {
 fn nom_de_segment(nom: &str) -> Option<&str> {
     let mois = nom.strip_suffix(".jsonl")?;
     let o = mois.as_bytes();
-    (o.len() == 7 && o[4] == b'-' && o.iter().enumerate().all(|(i, c)| i == 4 || c.is_ascii_digit())).then_some(mois)
+    let [a1, a2, a3, a4, b'-', m1, m2] = *o else {
+        return None;
+    };
+    [a1, a2, a3, a4, m1, m2].iter().all(u8::is_ascii_digit).then_some(mois)
 }
 
 /// Les segments présents, du plus ancien au plus récent : (mois, chemin).
@@ -1001,7 +1004,7 @@ fn lire_borne(dossier: &Path, bornes: Bornes) -> Lu {
     let derniere_rupture = evenements
         .iter()
         .rposition(|e| matches!(e.quoi, Genre::Rupture { .. }) && !de_perdus(e));
-    if let Some(r) = derniere_rupture.map(|i| &evenements[i]) {
+    if let Some(r) = derniere_rupture.and_then(|i| evenements.get(i)) {
         lecture = lecture.pire(Lecture::Incomplet(format!(
             "rupture notée le / break recorded on {}",
             r.date_locale().unwrap_or_default()

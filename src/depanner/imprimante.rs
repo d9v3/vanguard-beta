@@ -352,9 +352,14 @@ mod systeme {
              [pscustomobject]@{ spouleur = \"$s\"; imprimantes = $l } | ConvertTo-Json -Compress -Depth 3",
         )?;
         let v: serde_json::Value = serde_json::from_str(&json).unwrap_or_default();
-        let spouleur = v["spouleur"].as_str().unwrap_or_default().to_string();
-        let imprimantes: Vec<Imprimante> = v["imprimantes"]
-            .as_array()
+        let spouleur = v
+            .get("spouleur")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let imprimantes: Vec<Imprimante> = v
+            .get("imprimantes")
+            .and_then(serde_json::Value::as_array)
             .into_iter()
             .flatten()
             .map(|i| Imprimante {

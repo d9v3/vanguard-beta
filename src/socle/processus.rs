@@ -104,7 +104,7 @@ pub(crate) fn pids() -> Option<Vec<u32>> {
     // SAFETY : proc_listallpids écrit au plus `taille` octets dans `pids` et rend le nombre de processus écrits.
     let n = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), taille) };
     let n = usize::try_from(n).unwrap_or(0).min(pids.len());
-    let liste: Vec<u32> = pids[..n].iter().filter_map(|&p| u32::try_from(p).ok()).collect();
+    let liste: Vec<u32> = pids.iter().take(n).filter_map(|&p| u32::try_from(p).ok()).collect();
     (!liste.is_empty()).then_some(liste)
 }
 

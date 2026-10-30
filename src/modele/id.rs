@@ -9,24 +9,25 @@ use super::registre::PREFIXES;
 /// Un identifiant bien formé : préfixe connu (`registre::PREFIXES`), trois majuscules, trois chiffres
 /// (« LNX-PFE-001 »). `const` : la macro `regle!` le vérifie à la compilation, une faute de frappe ne passe pas.
 pub(crate) const fn bien_forme(id: &str) -> bool {
-    let o = id.as_bytes();
-    if o.len() != 11 || o[3] != b'-' || o[7] != b'-' {
+    // Motifs de tranche plutôt qu'itérateurs : ceux-ci ne s'emploient pas dans une `const fn`.
+    let [a, b, c, b'-', l1, l2, l3, b'-', c1, c2, c3] = *id.as_bytes() else {
+        return false;
+    };
+    let lettres = l1.is_ascii_uppercase() && l2.is_ascii_uppercase() && l3.is_ascii_uppercase();
+    let chiffres = c1.is_ascii_digit() && c2.is_ascii_digit() && c3.is_ascii_digit();
+    if !lettres || !chiffres {
         return false;
     }
-    let mut i = 4;
-    while i < 7 {
-        if !o[i].is_ascii_uppercase() || !o[i + 4].is_ascii_digit() {
-            return false;
-        }
-        i += 1;
-    }
-    let mut p = 0;
-    while p < PREFIXES.len() {
-        let connu = PREFIXES[p].0.as_bytes();
-        if connu[0] == o[0] && connu[1] == o[1] && connu[2] == o[2] {
+    let mut reste = PREFIXES;
+    while let [(connu, _), suite @ ..] = reste {
+        if let [x, y, z, ..] = *connu.as_bytes()
+            && x == a
+            && y == b
+            && z == c
+        {
             return true;
         }
-        p += 1;
+        reste = suite;
     }
     false
 }

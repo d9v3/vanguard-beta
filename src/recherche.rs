@@ -49,13 +49,21 @@ pub fn termes(requete: &str) -> Vec<Terme> {
         for g in SYNONYMES {
             for forme in *g {
                 let n = forme.split([' ', '-']).count();
-                if n >= pris && i + n <= mots.len() && mots[i..i + n].join(" ") == forme.replace('-', " ") {
+                if n >= pris
+                    && mots
+                        .get(i..i + n)
+                        .is_some_and(|m| m.join(" ") == forme.replace('-', " "))
+                {
                     pris = n;
                     groupe = Some(g);
                 }
             }
         }
-        let tape = mots[i..i + pris].join(" ");
+        // i < mots.len() et pris ne dépasse pas ce qui reste (vérifié par le `get` ci-dessus) : toujours là.
+        let Some(pris_ici) = mots.get(i..i + pris) else {
+            break;
+        };
+        let tape = pris_ici.join(" ");
         let mut formes = vec![(tape.clone(), 100)];
         if let Some(g) = groupe {
             for forme in g {
@@ -159,22 +167,32 @@ pub fn distance_bornee(a: &str, b: &str, borne: usize) -> Option<usize> {
     }
     let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
     for (i, ligne) in d.iter_mut().enumerate() {
-        ligne[0] = i;
+        if let Some(premiere) = ligne.first_mut() {
+            *premiere = i;
+        }
     }
-    for (j, case) in d[0].iter_mut().enumerate() {
-        *case = j;
+    if let Some(premiere) = d.first_mut() {
+        for (j, case) in premiere.iter_mut().enumerate() {
+            *case = j;
+        }
     }
     for i in 1..=a.len() {
         for j in 1..=b.len() {
-            let cout = usize::from(a[i - 1] != b[j - 1]);
-            let mut v = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + cout);
-            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                v = v.min(d[i - 2][j - 2] + 1);
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "1 <= i <= a.len() et 1 <= j <= b.len() par les boucles ; d a a.len()+1 lignes de b.len()+1 cases"
+            )]
+            {
+                let cout = usize::from(a[i - 1] != b[j - 1]);
+                let mut v = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + cout);
+                if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                    v = v.min(d[i - 2][j - 2] + 1);
+                }
+                d[i][j] = v;
             }
-            d[i][j] = v;
         }
     }
-    let n = d[a.len()][b.len()];
+    let n = *d.last()?.last()?;
     (n <= borne).then_some(n)
 }
 

@@ -175,9 +175,11 @@ fn chaines(mut octets: &[u8]) -> Vec<String> {
     let mut liste = Vec::new();
     while let Some((&l, reste)) = octets.split_first() {
         let l = usize::from(l);
-        let Some(texte) = reste.get(..l) else { break };
+        let Some((texte, suite)) = reste.split_at_checked(l) else {
+            break;
+        };
         liste.push(String::from_utf8_lossy(texte).into_owned());
-        octets = &reste[l..];
+        octets = suite;
         if liste.len() >= 32 {
             break;
         }
@@ -228,8 +230,8 @@ fn enregistrement(message: &[u8], pos: usize) -> Option<(Enregistrement, usize)>
     let fin = debut + longueur;
     let rdata = message.get(debut..fin)?;
     let donnees = match (genre, rdata) {
-        (1, o) if o.len() == 4 => Donnees::A(Ipv4Addr::new(o[0], o[1], o[2], o[3])),
-        (28, o) if o.len() == 16 => Donnees::Aaaa(Ipv6Addr::from(std::array::from_fn::<u8, 16, _>(|i| o[i]))),
+        (1, &[a, b, c, d]) => Donnees::A(Ipv4Addr::new(a, b, c, d)),
+        (28, o) if o.len() == 16 => Donnees::Aaaa(Ipv6Addr::from(<[u8; 16]>::try_from(o).ok()?)),
         (16, o) => Donnees::Txt(chaines(o)),
         (64 | 65, _) => svcb(message, debut, fin)?,
         (autre, _) => Donnees::Autre(autre),
@@ -240,7 +242,7 @@ fn enregistrement(message: &[u8], pos: usize) -> Option<(Enregistrement, usize)>
 /// Lit une réponse à la question `id` : rien si ce n'en est pas une (autre identifiant, question, forme inconnue).
 /// Les questions sont passées, la section réponse est lue en entier (bornée), le reste n'est pas lu.
 pub fn lire(message: &[u8], id: u16) -> Option<Reponse> {
-    if message.len() < 12 || message[..2] != id.to_be_bytes() {
+    if message.len() < 12 || message.first_chunk::<2>() != Some(&id.to_be_bytes()) {
         return None;
     }
     let drapeaux = u16_a(message, 2)?;

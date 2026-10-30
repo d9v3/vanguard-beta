@@ -444,7 +444,8 @@ fn fenetre(rangees: &[String], entete: usize, en_cours: usize, place: usize, hau
     }
     // Au moins trois rangées de liste sous l'en-tête et les deux annonces ; sinon l'en-tête défile aussi.
     let entete = if entete + 2 + 3 <= place { entete } else { 0 };
-    let liste = &rangees[entete..];
+    // `entete` <= `place` < `rangees.len()` ici ; le `min` le garantit même si l'appelant se trompe.
+    let (tete, liste) = rangees.split_at(entete.min(rangees.len()));
     let hauteur = place.saturating_sub(entete + 2).max(1);
     let ligne = en_cours.saturating_sub(entete).min(liste.len().saturating_sub(1));
     let marge = usize::from(hauteur >= 5);
@@ -465,7 +466,7 @@ fn fenetre(rangees: &[String], entete: usize, en_cours: usize, place: usize, hau
             format!("  {GRIS}{fleche} {texte}{RESET}")
         }
     };
-    let mut ecran: Vec<String> = rangees[..entete].to_vec();
+    let mut ecran: Vec<String> = tete.to_vec();
     ecran.push(annonce(
         '↑',
         *haut,
@@ -760,10 +761,12 @@ fn ecran_du_menu(lignes: &[Ligne], colonne: usize, nombre_visibles: usize, etat:
     // L'en-tête fixe s'arrête avant le titre de la première section et sa ligne vide : ils défilent avec la
     // liste, qu'ils annoncent.
     let mut entete_menu = entete_menu.unwrap_or(0);
-    while entete_menu > 0 && {
-        let t = simplement_affiche(&rangees[entete_menu - 1]);
-        t.trim().is_empty() || t.trim_start().starts_with("── ")
-    } {
+    while entete_menu > 0
+        && rangees.get(entete_menu - 1).is_some_and(|r| {
+            let t = simplement_affiche(r);
+            t.trim().is_empty() || t.trim_start().starts_with("── ")
+        })
+    {
         entete_menu -= 1;
     }
     // Première ou dernière ligne : la liste montre son début ou sa fin, titres compris.
@@ -835,11 +838,14 @@ fn touche_du_menu(
             };
             return ControlFlow::Break(Some(c.touche.to_string()));
         }
-        return ControlFlow::Break(Some(if etat.tape.is_empty() {
-            visibles[etat.en_cours].to_string()
-        } else {
-            std::mem::take(&mut etat.tape)
-        }));
+        if !etat.tape.is_empty() {
+            return ControlFlow::Break(Some(std::mem::take(&mut etat.tape)));
+        }
+        // Un menu vide : Entrée ne choisit rien, comme une recherche qui ne trouve rien.
+        let Some(choix) = visibles.get(etat.en_cours) else {
+            return ControlFlow::Continue(());
+        };
+        return ControlFlow::Break(Some(choix.to_string()));
     } else if ctrl && matches!(k.code, KeyCode::Char('c' | 'd')) {
         // Ctrl-C arrête Vanguard ; Ctrl-D (fin de l'entrée) le quitte, comme avant.
         let _ = terminal::disable_raw_mode();
@@ -989,7 +995,8 @@ pub fn choisir_en_ligne(options: &[(&str, &str)], invite: &str) -> Option<String
             KeyCode::Up => en_cours = en_cours.checked_sub(1).unwrap_or(toutes.len() - 1),
             KeyCode::Down | KeyCode::Tab => en_cours = (en_cours + 1) % toutes.len(),
             KeyCode::Enter => {
-                let (t, _) = toutes[en_cours];
+                // `en_cours` reste dans la liste (modulo, position) ; « ↵ » (Rien) est toujours au bout.
+                let t = toutes.get(en_cours).map_or("↵", |(t, _)| *t);
                 return (t != "↵").then(|| t.to_string());
             }
             KeyCode::Esc | KeyCode::Left => return None,
@@ -1261,7 +1268,9 @@ fn cocher_par_ligne(liste: &Liste<'_>, mut etats: Vec<bool>) -> Option<Vec<bool>
                 );
             }
             for i in trouves {
-                println!("{}", rendu_case(i + 1, &cases[i], etats[i], colonne, false));
+                if let (Some(c), Some(&e)) = (cases.get(i), etats.get(i)) {
+                    println!("{}", rendu_case(i + 1, c, e, colonne, false));
+                }
             }
             continue;
         }
@@ -1275,8 +1284,9 @@ fn cocher_par_ligne(liste: &Liste<'_>, mut etats: Vec<bool>) -> Option<Vec<bool>
                 .ok()
                 .and_then(|n| n.checked_sub(1))
                 .filter(|&i| cases.get(i).is_some_and(|c| !c.fixe))
+                && let Some(e) = etats.get_mut(i)
             {
-                etats[i] = !etats[i];
+                *e = !*e;
             }
         }
         return Some(etats);
@@ -1301,11 +1311,10 @@ fn ecran_de_la_liste(
         .flat_map(|l| l.split('\n').map(String::from))
         .collect();
     let entete = rangees.len();
-    rangees.extend(
-        montrees
-            .iter()
-            .map(|&i| rendu_case(i + 1, &cases[i], etat.etats[i], liste.colonne, i == etat.en_cours)),
-    );
+    rangees.extend(montrees.iter().filter_map(|&i| {
+        let (c, e) = (cases.get(i)?, *etat.etats.get(i)?);
+        Some(rendu_case(i + 1, c, e, liste.colonne, i == etat.en_cours))
+    }));
     if montrees.is_empty() {
         rangees.push(format!(
             "  {GRIS}{}{RESET}",
@@ -1335,7 +1344,9 @@ fn ecran_de_la_liste(
     }
     ecran += "\x1b[K\r\n";
     // L'explication de la ligne en cours, toujours sur le même nombre de lignes : l'écran ne saute pas.
-    let explication = rang.map_or("", |_| cases[etat.en_cours].detail.as_str());
+    let explication = rang
+        .and_then(|_| cases.get(etat.en_cours))
+        .map_or("", |c| c.detail.as_str());
     let mut detail = envelopper(explication, LARGEUR - 4);
     detail.resize(LIGNES_DETAIL, String::new());
     for l in detail.iter().take(LIGNES_DETAIL) {
@@ -1401,8 +1412,11 @@ fn touche_de_la_liste(
     // Ctrl-J ou Ctrl-M : le saut de ligne que certains terminaux envoient pour Entrée.
     let entree = k.code == KeyCode::Enter || (ctrl && matches!(k.code, KeyCode::Char('j' | 'm')));
     if k.code == KeyCode::Char(' ') {
-        if rang.is_some() && !cases[etat.en_cours].fixe {
-            etat.etats[etat.en_cours] = !etat.etats[etat.en_cours];
+        if rang.is_some()
+            && cases.get(etat.en_cours).is_some_and(|c| !c.fixe)
+            && let Some(e) = etat.etats.get_mut(etat.en_cours)
+        {
+            *e = !*e;
         }
     } else if let Some(t) = &mut etat.recherche {
         // Entrée ou Échap finissent la recherche : toute la liste revient, la ligne en cours gardée. Entrée ne
@@ -1440,8 +1454,11 @@ fn touche_de_la_liste(
 
 /// Les lignes (leur rang) dont le texte simplifié contient tous les mots de `recherche` ; toutes si rien n'est tapé.
 fn lignes_trouvees(recherche: &str, cherche: &[String]) -> Vec<usize> {
-    (0..cherche.len())
-        .filter(|&i| recherche.trim().is_empty() || correspond(recherche, &cherche[i]))
+    cherche
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| recherche.trim().is_empty() || correspond(recherche, c))
+        .map(|(i, _)| i)
         .collect()
 }
 

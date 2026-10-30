@@ -102,11 +102,13 @@ pub struct Manifeste {
 impl Manifeste {
     /// Le titre dans la langue de l'interface.
     pub fn titre(&self) -> &str {
-        &self.titre[usize::from(crate::langue::anglais())]
+        let [fr, en] = &self.titre;
+        if crate::langue::anglais() { en } else { fr }
     }
 
     pub fn description(&self) -> &str {
-        &self.description[usize::from(crate::langue::anglais())]
+        let [fr, en] = &self.description;
+        if crate::langue::anglais() { en } else { fr }
     }
 
     /// La commande à lancer sur `s` : celle de sa section, sinon la commune ; aucune si le plugin ne vise pas `s`.
@@ -286,7 +288,7 @@ impl Lecteur {
         {
             self.i += 1;
         }
-        self.c[debut..self.i].iter().collect()
+        self.c.iter().take(self.i).skip(debut).collect()
     }
 
     fn valeur(&mut self) -> Result<Valeur, String> {
@@ -338,7 +340,7 @@ impl Lecteur {
                 while self.voir().is_some_and(|c| c.is_ascii_digit() || c == '_') {
                     self.i += 1;
                 }
-                let texte: String = self.c[debut..self.i].iter().filter(|c| **c != '_').collect();
+                let texte: String = self.c.iter().take(self.i).skip(debut).filter(|c| **c != '_').collect();
                 texte
                     .parse()
                     .map(Valeur::Entier)
@@ -501,6 +503,16 @@ fn lire_paires(paires: Vec<Paire>) -> Result<Lus, Echec> {
     Ok(lus)
 }
 
+/// La commande de la section `place` ; une erreur plutôt qu'un arrêt si l'appelant s'est trompé de place.
+fn commande_a(lus: &mut Lus, place: usize) -> Result<&mut CommandeLue, Echec> {
+    lus.commandes.get_mut(place).ok_or_else(|| {
+        Echec::refuse(
+            CONTEXTE,
+            tr!("section de commande introuvable", "command section not found").to_string(),
+        )
+    })
+}
+
 /// Une paire à sa place dans `lus` (`place` : la commande de sa section) ; l'erreur sans sa ligne.
 fn ranger(lus: &mut Lus, dans_une_section: bool, cle: &str, valeur: Valeur, place: usize) -> Result<(), Echec> {
     let chaine = |v: Valeur| match v {
@@ -511,9 +523,9 @@ fn ranger(lus: &mut Lus, dans_une_section: bool, cle: &str, valeur: Valeur, plac
         )),
     };
     match (dans_une_section, cle) {
-        (_, "commande") => lus.commandes[place].1 = Some(chaine(valeur)?),
+        (_, "commande") => commande_a(lus, place)?.1 = Some(chaine(valeur)?),
         (_, "arguments") => match valeur {
-            Valeur::Tableau(t) => lus.commandes[place].2 = Some(t),
+            Valeur::Tableau(t) => commande_a(lus, place)?.2 = Some(t),
             _ => {
                 return Err(Echec::refuse(
                     CONTEXTE,

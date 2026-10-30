@@ -172,7 +172,7 @@ fn lire_borne(
                 Ok(n) => n,
             };
             let reste = borne - lu.len();
-            lu.extend_from_slice(&tampon[..n.min(reste)]);
+            lu.extend(tampon.iter().take(n.min(reste)));
             if n > reste {
                 plein.store(true, std::sync::atomic::Ordering::Relaxed);
                 break;
@@ -339,10 +339,10 @@ pub fn garder_la_fin(morceaux: std::collections::VecDeque<Vec<u8>>, borne: u64) 
         return (tout, false);
     }
     let mut debut = total - borne;
-    if debut > 0 && tout[debut - 1] != b'\n' {
-        debut = tout[debut..]
-            .iter()
-            .position(|&o| o == b'\n')
+    if debut > 0 && tout.get(debut - 1).is_some_and(|&o| o != b'\n') {
+        debut = tout
+            .get(debut..)
+            .and_then(|reste| reste.iter().position(|&o| o == b'\n'))
             .map_or(total, |p| debut + p + 1);
     }
     tout.drain(..debut);
@@ -389,7 +389,9 @@ pub fn lancer_vers(
                 Garder::Debut => {
                     let reste = usize::try_from(borne.saturating_sub(ecrits)).unwrap_or(usize::MAX);
                     let n_gardes = n.min(reste);
-                    ok &= vers.write_all(&tampon[..n_gardes]).is_ok();
+                    #[expect(clippy::indexing_slicing, reason = "Read::read rend au plus tampon.len() octets")]
+                    let morceau = &tampon[..n_gardes];
+                    ok &= vers.write_all(morceau).is_ok();
                     ecrits += n_gardes as u64;
                     if n_gardes < n || !ok {
                         tronque = n_gardes < n;
@@ -398,7 +400,7 @@ pub fn lancer_vers(
                     }
                 }
                 Garder::Fin => {
-                    fin.push_back(tampon[..n].to_vec());
+                    fin.push_back(tampon.iter().take(n).copied().collect());
                     en_memoire += n as u64;
                     // Les morceaux entièrement hors de la borne tombent tout de suite : la mémoire reste bornée.
                     while fin
@@ -809,7 +811,10 @@ mod tests {
 
 /// Le garde de `sh_chaine` : tout texte qui entre dans une commande `sudo` ou `rm` est une constante, un texte passé par
 /// `sh_chaine`, ou une exception relue (`RELUES`). Lu dans les fichiers du code, comme un relecteur le ferait.
-#[cfg(all(test, unix))]
+// `cfg(test)` seul sur sa ligne : clippy n'y reconnaît un module de tests (exempté des règles anti-panique,
+// clippy.toml) que sous cette forme, pas dans `all(test, …)`.
+#[cfg(test)]
+#[cfg(unix)]
 mod tests_sh_chaine {
     use std::path::Path;
 
@@ -1369,7 +1374,9 @@ mod tests_lancer_borne {
 
 /// Sous Windows, aucun programme lancé par son seul nom : la liste de ceux qui restent, lue dans les sources
 /// compilées pour Windows (les `cfg` des modules et des blocs sont suivis, les tests mis à part).
-#[cfg(all(test, unix))]
+// `cfg(test)` seul sur sa ligne, comme tests_sh_chaine : clippy y reconnaît un module de tests.
+#[cfg(test)]
+#[cfg(unix)]
 mod tests_noms_nus {
     use std::collections::HashMap;
     use std::path::Path;

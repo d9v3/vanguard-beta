@@ -223,9 +223,24 @@ fn nom_du_reseau(c: &Connexion) -> String {
     }
 }
 
-/// La borne de la connexion, sinon la première du réseau.
-fn principale<'a>(bornes: &[&'a Balise]) -> &'a Balise {
-    bornes.iter().find(|b| b.borne.actif).unwrap_or(&bornes[0])
+/// La borne de la connexion, sinon la première du réseau ; `None` pour une liste vide (`reseau` n'en rend pas).
+fn principale<'a>(bornes: &[&'a Balise]) -> Option<&'a Balise> {
+    bornes
+        .iter()
+        .find(|b| b.borne.actif)
+        .or_else(|| bornes.first())
+        .copied()
+}
+
+/// Le constat « impossible » d'un réseau sans émetteur, si `principale` n'en trouve pas.
+fn sans_emetteur(sujet: &str) -> Constat {
+    impossible(
+        CATEGORIE,
+        &trf!(
+            "{sujet} : aucun émetteur du réseau connecté",
+            "{sujet}: no transmitter for the connected network"
+        ),
+    )
 }
 
 /// COM-WIF-001 : le chiffrement du réseau connecté. TKIP encore accepté à côté d'AES : Moyen ; WPA de 2003, WEP
@@ -237,7 +252,9 @@ fn chiffrement(e: &Entree) -> Constat {
         Err(k) => return *k,
     };
     let ssid = nom_du_reseau(c);
-    let p = principale(&bornes).protection;
+    let Some(p) = principale(&bornes).map(|b| b.protection) else {
+        return sans_emetteur(sujet);
+    };
     let tkip = bornes.iter().any(|b| b.protection.tkip);
     if p.rsn && tkip {
         let seulement = !bornes.iter().any(|b| b.protection.aes);
@@ -435,7 +452,7 @@ fn emetteurs(e: &Entree) -> Constat {
     adresses.sort_unstable();
     adresses.dedup();
     let n = adresses.len();
-    if n <= 1 {
+    let [(premiere_adresse, _), _, ..] = adresses.as_slice() else {
         return ok(
             CATEGORIE,
             trf!(
@@ -443,7 +460,7 @@ fn emetteurs(e: &Entree) -> Constat {
                 "A single transmitter broadcasts “{nom}”: your router."
             ),
         );
-    }
+    };
     if nom_par_defaut(&c.ssid) {
         return alerte(
             CATEGORIE,
@@ -465,10 +482,12 @@ fn emetteurs(e: &Entree) -> Constat {
     let (reference, de_la_box) = match e.mac_box.as_deref().filter(|m| !m.is_empty()) {
         Some(m) => (m, true),
         None if !c.bssid.is_empty() => (c.bssid.as_str(), false),
-        None => (adresses[0].0.as_str(), false),
+        None => (premiere_adresse.as_str(), false),
     };
     let marque_reference = marque(reference);
-    let force_connectee = principale(&bornes).protection.force();
+    let Some(force_connectee) = principale(&bornes).map(|b| b.protection.force()) else {
+        return sans_emetteur(sujet);
+    };
     let etranger = |b: &Balise| !b.borne.bssid.is_empty() && !meme_marque(&marque(&b.borne.bssid), &marque_reference);
     let plus_faible = |b: &Balise| b.protection.force() < force_connectee;
     let Some(suspect) = bornes.iter().copied().find(|b| etranger(b) || plus_faible(b)) else {

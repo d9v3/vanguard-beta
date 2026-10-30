@@ -299,7 +299,9 @@ pub(crate) fn json_en_liste(texte: &str) -> Result<Vec<serde_json::Value>, Raiso
 }
 
 /// Pour les tests « X_comme_Y » : même avis que l'outil, ou sauté (dit, compté par verifier.sh).
-#[cfg(all(test, target_os = "linux"))]
+// `cfg(test)` seul, puis le système : clippy ne reconnaît le code de test qu'à la forme exacte `#[cfg(test)]`.
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 #[track_caller]
 pub(crate) fn essayer(id: &str) {
     let c = inventory::iter::<Croisee>

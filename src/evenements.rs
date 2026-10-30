@@ -118,10 +118,10 @@ pub fn afficher(json: bool, incident: Option<&str>) {
         );
     }
     println!();
-    for e in &montres[montres
+    let a_sauter = montres
         .len()
-        .saturating_sub(if incident.is_some() { usize::MAX } else { MONTRES })..]
-    {
+        .saturating_sub(if incident.is_some() { usize::MAX } else { MONTRES });
+    for e in montres.iter().skip(a_sauter) {
         let (quand, corps, id) = montre(e);
         afficher_aligne(&format!("  {GRIS}{quand}{RESET} "), &corps, 19, "");
         afficher_aligne("                   ", &id, 19, GRIS);

@@ -841,16 +841,18 @@ fn cases(e: &[Element], terminal: bool) -> Vec<Case> {
 fn garder_les_dependances(e: &[Element], etats: &mut [bool]) -> Vec<String> {
     let mut messages = Vec::new();
     for (i, garde_e) in e.iter().enumerate() {
-        if etats[i] {
+        // Un état manquant compte comme coché : rien à garder pour lui.
+        if etats.get(i).is_none_or(|&coche| coche) {
             continue;
         }
         let Some(lance) = &garde_e.lance else { continue };
         for (j, copie) in e.iter().enumerate() {
             if let Retrait::Fichiers(fichiers) = &copie.retrait
-                && etats[j]
+                && let Some(etat_copie) = etats.get_mut(j)
+                && *etat_copie
                 && fichiers.iter().any(|f| f == lance || meme(f, lance))
             {
-                etats[j] = false;
+                *etat_copie = false;
                 messages.push(trf!(
                     "Copie du programme gardée : {}, que vous gardez, la lance.",
                     "Program copy kept: {}, which you keep, starts it.",
@@ -1392,12 +1394,13 @@ fn retirer_sauvegarde_notee(e: &Element, m: &MiseEnPlace, x: &mut Execution) -> 
 
 /// Les pièges : ce qui ne part pas est un échec ; ce qui reste exprès (pas reconnu, preuve d'un passage) est dit.
 fn retirer_pieges(e: &Element) -> Result<String, Echec> {
-    match crate::protection::pieges::retirer_sans_question() {
-        (restes, _, _) if !restes.is_empty() => Err(Echec::Echoue(trf!(
+    let (restes, gardes, douteuse) = crate::protection::pieges::retirer_sans_question();
+    match (restes.as_slice(), gardes, douteuse) {
+        ([premier, ..], _, _) => Err(Echec::Echoue(trf!(
             "{} non retiré(s), dont {}",
             "{} not removed, including {}",
             restes.len(),
-            chemin_affichable(&restes[0])
+            chemin_affichable(premier)
         ))),
         // Liste qui ne pouvait pas être crue : des « !Vanguard » pas reconnus, laissés, pas des preuves.
         (_, gardes, true) if !gardes.is_empty() => Ok(trf!(
@@ -1977,8 +1980,9 @@ fn confirmer_les_donnees(rec: &Recensement, etats: &mut [bool], a: &Annulables) 
             gardes.extend(gardes_dans(d, e.genre == Genre::Donnees, &rec.elements, etats));
         }
     }
-    for (i, e) in rec.elements.iter().enumerate() {
-        if !etats[i] || !matches!(e.genre, Genre::Donnees | Genre::DonneesAvant) {
+    // `etats` a une case par élément ; un élément sans case n'est pas coché, donc pas effacé.
+    for (e, etat) in rec.elements.iter().zip(etats.iter_mut()) {
+        if !*etat || !matches!(e.genre, Genre::Donnees | Genre::DonneesAvant) {
             continue;
         }
         let Retrait::Dossier(d) = &e.retrait else { continue };
@@ -1988,7 +1992,7 @@ fn confirmer_les_donnees(rec: &Recensement, etats: &mut [bool], a: &Annulables) 
             .cloned()
             .collect();
         if !accord_donnees(e, a, &les_siens) {
-            etats[i] = false;
+            *etat = false;
             trp!("  Dossier de données gardé.", "  Data folder kept.");
         }
     }

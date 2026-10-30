@@ -415,7 +415,10 @@ pub fn commande(quoi: &[String]) -> i32 {
         Ok(r) => r,
         Err(e) => return echec(&e),
     };
-    match quoi.first().map(String::as_str) {
+    let (premier, apres) = quoi
+        .split_first()
+        .map_or((None, &[][..]), |(p, reste)| (Some(p.as_str()), reste));
+    match premier {
         None => {
             menu::labo(&racine);
             0
@@ -437,7 +440,7 @@ pub fn commande(quoi: &[String]) -> i32 {
             }
         }
         Some(fichier) => {
-            let (_, facon, arguments) = options_de_lancement(&quoi[1..]);
+            let (_, facon, arguments) = options_de_lancement(apres);
             executer(&racine, fichier, &arguments, facon)
         }
     }

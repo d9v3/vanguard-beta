@@ -558,9 +558,11 @@ fn copier_hache(source: &Path, copie: Option<&Path>, proprietaire: bool, max: u6
         if total > max {
             return Err(trf!("{} : trop gros", "{}: too large", chemin_affichable(source)));
         }
-        h.update(&tampon[..n]);
+        #[expect(clippy::indexing_slicing, reason = "Read::read rend au plus tampon.len() octets")]
+        let lus = &tampon[..n];
+        h.update(lus);
         if let Some(v) = vers.as_mut() {
-            v.write_all(&tampon[..n]).map_err(|e| e.to_string())?;
+            v.write_all(lus).map_err(|e| e.to_string())?;
         }
     }
     if let Some(v) = vers {
@@ -776,7 +778,9 @@ fn chemin_du_programme(d: &Path, programme: &str) -> PathBuf {
 fn verifier_chemin(d: &Path, programme: &str) -> Result<(), String> {
     let mut ici = d.to_path_buf();
     let parties: Vec<&str> = programme.split(['/', '\\']).collect();
-    for p in &parties[..parties.len().saturating_sub(1)] {
+    // Les dossiers : tout sauf le dernier morceau, le programme lui-même.
+    let dossiers = parties.split_last().map_or(&[][..], |(_, avant)| avant);
+    for p in dossiers {
         ici.push(p);
         dossier_sur(&ici)?;
     }
@@ -1777,7 +1781,7 @@ pub fn lancer(racine: &Path, nom: &str, arguments: &[String], facon: Facon) -> R
 
 /// `vanguard plugins …` : rend le code de sortie (celui du plugin lancé, sinon 0 ou 1).
 pub fn commande(quoi: &[String]) -> i32 {
-    let Some(mot) = quoi.first().map(String::as_str) else {
+    let Some((mot, apres_le_mot)) = quoi.split_first().map(|(m, reste)| (m.as_str(), reste)) else {
         return match dossier() {
             Ok(r) => {
                 menu::plugins(&r);
@@ -1822,7 +1826,7 @@ pub fn commande(quoi: &[String]) -> i32 {
             "The folder or the name is missing: “vanguard plugins {mot} <…>”."
         )),
         (nom, _) => {
-            let (rapport, facon, arguments) = options_de_lancement(&quoi[1..]);
+            let (rapport, facon, arguments) = options_de_lancement(apres_le_mot);
             return executer(&racine, nom, &arguments, rapport, facon);
         }
     };

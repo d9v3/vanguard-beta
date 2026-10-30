@@ -943,6 +943,10 @@ pub(crate) fn base64(octets: &[u8]) -> String {
         let n = bloc.iter().fold(0u32, |acc, &o| acc << 8 | u32::from(o)) << (8 * (3 - bloc.len()));
         for i in 0..4 {
             s.push(if i <= bloc.len() {
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "« & 63 » borne l'indice sous 64, la taille de LETTRES"
+                )]
                 char::from(LETTRES[(n >> (18 - 6 * i) & 63) as usize])
             } else {
                 '='

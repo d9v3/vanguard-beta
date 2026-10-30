@@ -706,8 +706,8 @@ fn forme_d_avant(dossier: &Path, r: &Registre) -> Avant {
     else {
         return Avant::Recule;
     };
-    let d_avant = &TARDIFS[..TARDIFS_D_AVANT];
-    let marque = !r.repris.is_empty() || r.vus.iter().any(|n| !d_avant.contains(&n.as_str()));
+    let d_avant = || TARDIFS.iter().take(TARDIFS_D_AVANT);
+    let marque = !r.repris.is_empty() || r.vus.iter().any(|n| !d_avant().any(|t| *t == n.as_str()));
     if forme >= u64::from(FORMAT) || marque {
         Avant::Ancienne
     } else {

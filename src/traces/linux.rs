@@ -530,7 +530,8 @@ fn absentes_de_last(
         *vus.entry(*t).or_default() += 1;
     }
     let mut absentes = 0;
-    for t in &montres[montres.len() - n..] {
+    // Les `n` plus récents (n <= montres.len() par construction) : on saute les autres.
+    for t in montres.iter().skip(montres.len().saturating_sub(n)) {
         match vus.get_mut(t) {
             Some(k) if *k > 0 => *k -= 1,
             _ => absentes += 1,
@@ -1397,8 +1398,9 @@ fn journal_cible_natif(filtres: &[&str], depuis: u64) -> Option<String> {
     let toutes = entrees(&champs, depuis, CHAMPS_COURTS)?;
     let debut = toutes.len().saturating_sub(ENTREES_CIBLEES);
     Some(
-        toutes[debut..]
+        toutes
             .iter()
+            .skip(debut)
             .filter_map(ligne_courte)
             .collect::<Vec<_>>()
             .join("\n"),

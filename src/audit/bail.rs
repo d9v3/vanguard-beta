@@ -114,15 +114,16 @@ fn adresses(texte: &str) -> Vec<IpAddr> {
 #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 fn paquet_dhcp(octets: &[u8], debut: Option<u64>) -> Option<Bail> {
     const COOKIE: [u8; 4] = [0x63, 0x82, 0x53, 0x63];
-    if octets.len() < 240 || octets[236..240] != COOKIE || octets[0] != 2 {
+    let (entete, mut options) = octets.split_at_checked(240)?;
+    if entete.get(236..240) != Some(&COOKIE[..]) || entete.first() != Some(&2) {
         return None;
     }
-    let v4 = |o: &[u8]| IpAddr::from([o[0], o[1], o[2], o[3]]);
+    // Les quatre premiers octets d'une valeur : une adresse IPv4 (rien s'il en manque).
+    let v4 = |o: &[u8]| o.first_chunk::<4>().map(|&q| IpAddr::from(q));
     let mut bail = Bail {
-        adresse: Some(v4(&octets[16..20])).filter(|ip| !ip.is_unspecified()),
+        adresse: entete.get(16..20).and_then(v4).filter(|ip| !ip.is_unspecified()),
         ..Bail::default()
     };
-    let mut options = &octets[240..];
     while let Some((&code, reste)) = options.split_first() {
         match code {
             0 => {
@@ -133,17 +134,19 @@ fn paquet_dhcp(octets: &[u8], debut: Option<u64>) -> Option<Bail> {
             _ => {}
         }
         let (&longueur, reste) = reste.split_first()?;
-        let valeur = reste.get(..usize::from(longueur))?;
-        options = &reste[usize::from(longueur)..];
+        let (valeur, suite) = reste.split_at_checked(usize::from(longueur))?;
+        options = suite;
         match code {
-            3 if valeur.len() >= 4 => bail.passerelle = Some(v4(valeur)),
+            3 if valeur.len() >= 4 => bail.passerelle = v4(valeur),
             6 => bail.dns = valeur.as_chunks::<4>().0.iter().map(|o| IpAddr::from(*o)).collect(),
             15 => bail.domaine = Some(String::from_utf8_lossy(valeur).trim_end_matches('\0').to_string()),
-            51 if valeur.len() == 4 => {
-                let duree = u64::from(u32::from_be_bytes([valeur[0], valeur[1], valeur[2], valeur[3]]));
-                bail.expire = debut.map(|d| d.saturating_add(duree));
+            51 => {
+                if let Ok(q) = <[u8; 4]>::try_from(valeur) {
+                    let duree = u64::from(u32::from_be_bytes(q));
+                    bail.expire = debut.map(|d| d.saturating_add(duree));
+                }
             }
-            54 if valeur.len() == 4 => bail.serveur = Some(v4(valeur)),
+            54 if valeur.len() == 4 => bail.serveur = v4(valeur),
             _ => {}
         }
     }

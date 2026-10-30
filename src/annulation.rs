@@ -210,7 +210,7 @@ fn remettre(elements: &[Element]) {
                     (Some(Err(refus)), _) => Err(String::from(refus.clone())),
                     (Some(Ok(_)), Some(i)) if plus.get(i) == Some(&true) => {
                         // Le port refait depuis les champs typés, pas celui relu du relevé.
-                        if let Some(p) = admis[i].1 {
+                        if let Some(p) = admis.get(i).and_then(|a| a.1) {
                             crate::machine::oublier_port(p);
                         }
                         crate::changements::marquer_annule(&b.id);

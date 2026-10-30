@@ -53,7 +53,7 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Vec<&'static str> {
             }
             let tout = crate::langue::tout(&rep);
             let lot: Vec<(&Constat, &Correctif)> = if tout {
-                auto[i..].to_vec()
+                auto.iter().skip(i).copied().collect()
             } else if crate::langue::oui(&rep) {
                 vec![(c, k)]
             } else {
@@ -67,7 +67,7 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Vec<&'static str> {
                     lot.len()
                 );
                 // Les suivantes n'ont pas été montrées une à une : ce qui ne s'annulera pas est dit avant.
-                for (_, k) in &lot[1..] {
+                for (_, k) in lot.iter().skip(1) {
                     afficher_aligne("    • ", &k.action, 6, "");
                     dire_si_annulable(k);
                 }
@@ -131,8 +131,8 @@ pub fn proposer(constats: &[Constat], contexte: &str) -> Vec<&'static str> {
             }
             let decale = usize::from(groupes.len() > lot.len());
             annulables::apres_application(
-                &ids[decale..]
-                    .iter()
+                &ids.iter()
+                    .skip(decale)
                     .zip(&resultats)
                     .filter_map(|(id, ok)| Some((id.clone()?, *ok)))
                     .collect::<Vec<_>>(),

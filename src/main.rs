@@ -1461,8 +1461,8 @@ async fn chercher(requete: &str, premier: bool, json: bool) -> bool {
         );
         return false;
     }
-    if premier {
-        let touche = trouves[0].touche.clone();
+    if premier && let Some(trouve) = trouves.first() {
+        let touche = trouve.touche.clone();
         let mut s = Session::default();
         return ouvrir_touche(&mut s, &touche).await;
     }
@@ -2331,6 +2331,10 @@ fn veilleur(etat: Option<&str>, sous_etat: Option<&str>, servir: bool) {
 
 impl Action {
     fn outil(self) -> &'static Outil {
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "Desinstaller est la dernière variante et l'assertion const sous OUTILS fixe OUTILS.len() à Desinstaller + 1"
+        )]
         &OUTILS[self as usize]
     }
 
@@ -2596,8 +2600,10 @@ async fn lancer(s: &mut Session, action: Action, chemin: &str) {
 /// Sous-menu d'un groupe. Le guide et le dépannage s'ouvrent directement sur leurs propres écrans.
 async fn sous_menu(s: &mut Session, groupe: Groupe) {
     let actions: Vec<Action> = groupe.actions().into_iter().filter(|a| a.disponible()).collect();
-    if groupe.direct() {
-        let premier = actions[0];
+    // Un groupe direct sans outil disponible tombe sur sa liste (vide) plutôt que d'arrêter le programme.
+    if groupe.direct()
+        && let Some(&premier) = actions.first()
+    {
         executer(s, premier).await;
         revenir_au_menu(premier);
         return;
@@ -2627,7 +2633,8 @@ fn depanner_avec_ses_outils() {
         })
         .collect();
     depanner::menu(&lignes, &mut |i| {
-        let action = autres[i];
+        // `i` vient d'une ligne de `lignes`, bâtie depuis `autres` : un numéro hors liste ne lance rien.
+        let Some(&action) = autres.get(i) else { return };
         match action {
             Action::Reparer => reparer::menu(),
             Action::Diagnostic => diagnostic::diagnostic(),
@@ -3787,7 +3794,7 @@ async fn main() {
         // « depanner traces [dossier] » : la collecte, comme l'ancienne commande « traces », avec son code de sortie
         // (1 si elle a échoué) pour un script ou une tâche ; le menu passe par le parcours 11.11 et son conseil.
         Some(Commande::Depanner { sujet })
-            if (1..=2).contains(&sujet.len()) && ["traces", "evidence"].contains(&sujet[0].as_str()) =>
+            if sujet.len() <= 2 && matches!(sujet.first().map(String::as_str), Some("traces" | "evidence")) =>
         {
             if !traces::commande(sujet.get(1).map(std::path::Path::new)) {
                 machine::quitter(1);

@@ -433,7 +433,11 @@ pub fn mesurer_et_proposer() {
         return;
     }
     let numero = choix.parse::<usize>().ok().and_then(|n| n.checked_sub(1));
-    let Some(p) = numero.and_then(|i| PUBLICS.get(i).filter(|_| temps_publics[i].is_some() && garde.is_none())) else {
+    let Some(p) = numero.and_then(|i| {
+        PUBLICS
+            .get(i)
+            .filter(|_| temps_publics.get(i).is_some_and(Option::is_some) && garde.is_none())
+    }) else {
         trp!("  DNS gardé.", "  DNS kept.");
         return;
     };

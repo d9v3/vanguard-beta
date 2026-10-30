@@ -396,6 +396,10 @@ fn refus(sortes: &[Sorte]) -> Echec {
 /// texte, la personne si). Le brouillon n'est pas préparé pour ce que le tri écarte.
 fn en_json(lu: &Lu, sujet: &Sujet, programme: Option<Programme>, langue: Option<Langue>) -> serde_json::Value {
     let tri = tri::trier(sujet);
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "propose() ajoute toujours les trois programmes de la plateforme"
+    )]
     let programme = programme.unwrap_or_else(|| programmes::propose("", programmes::Plateforme::d_ici())[0]);
     let fiche = programme.fiche();
     let langue = langue.or(fiche.langue).unwrap_or_else(Langue::de_l_interface);
@@ -407,19 +411,25 @@ fn en_json(lu: &Lu, sujet: &Sujet, programme: Option<Programme>, langue: Option<
         "adresse": fiche.adresse,
         "ecrit": false,
     });
+    // `v` est l'objet écrit juste au-dessus : `as_object_mut` le rend toujours.
+    let Some(o) = v.as_object_mut() else {
+        return v;
+    };
     if !matches!(tri, Tri::AEcrire | Tri::Vanguard | Tri::Contournement) {
-        v["brouillon"] = serde_json::Value::Null;
+        o.insert("brouillon".into(), serde_json::Value::Null);
         return v;
     }
     let b = assembler(fiche, langue, sujet, &Reponses::default(), &contexte(lu, sujet, None));
-    v["incomplet"] = b.incomplet().into();
-    v["manque"] = serde_json::json!(b.manque);
-    v["masques"] = serde_json::json!(b.masques);
+    o.insert("incomplet".into(), b.incomplet().into());
+    o.insert("manque".into(), serde_json::json!(b.manque));
+    o.insert("masques".into(), serde_json::json!(b.masques));
     match finaliser(&b, &garde::connues()) {
-        Ok(texte) => v["brouillon"] = texte.into(),
+        Ok(texte) => {
+            o.insert("brouillon".into(), texte.into());
+        }
         Err(sortes) => {
-            v["brouillon"] = serde_json::Value::Null;
-            v["refus"] = serde_json::json!(sortes);
+            o.insert("brouillon".into(), serde_json::Value::Null);
+            o.insert("refus".into(), serde_json::json!(sortes));
         }
     }
     v

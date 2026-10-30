@@ -62,8 +62,8 @@ fn etiquette_au_hasard() -> String {
     if getrandom::fill(&mut octets).is_err() {
         // Sans hasard du système : l'horloge, mêlée (rien de secret ici, seulement imprévisible d'avance).
         let h = crate::reseau::nat::hasard().to_le_bytes();
-        for (i, o) in octets.iter_mut().enumerate() {
-            *o = h[i % 8].rotate_left(u32::try_from(i).unwrap_or(0));
+        for (i, (o, h)) in octets.iter_mut().zip(h.iter().cycle()).enumerate() {
+            *o = h.rotate_left(u32::try_from(i).unwrap_or(0));
         }
     }
     octets.iter().map(|o| char::from(b'a' + o % 26)).collect()
@@ -398,15 +398,21 @@ fn doh_firefox(prefs: &str) -> Option<bool> {
 /// Les certificats qu'une politique Firefox installe (`policies.json`), et si elle importe les racines du système.
 fn lire_politique(texte: &str) -> Option<(Vec<String>, Option<bool>)> {
     let v: serde_json::Value = serde_json::from_str(texte).ok()?;
-    let certificats = &v["policies"]["Certificates"];
-    if certificats.is_null() {
-        return None;
-    }
-    let installes: Vec<String> = certificats["Install"]
-        .as_array()
+    let certificats = v
+        .get("policies")
+        .and_then(|p| p.get("Certificates"))
+        .filter(|c| !c.is_null())?;
+    let installes: Vec<String> = certificats
+        .get("Install")
+        .and_then(serde_json::Value::as_array)
         .map(|t| t.iter().filter_map(|c| c.as_str()).map(affichable).collect())
         .unwrap_or_default();
-    Some((installes, certificats["ImportEnterpriseRoots"].as_bool()))
+    Some((
+        installes,
+        certificats
+            .get("ImportEnterpriseRoots")
+            .and_then(serde_json::Value::as_bool),
+    ))
 }
 
 /// Les fichiers de politique de Firefox, par système.
@@ -854,7 +860,8 @@ fn constats_bail(e: &Entree) -> Vec<Constat> {
             )];
         }
     };
-    let Some(bail) = bail_principal(baux, e.passerelle) else {
+    // bail_principal ne rend qu'un bail qui a au moins un DNS : le premier est celui distribué.
+    let Some((bail, distribue)) = bail_principal(baux, e.passerelle).and_then(|b| Some((b, *b.dns.first()?))) else {
         return vec![regle(
             alerte(
                 CAT_DNS,
@@ -869,7 +876,6 @@ fn constats_bail(e: &Entree) -> Vec<Constat> {
     };
     let box_ = [e.passerelle, bail.passerelle, bail.serveur];
     let est_la_box = |ip: IpAddr| box_.contains(&Some(ip));
-    let distribue = bail.dns[0];
     let liste = bail.dns.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
     // Le DNS du bail réécrit les réponses (DNS-004 mesuré sur lui) : la maison entière le suit.
     let bail_diverge = e
@@ -1000,17 +1006,17 @@ fn verdict(reponse: Option<&Reponse>, attendues: &[Ipv4Addr], publiques: &[Ipv4A
         return Verdict::Filtre;
     }
     let vues = r.adresses_v4();
-    if vues.is_empty() {
+    let Some(&premiere) = vues.first() else {
         // Réponse sans adresse (panne du serveur, ou vide) : rien à comparer.
         return if r.rcode == 0 { Verdict::Filtre } else { Verdict::Muet };
-    }
+    };
     if vues.iter().all(|ip| ip.is_unspecified() || ip.is_loopback()) {
         return Verdict::Filtre;
     }
     if vues.iter().any(|ip| attendues.contains(ip) || publiques.contains(ip)) {
         return Verdict::Conforme;
     }
-    Verdict::Divergent(vues[0])
+    Verdict::Divergent(premiere)
 }
 
 /// Le bilan d'une mesure : les noms conformes, filtrés, divergents (avec l'adresse vue et une attendue), muets.
@@ -1130,8 +1136,8 @@ fn constat_du_resolveur(m: &Mesure, role: Role, e: &Entree, publics_muets: bool)
                 trf!("{serveur} ne répond pas d'ici", "{serveur} does not answer from here")
             },
         )
-    } else if b.divergents.len() >= 2 {
-        alerte_divergence(&b.divergents, role, &serveur)
+    } else if let [premier, _, ..] = b.divergents.as_slice() {
+        alerte_divergence(*premier, &b.divergents, role, &serveur)
     } else if let Some((nom, vu, attendu)) = b.divergents.first() {
         alerte(
             CAT_DNS,
@@ -1141,19 +1147,14 @@ fn constat_du_resolveur(m: &Mesure, role: Role, e: &Entree, publics_muets: bool)
                 "{serveur} answers {vu} for {nom} instead of {attendu}; the other names are right. A single gap: check again at the next audit before believing it."
             ),
         )
-    } else if let Some(vues) = m
-        .inexistant
-        .as_ref()
-        .map(Reponse::adresses_v4)
-        .filter(|v| !v.is_empty())
-    {
+    } else if let Some(premiere) = m.inexistant.as_ref().and_then(|r| r.adresses_v4().first().copied()) {
         alerte(
             CAT_DNS,
             Niveau::Moyen,
             trf!(
                 "{serveur} donne une adresse ({}) à un nom inventé à l'instant, qui n'existe pas : il réécrit les noms inexistants (page de publicité du fournisseur, ou détournement). Une faute de frappe mène alors chez lui.",
                 "{serveur} gives an address ({}) to a name made up just now, which does not exist: it rewrites nonexistent names (provider ad page, or hijack). A typo then leads to it.",
-                vues[0]
+                premiere
             ),
         )
         .manuel(
@@ -1180,8 +1181,12 @@ fn constat_du_resolveur(m: &Mesure, role: Role, e: &Entree, publics_muets: bool)
 
 /// Au moins deux noms stables détournés : tous vers une même adresse (portail Wi-Fi ou détournement complet), ou
 /// des réponses réécrites entre cet ordinateur et Internet.
-fn alerte_divergence(divergents: &[(&'static str, Ipv4Addr, Ipv4Addr)], role: Role, serveur: &str) -> Constat {
-    let (nom, vu, attendu) = divergents[0];
+fn alerte_divergence(
+    (nom, vu, attendu): (&'static str, Ipv4Addr, Ipv4Addr),
+    divergents: &[(&'static str, Ipv4Addr, Ipv4Addr)],
+    role: Role,
+    serveur: &str,
+) -> Constat {
     let meme = divergents.iter().all(|(_, v, _)| *v == vu);
     let qui = if role == Role::Bail {
         tr!(
@@ -1637,7 +1642,7 @@ fn hote_local(hote: &str) -> bool {
 /// COM-TLS-002 : exceptions de certificat gardées par Firefox.
 fn constat_exceptions(e: &Entree) -> Constat {
     const ID: &str = "COM-TLS-002";
-    if e.exceptions.is_empty() {
+    let Some(premiere) = e.exceptions.first() else {
         let message = if e.profils_firefox == 0 {
             tr!(
                 "Aucun profil Firefox sur cet ordinateur : pas d'exception de certificat gardée (Chrome et Edge n'en gardent pas durablement).",
@@ -1650,7 +1655,7 @@ fn constat_exceptions(e: &Entree) -> Constat {
             )
         };
         return regle(ok(CAT_TLS, message), ID);
-    }
+    };
     let n = e.exceptions.len();
     let internet = e.exceptions.iter().any(|x| !hote_local(&x.hote));
     let mut hotes: Vec<String> = Vec::new();
@@ -1667,7 +1672,7 @@ fn constat_exceptions(e: &Entree) -> Constat {
     };
     hotes.truncate(5);
     let hotes = hotes.join(", ") + &plus;
-    let navigateur = affichable(&e.exceptions[0].navigateur);
+    let navigateur = affichable(&premiere.navigateur);
     let message = if internet {
         trf!(
             "{navigateur} garde {n} exception(s) de certificat ({hotes}) : un site a présenté un faux certificat et quelqu'un a cliqué « accepter le risque ». Pour un site d'Internet, c'est la trace d'une interception possible.",

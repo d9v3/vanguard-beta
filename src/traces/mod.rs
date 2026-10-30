@@ -740,6 +740,7 @@ pub(crate) fn sha256_de(mut lecteur: impl Read) -> std::io::Result<String> {
         if n == 0 {
             break;
         }
+        #[expect(clippy::indexing_slicing, reason = "Read::read rend au plus tampon.len() octets")]
         h.update(&tampon[..n]);
     }
     Ok(h.finalize().iter().fold(String::with_capacity(64), |mut s, o| {
@@ -843,15 +844,16 @@ pub(crate) fn lire_ps(sortie: &str) -> Vec<(u32, Option<u32>, String, String, St
         .lines()
         .filter_map(|l| {
             let mots: Vec<&str> = l.split_whitespace().collect();
-            if mots.len() < 9 {
+            // Neuf mots au moins : pid, parent, compte, la date en cinq mots, puis le programme.
+            let [pid, parent, compte, d1, d2, d3, d4, d5, _, ..] = mots[..] else {
                 return None;
-            }
-            let pid = mots[0].parse().ok()?;
-            let parent = mots[1].parse().ok();
-            let debut = mots[3..8].join(" ");
+            };
+            let pid = pid.parse().ok()?;
+            let parent = parent.parse().ok();
+            let debut = [d1, d2, d3, d4, d5].join(" ");
             // Le programme : tout ce qui suit la date, espaces compris.
             let programme = apres_mots(l, 8)?;
-            Some((pid, parent, mots[2].to_string(), debut, programme.to_string()))
+            Some((pid, parent, compte.to_string(), debut, programme.to_string()))
         })
         .collect()
 }
@@ -1500,7 +1502,8 @@ fn machine_et_compte() -> (String, String) {
         let nom = std::fs::read_to_string("/etc/passwd").ok().and_then(|t| {
             t.lines().find_map(|l| {
                 let c: Vec<&str> = l.split(':').collect();
-                (c.get(2) == Some(&uid.to_string().as_str())).then(|| c[0].to_string())
+                let [nom, _, id, ..] = c[..] else { return None };
+                (id == uid.to_string()).then(|| nom.to_string())
             })
         });
         Some(nom.map_or_else(|| uid.to_string(), |n| format!("{n} ({uid})")))

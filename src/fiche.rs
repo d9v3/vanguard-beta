@@ -561,12 +561,20 @@ fn fiche_windows(l: LectureWindows) -> Fiche {
         coeurs: nombre(&l, "coeurs").and_then(|c| u32::try_from(c).ok()),
         fils: nombre(&l, "fils").and_then(|c| u32::try_from(c).ok()),
         memoire: nombre(&l, "memoire"),
-        barrettes_illisibles: l["barrettes"].as_array().is_none_or(Vec::is_empty),
+        barrettes_illisibles: l
+            .get("barrettes")
+            .and_then(serde_json::Value::as_array)
+            .is_none_or(Vec::is_empty),
         ..Fiche::default()
     };
     f.serie(tr!("Ordinateur", "Computer"), champ(&l, "serie"));
     f.serie(tr!("Carte mère", "Motherboard"), champ(&l, "serie_carte"));
-    for b in l["barrettes"].as_array().into_iter().flatten() {
+    for b in l
+        .get("barrettes")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let emplacement = champ(b, "emplacement");
         let quoi = trf!("Barrette {}", "Memory module {}", emplacement.trim());
         f.serie(&quoi, champ(b, "serie"));
@@ -579,7 +587,12 @@ fn fiche_windows(l: LectureWindows) -> Fiche {
             emplacement: propre(emplacement),
         });
     }
-    for g in l["graphique"].as_array().into_iter().flatten() {
+    for g in l
+        .get("graphique")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let pilote = match champ(g, "date").trim() {
             "" => champ(g, "pilote").trim().to_string(),
             date => format!("{} ({date})", champ(g, "pilote").trim()),
@@ -587,7 +600,12 @@ fn fiche_windows(l: LectureWindows) -> Fiche {
         let nom = champ(g, "nom").trim().to_string();
         f.graphique.push(Graphique { nom, pilote });
     }
-    for d in l["disques"].as_array().into_iter().flatten() {
+    for d in l
+        .get("disques")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let nom = champ(d, "nom").to_string();
         f.serie(&trf!("Disque {}", "Disk {}", nom), champ(d, "serie"));
         let sorte = match (champ(d, "bus").to_ascii_lowercase().as_str(), champ(d, "sorte")) {
@@ -770,12 +788,20 @@ fn lire() -> Fiche {
     .map_or_else(Fiche::default, fiche_windows)
 }
 
+/// Le premier objet de la section `cle` de `system_profiler`, `Null` s'il manque : la même lecture que
+/// `json[cle][0]`, sans indexation.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn premier_de<'a>(json: &'a serde_json::Value, cle: &str) -> &'a serde_json::Value {
+    static NUL: serde_json::Value = serde_json::Value::Null;
+    json.get(cle).and_then(|v| v.get(0)).unwrap_or(&NUL)
+}
+
 /// La fiche d'après `system_profiler -json SPHardwareDataType SPMemoryDataType SPDisplaysDataType` (séparée pour être
 /// testée partout).
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn fiche_macos(json: &serde_json::Value) -> Fiche {
     let texte = |objet: &serde_json::Value, cle: &str| champ(objet, cle).trim().to_string();
-    let materiel = &json["SPHardwareDataType"][0];
+    let materiel = premier_de(json, "SPHardwareDataType");
     let mut f = Fiche {
         modele: [texte(materiel, "machine_name"), texte(materiel, "machine_model")]
             .into_iter()
@@ -801,7 +827,7 @@ fn fiche_macos(json: &serde_json::Value) -> Fiche {
     if !numero.is_empty() {
         f.series.push((tr!("Ordinateur", "Computer").to_string(), numero));
     }
-    let memoire = &json["SPMemoryDataType"][0];
+    let memoire = premier_de(json, "SPMemoryDataType");
     if let Some(items) = memoire["_items"].as_array() {
         // Mac Intel : une fiche par barrette.
         for b in items {

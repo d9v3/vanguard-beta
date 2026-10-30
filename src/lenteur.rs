@@ -450,7 +450,7 @@ pub fn conseils(i: &Instantane) -> Vec<Conseil> {
         pousser(true, texte, Some(Outil::Nettoyer), "place");
     }
     if let Some(d) = i.demarrage.as_ref().ok().filter(|d| d.total >= 60.0) {
-        let lents = retards(&d.lents[..d.lents.len().min(3)]);
+        let lents = retards(d.lents.get(..3).unwrap_or(&d.lents));
         let texte = if lents.is_empty() {
             trf!("Démarrage long ({}).", "Slow startup ({}).", secondes_lisibles(d.total))
         } else {
@@ -726,9 +726,12 @@ pub fn menu() {
         if choix == "m" {
             continue;
         }
-        if let Some(n) = (1..=outils.len()).find(|n| n.to_string() == choix) {
+        if let Some(&outil) = (1..=outils.len())
+            .find(|n| n.to_string() == choix)
+            .and_then(|n| outils.get(n - 1))
+        {
             println!();
-            match outils[n - 1] {
+            match outil {
                 Outil::Nettoyer => crate::nettoyer::menu(),
                 Outil::Demarrage => crate::optimiser::programmes_au_demarrage(),
                 #[cfg(not(target_os = "macos"))]

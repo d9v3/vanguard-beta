@@ -176,7 +176,14 @@ fn recentes() -> Vec<Maj> {
             let date = mots.iter().rev().find(|m| m.contains('/') || m.contains('-'))?;
             Some(Maj {
                 date: (*date).to_string(),
-                quoi: affichable(&mots[..mots.len().saturating_sub(2)].join(" ")),
+                quoi: affichable(
+                    &mots
+                        .iter()
+                        .take(mots.len().saturating_sub(2))
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                ),
             })
         })
         .take(8)

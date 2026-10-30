@@ -221,11 +221,11 @@ pub(crate) fn sans_echappements(t: &str) -> String {
     let mut sortie = Vec::with_capacity(t.len());
     let octets = t.as_bytes();
     let mut i = 0;
-    while i < octets.len() {
+    while let Some(&octet) = octets.get(i) {
         let code = octets
             .get(i + 1..i + 4)
             .and_then(|o| u8::from_str_radix(std::str::from_utf8(o).ok()?, 8).ok());
-        match (octets[i], code) {
+        match (octet, code) {
             (b'\\', Some(c)) => {
                 sortie.push(c);
                 i += 4;
@@ -455,8 +455,11 @@ fn disques_des_lecteurs(texte: &str) -> Vec<(PathBuf, String)> {
         .lines()
         .filter_map(|l| {
             let c: Vec<&str> = l.trim().split('|').collect();
-            let numero = c.get(4)?.trim();
-            (!numero.is_empty()).then(|| (PathBuf::from(c[0]), numero.to_string()))
+            let [lecteur, _, _, _, numero, ..] = c[..] else {
+                return None;
+            };
+            let numero = numero.trim();
+            (!numero.is_empty()).then(|| (PathBuf::from(lecteur), numero.to_string()))
         })
         .collect()
 }
@@ -607,7 +610,16 @@ pub(crate) fn empreinte_relue(chemin: &Path) -> std::io::Result<blake3::Hash> {
     let taille = f.metadata()?.len();
     let mut memoire = vec![0u8; BLOC_RELU + ALIGNEMENT_RELU];
     let debut = memoire.as_ptr().align_offset(ALIGNEMENT_RELU);
-    let tampon = &mut memoire[debut..debut + BLOC_RELU];
+    // align_offset peut rendre usize::MAX (alignement impossible) : dit, plutôt qu'une lecture hors du tampon.
+    let tampon = memoire
+        .get_mut(debut..)
+        .and_then(|t| t.get_mut(..BLOC_RELU))
+        .ok_or_else(|| {
+            std::io::Error::other(tr!(
+                "tampon de relecture impossible à aligner",
+                "read-back buffer cannot be aligned"
+            ))
+        })?;
     let mut h = blake3::Hasher::new();
     let mut lu = 0u64;
     while lu < taille {
@@ -625,6 +637,7 @@ pub(crate) fn empreinte_relue(chemin: &Path) -> std::io::Result<blake3::Hash> {
                 "uncached read-back stopped in the middle of the file"
             )));
         }
+        #[expect(clippy::indexing_slicing, reason = "Read::read rend au plus tampon.len() octets")]
         h.update(&tampon[..n]);
     }
     Ok(h.finalize())
@@ -679,8 +692,10 @@ fn copier_vers(source: &Path, cible: &Path) -> std::io::Result<()> {
             if n == 0 {
                 break;
             }
-            h.update(&tampon[..n]);
-            sortie.write_all(&tampon[..n])?;
+            #[expect(clippy::indexing_slicing, reason = "Read::read rend au plus tampon.len() octets")]
+            let lus = &tampon[..n];
+            h.update(lus);
+            sortie.write_all(lus)?;
         }
         // Sur le disque, pas seulement en mémoire : un disque débranché juste après ne doit rien perdre.
         sortie.sync_all()?;
@@ -1220,7 +1235,11 @@ pub(crate) fn echantillon(fichiers: &[PathBuf], n: usize) -> Vec<&PathBuf> {
     if fichiers.len() <= n {
         return fichiers.iter().collect();
     }
-    (0..n).map(|i| &fichiers[i * (fichiers.len() - 1) / (n - 1)]).collect()
+    // i * (len - 1) / (n - 1) <= len - 1 : chaque `get` trouve son fichier. n = 1 : le premier seul (la division
+    // par n - 1 = 0 plantait).
+    (0..n)
+        .filter_map(|i| fichiers.get(i * (fichiers.len() - 1) / (n - 1).max(1)))
+        .collect()
 }
 
 /// Relit les fichiers choisis de la copie, en contournant le cache, et compare chacun à son original.

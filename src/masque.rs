@@ -28,18 +28,27 @@ pub const fn encoder<const N: usize>(clair: &[u8]) -> [u8; N] {
     let mut code = [0u8; N];
     let mut i = 0;
     while i < N {
-        code[i] = clair[i] ^ CLE[i % CLE.len()];
+        // Pas d'itérateur dans une `const fn`. Évaluée en `const`, une sortie de bornes serait une erreur de
+        // compilation, jamais un arrêt chez l'utilisateur.
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "i < N par la boucle ; i % CLE.len() < CLE.len() ; clair.len() == N : code_masque! passe N = $mot.len()"
+        )]
+        {
+            code[i] = clair[i] ^ CLE[i % CLE.len()];
+        }
         i += 1;
     }
     code
 }
 
 /// Refait l'opération à l'inverse, en mémoire, à l'exécution. L'entrée vient toujours d'un littéral `&str` encodé
-/// par `encoder`, donc le résultat est de l'UTF-8 valide.
+/// par `encoder`, donc le résultat est de l'UTF-8 valide : la lecture « avec pertes » ne change rien à ce mot, elle
+/// évite seulement un arrêt si un appel direct passait autre chose.
 #[must_use]
 pub fn decoder(code: &[u8]) -> String {
-    let octets: Vec<u8> = code.iter().enumerate().map(|(i, &b)| b ^ CLE[i % CLE.len()]).collect();
-    String::from_utf8(octets).expect("un mot masqué vient d'un littéral &str : UTF-8 valide")
+    let octets: Vec<u8> = code.iter().zip(CLE.iter().cycle()).map(|(b, k)| b ^ k).collect();
+    String::from_utf8_lossy(&octets).into_owned()
 }
 
 /// Le littéral brouillé à la compilation, en tableau d'octets. Le reste des macros s'en sert ; à n'appeler que par

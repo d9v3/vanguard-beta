@@ -105,16 +105,22 @@ fn courante() -> Option<Version> {
 /// plus ancienne que toute copie qui en a une). Seule une occurrence suivie d'une version et d'un « ; » compte.
 fn version_gravee(octets: &[u8]) -> Option<Version> {
     let entete = entete();
-    let mut debut = 0;
-    while let Some(i) = octets[debut..].windows(entete.len()).position(|f| f == entete) {
-        let apres = debut + i + entete.len();
-        let suite = &octets[apres..octets.len().min(apres + 32)];
+    let mut reste = octets;
+    while let Some(i) = reste.windows(entete.len()).position(|f| f == entete) {
+        // Ce qui suit l'occurrence ; les 32 premiers octets suffisent à une version et son « ; ».
+        let Some(apres) = reste.get(i + entete.len()..) else {
+            break;
+        };
+        let suite = apres.get(..32).unwrap_or(apres);
         if let Some(fin) = suite.iter().position(|&o| o == b';')
-            && let Some(v) = std::str::from_utf8(&suite[..fin]).ok().and_then(lire_version)
+            && let Some(v) = suite
+                .get(..fin)
+                .and_then(|t| std::str::from_utf8(t).ok())
+                .and_then(lire_version)
         {
             return Some(v);
         }
-        debut = apres;
+        reste = apres;
     }
     None
 }

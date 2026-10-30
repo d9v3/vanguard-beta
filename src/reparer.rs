@@ -957,10 +957,13 @@ fn etat_windows_natif() -> Option<EtatWindows> {
 /// et son nom (ASCII) suit à l'octet 16. Vide pour l'accès direct ; « configuré » quand le nom ne se lit pas.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn proxy_winhttp(octets: &[u8]) -> String {
-    if octets.len() < 16 || octets[8] == 1 {
+    let [_, _, _, _, _, _, _, _, direct, _, _, _, l0, l1, l2, l3, ..] = *octets else {
+        return String::new();
+    };
+    if direct == 1 {
         return String::new();
     }
-    let n = i32::from_le_bytes([octets[12], octets[13], octets[14], octets[15]]);
+    let n = i32::from_le_bytes([l0, l1, l2, l3]);
     match usize::try_from(n)
         .ok()
         .filter(|&n| n > 0)

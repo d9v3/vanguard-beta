@@ -86,25 +86,24 @@ fn signature(categorie: &str, message: &str) -> String {
     let lettres: Vec<char> = message.chars().collect();
     let mut sortie = String::new();
     let mut i = 0;
-    while i < lettres.len() {
-        if !lettres[i].is_ascii_digit() {
-            sortie.push(lettres[i]);
+    while let Some(&lettre) = lettres.get(i) {
+        if !lettre.is_ascii_digit() {
+            sortie.push(lettre);
             i += 1;
             continue;
         }
         // Un bloc de chiffres, avec ce qui les lie (« 10.0.0.5 », « 12:30 », « 4.5.4 »).
         let debut = i;
-        while i < lettres.len()
-            && (lettres[i].is_ascii_digit()
-                || (matches!(lettres[i], '.' | ':') && lettres.get(i + 1).is_some_and(char::is_ascii_digit)))
+        while let Some(&c) = lettres.get(i)
+            && (c.is_ascii_digit() || (matches!(c, '.' | ':') && lettres.get(i + 1).is_some_and(char::is_ascii_digit)))
         {
             i += 1;
         }
-        let bloc: String = lettres[debut..i].iter().collect();
+        let bloc: String = lettres.iter().take(i).skip(debut).collect();
         let lie = |c: Option<&char>| c.is_some_and(|c| c.is_alphanumeric() || *c == '_');
         // Avant : une lettre, « _ », ou un « - » qui suit lui-même une lettre ou un chiffre (« S-1-5 », pas « -60 »).
         let avant = lie(debut.checked_sub(1).and_then(|j| lettres.get(j)))
-            || (debut >= 2 && lettres[debut - 1] == '-' && lie(lettres.get(debut - 2)));
+            || (debut >= 2 && lettres.get(debut - 1) == Some(&'-') && lie(lettres.get(debut - 2)));
         let apres = lettres.get(i).is_some_and(|c| c.is_alphabetic() || *c == '_');
         if bloc.contains(['.', ':']) || avant || apres {
             sortie.push_str(&bloc);
@@ -413,8 +412,8 @@ pub fn menu() {
         }
         return;
     }
-    for i in &a_oublier {
-        appris.acceptees.remove(&liste[*i].0);
+    for (signature, _) in a_oublier.iter().filter_map(|&i| liste.get(i)) {
+        appris.acceptees.remove(signature);
     }
     match enregistrer(&appris) {
         Ok(()) => trp!(

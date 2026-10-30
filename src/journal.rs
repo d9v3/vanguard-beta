@@ -326,8 +326,7 @@ fn debut_dossier_personnel(texte: &str) -> Option<(usize, bool)> {
             return Some((n, false));
         }
     }
-    let b = texte.as_bytes();
-    if b.len() < 3 || !b[0].is_ascii_alphabetic() || b[1] != b':' {
+    if !matches!(texte.as_bytes(), [lecteur, b':', _, ..] if lecteur.is_ascii_alphabetic()) {
         return None;
     }
     // « C:\Users\ », « C:/Users/ », ou doublé dans du JSON, du PowerShell : « C:\\Users\\ ».
@@ -391,9 +390,9 @@ fn masquer_courriels(texte: &str) -> String {
         if i < copie {
             continue;
         }
-        let debut = i - b[copie..i].iter().rev().take_while(|c| locale(**c)).count();
-        let mut fin = i + 1 + b[i + 1..].iter().take_while(|c| domaine(**c)).count();
-        while fin > i + 1 && b[fin - 1] == b'.' {
+        let debut = i - b.iter().take(i).skip(copie).rev().take_while(|c| locale(**c)).count();
+        let mut fin = i + 1 + b.iter().skip(i + 1).take_while(|c| domaine(**c)).count();
+        while fin > i + 1 && b.get(fin - 1) == Some(&b'.') {
             fin -= 1;
         }
         let nom_de_domaine = texte[i + 1..fin].rsplit_once('.').is_some_and(|(nom, fin_du_nom)| {
@@ -421,7 +420,7 @@ fn masquer_sid(texte: &str) -> String {
         let b = reste.as_bytes();
         let (mut fin, mut nombres) = (0, 0);
         while nombres < 3 {
-            let chiffres = b[fin..].iter().take_while(|c| c.is_ascii_digit()).count();
+            let chiffres = b.iter().skip(fin).take_while(|c| c.is_ascii_digit()).count();
             if chiffres == 0 {
                 break;
             }
@@ -578,18 +577,23 @@ fn hasard(graine: &[u8]) -> u64 {
 /// (téléphones : bit « local » du premier octet) est inventée en entier, sorte gardée.
 fn masquer_mac(texte: &str) -> String {
     remplacer_passages(texte, |b, i| {
-        let libre = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b':' || b[i - 1] == b'-');
+        let libre = precedent(b, i).is_none_or(|c| !(c.is_ascii_alphanumeric() || c == b':' || c == b'-'));
         if !libre {
             return None;
         }
         let (fin, octets, separateur) = lire_mac(b, i)?;
-        let majuscules = b[i..fin].iter().any(u8::is_ascii_uppercase);
+        let majuscules = b.iter().take(fin).skip(i).any(u8::is_ascii_uppercase);
         Some((fin, mac_inventee(octets, separateur, majuscules)))
     })
 }
 
 /// Le texte où chaque passage que `trouver` reconnaît à une position (sa fin et son remplaçant) est remplacé, de gauche
 /// à droite ; la recherche reprend après chaque passage remplacé.
+/// L'octet juste avant `i`, s'il y en a un.
+fn precedent(b: &[u8], i: usize) -> Option<u8> {
+    i.checked_sub(1).and_then(|k| b.get(k)).copied()
+}
+
 fn remplacer_passages(texte: &str, trouver: impl Fn(&[u8], usize) -> Option<(usize, String)>) -> String {
     let b = texte.as_bytes();
     let mut sortie = String::with_capacity(texte.len());
@@ -622,12 +626,12 @@ fn lire_mac(b: &[u8], i: usize) -> Option<(usize, [u8; 6], u8)> {
             separateur = s;
             j += 1;
         }
-        let chiffres = b[j..].iter().take(2).take_while(|c| c.is_ascii_hexdigit()).count();
+        let chiffres = b.iter().skip(j).take(2).take_while(|c| c.is_ascii_hexdigit()).count();
         if chiffres == 0 {
             return None;
         }
         courts |= chiffres == 1;
-        *octet = u8::from_str_radix(std::str::from_utf8(&b[j..j + chiffres]).ok()?, 16).ok()?;
+        *octet = u8::from_str_radix(std::str::from_utf8(b.get(j..j + chiffres)?).ok()?, 16).ok()?;
         j += chiffres;
     }
     // Suivie d'un autre chiffre ou séparateur : un morceau d'autre chose (adresse IPv6…).
@@ -672,12 +676,12 @@ fn masquer_ipv6(texte: &str) -> String {
     let classe = |c: u8| c.is_ascii_hexdigit() || c == b':' || c == b'.';
     let mut sortie = String::with_capacity(texte.len());
     let (mut copie, mut i) = (0, 0);
-    while i < b.len() {
-        if !classe(b[i]) || (i > 0 && (b[i - 1].is_ascii_alphanumeric() || classe(b[i - 1]))) {
+    while let Some(&c) = b.get(i) {
+        if !classe(c) || precedent(b, i).is_some_and(|p| p.is_ascii_alphanumeric() || classe(p)) {
             i += 1;
             continue;
         }
-        let fin = i + b[i..].iter().take_while(|c| classe(**c)).count();
+        let fin = i + b.iter().skip(i).take_while(|c| classe(**c)).count();
         let mot = texte[i..fin].trim_end_matches('.');
         if b.get(fin).is_none_or(|c| !c.is_ascii_alphanumeric())
             && mot.matches(':').count() >= 2
@@ -738,8 +742,8 @@ fn ipv6_inventee(ip: Ipv6Addr, ecrite: &str) -> Option<String> {
 /// scan : elles restent, comme les DNS publics connus.
 fn masquer_ipv4(texte: &str) -> String {
     remplacer_passages(texte, |b, i| {
-        let libre = i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'.');
-        if !libre || !b[i].is_ascii_digit() {
+        let libre = precedent(b, i).is_none_or(|c| !(c.is_ascii_alphanumeric() || c == b'.'));
+        if !libre || !b.get(i).is_some_and(u8::is_ascii_digit) {
             return None;
         }
         let (fin, ip) = lire_ipv4(b, i).filter(|(_, ip)| !ipv4_commune(*ip))?;
@@ -759,11 +763,11 @@ fn lire_ipv4(b: &[u8], i: usize) -> Option<(usize, Ipv4Addr)> {
             }
             j += 1;
         }
-        let chiffres = b[j..].iter().take(4).take_while(|c| c.is_ascii_digit()).count();
+        let chiffres = b.iter().skip(j).take(4).take_while(|c| c.is_ascii_digit()).count();
         if !(1..=3).contains(&chiffres) {
             return None;
         }
-        *octet = std::str::from_utf8(&b[j..j + chiffres]).ok()?.parse().ok()?;
+        *octet = std::str::from_utf8(b.get(j..j + chiffres)?).ok()?.parse().ok()?;
         j += chiffres;
     }
     let suite = b.get(j).is_some_and(u8::is_ascii_alphanumeric)

@@ -53,7 +53,8 @@ fn mediane(v: &mut [u64]) -> u64 {
         return 0;
     }
     v.sort_unstable();
-    v[v.len() / 2]
+    let Some(&milieu) = v.get(v.len() / 2) else { return 0 };
+    milieu
 }
 
 fn resumer(durees: &[u64]) -> Resume {

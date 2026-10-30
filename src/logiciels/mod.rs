@@ -57,14 +57,16 @@ fn correspond(nom: &str, motif: &str) -> bool {
         .is_some_and(|reste| !reste.starts_with(char::is_alphanumeric))
 }
 
+/// Les paquets de `l` pour ce gestionnaire (`paquets` est dans l'ordre pacman, apt, dnf, zypper).
 #[cfg(target_os = "linux")]
-fn rang(gestion: crate::machine::linux::Paquets) -> usize {
+fn paquets_pour(l: &Logiciel, gestion: crate::machine::linux::Paquets) -> &'static [&'static str] {
     use crate::machine::linux::Paquets;
+    let [pacman, apt, dnf, zypper] = l.paquets;
     match gestion {
-        Paquets::Pacman => 0,
-        Paquets::Apt => 1,
-        Paquets::Dnf => 2,
-        Paquets::Zypper => 3,
+        Paquets::Pacman => pacman,
+        Paquets::Apt => apt,
+        Paquets::Dnf => dnf,
+        Paquets::Zypper => zypper,
     }
 }
 
@@ -105,8 +107,8 @@ fn lire() -> Result<Etat, String> {
     let mut offres = Vec::new();
     for l in CATALOGUE {
         let paquets: &[&str] = match gestion {
-            Some(g) if ubuntu && l.paquets[rang(g)] == ["firefox-esr"] => &["firefox"],
-            Some(g) => l.paquets[rang(g)],
+            Some(g) if ubuntu && paquets_pour(l, g) == ["firefox-esr"] => &["firefox"],
+            Some(g) => paquets_pour(l, g),
             None => &[],
         };
         let vu =
@@ -481,7 +483,7 @@ fn pour_ce_systeme(l: &Logiciel) -> bool {
         static ICI: std::sync::OnceLock<(Option<Paquets>, bool)> = std::sync::OnceLock::new();
         let (gestion, flatpak) =
             *ICI.get_or_init(|| (Paquets::detecter(), crate::machine::linux::natif::present("flatpak")));
-        gestion.is_some_and(|g| !l.paquets[rang(g)].is_empty()) || (flatpak && l.flatpak.is_some())
+        gestion.is_some_and(|g| !paquets_pour(l, g).is_empty()) || (flatpak && l.flatpak.is_some())
     }
     #[cfg(windows)]
     return l.winget.is_some();
