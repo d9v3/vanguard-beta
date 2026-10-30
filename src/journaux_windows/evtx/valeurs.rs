@@ -228,8 +228,13 @@ fn hexadecimal(octets: &[u8], max: usize) -> (String, bool) {
     const CHIFFRES: &[u8; 16] = b"0123456789ABCDEF";
     let mut t = Texte::new(max);
     for &b in octets {
-        t.pousser(char::from(CHIFFRES[usize::from(b >> 4)]));
-        t.pousser(char::from(CHIFFRES[usize::from(b & 0x0F)]));
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "un quartet (0 à 15) indexe une table de 16 chiffres"
+        )]
+        let (fort, faible) = (CHIFFRES[usize::from(b >> 4)], CHIFFRES[usize::from(b & 0x0F)]);
+        t.pousser(char::from(fort));
+        t.pousser(char::from(faible));
         if t.tronque {
             break;
         }
@@ -262,14 +267,15 @@ fn sid(o: &[u8]) -> Option<(String, usize)> {
     let revision = *o.first()?;
     let nombre = usize::from(*o.get(1)?);
     let longueur = 8 + 4 * nombre;
-    let octets = o.get(..longueur)?;
-    let autorite = octets[2..8].iter().fold(0u64, |a, &b| (a << 8) | u64::from(b));
+    let (premiers, suite) = o.get(..longueur)?.split_first_chunk::<8>()?;
+    let [_, _, octets_autorite @ ..] = premiers;
+    let autorite = octets_autorite.iter().fold(0u64, |a, &b| (a << 8) | u64::from(b));
     let mut texte = if autorite < 1 << 32 {
         format!("S-{revision}-{autorite}")
     } else {
         format!("S-{revision}-0x{autorite:012X}")
     };
-    for s in octets[8..].as_chunks::<4>().0 {
+    for s in suite.as_chunks::<4>().0 {
         texte.push('-');
         texte.push_str(&u32::from_le_bytes(*s).to_string());
     }
@@ -305,16 +311,18 @@ pub(crate) fn date(d: DateTime<Utc>) -> String {
 /// Un SYSTEMTIME ([MS-DTYP] 2.3.13 : année, mois, jour de la semaine, jour, heure, minute, seconde, milliseconde,
 /// sur 16 bits chacun), écrit tel quel : pas de calendrier à vérifier, c'est un texte.
 fn systemtime(o: [u8; 16]) -> String {
-    let champ = |i: usize| u16::from_le_bytes([o[2 * i], o[2 * i + 1]]);
+    // Le jour de la semaine (3e champ) n'est pas écrit.
+    let [a0, a1, mo0, mo1, _, _, j0, j1, h0, h1, mi0, mi1, s0, s1, ms0, ms1] = o;
+    let champ = |faible, fort| u16::from_le_bytes([faible, fort]);
     format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-        champ(0),
-        champ(1),
-        champ(3),
-        champ(4),
-        champ(5),
-        champ(6),
-        champ(7)
+        champ(a0, a1),
+        champ(mo0, mo1),
+        champ(j0, j1),
+        champ(h0, h1),
+        champ(mi0, mi1),
+        champ(s0, s1),
+        champ(ms0, ms1)
     )
 }
 

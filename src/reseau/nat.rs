@@ -76,7 +76,9 @@ fn recevoir_avec<T>(
         }
         match recevoir_un(tampon, reste) {
             Ok((n, de)) => {
-                if let Some(reponse) = lire(&tampon[..n.min(tampon.len())], de) {
+                // Un datagramme plus grand que le tampon y est coupé.
+                let tout: &[u8] = tampon;
+                if let Some(reponse) = lire(tout.get(..n).unwrap_or(tout), de) {
                     return Some(reponse);
                 }
             }
@@ -99,8 +101,9 @@ fn recevoir_avec<T>(
 
 /// Identifiant d'une requête : 12 octets au hasard, pour reconnaître sa réponse.
 fn identifiant() -> [u8; 12] {
-    let octets = [hasard().to_le_bytes(), hasard().to_le_bytes()].concat();
-    std::array::from_fn(|i| octets[i])
+    let [a0, a1, a2, a3, a4, a5, a6, a7] = hasard().to_le_bytes();
+    let [b0, b1, b2, b3, ..] = hasard().to_le_bytes();
+    [a0, a1, a2, a3, a4, a5, a6, a7, b0, b1, b2, b3]
 }
 
 /// Requête « Binding » sans attribut : type, longueur nulle, cookie, identifiant.
@@ -120,7 +123,13 @@ fn adresse(valeur: &[u8], masque: Option<&[u8; 12]>) -> Option<SocketAddr> {
     }
     let ip = match (valeur.get(1)?, valeur.get(4..)?) {
         (1, [a, b, c, d, ..]) => IpAddr::from([a ^ cle[0], b ^ cle[1], c ^ cle[2], d ^ cle[3]]),
-        (2, o) if o.len() >= 16 => IpAddr::from(std::array::from_fn::<u8, 16, _>(|i| o[i] ^ cle[i])),
+        (2, o) => {
+            let mut ip = *o.first_chunk::<16>()?;
+            for (octet, k) in ip.iter_mut().zip(cle) {
+                *octet ^= k;
+            }
+            IpAddr::from(ip)
+        }
         _ => return None,
     };
     Some(SocketAddr::new(ip, port))
@@ -129,10 +138,12 @@ fn adresse(valeur: &[u8], masque: Option<&[u8; 12]>) -> Option<SocketAddr> {
 /// L'adresse vue par le serveur, dans sa réponse « Binding Success » à notre requête : XOR-MAPPED-ADDRESS, sinon
 /// MAPPED-ADDRESS (anciens serveurs).
 fn lire_reponse(r: &[u8], id: &[u8; 12]) -> Option<SocketAddr> {
-    if r.len() < 20 || r[..2] != [0x01, 0x01] || r[4..8] != MAGIC.to_be_bytes() || r[8..20] != id[..] {
+    // L'en-tête de 20 octets en tableau : ses champs se lisent à des places fixes.
+    let (entete, suite) = r.split_first_chunk::<20>()?;
+    if entete[..2] != [0x01, 0x01] || entete[4..8] != MAGIC.to_be_bytes() || entete[8..20] != id[..] {
         return None;
     }
-    let mut attributs = r.get(20..20 + usize::from(u16::from_be_bytes([r[2], r[3]])))?;
+    let mut attributs = suite.get(..usize::from(u16::from_be_bytes([entete[2], entete[3]])))?;
     let mut simple = None;
     while let [t1, t2, n1, n2, reste @ ..] = attributs {
         let n = usize::from(u16::from_be_bytes([*n1, *n2]));
@@ -333,7 +344,10 @@ pub fn tester() {
         "\n  {GRIS}Interrogation des serveurs…{RESET}",
         "\n  {GRIS}Asking the servers…{RESET}"
     );
-    let Some(mesure) = mesurer(false).filter(|m| !m.vues.is_empty()) else {
+    let Some((mesure, publique)) = mesurer(false).and_then(|m| {
+        let publique = m.vues.first()?.1;
+        Some((m, publique))
+    }) else {
         let muet = tr!(
             "Aucun serveur n'a répondu : pas d'Internet, ou l'UDP sortant est bloqué (pare-feu, réseau d'entreprise ou d'hôtel). Le jeu en ligne sera alors difficile.",
             "No server answered: no Internet, or outgoing UDP is blocked (firewall, company or hotel network). Online gaming will then be hard."
@@ -357,7 +371,6 @@ pub fn tester() {
             ),
         ),
     };
-    let publique = mesure.vues[0].1;
     println!();
     let champ = |nom, valeur: &str| afficher_aligne(&format!("  {GRIS}{}{RESET}", ajuster(nom, 18)), valeur, 20, "");
     champ(tr!("Adresse publique", "Public address"), &publique.ip().to_string());

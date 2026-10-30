@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -18,8 +18,9 @@ use tokio::time::{Instant, timeout};
 use crate::ui::affichable;
 
 /// Groupes multicast et ports des trois protocoles de résolution de noms sur le réseau local.
-const LLMNR: &str = "224.0.0.252:5355";
-const MDNS: &str = "224.0.0.251:5353";
+// Écrites en valeurs plutôt qu'en texte à lire : rien à analyser, donc rien qui puisse échouer.
+const LLMNR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(224, 0, 0, 252), 5355));
+const MDNS: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(224, 0, 0, 251), 5353));
 const PORT_NETBIOS: u16 = 137;
 
 /// Délai d'attente des réponses à un faux nom (ms) : une réponse arrive en quelques millisecondes ; au-delà, personne.
@@ -99,8 +100,8 @@ fn requete_mdns(id: u16, nom: &str) -> Vec<u8> {
 /// travail).
 fn nom_netbios(nom: &str) -> [u8; 16] {
     let mut brut = [b' '; 16];
-    for (i, c) in nom.chars().take(15).enumerate() {
-        brut[i] = u8::try_from(c.to_ascii_uppercase() as u32).unwrap_or(b' ');
+    for (case, c) in brut.iter_mut().zip(nom.chars().take(15)) {
+        *case = u8::try_from(c.to_ascii_uppercase() as u32).unwrap_or(b' ');
     }
     brut[15] = 0x00;
     brut
@@ -122,13 +123,14 @@ fn decoder_netbios(code: &[u8]) -> Option<[u8; 16]> {
         return None;
     }
     let mut brut = [0u8; 16];
-    for (i, paire) in code.as_chunks::<2>().0.iter().enumerate() {
-        let haut = paire[0].checked_sub(b'A')?;
-        let bas = paire[1].checked_sub(b'A')?;
+    // 32 lettres : 16 paires, une par octet.
+    for (case, &[premiere, seconde]) in brut.iter_mut().zip(code.as_chunks::<2>().0) {
+        let haut = premiere.checked_sub(b'A')?;
+        let bas = seconde.checked_sub(b'A')?;
         if haut > 0x0f || bas > 0x0f {
             return None;
         }
-        brut[i] = (haut << 4) | bas;
+        *case = (haut << 4) | bas;
     }
     Some(brut)
 }
@@ -224,8 +226,8 @@ fn adresse_dns(p: &[u8], id_attendu: u16, nom_attendu: &str) -> Option<Ipv4Addr>
         let longueur = usize::from(u16_be(p, apres + 8)?);
         let rdata = apres + 10;
         if type_ == 0x0001 && longueur == 4 && nom.eq_ignore_ascii_case(nom_attendu) {
-            let a = p.get(rdata..rdata + 4)?;
-            return Some(Ipv4Addr::new(a[0], a[1], a[2], a[3]));
+            let a: [u8; 4] = p.get(rdata..rdata + 4)?.try_into().ok()?;
+            return Some(Ipv4Addr::from(a));
         }
         i = rdata + longueur;
     }
@@ -267,8 +269,8 @@ fn adresse_netbios(p: &[u8], id: u16, nom: &str) -> Option<Ipv4Addr> {
         return None;
     }
     // type (2) + classe (2) + TTL (4) + longueur (2) = 10 ; chaque adresse : drapeaux (2) + IP (4).
-    let a = p.get(apres + 12..apres + 16)?;
-    Some(Ipv4Addr::new(a[0], a[1], a[2], a[3]))
+    let a: [u8; 4] = p.get(apres + 12..apres + 16)?.try_into().ok()?;
+    Some(Ipv4Addr::from(a))
 }
 
 // ───────────────────────────── Sonde ─────────────────────────────
@@ -301,7 +303,7 @@ async fn interroger(
     let mut tampon = [0u8; 1500];
     while let Some(reste) = fin.checked_duration_since(Instant::now()) {
         match timeout(reste, socket.recv_from(&mut tampon)).await {
-            Ok(Ok((n, SocketAddr::V4(src)))) if valider(&tampon[..n]).is_some() => {
+            Ok(Ok((n, SocketAddr::V4(src)))) if tampon.get(..n).and_then(&valider).is_some() => {
                 trouves.insert(*src.ip());
             }
             Ok(Ok(_)) => {} // réponse sans rapport (autre nom, autre id) : ignorée.
@@ -321,23 +323,13 @@ async fn essai(local: Ipv4Addr, diffusion: Ipv4Addr) -> BTreeMap<Ipv4Addr, Vec<&
     let id = u16::from_be_bytes(id);
 
     let nom_l = nom.clone();
-    let llmnr = interroger(
-        local,
-        LLMNR.parse().unwrap(),
-        requete_llmnr(id, &nom),
-        true,
-        false,
-        move |p| adresse_llmnr(p, id, &nom_l),
-    );
+    let llmnr = interroger(local, LLMNR, requete_llmnr(id, &nom), true, false, move |p| {
+        adresse_llmnr(p, id, &nom_l)
+    });
     let nom_m = nom.clone();
-    let mdns = interroger(
-        local,
-        MDNS.parse().unwrap(),
-        requete_mdns(id, &nom),
-        true,
-        false,
-        move |p| adresse_mdns(p, id, &nom_m),
-    );
+    let mdns = interroger(local, MDNS, requete_mdns(id, &nom), true, false, move |p| {
+        adresse_mdns(p, id, &nom_m)
+    });
     let nom_n = nom.clone();
     let netbios = interroger(
         local,

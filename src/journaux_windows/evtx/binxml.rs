@@ -240,20 +240,23 @@ impl<'a> Morceau<'a> {
         Ok(b)
     }
 
+    /// `N` octets pris d'un coup, en tableau (les entiers se lisent sans index à vérifier).
+    fn prendre_fixe<const N: usize>(&self, c: &mut Curseur) -> R<[u8; N]> {
+        self.prendre(c, N)?.try_into().map_err(|_| ErreurBinxml::Tronque)
+    }
+
     fn mot(&self, c: &mut Curseur) -> R<u16> {
-        let b = self.prendre(c, 2)?;
-        Ok(u16::from_le_bytes([b[0], b[1]]))
+        self.prendre_fixe(c).map(u16::from_le_bytes)
     }
 
     fn double_mot(&self, c: &mut Curseur) -> R<u32> {
-        let b = self.prendre(c, 4)?;
-        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        self.prendre_fixe(c).map(u32::from_le_bytes)
     }
 
     /// Un mot de 32 bits à une position du morceau, hors de tout curseur (noms et gabarits désignés).
     fn double_mot_a(&self, pos: usize) -> Option<u32> {
         let b = self.octets.get(pos..pos.checked_add(4)?)?;
-        Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        Some(u32::from_le_bytes(b.try_into().ok()?))
     }
 
     /// Une position lue dans le fichier, en `usize`, bornée au morceau.
@@ -284,7 +287,8 @@ impl<'a> Morceau<'a> {
         let nombre = self
             .octets
             .get(pos + 6..pos + 8)
-            .map(|b| usize::from(u16::from_le_bytes([b[0], b[1]])))
+            .and_then(|b| b.try_into().ok())
+            .map(|b| usize::from(u16::from_le_bytes(b)))
             .ok_or(ErreurBinxml::Nom)?;
         if nombre > NOM_MAX {
             return Err(ErreurBinxml::Nom);

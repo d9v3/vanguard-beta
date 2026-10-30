@@ -231,8 +231,12 @@ impl Numeros {
     /// Le plus petit et le plus grand numéro de chaque clé.
     fn plages(&self) -> Vec<(u64, u64)> {
         let mut plages: Vec<Option<(u64, u64)>> = vec![None; self.cles.len()];
+        // Chaque indice de `presents` est celui d'une clé de `cles` (`noter`).
         for (i, p) in &self.presents {
-            plages[*i] = Some(match plages[*i] {
+            let Some(case) = plages.get_mut(*i) else {
+                continue;
+            };
+            *case = Some(match *case {
                 Some((a, b)) => (a.min(p.numero), b.max(p.numero)),
                 None => (p.numero, p.numero),
             });
@@ -248,7 +252,7 @@ impl Numeros {
 /// n'importe quel compte change dans son environnement.
 fn collecte(journal: &str, mut plages: Vec<(u64, u64)>) -> bool {
     plages.sort_unstable();
-    journal.eq_ignore_ascii_case("ForwardedEvents") || plages.windows(2).any(|p| p[1].0 <= p[0].1)
+    journal.eq_ignore_ascii_case("ForwardedEvents") || plages.windows(2).any(|p| matches!(p, [a, b] if b.0 <= a.1))
 }
 
 /// L'événement d'un XML rendu, et son numéro même quand le XML ne se lit pas (`numero_de_secours`).
@@ -382,8 +386,11 @@ pub(crate) fn lire_journal(
 /// filtre de l'abonnement peut trouer (`AvantExport`).
 fn suites_de_collecte(numeros: Numeros, max_trous: usize) -> Vec<Suite> {
     let mut par_cle: Vec<Vec<Present>> = vec![Vec::new(); numeros.cles.len()];
+    // Chaque indice de `presents` est celui d'une clé de `cles` (`Numeros::noter`).
     for (i, p) in numeros.presents {
-        par_cle[i].push(p);
+        if let Some(suite) = par_cle.get_mut(i) {
+            suite.push(p);
+        }
     }
     let mut restant = max_trous;
     numeros

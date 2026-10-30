@@ -510,7 +510,9 @@ fn morceaux_du_tube(ligne: &str) -> Vec<(usize, &str)> {
     let mut morceaux = Vec::new();
     let mut debut = 0;
     for (i, &o) in octets.iter().enumerate() {
-        let seul = o == b'|' && (i == 0 || octets[i - 1] != b'|') && octets.get(i + 1) != Some(&b'|');
+        let seul = o == b'|'
+            && i.checked_sub(1).and_then(|p| octets.get(p)) != Some(&b'|')
+            && octets.get(i + 1) != Some(&b'|');
         if seul {
             morceaux.push((debut, &ligne[debut..i]));
             debut = i + 1;
@@ -642,7 +644,7 @@ pub(crate) fn passe_a_un_shell(ligne: &str) -> Option<Motif> {
             .is_some_and(|p| INTERPRETES.contains(&nom_de_fichier(&p.to_ascii_lowercase())))
     };
     for (k, (debut, morceau)) in morceaux.iter().enumerate() {
-        if !morceaux[k + 1..].iter().any(interprete) {
+        if !morceaux.iter().skip(k + 1).any(interprete) {
             continue;
         }
         // Chaque mot du morceau, à sa place dans la ligne : lu en minuscules, montré tel qu'il est écrit.
@@ -663,16 +665,16 @@ pub(crate) fn passe_a_un_shell(ligne: &str) -> Option<Motif> {
                 fin: place.1,
             });
         }
-        if let Some(i) = places.iter().position(|p| nom(p) == "base64")
-            && let Some(&option) = places[i + 1..].iter().find(|p| matches!(nom(p), "-d" | "--decode"))
+        if let Some((i, &base)) = places.iter().enumerate().find(|(_, p)| nom(p) == "base64")
+            && let Some(&option) = places.iter().skip(i + 1).find(|p| matches!(nom(p), "-d" | "--decode"))
         {
             return Some(Motif {
                 raison: tr!(
                     "commande cachée en base64, exécutée aussitôt",
                     "command hidden in base64, run right away"
                 ),
-                mot: format!("{} {}", ecrit(places[i]), ecrit(option)),
-                debut: places[i].0,
+                mot: format!("{} {}", ecrit(base), ecrit(option)),
+                debut: base.0,
                 fin: option.1,
             });
         }
@@ -687,7 +689,10 @@ fn extrait(texte: &str, suite: bool) -> String {
     let texte = affichable(texte.trim());
     let caracteres: Vec<char> = texte.chars().collect();
     let mut montre = if caracteres.len() > LONGUEUR_EXTRAIT {
-        let garde: String = caracteres[caracteres.len() - (LONGUEUR_EXTRAIT - 1)..].iter().collect();
+        let garde: String = caracteres
+            .iter()
+            .skip(caracteres.len() - (LONGUEUR_EXTRAIT - 1))
+            .collect();
         format!("…{garde}")
     } else {
         texte
@@ -753,8 +758,8 @@ fn est_l_outil(nom: &str, outil: &str) -> bool {
 /// Un outil offensif connu, reconnu au nom entier de son fichier : voleurs de mots de passe, outils d'attaque
 /// d'Active Directory, mineur de cryptomonnaie, copie de la mémoire de LSASS. `noms` : le nom du processus, celui de
 /// son fichier, et pour un interpréteur (Python, PowerShell…) chaque mot de sa ligne de commande, où est le script.
-/// Rend la raison et la place, dans `noms`, du nom reconnu.
-fn outil_offensif(noms: &[&str], ligne: &str) -> Option<(&'static str, usize)> {
+/// Rend la raison, et la place dans `noms` et le mot du nom reconnu.
+fn outil_offensif<'a>(noms: &[&'a str], ligne: &str) -> Option<(&'static str, usize, &'a str)> {
     let bas = ligne.to_ascii_lowercase();
     for (i, nom) in noms.iter().enumerate() {
         let n = nom_de_fichier(nom).to_ascii_lowercase();
@@ -802,7 +807,7 @@ fn outil_offensif(noms: &[&str], ligne: &str) -> Option<(&'static str, usize)> {
         } else {
             continue;
         };
-        return Some((raison, i));
+        return Some((raison, i, *nom));
     }
     None
 }
@@ -869,7 +874,7 @@ fn maintenance_de_windows(chemin: &str) -> bool {
 /// caches où Chrome, par exemple, range une copie de lui-même).
 fn temporaire_du_compte_macos(c: &str) -> bool {
     let morceaux: Vec<&str> = c.trim_start_matches("/private").split('/').collect();
-    morceaux.len() > 6 && morceaux[1] == "var" && morceaux[2] == "folders" && morceaux[5] == "t"
+    matches!(morceaux.as_slice(), [_, "var", "folders", _, _, "t", _, ..])
 }
 
 /// Interpréteurs dont le vrai programme est le script en argument : un outil offensif en Python ou en PowerShell se
@@ -903,11 +908,11 @@ pub(crate) fn offensif(p: &EnMarche) -> Option<(&'static str, Origine)> {
     if interpreteur(nom_de_fichier(premier)) || interpreteur(nom_de_fichier(&p.nom)) {
         noms.extend(ligne.split_whitespace().skip(1));
     }
-    let (raison, i) = outil_offensif(&noms, ligne)?;
+    let (raison, i, nom) = outil_offensif(&noms, ligne)?;
     let origine = if i < 3 {
         Origine::Programme
     } else {
-        Origine::Argument(noms[i].to_string())
+        Origine::Argument(nom.to_string())
     };
     Some((raison, origine))
 }

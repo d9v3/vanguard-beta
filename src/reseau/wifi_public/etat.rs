@@ -170,11 +170,11 @@ pub(crate) fn dns_valide_linux(v: &str) -> bool {
     };
     let c: Vec<&str> = reste.split('|').collect();
     uuid_valide(uuid)
-        && c.len() == 4
-        && liste_valide(c[0], true)
-        && liste_valide(c[2], true)
-        && ["yes", "no"].contains(&c[1])
-        && ["yes", "no"].contains(&c[3])
+        && matches!(c.as_slice(), [dns4, ignore4, dns6, ignore6]
+            if liste_valide(dns4, true)
+                && liste_valide(dns6, true)
+                && ["yes", "no"].contains(ignore4)
+                && ["yes", "no"].contains(ignore6))
 }
 
 /// Windows : « {guid}\nv4|v6 » (forme d'`optimiser::windows`).

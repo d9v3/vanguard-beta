@@ -149,22 +149,22 @@ impl Curseur<'_> {
     }
 
     fn u16_le(&mut self) -> Option<u16> {
-        let o = self.octets.get(self.pos..self.pos + 2)?;
+        let o = self.octets.get(self.pos..self.pos + 2)?.first_chunk::<2>()?;
         self.pos += 2;
-        Some(u16::from_le_bytes([o[0], o[1]]))
+        Some(u16::from_le_bytes(*o))
     }
 
     fn u16_be(&mut self) -> Option<u16> {
-        let o = self.octets.get(self.pos..self.pos + 2)?;
+        let o = self.octets.get(self.pos..self.pos + 2)?.first_chunk::<2>()?;
         self.pos += 2;
-        Some(u16::from_be_bytes([o[0], o[1]]))
+        Some(u16::from_be_bytes(*o))
     }
 
     /// Une suite de chiffrement ou d'authentification : son OUI (3 octets) et son type.
     fn suite(&mut self) -> Option<([u8; 3], u8)> {
-        let o = self.octets.get(self.pos..self.pos + 4)?;
+        let &[a, b, c, genre] = self.octets.get(self.pos..self.pos + 4)?.first_chunk::<4>()?;
         self.pos += 4;
-        Some(([o[0], o[1], o[2]], o[3]))
+        Some(([a, b, c], genre))
     }
 
     fn sauter(&mut self, n: usize) -> Option<()> {
@@ -268,14 +268,17 @@ pub(crate) fn lire(ies: &[u8], capacites: u16) -> Elements {
                 e.protection.rsn = true;
                 lire_suites(corps, OUI_80211, &mut e.protection);
             }
-            ELEMENT_FABRICANT if corps.starts_with(&OUI_MICROSOFT) => match corps.get(3) {
-                Some(1) => {
-                    e.protection.wpa = true;
-                    lire_suites(&corps[4..], OUI_MICROSOFT, &mut e.protection);
+            // L'OUI (3 octets), le type, puis le contenu.
+            ELEMENT_FABRICANT if corps.starts_with(&OUI_MICROSOFT) => {
+                match corps.get(3..).and_then(<[u8]>::split_first) {
+                    Some((1, contenu)) => {
+                        e.protection.wpa = true;
+                        lire_suites(contenu, OUI_MICROSOFT, &mut e.protection);
+                    }
+                    Some((4, contenu)) => wps.get_or_insert_with(Vec::new).extend_from_slice(contenu),
+                    _ => {}
                 }
-                Some(4) => wps.get_or_insert_with(Vec::new).extend_from_slice(&corps[4..]),
-                _ => {}
-            },
+            }
             _ => {}
         }
     }

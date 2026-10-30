@@ -47,11 +47,13 @@ pub(crate) fn mots_de_passe_vides_sshd(conf: &str) -> bool {
 
 /// Le motif d'OpenSSH (« * » : n'importe quelle suite, « ? » : un caractère) correspond-il au nom ?
 pub(crate) fn correspond(motif: &[u8], nom: &[u8]) -> bool {
-    match (motif.first(), nom.first()) {
+    match (motif.split_first(), nom.split_first()) {
         (None, _) => nom.is_empty(),
-        (Some(b'*'), _) => correspond(&motif[1..], nom) || (!nom.is_empty() && correspond(motif, &nom[1..])),
-        (Some(b'?'), Some(_)) => correspond(&motif[1..], &nom[1..]),
-        (Some(m), Some(n)) if m.eq_ignore_ascii_case(n) => correspond(&motif[1..], &nom[1..]),
+        (Some((b'*', suite)), _) => {
+            correspond(suite, nom) || nom.split_first().is_some_and(|(_, reste)| correspond(motif, reste))
+        }
+        (Some((b'?', suite)), Some((_, reste))) => correspond(suite, reste),
+        (Some((m, suite)), Some((n, reste))) if m.eq_ignore_ascii_case(n) => correspond(suite, reste),
         _ => false,
     }
 }
@@ -95,7 +97,7 @@ pub(crate) fn version_dans_le_programme(octets: &[u8]) -> Option<(u32, u32)> {
         .filter(|(_, f)| *f == MOTIF)
         .filter_map(|(i, _)| {
             // OpenSSH de Microsoft : « OpenSSH_for_Windows_9.5p1 » dans sshd.exe et ssh.exe.
-            let reste = &octets[i + MOTIF.len()..];
+            let reste = octets.get(i + MOTIF.len()..)?;
             let reste = reste.strip_prefix(b"for_Windows_").unwrap_or(reste);
             let longueur = reste
                 .iter()
@@ -104,7 +106,7 @@ pub(crate) fn version_dans_le_programme(octets: &[u8]) -> Option<(u32, u32)> {
             if !matches!(reste.get(longueur), Some(0 | b' ')) {
                 return None;
             }
-            let texte = std::str::from_utf8(&reste[..longueur]).ok()?;
+            let texte = std::str::from_utf8(reste.get(..longueur)?).ok()?;
             // Une version commence par « chiffres.chiffres » ; « OpenSSH_for_Windows » n'en est pas une.
             texte.split('.').next()?.parse::<u32>().ok()?;
             version_openssh(&format!("OpenSSH_{texte}"))
@@ -183,8 +185,8 @@ pub(crate) fn kex_post_quantique(valeur: Option<&str>, version: Option<(u32, u32
     let Some(valeur) = valeur.map(str::trim).filter(|v| !v.is_empty()) else {
         return defaut();
     };
-    let (prefixe, liste) = match valeur.as_bytes()[0] {
-        p @ (b'+' | b'-' | b'^') => (Some(p), &valeur[1..]),
+    let (prefixe, liste) = match valeur.as_bytes().first() {
+        Some(&p @ (b'+' | b'-' | b'^')) => (Some(p), &valeur[1..]),
         _ => (None, valeur),
     };
     let entrees: Vec<&str> = liste.split(',').map(str::trim).filter(|e| !e.is_empty()).collect();

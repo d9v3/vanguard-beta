@@ -300,14 +300,14 @@ fn paquet_non_epingle(commande: &str, args: &[&str]) -> Option<String> {
         // fois (un fichier de réglages piégé, 350 Ko) faisait déborder la pile, ce qui arrête tout le programme.
         let barre = |a: &&str| a.eq_ignore_ascii_case("/c") || a.eq_ignore_ascii_case("/k");
         let i = args.iter().position(barre)?;
-        let mots: Vec<&str> = args[i + 1..].iter().flat_map(|a| a.split_whitespace()).collect();
+        let mots: Vec<&str> = args.get(i + 1..)?.iter().flat_map(|a| a.split_whitespace()).collect();
         let mut reste = &mots[..];
         loop {
             let (commande, suite) = reste.split_first()?;
             if nom_du_lanceur(commande) != "cmd" {
                 return paquet_non_epingle(commande, suite);
             }
-            reste = &suite[suite.iter().position(barre)? + 1..];
+            reste = suite.get(suite.iter().position(barre)? + 1..)?;
         }
     }
     let mut reste = args.iter().copied();

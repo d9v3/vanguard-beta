@@ -750,22 +750,30 @@ fn fichiers_inclus_ssh(dossier_ssh: &std::path::Path, motif: &str) -> Vec<(Strin
 /// Un nom correspond-il à un motif à jokers (« * » : n'importe quelle suite, « ? » : un caractère) ?
 #[cfg(unix)]
 fn joker(motif: &str, nom: &str) -> bool {
-    let (m, n): (Vec<char>, Vec<char>) = (motif.chars().collect(), nom.chars().collect());
-    // Programmation dynamique : possible[j] = le début du motif correspond aux j premiers caractères du nom.
-    let mut possible = vec![false; n.len() + 1];
-    possible[0] = true;
-    for c in m {
-        let mut suivant = vec![false; n.len() + 1];
-        for j in 0..=n.len() {
-            suivant[j] = match c {
-                '*' => possible[j] || (j > 0 && suivant[j - 1]),
-                '?' => j > 0 && possible[j - 1],
-                _ => j > 0 && possible[j - 1] && n[j - 1] == c,
+    let n: Vec<char> = nom.chars().collect();
+    // Programmation dynamique : possible[j] = le début du motif correspond aux j premiers caractères du nom. Les
+    // colonnes se parcourent dans l'ordre, sans index : la case de gauche (j - 1) et sa voisine du haut sont gardées
+    // au passage, et le caractère du nom qui mène à la colonne j est absent pour j = 0.
+    let mut possible: Vec<bool> = std::iter::once(true).chain(n.iter().map(|_| false)).collect();
+    for c in motif.chars() {
+        let mut suivant = Vec::with_capacity(possible.len());
+        let mut haut_gauche = None; // possible[j - 1]
+        let mut gauche = false; // suivant[j - 1]
+        for (&haut, car) in possible.iter().zip(std::iter::once(None).chain(n.iter().map(Some))) {
+            let ici = match (c, haut_gauche, car) {
+                ('*', _, _) => haut || gauche,
+                ('?', Some(d), _) => d,
+                (_, Some(d), Some(&x)) => d && x == c,
+                _ => false,
             };
+            suivant.push(ici);
+            gauche = ici;
+            haut_gauche = Some(haut);
         }
         possible = suivant;
     }
-    possible[n.len()]
+    // La dernière colonne existe toujours (n + 1 cases) : le motif couvre-t-il le nom entier ?
+    matches!(possible.last(), Some(true))
 }
 
 /// Réglages risqués de ~/.ssh/config qui valent pour tous les serveurs (avant le premier « Host », sous « Host * »
@@ -878,7 +886,8 @@ fn base64_decoder(texte: &str) -> Option<Vec<u8>> {
     let mut sortie = Vec::with_capacity(propre.len() * 3 / 4);
     for bloc in propre.chunks(4) {
         let n = bloc.iter().try_fold(0u32, |acc, &c| Some(acc << 6 | valeur(c)?))? << (6 * (4 - bloc.len()));
-        sortie.extend_from_slice(&n.to_be_bytes()[1..bloc.len()]);
+        // Un bloc de k caractères (1 à 4) donne k - 1 octets, pris après l'octet de poids fort, toujours nul.
+        sortie.extend(n.to_be_bytes().iter().skip(1).take(bloc.len().saturating_sub(1)));
     }
     Some(sortie)
 }
@@ -1030,9 +1039,11 @@ fn note_d_ordre(ligne: &str, r: &crate::protection::blocage::ordres::Resultat) -
 #[cfg(unix)]
 fn lancer_les_ordres(correctifs: &[Vec<String>], resultats: &mut [Option<bool>], notes: &mut [Vec<String>]) {
     use crate::protection::blocage::ordres;
-    let mut indices = Vec::new();
+    // Chaque groupe d'ordres garde ses commandes, et la case de son résultat et de ses notes (les trois listes vont
+    // ensemble, de même longueur : `lancer_chacune`).
+    let mut cibles = Vec::new();
     let mut groupes = Vec::new();
-    for (i, c) in correctifs.iter().enumerate() {
+    for ((c, resultat), note) in correctifs.iter().zip(resultats.iter_mut()).zip(notes.iter_mut()) {
         let n = c.iter().filter(|l| ordres::est_ordre(l)).count();
         if n == 0 {
             continue;
@@ -1042,10 +1053,10 @@ fn lancer_les_ordres(correctifs: &[Vec<String>], resultats: &mut [Option<bool>],
                 "    ✖ Une liste mêle des gestes de Vanguard et des commandes : elle n'est pas faite.",
                 "    ✖ A list mixes Vanguard steps and commands: it is not done."
             );
-            resultats[i] = Some(false);
+            *resultat = Some(false);
             continue;
         }
-        indices.push(i);
+        cibles.push((c, resultat, note));
         groupes.push(c.iter().filter_map(|l| ordres::analyser(l)).collect::<Vec<_>>());
     }
     if groupes.is_empty() {
@@ -1055,9 +1066,9 @@ fn lancer_les_ordres(correctifs: &[Vec<String>], resultats: &mut [Option<bool>],
         println!("    {GRIS}> {}{RESET}", o.texte());
     }
     let reponses = assistant::appliquer(&groupes);
-    for ((i, groupe), reponse) in indices.into_iter().zip(&groupes).zip(reponses) {
-        resultats[i] = Some(reponse.len() == groupe.len() && reponse.iter().all(|r| r.reussi));
-        notes[i] = correctifs[i]
+    for (((c, resultat, note), groupe), reponse) in cibles.into_iter().zip(&groupes).zip(reponses) {
+        *resultat = Some(reponse.len() == groupe.len() && reponse.iter().all(|r| r.reussi));
+        *note = c
             .iter()
             .zip(reponse.iter().map(Some).chain(std::iter::repeat(None)))
             .map(|(l, r)| r.map_or_else(|| l.clone(), |r| note_d_ordre(l, r)))

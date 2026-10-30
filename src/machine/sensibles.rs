@@ -215,7 +215,7 @@ fn premiere_ligne_csv(chemin: &Path) -> Option<String> {
     }
     let mut debut = [0u8; 256];
     let n = std::fs::File::open(chemin).ok()?.read(&mut debut).ok()?;
-    let texte = String::from_utf8_lossy(&debut[..n]);
+    let texte = String::from_utf8_lossy(debut.get(..n)?);
     texte.lines().next().map(str::to_string)
 }
 

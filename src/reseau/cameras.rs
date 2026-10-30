@@ -119,7 +119,7 @@ async fn flux(ip: Ipv4Addr, port: u16) -> Flux {
         c.write_all(demande.as_bytes()).await.ok()?;
         let mut tampon = [0u8; 256];
         let n = c.read(&mut tampon).await.ok()?;
-        Some(lire_flux(&String::from_utf8_lossy(&tampon[..n])))
+        Some(lire_flux(&String::from_utf8_lossy(tampon.get(..n)?)))
     };
     let reponse = timeout(Duration::from_secs(3), essai).await;
     reponse.ok().flatten().unwrap_or(Flux::Inconnu)
@@ -136,8 +136,9 @@ fn sans_pourcent(t: &str) -> String {
     let mut morceaux = t.split('%');
     let mut octets = morceaux.next().unwrap_or_default().as_bytes().to_vec();
     for m in morceaux {
-        match m.get(..2).and_then(|h| u8::from_str_radix(h, 16).ok()) {
-            Some(v) => octets.extend([v].iter().chain(&m.as_bytes()[2..])),
+        let code = m.get(..2).and_then(|h| u8::from_str_radix(h, 16).ok());
+        match code.zip(m.as_bytes().get(2..)) {
+            Some((v, suite)) => octets.extend([v].iter().chain(suite)),
             None => octets.extend(b"%".iter().chain(m.as_bytes())),
         }
     }

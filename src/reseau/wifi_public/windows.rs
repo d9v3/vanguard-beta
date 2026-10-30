@@ -48,13 +48,13 @@ pub(crate) fn lire_sortie(sortie: &str) -> Lu {
             }
         } else if let Some(r) = l.strip_prefix("PAREFEU|") {
             let c: Vec<&str> = r.split('|').collect();
-            let bons = c.len() == 3
+            if let [a, b, d] = c.as_slice()
                 && PARAMETRES_PROFIL
                     .iter()
                     .zip(&c)
-                    .all(|((_, valeurs), v)| valeurs.contains(v));
-            if bons {
-                lu.pare_feu = Some([c[0].to_string(), c[1].to_string(), c[2].to_string()]);
+                    .all(|((_, valeurs), v)| valeurs.contains(v))
+            {
+                lu.pare_feu = Some([a.to_string(), b.to_string(), d.to_string()]);
             }
         }
     }
@@ -187,7 +187,7 @@ pub(crate) mod lecture {
             Element::Categorie { guid, avant } => categorie(guid).map(|c| c == avant),
             Element::ProfilPublic { parametre, avant } => {
                 let i = super::PARAMETRES_PROFIL.iter().position(|(p, _)| p == parametre)?;
-                pare_feu.map(|f| f[i] == *avant)
+                pare_feu.and_then(|f| f.get(i)).map(|v| *v == *avant)
             }
             Element::NetBios { carte, avant } => netbios(carte).map(|v| v == *avant),
             Element::Dns { avant } => crate::optimiser::dns_relu(avant).map(|v| v == *avant),

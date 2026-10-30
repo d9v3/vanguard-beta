@@ -69,13 +69,20 @@ fn lire_firefox(texte: &str) -> Vec<Extension> {
         return Vec::new();
     };
     let mut extensions = Vec::new();
-    for a in json["addons"].as_array().into_iter().flatten() {
+    for a in json.get("addons").and_then(Value::as_array).into_iter().flatten() {
         if a["location"] != "app-profile" || a["type"] != "extension" || a["active"] != true {
             continue;
         }
-        let permissions = chaines(&a["userPermissions"]["permissions"]);
-        let origines = chaines(&a["userPermissions"]["origins"]);
-        let origine_suspecte = if a["installTelemetryInfo"]["method"] == "sideload" {
+        // Sans la clé, aucune permission : ce que disait déjà l'index (Null, lu comme une liste vide).
+        let permissions = a
+            .pointer("/userPermissions/permissions")
+            .map(chaines)
+            .unwrap_or_default();
+        let origines = a.pointer("/userPermissions/origins").map(chaines).unwrap_or_default();
+        let origine_suspecte = if a
+            .pointer("/installTelemetryInfo/method")
+            .is_some_and(|m| m == "sideload")
+        {
             Some(tr!(
                 "installée par un programme, sans passer par vous",
                 "installed by a program, without going through you"
@@ -87,7 +94,12 @@ fn lire_firefox(texte: &str) -> Vec<Extension> {
         };
         extensions.push(Extension {
             id: a["id"].as_str().unwrap_or_default().to_string(),
-            nom: affichable(a["defaultLocale"]["name"].as_str().or(a["id"].as_str()).unwrap_or("?")),
+            nom: affichable(
+                a.pointer("/defaultLocale/name")
+                    .and_then(Value::as_str)
+                    .or(a["id"].as_str())
+                    .unwrap_or("?"),
+            ),
             partout: origines.iter().any(|o| acces_partout(o)),
             pouvoirs: pouvoirs(&permissions),
             origine_suspecte,
@@ -124,7 +136,12 @@ fn lire_chromium(texte: &str, profil: &Path) -> Vec<Extension> {
         return Vec::new();
     };
     let mut extensions = Vec::new();
-    for (id, e) in json["extensions"]["settings"].as_object().into_iter().flatten() {
+    for (id, e) in json
+        .pointer("/extensions/settings")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
         let manifeste = &e["manifest"];
         let emplacement = e["location"].as_i64().unwrap_or(0);
         let desactivee = e["disable_reasons"].as_array().is_some_and(|r| !r.is_empty())

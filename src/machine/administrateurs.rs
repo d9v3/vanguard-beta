@@ -32,7 +32,10 @@ fn lire_groupes(texte: &str) -> Vec<String> {
         .lines()
         .filter_map(|l| {
             let c: Vec<&str> = l.split(':').collect();
-            (c.len() >= 4 && matches!(c[0], "wheel" | "sudo" | "admin")).then(|| c[3])
+            match c.as_slice() {
+                [groupe, _, _, membres, ..] if matches!(*groupe, "wheel" | "sudo" | "admin") => Some(*membres),
+                _ => None,
+            }
         })
         .flat_map(|membres| {
             membres

@@ -54,15 +54,35 @@ fn lire_firefox(prefs: &str) -> Reglages {
     }
 }
 
+/// La valeur au bout des clés, ou Null dès qu'une manque (ou qu'un maillon n'est pas un objet) : ce que rendait
+/// l'index de serde_json (`v["a"]["b"]`), écrit sans index. Les lectures qui suivent tiennent déjà Null pour « pas
+/// écrit », la valeur par défaut du navigateur.
+fn champ<'a>(v: &'a Value, cles: &[&str]) -> &'a Value {
+    static NUL: Value = Value::Null;
+    cles.iter().try_fold(v, |v, c| v.get(c)).unwrap_or(&NUL)
+}
+
+/// Une préférence de stratégie Firefox mise à false et imposée : valeur nue (ancienne forme, verrouillée) ou
+/// `"Status": "locked"`.
+fn pref_coupee_imposee(prefs: &Value, n: &str) -> bool {
+    *champ(prefs, &[n]) == false || (*champ(prefs, &[n, "Value"]) == false && *champ(prefs, &[n, "Status"]) == "locked")
+}
+
+/// Une préférence de stratégie Firefox mise à false seulement par défaut (« default », « user », sans Status).
+fn pref_coupee_par_defaut(prefs: &Value, n: &str) -> bool {
+    *champ(prefs, &[n, "Value"]) == false && *champ(prefs, &[n, "Status"]) != "locked"
+}
+
 /// `None` : Preferences n'est pas un objet JSON (abîmé, en cours d'écriture) ; rien n'est conclu, jamais « active ».
 fn lire_chromium(preferences: &str, etat_local: &str) -> Option<Reglages> {
     let p: Value = serde_json::from_str(preferences).ok().filter(Value::is_object)?;
     let l: Value = serde_json::from_str(etat_local).unwrap_or_default();
     Some(Reglages {
-        anti_hameconnage: p["safebrowsing"]["enabled"] != false,
+        anti_hameconnage: *champ(&p, &["safebrowsing", "enabled"]) != false,
         // cookie_controls_mode 0 = cookies tiers autorisés partout (le défaut les bloque en navigation privée).
-        cookies_ouverts: p["profile"]["cookie_controls_mode"] == 0 && p["profile"]["block_third_party_cookies"] != true,
-        dns_chiffre: match l["dns_over_https"]["mode"].as_str() {
+        cookies_ouverts: *champ(&p, &["profile", "cookie_controls_mode"]) == 0
+            && *champ(&p, &["profile", "block_third_party_cookies"]) != true,
+        dns_chiffre: match champ(&l, &["dns_over_https", "mode"]).as_str() {
             Some("secure") => Some(true),
             Some("off") => Some(false),
             _ => None,
@@ -115,12 +135,10 @@ const PREFS_SAFE_BROWSING: [&str; 2] = [
 /// forme, verrouillée) ou `"Status": "locked"` ; sinon (« default », « user », sans Status), la personne garde la main.
 fn firefox_coupe(politiques: &Value) -> (Option<&'static str>, Option<&'static str>) {
     let prefs = &politiques["Preferences"];
-    let imposee = PREFS_SAFE_BROWSING
-        .into_iter()
-        .find(|n| prefs[*n] == false || (prefs[*n]["Value"] == false && prefs[*n]["Status"] == "locked"));
+    let imposee = PREFS_SAFE_BROWSING.into_iter().find(|n| pref_coupee_imposee(prefs, n));
     let par_defaut = PREFS_SAFE_BROWSING
         .into_iter()
-        .find(|n| prefs[*n]["Value"] == false && prefs[*n]["Status"] != "locked");
+        .find(|n| pref_coupee_par_defaut(prefs, n));
     (imposee, par_defaut)
 }
 
@@ -141,7 +159,7 @@ fn strategies(nom: &str) -> Strategies {
         .find(|c| Path::new(c).exists())
         {
             match std::fs::read_to_string(c).ok().as_deref().and_then(json_souple) {
-                Some(v) => s.firefox = Some((v["policies"].clone(), c.to_string())),
+                Some(v) => s.firefox = Some((champ(&v, &["policies"]).clone(), c.to_string())),
                 None => s.illisibles.push(c.to_string()),
             }
         }
@@ -226,7 +244,7 @@ fn strategies(nom: &str) -> Strategies {
                     }
                     let ou = c.display().to_string();
                     match std::fs::read_to_string(&c).ok().as_deref().and_then(json_souple) {
-                        Some(v) => s.firefox = Some((v["policies"].clone(), ou)),
+                        Some(v) => s.firefox = Some((champ(&v, &["policies"]).clone(), ou)),
                         None => s.illisibles.push(ou),
                     }
                     break;
@@ -415,8 +433,8 @@ pub fn navigateurs() -> Vec<Constat> {
                 let etat_local = std::fs::read_to_string(racine.join("Local State")).unwrap_or_default();
                 lire("Preferences").and_then(|p| {
                     let mut r = lire_chromium(&p, &etat_local).ok_or_else(|| "Preferences".to_string())?;
-                    let choisi =
-                        serde_json::from_str::<Value>(&p).unwrap_or_default()["safebrowsing"]["enabled"].is_boolean();
+                    let lu = serde_json::from_str::<Value>(&p).unwrap_or_default();
+                    let choisi = champ(&lu, &["safebrowsing", "enabled"]).is_boolean();
                     if recommandee.is_some() && !choisi {
                         r.anti_hameconnage = false;
                     }
@@ -501,7 +519,7 @@ fn firefox_pq_impose(politiques: &Value) -> Option<String> {
     }
     let prefs = &politiques["Preferences"];
     prefs_pq_de_strategie()
-        .find(|n| prefs[*n] == false || (prefs[*n]["Value"] == false && prefs[*n]["Status"] == "locked"))
+        .find(|n| pref_coupee_imposee(prefs, n))
         .map(|n| format!("Preferences : {n} = false"))
 }
 
@@ -509,7 +527,7 @@ fn firefox_pq_impose(politiques: &Value) -> Option<String> {
 /// Status). Jamais écrite dans prefs.js, elle vaut tant que le profil n'écrit rien lui-même.
 fn firefox_pq_par_defaut(politiques: &Value) -> Option<&'static str> {
     let prefs = &politiques["Preferences"];
-    prefs_pq_de_strategie().find(|n| prefs[*n]["Value"] == false && prefs[*n]["Status"] != "locked")
+    prefs_pq_de_strategie().find(|n| pref_coupee_par_defaut(prefs, n))
 }
 
 /// Famille Chromium : la stratégie imposée qui coupe l'échange post-quantique, et son origine.

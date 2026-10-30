@@ -27,7 +27,10 @@ fn demande(identifiant: u16, numero: u16, donnees: &[u8]) -> Vec<u8> {
     p.extend(numero.to_be_bytes());
     p.extend(donnees);
     let somme = somme_de_controle(&p);
-    p[2..4].copy_from_slice(&somme.to_be_bytes());
+    // Les octets 2 et 3 existent : posés à la création de `p`.
+    if let Some(case) = p.get_mut(2..4) {
+        case.copy_from_slice(&somme.to_be_bytes());
+    }
     p
 }
 
@@ -35,9 +38,12 @@ fn demande(identifiant: u16, numero: u16, donnees: &[u8]) -> Vec<u8> {
 /// bits.
 #[cfg_attr(windows, allow(dead_code))]
 fn somme_de_controle(octets: &[u8]) -> u16 {
-    let mut somme: u32 = octets
-        .chunks(2)
-        .map(|m| u32::from(u16::from_be_bytes([m[0], m.get(1).copied().unwrap_or(0)])))
+    // Un octet seul à la fin compte comme un mot complété d'un zéro.
+    let (mots, dernier) = octets.as_chunks::<2>();
+    let mut somme: u32 = mots
+        .iter()
+        .map(|&m| u32::from(u16::from_be_bytes(m)))
+        .chain(dernier.first().map(|&o| u32::from(u16::from_be_bytes([o, 0]))))
         .sum();
     while somme > 0xffff {
         somme = (somme & 0xffff) + (somme >> 16);
@@ -170,7 +176,10 @@ mod unix {
             }
             let n = usize::try_from(recu).ok()?.min(tampon.len());
             let source = Ipv4Addr::from(depuis.sin_addr.s_addr.to_ne_bytes());
-            if super::est_notre_echo(&tampon[..n], source, cible, &donnees) {
+            if tampon
+                .get(..n)
+                .is_some_and(|recu| super::est_notre_echo(recu, source, cible, &donnees))
+            {
                 return Some(true);
             }
         }

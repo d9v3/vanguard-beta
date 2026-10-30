@@ -2326,11 +2326,15 @@ pub(crate) fn actions_de_tache(xml: &str) -> (Vec<(String, String)>, bool) {
 /// CDATA reste lue dans le XML lui-même (`entites`). Un commentaire, une instruction ou une CDATA sans fin couvre
 /// tout le reste.
 fn bas_de_tache(xml: &str) -> String {
+    // Le prochain « < » à partir de `i`, et ce qui le suit.
+    fn prochain(octets: &[u8], i: usize) -> Option<(usize, &[u8])> {
+        let reste = octets.get(i..)?;
+        let k = reste.iter().position(|&o| o == b'<')?;
+        Some((i + k, reste.get(k..)?))
+    }
     let mut octets = xml.to_ascii_lowercase().into_bytes();
     let mut i = 0;
-    while let Some(k) = octets[i..].iter().position(|&o| o == b'<') {
-        let debut = i + k;
-        let suite = &octets[debut..];
+    while let Some((debut, suite)) = prochain(&octets, i) {
         // (début couvert, fin cherchée, fin couverte ou non)
         let (couvert, fin, fin_couverte) = if suite.starts_with(b"<!--") {
             (debut, &b"-->"[..], true)
@@ -2342,11 +2346,14 @@ fn bas_de_tache(xml: &str) -> String {
             i = debut + 1;
             continue;
         };
-        let apres = octets[couvert..]
-            .windows(fin.len())
-            .position(|w| w == fin)
+        // Sans fin trouvée, tout le reste est couvert.
+        let apres = octets
+            .get(couvert..)
+            .and_then(|r| r.windows(fin.len()).position(|w| w == fin))
             .map_or(octets.len(), |j| couvert + j + if fin_couverte { fin.len() } else { 0 });
-        octets[couvert..apres].fill(b' ');
+        if let Some(zone) = octets.get_mut(couvert..apres) {
+            zone.fill(b' ');
+        }
         i = apres.max(debut + 1);
     }
     // Les morceaux couverts commencent et finissent sur un délimiteur ASCII ou au bout du texte : l'UTF-8 reste
@@ -2384,12 +2391,11 @@ fn balise_ouvrante(bas: &str, mut depuis: usize, nom: &str) -> Option<(usize, us
                 // Les attributs, jusqu'au « > » hors de leurs valeurs entre guillemets, où XML admet « > » et « / » :
                 // `<Exec id="a/">` n'est pas une action vide.
                 let mut guillemet = None;
-                for (k, &c) in bas.as_bytes()[apres..].iter().enumerate() {
+                for (j, &c) in bas.as_bytes().iter().enumerate().skip(apres) {
                     match (guillemet, c) {
                         (None, b'"' | b'\'') => guillemet = Some(c),
                         (Some(g), _) if c == g => guillemet = None,
                         (None, b'>') => {
-                            let j = apres + k;
                             return Some((i, j + 1, bas[..j].trim_end().ends_with('/')));
                         }
                         _ => {}

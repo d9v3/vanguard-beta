@@ -398,8 +398,9 @@ fn lire() -> Option<Etat> {
 /// Le nom d'un appareil tel que Windows le garde : UTF-8, terminé par un zéro.
 #[cfg(any(windows, test))]
 fn nom_utf8(octets: &[u8]) -> String {
-    let fin = octets.iter().position(|&o| o == 0).unwrap_or(octets.len());
-    String::from_utf8_lossy(&octets[..fin]).trim().to_string()
+    // Jusqu'au premier zéro, s'il y en a un.
+    let nom: Vec<u8> = octets.iter().copied().take_while(|&o| o != 0).collect();
+    String::from_utf8_lossy(&nom).trim().to_string()
 }
 
 #[cfg(target_os = "macos")]

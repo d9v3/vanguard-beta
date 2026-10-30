@@ -73,7 +73,7 @@ pub(crate) fn pids() -> Option<Vec<u32>> {
         let n = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), taille) };
         let n = usize::try_from(n).ok()?;
         if n < place {
-            let liste: Vec<u32> = pids[..n].iter().filter_map(|&p| u32::try_from(p).ok()).collect();
+            let liste: Vec<u32> = pids.get(..n)?.iter().filter_map(|&p| u32::try_from(p).ok()).collect();
             return (!liste.is_empty()).then_some(liste);
         }
         place *= 2;
@@ -139,7 +139,7 @@ pub(crate) fn enfants(pid: u32) -> Option<Vec<u32>> {
         let n = usize::try_from(n).ok()?;
         if n < place {
             return Some(
-                pids[..n]
+                pids.get(..n)?
                     .iter()
                     .filter_map(|&p| u32::try_from(p).ok())
                     .filter(|&p| p != 0)
@@ -217,8 +217,9 @@ pub(crate) fn sessions_ouvertes() -> (Vec<Session>, bool) {
     let texte = |c: &[c_char]| {
         // SAFETY : un c_char a la taille et l'alignement d'un octet.
         let o: &[u8] = unsafe { std::slice::from_raw_parts(c.as_ptr().cast(), c.len()) };
-        let fin = o.iter().position(|&x| x == 0).unwrap_or(o.len());
-        String::from_utf8_lossy(&o[..fin]).into_owned()
+        // Jusqu'au premier nul, s'il y en a un.
+        let o: Vec<u8> = o.iter().copied().take_while(|&x| x != 0).collect();
+        String::from_utf8_lossy(&o).into_owned()
     };
     let mut liste = Vec::new();
     let mut coupee = false;
@@ -362,7 +363,9 @@ fn descripteurs(pid: c_int) -> Option<Vec<(c_int, u32)>> {
     let lus = usize::try_from(lus).ok().filter(|&n| n > 0 && n <= taille)?;
     // `struct proc_fdinfo` : un int32 (le numéro) et un uint32 (la sorte), 8 octets.
     Some(
-        tampon[..lus - lus % 8]
+        // Un reste de moins de 8 octets (entrée coupée) est laissé par as_chunks, comme avant.
+        tampon
+            .get(..lus)?
             .as_chunks::<8>()
             .0
             .iter()
@@ -562,18 +565,16 @@ pub(crate) fn options_prochain_demarrage() -> Option<OptionsNvram> {
     if d.is_empty() {
         return Some(OptionsNvram::Posees(String::new()));
     }
-    let octets = d.bytes();
-    let fin = octets.iter().position(|&o| o == 0).unwrap_or(octets.len());
-    Some(OptionsNvram::Posees(
-        String::from_utf8_lossy(&octets[..fin]).into_owned(),
-    ))
+    // Jusqu'au premier nul, s'il y en a un.
+    let octets: Vec<u8> = d.bytes().iter().copied().take_while(|&o| o != 0).collect();
+    Some(OptionsNvram::Posees(String::from_utf8_lossy(&octets).into_owned()))
 }
 
 /// Les options du démarrage EN COURS (kern.bootargs). `Some("")` : aucune ; `None` : illisible.
 pub(crate) fn options_demarrage_en_cours() -> Option<String> {
     let octets = super::sysctl_ou_vide("kern.bootargs")?;
-    let fin = octets.iter().position(|&o| o == 0).unwrap_or(octets.len());
-    Some(String::from_utf8_lossy(&octets[..fin]).trim().to_string())
+    let octets: Vec<u8> = octets.into_iter().take_while(|&o| o != 0).collect();
+    Some(String::from_utf8_lossy(&octets).trim().to_string())
 }
 
 /// L'identifiant de l'ordinateur (gethostuuid), écrit comme l'IOPlatformUUID d'ioreg. Pas encore employé pour
@@ -615,8 +616,9 @@ pub(crate) fn montages() -> Option<Vec<Montage>> {
     let texte = |c: &[c_char]| {
         // SAFETY : un c_char a la taille et l'alignement d'un octet.
         let o: &[u8] = unsafe { std::slice::from_raw_parts(c.as_ptr().cast(), c.len()) };
-        let fin = o.iter().position(|&x| x == 0).unwrap_or(o.len());
-        String::from_utf8_lossy(&o[..fin]).into_owned()
+        // Jusqu'au premier nul, s'il y en a un.
+        let o: Vec<u8> = o.iter().copied().take_while(|&x| x != 0).collect();
+        String::from_utf8_lossy(&o).into_owned()
     };
     Some(
         liste

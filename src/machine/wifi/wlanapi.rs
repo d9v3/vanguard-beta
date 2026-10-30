@@ -128,14 +128,12 @@ struct Interface {
 
 #[cfg(any(windows, test))]
 fn u16_a(octets: &[u8], pos: usize) -> Option<u16> {
-    let o = octets.get(pos..pos + 2)?;
-    Some(u16::from_le_bytes([o[0], o[1]]))
+    Some(u16::from_le_bytes(*octets.get(pos..pos + 2)?.first_chunk::<2>()?))
 }
 
 #[cfg(any(windows, test))]
 fn u32_a(octets: &[u8], pos: usize) -> Option<u32> {
-    let o = octets.get(pos..pos + 4)?;
-    Some(u32::from_le_bytes([o[0], o[1], o[2], o[3]]))
+    Some(u32::from_le_bytes(*octets.get(pos..pos + 4)?.first_chunk::<4>()?))
 }
 
 /// Un texte UTF-16 terminé par un zéro, dans un champ de `n` caractères, prêt à montrer.
@@ -147,9 +145,10 @@ fn texte_large(octets: &[u8], pos: usize, n: usize) -> Option<String> {
         .0
         .iter()
         .map(|c| u16::from_le_bytes(*c))
+        // Jusqu'au zéro final, s'il y en a un.
+        .take_while(|&m| m != 0)
         .collect();
-    let fin = mots.iter().position(|&m| m == 0).unwrap_or(mots.len());
-    Some(affichable(&String::from_utf16_lossy(&mots[..fin])))
+    Some(affichable(&String::from_utf16_lossy(&mots)))
 }
 
 /// Un DOT11_SSID : sa longueur (32 au plus) et ses octets, prêt à montrer ; vide s'il est caché.

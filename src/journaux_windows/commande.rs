@@ -180,7 +180,7 @@ fn noter_alertes(c: &Chronologie) {
         .collect();
     datees.sort_by_key(|(_, d)| *d);
     let debut = datees.len().saturating_sub(NOTEES_MAX);
-    for (x, d) in &datees[debut..] {
+    for (x, d) in datees.iter().skip(debut) {
         let utc = d.format("%Y-%m-%dT%H:%M:%SZ").to_string();
         if deja.contains(&(x.cle.clone(), utc.clone())) {
             continue;
@@ -216,15 +216,23 @@ fn ecran(t: &str) -> String {
         // Coupé de préférence juste après un séparateur (« / », « \\ », « - »…), pour que chaque morceau se lise.
         let lettres: Vec<char> = mot.chars().collect();
         let mut reste: &[char] = &lettres;
+        // Plus long que `MOT_MAX` : la tête existe, et la coupe (au plus `MOT_MAX`) tombe dedans ; sinon le reste
+        // est écrit tel quel juste après.
         while reste.len() > MOT_MAX {
-            let coupe = reste[..MOT_MAX]
+            let Some((tete, _)) = reste.split_first_chunk::<MOT_MAX>() else {
+                break;
+            };
+            let coupe = tete
                 .iter()
                 .rposition(|c| matches!(c, '/' | '\\' | '-' | '_' | '%' | '.' | ','))
                 .filter(|i| *i >= MOT_MAX / 2)
                 .map_or(MOT_MAX, |i| i + 1);
-            sortie.extend(&reste[..coupe]);
+            let Some((morceau, suite)) = reste.split_at_checked(coupe) else {
+                break;
+            };
+            sortie.extend(morceau);
             sortie.push(' ');
-            reste = &reste[coupe..];
+            reste = suite;
         }
         sortie.extend(reste);
     }
@@ -477,7 +485,7 @@ fn chronologie_ecran(c: &Chronologie, depuis: DateTime<Utc>) {
             GRIS,
         );
     }
-    for x in &datees[coupees..] {
+    for x in datees.iter().skip(coupees) {
         ligne_alerte(x, depuis);
     }
     if !sans.is_empty() {

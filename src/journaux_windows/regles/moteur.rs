@@ -744,7 +744,10 @@ impl Moteur {
             return;
         };
         for &(r, v, b) in cibles {
-            let volet = &self.regles[r].volets[v];
+            // L'index est fait des mêmes règles (`Moteur::new`), et `etats` en a une par règle : rien n'y manque.
+            let Some(volet) = self.regles.get(r).and_then(|g| g.volets.get(v)) else {
+                continue;
+            };
             if !e.journal.eq_ignore_ascii_case(volet.journal)
                 || !(volet.fournisseurs.is_empty()
                     || volet
@@ -754,7 +757,9 @@ impl Moteur {
             {
                 continue;
             }
-            let etat = &mut self.etats[r];
+            let Some(etat) = self.etats.get_mut(r) else {
+                continue;
+            };
             if let Audit::PreuveChamp { champ, vide_permis, .. } = volet.audit
                 && e.verifie
                 && !b
@@ -802,9 +807,11 @@ impl Moteur {
     /// Le jugement de chaque règle, d'après ce qu'elle a vu et la lecture de chaque journal.
     pub(crate) fn conclure(mut self, journaux: &[EtatJournal]) -> Vec<Jugement> {
         let arrets = std::mem::take(&mut self.arrets);
+        // Une entrée d'`etats` par règle, dans le même ordre (`Moteur::new`).
+        let mut etats = std::mem::take(&mut self.etats);
         let mut sortie = Vec::new();
-        for (r, regle) in self.regles.iter().enumerate() {
-            let mut etat = std::mem::take(&mut self.etats[r]);
+        for (regle, etat) in self.regles.iter().zip(&mut etats) {
+            let mut etat = std::mem::take(etat);
             let mut manques: Vec<Manque> = Vec::new();
             for (v, volet) in regle.volets.iter().enumerate() {
                 match volet.forme {
@@ -834,15 +841,18 @@ impl Moteur {
                     nom: volet.journal.to_string(),
                     ..StatJournal::default()
                 });
-                let i = if let Some(i) = par_journal.iter().position(|(c, _)| *c == cle) {
-                    i
+                let entree = if let Some(i) = par_journal.iter().position(|(c, _)| *c == cle) {
+                    par_journal.get_mut(i)
                 } else {
                     let m = lecture(volet.journal, journaux, &stat, &self.options, plus_recent);
                     stats.push(stat.clone());
                     par_journal.push((cle, m));
-                    par_journal.len() - 1
+                    par_journal.last_mut()
                 };
-                let siens = &mut par_journal[i].1;
+                // Trouvée ou tout juste ajoutée : toujours là.
+                let Some((_, siens)) = entree else {
+                    continue;
+                };
                 let mut noter = |m: Manque| {
                     if !siens.contains(&m) {
                         siens.push(m);
@@ -1360,7 +1370,11 @@ fn noter_rafale(
         numero: e.numero.unwrap_or(u64::MAX),
         verifie: e.verifie,
     };
-    let entree = &mut raf.par_cle[indice as usize];
+    // Chaque clé a reçu son entrée de `par_cle` en même temps que son indice ; sinon compté perdu.
+    let Some(entree) = raf.par_cle.get_mut(indice as usize) else {
+        raf.perdus += 1;
+        return;
+    };
     if est_b {
         if raf.gardes_b >= bornes.dates {
             entree.2 += 1;
@@ -1409,11 +1423,14 @@ fn dans_rafale(dates: &[Marque], nombre: usize, fenetre: i64) -> Vec<bool> {
     }
     let mut i = 0;
     let mut marque_jusqua = 0usize;
-    for j in 0..dates.len() {
-        while (dates[j].date - dates[i].date).num_seconds() > fenetre {
+    for (j, dj) in dates.iter().enumerate() {
+        while dates
+            .get(i)
+            .is_some_and(|di| (dj.date - di.date).num_seconds() > fenetre)
+        {
             i += 1;
         }
-        if j + 1 - i >= nombre {
+        if (j + 1).saturating_sub(i) >= nombre {
             for c in couvert.iter_mut().take(j + 1).skip(i.max(marque_jusqua)) {
                 *c = true;
             }
@@ -1440,11 +1457,15 @@ impl<'a> IndexRafales<'a> {
     fn de(a: &'a [Marque], nombre: usize, fenetre: i64) -> Self {
         let mut fins = Vec::new();
         let mut debut_max: Vec<DateTime<Utc>> = Vec::new();
+        // Chaque suite de `nombre` échecs consécutifs (`windows` veut une taille non nulle).
         if nombre > 0 {
-            for j in nombre - 1..a.len() {
-                let debut = a[j + 1 - nombre].date;
-                if (a[j].date - debut).num_seconds() <= fenetre {
-                    fins.push(a[j].date);
+            for suite in a.windows(nombre) {
+                let (Some(premier), Some(dernier)) = (suite.first(), suite.last()) else {
+                    continue;
+                };
+                let debut = premier.date;
+                if (dernier.date - debut).num_seconds() <= fenetre {
+                    fins.push(dernier.date);
                     let m = debut_max.last().map_or(debut, |&m| m.max(debut));
                     debut_max.push(m);
                 }
@@ -1457,14 +1478,16 @@ impl<'a> IndexRafales<'a> {
     /// rafale tout entière dans les `fenetre + delai` secondes d'avant ?
     fn suit(&self, s: DateTime<Utc>, fenetre: i64, delai: i64) -> bool {
         let fin = self.a.partition_point(|d| d.date <= s);
-        let Some(dernier) = fin.checked_sub(1).map(|i| self.a[i].date) else {
+        let Some(dernier) = fin.checked_sub(1).and_then(|i| self.a.get(i)).map(|m| m.date) else {
             return false;
         };
         if (s - dernier).num_seconds() > delai {
             return false;
         }
         let k = self.fins.partition_point(|&f| f <= s);
-        k > 0 && (s - self.debut_max[k - 1]).num_seconds() <= fenetre.saturating_add(delai)
+        k.checked_sub(1)
+            .and_then(|i| self.debut_max.get(i))
+            .is_some_and(|&d| (s - d).num_seconds() <= fenetre.saturating_add(delai))
     }
 }
 

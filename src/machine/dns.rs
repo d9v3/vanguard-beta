@@ -233,7 +233,7 @@ fn serveurs_resolved(dns: &crate::machine::linux::dbus::Valeur) -> Vec<(i32, IpA
                 })
                 .collect();
             let ip = match (*famille, o.len()) {
-                (libc::AF_INET, 4) => IpAddr::from([o[0], o[1], o[2], o[3]]),
+                (libc::AF_INET, 4) => IpAddr::from(<[u8; 4]>::try_from(o.as_slice()).ok()?),
                 (libc::AF_INET6, 16) => IpAddr::from(<[u8; 16]>::try_from(o.as_slice()).ok()?),
                 _ => return None,
             };

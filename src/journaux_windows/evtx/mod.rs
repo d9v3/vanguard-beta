@@ -351,7 +351,8 @@ pub(crate) fn parcourir<R: Read + Seek>(
 ) -> Result<Bilan, Erreur> {
     let taille = source.seek(SeekFrom::End(0))?;
     source.seek(SeekFrom::Start(0))?;
-    let mut en_tete = vec![0u8; EN_TETE];
+    // Un tableau de taille fixe : les champs de l'en-tête se lisent à des places connues, sans index à vérifier.
+    let mut en_tete = [0u8; EN_TETE];
     if lire_au_plus(&mut source, &mut en_tete)? < EN_TETE || !en_tete.starts_with(b"ElfFile\0") {
         return Err(Erreur::PasUnEvtx);
     }
@@ -362,7 +363,7 @@ pub(crate) fn parcourir<R: Read + Seek>(
     bilan.sale = !bilan.en_tete_abime && u32_a(&en_tete, 120).is_some_and(|d| d & 1 != 0);
     if !bilan.en_tete_abime {
         bilan.prochain_numero = u64_a(&en_tete, 24);
-        bilan.nombre_morceaux = en_tete.get(42..44).map(|o| u16::from_le_bytes([o[0], o[1]]));
+        bilan.nombre_morceaux = Some(u16::from_le_bytes([en_tete[42], en_tete[43]]));
     }
 
     // Le nombre de morceaux de l'en-tête n'est pas cru (un fichier sale en annonce moins qu'il n'en a, [libyal]
@@ -402,8 +403,8 @@ pub(crate) fn parcourir<R: Read + Seek>(
 /// Remplit `tampon` autant que la source le permet ; rend le nombre d'octets lus.
 fn lire_au_plus<R: Read>(source: &mut R, tampon: &mut [u8]) -> std::io::Result<usize> {
     let mut lu = 0;
-    while lu < tampon.len() {
-        match source.read(&mut tampon[lu..]) {
+    while let Some(reste) = tampon.get_mut(lu..).filter(|r| !r.is_empty()) {
+        match source.read(reste) {
             Ok(0) => break,
             Ok(n) => lu += n,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
@@ -430,9 +431,10 @@ enum Etat {
 
 /// Le morceau vérifié : signature, CRC de l'en-tête, place libre plausible, CRC des enregistrements.
 fn verifier_morceau(morceau: &[u8]) -> Etat {
-    if morceau.len() != MORCEAU {
+    // Vu comme un tableau de 64 Kio : l'en-tête se découpe à des places fixes, sans index à vérifier.
+    let Ok(morceau) = <&[u8; MORCEAU]>::try_from(morceau) else {
         return Etat::Illisible;
-    }
+    };
     if !morceau.starts_with(b"ElfChnk\0") {
         return if morceau.iter().all(|&b| b == 0) {
             Etat::Vide(None)
@@ -460,7 +462,7 @@ fn verifier_morceau(morceau: &[u8]) -> Etat {
     if libre == EN_TETE_MORCEAU {
         return Etat::Vide(Some(libre));
     }
-    if u32_a(morceau, 52) != Some(crc32(&[&morceau[EN_TETE_MORCEAU..libre]])) {
+    if u32_a(morceau, 52) != morceau.get(EN_TETE_MORCEAU..libre).map(|z| crc32(&[z])) {
         return Etat::NonVerifie {
             en_tete_juste: true,
             libre: Some(libre),
@@ -582,7 +584,7 @@ fn lire_morceau(
     while pos + ENREGISTREMENT_MIN <= libre {
         let Some(taille) = taille_enregistrement(morceau, pos, libre) else {
             // Le reste est à zéro : la fin des enregistrements, pas une perte.
-            if morceau[pos..libre].iter().all(|&b| b == 0) {
+            if morceau.get(pos..libre).is_some_and(|z| z.iter().all(|&b| b == 0)) {
                 break;
             }
             // Signature, taille ou copie fausses : compté, puis la suite cherchée à la signature suivante
@@ -759,12 +761,12 @@ pub(crate) fn rendre_binxml(morceau: &[u8], debut: usize, bornes: &Bornes) -> Re
 
 fn u32_a(octets: &[u8], pos: usize) -> Option<u32> {
     let b = octets.get(pos..pos.checked_add(4)?)?;
-    Some(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    Some(u32::from_le_bytes(b.try_into().ok()?))
 }
 
 fn u64_a(octets: &[u8], pos: usize) -> Option<u64> {
     let b = octets.get(pos..pos.checked_add(8)?)?;
-    Some(u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+    Some(u64::from_le_bytes(b.try_into().ok()?))
 }
 
 /// La table du CRC32 de RFC 1952 (polynôme 0xEDB88320, bits retournés), calculée à la compilation.
@@ -778,7 +780,13 @@ const TABLE_CRC: [u32; 256] = {
             v = if v & 1 != 0 { 0xEDB8_8320 ^ (v >> 1) } else { v >> 1 };
             k += 1;
         }
-        table[c as usize] = v;
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "c < 256 par la boucle, table de 256 ; calculé à la compilation"
+        )]
+        {
+            table[c as usize] = v;
+        }
         c += 1;
     }
     table
@@ -789,7 +797,9 @@ pub(crate) fn crc32(zones: &[&[u8]]) -> u32 {
     let mut c = 0xFFFF_FFFFu32;
     for zone in zones {
         for &b in *zone {
-            c = TABLE_CRC[usize::from(c.to_le_bytes()[0] ^ b)] ^ (c >> 8);
+            #[expect(clippy::indexing_slicing, reason = "un octet indexe une table de 256 entrées")]
+            let entree = TABLE_CRC[usize::from(c.to_le_bytes()[0] ^ b)];
+            c = entree ^ (c >> 8);
         }
     }
     c ^ 0xFFFF_FFFF
@@ -799,23 +809,22 @@ pub(crate) fn crc32(zones: &[&[u8]]) -> u32 {
 /// banc de fuzzing fabriquent ou abîment un fichier, puis le rendent cohérent pour atteindre ce qui suit les CRC.
 #[cfg(any(test, fuzzing))]
 pub(crate) fn recalculer_crc(fichier: &mut [u8]) {
-    if fichier.len() >= EN_TETE {
-        let crc = crc32(&[&fichier[..120]]);
-        fichier[124..128].copy_from_slice(&crc.to_le_bytes());
-    }
-    let mut debut = EN_TETE;
-    while let Some(morceau) = fichier.get_mut(debut..debut + MORCEAU) {
+    // En tableaux de taille fixe : les champs se découpent à des places connues, sans index à vérifier.
+    let Some((en_tete, suite)) = fichier.split_first_chunk_mut::<EN_TETE>() else {
+        return;
+    };
+    let crc = crc32(&[&en_tete[..120]]);
+    en_tete[124..128].copy_from_slice(&crc.to_le_bytes());
+    for morceau in suite.as_chunks_mut::<MORCEAU>().0 {
         if morceau.starts_with(b"ElfChnk\0") {
             let libre = u32_a(morceau, 48)
                 .and_then(|l| usize::try_from(l).ok())
                 .filter(|l| (EN_TETE_MORCEAU..=MORCEAU).contains(l));
-            if let Some(libre) = libre {
-                let crc = crc32(&[&morceau[EN_TETE_MORCEAU..libre]]);
+            if let Some(crc) = libre.and_then(|l| morceau.get(EN_TETE_MORCEAU..l)).map(|z| crc32(&[z])) {
                 morceau[52..56].copy_from_slice(&crc.to_le_bytes());
             }
             let crc = crc32(&[&morceau[..120], &morceau[128..EN_TETE_MORCEAU]]);
             morceau[124..128].copy_from_slice(&crc.to_le_bytes());
         }
-        debut += MORCEAU;
     }
 }

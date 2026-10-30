@@ -153,7 +153,7 @@ pub(super) fn ceder_au_bilan_des_journaux(constats: &mut Vec<Constat>, lu: Optio
             && c.probleme.is_some()
             && instant_de(c).is_some_and(|t| t > lu.depuis + chrono::Duration::seconds(1) && t < lu.debut)
     };
-    let Some(premier) = constats.iter().position(vu) else {
+    let Some(premier) = constats.iter_mut().find(|c| vu(c)) else {
         return;
     };
     let mut cede = ok(
@@ -164,13 +164,10 @@ pub(super) fn ceder_au_bilan_des_journaux(constats: &mut Vec<Constat>, lu: Optio
         ),
     );
     cede.regle = REGLE;
-    let mut i = 0;
-    constats.retain(|c| {
-        let garde = i == premier || !vu(c);
-        i += 1;
-        garde
-    });
-    constats[premier] = cede;
+    // Le premier prend la place de tous, sans index : remplacé d'abord (un constat sans problème, que `vu` ne
+    // retient plus), puis les autres retirés.
+    *premier = cede;
+    constats.retain(|c| !vu(c));
 }
 
 /// Cette règle, et celle qui lit les journaux de Windows pour le bilan.

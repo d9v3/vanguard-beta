@@ -199,10 +199,15 @@ fn etendues(presents: &[Present], morceaux: &[RecapMorceau]) -> Vec<Option<(u64,
         .map(|m| if m.etat == EtatMorceau::Lu { m.annonce } else { None })
         .collect();
     for p in presents.iter().filter(|p| p.verifie) {
-        let Some(&i) = p.morceau.and_then(|r| rang_vers_indice.get(&r)) else {
+        // L'indice vient de `morceaux`, de même longueur que `sortie`.
+        let Some(case) = p
+            .morceau
+            .and_then(|r| rang_vers_indice.get(&r))
+            .and_then(|&i| sortie.get_mut(i))
+        else {
             continue;
         };
-        sortie[i] = Some(match sortie[i] {
+        *case = Some(match *case {
             Some((a, b)) => (a.min(p.numero), b.max(p.numero)),
             None => (p.numero, p.numero),
         });
@@ -297,21 +302,23 @@ fn paliers(
     let mut actifs: BTreeSet<(u64, u64, usize)> = BTreeSet::new();
     let mut ecartes = 0i64;
     let mut sortie = Vec::new();
-    let mut i = 0;
-    while i < bords.len() {
-        let pos = bords[i].0;
-        while i < bords.len() && bords[i].0 == pos {
-            let (_, sens, lu, debut) = bords[i];
-            match (lu, sens) {
-                (Some(k), 1) => {
-                    actifs.insert((debut, morceaux[k].rang, k));
+    // Triés par numéro : chaque groupe de bords au même numéro fait un palier.
+    for groupe in bords.chunk_by(|a, b| a.0 == b.0) {
+        let Some(&(pos, ..)) = groupe.first() else {
+            continue;
+        };
+        for &(_, sens, lu, debut) in groupe {
+            // `k` est un indice d'`etendues`, faites de `morceaux` (même longueur) : entrée et sortie lisent le
+            // même rang.
+            match (lu.and_then(|k| Some((k, morceaux.get(k)?.rang))), sens) {
+                (Some((k, rang)), 1) => {
+                    actifs.insert((debut, rang, k));
                 }
-                (Some(k), _) => {
-                    actifs.remove(&(debut, morceaux[k].rang, k));
+                (Some((k, rang)), _) => {
+                    actifs.remove(&(debut, rang, k));
                 }
                 (None, s) => ecartes += i64::from(s),
             }
-            i += 1;
         }
         sortie.push((pos, actifs.first().map(|a| a.2), ecartes > 0));
     }
@@ -322,8 +329,8 @@ fn paliers(
 /// contiguë d'une seule plage ; les plus grandes plages servies d'abord par les plus grandes pertes, une plage que
 /// le reste ne couvre pas entière n'est pas couverte (et ne consomme rien). Rend, pour chaque plage, si elle l'est.
 fn couvertes(tailles: &[u64], pertes: &[u64]) -> Vec<bool> {
-    let mut ordre: Vec<usize> = (0..tailles.len()).collect();
-    ordre.sort_unstable_by(|&a, &b| tailles[b].cmp(&tailles[a]));
+    let mut ordre: Vec<(usize, u64)> = tailles.iter().copied().enumerate().collect();
+    ordre.sort_unstable_by_key(|&(_, t)| std::cmp::Reverse(t));
     let mut triees: Vec<u64> = pertes.iter().copied().filter(|&c| c > 0).collect();
     triees.sort_unstable_by(|a, b| b.cmp(a));
     // Les sommes cumulées : les pertes prises dans l'ordre, la recherche de celles qui couvrent une plage se fait
@@ -336,13 +343,21 @@ fn couvertes(tailles: &[u64], pertes: &[u64]) -> Vec<bool> {
     }
     let mut debut = 0usize;
     let mut sortie = vec![false; tailles.len()];
-    for i in ordre {
-        let base = cumul[debut];
+    for (i, taille) in ordre {
+        // `debut` reste un indice de `cumul` (il ne prend que des `j` vérifiés) ; `i`, un indice de `tailles`.
+        let Some(reste) = cumul.get(debut..) else {
+            break;
+        };
+        let Some(&base) = reste.first() else {
+            break;
+        };
         // La plus petite fin `j` telle que les pertes de `debut` à `j` couvrent la plage.
-        let j = debut + cumul[debut..].partition_point(|&s| s - base < tailles[i]);
-        if j < cumul.len() {
+        let j = debut + reste.partition_point(|&s| s - base < taille);
+        if j < cumul.len()
+            && let Some(case) = sortie.get_mut(i)
+        {
             debut = j;
-            sortie[i] = true;
+            *case = true;
         }
     }
     sortie
@@ -412,7 +427,9 @@ fn ecarter_non_verifies(presents: &mut Vec<Present>, etendues: &[Option<(u64, u6
     }
     let reclame = |n: u64| {
         let i = fusionnees.partition_point(|z| z.0 <= n);
-        i > 0 && fusionnees[i - 1].1 >= n
+        i.checked_sub(1)
+            .and_then(|j| fusionnees.get(j))
+            .is_some_and(|z| z.1 >= n)
     };
     presents.retain(|p| p.verifie || !reclame(p.numero));
     // Un enregistrement non vérifié plus ancien que tout ce qui est vérifié ne fait reculer le début de la suite que
@@ -478,10 +495,10 @@ fn segments_manquants(
     let mut decouper = |de: u64, a: u64, segments: &mut Vec<(u64, u64, Classe)>| {
         let mut x = de;
         loop {
-            while k < paliers.len() && paliers[k].0 <= x {
+            while paliers.get(k).is_some_and(|p| p.0 <= x) {
                 k += 1;
             }
-            let classe = match k.checked_sub(1).map(|j| paliers[j]) {
+            let classe = match k.checked_sub(1).and_then(|j| paliers.get(j).copied()) {
                 Some((_, Some(m), _)) => Classe::Morceau(m),
                 Some((_, None, true)) => Classe::Ecarte,
                 _ => Classe::Libre,
@@ -526,7 +543,11 @@ fn ranger_les_trous(suite: &mut Suite, segments: Vec<(u64, u64, Classe)>, contex
     for &(de, a, classe) in &segments {
         let n = (a - de).saturating_add(1);
         match classe {
-            Classe::Morceau(m) => manque_au_morceau[m] = manque_au_morceau[m].saturating_add(n),
+            Classe::Morceau(m) => {
+                if let Some(manque) = manque_au_morceau.get_mut(m) {
+                    *manque = manque.saturating_add(n);
+                }
+            }
             Classe::Libre => libres.push(n),
             Classe::Ecarte => {}
         }
@@ -536,7 +557,15 @@ fn ranger_les_trous(suite: &mut Suite, segments: Vec<(u64, u64, Classe)>, contex
     let mut dernier_au_dela: Option<(Nature, u64)> = None;
     for (de, a, classe) in segments {
         let nature = match classe {
-            Classe::Morceau(m) if manque_au_morceau[m] <= contexte.morceaux[m].non_rendus => Nature::Illisible,
+            // Un indice hors de `contexte.morceaux` (impossible : les paliers en viennent) ne passe pas pour illisible.
+            Classe::Morceau(m)
+                if manque_au_morceau
+                    .get(m)
+                    .zip(contexte.morceaux.get(m))
+                    .is_some_and(|(&manque, morceau)| manque <= morceau.non_rendus) =>
+            {
+                Nature::Illisible
+            }
             Classe::Morceau(_) => Nature::Retires,
             Classe::Ecarte => Nature::Illisible,
             Classe::Libre if couverte.next().unwrap_or(false) => Nature::Illisible,

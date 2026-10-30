@@ -152,8 +152,12 @@ pub(crate) fn masque_runtime_dans(dossier: &std::path::Path, unite: &str) -> boo
 pub(crate) fn wifi_connectee(sortie: &str) -> Option<(String, String)> {
     sortie.lines().find_map(|l| {
         let c: Vec<&str> = l.split(':').collect();
-        (c.len() == 4 && c[1] == "wifi" && c[2] == "connected" && interface_valide(c[0]) && uuid_valide(c[3]))
-            .then(|| (c[0].to_string(), c[3].to_string()))
+        match c.as_slice() {
+            [interface, "wifi", "connected", uuid] if interface_valide(interface) && uuid_valide(uuid) => {
+                Some((interface.to_string(), uuid.to_string()))
+            }
+            _ => None,
+        }
     })
 }
 
@@ -193,10 +197,11 @@ pub(crate) fn cible_nm(propriete: &str) -> &'static str {
 /// aussi, ou ce qui y était avant quand le mode n'y a pas touché (pas d'IPv6 sur ce réseau). Les adresses se
 /// comparent lues (une IPv6 s'écrit de plusieurs façons). `None` : une des deux valeurs n'a pas cette forme.
 pub(crate) fn dns_du_mode(relu: &str, avant: &str, v4: &[&str], v6: &[&str]) -> Option<bool> {
-    let champs = |t: &str| -> Option<Vec<String>> {
+    let champs = |t: &str| -> Option<[String; 4]> {
         let c: Vec<String> = t.split_once('\n')?.1.split('|').map(str::to_string).collect();
-        (c.len() == 4).then_some(c)
+        c.try_into().ok()
     };
+    // Tableaux de quatre champs : les index constants ne peuvent pas déborder.
     let (r, a) = (champs(relu)?, champs(avant)?);
     let du_bouclier = |liste: &str, adresses: &[&str]| {
         !liste.is_empty()

@@ -162,9 +162,12 @@ pub fn passerelle() -> Option<Ipv4Addr> {
             .lines()
             .filter_map(|l| {
                 let c: Vec<&str> = l.split_whitespace().collect();
-                (c.len() >= 5 && c[0] == "0.0.0.0" && c[1] == "0.0.0.0")
-                    .then(|| Some((c[4].parse::<u32>().ok()?, c[2].parse::<Ipv4Addr>().ok()?)))
-                    .flatten()
+                match c.as_slice() {
+                    ["0.0.0.0", "0.0.0.0", passerelle, _, metrique, ..] => {
+                        Some((metrique.parse::<u32>().ok()?, passerelle.parse::<Ipv4Addr>().ok()?))
+                    }
+                    _ => None,
+                }
             })
             .min()
             .map(|(_, ip)| ip)
@@ -223,7 +226,9 @@ fn normaliser_mac(brut: &str) -> Option<String> {
             .iter()
             .all(|p| p.len() == 2 && u8::from_str_radix(p, 16).is_ok());
     // On écarte diffusion et multicast, qui ne sont pas des appareils.
-    let multicast = u8::from_str_radix(&parties[0], 16).is_ok_and(|o| o & 1 == 1);
+    let multicast = parties
+        .first()
+        .is_some_and(|p| u8::from_str_radix(p, 16).is_ok_and(|o| o & 1 == 1));
     (valide && !multicast && mac != "00:00:00:00:00:00").then_some(mac)
 }
 
@@ -378,8 +383,12 @@ pub(crate) fn demander_voisins(famille: libc::c_int) -> Option<Vec<u8>> {
                 let Ok(n @ 1..) = usize::try_from(n) else {
                     break;
                 };
-                tout.extend_from_slice(&tampon[..n]);
-                match fin_netlink(&tampon[..n]) {
+                // recv n'écrit jamais plus que le tampon.
+                let Some(recu) = tampon.get(..n) else {
+                    break;
+                };
+                tout.extend_from_slice(recu);
+                match fin_netlink(recu) {
                     Some(true) => {
                         resultat = Some(std::mem::take(&mut tout));
                         break;
@@ -401,9 +410,9 @@ pub(crate) fn demander_voisins(famille: libc::c_int) -> Option<Vec<u8>> {
 pub(crate) fn messages_netlink(octets: &[u8]) -> impl Iterator<Item = (u16, &[u8])> {
     let mut pos = 0usize;
     std::iter::from_fn(move || {
-        let entete = octets.get(pos..pos + 16)?;
-        let longueur = usize::try_from(u32::from_ne_bytes([entete[0], entete[1], entete[2], entete[3]])).ok()?;
-        let genre = u16::from_ne_bytes([entete[4], entete[5]]);
+        let &[l0, l1, l2, l3, g0, g1, ..] = octets.get(pos..pos.checked_add(16)?)?.first_chunk::<16>()?;
+        let longueur = usize::try_from(u32::from_ne_bytes([l0, l1, l2, l3])).ok()?;
+        let genre = u16::from_ne_bytes([g0, g1]);
         let corps = octets.get(pos + 16..pos.checked_add(longueur)?)?;
         if longueur < 16 {
             return None;
@@ -432,18 +441,21 @@ fn lire_voisins_netlink(octets: &[u8]) -> HashMap<Ipv4Addr, String> {
     let mut voisins = HashMap::new();
     for (genre, corps) in messages_netlink(octets) {
         // ndmsg : famille (1), bourrage (3), interface (4), état (2), drapeaux (1), type (1) ; puis les attributs.
-        if genre != RTM_NEWNEIGH || corps.len() < 12 || corps[0] != AF_INET {
+        let Some(&[famille, _, _, _, _, _, _, _, e0, e1, _, _]) = corps.first_chunk::<12>() else {
+            continue;
+        };
+        if genre != RTM_NEWNEIGH || famille != AF_INET {
             continue;
         }
-        let etat = u16::from_ne_bytes([corps[8], corps[9]]);
+        let etat = u16::from_ne_bytes([e0, e1]);
         // Comme ip sans « nud all » : ni les entrées sans ARP (diffusion, multidiffusion), ni celles sans état.
         if etat == 0 || etat & 0x40 != 0 {
             continue;
         }
         let mut pos = 12;
-        while let Some(attribut) = corps.get(pos..pos + 4) {
-            let longueur = usize::from(u16::from_ne_bytes([attribut[0], attribut[1]]));
-            let genre_attribut = u16::from_ne_bytes([attribut[2], attribut[3]]);
+        while let Some(&[l0, l1, g0, g1]) = corps.get(pos..pos + 4) {
+            let longueur = usize::from(u16::from_ne_bytes([l0, l1]));
+            let genre_attribut = u16::from_ne_bytes([g0, g1]);
             if longueur < 4 {
                 break;
             }
@@ -544,7 +556,9 @@ async fn lire(flux: &mut TcpStream) -> Option<String> {
         .await
         .ok()?
         .ok()?;
-    (n > 0).then(|| String::from_utf8_lossy(&buf[..n]).into_owned())
+    buf.get(..n)
+        .filter(|recu| !recu.is_empty())
+        .map(|recu| String::from_utf8_lossy(recu).into_owned())
 }
 
 /// Résumé d'une réponse HTTP : l'en-tête Server, sinon la ligne d'état.
@@ -624,9 +638,9 @@ fn requete_udp(port: u16) -> Option<Vec<u8>> {
         53 => vec![0x53, 0x45, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 1],
         // NTP : client, version 3.
         123 => {
-            let mut r = vec![0u8; 48];
+            let mut r = [0u8; 48];
             r[0] = 0x1b;
-            r
+            r.to_vec()
         }
         // NetBIOS : liste des noms de l'appareil (NBSTAT sur « * »).
         137 => {
@@ -708,7 +722,8 @@ async fn sonder_udp(ip: Ipv4Addr, port: u16, delai: Duration) -> Option<Option<S
     for _ in 0..3 {
         socket.send(&requete).await.ok()?;
         match timeout(delai, socket.recv(&mut tampon)).await {
-            Ok(Ok(n)) if n > 0 => return Some(resume_udp(port, &tampon[..n])),
+            // recv n'écrit jamais plus que le tampon.
+            Ok(Ok(n)) if n > 0 => return tampon.get(..n).map(|recu| resume_udp(port, recu)),
             Ok(_) => return None,
             Err(_) => {}
         }
@@ -764,9 +779,9 @@ mod base {
 fn nom_du_bloc(hex: &str, n: usize) -> Option<&'static str> {
     let valeur = u64::from_str_radix(hex.get(..n)?, 16).ok()?;
     let numero = match n {
-        6 => base::NOMS_6[base::PREFIXES_6.binary_search(&u32::try_from(valeur).ok()?).ok()?],
-        7 => base::NOMS_7[base::PREFIXES_7.binary_search(&u32::try_from(valeur).ok()?).ok()?],
-        9 => base::NOMS_9[base::PREFIXES_9.binary_search(&valeur).ok()?],
+        6 => *base::NOMS_6.get(base::PREFIXES_6.binary_search(&u32::try_from(valeur).ok()?).ok()?)?,
+        7 => *base::NOMS_7.get(base::PREFIXES_7.binary_search(&u32::try_from(valeur).ok()?).ok()?)?,
+        9 => *base::NOMS_9.get(base::PREFIXES_9.binary_search(&valeur).ok()?)?,
         _ => return None,
     };
     let i = usize::from(numero);

@@ -77,13 +77,15 @@ pub(crate) fn tlv(octets: &[u8]) -> Option<(u8, &[u8], &[u8])> {
         (usize::from(premier), reste)
     } else {
         let n = usize::from(premier & 0x7f);
-        if n == 0 || n > 4 || reste.len() < n {
+        if n == 0 || n > 4 {
             return None;
         }
-        let longueur = reste[..n].iter().fold(0usize, |acc, &o| acc << 8 | usize::from(o));
-        (longueur, &reste[n..])
+        let (octets_longueur, reste) = reste.split_at_checked(n)?;
+        let longueur = octets_longueur.iter().fold(0usize, |acc, &o| acc << 8 | usize::from(o));
+        (longueur, reste)
     };
-    (reste.len() >= longueur).then(|| (etiquette, &reste[..longueur], &reste[longueur..]))
+    let (contenu, apres) = reste.split_at_checked(longueur)?;
+    Some((etiquette, contenu, apres))
 }
 
 /// Valeur d'un attribut d'un nom X.500 (CN = 2.5.4.3, O = 2.5.4.10…), donné par le dernier octet de son OID.
@@ -98,9 +100,12 @@ pub(crate) fn attribut(nom: &[u8], code: u8) -> Option<String> {
         {
             return Some(if genre == 0x1e {
                 // BMPString : UTF-16 gros-boutiste.
-                let unites: Vec<u16> = valeur
-                    .chunks(2)
-                    .map(|c| u16::from_be_bytes([c[0], *c.get(1).unwrap_or(&0)]))
+                // Un octet seul en bout (longueur impaire) reste complété d'un zéro, comme avant.
+                let (paires, impair) = valeur.as_chunks::<2>();
+                let unites: Vec<u16> = paires
+                    .iter()
+                    .map(|&p| u16::from_be_bytes(p))
+                    .chain(impair.first().map(|&o| u16::from_be_bytes([o, 0])))
                     .collect();
                 String::from_utf16_lossy(&unites)
             } else {

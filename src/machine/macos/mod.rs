@@ -583,8 +583,9 @@ fn sysctl_ou_vide(nom: &str) -> Option<Vec<u8>> {
 /// Texte de sysctl (« machdep.cpu.brand_string », « hw.model ») : une chaîne C.
 pub fn sysctl_texte(nom: &str) -> Option<String> {
     let octets = sysctl(nom)?;
-    let fin = octets.iter().position(|&o| o == 0).unwrap_or(octets.len());
-    let texte = String::from_utf8_lossy(&octets[..fin]).trim().to_string();
+    // Jusqu'au premier nul, s'il y en a un.
+    let octets: Vec<u8> = octets.into_iter().take_while(|&o| o != 0).collect();
+    let texte = String::from_utf8_lossy(&octets).trim().to_string();
     (!texte.is_empty()).then_some(texte)
 }
 
@@ -633,7 +634,7 @@ pub fn nom_hote() -> Option<String> {
         return None;
     }
     let fin = tampon.iter().position(|&o| o == 0)?;
-    let nom = String::from_utf8_lossy(&tampon[..fin]).trim().to_string();
+    let nom = String::from_utf8_lossy(tampon.get(..fin)?).trim().to_string();
     (!nom.is_empty()).then_some(nom)
 }
 

@@ -78,13 +78,13 @@ pub(crate) struct Interface {
 fn messages(octets: &[u8]) -> impl Iterator<Item = (u16, u16, &[u8])> {
     let mut pos = 0usize;
     std::iter::from_fn(move || {
-        let entete = octets.get(pos..pos + 16)?;
-        let longueur = usize::try_from(u32::from_ne_bytes([entete[0], entete[1], entete[2], entete[3]])).ok()?;
+        let &[l0, l1, l2, l3, g0, g1, d0, d1, ..] = octets.get(pos..pos.checked_add(16)?)?.first_chunk::<16>()?;
+        let longueur = usize::try_from(u32::from_ne_bytes([l0, l1, l2, l3])).ok()?;
         if longueur < 16 {
             return None;
         }
-        let genre = u16::from_ne_bytes([entete[4], entete[5]]);
-        let drapeaux = u16::from_ne_bytes([entete[6], entete[7]]);
+        let genre = u16::from_ne_bytes([g0, g1]);
+        let drapeaux = u16::from_ne_bytes([d0, d1]);
         let corps = octets.get(pos + 16..pos.checked_add(longueur)?)?;
         pos += longueur.next_multiple_of(4);
         Some((genre, drapeaux, corps))
@@ -96,12 +96,12 @@ fn messages(octets: &[u8]) -> impl Iterator<Item = (u16, u16, &[u8])> {
 fn attributs(corps: &[u8]) -> impl Iterator<Item = (u16, &[u8])> {
     let mut pos = 0usize;
     std::iter::from_fn(move || {
-        let entete = corps.get(pos..pos + 4)?;
-        let longueur = usize::from(u16::from_ne_bytes([entete[0], entete[1]]));
+        let &[l0, l1, g0, g1] = corps.get(pos..pos + 4)?.first_chunk::<4>()?;
+        let longueur = usize::from(u16::from_ne_bytes([l0, l1]));
         if longueur < 4 {
             return None;
         }
-        let genre = u16::from_ne_bytes([entete[2], entete[3]]) & 0x3FFF;
+        let genre = u16::from_ne_bytes([g0, g1]) & 0x3FFF;
         let contenu = corps.get(pos + 4..pos + longueur)?;
         pos += longueur.next_multiple_of(4);
         Some((genre, contenu))
@@ -121,10 +121,12 @@ fn u16_ne(o: &[u8]) -> Option<u16> {
 /// Une demande netlink générique : en-tête netlink, en-tête générique (commande, version 1), attributs.
 #[cfg(any(target_os = "linux", test))]
 fn demande(famille: u16, drapeaux: u16, commande: u8, attributs: &[(u16, &[u8])]) -> Vec<u8> {
-    let mut m = vec![0u8; 16];
-    m[4..6].copy_from_slice(&famille.to_ne_bytes());
-    m[6..8].copy_from_slice(&drapeaux.to_ne_bytes());
-    m[8..12].copy_from_slice(&1u32.to_ne_bytes());
+    // L'en-tête en tableau : ses champs se posent à des places fixes ; la longueur totale, à la fin.
+    let mut entete = [0u8; 16];
+    entete[4..6].copy_from_slice(&famille.to_ne_bytes());
+    entete[6..8].copy_from_slice(&drapeaux.to_ne_bytes());
+    entete[8..12].copy_from_slice(&1u32.to_ne_bytes());
+    let mut m = entete.to_vec();
     m.extend_from_slice(&[commande, 1, 0, 0]);
     for (genre, contenu) in attributs {
         // Nos attributs tiennent sur quelques octets (un numéro d'interface, un nom de famille).
@@ -135,7 +137,9 @@ fn demande(famille: u16, drapeaux: u16, commande: u8, attributs: &[(u16, &[u8])]
         m.resize(m.len().next_multiple_of(4), 0);
     }
     let total = u32::try_from(m.len()).unwrap_or(0);
-    m[0..4].copy_from_slice(&total.to_ne_bytes());
+    if let Some(longueur) = m.first_chunk_mut::<4>() {
+        *longueur = total.to_ne_bytes();
+    }
     m
 }
 
@@ -170,8 +174,9 @@ fn interfaces(reponse: &[u8], famille: u16) -> Vec<Interface> {
                 match genre {
                     NL80211_ATTR_IFINDEX => i.index = u32_ne(contenu)?,
                     NL80211_ATTR_IFNAME => {
-                        let fin = contenu.iter().position(|&o| o == 0).unwrap_or(contenu.len());
-                        i.nom = affichable(&String::from_utf8_lossy(&contenu[..fin]));
+                        // Jusqu'au zéro final, s'il y en a un.
+                        let nom: Vec<u8> = contenu.iter().copied().take_while(|&o| o != 0).collect();
+                        i.nom = affichable(&String::from_utf8_lossy(&nom));
                     }
                     NL80211_ATTR_IFTYPE => i.station = u32_ne(contenu) == Some(NL80211_IFTYPE_STATION),
                     NL80211_ATTR_SSID => {
@@ -296,11 +301,7 @@ fn etat_economie(reponse: &[u8], famille: u16) -> Option<bool> {
 #[cfg(any(target_os = "linux", test))]
 fn fin(morceau: &[u8]) -> Option<bool> {
     messages(morceau).find_map(|(genre, drapeaux, corps)| match genre {
-        NLMSG_ERROR => Some(
-            corps
-                .get(..4)
-                .is_some_and(|e| i32::from_ne_bytes([e[0], e[1], e[2], e[3]]) == 0),
-        ),
+        NLMSG_ERROR => Some(corps.first_chunk::<4>().is_some_and(|&e| i32::from_ne_bytes(e) == 0)),
         NLMSG_DONE => Some(true),
         NLMSG_NOOP => None,
         _ if drapeaux & NLM_F_MULTI == 0 => Some(true),
@@ -356,8 +357,12 @@ fn echanger(demande: &[u8]) -> Option<Vec<u8>> {
                 let Ok(n @ 1..) = usize::try_from(n) else {
                     break;
                 };
-                tout.extend_from_slice(&tampon[..n]);
-                match fin(&tampon[..n]) {
+                // recv n'écrit jamais plus que le tampon.
+                let Some(recu) = tampon.get(..n) else {
+                    break;
+                };
+                tout.extend_from_slice(recu);
+                match fin(recu) {
                     Some(true) => {
                         resultat = Some(std::mem::take(&mut tout));
                         break;

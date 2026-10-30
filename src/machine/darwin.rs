@@ -375,8 +375,8 @@ pub(crate) struct Court {
 
 /// Le texte d'un tableau de caractères C : jusqu'au premier nul, ou tout le tableau.
 fn texte_c(o: &[u8]) -> String {
-    let fin = o.iter().position(|&c| c == 0).unwrap_or(o.len());
-    String::from_utf8_lossy(&o[..fin]).into_owned()
+    let texte: Vec<u8> = o.iter().copied().take_while(|&c| c != 0).collect();
+    String::from_utf8_lossy(&texte).into_owned()
 }
 
 /// Une réponse de proc_pidinfo(PROC_PIDT_SHORTBSDINFO) ; `None` d'une autre taille, ou d'un autre processus que
@@ -429,7 +429,7 @@ pub(crate) fn lire_procargs2(o: &[u8]) -> Option<(String, Vec<String>)> {
     }
     let reste = o.get(4..)?;
     let fin_chemin = reste.iter().position(|&c| c == 0)?;
-    let chemin = String::from_utf8_lossy(&reste[..fin_chemin]).into_owned();
+    let chemin = String::from_utf8_lossy(reste.get(..fin_chemin)?).into_owned();
     let mut i = fin_chemin;
     while reste.get(i) == Some(&0) {
         i += 1;
@@ -438,7 +438,7 @@ pub(crate) fn lire_procargs2(o: &[u8]) -> Option<(String, Vec<String>)> {
     for _ in 0..nombre {
         let morceau = reste.get(i..)?;
         let longueur = morceau.iter().position(|&c| c == 0)?;
-        args.push(String::from_utf8_lossy(&morceau[..longueur]).into_owned());
+        args.push(String::from_utf8_lossy(morceau.get(..longueur)?).into_owned());
         i += longueur + 1;
     }
     Some((chemin, args))
@@ -511,22 +511,18 @@ pub(crate) struct Route {
 /// la famille de la destination, toujours prise. Le noyau ne remplit pas celle du masque : rn_addmask (radix.c) met
 /// ses octets 1 à 3 à 0xff, et rtm_scrub (route.c) prend lui aussi la famille de la destination.
 fn adresse_route(sa: &[u8], famille_dst: Option<u8>) -> AdresseRoute {
-    let famille = famille_dst.or_else(|| sa.get(1).copied().filter(|&f| f != 0));
-    // Les octets à partir de `debut`, complétés de zéros jusqu'à `n` (masque tronqué).
-    let complet = |debut: usize, n: usize| -> Vec<u8> {
-        let mut v: Vec<u8> = sa.get(debut..).unwrap_or_default().iter().copied().take(n).collect();
-        v.resize(n, 0);
+    // Les N octets à partir de `debut`, complétés de zéros (masque tronqué).
+    fn complet<const N: usize>(sa: &[u8], debut: usize) -> [u8; N] {
+        let mut v = [0u8; N];
+        for (d, &s) in v.iter_mut().zip(sa.get(debut..).unwrap_or_default()) {
+            *d = s;
+        }
         v
-    };
+    }
+    let famille = famille_dst.or_else(|| sa.get(1).copied().filter(|&f| f != 0));
     match famille.map(i32::from) {
-        Some(AF_INET) => {
-            let a = complet(4, 4);
-            AdresseRoute::Ip(IpAddr::V4(Ipv4Addr::new(a[0], a[1], a[2], a[3])))
-        }
-        Some(AF_INET6) => {
-            let a: [u8; 16] = complet(8, 16).try_into().unwrap_or([0; 16]);
-            AdresseRoute::Ip(IpAddr::V6(Ipv6Addr::from(a)))
-        }
+        Some(AF_INET) => AdresseRoute::Ip(IpAddr::V4(Ipv4Addr::from(complet::<4>(sa, 4)))),
+        Some(AF_INET6) => AdresseRoute::Ip(IpAddr::V6(Ipv6Addr::from(complet::<16>(sa, 8)))),
         _ if famille == Some(AF_LINK) => {
             // sdl_len, sdl_family, sdl_index (2), sdl_type, sdl_nlen, sdl_alen, sdl_slen, puis le nom et l'adresse.
             let index = u16_ne(sa, 2).unwrap_or(0);

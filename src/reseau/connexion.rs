@@ -35,7 +35,7 @@ impl Serie {
             return None;
         }
         t.sort_by(f64::total_cmp);
-        Some(t[t.len() / 2])
+        t.get(t.len() / 2).copied()
     }
 
     /// Gigue : écart moyen entre deux mesures successives.
@@ -46,7 +46,7 @@ impl Serie {
         }
         #[allow(clippy::cast_precision_loss)]
         let n = (t.len() - 1) as f64;
-        t.windows(2).map(|w| (w[1] - w[0]).abs()).sum::<f64>() / n
+        t.iter().zip(t.iter().skip(1)).map(|(a, b)| (b - a).abs()).sum::<f64>() / n
     }
 
     fn pertes(&self) -> f64 {
@@ -339,7 +339,7 @@ pub fn habitudes(precedents: &[Resultat], reseau: Option<&str>) -> Option<Habitu
         .iter()
         .filter(|r| r.reseau.as_deref() == Some(reseau))
         .collect();
-    let derniers = &memes[memes.len().saturating_sub(10)..];
+    let (_, derniers) = memes.split_at_checked(memes.len().saturating_sub(10))?;
     if derniers.len() < 3 {
         return None;
     }

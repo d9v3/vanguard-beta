@@ -708,13 +708,16 @@ fn unites_dans_l_ordre(remises: &mut [(&Element, Option<String>)]) {
         Element::UniteRuntime { unite, .. } => etat::UNITES.iter().position(|u| u == unite).unwrap_or(usize::MAX),
         _ => usize::MAX,
     };
-    let places: Vec<usize> = (0..remises.len())
-        .filter(|&i| matches!(remises[i].0, Element::UniteRuntime { .. }))
+    let est_unite = |r: &&mut (&Element, Option<String>)| matches!(r.0, Element::UniteRuntime { .. });
+    let mut unites: Vec<(&Element, Option<String>)> = remises
+        .iter()
+        .filter(|r| matches!(r.0, Element::UniteRuntime { .. }))
+        .cloned()
         .collect();
-    let mut unites: Vec<(&Element, Option<String>)> = places.iter().map(|&i| remises[i].clone()).collect();
     unites.sort_by_key(|(x, _)| rang(x));
-    for (i, u) in places.into_iter().zip(unites) {
-        remises[i] = u;
+    // Remises aux mêmes places, dans le nouvel ordre.
+    for (place, u) in remises.iter_mut().filter(est_unite).zip(unites) {
+        *place = u;
     }
 }
 

@@ -152,8 +152,11 @@ const PRIORITAIRES: [&str; 16] = [
 /// système de fichiers sensible à la casse, « SECURity.evtx » peut voisiner avec le vrai.
 fn priorite(chemin: &Path) -> Option<(usize, bool)> {
     let nom = chemin.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-    let rang = PRIORITAIRES.iter().position(|p| p.eq_ignore_ascii_case(nom))?;
-    Some((rang, PRIORITAIRES[rang] == nom))
+    let (rang, prioritaire) = PRIORITAIRES
+        .iter()
+        .enumerate()
+        .find(|(_, p)| p.eq_ignore_ascii_case(nom))?;
+    Some((rang, *prioritaire == nom))
 }
 
 /// Coupe un nom venu du journal à `CLE_MAX` caractères.
@@ -205,15 +208,16 @@ pub(crate) fn lire_dossier(
             bilan.autres += 1;
             continue;
         }
-        match priorite(&chemin) {
-            Some((rang, exact)) => match prioritaires[rang].take() {
-                None => prioritaires[rang] = Some((exact, chemin)),
+        // `prioritaires` a une case par nom prioritaire : le rang y est toujours.
+        match priorite(&chemin).and_then(|(rang, exact)| Some((prioritaires.get_mut(rang)?, exact))) {
+            Some((case, exact)) => match case.take() {
+                None => *case = Some((exact, chemin)),
                 Some((false, deja)) if exact => {
                     ranger_autre(deja, &mut autres, &mut bilan);
-                    prioritaires[rang] = Some((true, chemin));
+                    *case = Some((true, chemin));
                 }
                 Some(deja) => {
-                    prioritaires[rang] = Some(deja);
+                    *case = Some(deja);
                     ranger_autre(chemin, &mut autres, &mut bilan);
                 }
             },
@@ -352,10 +356,12 @@ fn lire_fichier_borne(
                 morceau: None,
                 verifie: e.verifie,
             };
-            match origines.iter().position(|(c, _)| *c == cle) {
-                Some(i) => origines[i].1.push(origine),
-                None if origines.len() < bornes.suites_origine => origines.push((cle, vec![origine])),
-                None => bilan.hors_suites += 1,
+            if let Some((_, suite)) = origines.iter_mut().find(|(c, _)| *c == cle) {
+                suite.push(origine);
+            } else if origines.len() < bornes.suites_origine {
+                origines.push((cle, vec![origine]));
+            } else {
+                bilan.hors_suites += 1;
             }
         }
         let journal = couper(&e.canal);
@@ -436,11 +442,18 @@ fn signes_de_copie(lu: &Bilan) -> bool {
         .filter(|m| m.etat == EtatMorceau::Lu)
         .filter_map(|m| m.annonce)
         .collect();
-    let reculs: Vec<usize> = (1..plages.len()).filter(|&i| plages[i].0 < plages[i - 1].0).collect();
+    // L'indice de chaque plage qui commence avant la précédente.
+    let reculs: Vec<usize> = plages
+        .windows(2)
+        .enumerate()
+        .filter(|(_, w)| matches!(w, [avant, apres] if apres.0 < avant.0))
+        .map(|(i, _)| i + 1)
+        .collect();
     let recul_isole = reculs.iter().any(|&i| {
         plages
-            .get(i + 1)
-            .is_some_and(|suivant| plages[i].1.checked_add(1) != Some(suivant.0))
+            .get(i)
+            .zip(plages.get(i + 1))
+            .is_some_and(|(plage, suivant)| plage.1.checked_add(1) != Some(suivant.0))
     });
     zero_au_milieu || reculs.len() > 1 || recul_isole
 }
@@ -522,9 +535,10 @@ fn suites(
         prochain_peut_retarder: lu.sale,
         capacite: morceaux.saturating_mul(CAPACITE_MORCEAU),
     };
-    let mut sortie = vec![trous::juger(Numerotation::Journal, presents, &contexte, max_trous)];
+    let suite_du_journal = trous::juger(Numerotation::Journal, presents, &contexte, max_trous);
+    let mut restant = max_trous.saturating_sub(suite_du_journal.trous.len());
+    let mut sortie = vec![suite_du_journal];
     if exporte {
-        let mut restant = max_trous.saturating_sub(sortie[0].trous.len());
         for ((ordinateur, journal), v) in origines {
             let s = trous::juger(
                 Numerotation::Origine { ordinateur, journal },
