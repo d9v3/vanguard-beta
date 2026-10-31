@@ -263,6 +263,12 @@ from elsewhere (plist, HTTP and DNS replies, timeline logs, Windows .evtx logs, 
 change in `src/` shows at once), CI five minutes every night; its dependencies go through cargo deny
 (`fuzz/deny.toml`). A target is added in `fuzz/Cargo.toml`, which `fuzz.sh` reads.
 
+Proofs: `outils/preuves.sh [tout|miri|kani]` (nightly toolchain with Miri, and Kani), every Friday by the continuous
+watch. Miri interprets the tests of the `unsafe` that work on Vanguard's own memory (their names are listed in the
+script; a test that calls the system is ignored there by `#[cfg_attr(miri, ignore)]`); Kani proves, within a bound, a
+few readers of hostile data (`outils/preuves/`, included by `#[cfg(kani)]` at the end of their module). To be rerun
+after touching one of them.
+
 Dead links: `outils/liens.py` opens every link of the repository (documentation, the program's code except tests,
 scripts, licenses) and checks the internal links of the Markdown pages: target file, heading of an anchor, downloads
 of the latest release. It runs by itself before each push by `deployer.sh` and before each release page; CI checks

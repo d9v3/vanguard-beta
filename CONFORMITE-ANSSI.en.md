@@ -81,7 +81,7 @@ that could silently change a released program.
 | Point | Verdict | Evidence | Next step |
 |---|---|---|---|
 | LANG-UNSAFE | met | The `unsafe` blocks in `src/` are system calls (Windows, libc, macOS) or reads of its structures; none is in a format reader. Each says why it is safe (`// SAFETY:`, enforced by clippy). Their count is shown at every check (`outils/verifier.sh`). | — |
-| UNSAFE-NOUB | met | Two possible undefined behaviors found and fixed in this batch: the race between two walks of `getpwent` and `getutxent` on macOS (one lock per database, in `src/machine/macos/noyau.rs`) and the read of a VARIANT passed by reference (`src/machine/windows/wmi.rs`). | Miri on the readers that make no system call, Kani on a few: next batch. |
+| UNSAFE-NOUB | met | Two possible undefined behaviors found and fixed in this batch: the race between two walks of `getpwent` and `getutxent` on macOS (one lock per database, in `src/machine/macos/noyau.rs`) and the read of a VARIANT passed by reference (`src/machine/windows/wmi.rs`). | Miri and Kani every week: section “Proofs: Miri and Kani”. |
 | LANG-UNSAFE-ENCP | met | Fixed in this batch: the read of the account settings now accepts only the structures tied to their level by an `unsafe` trait, each implementation saying why (`src/machine/windows/comptes.rs`), and the precondition of copying a Wi-Fi list is written down (`src/machine/wifi/wlanapi.rs`). | — |
 | MEM-FORGET | met | No `mem::forget`. | — |
 | MEM-FORGET-LINT | met | Added in this batch: `mem_forget` in the lints of `Cargo.toml`. | — |
@@ -119,3 +119,13 @@ that could silently change a released program.
 | FFI-MEM-WRAPPING | partial | `Drop` wrappers exist (Wi-Fi sessions, memory reader, handles, CoreFoundation objects, COM); most releases are still written by hand. Fixed in this batch: the error paths that skipped the release (BCrypt fingerprints, shares, elevated channel). | `Drop` guards for each kind of system memory: roadmap. |
 | FFI-NOPANIC | met | The two functions called by C cannot panic: an atomic write (signal), and a test cleanup that ignores its errors. | — |
 | FFI-CAPI | not applicable | Vanguard is a program, not a library: the only exported symbol is a piece of data read by the Windows loader (`src/chargement.rs`). | — |
+
+## Proofs: Miri and Kani
+
+Run by `outils/preuves.sh`, every Friday by the continuous watch (`outils/veille/LISEZMOI.md`) and by hand after
+touching an `unsafe` or a proven reader; too slow for every check.
+
+| Tool | What is covered | What is not |
+|---|---|---|
+| Miri (nightly, strict provenance) | The `unsafe` that work on Vanguard's own memory, through tests interpreted for Linux and for Windows: wiping secrets (`src/socle/mod.rs`), the counting allocator of the tests (`src/protection/perimes/sources/mod.rs`, for Linux: for Windows, Miri rejects std's own system allocator), UTF-16 texts read up to their final zero (`src/machine/windows/impression.rs`, `partages.rs`, `comptes.rs`), zeroed C structures (`src/socle/mod.rs`, `processus.rs`, `memoire.rs`). No undefined behavior found. | The `unsafe` that call the system or read the memory it returns: Miri does not simulate Windows, libc or macOS; their tests are ignored there by `cfg_attr(miri, ignore)`. The macOS-only structures: Miri cannot build ring without Apple's tools. |
+| Kani (bounded verification) | For every input within the bound, no panic, no overflow and no endless loop, plus one simple property: SQLite integers (`src/sqlite.rs`: round trip with the reference encoding, length read), zstd bits (`src/machine/linux/zstd.rs`: equal to a bit-by-bit read, exact count of the remaining bits), compressed DNS names (`src/audit/dns_client.rs`: length, next position in the message; the UTF-8 decoding, from the standard library, is replaced there by a model of the same length). Proofs in `outils/preuves/`. No defect found. | Beyond the bound (a few bytes per reader), fuzzing (`outils/fuzz.sh`) takes over. |

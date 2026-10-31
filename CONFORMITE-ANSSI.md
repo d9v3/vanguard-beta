@@ -81,7 +81,7 @@ l'environnement qui pouvaient changer en silence un programme publié.
 | Point | Verdict | Preuve | Suite |
 |---|---|---|---|
 | LANG-UNSAFE | tenu | Les blocs `unsafe` de `src/` sont des appels au système (Windows, libc, macOS) ou des lectures de ses structures ; aucun n'est dans un lecteur de format. Chacun dit pourquoi il est sûr (`// SAFETY:`, imposé par clippy). Leur compte paraît à chaque vérification (`outils/verifier.sh`). | — |
-| UNSAFE-NOUB | tenu | Deux comportements indéfinis possibles trouvés et corrigés dans ce lot : la course entre deux parcours de `getpwent` et `getutxent` sous macOS (un verrou par base, dans `src/machine/macos/noyau.rs`) et la lecture d'un VARIANT passé par référence (`src/machine/windows/wmi.rs`). | Miri sur les lecteurs sans appel au système, Kani sur quelques-uns : prochain lot. |
+| UNSAFE-NOUB | tenu | Deux comportements indéfinis possibles trouvés et corrigés dans ce lot : la course entre deux parcours de `getpwent` et `getutxent` sous macOS (un verrou par base, dans `src/machine/macos/noyau.rs`) et la lecture d'un VARIANT passé par référence (`src/machine/windows/wmi.rs`). | Miri et Kani chaque semaine : section « Preuves : Miri et Kani ». |
 | LANG-UNSAFE-ENCP | tenu | Corrigé dans ce lot : la lecture des réglages des comptes n'accepte plus que les structures liées à leur niveau par un trait `unsafe`, dont chaque implémentation dit pourquoi (`src/machine/windows/comptes.rs`), et la précondition de la copie d'une liste du Wi-Fi est écrite (`src/machine/wifi/wlanapi.rs`). | — |
 | MEM-FORGET | tenu | Aucun `mem::forget`. | — |
 | MEM-FORGET-LINT | tenu | Ajouté dans ce lot : `mem_forget` dans les lints de `Cargo.toml`. | — |
@@ -119,3 +119,13 @@ l'environnement qui pouvaient changer en silence un programme publié.
 | FFI-MEM-WRAPPING | partiel | Des enveloppes `Drop` existent (sessions Wi-Fi, lecteur de mémoire, poignées, objets CoreFoundation, COM) ; la plupart des libérations restent écrites à la main. Corrigé dans ce lot : les chemins d'erreur qui sautaient la libération (empreintes BCrypt, partages, canal élevé). | Des gardes `Drop` pour chaque sorte de mémoire du système : feuille de route. |
 | FFI-NOPANIC | tenu | Les deux fonctions appelées par le C ne peuvent pas paniquer : une écriture atomique (signal), et un nettoyage des tests qui ignore ses erreurs. | — |
 | FFI-CAPI | sans objet | Vanguard est un programme, pas une bibliothèque : le seul symbole exporté est une donnée lue par le chargeur de Windows (`src/chargement.rs`). | — |
+
+## Preuves : Miri et Kani
+
+Lancées par `outils/preuves.sh`, chaque vendredi par la veille continue (`outils/veille/LISEZMOI.md`) et à la main
+après avoir touché à un `unsafe` ou à un lecteur prouvé ; trop lentes pour chaque vérification.
+
+| Outil | Ce qui est couvert | Ce qui ne l'est pas |
+|---|---|---|
+| Miri (nightly, provenance stricte) | Les `unsafe` qui portent sur la mémoire de Vanguard, par des essais interprétés pour Linux et pour Windows : effacement des secrets (`src/socle/mod.rs`), allocateur compteur des essais (`src/protection/perimes/sources/mod.rs`, pour Linux : pour Windows, Miri refuse l'allocateur du système de std lui-même), textes UTF-16 lus jusqu'au zéro final (`src/machine/windows/impression.rs`, `partages.rs`, `comptes.rs`), structures C mises à zéro (`src/socle/mod.rs`, `processus.rs`, `memoire.rs`). Aucun comportement indéfini trouvé. | Les `unsafe` qui appellent le système ou lisent la mémoire qu'il rend : Miri ne simule pas Windows, libc ni macOS ; leurs essais y sont ignorés par `cfg_attr(miri, ignore)`. Les structures propres à macOS : Miri ne compile pas ring sans les outils d'Apple. |
+| Kani (vérification bornée) | Pour toutes les entrées dans la borne, ni panique, ni débordement, ni boucle sans fin, plus une propriété simple : entiers de SQLite (`src/sqlite.rs` : aller-retour avec l'encodage de référence, longueur lue), bits de zstd (`src/machine/linux/zstd.rs` : égaux à une lecture bit à bit, compte des bits restants exact), noms DNS compressés (`src/audit/dns_client.rs` : longueur, position suivante dans le message ; le décodage UTF-8, de la bibliothèque standard, y est remplacé par un modèle de même longueur). Preuves dans `outils/preuves/`. Aucun défaut trouvé. | Au-delà de la borne (quelques octets par lecteur), le fuzzing (`outils/fuzz.sh`) prend le relais. |

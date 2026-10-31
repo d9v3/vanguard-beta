@@ -265,6 +265,12 @@ archives, ressources des .exe…). `outils/verifier.sh` compile le banc et passe
 cible cassée par un changement de `src/` se voit tout de suite), la CI cinq minutes chaque nuit ; ses dépendances
 passent à cargo deny (`fuzz/deny.toml`). Une cible s'ajoute dans `fuzz/Cargo.toml`, que `fuzz.sh` lit.
 
+Preuves : `outils/preuves.sh [tout|miri|kani]` (chaîne nightly avec Miri, et Kani), chaque vendredi par la veille
+continue. Miri interprète les essais des `unsafe` qui portent sur la mémoire de Vanguard (leurs noms sont listés
+dans le script ; un essai qui appelle le système s'y ignore par `#[cfg_attr(miri, ignore)]`) ; Kani prouve, dans
+une borne, quelques lecteurs de données hostiles (`outils/preuves/`, inclus par `#[cfg(kani)]` à la fin de leur
+module). À relancer après avoir touché à l'un d'eux.
+
 Liens morts : `outils/liens.py` ouvre tous les liens du dépôt (documentation, code du programme hors tests, scripts,
 licences) et vérifie les liens internes des pages Markdown : fichier visé, titre d'une ancre, téléchargements de la
 dernière version. Il est lancé tout seul avant chaque envoi par `deployer.sh` et avant chaque page de version ; la CI
