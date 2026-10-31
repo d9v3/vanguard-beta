@@ -12,6 +12,20 @@ ARBRE=$2
 DEPOT=$(dirname "$(git -C "$ARBRE" rev-parse --path-format=absolute --git-common-dir)")
 export CARGO_TARGET_DIR=$DEPOT/target
 JOURNAUX=$HOME/.cache/vanguard-dev
+# Le passage sur le Mac de GitHub, attendu au plus ATTENTE_MAC secondes : GitHub coupe son travail à 60 minutes
+# (.github/workflows/macos.yml, timeout-minutes), plus la file d'attente du runner et le travail « utile » d'avant.
+# Sans délai, un runner qui ne vient jamais tenait la livraison ouverte sans fin. Code 124 : délai passé, dit ici.
+ATTENTE_MAC=$((70 * 60))
+attendre_mac() { # exécution, secondes au plus
+  local code=0
+  timeout "$2" gh run watch "$1" --exit-status --interval 20 >/dev/null 2>&1 || code=$?
+  if ((code == 124)); then
+    echo "✖ Mac de GitHub pas fini après $(($2 / 60)) minutes : rien n'est fusionné. Où il en est : gh run view $1 (bloqué : gh run cancel $1) ; puis relancer la livraison, qui relance le Mac."
+  elif ((code != 0)); then
+    echo "✖ Mac de GitHub en échec : gh run view $1 --log-failed"
+  fi
+  return "$code"
+}
 
 cd "$ARBRE"
 [[ -z $(git status --porcelain) ]] || { echo "✖ $ARBRE a des changements non commités"; exit 1; }
@@ -51,7 +65,7 @@ if ! outils/verifier.sh >"$JOURNAUX/verif-$BRANCHE.log" 2>&1; then
 fi
 if [[ -n $ID ]]; then
   echo "· attente du Mac de GitHub"
-  gh run watch "$ID" --exit-status --interval 20 >/dev/null 2>&1 || { echo "✖ Mac de GitHub en échec : gh run view $ID --log-failed"; exit 1; }
+  attendre_mac "$ID" "$ATTENTE_MAC" || exit 1
 fi
 if [[ -n $ID ]]; then
   # Les résultats de l'essai complet sur le Mac, lisibles ici comme ceux de la VM Windows : un dossier par passage.

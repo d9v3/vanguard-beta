@@ -40,6 +40,8 @@
 #   6f. Les protections des programmes qui partent (vanguard deploiement verifier-binaire) : publier-version.sh les
 #      fait lire (verifier_binaires, face à un faux programme Linux) sur les copies Linux et Windows, après la relecture
 #      de leurs empreintes, et sur la version macOS récupérée ; deployer.sh, sur ce qui part ; un refus arrête tout.
+#   6g. livrer-branche.sh n'attend pas sans fin le Mac de GitHub : attendre_mac, face au même faux gh, abandonne au
+#      délai et dit quoi faire, sans rien fusionner.
 #   6d. Un passe-droit de publier-version.sh (VANGUARD_PUBLIER_SANS_EMPREINTES_CI, VANGUARD_PUBLIER_SANS_VM) est dit
 #      en tête des notes de la page (notes, face à un faux gh) et gardé dans le bloc de sa version de l'historique
 #      signé (signer-versions.sh --passe-droit), sous la forme que lit github.rs, jamais dans derniere.txt.
@@ -627,6 +629,28 @@ sans_attendu=$(grep -nE 'deploiement verifier[-]binaire( |"|$)' "$DEPOT/outils/"
   grep -v 'deploiement verifier-binaire --attendu ' | grep -vE '^[^:]+:[0-9]+: *#' | grep -v '«' | grep -v '/outils/essais-')
 [[ -z $sans_attendu ]] && ok "chaque appel à verifier-binaire dit le système attendu (--attendu)" ||
   ko "verifier-binaire appelé sans --attendu : $sans_attendu"
+# 6g. Le Mac de GitHub qui ne finit jamais ne tient pas livrer-branche.sh ouvert pour toujours : attendre_mac abandonne
+# au délai, dit quoi faire, et rend 124 ; la livraison s'arrête alors avant la fusion.
+rm -f "$F/fini"
+awk '/^attendre_mac\(\) \{/,/^\}/' "$DEPOT/outils/livrer-branche.sh" >"$T/attendre_mac.sh"
+attente_mac() { # secondes ; la sortie, puis le code
+  PATH="$F:$PATH" bash -c "source '$T/attendre_mac.sh'; attendre_mac 42 $1; echo \"code \$?\""
+}
+debut_attente=$SECONDS
+sortie=$(attente_mac 1 2>&1)
+[[ $sortie == *"code 124"* && $sortie == *"pas fini après"*"rien n'est fusionné"*"gh run view 42"* &&
+  $((SECONDS - debut_attente)) -lt 30 ]] &&
+  ok "livrer-branche.sh : un Mac de GitHub qui ne finit jamais est abandonné au délai, et dit" ||
+  ko "livrer-branche.sh attend sans fin le Mac de GitHub (${sortie:-rien})"
+touch "$F/fini"
+[[ $(attente_mac 5 2>&1) == "code 0" ]] && ok "livrer-branche.sh : un Mac fini à temps rend le code de gh" ||
+  ko "livrer-branche.sh : un Mac fini à temps ne rend pas 0"
+# Aucun « gh run watch » hors d'elle, et son appel avec le délai, suivi de l'arrêt.
+awk '/^attendre_mac\(\) \{/,/^\}/ { next } /^ *#/ { next } /gh run watch/ { exit 1 }
+  /attendre_mac "\$ID" "\$ATTENTE_MAC" \|\| exit 1/ { m = 1 } /^ATTENTE_MAC=\$\(\([0-9]+ \* 60\)\)$/ { d = 1 }
+  END { exit !(m && d) }' "$DEPOT/outils/livrer-branche.sh" &&
+  ok "livrer-branche.sh : l'attente du Mac de GitHub a un délai" ||
+  ko "livrer-branche.sh : un « gh run watch » sans délai"
 
 # 6c. Au branchement de la clé, un commit de GitHub n'est récupéré et compilé qu'avec une CI verte sur ce commit
 # exact (deployer.sh, ci_verte, campagne d'attaque n° 6, F4). Un faux gh filtre les exécutions par --commit comme
