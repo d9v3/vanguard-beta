@@ -82,9 +82,19 @@ fn etat_par_outil() -> (Etat, Option<Ipv4Addr>) {
     let Some(r) = crate::commande::lancer(std::process::Command::new("upnpc").arg("-l"), 20) else {
         return (Etat::OutilAbsent, None);
     };
-    let texte = format!("{}\n{}", r.sortie, r.erreurs);
-    let adresse = adresse_externe(&texte);
-    (lire_upnpc(&texte, adresse), adresse)
+    juger_upnpc(r.code, &format!("{}\n{}", r.sortie, r.erreurs))
+}
+
+/// Ce que dit `upnpc -l`, de code de retour `code` : « pas de box UPnP » quoi qu'il rende (miniupnpc sort alors en
+/// erreur) ; une lecture seulement s'il a réussi (code 0). Un échec d'autre chose (réseau, délai de la box, option
+/// refusée) n'est pas « UPnP actif, rien d'ouvert » : non vérifié (campagne 6, B1).
+#[cfg_attr(windows, allow(dead_code))]
+fn juger_upnpc(code: Option<i32>, texte: &str) -> (Etat, Option<Ipv4Addr>) {
+    let adresse = adresse_externe(texte);
+    match lire_upnpc(texte, adresse) {
+        Etat::Actif(_) if code != Some(0) => (Etat::OutilAbsent, None),
+        e => (e, adresse),
+    }
 }
 
 /// Le repli : l'interface UPnP de Windows (HNetCfg.NATUPnP), vide quand la box n'a pas d'UPnP ou l'a coupé ; elle
@@ -118,11 +128,14 @@ fn redirection_d_outil(proto: &str, public: u16, ip: &str, port: u16, descriptio
 
 /// Lignes de `upnpc -l` : « 0 UDP  3074->10.0.0.20:3074  'Xbox' '' 0 ». N'importe quel appareil du réseau peut
 /// demander une redirection, avec l'adresse et la description de son choix : lues prêtes à montrer (`affichable`).
+/// Une box lue se voit dans la sortie (sa table, son adresse, une redirection) : sans aucune de ces traces (sortie
+/// vide, autre message), rien n'a été lu, non vérifié.
 #[cfg_attr(windows, allow(dead_code))]
 fn lire_upnpc(sortie: &str, adresse: Option<Ipv4Addr>) -> Etat {
     if sortie.contains("No IGD UPnP Device") || sortie.contains("No valid UPNP Internet Gateway Device") {
         return Etat::Absent;
     }
+    let lue = adresse.is_some() || sortie.contains("Found valid IGD") || sortie.contains("exPort->inAddr:inPort");
     let mut liste = Vec::new();
     for l in sortie.lines() {
         let c: Vec<&str> = l.split_whitespace().collect();
@@ -141,6 +154,9 @@ fn lire_upnpc(sortie: &str, adresse: Option<Ipv4Addr>) -> Etat {
         };
         let description = l.split('\'').nth(1).unwrap_or("");
         liste.push(redirection_d_outil(proto, public, ip, port, description));
+    }
+    if !lue && liste.is_empty() {
+        return Etat::OutilAbsent;
     }
     lecture_d_outil(liste, adresse)
 }
@@ -225,6 +241,30 @@ mod tests {
         assert!(lecture.lues && !lecture.tronquees);
         assert_eq!(lecture.adresse_externe, Some(Ipv4Addr::new(203, 0, 113, 7)));
         assert_eq!(lecture.description, igd::Description::default());
+    }
+
+    /// B1 (campagne 6) : un échec d'`upnpc` autre que « pas de box UPnP » n'est pas « actif, rien d'ouvert ».
+    #[test]
+    fn echec_de_upnpc_non_verifie() {
+        assert_eq!(lire_upnpc("", None), Etat::OutilAbsent);
+        let erreur = "upnpc : miniupnpc library test client, version 2.2.5.\nList of UPNP devices found on the network :\n\
+                      UPNP_GetValidIGD() failed: Connection timed out\n";
+        assert_eq!(lire_upnpc(erreur, None), Etat::OutilAbsent);
+        assert_eq!(juger_upnpc(Some(0), ""), (Etat::OutilAbsent, None));
+        // Une table lue mais un code d'échec : pas cru.
+        let table = "Found valid IGD : http://10.0.0.1:5000/ctl\nExternalIPAddress = 203.0.113.7\n \
+                     i protocol exPort->inAddr:inPort description remoteHost leaseTime\n";
+        assert_eq!(juger_upnpc(Some(1), table), (Etat::OutilAbsent, None));
+        assert_eq!(juger_upnpc(None, table), (Etat::OutilAbsent, None));
+        // « Pas de box UPnP » : miniupnpc sort en erreur, c'est bien une réponse.
+        assert_eq!(
+            juger_upnpc(Some(1), "No valid UPNP Internet Gateway Device found.\n"),
+            (Etat::Absent, None)
+        );
+        // Réussi, sans aucune redirection : actif, rien d'ouvert.
+        let (e, adresse) = juger_upnpc(Some(0), table);
+        assert_eq!(adresse, Some(Ipv4Addr::new(203, 0, 113, 7)));
+        assert_eq!(redirections(&e), &[] as &[Redirection]);
     }
 
     /// N'importe quel appareil du réseau peut demander une redirection à la box, avec la description de son choix :
