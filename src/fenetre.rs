@@ -14,9 +14,6 @@
 //! fil à part : le menu n'attend pas, et se redessine quand sa grille change (annoncée par le terminal, ou relue par
 //! `selection` : la vieille console de Windows ne l'annonce pas).
 
-// FFI de libc (getppid) et de Windows (console, fenêtre et écran : GetConsoleWindow, GetWindowRect…).
-#![allow(unsafe_code)]
-
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -297,8 +294,7 @@ mod systeme {
                 .join("hypr")
                 .join(signature)
                 .join(".socket.sock");
-            // SAFETY: getppid ne lit que le numéro du processus parent ; elle ne peut pas échouer.
-            let parent = i64::from(unsafe { libc::getppid() });
+            let parent = i64::from(std::os::unix::process::parent_id());
             let clients: Value = serde_json::from_str(&demander(&socket, "j/clients")?).ok()?;
             // Le terminal qui a lancé Vanguard lui-même : pas un shell entre eux. Une seule fenêtre à ce processus
             // (un serveur de terminal en a plusieurs : laquelle ?), et qui flotte : une tuile appartient à la grille.
@@ -443,6 +439,8 @@ mod systeme {
 }
 
 #[cfg(windows)]
+// FFI de Windows : la console, sa fenêtre et son écran (GetConsoleWindow, GetWindowRect…).
+#[allow(unsafe_code)]
 mod systeme {
     //! La fenêtre de la console : la vieille console (conhost) est elle-même la fenêtre ; sous le Terminal Windows,
     //! la console n'a qu'une fenêtre cachée, dont le propriétaire est la vraie fenêtre.

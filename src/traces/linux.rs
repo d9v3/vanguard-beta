@@ -79,11 +79,18 @@ fn heure_locale(secondes: u64) -> String {
         .unwrap_or_default()
 }
 
+/// Les tops d'horloge par seconde du noyau (`_SC_CLK_TCK`), l'unité des temps de /proc/<pid>/stat ; 100 si le
+/// système ne la donne pas.
+// FFI de libc : sysconf (_SC_CLK_TCK).
+#[allow(unsafe_code)]
+fn tops_par_seconde() -> u64 {
+    // SAFETY: sysconf lit une constante du système, sans toucher à la mémoire du programme.
+    u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) }).unwrap_or(100)
+}
+
 /// Les processus, lus dans /proc sans rien lancer. Le programme de chacun se lit par `/proc/<pid>/exe`, même effacé du
 /// disque ou chargé en mémoire seulement : c'est ce qu'il faut à un spécialiste, et son empreinte se cherche sur
 /// VirusTotal. Ceux des autres comptes ne se lisent qu'en root.
-// FFI de libc : sysconf (_SC_CLK_TCK).
-#[allow(unsafe_code)]
 pub(super) fn processus(dossier: &Path) -> Partie {
     let mut manques = Vec::new();
     let Some(pids) = crate::socle::processus::pids() else {
@@ -93,8 +100,7 @@ pub(super) fn processus(dossier: &Path) -> Partie {
     };
     let comptes = comptes_de(&std::fs::read_to_string("/etc/passwd").unwrap_or_default());
     let demarrage = btime().unwrap_or(0);
-    // SAFETY: sysconf lit une constante du système, sans toucher à la mémoire du programme.
-    let tops = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) }).unwrap_or(100);
+    let tops = tops_par_seconde();
     let montages = std::fs::read_to_string("/proc/self/mounts").unwrap_or_default();
     let mut empreintes: HashMap<(u64, u64), Empreinte> = HashMap::new();
     let mut illisibles = 0;
