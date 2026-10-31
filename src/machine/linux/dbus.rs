@@ -817,6 +817,8 @@ impl Bus {
     /// Le bus de la session du compte (les programmes de la session : GameMode…), joint par la même règle que les
     /// actions (`actions::session`) : prise appartenant au compte, compte d'en face vérifié (SO_PEERCRED), refus
     /// sous root. `None` : pas de bus de session joignable (surveillance hors session, sudo) ; rien n'est alors su.
+    /// Hors du banc de fuzzing, comme `actions`.
+    #[cfg(not(fuzzing))]
     pub(crate) fn session() -> Option<Self> {
         actions::session().ok()
     }
@@ -1033,6 +1035,7 @@ impl Bus {
 /// est vu). Le nom com.feralinteractive.GameMode, lancé à la demande, est souvent libre : n'importe quel programme du
 /// compte pouvait le prendre et répondre ce qu'il voulait. Le vrai gamemoded peut, lui, compter un client qui ne joue
 /// pas : c'est la borne du report de l'autotest (`autotest::reporter`) qui empêche un report sans fin.
+#[cfg(not(fuzzing))]
 pub(crate) fn gamemode_actif() -> Option<bool> {
     const NOM: &str = "com.feralinteractive.GameMode";
     let mut bus = Bus::session()?;
