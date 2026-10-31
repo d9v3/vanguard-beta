@@ -49,6 +49,9 @@ pub(crate) struct Html {
 /// Le HTML lu au plus : au-delà, ses liens ne sont pas lus (c'est dit).
 pub(crate) const HTML_MAX: usize = 5_000_000;
 const AFFICHE_MAX: usize = 500;
+/// Un nom d'entité tient en peu d'octets (Illustrator : « ns_adobe_xpath ») : `derouler` ne cherche pas son « ; » plus
+/// loin, et `lire_entite` refuse un nom plus long, que le déroulé laisserait tel quel (relecture A des restes c6).
+const NOM_ENTITE_MAX: usize = 64;
 
 /// Une balise lue : son nom en minuscules, fermante ou pas, ses attributs (noms en minuscules, valeurs décodées).
 struct Balise {
@@ -345,8 +348,12 @@ pub(crate) enum Svg {
 /// paramètre, une valeur d'attribut par défaut (`<!ATTLIST`), ce que la lecture ne connaît pas ou ne sait pas
 /// dérouler (le « milliard de rires ») rendent l'image active. Une feuille de style XML n'est sûre qu'en CSS : XSLT
 /// transforme l'image (relecture du lot campagne 6 ; le reste, B-2 de sa relecture). Au-delà de `HTML_MAX` octets,
-/// rien n'est lu : `None`, à dire comme un manque.
-pub(crate) fn juger_svg(h: &[u8]) -> Option<Svg> {
+/// rien n'est lu : `None`, à dire comme un manque ; de même quand `echeance` passe avant la fin de la lecture (une
+/// forme de document qui la ralentirait ne doit pas tenir l'examen du courriel). Une image en UTF-16 est lue
+/// transcodée (`svg_utf8`).
+pub(crate) fn juger_svg(h: &[u8], echeance: Option<std::time::Instant>) -> Option<Svg> {
+    let h = svg_utf8(h)?;
+    let h: &[u8] = &h;
     if h.len() > HTML_MAX {
         return None;
     }
@@ -366,6 +373,8 @@ pub(crate) fn juger_svg(h: &[u8]) -> Option<Svg> {
         i = suite.max(p.saturating_add(1));
     }
     let mut doc = std::borrow::Cow::Borrowed(h);
+    // L'image telle qu'elle est écrite, DTD retirée, quand ses entités ont été déroulées dans `doc`.
+    let mut brut = None;
     let mut lues = 0;
     if let Some(debut) = chercher_casse(h, 0, b"<!doctype") {
         let Some(dtd) = lire_dtd(h, debut) else {
@@ -374,12 +383,16 @@ pub(crate) fn juger_svg(h: &[u8]) -> Option<Svg> {
         lues = dtd.entites.len();
         declarations |= dtd.interne;
         if !dtd.entites.is_empty() {
-            let Some(suite) = derouler(h.get(dtd.fin..).unwrap_or_default(), &dtd.entites) else {
-                return Some(Svg::Actif);
+            let avant = h.get(..debut).unwrap_or_default();
+            let apres = h.get(dtd.fin..).unwrap_or_default();
+            let Some(suite) = derouler(apres, &dtd.entites, echeance) else {
+                // Ce qui ne se déroule pas est actif ; un déroulé arrêté par l'échéance n'a rien vérifié.
+                return (!depassee(echeance)).then_some(Svg::Actif);
             };
-            let mut d = h.get(..debut).unwrap_or_default().to_vec();
+            let mut d = avant.to_vec();
             d.extend(suite);
             doc = std::borrow::Cow::Owned(d);
+            brut = Some([avant, apres].concat());
         }
     }
     // Chaque déclaration de l'image doit être une entité lue plus haut : une autre DTD, une déclaration hors de la
@@ -391,7 +404,15 @@ pub(crate) fn juger_svg(h: &[u8]) -> Option<Svg> {
     if declarees != lues {
         return Some(Svg::Actif);
     }
-    Some(if balayer_svg(&doc, true) || balayer_svg(&doc, false) {
+    // Le déroulé, puis le texte écrit : ce que le déroulé masquerait (une entité qui fermerait un attribut et ferait
+    // passer le gestionnaire écrit ensuite pour du texte : H-1 de la relecture B des restes c6) reste vu en clair.
+    let mut actif = false;
+    for texte in [Some(doc.as_ref()), brut.as_deref()].into_iter().flatten() {
+        for xml in [true, false] {
+            actif = actif || balayer_svg(texte, xml, echeance)?;
+        }
+    }
+    Some(if actif {
         Svg::Actif
     } else if declarations {
         Svg::Declarations
@@ -400,21 +421,61 @@ pub(crate) fn juger_svg(h: &[u8]) -> Option<Svg> {
     })
 }
 
+/// Le texte d'une image en UTF-16 transcodé en UTF-8 : marque d'ordre des octets (FF FE, FE FF), ou « <? » écrit en
+/// UTF-16 sans elle, que les lecteurs XML reconnaissent aussi. Le navigateur exécute le script d'une telle image, et
+/// ses balises, lues octet par octet en ASCII, ne se voyaient pas (relecture A des restes c6). Un caractère mal formé
+/// (moitié de paire, octet impair à la fin) devient « � », comme dans le navigateur. Tout autre texte est rendu tel
+/// quel ; `None` au-delà de `HTML_MAX` octets transcodés.
+pub(crate) fn svg_utf8(h: &[u8]) -> Option<std::borrow::Cow<'_, [u8]>> {
+    let (gros_boutiste, debut) = match h {
+        [0xff, 0xfe, ..] => (false, 2),
+        [0xfe, 0xff, ..] => (true, 2),
+        [0x3c, 0, 0x3f, 0, ..] => (false, 0),
+        [0, 0x3c, 0, 0x3f, ..] => (true, 0),
+        _ => return Some(std::borrow::Cow::Borrowed(h)),
+    };
+    // Chaque caractère d'UTF-16 (2 ou 4 octets) prend au plus 3 octets sur 2 en UTF-8 : le texte se borne d'avance.
+    if h.len() > HTML_MAX.saturating_mul(2) {
+        return None;
+    }
+    let unites = h.get(debut..).unwrap_or_default().chunks(2).map(|paire| match *paire {
+        [a, b] if gros_boutiste => u16::from_be_bytes([a, b]),
+        [a, b] => u16::from_le_bytes([a, b]),
+        _ => 0xfffd,
+    });
+    let mut texte = String::new();
+    for c in char::decode_utf16(unites) {
+        texte.push(c.unwrap_or('\u{fffd}'));
+        if texte.len() > HTML_MAX {
+            return None;
+        }
+    }
+    Some(std::borrow::Cow::Owned(texte.into_bytes()))
+}
+
 /// Les balises de `h` : l'une lance-t-elle du code ? Un commentaire, un bloc CDATA, une déclaration ou une instruction
 /// se sautent comme le ferait un lecteur XML (`xml`) ou HTML : `juger_svg` prend les deux lectures, une image active
-/// pour l'une l'est, et ce que l'ancienne lecture (HTML) voyait reste vu.
-fn balayer_svg(h: &[u8], xml: bool) -> bool {
+/// pour l'une l'est, et ce que l'ancienne lecture (HTML) voyait reste vu. Une passe : chaque octet est relu un nombre
+/// borné de fois, quelle que soit la forme du document (`Prochain`). `None` quand `echeance` est passée.
+fn balayer_svg(h: &[u8], xml: bool, echeance: Option<std::time::Instant>) -> Option<bool> {
+    let mut fins = FinsDeBloc::default();
     let mut i = 0;
+    let mut tours = 0_u32;
     while let Some(debut) = h.get(i..).and_then(|ici| ici.iter().position(|&c| c == b'<')) {
+        // Dès la première balise, puis toutes les 1024 : lire l'horloge à chacune coûterait plus que la lecture.
+        if tours.is_multiple_of(1024) && depassee(echeance) {
+            return None;
+        }
+        tours = tours.wrapping_add(1);
         i += debut;
         let ici = h.get(i..).unwrap_or_default();
         if ici.starts_with(b"<!--") {
-            i = fin_du_commentaire(h, i, xml);
+            i = fin_du_commentaire(h, i, xml, &mut fins);
             continue;
         }
         if xml && ici.starts_with(b"<![CDATA[") {
             // Un bloc qui ne se ferme pas : la suite est lue comme des balises, plutôt que tue.
-            i = chercher_casse(h, i + 9, b"]]>").map_or(i + 9, |p| p + 3);
+            i = fins.cdata.depuis(h, i + 9).map_or(i + 9, |p| p + 3);
             continue;
         }
         if ici.starts_with(b"<!") || ici.starts_with(b"<?") {
@@ -431,18 +492,70 @@ fn balayer_svg(h: &[u8], xml: bool) -> bool {
                     "script" | "foreignobject" | "handler" | "iframe" | "embed" | "object"
                 ))
         {
-            return true;
+            return Some(true);
         }
     }
-    false
+    Some(false)
+}
+
+/// L'échéance est passée.
+fn depassee(echeance: Option<std::time::Instant>) -> bool {
+    echeance.is_some_and(|e| std::time::Instant::now() >= e)
+}
+
+/// La prochaine place d'un marqueur de fin, gardée d'une recherche à l'autre : absent après un indice, il l'est après
+/// tout indice plus grand ; une place trouvée sert tant qu'elle n'est pas dépassée. Chercher à chaque ouverture
+/// jusqu'au bout relisait le document une fois par commentaire ou par bloc sans fin : 5 Mo de « <!----!> » ou de
+/// « <![CDATA[ » tenaient le processeur des dizaines de minutes (relectures A et B des restes c6). Les recherches
+/// successives portent sur des tranches disjointes.
+struct Prochain {
+    marqueur: &'static [u8],
+    /// L'indice d'où vient `place`, et `place` elle-même ; `None` avant la première recherche.
+    connue: Option<(usize, Option<usize>)>,
+}
+
+impl Prochain {
+    const fn new(marqueur: &'static [u8]) -> Self {
+        Prochain { marqueur, connue: None }
+    }
+
+    /// La première place du marqueur à partir de `i`.
+    fn depuis(&mut self, h: &[u8], i: usize) -> Option<usize> {
+        match self.connue {
+            Some((de, place)) if de <= i && place.is_none_or(|p| p >= i) => place,
+            _ => {
+                let place = chercher_casse(h, i, self.marqueur);
+                self.connue = Some((i, place));
+                place
+            }
+        }
+    }
+}
+
+/// Les marqueurs de fin d'une lecture de `balayer_svg`.
+struct FinsDeBloc {
+    commentaire: Prochain,
+    commentaire_html: Prochain,
+    cdata: Prochain,
+}
+
+impl Default for FinsDeBloc {
+    fn default() -> Self {
+        FinsDeBloc {
+            commentaire: Prochain::new(b"-->"),
+            commentaire_html: Prochain::new(b"--!>"),
+            cdata: Prochain::new(b"]]>"),
+        }
+    }
 }
 
 /// L'indice qui suit le commentaire ouvert en `i` (« <!-- »). XML le ferme sur « --> » seul ; HTML aussi sur « --!> »,
 /// et ferme aussitôt « <!--> » et « <!---> ». Sans fin, il va jusqu'au bout.
-fn fin_du_commentaire(h: &[u8], i: usize, xml: bool) -> usize {
+fn fin_du_commentaire(h: &[u8], i: usize, xml: bool, fins: &mut FinsDeBloc) -> usize {
     let apres = i + 4;
+    let fleche = fins.commentaire.depuis(h, apres).map(|p| p + 3);
     if xml {
-        return chercher_casse(h, apres, b"-->").map_or(h.len(), |p| p + 3);
+        return fleche.unwrap_or(h.len());
     }
     let reste = h.get(apres..).unwrap_or_default();
     if reste.starts_with(b">") {
@@ -451,11 +564,8 @@ fn fin_du_commentaire(h: &[u8], i: usize, xml: bool) -> usize {
     if reste.starts_with(b"->") {
         return apres + 2;
     }
-    [b"-->".as_slice(), b"--!>"]
-        .iter()
-        .filter_map(|m| chercher_casse(h, apres, m).map(|p| p + m.len()))
-        .min()
-        .unwrap_or(h.len())
+    let bang = fins.commentaire_html.depuis(h, apres).map(|p| p + 4);
+    fleche.into_iter().chain(bang).min().unwrap_or(h.len())
 }
 
 /// Les occurrences de `aiguille` (ASCII, sans tenir compte de la casse) dans `h`.
@@ -553,13 +663,19 @@ fn apres_guillemet(h: &[u8], i: usize, q: u8) -> Option<usize> {
 
 /// Une déclaration d'entité interne, lue après « <!ENTITY » : son nom, son texte de remplacement (références de
 /// caractères décodées, comme XML le fait à la déclaration) et l'indice qui suit son « > ». `None` pour une entité
-/// paramètre (`%`), externe (`SYSTEM`, `PUBLIC` : son texte est ailleurs) ou mal écrite.
+/// paramètre (`%`), externe (`SYSTEM`, `PUBLIC` : son texte est ailleurs) ou mal écrite, et pour un nom que `derouler`
+/// ne déroulerait pas : plus long que `NOM_ENTITE_MAX`, ou qui porte « ; », « & » ou « < » (aucun lecteur XML ne
+/// l'accepte ; laissé tel quel, son appel cachait le texte qu'il donne : relecture A des restes c6).
 fn lire_entite(h: &[u8], i: usize) -> Option<(Vec<u8>, Vec<u8>, usize)> {
     let (blanc, i) = prendre(h, i, |o| o.is_ascii_whitespace());
     let (nom, i) = prendre(h, i, |o| {
         !o.is_ascii_whitespace() && !matches!(o, b'"' | b'\'' | b'>' | b'%')
     });
-    if blanc.is_empty() || nom.is_empty() {
+    if blanc.is_empty()
+        || nom.is_empty()
+        || nom.len() > NOM_ENTITE_MAX
+        || nom.iter().any(|o| matches!(o, b';' | b'&' | b'<'))
+    {
         return None;
     }
     let i = prendre(h, i, |o| o.is_ascii_whitespace()).1;
@@ -594,42 +710,55 @@ fn references_de_caracteres(texte: &[u8]) -> Vec<u8> {
     s.into_bytes()
 }
 
-/// Le texte d'une entité porte du contenu actif une fois appelé : une balise (`<script`, `<image onerror=…`, tout
-/// « < »), un gestionnaire d'événement (`onload=`) ou une adresse qui exécute (`javascript:`).
+/// Le texte d'une entité (références de caractères déjà décodées : `&#34;` y est un « " ») porte du contenu actif une
+/// fois appelé, ou change la lecture de ce qui l'entoure : une balise (`<script`, `<image onerror=…`, tout « < »), un
+/// gestionnaire d'événement (`onload=` : tout « = »), une adresse qui exécute (`javascript:`), ou un guillemet, « > »
+/// ou « & ». Déroulée telle quelle, une entité « "/> » fermait la valeur de l'attribut où elle est appelée, et le
+/// gestionnaire écrit ensuite passait pour du texte ; un lecteur XML, lui, lit ces caractères comme des données (H-1
+/// de la relecture B des restes c6). Une passe : le texte peut faire 5 Mo, et chercher « on…= » à chaque « on » le
+/// relisait jusqu'au bout (relecture A des restes c6).
 fn entite_active(texte: &[u8]) -> bool {
-    if texte.contains(&b'<') {
+    if texte
+        .iter()
+        .any(|o| matches!(o, b'<' | b'>' | b'"' | b'\'' | b'&' | b'='))
+    {
         return true;
     }
     let t = adresse_attribut(&String::from_utf8_lossy(texte)).to_ascii_lowercase();
-    if t.contains("javascript:") || t.contains("vbscript:") {
-        return true;
-    }
-    // « on », des lettres, des blancs facultatifs, « = ».
-    t.match_indices("on").any(|(p, _)| {
-        let apres = t.get(p + 2..).unwrap_or_default();
-        let lettres = apres.bytes().take_while(u8::is_ascii_lowercase).count();
-        lettres > 0 && apres.get(lettres..).unwrap_or_default().trim_start().starts_with('=')
-    })
+    t.contains("javascript:") || t.contains("vbscript:")
 }
 
 /// `h` où chaque appel d'une entité déclarée (`&nom;`) est remplacé par son texte, de proche en proche (une entité
 /// peut en appeler une autre). `None` si le résultat dépasse `HTML_MAX` octets ou si un appel reste après `TOURS`
-/// tours : le « milliard de rires » et l'entité qui s'appelle elle-même ne se déroulent pas.
-fn derouler(h: &[u8], entites: &std::collections::HashMap<Vec<u8>, Vec<u8>>) -> Option<Vec<u8>> {
+/// tours : le « milliard de rires » et l'entité qui s'appelle elle-même ne se déroulent pas. `None` aussi pour un nom
+/// plus long que `NOM_ENTITE_MAX`, dont l'appel resterait tel quel (`lire_entite` les refuse déjà), et quand
+/// `echeance` passe.
+fn derouler(
+    h: &[u8],
+    entites: &std::collections::HashMap<Vec<u8>, Vec<u8>>,
+    echeance: Option<std::time::Instant>,
+) -> Option<Vec<u8>> {
     const TOURS: usize = 16;
-    // Un nom d'entité tient en peu d'octets : le « ; » n'est pas cherché plus loin.
-    const NOM_MAX: usize = 64;
+    if entites.keys().any(|nom| nom.len() > NOM_ENTITE_MAX) {
+        return None;
+    }
     let mut texte = h.to_vec();
     for _ in 0..TOURS {
         let mut sortie = Vec::with_capacity(texte.len());
         let mut change = false;
         let mut i = 0;
+        let mut appels = 0_u32;
         while let Some(p) = texte.get(i..).and_then(|r| r.iter().position(|&o| o == b'&')) {
+            if appels.is_multiple_of(4096) && depassee(echeance) {
+                return None;
+            }
+            appels = appels.wrapping_add(1);
             sortie.extend_from_slice(texte.get(i..i + p).unwrap_or_default());
             i += p;
+            // Le « ; » n'est pas cherché plus loin que le plus long nom permis.
             let appel = texte
                 .get(i + 1..)
-                .and_then(|r| r.iter().take(NOM_MAX + 1).position(|&o| o == b';'))
+                .and_then(|r| r.iter().take(NOM_ENTITE_MAX + 1).position(|&o| o == b';'))
                 .and_then(|n| entites.get(texte.get(i + 1..i + 1 + n)?).map(|t| (n, t)));
             if let Some((n, t)) = appel {
                 sortie.extend_from_slice(t);
@@ -1264,6 +1393,11 @@ mod tests {
         );
     }
 
+    /// Sans échéance : les essais chronométrés mesurent la lecture elle-même.
+    fn juger_svg(h: &[u8]) -> Option<Svg> {
+        super::juger_svg(h, None)
+    }
+
     /// Une image SVG minimale autour de `corps`.
     fn svg(corps: &str) -> Vec<u8> {
         format!("<svg xmlns=\"http://www.w3.org/2000/svg\">{corps}</svg>").into_bytes()
@@ -1396,6 +1530,132 @@ mod tests {
             juger_svg(&svg("<animate attributeName=\"opacity\" values=\"0;1\"/>")),
             Some(Svg::Inerte)
         );
+    }
+
+    /// `corps` dans une image SVG précédée de la DTD `dtd`.
+    fn svg_dtd(dtd: &str, corps: &str) -> Vec<u8> {
+        let mut h = format!("<!DOCTYPE svg [{dtd}]>").into_bytes();
+        h.extend(svg(corps));
+        h
+    }
+
+    /// H-1 de la relecture B des restes c6 : déroulée telle quelle, une entité qui porte un guillemet ou un « > »
+    /// fermait la valeur de l'attribut où elle est appelée, et le gestionnaire écrit en clair après semblait en être
+    /// le texte. Pour un lecteur XML, ce guillemet est une donnée : `onerror` reste un attribut de `<image>`.
+    #[test]
+    fn svg_entite_qui_ferme_un_attribut() {
+        for dtd in [
+            "<!ENTITY e '\"/>'>",
+            "<!ENTITY e '\" z='>",
+            "<!ENTITY e \"&#34;/&#62;\">",
+            "<!ENTITY e \"&#x27; z=&#x27;\">",
+            "<!ENTITY e \"&quot;\">",
+            "<!ENTITY e \"x=\">",
+        ] {
+            let h = svg_dtd(dtd, "<image href=\"x\" a=\"&e;\" onerror=\"alert(1)\"/>");
+            assert_eq!(juger_svg(&h), Some(Svg::Actif), "{dtd}");
+        }
+        // Une entité inoffensive appelée dans un attribut : seulement des déclarations.
+        let h = svg_dtd("<!ENTITY e \"x\">", "<image href=\"x\" a=\"&e;\"/>");
+        assert_eq!(juger_svg(&h), Some(Svg::Declarations));
+    }
+
+    /// Relecture A des restes c6 : un nom d'entité plus long que ce que `derouler` cherche n'était jamais déroulé, et
+    /// « java » + « script: » passaient pour des déclarations. Il est refusé dès la DTD, comme un nom qui porte « ; ».
+    #[test]
+    fn svg_nom_d_entite_long() {
+        let lien = |nom: &str| {
+            svg_dtd(
+                &format!("<!ENTITY {nom} \"java\"><!ENTITY s \"script:alert(1)\">"),
+                &format!("<a href=\"&{nom};&s;\"><text>x</text></a>"),
+            )
+        };
+        for nom in [
+            "a".repeat(NOM_ENTITE_MAX),
+            "a".repeat(NOM_ENTITE_MAX + 1),
+            "名".repeat(22),
+        ] {
+            assert_eq!(juger_svg(&lien(&nom)), Some(Svg::Actif), "{nom}");
+        }
+        let o = "o".repeat(70);
+        let h = svg_dtd(
+            &format!("<!ENTITY {o} \"onload\">"),
+            &format!("<rect><set attributeName=\"&{o};\" to=\"alert(1)\"/></rect>"),
+        );
+        assert_eq!(juger_svg(&h), Some(Svg::Actif));
+        let h = svg_dtd("<!ENTITY a;b \"x\">", "<text>&a;b;</text>");
+        assert_eq!(juger_svg(&h), Some(Svg::Actif));
+        // Ceinture : un nom trop long qui arriverait jusqu'à `derouler` ne se déroule pas.
+        let entites = std::collections::HashMap::from([(b"a".repeat(NOM_ENTITE_MAX + 1), b"x".to_vec())]);
+        assert_eq!(derouler(b"<svg/>", &entites, None), None);
+    }
+
+    /// Relectures A et B des restes c6 : chaque commentaire, bloc CDATA ou texte d'entité relisait le document jusqu'au
+    /// bout quand sa fin manquait ; 5 Mo (un .svgz de 50 Ko) tenaient le processeur des dizaines de minutes. Lu en une
+    /// passe, chaque motif tient en quelques secondes même sans optimisation.
+    #[test]
+    fn svg_lu_en_temps_lineaire() {
+        let borne = std::time::Duration::from_secs(if cfg!(debug_assertions) { 60 } else { 2 });
+        let remplir = |motif: &str| motif.repeat((HTML_MAX - 200) / motif.len());
+        for (quoi, h) in [
+            ("<!----!>", svg(&remplir("<!----!>"))),
+            ("<!-- -->", svg(&remplir("<!-- -->"))),
+            ("<![CDATA[", svg(&remplir("<![CDATA["))),
+            ("]]>", svg(&format!("<![CDATA[{}", remplir("<!--")))),
+            (
+                "onon",
+                svg_dtd(&format!("<!ENTITY a \"{}\">", remplir("on")), "<rect/>"),
+            ),
+            (
+                "on a",
+                svg_dtd(&format!("<!ENTITY a \"{}\">", remplir("on a ")), "<rect/>"),
+            ),
+        ] {
+            assert!(h.len() <= HTML_MAX, "{quoi}");
+            let debut = std::time::Instant::now();
+            let jugee = juger_svg(&h);
+            let duree = debut.elapsed();
+            eprintln!("{quoi} : {} octets, {jugee:?} en {duree:?}", h.len());
+            assert!(jugee.is_some(), "{quoi}");
+            assert!(duree < borne, "{quoi} : {duree:?}");
+        }
+        // Le filet : une échéance passée arrête la lecture, sans conclure, entités déroulées ou pas.
+        let passee = Some(std::time::Instant::now());
+        assert_eq!(super::juger_svg(&svg("<rect/>"), passee), None);
+        assert_eq!(
+            super::juger_svg(&svg_dtd("<!ENTITY e \"x\">", "<text>&e;</text>"), passee),
+            None
+        );
+    }
+
+    /// Relecture A des restes c6 : une image en UTF-16 (avec BOM, ou « <? » en UTF-16 sans BOM) s'exécute dans le
+    /// navigateur ; ses balises, lues octet par octet, ne se voyaient pas.
+    #[test]
+    fn svg_en_utf16() {
+        let texte = "<?xml version=\"1.0\" encoding=\"UTF-16\"?><svg xmlns=\"http://www.w3.org/2000/svg\">\
+                     <script>alert(1)</script></svg>";
+        let le: Vec<u8> = texte.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let be: Vec<u8> = texte.encode_utf16().flat_map(u16::to_be_bytes).collect();
+        for (quoi, h) in [
+            ("LE avec BOM", [&[0xff, 0xfe][..], &le].concat()),
+            ("BE avec BOM", [&[0xfe, 0xff][..], &be].concat()),
+            ("LE sans BOM", le.clone()),
+            ("BE sans BOM", be.clone()),
+        ] {
+            assert_eq!(juger_svg(&h), Some(Svg::Actif), "{quoi}");
+        }
+        let sain: Vec<u8> = [0xff, 0xfe]
+            .into_iter()
+            .chain(
+                String::from_utf8(svg("<rect/>"))
+                    .unwrap()
+                    .encode_utf16()
+                    .flat_map(u16::to_le_bytes),
+            )
+            .collect();
+        assert_eq!(juger_svg(&sain), Some(Svg::Inerte));
+        // Un nombre impair d'octets ou une moitié de paire : remplacés, comme le ferait le navigateur, sans panique.
+        assert!(juger_svg(&[0xff, 0xfe, 0x3c, 0x00, 0x00, 0xd8, 0x41]).is_some());
     }
 
     #[test]

@@ -213,15 +213,27 @@ pub(crate) fn juger(nom: &str, type_declare: &str, contenu: &[u8]) -> (Vec<Signe
     } else {
         contenu
     };
-    let jugee = svg.then(|| super::corps::juger_svg(contenu_svg));
+    // Une image en UTF-16 est lue transcodée ; l'échéance borne la lecture, quelle que soit la forme de l'image.
+    let lisible = if svg { super::corps::svg_utf8(contenu_svg) } else { None };
+    let echeance = std::time::Instant::now().checked_add(SVG_DELAI);
+    let jugee = svg.then(|| {
+        lisible
+            .as_deref()
+            .and_then(|texte| super::corps::juger_svg(texte, echeance))
+    });
     if jugee == Some(None) {
         manques.push(trf!(
             "le contenu de l'image SVG {montre}",
             "the content of the SVG image {montre}"
         ));
     }
-    if svg && (contenu_svg.to_ascii_lowercase().windows(7).any(|w| w == b"<script") || jugee == Some(Some(Svg::Actif)))
-    {
+    // `<script` écrit en clair, dans ce qui a été décompressé ou transcodé comme dans les octets reçus : un .svgz
+    // abîmé ne se décompresse pas, mais son script en clair se voit encore (relecture B des restes c6).
+    let en_clair = [Some(contenu), Some(contenu_svg), lisible.as_deref()]
+        .into_iter()
+        .flatten()
+        .any(|o| o.windows(7).any(|w| w.eq_ignore_ascii_case(b"<script")));
+    if svg && (en_clair || jugee == Some(Some(Svg::Actif))) {
         let qui = qui();
         signes.push((
             Niveau::Eleve,
@@ -296,6 +308,10 @@ const SVGZ_RAPPORT_MAX: usize = 100;
 
 /// Le temps de décompresser une image SVG : des blocs deflate vides tiennent le processeur sans rien produire.
 const SVGZ_DELAI: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Le temps de lire une image SVG (`corps::juger_svg`) : une lecture linéaire de 5 Mo en prend bien moins ; au-delà,
+/// une forme d'image qui la ralentirait est un manque, pas une image saine (relectures A et B des restes c6).
+const SVG_DELAI: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Le contenu d'une image SVG compressée (gzip), au plus `corps::HTML_MAX` octets et `SVGZ_RAPPORT_MAX` fois sa taille,
 /// et s'il est entier : membre lu jusqu'au bout avant `SVGZ_DELAI`, CRC et taille justes, rien après. Ce qui a été lu
@@ -1165,6 +1181,29 @@ mod tests {
         );
     }
 
+    /// Relectures A et B des restes c6 : une image en UTF-16, un .svgz dont le flux est abîmé mais le script écrit en
+    /// clair, un nom d'entité trop long dans un .svgz : chacun donne le signe élevé, pas un signe d'information ni un
+    /// manque seul.
+    #[test]
+    fn svg_utf16_svgz_abime_et_nom_long() {
+        let texte = "\u{feff}<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>";
+        let le: Vec<u8> = texte.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let (s, manques) = juger("logo.png", "image/svg+xml", &le);
+        assert_eq!(pire(&s), Some(Niveau::Eleve), "{s:?}");
+        assert!(manques.is_empty(), "{manques:?}");
+        let mut abime = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3];
+        abime.extend(b"\xff<svg xmlns=\"http://www.w3.org/2000/svg\"><SCRIPT>alert(1)</SCRIPT></svg>");
+        let (s, _) = juger("dessin.svgz", "image/svg+xml", &abime);
+        assert_eq!(pire(&s), Some(Niveau::Eleve), "{s:?}");
+        let long = "a".repeat(65);
+        let image = format!(
+            "<!DOCTYPE svg [<!ENTITY {long} \"java\"><!ENTITY s \"script:alert(1)\">]>\
+             <svg xmlns=\"http://www.w3.org/2000/svg\"><a href=\"&{long};&s;\"><text>x</text></a></svg>"
+        );
+        let (s, _) = juger("logo.svgz", "application/octet-stream", &gzip(image.as_bytes(), 6));
+        assert_eq!(pire(&s), Some(Niveau::Eleve), "{s:?}");
+    }
+
     /// B-2 (relecture des correctifs de la campagne 6) : une DTD d'entités qui nomment des espaces de noms, ou une
     /// feuille de style CSS, ne sont pas du script. Le logo d'un fournisseur exporté d'Illustrator était dit « image
     /// SVG qui contient du script » ; il garde un signe d'information, qui dit ce qui y est déclaré.
@@ -1237,10 +1276,12 @@ mod tests {
             "{avant}\t<!ENTITY ns_l \"&#38;#60;\">\n\t<!ENTITY ns_s \"&ns_l;\">\n]>{}",
             apres.replace("<g i:extraneous", "<text>&ns_s;</text><g i:extraneous")
         );
-        // « &#38;#60; » donne « &#60; », un « < » dans le texte une fois appelé, jamais une balise.
+        // « &#38;#60; » donne « &#60; », un « < » dans le texte une fois appelé, jamais une balise ; mais un « & »
+        // dans le texte d'une entité est refusé (relecture B des restes c6), comme un guillemet qui fermerait un
+        // attribut : aucun logiciel de dessin n'en écrit.
         assert_eq!(
             pire(&juger("", "image/svg+xml", image.as_bytes()).0),
-            Some(Niveau::Info)
+            Some(Niveau::Eleve)
         );
         // Le « milliard de rires » et l'entité qui s'appelle elle-même ne se déroulent pas : dits actifs.
         let rires: String = std::iter::once("<!ENTITY r0 \"ha\">".to_string())
