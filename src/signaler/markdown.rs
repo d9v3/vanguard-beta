@@ -7,6 +7,8 @@
 
 // Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+// Ni `unsafe` : refusé sans recours, aucun `allow` intérieur ne le lève (garde : chaque_module_fuzze_refuse_unsafe).
+#![forbid(unsafe_code)]
 
 /// Les caractères que GitHub ou Bugzilla interprètent hors d'un bloc de code : la barre oblique inverse d'abord (sinon
 /// « \@ » écrit par quelqu'un redeviendrait « \\@ », une barre échappée suivie d'une mention), l'accent grave (code en

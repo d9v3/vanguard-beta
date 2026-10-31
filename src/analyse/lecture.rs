@@ -6,6 +6,8 @@
 
 // Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+// Ni `unsafe` : refusé sans recours, aucun `allow` intérieur ne le lève (garde : chaque_module_fuzze_refuse_unsafe).
+#![forbid(unsafe_code)]
 
 /// Une taille ou une position en mémoire (`usize`) en `u64` : toujours exacte sur les cibles de Vanguard (64 bits au
 /// plus) ; `u64::MAX` sur une cible plus large, qui n'existe pas.

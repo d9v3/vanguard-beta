@@ -19,6 +19,8 @@
 
 // Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+// Ni `unsafe` : refusé sans recours, aucun `allow` intérieur ne le lève (garde : chaque_module_fuzze_refuse_unsafe).
+#![forbid(unsafe_code)]
 
 /// La clé du XOR. Ce n'en est pas une au sens d'un secret : elle est publique, elle sert seulement à ce que les mots
 /// d'attaque ne soient pas des chaînes ASCII repérables telles quelles dans le binaire.

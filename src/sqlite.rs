@@ -7,6 +7,8 @@
 
 // Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+// Ni `unsafe` : refusé sans recours, aucun `allow` intérieur ne le lève (garde : chaque_module_fuzze_refuse_unsafe).
+#![forbid(unsafe_code)]
 
 /// Un fichier SQLite, lu en mémoire, juste assez pour compter les lignes d'une table : l'en-tête donne la taille des
 /// pages, la page 1 porte la table des tables (sqlite_master) où se lit la page racine de « logins », puis l'arbre de

@@ -16,6 +16,8 @@
 // Ni débordement ni `as` : sous-module d'un module lu par le banc de fuzzing (dbus.rs), qui le déclare (Cargo.toml,
 // [lints.clippy]).
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+// Ni `unsafe` : refusé sans recours, aucun `allow` intérieur ne le lève (garde : chaque_module_fuzze_refuse_unsafe).
+#![forbid(unsafe_code)]
 
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};

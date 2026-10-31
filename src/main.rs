@@ -4551,25 +4551,11 @@ mod tests_menu {
             .then_some(nom)
     }
 
-    /// Chaque module de src/ que le banc de fuzzing compile refuse débordements et `as` (Cargo.toml, [lints.clippy]) :
-    /// ceux que fuzz/fuzz_targets/ et fuzz/cale/ incluent par `#[path]` (écrit avec ou sans espaces) ou `include!`,
-    /// puis, de proche en proche, chaque `mod x;` qu'ils déclarent hors essais. Et aucun d'eux ne lève ces lints
-    /// ailleurs que sur un module d'essais : seul `#[expect]` (avec sa raison, exigée) les tait sur du code lu par le banc,
-    /// et rien n'y tait `warnings` ni tout le groupe restriction. Un
-    /// lecteur ajouté au banc sans l'attribut, ou un `allow` glissé sur une fonction, garderait des calculs bruts sur
-    /// des données hostiles sans que clippy le dise.
-    #[test]
-    fn chaque_module_fuzze_refuse_debordements_et_as() {
+    /// Les modules de src/ que le banc de fuzzing compile, avec leur texte : ceux que fuzz/fuzz_targets/ et fuzz/cale/
+    /// incluent par `#[path]` (écrit avec ou sans espaces) ou `include!`, puis, de proche en proche, chaque `mod x;`
+    /// qu'ils déclarent hors essais et preuves de Kani.
+    fn modules_fuzzes() -> std::collections::BTreeMap<std::path::PathBuf, String> {
         use std::path::{Path, PathBuf};
-        const ATTRIBUT: &str = "#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]";
-        // Les noms qui lèvent ou baissent ces lints : les deux (et l'ancien nom du premier), et le groupe qui les
-        // contient ; `warnings`, qui les tait aussi, est refusé par `tait_tout`.
-        const NOMS: [&str; 4] = [
-            "arithmetic_side_effects",
-            "integer_arithmetic",
-            "as_conversions",
-            "clippy::restriction",
-        ];
         let racine = Path::new(env!("CARGO_MANIFEST_DIR"));
         let src = racine.join("src").canonicalize().unwrap();
         let mut a_lire: Vec<PathBuf> = Vec::new();
@@ -4608,7 +4594,6 @@ mod tests_menu {
                 continue;
             }
             let texte = std::fs::read_to_string(&module).unwrap();
-            let groupes = elements_et_attributs(&texte);
             // Les enfants hors ligne : à côté d'un mod.rs, dans le dossier du même nom sinon (règle de rustc).
             let dossier = module.parent().unwrap();
             let sous = if module.file_name().unwrap() == "mod.rs" {
@@ -4616,7 +4601,7 @@ mod tests_menu {
             } else {
                 dossier.join(module.file_stem().unwrap())
             };
-            for (nom, chemin) in enfants_hors_ligne(&groupes) {
+            for (nom, chemin) in enfants_hors_ligne(&elements_et_attributs(&texte)) {
                 let enfant = match chemin {
                     Some(c) => dossier.join(c),
                     None if sous.join(format!("{nom}.rs")).exists() => sous.join(format!("{nom}.rs")),
@@ -4628,6 +4613,35 @@ mod tests_menu {
                         .unwrap_or_else(|e| panic!("{}, mod {nom} : {e}", module.display())),
                 );
             }
+            modules.insert(module, texte);
+        }
+        assert!(
+            modules.len() >= 50,
+            "trop peu de modules lus dans fuzz/ : {:?}",
+            modules.keys()
+        );
+        modules
+    }
+
+    /// Chaque module de src/ que le banc de fuzzing compile (`modules_fuzzes`) refuse débordements et `as`
+    /// (Cargo.toml, [lints.clippy]). Et aucun d'eux ne lève ces lints ailleurs que sur un module d'essais : seul
+    /// `#[expect]` (avec sa raison, exigée) les tait sur du code lu par le banc, et rien n'y tait `warnings` ni tout le
+    /// groupe restriction. Un lecteur ajouté au banc sans l'attribut, ou un `allow` glissé sur une fonction, garderait
+    /// des calculs bruts sur des données hostiles sans que clippy le dise.
+    #[test]
+    fn chaque_module_fuzze_refuse_debordements_et_as() {
+        const ATTRIBUT: &str = "#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]";
+        // Les noms qui lèvent ou baissent ces lints : les deux (et l'ancien nom du premier), et le groupe qui les
+        // contient ; `warnings`, qui les tait aussi, est refusé par `tait_tout`.
+        const NOMS: [&str; 4] = [
+            "arithmetic_side_effects",
+            "integer_arithmetic",
+            "as_conversions",
+            "clippy::restriction",
+        ];
+        let mut modules = std::collections::BTreeMap::new();
+        for (module, texte) in modules_fuzzes() {
+            let groupes = elements_et_attributs(&texte);
             // Chaque attribut qui nomme ces lints : l'en-tête, un `#[expect]`, ou l'`allow` d'un module d'essais.
             let mut fautes = Vec::new();
             for (attributs, element) in &groupes {
@@ -4665,11 +4679,6 @@ mod tests_menu {
             }
             modules.insert(module, (texte.lines().any(|l| l == ATTRIBUT), fautes));
         }
-        assert!(
-            modules.len() >= 50,
-            "trop peu de modules lus dans fuzz/ : {:?}",
-            modules.keys()
-        );
         let sans: Vec<_> = modules.iter().filter(|(_, (a, _))| !a).map(|(m, _)| m).collect();
         assert!(sans.is_empty(), "modules fuzzés sans « {ATTRIBUT} » : {sans:?}");
         let leves: Vec<_> = modules
@@ -4681,6 +4690,197 @@ mod tests_menu {
             leves.is_empty(),
             "lints levés hors d'un module d'essais (seul #[expect] est permis) : {leves:?}"
         );
+    }
+
+    /// Une ligne de Rust sans ses chaînes : ce qui est entre guillemets (échappements compris) est ôté ; `'"'` est un
+    /// caractère, pas le début d'une chaîne.
+    fn hors_chaines(ligne: &str) -> String {
+        let (mut code, mut chaine, mut echappe) = (String::new(), false, false);
+        let mut reste = ligne;
+        while let Some(c) = reste.chars().next() {
+            if !chaine && (reste.starts_with("'\"'") || reste.starts_with("'\\\"'")) {
+                reste = &reste[reste[1..].find('\'').map_or(reste.len(), |i| i + 2)..];
+                continue;
+            }
+            match c {
+                _ if echappe => echappe = false,
+                '\\' if chaine => echappe = true,
+                '"' => chaine = !chaine,
+                _ if !chaine => code.push(c),
+                _ => {}
+            }
+            reste = &reste[c.len_utf8()..];
+        }
+        code
+    }
+
+    /// Les fautes d'un fichier de src/ envers le refus de l'`unsafe` (`unsafe_code`) : `fuzze` dit si le banc de
+    /// fuzzing le lit, `racine` si c'est la racine de la crate. La racine refuse (`deny`) ; un module fuzzé refuse sans
+    /// recours (`forbid`, qu'aucun `allow` intérieur ne lève) et ne nomme `unsafe_code` nulle part ailleurs ; ailleurs,
+    /// le refus se lève par `allow` seul, chacun sous une ligne de commentaire qui dit pourquoi, et jamais en tête d'un
+    /// fichier qui déclare des modules hors essais (ils hériteraient de la levée sans l'écrire). Nulle part un
+    /// `cfg_attr`, un `expect` ou un `warn` : la levée doit se lire telle quelle, sur toutes les plateformes.
+    fn fautes_envers_l_unsafe(texte: &str, fuzze: bool, racine: bool) -> Vec<String> {
+        const NOM: &str = "unsafe_code";
+        const DENY: &str = "#![deny(unsafe_code)]";
+        const FORBID: &str = "#![forbid(unsafe_code)]";
+        const ALLOW_MODULE: &str = "#![allow(unsafe_code)]";
+        const ALLOW: &str = "#[allow(unsafe_code)]";
+        let mut fautes = Vec::new();
+        let groupes = elements_et_attributs(texte);
+        let attributs: Vec<&String> = groupes.iter().flat_map(|(a, _)| a.iter()).collect();
+        let a = |forme: &str| attributs.iter().any(|x| *x == forme);
+        if racine && !a(DENY) {
+            fautes.push(format!("racine sans « {DENY} »"));
+        }
+        if fuzze && !a(FORBID) {
+            fautes.push(format!("module fuzzé sans « {FORBID} »"));
+        }
+        for x in attributs.iter().filter(|x| x.contains(NOM)) {
+            let permis = match x.as_str() {
+                DENY => racine,
+                FORBID => true,
+                ALLOW_MODULE | ALLOW => !fuzze,
+                _ => false,
+            };
+            if !permis {
+                fautes.push(format!("attribut refusé ici : {x}"));
+            }
+        }
+        // Un nom du lint hors de tout attribut lu (au milieu d'une ligne, dans un cfg_attr écrit sur deux lignes…) ;
+        // les chaînes ne comptent pas (les essais de cette garde en sont pleins).
+        let vus: usize = attributs.iter().map(|x| hors_chaines(x).matches(NOM).count()).sum();
+        let ecrits: usize = texte
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .map(|l| hors_chaines(l).matches(NOM).count())
+            .sum();
+        if ecrits != vus {
+            fautes.push(format!("{NOM} nommé hors d'un attribut en tête de ligne"));
+        }
+        // Chaque levée sous sa raison : la ligne d'avant est un commentaire simple (ni `///` ni `//!`, qui
+        // documenteraient l'élément ou le module au lieu de dire pourquoi l'`unsafe`).
+        let lignes: Vec<&str> = texte.lines().collect();
+        for (i, l) in lignes.iter().enumerate() {
+            if [ALLOW_MODULE, ALLOW].contains(&l.trim()) {
+                let avant = i.checked_sub(1).map_or("", |j| lignes[j].trim());
+                let raison = avant.strip_prefix("//").filter(|r| !r.starts_with(['/', '!']));
+                if raison.is_none_or(|r| r.trim().is_empty()) {
+                    fautes.push(format!(
+                        "ligne {} : « {} » sans commentaire qui dise pourquoi",
+                        i + 1,
+                        l.trim()
+                    ));
+                }
+            }
+        }
+        // Une levée en tête d'un fichier qui déclare des modules hors ligne (hors essais) : elle s'étendrait à eux, dans
+        // des fichiers qui ne la montrent pas. Un module écrit sur place, lui, est sous les yeux de qui lit la levée.
+        let enfants: Vec<&str> = enfants_hors_ligne(&groupes).into_iter().map(|(n, _)| n).collect();
+        if a(ALLOW_MODULE) && !enfants.is_empty() {
+            fautes.push(format!(
+                "« {ALLOW_MODULE} » dans un fichier qui déclare des modules {enfants:?}"
+            ));
+        }
+        fautes
+    }
+
+    /// Le compilateur refuse l'`unsafe` partout où il ne sert pas (`fautes_envers_l_unsafe`) : la racine le refuse, les
+    /// modules que lit le banc de fuzzing (`modules_fuzzes`, les lecteurs de données hostiles) le refusent sans
+    /// recours, et chaque module qui appelle le système le lève pour lui seul, en disant pourquoi. Aucune exception :
+    /// un lecteur fuzzé qui aurait besoin d'`unsafe` le confierait à un petit module voisin, hors du banc. Un `allow`
+    /// glissé dans un lecteur ne compilerait pas (`forbid`) ; un `forbid` ôté, un module ajouté au banc sans lui, ou une
+    /// levée sans raison arrêtent ce test.
+    #[test]
+    fn chaque_module_fuzze_refuse_unsafe() {
+        let racine = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let src = racine.join("src").canonicalize().unwrap();
+        let fuzzes = modules_fuzzes();
+        let mut fichiers = Vec::new();
+        let mut a_voir = vec![src.clone()];
+        while let Some(d) = a_voir.pop() {
+            for e in std::fs::read_dir(&d).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    a_voir.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    fichiers.push(p.canonicalize().unwrap());
+                }
+            }
+        }
+        assert!(
+            fichiers.len() > 300,
+            "trop peu de fichiers lus dans src/ : {}",
+            fichiers.len()
+        );
+        assert!(
+            fuzzes.keys().all(|m| fichiers.contains(m)),
+            "un module fuzzé hors de src/"
+        );
+        let mut fautes = Vec::new();
+        for f in &fichiers {
+            let texte = std::fs::read_to_string(f).unwrap();
+            for faute in fautes_envers_l_unsafe(&texte, fuzzes.contains_key(f), *f == src.join("main.rs")) {
+                fautes.push(format!("{} : {faute}", f.strip_prefix(&src).unwrap().display()));
+            }
+        }
+        assert!(fautes.is_empty(), "refus de l'unsafe :\n{}", fautes.join("\n"));
+    }
+
+    /// La garde de l'`unsafe` sur des fichiers inventés : ce qu'elle laisse passer, et chaque contournement qu'elle
+    /// arrête (levée dans un lecteur fuzzé, par cfg_attr, sans raison, en tête d'un fichier qui a des enfants…).
+    #[test]
+    fn garde_de_l_unsafe_lit_chaque_levee() {
+        let fuzze =
+            "//! Un lecteur.\n\n// Pourquoi.\n#![forbid(unsafe_code)]\n\nfn lire() {}\n#[cfg(test)]\nmod tests;\n";
+        assert_eq!(fautes_envers_l_unsafe(fuzze, true, false), Vec::<String>::new());
+        let ffi =
+            "//! FFI.\n\n// FFI de libc : kill.\n#![allow(unsafe_code)]\n\nfn f() {}\n#[cfg(test)]\nmod tests {}\n";
+        assert_eq!(fautes_envers_l_unsafe(ffi, false, false), Vec::<String>::new());
+        let element = "#[cfg(unix)]\n// FFI de libc : kill.\n#[allow(unsafe_code)]\nfn f() {}\nmod enfant;\n";
+        assert_eq!(fautes_envers_l_unsafe(element, false, false), Vec::<String>::new());
+        assert_eq!(hors_chaines(r#"a "b \" c" d '"' e '\"' f"#), "a  d  e  f");
+        let racine = "//! Racine.\n\n// Pourquoi.\n#![deny(unsafe_code)]\n\nmod a;\n";
+        assert_eq!(fautes_envers_l_unsafe(racine, false, true), Vec::<String>::new());
+        for (texte, fuzze, racine) in [
+            // Le module fuzzé sans forbid, la racine sans deny.
+            ("fn lire() {}\n", true, false),
+            ("mod a;\n", false, true),
+            // Toute levée dans un module fuzzé, même avec sa raison, même sur une fonction.
+            (
+                "// R.\n#![forbid(unsafe_code)]\n// R.\n#[allow(unsafe_code)]\nfn f() {}\n",
+                true,
+                false,
+            ),
+            (
+                "// R.\n#![forbid(unsafe_code)]\n#[expect(unsafe_code, reason = \"r\")]\nfn f() {}\n",
+                true,
+                false,
+            ),
+            // Une levée conditionnelle, ou glissée parmi d'autres lints.
+            (
+                "// R.\n#[cfg_attr(windows, allow(unsafe_code))]\nfn f() {}\n",
+                false,
+                false,
+            ),
+            ("// R.\n#[allow(dead_code, unsafe_code)]\nfn f() {}\n", false, false),
+            ("fn f() {} #[allow(unsafe_code)] fn g() {}\n", false, false),
+            // Sans raison, ou sous une doc au lieu d'une raison.
+            ("#[allow(unsafe_code)]\nfn f() {}\n", false, false),
+            ("/// La fonction.\n#[allow(unsafe_code)]\nfn f() {}\n", false, false),
+            ("//!\n#![allow(unsafe_code)]\n", false, false),
+            // En tête d'un fichier dont les modules hériteraient.
+            ("// R.\n#![allow(unsafe_code)]\n\nmod enfant;\n", false, false),
+            (
+                "// R.\n#![allow(unsafe_code)]\n\n#[cfg(unix)]\npub(crate) mod enfant;\n",
+                false,
+                false,
+            ),
+            // Un deny ailleurs qu'à la racine ne lève rien, mais n'a rien à y faire.
+            ("// R.\n#![deny(unsafe_code)]\n", false, false),
+        ] {
+            assert!(!fautes_envers_l_unsafe(texte, fuzze, racine).is_empty(), "{texte:?}");
+        }
     }
 
     /// Une seule table d'outils : chaque outil du menu nomme la sous-commande qui fait la même chose, ou dit pourquoi
