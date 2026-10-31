@@ -769,7 +769,12 @@ $propre = Join-Path $env:TEMP 'vanguard-dossier-propre'
 New-Item -ItemType Directory -Force $propre | Out-Null
 Set-Content -Path (Join-Path $propre 'note.txt') -Value 'fichier sans danger' -Encoding UTF8
 LancerAvec 'antivirus-dossier' @('antivirus', $propre) "n`nn`n"
-if ((Sortie 'antivirus-dossier') -match 'No malware found|Aucun malware|aucune menace|found no threats') { Ok 'Dossier analysé, rien trouvé' } else { Bug 'Résultat de l''analyse introuvable' }
+# Le ✔ de Vanguard seulement : la sortie de MpCmdRun (« found no threats ») est recopiée telle quelle, et Vanguard
+# ne la croit plus sans avoir lu les exclusions et les détections de Defender (cachées sans droits administrateur).
+$sad = Sortie 'antivirus-dossier'
+if ($sad -match '✔ (No malware found|Aucun malware)') { Ok 'Dossier analysé, rien trouvé' }
+elseif ($sad -match 'could not read its exclusions|n''a pas pu lire ses exclusions') { Info 'Dossier analysé : « rien trouvé » non confirmé (exclusions de Defender illisibles sans droits administrateur)' }
+else { Bug 'Résultat de l''analyse introuvable, ou dossier propre couvert par une exclusion de Defender' }
 Remove-Item $propre -Recurse -Force -ErrorAction SilentlyContinue
 
 Etape 'Menu : chaque groupe ouvert puis refermé'
