@@ -26,10 +26,18 @@
 //! par son chemin (fuzz/fuzz_targets/evtx_fichier.rs, binxml.rs) ; les textes pour l'utilisateur viendront avec
 //! son appelant (E2).
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 mod binxml;
 mod valeurs;
 
 // Ses fabriques de fichiers servent aussi aux essais de la suite des numéros (journaux_windows::trous).
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -51,6 +59,10 @@ const EN_TETE_MORCEAU: usize = 512;
 const ENREGISTREMENT_MIN: usize = 28;
 const EN_TETE_U64: u64 = 4096;
 const MORCEAU_U64: u64 = 65_536;
+const EN_TETE_MORCEAU_U64: u64 = 512;
+const ENREGISTREMENT_MIN_U64: u64 = 28;
+/// Le plus d'enregistrements minimaux que tiennent 64 Kio : au-delà, une plage annoncée ne se tient pas.
+const ENREGISTREMENTS_PAR_MORCEAU: u64 = MORCEAU_U64 / ENREGISTREMENT_MIN_U64;
 
 /// Les bornes d'une lecture. Les valeurs par défaut laissent passer tout vrai journal d'une maison ou d'une petite
 /// entreprise (Security.evtx fait 20 Mo d'origine, quelques dizaines de milliers d'événements) et arrêtent ce qu'un
@@ -252,7 +264,7 @@ pub(crate) enum EtatMorceau {
 }
 
 /// Le plus d'enregistrements qu'un morceau peut porter : ce qui suit son en-tête, en enregistrements minimaux.
-pub(crate) const CAPACITE_MORCEAU: u64 = ((MORCEAU - EN_TETE_MORCEAU) / ENREGISTREMENT_MIN) as u64;
+pub(crate) const CAPACITE_MORCEAU: u64 = (MORCEAU_U64 - EN_TETE_MORCEAU_U64) / ENREGISTREMENT_MIN_U64;
 
 /// Un morceau tel que la lecture l'a vu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -371,27 +383,27 @@ pub(crate) fn parcourir<R: Read + Seek>(
     let blocs = taille.saturating_sub(EN_TETE_U64).div_ceil(MORCEAU_U64);
     let blocs_permis = bornes.taille_fichier.saturating_sub(EN_TETE_U64) / MORCEAU_U64;
     let blocs_lus = blocs.min(blocs_permis);
-    bilan.morceaux_hors_borne = blocs - blocs_lus;
+    bilan.morceaux_hors_borne = blocs.saturating_sub(blocs_lus);
 
     let mut morceau = vec![0u8; MORCEAU];
     let mut restant = bornes.enregistrements;
     for i in 0..blocs_lus {
         if restant == 0 {
-            bilan.morceaux_hors_borne += blocs_lus - i;
+            ajouter(&mut bilan.morceaux_hors_borne, blocs_lus.saturating_sub(i));
             break;
         }
         // `i` reste sous la borne de taille, mais une borne choisie démesurée ne doit pas faire déborder le calcul.
         let Some(debut) = i.checked_mul(MORCEAU_U64).and_then(|d| d.checked_add(EN_TETE_U64)) else {
-            bilan.morceaux_hors_borne += blocs_lus - i;
+            ajouter(&mut bilan.morceaux_hors_borne, blocs_lus.saturating_sub(i));
             break;
         };
         source.seek(SeekFrom::Start(debut))?;
         if lire_au_plus(&mut source, &mut morceau)? < MORCEAU {
             // Coupé en fin de fichier : son CRC ne peut pas être vérifié. Il ne peut cacher que ce que ses octets
             // portent (rien sous 540 octets).
-            bilan.morceaux_illisibles += 1;
-            let octets = (taille - debut).min(MORCEAU_U64);
-            let capacite = octets.saturating_sub(EN_TETE_MORCEAU as u64) / ENREGISTREMENT_MIN as u64;
+            ajouter(&mut bilan.morceaux_illisibles, 1);
+            let octets = taille.saturating_sub(debut).min(MORCEAU_U64);
+            let capacite = octets.saturating_sub(EN_TETE_MORCEAU_U64) / ENREGISTREMENT_MIN_U64;
             recapituler(&mut bilan, i, EtatMorceau::Ecarte, None, 0, false, capacite);
             break;
         }
@@ -406,7 +418,9 @@ fn lire_au_plus<R: Read>(source: &mut R, tampon: &mut [u8]) -> std::io::Result<u
     while let Some(reste) = tampon.get_mut(lu..).filter(|r| !r.is_empty()) {
         match source.read(reste) {
             Ok(0) => break,
-            Ok(n) => lu += n,
+            // Read::read rend au plus `reste.len()` octets ; un lecteur fautif qui en dirait plus arrête la boucle
+            // (plus rien à remplir) sans faire déborder le compte.
+            Ok(n) => lu = lu.saturating_add(n),
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e),
         }
@@ -477,12 +491,12 @@ fn apres_place_libre(morceau: &[u8], libre: usize) -> u64 {
     let mut n = 0;
     let mut pos = libre;
     while let Some(trouve) = chercher_signature(morceau, pos, MORCEAU) {
-        match taille_enregistrement(morceau, trouve, MORCEAU) {
-            Some(taille) => {
-                n += 1;
-                pos = trouve + taille;
+        match fin_enregistrement(morceau, trouve, MORCEAU) {
+            Some(fin) => {
+                ajouter(&mut n, 1);
+                pos = fin;
             }
-            None => pos = trouve + 1,
+            None => pos = apres(trouve),
         }
     }
     n
@@ -508,7 +522,7 @@ fn recapituler(
             capacite,
         });
     } else {
-        bilan.morceaux_sans_recap += 1;
+        ajouter(&mut bilan.morceaux_sans_recap, 1);
     }
 }
 
@@ -536,8 +550,9 @@ fn lire_morceau(
             (libre, false, en_tete_juste)
         }
         Etat::Vide(libre) => {
-            bilan.morceaux_vides += 1;
-            bilan.enregistrements_apres_place_libre += libre.map_or(0, |l| apres_place_libre(morceau, l));
+            ajouter(&mut bilan.morceaux_vides, 1);
+            let apres = libre.map_or(0, |l| apres_place_libre(morceau, l));
+            ajouter(&mut bilan.enregistrements_apres_place_libre, apres);
             let etat = if libre.is_some() {
                 EtatMorceau::Prepare
             } else {
@@ -547,7 +562,7 @@ fn lire_morceau(
             return;
         }
         Etat::Illisible => {
-            bilan.morceaux_illisibles += 1;
+            ajouter(&mut bilan.morceaux_illisibles, 1);
             recapituler(bilan, rang, EtatMorceau::Ecarte, None, 0, false, CAPACITE_MORCEAU);
             return;
         }
@@ -563,26 +578,40 @@ fn lire_morceau(
         }
     };
     if verifie {
-        bilan.morceaux_lus += 1;
-        bilan.enregistrements_apres_place_libre += apres_place_libre(morceau, libre);
+        ajouter(&mut bilan.morceaux_lus, 1);
+        ajouter(
+            &mut bilan.enregistrements_apres_place_libre,
+            apres_place_libre(morceau, libre),
+        );
     } else {
-        bilan.morceaux_non_verifies += 1;
+        ajouter(&mut bilan.morceaux_non_verifies, 1);
         // Ce qui suit la place libre d'un en-tête juste, au CRC des données faux : compté, comme pour un morceau lu.
         if libre < MORCEAU {
-            bilan.enregistrements_apres_place_libre += apres_place_libre(morceau, libre);
+            ajouter(
+                &mut bilan.enregistrements_apres_place_libre,
+                apres_place_libre(morceau, libre),
+            );
         }
     }
     let mut lecteur = binxml::Morceau::new(morceau, bornes);
-    let avant = bilan.enregistrements_lus + bilan.enregistrements_illisibles + bilan.enregistrements_hors_borne;
+    // Les enregistrements trouvés dans ce morceau : la somme des trois compteurs, avant et après.
+    let vus = |b: &Bilan| {
+        b.enregistrements_lus
+            .saturating_add(b.enregistrements_illisibles)
+            .saturating_add(b.enregistrements_hors_borne)
+    };
+    let avant = vus(bilan);
     // Ce que le morceau peut cacher sans numéro connu (voir `RecapMorceau::non_rendus`).
     let mut non_rendus = 0u64;
     let noter_non_rendu = |bilan: &mut Bilan, numero: Option<u64>, non_rendus: &mut u64| match numero {
         Some(n) if bilan.numeros_non_rendus.len() < MAX_NON_RENDUS => bilan.numeros_non_rendus.push((n, rang)),
-        _ => *non_rendus += 1,
+        _ => ajouter(non_rendus, 1),
     };
     let mut pos = EN_TETE_MORCEAU;
-    while pos + ENREGISTREMENT_MIN <= libre {
-        let Some(taille) = taille_enregistrement(morceau, pos, libre) else {
+    // `pos` ne dépasse jamais `libre` (au plus 64 Kio) : il ne va que d'une signature trouvée avant `libre` à une
+    // autre, ou à la fin d'un enregistrement entier, qui tient avant `libre`.
+    while pos.checked_add(ENREGISTREMENT_MIN).is_some_and(|f| f <= libre) {
+        let Some(fin) = fin_enregistrement(morceau, pos, libre) else {
             // Le reste est à zéro : la fin des enregistrements, pas une perte.
             if morceau.get(pos..libre).is_some_and(|z| z.iter().all(|&b| b == 0)) {
                 break;
@@ -591,9 +620,13 @@ fn lire_morceau(
             // ([libyal] « Corrupt event record »), sans jamais revenir en arrière.
             // Le passage sauté ne peut avoir porté qu'un enregistrement par 28 octets : une fausse signature de
             // quelques octets ne couvre rien.
-            bilan.enregistrements_illisibles += 1;
-            let suivant = chercher_signature(morceau, pos + 1, libre);
-            non_rendus += (suivant.unwrap_or(libre) - pos) as u64 / ENREGISTREMENT_MIN as u64;
+            ajouter(&mut bilan.enregistrements_illisibles, 1);
+            let suivant = chercher_signature(morceau, apres(pos), libre);
+            let saute = suivant.unwrap_or(libre).saturating_sub(pos);
+            ajouter(
+                &mut non_rendus,
+                u64::try_from(saute).unwrap_or(u64::MAX) / ENREGISTREMENT_MIN_U64,
+            );
             match suivant {
                 Some(suivant) => {
                     pos = suivant;
@@ -602,33 +635,42 @@ fn lire_morceau(
                 None => break,
             }
         };
-        voir_numero(u64_a(morceau, pos + 8));
+        // L'enregistrement entier : signature, taille (4), numéro (8), date (16), BinXml (24), copie de la taille.
+        let entier = morceau.get(pos..fin).unwrap_or_default();
+        let numero = u64_a(entier, 8);
+        voir_numero(numero);
         if *restant == 0 {
-            bilan.enregistrements_hors_borne += 1;
-            noter_non_rendu(bilan, u64_a(morceau, pos + 8), &mut non_rendus);
-            pos += taille;
+            ajouter(&mut bilan.enregistrements_hors_borne, 1);
+            noter_non_rendu(bilan, numero, &mut non_rendus);
+            pos = fin;
             continue;
         }
-        if let Ok(evenement) = lecteur.rendre(pos + 24, pos + taille - 4) {
-            let numero = u64_a(morceau, pos + 8).unwrap_or(0);
-            let date = u64_a(morceau, pos + 16).and_then(valeurs::filetime);
+        // Le BinXml va de l'octet 24 à la copie de la taille (enregistrement de 28 octets au moins).
+        let binxml = pos.checked_add(24).zip(fin.checked_sub(4));
+        if let Some((debut_binxml, fin_binxml)) = binxml
+            && let Ok(evenement) = lecteur.rendre(debut_binxml, fin_binxml)
+        {
+            let numero = numero.unwrap_or(0);
+            let date = u64_a(entier, 16).and_then(valeurs::filetime);
             let mut e = enregistrement(numero, date, evenement);
             e.morceau = rang;
             e.verifie = verifie;
             recevoir(e);
-            bilan.enregistrements_lus += 1;
-            bilan.enregistrements_non_verifies += u64::from(!verifie);
-            *restant -= 1;
+            ajouter(&mut bilan.enregistrements_lus, 1);
+            ajouter(&mut bilan.enregistrements_non_verifies, u64::from(!verifie));
+            *restant = restant.saturating_sub(1);
         } else {
-            bilan.enregistrements_illisibles += 1;
-            noter_non_rendu(bilan, u64_a(morceau, pos + 8), &mut non_rendus);
+            ajouter(&mut bilan.enregistrements_illisibles, 1);
+            noter_non_rendu(bilan, numero, &mut non_rendus);
         }
-        pos += taille;
+        pos = fin;
     }
-    let trouves =
-        bilan.enregistrements_lus + bilan.enregistrements_illisibles + bilan.enregistrements_hors_borne - avant;
+    let trouves = vus(bilan).saturating_sub(avant);
     if en_tete_juste {
-        bilan.enregistrements_absents += annonces(morceau).saturating_sub(trouves);
+        ajouter(
+            &mut bilan.enregistrements_absents,
+            annonces(morceau).saturating_sub(trouves),
+        );
     }
     // Les numéros (8, 16) et les identifiants (24, 32) d'un même morceau comptent autant d'enregistrements.
     let compte = |a: usize, b: usize| u64_a(morceau, b)?.checked_sub(u64_a(morceau, a)?);
@@ -640,9 +682,23 @@ fn lire_morceau(
         EtatMorceau::NonVerifie
     };
     recapituler(bilan, rang, etat, annonce, non_rendus, incoherent, CAPACITE_MORCEAU);
-    bilan.valeurs_inconnues += lecteur.compteurs.valeurs_inconnues;
-    bilan.chaines_tronquees += lecteur.compteurs.chaines_tronquees;
-    bilan.substitutions_manquantes += lecteur.compteurs.substitutions_manquantes;
+    ajouter(&mut bilan.valeurs_inconnues, lecteur.compteurs.valeurs_inconnues);
+    ajouter(&mut bilan.chaines_tronquees, lecteur.compteurs.chaines_tronquees);
+    ajouter(
+        &mut bilan.substitutions_manquantes,
+        lecteur.compteurs.substitutions_manquantes,
+    );
+}
+
+/// Ajoute à un compteur du bilan. Chacun compte au plus un par octet lu et ne peut pas approcher `u64::MAX` ; il
+/// sature quand même, plutôt que de paniquer si une erreur de calcul l'y menait.
+fn ajouter(compteur: &mut u64, n: u64) {
+    *compteur = compteur.saturating_add(n);
+}
+
+/// La place qui suit `pos`, une place dans un morceau (64 Kio) : l'octet suivant.
+fn apres(pos: usize) -> usize {
+    pos.saturating_add(1)
 }
 
 /// Le nombre d'enregistrements que l'en-tête du morceau annonce : dernier numéro moins premier, plus un (`[libyal]`
@@ -653,7 +709,7 @@ fn annonces(morceau: &[u8]) -> u64 {
         return 0;
     };
     match dernier.checked_sub(premier) {
-        Some(n) if n < (MORCEAU / ENREGISTREMENT_MIN) as u64 => n + 1,
+        Some(n) if n < ENREGISTREMENTS_PAR_MORCEAU => n.saturating_add(1),
         _ => 0,
     }
 }
@@ -664,26 +720,30 @@ fn annonces(morceau: &[u8]) -> u64 {
 fn plage_annoncee(morceau: &[u8]) -> Option<(u64, u64)> {
     let (premier, dernier) = (u64_a(morceau, 24)?, u64_a(morceau, 32)?);
     let n = dernier.checked_sub(premier)?;
-    (n < (MORCEAU / ENREGISTREMENT_MIN) as u64).then_some((premier, dernier))
+    (n < ENREGISTREMENTS_PAR_MORCEAU).then_some((premier, dernier))
 }
 
-/// La taille de l'enregistrement qui commence à `pos`, s'il est entier : signature, taille plausible qui tient avant
-/// la place libre, copie de la taille à sa fin.
-fn taille_enregistrement(morceau: &[u8], pos: usize, libre: usize) -> Option<usize> {
-    if morceau.get(pos..pos + 4)? != b"**\0\0" {
+/// La fin (place qui suit son dernier octet) de l'enregistrement qui commence à `pos`, s'il est entier : signature,
+/// taille plausible qui tient avant la place libre, copie de la taille à sa fin.
+fn fin_enregistrement(morceau: &[u8], pos: usize, libre: usize) -> Option<usize> {
+    let apres_signature = pos.checked_add(4)?;
+    if morceau.get(pos..apres_signature)? != b"**\0\0" {
         return None;
     }
-    let taille = usize::try_from(u32_a(morceau, pos + 4)?).ok()?;
+    let annoncee = u32_a(morceau, apres_signature)?;
+    let taille = usize::try_from(annoncee).ok()?;
     let fin = pos.checked_add(taille)?;
     if taille < ENREGISTREMENT_MIN || fin > libre {
         return None;
     }
-    (u32_a(morceau, fin - 4)? == u32::try_from(taille).ok()?).then_some(taille)
+    (u32_a(morceau, fin.checked_sub(4)?)? == annoncee).then_some(fin)
 }
 
 fn chercher_signature(morceau: &[u8], depuis: usize, libre: usize) -> Option<usize> {
     let zone = morceau.get(depuis..libre)?;
-    zone.windows(4).position(|f| f == b"**\0\0").map(|i| depuis + i)
+    zone.windows(4)
+        .position(|f| f == b"**\0\0")
+        .and_then(|i| depuis.checked_add(i))
 }
 
 /// Les champs utiles tirés de l'arbre rendu. Sert aussi à l'arbre lu dans le XML que rend Windows (source vivante,
@@ -772,8 +832,10 @@ fn u64_a(octets: &[u8], pos: usize) -> Option<u64> {
 /// La table du CRC32 de RFC 1952 (polynôme 0xEDB88320, bits retournés), calculée à la compilation.
 const TABLE_CRC: [u32; 256] = {
     let mut table = [0u32; 256];
+    // `i` range l'entrée, `c` est sa valeur en u32 : deux compteurs qui avancent ensemble, sans conversion.
+    let mut i = 0usize;
     let mut c = 0u32;
-    while c < 256 {
+    while i < 256 {
         let mut v = c;
         let mut k = 0;
         while k < 8 {
@@ -782,11 +844,12 @@ const TABLE_CRC: [u32; 256] = {
         }
         #[expect(
             clippy::indexing_slicing,
-            reason = "c < 256 par la boucle, table de 256 ; calculé à la compilation"
+            reason = "i < 256 par la boucle, table de 256 ; calculé à la compilation"
         )]
         {
-            table[c as usize] = v;
+            table[i] = v;
         }
+        i += 1;
         c += 1;
     }
     table

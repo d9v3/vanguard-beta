@@ -23,6 +23,9 @@
 //! régulière), coupés avant d'être gardés, jamais interprétés. Module autonome (aucun `crate::`, aucun texte
 //! traduit) : le banc de fuzzing l'inclut par son chemin.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -695,19 +698,19 @@ impl Moteur {
                 ..StatJournal::default()
             })),
             None => {
-                self.journaux_au_dela += 1;
+                self.journaux_au_dela = self.journaux_au_dela.saturating_add(1);
                 None
             }
         };
         if let Some(s) = stat {
-            s.evenements += 1;
-            s.non_verifies += u64::from(!e.verifie);
+            s.evenements = s.evenements.saturating_add(1);
+            s.non_verifies = s.non_verifies.saturating_add(u64::from(!e.verifie));
             match e.date {
                 Some(d) => {
                     s.premier = Some(s.premier.map_or(d, |p| p.min(d)));
                     s.dernier = Some(s.dernier.map_or(d, |p| p.max(d)));
                 }
-                None => s.sans_date += 1,
+                None => s.sans_date = s.sans_date.saturating_add(1),
             }
             if e.verifie && s.ids_vus.len() < MAX_IDS_VUS {
                 s.ids_vus.insert(e.id);
@@ -719,7 +722,7 @@ impl Moteur {
                 Some(d) if self.arrets.len() < self.bornes.arrets => {
                     self.arrets.push((d, couper(&e.ordinateur.to_lowercase())));
                 }
-                Some(_) => self.arrets_au_dela += 1,
+                Some(_) => self.arrets_au_dela = self.arrets_au_dela.saturating_add(1),
                 None => {}
             }
         }
@@ -781,21 +784,21 @@ impl Moteur {
                     if !volet.quand.vrai(e) {
                         continue;
                     }
-                    etat.examines += 1;
+                    etat.examines = etat.examines.saturating_add(1);
                     if let Some(indice) = juger(e) {
                         ajouter(etat, &self.bornes, v, &e.ordinateur, indice, e);
                     }
                 }
                 Forme::Rafale { par, .. } => {
                     if volet.quand.vrai(e) {
-                        etat.examines += 1;
+                        etat.examines = etat.examines.saturating_add(1);
                         noter_rafale(etat, &self.bornes, v, par, e, false);
                     }
                 }
                 Forme::Apres { par, b_quand, .. } => {
                     let voulu = if b { b_quand.vrai(e) } else { volet.quand.vrai(e) };
                     if voulu {
-                        etat.examines += 1;
+                        etat.examines = etat.examines.saturating_add(1);
                         noter_rafale(etat, &self.bornes, v, par, e, b);
                     }
                 }
@@ -882,7 +885,11 @@ impl Moteur {
                             quoi,
                         }),
                         // La dernière preuve plus d'un jour avant la fin du journal : plus rien ne la tient.
-                        (Some(avec), _) if stat.dernier.is_some_and(|d| d - avec > chrono::Duration::days(1)) => {
+                        (Some(avec), _)
+                            if stat
+                                .dernier
+                                .is_some_and(|d| d.signed_duration_since(avec) > chrono::Duration::days(1)) =>
+                        {
                             noter(Manque::ChampCoupe {
                                 journal: volet.journal.to_string(),
                                 depuis: avec,
@@ -1043,9 +1050,14 @@ fn lu_depuis_l_installation(
     debut_securite: Option<DateTime<Utc>>,
     installation: DateTime<Utc>,
 ) -> bool {
-    let fenetre = installation - chrono::Duration::seconds(AVANT_INSTALLATION);
-    depuis.is_none_or(|d| d <= fenetre)
-        && debut_securite.is_some_and(|d| d >= fenetre && d <= installation + chrono::Duration::seconds(MARGE_JOURNAL))
+    // Une installation datée aux bornes de ce que `DateTime` sait écrire (une valeur forgée) : rien n'est prouvé.
+    let (Some(fenetre), Some(marge)) = (
+        installation.checked_sub_signed(chrono::Duration::seconds(AVANT_INSTALLATION)),
+        installation.checked_add_signed(chrono::Duration::seconds(MARGE_JOURNAL)),
+    ) else {
+        return false;
+    };
+    depuis.is_none_or(|d| d <= fenetre) && debut_securite.is_some_and(|d| d >= fenetre && d <= marge)
 }
 
 /// Le journal de sécurité commence avec l'installation (avant InstallDate, sur un vrai Windows 11) ; une heure de
@@ -1059,8 +1071,14 @@ fn pendant_la_mise_en_route(t: &Trouvaille, installation: DateTime<Utc>, session
     let (Some(premier), Some(dernier)) = (t.premier, t.dernier) else {
         return false;
     };
-    premier >= installation - chrono::Duration::seconds(AVANT_INSTALLATION)
-        && dernier <= installation + chrono::Duration::seconds(APRES_INSTALLATION)
+    // Une borne que `DateTime` ne sait pas écrire (une installation forgée à ses limites) est au-delà de toute date :
+    // elle ne retient rien de son côté.
+    installation
+        .checked_sub_signed(chrono::Duration::seconds(AVANT_INSTALLATION))
+        .is_none_or(|debut| premier >= debut)
+        && installation
+            .checked_add_signed(chrono::Duration::seconds(APRES_INSTALLATION))
+            .is_none_or(|fin| dernier <= fin)
         && session.is_none_or(|s| dernier <= s)
 }
 
@@ -1146,7 +1164,7 @@ fn lecture(
     }
     // Un journal qui écrit sans cesse et se tait depuis plus d'un jour quand d'autres écrivent encore.
     if let (true, Some(dernier), Some(recent)) = (actif, stat.dernier, plus_recent)
-        && recent - dernier > chrono::Duration::days(1)
+        && recent.signed_duration_since(dernier) > chrono::Duration::days(1)
     {
         m.push(Manque::Muet {
             journal: journal.to_string(),
@@ -1154,7 +1172,7 @@ fn lecture(
         });
     }
     if let (true, Some(depuis), Some(premier)) = (actif, options.depuis, stat.premier)
-        && premier - depuis > chrono::Duration::days(1)
+        && premier.signed_duration_since(depuis) > chrono::Duration::days(1)
     {
         m.push(Manque::PeriodeCourte {
             journal: journal.to_string(),
@@ -1257,8 +1275,8 @@ fn ajouter(
     if plus_ancien || t.nombre == 0 {
         t.details = indice.details.into_iter().map(|(l, v)| (l, couper(&v))).collect();
     }
-    t.nombre += 1;
-    t.verifies += u64::from(e.verifie);
+    t.nombre = t.nombre.saturating_add(1);
+    t.verifies = t.verifies.saturating_add(u64::from(e.verifie));
     if let Some(d) = e.date {
         t.premier = Some(t.premier.map_or(d, |p| p.min(d)));
         t.dernier = Some(t.dernier.map_or(d, |p| p.max(d)));
@@ -1345,7 +1363,7 @@ fn noter_rafale(
         return;
     };
     let Some(date) = e.date else {
-        raf.sans_date += 1;
+        raf.sans_date = raf.sans_date.saturating_add(1);
         return;
     };
     let indice = match raf.cles.get(&cle) {
@@ -1361,7 +1379,7 @@ fn noter_rafale(
         None => {
             // Une réussite laissée sans clé n'est une perte que si cette clé a des échecs : on ne le saura pas, la
             // borne est dite.
-            raf.perdus += 1;
+            raf.perdus = raf.perdus.saturating_add(1);
             return;
         }
     };
@@ -1371,25 +1389,25 @@ fn noter_rafale(
         verifie: e.verifie,
     };
     // Chaque clé a reçu son entrée de `par_cle` en même temps que son indice ; sinon compté perdu.
-    let Some(entree) = raf.par_cle.get_mut(indice as usize) else {
-        raf.perdus += 1;
+    let Some(entree) = usize::try_from(indice).ok().and_then(|i| raf.par_cle.get_mut(i)) else {
+        raf.perdus = raf.perdus.saturating_add(1);
         return;
     };
     if est_b {
         if raf.gardes_b >= bornes.dates {
-            entree.2 += 1;
+            entree.2 = entree.2.saturating_add(1);
             return;
         }
         entree.1.push(marque);
-        raf.gardes_b += 1;
+        raf.gardes_b = raf.gardes_b.saturating_add(1);
         return;
     }
     if raf.gardes >= bornes.dates {
-        raf.perdus += 1;
+        raf.perdus = raf.perdus.saturating_add(1);
         return;
     }
     entree.0.push(marque);
-    raf.gardes += 1;
+    raf.gardes = raf.gardes.saturating_add(1);
     let exemple = raf.exemples.get(&indice);
     if exemple.is_none_or(|(x, _, _)| (marque.date, marque.numero, !marque.verifie) < (x.date, x.numero, !x.verifie)) {
         let details = details_rafale(par, e);
@@ -1423,18 +1441,25 @@ fn dans_rafale(dates: &[Marque], nombre: usize, fenetre: i64) -> Vec<bool> {
     }
     let mut i = 0;
     let mut marque_jusqua = 0usize;
-    for (j, dj) in dates.iter().enumerate() {
+    // `jusqua` : le nombre de dates lues jusqu'à `dj` compris.
+    for (jusqua, dj) in (1usize..).zip(dates) {
         while dates
             .get(i)
-            .is_some_and(|di| (dj.date - di.date).num_seconds() > fenetre)
+            .is_some_and(|di| dj.date.signed_duration_since(di.date).num_seconds() > fenetre)
         {
-            i += 1;
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "dates.get(i) vient de rendre une date : i < dates.len(), i + 1 ne déborde pas"
+            )]
+            {
+                i += 1;
+            }
         }
-        if (j + 1).saturating_sub(i) >= nombre {
-            for c in couvert.iter_mut().take(j + 1).skip(i.max(marque_jusqua)) {
+        if jusqua.saturating_sub(i) >= nombre {
+            for c in couvert.iter_mut().take(jusqua).skip(i.max(marque_jusqua)) {
                 *c = true;
             }
-            marque_jusqua = j + 1;
+            marque_jusqua = jusqua;
         }
     }
     couvert
@@ -1464,7 +1489,7 @@ impl<'a> IndexRafales<'a> {
                     continue;
                 };
                 let debut = premier.date;
-                if (dernier.date - debut).num_seconds() <= fenetre {
+                if dernier.date.signed_duration_since(debut).num_seconds() <= fenetre {
                     fins.push(dernier.date);
                     let m = debut_max.last().map_or(debut, |&m| m.max(debut));
                     debut_max.push(m);
@@ -1481,14 +1506,20 @@ impl<'a> IndexRafales<'a> {
         let Some(dernier) = fin.checked_sub(1).and_then(|i| self.a.get(i)).map(|m| m.date) else {
             return false;
         };
-        if (s - dernier).num_seconds() > delai {
+        if s.signed_duration_since(dernier).num_seconds() > delai {
             return false;
         }
         let k = self.fins.partition_point(|&f| f <= s);
         k.checked_sub(1)
             .and_then(|i| self.debut_max.get(i))
-            .is_some_and(|&d| (s - d).num_seconds() <= fenetre.saturating_add(delai))
+            .is_some_and(|&d| s.signed_duration_since(d).num_seconds() <= fenetre.saturating_add(delai))
     }
+}
+
+/// Un nombre d'éléments en mémoire, en `u64` : un `usize` y tient sur toutes les cibles (64 bits au plus) ; il
+/// sature sinon, comme un compte.
+fn compte(n: usize) -> u64 {
+    u64::try_from(n).unwrap_or(u64::MAX)
 }
 
 fn juger_rafales(
@@ -1541,7 +1572,7 @@ fn juger_rafales(
     };
     let mut noms: Vec<String> = vec![String::new(); raf.par_cle.len()];
     for (cle, &i) in &raf.cles {
-        if let Some(n) = noms.get_mut(i as usize) {
+        if let Some(n) = usize::try_from(i).ok().and_then(|i| noms.get_mut(i)) {
             n.clone_from(cle);
         }
     }
@@ -1615,7 +1646,8 @@ fn juger_rafales(
             });
         }
         let cle_t = (v, ordinateur.clone(), couper(&objet));
-        if !faire_place(etat, bornes, &cle_t, gravite, appui.len() as u64) {
+        let nombre = compte(appui.len());
+        if !faire_place(etat, bornes, &cle_t, gravite, nombre) {
             continue;
         }
         let mut reserves = BTreeSet::new();
@@ -1631,10 +1663,10 @@ fn juger_rafales(
                 gravite,
                 pourquoi,
                 details,
-                nombre: appui.len() as u64,
+                nombre,
                 // Une rafale qui ne tient pas sans eux n'a pas d'appui vérifié.
                 verifies: if tient {
-                    appui.iter().filter(|d| d.verifie).count() as u64
+                    compte(appui.iter().filter(|d| d.verifie).count())
                 } else {
                     0
                 },
@@ -1675,8 +1707,9 @@ fn trous(
                 let explique = t.nombre() <= PERTE_ARRET_MAX
                     && t.apres.is_some_and(|apres| {
                         arrets.iter().any(|(a, ordi)| {
-                            (apres - *a).num_seconds().abs() <= MARGE_ARRET
-                                && t.avant.is_none_or(|avant| (*a - avant).num_seconds() >= -MARGE_ARRET)
+                            apres.signed_duration_since(*a).num_seconds().abs() <= MARGE_ARRET
+                                && t.avant
+                                    .is_none_or(|avant| a.signed_duration_since(avant).num_seconds() >= -MARGE_ARRET)
                                 && (ordinateur.is_empty() || ordinateur.eq_ignore_ascii_case(ordi))
                         })
                     });

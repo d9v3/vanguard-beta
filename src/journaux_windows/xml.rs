@@ -7,6 +7,8 @@
 //! aucune récursion, aucune panique ; un XML mal formé ou démesuré est illisible, et compté par l'appelant. Module
 //! autonome (aucun `crate::`) : le banc de fuzzing l'inclut par son chemin.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
 // La source vivante est celle de Windows : ailleurs, seuls les tests et le banc de fuzzing s'en servent.
 #![cfg_attr(not(windows), allow(dead_code))]
 
@@ -67,7 +69,7 @@ impl Compte<'_> {
             Some((i, _)) => {
                 if !*coupe {
                     *coupe = true;
-                    self.tronquees += 1;
+                    self.tronquees = self.tronquees.saturating_add(1);
                 }
                 (&texte[..i], place)
             }
@@ -78,14 +80,15 @@ impl Compte<'_> {
             return Err(ErreurXml::Demesure);
         }
         dans.push_str(garde);
-        *caracteres += n;
+        // n ≤ la place qui restait : la somme reste sous la borne `texte` et ne sature jamais.
+        *caracteres = caracteres.saturating_add(n);
         Ok(())
     }
 
     /// Un élément ouvert : son nom, ses attributs, sous les bornes (un attribut compte comme un élément : un élément
     /// aux milliers d'attributs s'arrête aussi). `profondeur` : les éléments déjà ouverts.
     fn ouvrir(&mut self, e: &BytesStart, profondeur: usize) -> Result<Ouvert, ErreurXml> {
-        self.noeuds += 1;
+        self.noeuds = self.noeuds.saturating_add(1);
         if profondeur >= self.bornes.profondeur || self.noeuds > self.bornes.noeuds {
             return Err(ErreurXml::Demesure);
         }
@@ -95,7 +98,7 @@ impl Compte<'_> {
             ..Noeud::default()
         };
         for a in e.attributes() {
-            self.noeuds += 1;
+            self.noeuds = self.noeuds.saturating_add(1);
             if self.noeuds > self.bornes.noeuds {
                 return Err(ErreurXml::Demesure);
             }
@@ -146,12 +149,12 @@ fn reference(nom: &str) -> char {
 pub(crate) fn deplier(brut: &str) -> String {
     let mut sortie = String::with_capacity(brut.len());
     let mut reste = brut;
-    while let Some(i) = reste.find('&') {
-        sortie.push_str(&reste[..i]);
-        let apres = &reste[i + 1..];
+    while let Some((avant, apres)) = reste.split_once('&') {
+        sortie.push_str(avant);
         if let Some((j, _)) = apres.char_indices().take(32).find(|&(_, c)| c == ';') {
-            sortie.push(reference(&apres[..j]));
-            reste = &apres[j + 1..];
+            let (nom, suite) = apres.split_at(j);
+            sortie.push(reference(nom));
+            reste = suite.strip_prefix(';').unwrap_or(suite);
         } else {
             sortie.push('&');
             reste = apres;
@@ -244,8 +247,7 @@ pub(crate) fn enregistrement(xml: &str, bornes: &Bornes) -> Result<(Enregistreme
 /// écrite par qui que ce soit y est échappée (« &lt; ») : la première balise littérale est bien celle de System.
 pub(crate) fn numero_de_secours(xml: &str) -> Option<u64> {
     const OUVRE: &str = "<EventRecordID>";
-    let debut = xml.find(OUVRE)? + OUVRE.len();
-    let reste = xml.get(debut..)?;
+    let (_, reste) = xml.split_once(OUVRE)?;
     let fin = reste.find("</EventRecordID>")?;
     reste[..fin].trim().parse().ok()
 }

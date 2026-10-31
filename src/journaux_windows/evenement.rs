@@ -8,6 +8,9 @@
 //! aucune valeur ne doit servir de chemin, de commande ou de format. Module autonome (aucun `crate::`) : le banc de
 //! fuzzing l'inclut par son chemin avec `evtx` et `xml`.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::path::Path;
 use std::sync::Arc;
 

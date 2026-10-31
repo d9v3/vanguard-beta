@@ -9,6 +9,9 @@
 //! démultiplier le travail (une même valeur BinXml substituée mille fois, et ainsi de suite à chaque niveau), d'où
 //! un budget de travail, de nœuds et de texte par enregistrement, en plus de la profondeur.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -144,6 +147,27 @@ struct Curseur {
     fin: usize,
 }
 
+impl Curseur {
+    /// Passe l'octet que `regarder` vient de rendre.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "appelé juste après un `regarder` réussi : pos < fin, pos + 1 ne déborde pas"
+    )]
+    fn passer(&mut self) {
+        self.pos += 1;
+    }
+}
+
+/// Un compteur de plus. Chacun compte au plus une fois par octet lu : il sature plutôt que de paniquer.
+fn un_de_plus(compteur: &mut u64) {
+    *compteur = compteur.saturating_add(1);
+}
+
+/// Un niveau de plus, pour le contrôle de profondeur de l'appel suivant.
+fn plus_profond(profondeur: usize) -> R<usize> {
+    profondeur.checked_add(1).ok_or(ErreurBinxml::Profondeur)
+}
+
 /// La lecture d'un morceau de 64 Kio : noms et gabarits gardés d'un enregistrement à l'autre, comme le fichier les
 /// partage. Un gabarit illisible est retenu comme tel : relu à chaque enregistrement qui le désigne, il coûterait sa
 /// taille autant de fois.
@@ -207,7 +231,8 @@ impl<'a> Morceau<'a> {
 
     /// Chaque lecture d'octets compte, pour tout le morceau.
     fn compter_lecture(&self) -> R<()> {
-        let n = self.lectures.get() + 1;
+        // Un budget : sature, puis dépasse la borne et arrête la lecture.
+        let n = self.lectures.get().saturating_add(1);
         self.lectures.set(n);
         if n > self.bornes.lecture_morceau {
             return Err(ErreurBinxml::Lecture);
@@ -236,7 +261,7 @@ impl<'a> Morceau<'a> {
 
     fn octet(&self, c: &mut Curseur) -> R<u8> {
         let b = self.regarder(c)?;
-        c.pos += 1;
+        c.passer();
         Ok(b)
     }
 
@@ -284,9 +309,10 @@ impl<'a> Morceau<'a> {
 
     /// Le nom rangé à `pos`, et la place qu'il y occupe.
     fn lire_nom(&mut self, pos: usize) -> R<(Arc<str>, usize)> {
-        let nombre = self
-            .octets
-            .get(pos + 6..pos + 8)
+        // Le nom vu depuis sa position : 8 octets d'en-tête (nombre de caractères aux octets 6 et 7), puis l'UTF-16.
+        let nom = self.octets.get(pos..).unwrap_or_default();
+        let nombre = nom
+            .get(6..8)
             .and_then(|b| b.try_into().ok())
             .map(|b| usize::from(u16::from_le_bytes(b)))
             .ok_or(ErreurBinxml::Nom)?;
@@ -294,13 +320,14 @@ impl<'a> Morceau<'a> {
             return Err(ErreurBinxml::Nom);
         }
         // 8 octets d'en-tête, les caractères, le zéro final.
-        let longueur = 8 + 2 * nombre + 2;
+        let caracteres = nombre.checked_mul(2).ok_or(ErreurBinxml::Nom)?;
+        let longueur = caracteres.checked_add(10).ok_or(ErreurBinxml::Nom)?;
         if let Some(nom) = self.noms.get(&pos) {
             return Ok((nom.clone(), longueur));
         }
-        let octets = self
-            .octets
-            .get(pos + 8..pos + 8 + 2 * nombre)
+        let octets = nom
+            .get(8..)
+            .and_then(|r| r.get(..caracteres))
             .ok_or(ErreurBinxml::Nom)?;
         let (nom, _) = valeurs::utf16(octets, NOM_MAX);
         let nom: Arc<str> = Arc::from(nom);
@@ -322,18 +349,18 @@ impl<'a> Morceau<'a> {
         while c.pos < c.fin {
             match self.regarder(c)? {
                 FIN => {
-                    c.pos += 1;
+                    c.passer();
                     break;
                 }
                 EN_TETE_FRAGMENT => {
                     self.prendre(c, 4)?;
                 }
                 INSTANCE if !gabarit => {
-                    let instance = self.instance(c, profondeur + 1)?;
+                    let instance = self.instance(c, plus_profond(profondeur)?)?;
                     sortie.push(Contenu::Instance(instance));
                 }
                 j if j & !ENCORE == OUVERTURE => {
-                    let element = self.element(c, gabarit, profondeur + 1)?;
+                    let element = self.element(c, gabarit, plus_profond(profondeur)?)?;
                     sortie.push(Contenu::Element(element));
                 }
                 PI_CIBLE => self.instruction(c)?,
@@ -365,7 +392,7 @@ impl<'a> Morceau<'a> {
             // AttributeListByteLength, lui aussi inutile pour une lecture dans l'ordre.
             self.double_mot(c)?;
             while self.regarder(c)? & !ENCORE == ATTRIBUT {
-                c.pos += 1;
+                c.passer();
                 let nom = self.nom(c)?;
                 let pieces = self.pieces(c)?;
                 attributs.push(Attribut { nom, pieces });
@@ -377,11 +404,11 @@ impl<'a> Morceau<'a> {
             FERMETURE_OUVERTURE => loop {
                 match self.regarder(c)? {
                     FIN_ELEMENT => {
-                        c.pos += 1;
+                        c.passer();
                         break;
                     }
                     j if j & !ENCORE == OUVERTURE => {
-                        contenu.push(Contenu::Element(self.element(c, gabarit, profondeur + 1)?));
+                        contenu.push(Contenu::Element(self.element(c, gabarit, plus_profond(profondeur)?)?));
                     }
                     PI_CIBLE => self.instruction(c)?,
                     j if est_piece(j) || j & !ENCORE == CDATA => contenu.push(self.piece(c)?),
@@ -409,9 +436,12 @@ impl<'a> Morceau<'a> {
         let plausible = |ou: usize| {
             self.double_mot_a(ou)
                 .and_then(|d| usize::try_from(d).ok())
-                .is_some_and(|d| d == ou + 4 || (d < ou && d + 8 <= self.octets.len()))
+                .is_some_and(|d| {
+                    ou.checked_add(4) == Some(d) || (d < ou && d.checked_add(8).is_some_and(|f| f <= self.octets.len()))
+                })
         };
-        match (plausible(c.pos + 6), plausible(c.pos + 4)) {
+        let a = |n: usize| c.pos.checked_add(n).is_some_and(plausible);
+        match (a(6), a(4)) {
             (true, false) => true,
             (false, true) => false,
             _ => gabarit,
@@ -472,10 +502,10 @@ impl<'a> Morceau<'a> {
     /// Une chaîne précédée de son nombre de caractères (LengthPrefixedUnicodeString).
     fn chaine(&mut self, c: &mut Curseur) -> R<String> {
         let nombre = usize::from(self.mot(c)?);
-        let octets = self.prendre(c, 2 * nombre)?;
+        let octets = self.prendre(c, nombre.checked_mul(2).ok_or(ErreurBinxml::Tronque)?)?;
         let (texte, tronquee) = valeurs::utf16(octets, self.bornes.texte);
         if tronquee {
-            self.compteurs.chaines_tronquees += 1;
+            un_de_plus(&mut self.compteurs.chaines_tronquees);
         }
         Ok(texte)
     }
@@ -485,7 +515,7 @@ impl<'a> Morceau<'a> {
         self.octet(c)?;
         self.nom(c)?;
         if c.pos < c.fin && self.regarder(c)? == PI_DONNEES {
-            c.pos += 1;
+            c.passer();
             self.chaine(c)?;
         }
         Ok(())
@@ -506,9 +536,15 @@ impl<'a> Morceau<'a> {
         let definition = self.position(decalage).ok_or(ErreurBinxml::Gabarit)?;
         if definition == c.pos {
             // Définition sur place : 4 octets (suivante), GUID, taille, corps ; les valeurs suivent le corps.
-            let taille = self.double_mot_a(definition + 20).ok_or(ErreurBinxml::Tronque)?;
+            let taille = definition
+                .checked_add(20)
+                .and_then(|p| self.double_mot_a(p))
+                .ok_or(ErreurBinxml::Tronque)?;
             let taille = usize::try_from(taille).map_err(|_| ErreurBinxml::Tronque)?;
-            let fin = (definition + 24).checked_add(taille).ok_or(ErreurBinxml::Tronque)?;
+            let fin = definition
+                .checked_add(24)
+                .and_then(|corps| corps.checked_add(taille))
+                .ok_or(ErreurBinxml::Tronque)?;
             if fin > c.fin {
                 return Err(ErreurBinxml::Tronque);
             }
@@ -520,7 +556,7 @@ impl<'a> Morceau<'a> {
             return Err(ErreurBinxml::Substitutions);
         }
         // Le nombre est borné, et ses descripteurs doivent tenir dans l'enregistrement avant toute allocation.
-        let descripteurs = self.prendre(c, 4 * nombre)?;
+        let descripteurs = self.prendre(c, nombre.checked_mul(4).ok_or(ErreurBinxml::Substitutions)?)?;
         let mut liste = Vec::with_capacity(nombre);
         for d in descripteurs.as_chunks::<4>().0 {
             let taille = usize::from(u16::from_le_bytes([d[0], d[1]]));
@@ -542,9 +578,9 @@ impl<'a> Morceau<'a> {
             TYPE_BINXML => {
                 let mut c = Curseur {
                     pos: debut,
-                    fin: debut + octets.len(),
+                    fin: debut.checked_add(octets.len()).ok_or(ErreurBinxml::Tronque)?,
                 };
-                Valeur::Fragment(self.fragment(&mut c, false, profondeur + 1)?)
+                Valeur::Fragment(self.fragment(&mut c, false, plus_profond(profondeur)?)?)
             }
             t if t & TYPE_TABLEAU != 0 => {
                 let (cases, compte) = valeurs::tableau(t, octets, self.bornes.texte);
@@ -561,10 +597,10 @@ impl<'a> Morceau<'a> {
 
     fn compter(&mut self, compte: valeurs::Compte) {
         if compte.inconnue {
-            self.compteurs.valeurs_inconnues += 1;
+            un_de_plus(&mut self.compteurs.valeurs_inconnues);
         }
         if compte.tronquee {
-            self.compteurs.chaines_tronquees += 1;
+            un_de_plus(&mut self.compteurs.chaines_tronquees);
         }
     }
 
@@ -587,9 +623,12 @@ impl<'a> Morceau<'a> {
     /// du corps, puis le corps, un fragment. Lue sans le contexte de qui la désigne : le résultat ne dépend que de
     /// sa position, il peut être gardé.
     fn lire_gabarit(&mut self, pos: usize) -> R<Rc<Gabarit>> {
-        let taille = self.double_mot_a(pos + 20).ok_or(ErreurBinxml::Tronque)?;
+        let taille = pos
+            .checked_add(20)
+            .and_then(|p| self.double_mot_a(p))
+            .ok_or(ErreurBinxml::Tronque)?;
         let taille = usize::try_from(taille).map_err(|_| ErreurBinxml::Tronque)?;
-        let debut = pos + 24;
+        let debut = pos.checked_add(24).ok_or(ErreurBinxml::Tronque)?;
         let fin = debut.checked_add(taille).ok_or(ErreurBinxml::Tronque)?;
         if fin > self.octets.len() {
             return Err(ErreurBinxml::Tronque);
@@ -617,7 +656,8 @@ struct Rendu<'b> {
 
 impl Rendu<'_> {
     fn depenser(&mut self) -> R<()> {
-        self.travail += 1;
+        // Un budget : sature, puis dépasse la borne et arrête le rendu.
+        self.travail = self.travail.saturating_add(1);
         if self.travail > self.bornes.travail {
             return Err(ErreurBinxml::Travail);
         }
@@ -649,10 +689,10 @@ impl Rendu<'_> {
         for contenu in contenus {
             self.depenser()?;
             match contenu {
-                Contenu::Element(e) => self.element(e, valeurs, parent, profondeur + 1)?,
+                Contenu::Element(e) => self.element(e, valeurs, parent, plus_profond(profondeur)?)?,
                 Contenu::Texte(t) => self.ajouter(&mut parent.texte, t)?,
                 Contenu::Substitution { id, .. } => match valeurs.get(usize::from(*id)) {
-                    None => self.compteurs.substitutions_manquantes += 1,
+                    None => un_de_plus(&mut self.compteurs.substitutions_manquantes),
                     Some(Valeur::Nulle) => {}
                     Some(Valeur::Texte(t)) => self.ajouter(&mut parent.texte, t)?,
                     Some(Valeur::Tableau(cases)) => match rang {
@@ -665,10 +705,12 @@ impl Rendu<'_> {
                     },
                     // Un fragment porté par une valeur : ses substitutions n'ont pas de valeurs à elles, ses
                     // instances apportent les leurs.
-                    Some(Valeur::Fragment(sous)) => self.contenus(sous, &[], None, parent, profondeur + 1)?,
+                    Some(Valeur::Fragment(sous)) => {
+                        self.contenus(sous, &[], None, parent, plus_profond(profondeur)?)?;
+                    }
                 },
                 Contenu::Instance(i) => {
-                    self.contenus(&i.gabarit.contenu, &i.valeurs, None, parent, profondeur + 1)?;
+                    self.contenus(&i.gabarit.contenu, &i.valeurs, None, parent, plus_profond(profondeur)?)?;
                 }
             }
         }
@@ -708,7 +750,7 @@ impl Rendu<'_> {
             Some(n) => n.max(1),
         };
         for copie in 0..copies {
-            self.noeuds += 1;
+            self.noeuds = self.noeuds.saturating_add(1);
             if self.noeuds > self.bornes.noeuds {
                 return Err(ErreurBinxml::Noeuds);
             }
@@ -745,13 +787,13 @@ impl Rendu<'_> {
             match piece {
                 Contenu::Texte(t) => self.ajouter(&mut texte, t)?,
                 Contenu::Substitution { id, optionnelle } => match valeurs.get(usize::from(*id)) {
-                    None => self.compteurs.substitutions_manquantes += 1,
+                    None => un_de_plus(&mut self.compteurs.substitutions_manquantes),
                     Some(Valeur::Nulle) if *optionnelle => return Ok(None),
                     Some(Valeur::Nulle) => {}
                     Some(Valeur::Texte(t)) => self.ajouter(&mut texte, t)?,
                     Some(Valeur::Tableau(cases)) => self.ajouter(&mut texte, &cases.join(", "))?,
                     // Interdit dans un attribut ([MS-EVEN6] 3.1.4.7.4 : seulement dans le contenu d'un élément).
-                    Some(Valeur::Fragment(_)) => self.compteurs.valeurs_inconnues += 1,
+                    Some(Valeur::Fragment(_)) => un_de_plus(&mut self.compteurs.valeurs_inconnues),
                 },
                 _ => {}
             }

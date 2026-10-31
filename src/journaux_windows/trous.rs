@@ -42,6 +42,9 @@
 //!
 //! Module autonome (aucun `crate::`) : pur, sans entrée ni sortie, essayé par proptest contre un modèle naïf.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::{BTreeSet, HashMap};
 
 use chrono::{DateTime, Utc};
@@ -102,8 +105,20 @@ pub(crate) struct Trou {
 impl Trou {
     /// Le nombre de numéros qui manquent.
     pub(crate) fn nombre(&self) -> u64 {
-        (self.a - self.de).saturating_add(1)
+        etendue(self.de, self.a)
     }
+}
+
+/// Le nombre de numéros de `de` à `a` compris : aucun si `a` est avant `de` (un trou à l'envers n'en compte pas). Toute
+/// la plage `u64` sature à `u64::MAX`.
+fn etendue(de: u64, a: u64) -> u64 {
+    a.checked_sub(de).map_or(0, |n| n.saturating_add(1))
+}
+
+/// Un nombre d'éléments en mémoire, en `u64` : un `usize` y tient sur toutes les cibles (64 bits au plus) ; il
+/// sature sinon, comme un compte.
+fn compte(n: usize) -> u64 {
+    u64::try_from(n).unwrap_or(u64::MAX)
 }
 
 /// La suite des numéros d'un journal et ses trous.
@@ -241,7 +256,8 @@ fn zones_non_verifiees(presents: &[Present], morceaux: &[RecapMorceau]) -> Vec<(
         let mut serie: Option<(u64, u64)> = None;
         for n in numeros {
             serie = match serie {
-                Some((a, b)) if n == b || n - b - 1 <= perdus => Some((a, n)),
+                // Triés : n ≥ b, l'écart est exact.
+                Some((a, b)) if n == b || n.saturating_sub(b).saturating_sub(1) <= perdus => Some((a, n)),
                 Some(z) => {
                     sortie.push(z);
                     Some((n, n))
@@ -317,7 +333,8 @@ fn paliers(
                 (Some((k, rang)), _) => {
                     actifs.remove(&(debut, rang, k));
                 }
-                (None, s) => ecartes += i64::from(s),
+                // Un compte d'entrées et de sorties, deux par étendue au plus : il sature plutôt que de paniquer.
+                (None, s) => ecartes = ecartes.saturating_add(i64::from(s)),
             }
         }
         sortie.push((pos, actifs.first().map(|a| a.2), ecartes > 0));
@@ -335,7 +352,7 @@ fn couvertes(tailles: &[u64], pertes: &[u64]) -> Vec<bool> {
     triees.sort_unstable_by(|a, b| b.cmp(a));
     // Les sommes cumulées : les pertes prises dans l'ordre, la recherche de celles qui couvrent une plage se fait
     // par dichotomie (des milliers d'événements sans numéro font autant de pertes d'un numéro).
-    let mut cumul = Vec::with_capacity(triees.len() + 1);
+    let mut cumul = Vec::with_capacity(triees.len().saturating_add(1));
     cumul.push(0u64);
     for c in &triees {
         let dernier = *cumul.last().unwrap_or(&0);
@@ -352,7 +369,10 @@ fn couvertes(tailles: &[u64], pertes: &[u64]) -> Vec<bool> {
             break;
         };
         // La plus petite fin `j` telle que les pertes de `debut` à `j` couvrent la plage.
-        let j = debut + reste.partition_point(|&s| s - base < taille);
+        // Les sommes croissent : s ≥ base, l'écart est exact. `j` reste au plus `cumul.len()`.
+        let Some(j) = debut.checked_add(reste.partition_point(|&s| s.saturating_sub(base) < taille)) else {
+            break;
+        };
         if j < cumul.len()
             && let Some(case) = sortie.get_mut(i)
         {
@@ -377,13 +397,13 @@ pub(crate) fn juger(
     let etendues = etendues(&presents, contexte.morceaux);
     let zones_nv = zones_non_verifiees(&presents, contexte.morceaux);
     ecarter_non_verifies(&mut presents, &etendues, &zones_nv);
-    let non_verifies = presents.iter().filter(|p| !p.verifie).count() as u64;
+    let non_verifies = compte(presents.iter().filter(|p| !p.verifie).count());
     let (premier, dernier, incoherences) = bornes(&presents, &etendues, contexte);
     let mut suite = Suite {
         numerotation,
         premier,
         dernier,
-        presents: presents.len() as u64,
+        presents: compte(presents.len()),
         doublons,
         incoherences,
         trous: Vec::new(),
@@ -407,7 +427,8 @@ fn dedoublonner(presents: &mut Vec<Present>) -> u64 {
     presents.sort_unstable_by_key(|p| (p.numero, !p.verifie));
     let avant_dedoublonnage = presents.len();
     presents.dedup_by_key(|p| p.numero);
-    (avant_dedoublonnage - presents.len()) as u64
+    // `dedup` ne fait que retirer : la différence est exacte.
+    compte(avant_dedoublonnage.saturating_sub(presents.len()))
 }
 
 /// Retire des présents les enregistrements non vérifiés qui ne prouvent rien : ceux qu'un morceau vérifié réclame, et
@@ -466,10 +487,12 @@ fn bornes(
         .into_iter()
         .chain(etendues.iter().flatten().map(|e| e.1))
         .max();
-    let mut incoherences = contexte.morceaux.iter().filter(|m| m.incoherent).count() as u64;
+    let mut incoherences = compte(contexte.morceaux.iter().filter(|m| m.incoherent).count());
     if let Some(attendu) = contexte.prochain.and_then(|p| p.checked_sub(1)) {
         match dernier {
-            Some(d) if attendu < d => incoherences += u64::from(!contexte.prochain_peut_retarder),
+            Some(d) if attendu < d => {
+                incoherences = incoherences.saturating_add(u64::from(!contexte.prochain_peut_retarder));
+            }
             Some(_) => dernier = Some(attendu),
             // Rien de présent ni de réclamé, et l'en-tête attend des enregistrements : tout ce que le fichier
             // pouvait porter manque.
@@ -496,34 +519,45 @@ fn segments_manquants(
         let mut x = de;
         loop {
             while paliers.get(k).is_some_and(|p| p.0 <= x) {
-                k += 1;
+                #[expect(
+                    clippy::arithmetic_side_effects,
+                    reason = "paliers.get(k) vient de rendre un palier : k < paliers.len(), k + 1 ne déborde pas"
+                )]
+                {
+                    k += 1;
+                }
             }
             let classe = match k.checked_sub(1).and_then(|j| paliers.get(j).copied()) {
                 Some((_, Some(m), _)) => Classe::Morceau(m),
                 Some((_, None, true)) => Classe::Ecarte,
                 _ => Classe::Libre,
             };
-            let fin = match paliers.get(k) {
-                Some(&(debut, _, _)) if debut <= a => debut - 1,
-                _ => a,
-            };
+            // Le palier suivant commence après `x` (la boucle au-dessus) : il n'est jamais à 0.
+            let fin = paliers
+                .get(k)
+                .map(|p| p.0)
+                .filter(|&debut| debut <= a)
+                .and_then(|debut| debut.checked_sub(1))
+                .unwrap_or(a);
             match segments.last_mut() {
                 Some(dernier) if dernier.2 == classe && dernier.1.checked_add(1) == Some(x) => dernier.1 = fin,
                 _ => segments.push((x, fin, classe)),
             }
-            if fin >= a {
-                break;
+            // fin < a : fin + 1 ne déborde pas.
+            match fin.checked_add(1) {
+                Some(suivant) if fin < a => x = suivant,
+                _ => break,
             }
-            x = fin + 1;
         }
     };
     // Le prochain numéro attendu ; rien quand le dernier possible est passé.
     let mut attendu = Some(lo);
     for p in presents {
         if let Some(x) = attendu
-            && p.numero > x
+            && let Some(avant) = p.numero.checked_sub(1)
+            && avant >= x
         {
-            decouper(x, p.numero - 1, &mut segments);
+            decouper(x, avant, &mut segments);
         }
         attendu = p.numero.checked_add(1);
     }
@@ -541,7 +575,7 @@ fn ranger_les_trous(suite: &mut Suite, segments: Vec<(u64, u64, Classe)>, contex
     let mut manque_au_morceau = vec![0u64; contexte.morceaux.len()];
     let mut libres = Vec::new();
     for &(de, a, classe) in &segments {
-        let n = (a - de).saturating_add(1);
+        let n = etendue(de, a);
         match classe {
             Classe::Morceau(m) => {
                 if let Some(manque) = manque_au_morceau.get_mut(m) {
@@ -577,7 +611,7 @@ fn ranger_les_trous(suite: &mut Suite, segments: Vec<(u64, u64, Classe)>, contex
             _ if gardes >= max_trous => {
                 let prolonge = dernier_au_dela.is_some_and(|(n, fin)| n == nature && fin.checked_add(1) == Some(de));
                 if !prolonge {
-                    suite.trous_au_dela += 1;
+                    suite.trous_au_dela = suite.trous_au_dela.saturating_add(1);
                 }
                 dernier_au_dela = Some((nature, a));
             }
@@ -601,5 +635,10 @@ fn dater_les_trous(suite: &mut Suite, presents: &[Present]) {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests;

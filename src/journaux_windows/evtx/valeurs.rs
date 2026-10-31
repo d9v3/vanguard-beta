@@ -3,6 +3,9 @@
 //! fichier fait autrement (booléens sur 32 bits). Une valeur d'un type inconnu, ou d'une taille impossible pour son
 //! type, est rendue « inconnu » et comptée : jamais une erreur qui ferait perdre l'enregistrement.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use chrono::{DateTime, Datelike, Timelike, Utc};
 
 /// Le texte d'une valeur qui n'a pas pu être lue.
@@ -38,7 +41,13 @@ impl Texte {
             self.tronque = true;
             return;
         }
-        self.caracteres += 1;
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "caracteres < max juste au-dessus : + 1 ne déborde pas"
+        )]
+        {
+            self.caracteres += 1;
+        }
         self.contenu.push(c);
     }
 }
@@ -266,7 +275,7 @@ fn guid(o: [u8; 16]) -> String {
 fn sid(o: &[u8]) -> Option<(String, usize)> {
     let revision = *o.first()?;
     let nombre = usize::from(*o.get(1)?);
-    let longueur = 8 + 4 * nombre;
+    let longueur = nombre.checked_mul(4)?.checked_add(8)?;
     let (premiers, suite) = o.get(..longueur)?.split_first_chunk::<8>()?;
     let [_, _, octets_autorite @ ..] = premiers;
     let autorite = octets_autorite.iter().fold(0u64, |a, &b| (a << 8) | u64::from(b));
@@ -287,7 +296,7 @@ fn sid(o: &[u8]) -> Option<(String, usize)> {
 pub(crate) fn filetime(valeur: u64) -> Option<DateTime<Utc>> {
     const DE_1601_A_1970: i64 = 11_644_473_600;
     let secondes = i64::try_from(valeur / 10_000_000).ok()?.checked_sub(DE_1601_A_1970)?;
-    let nanos = u32::try_from(valeur % 10_000_000).ok()? * 100;
+    let nanos = u32::try_from(valeur % 10_000_000).ok()?.checked_mul(100)?;
     DateTime::from_timestamp(secondes, nanos)
 }
 
@@ -297,14 +306,15 @@ pub(crate) fn filetime(valeur: u64) -> Option<DateTime<Utc>> {
 /// des événements 4616 et 1102 de Microsoft) : la source vivante et la source fichiers rendent la même valeur.
 pub(crate) fn date(d: DateTime<Utc>) -> String {
     format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:09}Z",
+        // Les centaines de nanosecondes, puis deux zéros : neuf décimales (dix pour une seconde intercalaire).
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:07}00Z",
         d.year(),
         d.month(),
         d.day(),
         d.hour(),
         d.minute(),
         d.second(),
-        d.nanosecond() / 100 * 100
+        d.nanosecond() / 100
     )
 }
 

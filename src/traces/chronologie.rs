@@ -7,6 +7,9 @@
 //! repris dans les fichiers que la collecte vient d'écrire, et sous Windows les événements voulus sont lus une fois,
 //! par les fonctions de Windows (wevtapi), sans PowerShell.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::fmt::Write as _;
 use std::path::Path;
 use std::time::SystemTime;
@@ -303,6 +306,8 @@ fn heure_locale<Tz: TimeZone>(quand: i64, fuseau: &Tz) -> Option<String> {
 fn ligne_de_groupe(genre: Genre, dossier: &str, heure: &str, membres: &[&FichierRecent], suite: &str) -> Evenement {
     let premier = membres.iter().map(|f| f.quand).min().unwrap_or_default();
     let h: u32 = heure.get(11..).and_then(|h| h.parse().ok()).unwrap_or_default();
+    // L'heure suivante, sur 24 heures (h % 24 ≤ 23 : + 1 ne déborde pas, même pour une heure lue démesurée).
+    let suivante = (h % 24).checked_add(1).map_or(0, |n| n % 24);
     Evenement::new(
         premier,
         Source::Fichier,
@@ -310,7 +315,7 @@ fn ligne_de_groupe(genre: Genre, dossier: &str, heure: &str, membres: &[&Fichier
         format!(
             "{} dans/in {dossier}, entre/between {h:02}:00 et/and {:02}:00{suite}",
             membres.len(),
-            (h + 1) % 24
+            suivante
         ),
     )
 }
@@ -322,7 +327,8 @@ fn extensions(membres: &[&FichierRecent]) -> String {
         let e = Path::new(&f.chemin)
             .extension()
             .map_or_else(|| "-".to_string(), |e| e.to_string_lossy().to_lowercase());
-        *par.entry(e).or_default() += 1;
+        let n = par.entry(e).or_default();
+        *n = n.saturating_add(1);
     }
     let mut v: Vec<(String, usize)> = par.into_iter().collect();
     v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
@@ -488,9 +494,10 @@ pub(crate) fn borner(evenements: Vec<Evenement>, max: usize) -> (Vec<Evenement>,
     }
     let secondaire = |e: &Evenement| e.source == Source::Fichier && e.mitre.is_none();
     let secondaires = evenements.iter().filter(|e| secondaire(e)).count();
-    let importants = n - secondaires;
+    // Des parties de `n` : les différences sont exactes.
+    let importants = n.saturating_sub(secondaires);
     let mut a_couper_importants = importants.saturating_sub(max);
-    let mut a_couper_secondaires = secondaires - max.saturating_sub(importants).min(secondaires);
+    let mut a_couper_secondaires = secondaires.saturating_sub(max.saturating_sub(importants));
     let gardes = evenements
         .into_iter()
         .filter(|e| {
@@ -499,15 +506,17 @@ pub(crate) fn borner(evenements: Vec<Evenement>, max: usize) -> (Vec<Evenement>,
             } else {
                 &mut a_couper_importants
             };
-            if *reste > 0 {
-                *reste -= 1;
-                false
-            } else {
-                true
+            match reste.checked_sub(1) {
+                Some(moins_un) => {
+                    *reste = moins_un;
+                    false
+                }
+                None => true,
             }
         })
         .collect();
-    (gardes, n - max)
+    // n > max (rendu plus haut sinon).
+    (gardes, n.saturating_sub(max))
 }
 
 /// « 2026-10-20 14:03:22 -04:00 » : l'heure locale, avec son décalage (un passage à l'heure d'hiver dans la semaine
@@ -625,7 +634,8 @@ where
 /// journaux (`apport`), sur les `JOURS` jours avant `maintenant` (secondes depuis 1970).
 pub(crate) fn partie(dossier: &Path, parties: &[Partie], apport: Apport, maintenant: i64) -> Partie {
     let mut p = Partie::new(titre());
-    let debut = maintenant - JOURS * 86_400;
+    // Une horloge aux limites de i64 : le début sature au plus ancien.
+    let debut = maintenant.saturating_sub(JOURS * 86_400);
     let tous = parties
         .iter()
         .flat_map(|x| x.evenements.iter().cloned())
@@ -671,7 +681,7 @@ fn mois(t: &str) -> Option<u32> {
     ];
     MOIS.iter()
         .position(|m| *m == t)
-        .and_then(|i| u32::try_from(i + 1).ok())
+        .and_then(|i| u32::try_from(i.checked_add(1)?).ok())
 }
 
 /// Une date sans année (syslog classique, last de macOS) : celle de cette année, ou de l'an dernier si elle tomberait
@@ -689,8 +699,12 @@ fn date_sans_annee(
         .ok()?;
     let annee = maintenant.year();
     let d = chrono::NaiveDate::from_ymd_opt(annee, mois, jour)?.and_time(h);
-    if d > maintenant + chrono::TimeDelta::days(1) {
-        Some(chrono::NaiveDate::from_ymd_opt(annee - 1, mois, jour)?.and_time(h))
+    // Demain hors de ce que chrono sait écrire : rien n'est au-delà.
+    if maintenant
+        .checked_add_signed(chrono::TimeDelta::days(1))
+        .is_some_and(|demain| d > demain)
+    {
+        Some(chrono::NaiveDate::from_ymd_opt(annee.checked_sub(1)?, mois, jour)?.and_time(h))
     } else {
         Some(d)
     }
@@ -803,7 +817,7 @@ fn connexion_ssh(r: &str) -> Option<String> {
 #[cfg(any(unix, test))]
 fn sudo(message: &str) -> Option<(Genre, String)> {
     let (compte, r) = message.split_once(" : ")?;
-    let commande = &r[r.find("COMMAND=")? + "COMMAND=".len()..];
+    let (_, commande) = r.split_once("COMMAND=")?;
     let cible = r.split(" ; ").find_map(|c| c.strip_prefix("USER=")).unwrap_or("root");
     let premier = r.split(" ; ").next().unwrap_or_default();
     let ordinaire = ["TTY=", "PWD=", "USER=", "COMMAND=", "HOST="]
@@ -887,8 +901,9 @@ pub(crate) fn lire_last<Tz: TimeZone>(sortie: &str, maintenant: chrono::NaiveDat
         }) else {
             continue;
         };
-        let annee = mots
-            .get(i + 4)
+        let annee = i
+            .checked_add(4)
+            .and_then(|j| mots.get(j))
             .filter(|a| a.len() == 4)
             .and_then(|a| a.parse::<i32>().ok());
         let date = match annee {
@@ -1087,9 +1102,9 @@ pub(crate) fn evenement_windows(id: u32, date: &str, valeurs: &[(String, String)
 #[cfg(any(windows, test))]
 fn commande_de_tache(xml: &str) -> String {
     let entre = |balise: &str| {
-        let debut = xml.find(&format!("<{balise}>"))? + balise.len() + 2;
-        let fin = xml[debut..].find(&format!("</{balise}>"))?;
-        Some(xml[debut..debut + fin].trim().to_string())
+        let (_, apres) = xml.split_once(&format!("<{balise}>"))?;
+        let fin = apres.find(&format!("</{balise}>"))?;
+        Some(apres[..fin].trim().to_string())
     };
     match (entre("Command"), entre("Arguments")) {
         (Some(c), Some(a)) => format!(" : {c} {a}"),
@@ -1130,7 +1145,10 @@ pub(crate) fn filetime_vers_unix(ft: u64) -> Option<i64> {
     if ft == 0 {
         return None;
     }
-    i64::try_from(ft / 10_000_000).ok().map(|s| s - 11_644_473_600)
+    // s ≤ u64::MAX / 10⁷ : la différence tient toujours dans un i64.
+    i64::try_from(ft / 10_000_000)
+        .ok()
+        .and_then(|s| s.checked_sub(11_644_473_600))
 }
 
 #[cfg(test)]

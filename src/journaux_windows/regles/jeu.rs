@@ -14,6 +14,9 @@
 //! noms courts 8.3 qui pourraient cacher un dossier se voient eux-mêmes ; les groupes se reconnaissent à leur SID,
 //! jamais à leur nom traduit.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::net::IpAddr;
 use std::sync::LazyLock;
 
@@ -180,16 +183,18 @@ const INSCRIPTIBLES: &[&str] = &[
 fn decouper(commande: &str) -> (String, String) {
     let c = commande.trim();
     if let Some(reste) = c.strip_prefix('"') {
-        return match reste.find('"') {
-            Some(i) => (reste[..i].to_string(), reste[i + 1..].to_string()),
+        return match reste.split_once('"') {
+            Some((programme, suite)) => (programme.to_string(), suite.to_string()),
             None => (reste.to_string(), String::new()),
         };
     }
     let bas = c.to_ascii_lowercase();
     for ext in [".exe", ".sys", ".com", ".bat", ".cmd", ".dll", ".scr"] {
         let mut depuis = 0;
-        while let Some(i) = bas[depuis..].find(ext) {
-            let fin = depuis + i + ext.len();
+        while let Some(fin) = bas[depuis..]
+            .find(ext)
+            .and_then(|i| depuis.checked_add(i)?.checked_add(ext.len()))
+        {
             if bas[fin..].chars().next().is_none_or(char::is_whitespace) {
                 return (c[..fin].to_string(), c[fin..].to_string());
             }
@@ -1249,7 +1254,11 @@ fn reglage_employe(bas: &str, reglage: &str) -> bool {
     let guillemets: &[char] = &['\'', '"'];
     bas.match_indices(reglage).any(|(i, _)| {
         let avant = &bas[..i];
-        let apres = bas[i + reglage.len()..].trim_start_matches(guillemets).trim_start();
+        let apres = bas[i..]
+            .get(reglage.len()..)
+            .unwrap_or_default()
+            .trim_start_matches(guillemets)
+            .trim_start();
         let nomme = avant
             .trim_end_matches(guillemets)
             .trim_end()
@@ -1501,7 +1510,7 @@ fn script_encode(net: &str) -> bool {
             return false;
         };
         let valeur = if colle.is_empty() {
-            mots.get(i + 1).copied().unwrap_or_default()
+            i.checked_add(1).and_then(|j| mots.get(j)).copied().unwrap_or_default()
         } else {
             colle.as_str()
         };
@@ -1545,6 +1554,10 @@ fn nom_d_encodage(valeur: &str) -> bool {
 /// caractères ASCII imprimables. Un mot ordinaire qui s'écrit en base64 (« BigEndianUnicode », « LongPatternHere »)
 /// décode en octets quelconques : le hasard n'y met pas un octet nul sur deux.
 fn base64_de_commande(valeur: &str) -> bool {
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "chaque bras borne o : o - b'A' ≤ 25, o - b'a' + 26 ≤ 51, o - b'0' + 52 ≤ 61"
+    )]
     let chiffre = |o: u8| -> Option<u32> {
         Some(u32::from(match o {
             b'A'..=b'Z' => o - b'A',
@@ -1556,7 +1569,8 @@ fn base64_de_commande(valeur: &str) -> bool {
         }))
     };
     let utiles = valeur.trim_end_matches('=');
-    if utiles.len() < 8 || valeur.len() - utiles.len() > 2 || utiles.bytes().any(|o| chiffre(o).is_none()) {
+    if utiles.len() < 8 || valeur.len().saturating_sub(utiles.len()) > 2 || utiles.bytes().any(|o| chiffre(o).is_none())
+    {
         return false;
     }
     let octets: Vec<u8> = utiles
@@ -1580,7 +1594,12 @@ fn base64_de_commande(valeur: &str) -> bool {
         .iter()
         .filter(|&&u| u == 9 || u == 10 || u == 13 || (0x20..0x7f).contains(&u))
         .count();
-    !unites.is_empty() && lisibles * 4 >= unites.len() * 3
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "lisibles ≤ unites.len() ≤ isize::MAX / 2 (des u16 en mémoire) : × 4 et × 3 tiennent dans un usize"
+    )]
+    let assez = lisibles * 4 >= unites.len() * 3;
+    !unites.is_empty() && assez
 }
 
 /// Le niveau Avertissement (3) : PowerShell écrit lui-même d'origine, même sans la journalisation des blocs, ceux
@@ -1777,7 +1796,9 @@ fn reglage_change(e: &EvenementWindows) -> Option<Indice> {
     let coupe = COUPURES.iter().find(|c| {
         let motif = format!("\\{c}=");
         bas.find(&motif).is_some_and(|i| {
-            let valeur: String = bas[i + motif.len()..]
+            let valeur: String = bas[i..]
+                .get(motif.len()..)
+                .unwrap_or_default()
                 .chars()
                 .take_while(char::is_ascii_alphanumeric)
                 .collect();
@@ -2124,7 +2145,9 @@ fn option_encodee(mot: &str) -> Option<(String, String)> {
 fn option_encodee_dans(mots: &[&str]) -> bool {
     let commande = |v: &str| base64_long(v) && !nom_d_encodage(v);
     mots.iter().enumerate().any(|(i, m)| {
-        option_encodee(m).is_some_and(|(_, colle)| commande(&colle) || mots.get(i + 1).is_some_and(|v| commande(v)))
+        option_encodee(m).is_some_and(|(_, colle)| {
+            commande(&colle) || i.checked_add(1).and_then(|j| mots.get(j)).is_some_and(|v| commande(v))
+        })
     })
 }
 
@@ -2271,11 +2294,7 @@ const XML_TACHE_MAX: usize = 64 * 1024;
 pub(crate) fn actions_de_tache(xml: &str) -> (Vec<(String, String)>, bool) {
     let tronque = xml.len() > XML_TACHE_MAX;
     let xml = if tronque {
-        let mut fin = XML_TACHE_MAX;
-        while !xml.is_char_boundary(fin) {
-            fin -= 1;
-        }
-        &xml[..fin]
+        &xml[..xml.floor_char_boundary(XML_TACHE_MAX)]
     } else {
         xml
     };
@@ -2284,6 +2303,8 @@ pub(crate) fn actions_de_tache(xml: &str) -> (Vec<(String, String)>, bool) {
     // pleine, qui la suit n'est pas perdue.
     let valeur = |debut: usize, fin: usize, balise: &str| -> Option<String> {
         let bloc = &bas[debut..fin];
+        // Les mêmes indices dans le XML lui-même (`bas` ne change que la casse ASCII).
+        let bloc_xml = &xml[debut..fin];
         let mut depuis = 0;
         loop {
             let (_, i, vide) = balise_ouvrante(bloc, depuis, balise)?;
@@ -2292,7 +2313,7 @@ pub(crate) fn actions_de_tache(xml: &str) -> (Vec<(String, String)>, bool) {
                 continue;
             }
             let (j, _) = balise_fermante(bloc, i, balise)?;
-            return Some(entites(&xml[debut + i..debut + j]));
+            return Some(entites(&bloc_xml[i..j]));
         }
     };
     let mut actions = Vec::new();
@@ -2330,45 +2351,61 @@ fn bas_de_tache(xml: &str) -> String {
     fn prochain(octets: &[u8], i: usize) -> Option<(usize, &[u8])> {
         let reste = octets.get(i..)?;
         let k = reste.iter().position(|&o| o == b'<')?;
-        Some((i + k, reste.get(k..)?))
+        Some((i.checked_add(k)?, reste.get(k..)?))
     }
     let mut octets = xml.to_ascii_lowercase().into_bytes();
     let mut i = 0;
     while let Some((debut, suite)) = prochain(&octets, i) {
-        // (début couvert, fin cherchée, fin couverte ou non)
-        let (couvert, fin, fin_couverte) = if suite.starts_with(b"<!--") {
-            (debut, &b"-->"[..], true)
+        // (ce qui reste découvert au début, fin cherchée, fin couverte ou non)
+        let (ouverture, fin, fin_couverte) = if suite.starts_with(b"<!--") {
+            (0, &b"-->"[..], true)
         } else if suite.starts_with(b"<?") {
-            (debut, &b"?>"[..], true)
+            (0, &b"?>"[..], true)
         } else if suite.starts_with(b"<![cdata[") {
-            (debut + b"<![cdata[".len(), &b"]]>"[..], false)
+            (b"<![cdata[".len(), &b"]]>"[..], false)
         } else {
-            i = debut + 1;
+            i = suivant(debut);
             continue;
+        };
+        // `suite` commence par l'ouverture : elle tient dans le texte.
+        let Some(couvert) = debut.checked_add(ouverture) else {
+            break;
         };
         // Sans fin trouvée, tout le reste est couvert.
         let apres = octets
             .get(couvert..)
             .and_then(|r| r.windows(fin.len()).position(|w| w == fin))
-            .map_or(octets.len(), |j| couvert + j + if fin_couverte { fin.len() } else { 0 });
+            .and_then(|j| {
+                couvert
+                    .checked_add(j)?
+                    .checked_add(if fin_couverte { fin.len() } else { 0 })
+            })
+            .unwrap_or(octets.len());
         if let Some(zone) = octets.get_mut(couvert..apres) {
             zone.fill(b' ');
         }
-        i = apres.max(debut + 1);
+        i = apres.max(suivant(debut));
     }
     // Les morceaux couverts commencent et finissent sur un délimiteur ASCII ou au bout du texte : l'UTF-8 reste
     // entier.
     String::from_utf8(octets).unwrap_or_else(|_| xml.to_ascii_lowercase())
 }
 
+/// L'indice qui suit `i` dans un texte où `i` est un indice : au plus sa longueur, il ne déborde pas. Il sature
+/// quand même plutôt que de paniquer ; un indice saturé tombe hors du texte.
+fn suivant(i: usize) -> usize {
+    i.saturating_add(1)
+}
+
 /// Le nom local de la balise qui commence au « < » d'indice `i` de `bas`, son préfixe d'espace de noms retiré
 /// (`<task:Exec>` est `exec`), et l'indice qui le suit. Le nom s'arrête au premier blanc, « > », « / » ou « < » :
 /// chaque « < » n'est lu qu'une fois, la recherche reste linéaire.
 fn nom_de_balise(bas: &str, i: usize) -> (&str, usize) {
-    let debut = i + 1;
+    let debut = suivant(i);
     let fin = bas[debut..]
         .find(|c: char| c.is_ascii_whitespace() || matches!(c, '>' | '/' | '<'))
-        .map_or(bas.len(), |k| debut + k);
+        .and_then(|k| debut.checked_add(k))
+        .unwrap_or(bas.len());
     let nom = &bas[debut..fin];
     (nom.rsplit_once(':').map_or(nom, |(_, local)| local), fin)
 }
@@ -2379,14 +2416,14 @@ fn nom_de_balise(bas: &str, i: usize) -> (&str, usize) {
 /// invisible. `<executable>` n'est pas `<exec>`.
 fn balise_ouvrante(bas: &str, mut depuis: usize, nom: &str) -> Option<(usize, usize, bool)> {
     loop {
-        let i = bas[depuis..].find('<')? + depuis;
+        let i = depuis.checked_add(bas.get(depuis..)?.find('<')?)?;
         let (local, apres) = nom_de_balise(bas, i);
         if local != nom {
-            depuis = i + 1;
+            depuis = suivant(i);
             continue;
         }
         match bas.as_bytes().get(apres) {
-            Some(b'>') => return Some((i, apres + 1, false)),
+            Some(b'>') => return Some((i, suivant(apres), false)),
             Some(o) if o.is_ascii_whitespace() || *o == b'/' => {
                 // Les attributs, jusqu'au « > » hors de leurs valeurs entre guillemets, où XML admet « > » et « / » :
                 // `<Exec id="a/">` n'est pas une action vide.
@@ -2396,7 +2433,7 @@ fn balise_ouvrante(bas: &str, mut depuis: usize, nom: &str) -> Option<(usize, us
                         (None, b'"' | b'\'') => guillemet = Some(c),
                         (Some(g), _) if c == g => guillemet = None,
                         (None, b'>') => {
-                            return Some((i, j + 1, bas[..j].trim_end().ends_with('/')));
+                            return Some((i, suivant(j), bas[..j].trim_end().ends_with('/')));
                         }
                         _ => {}
                     }
@@ -2412,12 +2449,17 @@ fn balise_ouvrante(bas: &str, mut depuis: usize, nom: &str) -> Option<(usize, us
 /// que le lecteur aurait dû trouver, même là où il n'a rien pu lire (un guillemet jamais fermé, une commande écrite
 /// autrement).
 fn ouvertures(bas: &str, nom: &str) -> usize {
-    let mut compte = 0;
+    let mut compte = 0usize;
     let mut depuis = 0;
-    while let Some(k) = bas[depuis..].find('<') {
-        let (local, apres) = nom_de_balise(bas, depuis + k);
-        compte += usize::from(local == nom);
-        depuis = apres.max(depuis + k + 1);
+    while let Some(i) = bas
+        .get(depuis..)
+        .and_then(|r| r.find('<'))
+        .and_then(|k| depuis.checked_add(k))
+    {
+        let (local, apres) = nom_de_balise(bas, i);
+        // Un compte de balises : au plus la longueur du texte ; il sature plutôt que de paniquer.
+        compte = compte.saturating_add(usize::from(local == nom));
+        depuis = apres.max(suivant(i));
     }
     compte
 }
@@ -2426,13 +2468,16 @@ fn ouvertures(bas: &str, nom: &str) -> usize {
 /// `depuis` : (son début, la fin de son « > »).
 fn balise_fermante(bas: &str, mut depuis: usize, nom: &str) -> Option<(usize, usize)> {
     loop {
-        let i = bas[depuis..].find("</")? + depuis;
-        let (local, apres) = nom_de_balise(bas, i + 1);
-        let blancs = bas[apres..].len() - bas[apres..].trim_start_matches(|c: char| c.is_ascii_whitespace()).len();
-        if local == nom && bas.as_bytes().get(apres + blancs) == Some(&b'>') {
-            return Some((i, apres + blancs + 1));
+        let i = depuis.checked_add(bas.get(depuis..)?.find("</")?)?;
+        let (local, apres) = nom_de_balise(bas, suivant(i));
+        let suite = bas[apres..].trim_start_matches(|c: char| c.is_ascii_whitespace());
+        if local == nom
+            && let Some(apres_chevron) = suite.strip_prefix('>')
+        {
+            // La fin du « > » : ce qui le suit est une fin de `bas`.
+            return Some((i, bas.len().checked_sub(apres_chevron.len())?));
         }
-        depuis = i + 2;
+        depuis = i.checked_add(2)?;
     }
 }
 
