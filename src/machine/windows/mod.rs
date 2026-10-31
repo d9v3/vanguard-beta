@@ -572,12 +572,33 @@ pub(crate) fn admin_mele(correctifs: &[Vec<String>]) -> Option<(Vec<bool>, Vec<V
 }
 
 /// Les lignes que reçoit le processus élevé pour ces morceaux : les gestes natifs tels quels, chaque suite PowerShell
-/// écrite en script et remplacée par sa ligne `vanguard:script`. `None` : un script ne s'écrit pas (dit).
+/// écrite en script et remplacée par sa ligne `vanguard:script`. `None` : un script ne s'écrit pas, ou une ligne de
+/// Vanguard mal formée irait dans un script (dit).
 fn lignes_pour_eleve(correctifs: &[Vec<String>], morceaux: &[crate::machine::gestes::Morceau]) -> Option<Vec<String>> {
     use crate::machine::gestes::{self, Morceau};
     // Une place hors de `correctifs` ne peut pas venir de `decouper` (elle énumère cette liste) : sautée, elle laisse
     // le correctif en échec, jamais en réussite.
     let ligne = |i: usize, j: usize| correctifs.get(i).and_then(|c| c.get(j));
+    // Une ligne de Vanguard que `native` n'a pas reconnue (forme fausse, identifiant inconnu) finirait dans un script,
+    // où PowerShell la prendrait pour une commande inconnue, après la demande d'administrateur : toute la liste est
+    // refusée avant, et avant d'écrire le moindre script.
+    let egaree = morceaux.iter().any(|m| match m {
+        Morceau::Script(suite) => suite
+            .iter()
+            .any(|(i, js)| js.iter().filter_map(|&j| ligne(*i, j)).any(|l| marque_de_vanguard(l))),
+        Morceau::Natif(_) => false,
+    });
+    if egaree {
+        trp!(
+            "    Vanguard a refusé sa propre liste de corrections avant de demander les droits d'administrateur : rien n'a été fait. Mettez Vanguard à jour ; si cela revient, signalez-le (le journal des erreurs en garde une trace).",
+            "    Vanguard refused its own list of fixes before asking for administrator rights: nothing was done. Update Vanguard; if it happens again, report it (the error log keeps a trace)."
+        );
+        crate::journal::erreur(
+            "Vanguard administrateur",
+            "liste refusée avant la demande (ligne vanguard: mal formée)",
+        );
+        return None;
+    }
     let mut lignes = Vec::new();
     for m in morceaux {
         match m {
@@ -603,24 +624,22 @@ fn lignes_pour_eleve(correctifs: &[Vec<String>], morceaux: &[crate::machine::ges
     Some(lignes)
 }
 
+/// Une ligne qui se donne pour une ligne de Vanguard (`vanguard:…`, espaces en tête et casse comprises).
+fn marque_de_vanguard(ligne: &str) -> bool {
+    const MARQUE: &str = "vanguard:";
+    ligne
+        .trim_start()
+        .get(..MARQUE.len())
+        .is_some_and(|debut| debut.eq_ignore_ascii_case(MARQUE))
+}
+
 /// Pour les tests des listes réelles (réparations, jeux) : ce correctif, découpé et écrit comme par `admin_mele`, est
-/// accepté tel quel par la validation du processus élevé, celle qui le refuserait avant la demande d'administrateur.
-/// Et aucune ligne de Vanguard (`vanguard:…`) mal formée ne file dans un script, où PowerShell la prendrait pour une
-/// commande inconnue.
+/// accepté tel quel par la validation du processus élevé, celle qui le refuserait avant la demande d'administrateur
+/// (une ligne de Vanguard mal formée comprise : `lignes_pour_eleve` la refuse).
 #[cfg(test)]
 pub(crate) fn accepte_par_le_processus_eleve(correctifs: &[Vec<String>]) -> bool {
-    use crate::machine::gestes::{self, Morceau};
-    let morceaux = gestes::decouper(correctifs, corrections::native);
-    let dans_un_script = morceaux.iter().flat_map(|m| match m {
-        Morceau::Script(suite) => suite
-            .iter()
-            .flat_map(|(i, js)| js.iter().map(|&j| correctifs[*i][j].as_str()))
-            .collect(),
-        Morceau::Natif(_) => Vec::new(),
-    });
-    let marque_egaree = dans_un_script.into_iter().any(|l| l.starts_with("vanguard:"));
-    !marque_egaree
-        && lignes_pour_eleve(correctifs, &morceaux).is_some_and(|l| !l.is_empty() && eleve::valider(&l).is_some())
+    let morceaux = crate::machine::gestes::decouper(correctifs, corrections::native);
+    lignes_pour_eleve(correctifs, &morceaux).is_some_and(|l| !l.is_empty() && eleve::valider(&l).is_some())
 }
 
 /// Ce qui n'est pas fait l'est-il seulement par choix ou en attente d'un redémarrage ? Rien fait, et chaque réponse
@@ -1726,6 +1745,31 @@ mod tests {
         );
         let oublie = vec![Vec::new(), vec!["Set-Service a -StartupType Disabled".to_string()]];
         assert_eq!(recomposer(&oublie, &[], Vec::new()).0, [true, false]);
+    }
+
+    /// Une ligne de Vanguard (`vanguard:…`) mal formée n'est pas un geste natif : `decouper` la range dans un script,
+    /// où PowerShell la prendrait pour une commande inconnue, après la demande d'administrateur. Elle fait refuser la
+    /// liste entière avant, sans écrire de script.
+    #[test]
+    fn une_ligne_vanguard_egaree_fait_refuser_la_liste_avant_l_uac() {
+        for egaree in [
+            "vanguard:programme ipconfig /all",
+            "vanguard:programme sfc-scannow ",
+            "vanguard:inconnu x",
+            "  Vanguard:programme sfc-scannow",
+        ] {
+            let correctifs = vec![
+                vec!["Set-Service a -StartupType Disabled".to_string()],
+                vec![egaree.to_string()],
+            ];
+            let morceaux = gestes::decouper(&correctifs, corrections::native);
+            assert!(lignes_pour_eleve(&correctifs, &morceaux).is_none(), "{egaree}");
+            assert!(!accepte_par_le_processus_eleve(&correctifs), "{egaree}");
+        }
+        // Le mot ailleurs que tout au début n'est pas une ligne de Vanguard.
+        let correctifs = vec![vec!["Write-Output 'vanguard:programme'".to_string()]];
+        let morceaux = gestes::decouper(&correctifs, corrections::native);
+        assert!(lignes_pour_eleve(&correctifs, &morceaux).is_some());
     }
 
     /// Sous Wine, ni Defender ni le Centre de sécurité ni PowerShell : « illisible », jamais « aucun antivirus » (une
