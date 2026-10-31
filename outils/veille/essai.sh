@@ -86,6 +86,9 @@ FIN
 printf '#!/usr/bin/env python3\nprint("Liens : 3 vérifié(s), aucun mort.")\n' >"$D/outils/liens.py"
 printf '#!/usr/bin/env python3\nprint("RUSTSEC-2023-0071")\n' >"$D/outils/exceptions-rustsec.py"
 printf '#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n' >"$D/outils/confidentialite.py"
+# Faux preuves.sh : note chaque passage (la veille ne le lance que le vendredi).
+printf '#!/usr/bin/env bash\necho "$(date +%%s)" >>"$BANC/preuves.log"\necho "Miri et Kani : verts"\n' \
+  >"$D/outils/preuves.sh"
 cat >"$D/outils/vm-tester.sh" <<'FIN'
 #!/usr/bin/env bash
 # Faux vm-tester.sh : note d'où il est lancé et ce qu'il reçoit ; rouge si ESSAI_VM=rouge.
@@ -201,6 +204,8 @@ nuit 2026-10-19
 attendu '[[ -s $R/2026-10-19.md ]] && jq -e .etapes "$R/2026-10-19.json" >/dev/null' "rapport JSON valide et Markdown écrits"
 attendu '(($(notifs) == 0))' "aucune notification quand tout est vert"
 attendu '(($(appels) == 0))' "claude jamais appelé"
+attendu '! jq -e ".etapes[] | select(.nom == \"preuves\")" "$R/2026-10-19.json" >/dev/null && [[ ! -e $BANC/preuves.log ]]' \
+  "preuves (Miri, Kani) pas lancées un lundi"
 attendu 'grep -qx "résumé d.avant" "$HOME/.cache/vanguard-dev/verifier-dernier.txt"' "verifier-dernier.txt remis"
 attendu 'jq -e ".fuzz.cibles_sans_fuzz_sh == [\"sqlite\"] and .fuzz.corpus_sans_cible == [\"echap\"]" "$R/2026-10-19.json" >/dev/null' \
   "cibles de fuzz absentes de fuzz.sh et corpus sans cible dits"
@@ -286,6 +291,8 @@ printf '2026-10-18\tcorrection\t0\t60\tlance\n2026-10-19\tcorrection\t0\t60\tlan
 ESSAI_PLANTAGE=quatre nuit 2026-10-23
 attendu '(($(appels) == 2))' "budget épuisé : claude pas rappelé"
 attendu 'jq -e ".ia.raison_si_non | test(\"budget\")" "$R/2026-10-23.json" >/dev/null' "raison : budget"
+attendu 'jq -e ".etapes[] | select(.nom == \"preuves\") | .etat == \"ok\"" "$R/2026-10-23.json" >/dev/null && (($(wc -l <"$BANC/preuves.log") == 1))' \
+  "preuves (Miri, Kani) lancées le vendredi, une fois"
 rm -f "$BANC"/fuzz/plantages/tar/*
 
 echo "Nuit 6 (signature déjà traitée)"

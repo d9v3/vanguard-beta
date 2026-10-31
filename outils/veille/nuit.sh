@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # La nuit de la veille continue, SANS IA (outils/veille/LISEZMOI.md) : le worktree de veille remis sur la tête de
 # prochaine, verifier.sh complet, proptest à la graine du jour, fuzz de chaque cible (le corpus grandit : c'est
-# l'adaptation), cargo audit sur les quatre Cargo.lock avec la base RUSTSEC fraîche, canaris des vraies sources lues
-# par le programme, liens.py, la VM par vm-tester.sh s'il existe. Puis le rapport (JSON et Markdown), une seule
-# notification si quelque chose ne va pas, et, sur alerte et dans le budget, une correction proposée par alerte.sh.
+# l'adaptation), le vendredi Miri et Kani (outils/preuves.sh), cargo audit sur les quatre Cargo.lock avec la base
+# RUSTSEC fraîche, canaris des vraies sources lues par le programme, liens.py, la VM par vm-tester.sh s'il existe.
+# Puis le rapport (JSON et Markdown), une seule notification si quelque chose ne va pas, et, sur alerte et dans le
+# budget, une correction proposée par alerte.sh.
 #   nuit.sh                       la nuit entière (minuterie vanguard-veille-nuit.timer)
 #   nuit.sh --sans-ia             sans jamais lancer alerte.sh
 #   nuit.sh --sans-fuzz --sans-vm --sans-verifier --sans-reseau
@@ -178,6 +179,18 @@ if [[ -n $ARBRE_OK ]]; then
         (cd "$ARBRE" && cargo +nightly fuzz cmin --fuzz-dir fuzz --target-dir "$ARBRE/target/fuzz" "$c" "$FUZZ/corpus/$c") \
           >>"$TRAVAIL/fuzz-cmin.log" 2>&1 || journal "cmin $c : échec (corpus gardé tel quel)"
       done
+    fi
+  fi
+
+  # ── 4 bis. Une fois par semaine, la nuit du vendredi (avant la relecture hebdomadaire de 05 h 30, qui lit la
+  # nuit) : Miri sur les `unsafe` qui touchent à la mémoire de Vanguard, puis les preuves bornées de Kani
+  # (outils/preuves.sh). Trop lentes pour chaque nuit ; les autres nuits, l'étape n'apparaît pas. Sans Miri ou sans
+  # Kani : sautée, dite. ──
+  if [[ $(date -d "$JOUR" +%u) == 5 ]]; then
+    if [[ ! -x $ARBRE/outils/preuves.sh ]]; then
+      sauter preuves "preuves.sh absent de $BASE"
+    else
+      etape preuves "$TRAVAIL/preuves.log" timeout --kill-after=60 45m outils/preuves.sh
     fi
   fi
 
