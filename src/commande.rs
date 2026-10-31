@@ -112,6 +112,16 @@ pub(crate) fn dossier_systeme() -> &'static std::path::Path {
     })
 }
 
+/// La lettre du lecteur de Windows (« C: »), tirée de System32 tel que Windows le donne ; `None` si ce chemin ne
+/// commence pas par une lettre et un deux-points.
+#[cfg(windows)]
+pub(crate) fn lecteur_systeme() -> Option<&'static str> {
+    dossier_systeme()
+        .to_str()?
+        .get(..2)
+        .filter(|l| l.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) && l.ends_with(':'))
+}
+
 /// Vanguard tourne-t-il sous Wine ? Sa ntdll exporte `wine_get_version`, celle de Windows non : la réponse vient du
 /// code chargé dans ce processus, pas de l'environnement (SystemRoot vers un dossier qui contient un faux
 /// wineboot.exe ferait passer un vrai Windows pour Wine, et ses corrections par la fenêtre PowerShell d'avant). Dans

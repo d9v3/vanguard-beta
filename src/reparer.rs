@@ -1154,7 +1154,10 @@ pub fn liste() -> Vec<Reparation> {
         ).avec_restauration(),
         rep(
             tr!("Disque : erreurs", "Disk: errors"),
-            tr!("Analyse le disque de Windows sans le bloquer (chkdsk /scan) et répare en ligne ce qui peut l'être. S'il reste des erreurs, la réparation se fait au redémarrage : chkdsk C: /f (le disque de Windows ne peut pas être mis hors ligne pendant qu'il tourne).", "Scans the Windows disk without locking it (chkdsk /scan) and repairs online what it can. If errors remain, the repair happens at restart: chkdsk C: /f (the Windows disk cannot be taken offline while it runs)."),
+            {
+                let lecteur = crate::commande::lecteur_systeme().unwrap_or("C:");
+                trf!("Analyse le disque de Windows ({lecteur}) sans le bloquer (chkdsk /scan) et répare en ligne ce qui peut l'être. S'il reste des erreurs, Vanguard le dit : la réparation se fait au redémarrage, à programmer par chkdsk {lecteur} /f (le disque de Windows ne peut pas être mis hors ligne pendant qu'il tourne).", "Scans the Windows disk ({lecteur}) without locking it (chkdsk /scan) and repairs online what it can. If errors remain, Vanguard says so: the repair happens at restart, to schedule with chkdsk {lecteur} /f (the Windows disk cannot be taken offline while it runs).")
+            },
             tr!("quelques minutes", "a few minutes"),
             &[&p("chkdsk-scan-systeme")],
         ),
@@ -1330,6 +1333,11 @@ pub fn lancer(r: &Reparation) {
         trp!(
             "  Arrêté à votre demande : rien n'a changé.",
             "  Stopped as you asked: nothing was changed."
+        );
+    } else if machine::a_finir_au_redemarrage() {
+        trp!(
+            "  ↻ À finir au redémarrage : lisez le message ci-dessus, puis redémarrez l'ordinateur.",
+            "  ↻ To finish at restart: read the message above, then restart the computer."
         );
     } else {
         trp!(

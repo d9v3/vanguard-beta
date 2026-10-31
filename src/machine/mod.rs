@@ -1088,26 +1088,40 @@ fn par_vanguard_eleve() -> bool {
     !crate::journal::sous_wine()
 }
 
-// Rien n'a été fait parce que la personne l'a voulu (point de restauration refusé, accord ou demande
-// d'administrateur refusés) : noté par la dernière application de ce fil, pour qu'elle ne se dise pas « échouée ».
+/// Ce que la dernière application de ce fil a laissé quand elle n'a pas tout fait, au-delà d'un échec : rien fait à
+/// la demande de la personne (point de restauration refusé, accord ou demande d'administrateur refusés), ou une étape
+/// à finir au redémarrage (chkdsk 3). Pour qu'elle ne se dise pas « échouée ».
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Inacheve {
+    Non,
+    ArreteeADemande,
+    AuRedemarrage,
+}
+
 thread_local! {
-    static ARRETEE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static INACHEVE: std::cell::Cell<Inacheve> = const { std::cell::Cell::new(Inacheve::Non) };
 }
 
 /// La dernière application (`appliquer`, `appliquer_chacune`) de ce fil n'a rien fait, à la demande de la personne :
 /// « arrêté à votre demande, rien n'a changé », pas « une étape a échoué ».
 pub(crate) fn arretee_a_votre_demande() -> bool {
-    ARRETEE.with(std::cell::Cell::get)
+    INACHEVE.with(std::cell::Cell::get) == Inacheve::ArreteeADemande
+}
+
+/// La dernière application de ce fil n'a eu, en dehors des réussites, qu'une étape à finir au redémarrage.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn a_finir_au_redemarrage() -> bool {
+    INACHEVE.with(std::cell::Cell::get) == Inacheve::AuRedemarrage
 }
 
 #[cfg(windows)]
-pub(crate) fn noter_arret(arretee: bool) {
-    ARRETEE.with(|a| a.set(arretee));
+pub(crate) fn noter_inacheve(etat: Inacheve) {
+    INACHEVE.with(|a| a.set(etat));
 }
 
 /// Les résultats, et ce qu'il faut noter pour chaque correctif (ses commandes, enrichies de la valeur d'avant).
 fn lancer_chacune(correctifs: &[Vec<String>]) -> (Vec<bool>, Vec<Vec<String>>) {
-    ARRETEE.with(|a| a.set(false));
+    INACHEVE.with(|a| a.set(Inacheve::Non));
     #[cfg(windows)]
     {
         for c in correctifs.iter().flatten() {

@@ -129,6 +129,8 @@ pub(crate) struct Programme {
     pub noms: &'static [&'static str],
     /// Les codes de sortie qui veulent dire « fait ».
     pub reussites: &'static [i32],
+    /// Ceux qui veulent dire « à finir au redémarrage » : ni fait ni échoué, la personne doit redémarrer.
+    pub au_redemarrage: &'static [i32],
     pub fr: &'static str,
     pub en: &'static str,
 }
@@ -157,6 +159,7 @@ pub(crate) static PROGRAMMES: &[Programme] = &[
         ],
         noms: &[],
         reussites: FAIT,
+        au_redemarrage: &[],
         fr: "Réparer l'image de Windows (DISM)",
         en: "Repair the Windows image (DISM)",
     },
@@ -167,6 +170,7 @@ pub(crate) static PROGRAMMES: &[Programme] = &[
         arguments: &[Argument::Fixe("/scannow")],
         noms: &[],
         reussites: FAIT,
+        au_redemarrage: &[],
         fr: "Vérifier et réparer les fichiers système (SFC)",
         en: "Check and repair the system files (SFC)",
     },
@@ -176,9 +180,11 @@ pub(crate) static PROGRAMMES: &[Programme] = &[
         exe: "chkdsk.exe",
         arguments: &[Argument::LecteurSysteme, Argument::Fixe("/scan")],
         noms: &[],
-        // Microsoft : 0 aucune erreur, 1 erreurs trouvées et corrigées, 2 nettoyage fait ou non fait ; 3 : erreurs
-        // restées (à réparer au redémarrage), ou disque non vérifié.
+        // Microsoft (learn.microsoft.com, chkdsk) : 0 aucune erreur, 1 erreurs trouvées et corrigées, 2 nettoyage
+        // fait ou non fait faute de /f ; 3 disque non vérifiable, erreurs non corrigeables ou non corrigées faute de
+        // /f : la réparation demande le disque hors ligne, donc un redémarrage.
         reussites: &[0, 1, 2],
+        au_redemarrage: &[3],
         fr: "Analyser le disque de Windows sans le bloquer (chkdsk /scan)",
         en: "Scan the Windows disk without locking it (chkdsk /scan)",
     },
@@ -189,6 +195,7 @@ pub(crate) static PROGRAMMES: &[Programme] = &[
         arguments: &[Argument::Fixe("winsock"), Argument::Fixe("reset")],
         noms: &[],
         reussites: FAIT,
+        au_redemarrage: &[],
         fr: "Remettre Winsock à zéro",
         en: "Reset Winsock",
     },
@@ -199,6 +206,7 @@ pub(crate) static PROGRAMMES: &[Programme] = &[
         arguments: &[Argument::Fixe("int"), Argument::Fixe("ip"), Argument::Fixe("reset")],
         noms: &[],
         reussites: FAIT,
+        au_redemarrage: &[],
         fr: "Remettre la pile TCP/IP à zéro",
         en: "Reset the TCP/IP stack",
     },
@@ -209,6 +217,7 @@ pub(crate) static PROGRAMMES: &[Programme] = &[
         arguments: &[Argument::Fixe("/resync"), Argument::Fixe("/force")],
         noms: &[],
         reussites: FAIT,
+        au_redemarrage: &[],
         fr: "Resynchroniser l'horloge (service de temps de Windows)",
         en: "Resynchronize the clock (Windows time service)",
     },
@@ -219,6 +228,7 @@ pub(crate) static PROGRAMMES: &[Programme] = &[
         arguments: &[Argument::Fixe("-SignatureUpdate")],
         noms: &[],
         reussites: &[0],
+        au_redemarrage: &[],
         fr: "Mettre à jour les signatures de Microsoft Defender",
         en: "Update the Microsoft Defender signatures",
     },
@@ -233,6 +243,7 @@ pub(crate) static PROGRAMMES: &[Programme] = &[
         ],
         noms: &[],
         reussites: FAIT,
+        au_redemarrage: &[],
         fr: "Retirer les versions remplacées des composants de Windows (DISM)",
         en: "Remove the replaced versions of Windows components (DISM)",
     },
@@ -248,6 +259,7 @@ pub(crate) static PROGRAMMES: &[Programme] = &[
         ],
         noms: FONCTIONS_A_RETIRER,
         reussites: FAIT,
+        au_redemarrage: &[],
         fr: "Retirer une fonctionnalité de Windows (DISM)",
         en: "Remove a Windows feature (DISM)",
     },
@@ -264,6 +276,7 @@ pub(crate) static PROGRAMMES: &[Programme] = &[
         ],
         noms: &[],
         reussites: FAIT,
+        au_redemarrage: &[],
         fr: "Installer .NET Framework 3.5 (DISM, par Windows Update)",
         en: "Install .NET Framework 3.5 (DISM, through Windows Update)",
     },
@@ -340,6 +353,11 @@ impl Appel {
     /// Ce code de sortie veut-il dire « fait » ?
     pub(crate) fn reussite(&self, code: i32) -> bool {
         self.programme.reussites.contains(&code)
+    }
+
+    /// Le code veut dire « à finir au redémarrage » (chkdsk 3), ni réussite ni échec.
+    pub(crate) fn au_redemarrage(&self, code: i32) -> bool {
+        self.programme.au_redemarrage.contains(&code)
     }
 }
 
@@ -658,6 +676,18 @@ mod tests {
         );
         assert_eq!(chkdsk.arguments("D:"), ["D:", "/scan"]);
         assert!(chkdsk.reussite(1) && chkdsk.reussite(2) && !chkdsk.reussite(3));
+        // 3 : ni fait ni échoué, à finir au redémarrage ; aucun autre programme n'a ce troisième état.
+        assert!(chkdsk.au_redemarrage(3) && !chkdsk.au_redemarrage(0) && !chkdsk.au_redemarrage(1));
+        assert!(
+            PROGRAMMES
+                .iter()
+                .all(|p| p.id == "chkdsk-scan-systeme" || p.au_redemarrage.is_empty())
+        );
+        assert!(
+            PROGRAMMES
+                .iter()
+                .all(|p| p.au_redemarrage.iter().all(|c| !p.reussites.contains(c)))
+        );
         let smb = analyser_programme("vanguard:programme dism-retirer-fonction SMB1Protocol-Client").unwrap();
         assert_eq!(
             smb.commande(),

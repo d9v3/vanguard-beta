@@ -45,7 +45,7 @@ use windows::Win32::System::Com::{
 use super::corrections::{self, Correction, Resultat};
 use crate::machine::gestes;
 use crate::protection::blocage::ordres::{self, Ordre};
-use crate::ui::{GRIS, RESET, VERT, tr, trf, trp};
+use crate::ui::{ACCENT, GRIS, RESET, VERT, tr, trf, trp};
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -232,6 +232,7 @@ fn ligne_resultat(r: &Resultat) -> String {
         (true, None) if !r.raison.is_empty() => format!("ok note={}", r.raison.replace(['\r', '\n'], " ")),
         (true, None) => "ok".to_string(),
         (false, _) if r.raison == arret_demande() => ARRETEE.to_string(),
+        (false, _) if r.raison.starts_with(au_redemarrage()) => AU_REDEMARRAGE.to_string(),
         (false, _) => format!("echec {}", r.raison.replace(['\r', '\n'], " ")),
     }
 }
@@ -249,12 +250,22 @@ pub(crate) struct Reponse {
     pub etats: Option<Vec<bool>>,
     /// Non fait parce que la personne s'est arrêtée (point de restauration refusé, accord refusé) : pas un échec.
     pub arretee: bool,
+    /// À finir au redémarrage (chkdsk 3) : pas fait, pas un échec non plus.
+    pub au_redemarrage: bool,
 }
 
 /// La réponse d'un point de restauration manquant que la personne a accepté.
 const SANS_POINT: &str = "ok sans-point";
 /// La réponse d'un geste non fait parce que la personne s'est arrêtée.
 const ARRETEE: &str = "echec arret";
+
+/// La réponse d'un geste à finir au redémarrage.
+const AU_REDEMARRAGE: &str = "echec redemarrage";
+
+/// Le début de la raison d'un programme à finir au redémarrage (suivi de son code).
+fn au_redemarrage() -> &'static str {
+    tr!("à finir au redémarrage", "to finish at restart")
+}
 
 /// La raison d'un geste non fait parce que la personne s'est arrêtée : point de restauration refusé, puis tout ce qui
 /// suit ; ou accord refusé.
@@ -280,6 +291,7 @@ fn lire_reponse(ligne: &str) -> Reponse {
         code,
         etats: gestes::etats_du_script(ligne),
         arretee: ligne == ARRETEE,
+        au_redemarrage: ligne == AU_REDEMARRAGE,
     }
 }
 
@@ -292,6 +304,7 @@ fn non_faite() -> Reponse {
         code: None,
         etats: None,
         arretee: false,
+        au_redemarrage: false,
     }
 }
 
@@ -714,6 +727,7 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
     let mut code = 0;
     // Un échec qui n'est pas un arrêt voulu par la personne : lui seul fait dire « au moins une étape en échec ».
     let mut echec = false;
+    let mut a_finir = false;
     let mut arret = !accepte(&accord);
     if arret {
         trp!("Annulé : rien n'a été modifié.", "Cancelled: nothing was changed.");
@@ -724,7 +738,8 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
         let r = if arret { refusee() } else { faire(e, &juge) };
         if !r.reussi {
             code = 1;
-            echec |= r.raison != arret_demande();
+            echec |= r.raison != arret_demande() && !r.raison.starts_with(au_redemarrage());
+            a_finir |= r.raison.starts_with(au_redemarrage());
             // Sans point de restauration, et la personne ne veut pas continuer sans : tout le reste est abandonné.
             arret |= est_point(e);
         }
@@ -740,6 +755,11 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
     println!();
     if code == 0 {
         trp!("{VERT}Terminé.{RESET}", "{VERT}Finished.{RESET}");
+    } else if code == 1 && !echec && a_finir {
+        trp!(
+            "Terminé : une étape est à finir au redémarrage (voir ci-dessus).",
+            "Finished: one step is to finish at restart (see above)."
+        );
     } else if code == 1 && !echec {
         trp!(
             "Arrêté à votre demande : rien de plus n'a été modifié.",
@@ -829,6 +849,14 @@ fn faire(e: &Element, juge: &ordres::Juge) -> Resultat {
             }
             None => trp!("  {VERT}OK{RESET}", "  {VERT}OK{RESET}"),
         }
+    } else if let Some(code) = r.raison.strip_prefix(au_redemarrage()) {
+        // Seul chkdsk /scan a un code « à finir au redémarrage » dans la table (`gestes::PROGRAMMES`).
+        let lecteur = crate::commande::lecteur_systeme().unwrap_or("C:");
+        trp!(
+            "  {ACCENT}À finir au redémarrage{RESET} : chkdsk a trouvé des erreurs qu'il ne peut pas réparer pendant que Windows tourne, ou n'a pas pu tout vérifier. Programmez la réparation (chkdsk {lecteur} /f, répondez O), puis redémarrez l'ordinateur. ({})",
+            "  {ACCENT}To finish at restart{RESET}: chkdsk found errors it cannot repair while Windows runs, or could not check everything. Schedule the repair (chkdsk {lecteur} /f, answer Y), then restart the computer. ({})",
+            code.trim()
+        );
     } else if r.raison == arret_demande() {
         trp!(
             "  Arrêté à votre demande : la suite n'est pas faite.",
@@ -994,6 +1022,8 @@ fn lancer_programme(a: &gestes::Appel) -> Resultat {
                 avant: None,
                 raison: String::new(),
             },
+            // Ni fait ni échoué : la personne doit redémarrer (chkdsk 3). Pas compté fait, dit à part.
+            Some(c) if a.au_redemarrage(c) => refus(format!("{} code={c}", au_redemarrage())),
             Some(c) => refus(format!("code={c}")),
             None => refus(tr!("arrêté sans code de sortie", "stopped without an exit code").to_string()),
         },
@@ -1009,10 +1039,7 @@ fn lancer_programme(a: &gestes::Appel) -> Resultat {
 /// (DISM ou sfc ne doivent rien charger de ce que le compte a posé) et System32 pour dossier courant.
 fn commande_du_programme(a: &gestes::Appel) -> Result<std::process::Command, String> {
     let systeme = crate::commande::dossier_systeme();
-    let lecteur = systeme
-        .to_str()
-        .and_then(|s| s.get(..2))
-        .filter(|l| l.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) && l.ends_with(':'))
+    let lecteur = crate::commande::lecteur_systeme()
         .ok_or_else(|| tr!("lecteur système introuvable", "system drive not found").to_string())?;
     let exe = match a.programme.dossier {
         gestes::Dossier::Systeme32 => systeme.join(a.programme.exe),
@@ -1365,6 +1392,16 @@ mod tests {
                 raison: "code=2".into(),
             };
             assert!(!lire_reponse(&ligne_resultat(&echec)).arretee);
+            // chkdsk 3 : « à finir au redémarrage », ni arrêt ni échec ordinaire.
+            let a_finir = Resultat {
+                reussi: false,
+                avant: None,
+                raison: format!("{} code=3", au_redemarrage()),
+            };
+            assert_eq!(ligne_resultat(&a_finir), AU_REDEMARRAGE);
+            let r = lire_reponse(AU_REDEMARRAGE);
+            assert!(r.au_redemarrage && !r.arretee && !r.reussi);
+            assert!(!lire_reponse(&ligne_resultat(&echec)).au_redemarrage);
         };
         verifier();
         crate::langue::en_anglais(verifier);

@@ -542,7 +542,9 @@ pub fn powershell_admin_chacune(correctifs: &[Vec<String>]) -> Vec<bool> {
     let reussi = statut.as_ref().is_ok_and(std::process::ExitStatus::success);
     let code = statut.as_ref().ok().and_then(std::process::ExitStatus::code);
     // 3 : demande d'administrateur refusée ; SANS_POINT_ARRETE : point refusé, le script s'arrête avant tout le reste.
-    crate::machine::noter_arret(matches!(code, Some(3 | crate::reparer::SANS_POINT_ARRETE)));
+    if matches!(code, Some(3 | crate::reparer::SANS_POINT_ARRETE)) {
+        crate::machine::noter_inacheve(crate::machine::Inacheve::ArreteeADemande);
+    }
     dire_code(code);
     resultats_du_script(&script, correctifs.len(), reussi)
 }
@@ -592,13 +594,23 @@ pub(crate) fn admin_mele(correctifs: &[Vec<String>]) -> Option<(Vec<bool>, Vec<V
     let reponses = eleve::appliquer(&lignes)?;
     // Tout arrêté à la demande de la personne (point refusé en tête, accord ou demande d'administrateur refusés) :
     // rien n'a été fait, et ce n'est pas un échec.
-    crate::machine::noter_arret(toutes_arretees(&reponses));
+    crate::machine::noter_inacheve(inacheve(&reponses));
     Some(recomposer(correctifs, &morceaux, reponses))
 }
 
-/// Rien n'a été fait, et seulement parce que la personne s'est arrêtée : chaque réponse le dit (une liste vide, non).
-fn toutes_arretees(reponses: &[eleve::Reponse]) -> bool {
-    !reponses.is_empty() && reponses.iter().all(|r| r.arretee)
+/// Ce qui n'est pas fait l'est-il seulement par choix ou en attente d'un redémarrage ? Rien fait, et chaque réponse
+/// dit « arrêté » (une liste vide, non) : arrêtée à la demande ; aucun vrai échec, et au moins une étape à finir au
+/// redémarrage : à finir au redémarrage ; sinon rien de plus qu'un échec ordinaire.
+fn inacheve(reponses: &[eleve::Reponse]) -> crate::machine::Inacheve {
+    use crate::machine::Inacheve;
+    if !reponses.is_empty() && reponses.iter().all(|r| r.arretee) {
+        return Inacheve::ArreteeADemande;
+    }
+    let sans_vrai_echec = reponses.iter().all(|r| r.reussi || r.arretee || r.au_redemarrage);
+    if sans_vrai_echec && reponses.iter().any(|r| r.au_redemarrage) {
+        return Inacheve::AuRedemarrage;
+    }
+    Inacheve::Non
 }
 
 /// Les résultats de chaque correctif, et ses lignes annotées (valeur d'avant, précision), à partir des réponses du
@@ -1595,6 +1607,7 @@ mod tests {
             code,
             etats,
             arretee: false,
+            au_redemarrage: false,
         }
     }
 
@@ -1602,17 +1615,29 @@ mod tests {
     /// arrêtée à la demande de la personne, pas échouée ; un seul vrai échec, ou rien du tout, ne l'est pas.
     #[test]
     fn un_arret_demande_n_est_pas_un_echec() {
+        use crate::machine::Inacheve;
         let arretee = || eleve::Reponse {
             arretee: true,
             ..reponse(false, None, None, None)
         };
-        assert!(toutes_arretees(&[arretee(), arretee()]));
-        assert!(!toutes_arretees(&[arretee(), reponse(false, None, Some(1), None)]));
-        assert!(!toutes_arretees(&[]));
-        crate::machine::noter_arret(toutes_arretees(&[arretee()]));
-        assert!(crate::machine::arretee_a_votre_demande());
-        crate::machine::noter_arret(toutes_arretees(&[reponse(false, None, None, None)]));
-        assert!(!crate::machine::arretee_a_votre_demande());
+        let a_finir = || eleve::Reponse {
+            au_redemarrage: true,
+            ..reponse(false, None, None, None)
+        };
+        let ok = || reponse(true, None, None, None);
+        let echec = || reponse(false, None, Some(1), None);
+        assert_eq!(inacheve(&[arretee(), arretee()]), Inacheve::ArreteeADemande);
+        assert_eq!(inacheve(&[arretee(), echec()]), Inacheve::Non);
+        assert_eq!(inacheve(&[]), Inacheve::Non);
+        // chkdsk 3 : à finir au redémarrage, seulement sans autre vrai échec.
+        assert_eq!(inacheve(&[ok(), a_finir()]), Inacheve::AuRedemarrage);
+        assert_eq!(inacheve(&[a_finir(), echec()]), Inacheve::Non);
+        crate::machine::noter_inacheve(inacheve(&[arretee()]));
+        assert!(crate::machine::arretee_a_votre_demande() && !crate::machine::a_finir_au_redemarrage());
+        crate::machine::noter_inacheve(inacheve(&[ok(), a_finir()]));
+        assert!(crate::machine::a_finir_au_redemarrage() && !crate::machine::arretee_a_votre_demande());
+        crate::machine::noter_inacheve(inacheve(&[echec()]));
+        assert!(!crate::machine::arretee_a_votre_demande() && !crate::machine::a_finir_au_redemarrage());
     }
 
     /// Une liste mêlée se recompose correctif par correctif : le point (natif) puis un script qui couvre deux
