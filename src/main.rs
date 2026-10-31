@@ -4541,7 +4541,8 @@ mod tests_menu {
             for nom in texte.lines().filter_map(|l| module_hors_ligne(l.trim())) {
                 let groupe = groupes.iter().find(|(_, l)| module_hors_ligne(l) == Some(nom));
                 let attributs = groupe.map_or(&[][..], |(a, _)| a.as_slice());
-                if attributs.iter().any(|a| a == "#[cfg(test)]") {
+                // Les essais, et les preuves de Kani (outils/preuves/), que le banc ne compile jamais.
+                if attributs.iter().any(|a| a == "#[cfg(test)]" || a == "#[cfg(kani)]") {
                     continue;
                 }
                 let enfant = match attributs.iter().find_map(|a| chemin_de(a)) {
