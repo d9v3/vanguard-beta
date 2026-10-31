@@ -488,7 +488,7 @@ mod tests {
     /// lien vers le même fichier ne se relit pas ; un fichier qui ne s'ouvre pas n'a pas de nom.
     #[test]
     fn identite_d_une_image_hors_du_systeme() {
-        let d = std::env::temp_dir().join(format!("vanguard-identite-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-identite-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let (a, b, lien) = (d.join("a.dll"), d.join("b.dll"), d.join("lien.dll"));
         std::fs::write(&a, b"MZ a").unwrap();

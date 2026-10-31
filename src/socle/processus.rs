@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn pids_d_un_proc_fabrique() {
-        let d = std::env::temp_dir().join(format!("vanguard-proc-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-proc-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         for n in ["1", "412", "self", "thread-self", "sys", "12a"] {
             std::fs::create_dir_all(d.join(n)).unwrap();

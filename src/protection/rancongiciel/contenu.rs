@@ -333,7 +333,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn tube_nomme_ne_bloque_pas() {
-        let d = std::env::temp_dir().join(format!("vanguard-tube-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-tube-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let tube = d.join("p.docx");

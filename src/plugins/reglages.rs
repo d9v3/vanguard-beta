@@ -271,7 +271,7 @@ mod tests {
     /// Un dossier des extensions jetable : « plugins » sous un dossier à lui, qui garde les sceaux comme celui de
     /// Vanguard.
     fn jetable(nom: &str) -> std::path::PathBuf {
-        let parent = std::env::temp_dir().join(format!("vanguard-reglages-{nom}-{}", std::process::id()));
+        let parent = crate::essais::temporaire().join(format!("vanguard-reglages-{nom}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&parent);
         let d = parent.join("plugins");
         super::super::creer_prive(&d).unwrap();

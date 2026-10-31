@@ -1018,7 +1018,7 @@ mod tests {
     };
 
     fn jetable(nom: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("vanguard-verif-{nom}-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-verif-{nom}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -1030,7 +1030,7 @@ mod tests {
 
     #[test]
     fn le_menage_n_efface_que_les_fichiers_d_essai() {
-        let d = std::env::temp_dir().join(format!("vanguard-verif-menage-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-verif-menage-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("verif-0001.bin"), b"x").unwrap();

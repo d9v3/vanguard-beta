@@ -754,7 +754,7 @@ mod tests {
 
     #[test]
     fn empreinte_lisible() {
-        let f = std::env::temp_dir().join(format!("vanguard-integrite-{}", std::process::id()));
+        let f = crate::essais::temporaire().join(format!("vanguard-integrite-{}", std::process::id()));
         std::fs::write(&f, b"abc").unwrap();
         let h = empreinte(&f).unwrap();
         // BLAKE3 de « abc ».

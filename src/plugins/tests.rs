@@ -20,7 +20,7 @@ impl Jetable {
     fn nouveau() -> Jetable {
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let d = std::env::temp_dir().join(format!("vanguard-plugins-{}-{n}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-plugins-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         creer_prive(&d.join("plugins")).unwrap();
         creer_prive(&d.join("source")).unwrap();
@@ -866,10 +866,13 @@ mod labo_unix {
         )
         .unwrap();
         // Une seule interface (lo) dans /proc/net/dev : pas de réseau ; le vrai dossier personnel est vide, vu d'ici
-        // (masqué : ni ses fichiers, ni ses sockets, ni ses tubes), et rien n'y reste.
+        // (masqué : ni ses fichiers, ni ses sockets, ni ses tubes), et rien n'y reste. Seul s'y voit le chemin du
+        // dossier de l'extension, remonté par-dessus le masque quand il est dans le dossier personnel (le dépôt, où
+        // vont les fichiers jetables des essais, l'est souvent).
+        let chemin_remonte = if racine.starts_with(&maison) { "1" } else { "0" };
         assert_eq!(
             b.sortie.split_whitespace().collect::<Vec<_>>(),
-            ["1", "0", "ecrit"],
+            ["1", chemin_remonte, "ecrit"],
             "{}",
             b.erreurs
         );
@@ -925,7 +928,7 @@ fn en_administrateur_rien_ne_tourne_tout_seul() {
     if !en_root() {
         return crate::essais::saute("pas en root");
     }
-    let racine = std::env::temp_dir().join(format!("vanguard-admin-{}", std::process::id()));
+    let racine = crate::essais::temporaire().join(format!("vanguard-admin-{}", std::process::id()));
     let auto = Facon {
         isole: false,
         auto: Some(Auto::Bilan),

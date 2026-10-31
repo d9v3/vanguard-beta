@@ -1121,7 +1121,7 @@ mod tests {
     fn magasin_des_permissions_de_flatpak() {
         use crate::machine::linux::gvdb::fabrique::{Contenu, chaines, fichier, hexa, valeur};
         use crate::machine::linux::gvdb::{Genre, Variante};
-        let dossier = std::env::temp_dir().join(format!("vanguard-acces-magasin-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-acces-magasin-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dossier);
         std::fs::create_dir_all(&dossier).unwrap();
         let resume = |a: &[Acces]| -> Vec<(Permission, String)> {

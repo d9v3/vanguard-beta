@@ -2070,7 +2070,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn services_ajoutes_et_actives() {
-        let d = std::env::temp_dir().join(format!("vanguard-lenteur-services-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-lenteur-services-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let session = "[Service]\nExecStart=/usr/bin/essai\n[Install]\nWantedBy=default.target\n";

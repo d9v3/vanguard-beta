@@ -1179,7 +1179,7 @@ mod tests {
         if !crate::machine::linux::natif::present("zstd") {
             return crate::essais::saute("zstd absent");
         }
-        let d = std::env::temp_dir().join(format!("vanguard-zstd-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-zstd-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let mut x: u64 = 7;

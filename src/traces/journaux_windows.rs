@@ -75,7 +75,7 @@ mod tests {
     #[test]
     fn alertes_des_journaux_de_windows() {
         use crate::journaux_windows::regles::resultat;
-        let d = std::env::temp_dir().join(format!("vanguard-chrono-evt-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-chrono-evt-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         // Un dossier vide : toutes les règles non vérifiées, aucune alerte.
         let a = resultat::analyser_dossier(&d, &crate::journaux_windows::regles::moteur::Options::default()).unwrap();

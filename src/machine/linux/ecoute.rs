@@ -461,7 +461,7 @@ LISTEN 0 4096 [::1]:631 [::]:* ino:15003 sk:4001 cgroup:/system.slice/cups.servi
     #[test]
     fn groupes_nommes_par_leur_dossier() {
         use std::os::unix::fs::MetadataExt;
-        let racine = std::env::temp_dir().join(format!("vanguard-ecoute-{}", std::process::id()));
+        let racine = crate::essais::temporaire().join(format!("vanguard-ecoute-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&racine);
         let service = racine.join("system.slice/cups.service");
         std::fs::create_dir_all(&service).unwrap();

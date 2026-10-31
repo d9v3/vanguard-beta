@@ -144,7 +144,7 @@ mod tests {
     /// Les vraies fonctions (Wine ici, la VM ensuite) : un canal qui n'existe pas est refusé, sans planter ni fichier.
     #[test]
     fn canal_inconnu_refuse() {
-        let d = std::env::temp_dir().join(format!("vanguard-export-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-export-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let f = d.join("x.evtx");

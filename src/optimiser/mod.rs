@@ -991,7 +991,7 @@ mod tests {
     }
 
     fn dossier_jetable(nom: &str) -> std::path::PathBuf {
-        let dossier = std::env::temp_dir().join(format!("vanguard-reglages-{nom}-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-reglages-{nom}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dossier);
         std::fs::create_dir_all(&dossier).unwrap();
         dossier
@@ -1148,7 +1148,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn annulation_jugee_sur_les_valeurs_relues() {
-        let f = std::env::temp_dir().join(format!("vanguard-test-annuler-{}", std::process::id()));
+        let f = crate::essais::temporaire().join(format!("vanguard-test-annuler-{}", std::process::id()));
         std::fs::write(&f, "ENABLED=0\n").unwrap();
         let chemin: &'static str = Box::leak(f.display().to_string().into_boxed_str());
         let r = Reglage {

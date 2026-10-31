@@ -979,7 +979,7 @@ mod tests {
     /// rien n'y va.
     #[test]
     fn partition_des_journaux_au_jeton_connu() {
-        let d = std::env::temp_dir().join(format!("vanguard-journal-partition-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-journal-partition-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let (temoin_seul, inconnue, connue) = (d.join("a"), d.join("b"), d.join("c"));
         for p in [&temoin_seul, &inconnue, &connue] {

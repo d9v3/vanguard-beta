@@ -1428,7 +1428,7 @@ mod tests {
     /// ouvert ; la note changée est dite au bilan (fichier scellé, COM-ETA-001).
     #[test]
     fn note_des_ports_forgee_ne_tait_rien() {
-        let d = std::env::temp_dir().join(format!("vanguard-ports-bloques-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-ports-bloques-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         changer_blocages_dans(&d, |deja| deja.insert("11434/tcp".into()));
@@ -1578,7 +1578,7 @@ Host *
     #[test]
     fn phrase_de_passe_des_cles_ssh() {
         // Clés générées pour le test, si ssh-keygen est disponible.
-        let dossier = std::env::temp_dir().join(format!("vanguard-cles-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-cles-{}", std::process::id()));
         std::fs::create_dir_all(&dossier).unwrap();
         let generer = |nom: &str, phrase: &str| {
             std::process::Command::new("ssh-keygen")
@@ -1698,7 +1698,7 @@ Host *
     #[cfg(unix)]
     #[test]
     fn un_correctif_en_echec_n_arrete_pas_les_autres() {
-        let temoin = std::env::temp_dir().join(format!("vanguard-test-appliquer-{}", std::process::id()));
+        let temoin = crate::essais::temporaire().join(format!("vanguard-test-appliquer-{}", std::process::id()));
         let toucher = format!("touch '{}'", temoin.display());
         let r = appliquer_chacune(&[vec!["true".into()], vec!["false".into(), toucher], vec!["true".into()]]);
         assert_eq!(r, [true, false, true]);

@@ -1576,7 +1576,7 @@ mod tests {
     }
 
     fn jetable(nom: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("vanguard-copie-{nom}-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-copie-{nom}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d

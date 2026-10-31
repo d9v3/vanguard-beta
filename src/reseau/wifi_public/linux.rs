@@ -558,7 +558,7 @@ mod tests {
 
     #[test]
     fn masque_runtime_lu_dans_un_dossier() {
-        let d = std::env::temp_dir().join(format!("vanguard-masque-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-masque-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         std::os::unix::fs::symlink("/dev/null", d.join("avahi-daemon.service")).unwrap();
@@ -583,7 +583,7 @@ mod tests {
         if !essai.is_ok_and(|s| s.success()) {
             return crate::essais::saute("espaces de noms indisponibles");
         }
-        let d = std::env::temp_dir().join(format!("vanguard-nft-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-nft-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let fichier = d.join("public.nft");
         std::fs::write(&fichier, script_nft("wlan0").unwrap()).unwrap();
@@ -626,7 +626,7 @@ mod tests {
         if !essai.is_ok_and(|s| s.success()) {
             return crate::essais::saute("espaces de noms indisponibles");
         }
-        let d = std::env::temp_dir().join(format!("vanguard-nft-dnat-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-nft-dnat-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let fichier = d.join("public.nft");
         std::fs::write(&fichier, script_nft("wlan0").unwrap()).unwrap();

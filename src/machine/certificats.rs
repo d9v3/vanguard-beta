@@ -597,7 +597,7 @@ xo1zjuQ=
     /// chacun a son constat, qui le nomme.
     #[test]
     fn ancre_illisible_ou_sans_nom_n_est_jamais_verte() {
-        let d = std::env::temp_dir().join(format!("vanguard-ancres-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-ancres-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let corps: String = PEM.lines().filter(|l| !l.starts_with("-----")).collect();
@@ -665,7 +665,7 @@ xo1zjuQ=
     #[cfg(target_os = "linux")]
     #[test]
     fn dossier_d_ancres_illisible_n_est_jamais_vert() {
-        let d = std::env::temp_dir().join(format!("vanguard-ancres-dossier-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-ancres-dossier-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let pas_un_dossier = d.join("anchors");

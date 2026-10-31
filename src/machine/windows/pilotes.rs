@@ -416,7 +416,7 @@ mod tests {
     /// empreinte. Un dossier se lit comme un fichier refusé : présent, donc jamais pris pour absent.
     #[test]
     fn absent_ou_illisible() {
-        let d = std::env::temp_dir().join(format!("vanguard-pilotes-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-pilotes-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         assert_eq!(lire_fichier(&d.join("absent.sys")), Fichier::Absent);

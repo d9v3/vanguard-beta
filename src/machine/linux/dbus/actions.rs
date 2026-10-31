@@ -618,7 +618,7 @@ mod tests {
         use std::os::unix::net::{SocketAddr, UnixListener};
         let moi = crate::socle::euid();
         let autre = moi.wrapping_add(1);
-        let dossier = std::env::temp_dir().join(format!("vanguard-dbus-session-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-dbus-session-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dossier);
         std::fs::create_dir_all(&dossier).unwrap();
         let _ecoute = UnixListener::bind(dossier.join("bus")).unwrap();

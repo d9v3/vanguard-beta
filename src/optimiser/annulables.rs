@@ -100,15 +100,20 @@ impl Geste {
 }
 
 /// Un fichier du dossier personnel, sans « .. » : ses droits se remettent sans sudo, et une note ne peut pas en
-/// viser un autre. Les tests travaillent dans le dossier temporaire, jamais dans le vrai dossier personnel.
+/// viser un autre. Les tests travaillent dans leur dossier jetable (`essais::temporaire`), jamais dans le vrai dossier
+/// personnel.
 #[cfg(unix)]
 pub(crate) fn dans_la_maison(p: &Path) -> bool {
     let maison = crate::socle::maison();
     let sous = |base: &Path| base.is_absolute() && base.parent().is_some() && p.starts_with(base);
+    #[cfg(test)]
+    let essais = sous(&crate::essais::temporaire());
+    #[cfg(not(test))]
+    let essais = false;
     p.is_absolute()
         && !p.components().any(|c| matches!(c, std::path::Component::ParentDir))
         && !p.to_string_lossy().contains(['\n', '\0'])
-        && (sous(&maison) || (cfg!(test) && sous(&std::env::temp_dir())))
+        && (sous(&maison) || essais)
 }
 
 /// Les droits d'un fichier (« 0644 »), tels qu'on les remet ; `None` : illisible ou absent.
@@ -812,7 +817,7 @@ mod tests {
     use super::*;
 
     fn dossier(nom: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("vanguard-annulables-{nom}-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-annulables-{nom}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d

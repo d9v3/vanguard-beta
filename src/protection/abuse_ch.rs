@@ -360,7 +360,7 @@ mod tests {
     const CLE: &str = "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0u1V2w3X4";
 
     fn jetable(nom: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("vanguard-abuse-ch-{nom}-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-abuse-ch-{nom}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d

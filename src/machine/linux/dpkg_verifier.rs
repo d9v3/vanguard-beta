@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn base_de_dpkg_fabriquee() {
-        let base = std::env::temp_dir().join(format!("vanguard-dpkg-{}", std::process::id()));
+        let base = crate::essais::temporaire().join(format!("vanguard-dpkg-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("info")).unwrap();
         let fichiers = base.join("fichiers");

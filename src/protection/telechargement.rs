@@ -946,7 +946,7 @@ mod tests {
     /// Les vecteurs de la RFC 1321 (annexe A.5), lus dans un fichier comme une empreinte publiée.
     #[test]
     fn md5_de_la_rfc() {
-        let f = std::env::temp_dir().join(format!("vanguard-md5-rfc-{}", std::process::id()));
+        let f = crate::essais::temporaire().join(format!("vanguard-md5-rfc-{}", std::process::id()));
         for (message, attendue) in [
             ("", "d41d8cd98f00b204e9800998ecf8427e"),
             ("abc", "900150983cd24fb0d6963f7d28e17f72"),
@@ -965,7 +965,7 @@ mod tests {
     #[test]
     fn empreintes_d_un_fichier() {
         use sha2::Digest;
-        let f = std::env::temp_dir().join(format!("vanguard-empreinte-{}", std::process::id()));
+        let f = crate::essais::temporaire().join(format!("vanguard-empreinte-{}", std::process::id()));
         // Plus grand que le tampon de lecture : le calcul traverse plusieurs morceaux.
         let contenu: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
         std::fs::write(&f, &contenu).unwrap();
@@ -995,7 +995,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn empreintes_comme_les_outils() {
-        let f = std::env::temp_dir().join(format!("vanguard-empreinte-outils-{}", std::process::id()));
+        let f = crate::essais::temporaire().join(format!("vanguard-empreinte-outils-{}", std::process::id()));
         std::fs::write(&f, b"Vanguard\n\x00\xff".repeat(5000)).unwrap();
         for (outil, algo) in [
             ("md5sum", Algo::Md5),
@@ -1267,7 +1267,7 @@ mod tests {
     /// toujours ». Celui que Vanguard a écrit sert tel quel ; aucun fichier, c'est le premier passage, muet.
     #[test]
     fn depuis_futur_pose_hors_de_vanguard_ne_tait_rien() {
-        let d = std::env::temp_dir().join(format!("vanguard-telechargements-sceau-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-telechargements-sceau-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let lu = || crate::sceau::juge_dans(&d, crate::sceau::TELECHARGEMENTS);
         let maintenant = 1_000;

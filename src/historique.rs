@@ -598,7 +598,7 @@ mod tests {
     /// Un historique tronqué n'est pas remplacé en silence par le seul nouveau bilan : il est mis de côté.
     #[test]
     fn historique_illisible_mis_de_cote() {
-        let dossier = std::env::temp_dir().join(format!("vanguard-historique-illisible-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-historique-illisible-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dossier);
         std::fs::create_dir_all(&dossier).unwrap();
         let chemin = dossier.join("historique.json");
@@ -642,7 +642,7 @@ mod tests {
     }
     #[test]
     fn chaine_des_bilans() {
-        let dossier = std::env::temp_dir().join(format!("vanguard-chaine-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-chaine-{}", std::process::id()));
         std::fs::create_dir_all(&dossier).unwrap();
         let chemin = dossier.join("historique.json");
         // Deux anciens bilans, sans empreinte, déjà là.
@@ -720,7 +720,7 @@ mod tests {
     /// bilan à clés sans que rien ne devienne « nouveau » ni « rompu ».
     #[test]
     fn historique_de_la_085_relu_puis_prolonge() {
-        let dossier = std::env::temp_dir().join(format!("vanguard-historique-085-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-historique-085-{}", std::process::id()));
         std::fs::create_dir_all(&dossier).unwrap();
         let chemin = dossier.join("historique.json");
         std::fs::write(&chemin, include_str!("../tests/donnees/historique-0.85.json")).unwrap();
@@ -747,7 +747,7 @@ mod tests {
 
     /// Deux bilans à clés, chaînés par leurs deux empreintes.
     fn deux_bilans_a_cles() -> Vec<Bilan> {
-        let dossier = std::env::temp_dir().join(format!(
+        let dossier = crate::essais::temporaire().join(format!(
             "vanguard-historique-cles-{}-{:?}",
             std::process::id(),
             std::thread::current().id()

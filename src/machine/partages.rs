@@ -646,7 +646,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn fermeture_samba_ne_change_que_la_section() {
-        let dossier = std::env::temp_dir().join(format!("vanguard-smb-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-smb-{}", std::process::id()));
         std::fs::create_dir_all(&dossier).unwrap();
         let fichier = dossier.join("smb.conf");
         let config = "[global]\n   workgroup = X\n[a.b]\n   path = /a\n   guest ok = yes\n   public = Yes\n[b]\n   path = /b\n   Guest OK = yes\n";

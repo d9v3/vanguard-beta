@@ -1763,7 +1763,7 @@ mod tests {
 
     #[test]
     fn fichier_ordinaire_seulement() {
-        let dossier = std::env::temp_dir().join(format!("vanguard-pe-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-pe-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dossier);
         std::fs::create_dir_all(&dossier).unwrap();
         let exe = dossier.join("chrome.exe");

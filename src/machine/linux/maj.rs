@@ -1669,7 +1669,7 @@ mod tests {
 
     #[test]
     fn arbre_de_dkms() {
-        let racine = std::env::temp_dir().join(format!("vanguard-dkms-{}", std::process::id()));
+        let racine = crate::essais::temporaire().join(format!("vanguard-dkms-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&racine);
         let dossier = |c: &str| std::fs::create_dir_all(racine.join(c)).unwrap();
         dossier("nvidia/610.57/source");

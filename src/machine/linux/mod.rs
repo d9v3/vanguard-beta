@@ -2047,7 +2047,7 @@ mod tests {
     #[test]
     fn wifi_sans_lecture_jamais_muet() {
         use crate::modele::{Absence, Etat, Raison};
-        let d = std::env::temp_dir().join(format!("vanguard-sys-net-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-sys-net-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(d.join("lo")).unwrap();
         std::fs::create_dir_all(d.join("enp3s0")).unwrap();
@@ -2116,7 +2116,7 @@ mod tests {
     }
 
     fn jetable(nom: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("vanguard-linux-{nom}-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-linux-{nom}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d

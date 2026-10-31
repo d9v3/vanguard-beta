@@ -413,12 +413,8 @@ impl Drop for Verrou {
 }
 
 /// Données propres à cet ordinateur (quarantaine antivirus : on ne transporte pas de malware sur une clé).
+#[cfg(not(test))]
 pub fn dossier_local() -> PathBuf {
-    // Tests automatiques : un dossier jetable. Ils tournent sur l'ordinateur de développement : ses vraies données ne
-    // doivent être ni lues ni écrites.
-    if cfg!(test) {
-        return dossier_des_tests();
-    }
     #[cfg(windows)]
     let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
     #[cfg(target_os = "macos")]
@@ -428,6 +424,13 @@ pub fn dossier_local() -> PathBuf {
         .map(PathBuf::from)
         .or_else(|| super::personnel::dossier_personnel().map(|h| h.join(".local/share")));
     base.unwrap_or_default().join("vanguard")
+}
+
+/// Tests automatiques : un dossier jetable (`dossier_des_tests`). Ils tournent sur l'ordinateur de développement : ses
+/// vraies données ne doivent être ni lues ni écrites.
+#[cfg(test)]
+pub fn dossier_local() -> PathBuf {
+    dossier_des_tests()
 }
 
 /// Le dossier local réservé à son compte (0700) : il garde les bilans (donc les failles trouvées sur cet ordinateur),
@@ -449,31 +452,29 @@ pub fn proteger_dossier_local() {
     }
 }
 
-/// Le dossier jetable des tests de ce processus (un par `cargo test`, nommé par son numéro de processus), retiré
-/// quand le processus se termine : chaque lancement en laissait un dans le dossier temporaire. Le crochet de sortie
+/// Le dossier jetable des tests de ce processus (un par `cargo test`, nommé par son numéro de processus), sous
+/// `essais::temporaire()`, retiré quand le processus se termine : chaque lancement en laissait un. Le crochet de sortie
 /// est posé une fois, au premier appel ; les tests tournent tous avant que le processus ne sorte.
+#[cfg(test)]
 // FFI de libc : atexit, en essais seulement (retirer le dossier jetable des tests à la sortie).
 #[allow(unsafe_code)]
 fn dossier_des_tests() -> PathBuf {
-    let dossier = std::env::temp_dir().join(format!("vanguard-tests-{}", std::process::id()));
-    #[cfg(test)]
-    {
-        static CROCHET: std::sync::Once = std::sync::Once::new();
-        CROCHET.call_once(|| {
-            unsafe extern "C" {
-                fn atexit(f: extern "C" fn()) -> std::ffi::c_int;
-            }
-            extern "C" fn retirer() {
-                let _ = std::fs::remove_dir_all(
-                    std::env::temp_dir().join(format!("vanguard-tests-{}", std::process::id())),
-                );
-            }
-            // SAFETY: atexit de la bibliothèque C, présent sous Linux, Windows (msvcrt) et macOS ; il reçoit une
-            // fonction sans argument qui vit tout le programme, appelée une fois à la sortie normale du processus.
-            unsafe { atexit(retirer) };
-        });
+    fn dossier() -> PathBuf {
+        crate::essais::temporaire().join(format!("vanguard-tests-{}", std::process::id()))
     }
-    dossier
+    static CROCHET: std::sync::Once = std::sync::Once::new();
+    CROCHET.call_once(|| {
+        unsafe extern "C" {
+            fn atexit(f: extern "C" fn()) -> std::ffi::c_int;
+        }
+        extern "C" fn retirer() {
+            let _ = std::fs::remove_dir_all(dossier());
+        }
+        // SAFETY: atexit de la bibliothèque C, présent sous Linux, Windows (msvcrt) et macOS ; il reçoit une
+        // fonction sans argument qui vit tout le programme, appelée une fois à la sortie normale du processus.
+        unsafe { atexit(retirer) };
+    });
+    dossier()
 }
 
 #[cfg(test)]
@@ -493,7 +494,7 @@ mod tests {
 
     #[test]
     fn ecriture_atomique_et_verrou() {
-        let dossier = std::env::temp_dir().join(format!("vanguard-atomique-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-atomique-{}", std::process::id()));
         let fichier = dossier.join("appareils.json");
         ecrire_atomique(&fichier, "{\"reseaux\":{}}").unwrap();
         ecrire_atomique(&fichier, "{\"reseaux\":{\"box\":{}}}").unwrap();
@@ -531,7 +532,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn ecriture_atomique_sans_suivre_de_lien() {
-        let dossier = std::env::temp_dir().join(format!("vanguard-atomique-lien-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-atomique-lien-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dossier);
         std::fs::create_dir_all(&dossier).unwrap();
         let cible = dossier.join("systeme.conf");
@@ -553,7 +554,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn lecture_bornee_d_un_simple_fichier() {
-        let dossier = std::env::temp_dir().join(format!("vanguard-ordinaire-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-ordinaire-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dossier);
         std::fs::create_dir_all(&dossier).unwrap();
         let tube = dossier.join("appris.json");
@@ -588,7 +589,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn en_root_seulement_un_dossier_de_root() {
-        let d = std::env::temp_dir().join(format!("vanguard-sur-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-sur-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         if crate::socle::uid() == 0 {
             return crate::essais::saute("lancé en root : un dossier à soi est à root");
@@ -605,7 +606,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn verrou_qui_n_est_pas_un_fichier_ne_fige_rien() {
-        let dossier = std::env::temp_dir().join(format!("vanguard-verrou-piege-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-verrou-piege-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dossier);
         std::fs::create_dir_all(dossier.join("evenements.verrou")).unwrap();
         let ancien = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
@@ -678,7 +679,7 @@ mod tests {
     /// avant de le retirer (marqué), il se reprend ; jamais celui d'un vivant de cette version, tenu par le système.
     #[test]
     fn verrou_compatible_avec_une_version_d_avant() {
-        let dossier = std::env::temp_dir().join(format!("vanguard-verrou-ancien-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-verrou-ancien-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dossier);
         std::fs::create_dir_all(&dossier).unwrap();
         let ancien = dossier.join("evenements.verrou");
@@ -721,7 +722,7 @@ mod tests {
     /// Une écriture qui échoue (le dossier parent est un fichier) ne laisse aucun fichier provisoire derrière elle.
     #[test]
     fn ecriture_ratee_sans_reste() {
-        let dossier = std::env::temp_dir().join(format!("vanguard-atomique-rate-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-atomique-rate-{}", std::process::id()));
         std::fs::create_dir_all(&dossier).unwrap();
         let bouchon = dossier.join("bouchon");
         std::fs::write(&bouchon, b"x").unwrap();

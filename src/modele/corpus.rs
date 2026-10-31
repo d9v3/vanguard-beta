@@ -65,7 +65,7 @@ impl Entree {
             .collect()
     }
 
-    /// Un dossier jetable à ce cas, vide, hors du dépôt : pour les jugements qui lisent des fichiers posés exprès.
+    /// Un dossier jetable à ce cas, vide, sous `essais::temporaire()` : pour les jugements qui lisent des fichiers posés exprès.
     /// Effacé quand il n'est plus tenu, même si le jugement panique.
     #[cfg(unix)]
     pub(crate) fn jetable(&self, nom: &str) -> Jetable {
@@ -75,7 +75,7 @@ impl Entree {
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
-        let d = std::env::temp_dir().join(format!("vanguard-corpus-{}-{cas}-{nom}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-corpus-{}-{cas}-{nom}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         Jetable(d)
@@ -1733,7 +1733,7 @@ fn lecture_de_ce_qu_un_cas_attend() {
 
 #[test]
 fn variantes_d_un_cas() {
-    let d = std::env::temp_dir().join(format!("vanguard-corpus-variantes-{}", std::process::id()));
+    let d = crate::essais::temporaire().join(format!("vanguard-corpus-variantes-{}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
     for f in [
         "attendu.toml",

@@ -2020,7 +2020,7 @@ mod tests {
     /// l'ancien est gardé de côté puis le nouveau scellé.
     #[test]
     fn carnet_local_forge_ne_tait_rien() {
-        let d = std::env::temp_dir().join(format!("vanguard-carnet-forge-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-carnet-forge-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let carnet = r#"{"reseaux":{"3c:22:fb:00:00:01":{"nom":"Salon","appareils":{}}}}"#;
@@ -2054,7 +2054,7 @@ mod tests {
     /// n'est ni effacé ni chiffré à la réécriture.
     #[test]
     fn enveloppe_posee_dans_le_dossier_local_ignoree() {
-        let d = std::env::temp_dir().join(format!("vanguard-carnet-enveloppe-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-carnet-enveloppe-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let vrai = r#"{"reseaux":{"3c:22:fb:00:00:01":{"nom":"Salon","appareils":{}}}}"#;
@@ -2088,7 +2088,7 @@ mod tests {
 
     #[test]
     fn base_avec_bom_ou_abimee() {
-        let dossier = std::env::temp_dir().join(format!("vanguard-base-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-base-{}", std::process::id()));
         std::fs::create_dir_all(&dossier).unwrap();
         let p = dossier.join("appareils.json");
         std::fs::write(
@@ -2128,7 +2128,7 @@ mod tests {
     /// s'enregistre chiffré sur la clé et en clair sur cet ordinateur, et jamais en clair sur la clé.
     #[test]
     fn carnet_chiffre_lu_et_enregistre() {
-        let d = std::env::temp_dir().join(format!("vanguard-carnet-chiffre-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-carnet-chiffre-{}", std::process::id()));
         let donnees = d.join("donnees");
         std::fs::create_dir_all(&donnees).unwrap();
         let carnet = r#"{"reseaux":{"3c:22:fb:00:00:01":{"nom":"Salon","appareils":{}}}}"#;
@@ -2155,7 +2155,7 @@ mod tests {
     /// à la lecture. Le journal des erreurs, lui, reconnaît les noms sous leurs deux formes.
     #[test]
     fn base_piegee_lue_inoffensive() {
-        let dossier = std::env::temp_dir().join(format!("vanguard-base-piegee-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-base-piegee-{}", std::process::id()));
         let fichier = dossier.join("appareils.json");
         let piege = "Salon\u{1b}]52;c;eA==\u{7}\u{1b}[2K\r\u{202e}";
         let vu = "Salon�]52;c;eA==��[2K��";
@@ -2184,7 +2184,7 @@ mod tests {
     }
 
     fn fausse_cle(nom: &str, jeton: Option<&str>) -> PathBuf {
-        let cle = std::env::temp_dir().join(format!("vanguard-fausse-cle-{nom}-{}", std::process::id()));
+        let cle = crate::essais::temporaire().join(format!("vanguard-fausse-cle-{nom}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&cle);
         std::fs::create_dir_all(cle.join("donnees")).unwrap();
         std::fs::write(cle.join(TEMOIN_CLE), "").unwrap();
@@ -2253,7 +2253,7 @@ mod tests {
     #[test]
     fn carnet_de_la_cle_modifie_ni_lu_ni_reecrit() {
         let cle = fausse_cle("carnet-modifie", Some("0123456789abcdef0123456789abcdef"));
-        let local = std::env::temp_dir().join(format!("vanguard-local-carnet-modifie-{}", std::process::id()));
+        let local = crate::essais::temporaire().join(format!("vanguard-local-carnet-modifie-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&local);
         std::fs::create_dir_all(&local).unwrap();
         let carnet_cle = cle.join("donnees").join("appareils.json");
@@ -2291,7 +2291,7 @@ mod tests {
     fn enveloppe_retiree_carnet_en_clair_refuse() {
         let cle = fausse_cle("enveloppe-retiree", Some("fedcba9876543210fedcba9876543210"));
         let donnees = cle.join("donnees");
-        let local = std::env::temp_dir().join(format!("vanguard-local-enveloppe-{}", std::process::id()));
+        let local = crate::essais::temporaire().join(format!("vanguard-local-enveloppe-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&local);
         std::fs::create_dir_all(&local).unwrap();
         std::fs::write(donnees.join("appareils.json"), r#"{"reseaux":{}}"#).unwrap();

@@ -851,7 +851,7 @@ mod tests {
     #[test]
     fn en_root_pas_de_remplacement_dans_un_dossier_d_un_compte() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let d = std::env::temp_dir().join(format!("vanguard-cible-root-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-cible-root-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let exe = d.join("vanguard-linux-x86_64");
         // Hors de root : le compte ne risque que lui-même.

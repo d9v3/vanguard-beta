@@ -87,7 +87,7 @@ mod tests {
     /// La vraie BCrypt (Wine ici, la VM ensuite) sur « abc », aux empreintes connues.
     #[test]
     fn empreintes_de_bcrypt() {
-        let f = std::env::temp_dir().join(format!("vanguard-hachage-{}.txt", std::process::id()));
+        let f = crate::essais::temporaire().join(format!("vanguard-hachage-{}.txt", std::process::id()));
         std::fs::write(&f, b"abc").unwrap();
         assert_eq!(
             empreinte(&f, "MD5", 16).as_deref(),

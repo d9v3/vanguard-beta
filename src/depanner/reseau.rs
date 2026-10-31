@@ -990,7 +990,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn cartes_wifi_selon_sys() {
-        let d = std::env::temp_dir().join(format!("vanguard-cartes-wifi-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-cartes-wifi-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         for chemin in ["wlan1/wireless", "eth0", "wlan0/wireless", "lo"] {
             std::fs::create_dir_all(d.join(chemin)).unwrap();

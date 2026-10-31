@@ -1367,7 +1367,7 @@ mod tests {
             "sdb · 28,9 Go · clé ou disque USB · Cle�]0;x��"
         );
         // Le chemin du programme planté vient d'un attribut que le programme choisit (son nom de fichier).
-        let d = std::env::temp_dir().join(format!("vanguard-diagnostic-vidage-piege-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-diagnostic-vidage-piege-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(
@@ -1471,7 +1471,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn vidages_de_la_semaine() {
-        let d = std::env::temp_dir().join(format!("vanguard-diagnostic-vidages-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-diagnostic-vidages-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let demarrage = "0123456789abcdef0123456789abcdef";

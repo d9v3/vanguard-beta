@@ -338,7 +338,7 @@ mod tests {
     /// programme, un fichier absent ou un programme illisible : ignorée, avec la raison.
     #[test]
     fn origine_crue_seulement_aux_memes_octets() {
-        let d = std::env::temp_dir().join(format!("vanguard-origine-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-origine-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let vrai = d.join("vanguard");
@@ -372,7 +372,7 @@ mod tests {
 
     #[test]
     fn empreinte_lue_dans_le_temoin() {
-        let cle = std::env::temp_dir().join(format!("vanguard-temoin-{}", std::process::id()));
+        let cle = crate::essais::temporaire().join(format!("vanguard-temoin-{}", std::process::id()));
         std::fs::create_dir_all(&cle).unwrap();
         assert_eq!(empreinte_attendue(&cle), "");
         std::fs::write(cle.join("vanguard.cle"), "abc").unwrap();

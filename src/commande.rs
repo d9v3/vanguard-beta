@@ -793,7 +793,7 @@ mod tests {
 
     #[test]
     fn le_delai_arrete_aussi_ce_que_le_programme_a_lance() {
-        let fichier = std::env::temp_dir().join(format!("vanguard-test-arbre-{}", std::process::id()));
+        let fichier = crate::essais::temporaire().join(format!("vanguard-test-arbre-{}", std::process::id()));
         let script = format!("sleep 30 & echo $! > '{}'; wait", fichier.display());
         assert!(lancer(Command::new("sh").args(["-c", &script]), 1).is_none());
         let pid = std::fs::read_to_string(&fichier).unwrap().trim().to_string();
@@ -1354,7 +1354,7 @@ mod tests_lancer_borne {
     #[test]
     fn un_petit_enfant_detache_ne_survit_pas() {
         use std::os::unix::process::CommandExt;
-        let temoin = std::env::temp_dir().join(format!("vanguard-groupe-{}", std::process::id()));
+        let temoin = crate::essais::temporaire().join(format!("vanguard-groupe-{}", std::process::id()));
         let _ = std::fs::remove_file(&temoin);
         let mut c = Command::new("sh");
         c.arg("-c").arg(format!(

@@ -596,7 +596,7 @@ mod tests {
 
     #[test]
     fn dossier_absent_refuse() {
-        let d = std::env::temp_dir().join(format!("vanguard-jw-absent-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-jw-absent-{}", std::process::id()));
         assert!(matches!(analyser(Some(&d), 7), Err(Refus::Dossier(..))));
     }
 
@@ -647,7 +647,7 @@ mod tests {
     /// Un dossier vide n'est jamais sain : chaque règle dit son journal absent.
     #[test]
     fn dossier_vide_jamais_sain() {
-        let d = std::env::temp_dir().join(format!("vanguard-jw-vide-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-jw-vide-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let Ok(a) = analyser(Some(&d), 7) else {
             panic!("dossier vide lisible")

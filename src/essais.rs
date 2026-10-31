@@ -36,6 +36,27 @@ pub fn tube_nomme(chemin: &std::path::Path) -> std::io::Result<()> {
     }
 }
 
+/// Le dossier des fichiers jetables des essais, à la place du dossier temporaire du système (`temp_dir`) : `target/essais-tmp/` du dépôt,
+/// que `cargo clean` vide. Le dossier temporaire du système peut avoir un quota (celui de l'ordinateur de l'auteur en
+/// a un) : un essai qui y écrivait pouvait échouer pour une raison sans rapport. Un sous-dossier par système : un essai
+/// sous Wine et un autre sous Linux, du même numéro de processus, ne s'y croisent pas. Sous Wine, le chemin du dépôt,
+/// connu à la compilation sous Linux, passe par le lecteur Z: qui montre la racine de Linux.
+pub fn temporaire() -> std::path::PathBuf {
+    let depot = env!("CARGO_MANIFEST_DIR");
+    #[cfg(windows)]
+    let depot = match depot.strip_prefix('/') {
+        Some(reste) => format!("Z:\\{}", reste.replace('/', "\\")),
+        None => depot.to_string(),
+    };
+    let dossier = std::path::Path::new(&depot)
+        .join("target")
+        .join("essais-tmp")
+        .join(std::env::consts::OS);
+    // Un dossier qui ne peut pas être créé fait échouer l'essai à sa première écriture, avec le chemin dans l'erreur.
+    let _ = std::fs::create_dir_all(&dossier);
+    dossier
+}
+
 /// Une ligne par saut (nom, raison, endroit), écrite d'un seul appel en ajout : les tests tournent en parallèle, et
 /// une écriture en mode ajout de cette taille ne se mélange pas avec celle d'un autre fil.
 fn noter(fichier: &std::path::Path, nom: &str, raison: &str, ou: &std::panic::Location) {
@@ -53,7 +74,7 @@ mod tests {
     #[test]
     fn un_saut_est_note_avec_son_nom_et_sa_raison() {
         // Pas `reseau::dossier_local` : ce module est aussi inclus par tests/programme.rs, qui ne l'a pas.
-        let dossier = std::env::temp_dir().join(format!("vanguard-essais-sautes-{}", std::process::id()));
+        let dossier = super::temporaire().join(format!("vanguard-essais-sautes-{}", std::process::id()));
         std::fs::create_dir_all(&dossier).unwrap();
         let fichier = dossier.join("sautes.txt");
         let _ = std::fs::remove_file(&fichier);
@@ -67,5 +88,22 @@ mod tests {
         assert!(lignes[0].contains("essais.rs:"), "{lu}");
         assert!(lignes[1].starts_with("a::c\tpas en root\t"), "{lu}");
         let _ = std::fs::remove_dir_all(&dossier);
+    }
+
+    /// B-6 de la relecture des correctifs c6 : les fichiers jetables des essais vont sous `target/` du dépôt, jamais
+    /// dans le dossier temporaire du système ; ils s'y écrivent.
+    #[test]
+    fn les_fichiers_jetables_restent_dans_le_depot() {
+        let d = super::temporaire();
+        let fin = std::path::Path::new("target/essais-tmp").join(std::env::consts::OS);
+        assert!(d.is_absolute() && d.ends_with(&fin), "{}", d.display());
+        // Sous Wine, le dépôt est vu par Z: : la fin du chemin suffit.
+        #[cfg(not(windows))]
+        assert_eq!(d, std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(&fin));
+        assert!(!d.starts_with(std::env::temp_dir()), "{}", d.display());
+        let f = d.join(format!("essai-{}", std::process::id()));
+        std::fs::write(&f, b"x").unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), b"x");
+        let _ = std::fs::remove_file(&f);
     }
 }

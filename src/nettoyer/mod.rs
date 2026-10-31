@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn taille_d_un_dossier_avec_exclusions() {
-        let racine = std::env::temp_dir().join(format!("vanguard-nettoyer-{}", std::process::id()));
+        let racine = crate::essais::temporaire().join(format!("vanguard-nettoyer-{}", std::process::id()));
         let garde = racine.join("garde");
         std::fs::create_dir_all(&garde).unwrap();
         std::fs::create_dir_all(racine.join("sous")).unwrap();
@@ -465,7 +465,7 @@ mod tests {
     #[test]
     fn des_fichiers_creux_ne_font_pas_deborder_les_tailles() {
         assert_eq!(somme([u64::MAX - 1, 1, u64::MAX]), u64::MAX);
-        let racine = std::env::temp_dir().join(format!("vanguard-creux-{}", std::process::id()));
+        let racine = crate::essais::temporaire().join(format!("vanguard-creux-{}", std::process::id()));
         let cache = racine.join("cache");
         let oublie = SystemTime::now() - Duration::from_hours(200 * 24);
         let creux = |f: &str| {
@@ -497,7 +497,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn un_cache_part_en_entier_ou_pas_du_tout() {
-        let racine = std::env::temp_dir().join(format!("vanguard-caches-{}", std::process::id()));
+        let racine = crate::essais::temporaire().join(format!("vanguard-caches-{}", std::process::id()));
         let cache = racine.join("cache");
         let ecrire = |f: &str, jours: u64| {
             let chemin = cache.join(f);

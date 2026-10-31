@@ -637,7 +637,7 @@ fn un_fichier_fabrique_se_lit_entier() {
 #[test]
 fn le_fichier_et_la_memoire_se_lisent_pareil() {
     let octets = fichier_type();
-    let dossier = std::env::temp_dir().join(format!("vanguard-evtx-{}", std::process::id()));
+    let dossier = crate::essais::temporaire().join(format!("vanguard-evtx-{}", std::process::id()));
     std::fs::create_dir_all(&dossier).unwrap();
     let chemin = dossier.join("essai.evtx");
     std::fs::write(&chemin, &octets).unwrap();

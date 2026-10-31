@@ -209,16 +209,16 @@ pub(super) mod essais {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixListener;
 
-    /// Un faux démon sur une prise Unix d'un dossier jetable : il lit la demande, la garde, et répond `reponse`
-    /// (une réponse par connexion, autant que `reponses`).
+    /// Un faux démon sur une prise Unix du dossier temporaire : il lit la demande, la garde, et répond `reponse`
+    /// (une réponse par connexion, autant que `reponses`). Pas sous `essais::temporaire()` : le chemin d'une prise
+    /// tient en 108 octets (SUN_LEN), que le dépôt peut dépasser ; posée seule, sans dossier, elle n'occupe aucun bloc
+    /// du quota.
     pub(crate) fn faux_demon(
         nom: &str,
         reponses: Vec<Vec<u8>>,
     ) -> (std::path::PathBuf, std::thread::JoinHandle<Vec<String>>) {
-        let dossier = std::env::temp_dir().join(format!("vanguard-http-unix-{nom}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dossier);
-        std::fs::create_dir_all(&dossier).unwrap();
-        let chemin = dossier.join("demon.sock");
+        let chemin = std::env::temp_dir().join(format!("vanguard-http-unix-{nom}-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&chemin);
         let l = UnixListener::bind(&chemin).unwrap();
         let fil = std::thread::spawn(move || {
             let mut demandes = Vec::new();

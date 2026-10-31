@@ -199,7 +199,7 @@ mod tests {
         assert!(texte(&vec![b'a'; TAILLE_MAX + 1]).is_none());
         assert!(texte("a\n".repeat(LIGNES_MAX + 1).as_bytes()).is_none());
         assert!(texte(b"\xff\xfe").is_none());
-        let d = std::env::temp_dir().join(format!("vanguard-lecteurs-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-lecteurs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let f = d.join("release");

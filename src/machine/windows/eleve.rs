@@ -1088,7 +1088,7 @@ mod tests {
     /// Un script dont les octets ne sont plus ceux de l'empreinte n'est jamais lancé (PowerShell n'est pas appelé).
     #[test]
     fn un_script_change_n_est_pas_lance() {
-        let d = std::env::temp_dir().join(format!("vanguard-script-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-script-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let chemin = d.join("correction-essai.ps1");
         std::fs::write(&chemin, b"Write-Host 'change'").unwrap();
@@ -1118,7 +1118,7 @@ mod tests {
 
     #[test]
     fn une_dll_a_cote_du_programme_se_voit() {
-        let dossier = std::env::temp_dir().join(format!("vanguard-dll-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-dll-{}", std::process::id()));
         std::fs::create_dir_all(&dossier).unwrap();
         std::fs::write(dossier.join("vanguard.exe"), b"").unwrap();
         assert_eq!(dll_a_cote(&dossier), None);

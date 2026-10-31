@@ -406,7 +406,7 @@ fn fichier_trop_gros_et_non_ordinaire() {
     };
     let a = analyser(&[0u8; 11], "gros", &bornes, &mut |_, _| panic!("rien n'est lu"));
     assert_eq!(a.parties[0].manques, [Raison::TropGros]);
-    let dossier = std::env::temp_dir().join(format!("vanguard-analyse-{}", std::process::id()));
+    let dossier = crate::essais::temporaire().join(format!("vanguard-analyse-{}", std::process::id()));
     std::fs::create_dir_all(&dossier).unwrap();
     assert!(analyser_fichier(&dossier, &Bornes::default(), &mut |_, _| {}).is_err());
     let f = dossier.join("a.txt");

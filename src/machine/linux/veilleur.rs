@@ -3190,7 +3190,7 @@ mod tests {
     /// voie ; un programme de Vanguard, jamais ; sans liste, le jugement de COM-PRG-001 seul.
     #[test]
     fn empreinte_connue_vue_au_lancement() {
-        let dossier = std::env::temp_dir().join(format!("vanguard-veilleur-empreinte-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-veilleur-empreinte-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dossier);
         std::fs::create_dir_all(&dossier).unwrap();
         let fichier = dossier.join("facture");
@@ -3826,7 +3826,7 @@ mod tests {
     /// n'allume rien : la veille qui gèle ne s'allume que par le geste (relecture S2c, Fable 6).
     #[test]
     fn marques_d_avant_adoptees() {
-        let d = std::env::temp_dir().join(format!("vanguard-marques-d-avant-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-marques-d-avant-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         voulues::adopter_d_avant_dans(&d, Defense::Rancongiciel);

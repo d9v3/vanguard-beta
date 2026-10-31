@@ -424,7 +424,7 @@ mod tests {
     /// quels, et met ses faits dans la chronologie.
     #[test]
     fn partie_des_traces() {
-        let racine = std::env::temp_dir().join(format!("vanguard-traces-vanguard-{}", std::process::id()));
+        let racine = crate::essais::temporaire().join(format!("vanguard-traces-vanguard-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&racine);
         let (dossier, donnees) = (racine.join("traces"), racine.join("donnees"));
         std::fs::create_dir_all(&dossier).unwrap();
@@ -491,7 +491,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn tube_ou_lien_a_la_place_d_un_etat() {
-        let racine = std::env::temp_dir().join(format!("vanguard-traces-tube-{}", std::process::id()));
+        let racine = crate::essais::temporaire().join(format!("vanguard-traces-tube-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&racine);
         let (dossier, donnees) = (racine.join("traces"), racine.join("donnees"));
         std::fs::create_dir_all(&dossier).unwrap();

@@ -27,7 +27,7 @@ struct Sortie {
 /// Un dossier personnel neuf pour chaque lancement.
 fn maison_jetable() -> PathBuf {
     static NUMERO: AtomicUsize = AtomicUsize::new(0);
-    let d = std::env::temp_dir().join(format!(
+    let d = essais::temporaire().join(format!(
         "vanguard-essai-{}-{}",
         std::process::id(),
         NUMERO.fetch_add(1, Ordering::Relaxed)
@@ -631,7 +631,7 @@ fn scan_de_cette_machine_en_json() {
 #[test]
 fn sauvegarde_puis_restauration() {
     // Hors du dossier personnel jetable : le fichier doit passer d'un lancement à l'autre.
-    let fichier = std::env::temp_dir().join(format!("vanguard-sauvegarde-essai-{}.json", std::process::id()));
+    let fichier = essais::temporaire().join(format!("vanguard-sauvegarde-essai-{}.json", std::process::id()));
     let chemin = fichier.to_str().unwrap();
     let s = vanguard("fr", &["exporter", chemin], "", 60);
     assert_eq!(s.code, Some(0), "{}", s.erreurs);

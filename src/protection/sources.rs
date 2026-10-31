@@ -222,7 +222,7 @@ mod tests {
     /// Un fichier connu l'est pour toutes les sources ; changé (autre taille), il est rehaché, pas cru d'avance.
     #[test]
     fn un_fichier_connu_est_rehache_s_il_change() {
-        let d = std::env::temp_dir().join(format!("vanguard-sources-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-sources-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let f = d.join("outil");
@@ -241,7 +241,7 @@ mod tests {
     /// le compte comme non haché, puis ne hache plus rien tant que ce fil reste pris, sans attendre de nouveau.
     #[test]
     fn un_fichier_qui_ne_repond_pas_ne_bloque_pas() {
-        let d = std::env::temp_dir().join(format!("vanguard-sources-fige-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-sources-fige-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let f = d.join("outil");
@@ -267,7 +267,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn un_tube_nomme_ne_se_hache_pas() {
-        let d = std::env::temp_dir().join(format!("vanguard-sources-tube-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-sources-tube-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let tube = d.join("outil");

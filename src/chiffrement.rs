@@ -695,7 +695,7 @@ mod tests {
 
     #[test]
     fn cle_locale_au_compte_seul() {
-        let d = std::env::temp_dir().join(format!("vanguard-cle-locale-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-cle-locale-{}", std::process::id()));
         let chemin = d.join("cle-donnees");
         let cle = Cle::nouvelle().unwrap();
         ecrire_cle_locale(&cle, &chemin).unwrap();
@@ -711,7 +711,7 @@ mod tests {
     }
 
     fn dossier(nom: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("vanguard-chiffrement-{nom}-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-chiffrement-{nom}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(d.join("donnees")).unwrap();
         d

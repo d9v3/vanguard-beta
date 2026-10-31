@@ -474,7 +474,7 @@ mod tests {
     /// problème nouveau » : tout est nouveau, et c'est dit.
     #[test]
     fn etat_forge_ne_tait_rien() {
-        let d = std::env::temp_dir().join(format!("vanguard-entretien-forge-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-entretien-forge-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         assert!(lire_etat_dans(&d).is_none());

@@ -1473,7 +1473,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn variables_de_proxy_trouvees_dans_les_deux_casses() {
-        let f = std::env::temp_dir().join(format!("vanguard-test-proxy-{}", std::process::id()));
+        let f = crate::essais::temporaire().join(format!("vanguard-test-proxy-{}", std::process::id()));
         std::fs::write(
             &f,
             "export HTTPS_PROXY=http://10.0.0.1:3128\n# http_proxy=http://commentaire\nall_proxy=socks5://h\n",
@@ -1601,7 +1601,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn zone_de_firewalld_lue_dans_sa_configuration() {
-        let d = std::env::temp_dir().join(format!("vanguard-reparer-firewalld-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-reparer-firewalld-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         assert_eq!(zone_firewalld(&d), None);
         let ecrire = |f: &str, t: &str| {
@@ -1631,7 +1631,7 @@ mod tests {
     #[test]
     fn firewalld_masque() {
         use std::os::unix::fs::symlink;
-        let d = std::env::temp_dir().join(format!("vanguard-reparer-masque-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-reparer-masque-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         for dossier in ["etc/systemd/system", "run/systemd/system"] {
             std::fs::create_dir_all(d.join(dossier)).unwrap();

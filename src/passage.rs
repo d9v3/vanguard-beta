@@ -717,7 +717,7 @@ mod tests {
 
     #[test]
     fn donnees_d_avant_deplacees_sans_rien_perdre() {
-        let base = std::env::temp_dir().join(format!("vanguard-passage-{}", std::process::id()));
+        let base = crate::essais::temporaire().join(format!("vanguard-passage-{}", std::process::id()));
         let (vieux, nouveau) = (base.join("ancien"), base.join("nouveau"));
         std::fs::create_dir_all(vieux.join("quarantaine")).unwrap();
         std::fs::write(vieux.join("historique.json"), "avant").unwrap();

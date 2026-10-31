@@ -1230,7 +1230,7 @@ mod tests {
     /// La copie d'avant se remet seulement sur le fichier que Vanguard a écrit, jamais sur une modification faite depuis.
     #[test]
     fn copie_remise_seulement_sur_le_fichier_ecrit() {
-        let d = std::env::temp_dir().join(format!("vanguard-blocage-copie-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-blocage-copie-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(d.join(".claude")).unwrap();
         let copies = crate::socle::dossier_local().join("blocage").join("copies");
@@ -1260,7 +1260,7 @@ mod tests {
     /// telle quelle, même avec la bonne empreinte.
     #[test]
     fn copie_forgee_jamais_remise() {
-        let d = std::env::temp_dir().join(format!("vanguard-blocage-copie-forgee-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-blocage-copie-forgee-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(d.join("etc")).unwrap();
         std::fs::create_dir_all(d.join(".claude")).unwrap();
@@ -1332,7 +1332,7 @@ mod tests {
     fn un_processus_du_compte_s_arrete_sans_commande() {
         use std::os::unix::process::ExitStatusExt;
         // Une copie de sleep hors des dossiers du système : un programme du système n'est jamais arrêté.
-        let dossier = std::env::temp_dir().join(format!("vanguard-arret-compte-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-arret-compte-{}", std::process::id()));
         std::fs::create_dir_all(&dossier).unwrap();
         // Le chemin réel : sous macOS, /var/folders est un lien vers /private/var/folders, que le système rend.
         let dossier = dossier.canonicalize().unwrap();
@@ -1664,7 +1664,7 @@ mod tests {
         });
         assert!(preparer(&vanguard, &ctx, false).is_err());
         // Un interpréteur désigné comme fichier à isoler ne l'est jamais : sans processus en marche, rien à faire.
-        let dossier = std::env::temp_dir().join(format!("vanguard-blocage-python-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-blocage-python-{}", std::process::id()));
         std::fs::create_dir_all(&dossier).unwrap();
         let python = dossier.join("python3.12");
         std::fs::write(&python, b"x").unwrap();
@@ -1685,7 +1685,7 @@ mod tests {
     /// chemin de la quarantaine, et l'annulation le remet à sa place.
     #[test]
     fn preuve_relevee_avant_la_quarantaine() {
-        let d = std::env::temp_dir().join(format!("vanguard-gestes-preuve-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-gestes-preuve-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let fichier = d.join("facture.pdf.exe");

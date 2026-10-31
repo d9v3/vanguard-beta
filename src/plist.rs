@@ -947,7 +947,7 @@ mod tests {
 
     #[test]
     fn fichier_borne_et_tube_refuse() {
-        let dossier = std::env::temp_dir().join(format!("vanguard-plist-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-plist-{}", std::process::id()));
         std::fs::create_dir_all(&dossier).unwrap();
         let f = dossier.join("a.plist");
         std::fs::write(&f, XML).unwrap();

@@ -1837,7 +1837,7 @@ mod tests {
 
     #[test]
     fn notes_ecrites_et_relues() {
-        let f = std::env::temp_dir().join(format!("vanguard-sauvegarde-{}", std::process::id()));
+        let f = crate::essais::temporaire().join(format!("vanguard-sauvegarde-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&f);
         std::fs::create_dir_all(&f).unwrap();
         assert_eq!(charger_de(&f), Notes::default());
@@ -1880,7 +1880,7 @@ mod tests {
     /// elle n'est pas crue, et c'est dit.
     #[test]
     fn note_forgee_ne_fait_rien_annuler() {
-        let f = std::env::temp_dir().join(format!("vanguard-sauvegarde-forgee-{}", std::process::id()));
+        let f = crate::essais::temporaire().join(format!("vanguard-sauvegarde-forgee-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&f);
         std::fs::create_dir_all(&f).unwrap();
         let vraie = MiseEnPlace::TimeMachine {
@@ -1914,7 +1914,7 @@ mod tests {
         // Effacée hors de Vanguard : pas crue non plus (rien n'est dit « en place » d'après elle).
         std::fs::remove_file(f.join(NOTES)).unwrap();
         assert!(charger_dans(&f).is_err());
-        let vide = std::env::temp_dir().join(format!("vanguard-sauvegarde-sans-note-{}", std::process::id()));
+        let vide = crate::essais::temporaire().join(format!("vanguard-sauvegarde-sans-note-{}", std::process::id()));
         assert!(note_douteuse_de(&vide).is_none());
         let _ = std::fs::remove_dir_all(&f);
     }
@@ -1973,7 +1973,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn schemas_de_reglages() {
-        let d = std::env::temp_dir().join(format!("vanguard-sauvegarde-schemas-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-sauvegarde-schemas-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let (compte, systeme) = (d.join("compte"), d.join("systeme"));
         for dossier in [&compte, &systeme] {

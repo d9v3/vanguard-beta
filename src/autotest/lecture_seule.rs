@@ -423,6 +423,11 @@ mod tests {
                 "module de tests (cfg(test)) : pose l'arborescence fabriquée d'un cas du corpus dans un dossier jetable",
             ),
             (
+                "machine/linux/http_unix.rs",
+                1,
+                "module d'essais (cfg(test)) : retire la prise Unix d'un faux démon laissée par un ancien processus",
+            ),
+            (
                 "machine/mod.rs",
                 1,
                 "ports bloqués : après une correction acceptée, hors bilan",

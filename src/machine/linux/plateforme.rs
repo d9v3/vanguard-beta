@@ -519,7 +519,7 @@ mod tests {
 
     #[test]
     fn service_actif_selon_son_groupe() {
-        let racine = std::env::temp_dir().join(format!("vanguard-cgroup-{}", std::process::id()));
+        let racine = crate::essais::temporaire().join(format!("vanguard-cgroup-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&racine);
         let ecrire = |c: &str, t: &str| {
             let f = racine.join(c);

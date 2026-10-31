@@ -470,7 +470,7 @@ mod tests {
         assert_eq!(tpm_de_ps("  false "), Some(false));
         assert_eq!(tpm_de_ps(""), None);
         assert_eq!(tpm_de_ps("Get-Tpm : access denied"), None);
-        let dossier = std::env::temp_dir().join(format!("vanguard-tpm-essai-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-tpm-essai-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dossier);
         assert_eq!(tpm_dans(&dossier), None);
         std::fs::create_dir_all(&dossier).unwrap();

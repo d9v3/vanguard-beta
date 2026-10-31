@@ -1534,7 +1534,7 @@ mod tests {
     /// Un fichier trop gros ou qui n'est pas un fichier ordinaire (un tube nommé bloquerait) n'est pas lu.
     #[test]
     fn fichiers_refuses_a_l_ouverture() {
-        let d = std::env::temp_dir().join(format!("vanguard-gvdb-ouvrir-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-gvdb-ouvrir-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         assert!(matches!(Gvdb::ouvrir(&d.join("absent")), Ok(None)));

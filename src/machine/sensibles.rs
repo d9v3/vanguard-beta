@@ -436,7 +436,7 @@ mod tests {
 
     #[test]
     fn parcours_d_un_dossier_d_essai() {
-        let base = std::env::temp_dir().join(format!("vanguard-sensibles-{}", std::process::id()));
+        let base = crate::essais::temporaire().join(format!("vanguard-sensibles-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let profond = base.join("a/b/c/d");
         std::fs::create_dir_all(&profond).unwrap();

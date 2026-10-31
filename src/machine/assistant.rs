@@ -485,8 +485,8 @@ mod tests {
             return crate::essais::saute("/usr/bin n'appartient pas à root ici (espace de noms utilisateur)");
         }
         assert!(chemin_sur(std::path::Path::new("/usr/bin")));
-        assert!(!chemin_sur(&std::env::temp_dir().join("absent-vanguard")));
-        let d = std::env::temp_dir().join(format!("vanguard-chemin-sur-{}", std::process::id()));
+        assert!(!chemin_sur(&crate::essais::temporaire().join("absent-vanguard")));
+        let d = crate::essais::temporaire().join(format!("vanguard-chemin-sur-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         if crate::socle::euid() != 0 {
             assert!(!chemin_sur(&d));

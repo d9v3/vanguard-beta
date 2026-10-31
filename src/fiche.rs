@@ -1067,7 +1067,7 @@ mod tests {
     /// Un dossier jetable qui tient lieu de racine du système.
     #[cfg(target_os = "linux")]
     fn racine(nom: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("vanguard-fiche-{nom}-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-fiche-{nom}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d
     }

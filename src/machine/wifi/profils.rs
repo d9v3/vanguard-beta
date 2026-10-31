@@ -454,7 +454,7 @@ mod tests {
         if crate::socle::euid() == 0 {
             return;
         }
-        let dossier = std::env::temp_dir().join(format!("vanguard-profils-{}", std::process::id()));
+        let dossier = crate::essais::temporaire().join(format!("vanguard-profils-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dossier);
         std::fs::create_dir_all(&dossier).unwrap();
         std::fs::write(dossier.join("Salon.nmconnection"), "[wifi]\nssid=Salon\n").unwrap();

@@ -1430,7 +1430,7 @@ mod tests_cle {
     #[test]
     fn volumes_lus_dans_sys() {
         use std::os::unix::fs::symlink;
-        let r = std::env::temp_dir().join(format!("vanguard-antivirus-volumes-{}", std::process::id()));
+        let r = crate::essais::temporaire().join(format!("vanguard-antivirus-volumes-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&r);
         let ecrire = |chemin: &str, texte: &str| {
             let f = sous(&r, chemin);
@@ -1656,7 +1656,7 @@ mod tests {
 
     #[test]
     fn dossiers_analyses_une_seule_fois() {
-        let base = std::env::temp_dir().join(format!("vanguard-cibles-{}", std::process::id()));
+        let base = crate::essais::temporaire().join(format!("vanguard-cibles-{}", std::process::id()));
         let bureau = base.join("Bureau");
         std::fs::create_dir_all(bureau.join("sous")).unwrap();
         std::os::unix::fs::symlink(&bureau, base.join("Desktop")).unwrap();
@@ -1679,7 +1679,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn base_dans_le_dossier_de_freshclam_conf() {
-        let d = std::env::temp_dir().join(format!("vanguard-base-clamav-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-base-clamav-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let conf = format!(

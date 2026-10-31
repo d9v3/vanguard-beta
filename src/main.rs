@@ -5166,6 +5166,63 @@ mod tests_menu {
         assert!(fautes.is_empty(), "refus de l'unsafe :\n{}", fautes.join("\n"));
     }
 
+    /// B-6 de la relecture des correctifs c6 : un essai écrit ses fichiers jetables sous `essais::temporaire()` (dans
+    /// `target/` du dépôt), jamais dans le dossier temporaire du système, qui peut avoir un quota. Restent les usages du
+    /// programme lui-même et les essais qui jugent ce dossier-là, comptés ici fichier par fichier : un usage de plus
+    /// arrête ce test.
+    #[test]
+    fn les_essais_n_ecrivent_pas_dans_le_dossier_temporaire() {
+        // En deux morceaux : ce test ne se compte pas lui-même.
+        let aiguille = concat!("std::env::", "temp_dir()");
+        let permis: std::collections::BTreeMap<&str, usize> = [
+            // Le programme : bac à sable, fichier pour ClamAV, disques exclus, dossiers risqués, traces de Windows.
+            ("src/protection/isoler.rs", 1),
+            ("src/protection/antivirus.rs", 1),
+            ("src/protection/cle.rs", 1),
+            ("src/traces/windows.rs", 2),
+            // Le programme (dossier risqué) et un essai qui juge le dossier temporaire du compte.
+            ("src/protection/sortantes.rs", 2),
+            // Une prise Unix d'essai : son chemin tient en 108 octets, que le dépôt peut dépasser.
+            ("src/machine/linux/http_unix.rs", 1),
+            // Des essais qui jugent ce dossier-là, sans y écrire.
+            ("src/verifier_cle.rs", 1),
+            ("src/protection/distance.rs", 1),
+            ("src/essais.rs", 1),
+            ("tests/programme.rs", 1),
+        ]
+        .into_iter()
+        .collect();
+        let racine = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut trouves = std::collections::BTreeMap::new();
+        let mut a_voir = vec![racine.join("src"), racine.join("tests")];
+        let mut lus = 0;
+        while let Some(d) = a_voir.pop() {
+            for e in std::fs::read_dir(&d).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    a_voir.push(p);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    lus += 1;
+                    let n = std::fs::read_to_string(&p).unwrap().matches(aiguille).count();
+                    if n > 0 {
+                        let nom = p.strip_prefix(racine).unwrap().to_string_lossy().replace('\\', "/");
+                        trouves.insert(nom, n);
+                    }
+                }
+            }
+        }
+        assert!(lus > 300, "trop peu de fichiers lus : {lus}");
+        let trop: Vec<String> = trouves
+            .iter()
+            .filter(|(f, n)| permis.get(f.as_str()).is_none_or(|p| *n > p))
+            .map(|(f, n)| format!("{f} ({n})"))
+            .collect();
+        assert!(
+            trop.is_empty(),
+            "dossier temporaire du système dans des essais, à remplacer par essais::temporaire() : {trop:?}"
+        );
+    }
+
     /// La garde de l'`unsafe` sur des fichiers inventés : ce qu'elle laisse passer, et chaque contournement qu'elle
     /// arrête (levée dans un lecteur fuzzé, par cfg_attr, sans raison ou à côté d'autre chose sur sa ligne, sur un
     /// module dont d'autres hériteraient, refus rangé ailleurs qu'en tête du fichier…).

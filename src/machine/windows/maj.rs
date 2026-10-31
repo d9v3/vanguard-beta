@@ -809,7 +809,7 @@ mod tests {
     /// direct (PowerShell reprend, par le PATH).
     #[test]
     fn winget_par_son_chemin_complet() {
-        let local = std::env::temp_dir().join(format!("vanguard-winget-{}", std::process::id()));
+        let local = crate::essais::temporaire().join(format!("vanguard-winget-{}", std::process::id()));
         let apps = local.join(r"Microsoft\WindowsApps");
         std::fs::create_dir_all(&apps).unwrap();
         assert_eq!(winget_du_store(Some(local.as_os_str())), None);

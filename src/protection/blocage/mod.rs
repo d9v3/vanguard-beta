@@ -1016,7 +1016,7 @@ mod tests {
     /// le fichier changé sans sceau se lit vide, et la menace est redite.
     #[test]
     fn cle_ajoutee_hors_de_vanguard_ne_tait_plus_l_echec() {
-        let d = std::env::temp_dir().join(format!("vanguard-blocage-signalees-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-blocage-signalees-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let lu = || signalees_lues(crate::sceau::juge_dans(&d, crate::sceau::BLOCAGE_SIGNALEES));
         crate::sceau::ecrire_dans(&d, crate::sceau::BLOCAGE_SIGNALEES, b"fichier:/home/alice/a").unwrap();

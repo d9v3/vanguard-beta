@@ -135,7 +135,7 @@ mod tests {
     use natif::present;
 
     fn jetable(nom: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("vanguard-paquets-{nom}-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-paquets-{nom}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d

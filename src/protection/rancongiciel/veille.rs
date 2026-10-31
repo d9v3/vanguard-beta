@@ -690,7 +690,7 @@ mod tests {
     #[test]
     fn banc_reel_rafale_de_chiffrement() {
         use std::io::Write;
-        let base = std::env::temp_dir().join(format!(
+        let base = crate::essais::temporaire().join(format!(
             "vanguard-rancon-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
@@ -847,7 +847,7 @@ mod tests {
     /// Une veille sur un dossier jetable, pour éprouver le cumul lent, la saturation et le vieillissement des
     /// drapeaux ; `None` si notify ne démarre pas ici.
     fn veille_jetable(nom: &str) -> Option<(Veille, PathBuf)> {
-        let base = std::env::temp_dir().join(format!("vanguard-veille-{nom}-{}", std::process::id()));
+        let base = crate::essais::temporaire().join(format!("vanguard-veille-{nom}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).ok()?;
         let v = Veille::demarrer(std::slice::from_ref(&base), HashSet::new());

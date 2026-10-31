@@ -2282,7 +2282,7 @@ fn journal_system_lu_en_entier() {
 #[test]
 fn dossier_hors_delai() {
     // Un dossier d'essai, pas un fichier d'état de Vanguard : hors du dossier des données, retiré à la fin.
-    let dossier = std::env::temp_dir().join(format!("vanguard-essai-delai-{}", std::process::id()));
+    let dossier = crate::essais::temporaire().join(format!("vanguard-essai-delai-{}", std::process::id()));
     std::fs::create_dir_all(&dossier).unwrap();
     let f = crate::journaux_windows::evtx::tests::fichier(&[crate::journaux_windows::evtx::tests::morceau_type(1)]);
     std::fs::write(dossier.join("System.evtx"), f).unwrap();

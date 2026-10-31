@@ -442,7 +442,7 @@ mod tests {
     fn releve_d_un_processus_et_de_son_fichier() {
         let moi = std::process::id();
         // Le programme des tests dépasse la borne du hachage : un petit fichier inventé à sa place.
-        let fichier = std::env::temp_dir().join(format!("vanguard-preuve-{moi}.sh"));
+        let fichier = crate::essais::temporaire().join(format!("vanguard-preuve-{moi}.sh"));
         std::fs::write(&fichier, b"#!/bin/sh\necho essai\n").unwrap();
         let p = relever_programme(Some(moi), Some(&fichier));
         let _ = std::fs::remove_file(&fichier);
@@ -472,7 +472,7 @@ mod tests {
     /// dans les deux langues, et le relevé est quand même rendu.
     #[test]
     fn ce_qui_ne_se_lit_pas_est_dit_impossible() {
-        let fichier = std::env::temp_dir().join(format!("vanguard-preuve-absent-{}", std::process::id()));
+        let fichier = crate::essais::temporaire().join(format!("vanguard-preuve-absent-{}", std::process::id()));
         let p = relever_programme(Some(u32::MAX - 7), Some(&fichier));
         assert!(p.fichier.as_ref().is_some_and(|f| f.sha256.is_none()));
         assert!(p.impossible.len() >= 2, "{:?}", p.impossible);

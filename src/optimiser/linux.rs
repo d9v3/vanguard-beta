@@ -1497,7 +1497,7 @@ mod tests {
     /// spéciaux revient telle quelle, et « absente » retire la ligne.
     #[test]
     fn option_posee_remise_puis_retiree() {
-        let f = std::env::temp_dir().join(format!("vanguard-test-option-sed-{}", std::process::id()));
+        let f = crate::essais::temporaire().join(format!("vanguard-test-option-sed-{}", std::process::id()));
         std::fs::write(&f, "# réglage\nPARTICIPATE=\"yes\"\nAUTRE=1\n").unwrap();
         let chemin: &'static str = Box::leak(f.display().to_string().into_boxed_str());
         let o = Changement::Option {
@@ -1688,7 +1688,7 @@ mod tests {
 
     /// Une arborescence de systemd inventée, pour le système ou le compte.
     fn dossiers_inventes(nom: &str, utilisateur: bool) -> (PathBuf, DossiersUnites) {
-        let d = std::env::temp_dir().join(format!("vanguard-optimiser-unites-{nom}-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-optimiser-unites-{nom}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let dossiers = DossiersUnites::du_systeme(
             &d,
@@ -1834,7 +1834,7 @@ mod tests {
 
     #[test]
     fn lit_une_option_d_un_fichier() {
-        let f = std::env::temp_dir().join(format!("vanguard-test-option-{}", std::process::id()));
+        let f = crate::essais::temporaire().join(format!("vanguard-test-option-{}", std::process::id()));
         std::fs::write(&f, "# commentaire\nENABLED=1\n").unwrap();
         let chemin: &'static str = Box::leak(f.display().to_string().into_boxed_str());
         let o = Changement::Option {
@@ -1849,7 +1849,7 @@ mod tests {
 
     /// Un dossier jetable par essai : les essais tournent en même temps.
     fn dossier_jetable(nom: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("vanguard-test-demarrage-{nom}-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-test-demarrage-{nom}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
