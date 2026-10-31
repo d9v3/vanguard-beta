@@ -347,8 +347,9 @@ fn regarder_le_contenu(contenu: &[u8], montre: &str, signes: &mut Vec<Signe>, ma
     }
 }
 
-/// Le nom d'une entrée zip : UTF-8 si le drapeau le dit, sinon octet par octet ; sa fin seule, où sont l'extension et
-/// le dernier dossier (un long chemin de dossiers ne cache pas un programme).
+/// Le nom d'une entrée zip : UTF-8 si le drapeau le dit, sinon octet par octet ; son dernier composant seul, où est
+/// l'extension (un long chemin de dossiers ne cache pas un programme). Il se juge entier : coupé avant, un nom de plus
+/// de 120 caractères perdait son extension (relecture du lot campagne 6).
 fn nom_d_entree(nom: &[u8], utf8: bool) -> String {
     let nom = if utf8 {
         String::from_utf8_lossy(nom).into_owned()
@@ -356,7 +357,26 @@ fn nom_d_entree(nom: &[u8], utf8: bool) -> String {
         crate::analyse::lecture::latin1_ou_utf8(nom)
     };
     let fin = nom.rsplit(['/', '\\']).next().unwrap_or(&nom);
-    crate::ui::couper(&crate::ui::affichable(fin), 120)
+    crate::ui::affichable(fin)
+}
+
+/// Un nom d'entrée prêt à montrer : sa fin, où est l'extension, quand il dépasse 120 colonnes.
+fn fin_montree(nom: &str) -> String {
+    const LARGEUR: usize = 120;
+    if crate::ui::largeur_affichee(nom) <= LARGEUR {
+        return nom.to_string();
+    }
+    let mut fin: Vec<char> = Vec::new();
+    let mut l = 0;
+    for c in nom.chars().rev() {
+        // Une colonne gardée pour « … ».
+        if l + crate::ui::largeur_car(c) >= LARGEUR {
+            break;
+        }
+        l += crate::ui::largeur_car(c);
+        fin.push(c);
+    }
+    std::iter::once('…').chain(fin.into_iter().rev()).collect()
 }
 
 /// Les noms d'une archive zip, lus sans rien décompresser par `archives::zip::parcourir` (le lecteur fuzzé de
@@ -440,7 +460,7 @@ fn regarder_le_zip(contenu: &[u8], montre: &str, signes: &mut Vec<Signe>, manque
             ),
         ));
     }
-    let dangereux: Vec<&String> = noms
+    let dangereux: Vec<String> = noms
         .iter()
         .filter(|n| {
             matches!(
@@ -448,6 +468,7 @@ fn regarder_le_zip(contenu: &[u8], montre: &str, signes: &mut Vec<Signe>, manque
                 Some(Classe::Programme | Classe::Raccourci | Classe::ImageDisque | Classe::OneNote)
             ) || !telechargement::nature(n, b"").is_empty()
         })
+        .map(|n| fin_montree(n))
         .collect();
     if !dangereux.is_empty() {
         signes.push((
@@ -683,6 +704,23 @@ mod tests {
             s.iter().any(|(n, t)| *n == Niveau::Eleve && t.contains("scan.js")),
             "{s:?}"
         );
+    }
+
+    /// Relecture du lot campagne 6 : un nom d'entrée de plus de 120 caractères se juge entier ; coupé avant d'être
+    /// jugé, il perdait son extension et le programme passait pour une archive anodine.
+    #[test]
+    fn nom_d_entree_long_juge_entier() {
+        let long = format!("{}.exe", "facture_".repeat(16));
+        assert!(long.chars().count() > 120);
+        let z = zip(&[("lisez-moi.txt", b"x", false), (long.as_str(), b"y", false)]);
+        let (s, _) = juger("documents.zip", "application/zip", &z);
+        assert!(
+            s.iter()
+                .any(|(n, t)| *n == Niveau::Eleve && t.contains("programme") && t.contains(".exe")),
+            "{s:?}"
+        );
+        // Ce qui est montré reste court.
+        assert!(s.iter().all(|(_, t)| crate::ui::largeur_affichee(t) < 400), "{s:?}");
     }
 
     /// La dernière entrée du répertoire annonce un nom plus long que ce qui reste du fichier : l'archive se dit
