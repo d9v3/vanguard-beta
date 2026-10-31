@@ -10,8 +10,9 @@
 //!   relocalisations présentes et pas retirées (sans elles, Windows ne déplace pas l'image, bit ou non) ; CFG et CET
 //!   affichés seulement ;
 //! - Mac (Mach-O universel, `analyse::macho`) : les deux tranches (arm64, x86_64), chacune lue et vérifiée : MH_EXECUTE,
-//!   MH_PIE, sans MH_ALLOW_STACK_EXECUTION, __PAGEZERO sans droits, aucun segment écrivable et exécutable, et la
-//!   signature (LC_CODE_SIGNATURE) que macOS exige sur arm64.
+//!   MH_PIE, sans MH_ALLOW_STACK_EXECUTION, __PAGEZERO sans droits (de 4 Gio en 64 bits), aucun segment écrivable et
+//!   exécutable (droits initiaux), et la signature (LC_CODE_SIGNATURE, non vide et dans la tranche) que macOS exige
+//!   sur arm64.
 //!
 //! Chaque programme doit aussi être d'une architecture qu'on livre (ELF 64 bits petit-boutiste x86-64, PE32+ AMD64,
 //! tranches arm64 et x86_64) et, avec `--attendu`, du système que le script annonce : un ELF posé à la place du .exe
@@ -30,6 +31,8 @@ use crate::ui::*;
 
 /// Au-delà, ce n'est pas un programme de Vanguard : lu en entier en mémoire, le fichier est borné.
 const TAILLE_MAX: u64 = 512 << 20;
+/// La __PAGEZERO que ld64 donne à un exécutable 64 bits : les 4 premiers Gio, toute adresse qui tient sur 32 bits.
+const PAGE_ZERO_64: u64 = 1 << 32;
 
 /// Une protection exigée, nommée sans dépendre de la langue (les essais la reconnaissent ainsi).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -668,18 +671,31 @@ fn juger_tranche(a: &str, m: &macho::MachO, j: &mut Jugement) {
             ),
         );
     }
-    if !m
+    let page_zero = m
         .segments
         .iter()
-        .any(|s| s.nom == "__PAGEZERO" && s.adresse == 0 && s.maxprot == 0 && s.initprot == 0)
-    {
-        j.manque(
+        .find(|s| s.nom == "__PAGEZERO" && s.adresse == 0 && s.maxprot == 0 && s.initprot == 0);
+    match page_zero {
+        None => j.manque(
             Protection::PageZero,
             trf!(
                 "{a} : __PAGEZERO absent ou accessible",
                 "{a}: __PAGEZERO missing or accessible"
             ),
-        );
+        ),
+        // En 64 bits, ld64 la fait de 4 Gio : un pointeur tronqué à 32 bits tombe alors dedans et plante, au lieu
+        // de lire ou d'écrire de la vraie mémoire. Une seule page ne garde que contre le pointeur nul.
+        Some(zero) if m.bits64 && zero.taille_memoire < PAGE_ZERO_64 => {
+            let taille = zero.taille_memoire;
+            j.manque(
+                Protection::PageZero,
+                trf!(
+                    "{a} : __PAGEZERO de 0x{taille:X} octets, moins des 4 Gio attendus en 64 bits",
+                    "{a}: __PAGEZERO of 0x{taille:X} bytes, less than the 4 GiB expected on 64-bit"
+                ),
+            );
+        }
+        Some(_) => {}
     }
     for s in m.segments.iter().filter(|s| s.ecrivable_executable()) {
         let nom = &s.nom;
@@ -697,6 +713,14 @@ fn juger_tranche(a: &str, m: &macho::MachO, j: &mut Jugement) {
             trf!(
                 "{a} : signature absente (LC_CODE_SIGNATURE, exigée par macOS sur arm64)",
                 "{a}: signature missing (LC_CODE_SIGNATURE, required by macOS on arm64)"
+            ),
+        );
+    } else if m.cpu == macho::CPU_ARM64 && !m.signature_dans_le_fichier {
+        j.manque(
+            Protection::Signature,
+            trf!(
+                "{a} : signature vide ou hors de la tranche (LC_CODE_SIGNATURE ne signe rien)",
+                "{a}: signature empty or outside the slice (LC_CODE_SIGNATURE signs nothing)"
             ),
         );
     }
@@ -977,6 +1001,35 @@ mod tests {
         assert_eq!(manques(&d, &faux), [Protection::Tranche]);
         let illisible = universel_de(&[(macho::CPU_ARM64, arm), (macho::CPU_X86_64, vec![0u8; 0x400])]);
         assert_eq!(manques(&d, &illisible), [Protection::Tranche]);
+        // Dans une tranche de macho64_durci : en-tête (32 octets), __PAGEZERO (72), __TEXT (72), LC_CODE_SIGNATURE.
+        let (page_zero, signature) = (32, 32 + 72 + 72);
+        let avec = |retouche: &dyn Fn(&mut Vec<u8>)| {
+            let mut arm = macho64_durci(macho::CPU_ARM64, complet);
+            retouche(&mut arm);
+            universel_de(&[
+                (macho::CPU_ARM64, arm),
+                (macho::CPU_X86_64, macho64_durci(macho::CPU_X86_64, complet)),
+            ])
+        };
+        // Une signature annoncée hors de la tranche, ou vide : macOS ne trouve rien à vérifier.
+        let hors = avec(&|v| v[signature + 8..signature + 12].copy_from_slice(&0x1_0000u32.to_le_bytes()));
+        let j = jugement(&d, &hors);
+        assert_eq!(
+            j.manques.iter().map(|m| m.protection).collect::<Vec<_>>(),
+            [Protection::Signature]
+        );
+        assert!(j.manques[0].texte.contains("hors de la tranche"), "{:?}", j.manques);
+        let vide = avec(&|v| v[signature + 12..signature + 16].fill(0));
+        assert_eq!(manques(&d, &vide), [Protection::Signature]);
+        // __PAGEZERO d'une seule page : en 64 bits, il doit couvrir les 4 premiers Gio (un pointeur tronqué à 32 bits
+        // tombe dedans).
+        let petite = avec(&|v| v[page_zero + 32..page_zero + 40].copy_from_slice(&0x1000u64.to_le_bytes()));
+        let j = jugement(&d, &petite);
+        assert_eq!(
+            j.manques.iter().map(|m| m.protection).collect::<Vec<_>>(),
+            [Protection::PageZero]
+        );
+        assert!(j.manques[0].texte.contains("0x1000"), "{:?}", j.manques);
         // L'ancien Mach-O d'essai (sans PIE ? si : MH_PIE posé ; sans __PAGEZERO ni signature) seul : pas universel.
         assert_eq!(manques(&d, &macho64(5, false)), [Protection::Universel]);
         let _ = std::fs::remove_dir_all(&d);

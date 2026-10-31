@@ -110,6 +110,9 @@ pub(crate) struct SegmentMachO {
 }
 
 impl SegmentMachO {
+    /// Jugé sur initprot seul : ce sont les droits que le noyau donne au chargement. maxprot borne ce qu'un
+    /// mprotect pourra demander ensuite ; un maxprot rwx est la norme sur macOS (ld64 l'écrit pour __DATA aussi),
+    /// l'exiger plus serré refuserait tous les programmes. Et un segment chargé w+x se verrait par initprot.
     pub(crate) fn ecrivable_executable(&self) -> bool {
         let w_x = VM_PROT_WRITE | VM_PROT_EXECUTE;
         self.initprot & w_x == w_x
@@ -132,6 +135,9 @@ pub(crate) struct MachO {
     /// LC_MAIN : position (dans le fichier, depuis __TEXT) du point d'entrée.
     pub point_entree: Option<u64>,
     pub signature: bool,
+    /// La signature annoncée est non vide et tient dans le fichier : une LC_CODE_SIGNATURE qui pointe ailleurs
+    /// ne signe rien, macOS n'y trouve rien à vérifier.
+    pub signature_dans_le_fichier: bool,
     /// LC_ENCRYPTION_INFO avec cryptid non nul : (position, taille) de la partie chiffrée.
     pub chiffre: Option<(u32, u32)>,
     /// Les commandes ne se lisent pas toutes (taille fausse, hors de leur place).
@@ -167,6 +173,7 @@ pub(crate) fn lire(octets: &[u8]) -> Option<MachO> {
         bibliotheques: Vec::new(),
         point_entree: None,
         signature: false,
+        signature_dans_le_fichier: false,
         chiffre: None,
         commandes_illisibles: false,
         fin_des_donnees: 0,
@@ -276,6 +283,7 @@ fn commande_de_chargement(o: Ordre, octets: &[u8], cmd: u32, commande: &[u8], m:
                 && fin <= taille_fichier
             {
                 m.fin_des_donnees = m.fin_des_donnees.max(fin);
+                m.signature_dans_le_fichier = taille > 0;
             }
         }
         LC_ENCRYPTION_INFO | LC_ENCRYPTION_INFO_64 => {
@@ -539,6 +547,7 @@ mod tests {
             v[j] = y;
             if let Some(m) = lire(&v) {
                 proptest::prop_assert!(m.fin_des_donnees <= v.len() as u64);
+                proptest::prop_assert!(m.signature || !m.signature_dans_le_fichier);
             }
             let mut f = fat(&[macho64(5, false)]);
             let n = f.len();

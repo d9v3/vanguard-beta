@@ -60,7 +60,10 @@ libfuzzer_sys::fuzz_target!(|donnees: &[u8]| {
                     .and_then(macho::lire);
             }
         }
-        let _ = macho::lire(octets);
+        if let Some(m) = macho::lire(octets) {
+            // Une signature ne peut tenir dans le fichier sans avoir été annoncée.
+            assert!(m.signature || !m.signature_dans_le_fichier);
+        }
         return;
     }
     match choix % 5 {
