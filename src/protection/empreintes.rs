@@ -251,16 +251,35 @@ fn charger(telecharger: bool) -> Result<Empreintes, String> {
             None
         }
     };
-    let mut triees = gardee("complete.zip", crate::socle::cache::LISTE_MAX)
-        .and_then(|a| premier_fichier_zip(&a, TEXTE_MAX))
-        .map(|t| lire_octets(&t))
-        .unwrap_or_default();
+    // Une liste complète gardée qui ne s'ouvre pas (abîmée, ou plus longue à décompresser que l'échéance) n'est pas
+    // une liste vide : dite comme un refus (campagne 6, B6).
+    let mut illisible = false;
+    let mut triees = match gardee("complete.zip", crate::socle::cache::LISTE_MAX) {
+        Some(a) => premier_fichier_zip(&a, TEXTE_MAX).map_or_else(
+            || {
+                illisible = true;
+                Vec::new()
+            },
+            |t| lire_octets(&t),
+        ),
+        None => Vec::new(),
+    };
     triees.extend(lire_octets(
         &gardee("recentes.txt", TEXTE_MAX as u64).unwrap_or_default(),
     ));
     triees.sort_unstable();
     triees.dedup();
-    let raison = raison_des_copies(echec, refus);
+    let mut raison = raison_des_copies(echec, refus);
+    if illisible {
+        let r = tr!(
+            "la liste complète gardée ne s'ouvre pas (abîmée, ou trop longue à décompresser)",
+            "the saved full list does not open (damaged, or too long to decompress)"
+        );
+        raison = Some(match raison {
+            Some(autre) => trf!("{autre} ; {r}", "{autre}; {r}"),
+            None => r.to_string(),
+        });
+    }
     if triees.is_empty() {
         return Err(match raison {
             Some(r) => trf!("non vérifiées : {r}", "not checked: {r}"),
@@ -374,6 +393,17 @@ mod tests {
             avertissement.contains(&manquante) || avertissement.contains("vanguard yara"),
             "{avertissement}"
         );
+        // B6 (campagne 6) : la liste complète gardée, sous son sceau, mais qui ne s'ouvre pas : dite, jamais une liste
+        // vide en silence.
+        crate::socle::cache::garder(lieu("complete.zip"), b"PK archive d'essai").unwrap();
+        let chargees = charger(false).unwrap();
+        assert_eq!(chargees.triees.len(), 1);
+        let avertissement = chargees.avertissement.expect("la liste illisible doit se dire");
+        assert!(
+            avertissement.contains("ne s'ouvre pas") || avertissement.contains("does not open"),
+            "{avertissement}"
+        );
+        std::fs::remove_file(dossier().join("complete.zip")).unwrap();
         // Les deux effacées : non vérifiées, jamais une liste vide.
         std::fs::remove_file(dossier().join("recentes.txt")).unwrap();
         let echec = charger(false).err().unwrap();
