@@ -35,6 +35,8 @@
 #   6c. Au branchement de la clé, deployer.sh (ci_verte, face à un faux gh) ne récupère ni ne compile un commit de
 #      GitHub sans CI verte sur ce commit exact (ci.yml, master ; campagne d'attaque n° 6, F4), et dit à part gh sans
 #      compte connecté ou introuvable (sinon, sous le service de la clé, « réessayé » pour toujours sans alerte).
+#   6e. publier-version.sh n'attend pas sans fin une exécution de GitHub (CI, Mac) bloquée : attendre_execution,
+#      face à un faux gh qui ne finit jamais, abandonne au délai.
 #   6d. Un passe-droit de publier-version.sh (VANGUARD_PUBLIER_SANS_EMPREINTES_CI, VANGUARD_PUBLIER_SANS_VM) est dit
 #      en tête des notes de la page (notes, face à un faux gh) et gardé dans le bloc de sa version de l'historique
 #      signé (signer-versions.sh --passe-droit), sous la forme que lit github.rs, jamais dans derniere.txt.
@@ -551,6 +553,31 @@ awk '/VANGUARD_PUBLIER_SANS_EMPREINTES_CI:-/ { e = 1 } e && /PASSE_DROITS\+=\(sa
   END { exit !(a && b && p && s) }' "$DEPOT/outils/publier-version.sh" &&
   ok "publier-version.sh note chaque passe-droit pris et le passe à la signature" ||
   ko "publier-version.sh : un passe-droit pris n'est ni noté ni signé"
+
+# 6e. Une exécution de GitHub qui ne finit jamais (runner en attente) ne tient pas publier-version.sh ouvert pour
+# toujours : attendre_execution abandonne au délai, le dit, et rend 124 ; chaque attente du script passe par elle.
+F=$T/faux-gh-attente
+mkdir -p "$F"
+printf '#!/usr/bin/env bash\n[[ "$1 $2" == "run watch" ]] || exit 9\n[[ -f "$(dirname "$0")/fini" ]] && exit 0\nexec sleep 600\n' \
+  >"$F/gh"
+chmod +x "$F/gh"
+awk '/^attendre_execution\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh" >"$T/attendre_execution.sh"
+attente() { # secondes ; la sortie, puis le code
+  PATH="$F:$PATH" bash -c "source '$T/attendre_execution.sh'; attendre_execution 42 $1; echo \"code \$?\""
+}
+debut_attente=$SECONDS
+sortie=$(attente 1 2>&1)
+[[ $sortie == *"code 124"* && $sortie == *"Exécution 42 de GitHub pas finie"* && $((SECONDS - debut_attente)) -lt 30 ]] &&
+  ok "publier-version.sh : une exécution de GitHub qui ne finit jamais est abandonnée au délai, et dite" ||
+  ko "publier-version.sh attend sans fin une exécution de GitHub bloquée (${sortie:-rien})"
+touch "$F/fini"
+[[ $(attente 5 2>&1) == "code 0" ]] && ok "publier-version.sh : une exécution finie à temps rend le code de gh" ||
+  ko "publier-version.sh : une exécution finie à temps ne rend pas 0"
+# Aucun « gh run watch » hors d'elle, et ses deux appels avec un délai en secondes.
+awk '/^attendre_execution\(\) \{/,/^\}/ { next } /^ *#/ { next } /gh run watch/ { exit 1 } /attendre_execution "\$EN_COURS" [0-9]+/ { c = 1 }
+  /attendre_execution "\$RUN" [0-9]+/ { m = 1 } END { exit !(c && m) }' "$DEPOT/outils/publier-version.sh" &&
+  ok "publier-version.sh : chaque attente de GitHub (CI, Mac) a un délai" ||
+  ko "publier-version.sh : un « gh run watch » sans délai"
 
 # 6c. Au branchement de la clé, un commit de GitHub n'est récupéré et compilé qu'avec une CI verte sur ce commit
 # exact (deployer.sh, ci_verte, campagne d'attaque n° 6, F4). Un faux gh filtre les exécutions par --commit comme

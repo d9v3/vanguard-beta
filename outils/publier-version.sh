@@ -197,6 +197,16 @@ cp "$WINDOWS" "$DOSSIER/vanguard-windows-x86_64.exe"
 outils/failles-programmes.sh "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-windows-x86_64.exe" ||
   { echo "Programmes : rien de publié."; exit 1; }
 
+# Une exécution de GitHub attendue au plus tant de secondes : un runner qui ne vient jamais (file d'attente bloquée)
+# tiendrait publier-version.sh ouvert pour toujours. Rend le code de gh run watch (--exit-status), 124 quand le délai
+# est passé, et le dit. Lue telle quelle par outils/essais-signature.sh.
+attendre_execution() { # exécution, secondes au plus
+  local code=0
+  timeout "$2" gh run watch "$1" --exit-status >/dev/null 2>&1 || code=$?
+  ((code != 124)) || echo "⚠ Exécution $1 de GitHub pas finie après $(($2 / 60)) minutes : attente abandonnée."
+  return "$code"
+}
+
 # Les programmes Linux et Windows qui partent doivent être ceux que la CI a compilés du même code : son travail
 # « reproductible » (.github/workflows/ci.yml) les compile deux fois par la même recette et écrit leurs empreintes
 # dans son journal (EMPREINTE-VANGUARD-LINUX, -WINDOWS). Sans cette comparaison, un programme altéré sur cet ordinateur
@@ -247,7 +257,8 @@ if ((CODE_CI == 2)); then
   if [[ $EN_COURS =~ ^[0-9]+$ ]]; then
     echo "Attente de la CI de ce commit (exécution $EN_COURS, compilation reproductible : jusqu'à 40 minutes)…"
     # Son code ne compte pas : un autre travail en échec n'empêche pas de lire les empreintes, relues ensuite.
-    gh run watch "$EN_COURS" >/dev/null 2>&1 || true
+    # Deux heures : son plus long travail en a 75 minutes au plus (ci.yml), plus l'attente d'un runner.
+    attendre_execution "$EN_COURS" 7200 || true
     CODE_CI=0
     EMPREINTES_CI=$(empreintes_de_la_ci) || CODE_CI=$?
   fi
@@ -318,7 +329,16 @@ if [[ -z $RUN ]]; then
     sleep 5
   done
   [[ -n $RUN ]] || { echo "La compilation macOS n'a pas démarré : rien de publié."; exit 1; }
-  gh run watch "$RUN" --exit-status >/dev/null || { echo "La compilation macOS a échoué : rien de publié."; exit 1; }
+  # 90 minutes : 60 au plus pour la compilation (macos.yml), plus l'attente d'un Mac.
+  CODE_MAC=0
+  attendre_execution "$RUN" 5400 || CODE_MAC=$?
+  if ((CODE_MAC == 124)); then
+    echo "La compilation macOS n'a pas fini à temps : rien de publié."
+    exit 1
+  elif ((CODE_MAC != 0)); then
+    echo "La compilation macOS a échoué : rien de publié."
+    exit 1
+  fi
 fi
 gh run download "$RUN" -n vanguard-macos -D "$DOSSIER/mac" >/dev/null
 cp "$DOSSIER/mac/vanguard" "$DOSSIER/vanguard-macos"
