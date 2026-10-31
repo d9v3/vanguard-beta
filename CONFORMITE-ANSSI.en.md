@@ -39,7 +39,7 @@ that could silently change a released program.
 
 | Point | Verdict | Evidence | Next step |
 |---|---|---|---|
-| DENV-STABLE | met | `rust-toolchain.toml` pins a stable toolchain; the nightly toolchain is used only for the fuzzing bench (`outils/fuzz.sh`). | — |
+| DENV-STABLE | met | `rust-toolchain.toml` pins a stable toolchain; the nightly toolchain is used only for the fuzzing bench (`outils/fuzz.sh`) and the proofs (`outils/preuves.sh`: Miri, and Kani with its own nightly in `~/.kani`), never for the published programs. | — |
 | DENV-TIERS | waiver | Two of the four targets are tier 2: `x86_64-unknown-linux-musl`, the Linux target and the one for the USB key, and `x86_64-apple-darwin`. The rule is aimed at safety-critical systems (avionics, vehicles), which Vanguard is not. What makes up for it: the test suite runs on musl at every check, and on a GitHub Intel Mac (`.github/workflows/macos.yml`). | — |
 | DENV-CARGO-LOCK | met | The five `Cargo.lock` files are versioned; every cargo command runs with `--locked` (`outils/verifier.sh`), except `cargo kani`, which has no such option: `outils/preuves.sh` first checks the lock of `outils/preuves/` (`cargo metadata --locked`), which has no dependency. | — |
 | DENV-CARGO-OPTS | met | `[profile.dev]` and `[profile.test]` change only `debug` and `opt-level` (`Cargo.toml`). | — |
