@@ -377,7 +377,8 @@ fn composants(e: &Etat) -> Vec<Element> {
                 "Needed by older games and launchers; it is a Windows feature (downloaded by Windows Update)."
             ),
             Some(e.netfx3),
-            vec!["DISM /Online /Enable-Feature /FeatureName:NetFx3 /All /NoRestart".into()],
+            // Par Vanguard administrateur : dism.exe de System32, arguments figés (`gestes::PROGRAMMES`).
+            vec![crate::machine::gestes::ligne_programme("dism-ajouter-netfx3", None)],
         ),
         element(
             "XNA Framework 4.0",

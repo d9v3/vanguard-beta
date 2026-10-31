@@ -738,7 +738,7 @@ pub(super) fn signatures(age: u64) -> Constat {
         )
         .corriger(
             tr!("Mettre à jour les signatures", "Update the signatures"),
-            &["Update-MpSignature"],
+            &[crate::machine::gestes::ligne_programme("defender-signatures", None)],
         )
     } else {
         ok(

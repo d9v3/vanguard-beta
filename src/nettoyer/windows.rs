@@ -119,7 +119,7 @@ fn elements_selon(env: &dyn Fn(&str) -> Option<PathBuf>) -> Vec<Element> {
             .into(),
             prudence: None,
             taille: None,
-            commandes: vec!["Dism /Online /Cleanup-Image /StartComponentCleanup".into()],
+            commandes: vec![crate::machine::gestes::ligne_programme("dism-nettoyage-composants", None)],
             recommande: true,
             admin: true,
         }),

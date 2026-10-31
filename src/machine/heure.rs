@@ -33,7 +33,7 @@ fn juger(e: &Etat) -> Constat {
                     r"Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters' -Name Type -Value NTP",
                     "Set-Service w32time -StartupType Automatic",
                     "Start-Service w32time",
-                    "w32tm /resync /force",
+                    &crate::machine::gestes::ligne_programme("w32tm-resync", None),
                 ],
             )
         } else {

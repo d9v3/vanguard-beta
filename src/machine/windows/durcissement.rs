@@ -93,7 +93,10 @@ pub(super) fn juger_powershell2(installe: Option<bool>) -> Option<Constat> {
                 "Retirer PowerShell 2.0 (les versions actuelles restent ; remis par « Activer ou désactiver des fonctionnalités Windows »)",
                 "Remove PowerShell 2.0 (the current versions stay; put back through “Turn Windows features on or off”)"
             ),
-            &["Disable-WindowsOptionalFeature -Online -FeatureName MicrosoftWindowsPowerShellV2Root -NoRestart | Out-Null"],
+            &[crate::machine::gestes::ligne_programme(
+                "dism-retirer-fonction",
+                Some("MicrosoftWindowsPowerShellV2Root"),
+            )],
         )
     } else {
         ok(
@@ -545,7 +548,7 @@ pub(super) fn juger_client_smb1(demarrage: Option<u32>) -> Option<Constat> {
                 "Retirer le client SMBv1 (effectif après redémarrage ; un très vieux NAS peut ne plus s'ouvrir)",
                 "Remove the SMBv1 client (effective after a restart; a very old NAS may no longer open)"
             ),
-            &["Disable-WindowsOptionalFeature -Online -FeatureName SMB1Protocol-Client -NoRestart"],
+            &[crate::machine::gestes::ligne_programme("dism-retirer-fonction", Some("SMB1Protocol-Client"))],
         )
     })
 }

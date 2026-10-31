@@ -1124,13 +1124,16 @@ pub fn liste() -> Vec<Reparation> {
     let etat = etat_windows();
     let etat = etat.as_ref();
     let a_distance = machine::windows::session_a_distance();
+    // Les programmes de Windows (netsh, DISM, sfc…) : lancés par Vanguard administrateur depuis System32, par leur
+    // chemin complet et avec les arguments de sa table, jamais par leur seul nom (`gestes::PROGRAMMES`).
+    let p = |id| crate::machine::gestes::ligne_programme(id, None);
     let mut reseau = rep(
         tr!("Internet ne marche plus", "Internet no longer works"),
         tr!("Remet à zéro Winsock et la pile TCP/IP, vide le cache DNS, redemande une adresse. Un redémarrage termine la réparation. Une adresse IP fixe réglée à la main sera à remettre.", "Resets Winsock and the TCP/IP stack, clears the DNS cache, asks for a new address. A restart finishes the repair. A static IP address set by hand will have to be entered again."),
         tr!("une minute, puis redémarrer", "one minute, then restart"),
         &[
-            "netsh winsock reset",
-            "netsh int ip reset",
+            &p("netsh-winsock-reset"),
+            &p("netsh-ip-reset"),
             "ipconfig /flushdns",
             "ipconfig /release",
             "ipconfig /renew",
@@ -1147,13 +1150,13 @@ pub fn liste() -> Vec<Reparation> {
             tr!("Fichiers système abîmés", "Damaged system files"),
             tr!("Répare l'image de Windows (DISM) puis vérifie et remplace les fichiers système corrompus (SFC). À faire après un plantage ou un écran bleu.", "Repairs the Windows image (DISM), then checks and replaces corrupted system files (SFC). Do it after a crash or a blue screen."),
             tr!("15 à 45 minutes", "15 to 45 minutes"),
-            &["DISM /Online /Cleanup-Image /RestoreHealth", "sfc /scannow"],
+            &[&p("dism-restorehealth"), &p("sfc-scannow")],
         ).avec_restauration(),
         rep(
             tr!("Disque : erreurs", "Disk: errors"),
-            tr!("Analyse le disque C: sans le bloquer. Si des erreurs sont trouvées, la réparation se fait au redémarrage : chkdsk C: /f (C: ne peut pas être mis hors ligne pendant que Windows tourne).", "Scans disk C: without locking it. If errors are found, the repair happens at restart: chkdsk C: /f (C: cannot be taken offline while Windows is running)."),
+            tr!("Analyse le disque de Windows sans le bloquer (chkdsk /scan) et répare en ligne ce qui peut l'être. S'il reste des erreurs, la réparation se fait au redémarrage : chkdsk C: /f (le disque de Windows ne peut pas être mis hors ligne pendant qu'il tourne).", "Scans the Windows disk without locking it (chkdsk /scan) and repairs online what it can. If errors remain, the repair happens at restart: chkdsk C: /f (the Windows disk cannot be taken offline while it runs)."),
             tr!("quelques minutes", "a few minutes"),
-            &["Repair-Volume -DriveLetter C -Scan"],
+            &[&p("chkdsk-scan-systeme")],
         ),
         reseau,
         navigation(etat),
@@ -1163,7 +1166,7 @@ pub fn liste() -> Vec<Reparation> {
             tr!("Télécharge les dernières signatures de Microsoft Defender et affiche leur date.", "Downloads the latest Microsoft Defender signatures and shows their date."),
             tr!("une minute", "one minute"),
             &[
-                "Update-MpSignature",
+                &p("defender-signatures"),
                 "Get-MpComputerStatus | Format-List AntivirusSignatureLastUpdated, AntivirusSignatureVersion",
             ],
         ),
@@ -1187,7 +1190,7 @@ pub fn liste() -> Vec<Reparation> {
             &[
                 "if ((Get-Service w32time).StartType -eq 'Disabled') { Set-Service w32time -StartupType Manual }",
                 "Start-Service w32time",
-                "w32tm /resync /force",
+                &p("w32tm-resync"),
             ],
         ),
     ]
