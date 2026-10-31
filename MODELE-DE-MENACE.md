@@ -59,6 +59,11 @@ Le détail de chaque menace, menu par menu : [Ce que fait Vanguard](README.md#ce
   sauvegarde reste la vraie protection.
 - **Un ordinateur volé allumé et déverrouillé.** Le chiffrement du disque (BitLocker, FileVault, LUKS) protège un
   ordinateur éteint ; Vanguard le vérifie et le recommande.
+- **Le détournement du flux d'exécution de Vanguard lui-même.** Ses programmes publiés portent l'ASLR, une mémoire
+  de données non exécutable et, sous Linux, le RELRO complet, vérifiés avant chaque publication
+  (`vanguard deploiement verifier-binaire`). Le contrôle du flux (CFG sous Windows, CET partout) n'y est pas : MinGW
+  et Rust stable ne le posent pas de façon fiable. Il est affiché sans être exigé, à revoir si la compilation de
+  Windows passe un jour à llvm-mingw ou MSVC.
 - **Ce que lit un ordinateur emprunté.** La protection en écriture empêche qu'on modifie la clé, pas qu'on la lise :
   le carnet n'est à l'abri que chiffré.
 

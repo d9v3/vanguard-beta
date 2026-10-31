@@ -48,6 +48,11 @@ that could silently change a released program.
 | DENV-LINTER | met | clippy pedantic and the restriction lints in `Cargo.toml`, zero warnings on the four targets (`-D warnings`). | — |
 | DENV-AUTOFIX | met | No `cargo fix` or `clippy --fix` in `outils/` or `.github/`; the fix proposed by the night watch is never merged without review (`outils/veille/LISEZMOI.md`). | — |
 
+Outside the guide: the protections of the published programs (Linux: PIE, full RELRO, non-executable stack, nothing
+writable and executable; Windows: high-entropy ASLR, DEP, relocations; macOS: every slice PIE) are read from their
+headers by `vanguard deploiement verifier-binaire` (`src/deploiement/binaire.rs`) on every `outils/verifier.sh` run,
+in CI and before every release; CFG and CET are shown without being required (see `MODELE-DE-MENACE.en.md`).
+
 ## Libraries
 
 | Point | Verdict | Evidence | Next step |

@@ -7,6 +7,14 @@ a day, gathering the day's work; October 21 had two, 0.82 in the morning and 0.8
 delivered just before it. Only the latest version has its download page; every version keeps its tag in the repository
 (`git checkout v0.62.0`, for example), to be rebuilt if needed.
 
+## Upcoming
+
+- **Programs' protections checked before they leave.** `vanguard deploiement verifier-binaire` (former name:
+  `verifier-pe`, kept) reads from their headers, without running them, the protections of the published programs: on
+  Linux PIE, full RELRO (BIND_NOW), non-executable stack, no writable and executable segment; on Windows high-entropy
+  ASLR, DEP and relocations, on top of System32 DLLs and the manifest; on macOS every slice PIE. verifier.sh, CI,
+  deployment and publishing refuse a program that loses one; CFG and CET are shown without being required.
+
 ## October 26, 2026: version 0.88
 
 - **Detection regression.** A corpus of harmless fabricated cases (tests/corpus-detection) proves through 77 cases

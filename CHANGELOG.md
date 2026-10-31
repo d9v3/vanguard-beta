@@ -7,6 +7,15 @@ une seule publication par jour, qui regroupe le travail de la journée ; le 21 o
 la 0.84 au soir, qui reprend la 0.83 livrée juste avant elle. Seule la dernière version a sa page de téléchargement ;
 chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par exemple), pour être recompilée au besoin.
 
+## À paraître
+
+- **Protections des programmes vérifiées avant de partir.** `vanguard deploiement verifier-binaire` (ancien nom :
+  `verifier-pe`, gardé) lit dans leurs en-têtes, sans les lancer, les protections des programmes publiés : sous Linux
+  PIE, RELRO complet (BIND_NOW), pile non exécutable, aucun segment écrivable et exécutable ; sous Windows ASLR à haute
+  entropie, DEP et relocalisations, en plus des DLL de System32 et du manifeste ; sous macOS chaque tranche en PIE.
+  verifier.sh, la CI, le déploiement et la publication refusent un programme qui en perd une ; CFG et CET sont
+  affichés sans être exigés.
+
 ## 26 octobre 2026 : version 0.88
 
 - **Régression de détection.** Un corpus de cas fabriqués et inoffensifs (tests/corpus-detection) prouve, par 77 cas
