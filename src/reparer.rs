@@ -1056,7 +1056,10 @@ fn navigation(etat: Option<&EtatWindows>) -> Reparation {
         }
         if !e.winhttp.is_empty() {
             constats.push(trf!("proxy WinHTTP {}", "WinHTTP proxy {}", e.winhttp));
-            commandes.push("netsh winhttp reset proxy".into());
+            commandes.push(crate::machine::gestes::ligne_programme(
+                "netsh-winhttp-reset-proxy",
+                None,
+            ));
         }
     }
     let mut r = navigation_detournee(
@@ -1080,7 +1083,9 @@ fn navigation(etat: Option<&EtatWindows>) -> Reparation {
             )
         }));
     } else {
-        r.commandes.push("ipconfig /flushdns".into());
+        // Par son chemin dans System32, jamais par son seul nom (`gestes::PROGRAMMES`).
+        r.commandes
+            .push(crate::machine::gestes::ligne_programme("ipconfig-flushdns", None));
         r.restauration = true;
     }
     r
@@ -1134,9 +1139,9 @@ pub fn liste() -> Vec<Reparation> {
         &[
             &p("netsh-winsock-reset"),
             &p("netsh-ip-reset"),
-            "ipconfig /flushdns",
-            "ipconfig /release",
-            "ipconfig /renew",
+            &p("ipconfig-flushdns"),
+            &p("ipconfig-release"),
+            &p("ipconfig-renew"),
         ],
     ).avec_restauration();
     if a_distance {
@@ -1569,6 +1574,51 @@ mod tests {
     }
 
     /// Proxy et script de proxy viennent du registre, que tout programme de la session peut écrire.
+    /// En administrateur, un programme de Windows ne se lance jamais par son seul nom, que PowerShell chercherait
+    /// dans le PATH du compte : chaque réparation passe par les programmes fixes (`gestes::PROGRAMMES`), y compris
+    /// la navigation détournée quand un proxy WinHTTP est imposé.
+    #[cfg(windows)]
+    #[test]
+    fn aucun_programme_de_windows_par_son_seul_nom() {
+        use crate::machine::gestes;
+        let mut noms: Vec<String> = gestes::PROGRAMMES
+            .iter()
+            .filter_map(|p| p.exe.strip_suffix(".exe"))
+            .map(str::to_ascii_lowercase)
+            .collect();
+        noms.extend(["ipconfig", "netsh", "w32tm", "sfc", "dism", "chkdsk"].map(String::from));
+        let json = serde_json::json!({
+            "proxy": "10.0.0.9:3128",
+            "pac": "",
+            "winhttp": "10.0.0.9:3128",
+            "parefeu_coupe": "",
+            "profils": 3
+        })
+        .to_string();
+        let detournee = navigation(lire_etat_windows(&json).as_ref());
+        assert!(
+            detournee
+                .commandes
+                .contains(&gestes::ligne_programme("netsh-winhttp-reset-proxy", None))
+        );
+        let mut reparations = liste();
+        reparations.push(detournee);
+        for r in &reparations {
+            for c in &r.commandes {
+                if c.starts_with(gestes::PROGRAMME) {
+                    assert!(gestes::analyser_programme(c).is_some(), "« {} » : {c}", r.titre);
+                    continue;
+                }
+                // Chaque instruction de la ligne (séparées par « ; ») : son premier mot.
+                for instruction in c.split(';') {
+                    let mot = instruction.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+                    let mot = mot.strip_suffix(".exe").unwrap_or(&mot);
+                    assert!(!noms.iter().any(|n| n == mot), "« {} » : {c}", r.titre);
+                }
+            }
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn proxy_windows_piege() {

@@ -211,6 +211,54 @@ pub(crate) static PROGRAMMES: &[Programme] = &[
         en: "Reset the TCP/IP stack",
     },
     Programme {
+        id: "netsh-winhttp-reset-proxy",
+        dossier: Dossier::Systeme32,
+        exe: "netsh.exe",
+        arguments: &[
+            Argument::Fixe("winhttp"),
+            Argument::Fixe("reset"),
+            Argument::Fixe("proxy"),
+        ],
+        noms: &[],
+        reussites: FAIT,
+        au_redemarrage: &[],
+        fr: "Retirer le proxy WinHTTP",
+        en: "Remove the WinHTTP proxy",
+    },
+    Programme {
+        id: "ipconfig-flushdns",
+        dossier: Dossier::Systeme32,
+        exe: "ipconfig.exe",
+        arguments: &[Argument::Fixe("/flushdns")],
+        noms: &[],
+        reussites: FAIT,
+        au_redemarrage: &[],
+        fr: "Vider le cache DNS",
+        en: "Clear the DNS cache",
+    },
+    Programme {
+        id: "ipconfig-release",
+        dossier: Dossier::Systeme32,
+        exe: "ipconfig.exe",
+        arguments: &[Argument::Fixe("/release")],
+        noms: &[],
+        reussites: FAIT,
+        au_redemarrage: &[],
+        fr: "Rendre l'adresse IP (DHCP)",
+        en: "Release the IP address (DHCP)",
+    },
+    Programme {
+        id: "ipconfig-renew",
+        dossier: Dossier::Systeme32,
+        exe: "ipconfig.exe",
+        arguments: &[Argument::Fixe("/renew")],
+        noms: &[],
+        reussites: FAIT,
+        au_redemarrage: &[],
+        fr: "Redemander une adresse IP (DHCP)",
+        en: "Request a new IP address (DHCP)",
+    },
+    Programme {
         id: "w32tm-resync",
         dossier: Dossier::Systeme32,
         exe: "w32tm.exe",
@@ -694,6 +742,22 @@ mod tests {
             "dism.exe /Online /Disable-Feature /FeatureName:SMB1Protocol-Client /NoRestart"
         );
         assert!(smb.reussite(3010) && !smb.reussite(1));
+        // ipconfig et netsh winhttp, autrefois par leur seul nom dans le script administrateur : leur chemin dans
+        // System32, leurs arguments fixes.
+        for (id, commande) in [
+            ("ipconfig-flushdns", "ipconfig.exe /flushdns"),
+            ("ipconfig-release", "ipconfig.exe /release"),
+            ("ipconfig-renew", "ipconfig.exe /renew"),
+            ("netsh-winhttp-reset-proxy", "netsh.exe winhttp reset proxy"),
+        ] {
+            let a = analyser_programme(&format!("{PROGRAMME}{id}")).unwrap();
+            assert_eq!(a.commande(), commande);
+            assert!(
+                a.powershell().starts_with(r#"& "$env:SystemRoot\System32\"#),
+                "{}",
+                a.powershell()
+            );
+        }
     }
 
     #[test]
