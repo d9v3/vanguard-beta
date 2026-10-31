@@ -11,10 +11,10 @@ delivered just before it. Only the latest version has its download page; every v
 
 - **Programs' protections checked before they leave.** `vanguard deploiement verifier-binaire` (former name:
   `verifier-pe`, kept) reads from their headers, without running them, the protections of the published programs: on
-  Linux PIE, full RELRO marking (PT_GNU_RELRO, BIND_NOW), non-executable stack, no writable and executable segment;
+  Linux PIE, full RELRO marking (PT_GNU_RELRO in the data and over the dynamic section, BIND_NOW), non-executable stack, no writable and executable segment;
   on Windows high-entropy ASLR (with LARGE_ADDRESS_AWARE, which it requires), DEP and relocations, on top of System32
-  DLLs and the manifest; on macOS every slice PIE, a 4 GiB __PAGEZERO and, on arm64, a signature that fits in the
-  slice. Each must also be of the shipped system and architecture (64-bit little-endian x86-64 ELF, PE32+ AMD64,
+  DLLs and the manifest; on macOS every slice PIE, a 4 GiB __PAGEZERO and, on arm64, a single signature that fits in
+  the slice. Each must also be of the shipped system and architecture (64-bit little-endian x86-64 ELF, PE32+ AMD64,
   arm64 and x86_64 Mac slices): the scripts say which one they expect (`--attendu linux|windows|macos`), and an .exe
   replaced by a Linux program, or a 32-bit program, is refused. verifier.sh always checks the debug program it has
   just built, and the release programs only if they are the ones built from this commit (`outils/compiler-version.sh`);
