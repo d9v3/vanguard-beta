@@ -55,12 +55,41 @@ struct Balise {
     nom: String,
     fermante: bool,
     attributs: Vec<(String, String)>,
+    /// Un de ses attributs, même au-delà des 50 gardés, lance du code : gestionnaire d'événement (`onload`…) ou
+    /// adresse `javascript:`.
+    actif: bool,
 }
 
 impl Balise {
     fn attribut(&self, nom: &str) -> Option<&str> {
         self.attributs.iter().find(|(n, _)| n == nom).map(|(_, v)| v.as_str())
     }
+
+    /// Le nom sans son préfixe d'espace de noms : dans une image SVG, lue comme du XML, `<svg:a>` est un lien.
+    fn local(&self) -> &str {
+        self.nom.rsplit(':').next().unwrap_or(&self.nom)
+    }
+
+    /// L'adresse d'un lien : `href`, sinon `xlink:href` (SVG 1.1), quel que soit le préfixe qui désigne XLink.
+    fn lien(&self) -> Option<&str> {
+        self.attribut("href").or_else(|| {
+            self.attributs
+                .iter()
+                .find(|(n, _)| n.ends_with(":href"))
+                .map(|(_, v)| v.as_str())
+        })
+    }
+}
+
+/// L'attribut `nom` = `valeur` lance du code : gestionnaire d'événement (préfixe compris), ou valeur qui porte une
+/// adresse `javascript:` ou `vbscript:` (celle d'un lien, ou celle qu'une animation SVG lui donne : `<set to=…>`,
+/// `<animate values=…>`). La valeur est lue comme le navigateur lit une adresse : entités décodées, caractères de
+/// contrôle retirés.
+fn attribut_actif(nom: &str, valeur: &str) -> bool {
+    let local = nom.rsplit(':').next().unwrap_or(nom);
+    let gestionnaire = local.len() > 2 && local.starts_with("on") && local.bytes().all(|o| o.is_ascii_lowercase());
+    let v = adresse_attribut(valeur).to_ascii_lowercase();
+    gestionnaire || v.contains("javascript:") || v.contains("vbscript:")
 }
 
 /// Les octets de `h` qui vérifient `garder` à partir de `i`, et l'indice qui les suit. Au-delà de la fin, il n'y a
@@ -86,6 +115,7 @@ fn lire_balise(h: &[u8], debut: usize) -> (Option<Balise>, usize) {
     let nom = String::from_utf8_lossy(nom).to_ascii_lowercase();
     i = suite;
     let mut attributs = Vec::new();
+    let mut actif = false;
     loop {
         i = prendre(h, i, |o| o.is_ascii_whitespace() || o == b'/').1;
         let Some(&o) = h.get(i) else {
@@ -116,8 +146,10 @@ fn lire_balise(h: &[u8], debut: usize) -> (Option<Balise>, usize) {
                 i = fin;
             }
         }
+        let valeur = entites(&valeur);
+        actif |= attribut_actif(&nom_attr, &valeur);
         if attributs.len() < 50 {
-            attributs.push((nom_attr, entites(&valeur)));
+            attributs.push((nom_attr, valeur));
         }
     }
     (
@@ -125,6 +157,7 @@ fn lire_balise(h: &[u8], debut: usize) -> (Option<Balise>, usize) {
             nom,
             fermante,
             attributs,
+            actif,
         }),
         i,
     )
@@ -198,12 +231,12 @@ pub(crate) fn lire_html(html: &str, max_liens: usize, source: &Source) -> Html {
             continue;
         };
         if lue.fermante {
-            if lue.nom == "a" {
+            if lue.local() == "a" {
                 fermer(&mut ouvert, &mut r);
             }
             continue;
         }
-        match lue.nom.as_str() {
+        match lue.local() {
             "script" | "style" => {
                 let fin = format!("</{}", lue.nom);
                 i = chercher_casse(h, i, fin.as_bytes()).unwrap_or(h.len());
@@ -211,12 +244,12 @@ pub(crate) fn lire_html(html: &str, max_liens: usize, source: &Source) -> Html {
             "a" => {
                 // Un lien jamais fermé se termine où le suivant commence.
                 fermer(&mut ouvert, &mut r);
-                if let Some(href) = lue.attribut("href") {
+                if let Some(href) = lue.lien() {
                     ouvert = Some((adresse_attribut(href), Vec::new()));
                 }
             }
             "area" => {
-                if let Some(href) = lue.attribut("href") {
+                if let Some(href) = lue.lien() {
                     pousser(&mut r, adresse_attribut(href), None, source, max_liens);
                 }
             }
@@ -254,9 +287,10 @@ pub(crate) fn lire_html(html: &str, max_liens: usize, source: &Source) -> Html {
                     r.base = Some(adresse_attribut(href));
                 }
             }
-            "img" => {
+            // `<image>` : l'image d'un SVG, désignée comme un lien.
+            "img" | "image" => {
                 r.images += 1;
-                if lue.attribut("src").is_some_and(|s| {
+                if lue.attribut("src").or_else(|| lue.lien()).is_some_and(|s| {
                     s.trim().get(..4).is_some_and(|d| d.eq_ignore_ascii_case("http")) || s.trim().starts_with("//")
                 }) {
                     r.images_distantes += 1;
@@ -270,6 +304,37 @@ pub(crate) fn lire_html(html: &str, max_liens: usize, source: &Source) -> Html {
         r.coupe = true;
     }
     r
+}
+
+/// Une image SVG (ou une page XML) porte du code qui tourne à son ouverture : élément `script` ou `foreignObject`
+/// (du HTML dans l'image), préfixe compris, gestionnaire d'événement ou adresse `javascript:`. Au-delà de `HTML_MAX`
+/// octets, rien n'est lu : `None`, à dire comme un manque.
+pub(crate) fn svg_actif(h: &[u8]) -> Option<bool> {
+    if h.len() > HTML_MAX {
+        return None;
+    }
+    let mut i = 0;
+    while let Some(debut) = h.get(i..).and_then(|ici| ici.iter().position(|&c| c == b'<')) {
+        i += debut;
+        let ici = h.get(i..).unwrap_or_default();
+        if ici.starts_with(b"<!--") {
+            i = chercher_casse(h, i + 4, b"-->").map_or(h.len(), |p| p + 3);
+            continue;
+        }
+        if ici.starts_with(b"<!") || ici.starts_with(b"<?") {
+            i = ici.iter().position(|&c| c == b'>').map_or(h.len(), |p| i + p + 1);
+            continue;
+        }
+        let (balise, suite) = lire_balise(h, i);
+        i = suite;
+        if let Some(lue) = balise
+            && !lue.fermante
+            && (lue.actif || matches!(lue.local(), "script" | "foreignobject" | "handler"))
+        {
+            return Some(true);
+        }
+    }
+    Some(false)
 }
 
 fn pousser(r: &mut Html, cible: String, affiche: Option<String>, source: &Source, max: usize) {

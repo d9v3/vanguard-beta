@@ -178,11 +178,18 @@ pub(crate) fn juger(nom: &str, type_declare: &str, contenu: &[u8]) -> (Vec<Signe
     let ext = extension(nom);
     signes.extend(signe_du_nom(classe(&ext), &montre));
     // Un SVG est une image qui peut porter du script : ouvert (« noname » chez Gmail, « Part 1.2 » chez Thunderbird),
-    // il s'exécute dans le navigateur. Sans nom, rien d'autre ne le dit.
-    if classe(&ext) != Some(Classe::PageWeb)
-        && (type_declare == "image/svg+xml" || ext == "svg")
-        && contenu.to_ascii_lowercase().windows(7).any(|w| w == b"<script")
-    {
+    // il s'exécute dans le navigateur. Sans nom, rien d'autre ne le dit. Le script peut aussi être préfixé
+    // (`<svg:script>`), dans un gestionnaire d'événement (`onload`), une adresse `javascript:` ou du HTML intégré
+    // (`foreignObject`) : `corps::svg_actif`.
+    let svg = classe(&ext) != Some(Classe::PageWeb) && (type_declare == "image/svg+xml" || ext == "svg");
+    let actif = svg.then(|| super::corps::svg_actif(contenu));
+    if actif == Some(None) {
+        manques.push(trf!(
+            "le contenu de l'image SVG {montre}",
+            "the content of the SVG image {montre}"
+        ));
+    }
+    if svg && (contenu.to_ascii_lowercase().windows(7).any(|w| w == b"<script") || actif == Some(Some(true))) {
         let qui = if nom.is_empty() {
             tr!("Pièce sans nom", "Unnamed attachment").to_string()
         } else {
@@ -806,6 +813,33 @@ mod tests {
         );
         let (s, manques) = juger("abime.zip", "application/zip", b"PK\x03\x04abime");
         assert!(s.iter().any(|(_, t)| t.contains("illisible")) && !manques.is_empty());
+    }
+
+    /// M4 (campagne 6) : un SVG porte du script sans la balise `<script` littérale ; chaque forme est vue, et une image
+    /// sans rien d'actif reste une image.
+    #[test]
+    fn svg_actif_sans_balise_script() {
+        let svg = |corps: &str| format!("<svg xmlns=\"http://www.w3.org/2000/svg\">{corps}</svg>");
+        for corps in [
+            "<svg:script xmlns:svg=\"http://www.w3.org/2000/svg\">alert(1)</svg:script>",
+            "<rect onload=\"alert(1)\"/>",
+            "<rect a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 b0 b1 b2 b3 b4 b5 b6 b7 b8 b9 c0 c1 c2 c3 c4 c5 c6 c7 c8 c9 d0 d1 d2 d3 \
+             d4 d5 d6 d7 d8 d9 e0 e1 e2 e3 e4 e5 e6 e7 e8 e9 f0 ONBEGIN=\"alert(1)\"/>",
+            "<a xlink:href=\"java&#x09;script&#58;alert(1)\"><text>x</text></a>",
+            "<a href=\" &#106;avascript:alert(1)\"><text>x</text></a>",
+            "<a><set attributeName=\"href\" to=\"javascript:alert(1)\"/><text>x</text></a>",
+            "<foreignObject><div xmlns=\"http://www.w3.org/1999/xhtml\">x</div></foreignObject>",
+        ] {
+            let (s, _) = juger("", "image/svg+xml", svg(corps).as_bytes());
+            assert!(
+                s.iter().any(|(n, t)| *n == Niveau::Eleve && t.contains("SVG")),
+                "{corps} : {s:?}"
+            );
+        }
+        let sain = svg("<!-- onload=\"x\" --><a xlink:href=\"https://example.org/\"><text>Photos en ligne</text></a>");
+        let (s, manques) = juger("", "image/svg+xml", sain.as_bytes());
+        assert_eq!(pire(&s), None, "{s:?}");
+        assert_eq!(manques, Vec::<String>::new());
     }
 
     #[test]

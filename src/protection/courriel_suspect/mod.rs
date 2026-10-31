@@ -1082,6 +1082,39 @@ Content-Transfer-Encoding: x-uuencode\r\n\r\nbegin 644 facture.pdf\r\nM35J0\r\n`
         assert!(c.manques.iter().any(|m| m.contains("x-uuencode")), "{:?}", c.manques);
     }
 
+    /// M4 (campagne 6) : dans une image SVG jointe sans nom, un lien porté par `xlink:href` (SVG 1.1, suivi par les
+    /// navigateurs), même sous un autre préfixe, est un lien ; un gestionnaire d'événement est du script.
+    #[test]
+    fn svg_sans_nom_lien_xlink() {
+        for (lien, actif) in [
+            ("<a xlink:href=\"https://paypal.com.vol.example/login\">", ""),
+            ("<svg:a x:href=\"https://paypal.com.vol.example/login\">", ""),
+            (
+                "<a xlink:href=\"https://paypal.com.vol.example/login\">",
+                "<rect onclick=\"top.location='x'\"/>",
+            ),
+        ] {
+            let c = format!(
+                "Received: from a by mx.example.net\r\nFrom: Bob <bob@example.com>\r\n\
+Content-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nVoici la facture.\r\n\
+--b\r\nContent-Type: image/svg+xml\r\n\r\n<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:svg=\"http://www.w3.org/2000/svg\" \
+xmlns:xlink=\"http://www.w3.org/1999/xlink\" xmlns:x=\"http://www.w3.org/1999/xlink\">{actif}{lien}<text>Payer</text></a></svg>\r\n--b--\r\n"
+            );
+            let (c, _) = examiner(&mime::lire(c.as_bytes()));
+            assert!(
+                c.liens.par_site.iter().any(|(s, _, _, _)| s == "vol.example"),
+                "{lien} : {:?}",
+                c.liens.par_site
+            );
+            assert!(c.pire() >= Some(Niveau::Eleve), "{lien}");
+            let script = c.pieces[0]
+                .signes
+                .iter()
+                .any(|(n, t)| *n == Niveau::Eleve && t.contains("SVG"));
+            assert_eq!(script, !actif.is_empty(), "{actif}");
+        }
+    }
+
     #[test]
     fn svg_sans_nom_examine() {
         let c = "Received: from a by mx.example.net\r\nFrom: Bob <bob@example.com>\r\n\
