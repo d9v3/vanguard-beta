@@ -493,58 +493,148 @@ fn revue_cle(racine: &std::path::Path) {
 #[cfg(windows)]
 const DELAI_MPCMDRUN: u64 = 8 * 24 * 3600;
 
+/// MpCmdRun par un chemin que le compte ne peut pas détourner : la plateforme à jour de Defender, que HKLM nomme
+/// (InstallLocation, sous ProgramData\Microsoft\Windows Defender\Platform, écrit par Defender lui-même), sinon la copie
+/// de Program Files, dossier demandé à Windows (KnownFolder), jamais à la variable ProgramFiles qu'un `set` change
+/// avant de lancer Vanguard. Sa sortie est crue : un faux MpCmdRun qui écrirait « found no threats » donnerait un
+/// faux ✔.
+#[cfg(windows)]
+fn mpcmdrun() -> PathBuf {
+    let dossiers = crate::machine::windows::environnement::dossiers();
+    let installe: Option<String> = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
+        .open_subkey(r"SOFTWARE\Microsoft\Windows Defender")
+        .and_then(|k| k.get_value("InstallLocation"))
+        .ok();
+    let plateforme = installe
+        .zip(dossiers.program_data.as_deref().and_then(std::path::Path::to_str))
+        .and_then(|(i, d)| plateforme_sure(&i, d))
+        .map(|p| PathBuf::from(p).join("MpCmdRun.exe"))
+        .filter(|p| p.is_file());
+    plateforme.unwrap_or_else(|| match &dossiers.program_files {
+        Some(d) => d.join(r"Windows Defender\MpCmdRun.exe"),
+        // Repli jamais vu : le chemin par défaut sous le lecteur de Windows, comme le processus élevé.
+        None => PathBuf::from(format!(
+            r"{}\{}\MpCmdRun.exe",
+            crate::commande::lecteur_systeme().unwrap_or("C:"),
+            crate::machine::gestes::DOSSIER_DEFENDER
+        )),
+    })
+}
+
+/// Le dossier de plateforme lu dans HKLM, gardé seulement s'il est un dossier direct de
+/// `<ProgramData>\Microsoft\Windows Defender\Platform` (« 4.18.24090.11-0 ») : ni « .. », ni autre endroit.
+#[cfg(any(windows, test))]
+fn plateforme_sure(installe: &str, program_data: &str) -> Option<String> {
+    let installe = installe.trim().trim_end_matches('\\');
+    let racine = format!(
+        r"{}\Microsoft\Windows Defender\Platform\",
+        program_data.trim().trim_end_matches('\\')
+    );
+    let version = installe
+        .get(..racine.len())
+        .filter(|debut| debut.eq_ignore_ascii_case(&racine))
+        .and_then(|_| installe.get(racine.len()..))?;
+    (!version.contains(['\\', '/']) && nom_sans_ambiguite(version)).then(|| installe.to_string())
+}
+
+/// Pendant une analyse qui peut durer une heure, une ligne par minute : MpCmdRun écrit son compte rendu dans un tube,
+/// montré à la fin, et un écran figé invite au Ctrl+C.
+#[cfg(windows)]
+fn avec_progression<T>(travail: impl FnOnce() -> T) -> T {
+    let (fin, attente) = std::sync::mpsc::channel::<()>();
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            let mut minutes = 0u64;
+            // S'arrête quand `fin` est lâché (Disconnected), le travail fini.
+            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                attente.recv_timeout(std::time::Duration::from_secs(60))
+            {
+                minutes += 1;
+                trp!(
+                    "  {GRIS}… analyse en cours ({minutes} min){RESET}",
+                    "  {GRIS}… scan in progress ({minutes} min){RESET}"
+                );
+            }
+        });
+        let resultat = travail();
+        drop(fin);
+        resultat
+    })
+}
+
 #[cfg(windows)]
 fn defender(portee: &Portee) {
-    let mpcmd =
-        PathBuf::from(std::env::var_os("ProgramFiles").unwrap_or_default()).join(r"Windows Defender\MpCmdRun.exe");
+    let mpcmd = mpcmdrun();
+    if !mpcmd.is_file() {
+        trp!(
+            "  Defender introuvable (MpCmdRun absent) : rien n'a été analysé.",
+            "  Defender not found (MpCmdRun missing): nothing was scanned."
+        );
+        return;
+    }
     trp!(
         "  {GRIS}Moteur : Microsoft Defender. Cela peut prendre de quelques minutes à une heure (analyse complète) ; son compte rendu s'affiche à la fin…{RESET}",
         "  {GRIS}Engine: Microsoft Defender. This can take from a few minutes to an hour (full scan); its report shows at the end…{RESET}"
     );
     let mut commande = Command::new(&mpcmd);
-    match portee {
-        Portee::Rapide => commande.args(["-Scan", "-ScanType", "1"]),
-        Portee::Complete => commande.args(["-Scan", "-ScanType", "2"]),
+    let cible = match portee {
+        Portee::Rapide => {
+            commande.args(["-Scan", "-ScanType", "1"]);
+            None
+        }
+        Portee::Complete => {
+            commande.args(["-Scan", "-ScanType", "2"]);
+            None
+        }
         // Analyse personnalisée d'un dossier ou d'une clé.
-        Portee::Dossier(d) => commande
-            .args(["-Scan", "-ScanType", "3", "-File"])
-            .arg(chemin_pour_mpcmdrun(d)),
+        Portee::Dossier(d) => {
+            commande
+                .args(["-Scan", "-ScanType", "3", "-File"])
+                .arg(chemin_pour_mpcmdrun(d));
+            Some((d.as_path(), true))
+        }
     };
+    let debut = chrono::Utc::now().naive_utc();
     // La sortie est lue, pas seulement le code : MpCmdRun rend 0 aussi quand il a trouvé une menace et l'a retirée.
-    let Some(r) = crate::commande::lancer(&mut commande, DELAI_MPCMDRUN) else {
+    let Some(r) = avec_progression(|| crate::commande::lancer(&mut commande, DELAI_MPCMDRUN)) else {
         trp!(
             "  Defender n'a pas pu aller au bout de l'analyse (antivirus tiers actif ?).",
             "  Defender could not finish the scan (third-party antivirus active?)."
         );
         return;
     };
+    let sortie = format!("{}\n{}", r.sortie, r.erreurs);
     // Son compte rendu, tel qu'il l'a écrit : le chemin y vient de qui a nommé le dossier, d'où `affichable`.
-    for l in r
-        .sortie
-        .lines()
-        .chain(r.erreurs.lines())
-        .filter(|l| !l.trim().is_empty())
-    {
+    for l in sortie.lines().filter(|l| !propre(l).is_empty()) {
         println!("  {GRIS}{}{RESET}", affichable(l.trim_end()));
     }
-    match lire_reponse(r.code, &format!("{}\n{}", r.sortie, r.erreurs)) {
+    let (verdict, detections) = confirmer_aupres_de_defender(lire_reponse(r.code, &sortie), debut, cible);
+    let attention = |texte: &str| println!("  {}● {texte}{RESET}", couleur(Niveau::Moyen));
+    match verdict {
         Verdict::Sain => trp!(
             "  {VERT}✔ Aucun malware trouvé.{RESET}",
             "  {VERT}✔ No malware found.{RESET}"
         ),
-        Verdict::Menaces(noms) => montrer_menaces_defender(&noms),
-        Verdict::Sautee => println!(
-            "  {}● {}{RESET}",
-            couleur(Niveau::Moyen),
-            tr!(
-                "Defender a sauté ce qu'il devait analyser : exclu de l'analyse, ce qui est suspect si personne ne l'a voulu. Rien n'est garanti.",
-                "Defender skipped what it had to scan: excluded from scanning, which is suspicious if nobody meant it. Nothing is guaranteed."
-            )
-        ),
+        Verdict::Menaces(noms) => montrer_menaces_defender(&noms, &detections),
+        Verdict::Sautee => attention(tr!(
+            "Defender a sauté ce qu'il devait analyser : exclu de l'analyse, ce qui est suspect si personne ne l'a voulu. Rien n'est garanti.",
+            "Defender skipped what it had to scan: excluded from scanning, which is suspicious if nobody meant it. Nothing is guaranteed."
+        )),
+        Verdict::Exclue(exclusions) => {
+            let liste = resume(&exclusions, 4, ", ");
+            attention(&trf!(
+                "Defender dit n'avoir rien trouvé, mais ses exclusions couvrent, en tout ou en partie, ce qu'il devait analyser : {liste}. Ce qui en relève n'a pas été regardé, ce qui est suspect si personne ne l'a voulu. Rien n'est garanti.",
+                "Defender says it found nothing, but its exclusions cover, wholly or partly, what it had to scan: {liste}. Whatever falls under them was not looked at, which is suspicious if nobody meant it. Nothing is guaranteed."
+            ));
+        }
+        Verdict::Inverifiable => attention(tr!(
+            "Defender dit n'avoir rien trouvé, mais Vanguard n'a pas pu lire ses exclusions ou ses détections pour le confirmer (Windows cache les exclusions sans droits administrateur) : rien ne garantit qu'il a tout regardé. Ses détections restent dans Sécurité Windows > Protection contre les virus et menaces > Historique de protection.",
+            "Defender says it found nothing, but Vanguard could not read its exclusions or detections to confirm it (Windows hides exclusions without administrator rights): nothing guarantees it looked at everything. Its detections remain in Windows Security > Virus & threat protection > Protection history."
+        )),
         // Pas de « ✔ » sans la phrase de résultat : la sortie d'une analyse rapide ou complète n'est pas documentée.
         Verdict::Muette => trp!(
-            "  Defender n'a signalé aucune menace (code 0), sans le confirmer par une ligne de résultat. Ses détections restent dans Sécurité Windows > Protection contre les virus et menaces > Historique de protection.",
-            "  Defender reported no threat (code 0), without confirming it with a result line. Its detections remain in Windows Security > Virus & threat protection > Protection history."
+            "  Defender a fini (code 0, qui veut aussi dire « menace trouvée et retirée »), mais son compte rendu n'a pas été reconnu : rien n'est conclu. Ses détections restent dans Sécurité Windows > Protection contre les virus et menaces > Historique de protection.",
+            "  Defender finished (code 0, which also means “threat found and removed”), but its report was not recognized: nothing is concluded. Its detections remain in Windows Security > Virus & threat protection > Protection history."
         ),
         Verdict::Echec => trp!(
             "  Defender n'a pas pu lancer l'analyse (antivirus tiers actif ?).",
@@ -553,55 +643,35 @@ fn defender(portee: &Portee) {
     }
 }
 
-/// Defender a trouvé des menaces (code 2, ou code 0 avec une menace retirée) : leur liste, puis la proposition de les
-/// supprimer. `noms` : ceux de la sortie de MpCmdRun, montrés si Windows ne donne pas sa liste.
+/// Defender a trouvé des menaces (code 2, ou code 0 avec une menace retirée) : celles de CETTE analyse (détections
+/// notées depuis son début, sous ce qu'elle regardait), jamais tout l'historique de Defender, puis la proposition de
+/// les supprimer. `noms` : ceux de la sortie de MpCmdRun, montrés si Windows n'a rien noté de lisible.
 #[cfg(windows)]
-fn montrer_menaces_defender(noms: &[String]) {
-    use crate::machine::windows::ps;
-    // WMI d'abord (la classe que lit Get-MpThreat), PowerShell en secours.
-    let menaces = crate::machine::windows::wmi::requete(
-        r"root\Microsoft\Windows\Defender",
-        "MSFT_MpThreat",
-        "",
-        &["ThreatName", "Resources"],
-    )
-    .map(|l| {
-        l.iter()
-            .map(|m| {
-                let fichiers: Vec<&str> = m["Resources"].liste().iter().filter_map(|r| r.texte()).collect();
-                format!(
-                    "{}|{}",
-                    m["ThreatName"].texte().unwrap_or_default(),
-                    fichiers.join(", ")
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    })
-    .or_else(|| ps("Get-MpThreat | ForEach-Object { \"$($_.ThreatName)|$($_.Resources -join ', ')\" }"))
-    .unwrap_or_default();
+fn montrer_menaces_defender(noms: &[String], detections: &[Detection]) {
     // Jamais une liste vide sous une menace trouvée : les noms de MpCmdRun (déjà prêts à montrer), sinon une ligne.
-    let lignes: Vec<(String, String)> = if menaces.trim().is_empty() {
-        if noms.is_empty() {
-            vec![(
-                tr!(
-                    "menace signalée par Defender (voir son compte rendu ci-dessus)",
-                    "threat reported by Defender (see its report above)"
-                )
-                .to_string(),
-                String::new(),
-            )]
-        } else {
-            noms.iter().map(|n| (n.clone(), String::new())).collect()
-        }
-    } else {
-        menaces
-            .lines()
-            .map(|l| {
-                let (nom, fichiers) = l.split_once('|').unwrap_or((l, ""));
-                (affichable(nom), affichable(fichiers))
+    let lignes: Vec<(String, String)> = if !detections.is_empty() {
+        detections
+            .iter()
+            .map(|d| {
+                let fichiers: Vec<String> = d
+                    .ressources
+                    .iter()
+                    .map(|r| affichable(chemin_de_ressource(r)))
+                    .collect();
+                (d.nom.clone(), resume(&fichiers, 3, ", "))
             })
             .collect()
+    } else if !noms.is_empty() {
+        noms.iter().map(|n| (n.clone(), String::new())).collect()
+    } else {
+        vec![(
+            tr!(
+                "menace signalée par Defender (voir son compte rendu ci-dessus)",
+                "threat reported by Defender (see its report above)"
+            )
+            .to_string(),
+            String::new(),
+        )]
     };
     for (nom, fichiers) in lignes {
         println!("  {}✖ {nom}{RESET}  {fichiers}", couleur(Niveau::Critique));
@@ -630,8 +700,11 @@ fn montrer_menaces_defender(noms: &[String]) {
 /// quarantaine ce qu'il reconnaît.
 #[cfg(windows)]
 pub(crate) fn examiner(fichier: &std::path::Path) -> Examen {
-    let mpcmd =
-        PathBuf::from(std::env::var_os("ProgramFiles").unwrap_or_default()).join(r"Windows Defender\MpCmdRun.exe");
+    let mpcmd = mpcmdrun();
+    if !mpcmd.is_file() {
+        return Examen::Impossible(raison_absent().into());
+    }
+    let debut = chrono::Utc::now().naive_utc();
     let Some(r) = crate::commande::lancer(
         Command::new(&mpcmd)
             .args(["-Scan", "-ScanType", "3", "-File"])
@@ -640,47 +713,73 @@ pub(crate) fn examiner(fichier: &std::path::Path) -> Examen {
     ) else {
         return Examen::Impossible(tr!("Defender n'a pas pu aller au bout", "Defender could not finish").into());
     };
-    lire_mpcmdrun(r.code, &r.sortie, std::fs::symlink_metadata(fichier).is_ok())
+    // La même lecture que l'analyse : sortie et erreurs.
+    let sortie = format!("{}\n{}", r.sortie, r.erreurs);
+    let (verdict, _) = confirmer_aupres_de_defender(lire_reponse(r.code, &sortie), debut, Some((fichier, false)));
+    examen_de(verdict, &sortie, std::fs::symlink_metadata(fichier).is_ok())
 }
 
 /// Ce que dit une réponse de MpCmdRun, lue une seule fois pour l'analyse (`defender`) et pour un fichier (`examiner`).
 #[cfg(any(windows, test))]
 #[derive(Debug, PartialEq, Eq)]
 enum Verdict {
-    /// Une ligne de résultat, « found no threats. » (ou 0), avec le code 0, et rien qui signale une menace.
+    /// Une ligne de résultat, « found no threats. » (ou 0), avec le code 0, rien qui signale une menace, et (après
+    /// `confirmer`) ni exclusion qui couvre la cible ni détection de Defender pendant l'analyse.
     Sain,
-    /// Une menace, quel que soit le code : ses noms quand MpCmdRun les écrit (vide sinon).
+    /// Une menace, quel que soit le code : ses noms quand MpCmdRun les écrit ou que Defender les a notés (vide sinon).
     Menaces(Vec<String>),
     /// « Scanning <chemin> was skipped. » : exclu de Defender, rien d'analysé.
     Sautee,
-    /// Code 0 sans ligne de résultat reconnue : rien ne garantit que l'analyse a regardé quelque chose.
+    /// « Rien trouvé », mais des exclusions de Defender couvrent la cible (ou un parent, ou son extension) : elles,
+    /// prêtes à montrer.
+    Exclue(Vec<String>),
+    /// « Rien trouvé », sans que les exclusions ou les détections de Defender aient pu être lues pour le confirmer.
+    Inverifiable,
+    /// Code 0 sans compte rendu reconnu : rien ne garantit que l'analyse a regardé quelque chose.
     Muette,
     /// Ni 0 ni 2 (ou arrêté), sans menace écrite : l'analyse n'a pas eu lieu.
     Echec,
+}
+
+/// Une ligne de MpCmdRun sans espaces autour ni BOM en tête (U+FEFF, que `trim` garde) : un BOM devant la première
+/// ligne la ferait ignorer.
+#[cfg(any(windows, test))]
+fn propre(ligne: &str) -> &str {
+    ligne.trim().trim_start_matches('\u{feff}').trim_start()
 }
 
 /// Fausse alerte plutôt que silence. MpCmdRun rend 0 pour « aucune menace » mais aussi pour « menace trouvée et
 /// retirée » (sa documentation, et vu dans une machine virtuelle : « found 1 threats. », code 0), et 2 pour une menace
 /// restée ou une erreur d'analyse : le code seul ne suffit pas. Une ligne « found N threats. » avec N > 0, ou une
 /// ligne « Threat : … », est donc une menace quel que soit le code. Le code 0 ne vaut « sain » qu'avec une ligne de
-/// résultat qui le dit ; sans elle (sortie vide, ou dans un format inconnu), la réponse est « muette », jamais saine.
-/// Le code 2 sans menace écrite reste une menace, sauf le fichier sauté (« was skipped »), reconnu en fin de ligne.
+/// résultat qui le dit et aucune ligne d'un format inconnu ; sans elle (sortie vide, ou dans un format inconnu), la
+/// réponse est « muette », jamais saine. Le code 2 sans menace écrite reste une menace, sauf le fichier sauté (« was
+/// skipped »), reconnu en fin de ligne. Ce « sain » n'est que la phrase de MpCmdRun : `confirmer` le confronte ensuite
+/// aux exclusions et aux détections de Defender (la passe 5 de l'essai T10 a écrit « found no threats » sur un
+/// dossier où EICAR était encore).
 #[cfg(any(windows, test))]
 fn lire_reponse(code: Option<i32>, sortie: &str) -> Verdict {
+    let lignes: Vec<&str> = sortie.lines().map(propre).filter(|l| !l.is_empty()).collect();
     let noms = menaces_mpcmdrun(sortie);
-    let comptes: Vec<u64> = sortie.lines().filter_map(compte_de_menaces).collect();
-    if !noms.is_empty() || comptes.iter().any(|&n| n > 0) {
+    let comptes: Vec<u64> = lignes.iter().filter_map(|l| compte_de_menaces(l)).collect();
+    // « b found 1 threats. » sans « Scanning » devant : la fin d'une ligne de résultat coupée par un saut de ligne dans
+    // le nom de la cible. Une menace si son compte en dit une ; jamais une raison de dire « sain ».
+    let orphelins: Vec<u64> = lignes.iter().filter_map(|l| compte_orphelin(l)).collect();
+    if !noms.is_empty() || comptes.iter().chain(&orphelins).any(|&n| n > 0) {
         return Verdict::Menaces(noms);
     }
     // La phrase n'est reconnue qu'en fin de ligne, où Windows ne laisse finir aucun nom (ni point ni espace final) :
     // « facture was skipped.exe » n'en est pas une.
-    let saute = sortie
-        .lines()
-        .map(str::trim)
-        .any(|l| l.starts_with("Scanning ") && l.ends_with(" was skipped."));
+    let est_saut = |l: &str| l.starts_with("Scanning ") && l.ends_with(" was skipped.");
+    let saute = lignes.iter().any(|l| est_saut(l));
+    // Une ligne « Scanning … » qui n'est ni un compte lu ni un saut : un format inconnu, peut-être une menace.
+    let inconnue = !orphelins.is_empty()
+        || lignes
+            .iter()
+            .any(|l| l.starts_with("Scanning") && compte_de_menaces(l).is_none() && !est_saut(l));
     match code {
         Some(0 | 2) if saute => Verdict::Sautee,
-        Some(0) if !comptes.is_empty() => Verdict::Sain,
+        Some(0) if !comptes.is_empty() && !inconnue => Verdict::Sain,
         Some(0) => Verdict::Muette,
         Some(2) => Verdict::Menaces(Vec::new()),
         _ => Verdict::Echec,
@@ -694,7 +793,7 @@ fn lire_reponse(code: Option<i32>, sortie: &str) -> Verdict {
 /// menace.
 #[cfg(any(windows, test))]
 fn compte_de_menaces(ligne: &str) -> Option<u64> {
-    let reste = ligne.trim().strip_prefix("Scanning")?;
+    let reste = propre(ligne).strip_prefix("Scanning")?;
     if !reste.starts_with(' ') {
         return None;
     }
@@ -708,18 +807,320 @@ fn compte_de_menaces(ligne: &str) -> Option<u64> {
     })
 }
 
-/// Pour un seul fichier (`examiner`). Seul le fichier sauté et resté en place devient « impossible » ; une menace sans
-/// nom est dite avec la dernière ligne de MpCmdRun, et une réponse muette n'est jamais comptée comme saine.
+/// Le compte d'une ligne qui finit comme une ligne de résultat (« … found N threats. ») sans commencer par
+/// « Scanning » ; `None` pour toute autre.
 #[cfg(any(windows, test))]
+fn compte_orphelin(ligne: &str) -> Option<u64> {
+    let ligne = propre(ligne);
+    if ligne.starts_with("Scanning") {
+        return None;
+    }
+    let avant = ligne
+        .strip_suffix(" threats.")
+        .or_else(|| ligne.strip_suffix(" threat."))?;
+    let (_, n) = avant.rsplit_once(" found ")?;
+    Some(if n == "no" { 0 } else { n.parse().unwrap_or(1) })
+}
+
+/// Une détection de Defender (MSFT_MpThreatDetection), telle que lue.
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Detection {
+    /// Le nom de la menace (MSFT_MpThreat.ThreatName), prêt à montrer.
+    nom: String,
+    /// InitialDetectionTime et LastThreatStatusChangeTime, dates CIM (« 20261031154900.000000-240 »).
+    dates: Vec<String>,
+    /// Resources, tels que lus (« file:_C:\…\eicar.com ») : le chemin vient de qui a nommé le fichier.
+    ressources: Vec<String>,
+}
+
+/// Une date CIM (« aaaammjjhhmmss.mmmmmm±UUU », décalage en minutes) en temps universel ; `None` si elle ne se lit
+/// pas.
+#[cfg(any(windows, test))]
+fn date_cim(date: &str) -> Option<chrono::NaiveDateTime> {
+    let date = date.trim();
+    let locale = chrono::NaiveDateTime::parse_from_str(date.get(..14)?, "%Y%m%d%H%M%S").ok()?;
+    let decalage: i64 = date.get(21..)?.parse().ok()?;
+    locale.checked_sub_signed(chrono::Duration::minutes(decalage))
+}
+
+/// Le chemin d'une ressource de détection : « file:_C:\x\a.exe » → « C:\x\a.exe », « containerfile:_C:\x.zip » →
+/// « C:\x.zip », et la partie avant « -> » (un fichier dans une archive). Inchangée sans préfixe.
+#[cfg(any(windows, test))]
+fn chemin_de_ressource(ressource: &str) -> &str {
+    let chemin = match ressource.split_once(":_") {
+        Some((sorte, chemin)) if !sorte.is_empty() && sorte.chars().all(|c| c.is_ascii_alphanumeric()) => chemin,
+        _ => ressource,
+    };
+    chemin.split("->").next().unwrap_or(chemin)
+}
+
+/// Un chemin comparable à un autre : sans « \\?\ » (ni « \\?\UNC\ »), « / » lus « \ », sans « \ » final, en
+/// minuscules (NTFS ne distingue pas la casse). Pour comparer seulement : jamais pour agir sur un fichier.
+#[cfg(any(windows, test))]
+fn pour_comparer(chemin: &str) -> String {
+    let c = chemin.trim().replace('/', "\\");
+    let c = match c.strip_prefix(r"\\?\UNC\") {
+        Some(reseau) => format!(r"\\{reseau}"),
+        None => c.strip_prefix(r"\\?\").map_or_else(|| c.clone(), str::to_string),
+    };
+    c.trim_end_matches('\\').to_lowercase()
+}
+
+/// `chemin` est-il `cible`, ou dedans ? (Comparés par `pour_comparer`.)
+#[cfg(any(windows, test))]
+fn sous_cible(chemin: &str, cible: &str) -> bool {
+    let (p, c) = (pour_comparer(chemin), pour_comparer(cible));
+    !c.is_empty() && (p == c || p.starts_with(&format!("{c}\\")))
+}
+
+/// Les détections de cette analyse : notées depuis son début (`debut`, temps universel, deux secondes de marge pour
+/// les secondes tronquées), sous la cible (toutes, sans cible : analyse rapide ou complète). Une détection sans
+/// ressource compte (fausse alerte plutôt que silence). `None` si une détection qui compterait n'a aucune date
+/// lisible : rien ne dit alors si elle est de cette analyse ou de l'historique.
+#[cfg(any(windows, test))]
+fn de_cette_analyse(
+    toutes: Vec<Detection>,
+    debut: chrono::NaiveDateTime,
+    cible: Option<&str>,
+) -> Option<Vec<Detection>> {
+    let seuil = debut.checked_sub_signed(chrono::Duration::seconds(2))?;
+    let mut gardees = Vec::new();
+    for d in toutes {
+        let concernee = cible.is_none_or(|c| {
+            d.ressources.is_empty() || d.ressources.iter().any(|r| sous_cible(chemin_de_ressource(r), c))
+        });
+        if !concernee {
+            continue;
+        }
+        let dates: Vec<chrono::NaiveDateTime> = d.dates.iter().filter_map(|x| date_cim(x)).collect();
+        if dates.is_empty() {
+            return None;
+        }
+        if dates.iter().any(|x| *x >= seuil) {
+            gardees.push(d);
+        }
+    }
+    Some(gardees)
+}
+
+/// Les exclusions de Defender qui couvrent `cible`, prêtes à montrer : un chemin exclu égal à la cible ou parent
+/// d'elle, et pour un dossier aussi un chemin exclu dedans et toute extension exclue (ses fichiers de ce type ne sont
+/// pas regardés) ; pour un fichier, son extension. Un chemin exclu avec une variable (%TEMP%) ou un joker (* ?) ne se
+/// compare pas exactement : il couvre dès que son début fixe est compatible avec la cible (prudence). Les exclusions
+/// de processus ne jouent pas sur une analyse à la demande. `None` : liste cachée (« N/A: Must be an
+/// administrator… », Windows sans droits administrateur), rien à conclure.
+#[cfg(any(windows, test))]
+fn exclusions_qui_couvrent(
+    cible: &str,
+    dossier: bool,
+    chemins: &[String],
+    extensions: &[String],
+) -> Option<Vec<String>> {
+    if chemins.iter().chain(extensions).any(|x| x.trim().starts_with("N/A")) {
+        return None;
+    }
+    let c = pour_comparer(cible);
+    let mut couvrent = Vec::new();
+    for exclu in chemins.iter().filter(|e| !e.trim().is_empty()) {
+        let e = pour_comparer(exclu);
+        let couvre = match e.find(['%', '*', '?']) {
+            Some(i) => {
+                let fixe = e.get(..i).unwrap_or_default();
+                c.starts_with(fixe) || (dossier && fixe.starts_with(c.as_str()))
+            }
+            // « C:\ » devient « c: » : parent de tout le lecteur.
+            None => c == e || c.starts_with(&format!("{e}\\")) || (dossier && e.starts_with(&format!("{c}\\"))),
+        };
+        if couvre {
+            couvrent.push(affichable(exclu.trim()));
+        }
+    }
+    let nom = c.rsplit('\\').next().unwrap_or_default();
+    for exclue in extensions {
+        let e = exclue.trim().trim_start_matches(['*', '.']).to_lowercase();
+        let couvre = dossier || e.is_empty() || nom.rsplit_once('.').is_some_and(|(_, x)| x == e);
+        if couvre {
+            couvrent.push(format!("*.{}", affichable(&e)));
+        }
+    }
+    Some(couvrent)
+}
+
+/// La phrase de MpCmdRun confrontée à ce que Defender a noté. Une détection de cette analyse est une menace, quoi
+/// qu'ait écrit MpCmdRun (`detections` : `None` si illisibles). Un « sain » ne le reste que si la cible n'a rien
+/// d'ambigu (`cible_piegee` : un caractère de contrôle, dont le saut de ligne qui découpe la ligne de résultat, ou un
+/// nom illisible en Unicode), qu'aucune exclusion ne la couvre (`exclusions` : celles qui la couvrent, `None` si
+/// illisibles ; vide aussi pour une analyse rapide ou complète, sans cible) et que les détections ont pu être lues.
+#[cfg(any(windows, test))]
+fn confirmer(
+    verdict: Verdict,
+    detections: Option<&[Detection]>,
+    exclusions: Option<Vec<String>>,
+    cible_piegee: bool,
+) -> Verdict {
+    if let Some(trouvees) = detections.filter(|d| !d.is_empty()) {
+        let mut noms = match verdict {
+            Verdict::Menaces(n) => n,
+            _ => Vec::new(),
+        };
+        for d in trouvees {
+            if !noms.contains(&d.nom) {
+                noms.push(d.nom.clone());
+            }
+        }
+        return Verdict::Menaces(noms);
+    }
+    if verdict != Verdict::Sain {
+        return verdict;
+    }
+    if cible_piegee {
+        return Verdict::Muette;
+    }
+    match exclusions {
+        Some(e) if !e.is_empty() => Verdict::Exclue(e),
+        Some(_) if detections.is_some() => Verdict::Sain,
+        _ => Verdict::Inverifiable,
+    }
+}
+
+/// `confirmer` avec ce que Defender dit lui-même : ses détections depuis `debut`, et ses exclusions pour un « sain »
+/// d'une cible (`(chemin, est un dossier)`). Rend aussi les détections de cette analyse, à montrer.
+#[cfg(windows)]
+fn confirmer_aupres_de_defender(
+    verdict: Verdict,
+    debut: chrono::NaiveDateTime,
+    cible: Option<(&std::path::Path, bool)>,
+) -> (Verdict, Vec<Detection>) {
+    // Un chemin illisible en Unicode ne se compare pas : piégé, et toutes les détections de l'analyse comptent (fausse
+    // alerte plutôt que silence).
+    let texte = cible.and_then(|(c, _)| c.to_str());
+    let piegee = cible.is_some() && texte.is_none_or(|t| t.chars().any(char::is_control));
+    let detections = detections_de_defender().and_then(|t| de_cette_analyse(t, debut, texte));
+    let exclusions = match (cible, texte) {
+        // Rien à confirmer : `confirmer` ne regarde les exclusions que pour un « sain » d'une cible lisible.
+        _ if verdict != Verdict::Sain || piegee => Some(Vec::new()),
+        (None, _) => Some(Vec::new()),
+        (Some((_, dossier)), Some(t)) => crate::machine::windows::exclusions::listes()
+            .and_then(|[chemins, _, extensions]| exclusions_qui_couvrent(t, dossier, &chemins, &extensions)),
+        (Some(_), None) => None,
+    };
+    let verdict = confirmer(verdict, detections.as_deref(), exclusions, piegee);
+    (verdict, detections.unwrap_or_default())
+}
+
+/// Toutes les détections notées par Defender (MSFT_MpThreatDetection, la classe de Get-MpThreatDetection), avec le
+/// nom de leur menace (MSFT_MpThreat) ; `None` si ni WMI ni PowerShell ne répondent. WMI d'abord, PowerShell en
+/// secours.
+#[cfg(windows)]
+fn detections_de_defender() -> Option<Vec<Detection>> {
+    use crate::machine::windows::wmi::{Valeur, requete};
+    const ESPACE: &str = r"root\Microsoft\Windows\Defender";
+    // Un tableau, ou une valeur seule ; une date CIM revient en texte.
+    let textes = |v: Option<&Valeur>| -> Vec<String> {
+        match v {
+            Some(Valeur::Liste(l)) => l.iter().filter_map(|x| x.texte().map(str::to_string)).collect(),
+            Some(x) => x.texte().map(str::to_string).into_iter().collect(),
+            None => Vec::new(),
+        }
+    };
+    if let Some(lignes) = requete(
+        ESPACE,
+        "MSFT_MpThreatDetection",
+        "",
+        &[
+            "ThreatID",
+            "InitialDetectionTime",
+            "LastThreatStatusChangeTime",
+            "Resources",
+        ],
+    ) {
+        let noms: std::collections::HashMap<i64, String> =
+            requete(ESPACE, "MSFT_MpThreat", "", &["ThreatID", "ThreatName"])
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|m| Some((m.get("ThreatID")?.entier()?, m.get("ThreatName")?.texte()?.to_string())))
+                .collect();
+        return Some(
+            lignes
+                .iter()
+                .map(|l| {
+                    let id = l.get("ThreatID").and_then(Valeur::entier);
+                    let mut dates = textes(l.get("InitialDetectionTime"));
+                    dates.extend(textes(l.get("LastThreatStatusChangeTime")));
+                    Detection {
+                        nom: nom_de_menace(id.and_then(|i| noms.get(&i)).map(String::as_str), id),
+                        dates,
+                        ressources: textes(l.get("Resources")),
+                    }
+                })
+                .collect(),
+        );
+    }
+    // Les dates en temps universel, au format CIM, écrites sans la culture de la session (un calendrier bouddhiste
+    // donnerait 2569).
+    let json = crate::machine::windows::ps(
+        "$n = @{}; Get-MpThreat | ForEach-Object { $n[[string]$_.ThreatID] = $_.ThreatName }; \
+         ConvertTo-Json -Compress -Depth 3 -InputObject @(Get-MpThreatDetection | ForEach-Object { @{ \
+         i = [string]$_.ThreatID; n = [string]$n[[string]$_.ThreatID]; \
+         d = @(@($_.InitialDetectionTime, $_.LastThreatStatusChangeTime) | Where-Object { $_ } | ForEach-Object { \
+         $_.ToUniversalTime().ToString('yyyyMMddHHmmss', [Globalization.CultureInfo]::InvariantCulture) + '.000000+000' }); \
+         r = @($_.Resources) } })",
+    )?;
+    let v: serde_json::Value = serde_json::from_str(&json).ok()?;
+    let chaines = |x: Option<&serde_json::Value>| -> Vec<String> {
+        x.and_then(serde_json::Value::as_array)
+            .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect())
+            .unwrap_or_default()
+    };
+    Some(
+        v.as_array()?
+            .iter()
+            .map(|d| {
+                let id = d
+                    .get("i")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|i| i.parse().ok());
+                let nom = d.get("n").and_then(serde_json::Value::as_str);
+                Detection {
+                    nom: nom_de_menace(nom, id),
+                    dates: chaines(d.get("d")),
+                    ressources: chaines(d.get("r")),
+                }
+            })
+            .collect(),
+    )
+}
+
+/// Le nom d'une menace prêt à montrer ; son numéro, ou un nom générique, si Defender ne le donne pas.
+#[cfg(windows)]
+fn nom_de_menace(nom: Option<&str>, id: Option<i64>) -> String {
+    match (nom.map(str::trim).filter(|n| !n.is_empty()), id) {
+        (Some(n), _) => affichable(n),
+        (None, Some(i)) => trf!("menace n° {i} de Defender", "Defender threat #{i}"),
+        (None, None) => tr!("menace reconnue par Defender", "threat recognized by Defender").to_string(),
+    }
+}
+
+/// La réponse de MpCmdRun lue seule, sans `confirmer` (les essais).
+#[cfg(test)]
 fn lire_mpcmdrun(code: Option<i32>, sortie: &str, encore_la: bool) -> Examen {
-    match lire_reponse(code, sortie) {
+    examen_de(lire_reponse(code, sortie), sortie, encore_la)
+}
+
+/// Le verdict d'un seul fichier en `Examen`. Exclu de Defender : « impossible » (`raison_sautee`), jamais sain. Sauté
+/// mais disparu : Defender l'a retiré. Une menace sans nom est dite avec la dernière ligne de MpCmdRun, et une réponse
+/// muette ou invérifiable n'est jamais comptée comme saine.
+#[cfg(any(windows, test))]
+fn examen_de(verdict: Verdict, sortie: &str, encore_la: bool) -> Examen {
+    match verdict {
         Verdict::Sain => Examen::Sain,
         Verdict::Menaces(noms) if !noms.is_empty() => Examen::Trouve(noms),
+        Verdict::Exclue(_) => Examen::Impossible(raison_sautee().into()),
         Verdict::Sautee if encore_la => Examen::Impossible(raison_sautee().into()),
-        // Sauté mais disparu : Defender l'a retiré.
         Verdict::Menaces(_) | Verdict::Sautee => {
             let generique = tr!("menace reconnue par Defender", "threat recognized by Defender");
-            Examen::Trouve(vec![match sortie.lines().map(str::trim).rfind(|l| !l.is_empty()) {
+            Examen::Trouve(vec![match sortie.lines().map(propre).rfind(|l| !l.is_empty()) {
                 // Le chemin du fichier y est, aussi long que Windows le permet : la ligne est coupée.
                 Some(l) => {
                     let l = couper(&affichable(l), 160);
@@ -728,25 +1129,28 @@ fn lire_mpcmdrun(code: Option<i32>, sortie: &str, encore_la: bool) -> Examen {
                 None => generique.to_string(),
             }])
         }
+        Verdict::Inverifiable => Examen::Impossible(
+            tr!(
+                "Defender dit n'avoir rien trouvé, mais ses exclusions ou ses détections n'ont pas pu être lues pour le confirmer",
+                "Defender says it found nothing, but its exclusions or detections could not be read to confirm it"
+            )
+            .into(),
+        ),
         Verdict::Muette => Examen::Impossible(
             tr!(
-                "Defender a fini sans dire ce qu'il a trouvé",
-                "Defender finished without saying what it found"
+                "compte rendu de Defender non reconnu (son code 0 veut aussi dire « menace trouvée et retirée »)",
+                "Defender's report not recognized (its code 0 also means “threat found and removed”)"
             )
             .into(),
         ),
-        Verdict::Echec => Examen::Impossible(
-            tr!(
-                "Defender n'a pas pu analyser (antivirus tiers actif ?)",
-                "Defender could not scan (third-party antivirus active?)"
-            )
-            .into(),
-        ),
+        Verdict::Echec => Examen::Impossible(raison_echec().into()),
     }
 }
 
-/// Le chemin à donner à MpCmdRun : sans le préfixe « \\?\ » que `canonicalize` ajoute sous Windows, qu'il semble mal
-/// lire (« found no threats » sur un dossier qui contenait EICAR). Inchangé quand ce n'est pas sûr.
+/// Le chemin à donner à MpCmdRun : sans le préfixe « \\?\ » que `canonicalize` ajoute sous Windows, quand la forme
+/// courte désigne sans doute possible le même fichier (la forme qu'on tape, la plus sûrement lue), inchangé sinon.
+/// Le préfixe n'explique pas à lui seul le « found no threats » de la passe 5 de l'essai T10 : quelle que soit la
+/// forme passée, un « sain » passe par `confirmer`.
 #[cfg(windows)]
 fn chemin_pour_mpcmdrun(chemin: &std::path::Path) -> PathBuf {
     chemin
@@ -759,10 +1163,10 @@ fn chemin_pour_mpcmdrun(chemin: &std::path::Path) -> PathBuf {
 /// courte désigne sans doute possible le même fichier. Sans « \\?\ », Windows réinterprète le chemin : point ou espace
 /// final retiré, « . » et « .. » résolus, CON, NUL, COM1… pris pour des périphériques, longueur bornée (MAX_PATH).
 /// « C:\x\dossier. », créé exprès par qui veut se cacher, deviendrait « C:\x\dossier », un autre dossier, sain. Dans
-/// ces cas, et pour toute autre forme (« \\?\Volume{…}\ »), `None` : le chemin reste tel quel, que MpCmdRun lit
-/// peut-être mal, mais il n'analyse pas autre chose à sa place.
+/// ces cas, et pour toute autre forme (« \\?\Volume{…}\ »), `None` : le chemin reste tel quel, et rien n'agit sur un
+/// autre fichier à sa place.
 #[cfg(any(windows, test))]
-fn sans_verbatim(chemin: &str) -> Option<String> {
+pub(crate) fn sans_verbatim(chemin: &str) -> Option<String> {
     // Au moins le serveur et le partage pour un chemin réseau ; un nom pour un lecteur.
     let (court, noms, minimum) = if let Some(reseau) = chemin.strip_prefix(r"\\?\UNC\") {
         (format!(r"\\{reseau}"), reseau, 2)
@@ -811,8 +1215,10 @@ fn nom_sans_ambiguite(nom: &str) -> bool {
         && !numerote
 }
 
-/// La raison d'un fichier sauté par Defender : propre à ce fichier, jamais l'antivirus absent (`pieces::moteurs` ne
-/// la reporte pas sur les pièces suivantes). Une exclusion qu'on n'a pas posée est elle-même un signe.
+/// La raison d'un fichier sauté ou exclu par Defender : propre à ce fichier (`vaut_pour_tous` la refuse, et
+/// `pieces::moteurs` ne la reporte pas sur les pièces suivantes). Une exclusion qu'on n'a pas posée est elle-même un
+/// signe.
+#[cfg(any(windows, test))]
 pub(crate) fn raison_sautee() -> &'static str {
     tr!(
         "Defender a sauté ce fichier : exclu de l'analyse, ce qui est suspect si personne ne l'a voulu",
@@ -834,17 +1240,46 @@ fn menaces_mpcmdrun(sortie: &str) -> Vec<String> {
         .collect()
 }
 
+/// Defender n'a pas pu analyser : un autre antivirus a pris sa place (Defender passif), ou il est cassé. Compilée
+/// partout pour `vaut_pour_tous`.
+fn raison_echec() -> &'static str {
+    tr!(
+        "Defender n'a pas pu analyser (antivirus tiers actif ?)",
+        "Defender could not scan (third-party antivirus active?)"
+    )
+}
+
+/// Le moteur manque.
+#[cfg(windows)]
+pub(crate) fn raison_absent() -> &'static str {
+    tr!(
+        "Defender introuvable (MpCmdRun absent)",
+        "Defender not found (MpCmdRun missing)"
+    )
+}
+
+/// Le moteur manque.
+#[cfg(unix)]
+pub(crate) fn raison_absent() -> &'static str {
+    tr!(
+        "ClamAV absent (installation refusée ou impossible)",
+        "ClamAV missing (installation declined or failed)"
+    )
+}
+
+/// Une raison d'`Examen::Impossible` qui vaut pour tous les fichiers, que `pieces::moteurs` peut reporter sur les
+/// pièces suivantes sans relancer le moteur : le moteur absent, ou (Windows) Defender qui n'analyse rien. Jamais une
+/// raison propre à un fichier (sauté, exclu, illisible, trop gros) ni une réponse muette ou invérifiable : la pièce
+/// suivante, elle, peut être lue ou détectée.
+pub(crate) fn vaut_pour_tous(raison: &str) -> bool {
+    raison == raison_absent() || (cfg!(windows) && raison == raison_echec())
+}
+
 /// Un seul fichier, pour « Vérifier un fichier téléchargé » : le résultat de ClamAV, sans rien déplacer.
 #[cfg(unix)]
 pub(crate) fn examiner(fichier: &std::path::Path) -> Examen {
     if !preparer() {
-        return Examen::Impossible(
-            tr!(
-                "ClamAV absent (installation refusée ou impossible)",
-                "ClamAV missing (installation declined or failed)"
-            )
-            .into(),
-        );
+        return Examen::Impossible(raison_absent().into());
     }
     // Au-delà de 200 Mo, ClamAV saute le fichier sans le lire (--max-filesize) : rien ne serait conclu.
     if std::fs::metadata(fichier).is_ok_and(|m| m.len() > 200 * 1024 * 1024) {
@@ -1818,6 +2253,74 @@ mod tests_cle {
                            Scanning \\\\?\\C:\\Users\\Public\\vg-essai-eicar found no threats.\r\n";
 
     #[test]
+    fn passe_5_found_no_threats_seul_ne_donne_jamais_le_coche() {
+        // Passe 5 : « found no threats », code 0, sur un dossier où EICAR était (une exclusion de Defender venait
+        // d'être posée puis retirée sur lui). La phrase seule n'est qu'un « sain » à confirmer, jamais un ✔.
+        assert_eq!(lire_reponse(Some(0), PASSE_5), Verdict::Sain);
+        let cible = r"\\?\C:\Users\Public\vg-essai-eicar";
+        let debut = date_cim("20261031194900.000000+000").unwrap();
+        let eicar = Detection {
+            nom: "Virus:DOS/EICAR_Test_File".into(),
+            dates: vec!["20261031154905.123456-240".into()],
+            ressources: vec![r"file:_C:\Users\Public\vg-essai-eicar\eicar.com".into()],
+        };
+        // Une détection notée pendant l'analyse, sous le dossier : menace, quoi qu'ait écrit MpCmdRun.
+        let pendant = de_cette_analyse(vec![eicar.clone()], debut, Some(cible)).unwrap();
+        assert_eq!(
+            confirmer(lire_reponse(Some(0), PASSE_5), Some(&pendant), Some(vec![]), false),
+            Verdict::Menaces(vec!["Virus:DOS/EICAR_Test_File".into()])
+        );
+        // Le dossier exclu (lui, un parent, ou tous les fichiers d'une extension) : pas de ✔, « rien n'est garanti ».
+        let exclu = exclusions_qui_couvrent(cible, true, &[r"C:\Users\Public\vg-essai-eicar".into()], &[]);
+        assert_eq!(
+            confirmer(lire_reponse(Some(0), PASSE_5), Some(&[]), exclu, false),
+            Verdict::Exclue(vec![r"C:\Users\Public\vg-essai-eicar".into()])
+        );
+        // Exclusions cachées (sans droits administrateur) ou détections illisibles : pas de ✔ non plus.
+        let cachees = exclusions_qui_couvrent(
+            cible,
+            true,
+            &["N/A: Must be an administrator to view exclusions".into()],
+            &[],
+        );
+        assert_eq!(
+            confirmer(lire_reponse(Some(0), PASSE_5), Some(&[]), cachees, false),
+            Verdict::Inverifiable
+        );
+        assert_eq!(
+            confirmer(lire_reponse(Some(0), PASSE_5), None, Some(vec![]), false),
+            Verdict::Inverifiable
+        );
+        // Un seul fichier : jamais « sain » dans ces cas, et l'exclusion vaut un fichier sauté.
+        assert_eq!(
+            examen_de(Verdict::Exclue(vec!["*.com".into()]), PASSE_5, true),
+            Examen::Impossible(raison_sautee().into())
+        );
+        assert!(matches!(
+            examen_de(Verdict::Inverifiable, PASSE_5, true),
+            Examen::Impossible(_)
+        ));
+        // Seul « sain » qui le reste : exclusions lues, aucune ne couvre le dossier, aucune détection pendant
+        // l'analyse (celle d'avant son début est de l'historique).
+        let avant = Detection {
+            dates: vec!["20261031150000.000000-240".into()],
+            ..eicar
+        };
+        let rien = de_cette_analyse(vec![avant], debut, Some(cible)).unwrap();
+        let aucune = exclusions_qui_couvrent(cible, true, &[r"D:\SteamLibrary".into()], &["vmdk".into()]);
+        assert_eq!(
+            aucune,
+            Some(vec!["*.vmdk".into()]),
+            "toute extension exclue couvre un dossier"
+        );
+        let aucune = exclusions_qui_couvrent(cible, true, &[r"D:\SteamLibrary".into()], &[]);
+        assert_eq!(
+            confirmer(lire_reponse(Some(0), PASSE_5), Some(&rien), aucune, false),
+            Verdict::Sain
+        );
+    }
+
+    #[test]
     fn reponse_de_mpcmdrun_lue_dans_la_sortie_pas_seulement_au_code() {
         // Passe 6 : menace trouvée et retirée, code 0. Ce n'est pas « aucun malware ».
         assert_eq!(lire_reponse(Some(0), PASSE_6), Verdict::Menaces(vec![]));
@@ -1826,9 +2329,6 @@ mod tests_cle {
             panic!("passe 6")
         };
         assert!(n[0].contains("found 1 threats."), "{n:?}");
-        // Passe 5 : la phrase de résultat dit « rien », avec le code 0.
-        assert_eq!(lire_reponse(Some(0), PASSE_5), Verdict::Sain);
-        assert_eq!(lire_mpcmdrun(Some(0), PASSE_5, true), Examen::Sain);
         assert_eq!(
             lire_reponse(Some(0), "Scanning C:\\a found 0 threats.\r\n"),
             Verdict::Sain
@@ -1867,6 +2367,220 @@ mod tests_cle {
             assert_eq!(lire_reponse(Some(0), sortie), Verdict::Muette, "{sortie:?}");
             assert!(matches!(lire_mpcmdrun(Some(0), sortie, true), Examen::Impossible(r) if r != raison_sautee()));
         }
+        // Le code 0 veut aussi dire « menace trouvée et retirée » : le texte ne dit jamais « aucune menace ».
+        let Examen::Impossible(r) = lire_mpcmdrun(Some(0), "", true) else {
+            panic!("muette")
+        };
+        assert!(!r.contains("aucune menace") && !r.contains("no threat"), "{r}");
+        assert!(r.contains("non reconnu") || r.contains("not recognized"), "{r}");
+    }
+
+    #[test]
+    fn ligne_de_resultat_coupee_ou_inconnue_jamais_saine() {
+        // Relecture T10 (désaccord tranché) : un saut de ligne dans le nom de la cible coupe la ligne de résultat.
+        // « Scanning C:\x\a found no threats.\nb found 1 threats. » : la menace est dans la fin orpheline.
+        for (sortie, attendu) in [
+            (
+                "Scanning C:\\x\\a found no threats.\nb found 1 threats.\n",
+                Verdict::Menaces(vec![]),
+            ),
+            (
+                "Scanning C:\\x\\a found no threats.\nb found no threats.\n",
+                Verdict::Muette,
+            ),
+            ("Scanning C:\\x\\a\nb found no threats.\n", Verdict::Muette),
+            // Une ligne « Scanning … » d'un format inconnu, à côté d'un « rien » : pas sain.
+            (
+                "Scanning C:\\x is being processed.\r\nScanning C:\\x found no threats.\r\n",
+                Verdict::Muette,
+            ),
+            // Un BOM en tête (sortie relayée par PowerShell) ne cache ni la menace ni le résultat.
+            ("\u{feff}Scanning C:\\x found 1 threats.\r\n", Verdict::Menaces(vec![])),
+            ("\u{feff}Scanning C:\\x found no threats.\r\n", Verdict::Sain),
+            ("\u{feff}Scanning C:\\x was skipped.\r\n", Verdict::Sautee),
+        ] {
+            assert_eq!(lire_reponse(Some(0), sortie), attendu, "{sortie:?}");
+        }
+        assert_eq!(compte_orphelin("b found 2 threats."), Some(2));
+        assert_eq!(compte_orphelin("Scanning C:\\b found 2 threats."), None);
+        assert_eq!(compte_orphelin("Scan finished."), None);
+        // Et même une ligne bien formée : une cible au nom piégé (caractère de contrôle) ne donne jamais le ✔.
+        assert_eq!(confirmer(Verdict::Sain, Some(&[]), Some(vec![]), true), Verdict::Muette);
+        // Ce qui n'est pas « sain » passe tel quel ; une menace garde ses noms, complétés par les détections.
+        assert_eq!(confirmer(Verdict::Echec, None, None, true), Verdict::Echec);
+        assert_eq!(confirmer(Verdict::Sautee, Some(&[]), None, false), Verdict::Sautee);
+        let d = Detection {
+            nom: "Trojan:Win32/Exemple".into(),
+            dates: vec![],
+            ressources: vec![],
+        };
+        assert_eq!(
+            confirmer(Verdict::Menaces(vec!["A".into()]), Some(&[d.clone(), d]), None, false),
+            Verdict::Menaces(vec!["A".into(), "Trojan:Win32/Exemple".into()])
+        );
+    }
+
+    #[test]
+    fn detections_de_cette_analyse_seulement() {
+        assert_eq!(
+            date_cim("20261031154900.123456-240"),
+            date_cim("20261031194900.000000+000")
+        );
+        assert_eq!(
+            date_cim("20261031154900.123456+060").map(|d| d.to_string()).as_deref(),
+            Some("2026-10-31 14:49:00")
+        );
+        for faux in [
+            "",
+            "2026",
+            "20261331154900.000000+000",
+            "20261031154900.000000",
+            "20261031154900.000000+abc",
+        ] {
+            assert_eq!(date_cim(faux), None, "{faux}");
+        }
+        assert_eq!(chemin_de_ressource(r"file:_C:\x\a.exe"), r"C:\x\a.exe");
+        assert_eq!(chemin_de_ressource(r"containerfile:_C:\x\a.zip->b.exe"), r"C:\x\a.zip");
+        assert_eq!(chemin_de_ressource(r"C:\x\a.exe"), r"C:\x\a.exe");
+        assert!(sous_cible(r"C:\X\A.exe", r"\\?\c:\x\"));
+        assert!(sous_cible(r"\\nas\p\a", r"\\?\UNC\nas\p"));
+        assert!(!sous_cible(r"C:\xy\a.exe", r"C:\x"));
+        assert!(!sous_cible(r"C:\x\a.exe", ""));
+        let debut = date_cim("20261031194900.000000+000").unwrap();
+        let det = |date: &str, ressource: &str| Detection {
+            nom: ressource.into(),
+            dates: if date.is_empty() { vec![] } else { vec![date.into()] },
+            ressources: if ressource.is_empty() {
+                vec![]
+            } else {
+                vec![ressource.into()]
+            },
+        };
+        let toutes = vec![
+            det("20261031194859.000000+000", r"file:_C:\x\pendant.exe"),
+            det("20261031150000.000000+000", r"file:_C:\x\avant.exe"),
+            det("20261031195000.000000+000", r"file:_D:\ailleurs.exe"),
+            det("20261031195000.000000+000", ""),
+        ];
+        let noms = |v: Option<Vec<Detection>>| v.map(|v| v.into_iter().map(|d| d.nom).collect::<Vec<_>>());
+        // Sous la cible et depuis le début (deux secondes de marge) ; sans ressource, gardée.
+        assert_eq!(
+            noms(de_cette_analyse(toutes.clone(), debut, Some(r"C:\x"))),
+            Some(vec![r"file:_C:\x\pendant.exe".to_string(), String::new()])
+        );
+        // Analyse rapide ou complète : tout ce qui est de cette analyse.
+        assert_eq!(
+            noms(de_cette_analyse(toutes.clone(), debut, None)).map(|v| v.len()),
+            Some(3)
+        );
+        // Une détection qui compterait, sans date lisible : rien à conclure.
+        let mut sans_date = toutes;
+        sans_date.push(det("", r"file:_C:\x\b.exe"));
+        assert_eq!(de_cette_analyse(sans_date.clone(), debut, Some(r"C:\x")), None);
+        assert!(de_cette_analyse(sans_date, debut, Some(r"E:\")).is_some_and(|v| v.len() == 1));
+    }
+
+    #[test]
+    fn exclusions_qui_couvrent_la_cible() {
+        let v = |l: &[&str]| l.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        let c = |cible: &str, dossier: bool, chemins: &[&str], ext: &[&str]| {
+            exclusions_qui_couvrent(cible, dossier, &v(chemins), &v(ext))
+        };
+        // Elle-même, un parent, le lecteur entier ; « \\?\ » ou non, casse ou « \ » final (relecture T10, point 6).
+        for exclu in [
+            r"C:\Users\Public\vg-essai-eicar",
+            r"c:\users\public\",
+            r"C:\",
+            "C:/Users",
+        ] {
+            assert_eq!(
+                c(r"\\?\C:\Users\Public\vg-essai-eicar", true, &[exclu], &[]),
+                Some(v(&[exclu])),
+                "{exclu}"
+            );
+        }
+        // Un dossier exclu dedans couvre une partie du dossier analysé, pas un fichier voisin.
+        assert_eq!(c(r"C:\x", true, &[r"C:\x\cache"], &[]), Some(v(&[r"C:\x\cache"])));
+        assert_eq!(c(r"C:\x\a.exe", false, &[r"C:\x\a.exe.d"], &[]), Some(vec![]));
+        assert_eq!(c(r"C:\xy", true, &[r"C:\x"], &[]), Some(vec![]));
+        // Variables et jokers : prudence, dès que le début fixe est compatible.
+        assert_eq!(
+            c(r"C:\Users\alice\AppData\Local\Temp\a.exe", false, &["%TEMP%"], &[]),
+            Some(v(&["%TEMP%"]))
+        );
+        assert_eq!(
+            c(r"C:\jeux\a.exe", false, &[r"C:\jeux\*.exe"], &[]),
+            Some(v(&[r"C:\jeux\*.exe"]))
+        );
+        assert_eq!(c(r"D:\a.exe", false, &[r"C:\jeux\*"], &[]), Some(vec![]));
+        // Extensions : celle du fichier ; toutes pour un dossier.
+        assert_eq!(
+            c(r"C:\x\facture.PDF", false, &[], &[".pdf", "exe"]),
+            Some(v(&["*.pdf"]))
+        );
+        assert_eq!(c(r"C:\x\facture.exe", false, &[], &["pdf"]), Some(vec![]));
+        assert_eq!(c(r"C:\x", true, &[], &["pdf"]), Some(v(&["*.pdf"])));
+        // Liste cachée : rien à conclure ; listes vides : rien ne couvre.
+        assert_eq!(
+            c(
+                r"C:\x",
+                true,
+                &["N/A: Must be an administrator to view exclusions"],
+                &[]
+            ),
+            None
+        );
+        assert_eq!(
+            c(
+                r"C:\x",
+                true,
+                &[],
+                &["N/A: Must be an administrator to view exclusions"]
+            ),
+            None
+        );
+        assert_eq!(c(r"C:\x", true, &[""], &[]), Some(vec![]));
+        // Un nom piégé est montré inoffensif.
+        assert!(c(r"C:\x", true, &["C:\\x\x1b[2J"], &[]).is_some_and(|e| e.iter().all(|x| !x.contains('\x1b'))));
+    }
+
+    #[test]
+    fn mpcmdrun_de_la_plateforme_et_raisons_reportees() {
+        let pd = r"C:\ProgramData";
+        assert_eq!(
+            plateforme_sure(
+                r"C:\ProgramData\Microsoft\Windows Defender\Platform\4.18.24090.11-0\",
+                pd
+            )
+            .as_deref(),
+            Some(r"C:\ProgramData\Microsoft\Windows Defender\Platform\4.18.24090.11-0")
+        );
+        assert!(plateforme_sure(r"c:\programdata\microsoft\windows defender\platform\4.18.1-0", pd).is_some());
+        for faux in [
+            r"C:\ProgramData\Microsoft\Windows Defender\Platform\..",
+            r"C:\ProgramData\Microsoft\Windows Defender\Platform\4.18\..\..\x",
+            r"C:\ProgramData\Microsoft\Windows Defender\Platform\",
+            r"C:\ProgramData\Microsoft\Windows Defender\Platform",
+            r"C:\Users\alice\Platform\4.18.1-0",
+            r"D:\ProgramData\Microsoft\Windows Defender\Platform\4.18.1-0",
+            r"C:\ProgramData\Microsoft\Windows Defender\Platform\4.18.1-0.",
+            "",
+        ] {
+            assert_eq!(plateforme_sure(faux, pd), None, "{faux}");
+        }
+        // Seul ce qui vaut pour tous les fichiers est reporté sur les pièces suivantes d'un courriel.
+        assert!(vaut_pour_tous(raison_absent()));
+        assert!(!vaut_pour_tous(raison_sautee()));
+        let Examen::Impossible(muette) = lire_mpcmdrun(Some(0), "", true) else {
+            panic!("muette")
+        };
+        assert!(!vaut_pour_tous(&muette));
+        let Examen::Impossible(inverifiable) = examen_de(Verdict::Inverifiable, "", true) else {
+            panic!("invérifiable")
+        };
+        assert!(!vaut_pour_tous(&inverifiable));
+        // L'échec de Defender (antivirus tiers) ne vaut pour tous que sous Windows.
+        assert_eq!(vaut_pour_tous(raison_echec()), cfg!(windows));
     }
 
     #[test]

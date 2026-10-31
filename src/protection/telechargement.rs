@@ -153,7 +153,11 @@ pub(crate) fn calculer(fichier: &Path, algo: Algo) -> Result<String, String> {
         if let Some(e) = crate::machine::windows::hachage::empreinte(fichier, nom, octets) {
             e
         } else {
-            let chemin = crate::commande::ps_texte(&fichier.display().to_string());
+            // PowerShell 5.1 lit mal « \\?\ » : la forme courte, seulement quand elle désigne sans doute possible le
+            // même fichier (`sans_verbatim`) ; sinon le chemin tel quel, qui échoue plutôt que de lire un autre fichier.
+            let texte = fichier.to_string_lossy();
+            let texte = crate::protection::antivirus::sans_verbatim(&texte).unwrap_or_else(|| texte.to_string());
+            let chemin = crate::commande::ps_texte(&texte);
             crate::machine::windows::ps(&format!("(Get-FileHash -Algorithm {nom} -LiteralPath '{chemin}').Hash"))
                 .ok_or_else(|| tr!("Get-FileHash a échoué", "Get-FileHash failed").to_string())?
         }
@@ -296,8 +300,15 @@ pub(crate) fn nature(nom: &str, debut: &[u8]) -> Vec<(Niveau, String)> {
     signes
 }
 
+/// Un chemin prêt à montrer : sous sa forme habituelle (`sans_prefixe_etendu`), rendu inoffensif.
+fn affiche(chemin: &Path) -> String {
+    affichable(&sans_prefixe_etendu(&chemin.to_string_lossy()))
+}
+
 /// Windows : `canonicalize` rend un chemin étendu (« \\?\C:\… », « \\?\UNC\serveur\… ») que la personne ne
-/// reconnaît pas à l'écran : remis sous sa forme habituelle, celle qu'elle a tapée ou glissée.
+/// reconnaît pas à l'écran : remis sous sa forme habituelle, celle qu'elle a tapée ou glissée. Pour l'affichage
+/// seulement : sans « \\?\ », Windows retire un point ou un espace final et lit « CON » comme un périphérique, et
+/// « C:\x\facture.exe. » désignerait un autre fichier. On agit toujours sur le chemin réel.
 fn sans_prefixe_etendu(chemin: &str) -> String {
     if let Some(reseau) = chemin.strip_prefix(r"\\?\UNC\") {
         return format!(r"\\{reseau}");
@@ -385,15 +396,14 @@ fn fichier_a_verifier(fichier: Option<&Path>) -> Option<(PathBuf, std::fs::Metad
         }
         PathBuf::from(reponse)
     };
-    let Ok(chemin) = chemin
-        .canonicalize()
-        .map(|c| PathBuf::from(sans_prefixe_etendu(&c.to_string_lossy())))
-    else {
+    // Le chemin réel, « \\?\ » compris sous Windows : c'est lui qui désigne ce fichier-là (« facture.exe. » et
+    // « facture.exe » sont deux fichiers). Il n'est raccourci qu'à l'écran (`affiche`).
+    let Ok(chemin) = chemin.canonicalize() else {
         trp!("  ✖ Introuvable : {}", "  ✖ Not found: {}", chemin_affichable(&chemin));
         return None;
     };
     let Ok(meta) = std::fs::metadata(&chemin) else {
-        trp!("  ✖ Illisible : {}", "  ✖ Unreadable: {}", chemin_affichable(&chemin));
+        trp!("  ✖ Illisible : {}", "  ✖ Unreadable: {}", affiche(&chemin));
         return None;
     };
     if !meta.is_file() {
@@ -417,7 +427,7 @@ fn montrer_le_fichier(chemin: &Path, nom: &str, meta: &std::fs::Metadata) {
     );
     afficher_aligne(
         &format!("  {GRIS}{}{RESET} ", ajuster(tr!("Dossier", "Folder"), 8)),
-        &chemin.parent().map(chemin_affichable).unwrap_or_default(),
+        &chemin.parent().map(affiche).unwrap_or_default(),
         11,
         "",
     );
@@ -1224,6 +1234,9 @@ mod tests {
             r"\\?\Volume{1234}\a.iso"
         );
         assert_eq!(sans_prefixe_etendu("/home/alice/a.iso"), "/home/alice/a.iso");
+        // Relecture T10 : le raccourci n'est qu'à l'écran, point final gardé ; un nom piégé y est rendu inoffensif.
+        assert_eq!(affiche(Path::new(r"\\?\C:\x\facture.exe.")), r"C:\x\facture.exe.");
+        assert!(!affiche(Path::new("\\\\?\\C:\\x\x1b[2J\\a.exe")).contains('\x1b'));
     }
 
     #[test]

@@ -11,6 +11,15 @@ use crate::ui::{affichable, resume, tr, trf};
 /// Les exclusions de Defender. Sans droits administrateur, Windows les cache (« N/A: Must be an administrator… ») :
 /// rien à conclure. Avec un autre antivirus, Get-MpPreference échoue : rien non plus.
 pub(super) fn exclusions() -> Option<Constat> {
+    let [chemins, processus, extensions] = listes()?;
+    juger(&chemins, &processus, &extensions)
+}
+
+/// Les trois listes d'exclusions de Defender, telles que lues : chemins, processus, extensions. Cachées sans droits
+/// administrateur, elles contiennent « N/A: Must be an administrator… » ; `None` si ni WMI ni PowerShell ne
+/// répondent (autre antivirus). Lues aussi par l'antivirus : un « found no threats » sur un dossier exclu ne prouve
+/// rien.
+pub(crate) fn listes() -> Option<[Vec<String>; 3]> {
     // WMI d'abord (la classe que lit Get-MpPreference), PowerShell en secours.
     if let Some(l) = super::wmi::requete(
         r"root\Microsoft\Windows\Defender",
@@ -27,11 +36,11 @@ pub(super) fn exclusions() -> Option<Constat> {
                 .map(|v| v.liste().iter().filter_map(|x| x.texte().map(str::to_string)).collect())
                 .unwrap_or_default()
         };
-        return juger(
-            &liste("ExclusionPath"),
-            &liste("ExclusionProcess"),
-            &liste("ExclusionExtension"),
-        );
+        return Some([
+            liste("ExclusionPath"),
+            liste("ExclusionProcess"),
+            liste("ExclusionExtension"),
+        ]);
     }
     let json = ps(
         "$p = Get-MpPreference; @{c=@($p.ExclusionPath); p=@($p.ExclusionProcess); e=@($p.ExclusionExtension)} | ConvertTo-Json -Compress",
@@ -45,7 +54,7 @@ pub(super) fn exclusions() -> Option<Constat> {
             .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
             .unwrap_or_default()
     };
-    juger(&liste("c"), &liste("p"), &liste("e"))
+    Some([liste("c"), liste("p"), liste("e")])
 }
 
 /// Exclusions trop larges, avec la commande qui retire chacune. `None` si aucune, ou si la liste est cachée.

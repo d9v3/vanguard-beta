@@ -696,8 +696,10 @@ pub(crate) fn passer_aux_moteurs(
 }
 
 /// Les vrais moteurs : YARA, puis l'antivirus. Un antivirus absent n'est proposé qu'une fois (l'installer ? non) : sa
-/// réponse vaut pour les pièces suivantes, au lieu de reposer la question à chacune. Un fichier sauté par Defender
-/// (exclu), lui, ne dit rien des autres : chacune repasse.
+/// réponse vaut pour les pièces suivantes, au lieu de reposer la question à chacune. Seule une raison qui vaut pour
+/// tous les fichiers est reportée (`antivirus::vaut_pour_tous` : moteur absent, Defender qui n'analyse rien) ; une
+/// raison propre à une pièce (sautée ou exclue, illisible, trop grosse, compte rendu muet ou invérifiable) ne dit
+/// rien des autres : chacune repasse, et une pièce suivante détectée l'est.
 pub(crate) fn moteurs(
     yara: impl Fn(&Path) -> Examen,
     antivirus: impl Fn(&Path) -> Examen,
@@ -710,7 +712,7 @@ pub(crate) fn moteurs(
         } else {
             let e = antivirus(chemin);
             if let Examen::Impossible(raison) = &e
-                && raison != crate::protection::antivirus::raison_sautee()
+                && crate::protection::antivirus::vaut_pour_tous(raison)
             {
                 absent = Some(raison.clone());
             }
@@ -1400,7 +1402,7 @@ mod tests {
             |_| Examen::Trouve(vec!["Eicar".into()]),
             |_| {
                 appels.set(appels.get() + 1);
-                Examen::Impossible("ClamAV absent".into())
+                Examen::Impossible(crate::protection::antivirus::raison_absent().into())
             },
         );
         let p = Path::new("/nexiste/pas");
@@ -1408,7 +1410,7 @@ mod tests {
         let deux = m(p);
         // L'antivirus absent n'est demandé qu'une fois ; sa réponse vaut pour la pièce suivante, jamais « sain ».
         assert_eq!(appels.get(), 1);
-        assert!(matches!(&deux[1].1, Examen::Impossible(r) if r == "ClamAV absent"));
+        assert!(matches!(&deux[1].1, Examen::Impossible(r) if r == crate::protection::antivirus::raison_absent()));
         assert!(matches!(&un[0].1, Examen::Trouve(_)));
         // Relecture Defender : une pièce sautée (exclue) ne fait pas sauter les suivantes.
         let appels = std::cell::Cell::new(0);
@@ -1426,5 +1428,28 @@ mod tests {
         assert!(matches!(&m(p)[1].1, Examen::Impossible(_)));
         assert!(matches!(&m(p)[1].1, Examen::Trouve(_)));
         assert_eq!(appels.get(), 2);
+        // Relecture T10 : une raison propre à une pièce (compte rendu muet, fichier illisible ou trop gros) n'est pas
+        // reportée ; la pièce suivante repasse, et EICAR y est trouvé.
+        for raison in [
+            "compte rendu de Defender non reconnu",
+            "fichier illisible pour ClamAV",
+            "fichier de plus de 200 Mo, que ClamAV ne lit pas",
+        ] {
+            let appels = std::cell::Cell::new(0);
+            let mut m = moteurs(
+                |_| Examen::Sain,
+                |_| {
+                    appels.set(appels.get() + 1);
+                    if appels.get() == 1 {
+                        Examen::Impossible(raison.into())
+                    } else {
+                        Examen::Trouve(vec!["Eicar".into()])
+                    }
+                },
+            );
+            assert!(matches!(&m(p)[1].1, Examen::Impossible(_)), "{raison}");
+            assert!(matches!(&m(p)[1].1, Examen::Trouve(_)), "{raison}");
+            assert_eq!(appels.get(), 2, "{raison}");
+        }
     }
 }
