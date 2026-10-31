@@ -129,7 +129,8 @@ pub(crate) struct Programme {
     pub noms: &'static [&'static str],
     /// Les codes de sortie qui veulent dire « fait ».
     pub reussites: &'static [i32],
-    /// Ceux qui veulent dire « à finir au redémarrage » : ni fait ni échoué, la personne doit redémarrer.
+    /// Ceux qui veulent dire « reste à faire » : ni fait ni échoué, la personne doit lancer elle-même ce qui finit le
+    /// travail (chkdsk /f, qui propose de vérifier au redémarrage) ; Vanguard ne programme rien.
     pub au_redemarrage: &'static [i32],
     pub fr: &'static str,
     pub en: &'static str,
@@ -182,7 +183,7 @@ pub(crate) static PROGRAMMES: &[Programme] = &[
         noms: &[],
         // Microsoft (learn.microsoft.com, chkdsk) : 0 aucune erreur, 1 erreurs trouvées et corrigées, 2 nettoyage
         // fait ou non fait faute de /f ; 3 disque non vérifiable, erreurs non corrigeables ou non corrigées faute de
-        // /f : la réparation demande le disque hors ligne, donc un redémarrage.
+        // /f. Rien n'est programmé : la personne lance chkdsk /f, qui propose de vérifier au redémarrage.
         reussites: &[0, 1, 2],
         au_redemarrage: &[3],
         fr: "Analyser le disque de Windows sans le bloquer (chkdsk /scan)",

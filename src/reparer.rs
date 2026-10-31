@@ -1161,7 +1161,7 @@ pub fn liste() -> Vec<Reparation> {
             tr!("Disque : erreurs", "Disk: errors"),
             {
                 let lecteur = crate::commande::lecteur_systeme().unwrap_or("C:");
-                trf!("Analyse le disque de Windows ({lecteur}) sans le bloquer (chkdsk /scan) et répare en ligne ce qui peut l'être. S'il reste des erreurs, Vanguard le dit : la réparation se fait au redémarrage, à programmer par chkdsk {lecteur} /f (le disque de Windows ne peut pas être mis hors ligne pendant qu'il tourne).", "Scans the Windows disk ({lecteur}) without locking it (chkdsk /scan) and repairs online what it can. If errors remain, Vanguard says so: the repair happens at restart, to schedule with chkdsk {lecteur} /f (the Windows disk cannot be taken offline while it runs).")
+                trf!("Analyse le disque de Windows ({lecteur}) sans le bloquer (chkdsk /scan) et répare en ligne ce qui peut l'être. S'il n'a pas pu tout vérifier ou s'il reste des erreurs, Vanguard le dit et ne programme rien : lancez alors chkdsk {lecteur} /f en administrateur, qui proposera de vérifier le disque au prochain redémarrage (le disque de Windows ne peut pas être mis hors ligne pendant qu'il tourne).", "Scans the Windows disk ({lecteur}) without locking it (chkdsk /scan) and repairs online what it can. If it could not check everything or errors remain, Vanguard says so and schedules nothing: then run chkdsk {lecteur} /f as administrator, which will offer to check the disk at the next restart (the Windows disk cannot be taken offline while it runs).")
             },
             tr!("quelques minutes", "a few minutes"),
             &[&p("chkdsk-scan-systeme")],
@@ -1340,9 +1340,14 @@ pub fn lancer(r: &Reparation) {
             "  Stopped as you asked: nothing was changed."
         );
     } else if machine::a_finir_au_redemarrage() {
+        #[cfg(windows)]
+        let lecteur = crate::commande::lecteur_systeme().unwrap_or("C:");
+        #[cfg(not(windows))]
+        let lecteur = "C:";
         trp!(
-            "  ↻ À finir au redémarrage : lisez le message ci-dessus, puis redémarrez l'ordinateur.",
-            "  ↻ To finish at restart: read the message above, then restart the computer."
+            "  ↻ Disque à vérifier : chkdsk n'a pas pu tout vérifier ou a trouvé des erreurs ; {}.",
+            "  ↻ Disk to check: chkdsk could not check everything or found errors; {}.",
+            machine::conseil_chkdsk(lecteur)
         );
     } else {
         trp!(
@@ -1617,6 +1622,31 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// chkdsk /scan qui rend 3 (disque non vérifiable, ou erreurs à corriger hors ligne) ne programme rien : le texte
+    /// de la réparation ne promet pas de réparation au redémarrage, il dit de lancer chkdsk /f, qui la proposera.
+    #[cfg(windows)]
+    #[test]
+    fn chkdsk_ne_promet_pas_de_reparation_au_redemarrage() {
+        let verifier = || {
+            let liste = liste();
+            let disque = liste
+                .iter()
+                .find(|r| r.commandes.iter().any(|c| c.contains("chkdsk-scan-systeme")));
+            let texte = &disque.expect("réparation chkdsk").pourquoi;
+            let lecteur = crate::commande::lecteur_systeme().unwrap_or("C:");
+            assert!(texte.contains(&format!("chkdsk {lecteur} /f")), "{texte}");
+            for promesse in ["se fait au redémarrage", "happens at restart"] {
+                assert!(!texte.contains(promesse), "{texte}");
+            }
+            assert!(
+                texte.contains("ne programme rien") || texte.contains("schedules nothing"),
+                "{texte}"
+            );
+        };
+        verifier();
+        crate::langue::en_anglais(verifier);
     }
 
     /// Les vraies réparations, telles que `lancer` les envoie (point de restauration en tête quand il en faut un),

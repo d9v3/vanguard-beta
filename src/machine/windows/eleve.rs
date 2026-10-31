@@ -250,7 +250,7 @@ pub(crate) struct Reponse {
     pub etats: Option<Vec<bool>>,
     /// Non fait parce que la personne s'est arrêtée (point de restauration refusé, accord refusé) : pas un échec.
     pub arretee: bool,
-    /// À finir au redémarrage (chkdsk 3) : pas fait, pas un échec non plus.
+    /// Laissé à la personne (chkdsk 3 : disque à vérifier par chkdsk /f) : pas fait, pas un échec non plus.
     pub au_redemarrage: bool,
 }
 
@@ -259,12 +259,12 @@ const SANS_POINT: &str = "ok sans-point";
 /// La réponse d'un geste non fait parce que la personne s'est arrêtée.
 const ARRETEE: &str = "echec arret";
 
-/// La réponse d'un geste à finir au redémarrage.
+/// La réponse d'un geste laissé à la personne (chkdsk 3).
 const AU_REDEMARRAGE: &str = "echec redemarrage";
 
-/// Le début de la raison d'un programme à finir au redémarrage (suivi de son code).
+/// Le début de la raison d'un programme laissé à la personne (suivi de son code).
 fn au_redemarrage() -> &'static str {
-    tr!("à finir au redémarrage", "to finish at restart")
+    tr!("disque à vérifier", "disk to check")
 }
 
 /// La raison d'un geste non fait parce que la personne s'est arrêtée : point de restauration refusé, puis tout ce qui
@@ -757,8 +757,8 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
         trp!("{VERT}Terminé.{RESET}", "{VERT}Finished.{RESET}");
     } else if code == 1 && !echec && a_finir {
         trp!(
-            "Terminé : une étape est à finir au redémarrage (voir ci-dessus).",
-            "Finished: one step is to finish at restart (see above)."
+            "Terminé : une étape reste à faire de votre côté (voir ci-dessus).",
+            "Finished: one step is left for you to do (see above)."
         );
     } else if code == 1 && !echec {
         trp!(
@@ -850,11 +850,12 @@ fn faire(e: &Element, juge: &ordres::Juge) -> Resultat {
             None => trp!("  {VERT}OK{RESET}", "  {VERT}OK{RESET}"),
         }
     } else if let Some(code) = r.raison.strip_prefix(au_redemarrage()) {
-        // Seul chkdsk /scan a un code « à finir au redémarrage » dans la table (`gestes::PROGRAMMES`).
-        let lecteur = crate::commande::lecteur_systeme().unwrap_or("C:");
+        // Seul chkdsk /scan a un code « reste à faire » dans la table (`gestes::PROGRAMMES`).
+        let conseil = crate::machine::conseil_chkdsk(crate::commande::lecteur_systeme().unwrap_or("C:"));
         trp!(
-            "  {ACCENT}À finir au redémarrage{RESET} : chkdsk a trouvé des erreurs qu'il ne peut pas réparer pendant que Windows tourne, ou n'a pas pu tout vérifier. Programmez la réparation (chkdsk {lecteur} /f, répondez O), puis redémarrez l'ordinateur. ({})",
-            "  {ACCENT}To finish at restart{RESET}: chkdsk found errors it cannot repair while Windows runs, or could not check everything. Schedule the repair (chkdsk {lecteur} /f, answer Y), then restart the computer. ({})",
+            "  {ACCENT}Disque à vérifier{RESET} : chkdsk n'a pas pu tout vérifier, ou a trouvé des erreurs qu'il ne répare pas pendant que Windows tourne ; {}. ({})",
+            "  {ACCENT}Disk to check{RESET}: chkdsk could not check everything, or found errors it does not repair while Windows runs; {}. ({})",
+            conseil,
             code.trim()
         );
     } else if r.raison == arret_demande() {
@@ -1021,7 +1022,7 @@ fn lancer_programme(a: &gestes::Appel) -> Resultat {
                 avant: None,
                 raison: String::new(),
             },
-            // Ni fait ni échoué : la personne doit redémarrer (chkdsk 3). Pas compté fait, dit à part.
+            // Ni fait ni échoué : la personne doit lancer chkdsk /f (chkdsk 3). Pas compté fait, dit à part.
             Some(c) if a.au_redemarrage(c) => refus(format!("{} code={c}", au_redemarrage())),
             Some(c) => refus(format!("code={c}")),
             None => refus(tr!("arrêté sans code de sortie", "stopped without an exit code").to_string()),
@@ -1391,7 +1392,7 @@ mod tests {
                 raison: "code=2".into(),
             };
             assert!(!lire_reponse(&ligne_resultat(&echec)).arretee);
-            // chkdsk 3 : « à finir au redémarrage », ni arrêt ni échec ordinaire.
+            // chkdsk 3 : « disque à vérifier », ni arrêt ni échec ordinaire.
             let a_finir = Resultat {
                 reussi: false,
                 avant: None,

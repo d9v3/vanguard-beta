@@ -1090,7 +1090,8 @@ fn par_vanguard_eleve() -> bool {
 
 /// Ce que la dernière application de ce fil a laissé quand elle n'a pas tout fait, au-delà d'un échec : rien fait à
 /// la demande de la personne (point de restauration refusé, accord ou demande d'administrateur refusés), ou une étape
-/// à finir au redémarrage (chkdsk 3). Pour qu'elle ne se dise pas « échouée ».
+/// laissée à la personne (chkdsk 3 : disque à vérifier par chkdsk /f, rien de programmé). Pour qu'elle ne se dise pas
+/// « échouée ».
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Inacheve {
     Non,
@@ -1112,6 +1113,17 @@ pub(crate) fn arretee_a_votre_demande() -> bool {
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn a_finir_au_redemarrage() -> bool {
     INACHEVE.with(std::cell::Cell::get) == Inacheve::AuRedemarrage
+}
+
+/// Ce que la personne doit faire quand chkdsk /scan rend 3 (learn.microsoft.com, chkdsk : disque non vérifiable, ou
+/// erreurs non corrigées faute de /f) : Vanguard ne programme rien. C'est chkdsk /f, lancé par elle en administrateur,
+/// qui propose de vérifier le disque au prochain redémarrage.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn conseil_chkdsk(lecteur: &str) -> String {
+    trf!(
+        "rien n'est programmé. Ouvrez un terminal en administrateur et lancez chkdsk {lecteur} /f : il proposera de vérifier le disque au prochain redémarrage (répondez O), puis redémarrez l'ordinateur",
+        "nothing is scheduled. Open a terminal as administrator and run chkdsk {lecteur} /f: it will offer to check the disk at the next restart (answer Y), then restart the computer"
+    )
 }
 
 #[cfg(windows)]
@@ -1439,6 +1451,21 @@ pub fn executer(json: bool) -> Audit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// chkdsk 3 : le conseil dit que rien n'est programmé et quoi lancer, sur le bon lecteur, dans les deux langues.
+    #[test]
+    fn le_conseil_chkdsk_ne_promet_rien() {
+        let verifier = || {
+            let c = conseil_chkdsk("D:");
+            assert!(c.contains("chkdsk D: /f"), "{c}");
+            assert!(
+                c.starts_with("rien n'est programmé") || c.starts_with("nothing is scheduled"),
+                "{c}"
+            );
+        };
+        verifier();
+        crate::langue::en_anglais(verifier);
+    }
 
     /// Sous Wine, aucune liste ne passe par le processus élevé (`eleve::appliquer`) : la fenêtre PowerShell d'avant,
     /// sans élévation. Ailleurs (vrai Windows), toutes y passent, sans repli. Wine reconnu ici sans
