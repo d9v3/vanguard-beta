@@ -67,7 +67,8 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
   `VANGUARD_INTERMEDIAIRE=1`, rien dans la VM). `deployer.sh` publie la page de chaque publication (Releases), 0.x.0
   comme 0.x.y, seulement quand une passe réussie de la VM a fait tourner ce .exe-là (verdict signé par le surveillant de la file
   d'essais, HMAC du secret tiré à son installation : `outils/vm-tester.sh --verdict <sha256>` ;
-  `VANGUARD_PUBLIER_SANS_VM=1` pour s'en passer, dit) ; avec elle, l'historique signé des versions ; elle reprend les versions intermédiaires d'avant, qui n'ont pas la leur. Pour chaque page, il refait
+  `VANGUARD_PUBLIER_SANS_VM=1` pour s'en passer, dit), et quand Linux et Windows ont les empreintes de la compilation
+  reproductible de la CI (`VANGUARD_PUBLIER_SANS_EMPREINTES_CI=1` pour s'en passer, dit) ; avec elle, l'historique signé des versions ; elle reprend les versions intermédiaires d'avant, qui n'ont pas la leur. Pour chaque page, il refait
   aussi les captures du README (`outils/captures.py`, sur une copie des données, ce qui identifierait la maison
   masqué) et les commite à part.
 - master est protégé sur GitHub (Settings › Rules) : jamais réécrit ni supprimé, même par le propriétaire (une

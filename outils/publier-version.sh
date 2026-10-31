@@ -174,6 +174,77 @@ cp "$WINDOWS" "$DOSSIER/vanguard-windows-x86_64.exe"
 outils/failles-programmes.sh "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-windows-x86_64.exe" ||
   { echo "Programmes : rien de publié."; exit 1; }
 
+# Les programmes Linux et Windows qui partent doivent être ceux que la CI a compilés du même code : son travail
+# « reproductible » (.github/workflows/ci.yml) les compile deux fois par la même recette et écrit leurs empreintes
+# dans son journal (EMPREINTE-VANGUARD-LINUX, -WINDOWS). Sans cette comparaison, un programme altéré sur cet ordinateur
+# (chaîne Rust, éditeur de liens, fichier de config de cargo) serait signé et publié avec une CI verte à côté
+# (campagne d'attaque n° 6, F1). Seulement une exécution de master (push, nuit ou à la main), du commit compilé ou
+# d'un commit d'avant au même code (.github/hors-code.txt), comme le Mac. Code 0 : mêmes empreintes ; 1 : différentes
+# (la raison) ; 2 : aucune exécution de la CI n'en a pour ce code. Lue telle quelle par outils/essais-signature.sh.
+empreintes_de_la_ci() {
+  local id sha travail journal linux windows ici_linux ici_windows
+  ici_linux=$(sha256sum "$DOSSIER/vanguard-linux-x86_64" | cut -d' ' -f1)
+  ici_windows=$(sha256sum "$DOSSIER/vanguard-windows-x86_64.exe" | cut -d' ' -f1)
+  while read -r id sha; do
+    [[ $id =~ ^[0-9]+$ ]] || continue
+    if [[ $sha != "$COMPILE" ]]; then
+      git merge-base --is-ancestor "$sha" "$COMPILE" 2>/dev/null || continue
+      [[ -n $HORS_CODE ]] || continue
+      git diff --name-only "$sha" "$COMPILE" | grep -vqE "$HORS_CODE" && continue
+    fi
+    travail=$(gh run view "$id" --json jobs \
+      -q '.jobs[] | select(.name == "reproductible" and .conclusion == "success") | .databaseId' | head -n 1)
+    [[ $travail =~ ^[0-9]+$ ]] || continue
+    journal=$(gh run view "$id" --job "$travail" --log 2>/dev/null) || continue
+    linux=$(grep -oE 'EMPREINTE-VANGUARD-LINUX [0-9a-f]{64}' <<<"$journal" | tail -n 1 | cut -d' ' -f2 || true)
+    windows=$(grep -oE 'EMPREINTE-VANGUARD-WINDOWS [0-9a-f]{64}' <<<"$journal" | tail -n 1 | cut -d' ' -f2 || true)
+    [[ -n $linux && -n $windows ]] || continue
+    if [[ $linux != "$ici_linux" || $windows != "$ici_windows" ]]; then
+      [[ $linux == "$ici_linux" ]] ||
+        echo "Linux : ${ici_linux:0:16}… ici, ${linux:0:16}… dans la CI (exécution $id, ${sha:0:12})."
+      [[ $windows == "$ici_windows" ]] ||
+        echo "Windows : ${ici_windows:0:16}… ici, ${windows:0:16}… dans la CI (exécution $id, ${sha:0:12})."
+      return 1
+    fi
+    echo "exécution $id, ${sha:0:12}"
+    return 0
+  done < <(gh run list --workflow ci.yml --branch master --limit 30 --json databaseId,headSha,headBranch,event \
+    -q '.[] | select(.headBranch == "master" and (.event == "push" or .event == "schedule"
+      or .event == "workflow_dispatch")) | "\(.databaseId) \(.headSha)"')
+  return 2
+}
+# La CI de ce commit tourne encore (poussé à l'instant par deployer.sh) : sa compilation reproductible est attendue.
+# VANGUARD_PUBLIER_SANS_EMPREINTES_CI=1 publie quand même (outils de compilation d'ici différents de ceux de la CI,
+# CONTRIBUTING.md, « Compilation reproductible »), et le dit.
+CODE_CI=0
+EMPREINTES_CI=$(empreintes_de_la_ci) || CODE_CI=$?
+if ((CODE_CI == 2)); then
+  EN_COURS=$(gh run list --workflow ci.yml --branch master --commit "$COMMIT" --limit 5 --json databaseId,status \
+    -q '[.[] | select(.status != "completed")][0].databaseId // ""')
+  if [[ $EN_COURS =~ ^[0-9]+$ ]]; then
+    echo "Attente de la CI de ce commit (exécution $EN_COURS, compilation reproductible : jusqu'à 40 minutes)…"
+    # Son code ne compte pas : un autre travail en échec n'empêche pas de lire les empreintes, relues ensuite.
+    gh run watch "$EN_COURS" >/dev/null 2>&1 || true
+    CODE_CI=0
+    EMPREINTES_CI=$(empreintes_de_la_ci) || CODE_CI=$?
+  fi
+fi
+if ((CODE_CI == 0)); then
+  echo "✔ Programmes Linux et Windows identiques à ceux de la compilation reproductible de la CI ($EMPREINTES_CI)."
+elif [[ -n ${VANGUARD_PUBLIER_SANS_EMPREINTES_CI:-} ]]; then
+  [[ -z $EMPREINTES_CI ]] || echo "$EMPREINTES_CI"
+  echo "⚠ Programmes Linux et Windows publiés sans être ceux de la CI (VANGUARD_PUBLIER_SANS_EMPREINTES_CI)."
+else
+  if ((CODE_CI == 1)); then
+    echo "$EMPREINTES_CI"
+    echo "Programmes Linux ou Windows différents de ceux de la compilation reproductible de la CI : rien de publié."
+  else
+    echo "Aucune compilation reproductible réussie de la CI (ci.yml, master) pour ce code : rien de publié."
+  fi
+  echo "  (VANGUARD_PUBLIER_SANS_EMPREINTES_CI=1 outils/publier-version.sh pour publier quand même, et le dire.)"
+  exit 1
+fi
+
 # Une compilation macOS qui a vraiment produit le programme de ce code : celle de ce commit, ou celle d'un commit
 # d'avant dont le programme est le même (seuls des captures, la documentation ou les outils ont changé depuis :
 # .github/hors-code.txt, la liste que lisent aussi les workflows). Une exécution de nuit sautée (code inchangé)

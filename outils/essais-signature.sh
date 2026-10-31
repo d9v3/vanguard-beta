@@ -29,6 +29,9 @@
 #      l'abonnement) sur une demande de fusion venue d'un fork : son garde, rejoué ici avec un faux gh. Ni sur un
 #      ticket « journal », ni sur un ticket ou une demande qu'un autre que le propriétaire a écrits, ni sur un fil où
 #      un autre a commenté ou relu (et un fil illisible est refusé).
+#   6b. Linux et Windows publiés portent les empreintes de la compilation reproductible de la CI (ci.yml, master) :
+#      publier-version.sh (empreintes_de_la_ci, face à un faux gh) refuse un octet changé, un travail en échec ou
+#      un journal sans empreintes, et ignore une autre branche (campagne d'attaque n° 6, F1).
 #   6. Le programme Mac que la clé signe vient d'une exécution de master : publier-version.sh (sa fonction
 #      avec_programme, face à un faux gh) écarte celle d'une autre branche, même plus récente et du même commit ; et
 #      macos.yml ne reprend aucun cache sur master. Sans jq, cet essai est sauté et dit. Chaque action des workflows
@@ -391,6 +394,91 @@ GH
     ko "deployer.sh prend la compilation macOS de n'importe quelle branche"
 else
   echo "  (sauté : jq absent, pas de faux gh pour essayer publier-version.sh)"
+fi
+
+# 6b. Linux et Windows publiés : les empreintes de la compilation reproductible de la CI (campagne d'attaque n° 6,
+# F1). Un faux gh : les exécutions de ci.yml (une sur une autre branche, aux empreintes d'ici : jamais retenue), le
+# travail « reproductible » de chacune, son journal. Sans jq, sauté et dit.
+if command -v jq >/dev/null; then
+  F=$T/faux-gh-ci
+  mkdir -p "$F" "$T/dossier-ci"
+  printf 'ELF linux' >"$T/dossier-ci/vanguard-linux-x86_64"
+  printf 'MZ windows' >"$T/dossier-ci/vanguard-windows-x86_64.exe"
+  E_LINUX=$(sha256sum "$T/dossier-ci/vanguard-linux-x86_64" | cut -d' ' -f1)
+  E_WINDOWS=$(sha256sum "$T/dossier-ci/vanguard-windows-x86_64.exe" | cut -d' ' -f1)
+  journal_ci() { # exécution, empreinte Linux, empreinte Windows ; la ligne du script, recopiée par GitHub, d'abord
+    printf '%s\n' 'reproductible	Deux compilations	echo "EMPREINTE-VANGUARD-LINUX $(sha256sum premiere/vanguard)"' \
+      "reproductible	Deux compilations	2026-10-31T08:00:00Z EMPREINTE-VANGUARD-LINUX $2" \
+      "reproductible	Deux compilations	2026-10-31T08:00:00Z EMPREINTE-VANGUARD-WINDOWS $3" >"$F/journal-$1.txt"
+  }
+  cat >"$F/gh" <<'GH'
+#!/usr/bin/env bash
+# run list → runs.json ; run view N --json jobs → travaux-N.json ; run view N --job J --log → journal-N.txt.
+q=. vue= travail=
+[[ $1 == run && $2 == view ]] && vue=$3
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -q) q=$2; shift ;;
+    --job) travail=$2; shift ;;
+  esac
+  shift
+done
+d=$(dirname "$0")
+if [[ -n $travail ]]; then
+  cat "$d/journal-$vue.txt"
+elif [[ -n $vue ]]; then
+  jq -r "$q" "$d/travaux-$vue.json"
+else
+  jq -r "$q" "$d/runs.json"
+fi
+GH
+  chmod +x "$F/gh"
+  cat >"$F/runs.json" <<'JSON'
+[{"databaseId": 3, "headSha": "c0ffee", "headBranch": "piege", "event": "workflow_dispatch", "status": "completed"},
+ {"databaseId": 1, "headSha": "c0ffee", "headBranch": "master", "event": "push", "status": "completed"}]
+JSON
+  echo '{"jobs": [{"databaseId": 30, "name": "reproductible", "conclusion": "success"}]}' >"$F/travaux-3.json"
+  echo '{"jobs": [{"databaseId": 10, "name": "reproductible", "conclusion": "success"}]}' >"$F/travaux-1.json"
+  journal_ci 3 "$E_LINUX" "$E_WINDOWS"
+  awk '/^empreintes_de_la_ci\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh" >"$T/empreintes_de_la_ci.sh"
+  empreintes_ci() { # la sortie de empreintes_de_la_ci, puis « code N »
+    local code=0 sortie
+    sortie=$(cd "$T" && PATH="$F:$PATH" COMPILE=c0ffee HORS_CODE= DOSSIER=$T/dossier-ci \
+      bash -c "source '$T/empreintes_de_la_ci.sh'; empreintes_de_la_ci" 2>&1) || code=$?
+    printf '%s\ncode %s\n' "$sortie" "$code"
+  }
+  ZERO=0000000000000000000000000000000000000000000000000000000000000000
+  journal_ci 1 "$E_LINUX" "$E_WINDOWS"
+  r=$(empreintes_ci)
+  [[ $r == *"exécution 1,"*"code 0" ]] && ok "publier : Linux et Windows aux empreintes de la CI de master acceptés" ||
+    ko "publier : empreintes égales à celles de la CI refusées ($r)"
+  journal_ci 1 "$ZERO" "$E_WINDOWS"
+  r=$(empreintes_ci)
+  [[ $r == *"Linux :"*"code 1" && $r != *"Windows :"* ]] &&
+    ok "publier : un programme Linux qui n'est pas celui de la CI est refusé (même avec une autre branche d'accord)" ||
+    ko "publier : Linux différent de la CI accepté ($r)"
+  journal_ci 1 "$E_LINUX" "$ZERO"
+  r=$(empreintes_ci)
+  [[ $r == *"Windows :"*"code 1" ]] && ok "publier : un programme Windows qui n'est pas celui de la CI est refusé" ||
+    ko "publier : Windows différent de la CI accepté ($r)"
+  journal_ci 1 "$E_LINUX" "$E_WINDOWS"
+  echo '{"jobs": [{"databaseId": 10, "name": "reproductible", "conclusion": "failure"}]}' >"$F/travaux-1.json"
+  r=$(empreintes_ci)
+  [[ $r == *"code 2" ]] && ok "publier : une compilation reproductible en échec ne compte pas (seule l'autre branche reste)" ||
+    ko "publier : empreintes prises d'un travail en échec ou d'une autre branche ($r)"
+  echo '{"jobs": [{"databaseId": 10, "name": "reproductible", "conclusion": "success"}]}' >"$F/travaux-1.json"
+  printf 'reproductible\tDeux compilations\tcmp: differ\n' >"$F/journal-1.txt"
+  r=$(empreintes_ci)
+  [[ $r == *"code 2" ]] && ok "publier : un journal sans empreintes ne vaut pas accord" ||
+    ko "publier : journal sans empreintes accepté ($r)"
+  # Le passage lui-même : sans accord, rien de publié, sauf le passe-droit nommé, et dit.
+  awk '/^EMPREINTES_CI=\$\(empreintes_de_la_ci\)/ { a = 1 }
+    a && /VANGUARD_PUBLIER_SANS_EMPREINTES_CI:-/ { p = 1 } p && /^  exit 1$/ { x = 1 } END { exit !(a && p && x) }' \
+    "$DEPOT/outils/publier-version.sh" &&
+    ok "publier-version.sh s'arrête sans les empreintes de la CI (passe-droit nommé seulement)" ||
+    ko "publier-version.sh publie sans comparer Linux et Windows à la CI"
+else
+  echo "  (sauté : jq absent, pas de faux gh pour les empreintes de la CI)"
 fi
 # Par le nom court : une étiquette nommée master a le même headBranch que la branche, que publier-version.sh
 # accepte ; « github.ref != 'refs/heads/master' » lui laissait reprendre un cache préparé.
