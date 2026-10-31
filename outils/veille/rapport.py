@@ -619,6 +619,15 @@ def alerte(rapport, signature, sortie, donnees, evidente=None):
     return 0
 
 
+def raison_preuves(etape):
+    """Pourquoi les preuves ont été sautées, réduit aux outils absents que nomme preuves.sh (jamais son texte)."""
+    texte = str(etape.get("raison") or "")
+    if etape.get("etat") != "sautee":
+        return None
+    outils = [o for o in ("miri", "kani") if texte.startswith("– absent, sauté :") and o in texte.lower()]
+    return sur("slug", "absent-" + "-".join(outils)) if outils else RETIRE
+
+
 def hebdo_entree(a):
     """hebdo-entree.json : les SHA de la semaine sur la base et les signaux des sept dernières nuits, en champs sûrs."""
     veille = Path(a.veille)
@@ -640,10 +649,17 @@ def hebdo_entree(a):
             fuzz.setdefault(c["cible"], {"cible": sur("slug", c["cible"]), "corpus_debut": c["corpus_avant"]})
             fuzz[c["cible"]]["corpus_fin"] = c["corpus_apres"]
     echap = [((n.get("canaris") or {}).get("echap") or {}).get("apres") for n in nuits]
-    # Miri et Kani, la nuit du jeudi (la veille de cette relecture) : l'état seul, jamais le journal.
+    # Miri et Kani, la nuit du jeudi (la veille de cette relecture) : l'état seul, jamais le journal ; d'un saut, les
+    # outils absents. Une semaine sans l'étape (nuit reportée, manquée, worktree pas prêt) le dit : rien n'a été prouvé.
     preuves = [{"jour": sur("jour", n.get("date")), "etat": sur("slug", e.get("etat")),
-                "code": sur("nombre", e.get("code"))}
+                "code": sur("nombre", e.get("code")), "raison": raison_preuves(e)}
                for n in nuits for e in (n.get("etapes") or []) if isinstance(e, dict) and e.get("nom") == "preuves"]
+    if not preuves:
+        jeudi = next(fin - datetime.timedelta(days=i) for i in range(7)
+                     if (fin - datetime.timedelta(days=i)).isoweekday() == 4)
+        nuit_du_jeudi = any(n.get("date") == jeudi.isoformat() for n in nuits)
+        preuves = [{"jour": jeudi.isoformat(), "etat": "absente", "code": None,
+                    "raison": "etape-absente" if nuit_du_jeudi else "nuit-absente"}]
     entree = {
         "jour": sur("jour", a.jour),
         "base": sur("branche", a.base),

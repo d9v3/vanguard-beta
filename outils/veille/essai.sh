@@ -306,7 +306,7 @@ attendu '! jq -e ".etapes[] | select(.nom == \"preuves\")" "$R/2026-10-23.json" 
   "preuves (Miri, Kani) pas relancées le vendredi"
 python3 -I "$ICI/rapport.py" hebdo-entree --veille "$R" --jour 2026-10-23 --base prochaine --commits /dev/null \
   "$BANC/hebdo-preuves.json" >>"$BANC/nuits.log" 2>&1
-attendu 'jq -e ".signaux.preuves == [{\"jour\": \"2026-10-22\", \"etat\": \"ok\", \"code\": 0}]" "$BANC/hebdo-preuves.json" >/dev/null' \
+attendu 'jq -e ".signaux.preuves == [{\"jour\": \"2026-10-22\", \"etat\": \"ok\", \"code\": 0, \"raison\": null}]" "$BANC/hebdo-preuves.json" >/dev/null' \
   "la relecture du vendredi lit les preuves du jeudi"
 rm -f "$BANC"/fuzz/plantages/tar/*
 
@@ -525,6 +525,18 @@ attendu 'jq -e ".etapes[] | select(.nom == \"preuves\") | .etat == \"echec\" and
 ESSAI_PREUVES=124 nuit 2026-12-10
 attendu 'jq -e ".etapes[] | select(.nom == \"preuves\") | .etat == \"echec\" and .code == 124" "$R/2026-12-10.json" >/dev/null' \
   "délai dépassé : étape en échec, jamais verte"
+hebdo_preuves() { # jour [dossier de la veille] : les preuves que lirait la relecture de ce jour
+  python3 -I "$ICI/rapport.py" hebdo-entree --veille "${2:-$R}" --jour "$1" --base prochaine --commits /dev/null \
+    "$BANC/hebdo-preuves.json" >>"$BANC/nuits.log" 2>&1 && jq -c .signaux.preuves "$BANC/hebdo-preuves.json"
+}
+attendu '[[ $(hebdo_preuves 2026-11-27) == "[{\"jour\":\"2026-11-26\",\"etat\":\"sautee\",\"code\":77,\"raison\":\"absent-kani\"}]" ]]' \
+  "hebdo : un saut dit l'outil absent"
+attendu '[[ $(hebdo_preuves 2027-01-08) == "[{\"jour\":\"2027-01-07\",\"etat\":\"absente\",\"code\":null,\"raison\":\"nuit-absente\"}]" ]]' \
+  "hebdo : une semaine sans nuit du jeudi le dit"
+mkdir -p "$BANC/veille-sans-preuves"
+echo '{"date": "2027-01-14", "etapes": [{"nom": "verifier", "etat": "ok", "code": 0}]}' >"$BANC/veille-sans-preuves/2027-01-14.json"
+attendu '[[ $(hebdo_preuves 2027-01-16 "$BANC/veille-sans-preuves") == "[{\"jour\":\"2027-01-14\",\"etat\":\"absente\",\"code\":null,\"raison\":\"etape-absente\"}]" ]]' \
+  "hebdo : un jeudi sans l'étape des preuves le dit"
 
 if ((ECHECS)); then
   echo "$ECHECS vérification(s) en échec ; journaux : $BANC/nuits.log"
