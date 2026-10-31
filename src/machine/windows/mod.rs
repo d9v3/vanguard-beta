@@ -83,8 +83,26 @@ const RECHERCHE_DE_WINGET: &str = "$vanguardWinget = $null; Import-Module -Name 
      -and [IO.File]::Exists($vanguardExe) -and (-not $vanguardVersion -or ([version]$vanguardPaquet.Version) -gt $vanguardVersion)) \
      { $vanguardVersion = [version]$vanguardPaquet.Version; $vanguardWinget = $vanguardExe } }; ";
 /// La suite : introuvable, la commande échoue sans rien lancer ; trouvé, winget par ce chemin (les arguments suivent).
-const WINGET_TROUVE_FR: &str = "if (-not $vanguardWinget) { throw 'winget introuvable dans App Installer (Microsoft Store) : rien n''a été lancé' }; & $vanguardWinget";
-const WINGET_TROUVE_EN: &str = "if (-not $vanguardWinget) { throw 'winget not found in App Installer (Microsoft Store): nothing was run' }; & $vanguardWinget";
+/// Un App Installer hors de Program Files\WindowsApps reste refusé (un dossier d'un autre disque peut être inscriptible
+/// par le compte) : le message le dit, avec quoi faire.
+const WINGET_TROUVE_FR: &str = "if (-not $vanguardWinget) { throw 'winget introuvable : App Installer de Microsoft manque, ou il n''est pas installé dans Program Files\\WindowsApps (ailleurs, Vanguard ne le lance pas en administrateur). Installez ou mettez à jour App Installer depuis le Microsoft Store ; rien n''a été lancé.' }; & $vanguardWinget";
+const WINGET_TROUVE_EN: &str = "if (-not $vanguardWinget) { throw 'winget not found: Microsoft App Installer is missing, or it is not installed in Program Files\\WindowsApps (elsewhere, Vanguard does not run it as administrator). Install or update App Installer from the Microsoft Store; nothing was run.' }; & $vanguardWinget";
+
+/// 0xC0000135 (STATUS_DLL_NOT_FOUND) en entier signé : winget lancé par son chemin, hors de l'alias du Store, n'a pas
+/// trouvé une de ses bibliothèques (App Installer ancien ou abîmé). « code -1073741515 » ne dirait rien à personne.
+const WINGET_NE_DEMARRE_PAS: i32 = -1_073_741_515;
+
+/// À mettre juste après les arguments de `winget_eleve()` : un winget qui n'a pas pu démarrer devient une erreur
+/// claire, dans la langue de l'interface, au lieu d'un code.
+pub(crate) fn winget_demarre() -> String {
+    format!(
+        "; if ($LASTEXITCODE -eq {WINGET_NE_DEMARRE_PAS}) {{ throw '{}' }}",
+        tr!(
+            "winget n''a pas pu démarrer en administrateur (code 0xC0000135) : mettez App Installer à jour depuis le Microsoft Store, puis relancez.",
+            "winget could not start as administrator (code 0xC0000135): update App Installer from the Microsoft Store, then try again."
+        )
+    )
+}
 
 /// Le début d'une commande winget de la fenêtre administrateur, dans la langue de l'interface (`& $vanguardWinget`
 /// suit : les arguments viennent après).
@@ -110,9 +128,10 @@ pub(crate) fn sans_recherche_de_winget(commande: &str) -> Option<&str> {
 /// identifiant ne peut pas être pris pour une application du Microsoft Store au nom voisin.
 pub fn winget_installer(id: &str) -> String {
     format!(
-        "{} install --id {id} --exact --source winget --silent --accept-package-agreements --accept-source-agreements --disable-interactivity; \
+        "{} install --id {id} --exact --source winget --silent --accept-package-agreements --accept-source-agreements --disable-interactivity{}; \
          if ($LASTEXITCODE -in {DEJA_INSTALLE}) {{ $global:LASTEXITCODE = 0 }}",
-        winget_eleve()
+        winget_eleve(),
+        winget_demarre()
     )
 }
 
@@ -1813,6 +1832,35 @@ mod tests {
             assert!(!s.contains(absent), "{absent}");
         }
         assert!(s.ends_with("if ($echecs) { exit 1 }\nexit 0"));
+    }
+
+    /// winget qui ne démarre pas (0xC0000135) : une erreur dite en mots, dans les deux langues, avant que le code ne
+    /// soit lu comme « déjà installé » ou effacé ; App Installer introuvable ou hors de WindowsApps : refus dit, avec quoi
+    /// faire. Les deux commandes winget de la fenêtre administrateur (installer, mettre à jour) portent le contrôle.
+    #[test]
+    fn winget_qui_ne_demarre_pas_se_dit_en_mots() {
+        let verifier = |anglais: bool| {
+            let controle = winget_demarre();
+            assert!(
+                controle.starts_with("; if ($LASTEXITCODE -eq -1073741515) { throw '"),
+                "{controle}"
+            );
+            assert!(controle.contains("App Installer") && controle.contains("Microsoft Store"));
+            assert!(controle.contains(if anglais {
+                "could not start as administrator"
+            } else {
+                "n''a pas pu démarrer en administrateur"
+            }));
+            let installer = winget_installer("Microsoft.DirectX");
+            let controle_a = installer.find(&controle).expect("contrôle absent de l'installation");
+            assert!(controle_a < installer.find("-in -1978335189").expect("codes « déjà installé »"));
+            assert!(installer.contains("--disable-interactivity; if ($LASTEXITCODE -eq -1073741515)"));
+            let suite = if anglais { WINGET_TROUVE_EN } else { WINGET_TROUVE_FR };
+            assert!(winget_eleve().ends_with(suite));
+            assert!(suite.contains("Program Files\\WindowsApps") && suite.contains("Microsoft Store"));
+        };
+        verifier(false);
+        crate::langue::en_anglais(|| verifier(true));
     }
 
     #[test]

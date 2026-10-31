@@ -87,6 +87,8 @@ fn lire_etat() -> Option<Etat> {
     .and_then(|b| b.trim().parse().ok())
     .unwrap_or(0);
     Some(Etat {
+        // Un indice pour le choix 1 (installer ou ouvrir le Store), pas le winget lancé : la fenêtre administrateur
+        // cherche le sien dans App Installer (`winget_eleve`) et, s'il manque ou est ailleurs, dit quoi faire.
         winget: installes::winget_present(),
         programmes,
         vc14_x64: dword(&machine, &format!(r"{vc}\x64"), "Installed") == Some(1),
@@ -155,6 +157,7 @@ fn batterie() -> bool {
     (unsafe { GetSystemPowerStatus(&raw mut etat) }) != 0 && !matches!(etat.drapeaux, 128 | 255)
 }
 
+/// `winget` : même indice que `installes::winget_present` (le PATH), pas le winget lancé en administrateur.
 fn lire_par_powershell() -> Option<Etat> {
     let json = machine::windows::ps(
         r#"$noms = @(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.DisplayName } | Where-Object { $_ })

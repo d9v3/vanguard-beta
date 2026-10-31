@@ -483,9 +483,10 @@ fn commandes_winget(programmes: &[(String, String)]) -> Vec<String> {
     ids.iter()
         .map(|id| {
             format!(
-                "{} upgrade --id '{}' --exact --accept-source-agreements --accept-package-agreements --disable-interactivity",
+                "{} upgrade --id '{}' --exact --accept-source-agreements --accept-package-agreements --disable-interactivity{}",
                 super::winget_eleve(),
-                crate::commande::ps_texte(id)
+                crate::commande::ps_texte(id),
+                super::winget_demarre()
             )
         })
         .collect()
@@ -872,6 +873,9 @@ Windows Terminal Microsoft.WindowsTerminal 1.24.12741.0  1.25.2733.0   winget\r\
         assert_eq!(programmes.len(), 3);
         let c = commandes_winget(&programmes);
         assert!(c[0].contains("--id 'Microsoft.Edge'") && c[2].contains("--id 'Microsoft.AppInstaller'"));
+        // winget qui ne démarre pas (0xC0000135) : chaque mise à jour le dit en mots, pas par un code.
+        assert!(c.iter().all(|l| l.ends_with(&super::super::winget_demarre())
+            && l.contains("--disable-interactivity; if ($LASTEXITCODE -eq -1073741515)")));
         assert_eq!(
             lire_winget("Aucun package installé ne correspond aux critères d’entrée.\nCODE=0"),
             None
