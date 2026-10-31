@@ -181,7 +181,7 @@ struct Sequence {
 
 /// Un bloc compressé : les littéraux, puis les séquences qui les assemblent.
 fn bloc_compresse(bloc: &[u8], etat: &mut Etat, sortie: &mut Vec<u8>, debut: usize, max: usize) -> Option<()> {
-    let (litteraux, lus) = litteraux(bloc, &mut etat.huffman)?;
+    let (litteraux, lus) = litteraux(bloc, &mut etat.huffman, max.saturating_sub(sortie.len()))?;
     let sequences = sequences(bloc.get(lus..)?, &mut etat.tables)?;
     let mut pos = 0usize;
     for s in sequences {
@@ -599,8 +599,9 @@ fn huffman_flux(table: &TableHuffman, octets: &[u8], n: usize, sortie: &mut Vec<
 
 // --- Littéraux (RFC 8878, 3.1.1.3.1) ---
 
-/// La section des littéraux d'un bloc : les octets, et ce qu'elle occupe dans le bloc.
-fn litteraux(bloc: &[u8], huffman: &mut Option<TableHuffman>) -> Option<(Vec<u8>, usize)> {
+/// La section des littéraux d'un bloc : les octets, et ce qu'elle occupe dans le bloc. Plus de `reste` octets (ce que
+/// la sortie peut encore recevoir) ou plus d'un bloc : `None`, avant toute allocation.
+fn litteraux(bloc: &[u8], huffman: &mut Option<TableHuffman>, reste: usize) -> Option<(Vec<u8>, usize)> {
     let b0 = *bloc.first()?;
     let genre = b0 & 3;
     let format = (b0 >> 2) & 3;
@@ -611,6 +612,11 @@ fn litteraux(bloc: &[u8], huffman: &mut Option<TableHuffman>) -> Option<(Vec<u8>
             1 => (usize::try_from(le(bloc.get(..2)?) >> 4).ok()?, 2),
             _ => (usize::try_from(le(bloc.get(..3)?) >> 4).ok()?, 3),
         };
+        // Un octet répété tient en un octet, quelle que soit la taille annoncée (20 bits, ~1 Mio) : bornée avant le
+        // `vec!` (campagne 6, B2).
+        if taille > BLOC_MAX || taille > reste {
+            return None;
+        }
         if genre == 0 {
             return Some((morceau(bloc, entete, taille)?.to_vec(), entete.checked_add(taille)?));
         }
@@ -627,7 +633,7 @@ fn litteraux(bloc: &[u8], huffman: &mut Option<TableHuffman>) -> Option<(Vec<u8>
     let masque = (1u64 << largeur).checked_sub(1)?;
     let taille = usize::try_from(v & masque).ok()?;
     let compresse = usize::try_from((v >> largeur) & masque).ok()?;
-    if taille > BLOC_MAX {
+    if taille > BLOC_MAX || taille > reste {
         return None;
     }
     let lus = entete.checked_add(compresse)?;
@@ -1054,6 +1060,19 @@ mod tests {
         }
         t.extend(&u32::try_from(xxh64(contenu, 0) & 0xffff_ffff).unwrap().to_le_bytes());
         t
+    }
+
+    /// B2 (campagne 6) : des littéraux répétés annoncent jusqu'à ~1 Mio pour un octet ; plus qu'un bloc ou que ce que
+    /// la sortie peut encore recevoir, ils sont refusés avant d'être alloués.
+    #[test]
+    fn litteraux_repetes_bornes_avant_allocation() {
+        // Genre 1 (répété), format 3 (taille sur 20 bits) : 0xFFFFF octets de « A ».
+        let bloc = [0xfd, 0xff, 0xff, b'A'];
+        assert_eq!(litteraux(&bloc, &mut None, usize::MAX), None);
+        // 0x8000 octets : un bloc, mais plus que les 0x4000 qui restent.
+        let bloc = [0x0d, 0x00, 0x08, b'A'];
+        assert_eq!(litteraux(&bloc, &mut None, 0x4000), None);
+        assert_eq!(litteraux(&bloc, &mut None, 0x8000), Some((vec![b'A'; 0x8000], 4)));
     }
 
     #[test]
