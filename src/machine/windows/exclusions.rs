@@ -4,6 +4,7 @@
 
 use super::super::{Constat, alerte};
 use super::ps;
+use super::wmi::Valeur;
 use crate::commande::ps_chaine;
 use crate::risk::Niveau;
 use crate::ui::{affichable, resume, tr, trf};
@@ -30,12 +31,10 @@ pub(crate) fn listes() -> Option<[Vec<String>; 3]> {
     .and_then(|l| l.into_iter().next())
     {
         // Une liste absente de la réponse compte pour vide : à elle seule, elle ne signale rien, et les deux autres
-        // sont jugées quand même (un `None` pour toutes les trois tairait leurs exclusions).
-        let liste = |cle: &str| -> Vec<String> {
-            l.get(cle)
-                .map(|v| v.liste().iter().filter_map(|x| x.texte().map(str::to_string)).collect())
-                .unwrap_or_default()
-        };
+        // sont jugées quand même (un `None` pour toutes les trois tairait leurs exclusions). Un texte seul compte
+        // pour une liste d'un élément : un « N/A… » rendu ainsi garde la liste cachée, au lieu de la faire passer
+        // pour lue et vide.
+        let liste = |cle: &str| -> Vec<String> { l.get(cle).map(Valeur::textes).unwrap_or_default() };
         return Some([
             liste("ExclusionPath"),
             liste("ExclusionProcess"),

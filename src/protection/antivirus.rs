@@ -633,8 +633,8 @@ fn defender(portee: &Portee) {
         }
         Verdict::Inverifiable => {
             attention(tr!(
-                "Defender dit n'avoir rien trouvé, mais Vanguard n'a pas pu lire ses exclusions ou ses détections pour le confirmer (Windows cache les exclusions sans droits administrateur) : rien ne garantit qu'il a tout regardé. Ses détections restent dans Sécurité Windows > Protection contre les virus et menaces > Historique de protection.",
-                "Defender says it found nothing, but Vanguard could not read its exclusions or detections to confirm it (Windows hides exclusions without administrator rights): nothing guarantees it looked at everything. Its detections remain in Windows Security > Virus & threat protection > Protection history."
+                "Defender dit n'avoir rien trouvé, mais Vanguard n'a pas pu lire ses exclusions ou ses détections pour le confirmer : rien ne garantit qu'il a tout regardé. Ses détections restent dans Sécurité Windows > Protection contre les virus et menaces > Historique de protection.",
+                "Defender says it found nothing, but Vanguard could not read its exclusions or detections to confirm it: nothing guarantees it looked at everything. Its detections remain in Windows Security > Virus & threat protection > Protection history."
             ));
             if analyse.sans_droits {
                 prevenir_sans_droits();
@@ -887,6 +887,11 @@ impl Memoire {
         match sondes.exclusions() {
             None => self.exclusions = Lecture::Illisibles,
             Some(l) if l.iter().flatten().any(|x| x.trim().starts_with("N/A")) => self.exclusions = Lecture::Cachees,
+            // Sans droits administrateur, Windows ne montre pas les exclusions : des listes vides (une valeur absente
+            // ou nulle au lieu de « N/A ») n'y prouvent rien.
+            Some(l) if !sondes.eleve() && l.iter().flatten().all(|x| x.trim().is_empty()) => {
+                self.exclusions = Lecture::Cachees;
+            }
             Some(listes) => {
                 self.exclusions = Lecture::Lues;
                 for (vues, lues) in self.vues.iter_mut().zip(listes) {
@@ -900,9 +905,11 @@ impl Memoire {
         }
     }
 
-    /// Les exclusions réunies ; `None` si l'une des lectures a été refusée ou a échoué.
-    fn listes(&self) -> Option<&[Vec<String>; 2]> {
-        (self.exclusions == Lecture::Lues).then_some(&self.vues)
+    /// Les exclusions vues, réunies, et si elles sont complètes (aucune lecture refusée ni échouée). Une lecture qui
+    /// échoue ou se cache après une réussite n'efface pas ce qui a été vu : une exclusion vue avant l'analyse couvre
+    /// encore son résultat.
+    fn listes(&self) -> (&[Vec<String>; 2], bool) {
+        (&self.vues, self.exclusions == Lecture::Lues)
     }
 }
 
@@ -961,7 +968,9 @@ fn analyse_confirmee(
         couverture(cible, verification, memoire.listes(), &sondes.variables())
     };
     let verdict = confirmer(verdict, detections.as_deref(), exclusions, piegee);
-    let sans_droits = verdict == Verdict::Inverifiable && (memoire.exclusions == Lecture::Cachees || !sondes.eleve());
+    // Relancer en administrateur n'aide pas quand ni WMI ni PowerShell ne répondent (antivirus tiers), ni quand
+    // Vanguard est déjà administrateur (exclusions cachées par une politique).
+    let sans_droits = verdict == Verdict::Inverifiable && !sondes.eleve() && memoire.exclusions != Lecture::Illisibles;
     Some(Analyse {
         verdict,
         detections: detections.unwrap_or_default(),
@@ -971,19 +980,20 @@ fn analyse_confirmee(
 }
 
 /// Les exclusions qui couvrent ce qu'une analyse devait regarder, prêtes à montrer ; `None` si rien ne permet de le
-/// savoir. Sans cible (analyse rapide ou complète) : toute exclusion de chemin ou d'extension, qui en retire forcément
-/// une partie. Pour une cible : celles de `exclusions_qui_couvrent`, et la cible elle-même quand MpCmdRun la dit exclue
-/// (`verification`). Listes cachées (sans droits administrateur) : la réponse de MpCmdRun suffit pour un fichier ;
-/// pour un dossier, elle ne dit rien d'un sous-dossier ou d'une extension exclus, donc rien n'est conclu.
+/// savoir. `listes` : les exclusions vues (`Memoire::listes`), et si elles sont complètes. Sans cible (analyse rapide
+/// ou complète) : toute exclusion de chemin ou d'extension, qui en retire forcément une partie. Pour une cible : celles
+/// de `exclusions_qui_couvrent`, et la cible elle-même quand MpCmdRun la dit exclue (`verification`). Listes
+/// incomplètes (cachées ou illisibles à l'une des lectures) : ce qui a été vu et MpCmdRun peuvent prouver une
+/// exclusion, jamais son absence.
 #[cfg(any(windows, test))]
 fn couverture(
     cible: Option<(&str, bool)>,
     verification: Option<bool>,
-    listes: Option<&[Vec<String>; 2]>,
+    (vues, completes): (&[Vec<String>; 2], bool),
     variables: &[(&str, Vec<String>)],
 ) -> Option<Vec<String>> {
+    let [chemins, extensions] = vues;
     let Some((cible, dossier)) = cible else {
-        let [chemins, extensions] = listes?;
         let chemins = chemins
             .iter()
             .map(|c| c.trim())
@@ -994,20 +1004,23 @@ fn couverture(
             .map(|e| e.trim())
             .filter(|e| !e.is_empty())
             .map(|e| format!("*.{}", affichable(e.trim_start_matches(['*', '.']))));
-        return Some(chemins.chain(extensions).collect());
+        let toutes: Vec<String> = chemins.chain(extensions).collect();
+        return (completes || !toutes.is_empty()).then_some(toutes);
     };
-    let mut couvrent = match listes {
-        Some([chemins, extensions]) => exclusions_qui_couvrent(cible, dossier, chemins, extensions, variables)?,
-        None if verification == Some(true) || (!dossier && verification == Some(false)) => Vec::new(),
-        None => return None,
-    };
+    let mut couvrent = exclusions_qui_couvrent(cible, dossier, chemins, extensions, variables)?;
     if verification == Some(true) {
-        couvrent.insert(
-            0,
-            affichable(&sans_verbatim(cible).unwrap_or_else(|| cible.to_string())),
-        );
+        // Pas deux fois : une exclusion déjà montrée qui est la cible elle-même.
+        let montree = sans_verbatim(cible).unwrap_or_else(|| cible.to_string());
+        let c = pour_comparer(&montree);
+        if !couvrent.iter().any(|x| pour_comparer(x) == c) {
+            couvrent.insert(0, affichable(&montree));
+        }
     }
-    Some(couvrent)
+    // Sans listes complètes, un « non exclue » de MpCmdRun ne suffit pas, même pour un fichier : rien ne prouve qu'il
+    // tienne compte des extensions exclues (et pour un dossier, il ne voit ni ses sous-dossiers ni ses extensions
+    // exclus). À rouvrir pour un fichier si l'essai en VM montre que `-CheckExclusion -Path C:\x\a.test` répond
+    // « excluded » avec la seule exclusion d'extension `.test`.
+    (completes || !couvrent.is_empty()).then_some(couvrent)
 }
 
 /// La réponse de `MpCmdRun -CheckExclusion -Path` (documentation de Microsoft) : « C:\x [\Device\…\x] is excluded.
@@ -1400,6 +1413,10 @@ fn exclusions_qui_couvrent(
     for exclu in chemins.iter().filter(|e| !e.trim().is_empty()) {
         let couvre = formes_developpees(exclu, variables).iter().any(|forme| {
             let e = pour_comparer(forme);
+            // Rien de fixe (« \ », « / », « . » seuls) : Defender pourrait y lire la racine, donc tout (prudence).
+            if e.is_empty() {
+                return true;
+            }
             match e.find(['%', '*', '?']) {
                 Some(i) => {
                     let fixe = e.get(..i).unwrap_or_default();
@@ -1471,13 +1488,7 @@ fn detections_de_defender() -> Option<Vec<Detection>> {
     use crate::machine::windows::wmi::{Valeur, requete};
     const ESPACE: &str = r"root\Microsoft\Windows\Defender";
     // Un tableau, ou une valeur seule ; une date CIM revient en texte.
-    let textes = |v: Option<&Valeur>| -> Vec<String> {
-        match v {
-            Some(Valeur::Liste(l)) => l.iter().filter_map(|x| x.texte().map(str::to_string)).collect(),
-            Some(x) => x.texte().map(str::to_string).into_iter().collect(),
-            None => Vec::new(),
-        }
-    };
+    let textes = |v: Option<&Valeur>| -> Vec<String> { v.map(Valeur::textes).unwrap_or_default() };
     if let Some(lignes) = requete(
         ESPACE,
         "MSFT_MpThreatDetection",
@@ -2975,6 +2986,14 @@ mod tests_cle {
         let c = |cible: &str, dossier: bool, chemins: &[&str], ext: &[&str]| {
             exclusions_qui_couvrent(cible, dossier, &v(chemins), &v(ext), &[])
         };
+        // Relecture 2 des correctifs T10, BAS-9 : « \ », « / » ou « . » seuls, rien de fixe : tout (prudence).
+        for exclu in ["\\", "/", " . "] {
+            assert_eq!(
+                c(r"C:\x\a.pdf", false, &[exclu], &[]),
+                Some(v(&[exclu.trim()])),
+                "{exclu}"
+            );
+        }
         // Elle-même, un parent, le lecteur entier ; « \\?\ » ou non, casse ou « \ » final (relecture T10, point 6).
         for exclu in [
             r"C:\Users\Public\vg-essai-eicar",
@@ -3182,6 +3201,14 @@ mod tests_cle {
             a.verdict,
             Verdict::Exclue(vec![r"C:\Users\Public\vg-essai-eicar".into()])
         );
+        // Relecture 2, BAS-4 : la cible exclue selon le moteur et déjà dans les listes n'est montrée qu'une fois.
+        let mut d = Double::new(&[Some([&[r"c:\users\public\vg-essai-eicar\", r"C:\Users"], AUCUNE])]);
+        d.exclue = Some(true);
+        let a = analyser_double(&mut d, Some((DOSSIER_T10, true)));
+        assert_eq!(
+            a.verdict,
+            Verdict::Exclue(vec![r"c:\users\public\vg-essai-eicar\".into(), r"C:\Users".into()])
+        );
         // Tout lu, rien n'exclut, aucune détection : le seul ✔.
         let mut d = Double::new(&[Some([&[r"D:\SteamLibrary"], AUCUNE])]);
         d.exclue = Some(false);
@@ -3210,14 +3237,16 @@ mod tests_cle {
     }
 
     #[test]
-    fn sans_droits_check_exclusion_en_repli() {
-        // Relecture des correctifs T10, MOYEN-B : listes cachées, détections lisibles. Pour un fichier, la réponse
-        // lisible de MpCmdRun suffit ; pour un dossier, elle ne voit ni un sous-dossier ni une extension exclus.
+    fn sans_droits_check_exclusion_seulement_pour_exclue() {
+        // Relecture 2 des correctifs T10, MOYEN-B : listes cachées, détections lisibles. Un « non exclue » de
+        // MpCmdRun ne suffit plus, même pour un fichier (rien ne prouve qu'il voie les extensions exclues) ; pour un
+        // dossier, il ne voit ni un sous-dossier ni une extension exclus.
         let mut d = Double::new(&[Some([CACHEES, CACHEES])]);
         d.exclue = Some(false);
         d.eleve = false;
         let a = analyser_double(&mut d, Some((r"C:\x\facture.pdf", false)));
-        assert_eq!(a.verdict, Verdict::Sain);
+        assert_eq!(a.verdict, Verdict::Inverifiable);
+        assert!(a.sans_droits);
         assert_eq!(d.lectures, 1, "cachées : pas relues après l'analyse");
         let a = analyser_double(&mut d, Some((r"C:\x", true)));
         assert_eq!(a.verdict, Verdict::Inverifiable);
@@ -3228,14 +3257,56 @@ mod tests_cle {
         let a = analyser_double(&mut d, Some((r"C:\x\facture.pdf", false)));
         assert_eq!(a.verdict, Verdict::Inverifiable);
         assert!(a.sans_droits);
-        // Exclue selon MpCmdRun : vrai même sans les listes.
+        // Exclue selon MpCmdRun : vrai même sans les listes, pour un dossier comme pour un fichier.
         d.exclue = Some(true);
         let a = analyser_double(&mut d, Some((r"C:\x", true)));
         assert_eq!(a.verdict, Verdict::Exclue(vec![r"C:\x".into()]));
-        // Exclusions illisibles en administrateur (ni WMI ni PowerShell) : invérifiable, mais pas faute de droits.
-        let mut d = Double::new(&[None]);
+        let a = analyser_double(&mut d, Some((r"\\?\C:\x\facture.pdf", false)));
+        assert_eq!(a.verdict, Verdict::Exclue(vec![r"C:\x\facture.pdf".into()]));
+        // Exclusions illisibles (ni WMI ni PowerShell) : invérifiable, mais pas faute de droits, élevé ou non
+        // (relecture 2, BAS-6 : relancer en administrateur n'y changerait rien).
+        for eleve in [true, false] {
+            let mut d = Double::new(&[None]);
+            d.exclue = Some(false);
+            d.eleve = eleve;
+            let a = analyser_double(&mut d, Some((r"C:\x\facture.pdf", false)));
+            assert_eq!(a.verdict, Verdict::Inverifiable);
+            assert!(!a.sans_droits);
+        }
+        // Cachées en administrateur (une politique les cache aux administrateurs) : pas faute de droits non plus.
+        let mut d = Double::new(&[Some([CACHEES, AUCUNE])]);
         let a = analyser_double(&mut d, Some((r"C:\x", true)));
         assert_eq!(a.verdict, Verdict::Inverifiable);
+        assert!(!a.sans_droits);
+    }
+
+    #[test]
+    fn sans_droits_des_listes_vides_ne_prouvent_rien() {
+        // Relecture 2 des correctifs T10, MOYEN-C : sans élévation, des listes lues vides (valeur absente ou nulle au
+        // lieu de « N/A ») valent des listes cachées : pas de ✔, et pas relues.
+        for cible in [(r"C:\x", true), (r"C:\x\facture.pdf", false)] {
+            let mut d = Double::new(&[Some([AUCUNE, &[" "]])]);
+            d.exclue = Some(false);
+            d.eleve = false;
+            let a = analyser_double(&mut d, Some(cible));
+            assert_eq!(a.verdict, Verdict::Inverifiable);
+            assert!(a.sans_droits);
+            assert_eq!(d.lectures, 1);
+        }
+        let mut d = Double::new(&[Some([AUCUNE, AUCUNE])]);
+        d.eleve = false;
+        assert_eq!(analyser_double(&mut d, None).verdict, Verdict::Inverifiable);
+        // Les mêmes listes vides en administrateur : lues, le ✔ reste possible.
+        let mut d = Double::new(&[Some([AUCUNE, AUCUNE])]);
+        d.exclue = Some(false);
+        let a = analyser_double(&mut d, Some((r"C:\x", true)));
+        assert_eq!((a.verdict, d.lectures), (Verdict::Sain, 2));
+        // Sans élévation mais des listes qui se lisent (Windows d'avant 2021) : lues aussi.
+        let mut d = Double::new(&[Some([&[r"D:\SteamLibrary"], AUCUNE])]);
+        d.exclue = Some(false);
+        d.eleve = false;
+        let a = analyser_double(&mut d, Some((r"C:\x\facture.pdf", false)));
+        assert_eq!(a.verdict, Verdict::Sain);
         assert!(!a.sans_droits);
     }
 
@@ -3288,6 +3359,22 @@ mod tests_cle {
         let b = analyse_confirmee(&mut d, Some((Path::new(r"C:\t\b.pdf"), false)), &mut memoire).unwrap();
         assert_eq!(b.verdict, Verdict::Sain);
         assert_eq!(d.lectures, 3);
+        // Relecture 2 des correctifs T10, MOYEN-A : la relecture d'après l'analyse échoue (illisible) ou se cache ;
+        // l'exclusion vue avant compte encore, et celles d'après étant inconnues, une pièce qu'elle ne couvre pas
+        // n'est jamais saine, même « non exclue » selon MpCmdRun.
+        for apres in [None, Some([CACHEES, AUCUNE])] {
+            let mut d = Double::new(&[Some([&[r"C:\t"], AUCUNE]), apres]);
+            d.exclue = Some(false);
+            let mut memoire = Memoire::default();
+            let a = analyse_confirmee(&mut d, Some((Path::new(r"C:\t\a.pdf"), false)), &mut memoire).unwrap();
+            assert_eq!(a.verdict, Verdict::Exclue(vec![r"C:\t".into()]));
+            let b = analyse_confirmee(&mut d, Some((Path::new(r"D:\b.pdf"), false)), &mut memoire).unwrap();
+            assert_eq!(b.verdict, Verdict::Inverifiable);
+            assert!(!b.sans_droits, "administrateur : relancer n'y changerait rien");
+            let c = analyse_confirmee(&mut d, None, &mut memoire).unwrap();
+            assert_eq!(c.verdict, Verdict::Exclue(vec![r"C:\t".into()]));
+            assert_eq!(d.lectures, 2, "refusées ou illisibles : plus relues");
+        }
     }
 
     #[test]

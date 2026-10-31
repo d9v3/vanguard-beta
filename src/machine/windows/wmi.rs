@@ -81,6 +81,15 @@ impl Valeur {
             _ => &[],
         }
     }
+
+    /// Les textes d'une liste, ou d'une valeur seule comptée pour une liste d'un élément : un fournisseur peut rendre
+    /// un seul texte (« N/A: Must be an administrator… ») là où la classe déclare un tableau.
+    pub(crate) fn textes(&self) -> Vec<String> {
+        match self {
+            Valeur::Liste(l) => l.iter().filter_map(|x| x.texte().map(str::to_string)).collect(),
+            x => x.texte().map(str::to_string).into_iter().collect(),
+        }
+    }
 }
 
 /// Une instance : ses champs demandés, `Valeur::Nul` pour un champ que la classe n'a pas (version de Windows plus
@@ -427,6 +436,15 @@ mod tests {
         );
         assert_eq!(Valeur::Nul.liste(), []);
         assert_eq!(Valeur::Liste(vec![Valeur::Entier(2)]).liste(), &[Valeur::Entier(2)]);
+        // Relecture 2 des correctifs T10, MOYEN-C : un texte seul compte pour une liste d'un élément.
+        let cache = "N/A: Must be an administrator to view exclusions";
+        assert_eq!(Valeur::Texte(cache.into()).textes(), [cache]);
+        assert_eq!(
+            Valeur::Liste(vec![Valeur::Texte("C:\\x".into()), Valeur::Entier(2)]).textes(),
+            ["C:\\x"]
+        );
+        assert_eq!(Valeur::Nul.textes(), Vec::<String>::new());
+        assert_eq!(Valeur::Entier(2).textes(), Vec::<String>::new());
     }
 
     /// Une erreur COM avec sa description (IErrorInfo posée par SetErrorInfo, comme le fait WMI) : captée par
