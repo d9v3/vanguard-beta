@@ -279,32 +279,73 @@ const DOSSIERS_AJOUTS: &[&str] = &[
     "/etc/pki/trust/anchors",
 ];
 
+/// Les fichiers d'un dossier d'ancres, sous-dossiers compris. Un dossier absent est normal (chaque distribution n'a
+/// que le sien) ; un dossier qu'on ne sait pas parcourir en entier va dans `illisibles`, pour être dit plutôt que
+/// compté comme vide.
 #[cfg(target_os = "linux")]
-fn fichiers(dossier: &std::path::Path, profondeur: u8, sortie: &mut Vec<std::path::PathBuf>) {
-    for e in std::fs::read_dir(dossier).into_iter().flatten().flatten() {
+fn fichiers(
+    dossier: &std::path::Path,
+    profondeur: u8,
+    sortie: &mut Vec<std::path::PathBuf>,
+    illisibles: &mut Vec<std::path::PathBuf>,
+) {
+    let entrees = match std::fs::read_dir(dossier) {
+        Ok(entrees) => entrees,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(_) => {
+            illisibles.push(dossier.to_path_buf());
+            return;
+        }
+    };
+    let mut entier = true;
+    for e in entrees {
+        let Ok(e) = e else {
+            entier = false;
+            continue;
+        };
         let chemin = e.path();
         if chemin.is_dir() && profondeur > 0 {
-            fichiers(&chemin, profondeur - 1, sortie);
+            fichiers(&chemin, profondeur - 1, sortie, illisibles);
         } else if chemin.is_file() {
             sortie.push(chemin);
         }
+    }
+    if !entier {
+        illisibles.push(dossier.to_path_buf());
     }
 }
 
 #[cfg(target_os = "linux")]
 pub fn certificats() -> Vec<Constat> {
+    certificats_dans(DOSSIERS_AJOUTS.iter().map(std::path::Path::new))
+}
+
+#[cfg(target_os = "linux")]
+fn certificats_dans<'a>(dossiers: impl Iterator<Item = &'a std::path::Path>) -> Vec<Constat> {
     let mut trouves = Vec::new();
-    for d in DOSSIERS_AJOUTS {
-        fichiers(std::path::Path::new(d), 3, &mut trouves);
+    let mut illisibles = Vec::new();
+    for d in dossiers {
+        fichiers(d, 3, &mut trouves, &mut illisibles);
     }
-    ancres(trouves)
+    ancres(trouves, &illisibles)
 }
 
 /// Les constats des fichiers d'ancres trouvés. Un fichier illisible n'est pas vérifié, un fichier qu'on ne sait pas
-/// nommer en entier est à regarder : « aucun certificat ajouté » seulement quand il n'y a aucun fichier.
+/// nommer en entier est à regarder, un dossier qu'on n'a pas pu parcourir aussi n'est pas vérifié : « aucun certificat
+/// ajouté » seulement quand il n'y a aucun fichier et que tout a été parcouru.
 #[cfg(any(target_os = "linux", test))]
-fn ancres(trouves: Vec<std::path::PathBuf>) -> Vec<Constat> {
+fn ancres(trouves: Vec<std::path::PathBuf>, illisibles: &[std::path::PathBuf]) -> Vec<Constat> {
     let mut constats = Vec::new();
+    for d in illisibles {
+        let ou = crate::ui::affichable(&d.display().to_string());
+        constats.push(super::impossible(
+            CAT,
+            &trf!(
+                "dossier de certificats racine illisible : {ou}",
+                "unreadable root certificate folder: {ou}"
+            ),
+        ));
+    }
     for f in trouves {
         let chemin = f.display().to_string();
         let Ok(octets) = std::fs::read(&f) else {
@@ -591,7 +632,7 @@ xo1zjuQ=
         for (nom, octets) in &cas {
             let f = d.join(nom);
             std::fs::write(&f, octets).unwrap();
-            let constats = ancres(vec![f]);
+            let constats = ancres(vec![f], &[]);
             let messages: Vec<&str> = constats.iter().map(|c| c.message.as_str()).collect();
             assert!(
                 !constats.is_empty() && constats.iter().all(|c| c.probleme.is_some()),
@@ -605,16 +646,39 @@ xo1zjuQ=
             );
         }
         // Un fichier qu'on ne peut pas lire (ici, un chemin disparu) : non vérifié, jamais vert.
-        let constats = ancres(vec![d.join("disparu.crt")]);
+        let constats = ancres(vec![d.join("disparu.crt")], &[]);
         assert!(!constats.is_empty() && constats.iter().all(|c| !c.verifie && c.message.contains("disparu.crt")));
         // Le certificat nommé seul reste ce qu'il était : un constat, sans fichier « à regarder ».
         let f = d.join("nomme.pem");
         std::fs::write(&f, PEM).unwrap();
-        let constats = ancres(vec![f]);
+        let constats = ancres(vec![f], &[]);
         assert_eq!(constats.len(), 1);
         assert!(constats[0].message.contains("Vanguard Test CA"));
         // Aucun fichier : vert.
-        assert!(ancres(Vec::new()).iter().all(|c| c.probleme.is_none()));
+        assert!(ancres(Vec::new(), &[]).iter().all(|c| c.probleme.is_none()));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Relecture du lot correctifs-c6 : un dossier d'ancres que `read_dir` ne sait pas ouvrir (ici, un fichier à la
+    /// place du dossier) n'est pas « aucun certificat ajouté » : il est dit illisible, non vérifié. Un dossier absent,
+    /// lui, reste normal.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dossier_d_ancres_illisible_n_est_jamais_vert() {
+        let d = std::env::temp_dir().join(format!("vanguard-ancres-dossier-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let pas_un_dossier = d.join("anchors");
+        std::fs::write(&pas_un_dossier, b"x").unwrap();
+        let constats = certificats_dans([pas_un_dossier.as_path()].into_iter());
+        let messages: Vec<&str> = constats.iter().map(|c| c.message.as_str()).collect();
+        assert!(
+            !constats.is_empty() && constats.iter().all(|c| !c.verifie && c.message.contains("anchors")),
+            "{messages:?}"
+        );
+        // Absent : rien à dire de plus que « aucun certificat ajouté ».
+        let constats = certificats_dans([d.join("absent").as_path()].into_iter());
+        assert!(constats.len() == 1 && constats[0].probleme.is_none() && constats[0].verifie);
         let _ = std::fs::remove_dir_all(&d);
     }
 

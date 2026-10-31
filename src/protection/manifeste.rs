@@ -110,14 +110,39 @@ pub struct Ecart {
     pub nouveaux: Vec<String>,
     pub modifies: Vec<String>,
     pub disparus: Vec<String>,
+    /// Les dossiers (ou entrées) de la clé qui n'ont pas pu être lus (« . » pour la racine) : ce qu'ils contiennent
+    /// n'est pas comparé, ce n'est donc jamais « inchangé ».
+    pub illisibles: Vec<String>,
     /// Les images ISO/ (par leur taille) et le menu ventoy/ ont été comparés (référence de la 0.86 ou d'après).
     pub images: bool,
 }
 
 impl Ecart {
     pub fn vide(&self) -> bool {
-        self.nouveaux.is_empty() && self.modifies.is_empty() && self.disparus.is_empty()
+        self.nouveaux.is_empty() && self.modifies.is_empty() && self.disparus.is_empty() && self.illisibles.is_empty()
     }
+
+    /// Rien de changé dans ce qui a pu être lu, mais une partie de la clé n'a pas pu l'être.
+    fn seulement_illisibles(&self) -> bool {
+        self.nouveaux.is_empty() && self.modifies.is_empty() && self.disparus.is_empty() && !self.illisibles.is_empty()
+    }
+}
+
+/// Les fichiers de la clé (chemin relatif, taille), triés, et ce qui n'a pas pu en être lu (`Ecart::illisibles`).
+struct Releve {
+    fichiers: Vec<(String, u64)>,
+    illisibles: Vec<String>,
+}
+
+/// Le chemin `chemin` est-il sous (ou est-il) l'un des illisibles ?
+fn sous_un_illisible(chemin: &str, illisibles: &[String]) -> bool {
+    illisibles.iter().any(|d| {
+        d == "."
+            || chemin == d
+            || chemin
+                .strip_prefix(d.as_str())
+                .is_some_and(|reste| reste.starts_with('/'))
+    })
 }
 
 /// L'unique référence des 0.59 : une seule clé connue, et une deuxième clé VANGUARD paraissait tout entière changée.
@@ -313,22 +338,40 @@ fn d_images(relatif: &str) -> bool {
 
 /// Les fichiers de la clé (chemin relatif, taille), sans les liens ni les dossiers exclus, triés ; sans ISO/ ni
 /// ventoy/ pour une référence d'avant qui ne les relevait pas.
-fn parcourir(racine: &Path, avec_images: bool) -> Vec<(String, u64)> {
-    let mut liste = parcourir_tout(racine);
+fn parcourir(racine: &Path, avec_images: bool) -> Releve {
+    let mut releve = parcourir_tout(racine);
     if !avec_images {
-        liste.retain(|(c, _)| !d_images(c));
+        releve.fichiers.retain(|(c, _)| !d_images(c));
+        releve.illisibles.retain(|c| !d_images(c));
     }
-    liste
+    releve
 }
 
 /// Parcours en largeur, par une file sur le tas : une clé aux milliers de dossiers imbriqués (permis par les chemins
 /// longs de Windows) ne fait pas déborder la pile du fil de la règle, ce qui arrêterait tout le processus sans que
-/// `rattraper` le voie (campagne 6, B7).
-fn parcourir_tout(racine: &Path) -> Vec<(String, u64)> {
+/// `rattraper` le voie (campagne 6, B7). Un dossier qu'on ne sait pas ouvrir ou lire en entier, une entrée dont on ne
+/// sait pas ce qu'elle est, vont dans `illisibles` : sautés en silence, ils laissaient la clé « inchangée ».
+fn parcourir_tout(racine: &Path) -> Releve {
     let mut liste = Vec::new();
+    let mut illisibles = Vec::new();
     let mut a_voir = std::collections::VecDeque::from([(racine.to_path_buf(), String::new())]);
     while let Some((dossier, prefixe)) = a_voir.pop_front() {
-        for e in std::fs::read_dir(&dossier).into_iter().flatten().flatten() {
+        let ici = || {
+            if prefixe.is_empty() {
+                ".".to_string()
+            } else {
+                prefixe.clone()
+            }
+        };
+        let Ok(entrees) = std::fs::read_dir(&dossier) else {
+            illisibles.push(ici());
+            continue;
+        };
+        for e in entrees {
+            let Ok(e) = e else {
+                illisibles.push(ici());
+                break;
+            };
             let nom = e.file_name().to_string_lossy().into_owned();
             let relatif = if prefixe.is_empty() {
                 nom
@@ -339,6 +382,7 @@ fn parcourir_tout(racine: &Path) -> Vec<(String, u64)> {
                 continue;
             }
             let Ok(meta) = e.metadata() else {
+                illisibles.push(relatif);
                 continue;
             };
             if meta.file_type().is_symlink() {
@@ -352,7 +396,12 @@ fn parcourir_tout(racine: &Path) -> Vec<(String, u64)> {
         }
     }
     liste.sort();
-    liste
+    illisibles.sort();
+    illisibles.dedup();
+    Releve {
+        fichiers: liste,
+        illisibles,
+    }
 }
 
 /// L'empreinte BLAKE3 d'un fichier, lu par morceaux : un simple fichier seulement, ouvert sans suivre de lien et sans
@@ -472,6 +521,7 @@ fn retirer_le_suspens(racine: &Path, ecart: Ecart) -> std::io::Result<(Ecart, Ve
             .filter(|c| !depose_par_le_deploiement(c))
             .cloned()
             .collect(),
+        illisibles: ecart.illisibles.clone(),
         images: ecart.images,
     };
     if !reste.vide() {
@@ -562,18 +612,33 @@ fn reecriture_permise(base: &Path, racine: &Path, reference: Option<&Path>, gros
     }
 }
 
-fn relever(racine: &Path, gros: u64) -> Vec<Entree> {
-    parcourir(racine, true)
+/// Les entrées de la clé ; refusé si une partie n'a pas pu en être lue : la référence la laisserait dehors, et ce qui
+/// y serait planté ensuite ne compterait pas.
+fn relever(racine: &Path, gros: u64) -> Result<Vec<Entree>, String> {
+    let releve = parcourir(racine, true);
+    if !releve.illisibles.is_empty() {
+        return Err(trf!(
+            "{} : illisible, la clé n'a pas pu être relevée en entier",
+            "{}: unreadable, the key could not be fully recorded",
+            resume(
+                &releve.illisibles.iter().map(|c| affichable(c)).collect::<Vec<_>>(),
+                5,
+                ", "
+            )
+        ));
+    }
+    Ok(releve
+        .fichiers
         .into_iter()
         .map(|(chemin, taille)| entree(racine, chemin, taille, gros))
-        .collect()
+        .collect())
 }
 
 /// `garder_differentes` faux (`--forcer`, l'auteur accepte la clé telle qu'elle est) : une image notée différente
 /// n'est plus suivie par son empreinte d'avant (sa taille seulement, jusqu'à ce qu'images-cle.sh la repose ou la
 /// relise) ; sinon elle resterait « modifiée » pour toujours, et la clé refusée.
 fn ecrire_dans(racine: &Path, reference: &Path, gros: u64, garder_differentes: bool) -> Result<usize, String> {
-    let mut fichiers = relever(racine, gros);
+    let mut fichiers = relever(racine, gros)?;
     // Un petit fichier dont l'empreinte ne se prend pas (remplacé entre-temps par un lien ou un tube, illisible) ne
     // part pas dans la référence sans elle : il y serait ensuite jugé sur sa seule taille.
     if let Some(e) = fichiers.iter().find(|e| e.taille < gros && e.blake3.is_none()) {
@@ -631,8 +696,16 @@ fn rafraichir_images_dans(
     }
     let avant: Vec<Entree> = m.fichiers.iter().filter(|e| d_images(&e.chemin)).cloned().collect();
     m.fichiers.retain(|e| !d_images(&e.chemin));
+    let releve = parcourir(racine, true);
+    if let Some(c) = releve.illisibles.iter().find(|c| *c == "." || d_images(c)) {
+        return Err(std::io::Error::other(trf!(
+            "{} : illisible, les images de la clé n'ont pas pu être relevées",
+            "{}: unreadable, the key's images could not be recorded",
+            affichable(c)
+        )));
+    }
     let mut images = 0;
-    for (chemin, taille) in parcourir(racine, true).into_iter().filter(|(c, _)| d_images(c)) {
+    for (chemin, taille) in releve.fichiers.into_iter().filter(|(c, _)| d_images(c)) {
         let nom = chemin.rsplit('/').next().unwrap_or_default();
         let posee = nouvelles
             .iter()
@@ -732,7 +805,10 @@ fn comparer_avec(racine: &Path, manifeste: &Manifeste, gros: u64) -> Ecart {
         images: manifeste.images,
         ..Ecart::default()
     };
-    let presents = parcourir(racine, manifeste.images);
+    let Releve {
+        fichiers: presents,
+        illisibles,
+    } = parcourir(racine, manifeste.images);
     for (chemin, taille) in &presents {
         match manifeste.fichiers.iter().find(|e| e.chemin == *chemin) {
             None => ecart.nouveaux.push(chemin.clone()),
@@ -756,10 +832,12 @@ fn comparer_avec(racine: &Path, manifeste: &Manifeste, gros: u64) -> Ecart {
         .iter()
         .filter(|e| manifeste.images || !d_images(&e.chemin))
     {
-        if !presents.iter().any(|(c, _)| *c == attendu.chemin) {
+        // Sous un dossier illisible, un fichier n'est pas « disparu » : il n'a pas pu être vu.
+        if !presents.iter().any(|(c, _)| *c == attendu.chemin) && !sous_un_illisible(&attendu.chemin, &illisibles) {
             ecart.disparus.push(attendu.chemin.clone());
         }
     }
+    ecart.illisibles = illisibles;
     ecart
 }
 
@@ -925,10 +1003,11 @@ pub(crate) fn relire_image(racine: &Path, empreintes: &[(String, Option<String>)
 
 /// Les changements, en une liste courte : « autorun.inf (nouveau), Windows/vanguard.exe (modifié)… ».
 fn resume_ecart(ecart: &Ecart) -> String {
-    let (n, m, d) = (
+    let (n, m, d, i) = (
         tr!("nouveau", "new"),
         tr!("modifié", "modified"),
         tr!("disparu", "missing"),
+        tr!("illisible", "unreadable"),
     );
     let tous: Vec<String> = ecart
         .nouveaux
@@ -936,6 +1015,7 @@ fn resume_ecart(ecart: &Ecart) -> String {
         .map(|c| format!("{} ({n})", affichable(c)))
         .chain(ecart.modifies.iter().map(|c| format!("{} ({m})", affichable(c))))
         .chain(ecart.disparus.iter().map(|c| format!("{} ({d})", affichable(c))))
+        .chain(ecart.illisibles.iter().map(|c| format!("{} ({i})", affichable(c))))
         .collect();
     resume(&tous, 5, ", ")
 }
@@ -973,6 +1053,14 @@ pub fn constat() -> Option<Constat> {
                 "La clé VANGUARD n'a pas changé depuis son écriture ({} fichiers vérifiés ; données, images ISO et menu Ventoy mis à part : redéployez-la pour qu'ils le soient).",
                 "The VANGUARD key has not changed since it was written ({} files checked; data, ISO images and Ventoy menu aside: redeploy it so they are).",
                 ecart.verifies
+            ),
+        ),
+        Ok(ecart) if ecart.seulement_illisibles() => impossible(
+            CAT,
+            &trf!(
+                "clé VANGUARD lue en partie seulement : {}",
+                "VANGUARD key only partly read: {}",
+                resume_ecart(&ecart)
             ),
         ),
         Ok(ecart) => alerte(
@@ -1384,6 +1472,7 @@ pub fn commande(ecrire_dossier: Option<&Path>, forcer: bool, accepter: bool, ima
                 (&ecart.nouveaux, tr!("nouveau", "new")),
                 (&ecart.modifies, tr!("modifié", "modified")),
                 (&ecart.disparus, tr!("disparu", "missing")),
+                (&ecart.illisibles, tr!("illisible", "unreadable")),
             ] {
                 for c in liste {
                     println!("  {}✖{RESET} {} ({mot})", couleur(Niveau::Eleve), affichable(c));
@@ -1427,8 +1516,52 @@ mod tests {
             .unwrap()
             .join()
             .unwrap();
-        assert_eq!(liste, [(format!("{}cache.bin", "d/".repeat(600)), 1)]);
+        assert!(liste.illisibles.is_empty(), "{:?}", liste.illisibles);
+        assert_eq!(liste.fichiers, [(format!("{}cache.bin", "d/".repeat(600)), 1)]);
         let _ = std::fs::remove_dir_all(&racine);
+    }
+
+    /// Relecture du lot correctifs-c6 : un dossier de la clé que `read_dir` ne sait pas ouvrir (ici, au-delà de
+    /// PATH_MAX, comme sur une clé aux chemins longs de Windows) n'est pas sauté en silence : la clé n'est pas
+    /// « inchangée », et sa référence ne s'écrit pas sans lui.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dossier_illisible_n_est_jamais_inchange() {
+        let racine = dossier_jetable("illisible");
+        let reference = dossier_jetable("illisible-ref")
+            .join("manifestes-cle")
+            .join("1A2B-3C4D.json");
+        std::fs::write(racine.join("autorun.sh"), b"#!/bin/sh").unwrap();
+        ecrire_dans(&racine, &reference, 10, true).unwrap();
+        let m = lire(&reference).unwrap();
+        // Plus de 4096 octets de dossiers, créés un à un en relatif : le chemin entier est trop long pour `read_dir`.
+        let creer = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(r#"cd "$1" && n=$(printf '%0200d' 0) && i=0 && while [ $i -lt 25 ]; do mkdir "$n" && cd "$n" || exit 1; i=$((i+1)); done && echo piege > autorun.inf"#)
+            .arg("sh")
+            .arg(&racine)
+            .status()
+            .unwrap();
+        assert!(creer.success());
+        let ecart = comparer_avec(&racine, &m, 10);
+        assert!(!ecart.vide(), "{ecart:?}");
+        // Seulement illisible : rien n'est dit changé ni disparu, le dossier trop profond est nommé.
+        assert!(ecart.seulement_illisibles() && ecart.verifies == 1, "{ecart:?}");
+        assert!(
+            ecart.illisibles.iter().all(|c| c.ends_with(&"0".repeat(200))),
+            "{ecart:?}"
+        );
+        assert!(resume_ecart(&ecart).contains("illisible") || resume_ecart(&ecart).contains("unreadable"));
+        assert!(ecrire_dans(&racine, &reference, 10, true).is_err());
+        // La racine elle-même illisible (un fichier à sa place) : rien de « disparu », tout illisible.
+        let fichier = racine.join("autorun.sh");
+        let ecart = comparer_avec(&fichier, &m, 10);
+        assert_eq!(
+            (ecart.disparus.len(), ecart.illisibles.as_slice()),
+            (0, [".".to_string()].as_slice())
+        );
+        let _ = std::fs::remove_dir_all(&racine);
+        let _ = std::fs::remove_dir_all(reference.parent().unwrap().parent().unwrap());
     }
 
     #[test]
