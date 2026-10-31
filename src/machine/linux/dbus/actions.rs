@@ -13,6 +13,10 @@
 //! Sous root (sudo), le bus de la session est celui d'un autre compte, ou celui de root : rien n'est envoyé, plutôt
 //! que d'écrire au mauvais endroit.
 
+// Ni débordement ni `as` : sous-module d'un module lu par le banc de fuzzing (dbus.rs), qui le déclare (Cargo.toml,
+// [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 

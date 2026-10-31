@@ -4410,44 +4410,199 @@ mod tests_menu {
         std::fs::read_to_string(format!("{}/{fichier}", env!("CARGO_MANIFEST_DIR"))).unwrap()
     }
 
-    /// Chaque module de src/ que le banc de fuzzing inclut par son chemin (fuzz/fuzz_targets/, fuzz/cale/), et pour un `mod.rs`
-    /// chaque fichier de son dossier, refuse débordements et `as` (Cargo.toml, [lints.clippy]) : un lecteur ajouté au
-    /// banc sans l'attribut garderait ses calculs bruts sur des données hostiles sans que clippy le dise.
+    /// Les attributs d'un fichier Rust, par groupes : ceux qui se suivent au-dessus d'un même élément, avec la ligne de
+    /// cet élément. Un attribut va de `#[` (ou `#![`) en tête de ligne au `]` qui le ferme, chaînes comprises (une
+    /// raison peut contenir des crochets).
+    fn groupes_d_attributs(texte: &str) -> Vec<(Vec<String>, String)> {
+        let mut groupes = Vec::new();
+        let mut attributs: Vec<String> = Vec::new();
+        let mut reste = texte;
+        loop {
+            let ligne_vide = reste.trim_start_matches([' ', '\t', '\r', '\n']);
+            if ligne_vide.starts_with("#[") || ligne_vide.starts_with("#![") {
+                let (mut profondeur, mut chaine, mut echappe, mut fin) = (0usize, false, false, ligne_vide.len());
+                for (i, c) in ligne_vide.char_indices() {
+                    match c {
+                        _ if echappe => echappe = false,
+                        '\\' if chaine => echappe = true,
+                        '"' => chaine = !chaine,
+                        '[' if !chaine => profondeur += 1,
+                        ']' if !chaine => {
+                            profondeur -= 1;
+                            if profondeur == 0 {
+                                fin = i + 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                attributs.push(ligne_vide[..fin].to_string());
+                reste = &ligne_vide[fin..];
+                continue;
+            }
+            // Un commentaire entre des attributs et leur élément (ou au bout de la ligne d'un attribut) : passé.
+            if !attributs.is_empty() && ligne_vide.starts_with("//") {
+                reste = ligne_vide.split_once('\n').map_or("", |(_, r)| r);
+                continue;
+            }
+            // L'élément d'un groupe commence après ses attributs (et les blancs qui les suivent).
+            let reste_lu = if attributs.is_empty() { reste } else { ligne_vide };
+            let (ligne, apres) = reste_lu.split_once('\n').unwrap_or((reste_lu, ""));
+            if !attributs.is_empty() {
+                groupes.push((std::mem::take(&mut attributs), ligne.trim().to_string()));
+            }
+            if apres.is_empty() && ligne.len() == reste_lu.len() {
+                return groupes;
+            }
+            reste = apres;
+        }
+    }
+
+    /// Le chemin d'un `#[path = "…"]` (espaces permis autour du `=`), s'il en est un.
+    fn chemin_de(attribut: &str) -> Option<&str> {
+        let dedans = attribut.strip_prefix("#[")?.strip_suffix(']')?.trim();
+        let valeur = dedans.strip_prefix("path")?.trim_start().strip_prefix('=')?.trim();
+        valeur.strip_prefix('"')?.strip_suffix('"')
+    }
+
+    /// Le nom d'un module déclaré hors ligne (`mod x;`, `pub(crate) mod x;`…), s'il en est un.
+    fn module_hors_ligne(ligne: &str) -> Option<&str> {
+        let sans_visibilite = ligne
+            .strip_prefix("pub")
+            .map_or(ligne, |l| {
+                l.split_once(')').filter(|_| l.starts_with('(')).map_or(l, |(_, r)| r)
+            })
+            .trim_start();
+        let nom = sans_visibilite.strip_prefix("mod ")?.trim().strip_suffix(';')?.trim();
+        nom.bytes()
+            .all(|o| o.is_ascii_alphanumeric() || o == b'_')
+            .then_some(nom)
+    }
+
+    /// Chaque module de src/ que le banc de fuzzing compile refuse débordements et `as` (Cargo.toml, [lints.clippy]) :
+    /// ceux que fuzz/fuzz_targets/ et fuzz/cale/ incluent par `#[path]` (écrit avec ou sans espaces) ou `include!`,
+    /// puis, de proche en proche, chaque `mod x;` qu'ils déclarent hors essais. Et aucun d'eux ne lève ces lints
+    /// ailleurs que sur un module d'essais : seul `#[expect]` (avec sa raison) les tait sur du code lu par le banc. Un
+    /// lecteur ajouté au banc sans l'attribut, ou un `allow` glissé sur une fonction, garderait des calculs bruts sur
+    /// des données hostiles sans que clippy le dise.
     #[test]
     fn chaque_module_fuzze_refuse_debordements_et_as() {
+        use std::path::{Path, PathBuf};
         const ATTRIBUT: &str = "#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]";
-        let racine = env!("CARGO_MANIFEST_DIR");
-        let mut modules = std::collections::BTreeSet::new();
-        let banc = |d: &str| {
-            std::fs::read_dir(format!("{racine}/fuzz/{d}"))
-                .unwrap()
-                .map(|f| f.unwrap().path())
-        };
-        // Les cales (fuzz/cale/) en incluent aussi, au même chemin relatif.
-        for cible in banc("fuzz_targets").chain(banc("cale")) {
-            let texte = std::fs::read_to_string(cible).unwrap();
-            for chemin in texte.split("#[path = \"../../").skip(1) {
-                let chemin = chemin.split('"').next().unwrap();
-                let Some(dossier) = chemin.strip_suffix("/mod.rs") else {
-                    modules.insert(chemin.to_string());
-                    continue;
-                };
-                for f in std::fs::read_dir(format!("{racine}/{dossier}")).unwrap() {
-                    let chemin = f.unwrap().path();
-                    let nom = chemin.file_name().unwrap().to_str().unwrap();
-                    // tests.rs n'est compilé que pour les essais, où ces deux lints sont permis.
-                    if chemin.extension().is_some_and(|e| e == "rs") && nom != "tests.rs" {
-                        modules.insert(format!("{dossier}/{nom}"));
+        // Les noms qui lèvent ou baissent ces lints : les deux, et le groupe qui les contient.
+        const NOMS: [&str; 3] = ["arithmetic_side_effects", "as_conversions", "clippy::restriction"];
+        let racine = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let src = racine.join("src").canonicalize().unwrap();
+        let mut a_lire: Vec<PathBuf> = Vec::new();
+        for d in ["fuzz/fuzz_targets", "fuzz/cale"] {
+            for banc in std::fs::read_dir(racine.join(d)).unwrap() {
+                let banc = banc.unwrap().path();
+                let texte = std::fs::read_to_string(&banc).unwrap();
+                let dossier = banc.parent().unwrap();
+                let groupes = groupes_d_attributs(&texte);
+                let mut chemins: Vec<&str> = groupes
+                    .iter()
+                    .flat_map(|(a, _)| a.iter().filter_map(|a| chemin_de(a)))
+                    .collect();
+                for morceau in texte.split("include!(").skip(1) {
+                    chemins.push(
+                        morceau
+                            .trim_start()
+                            .strip_prefix('"')
+                            .unwrap()
+                            .split('"')
+                            .next()
+                            .unwrap(),
+                    );
+                }
+                for chemin in chemins {
+                    let vrai = dossier.join(chemin).canonicalize().unwrap();
+                    if vrai.starts_with(&src) {
+                        a_lire.push(vrai);
                     }
                 }
             }
         }
-        assert!(modules.len() >= 40, "trop peu de modules lus dans fuzz/ : {modules:?}");
-        let sans: Vec<_> = modules
-            .iter()
-            .filter(|m| !lire(m).lines().any(|l| l == ATTRIBUT))
-            .collect();
+        let mut modules = std::collections::BTreeMap::new();
+        while let Some(module) = a_lire.pop() {
+            if modules.contains_key(&module) {
+                continue;
+            }
+            let texte = std::fs::read_to_string(&module).unwrap();
+            let groupes = groupes_d_attributs(&texte);
+            // Les enfants hors ligne : à côté d'un mod.rs, dans le dossier du même nom sinon (règle de rustc).
+            let dossier = module.parent().unwrap();
+            let sous = if module.file_name().unwrap() == "mod.rs" {
+                dossier.to_path_buf()
+            } else {
+                dossier.join(module.file_stem().unwrap())
+            };
+            for nom in texte.lines().filter_map(|l| module_hors_ligne(l.trim())) {
+                let groupe = groupes.iter().find(|(_, l)| module_hors_ligne(l) == Some(nom));
+                let attributs = groupe.map_or(&[][..], |(a, _)| a.as_slice());
+                if attributs.iter().any(|a| a == "#[cfg(test)]") {
+                    continue;
+                }
+                let enfant = match attributs.iter().find_map(|a| chemin_de(a)) {
+                    Some(c) => dossier.join(c),
+                    None if sous.join(format!("{nom}.rs")).exists() => sous.join(format!("{nom}.rs")),
+                    None => sous.join(nom).join("mod.rs"),
+                };
+                a_lire.push(
+                    enfant
+                        .canonicalize()
+                        .unwrap_or_else(|e| panic!("{}, mod {nom} : {e}", module.display())),
+                );
+            }
+            // Chaque attribut qui nomme ces lints : l'en-tête, un `#[expect]`, ou l'`allow` d'un module d'essais.
+            let mut fautes = Vec::new();
+            for (attributs, element) in &groupes {
+                // Un module d'essais, hors ligne (`mod tests;`) ou écrit sur place (`mod tests {`).
+                let essais = attributs.iter().any(|a| a == "#[cfg(test)]")
+                    && element.trim_start_matches("pub(crate) ").starts_with("mod ");
+                for a in attributs.iter().filter(|a| NOMS.iter().any(|n| a.contains(n))) {
+                    let permis = a == ATTRIBUT || a.starts_with("#[expect(") || essais && a.starts_with("#[allow(");
+                    if !permis {
+                        fautes.push(a.clone());
+                    }
+                }
+            }
+            // Un nom de ces lints hors de tout attribut lu (au milieu d'une ligne, dans un cfg_attr…) : refusé aussi.
+            let vus: usize = groupes
+                .iter()
+                .flat_map(|(a, _)| a.iter())
+                .map(|a| NOMS.iter().map(|n| a.matches(n).count()).sum::<usize>())
+                .sum();
+            let ecrits: usize = texte
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .map(|l| NOMS.iter().map(|n| l.matches(n).count()).sum::<usize>())
+                .sum();
+            if ecrits != vus {
+                fautes.push(format!(
+                    "{} nom(s) de ces lints hors d'un attribut en tête de ligne",
+                    ecrits - vus
+                ));
+            }
+            modules.insert(module, (texte.lines().any(|l| l == ATTRIBUT), fautes));
+        }
+        assert!(
+            modules.len() >= 50,
+            "trop peu de modules lus dans fuzz/ : {:?}",
+            modules.keys()
+        );
+        let sans: Vec<_> = modules.iter().filter(|(_, (a, _))| !a).map(|(m, _)| m).collect();
         assert!(sans.is_empty(), "modules fuzzés sans « {ATTRIBUT} » : {sans:?}");
+        let leves: Vec<_> = modules
+            .iter()
+            .filter(|(_, (_, f))| !f.is_empty())
+            .map(|(m, (_, f))| (m, f))
+            .collect();
+        assert!(
+            leves.is_empty(),
+            "lints levés hors d'un module d'essais (seul #[expect] est permis) : {leves:?}"
+        );
     }
 
     /// Une seule table d'outils : chaque outil du menu nomme la sous-commande qui fait la même chose, ou dit pourquoi
