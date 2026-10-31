@@ -1441,14 +1441,15 @@ mod tests {
     use super::*;
 
     /// Sous Wine, aucune liste ne passe par le processus élevé (`eleve::appliquer`) : la fenêtre PowerShell d'avant,
-    /// sans élévation. Ailleurs (vrai Windows), toutes y passent, sans repli.
+    /// sans élévation. Ailleurs (vrai Windows), toutes y passent, sans repli. Wine reconnu ici sans
+    /// `journal::sous_wine` (ntdll), que `par_vanguard_eleve` lit : par son outil de réglage, posé dans System32 de
+    /// chaque préfixe et absent de Windows. Le même test tourne donc sous Wine et dans la VM.
     #[cfg(windows)]
     #[test]
     fn sous_wine_rien_ne_passe_par_le_processus_eleve() {
-        if !crate::journal::sous_wine() {
-            return crate::essais::saute("pas sous Wine");
-        }
-        assert!(!par_vanguard_eleve());
+        let racine = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        let wine = std::path::Path::new(&racine).join(r"System32\winecfg.exe").is_file();
+        assert_eq!(par_vanguard_eleve(), !wine, "Wine : {wine}");
     }
 
     /// S2c : un port inscrit hors de Vanguard dans la note des blocages ne tait ni un port exposé ni un serveur d'IA
