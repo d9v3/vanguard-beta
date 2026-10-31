@@ -84,12 +84,18 @@ impl Balise {
 /// L'attribut `nom` = `valeur` lance du code : gestionnaire d'événement (préfixe compris), ou valeur qui porte une
 /// adresse `javascript:` ou `vbscript:` (celle d'un lien, ou celle qu'une animation SVG lui donne : `<set to=…>`,
 /// `<animate values=…>`). La valeur est lue comme le navigateur lit une adresse : entités décodées, caractères de
-/// contrôle retirés.
+/// contrôle retirés. Une animation SMIL qui vise un gestionnaire ou l'adresse d'un lien (`attributeName="onload"`,
+/// `"xlink:href"`) l'est aussi, quelle que soit la valeur qu'elle donne : celle-ci peut venir d'une entité ou d'une
+/// liste que la lecture ne déroule pas (relecture du lot campagne 6).
 fn attribut_actif(nom: &str, valeur: &str) -> bool {
-    let local = nom.rsplit(':').next().unwrap_or(nom);
-    let gestionnaire = local.len() > 2 && local.starts_with("on") && local.bytes().all(|o| o.is_ascii_lowercase());
+    let gestionnaire = |nom: &str| {
+        let local = nom.rsplit(':').next().unwrap_or(nom);
+        local.len() > 2 && local.starts_with("on") && local.bytes().all(|o| o.is_ascii_lowercase())
+    };
     let v = adresse_attribut(valeur).to_ascii_lowercase();
-    gestionnaire || v.contains("javascript:") || v.contains("vbscript:")
+    let anime =
+        nom.rsplit(':').next() == Some("attributename") && (gestionnaire(&v) || v.rsplit(':').next() == Some("href"));
+    gestionnaire(nom) || anime || v.contains("javascript:") || v.contains("vbscript:")
 }
 
 /// Les octets de `h` qui vérifient `garder` à partir de `i`, et l'indice qui les suit. Au-delà de la fin, il n'y a
@@ -100,14 +106,22 @@ fn prendre(h: &[u8], i: usize, garder: impl Fn(u8) -> bool) -> (&[u8], usize) {
     (reste.get(..n).unwrap_or(reste), i + n)
 }
 
-/// Lit la balise qui commence à `debut` (sur « < ») ; rend la balise et l'indice qui suit « > ».
-fn lire_balise(h: &[u8], debut: usize) -> (Option<Balise>, usize) {
+/// Lit la balise qui commence à `debut` (sur « < ») ; rend la balise et l'indice qui suit « > ». En `xml` (une image
+/// SVG), un nom va jusqu'à l'espace, « / » ou « > » : un préfixe d'espace de noms peut porter `_`, `.` ou une lettre
+/// non ASCII (`<a_b:script>`), et s'arrêter avant cachait le nom local (relecture du lot campagne 6). En HTML, le nom
+/// reste fait de lettres, chiffres, « - » et « : » : un « < » suivi d'autre chose y est du texte, et le lire comme une
+/// balise avalerait le lien qui suit.
+fn lire_balise(h: &[u8], debut: usize, xml: bool) -> (Option<Balise>, usize) {
     let mut i = debut + 1;
     let fermante = h.get(i) == Some(&b'/');
     if fermante {
         i += 1;
     }
-    let (nom, suite) = prendre(h, i, |o| o.is_ascii_alphanumeric() || o == b'-' || o == b':');
+    let (nom, suite) = if xml {
+        prendre(h, i, |o| !o.is_ascii_whitespace() && !matches!(o, b'/' | b'>'))
+    } else {
+        prendre(h, i, |o| o.is_ascii_alphanumeric() || o == b'-' || o == b':')
+    };
     if nom.is_empty() {
         // « < » seul dans le texte : pas une balise.
         return (None, debut + 1);
@@ -225,7 +239,7 @@ pub(crate) fn lire_html(html: &str, max_liens: usize, source: &Source) -> Html {
             i = ici.iter().position(|&c| c == b'>').map_or(h.len(), |p| i + p + 1);
             continue;
         }
-        let (balise, suite) = lire_balise(h, i);
+        let (balise, suite) = lire_balise(h, i, false);
         i = suite;
         let Some(lue) = balise else {
             continue;
@@ -312,11 +326,20 @@ pub(crate) fn lire_html(html: &str, max_liens: usize, source: &Source) -> Html {
 }
 
 /// Une image SVG (ou une page XML) porte du code qui tourne à son ouverture : élément `script` ou `foreignObject`
-/// (du HTML dans l'image), préfixe compris, gestionnaire d'événement ou adresse `javascript:`. Au-delà de `HTML_MAX`
-/// octets, rien n'est lu : `None`, à dire comme un manque.
+/// (du HTML dans l'image), cadre ou objet HTML (`iframe`, `embed`, `object`), préfixe compris, gestionnaire
+/// d'événement, adresse `javascript:` ou animation qui vise l'un ou l'autre. Une déclaration d'entité ou d'attribut
+/// par défaut dans la DTD (`<!ENTITY`, `<!ATTLIST`) peut les porter sans qu'ils soient écrits, et une feuille de style
+/// XML (`<?xml-stylesheet`, XSLT) transformer l'image : la lecture ne les déroule pas, l'image se dit active
+/// (relecture du lot campagne 6). Au-delà de `HTML_MAX` octets, rien n'est lu : `None`, à dire comme un manque.
 pub(crate) fn svg_actif(h: &[u8]) -> Option<bool> {
     if h.len() > HTML_MAX {
         return None;
+    }
+    if [b"<!entity".as_slice(), b"<!attlist", b"<?xml-stylesheet"]
+        .iter()
+        .any(|m| chercher_casse(h, 0, m).is_some())
+    {
+        return Some(true);
     }
     let mut i = 0;
     while let Some(debut) = h.get(i..).and_then(|ici| ici.iter().position(|&c| c == b'<')) {
@@ -330,11 +353,15 @@ pub(crate) fn svg_actif(h: &[u8]) -> Option<bool> {
             i = ici.iter().position(|&c| c == b'>').map_or(h.len(), |p| i + p + 1);
             continue;
         }
-        let (balise, suite) = lire_balise(h, i);
+        let (balise, suite) = lire_balise(h, i, true);
         i = suite;
         if let Some(lue) = balise
             && !lue.fermante
-            && (lue.actif || matches!(lue.local(), "script" | "foreignobject" | "handler"))
+            && (lue.actif
+                || matches!(
+                    lue.local(),
+                    "script" | "foreignobject" | "handler" | "iframe" | "embed" | "object"
+                ))
         {
             return Some(true);
         }
@@ -948,6 +975,101 @@ mod tests {
         assert_eq!(
             h.liens.iter().map(|l| l.cible.as_str()).collect::<Vec<_>>(),
             ["https://vu.example/"]
+        );
+    }
+
+    /// Une image SVG minimale autour de `corps`.
+    fn svg(corps: &str) -> Vec<u8> {
+        format!("<svg xmlns=\"http://www.w3.org/2000/svg\">{corps}</svg>").into_bytes()
+    }
+
+    /// Relecture du lot campagne 6 : un préfixe XML peut porter `_`, `.` ou une lettre non ASCII ; le nom lu ne
+    /// s'arrête plus avant le nom local.
+    #[test]
+    fn svg_prefixe_xml_large() {
+        for corps in [
+            "<a_b:script xmlns:a_b=\"http://www.w3.org/2000/svg\">alert(1)</a_b:script>",
+            "<s.v:script xmlns:s.v=\"http://www.w3.org/2000/svg\">alert(1)</s.v:script>",
+            "<é:script xmlns:é=\"http://www.w3.org/2000/svg\">alert(1)</é:script>",
+            "<_:foreignObject xmlns:_=\"http://www.w3.org/2000/svg\"/>",
+        ] {
+            assert_eq!(svg_actif(&svg(corps)), Some(true), "{corps}");
+        }
+        assert_eq!(
+            svg_actif(&svg("<a_b:rect xmlns:a_b=\"http://www.w3.org/2000/svg\"/>")),
+            Some(false)
+        );
+    }
+
+    /// Relecture du lot campagne 6 : une entité déclarée dans la DTD (ou un attribut par défaut) peut porter le
+    /// script ou l'adresse `javascript:` ; la lecture ne les déroule pas, l'image se dit active.
+    #[test]
+    fn svg_declarations_de_la_dtd() {
+        for debut in [
+            "<!DOCTYPE svg [<!ENTITY s \"&#60;script&#62;alert(1)&#60;/script&#62;\">]>",
+            "<!DOCTYPE svg [<!ENTITY j \"javascript:\">]>",
+            "<!DOCTYPE svg [\n  <!entity j \"javascript:\">\n]>",
+            "<!DOCTYPE svg [<!ATTLIST svg onload CDATA \"alert(1)\">]>",
+        ] {
+            let mut h = debut.as_bytes().to_vec();
+            h.extend(svg("<a href=\"&j;alert(1)\"><text>&s;</text></a>"));
+            assert_eq!(svg_actif(&h), Some(true), "{debut}");
+        }
+        let mut h =
+            b"<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">"
+                .to_vec();
+        h.extend(svg("<rect/>"));
+        assert_eq!(svg_actif(&h), Some(false));
+    }
+
+    /// Relecture du lot campagne 6 : une feuille de style XSLT intégrée (`<?xml-stylesheet?>`) transforme l'image
+    /// avant qu'elle soit montrée.
+    #[test]
+    fn svg_feuille_de_style_xml() {
+        for debut in [
+            "<?xml-stylesheet type=\"text/xsl\" href=\"#x\"?>",
+            "<?xml version=\"1.0\"?>\n<?XML-STYLESHEET href=\"x.xsl\"?>",
+        ] {
+            let mut h = debut.as_bytes().to_vec();
+            h.extend(svg("<rect/>"));
+            assert_eq!(svg_actif(&h), Some(true), "{debut}");
+        }
+        let mut h = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_vec();
+        h.extend(svg("<rect/>"));
+        assert_eq!(svg_actif(&h), Some(false));
+    }
+
+    /// Relecture du lot campagne 6 : un cadre ou un objet HTML, préfixé ou non, charge une autre page sans
+    /// `foreignObject`.
+    #[test]
+    fn svg_cadre_ou_objet() {
+        for corps in [
+            "<h:iframe xmlns:h=\"http://www.w3.org/1999/xhtml\" src=\"https://vol.example/\"/>",
+            "<h:embed xmlns:h=\"http://www.w3.org/1999/xhtml\" src=\"https://vol.example/\"/>",
+            "<h:object xmlns:h=\"http://www.w3.org/1999/xhtml\" data=\"https://vol.example/\"/>",
+            "<iframe src=\"https://vol.example/\"/>",
+        ] {
+            assert_eq!(svg_actif(&svg(corps)), Some(true), "{corps}");
+        }
+    }
+
+    /// Relecture du lot campagne 6 : une animation SMIL qui vise un gestionnaire d'événement ou l'adresse d'un lien
+    /// change ce que fait l'image, quelle que soit la valeur donnée.
+    #[test]
+    fn svg_animation_d_un_gestionnaire_ou_d_un_lien() {
+        let cinquante = "a ".repeat(50);
+        for corps in [
+            "<set attributeName=\"onload\" to=\"alert(1)\"/>".to_string(),
+            "<animate attributeName=\"ONCLICK\" values=\"alert(1)\"/>".to_string(),
+            "<a><set attributeName=\"href\" to=\"&j;alert(1)\"/><text>x</text></a>".to_string(),
+            "<a><animate attributeName=\"xlink:href\" values=\"https://vol.example/\"/><text>x</text></a>".to_string(),
+            format!("<set {cinquante}attributeName=\"onbegin\" to=\"alert(1)\"/>"),
+        ] {
+            assert_eq!(svg_actif(&svg(&corps)), Some(true), "{corps}");
+        }
+        assert_eq!(
+            svg_actif(&svg("<animate attributeName=\"opacity\" values=\"0;1\"/>")),
+            Some(false)
         );
     }
 

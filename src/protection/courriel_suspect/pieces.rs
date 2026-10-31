@@ -180,8 +180,9 @@ pub(crate) fn juger(nom: &str, type_declare: &str, contenu: &[u8]) -> (Vec<Signe
     // Un SVG est une image qui peut porter du script : ouvert (« noname » chez Gmail, « Part 1.2 » chez Thunderbird),
     // il s'exécute dans le navigateur. Sans nom, rien d'autre ne le dit. Le script peut aussi être préfixé
     // (`<svg:script>`), dans un gestionnaire d'événement (`onload`), une adresse `javascript:` ou du HTML intégré
-    // (`foreignObject`) : `corps::svg_actif`.
-    let svg = classe(&ext) != Some(Classe::PageWeb) && (type_declare == "image/svg+xml" || ext == "svg");
+    // (`foreignObject`) : `corps::svg_actif`. Un nom en « .svg » est déjà une page web (signe élevé) : seule une image
+    // annoncée SVG sous un autre nom passe par ici.
+    let svg = classe(&ext) != Some(Classe::PageWeb) && type_declare == "image/svg+xml";
     let actif = svg.then(|| super::corps::svg_actif(contenu));
     if actif == Some(None) {
         manques.push(trf!(
