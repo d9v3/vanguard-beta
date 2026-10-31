@@ -2,7 +2,8 @@
 Description=Vanguard : relecture de sécurité hebdomadaire, le vendredi à 05 h 30
 
 [Timer]
-# Après la nuit du vendredi et le renouvellement du quota de la semaine (vendredi 3 h).
+# Après la nuit du jeudi (et ses preuves de Miri et Kani, que cette relecture lit) et le renouvellement du quota
+# de la semaine (vendredi 3 h) ; la nuit du vendredi n'est pas forcément finie à 05 h 30.
 OnCalendar=Fri 05:30
 # Manquée (ordinateur éteint) : faite au démarrage suivant ; une seule par semaine (budget dans commun.sh).
 Persistent=true
