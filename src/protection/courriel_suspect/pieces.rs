@@ -313,6 +313,17 @@ const SVGZ_DELAI: std::time::Duration = std::time::Duration::from_secs(2);
 /// une forme d'image qui la ralentirait est un manque, pas une image saine (relectures A et B des restes c6).
 const SVG_DELAI: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Le texte d'une image SVG tel que le navigateur le lit, pour en examiner les liens et les formulaires : décompressé
+/// (« .svgz »), même en partie, et passé en UTF-8 s'il était en UTF-16. `None` : à lire tel quel.
+pub(crate) fn texte_svg(contenu: &[u8]) -> Option<Vec<u8>> {
+    let decompresse = crate::archives::gzip::est_gzip(contenu).then(|| degzip_svg(contenu).0);
+    let octets = decompresse.as_deref().unwrap_or(contenu);
+    match super::corps::svg_utf8(octets) {
+        Some(std::borrow::Cow::Owned(transcode)) => Some(transcode),
+        _ => decompresse,
+    }
+}
+
 /// Le contenu d'une image SVG compressée (gzip), au plus `corps::HTML_MAX` octets et `SVGZ_RAPPORT_MAX` fois sa taille,
 /// et s'il est entier : membre lu jusqu'au bout avant `SVGZ_DELAI`, CRC et taille justes, rien après. Ce qui a été lu
 /// d'un contenu pas entier est rendu aussi, à juger quand même.
