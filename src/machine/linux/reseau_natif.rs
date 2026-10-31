@@ -539,18 +539,40 @@ mod tests {
     /// ordinateur (des nombres seulement dans le message).
     #[test]
     fn ecoutes_comme_ss() {
-        let Some(natives) = prises() else {
-            return crate::essais::saute("sock_diag refusé");
-        };
-        let Some(ss) = crate::machine::sortie("ss", &["-tunap"]) else {
-            return crate::essais::saute("ss absent");
-        };
-        let outil = ecoutes_de_ss(&ss);
-        let absents = natives
-            .iter()
-            .filter(|p| p.a_l_ecoute() && !outil.contains(&(p.udp, p.port_local)))
-            .count();
-        assert_eq!(absents, 0, "ports à l'écoute absents de ss");
+        // Les deux lectures ne sont pas du même instant : un autre test (ou programme) qui écoute un instant entre
+        // elles fait un port que l'une voit et pas l'autre. Jusqu'à trois tentatives, chacune relisant les deux ; un
+        // port n'est absent que s'il manque à ss à chacune, sock_diag le voyant toujours (un port fermé entre-temps
+        // n'écoutait qu'un instant). Un port vraiment oublié manque aux trois.
+        let mut absents: Option<std::collections::HashSet<(bool, u16)>> = None;
+        let mut tentatives = 0;
+        while tentatives < 3 && absents.as_ref().is_none_or(|a| !a.is_empty()) {
+            if tentatives > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            tentatives += 1;
+            let Some(natives) = prises() else {
+                return crate::essais::saute("sock_diag refusé");
+            };
+            let Some(ss) = crate::machine::sortie("ss", &["-tunap"]) else {
+                return crate::essais::saute("ss absent");
+            };
+            let outil = ecoutes_de_ss(&ss);
+            let manquants: std::collections::HashSet<(bool, u16)> = natives
+                .iter()
+                .filter(|p| p.a_l_ecoute())
+                .map(|p| (p.udp, p.port_local))
+                .filter(|e| !outil.contains(e))
+                .collect();
+            absents = Some(match absents {
+                None => manquants,
+                Some(a) => a.intersection(&manquants).copied().collect(),
+            });
+        }
+        let absents = absents.map_or(0, |a| a.len());
+        assert_eq!(
+            absents, 0,
+            "ports à l'écoute absents de ss à chacune des {tentatives} tentatives"
+        );
         assert!(routes().is_some_and(|r| !r.is_empty()));
         assert!(adresses().is_some_and(|a| !a.is_empty()));
         assert!(voisins().is_some());
