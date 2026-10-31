@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Compile Vanguard (Linux statique + Windows), l'installe localement et met à jour la clé USB VANGUARD si elle est branchée.
 #   outils/deployer.sh                 compiler puis déployer
-#   outils/deployer.sh --branchement   au branchement de la clé : récupérer la dernière version de GitHub, la
-#                                      compiler si elle est nouvelle, puis copier
+#   outils/deployer.sh --branchement   au branchement de la clé : récupérer la dernière version de GitHub (si la
+#                                      CI est verte sur ce commit exact), la compiler si elle est nouvelle, puis copier
 #   outils/deployer.sh --sans-compiler copier les dernières versions compilées (après chaque compilation)
 #   outils/deployer.sh --local         comme sans option, mais rien ne part sur GitHub (ni le code, ni les tickets
 #                                      du journal) ; le service de copie qui suit la compilation le respecte aussi
@@ -205,6 +205,22 @@ if [[ $MODE == --sans-compiler ]] && grep -qs "/\.git/worktrees/" "$LINUX.d" "${
   exit 0
 fi
 
+# Un commit venu de GitHub n'est compilé ici (build.rs, macros, scripts de deployer.sh, sans un clic, au branchement
+# de la clé) qu'avec une CI verte sur ce commit exact : un passage complet de ci.yml, sur master, réussi. Un compte
+# GitHub pris pourrait pousser sur master malgré la protection ; la CI ne prouve pas que le code est sain, mais un
+# commit poussé de travers, sans passage ou en échec, n'est pas exécuté ici (campagne d'attaque n° 6, F4). gh absent,
+# hors ligne ou sans réponse : pas vert. Lue telle quelle par outils/essais-signature.sh.
+ci_verte() {
+  local n
+  [[ $1 =~ ^[0-9a-f]{40}$ ]] || return 1
+  n=$(timeout 60 gh run list --workflow ci.yml --branch master --commit "$1" --limit 20 \
+    --json headSha,headBranch,event,status,conclusion \
+    -q "[.[] | select(.headSha == \"$1\" and .headBranch == \"master\" and .status == \"completed\"
+      and .conclusion == \"success\" and (.event == \"push\" or .event == \"workflow_dispatch\"
+      or .event == \"schedule\"))] | length" 2>/dev/null) || return 1
+  [[ $n =~ ^[1-9][0-9]*$ ]]
+}
+
 VENU_DE_GITHUB=""
 if [[ $MODE == --branchement ]]; then
   # Dernière version de GitHub (code modifié depuis un autre ordinateur, puis poussé). Récupérée seulement sans
@@ -215,7 +231,12 @@ if [[ $MODE == --branchement ]]; then
       if [[ -n $(git status --porcelain --untracked-files=no) ]]; then
         echo "GitHub a une version plus récente, mais des changements locaux sont en cours : rien de récupéré."
       elif git merge-base --is-ancestor HEAD "$DISTANT"; then
-        git merge -q --ff-only "$DISTANT" && VENU_DE_GITHUB=1 && echo "Dernière version récupérée de GitHub."
+        if ci_verte "$DISTANT"; then
+          git merge -q --ff-only "$DISTANT" && VENU_DE_GITHUB=1 && echo "Dernière version récupérée de GitHub."
+        else
+          echo "GitHub a une version plus récente (${DISTANT:0:12}), sans CI verte sur ce commit exact (ci.yml, master) :"
+          echo "rien de récupéré ni compilé de GitHub, copie de la version locale. Réessayé au prochain branchement."
+        fi
       else
         echo "GitHub et ce PC ont chacun des commits que l'autre n'a pas : rien de récupéré (à fusionner à la main)."
       fi

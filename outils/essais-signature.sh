@@ -32,6 +32,8 @@
 #   6b. Linux et Windows publiés portent les empreintes de la compilation reproductible de la CI (ci.yml, master) :
 #      publier-version.sh (empreintes_de_la_ci, face à un faux gh) refuse un octet changé, un travail en échec ou
 #      un journal sans empreintes, et ignore une autre branche (campagne d'attaque n° 6, F1).
+#   6c. Au branchement de la clé, deployer.sh (ci_verte, face à un faux gh) ne récupère ni ne compile un commit de
+#      GitHub sans CI verte sur ce commit exact (ci.yml, master ; campagne d'attaque n° 6, F4).
 #   6. Le programme Mac que la clé signe vient d'une exécution de master : publier-version.sh (sa fonction
 #      avec_programme, face à un faux gh) écarte celle d'une autre branche, même plus récente et du même commit ; et
 #      macos.yml ne reprend aucun cache sur master. Sans jq, cet essai est sauté et dit. Chaque action des workflows
@@ -479,6 +481,63 @@ JSON
     ko "publier-version.sh publie sans comparer Linux et Windows à la CI"
 else
   echo "  (sauté : jq absent, pas de faux gh pour les empreintes de la CI)"
+fi
+
+# 6c. Au branchement de la clé, un commit de GitHub n'est récupéré et compilé qu'avec une CI verte sur ce commit
+# exact (deployer.sh, ci_verte, campagne d'attaque n° 6, F4). Un faux gh filtre les exécutions par --commit comme
+# GitHub. Sans jq, sauté et dit.
+if command -v jq >/dev/null; then
+  F=$T/faux-gh-verte
+  mkdir -p "$F"
+  cat >"$F/gh" <<'GH'
+#!/usr/bin/env bash
+q=. commit=
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -q) q=$2; shift ;;
+    --commit) commit=$2; shift ;;
+  esac
+  shift
+done
+[[ -f $(dirname "$0")/injoignable ]] && exit 1
+jq -r --arg c "$commit" "[.[] | select(.headSha == \$c)] | $q" "$(dirname "$0")/runs.json"
+GH
+  chmod +x "$F/gh"
+  awk '/^ci_verte\(\) \{/,/^\}/' "$DEPOT/outils/deployer.sh" >"$T/ci_verte.sh"
+  A=$(printf 'a%.0s' {1..40}) B=$(printf 'b%.0s' {1..40})
+  verte() { (cd "$T" && PATH="$F:$PATH" bash -c "source '$T/ci_verte.sh'; ci_verte '$1'") >/dev/null 2>&1; }
+  passage() { # sha, branche, évènement, état, conclusion
+    printf '{"headSha": "%s", "headBranch": "%s", "event": "%s", "status": "%s", "conclusion": "%s"}' "$@"
+  }
+  echo "[$(passage "$A" master push completed success)]" >"$F/runs.json"
+  verte "$A" && ok "branchement : un commit à la CI verte sur master est récupéré" ||
+    ko "branchement : un commit à la CI verte refusé"
+  verte "$B" && ko "branchement : un commit sans passage de la CI est récupéré" ||
+    ok "branchement : un commit sans passage de la CI n'est ni récupéré ni compilé"
+  echo "[$(passage "$A" master push completed failure)]" >"$F/runs.json"
+  verte "$A" && ko "branchement : un commit à la CI en échec est récupéré" ||
+    ok "branchement : un commit à la CI en échec n'est pas récupéré"
+  echo "[$(passage "$A" master push in_progress "")]" >"$F/runs.json"
+  verte "$A" && ko "branchement : un commit à la CI en cours est récupéré" ||
+    ok "branchement : un commit à la CI pas finie attend le branchement suivant"
+  echo "[$(passage "$A" piege push completed success), $(passage "$A" master pull_request completed success)]" \
+    >"$F/runs.json"
+  verte "$A" && ko "branchement : une CI verte d'une autre branche ou d'une demande de fusion suffit" ||
+    ok "branchement : seule une CI verte de master compte (pas une autre branche, pas une demande de fusion)"
+  echo "[$(passage "$A" master push completed success)]" >"$F/runs.json"
+  verte "${A:0:12}" && ko "branchement : un commit abrégé est accepté" ||
+    ok "branchement : seul un commit entier (40 caractères) est cherché"
+  touch "$F/injoignable"
+  verte "$A" && ko "branchement : gh sans réponse vaut CI verte" ||
+    ok "branchement : gh sans réponse (hors ligne, pas connecté) ne vaut pas CI verte"
+  rm -f "$F/injoignable"
+  awk '/elif git merge-base --is-ancestor HEAD "\$DISTANT"; then/ { e = 1; next }
+    e && /if ci_verte "\$DISTANT"; then/ { v = 1; e = 0; next } e && /git merge/ { exit 1 }
+    v && /git merge -q --ff-only "\$DISTANT"/ { m = 1 } END { exit !(v && m) }' "$DEPOT/outils/deployer.sh" &&
+    ok "deployer.sh --branchement ne fusionne le commit de GitHub qu'après ci_verte" ||
+    ko "deployer.sh --branchement fusionne et compile un commit de GitHub sans CI verte"
+else
+  echo "  (sauté : jq absent, pas de faux gh pour le branchement de la clé)"
 fi
 # Par le nom court : une étiquette nommée master a le même headBranch que la branche, que publier-version.sh
 # accepte ; « github.ref != 'refs/heads/master' » lui laissait reprendre un cache préparé.
