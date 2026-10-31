@@ -578,6 +578,19 @@ sortie=$(attente 1 2>&1)
 touch "$F/fini"
 [[ $(attente 5 2>&1) == "code 0" ]] && ok "publier-version.sh : une exécution finie à temps rend le code de gh" ||
   ko "publier-version.sh : une exécution finie à temps ne rend pas 0"
+# Un gh qui ignore TERM (le seul signal que timeout envoie sans -k) : l'attente doit finir quand même, par KILL.
+G=$T/faux-gh-sourd
+mkdir -p "$G"
+printf '#!/usr/bin/env bash\ntrap "" TERM\nexec sleep 60\n' >"$G/gh"
+chmod +x "$G/gh"
+attente_sourde() { # script de la fonction, fonction ; la sortie, puis le code
+  PATH="$G:$PATH" bash -c "source '$1'; $2 42 1; echo \"code \$?\""
+}
+debut_attente=$SECONDS
+sortie=$(attente_sourde "$T/attendre_execution.sh" attendre_execution 2>&1)
+[[ $sortie == *"code 124"* && $sortie == *"pas finie"* && $((SECONDS - debut_attente)) -lt 30 ]] &&
+  ok "publier-version.sh : un gh qui ignore TERM est tué au délai" ||
+  ko "publier-version.sh attend un gh qui ignore TERM (${sortie:-rien}, $((SECONDS - debut_attente)) s)"
 # Aucun « gh run watch » hors d'elle, et ses deux appels avec un délai en secondes.
 awk '/^attendre_execution\(\) \{/,/^\}/ { next } /^ *#/ { next } /gh run watch/ { exit 1 } /attendre_execution "\$EN_COURS" [0-9]+/ { c = 1 }
   /attendre_execution "\$RUN" [0-9]+/ { m = 1 } END { exit !(c && m) }' "$DEPOT/outils/publier-version.sh" &&
@@ -645,6 +658,11 @@ sortie=$(attente_mac 1 2>&1)
 touch "$F/fini"
 [[ $(attente_mac 5 2>&1) == "code 0" ]] && ok "livrer-branche.sh : un Mac fini à temps rend le code de gh" ||
   ko "livrer-branche.sh : un Mac fini à temps ne rend pas 0"
+debut_attente=$SECONDS
+sortie=$(attente_sourde "$T/attendre_mac.sh" attendre_mac 2>&1)
+[[ $sortie == *"code 124"* && $sortie == *"pas fini après"* && $((SECONDS - debut_attente)) -lt 30 ]] &&
+  ok "livrer-branche.sh : un gh qui ignore TERM est tué au délai" ||
+  ko "livrer-branche.sh attend un gh qui ignore TERM (${sortie:-rien}, $((SECONDS - debut_attente)) s)"
 # Aucun « gh run watch » hors d'elle, et son appel avec le délai, suivi de l'arrêt.
 awk '/^attendre_mac\(\) \{/,/^\}/ { next } /^ *#/ { next } /gh run watch/ { exit 1 }
   /attendre_mac "\$ID" "\$ATTENTE_MAC" \|\| exit 1/ { m = 1 } /^ATTENTE_MAC=\$\(\([0-9]+ \* 60\)\)$/ { d = 1 }

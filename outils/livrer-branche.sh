@@ -18,7 +18,9 @@ JOURNAUX=$HOME/.cache/vanguard-dev
 ATTENTE_MAC=$((70 * 60))
 attendre_mac() { # exécution, secondes au plus
   local code=0
-  timeout "$2" gh run watch "$1" --exit-status --interval 20 >/dev/null 2>&1 || code=$?
+  # -k : un gh qui ignore TERM est tué 10 s plus tard ; timeout rend alors 137 (KILL), le même délai passé.
+  timeout -k 10 "$2" gh run watch "$1" --exit-status --interval 20 >/dev/null 2>&1 || code=$?
+  ((code != 137)) || code=124
   if ((code == 124)); then
     echo "✖ Mac de GitHub pas fini après $(($2 / 60)) minutes : rien n'est fusionné. Où il en est : gh run view $1 (bloqué : gh run cancel $1) ; puis relancer la livraison, qui relance le Mac."
   elif ((code != 0)); then
