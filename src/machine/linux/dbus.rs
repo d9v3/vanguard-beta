@@ -814,15 +814,11 @@ impl Bus {
         Self::sur(prise)
     }
 
-    /// Le bus de la session du compte (les programmes de la session : GameMode…), d'après
-    /// DBUS_SESSION_BUS_ADDRESS (« unix:path=… » seulement), sinon $XDG_RUNTIME_DIR/bus.
-    /// `None` : pas de bus de session joignable (surveillance hors session) ; rien n'est alors su de la session.
+    /// Le bus de la session du compte (les programmes de la session : GameMode…), joint par la même règle que les
+    /// actions (`actions::session`) : prise appartenant au compte, compte d'en face vérifié (SO_PEERCRED), refus
+    /// sous root. `None` : pas de bus de session joignable (surveillance hors session, sudo) ; rien n'est alors su.
     pub(crate) fn session() -> Option<Self> {
-        let chemin = std::env::var("DBUS_SESSION_BUS_ADDRESS")
-            .ok()
-            .and_then(|a| chemin_de_session(&a))
-            .or_else(|| std::env::var_os("XDG_RUNTIME_DIR").map(|d| std::path::PathBuf::from(d).join("bus")))?;
-        Self::sur(UnixStream::connect(&chemin).ok()?).ok()
+        actions::session().ok()
     }
 
     /// Authentifie la prise puis se présente au bus (Hello, obligatoire avant tout autre appel).
@@ -1030,18 +1026,6 @@ impl Bus {
         objets.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(objets)
     }
-}
-
-/// Le chemin de la prise d'une adresse de bus « unix:path=/run/user/1000/bus[,guid=…] » ; une autre forme (abstract,
-/// tcp) n'est pas suivie.
-fn chemin_de_session(adresse: &str) -> Option<std::path::PathBuf> {
-    adresse.split(';').find_map(|a| {
-        let reste = a.strip_prefix("unix:")?;
-        reste
-            .split(',')
-            .find_map(|c| c.strip_prefix("path="))
-            .map(std::path::PathBuf::from)
-    })
 }
 
 /// Un jeu tourne-t-il sous GameMode (`ClientCount` > 0 sur le bus de la session) ? `None` : GameMode absent, le bus
@@ -1794,19 +1778,6 @@ mod tests {
             assert_eq!(bus.recevoir(echeance, 1).unwrap().corps, Vec::new());
         }
         assert_eq!(bus.recevoir(echeance, 1).unwrap().corps, vec![t("x")]);
-    }
-
-    #[test]
-    fn adresse_du_bus_de_la_session() {
-        assert_eq!(
-            chemin_de_session("unix:path=/run/user/1000/bus,guid=0123"),
-            Some(std::path::PathBuf::from("/run/user/1000/bus"))
-        );
-        assert_eq!(
-            chemin_de_session("unix:abstract=/tmp/x;unix:path=/run/bus"),
-            Some(std::path::PathBuf::from("/run/bus"))
-        );
-        assert_eq!(chemin_de_session("tcp:host=192.0.2.1,port=1"), None);
     }
 
     /// Le vrai bus système, quand il est là : les unités en échec sont celles que dit `systemctl --failed`.

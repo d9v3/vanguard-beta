@@ -160,20 +160,23 @@ pub(crate) fn session() -> Result<Bus, Echec> {
             "as root, the session bus is not the account's"
         )));
     }
-    let mut prises = std::env::var("DBUS_SESSION_BUS_ADDRESS")
-        .map(|a| prises_de(&a))
-        .unwrap_or_default();
-    // Le défaut de sd-bus : $XDG_RUNTIME_DIR/bus.
+    let adresse = std::env::var("DBUS_SESSION_BUS_ADDRESS").ok();
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR");
+    let prise = prise_de_session(adresse.as_deref(), runtime.as_deref(), uid)
+        .ok_or_else(|| echec(tr!("bus de la session injoignable", "session bus unreachable")))?;
+    Bus::sur(prise).map_err(echec)
+}
+
+/// La prise du bus de la session d'après DBUS_SESSION_BUS_ADDRESS (`adresse`), sinon $XDG_RUNTIME_DIR/bus (le défaut
+/// de sd-bus) : la première qui appartient au compte `uid` et dont le compte d'en face est `uid`.
+fn prise_de_session(adresse: Option<&str>, runtime: Option<&std::ffi::OsStr>, uid: u32) -> Option<UnixStream> {
+    let mut prises = adresse.map(prises_de).unwrap_or_default();
     if prises.is_empty()
-        && let Some(d) = std::env::var_os("XDG_RUNTIME_DIR")
+        && let Some(d) = runtime
     {
         prises.push(Prise::Chemin(std::path::PathBuf::from(d).join("bus")));
     }
-    let prise = prises
-        .iter()
-        .find_map(|p| connecter(p, uid))
-        .ok_or_else(|| echec(tr!("bus de la session injoignable", "session bus unreachable")))?;
-    Bus::sur(prise).map_err(echec)
+    prises.iter().find_map(|p| connecter(p, uid))
 }
 
 /// Une erreur dans le canal d'erreur commun ; son texte reste celui du bus quand il vient du bus
@@ -605,6 +608,44 @@ mod tests {
         assert!(prises_de("unix:path=/x%zz").is_empty(), "échappement mal formé");
         let vide = prises_de("");
         assert!(vide.is_empty(), "{vide:?}");
+    }
+
+    /// Le bus de la session LU (GameMode…) passe par la même règle que les actions : une prise qui n'est pas du
+    /// compte, ou dont le compte d'en face n'est pas le nôtre, n'est jamais suivie.
+    #[test]
+    fn bus_de_session_verifie_comme_les_actions() {
+        use std::os::linux::net::SocketAddrExt;
+        use std::os::unix::net::{SocketAddr, UnixListener};
+        let moi = crate::socle::euid();
+        let autre = moi.wrapping_add(1);
+        let dossier = std::env::temp_dir().join(format!("vanguard-dbus-session-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dossier);
+        std::fs::create_dir_all(&dossier).unwrap();
+        let _ecoute = UnixListener::bind(dossier.join("bus")).unwrap();
+        let adresse = format!("unix:path={}", dossier.join("bus").display());
+        assert!(prise_de_session(Some(&adresse), None, moi).is_some());
+        assert!(
+            prise_de_session(None, Some(dossier.as_os_str()), moi).is_some(),
+            "XDG_RUNTIME_DIR/bus"
+        );
+        // La prise appartient à un autre compte que celui demandé : refusée.
+        assert!(prise_de_session(Some(&adresse), None, autre).is_none());
+        assert!(prise_de_session(None, Some(dossier.as_os_str()), autre).is_none());
+        // Une prise abstraite n'a pas de propriétaire : seul le compte d'en face (SO_PEERCRED) la juge.
+        let nom = format!("vanguard-essai-bus-{}", std::process::id());
+        let a = SocketAddr::from_abstract_name(nom.as_bytes()).unwrap();
+        let _abstraite = UnixListener::bind_addr(&a).unwrap();
+        let adresse = format!("unix:abstract={nom}");
+        assert!(prise_de_session(Some(&adresse), None, moi).is_some());
+        assert!(prise_de_session(Some(&adresse), None, autre).is_none());
+        let _ = std::fs::remove_dir_all(&dossier);
+
+        // Bus::session (les lectures) ne joint plus sa prise lui-même : il passe par `session` d'ici.
+        let source = include_str!("../dbus.rs");
+        let debut = source.find("pub(crate) fn session() -> Option<Self>").unwrap();
+        let corps = &source[debut..debut + source[debut..].find("\n    }\n").unwrap()];
+        assert!(corps.contains("actions::session()"), "{corps}");
+        assert!(!corps.contains("UnixStream::connect"), "{corps}");
     }
 
     // ── Un faux bus de session : il lit l'authentification, Hello, puis répond selon un scénario ──
