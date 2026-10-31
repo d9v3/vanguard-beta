@@ -42,12 +42,41 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
             assert_eq!(gestes::etats_du_script(&raison), Some(etats));
         }
     }
-    // La liste : acceptée, elle a une entrée par ligne ; les « autres » lignes ne passent que par le validateur donné.
-    let autre = |l: &str| (l == "autre").then_some(());
-    if let Some(v) = gestes::valider(&lignes, autre) {
-        assert_eq!(v.len(), lignes.len());
-        assert!(!lignes.is_empty() && lignes.len() <= gestes::LIGNES_MAX);
-        assert!(lignes.iter().all(|l| l.len() <= gestes::LIGNE_MAX));
+    // La liste : acceptée, elle a une entrée par ligne ; les « autres » lignes ne passent que par le validateur donné,
+    // qui admet ici toute longueur (comme un ordre du blocage et son chemin) : seule la borne de `valider` arrête une
+    // ligne démesurée (graine « longue », -max_len d'outils/fuzz.sh).
+    let autre = |l: &str| l.starts_with("autre").then_some(());
+    // Deux lignes de script de même empreinte : la liste est refusée, quel que soit le chemin de chacune.
+    let empreintes: Vec<String> = lignes
+        .iter()
+        .filter_map(|l| gestes::analyser_script(l))
+        .map(|s| s.empreinte)
+        .collect();
+    let doublon = empreintes.iter().enumerate().any(|(i, e)| empreintes[..i].contains(e));
+    match gestes::valider(&lignes, autre) {
+        Some(v) => {
+            assert_eq!(v.len(), lignes.len());
+            assert!(!lignes.is_empty() && lignes.len() <= gestes::LIGNES_MAX);
+            assert!(lignes.iter().all(|l| l.len() <= gestes::LIGNE_MAX));
+            assert!(!doublon, "script en double accepté");
+        }
+        None => {
+            // Refusée : il y a une raison, jamais une liste bonne refusée sans cause.
+            let bonne = |l: &String| {
+                l.len() <= gestes::LIGNE_MAX
+                    && if l.starts_with(gestes::SCRIPT) {
+                        gestes::analyser_script(l).is_some()
+                    } else if l.starts_with(gestes::PROGRAMME) {
+                        gestes::analyser_programme(l).is_some()
+                    } else {
+                        autre(l).is_some()
+                    }
+            };
+            assert!(
+                lignes.is_empty() || lignes.len() > gestes::LIGNES_MAX || doublon || !lignes.iter().all(bonne),
+                "liste bonne refusée"
+            );
+        }
     }
     // La découpe : des correctifs séparés par une ligne vide ; chaque ligne est dans un seul morceau, dans l'ordre, et
     // un morceau natif n'a que des lignes natives (le point de restauration n'est jamais mêlé au script).

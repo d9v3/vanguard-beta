@@ -77,6 +77,9 @@ if ! cargo +nightly fuzz build --target "$HOTE" --fuzz-dir fuzz --target-dir "$C
 fi
 rm -f "$COMPILATION"
 
+# Plus longues que les 4096 octets que libFuzzer prend par défaut, pour une cible dont une limite est au-delà :
+# gestes refuse une ligne de plus de 8448 octets (gestes::LIGNE_MAX), à atteindre des deux côtés.
+declare -A MAX_LEN=([gestes]=20000)
 ECHECS=0
 for c in "${liste[@]}"; do
   corpus=$FUZZ/corpus/$c
@@ -87,7 +90,8 @@ for c in "${liste[@]}"; do
   # Le premier dossier reçoit ce que le fuzzer découvre ; les graines ne sont que lues. Compilé hors du dépôt, avec
   # les vérifications de débordement (comme la version publiée) et AddressSanitizer, par défaut chez cargo-fuzz.
   if cargo +nightly fuzz run --target "$HOTE" --fuzz-dir fuzz --target-dir "$CIBLE_FUZZ" "$c" "$corpus" "fuzz/graines/$c" -- \
-    -max_total_time="$DUREE" -artifact_prefix="$plantages/" -print_final_stats=1 >"$journal" 2>&1; then
+    -max_total_time="$DUREE" -artifact_prefix="$plantages/" -print_final_stats=1 ${MAX_LEN[$c]:+-max_len="${MAX_LEN[$c]}"} \
+    >"$journal" 2>&1; then
     # -a : le journal recopie parfois des octets d'une entrée ; grep le disait binaire (« Binary file matches »), et
     # le nombre d'exécutions manquait (« ? »).
     executions=$(grep -ao 'stat::number_of_executed_units: *[0-9]*' "$journal" | grep -o '[0-9]*$')
