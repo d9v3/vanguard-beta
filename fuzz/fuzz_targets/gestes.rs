@@ -1,0 +1,87 @@
+//! La grammaire des lignes que le processus élevé de Windows lit du Vanguard non élevé (src/machine/windows/
+//! gestes.rs) : script vérifié par empreinte, programme fixe de la table, liste validée, découpe d'une liste de
+//! correctifs en morceaux natifs et PowerShell, états d'un script en échec. Chemins piégés (« .. », NUL, lecteur
+//! manquant), hexadécimal en majuscules, noms hors de la liste fermée, lignes et correctifs en nombre.
+#![no_main]
+// Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
+#![forbid(unsafe_code)]
+
+#[allow(dead_code)]
+#[path = "../../src/machine/windows/gestes.rs"]
+mod gestes;
+
+libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
+    let Ok(texte) = std::str::from_utf8(octets) else {
+        return;
+    };
+    let lignes: Vec<String> = texte.split('\n').map(str::to_string).collect();
+    for l in &lignes {
+        // Une ligne relue se réécrit à l'identique : rien d'autre que sa forme exacte n'est accepté.
+        if let Some(a) = gestes::analyser_programme(l) {
+            assert_eq!(a.ligne(), *l);
+            assert!(l.len() <= 256 && l.is_ascii());
+            // Les arguments sont ceux de la table : le nom reçu n'en ajoute pas un, ni une espace.
+            let args = a.arguments("C:");
+            assert_eq!(args.len(), a.programme.arguments.len());
+            assert!(args.iter().all(|x| !x.contains(['\n', '\r', '"'])));
+        }
+        if let Some(s) = gestes::analyser_script(l) {
+            assert_eq!(gestes::ligne_script(&s.empreinte, &s.chemin), *l);
+            assert!(!s.chemin.split(['\\', '/']).any(|c| c == "." || c == ".."));
+            assert!(!s.chemin.contains(['\0', '\n', '\r']));
+        }
+        if let Some(etats) = gestes::etats_du_script(l) {
+            assert!(etats.len() <= gestes::ETATS_MAX);
+            // Relus depuis la raison qu'en écrit le processus élevé : les mêmes.
+            let code: i32 = l
+                .strip_prefix("echec code=")
+                .and_then(|r| r.split(' ').next())
+                .and_then(|c| c.parse().ok())
+                .unwrap();
+            let raison = format!("echec {}", gestes::raison_du_script(code, &etats));
+            assert_eq!(gestes::etats_du_script(&raison), Some(etats));
+        }
+    }
+    // La liste : acceptée, elle a une entrée par ligne ; les « autres » lignes ne passent que par le validateur donné.
+    let autre = |l: &str| (l == "autre").then_some(());
+    if let Some(v) = gestes::valider(&lignes, autre) {
+        assert_eq!(v.len(), lignes.len());
+        assert!(!lignes.is_empty() && lignes.len() <= gestes::LIGNES_MAX);
+        assert!(lignes.iter().all(|l| l.len() <= gestes::LIGNE_MAX));
+    }
+    // La découpe : des correctifs séparés par une ligne vide ; chaque ligne est dans un seul morceau, dans l'ordre, et
+    // un morceau natif n'a que des lignes natives (le point de restauration n'est jamais mêlé au script).
+    let correctifs: Vec<Vec<String>> = texte
+        .split("\n\n")
+        .map(|c| c.split('\n').filter(|l| !l.is_empty()).map(str::to_string).collect())
+        .collect();
+    let natif = |l: &str| l.starts_with('#');
+    let mut vues = Vec::new();
+    for m in gestes::decouper(&correctifs, natif) {
+        match m {
+            gestes::Morceau::Natif(v) => {
+                assert!(!v.is_empty());
+                for (i, j) in v {
+                    assert!(natif(&correctifs[i][j]));
+                    vues.push((i, j));
+                }
+            }
+            gestes::Morceau::Script(v) => {
+                assert!(!v.is_empty());
+                for (i, suite) in v {
+                    assert!(!suite.is_empty());
+                    for j in suite {
+                        assert!(!natif(&correctifs[i][j]));
+                        vues.push((i, j));
+                    }
+                }
+            }
+        }
+    }
+    let attendues: Vec<(usize, usize)> = correctifs
+        .iter()
+        .enumerate()
+        .flat_map(|(i, c)| (0..c.len()).map(move |j| (i, j)))
+        .collect();
+    assert_eq!(vues, attendues);
+});

@@ -226,3 +226,10 @@ path = "fuzz_targets/journal_systemd.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "gestes"
+path = "fuzz_targets/gestes.rs"
+test = false
+doc = false
+bench = false
