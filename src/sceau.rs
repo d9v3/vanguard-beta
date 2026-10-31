@@ -383,6 +383,8 @@ pub(crate) fn verrous_remplaces(dossier: &Path) -> Vec<String> {
 
 /// Les verrous des autres bases du dossier (appareils du réseau, alertes) : rien ne les dit sinon remplacés, et leur
 /// base ne s'écrit plus sans un mot à l'écran. Au bilan seulement : ils ne touchent pas au journal des événements.
+/// Chacun avec son verrou du système (`socle::nom_systeme`, `appareils.lock`), que `prendre_compatible` prend d'abord :
+/// remplacé, la base se lit sans verrou, sans rien dire (campagne 6, E6-B3).
 const AUTRES_VERROUS: [&str; 2] = ["appareils.verrou", "alertes.verrou"];
 
 /// Au bilan : le verrou des sceaux tenu ailleurs, comme celui du journal (`modele::journal`). Avant cela, un verrou
@@ -393,8 +395,8 @@ fn constat_verrou(dossier: &Path) -> Option<Constat> {
     remplaces.extend(
         AUTRES_VERROUS
             .into_iter()
-            .filter(|n| crate::socle::verrou_remplace(dossier, n))
-            .map(String::from),
+            .flat_map(|n| [n.to_string(), crate::socle::nom_systeme(n)])
+            .filter(|n| crate::socle::verrou_remplace(dossier, n)),
     );
     let copies = crate::socle::cache::verrous_remplaces(dossier);
     let des_copies = !copies.is_empty();
@@ -413,10 +415,10 @@ fn constat_verrou(dossier: &Path) -> Option<Constat> {
             if remplaces.iter().any(|n| n.starts_with("evenements.")) {
                 bases.push(tr!("le journal des événements", "the event log"));
             }
-            if remplaces.iter().any(|n| n == AUTRES_VERROUS[0]) {
+            if remplaces.iter().any(|n| n.starts_with("appareils.")) {
                 bases.push(tr!("la base des appareils du réseau", "the network device database"));
             }
-            if remplaces.iter().any(|n| n == AUTRES_VERROUS[1]) {
+            if remplaces.iter().any(|n| n.starts_with("alertes.")) {
                 bases.push(tr!("les alertes du réseau", "the network alerts"));
             }
             if des_copies {
@@ -1589,6 +1591,17 @@ mod tests {
         assert!(!c.message.contains("journal des événements"), "{}", c.message);
         assert_eq!(verrous_remplaces(&d), Vec::<String>::new());
         std::fs::remove_dir(d.join("appareils.verrou")).unwrap();
+        // E6-B3 (campagne 6) : leur verrou du système aussi, que la lecture prend d'abord.
+        for (verrou, base, en) in [
+            ("appareils.lock", "appareils du réseau", "network device"),
+            ("alertes.lock", "alertes du réseau", "network alerts"),
+        ] {
+            std::fs::create_dir(d.join(verrou)).unwrap();
+            let c = constat_verrou(&d).unwrap();
+            assert!(c.message.contains(verrou), "{}", c.message);
+            assert!(c.message.contains(base) || c.message.contains(en), "{}", c.message);
+            std::fs::remove_dir(d.join(verrou)).unwrap();
+        }
         // Celui d'une copie de liste aussi (relecture de la campagne 5) ; un verrou ordinaire, lui, ne dit rien.
         std::fs::create_dir_all(d.join("kev")).unwrap();
         std::fs::write(d.join("kev/autre.json.verrou"), b"").unwrap();
