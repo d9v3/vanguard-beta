@@ -263,9 +263,9 @@ from elsewhere (plist, HTTP and DNS replies, timeline logs, Windows .evtx logs, 
 change in `src/` shows at once), CI five minutes every night; its dependencies go through cargo deny
 (`fuzz/deny.toml`). A target is added in `fuzz/Cargo.toml`, which `fuzz.sh` reads.
 
-Proofs: `outils/preuves.sh [tout|miri|kani]` (nightly toolchain with Miri, and Kani), every Friday by the continuous
-watch. Miri interprets the tests of the `unsafe` that work on Vanguard's own memory (their names are listed in the
-script; a test that calls the system is ignored there by `#[cfg_attr(miri, ignore)]`); Kani proves, within a bound, a
+Proofs: `outils/preuves.sh [tout|miri|kani]` (nightly toolchain with Miri, and Kani), every Thursday by the continuous
+watch. Miri interprets the tests of the `unsafe` that work on Vanguard's own memory, and only them: the script runs
+them by their exact name; a test that calls the system is not in its list; Kani proves, within a bound, a
 few readers of hostile data (`outils/preuves/`, included by `#[cfg(kani)]` at the end of their module). To be rerun
 after touching one of them.
 

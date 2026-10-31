@@ -43,7 +43,7 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
   à part (modules inclus par leur chemin, cales dans `fuzz/cale/`, cibles lues dans `fuzz/Cargo.toml`), corpus et
   plantages dans `~/.cache/vanguard-dev/fuzz/` ; verifier.sh le compile et passe 5 s par cible, la CI 5 min chaque
   nuit ; ses dépendances passent à cargo deny (`fuzz/deny.toml`).
-- Preuves (nightly) : `outils/preuves.sh [tout|miri|kani]`, chaque vendredi par la veille ; Miri sur les essais des
+- Preuves (nightly) : `outils/preuves.sh [tout|miri|kani]`, chaque jeudi par la veille ; Miri sur les essais des
   `unsafe` qui touchent la mémoire de Vanguard (liste dans le script), Kani sur trois lecteurs (`outils/preuves/`).
   À relancer après avoir touché à l'un d'eux.
 - Chaîne Rust épinglée (`rust-toolchain.toml`, à monter à la main après un verifier.sh vert) ; programmes publiés

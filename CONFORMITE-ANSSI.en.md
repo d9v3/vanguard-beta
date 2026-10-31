@@ -16,7 +16,7 @@ Verdicts:
 - **not applicable**: the point cannot apply to Vanguard.
 
 What is missing is not counted as met. Every partial and every gap has a next step: fixed in this batch, or
-added to the work that comes next (proofs with Miri and Kani, arithmetic checked module by module, then the roadmap).
+added to the roadmap.
 
 ## In brief
 
@@ -41,7 +41,7 @@ that could silently change a released program.
 |---|---|---|---|
 | DENV-STABLE | met | `rust-toolchain.toml` pins a stable toolchain; the nightly toolchain is used only for the fuzzing bench (`outils/fuzz.sh`). | — |
 | DENV-TIERS | waiver | Two of the four targets are tier 2: `x86_64-unknown-linux-musl`, the Linux target and the one for the USB key, and `x86_64-apple-darwin`. The rule is aimed at safety-critical systems (avionics, vehicles), which Vanguard is not. What makes up for it: the test suite runs on musl at every check, and on a GitHub Intel Mac (`.github/workflows/macos.yml`). | — |
-| DENV-CARGO-LOCK | met | The four `Cargo.lock` files are versioned; every cargo command runs with `--locked` (`outils/verifier.sh`). | — |
+| DENV-CARGO-LOCK | met | The five `Cargo.lock` files are versioned; every cargo command runs with `--locked` (`outils/verifier.sh`), except `cargo kani`, which has no such option: `outils/preuves.sh` first checks the lock of `outils/preuves/` (`cargo metadata --locked`), which has no dependency. | — |
 | DENV-CARGO-OPTS | met | `[profile.dev]` and `[profile.test]` change only `debug` and `opt-level` (`Cargo.toml`). | — |
 | DENV-CARGO-ENVVARS | partial | `outils/compiler-version.sh` sets `RUSTFLAGS` (`--remap-path-prefix`), so that a released program keeps no path from the machine that built it: this is the condition for a reproducible build. Fixed in this batch: it removes from the environment what would silently change the program (`RUSTUP_TOOLCHAIN`, `RUSTC`, `RUSTC_WRAPPER`, `RUSTC_WORKSPACE_WRAPPER`, `CARGO_ENCODED_RUSTFLAGS`, `CARGO_BUILD_…`, `CARGO_PROFILE_…`, `CARGO_TARGET_…_LINKER`, and for ring's C code `CC`, `AR`, `CFLAGS`…) and refuses any `rustc` other than the one in `rust-toolchain.toml`. Still open: a personal `~/.cargo/config.toml` (`[profile.release]`, `[build] rustc`), which nothing checks, and no automatic comparison of the Linux and Windows programs built on the author's computer with those of the CI (musl-gcc and MinGW versions differ from one machine to another). | Move to `trim-paths` once cargo has stabilized it. |
 | DENV-FORMAT | met | `rustfmt.toml`; `cargo fmt --check` is the first step of `outils/verifier.sh`, and so of the CI. | — |
@@ -122,10 +122,10 @@ that could silently change a released program.
 
 ## Proofs: Miri and Kani
 
-Run by `outils/preuves.sh`, every Friday by the continuous watch (`outils/veille/LISEZMOI.md`) and by hand after
+Run by `outils/preuves.sh`, every Thursday by the continuous watch (`outils/veille/LISEZMOI.md`) and by hand after
 touching an `unsafe` or a proven reader; too slow for every check.
 
 | Tool | What is covered | What is not |
 |---|---|---|
-| Miri (nightly, strict provenance) | The `unsafe` that work on Vanguard's own memory, through tests interpreted for Linux and for Windows: wiping secrets (`src/socle/mod.rs`), the counting allocator of the tests (`src/protection/perimes/sources/mod.rs`, for Linux: for Windows, Miri rejects std's own system allocator), UTF-16 texts read up to their final zero (`src/machine/windows/impression.rs`, `partages.rs`, `comptes.rs`), zeroed C structures (`src/socle/mod.rs`, `processus.rs`, `memoire.rs`). No undefined behavior found. | The `unsafe` that call the system or read the memory it returns: Miri does not simulate Windows, libc or macOS; their tests are ignored there by `cfg_attr(miri, ignore)`. The macOS-only structures: Miri cannot build ring without Apple's tools. |
-| Kani (bounded verification) | For every input within the bound, no panic, no overflow and no endless loop, plus one simple property: SQLite integers (`src/sqlite.rs`: round trip with the reference encoding, length read), zstd bits (`src/machine/linux/zstd.rs`: equal to a bit-by-bit read, exact count of the remaining bits), compressed DNS names (`src/audit/dns_client.rs`: length, next position in the message; the UTF-8 decoding, from the standard library, is replaced there by a model of the same length). Proofs in `outils/preuves/`. No defect found. | Beyond the bound (a few bytes per reader), fuzzing (`outils/fuzz.sh`) takes over. |
+| Miri (nightly, strict provenance) | The `unsafe` that work on Vanguard's own memory, through tests interpreted for Linux and for Windows: wiping secrets (`src/socle/mod.rs`), the counting allocator of the tests (`src/protection/perimes/sources/mod.rs`, for Linux: for Windows, Miri rejects std's own system allocator), UTF-16 texts read up to their final zero (`src/machine/windows/impression.rs`, `partages.rs`, `comptes.rs`), zeroed C structures (`src/socle/mod.rs`, `processus.rs`, `memoire.rs`). No undefined behavior found. | The `unsafe` that call the system or read the memory it returns: Miri does not simulate Windows, libc or macOS; their tests are outside the list that `outils/preuves.sh` runs by exact name (only one also carries `cfg_attr(miri, ignore)`). The macOS-only structures: Miri cannot build ring without Apple's tools. |
+| Kani (bounded verification) | For every input within the bound, no panic, no overflow and no endless loop, plus one simple property: SQLite integers (`src/sqlite.rs`: round trip with the reference encoding, length read), zstd bits (`src/machine/linux/zstd.rs`: equal to a bit-by-bit read, exact count of the remaining bits), compressed DNS names (`src/audit/dns_client.rs`, 3-byte messages: pointer loops stopped, positions within the message; the UTF-8 decoding, from the standard library, is replaced there by a model that returns one character per byte, a lower bound of the real one). The 253-character bound of a name is not proven (unreachable in 3 bytes): it is a guard-rail of the code, covered by fuzzing. Proofs in `outils/preuves/`. No defect found. | Beyond the bound (a few bytes per reader), fuzzing (`outils/fuzz.sh`) takes over. |

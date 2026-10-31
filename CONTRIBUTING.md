@@ -265,9 +265,9 @@ archives, ressources des .exe…). `outils/verifier.sh` compile le banc et passe
 cible cassée par un changement de `src/` se voit tout de suite), la CI cinq minutes chaque nuit ; ses dépendances
 passent à cargo deny (`fuzz/deny.toml`). Une cible s'ajoute dans `fuzz/Cargo.toml`, que `fuzz.sh` lit.
 
-Preuves : `outils/preuves.sh [tout|miri|kani]` (chaîne nightly avec Miri, et Kani), chaque vendredi par la veille
-continue. Miri interprète les essais des `unsafe` qui portent sur la mémoire de Vanguard (leurs noms sont listés
-dans le script ; un essai qui appelle le système s'y ignore par `#[cfg_attr(miri, ignore)]`) ; Kani prouve, dans
+Preuves : `outils/preuves.sh [tout|miri|kani]` (chaîne nightly avec Miri, et Kani), chaque jeudi par la veille
+continue. Miri interprète les essais des `unsafe` qui portent sur la mémoire de Vanguard, et eux seuls : le script
+les lance à leur nom exact ; un essai qui appelle le système n'est pas dans sa liste ; Kani prouve, dans
 une borne, quelques lecteurs de données hostiles (`outils/preuves/`, inclus par `#[cfg(kani)]` à la fin de leur
 module). À relancer après avoir touché à l'un d'eux.
 
