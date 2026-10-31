@@ -367,7 +367,7 @@ fn script_admin(correctifs: &[Vec<String>], sortie: Sortie) -> String {
 pub(super) const SCRIPT_MODIFIE: i32 = 6;
 /// Code de sortie quand PowerShell est en mode restreint (stratégie WDAC ou AppLocker) : sans .NET, l'empreinte ne se
 /// vérifie pas, et un script modifié serait annoncé à tort.
-const LANGAGE_RESTREINT: i32 = 7;
+pub(super) const LANGAGE_RESTREINT: i32 = 7;
 
 /// L'empreinte SHA-256, en hexadécimal majuscule, comme la calcule PowerShell.
 pub(super) fn sha256_hex(octets: &[u8]) -> String {

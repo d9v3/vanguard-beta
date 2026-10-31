@@ -304,8 +304,12 @@ pub(crate) fn appliquer(lignes: &[String]) -> Option<Vec<Reponse>> {
     // (la liste a changé en route).
     if valider(lignes).is_none() {
         trp!(
-            "    Cette liste n'a pas la forme que Vanguard administrateur accepte : rien n'a été fait, aucune demande d'administrateur.",
-            "    This list does not have the form Vanguard as administrator accepts: nothing was done, no administrator prompt."
+            "    Vanguard a refusé sa propre liste de corrections avant de demander les droits d'administrateur : rien n'a été fait. Mettez Vanguard à jour ; si cela revient, signalez-le.",
+            "    Vanguard refused its own list of fixes before asking for administrator rights: nothing was done. Update Vanguard; if it happens again, report it (the error log keeps a trace)."
+        );
+        crate::journal::erreur(
+            "Vanguard administrateur",
+            "liste refusée avant la demande (forme inattendue)",
         );
         return None;
     }
@@ -383,10 +387,11 @@ pub(crate) fn appliquer(lignes: &[String]) -> Option<Vec<Reponse>> {
 /// prend le relais.
 fn relance_impossible(fr: &str, en: &str) -> Option<Vec<Reponse>> {
     trp!(
-        "    Vanguard administrateur ne peut pas se préparer ({}) : rien n'a été modifié.",
-        "    Vanguard as administrator cannot get ready ({}): nothing was changed.",
+        "    Vanguard n'a pas pu préparer sa fenêtre administrateur : rien n'a été modifié. Redémarrez l'ordinateur, puis relancez la correction. (détail : {})",
+        "    Vanguard could not prepare its administrator window: nothing was changed. Restart the computer, then run the fix again. (detail: {})",
         if crate::langue::anglais() { en } else { fr }
     );
+    crate::journal::erreur("Vanguard administrateur", &format!("relance impossible : {fr}"));
     None
 }
 
@@ -804,9 +809,51 @@ fn faire(e: &Element, juge: &ordres::Juge) -> Resultat {
             None => trp!("  {VERT}OK{RESET}", "  {VERT}OK{RESET}"),
         }
     } else {
-        trp!("  Échec : {}", "  Failed: {}", r.raison);
+        trp!("  Échec : {}", "  Failed: {}", echec_lisible(e, &r.raison));
     }
     r
+}
+
+/// Un échec dit à la personne : ce qui s'est passé, quoi faire, le détail technique entre parenthèses. La raison
+/// elle-même (« code=1 etats=101 ») part telle quelle au parent, qui la relit : seul l'affichage change.
+fn echec_lisible(e: &Element, raison: &str) -> String {
+    let Some((code, suite)) = raison
+        .strip_prefix("code=")
+        .map(|r| r.split_once(' ').unwrap_or((r, "")))
+        .and_then(|(c, suite)| Some((c.parse::<i32>().ok()?, suite)))
+    else {
+        return raison.to_string();
+    };
+    match e {
+        Element::Script(_) if code == super::SCRIPT_MODIFIE => trf!(
+            "le script de correction a changé ou disparu depuis que Vanguard l'a écrit : rien n'a été lancé. Un autre programme y a touché : lancez une analyse antivirus, puis relancez la correction. (code {code})",
+            "the fix script changed or disappeared since Vanguard wrote it: nothing was run. Another program touched it: run an antivirus scan, then run the fix again. (code {code})"
+        ),
+        Element::Script(_) if code == super::LANGAGE_RESTREINT => trf!(
+            "PowerShell est en mode restreint sur ce PC (stratégie de sécurité) : Vanguard ne peut pas y vérifier son script, rien n'a été lancé. Faites cette correction à la main ou demandez à qui gère ce PC. (code {code})",
+            "PowerShell is in restricted mode on this PC (security policy): Vanguard cannot verify its script there, nothing was run. Make this fix by hand or ask whoever manages this PC. (code {code})"
+        ),
+        Element::Script(_) if code == crate::reparer::SANS_POINT_ARRETE => trf!(
+            "arrêté à votre demande, sans point de restauration : rien n'a changé. (code {code})",
+            "stopped as you asked, without a restore point: nothing was changed. (code {code})"
+        ),
+        Element::Script(_) => {
+            let detail = match suite.strip_prefix("etats=") {
+                Some(etats) if !etats.is_empty() => format!("code {code}, {etats}"),
+                _ => format!("code {code}"),
+            };
+            trf!(
+                "une ou plusieurs étapes n'ont pas abouti ; le message de chacune est juste au-dessus. Relancez la correction ; si l'échec revient, redémarrez l'ordinateur puis réessayez. ({detail})",
+                "one or more steps did not succeed; the message of each is just above. Run the fix again; if it fails again, restart the computer and try once more. ({detail})"
+            )
+        }
+        Element::Programme(a) => trf!(
+            "{} a fini en erreur ; son message est juste au-dessus. Redémarrez l'ordinateur, puis relancez la correction. (code {code})",
+            "{} ended with an error; its message is just above. Restart the computer, then run the fix again. (code {code})",
+            a.programme.exe
+        ),
+        _ => raison.to_string(),
+    }
 }
 
 /// Le script PowerShell d'une liste mêlée : lu ici en mémoire, son empreinte vérifiée, puis lancé dans cette console
@@ -1272,6 +1319,51 @@ mod tests {
 
     /// Avant l'accord, un script illisible ou changé fait refuser toute la liste (rien n'est montré, rien demandé) ;
     /// un script intact est montré tel qu'il sera lancé.
+    /// Un échec se dit en phrase, avec quoi faire, le détail entre parenthèses : jamais « code=1 etats=101 » seul.
+    #[test]
+    fn un_echec_se_dit_en_phrase() {
+        let script = valider(&[gestes::ligne_script(
+            &"A".repeat(64),
+            r"C:\Users\alice\AppData\Local\Vanguard\corrections\correction-1.ps1",
+        )])
+        .and_then(|mut v| v.pop())
+        .expect("script accepté");
+        let sfc = Element::Programme(gestes::analyser_programme("vanguard:programme sfc-scannow").expect("sfc"));
+        let verifier = |anglais: bool| {
+            let t = echec_lisible(&script, &gestes::raison_du_script(1, &[true, false, true]));
+            assert!(!t.contains("code=") && !t.contains("etats="), "{t}");
+            assert!(t.ends_with("(code 1, 101)"), "{t}");
+            assert!(
+                t.contains(if anglais { "just above" } else { "juste au-dessus" }),
+                "{t}"
+            );
+            let t = echec_lisible(
+                &script,
+                &format!("code={} script modifié", super::super::SCRIPT_MODIFIE),
+            );
+            assert!(
+                t.contains(if anglais { "antivirus scan" } else { "analyse antivirus" }) && t.ends_with("(code 6)")
+            );
+            let t = echec_lisible(&sfc, "code=2");
+            assert!(t.starts_with("sfc.exe ") && t.ends_with("(code 2)"), "{t}");
+            assert!(
+                t.contains(if anglais {
+                    "Restart the computer"
+                } else {
+                    "Redémarrez l'ordinateur"
+                }),
+                "{t}"
+            );
+            // Une raison déjà en mots passe telle quelle.
+            assert_eq!(
+                echec_lisible(&sfc, "sfc.exe ne s'est pas lancé"),
+                "sfc.exe ne s'est pas lancé"
+            );
+        };
+        verifier(false);
+        crate::langue::en_anglais(|| verifier(true));
+    }
+
     #[test]
     fn un_script_change_est_refuse_avant_l_accord() {
         let d = std::env::temp_dir().join(format!("vanguard-montrer-{}", std::process::id()));
