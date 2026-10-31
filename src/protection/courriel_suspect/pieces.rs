@@ -697,12 +697,13 @@ pub(crate) fn passer_aux_moteurs(
 
 /// Les vrais moteurs : YARA, puis l'antivirus. Un antivirus absent n'est proposé qu'une fois (l'installer ? non) : sa
 /// réponse vaut pour les pièces suivantes, au lieu de reposer la question à chacune. Seule une raison qui vaut pour
-/// tous les fichiers est reportée (`antivirus::vaut_pour_tous` : moteur absent, Defender qui n'analyse rien) ; une
-/// raison propre à une pièce (sautée ou exclue, illisible, trop grosse, compte rendu muet ou invérifiable) ne dit
-/// rien des autres : chacune repasse, et une pièce suivante détectée l'est.
+/// tous les fichiers est reportée (`antivirus::vaut_pour_tous` : moteur absent, MpCmdRun qui ne se lance pas ou ne
+/// finit pas) ; une raison propre à une pièce (sautée ou exclue, illisible, verrouillée, trop grosse, compte rendu muet
+/// ou invérifiable) ne dit rien des autres : chacune repasse, et une pièce suivante détectée l'est. `antivirus` peut
+/// garder ce qu'il a lu pour tout le courriel (`antivirus::examinateur` : les exclusions de Defender, lues une fois).
 pub(crate) fn moteurs(
     yara: impl Fn(&Path) -> Examen,
-    antivirus: impl Fn(&Path) -> Examen,
+    mut antivirus: impl FnMut(&Path) -> Examen,
 ) -> impl FnMut(&Path) -> Vec<(String, Examen)> {
     let nom_antivirus = if cfg!(windows) { "Defender" } else { "ClamAV" };
     let mut absent: Option<String> = None;
@@ -1450,6 +1451,39 @@ mod tests {
             assert!(matches!(&m(p)[1].1, Examen::Impossible(_)), "{raison}");
             assert!(matches!(&m(p)[1].1, Examen::Trouve(_)), "{raison}");
             assert_eq!(appels.get(), 2, "{raison}");
+        }
+        // Relecture des correctifs T10, MOYEN-C : un échec d'analyse (code 2 : ce fichier verrouillé, refusé) est
+        // propre à la pièce, jamais reporté ; seul MpCmdRun qui ne se lance pas ou ne finit pas l'est (Windows).
+        // L'examinateur est un `FnMut` : il garde son état d'une pièce à l'autre (exclusions lues une fois).
+        for (raison, reportee) in [
+            (crate::protection::antivirus::raison_echec(), false),
+            (crate::protection::antivirus::raison_injoignable(), cfg!(windows)),
+        ] {
+            let mut appels = 0;
+            let mut m = moteurs(
+                |_| Examen::Sain,
+                |_: &Path| {
+                    appels += 1;
+                    if appels == 1 {
+                        Examen::Impossible(raison.into())
+                    } else {
+                        Examen::Trouve(vec!["Eicar".into()])
+                    }
+                },
+            );
+            assert!(matches!(&m(p)[1].1, Examen::Impossible(r) if r == raison), "{raison}");
+            let deuxieme = m(p);
+            drop(m);
+            if reportee {
+                assert!(
+                    matches!(&deuxieme[1].1, Examen::Impossible(r) if r == raison),
+                    "{raison}"
+                );
+                assert_eq!(appels, 1, "{raison}");
+            } else {
+                assert!(matches!(&deuxieme[1].1, Examen::Trouve(_)), "{raison}");
+                assert_eq!(appels, 2, "{raison}");
+            }
         }
     }
 }

@@ -156,10 +156,23 @@ pub(crate) fn calculer(fichier: &Path, algo: Algo) -> Result<String, String> {
             // PowerShell 5.1 lit mal « \\?\ » : la forme courte, seulement quand elle désigne sans doute possible le
             // même fichier (`sans_verbatim`) ; sinon le chemin tel quel, qui échoue plutôt que de lire un autre fichier.
             let texte = fichier.to_string_lossy();
-            let texte = crate::protection::antivirus::sans_verbatim(&texte).unwrap_or_else(|| texte.to_string());
+            let court = crate::protection::antivirus::sans_verbatim(&texte);
+            // Gardé en « \?\ », le chemin a de quoi faire échouer PowerShell : le dire plutôt qu'un échec muet.
+            let garde = court.is_none() && texte.starts_with(r"\\?\");
+            let texte = court.unwrap_or_else(|| texte.to_string());
             let chemin = crate::commande::ps_texte(&texte);
             crate::machine::windows::ps(&format!("(Get-FileHash -Algorithm {nom} -LiteralPath '{chemin}').Hash"))
-                .ok_or_else(|| tr!("Get-FileHash a échoué", "Get-FileHash failed").to_string())?
+                .ok_or_else(|| {
+                    if garde {
+                        tr!(
+                            "Get-FileHash a échoué : nom de fichier que PowerShell ne peut pas ouvrir (point ou espace final, nom réservé ou chemin trop long)",
+                            "Get-FileHash failed: a file name PowerShell cannot open (trailing dot or space, reserved name or path too long)"
+                        )
+                    } else {
+                        tr!("Get-FileHash a échoué", "Get-FileHash failed")
+                    }
+                    .to_string()
+                })?
         }
     };
     // Lu ici, sans md5sum, sha256sum, md5 ni shasum : rien à lancer, et rien qu'un faux programme du PATH (le dossier

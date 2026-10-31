@@ -594,21 +594,25 @@ fn defender(portee: &Portee) {
             Some((d.as_path(), true))
         }
     };
-    let debut = chrono::Utc::now().naive_utc();
+    let mut sondes = VraiDefender {
+        mpcmd: &mpcmd,
+        analyse: commande,
+        delai: DELAI_MPCMDRUN,
+        progression: true,
+    };
     // La sortie est lue, pas seulement le code : MpCmdRun rend 0 aussi quand il a trouvé une menace et l'a retirée.
-    let Some(r) = avec_progression(|| crate::commande::lancer(&mut commande, DELAI_MPCMDRUN)) else {
+    let Some(analyse) = analyse_confirmee(&mut sondes, cible, &mut Memoire::default()) else {
         trp!(
             "  Defender n'a pas pu aller au bout de l'analyse (antivirus tiers actif ?).",
             "  Defender could not finish the scan (third-party antivirus active?)."
         );
         return;
     };
-    let sortie = format!("{}\n{}", r.sortie, r.erreurs);
     // Son compte rendu, tel qu'il l'a écrit : le chemin y vient de qui a nommé le dossier, d'où `affichable`.
-    for l in sortie.lines().filter(|l| !propre(l).is_empty()) {
+    for l in analyse.sortie.lines().filter(|l| !propre(l).is_empty()) {
         println!("  {GRIS}{}{RESET}", affichable(l.trim_end()));
     }
-    let (verdict, detections) = confirmer_aupres_de_defender(lire_reponse(r.code, &sortie), debut, cible);
+    let (verdict, detections) = (analyse.verdict, analyse.detections);
     let attention = |texte: &str| println!("  {}● {texte}{RESET}", couleur(Niveau::Moyen));
     match verdict {
         Verdict::Sain => trp!(
@@ -627,10 +631,15 @@ fn defender(portee: &Portee) {
                 "Defender says it found nothing, but its exclusions cover, wholly or partly, what it had to scan: {liste}. Whatever falls under them was not looked at, which is suspicious if nobody meant it. Nothing is guaranteed."
             ));
         }
-        Verdict::Inverifiable => attention(tr!(
-            "Defender dit n'avoir rien trouvé, mais Vanguard n'a pas pu lire ses exclusions ou ses détections pour le confirmer (Windows cache les exclusions sans droits administrateur) : rien ne garantit qu'il a tout regardé. Ses détections restent dans Sécurité Windows > Protection contre les virus et menaces > Historique de protection.",
-            "Defender says it found nothing, but Vanguard could not read its exclusions or detections to confirm it (Windows hides exclusions without administrator rights): nothing guarantees it looked at everything. Its detections remain in Windows Security > Virus & threat protection > Protection history."
-        )),
+        Verdict::Inverifiable => {
+            attention(tr!(
+                "Defender dit n'avoir rien trouvé, mais Vanguard n'a pas pu lire ses exclusions ou ses détections pour le confirmer (Windows cache les exclusions sans droits administrateur) : rien ne garantit qu'il a tout regardé. Ses détections restent dans Sécurité Windows > Protection contre les virus et menaces > Historique de protection.",
+                "Defender says it found nothing, but Vanguard could not read its exclusions or detections to confirm it (Windows hides exclusions without administrator rights): nothing guarantees it looked at everything. Its detections remain in Windows Security > Virus & threat protection > Protection history."
+            ));
+            if analyse.sans_droits {
+                prevenir_sans_droits();
+            }
+        }
         // Pas de « ✔ » sans la phrase de résultat : la sortie d'une analyse rapide ou complète n'est pas documentée.
         Verdict::Muette => trp!(
             "  Defender a fini (code 0, qui veut aussi dire « menace trouvée et retirée »), mais son compte rendu n'a pas été reconnu : rien n'est conclu. Ses détections restent dans Sécurité Windows > Protection contre les virus et menaces > Historique de protection.",
@@ -700,23 +709,339 @@ fn montrer_menaces_defender(noms: &[String], detections: &[Detection]) {
 /// quarantaine ce qu'il reconnaît.
 #[cfg(windows)]
 pub(crate) fn examiner(fichier: &std::path::Path) -> Examen {
+    examiner_avec(fichier, &mut Memoire::default())
+}
+
+/// Un examinateur pour une série de fichiers (les pièces d'un courriel) : les exclusions lues une fois avant la
+/// série puis réunies, et ce que Windows refuse de montrer retenu au lieu d'être redemandé à chaque pièce.
+#[cfg(windows)]
+pub(crate) fn examinateur() -> impl FnMut(&std::path::Path) -> Examen {
+    let mut memoire = Memoire::default();
+    move |fichier: &std::path::Path| examiner_avec(fichier, &mut memoire)
+}
+
+/// `examiner` avec ce qui a déjà été lu pour la même série (`memoire`).
+#[cfg(windows)]
+fn examiner_avec(fichier: &std::path::Path, memoire: &mut Memoire) -> Examen {
     let mpcmd = mpcmdrun();
     if !mpcmd.is_file() {
         return Examen::Impossible(raison_absent().into());
     }
-    let debut = chrono::Utc::now().naive_utc();
-    let Some(r) = crate::commande::lancer(
-        Command::new(&mpcmd)
-            .args(["-Scan", "-ScanType", "3", "-File"])
-            .arg(chemin_pour_mpcmdrun(fichier)),
-        900,
-    ) else {
-        return Examen::Impossible(tr!("Defender n'a pas pu aller au bout", "Defender could not finish").into());
+    let mut analyse = Command::new(&mpcmd);
+    analyse
+        .args(["-Scan", "-ScanType", "3", "-File"])
+        .arg(chemin_pour_mpcmdrun(fichier));
+    let mut sondes = VraiDefender {
+        mpcmd: &mpcmd,
+        analyse,
+        delai: 900,
+        progression: false,
     };
-    // La même lecture que l'analyse : sortie et erreurs.
-    let sortie = format!("{}\n{}", r.sortie, r.erreurs);
-    let (verdict, _) = confirmer_aupres_de_defender(lire_reponse(r.code, &sortie), debut, Some((fichier, false)));
-    examen_de(verdict, &sortie, std::fs::symlink_metadata(fichier).is_ok())
+    let Some(a) = analyse_confirmee(&mut sondes, Some((fichier, false)), memoire) else {
+        return Examen::Impossible(raison_injoignable().into());
+    };
+    if a.sans_droits {
+        prevenir_sans_droits();
+    }
+    examen_de(a.verdict, &a.sortie, std::fs::symlink_metadata(fichier).is_ok())
+}
+
+/// Sans droits administrateur, dit une seule fois par lancement (pas à chaque pièce d'un courriel) pourquoi les
+/// « rien trouvé » de Defender restent invérifiables, et comment avoir un verdict complet.
+#[cfg(windows)]
+fn prevenir_sans_droits() {
+    static DIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !DIT.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        println!(
+            "  {}● {}{RESET}",
+            couleur(Niveau::Moyen),
+            tr!(
+                "Sans droits administrateur, Windows cache à Vanguard les exclusions de Defender (et parfois ses détections) : ses « rien trouvé » ne peuvent pas être confirmés et restent « impossibles à vérifier ». Pour un verdict complet, relancez Vanguard en administrateur (clic droit > Exécuter en tant qu'administrateur).",
+                "Without administrator rights, Windows hides Defender's exclusions (and sometimes its detections) from Vanguard: its “nothing found” cannot be confirmed and stays “impossible to verify”. For a full verdict, run Vanguard as administrator (right-click > Run as administrator)."
+            )
+        );
+    }
+}
+
+/// Ce que Vanguard demande à Defender autour d'une analyse, dans l'ordre d'`analyse_confirmee` : sous Windows,
+/// `VraiDefender` ; dans les essais, un double qui joue la séquence entière sans Windows.
+#[cfg(any(windows, test))]
+trait Sondes {
+    /// Les exclusions de chemin et d'extension, telles que lues (« N/A: Must be an administrator… » sans droits
+    /// administrateur) ; `None` si ni WMI ni PowerShell ne répondent.
+    fn exclusions(&mut self) -> Option<[Vec<String>; 2]>;
+    /// `MpCmdRun -CheckExclusion -Path <cible>` (`exclusion_selon_mpcmdrun`) : le moteur lui-même, à cet instant.
+    fn cible_exclue(&mut self, cible: &std::path::Path) -> Option<bool>;
+    /// L'analyse : son code et sa sortie (erreurs comprises) ; `None` si MpCmdRun n'a pas pu aller au bout.
+    fn analyser(&mut self) -> Option<(Option<i32>, String)>;
+    /// Toutes les détections notées par Defender ; `None` si illisibles.
+    fn detections(&mut self) -> Option<Vec<Detection>>;
+    /// L'heure du début de l'analyse, en temps universel.
+    fn maintenant(&self) -> chrono::NaiveDateTime;
+    /// Vanguard a-t-il les droits administrateur ?
+    fn eleve(&self) -> bool;
+    /// Les variables d'environnement qu'une exclusion peut contenir, avec leurs valeurs (`variables_de_defender`).
+    fn variables(&self) -> Vec<(&'static str, Vec<String>)>;
+}
+
+/// Defender pour de vrai : MpCmdRun (le chemin sûr de `mpcmdrun`), WMI ou PowerShell.
+#[cfg(windows)]
+struct VraiDefender<'a> {
+    mpcmd: &'a std::path::Path,
+    /// La commande d'analyse, prête.
+    analyse: Command,
+    delai: u64,
+    /// Une ligne par minute pendant l'analyse (une analyse de dossier, pas un fichier).
+    progression: bool,
+}
+
+#[cfg(windows)]
+impl Sondes for VraiDefender<'_> {
+    fn exclusions(&mut self) -> Option<[Vec<String>; 2]> {
+        crate::machine::windows::exclusions::listes().map(|[chemins, _, extensions]| [chemins, extensions])
+    }
+
+    fn cible_exclue(&mut self, cible: &std::path::Path) -> Option<bool> {
+        let r = crate::commande::lancer(
+            Command::new(self.mpcmd)
+                .args(["-CheckExclusion", "-Path"])
+                .arg(chemin_pour_mpcmdrun(cible)),
+            60,
+        )?;
+        exclusion_selon_mpcmdrun(r.code, &format!("{}\n{}", r.sortie, r.erreurs))
+    }
+
+    fn analyser(&mut self) -> Option<(Option<i32>, String)> {
+        let (commande, delai) = (&mut self.analyse, self.delai);
+        let r = if self.progression {
+            avec_progression(|| crate::commande::lancer(commande, delai))
+        } else {
+            crate::commande::lancer(commande, delai)
+        }?;
+        // La même lecture partout : sortie et erreurs.
+        Some((r.code, format!("{}\n{}", r.sortie, r.erreurs)))
+    }
+
+    fn detections(&mut self) -> Option<Vec<Detection>> {
+        detections_de_defender()
+    }
+
+    fn maintenant(&self) -> chrono::NaiveDateTime {
+        chrono::Utc::now().naive_utc()
+    }
+
+    fn eleve(&self) -> bool {
+        crate::machine::windows::processus::eleve()
+    }
+
+    fn variables(&self) -> Vec<(&'static str, Vec<String>)> {
+        let d = crate::machine::windows::environnement::dossiers();
+        let texte = |p: Option<&'static PathBuf>| p.and_then(|p| p.to_str());
+        variables_de_defender(&Racines {
+            windows: d.windows.to_str().filter(|w| !w.is_empty()),
+            program_files: texte(d.program_files.as_ref()),
+            program_files_x86: texte(d.program_files_x86.as_ref()),
+            communs: texte(d.fichiers_communs.as_ref()),
+            program_data: texte(d.program_data.as_ref()),
+            profil: texte(d.profil.as_ref()),
+            appdata: texte(d.appdata.as_ref()),
+            local: texte(d.appdata_local.as_ref()),
+        })
+    }
+}
+
+/// Ce qui ne se relit pas à chaque fichier d'une même série (les pièces d'un courriel) : les exclusions vues, et ce
+/// que Windows refuse de montrer, qui ne change pas tant que Vanguard tourne.
+#[cfg(any(windows, test))]
+#[derive(Default)]
+struct Memoire {
+    /// Chemins et extensions exclus, réunis sur toutes les lectures : une exclusion vue avant une analyse puis retirée
+    /// pendant couvre encore son résultat (Defender peut l'appliquer encore quelques secondes : passe 5 de l'essai
+    /// T10).
+    vues: [Vec<String>; 2],
+    exclusions: Lecture,
+    /// Détections illisibles : pas relues.
+    detections_illisibles: bool,
+}
+
+/// Où en est la lecture des exclusions d'une série.
+#[cfg(any(windows, test))]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum Lecture {
+    #[default]
+    PasEncore,
+    Lues,
+    /// Cachées (« N/A », sans droits administrateur) : pas relues.
+    Cachees,
+    /// Illisibles (ni WMI ni PowerShell) : pas relues.
+    Illisibles,
+}
+
+#[cfg(any(windows, test))]
+impl Memoire {
+    /// Lit les exclusions et les ajoute à celles déjà vues ; rien si Windows les a déjà refusées.
+    fn lire(&mut self, sondes: &mut impl Sondes) {
+        if matches!(self.exclusions, Lecture::Cachees | Lecture::Illisibles) {
+            return;
+        }
+        match sondes.exclusions() {
+            None => self.exclusions = Lecture::Illisibles,
+            Some(l) if l.iter().flatten().any(|x| x.trim().starts_with("N/A")) => self.exclusions = Lecture::Cachees,
+            Some(listes) => {
+                self.exclusions = Lecture::Lues;
+                for (vues, lues) in self.vues.iter_mut().zip(listes) {
+                    for x in lues {
+                        if !vues.contains(&x) {
+                            vues.push(x);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Les exclusions réunies ; `None` si l'une des lectures a été refusée ou a échoué.
+    fn listes(&self) -> Option<&[Vec<String>; 2]> {
+        (self.exclusions == Lecture::Lues).then_some(&self.vues)
+    }
+}
+
+/// Une analyse confirmée auprès de Defender.
+#[cfg(any(windows, test))]
+struct Analyse {
+    verdict: Verdict,
+    /// Les détections de cette analyse, à montrer.
+    detections: Vec<Detection>,
+    /// Ce qu'a écrit MpCmdRun (sortie et erreurs).
+    sortie: String,
+    /// Invérifiable faute de droits administrateur : relancer Vanguard en administrateur donnerait un verdict.
+    sans_droits: bool,
+}
+
+/// Une analyse de Defender, de bout en bout. Avant : les exclusions (une fois par série) et, pour une cible lisible,
+/// `MpCmdRun -CheckExclusion` à cet instant. Puis l'analyse, lue par `lire_reponse`, et les détections notées depuis
+/// son début. Un « sain » n'en reste un que confronté aux exclusions relues après l'analyse et réunies à celles d'avant
+/// (une exclusion retirée juste avant l'analyse peut encore jouer, une autre peut être posée pendant), puis à
+/// `confirmer`. `cible` : `(chemin, est un dossier)`, `None` pour une analyse rapide ou complète. `None` si MpCmdRun
+/// n'a pas pu aller au bout.
+#[cfg(any(windows, test))]
+fn analyse_confirmee(
+    sondes: &mut impl Sondes,
+    cible: Option<(&std::path::Path, bool)>,
+    memoire: &mut Memoire,
+) -> Option<Analyse> {
+    // Un chemin illisible en Unicode ne se compare pas : piégé, et toutes les détections de l'analyse comptent (fausse
+    // alerte plutôt que silence).
+    let texte = cible.and_then(|(c, _)| c.to_str());
+    let piegee = cible.is_some() && texte.is_none_or(|t| t.chars().any(char::is_control));
+    if memoire.exclusions == Lecture::PasEncore {
+        memoire.lire(sondes);
+    }
+    let verification = match cible {
+        Some((c, _)) if !piegee => sondes.cible_exclue(c),
+        _ => None,
+    };
+    let debut = sondes.maintenant();
+    let (code, sortie) = sondes.analyser()?;
+    let verdict = lire_reponse(code, &sortie);
+    let detections = if memoire.detections_illisibles {
+        None
+    } else {
+        let toutes = sondes.detections();
+        memoire.detections_illisibles = toutes.is_none();
+        toutes.and_then(|t| de_cette_analyse(t, debut, texte))
+    };
+    // Rien à confirmer : `confirmer` ne regarde les exclusions que pour un « sain » sans détection, d'une cible lisible
+    // ou sans cible.
+    let exclusions = if verdict != Verdict::Sain || piegee || detections.as_ref().is_some_and(|d| !d.is_empty()) {
+        Some(Vec::new())
+    } else {
+        memoire.lire(sondes);
+        let cible = cible.and_then(|(_, dossier)| texte.map(|t| (t, dossier)));
+        couverture(cible, verification, memoire.listes(), &sondes.variables())
+    };
+    let verdict = confirmer(verdict, detections.as_deref(), exclusions, piegee);
+    let sans_droits = verdict == Verdict::Inverifiable && (memoire.exclusions == Lecture::Cachees || !sondes.eleve());
+    Some(Analyse {
+        verdict,
+        detections: detections.unwrap_or_default(),
+        sortie,
+        sans_droits,
+    })
+}
+
+/// Les exclusions qui couvrent ce qu'une analyse devait regarder, prêtes à montrer ; `None` si rien ne permet de le
+/// savoir. Sans cible (analyse rapide ou complète) : toute exclusion de chemin ou d'extension, qui en retire forcément
+/// une partie. Pour une cible : celles de `exclusions_qui_couvrent`, et la cible elle-même quand MpCmdRun la dit exclue
+/// (`verification`). Listes cachées (sans droits administrateur) : la réponse de MpCmdRun suffit pour un fichier ;
+/// pour un dossier, elle ne dit rien d'un sous-dossier ou d'une extension exclus, donc rien n'est conclu.
+#[cfg(any(windows, test))]
+fn couverture(
+    cible: Option<(&str, bool)>,
+    verification: Option<bool>,
+    listes: Option<&[Vec<String>; 2]>,
+    variables: &[(&str, Vec<String>)],
+) -> Option<Vec<String>> {
+    let Some((cible, dossier)) = cible else {
+        let [chemins, extensions] = listes?;
+        let chemins = chemins
+            .iter()
+            .map(|c| c.trim())
+            .filter(|c| !c.is_empty())
+            .map(affichable);
+        let extensions = extensions
+            .iter()
+            .map(|e| e.trim())
+            .filter(|e| !e.is_empty())
+            .map(|e| format!("*.{}", affichable(e.trim_start_matches(['*', '.']))));
+        return Some(chemins.chain(extensions).collect());
+    };
+    let mut couvrent = match listes {
+        Some([chemins, extensions]) => exclusions_qui_couvrent(cible, dossier, chemins, extensions, variables)?,
+        None if verification == Some(true) || (!dossier && verification == Some(false)) => Vec::new(),
+        None => return None,
+    };
+    if verification == Some(true) {
+        couvrent.insert(
+            0,
+            affichable(&sans_verbatim(cible).unwrap_or_else(|| cible.to_string())),
+        );
+    }
+    Some(couvrent)
+}
+
+/// La réponse de `MpCmdRun -CheckExclusion -Path` (documentation de Microsoft) : « C:\x [\Device\…\x] is excluded.
+/// Exit code is 0. » ou « … is not excluded. Exit code is 1. ». Seule la fin de la ligne compte : le chemin, devant,
+/// vient de qui a nommé le fichier. Une ligne « excluded » suffit (prudence) ; « non exclue » demande que toutes les
+/// lignes de résultat le disent et le code 1. `None` pour toute autre réponse (refus sans droits, plateforme d'avant
+/// décembre 2021, format inconnu).
+#[cfg(any(windows, test))]
+fn exclusion_selon_mpcmdrun(code: Option<i32>, sortie: &str) -> Option<bool> {
+    let resultats: Vec<bool> = sortie
+        .lines()
+        .map(propre)
+        .filter_map(|l| {
+            let l = l
+                .strip_suffix(" Exit code is 0.")
+                .or_else(|| l.strip_suffix(" Exit code is 1."))
+                .unwrap_or(l)
+                .trim_end();
+            if l.ends_with(" is not excluded.") {
+                Some(false)
+            } else if l.ends_with(" is excluded.") {
+                Some(true)
+            } else {
+                None
+            }
+        })
+        .collect();
+    if resultats.contains(&true) {
+        Some(true)
+    } else if !resultats.is_empty() && code == Some(1) {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 /// Ce que dit une réponse de MpCmdRun, lue une seule fois pour l'analyse (`defender`) et pour un fichier (`examiner`).
@@ -844,27 +1169,68 @@ fn date_cim(date: &str) -> Option<chrono::NaiveDateTime> {
     locale.checked_sub_signed(chrono::Duration::minutes(decalage))
 }
 
-/// Le chemin d'une ressource de détection : « file:_C:\x\a.exe » → « C:\x\a.exe », « containerfile:_C:\x.zip » →
-/// « C:\x.zip », et la partie avant « -> » (un fichier dans une archive). Inchangée sans préfixe.
+/// Le chemin d'une ressource de détection : « file:_C:\x\a.exe » → « C:\x\a.exe », « containerfile:_C:\x.zip->b.exe »
+/// → « C:\x.zip » (un fichier dans une archive : l'archive). Seule une ressource d'archive est coupée à « -> » : un
+/// chemin de fichier peut en contenir un (nom posé hors de Win32, par WSL ou l'API native). Inchangée sans préfixe.
 #[cfg(any(windows, test))]
 fn chemin_de_ressource(ressource: &str) -> &str {
-    let chemin = match ressource.split_once(":_") {
+    match ressource.split_once(":_") {
+        Some((sorte, chemin)) if sorte.eq_ignore_ascii_case("containerfile") => {
+            chemin.split("->").next().unwrap_or(chemin)
+        }
         Some((sorte, chemin)) if !sorte.is_empty() && sorte.chars().all(|c| c.is_ascii_alphanumeric()) => chemin,
         _ => ressource,
-    };
-    chemin.split("->").next().unwrap_or(chemin)
+    }
 }
 
-/// Un chemin comparable à un autre : sans « \\?\ » (ni « \\?\UNC\ »), « / » lus « \ », sans « \ » final, en
-/// minuscules (NTFS ne distingue pas la casse). Pour comparer seulement : jamais pour agir sur un fichier.
+/// La ressource d'une détection est-elle `cible`, ou dedans ? Pour une archive, chaque coupe à un « -> » est essayée,
+/// et le chemin entier : l'archive peut être dans un dossier dont le nom contient « -> ».
+#[cfg(any(windows, test))]
+fn ressource_sous_cible(ressource: &str, cible: &str) -> bool {
+    if sous_cible(chemin_de_ressource(ressource), cible) {
+        return true;
+    }
+    let Some((sorte, chemin)) = ressource.split_once(":_") else {
+        return false;
+    };
+    sorte.eq_ignore_ascii_case("containerfile")
+        && (sous_cible(chemin, cible)
+            || chemin
+                .match_indices("->")
+                .any(|(i, _)| chemin.get(..i).is_some_and(|avant| sous_cible(avant, cible))))
+}
+
+/// Un chemin comparable à un autre, la même forme pour la cible et pour une exclusion : sans « \\?\ » (ni
+/// « \\?\UNC\ »), « / » lus « \ », sans « \ » doublé ni final, « . » retirés et « .. » résolus (jamais sous la
+/// racine : le lecteur, ou le serveur et le partage), en majuscules Unicode (NTFS compare par sa table de majuscules,
+/// plus proche de `to_uppercase` que de `to_lowercase` : « İ »). Limites connues : un nom court 8.3 (PROGRA~1), un
+/// lecteur réseau mappé et une jonction ou un lien ne se ramènent pas au chemin réel ; les résoudre demanderait
+/// d'ouvrir le fichier. Pour comparer seulement : jamais pour agir sur un fichier.
 #[cfg(any(windows, test))]
 fn pour_comparer(chemin: &str) -> String {
     let c = chemin.trim().replace('/', "\\");
-    let c = match c.strip_prefix(r"\\?\UNC\") {
-        Some(reseau) => format!(r"\\{reseau}"),
-        None => c.strip_prefix(r"\\?\").map_or_else(|| c.clone(), str::to_string),
+    let (tete, reste) = match c.strip_prefix(r"\\?\UNC\") {
+        Some(reseau) => (r"\\", reseau),
+        None => match c.strip_prefix(r"\\?\") {
+            Some(local) => ("", local),
+            None => c.strip_prefix(r"\\").map_or(("", c.as_str()), |reseau| (r"\\", reseau)),
+        },
     };
-    c.trim_end_matches('\\').to_lowercase()
+    // Ce que « .. » ne peut pas retirer : le lecteur (« C: »), ou le serveur et le partage.
+    let plancher = if tete.is_empty() { 1 } else { 2 };
+    let mut parties: Vec<&str> = Vec::new();
+    for partie in reste.split('\\') {
+        match partie {
+            "" | "." => {}
+            ".." => {
+                if parties.len() > plancher {
+                    parties.pop();
+                }
+            }
+            _ => parties.push(partie),
+        }
+    }
+    format!("{tete}{}", parties.join("\\")).to_uppercase()
 }
 
 /// `chemin` est-il `cible`, ou dedans ? (Comparés par `pour_comparer`.)
@@ -872,6 +1238,113 @@ fn pour_comparer(chemin: &str) -> String {
 fn sous_cible(chemin: &str, cible: &str) -> bool {
     let (p, c) = (pour_comparer(chemin), pour_comparer(cible));
     !c.is_empty() && (p == c || p.starts_with(&format!("{c}\\")))
+}
+
+/// Les dossiers d'où Defender lit les variables d'une exclusion (`variables_de_defender`), tirés des dossiers connus
+/// (`environnement::dossiers`, jamais de l'environnement du processus, que qui lance Vanguard choisit).
+#[cfg(any(windows, test))]
+#[derive(Default)]
+struct Racines<'a> {
+    windows: Option<&'a str>,
+    program_files: Option<&'a str>,
+    program_files_x86: Option<&'a str>,
+    communs: Option<&'a str>,
+    program_data: Option<&'a str>,
+    /// Le profil du compte qui lance Vanguard.
+    profil: Option<&'a str>,
+    appdata: Option<&'a str>,
+    local: Option<&'a str>,
+}
+
+/// Ce que valent les variables d'une exclusion pour Defender. Il tourne sous le compte SYSTEM et les développe là
+/// (documentation de Microsoft) : %USERPROFILE%, %APPDATA%, %LOCALAPPDATA% désignent le profil de SYSTEM, %TEMP% et
+/// %TMP% « C:\Windows\Temp ». Le dossier du compte qui lance Vanguard compte aussi, par prudence : une version qui les
+/// développerait autrement ne doit pas faire passer une exclusion pour étrangère. Une variable absente d'ici
+/// (%PUBLIC%, %CommonProgramFiles(x86)%, toute autre) est inconnue : elle couvre tout (`exclusions_qui_couvrent`).
+#[cfg(any(windows, test))]
+fn variables_de_defender(r: &Racines) -> Vec<(&'static str, Vec<String>)> {
+    let net = |x: Option<&str>| {
+        x.map(|x| x.trim_end_matches('\\').to_string())
+            .filter(|x| !x.is_empty())
+    };
+    let windows = net(r.windows);
+    let sous = |base: &Option<String>, s: &str| base.as_ref().map(|b| format!(r"{b}\{s}"));
+    let systeme = sous(&windows, r"System32\config\systemprofile");
+    let lecteur = windows
+        .as_deref()
+        .and_then(|w| w.get(..2))
+        .filter(|l| l.ends_with(':'))
+        .map(str::to_string);
+    let temp = [sous(&windows, "Temp"), sous(&net(r.local), "Temp")];
+    let toutes: [(&'static str, [Option<String>; 2]); 15] = [
+        ("USERPROFILE", [systeme.clone(), net(r.profil)]),
+        ("APPDATA", [sous(&systeme, r"AppData\Roaming"), net(r.appdata)]),
+        ("LOCALAPPDATA", [sous(&systeme, r"AppData\Local"), net(r.local)]),
+        ("TEMP", temp.clone()),
+        ("TMP", temp),
+        ("PROGRAMFILES", [net(r.program_files), None]),
+        ("PROGRAMW6432", [net(r.program_files), None]),
+        ("PROGRAMFILES(X86)", [net(r.program_files_x86), None]),
+        ("COMMONPROGRAMFILES", [net(r.communs), None]),
+        ("PROGRAMDATA", [net(r.program_data), None]),
+        ("ALLUSERSPROFILE", [net(r.program_data), None]),
+        ("SYSTEMROOT", [windows.clone(), None]),
+        ("WINDIR", [windows, None]),
+        ("SYSTEMDRIVE", [lecteur, None]),
+        ("HOMEDRIVE", [None, None]),
+    ];
+    toutes
+        .into_iter()
+        .map(|(nom, valeurs)| {
+            let mut v: Vec<String> = Vec::new();
+            for x in valeurs.into_iter().flatten() {
+                if !v.contains(&x) {
+                    v.push(x);
+                }
+            }
+            (nom, v)
+        })
+        .filter(|(_, v)| !v.is_empty())
+        .collect()
+}
+
+/// Les formes d'un chemin exclu une fois ses variables connues développées (`variables`, une forme par valeur
+/// possible ; 64 au plus, au-delà la variable reste telle quelle), sans la condition d'une exclusion contextuelle
+/// (« C:\x\:{PathType:folder} »). Une variable inconnue, ou un « % » seul, reste tel quel : son « % » arrête le début
+/// fixe de l'exclusion, qui couvre alors tout ce qui commence pareil (prudence).
+#[cfg(any(windows, test))]
+fn formes_developpees(exclu: &str, variables: &[(&str, Vec<String>)]) -> Vec<String> {
+    let exclu = exclu.find(":{").and_then(|i| exclu.get(..i)).unwrap_or(exclu);
+    let mut formes = vec![String::new()];
+    let mut reste = exclu;
+    while let Some(i) = reste.find('%') {
+        for f in &mut formes {
+            f.push_str(reste.get(..i).unwrap_or_default());
+        }
+        let apres = reste.get(i + 1..).unwrap_or_default();
+        let Some(j) = apres.find('%') else {
+            reste = reste.get(i..).unwrap_or_default();
+            break;
+        };
+        let nom = apres.get(..j).unwrap_or_default();
+        let valeurs = variables
+            .iter()
+            .find(|(v, _)| v.eq_ignore_ascii_case(nom))
+            .map(|(_, x)| x)
+            .filter(|x| !x.is_empty() && x.len().saturating_mul(formes.len()) <= 64);
+        formes = match valeurs {
+            Some(valeurs) => formes
+                .iter()
+                .flat_map(|f| valeurs.iter().map(move |v| format!("{f}{v}")))
+                .collect(),
+            None => formes.into_iter().map(|f| format!("{f}%{nom}%")).collect(),
+        };
+        reste = apres.get(j + 1..).unwrap_or_default();
+    }
+    for f in &mut formes {
+        f.push_str(reste);
+    }
+    formes
 }
 
 /// Les détections de cette analyse : notées depuis son début (`debut`, temps universel, deux secondes de marge pour
@@ -887,9 +1360,8 @@ fn de_cette_analyse(
     let seuil = debut.checked_sub_signed(chrono::Duration::seconds(2))?;
     let mut gardees = Vec::new();
     for d in toutes {
-        let concernee = cible.is_none_or(|c| {
-            d.ressources.is_empty() || d.ressources.iter().any(|r| sous_cible(chemin_de_ressource(r), c))
-        });
+        let concernee =
+            cible.is_none_or(|c| d.ressources.is_empty() || d.ressources.iter().any(|r| ressource_sous_cible(r, c)));
         if !concernee {
             continue;
         }
@@ -904,18 +1376,21 @@ fn de_cette_analyse(
     Some(gardees)
 }
 
-/// Les exclusions de Defender qui couvrent `cible`, prêtes à montrer : un chemin exclu égal à la cible ou parent
-/// d'elle, et pour un dossier aussi un chemin exclu dedans et toute extension exclue (ses fichiers de ce type ne sont
-/// pas regardés) ; pour un fichier, son extension. Un chemin exclu avec une variable (%TEMP%) ou un joker (* ?) ne se
-/// compare pas exactement : il couvre dès que son début fixe est compatible avec la cible (prudence). Les exclusions
-/// de processus ne jouent pas sur une analyse à la demande. `None` : liste cachée (« N/A: Must be an
-/// administrator… », Windows sans droits administrateur), rien à conclure.
+/// Les exclusions de Defender qui couvrent `cible`, prêtes à montrer telles qu'écrites : un chemin exclu égal à la
+/// cible ou parent d'elle, et pour un dossier aussi un chemin exclu dedans et toute extension exclue (ses fichiers de
+/// ce type ne sont pas regardés) ; pour un fichier, son extension. Exclusion et cible passent par la même
+/// normalisation (`pour_comparer`), l'exclusion après le développement de ses variables connues (`variables` :
+/// `formes_developpees`). Ce qui reste variable inconnue ou joker (% * ?) ne se compare pas exactement : l'exclusion
+/// couvre dès que son début fixe est compatible avec la cible (prudence). Les exclusions de processus ne jouent pas
+/// sur une analyse à la demande. `None` : liste cachée (« N/A: Must be an administrator… », Windows sans droits
+/// administrateur), rien à conclure.
 #[cfg(any(windows, test))]
 fn exclusions_qui_couvrent(
     cible: &str,
     dossier: bool,
     chemins: &[String],
     extensions: &[String],
+    variables: &[(&str, Vec<String>)],
 ) -> Option<Vec<String>> {
     if chemins.iter().chain(extensions).any(|x| x.trim().starts_with("N/A")) {
         return None;
@@ -923,25 +1398,28 @@ fn exclusions_qui_couvrent(
     let c = pour_comparer(cible);
     let mut couvrent = Vec::new();
     for exclu in chemins.iter().filter(|e| !e.trim().is_empty()) {
-        let e = pour_comparer(exclu);
-        let couvre = match e.find(['%', '*', '?']) {
-            Some(i) => {
-                let fixe = e.get(..i).unwrap_or_default();
-                c.starts_with(fixe) || (dossier && fixe.starts_with(c.as_str()))
+        let couvre = formes_developpees(exclu, variables).iter().any(|forme| {
+            let e = pour_comparer(forme);
+            match e.find(['%', '*', '?']) {
+                Some(i) => {
+                    let fixe = e.get(..i).unwrap_or_default();
+                    c.starts_with(fixe) || (dossier && fixe.starts_with(c.as_str()))
+                }
+                // « C:\ » devient « C: » : parent de tout le lecteur.
+                None => c == e || c.starts_with(&format!("{e}\\")) || (dossier && e.starts_with(&format!("{c}\\"))),
             }
-            // « C:\ » devient « c: » : parent de tout le lecteur.
-            None => c == e || c.starts_with(&format!("{e}\\")) || (dossier && e.starts_with(&format!("{c}\\"))),
-        };
+        });
         if couvre {
             couvrent.push(affichable(exclu.trim()));
         }
     }
     let nom = c.rsplit('\\').next().unwrap_or_default();
     for exclue in extensions {
-        let e = exclue.trim().trim_start_matches(['*', '.']).to_lowercase();
-        let couvre = dossier || e.is_empty() || nom.rsplit_once('.').is_some_and(|(_, x)| x == e);
+        let e = exclue.trim().trim_start_matches(['*', '.']);
+        let haute = e.to_uppercase();
+        let couvre = dossier || e.is_empty() || nom.rsplit_once('.').is_some_and(|(_, x)| x == haute);
         if couvre {
-            couvrent.push(format!("*.{}", affichable(&e)));
+            couvrent.push(format!("*.{}", affichable(e)));
         }
     }
     Some(couvrent)
@@ -951,7 +1429,8 @@ fn exclusions_qui_couvrent(
 /// qu'ait écrit MpCmdRun (`detections` : `None` si illisibles). Un « sain » ne le reste que si la cible n'a rien
 /// d'ambigu (`cible_piegee` : un caractère de contrôle, dont le saut de ligne qui découpe la ligne de résultat, ou un
 /// nom illisible en Unicode), qu'aucune exclusion ne la couvre (`exclusions` : celles qui la couvrent, `None` si
-/// illisibles ; vide aussi pour une analyse rapide ou complète, sans cible) et que les détections ont pu être lues.
+/// rien ne permet de le savoir ; pour une analyse rapide ou complète, toutes les exclusions de chemin et d'extension :
+/// `couverture`) et que les détections ont pu être lues.
 #[cfg(any(windows, test))]
 fn confirmer(
     verdict: Verdict,
@@ -982,31 +1461,6 @@ fn confirmer(
         Some(_) if detections.is_some() => Verdict::Sain,
         _ => Verdict::Inverifiable,
     }
-}
-
-/// `confirmer` avec ce que Defender dit lui-même : ses détections depuis `debut`, et ses exclusions pour un « sain »
-/// d'une cible (`(chemin, est un dossier)`). Rend aussi les détections de cette analyse, à montrer.
-#[cfg(windows)]
-fn confirmer_aupres_de_defender(
-    verdict: Verdict,
-    debut: chrono::NaiveDateTime,
-    cible: Option<(&std::path::Path, bool)>,
-) -> (Verdict, Vec<Detection>) {
-    // Un chemin illisible en Unicode ne se compare pas : piégé, et toutes les détections de l'analyse comptent (fausse
-    // alerte plutôt que silence).
-    let texte = cible.and_then(|(c, _)| c.to_str());
-    let piegee = cible.is_some() && texte.is_none_or(|t| t.chars().any(char::is_control));
-    let detections = detections_de_defender().and_then(|t| de_cette_analyse(t, debut, texte));
-    let exclusions = match (cible, texte) {
-        // Rien à confirmer : `confirmer` ne regarde les exclusions que pour un « sain » d'une cible lisible.
-        _ if verdict != Verdict::Sain || piegee => Some(Vec::new()),
-        (None, _) => Some(Vec::new()),
-        (Some((_, dossier)), Some(t)) => crate::machine::windows::exclusions::listes()
-            .and_then(|[chemins, _, extensions]| exclusions_qui_couvrent(t, dossier, &chemins, &extensions)),
-        (Some(_), None) => None,
-    };
-    let verdict = confirmer(verdict, detections.as_deref(), exclusions, piegee);
-    (verdict, detections.unwrap_or_default())
 }
 
 /// Toutes les détections notées par Defender (MSFT_MpThreatDetection, la classe de Get-MpThreatDetection), avec le
@@ -1233,19 +1687,31 @@ fn menaces_mpcmdrun(sortie: &str) -> Vec<String> {
     sortie
         .lines()
         .filter_map(|l| {
-            let (cle, valeur) = l.split_once(':')?;
+            // `propre` : la première ligne peut porter la marque d'ordre des octets (U+FEFF), que `trim` laisse.
+            let (cle, valeur) = propre(l).split_once(':')?;
             (cle.trim() == "Threat").then(|| affichable(valeur.trim()))
         })
         .filter(|v| !v.is_empty())
         .collect()
 }
 
-/// Defender n'a pas pu analyser : un autre antivirus a pris sa place (Defender passif), ou il est cassé. Compilée
-/// partout pour `vaut_pour_tous`.
-fn raison_echec() -> &'static str {
+/// Defender n'a pas pu analyser ce fichier (code de sortie 2 sans menace) : un autre antivirus a pris sa place
+/// (Defender passif), il est cassé, ou ce seul fichier ne se lit pas (verrouillé, refusé). Propre au fichier :
+/// `vaut_pour_tous` ne la reporte jamais.
+#[cfg(any(windows, test))]
+pub(crate) fn raison_echec() -> &'static str {
     tr!(
         "Defender n'a pas pu analyser (antivirus tiers actif ?)",
         "Defender could not scan (third-party antivirus active?)"
+    )
+}
+
+/// MpCmdRun n'a pas pu aller au bout : lancement impossible ou délai dépassé (`commande::lancer` rend `None`), quel
+/// que soit le fichier. Compilée partout pour `vaut_pour_tous`.
+pub(crate) fn raison_injoignable() -> &'static str {
+    tr!(
+        "Defender n'a pas pu aller au bout (lancement impossible ou délai dépassé)",
+        "Defender could not finish (could not start or timed out)"
     )
 }
 
@@ -1268,14 +1734,21 @@ pub(crate) fn raison_absent() -> &'static str {
 }
 
 /// Une raison d'`Examen::Impossible` qui vaut pour tous les fichiers, que `pieces::moteurs` peut reporter sur les
-/// pièces suivantes sans relancer le moteur : le moteur absent, ou (Windows) Defender qui n'analyse rien. Jamais une
-/// raison propre à un fichier (sauté, exclu, illisible, trop gros) ni une réponse muette ou invérifiable : la pièce
+/// pièces suivantes sans relancer le moteur : le moteur absent, ou (Windows) MpCmdRun qui ne se lance pas ou ne
+/// finit pas dans le délai. Jamais une raison propre à un fichier (sauté, exclu, illisible, trop gros), ni un échec
+/// d'analyse (code 2 : ce fichier-là peut être verrouillé), ni une réponse muette ou invérifiable : la pièce
 /// suivante, elle, peut être lue ou détectée.
 pub(crate) fn vaut_pour_tous(raison: &str) -> bool {
-    raison == raison_absent() || (cfg!(windows) && raison == raison_echec())
+    raison == raison_absent() || (cfg!(windows) && raison == raison_injoignable())
 }
 
 /// Un seul fichier, pour « Vérifier un fichier téléchargé » : le résultat de ClamAV, sans rien déplacer.
+/// Un examinateur pour une série de fichiers : ClamAV n'a rien à retenir d'un fichier à l'autre.
+#[cfg(unix)]
+pub(crate) fn examinateur() -> impl FnMut(&std::path::Path) -> Examen {
+    examiner
+}
+
 #[cfg(unix)]
 pub(crate) fn examiner(fichier: &std::path::Path) -> Examen {
     if !preparer() {
@@ -2015,6 +2488,7 @@ fn demarrage_windows() -> (Vec<String>, Vec<String>) {
 #[cfg(test)]
 mod tests_cle {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn volumes_de_lsblk() {
@@ -2253,9 +2727,11 @@ mod tests_cle {
                            Scanning \\\\?\\C:\\Users\\Public\\vg-essai-eicar found no threats.\r\n";
 
     #[test]
-    fn passe_5_found_no_threats_seul_ne_donne_jamais_le_coche() {
+    fn passe_5_le_coche_seulement_avec_exclusions_et_detections_lues() {
         // Passe 5 : « found no threats », code 0, sur un dossier où EICAR était (une exclusion de Defender venait
-        // d'être posée puis retirée sur lui). La phrase seule n'est qu'un « sain » à confirmer, jamais un ✔.
+        // d'être posée puis retirée sur lui). La phrase seule n'est qu'un « sain » à confirmer, jamais un ✔ ; la
+        // séquence entière (exclusions lues avant et après l'analyse) est rejouée par
+        // `passe_5_exclusion_lue_avant_l_analyse_puis_retiree`.
         assert_eq!(lire_reponse(Some(0), PASSE_5), Verdict::Sain);
         let cible = r"\\?\C:\Users\Public\vg-essai-eicar";
         let debut = date_cim("20261031194900.000000+000").unwrap();
@@ -2271,7 +2747,7 @@ mod tests_cle {
             Verdict::Menaces(vec!["Virus:DOS/EICAR_Test_File".into()])
         );
         // Le dossier exclu (lui, un parent, ou tous les fichiers d'une extension) : pas de ✔, « rien n'est garanti ».
-        let exclu = exclusions_qui_couvrent(cible, true, &[r"C:\Users\Public\vg-essai-eicar".into()], &[]);
+        let exclu = exclusions_qui_couvrent(cible, true, &[r"C:\Users\Public\vg-essai-eicar".into()], &[], &[]);
         assert_eq!(
             confirmer(lire_reponse(Some(0), PASSE_5), Some(&[]), exclu, false),
             Verdict::Exclue(vec![r"C:\Users\Public\vg-essai-eicar".into()])
@@ -2281,6 +2757,7 @@ mod tests_cle {
             cible,
             true,
             &["N/A: Must be an administrator to view exclusions".into()],
+            &[],
             &[],
         );
         assert_eq!(
@@ -2307,13 +2784,13 @@ mod tests_cle {
             ..eicar
         };
         let rien = de_cette_analyse(vec![avant], debut, Some(cible)).unwrap();
-        let aucune = exclusions_qui_couvrent(cible, true, &[r"D:\SteamLibrary".into()], &["vmdk".into()]);
+        let aucune = exclusions_qui_couvrent(cible, true, &[r"D:\SteamLibrary".into()], &["vmdk".into()], &[]);
         assert_eq!(
             aucune,
             Some(vec!["*.vmdk".into()]),
             "toute extension exclue couvre un dossier"
         );
-        let aucune = exclusions_qui_couvrent(cible, true, &[r"D:\SteamLibrary".into()], &[]);
+        let aucune = exclusions_qui_couvrent(cible, true, &[r"D:\SteamLibrary".into()], &[], &[]);
         assert_eq!(
             confirmer(lire_reponse(Some(0), PASSE_5), Some(&rien), aucune, false),
             Verdict::Sain
@@ -2446,6 +2923,18 @@ mod tests_cle {
         assert!(sous_cible(r"\\nas\p\a", r"\\?\UNC\nas\p"));
         assert!(!sous_cible(r"C:\xy\a.exe", r"C:\x"));
         assert!(!sous_cible(r"C:\x\a.exe", ""));
+        // Relecture des correctifs T10, BAS-3 : seule une ressource d'archive est coupée à « -> ».
+        assert_eq!(
+            chemin_de_ressource(r"file:_C:\x->y\dir\eicar.com"),
+            r"C:\x->y\dir\eicar.com"
+        );
+        assert_eq!(chemin_de_ressource(r"CONTAINERFILE:_C:\x\a.zip->b.exe"), r"C:\x\a.zip");
+        assert!(ressource_sous_cible(r"file:_C:\x->y\dir\eicar.com", r"C:\x->y\dir"));
+        assert!(ressource_sous_cible(r"containerfile:_C:\x->y\a.zip->b.exe", r"C:\x->y"));
+        assert!(ressource_sous_cible(r"containerfile:_C:\x\a.zip->b.exe", r"C:\x"));
+        assert!(!ressource_sous_cible(r"containerfile:_D:\x\a.zip->b.exe", r"C:\x"));
+        assert!(!ressource_sous_cible(r"file:_C:\x->y\eicar.com", r"C:\x"));
+        assert!(!ressource_sous_cible("process:_pid:42", r"C:\x"));
         let debut = date_cim("20261031194900.000000+000").unwrap();
         let det = |date: &str, ressource: &str| Detection {
             nom: ressource.into(),
@@ -2484,7 +2973,7 @@ mod tests_cle {
     fn exclusions_qui_couvrent_la_cible() {
         let v = |l: &[&str]| l.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
         let c = |cible: &str, dossier: bool, chemins: &[&str], ext: &[&str]| {
-            exclusions_qui_couvrent(cible, dossier, &v(chemins), &v(ext))
+            exclusions_qui_couvrent(cible, dossier, &v(chemins), &v(ext), &[])
         };
         // Elle-même, un parent, le lecteur entier ; « \\?\ » ou non, casse ou « \ » final (relecture T10, point 6).
         for exclu in [
@@ -2503,7 +2992,7 @@ mod tests_cle {
         assert_eq!(c(r"C:\x", true, &[r"C:\x\cache"], &[]), Some(v(&[r"C:\x\cache"])));
         assert_eq!(c(r"C:\x\a.exe", false, &[r"C:\x\a.exe.d"], &[]), Some(vec![]));
         assert_eq!(c(r"C:\xy", true, &[r"C:\x"], &[]), Some(vec![]));
-        // Variables et jokers : prudence, dès que le début fixe est compatible.
+        // Variables inconnues et jokers : prudence, dès que le début fixe est compatible.
         assert_eq!(
             c(r"C:\Users\alice\AppData\Local\Temp\a.exe", false, &["%TEMP%"], &[]),
             Some(v(&["%TEMP%"]))
@@ -2579,8 +3068,363 @@ mod tests_cle {
             panic!("invérifiable")
         };
         assert!(!vaut_pour_tous(&inverifiable));
-        // L'échec de Defender (antivirus tiers) ne vaut pour tous que sous Windows.
-        assert_eq!(vaut_pour_tous(raison_echec()), cfg!(windows));
+        // Relecture des correctifs T10, MOYEN-C : un échec d'analyse (code 2) peut ne tenir qu'à ce fichier
+        // (verrouillé) ; seul MpCmdRun qui ne se lance pas ou ne finit pas vaut pour tous, sous Windows.
+        assert!(!vaut_pour_tous(raison_echec()));
+        assert_eq!(vaut_pour_tous(raison_injoignable()), cfg!(windows));
+    }
+
+    /// Un Defender joué d'avance pour `analyse_confirmee` : les réponses successives aux lectures des exclusions (la
+    /// dernière se répète), celle de `-CheckExclusion`, l'analyse et les détections, avec le compte des appels.
+    struct Double {
+        exclusions: Vec<Option<[Vec<String>; 2]>>,
+        lectures: usize,
+        exclue: Option<bool>,
+        verifications: usize,
+        analyse: Option<(Option<i32>, String)>,
+        detections: Option<Vec<Detection>>,
+        lectures_detections: usize,
+        eleve: bool,
+        variables: Vec<(&'static str, Vec<String>)>,
+    }
+
+    impl Double {
+        fn new(exclusions: &[Option<[&[&str]; 2]>]) -> Self {
+            let liste = |l: &[&str]| l.iter().map(|x| (*x).to_string()).collect::<Vec<_>>();
+            Double {
+                exclusions: exclusions
+                    .iter()
+                    .map(|e| e.map(|[c, x]| [liste(c), liste(x)]))
+                    .collect(),
+                lectures: 0,
+                exclue: None,
+                verifications: 0,
+                analyse: Some((Some(0), PASSE_5.into())),
+                detections: Some(vec![]),
+                lectures_detections: 0,
+                eleve: true,
+                variables: vec![],
+            }
+        }
+    }
+
+    impl Sondes for Double {
+        fn exclusions(&mut self) -> Option<[Vec<String>; 2]> {
+            let r = self
+                .exclusions
+                .get(self.lectures)
+                .or(self.exclusions.last())
+                .cloned()
+                .flatten();
+            self.lectures += 1;
+            r
+        }
+        fn cible_exclue(&mut self, _: &std::path::Path) -> Option<bool> {
+            self.verifications += 1;
+            self.exclue
+        }
+        fn analyser(&mut self) -> Option<(Option<i32>, String)> {
+            self.analyse.clone()
+        }
+        fn detections(&mut self) -> Option<Vec<Detection>> {
+            self.lectures_detections += 1;
+            self.detections.clone()
+        }
+        fn maintenant(&self) -> chrono::NaiveDateTime {
+            date_cim("20261031194900.000000+000").unwrap()
+        }
+        fn eleve(&self) -> bool {
+            self.eleve
+        }
+        fn variables(&self) -> Vec<(&'static str, Vec<String>)> {
+            self.variables.clone()
+        }
+    }
+
+    const DOSSIER_T10: &str = r"\\?\C:\Users\Public\vg-essai-eicar";
+    const AUCUNE: &[&str] = &[];
+    const CACHEES: &[&str] = &["N/A: Must be an administrator to view exclusions"];
+
+    fn analyser_double(d: &mut Double, cible: Option<(&str, bool)>) -> Analyse {
+        analyse_confirmee(
+            d,
+            cible.map(|(c, dossier)| (Path::new(c), dossier)),
+            &mut Memoire::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn passe_5_exclusion_lue_avant_l_analyse_puis_retiree() {
+        // Relecture des correctifs T10, HAUT-1 : l'exclusion posée sur le dossier est vue avant l'analyse, retirée
+        // pendant (relue vide après) ; Defender a pu l'appliquer encore : « found no threats », aucune détection,
+        // et pourtant jamais ✔.
+        let mut d = Double::new(&[
+            Some([&[r"C:\Users\Public\vg-essai-eicar"], AUCUNE]),
+            Some([AUCUNE, AUCUNE]),
+        ]);
+        d.exclue = Some(false);
+        let a = analyser_double(&mut d, Some((DOSSIER_T10, true)));
+        assert_eq!(
+            a.verdict,
+            Verdict::Exclue(vec![r"C:\Users\Public\vg-essai-eicar".into()])
+        );
+        assert_eq!((d.lectures, d.verifications, d.lectures_detections), (2, 1, 1));
+        // L'inverse : posée pendant l'analyse, vue seulement après.
+        let mut d = Double::new(&[Some([AUCUNE, AUCUNE]), Some([AUCUNE, &["com"]])]);
+        let a = analyser_double(&mut d, Some((DOSSIER_T10, true)));
+        assert_eq!(a.verdict, Verdict::Exclue(vec!["*.com".into()]));
+        // Listes vides, mais le moteur dit la cible exclue à cet instant : pas de ✔, et la cible est montrée.
+        let mut d = Double::new(&[Some([AUCUNE, AUCUNE])]);
+        d.exclue = Some(true);
+        let a = analyser_double(&mut d, Some((DOSSIER_T10, true)));
+        assert_eq!(
+            a.verdict,
+            Verdict::Exclue(vec![r"C:\Users\Public\vg-essai-eicar".into()])
+        );
+        // Tout lu, rien n'exclut, aucune détection : le seul ✔.
+        let mut d = Double::new(&[Some([&[r"D:\SteamLibrary"], AUCUNE])]);
+        d.exclue = Some(false);
+        let a = analyser_double(&mut d, Some((DOSSIER_T10, true)));
+        assert_eq!(a.verdict, Verdict::Sain);
+        assert!(!a.sans_droits);
+        assert_eq!(a.sortie, PASSE_5, "la sortie de MpCmdRun, à montrer");
+        // Une détection notée pendant l'analyse, sous le dossier : menace, et les exclusions ne sont pas relues.
+        let mut d = Double::new(&[Some([AUCUNE, AUCUNE])]);
+        d.detections = Some(vec![Detection {
+            nom: "Virus:DOS/EICAR_Test_File".into(),
+            dates: vec!["20261031154905.123456-240".into()],
+            ressources: vec![r"file:_C:\Users\Public\vg-essai-eicar\eicar.com".into()],
+        }]);
+        let a = analyser_double(&mut d, Some((DOSSIER_T10, true)));
+        assert_eq!(a.verdict, Verdict::Menaces(vec!["Virus:DOS/EICAR_Test_File".into()]));
+        assert_eq!((d.lectures, a.detections.len()), (1, 1));
+        // MpCmdRun qui ne va pas au bout : rien.
+        let mut d = Double::new(&[Some([AUCUNE, AUCUNE])]);
+        d.analyse = None;
+        assert!(analyse_confirmee(&mut d, Some((Path::new(DOSSIER_T10), true)), &mut Memoire::default()).is_none());
+        // Un nom piégé (saut de ligne) : MpCmdRun n'est pas interrogé sur lui, et jamais ✔.
+        let mut d = Double::new(&[Some([AUCUNE, AUCUNE])]);
+        let a = analyser_double(&mut d, Some(("C:\\x\nScanning C:\\y found no threats.", true)));
+        assert_eq!((a.verdict, d.verifications), (Verdict::Muette, 0));
+    }
+
+    #[test]
+    fn sans_droits_check_exclusion_en_repli() {
+        // Relecture des correctifs T10, MOYEN-B : listes cachées, détections lisibles. Pour un fichier, la réponse
+        // lisible de MpCmdRun suffit ; pour un dossier, elle ne voit ni un sous-dossier ni une extension exclus.
+        let mut d = Double::new(&[Some([CACHEES, CACHEES])]);
+        d.exclue = Some(false);
+        d.eleve = false;
+        let a = analyser_double(&mut d, Some((r"C:\x\facture.pdf", false)));
+        assert_eq!(a.verdict, Verdict::Sain);
+        assert_eq!(d.lectures, 1, "cachées : pas relues après l'analyse");
+        let a = analyser_double(&mut d, Some((r"C:\x", true)));
+        assert_eq!(a.verdict, Verdict::Inverifiable);
+        assert!(a.sans_droits);
+        // MpCmdRun refuse aussi, ou répond autrement : invérifiable, faute de droits.
+        let mut d = Double::new(&[Some([CACHEES, CACHEES])]);
+        d.eleve = false;
+        let a = analyser_double(&mut d, Some((r"C:\x\facture.pdf", false)));
+        assert_eq!(a.verdict, Verdict::Inverifiable);
+        assert!(a.sans_droits);
+        // Exclue selon MpCmdRun : vrai même sans les listes.
+        d.exclue = Some(true);
+        let a = analyser_double(&mut d, Some((r"C:\x", true)));
+        assert_eq!(a.verdict, Verdict::Exclue(vec![r"C:\x".into()]));
+        // Exclusions illisibles en administrateur (ni WMI ni PowerShell) : invérifiable, mais pas faute de droits.
+        let mut d = Double::new(&[None]);
+        let a = analyser_double(&mut d, Some((r"C:\x", true)));
+        assert_eq!(a.verdict, Verdict::Inverifiable);
+        assert!(!a.sans_droits);
+    }
+
+    #[test]
+    fn analyse_rapide_ou_complete_et_exclusions() {
+        // Relecture des correctifs T10, MOYEN-A : sans cible, toute exclusion de chemin ou d'extension retire une
+        // partie de l'analyse ; MpCmdRun n'est pas interrogé (rien à lui nommer).
+        let mut d = Double::new(&[Some([&[r"D:\SteamLibrary", ""], &[".vmdk"]])]);
+        let a = analyser_double(&mut d, None);
+        assert_eq!(
+            a.verdict,
+            Verdict::Exclue(vec![r"D:\SteamLibrary".into(), "*.vmdk".into()])
+        );
+        assert_eq!(d.verifications, 0);
+        let mut d = Double::new(&[Some([AUCUNE, AUCUNE])]);
+        assert_eq!(analyser_double(&mut d, None).verdict, Verdict::Sain);
+        // Une exclusion vue seulement avant l'analyse compte aussi.
+        let mut d = Double::new(&[Some([&[r"C:\Outils"], AUCUNE]), Some([AUCUNE, AUCUNE])]);
+        assert_eq!(
+            analyser_double(&mut d, None).verdict,
+            Verdict::Exclue(vec![r"C:\Outils".into()])
+        );
+        for illisibles in [Some([CACHEES, AUCUNE]), None] {
+            let mut d = Double::new(&[illisibles]);
+            assert_eq!(analyser_double(&mut d, None).verdict, Verdict::Inverifiable);
+        }
+    }
+
+    #[test]
+    fn memoire_d_une_serie_de_pieces() {
+        // Relecture des correctifs T10, BAS-6 : pour les pièces d'un courriel, ce que Windows cache ou ne rend pas
+        // n'est demandé qu'une fois.
+        let mut d = Double::new(&[Some([CACHEES, CACHEES])]);
+        d.detections = None;
+        d.eleve = false;
+        let mut memoire = Memoire::default();
+        for piece in [r"C:\t\a.pdf", r"C:\t\b.pdf", r"C:\t\c.pdf"] {
+            let a = analyse_confirmee(&mut d, Some((Path::new(piece), false)), &mut memoire).unwrap();
+            assert_eq!(a.verdict, Verdict::Inverifiable);
+            assert!(a.sans_droits);
+        }
+        assert_eq!((d.lectures, d.lectures_detections, d.verifications), (1, 1, 3));
+        // Lisibles : les exclusions vues à la première pièce valent pour les suivantes (réunies), relues après
+        // chaque analyse.
+        let mut d = Double::new(&[Some([&[r"C:\t\a.pdf"], AUCUNE]), Some([AUCUNE, AUCUNE])]);
+        d.exclue = Some(false);
+        let mut memoire = Memoire::default();
+        let a = analyse_confirmee(&mut d, Some((Path::new(r"C:\t\a.pdf"), false)), &mut memoire).unwrap();
+        assert_eq!(a.verdict, Verdict::Exclue(vec![r"C:\t\a.pdf".into()]));
+        let b = analyse_confirmee(&mut d, Some((Path::new(r"C:\t\b.pdf"), false)), &mut memoire).unwrap();
+        assert_eq!(b.verdict, Verdict::Sain);
+        assert_eq!(d.lectures, 3);
+    }
+
+    #[test]
+    fn reponse_de_check_exclusion() {
+        let oui = r"C:\Data\Test [\Device\HarddiskVolume1\Data\Test] is excluded. Exit code is 0.";
+        let non = r"C:\Data\Test [\Device\HarddiskVolume1\Data\Test] is not excluded. Exit code is 1.";
+        assert_eq!(exclusion_selon_mpcmdrun(Some(0), oui), Some(true));
+        assert_eq!(exclusion_selon_mpcmdrun(None, oui), Some(true));
+        assert_eq!(
+            exclusion_selon_mpcmdrun(Some(0), &format!("\u{feff}{oui}\r\n")),
+            Some(true)
+        );
+        assert_eq!(
+            exclusion_selon_mpcmdrun(
+                Some(0),
+                r"C:\Data\Test [\Device\HarddiskVolume1\Data\Test] is excluded."
+            ),
+            Some(true)
+        );
+        assert_eq!(exclusion_selon_mpcmdrun(Some(1), non), Some(false));
+        assert_eq!(
+            exclusion_selon_mpcmdrun(Some(1), &format!("{non}\r\n\r\n")),
+            Some(false)
+        );
+        // « Non exclue » demande le code 1 ; une ligne « exclue » l'emporte (prudence).
+        assert_eq!(exclusion_selon_mpcmdrun(Some(0), non), None);
+        assert_eq!(exclusion_selon_mpcmdrun(Some(1), &format!("{non}\n{oui}")), Some(true));
+        // Seule la fin de la ligne compte : un nom qui contient « is excluded. » ne trompe pas.
+        assert_eq!(
+            exclusion_selon_mpcmdrun(
+                Some(1),
+                r"C:\a is excluded.\b [\Device\x] is not excluded. Exit code is 1."
+            ),
+            Some(false)
+        );
+        for autre in [
+            "",
+            "N/A: Must be an administrator to check exclusions",
+            "CmdTool: Failed with hr = 0x80070005. Check C:\\Users\\alice\\AppData\\Local\\Temp\\MpCmdRun.log",
+            "Usage: MpCmdRun.exe [command-specific-arguments]",
+        ] {
+            assert_eq!(exclusion_selon_mpcmdrun(Some(2), autre), None, "{autre}");
+            assert_eq!(exclusion_selon_mpcmdrun(Some(1), autre), None, "{autre}");
+        }
+    }
+
+    #[test]
+    fn variables_des_exclusions() {
+        // Relecture des correctifs T10, MOYEN-D : les variables connues développées, jamais par l'environnement du
+        // processus.
+        let variables = variables_de_defender(&Racines {
+            windows: Some(r"C:\Windows"),
+            program_files: Some(r"C:\Program Files\"),
+            program_data: Some(r"C:\ProgramData"),
+            profil: Some(r"C:\Users\alice"),
+            local: Some(r"C:\Users\alice\AppData\Local"),
+            ..Racines::default()
+        });
+        let valeurs = |nom: &str| variables.iter().find(|(v, _)| *v == nom).map(|(_, x)| x.clone());
+        assert_eq!(
+            valeurs("TEMP"),
+            Some(vec![
+                r"C:\Windows\Temp".into(),
+                r"C:\Users\alice\AppData\Local\Temp".into()
+            ])
+        );
+        assert_eq!(
+            valeurs("USERPROFILE"),
+            Some(vec![
+                r"C:\Windows\System32\config\systemprofile".into(),
+                r"C:\Users\alice".into()
+            ])
+        );
+        assert_eq!(valeurs("PROGRAMFILES"), Some(vec![r"C:\Program Files".into()]));
+        assert_eq!(valeurs("SYSTEMDRIVE"), Some(vec!["C:".into()]));
+        assert_eq!(valeurs("PROGRAMFILES(X86)"), None, "absent : inconnue");
+        assert_eq!(valeurs("PUBLIC"), None);
+        assert_eq!(
+            formes_developpees(r"%programfiles%\Steam\:{PathType:folder}", &variables),
+            [r"C:\Program Files\Steam\"]
+        );
+        assert_eq!(formes_developpees(r"%TEMP%\x", &variables).len(), 2);
+        assert_eq!(formes_developpees(r"%PUBLIC%\x", &variables), [r"%PUBLIC%\x"]);
+        assert_eq!(formes_developpees(r"C:\100%\x", &variables), [r"C:\100%\x"]);
+        let beaucoup = vec![("A", (0..10).map(|i| i.to_string()).collect::<Vec<_>>())];
+        let formes = formes_developpees("%A%%A%%A%", &beaucoup);
+        assert_eq!(formes.len(), 10);
+        assert!(formes.iter().all(|f| f.ends_with("%A%%A%")));
+        let c = |cible: &str, exclu: &str| exclusions_qui_couvrent(cible, false, &[exclu.to_string()], &[], &variables);
+        // Développée : ne couvre plus « tout ce qui commence par rien ».
+        assert_eq!(c(r"D:\Jeux\x.exe", r"%ProgramFiles%\Steam"), Some(vec![]));
+        assert_eq!(
+            c(r"C:\Program Files\Steam\x.exe", r"%ProgramFiles%\Steam"),
+            Some(vec![r"%ProgramFiles%\Steam".into()])
+        );
+        assert_eq!(
+            c(r"C:\Windows\Temp\x.exe", r"%TEMP%"),
+            Some(vec!["%TEMP%".into()]),
+            "le TEMP de SYSTEM"
+        );
+        assert_eq!(
+            c(r"C:\Users\alice\AppData\Local\Temp\x.exe", r"%TEMP%").map(|v| v.len()),
+            Some(1)
+        );
+        assert_eq!(c(r"D:\x.exe", r"%TEMP%"), Some(vec![]));
+        // Inconnue : couvre, montrée telle quelle.
+        assert_eq!(c(r"D:\Jeux\x.exe", r"%PUBLIC%\x"), Some(vec![r"%PUBLIC%\x".into()]));
+    }
+
+    #[test]
+    fn exclusion_et_cible_normalisees_pareil() {
+        // Relecture des correctifs T10, BAS-2.
+        assert_eq!(pour_comparer(r"C:\x\z\..\y"), pour_comparer(r"C:\x\y"));
+        assert_eq!(pour_comparer(r"C:\x\\y\.\"), r"C:\X\Y");
+        assert_eq!(pour_comparer(r"C:\..\..\x"), r"C:\X");
+        assert_eq!(pour_comparer(r"\\?\UNC\nas\p\..\..\x"), r"\\NAS\P\X");
+        assert_eq!(pour_comparer(r"\\nas\p\x"), pour_comparer(r"\\?\UNC\NAS\P\X\"));
+        assert_eq!(pour_comparer(r"\\?\c:\"), "C:");
+        // NTFS compare par sa table de majuscules : σ et ς sont tous deux Σ (`to_lowercase` les sépare).
+        assert_eq!(pour_comparer("C:\\ΟΔΟΣ"), pour_comparer("C:\\οδοσ"));
+        let c = |cible: &str, exclu: &str| {
+            exclusions_qui_couvrent(cible, false, &[exclu.to_string()], &[], &[]).map(|v| v.len())
+        };
+        assert_eq!(c(r"\\?\C:\x\y\a.exe", r"C:\x\z\..\y"), Some(1));
+        assert_eq!(c(r"\\?\C:\x\y\a.exe", r"C:\x\\y"), Some(1));
+        assert_eq!(c("C:\\οδοσ\\a.exe", "c:\\ΟΔΟΣ"), Some(1));
+        assert_eq!(c(r"C:\x\y\a.exe", r"C:\x\y\..\..\z"), Some(0));
+        // Extension : majuscules Unicode des deux côtés, montrée telle qu'écrite.
+        assert_eq!(
+            exclusions_qui_couvrent(r"C:\x\a.ΣΚ", false, &[], &[".σκ".into()], &[]),
+            Some(vec!["*.σκ".into()])
+        );
+        // Le BOM devant « Threat » (relecture BAS-1).
+        assert_eq!(
+            menaces_mpcmdrun("\u{feff}Threat : Trojan:Win32/X\r\n"),
+            ["Trojan:Win32/X"]
+        );
     }
 
     #[test]

@@ -856,9 +856,10 @@ pub fn verifier(fichier: Option<&Path>) {
         match crate::protection::isoler::dossier_jetable() {
             Ok(dossier) => {
                 section(tr!("Analyse des pièces jointes", "Scanning the attachments"));
+                // Un examinateur par courriel : les exclusions de Defender lues une fois pour toutes ses pièces.
                 let mut moteurs = pieces::moteurs(
                     crate::protection::yara::examiner,
-                    crate::protection::antivirus::examiner,
+                    crate::protection::antivirus::examinateur(),
                 );
                 pieces::passer_aux_moteurs(dossier, &mut c.pieces, &contenus, &mut moteurs);
             }
