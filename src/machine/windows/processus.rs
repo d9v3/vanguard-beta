@@ -318,6 +318,16 @@ fn sid_valide(sid: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// PROCESSENTRY32W mise à zéro avant Process32FirstW (exercé sous Miri par outils/preuves.sh) : zéro est une
+    /// valeur permise de chaque champ, et la taille est celle de tlhelp32.h sur x86_64.
+    #[test]
+    fn entree_mise_a_zero() {
+        // SAFETY: c'est ce que vérifie l'essai : la structure n'a que des entiers et un tableau d'entiers.
+        let entree: Entree = unsafe { std::mem::zeroed() };
+        assert_eq!(entree.fichier, [0; 260]);
+        assert_eq!(std::mem::size_of::<Entree>(), 568);
+    }
+
     /// Le compte de ce processus se lit dans son jeton (sous Wine aussi) ; un numéro qui n'existe pas : vide.
     #[test]
     fn compte_d_un_processus() {

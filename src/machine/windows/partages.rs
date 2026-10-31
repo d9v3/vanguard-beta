@@ -339,6 +339,22 @@ pub(crate) fn releve() -> Option<String> {
 mod tests {
     use super::*;
 
+    /// Le lecteur de texte UTF-16 (exercé sous Miri par outils/preuves.sh) : nul, vide, terminé, et la borne de
+    /// 32 767 caractères respectée sans lire au-delà.
+    #[test]
+    fn texte_utf16_nul_termine_et_borne() {
+        let t: Vec<u16> = "Partage é".encode_utf16().chain([0, 0x41]).collect();
+        let mut long = vec![0x41u16; 32_768];
+        long.push(0);
+        // SAFETY: pointeur nul, ou tampons terminés par un zéro qui vivent pendant les appels.
+        unsafe {
+            assert_eq!(texte(std::ptr::null()), "");
+            assert_eq!(texte([0u16].as_ptr()), "");
+            assert_eq!(texte(t.as_ptr()), "Partage é");
+            assert_eq!(texte(long.as_ptr()).len(), 32_767);
+        }
+    }
+
     /// SID binaire de « Tout le monde » (S-1-1-0) et d'un compte inventé.
     const TOUT_LE_MONDE: [u8; 12] = [1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0];
 

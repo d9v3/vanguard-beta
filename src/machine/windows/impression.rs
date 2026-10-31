@@ -180,6 +180,22 @@ fn hote_du_port(port: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Le lecteur de texte UTF-16 (exercé sous Miri par outils/preuves.sh) : nul, vide, terminé, et la borne de
+    /// 32 767 caractères respectée sans lire au-delà.
+    #[test]
+    fn texte_utf16_nul_termine_et_borne() {
+        let t: Vec<u16> = "Imprimante é".encode_utf16().chain([0, 0x41]).collect();
+        let mut long = vec![0x41u16; 32_768];
+        long.push(0);
+        // SAFETY: pointeur nul, ou tampons terminés par un zéro qui vivent pendant les appels.
+        unsafe {
+            assert_eq!(texte(std::ptr::null()), "");
+            assert_eq!(texte([0u16].as_ptr()), "");
+            assert_eq!(texte(t.as_ptr()), "Imprimante é");
+            assert_eq!(texte(long.as_ptr()).len(), 32_767);
+        }
+    }
+
     /// Les vraies fonctions de Windows (Wine ici, la VM ensuite) : la liste se lit sans planter, au plus une imprimante
     /// par défaut.
     #[test]

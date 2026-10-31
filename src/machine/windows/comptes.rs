@@ -737,6 +737,21 @@ fn juger_politique(longueur: u32, seuil: u32) -> Option<Constat> {
 mod tests {
     use super::*;
 
+    /// La lecture bornée des noms (exercée sous Miri par outils/preuves.sh) : nul, terminé avant la borne, et un
+    /// tampon sans zéro final lu exactement jusqu'à la borne, sans un caractère de plus.
+    #[test]
+    fn texte_large_nul_termine_et_borne() {
+        let nom = large("Invité");
+        let sans_zero = [0x42u16; 4];
+        // SAFETY: pointeur nul, tampon terminé par un zéro, ou long d'au moins `max` caractères (contrat de la fonction).
+        unsafe {
+            assert_eq!(texte_large(std::ptr::null(), 8), "");
+            assert_eq!(texte_large(nom.as_ptr(), 256), "Invité");
+            assert_eq!(texte_large(nom.as_ptr(), 3), "Inv");
+            assert_eq!(texte_large(sans_zero.as_ptr(), 4), "BBBB");
+        }
+    }
+
     /// Les sections écrites comme le script PowerShell : un compte actif, l'invité désactivé, celui de la personne,
     /// et un compte jamais connecté ; puis relues par les vérifications des comptes.
     #[test]

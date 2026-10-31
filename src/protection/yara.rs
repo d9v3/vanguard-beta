@@ -594,6 +594,7 @@ mod tests {
     /// l'étape de la CI qui le passait à libyara (yara-python, installé par pip sans version épinglée) : un autre moteur
     /// pouvait accepter une règle que YARA-X refuse, ou l'inverse.
     #[test]
+    #[cfg(not(miri))]
     fn les_regles_d_origine_se_compilent_avec_yara_x() {
         let mut compilateur = yara_x::Compiler::new();
         if let Err(e) = compilateur.add_source(ORIGINE) {

@@ -172,4 +172,7 @@ evtx = { version = "=0.13.0", default-features = false }
 # demande wasmtime 48.0.6 ou plus ; Cargo.lock retient 48.0.8, qui corrige RUSTSEC-2026-0379 (Cranelift, saut mal
 # calculé sur aarch64, depuis la 48.0.7) et les trois failles publiées le 29 oct. 2026 contre la 48.0.7
 # (RUSTSEC-2026-0423, RUSTSEC-2026-0424 et une de vérification de types), ce que cargo deny surveille encore.
+# Hors de Miri (outils/preuves.sh) : yara-x 1.22.0 ne compile pas sous cfg(miri) (wasmtime y retire
+# `unload_process_handlers`), et ses essais d'oracle n'ont rien à y faire (aucun unsafe de Vanguard).
+[target.'cfg(not(miri))'.dev-dependencies]
 yara-x = { version = "1.22.0", default-features = false, features = ["pe-module", "elf-module", "constant-folding", "exact-atoms", "fast-regexp"] }

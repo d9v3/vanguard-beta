@@ -30,7 +30,10 @@ pub(crate) mod memoire_dns;
 pub(crate) mod moteur_yara;
 pub(crate) mod motifs;
 pub(crate) mod normales;
+// Hors de Miri : YARA-X, son oracle, n'y compile pas (Cargo.toml). `cfg(test)` reste à part : clippy ne reconnaît
+// un module d'essais (règles allégées de clippy.toml) qu'à cette forme exacte.
 #[cfg(test)]
+#[cfg(not(miri))]
 mod oracle_yara;
 pub(crate) mod outil;
 pub mod perimes;

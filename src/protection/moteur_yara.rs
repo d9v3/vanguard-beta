@@ -129,7 +129,8 @@ impl Regles {
         }
     }
 
-    #[cfg(any(test, fuzzing))]
+    // Sous Miri, l'oracle YARA-X (seul appelant des essais) n'est pas compilé : voir Cargo.toml.
+    #[cfg(any(all(test, not(miri)), fuzzing))]
     pub(crate) fn avec_bloc(mut self, bloc: usize) -> Regles {
         self.bloc = bloc;
         self

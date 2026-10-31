@@ -470,6 +470,16 @@ fn cle_de_fichier(info: &InformationFichier) -> String {
 mod tests {
     use super::identite_du_fichier;
 
+    /// MEMORY_BASIC_INFORMATION mise à zéro avant VirtualQueryEx (exercé sous Miri par outils/preuves.sh) : zéro est
+    /// une valeur permise de chaque champ (pointeurs nuls, entiers), et la taille est celle de winnt.h sur x86_64.
+    #[test]
+    fn information_mise_a_zero() {
+        // SAFETY: c'est ce que vérifie l'essai : la structure n'a que des pointeurs bruts et des entiers.
+        let information: super::Information = unsafe { std::mem::zeroed() };
+        assert!(information.base.is_null() && information.taille == 0);
+        assert_eq!(std::mem::size_of::<super::Information>(), 48);
+    }
+
     /// Campagne n° 4, deuxième relecture (M4) : une image hors du système est nommée par son fichier (volume,
     /// identifiant, date d'écriture), pas par son chemin : un autre fichier au même chemin, ou réécrit, se relit ; un
     /// lien vers le même fichier ne se relit pas ; un fichier qui ne s'ouvre pas n'a pas de nom.

@@ -39,3 +39,55 @@ pub(crate) fn effacer(octets: &mut [u8]) {
     }
     std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Chaque longueur autour des blocs de 64 octets est remise à zéro, et seulement elle : les octets voisins, hors
+    /// de la tranche donnée, restent tels quels. Lancé sous Miri (outils/preuves.sh) : les deux écritures volatiles
+    /// y sont vérifiées (adresse, alignement, bornes).
+    #[test]
+    fn effacer_remet_la_tranche_a_zero_et_rien_d_autre() {
+        for n in [0, 1, 63, 64, 65, 128, 130] {
+            let mut tampon = vec![0xA5u8; n + 2];
+            if let Some(milieu) = tampon.get_mut(1..=n) {
+                effacer(milieu);
+            }
+            assert_eq!(tampon[0], 0xA5, "{n}");
+            assert_eq!(tampon[n + 1], 0xA5, "{n}");
+            assert!(tampon[1..=n].iter().all(|&o| o == 0), "{n}");
+        }
+    }
+
+    /// Les structures C que Vanguard remet à zéro par `std::mem::zeroed` avant de les confier au système (Linux,
+    /// macOS) : zéro doit être une valeur permise pour chacune (aucune référence, aucun pointeur de fonction non nul,
+    /// aucune énumération sans variante nulle). Sous Miri, une valeur interdite est une erreur ; la liste suit
+    /// `grep -rn 'mem::zeroed' src`, une structure ajoutée là s'ajoute ici (celles de Windows : leurs modules).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn structures_c_mises_a_zero() {
+        fn zero<T>() -> T {
+            // SAFETY: c'est précisément ce que vérifie l'essai, sous Miri : zéro est une valeur permise de `T`.
+            unsafe { std::mem::zeroed() }
+        }
+        let _: libc::statfs = zero();
+        let _: libc::group = zero();
+        let _: libc::passwd = zero();
+        #[cfg(target_os = "linux")]
+        {
+            let _: libc::siginfo_t = zero();
+            let _: libc::statvfs = zero();
+            let _: libc::iwreq = zero();
+            let _: libc::timex = zero();
+            let _: libc::sockaddr_nl = zero();
+            let _: libc::utsname = zero();
+            let _: libc::sigaction = zero();
+            let _: [libc::sigaction; 2] = zero();
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let _: libc::proc_bsdinfo = zero();
+        }
+    }
+}

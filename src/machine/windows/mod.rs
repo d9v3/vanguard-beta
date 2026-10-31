@@ -1517,9 +1517,12 @@ mod tests {
         assert!(c[0].message.contains("« snmp�]52;c;eA==�� »"), "{}", c[0].message);
     }
 
+    // Sous Miri : session_a_distance appelle GetSystemMetrics, que Miri n'interprète pas.
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn jamais_couper_le_bureau_a_distance_qu_on_utilise() {
-        // SAFETY: variable propre au processus de test.
+        // SAFETY: sous Windows, set_var est toujours sûr (documentation de std) : l'environnement du processus y est
+        // protégé par un verrou ; `unsafe` ne sert qu'aux systèmes POSIX.
         unsafe { std::env::set_var("SESSIONNAME", "RDP-Tcp#3") };
         assert!(session_a_distance());
     }

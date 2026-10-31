@@ -740,6 +740,22 @@ mod tests {
         (r, ALLOUE.with(Cell::get) - avant)
     }
 
+    /// Le compteur lui-même : chaque méthode de l'allocateur (allocation, à zéro, agrandie, libérée) passe au système
+    /// et compte ce qu'elle demande. Lancé sous Miri (outils/preuves.sh), qui y vérifie les quatre délégations.
+    #[test]
+    fn compteur_delegue_et_compte() {
+        let (v, alloue) = allocations(|| {
+            let mut v = vec![0u8; 16];
+            v.extend_from_slice(&[7; 100]);
+            v.push(1);
+            v
+        });
+        assert_eq!(v.len(), 117);
+        assert!(v[..16].iter().all(|&o| o == 0) && v[16..116].iter().all(|&o| o == 7));
+        assert!(alloue >= 117, "{alloue}");
+        drop(v);
+    }
+
     /// Un serveur HTTP local qui répond `reponse` à une demande et rend les en-têtes reçus.
     fn serveur(reponse: Vec<u8>) -> (String, std::thread::JoinHandle<String>) {
         let ecoute = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
