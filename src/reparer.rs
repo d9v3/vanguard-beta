@@ -1326,6 +1326,11 @@ pub fn lancer(r: &Reparation) {
             "  {VERT}✔ Réparation terminée.{RESET}",
             "  {VERT}✔ Repair finished.{RESET}"
         );
+    } else if machine::arretee_a_votre_demande() {
+        trp!(
+            "  Arrêté à votre demande : rien n'a changé.",
+            "  Stopped as you asked: nothing was changed."
+        );
     } else {
         trp!(
             "  ✖ Une étape a échoué : lisez le message ci-dessus.",

@@ -231,6 +231,7 @@ fn ligne_resultat(r: &Resultat) -> String {
         // Un ordre réussi avec sa précision (« déjà retirée »).
         (true, None) if !r.raison.is_empty() => format!("ok note={}", r.raison.replace(['\r', '\n'], " ")),
         (true, None) => "ok".to_string(),
+        (false, _) if r.raison == arret_demande() => ARRETEE.to_string(),
         (false, _) => format!("echec {}", r.raison.replace(['\r', '\n'], " ")),
     }
 }
@@ -246,10 +247,20 @@ pub(crate) struct Reponse {
     /// Pour un script en échec : l'état de chaque correctif, dans l'ordre, tel que le script l'a écrit dans le tube
     /// (un correctif sans état n'a pas été fait).
     pub etats: Option<Vec<bool>>,
+    /// Non fait parce que la personne s'est arrêtée (point de restauration refusé, accord refusé) : pas un échec.
+    pub arretee: bool,
 }
 
 /// La réponse d'un point de restauration manquant que la personne a accepté.
 const SANS_POINT: &str = "ok sans-point";
+/// La réponse d'un geste non fait parce que la personne s'est arrêtée.
+const ARRETEE: &str = "echec arret";
+
+/// La raison d'un geste non fait parce que la personne s'est arrêtée : point de restauration refusé, puis tout ce qui
+/// suit ; ou accord refusé.
+fn arret_demande() -> &'static str {
+    tr!("arrêté à votre demande", "stopped as you asked")
+}
 
 fn lire_reponse(ligne: &str) -> Reponse {
     let reussi = ligne == "ok" || ligne.starts_with("ok ");
@@ -268,6 +279,7 @@ fn lire_reponse(ligne: &str) -> Reponse {
         note,
         code,
         etats: gestes::etats_du_script(ligne),
+        arretee: ligne == ARRETEE,
     }
 }
 
@@ -279,6 +291,7 @@ fn non_faite() -> Reponse {
         note: None,
         code: None,
         etats: None,
+        arretee: false,
     }
 }
 
@@ -359,7 +372,7 @@ pub(crate) fn appliquer(lignes: &[String]) -> Option<Vec<Reponse>> {
                 "    Demande d'administrateur refusée : rien n'a été modifié.",
                 "    Administrator prompt refused: nothing was changed."
             );
-            return Some(lignes.iter().map(|_| non_faite()).collect());
+            return Some(lignes.iter().map(|_| lire_reponse(ARRETEE)).collect());
         }
         Err(code) => {
             trp!(
@@ -699,6 +712,8 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
         "Press Enter to apply; any answer other than yes cancels: "
     ));
     let mut code = 0;
+    // Un échec qui n'est pas un arrêt voulu par la personne : lui seul fait dire « au moins une étape en échec ».
+    let mut echec = false;
     let mut arret = !accepte(&accord);
     if arret {
         trp!("Annulé : rien n'a été modifié.", "Cancelled: nothing was changed.");
@@ -709,6 +724,7 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
         let r = if arret { refusee() } else { faire(e, &juge) };
         if !r.reussi {
             code = 1;
+            echec |= r.raison != arret_demande();
             // Sans point de restauration, et la personne ne veut pas continuer sans : tout le reste est abandonné.
             arret |= est_point(e);
         }
@@ -724,6 +740,11 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
     println!();
     if code == 0 {
         trp!("{VERT}Terminé.{RESET}", "{VERT}Finished.{RESET}");
+    } else if code == 1 && !echec {
+        trp!(
+            "Arrêté à votre demande : rien de plus n'a été modifié.",
+            "Stopped as you asked: nothing more was changed."
+        );
     } else {
         trp!(
             "Terminé, avec au moins une étape en échec.",
@@ -773,7 +794,7 @@ fn refusee() -> Resultat {
     Resultat {
         reussi: false,
         avant: None,
-        raison: tr!("non faite (arrêt demandé)", "not done (stopped as asked)").to_string(),
+        raison: arret_demande().to_string(),
     }
 }
 
@@ -808,6 +829,11 @@ fn faire(e: &Element, juge: &ordres::Juge) -> Resultat {
             }
             None => trp!("  {VERT}OK{RESET}", "  {VERT}OK{RESET}"),
         }
+    } else if r.raison == arret_demande() {
+        trp!(
+            "  Arrêté à votre demande : la suite n'est pas faite.",
+            "  Stopped as you asked: the rest is not done."
+        );
     } else {
         trp!("  Échec : {}", "  Failed: {}", echec_lisible(e, &r.raison));
     }
@@ -1067,7 +1093,7 @@ fn continuer_sans_point(raison: &str, demander: impl FnOnce(&str) -> String) -> 
         // Pas de point, accepté : la suite continue, et « Ce que Vanguard a changé » le note.
         (true, sans_point_accepte().to_string())
     } else {
-        (false, tr!("arrêté à votre demande", "stopped as you asked").to_string())
+        (false, arret_demande().to_string())
     }
 }
 
@@ -1319,6 +1345,31 @@ mod tests {
 
     /// Avant l'accord, un script illisible ou changé fait refuser toute la liste (rien n'est montré, rien demandé) ;
     /// un script intact est montré tel qu'il sera lancé.
+    /// Un geste non fait parce que la personne s'est arrêtée (point refusé, puis tout ce qui suit ; accord refusé) part
+    /// au parent comme « arrêté », dans les deux langues ; un vrai échec, jamais.
+    #[test]
+    fn l_arret_demande_part_au_parent() {
+        let verifier = || {
+            assert_eq!(ligne_resultat(&refusee()), ARRETEE);
+            let (continuer, raison) = continuer_sans_point("protection coupée", |_| "n".into());
+            let point = Resultat {
+                reussi: continuer,
+                avant: None,
+                raison,
+            };
+            assert_eq!(ligne_resultat(&point), ARRETEE);
+            assert!(lire_reponse(ARRETEE).arretee && !lire_reponse(ARRETEE).reussi);
+            let echec = Resultat {
+                reussi: false,
+                avant: None,
+                raison: "code=2".into(),
+            };
+            assert!(!lire_reponse(&ligne_resultat(&echec)).arretee);
+        };
+        verifier();
+        crate::langue::en_anglais(verifier);
+    }
+
     /// Un échec se dit en phrase, avec quoi faire, le détail entre parenthèses : jamais « code=1 etats=101 » seul.
     #[test]
     fn un_echec_se_dit_en_phrase() {

@@ -540,7 +540,10 @@ pub fn powershell_admin_chacune(correctifs: &[Vec<String>]) -> Vec<bool> {
     );
     let statut = powershell().args(["-NoProfile", "-Command", &lanceur]).status();
     let reussi = statut.as_ref().is_ok_and(std::process::ExitStatus::success);
-    dire_code(statut.as_ref().ok().and_then(std::process::ExitStatus::code));
+    let code = statut.as_ref().ok().and_then(std::process::ExitStatus::code);
+    // 3 : demande d'administrateur refusée ; SANS_POINT_ARRETE : point refusé, le script s'arrête avant tout le reste.
+    crate::machine::noter_arret(matches!(code, Some(3 | crate::reparer::SANS_POINT_ARRETE)));
+    dire_code(code);
     resultats_du_script(&script, correctifs.len(), reussi)
 }
 
@@ -587,7 +590,15 @@ pub(crate) fn admin_mele(correctifs: &[Vec<String>]) -> Option<(Vec<bool>, Vec<V
         return Some(recomposer(correctifs, &morceaux, Vec::new()));
     }
     let reponses = eleve::appliquer(&lignes)?;
+    // Tout arrêté à la demande de la personne (point refusé en tête, accord ou demande d'administrateur refusés) :
+    // rien n'a été fait, et ce n'est pas un échec.
+    crate::machine::noter_arret(toutes_arretees(&reponses));
     Some(recomposer(correctifs, &morceaux, reponses))
+}
+
+/// Rien n'a été fait, et seulement parce que la personne s'est arrêtée : chaque réponse le dit (une liste vide, non).
+fn toutes_arretees(reponses: &[eleve::Reponse]) -> bool {
+    !reponses.is_empty() && reponses.iter().all(|r| r.arretee)
 }
 
 /// Les résultats de chaque correctif, et ses lignes annotées (valeur d'avant, précision), à partir des réponses du
@@ -1583,7 +1594,25 @@ mod tests {
             note: note.map(str::to_string),
             code,
             etats,
+            arretee: false,
         }
+    }
+
+    /// Point de restauration refusé (« N ») ou demande refusée : chaque geste revient « arrêté », la liste est dite
+    /// arrêtée à la demande de la personne, pas échouée ; un seul vrai échec, ou rien du tout, ne l'est pas.
+    #[test]
+    fn un_arret_demande_n_est_pas_un_echec() {
+        let arretee = || eleve::Reponse {
+            arretee: true,
+            ..reponse(false, None, None, None)
+        };
+        assert!(toutes_arretees(&[arretee(), arretee()]));
+        assert!(!toutes_arretees(&[arretee(), reponse(false, None, Some(1), None)]));
+        assert!(!toutes_arretees(&[]));
+        crate::machine::noter_arret(toutes_arretees(&[arretee()]));
+        assert!(crate::machine::arretee_a_votre_demande());
+        crate::machine::noter_arret(toutes_arretees(&[reponse(false, None, None, None)]));
+        assert!(!crate::machine::arretee_a_votre_demande());
     }
 
     /// Une liste mêlée se recompose correctif par correctif : le point (natif) puis un script qui couvre deux
