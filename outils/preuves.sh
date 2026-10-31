@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Les preuves de la mémoire et des lecteurs (guide de l'ANSSI, règles UNSAFE et outils de vérification) : deux outils
 # de la chaîne nightly, trop lents pour chaque vérification, lancés une fois par semaine par la veille continue (la
-# nuit du vendredi, avant la relecture hebdomadaire : outils/veille/nuit.sh) et à la main après avoir touché à un
+# nuit du jeudi, que lit la relecture hebdomadaire du vendredi : outils/veille/nuit.sh) et à la main après avoir touché à un
 # `unsafe` ou à l'un des lecteurs prouvés.
 #  1. Miri interprète les essais qui exercent les `unsafe` portant sur la mémoire de Vanguard (et non sur celle que
 #     rend le système, que Miri ne sait pas simuler) : effacement des secrets (socle::effacer), allocateur compteur des
@@ -14,13 +14,14 @@
 #   outils/preuves.sh             Miri puis Kani
 #   outils/preuves.sh miri        Miri seul
 #   outils/preuves.sh kani        Kani seul
-# Code 0 : tout est prouvé ; 1 : un échec (le journal est dit) ; 77 : un outil manque, rien n'est compté vert
-# (« sautée » pour la veille). Les journaux vont dans ~/.cache/vanguard-dev/preuves/ (VANGUARD_PREUVES pour un autre
-# dossier) ; les compilations dans target/ de CET arbre (target/miri, target/kani).
+# Code 0 : tout ce qui est demandé est prouvé ; 1 : un échec (le journal est dit) ; 77 : un outil manque, rien n'est
+# compté vert (« sautée » pour la veille, avec l'outil absent en première ligne). Les journaux vont dans
+# ~/.cache/vanguard-dev/preuves/ (VANGUARD_PREUVES pour un autre dossier) ; les compilations dans miri/ et kani/ du
+# dossier de compilation de cargo (CARGO_TARGET_DIR, sinon target/ de CET arbre).
 # Prérequis : rustup toolchain install nightly --component miri rust-src ; cargo install --locked kani-verifier &&
 # cargo kani setup (sa propre chaîne nightly, dans ~/.kani, sans droits d'administrateur).
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 export PATH="$HOME/.cargo/bin:$PATH"
 
 QUOI=${1:-tout}
@@ -30,9 +31,7 @@ case $QUOI in
 esac
 JOURNAUX=${VANGUARD_PREUVES:-$HOME/.cache/vanguard-dev/preuves}
 mkdir -p "$JOURNAUX"
-# La chaîne de Miri : nightly, ou une autre datée (VANGUARD_NUIT_MIRI=nightly-2026-10-21) si une nightly nouvelle
-# casse la compilation ; la version utilisée est toujours écrite.
-NUIT=${VANGUARD_NUIT_MIRI:-nightly}
+CIBLE=$(realpath -m "${CARGO_TARGET_DIR:-target}")
 
 # Les essais lancés sous Miri, par cible, à leur nom exact : un essai renommé ou disparu ne passe pas pour vert (le
 # nombre d'essais passés doit être celui de la liste). L'allocateur compteur des essais n'est vérifié que pour Linux :
@@ -52,7 +51,17 @@ WINDOWS=(
   machine::windows::memoire::tests::information_mise_a_zero
 )
 
-ECHECS=0 SAUTEES=0
+ECHECS=0
+# Les outils d'abord : un outil absent est dit en première ligne (la raison que la veille note) ; l'autre tourne
+# quand même, mais le tout finit en 77, jamais vert.
+MIRI=$([[ $QUOI != kani ]] && echo oui) KANI=$([[ $QUOI != miri ]] && echo oui) ABSENTS=()
+if [[ -n $MIRI ]] && ! cargo +nightly miri --version >/dev/null 2>&1; then
+  ABSENTS+=("Miri (rustup toolchain install nightly --component miri rust-src)") MIRI=
+fi
+if [[ -n $KANI ]] && ! command -v cargo-kani >/dev/null; then
+  ABSENTS+=("Kani (cargo install --locked kani-verifier && cargo kani setup)") KANI=
+fi
+((${#ABSENTS[@]})) && echo "– absent, sauté : ${ABSENTS[*]}"
 
 # Une cible sous Miri : ses essais, à leur nom exact ; vert seulement si chacun est passé, aucun ignoré.
 miri_cible() {
@@ -61,7 +70,7 @@ miri_cible() {
   journal=$JOURNAUX/miri-$cible.log
   # -Zmiri-strict-provenance : un entier changé en pointeur est refusé (règle de provenance stricte), plutôt que
   # deviné.
-  if MIRIFLAGS="-Zmiri-strict-provenance" cargo "+$NUIT" miri test --locked --target "$cible" --bin vanguard \
+  if MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test --locked --target "$cible" --bin vanguard \
     -- --exact "$@" >"$journal" 2>&1 &&
     grep -q "^test result: ok\. $# passed; 0 failed; 0 ignored" "$journal"; then
     echo "  ✔ Miri $cible : $# essai(s), aucun comportement indéfini ($((SECONDS - debut)) s)"
@@ -72,28 +81,24 @@ miri_cible() {
   fi
 }
 
-if [[ $QUOI != kani ]]; then
-  if ! cargo "+$NUIT" miri --version >/dev/null 2>&1; then
-    echo "  – Miri absent de la chaîne $NUIT (rustup toolchain install nightly --component miri rust-src) : sauté"
-    SAUTEES=$((SAUTEES + 1))
-  else
-    echo "Miri : $(cargo "+$NUIT" miri --version) ; $(rustc "+$NUIT" -V)"
-    miri_cible x86_64-unknown-linux-gnu "${LINUX[@]}"
-    miri_cible x86_64-pc-windows-gnu "${WINDOWS[@]}"
-  fi
+if [[ -n $MIRI ]]; then
+  echo "Miri : $(cargo +nightly miri --version) ; $(rustc +nightly -V)"
+  miri_cible x86_64-unknown-linux-gnu "${LINUX[@]}"
+  miri_cible x86_64-pc-windows-gnu "${WINDOWS[@]}"
 fi
 
-if [[ $QUOI != miri ]]; then
-  if ! command -v cargo-kani >/dev/null; then
-    echo "  – Kani absent (cargo install --locked kani-verifier && cargo kani setup) : sauté"
-    SAUTEES=$((SAUTEES + 1))
+if [[ -n $KANI ]]; then
+  # cargo kani n'a pas d'option --locked : le verrou est vérifié avant (outils/preuves n'a aucune dépendance).
+  if ! (cd outils/preuves && cargo metadata --locked --offline --format-version 1 >/dev/null); then
+    echo "  ✖ Kani : outils/preuves/Cargo.lock n'est plus à jour"
+    ECHECS=$((ECHECS + 1))
   else
     echo "Kani : $(cargo kani --version 2>/dev/null | head -n 1)"
     journal=$JOURNAUX/kani.log debut=$SECONDS
     # Autant de preuves vérifiées que de #[kani::proof] écrites : une preuve que Kani ne trouverait plus (module
     # renommé, inclusion cassée) ne passe pas pour verte.
     attendues=$(cat outils/preuves/src/preuve_*.rs | grep -c '^#\[kani::proof\]')
-    if (cd outils/preuves && cargo kani --target-dir "$PWD/../../target/kani" --output-format terse) >"$journal" 2>&1 &&
+    if (cd outils/preuves && cargo kani --target-dir "$CIBLE/kani" --output-format terse) >"$journal" 2>&1 &&
       grep -q "^Complete - $attendues successfully verified harnesses, 0 failures, $attendues total\.$" "$journal"; then
       echo "  ✔ Kani : $attendues preuve(s) bornée(s) vérifiée(s) ($((SECONDS - debut)) s)"
     else
@@ -107,8 +112,12 @@ fi
 if ((ECHECS)); then
   echo "✖ $ECHECS échec(s)"
   exit 1
-elif ((SAUTEES)); then
-  echo "– $SAUTEES outil(s) absent(s) : rien n'est compté vert"
+elif ((${#ABSENTS[@]})); then
+  echo "– ${#ABSENTS[@]} outil(s) absent(s) : rien n'est compté vert"
   exit 77
 fi
-echo "✔ Miri et Kani : tout est vert"
+case $QUOI in
+  tout) echo "✔ Miri et Kani : tout est vert" ;;
+  miri) echo "✔ Miri : vert (Kani non lancé)" ;;
+  kani) echo "✔ Kani : vert (Miri non lancé)" ;;
+esac
