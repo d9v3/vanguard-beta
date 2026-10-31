@@ -489,7 +489,7 @@ fn revue_cle(racine: &std::path::Path) {
 
 #[cfg(windows)]
 fn defender(portee: &Portee) {
-    use crate::machine::windows::{powershell_admin, ps};
+    use crate::machine::windows::ps;
     let mpcmd =
         PathBuf::from(std::env::var_os("ProgramFiles").unwrap_or_default()).join(r"Windows Defender\MpCmdRun.exe");
     trp!(
@@ -546,7 +546,9 @@ fn defender(portee: &Portee) {
                 "  Permanently delete the detected threats? [y/N]: "
             ))
             .oui()
-                && powershell_admin(&["Remove-MpThreat".to_string()])
+                // Par Vanguard administrateur, comme toute correction (une seule forme de demande d'administrateur),
+                // sans note : rien à défaire.
+                && crate::machine::appliquer_sans_noter(&["Remove-MpThreat".to_string()]).0
             {
                 trp!(
                     "  {VERT}✔ Menaces supprimées.{RESET}",
