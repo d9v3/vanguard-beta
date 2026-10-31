@@ -1454,7 +1454,7 @@ mod tests {
 
     #[test]
     fn un_script_change_est_refuse_avant_l_accord() {
-        let d = std::env::temp_dir().join(format!("vanguard-montrer-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-montrer-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let chemin = d.join("correction-1.ps1");
         let ecrit = "\u{feff}Write-Host 'ecrit'\r\nexit 0\r\n";

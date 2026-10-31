@@ -1629,7 +1629,7 @@ mod tests_systeme32 {
             return;
         }
         assert_eq!(super::sous_wine(), wine);
-        let d = std::env::temp_dir().join(format!("vanguard-systemroot-{}", std::process::id()));
+        let d = crate::essais::temporaire().join(format!("vanguard-systemroot-{}", std::process::id()));
         std::fs::create_dir_all(d.join("system32")).unwrap();
         if !wine {
             std::fs::write(d.join(r"system32\wineboot.exe"), b"MZ").unwrap();

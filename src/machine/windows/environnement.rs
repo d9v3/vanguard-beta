@@ -347,7 +347,7 @@ mod tests {
         ) else {
             return crate::essais::saute("User Shell Folders absent");
         };
-        let piege = std::env::temp_dir().join(format!("vanguard-piege-{}", std::process::id()));
+        let piege = crate::essais::temporaire().join(format!("vanguard-piege-{}", std::process::id()));
         std::fs::create_dir_all(&piege).unwrap();
         let avant = cle.get_raw_value("Local AppData").ok();
         cle.set_value("Local AppData", &piege.as_os_str()).unwrap();
