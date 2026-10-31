@@ -739,10 +739,18 @@ mod tests {
     static COMPTEUR: Compteur = Compteur;
 
     /// Ce que rend `f`, et les octets alloués par ce fil pendant qu'il tournait.
+    #[cfg(not(all(miri, windows)))]
     pub(crate) fn allocations<T>(f: impl FnOnce() -> T) -> (T, usize) {
         let avant = ALLOUE.with(Cell::get);
         let r = f();
         (r, ALLOUE.with(Cell::get) - avant)
+    }
+
+    /// Sans le compteur (Miri pour Windows) : refuse plutôt que de rendre zéro, pour qu'un essai « ne copie pas » n'y
+    /// passe jamais à vide.
+    #[cfg(all(miri, windows))]
+    pub(crate) fn allocations<T>(_: impl FnOnce() -> T) -> (T, usize) {
+        panic!("allocations : pas de compteur sous Miri pour Windows (voir COMPTEUR)")
     }
 
     /// Le compteur lui-même : chaque méthode de l'allocateur (allocation, à zéro, agrandie, libérée) passe au système

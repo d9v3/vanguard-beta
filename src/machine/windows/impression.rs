@@ -58,13 +58,15 @@ unsafe extern "system" {
 /// Un texte UTF-16 terminé par un zéro, lu sur 32 767 caractères au plus.
 ///
 /// # Safety
-/// `p` est nul, ou désigne un texte terminé par un zéro qui vit pendant l'appel.
+/// `p` est nul, ou désigne un texte terminé par un zéro ou long d'au moins 32 767 caractères, qui vit pendant
+/// l'appel.
 unsafe fn texte(p: *const u16) -> String {
     if p.is_null() {
         return String::new();
     }
     let mut n = 0;
-    // SAFETY: la borne est testée avant chaque lecture ; le texte se termine par un zéro (contrat de l'appelant).
+    // SAFETY: la borne est testée avant chaque lecture ; le texte se termine par un zéro ou a au moins 32 767
+    // caractères (contrat de l'appelant).
     unsafe {
         while n < 32_767 && *p.add(n) != 0 {
             n += 1;
@@ -185,9 +187,9 @@ mod tests {
     #[test]
     fn texte_utf16_nul_termine_et_borne() {
         let t: Vec<u16> = "Imprimante é".encode_utf16().chain([0, 0x41]).collect();
-        let mut long = vec![0x41u16; 32_768];
-        long.push(0);
-        // SAFETY: pointeur nul, ou tampons terminés par un zéro qui vivent pendant les appels.
+        // Exactement 32 767 caractères, sans zéro : une lecture d'un de trop sortirait du tampon, et Miri la refuse.
+        let long = vec![0x41u16; 32_767];
+        // SAFETY: pointeur nul, tampons terminés par un zéro ou de 32 767 caractères, qui vivent pendant les appels.
         unsafe {
             assert_eq!(texte(std::ptr::null()), "");
             assert_eq!(texte([0u16].as_ptr()), "");
