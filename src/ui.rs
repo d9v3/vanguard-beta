@@ -183,8 +183,12 @@ pub fn chemin_affichable(chemin: &std::path::Path) -> String {
 /// isoler, cache à effacer, tâche planifiée, imprimante) : piégé, il effacerait ou retournerait une partie de la
 /// ligne, et ce qui est montré ne serait plus ce qui est lancé. Les tabulations restent ; un saut de ligne devient
 /// « ⏎ » sur la même ligne, pour qu'un nom de fichier qui en contient n'ajoute pas sous la commande une fausse ligne
-/// (« ✔ … ») ; le reste passe par le filtre d'`affichable`. La commande lancée, elle, ne change pas.
+/// (« ✔ … ») ; le reste passe par le filtre d'`affichable`. La commande lancée, elle, ne change pas. Un programme fixe
+/// de Windows (`vanguard:programme …`) se montre tel qu'il est lancé (« sfc.exe /scannow »).
 pub fn commande_affichable(commande: &str) -> String {
+    if let Some(a) = crate::machine::gestes::analyser_programme(commande) {
+        return a.commande();
+    }
     commande
         .chars()
         .map(|c| match c {

@@ -43,6 +43,7 @@ use windows::Win32::System::Com::{
 };
 
 use super::corrections::{self, Correction, Resultat};
+use crate::machine::gestes;
 use crate::protection::blocage::ordres::{self, Ordre};
 use crate::ui::{GRIS, RESET, VERT, tr, trf, trp};
 
@@ -69,6 +70,7 @@ unsafe extern "system" {
     fn LoadLibraryExW(nom: *const u16, fichier: *mut c_void, drapeaux: u32) -> *mut c_void;
     fn SetDefaultDllDirectories(drapeaux: u32) -> i32;
     fn GetProcAddress(module: *mut c_void, nom: *const u8) -> *mut c_void;
+    fn SetHandleInformation(objet: *mut c_void, masque: u32, drapeaux: u32) -> i32;
 }
 
 #[link(name = "advapi32")]
@@ -141,20 +143,21 @@ const LIGNE_MAX: usize = ordres::LIGNE_MAX;
 /// Au-delà, une liste n'est pas celle d'une session de Vanguard (« Tout remettre comme avant » peut en compter
 /// plusieurs dizaines).
 const LIGNES_MAX: usize = ordres::LIGNES_MAX;
-/// Le verbe d'un script PowerShell vérifié par empreinte.
-const SCRIPT: &str = "vanguard:script ";
+// La grammaire (`gestes::valider`, lue aussi par le banc de fuzzing, sans dépendance) a ses propres bornes : les mêmes.
+const _: () = assert!(gestes::LIGNE_MAX == LIGNE_MAX && gestes::LIGNES_MAX == LIGNES_MAX);
 /// Au-delà, ce n'est pas un script de correction de Vanguard (quelques dizaines de Kio) : il n'est ni montré ni lancé.
 const SCRIPT_MAX: u64 = 16 << 20;
+/// HANDLE_FLAG_INHERIT : la poignée passe au processus créé avec l'héritage des poignées (SetHandleInformation).
+const HERITEE: u32 = 0x1;
 
 /// Une ligne de la liste, relue.
 pub(crate) enum Element {
     Correction(&'static Correction),
     Ordre(Ordre),
-    /// Un script PowerShell à lancer seulement si ses octets ont cette empreinte (SHA-256, hexadécimal majuscule).
-    Script {
-        empreinte: String,
-        chemin: String,
-    },
+    /// Un script PowerShell à lancer seulement si ses octets ont son empreinte (SHA-256, hexadécimal majuscule).
+    Script(gestes::Script),
+    /// Un programme fixe de Windows (DISM, sfc…), lancé par son chemin complet avec les arguments de la table.
+    Programme(gestes::Appel),
 }
 
 impl Element {
@@ -162,87 +165,42 @@ impl Element {
         match self {
             Element::Correction(c) => c.texte().to_string(),
             Element::Ordre(o) => o.texte(),
-            Element::Script { chemin, empreinte } => trf!(
+            Element::Script(s) => trf!(
                 "Lancer le script PowerShell {} (vérifié par son empreinte {}…)",
                 "Run the PowerShell script {} (checked by its fingerprint {}…)",
-                crate::ui::affichable(chemin),
-                &empreinte[..12]
+                crate::ui::affichable(&s.chemin),
+                s.empreinte.get(..12).unwrap_or_default()
             ),
+            Element::Programme(a) => corrections::texte_programme(a),
         }
     }
 }
 
-/// La ligne qui demande ce script.
-pub(crate) fn ligne_script(empreinte: &str, chemin: &str) -> String {
-    let hex = chemin.bytes().fold(String::new(), |mut s, o| {
-        let _ = write!(s, "{o:02x}");
-        s
-    });
-    format!("{SCRIPT}{empreinte} {hex}")
-}
-
-/// Le script d'une ligne, si et seulement si elle est exactement de sa forme : 64 chiffres hexadécimaux majuscules,
-/// une espace, un chemin complet de .ps1 en hexadécimal minuscule.
-fn analyser_script(ligne: &str) -> Option<Element> {
-    let (empreinte, hex) = ligne.strip_prefix(SCRIPT)?.split_once(' ')?;
-    let forme = empreinte.len() == 64 && empreinte.bytes().all(|o| matches!(o, b'0'..=b'9' | b'A'..=b'F'));
-    if !forme || hex.is_empty() || !hex.len().is_multiple_of(2) {
-        return None;
-    }
-    let octets: Option<Vec<u8>> = (0..hex.len())
-        .step_by(2)
-        .map(|i| {
-            let paire = hex.get(i..i + 2)?;
-            paire
-                .bytes()
-                .all(|o| matches!(o, b'0'..=b'9' | b'a'..=b'f'))
-                .then(|| u8::from_str_radix(paire, 16).ok())?
-        })
-        .collect();
-    let chemin = String::from_utf8(octets?).ok()?;
-    let o = chemin.as_bytes();
-    let complet = matches!(o, [lecteur, b':', b'\\', _, ..] if lecteur.is_ascii_alphabetic());
-    // Un script de correction de Vanguard : « correction-….ps1 » dans un dossier « corrections ».
-    let p = std::path::Path::new(&chemin);
-    let ps1 = p
-        .file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| n.starts_with("correction-") && n.to_ascii_lowercase().ends_with(".ps1"))
-        && p.parent()
-            .and_then(|d| d.file_name())
-            .is_some_and(|d| d.eq_ignore_ascii_case("corrections"));
-    (complet && ps1 && !chemin.contains(['\0', '\n', '\r']) && ligne_script(empreinte, &chemin) == ligne).then(|| {
-        Element::Script {
-            empreinte: empreinte.to_string(),
-            chemin,
-        }
-    })
-}
-
-/// La liste telle que le processus élevé la recevra, validée ligne à ligne, dans l'ordre ; `None` dès qu'une ligne
-/// n'est ni une correction de la table, ni un ordre du blocage permis sous Windows, ni un script à empreinte, qu'il y
-/// en a trop, ou qu'une revient deux fois (une liste de Vanguard ne fait jamais deux fois le même geste).
+/// La liste telle que le processus élevé la recevra, validée ligne à ligne, dans l'ordre (`gestes::valider`) ; `None`
+/// dès qu'une ligne n'est ni une correction de la table, ni un ordre du blocage permis sous Windows, ni un script à
+/// empreinte, ni un programme fixe, qu'il y en a trop, ou qu'une correction ou un script revient (une liste de
+/// Vanguard ne fait jamais deux fois le même). Le parent l'appelle avant la demande d'administrateur, le fils à la
+/// réception : la même relecture des deux côtés.
 pub(crate) fn valider(lignes: &[String]) -> Option<Vec<Element>> {
-    if lignes.is_empty() || lignes.len() > LIGNES_MAX {
-        return None;
-    }
     let mut vues = std::collections::HashSet::new();
-    let liste: Option<Vec<Element>> = lignes
-        .iter()
-        .map(|l| {
-            if let Some(c) = corrections::analyser(l) {
-                // Une correction de la table ne revient jamais deux fois dans une liste de Vanguard ; un ordre, si
-                // (deux blocages notés de la même adresse) : le second dit « déjà retirée ».
-                return vues.insert(l.as_str()).then_some(Element::Correction(c));
-            }
-            if let Some(o) = ordres::analyser(l).filter(Ordre::permis_ici) {
-                return Some(Element::Ordre(o));
-            }
-            analyser_script(l)
-        })
-        .collect();
-    // Un script n'arrive que dans une liste mêlée, à côté d'un geste natif : jamais seul.
-    liste.filter(|l| l.iter().any(|e| !matches!(e, Element::Script { .. })))
+    let liste = gestes::valider(lignes, |l| {
+        if let Some(c) = corrections::analyser(l) {
+            // Une correction de la table ne revient jamais deux fois dans une liste de Vanguard ; un ordre, si
+            // (deux blocages notés de la même adresse) : le second dit « déjà retirée ».
+            return vues.insert(c.id).then_some(Element::Correction(c));
+        }
+        ordres::analyser(l).filter(Ordre::permis_ici).map(Element::Ordre)
+    })?;
+    Some(
+        liste
+            .into_iter()
+            .map(|l| match l {
+                gestes::Ligne::Autre(e) => e,
+                gestes::Ligne::Script(s) => Element::Script(s),
+                gestes::Ligne::Programme(a) => Element::Programme(a),
+            })
+            .collect(),
+    )
 }
 
 fn large(t: &str) -> Vec<u16> {
@@ -285,6 +243,9 @@ pub(crate) struct Reponse {
     pub note: Option<String>,
     /// Pour un script : son code de sortie, quand il n'est pas 0.
     pub code: Option<i32>,
+    /// Pour un script en échec : l'état de chaque correctif, dans l'ordre, tel que le script l'a écrit dans le tube
+    /// (un correctif sans état n'a pas été fait).
+    pub etats: Option<Vec<bool>>,
 }
 
 /// La réponse d'un point de restauration manquant que la personne a accepté.
@@ -306,6 +267,7 @@ fn lire_reponse(ligne: &str) -> Reponse {
         avant,
         note,
         code,
+        etats: gestes::etats_du_script(ligne),
     }
 }
 
@@ -316,45 +278,70 @@ fn non_faite() -> Reponse {
         avant: None,
         note: None,
         code: None,
+        etats: None,
     }
 }
 
 // ---------------------------------------------------------------- le parent
 
-/// Applique des corrections natives avec les droits d'administrateur : en place si ce processus est déjà élevé,
-/// sinon par une relance élevée de Vanguard. Une réponse par commande, dans l'ordre reçu. `None` : impossible de
-/// préparer la relance (tube, identité du compte) ; l'appelant repasse alors par le script PowerShell. Une demande
-/// d'administrateur refusée n'est pas `None` : tout est « non fait », sans redemander.
+/// Applique une liste (gestes natifs, scripts, programmes) avec les droits d'administrateur : en place si ce
+/// processus est déjà élevé, sinon par une relance élevée de Vanguard. Une réponse par ligne, dans l'ordre reçu.
+/// `None` : rien n'a été fait, et la raison est dite (liste refusée, DLL à côté du programme, relance impossible) ;
+/// l'appelant ne repasse jamais par une autre demande d'administrateur (un attaquant qui provoquerait le repli
+/// retrouverait le vieux chemin). Une demande d'administrateur refusée n'est pas `None` : tout est « non fait », sans
+/// redemander.
 pub(crate) fn appliquer(lignes: &[String]) -> Option<Vec<Reponse>> {
-    // Trop long pour le processus élevé : le script PowerShell prend le relais (chaque geste y a son équivalent).
     if lignes.len() > LIGNES_MAX {
+        trp!(
+            "    Trop d'étapes d'un coup ({} ; {LIGNES_MAX} au plus) : rien n'a été fait. Appliquez-les en plusieurs fois.",
+            "    Too many steps at once ({}; {LIGNES_MAX} at most): nothing was done. Apply them in several goes.",
+            lignes.len()
+        );
+        return None;
+    }
+    // La même relecture que celle du fils, AVANT de demander quoi que ce soit : une liste qu'il refuserait n'ouvre pas
+    // une demande d'administrateur pour rien. Le message d'antivirus reste au fils, le seul endroit où il a un sens
+    // (la liste a changé en route).
+    if valider(lignes).is_none() {
+        trp!(
+            "    Cette liste n'a pas la forme que Vanguard administrateur accepte : rien n'a été fait, aucune demande d'administrateur.",
+            "    This list does not have the form Vanguard as administrator accepts: nothing was done, no administrator prompt."
+        );
         return None;
     }
     if super::processus::eleve() {
         return Some(appliquer_en_place(lignes));
     }
     let mut aleatoire = [0u8; 16];
-    getrandom::fill(&mut aleatoire).ok()?;
+    if getrandom::fill(&mut aleatoire).is_err() {
+        return relance_impossible("aléa", "randomness");
+    }
     let canal = aleatoire.iter().fold(String::with_capacity(32), |mut s, o| {
         let _ = write!(s, "{o:02x}");
         s
     });
-    let serveur = Serveur::creer(&canal)?;
-    let exe = std::env::current_exe().ok()?;
+    let Some(serveur) = Serveur::creer(&canal) else {
+        return relance_impossible("tube", "pipe");
+    };
+    let Ok(exe) = std::env::current_exe() else {
+        return relance_impossible("chemin du programme", "program path");
+    };
     // La vraie garde contre une DLL posée à côté du programme est dans le PE lui-même (chargement.rs : imports pris
-    // dans System32 seulement). Elle n'existe qu'à partir de Windows 10 1607 : en plus, une DLL déjà là fait passer
-    // la correction par le script PowerShell, lancé depuis System32.
+    // dans System32 seulement). Elle n'existe qu'à partir de Windows 10 1607 : en plus, une DLL déjà là arrête tout,
+    // sans autre demande d'administrateur.
     if let Some(dll) = exe.parent().and_then(dll_a_cote) {
         trp!(
-            "    {GRIS}{dll} est à côté de Vanguard : la correction passe par PowerShell, pas par Vanguard en administrateur.{RESET}",
-            "    {GRIS}{dll} sits next to Vanguard: the fix goes through PowerShell, not Vanguard as administrator.{RESET}"
+            "    {dll} est à côté de Vanguard : par prudence, rien n'est fait en administrateur. Placez vanguard.exe seul dans un dossier à lui, puis recommencez.",
+            "    {dll} sits next to Vanguard: to be safe, nothing is done as administrator. Put vanguard.exe alone in a folder of its own, then try again."
         );
         return None;
     }
     // Ouvert sans partage de suppression tant que le fils n'a pas répondu : ni renommage ni remplacement possibles.
-    let _verrou = {
+    let Ok(_verrou) = ({
         use std::os::windows::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new().read(true).share_mode(1).open(&exe).ok()?
+        std::fs::OpenOptions::new().read(true).share_mode(1).open(&exe)
+    }) else {
+        return relance_impossible("verrou du programme", "program lock");
     };
     trp!(
         "    {GRIS}Une fenêtre Vanguard administrateur s'ouvre, montre la liste et attend Entrée ; attendez qu'elle se ferme.{RESET}",
@@ -372,8 +359,8 @@ pub(crate) fn appliquer(lignes: &[String]) -> Option<Vec<Reponse>> {
         }
         Err(code) => {
             trp!(
-                "    Impossible de relancer Vanguard en administrateur (erreur Windows {code}).",
-                "    Could not relaunch Vanguard as administrator (Windows error {code})."
+                "    Impossible de relancer Vanguard en administrateur (erreur Windows {code}) : rien n'a été modifié.",
+                "    Could not relaunch Vanguard as administrator (Windows error {code}): nothing was changed."
             );
             return None;
         }
@@ -390,6 +377,17 @@ pub(crate) fn appliquer(lignes: &[String]) -> Option<Vec<Reponse>> {
     drop(serveur);
     let _ = veilleur.join();
     Some(reponses.unwrap_or_else(|| lignes.iter().map(|_| non_faite()).collect()))
+}
+
+/// La relance élevée ne peut pas se préparer : on le dit, rien n'est fait, et aucune autre demande d'administrateur ne
+/// prend le relais.
+fn relance_impossible(fr: &str, en: &str) -> Option<Vec<Reponse>> {
+    trp!(
+        "    Vanguard administrateur ne peut pas se préparer ({}) : rien n'a été modifié.",
+        "    Vanguard as administrator cannot get ready ({}): nothing was changed.",
+        if crate::langue::anglais() { en } else { fr }
+    );
+    None
 }
 
 /// Déjà administrateur : chaque geste est fait ici, montré au passage, les ordres rejugés comme par le fils.
@@ -663,8 +661,8 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
     for e in &liste {
         println!("  · {}", e.texte());
         // Le script lui-même, tel qu'il sera vérifié puis lancé : ce que l'Entrée autorise, ligne par ligne.
-        if let Element::Script { chemin, .. } = e
-            && let Ok(o) = crate::socle::lire_ordinaire(std::path::Path::new(chemin), SCRIPT_MAX)
+        if let Element::Script(s) = e
+            && let Ok(o) = crate::socle::lire_ordinaire(std::path::Path::new(&s.chemin), SCRIPT_MAX)
         {
             for l in String::from_utf8_lossy(&o).trim_start_matches('\u{feff}').lines() {
                 println!("    {GRIS}{}{RESET}", crate::ui::affichable(l));
@@ -742,7 +740,8 @@ fn faire(e: &Element, juge: &ordres::Juge) -> Resultat {
                 raison: if r.reussi { r.note.unwrap_or_default() } else { r.raison },
             }
         }
-        Element::Script { empreinte, chemin } => lancer_script(chemin, empreinte),
+        Element::Script(s) => lancer_script(&s.chemin, &s.empreinte),
+        Element::Programme(a) => lancer_programme(a),
     };
     if r.reussi {
         match &r.avant {
@@ -763,6 +762,9 @@ fn faire(e: &Element, juge: &ordres::Juge) -> Resultat {
 
 /// Le script PowerShell d'une liste mêlée : lu ici en mémoire, son empreinte vérifiée, puis lancé dans cette console
 /// par l'amorce, qui relit les octets et refuse tout autre contenu. Un lien, un dossier ou un fichier changé : refusé.
+/// Le script répond correctif par correctif dans un tube anonyme créé ici et hérité par PowerShell (variable
+/// `VANGUARD_RESULTATS` : la valeur de la poignée) : ni journal ni fichier de résultats dans le dossier du compte, que
+/// ce compte pourrait réécrire. En échec, les états lus partent au parent (`echec code=N etats=101`).
 fn lancer_script(chemin: &str, empreinte: &str) -> Resultat {
     let refus = |raison: String| Resultat {
         reussi: false,
@@ -781,23 +783,111 @@ fn lancer_script(chemin: &str, empreinte: &str) -> Resultat {
             )
         ));
     }
-    let statut = super::powershell()
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            &super::amorce_admin(chemin, empreinte),
-        ])
-        .status();
+    let tube = std::io::pipe().ok().filter(|(_, w)| heritable(w));
+    let mut commande = super::powershell();
+    commande.args([
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        &super::amorce_admin(chemin, empreinte),
+    ]);
+    if let Some((_, w)) = &tube {
+        commande.env(super::VARIABLE_RESULTATS, w.as_raw_handle().addr().to_string());
+    }
+    let fils = commande.spawn();
+    // Le parent ferme sa copie de l'écrivain : la fin de lecture vient quand PowerShell (et ce qu'il a lancé) a fermé
+    // la sienne.
+    let lecteur = tube.map(|(r, w)| {
+        drop(w);
+        let (envoi, reception) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for l in std::io::BufReader::new(r.take(1 << 16)).lines() {
+                let Ok(l) = l else { break };
+                let etat = match l.trim() {
+                    "ok" => true,
+                    "echec" => false,
+                    _ => continue,
+                };
+                if envoi.send(etat).is_err() {
+                    break;
+                }
+            }
+        });
+        reception
+    });
+    let statut = fils.and_then(|mut f| f.wait());
+    // Un programme lancé par le script et resté en vie garde l'écrivain ouvert : on ne l'attend pas au-delà de 2 s.
+    let mut etats = Vec::new();
+    if let Some(reception) = lecteur {
+        while let Ok(e) = reception.recv_timeout(std::time::Duration::from_secs(2)) {
+            if etats.len() >= gestes::ETATS_MAX {
+                break;
+            }
+            etats.push(e);
+        }
+    }
     match statut.ok().and_then(|s| s.code()) {
         Some(0) => Resultat {
             reussi: true,
             avant: None,
             raison: String::new(),
         },
-        Some(c) => refus(format!("code={c}")),
+        Some(c) => refus(gestes::raison_du_script(c, &etats)),
         None => refus(tr!("PowerShell ne s'est pas lancé", "PowerShell did not start").to_string()),
+    }
+}
+
+/// Rend la poignée héritable par le prochain processus créé (std les crée toutes non héritables).
+fn heritable(w: &std::io::PipeWriter) -> bool {
+    // SAFETY: la poignée est valide tant que `w` vit (emprunté pendant l'appel) ; SetHandleInformation ne lit ni
+    // n'écrit aucune mémoire de ce processus, il change un drapeau de l'objet noyau.
+    unsafe { SetHandleInformation(w.as_raw_handle(), HERITEE, HERITEE) != 0 }
+}
+
+/// Un programme fixe de la table (`gestes::PROGRAMMES`), lancé par son chemin complet : System32 pris à Windows
+/// (GetSystemDirectoryW), le lecteur système tiré de ce même chemin, jamais de l'environnement ni du PATH, que le
+/// compte qui a lancé Vanguard peut régler. Sa sortie s'affiche telle quelle dans cette console.
+fn lancer_programme(a: &gestes::Appel) -> Resultat {
+    let refus = |raison: String| Resultat {
+        reussi: false,
+        avant: None,
+        raison,
+    };
+    let systeme = crate::commande::dossier_systeme();
+    let Some(lecteur) = systeme
+        .to_str()
+        .and_then(|s| s.get(..2))
+        .filter(|l| l.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) && l.ends_with(':'))
+    else {
+        return refus(tr!("lecteur système introuvable", "system drive not found").to_string());
+    };
+    let exe = match a.programme.dossier {
+        gestes::Dossier::Systeme32 => systeme.join(a.programme.exe),
+        gestes::Dossier::Defender => {
+            std::path::PathBuf::from(format!(r"{lecteur}\{}\{}", gestes::DOSSIER_DEFENDER, a.programme.exe))
+        }
+    };
+    match std::process::Command::new(&exe).args(a.arguments(lecteur)).status() {
+        Ok(s) => match s.code() {
+            Some(3010) if a.reussite(3010) => Resultat {
+                reussi: true,
+                avant: None,
+                raison: tr!("redémarrage nécessaire", "restart needed").to_string(),
+            },
+            Some(c) if a.reussite(c) => Resultat {
+                reussi: true,
+                avant: None,
+                raison: String::new(),
+            },
+            Some(c) => refus(format!("code={c}")),
+            None => refus(tr!("arrêté sans code de sortie", "stopped without an exit code").to_string()),
+        },
+        Err(_) => refus(trf!(
+            "{} ne s'est pas lancé",
+            "{} did not start",
+            crate::ui::affichable(&exe.to_string_lossy())
+        )),
     }
 }
 
@@ -1046,17 +1136,22 @@ fn poser_le_point() -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// La liste du fils : corrections, ordres du blocage permis sous Windows et scripts à empreinte, sous leur seule
-    /// forme ; tout le reste refusé en entier.
+    /// La liste du fils : corrections, ordres du blocage permis sous Windows, scripts à empreinte et programmes fixes,
+    /// sous leur seule forme ; tout le reste refusé en entier.
     #[test]
     fn la_liste_mele_corrections_ordres_et_script() {
+        use gestes::ligne_script;
         let empreinte = "A".repeat(64);
         let script = ligne_script(
             &empreinte,
             r"C:\Users\alice\AppData\Local\Vanguard\corrections\correction-1.ps1",
         );
-        // Seul, sans geste natif : refusé ; hors du dossier des corrections ou sous un autre nom : refusé.
-        assert!(valider(std::slice::from_ref(&script)).is_none());
+        // Seul : accepté (toutes les listes passent par le fils) ; hors du dossier des corrections ou sous un autre
+        // nom : refusé.
+        assert!(matches!(
+            valider(std::slice::from_ref(&script)).as_deref(),
+            Some([Element::Script(_)])
+        ));
         let point = corrections::POINT.to_string();
         assert!(valider(&[point.clone(), ligne_script(&empreinte, r"C:\Temp\correction-1.ps1")]).is_none());
         assert!(valider(&[point, ligne_script(&empreinte, r"C:\x\corrections\autre.ps1")]).is_none());
@@ -1065,11 +1160,13 @@ mod tests {
             "vanguard:bloquer-sortie windows 203.0.113.7".to_string(),
             "vanguard:arreter-processus 4242 433a5c782e657865".to_string(),
             script.clone(),
+            gestes::ligne_programme("sfc-scannow", None),
         ];
         let v = valider(&bonne).unwrap();
         assert!(matches!(v[0], Element::Correction(_)));
         assert!(matches!(&v[1], Element::Ordre(Ordre::BloquerSortie { .. })));
-        assert!(matches!(&v[3], Element::Script { chemin, .. } if chemin.ends_with("correction-1.ps1")));
+        assert!(matches!(&v[3], Element::Script(s) if s.chemin.ends_with("correction-1.ps1")));
+        assert!(matches!(&v[4], Element::Programme(a) if a.programme.id == "sfc-scannow"));
         for hostile in [
             // Un ordre d'un autre système, un script à empreinte en minuscules, un chemin relatif ou sans .ps1, des
             // octets du chemin en majuscules, une ligne en double.
@@ -1080,6 +1177,10 @@ mod tests {
             vec![script.to_uppercase()],
             vec![script.clone(), script.clone()],
             vec![format!("{script} ")],
+            // Le point deux fois (une correction ne revient jamais), un programme hors table ou avec un argument.
+            vec![corrections::POINT.to_string(), corrections::POINT.to_string()],
+            vec!["vanguard:programme cmd".to_string()],
+            vec![format!("{} /x", gestes::ligne_programme("sfc-scannow", None))],
         ] {
             assert!(valider(&hostile).is_none(), "{hostile:?}");
         }
@@ -1167,6 +1268,9 @@ mod tests {
             raison: "a\r\nb".into(),
         });
         assert_eq!(aller_retour, "echec a  b");
+        let r = lire_reponse("echec code=1 etats=101");
+        assert!(!r.reussi && r.code == Some(1) && r.etats == Some(vec![true, false, true]));
+        assert!(lire_reponse("echec code=1").etats.is_none());
     }
 
     /// Les lignes reçues s'arrêtent à « fin » et sont bornées : un flux sans fin, trop long ou trop fourni est refusé.

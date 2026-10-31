@@ -271,16 +271,22 @@ pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
     }
 }
 
-/// La ligne est-elle faite par le processus élevé lui-même : une correction de la table, ou un ordre du blocage permis
-/// sous Windows ?
+/// La ligne est-elle faite par le processus élevé lui-même, sans PowerShell : une correction de la table, un ordre du
+/// blocage permis sous Windows, ou un programme fixe (`gestes::PROGRAMMES`) ?
 pub(crate) fn native(ligne: &str) -> bool {
-    analyser(ligne).is_some() || crate::protection::blocage::ordres::analyser(ligne).is_some_and(|o| o.permis_ici())
+    analyser(ligne).is_some()
+        || crate::protection::blocage::ordres::analyser(ligne).is_some_and(|o| o.permis_ici())
+        || crate::machine::gestes::analyser_programme(ligne).is_some()
 }
 
-/// Toutes les commandes de ces correctifs sont-elles natives (`native`) ? Alors tout passe par le processus élevé en
-/// Rust, sans PowerShell.
-pub(crate) fn toutes_natives(correctifs: &[Vec<String>]) -> bool {
-    !correctifs.is_empty() && correctifs.iter().all(|c| !c.is_empty() && c.iter().all(|l| native(l)))
+/// La phrase d'un programme fixe, avec la commande lancée : « Réparer les fichiers de Windows (SFC) : sfc.exe /scannow ».
+pub(crate) fn texte_programme(a: &crate::machine::gestes::Appel) -> String {
+    crate::trf!(
+        "{} : {}",
+        "{}: {}",
+        if anglais() { a.programme.en } else { a.programme.fr },
+        a.commande()
+    )
 }
 
 /// La liste telle que le processus élevé la recevra, validée ligne à ligne, dans l'ordre ; `None` dès qu'une ligne
@@ -298,8 +304,8 @@ pub(crate) fn valider(lignes: &[String]) -> Option<Vec<&'static Correction>> {
         .collect()
 }
 
-/// Pour le chemin par script : chaque correction native, et chaque ordre du blocage, remplacé par son équivalent
-/// PowerShell, le reste inchangé.
+/// Pour le chemin par script : chaque correction native, chaque ordre du blocage et chaque programme fixe, remplacé par
+/// son équivalent PowerShell, le reste inchangé.
 pub(crate) fn en_powershell(correctifs: &[Vec<String>]) -> Vec<Vec<String>> {
     use crate::protection::blocage::ordres;
     correctifs
@@ -312,7 +318,9 @@ pub(crate) fn en_powershell(correctifs: &[Vec<String>]) -> Vec<Vec<String>> {
                     // erreur dite par la fenêtre, jamais un geste deviné.
                     (None, Some(o)) => ordres::powershell(&o)
                         .unwrap_or_else(|| "throw 'Vanguard : geste sans équivalent PowerShell'".to_string()),
-                    (None, None) => l.clone(),
+                    (None, None) => {
+                        crate::machine::gestes::analyser_programme(l).map_or_else(|| l.clone(), |a| a.powershell())
+                    }
                 })
                 .collect()
         })
@@ -321,6 +329,9 @@ pub(crate) fn en_powershell(correctifs: &[Vec<String>]) -> Vec<Vec<String>> {
 
 /// Le texte à montrer pour une commande : la phrase d'une correction native ou d'un ordre, la commande elle-même sinon.
 pub(crate) fn affichable(commande: &str) -> String {
+    if let Some(a) = crate::machine::gestes::analyser_programme(commande) {
+        return texte_programme(&a);
+    }
     analyser(commande).map_or_else(
         || crate::protection::blocage::ordres::affichable(commande),
         |c| c.texte().to_string(),
@@ -573,16 +584,22 @@ mod tests {
             vec![POINT.to_string()],
             vec![id("rdp-nla")],
             vec!["Update-MpSignature".to_string()],
+            vec![crate::machine::gestes::ligne_programme("sfc-scannow", None)],
         ];
-        assert!(!toutes_natives(&correctifs));
-        assert!(toutes_natives(&correctifs[..2]));
-        assert!(!toutes_natives(&[]));
-        assert!(!toutes_natives(&[vec![]]));
+        assert!(correctifs[..2].iter().flatten().all(|l| native(l)));
+        assert!(!native(&correctifs[2][0]) && native(&correctifs[3][0]));
         let ps = en_powershell(&correctifs);
         assert!(ps[0][0].contains("Checkpoint-Computer"), "{}", ps[0][0]);
         assert!(ps[1][0].contains("UserAuthentication -Value 1"), "{}", ps[1][0]);
         assert_eq!(ps[2][0], "Update-MpSignature");
         assert!(affichable(&id("rdp-nla")).contains("NLA"));
         assert_eq!(affichable("Update-MpSignature"), "Update-MpSignature");
+        // Un programme fixe : par son chemin dans System32, jamais par le PATH ; montré avec sa commande.
+        assert_eq!(ps[3][0], r#"& "$env:SystemRoot\System32\sfc.exe" /scannow"#);
+        assert!(
+            affichable(&correctifs[3][0]).ends_with("sfc.exe /scannow"),
+            "{}",
+            affichable(&correctifs[3][0])
+        );
     }
 }

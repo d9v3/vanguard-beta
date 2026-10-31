@@ -44,6 +44,11 @@ pub(crate) mod wifi;
 use linux as os;
 #[cfg(windows)]
 pub mod windows;
+// La grammaire des scripts et des programmes fixes du processus élevé : du code pur, compilé partout pour ses tests
+// sous Linux et pour montrer une ligne `vanguard:programme` (`ui::commande_affichable`).
+#[cfg_attr(not(windows), allow(dead_code))]
+#[path = "windows/gestes.rs"]
+pub(crate) mod gestes;
 #[cfg(windows)]
 use windows as os;
 #[cfg(unix)]
@@ -1076,6 +1081,13 @@ fn lancer_les_ordres(correctifs: &[Vec<String>], resultats: &mut [Option<bool>],
     }
 }
 
+/// Une liste passe-t-elle par Vanguard administrateur (`windows::admin_mele`) ? Partout sauf sous Wine, où
+/// l'élévation n'existe pas : là seulement, la fenêtre PowerShell d'avant.
+#[cfg(windows)]
+fn par_vanguard_eleve() -> bool {
+    !crate::journal::sous_wine()
+}
+
 /// Les résultats, et ce qu'il faut noter pour chaque correctif (ses commandes, enrichies de la valeur d'avant).
 fn lancer_chacune(correctifs: &[Vec<String>]) -> (Vec<bool>, Vec<Vec<String>>) {
     #[cfg(windows)]
@@ -1083,41 +1095,13 @@ fn lancer_chacune(correctifs: &[Vec<String>]) -> (Vec<bool>, Vec<Vec<String>>) {
         for c in correctifs.iter().flatten() {
             println!("    {GRIS}> {}{RESET}", windows::corrections::affichable(c));
         }
-        // Rien que des corrections natives ou des ordres du blocage, et une vraie élévation possible (pas sous Wine) :
-        // par Vanguard lui-même, relancé en administrateur ; une liste mêlée de PowerShell passe aussi par lui, en
-        // une seule demande (`admin_mele`) ; sinon par le script PowerShell, comme avant.
-        // Mêlée seulement : une liste toute en PowerShell (sans geste natif) garde la fenêtre PowerShell d'avant.
-        let une_native = correctifs.iter().flatten().any(|l| windows::corrections::native(l));
-        if une_native
-            && !windows::corrections::toutes_natives(correctifs)
-            && !crate::journal::sous_wine()
-            && let Some(fait) = windows::admin_mele(correctifs)
-        {
-            return fait;
-        }
-        if windows::corrections::toutes_natives(correctifs) && !crate::journal::sous_wine() {
-            let lignes: Vec<String> = correctifs.iter().flatten().cloned().collect();
-            if let Some(reponses) = windows::eleve::appliquer(&lignes) {
-                let mut reponses = reponses.into_iter();
-                let mut resultats = Vec::with_capacity(correctifs.len());
-                let mut notes = Vec::with_capacity(correctifs.len());
-                for commandes in correctifs {
-                    let mut reussi = true;
-                    let mut note = Vec::with_capacity(commandes.len());
-                    for c in commandes {
-                        let r = reponses.next();
-                        reussi &= r.as_ref().is_some_and(|r| r.reussi);
-                        note.push(match r.map(|r| (r.avant, r.note)) {
-                            Some((Some(avant), _)) => format!("{c} (avant : {avant})"),
-                            Some((None, Some(n))) => format!("{c} ({n})"),
-                            _ => c.clone(),
-                        });
-                    }
-                    resultats.push(reussi);
-                    notes.push(note);
-                }
-                return (resultats, notes);
-            }
+        // Toute liste passe par Vanguard lui-même, relancé en administrateur, en une seule demande (`admin_mele`) : les
+        // gestes natifs tels quels, le PowerShell en scripts vérifiés par leur empreinte. S'il ne peut pas (dit par
+        // `admin_mele`), rien n'est fait : l'ancienne fenêtre PowerShell administrateur, qu'un repli provoqué rouvrirait,
+        // ne sert plus que sous Wine, où l'élévation n'existe pas.
+        if par_vanguard_eleve() {
+            return windows::admin_mele(correctifs)
+                .unwrap_or_else(|| (vec![false; correctifs.len()], correctifs.to_vec()));
         }
         trp!(
             "    {GRIS}Une fenêtre administrateur s'ouvre et montre chaque étape ; attendez qu'elle se ferme.{RESET}",
@@ -1423,6 +1407,17 @@ pub fn executer(json: bool) -> Audit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Sous Wine, aucune liste ne passe par le processus élevé (`eleve::appliquer`) : la fenêtre PowerShell d'avant,
+    /// sans élévation. Ailleurs (vrai Windows), toutes y passent, sans repli.
+    #[cfg(windows)]
+    #[test]
+    fn sous_wine_rien_ne_passe_par_le_processus_eleve() {
+        if !crate::journal::sous_wine() {
+            return crate::essais::saute("pas sous Wine");
+        }
+        assert!(!par_vanguard_eleve());
+    }
 
     /// S2c : un port inscrit hors de Vanguard dans la note des blocages ne tait ni un port exposé ni un serveur d'IA
     /// ouvert ; la note changée est dite au bilan (fichier scellé, COM-ETA-001).

@@ -192,11 +192,26 @@ pub(super) fn illisible(categorie: &'static str) -> Constat {
     )
 }
 
+/// La variable d'environnement qui donne au script lancé par le processus élevé la poignée (héritée) du tube anonyme
+/// où il écrit l'état de chaque correctif.
+pub(super) const VARIABLE_RESULTATS: &str = "VANGUARD_RESULTATS";
+
+/// Où le script écrit l'état de chaque correctif.
+#[derive(Clone, Copy)]
+enum Sortie<'a> {
+    /// Dans ce fichier, ouvert seulement s'il n'existe pas encore, avec un journal à côté : la fenêtre PowerShell
+    /// administrateur de Wine, un autre processus, qui ne peut répondre autrement.
+    Fichier(&'a str),
+    /// Dans le tube anonyme du processus élevé (`VARIABLE_RESULTATS`) : rien n'est écrit dans le dossier du compte, et
+    /// la console du processus élevé, qui attend Entrée à la fin, garde ce qui s'est affiché.
+    Tube,
+}
+
 /// Le script exécuté dans la fenêtre administrateur : chaque commande est annoncée, puis « OK » ou l'erreur.
 /// Une fenêtre muette ne se distingue pas d'une fenêtre figée. Chaque étape a son try/catch : une erreur PowerShell
 /// compte, comme un programme externe en échec, pour une étape ratée, et la fenêtre passe à la suivante. Après chaque
-/// correctif, une ligne « ok » ou « echec » s'écrit dans le fichier `resultats`, que Vanguard lit à la fermeture.
-fn script_admin(correctifs: &[Vec<String>], resultats: &str) -> String {
+/// correctif, une ligne « ok » ou « echec » s'écrit dans la `sortie`, que Vanguard lit.
+fn script_admin(correctifs: &[Vec<String>], sortie: Sortie) -> String {
     let texte = crate::commande::ps_texte;
     let mut script = String::from(tr!(
         "$Host.UI.RawUI.WindowTitle = 'Vanguard : correction en cours'\n\
@@ -217,14 +232,25 @@ fn script_admin(correctifs: &[Vec<String>], resultats: &str) -> String {
     // droits d'administrateur : sous un nom connu d'avance, un lien posé là lui ferait écrire ailleurs (un fichier du
     // système). Le journal finit donc par un nombre qu'elle tire elle-même, sans rien écraser (-NoClobber), et le
     // fichier des résultats ne s'ouvre que s'il n'existe pas encore (CreateNew : ni fichier ni lien posé avant).
-    let journal = resultats.strip_suffix(".resultats").unwrap_or(resultats);
-    let _ = writeln!(
-        script,
-        "try {{ Start-Transcript -LiteralPath ('{}-' + [guid]::NewGuid().ToString('N') + '.log') -NoClobber -ErrorAction Stop | Out-Null }} catch {{ }}\n\
-         try {{ $resultats = [IO.StreamWriter]::new([IO.File]::Open('{}', 'CreateNew', 'Write', 'Read')); $resultats.AutoFlush = $true }} catch {{ $resultats = $null }}",
-        texte(journal),
-        texte(resultats)
-    );
+    // Dans le tube : sa poignée, héritée du processus élevé, et lue dans une variable que ce processus a lui-même fixée.
+    match sortie {
+        Sortie::Fichier(resultats) => {
+            let journal = resultats.strip_suffix(".resultats").unwrap_or(resultats);
+            let _ = writeln!(
+                script,
+                "try {{ Start-Transcript -LiteralPath ('{}-' + [guid]::NewGuid().ToString('N') + '.log') -NoClobber -ErrorAction Stop | Out-Null }} catch {{ }}\n\
+                 try {{ $resultats = [IO.StreamWriter]::new([IO.File]::Open('{}', 'CreateNew', 'Write', 'Read')); $resultats.AutoFlush = $true }} catch {{ $resultats = $null }}",
+                texte(journal),
+                texte(resultats)
+            );
+        }
+        Sortie::Tube => {
+            let _ = writeln!(
+                script,
+                "try {{ Add-Type -AssemblyName System.Core; $resultats = [IO.StreamWriter]::new([IO.Pipes.AnonymousPipeClientStream]::new([IO.Pipes.PipeDirection]::Out, $env:{VARIABLE_RESULTATS})); $resultats.AutoFlush = $true }} catch {{ $resultats = $null }}"
+            );
+        }
+    }
     for commandes in correctifs {
         script += "$avant = $echecs\n";
         for c in commandes {
@@ -248,6 +274,11 @@ fn script_admin(correctifs: &[Vec<String>], resultats: &str) -> String {
             );
         }
         script += "if ($resultats) { $resultats.WriteLine($(if ($echecs -gt $avant) { 'echec' } else { 'ok' })) }\n";
+    }
+    if let Sortie::Tube = sortie {
+        // Le processus élevé dit lui-même « Terminé » et attend Entrée avant de fermer sa console.
+        script += "if ($resultats) { $resultats.Dispose() }\nif ($echecs) { exit 1 }\nexit 0";
+        return script;
     }
     script += "if ($resultats) { $resultats.Dispose() }\ntry { Stop-Transcript | Out-Null } catch { }\n";
     script += tr!(
@@ -302,38 +333,39 @@ pub(super) fn amorce_admin(chemin: &str, empreinte: &str) -> String {
     )
 }
 
-/// Lance des commandes dans une fenêtre PowerShell administrateur (une demande UAC). Retourne `true` si tout a réussi.
-pub fn powershell_admin(commandes: &[String]) -> bool {
-    powershell_admin_chacune(&[commandes.to_vec()]) == [true]
-}
-
-/// Un script de correction écrit, prêt à lancer : son chemin, le fichier où il répond, son empreinte.
+/// Un script de correction écrit, prêt à lancer : son chemin, le fichier où il répond (fenêtre PowerShell de Wine
+/// seulement), son empreinte.
 struct Script {
     chemin: std::path::PathBuf,
-    resultats: std::path::PathBuf,
+    resultats: Option<std::path::PathBuf>,
     empreinte: String,
 }
 
 /// Écrit le script de ces correctifs (déjà en PowerShell) : en clair, dans un fichier .ps1 dont le chemin est
 /// affiché, qu'on peut lire avant d'accepter la demande d'administrateur et qui reste comme trace. `None` : il ne
-/// s'écrit pas (dit).
-fn ecrire_script(correctifs: &[Vec<String>]) -> Option<Script> {
+/// s'écrit pas (dit). `fichier` : il répond par un fichier `.resultats` (Wine) ; sinon par le tube du processus élevé.
+fn ecrire_script(correctifs: &[Vec<String>], fichier: bool) -> Option<Script> {
     static SUITE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let dossier = crate::socle::dossier_local().join("corrections");
     // Deux scripts dans la même seconde (une liste mêlée en plusieurs morceaux) ne s'écrasent pas.
     let n = SUITE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let nom = format!("correction-{}-{n}", chrono::Local::now().format("%Y%m%d-%H%M%S"));
     let chemin = dossier.join(format!("{nom}.ps1"));
-    // La fenêtre administrateur est un autre processus : elle répond par ce fichier, une ligne par correctif.
-    let resultats = dossier.join(format!("{nom}.resultats"));
+    // La fenêtre PowerShell de Wine est un autre processus : elle répond par ce fichier, une ligne par correctif.
+    let resultats = fichier.then(|| dossier.join(format!("{nom}.resultats")));
+    // Le nom dans l'en-tête : deux scripts d'une même liste n'ont jamais la même empreinte (le processus élevé refuse
+    // une empreinte qui revient).
     let entete = trf!(
-        "# Correction proposée par Vanguard {} le {}.\r\n# Ce script n'est lancé qu'après votre accord (demande d'administrateur).\r\n\r\n",
-        "# Fix proposed by Vanguard {} on {}.\r\n# This script only runs after your consent (administrator prompt).\r\n\r\n",
+        "# Correction proposée par Vanguard {} le {} ({}).\r\n# Ce script n'est lancé qu'après votre accord (demande d'administrateur).\r\n\r\n",
+        "# Fix proposed by Vanguard {} on {} ({}).\r\n# This script only runs after your consent (administrator prompt).\r\n\r\n",
         env!("CARGO_PKG_VERSION"),
-        chrono::Local::now().format(tr!("%d/%m/%Y à %H:%M", "%Y-%m-%d %H:%M"))
+        chrono::Local::now().format(tr!("%d/%m/%Y à %H:%M", "%Y-%m-%d %H:%M")),
+        nom
     );
     // BOM : sans lui, Windows PowerShell 5.1 lit le fichier en ANSI et casse les accents.
-    let script = script_admin(correctifs, &resultats.display().to_string());
+    let resultats_texte = resultats.as_ref().map(|r| r.display().to_string());
+    let sortie = resultats_texte.as_deref().map_or(Sortie::Tube, Sortie::Fichier);
+    let script = script_admin(correctifs, sortie);
     let contenu = format!("\u{feff}{entete}{}\r\n", script.replace('\n', "\r\n"));
     let empreinte = sha256_hex(contenu.as_bytes());
     if std::fs::create_dir_all(&dossier)
@@ -347,7 +379,9 @@ fn ecrire_script(correctifs: &[Vec<String>]) -> Option<Script> {
         );
         return None;
     }
-    let _ = std::fs::remove_file(&resultats);
+    if let Some(r) = &resultats {
+        let _ = std::fs::remove_file(r);
+    }
     trp!(
         "    Script de correction (lisible) : {}",
         "    Fix script (readable): {}",
@@ -382,12 +416,19 @@ fn dire_code(code: Option<i32>) {
     }
 }
 
-/// La réussite de chaque correctif d'un script : tous, s'il a fini sans échec ; sinon ceux dont la ligne « ok » est
-/// dans son fichier de résultats (demande refusée, point de restauration refusé, fenêtre fermée en route : un
-/// correctif sans sa ligne « ok » n'a pas été fait, ou pas en entier).
+/// La réussite de chaque correctif d'un script de la fenêtre PowerShell (Wine) : tous, s'il a fini sans échec ; sinon
+/// ceux dont la ligne « ok » est dans son fichier de résultats (demande refusée, point de restauration refusé, fenêtre
+/// fermée en route : un correctif sans sa ligne « ok » n'a pas été fait, ou pas en entier).
 fn resultats_du_script(s: &Script, nombre: usize, reussi: bool) -> Vec<bool> {
-    let lus = crate::socle::lire_texte_ordinaire(&s.resultats, 1 << 20).unwrap_or_default();
-    let _ = std::fs::remove_file(&s.resultats);
+    let lus = s
+        .resultats
+        .as_ref()
+        .and_then(|r| {
+            let lus = crate::socle::lire_texte_ordinaire(r, 1 << 20).ok();
+            let _ = std::fs::remove_file(r);
+            lus
+        })
+        .unwrap_or_default();
     if reussi {
         return vec![true; nombre];
     }
@@ -397,14 +438,15 @@ fn resultats_du_script(s: &Script, nombre: usize, reussi: bool) -> Vec<bool> {
 }
 
 /// Lance des correctifs (chacun sa liste de commandes) dans une seule fenêtre PowerShell administrateur et dit
-/// lesquels ont réussi. Le chemin de secours : sous Wine, ou quand Vanguard ne peut pas se relancer lui-même en
-/// administrateur (une DLL posée à côté de lui).
+/// lesquels ont réussi. Sous Wine seulement, où l'élévation n'existe pas (aucune demande d'administrateur, un seul
+/// compte) : partout ailleurs, tout passe par Vanguard administrateur (`admin_mele`), sans jamais revenir ici, même
+/// quand il ne peut pas se lancer (un repli qu'on pourrait provoquer rouvrirait ce chemin, que le compte peut piéger).
 pub fn powershell_admin_chacune(correctifs: &[Vec<String>]) -> Vec<bool> {
     let echec = vec![false; correctifs.len()];
     // Une correction native (« vanguard:… ») ou un ordre mêlé à du PowerShell passe par le script, sous sa forme
     // PowerShell.
     let correctifs = &corrections::en_powershell(correctifs);
-    let Some(script) = ecrire_script(correctifs) else {
+    let Some(script) = ecrire_script(correctifs, true) else {
         return echec;
     };
     let amorce = crate::commande::ps_texte(&amorce_admin(&script.chemin.display().to_string(), &script.empreinte));
@@ -429,80 +471,83 @@ pub fn powershell_admin_chacune(correctifs: &[Vec<String>]) -> Vec<bool> {
     resultats_du_script(&script, correctifs.len(), reussi)
 }
 
-/// Une liste qui mêle corrections natives ou ordres du blocage et commandes PowerShell, en UNE seule demande UAC qui
-/// nomme Vanguard : les correctifs tout natifs vont tels quels au processus élevé ; chaque suite de correctifs
-/// PowerShell devient un script (sous sa forme PowerShell), que le processus élevé lit en mémoire, vérifie par son
-/// empreinte et lance lui-même. L'ordre de la liste est gardé. `None` : le processus élevé ne peut pas être lancé (le
-/// script par PowerShell prend alors le relais, comme avant).
+/// Une liste de correctifs, en UNE seule demande UAC qui nomme Vanguard : les gestes natifs (corrections de la table,
+/// ordres du blocage, programmes fixes) vont tels quels au processus élevé ; chaque suite de commandes PowerShell
+/// devient un script (sous sa forme PowerShell), que le processus élevé lit en mémoire, vérifie par son empreinte et
+/// lance lui-même. La découpe suit les lignes, pas les correctifs (`gestes::decouper`) : le point de restauration en
+/// tête d'un correctif est toujours un geste à lui, que le processus élevé fait d'abord et dont l'échec arrête tout.
+/// L'ordre de la liste est gardé. `None` : rien n'a été fait (script impossible à écrire, liste refusée, relance
+/// impossible), et c'est dit ; aucune autre demande d'administrateur ne prend le relais.
 pub(crate) fn admin_mele(correctifs: &[Vec<String>]) -> Option<(Vec<bool>, Vec<Vec<String>>)> {
-    // Les morceaux : des correctifs tout natifs (un par un), ou une suite de correctifs PowerShell (un script).
-    // Chaque correctif garde sa place dans la liste (pour ses résultats et ses notes) et ses lignes.
-    enum Morceau<'a> {
-        Natif(usize, &'a [String]),
-        Script(Vec<usize>, Script),
-    }
-    let mut morceaux = Vec::new();
-    let mut suite: Vec<(usize, &Vec<String>)> = Vec::new();
-    let fermer = |suite: &mut Vec<(usize, &Vec<String>)>, morceaux: &mut Vec<Morceau>| -> Option<()> {
-        if suite.is_empty() {
-            return Some(());
-        }
-        let ps = corrections::en_powershell(&suite.iter().map(|&(_, c)| c.clone()).collect::<Vec<_>>());
-        let script = ecrire_script(&ps)?;
-        let indices = std::mem::take(suite).into_iter().map(|(i, _)| i).collect();
-        morceaux.push(Morceau::Script(indices, script));
-        Some(())
-    };
-    for (i, c) in correctifs.iter().enumerate() {
-        if !c.is_empty() && c.iter().all(|l| corrections::native(l)) {
-            fermer(&mut suite, &mut morceaux)?;
-            morceaux.push(Morceau::Natif(i, c));
-        } else {
-            suite.push((i, c));
-        }
-    }
-    fermer(&mut suite, &mut morceaux)?;
+    use crate::machine::gestes::{self, Morceau};
+    // Une place hors de `correctifs` ne peut pas venir de `decouper` (elle énumère cette liste) : sautée, elle laisse
+    // le correctif en échec, jamais en réussite.
+    let ligne = |i: usize, j: usize| correctifs.get(i).and_then(|c| c.get(j));
+    let morceaux = gestes::decouper(correctifs, corrections::native);
+    let mut scripts = Vec::new();
     let mut lignes = Vec::new();
     for m in &morceaux {
         match m {
-            Morceau::Natif(_, c) => lignes.extend(c.iter().cloned()),
-            Morceau::Script(_, s) => lignes.push(eleve::ligne_script(&s.empreinte, &s.chemin.display().to_string())),
+            Morceau::Natif(places) => {
+                lignes.extend(places.iter().filter_map(|&(i, j)| ligne(i, j)).cloned());
+            }
+            Morceau::Script(suite) => {
+                let commandes: Vec<Vec<String>> = suite
+                    .iter()
+                    .map(|(i, js)| js.iter().filter_map(|&j| ligne(*i, j)).cloned().collect())
+                    .collect();
+                let Some(script) = ecrire_script(&corrections::en_powershell(&commandes), false) else {
+                    trp!("    Rien n'a été modifié.", "    Nothing was changed.");
+                    return None;
+                };
+                lignes.push(gestes::ligne_script(
+                    &script.empreinte,
+                    &script.chemin.display().to_string(),
+                ));
+                scripts.push(script);
+            }
         }
     }
-    let reponses = eleve::appliquer(&lignes)?;
-    let mut reponses = reponses.into_iter();
-    let mut resultats = vec![false; correctifs.len()];
+    if lignes.is_empty() {
+        return Some((vec![true; correctifs.len()], correctifs.to_vec()));
+    }
+    let mut reponses = eleve::appliquer(&lignes)?.into_iter();
+    let mut resultats = vec![true; correctifs.len()];
     let mut notes = correctifs.to_vec();
+    let mut echec = |i: usize| {
+        if let Some(r) = resultats.get_mut(i) {
+            *r = false;
+        }
+    };
     for m in &morceaux {
         match m {
-            Morceau::Natif(i, c) => {
-                let mut reussi = true;
-                let note = c
-                    .iter()
-                    .map(|c| {
-                        let r = reponses.next();
-                        reussi &= r.as_ref().is_some_and(|r| r.reussi);
+            Morceau::Natif(places) => {
+                for &(i, j) in places {
+                    let r = reponses.next();
+                    if !r.as_ref().is_some_and(|r| r.reussi) {
+                        echec(i);
+                    }
+                    if let Some(note) = notes.get_mut(i).and_then(|n| n.get_mut(j)) {
                         match r.map(|r| (r.avant, r.note)) {
-                            Some((Some(avant), _)) => format!("{c} (avant : {avant})"),
-                            Some((None, Some(n))) => format!("{c} ({n})"),
-                            _ => c.clone(),
+                            Some((Some(avant), _)) => *note = format!("{note} (avant : {avant})"),
+                            Some((None, Some(n))) => *note = format!("{note} ({n})"),
+                            _ => {}
                         }
-                    })
-                    .collect();
-                // `i` vient de l'énumération de `correctifs`, dont `notes` et `resultats` ont la longueur : rien
-                // n'est jamais sauté ici (et un résultat non écrit resterait un échec, jamais une réussite).
-                if let (Some(n), Some(r)) = (notes.get_mut(*i), resultats.get_mut(*i)) {
-                    *n = note;
-                    *r = reussi;
+                    }
                 }
             }
-            Morceau::Script(indices, s) => {
+            Morceau::Script(suite) => {
                 let r = reponses.next();
                 dire_code(r.as_ref().and_then(|r| r.code));
-                let faits = resultats_du_script(s, indices.len(), r.as_ref().is_some_and(|r| r.reussi));
-                for (i, ok) in indices.iter().zip(faits) {
-                    if let Some(r) = resultats.get_mut(*i) {
-                        *r = ok;
+                if r.as_ref().is_some_and(|r| r.reussi) {
+                    continue;
+                }
+                // Un correctif sans son « ok » dans le tube n'a pas été fait, ou pas en entier.
+                let mut etats = r.and_then(|r| r.etats).unwrap_or_default();
+                etats.resize(suite.len(), false);
+                for ((i, _), ok) in suite.iter().zip(etats) {
+                    if !ok {
+                        echec(*i);
                     }
                 }
             }
@@ -1542,7 +1587,7 @@ mod tests {
                 vec!["Update-MpSignature".to_string()],
                 vec!["Disable-LocalUser -Name 'Invité'".to_string()],
             ],
-            r"C:\Users\Zoé O'Brien\correction.resultats",
+            Sortie::Fichier(r"C:\Users\Zoé O'Brien\correction.resultats"),
         );
         assert!(s.contains("+ '  Update-MpSignature')"));
         assert!(s.contains("+ '  Disable-LocalUser -Name ''Invité'''"));
@@ -1564,7 +1609,7 @@ mod tests {
     #[test]
     fn la_fenetre_admin_annonce_sans_piege() {
         let c = "Unregister-ScheduledTask -TaskName 'Maj\u{1b}[2K' -Confirm:$false".to_string();
-        let s = script_admin(&[vec![c.clone()]], r"C:\x\correction-1.resultats");
+        let s = script_admin(&[vec![c.clone()]], Sortie::Fichier(r"C:\x\correction-1.resultats"));
         assert!(
             s.contains("'  Unregister-ScheduledTask -TaskName ''Maj\u{fffd}[2K'' -Confirm:$false')"),
             "{s}"
@@ -1576,7 +1621,7 @@ mod tests {
     fn la_fenetre_admin_garde_son_journal() {
         let s = script_admin(
             &[vec!["Update-MpSignature".to_string()]],
-            r"C:\Users\Zoé O'Brien\correction-1.resultats",
+            Sortie::Fichier(r"C:\Users\Zoé O'Brien\correction-1.resultats"),
         );
         // Un nom que la fenêtre tire elle-même, sans rien écraser : pas de lien à poser d'avance sous ce nom.
         assert!(s.contains(
@@ -1585,6 +1630,30 @@ mod tests {
         let position = |mot: &str| s.find(mot).unwrap();
         assert!(position("Start-Transcript") < position("Update-MpSignature"));
         assert!(position("Stop-Transcript") < position("Read-Host"));
+    }
+
+    /// Par le processus élevé : l'état de chaque correctif part dans le tube hérité, sans journal ni fichier dans le
+    /// dossier du compte, et sans attente d'Entrée (la console du processus élevé l'a déjà).
+    #[test]
+    fn la_fenetre_eleve_repond_par_le_tube() {
+        let s = script_admin(
+            &[vec!["Update-MpSignature".to_string()], vec!["Get-Date".to_string()]],
+            Sortie::Tube,
+        );
+        assert!(s.contains(
+            "[IO.Pipes.AnonymousPipeClientStream]::new([IO.Pipes.PipeDirection]::Out, $env:VANGUARD_RESULTATS)"
+        ));
+        assert_eq!(s.matches("$resultats.WriteLine(").count(), 2);
+        for absent in [
+            "Start-Transcript",
+            "Stop-Transcript",
+            "Read-Host",
+            ".resultats",
+            "CreateNew",
+        ] {
+            assert!(!s.contains(absent), "{absent}");
+        }
+        assert!(s.ends_with("if ($echecs) { exit 1 }\nexit 0"));
     }
 
     #[test]
