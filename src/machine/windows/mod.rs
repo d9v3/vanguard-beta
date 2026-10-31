@@ -23,6 +23,7 @@ mod defender;
 mod durcissement;
 pub(crate) mod ecoute;
 pub(crate) mod eleve;
+mod environnement;
 pub(crate) mod evenements;
 mod exclusions;
 pub(crate) mod export_journaux;
@@ -119,10 +120,22 @@ pub fn winget_installer(id: &str) -> String {
 /// de son PSModulePath et chargerait des modules de la version 7, incompatibles : le lecteur Cert: manquait ainsi
 /// dans le test de la VM. Sans la variable, la 5.1 reprend ses chemins par défaut. Celui de System32 : par son seul nom,
 /// Windows chercherait d'abord un powershell.exe posé à côté de Vanguard (dossier du programme lancé, peut-être en
-/// administrateur). Absent (Wine) : il ne démarre pas, et ce qu'il devait lire reste non vérifié.
+/// administrateur). Absent (Wine) : il ne démarre pas, et ce qu'il devait lire reste non vérifié. Vanguard lancé en
+/// administrateur : l'environnement réduit de `powershell_eleve`, le compte ne doit rien y glisser.
 pub fn powershell() -> Command {
+    if processus::eleve() {
+        return powershell_eleve();
+    }
     let mut c = Command::new(crate::commande::systeme32(r"WindowsPowerShell\v1.0\powershell.exe"));
     c.env_remove("PSModulePath");
+    c
+}
+
+/// PowerShell pour un geste en administrateur : rien de l'environnement du compte (COR_PROFILER chargerait une DLL,
+/// PSModulePath un module des Documents), seulement les variables calculées par Windows (`environnement::reduire`).
+pub(crate) fn powershell_eleve() -> Command {
+    let mut c = Command::new(crate::commande::systeme32(r"WindowsPowerShell\v1.0\powershell.exe"));
+    environnement::reduire(&mut c);
     c
 }
 

@@ -823,7 +823,7 @@ fn lancer_script(chemin: &str, empreinte: &str) -> Resultat {
         ));
     }
     let tube = std::io::pipe().ok().filter(|(_, w)| heritable(w));
-    let mut commande = super::powershell();
+    let mut commande = super::powershell_eleve();
     commande.args([
         "-NoProfile",
         "-ExecutionPolicy",
@@ -909,7 +909,10 @@ fn lancer_programme(a: &gestes::Appel) -> Resultat {
             std::path::PathBuf::from(format!(r"{lecteur}\{}\{}", gestes::DOSSIER_DEFENDER, a.programme.exe))
         }
     };
-    match std::process::Command::new(&exe).args(a.arguments(lecteur)).status() {
+    // Le même environnement réduit que PowerShell : DISM ou sfc ne doivent rien charger de ce que le compte a posé.
+    let mut commande = std::process::Command::new(&exe);
+    super::environnement::reduire(&mut commande);
+    match commande.args(a.arguments(lecteur)).status() {
         Ok(s) => match s.code() {
             Some(3010) if a.reussite(3010) => Resultat {
                 reussi: true,

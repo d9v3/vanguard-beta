@@ -9,7 +9,11 @@ paths:
 
 - Vanguard lance Windows PowerShell 5.1 (`powershell`), jamais pwsh. `windows::powershell()` retire PSModulePath :
   lancé depuis pwsh 7, PowerShell 5.1 hériterait de ses modules et `Get-AuthenticodeSignature`, les certificats…
-  ne se chargeraient pas.
+  ne se chargeraient pas. En administrateur (`powershell_eleve()`, et `powershell()` quand Vanguard est élevé),
+  comme pour les programmes fixes : `environnement::reduire` vide l'environnement (COR_PROFILER, COMPlus_*,
+  PSModulePath, PATH du compte) et ne pose que des variables calculées par Windows ; PSModulePath fixé à
+  `$PSHOME\Modules` puis Program Files, cache d'analyse des modules coupé (`NUL`). Une variable de plus : l'ajouter
+  à la liste et à son test, jamais la reprendre de l'environnement.
 - Un script .ps1 s'écrit avec BOM UTF-8, sinon PowerShell 5.1 le lit en ANSI et casse les accents.
 - `ps()` attend un marqueur de fin : une sortie vide sans marqueur (PowerShell bloqué, absent) n'est pas une réponse.
 - Registre : `New-Item -Force` sur une clé existante l'écrase, valeurs comprises ; la créer seulement si
