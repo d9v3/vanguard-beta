@@ -1535,7 +1535,8 @@ mod tests {
         ecrire_dans(&racine, &reference, 10, true).unwrap();
         let m = lire(&reference).unwrap();
         // Plus de 4096 octets de dossiers, créés un à un en relatif : le chemin entier est trop long pour `read_dir`.
-        let creer = std::process::Command::new("sh")
+        // bash et pas sh : le cd de dash (sh d'Ubuntu, donc de la CI) refait le chemin entier et échoue au-delà de 4096.
+        let creer = std::process::Command::new("bash")
             .arg("-c")
             .arg(r#"cd "$1" && n=$(printf '%0200d' 0) && i=0 && while [ $i -lt 25 ]; do mkdir "$n" && cd "$n" || exit 1; i=$((i+1)); done && echo piege > autorun.inf"#)
             .arg("sh")
