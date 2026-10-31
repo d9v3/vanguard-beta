@@ -344,7 +344,7 @@ pub(crate) struct Parcours {
     pub limitees: bool,
     /// Le répertoire central annoncé ne se lit pas où il devrait (position hors du fichier, signature absente).
     pub central_illisible: bool,
-    /// Où commence l'archive dans `octets` (le premier en-tête local vu).
+    /// Où commence l'archive dans `octets` (le premier en-tête local trouvé ; 0 s'il n'y en a aucun).
     pub debut: usize,
 }
 
@@ -386,7 +386,15 @@ pub(crate) fn parcourir(octets: &[u8], entrees_max: usize) -> Parcours {
         central(octets, fin, entrees_max, &mut p);
     }
     locales_seules(octets, entrees_max, &mut p);
-    p.debut = p.entrees.iter().map(|e| e.local).min().unwrap_or(0);
+    // Seuls les en-têtes locaux réellement trouvés comptent : une entrée centrale leurre qui désigne la position 0
+    // effaçait sinon les octets placés devant l'archive.
+    p.debut = p
+        .entrees
+        .iter()
+        .filter(|e| e.nom_local.is_some())
+        .map(|e| e.local)
+        .min()
+        .unwrap_or(0);
     p
 }
 
@@ -816,6 +824,43 @@ mod tests {
         zip.extend(debut.to_le_bytes());
         zip.extend([0, 0]);
         zip
+    }
+
+    /// Relecture du lot correctifs-c6 : des octets devant l'archive, ses positions corrigées, et une entrée centrale
+    /// leurre qui désigne la position 0 (où il n'y a pas d'en-tête local) : le début de l'archive reste celui du
+    /// premier en-tête local trouvé, et « précédée de données » ne se perd pas.
+    #[test]
+    fn debut_ignore_un_en_tete_local_leurre() {
+        let devant = b"#!/bin/sh\nexit 0\n".to_vec();
+        let d = u32::try_from(devant.len()).unwrap();
+        let z = archive(&[("scan.js", b"y".to_vec(), 0, 1)]);
+        let fin = z.len() - 22;
+        let central = usize::try_from(u32::from_le_bytes(z[fin + 16..fin + 20].try_into().unwrap())).unwrap();
+        let mut vrai = z[central..fin].to_vec();
+        vrai[42..46].copy_from_slice(&d.to_le_bytes());
+        let mut leurre = z[central..fin].to_vec();
+        leurre[46..53].copy_from_slice(b"leurre!");
+        let mut o = devant;
+        o.extend_from_slice(&z[..central]);
+        let position = u32::try_from(o.len()).unwrap();
+        o.extend_from_slice(&vrai);
+        o.extend_from_slice(&leurre);
+        let mut queue = z[fin..].to_vec();
+        queue[8..12].copy_from_slice(&[2, 0, 2, 0]);
+        queue[12..16].copy_from_slice(&u32::try_from(vrai.len() + leurre.len()).unwrap().to_le_bytes());
+        queue[16..20].copy_from_slice(&position.to_le_bytes());
+        o.extend_from_slice(&queue);
+        let p = parcourir(&o, 10);
+        assert_eq!(p.decalage, 0, "{p:?}");
+        assert_eq!(
+            p.entrees
+                .iter()
+                .map(|e| (e.local, e.nom_local.is_some()))
+                .collect::<Vec<_>>(),
+            [(usize::try_from(d).unwrap(), true), (0, false)],
+            "{p:?}"
+        );
+        assert_eq!(p.debut, usize::try_from(d).unwrap(), "{p:?}");
     }
 
     #[test]
