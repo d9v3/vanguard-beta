@@ -407,7 +407,7 @@ fn relro_applique_par_le_programme() {
         .env("VANGUARD_LANG", "fr")
         .env("USER", "essai")
         .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
-        .env("HOME", &maison)
+        .env("HOME", &*maison)
         .env("XDG_RUNTIME_DIR", maison.join("run"))
         .env("XDG_DATA_HOME", maison.join("donnees"))
         .env("XDG_CONFIG_HOME", maison.join("config"))
