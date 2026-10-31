@@ -1071,15 +1071,15 @@ fn pendant_la_mise_en_route(t: &Trouvaille, installation: DateTime<Utc>, session
     let (Some(premier), Some(dernier)) = (t.premier, t.dernier) else {
         return false;
     };
-    // Une borne que `DateTime` ne sait pas écrire (une installation forgée à ses limites) est au-delà de toute date :
-    // elle ne retient rien de son côté.
-    installation
-        .checked_sub_signed(chrono::Duration::seconds(AVANT_INSTALLATION))
-        .is_none_or(|debut| premier >= debut)
-        && installation
-            .checked_add_signed(chrono::Duration::seconds(APRES_INSTALLATION))
-            .is_none_or(|fin| dernier <= fin)
-        && session.is_none_or(|s| dernier <= s)
+    // Une borne que `DateTime` ne sait pas écrire (une installation forgée à ses limites) : rien n'est prouvé, la
+    // trouvaille reste (comme dans `lu_depuis_l_installation`).
+    let (Some(debut), Some(fin)) = (
+        installation.checked_sub_signed(chrono::Duration::seconds(AVANT_INSTALLATION)),
+        installation.checked_add_signed(chrono::Duration::seconds(APRES_INSTALLATION)),
+    ) else {
+        return false;
+    };
+    premier >= debut && dernier <= fin && session.is_none_or(|s| dernier <= s)
 }
 
 /// La sous-catégorie qu'un 4719 réduit (succès ou échec retiré : %%8448, %%8450), en minuscules.

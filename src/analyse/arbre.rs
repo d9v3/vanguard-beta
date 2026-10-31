@@ -252,10 +252,10 @@ impl Etat<'_> {
         }
     }
 
-    /// L'échéance de l'analyse, pour les décompressions. `None` (un délai qui dépasserait l'horloge, que les bornes
-    /// ne donnent jamais) : aucune échéance, comme `inflater` ; les autres bornes tiennent toujours.
-    fn echeance(&self) -> Option<Instant> {
-        self.debut.checked_add(self.bornes.delai)
+    /// L'échéance de l'analyse, pour les décompressions. Un délai qui dépasserait l'horloge (les bornes n'en donnent
+    /// jamais) la rend échue tout de suite, comme `dbus::echeance` : on refuse plutôt que de n'avoir plus d'échéance.
+    fn echeance(&self) -> Instant {
+        self.debut.checked_add(self.bornes.delai).unwrap_or(self.debut)
     }
 
     fn produit(&mut self, n: usize) {
@@ -714,7 +714,7 @@ impl Etat<'_> {
                 continue;
             }
             self.examines = self.examines.saturating_add(compresses);
-            match zip::extraire_avant(octets, vue, limite, self.echeance()) {
+            match zip::extraire_avant(octets, vue, limite, Some(self.echeance())) {
                 Err(refus) => {
                     let raison = match refus {
                         zip::Refus::Chiffree => Raison::Chiffre,
@@ -851,7 +851,7 @@ impl Etat<'_> {
                 break;
             };
             // Ce qui reste du budget : `contenu` n'a reçu que ce que chaque membre pouvait encore produire.
-            let lu = deflate::inflater_avant(donnees, limite.saturating_sub(contenu.len()), self.echeance());
+            let lu = deflate::inflater_avant(donnees, limite.saturating_sub(contenu.len()), Some(self.echeance()));
             let Some(fin) = flux.checked_add(lu.lus) else {
                 manques.push(Raison::Illisible("flux deflate"));
                 break;
