@@ -86,9 +86,18 @@ FIN
 printf '#!/usr/bin/env python3\nprint("Liens : 3 vérifié(s), aucun mort.")\n' >"$D/outils/liens.py"
 printf '#!/usr/bin/env python3\nprint("RUSTSEC-2023-0071")\n' >"$D/outils/exceptions-rustsec.py"
 printf '#!/usr/bin/env python3\nimport sys\nsys.exit(0)\n' >"$D/outils/confidentialite.py"
-# Faux preuves.sh : note chaque passage (la veille ne le lance que le vendredi).
-printf '#!/usr/bin/env bash\necho "$(date +%%s)" >>"$BANC/preuves.log"\necho "Miri et Kani : verts"\n' \
-  >"$D/outils/preuves.sh"
+cat >"$D/outils/preuves.sh" <<'FIN'
+#!/usr/bin/env bash
+# Faux preuves.sh : note chaque passage (la veille ne le lance que le jeudi) ; ESSAI_PREUVES=77 (outil absent), 1
+# (échec) ou 124 (ce que rend timeout à l'échéance des 45 min).
+echo "$(date +%s)" >>"$BANC/preuves.log"
+case ${ESSAI_PREUVES:-0} in
+  77) echo "– absent, sauté : Kani (cargo install --locked kani-verifier && cargo kani setup)"; echo "Miri : vert"; exit 77 ;;
+  1) echo "  ✖ Kani : échec"; exit 1 ;;
+  124) exit 124 ;;
+esac
+echo "Miri et Kani : verts"
+FIN
 cat >"$D/outils/vm-tester.sh" <<'FIN'
 #!/usr/bin/env bash
 # Faux vm-tester.sh : note d'où il est lancé et ce qu'il reçoit ; rouge si ESSAI_VM=rouge.
@@ -284,6 +293,8 @@ ESSAI_PLANTAGE=trois ESSAI_VERIFIER=rouge nuit 2026-10-22
 attendu '(($(appels) == 2))' "proposition en attente : claude pas rappelé"
 attendu 'jq -e ".ia.raison_si_non | test(\"attend\")" "$R/2026-10-22.json" >/dev/null' "raison : la proposition attend"
 attendu '(($(notifs) == 1))' "une seule notification"
+attendu 'jq -e ".etapes[] | select(.nom == \"preuves\") | .etat == \"ok\"" "$R/2026-10-22.json" >/dev/null && (($(wc -l <"$BANC/preuves.log") == 1))' \
+  "preuves (Miri, Kani) lancées le jeudi, une fois"
 git -C "$VANGUARD_VEILLE_DEPOT" branch -q -D veille/2026-10-21-fuzz-tar
 
 echo "Nuit 5 (budget de la semaine épuisé)"
@@ -291,8 +302,12 @@ printf '2026-10-18\tcorrection\t0\t60\tlance\n2026-10-19\tcorrection\t0\t60\tlan
 ESSAI_PLANTAGE=quatre nuit 2026-10-23
 attendu '(($(appels) == 2))' "budget épuisé : claude pas rappelé"
 attendu 'jq -e ".ia.raison_si_non | test(\"budget\")" "$R/2026-10-23.json" >/dev/null' "raison : budget"
-attendu 'jq -e ".etapes[] | select(.nom == \"preuves\") | .etat == \"ok\"" "$R/2026-10-23.json" >/dev/null && (($(wc -l <"$BANC/preuves.log") == 1))' \
-  "preuves (Miri, Kani) lancées le vendredi, une fois"
+attendu '! jq -e ".etapes[] | select(.nom == \"preuves\")" "$R/2026-10-23.json" >/dev/null && (($(wc -l <"$BANC/preuves.log") == 1))' \
+  "preuves (Miri, Kani) pas relancées le vendredi"
+python3 -I "$ICI/rapport.py" hebdo-entree --veille "$R" --jour 2026-10-23 --base prochaine --commits /dev/null \
+  "$BANC/hebdo-preuves.json" >>"$BANC/nuits.log" 2>&1
+attendu 'jq -e ".signaux.preuves == [{\"jour\": \"2026-10-22\", \"etat\": \"ok\", \"code\": 0}]" "$BANC/hebdo-preuves.json" >/dev/null' \
+  "la relecture du vendredi lit les preuves du jeudi"
 rm -f "$BANC"/fuzz/plantages/tar/*
 
 echo "Nuit 6 (signature déjà traitée)"
@@ -498,6 +513,18 @@ demander
 VANGUARD_VEILLE_ATTENTE_VERROU=1 VANGUARD_VEILLE_JOUR=2026-11-20 timeout 15 bash "$ICI/alerte.sh" >>"$BANC/nuits.log" 2>&1
 attendu '(($(notifs) == 2)) && grep -q "résumé de la nuit" "$R/a-lire"' "alerte.sh : la notification de la nuit part quand même"
 kill "$v" 2>/dev/null; wait "$v" 2>/dev/null
+
+echo "Preuves : outil absent, échec, délai dépassé (trois jeudis)"
+flock -w 60 "$R/verrou" true # la nuit lente tuée plus haut : son sommeil tient encore le verrou
+ESSAI_PREUVES=77 nuit 2026-11-26
+attendu 'jq -e ".etapes[] | select(.nom == \"preuves\") | .etat == \"sautee\" and .code == 77 and (.raison | test(\"^– absent, sauté : Kani\"))" "$R/2026-11-26.json" >/dev/null' \
+  "outil absent : sautée, l'outil dit"
+ESSAI_PREUVES=1 nuit 2026-12-03
+attendu 'jq -e ".etapes[] | select(.nom == \"preuves\") | .etat == \"echec\" and .code == 1" "$R/2026-12-03.json" >/dev/null' \
+  "preuve en échec : étape en échec"
+ESSAI_PREUVES=124 nuit 2026-12-10
+attendu 'jq -e ".etapes[] | select(.nom == \"preuves\") | .etat == \"echec\" and .code == 124" "$R/2026-12-10.json" >/dev/null' \
+  "délai dépassé : étape en échec, jamais verte"
 
 if ((ECHECS)); then
   echo "$ECHECS vérification(s) en échec ; journaux : $BANC/nuits.log"

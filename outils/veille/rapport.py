@@ -640,6 +640,10 @@ def hebdo_entree(a):
             fuzz.setdefault(c["cible"], {"cible": sur("slug", c["cible"]), "corpus_debut": c["corpus_avant"]})
             fuzz[c["cible"]]["corpus_fin"] = c["corpus_apres"]
     echap = [((n.get("canaris") or {}).get("echap") or {}).get("apres") for n in nuits]
+    # Miri et Kani, la nuit du jeudi (la veille de cette relecture) : l'état seul, jamais le journal.
+    preuves = [{"jour": sur("jour", n.get("date")), "etat": sur("slug", e.get("etat")),
+                "code": sur("nombre", e.get("code"))}
+               for n in nuits for e in (n.get("etapes") or []) if isinstance(e, dict) and e.get("nom") == "preuves"]
     entree = {
         "jour": sur("jour", a.jour),
         "base": sur("branche", a.base),
@@ -651,6 +655,7 @@ def hebdo_entree(a):
             "canaris_hors_ok": list(canaris.values()),
             "fuzz": list(fuzz.values()),
             "echap_comptes": [e for e in echap if isinstance(e, dict)][:7],
+            "preuves": preuves[:7],
             "cibles_sans_fuzz_sh": [sur("slug", c) for c in ((nuits[0].get("fuzz") or {}) if nuits else {})
                                     .get("cibles_sans_fuzz_sh", [])],
         },

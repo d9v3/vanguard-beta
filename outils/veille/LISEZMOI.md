@@ -10,7 +10,7 @@ et ne publie jamais rien.
 
 | Quoi | Quand | IA | Durée |
 |---|---|---|---|
-| Nuit (`nuit.sh`) | chaque jour à 03 h 30 (après le renouvellement du quota du vendredi à 3 h) | non | ~1 h 45 |
+| Nuit (`nuit.sh`) | chaque jour à 03 h 30 (après le renouvellement du quota du vendredi à 3 h) | non | ~1 h 45 (le jeudi, plus les preuves : 45 min au plus) |
 | Correction sur alerte (`alerte.sh`) | lancée par la nuit, si une alerte tient dans le budget | oui | ≤ 4 h 30 (correction, verifier.sh, relecture : 90 min chacun au plus ; pas de VM) |
 | Relecture hebdomadaire (`hebdo.sh`) | vendredi à 05 h 30 | oui, lecture seule | ≤ 90 min |
 | Rappel (`matin.sh`) | 08 h 30, si la notification de la nuit n'a pas été vue | non | secondes |
@@ -27,10 +27,12 @@ manquée (ordinateur éteint) n'est pas rattrapée en journée (`Persistent=fals
    avec la graine du rapport.
 4. `outils/fuzz.sh tout 300` : corpus suivi avant/après (il grandit : c'est l'adaptation), plantages nouveaux
    (SHA-256 jamais vu), cibles du banc absentes de `fuzz.sh`. Le dimanche, `cargo fuzz cmin`.
-   **Le vendredi seulement** (avant la relecture hebdomadaire de 05 h 30) : `outils/preuves.sh`, borné à 45 min.
+   **Le jeudi seulement** (la relecture hebdomadaire du vendredi lit les sept dernières nuits ; celle du vendredi,
+   finie après 05 h 30, n'y serait pas) : `outils/preuves.sh`, borné à 45 min.
    Miri interprète, pour Linux puis pour Windows, les essais qui exercent les `unsafe` portant sur la mémoire de
    Vanguard (comportement indéfini = échec), puis Kani prouve les lecteurs de `outils/preuves/` pour toutes les
-   entrées dans sa borne. Sans Miri ou sans Kani : « sautée », dite. Les autres nuits, l'étape n'apparaît pas.
+   entrées dans sa borne. Sans Miri ou sans Kani : « sautée », l'outil absent dit (l'autre tourne quand même). Les
+   autres nuits, l'étape n'apparaît pas.
 5. `cargo audit --json` sur les quatre `Cargo.lock`, base RUSTSEC fraîche : avis nouveaux depuis la veille.
 6. **Canaris** (`src/canaris.rs`, essais `#[ignore]` lancés avec `VANGUARD_CANARIS`) : chaque source réelle
    (`sources::SOURCES`, KEV, Échap, LOLDrivers, Feodo) téléchargée par **la même demande que le programme** et relue
