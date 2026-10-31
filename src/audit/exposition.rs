@@ -202,6 +202,19 @@ fn redirections(e: &Entree) -> Vec<Constat> {
                 REGLE,
             )];
         }
+        Etat::OutilEnEchec => {
+            // L'outil de repli est là : conseiller de l'installer serait faux, et cacherait l'échec.
+            return vec![marque(
+                impossible(
+                    CATEGORIE,
+                    tr!(
+                        "le routeur n'a pas pu être interrogé en UPnP : l'outil de repli a échoué ou n'a rien lu de lui (délai, réseau, réponse inattendue)",
+                        "the router could not be queried over UPnP: the fallback tool failed or read nothing from it (timeout, network, unexpected answer)"
+                    ),
+                ),
+                REGLE,
+            )];
+        }
         // Personne à la passerelle, mais d'autres se disent box : un appareil se fait peut-être passer pour elle.
         Etat::Usurpee(ips) => return vec![marque(usurpateurs(ips, false), REGLE)],
         Etat::Actif(l) => l,
@@ -856,6 +869,20 @@ mod tests {
         assert!(regle(&liste, "COM-EXP-001")[2].message.contains("peut-être d'autres"));
     }
 
+    /// `upnpc` installé, mais en échec (une table sans code 0) : non vérifié, sans conseiller d'installer l'outil
+    /// de repli qui est déjà là (relecture de la campagne 6).
+    #[cfg(unix)]
+    #[test]
+    fn upnpc_en_echec_n_est_pas_dit_absent() {
+        let table = "ExternalIPAddress = 203.0.113.7\n 0 TCP  8080->10.0.0.30:80  'Piège' '' 0\n";
+        let (etat, _) = upnp::juger_upnpc(Some(1), table);
+        let r = rapport(Some(etat));
+        let liste = constats(&entree(&r));
+        let exp = regle(&liste, "COM-EXP-001");
+        assert!(!exp[0].verifie);
+        assert!(!exp[0].message.contains("absent"), "{}", exp[0].message);
+    }
+
     #[test]
     fn upnp_absent_ou_non_verifie() {
         let r = rapport(Some(Etat::Absent));
@@ -868,6 +895,12 @@ mod tests {
         let liste = constats(&entree(&r));
         let exp = regle(&liste, "COM-EXP-001");
         assert!(!exp[0].verifie && exp[0].message.contains("interrogé"));
+        // L'outil de repli installé mais en échec : non vérifié, sans le dire absent (campagne 6, relecture).
+        let r = rapport(Some(Etat::OutilEnEchec));
+        let liste = constats(&entree(&r));
+        let exp = regle(&liste, "COM-EXP-001");
+        assert!(!exp[0].verifie && exp[0].message.contains("interrogé"));
+        assert!(exp[0].message.contains("a échoué") && !exp[0].message.contains("absent"));
         let r = rapport(None);
         let liste = constats(&entree(&r));
         assert!(!regle(&liste, "COM-EXP-001")[0].verifie);

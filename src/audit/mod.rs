@@ -260,7 +260,7 @@ pub fn redirections_du_scan(scan: &Rapport) -> Option<Vec<upnp::Redirection>> {
         Some(upnp::Etat::Actif(l)) if !l.lues => None,
         Some(upnp::Etat::Actif(l)) => Some(l.redirections.clone()),
         Some(upnp::Etat::Absent) => Some(Vec::new()),
-        Some(upnp::Etat::OutilAbsent | upnp::Etat::Usurpee(_)) | None => None,
+        Some(upnp::Etat::OutilAbsent | upnp::Etat::OutilEnEchec | upnp::Etat::Usurpee(_)) | None => None,
     }
 }
 

@@ -231,7 +231,7 @@ fn complements_scan_markdown(m: &mut String, r: &Rapport) {
                     "UPnP off or absent on the router: no device can open a port to the Internet by itself."
                 );
             }
-            upnp::Etat::OutilAbsent => {
+            upnp::Etat::OutilAbsent | upnp::Etat::OutilEnEchec => {
                 let _ = trwln!(
                     m,
                     "Non vérifié : les redirections du routeur n'ont pas pu être lues.",
@@ -616,7 +616,7 @@ fn complements_scan_html(h: &mut String, r: &Rapport) {
                 "<div class=meta>UPnP coupé ou absent sur le routeur : aucun appareil ne peut ouvrir de port vers Internet tout seul.</div>",
                 "<div class=meta>UPnP off or absent on the router: no device can open a port to the Internet by itself.</div>"
             )),
-            upnp::Etat::OutilAbsent => {
+            upnp::Etat::OutilAbsent | upnp::Etat::OutilEnEchec => {
                 let _ = write!(
                     h,
                     "<div class=ligne>{}<div>{}</div></div>",

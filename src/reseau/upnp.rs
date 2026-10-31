@@ -20,8 +20,13 @@ pub enum Etat {
     Absent,
     /// UPnP actif : ce que la box a répondu (ses redirections, peut-être aucune ; peut-être refusées, voir `lues`).
     Actif(Box<Lecture>),
-    /// La box n'a pas pu être interrogée, ni en Rust ni par l'outil de repli : non vérifié.
+    /// La box n'a pas pu être interrogée, ni en Rust ni par l'outil de repli, qui manque : non vérifié. Jamais sous
+    /// Windows, dont l'interface UPnP fait partie du système.
+    #[cfg_attr(windows, allow(dead_code))]
     OutilAbsent,
+    /// La box n'a pas pu être interrogée : le client natif n'a pas pu partir, et l'outil de repli, installé, a
+    /// échoué ou n'a rien lu d'elle. Non vérifié ; l'installer n'y changerait rien, à dire autrement qu'`OutilAbsent`.
+    OutilEnEchec,
     /// La passerelle n'a pas répondu en UPnP, mais d'autres appareils du réseau se disent box (leurs adresses) :
     /// suspect, et rien n'est cru d'eux. Ce que la vraie box ouvre n'est pas vérifié.
     Usurpee(Vec<Ipv4Addr>),
@@ -76,11 +81,17 @@ fn lecture_d_outil(redirections: Vec<Redirection>, adresse_externe: Option<Ipv4A
     }))
 }
 
-/// Le repli : `upnpc -l` (miniupnpc), qui attend les réponses de la box jusqu'à 8 s.
+/// Le repli : `upnpc -l` (miniupnpc), qui attend les réponses de la box jusqu'à 8 s. Sans réponse (pas lancé, ou
+/// délai dépassé), absent seulement s'il n'est pas dans le PATH.
 #[cfg(unix)]
 fn etat_par_outil() -> (Etat, Option<Ipv4Addr>) {
     let Some(r) = crate::commande::lancer(std::process::Command::new("upnpc").arg("-l"), 20) else {
-        return (Etat::OutilAbsent, None);
+        let etat = if crate::machine::unix::present("upnpc") {
+            Etat::OutilEnEchec
+        } else {
+            Etat::OutilAbsent
+        };
+        return (etat, None);
     };
     juger_upnpc(r.code, &format!("{}\n{}", r.sortie, r.erreurs))
 }
@@ -89,10 +100,10 @@ fn etat_par_outil() -> (Etat, Option<Ipv4Addr>) {
 /// erreur) ; une lecture seulement s'il a réussi (code 0). Un échec d'autre chose (réseau, délai de la box, option
 /// refusée) n'est pas « UPnP actif, rien d'ouvert » : non vérifié (campagne 6, B1).
 #[cfg_attr(windows, allow(dead_code))]
-fn juger_upnpc(code: Option<i32>, texte: &str) -> (Etat, Option<Ipv4Addr>) {
+pub(crate) fn juger_upnpc(code: Option<i32>, texte: &str) -> (Etat, Option<Ipv4Addr>) {
     let adresse = adresse_externe(texte);
     match lire_upnpc(texte, adresse) {
-        Etat::Actif(_) if code != Some(0) => (Etat::OutilAbsent, None),
+        Etat::Actif(_) if code != Some(0) => (Etat::OutilEnEchec, None),
         e => (e, adresse),
     }
 }
@@ -106,7 +117,7 @@ fn etat_par_outil() -> (Etat, Option<Ipv4Addr>) {
          if ($null -eq $c) { 'UPNP_ABSENT' } else { 'UPNP_ACTIF'; $c | ForEach-Object { \
          \"UPNP|$($_.Protocol)|$($_.ExternalPort)|$($_.InternalClient)|$($_.InternalPort)|$($_.Description)\" } }",
     ) else {
-        return (Etat::OutilAbsent, None);
+        return (Etat::OutilEnEchec, None);
     };
     (lire_upnp_windows(&sortie), None)
 }
@@ -156,7 +167,7 @@ fn lire_upnpc(sortie: &str, adresse: Option<Ipv4Addr>) -> Etat {
         liste.push(redirection_d_outil(proto, public, ip, port, description));
     }
     if !lue && liste.is_empty() {
-        return Etat::OutilAbsent;
+        return Etat::OutilEnEchec;
     }
     lecture_d_outil(liste, adresse)
 }
@@ -246,16 +257,16 @@ mod tests {
     /// B1 (campagne 6) : un échec d'`upnpc` autre que « pas de box UPnP » n'est pas « actif, rien d'ouvert ».
     #[test]
     fn echec_de_upnpc_non_verifie() {
-        assert_eq!(lire_upnpc("", None), Etat::OutilAbsent);
+        assert_eq!(lire_upnpc("", None), Etat::OutilEnEchec);
         let erreur = "upnpc : miniupnpc library test client, version 2.2.5.\nList of UPNP devices found on the network :\n\
                       UPNP_GetValidIGD() failed: Connection timed out\n";
-        assert_eq!(lire_upnpc(erreur, None), Etat::OutilAbsent);
-        assert_eq!(juger_upnpc(Some(0), ""), (Etat::OutilAbsent, None));
+        assert_eq!(lire_upnpc(erreur, None), Etat::OutilEnEchec);
+        assert_eq!(juger_upnpc(Some(0), ""), (Etat::OutilEnEchec, None));
         // Une table lue mais un code d'échec : pas cru.
         let table = "Found valid IGD : http://10.0.0.1:5000/ctl\nExternalIPAddress = 203.0.113.7\n \
                      i protocol exPort->inAddr:inPort description remoteHost leaseTime\n";
-        assert_eq!(juger_upnpc(Some(1), table), (Etat::OutilAbsent, None));
-        assert_eq!(juger_upnpc(None, table), (Etat::OutilAbsent, None));
+        assert_eq!(juger_upnpc(Some(1), table), (Etat::OutilEnEchec, None));
+        assert_eq!(juger_upnpc(None, table), (Etat::OutilEnEchec, None));
         // « Pas de box UPnP » : miniupnpc sort en erreur, c'est bien une réponse.
         assert_eq!(
             juger_upnpc(Some(1), "No valid UPNP Internet Gateway Device found.\n"),

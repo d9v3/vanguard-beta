@@ -359,7 +359,7 @@ pub fn tester() {
     let (upnp_actif, etat_upnp) = match upnp {
         Etat::Actif(_) => (Some(true), tr!("actif", "on")),
         Etat::Absent => (Some(false), tr!("coupé ou absent", "off or absent")),
-        Etat::OutilAbsent => (
+        Etat::OutilAbsent | Etat::OutilEnEchec => (
             None,
             tr!("inconnu (routeur non interrogé)", "unknown (router not queried)"),
         ),

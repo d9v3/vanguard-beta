@@ -33,7 +33,6 @@ pub(crate) fn chemin_dans(cmd: &str, path: &OsStr) -> Option<PathBuf> {
 }
 
 /// Le programme `cmd` est-il dans le PATH, exécutable ?
-#[cfg_attr(target_os = "linux", allow(dead_code))]
 pub(crate) fn present(cmd: &str) -> bool {
     chemin_dans(cmd, &std::env::var_os("PATH").unwrap_or_default()).is_some()
 }
