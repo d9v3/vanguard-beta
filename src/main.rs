@@ -4410,10 +4410,10 @@ mod tests_menu {
         std::fs::read_to_string(format!("{}/{fichier}", env!("CARGO_MANIFEST_DIR"))).unwrap()
     }
 
-    /// Les attributs d'un fichier Rust, par groupes : ceux qui se suivent au-dessus d'un même élément, avec la ligne de
-    /// cet élément. Un attribut va de `#[` (ou `#![`) en tête de ligne au `]` qui le ferme, chaînes comprises (une
-    /// raison peut contenir des crochets).
-    fn groupes_d_attributs(texte: &str) -> Vec<(Vec<String>, String)> {
+    /// Les lignes d'un fichier Rust, chacune avec ses attributs : ceux qui se suivent au-dessus d'un même élément (aucun
+    /// pour la plupart des lignes). Un attribut va de `#[` (ou `#![`) en tête de ligne au `]` qui le ferme, chaînes
+    /// comprises (une raison peut contenir des crochets) ; l'élément peut suivre sur la même ligne.
+    fn elements_et_attributs(texte: &str) -> Vec<(Vec<String>, String)> {
         let mut groupes = Vec::new();
         let mut attributs: Vec<String> = Vec::new();
         let mut reste = texte;
@@ -4449,13 +4449,80 @@ mod tests_menu {
             // L'élément d'un groupe commence après ses attributs (et les blancs qui les suivent).
             let reste_lu = if attributs.is_empty() { reste } else { ligne_vide };
             let (ligne, apres) = reste_lu.split_once('\n').unwrap_or((reste_lu, ""));
-            if !attributs.is_empty() {
-                groupes.push((std::mem::take(&mut attributs), ligne.trim().to_string()));
-            }
+            groupes.push((std::mem::take(&mut attributs), ligne.trim().to_string()));
             if apres.is_empty() && ligne.len() == reste_lu.len() {
                 return groupes;
             }
             reste = apres;
+        }
+    }
+
+    /// Les modules hors ligne qu'un fichier déclare et que le banc compile, avec leur `#[path]` : chaque `mod x;` avec
+    /// SES attributs (deux déclarations du même nom sous des `cfg` exclusifs ont chacune les leurs), sauf les essais et
+    /// les preuves de Kani (outils/preuves/), que le banc ne compile jamais.
+    fn enfants_hors_ligne(elements: &[(Vec<String>, String)]) -> Vec<(&str, Option<&str>)> {
+        elements
+            .iter()
+            .filter_map(|(attributs, element)| {
+                let nom = module_hors_ligne(element)?;
+                if attributs.iter().any(|a| a == "#[cfg(test)]" || a == "#[cfg(kani)]") {
+                    return None;
+                }
+                Some((nom, attributs.iter().find_map(|a| chemin_de(a))))
+            })
+            .collect()
+    }
+
+    /// Un `allow` ou un `expect` (`cfg_attr` compris) qui tait tous les avertissements ou tout le groupe restriction,
+    /// donc aussi les lints des modules fuzzés : `warnings` l'emporte même sur `-D warnings` de la ligne de commande.
+    fn tait_tout(attribut: &str) -> bool {
+        // Hors des chaînes : une raison peut parler des avertissements.
+        let (mut code, mut chaine, mut echappe) = (String::new(), false, false);
+        for c in attribut.chars() {
+            match c {
+                _ if echappe => echappe = false,
+                '\\' if chaine => echappe = true,
+                '"' => chaine = !chaine,
+                _ if !chaine => code.push(c),
+                _ => {}
+            }
+        }
+        (code.contains("allow(") || code.contains("expect("))
+            && code
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
+                .any(|mot| mot == "warnings" || mot == "clippy::restriction")
+    }
+
+    /// La garde suit chaque déclaration avec ses propres attributs : une variante sous `cfg` qui porte le même nom
+    /// qu'une déclaration sautée (essais, Kani) ou qu'une autre plateforme est lue à son propre chemin.
+    #[test]
+    fn garde_des_modules_fuzzes_lit_chaque_declaration() {
+        let texte = "#[cfg(kani)]\nmod lecteur;\n#[cfg(not(kani))]\n#[path = \"lecteur_brut.rs\"]\nmod lecteur;\n\n\
+                     #[cfg(unix)]\nmod plateforme;\n#[cfg(windows)]\n// la variante\n#[path = \"plateforme_win.rs\"]\n\
+                     pub(crate) mod plateforme;\n#[cfg(test)]\nmod tests;\nmod simple;\n#[cfg(unix)] mod une_ligne;\n";
+        assert_eq!(
+            enfants_hors_ligne(&elements_et_attributs(texte)),
+            [
+                ("lecteur", Some("lecteur_brut.rs")),
+                ("plateforme", None),
+                ("plateforme", Some("plateforme_win.rs")),
+                ("simple", None),
+                ("une_ligne", None),
+            ]
+        );
+        for a in [
+            "#[allow(warnings)]",
+            "#![expect(unused, warnings, reason = \"x\")]",
+            "#[cfg_attr(fuzzing, allow(clippy::restriction))]",
+        ] {
+            assert!(tait_tout(a), "{a}");
+        }
+        for a in [
+            "#[allow(unused_mut)]",
+            "#[expect(clippy::as_conversions, reason = \"warnings : non\")]",
+            "#[cfg(warnings)]",
+        ] {
+            assert!(!tait_tout(a), "{a}");
         }
     }
 
@@ -4483,15 +4550,22 @@ mod tests_menu {
     /// Chaque module de src/ que le banc de fuzzing compile refuse débordements et `as` (Cargo.toml, [lints.clippy]) :
     /// ceux que fuzz/fuzz_targets/ et fuzz/cale/ incluent par `#[path]` (écrit avec ou sans espaces) ou `include!`,
     /// puis, de proche en proche, chaque `mod x;` qu'ils déclarent hors essais. Et aucun d'eux ne lève ces lints
-    /// ailleurs que sur un module d'essais : seul `#[expect]` (avec sa raison) les tait sur du code lu par le banc. Un
+    /// ailleurs que sur un module d'essais : seul `#[expect]` (avec sa raison, exigée) les tait sur du code lu par le banc,
+    /// et rien n'y tait `warnings` ni tout le groupe restriction. Un
     /// lecteur ajouté au banc sans l'attribut, ou un `allow` glissé sur une fonction, garderait des calculs bruts sur
     /// des données hostiles sans que clippy le dise.
     #[test]
     fn chaque_module_fuzze_refuse_debordements_et_as() {
         use std::path::{Path, PathBuf};
         const ATTRIBUT: &str = "#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]";
-        // Les noms qui lèvent ou baissent ces lints : les deux, et le groupe qui les contient.
-        const NOMS: [&str; 3] = ["arithmetic_side_effects", "as_conversions", "clippy::restriction"];
+        // Les noms qui lèvent ou baissent ces lints : les deux (et l'ancien nom du premier), et le groupe qui les
+        // contient ; `warnings`, qui les tait aussi, est refusé par `tait_tout`.
+        const NOMS: [&str; 4] = [
+            "arithmetic_side_effects",
+            "integer_arithmetic",
+            "as_conversions",
+            "clippy::restriction",
+        ];
         let racine = Path::new(env!("CARGO_MANIFEST_DIR"));
         let src = racine.join("src").canonicalize().unwrap();
         let mut a_lire: Vec<PathBuf> = Vec::new();
@@ -4500,7 +4574,7 @@ mod tests_menu {
                 let banc = banc.unwrap().path();
                 let texte = std::fs::read_to_string(&banc).unwrap();
                 let dossier = banc.parent().unwrap();
-                let groupes = groupes_d_attributs(&texte);
+                let groupes = elements_et_attributs(&texte);
                 let mut chemins: Vec<&str> = groupes
                     .iter()
                     .flat_map(|(a, _)| a.iter().filter_map(|a| chemin_de(a)))
@@ -4530,7 +4604,7 @@ mod tests_menu {
                 continue;
             }
             let texte = std::fs::read_to_string(&module).unwrap();
-            let groupes = groupes_d_attributs(&texte);
+            let groupes = elements_et_attributs(&texte);
             // Les enfants hors ligne : à côté d'un mod.rs, dans le dossier du même nom sinon (règle de rustc).
             let dossier = module.parent().unwrap();
             let sous = if module.file_name().unwrap() == "mod.rs" {
@@ -4538,14 +4612,8 @@ mod tests_menu {
             } else {
                 dossier.join(module.file_stem().unwrap())
             };
-            for nom in texte.lines().filter_map(|l| module_hors_ligne(l.trim())) {
-                let groupe = groupes.iter().find(|(_, l)| module_hors_ligne(l) == Some(nom));
-                let attributs = groupe.map_or(&[][..], |(a, _)| a.as_slice());
-                // Les essais, et les preuves de Kani (outils/preuves/), que le banc ne compile jamais.
-                if attributs.iter().any(|a| a == "#[cfg(test)]" || a == "#[cfg(kani)]") {
-                    continue;
-                }
-                let enfant = match attributs.iter().find_map(|a| chemin_de(a)) {
+            for (nom, chemin) in enfants_hors_ligne(&groupes) {
+                let enfant = match chemin {
                     Some(c) => dossier.join(c),
                     None if sous.join(format!("{nom}.rs")).exists() => sous.join(format!("{nom}.rs")),
                     None => sous.join(nom).join("mod.rs"),
@@ -4563,11 +4631,16 @@ mod tests_menu {
                 let essais = attributs.iter().any(|a| a == "#[cfg(test)]")
                     && element.trim_start_matches("pub(crate) ").starts_with("mod ");
                 for a in attributs.iter().filter(|a| NOMS.iter().any(|n| a.contains(n))) {
-                    let permis = a == ATTRIBUT || a.starts_with("#[expect(") || essais && a.starts_with("#[allow(");
+                    // Un `#[expect]` dit pourquoi : sans raison, il tairait un calcul sans preuve.
+                    let avec_raison = a.split_whitespace().collect::<String>().contains("reason=\"");
+                    let permis = a == ATTRIBUT
+                        || a.starts_with("#[expect(") && avec_raison
+                        || essais && a.starts_with("#[allow(");
                     if !permis {
                         fautes.push(a.clone());
                     }
                 }
+                fautes.extend(attributs.iter().filter(|a| tait_tout(a)).cloned());
             }
             // Un nom de ces lints hors de tout attribut lu (au milieu d'une ligne, dans un cfg_attr…) : refusé aussi.
             let vus: usize = groupes
