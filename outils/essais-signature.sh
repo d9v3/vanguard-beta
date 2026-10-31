@@ -33,7 +33,8 @@
 #      publier-version.sh (empreintes_de_la_ci, face à un faux gh) refuse un octet changé, un travail en échec ou
 #      un journal sans empreintes, et ignore une autre branche (campagne d'attaque n° 6, F1).
 #   6c. Au branchement de la clé, deployer.sh (ci_verte, face à un faux gh) ne récupère ni ne compile un commit de
-#      GitHub sans CI verte sur ce commit exact (ci.yml, master ; campagne d'attaque n° 6, F4).
+#      GitHub sans CI verte sur ce commit exact (ci.yml, master ; campagne d'attaque n° 6, F4), et dit à part gh sans
+#      compte connecté ou introuvable (sinon, sous le service de la clé, « réessayé » pour toujours sans alerte).
 #   6d. Un passe-droit de publier-version.sh (VANGUARD_PUBLIER_SANS_EMPREINTES_CI, VANGUARD_PUBLIER_SANS_VM) est dit
 #      en tête des notes de la page (notes, face à un faux gh) et gardé dans le bloc de sa version de l'historique
 #      signé (signer-versions.sh --passe-droit), sous la forme que lit github.rs, jamais dans derniere.txt.
@@ -568,6 +569,8 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 [[ -f $(dirname "$0")/injoignable ]] && exit 1
+# Comme le vrai gh sans compte connecté (sans rien demander à GitHub).
+[[ -f $(dirname "$0")/non-connecte ]] && { echo "To get started with GitHub CLI, please run:  gh auth login" >&2; exit 4; }
 jq -r --arg c "$commit" "[.[] | select(.headSha == \$c)] | $q" "$(dirname "$0")/runs.json"
 GH
   chmod +x "$F/gh"
@@ -597,13 +600,28 @@ GH
     ok "branchement : seul un commit entier (40 caractères) est cherché"
   touch "$F/injoignable"
   verte "$A" && ko "branchement : gh sans réponse vaut CI verte" ||
-    ok "branchement : gh sans réponse (hors ligne, pas connecté) ne vaut pas CI verte"
+    ok "branchement : gh sans réponse (hors ligne) ne vaut pas CI verte"
+  # Hors ligne n'est pas « pas connecté » : l'un passe au branchement suivant, l'autre jamais sans qu'on le règle.
+  code_verte() { (cd "$T" && PATH="$1" "$BASH" -c "source '$T/ci_verte.sh'; ci_verte '$2'") >/dev/null 2>&1; echo $?; }
+  [[ $(code_verte "$F:$PATH" "$A") == 1 ]] && ok "branchement : gh sans réponse se dit « pas verte », à réessayer" ||
+    ko "branchement : gh sans réponse se dit autrement que « pas verte » ($(code_verte "$F:$PATH" "$A"))"
   rm -f "$F/injoignable"
+  touch "$F/non-connecte"
+  [[ $(code_verte "$F:$PATH" "$A") == 2 ]] && ok "branchement : gh sans compte connecté se dit à part (code 2)" ||
+    ko "branchement : gh sans compte connecté se confond avec une CI en cours ($(code_verte "$F:$PATH" "$A"))"
+  rm -f "$F/non-connecte"
+  # gh absent du PATH du service : un PATH qui n'a que timeout.
+  mkdir -p "$T/sans-gh" && ln -sf "$(command -v timeout)" "$T/sans-gh/timeout"
+  [[ $(code_verte "$T/sans-gh" "$A") == 3 ]] && ok "branchement : gh introuvable se dit à part (code 3)" ||
+    ko "branchement : gh introuvable se confond avec une CI en cours ($(code_verte "$T/sans-gh" "$A"))"
   awk '/elif git merge-base --is-ancestor HEAD "\$DISTANT"; then/ { e = 1; next }
-    e && /if ci_verte "\$DISTANT"; then/ { v = 1; e = 0; next } e && /git merge/ { exit 1 }
-    v && /git merge -q --ff-only "\$DISTANT"/ { m = 1 } END { exit !(v && m) }' "$DEPOT/outils/deployer.sh" &&
-    ok "deployer.sh --branchement ne fusionne le commit de GitHub qu'après ci_verte" ||
-    ko "deployer.sh --branchement fusionne et compile un commit de GitHub sans CI verte"
+    e && /ci_verte "\$DISTANT" \|\| VERTE=\$\?/ { c = 1; next } e && c && /if \(\(VERTE == 0\)\); then/ { v = 1; e = 0; next }
+    e && /git merge/ { exit 1 }
+    v && !m && /git merge -q --ff-only "\$DISTANT"/ { m = 1; next }
+    m && /elif \(\(VERTE == 2 \|\| VERTE == 3\)\); then/ { d = 1 } d && /avertir_cle/ { a = 1 }
+    END { exit !(v && m && a) }' "$DEPOT/outils/deployer.sh" &&
+    ok "deployer.sh --branchement ne fusionne le commit de GitHub qu'après ci_verte, et dit gh pas connecté à part" ||
+    ko "deployer.sh --branchement fusionne sans CI verte, ou tait que gh n'est pas connecté"
 else
   echo "  (sauté : jq absent, pas de faux gh pour le branchement de la clé)"
 fi

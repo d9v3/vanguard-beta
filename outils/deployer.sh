@@ -210,14 +210,20 @@ fi
 # GitHub pris pourrait pousser sur master malgré la protection ; la CI ne prouve pas que le code est sain, mais un
 # commit poussé de travers, sans passage ou en échec, n'est pas exécuté ici (campagne d'attaque n° 6, F4). gh absent,
 # hors ligne ou sans réponse : pas vert. Lue telle quelle par outils/essais-signature.sh.
+# Rend 0 (verte), 1 (pas verte, ou pas encore : réessayé au branchement suivant), 2 (gh sans compte connecté) ou 3
+# (gh introuvable). Sous vanguard-cle.service, 2 et 3 dureraient pour toujours sous le même « réessayé » que la CI en
+# cours : l'appelant les dit à part. gh rend 4 quand aucun compte n'est connecté, sans rien demander à GitHub.
 ci_verte() {
-  local n
+  local n code=0
   [[ $1 =~ ^[0-9a-f]{40}$ ]] || return 1
   n=$(timeout 60 gh run list --workflow ci.yml --branch master --commit "$1" --limit 20 \
     --json headSha,headBranch,event,status,conclusion \
     -q "[.[] | select(.headSha == \"$1\" and .headBranch == \"master\" and .status == \"completed\"
       and .conclusion == \"success\" and (.event == \"push\" or .event == \"workflow_dispatch\"
-      or .event == \"schedule\"))] | length" 2>/dev/null) || return 1
+      or .event == \"schedule\"))] | length" 2>/dev/null) || code=$?
+  ((code == 4)) && return 2
+  ((code == 127)) && return 3
+  ((code == 0)) || return 1
   [[ $n =~ ^[1-9][0-9]*$ ]]
 }
 
@@ -231,8 +237,20 @@ if [[ $MODE == --branchement ]]; then
       if [[ -n $(git status --porcelain --untracked-files=no) ]]; then
         echo "GitHub a une version plus récente, mais des changements locaux sont en cours : rien de récupéré."
       elif git merge-base --is-ancestor HEAD "$DISTANT"; then
-        if ci_verte "$DISTANT"; then
+        VERTE=0
+        ci_verte "$DISTANT" || VERTE=$?
+        if ((VERTE == 0)); then
           git merge -q --ff-only "$DISTANT" && VENU_DE_GITHUB=1 && echo "Dernière version récupérée de GitHub."
+        elif ((VERTE == 2 || VERTE == 3)); then
+          if ((VERTE == 2)); then
+            POURQUOI="gh n'a aucun compte GitHub connecté pour cet utilisateur (gh auth login, une fois)"
+          else
+            POURQUOI="gh est introuvable dans le PATH de ce service (installer gh, ou l'ajouter au PATH du service)"
+          fi
+          echo "GitHub a une version plus récente (${DISTANT:0:12}), mais sa CI ne peut pas être lue : $POURQUOI."
+          echo "Rien de récupéré ni compilé de GitHub, copie de la version locale ; tant que ce n'est pas réglé, aucune"
+          echo "version de GitHub ne sera récupérée au branchement."
+          avertir_cle "Vanguard : versions de GitHub jamais récupérées" "$POURQUOI."
         else
           echo "GitHub a une version plus récente (${DISTANT:0:12}), sans CI verte sur ce commit exact (ci.yml, master) :"
           echo "rien de récupéré ni compilé de GitHub, copie de la version locale. Réessayé au prochain branchement."
