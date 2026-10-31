@@ -589,8 +589,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn en_root_seulement_un_dossier_de_root() {
-        let d = crate::essais::temporaire().join(format!("vanguard-sur-{}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
+        let d = crate::essais::Jetable::nouveau("sur");
         if crate::socle::uid() == 0 {
             return crate::essais::saute("lancé en root : un dossier à soi est à root");
         }

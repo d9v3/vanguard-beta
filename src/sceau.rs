@@ -1548,11 +1548,9 @@ pub(crate) fn connus_sous(dossier: &Path, sous: &str) -> bool {
 mod tests {
     use super::*;
 
-    fn jetable(nom: &str) -> PathBuf {
-        let d = crate::essais::temporaire().join(format!("vanguard-sceau-{nom}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    /// Retiré à la fin de l'essai, même fermé ou après une panique (M-1 de la relecture des restes c6).
+    fn jetable(nom: &str) -> crate::essais::Jetable {
+        crate::essais::Jetable::nouveau(&format!("sceau-{nom}"))
     }
 
     /// E5-M1 (campagne 5) : un dossier à la place de `sceaux.verrou`. Rien ne s'écrit, et le bilan le dit (élevé) en
@@ -2025,7 +2023,7 @@ mod tests {
         ecrire_dans(&d, APPRIS, b"{}").unwrap();
         std::fs::remove_file(d.join(TEMOIN)).unwrap();
         std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o555)).unwrap();
-        let refuse = || TEMOINS_REFUSES.lock().unwrap().contains(&d);
+        let refuse = || TEMOINS_REFUSES.lock().unwrap().contains(&d.to_path_buf());
         assert!(!refuse());
         for _ in 0..3 {
             assert!(matches!(lire_dans(&d, APPRIS), Lecture::Intact(_)));
@@ -2078,7 +2076,7 @@ mod tests {
         let d = jetable("ensemble");
         let fils: Vec<_> = proteges()
             .map(|nom| {
-                let d = d.clone();
+                let d = d.to_path_buf();
                 std::thread::spawn(move || {
                     attendre_en_essai(std::time::Duration::from_secs(600));
                     for i in 0..5 {
@@ -2278,7 +2276,7 @@ mod tests {
     /// Un dossier où cette forme-ci a servi (un réglage écrit, un événement noté), dont les sceaux sont ramenés à une
     /// forme d'avant comme le ferait qui veut faire reprendre un `parametres.json` forgé : `format` à 0, plus de
     /// `repris`, `parametres.json` retiré des `vus` et des `fichiers`, et seulement les `vus` d'avant.
-    fn ramene(nom: &str, abimer: impl FnOnce(&Path, &mut Registre)) -> PathBuf {
+    fn ramene(nom: &str, abimer: impl FnOnce(&Path, &mut Registre)) -> crate::essais::Jetable {
         let d = jetable(nom);
         ecrire_dans(&d, crate::parametres::PARAMETRES, br#"{"hors_ligne":false}"#).unwrap();
         crate::modele::journal::noter_dans(
@@ -2416,7 +2414,7 @@ mod tests {
 
     /// Des sceaux d'une 0.87 qui n'avait encore rien noté au journal (ni tête, ni segment, ni verrou), avec un
     /// `parametres.json` qu'elle ne scellait pas.
-    fn sceaux_d_avant_sans_journal(nom: &str) -> PathBuf {
+    fn sceaux_d_avant_sans_journal(nom: &str) -> crate::essais::Jetable {
         let d = jetable(nom);
         std::fs::write(d.join(REGISTRE), br#"{"depuis":"2026-10-01","fichiers":{}}"#).unwrap();
         std::fs::write(d.join(crate::parametres::PARAMETRES), FORGE).unwrap();

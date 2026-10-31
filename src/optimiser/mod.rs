@@ -990,11 +990,9 @@ mod tests {
         assert_eq!(relu.reglages["x"].valeurs, [Some("dword:1".to_string()), None]);
     }
 
-    fn dossier_jetable(nom: &str) -> std::path::PathBuf {
-        let dossier = crate::essais::temporaire().join(format!("vanguard-reglages-{nom}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dossier);
-        std::fs::create_dir_all(&dossier).unwrap();
-        dossier
+    /// Au nom unique : `plugins::reglages` prenait le même, et les deux essais « illisible » se croisaient.
+    fn dossier_jetable(nom: &str) -> crate::essais::Jetable {
+        crate::essais::Jetable::nouveau(&format!("optimiser-{nom}"))
     }
 
     fn copies(dossier: &std::path::Path, debut: &str) -> usize {

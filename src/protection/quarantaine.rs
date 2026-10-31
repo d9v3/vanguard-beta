@@ -497,11 +497,9 @@ pub fn menu() {
 mod tests {
     use super::*;
 
-    fn jetable(nom: &str) -> PathBuf {
-        let d = crate::essais::temporaire().join(format!("vanguard-quarantaine-{nom}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    /// Retiré à la fin de l'essai, même fermé ou après une panique (M-1 de la relecture des restes c6).
+    fn jetable(nom: &str) -> crate::essais::Jetable {
+        crate::essais::Jetable::nouveau(&format!("quarantaine-{nom}"))
     }
 
     #[test]

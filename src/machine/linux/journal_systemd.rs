@@ -1457,11 +1457,9 @@ mod tests {
         }
     }
 
-    fn jetable(nom: &str) -> PathBuf {
-        let d = crate::essais::temporaire().join(format!("vanguard-journal-{nom}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    /// Retiré à la fin de l'essai, même fermé ou après une panique (M-1 de la relecture des restes c6).
+    fn jetable(nom: &str) -> crate::essais::Jetable {
+        crate::essais::Jetable::nouveau(&format!("journal-{nom}"))
     }
 
     /// Un journal inventé : des erreurs de deux démarrages, un message compressé en zstd, un autre en LZ4.

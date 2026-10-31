@@ -457,11 +457,9 @@ mod tests {
     use super::super::gvdb::fabrique::{Contenu, base_dconf, chaines, fichier, valeur};
     use super::*;
 
-    fn jetable(nom: &str) -> PathBuf {
-        let d = crate::essais::temporaire().join(format!("vanguard-dconf-{nom}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    /// Retiré à la fin de l'essai, même fermé ou après une panique (M-1 de la relecture des restes c6).
+    fn jetable(nom: &str) -> crate::essais::Jetable {
+        crate::essais::Jetable::nouveau(&format!("dconf-{nom}"))
     }
 
     fn lieux(racine: &Path) -> Lieux {

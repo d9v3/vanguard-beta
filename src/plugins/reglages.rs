@@ -269,18 +269,17 @@ mod tests {
     use super::*;
 
     /// Un dossier des extensions jetable : « plugins » sous un dossier à lui, qui garde les sceaux comme celui de
-    /// Vanguard.
-    fn jetable(nom: &str) -> std::path::PathBuf {
-        let parent = crate::essais::temporaire().join(format!("vanguard-reglages-{nom}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&parent);
+    /// Vanguard. Le parent, au nom unique (un autre module d'essais prenait le même), est retiré avec la garde.
+    fn jetable(nom: &str) -> (crate::essais::Jetable, std::path::PathBuf) {
+        let parent = crate::essais::Jetable::nouveau(&format!("reglages-{nom}"));
         let d = parent.join("plugins");
         super::super::creer_prive(&d).unwrap();
-        d
+        (parent, d)
     }
 
     #[test]
     fn couper_demande_une_fois_remettre_jamais() {
-        let d = jetable("bascule");
+        let (_garde, d) = jetable("bascule");
         // Refusé : rien ne change.
         assert!(!basculer(&d, |_| false).unwrap());
         assert_eq!(charger(&d), Reglages::default());
@@ -304,7 +303,6 @@ mod tests {
         );
         oublier(&d, false, "salon").unwrap();
         assert!(charger(&d).plugin_a_moi("salon", "a1").is_none());
-        let _ = std::fs::remove_dir_all(d.parent().unwrap());
     }
 
     /// Un fichier qui ne se lit plus n'est jamais écrasé en silence : couper (menu Extensions, Paramètres,
@@ -312,7 +310,7 @@ mod tests {
     /// illisible, les restrictions restent actives, et couper redemande l'accord.
     #[test]
     fn fichier_illisible_mis_de_cote() {
-        let d = jetable("illisible");
+        let (_garde, d) = jetable("illisible");
         assert_eq!(lire(&d), Ok(Reglages::default()), "absent : les défauts, sans erreur");
         let abime = r#"{"coupure_confirmee": true, "plugins_a_moi": [{"nom": "salon", "empreinte": "a1"}] pas du json"#;
         std::fs::write(d.join(FICHIER), abime).unwrap();
@@ -349,6 +347,5 @@ mod tests {
         assert!(!basculer(&d, |_| panic!("remettre ne demande rien")).unwrap());
         assert_eq!(charger(&d).plugins_a_moi.len(), 1);
         assert_eq!(mis_de_cote(), gardes);
-        let _ = std::fs::remove_dir_all(d.parent().unwrap());
     }
 }

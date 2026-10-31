@@ -11,7 +11,6 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 // Les essais sautés, comptés par outils/verifier.sh comme ceux des tests unitaires.
@@ -24,16 +23,9 @@ struct Sortie {
     erreurs: String,
 }
 
-/// Un dossier personnel neuf pour chaque lancement.
-fn maison_jetable() -> PathBuf {
-    static NUMERO: AtomicUsize = AtomicUsize::new(0);
-    let d = essais::temporaire().join(format!(
-        "vanguard-essai-{}-{}",
-        std::process::id(),
-        NUMERO.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&d).unwrap();
-    d
+/// Un dossier personnel neuf pour chaque lancement, retiré à la fin de l'essai même s'il échoue ou se dit sauté.
+fn maison_jetable() -> essais::Jetable {
+    essais::Jetable::nouveau("essai")
 }
 
 /// Wine (tests Windows faits depuis Linux) n'a pas de PowerShell : les lectures du système y échouent, et c'est dit.
@@ -2524,7 +2516,7 @@ fn tickets_du_journal_regroupes() {
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("outils/journal-vers-github.py"))
         .arg(&fichier)
         .env("PATH", chemin)
-        .env("HOME", &d)
+        .env("HOME", &*d)
         .output()
         .unwrap();
     assert!(s.status.success(), "{}", String::from_utf8_lossy(&s.stderr));
@@ -2720,7 +2712,7 @@ fn lien_a_identifiants_rien_sur_le_disque() {
     );
     assert_eq!(s.code, Some(0), "{}", s.erreurs);
     assert!(s.texte.contains("identifiants retirés"), "{}", s.texte);
-    let mut a_voir = vec![maison.clone()];
+    let mut a_voir = vec![maison.to_path_buf()];
     let mut lus = 0;
     while let Some(d) = a_voir.pop() {
         for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {

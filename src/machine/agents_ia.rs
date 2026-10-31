@@ -1074,8 +1074,7 @@ mod tests {
     /// Absent : rien à dire ; présent mais illisible, trop gros ou invalide : la raison.
     #[test]
     fn fichiers_absents_ou_illisibles() {
-        let dossier = crate::essais::temporaire().join(format!("vanguard-agents-{}", std::process::id()));
-        std::fs::create_dir_all(&dossier).unwrap();
+        let dossier = crate::essais::Jetable::nouveau("agents-ia");
         assert_eq!(lire_fichier(&dossier.join("absent.json")), Ok(None));
         let bon = dossier.join("mcp.json");
         std::fs::write(&bon, "{ \"servers\": {}, // VS Code\n }").unwrap();

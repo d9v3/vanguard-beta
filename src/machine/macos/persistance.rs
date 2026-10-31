@@ -331,7 +331,7 @@ mod tests {
     #[test]
     fn dossier_refuse_et_agent_hors_bornes() {
         use std::os::unix::fs::PermissionsExt;
-        let racine = crate::essais::temporaire().join(format!("vanguard-agents-{}", std::process::id()));
+        let racine = crate::essais::Jetable::nouveau("persistance");
         let (refuse, gonfle, absent) = (racine.join("refuse"), racine.join("gonfle"), racine.join("absent"));
         std::fs::create_dir_all(&refuse).unwrap();
         std::fs::create_dir_all(&gonfle).unwrap();
@@ -385,15 +385,14 @@ mod tests {
     /// Le même fichier d'agent réécrit pour lancer un autre programme : autre clé, le choix d'avant ne la tait pas.
     #[test]
     fn agent_reecrit_autre_cle() {
-        let dossier = crate::essais::temporaire().join(format!("vanguard-agents-cle-{}", std::process::id()));
-        std::fs::create_dir_all(&dossier).unwrap();
+        let dossier = crate::essais::Jetable::nouveau("persistance-cle");
         let ecrire = |prog: &str| {
             std::fs::write(
                 dossier.join("com.exemple.aide.plist"),
                 format!("<plist><dict><key>Program</key><string>{prog}</string></dict></plist>"),
             )
             .unwrap();
-            let c = persistance_dans([(dossier.clone(), false)]);
+            let c = persistance_dans([(dossier.to_path_buf(), false)]);
             let alerte = c.iter().find(|c| c.probleme == Some(Niveau::Eleve)).unwrap();
             alerte.objet.clone()
         };
