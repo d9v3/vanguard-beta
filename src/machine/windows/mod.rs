@@ -123,19 +123,22 @@ pub fn winget_installer(id: &str) -> String {
 /// administrateur). Absent (Wine) : il ne démarre pas, et ce qu'il devait lire reste non vérifié. Vanguard lancé en
 /// administrateur : l'environnement réduit de `powershell_eleve`, le compte ne doit rien y glisser.
 pub fn powershell() -> Command {
-    if processus::eleve() {
-        return powershell_eleve();
-    }
     let mut c = Command::new(crate::commande::systeme32(r"WindowsPowerShell\v1.0\powershell.exe"));
-    c.env_remove("PSModulePath");
+    if processus::eleve() {
+        environnement::reduire(&mut c);
+    } else {
+        c.env_remove("PSModulePath");
+    }
     c
 }
 
-/// PowerShell pour un geste en administrateur : rien de l'environnement du compte (COR_PROFILER chargerait une DLL,
-/// PSModulePath un module des Documents), seulement les variables calculées par Windows (`environnement::reduire`).
+/// PowerShell pour un geste de Vanguard administrateur : rien de l'environnement du compte (COR_PROFILER chargerait
+/// une DLL, PSModulePath un module des Documents), seulement les variables calculées par Windows
+/// (`environnement::reduire`) ; lancé depuis System32, pas depuis le dossier (Téléchargements, clé) d'où Vanguard est
+/// parti.
 pub(crate) fn powershell_eleve() -> Command {
     let mut c = Command::new(crate::commande::systeme32(r"WindowsPowerShell\v1.0\powershell.exe"));
-    environnement::reduire(&mut c);
+    environnement::reduire(&mut c).current_dir(crate::commande::dossier_systeme());
     c
 }
 

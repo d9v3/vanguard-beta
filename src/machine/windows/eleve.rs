@@ -449,6 +449,13 @@ fn relancer_eleve(exe: &std::path::Path, parametres: &str) -> Result<Fils, u32> 
     let verbe = large("runas");
     let fichier: Vec<u16> = exe.as_os_str().encode_wide().chain(Some(0)).collect();
     let parametres = large(parametres);
+    // Le fils démarre dans System32, pas dans le dossier d'où Vanguard est parti (Téléchargements, clé USB) : rien
+    // de ce que le compte y a posé n'est trouvé par un nom relatif, ni par lui ni par ce qu'il lance.
+    let dossier: Vec<u16> = crate::commande::dossier_systeme()
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
     let mut info = InfoLancement {
         taille: u32::try_from(std::mem::size_of::<InfoLancement>()).map_err(|_| 0u32)?,
         masque: SANS_FERMER_PROCESSUS | SYNCHRONE | SANS_DIALOGUE_D_ERREUR,
@@ -456,7 +463,7 @@ fn relancer_eleve(exe: &std::path::Path, parametres: &str) -> Result<Fils, u32> 
         verbe: verbe.as_ptr(),
         fichier: fichier.as_ptr(),
         parametres: parametres.as_ptr(),
-        dossier: std::ptr::null(),
+        dossier: dossier.as_ptr(),
         affichage: 1,
         instance: std::ptr::null_mut(),
         liste: std::ptr::null_mut(),
@@ -624,6 +631,8 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
     unsafe {
         SetDefaultDllDirectories(CHARGER_DE_SYSTEM32);
     }
+    // Le dossier de départ demandé à ShellExecuteExW est System32 ; s'il n'a pas été suivi, il l'est ici.
+    let _ = std::env::set_current_dir(crate::commande::dossier_systeme());
     trp!(
         "Vanguard applique une correction (administrateur).",
         "Vanguard is applying a fix (administrator)."
@@ -895,24 +904,12 @@ fn lancer_programme(a: &gestes::Appel) -> Resultat {
         avant: None,
         raison,
     };
-    let systeme = crate::commande::dossier_systeme();
-    let Some(lecteur) = systeme
-        .to_str()
-        .and_then(|s| s.get(..2))
-        .filter(|l| l.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) && l.ends_with(':'))
-    else {
-        return refus(tr!("lecteur système introuvable", "system drive not found").to_string());
+    let mut commande = match commande_du_programme(a) {
+        Ok(c) => c,
+        Err(raison) => return refus(raison),
     };
-    let exe = match a.programme.dossier {
-        gestes::Dossier::Systeme32 => systeme.join(a.programme.exe),
-        gestes::Dossier::Defender => {
-            std::path::PathBuf::from(format!(r"{lecteur}\{}\{}", gestes::DOSSIER_DEFENDER, a.programme.exe))
-        }
-    };
-    // Le même environnement réduit que PowerShell : DISM ou sfc ne doivent rien charger de ce que le compte a posé.
-    let mut commande = std::process::Command::new(&exe);
-    super::environnement::reduire(&mut commande);
-    match commande.args(a.arguments(lecteur)).status() {
+    let exe = std::path::PathBuf::from(commande.get_program());
+    match commande.status() {
         Ok(s) => match s.code() {
             Some(3010) if a.reussite(3010) => Resultat {
                 reussi: true,
@@ -933,6 +930,28 @@ fn lancer_programme(a: &gestes::Appel) -> Resultat {
             crate::ui::affichable(&exe.to_string_lossy())
         )),
     }
+}
+
+/// La commande d'un programme fixe, prête à lancer : son chemin complet, ses arguments, l'environnement réduit
+/// (DISM ou sfc ne doivent rien charger de ce que le compte a posé) et System32 pour dossier courant.
+fn commande_du_programme(a: &gestes::Appel) -> Result<std::process::Command, String> {
+    let systeme = crate::commande::dossier_systeme();
+    let lecteur = systeme
+        .to_str()
+        .and_then(|s| s.get(..2))
+        .filter(|l| l.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) && l.ends_with(':'))
+        .ok_or_else(|| tr!("lecteur système introuvable", "system drive not found").to_string())?;
+    let exe = match a.programme.dossier {
+        gestes::Dossier::Systeme32 => systeme.join(a.programme.exe),
+        gestes::Dossier::Defender => {
+            std::path::PathBuf::from(format!(r"{lecteur}\{}\{}", gestes::DOSSIER_DEFENDER, a.programme.exe))
+        }
+    };
+    let mut commande = std::process::Command::new(exe);
+    super::environnement::reduire(&mut commande)
+        .current_dir(systeme)
+        .args(a.arguments(lecteur));
+    Ok(commande)
 }
 
 /// Se branche sur le tube du parent, puis vérifie que le serveur est bien le processus annoncé et que son programme
@@ -1281,6 +1300,25 @@ mod tests {
         std::fs::remove_file(&chemin).unwrap();
         assert!(a_montrer(&script(bonne)).is_err());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Ce que le fils lance part de System32, avec l'environnement réduit seulement : un programme fixe comme le script.
+    #[test]
+    fn le_fils_lance_depuis_system32_sans_l_environnement_du_compte() {
+        let systeme = crate::commande::dossier_systeme();
+        let script = super::super::powershell_eleve();
+        let a = gestes::analyser_programme(&gestes::ligne_programme("sfc-scannow", None)).unwrap();
+        let programme = commande_du_programme(&a).unwrap();
+        for c in [&script, &programme] {
+            assert_eq!(c.get_current_dir(), Some(systeme), "{c:?}");
+            let modules = c.get_envs().find(|(n, _)| *n == "PSModulePath").and_then(|(_, v)| v);
+            assert!(
+                modules.is_some_and(|m| !m.to_string_lossy().contains("Documents")),
+                "{c:?}"
+            );
+            assert!(c.get_envs().all(|(n, _)| n != "COR_PROFILER" && n != "Path"), "{c:?}");
+        }
+        assert_eq!(programme.get_program(), systeme.join("sfc.exe").as_os_str());
     }
 
     #[test]
