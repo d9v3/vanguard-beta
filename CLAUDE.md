@@ -93,6 +93,10 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
   committer LICENCES-TIERCES.txt.
 - `unsafe` seulement avec un commentaire `// SAFETY:` juste au-dessus (sans espace avant le deux-points : clippy,
   `undocumented_unsafe_blocks`, ne reconnaît que cette forme et refuse un bloc ou un `unsafe impl` sans lui).
+  `unsafe_code` est refusé à la racine : un nouvel `unsafe` demande `#[allow(unsafe_code)]` sur le seul élément
+  (fn, impl, static, bloc extern, `mod nom {` sans `mod x;` dedans), seul sur sa ligne, sous une ligne `// raison`
+  (FFI de quoi). Jamais dans un module lu par le banc de fuzzing : rustc le refuse (`forbid` des cibles), la garde
+  `chaque_module_fuzze_refuse_unsafe` aussi ; sortir l'appel système dans un module voisin (ex. `socle::identite`).
 - Le programme s'appelle Vanguard, point : aucun ancien nom dans le code, les textes, les commits ni sur GitHub. Seule
   exception : `src/passage.rs`, qui reprend ce qu'une version d'avant a posé sur un ordinateur (à retirer à la 1.0).
 - Les tests ne touchent jamais les vraies données de l'ordinateur : sous `cfg(test)`, `socle::dossier_local()` est un
