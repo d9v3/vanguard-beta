@@ -704,7 +704,7 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
             trp!(
                 "Le script de correction {} ne se lit plus ou a changé depuis que Vanguard l'a écrit : rien n'est fait, rien n'est demandé. Un autre programme y a touché : lancez une analyse antivirus, puis relancez la correction.",
                 "The fix script {} can no longer be read or has changed since Vanguard wrote it: nothing is done, nothing is asked. Another program touched it: run an antivirus scan, then run the fix again.",
-                crate::ui::affichable(&chemin)
+                crate::ui::affichable(chemin)
             );
             let _ = tube.write_all(format!("{FIN}\n").as_bytes());
             attendre_entree_pour_fermer();
@@ -785,13 +785,13 @@ fn lire_script_verifie(chemin: &str, empreinte: &str) -> Option<Vec<u8>> {
 /// Ce que la console montre avant l'accord : le texte de chaque geste et, pour un script, ses lignes vérifiées.
 /// `Err(chemin)` dès qu'un script est illisible ou n'a plus son empreinte : montrer autre chose que ce qui sera
 /// lancé (ou rien) ferait accepter à l'aveugle.
-fn a_montrer(liste: &[Element]) -> Result<Vec<(String, Vec<String>)>, String> {
+fn a_montrer(liste: &[Element]) -> Result<Vec<(String, Vec<String>)>, &str> {
     liste
         .iter()
         .map(|e| {
             let lignes = match e {
                 Element::Script(s) => {
-                    let o = lire_script_verifie(&s.chemin, &s.empreinte).ok_or_else(|| s.chemin.clone())?;
+                    let o = lire_script_verifie(&s.chemin, &s.empreinte).ok_or(s.chemin.as_str())?;
                     String::from_utf8_lossy(&o)
                         .trim_start_matches('\u{feff}')
                         .lines()
@@ -1005,9 +1005,8 @@ fn lancer_programme(a: &gestes::Appel) -> Resultat {
         avant: None,
         raison,
     };
-    let mut commande = match commande_du_programme(a) {
-        Ok(c) => c,
-        Err(raison) => return refus(raison),
+    let Some(mut commande) = commande_du_programme(a) else {
+        return refus(tr!("lecteur système introuvable", "system drive not found").to_string());
     };
     let exe = std::path::PathBuf::from(commande.get_program());
     match commande.status() {
@@ -1036,11 +1035,11 @@ fn lancer_programme(a: &gestes::Appel) -> Resultat {
 }
 
 /// La commande d'un programme fixe, prête à lancer : son chemin complet, ses arguments, l'environnement réduit
-/// (DISM ou sfc ne doivent rien charger de ce que le compte a posé) et System32 pour dossier courant.
-fn commande_du_programme(a: &gestes::Appel) -> Result<std::process::Command, String> {
+/// (DISM ou sfc ne doivent rien charger de ce que le compte a posé) et System32 pour dossier courant. `None` : le
+/// lecteur système ne se lit pas.
+fn commande_du_programme(a: &gestes::Appel) -> Option<std::process::Command> {
     let systeme = crate::commande::dossier_systeme();
-    let lecteur = crate::commande::lecteur_systeme()
-        .ok_or_else(|| tr!("lecteur système introuvable", "system drive not found").to_string())?;
+    let lecteur = crate::commande::lecteur_systeme()?;
     let exe = match a.programme.dossier {
         gestes::Dossier::Systeme32 => systeme.join(a.programme.exe),
         gestes::Dossier::Defender => {
@@ -1051,7 +1050,7 @@ fn commande_du_programme(a: &gestes::Appel) -> Result<std::process::Command, Str
     super::environnement::reduire(&mut commande)
         .current_dir(systeme)
         .args(a.arguments(lecteur));
-    Ok(commande)
+    Some(commande)
 }
 
 /// Se branche sur le tube du parent, puis vérifie que le serveur est bien le processus annoncé et que son programme
@@ -1475,7 +1474,8 @@ mod tests {
         assert_eq!(m[1].1, ["Write-Host 'ecrit'", "exit 0"]);
         // Changé après son écriture : refusé, et le chemin est dit.
         std::fs::write(&chemin, "Write-Host 'change'").unwrap();
-        assert_eq!(a_montrer(&script(bonne.clone())), Err(chemin.display().to_string()));
+        let change = script(bonne.clone());
+        assert_eq!(a_montrer(&change), Err(chemin.display().to_string().as_str()));
         // Disparu : refusé aussi (avant, la liste était montrée sans le script, puis l'Entrée demandée).
         std::fs::remove_file(&chemin).unwrap();
         assert!(a_montrer(&script(bonne)).is_err());
