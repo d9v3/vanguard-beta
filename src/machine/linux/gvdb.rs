@@ -885,8 +885,11 @@ pub(crate) mod ecriture {
     use super::{Variante, taille_decalage};
 
     pub(crate) fn completer(sortie: &mut Vec<u8>, alignement: usize) {
-        // Un Vec ne dépasse pas isize::MAX octets : le multiple suivant (8 au plus de plus) ne déborde pas.
-        sortie.resize(sortie.len().next_multiple_of(alignement.max(1)), 0);
+        // `checked_` : le lint des débordements ne voit pas `next_multiple_of`, qui paniquerait au bout de usize. Un
+        // Vec ne dépasse pas isize::MAX octets, et l'alignement vaut 8 au plus : le `None` n'arrive pas.
+        if let Some(fin) = sortie.len().checked_next_multiple_of(alignement.max(1)) {
+            sortie.resize(fin, 0);
+        }
     }
 
     pub(crate) fn decalages(corps: &mut Vec<u8>, fins: &[usize]) {
