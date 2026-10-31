@@ -29,6 +29,14 @@ const LC_REEXPORT_DYLIB: u32 = 0x8000_001f;
 const LC_ENCRYPTION_INFO: u32 = 0x21;
 const LC_MAIN: u32 = 0x8000_0028;
 const LC_ENCRYPTION_INFO_64: u32 = 0x2c;
+/// filetype MH_EXECUTE, et les drapeaux de l'en-tête que regarde le durcissement (loader.h) : MH_PIE (adresse de
+/// chargement tirée au hasard), MH_ALLOW_STACK_EXECUTION (pile exécutable).
+pub(crate) const MH_EXECUTE: u32 = 2;
+pub(crate) const MH_PIE: u32 = 0x0020_0000;
+pub(crate) const MH_ALLOW_STACK_EXECUTION: u32 = 0x0002_0000;
+/// Les deux architectures d'un programme Mac universel (machine.h).
+pub(crate) const CPU_X86_64: u32 = 0x0100_0007;
+pub(crate) const CPU_ARM64: u32 = 0x0100_000c;
 pub(crate) const VM_PROT_WRITE: u32 = 0x2;
 pub(crate) const VM_PROT_EXECUTE: u32 = 0x4;
 /// Un fichier universel réel a deux ou trois architectures ; une classe Java commence aussi par 0xCAFEBABE, suivie
@@ -365,21 +373,107 @@ pub(crate) mod essais {
         v
     }
 
-    /// Un fichier universel (fat_arch, gros-boutiste) qui contient `tranches`, alignées sur 0x1000.
+    /// Les protections d'une tranche durcie, chacune retirable pour l'essai.
+    #[allow(clippy::struct_excessive_bools)] // une protection par champ
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) struct MacDurci {
+        pub pie: bool,
+        pub pile_non_executable: bool,
+        /// __TEXT en lecture et exécution ; sans : écrivable aussi.
+        pub sans_ecrivable_executable: bool,
+        pub page_zero: bool,
+        pub signature: bool,
+        /// MH_EXECUTE ; sans : une bibliothèque (MH_DYLIB).
+        pub executable: bool,
+    }
+
+    impl MacDurci {
+        pub(crate) const COMPLET: MacDurci = MacDurci {
+            pie: true,
+            pile_non_executable: true,
+            sans_ecrivable_executable: true,
+            page_zero: true,
+            signature: true,
+            executable: true,
+        };
+    }
+
+    /// Une tranche comme celles du programme Mac de Vanguard, pour l'architecture `cpu` : __PAGEZERO (sans droits),
+    /// __TEXT, LC_CODE_SIGNATURE (à 0x380, 0x80 octets) ; MH_PIE ; 0x400 octets.
+    pub(crate) fn macho64_durci(cpu: u32, d: MacDurci) -> Vec<u8> {
+        let segment = |nom: &[u8], adresse: u64, taille: u64, position: u64, prot: u32| {
+            let mut seg = Vec::new();
+            seg.extend(0x19u32.to_le_bytes());
+            seg.extend(72u32.to_le_bytes());
+            let mut n = [0u8; 16];
+            n[..nom.len()].copy_from_slice(nom);
+            seg.extend(n);
+            for v in [adresse, taille, position, if prot == 0 { 0 } else { 0x400 }] {
+                seg.extend(v.to_le_bytes());
+            }
+            seg.extend(prot.to_le_bytes());
+            seg.extend(prot.to_le_bytes());
+            seg.extend([0u8; 8]);
+            seg
+        };
+        let mut commandes = Vec::new();
+        let mut n = 0u32;
+        if d.page_zero {
+            commandes.extend(segment(b"__PAGEZERO", 0, 0x1_0000_0000, 0, 0));
+            n += 1;
+        }
+        let texte = if d.sans_ecrivable_executable { 5 } else { 7 };
+        commandes.extend(segment(b"__TEXT", 0x1_0000_0000, 0x400, 0, texte));
+        n += 1;
+        if d.signature {
+            for v in [0x1du32, 16, 0x380, 0x80] {
+                commandes.extend(v.to_le_bytes());
+            }
+            n += 1;
+        }
+        let mut drapeaux = 0x85u32;
+        if d.pie {
+            drapeaux |= super::MH_PIE;
+        }
+        if !d.pile_non_executable {
+            drapeaux |= super::MH_ALLOW_STACK_EXECUTION;
+        }
+        let mut v = Vec::new();
+        v.extend(super::MH_MAGIC_64.to_le_bytes());
+        v.extend(cpu.to_le_bytes());
+        v.extend(0u32.to_le_bytes());
+        v.extend(if d.executable { super::MH_EXECUTE } else { 6 }.to_le_bytes());
+        v.extend(n.to_le_bytes());
+        v.extend(u32::try_from(commandes.len()).unwrap().to_le_bytes());
+        v.extend(drapeaux.to_le_bytes());
+        v.extend(0u32.to_le_bytes());
+        v.extend(commandes);
+        v.resize(0x400, 0);
+        v
+    }
+
+    /// Un fichier universel (fat_arch, gros-boutiste) qui contient `tranches`, alignées sur 0x1000, toutes annoncées
+    /// x86_64.
     pub(crate) fn universel(tranches: &[Vec<u8>]) -> Vec<u8> {
+        let avec_cpu: Vec<(u32, Vec<u8>)> = tranches.iter().map(|t| (super::CPU_X86_64, t.clone())).collect();
+        universel_de(&avec_cpu)
+    }
+
+    /// Un fichier universel dont chaque tranche est annoncée pour son architecture.
+    pub(crate) fn universel_de(tranches: &[(u32, Vec<u8>)]) -> Vec<u8> {
         let mut v = Vec::new();
         v.extend(super::FAT_MAGIC.to_be_bytes());
         v.extend(u32::try_from(tranches.len()).unwrap().to_be_bytes());
         let mut position = 0x1000u32;
-        for t in tranches {
-            v.extend(0x0100_0007u32.to_be_bytes());
+        for (cpu, t) in tranches {
+            v.extend(cpu.to_be_bytes());
             v.extend(3u32.to_be_bytes());
             v.extend(position.to_be_bytes());
             v.extend(u32::try_from(t.len()).unwrap().to_be_bytes());
             v.extend(12u32.to_be_bytes());
             position += u32::try_from(t.len()).unwrap().next_multiple_of(0x1000);
         }
-        for t in tranches {
+        for (_, t) in tranches {
             v.resize(v.len().next_multiple_of(0x1000), 0);
             v.extend(t);
         }

@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 
 use crate::ui::*;
 
+mod binaire;
+
 /// Une étape du déploiement.
 #[derive(clap::Subcommand)]
 pub(crate) enum Etape {
@@ -15,12 +17,15 @@ pub(crate) enum Etape {
         /// Le dossier tldr de la clé.
         dossier: PathBuf,
     },
-    /// Vérifier que vanguard.exe ne charge ses DLL importées que depuis System32 (DependentLoadFlags) et porte son
-    /// manifeste (UTF-8, asInvoker).
-    #[command(name = "verifier-pe")]
-    VerifierPe {
-        /// Le programme Windows compilé, lu sans être lancé.
-        fichier: PathBuf,
+    /// Vérifier les protections d'un programme livré, lu sans être lancé (`binaire`) : Linux (ELF : PIE, statique,
+    /// RELRO complet, pile non exécutable, rien d'écrivable et exécutable), Windows (PE : DLL importées depuis System32,
+    /// manifeste UTF-8 et asInvoker, ASLR, DEP, relocalisations) et Mac (Mach-O universel, chaque tranche). Réussit
+    /// seulement si tous les fichiers passent. L'ancien nom, `verifier-pe`, reste accepté.
+    #[command(name = "verifier-binaire", alias = "verifier-pe")]
+    VerifierBinaire {
+        /// Les programmes compilés.
+        #[arg(required = true)]
+        fichiers: Vec<PathBuf>,
     },
     /// Écrire les témoins de la clé : son jeton d'identité (tiré une fois) et l'empreinte de cet ordinateur.
     Temoins {
@@ -59,7 +64,7 @@ pub(crate) enum Etape {
 pub(crate) fn executer(etape: Etape) -> i32 {
     let reussi = match etape {
         Etape::Tldr { dossier } => crate::guide::tldr_sur_la_cle(&dossier),
-        Etape::VerifierPe { fichier } => verifier_pe(&fichier),
+        Etape::VerifierBinaire { fichiers } => binaire::verifier(&fichiers),
         Etape::Temoins { racine } => match temoins(&racine, crate::machine::empreinte_machine()) {
             Ok(_) => true,
             Err(e) => {
@@ -284,93 +289,6 @@ fn lire_manifeste(octets: &[u8]) -> Option<(Vec<String>, Vec<String>)> {
     None
 }
 
-/// Le programme Windows porte-t-il ses gardes ? DependentLoadFlags (`machine::windows::chargement`), qui ferme le
-/// chargement d'une DLL posée à côté de lui, et son manifeste. Lu, jamais lancé (`crate::pe`). Un fichier absent,
-/// illisible ou qui n'est pas un PE est refusé : ce qui n'est pas vérifié ne part pas.
-fn verifier_pe(fichier: &Path) -> bool {
-    let f = fichier.display();
-    let gardes = match crate::pe::gardes(fichier) {
-        Ok(g) => g,
-        Err(e) => {
-            let pourquoi = match e {
-                crate::pe::Echec::Ouverture(k) => std::io::Error::from(k).to_string(),
-                crate::pe::Echec::PasUnFichier => tr!("pas un fichier ordinaire", "not a regular file").to_string(),
-                crate::pe::Echec::Format => {
-                    tr!("pas un programme Windows lisible", "not a readable Windows program").to_string()
-                }
-            };
-            eprintln!(
-                "{}",
-                trf!(
-                    "✖ {f} illisible ({pourquoi}) : ne pas le livrer",
-                    "✖ {f} unreadable ({pourquoi}): do not ship it"
-                )
-            );
-            return false;
-        }
-    };
-    if !gardes.load_config.is_some_and(|c| c.system32_seulement()) {
-        let config = match gardes.load_config {
-            None => tr!("absent", "missing").to_string(),
-            Some(c) => trf!(
-                "tailles {} et {}, drapeaux 0x{:X}",
-                "sizes {} and {}, flags 0x{:X}",
-                c.taille_repertoire,
-                c.taille,
-                c.drapeaux
-            ),
-        };
-        eprintln!(
-            "{}",
-            trf!(
-                "✖ {f} : DLL importées pas limitées à System32 (Load Config : {config}) ; ne pas le livrer",
-                "✖ {f}: imported DLLs not limited to System32 (Load Config: {config}); do not ship it"
-            )
-        );
-        return false;
-    }
-    // Un seul niveau demandé, asInvoker (Vanguard démarre sans droits d'administrateur), et la page de code UTF-8
-    // (sans elle, accents et chemins sont cassés dans la console et les fichiers), rien d'autre.
-    let lu = gardes.manifeste.as_deref().and_then(lire_manifeste);
-    let mut manquants = Vec::new();
-    match &lu {
-        None => manquants.push(tr!("manifeste absent ou malformé", "manifest missing or malformed").to_string()),
-        Some((niveaux, pages)) => {
-            if !matches!(niveaux.as_slice(), [seul] if seul == "asInvoker") {
-                manquants.push(trf!(
-                    "requestedExecutionLevel : {niveaux:?} au lieu d'un seul asInvoker",
-                    "requestedExecutionLevel: {niveaux:?} instead of a single asInvoker"
-                ));
-            }
-            if pages.is_empty() || pages.iter().any(|p| p != "UTF-8") {
-                manquants.push(trf!(
-                    "activeCodePage : {pages:?} au lieu de UTF-8",
-                    "activeCodePage: {pages:?} instead of UTF-8"
-                ));
-            }
-        }
-    }
-    if !manquants.is_empty() {
-        let manquants = manquants.join(", ");
-        eprintln!(
-            "{}",
-            trf!(
-                "✖ {f} : manifeste absent ou incomplet ({manquants}) ; ne pas le livrer",
-                "✖ {f}: manifest missing or incomplete ({manquants}); do not ship it"
-            )
-        );
-        return false;
-    }
-    println!(
-        "{}",
-        trf!(
-            "✔ {f} : DLL importées depuis System32 seulement, manifeste UTF-8 et asInvoker",
-            "✔ {f}: imported DLLs from System32 only, UTF-8 and asInvoker manifest"
-        )
-    );
-    true
-}
-
 /// Les deux témoins de la clé, que le bash du déploiement écrivait à côté du code qui les relit :
 /// - `vanguard.jeton` (`protection::cles_connues`), tiré une seule fois : 16 octets du hasard du système en 32
 ///   caractères hexadécimaux minuscules et un saut de ligne, comme `head -c 16 /dev/urandom | od`. Un jeton que le
@@ -469,12 +387,12 @@ mod tests {
     const MANIFESTE_D_ESSAI: &[u8] = br#"<assembly><security><requestedPrivileges><requestedExecutionLevel level="asInvoker" uiAccess="false"/></requestedPrivileges></security><windowsSettings><activeCodePage>UTF-8</activeCodePage></windowsSettings></assembly>"#;
 
     #[test]
-    fn verifier_pe_accepte_et_refuse() {
+    fn verifier_binaire_garde_les_controles_de_verifier_pe() {
         let d = dossier();
         let essai = |nom: &str, octets: Vec<u8>| {
             let chemin = d.join(nom);
             std::fs::write(&chemin, octets).unwrap();
-            verifier_pe(&chemin)
+            binaire::verifier(&[chemin])
         };
         let bon = d.join("bon.exe");
         std::fs::write(
@@ -482,8 +400,8 @@ mod tests {
             gardes_d_essai(Some((148, 148, 0x800)), Some(MANIFESTE_D_ESSAI), 1),
         )
         .unwrap();
-        assert!(verifier_pe(&bon));
-        assert_eq!(executer(Etape::VerifierPe { fichier: bon }), 0);
+        assert!(binaire::verifier(std::slice::from_ref(&bon)));
+        assert_eq!(executer(Etape::VerifierBinaire { fichiers: vec![bon] }), 0);
         // DependentLoadFlags absent, autre, ou pas couvert par l'une des deux tailles.
         assert!(!essai("sans.exe", gardes_d_essai(None, Some(MANIFESTE_D_ESSAI), 1)));
         assert!(!essai(
@@ -560,11 +478,11 @@ mod tests {
         assert!(!essai("ailleurs.exe", ailleurs));
         // Pas un PE, absent, ou un dossier : refusé, jamais compté comme vérifié.
         assert!(!essai("texte.exe", b"MZ pas un programme".to_vec()));
-        assert!(!verifier_pe(&d.join("absent.exe")));
-        assert!(!verifier_pe(&d));
+        assert!(!binaire::verifier(&[d.join("absent.exe")]));
+        assert!(!binaire::verifier(std::slice::from_ref(&d)));
         assert_eq!(
-            executer(Etape::VerifierPe {
-                fichier: d.join("absent.exe")
+            executer(Etape::VerifierBinaire {
+                fichiers: vec![d.join("absent.exe")]
             }),
             1
         );

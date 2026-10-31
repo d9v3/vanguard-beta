@@ -83,5 +83,16 @@ mod tests {
             })
         );
         assert!(gardes.load_config.is_some_and(|c| c.system32_seulement()));
+        // Et ce que `vanguard deploiement verifier-binaire` exige du programme livré : ASLR à haute entropie, DEP,
+        // relocalisations gardées.
+        let d = gardes.durcissement;
+        for drapeau in [
+            crate::pe::DYNAMIC_BASE,
+            crate::pe::HIGH_ENTROPY_VA,
+            crate::pe::NX_COMPAT,
+        ] {
+            assert!(d.a(drapeau), "0x{drapeau:X} absent : 0x{:04X}", d.dll_caracteristiques);
+        }
+        assert!(d.relocalisable(), "{d:?}");
     }
 }

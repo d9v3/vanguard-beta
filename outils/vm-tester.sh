@@ -5,7 +5,7 @@
 # Dans la VM, une seule fois : double-clic sur INSTALLER-ESSAIS-AUTO.bat (une fenêtre UAC ; --installer l'y pose).
 #   outils/vm-tester.sh                       l'arbre courant (HEAD, « modifie=oui » s'il n'est pas propre)
 #   outils/vm-tester.sh --branche B           la branche B (son worktree, ou un worktree temporaire)
-#   outils/vm-tester.sh --exe chemin.exe      un programme déjà compilé (rien compilé ; passé à verifier-pe)
+#   outils/vm-tester.sh --exe chemin.exe      un programme déjà compilé (rien compilé ; passé à verifier-binaire)
 #   options : --sans-console --sans-test --langues fr,en --delai MIN (60) --sans-attendre
 #   outils/vm-tester.sh --attendre <id>       attendre (de nouveau) un travail déjà déposé
 #   outils/vm-tester.sh --installer           pose INSTALLER-/DESINSTALLER-ESSAIS-AUTO.bat dans la VM, et la clé de
@@ -205,7 +205,7 @@ preparer_programme() {
   fi
   if [[ -n $EXE ]]; then
     [[ -f $EXE ]] || { echo "Programme absent : $EXE" >&2; exit 1; }
-    verifier_pe "$EXE"
+    verifier_binaire "$EXE"
     COMMIT=inconnu BRANCHE="exe fourni" MODIFIE=non
     return
   fi
@@ -218,18 +218,19 @@ preparer_programme() {
   echo "Compilation de $BRANCHE ($(git -C "$ARBRE" rev-parse --short HEAD)) pour Windows…"
   (cd "$ARBRE" && cargo build -q --release --target x86_64-pc-windows-gnu) || { echo "Compilation en échec." >&2; exit 1; }
   EXE=$cible/x86_64-pc-windows-gnu/release/vanguard.exe
-  verifier_pe "$EXE"
+  verifier_binaire "$EXE"
 }
 
-# Comme deployer.sh : un programme qui chargerait une DLL posée à côté de lui, ou sans son manifeste, ne part pas,
-# qu'il vienne d'être compilé ou qu'il soit fourni par --exe (il tournera en administrateur dans la VM). Vérifié par le
-# programme Linux de ce dépôt-ci (src/pe.rs), qui sait le faire même si la branche essayée est d'avant. Aucune
-# exception, même pour les essais : ils déposent un vrai petit PE qui porte ses gardes.
-verifier_pe() {
+# Comme deployer.sh : un programme qui chargerait une DLL posée à côté de lui, sans son manifeste, ou sans ASLR, DEP
+# ou relocalisations, ne part pas, qu'il vienne d'être compilé ou qu'il soit fourni par --exe (il tournera en
+# administrateur dans la VM). Vérifié par le programme Linux de ce dépôt-ci (src/deploiement/binaire.rs), qui sait le
+# faire même si la branche essayée est d'avant. Aucune exception, même pour les essais : ils déposent un vrai petit PE
+# qui porte ses gardes.
+verifier_binaire() {
   (cd "$DEPOT" && env -u CARGO_TARGET_DIR cargo build -q --target x86_64-unknown-linux-musl) ||
     { echo "Vanguard pour Linux pas compilé dans $DEPOT : $1 pas vérifié, rien déposé." >&2; exit 1; }
-  "$DEPOT/target/x86_64-unknown-linux-musl/debug/vanguard" deploiement verifier-pe "$1" ||
-    { echo "Programme refusé par « vanguard deploiement verifier-pe » : rien déposé ($1)." >&2; exit 1; }
+  "$DEPOT/target/x86_64-unknown-linux-musl/debug/vanguard" deploiement verifier-binaire "$1" ||
+    { echo "Programme refusé par « vanguard deploiement verifier-binaire » : rien déposé ($1)." >&2; exit 1; }
 }
 
 # Copie un fichier dans le travail ; un .ps1 reçoit le BOM qui lui manque (PowerShell 5.1 lirait sinon en ANSI).
@@ -254,10 +255,10 @@ deposer() {
   p=$FILE/$ID.partiel
   mkdir "$p" || exit 1
   copier "$EXE" "$p/vanguard.exe"
-  # verifier-pe sur la copie qui part, pas sur la source : une compilation dans le même dossier cible a pu remplacer
+  # verifier-binaire sur la copie qui part, pas sur la source : une compilation dans le même dossier cible a pu remplacer
   # le programme entre les deux (son empreinte, dans travail.txt, est aussi celle de la copie).
-  "$DEPOT/target/x86_64-unknown-linux-musl/debug/vanguard" deploiement verifier-pe "$p/vanguard.exe" >/dev/null || {
-    echo "Copie déposée refusée par « vanguard deploiement verifier-pe » : rien déposé." >&2
+  "$DEPOT/target/x86_64-unknown-linux-musl/debug/vanguard" deploiement verifier-binaire "$p/vanguard.exe" >/dev/null || {
+    echo "Copie déposée refusée par « vanguard deploiement verifier-binaire » : rien déposé." >&2
     rm -rf "$p"
     exit 1
   }
@@ -528,8 +529,8 @@ essai_local() {
   trap "rm -rf '$T'" EXIT
   # pwsh laisse ses tubes dans TMPDIR quand il est arrêté (essai du délai) : ils partent avec le banc.
   mkdir -p "$T/tmp" && export TMPDIR=$T/tmp
-  # Un vrai petit PE32+ qui porte les gardes que vérifie verifier-pe (comme pe::essais::gardes_d_essai) : Load Config
-  # de 148 octets, DependentLoadFlags 0x800, manifeste n° 1 ; jamais lancé.
+  # Un vrai petit PE32+ qui porte les gardes que vérifie verifier-binaire (comme pe::essais::gardes_d_essai) : Load
+  # Config de 148 octets, DependentLoadFlags 0x800, manifeste n° 1, ASLR, DEP et relocalisations ; jamais lancé.
   python3 - "$T/vanguard.exe" <<'EOF2' || { echo "faux vanguard.exe : écriture en échec"; exit 1; }
 import struct, sys
 v = bytearray(0x800)
@@ -537,6 +538,8 @@ def m16(a, x): v[a:a + 2] = struct.pack('<H', x)
 def m32(a, x): v[a:a + 4] = struct.pack('<I', x)
 v[0:2] = b'MZ'; m32(0x3C, 0x40); v[0x40:0x44] = b'PE\0\0'; m16(0x44, 0x8664); m16(0x46, 2); m16(0x54, 240)
 f = 0x58; m16(f, 0x20B); m32(f + 108, 16); r = f + 112
+m16(0x56, 0x22); m16(f + 70, 0x0160)  # COFF sans RELOCS_STRIPPED ; HIGH_ENTROPY_VA, DYNAMIC_BASE, NX_COMPAT
+m32(r + 40, 0x1180); m32(r + 44, 12); m32(0x380, 0x1000); m32(0x384, 12); m16(0x388, 0xA010)  # un bloc de .reloc
 m32(r + 80, 0x1000); m32(r + 84, 148); m32(0x200, 148); m16(0x200 + 78, 0x800)
 for i, (nom, rva, brut) in enumerate([(b'.rdata', 0x1000, 0x200), (b'.rsrc', 0x2000, 0x400)]):
     s = f + 240 + 40 * i
@@ -671,11 +674,11 @@ EOF2
   fi
 
   echo "File d'essais (vm-tester.sh, surveillant-essais.ps1), sans VM :"
-  # 0. Un programme fourni par --exe passe par verifier-pe comme un programme compilé ; sans pwsh (rien ne tourne).
+  # 0. Un programme fourni par --exe passe par verifier-binaire comme un programme compilé ; sans pwsh (rien ne tourne).
   nouvelle_vm; sources 0 0 0 'OK conhost fr C1 menu'
   vmt --exe "$T/abime.exe" --sans-attendre
-  voir "--exe abîmé : refusé par verifier-pe, rien déposé, code 1" \
-    eval '((code == 1)) && dit "refusé par « vanguard deploiement verifier-pe » : rien déposé" && [[ -z $(ls -A "$VMD/file-essais") ]]'
+  voir "--exe abîmé : refusé par verifier-binaire, rien déposé, code 1" \
+    eval '((code == 1)) && dit "refusé par « vanguard deploiement verifier-binaire » : rien déposé" && [[ -z $(ls -A "$VMD/file-essais") ]]'
   vmt --sans-attendre
   voir "--exe qui porte ses gardes : accepté, travail déposé" eval '((code == 0)) && dit "Travail déposé"'
   if [[ -n $avec_pwsh ]]; then

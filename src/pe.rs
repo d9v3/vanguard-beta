@@ -7,9 +7,10 @@
 //!
 //! Les mêmes en-têtes donnent aussi les gardes que le programme Windows de Vanguard doit porter (`gardes`) : le champ
 //! DependentLoadFlags de son répertoire « Load Config » (ses DLL importées ne viennent que de System32, voir
-//! `machine/windows/chargement.rs`) et son manifeste (ressource RT_MANIFEST n° 1). Le déploiement, qui tourne sous
-//! Linux, les relit dans le vanguard.exe compilé avant de le livrer (`vanguard deploiement verifier-pe`), comme la
-//! compilation reproductible de la CI : d'où ce module compilé partout, et pas seulement sous Windows.
+//! `machine/windows/chargement.rs`), son manifeste (ressource RT_MANIFEST n° 1) et ses protections de l'éditeur de
+//! liens (`Durcissement` : DllCharacteristics, relocalisations, CET). Le déploiement, qui tourne sous Linux, les relit
+//! dans le vanguard.exe compilé avant de le livrer (`vanguard deploiement verifier-binaire`), comme la compilation
+//! reproductible de la CI : d'où ce module compilé partout, et pas seulement sous Windows.
 //!
 //! Lecteur pur, sans `crate::` : le banc de fuzzing l'inclut par son chemin.
 
@@ -37,9 +38,24 @@ const RT_VERSION: u32 = 16;
 /// (CREATEPROCESS_MANIFEST_RESOURCE_ID) : le seul que Windows lit en le lançant.
 const RT_MANIFEST: u32 = 24;
 const MANIFESTE_DU_PROCESSUS: u32 = 1;
-/// Le répertoire de données n° 2 (ressources) et n° 10 (Load Config).
+/// Le répertoire de données n° 2 (ressources), n° 5 (relocalisations), n° 6 (débogage) et n° 10 (Load Config).
 const REPERTOIRE_RESSOURCES: u32 = 2;
+const REPERTOIRE_RELOCALISATIONS: u32 = 5;
+const REPERTOIRE_DEBOGAGE: u32 = 6;
 const REPERTOIRE_LOAD_CONFIG: u32 = 10;
+/// Une entrée du répertoire de débogage (IMAGE_DEBUG_DIRECTORY) : 28 octets ; un vrai programme en a quelques-unes.
+const ENTREE_DEBOGAGE: u32 = 28;
+const ENTREES_DEBOGAGE_MAX: u32 = 64;
+/// IMAGE_DEBUG_TYPE_EX_DLLCHARACTERISTICS, et son drapeau IMAGE_DLLCHARACTERISTICS_EX_CET_COMPAT (la pile fantôme).
+const DEBOGAGE_EX_DLLCHARACTERISTICS: u32 = 20;
+const CET_COMPAT: u32 = 0x1;
+/// Champ Characteristics de l'en-tête COFF : IMAGE_FILE_RELOCS_STRIPPED, les relocalisations retirées.
+pub(crate) const RELOCS_STRIPPED: u16 = 0x1;
+/// Champ DllCharacteristics de l'en-tête facultatif (même décalage, 70, en PE32 et PE32+).
+pub(crate) const HIGH_ENTROPY_VA: u16 = 0x20;
+pub(crate) const DYNAMIC_BASE: u16 = 0x40;
+pub(crate) const NX_COMPAT: u16 = 0x100;
+pub(crate) const GUARD_CF: u16 = 0x4000;
 /// DependentLoadFlags est au décalage 78 (2 octets) d'IMAGE_LOAD_CONFIG_DIRECTORY64 : Windows ne le lit que si la
 /// taille annoncée du répertoire le couvre.
 const DRAPEAUX_DE_CHARGEMENT: u32 = 78;
@@ -96,7 +112,7 @@ pub(crate) fn version(chemin: &Path) -> Result<InfoPe, Echec> {
 }
 
 /// Un fichier ordinaire ouvert sans attendre (un tube nommé bloquerait la lecture), et sa taille.
-fn ouvrir(chemin: &Path) -> Result<(std::fs::File, u64), Echec> {
+pub(crate) fn ouvrir(chemin: &Path) -> Result<(std::fs::File, u64), Echec> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -188,6 +204,9 @@ fn position_chargee(sections: &[Section], rva: u32, n: u32) -> Option<u64> {
 struct Entetes {
     machine: Machine,
     pe32_plus: bool,
+    /// Characteristics (en-tête COFF) et DllCharacteristics (en-tête facultatif).
+    caracteristiques: u16,
+    dll_caracteristiques: u16,
     /// Position de la table des répertoires dans le fichier, et ce qu'en annonce l'en-tête facultatif : nombre
     /// d'entrées, place qu'elles ont avant la fin de l'en-tête.
     repertoires: u64,
@@ -234,6 +253,7 @@ fn entetes<R: Read + Seek>(l: &mut Lecteur<'_, R>) -> Option<Entetes> {
     let machine = Machine::depuis(l.u16(pe.checked_add(4)?)?);
     let nombre_sections = l.u16(pe.checked_add(6)?)?;
     let taille_facultatif = l.u16(pe.checked_add(20)?)?;
+    let caracteristiques = l.u16(pe.checked_add(22)?)?;
     if nombre_sections == 0 || nombre_sections > SECTIONS_MAX {
         return None;
     }
@@ -245,6 +265,7 @@ fn entetes<R: Read + Seek>(l: &mut Lecteur<'_, R>) -> Option<Entetes> {
         _ => return None,
     };
     let place_repertoires = u32::from(taille_facultatif.checked_sub(debut_repertoires)?);
+    let dll_caracteristiques = l.u16(facultatif.checked_add(70)?)?;
     // Table des sections.
     let table = facultatif.checked_add(u64::from(taille_facultatif))?;
     let mut sections = Vec::with_capacity(usize::from(nombre_sections));
@@ -264,6 +285,8 @@ fn entetes<R: Read + Seek>(l: &mut Lecteur<'_, R>) -> Option<Entetes> {
     Some(Entetes {
         machine,
         pe32_plus,
+        caracteristiques,
+        dll_caracteristiques,
         repertoires: facultatif.checked_add(u64::from(debut_repertoires))?,
         nombre_repertoires,
         place_repertoires,
@@ -308,12 +331,75 @@ impl LoadConfig {
     }
 }
 
-/// Les gardes d'un exécutable : son Load Config (PE32+ seulement) et son manifeste. Chacune `None` quand elle manque
-/// ou ne se lit pas.
+/// Les protections que l'éditeur de liens a posées sur l'image, telles que le chargeur de Windows les lit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Durcissement {
+    pub pe32_plus: bool,
+    /// Characteristics de l'en-tête COFF (RELOCS_STRIPPED).
+    pub caracteristiques: u16,
+    /// DllCharacteristics de l'en-tête facultatif (DYNAMIC_BASE, HIGH_ENTROPY_VA, NX_COMPAT, GUARD_CF).
+    pub dll_caracteristiques: u16,
+    /// Le répertoire des relocalisations (n° 5) est annoncé, et son premier bloc se lit dans l'image chargée, avec
+    /// une taille cohérente : sans lui, Windows ne peut pas déplacer l'image, ASLR ou non.
+    pub relocalisations: bool,
+    /// CET_COMPAT, dans le répertoire de débogage (IMAGE_DEBUG_TYPE_EX_DLLCHARACTERISTICS) : la pile fantôme.
+    pub cet: bool,
+}
+
+impl Durcissement {
+    /// Les drapeaux `drapeaux` de DllCharacteristics sont-ils tous là ?
+    pub(crate) fn a(self, drapeaux: u16) -> bool {
+        self.dll_caracteristiques & drapeaux == drapeaux
+    }
+
+    /// Les relocalisations sont-elles là, et pas retirées (RELOCS_STRIPPED) ?
+    pub(crate) fn relocalisable(self) -> bool {
+        self.relocalisations && self.caracteristiques & RELOCS_STRIPPED == 0
+    }
+}
+
+/// Les gardes d'un exécutable : son Load Config (PE32+ seulement) et son manifeste, chacun `None` quand il manque ou
+/// ne se lit pas ; ses protections, toujours lues avec les en-têtes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Gardes {
     pub load_config: Option<LoadConfig>,
     pub manifeste: Option<Vec<u8>>,
+    pub durcissement: Durcissement,
+}
+
+/// Le premier bloc des relocalisations (VirtualAddress, SizeOfBlock) se lit-il dans l'image chargée, et sa taille
+/// tient-elle entre un en-tête de bloc (8 octets) et celle du répertoire ?
+fn relocalisations<R: Read + Seek>(l: &mut Lecteur<'_, R>, e: &Entetes) -> bool {
+    (|| {
+        let (rva, taille) = e.repertoire(l, REPERTOIRE_RELOCALISATIONS)?;
+        if taille < 8 {
+            return None;
+        }
+        let debut = position_chargee(&e.sections, rva, 8)?;
+        let bloc = l.u32(debut.checked_add(4)?)?;
+        Some(bloc >= 8 && bloc <= taille)
+    })()
+    .unwrap_or(false)
+}
+
+/// CET_COMPAT dans une entrée IMAGE_DEBUG_TYPE_EX_DLLCHARACTERISTICS du répertoire de débogage.
+fn cet<R: Read + Seek>(l: &mut Lecteur<'_, R>, e: &Entetes) -> bool {
+    (|| {
+        let (rva, taille) = e.repertoire(l, REPERTOIRE_DEBOGAGE)?;
+        for k in 0..(taille / ENTREE_DEBOGAGE).min(ENTREES_DEBOGAGE_MAX) {
+            let entree = position_chargee(
+                &e.sections,
+                rva.checked_add(k.checked_mul(ENTREE_DEBOGAGE)?)?,
+                ENTREE_DEBOGAGE,
+            )?;
+            if l.u32(entree.checked_add(12)?)? == DEBOGAGE_EX_DLLCHARACTERISTICS {
+                let donnees = u64::from(l.u32(entree.checked_add(24)?)?);
+                return Some(l.u32(donnees)? & CET_COMPAT != 0);
+            }
+        }
+        Some(false)
+    })()
+    .unwrap_or(false)
 }
 
 /// Les gardes d'un exécutable de `taille` octets. `None` : pas un PE, ou des en-têtes refusés.
@@ -343,11 +429,23 @@ pub(crate) fn lire_gardes<R: Read + Seek>(source: &mut R, taille: u64) -> Option
             VERSION_MAX,
         )
     });
-    Some(Gardes { load_config, manifeste })
+    let durcissement = Durcissement {
+        pe32_plus: e.pe32_plus,
+        caracteristiques: e.caracteristiques,
+        dll_caracteristiques: e.dll_caracteristiques,
+        relocalisations: relocalisations(&mut l, &e),
+        cet: cet(&mut l, &e),
+    };
+    Some(Gardes {
+        load_config,
+        manifeste,
+        durcissement,
+    })
 }
 
-/// Les gardes de l'exécutable `chemin`, lu sans être lancé. Un fichier ordinaire seulement.
-#[cfg_attr(not(any(target_os = "linux", windows, test)), allow(dead_code))] // le déploiement, sous Linux
+/// Les gardes de l'exécutable `chemin`, lu sans être lancé. Un fichier ordinaire seulement. Le déploiement lit le
+/// fichier une seule fois (`deploiement::binaire`) ; seul l'essai du programme Windows lui-même passe par ici.
+#[cfg(all(windows, test))]
 pub(crate) fn gardes(chemin: &Path) -> Result<Gardes, Echec> {
     let (mut fichier, taille) = ouvrir(chemin)?;
     lire_gardes(&mut fichier, taille).ok_or(Echec::Format)
@@ -1271,7 +1369,9 @@ pub(crate) mod essais {
     /// Un PE32+ qui porte des gardes (`lire_gardes`) : une section « .rdata » (RVA 0x1000, à 0x200 du fichier) où
     /// commence le Load Config — (taille écrite dans la structure, taille annoncée par le répertoire n° 10,
     /// DependentLoadFlags), absent si `None` — et une section « .rsrc » (RVA 0x2000, à 0x400) dont l'arbre a un seul
-    /// manifeste (RT_MANIFEST, au `numero` donné, langue 0x409), sans ressources si `None`.
+    /// manifeste (RT_MANIFEST, au `numero` donné, langue 0x409), sans ressources si `None`. Durci comme vanguard.exe :
+    /// DllCharacteristics 0x0160 (ASLR à haute entropie, DEP), un bloc de relocalisations (répertoire n° 5, à RVA
+    /// 0x1180 dans .rdata) ; `sans_protection` les retire un à un.
     pub(crate) fn gardes_d_essai(
         load_config: Option<(u32, u32, u16)>,
         manifeste: Option<&[u8]>,
@@ -1284,10 +1384,18 @@ pub(crate) mod essais {
         mot16(&mut v, 0x44, 0x8664);
         mot16(&mut v, 0x46, 2);
         mot16(&mut v, 0x54, 240);
+        mot16(&mut v, COFF_CARACTERISTIQUES, 0x22);
         let facultatif = 0x58;
         mot16(&mut v, facultatif, 0x20B);
+        mot16(&mut v, DLL_CARACTERISTIQUES, 0x0160);
         mot32(&mut v, facultatif + 108, 16);
         let repertoires = facultatif + 112;
+        // Relocalisations : un bloc de 12 octets (page 0x1000, une entrée).
+        mot32(&mut v, REPERTOIRE_RELOCALISATIONS, 0x1180);
+        mot32(&mut v, REPERTOIRE_RELOCALISATIONS + 4, 12);
+        mot32(&mut v, 0x380, 0x1000);
+        mot32(&mut v, 0x384, 12);
+        mot16(&mut v, 0x388, 0xA010);
         if let Some((taille, taille_repertoire, drapeaux)) = load_config {
             mot32(&mut v, repertoires + 80, 0x1000);
             mot32(&mut v, repertoires + 84, taille_repertoire);
@@ -1326,6 +1434,35 @@ pub(crate) mod essais {
         }
         v
     }
+
+    /// Les positions, dans `gardes_d_essai`, des champs que lit `Durcissement`.
+    pub(crate) const COFF_CARACTERISTIQUES: usize = 0x56;
+    pub(crate) const DLL_CARACTERISTIQUES: usize = 0x58 + 70;
+    pub(crate) const REPERTOIRE_RELOCALISATIONS: usize = 0x58 + 112 + 5 * 8;
+
+    /// Les protections de `gardes_d_essai`, chacune retirable.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum Retrait {
+        DynamicBase,
+        HighEntropyVa,
+        NxCompat,
+        /// Le répertoire n° 5 vidé.
+        Relocalisations,
+        /// RELOCS_STRIPPED posé dans l'en-tête COFF, le répertoire gardé.
+        RelocsStripped,
+    }
+
+    /// Retire de `v` (fait par `gardes_d_essai`) la protection `r`.
+    pub(crate) fn sans_protection(v: &mut [u8], r: Retrait) {
+        let dll = u16::from_le_bytes([v[DLL_CARACTERISTIQUES], v[DLL_CARACTERISTIQUES + 1]]);
+        match r {
+            Retrait::DynamicBase => mot16(v, DLL_CARACTERISTIQUES, dll & !super::DYNAMIC_BASE),
+            Retrait::HighEntropyVa => mot16(v, DLL_CARACTERISTIQUES, dll & !super::HIGH_ENTROPY_VA),
+            Retrait::NxCompat => mot16(v, DLL_CARACTERISTIQUES, dll & !super::NX_COMPAT),
+            Retrait::Relocalisations => v[REPERTOIRE_RELOCALISATIONS..REPERTOIRE_RELOCALISATIONS + 8].fill(0),
+            Retrait::RelocsStripped => mot16(v, COFF_CARACTERISTIQUES, 0x22 | super::RELOCS_STRIPPED),
+        }
+    }
 }
 
 #[allow(
@@ -1335,7 +1472,7 @@ pub(crate) mod essais {
 )]
 #[cfg(test)]
 mod tests {
-    use super::essais::{Fabrique, gardes_d_essai, pe};
+    use super::essais::{Fabrique, Retrait, gardes_d_essai, pe, sans_protection};
     use super::*;
     use std::io::Cursor;
 
@@ -1485,7 +1622,14 @@ mod tests {
             gardes_lues(&gardes_d_essai(None, None, 1)),
             Some(Gardes {
                 load_config: None,
-                manifeste: None
+                manifeste: None,
+                durcissement: Durcissement {
+                    pe32_plus: true,
+                    caracteristiques: 0x22,
+                    dll_caracteristiques: 0x0160,
+                    relocalisations: true,
+                    cet: false,
+                }
             })
         );
         // Un manifeste sous un autre numéro n'est pas celui du processus.
@@ -1510,6 +1654,58 @@ mod tests {
         );
         assert_eq!(gardes_lues(b"MZ"), None);
         assert_eq!(gardes_lues(&[]), None);
+    }
+
+    #[test]
+    fn durcissement_lu() {
+        let bon = gardes_d_essai(Some((148, 148, 0x800)), None, 1);
+        let d = gardes_lues(&bon).unwrap().durcissement;
+        assert!(d.pe32_plus && d.a(DYNAMIC_BASE | HIGH_ENTROPY_VA | NX_COMPAT) && !d.a(GUARD_CF));
+        assert!(d.relocalisable() && !d.cet);
+        // Chaque protection retirée se voit, et seule elle.
+        for (r, drapeau) in [
+            (Retrait::DynamicBase, DYNAMIC_BASE),
+            (Retrait::HighEntropyVa, HIGH_ENTROPY_VA),
+            (Retrait::NxCompat, NX_COMPAT),
+        ] {
+            let mut v = bon.clone();
+            sans_protection(&mut v, r);
+            let d = gardes_lues(&v).unwrap().durcissement;
+            assert!(!d.a(drapeau) && d.relocalisable(), "{r:?}");
+        }
+        for r in [Retrait::Relocalisations, Retrait::RelocsStripped] {
+            let mut v = bon.clone();
+            sans_protection(&mut v, r);
+            let d = gardes_lues(&v).unwrap().durcissement;
+            assert!(
+                !d.relocalisable() && d.a(DYNAMIC_BASE | HIGH_ENTROPY_VA | NX_COMPAT),
+                "{r:?}"
+            );
+        }
+        // Un bloc de relocalisations à la taille impossible (moins que son en-tête, plus que le répertoire), ou hors
+        // de l'image chargée.
+        for (decalage, valeur) in [
+            (0x384usize, 4u32),
+            (0x384, 13),
+            (essais::REPERTOIRE_RELOCALISATIONS, 0x9000),
+        ] {
+            let mut v = bon.clone();
+            v[decalage..decalage + 4].copy_from_slice(&valeur.to_le_bytes());
+            assert!(!gardes_lues(&v).unwrap().durcissement.relocalisable(), "{decalage:x}");
+        }
+        // CET_COMPAT : une entrée de débogage EX_DLLCHARACTERISTICS (répertoire n° 6, à RVA 0x1100) qui désigne
+        // ses données, à 0x320.
+        let mut v = bon.clone();
+        let repertoire = 0x58 + 112 + 6 * 8;
+        v[repertoire..repertoire + 4].copy_from_slice(&0x1100u32.to_le_bytes());
+        v[repertoire + 4..repertoire + 8].copy_from_slice(&28u32.to_le_bytes());
+        v[0x300 + 12..0x300 + 16].copy_from_slice(&20u32.to_le_bytes());
+        v[0x300 + 24..0x300 + 28].copy_from_slice(&0x320u32.to_le_bytes());
+        v[0x320..0x324].copy_from_slice(&1u32.to_le_bytes());
+        assert!(gardes_lues(&v).unwrap().durcissement.cet);
+        // Ses données hors du fichier : pas de CET lu, sans planter.
+        v[0x300 + 24..0x300 + 28].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(!gardes_lues(&v).unwrap().durcissement.cet);
     }
 
     #[test]

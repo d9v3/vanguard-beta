@@ -1,7 +1,8 @@
 //! Les lecteurs propres à l'analyse, seuls (src/analyse/) : fichiers composés OLE ([MS-CFB] : DIFAT, FAT et
 //! mini-FAT qui bouclent, arbre qui revient sur lui-même), compression VBA ([MS-OVBA] : copies hors du tampon),
 //! flux « dir » d'un projet VBA, raccourcis ([MS-SHLLINK]), parties XML d'un document OOXML (encodages, entités,
-//! relations). Le premier octet choisit le lecteur.
+//! relations), en-têtes ELF (section dynamique, propriétés GNU) et Mach-O, que relit aussi `vanguard deploiement
+//! verifier-binaire`. Le premier octet choisit le lecteur.
 #![no_main]
 // Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
 #![forbid(unsafe_code)]
@@ -30,10 +31,35 @@ mod lnk;
 #[path = "../../src/analyse/office.rs"]
 mod office;
 
+#[allow(dead_code)]
+#[path = "../../src/analyse/elf.rs"]
+mod elf;
+
+#[allow(dead_code)]
+#[path = "../../src/analyse/macho.rs"]
+mod macho;
+
 const LIMITE: usize = 1 << 18;
 
 libfuzzer_sys::fuzz_target!(|donnees: &[u8]| {
     let Some((&choix, octets)) = donnees.split_first() else { return };
+    // Les exécutables sur les derniers choix : ceux d'avant gardent leur lecteur, et le corpus appris son sens.
+    if choix >= 250 {
+        if let Some(e) = elf::lire(octets) {
+            assert!(e.fin_des_donnees <= octets.len() as u64);
+            assert!(!(e.dynamique.is_some() && e.dynamique_illisible));
+        }
+        if let Some(u) = macho::universel(octets) {
+            for t in &u.tranches {
+                let _ = octets
+                    .get(t.position as usize..)
+                    .and_then(|r| r.get(..t.taille as usize))
+                    .and_then(macho::lire);
+            }
+        }
+        let _ = macho::lire(octets);
+        return;
+    }
     match choix % 5 {
         0 => {
             if let Ok(c) = cfb::Cfb::lire(octets, LIMITE) {

@@ -1,4 +1,5 @@
-//! La ressource de version d'un exécutable Windows (PE, RT_VERSION), et ses gardes (Load Config, manifeste) : un .exe
+//! La ressource de version d'un exécutable Windows (PE, RT_VERSION), et ses gardes (Load Config, manifeste,
+//! DllCharacteristics, relocalisations, CET du répertoire de débogage) : un .exe
 //! peut être fabriqué pour gêner l'analyse (en-têtes qui débordent, arbre des ressources qui boucle, tailles
 //! démesurées).
 #![no_main]

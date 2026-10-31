@@ -1,7 +1,9 @@
 //! Les en-têtes d'un exécutable ELF (Linux, BSD…), d'après elf(5) et la spécification System V (gABI) : en-tête,
 //! segments (table des programmes, ce que lit le chargeur), sections (table des sections, ce que lisent les outils),
-//! interpréteur (PT_INTERP), pile exécutable (PT_GNU_STACK), et la fin des données décrites, au-delà de laquelle des
-//! octets ajoutés (overlay) sont à analyser à part. 32 et 64 bits, petit et gros-boutiste ; les comptes étendus
+//! interpréteur (PT_INTERP), pile exécutable (PT_GNU_STACK), protections de l'éditeur de liens (PT_GNU_RELRO, la
+//! section dynamique PT_DYNAMIC et ses entrées DT_FLAGS, DT_FLAGS_1, DT_BIND_NOW, la propriété x86 de CET dans
+//! PT_GNU_PROPERTY), et la fin des données décrites, au-delà de laquelle des octets ajoutés (overlay) sont à analyser
+//! à part. 32 et 64 bits, petit et gros-boutiste ; les comptes étendus
 //! (PN_XNUM, e_shnum nul, SHN_XINDEX) lus dans la section 0, comme le dit elf(5).
 //!
 //! Lecteur pur : le fichier est en mémoire, chaque position contrôlée ; tout ce qui sort de la forme donne `None` ou
@@ -15,8 +17,31 @@
 use super::lecture::{Ordre, chaine_c, en_u64};
 
 pub(crate) const PT_LOAD: u32 = 1;
+pub(crate) const PT_DYNAMIC: u32 = 2;
 pub(crate) const PT_INTERP: u32 = 3;
 pub(crate) const PT_GNU_STACK: u32 = 0x6474_e551;
+pub(crate) const PT_GNU_RELRO: u32 = 0x6474_e552;
+pub(crate) const PT_GNU_PROPERTY: u32 = 0x6474_e553;
+/// e_type d'un objet partagé, la forme d'un exécutable à position indépendante (PIE).
+pub(crate) const ET_DYN: u16 = 3;
+/// Les entrées de la section dynamique lues ici (elf(5)).
+const DT_NULL: u64 = 0;
+const DT_BIND_NOW: u64 = 24;
+const DT_FLAGS: u64 = 30;
+const DT_FLAGS_1: u64 = 0x6fff_fffb;
+/// DT_FLAGS : DF_BIND_NOW ; DT_FLAGS_1 : DF_1_NOW et DF_1_PIE (ce que l'éditeur de liens écrit pour `-pie`).
+pub(crate) const DF_BIND_NOW: u64 = 0x8;
+pub(crate) const DF_1_NOW: u64 = 0x1;
+pub(crate) const DF_1_PIE: u64 = 0x0800_0000;
+/// La note des propriétés GNU (NT_GNU_PROPERTY_TYPE_0) et sa propriété x86 des protections du flot (CET) : IBT, SHSTK.
+const NT_GNU_PROPERTY_TYPE_0: u32 = 5;
+const GNU_PROPERTY_X86_FEATURE_1_AND: u32 = 0xc000_0002;
+pub(crate) const CET_IBT: u32 = 0x1;
+pub(crate) const CET_SHSTK: u32 = 0x2;
+/// Entrées lues dans la section dynamique : un vrai programme en a quelques dizaines.
+const ENTREES_DYNAMIQUES_MAX: usize = 4096;
+/// Les notes de propriétés : quelques dizaines d'octets dans un vrai programme.
+const PROPRIETES_MAX: usize = 4096;
 pub(crate) const PF_X: u32 = 1;
 pub(crate) const PF_W: u32 = 2;
 const SHT_NOBITS: u32 = 8;
@@ -75,6 +100,15 @@ pub(crate) struct Elf {
     pub interpreteur: Option<String>,
     /// PT_GNU_STACK : la pile est-elle exécutable ? `None` sans ce segment.
     pub pile_executable: Option<bool>,
+    /// PT_GNU_RELRO : une plage que le chargeur remet en lecture seule après la liaison.
+    pub relro: bool,
+    /// La section dynamique (PT_DYNAMIC), `None` sans ce segment ou quand elle ne se lit pas.
+    pub dynamique: Option<Dynamique>,
+    /// La section dynamique est là mais ne se lit pas : deux segments PT_DYNAMIC, hors du fichier, sans DT_NULL
+    /// avant sa fin, trop longue.
+    pub dynamique_illisible: bool,
+    /// Les protections x86 du flot (CET) annoncées par PT_GNU_PROPERTY : CET_IBT, CET_SHSTK. `None` sans la note.
+    pub cet: Option<u32>,
     /// La table des segments ne se lit pas en entier (hors du fichier, trop grande).
     pub segments_illisibles: bool,
     /// La table des sections ne se lit pas en entier, ou ses noms non plus : un programme peut l'abîmer exprès
@@ -82,6 +116,33 @@ pub(crate) struct Elf {
     pub sections_illisibles: bool,
     /// La fin de ce que décrivent les en-têtes : au-delà, des octets ajoutés.
     pub fin_des_donnees: u64,
+}
+
+/// Ce que dit la section dynamique de la liaison : les drapeaux, chacun `None` sans son entrée. Une entrée répétée :
+/// la dernière vaut, comme chez le chargeur de glibc et celui de musl.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct Dynamique {
+    /// DT_FLAGS.
+    pub drapeaux: Option<u64>,
+    /// DT_FLAGS_1.
+    pub drapeaux_1: Option<u64>,
+    /// DT_BIND_NOW, l'ancienne forme de DF_BIND_NOW.
+    pub bind_now: bool,
+}
+
+impl Dynamique {
+    /// Liaison immédiate (BIND_NOW) : tous les symboles résolus au chargement, avant que RELRO ne rende la table des
+    /// adresses (GOT) en lecture seule. L'une des trois formes suffit.
+    pub(crate) fn liaison_immediate(&self) -> bool {
+        self.bind_now
+            || self.drapeaux.is_some_and(|d| d & DF_BIND_NOW != 0)
+            || self.drapeaux_1.is_some_and(|d| d & DF_1_NOW != 0)
+    }
+
+    /// DF_1_PIE : l'éditeur de liens dit un exécutable à position indépendante, pas une bibliothèque.
+    pub(crate) fn pie(&self) -> bool {
+        self.drapeaux_1.is_some_and(|d| d & DF_1_PIE != 0)
+    }
 }
 
 impl Elf {
@@ -181,6 +242,9 @@ pub(crate) fn lire(octets: &[u8]) -> Option<Elf> {
         &mut fin_des_donnees,
     );
     let (interpreteur, pile_executable) = lire_programme(octets, &segments, &mut fin_des_donnees);
+    let relro = segments.iter().any(|s| s.type_ == PT_GNU_RELRO);
+    let (dynamique, dynamique_illisible) = lire_dynamique(octets, o, bits64, &segments);
+    let cet = lire_cet(octets, o, bits64, &segments);
     // Les sections et leurs noms.
     let (sections, sections_illisibles) = lire_sections(
         octets,
@@ -204,6 +268,10 @@ pub(crate) fn lire(octets: &[u8]) -> Option<Elf> {
         sections,
         interpreteur,
         pile_executable,
+        relro,
+        dynamique,
+        dynamique_illisible,
+        cet,
         segments_illisibles,
         sections_illisibles,
         fin_des_donnees,
@@ -308,6 +376,81 @@ fn lire_programme(octets: &[u8], segments: &[Segment], fin_des_donnees: &mut u64
         }
     }
     (interpreteur, pile_executable)
+}
+
+/// Les octets d'un segment dans le fichier, s'ils y sont tous.
+fn contenu<'a>(octets: &'a [u8], s: &Segment) -> Option<&'a [u8]> {
+    let debut = usize::try_from(s.position).ok()?;
+    let fin = debut.checked_add(usize::try_from(s.taille_fichier).ok()?)?;
+    octets.get(debut..fin)
+}
+
+/// La section dynamique (PT_DYNAMIC), lue jusqu'à DT_NULL dans les octets du segment, et `true` si elle est là mais
+/// illisible. Plus d'un PT_DYNAMIC : illisible, on ne sait pas lequel le chargeur prend.
+fn lire_dynamique(octets: &[u8], o: Ordre, bits64: bool, segments: &[Segment]) -> (Option<Dynamique>, bool) {
+    let mut trouves = segments.iter().filter(|s| s.type_ == PT_DYNAMIC);
+    let Some(segment) = trouves.next() else {
+        return (None, false);
+    };
+    if trouves.next().is_some() {
+        return (None, true);
+    }
+    let lue = (|| {
+        let table = contenu(octets, segment)?;
+        let taille_entree: usize = if bits64 { 16 } else { 8 };
+        let mut dynamique = Dynamique::default();
+        for k in 0..ENTREES_DYNAMIQUES_MAX {
+            let e = table.get(k.checked_mul(taille_entree)?..)?;
+            let (etiquette, valeur) = if bits64 {
+                (o.u64(e, 0)?, o.u64(e, 8)?)
+            } else {
+                (u64::from(o.u32(e, 0)?), u64::from(o.u32(e, 4)?))
+            };
+            match etiquette {
+                DT_NULL => return Some(dynamique),
+                DT_BIND_NOW => dynamique.bind_now = true,
+                DT_FLAGS => dynamique.drapeaux = Some(valeur),
+                DT_FLAGS_1 => dynamique.drapeaux_1 = Some(valeur),
+                _ => {}
+            }
+        }
+        None
+    })();
+    let illisible = lue.is_none();
+    (lue, illisible)
+}
+
+/// Arrondi de `n` au multiple de `pas` (une puissance de deux) suivant.
+fn aligne(n: usize, pas: usize) -> Option<usize> {
+    let masque = pas.checked_sub(1)?;
+    Some(n.checked_add(masque)? & !masque)
+}
+
+/// Les protections x86 du flot (CET) annoncées par la note GNU de PT_GNU_PROPERTY : `None` sans elle ou illisible.
+fn lire_cet(octets: &[u8], o: Ordre, bits64: bool, segments: &[Segment]) -> Option<u32> {
+    let segment = segments.iter().find(|s| s.type_ == PT_GNU_PROPERTY)?;
+    let notes = contenu(octets, segment)?;
+    let notes = notes.get(..notes.len().min(PROPRIETES_MAX))?;
+    // Une seule note : namesz, descsz, type, puis le nom « GNU\0 » et la description, alignée sur 8 en 64 bits.
+    let pas = if bits64 { 8 } else { 4 };
+    let taille_nom = usize::try_from(o.u32(notes, 0)?).ok()?;
+    let taille_desc = usize::try_from(o.u32(notes, 4)?).ok()?;
+    if o.u32(notes, 8)? != NT_GNU_PROPERTY_TYPE_0 || notes.get(12..16)? != b"GNU\0" || taille_nom != 4 {
+        return None;
+    }
+    let debut = aligne(12usize.checked_add(taille_nom)?, pas)?;
+    let desc = notes.get(debut..debut.checked_add(taille_desc)?)?;
+    let mut i = 0usize;
+    while i < desc.len() {
+        let type_ = o.u32(desc, i)?;
+        let taille = usize::try_from(o.u32(desc, i.checked_add(4)?)?).ok()?;
+        let donnees = i.checked_add(8)?;
+        if type_ == GNU_PROPERTY_X86_FEATURE_1_AND && taille >= 4 {
+            return o.u32(desc, donnees);
+        }
+        i = aligne(donnees.checked_add(taille)?, pas)?;
+    }
+    None
 }
 
 /// Les sections, nommées par la table des noms `shstrndx`, et `true` si elles sont illisibles ; la fin des données
@@ -476,6 +619,104 @@ pub(crate) mod essais {
         v.extend_from_slice(ajout);
         v
     }
+
+    /// Les protections d'un exécutable durci, chacune retirable pour l'essai.
+    #[allow(clippy::struct_excessive_bools)] // une protection par champ
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) struct Durci {
+        /// ET_DYN et DF_1_PIE ; sans : ET_EXEC, DF_1_PIE retiré.
+        pub pie: bool,
+        /// PT_GNU_RELRO.
+        pub relro: bool,
+        /// DF_BIND_NOW et DF_1_NOW.
+        pub liaison_immediate: bool,
+        /// PT_GNU_STACK sans PF_X ; sans : pile exécutable.
+        pub pile_non_executable: bool,
+        /// Sans PT_INTERP (statique) ; sans : un interpréteur demandé.
+        pub statique: bool,
+        /// La note PT_GNU_PROPERTY de CET (IBT et SHSTK), affichée seulement.
+        pub cet: bool,
+    }
+
+    impl Durci {
+        pub(crate) const COMPLET: Durci = Durci {
+            pie: true,
+            relro: true,
+            liaison_immediate: true,
+            pile_non_executable: true,
+            statique: true,
+            cet: false,
+        };
+    }
+
+    /// Un ELF 64 bits petit-boutiste comme celui de Vanguard (static-pie de musl) : PT_LOAD (lecture, exécution),
+    /// PT_DYNAMIC (DT_FLAGS, DT_FLAGS_1, DT_NULL, à 0x180), PT_GNU_RELRO, PT_GNU_STACK, selon `d` PT_INTERP et
+    /// PT_GNU_PROPERTY ; sans sections.
+    pub(crate) fn elf64_durci(d: Durci) -> Vec<u8> {
+        let mut v = vec![0u8; 0x200];
+        v[..4].copy_from_slice(b"\x7fELF");
+        v[4] = 2;
+        v[5] = 1;
+        v[6] = 1;
+        let mot16 = |v: &mut Vec<u8>, a: usize, x: u16| v[a..a + 2].copy_from_slice(&x.to_le_bytes());
+        let mot32 = |v: &mut Vec<u8>, a: usize, x: u32| v[a..a + 4].copy_from_slice(&x.to_le_bytes());
+        let mot64 = |v: &mut Vec<u8>, a: usize, x: u64| v[a..a + 8].copy_from_slice(&x.to_le_bytes());
+        mot16(&mut v, 16, if d.pie { super::ET_DYN } else { 2 });
+        mot16(&mut v, 18, 62);
+        mot32(&mut v, 20, 1);
+        mot64(&mut v, 24, 0x100);
+        mot64(&mut v, 32, 0x40);
+        mot16(&mut v, 52, 64);
+        mot16(&mut v, 54, 56);
+        // (type, drapeaux, position, taille)
+        let mut segments = vec![
+            (super::PT_LOAD, 5u32, 0u64, 0x200u64),
+            (super::PT_DYNAMIC, 6, 0x180, 0x30),
+            (super::PT_GNU_STACK, if d.pile_non_executable { 6 } else { 7 }, 0, 0),
+        ];
+        if d.relro {
+            segments.push((super::PT_GNU_RELRO, 4, 0x180, 0x30));
+        }
+        if !d.statique {
+            let interp = b"/lib/ld-musl-x86_64.so.1\0";
+            v[0x160..0x160 + interp.len()].copy_from_slice(interp);
+            segments.push((super::PT_INTERP, 4, 0x160, interp.len() as u64));
+        }
+        if d.cet {
+            // namesz 4, descsz 16, NT_GNU_PROPERTY_TYPE_0, « GNU », puis X86_FEATURE_1_AND = IBT | SHSTK.
+            let n = 0x1C0;
+            mot32(&mut v, n, 4);
+            mot32(&mut v, n + 4, 16);
+            mot32(&mut v, n + 8, 5);
+            v[n + 12..n + 16].copy_from_slice(b"GNU\0");
+            mot32(&mut v, n + 16, 0xc000_0002);
+            mot32(&mut v, n + 20, 4);
+            mot32(&mut v, n + 24, 3);
+            segments.push((super::PT_GNU_PROPERTY, 4, 0x1C0, 0x20));
+        }
+        mot16(&mut v, 56, u16::try_from(segments.len()).unwrap());
+        for (i, (type_, drapeaux, position, taille)) in segments.into_iter().enumerate() {
+            let p = 0x40 + 56 * i;
+            mot32(&mut v, p, type_);
+            mot32(&mut v, p + 4, drapeaux);
+            mot64(&mut v, p + 8, position);
+            mot64(&mut v, p + 16, position);
+            mot64(&mut v, p + 32, taille);
+            mot64(&mut v, p + 40, taille);
+        }
+        // La section dynamique : DT_FLAGS, DT_FLAGS_1, DT_NULL.
+        let (flags, flags_1) = match (d.liaison_immediate, d.pie) {
+            (true, true) => (super::DF_BIND_NOW, super::DF_1_NOW | super::DF_1_PIE),
+            (true, false) => (super::DF_BIND_NOW, super::DF_1_NOW),
+            (false, true) => (0, super::DF_1_PIE),
+            (false, false) => (0, 0),
+        };
+        mot64(&mut v, 0x180, 30);
+        mot64(&mut v, 0x188, flags);
+        mot64(&mut v, 0x190, 0x6fff_fffb);
+        mot64(&mut v, 0x198, flags_1);
+        v
+    }
 }
 
 #[allow(
@@ -485,7 +726,7 @@ pub(crate) mod essais {
 )]
 #[cfg(test)]
 mod tests {
-    use super::essais::elf64;
+    use super::essais::{Durci, elf64, elf64_durci};
     use super::*;
 
     #[test]
@@ -531,6 +772,82 @@ mod tests {
         assert!(lire(&v).unwrap().segments_illisibles);
     }
 
+    #[test]
+    fn protections_de_l_editeur_de_liens() {
+        // Celui de Vanguard : PIE, RELRO, BIND_NOW, pile non exécutable, sans interpréteur.
+        let elf = lire(&elf64_durci(Durci::COMPLET)).unwrap();
+        assert_eq!(elf.type_, ET_DYN);
+        assert!(elf.relro && !elf.dynamique_illisible && elf.interpreteur.is_none());
+        let d = elf.dynamique.unwrap();
+        assert_eq!(d.drapeaux, Some(DF_BIND_NOW));
+        assert_eq!(d.drapeaux_1, Some(DF_1_NOW | DF_1_PIE));
+        assert!(d.pie() && d.liaison_immediate() && !d.bind_now);
+        assert_eq!(elf.pile_executable, Some(false));
+        assert_eq!(elf.cet, None);
+        // Chacune retirée.
+        let sans = |f: fn(&mut Durci)| {
+            let mut d = Durci::COMPLET;
+            f(&mut d);
+            lire(&elf64_durci(d)).unwrap()
+        };
+        let elf = sans(|d| d.pie = false);
+        assert!(elf.type_ == 2 && !elf.dynamique.unwrap().pie() && elf.dynamique.unwrap().liaison_immediate());
+        assert!(!sans(|d| d.relro = false).relro);
+        let elf = sans(|d| d.liaison_immediate = false);
+        assert!(!elf.dynamique.unwrap().liaison_immediate() && elf.dynamique.unwrap().pie());
+        assert_eq!(sans(|d| d.pile_non_executable = false).pile_executable, Some(true));
+        assert_eq!(
+            sans(|d| d.statique = false).interpreteur.as_deref(),
+            Some("/lib/ld-musl-x86_64.so.1")
+        );
+        assert_eq!(sans(|d| d.cet = true).cet, Some(CET_IBT | CET_SHSTK));
+        // Les deux autres formes de BIND_NOW : DT_BIND_NOW seul, DF_1_NOW seul.
+        let mut v = elf64_durci(Durci::COMPLET);
+        v[0x180..0x190].copy_from_slice(&[24, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        v[0x198..0x1A0].copy_from_slice(&DF_1_PIE.to_le_bytes());
+        let d = lire(&v).unwrap().dynamique.unwrap();
+        assert!(d.bind_now && d.liaison_immediate() && d.drapeaux.is_none());
+        let mut v = elf64_durci(Durci::COMPLET);
+        v[0x188..0x190].fill(0);
+        assert!(lire(&v).unwrap().dynamique.unwrap().liaison_immediate());
+        // Une entrée répétée : la dernière vaut (DT_FLAGS_1 sans NOW après DT_FLAGS remis à rien).
+        let mut v = elf64_durci(Durci::COMPLET);
+        v[0x180..0x188].copy_from_slice(&0x6fff_fffbu64.to_le_bytes());
+        v[0x188..0x190].copy_from_slice(&(DF_1_NOW | DF_1_PIE).to_le_bytes());
+        v[0x198..0x1A0].copy_from_slice(&DF_1_PIE.to_le_bytes());
+        assert!(!lire(&v).unwrap().dynamique.unwrap().liaison_immediate());
+    }
+
+    #[test]
+    fn section_dynamique_abimee() {
+        let illisible = |v: &[u8]| {
+            let elf = lire(v).unwrap();
+            elf.dynamique_illisible && elf.dynamique.is_none()
+        };
+        // Sans DT_NULL avant la fin du segment.
+        let mut v = elf64_durci(Durci::COMPLET);
+        v[0x1A0..0x1B0].fill(0xAA);
+        v[0x40 + 56 + 32..0x40 + 56 + 40].copy_from_slice(&0x28u64.to_le_bytes());
+        assert!(illisible(&v));
+        // Hors du fichier.
+        let mut v = elf64_durci(Durci::COMPLET);
+        v[0x40 + 56 + 8..0x40 + 56 + 16].copy_from_slice(&0x1F0u64.to_le_bytes());
+        assert!(illisible(&v));
+        // Deux PT_DYNAMIC : le PT_GNU_STACK devient le second.
+        let mut v = elf64_durci(Durci::COMPLET);
+        v[0x40 + 112..0x40 + 116].copy_from_slice(&PT_DYNAMIC.to_le_bytes());
+        assert!(illisible(&v));
+        // Sans PT_DYNAMIC du tout : rien à lire, rien d'illisible.
+        let elf = lire(&elf64(5, false, 0x40_0180, b"")).unwrap();
+        assert!(elf.dynamique.is_none() && !elf.dynamique_illisible && !elf.relro && elf.cet.is_none());
+        // Une note de propriétés qui ment sur sa taille : pas de CET lu, sans planter.
+        let mut d = Durci::COMPLET;
+        d.cet = true;
+        let mut v = elf64_durci(d);
+        v[0x1C4..0x1C8].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(lire(&v).unwrap().cet, None);
+    }
+
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig { cases: 2000, failure_persistence: None, ..proptest::prelude::ProptestConfig::default() })]
         #[test]
@@ -542,6 +859,18 @@ mod tests {
             if let Some(elf) = lire(&v) {
                 proptest::prop_assert!(elf.fin_des_donnees <= v.len() as u64);
                 proptest::prop_assert!(elf.segments.len() <= SEGMENTS_MAX);
+            }
+        }
+
+        #[test]
+        fn durci_abime(i in 0usize..0x200, x in proptest::num::u8::ANY, j in 0usize..0x200, y in proptest::num::u8::ANY, cet in proptest::bool::ANY) {
+            let mut d = Durci::COMPLET;
+            d.cet = cet;
+            let mut v = elf64_durci(d);
+            v[i] = x;
+            v[j] = y;
+            if let Some(elf) = lire(&v) {
+                proptest::prop_assert!(!(elf.dynamique.is_some() && elf.dynamique_illisible));
             }
         }
     }
