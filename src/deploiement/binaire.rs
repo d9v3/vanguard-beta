@@ -1196,6 +1196,9 @@ mod tests {
 
     /// Le programme des essais, compilé comme celui qu'on livre (static-pie de musl, mêmes options d'édition des
     /// liens) : il porte ses protections. Un réglage perdu dans .cargo/config.toml ou build.rs se voit ici.
+    /// Suppose la cible par défaut des essais, x86_64-unknown-linux-musl (.cargo/config.toml) : lancé avec
+    /// `--target x86_64-unknown-linux-gnu`, il jugerait un autre programme (dynamique, chargé par glibc) que celui
+    /// qu'on livre, et son verdict ne dirait rien du programme publié.
     #[cfg(target_os = "linux")]
     #[test]
     fn le_programme_des_essais_est_durci() {

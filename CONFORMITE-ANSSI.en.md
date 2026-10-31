@@ -49,9 +49,12 @@ that could silently change a released program.
 | DENV-AUTOFIX | met | No `cargo fix` or `clippy --fix` in `outils/` or `.github/`; the fix proposed by the night watch is never merged without review (`outils/veille/LISEZMOI.md`). | — |
 
 Outside the guide: the protections of the published programs (Linux: PIE, full RELRO marking, which Vanguard applies
-itself at startup, non-executable stack, nothing writable and executable; Windows: high-entropy ASLR, DEP, relocations; macOS: every slice PIE) are read from their
-headers by `vanguard deploiement verifier-binaire` (`src/deploiement/binaire.rs`) on every `outils/verifier.sh` run,
-in CI and before every release; CFG and CET are shown without being required (see `MODELE-DE-MENACE.en.md`).
+itself at startup, non-executable stack, nothing writable and executable; Windows: high-entropy ASLR with
+LARGE_ADDRESS_AWARE, DEP, relocations; macOS: every slice PIE, 4 GiB __PAGEZERO, arm64 signature inside the slice;
+everywhere the shipped system and architecture) are read from their headers by `vanguard deploiement verifier-binaire`
+(`src/deploiement/binaire.rs`). `outils/verifier.sh` always runs it on the debug program, and on the release programs
+only if they were built from this commit; `outils/deployer.sh`, `outils/publier-version.sh` and CI run it on the ones
+that leave, before sending them. CFG and CET are shown without being required (see `MODELE-DE-MENACE.en.md`).
 
 ## Libraries
 

@@ -49,10 +49,13 @@ l'environnement qui pouvaient changer en silence un programme publié.
 | DENV-AUTOFIX | tenu | Aucun `cargo fix` ni `clippy --fix` dans `outils/` ou `.github/` ; la correction proposée par la veille de nuit n'est jamais fusionnée sans relecture (`outils/veille/LISEZMOI.md`). | — |
 
 Hors du guide : les protections des programmes publiés (Linux : PIE, marque du RELRO complet, que Vanguard applique
-lui-même au démarrage, pile non exécutable, rien d'écrivable et exécutable ; Windows : ASLR à haute entropie, DEP, relocalisations ; macOS : chaque tranche en PIE)
-sont lues dans leurs en-têtes par `vanguard deploiement verifier-binaire` (`src/deploiement/binaire.rs`) à chaque
-`outils/verifier.sh`, dans la CI et avant chaque publication ; CFG et CET sont affichés sans être exigés (voir
-`MODELE-DE-MENACE.md`).
+lui-même au démarrage, pile non exécutable, rien d'écrivable et exécutable ; Windows : ASLR à haute entropie avec
+LARGE_ADDRESS_AWARE, DEP, relocalisations ; macOS : chaque tranche en PIE, __PAGEZERO de 4 Gio, signature arm64 dans
+la tranche ; partout le système et l'architecture livrés) sont lues dans leurs en-têtes par `vanguard deploiement
+verifier-binaire` (`src/deploiement/binaire.rs`). `outils/verifier.sh` y passe toujours le programme de débogage, et
+les programmes de publication seulement s'ils sont compilés de ce commit ; `outils/deployer.sh`,
+`outils/publier-version.sh` et la CI y passent ceux qui partent, avant de les envoyer. CFG et CET sont affichés sans
+être exigés (voir `MODELE-DE-MENACE.md`).
 
 ## Bibliothèques
 
