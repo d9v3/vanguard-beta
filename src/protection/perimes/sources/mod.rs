@@ -700,6 +700,7 @@ mod tests {
 
     /// L'allocateur des essais : celui du système, qui compte les octets alloués par chaque fil. Il sert à vérifier
     /// qu'une lecture ne copie pas en mémoire ce qu'elle ignore (`allocations`).
+    #[cfg_attr(all(miri, windows), allow(dead_code))]
     struct Compteur;
 
     thread_local! {
@@ -730,6 +731,10 @@ mod tests {
         }
     }
 
+    // Pas sous Miri pour Windows : l'allocateur du système de std y relit son en-tête (allocations alignées sur plus
+    // de 16 octets) par un pointeur que Miri juge sans droit sur lui, ce qui se reproduit sans Vanguard, avec `System`
+    // seul. Miri y garde son allocateur ; le compteur est vérifié sous Miri pour Linux (outils/preuves.sh).
+    #[cfg(not(all(miri, windows)))]
     #[global_allocator]
     static COMPTEUR: Compteur = Compteur;
 
@@ -743,6 +748,10 @@ mod tests {
     /// Le compteur lui-même : chaque méthode de l'allocateur (allocation, à zéro, agrandie, libérée) passe au système
     /// et compte ce qu'elle demande. Lancé sous Miri (outils/preuves.sh), qui y vérifie les quatre délégations.
     #[test]
+    #[cfg_attr(
+        all(miri, windows),
+        ignore = "sans le compteur sous Miri pour Windows (voir COMPTEUR)"
+    )]
     fn compteur_delegue_et_compte() {
         let (v, alloue) = allocations(|| {
             let mut v = vec![0u8; 16];
