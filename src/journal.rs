@@ -101,11 +101,10 @@ fn lecteur_windows(connues: &std::collections::BTreeSet<String>) -> Option<PathB
     cles_connues::seule_parmi_lus(trouves, connues)
 }
 
-/// Wine installe ses propres programmes dans system32 ; wineboot.exe n'existe pas sur un vrai Windows.
+/// Vanguard tourne-t-il sous Wine ? Demandé à la ntdll chargée, jamais à l'environnement (`commande::sous_wine`).
 #[cfg(windows)]
 pub(crate) fn sous_wine() -> bool {
-    let systeme = std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from("C:\\windows"), PathBuf::from);
-    systeme.join("system32").join("wineboot.exe").is_file()
+    crate::commande::sous_wine()
 }
 
 /// Système et version, pour situer l'erreur (« Windows 10.0.26200.9711 », « Arch Linux 6.17.2 », « macOS 15.1 »).

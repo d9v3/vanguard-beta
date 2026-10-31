@@ -1,7 +1,8 @@
 //! Lancement des commandes système avec un délai maximal : un outil qui ne répond plus (systemctl, gsettings,
 //! PowerShell, gestionnaire de paquets hors ligne…) ne doit jamais figer Vanguard.
 
-// FFI de libc (setsid, getpgid, kill, waitid : groupe de processus et attente) et de kernel32 (GetSystemDirectoryW).
+// FFI de libc (setsid, getpgid, kill, waitid : groupe de processus et attente) et de kernel32 (GetSystemDirectoryW ;
+// GetModuleHandleW et GetProcAddress, pour reconnaître Wine).
 #![allow(unsafe_code)]
 
 use std::io::{Read, Write};
@@ -108,6 +109,29 @@ pub(crate) fn dossier_systeme() -> &'static std::path::Path {
             // Jamais vu : un chemin écrit plutôt qu'un nom nu, que Windows chercherait d'abord à côté de Vanguard.
             _ => std::path::PathBuf::from(r"C:\Windows\System32"),
         }
+    })
+}
+
+/// Vanguard tourne-t-il sous Wine ? Sa ntdll exporte `wine_get_version`, celle de Windows non : la réponse vient du
+/// code chargé dans ce processus, pas de l'environnement (SystemRoot vers un dossier qui contient un faux
+/// wineboot.exe ferait passer un vrai Windows pour Wine, et ses corrections par la fenêtre PowerShell d'avant). Dans
+/// le doute (ntdll introuvable, jamais vu), ce n'est pas Wine : le chemin sûr, celui de Windows. Lu une fois.
+#[cfg(windows)]
+pub(crate) fn sous_wine() -> bool {
+    static WINE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetModuleHandleW(nom: *const u16) -> *mut std::ffi::c_void;
+        fn GetProcAddress(module: *mut std::ffi::c_void, nom: *const u8) -> *mut std::ffi::c_void;
+    }
+    *WINE.get_or_init(|| {
+        let nom: Vec<u16> = "ntdll.dll\0".encode_utf16().collect();
+        // SAFETY: `nom` est terminé par un zéro et vit pendant l'appel ; ntdll est chargée dans tout processus, la
+        // poignée rendue n'est pas à libérer.
+        let ntdll = unsafe { GetModuleHandleW(nom.as_ptr()) };
+        // SAFETY: `ntdll` est une poignée de module valide (non nulle), le nom une chaîne C terminée par un zéro ;
+        // l'adresse rendue n'est que comparée à nul, jamais appelée.
+        !ntdll.is_null() && !unsafe { GetProcAddress(ntdll, c"wine_get_version".as_ptr().cast()) }.is_null()
     })
 }
 
@@ -1577,6 +1601,48 @@ mod tests_noms_nus {
 
 #[cfg(all(test, windows))]
 mod tests_systeme32 {
+    /// Sous Wine ou non, la réponse est celle du système qui tourne (clé HKLM\Software\Wine, que Wine pose et que
+    /// Windows n'a pas), même avec un SystemRoot trompeur : le test se relance lui-même avec SystemRoot vers un
+    /// dossier jetable qui contient un faux wineboot.exe sur Windows, ou rien sous Wine. L'ancienne détection
+    /// (wineboot.exe sous %SystemRoot%) s'y trompait sur Windows. Wine, lui, remet SystemRoot à sa valeur dans chaque
+    /// processus : là, la tromperie ne passe pas, et le test le dit (sauté).
+    #[test]
+    fn sous_wine_ne_croit_pas_l_environnement() {
+        let wine = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
+            .open_subkey(r"Software\Wine")
+            .is_ok();
+        if let Some(trompeur) = std::env::var_os("VANGUARD_ESSAI_SOUS_WINE") {
+            if std::env::var_os("SystemRoot") == Some(trompeur) {
+                println!("SystemRoot trompeur reçu");
+            }
+            assert_eq!(super::sous_wine(), wine);
+            return;
+        }
+        assert_eq!(super::sous_wine(), wine);
+        let d = std::env::temp_dir().join(format!("vanguard-systemroot-{}", std::process::id()));
+        std::fs::create_dir_all(d.join("system32")).unwrap();
+        if !wine {
+            std::fs::write(d.join(r"system32\wineboot.exe"), b"MZ").unwrap();
+        }
+        let sortie = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "commande::tests_systeme32::sous_wine_ne_croit_pas_l_environnement",
+                "--nocapture",
+            ])
+            .env("VANGUARD_ESSAI_SOUS_WINE", &d)
+            .env("SystemRoot", &d)
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+        let texte = String::from_utf8_lossy(&sortie.stdout);
+        // Le test relancé a bien tourné (un filtre qui ne trouverait rien réussirait aussi).
+        assert!(sortie.status.success() && texte.contains("1 passed"), "{texte}");
+        if !texte.contains("SystemRoot trompeur reçu") {
+            crate::essais::saute("SystemRoot remis à sa valeur dans le processus relancé (Wine)");
+        }
+    }
+
     /// Le chemin donné par Windows, complet, « .exe » ajouté seulement s'il manque ; cmd.exe y est (Wine compris).
     #[test]
     fn programmes_du_systeme_par_leur_chemin() {

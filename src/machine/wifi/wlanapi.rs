@@ -414,11 +414,10 @@ mod natif {
         }
     }
 
-    /// Wine installe ses propres programmes dans system32 ; wineboot.exe n'existe pas sur un vrai Windows. Ses
-    /// fonctions WLAN sont des coquilles qui lèvent une exception : on ne les appelle pas.
+    /// Sous Wine, les fonctions WLAN sont des coquilles qui lèvent une exception : on ne les appelle pas. Wine
+    /// reconnu par sa ntdll, jamais par l'environnement (`commande::sous_wine`).
     fn sous_wine() -> bool {
-        let systeme = std::env::var_os("SystemRoot").map_or_else(|| "C:\\windows".into(), std::path::PathBuf::from);
-        systeme.join("system32").join("wineboot.exe").is_file()
+        crate::commande::sous_wine()
     }
 
     impl Api {
