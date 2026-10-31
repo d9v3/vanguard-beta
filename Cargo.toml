@@ -139,7 +139,10 @@ unimplemented = "warn"
 # `arithmetic_side_effects` et `as_conversions`, posés en tête de chacun de ces modules (`#![warn(…)]`) et non ici :
 # sur tout le crate, ils toucheraient un bon millier de calculs sans donnée hostile. À leur place, `checked_*` et une
 # erreur rendue, `try_from` ou `From` ; `wrapping_*` ou `saturating_*` seulement quand c'est le sens voulu (somme de
-# contrôle, hachage, compteur plafonné). Un test de main.rs exige l'attribut de chaque module inclus par fuzz/.
+# contrôle, hachage, compteur plafonné). Un test de main.rs exige l'attribut de chaque module inclus par fuzz/ et de
+# ses sous-modules, et n'y laisse taire ces lints que par `#[expect]` (avec sa preuve) ou sur un module d'essais.
+# Le lint ne voit ni les décalages (`<<`, `>>`), ni `pow`, `abs`, `next_multiple_of`, `div_ceil`, `step_by`, les
+# sommes d'itérateurs, ni `Duration`/`Instant` hors `+` et `*` : dans ces modules, ces formes sont relues à la main.
 # Chaque bloc `unsafe` et chaque `unsafe impl` dit pourquoi il est sûr, par un `// SAFETY:` juste au-dessus : ce que
 # la relecture d'un bloc doit vérifier est écrit là, et un bloc ajouté sans raison ne passe plus. Un tel commentaire
 # posé sur du code sûr est refusé aussi : il ferait croire à une garantie qui n'existe pas.
