@@ -14,7 +14,8 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
   (sans être lancées) ; tout cargo en `--locked` ; les cibles en parallèle, une ligne par étape à la fin, avec les avertissements de cargo deny et le
   compte de l'unsafe de src/). Un test qui ne peut pas
   tourner ici le dit : `return crate::essais::saute("raison");` (`src/essais.rs`), compté « sauté » par verifier.sh,
-  jamais un simple `return`. `--ci` : ce que lance la CI ; `--seulement étape,étape` (une étape demandée qui se dit
+  jamais un simple `return`. Sans option, une étape sautée ou jamais lancée est un échec (« passage partiel » avec `--ci`, `--rapide`,
+  `--sans-wine`, jamais « Tout est vert ») ; `--ci` : ce que lance la CI ; `--seulement étape,étape` (une étape demandée qui se dit
   sautée ou ne tourne pas y échoue, un nom inconnu est refusé : `outils/essais-verifier.sh`). Les
   scripts PowerShell du programme y sont analysés et rejoués sous Linux dans un bac à sable, depuis un dossier
   courant à témoins (`outils/rejouer-ps.py`) : un chemin vide qui le lirait se voit. `--rapide` : Linux seulement,

@@ -15,7 +15,8 @@ relance. Le détail, si une étape demande d'y regarder de près :
    session. La première fois, Wine prépare ce dossier (une minute).
 5. Si un script généré a changé : commandes shell par `bash -n -c`, PowerShell par pwsh (voir .claude/rules/windows.md).
 6. Dépendances : `cargo deny check` (deny.toml) et `cargo audit` ; « sautée » sans l'outil (cargo audit aussi sans
-   Internet), ce qui n'est pas un échec mais se dit.
+   Internet). Dans le passage complet (sans option, celui de la livraison), une étape sautée ou jamais lancée est un
+   échec ; `--rapide`, `--sans-wine` et `--ci` finissent « passage partiel » et nomment ce qui n'a pas été vérifié.
 7. Workflows : `zizmor --offline .github/workflows` (sans jeton dans l'environnement) ; nomenclatures :
    `outils/sbom.sh <dossier>` deux fois, identiques (cargo-cyclonedx 0.5.9). Sautées sans l'outil.
 

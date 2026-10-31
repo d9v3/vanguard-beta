@@ -12,11 +12,15 @@
 # un dossier par cible, elles ne s'attendent presque pas. À la fin, une ligne par étape ; le code de sortie dit si tout
 # est vert. Chaque cargo compile avec --locked : un Cargo.lock qui ne suit plus Cargo.toml est une erreur, jamais
 # réécrit en silence avec d'autres versions que celles que cargo deny et cargo audit ont jugées.
-#   outils/verifier.sh               tout
+#   outils/verifier.sh               tout ; une étape qui se dit sautée (outil absent, pas d'Internet) ou ne tourne
+#                                    pas y est un échec : seul ce passage-là peut finir « Tout est vert », et c'est
+#                                    lui que la livraison lance (outils/livrer-branche.sh)
 #   outils/verifier.sh --rapide      mise en forme, clippy et tests Linux seulement
 #   outils/verifier.sh --sans-wine   tout, sauf les tests Windows
 #   outils/verifier.sh --ci          pour la CI de GitHub : tout sauf Wine, et l'essai du veilleur sur le vrai noyau
 #                                    peut s'y dire sauté (les runners refusent le connecteur de processus)
+# Ces trois-là sautent des étapes en le demandant : rien en échec y rend 0, mais la dernière ligne dit « passage
+# partiel » et nomme ce qui n'a pas été vérifié, jamais « Tout est vert ».
 #   outils/verifier.sh --seulement dependances,failles-connues   ces étapes-là (la nuit en CI), sans les autres ;
 #                                    une étape demandée qui se dit sautée, ou ne tourne pas, y est un échec, et un nom
 #                                    inconnu est refusé (code 2)
@@ -50,8 +54,8 @@ trap 'rm -rf "$TRAVAIL"' EXIT
 DEBUT=$SECONDS
 
 # Une étape qui ne peut pas tourner ici (outil absent) sort avec ce code et dit pourquoi en première ligne : elle est
-# dite « sautée », sans compter comme un échec, sauf avec --seulement (voir ligne). 77, comme les tests d'automake ;
-# 1 et 2 sont déjà ceux des échecs.
+# dite « sautée ». Un échec dans le passage complet et sous --seulement, un « passage partiel » ailleurs (voir
+# juger_etape). 77, comme les tests d'automake ; 1 et 2 sont déjà ceux des échecs.
 SAUTEE=77
 
 # Une étape : sa commande, son journal, son état (« ok 41 », « sautee 0 » ou « echec 41 », en secondes). Avec
@@ -355,12 +359,18 @@ relectures() {
     [[ $MODE == --ci ]] && return 1
     return "$SAUTEE"
   fi
+  # Hors ligne, seul imports.lock est lu, cru sur parole : la moitié de l'étape, donc pas un vert. La raison
+  # d'abord (première ligne du journal, que le résumé montre), puis ce qui a pu être vérifié quand même.
+  local hors_ligne=""
+  if ! internet; then
+    hors_ligne=1
+    echo "relectures importées pas confrontées à leurs registres (hors ligne)"
+  fi
   cargo vet --version
   cargo fetch --locked -q && cargo vet --locked --frozen || return 1
-  if ! internet; then
-    echo "relectures importées pas confrontées à leurs registres (hors ligne)"
+  if [[ -n $hors_ligne ]]; then
     [[ $MODE == --ci ]] && return 1
-    return 0
+    return "$SAUTEE"
   fi
   local copie=$TRAVAIL/supply-chain-relu
   rm -rf "$copie" && cp -r supply-chain "$copie" || return 1
@@ -452,7 +462,23 @@ raisons_des_sautes() {
   (($(cut -f2 "$f" | sort -u | wc -l) <= 8)) || echo "      … (liste complète : VANGUARD_TESTS_SAUTES=fichier cargo test)"
 }
 
+# Ce que vaut au résumé une étape (ok, sautee, echec, ou absente : jamais lancée) : « vert », « echec » ou
+# « partiel ». Le passage complet (sans option) est celui de la livraison (outils/livrer-branche.sh) et --seulement
+# celui de l'audit de nuit de la CI : une étape qui n'a rien vérifié y est un échec, sinon un outil désinstallé ou une
+# coupure d'Internet suffirait à publier une version que cargo vet, cargo deny ou zizmor n'ont jamais vue (campagne
+# d'attaque n° 6, F7). --rapide, --sans-wine et --ci sautent des étapes en le demandant : « partiel », dit à la fin.
+# Lue telle quelle par outils/essais-verifier.sh.
+juger_etape() {
+  case $1 in
+    ok) echo vert ;;
+    sautee | absente) if [[ -z $MODE || -n $SEULEMENT ]]; then echo echec; else echo partiel; fi ;;
+    *) echo echec ;;
+  esac
+}
+
 ECHECS=0
+# Les étapes d'un passage partiel qui n'ont rien vérifié, nommées à la fin.
+NON_VERIFIEES=()
 # Le résumé est aussi gardé dans un fichier : la page des fonctions (outils/page-fonctions.py) y lit les nombres de
 # tests de la dernière vérification, au déploiement.
 RESUME=$HOME/.cache/vanguard-dev/verifier-dernier.txt
@@ -460,24 +486,22 @@ RESUME=$HOME/.cache/vanguard-dev/verifier-dernier.txt
 [[ -n $SEULEMENT ]] && RESUME=/dev/null
 mkdir -p "$HOME/.cache/vanguard-dev" && : >"$RESUME"
 ligne() {
-  local nom=$1 libelle=$2 etat duree
+  local nom=$1 libelle=$2 etat=absente duree quoi
   [[ -z $SEULEMENT || $SEULEMENT == *",$nom,"* ]] || return 0
-  # Une étape demandée nommément (--seulement : l'audit de nuit de la CI) qui n'a pas tourné, ou qui s'est dite
-  # sautée, n'a rien vérifié : ce n'est pas un vert. Sans --seulement, un saut a ses raisons (outil absent ici,
-  # clone partiel de la CI) et reste dit sans échouer.
-  if [[ ! -f $TRAVAIL/$nom.etat ]]; then
-    printf '  · %-34s non lancé\n' "$libelle" | tee -a "$RESUME"
-    [[ -z $SEULEMENT ]] || ECHECS=$((ECHECS + 1))
-    return
-  fi
-  read -r etat duree <"$TRAVAIL/$nom.etat"
+  # Une étape qui n'a pas tourné, ou qui s'est dite sautée, n'a rien vérifié : jamais un vert (juger_etape).
+  [[ -f $TRAVAIL/$nom.etat ]] && read -r etat duree <"$TRAVAIL/$nom.etat"
   if [[ $etat == ok ]]; then
     printf '  ✔ %-34s %4s s\n' "$libelle" "$duree" | tee -a "$RESUME"
-  elif [[ $etat == sautee && -z $SEULEMENT ]]; then
-    printf '  · %-34s sautée : %s\n' "$libelle" "$(head -n1 "$TRAVAIL/$nom.log")" | tee -a "$RESUME"
-  elif [[ $etat == sautee ]]; then
-    ECHECS=$((ECHECS + 1))
-    printf '  ✖ %-34s sautée, rien vérifié : %s\n' "$libelle" "$(head -n1 "$TRAVAIL/$nom.log")" | tee -a "$RESUME"
+  elif [[ $etat == absente || $etat == sautee ]]; then
+    quoi="non lancé"
+    [[ $etat == absente ]] || quoi="sautée, rien vérifié : $(head -n1 "$TRAVAIL/$nom.log")"
+    if [[ $(juger_etape "$etat") == echec ]]; then
+      ECHECS=$((ECHECS + 1))
+      printf '  ✖ %-34s %s\n' "$libelle" "$quoi" | tee -a "$RESUME"
+    else
+      NON_VERIFIEES+=("$libelle")
+      printf '  · %-34s %s\n' "$libelle" "$quoi" | tee -a "$RESUME"
+    fi
   else
     ECHECS=$((ECHECS + 1))
     printf '  ✖ %-34s %4s s\n' "$libelle" "$duree" | tee -a "$RESUME"
@@ -539,6 +563,7 @@ if [[ $MODE != --rapide ]]; then
     ligne regression-detection-windows "régression de détection Windows ($(cas_qui_tirent regression-detection-windows) règles)"
   elif [[ -z $SEULEMENT ]]; then
     printf '  · %-34s non lancé (%s) : le vrai Windows de la CI fait tourner son cargo test\n' "régression de détection Windows" "$MODE" | tee -a "$RESUME"
+    NON_VERIFIEES+=("tests Windows sous Wine")
   fi
   ligne clippy-macos-arm "clippy macOS Apple Silicon"
   ligne clippy-macos-intel "clippy macOS Intel"
@@ -570,5 +595,15 @@ DUREE=$((SECONDS - DEBUT))
 if ((ECHECS)); then
   echo "$ECHECS étape(s) en échec, en $((DUREE / 60)) min $((DUREE % 60)) s."
   exit 1
+fi
+# Un passage qui a sauté des étapes en le demandant (--rapide, --sans-wine, --ci) : rien en échec, mais pas « Tout est
+# vert », que seuls le passage complet et --seulement peuvent dire.
+if [[ -n $MODE && -z $SEULEMENT ]]; then
+  PARTIEL="Passage partiel ($MODE) : rien en échec, mais ce n'est pas la vérification complète"
+  for e in "${NON_VERIFIEES[@]}"; do
+    [[ $PARTIEL == *" ; non vérifié : "* ]] && PARTIEL+=", $e" || PARTIEL+=" ; non vérifié : $e"
+  done
+  echo "$PARTIEL ; en $((DUREE / 60)) min $((DUREE % 60)) s."
+  exit 0
 fi
 echo "Tout est vert, en $((DUREE / 60)) min $((DUREE % 60)) s."

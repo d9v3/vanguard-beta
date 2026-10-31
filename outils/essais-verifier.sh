@@ -6,6 +6,11 @@
 #   2. Une étape demandée qui ne tourne jamais sous --seulement (la mise en forme) fait échouer.
 #   3. Un nom d'étape inconnu (mal écrit, ou renommé sans suivre ci.yml) est refusé, code 2.
 #   4. Une étape demandée qui réussit (scripts Python) donne bien « Tout est vert ».
+#   5. Le passage complet (celui de la livraison) : une étape sautée ou jamais lancée y est un échec, pas un vert ;
+#      --rapide, --sans-wine et --ci la disent « partiel » (juger_etape, lue dans verifier.sh : le passage complet
+#      ne se relance pas d'ici, il dure des minutes et lance ces essais mêmes).
+#   6. Les relectures de cargo vet sans Internet (VANGUARD_HORS_LIGNE) : imports.lock cru sur parole, l'étape se dit
+#      sautée avec sa raison, jamais verte (sauté sans cargo-vet 0.10.3).
 # Chaque essai ne lance que des étapes de quelques secondes, sans Internet ni compilation.
 # Lancé par outils/verifier.sh.
 #   outils/essais-verifier.sh
@@ -54,6 +59,32 @@ if ((CODE == 0)) && grep -q '✔ scripts Python' <<<"$SORTIE" && grep -q '^Tout 
   ok "étape demandée et réussie : tout est vert"
 else
   ko "étape demandée et réussie (code $CODE) : $(tail -n 2 <<<"$SORTIE")"
+fi
+
+# La règle du résumé, lue telle quelle dans verifier.sh et jugée dans chaque mode.
+juge=$(mktemp "$HOME/.cache/vanguard-dev/juger-etape.XXXX")
+awk '/^juger_etape\(\) \{/,/^\}/' outils/verifier.sh >"$juge"
+juger() { MODE=$1 SEULEMENT=$2 bash -c "source '$juge'; juger_etape $3"; }
+if [[ -s $juge && $(juger "" "" sautee) == echec && $(juger "" "" absente) == echec && $(juger "" "" ok) == vert &&
+  $(juger --seulement ,python, sautee) == echec && $(juger --ci "" sautee) == partiel &&
+  $(juger --sans-wine "" absente) == partiel && $(juger --rapide "" echec) == echec ]]; then
+  ok "passage complet : une étape sautée ou jamais lancée est un échec ; --rapide, --sans-wine, --ci : partiel"
+else
+  ko "passage complet : une étape sautée ou jamais lancée n'y est pas un échec (juger_etape de verifier.sh)"
+fi
+rm -f "$juge"
+grep -q '^echo "Tout est vert' outils/verifier.sh && grep -q 'Passage partiel (\$MODE)' outils/verifier.sh &&
+  ok "un passage partiel ne finit jamais « Tout est vert »" || ko "verifier.sh : fin d'un passage partiel introuvable"
+
+if [[ $(cargo vet --version 2>/dev/null) == "cargo-vet 0.10.3" ]]; then
+  lancer env VANGUARD_HORS_LIGNE=1 bash outils/verifier.sh --seulement relectures
+  if ((CODE == 1)) && grep -q '✖ dépendances tracées.*sautée, rien vérifié : relectures importées pas confrontées' <<<"$SORTIE"; then
+    ok "relectures de cargo vet hors ligne : sautées et dites, pas un vert"
+  else
+    ko "relectures de cargo vet hors ligne (code $CODE) : $(tail -n 2 <<<"$SORTIE")"
+  fi
+else
+  echo "  (sauté : cargo-vet 0.10.3 absent, relectures hors ligne pas essayées)"
 fi
 
 ((ECHECS == 0)) || { echo "$ECHECS essai(s) en échec."; exit 1; }
