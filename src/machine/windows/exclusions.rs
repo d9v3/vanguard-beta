@@ -6,6 +6,7 @@ use super::super::{Constat, alerte};
 use super::ps;
 use super::wmi::Valeur;
 use crate::commande::ps_chaine;
+use crate::protection::antivirus::Politiques;
 use crate::risk::Niveau;
 use crate::ui::{affichable, resume, tr, trf};
 
@@ -18,15 +19,29 @@ pub(super) fn exclusions() -> Option<Constat> {
 
 /// Les trois listes d'exclusions de Defender, telles que lues : chemins, processus, extensions. Cachées sans droits
 /// administrateur, elles contiennent « N/A: Must be an administrator… » ; `None` si ni WMI ni PowerShell ne
-/// répondent (autre antivirus). Lues aussi par l'antivirus : un « found no threats » sur un dossier exclu ne prouve
-/// rien.
+/// répondent (autre antivirus).
 pub(crate) fn listes() -> Option<[Vec<String>; 3]> {
+    lecture().map(|(listes, _)| listes)
+}
+
+/// Les trois listes de `listes`, et les politiques qui les cachent, lues ensemble (une seule requête, un seul
+/// instant). Pour l'antivirus : un « found no threats » sur un dossier exclu ne prouve rien, et une politique peut
+/// cacher les exclusions même à l'administrateur, peut-être sous la forme de listes vides plutôt que de « N/A ».
+/// Fonction voisine plutôt que trois valeurs de plus dans `listes` : le constat de l'audit (`exclusions`) n'en a pas
+/// l'usage et garde sa forme.
+pub(crate) fn lecture() -> Option<([Vec<String>; 3], Politiques)> {
     // WMI d'abord (la classe que lit Get-MpPreference), PowerShell en secours.
     if let Some(l) = super::wmi::requete(
         r"root\Microsoft\Windows\Defender",
         "MSFT_MpPreference",
         "",
-        &["ExclusionPath", "ExclusionProcess", "ExclusionExtension"],
+        &[
+            "ExclusionPath",
+            "ExclusionProcess",
+            "ExclusionExtension",
+            "HideExclusionsFromLocalAdmins",
+            "HideExclusionsFromLocalUsers",
+        ],
     )
     .and_then(|l| l.into_iter().next())
     {
@@ -35,25 +50,58 @@ pub(crate) fn listes() -> Option<[Vec<String>; 3]> {
         // pour une liste d'un élément : un « N/A… » rendu ainsi garde la liste cachée, au lieu de la faire passer
         // pour lue et vide.
         let liste = |cle: &str| -> Vec<String> { l.get(cle).map(Valeur::textes).unwrap_or_default() };
-        return Some([
-            liste("ExclusionPath"),
-            liste("ExclusionProcess"),
-            liste("ExclusionExtension"),
-        ]);
+        // Une politique que ce Windows n'a pas (plateforme plus ancienne) arrive nulle (`requete` lit `*` puis
+        // chaque champ) : elle ne cache rien.
+        let vraie = |cle: &str| l.get(cle).is_some_and(politique_vraie);
+        return Some((
+            [
+                liste("ExclusionPath"),
+                liste("ExclusionProcess"),
+                liste("ExclusionExtension"),
+            ],
+            Politiques {
+                aux_admins: vraie("HideExclusionsFromLocalAdmins"),
+                aux_utilisateurs: vraie("HideExclusionsFromLocalUsers"),
+            },
+        ));
     }
     let json = ps(
-        "$p = Get-MpPreference; @{c=@($p.ExclusionPath); p=@($p.ExclusionProcess); e=@($p.ExclusionExtension)} | ConvertTo-Json -Compress",
+        "$p = Get-MpPreference; @{c=@($p.ExclusionPath); p=@($p.ExclusionProcess); e=@($p.ExclusionExtension); ha=$p.HideExclusionsFromLocalAdmins; hu=$p.HideExclusionsFromLocalUsers} | ConvertTo-Json -Compress",
     )?;
     let v: serde_json::Value = serde_json::from_str(&json).ok()?;
-    // Le script rend toujours trois tableaux (@(…)) ; un autre compte pour vide, comme plus haut : les deux autres
-    // sont jugées quand même.
+    Some(lire_json(&v))
+}
+
+/// La réponse du secours PowerShell. Le script rend toujours trois tableaux (@(…)) ; un autre compte pour vide,
+/// comme pour WMI : les deux autres sont jugées quand même. Une politique absente de cette plateforme vaut `null` :
+/// elle ne cache rien.
+fn lire_json(v: &serde_json::Value) -> ([Vec<String>; 3], Politiques) {
     let liste = |cle: &str| -> Vec<String> {
         v.get(cle)
             .and_then(serde_json::Value::as_array)
             .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
             .unwrap_or_default()
     };
-    Some([liste("c"), liste("p"), liste("e")])
+    let vraie = |cle: &str| match v.get(cle) {
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(serde_json::Value::Number(n)) => n.as_i64().is_some_and(|n| n != 0),
+        _ => false,
+    };
+    (
+        [liste("c"), liste("p"), liste("e")],
+        Politiques {
+            aux_admins: vraie("ha"),
+            aux_utilisateurs: vraie("hu"),
+        },
+    )
+}
+
+/// Une politique booléenne lue par WMI : un entier (0 ou 1, la valeur du registre) compte aussi.
+fn politique_vraie(v: &Valeur) -> bool {
+    match v {
+        Valeur::Booleen(b) => *b,
+        x => x.entier().is_some_and(|n| n != 0),
+    }
 }
 
 /// Exclusions trop larges, avec la commande qui retire chacune. `None` si aucune, ou si la liste est cachée.
@@ -264,6 +312,24 @@ mod tests {
         assert!(!programme_sensible("C:\\Jeux\\jeu.exe") && !programme_sensible("code.exe"));
         assert!(extension_sensible(".exe") && extension_sensible("*.PS1") && extension_sensible("lnk"));
         assert!(!extension_sensible(".vmdk") && !extension_sensible("log") && !extension_sensible("pst"));
+    }
+
+    #[test]
+    fn politiques_qui_cachent_les_exclusions() {
+        // Relecture des correctifs T10, 3e passe, MOYEN-1 : absentes (Windows plus ancien), nulles ou fausses, elles
+        // ne cachent rien ; vraies, en booléen ou en entier (la valeur du registre).
+        let lire = |texte: &str| lire_json(&serde_json::from_str(texte).unwrap());
+        let (listes, p) = lire(r#"{"c":["D:\\Jeux"],"p":[],"e":["vmdk"]}"#);
+        assert_eq!(listes, [v(&["D:\\Jeux"]), vec![], v(&["vmdk"])]);
+        assert!(!p.aux_admins && !p.aux_utilisateurs);
+        let (_, p) = lire(r#"{"c":[],"p":[],"e":[],"ha":null,"hu":false}"#);
+        assert!(!p.aux_admins && !p.aux_utilisateurs);
+        let (listes, p) = lire(r#"{"c":[],"p":[],"e":[],"ha":true,"hu":1}"#);
+        assert_eq!(listes, [Vec::<String>::new(), vec![], vec![]]);
+        assert!(p.aux_admins && p.aux_utilisateurs);
+        assert!(politique_vraie(&Valeur::Booleen(true)) && politique_vraie(&Valeur::Entier(1)));
+        assert!(!politique_vraie(&Valeur::Nul) && !politique_vraie(&Valeur::Booleen(false)));
+        assert!(!politique_vraie(&Valeur::Entier(0)) && !politique_vraie(&Valeur::Texte("oui".into())));
     }
 
     #[test]

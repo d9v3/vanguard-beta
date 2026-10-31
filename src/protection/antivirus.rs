@@ -639,6 +639,9 @@ fn defender(portee: &Portee) {
             if analyse.sans_droits {
                 prevenir_sans_droits();
             }
+            if analyse.cachees_a_l_admin {
+                prevenir_cachees_a_l_admin();
+            }
         }
         // Pas de « ✔ » sans la phrase de résultat : la sortie d'une analyse rapide ou complète n'est pas documentée.
         Verdict::Muette => trp!(
@@ -743,6 +746,9 @@ fn examiner_avec(fichier: &std::path::Path, memoire: &mut Memoire) -> Examen {
     if a.sans_droits {
         prevenir_sans_droits();
     }
+    if a.cachees_a_l_admin {
+        prevenir_cachees_a_l_admin();
+    }
     examen_de(a.verdict, &a.sortie, std::fs::symlink_metadata(fichier).is_ok())
 }
 
@@ -763,13 +769,44 @@ fn prevenir_sans_droits() {
     }
 }
 
+/// Les politiques de Defender qui cachent ses exclusions (HideExclusionsFromLocalAdmins, HideExclusionsFromLocalUsers,
+/// propriétés de MSFT_MpPreference) : vraies seulement lues vraies, fausses si ce Windows ne les a pas. Ici et non
+/// dans `machine::windows::exclusions`, qui les lit : les essais du double les jouent aussi sous Linux.
+#[cfg(any(windows, test))]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Politiques {
+    /// Cachées même à un administrateur ; d'après Microsoft, elle cache aussi aux utilisateurs.
+    pub(crate) aux_admins: bool,
+    /// Cachées aux comptes sans droits administrateur.
+    pub(crate) aux_utilisateurs: bool,
+}
+
+/// Une politique cache les exclusions même à l'administrateur : dit une seule fois par lancement pourquoi les « rien
+/// trouvé » de Defender restent invérifiables et quoi vérifier. Pas de « relancez en administrateur » : rien n'y
+/// changerait.
+#[cfg(windows)]
+fn prevenir_cachees_a_l_admin() {
+    static DIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !DIT.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        println!(
+            "  {}● {}{RESET}",
+            couleur(Niveau::Moyen),
+            tr!(
+                "Une politique de Windows (HideExclusionsFromLocalAdmins) cache les exclusions de Defender même à l'administrateur : ses « rien trouvé » ne peuvent pas être confirmés. Une entreprise la pose parfois sur ses ordinateurs ; sur un ordinateur personnel, personne n'a de raison de le faire, et elle peut servir à cacher un dossier exclu par un programme malveillant. À vérifier : Paramètres > Comptes > Accès Professionnel ou Scolaire (l'ordinateur est-il géré par une organisation ?). Sinon, faites vérifier l'ordinateur.",
+                "A Windows policy (HideExclusionsFromLocalAdmins) hides Defender's exclusions even from the administrator: its “nothing found” cannot be confirmed. Companies sometimes set it on their computers; on a personal computer nobody has a reason to, and it can be used to hide a folder excluded by malware. To check: Settings > Accounts > Access work or school (is the computer managed by an organization?). If not, have the computer checked."
+            )
+        );
+    }
+}
+
 /// Ce que Vanguard demande à Defender autour d'une analyse, dans l'ordre d'`analyse_confirmee` : sous Windows,
 /// `VraiDefender` ; dans les essais, un double qui joue la séquence entière sans Windows.
 #[cfg(any(windows, test))]
 trait Sondes {
     /// Les exclusions de chemin et d'extension, telles que lues (« N/A: Must be an administrator… » sans droits
-    /// administrateur) ; `None` si ni WMI ni PowerShell ne répondent.
-    fn exclusions(&mut self) -> Option<[Vec<String>; 2]>;
+    /// administrateur), et les politiques qui les cachent, lues dans la même requête ; `None` si ni WMI ni
+    /// PowerShell ne répondent.
+    fn exclusions(&mut self) -> Option<([Vec<String>; 2], Politiques)>;
     /// `MpCmdRun -CheckExclusion -Path <cible>` (`exclusion_selon_mpcmdrun`) : le moteur lui-même, à cet instant.
     fn cible_exclue(&mut self, cible: &std::path::Path) -> Option<bool>;
     /// L'analyse : son code et sa sortie (erreurs comprises) ; `None` si MpCmdRun n'a pas pu aller au bout.
@@ -797,8 +834,9 @@ struct VraiDefender<'a> {
 
 #[cfg(windows)]
 impl Sondes for VraiDefender<'_> {
-    fn exclusions(&mut self) -> Option<[Vec<String>; 2]> {
-        crate::machine::windows::exclusions::listes().map(|[chemins, _, extensions]| [chemins, extensions])
+    fn exclusions(&mut self) -> Option<([Vec<String>; 2], Politiques)> {
+        crate::machine::windows::exclusions::lecture()
+            .map(|([chemins, _, extensions], politiques)| ([chemins, extensions], politiques))
     }
 
     fn cible_exclue(&mut self, cible: &std::path::Path) -> Option<bool> {
@@ -860,6 +898,9 @@ struct Memoire {
     /// T10).
     vues: [Vec<String>; 2],
     exclusions: Lecture,
+    /// Cachées même à un administrateur (Vanguard élevé qui lit « N/A » ou des listes vides sous une politique, ou
+    /// HideExclusionsFromLocalAdmins posée) : relancer en administrateur n'y changerait rien.
+    cachees_a_l_admin: bool,
     /// Détections illisibles : pas relues.
     detections_illisibles: bool,
 }
@@ -871,7 +912,8 @@ enum Lecture {
     #[default]
     PasEncore,
     Lues,
-    /// Cachées (« N/A », sans droits administrateur) : pas relues.
+    /// Cachées : « N/A » (sans droits administrateur, ou une politique), listes vides sans droits administrateur, ou
+    /// une politique qui les cache au compte de Vanguard (`Memoire::lire`). Pas relues.
     Cachees,
     /// Illisibles (ni WMI ni PowerShell) : pas relues.
     Illisibles,
@@ -884,22 +926,36 @@ impl Memoire {
         if matches!(self.exclusions, Lecture::Cachees | Lecture::Illisibles) {
             return;
         }
-        match sondes.exclusions() {
-            None => self.exclusions = Lecture::Illisibles,
-            Some(l) if l.iter().flatten().any(|x| x.trim().starts_with("N/A")) => self.exclusions = Lecture::Cachees,
-            // Sans droits administrateur, Windows ne montre pas les exclusions : des listes vides (une valeur absente
-            // ou nulle au lieu de « N/A ») n'y prouvent rien.
-            Some(l) if !sondes.eleve() && l.iter().flatten().all(|x| x.trim().is_empty()) => {
-                self.exclusions = Lecture::Cachees;
-            }
-            Some(listes) => {
-                self.exclusions = Lecture::Lues;
-                for (vues, lues) in self.vues.iter_mut().zip(listes) {
-                    for x in lues {
-                        if !vues.contains(&x) {
-                            vues.push(x);
-                        }
-                    }
+        let eleve = sondes.eleve();
+        let Some((listes, politiques)) = sondes.exclusions() else {
+            self.exclusions = Lecture::Illisibles;
+            return;
+        };
+        // La politique qui vaut pour le compte de Vanguard. Élevé, celle des administrateurs seule (celle des
+        // utilisateurs laisse voir l'administrateur). Sans élévation, l'une ou l'autre : un compte administrateur non
+        // élevé est-il « admin » ou « utilisateur » pour Defender ? Dans le doute, caché. Elle peut cacher les listes
+        // sous une autre forme que « N/A » (vides, nulles : Microsoft ne dit pas laquelle) : rien n'y prouve
+        // l'absence d'exclusion.
+        let politique = politiques.aux_admins || (!eleve && politiques.aux_utilisateurs);
+        let refusees = listes.iter().flatten().any(|x| x.trim().starts_with("N/A"));
+        // Sans droits administrateur, Windows ne montre pas les exclusions : des listes vides (une valeur absente ou
+        // nulle au lieu de « N/A ») n'y prouvent rien.
+        let vides = listes.iter().flatten().all(|x| x.trim().is_empty());
+        if politique || refusees || (!eleve && vides) {
+            self.exclusions = Lecture::Cachees;
+            self.cachees_a_l_admin = eleve || politiques.aux_admins;
+        } else {
+            self.exclusions = Lecture::Lues;
+        }
+        // Ce qui se lit quand même sous des listes cachées (une politique qui laisserait voir une partie) est gardé :
+        // une exclusion vue prouve une couverture. Jamais « N/A », qui n'est pas un chemin (`exclusions_qui_couvrent`
+        // ne le compare donc pas), ni, cachées, un texte blanc : la forme vide du refus, pas une exclusion.
+        let lues = self.exclusions == Lecture::Lues;
+        for (vues, liste) in self.vues.iter_mut().zip(listes) {
+            for x in liste {
+                let t = x.trim();
+                if !t.starts_with("N/A") && (lues || !t.is_empty()) && !vues.contains(&x) {
+                    vues.push(x);
                 }
             }
         }
@@ -923,6 +979,8 @@ struct Analyse {
     sortie: String,
     /// Invérifiable faute de droits administrateur : relancer Vanguard en administrateur donnerait un verdict.
     sans_droits: bool,
+    /// Invérifiable parce qu'une politique cache les exclusions même à l'administrateur : relancer n'y changerait rien.
+    cachees_a_l_admin: bool,
 }
 
 /// Une analyse de Defender, de bout en bout. Avant : les exclusions (une fois par série) et, pour une cible lisible,
@@ -944,8 +1002,18 @@ fn analyse_confirmee(
     if memoire.exclusions == Lecture::PasEncore {
         memoire.lire(sondes);
     }
+    // `-CheckExclusion` ne compte plus que pour « exclue » (`couverture`) ; inutile quand une exclusion déjà vue
+    // couvre la cible : les vues ne font que grandir, un « sain » deviendra « exclue » de toute façon (seule la
+    // cible ne s'ajoute pas à la liste montrée, sous l'exclusion qui la couvre). Un lancement de MpCmdRun de moins par
+    // pièce d'un courriel sous un dossier exclu.
+    let deja_couverte = !piegee
+        && memoire.vues.iter().any(|v| !v.is_empty())
+        && texte.zip(cible).is_some_and(|(t, (_, dossier))| {
+            let [chemins, extensions] = &memoire.vues;
+            !exclusions_qui_couvrent(t, dossier, chemins, extensions, &sondes.variables()).is_empty()
+        });
     let verification = match cible {
-        Some((c, _)) if !piegee => sondes.cible_exclue(c),
+        Some((c, _)) if !piegee && !deja_couverte => sondes.cible_exclue(c),
         _ => None,
     };
     let debut = sondes.maintenant();
@@ -968,14 +1036,19 @@ fn analyse_confirmee(
         couverture(cible, verification, memoire.listes(), &sondes.variables())
     };
     let verdict = confirmer(verdict, detections.as_deref(), exclusions, piegee);
-    // Relancer en administrateur n'aide pas quand ni WMI ni PowerShell ne répondent (antivirus tiers), ni quand
-    // Vanguard est déjà administrateur (exclusions cachées par une politique).
-    let sans_droits = verdict == Verdict::Inverifiable && !sondes.eleve() && memoire.exclusions != Lecture::Illisibles;
+    // Relancer en administrateur n'aide pas quand ni WMI ni PowerShell ne répondent (antivirus tiers), ni quand une
+    // politique cache les exclusions même à l'administrateur (déjà élevé, ou HideExclusionsFromLocalAdmins).
+    let inverifiable = verdict == Verdict::Inverifiable;
+    let cachees = memoire.exclusions == Lecture::Cachees;
+    let cachees_a_l_admin = inverifiable && cachees && memoire.cachees_a_l_admin;
+    let sans_droits =
+        inverifiable && !sondes.eleve() && memoire.exclusions != Lecture::Illisibles && !memoire.cachees_a_l_admin;
     Some(Analyse {
         verdict,
         detections: detections.unwrap_or_default(),
         sortie,
         sans_droits,
+        cachees_a_l_admin,
     })
 }
 
@@ -1007,7 +1080,7 @@ fn couverture(
         let toutes: Vec<String> = chemins.chain(extensions).collect();
         return (completes || !toutes.is_empty()).then_some(toutes);
     };
-    let mut couvrent = exclusions_qui_couvrent(cible, dossier, chemins, extensions, variables)?;
+    let mut couvrent = exclusions_qui_couvrent(cible, dossier, chemins, extensions, variables);
     if verification == Some(true) {
         // Pas deux fois : une exclusion déjà montrée qui est la cible elle-même.
         let montree = sans_verbatim(cible).unwrap_or_else(|| cible.to_string());
@@ -1395,8 +1468,9 @@ fn de_cette_analyse(
 /// normalisation (`pour_comparer`), l'exclusion après le développement de ses variables connues (`variables` :
 /// `formes_developpees`). Ce qui reste variable inconnue ou joker (% * ?) ne se compare pas exactement : l'exclusion
 /// couvre dès que son début fixe est compatible avec la cible (prudence). Les exclusions de processus ne jouent pas
-/// sur une analyse à la demande. `None` : liste cachée (« N/A: Must be an administrator… », Windows sans droits
-/// administrateur), rien à conclure.
+/// sur une analyse à la demande. Des listes cachées ne viennent jamais ici : « N/A » n'entre pas dans les exclusions
+/// vues (`Memoire::lire`), seules lues par ses appelants (`couverture`, et `analyse_confirmee` avant
+/// `-CheckExclusion`), et `couverture` dit seule si les listes sont complètes.
 #[cfg(any(windows, test))]
 fn exclusions_qui_couvrent(
     cible: &str,
@@ -1404,10 +1478,7 @@ fn exclusions_qui_couvrent(
     chemins: &[String],
     extensions: &[String],
     variables: &[(&str, Vec<String>)],
-) -> Option<Vec<String>> {
-    if chemins.iter().chain(extensions).any(|x| x.trim().starts_with("N/A")) {
-        return None;
-    }
+) -> Vec<String> {
     let c = pour_comparer(cible);
     let mut couvrent = Vec::new();
     for exclu in chemins.iter().filter(|e| !e.trim().is_empty()) {
@@ -1439,7 +1510,7 @@ fn exclusions_qui_couvrent(
             couvrent.push(format!("*.{}", affichable(e)));
         }
     }
-    Some(couvrent)
+    couvrent
 }
 
 /// La phrase de MpCmdRun confrontée à ce que Defender a noté. Une détection de cette analyse est une menace, quoi
@@ -2758,19 +2829,19 @@ mod tests_cle {
             Verdict::Menaces(vec!["Virus:DOS/EICAR_Test_File".into()])
         );
         // Le dossier exclu (lui, un parent, ou tous les fichiers d'une extension) : pas de ✔, « rien n'est garanti ».
-        let exclu = exclusions_qui_couvrent(cible, true, &[r"C:\Users\Public\vg-essai-eicar".into()], &[], &[]);
+        let exclu = Some(exclusions_qui_couvrent(
+            cible,
+            true,
+            &[r"C:\Users\Public\vg-essai-eicar".into()],
+            &[],
+            &[],
+        ));
         assert_eq!(
             confirmer(lire_reponse(Some(0), PASSE_5), Some(&[]), exclu, false),
             Verdict::Exclue(vec![r"C:\Users\Public\vg-essai-eicar".into()])
         );
         // Exclusions cachées (sans droits administrateur) ou détections illisibles : pas de ✔ non plus.
-        let cachees = exclusions_qui_couvrent(
-            cible,
-            true,
-            &["N/A: Must be an administrator to view exclusions".into()],
-            &[],
-            &[],
-        );
+        let cachees = couverture(Some((cible, true)), None, (&[vec![], vec![]], false), &[]);
         assert_eq!(
             confirmer(lire_reponse(Some(0), PASSE_5), Some(&[]), cachees, false),
             Verdict::Inverifiable
@@ -2798,10 +2869,16 @@ mod tests_cle {
         let aucune = exclusions_qui_couvrent(cible, true, &[r"D:\SteamLibrary".into()], &["vmdk".into()], &[]);
         assert_eq!(
             aucune,
-            Some(vec!["*.vmdk".into()]),
+            vec!["*.vmdk".to_string()],
             "toute extension exclue couvre un dossier"
         );
-        let aucune = exclusions_qui_couvrent(cible, true, &[r"D:\SteamLibrary".into()], &[], &[]);
+        let aucune = Some(exclusions_qui_couvrent(
+            cible,
+            true,
+            &[r"D:\SteamLibrary".into()],
+            &[],
+            &[],
+        ));
         assert_eq!(
             confirmer(lire_reponse(Some(0), PASSE_5), Some(&rien), aucune, false),
             Verdict::Sain
@@ -2988,11 +3065,7 @@ mod tests_cle {
         };
         // Relecture 2 des correctifs T10, BAS-9 : « \ », « / » ou « . » seuls, rien de fixe : tout (prudence).
         for exclu in ["\\", "/", " . "] {
-            assert_eq!(
-                c(r"C:\x\a.pdf", false, &[exclu], &[]),
-                Some(v(&[exclu.trim()])),
-                "{exclu}"
-            );
+            assert_eq!(c(r"C:\x\a.pdf", false, &[exclu], &[]), v(&[exclu.trim()]), "{exclu}");
         }
         // Elle-même, un parent, le lecteur entier ; « \\?\ » ou non, casse ou « \ » final (relecture T10, point 6).
         for exclu in [
@@ -3003,53 +3076,36 @@ mod tests_cle {
         ] {
             assert_eq!(
                 c(r"\\?\C:\Users\Public\vg-essai-eicar", true, &[exclu], &[]),
-                Some(v(&[exclu])),
+                v(&[exclu]),
                 "{exclu}"
             );
         }
         // Un dossier exclu dedans couvre une partie du dossier analysé, pas un fichier voisin.
-        assert_eq!(c(r"C:\x", true, &[r"C:\x\cache"], &[]), Some(v(&[r"C:\x\cache"])));
-        assert_eq!(c(r"C:\x\a.exe", false, &[r"C:\x\a.exe.d"], &[]), Some(vec![]));
-        assert_eq!(c(r"C:\xy", true, &[r"C:\x"], &[]), Some(vec![]));
+        assert_eq!(c(r"C:\x", true, &[r"C:\x\cache"], &[]), v(&[r"C:\x\cache"]));
+        assert_eq!(c(r"C:\x\a.exe", false, &[r"C:\x\a.exe.d"], &[]), Vec::<String>::new());
+        assert_eq!(c(r"C:\xy", true, &[r"C:\x"], &[]), Vec::<String>::new());
         // Variables inconnues et jokers : prudence, dès que le début fixe est compatible.
         assert_eq!(
             c(r"C:\Users\alice\AppData\Local\Temp\a.exe", false, &["%TEMP%"], &[]),
-            Some(v(&["%TEMP%"]))
+            v(&["%TEMP%"])
         );
         assert_eq!(
             c(r"C:\jeux\a.exe", false, &[r"C:\jeux\*.exe"], &[]),
-            Some(v(&[r"C:\jeux\*.exe"]))
+            v(&[r"C:\jeux\*.exe"])
         );
-        assert_eq!(c(r"D:\a.exe", false, &[r"C:\jeux\*"], &[]), Some(vec![]));
+        assert_eq!(c(r"D:\a.exe", false, &[r"C:\jeux\*"], &[]), Vec::<String>::new());
         // Extensions : celle du fichier ; toutes pour un dossier.
-        assert_eq!(
-            c(r"C:\x\facture.PDF", false, &[], &[".pdf", "exe"]),
-            Some(v(&["*.pdf"]))
-        );
-        assert_eq!(c(r"C:\x\facture.exe", false, &[], &["pdf"]), Some(vec![]));
-        assert_eq!(c(r"C:\x", true, &[], &["pdf"]), Some(v(&["*.pdf"])));
-        // Liste cachée : rien à conclure ; listes vides : rien ne couvre.
-        assert_eq!(
-            c(
-                r"C:\x",
-                true,
-                &["N/A: Must be an administrator to view exclusions"],
-                &[]
-            ),
-            None
-        );
-        assert_eq!(
-            c(
-                r"C:\x",
-                true,
-                &[],
-                &["N/A: Must be an administrator to view exclusions"]
-            ),
-            None
-        );
-        assert_eq!(c(r"C:\x", true, &[""], &[]), Some(vec![]));
+        assert_eq!(c(r"C:\x\facture.PDF", false, &[], &[".pdf", "exe"]), v(&["*.pdf"]));
+        assert_eq!(c(r"C:\x\facture.exe", false, &[], &["pdf"]), Vec::<String>::new());
+        assert_eq!(c(r"C:\x", true, &[], &["pdf"]), v(&["*.pdf"]));
+        // Listes vides : rien ne couvre. Cachées : jamais ici (`Memoire::lire` ne garde pas « N/A »).
+        assert_eq!(c(r"C:\x", true, &[""], &[]), Vec::<String>::new());
         // Un nom piégé est montré inoffensif.
-        assert!(c(r"C:\x", true, &["C:\\x\x1b[2J"], &[]).is_some_and(|e| e.iter().all(|x| !x.contains('\x1b'))));
+        assert!(
+            c(r"C:\x", true, &["C:\\x\x1b[2J"], &[])
+                .iter()
+                .all(|x| !x.contains('\x1b'))
+        );
     }
 
     #[test]
@@ -3097,6 +3153,8 @@ mod tests_cle {
     /// dernière se répète), celle de `-CheckExclusion`, l'analyse et les détections, avec le compte des appels.
     struct Double {
         exclusions: Vec<Option<[Vec<String>; 2]>>,
+        /// Les politiques rendues avec chaque lecture réussie.
+        politiques: Politiques,
         lectures: usize,
         exclue: Option<bool>,
         verifications: usize,
@@ -3115,6 +3173,7 @@ mod tests_cle {
                     .iter()
                     .map(|e| e.map(|[c, x]| [liste(c), liste(x)]))
                     .collect(),
+                politiques: Politiques::default(),
                 lectures: 0,
                 exclue: None,
                 verifications: 0,
@@ -3128,7 +3187,7 @@ mod tests_cle {
     }
 
     impl Sondes for Double {
-        fn exclusions(&mut self) -> Option<[Vec<String>; 2]> {
+        fn exclusions(&mut self) -> Option<([Vec<String>; 2], Politiques)> {
             let r = self
                 .exclusions
                 .get(self.lectures)
@@ -3136,7 +3195,7 @@ mod tests_cle {
                 .cloned()
                 .flatten();
             self.lectures += 1;
-            r
+            r.map(|l| (l, self.politiques))
         }
         fn cible_exclue(&mut self, _: &std::path::Path) -> Option<bool> {
             self.verifications += 1;
@@ -3188,7 +3247,8 @@ mod tests_cle {
             a.verdict,
             Verdict::Exclue(vec![r"C:\Users\Public\vg-essai-eicar".into()])
         );
-        assert_eq!((d.lectures, d.verifications, d.lectures_detections), (2, 1, 1));
+        // Relecture 3, BAS-6 : l'exclusion vue avant couvre déjà la cible, `-CheckExclusion` ne changerait rien.
+        assert_eq!((d.lectures, d.verifications, d.lectures_detections), (2, 0, 1));
         // L'inverse : posée pendant l'analyse, vue seulement après.
         let mut d = Double::new(&[Some([AUCUNE, AUCUNE]), Some([AUCUNE, &["com"]])]);
         let a = analyser_double(&mut d, Some((DOSSIER_T10, true)));
@@ -3371,10 +3431,106 @@ mod tests_cle {
             let b = analyse_confirmee(&mut d, Some((Path::new(r"D:\b.pdf"), false)), &mut memoire).unwrap();
             assert_eq!(b.verdict, Verdict::Inverifiable);
             assert!(!b.sans_droits, "administrateur : relancer n'y changerait rien");
+            assert_eq!(
+                b.cachees_a_l_admin,
+                apres.is_some(),
+                "illisibles : rien ne dit qu'une politique les cache"
+            );
             let c = analyse_confirmee(&mut d, None, &mut memoire).unwrap();
             assert_eq!(c.verdict, Verdict::Exclue(vec![r"C:\t".into()]));
             assert_eq!(d.lectures, 2, "refusées ou illisibles : plus relues");
         }
+    }
+
+    #[test]
+    fn politique_qui_cache_les_exclusions() {
+        // Relecture des correctifs T10, 3e passe, MOYEN-1 : HideExclusionsFromLocalAdmins peut rendre des listes
+        // vides plutôt que « N/A » ; en administrateur, vides, elles ne prouvent alors plus rien.
+        let admins = Politiques {
+            aux_admins: true,
+            aux_utilisateurs: true,
+        };
+        let utilisateurs = Politiques {
+            aux_admins: false,
+            aux_utilisateurs: true,
+        };
+        for cible in [Some((DOSSIER_T10, true)), Some((r"C:\x\facture.pdf", false)), None] {
+            let mut d = Double::new(&[Some([AUCUNE, AUCUNE])]);
+            d.exclue = Some(false);
+            d.politiques = admins;
+            let a = analyser_double(&mut d, cible);
+            assert_eq!(a.verdict, Verdict::Inverifiable, "{cible:?}");
+            // BAS-2 : la cause est dite, sans proposer de relancer en administrateur.
+            assert!(a.cachees_a_l_admin && !a.sans_droits);
+            assert_eq!(d.lectures, 1, "cachées : pas relues");
+            // Politique fausse, ou absente (Windows plus ancien : fausse aussi) : lues, le ✔ reste possible.
+            for p in [Politiques::default(), utilisateurs] {
+                let mut d = Double::new(&[Some([AUCUNE, AUCUNE])]);
+                d.exclue = Some(false);
+                d.politiques = p;
+                let a = analyser_double(&mut d, cible);
+                assert_eq!(a.verdict, Verdict::Sain, "{cible:?}");
+                assert!(!a.cachees_a_l_admin && !a.sans_droits);
+            }
+        }
+        // Une exclusion qui se lit malgré la politique est gardée : elle prouve une couverture.
+        let mut d = Double::new(&[Some([&[r"C:\x"], AUCUNE])]);
+        d.politiques = admins;
+        let a = analyser_double(&mut d, Some((r"C:\x\facture.pdf", false)));
+        assert_eq!(a.verdict, Verdict::Exclue(vec![r"C:\x".into()]));
+        let a = analyser_double(&mut d, Some((r"D:\facture.pdf", false)));
+        assert_eq!(a.verdict, Verdict::Inverifiable);
+        // Sans élévation, l'une ou l'autre cache (dans le doute). Celle des utilisateurs seule : relancer en
+        // administrateur donnerait un verdict ; celle des administrateurs : non.
+        for (p, relancer) in [(utilisateurs, true), (admins, false)] {
+            let mut d = Double::new(&[Some([&[r"D:\SteamLibrary"], AUCUNE])]);
+            d.exclue = Some(false);
+            d.eleve = false;
+            d.politiques = p;
+            let a = analyser_double(&mut d, Some((r"C:\x\facture.pdf", false)));
+            assert_eq!(a.verdict, Verdict::Inverifiable);
+            assert_eq!((a.sans_droits, a.cachees_a_l_admin), (relancer, !relancer));
+        }
+        // « N/A » en administrateur : une politique aussi, sous l'autre forme.
+        let mut d = Double::new(&[Some([CACHEES, CACHEES])]);
+        let a = analyser_double(&mut d, None);
+        assert_eq!(a.verdict, Verdict::Inverifiable);
+        assert!(a.cachees_a_l_admin && !a.sans_droits);
+        // BAS-5 : « N/A » n'entre jamais dans les exclusions vues ; ce qui se lit à côté, si.
+        let mut d = Double::new(&[Some([CACHEES, &["pdf", " "]])]);
+        let mut memoire = Memoire::default();
+        memoire.lire(&mut d);
+        assert_eq!(memoire.listes(), (&[vec![], vec!["pdf".to_string()]], false));
+    }
+
+    #[test]
+    fn check_exclusion_seulement_s_il_peut_changer_le_verdict() {
+        // Relecture des correctifs T10, 3e passe, BAS-6 : une pièce déjà couverte par une exclusion vue n'est pas
+        // soumise à MpCmdRun (« exclue » de toute façon) ; les autres, si.
+        let mut d = Double::new(&[Some([&[r"C:\t"], AUCUNE])]);
+        d.exclue = Some(true);
+        let mut memoire = Memoire::default();
+        for piece in [r"C:\t\a.pdf", r"c:\T\b.pdf"] {
+            let a = analyse_confirmee(&mut d, Some((Path::new(piece), false)), &mut memoire).unwrap();
+            assert_eq!(a.verdict, Verdict::Exclue(vec![r"C:\t".into()]));
+        }
+        assert_eq!(d.verifications, 0);
+        let a = analyse_confirmee(&mut d, Some((Path::new(r"D:\c.pdf"), false)), &mut memoire).unwrap();
+        assert_eq!(a.verdict, Verdict::Exclue(vec![r"D:\c.pdf".into()]));
+        assert_eq!(d.verifications, 1);
+        // Relue illisible après l'analyse : vue avant, donc toujours couverte.
+        let mut d = Double::new(&[Some([AUCUNE, &["pdf"]]), None]);
+        let mut memoire = Memoire::default();
+        let a = analyse_confirmee(&mut d, Some((Path::new(r"C:\t\a.pdf"), false)), &mut memoire).unwrap();
+        assert_eq!((a.verdict, d.verifications), (Verdict::Exclue(vec!["*.pdf".into()]), 0));
+        // Rien de vu qui couvre : demandée, même avec des listes cachées (« exclue » reste une preuve).
+        let mut d = Double::new(&[Some([CACHEES, CACHEES])]);
+        d.exclue = Some(true);
+        let a = analyser_double(&mut d, Some((r"C:\t\a.pdf", false)));
+        assert_eq!(
+            (a.verdict, d.verifications),
+            (Verdict::Exclue(vec![r"C:\t\a.pdf".into()]), 1)
+        );
     }
 
     #[test]
@@ -3465,23 +3621,16 @@ mod tests_cle {
         assert!(formes.iter().all(|f| f.ends_with("%A%%A%")));
         let c = |cible: &str, exclu: &str| exclusions_qui_couvrent(cible, false, &[exclu.to_string()], &[], &variables);
         // Développée : ne couvre plus « tout ce qui commence par rien ».
-        assert_eq!(c(r"D:\Jeux\x.exe", r"%ProgramFiles%\Steam"), Some(vec![]));
+        assert_eq!(c(r"D:\Jeux\x.exe", r"%ProgramFiles%\Steam"), Vec::<String>::new());
         assert_eq!(
             c(r"C:\Program Files\Steam\x.exe", r"%ProgramFiles%\Steam"),
-            Some(vec![r"%ProgramFiles%\Steam".into()])
+            [r"%ProgramFiles%\Steam"]
         );
-        assert_eq!(
-            c(r"C:\Windows\Temp\x.exe", r"%TEMP%"),
-            Some(vec!["%TEMP%".into()]),
-            "le TEMP de SYSTEM"
-        );
-        assert_eq!(
-            c(r"C:\Users\alice\AppData\Local\Temp\x.exe", r"%TEMP%").map(|v| v.len()),
-            Some(1)
-        );
-        assert_eq!(c(r"D:\x.exe", r"%TEMP%"), Some(vec![]));
+        assert_eq!(c(r"C:\Windows\Temp\x.exe", r"%TEMP%"), ["%TEMP%"], "le TEMP de SYSTEM");
+        assert_eq!(c(r"C:\Users\alice\AppData\Local\Temp\x.exe", r"%TEMP%").len(), 1);
+        assert_eq!(c(r"D:\x.exe", r"%TEMP%"), Vec::<String>::new());
         // Inconnue : couvre, montrée telle quelle.
-        assert_eq!(c(r"D:\Jeux\x.exe", r"%PUBLIC%\x"), Some(vec![r"%PUBLIC%\x".into()]));
+        assert_eq!(c(r"D:\Jeux\x.exe", r"%PUBLIC%\x"), [r"%PUBLIC%\x"]);
     }
 
     #[test]
@@ -3495,17 +3644,15 @@ mod tests_cle {
         assert_eq!(pour_comparer(r"\\?\c:\"), "C:");
         // NTFS compare par sa table de majuscules : σ et ς sont tous deux Σ (`to_lowercase` les sépare).
         assert_eq!(pour_comparer("C:\\ΟΔΟΣ"), pour_comparer("C:\\οδοσ"));
-        let c = |cible: &str, exclu: &str| {
-            exclusions_qui_couvrent(cible, false, &[exclu.to_string()], &[], &[]).map(|v| v.len())
-        };
-        assert_eq!(c(r"\\?\C:\x\y\a.exe", r"C:\x\z\..\y"), Some(1));
-        assert_eq!(c(r"\\?\C:\x\y\a.exe", r"C:\x\\y"), Some(1));
-        assert_eq!(c("C:\\οδοσ\\a.exe", "c:\\ΟΔΟΣ"), Some(1));
-        assert_eq!(c(r"C:\x\y\a.exe", r"C:\x\y\..\..\z"), Some(0));
+        let c = |cible: &str, exclu: &str| exclusions_qui_couvrent(cible, false, &[exclu.to_string()], &[], &[]).len();
+        assert_eq!(c(r"\\?\C:\x\y\a.exe", r"C:\x\z\..\y"), 1);
+        assert_eq!(c(r"\\?\C:\x\y\a.exe", r"C:\x\\y"), 1);
+        assert_eq!(c("C:\\οδοσ\\a.exe", "c:\\ΟΔΟΣ"), 1);
+        assert_eq!(c(r"C:\x\y\a.exe", r"C:\x\y\..\..\z"), 0);
         // Extension : majuscules Unicode des deux côtés, montrée telle qu'écrite.
         assert_eq!(
             exclusions_qui_couvrent(r"C:\x\a.ΣΚ", false, &[], &[".σκ".into()], &[]),
-            Some(vec!["*.σκ".into()])
+            ["*.σκ"]
         );
         // Le BOM devant « Threat » (relecture BAS-1).
         assert_eq!(
