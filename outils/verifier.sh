@@ -495,10 +495,13 @@ compte_unsafe() {
   printf '      unsafe dans src/ : %s blocs, %s blocs extern, %s fn, %s impl, %s attributs\n' \
     "$(forme 'unsafe \{')" "$(forme 'unsafe extern')" "$(forme 'unsafe fn')" "$(forme 'unsafe impl')" "$(forme '#\[unsafe\(')"
   # Où le refus de la racine (#![deny(unsafe_code)]) est levé : un module de plus se voit au résumé, comme un module
-  # fuzzé de moins à refuser sans recours (garde : chaque_module_fuzze_refuse_unsafe dans src/main.rs).
-  leve() { grep -rxE --include='*.rs' "[[:space:]]*$1" src | wc -l; }
-  printf '      unsafe_code levé : %s modules, %s éléments ; refusé sans recours : %s modules fuzzés\n' \
-    "$(leve '#!\[allow\(unsafe_code\)\]')" "$(leve '#\[allow\(unsafe_code\)\]')" "$(leve '#!\[forbid\(unsafe_code\)\]')"
+  # de moins à refuser sans recours. La garde (chaque_module_fuzze_refuse_unsafe dans src/main.rs) veut chaque forme
+  # seule sur sa ligne, et celles de module en tête du fichier : ces comptes sont exacts. Modules : les fichiers qui
+  # portent la forme en colonne zéro ; éléments : les lignes, indentées ou non.
+  modules() { grep -rlx --include='*.rs' "$1" src | wc -l; }
+  elements() { grep -rxE --include='*.rs' "[[:space:]]*$1" src | wc -l; }
+  printf '      unsafe_code levé : %s modules, %s éléments ; refusé sans recours : %s modules\n' \
+    "$(modules '#!\[allow(unsafe_code)\]')" "$(elements '#\[allow\(unsafe_code\)\]')" "$(modules '#!\[forbid(unsafe_code)\]')"
 }
 
 # Ce que cargo deny laisse passer sans le taire : les failles admises dans deny.toml (leur raison commence par le nom
