@@ -869,7 +869,14 @@ mod tests {
             juger(&d.join("absent")).unwrap_err(),
             Illisible::Ouverture(std::io::ErrorKind::NotFound)
         );
-        assert_eq!(juger(&d).unwrap_err(), Illisible::PasUnFichier);
+        // Un dossier : refusé partout. Windows refuse déjà de l'ouvrir comme un fichier (accès refusé, sans
+        // FILE_FLAG_BACKUP_SEMANTICS) ; ailleurs il s'ouvre et n'est pas un fichier ordinaire.
+        let attendu = if cfg!(windows) {
+            Illisible::Ouverture(std::io::ErrorKind::PermissionDenied)
+        } else {
+            Illisible::PasUnFichier
+        };
+        assert_eq!(juger(&d).unwrap_err(), attendu);
         // Plusieurs fichiers : un seul refusé suffit à refuser le tout, et chacun est jugé.
         let bon = d.join("vanguard.exe");
         std::fs::write(&bon, pe_durci()).unwrap();
