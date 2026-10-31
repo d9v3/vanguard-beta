@@ -541,7 +541,7 @@ fn sysctl(nom: &str) -> Option<Vec<u8>> {
 }
 
 /// Comme `sysctl`, mais une valeur vide (kern.bootargs sans option) est une réponse : `Some` d'un tableau vide.
-// FFI de libc : sysctlbyname, gethostname, getgrnam_r.
+// FFI de libc : sysctlbyname.
 #[allow(unsafe_code)]
 fn sysctl_ou_vide(nom: &str) -> Option<Vec<u8>> {
     let nom = std::ffi::CString::new(nom).ok()?;
@@ -629,7 +629,7 @@ pub fn nom_machine(cle: &str) -> Option<String> {
 }
 
 /// Nom d'hôte, ce qu'affiche `hostname` (gethostname).
-// FFI de libc : sysctlbyname, gethostname, getgrnam_r.
+// FFI de libc : gethostname.
 #[allow(unsafe_code)]
 pub fn nom_hote() -> Option<String> {
     let mut tampon = [0u8; 256];
@@ -644,7 +644,7 @@ pub fn nom_hote() -> Option<String> {
 
 /// Membres du groupe admin, ceux du « GroupMembership » de dscl, demandés à la bibliothèque du système. `None` :
 /// groupe introuvable ou illisible. Aussi lu par `administrateurs` (nouveaux administrateurs).
-// FFI de libc : sysctlbyname, gethostname, getgrnam_r.
+// FFI de libc : getgrnam_r (les membres du groupe admin).
 #[allow(unsafe_code)]
 pub(super) fn membres_admin() -> Option<Vec<String>> {
     let mut taille = 16 * 1024;
