@@ -3,8 +3,8 @@
 //! COMPlus_* chargeraient une DLL dans PowerShell, PSModulePath ferait charger un module des Documents, PATH ferait
 //! trouver un faux programme. Seule une liste fixe de variables passe, chacune calculée par Windows.
 
-// FFI de kernel32 (GetSystemWindowsDirectoryW, GetComputerNameW) et de shell32 (SHGetKnownFolderPath) : les dossiers
-// du système demandés à Windows plutôt qu'à l'environnement.
+// FFI de kernel32 (GetSystemWindowsDirectoryW, GetComputerNameW, IsWow64Process2) et de shell32 (SHGetKnownFolderPath) :
+// les dossiers et la machine demandés à Windows plutôt qu'à l'environnement.
 #![allow(unsafe_code)]
 
 use std::ffi::OsString;
@@ -31,6 +31,9 @@ pub(crate) struct Dossiers {
     pub appdata: Option<PathBuf>,
     pub appdata_local: Option<PathBuf>,
     pub ordinateur: Option<String>,
+    /// L'architecture de la machine (PROCESSOR_ARCHITECTURE), pas celle de Vanguard : un Vanguard x64 émulé sur
+    /// Windows ARM64 lance des programmes ARM64.
+    pub architecture: Option<&'static str>,
 }
 
 /// Les noms des variables qui passent, et rien d'autre (la garde des tests).
@@ -93,16 +96,10 @@ pub(crate) fn variables(d: &Dossiers) -> Vec<(&'static str, OsString)> {
         // coupe (moyen documenté par Microsoft), PowerShell relit les modules eux-mêmes.
         ("PSModuleAnalysisCachePath", "NUL".into()),
         ("OS", "Windows_NT".into()),
-        (
-            "PROCESSOR_ARCHITECTURE",
-            if cfg!(target_arch = "aarch64") {
-                "ARM64"
-            } else {
-                "AMD64"
-            }
-            .into(),
-        ),
     ];
+    if let Some(a) = d.architecture {
+        v.push(("PROCESSOR_ARCHITECTURE", a.into()));
+    }
     if let Some(l) = w.to_str().and_then(|t| t.get(..2)).filter(|l| l.ends_with(':')) {
         v.push(("SystemDrive", l.into()));
     }
@@ -153,6 +150,7 @@ pub(crate) fn dossiers() -> &'static Dossiers {
             appdata: dossier_connu(&APPDATA),
             appdata_local: dossier_connu(&APPDATA_LOCAL),
             ordinateur: nom_ordinateur(),
+            architecture: architecture_native(),
             systeme,
             windows,
         }
@@ -172,6 +170,56 @@ static APPDATA_LOCAL: GUID = GUID::from_u128(0xf1b32785_6fba_4fcf_9d55_7b8e7f157
 unsafe extern "system" {
     fn GetSystemWindowsDirectoryW(tampon: *mut u16, taille: u32) -> u32;
     fn GetComputerNameW(tampon: *mut u16, taille: *mut u32) -> i32;
+    fn GetCurrentProcess() -> *mut std::ffi::c_void;
+    fn GetModuleHandleW(nom: *const u16) -> *mut std::ffi::c_void;
+    fn GetProcAddress(module: *mut std::ffi::c_void, nom: *const u8) -> *mut std::ffi::c_void;
+}
+
+/// IsWow64Process2 (learn.microsoft.com) : la machine du processus et celle du système.
+type IsWow64Process2 = unsafe extern "system" fn(*mut std::ffi::c_void, *mut u16, *mut u16) -> i32;
+
+/// PROCESSOR_ARCHITECTURE pour une machine IMAGE_FILE_MACHINE_* (learn.microsoft.com, « Image File Machine
+/// Constants ») ; `None` pour une autre, dont la variable reste alors absente.
+fn nom_architecture(machine: u16) -> Option<&'static str> {
+    match machine {
+        0x8664 => Some("AMD64"),
+        0xAA64 => Some("ARM64"),
+        0x014C => Some("x86"),
+        _ => None,
+    }
+}
+
+/// L'architecture de la machine, lue à l'exécution par IsWow64Process2. GetNativeSystemInfo ne suffit pas : appelée
+/// par un programme x64 émulé sur ARM64, elle répond x64. IsWow64Process2 n'existe que depuis Windows 10 1709,
+/// d'où GetProcAddress (une importation manquante empêcherait Vanguard de démarrer) ; avant 1709, Windows ARM64
+/// n'existait pas et un Vanguard x64 ne tourne que sur une machine x64 : l'architecture de compilation est alors la
+/// bonne.
+fn architecture_native() -> Option<&'static str> {
+    let compilee = if cfg!(target_arch = "aarch64") {
+        "ARM64"
+    } else {
+        "AMD64"
+    };
+    let nom: Vec<u16> = "kernel32.dll\0".encode_utf16().collect();
+    // SAFETY: `nom` est terminé par un zéro et vit pendant l'appel ; kernel32 est chargée dans tout processus, la
+    // poignée rendue n'est pas à libérer.
+    let kernel32 = unsafe { GetModuleHandleW(nom.as_ptr()) };
+    if kernel32.is_null() {
+        return Some(compilee);
+    }
+    // SAFETY: `kernel32` est une poignée de module valide (non nulle), le nom une chaîne C terminée par un zéro.
+    let adresse = unsafe { GetProcAddress(kernel32, c"IsWow64Process2".as_ptr().cast()) };
+    if adresse.is_null() {
+        return Some(compilee);
+    }
+    // SAFETY: l'adresse non nulle est celle de IsWow64Process2 exportée par kernel32, dont la signature documentée
+    // est BOOL (HANDLE, USHORT*, USHORT*) en convention « system ».
+    let is_wow64_process2 = unsafe { std::mem::transmute::<*mut std::ffi::c_void, IsWow64Process2>(adresse) };
+    let (mut processus, mut native) = (0u16, 0u16);
+    // SAFETY: GetCurrentProcess rend une pseudo-poignée valide sans droits à demander ; les deux pointeurs visent des
+    // u16 locaux, écrits par Windows en cas de succès.
+    let ok = unsafe { is_wow64_process2(GetCurrentProcess(), &raw mut processus, &raw mut native) } != 0;
+    if ok { nom_architecture(native) } else { None }
 }
 
 #[link(name = "shell32")]
@@ -237,6 +285,7 @@ mod tests {
             appdata: Some(PathBuf::from(r"C:\Users\alice\AppData\Roaming")),
             appdata_local: Some(PathBuf::from(r"C:\Users\alice\AppData\Local")),
             ordinateur: Some("SALON".to_string()),
+            architecture: Some("ARM64"),
         }
     }
 
@@ -266,13 +315,19 @@ mod tests {
         );
         assert_eq!(valeur("TEMP").as_deref(), Some(r"C:\Windows\Temp"));
         assert_eq!(valeur("SystemDrive").as_deref(), Some("C:"));
+        // L'architecture est celle que Windows donne, jamais celle de la compilation.
+        assert_eq!(valeur("PROCESSOR_ARCHITECTURE").as_deref(), Some("ARM64"));
         // Un dossier que Windows n'a pas donné : sa variable manque, rien n'est repris d'ailleurs.
         let v = variables(&Dossiers {
             program_files: None,
             profil: None,
+            architecture: None,
             ..exemple()
         });
-        assert!(v.iter().all(|(n, _)| *n != "ProgramFiles" && *n != "USERPROFILE"));
+        assert!(
+            v.iter()
+                .all(|(n, _)| *n != "ProgramFiles" && *n != "USERPROFILE" && *n != "PROCESSOR_ARCHITECTURE")
+        );
         let modules = v.iter().find(|(n, _)| *n == "PSModulePath").unwrap();
         assert_eq!(modules.1, r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules");
     }
@@ -317,6 +372,21 @@ mod tests {
             &d.appdata_local,
         ];
         assert!(tous.iter().all(|p| p.is_some()), "{d:?}");
+    }
+
+    /// Les machines connues, et celle où tournent les tests lue à l'exécution.
+    #[test]
+    fn l_architecture_est_celle_de_la_machine() {
+        assert_eq!(nom_architecture(0x8664), Some("AMD64"));
+        assert_eq!(nom_architecture(0xAA64), Some("ARM64"));
+        assert_eq!(nom_architecture(0x014C), Some("x86"));
+        assert_eq!(nom_architecture(0), None);
+        // Un Vanguard x64 tourne sur une machine x64, ou ARM64 par émulation ; jamais sans réponse.
+        assert!(
+            matches!(architecture_native(), Some("AMD64" | "ARM64")),
+            "{:?}",
+            architecture_native()
+        );
     }
 
     /// La commande réduite ne garde rien de l'environnement de Vanguard : un vrai programme lancé ainsi (cmd.exe,
