@@ -189,6 +189,11 @@ pub fn commande_affichable(commande: &str) -> String {
     if let Some(a) = crate::machine::gestes::analyser_programme(commande) {
         return a.commande();
     }
+    // La recherche du vrai winget (fenêtre administrateur) est longue : annoncée « winget … », le reste filtré.
+    #[cfg(windows)]
+    if let Some(reste) = crate::machine::windows::sans_recherche_de_winget(commande) {
+        return format!("winget{}", commande_affichable(reste));
+    }
     commande
         .chars()
         .map(|c| match c {

@@ -792,9 +792,11 @@ fn lancer_script(chemin: &str, empreinte: &str) -> Resultat {
         "-Command",
         &super::amorce_admin(chemin, empreinte),
     ]);
-    if let Some((_, w)) = &tube {
-        commande.env(super::VARIABLE_RESULTATS, w.as_raw_handle().addr().to_string());
-    }
+    // Sans tube, la variable est retirée : une valeur venue de l'environnement du compte ne désigne pas une poignée.
+    match &tube {
+        Some((_, w)) => commande.env(super::VARIABLE_RESULTATS, w.as_raw_handle().addr().to_string()),
+        None => commande.env_remove(super::VARIABLE_RESULTATS),
+    };
     let fils = commande.spawn();
     // Le parent ferme sa copie de l'écrivain : la fin de lecture vient quand PowerShell (et ce qu'il a lancé) a fermé
     // la sienne.

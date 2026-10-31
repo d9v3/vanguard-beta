@@ -29,7 +29,8 @@ paths:
   ligne ok/echec par correctif, dans un tube anonyme hérité (`VANGUARD_RESULTATS`) ; le fichier `.resultats` ne
   sert plus qu'à la fenêtre PowerShell de Wine : c'est un autre processus, son code de retour ne suffit pas.
 - Un programme de Windows ne se lance jamais par son seul nom en administrateur (PATH du compte) : programme fixe
-  `vanguard:programme <id>` (`gestes.rs`, chemin pris à GetSystemDirectoryW), ou chemin complet résolu.
+  `vanguard:programme <id>` (`gestes.rs`, chemin pris à GetSystemDirectoryW), ou chemin complet résolu (winget :
+  `winget_eleve()`, celui du paquet App Installer de Microsoft sous Program Files\WindowsApps).
 - Vérifier un script généré : l'écrire depuis un test temporaire sous Wine (chemin `Z:\…`), puis l'analyser avec
   pwsh pour Linux (`[System.Management.Automation.Language.Parser]::ParseInput`) ; pwsh se télécharge depuis les
   versions GitHub de PowerShell (vérifier l'empreinte SHA-256).

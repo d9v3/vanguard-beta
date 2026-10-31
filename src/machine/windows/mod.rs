@@ -68,12 +68,50 @@ const FIN: &str = "__VANGUARD_FIN__";
 /// ce n'est pas un échec.
 const DEJA_INSTALLE: &str = "-1978335189, -1978335135";
 
+/// winget dans la fenêtre administrateur, par son chemin complet. Par son seul nom, PowerShell le chercherait dans le
+/// PATH du compte, que tout programme de ce compte peut changer : un winget.exe posé plus tôt dans ce PATH serait lancé
+/// en administrateur. Le chemin vient du paquet App Installer de Microsoft (éditeur 8wekyb3d8bbwe), installé sous
+/// Program Files\WindowsApps, dossier que seul le système écrit ; la plus récente version si plusieurs comptes en ont
+/// une. Le module Appx est chargé par son chemin dans le dossier de PowerShell : un module « Appx » du compte (premier
+/// dans PSModulePath) ne répond pas à sa place. Introuvable : la commande échoue, rien n'est lancé.
+const RECHERCHE_DE_WINGET: &str = "$vanguardWinget = $null; Import-Module -Name ([IO.Path]::Combine($PSHOME, 'Modules\\Appx')) -ErrorAction Stop; \
+     $vanguardRacine = [IO.Path]::Combine([Environment]::GetFolderPath('ProgramFiles'), 'WindowsApps') + '\\'; $vanguardVersion = $null; \
+     foreach ($vanguardPaquet in @(Appx\\Get-AppxPackage -AllUsers -Name 'Microsoft.DesktopAppInstaller')) { \
+     $vanguardDossier = [string]$vanguardPaquet.InstallLocation; $vanguardExe = [IO.Path]::Combine($vanguardDossier, 'winget.exe'); \
+     if ($vanguardPaquet.PublisherId -eq '8wekyb3d8bbwe' -and $vanguardDossier.StartsWith($vanguardRacine, [StringComparison]::OrdinalIgnoreCase) -and -not $vanguardDossier.Contains('..') \
+     -and [IO.File]::Exists($vanguardExe) -and (-not $vanguardVersion -or ([version]$vanguardPaquet.Version) -gt $vanguardVersion)) \
+     { $vanguardVersion = [version]$vanguardPaquet.Version; $vanguardWinget = $vanguardExe } }; ";
+/// La suite : introuvable, la commande échoue sans rien lancer ; trouvé, winget par ce chemin (les arguments suivent).
+const WINGET_TROUVE_FR: &str = "if (-not $vanguardWinget) { throw 'winget introuvable dans App Installer (Microsoft Store) : rien n''a été lancé' }; & $vanguardWinget";
+const WINGET_TROUVE_EN: &str = "if (-not $vanguardWinget) { throw 'winget not found in App Installer (Microsoft Store): nothing was run' }; & $vanguardWinget";
+
+/// Le début d'une commande winget de la fenêtre administrateur, dans la langue de l'interface (`& $vanguardWinget`
+/// suit : les arguments viennent après).
+pub(crate) fn winget_eleve() -> String {
+    let suite = if crate::langue::anglais() {
+        WINGET_TROUVE_EN
+    } else {
+        WINGET_TROUVE_FR
+    };
+    format!("{RECHERCHE_DE_WINGET}{suite}")
+}
+
+/// La commande sans la recherche de winget, telle qu'elle s'annonce : `winget install …`. `None` : pas une commande
+/// winget de la fenêtre administrateur.
+pub(crate) fn sans_recherche_de_winget(commande: &str) -> Option<&str> {
+    let suite = commande.strip_prefix(RECHERCHE_DE_WINGET)?;
+    [WINGET_TROUVE_FR, WINGET_TROUVE_EN]
+        .iter()
+        .find_map(|t| suite.strip_prefix(t))
+}
+
 /// Installation silencieuse par winget, sans erreur si le paquet est déjà là. La source est imposée : un
 /// identifiant ne peut pas être pris pour une application du Microsoft Store au nom voisin.
 pub fn winget_installer(id: &str) -> String {
     format!(
-        "winget install --id {id} --exact --source winget --silent --accept-package-agreements --accept-source-agreements --disable-interactivity; \
-         if ($LASTEXITCODE -in {DEJA_INSTALLE}) {{ $global:LASTEXITCODE = 0 }}"
+        "{} install --id {id} --exact --source winget --silent --accept-package-agreements --accept-source-agreements --disable-interactivity; \
+         if ($LASTEXITCODE -in {DEJA_INSTALLE}) {{ $global:LASTEXITCODE = 0 }}",
+        winget_eleve()
     )
 }
 
@@ -1654,6 +1692,38 @@ mod tests {
             assert!(!s.contains(absent), "{absent}");
         }
         assert!(s.ends_with("if ($echecs) { exit 1 }\nexit 0"));
+    }
+
+    #[test]
+    fn winget_en_administrateur_par_le_chemin_d_app_installer() {
+        let c = winget_installer("Microsoft.DirectX");
+        // Jamais par son seul nom : la commande commence par la recherche du paquet de Microsoft, et winget n'est
+        // lancé que par le chemin trouvé.
+        assert!(c.starts_with(
+            "$vanguardWinget = $null; Import-Module -Name ([IO.Path]::Combine($PSHOME, 'Modules\\Appx'))"
+        ));
+        assert!(c.contains("Appx\\Get-AppxPackage -AllUsers -Name 'Microsoft.DesktopAppInstaller'"));
+        assert!(c.contains("$vanguardPaquet.PublisherId -eq '8wekyb3d8bbwe'"));
+        assert!(c.contains("[Environment]::GetFolderPath('ProgramFiles'), 'WindowsApps') + '\\'"));
+        assert!(c.contains("& $vanguardWinget install --id Microsoft.DirectX --exact --source winget"));
+        assert!(!c.contains("winget install") && !c.contains("; winget "));
+        // Annoncée courte, dans les deux langues, le reste filtré comme toute commande.
+        let attendu = "winget install --id Microsoft.DirectX --exact --source winget --silent";
+        assert!(
+            crate::ui::commande_affichable(&c).starts_with(attendu),
+            "{}",
+            crate::ui::commande_affichable(&c)
+        );
+        for suite in [WINGET_TROUVE_FR, WINGET_TROUVE_EN] {
+            let autre = format!("{RECHERCHE_DE_WINGET}{suite} upgrade --id 'X\x1b[2K'");
+            assert_eq!(
+                crate::ui::commande_affichable(&autre),
+                "winget upgrade --id 'X\u{fffd}[2K'"
+            );
+        }
+        // Une recherche modifiée n'est pas raccourcie : on voit tout.
+        let changee = c.replacen("8wekyb3d8bbwe", "0000000000000", 1);
+        assert!(crate::ui::commande_affichable(&changee).starts_with("$vanguardWinget"));
     }
 
     #[test]
