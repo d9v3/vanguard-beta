@@ -12,6 +12,8 @@ pub(crate) mod jsonc;
 pub(crate) mod personnel;
 #[cfg(unix)]
 pub(crate) mod processus;
+#[cfg(target_os = "linux")]
+pub(crate) mod relro;
 pub(crate) mod systeme;
 
 pub use fichiers::dossier_local;

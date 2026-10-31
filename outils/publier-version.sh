@@ -197,7 +197,7 @@ cp "$WINDOWS" "$DOSSIER/vanguard-windows-x86_64.exe"
 outils/failles-programmes.sh "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-windows-x86_64.exe" ||
   { echo "Programmes : rien de publié."; exit 1; }
 # Les protections des fichiers mêmes qui partent, lues dans leurs en-têtes sans les lancer (vanguard deploiement
-# verifier-binaire, src/deploiement/binaire.rs) : PIE statique, RELRO complet et pile non exécutable pour Linux ; DLL
+# verifier-binaire, src/deploiement/binaire.rs) : PIE statique, marque RELRO et pile non exécutable pour Linux ; DLL
 # depuis System32, manifeste, ASLR, DEP et relocalisations pour Windows. Lues par la copie Linux qui part, dont
 # l'empreinte vient d'être relue ; le programme Mac, compilé par GitHub, l'est par elle aussi une fois récupéré (aucun
 # Mac ici). Lue telle quelle par outils/essais-signature.sh.

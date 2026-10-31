@@ -5,7 +5,7 @@
 # des versions (outils/essais-signature.sh) et de ce script même sous --seulement (outils/essais-verifier.sh), liens
 # internes, carte de couverture ATT&CK à jour (outils/couverture-attack.py), documentation du code sans avertissement
 # (cargo doc), textes français et anglais (outils/textes.py), protections des programmes lues dans leurs en-têtes
-# (vanguard deploiement verifier-binaire : PIE, RELRO complet, pile non exécutable ; ASLR, DEP), régression de détection (le corpus de
+# (vanguard deploiement verifier-binaire : PIE, marque RELRO, pile non exécutable ; ASLR, DEP), régression de détection (le corpus de
 # src/modele/corpus.rs, Linux et Wine), dépendances (cargo deny) et leurs failles connues (cargo audit), banc de
 # fuzzing compilé et passé quelques secondes par cible, preuves de Kani compilées (lancées par outils/preuves.sh).
 # La CI lance ce même script (.github/workflows/ci.yml) : une seule logique, ici.

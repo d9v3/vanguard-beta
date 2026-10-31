@@ -18,7 +18,7 @@ pub(crate) enum Etape {
         dossier: PathBuf,
     },
     /// Vérifier les protections d'un programme livré, lu sans être lancé (`binaire`) : Linux (ELF : PIE, statique,
-    /// RELRO complet, pile non exécutable, rien d'écrivable et exécutable), Windows (PE : DLL importées depuis System32,
+    /// marque RELRO, pile non exécutable, rien d'écrivable et exécutable), Windows (PE : DLL importées depuis System32,
     /// manifeste UTF-8 et asInvoker, ASLR, DEP, relocalisations) et Mac (Mach-O universel, chaque tranche). Réussit
     /// seulement si tous les fichiers passent. L'ancien nom, `verifier-pe`, reste accepté.
     #[command(name = "verifier-binaire", alias = "verifier-pe")]

@@ -11,10 +11,15 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 
 - **Protections des programmes vérifiées avant de partir.** `vanguard deploiement verifier-binaire` (ancien nom :
   `verifier-pe`, gardé) lit dans leurs en-têtes, sans les lancer, les protections des programmes publiés : sous Linux
-  PIE, RELRO complet (BIND_NOW), pile non exécutable, aucun segment écrivable et exécutable ; sous Windows ASLR à haute
+  PIE, marque du RELRO complet (PT_GNU_RELRO, BIND_NOW), pile non exécutable, aucun segment écrivable et exécutable ; sous Windows ASLR à haute
   entropie, DEP et relocalisations, en plus des DLL de System32 et du manifeste ; sous macOS chaque tranche en PIE.
   verifier.sh, la CI, le déploiement et la publication refusent un programme qui en perd une ; CFG et CET sont
   affichés sans être exigés.
+
+- **RELRO appliqué pour de bon sous Linux.** Le programme Linux (static-pie musl) portait la marque du RELRO complet,
+  mais le démarrage de musl ne l'applique pas : la GOT et `.data.rel.ro` restaient écrivables pendant toute la vie
+  du processus. Vanguard met désormais lui-même ce segment en lecture seule au lancement, comme le fait le chargeur
+  de glibc ; un échec est noté au journal sans empêcher le démarrage.
 
 ## 26 octobre 2026 : version 0.88
 

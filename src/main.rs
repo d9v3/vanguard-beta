@@ -3470,6 +3470,14 @@ fn portee(dossier: Option<std::path::PathBuf>, complet: bool) -> protection::ant
 
 #[tokio::main]
 async fn main() {
+    // RELRO, avant tout le reste : le démarrage de musl laisse PT_GNU_RELRO écrivable (socle/relro.rs). Un échec ne
+    // tue pas le programme : Vanguard sans cette protection reste celui de la 0.88, alors que refuser de démarrer
+    // laisserait la machine sans aucune de ses défenses, pour une page que rien n'attaque encore. On le note au
+    // journal, où il se verra (un noyau qui refuserait mprotect sur ses propres pages est déjà une anomalie).
+    #[cfg(target_os = "linux")]
+    if let Err(e) = crate::socle::relro::proteger() {
+        journal::erreur("protection RELRO", &e.to_string());
+    }
     // Couleurs ANSI dans l'ancienne console Windows (Windows Terminal les gère déjà) : crossterm ouvre CONOUT$ et y
     // active ENABLE_VIRTUAL_TERMINAL_PROCESSING, le même appel que faisait une crate à part pour cela seul.
     #[cfg(windows)]

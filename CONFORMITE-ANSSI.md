@@ -48,8 +48,8 @@ l'environnement qui pouvaient changer en silence un programme publié.
 | DENV-LINTER | tenu | clippy pedantic et les lints de restriction de `Cargo.toml`, zéro remarque sur les quatre cibles (`-D warnings`). | — |
 | DENV-AUTOFIX | tenu | Aucun `cargo fix` ni `clippy --fix` dans `outils/` ou `.github/` ; la correction proposée par la veille de nuit n'est jamais fusionnée sans relecture (`outils/veille/LISEZMOI.md`). | — |
 
-Hors du guide : les protections des programmes publiés (Linux : PIE, RELRO complet, pile non exécutable, rien
-d'écrivable et exécutable ; Windows : ASLR à haute entropie, DEP, relocalisations ; macOS : chaque tranche en PIE)
+Hors du guide : les protections des programmes publiés (Linux : PIE, marque du RELRO complet, que Vanguard applique
+lui-même au démarrage, pile non exécutable, rien d'écrivable et exécutable ; Windows : ASLR à haute entropie, DEP, relocalisations ; macOS : chaque tranche en PIE)
 sont lues dans leurs en-têtes par `vanguard deploiement verifier-binaire` (`src/deploiement/binaire.rs`) à chaque
 `outils/verifier.sh`, dans la CI et avant chaque publication ; CFG et CET sont affichés sans être exigés (voir
 `MODELE-DE-MENACE.md`).

@@ -18,7 +18,7 @@ Une faille de sécurité ? Pas de ticket ni de demande de fusion publics : signa
 | Fichier | Rôle |
 |---|---|
 | `src/main.rs` | menu et sous-commandes |
-| `src/deploiement.rs`, `src/deploiement/binaire.rs` | étapes de `outils/deployer.sh` confiées au programme (`vanguard deploiement …`, commande cachée) : témoins de la clé, archives tldr de la clé ; protections des programmes livrés lues dans leurs en-têtes, sans les lancer (`binaire.rs`, `verifier-binaire`) : ELF (PIE, statique, RELRO complet, pile non exécutable, rien d'écrivable et exécutable), PE (gardes du vanguard.exe, ASLR, DEP, relocalisations), Mach-O universel (chaque tranche) |
+| `src/deploiement.rs`, `src/deploiement/binaire.rs` | étapes de `outils/deployer.sh` confiées au programme (`vanguard deploiement …`, commande cachée) : témoins de la clé, archives tldr de la clé ; protections des programmes livrés lues dans leurs en-têtes, sans les lancer (`binaire.rs`, `verifier-binaire`) : ELF (PIE, statique, marque RELRO, pile non exécutable, rien d'écrivable et exécutable), PE (gardes du vanguard.exe, ASLR, DEP, relocalisations), Mach-O universel (chaque tranche) |
 | `src/ui.rs` | couleurs, titres, cadres, barres, lignes coupées et alignées dans 76 colonnes |
 | `src/selection.rs` | menus et listes à cocher au clavier (flèches, Entrée, Échap ou Retour arrière), recherche par mot dans les menus, aperçu à droite de la ligne en surbrillance (fenêtre assez large) |
 | `src/descriptions.rs` | ce que l'aperçu des menus dit de chaque outil et de chaque groupe |
@@ -56,7 +56,7 @@ Une faille de sécurité ? Pas de ticket ni de demande de fusion publics : signa
 | `src/annulation.rs` | « Tout remettre comme avant » : corrections du bilan, réglages d'Optimiser et de Gaming, blocages et mode Wi-Fi public, montrés puis défaits du plus récent au plus ancien, en une demande administrateur, relus après coup |
 | `src/sauvegarde.rs`, `src/raccourci.rs`, `src/mise_a_jour.rs`, `src/a_laisser.rs` | sauvegarde automatique guidée (Déjà Dup ou rsync, Time Machine, Historique des fichiers) et vérifier ma sauvegarde (la copie rsync relue sans cache, des fichiers au hasard comparés à leur original ; un original plus récent n'est pas une erreur) ; raccourci sur cet ordinateur ; mise à jour de sa copie depuis la clé (version gravée dans le programme, lue sans le lancer) ou depuis GitHub (`mise_a_jour/github.rs` : manifeste signé en Ed25519 publié dans d9v3/vanguard-update, taille, empreinte et version du programme vérifiées) ; rapport à laisser à la personne dépannée |
 | `src/corriger.rs` | application guidée des correctifs |
-| `src/socle/` | le socle commun, sans rien savoir du réseau ni de la protection : dossier de Vanguard, écriture atomique et verrou (`fichiers.rs`), cache des listes téléchargées (`cache.rs`), portée d'une adresse IP selon les RFC (`adresses.rs`), dossier personnel et place sur les disques (`personnel.rs`), processus de Linux et macOS (`processus.rs`), JSON avec commentaires (`jsonc.rs`), os-release (`systeme.rs`), empreintes en hexadécimal (`hachage.rs`) |
+| `src/socle/` | le socle commun, sans rien savoir du réseau ni de la protection : dossier de Vanguard, écriture atomique et verrou (`fichiers.rs`), cache des listes téléchargées (`cache.rs`), portée d'une adresse IP selon les RFC (`adresses.rs`), dossier personnel et place sur les disques (`personnel.rs`), processus de Linux et macOS (`processus.rs`), JSON avec commentaires (`jsonc.rs`), os-release (`systeme.rs`), empreintes en hexadécimal (`hachage.rs`), RELRO appliqué au démarrage sous Linux, que musl n'applique pas (`relro.rs`) |
 | `src/reseau/mod.rs`, `src/reseau/scan.rs`, `ping.rs` | scan réseau (TCP connect, sans root), ARP, carnets des réseaux ; écho ICMP sans lancer ping |
 | `src/reseau/nmap.rs` | versions des services par nmap -sV, s'il est installé : scan approfondi d'un appareil du réseau local, sur ses ports déjà trouvés ouverts |
 | `src/reseau/empoisonnement.rs` | empoisonneur de noms (Responder) : un nom tiré au hasard, qui n'existe pas, demandé en LLMNR, NetBIOS et mDNS pendant le scan ; l'appareil qui répond aux deux essais est signalé (paquets écrits et lus en Rust) |
@@ -236,7 +236,7 @@ Intégration continue (`.github/workflows/ci.yml`) : à chaque envoi sur master 
 vraies distributions ; un vrai Windows (PowerShell, registre) à chaque envoi, à chaque demande de fusion, la nuit si
 le code a changé (`.github/hors-code.txt`) et à la demande (`gh workflow run ci.yml`), avec la compilation
 reproductible et le .exe livré (MinGW) essayé sur Windows. `verifier.sh` relit aussi les workflows avec zizmor (hors ligne) et
-compile tout en `--locked`. Les protections des programmes (Linux : PIE, RELRO complet, pile non exécutable, rien
+compile tout en `--locked`. Les protections des programmes (Linux : PIE, marque RELRO, pile non exécutable, rien
 d'écrivable et exécutable ; Windows : ASLR à haute entropie, DEP, relocalisations, DLL de System32, manifeste ; Mac :
 chaque tranche en PIE) sont lues dans leurs en-têtes par `vanguard deploiement verifier-binaire` : à chaque passe de
 `verifier.sh` (le programme de débogage, et ceux de publication s'ils sont de ce commit), dans la CI sur ceux de

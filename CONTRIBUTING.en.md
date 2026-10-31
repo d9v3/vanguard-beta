@@ -17,7 +17,7 @@ A security flaw? No public issue or pull request: report it privately, see [SECU
 | File | Purpose |
 |---|---|
 | `src/main.rs` | menu and subcommands |
-| `src/deploiement.rs`, `src/deploiement/binaire.rs` | steps of `outils/deployer.sh` handed to the program (`vanguard deploiement …`, hidden command): key markers, the key's tldr archives; protections of the shipped programs read from their headers, without running them (`binaire.rs`, `verifier-binaire`): ELF (PIE, static, full RELRO, non-executable stack, nothing writable and executable), PE (guards of vanguard.exe, ASLR, DEP, relocations), universal Mach-O (each slice) |
+| `src/deploiement.rs`, `src/deploiement/binaire.rs` | steps of `outils/deployer.sh` handed to the program (`vanguard deploiement …`, hidden command): key markers, the key's tldr archives; protections of the shipped programs read from their headers, without running them (`binaire.rs`, `verifier-binaire`): ELF (PIE, static, RELRO marking, non-executable stack, nothing writable and executable), PE (guards of vanguard.exe, ASLR, DEP, relocations), universal Mach-O (each slice) |
 | `src/ui.rs` | colors, titles, frames, bars, lines wrapped and aligned within 76 columns |
 | `src/selection.rs` | keyboard menus and checklists (arrows, Enter, Esc or Backspace), word search in menus, preview of the highlighted line on the right (wide enough window) |
 | `src/descriptions.rs` | what the menu preview says about each tool and each group |
@@ -55,7 +55,7 @@ A security flaw? No public issue or pull request: report it privately, see [SECU
 | `src/annulation.rs` | “Put everything back”: check-up fixes, Optimize and Gaming settings, blocks and public Wi-Fi mode, shown then undone from the most recent to the oldest, in one administrator request, read back afterwards |
 | `src/sauvegarde.rs`, `src/raccourci.rs`, `src/mise_a_jour.rs`, `src/a_laisser.rs` | guided automatic backup (Déjà Dup or rsync, Time Machine, File History) and check my backup (the rsync copy read back without cache, random files compared with their original; a newer original is not an error); shortcut on this computer; updating its copy from the key (version engraved in the program, read without running it) or from GitHub (`mise_a_jour/github.rs`: Ed25519-signed manifest published in d9v3/vanguard-update, the program's size, checksum and version checked); report to leave with the person you helped |
 | `src/corriger.rs` | guided application of fixes |
-| `src/socle/` | the common base, knowing nothing of the network or protection: Vanguard's folder, atomic write and lock (`fichiers.rs`), cache of downloaded lists (`cache.rs`), an IP address's scope per the RFCs (`adresses.rs`), home folder and disk space (`personnel.rs`), Linux and macOS processes (`processus.rs`), JSON with comments (`jsonc.rs`), os-release (`systeme.rs`), hex fingerprints (`hachage.rs`) |
+| `src/socle/` | the common base, knowing nothing of the network or protection: Vanguard's folder, atomic write and lock (`fichiers.rs`), cache of downloaded lists (`cache.rs`), an IP address's scope per the RFCs (`adresses.rs`), home folder and disk space (`personnel.rs`), Linux and macOS processes (`processus.rs`), JSON with comments (`jsonc.rs`), os-release (`systeme.rs`), hex fingerprints (`hachage.rs`), RELRO applied at startup on Linux, which musl does not apply (`relro.rs`) |
 | `src/reseau/mod.rs`, `src/reseau/scan.rs`, `ping.rs` | network scan (TCP connect, without root), ARP, network notebooks; ICMP echo without running ping |
 | `src/reseau/nmap.rs` | service versions with nmap -sV, when installed: deep scan of a local network device, on the ports already found open |
 | `src/reseau/empoisonnement.rs` | name poisoner (Responder): a random name that does not exist, asked over LLMNR, NetBIOS and mDNS during the scan; the device that answers both tries is flagged (packets written and read in Rust) |
@@ -234,7 +234,7 @@ Continuous integration (`.github/workflows/ci.yml`): on each push to master and 
 distributions; a real Windows (PowerShell, registry) on each push, each pull request, every night if the code
 changed (`.github/hors-code.txt`) and on demand (`gh workflow run ci.yml`), with the reproducible build and the
 delivered .exe (MinGW) tried on Windows. `verifier.sh` also checks the workflows with zizmor (offline) and builds
-everything with `--locked`. The programs' protections (Linux: PIE, full RELRO, non-executable stack, nothing
+everything with `--locked`. The programs' protections (Linux: PIE, RELRO marking, non-executable stack, nothing
 writable and executable; Windows: high-entropy ASLR, DEP, relocations, DLLs from System32, manifest; Mac: every slice
 PIE) are read from their headers by `vanguard deploiement verifier-binaire`: on every `verifier.sh` run (the debug
 program, and the release ones when built from this commit), in CI on the release ones, then before anything leaves

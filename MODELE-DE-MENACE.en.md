@@ -58,7 +58,9 @@ Each threat in detail, menu by menu: [What Vanguard does](README.en.md#what-vang
 - **A stolen computer that is on and unlocked.** Disk encryption (BitLocker, FileVault, LUKS) protects a computer
   that is off; Vanguard checks it and recommends it.
 - **Hijacking the control flow of Vanguard itself.** Its published programs carry ASLR, non-executable data memory
-  and, on Linux, full RELRO, checked before every release (`vanguard deploiement verifier-binaire`). Control-flow
+  and, on Linux, the full RELRO marking, checked before every release (`vanguard deploiement verifier-binaire`);
+  since musl's startup does not apply that marking, Vanguard makes the PT_GNU_RELRO segment read-only itself at
+  launch (`src/socle/relro.rs`). Control-flow
   protection (CFG on Windows, CET everywhere) is not there: MinGW and stable Rust do not set it reliably. It is shown
   without being required, to be revisited if the Windows build ever moves to llvm-mingw or MSVC.
 - **What a borrowed computer reads.** Write protection keeps the key from being changed, not from being read: the

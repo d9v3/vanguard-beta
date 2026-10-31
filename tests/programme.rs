@@ -380,6 +380,111 @@ fn menu_quitte_par_q_et_par_la_fin_de_l_entree() {
     assert_eq!(ferme.code, Some(0));
 }
 
+/// RELRO appliqué par le programme lui-même (src/socle/relro.rs) : le démarrage de musl laisse PT_GNU_RELRO
+/// écrivable. Le programme est lancé sur son menu, qui attend une réponse ; sa plage RELRO, lue dans ses propres
+/// en-têtes, doit être en lecture seule dans /proc/<pid>/maps pendant qu'il tourne.
+#[cfg(target_os = "linux")]
+#[test]
+fn relro_applique_par_le_programme() {
+    let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
+    let octets = std::fs::read(programme).unwrap();
+    let u16_ = |o: usize| usize::from(u16::from_le_bytes(octets[o..o + 2].try_into().unwrap()));
+    let u64_ = |o: usize| usize::try_from(u64::from_le_bytes(octets[o..o + 8].try_into().unwrap())).unwrap();
+    assert_eq!(&octets[..6], b"\x7fELF\x02\x01", "ELF 64 bits petit-boutiste attendu");
+    let (position, taille, nombre) = (u64_(0x20), u16_(0x36), u16_(0x38));
+    let entetes: Vec<(u32, usize, usize, usize)> = (0..nombre)
+        .map(|i| {
+            let e = position + i * taille;
+            let type_ = u32::from_le_bytes(octets[e..e + 4].try_into().unwrap());
+            (type_, u64_(e + 8), u64_(e + 16), u64_(e + 40))
+        })
+        .collect();
+    let Some(&(_, _, adresse, memoire)) = entetes.iter().find(|e| e.0 == 0x6474_e552) else {
+        return essais::saute("programme sans PT_GNU_RELRO");
+    };
+    let premier = entetes
+        .iter()
+        .find(|e| e.0 == 1 && e.1 == 0)
+        .expect("PT_LOAD à la position 0")
+        .2;
+    let chemin = std::fs::canonicalize(programme).unwrap();
+    let maison = maison_jetable();
+    let mut enfant = Command::new(programme)
+        .env_clear()
+        .env("PATH", "/usr/bin")
+        .env("VANGUARD_LANG", "fr")
+        .env("USER", "essai")
+        .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+        .env("HOME", &maison)
+        .env("XDG_RUNTIME_DIR", maison.join("run"))
+        .env("XDG_DATA_HOME", maison.join("donnees"))
+        .env("XDG_CONFIG_HOME", maison.join("config"))
+        .env("XDG_CACHE_HOME", maison.join("cache"))
+        .env("XDG_STATE_HOME", maison.join("etat"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let maps = format!("/proc/{}/maps", enfant.id());
+    let masque = !0xFFF_usize;
+    // Comme glibc : début et fin arrondis à la page inférieure (4 Kio sur x86-64).
+    let plage = |base: usize| ((base + adresse) & masque, (base + adresse + memoire) & masque);
+    let fin_attente = Instant::now() + Duration::from_secs(30);
+    let mut vu = String::new();
+    let protege = loop {
+        let lu = std::fs::read_to_string(&maps).unwrap_or_default();
+        let lignes: Vec<(usize, usize, String, usize, String)> = lu
+            .lines()
+            .filter_map(|l| {
+                let mut champs = l.split_whitespace();
+                let (a, b) = champs.next()?.split_once('-')?;
+                let droits = champs.next()?.to_owned();
+                let decalage = usize::from_str_radix(champs.next()?, 16).ok()?;
+                let nom = champs.nth(2).unwrap_or("").to_owned();
+                Some((
+                    usize::from_str_radix(a, 16).ok()?,
+                    usize::from_str_radix(b, 16).ok()?,
+                    droits,
+                    decalage,
+                    nom,
+                ))
+            })
+            .collect();
+        let base = lignes
+            .iter()
+            .find(|l| l.3 == 0 && Path::new(&l.4) == chemin)
+            .map(|l| l.0 - premier);
+        if let Some(base) = base {
+            let (debut, fin) = plage(base);
+            let couvrants: Vec<&String> = lignes
+                .iter()
+                .filter(|l| l.0 < fin && l.1 > debut)
+                .map(|l| &l.2)
+                .collect();
+            vu = format!("{debut:#x}-{fin:#x} : {couvrants:?}");
+            if !couvrants.is_empty() && couvrants.iter().all(|d| d.starts_with("r-")) {
+                break true;
+            }
+        }
+        if Instant::now() > fin_attente || enfant.try_wait().unwrap().is_some() {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    if let Some(mut stdin) = enfant.stdin.take() {
+        let _ = stdin.write_all(b"q\n");
+    }
+    let fin = Instant::now() + Duration::from_secs(30);
+    while enfant.try_wait().unwrap().is_none() && Instant::now() < fin {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let _ = enfant.kill();
+    let _ = enfant.wait();
+    let _ = std::fs::remove_dir_all(&maison);
+    assert!(protege, "plage RELRO écrivable ou introuvable dans {maps} : {vu}");
+}
+
 /// F4 (relecture du delta) : ouvrir le menu, sans rien d'autre, note la tête du journal ; c'est la preuve d'une vraie
 /// mise à jour que lira la version suivante (sans elle, ce qu'elle reprendrait ne serait pas cru).
 #[test]

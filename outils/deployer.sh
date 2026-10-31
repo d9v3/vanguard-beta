@@ -269,7 +269,7 @@ elif [[ $MODE != --sans-compiler ]]; then
   compiler
 fi
 # Ce qui part porte ses protections, lues dans ses en-têtes par le programme Linux (src/deploiement/binaire.rs), après
-# la compilation et sur les programmes qui vont être copiés : celui de Linux (PIE statique, RELRO complet, pile non
+# la compilation et sur les programmes qui vont être copiés : celui de Linux (PIE statique, marque RELRO, pile non
 # exécutable, rien d'écrivable et exécutable) et vanguard.exe (DLL chargées depuis System32 seulement, que chargement.rs
 # garde : une DLL posée à côté de lui n'est jamais chargée ; manifeste UTF-8 et asInvoker ; ASLR, DEP,
 # relocalisations). Sans repli : un programme non vérifié n'est jamais compté sain.

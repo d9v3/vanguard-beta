@@ -1,7 +1,8 @@
 //! `vanguard deploiement verifier-binaire` : les protections qu'un programme livré doit porter, relues dans ses
 //! en-têtes avant qu'il parte, jamais en le lançant. Le format se reconnaît aux premiers octets :
-//! - Linux (ELF, `analyse::elf`) : PIE (ET_DYN et DF_1_PIE), statique (sans PT_INTERP), RELRO complet (PT_GNU_RELRO
-//!   et BIND_NOW, sous l'une de ses trois formes), pile non exécutable (PT_GNU_STACK sans PF_X), aucun PT_LOAD à la
+//! - Linux (ELF, `analyse::elf`) : PIE (ET_DYN et DF_1_PIE), statique (sans PT_INTERP), la marque du RELRO complet
+//!   (PT_GNU_RELRO et BIND_NOW, sous l'une de ses trois formes : le démarrage de musl ne l'applique pas, Vanguard le
+//!   fait lui-même au lancement, `socle::relro`), pile non exécutable (PT_GNU_STACK sans PF_X), aucun PT_LOAD à la
 //!   fois écrivable et exécutable ; CET (IBT, SHSTK) affiché seulement ;
 //! - Windows (PE, `crate::pe`) : ce que vérifiait `verifier-pe` (DLL importées depuis System32 seulement, manifeste
 //!   UTF-8 et asInvoker), plus ASLR (DYNAMIC_BASE, et HIGH_ENTROPY_VA en 64 bits), DEP (NX_COMPAT) et des
@@ -216,8 +217,10 @@ fn oui_non(b: bool) -> &'static str {
 fn juger_elf(e: &elf::Elf) -> Jugement {
     let mut j = Jugement {
         resume: tr!(
-            "ELF static-pie, RELRO complet (BIND_NOW), pile non exécutable, aucun segment écrivable et exécutable",
-            "ELF static-pie, full RELRO (BIND_NOW), non-executable stack, no writable and executable segment"
+            "ELF static-pie, marque RELRO (BIND_NOW, appliqué par Vanguard au démarrage), pile non exécutable, aucun segment \
+             écrivable et exécutable",
+            "ELF static-pie, RELRO marking (BIND_NOW, applied by Vanguard at startup), non-executable stack, no writable \
+             and executable segment"
         )
         .to_string(),
         ..Jugement::default()

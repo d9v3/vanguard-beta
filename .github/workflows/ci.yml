@@ -312,7 +312,7 @@ jobs:
           x86_64-w64-mingw32-gcc --version | head -n 1
           musl-gcc --version 2>/dev/null | head -n 1 || true
       # Ce que l'ordinateur de l'auteur vérifie avant de livrer (vanguard deploiement verifier-binaire) : Linux en PIE
-      # statique, RELRO complet, pile non exécutable ; le .exe avec ses DLL depuis System32 seulement, son manifeste
+      # statique, marque RELRO, pile non exécutable ; le .exe avec ses DLL depuis System32 seulement, son manifeste
       # UTF-8 et asInvoker, ASLR, DEP et relocalisations ; puis les failles connues des deux programmes, lues dans la
       # liste qu'ils portent.
       - name: Les programmes portent leurs protections, failles connues des programmes
