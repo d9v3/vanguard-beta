@@ -244,9 +244,14 @@ fn decalage(s: &Sequence, recents: &mut [u64; 3]) -> Option<u64> {
 
 // --- Lecture des bits ---
 
-/// Jusqu'à 57 bits pris à la position `debut` (en bits, petit-boutiste) ; zéro au-delà de la fin.
+/// Le plus de bits qu'une lecture prend d'un coup : 64 moins les 7 du décalage dans l'octet de départ.
+const BITS_MAX: u32 = 57;
+
+/// Jusqu'à `BITS_MAX` bits pris à la position `debut` (en bits, petit-boutiste) ; zéro au-delà de la fin. Une
+/// largeur nulle ou au-delà de `BITS_MAX` rend zéro : la borne est gardée ici, pas chez les appelants (un décalage
+/// de 64 paniquerait, et le lint des débordements ne voit pas les décalages).
 fn bits(octets: &[u8], debut: usize, n: u32) -> u64 {
-    if n == 0 {
+    if n == 0 || n > BITS_MAX {
         return 0;
     }
     // Les 8 octets à partir de celui du premier bit, des zéros pour ceux qui manquent.
@@ -254,8 +259,8 @@ fn bits(octets: &[u8], debut: usize, n: u32) -> u64 {
     for (o, &lu) in mot.iter_mut().zip(octets.get(debut / 8..).unwrap_or_default()) {
         *o = lu;
     }
-    // Le masque des n bits du bas, sans soustraction : 1 ≤ n ≤ 57.
-    (u64::from_le_bytes(mot) >> (debut % 8)) & !(u64::MAX << n)
+    // Le masque des n bits du bas, sans soustraction : 1 ≤ n ≤ BITS_MAX, gardé juste au-dessus.
+    (u64::from_le_bytes(mot) >> (debut % 8)) & !u64::MAX.checked_shl(n).unwrap_or(0)
 }
 
 /// Un flux lu vers l'avant, bit par bit (les descriptions de tables FSE).
@@ -266,6 +271,9 @@ struct Avant<'a> {
 
 impl Avant<'_> {
     fn lire(&mut self, n: u32) -> Option<u64> {
+        if n > BITS_MAX {
+            return None;
+        }
         let fin = self.bit.checked_add(usize::try_from(n).ok()?)?;
         if fin > self.octets.len().checked_mul(8)? {
             return None;
@@ -301,7 +309,12 @@ impl<'a> Arriere<'a> {
         })
     }
 
+    /// Les `n` bits suivants, sans avancer ; zéro pour une largeur au-delà de `BITS_MAX` (que `avancer` note comme
+    /// un débordement).
     fn regarder(&self, n: u32) -> u64 {
+        if n > BITS_MAX {
+            return 0;
+        }
         if let Some(debut) = usize::try_from(n).ok().and_then(|n| self.restant.checked_sub(n)) {
             return bits(self.octets, debut, n);
         }
@@ -309,11 +322,15 @@ impl<'a> Arriere<'a> {
         let r = u32::try_from(self.restant).unwrap_or(n);
         #[expect(clippy::arithmetic_side_effects, reason = "restant < n ici : r = restant < n")]
         let vide = n - r;
-        bits(self.octets, 0, r) << vide
+        bits(self.octets, 0, r).checked_shl(vide).unwrap_or(0)
     }
 
     fn avancer(&mut self, n: u32) {
-        if let Some(restant) = usize::try_from(n).ok().and_then(|n| self.restant.checked_sub(n)) {
+        if let Some(restant) = usize::try_from(n)
+            .ok()
+            .filter(|_| n <= BITS_MAX)
+            .and_then(|n| self.restant.checked_sub(n))
+        {
             self.restant = restant;
         } else {
             self.deborde = true;
@@ -1085,6 +1102,32 @@ mod tests {
 
     /// Chaque octet changé, chaque coupure : jamais de panique (les dépassements de capacité paniquent aussi dans la
     /// version publiée), et jamais un contenu faux quand la trame a sa somme de contrôle.
+    /// La largeur d'une lecture est bornée dans `bits` même : 57 bits passent, 58 et 64 rendent zéro sans paniquer,
+    /// et les deux flux refusent ou marquent la lecture trop large.
+    #[test]
+    fn largeur_des_lectures_bornee_sur_place() {
+        let uns = [0xFFu8; 16];
+        assert_eq!(bits(&uns, 7, 57), (1u64 << 57) - 1);
+        assert_eq!(bits(&uns, 0, 1), 1);
+        for n in [58, 64, 65, u32::MAX] {
+            assert_eq!(bits(&uns, 7, n), 0, "n = {n}");
+        }
+        let mut avant = Avant { octets: &uns, bit: 0 };
+        assert_eq!(avant.lire(57), Some((1u64 << 57) - 1));
+        assert_eq!(avant.lire(58), None);
+        assert_eq!(avant.lire(64), None);
+        assert_eq!(avant.bit, 57, "une lecture refusée n'avance pas");
+        let mut arriere = Arriere::new(&uns).unwrap();
+        assert_eq!(arriere.regarder(57), (1u64 << 57) - 1);
+        assert_eq!(arriere.regarder(64), 0);
+        assert!(!arriere.deborde);
+        assert_eq!(arriere.lire(58), 0);
+        assert!(arriere.deborde, "une lecture trop large est un débordement");
+        // Moins de bits qu'il n'en faut, au bout du flux : ceux-là en haut, des zéros dessous.
+        let court = Arriere::new(&[0b0000_0011]).unwrap();
+        assert_eq!(court.regarder(57), 1u64 << 56);
+    }
+
     #[test]
     fn donnees_abimees_sans_panique() {
         for (h, attendu, controle) in [
