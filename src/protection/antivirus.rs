@@ -938,7 +938,11 @@ impl Memoire {
         // politique des administrateurs (celle des utilisateurs laisse voir l'administrateur) peut les cacher sous une
         // autre forme que « N/A » (vides, nulles : Microsoft ne dit pas laquelle) : rien n'y prouve l'absence
         // d'exclusion.
-        let refusees = listes.iter().flatten().any(|x| x.trim().starts_with("N/A"));
+        // Un refus se reconnaît à « N/A », ou, sans ce préfixe (traduit, autre forme), à une phrase : des espaces
+        // dans un texte qui n'a rien d'un chemin (ni « \\ » ni « / »). Une extension n'a pas d'espace ; un tel texte
+        // pris pour une exclusion pourrait donner un ✔ à tort pour un fichier (relecture des correctifs T10,
+        // 5e passe, BAS-1).
+        let refusees = listes.iter().flatten().any(|x| ressemble_a_un_refus(x));
         if !eleve || politiques.aux_admins || refusees {
             self.exclusions = Lecture::Cachees;
             self.cachees_a_l_admin = eleve || politiques.aux_admins;
@@ -964,6 +968,13 @@ impl Memoire {
     fn listes(&self) -> (&[Vec<String>; 2], bool) {
         (&self.vues, self.exclusions == Lecture::Lues)
     }
+}
+
+/// Un texte des listes d'exclusions qui est un refus de Windows et non une exclusion (voir `Memoire::lire`).
+#[cfg(any(windows, test))]
+fn ressemble_a_un_refus(x: &str) -> bool {
+    let x = x.trim();
+    x.starts_with("N/A") || (x.contains(char::is_whitespace) && !x.contains(['\\', '/']))
 }
 
 /// Une analyse confirmée auprès de Defender.
@@ -3391,6 +3402,18 @@ mod tests_cle {
             assert!(a.sans_droits && !a.cachees_a_l_admin);
             assert_eq!(d.lectures, 1, "cachées : pas relues");
         }
+        // 5e passe, BAS-1 : élevé, sans politique lue, un refus sans « N/A » ne compte ni pour des listes lues
+        // ni pour une exclusion : jamais ✔ pour un fichier.
+        let refus_en: &[&str] = &["Must be an administrator to view exclusions"];
+        for cible in [Some((r"C:\x\facture.pdf", false)), Some((r"C:\x", true)), None] {
+            let mut d = Double::new(&[Some([refus_en, refus_en])]);
+            d.exclue = Some(false);
+            let a = analyser_double(&mut d, cible);
+            assert_eq!(a.verdict, Verdict::Inverifiable, "{cible:?}");
+        }
+        assert!(!ressemble_a_un_refus(r"C:\Program Files\Steam"));
+        assert!(!ressemble_a_un_refus("%ProgramData%"));
+        assert!(!ressemble_a_un_refus(".vmdk"));
         let mut d = Double::new(&[Some([refus, refus])]);
         d.eleve = false;
         let mut memoire = Memoire::default();
