@@ -79,7 +79,7 @@ fn heure_locale(secondes: u64) -> String {
         .unwrap_or_default()
 }
 
-/// Les tops d'horloge par seconde du noyau (`_SC_CLK_TCK`), l'unité des temps de /proc/<pid>/stat ; 100 si le
+/// Les tops d'horloge par seconde du noyau (`_SC_CLK_TCK`), l'unité des temps de `/proc/<pid>/stat` ; 100 si le
 /// système ne la donne pas.
 // FFI de libc : sysconf (_SC_CLK_TCK).
 #[allow(unsafe_code)]
