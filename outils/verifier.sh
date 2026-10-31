@@ -6,7 +6,7 @@
 # internes, carte de couverture ATT&CK à jour (outils/couverture-attack.py), documentation du code sans avertissement
 # (cargo doc), textes français et anglais (outils/textes.py), régression de détection (le corpus de
 # src/modele/corpus.rs, Linux et Wine), dépendances (cargo deny) et leurs failles connues (cargo audit), banc de
-# fuzzing compilé et passé quelques secondes par cible.
+# fuzzing compilé et passé quelques secondes par cible, preuves de Kani compilées (lancées par outils/preuves.sh).
 # La CI lance ce même script (.github/workflows/ci.yml) : une seule logique, ici.
 # Chaque cible de compilation a sa chaîne (clippy, puis ses tests) et les quatre tournent en même temps : cargo garde
 # un dossier par cible, elles ne s'attendent presque pas. À la fin, une ligne par étape ; le code de sortie dit si tout
@@ -236,6 +236,17 @@ rejeu_powershell() {
 # chaîne nightly (outils/fuzz.sh le dit).
 fuzzing() { bash outils/fuzz.sh tout "${VANGUARD_FUZZ_SECONDES:-5}"; }
 
+# Les preuves de Kani (outils/preuves/) compilées sous cfg(kani), sans être lancées (outils/preuves.sh le fait, le
+# jeudi par la veille) : un lecteur prouvé qui change se voit à la vérification suivante. Quelques secondes ; sautée
+# sans Kani. cargo kani n'a pas --locked : le verrou est vérifié avant.
+preuves_compilees() {
+  local cible
+  command -v cargo-kani >/dev/null || { echo "Kani absent (cargo install --locked kani-verifier)"; return "$SAUTEE"; }
+  cible=$(realpath -m "${CARGO_TARGET_DIR:-target}")/kani
+  (cd outils/preuves && cargo metadata --locked --offline --format-version 1 >/dev/null &&
+    cargo kani --only-codegen --target-dir "$cible")
+}
+
 # La bibliothèque des extensions (extensions/sdk) et l'exemple en Rust : des crates à part, hors de l'espace de travail
 # de Vanguard ; leurs propres clippy, tests et compilation, dans un dossier de compilation à eux.
 extensions() {
@@ -413,6 +424,7 @@ if [[ $MODE != --rapide ]]; then
   etape relectures relectures &
   etape failles-connues failles_connues &
   etape fuzzing fuzzing &
+  etape preuves-compilees preuves_compilees &
 fi
 wait
 
@@ -544,6 +556,7 @@ if [[ $MODE != --rapide ]]; then
   ligne relectures "dépendances tracées (cargo vet)"
   [[ -f $TRAVAIL/relectures.log ]] && grep -m1 -oE '[0-9]+ fully audited.*exempted' "$TRAVAIL/relectures.log" | sed 's/^/      /'
   ligne fuzzing "banc de fuzzing ($(awk '/^  ✔/ { n++ } END { print n + 0 }' "$TRAVAIL/fuzzing.log" 2>/dev/null) cibles)"
+  ligne preuves-compilees "preuves de Kani compilées"
 fi
 DUREE=$((SECONDS - DEBUT))
 if ((ECHECS)); then

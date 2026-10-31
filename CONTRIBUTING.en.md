@@ -267,7 +267,8 @@ Proofs: `outils/preuves.sh [tout|miri|kani]` (nightly toolchain with Miri, and K
 watch. Miri interprets the tests of the `unsafe` that work on Vanguard's own memory, and only them: the script runs
 them by their exact name; a test that calls the system is not in its list; Kani proves, within a bound, a
 few readers of hostile data (`outils/preuves/`, included by `#[cfg(kani)]` at the end of their module). To be rerun
-after touching one of them.
+after touching one of them; `outils/verifier.sh` compiles the Kani proofs at every check (a few seconds, without
+running them).
 
 Dead links: `outils/liens.py` opens every link of the repository (documentation, the program's code except tests,
 scripts, licenses) and checks the internal links of the Markdown pages: target file, heading of an anchor, downloads

@@ -269,7 +269,8 @@ Preuves : `outils/preuves.sh [tout|miri|kani]` (chaîne nightly avec Miri, et Ka
 continue. Miri interprète les essais des `unsafe` qui portent sur la mémoire de Vanguard, et eux seuls : le script
 les lance à leur nom exact ; un essai qui appelle le système n'est pas dans sa liste ; Kani prouve, dans
 une borne, quelques lecteurs de données hostiles (`outils/preuves/`, inclus par `#[cfg(kani)]` à la fin de leur
-module). À relancer après avoir touché à l'un d'eux.
+module). À relancer après avoir touché à l'un d'eux ; `outils/verifier.sh` compile les preuves de Kani à chaque
+vérification (quelques secondes, sans les lancer).
 
 Liens morts : `outils/liens.py` ouvre tous les liens du dépôt (documentation, code du programme hors tests, scripts,
 licences) et vérifie les liens internes des pages Markdown : fichier visé, titre d'une ancre, téléchargements de la
