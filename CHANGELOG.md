@@ -12,7 +12,7 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
 - **Protections des programmes vérifiées avant de partir.** `vanguard deploiement verifier-binaire` (ancien nom :
   `verifier-pe`, gardé) lit dans leurs en-têtes, sans les lancer, les protections des programmes publiés : sous Linux
   PIE, marque du RELRO complet (PT_GNU_RELRO, BIND_NOW), pile non exécutable, aucun segment écrivable et exécutable ; sous Windows ASLR à haute
-  entropie, DEP et relocalisations, en plus des DLL de System32 et du manifeste ; sous macOS chaque tranche en PIE.
+  entropie (avec LARGE_ADDRESS_AWARE, qu'il exige), DEP et relocalisations, en plus des DLL de System32 et du manifeste ; sous macOS chaque tranche en PIE.
   Chacun doit aussi être du système et de l'architecture livrés (ELF x86-64 64 bits petit-boutiste, PE32+ AMD64,
   tranches Mac arm64 et x86_64) : les scripts disent lequel ils attendent (`--attendu linux|windows|macos`), et un
   .exe remplacé par un programme Linux, ou un programme 32 bits, est refusé. verifier.sh, la CI, le déploiement et la

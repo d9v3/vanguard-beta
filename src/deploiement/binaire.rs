@@ -5,7 +5,8 @@
 //!   fait lui-même au lancement, `socle::relro`), pile non exécutable (PT_GNU_STACK sans PF_X), aucun PT_LOAD à la
 //!   fois écrivable et exécutable ; CET (IBT, SHSTK) affiché seulement ;
 //! - Windows (PE, `crate::pe`) : ce que vérifiait `verifier-pe` (DLL importées depuis System32 seulement, manifeste
-//!   UTF-8 et asInvoker), plus ASLR (DYNAMIC_BASE, et HIGH_ENTROPY_VA en 64 bits), DEP (NX_COMPAT) et des
+//!   UTF-8 et asInvoker), plus ASLR (DYNAMIC_BASE, et en 64 bits HIGH_ENTROPY_VA avec LARGE_ADDRESS_AWARE, qu'il
+//!   exige), DEP (NX_COMPAT) et des
 //!   relocalisations présentes et pas retirées (sans elles, Windows ne déplace pas l'image, bit ou non) ; CFG et CET
 //!   affichés seulement ;
 //! - Mac (Mach-O universel, `analyse::macho`) : les deux tranches (arm64, x86_64), chacune lue et vérifiée : MH_EXECUTE,
@@ -410,6 +411,17 @@ fn juger_pe(g: &pe::Gardes) -> Jugement {
                 "high-entropy ASLR missing (DllCharacteristics 0x{dll:04X}, no HIGH_ENTROPY_VA)"
             ),
         );
+    } else if d.pe32_plus && d.caracteristiques & pe::LARGE_ADDRESS_AWARE == 0 {
+        // /HIGHENTROPYVA exige /LARGEADDRESSAWARE (documentation de l'éditeur de liens de Microsoft) : le drapeau
+        // seul ne promet pas que l'image tienne à une adresse au-delà de 2 Gio, et l'entropie annoncée n'est pas due.
+        let c = d.caracteristiques;
+        j.manque(
+            Protection::AslrHauteEntropie,
+            trf!(
+                "ASLR à haute entropie sans LARGE_ADDRESS_AWARE, qu'il exige (Characteristics 0x{c:04X})",
+                "high-entropy ASLR without LARGE_ADDRESS_AWARE, which it requires (Characteristics 0x{c:04X})"
+            ),
+        );
     }
     if !d.a(pe::NX_COMPAT) {
         j.manque(
@@ -778,11 +790,20 @@ mod tests {
             (Retrait::NxCompat, Protection::Dep),
             (Retrait::Relocalisations, Protection::Relocalisations),
             (Retrait::RelocsStripped, Protection::Relocalisations),
+            (Retrait::LargeAddressAware, Protection::AslrHauteEntropie),
         ] {
             let mut v = pe_durci();
             sans_protection(&mut v, retrait);
             assert_eq!(manques(&d, &v), [protection], "{retrait:?}");
         }
+        let mut v = pe_durci();
+        sans_protection(&mut v, Retrait::LargeAddressAware);
+        let j = jugement(&d, &v);
+        assert!(
+            j.manques[0].texte.contains("sans LARGE_ADDRESS_AWARE") && j.manques[0].texte.contains("0x0002"),
+            "{:?}",
+            j.manques
+        );
         // Les gardes d'avant restent exigées.
         assert_eq!(
             manques(&d, &gardes_d_essai(None, Some(MANIFESTE), 1)),

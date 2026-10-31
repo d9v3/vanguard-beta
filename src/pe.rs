@@ -51,6 +51,10 @@ const DEBOGAGE_EX_DLLCHARACTERISTICS: u32 = 20;
 const CET_COMPAT: u32 = 0x1;
 /// Champ Characteristics de l'en-tête COFF : IMAGE_FILE_RELOCS_STRIPPED, les relocalisations retirées.
 pub(crate) const RELOCS_STRIPPED: u16 = 0x1;
+/// IMAGE_FILE_LARGE_ADDRESS_AWARE (Characteristics de l'en-tête COFF) : l'image accepte des adresses au-delà de 2 Gio.
+/// /HIGHENTROPYVA l'exige (documentation de l'éditeur de liens de Microsoft) : sans lui, l'ASLR à haute entropie
+/// annoncé n'a pas l'espace pour placer l'image haut.
+pub(crate) const LARGE_ADDRESS_AWARE: u16 = 0x20;
 /// Champ DllCharacteristics de l'en-tête facultatif (même décalage, 70, en PE32 et PE32+).
 pub(crate) const HIGH_ENTROPY_VA: u16 = 0x20;
 pub(crate) const DYNAMIC_BASE: u16 = 0x40;
@@ -1463,6 +1467,8 @@ pub(crate) mod essais {
         Relocalisations,
         /// RELOCS_STRIPPED posé dans l'en-tête COFF, le répertoire gardé.
         RelocsStripped,
+        /// LARGE_ADDRESS_AWARE retiré de l'en-tête COFF, HIGH_ENTROPY_VA gardé.
+        LargeAddressAware,
     }
 
     /// Retire de `v` (fait par `gardes_d_essai`) la protection `r`.
@@ -1474,6 +1480,7 @@ pub(crate) mod essais {
             Retrait::NxCompat => mot16(v, DLL_CARACTERISTIQUES, dll & !super::NX_COMPAT),
             Retrait::Relocalisations => v[REPERTOIRE_RELOCALISATIONS..REPERTOIRE_RELOCALISATIONS + 8].fill(0),
             Retrait::RelocsStripped => mot16(v, COFF_CARACTERISTIQUES, 0x22 | super::RELOCS_STRIPPED),
+            Retrait::LargeAddressAware => mot16(v, COFF_CARACTERISTIQUES, 0x22 & !super::LARGE_ADDRESS_AWARE),
         }
     }
 }
