@@ -562,21 +562,41 @@ pub(crate) fn admin_mele(correctifs: &[Vec<String>]) -> Option<(Vec<bool>, Vec<V
             }
         }
     }
+    // Rien à envoyer : seulement quand chaque correctif est vide (`decouper` place toute ligne). Vrai pour un
+    // correctif vide seulement, jamais d'office.
     if lignes.is_empty() {
-        return Some((vec![true; correctifs.len()], correctifs.to_vec()));
+        return Some(recomposer(correctifs, &morceaux, Vec::new()));
     }
-    let mut reponses = eleve::appliquer(&lignes)?.into_iter();
+    let reponses = eleve::appliquer(&lignes)?;
+    Some(recomposer(correctifs, &morceaux, reponses))
+}
+
+/// Les résultats de chaque correctif, et ses lignes annotées (valeur d'avant, précision), à partir des réponses du
+/// processus élevé, dans l'ordre des morceaux. Un correctif réussit seulement si chacun de ses morceaux a réussi
+/// (pour un script, son propre « ok » dans le tube), ou s'il est vide ; une réponse qui manque est un échec, comme
+/// un correctif qu'aucun morceau ne couvre.
+fn recomposer(
+    correctifs: &[Vec<String>],
+    morceaux: &[crate::machine::gestes::Morceau],
+    reponses: Vec<eleve::Reponse>,
+) -> (Vec<bool>, Vec<Vec<String>>) {
+    use crate::machine::gestes::Morceau;
+    let mut reponses = reponses.into_iter();
     let mut resultats = vec![true; correctifs.len()];
+    let mut couverts = vec![false; correctifs.len()];
     let mut notes = correctifs.to_vec();
     let mut echec = |i: usize| {
         if let Some(r) = resultats.get_mut(i) {
             *r = false;
         }
     };
-    for m in &morceaux {
+    for m in morceaux {
         match m {
             Morceau::Natif(places) => {
                 for &(i, j) in places {
+                    if let Some(c) = couverts.get_mut(i) {
+                        *c = true;
+                    }
                     let r = reponses.next();
                     if !r.as_ref().is_some_and(|r| r.reussi) {
                         echec(i);
@@ -591,6 +611,11 @@ pub(crate) fn admin_mele(correctifs: &[Vec<String>]) -> Option<(Vec<bool>, Vec<V
                 }
             }
             Morceau::Script(suite) => {
+                for (i, _) in suite {
+                    if let Some(c) = couverts.get_mut(*i) {
+                        *c = true;
+                    }
+                }
                 let r = reponses.next();
                 dire_code(r.as_ref().and_then(|r| r.code));
                 if r.as_ref().is_some_and(|r| r.reussi) {
@@ -607,7 +632,12 @@ pub(crate) fn admin_mele(correctifs: &[Vec<String>]) -> Option<(Vec<bool>, Vec<V
             }
         }
     }
-    Some((resultats, notes))
+    for (i, (c, couvert)) in correctifs.iter().zip(couverts).enumerate() {
+        if !c.is_empty() && !couvert {
+            echec(i);
+        }
+    }
+    (resultats, notes)
 }
 
 /// État de chaque profil du pare-feu, lu dans le registre (les valeurs que rend Get-NetFirewallProfile, sans
@@ -1524,6 +1554,81 @@ pub fn auditer() -> Audit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::machine::gestes;
+
+    fn reponse(reussi: bool, note: Option<&str>, code: Option<i32>, etats: Option<Vec<bool>>) -> eleve::Reponse {
+        eleve::Reponse {
+            reussi,
+            avant: None,
+            note: note.map(str::to_string),
+            code,
+            etats,
+        }
+    }
+
+    /// Une liste mêlée se recompose correctif par correctif : le point (natif) puis un script qui couvre deux
+    /// correctifs ; le script en échec partiel n'échoue que pour le correctif sans son « ok » ; une réponse qui
+    /// manque est un échec ; un correctif vide réussit (rien à faire).
+    #[test]
+    fn admin_mele_recompose_par_correctif() {
+        let correctifs = vec![
+            vec![
+                corrections::POINT.to_string(),
+                "Set-Service a -StartupType Disabled".to_string(),
+            ],
+            vec!["Set-Service b -StartupType Disabled".to_string()],
+            Vec::new(),
+        ];
+        let morceaux = gestes::decouper(&correctifs, corrections::native);
+        assert_eq!(
+            morceaux,
+            [
+                gestes::Morceau::Natif(vec![(0, 0)]),
+                gestes::Morceau::Script(vec![(0, vec![1]), (1, vec![0])]),
+            ]
+        );
+        // Tout réussi : tous vrais, la précision du point notée à sa ligne.
+        let (r, notes) = recomposer(
+            &correctifs,
+            &morceaux,
+            vec![
+                reponse(true, Some("déjà fait"), None, None),
+                reponse(true, None, None, None),
+            ],
+        );
+        assert_eq!(r, [true, true, true]);
+        assert_eq!(notes[0][0], format!("{} (déjà fait)", corrections::POINT));
+        // Le script échoue après le premier correctif : seul le second est en échec.
+        let (r, _) = recomposer(
+            &correctifs,
+            &morceaux,
+            vec![
+                reponse(true, None, None, None),
+                reponse(false, None, Some(1), Some(vec![true])),
+            ],
+        );
+        assert_eq!(r, [true, false, true]);
+        // Le point refusé : le premier correctif échoue ; le script sans réponse (arrêt) : les deux.
+        let (r, _) = recomposer(&correctifs, &morceaux, vec![reponse(false, None, None, None)]);
+        assert_eq!(r, [false, false, true]);
+        // Aucune réponse du tout : rien n'est compté fait, sauf le correctif vide.
+        let (r, _) = recomposer(&correctifs, &morceaux, Vec::new());
+        assert_eq!(r, [false, false, true]);
+    }
+
+    /// Rien à envoyer au processus élevé : vrai seulement pour un correctif vide, jamais d'office (un correctif non
+    /// vide qu'aucun morceau ne couvre est un échec).
+    #[test]
+    fn sans_rien_a_envoyer_seul_le_vide_reussit() {
+        let vides = vec![Vec::new(), Vec::new()];
+        assert_eq!(
+            recomposer(&vides, &gestes::decouper(&vides, corrections::native), Vec::new()).0,
+            [true, true]
+        );
+        let oublie = vec![Vec::new(), vec!["Set-Service a -StartupType Disabled".to_string()]];
+        assert_eq!(recomposer(&oublie, &[], Vec::new()).0, [true, false]);
+    }
 
     /// Sous Wine, ni Defender ni le Centre de sécurité ni PowerShell : « illisible », jamais « aucun antivirus » (une
     /// alerte critique fausse) ni « Defender actif ».
