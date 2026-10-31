@@ -321,9 +321,14 @@ fn parcourir(racine: &Path, avec_images: bool) -> Vec<(String, u64)> {
     liste
 }
 
+/// Parcours en largeur, par une file sur le tas : une clé aux milliers de dossiers imbriqués (permis par les chemins
+/// longs de Windows) ne fait pas déborder la pile du fil de la règle, ce qui arrêterait tout le processus sans que
+/// `rattraper` le voie (campagne 6, B7).
 fn parcourir_tout(racine: &Path) -> Vec<(String, u64)> {
-    fn descendre(dossier: &Path, prefixe: &str, liste: &mut Vec<(String, u64)>) {
-        for e in std::fs::read_dir(dossier).into_iter().flatten().flatten() {
+    let mut liste = Vec::new();
+    let mut a_voir = std::collections::VecDeque::from([(racine.to_path_buf(), String::new())]);
+    while let Some((dossier, prefixe)) = a_voir.pop_front() {
+        for e in std::fs::read_dir(&dossier).into_iter().flatten().flatten() {
             let nom = e.file_name().to_string_lossy().into_owned();
             let relatif = if prefixe.is_empty() {
                 nom
@@ -340,14 +345,12 @@ fn parcourir_tout(racine: &Path) -> Vec<(String, u64)> {
                 continue;
             }
             if meta.is_dir() {
-                descendre(&e.path(), &relatif, liste);
+                a_voir.push_back((e.path(), relatif));
             } else if meta.is_file() {
                 liste.push((relatif, meta.len()));
             }
         }
     }
-    let mut liste = Vec::new();
-    descendre(racine, "", &mut liste);
     liste.sort();
     liste
 }
@@ -1404,6 +1407,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// B7 (campagne 6) : des dossiers imbriqués sur des centaines de niveaux se parcourent sur une petite pile, sans
+    /// arrêter le processus ; le fichier du fond est vu.
+    #[test]
+    fn dossiers_tres_imbriques() {
+        let racine = dossier_jetable("profond");
+        let mut fond = racine.clone();
+        for _ in 0..600 {
+            fond.push("d");
+        }
+        std::fs::create_dir_all(&fond).unwrap();
+        std::fs::write(fond.join("cache.bin"), b"x").unwrap();
+        let r = racine.clone();
+        let liste = std::thread::Builder::new()
+            .stack_size(64 << 10)
+            .spawn(move || parcourir_tout(&r))
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(liste, [(format!("{}cache.bin", "d/".repeat(600)), 1)]);
+        let _ = std::fs::remove_dir_all(&racine);
     }
 
     #[test]
