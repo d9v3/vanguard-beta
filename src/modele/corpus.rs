@@ -314,6 +314,7 @@ const FILS: &[(&str, &[(&str, &str)])] = &[
         "COM-CRT-001",
         &[
             ("machine/certificats.rs", "certificats@linux"),
+            ("machine/certificats.rs", "certificats_dans"),
             ("machine/certificats.rs", "ancres"),
             ("machine/certificats.rs", "juger"),
         ],

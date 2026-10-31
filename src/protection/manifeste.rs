@@ -612,9 +612,20 @@ fn reecriture_permise(base: &Path, racine: &Path, reference: Option<&Path>, gros
     }
 }
 
-/// Les entrées de la clé ; refusé si une partie n'a pas pu en être lue : la référence la laisserait dehors, et ce qui
-/// y serait planté ensuite ne compterait pas.
-fn relever(racine: &Path, gros: u64) -> Result<Vec<Entree>, String> {
+/// Les entrées de la clé, d'après un relevé entier (voir `ecrire_dans`).
+fn relever(racine: &Path, fichiers: Vec<(String, u64)>, gros: u64) -> Vec<Entree> {
+    fichiers
+        .into_iter()
+        .map(|(chemin, taille)| entree(racine, chemin, taille, gros))
+        .collect()
+}
+
+/// `garder_differentes` faux (`--forcer`, l'auteur accepte la clé telle qu'elle est) : une image notée différente
+/// n'est plus suivie par son empreinte d'avant (sa taille seulement, jusqu'à ce qu'images-cle.sh la repose ou la
+/// relise) ; sinon elle resterait « modifiée » pour toujours, et la clé refusée.
+fn ecrire_dans(racine: &Path, reference: &Path, gros: u64, garder_differentes: bool) -> Result<usize, String> {
+    // Refusé si une partie de la clé n'a pas pu être lue : la référence la laisserait dehors, et ce qui y serait
+    // planté ensuite ne compterait pas.
     let releve = parcourir(racine, true);
     if !releve.illisibles.is_empty() {
         return Err(trf!(
@@ -627,18 +638,7 @@ fn relever(racine: &Path, gros: u64) -> Result<Vec<Entree>, String> {
             )
         ));
     }
-    Ok(releve
-        .fichiers
-        .into_iter()
-        .map(|(chemin, taille)| entree(racine, chemin, taille, gros))
-        .collect())
-}
-
-/// `garder_differentes` faux (`--forcer`, l'auteur accepte la clé telle qu'elle est) : une image notée différente
-/// n'est plus suivie par son empreinte d'avant (sa taille seulement, jusqu'à ce qu'images-cle.sh la repose ou la
-/// relise) ; sinon elle resterait « modifiée » pour toujours, et la clé refusée.
-fn ecrire_dans(racine: &Path, reference: &Path, gros: u64, garder_differentes: bool) -> Result<usize, String> {
-    let mut fichiers = relever(racine, gros)?;
+    let mut fichiers = relever(racine, releve.fichiers, gros);
     // Un petit fichier dont l'empreinte ne se prend pas (remplacé entre-temps par un lien ou un tube, illisible) ne
     // part pas dans la référence sans elle : il y serait ensuite jugé sur sa seule taille.
     if let Some(e) = fichiers.iter().find(|e| e.taille < gros && e.blake3.is_none()) {
