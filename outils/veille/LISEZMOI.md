@@ -32,7 +32,9 @@ manquée (ordinateur éteint) n'est pas rattrapée en journée (`Persistent=fals
    Miri interprète, pour Linux puis pour Windows, les essais qui exercent les `unsafe` portant sur la mémoire de
    Vanguard (comportement indéfini = échec), puis Kani prouve les lecteurs de `outils/preuves/` pour toutes les
    entrées dans sa borne. Sans Miri ou sans Kani : « sautée », l'outil absent dit (l'autre tourne quand même). Les
-   autres nuits, l'étape n'apparaît pas.
+   autres nuits, l'étape n'apparaît pas. Mesuré le 30 octobre 2026 (Kani 0.68, CBMC 6.11) : la plus lourde des
+   preuves, `nom_borne` (noms DNS), prend environ 5 min 15 s et 6,1 Go de mémoire de pointe (5,7 Gio) ; Kani en
+   tout, environ 6 min ; Miri, moins d'une minute.
 5. `cargo audit --json` sur les quatre `Cargo.lock`, base RUSTSEC fraîche : avis nouveaux depuis la veille.
 6. **Canaris** (`src/canaris.rs`, essais `#[ignore]` lancés avec `VANGUARD_CANARIS`) : chaque source réelle
    (`sources::SOURCES`, KEV, Échap, LOLDrivers, Feodo) téléchargée par **la même demande que le programme** et relue

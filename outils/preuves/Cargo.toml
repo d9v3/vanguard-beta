@@ -17,7 +17,3 @@ path = "src/lib.rs"
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)", "cfg(kani)"] }
 
 [workspace]
-
-# Le remplacement d'une fonction dans une preuve (`#[kani::stub]`, preuve_dns.rs) est encore instable dans Kani.
-[package.metadata.kani]
-unstable = { stubbing = true }

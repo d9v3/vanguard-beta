@@ -131,8 +131,21 @@ fn u32_a(message: &[u8], pos: usize) -> Option<u32> {
 
 /// Un nom à la position `pos` du message : étiquettes, avec les pointeurs de compression (bornés : seize sauts au
 /// plus, un nom de 253 caractères au plus). Rend le nom et la position qui suit le nom dans le flux de départ.
-fn nom(message: &[u8], mut pos: usize) -> Option<(String, usize)> {
+fn nom(message: &[u8], pos: usize) -> Option<(String, usize)> {
     let mut texte = String::new();
+    let suite = etiquettes(message, pos, |etiquette| {
+        if !texte.is_empty() {
+            texte.push('.');
+        }
+        texte.push_str(&String::from_utf8_lossy(etiquette));
+        texte.len() <= 253
+    })?;
+    Some((texte, suite))
+}
+
+/// Le parcours d'un nom, sans l'assembler (c'est ce que prouve Kani, outils/preuves/src/preuve_dns.rs) : chaque
+/// étiquette va à `ajout`, qui rend `false` pour arrêter la lecture (nom trop long). Rend la position qui suit le nom.
+fn etiquettes(message: &[u8], mut pos: usize, mut ajout: impl FnMut(&[u8]) -> bool) -> Option<usize> {
     let mut suite = None;
     let mut sauts: u8 = 0;
     loop {
@@ -155,19 +168,14 @@ fn nom(message: &[u8], mut pos: usize) -> Option<(String, usize)> {
             l => {
                 let l = usize::from(l);
                 let debut = pos.checked_add(1)?;
-                let etiquette = message.get(debut..debut.checked_add(l)?)?;
-                if !texte.is_empty() {
-                    texte.push('.');
-                }
-                texte.push_str(&String::from_utf8_lossy(etiquette));
-                if texte.len() > 253 {
+                if !ajout(message.get(debut..debut.checked_add(l)?)?) {
                     return None;
                 }
                 pos = debut.checked_add(l)?;
             }
         }
     }
-    Some((texte, suite.unwrap_or(pos)))
+    Some(suite.unwrap_or(pos))
 }
 
 /// Une suite de chaînes de caractères DNS (un octet de longueur, puis le texte) : TXT et la liste alpn de SVCB.
