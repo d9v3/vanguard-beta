@@ -1,9 +1,6 @@
 //! Recherche de malwares avec un moteur reconnu (ClamAV sous Linux, Microsoft Defender sous Windows)
 //! et revue des programmes lancés au démarrage, là où un malware cherche à se maintenir.
 
-// FFI de libc : getfsstat (volumes montés sous macOS).
-#![allow(unsafe_code)]
-
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -328,6 +325,8 @@ fn volumes_amovibles() -> Vec<(PathBuf, String)> {
 /// les valeurs que le noyau garde, sans interroger chaque volume, si bien qu'un volume réseau qui ne répond plus ne
 /// fait rien attendre (df, lancé avant, pouvait y rester bloqué jusqu'à son délai).
 #[cfg(target_os = "macos")]
+// FFI de libc : getfsstat.
+#[allow(unsafe_code)]
 fn tailles_des_volumes() -> std::collections::HashMap<PathBuf, u64> {
     use std::os::unix::ffi::OsStrExt;
     // SAFETY: sans tampon, getfsstat rend seulement le nombre de systèmes de fichiers montés.

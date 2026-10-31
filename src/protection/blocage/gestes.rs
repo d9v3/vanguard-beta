@@ -2,9 +2,6 @@
 //! notés avec de quoi les défaire (changements.rs), puis défaits sur demande. Tout ce qui peut empêcher un geste
 //! (garde-fou, droits, pare-feu absent) est vérifié avant d'y toucher : rien n'est fait à moitié.
 
-// FFI de libc : access et kill (signal 0).
-#![allow(unsafe_code)]
-
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -466,6 +463,8 @@ pub(super) fn administrateur_ou_inconnu() -> bool {
 
 /// Ce compte peut-il sortir ce fichier de son dossier (la quarantaine le déplace) ? Vérifié avant d'arrêter quoi que
 /// ce soit : un processus arrêté dont le fichier resterait en place serait un geste à moitié fait.
+// FFI de libc : access.
+#[allow(unsafe_code)]
 fn peut_deplacer(chemin: &Path) -> bool {
     #[cfg(unix)]
     {
@@ -828,6 +827,8 @@ fn attendre_la_fin(a: &Arret) -> bool {
 
 /// Un processus vivant de ce numéro existe-t-il encore (même illisible, ou d'un autre compte) ? Un zombie (fini, pas
 /// encore ramassé par son parent) n'en est plus un.
+// FFI de libc : kill (signal 0).
+#[allow(unsafe_code)]
 fn processus_present(pid: u32) -> bool {
     #[cfg(target_os = "linux")]
     {

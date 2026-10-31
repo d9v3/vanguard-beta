@@ -1,8 +1,5 @@
 //! Découverte des machines et scan TCP « connect » (aucun privilège root requis).
 
-// FFI de libc : prises du scan (socket, setsockopt, sendto, recv) et getrlimit/setrlimit.
-#![allow(unsafe_code)]
-
 use std::collections::{BTreeMap, HashMap};
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -37,6 +34,8 @@ pub async fn sonder(ip: Ipv4Addr, port: u16, delai: Duration) -> (Etat, Option<T
 
 /// Nombre de connexions simultanées réellement possible : chaque connexion consomme un descripteur
 /// de fichier, et certains systèmes n'en autorisent que 256 par défaut. On relève la limite si le système le permet.
+// FFI de libc : getrlimit et setrlimit.
+#[allow(unsafe_code)]
 pub fn limite_connexions(demande: usize) -> usize {
     // SAFETY: getrlimit et setrlimit lisent et écrivent la structure locale `lim`, passée par pointeur valide.
     #[cfg(unix)]
@@ -329,6 +328,8 @@ pub(crate) fn etats_voisins() -> Option<HashMap<Ipv4Addr, String>> {
 /// Envoie la demande des voisins d'une famille (`libc::AF_INET` ou `AF_INET6`) et rend les réponses du noyau,
 /// jusqu'à la fin de la liste. La même socket sert à l'IPv4 du scan et à l'IPv6 de l'audit.
 #[cfg(target_os = "linux")]
+// FFI de libc : prise netlink (socket, setsockopt, sendto, recv).
+#[allow(unsafe_code)]
 pub(crate) fn demander_voisins(famille: libc::c_int) -> Option<Vec<u8>> {
     const RTM_GETNEIGH: u16 = 30;
     // En-tête netlink (16 octets) puis ndmsg (12) : la famille, rien d'autre.
