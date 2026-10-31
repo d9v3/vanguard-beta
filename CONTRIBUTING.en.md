@@ -236,7 +236,8 @@ changed (`.github/hors-code.txt`) and on demand (`gh workflow run ci.yml`), with
 delivered .exe (MinGW) tried on Windows. `verifier.sh` also checks the workflows with zizmor (offline) and builds
 everything with `--locked`. The programs' protections (Linux: PIE, RELRO marking, non-executable stack, nothing
 writable and executable; Windows: high-entropy ASLR, DEP, relocations, DLLs from System32, manifest; Mac: every slice
-PIE) are read from their headers by `vanguard deploiement verifier-binaire`: on every `verifier.sh` run (the debug
+PIE), with the shipped system and architecture (`--attendu linux|windows|macos`: x86-64 ELF, PE32+ AMD64, arm64 and
+x86_64 slices), are read from their headers by `vanguard deploiement verifier-binaire`: on every `verifier.sh` run (the debug
 program, and the release ones when built from this commit), in CI on the release ones, then before anything leaves
 in `deployer.sh` and `publier-version.sh` (Mac included). A refused program does not leave. Every night: cargo audit, cargo deny, and five minutes of fuzzing per
 target. The repository is public: Linux and Windows minutes do not count.

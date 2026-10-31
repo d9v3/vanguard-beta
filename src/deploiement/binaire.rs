@@ -12,12 +12,17 @@
 //!   MH_PIE, sans MH_ALLOW_STACK_EXECUTION, __PAGEZERO sans droits, aucun segment écrivable et exécutable, et la
 //!   signature (LC_CODE_SIGNATURE) que macOS exige sur arm64.
 //!
+//! Chaque programme doit aussi être d'une architecture qu'on livre (ELF 64 bits petit-boutiste x86-64, PE32+ AMD64,
+//! tranches arm64 et x86_64) et, avec `--attendu`, du système que le script annonce : un ELF posé à la place du .exe
+//! porterait toutes ses protections, et ne démarrerait pas.
+//!
 //! Un seul refus par fichier, qui nomme chaque protection manquante et le champ lu. Ce qui ne se lit pas est refusé :
 //! ce qui n'est pas vérifié ne part pas.
 
 use std::io::Read;
 use std::path::Path;
 
+use super::Systeme;
 use crate::analyse::{elf, macho};
 use crate::pe;
 use crate::ui::*;
@@ -28,6 +33,9 @@ const TAILLE_MAX: u64 = 512 << 20;
 /// Une protection exigée, nommée sans dépendre de la langue (les essais la reconnaissent ainsi).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Protection {
+    /// Un format autre que celui attendu, ou une architecture qu'on ne livre pas : un programme qui ne démarrerait
+    /// pas là où il part, quelles que soient ses protections.
+    Architecture,
     // ELF
     Pie,
     Statique,
@@ -75,18 +83,19 @@ impl Jugement {
     }
 }
 
-/// Vérifie chaque fichier et le dit, une ligne par fichier. `true` si tous portent leurs protections.
-pub(super) fn verifier(fichiers: &[std::path::PathBuf]) -> bool {
+/// Vérifie chaque fichier et le dit, une ligne par fichier. `true` si tous portent leurs protections, et, avec
+/// `attendu`, sont tous des programmes de ce système.
+pub(super) fn verifier(fichiers: &[std::path::PathBuf], attendu: Option<Systeme>) -> bool {
     let mut tous = true;
     for fichier in fichiers {
-        tous &= verifier_un(fichier);
+        tous &= verifier_un(fichier, attendu);
     }
     tous
 }
 
-fn verifier_un(fichier: &Path) -> bool {
+fn verifier_un(fichier: &Path, attendu: Option<Systeme>) -> bool {
     let f = fichier.display();
-    match juger(fichier) {
+    match juger(fichier, attendu) {
         Err(pourquoi) => {
             eprintln!(
                 "{}",
@@ -99,7 +108,7 @@ fn verifier_un(fichier: &Path) -> bool {
         }
         Ok(j) if !j.manques.is_empty() => {
             let manques: Vec<&str> = j.manques.iter().map(|m| m.texte.as_str()).collect();
-            let manques = manques.join(" ; ");
+            let manques = manques.join(tr!(" ; ", "; "));
             eprintln!(
                 "{}",
                 trf!(
@@ -153,21 +162,31 @@ impl std::fmt::Display for Illisible {
     }
 }
 
+/// Le nom d'un système et de son format, dans la langue de l'interface.
+fn nom_systeme(s: Systeme) -> &'static str {
+    match s {
+        Systeme::Linux => tr!("programme Linux (ELF)", "Linux program (ELF)"),
+        Systeme::Windows => tr!("programme Windows (PE)", "Windows program (PE)"),
+        Systeme::Macos => tr!("programme macOS (Mach-O)", "macOS program (Mach-O)"),
+    }
+}
+
 /// Le jugement du fichier `fichier`, lu une seule fois (le format et les protections viennent des mêmes octets).
-pub(super) fn juger(fichier: &Path) -> Result<Jugement, Illisible> {
+/// Avec `attendu`, un autre format est un manque, nommé en premier ; ses protections sont jugées quand même.
+pub(super) fn juger(fichier: &Path, attendu: Option<Systeme>) -> Result<Jugement, Illisible> {
     let octets = lire(fichier)?;
-    if octets.starts_with(b"\x7fELF") {
+    let (systeme, mut j) = if octets.starts_with(b"\x7fELF") {
         let e = elf::lire(&octets).ok_or(Illisible::Elf)?;
-        Ok(juger_elf(&e))
+        (Systeme::Linux, juger_elf(&e))
     } else if octets.starts_with(b"MZ") {
         let g = pe::lire_gardes(
             &mut std::io::Cursor::new(&octets),
             crate::analyse::lecture::en_u64(octets.len()),
         )
         .ok_or(Illisible::Pe)?;
-        Ok(juger_pe(&g))
+        (Systeme::Windows, juger_pe(&g))
     } else if let Some(u) = macho::universel(&octets) {
-        Ok(juger_universel(&octets, &u))
+        (Systeme::Macos, juger_universel(&octets, &u))
     } else if macho::lire(&octets).is_some() {
         let mut j = Jugement::default();
         j.manque(
@@ -178,10 +197,23 @@ pub(super) fn juger(fichier: &Path) -> Result<Jugement, Illisible> {
             )
             .to_string(),
         );
-        Ok(j)
+        (Systeme::Macos, j)
     } else {
-        Err(Illisible::Inconnu)
+        return Err(Illisible::Inconnu);
+    };
+    if let Some(attendu) = attendu
+        && attendu != systeme
+    {
+        let (lu, attendu) = (nom_systeme(systeme), nom_systeme(attendu));
+        j.manques.insert(
+            0,
+            Manque {
+                protection: Protection::Architecture,
+                texte: trf!("{lu} au lieu d'un {attendu}", "{lu} instead of a {attendu}"),
+            },
+        );
     }
+    Ok(j)
 }
 
 /// Les octets du fichier ordinaire `fichier`, au plus TAILLE_MAX.
@@ -225,6 +257,21 @@ fn juger_elf(e: &elf::Elf) -> Jugement {
         .to_string(),
         ..Jugement::default()
     };
+    if !e.bits64 || e.gros_boutiste || e.machine != elf::EM_X86_64 {
+        let (bits, m) = (if e.bits64 { 64 } else { 32 }, e.machine);
+        let ordre = if e.gros_boutiste {
+            tr!("gros-boutiste", "big-endian")
+        } else {
+            tr!("petit-boutiste", "little-endian")
+        };
+        j.manque(
+            Protection::Architecture,
+            trf!(
+                "architecture non livrée : ELF {bits} bits {ordre}, e_machine {m} ; x86-64 attendu (64 bits, petit-boutiste, e_machine 62)",
+                "architecture not shipped: ELF {bits}-bit {ordre}, e_machine {m}; x86-64 expected (64-bit, little-endian, e_machine 62)"
+            ),
+        );
+    }
     if e.segments_illisibles {
         j.manque(
             Protection::Segments,
@@ -332,8 +379,19 @@ fn juger_pe(g: &pe::Gardes) -> Jugement {
         .to_string(),
         ..Jugement::default()
     };
-    gardes_pe(g, &mut j);
     let d = g.durcissement;
+    if !d.pe32_plus || d.machine != pe::Machine::X64 {
+        let forme = if d.pe32_plus { "PE32+" } else { "PE32" };
+        let m = d.machine.champ();
+        j.manque(
+            Protection::Architecture,
+            trf!(
+                "architecture non livrée : {forme}, Machine 0x{m:04X} ; PE32+ AMD64 attendu (0x8664)",
+                "architecture not shipped: {forme}, Machine 0x{m:04X}; PE32+ AMD64 expected (0x8664)"
+            ),
+        );
+    }
+    gardes_pe(g, &mut j);
     let dll = d.dll_caracteristiques;
     if !d.a(pe::DYNAMIC_BASE) {
         j.manque(
@@ -485,6 +543,15 @@ fn juger_universel(octets: &[u8], u: &macho::Universel) -> Jugement {
     }
     for t in &u.tranches {
         let a = architecture(t.cpu);
+        if t.cpu != macho::CPU_ARM64 && t.cpu != macho::CPU_X86_64 {
+            j.manque(
+                Protection::Architecture,
+                trf!(
+                    "tranche {a} : architecture non livrée (arm64 et x86_64 seulement)",
+                    "{a} slice: architecture not shipped (arm64 and x86_64 only)"
+                ),
+            );
+        }
         let tranche = usize::try_from(t.position)
             .ok()
             .zip(usize::try_from(t.taille).ok())
@@ -620,7 +687,7 @@ mod tests {
     fn jugement(d: &Path, octets: &[u8]) -> Jugement {
         let f = d.join("programme");
         std::fs::write(&f, octets).unwrap();
-        juger(&f).unwrap()
+        juger(&f, None).unwrap()
     }
 
     /// Les protections manquantes des `octets`.
@@ -736,6 +803,7 @@ mod tests {
             load_config: None,
             manifeste: None,
             durcissement: pe::Durcissement {
+                machine: pe::Machine::X86,
                 pe32_plus: false,
                 caracteristiques: 0x102,
                 dll_caracteristiques: 0x0140,
@@ -745,12 +813,18 @@ mod tests {
         };
         j.manques = juger_pe(&gardes).manques;
         assert!(!j.manques.iter().any(|m| m.protection == Protection::AslrHauteEntropie));
+        // Mais un PE32 x86 n'est pas ce qu'on livre.
+        assert_eq!(j.manques[0].protection, Protection::Architecture);
+        assert_eq!(
+            j.manques[0].texte,
+            "architecture non livrée : PE32, Machine 0x014C ; PE32+ AMD64 attendu (0x8664)"
+        );
         // En-tête facultatif trop court pour DllCharacteristics et les répertoires : illisible, refusé.
         let mut v = pe_durci();
         v[0x54..0x56].copy_from_slice(&60u16.to_le_bytes());
         let court = d.join("court.exe");
         std::fs::write(&court, &v).unwrap();
-        assert!(juger(&court).is_err() && !verifier(&[court]));
+        assert!(juger(&court, None).is_err() && !verifier(&[court], None));
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -804,6 +878,125 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// Un programme d'une architecture qu'on ne livre pas, ou d'un autre système que celui attendu : refusé, même
+    /// avec toutes ses protections.
+    #[test]
+    fn architecture_et_format_attendus() {
+        use crate::analyse::elf::essais::{Forme, elf_durci};
+        let d = dossier();
+        let ecrire = |nom: &str, octets: &[u8]| {
+            let f = d.join(nom);
+            std::fs::write(&f, octets).unwrap();
+            f
+        };
+        let protections = |f: &Path, attendu| -> Vec<Protection> {
+            juger(f, attendu)
+                .unwrap()
+                .manques
+                .iter()
+                .map(|m| m.protection)
+                .collect()
+        };
+        let complet = MacDurci::COMPLET;
+        let linux = ecrire("vanguard", &elf64_durci(Durci::COMPLET));
+        let windows = ecrire("vanguard.exe", &pe_durci());
+        let macos = ecrire("vanguard-macos", &mac(complet, complet));
+        let systemes = [Systeme::Linux, Systeme::Windows, Systeme::Macos];
+        for (f, s) in [
+            (&linux, Systeme::Linux),
+            (&windows, Systeme::Windows),
+            (&macos, Systeme::Macos),
+        ] {
+            assert_eq!(protections(f, None), [], "{s:?}");
+            assert_eq!(protections(f, Some(s)), [], "{s:?}");
+            assert!(verifier(std::slice::from_ref(f), Some(s)));
+            // Tout autre système attendu : refusé, et seulement pour cela.
+            for autre in systemes.into_iter().filter(|a| *a != s) {
+                assert_eq!(
+                    protections(f, Some(autre)),
+                    [Protection::Architecture],
+                    "{s:?} au lieu de {autre:?}"
+                );
+                assert!(!verifier(std::slice::from_ref(f), Some(autre)));
+            }
+        }
+        // Un ELF à la place du .exe, dit dans les deux langues.
+        assert_eq!(
+            juger(&linux, Some(Systeme::Windows)).unwrap().manques[0].texte,
+            "programme Linux (ELF) au lieu d'un programme Windows (PE)"
+        );
+        assert_eq!(
+            crate::langue::en_anglais(|| juger(&linux, Some(Systeme::Windows)))
+                .unwrap()
+                .manques[0]
+                .texte,
+            "Linux program (ELF) instead of a Windows program (PE)"
+        );
+        // ELF 32 bits (x86 ou x86-64 annoncé), aarch64, gros-boutiste : refusés même sans système attendu.
+        let x = Forme::X86_64;
+        for forme in [
+            Forme { bits64: false, ..x },
+            Forme {
+                bits64: false,
+                machine: 3,
+                ..x
+            },
+            Forme { machine: 183, ..x },
+            Forme {
+                gros_boutiste: true,
+                ..x
+            },
+        ] {
+            let f = ecrire("autre", &elf_durci(Durci::COMPLET, forme));
+            assert_eq!(protections(&f, None), [Protection::Architecture], "{forme:?}");
+            assert_eq!(
+                protections(&f, Some(Systeme::Linux)),
+                [Protection::Architecture],
+                "{forme:?}"
+            );
+        }
+        let f = ecrire(
+            "elf32",
+            &elf_durci(
+                Durci::COMPLET,
+                Forme {
+                    bits64: false,
+                    machine: 3,
+                    ..x
+                },
+            ),
+        );
+        assert_eq!(
+            juger(&f, None).unwrap().manques[0].texte,
+            "architecture non livrée : ELF 32 bits petit-boutiste, e_machine 3 ; x86-64 attendu (64 bits, petit-boutiste, e_machine 62)"
+        );
+        assert_eq!(
+            crate::langue::en_anglais(|| juger(&f, None)).unwrap().manques[0].texte,
+            "architecture not shipped: ELF 32-bit little-endian, e_machine 3; x86-64 expected (64-bit, little-endian, e_machine 62)"
+        );
+        // Un PE32+ d'une autre machine (x86, ARM64) : refusé.
+        for machine in [0x014Cu16, 0xAA64, 0x01C4] {
+            let mut v = pe_durci();
+            v[0x44..0x46].copy_from_slice(&machine.to_le_bytes());
+            let f = ecrire("autre.exe", &v);
+            assert_eq!(protections(&f, None), [Protection::Architecture], "0x{machine:04X}");
+            assert_eq!(protections(&f, Some(Systeme::Windows)), [Protection::Architecture]);
+        }
+        // Une troisième tranche Mac d'une autre architecture (i386), durcie : refusée.
+        let trois = universel_de(&[
+            (macho::CPU_ARM64, macho64_durci(macho::CPU_ARM64, complet)),
+            (macho::CPU_X86_64, macho64_durci(macho::CPU_X86_64, complet)),
+            (7, macho64_durci(7, complet)),
+        ]);
+        let f = ecrire("trois", &trois);
+        assert_eq!(protections(&f, None), [Protection::Architecture]);
+        assert_eq!(
+            juger(&f, None).unwrap().manques[0].texte,
+            "tranche cpu 0x7 : architecture non livrée (arm64 et x86_64 seulement)"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     #[test]
     fn refus_dits_dans_les_deux_langues() {
         let d = dossier();
@@ -850,7 +1043,7 @@ mod tests {
     #[test]
     fn le_programme_des_essais_est_durci() {
         let exe = std::env::current_exe().unwrap();
-        let j = juger(&exe).unwrap();
+        let j = juger(&exe, None).unwrap();
         assert!(j.manques.is_empty(), "{}: {:?}", exe.display(), j.manques);
     }
 
@@ -859,17 +1052,17 @@ mod tests {
         let d = dossier();
         let f = d.join("texte");
         std::fs::write(&f, b"#!/bin/sh\necho bonjour\n").unwrap();
-        assert_eq!(juger(&f).unwrap_err(), Illisible::Inconnu);
+        assert_eq!(juger(&f, None).unwrap_err(), Illisible::Inconnu);
         assert_eq!(
             Illisible::Inconnu.to_string(),
             "format inconnu : ni ELF, ni PE, ni Mach-O"
         );
         std::fs::write(&f, b"MZ pas un programme").unwrap();
-        assert_eq!(juger(&f).unwrap_err(), Illisible::Pe);
+        assert_eq!(juger(&f, None).unwrap_err(), Illisible::Pe);
         std::fs::write(&f, b"\x7fELF").unwrap();
-        assert_eq!(juger(&f).unwrap_err(), Illisible::Elf);
+        assert_eq!(juger(&f, None).unwrap_err(), Illisible::Elf);
         assert_eq!(
-            juger(&d.join("absent")).unwrap_err(),
+            juger(&d.join("absent"), None).unwrap_err(),
             Illisible::Ouverture(std::io::ErrorKind::NotFound)
         );
         // Un dossier : refusé partout. Windows refuse déjà de l'ouvrir comme un fichier (accès refusé, sans
@@ -879,13 +1072,13 @@ mod tests {
         } else {
             Illisible::PasUnFichier
         };
-        assert_eq!(juger(&d).unwrap_err(), attendu);
+        assert_eq!(juger(&d, None).unwrap_err(), attendu);
         // Plusieurs fichiers : un seul refusé suffit à refuser le tout, et chacun est jugé.
         let bon = d.join("vanguard.exe");
         std::fs::write(&bon, pe_durci()).unwrap();
-        assert!(verifier(std::slice::from_ref(&bon)));
-        assert!(!verifier(&[bon.clone(), d.join("absent")]));
-        assert!(!verifier(&[d.join("absent"), bon]));
+        assert!(verifier(std::slice::from_ref(&bon), None));
+        assert!(!verifier(&[bon.clone(), d.join("absent")], None));
+        assert!(!verifier(&[d.join("absent"), bon], None));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

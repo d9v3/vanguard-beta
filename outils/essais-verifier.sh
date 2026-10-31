@@ -14,7 +14,8 @@
 #      sautée avec sa raison, jamais verte (sauté sans cargo-vet 0.10.3).
 #   7. Les protections des programmes (durcissement, lue dans verifier.sh, cargo et le programme remplacés par des
 #      faux) : jamais sautée ; les programmes de publication vérifiés seulement s'ils sont ceux de ce commit (sinon
-#      c'est dit) ; un refus, ou le programme absent, est un échec.
+#      c'est dit) ; chacun avec son système (--attendu linux ou windows) ; un refus, ou le programme absent, est un
+#      échec.
 # Chaque essai ne lance que des étapes de quelques secondes, sans Internet ni compilation.
 # Lancé par outils/verifier.sh.
 #   outils/essais-verifier.sh
@@ -105,8 +106,9 @@ rm -f "$juge"
 grep -q '^echo "Tout est vert' outils/verifier.sh && grep -q 'Passage partiel (\$MODE)' outils/verifier.sh &&
   ok "un passage partiel ne finit jamais « Tout est vert »" || ko "verifier.sh : fin d'un passage partiel introuvable"
 
-# Le faux programme note les fichiers qu'on lui donne et répond le code écrit dans « code » ; la vraie lecture des
-# en-têtes est essayée par les tests de src/deploiement/binaire.rs.
+# Le faux programme note les fichiers qu'on lui donne, chacun avec le système attendu (« aucun » sans --attendu), et
+# répond le code écrit dans « code » ; la vraie lecture des en-têtes est essayée par les tests de
+# src/deploiement/binaire.rs.
 faux=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-durcissement.XXXX")
 mkdir -p "$faux/x86_64-unknown-linux-musl/debug" "$faux/x86_64-unknown-linux-musl/release" \
   "$faux/x86_64-pc-windows-gnu/release"
@@ -114,7 +116,9 @@ cat >"$faux/x86_64-unknown-linux-musl/debug/vanguard" <<FAUX
 #!/usr/bin/env bash
 [[ "\$1 \$2" == "deploiement verifier-binaire" ]] || exit 9
 shift 2
-for f; do echo "✔ \$f" >>"$faux/appels"; done
+attendu=aucun
+if [[ \$1 == --attendu ]]; then attendu=\$2; shift 2; fi
+for f; do echo "\$attendu \$f" >>"$faux/appels"; done
 exit \$(cat "$faux/code")
 FAUX
 chmod +x "$faux/x86_64-unknown-linux-musl/debug/vanguard"
@@ -134,15 +138,17 @@ durcissement" 2>&1)
   CODE=$?
   APPELS=$(wc -l <"$faux/appels")
 }
+# Chaque programme Linux vérifié comme Linux, le .exe comme Windows : jamais sans --attendu, jamais croisés.
+systemes_justes() { ! grep -vE '^(linux .*/vanguard|windows .*/vanguard\.exe)$' "$faux/appels" | grep -q .; }
 ici=$(git rev-parse HEAD)
 durcir 0
 [[ -n $fonction && $CODE == 0 && $APPELS == 1 ]] && grep -q 'pas compilés de ce commit' <<<"$SORTIE" &&
   repere "$ici" oui "$(empreinte x86_64-pc-windows-gnu/release/vanguard.exe)" && durcir 0 &&
-  [[ $CODE == 0 && $APPELS == 3 ]] && repere "$ici" non "$(empreinte x86_64-pc-windows-gnu/release/vanguard.exe)" &&
+  [[ $CODE == 0 && $APPELS == 3 ]] && systemes_justes && repere "$ici" non "$(empreinte x86_64-pc-windows-gnu/release/vanguard.exe)" &&
   durcir 0 && [[ $CODE == 0 && $APPELS == 1 ]] && repere "$ici" oui autre && durcir 0 &&
   [[ $CODE == 0 && $APPELS == 2 ]] && grep -q 'vanguard.exe n.est plus celui' <<<"$SORTIE" &&
-  ok "protections des programmes : ceux de publication vérifiés seulement s'ils sont de ce commit, sinon dit" ||
-  ko "protections des programmes, programmes vérifiés (code $CODE, $APPELS programme(s)) : $(tail -n 2 <<<"$SORTIE")"
+  ok "protections des programmes : ceux de publication vérifiés seulement s'ils sont de ce commit, sinon dit, chacun avec son système" ||
+  ko "protections des programmes, programmes vérifiés (code $CODE, $APPELS programme(s)) : $(tail -n 2 <<<"$SORTIE") $(cat "$faux/appels")"
 durcir 1
 if [[ -n $fonction && $CODE != 0 && $CODE != 77 ]]; then
   rm "$faux/x86_64-unknown-linux-musl/debug/vanguard"

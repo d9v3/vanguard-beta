@@ -583,10 +583,11 @@ awk '/^attendre_execution\(\) \{/,/^\}/ { next } /^ *#/ { next } /gh run watch/ 
   ko "publier-version.sh : un « gh run watch » sans délai"
 
 # 6f. Les protections des programmes qui partent, lues par la copie Linux qui part : verifier_binaires, face à un faux
-# programme Linux qui note ce qu'on lui demande, lui passe chaque fichier et rend son refus. Chaque appel arrête tout
-# sur un refus : dans publier-version.sh, Linux et Windows après la relecture de leurs empreintes et avant d'attendre
-# GitHub, la version macOS une fois son empreinte relue ; dans deployer.sh, le programme Linux et vanguard.exe, avant
-# toute copie. Le nom d'avant (verifier-pe, alias) n'est plus appelé.
+# programme Linux qui note ce qu'on lui demande, lui passe le système attendu et chaque fichier, et rend son refus.
+# Chaque appel arrête tout sur un refus : dans publier-version.sh, Linux et Windows après la relecture de leurs
+# empreintes et avant d'attendre GitHub, la version macOS une fois son empreinte relue ; dans deployer.sh, le programme
+# Linux et vanguard.exe, avant toute copie. Chacun avec son système (--attendu) : un fichier échangé ou d'une autre
+# architecture est refusé. Le nom d'avant (verifier-pe, alias) n'est plus appelé, ni verifier-binaire sans --attendu.
 D=$T/faux-verificateur
 mkdir -p "$D"
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$(dirname "$0")/appels"\n[[ ! -f "$(dirname "$0")/refus" ]]\n' \
@@ -594,29 +595,38 @@ printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$(dirname "$0")/appels"\n[[
 chmod +x "$D/vanguard-linux-x86_64"
 awk '/^verifier_binaires\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh" >"$T/verifier_binaires.sh"
 verifier_avec() { DOSSIER=$D bash -c "source '$T/verifier_binaires.sh'; verifier_binaires \"\$@\"" _ "$@"; }
-if verifier_avec "$D/a" "$D/b c.exe" && [[ $(cat "$D/appels") == "deploiement verifier-binaire $D/a $D/b c.exe" ]] &&
-  touch "$D/refus" && ! verifier_avec "$D/a"; then
-  ok "publier-version.sh : verifier_binaires passe chaque fichier à « deploiement verifier-binaire » et rend son refus"
+if verifier_avec windows "$D/a" "$D/b c.exe" &&
+  [[ $(cat "$D/appels") == "deploiement verifier-binaire --attendu windows $D/a $D/b c.exe" ]] &&
+  touch "$D/refus" && ! verifier_avec linux "$D/a"; then
+  ok "publier-version.sh : verifier_binaires passe le système et chaque fichier à « deploiement verifier-binaire » et rend son refus"
 else
   ko "publier-version.sh : verifier_binaires ne passe pas les fichiers tels quels, ou cache un refus ($(cat "$D/appels" 2>/dev/null))"
 fi
 awk '/Copie des programmes différente de leur compilation/ { e = NR }
-  /^verifier_binaires "\$DOSSIER\/vanguard-linux-x86_64" "\$DOSSIER\/vanguard-windows-x86_64.exe" \|\|$/ { v = NR }
-  v && NR == v + 1 && /rien de publié."; exit 1; }$/ { lw = 1 }
+  /^\{ verifier_binaires linux "\$DOSSIER\/vanguard-linux-x86_64" &&$/ { v = NR }
+  v && NR == v + 1 && /^  verifier_binaires windows "\$DOSSIER\/vanguard-windows-x86_64\.exe"; \} \|\|$/ { w = 1 }
+  v && NR == v + 2 && /rien de publié."; exit 1; }$/ { lw = 1 }
   /attendre_execution "\$/ && !a { a = NR }
   /EMPREINTE-VANGUARD-MACOS/ { m = NR }
-  /^verifier_binaires "\$DOSSIER\/vanguard-macos" \|\| \{ .*rien de publié."; exit 1; \}$/ { mac = NR }
-  END { exit !(e && lw && e < v && v < a && m && m < mac) }' "$DEPOT/outils/publier-version.sh" &&
+  /^verifier_binaires macos "\$DOSSIER\/vanguard-macos" \|\| \{ .*rien de publié."; exit 1; \}$/ { mac = NR }
+  END { exit !(e && w && lw && e < v && v < a && m && m < mac) }' "$DEPOT/outils/publier-version.sh" &&
   ok "publier-version.sh : Linux, Windows et macOS vérifiés là où il faut, chaque refus arrête la publication" ||
   ko "publier-version.sh : un programme publié sans « verifier-binaire », ou vérifié trop tôt, ou refus ignoré"
-awk '/^A_VERIFIER=\("\$LINUX"\)$/ { l = NR } /^\[\[ -f \$WINDOWS \]\] && A_VERIFIER\+=\("\$WINDOWS"\)$/ { w = NR }
-  /^\.\/"\$LINUX" deploiement verifier-binaire "\$\{A_VERIFIER\[@\]\}" \|\| \{$/ { v = NR }
-  v && !x && NR > v && /^  exit 1$/ { x = NR } /^copier |^install / && !c { c = NR }
-  END { exit !(l && w && l < v && w < v && x && x < c) }' "$DEPOT/outils/deployer.sh" &&
+awk '/^\.\/"\$LINUX" deploiement verifier-binaire --attendu linux "\$LINUX" \|\| \{$/ { l = NR }
+  l && !x && NR > l && /^  exit 1$/ { x = NR }
+  /^if \[\[ -f \$WINDOWS \]\]; then$/ && !i { i = NR }
+  i && NR == i + 1 && /^  \.\/"\$LINUX" deploiement verifier-binaire --attendu windows "\$WINDOWS" \|\| \{$/ { w = NR }
+  w && !y && NR > w && /^    exit 1$/ { y = NR } /^copier |^install / && !c { c = NR }
+  END { exit !(l && x && x < i && w && y && y < c) }' "$DEPOT/outils/deployer.sh" &&
   ok "deployer.sh : le programme Linux et vanguard.exe vérifiés (verifier-binaire) avant toute copie, sans repli" ||
   ko "deployer.sh : un programme part sans « verifier-binaire », ou après sa copie, ou malgré un refus"
 ! grep -nE 'deploiement verifier[-]pe' "$DEPOT/outils/"*.sh "$DEPOT/.github/workflows/"*.yml >/dev/null &&
   ok "plus aucun appel à l'ancien nom (verifier-pe)" || ko "un appel à verifier-pe reste : les protections n'y sont lues que par l'alias"
+# Un appel sans --attendu ne refuserait pas un .exe qui serait un ELF. Hors commentaires, messages (« ») et essais.
+sans_attendu=$(grep -nE 'deploiement verifier[-]binaire( |"|$)' "$DEPOT/outils/"*.sh "$DEPOT/.github/workflows/"*.yml |
+  grep -v 'deploiement verifier-binaire --attendu ' | grep -vE '^[^:]+:[0-9]+: *#' | grep -v '«' | grep -v '/outils/essais-')
+[[ -z $sans_attendu ]] && ok "chaque appel à verifier-binaire dit le système attendu (--attendu)" ||
+  ko "verifier-binaire appelé sans --attendu : $sans_attendu"
 
 # 6c. Au branchement de la clé, un commit de GitHub n'est récupéré et compilé qu'avec une CI verte sur ce commit
 # exact (deployer.sh, ci_verte, campagne d'attaque n° 6, F4). Un faux gh filtre les exécutions par --commit comme

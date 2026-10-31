@@ -24,6 +24,8 @@ pub(crate) const PT_GNU_RELRO: u32 = 0x6474_e552;
 pub(crate) const PT_GNU_PROPERTY: u32 = 0x6474_e553;
 /// e_type d'un objet partagé, la forme d'un exécutable à position indépendante (PIE).
 pub(crate) const ET_DYN: u16 = 3;
+/// e_machine de x86-64, la seule architecture Linux livrée.
+pub(crate) const EM_X86_64: u16 = 62;
 /// Les entrées de la section dynamique lues ici (elf(5)).
 const DT_NULL: u64 = 0;
 const DT_BIND_NOW: u64 = 24;
@@ -649,25 +651,65 @@ pub(crate) mod essais {
         };
     }
 
+    /// La classe, l'ordre des octets et l'architecture d'un ELF fabriqué.
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) struct Forme {
+        pub bits64: bool,
+        pub gros_boutiste: bool,
+        pub machine: u16,
+    }
+
+    impl Forme {
+        /// Celle du programme livré : 64 bits, petit-boutiste, x86-64.
+        pub(crate) const X86_64: Forme = Forme {
+            bits64: true,
+            gros_boutiste: false,
+            machine: super::EM_X86_64,
+        };
+    }
+
     /// Un ELF 64 bits petit-boutiste comme celui de Vanguard (static-pie de musl) : PT_LOAD (lecture, exécution),
     /// PT_DYNAMIC (DT_FLAGS, DT_FLAGS_1, DT_NULL, à 0x180), PT_GNU_RELRO, PT_GNU_STACK, selon `d` PT_INTERP et
     /// PT_GNU_PROPERTY ; sans sections.
     pub(crate) fn elf64_durci(d: Durci) -> Vec<u8> {
+        elf_durci(d, Forme::X86_64)
+    }
+
+    /// Comme `elf64_durci`, dans la forme `f` (32 ou 64 bits, petit- ou gros-boutiste, autre architecture) : les
+    /// mêmes segments aux mêmes positions.
+    pub(crate) fn elf_durci(d: Durci, f: Forme) -> Vec<u8> {
         let mut v = vec![0u8; 0x200];
         v[..4].copy_from_slice(b"\x7fELF");
-        v[4] = 2;
-        v[5] = 1;
+        v[4] = if f.bits64 { 2 } else { 1 };
+        v[5] = if f.gros_boutiste { 2 } else { 1 };
         v[6] = 1;
-        let mot16 = |v: &mut Vec<u8>, a: usize, x: u16| v[a..a + 2].copy_from_slice(&x.to_le_bytes());
-        let mot32 = |v: &mut Vec<u8>, a: usize, x: u32| v[a..a + 4].copy_from_slice(&x.to_le_bytes());
-        let mot64 = |v: &mut Vec<u8>, a: usize, x: u64| v[a..a + 8].copy_from_slice(&x.to_le_bytes());
+        let be = f.gros_boutiste;
+        let mot16 = |v: &mut Vec<u8>, a: usize, x: u16| {
+            v[a..a + 2].copy_from_slice(&if be { x.to_be_bytes() } else { x.to_le_bytes() });
+        };
+        let mot32 = |v: &mut Vec<u8>, a: usize, x: u32| {
+            v[a..a + 4].copy_from_slice(&if be { x.to_be_bytes() } else { x.to_le_bytes() });
+        };
+        let mot64 = |v: &mut Vec<u8>, a: usize, x: u64| {
+            v[a..a + 8].copy_from_slice(&if be { x.to_be_bytes() } else { x.to_le_bytes() });
+        };
+        // Un mot de la taille d'une adresse : 8 octets en 64 bits, 4 en 32.
+        let mot = |v: &mut Vec<u8>, a: usize, x: u64| {
+            if f.bits64 {
+                mot64(v, a, x);
+            } else {
+                mot32(v, a, u32::try_from(x).unwrap());
+            }
+        };
         mot16(&mut v, 16, if d.pie { super::ET_DYN } else { 2 });
-        mot16(&mut v, 18, 62);
+        mot16(&mut v, 18, f.machine);
         mot32(&mut v, 20, 1);
-        mot64(&mut v, 24, 0x100);
-        mot64(&mut v, 32, 0x40);
-        mot16(&mut v, 52, 64);
-        mot16(&mut v, 54, 56);
+        mot(&mut v, 24, 0x100);
+        // e_phoff, puis e_ehsize, e_phentsize, e_phnum.
+        let (phoff, apres, taille_ph) = if f.bits64 { (0x40, 52, 56) } else { (0x34, 40, 32) };
+        mot(&mut v, if f.bits64 { 32 } else { 28 }, phoff as u64);
+        mot16(&mut v, apres, if f.bits64 { 64 } else { 52 });
+        mot16(&mut v, apres + 2, u16::try_from(taille_ph).unwrap());
         // (type, drapeaux, position, taille)
         let mut segments = vec![
             (super::PT_LOAD, 5u32, 0u64, 0x200u64),
@@ -694,27 +736,36 @@ pub(crate) mod essais {
             mot32(&mut v, n + 24, 3);
             segments.push((super::PT_GNU_PROPERTY, 4, 0x1C0, 0x20));
         }
-        mot16(&mut v, 56, u16::try_from(segments.len()).unwrap());
+        mot16(&mut v, apres + 4, u16::try_from(segments.len()).unwrap());
         for (i, (type_, drapeaux, position, taille)) in segments.into_iter().enumerate() {
-            let p = 0x40 + 56 * i;
+            let p = phoff + taille_ph * i;
             mot32(&mut v, p, type_);
-            mot32(&mut v, p + 4, drapeaux);
-            mot64(&mut v, p + 8, position);
-            mot64(&mut v, p + 16, position);
-            mot64(&mut v, p + 32, taille);
-            mot64(&mut v, p + 40, taille);
+            if f.bits64 {
+                mot32(&mut v, p + 4, drapeaux);
+                mot64(&mut v, p + 8, position);
+                mot64(&mut v, p + 16, position);
+                mot64(&mut v, p + 32, taille);
+                mot64(&mut v, p + 40, taille);
+            } else {
+                let (position, taille) = (u32::try_from(position).unwrap(), u32::try_from(taille).unwrap());
+                mot32(&mut v, p + 4, position);
+                mot32(&mut v, p + 8, position);
+                mot32(&mut v, p + 16, taille);
+                mot32(&mut v, p + 20, taille);
+                mot32(&mut v, p + 24, drapeaux);
+            }
         }
-        // La section dynamique : DT_FLAGS, DT_FLAGS_1, DT_NULL.
+        // La section dynamique : DT_FLAGS, DT_FLAGS_1, DT_NULL (le reste, à zéro).
         let (flags, flags_1) = match (d.liaison_immediate, d.pie) {
             (true, true) => (super::DF_BIND_NOW, super::DF_1_NOW | super::DF_1_PIE),
             (true, false) => (super::DF_BIND_NOW, super::DF_1_NOW),
             (false, true) => (0, super::DF_1_PIE),
             (false, false) => (0, 0),
         };
-        mot64(&mut v, 0x180, 30);
-        mot64(&mut v, 0x188, flags);
-        mot64(&mut v, 0x190, 0x6fff_fffb);
-        mot64(&mut v, 0x198, flags_1);
+        let pas = if f.bits64 { 8 } else { 4 };
+        for (k, x) in [30, flags, 0x6fff_fffb, flags_1].into_iter().enumerate() {
+            mot(&mut v, 0x180 + pas * k, x);
+        }
         v
     }
 }

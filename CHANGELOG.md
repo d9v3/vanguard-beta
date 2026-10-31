@@ -13,8 +13,10 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   `verifier-pe`, gardé) lit dans leurs en-têtes, sans les lancer, les protections des programmes publiés : sous Linux
   PIE, marque du RELRO complet (PT_GNU_RELRO, BIND_NOW), pile non exécutable, aucun segment écrivable et exécutable ; sous Windows ASLR à haute
   entropie, DEP et relocalisations, en plus des DLL de System32 et du manifeste ; sous macOS chaque tranche en PIE.
-  verifier.sh, la CI, le déploiement et la publication refusent un programme qui en perd une ; CFG et CET sont
-  affichés sans être exigés.
+  Chacun doit aussi être du système et de l'architecture livrés (ELF x86-64 64 bits petit-boutiste, PE32+ AMD64,
+  tranches Mac arm64 et x86_64) : les scripts disent lequel ils attendent (`--attendu linux|windows|macos`), et un
+  .exe remplacé par un programme Linux, ou un programme 32 bits, est refusé. verifier.sh, la CI, le déploiement et la
+  publication refusent un programme qui en perd une ; CFG et CET sont affichés sans être exigés.
 
 - **RELRO appliqué pour de bon sous Linux.** Le programme Linux (static-pie musl) portait la marque du RELRO complet,
   mais le démarrage de musl ne l'applique pas : la GOT et `.data.rel.ro` restaient écrivables pendant toute la vie

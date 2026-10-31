@@ -317,8 +317,10 @@ jobs:
       # liste qu'ils portent.
       - name: Les programmes portent leurs protections, failles connues des programmes
         run: |
-          target/x86_64-unknown-linux-musl/release/vanguard deploiement verifier-binaire \
-            target/x86_64-unknown-linux-musl/release/vanguard target/x86_64-pc-windows-gnu/release/vanguard.exe
+          target/x86_64-unknown-linux-musl/release/vanguard deploiement verifier-binaire --attendu linux \
+            target/x86_64-unknown-linux-musl/release/vanguard
+          target/x86_64-unknown-linux-musl/release/vanguard deploiement verifier-binaire --attendu windows \
+            target/x86_64-pc-windows-gnu/release/vanguard.exe
           bash outils/failles-programmes.sh target/x86_64-unknown-linux-musl/release/vanguard \
             target/x86_64-pc-windows-gnu/release/vanguard.exe
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

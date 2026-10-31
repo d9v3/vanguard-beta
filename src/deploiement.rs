@@ -17,13 +17,26 @@ pub(crate) enum Etape {
         /// Le dossier tldr de la clé.
         dossier: PathBuf,
     },
-    /// Vérifier les protections d'un programme livré, lu sans être lancé (`binaire`) : Linux (ELF : PIE, statique,
-    /// marque RELRO, pile non exécutable, rien d'écrivable et exécutable), Windows (PE : DLL importées depuis System32,
-    /// manifeste UTF-8 et asInvoker, ASLR, DEP, relocalisations) et Mac (Mach-O universel, chaque tranche). Réussit
-    /// seulement si tous les fichiers passent. L'ancien nom, `verifier-pe`, reste accepté.
-    #[command(name = "verifier-binaire", alias = "verifier-pe")]
+    /// Vérifier les protections d'un programme livré, lu sans être lancé (`binaire`) : Linux (ELF x86-64 : PIE,
+    /// statique, marque RELRO, pile non exécutable, rien d'écrivable et exécutable), Windows (PE32+ AMD64 : DLL
+    /// importées depuis System32, manifeste UTF-8 et asInvoker, ASLR, DEP, relocalisations) et Mac (Mach-O universel
+    /// arm64 et x86_64, chaque tranche). Une architecture qu'on ne livre pas est refusée. Réussit seulement si tous
+    /// les fichiers passent.
+    #[command(name = "verifier-binaire")]
     VerifierBinaire {
+        /// Le système de chaque fichier : un autre format est refusé (un programme Linux posé à la place du .exe
+        /// porterait toutes ses protections, et ne démarrerait pas sous Windows).
+        #[arg(long, value_enum)]
+        attendu: Option<Systeme>,
         /// Les programmes compilés.
+        #[arg(required = true)]
+        fichiers: Vec<PathBuf>,
+    },
+    /// L'ancien nom (un deployer.sh d'avant l'appelle encore), qui ne vérifiait que des .exe : le format Windows y est
+    /// imposé, comme `verifier-binaire --attendu windows`.
+    #[command(name = "verifier-pe", hide = true)]
+    VerifierPe {
+        /// Les programmes Windows compilés.
         #[arg(required = true)]
         fichiers: Vec<PathBuf>,
     },
@@ -60,11 +73,20 @@ pub(crate) enum Etape {
     },
 }
 
+/// Le système d'un programme livré, que le script qui le vérifie annonce (`--attendu`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum Systeme {
+    Linux,
+    Windows,
+    Macos,
+}
+
 /// 0 : l'étape a réussi ; 1 : elle a échoué, et l'a dit.
 pub(crate) fn executer(etape: Etape) -> i32 {
     let reussi = match etape {
         Etape::Tldr { dossier } => crate::guide::tldr_sur_la_cle(&dossier),
-        Etape::VerifierBinaire { fichiers } => binaire::verifier(&fichiers),
+        Etape::VerifierBinaire { attendu, fichiers } => binaire::verifier(&fichiers, attendu),
+        Etape::VerifierPe { fichiers } => binaire::verifier(&fichiers, Some(Systeme::Windows)),
         Etape::Temoins { racine } => match temoins(&racine, crate::machine::empreinte_machine()) {
             Ok(_) => true,
             Err(e) => {
@@ -386,7 +408,8 @@ mod tests {
 
     const MANIFESTE_D_ESSAI: &[u8] = br#"<assembly><security><requestedPrivileges><requestedExecutionLevel level="asInvoker" uiAccess="false"/></requestedPrivileges></security><windowsSettings><activeCodePage>UTF-8</activeCodePage></windowsSettings></assembly>"#;
 
-    /// L'ancien nom reste accepté (un deployer.sh d'avant l'appelle encore) ; sans fichier, refusé avant toute lecture.
+    /// `--attendu` lu pour tous les fichiers de l'appel ; l'ancien nom reste accepté (un deployer.sh d'avant l'appelle
+    /// encore) et n'admet que des programmes Windows ; sans fichier, refusé avant toute lecture.
     #[test]
     fn verifier_binaire_et_son_ancien_nom() {
         #[derive(clap::Parser)]
@@ -395,14 +418,71 @@ mod tests {
             etape: Etape,
         }
         use clap::Parser as _;
-        for nom in ["verifier-binaire", "verifier-pe"] {
-            let e = Essai::try_parse_from(["vanguard", nom, "a", "b.exe"]).unwrap();
+        let deux = [PathBuf::from("a"), PathBuf::from("b.exe")];
+        let e = Essai::try_parse_from(["vanguard", "verifier-binaire", "a", "b.exe"]).unwrap();
+        assert!(matches!(&e.etape, Etape::VerifierBinaire { attendu: None, fichiers } if fichiers == &deux));
+        for (valeur, systeme) in [
+            ("linux", Systeme::Linux),
+            ("windows", Systeme::Windows),
+            ("macos", Systeme::Macos),
+        ] {
+            let e = Essai::try_parse_from(["vanguard", "verifier-binaire", "--attendu", valeur, "a", "b.exe"]).unwrap();
             assert!(
-                matches!(&e.etape, Etape::VerifierBinaire { fichiers } if fichiers == &[PathBuf::from("a"), PathBuf::from("b.exe")]),
-                "{nom}"
+                matches!(&e.etape, Etape::VerifierBinaire { attendu: Some(s), fichiers } if *s == systeme && fichiers == &deux),
+                "{valeur}"
             );
+        }
+        assert!(Essai::try_parse_from(["vanguard", "verifier-binaire", "--attendu", "android", "a"]).is_err());
+        let e = Essai::try_parse_from(["vanguard", "verifier-pe", "a", "b.exe"]).unwrap();
+        assert!(matches!(&e.etape, Etape::VerifierPe { fichiers } if fichiers == &deux));
+        for nom in ["verifier-binaire", "verifier-pe"] {
             assert!(Essai::try_parse_from(["vanguard", nom]).is_err(), "{nom} sans fichier");
         }
+    }
+
+    /// verifier-pe impose le format Windows : un programme Linux, protégé, y est refusé ; vanguard.exe passe.
+    #[test]
+    fn verifier_pe_n_admet_que_windows() {
+        let d = dossier();
+        let linux = d.join("vanguard");
+        std::fs::write(
+            &linux,
+            crate::analyse::elf::essais::elf64_durci(crate::analyse::elf::essais::Durci::COMPLET),
+        )
+        .unwrap();
+        let exe = d.join("vanguard.exe");
+        std::fs::write(
+            &exe,
+            gardes_d_essai(Some((148, 148, 0x800)), Some(MANIFESTE_D_ESSAI), 1),
+        )
+        .unwrap();
+        assert_eq!(
+            executer(Etape::VerifierBinaire {
+                attendu: None,
+                fichiers: vec![linux.clone(), exe.clone()]
+            }),
+            0
+        );
+        assert_eq!(
+            executer(Etape::VerifierPe {
+                fichiers: vec![exe.clone()]
+            }),
+            0
+        );
+        assert_eq!(
+            executer(Etape::VerifierPe {
+                fichiers: vec![linux.clone()]
+            }),
+            1
+        );
+        assert_eq!(
+            executer(Etape::VerifierBinaire {
+                attendu: Some(Systeme::Windows),
+                fichiers: vec![exe, linux]
+            }),
+            1
+        );
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -411,7 +491,7 @@ mod tests {
         let essai = |nom: &str, octets: Vec<u8>| {
             let chemin = d.join(nom);
             std::fs::write(&chemin, octets).unwrap();
-            binaire::verifier(&[chemin])
+            binaire::verifier(&[chemin], None)
         };
         let bon = d.join("bon.exe");
         std::fs::write(
@@ -419,8 +499,14 @@ mod tests {
             gardes_d_essai(Some((148, 148, 0x800)), Some(MANIFESTE_D_ESSAI), 1),
         )
         .unwrap();
-        assert!(binaire::verifier(std::slice::from_ref(&bon)));
-        assert_eq!(executer(Etape::VerifierBinaire { fichiers: vec![bon] }), 0);
+        assert!(binaire::verifier(std::slice::from_ref(&bon), None));
+        assert_eq!(
+            executer(Etape::VerifierBinaire {
+                attendu: None,
+                fichiers: vec![bon]
+            }),
+            0
+        );
         // DependentLoadFlags absent, autre, ou pas couvert par l'une des deux tailles.
         assert!(!essai("sans.exe", gardes_d_essai(None, Some(MANIFESTE_D_ESSAI), 1)));
         assert!(!essai(
@@ -497,10 +583,11 @@ mod tests {
         assert!(!essai("ailleurs.exe", ailleurs));
         // Pas un PE, absent, ou un dossier : refusé, jamais compté comme vérifié.
         assert!(!essai("texte.exe", b"MZ pas un programme".to_vec()));
-        assert!(!binaire::verifier(&[d.join("absent.exe")]));
-        assert!(!binaire::verifier(std::slice::from_ref(&d)));
+        assert!(!binaire::verifier(&[d.join("absent.exe")], None));
+        assert!(!binaire::verifier(std::slice::from_ref(&d), None));
         assert_eq!(
             executer(Etape::VerifierBinaire {
+                attendu: None,
                 fichiers: vec![d.join("absent.exe")]
             }),
             1

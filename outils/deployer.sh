@@ -272,13 +272,18 @@ fi
 # la compilation et sur les programmes qui vont être copiés : celui de Linux (PIE statique, marque RELRO, pile non
 # exécutable, rien d'écrivable et exécutable) et vanguard.exe (DLL chargées depuis System32 seulement, que chargement.rs
 # garde : une DLL posée à côté de lui n'est jamais chargée ; manifeste UTF-8 et asInvoker ; ASLR, DEP,
-# relocalisations). Sans repli : un programme non vérifié n'est jamais compté sain.
-A_VERIFIER=("$LINUX")
-[[ -f $WINDOWS ]] && A_VERIFIER+=("$WINDOWS")
-./"$LINUX" deploiement verifier-binaire "${A_VERIFIER[@]}" || {
-  echo "✖ Programmes non vérifiés (protections dites ci-dessus) : rien ne part. Un programme Linux d'avant « verifier-binaire » ne sait pas les vérifier : recompiler."
+# relocalisations). Chacun avec le système qu'il doit être (--attendu) : un .exe qui serait un ELF, ou un programme
+# Linux d'une autre architecture, est refusé. Sans repli : un programme non vérifié n'est jamais compté sain.
+./"$LINUX" deploiement verifier-binaire --attendu linux "$LINUX" || {
+  echo "✖ Programme Linux non vérifié (protections dites ci-dessus) : rien ne part. Un programme Linux d'avant « verifier-binaire --attendu » ne sait pas le vérifier : recompiler."
   exit 1
 }
+if [[ -f $WINDOWS ]]; then
+  ./"$LINUX" deploiement verifier-binaire --attendu windows "$WINDOWS" || {
+    echo "✖ Programme Windows non vérifié (protections dites ci-dessus) : rien ne part."
+    exit 1
+  }
+fi
 # Les octets qui vont partir sont-ils ceux que outils/compiler-version.sh a relevés à la compilation ? Le dossier de
 # compilation est partagé avec les worktrees, et une compilation ordinaire (cargo build) y remplace les programmes sans
 # toucher le repère : ceux-là ne partent nulle part.

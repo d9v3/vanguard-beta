@@ -200,11 +200,13 @@ outils/failles-programmes.sh "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard
 # verifier-binaire, src/deploiement/binaire.rs) : PIE statique, marque RELRO et pile non exécutable pour Linux ; DLL
 # depuis System32, manifeste, ASLR, DEP et relocalisations pour Windows. Lues par la copie Linux qui part, dont
 # l'empreinte vient d'être relue ; le programme Mac, compilé par GitHub, l'est par elle aussi une fois récupéré (aucun
-# Mac ici). Lue telle quelle par outils/essais-signature.sh.
-verifier_binaires() { # fichiers…
-  "$DOSSIER/vanguard-linux-x86_64" deploiement verifier-binaire "$@"
+# Mac ici). Chacun avec le système qu'il doit être (--attendu) : un fichier échangé ou d'une autre architecture est
+# refusé. Lue telle quelle par outils/essais-signature.sh.
+verifier_binaires() { # système fichiers…
+  "$DOSSIER/vanguard-linux-x86_64" deploiement verifier-binaire --attendu "$@"
 }
-verifier_binaires "$DOSSIER/vanguard-linux-x86_64" "$DOSSIER/vanguard-windows-x86_64.exe" ||
+{ verifier_binaires linux "$DOSSIER/vanguard-linux-x86_64" &&
+  verifier_binaires windows "$DOSSIER/vanguard-windows-x86_64.exe"; } ||
   { echo "Protections des programmes : rien de publié."; exit 1; }
 
 # Une exécution de GitHub attendue au plus tant de secondes : un runner qui ne vient jamais (file d'attente bloquée)
@@ -375,7 +377,7 @@ if [[ -z $ANNONCEE || $ANNONCEE != "$(sha256sum "$DOSSIER/vanguard-macos" | cut 
   exit 1
 fi
 outils/failles-programmes.sh "$DOSSIER/vanguard-macos" || { echo "Version macOS : rien de publié."; exit 1; }
-verifier_binaires "$DOSSIER/vanguard-macos" || { echo "Version macOS, protections : rien de publié."; exit 1; }
+verifier_binaires macos "$DOSSIER/vanguard-macos" || { echo "Version macOS, protections : rien de publié."; exit 1; }
 
 # Les nomenclatures (SBOM) faites ici (outils/sbom.sh), octet pour octet celles du passage Mac : son travail
 # « attester » (.github/workflows/macos.yml) les a attestées avec le programme Mac, et c'est ce que la page publie.

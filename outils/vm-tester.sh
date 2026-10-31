@@ -229,7 +229,7 @@ preparer_programme() {
 verifier_binaire() {
   (cd "$DEPOT" && env -u CARGO_TARGET_DIR cargo build -q --target x86_64-unknown-linux-musl) ||
     { echo "Vanguard pour Linux pas compilé dans $DEPOT : $1 pas vérifié, rien déposé." >&2; exit 1; }
-  "$DEPOT/target/x86_64-unknown-linux-musl/debug/vanguard" deploiement verifier-binaire "$1" ||
+  "$DEPOT/target/x86_64-unknown-linux-musl/debug/vanguard" deploiement verifier-binaire --attendu windows "$1" ||
     { echo "Programme refusé par « vanguard deploiement verifier-binaire » : rien déposé ($1)." >&2; exit 1; }
 }
 
@@ -257,7 +257,7 @@ deposer() {
   copier "$EXE" "$p/vanguard.exe"
   # verifier-binaire sur la copie qui part, pas sur la source : une compilation dans le même dossier cible a pu remplacer
   # le programme entre les deux (son empreinte, dans travail.txt, est aussi celle de la copie).
-  "$DEPOT/target/x86_64-unknown-linux-musl/debug/vanguard" deploiement verifier-binaire "$p/vanguard.exe" >/dev/null || {
+  "$DEPOT/target/x86_64-unknown-linux-musl/debug/vanguard" deploiement verifier-binaire --attendu windows "$p/vanguard.exe" >/dev/null || {
     echo "Copie déposée refusée par « vanguard deploiement verifier-binaire » : rien déposé." >&2
     rm -rf "$p"
     exit 1

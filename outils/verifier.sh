@@ -410,7 +410,7 @@ durcissement() {
   local cible=${CARGO_TARGET_DIR:-target} programme repere sorte fichier
   programme=$cible/x86_64-unknown-linux-musl/debug/vanguard
   cargo build -q --locked --target x86_64-unknown-linux-musl || return 1
-  local fichiers=("$programme")
+  local linux=("$programme") windows=()
   repere=$cible/.compilation
   if [[ $(sed -n 's/^commit //p' "$repere" 2>/dev/null) != "$(git rev-parse HEAD)" ||
     $(sed -n 's/^propre //p' "$repere" 2>/dev/null) != oui ]]; then
@@ -420,17 +420,25 @@ durcissement() {
       fichier=$cible/x86_64-unknown-linux-musl/release/vanguard
       [[ $sorte == linux-x86_64 ]] || fichier=$cible/x86_64-pc-windows-gnu/release/vanguard.exe
       if [[ -f $fichier && $(sha256sum "$fichier" | cut -d' ' -f1) == "$(sed -n "s/^$sorte //p" "$repere")" ]]; then
-        fichiers+=("$fichier")
+        if [[ $sorte == linux-x86_64 ]]; then linux+=("$fichier"); else windows+=("$fichier"); fi
       else
         echo "$fichier n'est plus celui de la compilation de ce commit : pas vérifié ici"
       fi
     done
   fi
-  # Isolé : rien de ce qu'il écrirait au démarrage ne va dans le vrai dossier personnel.
-  local isole=$TRAVAIL/durcissement
+  # Isolé : rien de ce qu'il écrirait au démarrage ne va dans le vrai dossier personnel. Un appel par système
+  # (--attendu) : un programme d'un autre système ou d'une autre architecture est refusé ; les deux appels se font même
+  # si le premier échoue, pour tout dire en une passe.
+  local isole=$TRAVAIL/durcissement code=0
   mkdir -p "$isole"
-  env -i PATH="$PATH" HOME="$isole" XDG_DATA_HOME="$isole/data" XDG_CONFIG_HOME="$isole/config" \
-    XDG_CACHE_HOME="$isole/cache" LANG="${LANG:-C.UTF-8}" "$programme" deploiement verifier-binaire "${fichiers[@]}"
+  isole_lance() { # système fichiers…
+    env -i PATH="$PATH" HOME="$isole" XDG_DATA_HOME="$isole/data" XDG_CONFIG_HOME="$isole/config" \
+      XDG_CACHE_HOME="$isole/cache" XDG_STATE_HOME="$isole/state" LANG="${LANG:-C.UTF-8}" \
+      "$programme" deploiement verifier-binaire --attendu "$@"
+  }
+  isole_lance linux "${linux[@]}" || code=1
+  if ((${#windows[@]})); then isole_lance windows "${windows[@]}" || code=1; fi
+  return "$code"
 }
 
 # La documentation du code (cargo doc) sans aucun avertissement : un `<pid>` pris pour une balise HTML ou un

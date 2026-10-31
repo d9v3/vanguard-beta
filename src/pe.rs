@@ -75,6 +75,16 @@ pub(crate) enum Machine {
 }
 
 impl Machine {
+    /// Le champ Machine de l'en-tête COFF.
+    pub(crate) fn champ(self) -> u16 {
+        match self {
+            Machine::X86 => 0x014c,
+            Machine::X64 => 0x8664,
+            Machine::Arm64 => 0xAA64,
+            Machine::Autre(autre) => autre,
+        }
+    }
+
     fn depuis(champ: u16) -> Machine {
         match champ {
             0x014c => Machine::X86,
@@ -334,6 +344,8 @@ impl LoadConfig {
 /// Les protections que l'éditeur de liens a posées sur l'image, telles que le chargeur de Windows les lit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Durcissement {
+    /// L'architecture de l'en-tête COFF : un programme livré pour une autre ne démarrerait pas.
+    pub machine: Machine,
     pub pe32_plus: bool,
     /// Characteristics de l'en-tête COFF (RELOCS_STRIPPED).
     pub caracteristiques: u16,
@@ -430,6 +442,7 @@ pub(crate) fn lire_gardes<R: Read + Seek>(source: &mut R, taille: u64) -> Option
         )
     });
     let durcissement = Durcissement {
+        machine: e.machine,
         pe32_plus: e.pe32_plus,
         caracteristiques: e.caracteristiques,
         dll_caracteristiques: e.dll_caracteristiques,
@@ -1624,6 +1637,7 @@ mod tests {
                 load_config: None,
                 manifeste: None,
                 durcissement: Durcissement {
+                    machine: Machine::X64,
                     pe32_plus: true,
                     caracteristiques: 0x22,
                     dll_caracteristiques: 0x0160,
