@@ -1823,4 +1823,69 @@ mod tests {
         assert_eq!(e.examines, 0);
         assert!(debut.elapsed() < std::time::Duration::from_secs(5));
     }
+
+    /// Morceaux de syntaxe SVG, XML et DTD, mêlés au hasard par les essais de propriétés : commentaires et blocs pas
+    /// fermés, entités qui s'appellent, guillemets ouverts, gestionnaires d'événement.
+    const MORCEAUX: [&str; 34] = [
+        "<svg>",
+        "</svg>",
+        "<script>",
+        "<svg:script>",
+        "<!--",
+        "-->",
+        "--!>",
+        "<![CDATA[",
+        "]]>",
+        "<!DOCTYPE svg [",
+        "]>",
+        "<!ENTITY e '",
+        "<!ENTITY f \"",
+        "'>",
+        "\">",
+        "&e;",
+        "&f;",
+        "&#34;",
+        "&#x27;",
+        " onload=",
+        "\"",
+        "'",
+        "<a href=\"",
+        "javascript:",
+        "<image ",
+        "/>",
+        ">",
+        " ",
+        "x",
+        "<?xml ",
+        "?>",
+        "<foreignObject>",
+        "<set attributeName=\"onload\" to=\"",
+        "&#60;",
+    ];
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig { cases: 3000, failure_persistence: None, ..proptest::prelude::ProptestConfig::default() })]
+        /// Aucun plantage sur des octets quelconques, ni sur un mélange de syntaxe.
+        #[test]
+        fn svg_jamais_de_plantage(
+            octets in proptest::collection::vec(proptest::num::u8::ANY, 0..600),
+            morceaux in proptest::collection::vec(0usize..MORCEAUX.len(), 0..60),
+        ) {
+            let _ = super::juger_svg(&octets, None);
+            let texte: String = morceaux.iter().filter_map(|&i| MORCEAUX.get(i).copied()).collect();
+            let _ = super::juger_svg(texte.as_bytes(), None);
+        }
+
+        /// Le même SVG en UTF-16 (petit ou gros boutiste, avec BOM) est jugé comme en UTF-8 : le transcodage ne
+        /// change pas ce qui est vu.
+        #[test]
+        fn svg_utf16_juge_comme_utf8(morceaux in proptest::collection::vec(0usize..MORCEAUX.len(), 0..60)) {
+            let texte: String = morceaux.iter().filter_map(|&i| MORCEAUX.get(i).copied()).collect();
+            let attendu = super::juger_svg(texte.as_bytes(), None);
+            let le: Vec<u8> = [0xff, 0xfe].into_iter().chain(texte.encode_utf16().flat_map(u16::to_le_bytes)).collect();
+            let be: Vec<u8> = [0xfe, 0xff].into_iter().chain(texte.encode_utf16().flat_map(u16::to_be_bytes)).collect();
+            proptest::prop_assert_eq!(super::juger_svg(&le, None), attendu);
+            proptest::prop_assert_eq!(super::juger_svg(&be, None), attendu);
+        }
+    }
 }
