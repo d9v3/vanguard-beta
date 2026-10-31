@@ -8,6 +8,9 @@
 //! Lecture seule : seules les méthodes de `LECTURES` partent, toutes sans effet sur le système ; une autre est refusée
 //! avant d'être envoyée. Aucun appel ne demande d'autorisation interactive (pas de fenêtre polkit).
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::io::{Read, Write};
@@ -171,6 +174,17 @@ impl Valeur {
     }
 }
 
+/// L'erreur d'un calcul qui déborderait (des tailles et des compteurs lus dans le message).
+fn deborde() -> String {
+    mal_forme("débordement")
+}
+
+/// L'échéance d'une attente ; une horloge au bout de sa plage la rend échue tout de suite.
+pub(super) fn echeance(delai: Duration) -> Instant {
+    let maintenant = Instant::now();
+    maintenant.checked_add(delai).unwrap_or(maintenant)
+}
+
 fn mal_forme(detail: &str) -> String {
     trf!(
         "message D-Bus mal formé ({detail})",
@@ -196,20 +210,26 @@ fn longueur_type(sig: &[u8], profondeur: usize) -> Result<usize, String> {
             let Some((_, reste)) = apres.split_first().filter(|(c, _)| type_de_base(**c)) else {
                 return Err(mal_forme("clé de dictionnaire"));
             };
-            let n = longueur_type(reste, profondeur + 1)?;
+            let n = longueur_type(reste, profondeur.checked_add(1).ok_or_else(deborde)?)?;
             if reste.get(n) != Some(&b'}') {
                 return Err(mal_forme("dictionnaire"));
             }
-            Ok(4 + n)
+            n.checked_add(4).ok_or_else(deborde)
         }
-        [b'a', reste @ ..] => Ok(1 + longueur_type(reste, profondeur + 1)?),
+        [b'a', reste @ ..] => {
+            let n = longueur_type(reste, profondeur.checked_add(1).ok_or_else(deborde)?)?;
+            n.checked_add(1).ok_or_else(deborde)
+        }
         [b'(', ..] => {
             let mut i = 1;
             loop {
                 match sig.get(i..) {
-                    Some([b')', ..]) if i > 1 => return Ok(i + 1),
+                    Some([b')', ..]) if i > 1 => return i.checked_add(1).ok_or_else(deborde),
                     None | Some([] | [b')', ..]) => return Err(mal_forme("structure")),
-                    Some(reste) => i += longueur_type(reste, profondeur + 1)?,
+                    Some(reste) => {
+                        let n = longueur_type(reste, profondeur.checked_add(1).ok_or_else(deborde)?)?;
+                        i = i.checked_add(n).ok_or_else(deborde)?;
+                    }
                 }
             }
         }
@@ -333,7 +353,7 @@ impl Ecrivain {
                     return Err(mal_forme("variante à plusieurs types"));
                 };
                 self.signature(s)?;
-                self.ecrire(seul, dedans, profondeur + 1)?;
+                self.ecrire(seul, dedans, profondeur.checked_add(1).ok_or_else(deborde)?)?;
             }
             (b'(', Valeur::Structure(valeurs)) => {
                 let t = types(membres(sig).ok_or_else(|| mal_forme("structure"))?)?;
@@ -341,7 +361,7 @@ impl Ecrivain {
                     return Err(mal_forme("structure incomplète"));
                 }
                 for (s, m) in t.into_iter().zip(valeurs) {
-                    self.ecrire(s, m, profondeur + 1)?;
+                    self.ecrire(s, m, profondeur.checked_add(1).ok_or_else(deborde)?)?;
                 }
             }
             (b'a', Valeur::Tableau(_) | Valeur::Dictionnaire(_)) => self.tableau(sig, v, profondeur)?,
@@ -365,24 +385,30 @@ impl Ecrivain {
                 let (cle, valeur) = cle_et_valeur(element).ok_or_else(|| mal_forme("dictionnaire"))?;
                 for (k, val) in entrees {
                     self.aligner(8);
-                    self.ecrire(cle, k, profondeur + 1)?;
-                    self.ecrire(valeur, val, profondeur + 1)?;
+                    let dessous = profondeur.checked_add(1).ok_or_else(deborde)?;
+                    self.ecrire(cle, k, dessous)?;
+                    self.ecrire(valeur, val, dessous)?;
                 }
             }
             (c, Valeur::Tableau(elements)) if c != b'{' => {
                 for e in elements {
-                    self.ecrire(element, e, profondeur + 1)?;
+                    self.ecrire(element, e, profondeur.checked_add(1).ok_or_else(deborde)?)?;
                 }
             }
             _ => return Err(mal_forme("valeur d'un autre type que sa signature")),
         }
-        let longueur = self.octets.len() - debut;
+        // L'écriture ne fait qu'allonger `octets` depuis `debut`.
+        let longueur = self
+            .octets
+            .len()
+            .checked_sub(debut)
+            .ok_or_else(|| mal_forme("tableau"))?;
         if longueur > TABLEAU_MAX {
             return Err(mal_forme("tableau trop long"));
         }
         let n = u32::try_from(longueur).map_err(|_| mal_forme("tableau trop long"))?;
         self.octets
-            .get_mut(place..place + 4)
+            .get_mut(place..place.checked_add(4).ok_or_else(deborde)?)
             .ok_or_else(|| mal_forme("tableau"))?
             .copy_from_slice(&n.to_le_bytes());
         Ok(())
@@ -403,16 +429,20 @@ struct Lecteur<'a> {
 impl Lecteur<'_> {
     fn prendre(&mut self, n: usize) -> Result<&[u8], String> {
         let fin = self.pos.checked_add(n);
-        let morceau = fin
-            .and_then(|f| self.octets.get(self.pos..f))
+        let (morceau, fin) = fin
+            .and_then(|f| Some((self.octets.get(self.pos..f)?, f)))
             .ok_or_else(|| mal_forme("message tronqué"))?;
-        self.pos += n;
+        self.pos = fin;
         Ok(morceau)
     }
 
     /// Saute le remplissage, que la spécification veut nul.
     fn aligner(&mut self, n: usize) -> Result<(), String> {
-        let reste = (n - self.pos % n) % n;
+        let reste = self
+            .pos
+            .checked_next_multiple_of(n)
+            .and_then(|p| p.checked_sub(self.pos))
+            .ok_or_else(|| mal_forme("alignement"))?;
         if self.prendre(reste)?.iter().any(|&o| o != 0) {
             return Err(mal_forme("remplissage non nul"));
         }
@@ -458,7 +488,7 @@ impl Lecteur<'_> {
         if profondeur > PROFONDEUR_MAX {
             return Err(mal_forme("valeur trop imbriquée"));
         }
-        self.valeurs += 1;
+        self.valeurs = self.valeurs.checked_add(1).ok_or_else(deborde)?;
         if self.valeurs > VALEURS_MAX {
             return Err(mal_forme("trop de valeurs"));
         }
@@ -481,7 +511,7 @@ impl Lecteur<'_> {
             b't' => Valeur::U64(u64::from_le_bytes(self.fixe()?)),
             b'd' => Valeur::Reel(f64::from_le_bytes(self.fixe()?)),
             b's' | b'o' => {
-                let n = self.u32()? as usize;
+                let n = usize::try_from(self.u32()?).map_err(|_| mal_forme("message tronqué"))?;
                 let t = self.texte(n)?;
                 if c == b'o' && !chemin_valide(&t) {
                     return Err(mal_forme("chemin d'objet"));
@@ -495,7 +525,7 @@ impl Lecteur<'_> {
                 let [seul] = t[..] else {
                     return Err(mal_forme("variante à plusieurs types"));
                 };
-                let dedans = self.lire(seul, profondeur + 1)?;
+                let dedans = self.lire(seul, profondeur.checked_add(1).ok_or_else(deborde)?)?;
                 Valeur::Variante(s, Box::new(dedans))
             }
             b'(' => {
@@ -503,7 +533,7 @@ impl Lecteur<'_> {
                 let t = types(membres(sig).ok_or_else(|| mal_forme("structure"))?)?;
                 let mut valeurs = Vec::with_capacity(t.len());
                 for s in t {
-                    valeurs.push(self.lire(s, profondeur + 1)?);
+                    valeurs.push(self.lire(s, profondeur.checked_add(1).ok_or_else(deborde)?)?);
                 }
                 Valeur::Structure(valeurs)
             }
@@ -513,7 +543,7 @@ impl Lecteur<'_> {
     }
 
     fn tableau(&mut self, element: &[u8], profondeur: usize) -> Result<Valeur, String> {
-        let longueur = self.u32()? as usize;
+        let longueur = usize::try_from(self.u32()?).map_err(|_| mal_forme("tableau trop long"))?;
         if longueur > TABLEAU_MAX {
             return Err(mal_forme("tableau trop long"));
         }
@@ -532,11 +562,12 @@ impl Lecteur<'_> {
             if dictionnaire {
                 self.aligner(8)?;
                 let (sig_cle, sig_valeur) = cle_et_valeur(element).ok_or_else(|| mal_forme("dictionnaire"))?;
-                let cle = self.lire(sig_cle, profondeur + 1)?;
-                let valeur = self.lire(sig_valeur, profondeur + 1)?;
+                let dessous = profondeur.checked_add(1).ok_or_else(deborde)?;
+                let cle = self.lire(sig_cle, dessous)?;
+                let valeur = self.lire(sig_valeur, dessous)?;
                 entrees.push((cle, valeur));
             } else {
-                elements.push(self.lire(element, profondeur + 1)?);
+                elements.push(self.lire(element, profondeur.checked_add(1).ok_or_else(deborde)?)?);
             }
         }
         if self.pos != fin {
@@ -663,7 +694,7 @@ impl Message {
         if version != 1 {
             return Err(mal_forme("version du protocole"));
         }
-        let longueur_corps = l.u32()? as usize;
+        let longueur_corps = usize::try_from(l.u32()?).map_err(|_| mal_forme("message trop long"))?;
         let serie = l.u32()?;
         if serie == 0 {
             return Err(mal_forme("numéro de série nul"));
@@ -733,9 +764,13 @@ pub(crate) fn longueur_totale(debut: &[u8; 16]) -> Result<usize, String> {
             u32::from_le_bytes(t)
         })
     };
-    let entete = (16 + nombre([debut[12], debut[13], debut[14], debut[15]])).div_ceil(8) * 8;
-    usize::try_from(entete + nombre([debut[4], debut[5], debut[6], debut[7]]))
-        .ok()
+    // L'en-tête fixe (16 octets) et ses champs, complétés jusqu'au multiple de 8, puis le corps.
+    let entete = nombre([debut[12], debut[13], debut[14], debut[15]])
+        .checked_add(16)
+        .and_then(|n| n.checked_next_multiple_of(8));
+    entete
+        .and_then(|e| e.checked_add(nombre([debut[4], debut[5], debut[6], debut[7]])))
+        .and_then(|n| usize::try_from(n).ok())
         .filter(|&n| n <= TAILLE_MAX)
         .ok_or_else(|| mal_forme("message trop long"))
 }
@@ -846,8 +881,8 @@ impl Bus {
             self.prise.read_exact(&mut octet).map_err(|e| erreur_io(&e))?;
             ligne.push(octet[0]);
         }
-        ligne.truncate(ligne.len() - 2);
-        Ok(String::from_utf8_lossy(&ligne).into_owned())
+        let sans_fin = ligne.strip_suffix(b"\r\n").unwrap_or(&ligne);
+        Ok(String::from_utf8_lossy(sans_fin).into_owned())
     }
 
     /// EXTERNAL : le bus reconnaît le compte au noyau (les droits de la prise). Sans identité écrite d'abord, il prend
@@ -910,7 +945,7 @@ impl Bus {
         appel.serie = self.serie;
         let octets = appel.encoder()?;
         self.ecrire(&octets)?;
-        let echeance = Instant::now() + DELAI;
+        let echeance = echeance(DELAI);
         loop {
             let r = self.recevoir(echeance, appel.serie)?;
             if r.reponse_a != Some(appel.serie) || !matches!(r.genre, RETOUR | ERREUR) {
@@ -1158,6 +1193,11 @@ fn noms_d_unites(liste: Option<&Valeur>, sans_suivies: bool) -> Vec<String> {
     noms
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

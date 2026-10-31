@@ -7,6 +7,9 @@
 //! quelques Mo, des champs de journal de quelques ko). Une donnée abîmée ou hostile rend `None`, jamais une panique :
 //! chaque taille lue est bornée avant usage, et la somme de contrôle de la trame, quand elle est là, est vérifiée.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 /// La signature d'une trame zstd, en tête de fichier.
 pub(crate) const SIGNATURE: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
 
@@ -66,10 +69,10 @@ fn trame(entree: &[u8], sortie: &mut Vec<u8>, max: usize) -> Option<usize> {
         2 => 2,
         _ => 4,
     };
-    if le(entree.get(i..i + octets_dico)?) != 0 {
+    if le(morceau(entree, i, octets_dico)?) != 0 {
         return None;
     }
-    i += octets_dico;
+    i = i.checked_add(octets_dico)?;
     let octets_taille = match descripteur >> 6 {
         0 => usize::from(segment_unique),
         1 => 2,
@@ -78,36 +81,37 @@ fn trame(entree: &[u8], sortie: &mut Vec<u8>, max: usize) -> Option<usize> {
     };
     let taille_annoncee = match octets_taille {
         0 => None,
-        2 => Some(le(entree.get(i..i + 2)?) + 256),
-        n => Some(le(entree.get(i..i + n)?)),
+        2 => Some(le(morceau(entree, i, 2)?).checked_add(256)?),
+        n => Some(le(morceau(entree, i, n)?)),
     };
-    i += octets_taille;
+    i = i.checked_add(octets_taille)?;
 
     let debut = sortie.len();
     let mut etat = Etat::default();
     loop {
-        let entete = le(entree.get(i..i + 3)?);
-        i += 3;
+        let entete = le(morceau(entree, i, 3)?);
+        i = i.checked_add(3)?;
         let taille = usize::try_from(entete >> 3).ok()?;
         match (entete >> 1) & 3 {
             0 => {
-                ajouter(sortie, entree.get(i..i + taille)?, max)?;
-                i += taille;
+                ajouter(sortie, morceau(entree, i, taille)?, max)?;
+                i = i.checked_add(taille)?;
             }
             1 => {
-                if sortie.len().checked_add(taille)? > max {
+                let nouvelle = sortie.len().checked_add(taille)?;
+                if nouvelle > max {
                     return None;
                 }
-                sortie.resize(sortie.len() + taille, *entree.get(i)?);
+                sortie.resize(nouvelle, *entree.get(i)?);
                 // Un bloc répété ne tient qu'un octet dans l'entrée, quelle que soit sa taille.
-                i += 1;
+                i = i.checked_add(1)?;
             }
             2 => {
                 if taille > BLOC_MAX {
                     return None;
                 }
-                bloc_compresse(entree.get(i..i + taille)?, &mut etat, sortie, debut, max)?;
-                i += taille;
+                bloc_compresse(morceau(entree, i, taille)?, &mut etat, sortie, debut, max)?;
+                i = i.checked_add(taille)?;
             }
             _ => return None,
         }
@@ -115,16 +119,23 @@ fn trame(entree: &[u8], sortie: &mut Vec<u8>, max: usize) -> Option<usize> {
             break;
         }
     }
-    if taille_annoncee.is_some_and(|t| u64::try_from(sortie.len() - debut).ok() != Some(t)) {
+    // La sortie ne fait que grandir depuis `debut` : la soustraction ne manque jamais.
+    let produits = sortie.len().checked_sub(debut)?;
+    if taille_annoncee.is_some_and(|t| u64::try_from(produits).ok() != Some(t)) {
         return None;
     }
     if controle {
-        if xxh64(sortie.get(debut..)?, 0) & 0xffff_ffff != le(entree.get(i..i + 4)?) {
+        if xxh64(sortie.get(debut..)?, 0) & 0xffff_ffff != le(morceau(entree, i, 4)?) {
             return None;
         }
-        i += 4;
+        i = i.checked_add(4)?;
     }
     Some(i)
+}
+
+/// Les `n` octets de `entree` à partir de `debut` ; `None` s'ils n'y sont pas, ou si la fin ne tient pas dans un usize.
+fn morceau(entree: &[u8], debut: usize, n: usize) -> Option<&[u8]> {
+    entree.get(debut..debut.checked_add(n)?)
 }
 
 /// Un entier non signé en petit-boutiste, de 0 à 8 octets.
@@ -177,20 +188,20 @@ fn bloc_compresse(bloc: &[u8], etat: &mut Etat, sortie: &mut Vec<u8>, debut: usi
         pos = fin;
         let recul = usize::try_from(decalage(&s, &mut etat.recents)?).ok()?;
         // Pas de dictionnaire : une copie ne remonte pas avant le début de la trame.
-        if recul == 0 || recul > sortie.len() - debut {
+        if recul == 0 || recul > sortie.len().checked_sub(debut)? {
             return None;
         }
         let longueur = usize::try_from(s.copie).ok()?;
         if sortie.len().checked_add(longueur)? > max {
             return None;
         }
-        let depart = sortie.len() - recul;
+        let depart = sortie.len().checked_sub(recul)?;
         if recul >= longueur {
-            sortie.extend_from_within(depart..depart + longueur);
+            sortie.extend_from_within(depart..depart.checked_add(longueur)?);
         } else {
             // La copie recouvre ce qu'elle écrit (un motif qui se répète) : octet par octet.
             for k in 0..longueur {
-                let o = *sortie.get(depart + k)?;
+                let o = *sortie.get(depart.checked_add(k)?)?;
                 sortie.push(o);
             }
         }
@@ -202,13 +213,17 @@ fn bloc_compresse(bloc: &[u8], etat: &mut Etat, sortie: &mut Vec<u8>, debut: usi
 fn decalage(s: &Sequence, recents: &mut [u64; 3]) -> Option<u64> {
     let [r0, r1, r2] = *recents;
     if s.decalage > 3 {
-        let d = s.decalage - 3;
+        let d = s.decalage.checked_sub(3)?;
         *recents = [d, r0, r1];
         return Some(d);
     }
     // Sans littéral avant la copie, « le dernier décalage » ne servirait à rien (la séquence d'avant aurait été
     // prolongée) : les codes se décalent d'un cran.
-    let rang = if s.litteraux == 0 { s.decalage } else { s.decalage - 1 };
+    let rang = if s.litteraux == 0 {
+        s.decalage
+    } else {
+        s.decalage.checked_sub(1)?
+    };
     match rang {
         0 => Some(r0),
         1 => {
@@ -234,12 +249,13 @@ fn bits(octets: &[u8], debut: usize, n: u32) -> u64 {
     if n == 0 {
         return 0;
     }
-    let premier = debut / 8;
-    let mut v = 0u64;
-    for k in 0..8 {
-        v |= u64::from(octets.get(premier + k).copied().unwrap_or(0)) << (8 * k);
+    // Les 8 octets à partir de celui du premier bit, des zéros pour ceux qui manquent.
+    let mut mot = [0u8; 8];
+    for (o, &lu) in mot.iter_mut().zip(octets.get(debut / 8..).unwrap_or_default()) {
+        *o = lu;
     }
-    (v >> (debut % 8)) & ((1u64 << n) - 1)
+    // Le masque des n bits du bas, sans soustraction : 1 ≤ n ≤ 57.
+    (u64::from_le_bytes(mot) >> (debut % 8)) & !(u64::MAX << n)
 }
 
 /// Un flux lu vers l'avant, bit par bit (les descriptions de tables FSE).
@@ -250,8 +266,8 @@ struct Avant<'a> {
 
 impl Avant<'_> {
     fn lire(&mut self, n: u32) -> Option<u64> {
-        let fin = self.bit.checked_add(n as usize)?;
-        if fin > self.octets.len() * 8 {
+        let fin = self.bit.checked_add(usize::try_from(n).ok()?)?;
+        if fin > self.octets.len().checked_mul(8)? {
             return None;
         }
         let v = bits(self.octets, self.bit, n);
@@ -275,7 +291,9 @@ impl<'a> Arriere<'a> {
         if dernier == 0 {
             return None;
         }
-        let restant = octets.len() * 8 - dernier.leading_zeros() as usize - 1;
+        // Le bit de fin et les zéros au-dessus de lui ne sont pas des données.
+        let au_dessus = usize::try_from(dernier.leading_zeros()).ok()?.checked_add(1)?;
+        let restant = octets.len().checked_mul(8)?.checked_sub(au_dessus)?;
         Some(Arriere {
             octets,
             restant,
@@ -284,19 +302,22 @@ impl<'a> Arriere<'a> {
     }
 
     fn regarder(&self, n: u32) -> u64 {
-        match u32::try_from(self.restant) {
-            Ok(r) if r < n => bits(self.octets, 0, r) << (n - r),
-            _ => bits(self.octets, self.restant - n as usize, n),
+        if let Some(debut) = usize::try_from(n).ok().and_then(|n| self.restant.checked_sub(n)) {
+            return bits(self.octets, debut, n);
         }
+        // Moins de n bits restent : ceux-là en haut, des zéros dessous.
+        let r = u32::try_from(self.restant).unwrap_or(n);
+        #[expect(clippy::arithmetic_side_effects, reason = "restant < n ici : r = restant < n")]
+        let vide = n - r;
+        bits(self.octets, 0, r) << vide
     }
 
     fn avancer(&mut self, n: u32) {
-        let n = n as usize;
-        if n > self.restant {
+        if let Some(restant) = usize::try_from(n).ok().and_then(|n| self.restant.checked_sub(n)) {
+            self.restant = restant;
+        } else {
             self.deborde = true;
             self.restant = 0;
-        } else {
-            self.restant -= n;
         }
     }
 
@@ -350,8 +371,8 @@ impl TableFse {
                 *suivant.get_mut(s)? = 1;
             }
         }
-        let pas = (taille >> 1) + (taille >> 3) + 3;
-        let masque = taille - 1;
+        let pas = (taille >> 1).checked_add(taille >> 3)?.checked_add(3)?;
+        let masque = taille.checked_sub(1)?;
         let mut pos = 0usize;
         for (s, &p) in probas.iter().enumerate() {
             if p <= 0 {
@@ -361,7 +382,7 @@ impl TableFse {
             for _ in 0..p {
                 *symboles.get_mut(pos)? = u8::try_from(s).ok()?;
                 loop {
-                    pos = (pos + pas) & masque;
+                    pos = pos.checked_add(pas)? & masque;
                     if pos < haut {
                         break;
                     }
@@ -375,9 +396,9 @@ impl TableFse {
         for &s in &symboles {
             let compte = suivant.get_mut(usize::from(s))?;
             let etat = *compte;
-            *compte += 1;
+            *compte = etat.checked_add(1)?;
             let nb = log.checked_sub(bit_fort(etat))?;
-            let base = (u64::from(etat) << nb).checked_sub(taille as u64)?;
+            let base = (u64::from(etat) << nb).checked_sub(u64::try_from(taille).ok()?)?;
             cases.push((s, u8::try_from(nb).ok()?, u16::try_from(base).ok()?));
         }
         Some(TableFse { log, cases })
@@ -405,8 +426,8 @@ impl<'t> EtatFse<'t> {
     fn suivant(&mut self, flux: &mut Arriere) -> Option<()> {
         let &(_, nb, base) = self.table.cases.get(self.etat)?;
         // base + bits lus reste sous la taille de la table, par construction.
-        self.etat =
-            (usize::from(base) + usize::try_from(flux.lire(u32::from(nb))).unwrap_or(0)) & (self.table.cases.len() - 1);
+        let lus = usize::try_from(flux.lire(u32::from(nb))).unwrap_or(0);
+        self.etat = usize::from(base).checked_add(lus)? & self.table.cases.len().checked_sub(1)?;
         Some(())
     }
 }
@@ -415,7 +436,7 @@ impl<'t> EtatFse<'t> {
 /// nombre d'octets lus.
 fn lire_probas(octets: &[u8], max_symbole: usize, max_log: u32) -> Option<(Vec<i16>, u32, usize)> {
     let mut flux = Avant { octets, bit: 0 };
-    let log = u32::try_from(flux.lire(4)?).ok()? + 5;
+    let log = u32::try_from(flux.lire(4)?).ok()?.checked_add(5)?;
     if log > max_log {
         return None;
     }
@@ -426,19 +447,19 @@ fn lire_probas(octets: &[u8], max_symbole: usize, max_log: u32) -> Option<(Vec<i
             return None;
         }
         // Les valeurs possibles vont de 0 à restant + 1 ; les plus petites s'écrivent avec un bit de moins.
-        let possibles = u32::try_from(restant + 1).ok()?;
-        let n = bit_fort(possibles) + 1;
+        let possibles = u32::try_from(restant.checked_add(1)?).ok()?;
+        let n = bit_fort(possibles).checked_add(1)?;
         let mut v = u32::try_from(flux.lire(n)?).ok()?;
-        let bas = (1u32 << (n - 1)) - 1;
-        let seuil = ((1u32 << n) - 1).checked_sub(possibles)?;
+        let bas = 1u32.checked_shl(n.checked_sub(1)?)?.checked_sub(1)?;
+        let seuil = 1u32.checked_shl(n)?.checked_sub(1)?.checked_sub(possibles)?;
         if v & bas < seuil {
             v &= bas;
-            flux.bit -= 1;
+            flux.bit = flux.bit.checked_sub(1)?;
         } else if v > bas {
-            v -= seuil;
+            v = v.checked_sub(seuil)?;
         }
-        let p = i16::try_from(v).ok()? - 1;
-        restant -= i32::from(p.abs());
+        let p = i16::try_from(v).ok()?.checked_sub(1)?;
+        restant = restant.checked_sub(i32::from(p.unsigned_abs()))?;
         probas.push(p);
         if p == 0 {
             // Les zéros qui suivent un zéro se comptent par paires de bits, 3 voulant dire « et encore ».
@@ -451,7 +472,7 @@ fn lire_probas(octets: &[u8], max_symbole: usize, max_log: u32) -> Option<(Vec<i
             }
         }
     }
-    if restant != 0 || probas.len() > max_symbole + 1 {
+    if restant != 0 || probas.len() > max_symbole.checked_add(1)? {
         return None;
     }
     Some((probas, log, flux.bit.div_ceil(8)))
@@ -471,13 +492,13 @@ fn lire_huffman(octets: &[u8]) -> Option<(TableHuffman, usize)> {
     let entete = usize::from(*octets.first()?);
     let (poids, lus) = if entete < 128 {
         // Les poids compressés en FSE, sur `entete` octets.
-        (poids_fse(octets.get(1..1 + entete)?)?, 1 + entete)
+        (poids_fse(morceau(octets, 1, entete)?)?, entete.checked_add(1)?)
     } else {
         // Les poids en clair, quatre bits chacun, le premier dans la moitié haute.
-        let n = entete - 127;
-        let flux = octets.get(1..1 + n.div_ceil(2))?;
+        let n = entete.checked_sub(127)?;
+        let flux = morceau(octets, 1, n.div_ceil(2))?;
         let poids = flux.iter().flat_map(|&o| [o >> 4, o & 0xf]).take(n).collect();
-        (poids, 1 + n.div_ceil(2))
+        (poids, n.div_ceil(2).checked_add(1)?)
     };
     Some((table_huffman(poids)?, lus))
 }
@@ -518,25 +539,29 @@ fn table_huffman(mut poids: Vec<u8>) -> Option<TableHuffman> {
     if poids.iter().any(|&w| w > 11) {
         return None;
     }
-    let somme: u32 = poids.iter().filter(|&&w| w > 0).map(|&w| 1u32 << (w - 1)).sum();
+    // Un poids nul ne compte pas ; w ≤ 11, donc 2^(w-1) se décale sans perte.
+    let somme = poids
+        .iter()
+        .filter_map(|&w| w.checked_sub(1))
+        .try_fold(0u32, |somme, w| somme.checked_add(1u32 << w))?;
     if somme == 0 {
         return None;
     }
-    let max_bits = bit_fort(somme) + 1;
+    let max_bits = bit_fort(somme).checked_add(1)?;
     if max_bits > 11 {
         return None;
     }
-    let reste = (1u32 << max_bits) - somme;
+    let reste = (1u32 << max_bits).checked_sub(somme)?;
     if !reste.is_power_of_two() {
         return None;
     }
-    poids.push(u8::try_from(bit_fort(reste) + 1).ok()?);
+    poids.push(u8::try_from(bit_fort(reste).checked_add(1)?).ok()?);
     let mut cases = Vec::with_capacity(1 << max_bits);
     for w in 1..=max_bits {
         for (s, _) in poids.iter().enumerate().filter(|&(_, &p)| u32::from(p) == w) {
-            let nb = u8::try_from(max_bits + 1 - w).ok()?;
+            let nb = u8::try_from(max_bits.checked_add(1)?.checked_sub(w)?).ok()?;
             let s = u8::try_from(s).ok()?;
-            cases.extend(std::iter::repeat_n((s, nb), 1 << (w - 1)));
+            cases.extend(std::iter::repeat_n((s, nb), 1 << w.checked_sub(1)?));
         }
     }
     (cases.len() == 1 << max_bits).then_some(TableHuffman { max_bits, cases })
@@ -568,9 +593,9 @@ fn litteraux(bloc: &[u8], huffman: &mut Option<TableHuffman>) -> Option<(Vec<u8>
             _ => (usize::try_from(le(bloc.get(..3)?) >> 4).ok()?, 3),
         };
         if genre == 0 {
-            return Some((bloc.get(entete..entete + taille)?.to_vec(), entete + taille));
+            return Some((morceau(bloc, entete, taille)?.to_vec(), entete.checked_add(taille)?));
         }
-        return Some((vec![*bloc.get(entete)?; taille], entete + 1));
+        return Some((vec![*bloc.get(entete)?; taille], entete.checked_add(1)?));
     }
     // Compressés en Huffman : un flux ou quatre, les deux tailles sur 10, 14 ou 18 bits.
     let (quatre, entete, largeur) = match format {
@@ -580,13 +605,14 @@ fn litteraux(bloc: &[u8], huffman: &mut Option<TableHuffman>) -> Option<(Vec<u8>
         _ => (true, 5, 18),
     };
     let v = le(bloc.get(..entete)?) >> 4;
-    let masque = (1u64 << largeur) - 1;
+    let masque = (1u64 << largeur).checked_sub(1)?;
     let taille = usize::try_from(v & masque).ok()?;
     let compresse = usize::try_from((v >> largeur) & masque).ok()?;
     if taille > BLOC_MAX {
         return None;
     }
-    let donnees = bloc.get(entete..entete + compresse)?;
+    let lus = entete.checked_add(compresse)?;
+    let donnees = bloc.get(entete..lus)?;
     let arbre = if genre == 2 {
         let (table, lus) = lire_huffman(donnees)?;
         *huffman = Some(table);
@@ -603,17 +629,18 @@ fn litteraux(bloc: &[u8], huffman: &mut Option<TableHuffman>) -> Option<(Vec<u8>
         let t2 = usize::try_from(le(flux.get(2..4)?)).ok()?;
         let t3 = usize::try_from(le(flux.get(4..6)?)).ok()?;
         let corps = flux.get(6..)?;
-        let fin3 = t1.checked_add(t2)?.checked_add(t3)?;
+        let fin2 = t1.checked_add(t2)?;
+        let fin3 = fin2.checked_add(t3)?;
         let part = taille.div_ceil(4);
-        let derniere = taille.checked_sub(3 * part)?;
+        let derniere = taille.checked_sub(part.checked_mul(3)?)?;
         huffman_flux(table, corps.get(..t1)?, part, &mut sortie)?;
-        huffman_flux(table, corps.get(t1..t1 + t2)?, part, &mut sortie)?;
-        huffman_flux(table, corps.get(t1 + t2..fin3)?, part, &mut sortie)?;
+        huffman_flux(table, corps.get(t1..fin2)?, part, &mut sortie)?;
+        huffman_flux(table, corps.get(fin2..fin3)?, part, &mut sortie)?;
         huffman_flux(table, corps.get(fin3..)?, derniere, &mut sortie)?;
     } else {
         huffman_flux(table, flux, taille, &mut sortie)?;
     }
-    Some((sortie, entete + compresse))
+    Some((sortie, lus))
 }
 
 // --- Séquences (RFC 8878, 3.1.1.3.2) ---
@@ -734,11 +761,14 @@ fn sequences(octets: &[u8], tables: &mut [Option<TableFse>; 3]) -> Option<Vec<Se
     let (nombre, mut i) = match b0 {
         0 => return Some(Vec::new()),
         1..128 => (b0, 1),
-        128..255 => (((b0 - 128) << 8) + usize::from(*octets.get(1)?), 2),
-        _ => (usize::try_from(le(octets.get(1..3)?)).ok()? + 0x7f00, 3),
+        128..255 => (
+            (b0.checked_sub(128)? << 8).checked_add(usize::from(*octets.get(1)?))?,
+            2,
+        ),
+        _ => (usize::try_from(le(octets.get(1..3)?)).ok()?.checked_add(0x7f00)?, 3),
     };
     let modes = *octets.get(i)?;
-    i += 1;
+    i = i.checked_add(1)?;
     if modes & 3 != 0 {
         return None;
     }
@@ -753,7 +783,7 @@ fn sequences(octets: &[u8], tables: &mut [Option<TableFse>; 3]) -> Option<Vec<Se
             0 => Some(TableFse::new(predefini, log_predefini)?),
             1 => {
                 let s = *octets.get(i)?;
-                i += 1;
+                i = i.checked_add(1)?;
                 if usize::from(s) > max_symbole {
                     return None;
                 }
@@ -761,7 +791,7 @@ fn sequences(octets: &[u8], tables: &mut [Option<TableFse>; 3]) -> Option<Vec<Se
             }
             2 => {
                 let (probas, log, lus) = lire_probas(octets.get(i..)?, max_symbole, max_log)?;
-                i += lus;
+                i = i.checked_add(lus)?;
                 Some(TableFse::new(&probas, log)?)
             }
             // « Répéter » : la table du bloc d'avant, qui doit exister.
@@ -786,15 +816,15 @@ fn sequences(octets: &[u8], tables: &mut [Option<TableFse>; 3]) -> Option<Vec<Se
             return None;
         }
         // Les bits supplémentaires dans cet ordre : décalage, copie, littéraux.
-        let decalage = (1u64 << code_decalage) + flux.lire(code_decalage);
-        let copie = u64::from(base_copie) + flux.lire(bits_copie);
-        let litteraux = u64::from(base_litteraux) + flux.lire(bits_litteraux);
+        let decalage = (1u64 << code_decalage).checked_add(flux.lire(code_decalage))?;
+        let copie = u64::from(base_copie).checked_add(flux.lire(bits_copie))?;
+        let litteraux = u64::from(base_litteraux).checked_add(flux.lire(bits_litteraux))?;
         sortie.push(Sequence {
             litteraux,
             copie,
             decalage,
         });
-        if k + 1 < nombre {
+        if k.checked_add(1)? < nombre {
             // Et les états dans celui-ci : littéraux, copie, décalage.
             e_litteraux.suivant(&mut flux)?;
             e_copies.suivant(&mut flux)?;
@@ -853,7 +883,10 @@ fn xxh64(octets: &[u8], graine: u64) -> u64 {
     } else {
         graine.wrapping_add(P5)
     };
-    h = h.wrapping_add(octets.len() as u64);
+    // XXH64 ajoute la longueur modulo 2^64 : ce que fait `as`, et un usize tient en 64 bits sur toutes nos cibles.
+    #[expect(clippy::as_conversions, reason = "XXH64 prend la longueur modulo 2^64")]
+    let longueur = octets.len() as u64;
+    h = h.wrapping_add(longueur);
     while let Some((mot, suite)) = reste.split_first_chunk::<8>() {
         h = (h ^ tour(0, le(mot))).rotate_left(27).wrapping_mul(P1).wrapping_add(P4);
         reste = suite;
@@ -875,6 +908,11 @@ fn xxh64(octets: &[u8], graine: u64) -> u64 {
     h ^ (h >> 32)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -21,6 +21,9 @@
 //! décodées) : une donnée forgée ne bloque pas Vanguard des minutes. Seuls les fichiers petit-boutistes sont lus
 //! (ceux qu'écrit un PC ou un ARM sous Linux) ; un autre rend `None` et la commande prend le relais.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::fmt::Write;
 use std::io::{ErrorKind, Read};
 use std::path::Path;
@@ -81,6 +84,11 @@ fn u32_le(octets: &[u8], position: usize) -> Option<u32> {
     Some(u32::from_le_bytes(mot.try_into().ok()?))
 }
 
+/// Un `u32_le` qui sert de taille ou de position.
+fn usize_le(octets: &[u8], position: usize) -> Option<usize> {
+    usize::try_from(u32_le(octets, position)?).ok()
+}
+
 fn u16_le(octets: &[u8], position: usize) -> Option<u16> {
     let mot = octets.get(position..position.checked_add(2)?)?;
     Some(u16::from_le_bytes(mot.try_into().ok()?))
@@ -119,15 +127,15 @@ impl Gvdb {
         }
         let mut octets = Vec::new();
         fichier.take(FICHIER_MAX + 1).read_to_end(&mut octets).map_err(|_| ())?;
-        if octets.len() as u64 > FICHIER_MAX {
+        if u64::try_from(octets.len()).ok().is_none_or(|n| n > FICHIER_MAX) {
             return Err(());
         }
         Gvdb::depuis(octets).map(Some).ok_or(())
     }
 
     pub(crate) fn racine(&self) -> Option<Table> {
-        let debut = u32_le(&self.octets, 16)? as usize;
-        let fin = u32_le(&self.octets, 20)? as usize;
+        let debut = usize_le(&self.octets, 16)?;
+        let fin = usize_le(&self.octets, 20)?;
         Table::lire(Rc::clone(&self.octets), debut, fin)
     }
 }
@@ -141,24 +149,25 @@ impl Table {
             return None;
         }
         // Les 5 bits du haut du premier mot portent un décalage que GLib ne lit pas.
-        let mots_bloom = (u32_le(&octets, debut)? & ((1 << 27) - 1)) as usize;
-        let n_seaux = u32_le(&octets, debut + 4)? as usize;
-        let place = (fin - debut)
+        let mots_bloom = usize::try_from(u32_le(&octets, debut)? & (u32::MAX >> 5)).ok()?;
+        let n_seaux = usize_le(&octets, debut.checked_add(4)?)?;
+        let place = fin
+            .checked_sub(debut)?
             .checked_sub(8)?
             .checked_sub(mots_bloom.checked_mul(4)?)?
             .checked_sub(n_seaux.checked_mul(4)?)?;
         if !place.is_multiple_of(24) {
             return None;
         }
-        let bloom = debut + 8;
-        let seaux = bloom + 4 * mots_bloom;
+        let bloom = debut.checked_add(8)?;
+        let seaux = bloom.checked_add(mots_bloom.checked_mul(4)?)?;
         Some(Table {
             octets,
             bloom,
             mots_bloom,
             seaux,
             n_seaux,
-            elements: seaux + 4 * n_seaux,
+            elements: seaux.checked_add(n_seaux.checked_mul(4)?)?,
             n: place / 24,
         })
     }
@@ -166,14 +175,15 @@ impl Table {
     fn element(&self, i: usize) -> Option<Element> {
         let e = self.elements.checked_add(i.checked_mul(24)?)?;
         let o = &self.octets;
+        let a = |decalage: usize| e.checked_add(decalage);
         Some(Element {
             hachage: u32_le(o, e)?,
-            parent: u32_le(o, e + 4)?,
-            debut_nom: u32_le(o, e + 8)? as usize,
-            longueur_nom: usize::from(u16_le(o, e + 12)?),
-            genre: *o.get(e + 14)?,
-            debut: u32_le(o, e + 16)? as usize,
-            fin: u32_le(o, e + 20)? as usize,
+            parent: u32_le(o, a(4)?)?,
+            debut_nom: usize_le(o, a(8)?)?,
+            longueur_nom: usize::from(u16_le(o, a(12)?)?),
+            genre: *o.get(a(14)?)?,
+            debut: usize_le(o, a(16)?)?,
+            fin: usize_le(o, a(20)?)?,
         })
     }
 
@@ -201,8 +211,10 @@ impl Table {
             if reste == 0 && e.parent == u32::MAX {
                 return true;
             }
-            let parent = e.parent as usize;
-            if parent >= self.n || morceau.is_empty() {
+            let Some(parent) = usize::try_from(e.parent).ok().filter(|&p| p < self.n) else {
+                return false;
+            };
+            if morceau.is_empty() {
                 return false;
             }
             let Some(p) = self.element(parent) else {
@@ -220,19 +232,25 @@ impl Table {
         let cle = cle.as_bytes();
         let h = hachage(cle);
         if self.mots_bloom > 0 {
-            let mot = u32_le(&self.octets, self.bloom + 4 * ((h / 32) as usize % self.mots_bloom))?;
+            let place = usize::try_from(h / 32)
+                .ok()?
+                .checked_rem(self.mots_bloom)?
+                .checked_mul(4)?;
+            let mot = u32_le(&self.octets, self.bloom.checked_add(place)?)?;
             // GLib n'affecte jamais son `bloom_shift`, qui reste à 0 : ses deux bits du filtre n'en font qu'un.
             let masque = 1u32 << (h & 31);
             if mot & masque != masque {
                 return None;
             }
         }
-        let seau = h as usize % self.n_seaux;
-        let premier = u32_le(&self.octets, self.seaux + 4 * seau)? as usize;
-        let dernier = if seau + 1 == self.n_seaux {
+        let seau = usize::try_from(h).ok()?.checked_rem(self.n_seaux)?;
+        let place = |s: usize| self.seaux.checked_add(s.checked_mul(4)?);
+        let premier = usize_le(&self.octets, place(seau)?)?;
+        let suivant = seau.checked_add(1)?;
+        let dernier = if suivant == self.n_seaux {
             self.n
         } else {
-            (u32_le(&self.octets, self.seaux + 4 * (seau + 1))? as usize).min(self.n)
+            usize_le(&self.octets, place(suivant)?)?.min(self.n)
         };
         (premier..dernier)
             .map_while(|i| self.element(i))
@@ -301,10 +319,10 @@ impl Table {
                 if parent == u32::MAX {
                     break Some(Vec::new());
                 }
-                if parent as usize >= self.n {
+                let Some(p) = usize::try_from(parent).ok().filter(|&p| p < self.n) else {
                     break None;
-                }
-                courant = parent as usize;
+                };
+                courant = p;
             };
             for &j in pile.iter().rev() {
                 let e = self.element(j)?;
@@ -438,38 +456,39 @@ fn taille_membres(membres: &[Plan], alignement: usize) -> Option<usize> {
 }
 
 fn aligner(position: usize, alignement: usize) -> Option<usize> {
-    Some(position.checked_add(alignement - 1)? / alignement * alignement)
+    position.checked_next_multiple_of(alignement)
 }
 
 fn lire_genre(texte: &[u8], position: &mut usize, profondeur: usize) -> Option<Genre> {
     if profondeur > PROFONDEUR_MAX {
         return None;
     }
+    let dessous = profondeur.checked_add(1)?;
     let c = *texte.get(*position)?;
-    *position += 1;
+    *position = position.checked_add(1)?;
     Some(match c {
         b'v' => Genre::Variante,
-        b'a' => Genre::Tableau(Box::new(lire_genre(texte, position, profondeur + 1)?)),
-        b'm' => Genre::Peut(Box::new(lire_genre(texte, position, profondeur + 1)?)),
+        b'a' => Genre::Tableau(Box::new(lire_genre(texte, position, dessous)?)),
+        b'm' => Genre::Peut(Box::new(lire_genre(texte, position, dessous)?)),
         b'(' => {
             let mut membres = Vec::new();
             while *texte.get(*position)? != b')' {
-                membres.push(lire_genre(texte, position, profondeur + 1)?);
+                membres.push(lire_genre(texte, position, dessous)?);
             }
-            *position += 1;
+            *position = position.checked_add(1)?;
             Genre::Tuple(membres)
         }
         b'{' => {
-            let cle = lire_genre(texte, position, profondeur + 1)?;
+            let cle = lire_genre(texte, position, dessous)?;
             // La clé d'un dictionnaire est toujours d'un type de base.
             if !matches!(cle, Genre::Simple(_)) {
                 return None;
             }
-            let valeur = lire_genre(texte, position, profondeur + 1)?;
+            let valeur = lire_genre(texte, position, dessous)?;
             if *texte.get(*position)? != b'}' {
                 return None;
             }
-            *position += 1;
+            *position = position.checked_add(1)?;
             Genre::Entree(Box::new(cle), Box::new(valeur))
         }
         c if SIMPLES.contains(&c) => Genre::Simple(c),
@@ -720,6 +739,7 @@ fn decoder_plan(plan: &Plan, octets: &[u8], profondeur: usize, budget: &mut usiz
         return None;
     }
     depenser(budget, 1)?;
+    let dessous = profondeur.checked_add(1)?;
     if let Some(taille) = plan.taille
         && octets.len() != taille
     {
@@ -765,7 +785,7 @@ fn decoder_plan(plan: &Plan, octets: &[u8], profondeur: usize, budget: &mut usiz
             let interieur = Genre::depuis(apres.get(1..)?)?;
             let p = Plan::de(&interieur);
             depenser(budget, p.noeuds)?;
-            Variante::Boite(Box::new(decoder_plan(&p, valeur, profondeur + 1, budget)?))
+            Variante::Boite(Box::new(decoder_plan(&p, valeur, dessous, budget)?))
         }
         Genre::Peut(e) => {
             let pe = plan.enfants.first()?;
@@ -773,13 +793,13 @@ fn decoder_plan(plan: &Plan, octets: &[u8], profondeur: usize, budget: &mut usiz
             let valeur = if octets.is_empty() {
                 None
             } else if pe.taille.is_some() {
-                Some(decoder_plan(pe, octets, profondeur + 1, budget)?)
+                Some(decoder_plan(pe, octets, dessous, budget)?)
             } else {
                 let (zero, reste) = octets.split_last()?;
                 if *zero != 0 {
                     return None;
                 }
-                Some(decoder_plan(pe, reste, profondeur + 1, budget)?)
+                Some(decoder_plan(pe, reste, dessous, budget)?)
             };
             Variante::Peut((**e).clone(), valeur.map(Box::new))
         }
@@ -798,16 +818,16 @@ fn decoder_plan(plan: &Plan, octets: &[u8], profondeur: usize, budget: &mut usiz
                 position = aligner(position, m.alignement)?;
                 let fin = match m.taille {
                     Some(t) => position.checked_add(t)?,
-                    None if i + 1 == n => fin_decalages,
+                    None if i.checked_add(1) == Some(n) => fin_decalages,
                     None => {
                         fin_decalages = fin_decalages.checked_sub(tde)?;
-                        lire_decalage(octets.get(fin_decalages..fin_decalages + tde)?)?
+                        lire_decalage(octets.get(fin_decalages..fin_decalages.checked_add(tde)?)?)?
                     }
                 };
                 if position > fin || fin > fin_decalages {
                     return None;
                 }
-                valeurs.push(decoder_plan(m, octets.get(position..fin)?, profondeur + 1, budget)?);
+                valeurs.push(decoder_plan(m, octets.get(position..fin)?, dessous, budget)?);
                 position = fin;
             }
             match plan.genre {
@@ -822,13 +842,14 @@ fn decoder_plan(plan: &Plan, octets: &[u8], profondeur: usize, budget: &mut usiz
 }
 
 fn elements(e: &Plan, octets: &[u8], profondeur: usize, budget: &mut usize) -> Option<Vec<Variante>> {
+    let dessous = profondeur.checked_add(1)?;
     if let Some(taille) = e.taille {
-        if !octets.len().is_multiple_of(taille) || octets.len() / taille > *budget {
+        if !octets.len().is_multiple_of(taille) || octets.len().checked_div(taille)? > *budget {
             return None;
         }
         return octets
             .chunks(taille)
-            .map(|o| decoder_plan(e, o, profondeur + 1, budget))
+            .map(|o| decoder_plan(e, o, dessous, budget))
             .collect();
     }
     if octets.is_empty() {
@@ -837,10 +858,11 @@ fn elements(e: &Plan, octets: &[u8], profondeur: usize, budget: &mut usize) -> O
     let tde = taille_decalage(octets.len());
     let debut_decalages = lire_decalage(octets.get(octets.len().checked_sub(tde)?..)?)?;
     let place = octets.len().checked_sub(debut_decalages)?;
-    if place % tde != 0 || place / tde > *budget {
+    let n = place.checked_div(tde)?;
+    if !place.is_multiple_of(tde) || n > *budget {
         return None;
     }
-    let mut valeurs = Vec::with_capacity(place / tde);
+    let mut valeurs = Vec::with_capacity(n);
     let mut position = 0;
     for mot in octets.get(debut_decalages..)?.chunks(tde) {
         let fin = lire_decalage(mot)?;
@@ -848,7 +870,7 @@ fn elements(e: &Plan, octets: &[u8], profondeur: usize, budget: &mut usize) -> O
         if position > fin || fin > debut_decalages {
             return None;
         }
-        valeurs.push(decoder_plan(e, octets.get(position..fin)?, profondeur + 1, budget)?);
+        valeurs.push(decoder_plan(e, octets.get(position..fin)?, dessous, budget)?);
         position = fin;
     }
     Some(valeurs)
@@ -869,8 +891,14 @@ pub(crate) mod ecriture {
 
     pub(crate) fn decalages(corps: &mut Vec<u8>, fins: &[usize]) {
         let mut tde = 1;
-        while taille_decalage(corps.len() + fins.len() * tde) > tde {
-            tde *= 2;
+        // Une somme au-delà de usize ne prend de toute façon que la plus grande largeur.
+        while taille_decalage(corps.len().saturating_add(fins.len().saturating_mul(tde))) > tde {
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "tde < taille_decalage(…) ≤ 8 ici : le double tient"
+            )]
+            let double = tde * 2;
+            tde = double;
         }
         for f in fins {
             // `tde` vaut 1, 2, 4 ou 8 (taille_decalage) : les octets de poids faible, sur sa largeur.
@@ -937,7 +965,7 @@ pub(crate) mod ecriture {
                     let g = m.genre();
                     completer(&mut o, g.alignement());
                     o.extend(serialiser(m));
-                    if g.taille_fixe().is_none() && i + 1 < membres.len() {
+                    if g.taille_fixe().is_none() && i.checked_add(1).is_some_and(|suivant| suivant < membres.len()) {
                         fins.push(o.len());
                     }
                 }
@@ -953,6 +981,11 @@ pub(crate) mod ecriture {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 pub(crate) mod fabrique {
     use super::ecriture::completer;
@@ -1104,6 +1137,11 @@ pub(crate) mod fabrique {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::fabrique::{Contenu, base_dconf, chaines, fichier, hexa, serialiser, valeur};

@@ -249,7 +249,7 @@ impl Bus {
         appel.serie = self.serie;
         let octets = appel.encoder().map_err(echec)?;
         self.ecrire(&octets).map_err(echec)?;
-        let echeance = Instant::now() + super::DELAI;
+        let echeance = super::echeance(super::DELAI);
         loop {
             let r = self.recevoir_avec_signaux(echeance, appel.serie, systemd)?;
             if r.genre == SIGNAL {
@@ -303,7 +303,7 @@ impl Bus {
 
     /// Attend la fin du job `job` (JobRemoved), dans `fins` déjà reçus puis dans la prise.
     fn attendre_job(&mut self, job: &str, systemd: &str, fins: &mut Vec<FinDeJob>) -> Result<String, Echec> {
-        let echeance = Instant::now() + DELAI_JOB;
+        let echeance = super::echeance(DELAI_JOB);
         loop {
             if let Some(i) = fins.iter().position(|(j, _)| j == job) {
                 return Ok(fins.swap_remove(i).1);
@@ -500,11 +500,7 @@ pub(crate) fn notifier(titre: &str, corps: &str) -> Result<u32, Echec> {
 }
 
 fn coupe(t: &str) -> String {
-    let mut fin = t.len().min(TEXTE_MAX);
-    while !t.is_char_boundary(fin) {
-        fin -= 1;
-    }
-    t[..fin].to_string()
+    t[..t.floor_char_boundary(TEXTE_MAX)].to_string()
 }
 
 fn notifier_sur(bus: &mut Bus, titre: &str, corps: &str) -> Result<u32, Echec> {
@@ -558,6 +554,11 @@ fn changer_dconf_sur(bus: &mut Bus, changement: &[u8]) -> Result<String, Echec> 
         .ok_or_else(|| echec(super::mal_forme("étiquette")))
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

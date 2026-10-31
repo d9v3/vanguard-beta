@@ -8,6 +8,9 @@
 //! l'ancien défaut, n'est pas lu. Tout ce qui ne se lit pas (droits, format plus récent, xz, fichier abîmé) rend
 //! `None` : l'appelant garde journalctl en secours, et rien n'est compté comme sain sans avoir été lu.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
@@ -229,17 +232,19 @@ impl Cache {
 
     fn garder(&mut self, pos: u64, c: &Champ) {
         let taille = match c {
-            Champ::Voulu(n, v) => n.len() + v.len(),
-            Champ::Autre => 0,
-        } + 32;
-        if taille > 64 << 10 {
+            Champ::Voulu(n, v) => n.len().checked_add(v.len()),
+            Champ::Autre => Some(0),
+        }
+        .and_then(|t| t.checked_add(32));
+        let Some(taille) = taille.filter(|&t| t <= 64 << 10) else {
             return;
-        }
-        if self.octets + taille > Self::MAX {
+        };
+        self.octets = if let Some(total) = self.octets.checked_add(taille).filter(|&t| t <= Self::MAX) {
+            total
+        } else {
             self.champs.clear();
-            self.octets = 0;
-        }
-        self.octets += taille;
+            taille
+        };
         self.champs.insert(pos, c.clone());
     }
 }
@@ -465,7 +470,8 @@ fn parcourir(mut reculs: Vec<Recul>, depuis: u64, ecrire: &mut impl FnMut(&str) 
                     parcours.coupe = true;
                     return Some(parcours);
                 }
-                parcours.entrees += 1;
+                // Un décompte d'entrées écrites : au bout de usize, il y reste.
+                parcours.entrees = parcours.entrees.saturating_add(1);
             }
         }
         avancer(&mut reculs, i, &mut tas)?;
@@ -505,13 +511,13 @@ impl Lecteur {
 
     /// `n` octets de plus lus (ou décompressés) ; `None` quand le budget est épuisé.
     fn compter(&mut self, n: usize) -> Option<()> {
-        self.lus = self.lus.saturating_add(n as u64);
+        self.lus = self.lus.saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
         (self.lus <= self.budget).then_some(())
     }
 
     /// `n` octets à `pos`, ou `None` au-delà de la fin du fichier.
     fn lire(&mut self, pos: u64, n: usize) -> Option<Vec<u8>> {
-        let fin = pos.checked_add(n as u64)?;
+        let fin = pos.checked_add(u64::try_from(n).ok()?)?;
         if fin > self.longueur {
             return None;
         }
@@ -520,34 +526,50 @@ impl Lecteur {
         let mut p = pos;
         while p < fin {
             let k = p / MORCEAU;
+            let debut_morceau = k.checked_mul(MORCEAU)?;
+            let fin_morceau = debut_morceau.checked_add(MORCEAU)?;
             if !self.morceaux.contains_key(&k) {
                 // 32 Mio au plus en mémoire : au-delà, on repart de zéro plutôt que de tout garder.
                 if self.morceaux.len() >= self.morceaux_max {
                     self.morceaux.clear();
                 }
-                let taille = usize::try_from(MORCEAU.min(self.longueur - k * MORCEAU)).ok()?;
+                let taille = usize::try_from(MORCEAU.min(self.longueur.checked_sub(debut_morceau)?)).ok()?;
                 let mut tampon = vec![0u8; taille];
-                self.fichier.read_exact_at(&mut tampon, k * MORCEAU).ok()?;
+                self.fichier.read_exact_at(&mut tampon, debut_morceau).ok()?;
                 self.morceaux.insert(k, tampon);
             }
             let morceau = self.morceaux.get(&k)?;
-            let debut = usize::try_from(p - k * MORCEAU).ok()?;
-            let jusqua = usize::try_from(fin.min((k + 1) * MORCEAU) - k * MORCEAU).ok()?;
+            let debut = usize::try_from(p.checked_sub(debut_morceau)?).ok()?;
+            let jusqua = usize::try_from(fin.min(fin_morceau).checked_sub(debut_morceau)?).ok()?;
             sortie.extend_from_slice(morceau.get(debut..jusqua)?);
-            p = (k + 1) * MORCEAU;
+            p = fin_morceau;
         }
         Some(sortie)
     }
 }
 
+/// Les positions rangées dans `o` à partir de `debut`, une par case de `largeur` octets : un u32 dans une case de 4
+/// (fichier compact), sinon le u64 du début de la case.
+fn positions_rangees(o: &[u8], debut: usize, largeur: usize) -> impl Iterator<Item = u64> {
+    o.get(debut..).unwrap_or_default().chunks_exact(largeur).map(move |c| {
+        if largeur == 4 {
+            u64::from(u32_a(c, 0))
+        } else {
+            u64_a(c, 0)
+        }
+    })
+}
+
 fn u64_a(o: &[u8], pos: usize) -> u64 {
-    o.get(pos..pos + 8)
+    pos.checked_add(8)
+        .and_then(|fin| o.get(pos..fin))
         .and_then(|b| b.try_into().ok())
         .map_or(0, u64::from_le_bytes)
 }
 
 fn u32_a(o: &[u8], pos: usize) -> u32 {
-    o.get(pos..pos + 4)
+    pos.checked_add(4)
+        .and_then(|fin| o.get(pos..fin))
         .and_then(|b| b.try_into().ok())
         .map_or(0, u32::from_le_bytes)
 }
@@ -672,7 +694,8 @@ impl Journal {
             let Some(charge) = d.charge else {
                 continue;
             };
-            return (self.empreinte(&charge) == d.empreinte && d.empreinte % self.cases == case).then_some(());
+            return (self.empreinte(&charge) == d.empreinte && d.empreinte.checked_rem(self.cases) == Some(case))
+                .then_some(());
         }
         None
     }
@@ -700,11 +723,12 @@ impl Journal {
         let debut = if self.compact() { 72 } else { 64 };
         let (drapeaux, taille) = self.objet(pos, DATA, debut)?;
         let o = self.lecteur.lire(pos, usize::try_from(debut).ok()?)?;
-        let longueur = usize::try_from(taille - debut).ok()?;
+        let place = taille.checked_sub(debut)?;
+        let longueur = usize::try_from(place).ok()?;
         let compresse = drapeaux & COMPRESSE != 0;
         let charge = match charge.map(|m| m.min(CHAMP_MAX)) {
             Some(max) if longueur <= CHAMP_MAX && (compresse || longueur <= max) => {
-                let brut = self.lecteur.lire(pos + debut, longueur)?;
+                let brut = self.lecteur.lire(pos.checked_add(debut)?, longueur)?;
                 let lu = match drapeaux & COMPRESSE {
                     0 => Some(brut),
                     4 => super::zstd::decompresser(&brut, max),
@@ -722,7 +746,7 @@ impl Journal {
         };
         Some(Donnee {
             empreinte: u64_a(&o, 16),
-            longueur: taille - debut,
+            longueur: place,
             suivant_meme_case: u64_a(&o, 24),
             premiere_entree: u64_a(&o, 40),
             tableau: u64_a(&o, 48),
@@ -735,7 +759,7 @@ impl Journal {
     /// liste qu'il tient. Aucune s'il n'est pas dans ce fichier.
     fn entrees_du_champ(&mut self, champ: &[u8]) -> Option<Vec<u64>> {
         let h = self.empreinte(champ);
-        let mut pos = u64_a(&self.lecteur.lire(self.case(h % self.cases)?, 8)?, 0);
+        let mut pos = u64_a(&self.lecteur.lire(self.case(h.checked_rem(self.cases)?)?, 8)?, 0);
         // Une chaîne qui revient sur un maillon déjà vu (fichier abîmé ou hostile) rend None tout de suite ; et jamais
         // plus de maillons que d'objets possibles. Un maillon au-delà de la taille lue à l'ouverture a été écrit
         // depuis (le fichier en cours) : la chaîne s'arrête là.
@@ -750,7 +774,7 @@ impl Journal {
             // journald ne garde la forme compressée d'un champ que plus courte que lui (journal-file.c, compress_blob
             // dans size - 1 octets) : un DATA qui range plus que le champ n'est pas celui qu'on cherche, et sa charge
             // (jusqu'à 16 Mio) n'est ni lue ni décompressée.
-            if entete.empreinte == h && entete.longueur <= champ.len() as u64 {
+            if entete.empreinte == h && u64::try_from(champ.len()).is_ok_and(|n| entete.longueur <= n) {
                 let d = self.donnee(pos, Some(champ.len()))?;
                 match d.charge.as_deref() {
                     Some(c) if c == champ => return self.entrees_de(&d),
@@ -780,9 +804,9 @@ impl Journal {
         // chaîne, le fichier est abîmé (ou hostile) et la liste grossirait sans fin.
         let plafond = usize::try_from(longueur / 64).unwrap_or(usize::MAX);
         let mut vus: HashSet<u64> = HashSet::new();
-        let mut reste = d.nombre - 1;
+        let mut reste = d.nombre.checked_sub(1)?;
         let mut tableau = d.tableau;
-        let largeur: u64 = if self.compact() { 4 } else { 8 };
+        let largeur = if self.compact() { 4 } else { 8 };
         let mut pas = self.lecteur.longueur / 24;
         while reste > 0 && tableau != 0 && tableau < longueur {
             pas = pas.checked_sub(1)?;
@@ -791,16 +815,10 @@ impl Journal {
             }
             let (_, taille) = self.objet(tableau, TABLEAU, 24)?;
             let o = self.lecteur.lire(tableau, usize::try_from(taille).ok()?)?;
-            for k in 0..(taille - 24) / largeur {
+            for e in positions_rangees(&o, 24, largeur) {
                 if reste == 0 {
                     break;
                 }
-                let p = usize::try_from(24 + k * largeur).ok()?;
-                let e = if largeur == 4 {
-                    u64::from(u32_a(&o, p))
-                } else {
-                    u64_a(&o, p)
-                };
                 // Une case encore vide : le fichier en cours d'écriture s'arrête là.
                 if e == 0 || e >= longueur {
                     return Some(sortie);
@@ -809,7 +827,7 @@ impl Journal {
                     return None;
                 }
                 sortie.push(e);
-                reste -= 1;
+                reste = reste.checked_sub(1)?;
             }
             tableau = u64_a(&o, 16);
         }
@@ -841,13 +859,7 @@ impl Journal {
             }
             let largeur = if self.compact() { 4 } else { 16 };
             let mut lus = Vec::new();
-            for k in 0..(o.len() - 64) / largeur {
-                let p = 64 + k * largeur;
-                let objet = if self.compact() {
-                    u64::from(u32_a(&o, p))
-                } else {
-                    u64_a(&o, p)
-                };
+            for objet in positions_rangees(&o, 64, largeur) {
                 // Un même champ revient dans beaucoup d'entrées (« SYSLOG_IDENTIFIER=kernel ») : lu une fois.
                 let champ = if let Some(c) = champs.get(&objet) {
                     c.clone()
@@ -859,7 +871,7 @@ impl Journal {
                 // Une copie par entrée, comptée comme une lecture (`Lecteur::compter`) : un même long champ porté par
                 // toutes les entrées d'un petit fichier hostile rendait des centaines de Mio hors du budget.
                 if let Champ::Voulu(nom, valeur) = champ {
-                    self.lecteur.compter(nom.len() + valeur.len())?;
+                    self.lecteur.compter(nom.len().checked_add(valeur.len())?)?;
                     lus.push((nom, valeur));
                 }
             }
@@ -882,13 +894,7 @@ impl Journal {
         let o = self.lecteur.lire(pos, usize::try_from(taille).ok()?)?;
         let largeur = if self.compact() { 4 } else { 16 };
         let mut champs = Vec::new();
-        for k in 0..(o.len() - 64) / largeur {
-            let p = 64 + k * largeur;
-            let objet = if self.compact() {
-                u64::from(u32_a(&o, p))
-            } else {
-                u64_a(&o, p)
-            };
+        for objet in positions_rangees(&o, 64, largeur) {
             let champ = if let Some(c) = cache.champs.get(&objet) {
                 c.clone()
             } else {
@@ -898,7 +904,7 @@ impl Journal {
             };
             // Comptée comme dans `chercher` : le cache garde des champs jusqu'à 64 Kio, copiés à chaque entrée.
             if let Champ::Voulu(nom, valeur) = champ {
-                self.lecteur.compter(nom.len() + valeur.len())?;
+                self.lecteur.compter(nom.len().checked_add(valeur.len())?)?;
                 champs.push((nom, valeur));
             }
         }
@@ -923,7 +929,7 @@ impl Journal {
             }
             self.objet(t, TABLEAU, 24)?;
             tableaux.push(t);
-            t = u64_a(&self.lecteur.lire(t + 16, 8)?, 0);
+            t = u64_a(&self.lecteur.lire(t.checked_add(16)?, 8)?, 0);
         }
         Some(tableaux)
     }
@@ -935,13 +941,7 @@ impl Journal {
         let o = self.lecteur.lire(tableau, usize::try_from(taille).ok()?)?;
         let largeur: usize = if self.compact() { 4 } else { 8 };
         let mut cases = Vec::new();
-        for k in 0..(o.len() - 24) / largeur {
-            let p = 24 + k * largeur;
-            let e = if largeur == 4 {
-                u64::from(u32_a(&o, p))
-            } else {
-                u64_a(&o, p)
-            };
+        for e in positions_rangees(&o, 24, largeur) {
             if e == 0 || e >= longueur {
                 break;
             }
@@ -958,8 +958,8 @@ impl Journal {
         let debut = if self.compact() { 72 } else { 64 };
         let (drapeaux, taille) = self.objet(pos, DATA, debut)?;
         if drapeaux & COMPRESSE == 0 {
-            let n = usize::try_from((taille - debut).min(64)).ok()?;
-            let tete = self.lecteur.lire(pos + debut, n)?;
+            let n = usize::try_from(taille.checked_sub(debut)?.min(64)).ok()?;
+            let tete = self.lecteur.lire(pos.checked_add(debut)?, n)?;
             let nom = tete.split(|&c| c == b'=').next().unwrap_or_default();
             if !voulus.iter().any(|v| v.as_bytes() == nom) || nom.len() == tete.len() {
                 return Some(Champ::Autre);
@@ -991,7 +991,7 @@ fn delz4(entree: &[u8], max: usize) -> Option<Vec<u8>> {
         if n == 15 {
             loop {
                 let o = *entree.get(*i)?;
-                *i += 1;
+                *i = i.checked_add(1)?;
                 n = n.checked_add(usize::from(o))?;
                 if o != 255 {
                     break;
@@ -1002,7 +1002,7 @@ fn delz4(entree: &[u8], max: usize) -> Option<Vec<u8>> {
     };
     loop {
         let jeton = *entree.get(i)?;
-        i += 1;
+        i = i.checked_add(1)?;
         let litteraux = longueur(&mut i, usize::from(jeton >> 4))?;
         let fin = i.checked_add(litteraux)?;
         if s.len().checked_add(litteraux)? > taille {
@@ -1013,15 +1013,16 @@ fn delz4(entree: &[u8], max: usize) -> Option<Vec<u8>> {
         if i == entree.len() {
             break;
         }
-        let recul = usize::from(u16::from_le_bytes(entree.get(i..i + 2)?.try_into().ok()?));
-        i += 2;
+        let apres = i.checked_add(2)?;
+        let recul = usize::from(u16::from_le_bytes(entree.get(i..apres)?.try_into().ok()?));
+        i = apres;
         let copie = longueur(&mut i, usize::from(jeton & 15))?.checked_add(4)?;
         if recul == 0 || recul > s.len() || s.len().checked_add(copie)? > taille {
             return None;
         }
-        let depart = s.len() - recul;
+        let depart = s.len().checked_sub(recul)?;
         for k in 0..copie {
-            let o = *s.get(depart + k)?;
+            let o = *s.get(depart.checked_add(k)?)?;
             s.push(o);
         }
     }
@@ -1058,10 +1059,17 @@ fn siphash24(octets: &[u8], cle: &[u8; 16]) -> u64 {
         tour(&mut v);
         v[0] ^= m;
     }
-    let mut dernier = (octets.len() as u64) << 56;
-    for (k, &o) in reste.iter().enumerate() {
-        dernier |= u64::from(o) << (8 * k);
+    // Les octets restants en petit-boutiste, et la longueur modulo 256 dans l'octet du haut.
+    let mut mot = [0u8; 8];
+    for (d, &o) in mot.iter_mut().zip(reste) {
+        *d = o;
     }
+    #[expect(
+        clippy::as_conversions,
+        reason = "SipHash ne garde que l'octet du bas de la longueur, poussé en haut"
+    )]
+    let longueur = octets.len() as u64;
+    let dernier = u64::from_le_bytes(mot) | (longueur << 56);
     v[3] ^= dernier;
     tour(&mut v);
     tour(&mut v);
@@ -1099,11 +1107,12 @@ fn melange(a: &mut u32, b: &mut u32, c: &mut u32) {
 fn hashlittle2(octets: &[u8], pc: u32, pb: u32) -> (u32, u32) {
     // La longueur entre dans l'état sur 32 bits, comme dans lookup3.c.
     #[allow(clippy::cast_possible_truncation)]
+    #[expect(clippy::as_conversions, reason = "lookup3 prend la longueur modulo 2^32")]
     let depart = 0xdead_beef_u32.wrapping_add(octets.len() as u32).wrapping_add(pc);
     let (mut a, mut b, mut c) = (depart, depart, depart.wrapping_add(pb));
     let mot = |m: &[u8], k: usize| {
         let mut w = [0u8; 4];
-        for (d, o) in w.iter_mut().zip(m.iter().skip(4 * k)) {
+        for (d, o) in w.iter_mut().zip(m.chunks(4).nth(k).unwrap_or_default()) {
             *d = *o;
         }
         u32::from_le_bytes(w)
@@ -1134,6 +1143,11 @@ fn hashlittle2(octets: &[u8], pc: u32, pb: u32) -> (u32, u32) {
     (c, b)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;
