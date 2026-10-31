@@ -4,6 +4,9 @@
 //! KEXINIT et raccroche : aucune authentification, aucune clé calculée. Ce que le serveur envoie est une donnée
 //! hostile : tailles bornées, longueurs vérifiées ; illisible, rien n'est conclu.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
 use std::time::{Duration, Instant};
@@ -69,7 +72,7 @@ pub fn lire(o: &[u8]) -> Result<Lu, Echec> {
             "packet length out of bounds"
         )));
     }
-    let Some(paquet) = reste.get(4..4 + longueur) else {
+    let Some(paquet) = reste.get(4..).and_then(|r| r.get(..longueur)) else {
         return Ok(Lu::Incomplet);
     };
     // `longueur` >= 5 : le paquet a toujours son octet de bourrage.
@@ -126,7 +129,10 @@ pub fn kexinit(ip: Ipv4Addr, port: u16, delai: Duration) -> Result<Vec<String>, 
             crate::tr!("adresse hors du réseau local", "address outside the local network"),
         ));
     }
-    let fin = Instant::now() + delai;
+    // Un délai qui ferait sortir l'instant limite des bornes d'Instant : aucune réponse ne l'attendra.
+    let fin = Instant::now()
+        .checked_add(delai)
+        .ok_or_else(|| Echec::new(OU, Raison::Delai))?;
     let cible = SocketAddr::V4(SocketAddrV4::new(ip, port));
     let mut flux = TcpStream::connect_timeout(&cible, delai).map_err(|e| {
         Echec::echoue(
@@ -163,6 +169,11 @@ pub fn kexinit(ip: Ipv4Addr, port: u16, delai: Duration) -> Result<Vec<String>, 
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

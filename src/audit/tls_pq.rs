@@ -8,6 +8,9 @@
 //! une sonde de 150 octets ne la reproduirait pas. La réponse du serveur est une donnée hostile : bornée en taille et
 //! en temps, longueurs vérifiées ; incompréhensible, elle ne conclut rien.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
@@ -53,7 +56,13 @@ pub fn client_hello_avec(hote: Option<&str>, alea: &[u8; 64]) -> Vec<u8> {
     if let Some(h) = hote.filter(|h| h.parse::<std::net::IpAddr>().is_err() && !h.is_empty() && h.len() < 256) {
         let nom = h.as_bytes();
         let mut sni = Vec::new();
-        sni.extend_from_slice(&u16::try_from(nom.len() + 3).unwrap_or(0).to_be_bytes());
+        sni.extend_from_slice(
+            &nom.len()
+                .checked_add(3)
+                .and_then(|n| u16::try_from(n).ok())
+                .unwrap_or(0)
+                .to_be_bytes(),
+        );
         sni.push(0);
         sni.extend_from_slice(&u16::try_from(nom.len()).unwrap_or(0).to_be_bytes());
         sni.extend_from_slice(nom);
@@ -66,7 +75,7 @@ pub fn client_hello_avec(hote: Option<&str>, alea: &[u8; 64]) -> Vec<u8> {
         0x0403, 0x0503, 0x0603, 0x0804, 0x0805, 0x0806, 0x0807, 0x0808, 0x0401, 0x0501, 0x0601,
     ];
     let mut sig = Vec::new();
-    sig.extend_from_slice(&u16::try_from(signatures.len() * 2).unwrap_or(0).to_be_bytes());
+    sig.extend_from_slice(&u16::try_from(size_of_val(&signatures)).unwrap_or(0).to_be_bytes());
     for s in signatures {
         sig.extend_from_slice(&s.to_be_bytes());
     }
@@ -84,8 +93,8 @@ pub fn client_hello_avec(hote: Option<&str>, alea: &[u8; 64]) -> Vec<u8> {
     corps.extend_from_slice(&alea[32..]);
     corps.extend_from_slice(&[0, 6, 0x13, 0x01, 0x13, 0x02, 0x13, 0x03, 1, 0]);
     // padding : ce qui manque pour atteindre la taille visée (en-têtes : 5 d'enregistrement, 4 de message, 2 de
-    // longueur des extensions, 4 de l'extension elle-même).
-    let deja = 5 + 4 + corps.len() + 2 + ext.len() + 4;
+    // longueur des extensions, 4 de l'extension elle-même). Saturer : au-delà, il ne manque rien.
+    let deja = corps.len().saturating_add(ext.len()).saturating_add(5 + 4 + 2 + 4);
     extension(&mut ext, 21, &vec![0; TAILLE_SONDE.saturating_sub(deja)]);
     corps.extend_from_slice(&u16::try_from(ext.len()).unwrap_or(0).to_be_bytes());
     corps.extend_from_slice(&ext);
@@ -151,11 +160,10 @@ pub fn lire_reponse(o: &[u8]) -> Option<ReponsePq> {
 /// Un ServerHello : accepté seulement s'il est un HelloRetryRequest (random fixe) dont l'extension key_share nomme
 /// X25519MLKEM768.
 fn lire_server_hello(o: &[u8]) -> Option<ReponsePq> {
-    let mut i = 0;
     if o.first() != Some(&2) {
         return Some(ReponsePq::Autre);
     }
-    i += 4;
+    let mut i = 4;
     let _version = u16_a(o, &mut i)?;
     if *prendre_octets(o, &mut i, 32)? != RANDOM_HRR {
         return Some(ReponsePq::Autre);
@@ -188,8 +196,9 @@ fn lire_server_hello(o: &[u8]) -> Option<ReponsePq> {
 /// référence déjà contacté, ou un port d'administration de la box trouvé ouvert par le scan.
 pub fn sonder(adresse: SocketAddr, hote: Option<&str>, delai: Duration) -> Result<ReponsePq, Echec> {
     const OU: &str = "audit/tls-pq";
-    let fin = Instant::now() + delai;
     let muet = || Echec::new(OU, Raison::Delai);
+    // Un délai qui ferait sortir l'instant limite des bornes d'Instant : aucune réponse ne l'attendra.
+    let fin = Instant::now().checked_add(delai).ok_or_else(muet)?;
     let mut flux = TcpStream::connect_timeout(&adresse, delai).map_err(|e| {
         Echec::echoue(
             OU,

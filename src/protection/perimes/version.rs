@@ -6,6 +6,9 @@
 //!
 //! Lecteur pur, sans `crate::`.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::cmp::Ordering;
 use std::fmt;
 
@@ -38,7 +41,7 @@ impl Version {
             }
             // `n` < CHAMPS_MAX, vérifié juste au-dessus.
             *champs.get_mut(n)? = morceau.parse().ok()?;
-            n += 1;
+            n = n.checked_add(1)?;
         }
         Some(Version {
             champs,
@@ -233,6 +236,11 @@ pub(crate) fn brave(texte: &str) -> Option<Version> {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

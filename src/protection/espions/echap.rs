@@ -9,6 +9,9 @@
 //! valeurs, et refuse le reste. Les paquets Android et les certificats d'APK ne servent pas sur un ordinateur : lus,
 //! puis jetés.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::Duration;
@@ -332,13 +335,13 @@ pub(super) fn lire_yaml(texte: &str) -> Option<Lecture> {
         // qui suivent iraient à l'entrée d'avant (ses serveurs montrés comme ceux d'un autre logiciel).
         let longue = ligne.len() > LONGUEUR_MAX;
         if longue && !(ligne == "-" || ligne.starts_with("- ")) {
-            lecture.ignorees += 1;
+            lecture.ignorees = lecture.ignorees.saturating_add(1);
             continue;
         }
-        let retrait = ligne.len() - ligne.trim_start_matches(' ').len();
+        let retrait = ligne.bytes().take_while(|&o| o == b' ').count();
         let reste = &ligne[retrait..];
         if reste.starts_with('\t') {
-            lecture.ignorees += 1;
+            lecture.ignorees = lecture.ignorees.saturating_add(1);
             continue;
         }
         let reste = sans_commentaire(reste).trim_end();
@@ -358,7 +361,7 @@ pub(super) fn lire_yaml(texte: &str) -> Option<Lecture> {
             valeurs_entree = 0;
             if longue {
                 // Une entrée sans nom : ses valeurs sont lues puis jetées (`indicateurs_de` saute les sans-nom).
-                lecture.ignorees += 1;
+                lecture.ignorees = lecture.ignorees.saturating_add(1);
                 continue;
             }
             let r = reste[1..].trim_start();
@@ -371,7 +374,7 @@ pub(super) fn lire_yaml(texte: &str) -> Option<Lecture> {
         };
         let Some(entree) = courante.as_mut() else {
             // Avant la première entrée : pas la liste d'Échap (un portail Wi-Fi, une page HTML).
-            lecture.ignorees += 1;
+            lecture.ignorees = lecture.ignorees.saturating_add(1);
             continue;
         };
         let (chemin, valeur) = if reste == "-" || reste.starts_with("- ") {
@@ -394,11 +397,11 @@ pub(super) fn lire_yaml(texte: &str) -> Option<Lecture> {
             chemin.push(cle);
             (chemin.join("/"), valeur)
         } else {
-            lecture.ignorees += 1;
+            lecture.ignorees = lecture.ignorees.saturating_add(1);
             continue;
         };
         let Some(valeur) = scalaire(valeur) else {
-            lecture.ignorees += 1;
+            lecture.ignorees = lecture.ignorees.saturating_add(1);
             continue;
         };
         let liste = match chemin.as_str() {
@@ -414,8 +417,9 @@ pub(super) fn lire_yaml(texte: &str) -> Option<Lecture> {
         if valeur.is_empty() {
             continue;
         }
-        valeurs_entree += 1;
-        valeurs += 1;
+        // Compteurs bornés juste après (VALEURS_PAR_ENTREE, VALEURS_MAX).
+        valeurs_entree = valeurs_entree.saturating_add(1);
+        valeurs = valeurs.saturating_add(1);
         if valeurs_entree > VALEURS_PAR_ENTREE || valeurs > VALEURS_MAX {
             return None;
         }

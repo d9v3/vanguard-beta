@@ -12,6 +12,9 @@
 //! Lecteur pur, sans `crate::` : le banc de fuzzing l'inclut par son chemin. Borné : 1 Mio et 20 000 lignes par
 //! fichier, 4 Kio par ligne, 1 000 CVE par avis, 10 000 avis, 100 000 CVE en tout, 64 branches ESR par CVE.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::collections::HashMap;
 
 use super::version::Version;
@@ -77,7 +80,7 @@ fn longueur_cve(octets: &[u8]) -> Option<usize> {
         return None;
     }
     let n = suite.iter().take(8).take_while(|o| o.is_ascii_digit()).count();
-    (4..=7).contains(&n).then_some(4 + 5 + n)
+    (4..=7).contains(&n).then_some(n)?.checked_add(4 + 5)
 }
 
 /// Les CVE écrites dans un texte (le corps d'un ancien avis `.md`), par un simple parcours d'octets : un nombre qui
@@ -86,19 +89,27 @@ fn cves_du_texte(texte: &str, cves: &mut Vec<String>) {
     let octets = texte.as_bytes();
     let mut i = 0;
     while let Some(pos) = octets.get(i..).and_then(|r| r.windows(4).position(|w| w == b"CVE-")) {
-        let debut = i + pos;
+        let Some(debut) = i.checked_add(pos) else {
+            return;
+        };
         let precede = debut
             .checked_sub(1)
             .and_then(|k| octets.get(k))
             .is_some_and(u8::is_ascii_alphanumeric);
         if !precede
-            && let Some(n) = octets.get(debut..).and_then(longueur_cve)
-            && !octets.get(debut + n).is_some_and(u8::is_ascii_digit)
+            && let Some(fin) = octets
+                .get(debut..)
+                .and_then(longueur_cve)
+                .and_then(|n| debut.checked_add(n))
+            && !octets.get(fin).is_some_and(u8::is_ascii_digit)
         {
-            ajouter_cve(cves, &texte[debut..debut + n]);
-            i = debut + n;
+            ajouter_cve(cves, &texte[debut..fin]);
+            i = fin;
         } else {
-            i = debut + 4;
+            let Some(suite) = debut.checked_add(4) else {
+                return;
+            };
+            i = suite;
         }
         if cves.len() >= CVE_PAR_AVIS {
             return;
@@ -192,7 +203,11 @@ pub(crate) fn avis(nom: &str, octets: &[u8]) -> Option<Avis> {
             if lignes.first().map(|l| l.trim_end()) != Some("---") {
                 return None;
             }
-            let fin = lignes.iter().skip(1).position(|l| l.trim_end() == "---")? + 1;
+            let fin = lignes
+                .iter()
+                .skip(1)
+                .position(|l| l.trim_end() == "---")?
+                .checked_add(1)?;
             lire_entete(lignes.get(1..fin)?, &mut a);
             cves_du_texte(texte, &mut a.cves);
         }
@@ -207,7 +222,7 @@ impl Index {
         if self.avis >= AVIS_TOUS {
             return;
         }
-        self.avis += 1;
+        self.avis = self.avis.saturating_add(1);
         for cve in &avis.cves {
             let cle = cve.to_ascii_uppercase();
             if self.cves.len() >= CVES_TOUTES && !self.cves.contains_key(&cle) {

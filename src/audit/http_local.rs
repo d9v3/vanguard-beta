@@ -3,6 +3,9 @@
 //! accepterait. Borné de partout : seulement une adresse du réseau local écrite en chiffres (jamais Internet, jamais
 //! un nom à résoudre), un instant limite pour toute la demande, une taille de réponse ; aucune redirection suivie.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::fmt::Write as _;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
@@ -162,7 +165,9 @@ fn complete(brut: &[u8]) -> bool {
 
 /// Position du premier octet du corps, après la ligne vide qui finit les en-têtes.
 fn fin_entetes(brut: &[u8]) -> Option<usize> {
-    brut.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4)
+    brut.windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .and_then(|i| i.checked_add(4))
 }
 
 /// « content-length: 1234 », dans des en-têtes déjà en minuscules.
@@ -221,7 +226,9 @@ fn recoller(mut reste: &[u8]) -> Vec<u8> {
         if n == 0 {
             break;
         }
-        let debut = fin_ligne + 2;
+        let Some(debut) = fin_ligne.checked_add(2) else {
+            break;
+        };
         let Some(fin_morceau) = debut.checked_add(n) else {
             break;
         };

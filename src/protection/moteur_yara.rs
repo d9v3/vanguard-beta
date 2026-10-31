@@ -15,6 +15,9 @@
 //!
 //! Module pur, sans `crate::` (sauf `crate::pe`) : le banc de fuzzing l'inclut par son chemin.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::io::{Read, Seek, SeekFrom};
 use std::time::Instant;
 
@@ -70,7 +73,11 @@ impl Regles {
                 for forme in &c.formes {
                     match Motif::nouveau(forme.clone()) {
                         Ok(m) => {
-                            rangs.push(motifs_liste.len() + neufs.len());
+                            let Some(rang) = motifs_liste.len().checked_add(neufs.len()) else {
+                                echec = Some(format!("{} : trop de motifs", c.nom));
+                                break;
+                            };
+                            rangs.push(rang);
                             neufs.push(m);
                         }
                         Err(e) => {
@@ -261,7 +268,7 @@ struct Tampon<'a> {
 
 impl Acces for Tampon<'_> {
     fn taille(&self) -> u64 {
-        self.donnees.len() as u64
+        u64::try_from(self.donnees.len()).unwrap_or(u64::MAX)
     }
 
     fn lire(&mut self, position: u64, n: usize) -> Vec<u8> {
@@ -318,7 +325,7 @@ impl<S: Read + Seek> Read for Flux<'_, S> {
         let r = self.source.read(tampon);
         match &r {
             Ok(0) if !tampon.is_empty() && self.position < self.taille => self.erreur = true,
-            Ok(n) => self.position += *n as u64,
+            Ok(n) => self.position = self.position.saturating_add(u64::try_from(*n).unwrap_or(u64::MAX)),
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => self.erreur = true,
         }
@@ -343,10 +350,10 @@ impl<S: Read + Seek> Acces for Flux<'_, S> {
     }
 
     fn lire(&mut self, position: u64, n: usize) -> Vec<u8> {
-        if position >= self.taille {
+        let Some(reste) = self.taille.checked_sub(position).filter(|&r| r > 0) else {
             return Vec::new();
-        }
-        let n = n.min(usize::try_from(self.taille - position).unwrap_or(usize::MAX));
+        };
+        let n = n.min(usize::try_from(reste).unwrap_or(usize::MAX));
         let mut tampon = vec![0u8; n];
         if self.seek(SeekFrom::Start(position)).is_err() || self.read_exact(&mut tampon).is_err() {
             self.erreur = true;
@@ -434,9 +441,11 @@ impl<A: Acces> Contexte<'_, A> {
                     lu.iter().rev().fold(0u64, empiler)
                 };
                 if *signe {
-                    // Étendre le signe de la largeur lue (1 à 4 octets).
-                    let decalage = 64 - 8 * u32::from(*octets);
-                    Some((valeur << decalage).cast_signed() >> decalage)
+                    // Étendre le signe de la largeur lue (1 à 4 octets ; une autre largeur : indéfini).
+                    let decalage = 8u32
+                        .checked_mul(u32::from(*octets))
+                        .and_then(|b| 64u32.checked_sub(b))?;
+                    valeur.checked_shl(decalage)?.cast_signed().checked_shr(decalage)
                 } else {
                     i64::try_from(valeur).ok()
                 }
@@ -544,7 +553,9 @@ impl<A: Acces> Contexte<'_, A> {
                 let mut trouve = false;
                 for &m in chaines.get(*c).ok_or(Echec::Lecture)? {
                     let motif = recherche.motifs().get(m).ok_or(Echec::Lecture)?;
-                    let morceau = self.acces.lire(p, motif.longueur_max() as usize);
+                    let morceau = self
+                        .acces
+                        .lire(p, usize::try_from(motif.longueur_max()).unwrap_or(usize::MAX));
                     if motif.commence_ici(&morceau) {
                         trouve = true;
                         break;
@@ -555,10 +566,10 @@ impl<A: Acces> Contexte<'_, A> {
             Expr::Ensemble(quantite, rangs) => {
                 let mut n = 0u64;
                 for &c in rangs {
-                    n += u64::from(self.trouvee(chaines, c)?);
+                    n = n.saturating_add(u64::from(self.trouvee(chaines, c)?));
                 }
                 Some(match quantite {
-                    Quantite::Toutes => n == rangs.len() as u64,
+                    Quantite::Toutes => usize::try_from(n).is_ok_and(|n| n == rangs.len()),
                     Quantite::AuMoins(k) => n >= *k,
                     Quantite::Aucune => n == 0,
                 })
@@ -604,7 +615,7 @@ impl<A: Acces> Contexte<'_, A> {
 
 /// Lit `n` octets à `position`, s'ils sont tous avant `taille`.
 fn morceau<S: Read + Seek>(source: &mut S, taille: u64, position: u64, n: usize) -> Option<Vec<u8>> {
-    if position.checked_add(n as u64)? > taille {
+    if position.checked_add(u64::try_from(n).ok()?)? > taille {
         return None;
     }
     source.seek(SeekFrom::Start(position)).ok()?;
@@ -640,7 +651,7 @@ pub(crate) fn entree_elf<S: Read + Seek>(source: &mut S, taille: u64) -> Option<
     let entete = morceau(source, taille, 0, if large { 64 } else { 52 })?;
     // Les champs sont tous dans l'en-tête ou l'entrée lus à leur taille de la norme : `None` ne vient jamais.
     let lire = |o: &[u8], a: usize, n: usize| -> Option<u64> {
-        let champ = o.get(a..a + n)?;
+        let champ = o.get(a..)?.get(..n)?;
         let empiler = |v: u64, x: &u8| (v << 8) | u64::from(*x);
         Some(if gros {
             champ.iter().fold(0u64, empiler)
@@ -648,15 +659,19 @@ pub(crate) fn entree_elf<S: Read + Seek>(source: &mut S, taille: u64) -> Option<
             champ.iter().rev().fold(0u64, empiler)
         })
     };
-    let mot = if large { 8 } else { 4 };
+    // Taille d'une adresse, positions de e_phoff, e_shoff, e_phnum et e_shnum dans l'en-tête (ELF64, puis ELF32).
+    let (mot, phoff, shoff, phnum, shnum) = if large {
+        (8, 32, 40, 56, 60)
+    } else {
+        (4, 28, 32, 44, 48)
+    };
     let sorte = lire(&entete, 16, 2)?;
     let entree = lire(&entete, 24, mot)?;
     if entree == 0 {
         return None;
     }
-    let (table_segments, table_sections) = (lire(&entete, 24 + mot, mot)?, lire(&entete, 24 + 2 * mot, mot)?);
-    let nombres = 24 + 3 * mot + 4 + 2;
-    let (segments, sections) = (lire(&entete, nombres + 2, 2)?, lire(&entete, nombres + 6, 2)?);
+    let (table_segments, table_sections) = (lire(&entete, phoff, mot)?, lire(&entete, shoff, mot)?);
+    let (segments, sections) = (lire(&entete, phnum, 2)?, lire(&entete, shnum, 2)?);
     // Un nombre de sections dans la plage réservée (SHN_LORESERVE, 0xFF00, et au-delà) : indéfini, quel que soit le type
     // (vérifié en boîte noire contre YARA-X).
     if sections >= 0xFF00 {
@@ -669,13 +684,19 @@ pub(crate) fn entree_elf<S: Read + Seek>(source: &mut S, taille: u64) -> Option<
     } else {
         (table_sections, sections, if large { 64 } else { 40 })
     };
-    if debut.checked_add(nombre * pas)? > taille {
+    if debut.checked_add(nombre.checked_mul(pas)?)? > taille {
         return None;
     }
     let mut k = 0;
     while k < nombre {
-        let lot = (nombre - k).min(TABLE_PAR_LECTURE);
-        let octets = morceau(source, taille, debut + k * pas, usize::try_from(lot * pas).ok()?)?;
+        let lot = nombre.checked_sub(k)?.min(TABLE_PAR_LECTURE);
+        let position_lot = debut.checked_add(k.checked_mul(pas)?)?;
+        let octets = morceau(
+            source,
+            taille,
+            position_lot,
+            usize::try_from(lot.checked_mul(pas)?).ok()?,
+        )?;
         for e in octets.chunks_exact(usize::try_from(pas).ok()?) {
             let (genre, adresse, position, etendue) = match (par_segments, large) {
                 (true, true) => (lire(e, 0, 4)?, lire(e, 16, 8)?, lire(e, 8, 8)?, lire(e, 40, 8)?),
@@ -689,15 +710,22 @@ pub(crate) fn entree_elf<S: Read + Seek>(source: &mut S, taille: u64) -> Option<
             // Une entrée dont la fin dépasse 64 bits rend le champ indéfini, comme dans
             // YARA-X, si elle vient avant celle qui contient l'entrée (relecture adverse, vérifié en boîte noire).
             adresse.checked_add(etendue)?;
-            if adresse <= entree && entree - adresse < etendue {
-                return (entree - adresse).checked_add(position);
+            if let Some(ecart) = entree.checked_sub(adresse)
+                && ecart < etendue
+            {
+                return ecart.checked_add(position);
             }
         }
-        k += lot;
+        k = k.checked_add(lot)?;
     }
     None
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

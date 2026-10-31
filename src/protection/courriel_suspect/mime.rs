@@ -6,6 +6,9 @@
 //!
 //! Module autonome (aucun `crate::`) : le banc de fuzzing l'inclut par son chemin (`fuzz/fuzz_targets/courriel_mime.rs`).
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::borrow::Cow;
 
 /// Les bornes de lecture. Celles du programme sont dans `BORNES` ; les tests en passent de plus petites.
@@ -216,7 +219,7 @@ pub(crate) fn lire_borne(octets: &[u8], b: &Bornes) -> Message {
                         m.noter(Anomalie::TropProfond);
                         m.incomplet = true;
                     } else {
-                        let reste = (b.parties * 2).saturating_sub(empiles);
+                        let reste = b.parties.saturating_mul(2).saturating_sub(empiles);
                         let (morceaux, anomalies, trop) = decouper_multipart(corps, &frontiere, reste);
                         for a in anomalies {
                             m.noter(a);
@@ -231,16 +234,22 @@ pub(crate) fn lire_borne(octets: &[u8], b: &Bornes) -> Message {
                             pousser_feuille(&mut m, &t, "text/plain", &params, &entetes, corps, &encodage, b);
                             continue;
                         }
-                        empiles += morceaux.len();
+                        // Compteur borné par `reste` ci-dessus.
+                        empiles = empiles.saturating_add(morceaux.len());
                         let mut frontieres = t.frontieres.clone();
                         frontieres.push(frontiere);
                         let mut enfants: Vec<Travail> = Vec::with_capacity(morceaux.len());
-                        for (i, (debut, fin)) in morceaux.into_iter().enumerate() {
-                            let plage = debut_corps + debut..debut_corps + fin;
-                            let octets = match &t.octets {
-                                Cow::Borrowed(o) => o.get(plage).map(Cow::Borrowed),
-                                Cow::Owned(o) => o.get(plage).map(|p| Cow::Owned(p.to_vec())),
-                            };
+                        #[expect(
+                            clippy::arithmetic_side_effects,
+                            reason = "t.profondeur < b.profondeur, vérifié au-dessus"
+                        )]
+                        let profondeur = t.profondeur + 1;
+                        for (rang, (debut, fin)) in (1_usize..).zip(morceaux) {
+                            let plage = debut_corps.checked_add(debut).zip(debut_corps.checked_add(fin));
+                            let octets = plage.and_then(|(debut, fin)| match &t.octets {
+                                Cow::Borrowed(o) => o.get(debut..fin).map(Cow::Borrowed),
+                                Cow::Owned(o) => o.get(debut..fin).map(|p| Cow::Owned(p.to_vec())),
+                            });
                             // Les morceaux sont découpés dans le corps : un morceau hors de lui est sauté, dit.
                             let Some(octets) = octets else {
                                 m.incomplet = true;
@@ -248,8 +257,8 @@ pub(crate) fn lire_borne(octets: &[u8], b: &Bornes) -> Message {
                             };
                             enfants.push(Travail {
                                 octets,
-                                profondeur: t.profondeur + 1,
-                                chemin: format!("{}.{}", t.chemin, i + 1),
+                                profondeur,
+                                chemin: format!("{}.{rang}", t.chemin),
                                 frontieres: frontieres.clone(),
                                 dans_piece_jointe: t.dans_piece_jointe,
                                 digest: sorte == "digest",
@@ -269,7 +278,7 @@ pub(crate) fn lire_borne(octets: &[u8], b: &Bornes) -> Message {
             if t.profondeur >= b.profondeur {
                 m.noter(Anomalie::TropProfond);
                 m.incomplet = true;
-            } else if empiles >= b.parties * 2 {
+            } else if empiles >= b.parties.saturating_mul(2) {
                 m.noter(Anomalie::TropDeParties);
                 m.incomplet = true;
             } else {
@@ -278,7 +287,8 @@ pub(crate) fn lire_borne(octets: &[u8], b: &Bornes) -> Message {
                 if let Some(a) = anomalie {
                     m.noter(a);
                 }
-                empiles += 1;
+                // Compteur borné juste au-dessus (b.parties * 2).
+                empiles = empiles.saturating_add(1);
                 let octets = match (decode, &t.octets) {
                     // `corps` a déjà été lu à cette place : elle est dans le bloc.
                     (None, Cow::Borrowed(o)) => o.get(debut_corps..).map(Cow::Borrowed),
@@ -289,9 +299,14 @@ pub(crate) fn lire_borne(octets: &[u8], b: &Bornes) -> Message {
                     m.incomplet = true;
                     continue;
                 };
+                #[expect(
+                    clippy::arithmetic_side_effects,
+                    reason = "t.profondeur < b.profondeur, vérifié au-dessus"
+                )]
+                let profondeur = t.profondeur + 1;
                 pile.push(Travail {
                     octets,
-                    profondeur: t.profondeur + 1,
+                    profondeur,
                     chemin: format!("{}.1", t.chemin),
                     frontieres: t.frontieres.clone(),
                     dans_piece_jointe: true,
@@ -394,11 +409,12 @@ fn lignes(octets: &[u8]) -> impl Iterator<Item = (usize, &[u8], usize)> + '_ {
             .unwrap_or(reste.len());
         // `n` est pris dans `reste` : la coupe ne manque jamais.
         let (ligne, apres) = reste.split_at_checked(n)?;
-        i += n + match apres {
+        let saut = match apres {
             [b'\r', b'\n', ..] => 2,
             [] => 0,
             _ => 1,
         };
+        i = debut.checked_add(n)?.checked_add(saut)?;
         Some((debut, ligne, i))
     })
 }
@@ -437,7 +453,8 @@ fn separer_entetes(octets: &[u8], b: &Bornes) -> (Vec<Entete>, usize, Vec<Anomal
         if ligne.is_empty() {
             return (entetes, suivante, anomalies, coupe);
         }
-        lus += suivante - debut;
+        // Compteur comparé à sa borne juste après ; `suivante` >= `debut` (lignes).
+        lus = lus.saturating_add(suivante.saturating_sub(debut));
         if lus > b.bloc_entetes && garder {
             garder = false;
             coupe = true;
@@ -515,11 +532,13 @@ fn decouper_multipart(corps: &[u8], frontiere: &[u8], max: usize) -> (Vec<(usize
         if let Some(d) = ouvert {
             // Le saut de ligne qui précède la frontière lui appartient (RFC 2046).
             let mut f = debut;
-            if f > d && corps.get(f - 1) == Some(&b'\n') {
-                f -= 1;
-            }
-            if f > d && corps.get(f - 1) == Some(&b'\r') {
-                f -= 1;
+            for fin_de_ligne in b"\n\r" {
+                if f > d
+                    && let Some(avant) = f.checked_sub(1)
+                    && corps.get(avant) == Some(fin_de_ligne)
+                {
+                    f = avant;
+                }
             }
             if morceaux.len() >= max {
                 return (morceaux, anomalies, true);
@@ -545,6 +564,10 @@ fn decouper_multipart(corps: &[u8], frontiere: &[u8], max: usize) -> (Vec<(usize
     (morceaux, anomalies, false)
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "chaque bras retire le bas de sa propre plage : ni négatif ni débordement"
+)]
 fn valeur_base64(o: u8) -> Option<u8> {
     match o {
         b'A'..=b'Z' => Some(o - b'A'),
@@ -561,7 +584,7 @@ fn valeur_base64(o: u8) -> Option<u8> {
 /// caractère étranger : un courriel se lit comme les logiciels de courriel le lisent, sinon ce qu'ils montrent
 /// échapperait à l'examen. `true` : quelque chose clochait (caractère étranger, groupe incomplet).
 fn base64_tolerant(octets: &[u8]) -> (Vec<u8>, bool) {
-    let mut sortie = Vec::with_capacity(octets.len() / 4 * 3);
+    let mut sortie = Vec::with_capacity((octets.len() / 4).saturating_mul(3));
     let mut groupe = 0_u32;
     let mut n = 0_u8;
     let mut abime = false;
@@ -574,7 +597,10 @@ fn base64_tolerant(octets: &[u8]) -> (Vec<u8>, bool) {
                 apres_egal = false;
             }
             groupe = (groupe << 6) | u32::from(v);
-            n += 1;
+            #[expect(clippy::arithmetic_side_effects, reason = "n < 4 : remis à 0 dès qu'il vaut 4")]
+            {
+                n += 1;
+            }
             if n == 4 {
                 sortie.extend_from_slice(&groupe.to_be_bytes()[1..]);
                 groupe = 0;
@@ -608,6 +634,10 @@ fn vider_groupe(sortie: &mut Vec<u8>, groupe: u32, n: u8, abime: &mut bool) {
     }
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "chaque bras retire le bas de sa propre plage : ni négatif ni débordement"
+)]
 fn hex(o: u8) -> Option<u8> {
     match o {
         b'0'..=b'9' => Some(o - b'0'),
@@ -621,35 +651,29 @@ fn hex(o: u8) -> Option<u8> {
 /// mal formé reste tel quel.
 fn quoted_printable(octets: &[u8]) -> Vec<u8> {
     let mut sortie = Vec::with_capacity(octets.len());
-    let mut i = 0;
-    while let Some(&o) = octets.get(i) {
+    let mut reste = octets;
+    while let Some((&o, apres)) = reste.split_first() {
         if o != b'=' {
             sortie.push(o);
-            i += 1;
+            reste = apres;
             continue;
         }
         // Saut de ligne doux, avec des espaces oubliés avant lui.
-        let mut j = i + 1;
-        while matches!(octets.get(j), Some(b' ' | b'\t')) {
-            j += 1;
-        }
-        match octets.get(j) {
-            Some(b'\r') if octets.get(j + 1) == Some(&b'\n') => i = j + 2,
-            Some(b'\n' | b'\r') => i = j + 1,
-            None => i = j,
-            Some(_) => {
-                if let (Some(h), Some(l)) = (
-                    octets.get(i + 1).copied().and_then(hex),
-                    octets.get(i + 2).copied().and_then(hex),
-                ) {
+        reste = match trim_debut(apres) {
+            [b'\r', b'\n', suite @ ..] | [b'\n' | b'\r', suite @ ..] => suite,
+            [] => &[],
+            [_, ..] => {
+                if let [h, l, suite @ ..] = apres
+                    && let (Some(h), Some(l)) = (hex(*h), hex(*l))
+                {
                     sortie.push(h << 4 | l);
-                    i += 3;
+                    suite
                 } else {
                     sortie.push(b'=');
-                    i += 1;
+                    apres
                 }
             }
-        }
+        };
     }
     sortie
 }
@@ -690,8 +714,9 @@ pub(crate) fn texte(octets: &[u8], jeu: Option<&str>) -> (String, bool) {
             octets
                 .iter()
                 .map(|&o| match o {
-                    0x80..=0x9f => WINDOWS_1252
-                        .get(usize::from(o - 0x80))
+                    0x80..=0x9f => usize::from(o)
+                        .checked_sub(0x80)
+                        .and_then(|k| WINDOWS_1252.get(k))
                         .copied()
                         .unwrap_or(char::REPLACEMENT_CHARACTER),
                     _ => char::from(o),
@@ -707,12 +732,12 @@ pub(crate) fn texte(octets: &[u8], jeu: Option<&str>) -> (String, bool) {
 /// encodés voisins retirés (la RFC le veut). Un mot mal formé reste tel quel ; au-delà de la borne, le reste aussi.
 pub(crate) fn mots_encodes(brut: &[u8], b: &Bornes) -> String {
     let mut sortie = String::new();
-    let mut i = 0;
-    let mut decodes = 0;
+    let mut reste = brut;
+    let mut decodes = 0_usize;
     // Espaces vus depuis le dernier mot encodé, gardés seulement si un texte ordinaire suit.
     let mut attente = String::new();
     let mut apres_mot = false;
-    while let Some(ici @ [_, apres @ ..]) = brut.get(i..) {
+    while let ici @ [_, ..] = reste {
         if decodes < b.mots_encodes
             && ici.starts_with(b"=?")
             && let Some((texte, longueur)) = mot_encode(ici)
@@ -722,15 +747,21 @@ pub(crate) fn mots_encodes(brut: &[u8], b: &Bornes) -> String {
             }
             attente.clear();
             sortie.push_str(&texte);
-            decodes += 1;
-            i += longueur;
+            // Compteur borné par b.mots_encodes juste au-dessus.
+            decodes = decodes.saturating_add(1);
+            reste = ici.get(longueur..).unwrap_or_default();
             apres_mot = true;
             continue;
         }
         // Jusqu'au prochain « =? » après le premier octet, ou la fin.
-        let n = 1 + apres.windows(2).position(|w| w == b"=?").unwrap_or(apres.len());
-        let morceau = String::from_utf8_lossy(ici.get(..n).unwrap_or(ici));
-        let fin = i + n;
+        let n = ici
+            .windows(2)
+            .enumerate()
+            .skip(1)
+            .find(|(_, w)| *w == b"=?")
+            .map_or(ici.len(), |(k, _)| k);
+        let (morceau, suite) = ici.split_at_checked(n).unwrap_or((ici, &[]));
+        let morceau = String::from_utf8_lossy(morceau);
         if apres_mot && morceau.chars().all(char::is_whitespace) {
             attente.push_str(&morceau);
         } else {
@@ -739,7 +770,7 @@ pub(crate) fn mots_encodes(brut: &[u8], b: &Bornes) -> String {
             sortie.push_str(&morceau);
             apres_mot = false;
         }
-        i = fin;
+        reste = suite;
     }
     sortie.push_str(&attente);
     sortie
@@ -767,30 +798,33 @@ fn mot_encode(o: &[u8]) -> Option<(String, usize)> {
         b'B' => base64_tolerant(code).0,
         b'Q' => {
             let mut s = Vec::with_capacity(code.len());
-            let mut i = 0;
-            while let Some(&c) = code.get(i) {
+            let mut reste = code;
+            while let Some((&c, apres)) = reste.split_first() {
+                reste = apres;
                 match c {
                     b'_' => s.push(b' '),
                     b'=' => {
-                        if let (Some(h), Some(l)) = (
-                            code.get(i + 1).copied().and_then(hex),
-                            code.get(i + 2).copied().and_then(hex),
-                        ) {
+                        if let [h, l, suite @ ..] = apres
+                            && let (Some(h), Some(l)) = (hex(*h), hex(*l))
+                        {
                             s.push(h << 4 | l);
-                            i += 2;
+                            reste = suite;
                         } else {
                             s.push(b'=');
                         }
                     }
                     c => s.push(c),
                 }
-                i += 1;
             }
             s
         }
         _ => return None,
     };
-    Some((texte(&octets, Some(jeu)).0, 2 + q1 + 1 + 2 + fin + 2))
+    // « =? », le jeu, « ? », la sorte et « ? », le code, « ?= ».
+    Some((
+        texte(&octets, Some(jeu)).0,
+        q1.checked_add(fin)?.checked_add(2 + 1 + 2 + 2)?,
+    ))
 }
 
 /// Un morceau d'un paramètre découpé (RFC 2231) : son rang, s'il est encodé, sa valeur.
@@ -850,17 +884,18 @@ fn sans_guillemets(v: &str) -> String {
 fn pourcents(v: &str) -> Vec<u8> {
     let o = v.as_bytes();
     let mut s = Vec::with_capacity(o.len());
-    let mut i = 0;
-    while let Some(&c) = o.get(i) {
+    let mut reste = o;
+    while let Some((&c, apres)) = reste.split_first() {
         if c == b'%'
-            && let (Some(h), Some(l)) = (o.get(i + 1).copied().and_then(hex), o.get(i + 2).copied().and_then(hex))
+            && let [h, l, suite @ ..] = apres
+            && let (Some(h), Some(l)) = (hex(*h), hex(*l))
         {
             s.push(h << 4 | l);
-            i += 3;
+            reste = suite;
             continue;
         }
         s.push(c);
-        i += 1;
+        reste = apres;
     }
     s
 }

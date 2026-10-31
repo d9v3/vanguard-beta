@@ -4,6 +4,9 @@
 //! une réponse mal formée est simplement ignorée. Aucune bibliothèque DNS : le format tient en quelques dizaines de
 //! lignes et Vanguard a besoin de voir les drapeaux, que les résolveurs du système cachent.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
@@ -99,6 +102,10 @@ pub fn question(id: u16, nom: &str, genre: Genre, edns: bool, dnssec: bool) -> V
         q.extend(etiquette.as_bytes());
     }
     q.push(0);
+    #[expect(
+        clippy::as_conversions,
+        reason = "énumération sans données, discriminants de 1 à 65 : conversion exacte"
+    )]
     q.extend((genre as u16).to_be_bytes());
     q.extend([0, 1]);
     if edns {
@@ -115,16 +122,11 @@ pub fn question(id: u16, nom: &str, genre: Genre, edns: bool, dnssec: bool) -> V
 }
 
 fn u16_a(message: &[u8], pos: usize) -> Option<u16> {
-    Some(u16::from_be_bytes([*message.get(pos)?, *message.get(pos + 1)?]))
+    Some(u16::from_be_bytes(*message.get(pos..)?.first_chunk::<2>()?))
 }
 
 fn u32_a(message: &[u8], pos: usize) -> Option<u32> {
-    Some(u32::from_be_bytes([
-        *message.get(pos)?,
-        *message.get(pos + 1)?,
-        *message.get(pos + 2)?,
-        *message.get(pos + 3)?,
-    ]))
+    Some(u32::from_be_bytes(*message.get(pos..)?.first_chunk::<4>()?))
 }
 
 /// Un nom à la position `pos` du message : étiquettes, avec les pointeurs de compression (bornés : seize sauts au
@@ -132,30 +134,28 @@ fn u32_a(message: &[u8], pos: usize) -> Option<u32> {
 fn nom(message: &[u8], mut pos: usize) -> Option<(String, usize)> {
     let mut texte = String::new();
     let mut suite = None;
-    let mut sauts = 0;
+    let mut sauts: u8 = 0;
     loop {
         let &longueur = message.get(pos)?;
         match longueur {
             0 => {
-                pos += 1;
+                pos = pos.checked_add(1)?;
                 break;
             }
             l if l & 0xC0 == 0xC0 => {
-                let &bas = message.get(pos + 1)?;
+                let &bas = message.get(pos.checked_add(1)?)?;
                 if suite.is_none() {
-                    suite = Some(pos + 2);
+                    suite = Some(pos.checked_add(2)?);
                 }
-                sauts += 1;
-                if sauts > 16 {
-                    return None;
-                }
+                sauts = sauts.checked_add(1).filter(|&n| n <= 16)?;
                 pos = usize::from(l & 0x3F) << 8 | usize::from(bas);
             }
             // Étiquettes étendues (0x40, 0x80) : jamais vues en pratique, pas lues.
             l if l & 0xC0 != 0 => return None,
             l => {
                 let l = usize::from(l);
-                let etiquette = message.get(pos + 1..pos + 1 + l)?;
+                let debut = pos.checked_add(1)?;
+                let etiquette = message.get(debut..debut.checked_add(l)?)?;
                 if !texte.is_empty() {
                     texte.push('.');
                 }
@@ -163,7 +163,7 @@ fn nom(message: &[u8], mut pos: usize) -> Option<(String, usize)> {
                 if texte.len() > 253 {
                     return None;
                 }
-                pos += 1 + l;
+                pos = debut.checked_add(l)?;
             }
         }
     }
@@ -191,13 +191,15 @@ fn chaines(mut octets: &[u8]) -> Vec<String> {
 /// 3 = port, 4 et 6 = adresses, 7 = chemin DoH.
 fn svcb(message: &[u8], debut: usize, fin: usize) -> Option<Donnees> {
     let priorite = u16_a(message, debut)?;
-    let (cible, mut pos) = nom(message, debut + 2)?;
+    let (cible, mut pos) = nom(message, debut.checked_add(2)?)?;
     let (mut alpn, mut port, mut dohpath, mut indices) = (Vec::new(), None, None, Vec::new());
-    while pos + 4 <= fin {
+    while pos.checked_add(4)? <= fin {
         let cle = u16_a(message, pos)?;
-        let longueur = usize::from(u16_a(message, pos + 2)?);
-        let valeur = message.get(pos + 4..pos + 4 + longueur)?;
-        if pos + 4 + longueur > fin {
+        let longueur = usize::from(u16_a(message, pos.checked_add(2)?)?);
+        let debut_valeur = pos.checked_add(4)?;
+        let fin_valeur = debut_valeur.checked_add(longueur)?;
+        let valeur = message.get(debut_valeur..fin_valeur)?;
+        if fin_valeur > fin {
             return None;
         }
         match cle {
@@ -208,7 +210,7 @@ fn svcb(message: &[u8], debut: usize, fin: usize) -> Option<Donnees> {
             7 => dohpath = Some(String::from_utf8_lossy(valeur).into_owned()),
             _ => {}
         }
-        pos += 4 + longueur;
+        pos = fin_valeur;
     }
     Some(Donnees::Svcb {
         priorite,
@@ -224,10 +226,10 @@ fn svcb(message: &[u8], debut: usize, fin: usize) -> Option<Donnees> {
 fn enregistrement(message: &[u8], pos: usize) -> Option<(Enregistrement, usize)> {
     let (nom, apres) = nom(message, pos)?;
     let genre = u16_a(message, apres)?;
-    let ttl = u32_a(message, apres + 4)?;
-    let longueur = usize::from(u16_a(message, apres + 8)?);
-    let debut = apres + 10;
-    let fin = debut + longueur;
+    let ttl = u32_a(message, apres.checked_add(4)?)?;
+    let longueur = usize::from(u16_a(message, apres.checked_add(8)?)?);
+    let debut = apres.checked_add(10)?;
+    let fin = debut.checked_add(longueur)?;
     let rdata = message.get(debut..fin)?;
     let donnees = match (genre, rdata) {
         (1, &[a, b, c, d]) => Donnees::A(Ipv4Addr::new(a, b, c, d)),
@@ -253,7 +255,7 @@ pub fn lire(message: &[u8], id: u16) -> Option<Reponse> {
     let reponses = usize::from(u16_a(message, 6)?).min(ENREGISTREMENTS_MAX);
     let mut pos = 12;
     for _ in 0..questions.min(4) {
-        pos = nom(message, pos)?.1 + 4;
+        pos = nom(message, pos)?.1.checked_add(4)?;
     }
     let mut enregistrements = Vec::new();
     for _ in 0..reponses {
@@ -289,6 +291,10 @@ pub fn interroger(serveur: IpAddr, nom: &str, genre: Genre, edns: bool, dnssec: 
     let mut tampon = [0u8; 4096];
     for _ in 0..ESSAIS {
         socket.send(&q).ok()?;
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "maintenant + 1,5 s : loin de la limite d'Instant"
+        )]
         let fin = Instant::now() + DELAI;
         let lire_la_notre = |r: &[u8], _: SocketAddr| lire(r, id);
         if let Some(reponse) = recevoir(&socket, fin, &mut tampon, lire_la_notre) {
@@ -499,6 +505,11 @@ mod tests {
 
 /// Ce que n'importe quel serveur (ou un paquet forgé qui se fait passer pour sa réponse) peut envoyer : jamais de
 /// panique, une lecture bornée (enregistrements, noms, chaînes).
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod entrees_hostiles {
     use super::*;

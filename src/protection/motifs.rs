@@ -17,6 +17,9 @@
 //!
 //! Module pur, sans `crate::` : le banc de fuzzing l'inclut par son chemin.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::io::Read;
 use std::time::Instant;
 
@@ -40,6 +43,18 @@ pub(crate) const ETATS_MAX: usize = 1 << 22;
 const ETATS_TABLE: usize = 1 << 14;
 /// Les données lues d'un coup dans un flux.
 pub(crate) const BLOC: usize = 1 << 20;
+
+// Les états, les motifs et les longueurs sont des u32 : ils doivent tenir dans un usize.
+const _: () = assert!(usize::BITS >= u32::BITS);
+
+/// Un état, un motif ou une longueur (u32) comme usize.
+#[expect(
+    clippy::as_conversions,
+    reason = "usize a au moins 32 bits (assertion juste au-dessus) : conversion exacte"
+)]
+fn en_usize(n: u32) -> usize {
+    n as usize
+}
 
 /// Un élément de motif.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -114,13 +129,15 @@ fn cout(elements: &[Element], mut largeur: u64) -> (u64, u64) {
         match e {
             Element::Octet { .. } => {}
             // Les positions restent dans un intervalle : un saut l'élargit de sa marge.
-            Element::Saut { min, max } => largeur = largeur.saturating_add(u64::from(max - min)),
+            // `min` ≤ `max` : contrôlé avant (controler).
+            Element::Saut { min, max } => largeur = largeur.saturating_add(u64::from(max.saturating_sub(*min))),
             Element::Choix(suites) => {
                 let (court, long) = longueurs(std::slice::from_ref(e));
                 for s in suites {
                     total = total.saturating_add(cout(s, largeur).0);
                 }
-                largeur = largeur.saturating_add(long - court);
+                // Le plus court des minimums ne dépasse jamais le plus long des maximums.
+                largeur = largeur.saturating_add(long.saturating_sub(court));
             }
         }
         // Les positions restent distinctes et dans la longueur du motif.
@@ -151,7 +168,8 @@ fn controler(elements: &[Element], profondeur: usize, compte: &mut usize) -> Res
                     return Err(Refus::Choix);
                 }
                 for s in suites {
-                    controler(s, profondeur + 1, compte)?;
+                    // Borné : au-delà de PROFONDEUR_MAX, refusé dès l'entrée.
+                    controler(s, profondeur.saturating_add(1), compte)?;
                 }
             }
         }
@@ -182,6 +200,10 @@ fn rarete(o: u8) -> u32 {
 }
 
 /// La meilleure fenêtre d'au plus `ATOME_MAX` octets connus qui se suivent au premier niveau : (début, longueur).
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "positions dans `elements` (somme des longueurs de ses tranches) ; note au plus 4 × 6 + 2 × 3"
+)]
 fn choisir_atome(elements: &[Element]) -> Option<(usize, usize)> {
     let connu = |e: &Element| matches!(e, Element::Octet { masque: 0xFF, .. });
     let octet = |e: &Element| match e {
@@ -271,21 +293,35 @@ impl Motif {
     /// Le motif commence-t-il exactement à `donnees[0]` ? `donnees` : à partir de la position voulue, jusqu'à la fin des
     /// données ou au moins `longueur_max` octets.
     pub(crate) fn commence_ici(&self, donnees: &[u8]) -> bool {
-        !etendre(&self.elements, vec![0], &|d| donnees.get(d as usize).copied()).is_empty()
+        !etendre(&self.elements, vec![0], &|d| donnees.get(en_usize(d)).copied()).is_empty()
     }
 
     /// Le motif se trouve-t-il autour de l'atome qui commence à `donnees[atome]` ?
     fn autour(&self, donnees: &[u8], atome: usize) -> bool {
-        let fin = atome + self.atome.len();
+        let Some(fin) = atome.checked_add(self.atome.len()) else {
+            return false;
+        };
         // L'atome lui-même a été trouvé par l'automate ; seul ce qui l'entoure reste à voir.
-        let apres = etendre(&self.apres, vec![0], &|d| donnees.get(fin + d as usize).copied());
+        let apres = etendre(&self.apres, vec![0], &|d| {
+            fin.checked_add(en_usize(d)).and_then(|p| donnees.get(p).copied())
+        });
         if apres.is_empty() {
             return false;
         }
         !etendre(&self.avant, vec![0], &|d| {
-            atome.checked_sub(1 + d as usize).and_then(|p| donnees.get(p).copied())
+            atome
+                .checked_sub(en_usize(d))
+                .and_then(|p| p.checked_sub(1))
+                .and_then(|p| donnees.get(p).copied())
         })
         .is_empty()
+    }
+
+    /// La position qui suit tout ce que le motif peut lire après l'atome qui commence à `atome`.
+    fn fin_possible(&self, atome: u64) -> Option<u64> {
+        atome
+            .checked_add(u64::try_from(self.atome.len()).ok()?)?
+            .checked_add(u64::from(self.apres_max))
     }
 }
 
@@ -300,7 +336,8 @@ fn etendre(elements: &[Element], mut positions: Vec<u32>, lire: &impl Fn(u32) ->
             Element::Octet { valeur, masque } => {
                 positions.retain(|&p| lire(p).is_some_and(|o| o & masque == *valeur));
                 for p in &mut positions {
-                    *p += 1;
+                    // Comme pour les sauts : saturé, au-delà de toute donnée lue.
+                    *p = p.saturating_add(1);
                 }
             }
             Element::Saut { min, max } => {
@@ -380,7 +417,7 @@ impl Automate {
                 let compte = noeuds.len();
                 let noeud = noeuds.get_mut(etat)?;
                 etat = match noeud.fils.binary_search_by_key(&o, |f| f.0) {
-                    Ok(k) => noeud.fils.get(k)?.1 as usize,
+                    Ok(k) => en_usize(noeud.fils.get(k)?.1),
                     Err(k) => {
                         if compte >= ETATS_MAX {
                             return None;
@@ -388,7 +425,7 @@ impl Automate {
                         let nouveau = u32::try_from(compte).ok()?;
                         noeud.fils.insert(k, (o, nouveau));
                         noeuds.push(Noeud::default());
-                        nouveau as usize
+                        compte
                     }
                 };
             }
@@ -397,12 +434,12 @@ impl Automate {
         // Liens d'échec, en largeur : l'échec d'un état est le plus long suffixe de son chemin qui soit aussi un état.
         let mut file: std::collections::VecDeque<u32> = noeuds.first()?.fils.iter().map(|f| f.1).collect();
         while let Some(etat) = file.pop_front() {
-            let courant = noeuds.get(etat as usize)?;
+            let courant = noeuds.get(en_usize(etat))?;
             let depart = courant.echec;
             for (o, fils) in courant.fils.clone() {
                 let mut e = depart;
                 let echec = loop {
-                    let n = noeuds.get(e as usize)?;
+                    let n = noeuds.get(en_usize(e))?;
                     if let Some(&(_, f)) = n
                         .fils
                         .binary_search_by_key(&o, |f| f.0)
@@ -416,13 +453,13 @@ impl Automate {
                     }
                     e = n.echec;
                 };
-                let cible = noeuds.get(echec as usize)?;
+                let cible = noeuds.get(en_usize(echec))?;
                 let suivante = if cible.sorties.is_empty() {
                     cible.sortie_suivante
                 } else {
                     echec
                 };
-                let n = noeuds.get_mut(fils as usize)?;
+                let n = noeuds.get_mut(en_usize(fils))?;
                 n.echec = echec;
                 n.sortie_suivante = suivante;
                 file.push_back(fils);
@@ -443,7 +480,7 @@ impl Automate {
         }
         let mut automate = Automate { noeuds, table: None };
         if automate.noeuds.len() <= ETATS_TABLE {
-            let mut table = vec![0u32; automate.noeuds.len() * 256];
+            let mut table = vec![0u32; automate.noeuds.len().checked_mul(256)?];
             for (etat, ligne) in (0u32..).zip(table.as_chunks_mut::<256>().0) {
                 for (o, case) in (0..=255u8).zip(ligne.iter_mut()) {
                     *case = automate.suivant_par_echecs(etat, o);
@@ -460,7 +497,7 @@ impl Automate {
             clippy::indexing_slicing,
             reason = "construire refuse l'automate si un état noté sort de `noeuds`, et rien ne le change ensuite"
         )]
-        &self.noeuds[etat as usize]
+        &self.noeuds[en_usize(etat)]
     }
 
     fn suivant_par_echecs(&self, mut etat: u32, o: u8) -> u32 {
@@ -491,8 +528,10 @@ impl Automate {
         for (i, &o) in octets.iter().enumerate() {
             // La table a 256 cases par état (construire) ; hors d'elle, la même transition se calcule par les échecs.
             e = match &self.table {
-                Some(t) => t
-                    .get(e as usize * 256 + o as usize)
+                Some(t) => en_usize(e)
+                    .checked_mul(256)
+                    .and_then(|k| k.checked_add(usize::from(o)))
+                    .and_then(|k| t.get(k))
                     .copied()
                     .unwrap_or_else(|| self.suivant_par_echecs(e, o)),
                 None => self.suivant_par_echecs(e, o),
@@ -518,6 +557,11 @@ impl Automate {
 /// Ajoute le coût d'une vérification au travail fait, et lit l'horloge chaque fois qu'il passe
 /// `TRAVAIL_ENTRE_DELAIS` : vrai si le délai est passé. Une vérification chère compte pour beaucoup, si bien que le
 /// délai est lu assez souvent quel que soit le coût des motifs.
+/// Une taille ou une position comme u64 ; `Echec::Lecture` si elle n'y tenait pas (jamais sur 32 ou 64 bits).
+fn en_u64(n: usize) -> Result<u64, Echec> {
+    u64::try_from(n).map_err(|_| Echec::Lecture)
+}
+
 fn delai_passe(travail: &mut u64, cout: u64, echeance: Option<Instant>) -> bool {
     *travail = travail.saturating_add(cout);
     if *travail < TRAVAIL_ENTRE_DELAIS {
@@ -540,7 +584,7 @@ impl Recherche {
     pub(crate) fn nouvelle(motifs: Vec<Motif>) -> Option<Recherche> {
         let atomes: Vec<&[u8]> = motifs.iter().map(|m| m.atome.as_slice()).collect();
         let automate = Automate::construire(&atomes)?;
-        let garde = motifs.iter().map(|m| m.longueur_max as usize).max().unwrap_or(0);
+        let garde = motifs.iter().map(|m| en_usize(m.longueur_max)).max().unwrap_or(0);
         Some(Recherche {
             motifs,
             automate,
@@ -580,16 +624,15 @@ impl Recherche {
         let mut etat = 0;
         let mut travail = 0u64;
         let mut arret: Option<Echec> = None;
-        for (k, morceau) in donnees.chunks(BLOC).enumerate() {
+        for (morceau, base) in donnees.chunks(BLOC).zip((0_usize..).step_by(BLOC)) {
             if echeance.is_some_and(|e| Instant::now() >= e) {
                 return Err(Echec::Delai);
             }
-            let base = k * BLOC;
             self.automate.avancer(&mut etat, morceau, |i, m| {
                 if arret.is_some() {
                     return;
                 }
-                let m = m as usize;
+                let m = en_usize(m);
                 // Un motif que `vus` ou `utile` ne connaissent pas : rien n'est conclu, plutôt qu'un motif tu.
                 let (Some(motif), Some(vu), Some(&sert)) = (self.motifs.get(m), vus.get_mut(m), utile.get(m)) else {
                     arret = Some(Echec::Lecture);
@@ -602,7 +645,15 @@ impl Recherche {
                     arret = Some(Echec::Delai);
                     return;
                 }
-                let atome = base + i + 1 - motif.atome.len();
+                // L'atome finit à `base + i` : il commence dans les données.
+                let Some(atome) = base
+                    .checked_add(i)
+                    .and_then(|f| f.checked_add(1))
+                    .and_then(|f| f.checked_sub(motif.atome.len()))
+                else {
+                    arret = Some(Echec::Lecture);
+                    return;
+                };
                 if motif.autour(donnees, atome) {
                     *vu = true;
                 }
@@ -628,7 +679,13 @@ impl Recherche {
         let bloc = bloc.max(1);
         // La fenêtre : les données à partir de la position `base`. Après chaque bloc, on n'en garde que ce que les
         // vérifications en attente et les atomes à venir peuvent encore lire.
-        let mut fenetre: Vec<u8> = Vec::with_capacity(bloc + 2 * self.garde);
+        // Une capacité de départ, sans plus : `bloc` seul si la somme ne tenait pas.
+        let capacite = self
+            .garde
+            .checked_mul(2)
+            .and_then(|g| g.checked_add(bloc))
+            .unwrap_or(bloc);
+        let mut fenetre: Vec<u8> = Vec::with_capacity(capacite);
         let mut base = 0u64;
         let mut lus = 0u64;
         let mut etat = 0;
@@ -641,25 +698,30 @@ impl Recherche {
                 return Err(Echec::Delai);
             }
             let ancien = fenetre.len();
-            let voulu = usize::try_from(limite - lus).map_or(bloc, |reste| reste.min(bloc));
-            fenetre.resize(ancien + voulu, 0);
+            // `lus` ne dépasse jamais `limite` : chaque lecture est bornée par ce qui reste.
+            let voulu = usize::try_from(limite.saturating_sub(lus)).map_or(bloc, |reste| reste.min(bloc));
+            fenetre.resize(ancien.checked_add(voulu).ok_or(Echec::Lecture)?, 0);
             let n = remplir(source, fenetre.get_mut(ancien..).ok_or(Echec::Lecture)?)?;
-            fenetre.truncate(ancien + n);
-            lus += n as u64;
+            fenetre.truncate(ancien.checked_add(n).ok_or(Echec::Lecture)?);
+            lus = lus.checked_add(en_u64(n)?).ok_or(Echec::Lecture)?;
             let fin = n < voulu || lus >= limite;
-            let debut_neuf = base + ancien as u64;
-            let bout = base + fenetre.len() as u64;
+            let debut_neuf = base.checked_add(en_u64(ancien)?).ok_or(Echec::Lecture)?;
+            let bout = base.checked_add(en_u64(fenetre.len())?).ok_or(Echec::Lecture)?;
             // Ce qui précède l'atome est encore dans la fenêtre (voir la coupe plus bas) : avant son début, il n'y a que
             // ce qui précéderait le début des données, qui n'existe pas. La position relative suffit. Un motif inconnu
             // de `self.motifs` ou de `vus` n'est jamais tu : rien n'est conclu.
             let verifier = |m: u32, atome: u64, vus: &mut [bool], travail: &mut u64| -> Result<(), Echec> {
-                let motif = self.motifs.get(m as usize).ok_or(Echec::Lecture)?;
+                let motif = self.motifs.get(en_usize(m)).ok_or(Echec::Lecture)?;
                 if delai_passe(travail, motif.cout, echeance) {
                     return Err(Echec::Delai);
                 }
                 debug_assert!(atome.saturating_sub(u64::from(motif.avant_max)) >= base || base == 0);
-                if usize::try_from(atome - base).is_ok_and(|relatif| motif.autour(&fenetre, relatif)) {
-                    *vus.get_mut(m as usize).ok_or(Echec::Lecture)? = true;
+                if atome
+                    .checked_sub(base)
+                    .and_then(|r| usize::try_from(r).ok())
+                    .is_some_and(|relatif| motif.autour(&fenetre, relatif))
+                {
+                    *vus.get_mut(en_usize(m)).ok_or(Echec::Lecture)? = true;
                 }
                 Ok(())
             };
@@ -671,7 +733,7 @@ impl Recherche {
                 if arret.is_some() {
                     return;
                 }
-                let mi = m as usize;
+                let mi = en_usize(m);
                 let (Some(motif), Some(&vu), Some(&sert)) = (self.motifs.get(mi), vus.get(mi), utile.get(mi)) else {
                     arret = Some(Echec::Lecture);
                     return;
@@ -679,8 +741,17 @@ impl Recherche {
                 if vu || !sert {
                     return;
                 }
-                let atome = debut_neuf + i as u64 + 1 - motif.atome.len() as u64;
-                if atome + motif.atome.len() as u64 + u64::from(motif.apres_max) > bout && !fin {
+                // L'atome finit à `debut_neuf + i` : il commence dans les données.
+                let atome = en_u64(i)
+                    .ok()
+                    .and_then(|i| debut_neuf.checked_add(i))
+                    .and_then(|f| f.checked_add(1))
+                    .and_then(|f| f.checked_sub(u64::try_from(motif.atome.len()).ok()?));
+                let Some((atome, besoin)) = atome.and_then(|a| Some((a, motif.fin_possible(a)?))) else {
+                    arret = Some(Echec::Lecture);
+                    return;
+                };
+                if besoin > bout && !fin {
                     attente.push((m, atome));
                 } else if let Err(e) = verifier(m, atome, vus, &mut travail) {
                     arret = Some(e);
@@ -691,11 +762,11 @@ impl Recherche {
             }
             let mut restantes = Vec::new();
             for (m, atome) in attente.drain(..) {
-                let motif = self.motifs.get(m as usize).ok_or(Echec::Lecture)?;
-                if vus.get(m as usize).copied().ok_or(Echec::Lecture)? {
+                let motif = self.motifs.get(en_usize(m)).ok_or(Echec::Lecture)?;
+                if vus.get(en_usize(m)).copied().ok_or(Echec::Lecture)? {
                     continue;
                 }
-                let besoin = atome + motif.atome.len() as u64 + u64::from(motif.apres_max);
+                let besoin = motif.fin_possible(atome).ok_or(Echec::Lecture)?;
                 if besoin > bout && !fin {
                     restantes.push((m, atome));
                     continue;
@@ -708,13 +779,16 @@ impl Recherche {
             }
             // La coupe : garder la fin de la fenêtre (un atome à cheval sur deux blocs a besoin de ce qui le précède)
             // et tout ce que les vérifications en attente liront.
-            let mut coupe = bout.saturating_sub(self.garde as u64 + ATOME_MAX as u64);
+            // Saturer la marge, c'est tout garder : jamais moins que voulu.
+            let mut coupe = bout.saturating_sub(en_u64(self.garde.saturating_add(ATOME_MAX))?);
             for (m, atome) in &attente {
-                let avant_max = self.motifs.get(*m as usize).ok_or(Echec::Lecture)?.avant_max;
+                let avant_max = self.motifs.get(en_usize(*m)).ok_or(Echec::Lecture)?.avant_max;
                 coupe = coupe.min(atome.saturating_sub(u64::from(avant_max)));
             }
             let coupe = coupe.max(base);
-            fenetre.drain(..usize::try_from(coupe - base).unwrap_or(fenetre.len()));
+            let coupe_relative = coupe.checked_sub(base).ok_or(Echec::Lecture)?;
+            let coupe_relative = usize::try_from(coupe_relative).map_or(fenetre.len(), |c| c.min(fenetre.len()));
+            fenetre.drain(..coupe_relative);
             base = coupe;
         }
     }
@@ -722,14 +796,14 @@ impl Recherche {
 
 /// Remplit `tampon` depuis `source`, jusqu'à la fin des données : le nombre d'octets lus.
 fn remplir(source: &mut impl Read, mut tampon: &mut [u8]) -> Result<usize, Echec> {
-    let mut n = 0;
+    let mut n = 0_usize;
     while !tampon.is_empty() {
         match source.read(tampon) {
             Ok(0) => break,
             // Une source qui dit avoir lu plus que le tampon ne se croit pas.
             Ok(k) => {
                 tampon = std::mem::take(&mut tampon).get_mut(k..).ok_or(Echec::Lecture)?;
-                n += k;
+                n = n.checked_add(k).ok_or(Echec::Lecture)?;
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => return Err(Echec::Lecture),
@@ -738,6 +812,11 @@ fn remplir(source: &mut impl Read, mut tampon: &mut [u8]) -> Result<usize, Echec
     Ok(n)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

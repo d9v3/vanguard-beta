@@ -6,6 +6,9 @@
 //! borne. Rien d'autre n'est envoyé à la box : aucune ouverture, aucune suppression. Tout ce que la box ou un
 //! appareil écrit (nom, modèle, description d'une redirection) est rendu inoffensif avant d'être gardé.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::time::{Duration, Instant};
 
@@ -114,6 +117,10 @@ pub(crate) struct Service {
 
 /// Cherche la box IGD du réseau local et lit ce qu'elle ouvre vers Internet. Lecture seule.
 pub fn decouvrir() -> Decouverte {
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "maintenant + 15 s : loin de la limite d'Instant"
+    )]
     let fin = Instant::now() + DUREE_MAX;
     let Some(reponses) = chercher() else {
         return Decouverte::NonVerifie;
@@ -175,6 +182,10 @@ fn chercher() -> Option<Vec<ReponseSsdp>> {
             }
             break;
         }
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "maintenant + 1,5 s : loin de la limite d'Instant"
+        )]
         let fin = Instant::now() + ATTENTE_SSDP;
         crate::reseau::nat::recevoir(&socket, fin, &mut tampon, |reponse, de| {
             if let std::net::IpAddr::V4(source) = de.ip()
@@ -291,6 +302,10 @@ fn lire_box(ssdp: &ReponseSsdp, fin: Instant) -> Lecture {
 }
 
 /// L'instant limite d'une demande HTTP : son délai, sans dépasser la fin de toute la lecture.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "maintenant + 5 s : loin de la limite d'Instant"
+)]
 fn delai(fin: Instant) -> Instant {
     fin.min(Instant::now() + DELAI_HTTP)
 }
@@ -315,7 +330,7 @@ fn noeuds(xml: &str) -> Vec<Noeud> {
         match evenement {
             Event::Eof => break,
             Event::Start(e) => {
-                elements += 1;
+                elements = elements.saturating_add(1);
                 if elements > ELEMENTS_MAX {
                     break;
                 }
@@ -323,7 +338,7 @@ fn noeuds(xml: &str) -> Vec<Noeud> {
                 texte.clear();
             }
             Event::Empty(e) => {
-                elements += 1;
+                elements = elements.saturating_add(1);
                 if elements > ELEMENTS_MAX {
                     break;
                 }
@@ -412,7 +427,9 @@ pub(crate) fn lire_description(xml: &str, base: &Adresse) -> (Description, Optio
                 }
             }
             Noeud::Debut(n) => {
-                if let (Some(champs), Some(Noeud::Texte(t))) = (&mut en_cours, noeuds.get(i + 1)) {
+                if let (Some(champs), Some(Noeud::Texte(t))) =
+                    (&mut en_cours, i.checked_add(1).and_then(|j| noeuds.get(j)))
+                {
                     match n.as_str() {
                         "serviceType" => champs.0 = Some(t.trim().to_string()),
                         "controlURL" => champs.1 = Some(t.trim().to_string()),
@@ -527,6 +544,11 @@ pub(crate) fn lire_redirections(mut demander: impl FnMut(u32) -> Option<Reponse>
     (liste, true, true)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1010,6 +1032,11 @@ mod tests {
 
 /// Ce que la box (ou un appareil qui se fait passer pour elle) peut répondre de pire : jamais de panique, et ce qui
 /// en est gardé reste borné et inoffensif.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod entrees_hostiles {
     use super::*;
