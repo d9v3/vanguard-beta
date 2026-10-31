@@ -300,7 +300,13 @@ fn juger_elf(e: &elf::Elf) -> Jugement {
             ),
         );
     }
-    if let Some(i) = &e.interpreteur {
+    // Statique : sans segment PT_INTERP. La chaîne ne sert qu'au message : un PT_INTERP dont elle ne se lit pas
+    // (hors du fichier) n'en demande pas moins un interpréteur au noyau.
+    if e.segments.iter().any(|s| s.type_ == elf::PT_INTERP) {
+        let i = e
+            .interpreteur
+            .clone()
+            .unwrap_or_else(|| tr!("illisible", "unreadable").to_string());
         j.manque(
             Protection::Statique,
             trf!(
@@ -309,11 +315,36 @@ fn juger_elf(e: &elf::Elf) -> Jugement {
             ),
         );
     }
-    if !e.relro {
-        j.manque(
+    // La marque doit aussi couvrir quelque chose : vide, ou hors de tout PT_LOAD, elle ne protège rien (relro.rs la
+    // prend telle quelle) ; à deux, on ne sait pas laquelle le démarrage prend (relro.rs : la première, glibc : la
+    // dernière).
+    let relros: Vec<&elf::Segment> = e.segments.iter().filter(|s| s.type_ == elf::PT_GNU_RELRO).collect();
+    match relros.as_slice() {
+        [] => j.manque(
             Protection::Relro,
             tr!("RELRO absent (pas de PT_GNU_RELRO)", "RELRO missing (no PT_GNU_RELRO)").to_string(),
-        );
+        ),
+        [seul] if elf::en_memoire_dans_un_load(&e.segments, seul) => {}
+        [seul] => {
+            let (adresse, taille) = (seul.adresse, seul.taille_memoire);
+            j.manque(
+                Protection::Relro,
+                trf!(
+                    "RELRO vide ou hors de tout PT_LOAD, rien n'y est protégé (PT_GNU_RELRO à 0x{adresse:X}, 0x{taille:X} octets)",
+                    "RELRO empty or outside every PT_LOAD, nothing protected (PT_GNU_RELRO at 0x{adresse:X}, 0x{taille:X} bytes)"
+                ),
+            );
+        }
+        plusieurs => {
+            let n = plusieurs.len();
+            j.manque(
+                Protection::Relro,
+                trf!(
+                    "{n} PT_GNU_RELRO : on ne sait pas lequel est appliqué",
+                    "{n} PT_GNU_RELRO: unknown which one is applied"
+                ),
+            );
+        }
     }
     if !d.liaison_immediate() {
         let (f, f1) = (hexa(d.drapeaux), hexa(d.drapeaux_1));
@@ -765,6 +796,58 @@ mod tests {
             m.contains(&Protection::SectionDynamique) && m.contains(&Protection::Pie),
             "{m:?}"
         );
+        // Les en-têtes de programme d'elf64_durci : PT_LOAD, PT_DYNAMIC, PT_GNU_STACK, PT_GNU_RELRO, puis PT_INTERP.
+        let entete = |i: usize| 0x40 + 56 * i;
+        // PT_GNU_RELRO vide, ou hors de tout PT_LOAD : la marque est là, mais rien n'y serait protégé.
+        let mut v = elf64_durci(Durci::COMPLET);
+        v[entete(3) + 40..entete(3) + 48].fill(0);
+        let j = jugement(&d, &v);
+        assert_eq!(
+            j.manques.iter().map(|m| m.protection).collect::<Vec<_>>(),
+            [Protection::Relro]
+        );
+        assert!(j.manques[0].texte.contains("0x0 octets"), "{:?}", j.manques);
+        let mut v = elf64_durci(Durci::COMPLET);
+        v[entete(3) + 16..entete(3) + 24].copy_from_slice(&0x10_0000u64.to_le_bytes());
+        assert_eq!(manques(&d, &v), [Protection::Relro]);
+        // Débordant de son PT_LOAD : pas dedans non plus.
+        let mut v = elf64_durci(Durci::COMPLET);
+        v[entete(3) + 40..entete(3) + 48].copy_from_slice(&0x81u64.to_le_bytes());
+        assert_eq!(manques(&d, &v), [Protection::Relro]);
+        // Deux PT_GNU_RELRO (la pile en devient un) : on ne sait pas lequel le démarrage protège.
+        let mut v = elf64_durci(Durci::COMPLET);
+        v[entete(2)..entete(2) + 4].copy_from_slice(&elf::PT_GNU_RELRO.to_le_bytes());
+        let j = jugement(&d, &v);
+        assert!(
+            j.manques
+                .iter()
+                .any(|m| m.protection == Protection::Relro && m.texte.contains("2 PT_GNU_RELRO")),
+            "{:?}",
+            j.manques
+        );
+        // Un PT_INTERP dont la chaîne ne se lit pas (hors du fichier) : le chargeur, lui, en demanderait un. Statique
+        // veut dire sans PT_INTERP, pas sans chaîne lisible.
+        let mut v = elf64_durci(Durci {
+            statique: false,
+            ..Durci::COMPLET
+        });
+        v[entete(4) + 8..entete(4) + 16].copy_from_slice(&0xFFFF_0000u64.to_le_bytes());
+        let j = jugement(&d, &v);
+        assert_eq!(
+            j.manques.iter().map(|m| m.protection).collect::<Vec<_>>(),
+            [Protection::Statique]
+        );
+        assert!(j.manques[0].texte.contains("illisible"), "{:?}", j.manques);
+        // PT_DYNAMIC lu à p_offset mais chargé ailleurs (p_vaddr à un autre décalage dans le PT_LOAD) : les octets lus ne
+        // sont pas ceux que le démarrage trouve. Illisible, jamais cru.
+        let mut v = elf64_durci(Durci::COMPLET);
+        v[entete(1) + 16..entete(1) + 24].copy_from_slice(&0x100u64.to_le_bytes());
+        assert!(manques(&d, &v).contains(&Protection::SectionDynamique));
+        // Hors de tout PT_LOAD.
+        let mut v = elf64_durci(Durci::COMPLET);
+        v[entete(1) + 8..entete(1) + 16].copy_from_slice(&0x1_0180u64.to_le_bytes());
+        v[entete(1) + 16..entete(1) + 24].copy_from_slice(&0x1_0180u64.to_le_bytes());
+        assert!(manques(&d, &v).contains(&Protection::SectionDynamique));
         // Un vieil ELF d'essai (ET_EXEC, interpréteur, sans section dynamique ni RELRO) : tout manque.
         let m = manques(&d, &elf64(5, false, 0x40_0180, b""));
         for p in [

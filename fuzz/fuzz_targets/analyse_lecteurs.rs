@@ -48,6 +48,9 @@ libfuzzer_sys::fuzz_target!(|donnees: &[u8]| {
         if let Some(e) = elf::lire(octets) {
             assert!(e.fin_des_donnees <= octets.len() as u64);
             assert!(!(e.dynamique.is_some() && e.dynamique_illisible));
+            for s in &e.segments {
+                let _ = elf::en_memoire_dans_un_load(&e.segments, s);
+            }
         }
         if let Some(u) = macho::universel(octets) {
             for t in &u.tranches {

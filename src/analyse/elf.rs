@@ -162,6 +162,20 @@ impl Elf {
     }
 }
 
+/// La plage en mémoire de `s` ([p_vaddr, p_vaddr + p_memsz), non vide) tient-elle dans celle d'un PT_LOAD ? Un
+/// PT_GNU_RELRO hors de toute plage chargée ne protège rien : il n'y a rien à cette adresse.
+pub(crate) fn en_memoire_dans_un_load(segments: &[Segment], s: &Segment) -> bool {
+    let Some(fin) = s.adresse.checked_add(s.taille_memoire) else {
+        return false;
+    };
+    s.taille_memoire > 0
+        && segments.iter().any(|l| {
+            l.type_ == PT_LOAD
+                && l.adresse <= s.adresse
+                && l.adresse.checked_add(l.taille_memoire).is_some_and(|f| fin <= f)
+        })
+}
+
 /// Les en-têtes de l'ELF `octets`. `None` : pas un ELF, ou en-tête principal illisible.
 pub(crate) fn lire(octets: &[u8]) -> Option<Elf> {
     if !octets.starts_with(b"\x7fELF") {
@@ -387,14 +401,39 @@ fn contenu<'a>(octets: &'a [u8], s: &Segment) -> Option<&'a [u8]> {
     octets.get(debut..fin)
 }
 
+/// Le segment `s` est-il dans un même PT_LOAD dans le fichier et en mémoire, au même décalage ? Alors les octets lus
+/// à p_offset sont ceux que le programme trouve à p_vaddr une fois chargé.
+fn charge_tel_quel(segments: &[Segment], s: &Segment) -> bool {
+    let (Some(fin_fichier), Some(fin_memoire)) = (
+        s.position.checked_add(s.taille_fichier),
+        s.adresse.checked_add(s.taille_memoire),
+    ) else {
+        return false;
+    };
+    segments.iter().any(|l| {
+        l.type_ == PT_LOAD
+            && s.position
+                .checked_sub(l.position)
+                .is_some_and(|d| s.adresse.checked_sub(l.adresse) == Some(d))
+            && l.position
+                .checked_add(l.taille_fichier)
+                .is_some_and(|f| fin_fichier <= f)
+            && l.adresse
+                .checked_add(l.taille_memoire)
+                .is_some_and(|f| fin_memoire <= f)
+    })
+}
+
 /// La section dynamique (PT_DYNAMIC), lue jusqu'à DT_NULL dans les octets du segment, et `true` si elle est là mais
-/// illisible. Plus d'un PT_DYNAMIC : illisible, on ne sait pas lequel le chargeur prend.
+/// illisible. Plus d'un PT_DYNAMIC : illisible, on ne sait pas lequel le chargeur prend. Hors de tout PT_LOAD, ou
+/// chargée à un autre décalage que celui du fichier : illisible aussi, car le démarrage lit la section à son adresse
+/// (p_vaddr) et nous à sa position (p_offset) ; deux tables différentes feraient croire à des drapeaux absents.
 fn lire_dynamique(octets: &[u8], o: Ordre, bits64: bool, segments: &[Segment]) -> (Option<Dynamique>, bool) {
     let mut trouves = segments.iter().filter(|s| s.type_ == PT_DYNAMIC);
     let Some(segment) = trouves.next() else {
         return (None, false);
     };
-    if trouves.next().is_some() {
+    if trouves.next().is_some() || !charge_tel_quel(segments, segment) {
         return (None, true);
     }
     let lue = (|| {
@@ -870,6 +909,27 @@ mod tests {
     }
 
     #[test]
+    fn segment_en_memoire_dans_un_load() {
+        let seg = |type_, adresse, taille_memoire| Segment {
+            type_,
+            drapeaux: 4,
+            position: 0,
+            adresse,
+            taille_fichier: 0,
+            taille_memoire,
+        };
+        let loads = [seg(PT_LOAD, 0x1000, 0x2000), seg(PT_GNU_STACK, 0, u64::MAX)];
+        assert!(en_memoire_dans_un_load(&loads, &seg(PT_GNU_RELRO, 0x1000, 0x2000)));
+        assert!(en_memoire_dans_un_load(&loads, &seg(PT_GNU_RELRO, 0x2FFF, 1)));
+        // Vide, débordant, avant, hors de tout PT_LOAD (le PT_GNU_STACK ne compte pas), adresse qui déborde.
+        assert!(!en_memoire_dans_un_load(&loads, &seg(PT_GNU_RELRO, 0x1000, 0)));
+        assert!(!en_memoire_dans_un_load(&loads, &seg(PT_GNU_RELRO, 0x2FFF, 2)));
+        assert!(!en_memoire_dans_un_load(&loads, &seg(PT_GNU_RELRO, 0xFFF, 2)));
+        assert!(!en_memoire_dans_un_load(&loads, &seg(PT_GNU_RELRO, 0x10_0000, 0x10)));
+        assert!(!en_memoire_dans_un_load(&loads, &seg(PT_GNU_RELRO, u64::MAX, 2)));
+    }
+
+    #[test]
     fn section_dynamique_abimee() {
         let illisible = |v: &[u8]| {
             let elf = lire(v).unwrap();
@@ -884,6 +944,22 @@ mod tests {
         let mut v = elf64_durci(Durci::COMPLET);
         v[0x40 + 56 + 8..0x40 + 56 + 16].copy_from_slice(&0x1F0u64.to_le_bytes());
         assert!(illisible(&v));
+        // Chargée à un autre décalage que celui du fichier (p_vaddr 0x100, p_offset 0x180, PT_LOAD à 0 et 0) : ce que
+        // lit le démarrage n'est pas ce qu'on lit.
+        let mut v = elf64_durci(Durci::COMPLET);
+        v[0x40 + 56 + 16..0x40 + 56 + 24].copy_from_slice(&0x100u64.to_le_bytes());
+        assert!(illisible(&v));
+        // Débordant du PT_LOAD en mémoire.
+        let mut v = elf64_durci(Durci::COMPLET);
+        v[0x40 + 32..0x40 + 40].copy_from_slice(&0x190u64.to_le_bytes());
+        v[0x40 + 40..0x40 + 48].copy_from_slice(&0x190u64.to_le_bytes());
+        assert!(illisible(&v));
+        // Le même décalage, à une autre adresse (PT_LOAD et PT_DYNAMIC déplacés de 0x1000 ensemble) : lisible.
+        let mut v = elf64_durci(Durci::COMPLET);
+        v[0x40 + 16..0x40 + 24].copy_from_slice(&0x1000u64.to_le_bytes());
+        v[0x40 + 56 + 16..0x40 + 56 + 24].copy_from_slice(&0x1180u64.to_le_bytes());
+        let elf = lire(&v).unwrap();
+        assert!(!elf.dynamique_illisible && elf.dynamique.is_some_and(|d| d.liaison_immediate()));
         // Deux PT_DYNAMIC : le PT_GNU_STACK devient le second.
         let mut v = elf64_durci(Durci::COMPLET);
         v[0x40 + 112..0x40 + 116].copy_from_slice(&PT_DYNAMIC.to_le_bytes());
