@@ -85,6 +85,7 @@ fn lire_json(v: &serde_json::Value) -> ([Vec<String>; 3], Politiques) {
     let vraie = |cle: &str| match v.get(cle) {
         Some(serde_json::Value::Bool(b)) => *b,
         Some(serde_json::Value::Number(n)) => n.as_i64().is_some_and(|n| n != 0),
+        Some(serde_json::Value::String(t)) => texte_vrai(t),
         _ => false,
     };
     (
@@ -96,12 +97,22 @@ fn lire_json(v: &serde_json::Value) -> ([Vec<String>; 3], Politiques) {
     )
 }
 
-/// Une politique booléenne lue par WMI : un entier (0 ou 1, la valeur du registre) compte aussi.
+/// Une politique booléenne lue par WMI : un entier (0 ou 1, la valeur du registre) compte aussi, et un texte
+/// (`texte_vrai`).
 fn politique_vraie(v: &Valeur) -> bool {
     match v {
         Valeur::Booleen(b) => *b,
+        Valeur::Texte(t) => texte_vrai(t),
         x => x.entier().is_some_and(|n| n != 0),
     }
+}
+
+/// Une politique rendue en texte : « True » (la forme d'un booléen converti en chaîne, toute casse) ou un entier non
+/// nul. Microsoft ne documente pas la forme de la propriété ; la lire fausse rendrait lisibles des listes que la
+/// politique a vidées (relecture des correctifs T10, 4e passe, BAS-1).
+fn texte_vrai(t: &str) -> bool {
+    let t = t.trim();
+    t.eq_ignore_ascii_case("true") || t.parse::<i64>().is_ok_and(|n| n != 0)
 }
 
 /// Exclusions trop larges, avec la commande qui retire chacune. `None` si aucune, ou si la liste est cachée.
@@ -330,6 +341,17 @@ mod tests {
         assert!(politique_vraie(&Valeur::Booleen(true)) && politique_vraie(&Valeur::Entier(1)));
         assert!(!politique_vraie(&Valeur::Nul) && !politique_vraie(&Valeur::Booleen(false)));
         assert!(!politique_vraie(&Valeur::Entier(0)) && !politique_vraie(&Valeur::Texte("oui".into())));
+        // 4e passe, BAS-1 : un booléen rendu en texte, toute casse, espaces autour ; « 1 » aussi.
+        for t in ["True", "true", " TRUE ", "1", " 1"] {
+            assert!(politique_vraie(&Valeur::Texte(t.into())), "{t}");
+        }
+        for t in ["False", "0", "", " ", "truE!", "vrai"] {
+            assert!(!politique_vraie(&Valeur::Texte(t.into())), "{t}");
+        }
+        let (_, p) = lire(r#"{"c":[],"p":[],"e":[],"ha":" True ","hu":"1"}"#);
+        assert!(p.aux_admins && p.aux_utilisateurs);
+        let (_, p) = lire(r#"{"c":[],"p":[],"e":[],"ha":"False","hu":"0"}"#);
+        assert!(!p.aux_admins && !p.aux_utilisateurs);
     }
 
     #[test]
