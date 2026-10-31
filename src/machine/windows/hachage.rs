@@ -1,6 +1,9 @@
 //! L'empreinte d'un fichier (MD5, SHA-1, SHA-256, SHA-512) calculée par BCrypt, le chiffrement de Windows, sans
 //! PowerShell : Get-FileHash passait par le délai de 60 s de `ps`, trop court pour une image disque.
 
+// FFI de bcrypt : BCryptCreateHash, BCryptHashData…
+#![allow(unsafe_code)]
+
 use std::ffi::c_void;
 use std::fmt::Write as _;
 use std::io::Read;

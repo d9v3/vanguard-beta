@@ -1,6 +1,9 @@
 //! Comptes locaux Windows : invité, Administrateur intégré, comptes sans mot de passe exigé, règle des mots de passe
 //! (longueur minimale, blocage après des essais ratés).
 
+// FFI de netapi32 et advapi32 : NetUserEnum, NetUserGetInfo, LookupAccountSidW…
+#![allow(unsafe_code)]
+
 use super::*;
 
 /// Comptes locaux : invité, administrateur intégré, comptes sans mot de passe exigé, et la règle qui empêche

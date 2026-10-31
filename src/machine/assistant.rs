@@ -22,6 +22,9 @@
 //! ne redemande pas (le mot de passe vaut accord), au contraire de Windows, dont la demande d'administrateur ne montre
 //! que le nom du programme et où la fenêtre élevée est à part.
 
+// FFI de libc : prctl (PR_SET_DUMPABLE, le secret de l'assistant élevé hors des vidages).
+#![allow(unsafe_code)]
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
 

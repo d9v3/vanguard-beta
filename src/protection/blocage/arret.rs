@@ -9,6 +9,9 @@
 //!   la relecture du programme (proc_pidpath) : un numéro repris entre-temps aurait une autre heure.
 //! - Windows : la poignée qui lit le chemin est celle qui arrête (`processus::terminer_si`).
 
+// FFI de libc : pidfd_open (syscall), poll, kill, proc_pidinfo et proc_pidpath.
+#![allow(unsafe_code)]
+
 use crate::modele::Echec;
 
 const OU: &str = "blocage/arret";

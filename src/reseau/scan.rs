@@ -1,5 +1,8 @@
 //! Découverte des machines et scan TCP « connect » (aucun privilège root requis).
 
+// FFI de libc : prises du scan (socket, setsockopt, sendto, recv) et getrlimit/setrlimit.
+#![allow(unsafe_code)]
+
 use std::collections::{BTreeMap, HashMap};
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};

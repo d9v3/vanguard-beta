@@ -11,6 +11,9 @@
 //! écrits par Vanguard, des adresses de ses listes fermées et des pages de réglages de Windows, jamais un chemin
 //! choisi par quelqu'un d'autre.
 
+// FFI de shell32 (ShellExecuteExW) et de COM.
+#![allow(unsafe_code)]
+
 use std::ffi::c_void;
 use std::sync::Mutex;
 use std::thread::JoinHandle;

@@ -2,6 +2,9 @@
 //! GetExtendedUdpTable (iphlpapi) sans PowerShell : ce que Get-NetTCPConnection et Get-NetUDPEndpoint donnaient. Les
 //! tables rendues sont relues en code sûr, la taille annoncée vérifiée contre ce que Windows a écrit.
 
+// FFI d'iphlpapi : GetExtendedTcpTable et GetExtendedUdpTable.
+#![allow(unsafe_code)]
+
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// Une socket.

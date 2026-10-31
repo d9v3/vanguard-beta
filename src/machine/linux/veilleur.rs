@@ -21,6 +21,9 @@
 //! Le service est une unité systemd de l'utilisateur, Type=simple, coupée par défaut et posée seulement après accord
 //! (`vanguard veilleur on`) ; `vanguard veilleur off` la retire exactement.
 
+// FFI de libc : prises netlink et poll du veilleur, signaux (sigaction).
+#![allow(unsafe_code)]
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{IsTerminal, Read};
 use std::net::{IpAddr, SocketAddr};

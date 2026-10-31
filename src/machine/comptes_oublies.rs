@@ -5,6 +5,9 @@
 //! une connexion graphique n'est pas toujours notée). Rien depuis six mois : une information, avec la façon de le
 //! désactiver. Le compte qui lance Vanguard n'est jamais compté.
 
+// FFI de libc : getpwent et getutxent (comptes et dernières connexions), wtmp de macOS.
+#![allow(unsafe_code)]
+
 use super::{Constat, alerte};
 use crate::risk::Niveau;
 use crate::ui::affichable;

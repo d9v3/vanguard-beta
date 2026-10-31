@@ -42,6 +42,8 @@ pub(crate) fn lire() -> Result<Option<Lecture>, crate::modele::raison::Echec> {
 }
 
 /// L'horloge de LastScan : CLOCK_BOOTTIME, en millisecondes (elle avance aussi pendant la veille).
+// FFI de libc : clock_gettime (CLOCK_BOOTTIME).
+#[allow(unsafe_code)]
 fn maintenant_ms() -> Option<u64> {
     let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     // SAFETY: clock_gettime écrit dans une structure à nous, vivante pendant l'appel ; l'horloge existe depuis

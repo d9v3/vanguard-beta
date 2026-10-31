@@ -82,6 +82,8 @@ fn heure_locale(secondes: u64) -> String {
 /// Les processus, lus dans /proc sans rien lancer. Le programme de chacun se lit par `/proc/<pid>/exe`, même effacé du
 /// disque ou chargé en mémoire seulement : c'est ce qu'il faut à un spécialiste, et son empreinte se cherche sur
 /// VirusTotal. Ceux des autres comptes ne se lisent qu'en root.
+// FFI de libc : sysconf (_SC_CLK_TCK).
+#[allow(unsafe_code)]
 pub(super) fn processus(dossier: &Path) -> Partie {
     let mut manques = Vec::new();
     let Some(pids) = crate::socle::processus::pids() else {

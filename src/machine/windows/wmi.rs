@@ -3,6 +3,9 @@
 //! Chaque requête tourne dans son propre fil : son appartement COM ne gêne pas celui de l'appelant, et un fournisseur
 //! WMI bloqué (Defender suspendu…) ne fige pas l'audit, comme le délai de `ps()`.
 
+// FFI de COM et WMI (crate windows) : IWbemServices, VARIANT.
+#![allow(unsafe_code)]
+
 use std::collections::HashMap;
 use std::sync::mpsc;
 use std::time::Duration;

@@ -4,6 +4,9 @@
 //! outils des spécialistes). Pour la chronologie,
 //! les événements qui racontent une intrusion sont lus en plus par les fonctions de Windows (wevtapi).
 
+// FFI de kernel32 : GetDiskFreeSpaceExW.
+#![allow(unsafe_code)]
+
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};

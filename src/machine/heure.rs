@@ -136,6 +136,8 @@ fn lire() -> Option<Etat> {
 /// 16 secondes. Pas sur le drapeau « non synchronisée » : chrony sans « rtcsync » le laisse posé pour toujours.
 /// `None` : le noyau refuse.
 #[cfg(target_os = "linux")]
+// FFI de libc : adjtimex (état de la synchronisation de l'horloge).
+#[allow(unsafe_code)]
 fn synchronisee() -> Option<bool> {
     // SAFETY: avec `modes` à zéro, adjtimex ne change rien ; il remplit seulement la structure, à nous, passée par
     // un pointeur valable pendant l'appel.

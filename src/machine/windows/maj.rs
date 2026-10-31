@@ -1,5 +1,8 @@
 //! Mises à jour Windows : Windows Update et ses pilotes, winget, périphériques, cartes graphiques, Defender.
 
+// FFI de COM (crate windows) : Windows Update (IUpdateSession).
+#![allow(unsafe_code)]
+
 use super::*;
 
 /// Une mise à jour proposée par Windows Update.

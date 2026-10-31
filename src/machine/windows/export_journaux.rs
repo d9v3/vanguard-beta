@@ -3,6 +3,9 @@
 //! (EvtLogFileSize) disent la taille, sans texte traduit à lire ni page de code de la console. Un fichier à part,
 //! avec ses propres déclarations : la lecture vivante des journaux (`evenements.rs`) suit son propre chemin.
 
+// FFI de wevtapi : EvtExportLog, EvtOpenLog, EvtGetLogInfo.
+#![allow(unsafe_code)]
+
 use std::ffi::c_void;
 use std::path::Path;
 use std::time::Duration;

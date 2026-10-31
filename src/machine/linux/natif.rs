@@ -6,6 +6,9 @@
 //! analyseur qui reçoit la racine en paramètre : les tests lui donnent une arborescence inventée. `None` veut dire
 //! « non vérifié » (base absente, format inconnu), jamais « rien trouvé ».
 
+// FFI de libc : getgroups, getgrgid_r et sysconf (groupes du compte, constantes du noyau).
+#![allow(unsafe_code)]
+
 // La recherche dans le PATH est commune à Linux et macOS (`machine::unix`).
 use crate::machine::unix::chemin_dans;
 use std::collections::{HashMap, HashSet};

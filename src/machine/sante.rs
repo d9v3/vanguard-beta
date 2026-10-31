@@ -2,6 +2,9 @@
 //! Un disque qui lâche ou plein, c'est des données perdues ; seuls ces deux cas comptent dans la note.
 //! Batterie et chaleur sont de simples informations.
 
+// FFI de libc : statvfs et statfs (place libre des disques).
+#![allow(unsafe_code)]
+
 use super::{Constat, alerte, impossible, ok};
 use crate::risk::Niveau;
 use crate::{tr, trf};

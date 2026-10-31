@@ -3,6 +3,9 @@
 //! Chaque texte est écrit dans les deux langues à l'endroit où il sert : `tr!("Pare-feu actif", "Firewall on")`.
 //! Les noms internes (catégories des constats, clés JSON) restent en français : le code s'en sert pour décider.
 
+// FFI de kernel32 : GetUserDefaultUILanguage.
+#![allow(unsafe_code)]
+
 use std::sync::OnceLock;
 
 static ANGLAIS: OnceLock<bool> = OnceLock::new();

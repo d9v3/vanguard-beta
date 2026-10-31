@@ -8,6 +8,9 @@
 //! secours là où la lecture native ne répond pas : chaque fonction rend `None` quand elle n'a rien pu lire, jamais une
 //! liste vide qui passerait pour « rien d'anormal ».
 
+// FFI de libc et d'IOKit : sysctl, proc_*, getmntinfo, getpwent, IORegistry ; dlsym (transmute).
+#![allow(unsafe_code)]
+
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::net::Ipv4Addr;
 

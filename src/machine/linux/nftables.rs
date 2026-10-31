@@ -21,6 +21,9 @@
 //! Seule la table « vanguard » de la famille inet est visée : chaque message la nomme, et le vidage d'une chaîne
 //! nomme la chaîne.
 
+// FFI de libc : uname (version du noyau).
+#![allow(unsafe_code)]
+
 use std::net::IpAddr;
 
 use crate::modele::Echec;

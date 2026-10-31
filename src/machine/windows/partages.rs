@@ -3,6 +3,9 @@
 //! celui du script de secours (sections ACC, INV, SRV), lu par le même code. Le descripteur de sécurité est copié
 //! puis relu en code sûr.
 
+// FFI de netapi32 et advapi32 : NetShareEnum, NetUserEnum, LookupAccountSidW.
+#![allow(unsafe_code)]
+
 use std::ffi::c_void;
 
 use super::securite::sid_en_texte;

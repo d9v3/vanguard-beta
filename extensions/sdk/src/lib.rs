@@ -13,6 +13,9 @@
 //! Constat::ok("Salon", "Tout le reste va bien.").envoyer();
 //! ```
 
+// Pas d'`unsafe` hors du seul appel au système qui en demande un (`arreter`).
+#![deny(unsafe_code)]
+
 use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::io::{Read, Write};
@@ -265,6 +268,8 @@ pub fn lancer(programme: impl AsRef<OsStr>, arguments: &[&str], delai: Duration)
     })
 }
 
+// FFI de libc : kill, pour arrêter tout le groupe de processus du programme lancé.
+#[allow(unsafe_code)]
 fn arreter(enfant: &mut std::process::Child) {
     #[cfg(unix)]
     {

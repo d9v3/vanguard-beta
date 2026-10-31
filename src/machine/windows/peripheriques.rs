@@ -2,6 +2,9 @@
 //! leur nom, la clé de leur pilote dans le registre (version, date) et s'ils fonctionnent. Ce que Win32_VideoController
 //! et Win32_SoundDevice listent, sans les appareils débranchés dont Windows garde le pilote.
 
+// FFI de setupapi et cfgmgr32 : SetupDiGetClassDevsW, CM_Get_DevNode_Status…
+#![allow(unsafe_code)]
+
 use std::ffi::c_void;
 
 #[repr(C)]

@@ -139,6 +139,8 @@ pub(crate) fn reprendre(pids: &[u32]) {
 }
 
 #[cfg(unix)]
+// FFI de libc : kill (SIGKILL au processus fautif).
+#[allow(unsafe_code)]
 fn tuer(pid: u32) {
     if let Ok(pid) = libc::pid_t::try_from(pid) {
         // SAFETY: SIGKILL à un numéro de processus ; il arrête aussi un processus gelé.

@@ -4,6 +4,9 @@
 //! seulement après accord.
 //! Les réglages qui retirent une protection (intégrité de la mémoire, Defender, pare-feu…) ne sont jamais proposés.
 
+// FFI de kernel32 : GetSystemPowerStatus.
+#![allow(unsafe_code)]
+
 use std::fmt::Write;
 
 use serde::Deserialize;

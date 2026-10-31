@@ -1,6 +1,9 @@
 //! Descripteurs de sécurité de Windows (droits d'un partage, d'un dossier) : copiés depuis Windows, puis relus en code
 //! sûr, chaque décalage vérifié dans la copie avant d'être lu.
 
+// FFI d'advapi32 : descripteurs de sécurité (GetNamedSecurityInfoW…).
+#![allow(unsafe_code)]
+
 use std::ffi::c_void;
 use std::path::Path;
 

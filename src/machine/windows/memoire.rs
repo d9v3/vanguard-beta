@@ -5,6 +5,9 @@
 //! SeDebugPrivilege : lire la mémoire d'autrui ressemble déjà assez à un vol d'identifiants pour ne rien y ajouter.
 //! Le dossier System32 est lu ici aussi : un processus au nom critique n'est écarté que si son programme y est.
 
+// FFI de kernel32 : mémoire d'un autre processus (VirtualQueryEx, ReadProcessMemory…).
+#![allow(unsafe_code)]
+
 use std::ffi::c_void;
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE};

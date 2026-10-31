@@ -14,6 +14,9 @@
 //! Tant que le test d'oracle de macos.yml (plus bas) n'a pas prouvé ces lectures contre scutil et networksetup, les
 //! appelants gardent l'outil en secours.
 
+// FFI de SystemConfiguration et CoreFoundation (system-configuration-sys) : DNS, proxy, services.
+#![allow(unsafe_code)]
+
 use std::ffi::c_void;
 use std::net::IpAddr;
 

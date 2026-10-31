@@ -1,6 +1,9 @@
 //! Lancement des commandes système avec un délai maximal : un outil qui ne répond plus (systemctl, gsettings,
 //! PowerShell, gestionnaire de paquets hors ligne…) ne doit jamais figer Vanguard.
 
+// FFI de libc (setsid, getpgid, kill, waitid : groupe de processus et attente) et de kernel32 (GetSystemDirectoryW).
+#![allow(unsafe_code)]
+
 use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;

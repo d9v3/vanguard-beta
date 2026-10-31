@@ -861,6 +861,8 @@ fn bureau_distance() -> Constat {
     }
 }
 
+// FFI de user32 : GetSystemMetrics.
+#[allow(unsafe_code)]
 #[link(name = "user32")]
 unsafe extern "system" {
     fn GetSystemMetrics(index: i32) -> i32;
@@ -869,6 +871,8 @@ unsafe extern "system" {
 /// Cette session Windows est-elle affichée à travers le Bureau à distance, en ce moment ?
 /// On interroge Windows directement : la variable SESSIONNAME est figée à l'ouverture de session et
 /// reste « Console » quand le Bureau à distance reprend une session ouverte sur l'écran (vu en test réel).
+// FFI de user32 : GetSystemMetrics.
+#[allow(unsafe_code)]
 pub fn session_a_distance() -> bool {
     const SM_REMOTESESSION: i32 = 0x1000;
     // SAFETY: GetSystemMetrics n'a ni pointeur ni effet de bord.
@@ -981,6 +985,8 @@ fn mises_a_jour() -> Constat {
 /// System.Volume.BitLockerProtection de C:, la propriété que montre l'Explorateur, lue par son magasin de
 /// propriétés : sans droits administrateur, contrairement à Get-BitLockerVolume et à Win32_EncryptableVolume. Vide
 /// si le volume n'en a pas, comme ExtendedProperty dans PowerShell.
+// FFI de COM (crate windows) : les propriétés du volume, pour BitLocker.
+#[allow(unsafe_code)]
 fn protection_bitlocker() -> Option<String> {
     use windows::Win32::Foundation::PROPERTYKEY;
     use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PropVariantToUInt32};
@@ -1520,6 +1526,8 @@ mod tests {
     // Sous Miri : session_a_distance appelle GetSystemMetrics, que Miri n'interprète pas.
     #[cfg_attr(miri, ignore)]
     #[test]
+    // `std::env::set_var` est unsafe en édition 2024 : l'essai change SESSIONNAME.
+    #[allow(unsafe_code)]
     fn jamais_couper_le_bureau_a_distance_qu_on_utilise() {
         // SAFETY: sous Windows, set_var est toujours sûr (documentation de std) : l'environnement du processus y est
         // protégé par un verrou ; `unsafe` ne sert qu'aux systèmes POSIX.

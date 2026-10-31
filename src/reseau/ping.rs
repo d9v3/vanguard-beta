@@ -3,6 +3,9 @@
 //! règle à tous ; macOS : toujours), sous Windows par IcmpSendEcho (`machine::windows::routes`). `None` : le système
 //! refuse la prise ou l'API, rien n'est prouvé, et l'appelant lance `ping` en secours.
 
+// FFI de libc : prise ICMP (socket, sendto, recvfrom, poll).
+#![allow(unsafe_code)]
+
 use std::net::Ipv4Addr;
 use std::time::Duration;
 

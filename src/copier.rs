@@ -6,6 +6,9 @@
 //! reprend là où elle s'est arrêtée : ce qui est déjà copié, à l'identique, n'est pas recopié. Jamais vers la clé
 //! VANGUARD ni vers le disque du système.
 
+// FFI de libc : statfs, fcntl et posix_fadvise (copie sans cache, système de fichiers de la cible).
+#![allow(unsafe_code)]
+
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};

@@ -3,6 +3,9 @@
 //! leur ancienne place dans `reseau` ; le bilan, la protection et les traces s'en servent autant, sans rien avoir à
 //! faire du réseau.
 
+// FFI de libc : atexit (retirer le verrou à la sortie).
+#![allow(unsafe_code)]
+
 use std::path::PathBuf;
 
 use crate::{tr, trf};

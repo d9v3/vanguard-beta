@@ -3,6 +3,9 @@
 //! (wevtapi) : les échecs et réussites de connexion de la chasse (mot de passe deviné), le 104 de la règle commune des
 //! journaux, les événements du diagnostic et des traces.
 
+// FFI de wevtapi : EvtQuery, EvtNext, EvtRender.
+#![allow(unsafe_code)]
+
 use std::collections::HashMap;
 
 use chrono::NaiveDateTime;

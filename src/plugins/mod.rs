@@ -1555,6 +1555,8 @@ pub struct Facon {
 /// l'environnement minimal sauf sans restrictions (`libre`) ; dans bubblewrap avec `isole` (alors `jetable` reçoit
 /// la seule écriture permise). Le programme perd le terminal (nouvelle session sous Unix, pas de console sous
 /// Windows) : il ne peut plus y écrire en passant à côté du filtre de sa sortie, ni y lire les frappes.
+// `pre_exec` et libc::setsid : l'extension dans son propre groupe de processus.
+#[allow(unsafe_code)]
 fn commande_de(
     programme: &Path,
     arguments: &[String],

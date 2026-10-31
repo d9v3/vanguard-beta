@@ -1,6 +1,9 @@
 //! Les processus de Windows, lus et arrêtés par ses fonctions (Toolhelp32, OpenProcess) au lieu de tasklist, taskkill
 //! et whoami : rien à lancer, quelques millisecondes, et des noms qui ne dépendent pas de la langue de la console.
 
+// FFI de kernel32 et advapi32 : processus et jetons (CreateToolhelp32Snapshot, OpenProcessToken…).
+#![allow(unsafe_code)]
+
 use std::ffi::c_void;
 
 #[link(name = "kernel32")]

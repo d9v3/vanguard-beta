@@ -300,6 +300,8 @@ mod systeme {
 
     /// L'attribut étendu « user.coredump.exe » qu'écrit systemd-coredump sur chaque vidage (avec .comm, .pid…) :
     /// le chemin du programme. Lisible par qui peut lire le fichier.
+    // FFI de libc : getxattr (l'attribut étendu de systemd-coredump).
+    #[allow(unsafe_code)]
     pub(super) fn attribut_exe(chemin: &std::path::Path) -> Option<Vec<u8>> {
         use std::os::unix::ffi::OsStrExt;
         let c = std::ffi::CString::new(chemin.as_os_str().as_bytes()).ok()?;

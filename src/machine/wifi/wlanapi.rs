@@ -6,6 +6,9 @@
 //! Windows rend est copié d'un bloc puis lu octet par octet, chaque borne testée avant la lecture ; les lecteurs sont
 //! purs et testés sur des blocs fabriqués selon wlanapi.h.
 
+// FFI de wlanapi.dll chargée à la demande (LoadLibraryExW, GetProcAddress, transmute) et de ses listes.
+#![allow(unsafe_code)]
+
 #[cfg(any(windows, test))]
 use super::elements::{self, mac_texte};
 #[cfg(any(windows, test))]

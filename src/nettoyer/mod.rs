@@ -194,6 +194,8 @@ pub fn lectures_datees(chemin: &Path) -> bool {
 
 /// Sous macOS, statvfs ne dit rien de `noatime` : statfs, si.
 #[cfg(target_os = "macos")]
+// FFI de libc : statfs (option noatime sous macOS).
+#[allow(unsafe_code)]
 pub fn lectures_datees(chemin: &Path) -> bool {
     use std::os::unix::ffi::OsStrExt;
     let Ok(c) = std::ffi::CString::new(chemin.as_os_str().as_bytes()) else {

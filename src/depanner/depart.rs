@@ -4,6 +4,9 @@
 //! système, la puce TPM remise à zéro. Vanguard vérifie et explique ; il n'efface rien lui-même : l'outil du système
 //! sait traiter chaque disque (SSD, puce de sécurité), et c'est à toi d'appuyer.
 
+// FFI de kernel32 : LoadLibraryExW et GetProcAddress, le pointeur rendu changé en fonction typée (transmute).
+#![allow(unsafe_code)]
+
 use super::{Etat, a_savoir, bilan, conseil, proposer_outil, question, verifications};
 use crate::ui::*;
 

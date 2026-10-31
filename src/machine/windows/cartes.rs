@@ -3,6 +3,9 @@
 //! une liste chaînée par pointeurs absolus : il est relu ici en code sûr, chaque pointeur ramené à un décalage dans le
 //! tampon et vérifié avant d'être suivi.
 
+// FFI d'iphlpapi : GetAdaptersAddresses.
+#![allow(unsafe_code)]
+
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// IF_TYPE_IEEE80211 : une carte Wi-Fi.

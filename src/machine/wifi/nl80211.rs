@@ -6,6 +6,9 @@
 //! (cela demande des droits et coupe le Wi-Fi une seconde). Les lectures des réponses sont pures et testées sur des
 //! messages fabriqués ; seule `echanger` parle au noyau.
 
+// FFI de libc : prise netlink nl80211 (socket, sendto, recv) et if_nametoindex.
+#![allow(unsafe_code)]
+
 #[cfg(target_os = "linux")]
 use super::Lecture;
 #[cfg(any(target_os = "linux", test))]

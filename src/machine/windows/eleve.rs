@@ -20,6 +20,9 @@
 //! clé USB), et son contenu est déjà verrouillé par l'image chargée. Le processus élevé n'écrit aucun fichier dans
 //! un dossier du compte : ses réponses passent par le tube.
 
+// FFI de Windows (kernel32, advapi32, shell32, COM) : tube nommé, élévation, GetProcAddress (transmute).
+#![allow(unsafe_code)]
+
 use std::ffi::c_void;
 use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read, Write};

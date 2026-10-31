@@ -1,6 +1,9 @@
 //! Les certificats racine des magasins de Windows (ordinateur et utilisateur), lus par crypt32 sans PowerShell :
 //! les lignes « CERT|magasin|clé privée|empreinte|nom » que le lecteur Cert: de PowerShell donnait.
 
+// FFI de crypt32 : magasins de certificats (CertOpenStore, CertEnumCertificatesInStore…).
+#![allow(unsafe_code)]
+
 use std::ffi::c_void;
 
 #[link(name = "crypt32")]

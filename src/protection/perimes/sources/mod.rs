@@ -709,6 +709,8 @@ mod tests {
 
     // SAFETY: tout est délégué à l'allocateur du système ; le compte (un `Cell` sans destructeur, initialisé à la
     // compilation) n'alloue rien lui-même.
+    // `unsafe impl GlobalAlloc` : l'allocateur compteur des essais.
+    #[allow(unsafe_code)]
     unsafe impl GlobalAlloc for Compteur {
         unsafe fn alloc(&self, l: Layout) -> *mut u8 {
             let _ = ALLOUE.try_with(|c| c.set(c.get().saturating_add(l.size())));

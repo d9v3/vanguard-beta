@@ -1,6 +1,9 @@
 //! L'état d'un service Windows, lu auprès du gestionnaire de services (advapi32) sans PowerShell : ce que
 //! `(Get-Service <nom>).Status` donnait, avec les mêmes mots.
 
+// FFI d'advapi32 : le gestionnaire de services (OpenSCManagerW, QueryServiceConfigW…).
+#![allow(unsafe_code)]
+
 use std::ffi::c_void;
 
 #[repr(C)]

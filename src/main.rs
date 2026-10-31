@@ -3,6 +3,11 @@
 //! N'utilise le scan réseau que sur un réseau qui t'appartient ou que tu as le droit d'auditer.
 //! Lancé sans argument, affiche un menu.
 
+// Pas d'`unsafe` sans raison : chaque module qui appelle le système (FFI) lève ce refus pour lui seul, avec une
+// ligne qui dit pourquoi ; les modules que lit le banc de fuzzing le refusent sans recours (`forbid`). Garde :
+// `chaque_module_fuzze_refuse_unsafe`.
+#![deny(unsafe_code)]
+
 mod a_laisser;
 // Le socle d'analyse des fichiers (lot AV1 de l'antivirus maison) : ses lecteurs servent aux motifs, aux signatures
 // et aux heuristiques des lots suivants (AV2 à AV4), qui ne sont pas encore branchés.

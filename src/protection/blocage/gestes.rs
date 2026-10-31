@@ -2,6 +2,9 @@
 //! notés avec de quoi les défaire (changements.rs), puis défaits sur demande. Tout ce qui peut empêcher un geste
 //! (garde-fou, droits, pare-feu absent) est vérifié avant d'y toucher : rien n'est fait à moitié.
 
+// FFI de libc : access et kill (signal 0).
+#![allow(unsafe_code)]
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 

@@ -2,6 +2,9 @@
 //! les noms de sites), lu par des essais qui ne changent rien : une adresse sur le réseau, la box qui répond, trois
 //! serveurs d'Internet joignables (Cloudflare, Quad9, Google), deux noms de sites traduits en adresses.
 
+// FFI de libc : socket et ioctl (état des cartes réseau).
+#![allow(unsafe_code)]
+
 use std::net::{Ipv4Addr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 

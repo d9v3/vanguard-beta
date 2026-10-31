@@ -14,6 +14,9 @@
 //! fil à part : le menu n'attend pas, et se redessine quand sa grille change (annoncée par le terminal, ou relue par
 //! `selection` : la vieille console de Windows ne l'annonce pas).
 
+// FFI de libc (getppid) et de Windows (console, fenêtre et écran : GetConsoleWindow, GetWindowRect…).
+#![allow(unsafe_code)]
+
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};

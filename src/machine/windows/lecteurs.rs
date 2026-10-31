@@ -1,6 +1,9 @@
 //! Les lecteurs de Windows (C:, E:…) lus par kernel32 sans PowerShell : ce que `[IO.DriveInfo]`, `Get-Volume` et
 //! `Get-Partition` donnaient (sorte, étiquette, place, système de fichiers, numéro du disque).
 
+// FFI de kernel32 : lecteurs et volumes (GetLogicalDrives, GetVolumeInformationW, DeviceIoControl…).
+#![allow(unsafe_code)]
+
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 

@@ -1,6 +1,9 @@
 //! Recherche de malwares avec un moteur reconnu (ClamAV sous Linux, Microsoft Defender sous Windows)
 //! et revue des programmes lancés au démarrage, là où un malware cherche à se maintenir.
 
+// FFI de libc : getfsstat (volumes montés sous macOS).
+#![allow(unsafe_code)]
+
 use std::path::PathBuf;
 use std::process::Command;
 

@@ -3,6 +3,9 @@
 //! parcours de /proc, avec chacun sa règle quand il ne se lisait pas : une liste vide, que rien ne distinguait d'un
 //! ordinateur où rien ne tourne. Ici, une liste illisible est `None`, à dire « non vérifié ».
 
+// FFI de libc : kill, proc_listallpids et proc_pidpath.
+#![allow(unsafe_code)]
+
 #[cfg(target_os = "linux")]
 use std::path::Path;
 use std::path::PathBuf;

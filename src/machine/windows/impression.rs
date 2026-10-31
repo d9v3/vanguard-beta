@@ -2,6 +2,9 @@
 //! par défaut (GetDefaultPrinterW) et l'adresse des ports TCP/IP standard (registre). Ce que Get-Printer,
 //! Get-PrintJob, Get-PrinterPort et Win32_Printer donnaient.
 
+// FFI de winspool : EnumPrintersW, GetDefaultPrinterW.
+#![allow(unsafe_code)]
+
 use std::ffi::c_void;
 
 /// Une imprimante installée.

@@ -5,6 +5,9 @@
 //! contenir ni « | » ni être « all » (documentation de INetFwRule) : les nôtres sont faits d'une adresse ou d'un
 //! port analysés. Après chaque geste, la règle est relue.
 
+// FFI de COM (crate windows) : INetFwPolicy2, les règles du Pare-feu Windows.
+#![allow(unsafe_code)]
+
 use std::net::IpAddr;
 
 use windows::Win32::Foundation::VARIANT_TRUE;

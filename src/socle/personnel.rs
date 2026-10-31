@@ -2,6 +2,9 @@
 //! place dans `nettoyer`, mais demandés partout (bilan, traces d'incident, protection, Gaming). Le dossier
 //! personnel était relu dans une quarantaine d'endroits, chacun avec sa règle quand HOME manque.
 
+// FFI de libc : getpwuid_r et statvfs.
+#![allow(unsafe_code)]
+
 #[cfg(unix)]
 use std::path::Path;
 use std::path::PathBuf;

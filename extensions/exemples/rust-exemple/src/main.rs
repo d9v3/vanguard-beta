@@ -1,6 +1,9 @@
 //! Exemple de plugin en Rust : deux constats inventés, puis la version du système lue par un programme lancé
 //! proprement (sans shell, délai et sortie bornés).
 
+// Un plugin n'a aucune raison d'écrire de l'`unsafe` : le compilateur le refuse.
+#![forbid(unsafe_code)]
+
 use std::time::Duration;
 
 use vanguard_extension::{Constat, arguments, lancer, message, tr};

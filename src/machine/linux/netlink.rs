@@ -6,6 +6,9 @@
 //! attribut (nlattr) a 4 octets d'en-tête (longueur, type), sa donnée, et un bourrage jusqu'au multiple de 4
 //! (linux/netlink.h).
 
+// FFI de libc : prise netlink (socket, setsockopt, sendto, recv).
+#![allow(unsafe_code)]
+
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
 pub(crate) const NLM_F_REQUEST: u16 = 0x01;

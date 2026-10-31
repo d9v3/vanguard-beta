@@ -180,6 +180,8 @@ fn lire_sock_diag(octets: &[u8], udp: bool) -> Vec<(Ecoute, Option<u64>)> {
 
 /// Envoie une demande netlink et rend les réponses du noyau jusqu'à la fin de la liste ; `None` sur une erreur
 /// (un protocole que le noyau ne connaît pas, udp_diag absent) ou sans réponse.
+// FFI de libc : prise netlink (socket, sendto, recv) des connexions en écoute.
+#[allow(unsafe_code)]
 pub(crate) fn demander_netlink(protocole: i32, demande: &[u8]) -> Option<Vec<u8>> {
     // SAFETY: une socket netlink ouverte ici et refermée une seule fois à la sortie ; chaque appel reçoit un pointeur
     // et la taille exacte d'un objet à nous, vivant pendant l'appel (demande, adresse, délai, tampon). Le délai de

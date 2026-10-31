@@ -33,6 +33,8 @@ pub use personnel::{maison, taille_lisible};
 
 /// Remet chaque octet à zéro par des écritures que le compilateur ne peut pas retirer : un simple `fill(0)` juste
 /// avant la libération est une écriture sans lecteur, qu'il a le droit de supprimer.
+// écritures volatiles (std::ptr::write_volatile) : l'effacement des secrets.
+#[allow(unsafe_code)]
 pub(crate) fn effacer(octets: &mut [u8]) {
     let (blocs, reste) = octets.as_chunks_mut::<64>();
     for bloc in blocs {
@@ -73,6 +75,8 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn structures_c_mises_a_zero() {
+        // std::mem::zeroed : l'essai (sous Miri) des structures C mises à zéro.
+        #[allow(unsafe_code)]
         fn zero<T>() -> T {
             // SAFETY: c'est précisément ce que vérifie l'essai, sous Miri : zéro est une valeur permise de `T`.
             unsafe { std::mem::zeroed() }

@@ -1,6 +1,9 @@
 //! Les tâches planifiées lues par le planificateur de Windows lui-même (ITaskService, COM), au lieu de
 //! Get-ScheduledTask : quelques millisecondes là où PowerShell prend une à plusieurs secondes.
 
+// FFI de COM (crate windows) : ITaskService, le planificateur de tâches.
+#![allow(unsafe_code)]
+
 use windows::Win32::Foundation::VARIANT_BOOL;
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::Win32::System::TaskScheduler::{

@@ -36,6 +36,8 @@ pub(crate) const TAILLE: u32 = 148;
 
 // Le nom est imposé par l'éditeur de liens ; `#[used]` le garde même si rien ne le lit.
 #[allow(non_upper_case_globals)]
+// `#[unsafe(no_mangle)]` : le nom _load_config_used est imposé par l'éditeur de liens de Windows.
+#[allow(unsafe_code)]
 #[unsafe(no_mangle)]
 #[used]
 pub(crate) static _load_config_used: ConfigurationDeChargement = ConfigurationDeChargement {

@@ -3,6 +3,9 @@
 //! rendues par Windows sont copiées puis relues en code sûr ; les tailles et les places des champs sont celles de
 //! netioapi.h et ipexport.h (vérifiées contre les en-têtes de MinGW, et par les essais ci-dessous).
 
+// FFI d'iphlpapi : routes, voisins et écho ICMP (GetIpForwardTable2, IcmpSendEcho…).
+#![allow(unsafe_code)]
+
 use std::net::Ipv4Addr;
 
 /// AF_INET.
