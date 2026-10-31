@@ -4,7 +4,8 @@
 # Internet, scripts PowerShell, shell et Python, essais des outils de la clé (outils/essais-cle.sh), de la signature
 # des versions (outils/essais-signature.sh) et de ce script même sous --seulement (outils/essais-verifier.sh), liens
 # internes, carte de couverture ATT&CK à jour (outils/couverture-attack.py), documentation du code sans avertissement
-# (cargo doc), textes français et anglais (outils/textes.py), régression de détection (le corpus de
+# (cargo doc), textes français et anglais (outils/textes.py), protections des programmes lues dans leurs en-têtes
+# (vanguard deploiement verifier-binaire : PIE, RELRO complet, pile non exécutable ; ASLR, DEP), régression de détection (le corpus de
 # src/modele/corpus.rs, Linux et Wine), dépendances (cargo deny) et leurs failles connues (cargo audit), banc de
 # fuzzing compilé et passé quelques secondes par cible, preuves de Kani compilées (lancées par outils/preuves.sh).
 # La CI lance ce même script (.github/workflows/ci.yml) : une seule logique, ici.
@@ -15,7 +16,7 @@
 #   outils/verifier.sh               tout ; une étape qui se dit sautée (outil absent, pas d'Internet) ou ne tourne
 #                                    pas y est un échec : seul ce passage-là peut finir « Tout est vert », et c'est
 #                                    lui que la livraison lance (outils/livrer-branche.sh)
-#   outils/verifier.sh --rapide      mise en forme, clippy et tests Linux seulement
+#   outils/verifier.sh --rapide      mise en forme, clippy, tests Linux et protections du programme seulement
 #   outils/verifier.sh --sans-wine   tout, sauf les tests Windows
 #   outils/verifier.sh --ci          pour la CI de GitHub : tout sauf Wine, et l'essai du veilleur sur le vrai noyau
 #                                    peut s'y dire sauté (les runners refusent le connecteur de processus)
@@ -397,6 +398,41 @@ nomenclatures() {
     diff -r "$TRAVAIL/sbom-1" "$TRAVAIL/sbom-2"
 }
 
+# Les protections des programmes, lues dans leurs en-têtes par vanguard deploiement verifier-binaire
+# (src/deploiement/binaire.rs), sans les lancer : toujours le programme Linux de ce code-ci (compilé en débogage, déjà
+# fait par les tests : mêmes réglages d'édition des liens que celui qu'on publie, static-pie de musl, voir
+# .cargo/config.toml), et les programmes de publication (Linux, Windows) quand ce sont ceux de ce commit (repère de
+# outils/compiler-version.sh : même commit, arbre propre, mêmes empreintes). Sinon c'est dit, sans se dire sautée :
+# une étape sautée à chaque passe sans compilation de version ferait échouer pour toujours le passage complet, et des
+# programmes d'un autre commit donneraient un vert ou un rouge qui n'est pas celui de ce code. deployer.sh,
+# publier-version.sh et la CI les revérifient avant qu'ils partent. Lue telle quelle par outils/essais-verifier.sh.
+durcissement() {
+  local cible=${CARGO_TARGET_DIR:-target} programme repere sorte fichier
+  programme=$cible/x86_64-unknown-linux-musl/debug/vanguard
+  cargo build -q --locked --target x86_64-unknown-linux-musl || return 1
+  local fichiers=("$programme")
+  repere=$cible/.compilation
+  if [[ $(sed -n 's/^commit //p' "$repere" 2>/dev/null) != "$(git rev-parse HEAD)" ||
+    $(sed -n 's/^propre //p' "$repere" 2>/dev/null) != oui ]]; then
+    echo "programmes de publication pas compilés de ce commit (outils/compiler-version.sh) : le programme de débogage seul"
+  else
+    for sorte in linux-x86_64 windows-x86_64; do
+      fichier=$cible/x86_64-unknown-linux-musl/release/vanguard
+      [[ $sorte == linux-x86_64 ]] || fichier=$cible/x86_64-pc-windows-gnu/release/vanguard.exe
+      if [[ -f $fichier && $(sha256sum "$fichier" | cut -d' ' -f1) == "$(sed -n "s/^$sorte //p" "$repere")" ]]; then
+        fichiers+=("$fichier")
+      else
+        echo "$fichier n'est plus celui de la compilation de ce commit : pas vérifié ici"
+      fi
+    done
+  fi
+  # Isolé : rien de ce qu'il écrirait au démarrage ne va dans le vrai dossier personnel.
+  local isole=$TRAVAIL/durcissement
+  mkdir -p "$isole"
+  env -i PATH="$PATH" HOME="$isole" XDG_DATA_HOME="$isole/data" XDG_CONFIG_HOME="$isole/config" \
+    XDG_CACHE_HOME="$isole/cache" LANG="${LANG:-C.UTF-8}" "$programme" deploiement verifier-binaire "${fichiers[@]}"
+}
+
 # La documentation du code (cargo doc) sans aucun avertissement : un `<pid>` pris pour une balise HTML ou un
 # `[Install]` pris pour un lien se voit ici plutôt que dans une page cassée.
 documentation() { RUSTDOCFLAGS="-D warnings" cargo doc -q --locked --no-deps; }
@@ -410,7 +446,7 @@ fi
 # Pas d'exigence du veilleur dans la passe sans Internet, où le connecteur de processus n'existe pas.
 {
   etape clippy-linux clippy x86_64-unknown-linux-musl && etape tests-linux tests_linux &&
-    etape regression-detection regression_linux &&
+    { etape durcissement durcissement || true; } && etape regression-detection regression_linux &&
     if [[ $MODE != --rapide ]]; then etape tests-hors-ligne hors_ligne; fi
 } &
 if [[ $MODE != --rapide ]]; then
@@ -560,6 +596,9 @@ ligne clippy-linux "clippy Linux"
 [[ -z $SEULEMENT ]] && compte_unsafe | tee -a "$RESUME"
 ligne tests-linux "tests Linux ($(passes tests-linux))"
 raisons_des_sautes tests-linux
+VERIFIES=$(grep -sc '^✔' "$TRAVAIL/durcissement.log")
+ligne durcissement "protections (${VERIFIES:-0} programmes)"
+[[ $(cat "$TRAVAIL/durcissement.etat" 2>/dev/null) != ok* ]] || grep -v '^✔' "$TRAVAIL/durcissement.log" | sed 's/^/      /'
 ligne regression-detection "régression de détection Linux ($(cas_qui_tirent regression-detection) règles)"
 [[ -f $TRAVAIL/regression-detection.log ]] && grep -m1 -oE '[0-9]+ exemptées, [0-9]+ en attente de S3b, [0-9]+ de S3c' "$TRAVAIL/regression-detection.log" | sed 's/^/      /'
 if [[ $MODE != --rapide ]]; then

@@ -37,6 +37,9 @@
 #      compte connecté ou introuvable (sinon, sous le service de la clé, « réessayé » pour toujours sans alerte).
 #   6e. publier-version.sh n'attend pas sans fin une exécution de GitHub (CI, Mac) bloquée : attendre_execution,
 #      face à un faux gh qui ne finit jamais, abandonne au délai.
+#   6f. Les protections des programmes qui partent (vanguard deploiement verifier-binaire) : publier-version.sh les
+#      fait lire (verifier_binaires, face à un faux programme Linux) sur les copies Linux et Windows, après la relecture
+#      de leurs empreintes, et sur la version macOS récupérée ; deployer.sh, sur ce qui part ; un refus arrête tout.
 #   6d. Un passe-droit de publier-version.sh (VANGUARD_PUBLIER_SANS_EMPREINTES_CI, VANGUARD_PUBLIER_SANS_VM) est dit
 #      en tête des notes de la page (notes, face à un faux gh) et gardé dans le bloc de sa version de l'historique
 #      signé (signer-versions.sh --passe-droit), sous la forme que lit github.rs, jamais dans derniere.txt.
@@ -578,6 +581,42 @@ awk '/^attendre_execution\(\) \{/,/^\}/ { next } /^ *#/ { next } /gh run watch/ 
   /attendre_execution "\$RUN" [0-9]+/ { m = 1 } END { exit !(c && m) }' "$DEPOT/outils/publier-version.sh" &&
   ok "publier-version.sh : chaque attente de GitHub (CI, Mac) a un délai" ||
   ko "publier-version.sh : un « gh run watch » sans délai"
+
+# 6f. Les protections des programmes qui partent, lues par la copie Linux qui part : verifier_binaires, face à un faux
+# programme Linux qui note ce qu'on lui demande, lui passe chaque fichier et rend son refus. Chaque appel arrête tout
+# sur un refus : dans publier-version.sh, Linux et Windows après la relecture de leurs empreintes et avant d'attendre
+# GitHub, la version macOS une fois son empreinte relue ; dans deployer.sh, le programme Linux et vanguard.exe, avant
+# toute copie. Le nom d'avant (verifier-pe, alias) n'est plus appelé.
+D=$T/faux-verificateur
+mkdir -p "$D"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$(dirname "$0")/appels"\n[[ ! -f "$(dirname "$0")/refus" ]]\n' \
+  >"$D/vanguard-linux-x86_64"
+chmod +x "$D/vanguard-linux-x86_64"
+awk '/^verifier_binaires\(\) \{/,/^\}/' "$DEPOT/outils/publier-version.sh" >"$T/verifier_binaires.sh"
+verifier_avec() { DOSSIER=$D bash -c "source '$T/verifier_binaires.sh'; verifier_binaires \"\$@\"" _ "$@"; }
+if verifier_avec "$D/a" "$D/b c.exe" && [[ $(cat "$D/appels") == "deploiement verifier-binaire $D/a $D/b c.exe" ]] &&
+  touch "$D/refus" && ! verifier_avec "$D/a"; then
+  ok "publier-version.sh : verifier_binaires passe chaque fichier à « deploiement verifier-binaire » et rend son refus"
+else
+  ko "publier-version.sh : verifier_binaires ne passe pas les fichiers tels quels, ou cache un refus ($(cat "$D/appels" 2>/dev/null))"
+fi
+awk '/Copie des programmes différente de leur compilation/ { e = NR }
+  /^verifier_binaires "\$DOSSIER\/vanguard-linux-x86_64" "\$DOSSIER\/vanguard-windows-x86_64.exe" \|\|$/ { v = NR }
+  v && NR == v + 1 && /rien de publié."; exit 1; }$/ { lw = 1 }
+  /attendre_execution "\$/ && !a { a = NR }
+  /EMPREINTE-VANGUARD-MACOS/ { m = NR }
+  /^verifier_binaires "\$DOSSIER\/vanguard-macos" \|\| \{ .*rien de publié."; exit 1; \}$/ { mac = NR }
+  END { exit !(e && lw && e < v && v < a && m && m < mac) }' "$DEPOT/outils/publier-version.sh" &&
+  ok "publier-version.sh : Linux, Windows et macOS vérifiés là où il faut, chaque refus arrête la publication" ||
+  ko "publier-version.sh : un programme publié sans « verifier-binaire », ou vérifié trop tôt, ou refus ignoré"
+awk '/^A_VERIFIER=\("\$LINUX"\)$/ { l = NR } /^\[\[ -f \$WINDOWS \]\] && A_VERIFIER\+=\("\$WINDOWS"\)$/ { w = NR }
+  /^\.\/"\$LINUX" deploiement verifier-binaire "\$\{A_VERIFIER\[@\]\}" \|\| \{$/ { v = NR }
+  v && !x && NR > v && /^  exit 1$/ { x = NR } /^copier |^install / && !c { c = NR }
+  END { exit !(l && w && l < v && w < v && x && x < c) }' "$DEPOT/outils/deployer.sh" &&
+  ok "deployer.sh : le programme Linux et vanguard.exe vérifiés (verifier-binaire) avant toute copie, sans repli" ||
+  ko "deployer.sh : un programme part sans « verifier-binaire », ou après sa copie, ou malgré un refus"
+! grep -nE 'deploiement verifier[-]pe' "$DEPOT/outils/"*.sh "$DEPOT/.github/workflows/"*.yml >/dev/null &&
+  ok "plus aucun appel à l'ancien nom (verifier-pe)" || ko "un appel à verifier-pe reste : les protections n'y sont lues que par l'alias"
 
 # 6c. Au branchement de la clé, un commit de GitHub n'est récupéré et compilé qu'avec une CI verte sur ce commit
 # exact (deployer.sh, ci_verte, campagne d'attaque n° 6, F4). Un faux gh filtre les exécutions par --commit comme

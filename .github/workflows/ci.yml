@@ -266,7 +266,7 @@ jobs:
     needs: utile
     if: needs.utile.outputs.windows == 'oui' && github.event_name != 'pull_request'
     # 26.04 : son éditeur de liens MinGW (binutils 2.41 sur 24.04, trop vieux) remplit le répertoire « Load Config »
-    # depuis _load_config_used ; sans lui, le .exe n'a pas la garde des DLL et verifier-pe.py le refuse à raison.
+    # depuis _load_config_used ; sans lui, le .exe n'a pas la garde des DLL et verifier-binaire le refuse à raison.
     runs-on: ubuntu-26.04
     timeout-minutes: 40
     steps:
@@ -311,11 +311,14 @@ jobs:
           rustc --version
           x86_64-w64-mingw32-gcc --version | head -n 1
           musl-gcc --version 2>/dev/null | head -n 1 || true
-      # Ce que l'ordinateur de l'auteur vérifie avant de livrer : DLL depuis System32 seulement, manifeste UTF-8 et
-      # asInvoker ; puis les failles connues des deux programmes, lues dans la liste qu'ils portent.
-      - name: Le .exe porte ses gardes, failles connues des programmes
+      # Ce que l'ordinateur de l'auteur vérifie avant de livrer (vanguard deploiement verifier-binaire) : Linux en PIE
+      # statique, RELRO complet, pile non exécutable ; le .exe avec ses DLL depuis System32 seulement, son manifeste
+      # UTF-8 et asInvoker, ASLR, DEP et relocalisations ; puis les failles connues des deux programmes, lues dans la
+      # liste qu'ils portent.
+      - name: Les programmes portent leurs protections, failles connues des programmes
         run: |
-          target/x86_64-unknown-linux-musl/release/vanguard deploiement verifier-pe target/x86_64-pc-windows-gnu/release/vanguard.exe
+          target/x86_64-unknown-linux-musl/release/vanguard deploiement verifier-binaire \
+            target/x86_64-unknown-linux-musl/release/vanguard target/x86_64-pc-windows-gnu/release/vanguard.exe
           bash outils/failles-programmes.sh target/x86_64-unknown-linux-musl/release/vanguard \
             target/x86_64-pc-windows-gnu/release/vanguard.exe
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

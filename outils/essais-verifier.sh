@@ -12,6 +12,9 @@
 #      ne se relance pas d'ici, il dure des minutes et lance ces essais mêmes).
 #   6. Les relectures de cargo vet sans Internet (VANGUARD_HORS_LIGNE) : imports.lock cru sur parole, l'étape se dit
 #      sautée avec sa raison, jamais verte (sauté sans cargo-vet 0.10.3).
+#   7. Les protections des programmes (durcissement, lue dans verifier.sh, cargo et le programme remplacés par des
+#      faux) : jamais sautée ; les programmes de publication vérifiés seulement s'ils sont ceux de ce commit (sinon
+#      c'est dit) ; un refus, ou le programme absent, est un échec.
 # Chaque essai ne lance que des étapes de quelques secondes, sans Internet ni compilation.
 # Lancé par outils/verifier.sh.
 #   outils/essais-verifier.sh
@@ -101,6 +104,57 @@ fi
 rm -f "$juge"
 grep -q '^echo "Tout est vert' outils/verifier.sh && grep -q 'Passage partiel (\$MODE)' outils/verifier.sh &&
   ok "un passage partiel ne finit jamais « Tout est vert »" || ko "verifier.sh : fin d'un passage partiel introuvable"
+
+# Le faux programme note les fichiers qu'on lui donne et répond le code écrit dans « code » ; la vraie lecture des
+# en-têtes est essayée par les tests de src/deploiement/binaire.rs.
+faux=$(mktemp -d "$HOME/.cache/vanguard-dev/essai-durcissement.XXXX")
+mkdir -p "$faux/x86_64-unknown-linux-musl/debug" "$faux/x86_64-unknown-linux-musl/release" \
+  "$faux/x86_64-pc-windows-gnu/release"
+cat >"$faux/x86_64-unknown-linux-musl/debug/vanguard" <<FAUX
+#!/usr/bin/env bash
+[[ "\$1 \$2" == "deploiement verifier-binaire" ]] || exit 9
+shift 2
+for f; do echo "✔ \$f" >>"$faux/appels"; done
+exit \$(cat "$faux/code")
+FAUX
+chmod +x "$faux/x86_64-unknown-linux-musl/debug/vanguard"
+echo linux >"$faux/x86_64-unknown-linux-musl/release/vanguard"
+echo windows >"$faux/x86_64-pc-windows-gnu/release/vanguard.exe"
+empreinte() { sha256sum "$faux/$1" | cut -d' ' -f1; }
+repere() {
+  printf 'commit %s\npropre %s\nlinux-x86_64 %s\nwindows-x86_64 %s\n' "$1" "$2" \
+    "$(empreinte x86_64-unknown-linux-musl/release/vanguard)" "$3" >"$faux/.compilation"
+}
+fonction=$(awk '/^durcissement\(\) \{/,/^\}/' outils/verifier.sh)
+durcir() {
+  : >"$faux/appels"
+  echo "$1" >"$faux/code"
+  SORTIE=$(CARGO_TARGET_DIR=$faux TRAVAIL=$faux bash -c "cargo() { :; }; $fonction
+durcissement" 2>&1)
+  CODE=$?
+  APPELS=$(wc -l <"$faux/appels")
+}
+ici=$(git rev-parse HEAD)
+durcir 0
+[[ -n $fonction && $CODE == 0 && $APPELS == 1 ]] && grep -q 'pas compilés de ce commit' <<<"$SORTIE" &&
+  repere "$ici" oui "$(empreinte x86_64-pc-windows-gnu/release/vanguard.exe)" && durcir 0 &&
+  [[ $CODE == 0 && $APPELS == 3 ]] && repere "$ici" non "$(empreinte x86_64-pc-windows-gnu/release/vanguard.exe)" &&
+  durcir 0 && [[ $CODE == 0 && $APPELS == 1 ]] && repere "$ici" oui autre && durcir 0 &&
+  [[ $CODE == 0 && $APPELS == 2 ]] && grep -q 'vanguard.exe n.est plus celui' <<<"$SORTIE" &&
+  ok "protections des programmes : ceux de publication vérifiés seulement s'ils sont de ce commit, sinon dit" ||
+  ko "protections des programmes, programmes vérifiés (code $CODE, $APPELS programme(s)) : $(tail -n 2 <<<"$SORTIE")"
+durcir 1
+if [[ -n $fonction && $CODE != 0 && $CODE != 77 ]]; then
+  rm "$faux/x86_64-unknown-linux-musl/debug/vanguard"
+  durcir 0
+fi
+[[ -n $fonction && $CODE != 0 && $CODE != 77 ]] &&
+  ok "protections des programmes : un refus ou le programme absent est un échec, jamais sautée" ||
+  ko "protections des programmes : un refus ou le programme absent n'échoue pas (code $CODE)"
+rm -rf "$faux"
+grep -q '{ etape durcissement durcissement || true; } && etape regression-detection' outils/verifier.sh &&
+  grep -q '^ligne durcissement ' outils/verifier.sh && ok "protections des programmes : lancées et jugées à chaque passe" ||
+  ko "verifier.sh : l'étape durcissement n'est pas dans la chaîne Linux ou dans le résumé"
 
 if [[ $(cargo vet --version 2>/dev/null) == "cargo-vet 0.10.3" ]]; then
   lancer env VANGUARD_HORS_LIGNE=1 bash outils/verifier.sh --seulement relectures

@@ -234,7 +234,11 @@ Continuous integration (`.github/workflows/ci.yml`): on each push to master and 
 distributions; a real Windows (PowerShell, registry) on each push, each pull request, every night if the code
 changed (`.github/hors-code.txt`) and on demand (`gh workflow run ci.yml`), with the reproducible build and the
 delivered .exe (MinGW) tried on Windows. `verifier.sh` also checks the workflows with zizmor (offline) and builds
-everything with `--locked`. Every night: cargo audit, cargo deny, and five minutes of fuzzing per
+everything with `--locked`. The programs' protections (Linux: PIE, full RELRO, non-executable stack, nothing
+writable and executable; Windows: high-entropy ASLR, DEP, relocations, DLLs from System32, manifest; Mac: every slice
+PIE) are read from their headers by `vanguard deploiement verifier-binaire`: on every `verifier.sh` run (the debug
+program, and the release ones when built from this commit), in CI on the release ones, then before anything leaves
+in `deployer.sh` and `publier-version.sh` (Mac included). A refused program does not leave. Every night: cargo audit, cargo deny, and five minutes of fuzzing per
 target. The repository is public: Linux and Windows minutes do not count.
 
 Skipped tests: a test that cannot run on a computer (missing system tool, unreachable registry, root of a namespace)

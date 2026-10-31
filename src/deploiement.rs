@@ -386,6 +386,25 @@ mod tests {
 
     const MANIFESTE_D_ESSAI: &[u8] = br#"<assembly><security><requestedPrivileges><requestedExecutionLevel level="asInvoker" uiAccess="false"/></requestedPrivileges></security><windowsSettings><activeCodePage>UTF-8</activeCodePage></windowsSettings></assembly>"#;
 
+    /// L'ancien nom reste accepté (un deployer.sh d'avant l'appelle encore) ; sans fichier, refusé avant toute lecture.
+    #[test]
+    fn verifier_binaire_et_son_ancien_nom() {
+        #[derive(clap::Parser)]
+        struct Essai {
+            #[command(subcommand)]
+            etape: Etape,
+        }
+        use clap::Parser as _;
+        for nom in ["verifier-binaire", "verifier-pe"] {
+            let e = Essai::try_parse_from(["vanguard", nom, "a", "b.exe"]).unwrap();
+            assert!(
+                matches!(&e.etape, Etape::VerifierBinaire { fichiers } if fichiers == &[PathBuf::from("a"), PathBuf::from("b.exe")]),
+                "{nom}"
+            );
+            assert!(Essai::try_parse_from(["vanguard", nom]).is_err(), "{nom} sans fichier");
+        }
+    }
+
     #[test]
     fn verifier_binaire_garde_les_controles_de_verifier_pe() {
         let d = dossier();

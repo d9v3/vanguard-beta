@@ -9,7 +9,7 @@ Réponses à l'utilisateur en français, claires, avec le pourquoi.
 
 - Tout vérifier en une commande : `outils/verifier.sh` (mise en forme, clippy ×4, tests Linux et Wine, la suite Linux
   refaite sans Internet, scripts PowerShell, shell et Python, extensions, essais de la clé et de la signature des
-  versions, liens internes, textes FR/EN (`outils/textes.py`), dépendances par cargo deny et cargo vet, workflows
+  versions, liens internes, textes FR/EN (`outils/textes.py`), protections des programmes (`verifier-binaire`), dépendances par cargo deny et cargo vet, workflows
   par zizmor, nomenclatures (SBOM, `outils/sbom.sh`, cargo-cyclonedx 0.5.9), banc de fuzzing, preuves de Kani compilées
   (sans être lancées) ; tout cargo en `--locked` ; les cibles en parallèle, une ligne par étape à la fin, avec les avertissements de cargo deny et le
   compte de l'unsafe de src/). Un test qui ne peut pas

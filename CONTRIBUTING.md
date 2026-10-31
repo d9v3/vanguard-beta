@@ -236,7 +236,12 @@ Intégration continue (`.github/workflows/ci.yml`) : à chaque envoi sur master 
 vraies distributions ; un vrai Windows (PowerShell, registre) à chaque envoi, à chaque demande de fusion, la nuit si
 le code a changé (`.github/hors-code.txt`) et à la demande (`gh workflow run ci.yml`), avec la compilation
 reproductible et le .exe livré (MinGW) essayé sur Windows. `verifier.sh` relit aussi les workflows avec zizmor (hors ligne) et
-compile tout en `--locked`. Chaque nuit : cargo audit, cargo deny, et cinq minutes
+compile tout en `--locked`. Les protections des programmes (Linux : PIE, RELRO complet, pile non exécutable, rien
+d'écrivable et exécutable ; Windows : ASLR à haute entropie, DEP, relocalisations, DLL de System32, manifeste ; Mac :
+chaque tranche en PIE) sont lues dans leurs en-têtes par `vanguard deploiement verifier-binaire` : à chaque passe de
+`verifier.sh` (le programme de débogage, et ceux de publication s'ils sont de ce commit), dans la CI sur ceux de
+publication, puis avant tout départ dans `deployer.sh` et `publier-version.sh` (Mac compris). Un programme refusé ne
+part pas. Chaque nuit : cargo audit, cargo deny, et cinq minutes
 de fuzzing par cible. Le dépôt est public : les minutes de Linux et de Windows ne comptent pas.
 
 Tests sautés : un test qui ne peut pas tourner sur un ordinateur (outil du système absent, registre inaccessible,

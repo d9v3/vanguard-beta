@@ -268,16 +268,17 @@ if [[ $MODE == --branchement ]]; then
 elif [[ $MODE != --sans-compiler ]]; then
   compiler
 fi
-# Une DLL posée à côté de vanguard.exe ne doit jamais être chargée : le programme Windows qui n'en porte pas la
-# garde (chargement.rs), ou pas son manifeste (UTF-8, asInvoker), ne part nulle part. Vérifié après la compilation,
-# sur le programme qui va être copié, par le programme Linux (src/pe.rs, src/deploiement.rs) ; sans repli : un .exe
-# non vérifié n'est jamais compté sain.
-if [[ -f $WINDOWS ]]; then
-  ./"$LINUX" deploiement verifier-pe "$WINDOWS" || {
-    echo "✖ vanguard.exe non vérifié (DLL depuis System32, manifeste) : rien ne part. Un programme Linux d'avant « deploiement » ne sait pas le vérifier : recompiler."
-    exit 1
-  }
-fi
+# Ce qui part porte ses protections, lues dans ses en-têtes par le programme Linux (src/deploiement/binaire.rs), après
+# la compilation et sur les programmes qui vont être copiés : celui de Linux (PIE statique, RELRO complet, pile non
+# exécutable, rien d'écrivable et exécutable) et vanguard.exe (DLL chargées depuis System32 seulement, que chargement.rs
+# garde : une DLL posée à côté de lui n'est jamais chargée ; manifeste UTF-8 et asInvoker ; ASLR, DEP,
+# relocalisations). Sans repli : un programme non vérifié n'est jamais compté sain.
+A_VERIFIER=("$LINUX")
+[[ -f $WINDOWS ]] && A_VERIFIER+=("$WINDOWS")
+./"$LINUX" deploiement verifier-binaire "${A_VERIFIER[@]}" || {
+  echo "✖ Programmes non vérifiés (protections dites ci-dessus) : rien ne part. Un programme Linux d'avant « verifier-binaire » ne sait pas les vérifier : recompiler."
+  exit 1
+}
 # Les octets qui vont partir sont-ils ceux que outils/compiler-version.sh a relevés à la compilation ? Le dossier de
 # compilation est partagé avec les worktrees, et une compilation ordinaire (cargo build) y remplace les programmes sans
 # toucher le repère : ceux-là ne partent nulle part.
