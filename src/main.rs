@@ -5167,16 +5167,17 @@ mod tests_menu {
     }
 
     /// B-6 de la relecture des correctifs c6 : un essai écrit ses fichiers jetables sous `essais::temporaire()` (dans
-    /// `target/` du dépôt), jamais dans le dossier temporaire du système, qui peut avoir un quota. Restent les usages du
+    /// le dossier de compilation), jamais dans le dossier temporaire du système, qui peut avoir un quota. Restent les usages du
     /// programme lui-même et les essais qui jugent ce dossier-là, comptés ici fichier par fichier : un usage de plus
     /// arrête ce test.
     #[test]
     fn les_essais_n_ecrivent_pas_dans_le_dossier_temporaire() {
-        // En deux morceaux : ce test ne se compte pas lui-même.
-        let aiguille = concat!("std::env::", "temp_dir()");
         let permis: std::collections::BTreeMap<&str, usize> = [
-            // Le programme : bac à sable, fichier pour ClamAV, disques exclus, dossiers risqués, traces de Windows.
+            // Le programme : bac à sable, fichier pour ClamAV, disques exclus, dossiers risqués, traces de Windows
+            // et de macOS (`TMPDIR` lu), dossier d'une extension isolée sous macOS (`TMPDIR` donné).
             ("src/protection/isoler.rs", 1),
+            ("src/traces/macos.rs", 1),
+            ("src/plugins/mod.rs", 1),
             ("src/protection/antivirus.rs", 1),
             ("src/protection/cle.rs", 1),
             ("src/traces/windows.rs", 2),
@@ -5203,7 +5204,7 @@ mod tests_menu {
                     a_voir.push(p);
                 } else if p.extension().is_some_and(|x| x == "rs") {
                     lus += 1;
-                    let n = std::fs::read_to_string(&p).unwrap().matches(aiguille).count();
+                    let n = usages_du_dossier_temporaire(&std::fs::read_to_string(&p).unwrap());
                     if n > 0 {
                         let nom = p.strip_prefix(racine).unwrap().to_string_lossy().replace('\\', "/");
                         trouves.insert(nom, n);
@@ -5221,6 +5222,32 @@ mod tests_menu {
             trop.is_empty(),
             "dossier temporaire du système dans des essais, à remplacer par essais::temporaire() : {trop:?}"
         );
+    }
+
+    /// Les usages du dossier temporaire du système dans un fichier de code.
+    fn usages_du_dossier_temporaire(texte: &str) -> usize {
+        // En morceaux : ce fichier ne se compte pas lui-même. Le nom de la fonction suivi de sa parenthèse couvre
+        // chaque chemin qui y mène, complet, raccourci par un `use` ou importé.
+        texte.matches(concat!("temp_", "dir(")).count() + texte.matches(concat!("\"TMP", "DIR\"")).count()
+    }
+
+    /// B-5 de la relecture des restes c6 : la garde voit le dossier temporaire sous chacune de ses formes, pas
+    /// seulement le chemin complet : `env::temp_dir` après `use std::env`, `temp_dir` importé, la variable
+    /// `TMPDIR` lue ou donnée à un programme.
+    #[test]
+    fn garde_du_dossier_temporaire_voit_chaque_forme() {
+        // Les noms en morceaux, comme dans la garde : ce fichier ne se compte pas lui-même.
+        let (td, var) = (concat!("temp_", "dir"), concat!("\"TMP", "DIR\""));
+        for (texte, n) in [
+            (format!("let d = std::env::{td}();"), 1),
+            (format!("use std::env;\nlet d = env::{td}().join(\"x\");"), 1),
+            (format!("use std::env::{td};\nlet d = {td}();"), 1),
+            (format!("let d = std::env::var_os({var});"), 1),
+            (format!("c.env({var}, j);"), 1),
+            ("let d = crate::essais::temporaire();".to_string(), 0),
+        ] {
+            assert_eq!(usages_du_dossier_temporaire(&texte), n, "{texte}");
+        }
     }
 
     /// La garde de l'`unsafe` sur des fichiers inventés : ce qu'elle laisse passer, et chaque contournement qu'elle
