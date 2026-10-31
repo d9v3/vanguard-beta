@@ -4414,6 +4414,28 @@ mod tests_menu {
         std::fs::read_to_string(format!("{}/{fichier}", env!("CARGO_MANIFEST_DIR"))).unwrap()
     }
 
+    /// La fin (après le `]` qui le ferme) de l'attribut qui ouvre `texte` (`#[` ou `#![`), chaînes comprises : une
+    /// raison peut contenir des crochets. Tout le texte s'il n'est jamais fermé.
+    fn fin_d_attribut(texte: &str) -> usize {
+        let (mut profondeur, mut chaine, mut echappe) = (0usize, false, false);
+        for (i, c) in texte.char_indices() {
+            match c {
+                _ if echappe => echappe = false,
+                '\\' if chaine => echappe = true,
+                '"' => chaine = !chaine,
+                '[' if !chaine => profondeur += 1,
+                ']' if !chaine => {
+                    profondeur -= 1;
+                    if profondeur == 0 {
+                        return i + 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        texte.len()
+    }
+
     /// Les lignes d'un fichier Rust, chacune avec ses attributs : ceux qui se suivent au-dessus d'un même élément (aucun
     /// pour la plupart des lignes). Un attribut va de `#[` (ou `#![`) en tête de ligne au `]` qui le ferme, chaînes
     /// comprises (une raison peut contenir des crochets) ; l'élément peut suivre sur la même ligne.
@@ -4424,23 +4446,7 @@ mod tests_menu {
         loop {
             let ligne_vide = reste.trim_start_matches([' ', '\t', '\r', '\n']);
             if ligne_vide.starts_with("#[") || ligne_vide.starts_with("#![") {
-                let (mut profondeur, mut chaine, mut echappe, mut fin) = (0usize, false, false, ligne_vide.len());
-                for (i, c) in ligne_vide.char_indices() {
-                    match c {
-                        _ if echappe => echappe = false,
-                        '\\' if chaine => echappe = true,
-                        '"' => chaine = !chaine,
-                        '[' if !chaine => profondeur += 1,
-                        ']' if !chaine => {
-                            profondeur -= 1;
-                            if profondeur == 0 {
-                                fin = i + 1;
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
+                let fin = fin_d_attribut(ligne_vide);
                 attributs.push(ligne_vide[..fin].to_string());
                 reste = &ligne_vide[fin..];
                 continue;
@@ -4530,22 +4536,48 @@ mod tests_menu {
         }
     }
 
-    /// Le chemin d'un `#[path = "…"]` (espaces permis autour du `=`), s'il en est un.
+    /// Le chemin d'un `#[path = "…"]` (espaces permis autour du `=`, chaîne brute `r"…"` ou `r#"…"#` comprise), s'il
+    /// en est un.
     fn chemin_de(attribut: &str) -> Option<&str> {
         let dedans = attribut.strip_prefix("#[")?.strip_suffix(']')?.trim();
         let valeur = dedans.strip_prefix("path")?.trim_start().strip_prefix('=')?.trim();
-        valeur.strip_prefix('"')?.strip_suffix('"')
+        litteral(valeur)
+            .filter(|(_, reste)| reste.is_empty())
+            .map(|(chemin, _)| chemin)
     }
 
-    /// Le nom d'un module déclaré hors ligne (`mod x;`, `pub(crate) mod x;`…), s'il en est un.
-    fn module_hors_ligne(ligne: &str) -> Option<&str> {
-        let sans_visibilite = ligne
+    /// La chaîne (sans échappement : un chemin) qui ouvre `texte`, `"…"`, `r"…"` ou `r#"…"#`, et ce qui la suit.
+    fn litteral(texte: &str) -> Option<(&str, &str)> {
+        let (dieses, corps) = match texte.strip_prefix('r') {
+            Some(brut) => {
+                let corps = brut.trim_start_matches('#');
+                (&brut[..brut.len() - corps.len()], corps)
+            }
+            None => ("", texte),
+        };
+        let corps = corps.strip_prefix('"')?;
+        let fin = format!("\"{dieses}");
+        let i = corps.find(&fin)?;
+        Some((&corps[..i], &corps[i + fin.len()..]))
+    }
+
+    /// Une ligne sans sa visibilité en tête (`pub`, `pub(crate)`…).
+    fn sans_visibilite(ligne: &str) -> &str {
+        ligne
             .strip_prefix("pub")
             .map_or(ligne, |l| {
                 l.split_once(')').filter(|_| l.starts_with('(')).map_or(l, |(_, r)| r)
             })
-            .trim_start();
-        let nom = sans_visibilite.strip_prefix("mod ")?.trim().strip_suffix(';')?.trim();
+            .trim_start()
+    }
+
+    /// Le nom d'un module déclaré hors ligne (`mod x;`, `pub(crate) mod x;`…), s'il en est un.
+    fn module_hors_ligne(ligne: &str) -> Option<&str> {
+        let nom = sans_visibilite(ligne)
+            .strip_prefix("mod ")?
+            .trim()
+            .strip_suffix(';')?
+            .trim();
         nom.bytes()
             .all(|o| o.is_ascii_alphanumeric() || o == b'_')
             .then_some(nom)
@@ -4570,15 +4602,7 @@ mod tests_menu {
                     .flat_map(|(a, _)| a.iter().filter_map(|a| chemin_de(a)))
                     .collect();
                 for morceau in texte.split("include!(").skip(1) {
-                    chemins.push(
-                        morceau
-                            .trim_start()
-                            .strip_prefix('"')
-                            .unwrap()
-                            .split('"')
-                            .next()
-                            .unwrap(),
-                    );
+                    chemins.push(litteral(morceau.trim_start()).unwrap().0);
                 }
                 for chemin in chemins {
                     let vrai = dossier.join(chemin).canonicalize().unwrap();
@@ -4714,12 +4738,80 @@ mod tests_menu {
         code
     }
 
+    /// Les attributs intérieurs de tête d'un fichier : les `#![…]` en colonne zéro avant tout élément, les seuls qui
+    /// valent pour tout le fichier. Un `#![…]` rangé plus bas (dans un `mod tests {`, dans une chaîne brute…) ne vaut
+    /// que pour ce qui l'entoure, ou pour rien. Lignes vides et commentaires passés ; un attribut que suit autre chose
+    /// qu'un commentaire sur sa ligne arrête la lecture.
+    fn attributs_de_tete(texte: &str) -> Vec<&str> {
+        let mut attributs = Vec::new();
+        let mut reste = texte;
+        while !reste.is_empty() {
+            let (ligne, apres) = reste.split_once('\n').unwrap_or((reste, ""));
+            if ligne.trim().is_empty() || ligne.trim_start().starts_with("//") {
+                reste = apres;
+                continue;
+            }
+            if !ligne.starts_with("#![") {
+                break;
+            }
+            let (attribut, suite) = reste.split_at(fin_d_attribut(reste));
+            let (bout, apres) = suite.split_once('\n').unwrap_or((suite, ""));
+            if !(bout.trim().is_empty() || bout.trim_start().starts_with("//")) {
+                break;
+            }
+            attributs.push(attribut);
+            reste = apres;
+        }
+        attributs
+    }
+
+    /// L'élément que portent les attributs et commentaires qui ouvrent `texte` : la suite, depuis sa première ligne.
+    fn element_porte(texte: &str) -> &str {
+        let mut reste = texte;
+        loop {
+            reste = reste.trim_start();
+            if reste.starts_with("//") {
+                reste = reste.split_once('\n').map_or("", |(_, r)| r);
+            } else if reste.starts_with("#[") {
+                reste = &reste[fin_d_attribut(reste)..];
+            } else {
+                return reste;
+            }
+        }
+    }
+
+    /// Le début de `texte` jusqu'à la ligne qui ferme la première accolade ouverte (chaînes, commentaires `//` et
+    /// caractères `'{'` et `'}'` passés) : le corps d'un `mod x {`. Tout le texte si elle n'est jamais fermée.
+    fn jusqu_a_l_accolade_fermante(texte: &str) -> &str {
+        let (mut profondeur, mut ouvert, mut lu) = (0usize, false, 0usize);
+        for ligne in texte.split_inclusive('\n') {
+            lu += ligne.len();
+            let code = hors_chaines(ligne).replace("'{'", "").replace("'}'", "");
+            for c in code.split("//").next().unwrap_or("").chars() {
+                match c {
+                    '{' => {
+                        profondeur += 1;
+                        ouvert = true;
+                    }
+                    '}' => profondeur = profondeur.saturating_sub(1),
+                    _ => {}
+                }
+            }
+            if ouvert && profondeur == 0 {
+                return &texte[..lu];
+            }
+        }
+        texte
+    }
+
     /// Les fautes d'un fichier de src/ envers le refus de l'`unsafe` (`unsafe_code`) : `fuzze` dit si le banc de
-    /// fuzzing le lit, `racine` si c'est la racine de la crate. La racine refuse (`deny`) ; un module fuzzé refuse sans
-    /// recours (`forbid`, qu'aucun `allow` intérieur ne lève) et ne nomme `unsafe_code` nulle part ailleurs ; ailleurs,
-    /// le refus se lève par `allow` seul, chacun sous une ligne de commentaire qui dit pourquoi, et jamais en tête d'un
-    /// fichier qui déclare des modules hors essais (ils hériteraient de la levée sans l'écrire). Nulle part un
-    /// `cfg_attr`, un `expect` ou un `warn` : la levée doit se lire telle quelle, sur toutes les plateformes.
+    /// fuzzing le lit, `racine` si c'est la racine de la crate. La racine refuse (`deny`) et un module fuzzé refuse sans
+    /// recours (`forbid`, qu'aucun `allow` intérieur ne lève), chacun parmi les attributs de tête du fichier, les seuls
+    /// qui le couvrent en entier ; un module fuzzé ne lève rien. Ailleurs, le refus se lève par `allow` seul, seul sur
+    /// sa ligne, sous une ligne de commentaire qui dit pourquoi, et jamais sur un module qui en déclare d'autres hors
+    /// ligne (`mod x;` en dessous de la levée, essais compris) : ils en hériteraient dans des fichiers qui ne la montrent
+    /// pas. Nulle part un `cfg_attr`, un `expect` ou un `warn` : la levée doit se lire telle quelle, sur toutes les
+    /// plateformes.
     fn fautes_envers_l_unsafe(texte: &str, fuzze: bool, racine: bool) -> Vec<String> {
         const NOM: &str = "unsafe_code";
         const DENY: &str = "#![deny(unsafe_code)]";
@@ -4727,60 +4819,86 @@ mod tests_menu {
         const ALLOW_MODULE: &str = "#![allow(unsafe_code)]";
         const ALLOW: &str = "#[allow(unsafe_code)]";
         let mut fautes = Vec::new();
-        let groupes = elements_et_attributs(texte);
-        let attributs: Vec<&String> = groupes.iter().flat_map(|(a, _)| a.iter()).collect();
-        let a = |forme: &str| attributs.iter().any(|x| *x == forme);
-        if racine && !a(DENY) {
-            fautes.push(format!("racine sans « {DENY} »"));
+        let en_tete = attributs_de_tete(texte);
+        if racine && !en_tete.contains(&DENY) {
+            fautes.push(format!("racine sans « {DENY} » en tête du fichier"));
         }
-        if fuzze && !a(FORBID) {
-            fautes.push(format!("module fuzzé sans « {FORBID} »"));
+        if fuzze && !en_tete.contains(&FORBID) {
+            fautes.push(format!("module fuzzé sans « {FORBID} » en tête du fichier"));
         }
-        for x in attributs.iter().filter(|x| x.contains(NOM)) {
-            let permis = match x.as_str() {
+        let lignes: Vec<&str> = texte.lines().collect();
+        for (i, ligne) in lignes.iter().enumerate() {
+            // Les chaînes ne comptent pas (les essais de cette garde en sont pleins), ni les commentaires.
+            let forme = ligne.trim();
+            if forme.starts_with("//") || !hors_chaines(ligne).contains(NOM) {
+                continue;
+            }
+            // Une des quatre formes, seule sur sa ligne : rien avant (un `cfg` ou un autre lint), rien après (un
+            // élément, un commentaire vide qui passerait pour la raison).
+            let permis = match forme {
                 DENY => racine,
                 FORBID => true,
-                ALLOW_MODULE | ALLOW => !fuzze,
+                ALLOW_MODULE => !fuzze && en_tete.contains(&ALLOW_MODULE),
+                ALLOW => !fuzze,
                 _ => false,
             };
             if !permis {
-                fautes.push(format!("attribut refusé ici : {x}"));
+                fautes.push(format!(
+                    "ligne {} : refusé ici : {forme} (seuls le deny de la racine, le forbid et, hors banc, l'allow, \
+                     seuls sur leur ligne, celui de module en tête du fichier)",
+                    i + 1
+                ));
+                continue;
             }
-        }
-        // Un nom du lint hors de tout attribut lu (au milieu d'une ligne, dans un cfg_attr écrit sur deux lignes…) ;
-        // les chaînes ne comptent pas (les essais de cette garde en sont pleins).
-        let vus: usize = attributs.iter().map(|x| hors_chaines(x).matches(NOM).count()).sum();
-        let ecrits: usize = texte
-            .lines()
-            .filter(|l| !l.trim_start().starts_with("//"))
-            .map(|l| hors_chaines(l).matches(NOM).count())
-            .sum();
-        if ecrits != vus {
-            fautes.push(format!("{NOM} nommé hors d'un attribut en tête de ligne"));
-        }
-        // Chaque levée sous sa raison : la ligne d'avant est un commentaire simple (ni `///` ni `//!`, qui
-        // documenteraient l'élément ou le module au lieu de dire pourquoi l'`unsafe`).
-        let lignes: Vec<&str> = texte.lines().collect();
-        for (i, l) in lignes.iter().enumerate() {
-            if [ALLOW_MODULE, ALLOW].contains(&l.trim()) {
-                let avant = i.checked_sub(1).map_or("", |j| lignes[j].trim());
-                let raison = avant.strip_prefix("//").filter(|r| !r.starts_with(['/', '!']));
-                if raison.is_none_or(|r| r.trim().is_empty()) {
+            if ![ALLOW_MODULE, ALLOW].contains(&forme) {
+                continue;
+            }
+            // La raison : la ligne d'avant est un commentaire simple (ni `///` ni `//!`, qui documenteraient l'élément
+            // ou le module au lieu de dire pourquoi l'`unsafe`), avec des mots.
+            let avant = i.checked_sub(1).map_or("", |j| lignes[j].trim());
+            let raison = avant.strip_prefix("//").filter(|r| !r.starts_with(['/', '!']));
+            if !raison.is_some_and(|r| r.chars().any(char::is_alphabetic)) {
+                fautes.push(format!(
+                    "ligne {} : « {forme} » sans commentaire qui dise pourquoi",
+                    i + 1
+                ));
+            }
+            // Une levée sur un module : ni hors ligne, ni sur place s'il déclare des modules hors ligne.
+            if forme == ALLOW {
+                let element = element_porte(&lignes[i + 1..].join("\n")).to_string();
+                let premiere = element.lines().next().unwrap_or("").trim();
+                let enfants: Vec<String> = if module_hors_ligne(premiere).is_some() {
+                    vec![premiere.to_string()]
+                } else if sans_visibilite(premiere).starts_with("mod ") {
+                    elements_et_attributs(jusqu_a_l_accolade_fermante(&element))
+                        .into_iter()
+                        .filter(|(_, e)| module_hors_ligne(e).is_some())
+                        .map(|(_, e)| e)
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                if !enfants.is_empty() {
                     fautes.push(format!(
-                        "ligne {} : « {} » sans commentaire qui dise pourquoi",
-                        i + 1,
-                        l.trim()
+                        "ligne {} : « {ALLOW} » sur un module dont hériteraient {enfants:?}",
+                        i + 1
                     ));
                 }
             }
         }
-        // Une levée en tête d'un fichier qui déclare des modules hors ligne (hors essais) : elle s'étendrait à eux, dans
-        // des fichiers qui ne la montrent pas. Un module écrit sur place, lui, est sous les yeux de qui lit la levée.
-        let enfants: Vec<&str> = enfants_hors_ligne(&groupes).into_iter().map(|(n, _)| n).collect();
-        if a(ALLOW_MODULE) && !enfants.is_empty() {
-            fautes.push(format!(
-                "« {ALLOW_MODULE} » dans un fichier qui déclare des modules {enfants:?}"
-            ));
+        // Une levée en tête d'un fichier qui déclare des modules hors ligne, essais compris : elle s'étendrait à eux.
+        // Un module écrit sur place, lui, est sous les yeux de qui lit la levée.
+        if en_tete.contains(&ALLOW_MODULE) {
+            let enfants: Vec<String> = elements_et_attributs(texte)
+                .into_iter()
+                .filter(|(_, e)| module_hors_ligne(e).is_some())
+                .map(|(_, e)| e)
+                .collect();
+            if !enfants.is_empty() {
+                fautes.push(format!(
+                    "« {ALLOW_MODULE} » dans un fichier qui déclare des modules {enfants:?}"
+                ));
+            }
         }
         fautes
     }
@@ -4828,7 +4946,8 @@ mod tests_menu {
     }
 
     /// La garde de l'`unsafe` sur des fichiers inventés : ce qu'elle laisse passer, et chaque contournement qu'elle
-    /// arrête (levée dans un lecteur fuzzé, par cfg_attr, sans raison, en tête d'un fichier qui a des enfants…).
+    /// arrête (levée dans un lecteur fuzzé, par cfg_attr, sans raison ou à côté d'autre chose sur sa ligne, sur un
+    /// module dont d'autres hériteraient, refus rangé ailleurs qu'en tête du fichier…).
     #[test]
     fn garde_de_l_unsafe_lit_chaque_levee() {
         let fuzze =
@@ -4842,6 +4961,15 @@ mod tests_menu {
         assert_eq!(hors_chaines(r#"a "b \" c" d '"' e '\"' f"#), "a  d  e  f");
         let racine = "//! Racine.\n\n// Pourquoi.\n#![deny(unsafe_code)]\n\nmod a;\n";
         assert_eq!(fautes_envers_l_unsafe(racine, false, true), Vec::<String>::new());
+        // Un module d'essais écrit sur place peut être levé : rien n'en hérite sans le montrer (l'accolade d'un
+        // caractère ne ferme pas le bloc, et `mod enfant;` est hors de lui).
+        let essais = "// FFI de libc : mmap.\n#[allow(unsafe_code)]\nmod tests {\n    fn f() -> char {\n        '}'\n    }\n}\nmod enfant;\n";
+        assert_eq!(fautes_envers_l_unsafe(essais, false, false), Vec::<String>::new());
+        assert_eq!(chemin_de(r#"#[path = "a.rs"]"#), Some("a.rs"));
+        assert_eq!(chemin_de(r#"#[path = r"a.rs"]"#), Some("a.rs"));
+        assert_eq!(chemin_de(r##"#[path = r#"a.rs"#]"##), Some("a.rs"));
+        assert_eq!(chemin_de(r#"#[path = "a.rs" ]"#), Some("a.rs"));
+        assert_eq!(chemin_de(r#"#[path = "a.rs" "b"]"#), None);
         for (texte, fuzze, racine) in [
             // Le module fuzzé sans forbid, la racine sans deny.
             ("fn lire() {}\n", true, false),
@@ -4878,9 +5006,61 @@ mod tests_menu {
             ),
             // Un deny ailleurs qu'à la racine ne lève rien, mais n'a rien à y faire.
             ("// R.\n#![deny(unsafe_code)]\n", false, false),
+            // Le refus ailleurs qu'en tête du fichier : il ne couvre que ce qui l'entoure, ou rien (chaîne brute).
+            (
+                "fn lire() {}\nmod tests {\n    #![forbid(unsafe_code)]\n}\n",
+                true,
+                false,
+            ),
+            ("mod x {\n    #![forbid(unsafe_code)]\n}\nfn lire() {}\n", true, false),
+            ("#[cfg(test)]\nmod tests {\n#![forbid(unsafe_code)]\n}\n", true, false),
+            (
+                "fn lire() {}\nconst T: &str = r#\"\n#![forbid(unsafe_code)]\n\"#;\n",
+                true,
+                false,
+            ),
+            ("fn main() {}\nmod x {\n#![deny(unsafe_code)]\n}\n", false, true),
+            // Une levée posée sur un module dont d'autres hériteraient : hors ligne, sur place avec un enfant hors
+            // ligne, en tête d'un fichier qui déclare ses essais hors ligne, ou intérieure à un module sur place.
+            ("// R.\n#[allow(unsafe_code)]\nmod enfant;\n", false, false),
+            (
+                "// R.\n#[allow(unsafe_code)]\n#[cfg(unix)]\n// Pourquoi.\npub(crate) mod enfant;\n",
+                false,
+                false,
+            ),
+            ("// R.\n#[allow(unsafe_code)]\nmod x {\n    mod y;\n}\n", false, false),
+            (
+                "// R.\n#[allow(unsafe_code)]\nmod x {\n    #[cfg(test)] mod tests;\n}\n",
+                false,
+                false,
+            ),
+            (
+                "// R.\n#![allow(unsafe_code)]\n\n#[cfg(test)]\nmod tests;\n",
+                false,
+                false,
+            ),
+            (
+                "fn a() {}\nmod x {\n    // R.\n    #![allow(unsafe_code)]\n    mod y;\n}\n",
+                false,
+                false,
+            ),
+            // La raison contournée sur une seule ligne : autre chose avant ou après la levée, ou une raison sans mot.
+            ("fn a() {}\n#[allow(unsafe_code)] // \nfn f() {}\n", false, false),
+            ("// R.\n#[allow(unsafe_code)] fn f() {}\n", false, false),
+            ("#![allow(unsafe_code)] //\nfn f() {}\n", false, false),
+            ("// R.\n#[cfg(unix)] #[allow(unsafe_code)]\nfn f() {}\n", false, false),
+            ("// .\n#[allow(unsafe_code)]\nfn f() {}\n", false, false),
         ] {
             assert!(!fautes_envers_l_unsafe(texte, fuzze, racine).is_empty(), "{texte:?}");
         }
+        // Le contournement combiné des relecteurs : le parent lève sur `mod lecteur;`, le lecteur range son refus dans
+        // ses essais ; le haut du lecteur n'est plus couvert que par la levée du parent, et rustc y compilerait un bloc
+        // `unsafe`. La garde arrête chacun des deux fichiers.
+        let parent = "// R\n#[allow(unsafe_code)]\nmod lecteur;\n";
+        let lecteur =
+            "fn lire(x: &[u8]) -> u8 {\n    x[0]\n}\n#[cfg(test)]\nmod tests {\n    #![forbid(unsafe_code)]\n}\n";
+        assert!(!fautes_envers_l_unsafe(parent, false, false).is_empty(), "{parent:?}");
+        assert!(!fautes_envers_l_unsafe(lecteur, true, false).is_empty(), "{lecteur:?}");
     }
 
     /// Une seule table d'outils : chaque outil du menu nomme la sous-commande qui fait la même chose, ou dit pourquoi
