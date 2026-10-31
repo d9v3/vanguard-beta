@@ -679,6 +679,35 @@ mod tests {
         super::super::tests::tient_dans_la_liste(&composants(&e));
     }
 
+    /// Les vraies listes, telles que `proposer` les envoie (point de restauration en tête pour les réglages) : chaque
+    /// choix seul, puis tout coché d'un coup, passe la validation du processus élevé. Sinon la personne ne lirait
+    /// qu'une liste refusée, après avoir tout accepté.
+    #[test]
+    fn les_listes_reelles_passent_la_validation_du_processus_eleve() {
+        let mut e = etat_vide();
+        e.winget = true;
+        let point = crate::reparer::point_restauration("essai").unwrap().1;
+        for (liste, restauration) in [
+            (composants(&e), false),
+            (reglages(&e, Some("S-1-5-21-1-2-3-1001")), true),
+            (reglages(&e, None), true),
+        ] {
+            let tete: Vec<String> = if restauration { vec![point.clone()] } else { Vec::new() };
+            let mut tout = tete.clone();
+            for el in liste.iter().filter(|el| !el.commandes.is_empty()) {
+                let seul: Vec<String> = tete.iter().chain(&el.commandes).cloned().collect();
+                assert!(
+                    crate::machine::windows::accepte_par_le_processus_eleve(&[seul]),
+                    "{}",
+                    el.titre
+                );
+                tout.extend(el.commandes.iter().cloned());
+            }
+            assert!(tout.len() > tete.len());
+            assert!(crate::machine::windows::accepte_par_le_processus_eleve(&[tout]));
+        }
+    }
+
     /// Chaque réglage désigne ses valeurs par des gestes d'Optimiser (relevées et notées avant de l'appliquer), et
     /// une note de jeux.json d'avant se convertit dans cette forme : DWORD et texte du registre, GUID du mode
     /// d'alimentation ; un nom ou une valeur que Vanguard n'a jamais notés ne se convertit pas.

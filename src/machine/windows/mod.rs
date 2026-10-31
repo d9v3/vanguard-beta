@@ -557,14 +557,29 @@ pub fn powershell_admin_chacune(correctifs: &[Vec<String>]) -> Vec<bool> {
 /// L'ordre de la liste est gardé. `None` : rien n'a été fait (script impossible à écrire, liste refusée, relance
 /// impossible), et c'est dit ; aucune autre demande d'administrateur ne prend le relais.
 pub(crate) fn admin_mele(correctifs: &[Vec<String>]) -> Option<(Vec<bool>, Vec<Vec<String>>)> {
+    let morceaux = crate::machine::gestes::decouper(correctifs, corrections::native);
+    let lignes = lignes_pour_eleve(correctifs, &morceaux)?;
+    // Rien à envoyer : seulement quand chaque correctif est vide (`decouper` place toute ligne). Vrai pour un
+    // correctif vide seulement, jamais d'office.
+    if lignes.is_empty() {
+        return Some(recomposer(correctifs, &morceaux, Vec::new()));
+    }
+    let reponses = eleve::appliquer(&lignes)?;
+    // Tout arrêté à la demande de la personne (point refusé en tête, accord ou demande d'administrateur refusés) :
+    // rien n'a été fait, et ce n'est pas un échec.
+    crate::machine::noter_inacheve(inacheve(&reponses));
+    Some(recomposer(correctifs, &morceaux, reponses))
+}
+
+/// Les lignes que reçoit le processus élevé pour ces morceaux : les gestes natifs tels quels, chaque suite PowerShell
+/// écrite en script et remplacée par sa ligne `vanguard:script`. `None` : un script ne s'écrit pas (dit).
+fn lignes_pour_eleve(correctifs: &[Vec<String>], morceaux: &[crate::machine::gestes::Morceau]) -> Option<Vec<String>> {
     use crate::machine::gestes::{self, Morceau};
     // Une place hors de `correctifs` ne peut pas venir de `decouper` (elle énumère cette liste) : sautée, elle laisse
     // le correctif en échec, jamais en réussite.
     let ligne = |i: usize, j: usize| correctifs.get(i).and_then(|c| c.get(j));
-    let morceaux = gestes::decouper(correctifs, corrections::native);
-    let mut scripts = Vec::new();
     let mut lignes = Vec::new();
-    for m in &morceaux {
+    for m in morceaux {
         match m {
             Morceau::Natif(places) => {
                 lignes.extend(places.iter().filter_map(|&(i, j)| ligne(i, j)).cloned());
@@ -582,20 +597,30 @@ pub(crate) fn admin_mele(correctifs: &[Vec<String>]) -> Option<(Vec<bool>, Vec<V
                     &script.empreinte,
                     &script.chemin.display().to_string(),
                 ));
-                scripts.push(script);
             }
         }
     }
-    // Rien à envoyer : seulement quand chaque correctif est vide (`decouper` place toute ligne). Vrai pour un
-    // correctif vide seulement, jamais d'office.
-    if lignes.is_empty() {
-        return Some(recomposer(correctifs, &morceaux, Vec::new()));
-    }
-    let reponses = eleve::appliquer(&lignes)?;
-    // Tout arrêté à la demande de la personne (point refusé en tête, accord ou demande d'administrateur refusés) :
-    // rien n'a été fait, et ce n'est pas un échec.
-    crate::machine::noter_inacheve(inacheve(&reponses));
-    Some(recomposer(correctifs, &morceaux, reponses))
+    Some(lignes)
+}
+
+/// Pour les tests des listes réelles (réparations, jeux) : ce correctif, découpé et écrit comme par `admin_mele`, est
+/// accepté tel quel par la validation du processus élevé, celle qui le refuserait avant la demande d'administrateur.
+/// Et aucune ligne de Vanguard (`vanguard:…`) mal formée ne file dans un script, où PowerShell la prendrait pour une
+/// commande inconnue.
+#[cfg(test)]
+pub(crate) fn accepte_par_le_processus_eleve(correctifs: &[Vec<String>]) -> bool {
+    use crate::machine::gestes::{self, Morceau};
+    let morceaux = gestes::decouper(correctifs, corrections::native);
+    let dans_un_script = morceaux.iter().flat_map(|m| match m {
+        Morceau::Script(suite) => suite
+            .iter()
+            .flat_map(|(i, js)| js.iter().map(|&j| correctifs[*i][j].as_str()))
+            .collect(),
+        Morceau::Natif(_) => Vec::new(),
+    });
+    let marque_egaree = dans_un_script.into_iter().any(|l| l.starts_with("vanguard:"));
+    !marque_egaree
+        && lignes_pour_eleve(correctifs, &morceaux).is_some_and(|l| !l.is_empty() && eleve::valider(&l).is_some())
 }
 
 /// Ce qui n'est pas fait l'est-il seulement par choix ou en attente d'un redémarrage ? Rien fait, et chaque réponse

@@ -1619,6 +1619,38 @@ mod tests {
         }
     }
 
+    /// Les vraies réparations, telles que `lancer` les envoie (point de restauration en tête quand il en faut un),
+    /// passent la validation du processus élevé : découpées en gestes natifs et en scripts, puis relues comme lui les
+    /// relit avant la demande d'administrateur.
+    #[cfg(windows)]
+    #[test]
+    fn les_reparations_reelles_passent_la_validation_du_processus_eleve() {
+        let json = serde_json::json!({
+            "proxy": "10.0.0.9:3128",
+            "pac": "http://pac.exemple/p.pac",
+            "winhttp": "10.0.0.9:3128",
+            "parefeu_coupe": "",
+            "profils": 3
+        })
+        .to_string();
+        let mut reparations = liste();
+        reparations.push(navigation(lire_etat_windows(&json).as_ref()));
+        let mut essayees = 0;
+        for r in reparations.iter().filter(|r| !r.commandes.is_empty()) {
+            let mut commandes = r.commandes.clone();
+            if r.restauration {
+                commandes.insert(0, point_restauration(r.titre).unwrap().1);
+            }
+            assert!(
+                crate::machine::windows::accepte_par_le_processus_eleve(&[commandes]),
+                "{}",
+                r.titre
+            );
+            essayees += 1;
+        }
+        assert!(essayees >= 4);
+    }
+
     #[cfg(windows)]
     #[test]
     fn proxy_windows_piege() {
