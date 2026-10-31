@@ -89,8 +89,8 @@ pub(crate) fn variables(d: &Dossiers) -> Vec<(&'static str, OsString)> {
                     .collect::<Vec<_>>(),
             ),
         ),
-        // Le cache d'analyse des modules vit dans le dossier du compte (LOCALAPPDATA, que le compte peut d'ailleurs
-        // déplacer par HKCU) : NUL le coupe (moyen documenté par Microsoft), PowerShell relit les modules eux-mêmes.
+        // Le cache d'analyse des modules vit dans le dossier du compte (LOCALAPPDATA, qu'il peut écrire) : NUL le
+        // coupe (moyen documenté par Microsoft), PowerShell relit les modules eux-mêmes.
         ("PSModuleAnalysisCachePath", "NUL".into()),
         ("OS", "Windows_NT".into()),
         (
@@ -200,12 +200,19 @@ fn nom_ordinateur() -> Option<String> {
     (ok && !nom.is_empty()).then_some(nom)
 }
 
-/// Un dossier connu du compte qui fait tourner ce processus (jeton nul), ou `None` si Windows n'en donne pas.
+/// KF_FLAG_DEFAULT_PATH | KF_FLAG_NOT_PARENT_RELATIVE (learn.microsoft.com, « KNOWN_FOLDER_FLAG ») : le chemin par
+/// défaut du dossier, indépendant de l'endroit où se trouve son parent, et non le chemin « actuel, peut-être
+/// redirigé » que Windows lit dans HKCU\…\User Shell Folders, que le compte peut réécrire. Sans effet sur les
+/// dossiers fixes (Program Files, ProgramData) ni sur le profil, que Windows ne redirige pas.
+const PAR_DEFAUT: u32 = 0x0000_0400 | 0x0000_0200;
+
+/// Un dossier connu du compte qui fait tourner ce processus (jeton nul), à son emplacement par défaut, ou `None` si
+/// Windows n'en donne pas.
 fn dossier_connu(id: &GUID) -> Option<PathBuf> {
     let mut chemin = PWSTR::null();
-    // SAFETY: `id` est un GUID valide pour l'appel ; drapeaux 0 et jeton nul (le compte de ce processus) ; Windows
-    // écrit dans `chemin` une chaîne allouée par CoTaskMemAlloc, à libérer même en cas d'échec.
-    let r = unsafe { SHGetKnownFolderPath(id, 0, std::ptr::null_mut(), &raw mut chemin) };
+    // SAFETY: `id` est un GUID valide pour l'appel ; drapeaux documentés et jeton nul (le compte de ce processus) ;
+    // Windows écrit dans `chemin` une chaîne allouée par CoTaskMemAlloc, à libérer même en cas d'échec.
+    let r = unsafe { SHGetKnownFolderPath(id, PAR_DEFAUT, std::ptr::null_mut(), &raw mut chemin) };
     // SAFETY: en cas de succès, `chemin` est une chaîne terminée par un zéro, lue avant d'être libérée.
     let lu = (r >= 0 && !chemin.is_null()).then(|| PathBuf::from(OsString::from_wide(unsafe { chemin.as_wide() })));
     // SAFETY: CoTaskMemFree accepte un pointeur nul ; sinon c'est la chaîne rendue par SHGetKnownFolderPath, libérée
@@ -268,6 +275,48 @@ mod tests {
         assert!(v.iter().all(|(n, _)| *n != "ProgramFiles" && *n != "USERPROFILE"));
         let modules = v.iter().find(|(n, _)| *n == "PSModulePath").unwrap();
         assert_eq!(modules.1, r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules");
+    }
+
+    /// Le compte peut déplacer ses dossiers (HKCU\…\User Shell Folders) : le fils élevé n'en tient pas compte et prend
+    /// le dossier par défaut. Sous Wine seulement : sur un vrai Windows, le test changerait le dossier de la personne.
+    #[test]
+    fn les_dossiers_du_profil_ne_suivent_pas_le_registre_du_compte() {
+        use winreg::RegKey;
+        use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
+        if !crate::commande::sous_wine() {
+            return crate::essais::saute("change HKCU : sous Wine seulement");
+        }
+        let Ok(cle) = RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+            KEY_READ | KEY_WRITE,
+        ) else {
+            return crate::essais::saute("User Shell Folders absent");
+        };
+        let piege = std::env::temp_dir().join(format!("vanguard-piege-{}", std::process::id()));
+        std::fs::create_dir_all(&piege).unwrap();
+        let avant = cle.get_raw_value("Local AppData").ok();
+        cle.set_value("Local AppData", &piege.as_os_str()).unwrap();
+        let lu = dossier_connu(&APPDATA_LOCAL);
+        match avant {
+            Some(v) => cle.set_raw_value("Local AppData", &v).unwrap(),
+            None => cle.delete_value("Local AppData").unwrap(),
+        }
+        let _ = std::fs::remove_dir(&piege);
+        let lu = lu.expect("LOCALAPPDATA par défaut");
+        assert_ne!(lu, piege);
+        assert!(lu.ends_with(r"AppData\Local"), "{}", lu.display());
+        // Les drapeaux valent pour chaque dossier demandé : Windows les donne tous.
+        let d = dossiers();
+        let tous = [
+            &d.program_files,
+            &d.program_files_x86,
+            &d.fichiers_communs,
+            &d.program_data,
+            &d.profil,
+            &d.appdata,
+            &d.appdata_local,
+        ];
+        assert!(tous.iter().all(|p| p.is_some()), "{d:?}");
     }
 
     /// La commande réduite ne garde rien de l'environnement de Vanguard : un vrai programme lancé ainsi (cmd.exe,
