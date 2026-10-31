@@ -4410,6 +4410,46 @@ mod tests_menu {
         std::fs::read_to_string(format!("{}/{fichier}", env!("CARGO_MANIFEST_DIR"))).unwrap()
     }
 
+    /// Chaque module de src/ que le banc de fuzzing inclut par son chemin (fuzz/fuzz_targets/, fuzz/cale/), et pour un `mod.rs`
+    /// chaque fichier de son dossier, refuse débordements et `as` (Cargo.toml, [lints.clippy]) : un lecteur ajouté au
+    /// banc sans l'attribut garderait ses calculs bruts sur des données hostiles sans que clippy le dise.
+    #[test]
+    fn chaque_module_fuzze_refuse_debordements_et_as() {
+        const ATTRIBUT: &str = "#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]";
+        let racine = env!("CARGO_MANIFEST_DIR");
+        let mut modules = std::collections::BTreeSet::new();
+        let banc = |d: &str| {
+            std::fs::read_dir(format!("{racine}/fuzz/{d}"))
+                .unwrap()
+                .map(|f| f.unwrap().path())
+        };
+        // Les cales (fuzz/cale/) en incluent aussi, au même chemin relatif.
+        for cible in banc("fuzz_targets").chain(banc("cale")) {
+            let texte = std::fs::read_to_string(cible).unwrap();
+            for chemin in texte.split("#[path = \"../../").skip(1) {
+                let chemin = chemin.split('"').next().unwrap();
+                let Some(dossier) = chemin.strip_suffix("/mod.rs") else {
+                    modules.insert(chemin.to_string());
+                    continue;
+                };
+                for f in std::fs::read_dir(format!("{racine}/{dossier}")).unwrap() {
+                    let chemin = f.unwrap().path();
+                    let nom = chemin.file_name().unwrap().to_str().unwrap();
+                    // tests.rs n'est compilé que pour les essais, où ces deux lints sont permis.
+                    if chemin.extension().is_some_and(|e| e == "rs") && nom != "tests.rs" {
+                        modules.insert(format!("{dossier}/{nom}"));
+                    }
+                }
+            }
+        }
+        assert!(modules.len() >= 40, "trop peu de modules lus dans fuzz/ : {modules:?}");
+        let sans: Vec<_> = modules
+            .iter()
+            .filter(|m| !lire(m).lines().any(|l| l == ATTRIBUT))
+            .collect();
+        assert!(sans.is_empty(), "modules fuzzés sans « {ATTRIBUT} » : {sans:?}");
+    }
+
     /// Une seule table d'outils : chaque outil du menu nomme la sous-commande qui fait la même chose, ou dit pourquoi
     /// il n'en a pas ; chaque sous-commande a son outil, ou dit pourquoi. Un outil ajouté d'un côté seulement (les
     /// cinq d'Optimiser n'avaient aucune commande, aucun script ne pouvait tout annuler) arrête ce test.
