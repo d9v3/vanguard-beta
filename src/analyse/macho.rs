@@ -135,8 +135,8 @@ pub(crate) struct MachO {
     /// LC_MAIN : position (dans le fichier, depuis __TEXT) du point d'entrée.
     pub point_entree: Option<u64>,
     pub signature: bool,
-    /// La signature annoncée est non vide et tient dans le fichier : une LC_CODE_SIGNATURE qui pointe ailleurs
-    /// ne signe rien, macOS n'y trouve rien à vérifier.
+    /// Une seule signature annoncée, non vide, qui tient dans le fichier : une LC_CODE_SIGNATURE qui pointe ailleurs
+    /// ne signe rien, macOS n'y trouve rien à vérifier ; deux, on ne sait pas laquelle il lirait.
     pub signature_dans_le_fichier: bool,
     /// LC_ENCRYPTION_INFO avec cryptid non nul : (position, taille) de la partie chiffrée.
     pub chiffre: Option<(u32, u32)>,
@@ -277,13 +277,16 @@ fn commande_de_chargement(o: Ordre, octets: &[u8], cmd: u32, commande: &[u8], m:
         },
         LC_MAIN => m.point_entree = o.u64(commande, 8),
         LC_CODE_SIGNATURE => {
+            // Une seule compte : à deux, on ne sait pas laquelle macOS lirait (codesign n'en écrit qu'une).
+            let premiere = !m.signature;
             m.signature = true;
+            m.signature_dans_le_fichier = false;
             if let (Some(position), Some(taille)) = (o.u32(commande, 8), o.u32(commande, 12))
                 && let Some(fin) = u64::from(position).checked_add(u64::from(taille))
                 && fin <= taille_fichier
             {
                 m.fin_des_donnees = m.fin_des_donnees.max(fin);
-                m.signature_dans_le_fichier = taille > 0;
+                m.signature_dans_le_fichier = premiere && taille > 0;
             }
         }
         LC_ENCRYPTION_INFO | LC_ENCRYPTION_INFO_64 => {

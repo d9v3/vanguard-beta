@@ -12,8 +12,8 @@
 //!   affichés seulement ;
 //! - Mac (Mach-O universel, `analyse::macho`) : les deux tranches (arm64, x86_64), chacune lue et vérifiée : MH_EXECUTE,
 //!   MH_PIE, sans MH_ALLOW_STACK_EXECUTION, __PAGEZERO sans droits (de 4 Gio en 64 bits), aucun segment écrivable et
-//!   exécutable (droits initiaux), et la signature (LC_CODE_SIGNATURE, non vide et dans la tranche) que macOS exige
-//!   sur arm64.
+//!   exécutable (droits initiaux), et la signature (une seule LC_CODE_SIGNATURE, non vide et dans la tranche) que
+//!   macOS exige sur arm64.
 //!
 //! Chaque programme doit aussi être d'une architecture qu'on livre (ELF 64 bits petit-boutiste x86-64, PE32+ AMD64,
 //! tranches arm64 et x86_64) et, avec `--attendu`, du système que le script annonce : un ELF posé à la place du .exe
@@ -738,8 +738,8 @@ fn juger_tranche(a: &str, m: &macho::MachO, j: &mut Jugement) {
         j.manque(
             Protection::Signature,
             trf!(
-                "{a} : signature vide ou hors de la tranche (LC_CODE_SIGNATURE ne signe rien)",
-                "{a}: signature empty or outside the slice (LC_CODE_SIGNATURE signs nothing)"
+                "{a} : signature vide, hors de la tranche ou en double (LC_CODE_SIGNATURE ne signe rien de sûr)",
+                "{a}: signature empty, outside the slice or duplicated (LC_CODE_SIGNATURE signs nothing reliable)"
             ),
         );
     }
@@ -1061,6 +1061,23 @@ mod tests {
         assert!(j.manques[0].texte.contains("hors de la tranche"), "{:?}", j.manques);
         let vide = avec(&|v| v[signature + 12..signature + 16].fill(0));
         assert_eq!(manques(&d, &vide), [Protection::Signature]);
+        // Une seconde LC_CODE_SIGNATURE après la bonne, hors de la tranche ou non : codesign n'en écrit qu'une, et on
+        // ne sait pas laquelle macOS lirait.
+        for position in [0x1_0000u32, 0x380] {
+            let double = avec(&|v| {
+                let suite = signature + 16;
+                for (k, x) in [0x1du32, 16, position, 0x80].into_iter().enumerate() {
+                    v[suite + 4 * k..suite + 4 * k + 4].copy_from_slice(&x.to_le_bytes());
+                }
+                v[16..20].copy_from_slice(&4u32.to_le_bytes());
+                v[20..24].copy_from_slice(&(72u32 + 72 + 16 + 16).to_le_bytes());
+            });
+            assert_eq!(
+                manques(&d, &double),
+                [Protection::Signature],
+                "seconde à 0x{position:X}"
+            );
+        }
         // __PAGEZERO d'une seule page : en 64 bits, il doit couvrir les 4 premiers Gio (un pointeur tronqué à 32 bits
         // tombe dedans).
         let petite = avec(&|v| v[page_zero + 32..page_zero + 40].copy_from_slice(&0x1000u64.to_le_bytes()));
