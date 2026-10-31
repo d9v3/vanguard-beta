@@ -1011,6 +1011,18 @@ mod tests {
 </svg>
 "##;
 
+    /// B-3 de la relecture des correctifs c6 : `<script` écrit dans un bloc CDATA est du texte pour la lecture des
+    /// balises, mais la recherche brute le lève toujours.
+    #[test]
+    fn svg_script_dans_un_cdata() {
+        let image =
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><text><![CDATA[<script>alert(1)</script>]]></text></svg>";
+        assert_eq!(
+            pire(&juger("", "image/svg+xml", image.as_bytes()).0),
+            Some(Niveau::Eleve)
+        );
+    }
+
     /// B-2 (relecture des correctifs de la campagne 6) : une DTD d'entités qui nomment des espaces de noms, ou une
     /// feuille de style CSS, ne sont pas du script. Le logo d'un fournisseur exporté d'Illustrator était dit « image
     /// SVG qui contient du script » ; il garde un signe d'information, qui dit ce qui y est déclaré.

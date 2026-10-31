@@ -391,7 +391,7 @@ pub(crate) fn juger_svg(h: &[u8]) -> Option<Svg> {
     if declarees != lues {
         return Some(Svg::Actif);
     }
-    Some(if balayer_svg(&doc) {
+    Some(if balayer_svg(&doc, true) || balayer_svg(&doc, false) {
         Svg::Actif
     } else if declarations {
         Svg::Declarations
@@ -400,14 +400,21 @@ pub(crate) fn juger_svg(h: &[u8]) -> Option<Svg> {
     })
 }
 
-/// Les balises de `h` : l'une lance-t-elle du code ?
-fn balayer_svg(h: &[u8]) -> bool {
+/// Les balises de `h` : l'une lance-t-elle du code ? Un commentaire, un bloc CDATA, une déclaration ou une instruction
+/// se sautent comme le ferait un lecteur XML (`xml`) ou HTML : `juger_svg` prend les deux lectures, une image active
+/// pour l'une l'est, et ce que l'ancienne lecture (HTML) voyait reste vu.
+fn balayer_svg(h: &[u8], xml: bool) -> bool {
     let mut i = 0;
     while let Some(debut) = h.get(i..).and_then(|ici| ici.iter().position(|&c| c == b'<')) {
         i += debut;
         let ici = h.get(i..).unwrap_or_default();
         if ici.starts_with(b"<!--") {
-            i = chercher_casse(h, i + 4, b"-->").map_or(h.len(), |p| p + 3);
+            i = fin_du_commentaire(h, i, xml);
+            continue;
+        }
+        if xml && ici.starts_with(b"<![CDATA[") {
+            // Un bloc qui ne se ferme pas : la suite est lue comme des balises, plutôt que tue.
+            i = chercher_casse(h, i + 9, b"]]>").map_or(i + 9, |p| p + 3);
             continue;
         }
         if ici.starts_with(b"<!") || ici.starts_with(b"<?") {
@@ -428,6 +435,27 @@ fn balayer_svg(h: &[u8]) -> bool {
         }
     }
     false
+}
+
+/// L'indice qui suit le commentaire ouvert en `i` (« <!-- »). XML le ferme sur « --> » seul ; HTML aussi sur « --!> »,
+/// et ferme aussitôt « <!--> » et « <!---> ». Sans fin, il va jusqu'au bout.
+fn fin_du_commentaire(h: &[u8], i: usize, xml: bool) -> usize {
+    let apres = i + 4;
+    if xml {
+        return chercher_casse(h, apres, b"-->").map_or(h.len(), |p| p + 3);
+    }
+    let reste = h.get(apres..).unwrap_or_default();
+    if reste.starts_with(b">") {
+        return apres + 1;
+    }
+    if reste.starts_with(b"->") {
+        return apres + 2;
+    }
+    [b"-->".as_slice(), b"--!>"]
+        .iter()
+        .filter_map(|m| chercher_casse(h, apres, m).map(|p| p + m.len()))
+        .min()
+        .unwrap_or(h.len())
 }
 
 /// Les occurrences de `aiguille` (ASCII, sans tenir compte de la casse) dans `h`.
@@ -1308,6 +1336,45 @@ mod tests {
             "<iframe src=\"https://vol.example/\"/>",
         ] {
             assert_eq!(juger_svg(&svg(corps)), Some(Svg::Actif), "{corps}");
+        }
+    }
+
+    /// B-3 de la relecture des correctifs c6 : un bloc CDATA va jusqu'à « ]]> », pas jusqu'au premier « > » ; un
+    /// « > » et un guillemet ouvert dans le bloc ne cachent plus la balise qui le suit. Un bloc qui ne se ferme pas
+    /// laisse lire la suite comme des balises.
+    #[test]
+    fn svg_bloc_cdata() {
+        for corps in [
+            "<text><![CDATA[ > <x y=\"]]><rect onload=\"alert(1)\"/></text>",
+            "<text><![CDATA[ a > b ]]></text><rect onload=\"alert(1)\"/>",
+            "<text><![CDATA[ <rect onload=\"alert(1)\"/>",
+        ] {
+            assert_eq!(juger_svg(&svg(corps)), Some(Svg::Actif), "{corps}");
+        }
+        // Le contenu d'un bloc CDATA est du texte : il ne s'exécute que dans un `<script>`, déjà vu par sa balise.
+        // Un `<script` écrit dedans reste levé par la recherche brute de `pieces::juger`.
+        for corps in [
+            "<text><![CDATA[ if (a < b && c) x(); ]]></text>",
+            "<text><![CDATA[<script>alert(1)</script>]]></text>",
+        ] {
+            assert_eq!(juger_svg(&svg(corps)), Some(Svg::Inerte), "{corps}");
+        }
+    }
+
+    /// B-3 de la relecture des correctifs c6 : un commentaire se ferme comme le lirait l'une ou l'autre lecture. HTML
+    /// le ferme aussi sur « --!> », et « <!--> » ou « <!---> » se ferment aussitôt ; ce qui suit est lu.
+    #[test]
+    fn svg_commentaire() {
+        for corps in [
+            "<!-- --!><rect onload=\"alert(1)\"/> -->",
+            "<!--><rect onload=\"alert(1)\"/>-->",
+            "<!---><rect onload=\"alert(1)\"/>-->",
+            "<!-- a --><rect onload=\"alert(1)\"/>",
+        ] {
+            assert_eq!(juger_svg(&svg(corps)), Some(Svg::Actif), "{corps}");
+        }
+        for corps in ["<!-- onload=\"x\" <script> -->", "<!-- a > b --><rect/>"] {
+            assert_eq!(juger_svg(&svg(corps)), Some(Svg::Inerte), "{corps}");
         }
     }
 
