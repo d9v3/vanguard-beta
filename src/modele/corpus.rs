@@ -308,10 +308,27 @@ const FILS: &[(&str, &[(&str, &str)])] = &[
             ("machine/chasse.rs", "tentatives_sans_journal"),
         ],
     ),
+    // Linux passe par la lecture des fichiers d'ancres (un fichier sans nom y a son constat) ; Windows et macOS
+    // jugent directement ce que leur magasin nomme.
     (
         "COM-CRT-001",
         &[
-            ("machine/certificats.rs", "certificats"),
+            ("machine/certificats.rs", "certificats@linux"),
+            ("machine/certificats.rs", "ancres"),
+            ("machine/certificats.rs", "juger"),
+        ],
+    ),
+    (
+        "COM-CRT-001",
+        &[
+            ("machine/certificats.rs", "certificats@windows"),
+            ("machine/certificats.rs", "juger"),
+        ],
+    ),
+    (
+        "COM-CRT-001",
+        &[
+            ("machine/certificats.rs", "certificats@macos"),
             ("machine/certificats.rs", "juger"),
         ],
     ),

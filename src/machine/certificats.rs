@@ -159,6 +159,37 @@ fn noms_du_fichier(octets: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// Les noms des certificats d'un fichier d'ancres, et s'il est lu en entier : chaque bloc PEM (« -----BEGIN … »,
+/// quel que soit son libellé) ou le fichier DER doit donner un nom. Un bloc « TRUSTED CERTIFICATE » d'OpenSSL, un
+/// sujet sans CN, O ni OU, un fichier vide ou d'un autre format : le système peut lui faire confiance (p11-kit,
+/// update-ca-trust) sans que Vanguard sache dire lequel ; jamais compté comme « rien d'ajouté ».
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn lire_ancre(octets: &[u8]) -> (Vec<String>, bool) {
+    let noms = noms_du_fichier(octets);
+    let blocs = String::from_utf8_lossy(octets).matches("-----BEGIN ").count().max(1);
+    let entier = noms.len() >= blocs;
+    (noms, entier)
+}
+
+/// Un fichier d'ancres qu'on n'a pas su lire en entier : à regarder, avec la commande qui le retire.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn ancre_non_nommee(ou: &str, retirer: &[String]) -> Constat {
+    let ou = crate::ui::affichable(ou);
+    let commandes: Vec<&str> = retirer.iter().map(String::as_str).collect();
+    alerte(
+        CAT,
+        Niveau::Moyen,
+        trf!(
+            "Fichier ajouté aux certificats racine que Vanguard ne sait pas lire en entier ({ou}) : le système peut lui faire confiance quand même. Regardez ce qu'il contient ; retirez-le si vous ne l'avez pas installé.",
+            "File added to the root certificates that Vanguard cannot fully read ({ou}): the system may trust it anyway. Check what it contains; remove it if you did not install it."
+        ),
+    )
+    .manuel(
+        trf!("Retirer le fichier {ou}", "Remove the file {ou}"),
+        &commandes,
+    )
+}
+
 /// Constat pour un certificat ajouté. `cle_privee` : sa clé privée est sur cette machine (Windows le sait). Le nom
 /// (sujet du certificat, écrit par qui l'a fabriqué) et l'endroit sont montrés rendus inoffensifs ; `retirer` garde
 /// le vrai nom.
@@ -266,17 +297,38 @@ pub fn certificats() -> Vec<Constat> {
     for d in DOSSIERS_AJOUTS {
         fichiers(std::path::Path::new(d), 3, &mut trouves);
     }
+    ancres(trouves)
+}
+
+/// Les constats des fichiers d'ancres trouvés. Un fichier illisible n'est pas vérifié, un fichier qu'on ne sait pas
+/// nommer en entier est à regarder : « aucun certificat ajouté » seulement quand il n'y a aucun fichier.
+#[cfg(any(target_os = "linux", test))]
+fn ancres(trouves: Vec<std::path::PathBuf>) -> Vec<Constat> {
     let mut constats = Vec::new();
     for f in trouves {
-        let Ok(octets) = std::fs::read(&f) else { continue };
         let chemin = f.display().to_string();
+        let Ok(octets) = std::fs::read(&f) else {
+            let ou = crate::ui::affichable(&chemin);
+            constats.push(super::impossible(
+                CAT,
+                &trf!(
+                    "fichier de certificats racine illisible : {ou}",
+                    "unreadable root certificate file: {ou}"
+                ),
+            ));
+            continue;
+        };
         let retirer = vec![
             format!("sudo rm -f {}", crate::commande::sh_chaine(&chemin)),
             "if command -v update-ca-trust >/dev/null; then sudo update-ca-trust; else sudo update-ca-certificates --fresh; fi"
                 .to_string(),
         ];
-        for nom in noms_du_fichier(&octets) {
+        let (noms, entier) = lire_ancre(&octets);
+        for nom in noms {
             constats.push(juger(&nom, &chemin, false, &retirer));
+        }
+        if !entier {
+            constats.push(ancre_non_nommee(&chemin, &retirer));
         }
     }
     if constats.is_empty() {
@@ -497,6 +549,73 @@ xo1zjuQ=
             juger("Mon entreprise CA", "/x", true, &retirer).probleme,
             Some(Niveau::Eleve)
         );
+    }
+
+    /// Campagne d'attaque n° 6, M1 : un fichier d'ancres que le lecteur ne sait pas nommer (vide, octets quelconques,
+    /// bloc « TRUSTED CERTIFICATE », sujet sans CN, O ni OU) ou illisible ne donne jamais « aucun certificat ajouté » ;
+    /// chacun a son constat, qui le nomme.
+    #[test]
+    fn ancre_illisible_ou_sans_nom_n_est_jamais_verte() {
+        let d = std::env::temp_dir().join(format!("vanguard-ancres-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let corps: String = PEM.lines().filter(|l| !l.starts_with("-----")).collect();
+        let trusted = format!("-----BEGIN TRUSTED CERTIFICATE-----\n{corps}\n-----END TRUSTED CERTIFICATE-----\n");
+        // Un DER dont le sujet n'a qu'une adresse (1.2.840.113549.1.9.1) : SEQUENCE { [0] v3, série, algorithme,
+        // émetteur, validité, sujet }.
+        let adresse = [
+            0x30, 0x13, 0x31, 0x11, 0x30, 0x0f, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x01, 0x16,
+            0x02, b'a', b'@',
+        ];
+        let mut tbs = vec![
+            0xa0, 0x03, 0x02, 0x01, 0x02, 0x02, 0x01, 0x01, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00,
+        ];
+        tbs.extend_from_slice(&adresse);
+        let mut tbs_tlv = vec![0x30, u8::try_from(tbs.len()).unwrap()];
+        tbs_tlv.extend_from_slice(&tbs);
+        let mut der = vec![0x30, u8::try_from(tbs_tlv.len()).unwrap()];
+        der.extend_from_slice(&tbs_tlv);
+        assert_eq!(sujet(&der), None, "le sujet d'essai ne doit avoir ni CN, ni O, ni OU");
+        let cas: [(&str, Vec<u8>); 5] = [
+            ("vide.crt", Vec::new()),
+            ("octets.crt", (0..64u8).collect()),
+            ("trusted.pem", trusted.into_bytes()),
+            ("adresse.der", der),
+            // Un certificat nommé, puis un bloc d'un autre libellé dans le même fichier.
+            (
+                "deux.pem",
+                format!("{PEM}-----BEGIN TRUSTED CERTIFICATE-----\n{corps}\n-----END TRUSTED CERTIFICATE-----\n")
+                    .into_bytes(),
+            ),
+        ];
+        for (nom, octets) in &cas {
+            let f = d.join(nom);
+            std::fs::write(&f, octets).unwrap();
+            let constats = ancres(vec![f]);
+            let messages: Vec<&str> = constats.iter().map(|c| c.message.as_str()).collect();
+            assert!(
+                !constats.is_empty() && constats.iter().all(|c| c.probleme.is_some()),
+                "{nom} : {messages:?}"
+            );
+            assert!(
+                constats
+                    .iter()
+                    .any(|c| c.probleme == Some(Niveau::Moyen) && c.message.contains(nom)),
+                "{nom} : {messages:?}"
+            );
+        }
+        // Un fichier qu'on ne peut pas lire (ici, un chemin disparu) : non vérifié, jamais vert.
+        let constats = ancres(vec![d.join("disparu.crt")]);
+        assert!(!constats.is_empty() && constats.iter().all(|c| !c.verifie && c.message.contains("disparu.crt")));
+        // Le certificat nommé seul reste ce qu'il était : un constat, sans fichier « à regarder ».
+        let f = d.join("nomme.pem");
+        std::fs::write(&f, PEM).unwrap();
+        let constats = ancres(vec![f]);
+        assert_eq!(constats.len(), 1);
+        assert!(constats[0].message.contains("Vanguard Test CA"));
+        // Aucun fichier : vert.
+        assert!(ancres(Vec::new()).iter().all(|c| c.probleme.is_none()));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// Une racine nommée « localhost » avec sa clé privée n'est plus passée sous silence : le nom est choisi par qui
