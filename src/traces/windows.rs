@@ -4,9 +4,6 @@
 //! outils des spécialistes). Pour la chronologie,
 //! les événements qui racontent une intrusion sont lus en plus par les fonctions de Windows (wevtapi).
 
-// FFI de kernel32 : GetDiskFreeSpaceExW.
-#![allow(unsafe_code)]
-
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -57,6 +54,8 @@ pub(super) fn administrateur() -> bool {
 }
 
 /// Place libre pour ce compte sur le disque de `d`.
+// FFI de kernel32 : GetDiskFreeSpaceExW.
+#[allow(unsafe_code)]
 pub(super) fn place_libre(d: &Path) -> Option<u64> {
     use std::os::windows::ffi::OsStrExt;
     #[link(name = "kernel32")]

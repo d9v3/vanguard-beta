@@ -2,9 +2,6 @@
 //! GetExtendedUdpTable (iphlpapi) sans PowerShell : ce que Get-NetTCPConnection et Get-NetUDPEndpoint donnaient. Les
 //! tables rendues sont relues en code sûr, la taille annoncée vérifiée contre ce que Windows a écrit.
 
-// FFI d'iphlpapi : GetExtendedTcpTable et GetExtendedUdpTable.
-#![allow(unsafe_code)]
-
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// Une socket.
@@ -62,6 +59,8 @@ pub(crate) fn table_tcp(famille: u32) -> Option<Vec<u8>> {
 
 /// Une table brute (TCP_TABLE_OWNER_PID_ALL ou UDP_TABLE_OWNER_PID), coupée à ce que Windows a écrit.
 #[cfg(windows)]
+// FFI d'iphlpapi : GetExtendedTcpTable et GetExtendedUdpTable.
+#[allow(unsafe_code)]
 fn table(tcp: bool, famille: u32) -> Option<Vec<u8>> {
     #[link(name = "iphlpapi")]
     unsafe extern "system" {

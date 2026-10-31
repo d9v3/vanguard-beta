@@ -4,9 +4,6 @@
 //! seulement après accord.
 //! Les réglages qui retirent une protection (intégrité de la mémoire, Defender, pare-feu…) ne sont jamais proposés.
 
-// FFI de kernel32 : GetSystemPowerStatus.
-#![allow(unsafe_code)]
-
 use std::fmt::Write;
 
 use serde::Deserialize;
@@ -136,6 +133,8 @@ fn carte_ignoree(nom: &str) -> bool {
 
 /// Une batterie dans la machine (Win32_Battery) : GetSystemPowerStatus dit « aucune batterie » (128) ou « inconnu »
 /// (255) sinon.
+// FFI de kernel32 : GetSystemPowerStatus.
+#[allow(unsafe_code)]
 fn batterie() -> bool {
     #[repr(C)]
     #[derive(Default)]

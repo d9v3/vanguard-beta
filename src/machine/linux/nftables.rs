@@ -21,9 +21,6 @@
 //! Seule la table « vanguard » de la famille inet est visée : chaque message la nomme, et le vidage d'une chaîne
 //! nomme la chaîne.
 
-// FFI de libc : uname (version du noyau).
-#![allow(unsafe_code)]
-
 use std::net::IpAddr;
 
 use crate::modele::Echec;
@@ -622,6 +619,8 @@ fn module_liste(texte: &str) -> bool {
     })
 }
 
+// FFI de libc : uname (version du noyau).
+#[allow(unsafe_code)]
 fn version_du_noyau() -> Option<String> {
     // SAFETY: utsname est une structure de tableaux d'octets, remplie par uname ; zéro est une valeur valide.
     let mut u: libc::utsname = unsafe { std::mem::zeroed() };

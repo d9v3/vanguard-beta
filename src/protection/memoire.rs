@@ -14,9 +14,6 @@
 //! dit, jamais compté comme sain. Sur macOS, la mémoire d'autrui demande des droits spéciaux (task_for_pid) : non
 //! vérifié, dit tel quel.
 
-// FFI de libc : mmap et munmap.
-#![allow(unsafe_code)]
-
 use std::time::{Duration, Instant};
 
 use crate::protection::moteur_yara::Regles;
@@ -1408,6 +1405,8 @@ pub fn analyser() {
 }
 
 #[cfg(test)]
+// FFI de libc : mmap et munmap, pour les images de fichier que lisent les essais.
+#[allow(unsafe_code)]
 mod tests {
     use super::*;
 

@@ -3,9 +3,6 @@
 //! une liste chaînée par pointeurs absolus : il est relu ici en code sûr, chaque pointeur ramené à un décalage dans le
 //! tampon et vérifié avant d'être suivi.
 
-// FFI d'iphlpapi : GetAdaptersAddresses.
-#![allow(unsafe_code)]
-
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// IF_TYPE_IEEE80211 : une carte Wi-Fi.
@@ -54,6 +51,8 @@ const DNS_TAILLE: usize = 28;
 
 /// Les cartes réseau ; `None` si Windows refuse la liste.
 #[cfg(windows)]
+// FFI d'iphlpapi : GetAdaptersAddresses.
+#[allow(unsafe_code)]
 pub(crate) fn cartes() -> Option<Vec<Carte>> {
     #[link(name = "iphlpapi")]
     unsafe extern "system" {

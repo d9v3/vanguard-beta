@@ -3,9 +3,6 @@
 //! la fenêtre administrateur s'ouvre sous un autre compte ; le reste (HKLM, stratégies, services) passe par une seule
 //! fenêtre administrateur, après un point de restauration.
 
-// FFI d'iphlpapi : GetBestInterface.
-#![allow(unsafe_code)]
-
 use std::process::Command;
 
 use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_READ, KEY_SET_VALUE, REG_BINARY};
@@ -125,6 +122,8 @@ fn decrire_dns(v: Option<&str>) -> String {
 /// La ligne « CARTE|guid|IPv6 » de la carte qui porte la route vers Internet, sans PowerShell : GetBestInterface (une
 /// recherche dans la table de routage, rien n'est envoyé) puis GetAdaptersAddresses. Vide sans route par défaut ;
 /// `None` si Windows refuse la liste des cartes (PowerShell la refait).
+// FFI d'iphlpapi : GetBestInterface.
+#[allow(unsafe_code)]
 fn carte_principale() -> Option<String> {
     #[link(name = "iphlpapi")]
     unsafe extern "system" {

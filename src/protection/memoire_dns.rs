@@ -2,9 +2,6 @@
 //! Windows la donne à chaque compte ; sous Linux, systemd-resolved ne la donne qu'en root ; macOS ne la montre pas.
 //! Lecture seule : rien n'est vidé.
 
-// FFI de dnsapi : DnsGetCacheDataTable et DnsFree.
-#![allow(unsafe_code)]
-
 /// Les noms en mémoire, en minuscules, sans le point final. `Err` : pourquoi ils n'ont pas pu être lus, à montrer.
 pub(crate) fn noms() -> Result<Vec<String>, String> {
     // Un nom que le hosts envoie nulle part (le blocage de Vanguard, ou celui de la personne) n'a mené à rien : sous
@@ -104,6 +101,8 @@ fn lire() -> Result<Vec<String>, String> {
 }
 
 #[cfg(windows)]
+// FFI de dnsapi : DnsGetCacheDataTable et DnsFree.
+#[allow(unsafe_code)]
 fn lire() -> Result<Vec<String>, String> {
     use std::ffi::c_void;
 

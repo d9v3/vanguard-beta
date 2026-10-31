@@ -3,9 +3,6 @@
 //! leur ancienne place dans `reseau` ; le bilan, la protection et les traces s'en servent autant, sans rien avoir à
 //! faire du réseau.
 
-// FFI de libc : atexit (retirer le verrou à la sortie).
-#![allow(unsafe_code)]
-
 use std::path::PathBuf;
 
 use crate::{tr, trf};
@@ -455,6 +452,8 @@ pub fn proteger_dossier_local() {
 /// Le dossier jetable des tests de ce processus (un par `cargo test`, nommé par son numéro de processus), retiré
 /// quand le processus se termine : chaque lancement en laissait un dans le dossier temporaire. Le crochet de sortie
 /// est posé une fois, au premier appel ; les tests tournent tous avant que le processus ne sorte.
+// FFI de libc : atexit, en essais seulement (retirer le dossier jetable des tests à la sortie).
+#[allow(unsafe_code)]
 fn dossier_des_tests() -> PathBuf {
     let dossier = std::env::temp_dir().join(format!("vanguard-tests-{}", std::process::id()));
     #[cfg(test)]
