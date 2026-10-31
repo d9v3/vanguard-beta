@@ -14,11 +14,13 @@
 //!
 //! Lecteur pur, sans `crate::` : le banc de fuzzing l'inclut par son chemin.
 
-use super::lecture::{tranche, u16le, u32le, u64le, utf16le};
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
+use super::lecture::{rang, tranche, u16le, u32le, u64le, utf16le};
 
 pub(crate) const SIGNATURE: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
 const ENDOFCHAIN: u32 = 0xFFFF_FFFE;
-const FREESECT: u32 = 0xFFFF_FFFF;
 const MAXREGSECT: u32 = 0xFFFF_FFFA;
 const NOSTREAM: u32 = 0xFFFF_FFFF;
 /// Au-delà, une entrée de répertoire n'est pas suivie : un document réel en a quelques centaines.
@@ -115,12 +117,18 @@ impl<'a> Cfb<'a> {
             return Err(Defaut::EnTete);
         }
         let champ = |a: usize| u32le(octets, a).ok_or(Defaut::EnTete);
-        let nombre_fat = champ(44)? as usize;
+        // Un nombre qui ne tiendrait pas dépasse de toute façon les secteurs du fichier, auxquels il est borné.
+        let nombre_fat = usize::try_from(champ(44)?).unwrap_or(usize::MAX);
         let premier_repertoire = champ(48)?;
         let premier_mini_fat = champ(60)?;
         let premier_difat = champ(68)?;
-        // Le nombre de secteurs que le fichier peut contenir : aucune chaîne n'est plus longue.
-        let secteurs_du_fichier = octets.len().saturating_sub(secteur) / secteur + 1;
+        // Le nombre de secteurs que le fichier peut contenir, l'en-tête en tenant la place d'un, et au moins un : aucune
+        // chaîne n'est plus longue.
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "secteur vaut 512 ou 4096 (match ci-dessus) : jamais nul"
+        )]
+        let secteurs_du_fichier = (octets.len() / secteur).max(1);
         let mut c = Cfb {
             octets,
             secteur,
@@ -139,8 +147,9 @@ impl<'a> Cfb<'a> {
         // La DIFAT : 109 entrées dans l'en-tête, puis sa propre chaîne (le dernier mot de chaque secteur désigne le
         // suivant), avec son témoin.
         let mut secteurs_fat = Vec::new();
-        for k in 0..109 {
-            let s = champ(76 + 4 * k)?;
+        let difat_entete = octets.get(76..512).ok_or(Defaut::EnTete)?;
+        for mot in difat_entete.as_chunks::<4>().0 {
+            let s = u32::from_le_bytes(*mot);
             if s <= MAXREGSECT {
                 secteurs_fat.push(s);
             }
@@ -148,7 +157,7 @@ impl<'a> Cfb<'a> {
         let mut difat = premier_difat;
         let mut vus = vec![false; secteurs_du_fichier];
         while difat <= MAXREGSECT && secteurs_fat.len() < nombre_fat.min(secteurs_du_fichier) {
-            let Some(vu) = vus.get_mut(difat as usize) else {
+            let Some(vu) = vus.get_mut(rang(difat)) else {
                 c.fat_incomplete = true;
                 break;
             };
@@ -161,14 +170,19 @@ impl<'a> Cfb<'a> {
                 c.fat_incomplete = true;
                 break;
             };
-            let mots = secteur / 4;
-            for k in 0..mots - 1 {
-                let s = u32le(donnees, 4 * k).unwrap_or(FREESECT);
+            // Le dernier mot d'un secteur entier désigne le suivant ; un secteur coupé par la fin du fichier n'en a pas.
+            let mots = donnees.as_chunks::<4>().0;
+            let (entrees, suivant) = match mots.split_last() {
+                Some((dernier, autres)) if donnees.len() == secteur => (autres, u32::from_le_bytes(*dernier)),
+                _ => (mots, ENDOFCHAIN),
+            };
+            for mot in entrees {
+                let s = u32::from_le_bytes(*mot);
                 if s <= MAXREGSECT {
                     secteurs_fat.push(s);
                 }
             }
-            difat = u32le(donnees, 4 * (mots - 1)).unwrap_or(ENDOFCHAIN);
+            difat = suivant;
         }
         secteurs_fat.truncate(nombre_fat.min(secteurs_du_fichier));
         // La FAT : au plus un mot par secteur que le fichier peut contenir (le reste ne désignerait rien).
@@ -243,7 +257,7 @@ impl<'a> Cfb<'a> {
 
     /// Les octets du secteur `s` (le secteur 0 suit l'en-tête : position (s + 1) × taille).
     fn secteur_brut(&self, s: u32) -> Option<&'a [u8]> {
-        let position = (s as usize).checked_add(1)?.checked_mul(self.secteur)?;
+        let position = rang(s).checked_add(1)?.checked_mul(self.secteur)?;
         let octets: &'a [u8] = self.octets;
         // Le dernier secteur peut être coupé par la fin du fichier : ce qui en reste est rendu.
         let fin = position.checked_add(self.secteur)?.min(octets.len());
@@ -258,8 +272,7 @@ impl<'a> Cfb<'a> {
         let mut vus = std::collections::HashSet::new();
         let mut s = debut;
         while s != ENDOFCHAIN {
-            let i = s as usize;
-            let suivant = table.get(i).copied().ok_or(Defaut::Chaine)?;
+            let suivant = table.get(rang(s)).copied().ok_or(Defaut::Chaine)?;
             if s > MAXREGSECT || chaine.len() >= max || !vus.insert(s) {
                 return Err(Defaut::Chaine);
             }
@@ -280,8 +293,9 @@ impl<'a> Cfb<'a> {
         let mut donnees = Vec::with_capacity(taille.min(chaine.len().saturating_mul(self.secteur)));
         for s in chaine {
             let d = self.secteur_brut(s).ok_or(Defaut::Chaine)?;
-            // Le dernier secteur n'est pris que jusqu'à la taille du flux (tout le secteur s'il est plus court).
-            donnees.extend_from_slice(d.get(..taille - donnees.len()).unwrap_or(d));
+            // Le dernier secteur n'est pris que jusqu'à la taille du flux (tout le secteur s'il est plus court) ; ce
+            // qui manque n'est jamais négatif, aucun secteur n'étant pris au-delà.
+            donnees.extend_from_slice(d.get(..taille.saturating_sub(donnees.len())).unwrap_or(d));
         }
         if donnees.len() < taille {
             return Err(Defaut::Tronque);
@@ -314,13 +328,14 @@ impl<'a> Cfb<'a> {
         let chaine = Self::chaine(e.debut, &self.mini_fat, taille.div_ceil(MINI_SECTEUR))?;
         let mut donnees = Vec::with_capacity(taille);
         for s in chaine {
-            let position = (s as usize).checked_mul(MINI_SECTEUR).ok_or(Defaut::Chaine)?;
+            let position = rang(s).checked_mul(MINI_SECTEUR).ok_or(Defaut::Chaine)?;
             let d = tranche(&self.mini_flux, position, MINI_SECTEUR)
                 .or_else(|| self.mini_flux.get(position..))
                 .filter(|d| !d.is_empty())
                 .ok_or(Defaut::Tronque)?;
-            // Le dernier secteur n'est pris que jusqu'à la taille du flux (tout le secteur s'il est plus court).
-            donnees.extend_from_slice(d.get(..taille - donnees.len()).unwrap_or(d));
+            // Le dernier secteur n'est pris que jusqu'à la taille du flux (tout le secteur s'il est plus court) ; ce
+            // qui manque n'est jamais négatif, aucun secteur n'étant pris au-delà.
+            donnees.extend_from_slice(d.get(..taille.saturating_sub(donnees.len())).unwrap_or(d));
         }
         if donnees.len() < taille {
             return Err(Defaut::Tronque);
@@ -341,7 +356,7 @@ impl<'a> Cfb<'a> {
             if id == NOSTREAM {
                 continue;
             }
-            let i = id as usize;
+            let i = rang(id);
             // Un numéro hors du répertoire ne désigne rien.
             let (Some(vu), Some(e)) = (vus.get_mut(i), self.entrees.get(i)) else {
                 continue;
@@ -356,26 +371,24 @@ impl<'a> Cfb<'a> {
                 None => e.nom.clone(),
             };
             if chemin.len() > CHEMIN_MAX {
-                let mut fin = CHEMIN_MAX;
-                while !chemin.is_char_boundary(fin) {
-                    fin -= 1;
-                }
-                chemin.truncate(fin);
+                chemin.truncate(chemin.floor_char_boundary(CHEMIN_MAX));
             }
             pile.push((e.droite, parent, place_parent, profondeur));
             pile.push((e.gauche, parent, place_parent, profondeur));
             let (type_, enfant) = (e.type_, e.enfant);
             if matches!(type_, 1 | 2) {
+                let k = self.places.len();
                 self.places.push(Place {
                     entree: i,
                     chemin,
                     parent,
                 });
-                let k = self.places.len() - 1;
                 self.enfants.entry(parent).or_default().push(k);
                 if type_ == 1 {
-                    if profondeur + 1 < PROFONDEUR_MAX {
-                        pile.push((enfant, i, Some(k), profondeur + 1));
+                    if let Some(suivante) = profondeur.checked_add(1)
+                        && suivante < PROFONDEUR_MAX
+                    {
+                        pile.push((enfant, i, Some(k), suivante));
                     } else if enfant != NOSTREAM {
                         self.limite_atteinte = true;
                     }
@@ -440,6 +453,11 @@ fn entree(e: &[u8; 128]) -> Entree {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 pub(crate) mod essais {
     //! Des fichiers composés fabriqués ici (version 3, secteurs de 512 octets) : aucun document tiers.
@@ -592,6 +610,11 @@ pub(crate) mod essais {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::essais::fichier;

@@ -6,6 +6,9 @@
 //! de contrôle juste), et celles, publiées par leurs auteurs, des formats reconnus mais pas ouverts ici (7z, RAR,
 //! CAB, ISO 9660, bzip2, xz, zstd, PDF, RTF…), qui seront dits « non vérifiés ».
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use super::Type;
 use super::texte;
 
@@ -18,7 +21,7 @@ pub(crate) fn deviner(octets: &[u8]) -> Type {
         return Type::Vide;
     }
     let commence = |m: &[u8]| octets.starts_with(m);
-    let a = |position: usize, m: &[u8]| octets.get(position..position + m.len()) == Some(m);
+    let a = |position: usize, m: &[u8]| octets.get(position..).is_some_and(|r| r.starts_with(m));
     if commence(b"MZ") {
         let pe = super::lecture::u32le(octets, 0x3C)
             .and_then(|e| usize::try_from(e).ok())
@@ -158,7 +161,7 @@ pub(crate) fn deviner(octets: &[u8]) -> Type {
 
 /// ISO 9660 et UDF : le descripteur de volume au secteur 16 (« CD001 », « BEA01 »…), et ses copies.
 pub(crate) fn iso(octets: &[u8]) -> bool {
-    let a = |position: usize, m: &[u8]| octets.get(position..position + m.len()) == Some(m);
+    let a = |position: usize, m: &[u8]| octets.get(position..).is_some_and(|r| r.starts_with(m));
     [0x8001usize, 0x8801, 0x9001]
         .iter()
         .any(|&p| a(p, b"CD001") || a(p, b"BEA01") || a(p, b"NSR02") || a(p, b"NSR03"))
@@ -179,7 +182,7 @@ pub(crate) fn fin_png(octets: &[u8]) -> Option<usize> {
     let mut p = 8usize;
     loop {
         let n = usize::try_from(o.u32(octets, p)?).ok()?;
-        let type_ = octets.get(p + 4..p + 8)?;
+        let type_ = octets.get(p..)?.get(4..8)?;
         let suivant = p.checked_add(12)?.checked_add(n)?;
         if suivant > octets.len() {
             return None;
@@ -228,16 +231,16 @@ fn fin_jpeg(o: &[u8]) -> Option<usize> {
             return None;
         }
         while *o.get(p)? == 0xFF {
-            p += 1;
+            p = p.checked_add(1)?;
         }
         let code = *o.get(p)?;
-        p += 1;
+        p = p.checked_add(1)?;
         match code {
             0xD9 => return Some(p),
             0x01 | 0xD0..=0xD7 => {}
             0x00 | 0xD8 => return None,
             _ => {
-                let n = usize::from(u16::from_be_bytes([*o.get(p)?, *o.get(p + 1)?]));
+                let n = usize::from(u16::from_be_bytes([*o.get(p)?, *o.get(p.checked_add(1)?)?]));
                 if n < 2 {
                     return None;
                 }
@@ -245,10 +248,10 @@ fn fin_jpeg(o: &[u8]) -> Option<usize> {
                 if code == 0xDA {
                     // Les données du balayage, jusqu'au prochain vrai marqueur.
                     loop {
-                        let q = p + o.get(p..)?.iter().position(|&b| b == 0xFF)?;
-                        match *o.get(q + 1)? {
-                            0x00 | 0xD0..=0xD7 => p = q + 2,
-                            0xFF => p = q + 1,
+                        let q = p.checked_add(o.get(p..)?.iter().position(|&b| b == 0xFF)?)?;
+                        match *o.get(q.checked_add(1)?)? {
+                            0x00 | 0xD0..=0xD7 => p = q.checked_add(2)?,
+                            0xFF => p = q.checked_add(1)?,
                             _ => {
                                 p = q;
                                 break;
@@ -266,7 +269,8 @@ fn fin_jpeg(o: &[u8]) -> Option<usize> {
 fn fin_gif(o: &[u8]) -> Option<usize> {
     let table = |drapeaux: u8| {
         if drapeaux & 0x80 != 0 {
-            3usize << ((drapeaux & 7) + 1)
+            // 3 << (taille + 1) : 6 à 768 octets.
+            6usize << (drapeaux & 7)
         } else {
             0
         }
@@ -275,7 +279,7 @@ fn fin_gif(o: &[u8]) -> Option<usize> {
     let sous_blocs = |mut p: usize| -> Option<usize> {
         loop {
             let n = usize::from(*o.get(p)?);
-            p += 1;
+            p = p.checked_add(1)?;
             if n == 0 {
                 return Some(p);
             }
@@ -284,10 +288,10 @@ fn fin_gif(o: &[u8]) -> Option<usize> {
     };
     loop {
         match *o.get(p)? {
-            0x3B => return Some(p + 1),
+            0x3B => return p.checked_add(1),
             0x21 => p = sous_blocs(p.checked_add(2)?)?,
             0x2C => {
-                let drapeaux = *o.get(p + 9)?;
+                let drapeaux = *o.get(p.checked_add(9)?)?;
                 p = p.checked_add(10)?.checked_add(table(drapeaux))?.checked_add(1)?;
                 p = sous_blocs(p)?;
             }
@@ -302,9 +306,9 @@ fn fin_ico(o: &[u8]) -> Option<usize> {
     let n = usize::from(super::lecture::u16le(o, 4)?);
     let mut fin = 6usize.checked_add(16 * n)?;
     for k in 0..n {
-        let e = 6 + 16 * k;
-        let taille = usize::try_from(super::lecture::u32le(o, e + 8)?).ok()?;
-        let position = usize::try_from(super::lecture::u32le(o, e + 12)?).ok()?;
+        let e = o.get(6..)?.get(k.checked_mul(16)?..)?;
+        let taille = usize::try_from(super::lecture::u32le(e, 8)?).ok()?;
+        let position = usize::try_from(super::lecture::u32le(e, 12)?).ok()?;
         fin = fin.max(position.checked_add(taille)?);
     }
     Some(fin)
@@ -318,7 +322,7 @@ pub(crate) fn archive_cachee(octets: &[u8]) -> Option<usize> {
     const SIGNATURES: [&[u8]; 4] = [b"Rar!\x1A\x07", b"7z\xBC\xAF\x27\x1C", b"MSCF\0\0\0\0", b"\xFD7zXZ\0"];
     SIGNATURES
         .iter()
-        .filter_map(|s| octets.get(1..)?.windows(s.len()).position(|f| f == *s).map(|p| p + 1))
+        .filter_map(|s| octets.get(1..)?.windows(s.len()).position(|f| f == *s)?.checked_add(1))
         .min()
 }
 

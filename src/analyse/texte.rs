@@ -6,6 +6,9 @@
 //!
 //! Lecteur pur, sans `crate::` : le banc de fuzzing l'inclut par son chemin.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 /// L'encodage reconnu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Encodage {
@@ -95,9 +98,8 @@ pub(crate) fn lire(octets: &[u8], limite: usize) -> Option<Texte> {
         Encodage::Utf16Le { .. } | Encodage::Utf16Be { .. } => {
             let gros = matches!(encodage, Encodage::Utf16Be { .. });
             // Au plus `limite` unités (l'octet impair de la fin, sans paire, n'en est pas une).
-            let paires = corps.as_chunks::<2>().0;
-            let paires = paires.get(..limite).unwrap_or(paires);
-            let n = paires.len() * 2;
+            let toutes = corps.as_chunks::<2>().0;
+            let paires = toutes.get(..limite).unwrap_or(toutes);
             let unites = paires.iter().map(|&p| {
                 if gros {
                     u16::from_be_bytes(p)
@@ -111,13 +113,9 @@ pub(crate) fn lire(octets: &[u8], limite: usize) -> Option<Texte> {
             let mut texte = texte;
             let coupe = texte.len() > limite;
             if coupe {
-                let mut fin = limite;
-                while !texte.is_char_boundary(fin) {
-                    fin -= 1;
-                }
-                texte.truncate(fin);
+                texte.truncate(texte.floor_char_boundary(limite));
             }
-            (texte, coupe || n < corps.len() & !1, encodage)
+            (texte, coupe || paires.len() < toutes.len(), encodage)
         }
         _ => {
             let tranche = corps.get(..limite).unwrap_or(corps);
@@ -146,12 +144,8 @@ pub(crate) fn lire(octets: &[u8], limite: usize) -> Option<Texte> {
         return None;
     }
     let (langage, interpreteur) = deviner(&texte);
-    let mut lignes = 0;
-    let mut plus_longue = 0;
-    for l in texte.lines() {
-        lignes += 1;
-        plus_longue = plus_longue.max(l.chars().count());
-    }
+    let lignes = texte.lines().count();
+    let plus_longue = texte.lines().map(|l| l.chars().count()).max().unwrap_or(0);
     Some(Texte {
         encodage,
         contenu: texte,
@@ -172,9 +166,15 @@ fn utf16_sans_marque(octets: &[u8]) -> Option<bool> {
     let paires = debut.len();
     let nuls_impairs = debut.iter().filter(|p| p[1] == 0 && p[0] != 0).count();
     let nuls_pairs = debut.iter().filter(|p| p[0] == 0 && p[1] != 0).count();
-    if nuls_impairs * 10 >= paires * 9 {
+    // Au moins 90 % des paires.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "au plus 512 paires (les 1 024 premiers octets) : ni n × 10 ni paires × 9 ne débordent"
+    )]
+    let presque_toutes = |n: usize| n * 10 >= paires * 9;
+    if presque_toutes(nuls_impairs) {
         Some(false)
-    } else if nuls_pairs * 10 >= paires * 9 {
+    } else if presque_toutes(nuls_pairs) {
         Some(true)
     } else {
         None
@@ -183,19 +183,17 @@ fn utf16_sans_marque(octets: &[u8]) -> Option<bool> {
 
 /// Pas de nul, et au plus 1 % de caractères de contrôle (hors tabulation, retours, saut de page, échappement).
 fn ressemble_a_du_texte(texte: &str) -> bool {
-    let mut total = 0usize;
-    let mut controles = 0usize;
     // Tout le texte lu, pas un échantillon : du binaire après 64 Kio de texte n'en est pas.
-    for c in texte.chars() {
-        total += 1;
-        if c == '\0' {
-            return false;
-        }
-        if c.is_control() && !matches!(c, '\t' | '\n' | '\r' | '\x0c' | '\x1b') {
-            controles += 1;
-        }
+    if texte.contains('\0') {
+        return false;
     }
-    total > 0 && controles * 100 <= total
+    let total = texte.chars().count();
+    let controles = texte
+        .chars()
+        .filter(|&c| c.is_control() && !matches!(c, '\t' | '\n' | '\r' | '\x0c' | '\x1b'))
+        .count();
+    // controles × 100 ≤ total, sans multiplier.
+    total > 0 && controles <= total / 100
 }
 
 /// Le langage, par la ligne « #! » puis par des marques.
@@ -318,6 +316,11 @@ fn deviner(texte: &str) -> (Langage, Option<String>) {
     (Langage::Texte, None)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

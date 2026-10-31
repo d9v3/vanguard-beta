@@ -7,7 +7,10 @@
 //! Lecteur pur : le fichier est en mémoire, chaque position contrôlée ; tout ce qui sort de la forme donne `None` ou
 //! un drapeau, jamais une panique. Sans `crate::` : le banc de fuzzing l'inclut par son chemin.
 
-use super::lecture::{Ordre, chaine_c};
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
+use super::lecture::{Ordre, chaine_c, en_u64};
 
 pub(crate) const PT_LOAD: u32 = 1;
 pub(crate) const PT_INTERP: u32 = 3;
@@ -86,8 +89,10 @@ impl Elf {
             || self.segments.iter().any(|s| {
                 s.type_ == PT_LOAD
                     && s.executable()
-                    && self.point_entree >= s.adresse
-                    && self.point_entree - s.adresse < s.taille_memoire.max(s.taille_fichier)
+                    && self
+                        .point_entree
+                        .checked_sub(s.adresse)
+                        .is_some_and(|d| d < s.taille_memoire.max(s.taille_fichier))
             })
     }
 }
@@ -121,12 +126,14 @@ pub(crate) fn lire(octets: &[u8]) -> Option<Elf> {
     };
     let type_ = o.u16(octets, 16)?;
     let machine = o.u16(octets, 18)?;
-    let ehsize = o.u16(octets, apres + 4)?;
-    let phentsize = usize::from(o.u16(octets, apres + 6)?);
-    let mut phnum = usize::from(o.u16(octets, apres + 8)?);
-    let shentsize = usize::from(o.u16(octets, apres + 10)?);
-    let mut shnum = usize::from(o.u16(octets, apres + 12)?);
-    let mut shstrndx = usize::from(o.u16(octets, apres + 14)?);
+    // La suite de l'en-tête, après les adresses.
+    let suite = octets.get(apres..)?;
+    let ehsize = o.u16(suite, 4)?;
+    let phentsize = usize::from(o.u16(suite, 6)?);
+    let mut phnum = usize::from(o.u16(suite, 8)?);
+    let shentsize = usize::from(o.u16(suite, 10)?);
+    let mut shnum = usize::from(o.u16(suite, 12)?);
+    let mut shstrndx = usize::from(o.u16(suite, 14)?);
     let taille_sh = if bits64 { 64 } else { 40 };
     // Les comptes étendus, dans la section 0 (elf(5)).
     let entete_zero = (shoff != 0 && shentsize >= taille_sh)
@@ -142,10 +149,10 @@ pub(crate) fn lire(octets: &[u8]) -> Option<Elf> {
     };
     if phnum == usize::from(PN_XNUM) {
         // sh_info de la section 0 (32 bits dans les deux formes).
-        match entete_zero.and_then(|s| o.u32(octets, s.checked_add(if bits64 { 44 } else { 28 })?)) {
-            Some(n) => phnum = n as usize,
-            None => phnum = 0,
-        }
+        phnum = entete_zero
+            .and_then(|s| o.u32(octets, s.checked_add(if bits64 { 44 } else { 28 })?))
+            .and_then(|n| usize::try_from(n).ok())
+            .unwrap_or(0);
     }
     if shnum == 0 && shoff != 0 {
         // sh_size de la section 0.
@@ -155,9 +162,10 @@ pub(crate) fn lire(octets: &[u8]) -> Option<Elf> {
         // sh_link de la section 0.
         shstrndx = entete_zero
             .and_then(|s| o.u32(octets, s.checked_add(if bits64 { 40 } else { 24 })?))
-            .map_or(usize::MAX, |n| n as usize);
+            .and_then(|n| usize::try_from(n).ok())
+            .unwrap_or(usize::MAX);
     }
-    let mut fin_des_donnees = u64::from(ehsize).min(octets.len() as u64);
+    let mut fin_des_donnees = u64::from(ehsize).min(en_u64(octets.len()));
     // Les segments.
     let (segments, segments_illisibles) = lire_segments(
         octets,
@@ -238,24 +246,26 @@ fn lire_segments(
                 };
                 let segment = if bits64 {
                     (|| {
+                        let e = octets.get(p..)?;
                         Some(Segment {
-                            type_: o.u32(octets, p)?,
-                            drapeaux: o.u32(octets, p + 4)?,
-                            position: o.u64(octets, p + 8)?,
-                            adresse: o.u64(octets, p + 16)?,
-                            taille_fichier: o.u64(octets, p + 32)?,
-                            taille_memoire: o.u64(octets, p + 40)?,
+                            type_: o.u32(e, 0)?,
+                            drapeaux: o.u32(e, 4)?,
+                            position: o.u64(e, 8)?,
+                            adresse: o.u64(e, 16)?,
+                            taille_fichier: o.u64(e, 32)?,
+                            taille_memoire: o.u64(e, 40)?,
                         })
                     })()
                 } else {
                     (|| {
+                        let e = octets.get(p..)?;
                         Some(Segment {
-                            type_: o.u32(octets, p)?,
-                            position: u64::from(o.u32(octets, p + 4)?),
-                            adresse: u64::from(o.u32(octets, p + 8)?),
-                            taille_fichier: u64::from(o.u32(octets, p + 16)?),
-                            taille_memoire: u64::from(o.u32(octets, p + 20)?),
-                            drapeaux: o.u32(octets, p + 24)?,
+                            type_: o.u32(e, 0)?,
+                            position: u64::from(o.u32(e, 4)?),
+                            adresse: u64::from(o.u32(e, 8)?),
+                            taille_fichier: u64::from(o.u32(e, 16)?),
+                            taille_memoire: u64::from(o.u32(e, 20)?),
+                            drapeaux: o.u32(e, 24)?,
                         })
                     })()
                 };
@@ -265,8 +275,8 @@ fn lire_segments(
                 };
                 segments.push(segment);
             }
-            let fin_table = phoff.saturating_add((phnum as u64).saturating_mul(phentsize as u64));
-            *fin_des_donnees = (*fin_des_donnees).max(fin_table.min(octets.len() as u64));
+            let fin_table = phoff.saturating_add(en_u64(phnum).saturating_mul(en_u64(phentsize)));
+            *fin_des_donnees = (*fin_des_donnees).max(fin_table.min(en_u64(octets.len())));
         }
     }
     (segments, segments_illisibles)
@@ -279,7 +289,7 @@ fn lire_programme(octets: &[u8], segments: &[Segment], fin_des_donnees: &mut u64
     let mut pile_executable = None;
     for s in segments {
         let fin = s.position.saturating_add(s.taille_fichier);
-        if s.taille_fichier > 0 && fin <= octets.len() as u64 {
+        if s.taille_fichier > 0 && fin <= en_u64(octets.len()) {
             *fin_des_donnees = (*fin_des_donnees).max(fin);
         }
         match s.type_ {
@@ -331,22 +341,18 @@ fn lire_sections(
                 };
                 let s = if bits64 {
                     (|| {
-                        Some((
-                            o.u32(octets, p)?,
-                            o.u32(octets, p + 4)?,
-                            o.u64(octets, p + 8)?,
-                            o.u64(octets, p + 24)?,
-                            o.u64(octets, p + 32)?,
-                        ))
+                        let e = octets.get(p..)?;
+                        Some((o.u32(e, 0)?, o.u32(e, 4)?, o.u64(e, 8)?, o.u64(e, 24)?, o.u64(e, 32)?))
                     })()
                 } else {
                     (|| {
+                        let e = octets.get(p..)?;
                         Some((
-                            o.u32(octets, p)?,
-                            o.u32(octets, p + 4)?,
-                            u64::from(o.u32(octets, p + 8)?),
-                            u64::from(o.u32(octets, p + 16)?),
-                            u64::from(o.u32(octets, p + 20)?),
+                            o.u32(e, 0)?,
+                            o.u32(e, 4)?,
+                            u64::from(o.u32(e, 8)?),
+                            u64::from(o.u32(e, 16)?),
+                            u64::from(o.u32(e, 20)?),
                         ))
                     })()
                 };
@@ -356,8 +362,8 @@ fn lire_sections(
                 };
                 brutes.push(s);
             }
-            let fin_table = shoff.saturating_add((shnum as u64).saturating_mul(shentsize as u64));
-            if fin_table <= octets.len() as u64 {
+            let fin_table = shoff.saturating_add(en_u64(shnum).saturating_mul(en_u64(shentsize)));
+            if fin_table <= en_u64(octets.len()) {
                 *fin_des_donnees = (*fin_des_donnees).max(fin_table);
             }
             let noms = brutes.get(shstrndx).copied();
@@ -377,7 +383,7 @@ fn lire_sections(
                     .unwrap_or_default();
                 let fin = position.saturating_add(taille);
                 if type_ != SHT_NOBITS && taille > 0 {
-                    if fin <= octets.len() as u64 {
+                    if fin <= en_u64(octets.len()) {
                         *fin_des_donnees = (*fin_des_donnees).max(fin);
                     } else {
                         sections_illisibles = true;
@@ -396,6 +402,11 @@ fn lire_sections(
     (sections, sections_illisibles)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 pub(crate) mod essais {
     //! Un ELF minimal fabriqué ici : aucun binaire tiers dans le dépôt.
@@ -465,6 +476,11 @@ pub(crate) mod essais {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::essais::elf64;

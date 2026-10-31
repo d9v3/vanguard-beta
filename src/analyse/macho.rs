@@ -8,7 +8,10 @@
 //!
 //! Lecteur pur, sans `crate::` : le banc de fuzzing l'inclut par son chemin.
 
-use super::lecture::{Ordre, chaine_c};
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
+use super::lecture::{Ordre, chaine_c, en_u64};
 
 pub(crate) const MH_MAGIC: u32 = 0xfeed_face;
 pub(crate) const MH_MAGIC_64: u32 = 0xfeed_facf;
@@ -58,26 +61,27 @@ pub(crate) fn universel(octets: &[u8]) -> Option<Universel> {
     if !matches!(magie, FAT_MAGIC | FAT_MAGIC_64) || n == 0 || n > TRANCHES_MAX {
         return None;
     }
-    let (taille_entree, bits64) = if magie == FAT_MAGIC_64 { (32, true) } else { (20, false) };
+    let (taille_entree, bits64): (usize, bool) = if magie == FAT_MAGIC_64 { (32, true) } else { (20, false) };
+    // L'en-tête (8 octets), puis la table : `n` est borné par TRANCHES_MAX, ces calculs ne débordent jamais.
     let mut u = Universel {
         tranches: Vec::new(),
         tranches_hors_fichier: 0,
-        fin_des_donnees: 8 + u64::from(n) * taille_entree as u64,
+        fin_des_donnees: u64::from(n).checked_mul(en_u64(taille_entree))?.checked_add(8)?,
     };
-    for k in 0..n as usize {
-        let p = 8 + k * taille_entree;
-        let cpu = o.u32(octets, p)?;
+    for k in 0..usize::try_from(n).ok()? {
+        let e = octets.get(k.checked_mul(taille_entree)?.checked_add(8)?..)?;
+        let cpu = o.u32(e, 0)?;
         let (position, taille) = if bits64 {
-            (o.u64(octets, p + 8)?, o.u64(octets, p + 16)?)
+            (o.u64(e, 8)?, o.u64(e, 16)?)
         } else {
-            (u64::from(o.u32(octets, p + 8)?), u64::from(o.u32(octets, p + 12)?))
+            (u64::from(o.u32(e, 8)?), u64::from(o.u32(e, 12)?))
         };
         match position.checked_add(taille) {
-            Some(fin) if fin <= octets.len() as u64 && taille > 0 => {
+            Some(fin) if fin <= en_u64(octets.len()) && taille > 0 => {
                 u.fin_des_donnees = u.fin_des_donnees.max(fin);
                 u.tranches.push(Tranche { cpu, position, taille });
             }
-            _ => u.tranches_hors_fichier += 1,
+            _ => u.tranches_hors_fichier = u.tranches_hors_fichier.saturating_add(1),
         }
     }
     Some(u)
@@ -157,10 +161,11 @@ pub(crate) fn lire(octets: &[u8]) -> Option<MachO> {
         commandes_illisibles: false,
         fin_des_donnees: 0,
     };
-    let fin_commandes = debut as u64 + u64::from(sizeofcmds);
-    if fin_commandes > octets.len() as u64 || ncmds > COMMANDES_MAX {
+    // Une fin incalculable (saturée) est au-delà du fichier : illisible, comme une fin trop loin.
+    let fin_commandes = en_u64(debut).saturating_add(u64::from(sizeofcmds));
+    if fin_commandes > en_u64(octets.len()) || ncmds > COMMANDES_MAX {
         m.commandes_illisibles = true;
-        m.fin_des_donnees = (debut as u64).min(octets.len() as u64);
+        m.fin_des_donnees = en_u64(debut).min(en_u64(octets.len()));
         return Some(m);
     }
     m.fin_des_donnees = fin_commandes;
@@ -170,32 +175,37 @@ pub(crate) fn lire(octets: &[u8]) -> Option<MachO> {
     };
     let mut p = debut;
     for _ in 0..ncmds {
-        let (Some(cmd), Some(taille)) = (o.u32(octets, p), o.u32(octets, p + 4)) else {
+        let entete = octets.get(p..).unwrap_or_default();
+        let (Some(cmd), Some(taille)) = (o.u32(entete, 0), o.u32(entete, 4)) else {
             m.commandes_illisibles = true;
             break;
         };
-        let taille = taille as usize;
         // cmdsize : au moins l'en-tête de la commande, multiple de 4, dans la place annoncée (loader.h).
-        if taille < 8 || !taille.is_multiple_of(4) || p + taille > fin_commandes {
+        let fin = usize::try_from(taille)
+            .ok()
+            .filter(|&t| t >= 8 && t.is_multiple_of(4))
+            .and_then(|t| p.checked_add(t))
+            .filter(|&f| f <= fin_commandes);
+        let Some(fin) = fin else {
             m.commandes_illisibles = true;
             break;
-        }
-        let Some(commande) = octets.get(p..p + taille) else {
+        };
+        let Some(commande) = octets.get(p..fin) else {
             m.commandes_illisibles = true;
             break;
         };
         commande_de_chargement(o, octets, cmd, commande, &mut m);
-        p += taille;
+        p = fin;
     }
     Some(m)
 }
 
 /// Une commande de chargement, lue dans ses propres octets (`commande`, sa taille annoncée).
 fn commande_de_chargement(o: Ordre, octets: &[u8], cmd: u32, commande: &[u8], m: &mut MachO) {
-    let taille_fichier = octets.len() as u64;
+    let taille_fichier = en_u64(octets.len());
     // Une chaîne lc_str : sa position depuis le début de la commande, dans la commande.
     let lc_str = |a: usize| -> Option<String> {
-        let decalage = o.u32(commande, a)? as usize;
+        let decalage = usize::try_from(o.u32(commande, a)?).ok()?;
         let max = commande.len().checked_sub(decalage)?.min(NOM_MAX);
         chaine_c(commande, decalage, max)
     };
@@ -251,11 +261,11 @@ fn commande_de_chargement(o: Ordre, octets: &[u8], cmd: u32, commande: &[u8], m:
         LC_MAIN => m.point_entree = o.u64(commande, 8),
         LC_CODE_SIGNATURE => {
             m.signature = true;
-            if let (Some(position), Some(taille)) = (o.u32(commande, 8), o.u32(commande, 12)) {
-                let fin = u64::from(position) + u64::from(taille);
-                if fin <= taille_fichier {
-                    m.fin_des_donnees = m.fin_des_donnees.max(fin);
-                }
+            if let (Some(position), Some(taille)) = (o.u32(commande, 8), o.u32(commande, 12))
+                && let Some(fin) = u64::from(position).checked_add(u64::from(taille))
+                && fin <= taille_fichier
+            {
+                m.fin_des_donnees = m.fin_des_donnees.max(fin);
             }
         }
         LC_ENCRYPTION_INFO | LC_ENCRYPTION_INFO_64 => {
@@ -275,6 +285,11 @@ fn nom_segment(nom: &[u8]) -> String {
     String::from_utf8_lossy(nom.split(|&o| o == 0).next().unwrap_or(nom)).into_owned()
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 pub(crate) mod essais {
     //! Des Mach-O minimaux fabriqués ici.
@@ -370,6 +385,11 @@ pub(crate) mod essais {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::essais::{macho64, universel as fat};

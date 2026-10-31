@@ -13,7 +13,10 @@
 //!
 //! Lecteur pur, sans `crate::` : le banc de fuzzing l'inclut par son chemin.
 
-use super::lecture::{latin1_ou_utf8, tranche, u16le, u32le, utf16le};
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
+use super::lecture::{latin1_ou_utf8, rang, u16le, u32le, utf16le};
 
 const MODULES_MAX: usize = 4096;
 const ENREGISTREMENTS_MAX: usize = 200_000;
@@ -47,27 +50,29 @@ pub(crate) struct Projet {
 /// Le flux « dir » décompressé.
 pub(crate) fn lire_dir(dir: &[u8]) -> Projet {
     let mut p = Projet::default();
-    let mut i = 0usize;
+    // Les enregistrements, consommés par le début : identifiant (16 bits), taille (32 bits), puis les données.
+    let mut reste = dir;
     let mut module: Option<Module> = None;
     for _ in 0..ENREGISTREMENTS_MAX {
-        let Some(id) = u16le(dir, i) else {
+        let Some((&id, suite)) = reste.split_first_chunk::<2>() else {
             p.incomplet = true;
             break;
         };
+        let id = u16::from_le_bytes(id);
         if id == 0x0009 {
-            // PROJECTVERSION : Reserved (4), VersionMajor (4), VersionMinor (2).
-            i += 2 + 4 + 4 + 2;
+            // PROJECTVERSION : Id (2), Reserved (4), VersionMajor (4), VersionMinor (2).
+            reste = reste.get(2 + 4 + 4 + 2..).unwrap_or_default();
             continue;
         }
-        let Some(taille) = u32le(dir, i + 2).map(|t| t as usize) else {
+        let Some((&taille, suite)) = suite.split_first_chunk::<4>() else {
             p.incomplet = true;
             break;
         };
-        let Some(donnees) = tranche(dir, i + 6, taille) else {
+        let Some((donnees, apres)) = suite.split_at_checked(rang(u32::from_le_bytes(taille))) else {
             p.incomplet = true;
             break;
         };
-        i += 6 + taille;
+        reste = apres;
         match id {
             0x0003 => p.code_page = u16le(donnees, 0),
             0x0004 => p.nom = Some(latin1_ou_utf8(donnees)),
@@ -315,6 +320,11 @@ pub(crate) mod essais {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::essais::dir;

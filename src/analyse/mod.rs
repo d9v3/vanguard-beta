@@ -15,6 +15,9 @@
 //! l'inclut par son chemin. Les lecteurs propres à l'analyse (`cfb`, `ovba`, `vba`, `lnk`, `elf`, `macho`, `texte`)
 //! n'utilisent que `lecture` : ils s'incluent aussi seuls.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 mod arbre;
 pub(crate) mod cfb;
 pub(crate) mod elf;
@@ -28,6 +31,11 @@ pub(crate) mod ovba;
 pub(crate) mod texte;
 pub(crate) mod vba;
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests;
 

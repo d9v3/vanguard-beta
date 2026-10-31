@@ -3,8 +3,12 @@
 //! sont gardés en mémoire). Le visiteur reçoit chaque partie lue avec ses octets, une fois : les motifs (AV2) et les
 //! signatures (AV3) les lisent là, sans que l'arbre garde le contenu.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::time::Instant;
 
+use super::lecture::{en_u64, tranche};
 use super::{Analyse, Bornes, Details, Fait, Origine, Partie, Raison, Type};
 use super::{cfb, elf, lnk, macho, nature, nom, office, ovba, texte, vba};
 use crate::archives::{deflate, tar, zip};
@@ -61,17 +65,17 @@ pub(crate) fn analyser(octets: &[u8], nom: &str, bornes: &Bornes, visiteur: &mut
         debut: Instant::now(),
         produits: 0,
         examines: 0,
-        taille_racine: octets.len() as u64,
+        taille_racine: en_u64(octets.len()),
         parties: Vec::new(),
         ancetres: Vec::new(),
         visiteur,
     };
-    if octets.len() as u64 > bornes.taille_fichier {
+    if en_u64(octets.len()) > bornes.taille_fichier {
         e.non_lue(
             None,
             nom.to_string(),
             Origine::Fichier,
-            octets.len() as u64,
+            en_u64(octets.len()),
             Vec::new(),
             vec![Raison::TropGros],
         );
@@ -209,7 +213,7 @@ impl Etat<'_> {
             manques,
             details: Details::Aucun,
         });
-        Some(self.parties.len() - 1)
+        self.parties.len().checked_sub(1)
     }
 
     /// La profondeur d'une partie sous `parent` (0 pour la racine). `None` : un parent qui n'est pas une partie de
@@ -218,7 +222,7 @@ impl Etat<'_> {
     fn profondeur_enfant(&self, parent: Option<usize>) -> Option<usize> {
         match parent {
             None => Some(0),
-            Some(p) => Some(self.parties.get(p)?.profondeur + 1),
+            Some(p) => self.parties.get(p)?.profondeur.checked_add(1),
         }
     }
 
@@ -248,8 +252,14 @@ impl Etat<'_> {
         }
     }
 
+    /// L'échéance de l'analyse, pour les décompressions. `None` (un délai qui dépasserait l'horloge, que les bornes
+    /// ne donnent jamais) : aucune échéance, comme `inflater` ; les autres bornes tiennent toujours.
+    fn echeance(&self) -> Option<Instant> {
+        self.debut.checked_add(self.bornes.delai)
+    }
+
     fn produit(&mut self, n: usize) {
-        self.produits = self.produits.saturating_add(n as u64);
+        self.produits = self.produits.saturating_add(en_u64(n));
     }
 
     /// La partie `octets`, puis ses enfants. Rend son numéro (`None` : pas analysée, une borne l'a dit au parent).
@@ -273,12 +283,12 @@ impl Etat<'_> {
             }
             // Des tranches qui se chevauchent (architectures d'un Mach-O, overlays) ne sont pas copiées, donc pas
             // comptées dans `produits` : leur lecture l'est ici.
-            if self.examines.saturating_add(octets.len() as u64) > self.bornes.examines {
+            if self.examines.saturating_add(en_u64(octets.len())) > self.bornes.examines {
                 self.manque(p, Raison::Travail);
                 return None;
             }
         }
-        self.examines = self.examines.saturating_add(octets.len() as u64);
+        self.examines = self.examines.saturating_add(en_u64(octets.len()));
         let empreinte = sha256(octets);
         let type_ = nature::deviner(octets);
         faits.extend(nom::examiner(&chemin).into_iter().map(Fait::Nom));
@@ -294,13 +304,13 @@ impl Etat<'_> {
             chemin,
             origine,
             type_,
-            taille: octets.len() as u64,
+            taille: en_u64(octets.len()),
             sha256: Some(empreinte),
             faits,
             manques,
             details: Details::Aucun,
         });
-        let i = self.parties.len() - 1;
+        let i = self.parties.len().checked_sub(1)?;
         if self.ancetres.contains(&empreinte) {
             self.manque(i, Raison::Quine);
         } else {
@@ -335,7 +345,7 @@ impl Etat<'_> {
     fn trop_profond(&self, i: usize) -> bool {
         self.parties
             .get(i)
-            .is_none_or(|p| p.profondeur + 1 > self.bornes.profondeur)
+            .is_none_or(|p| p.profondeur >= self.bornes.profondeur)
     }
 
     /// Le type de la partie `i`, s'il en est une.
@@ -421,8 +431,8 @@ impl Etat<'_> {
         if fin >= octets.len() {
             return None;
         }
-        let r = fin as u64..octets.len() as u64;
-        self.fait(i, Fait::Overlay(r.end - r.start));
+        let r = en_u64(fin)..en_u64(octets.len());
+        self.fait(i, Fait::Overlay(longueur(&r)));
         self.morceau(i, octets, r.clone(), "#apres-image", Origine::Overlay);
         Some(r.start)
     }
@@ -431,8 +441,8 @@ impl Etat<'_> {
     /// lue par son propre type), depuis sa signature.
     fn archive_cachee(&mut self, i: usize, octets: &[u8]) -> Option<u64> {
         let debut = nature::archive_cachee(octets)?;
-        let r = debut as u64..octets.len() as u64;
-        self.fait(i, Fait::Overlay(r.end - r.start));
+        let r = en_u64(debut)..en_u64(octets.len());
+        self.fait(i, Fait::Overlay(longueur(&r)));
         self.morceau(i, octets, r.clone(), "#archive-cachee", Origine::Overlay);
         Some(r.start)
     }
@@ -484,11 +494,11 @@ impl Etat<'_> {
             self.fait(i, Fait::ImportsIncomplets);
         }
         if let Some(r) = s.apres_certificats.clone() {
-            self.fait(i, Fait::DonneesApresSignature(r.end - r.start));
+            self.fait(i, Fait::DonneesApresSignature(longueur(&r)));
             self.morceau(i, octets, r, "#apres-certificats", Origine::ApresCertificats);
         }
         for r in s.overlay.clone() {
-            self.fait(i, Fait::Overlay(r.end - r.start));
+            self.fait(i, Fait::Overlay(longueur(&r)));
             self.morceau(i, octets, r.clone(), &format!("#overlay@{}", r.start), Origine::Overlay);
         }
         let debut_overlay = s.overlay.first().map(|r| r.start);
@@ -533,10 +543,10 @@ impl Etat<'_> {
             self.manque(i, Raison::Illisible("table des segments ELF"));
         }
         let mut debut_overlay = None;
-        if e.fin_des_donnees < octets.len() as u64 {
-            let r = e.fin_des_donnees..octets.len() as u64;
+        if e.fin_des_donnees < en_u64(octets.len()) {
+            let r = e.fin_des_donnees..en_u64(octets.len());
             debut_overlay = Some(r.start);
-            self.fait(i, Fait::Overlay(r.end - r.start));
+            self.fait(i, Fait::Overlay(longueur(&r)));
             self.morceau(i, octets, r, "#overlay", Origine::Overlay);
         }
         self.details(i, Details::Elf(Box::new(e)));
@@ -566,10 +576,10 @@ impl Etat<'_> {
             self.manque(i, Raison::Illisible("commandes de chargement Mach-O"));
         }
         let mut debut_overlay = None;
-        if m.fin_des_donnees < octets.len() as u64 && !m.commandes_illisibles {
-            let r = m.fin_des_donnees..octets.len() as u64;
+        if m.fin_des_donnees < en_u64(octets.len()) && !m.commandes_illisibles {
+            let r = m.fin_des_donnees..en_u64(octets.len());
             debut_overlay = Some(r.start);
-            self.fait(i, Fait::Overlay(r.end - r.start));
+            self.fait(i, Fait::Overlay(longueur(&r)));
             self.morceau(i, octets, r, "#overlay", Origine::Overlay);
         }
         self.details(i, Details::MachO(Box::new(m)));
@@ -586,17 +596,15 @@ impl Etat<'_> {
             self.manque(i, Raison::Tronque);
         }
         for (k, t) in u.tranches.iter().enumerate() {
-            self.morceau(
-                i,
-                octets,
-                t.position..t.position + t.taille,
-                &format!("#tranche{k}"),
-                Origine::Tranche,
-            );
+            // `macho::universel` ne garde que les tranches qui tiennent dans le fichier : la fin se calcule toujours.
+            let Some(fin) = t.position.checked_add(t.taille) else {
+                continue;
+            };
+            self.morceau(i, octets, t.position..fin, &format!("#tranche{k}"), Origine::Tranche);
         }
-        if u.fin_des_donnees < octets.len() as u64 {
-            let r = u.fin_des_donnees..octets.len() as u64;
-            self.fait(i, Fait::Overlay(r.end - r.start));
+        if u.fin_des_donnees < en_u64(octets.len()) {
+            let r = u.fin_des_donnees..en_u64(octets.len());
+            self.fait(i, Fait::Overlay(longueur(&r)));
             self.morceau(i, octets, r.clone(), "#overlay", Origine::Overlay);
             return Some(r.start);
         }
@@ -618,7 +626,7 @@ impl Etat<'_> {
             self.manque(i, Raison::EntreesLimitees);
         }
         if p.decalage > 0 {
-            self.fait(i, Fait::DonneesAvantArchive(p.decalage as u64));
+            self.fait(i, Fait::DonneesAvantArchive(en_u64(p.decalage)));
         }
         // Le type précis, par les noms d'entrées.
         let noms: Vec<String> = p.entrees.iter().map(|v| nom_zip(&v.nom, v.utf8)).collect();
@@ -642,7 +650,9 @@ impl Etat<'_> {
         }
         let mut vus_casse: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         for n in &noms {
-            *vus_casse.entry(n.to_lowercase()).or_default() += 1;
+            // Un compte borné par le nombre d'entrées lues : saturer ne change rien à « plus d'une ».
+            let vus = vus_casse.entry(n.to_lowercase()).or_default();
+            *vus = vus.saturating_add(1);
         }
         // Les données déjà lues : même en-tête local, même méthode, même taille compressée et mêmes drapeaux de
         // chiffrement (une entrée qui désigne le même en-tête avec une autre méthode se lit autrement : relue). La
@@ -698,13 +708,13 @@ impl Etat<'_> {
                     continue;
                 }
             };
-            let compresses = vue.donnees.as_ref().map_or(0, |d| (d.end - d.start) as u64);
+            let compresses = vue.donnees.as_ref().map_or(0, |d| en_u64(d.len()));
             if self.examines.saturating_add(compresses) > self.bornes.examines {
                 self.non_lue(Some(i), nom, origine, vue.taille, faits, vec![Raison::Travail]);
                 continue;
             }
             self.examines = self.examines.saturating_add(compresses);
-            match zip::extraire_avant(octets, vue, limite, Some(self.debut + self.bornes.delai)) {
+            match zip::extraire_avant(octets, vue, limite, self.echeance()) {
                 Err(refus) => {
                     let raison = match refus {
                         zip::Refus::Chiffree => Raison::Chiffre,
@@ -726,16 +736,16 @@ impl Etat<'_> {
                     if x.crc_juste == Some(false) {
                         faits.push(Fait::CrcFaux);
                     }
-                    if x.fin == deflate::Fin::Complet && !vue.taille_inconnue && x.contenu.len() as u64 != vue.taille {
+                    if x.fin == deflate::Fin::Complet && !vue.taille_inconnue && en_u64(x.contenu.len()) != vue.taille {
                         faits.push(Fait::TailleAnnonceeFausse {
                             annoncee: vue.taille,
-                            lue: x.contenu.len() as u64,
+                            lue: en_u64(x.contenu.len()),
                         });
                     }
                     self.office_dans_zip(i, &nom, &x.contenu);
                     if !x.reste.is_empty() {
-                        self.fait(i, Fait::DonneesApresFlux((x.reste.end - x.reste.start) as u64));
-                        let reste = x.reste.start as u64..x.reste.end as u64;
+                        self.fait(i, Fait::DonneesApresFlux(en_u64(x.reste.len())));
+                        let reste = en_u64(x.reste.start)..en_u64(x.reste.end);
                         self.morceau(i, octets, reste, &format!("{nom}#apres-flux"), Origine::Overlay);
                     }
                     self.enfant(i, &x.contenu, nom, origine, faits, manques);
@@ -793,7 +803,7 @@ impl Etat<'_> {
             return;
         };
         // Déjà dans l'overlay, analysé à part.
-        if overlay.is_some_and(|o| debut as u64 >= o) {
+        if overlay.is_some_and(|o| en_u64(debut) >= o) {
             return;
         }
         if let Some(archive) = octets.get(debut..) {
@@ -840,8 +850,12 @@ impl Etat<'_> {
                 manques.push(Raison::Illisible("en-tête gzip"));
                 break;
             };
-            let lu = deflate::inflater_avant(donnees, limite - contenu.len(), Some(self.debut + self.bornes.delai));
-            let fin = flux + lu.lus;
+            // Ce qui reste du budget : `contenu` n'a reçu que ce que chaque membre pouvait encore produire.
+            let lu = deflate::inflater_avant(donnees, limite.saturating_sub(contenu.len()), self.echeance());
+            let Some(fin) = flux.checked_add(lu.lus) else {
+                manques.push(Raison::Illisible("flux deflate"));
+                break;
+            };
             if lu.fin == deflate::Fin::Complet {
                 let crc = octets
                     .get(fin..)
@@ -871,7 +885,12 @@ impl Etat<'_> {
                     break;
                 }
             }
-            debut = fin + 8;
+            // Le CRC et la taille (8 octets) ferment le membre.
+            let Some(suite) = fin.checked_add(8) else {
+                manques.push(Raison::Tronque);
+                break;
+            };
+            debut = suite;
             if debut >= octets.len() {
                 if debut > octets.len() {
                     manques.push(Raison::Tronque);
@@ -887,14 +906,9 @@ impl Etat<'_> {
         self.produit(contenu.len());
         self.enfant(i, &contenu, nom, Origine::Gzip, faits, manques);
         if let Some(debut) = apres {
-            self.fait(i, Fait::Overlay((octets.len() - debut) as u64));
-            self.morceau(
-                i,
-                octets,
-                debut as u64..octets.len() as u64,
-                "#apres-gzip",
-                Origine::Overlay,
-            );
+            let r = en_u64(debut)..en_u64(octets.len());
+            self.fait(i, Fait::Overlay(longueur(&r)));
+            self.morceau(i, octets, r, "#apres-gzip", Origine::Overlay);
         }
     }
 
@@ -917,13 +931,21 @@ impl Etat<'_> {
                 self.manque(i, Raison::Delai);
                 return;
             }
-            let debut = position + 512;
-            fin_des_entrees = fin_des_entrees.max(debut + taille.div_ceil(512) * 512);
+            // L'en-tête (512 octets), puis le contenu arrondi au bloc. Une fin incalculable est au-delà du fichier.
+            let debut = position.checked_add(512);
+            let fin_entree = debut
+                .zip(taille.div_ceil(512).checked_mul(512))
+                .and_then(|(d, t)| d.checked_add(t));
+            fin_des_entrees = fin_des_entrees.max(fin_entree.unwrap_or(usize::MAX));
+            let Some(debut) = debut else {
+                continue;
+            };
             match type_ {
                 // Liens : sans contenu, jamais suivis.
                 b'1' | b'2' => {
                     let cible = octets
-                        .get(position + 157..position + 257)
+                        .get(position..)
+                        .and_then(|e| e.get(157..257))
                         .map(|c| {
                             // Jusqu'au premier nul (le champ entier sans nul).
                             String::from_utf8_lossy(c.split(|&o| o == 0).next().unwrap_or(c)).into_owned()
@@ -940,7 +962,7 @@ impl Etat<'_> {
                     } else {
                         Vec::new()
                     };
-                    if let Some(contenu) = octets.get(debut..debut + taille) {
+                    if let Some(contenu) = tranche(octets, debut, taille) {
                         self.enfant(i, contenu, nom, Origine::EntreeTar, Vec::new(), manques);
                     }
                 }
@@ -950,19 +972,18 @@ impl Etat<'_> {
         // Après le bloc de fin : une autre archive mise bout à bout (`tar -i` la lit), ou autre chose.
         if fin == tar::FinTar::Fin {
             let mut reste = fin_des_entrees.min(octets.len());
-            while octets
-                .get(reste..reste + 512)
-                .is_some_and(|b| b.iter().all(|&o| o == 0))
+            while let Some(suite) = reste.checked_add(512)
+                && octets.get(reste..suite).is_some_and(|b| b.iter().all(|&o| o == 0))
             {
-                reste += 512;
+                reste = suite;
             }
             let queue = octets.get(reste..).unwrap_or(&[]);
             if queue.iter().any(|&o| o != 0) {
-                self.fait(i, Fait::Overlay(queue.len() as u64));
+                self.fait(i, Fait::Overlay(en_u64(queue.len())));
                 self.morceau(
                     i,
                     octets,
-                    reste as u64..octets.len() as u64,
+                    en_u64(reste)..en_u64(octets.len()),
                     "#apres-tar",
                     Origine::Overlay,
                 );
@@ -1041,7 +1062,7 @@ impl Etat<'_> {
             let Some(dir) = ole.flux_nomme(*stockage, "dir") else {
                 continue;
             };
-            projets += 1;
+            projets = projets.saturating_add(1);
             if projets > PROJETS_VBA_MAX {
                 self.manque(i, Raison::EntreesLimitees);
                 break;
@@ -1222,7 +1243,7 @@ impl Etat<'_> {
     /// La source du module VBA dont le flux est la partie `j` : décompressée depuis `decalage`, puis ses procédures
     /// qui se lancent d'elles-mêmes.
     fn source_vba(&mut self, j: usize, flux: &[u8], nom_module: &str, decalage: u32, chemin: &str) {
-        let Some(compresse) = flux.get(decalage as usize..) else {
+        let Some(compresse) = usize::try_from(decalage).ok().and_then(|d| flux.get(d..)) else {
             self.manque(j, Raison::SourceVbaIllisible);
             return;
         };
@@ -1314,9 +1335,9 @@ impl Etat<'_> {
         }
         let mut debut_overlay = None;
         if !l.tronque && l.fin < octets.len() {
-            let r = l.fin as u64..octets.len() as u64;
+            let r = en_u64(l.fin)..en_u64(octets.len());
             debut_overlay = Some(r.start);
-            self.fait(i, Fait::Overlay(r.end - r.start));
+            self.fait(i, Fait::Overlay(longueur(&r)));
             self.morceau(i, octets, r, "#overlay", Origine::Overlay);
         }
         self.details(i, Details::Lnk(Box::new(l)));
@@ -1368,6 +1389,11 @@ impl Etat<'_> {
     }
 }
 
+/// Les octets d'une tranche du fichier ; une tranche à l'envers (fin avant début) est vide, comme `Range::is_empty`.
+fn longueur(r: &std::ops::Range<u64>) -> u64 {
+    r.end.saturating_sub(r.start)
+}
+
 /// Le nom d'une entrée zip : UTF-8 si le drapeau le dit (ou si c'en est), sinon octet par octet.
 fn nom_zip(nom: &[u8], utf8: bool) -> String {
     if utf8 {
@@ -1385,7 +1411,8 @@ fn nom_gzip(octets: &[u8]) -> Option<String> {
     }
     let mut pos = 10usize;
     if drapeaux & 4 != 0 {
-        pos += 2 + usize::from(super::lecture::u16le(octets, pos)?);
+        let extra = usize::from(super::lecture::u16le(octets, pos)?);
+        pos = pos.checked_add(2)?.checked_add(extra)?;
     }
     super::lecture::chaine_c(octets, pos, 4096).filter(|n| !n.is_empty())
 }

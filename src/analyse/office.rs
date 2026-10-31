@@ -10,6 +10,9 @@
 //!
 //! Des faits, lus bornés ; aucun verdict. Sans `crate::` (sauf `lecture`) : le banc de fuzzing l'inclut.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use super::lecture::u16le;
 
 /// Le document Word est-il chiffré ou obscurci ? `None` : pas un FibBase de Word.
@@ -43,18 +46,20 @@ const FEUILLES_MAX: usize = 4096;
 /// Le flux « Workbook » (ou « Book ») d'un classeur.
 pub(crate) fn classeur(flux: &[u8]) -> Classeur {
     let mut c = Classeur::default();
-    let mut i = 0usize;
+    // Les enregistrements, consommés par le début : type et taille (16 bits chacun), puis les données.
+    let mut reste = flux;
     for _ in 0..ENREGISTREMENTS_MAX {
-        let (Some(type_), Some(taille)) = (u16le(flux, i), u16le(flux, i + 2)) else {
+        let Some((&[t0, t1, n0, n1], suite)) = reste.split_first_chunk::<4>() else {
             c.incomplet = true;
             return c;
         };
-        let taille = usize::from(taille);
-        let Some(donnees) = flux.get(i + 4..i + 4 + taille) else {
+        let type_ = u16::from_le_bytes([t0, t1]);
+        let taille = usize::from(u16::from_le_bytes([n0, n1]));
+        let Some((donnees, apres)) = suite.split_at_checked(taille) else {
             c.incomplet = true;
             return c;
         };
-        i += 4 + taille;
+        reste = apres;
         match type_ {
             // EOF : la fin du sous-flux global.
             0x000A => return c,
@@ -68,14 +73,15 @@ pub(crate) fn classeur(flux: &[u8]) -> Classeur {
                 let masquage = etat & 0b11;
                 let n = usize::from(cch);
                 let large = haut & 1 != 0;
+                let texte = donnees.get(8..).unwrap_or_default();
                 let nom = if large {
-                    donnees
-                        .get(8..8 + 2 * n)
+                    n.checked_mul(2)
+                        .and_then(|t| texte.get(..t))
                         .map(super::lecture::utf16le)
                         .unwrap_or_default()
                 } else {
-                    donnees
-                        .get(8..8 + n)
+                    texte
+                        .get(..n)
                         .map(|b| b.iter().map(|&o| char::from(o)).collect())
                         .unwrap_or_default()
                 };
@@ -153,16 +159,16 @@ struct Element {
 fn elements(xml: &str) -> (Vec<Element>, bool) {
     let mut sortie = Vec::new();
     let mut reste = xml;
-    while let Some(p) = reste.find('<') {
+    while let Some((_, apres)) = reste.split_once('<') {
         if sortie.len() >= ELEMENTS_MAX {
             return (sortie, true);
         }
-        reste = &reste[p + 1..];
+        reste = apres;
         let sautee = [("!--", "-->"), ("![CDATA[", "]]>"), ("?", "?>"), ("!", ">")]
             .into_iter()
             .find(|(debut, _)| reste.starts_with(debut));
         if let Some((_, fin)) = sautee {
-            reste = reste.find(fin).map_or("", |f| &reste[f + fin.len()..]);
+            reste = reste.split_once(fin).map_or("", |(_, apres)| apres);
             continue;
         }
         if reste.starts_with('/') || reste.is_empty() {
@@ -179,23 +185,23 @@ fn elements(xml: &str) -> (Vec<Element>, bool) {
             if reste.is_empty() || reste.starts_with('>') || reste.starts_with("/>") {
                 break;
             }
-            let Some(egal) = reste.find('=') else {
+            let Some((cle, apres)) = reste.split_once('=') else {
                 reste = "";
                 break;
             };
-            let cle = reste[..egal].trim().rsplit(':').next().unwrap_or("").to_string();
-            let apres = reste[egal + 1..].trim_start();
+            let cle = cle.trim().rsplit(':').next().unwrap_or("").to_string();
+            let apres = apres.trim_start();
             let Some(guillemet) = apres.chars().next().filter(|c| *c == '"' || *c == '\'') else {
                 reste = apres;
                 break;
             };
             let corps = &apres[1..];
-            let Some(f) = corps.find(guillemet) else {
+            let Some((valeur, suite)) = corps.split_once(guillemet) else {
                 reste = "";
                 break;
             };
-            attributs.push((cle, entites(&corps[..f])));
-            reste = &corps[f + 1..];
+            attributs.push((cle, entites(valeur)));
+            reste = suite;
         }
         sortie.push(Element { nom, attributs });
     }
@@ -215,18 +221,19 @@ fn entites(valeur: &str) -> String {
         // « ; » cherché dans les 12 octets qui suivent seulement : chercher plus loin coûtait la longueur du reste à
         // chaque « & », le carré de la taille pour un fichier fait d'esperluettes.
         let Some(fin) = reste
-            .as_bytes()
-            .iter()
+            .bytes()
+            .enumerate()
             .take(13)
             .skip(1)
-            .position(|&b| b == b';')
-            .map(|f| f + 1)
+            .find_map(|(f, b)| (b == b';').then_some(f))
         else {
             sortie.push('&');
             reste = &reste[1..];
             continue;
         };
-        let nom = &reste[1..fin];
+        // « &nom », puis « ;… ».
+        let (entite, apres) = reste.split_at(fin);
+        let nom = &entite[1..];
         let caractere = match nom {
             "amp" => Some('&'),
             "lt" => Some('<'),
@@ -242,7 +249,7 @@ fn entites(valeur: &str) -> String {
         };
         if let Some(c) = caractere {
             sortie.push(c);
-            reste = &reste[fin + 1..];
+            reste = &apres[1..];
         } else {
             sortie.push('&');
             reste = &reste[1..];

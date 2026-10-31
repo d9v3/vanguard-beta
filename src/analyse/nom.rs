@@ -4,6 +4,9 @@
 //! retire, caractères de contrôle, chemin qui sort de l'archive (« ../ ») ou absolu. Des FAITS pour les heuristiques
 //! (AV4), jamais un verdict à eux seuls.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 /// Un fait relevé dans un nom.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FaitNom {

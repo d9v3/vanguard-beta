@@ -11,6 +11,9 @@
 //!
 //! Lecteur pur, sans `crate::` : le banc de fuzzing l'inclut par son chemin.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 /// Pourquoi la décompression s'est arrêtée avant la fin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Defaut {
@@ -45,6 +48,11 @@ pub(crate) fn decompresser(conteneur: &[u8], limite: usize) -> Decompresse {
     }
 }
 
+/// Ce qu'a donné le morceau commencé en `debut` dans la sortie (qui ne fait que grandir).
+fn donne(sortie: &[u8], debut: usize) -> usize {
+    sortie.get(debut..).map_or(0, <[u8]>::len)
+}
+
 fn boucle(c: &[u8], limite: usize, sortie: &mut Vec<u8>) -> Result<(), Defaut> {
     if c.first() != Some(&0x01) {
         return Err(Defaut::Signature);
@@ -62,8 +70,10 @@ fn boucle(c: &[u8], limite: usize, sortie: &mut Vec<u8>) -> Result<(), Defaut> {
         }
         let compresse = en_tete & 0x8000 != 0;
         let debut_sortie = sortie.len();
-        let fin = c.len().min(debut_morceau + taille);
-        pos = debut_morceau + 2;
+        // Le morceau, coupé par la fin des données.
+        let fin = debut_morceau.saturating_add(taille).min(c.len());
+        // Après l'en-tête, qui vient d'être lu.
+        pos = debut_morceau.checked_add(2).ok_or(Defaut::EnTete)?;
         if !compresse {
             // Un morceau brut : 4 096 octets tels quels.
             let reste = c.get(pos..).ok_or(Defaut::Tronque)?;
@@ -76,71 +86,77 @@ fn boucle(c: &[u8], limite: usize, sortie: &mut Vec<u8>) -> Result<(), Defaut> {
             if brut.len() < MORCEAU {
                 return Err(Defaut::Tronque);
             }
-            pos += MORCEAU;
+            pos = pos.checked_add(MORCEAU).ok_or(Defaut::Tronque)?;
             continue;
         }
-        while pos < fin {
-            let &drapeaux = c.get(pos).ok_or(Defaut::Tronque)?;
-            pos += 1;
+        // Les séquences du morceau, consommées par le début (la taille est d'au moins 3 : `fin` suit l'en-tête).
+        let mut reste = c.get(pos..fin).ok_or(Defaut::Tronque)?;
+        while let Some((&drapeaux, suite)) = reste.split_first() {
+            reste = suite;
             for indice in 0..8 {
-                if pos >= fin {
+                if reste.is_empty() {
                     break;
                 }
                 if drapeaux >> indice & 1 == 0 {
                     if sortie.len() >= limite {
                         return Err(Defaut::Limite);
                     }
-                    sortie.push(*c.get(pos).ok_or(Defaut::Tronque)?);
-                    pos += 1;
+                    let (&o, suite) = reste.split_first().ok_or(Defaut::Tronque)?;
+                    sortie.push(o);
+                    reste = suite;
                 } else {
-                    let Some(b) = c
-                        .get(pos..)
-                        .and_then(<[u8]>::first_chunk::<2>)
-                        .filter(|_| pos + 2 <= fin)
-                    else {
+                    let Some((b, suite)) = reste.split_first_chunk::<2>() else {
                         return Err(Defaut::Tronque);
                     };
                     let jeton = u16::from_le_bytes(*b);
-                    let ecart = sortie.len() - debut_sortie;
-                    if ecart == 0 {
-                        // Rien avant dans ce morceau : une copie n'a rien à copier.
+                    let ecart = donne(sortie, debut_sortie);
+                    // Rien avant dans ce morceau : une copie n'a rien à copier.
+                    let Some(avant) = ecart.checked_sub(1) else {
                         return Err(Defaut::Copie);
-                    }
+                    };
                     // Le plus petit entier ≥ log2(écart), au moins 4 (et au plus 12 : un morceau fait 4 096 octets).
-                    let bits = (ecart - 1).bit_width().max(4);
+                    let bits = avant.bit_width().max(4);
                     if bits > 12 {
                         return Err(Defaut::Copie);
                     }
                     let masque_longueur = 0xFFFFu16 >> bits;
                     let longueur = usize::from(jeton & masque_longueur) + 3;
-                    let distance = usize::from(jeton >> (16 - bits)) + 1;
+                    let bits_distance = 16u32.checked_sub(bits).ok_or(Defaut::Copie)?;
+                    let distance = usize::from(jeton >> bits_distance)
+                        .checked_add(1)
+                        .ok_or(Defaut::Copie)?;
                     if distance > ecart {
                         return Err(Defaut::Copie);
                     }
-                    if ecart + longueur > MORCEAU {
+                    if ecart.checked_add(longueur).is_none_or(|n| n > MORCEAU) {
                         return Err(Defaut::Copie);
                     }
-                    if sortie.len() + longueur > limite {
+                    if sortie.len().checked_add(longueur).is_none_or(|n| n > limite) {
                         return Err(Defaut::Limite);
                     }
                     // Octet par octet : la source peut chevaucher ce qui s'écrit (une répétition).
-                    let source = sortie.len() - distance;
+                    let source = sortie.len().checked_sub(distance).ok_or(Defaut::Copie)?;
                     for k in 0..longueur {
-                        let &o = sortie.get(source + k).ok_or(Defaut::Copie)?;
+                        let &o = sortie.get(source..).and_then(|s| s.get(k)).ok_or(Defaut::Copie)?;
                         sortie.push(o);
                     }
-                    pos += 2;
+                    reste = suite;
                 }
             }
-            if sortie.len() - debut_sortie > MORCEAU {
+            if donne(sortie, debut_sortie) > MORCEAU {
                 return Err(Defaut::Copie);
             }
         }
-        pos = pos.max(fin);
+        pos = fin;
     }
     Ok(())
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 pub(crate) mod essais {
     //! Une compression simple, écrite d'après la même section (2.4.1.3.6 à 2.4.1.3.19.4) : de quoi fabriquer des

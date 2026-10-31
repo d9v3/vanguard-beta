@@ -4,6 +4,21 @@
 //!
 //! Sans `crate::` ni `super::` : le banc de fuzzing inclut les lecteurs par leur chemin, avec ce module à côté.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
+/// Une taille ou une position en mémoire (`usize`) en `u64` : toujours exacte sur les cibles de Vanguard (64 bits au
+/// plus) ; `u64::MAX` sur une cible plus large, qui n'existe pas.
+pub(crate) fn en_u64(n: usize) -> u64 {
+    u64::try_from(n).unwrap_or(u64::MAX)
+}
+
+/// Un nombre lu dans le fichier (`u32` : indice, position, taille) en `usize` : toujours exact sur les cibles de
+/// Vanguard (32 bits au moins) ; `usize::MAX`, hors de toute table, sur une cible plus étroite, qui n'existe pas.
+pub(crate) fn rang(n: u32) -> usize {
+    usize::try_from(n).unwrap_or(usize::MAX)
+}
+
 pub(crate) fn tranche(octets: &[u8], i: usize, n: usize) -> Option<&[u8]> {
     octets.get(i..i.checked_add(n)?)
 }

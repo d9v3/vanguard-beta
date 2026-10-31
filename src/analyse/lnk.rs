@@ -12,7 +12,10 @@
 //!
 //! Lecteur pur, sans `crate::` : le banc de fuzzing l'inclut par son chemin.
 
-use super::lecture::{chaine_c, chaine_utf16, latin1_ou_utf8, tranche, u16le, u32le, utf16le};
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
+use super::lecture::{chaine_c, chaine_utf16, latin1_ou_utf8, rang, tranche, u16le, u32le, utf16le};
 
 pub(crate) const CLSID: [u8; 16] = [
     0x01, 0x14, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46,
@@ -200,11 +203,8 @@ impl Lnk {
     /// fenêtre des propriétés.
     pub(crate) fn arguments_rembourres(&self) -> bool {
         self.arguments.as_ref().is_some_and(|a| {
-            let mut suite = 0usize;
-            a.chars().any(|c| {
-                suite = if c.is_whitespace() { suite + 1 } else { 0 };
-                suite >= 64
-            })
+            a.split(|c: char| !c.is_whitespace())
+                .any(|blancs| blancs.chars().count() >= 64)
         })
     }
 }
@@ -248,6 +248,12 @@ fn chaines_lisibles(octets: &[u8]) -> Vec<String> {
     v
 }
 
+/// Les `n` octets en `i`, et la position qui les suit.
+fn morceau(octets: &[u8], i: usize, n: usize) -> Option<(&[u8], usize)> {
+    let fin = i.checked_add(n)?;
+    Some((octets.get(i..fin)?, fin))
+}
+
 /// Le raccourci `octets`. `None` : pas un raccourci (en-tête ou CLSID).
 pub(crate) fn lire(octets: &[u8]) -> Option<Lnk> {
     if u32le(octets, 0)? != 0x4C || tranche(octets, 4, 16)? != CLSID {
@@ -267,30 +273,32 @@ pub(crate) fn lire(octets: &[u8]) -> Option<Lnk> {
             l.fin = octets.len();
             return Some(l);
         };
-        let Some(ids) = tranche(octets, i + 2, taille) else {
+        let Some((ids, suite)) = i.checked_add(2).and_then(|d| morceau(octets, d, taille)) else {
             l.tronque = true;
             l.fin = octets.len();
             return Some(l);
         };
         l.liste_ids = Some(ids.to_vec());
-        i += 2 + taille;
+        i = suite;
     }
     if drapeaux & HAS_LINK_INFO != 0 {
-        let Some(taille) = u32le(octets, i).map(|t| t as usize) else {
+        let Some(taille) = u32le(octets, i).map(rang) else {
             l.tronque = true;
             l.fin = octets.len();
             return Some(l);
         };
-        match tranche(octets, i, taille) {
+        match morceau(octets, i, taille) {
             // ForceNoLinkInfo : Windows l'ignore, nous la lisons quand même (la cible qu'elle désigne est un fait).
-            Some(info) if taille >= 0x1C => lien(info, &mut l),
+            Some((info, suite)) if taille >= 0x1C => {
+                lien(info, &mut l);
+                i = suite;
+            }
             _ => {
                 l.tronque = true;
                 l.fin = octets.len();
                 return Some(l);
             }
         }
-        i += taille;
     }
     let unicode = drapeaux & IS_UNICODE != 0;
     for (drapeau, champ) in [
@@ -308,14 +316,14 @@ pub(crate) fn lire(octets: &[u8]) -> Option<Lnk> {
             l.fin = octets.len();
             return Some(l);
         };
-        let n = if unicode { compte * 2 } else { compte };
-        let Some(brut) = tranche(octets, i + 2, n) else {
+        let n = if unicode { compte.checked_mul(2) } else { Some(compte) };
+        let Some((brut, suite)) = n.zip(i.checked_add(2)).and_then(|(n, d)| morceau(octets, d, n)) else {
             l.tronque = true;
             l.fin = octets.len();
             return Some(l);
         };
         let texte = if unicode { utf16le(brut) } else { latin1_ou_utf8(brut) };
-        i += 2 + n;
+        i = suite;
         let place = match champ {
             0 => &mut l.nom,
             1 => &mut l.chemin_relatif,
@@ -327,16 +335,17 @@ pub(crate) fn lire(octets: &[u8]) -> Option<Lnk> {
     }
     // Les blocs de données, jusqu'au bloc de fin.
     for _ in 0..BLOCS_MAX {
-        let Some(taille) = u32le(octets, i).map(|t| t as usize) else {
+        let Some(taille) = u32le(octets, i).map(rang) else {
             l.tronque = true;
             l.fin = octets.len();
             return Some(l);
         };
         if taille < 4 {
-            l.fin = i + 4;
+            // Le mot de fin vient d'être lu en `i` : il tient dans le fichier.
+            l.fin = i.checked_add(4).unwrap_or(octets.len());
             return Some(l);
         }
-        let Some(bloc) = tranche(octets, i, taille).filter(|_| taille >= 8) else {
+        let Some((bloc, suite)) = morceau(octets, i, taille).filter(|_| taille >= 8) else {
             l.tronque = true;
             l.fin = octets.len();
             return Some(l);
@@ -347,7 +356,7 @@ pub(crate) fn lire(octets: &[u8]) -> Option<Lnk> {
             let unicode = chaine_utf16(bloc, 8 + 260, 520).filter(|c| !c.is_empty());
             l.cible_environnement = unicode.or_else(|| chaine_c(bloc, 8, 260));
         }
-        i += taille;
+        i = suite;
     }
     // Plus de blocs que la borne : le reste n'est pas lu.
     l.tronque = true;
@@ -358,9 +367,9 @@ pub(crate) fn lire(octets: &[u8]) -> Option<Lnk> {
 /// LinkInfo : chemin local (LocalBasePath, CommonPathSuffix et leurs formes Unicode quand l'en-tête les annonce) ou
 /// réseau (NetName de CommonNetworkRelativeLink). Chaque décalage est contrôlé contre la taille de la structure.
 fn lien(info: &[u8], l: &mut Lnk) {
-    let taille_entete = u32le(info, 4).unwrap_or(0) as usize;
+    let taille_entete = rang(u32le(info, 4).unwrap_or(0));
     let drapeaux = u32le(info, 8).unwrap_or(0);
-    let champ = |a: usize| u32le(info, a).map(|v| v as usize).filter(|&v| v > 0 && v < info.len());
+    let champ = |a: usize| u32le(info, a).map(rang).filter(|&v| v > 0 && v < info.len());
     if drapeaux & 1 != 0 {
         let unicode = (taille_entete >= 0x24)
             .then(|| champ(0x1C).and_then(|d| chaine_utf16(info, d, CHEMIN_MAX)))
@@ -371,10 +380,10 @@ fn lien(info: &[u8], l: &mut Lnk) {
         && let Some(reseau) = champ(0x14)
         && let Some(lien_reseau) = info.get(reseau..)
     {
-        let taille = u32le(lien_reseau, 0).unwrap_or(0) as usize;
+        let taille = rang(u32le(lien_reseau, 0).unwrap_or(0));
         if taille >= 0x14
             && let Some(structure) = lien_reseau.get(..taille)
-            && let Some(nom) = u32le(structure, 8).map(|v| v as usize).filter(|&v| v > 0 && v < taille)
+            && let Some(nom) = u32le(structure, 8).map(rang).filter(|&v| v > 0 && v < taille)
         {
             l.chemin_reseau = chaine_c(structure, nom, CHEMIN_MAX);
         }
@@ -443,6 +452,11 @@ pub(crate) mod essais {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::essais::raccourci;
