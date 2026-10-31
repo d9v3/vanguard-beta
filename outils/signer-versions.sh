@@ -24,6 +24,9 @@
 #   outils/signer-versions.sh --premier DOSSIER   sans rien d'avant : l'historique commence à cette version (la
 #                                                 toute première publication seulement ; sinon, refusé)
 #   outils/signer-versions.sh --point-sur FICHIER …   le point sûr (voir plus bas) pris dans FICHIER (et FICHIER.sig)
+#   outils/signer-versions.sh --passe-droit NOM …     un passe-droit pris par outils/publier-version.sh pour cette
+#                                                 version (sans-empreintes-ci, sans-vm), gardé dans son bloc de
+#                                                 l'historique signé : jamais dans derniere.txt. Répétable.
 # LE POINT SÛR : le dernier historique que cet ordinateur a publié, gardé ici par outils/publier-version.sh une fois la
 # version en ligne (~/.local/state/vanguard-dev/historique-publie.txt et .sig ; VANGUARD_HISTORIQUE_PUBLIE pour un
 # autre), signé par une clé gravée. Ce qui est téléchargé de vanguard-update s'y compare : la clé principale volée et le
@@ -49,6 +52,7 @@ cd "$(dirname "$0")/.."
 SECOURS=
 PREMIER=
 REVOQUER=
+PASSE_DROITS=()
 POINT_SUR=${VANGUARD_HISTORIQUE_PUBLIE:-${XDG_STATE_HOME:-$HOME/.local/state}/vanguard-dev/historique-publie.txt}
 ARGS=()
 while (($#)); do
@@ -57,6 +61,7 @@ while (($#)); do
     --premier) PREMIER=1 ;;
     --revoquer) REVOQUER=1 ;;
     --point-sur) POINT_SUR=${2:?--point-sur FICHIER}; shift ;;
+    --passe-droit) PASSE_DROITS+=("${2:?--passe-droit sans-empreintes-ci|sans-vm}"); shift ;;
     *) ARGS+=("$1") ;;
   esac
   shift
@@ -78,6 +83,9 @@ erreur() { echo "✖ $*" >&2; exit 1; }
 # Seule la clé de secours révoque (github.rs ne croit la ligne que d'elle) : signée par la principale, elle ne ferait
 # rien, sinon croire à une révocation qui n'a pas eu lieu.
 [[ -z $REVOQUER || -n $SECOURS ]] || erreur "--revoquer va avec --secours : la principale ne se révoque pas elle-même"
+for p in "${PASSE_DROITS[@]+"${PASSE_DROITS[@]}"}"; do
+  [[ $p == sans-empreintes-ci || $p == sans-vm ]] || erreur "passe-droit inconnu : $p (sans-empreintes-ci ou sans-vm)"
+done
 # Ce qui retient la révocation sur un ordinateur s'efface avec ses sceaux (github.rs, revocation_retenue) : les
 # programmes qui révoquent retirent donc aussi la principale de leur code, et une fois installés, elle n'y revient plus.
 # Lu dans chacun (github.rs, PRINCIPALE_GRAVEE), pas dans le code source, qui a pu changer depuis ; avant la phrase de
@@ -341,8 +349,15 @@ openssl pkeyutl -verify -pubin -inkey "$publique_pem" -rawin -in "$message" \
   -sigfile "$D/derniere.txt.sig" >/dev/null || erreur "la signature ne se vérifie pas"
 echo "Version $version signée ($GRAVEE) : $D/derniere.txt et derniere.txt.sig"
 anciens=$(tr '|' '\n' <<<"$anciens")
+# Un passe-droit pris pour cette version, dans son bloc et pour toujours (les versions suivantes reprennent le bloc
+# tel quel) : « passe-droit-NOM », une empreinte de zéros et une taille nulle. Sous la forme d'une ligne de programme,
+# la seule que lire_historique (src/mise_a_jour/github.rs) accepte : les copies déjà installées refuseraient sinon
+# l'historique entier. Aucun programme n'a une empreinte de zéros : la ligne ne désigne jamais un fichier.
 {
   grep -v '^revoque ' "$D/derniere.txt"
+  for p in "${PASSE_DROITS[@]+"${PASSE_DROITS[@]}"}"; do
+    echo "passe-droit-$p $(printf '0%.0s' {1..64}) 0"
+  done
   [[ -z $anciens ]] || printf '%s\n' "$anciens"
 } >"$D/historique.txt"
 { printf '%s\n' "$DOMAINE_HISTORIQUE"; cat "$D/historique.txt"; } >"$message"

@@ -292,7 +292,10 @@ dossiers donnaient deux programmes. Ce qui peut encore différer d'un ordinateur
 et de MinGW (gcc, binutils, bibliothèques de démarrage), qui compilent le C de ring et lient les
 programmes. La CI écrit l'empreinte de ses compilations dans son journal (`EMPREINTE-VANGUARD-LINUX`, `-WINDOWS`), à
 comparer à `SHA256SUMS.txt` ; elles ne sont pas encore les mêmes que celles de l'ordinateur de l'auteur tant que ces
-outils diffèrent (Arch contre Ubuntu).
+outils diffèrent (Arch contre Ubuntu). D'ici là, `outils/publier-version.sh` refuse de publier : il faut le passe-droit
+`VANGUARD_PUBLIER_SANS_EMPREINTES_CI=1`, qui est dit sur la page de la version (notes, en français et en anglais) et
+dans l'historique signé des versions (`historique.txt`, ligne `passe-droit-sans-empreintes-ci`, de même
+`passe-droit-sans-vm` pour `VANGUARD_PUBLIER_SANS_VM=1`) ; une version publiée ainsi n'a pas été confrontée à la CI.
 
 ## Captures d'écran et image de partage
 

@@ -34,6 +34,9 @@
 #      un journal sans empreintes, et ignore une autre branche (campagne d'attaque n° 6, F1).
 #   6c. Au branchement de la clé, deployer.sh (ci_verte, face à un faux gh) ne récupère ni ne compile un commit de
 #      GitHub sans CI verte sur ce commit exact (ci.yml, master ; campagne d'attaque n° 6, F4).
+#   6d. Un passe-droit de publier-version.sh (VANGUARD_PUBLIER_SANS_EMPREINTES_CI, VANGUARD_PUBLIER_SANS_VM) est dit
+#      en tête des notes de la page (notes, face à un faux gh) et gardé dans le bloc de sa version de l'historique
+#      signé (signer-versions.sh --passe-droit), sous la forme que lit github.rs, jamais dans derniere.txt.
 #   6. Le programme Mac que la clé signe vient d'une exécution de master : publier-version.sh (sa fonction
 #      avec_programme, face à un faux gh) écarte celle d'une autre branche, même plus récente et du même commit ; et
 #      macos.yml ne reprend aucun cache sur master. Sans jq, cet essai est sauté et dit. Chaque action des workflows
@@ -482,6 +485,71 @@ JSON
 else
   echo "  (sauté : jq absent, pas de faux gh pour les empreintes de la CI)"
 fi
+
+# 6d. Les passe-droits de publier-version.sh : dans les notes de la page et dans l'historique signé (relecture du lot
+# correctifs-c6), pas seulement au terminal.
+retirer_point
+banc "$T/passe" "$DEPOT/outils/signer-versions.sh" 0.86.0
+programmes "$T/v-passe" 0.86.0+1792600000
+cp -r "$T/v-passe" "$T/v-sans"
+signer "$T/passe" "$T/v-sans" --premier || ko "passe-droit : signature sans passe-droit ($(tail -n 1 "$T/v-sans.log"))"
+ZEROS=$(printf '0%.0s' {1..64})
+if signer "$T/passe" "$T/v-passe" --premier --passe-droit sans-empreintes-ci --passe-droit sans-vm; then
+  grep -qxF "passe-droit-sans-empreintes-ci $ZEROS 0" "$T/v-passe/historique.txt" &&
+    grep -qxF "passe-droit-sans-vm $ZEROS 0" "$T/v-passe/historique.txt" &&
+    [[ $(sed -n 1p "$T/v-passe/historique.txt") == "version 0.86.0+1792600000" ]] &&
+    ok "passe-droit : gardé dans le bloc de sa version de l'historique signé" ||
+    ko "passe-droit absent de l'historique : $(cat "$T/v-passe/historique.txt")"
+  signe "$T/v-passe/historique.txt" 'vanguard-historique 1' && ok "passe-droit : l'historique qui le porte est signé" ||
+    ko "passe-droit : historique mal signé"
+  awk 'NR == 1 && !/^version / { exit 1 } /^version / { next } NF != 3 { exit 1 }' "$T/v-passe/historique.txt" &&
+    ok "passe-droit : l'historique garde la forme que lit github.rs (les copies installées le lisent encore)" ||
+    ko "passe-droit : forme de l'historique cassée"
+  cmp -s "$T/v-passe/derniere.txt" "$T/v-sans/derniere.txt" && ok "passe-droit : derniere.txt inchangé, à l'octet" ||
+    ko "passe-droit : derniere.txt changé"
+  # La version suivante reprend le bloc tel quel : le passe-droit reste dit pour toujours.
+  banc "$T/passe87" "$DEPOT/outils/signer-versions.sh" 0.87.0
+  programmes "$T/v-passe87" 0.87.0+1792700000
+  mkdir -p "$T/v-passe87/avant" && cp "$T/v-passe/historique.txt" "$T/v-passe/historique.txt.sig" "$T/v-passe87/avant/"
+  if signer "$T/passe87" "$T/v-passe87"; then
+    awk '/^version 0.87/ { b = 87 } /^version 0.86/ { b = 86 } /^passe-droit-/ { p[b]++ } END { exit !(p[86] == 2 && !p[87]) }' \
+      "$T/v-passe87/historique.txt" && ok "passe-droit : repris avec son bloc par la version suivante, pas au-delà" ||
+      ko "passe-droit : perdu ou recopié dans la version suivante : $(cat "$T/v-passe87/historique.txt")"
+  else
+    ko "passe-droit : version suivante non signée ($(tail -n 1 "$T/v-passe87.log"))"
+  fi
+else
+  ko "passe-droit : refusé par signer-versions.sh ($(tail -n 2 "$T/v-passe.log"))"
+fi
+rm -rf "$T/v-inconnu" && programmes "$T/v-inconnu" 0.86.0+1792600000
+signer "$T/passe" "$T/v-inconnu" --premier --passe-droit rien && ko "passe-droit inconnu accepté" ||
+  ok "passe-droit : un nom inconnu est refusé"
+# Les notes de la page : le passe-droit en tête, en français et en anglais ; aucun sans passe-droit.
+mkdir -p "$T/faux-gh-notes"
+printf '#!/bin/sh\nexit 1\n' >"$T/faux-gh-notes/gh"
+chmod +x "$T/faux-gh-notes/gh"
+awk '/^passe_droits_notes\(\) \{/,/^\}/; /^versions\(\) \{/,/^\}/; /^notes\(\) \{/,/^\}/' \
+  "$DEPOT/outils/publier-version.sh" >"$T/notes.sh"
+notes_avec() { # passe-droits
+  PATH="$T/faux-gh-notes:$PATH" NOM=Vanguard VERSION=0.0.0 TAG=v0.0.0 TELECHARGER=téléchargement \
+    bash -c "source '$T/notes.sh'; PASSE_DROITS=(\"\$@\"); notes" _ "$@" 2>&1
+}
+r=$(notes_avec sans-empreintes-ci sans-vm)
+[[ $(head -n 1 <<<"$r") == "⚠ **Passe-droit**"*VANGUARD_PUBLIER_SANS_EMPREINTES_CI* ]] &&
+  grep -q "Override.*VANGUARD_PUBLIER_SANS_EMPREINTES_CI" <<<"$r" &&
+  grep -q "Passe-droit.*VANGUARD_PUBLIER_SANS_VM" <<<"$r" && grep -q "Override.*VANGUARD_PUBLIER_SANS_VM" <<<"$r" &&
+  ok "passe-droit : dit en tête des notes de la page, en français et en anglais" ||
+  ko "passe-droit absent des notes : $(head -c 400 <<<"$r")"
+r=$(notes_avec)
+[[ $r != *Passe-droit* && $r != *Override* && $r == *téléchargement* ]] && ok "notes sans passe-droit : rien de tel" ||
+  ko "notes sans passe-droit : $(head -c 400 <<<"$r")"
+# Chaque passe-droit pris l'ajoute ; la signature le reçoit.
+awk '/VANGUARD_PUBLIER_SANS_EMPREINTES_CI:-/ { e = 1 } e && /PASSE_DROITS\+=\(sans-empreintes-ci\)/ { a = 1; e = 0 }
+  /VANGUARD_PUBLIER_SANS_VM:-/ { v = 1 } v && /PASSE_DROITS\+=\(sans-vm\)/ { b = 1; v = 0 }
+  /PASSES\+=\(--passe-droit "\$p"\)/ { p = 1 } /outils\/signer-versions.sh .*"\$\{PASSES\[@\]\}" "\$DOSSIER"/ { s = 1 }
+  END { exit !(a && b && p && s) }' "$DEPOT/outils/publier-version.sh" &&
+  ok "publier-version.sh note chaque passe-droit pris et le passe à la signature" ||
+  ko "publier-version.sh : un passe-droit pris n'est ni noté ni signé"
 
 # 6c. Au branchement de la clé, un commit de GitHub n'est récupéré et compilé qu'avec une CI verte sur ce commit
 # exact (deployer.sh, ci_verte, campagne d'attaque n° 6, F4). Un faux gh filtre les exécutions par --commit comme

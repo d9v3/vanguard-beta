@@ -289,7 +289,10 @@ of this computer gives two identical programs, Linux and Windows alike; before, 
 another: the versions of musl-gcc and MinGW (gcc, binutils, startup libraries), which compile the C of ring and
 link the programs. CI writes the fingerprint of its builds in its log (`EMPREINTE-VANGUARD-LINUX`,
 `-WINDOWS`), to compare with `SHA256SUMS.txt`; they are not yet the same as the author's computer's while these tools
-differ (Arch versus Ubuntu).
+differ (Arch versus Ubuntu). Until then, `outils/publier-version.sh` refuses to publish: it needs the override
+`VANGUARD_PUBLIER_SANS_EMPREINTES_CI=1`, which is stated on the release page (notes, in French and English) and in the
+signed version history (`historique.txt`, line `passe-droit-sans-empreintes-ci`, likewise `passe-droit-sans-vm` for
+`VANGUARD_PUBLIER_SANS_VM=1`); a version published that way was not checked against CI.
 
 ## Screenshots and social preview
 

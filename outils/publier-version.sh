@@ -32,11 +32,34 @@ versions() {
   fi | grep -E ' \(v[0-9]+\.[0-9]+\.[0-9]+\)$' | awk '{ v = $NF } !vu[v]++' || true
 }
 
+# Les passe-droits pris pour cette version (VANGUARD_PUBLIER_SANS_EMPREINTES_CI, VANGUARD_PUBLIER_SANS_VM) : dits en
+# tête des notes de la page, et gardés dans l'historique signé (outils/signer-versions.sh --passe-droit), pas
+# seulement au terminal (relecture du lot correctifs-c6).
+PASSE_DROITS=()
+passe_droits_notes() {
+  local p
+  for p in "${PASSE_DROITS[@]+"${PASSE_DROITS[@]}"}"; do
+    case $p in
+      sans-empreintes-ci)
+        printf '%s\n' "⚠ **Passe-droit** : programmes Linux et Windows publiés sans être confrontés à la compilation \
+reproductible de la CI (VANGUARD_PUBLIER_SANS_EMPREINTES_CI)." "⚠ **Override**: Linux and Windows programs published \
+without being matched against the CI's reproducible build (VANGUARD_PUBLIER_SANS_EMPREINTES_CI)." ""
+        ;;
+      sans-vm)
+        printf '%s\n' "⚠ **Passe-droit** : programme Windows publié sans passe de la VM d'essais sur ce .exe \
+(VANGUARD_PUBLIER_SANS_VM)." "⚠ **Override**: Windows program published without a pass of the test VM on this .exe \
+(VANGUARD_PUBLIER_SANS_VM)." ""
+        ;;
+    esac
+  done
+}
+
 # Ce qui change, version par version : le titre de son commit, ses puces dessous (sans les lignes de co-auteur). Une
 # seule version : son titre en gras, comme avant ; plusieurs : un titre « X.Y.Z : … » chacune. Puis comment
-# télécharger.
+# télécharger. Les passe-droits pris d'abord.
 notes() {
   local lignes nombre sha sujet puces
+  passe_droits_notes
   lignes=$(versions)
   nombre=$(grep -c . <<<"$lignes" || true)
   [[ $nombre -gt 0 ]] || printf '**%s %s**\n\n' "$NOM" "$VERSION"
@@ -233,7 +256,8 @@ if ((CODE_CI == 0)); then
   echo "✔ Programmes Linux et Windows identiques à ceux de la compilation reproductible de la CI ($EMPREINTES_CI)."
 elif [[ -n ${VANGUARD_PUBLIER_SANS_EMPREINTES_CI:-} ]]; then
   [[ -z $EMPREINTES_CI ]] || echo "$EMPREINTES_CI"
-  echo "⚠ Programmes Linux et Windows publiés sans être ceux de la CI (VANGUARD_PUBLIER_SANS_EMPREINTES_CI)."
+  echo "⚠ Programmes Linux et Windows publiés sans être ceux de la CI (VANGUARD_PUBLIER_SANS_EMPREINTES_CI) : dit dans les notes et l'historique signé."
+  PASSE_DROITS+=(sans-empreintes-ci)
 else
   if ((CODE_CI == 1)); then
     echo "$EMPREINTES_CI"
@@ -367,7 +391,8 @@ passe_de_la_vm() {
   fi
 }
 if [[ -n ${VANGUARD_PUBLIER_SANS_VM:-} ]]; then
-  echo "⚠ Programme Windows publié sans passe de la VM sur ce .exe (VANGUARD_PUBLIER_SANS_VM)."
+  echo "⚠ Programme Windows publié sans passe de la VM sur ce .exe (VANGUARD_PUBLIER_SANS_VM) : dit dans les notes et l'historique signé."
+  PASSE_DROITS+=(sans-vm)
 else
   fin=$((SECONDS + 60 * ${VANGUARD_ATTENTE_VM:-40}))
   [[ -n $(passe_de_la_vm) ]] || echo "Programme Windows : attente de sa passe dans la VM (${VANGUARD_ATTENTE_VM:-40} min au plus)…"
@@ -420,7 +445,12 @@ else
 outils/publier-version.sh --premier ; sinon, il a été vidé, et l'historique ne repart pas de zéro."
     fi
   fi
-  outils/signer-versions.sh "${PREMIER[@]}" "$DOSSIER" ||
+  # Les passe-droits pris plus haut, gardés dans le bloc de cette version de l'historique signé.
+  PASSES=()
+  for p in "${PASSE_DROITS[@]+"${PASSE_DROITS[@]}"}"; do
+    PASSES+=(--passe-droit "$p")
+  done
+  outils/signer-versions.sh "${PREMIER[@]}" "${PASSES[@]}" "$DOSSIER" ||
     { echo "✖ Signature refusée (voir ci-dessus) : rien de publié, ni page ni mise à jour."; exit 1; }
   SIGNEE=1
 fi

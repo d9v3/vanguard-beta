@@ -639,6 +639,31 @@ mod tests {
         assert!(!signature_valide(&cles[0], historique.as_bytes(), &signature));
     }
 
+    /// Un passe-droit de la publication (outils/signer-versions.sh --passe-droit) est gardé dans le bloc de sa
+    /// version sous la forme d'une ligne de programme : cet historique se lit encore entier, chaque programme s'y
+    /// retrouve, et la ligne du passe-droit ne désigne aucun programme réel.
+    #[test]
+    fn un_passe_droit_garde_l_historique_lisible() {
+        let zeros = "0".repeat(64);
+        let historique = format!(
+            "{MANIFESTE}passe-droit-sans-empreintes-ci {zeros} 0
+passe-droit-sans-vm {zeros} 0
+"
+        );
+        let cle = cle_d_essai();
+        let cles = [cle.verifying_key().to_bytes()];
+        let signature = signer_historique(&cle, &historique);
+        let windows = en_octets("ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100").unwrap();
+        assert_eq!(
+            chercher_avec(&cles, historique.as_bytes(), &signature, &windows).unwrap(),
+            Some(((0, 79, 0, 1_792_540_000), "windows-x86_64".to_string()))
+        );
+        assert_eq!(
+            chercher_avec(&cles, historique.as_bytes(), &signature, &[0x42; 32]).unwrap(),
+            None
+        );
+    }
+
     #[test]
     fn manifeste_lu_ligne_par_ligne() {
         let (v, sha, taille) = lire_manifeste(MANIFESTE, "windows-x86_64").unwrap();
