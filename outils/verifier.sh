@@ -494,6 +494,11 @@ compte_unsafe() {
   forme() { grep -oE "(^|[^_[:alnum:]])$1" <<<"$lignes" | wc -l; }
   printf '      unsafe dans src/ : %s blocs, %s blocs extern, %s fn, %s impl, %s attributs\n' \
     "$(forme 'unsafe \{')" "$(forme 'unsafe extern')" "$(forme 'unsafe fn')" "$(forme 'unsafe impl')" "$(forme '#\[unsafe\(')"
+  # Où le refus de la racine (#![deny(unsafe_code)]) est levé : un module de plus se voit au résumé, comme un module
+  # fuzzé de moins à refuser sans recours (garde : chaque_module_fuzze_refuse_unsafe dans src/main.rs).
+  leve() { grep -rxE --include='*.rs' "[[:space:]]*$1" src | wc -l; }
+  printf '      unsafe_code levé : %s modules, %s éléments ; refusé sans recours : %s modules fuzzés\n' \
+    "$(leve '#!\[allow\(unsafe_code\)\]')" "$(leve '#\[allow\(unsafe_code\)\]')" "$(leve '#!\[forbid\(unsafe_code\)\]')"
 }
 
 # Ce que cargo deny laisse passer sans le taire : les failles admises dans deny.toml (leur raison commence par le nom
