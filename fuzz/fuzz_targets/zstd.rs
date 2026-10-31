@@ -2,6 +2,8 @@
 //! programme de n'importe quel compte peut remplir. Tables FSE et Huffman forgées, décalages qui remontent avant le
 //! début, blocs qui mentent sur leur taille, trames à sauter démesurées, bombes de décompression.
 #![no_main]
+// Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
+#![forbid(unsafe_code)]
 
 #[allow(dead_code)]
 #[path = "../../src/machine/linux/zstd.rs"]

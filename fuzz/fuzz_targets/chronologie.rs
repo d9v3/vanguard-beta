@@ -2,6 +2,8 @@
 //! par un robot, une commande passée à sudo y sont écrits tels quels. Ceux de Windows ne se compilent que pour
 //! Windows : leurs tests de propriétés (proptest) les couvrent, sous Wine.
 #![no_main]
+// Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
+#![forbid(unsafe_code)]
 
 #[path = "../cale/traces.rs"]
 mod traces;

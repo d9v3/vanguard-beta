@@ -1,6 +1,8 @@
 //! Les archives tar téléchargées (archive des avis de sécurité de Mozilla, par codeload) et les bases de pacman :
 //! noms longs (pax, GNU), tailles en octal, archives coupées.
 #![no_main]
+// Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
+#![forbid(unsafe_code)]
 
 /// Les bornes du lecteur (`archives::Bornes`), à la place où il les attend.
 #[derive(Clone, Copy)]

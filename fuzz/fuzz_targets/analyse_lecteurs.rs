@@ -3,6 +3,8 @@
 //! flux « dir » d'un projet VBA, raccourcis ([MS-SHLLINK]), parties XML d'un document OOXML (encodages, entités,
 //! relations). Le premier octet choisit le lecteur.
 #![no_main]
+// Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
+#![forbid(unsafe_code)]
 
 #[allow(dead_code)]
 #[path = "../../src/analyse/lecture.rs"]

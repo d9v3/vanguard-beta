@@ -1,6 +1,8 @@
 //! Les courriels enregistrés (.eml) : la personne donne un courriel reçu, écrit par n'importe qui pour gêner la lecture
 //! (frontières en boucle, imbrications sans fin, encodages abîmés).
 #![no_main]
+// Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
+#![forbid(unsafe_code)]
 
 #[allow(dead_code)]
 #[path = "../../src/protection/courriel_suspect/mime.rs"]

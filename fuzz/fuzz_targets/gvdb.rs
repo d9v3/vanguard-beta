@@ -2,6 +2,8 @@
 //! compte peut forger, lues pour les réglages de verrouillage et de confidentialité de GNOME. Tables qui se
 //! chevauchent, parents en boucle, noms hors du fichier, valeurs GVariant imbriquées sans fin.
 #![no_main]
+// Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
+#![forbid(unsafe_code)]
 
 #[allow(dead_code)]
 #[path = "../../src/machine/linux/gvdb.rs"]

@@ -2,6 +2,8 @@
 //! depuis la clé de secours. En-têtes qui mentent, morceaux abîmés, enregistrements qui se chevauchent, gabarits
 //! désignés n'importe où, valeurs BinXml imbriquées, substitutions démultipliées.
 #![no_main]
+// Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
+#![forbid(unsafe_code)]
 
 #[allow(dead_code)]
 #[path = "../../src/journaux_windows/evtx/mod.rs"]

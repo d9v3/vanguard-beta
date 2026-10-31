@@ -1,5 +1,7 @@
 //! Les réponses DNS : n'importe quel serveur, ou un paquet forgé qui se fait passer pour sa réponse.
 #![no_main]
+// Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
+#![forbid(unsafe_code)]
 
 #[path = "../cale/reseau.rs"]
 mod reseau;

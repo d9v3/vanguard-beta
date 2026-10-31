@@ -1,6 +1,8 @@
 //! Les avis de sécurité de Mozilla, lus sans bibliothèque YAML (`.yml` depuis 2017, en-tête des `.md` avant) : lignes
 //! démesurées, en-têtes non fermés, CVE tronquées, versions de toutes formes.
 #![no_main]
+// Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
+#![forbid(unsafe_code)]
 
 #[allow(dead_code)]
 #[path = "../../src/protection/perimes/version.rs"]

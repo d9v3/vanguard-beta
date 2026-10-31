@@ -3,6 +3,8 @@
 //! bouclent, macros VBA compressées abîmées, raccourcis coupés, scripts UTF-16 : jamais de panique, et les bornes
 //! (parties, octets produits, profondeur) tiennent.
 #![no_main]
+// Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
+#![forbid(unsafe_code)]
 
 #[allow(dead_code)]
 #[path = "../../src/archives/mod.rs"]

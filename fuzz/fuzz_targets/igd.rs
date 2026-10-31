@@ -1,5 +1,7 @@
 //! Le XML UPnP et SOAP de la box (ou d'un appareil qui se fait passer pour elle), et ses réponses SSDP.
 #![no_main]
+// Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
+#![forbid(unsafe_code)]
 
 #[path = "../cale/reseau.rs"]
 mod reseau;

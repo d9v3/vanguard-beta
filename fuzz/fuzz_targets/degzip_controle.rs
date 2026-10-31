@@ -2,6 +2,8 @@
 //! Mozilla) : en-têtes aux champs facultatifs démesurés, flux deflate abîmés, CRC et taille faux, membres bout à bout,
 //! bombes de décompression. La lecture des fichiers de cet ordinateur (`degzip`) passe aussi.
 #![no_main]
+// Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
+#![forbid(unsafe_code)]
 
 #[path = "../../src/archives/crc32.rs"]
 mod crc32;

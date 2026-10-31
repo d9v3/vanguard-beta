@@ -2,6 +2,8 @@
 //! bibliothèque (src/protection/espions/echap.rs), puis les serveurs, adresses et sites qui en sont tirés. Retraits
 //! qui changent, guillemets non fermés, clés sans valeur, blocs « | », lignes et entrées en nombre.
 #![no_main]
+// Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
+#![forbid(unsafe_code)]
 
 #[path = "../cale/langue.rs"]
 mod langue;

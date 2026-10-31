@@ -4,6 +4,8 @@
 //! d'un événement (tel que le rend le service des journaux), et l'entrée entière est aussi lue comme un fichier
 //! .evtx. Aucune panique, et les bornes du moteur tenues : trouvailles, exemples, textes gardés.
 #![no_main]
+// Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
+#![forbid(unsafe_code)]
 
 #[allow(dead_code)]
 #[path = "../../src/journaux_windows/evtx/mod.rs"]

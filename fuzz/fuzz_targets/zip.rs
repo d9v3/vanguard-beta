@@ -1,6 +1,8 @@
 //! Les archives zip téléchargées (tldr-pages), lues ou contrôlées entières : répertoire central qui ment sur les
 //! tailles et les positions, noms démesurés, flux deflate abîmés, CRC faux, entrées en nombre.
 #![no_main]
+// Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
+#![forbid(unsafe_code)]
 
 /// Les bornes du lecteur (`archives::Bornes`), à la place où il les attend.
 #[derive(Clone, Copy)]

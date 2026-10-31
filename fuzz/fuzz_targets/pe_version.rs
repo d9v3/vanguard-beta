@@ -2,6 +2,8 @@
 //! peut être fabriqué pour gêner l'analyse (en-têtes qui débordent, arbre des ressources qui boucle, tailles
 //! démesurées).
 #![no_main]
+// Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
+#![forbid(unsafe_code)]
 
 #[allow(dead_code)]
 #[path = "../../src/pe.rs"]

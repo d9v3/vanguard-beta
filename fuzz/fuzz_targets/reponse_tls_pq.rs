@@ -1,6 +1,8 @@
 //! La réponse d'un serveur TLS à la sonde post-quantique (le site de référence, ou l'administration de la box) ; et
 //! le ClientHello lui-même, quel que soit le nom donné.
 #![no_main]
+// Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
+#![forbid(unsafe_code)]
 
 #[path = "../cale/langue.rs"]
 #[macro_use]
