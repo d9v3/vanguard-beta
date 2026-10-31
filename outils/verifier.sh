@@ -32,6 +32,15 @@ cd "$(dirname "$0")/.."
 export PATH="$HOME/.cargo/bin:$PATH"
 
 MODE=${1:-}
+# Une option mal écrite (« --tout ») deviendrait un mode : tout tournerait, pour finir « passage partiel » sans dire
+# pourquoi. Refusée d'emblée, comme un nom d'étape inconnu sous --seulement.
+case $MODE in
+  '' | --ci | --rapide | --sans-wine | --seulement) ;;
+  *)
+    echo "✖ option inconnue : $MODE (connues : --ci, --rapide, --sans-wine, --seulement étape[,étape])" >&2
+    exit 2
+    ;;
+esac
 SEULEMENT=
 if [[ $MODE == --seulement ]]; then
   SEULEMENT=",${2:?--seulement étape[,étape]},"
