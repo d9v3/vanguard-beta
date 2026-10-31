@@ -12,7 +12,8 @@ pub(crate) mod jsonc;
 pub(crate) mod personnel;
 #[cfg(unix)]
 pub(crate) mod processus;
-#[cfg(target_os = "linux")]
+// 64 bits seulement : il lit les en-têtes en Elf64_Phdr, et seul un programme x86-64 est livré.
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 pub(crate) mod relro;
 pub(crate) mod systeme;
 

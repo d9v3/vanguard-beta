@@ -3472,12 +3472,12 @@ fn portee(dossier: Option<std::path::PathBuf>, complet: bool) -> protection::ant
 async fn main() {
     // RELRO, avant tout le reste : le démarrage de musl laisse PT_GNU_RELRO écrivable (socle/relro.rs). Un échec ne
     // tue pas le programme : Vanguard sans cette protection reste celui de la 0.88, alors que refuser de démarrer
-    // laisserait la machine sans aucune de ses défenses, pour une page que rien n'attaque encore. On le note au
-    // journal, où il se verra (un noyau qui refuserait mprotect sur ses propres pages est déjà une anomalie).
-    #[cfg(target_os = "linux")]
-    if let Err(e) = crate::socle::relro::proteger() {
-        journal::erreur("protection RELRO", &e.to_string());
-    }
+    // laisserait la machine sans aucune de ses défenses, pour une page que rien n'attaque encore. Il est noté au
+    // journal plus bas, une fois la langue et les réglages lus : ici, le texte sortirait dans la langue par défaut,
+    // et le journal ferait la première écriture du programme avant qu'il sache qui il est (processus élevé compris,
+    // qui ne doit rien écrire). 64 bits seulement : relro.rs lit des Elf64_Phdr, et on ne livre rien d'autre.
+    #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+    let relro = crate::socle::relro::proteger();
     // Couleurs ANSI dans l'ancienne console Windows (Windows Terminal les gère déjà) : crossterm ouvre CONOUT$ et y
     // active ENABLE_VIRTUAL_TERMINAL_PROCESSING, le même appel que faisait une crate à part pour cela seul.
     #[cfg(windows)]
@@ -3524,6 +3524,10 @@ async fn main() {
     // Les réglages du lancement (langue, emojis, travail sans Internet), avant tout affichage.
     parametres::au_lancement();
     journal::installer();
+    #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+    if let Err(e) = relro {
+        journal::erreur("protection RELRO", &e.to_string());
+    }
     #[cfg(unix)]
     protection::cle::proteger_cle();
     protection::environnement::afficher();

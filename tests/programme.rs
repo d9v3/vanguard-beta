@@ -383,7 +383,7 @@ fn menu_quitte_par_q_et_par_la_fin_de_l_entree() {
 /// RELRO appliqué par le programme lui-même (src/socle/relro.rs) : le démarrage de musl laisse PT_GNU_RELRO
 /// écrivable. Le programme est lancé sur son menu, qui attend une réponse ; sa plage RELRO, lue dans ses propres
 /// en-têtes, doit être en lecture seule dans /proc/<pid>/maps pendant qu'il tourne.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 #[test]
 fn relro_applique_par_le_programme() {
     let programme = Path::new(env!("CARGO_BIN_EXE_vanguard"));
