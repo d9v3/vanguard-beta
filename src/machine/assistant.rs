@@ -317,8 +317,7 @@ fn essayer(m: Methode, groupes: &[Vec<Ordre>]) -> Issue {
 /// l'assistant élevé, une seule demande pour tous. Une réponse par ordre, dans l'ordre reçu ; une demande refusée
 /// rend tout « non fait », sans redemander.
 pub(crate) fn appliquer(groupes: &[Vec<Ordre>]) -> Vec<Vec<Resultat>> {
-    // SAFETY: geteuid ne prend aucun argument et ne touche aucune mémoire.
-    if unsafe { libc::geteuid() } == 0 {
+    if crate::socle::euid() == 0 {
         let juge = ordres::Juge::lire(None);
         // Les gestes viennent d'être montrés (`machine::lancer_les_ordres`) : seulement leur issue.
         return ordres::executer_groupes(groupes, &juge, &mut |t| {
@@ -407,8 +406,7 @@ pub(crate) fn executer(langue: Option<&str>, parent: Option<u32>) -> i32 {
     if let Some(l) = langue {
         crate::langue::forcer(l == "en");
     }
-    // SAFETY: geteuid ne prend aucun argument et ne touche aucune mémoire.
-    if unsafe { libc::geteuid() } != 0 {
+    if crate::socle::euid() != 0 {
         eprintln!(
             "{}",
             tr!(
@@ -487,8 +485,7 @@ mod tests {
         assert!(!chemin_sur(&std::env::temp_dir().join("absent-vanguard")));
         let d = std::env::temp_dir().join(format!("vanguard-chemin-sur-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
-        // SAFETY: geteuid ne prend aucun argument et ne touche aucune mémoire.
-        if unsafe { libc::geteuid() } != 0 {
+        if crate::socle::euid() != 0 {
             assert!(!chemin_sur(&d));
         }
         let _ = std::fs::remove_dir_all(&d);
@@ -630,8 +627,7 @@ mod tests {
     /// Sous les essais, rien n'est jamais élevé pour de vrai : tout est « non fait », dit.
     #[test]
     fn jamais_d_elevation_dans_les_essais() {
-        // SAFETY: geteuid ne prend aucun argument et ne touche aucune mémoire.
-        if unsafe { libc::geteuid() } == 0 {
+        if crate::socle::euid() == 0 {
             return crate::essais::saute("essais lancés en root : l'ordre se ferait ici");
         }
         let r = appliquer(&[vec![Ordre::CouperConnexions {

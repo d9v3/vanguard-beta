@@ -1493,8 +1493,7 @@ fn machine_et_compte() -> (String, String) {
     // Sans variable (service, conteneur) : le numéro du compte, et son nom d'après /etc/passwd.
     #[cfg(unix)]
     let compte = compte.or_else(|| {
-        // SAFETY: geteuid ne prend aucun argument et ne touche aucune mémoire.
-        let uid = unsafe { libc::geteuid() };
+        let uid = crate::socle::euid();
         // macOS : l'annuaire (getpwuid_r) ; /etc/passwd n'y liste pas les comptes des personnes.
         #[cfg(target_os = "macos")]
         let nom = crate::machine::macos::noyau::compte(uid);
@@ -1515,8 +1514,7 @@ fn machine_et_compte() -> (String, String) {
 pub(crate) fn privilegie() -> bool {
     #[cfg(unix)]
     {
-        // SAFETY: geteuid ne prend aucun argument et ne touche aucune mémoire.
-        unsafe { libc::geteuid() == 0 }
+        crate::socle::euid() == 0
     }
     #[cfg(windows)]
     {
@@ -2038,8 +2036,7 @@ mod tests {
         assert!(f.texte.contains("127.0.0.1 localhost\n\\u{1b}[2J"));
         // Un lien posé par un compte ordinaire est dit, jamais suivi : sa cible (ici un faux secret) n'est pas recopiée.
         #[cfg(unix)]
-        // SAFETY: geteuid n'a ni pointeur ni effet de bord.
-        if unsafe { libc::geteuid() } != 0 {
+        if crate::socle::euid() != 0 {
             std::fs::write(dossier.join("secret"), "mot-de-passe-de-root\n").unwrap();
             std::os::unix::fs::symlink(dossier.join("secret"), dossier.join("lien")).unwrap();
             f.fichier(&dossier.join("lien"), true);
@@ -2055,9 +2052,7 @@ mod tests {
         #[cfg(unix)]
         {
             let tube = dossier.join("tube");
-            let nom = std::ffi::CString::new(tube.to_string_lossy().as_bytes()).unwrap();
-            // SAFETY: mkfifo lit le chemin terminé par un zéro que `nom` garde en vie pendant l'appel.
-            assert_eq!(unsafe { libc::mkfifo(nom.as_ptr(), 0o600) }, 0);
+            crate::essais::tube_nomme(&tube).unwrap();
             let debut = Instant::now();
             assert_eq!(empreinte(&tube, 1024), Empreinte::Illisible);
             assert_eq!(premiers_octets(&tube), Vec::<u8>::new());

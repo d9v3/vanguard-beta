@@ -203,9 +203,7 @@ fn fichiers_d_etat_piegees_ne_figent_rien() {
         for nom in ETAT {
             let chemin = donnees.join(nom);
             if piege == "tube" {
-                let c = std::ffi::CString::new(chemin.as_os_str().as_encoded_bytes()).unwrap();
-                // SAFETY: mkfifo reçoit un chemin terminé par zéro, qui vit le temps de l'appel.
-                assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "{nom}");
+                essais::tube_nomme(&chemin).unwrap_or_else(|e| panic!("{nom} : {e}"));
             } else {
                 std::os::unix::fs::symlink("/dev/zero", &chemin).unwrap();
             }

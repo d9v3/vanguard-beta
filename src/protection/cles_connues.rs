@@ -507,9 +507,7 @@ mod tests {
         std::fs::remove_dir(racine.join(JETON)).unwrap();
         #[cfg(unix)]
         {
-            let fifo = std::ffi::CString::new(racine.join(JETON).to_string_lossy().as_bytes()).unwrap();
-            // SAFETY: mkfifo lit un chemin C valide, terminé par un zéro, le temps de l'appel.
-            assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+            crate::essais::tube_nomme(&racine.join(JETON)).unwrap();
             assert!(jeton_de(&racine).is_none(), "une file nommée ne bloque pas");
         }
         let _ = std::fs::remove_dir_all(&racine);

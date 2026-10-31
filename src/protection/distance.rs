@@ -739,8 +739,7 @@ fn unites_activees(maison: &std::path::Path, utilisateur: bool) -> Option<Vec<St
     if utilisateur {
         let config = std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| maison.join(".config"), PathBuf::from);
         let donnees = std::env::var_os("XDG_DATA_HOME").map_or_else(|| maison.join(".local/share"), PathBuf::from);
-        // SAFETY: getuid ne peut pas échouer et ne touche à aucune mémoire du programme.
-        let uid = unsafe { libc::getuid() };
+        let uid = crate::socle::uid();
         let compte = config.join("systemd/user");
         let session = PathBuf::from(format!("/run/user/{uid}/systemd"));
         // Les dossiers où le gestionnaire de la session cherche les unités (sans ceux des générateurs, dont les unités
@@ -1917,10 +1916,7 @@ mod tests {
         let d = jetable("special");
         let wants = d.join("default.target.wants");
         std::fs::create_dir_all(&wants).unwrap();
-        let tube = std::ffi::CString::new(d.join("tube").to_str().unwrap()).unwrap();
-        // SAFETY: chemin C terminé par un zéro, vivant pendant l'appel ; mkfifo ne touche aucune mémoire du
-        // programme.
-        assert_eq!(unsafe { libc::mkfifo(tube.as_ptr(), 0o600) }, 0);
+        crate::essais::tube_nomme(&d.join("tube")).unwrap();
         let (zero, fifo) = (instance("x", "y", "service"), instance("x", "z", "service"));
         symlink("/dev/zero", wants.join(&zero)).unwrap();
         symlink(d.join("tube"), wants.join(&fifo)).unwrap();

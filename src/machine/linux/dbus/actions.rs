@@ -123,33 +123,11 @@ pub(crate) fn prises_de(adresse: &str) -> Vec<Prise> {
         .collect()
 }
 
-/// Le compte du programme à l'autre bout de la prise (SO_PEERCRED) : le bus de la session doit tourner sous le
-/// nôtre, sinon un autre compte qui aurait pris le nom (prise abstraite d'un bus mort) recevrait nos actions.
-fn compte_d_en_face(s: &UnixStream) -> Option<u32> {
-    use std::os::fd::AsRawFd;
-    let mut cred = libc::ucred {
-        pid: 0,
-        uid: u32::MAX,
-        gid: 0,
-    };
-    let mut taille = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).ok()?;
-    // SAFETY: getsockopt écrit au plus `taille` octets dans `cred`, une structure à nous vivante pendant l'appel, sur
-    // une prise ouverte que `s` garde.
-    let r = unsafe {
-        libc::getsockopt(
-            s.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            (&raw mut cred).cast(),
-            &raw mut taille,
-        )
-    };
-    (r == 0).then_some(cred.uid)
-}
-
 fn connecter(prise: &Prise, uid: u32) -> Option<UnixStream> {
     let s = connecter_sans_verifier(prise, uid)?;
-    (compte_d_en_face(&s) == Some(uid)).then_some(s)
+    // Le compte d'en face (SO_PEERCRED) : le bus de la session doit tourner sous le nôtre, sinon un autre compte
+    // qui aurait pris le nom (prise abstraite d'un bus mort) recevrait nos actions.
+    (crate::socle::compte_d_en_face(&s) == Some(uid)).then_some(s)
 }
 
 fn connecter_sans_verifier(prise: &Prise, uid: u32) -> Option<UnixStream> {
@@ -173,8 +151,7 @@ fn connecter_sans_verifier(prise: &Prise, uid: u32) -> Option<UnixStream> {
 /// Le bus de la session du compte, pour ses lectures (LECTURES) et les actions de ce module. `Err` : pas de bus
 /// joignable (hors session, sous sudo, service sans DBUS_SESSION_BUS_ADDRESS ni XDG_RUNTIME_DIR), avec la raison.
 pub(crate) fn session() -> Result<Bus, Echec> {
-    // SAFETY: geteuid ne prend rien et ne peut pas échouer.
-    let uid = unsafe { libc::geteuid() };
+    let uid = crate::socle::euid();
     if uid == 0 {
         return Err(echec(tr!(
             "sous root, le bus de la session n'est pas celui du compte",
@@ -365,8 +342,7 @@ pub(crate) fn utilisateur(geste: Geste, unite: &str) -> bool {
     if geste != Geste::Recharger && !unite_de_vanguard(unite) {
         return false;
     }
-    // SAFETY: geteuid ne prend rien et ne peut pas échouer.
-    if unsafe { libc::geteuid() } == 0 {
+    if crate::socle::euid() == 0 {
         return false;
     }
     // Sous les essais, ni le vrai bus ni systemctl.

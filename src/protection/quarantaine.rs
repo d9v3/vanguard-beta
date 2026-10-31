@@ -558,8 +558,7 @@ mod tests {
         std::fs::write(&f, b"x").unwrap();
         isoler_dans(&f, "Test.Fichier", &q, None).unwrap();
         assert_eq!(std::fs::read(&cible).unwrap(), b"");
-        // SAFETY: getuid lit le compte du processus, sans argument.
-        if unsafe { libc::getuid() } == 0 {
+        if crate::socle::uid() == 0 {
             return crate::essais::saute("lancé en root : un dossier à soi est à root");
         }
         assert!(!crate::socle::ecriture_sure_pour(0, &q));

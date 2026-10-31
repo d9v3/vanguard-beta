@@ -949,8 +949,7 @@ fn nommer(appareil: &str, surnom: &str) {
 fn processus_eleve() -> bool {
     #[cfg(unix)]
     {
-        // SAFETY: geteuid et getuid ne prennent aucun argument, ne touchent aucune mémoire et ne peuvent pas échouer.
-        let (effectif, reel) = unsafe { (libc::geteuid(), libc::getuid()) };
+        let (effectif, reel) = (crate::socle::euid(), crate::socle::uid());
         (effectif == 0 && !root_d_un_espace_de_noms()) || effectif != reel
     }
     #[cfg(windows)]

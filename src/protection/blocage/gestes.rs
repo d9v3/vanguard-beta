@@ -386,8 +386,7 @@ fn arret_sans_droits(pid: u32) -> bool {
     }
     #[cfg(unix)]
     {
-        // SAFETY: geteuid ne prend aucun argument et ne touche aucune mémoire.
-        let moi = unsafe { libc::geteuid() };
+        let moi = crate::socle::euid();
         moi == 0 || comptes(pid).is_some_and(|(reel, sauve)| reel == moi || sauve == moi)
     }
 }
@@ -444,8 +443,7 @@ pub(super) fn administrateur() -> bool {
     }
     #[cfg(unix)]
     {
-        // SAFETY: geteuid ne prend aucun argument et ne touche aucune mémoire.
-        unsafe { libc::geteuid() == 0 }
+        crate::socle::euid() == 0
     }
 }
 
@@ -459,8 +457,7 @@ pub(super) fn administrateur_ou_inconnu() -> bool {
     }
     #[cfg(unix)]
     {
-        // SAFETY: geteuid et getuid ne prennent aucun argument et ne touchent aucune mémoire.
-        unsafe { libc::geteuid() == 0 || libc::geteuid() != libc::getuid() }
+        crate::socle::euid() == 0 || crate::socle::euid() != crate::socle::uid()
     }
 }
 
@@ -479,8 +476,7 @@ fn peut_deplacer(chemin: &Path) -> bool {
                 // SAFETY: `c` est une chaîne terminée par un zéro, vivante pendant l'appel ; access ne fait que la lire.
                 .is_ok_and(|c| unsafe { libc::access(c.as_ptr(), mode) } == 0)
         };
-        // SAFETY: geteuid ne prend aucun argument et ne touche aucune mémoire.
-        let moi = unsafe { libc::geteuid() };
+        let moi = crate::socle::euid();
         let (Ok(dossier), Ok(fichier)) = (std::fs::metadata(parent), std::fs::symlink_metadata(chemin)) else {
             return false;
         };

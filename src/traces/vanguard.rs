@@ -496,9 +496,7 @@ mod tests {
         let (dossier, donnees) = (racine.join("traces"), racine.join("donnees"));
         std::fs::create_dir_all(&dossier).unwrap();
         std::fs::create_dir_all(&donnees).unwrap();
-        let tube = std::ffi::CString::new(donnees.join("veilleur-etat.json").as_os_str().as_encoded_bytes()).unwrap();
-        // SAFETY: `tube` est une chaîne terminée par un zéro, vivante pendant l'appel ; mkfifo ne fait que la lire.
-        assert_eq!(unsafe { libc::mkfifo(tube.as_ptr(), 0o600) }, 0);
+        crate::essais::tube_nomme(&donnees.join("veilleur-etat.json")).unwrap();
         std::fs::write(racine.join("secret"), b"reserve").unwrap();
         std::os::unix::fs::symlink(racine.join("secret"), donnees.join("blocage.json")).unwrap();
         std::os::unix::fs::symlink(racine.join("secret"), donnees.join("surveillance-alertes.jsonl")).unwrap();

@@ -34,8 +34,7 @@ pub(crate) fn get(prise: &Path, chemin: &str) -> Result<(u16, Vec<u8>), Echec> {
     {
         use std::os::unix::fs::MetadataExt;
         let m = std::fs::metadata(prise).map_err(|e| Echec::io("http_unix/connexion", &e))?;
-        // SAFETY: geteuid ne prend rien et ne peut pas échouer.
-        let moi = unsafe { libc::geteuid() };
+        let moi = crate::socle::euid();
         if m.uid() != 0 && m.uid() != moi {
             return Err(echec("prise d'un autre compte"));
         }

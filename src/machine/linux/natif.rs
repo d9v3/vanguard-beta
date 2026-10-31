@@ -91,8 +91,7 @@ fn dossiers_utilisateur(racine: &Path, maison: &Path, xdg: Option<&Path>, uid: u
 }
 
 fn uid() -> u32 {
-    // SAFETY: getuid ne peut pas échouer et ne touche à aucune mémoire du programme.
-    unsafe { libc::getuid() }
+    crate::socle::uid()
 }
 
 /// Le nom complet d'une unité : `systemctl` ajoute « .service » quand il n'y a pas de suffixe, on fait pareil.
@@ -1729,10 +1728,7 @@ mod tests {
         let d = jetable("borne");
         std::fs::write(d.join("unite.service"), "[Install]\nDefaultInstance=tty1\n").unwrap();
         std::fs::write(d.join("long"), "x".repeat(5000)).unwrap();
-        let tube = std::ffi::CString::new(d.join("tube").to_str().unwrap()).unwrap();
-        // SAFETY: chemin C terminé par un zéro, vivant pendant l'appel ; mkfifo ne touche aucune mémoire du
-        // programme.
-        assert_eq!(unsafe { libc::mkfifo(tube.as_ptr(), 0o600) }, 0);
+        crate::essais::tube_nomme(&d.join("tube")).unwrap();
         symlink("/dev/zero", d.join("zero")).unwrap();
         symlink(d.join("unite.service"), d.join("lien.service")).unwrap();
         let depart = std::time::Instant::now();

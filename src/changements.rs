@@ -1114,9 +1114,7 @@ mod tests {
     #[test]
     fn releve_tube_ou_lien_ne_fige_rien() {
         let f = releve("tube");
-        let c = std::ffi::CString::new(f.as_os_str().as_encoded_bytes()).unwrap();
-        // SAFETY: mkfifo reçoit un chemin terminé par zéro, qui vit le temps de l'appel.
-        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        crate::essais::tube_nomme(&f).unwrap();
         let debut = std::time::Instant::now();
         assert_eq!(blocages_en_place_de(&f), Vec::new());
         // Une note qui s'écrit : le tube est mis de côté, jamais écrasé, et le relevé repart.

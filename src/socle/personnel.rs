@@ -19,8 +19,7 @@ pub(crate) fn dossier_personnel() -> Option<PathBuf> {
     let complet = |v: std::ffi::OsString| Some(PathBuf::from(v)).filter(|d| d.is_absolute());
     let home = std::env::var_os("HOME").and_then(complet);
     #[cfg(unix)]
-    // SAFETY: getuid lit le compte du processus, sans argument ni échec possible.
-    let repli = || dossier_personnel_de(unsafe { libc::getuid() }).filter(|d| d.is_absolute());
+    let repli = || dossier_personnel_de(crate::socle::uid()).filter(|d| d.is_absolute());
     #[cfg(windows)]
     let repli = || std::env::var_os("USERPROFILE").and_then(complet);
     home.or_else(repli)

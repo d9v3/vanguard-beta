@@ -1198,8 +1198,7 @@ fn etat_unite_lu(nom: &str, utilisateur: bool) -> Valeur {
     let maison = crate::socle::maison();
     let config = std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| maison.join(".config"), PathBuf::from);
     let donnees = std::env::var_os("XDG_DATA_HOME").map_or_else(|| maison.join(".local/share"), PathBuf::from);
-    // SAFETY: getuid ne peut pas échouer et ne touche à aucune mémoire du programme.
-    let uid = unsafe { libc::getuid() };
+    let uid = crate::socle::uid();
     let dossiers = DossiersUnites::du_systeme(Path::new("/"), &config, &donnees, uid, utilisateur);
     etat_unite_selon(&dossiers, nom, natif::unite_activee(nom, utilisateur))
         .map(str::to_string)
@@ -1796,8 +1795,7 @@ mod tests {
         let maison = crate::socle::maison();
         let config = std::env::var_os("XDG_CONFIG_HOME").map_or_else(|| maison.join(".config"), PathBuf::from);
         let donnees = std::env::var_os("XDG_DATA_HOME").map_or_else(|| maison.join(".local/share"), PathBuf::from);
-        // SAFETY: getuid ne peut pas échouer et ne touche à aucune mémoire du programme.
-        let uid = unsafe { libc::getuid() };
+        let uid = crate::socle::uid();
         for utilisateur in [false, true] {
             let dossiers = DossiersUnites::du_systeme(Path::new("/"), &config, &donnees, uid, utilisateur);
             let mut noms: Vec<String> = dossiers

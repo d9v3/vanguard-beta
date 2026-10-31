@@ -13,6 +13,15 @@ mod ui;
 #[path = "../cale/modele.rs"]
 mod modele;
 
+/// Cale : le compte du processus (`crate::socle::euid`), que seule l'authentification au bus demande. Le banc ne lit
+/// que des messages, sans prise ni authentification : jamais appelé.
+#[allow(dead_code)]
+mod socle {
+    pub(crate) fn euid() -> u32 {
+        unreachable!("le banc ne s'authentifie auprès d'aucun bus")
+    }
+}
+
 #[allow(dead_code)]
 #[path = "../../src/machine/linux/dbus.rs"]
 mod dbus;

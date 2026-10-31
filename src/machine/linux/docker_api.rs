@@ -144,9 +144,7 @@ mod tests {
     fn config_en_tube_ne_fige_pas() {
         let d = crate::protection::isoler::dossier_jetable().unwrap();
         assert!(config_par_defaut(&d));
-        let nom = std::ffi::CString::new(d.join("config.json").to_string_lossy().as_bytes()).unwrap();
-        // SAFETY: chaîne C terminée par un zéro, à nous ; mkfifo ne la garde pas.
-        assert_eq!(unsafe { libc::mkfifo(nom.as_ptr(), 0o600) }, 0);
+        crate::essais::tube_nomme(&d.join("config.json")).unwrap();
         assert!(!config_par_defaut(&d));
         let _ = std::fs::remove_dir_all(&d);
         let d = crate::protection::isoler::dossier_jetable().unwrap();

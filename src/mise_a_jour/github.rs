@@ -431,8 +431,7 @@ fn comparer_a_la_vue(vue: Option<Version>, recue: Version) -> Result<bool, Strin
 pub(super) fn dossier_sur() -> bool {
     #[cfg(unix)]
     {
-        // SAFETY: geteuid n'a ni pointeur ni effet de bord.
-        if unsafe { libc::geteuid() } != 0 {
+        if crate::socle::euid() != 0 {
             return true;
         }
         std::fs::symlink_metadata(crate::socle::dossier_local())

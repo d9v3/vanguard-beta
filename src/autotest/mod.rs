@@ -1002,8 +1002,7 @@ pub(crate) fn executer(o: &Options) -> i32 {
     // Pas de root : lancé par sudo -E, le dossier serait celui d'un compte, et rien ne doit y être écrit en root (même
     // règle que les sceaux). Sous `unshare -r` aussi, où le compte se croit root.
     #[cfg(unix)]
-    // SAFETY: geteuid n'a ni argument ni effet de bord.
-    if unsafe { libc::geteuid() } == 0 {
+    if crate::socle::euid() == 0 {
         if o.json {
             println!(
                 "{}",

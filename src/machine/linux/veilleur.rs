@@ -771,8 +771,7 @@ fn remettre_les_signaux(avant: &[libc::sigaction; 2]) {
 }
 
 fn root() -> bool {
-    // SAFETY: geteuid n'a ni argument ni échec possible.
-    unsafe { libc::geteuid() == 0 }
+    crate::socle::euid() == 0
 }
 
 /// Le jeton de notre abonnement. L'accusé est envoyé à tout le groupe, et son numéro (seq) est celui du compteur

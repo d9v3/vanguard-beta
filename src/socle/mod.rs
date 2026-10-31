@@ -6,6 +6,8 @@ pub(crate) mod adresses;
 pub(crate) mod cache;
 mod fichiers;
 pub(crate) mod hachage;
+#[cfg(unix)]
+mod identite;
 pub(crate) mod jsonc;
 pub(crate) mod personnel;
 #[cfg(unix)]
@@ -21,6 +23,10 @@ pub(crate) use fichiers::{
     ATTENTE_ECRITURE, ATTENTE_LECTURE, SansVerrou, Verrou, ecrire_atomique, ecrire_atomique_date, ecriture_sure,
     lire_ordinaire, lire_texte_ordinaire, nom_systeme, verrou_remplace,
 };
+#[cfg(target_os = "linux")]
+pub(crate) use identite::compte_d_en_face;
+#[cfg(unix)]
+pub(crate) use identite::{euid, uid};
 #[cfg(unix)]
 pub use personnel::volume;
 pub use personnel::{maison, taille_lisible};

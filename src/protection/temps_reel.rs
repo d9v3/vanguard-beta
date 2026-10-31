@@ -143,8 +143,7 @@ pub(crate) fn dossier_local_appelant() -> (PathBuf, bool) {
     #[cfg(unix)]
     if !cfg!(test)
         && let Some(d) = dossier_appelant(
-            // SAFETY: geteuid ne prend aucun argument et ne touche aucune mémoire.
-            unsafe { libc::geteuid() },
+            crate::socle::euid(),
             std::env::var("SUDO_UID")
                 .or_else(|_| std::env::var("PKEXEC_UID"))
                 .ok()
@@ -872,8 +871,7 @@ mod tests {
             None
         );
         // La vraie base des comptes : le compte qui lance les tests y est (root dans « unshare -rn »).
-        // SAFETY: getuid ne prend aucun argument et ne touche aucune mémoire.
-        let moi = unsafe { libc::getuid() };
+        let moi = crate::socle::uid();
         assert!(dossier_personnel_de(moi).is_some_and(|d| d.is_absolute()));
     }
 

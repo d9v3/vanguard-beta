@@ -1850,9 +1850,7 @@ mod tests {
         ecrire_dans(&d, APPRIS, b"{}").unwrap();
         let tube = |chemin: &Path| {
             let _ = std::fs::remove_file(chemin);
-            let c = std::ffi::CString::new(chemin.as_os_str().as_encoded_bytes()).unwrap();
-            // SAFETY: mkfifo reçoit un chemin terminé par zéro, qui vit le temps de l'appel.
-            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+            crate::essais::tube_nomme(chemin).unwrap();
         };
         let debut = std::time::Instant::now();
         tube(&d.join(APPRIS));
@@ -2007,8 +2005,7 @@ mod tests {
     #[test]
     fn temoin_refuse_retenu_une_fois() {
         use std::os::unix::fs::PermissionsExt as _;
-        // SAFETY: geteuid ne prend aucun argument, ne touche aucune mémoire et ne peut pas échouer.
-        if unsafe { libc::geteuid() } == 0 {
+        if crate::socle::euid() == 0 {
             return crate::essais::saute("en root, un dossier en lecture seule s'écrit quand même");
         }
         let d = jetable("temoin-refuse");

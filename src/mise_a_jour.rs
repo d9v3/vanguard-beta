@@ -346,8 +346,7 @@ fn cibles_github() -> Vec<PathBuf> {
 fn remplacable_ici(programme: &Path) -> bool {
     #[cfg(unix)]
     {
-        // SAFETY: geteuid n'a ni pointeur ni effet de bord.
-        remplacable_pour(unsafe { libc::geteuid() }, programme)
+        remplacable_pour(crate::socle::euid(), programme)
     }
     #[cfg(not(unix))]
     {

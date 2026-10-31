@@ -20,6 +20,22 @@ pub fn saute(raison: &str) {
     }
 }
 
+/// Un tube nommé (FIFO) à `chemin`, pour les essais qui vérifient qu'un lecteur ne s'y bloque pas : un seul appel à
+/// mkfifo pour tous, au lieu d'un bloc `unsafe` dans chaque module essayé (dont des lecteurs fuzzés, qui n'en ont pas
+/// le droit). Rend l'erreur du système si le tube n'a pas pu être créé.
+#[cfg(unix)]
+// FFI de libc : mkfifo n'a pas d'équivalent dans std.
+#[allow(unsafe_code)]
+pub fn tube_nomme(chemin: &std::path::Path) -> std::io::Result<()> {
+    let c = std::ffi::CString::new(chemin.as_os_str().as_encoded_bytes())?;
+    // SAFETY: mkfifo reçoit un chemin terminé par zéro, qui vit le temps de l'appel, et n'en garde rien.
+    if unsafe { libc::mkfifo(c.as_ptr(), 0o600) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
 /// Une ligne par saut (nom, raison, endroit), écrite d'un seul appel en ajout : les tests tournent en parallèle, et
 /// une écriture en mode ajout de cette taille ne se mélange pas avec celle d'un autre fil.
 fn noter(fichier: &std::path::Path, nom: &str, raison: &str, ou: &std::panic::Location) {

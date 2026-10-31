@@ -811,9 +811,7 @@ mod tests {
         let lien = d.join("lien.bin");
         std::os::unix::fs::symlink(&vrai, &lien).unwrap();
         let tube = d.join("tube");
-        let nom = std::ffi::CString::new(tube.to_string_lossy().as_bytes()).unwrap();
-        // SAFETY: chaîne C terminée par un zéro, à nous ; mkfifo ne la garde pas.
-        assert_eq!(unsafe { libc::mkfifo(nom.as_ptr(), 0o600) }, 0);
+        crate::essais::tube_nomme(&tube).unwrap();
         assert_eq!(examiner(&vrai), Examen::Sain);
         for cible in [&lien, &tube] {
             assert!(matches!(examiner(cible), Examen::Impossible(_)), "{}", cible.display());

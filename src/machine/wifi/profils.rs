@@ -451,8 +451,7 @@ mod tests {
     #[test]
     fn fichier_interdit_dans_un_dossier_lisible() {
         use std::os::unix::fs::PermissionsExt;
-        // SAFETY: geteuid ne prend rien et ne peut pas échouer.
-        if unsafe { libc::geteuid() } == 0 {
+        if crate::socle::euid() == 0 {
             return;
         }
         let dossier = std::env::temp_dir().join(format!("vanguard-profils-{}", std::process::id()));

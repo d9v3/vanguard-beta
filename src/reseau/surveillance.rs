@@ -1835,8 +1835,7 @@ fn plist_agent() -> std::path::PathBuf {
 /// Domaine launchd de la session graphique de l'utilisateur (« gui/501 »).
 #[cfg(target_os = "macos")]
 pub(crate) fn domaine_launchd() -> String {
-    // SAFETY: getuid n'a ni argument ni échec possible.
-    let uid = unsafe { libc::getuid() };
+    let uid = crate::socle::uid();
     format!("gui/{uid}")
 }
 

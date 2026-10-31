@@ -99,8 +99,7 @@ fn creer_prive(d: &Path) -> std::io::Result<()> {
 /// Le compte de ce processus (Unix).
 #[cfg(unix)]
 fn moi() -> u32 {
-    // SAFETY: getuid ne prend aucun argument, ne touche aucune mémoire et ne peut pas échouer.
-    unsafe { libc::getuid() }
+    crate::socle::uid()
 }
 
 /// Un dossier où lire et lancer un plugin. Unix : à soi, ni lien ni ouvert en écriture au groupe ou aux autres ; chaque
@@ -188,8 +187,7 @@ fn dossier_sur(d: &Path) -> Result<(), String> {
 fn eleve() -> bool {
     #[cfg(unix)]
     {
-        // SAFETY: geteuid ne prend aucun argument, ne touche aucune mémoire et ne peut pas échouer.
-        let effectif = unsafe { libc::geteuid() };
+        let effectif = crate::socle::euid();
         effectif == 0 || effectif != moi()
     }
     #[cfg(windows)]
