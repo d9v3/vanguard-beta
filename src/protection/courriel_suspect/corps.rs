@@ -325,22 +325,83 @@ pub(crate) fn lire_html(html: &str, max_liens: usize, source: &Source) -> Html {
     r
 }
 
+/// Ce que porte une image SVG (`juger_svg`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Svg {
+    /// Rien qui tourne, rien de déclaré.
+    Inerte,
+    /// Des déclarations XML lues jusqu'au bout, sans rien d'actif : entités internes (les espaces de noms
+    /// qu'Illustrator déclare dans sa DTD), feuille de style CSS (`<?xml-stylesheet type="text/css"?>`).
+    Declarations,
+    /// Du code qui tourne à l'ouverture, ou une déclaration qui peut en cacher.
+    Actif,
+}
+
 /// Une image SVG (ou une page XML) porte du code qui tourne à son ouverture : élément `script` ou `foreignObject`
 /// (du HTML dans l'image), cadre ou objet HTML (`iframe`, `embed`, `object`), préfixe compris, gestionnaire
-/// d'événement, adresse `javascript:` ou animation qui vise l'un ou l'autre. Une déclaration d'entité ou d'attribut
-/// par défaut dans la DTD (`<!ENTITY`, `<!ATTLIST`) peut les porter sans qu'ils soient écrits, et une feuille de style
-/// XML (`<?xml-stylesheet`, XSLT) transformer l'image : la lecture ne les déroule pas, l'image se dit active
-/// (relecture du lot campagne 6). Au-delà de `HTML_MAX` octets, rien n'est lu : `None`, à dire comme un manque.
-pub(crate) fn svg_actif(h: &[u8]) -> Option<bool> {
+/// d'événement, adresse `javascript:` ou animation qui vise l'un ou l'autre. Les déclarations de la DTD sont lues :
+/// une entité interne est déroulée dans l'image avant de la lire (`&j;` qui vaut « javascript: » dans un lien se
+/// voit), et son texte ne doit porter ni balise, ni gestionnaire, ni adresse qui exécute ; une entité externe ou
+/// paramètre, une valeur d'attribut par défaut (`<!ATTLIST`), ce que la lecture ne connaît pas ou ne sait pas
+/// dérouler (le « milliard de rires ») rendent l'image active. Une feuille de style XML n'est sûre qu'en CSS : XSLT
+/// transforme l'image (relecture du lot campagne 6 ; le reste, B-2 de sa relecture). Au-delà de `HTML_MAX` octets,
+/// rien n'est lu : `None`, à dire comme un manque.
+pub(crate) fn juger_svg(h: &[u8]) -> Option<Svg> {
     if h.len() > HTML_MAX {
         return None;
     }
-    if [b"<!entity".as_slice(), b"<!attlist", b"<?xml-stylesheet"]
-        .iter()
-        .any(|m| chercher_casse(h, 0, m).is_some())
-    {
-        return Some(true);
+    let mut declarations = false;
+    let mut i = 0;
+    while let Some(p) = chercher_casse(h, i, b"<?xml-stylesheet") {
+        let (balise, suite) = lire_balise(h, p, true);
+        // Tous ses `type` en CSS : un second `type` ne doit pas cacher du XSLT derrière le premier.
+        let css = balise.is_some_and(|b| {
+            let mut types = b.attributs.iter().filter(|(n, _)| n == "type").peekable();
+            !b.actif && types.peek().is_some() && types.all(|(_, v)| v.trim().eq_ignore_ascii_case("text/css"))
+        });
+        if !css {
+            return Some(Svg::Actif);
+        }
+        declarations = true;
+        i = suite.max(p.saturating_add(1));
     }
+    let mut doc = std::borrow::Cow::Borrowed(h);
+    let mut lues = 0;
+    if let Some(debut) = chercher_casse(h, 0, b"<!doctype") {
+        let Some(dtd) = lire_dtd(h, debut) else {
+            return Some(Svg::Actif);
+        };
+        lues = dtd.entites.len();
+        declarations |= dtd.interne;
+        if !dtd.entites.is_empty() {
+            let Some(suite) = derouler(h.get(dtd.fin..).unwrap_or_default(), &dtd.entites) else {
+                return Some(Svg::Actif);
+            };
+            let mut d = h.get(..debut).unwrap_or_default().to_vec();
+            d.extend(suite);
+            doc = std::borrow::Cow::Owned(d);
+        }
+    }
+    // Chaque déclaration de l'image doit être une entité lue plus haut : une autre DTD, une déclaration hors de la
+    // DTD ou dans un commentaire de celle-ci ne se lit pas ici.
+    let declarees = [b"<!entity".as_slice(), b"<!attlist"]
+        .iter()
+        .map(|m| compter_casse(h, m))
+        .sum::<usize>();
+    if declarees != lues {
+        return Some(Svg::Actif);
+    }
+    Some(if balayer_svg(&doc) {
+        Svg::Actif
+    } else if declarations {
+        Svg::Declarations
+    } else {
+        Svg::Inerte
+    })
+}
+
+/// Les balises de `h` : l'une lance-t-elle du code ?
+fn balayer_svg(h: &[u8]) -> bool {
     let mut i = 0;
     while let Some(debut) = h.get(i..).and_then(|ici| ici.iter().position(|&c| c == b'<')) {
         i += debut;
@@ -363,10 +424,207 @@ pub(crate) fn svg_actif(h: &[u8]) -> Option<bool> {
                     "script" | "foreignobject" | "handler" | "iframe" | "embed" | "object"
                 ))
         {
-            return Some(true);
+            return true;
         }
     }
-    Some(false)
+    false
+}
+
+/// Les occurrences de `aiguille` (ASCII, sans tenir compte de la casse) dans `h`.
+fn compter_casse(h: &[u8], aiguille: &[u8]) -> usize {
+    let mut n = 0;
+    let mut i = 0;
+    while let Some(p) = chercher_casse(h, i, aiguille) {
+        n += 1;
+        i = p + 1;
+    }
+    n
+}
+
+/// La DTD d'une image : où elle finit, si elle a un sous-ensemble interne (`[ … ]`), et ses entités internes
+/// (nom, texte de remplacement).
+struct Dtd {
+    fin: usize,
+    interne: bool,
+    entites: std::collections::HashMap<Vec<u8>, Vec<u8>>,
+}
+
+/// Les entités qu'une image déclare au plus : Illustrator en écrit une dizaine.
+const ENTITES_MAX: usize = 256;
+
+/// Lit la DTD qui commence en `debut` (« <!DOCTYPE »). `None` dès qu'elle porte autre chose que des entités internes
+/// inoffensives, des éléments, des notations, des commentaires ou des instructions : entité externe ou paramètre,
+/// `<!ATTLIST`, référence d'entité paramètre (`%p;`), section conditionnelle, ou une fin qui manque.
+fn lire_dtd(h: &[u8], debut: usize) -> Option<Dtd> {
+    let mut i = debut.checked_add(9)?;
+    // Jusqu'au « [ » du sous-ensemble interne ou au « > » de la fin ; l'identifiant public ou système, entre
+    // guillemets, peut porter l'un ou l'autre.
+    loop {
+        match *h.get(i)? {
+            b'>' => {
+                return Some(Dtd {
+                    fin: i + 1,
+                    interne: false,
+                    entites: std::collections::HashMap::new(),
+                });
+            }
+            b'[' => break,
+            q @ (b'"' | b'\'') => i = apres_guillemet(h, i, q)?,
+            _ => i += 1,
+        }
+    }
+    i += 1;
+    let mut entites = std::collections::HashMap::new();
+    loop {
+        i = prendre(h, i, |o| o.is_ascii_whitespace()).1;
+        let ici = h.get(i..)?;
+        if ici.first() == Some(&b']') {
+            i = prendre(h, i + 1, |o| o.is_ascii_whitespace()).1;
+            return (h.get(i) == Some(&b'>')).then_some(Dtd {
+                fin: i + 1,
+                interne: true,
+                entites,
+            });
+        }
+        if ici.starts_with(b"<!--") {
+            i = chercher_casse(h, i + 4, b"-->")? + 3;
+        } else if ici.starts_with(b"<?") {
+            i = chercher_casse(h, i + 2, b"?>")? + 2;
+        } else if ici.get(..8).is_some_and(|d| d.eq_ignore_ascii_case(b"<!entity")) {
+            let (nom, texte, suite) = lire_entite(h, i + 8)?;
+            if entites.len() >= ENTITES_MAX || entite_active(&texte) {
+                return None;
+            }
+            // Comme XML : la première déclaration d'un nom l'emporte.
+            entites.entry(nom).or_insert(texte);
+            i = suite;
+        } else if ["<!element", "<!notation"]
+            .iter()
+            .any(|m| ici.get(..m.len()).is_some_and(|d| d.eq_ignore_ascii_case(m.as_bytes())))
+        {
+            // Jusqu'au « > », guillemets sautés : rien d'actif, mais un identifiant entre guillemets peut porter « > ».
+            loop {
+                match *h.get(i)? {
+                    b'>' => break,
+                    q @ (b'"' | b'\'') => i = apres_guillemet(h, i, q)?,
+                    _ => i += 1,
+                }
+            }
+            i += 1;
+        } else {
+            return None;
+        }
+    }
+}
+
+/// L'indice qui suit le guillemet `q` qui ferme celui ouvert en `i`.
+fn apres_guillemet(h: &[u8], i: usize, q: u8) -> Option<usize> {
+    let ferme = h.get(i + 1..)?.iter().position(|&o| o == q)?;
+    Some(i + ferme + 2)
+}
+
+/// Une déclaration d'entité interne, lue après « <!ENTITY » : son nom, son texte de remplacement (références de
+/// caractères décodées, comme XML le fait à la déclaration) et l'indice qui suit son « > ». `None` pour une entité
+/// paramètre (`%`), externe (`SYSTEM`, `PUBLIC` : son texte est ailleurs) ou mal écrite.
+fn lire_entite(h: &[u8], i: usize) -> Option<(Vec<u8>, Vec<u8>, usize)> {
+    let (blanc, i) = prendre(h, i, |o| o.is_ascii_whitespace());
+    let (nom, i) = prendre(h, i, |o| {
+        !o.is_ascii_whitespace() && !matches!(o, b'"' | b'\'' | b'>' | b'%')
+    });
+    if blanc.is_empty() || nom.is_empty() {
+        return None;
+    }
+    let i = prendre(h, i, |o| o.is_ascii_whitespace()).1;
+    let q = *h.get(i).filter(|q| matches!(q, b'"' | b'\''))?;
+    let fin = apres_guillemet(h, i, q)?;
+    let texte = h.get(i + 1..fin - 1)?;
+    let i = prendre(h, fin, |o| o.is_ascii_whitespace()).1;
+    if h.get(i) != Some(&b'>') {
+        return None;
+    }
+    Some((nom.to_vec(), references_de_caracteres(texte), i + 1))
+}
+
+/// `texte` où les seules références de caractères (`&#60;`, `&#x3C;`) sont décodées ; les appels d'entités restent,
+/// déroulés plus tard (`derouler`).
+fn references_de_caracteres(texte: &[u8]) -> Vec<u8> {
+    let t = String::from_utf8_lossy(texte);
+    let mut s = String::with_capacity(t.len());
+    let mut reste: &str = &t;
+    while let Some(p) = reste.find("&#") {
+        s.push_str(reste.get(..p).unwrap_or_default());
+        reste = reste.get(p..).unwrap_or_default();
+        if let Some((c, longueur)) = reference_numerique(reste) {
+            s.push(c);
+            reste = reste.get(longueur..).unwrap_or_default();
+        } else {
+            s.push('&');
+            reste = reste.get(1..).unwrap_or_default();
+        }
+    }
+    s.push_str(reste);
+    s.into_bytes()
+}
+
+/// Le texte d'une entité porte du contenu actif une fois appelé : une balise (`<script`, `<image onerror=…`, tout
+/// « < »), un gestionnaire d'événement (`onload=`) ou une adresse qui exécute (`javascript:`).
+fn entite_active(texte: &[u8]) -> bool {
+    if texte.contains(&b'<') {
+        return true;
+    }
+    let t = adresse_attribut(&String::from_utf8_lossy(texte)).to_ascii_lowercase();
+    if t.contains("javascript:") || t.contains("vbscript:") {
+        return true;
+    }
+    // « on », des lettres, des blancs facultatifs, « = ».
+    t.match_indices("on").any(|(p, _)| {
+        let apres = t.get(p + 2..).unwrap_or_default();
+        let lettres = apres.bytes().take_while(u8::is_ascii_lowercase).count();
+        lettres > 0 && apres.get(lettres..).unwrap_or_default().trim_start().starts_with('=')
+    })
+}
+
+/// `h` où chaque appel d'une entité déclarée (`&nom;`) est remplacé par son texte, de proche en proche (une entité
+/// peut en appeler une autre). `None` si le résultat dépasse `HTML_MAX` octets ou si un appel reste après `TOURS`
+/// tours : le « milliard de rires » et l'entité qui s'appelle elle-même ne se déroulent pas.
+fn derouler(h: &[u8], entites: &std::collections::HashMap<Vec<u8>, Vec<u8>>) -> Option<Vec<u8>> {
+    const TOURS: usize = 16;
+    // Un nom d'entité tient en peu d'octets : le « ; » n'est pas cherché plus loin.
+    const NOM_MAX: usize = 64;
+    let mut texte = h.to_vec();
+    for _ in 0..TOURS {
+        let mut sortie = Vec::with_capacity(texte.len());
+        let mut change = false;
+        let mut i = 0;
+        while let Some(p) = texte.get(i..).and_then(|r| r.iter().position(|&o| o == b'&')) {
+            sortie.extend_from_slice(texte.get(i..i + p).unwrap_or_default());
+            i += p;
+            let appel = texte
+                .get(i + 1..)
+                .and_then(|r| r.iter().take(NOM_MAX + 1).position(|&o| o == b';'))
+                .and_then(|n| entites.get(texte.get(i + 1..i + 1 + n)?).map(|t| (n, t)));
+            if let Some((n, t)) = appel {
+                sortie.extend_from_slice(t);
+                i += n + 2;
+                change = true;
+            } else {
+                sortie.push(b'&');
+                i += 1;
+            }
+            if sortie.len() > HTML_MAX {
+                return None;
+            }
+        }
+        sortie.extend_from_slice(texte.get(i..).unwrap_or_default());
+        if sortie.len() > HTML_MAX {
+            return None;
+        }
+        if !change {
+            return Some(sortie);
+        }
+        texte = sortie;
+    }
+    None
 }
 
 fn pousser(r: &mut Html, cible: String, affiche: Option<String>, source: &Source, max: usize) {
@@ -993,16 +1251,16 @@ mod tests {
             "<é:script xmlns:é=\"http://www.w3.org/2000/svg\">alert(1)</é:script>",
             "<_:foreignObject xmlns:_=\"http://www.w3.org/2000/svg\"/>",
         ] {
-            assert_eq!(svg_actif(&svg(corps)), Some(true), "{corps}");
+            assert_eq!(juger_svg(&svg(corps)), Some(Svg::Actif), "{corps}");
         }
         assert_eq!(
-            svg_actif(&svg("<a_b:rect xmlns:a_b=\"http://www.w3.org/2000/svg\"/>")),
-            Some(false)
+            juger_svg(&svg("<a_b:rect xmlns:a_b=\"http://www.w3.org/2000/svg\"/>")),
+            Some(Svg::Inerte)
         );
     }
 
     /// Relecture du lot campagne 6 : une entité déclarée dans la DTD (ou un attribut par défaut) peut porter le
-    /// script ou l'adresse `javascript:` ; la lecture ne les déroule pas, l'image se dit active.
+    /// script ou l'adresse `javascript:` ; une entité au texte actif, ou un attribut par défaut, rend l'image active.
     #[test]
     fn svg_declarations_de_la_dtd() {
         for debut in [
@@ -1013,13 +1271,13 @@ mod tests {
         ] {
             let mut h = debut.as_bytes().to_vec();
             h.extend(svg("<a href=\"&j;alert(1)\"><text>&s;</text></a>"));
-            assert_eq!(svg_actif(&h), Some(true), "{debut}");
+            assert_eq!(juger_svg(&h), Some(Svg::Actif), "{debut}");
         }
         let mut h =
             b"<!DOCTYPE svg PUBLIC \"-//W3C//DTD SVG 1.1//EN\" \"http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd\">"
                 .to_vec();
         h.extend(svg("<rect/>"));
-        assert_eq!(svg_actif(&h), Some(false));
+        assert_eq!(juger_svg(&h), Some(Svg::Inerte));
     }
 
     /// Relecture du lot campagne 6 : une feuille de style XSLT intégrée (`<?xml-stylesheet?>`) transforme l'image
@@ -1032,11 +1290,11 @@ mod tests {
         ] {
             let mut h = debut.as_bytes().to_vec();
             h.extend(svg("<rect/>"));
-            assert_eq!(svg_actif(&h), Some(true), "{debut}");
+            assert_eq!(juger_svg(&h), Some(Svg::Actif), "{debut}");
         }
         let mut h = b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_vec();
         h.extend(svg("<rect/>"));
-        assert_eq!(svg_actif(&h), Some(false));
+        assert_eq!(juger_svg(&h), Some(Svg::Inerte));
     }
 
     /// Relecture du lot campagne 6 : un cadre ou un objet HTML, préfixé ou non, charge une autre page sans
@@ -1049,7 +1307,7 @@ mod tests {
             "<h:object xmlns:h=\"http://www.w3.org/1999/xhtml\" data=\"https://vol.example/\"/>",
             "<iframe src=\"https://vol.example/\"/>",
         ] {
-            assert_eq!(svg_actif(&svg(corps)), Some(true), "{corps}");
+            assert_eq!(juger_svg(&svg(corps)), Some(Svg::Actif), "{corps}");
         }
     }
 
@@ -1065,11 +1323,11 @@ mod tests {
             "<a><animate attributeName=\"xlink:href\" values=\"https://vol.example/\"/><text>x</text></a>".to_string(),
             format!("<set {cinquante}attributeName=\"onbegin\" to=\"alert(1)\"/>"),
         ] {
-            assert_eq!(svg_actif(&svg(&corps)), Some(true), "{corps}");
+            assert_eq!(juger_svg(&svg(&corps)), Some(Svg::Actif), "{corps}");
         }
         assert_eq!(
-            svg_actif(&svg("<animate attributeName=\"opacity\" values=\"0;1\"/>")),
-            Some(false)
+            juger_svg(&svg("<animate attributeName=\"opacity\" values=\"0;1\"/>")),
+            Some(Svg::Inerte)
         );
     }
 

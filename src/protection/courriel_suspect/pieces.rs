@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use super::Signe;
+use super::corps::Svg;
 use crate::protection::antivirus::Examen;
 use crate::protection::telechargement;
 use crate::risk::Niveau;
@@ -180,27 +181,42 @@ pub(crate) fn juger(nom: &str, type_declare: &str, contenu: &[u8]) -> (Vec<Signe
     // Un SVG est une image qui peut porter du script : ouvert (« noname » chez Gmail, « Part 1.2 » chez Thunderbird),
     // il s'exécute dans le navigateur. Sans nom, rien d'autre ne le dit. Le script peut aussi être préfixé
     // (`<svg:script>`), dans un gestionnaire d'événement (`onload`), une adresse `javascript:` ou du HTML intégré
-    // (`foreignObject`) : `corps::svg_actif`. Un nom en « .svg » est déjà une page web (signe élevé) : seule une image
+    // (`foreignObject`) : `corps::juger_svg`. Un nom en « .svg » est déjà une page web (signe élevé) : seule une image
     // annoncée SVG sous un autre nom passe par ici.
     let svg = classe(&ext) != Some(Classe::PageWeb) && type_declare == "image/svg+xml";
-    let actif = svg.then(|| super::corps::svg_actif(contenu));
-    if actif == Some(None) {
+    let jugee = svg.then(|| super::corps::juger_svg(contenu));
+    if jugee == Some(None) {
         manques.push(trf!(
             "le contenu de l'image SVG {montre}",
             "the content of the SVG image {montre}"
         ));
     }
-    if svg && (contenu.to_ascii_lowercase().windows(7).any(|w| w == b"<script") || actif == Some(Some(true))) {
-        let qui = if nom.is_empty() {
+    let qui = || {
+        if nom.is_empty() {
             tr!("Pièce sans nom", "Unnamed attachment").to_string()
         } else {
             montre.clone()
-        };
+        }
+    };
+    if svg && (contenu.to_ascii_lowercase().windows(7).any(|w| w == b"<script") || jugee == Some(Some(Svg::Actif))) {
+        let qui = qui();
         signes.push((
             Niveau::Eleve,
             trf!(
                 "{qui} : image SVG qui contient du script ; ouverte, elle s'exécute dans le navigateur.",
                 "{qui}: SVG image containing script; once opened, it runs in the browser."
+            ),
+        ));
+    } else if jugee == Some(Some(Svg::Declarations)) {
+        // Une DTD à entités internes ou une feuille de style CSS : Illustrator et Inkscape en écrivent, rien n'y
+        // tourne. La lecture n'est pas celle d'un vrai lecteur XML et les déclarations sont l'endroit où l'on cache :
+        // le signe reste, au niveau Info, sans dire que l'image s'exécute (B-2 de la relecture des correctifs c6).
+        let qui = qui();
+        signes.push((
+            Niveau::Info,
+            trf!(
+                "{qui} : image SVG avec une DTD ou une feuille de style, comme en écrivent les logiciels de dessin ; aucun script vu.",
+                "{qui}: SVG image with a DTD or a stylesheet, as drawing programs write them; no script seen."
             ),
         ));
     }
@@ -906,6 +922,200 @@ mod tests {
         let (s, manques) = juger("", "image/svg+xml", sain.as_bytes());
         assert_eq!(pire(&s), None, "{s:?}");
         assert_eq!(manques, Vec::<String>::new());
+    }
+
+    /// L'en-tête d'un logo enregistré par Illustrator (« Enregistrer sous », SVG 1.1) : une DTD dont les entités
+    /// nomment les espaces de noms d'Adobe, une feuille de style CSS dans l'image, les données d'Illustrator dans un
+    /// CDATA. Écrit pour l'essai, à la façon d'Illustrator.
+    const ILLUSTRATOR: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<!-- Generator: Adobe Illustrator 27.5.0, SVG Export Plug-In . SVG Version: 6.00 Build 0)  -->
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd" [
+	<!ENTITY ns_extend "http://ns.adobe.com/Extensibility/1.0/">
+	<!ENTITY ns_ai "http://ns.adobe.com/AdobeIllustrator/10.0/">
+	<!ENTITY ns_graphs "http://ns.adobe.com/Graphs/1.0/">
+	<!ENTITY ns_vars "http://ns.adobe.com/Variables/1.0/">
+	<!ENTITY ns_imrep "http://ns.adobe.com/ImageReplacement/1.0/">
+	<!ENTITY ns_sfw "http://ns.adobe.com/SaveForWeb/1.0/">
+	<!ENTITY ns_custom "http://ns.adobe.com/GenericCustomNamespace/1.0/">
+	<!ENTITY ns_adobe_xpath "http://ns.adobe.com/XPath/1.0/">
+	<!ENTITY ns_svg "http://www.w3.org/2000/svg">
+	<!ENTITY ns_xlink "http://www.w3.org/1999/xlink">
+]>
+<svg version="1.1" id="Calque_1" xmlns:x="&ns_extend;" xmlns:i="&ns_ai;" xmlns:graph="&ns_graphs;"
+	 xmlns="&ns_svg;" xmlns:xlink="&ns_xlink;" x="0px" y="0px" viewBox="0 0 200 80"
+	 style="enable-background:new 0 0 200 80;" xml:space="preserve">
+<style type="text/css">
+	.st0{fill:#C8102E;}
+	.st1{font-family:'Arial-BoldMT';font-size:24px;}
+</style>
+<metadata>
+	<sfw  xmlns="&ns_sfw;">
+		<slices></slices>
+		<sliceSourceBounds  bottomLeftOrigin="true" height="80" width="200" x="0" y="0"></sliceSourceBounds>
+	</sfw>
+</metadata>
+<g i:extraneous="self">
+	<rect class="st0" width="200" height="80"/>
+	<text transform="matrix(1 0 0 1 20 50)" class="st1">Salon &amp; Cie</text>
+</g>
+<i:pgf  id="adobe_illustrator_pgf">
+	<![CDATA[
+	eJzsvWuTHcd1IPh9IvY/1H7oCHLGaNf7MbG7EfdF2xqQoAXakmJjQ9EEm1RLIFoDgqbnwfzt+B==
+	]]>
+</i:pgf>
+</svg>
+"#;
+
+    /// Un dessin enregistré par Inkscape (SVG Inkscape) : pas de DTD, ses propres espaces de noms et leurs
+    /// attributs. Écrit pour l'essai, à la façon d'Inkscape.
+    const INKSCAPE: &str = r##"<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="64mm"
+   height="32mm"
+   viewBox="0 0 64 32"
+   version="1.1"
+   id="svg1"
+   inkscape:version="1.3.2 (091e20e, 2023-11-25)"
+   sodipodi:docname="logo-salon.svg"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:document-units="mm" />
+  <defs
+     id="defs1" />
+  <g
+     inkscape:label="Calque 1"
+     inkscape:groupmode="layer"
+     id="layer1">
+    <rect
+       style="fill:#c8102e;stroke-width:0.264583"
+       id="rect1"
+       width="60"
+       height="28"
+       x="2"
+       y="2"
+       sodipodi:nodetypes="cccc" />
+  </g>
+</svg>
+"##;
+
+    /// B-2 (relecture des correctifs de la campagne 6) : une DTD d'entités qui nomment des espaces de noms, ou une
+    /// feuille de style CSS, ne sont pas du script. Le logo d'un fournisseur exporté d'Illustrator était dit « image
+    /// SVG qui contient du script » ; il garde un signe d'information, qui dit ce qui y est déclaré.
+    #[test]
+    fn svg_des_logiciels_de_dessin() {
+        let css = format!(
+            "<?xml version=\"1.0\"?>\n<?xml-stylesheet type=\"text/css\" href=\"logo.css\"?>\n{}",
+            INKSCAPE.split_once("-->").unwrap().1
+        );
+        for (qui, image, declare) in [
+            ("Illustrator", ILLUSTRATOR, true),
+            ("Inkscape", INKSCAPE, false),
+            ("feuille CSS", css.as_str(), true),
+        ] {
+            let (s, manques) = juger("", "image/svg+xml", image.as_bytes());
+            assert!(
+                !s.iter()
+                    .any(|(n, t)| *n >= Niveau::Moyen || t.contains("script ;") || t.contains("script;")),
+                "{qui} : {s:?}"
+            );
+            assert_eq!(
+                s.iter().any(|(n, t)| *n == Niveau::Info && t.contains("DTD")),
+                declare,
+                "{qui} : {s:?}"
+            );
+            assert_eq!(manques, Vec::<String>::new(), "{qui}");
+        }
+    }
+
+    /// B-2 : une déclaration qui peut cacher du contenu actif reste active, même dans l'en-tête d'Illustrator.
+    #[test]
+    fn svg_dtd_piegee() {
+        let (avant, apres) = ILLUSTRATOR.split_once("]>").unwrap();
+        for piege in [
+            // Entité externe : son contenu n'est pas dans l'image (et la lire irait chercher un fichier).
+            "<!ENTITY ns_x SYSTEM \"file:///etc/hostname\">",
+            "<!ENTITY ns_x PUBLIC \"-//X//Y\" \"https://vol.example/x.ent\">",
+            // Entité paramètre : elle ajoute des déclarations que la lecture ne voit pas.
+            "<!ENTITY % p \"<!ENTITY ns_x 'x'>\"> %p;",
+            // Du balisage dans le texte de l'entité, écrit tel quel ou par références de caractères.
+            "<!ENTITY ns_x \"<script>alert(1)</script>\">",
+            "<!ENTITY ns_x \"&#60;script&#62;alert(1)&#60;/script&#62;\">",
+            "<!ENTITY ns_x \"&#x3C;image href='x' onerror='alert(1)'/>\">",
+            // Un gestionnaire ou une adresse qui exécute, même hors d'une balise.
+            "<!ENTITY ns_x \"onload=alert(1)\">",
+            "<!ENTITY ns_x \"java&#x09;script:alert(1)\">",
+            // Valeur par défaut d'un attribut : `onload` posé sur chaque `<svg>` sans être écrit.
+            "<!ATTLIST svg onload CDATA \"alert(1)\">",
+            // Une déclaration que la lecture ne connaît pas.
+            "<![INCLUDE[ <!ENTITY ns_x \"x\"> ]]>",
+        ] {
+            let image = format!("{avant}\t{piege}\n]>{apres}");
+            let (s, _) = juger("", "image/svg+xml", image.as_bytes());
+            assert_eq!(pire(&s), Some(Niveau::Eleve), "{piege} : {s:?}");
+        }
+        // Entités inoffensives une à une, actives une fois assemblées : « java » puis « script: » dans une adresse.
+        let image = format!(
+            "{avant}\t<!ENTITY ns_j1 \"java\">\n\t<!ENTITY ns_j2 \"script\">\n]>{}",
+            apres.replace(
+                "<g i:extraneous",
+                "<a xlink:href=\"&ns_j1;&ns_j2;:alert(1)\"><text>x</text></a><g i:extraneous"
+            )
+        );
+        assert_eq!(
+            pire(&juger("", "image/svg+xml", image.as_bytes()).0),
+            Some(Niveau::Eleve)
+        );
+        // Une entité qui en appelle une autre.
+        let image = format!(
+            "{avant}\t<!ENTITY ns_l \"&#38;#60;\">\n\t<!ENTITY ns_s \"&ns_l;\">\n]>{}",
+            apres.replace("<g i:extraneous", "<text>&ns_s;</text><g i:extraneous")
+        );
+        // « &#38;#60; » donne « &#60; », un « < » dans le texte une fois appelé, jamais une balise.
+        assert_eq!(
+            pire(&juger("", "image/svg+xml", image.as_bytes()).0),
+            Some(Niveau::Info)
+        );
+        // Le « milliard de rires » et l'entité qui s'appelle elle-même ne se déroulent pas : dits actifs.
+        let rires: String = std::iter::once("<!ENTITY r0 \"ha\">".to_string())
+            .chain((1..12).map(|n| format!("<!ENTITY r{n} \"{}\">", format!("&r{};", n - 1).repeat(8))))
+            .collect();
+        for dtd in [rires.as_str(), "<!ENTITY moi \"&moi;\">"] {
+            let image = format!(
+                "<!DOCTYPE svg [{dtd}]><svg xmlns=\"http://www.w3.org/2000/svg\"><text>&r11;&moi;</text></svg>"
+            );
+            assert_eq!(
+                pire(&juger("", "image/svg+xml", image.as_bytes()).0),
+                Some(Niveau::Eleve),
+                "{dtd}"
+            );
+        }
+        // Une déclaration hors de la DTD, une feuille XSLT ou sans type : actives.
+        for image in [
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><!ENTITY x \"y\"><rect/></svg>",
+            "<?xml-stylesheet type=\"text/xsl\" href=\"x.xsl\"?><svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+            "<?xml-stylesheet href=\"x.xsl\"?><svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+            "<?xml-stylesheet type=\"text/css\" type=\"text/xsl\" href=\"x\"?><svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+            "<?xml-stylesheet type=\"text/css\" href=\"javascript:alert(1)\"?><svg xmlns=\"http://www.w3.org/2000/svg\"/>",
+        ] {
+            assert_eq!(
+                pire(&juger("", "image/svg+xml", image.as_bytes()).0),
+                Some(Niveau::Eleve),
+                "{image}"
+            );
+        }
     }
 
     #[test]
