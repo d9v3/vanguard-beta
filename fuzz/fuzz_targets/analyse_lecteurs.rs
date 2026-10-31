@@ -49,7 +49,11 @@ libfuzzer_sys::fuzz_target!(|donnees: &[u8]| {
             assert!(e.fin_des_donnees <= octets.len() as u64);
             assert!(!(e.dynamique.is_some() && e.dynamique_illisible));
             for s in &e.segments {
-                let _ = elf::en_memoire_dans_un_load(&e.segments, s);
+                let _ = elf::dans_un_load_ecrivable(&e.segments, s);
+                // Quelques paires seulement : jusqu'à 4096 segments, toutes les paires ralentiraient le banc.
+                for t in e.segments.iter().take(8) {
+                    let _ = elf::contient(s, t);
+                }
             }
         }
         if let Some(u) = macho::universel(octets) {

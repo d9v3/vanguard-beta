@@ -1,8 +1,9 @@
 //! `vanguard deploiement verifier-binaire` : les protections qu'un programme livré doit porter, relues dans ses
 //! en-têtes avant qu'il parte, jamais en le lançant. Le format se reconnaît aux premiers octets :
 //! - Linux (ELF, `analyse::elf`) : PIE (ET_DYN et DF_1_PIE), statique (sans PT_INTERP), la marque du RELRO complet
-//!   (PT_GNU_RELRO et BIND_NOW, sous l'une de ses trois formes : le démarrage de musl ne l'applique pas, Vanguard le
-//!   fait lui-même au lancement, `socle::relro`), pile non exécutable (PT_GNU_STACK sans PF_X), aucun PT_LOAD à la
+//!   (un seul PT_GNU_RELRO, dans un PT_LOAD écrivable et sur toute la section dynamique, et BIND_NOW, sous l'une de
+//!   ses trois formes : le démarrage de musl ne l'applique pas, Vanguard le fait lui-même au lancement,
+//!   `socle::relro`), pile non exécutable (PT_GNU_STACK sans PF_X), aucun PT_LOAD à la
 //!   fois écrivable et exécutable ; CET (IBT, SHSTK) affiché seulement ;
 //! - Windows (PE, `crate::pe`) : ce que vérifiait `verifier-pe` (DLL importées depuis System32 seulement, manifeste
 //!   UTF-8 et asInvoker), plus ASLR (DYNAMIC_BASE, et en 64 bits HIGH_ENTROPY_VA avec LARGE_ADDRESS_AWARE, qu'il
@@ -318,8 +319,8 @@ fn juger_elf(e: &elf::Elf) -> Jugement {
             ),
         );
     }
-    // La marque doit aussi couvrir quelque chose : vide, ou hors de tout PT_LOAD, elle ne protège rien (relro.rs la
-    // prend telle quelle) ; à deux, on ne sait pas laquelle le démarrage prend (relro.rs : la première, glibc : la
+    // La marque doit aussi couvrir ce qu'il faut : vide, hors de tout PT_LOAD écrivable ou à côté de la section
+    // dynamique, elle ne protège pas ce qu'elle annonce (relro.rs la prend telle quelle) ; à deux, on ne sait pas laquelle le démarrage prend (relro.rs : la première, glibc : la
     // dernière).
     let relros: Vec<&elf::Segment> = e.segments.iter().filter(|s| s.type_ == elf::PT_GNU_RELRO).collect();
     match relros.as_slice() {
@@ -327,16 +328,34 @@ fn juger_elf(e: &elf::Elf) -> Jugement {
             Protection::Relro,
             tr!("RELRO absent (pas de PT_GNU_RELRO)", "RELRO missing (no PT_GNU_RELRO)").to_string(),
         ),
-        [seul] if elf::en_memoire_dans_un_load(&e.segments, seul) => {}
-        [seul] => {
+        [seul] if !elf::dans_un_load_ecrivable(&e.segments, seul) => {
             let (adresse, taille) = (seul.adresse, seul.taille_memoire);
             j.manque(
                 Protection::Relro,
                 trf!(
-                    "RELRO vide ou hors de tout PT_LOAD, rien n'y est protégé (PT_GNU_RELRO à 0x{adresse:X}, 0x{taille:X} octets)",
-                    "RELRO empty or outside every PT_LOAD, nothing protected (PT_GNU_RELRO at 0x{adresse:X}, 0x{taille:X} bytes)"
+                    "RELRO vide ou hors de tout PT_LOAD écrivable, rien n'y est protégé (PT_GNU_RELRO à 0x{adresse:X}, 0x{taille:X} octets)",
+                    "RELRO empty or outside every writable PT_LOAD, nothing protected (PT_GNU_RELRO at 0x{adresse:X}, 0x{taille:X} bytes)"
                 ),
             );
+        }
+        // `-z relro` y met toujours la section dynamique, et la .got juste après : une marque qui ne la couvre pas
+        // protège autre chose que ce qu'elle annonce.
+        [seul] => {
+            for dynamique in e
+                .segments
+                .iter()
+                .filter(|s| s.type_ == elf::PT_DYNAMIC && !elf::contient(seul, s))
+            {
+                let (adresse, taille) = (dynamique.adresse, dynamique.taille_memoire);
+                let (debut, longueur) = (seul.adresse, seul.taille_memoire);
+                j.manque(
+                    Protection::Relro,
+                    trf!(
+                        "RELRO ne couvre pas la section dynamique, ni la .got qui la suit (PT_DYNAMIC à 0x{adresse:X}, 0x{taille:X} octets ; PT_GNU_RELRO à 0x{debut:X}, 0x{longueur:X} octets)",
+                        "RELRO does not cover the dynamic section, nor the .got after it (PT_DYNAMIC at 0x{adresse:X}, 0x{taille:X} bytes; PT_GNU_RELRO at 0x{debut:X}, 0x{longueur:X} bytes)"
+                    ),
+                );
+            }
         }
         plusieurs => {
             let n = plusieurs.len();
@@ -734,7 +753,7 @@ fn juger_tranche(a: &str, m: &macho::MachO, j: &mut Jugement) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analyse::elf::essais::{Durci, elf64, elf64_durci};
+    use crate::analyse::elf::essais::{Durci, elf64, elf64_durci, entete};
     use crate::analyse::macho::essais::{MacDurci, macho64, macho64_durci, universel_de};
     use crate::pe::essais::{Retrait, gardes_d_essai, sans_protection};
 
@@ -805,23 +824,23 @@ mod tests {
         assert_eq!(manques(&d, &v), [Protection::Pie]);
         // PT_GNU_STACK absent (devenu PT_NULL) : la pile n'est pas dite non exécutable.
         let mut v = elf64_durci(Durci::COMPLET);
-        v[0x40 + 112..0x40 + 116].fill(0);
+        v[entete(2)..entete(2) + 4].fill(0);
         assert_eq!(manques(&d, &v), [Protection::PileNonExecutable]);
         // Un PT_LOAD écrivable et exécutable.
         let mut v = elf64_durci(Durci::COMPLET);
-        v[0x40 + 4] = 7;
+        v[entete(0) + 4] = 7;
         assert_eq!(manques(&d, &v), [Protection::SansEcrivableExecutable]);
         // Section dynamique sans DT_NULL : illisible, et donc ni PIE ni BIND_NOW lus.
         let mut v = elf64_durci(Durci::COMPLET);
         v[0x1A0..0x1B0].fill(0xAA);
-        v[0x40 + 56 + 32..0x40 + 56 + 40].copy_from_slice(&0x28u64.to_le_bytes());
+        v[entete(1) + 32..entete(1) + 40].copy_from_slice(&0x28u64.to_le_bytes());
         let m = manques(&d, &v);
         assert!(
             m.contains(&Protection::SectionDynamique) && m.contains(&Protection::Pie),
             "{m:?}"
         );
-        // Les en-têtes de programme d'elf64_durci : PT_LOAD, PT_DYNAMIC, PT_GNU_STACK, PT_GNU_RELRO, puis PT_INTERP.
-        let entete = |i: usize| 0x40 + 56 * i;
+        // Les en-têtes de programme d'elf64_durci (`entete`) : PT_LOAD du code, PT_DYNAMIC, PT_GNU_STACK,
+        // PT_GNU_RELRO, puis PT_INTERP (s'il y est) et le PT_LOAD des données.
         // PT_GNU_RELRO vide, ou hors de tout PT_LOAD : la marque est là, mais rien n'y serait protégé.
         let mut v = elf64_durci(Durci::COMPLET);
         v[entete(3) + 40..entete(3) + 48].fill(0);
@@ -834,6 +853,27 @@ mod tests {
         let mut v = elf64_durci(Durci::COMPLET);
         v[entete(3) + 16..entete(3) + 24].copy_from_slice(&0x10_0000u64.to_le_bytes());
         assert_eq!(manques(&d, &v), [Protection::Relro]);
+        // Rétréci à 16 octets : dans le PT_LOAD des données, mais la section dynamique (et la .got qui la suit chez
+        // un vrai éditeur de liens) reste écrivable.
+        let mut v = elf64_durci(Durci::COMPLET);
+        v[entete(3) + 32..entete(3) + 48].copy_from_slice(&[0x10, 0, 0, 0, 0, 0, 0, 0, 0x10, 0, 0, 0, 0, 0, 0, 0]);
+        let j = jugement(&d, &v);
+        assert_eq!(
+            j.manques.iter().map(|m| m.protection).collect::<Vec<_>>(),
+            [Protection::Relro]
+        );
+        assert!(j.manques[0].texte.contains("section dynamique"), "{:?}", j.manques);
+        // Déplacé dans le PT_LOAD du code, déjà en lecture seule : le protéger ne change rien, les données restent
+        // écrivables.
+        let mut v = elf64_durci(Durci::COMPLET);
+        v[entete(3) + 8..entete(3) + 16].copy_from_slice(&0x100u64.to_le_bytes());
+        v[entete(3) + 16..entete(3) + 24].copy_from_slice(&0x100u64.to_le_bytes());
+        let j = jugement(&d, &v);
+        assert_eq!(
+            j.manques.iter().map(|m| m.protection).collect::<Vec<_>>(),
+            [Protection::Relro]
+        );
+        assert!(j.manques[0].texte.contains("écrivable"), "{:?}", j.manques);
         // Débordant de son PT_LOAD : pas dedans non plus.
         let mut v = elf64_durci(Durci::COMPLET);
         v[entete(3) + 40..entete(3) + 48].copy_from_slice(&0x81u64.to_le_bytes());

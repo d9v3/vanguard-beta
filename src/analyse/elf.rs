@@ -162,18 +162,25 @@ impl Elf {
     }
 }
 
-/// La plage en mémoire de `s` ([p_vaddr, p_vaddr + p_memsz), non vide) tient-elle dans celle d'un PT_LOAD ? Un
-/// PT_GNU_RELRO hors de toute plage chargée ne protège rien : il n'y a rien à cette adresse.
-pub(crate) fn en_memoire_dans_un_load(segments: &[Segment], s: &Segment) -> bool {
-    let Some(fin) = s.adresse.checked_add(s.taille_memoire) else {
+/// La plage en mémoire de `s` ([p_vaddr, p_vaddr + p_memsz), non vide) tient-elle dans celle d'un PT_LOAD
+/// écrivable ? Un PT_GNU_RELRO hors de toute plage chargée ne protège rien (il n'y a rien à cette adresse), et dans un
+/// PT_LOAD déjà en lecture seule non plus : ce qu'il fallait protéger est ailleurs.
+pub(crate) fn dans_un_load_ecrivable(segments: &[Segment], s: &Segment) -> bool {
+    s.taille_memoire > 0
+        && segments
+            .iter()
+            .any(|l| l.type_ == PT_LOAD && l.ecrivable() && contient(l, s))
+}
+
+/// La plage en mémoire de `dedans` tient-elle dans celle de `s` ? Une adresse qui déborde n'y tient jamais.
+pub(crate) fn contient(s: &Segment, dedans: &Segment) -> bool {
+    let (Some(fin), Some(fin_dedans)) = (
+        s.adresse.checked_add(s.taille_memoire),
+        dedans.adresse.checked_add(dedans.taille_memoire),
+    ) else {
         return false;
     };
-    s.taille_memoire > 0
-        && segments.iter().any(|l| {
-            l.type_ == PT_LOAD
-                && l.adresse <= s.adresse
-                && l.adresse.checked_add(l.taille_memoire).is_some_and(|f| fin <= f)
-        })
+    s.adresse <= dedans.adresse && fin_dedans <= fin
 }
 
 /// Les en-têtes de l'ELF `octets`. `None` : pas un ELF, ou en-tête principal illisible.
@@ -707,17 +714,27 @@ pub(crate) mod essais {
         };
     }
 
-    /// Un ELF 64 bits petit-boutiste comme celui de Vanguard (static-pie de musl) : PT_LOAD (lecture, exécution),
-    /// PT_DYNAMIC (DT_FLAGS, DT_FLAGS_1, DT_NULL, à 0x180), PT_GNU_RELRO, PT_GNU_STACK, selon `d` PT_INTERP et
-    /// PT_GNU_PROPERTY ; sans sections.
+    /// Un ELF 64 bits petit-boutiste comme celui de Vanguard (static-pie de musl) : PT_LOAD du code (lecture,
+    /// exécution, 0..0x180), PT_DYNAMIC (DT_FLAGS, DT_FLAGS_1, DT_NULL, à 0x180), PT_GNU_STACK, PT_GNU_RELRO (sur la
+    /// section dynamique, comme le place `-z relro`), selon `d` PT_INTERP et PT_GNU_PROPERTY, et en dernier le PT_LOAD
+    /// des données (lecture, écriture, 0x180..0x200) ; sans sections. Les en-têtes de programme sont après, à
+    /// `ENTETES` (hors des PT_LOAD : le chargeur les lit dans le fichier), pour qu'en ajouter ne recouvre rien.
     pub(crate) fn elf64_durci(d: Durci) -> Vec<u8> {
         elf_durci(d, Forme::X86_64)
+    }
+
+    /// La table des en-têtes de programme d'`elf_durci`.
+    pub(crate) const ENTETES: usize = 0x200;
+
+    /// La position de l'en-tête de programme `i` d'`elf64_durci`.
+    pub(crate) fn entete(i: usize) -> usize {
+        ENTETES + 56 * i
     }
 
     /// Comme `elf64_durci`, dans la forme `f` (32 ou 64 bits, petit- ou gros-boutiste, autre architecture) : les
     /// mêmes segments aux mêmes positions.
     pub(crate) fn elf_durci(d: Durci, f: Forme) -> Vec<u8> {
-        let mut v = vec![0u8; 0x200];
+        let mut v = vec![0u8; 0x400];
         v[..4].copy_from_slice(b"\x7fELF");
         v[4] = if f.bits64 { 2 } else { 1 };
         v[5] = if f.gros_boutiste { 2 } else { 1 };
@@ -745,13 +762,13 @@ pub(crate) mod essais {
         mot32(&mut v, 20, 1);
         mot(&mut v, 24, 0x100);
         // e_phoff, puis e_ehsize, e_phentsize, e_phnum.
-        let (phoff, apres, taille_ph) = if f.bits64 { (0x40, 52, 56) } else { (0x34, 40, 32) };
+        let (phoff, apres, taille_ph) = if f.bits64 { (ENTETES, 52, 56) } else { (ENTETES, 40, 32) };
         mot(&mut v, if f.bits64 { 32 } else { 28 }, phoff as u64);
         mot16(&mut v, apres, if f.bits64 { 64 } else { 52 });
         mot16(&mut v, apres + 2, u16::try_from(taille_ph).unwrap());
         // (type, drapeaux, position, taille)
         let mut segments = vec![
-            (super::PT_LOAD, 5u32, 0u64, 0x200u64),
+            (super::PT_LOAD, 5u32, 0u64, 0x180u64),
             (super::PT_DYNAMIC, 6, 0x180, 0x30),
             (super::PT_GNU_STACK, if d.pile_non_executable { 6 } else { 7 }, 0, 0),
         ];
@@ -775,6 +792,8 @@ pub(crate) mod essais {
             mot32(&mut v, n + 24, 3);
             segments.push((super::PT_GNU_PROPERTY, 4, 0x1C0, 0x20));
         }
+        // En dernier : les index des en-têtes d'avant ne bougent pas.
+        segments.push((super::PT_LOAD, 6, 0x180, 0x80));
         mot16(&mut v, apres + 4, u16::try_from(segments.len()).unwrap());
         for (i, (type_, drapeaux, position, taille)) in segments.into_iter().enumerate() {
             let p = phoff + taille_ph * i;
@@ -816,7 +835,7 @@ pub(crate) mod essais {
 )]
 #[cfg(test)]
 mod tests {
-    use super::essais::{Durci, elf64, elf64_durci};
+    use super::essais::{Durci, elf64, elf64_durci, entete};
     use super::*;
 
     #[test]
@@ -912,21 +931,44 @@ mod tests {
     fn segment_en_memoire_dans_un_load() {
         let seg = |type_, adresse, taille_memoire| Segment {
             type_,
-            drapeaux: 4,
+            drapeaux: 6,
             position: 0,
             adresse,
             taille_fichier: 0,
             taille_memoire,
         };
         let loads = [seg(PT_LOAD, 0x1000, 0x2000), seg(PT_GNU_STACK, 0, u64::MAX)];
-        assert!(en_memoire_dans_un_load(&loads, &seg(PT_GNU_RELRO, 0x1000, 0x2000)));
-        assert!(en_memoire_dans_un_load(&loads, &seg(PT_GNU_RELRO, 0x2FFF, 1)));
+        assert!(dans_un_load_ecrivable(&loads, &seg(PT_GNU_RELRO, 0x1000, 0x2000)));
+        assert!(dans_un_load_ecrivable(&loads, &seg(PT_GNU_RELRO, 0x2FFF, 1)));
         // Vide, débordant, avant, hors de tout PT_LOAD (le PT_GNU_STACK ne compte pas), adresse qui déborde.
-        assert!(!en_memoire_dans_un_load(&loads, &seg(PT_GNU_RELRO, 0x1000, 0)));
-        assert!(!en_memoire_dans_un_load(&loads, &seg(PT_GNU_RELRO, 0x2FFF, 2)));
-        assert!(!en_memoire_dans_un_load(&loads, &seg(PT_GNU_RELRO, 0xFFF, 2)));
-        assert!(!en_memoire_dans_un_load(&loads, &seg(PT_GNU_RELRO, 0x10_0000, 0x10)));
-        assert!(!en_memoire_dans_un_load(&loads, &seg(PT_GNU_RELRO, u64::MAX, 2)));
+        assert!(!dans_un_load_ecrivable(&loads, &seg(PT_GNU_RELRO, 0x1000, 0)));
+        assert!(!dans_un_load_ecrivable(&loads, &seg(PT_GNU_RELRO, 0x2FFF, 2)));
+        assert!(!dans_un_load_ecrivable(&loads, &seg(PT_GNU_RELRO, 0xFFF, 2)));
+        assert!(!dans_un_load_ecrivable(&loads, &seg(PT_GNU_RELRO, 0x10_0000, 0x10)));
+        assert!(!dans_un_load_ecrivable(&loads, &seg(PT_GNU_RELRO, u64::MAX, 2)));
+        // Un PT_LOAD en lecture seule ne compte pas.
+        let lecture = [Segment {
+            drapeaux: 4,
+            ..seg(PT_LOAD, 0x1000, 0x2000)
+        }];
+        assert!(!dans_un_load_ecrivable(&lecture, &seg(PT_GNU_RELRO, 0x1000, 0x10)));
+        // contient : bornes comprises, débordement refusé.
+        assert!(contient(
+            &seg(PT_GNU_RELRO, 0x1000, 0x30),
+            &seg(PT_DYNAMIC, 0x1000, 0x30)
+        ));
+        assert!(!contient(
+            &seg(PT_GNU_RELRO, 0x1000, 0x10),
+            &seg(PT_DYNAMIC, 0x1000, 0x30)
+        ));
+        assert!(!contient(
+            &seg(PT_GNU_RELRO, 0x1010, 0x30),
+            &seg(PT_DYNAMIC, 0x1000, 0x30)
+        ));
+        assert!(!contient(
+            &seg(PT_GNU_RELRO, 0, u64::MAX),
+            &seg(PT_DYNAMIC, u64::MAX, 2)
+        ));
     }
 
     #[test]
@@ -938,31 +980,32 @@ mod tests {
         // Sans DT_NULL avant la fin du segment.
         let mut v = elf64_durci(Durci::COMPLET);
         v[0x1A0..0x1B0].fill(0xAA);
-        v[0x40 + 56 + 32..0x40 + 56 + 40].copy_from_slice(&0x28u64.to_le_bytes());
+        v[entete(1) + 32..entete(1) + 40].copy_from_slice(&0x28u64.to_le_bytes());
         assert!(illisible(&v));
         // Hors du fichier.
         let mut v = elf64_durci(Durci::COMPLET);
-        v[0x40 + 56 + 8..0x40 + 56 + 16].copy_from_slice(&0x1F0u64.to_le_bytes());
+        v[entete(1) + 8..entete(1) + 16].copy_from_slice(&0x3F0u64.to_le_bytes());
         assert!(illisible(&v));
-        // Chargée à un autre décalage que celui du fichier (p_vaddr 0x100, p_offset 0x180, PT_LOAD à 0 et 0) : ce que
+        // Chargée à un autre décalage que celui du fichier (p_vaddr 0x100, dans le PT_LOAD du code ; p_offset 0x180, dans celui des données) : ce que
         // lit le démarrage n'est pas ce qu'on lit.
         let mut v = elf64_durci(Durci::COMPLET);
-        v[0x40 + 56 + 16..0x40 + 56 + 24].copy_from_slice(&0x100u64.to_le_bytes());
+        v[entete(1) + 16..entete(1) + 24].copy_from_slice(&0x100u64.to_le_bytes());
         assert!(illisible(&v));
-        // Débordant du PT_LOAD en mémoire.
+        // Débordant du PT_LOAD des données (le dernier en-tête) en mémoire.
         let mut v = elf64_durci(Durci::COMPLET);
-        v[0x40 + 32..0x40 + 40].copy_from_slice(&0x190u64.to_le_bytes());
-        v[0x40 + 40..0x40 + 48].copy_from_slice(&0x190u64.to_le_bytes());
+        v[entete(4) + 32..entete(4) + 40].copy_from_slice(&0x10u64.to_le_bytes());
+        v[entete(4) + 40..entete(4) + 48].copy_from_slice(&0x10u64.to_le_bytes());
         assert!(illisible(&v));
-        // Le même décalage, à une autre adresse (PT_LOAD et PT_DYNAMIC déplacés de 0x1000 ensemble) : lisible.
+        // Le même décalage, à une autre adresse (PT_LOAD des données et PT_DYNAMIC déplacés de 0x1000 ensemble) :
+        // lisible.
         let mut v = elf64_durci(Durci::COMPLET);
-        v[0x40 + 16..0x40 + 24].copy_from_slice(&0x1000u64.to_le_bytes());
-        v[0x40 + 56 + 16..0x40 + 56 + 24].copy_from_slice(&0x1180u64.to_le_bytes());
+        v[entete(4) + 16..entete(4) + 24].copy_from_slice(&0x1180u64.to_le_bytes());
+        v[entete(1) + 16..entete(1) + 24].copy_from_slice(&0x1180u64.to_le_bytes());
         let elf = lire(&v).unwrap();
         assert!(!elf.dynamique_illisible && elf.dynamique.is_some_and(|d| d.liaison_immediate()));
         // Deux PT_DYNAMIC : le PT_GNU_STACK devient le second.
         let mut v = elf64_durci(Durci::COMPLET);
-        v[0x40 + 112..0x40 + 116].copy_from_slice(&PT_DYNAMIC.to_le_bytes());
+        v[entete(2)..entete(2) + 4].copy_from_slice(&PT_DYNAMIC.to_le_bytes());
         assert!(illisible(&v));
         // Sans PT_DYNAMIC du tout : rien à lire, rien d'illisible.
         let elf = lire(&elf64(5, false, 0x40_0180, b"")).unwrap();
@@ -990,7 +1033,7 @@ mod tests {
         }
 
         #[test]
-        fn durci_abime(i in 0usize..0x200, x in proptest::num::u8::ANY, j in 0usize..0x200, y in proptest::num::u8::ANY, cet in proptest::bool::ANY) {
+        fn durci_abime(i in 0usize..0x400, x in proptest::num::u8::ANY, j in 0usize..0x400, y in proptest::num::u8::ANY, cet in proptest::bool::ANY) {
             let mut d = Durci::COMPLET;
             d.cet = cet;
             let mut v = elf64_durci(d);
