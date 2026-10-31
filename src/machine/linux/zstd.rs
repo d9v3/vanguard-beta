@@ -1255,3 +1255,8 @@ mod tests {
         }
     }
 }
+
+// Preuves bornées (Kani) : outils/preuves/, lancées par outils/preuves.sh ; jamais compilées ailleurs.
+#[cfg(kani)]
+#[path = "../../../outils/preuves/src/preuve_zstd.rs"]
+mod preuves;

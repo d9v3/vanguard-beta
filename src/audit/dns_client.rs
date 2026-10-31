@@ -694,3 +694,8 @@ mod entrees_hostiles {
         }
     }
 }
+
+// Preuves bornées (Kani) : outils/preuves/, lancées par outils/preuves.sh ; jamais compilées ailleurs.
+#[cfg(kani)]
+#[path = "../../outils/preuves/src/preuve_dns.rs"]
+mod preuves;

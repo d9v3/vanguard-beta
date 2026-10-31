@@ -850,3 +850,8 @@ mod tests {
         assert_eq!(signe(&[0x80, 0, 0, 0, 0, 0, 0, 0]), i64::MIN);
     }
 }
+
+// Preuves bornées (Kani) : outils/preuves/, lancées par outils/preuves.sh ; jamais compilées ailleurs.
+#[cfg(kani)]
+#[path = "../outils/preuves/src/preuve_sqlite.rs"]
+mod preuves;

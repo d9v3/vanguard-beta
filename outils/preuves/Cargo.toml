@@ -1,0 +1,23 @@
+# Preuves bornées de Vanguard (Kani) : à part, jamais compilé avec le programme. Comme le banc de fuzz/, il a son
+# propre espace de travail et inclut des modules de ../../src par leur chemin ; les preuves elles-mêmes sont des
+# modules enfants de ceux-ci (`#[cfg(kani)] mod preuves`, à la fin de chaque module), pour atteindre leurs
+# fonctions privées. Lancer : outils/preuves.sh (Miri, puis Kani).
+[package]
+name = "vanguard-preuves"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "GPL-3.0-or-later"
+
+[lib]
+path = "src/lib.rs"
+
+# `kani` : posé par Kani ; `fuzzing` : celui du banc de fuzz/, lu par src/sqlite.rs (jamais posé ici).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)", "cfg(kani)"] }
+
+[workspace]
+
+# Le remplacement d'une fonction dans une preuve (`#[kani::stub]`, preuve_dns.rs) est encore instable dans Kani.
+[package.metadata.kani]
+unstable = { stubbing = true }

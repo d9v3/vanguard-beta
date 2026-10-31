@@ -154,9 +154,10 @@ mem_forget = "warn"
 
 # `fuzzing` : posé par cargo-fuzz pour le banc de fuzz/, qui inclut des modules de src/ par leur chemin (sqlite.rs
 # y ouvre sa lecture des colonnes, réservée à macOS ailleurs). Déclaré pour que la compilation de Vanguard ne le
-# prenne pas pour une faute de frappe.
+# prenne pas pour une faute de frappe. `kani` : posé par le vérificateur Kani pour les preuves bornées de
+# outils/preuves/ (outils/preuves.sh), qui inclut de même sqlite.rs, zstd.rs et dns_client.rs.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)", "cfg(kani)"] }
 
 [dev-dependencies]
 proptest = "1.12.0"
