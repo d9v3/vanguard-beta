@@ -236,11 +236,16 @@ pub(crate) fn lire_html(html: &str, max_liens: usize, source: &Source) -> Html {
             }
             continue;
         }
+        // `script` et `style` sans préfixe seuls : un `<o:script>` est, pour un client de messagerie, un élément
+        // inconnu qui montre son contenu ; sauté jusqu'à une fermeture qui ne vient pas, il avalait le reste du
+        // courriel (relecture du lot campagne 6). Le nom local ne sert qu'aux liens et aux images, que `<svg:a>`
+        // désigne aussi.
+        if matches!(lue.nom.as_str(), "script" | "style") {
+            let fin = format!("</{}", lue.nom);
+            i = chercher_casse(h, i, fin.as_bytes()).unwrap_or(h.len());
+            continue;
+        }
         match lue.local() {
-            "script" | "style" => {
-                let fin = format!("</{}", lue.nom);
-                i = chercher_casse(h, i, fin.as_bytes()).unwrap_or(h.len());
-            }
             "a" => {
                 // Un lien jamais fermé se termine où le suivant commence.
                 fermer(&mut ouvert, &mut r);
@@ -923,6 +928,27 @@ mod tests {
         let h = html("<a href='https://a.example'>un <a href='https://b.example'>deux");
         assert_eq!(h.liens.len(), 2);
         assert_eq!(h.liens[0].affiche.as_deref(), Some("un"));
+    }
+
+    /// Relecture du lot campagne 6 : seuls `script` et `style` sans préfixe se sautent jusqu'à leur fermeture. Un
+    /// `<o:script>` est, pour un client de messagerie, un élément inconnu qui montre son contenu : non fermé, il ne
+    /// doit pas avaler le reste du courriel.
+    #[test]
+    fn script_prefixe_non_saute() {
+        for debut in ["<o:script>", "<x:style>", "<o:script >"] {
+            let h = html(&format!("{debut}<a href=\"https://paypa1-login.example/\">Payer</a>"));
+            assert_eq!(
+                h.liens.iter().map(|l| l.cible.as_str()).collect::<Vec<_>>(),
+                ["https://paypa1-login.example/"],
+                "{debut}"
+            );
+        }
+        // Sans préfixe, le contenu reste sauté.
+        let h = html("<SCRIPT>x='<a href=\"https://s.example/\">'</script><a href='https://vu.example/'>v</a>");
+        assert_eq!(
+            h.liens.iter().map(|l| l.cible.as_str()).collect::<Vec<_>>(),
+            ["https://vu.example/"]
+        );
     }
 
     #[test]
