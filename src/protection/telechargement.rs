@@ -177,8 +177,9 @@ pub(crate) fn calculer(fichier: &Path, algo: Algo) -> Result<String, String> {
 }
 
 /// Un caractère qui ne se voit pas dans un nom de fichier : ceux que `ui::affichable` neutralise (contrôles, bidi,
-/// espaces sans chasse, U+FEFF, U+00AD, étiquettes), le reste de la catégorie « format » (Cf) et les remplissages
-/// qui s'affichent vides (Hangul, sélecteurs de variante, U+034F).
+/// espaces sans chasse, U+FEFF, U+00AD, étiquettes), le reste de la catégorie « format » (Cf, dont les commandes de
+/// mise en forme obsolètes U+206A à U+206F) et ce qui s'affiche vide (remplissages Hangul, sélecteurs de variante,
+/// mongols compris, U+034F, braille vide U+2800, rendu comme une espace).
 fn invisible_dans_un_nom(c: char) -> bool {
     crate::ui::piege(c)
         || matches!(
@@ -191,6 +192,10 @@ fn invisible_dans_un_nom(c: char) -> bool {
                 | 0x08E2
                 | 0x115F..=0x1160
                 | 0x17B4..=0x17B5
+                | 0x180B..=0x180D
+                | 0x180F
+                | 0x206A..=0x206F
+                | 0x2800
                 | 0x3164
                 | 0xFE00..=0xFE0F
                 | 0xFFA0
@@ -1175,6 +1180,32 @@ mod tests {
         // Accents et autres écritures ne sont pas invisibles.
         assert_eq!(niveaux("relevé-été.pdf", b"%PDF"), []);
         assert_eq!(niveaux("報告.pdf", b"%PDF"), []);
+    }
+
+    /// Relecture du lot campagne 6 : les commandes de mise en forme obsolètes (U+206A à U+206F), les sélecteurs de
+    /// variante mongols (U+180B à U+180D, U+180F), le braille vide (U+2800) et les remplissages Hangul restent
+    /// invisibles dans un nom.
+    #[test]
+    fn invisibles_oublies() {
+        for invisible in [
+            '\u{206a}', '\u{206b}', '\u{206c}', '\u{206d}', '\u{206e}', '\u{206f}', '\u{180b}', '\u{180c}', '\u{180d}',
+            '\u{180f}', '\u{2800}', '\u{3164}', '\u{115f}', '\u{1160}', '\u{ffa0}',
+        ] {
+            let nom = format!("rapport.pdf{invisible}.exe");
+            let signes = nature(&nom, b"MZ\x90\x00");
+            assert!(
+                signes
+                    .iter()
+                    .any(|(n, t)| *n == Niveau::Eleve && t.contains("Nom piégé")),
+                "{:?} : {signes:?}",
+                u32::from(invisible)
+            );
+            assert!(
+                signes.iter().any(|(_, t)| t.contains("Double extension « .pdf.exe »")),
+                "{:?} : {signes:?}",
+                u32::from(invisible)
+            );
+        }
     }
 
     #[test]
