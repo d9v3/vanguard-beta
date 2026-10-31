@@ -182,15 +182,8 @@ pub(crate) fn juger(nom: &str, type_declare: &str, contenu: &[u8]) -> (Vec<Signe
     // il s'exécute dans le navigateur. Sans nom, rien d'autre ne le dit. Le script peut aussi être préfixé
     // (`<svg:script>`), dans un gestionnaire d'événement (`onload`), une adresse `javascript:` ou du HTML intégré
     // (`foreignObject`) : `corps::juger_svg`. Un nom en « .svg » est déjà une page web (signe élevé) : seule une image
-    // annoncée SVG sous un autre nom passe par ici.
-    let svg = classe(&ext) != Some(Classe::PageWeb) && type_declare == "image/svg+xml";
-    let jugee = svg.then(|| super::corps::juger_svg(contenu));
-    if jugee == Some(None) {
-        manques.push(trf!(
-            "le contenu de l'image SVG {montre}",
-            "the content of the SVG image {montre}"
-        ));
-    }
+    // annoncée SVG sous un autre nom, ou une image compressée (« .svgz », que le navigateur ouvre aussi), passe par ici.
+    let svg = classe(&ext) != Some(Classe::PageWeb) && (type_declare == "image/svg+xml" || ext == "svgz");
     let qui = || {
         if nom.is_empty() {
             tr!("Pièce sans nom", "Unnamed attachment").to_string()
@@ -198,7 +191,37 @@ pub(crate) fn juger(nom: &str, type_declare: &str, contenu: &[u8]) -> (Vec<Signe
             montre.clone()
         }
     };
-    if svg && (contenu.to_ascii_lowercase().windows(7).any(|w| w == b"<script") || jugee == Some(Some(Svg::Actif))) {
+    let desvgz;
+    let contenu_svg = if svg && crate::archives::gzip::est_gzip(contenu) {
+        let (lu, entier) = degzip_svg(contenu);
+        desvgz = lu;
+        if !entier {
+            manques.push(trf!(
+                "le contenu de l'image SVG compressée {montre}",
+                "the content of the compressed SVG image {montre}"
+            ));
+            let qui = qui();
+            signes.push((
+                Niveau::Moyen,
+                trf!(
+                    "{qui} : image SVG compressée (.svgz) dont le contenu n'a pas pu être vérifié en entier (abîmé, coupé ou trop gros une fois décompressé) ; elle peut porter du script.",
+                    "{qui}: compressed SVG image (.svgz) whose content could not be fully checked (damaged, cut off or too large once decompressed); it may carry script."
+                ),
+            ));
+        }
+        desvgz.as_slice()
+    } else {
+        contenu
+    };
+    let jugee = svg.then(|| super::corps::juger_svg(contenu_svg));
+    if jugee == Some(None) {
+        manques.push(trf!(
+            "le contenu de l'image SVG {montre}",
+            "the content of the SVG image {montre}"
+        ));
+    }
+    if svg && (contenu_svg.to_ascii_lowercase().windows(7).any(|w| w == b"<script") || jugee == Some(Some(Svg::Actif)))
+    {
         let qui = qui();
         signes.push((
             Niveau::Eleve,
@@ -265,6 +288,36 @@ pub(crate) fn juger(nom: &str, type_declare: &str, contenu: &[u8]) -> (Vec<Signe
         signes.retain(|(n, t)| *n != Niveau::Info || !conseils.contains(t));
     }
     (signes, manques)
+}
+
+/// Une image SVG compressée décompresse au plus cent fois sa taille : une vraie en gagne dix tout au plus, une bombe de
+/// quelques Kio en donnerait des Go.
+const SVGZ_RAPPORT_MAX: usize = 100;
+
+/// Le temps de décompresser une image SVG : des blocs deflate vides tiennent le processeur sans rien produire.
+const SVGZ_DELAI: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Le contenu d'une image SVG compressée (gzip), au plus `corps::HTML_MAX` octets et `SVGZ_RAPPORT_MAX` fois sa taille,
+/// et s'il est entier : membre lu jusqu'au bout avant `SVGZ_DELAI`, CRC et taille justes, rien après. Ce qui a été lu
+/// d'un contenu pas entier est rendu aussi, à juger quand même.
+fn degzip_svg(octets: &[u8]) -> (Vec<u8>, bool) {
+    use crate::archives::{crc32::crc32, deflate, gzip};
+    let Some(flux) = gzip::debut_du_flux(octets, 0) else {
+        return (Vec::new(), false);
+    };
+    let limite = super::corps::HTML_MAX.min(octets.len().saturating_mul(SVGZ_RAPPORT_MAX));
+    let echeance = std::time::Instant::now().checked_add(SVGZ_DELAI);
+    let lu = deflate::inflater_avant(octets.get(flux..).unwrap_or_default(), limite, echeance);
+    let fin = octets.get(flux.saturating_add(lu.lus)..).unwrap_or_default();
+    // RFC 1952 : CRC-32 puis taille modulo 2³², et le fichier s'arrête là.
+    let [c0, c1, c2, c3, t0, t1, t2, t3] = *fin else {
+        return (lu.contenu, false);
+    };
+    let taille = u32::try_from(lu.contenu.len()).ok();
+    let entier = lu.fin == deflate::Fin::Complet
+        && u32::from_le_bytes([c0, c1, c2, c3]) == crc32(&lu.contenu)
+        && Some(u32::from_le_bytes([t0, t1, t2, t3])) == taille;
+    (lu.contenu, entier)
 }
 
 /// Ce que dit le nom seul, d'après sa classe d'extension.
@@ -1010,6 +1063,95 @@ mod tests {
   </g>
 </svg>
 "##;
+
+    /// Un membre gzip d'en-tête minimal : flux deflate, CRC et taille.
+    fn gzip(contenu: &[u8], niveau: u8) -> Vec<u8> {
+        let mut gz = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3];
+        gz.extend(miniz_oxide::deflate::compress_to_vec(contenu, niveau));
+        gz.extend(crate::archives::crc32::crc32(contenu).to_le_bytes());
+        gz.extend(u32::try_from(contenu.len()).unwrap().to_le_bytes());
+        gz
+    }
+
+    /// B-4 de la relecture des correctifs c6 : une image SVG compressée (« .svgz », ou du gzip annoncé
+    /// image/svg+xml) est décompressée puis jugée comme un SVG.
+    #[test]
+    fn svgz_lu_comme_un_svg() {
+        let script = "<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>";
+        let onload = "<svg xmlns=\"http://www.w3.org/2000/svg\"><rect onload=\"alert(1)\"/></svg>";
+        for (nom, type_declare, image) in [
+            ("logo.svgz", "image/svg+xml", script),
+            ("logo.svgz", "application/octet-stream", onload),
+            ("LOGO.SVGZ", "", onload),
+            ("", "image/svg+xml", onload),
+            ("logo.png", "image/svg+xml", script),
+        ] {
+            let (s, manques) = juger(nom, type_declare, &gzip(image.as_bytes(), 6));
+            assert_eq!(pire(&s), Some(Niveau::Eleve), "{nom} {type_declare} {image}");
+            assert!(manques.is_empty(), "{manques:?}");
+        }
+        // Nommée « .svgz » sans être compressée : lue telle quelle.
+        let (s, _) = juger("logo.svgz", "image/svg+xml", onload.as_bytes());
+        assert_eq!(pire(&s), Some(Niveau::Eleve));
+        // Un dessin d'Inkscape compressé reste une image.
+        for (nom, type_declare) in [("dessin.svgz", "image/svg+xml"), ("dessin.svgz", "")] {
+            let (s, manques) = juger(nom, type_declare, &gzip(INKSCAPE.as_bytes(), 9));
+            assert!(pire(&s) < Some(Niveau::Moyen), "{nom} : {s:?}");
+            assert!(manques.is_empty(), "{manques:?}");
+        }
+    }
+
+    /// B-4 de la relecture des correctifs c6 : ce qui ne se décompresse pas en entier (bombe arrêtée à la borne, flux
+    /// coupé ou abîmé, CRC faux, autre chose après le membre) est un manque et un signe moyen ; ce qui a été lu est
+    /// jugé quand même.
+    #[test]
+    fn svgz_pas_entier() {
+        let image = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\">{}<rect/></svg>",
+            " ".repeat(16 << 20)
+        );
+        let bombe = gzip(image.as_bytes(), 9);
+        assert!(bombe.len() < 64 << 10, "{}", bombe.len());
+        let script = gzip(
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>",
+            6,
+        );
+        let sain = gzip(INKSCAPE.as_bytes(), 9);
+        let coupe = sain.get(..sain.len() / 2).unwrap().to_vec();
+        let mut crc_faux = sain.clone();
+        let n = crc_faux.len();
+        crc_faux[n - 8] ^= 1;
+        let mut suivi = sain.clone();
+        suivi.extend(&script);
+        let mut abime = sain.clone();
+        abime[10] = 0xff;
+        let en_tete = sain.get(..5).unwrap().to_vec();
+        for (quoi, gz) in [
+            ("bombe", bombe),
+            ("coupé", coupe),
+            ("crc", crc_faux),
+            ("suivi", suivi),
+            ("abîmé", abime),
+            ("en-tête", en_tete),
+        ] {
+            let debut = std::time::Instant::now();
+            let (s, manques) = juger("dessin.svgz", "image/svg+xml", &gz);
+            assert!(debut.elapsed() < std::time::Duration::from_secs(10), "{quoi}");
+            assert_eq!(pire(&s), Some(Niveau::Moyen), "{quoi} : {s:?}");
+            assert!(s.iter().any(|(_, t)| t.contains("compressée")), "{quoi} : {s:?}");
+            assert_eq!(manques.len(), 1, "{quoi} : {manques:?}");
+        }
+        // Coupé après le script : ce qui a été lu le montre.
+        let mut long = b"<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script>".to_vec();
+        long.extend(
+            std::iter::repeat_n(b'x', 1 << 16)
+                .enumerate()
+                .map(|(i, x)| x ^ u8::try_from(i % 7).unwrap()),
+        );
+        let gz = gzip(&long, 6);
+        let (s, _) = juger("dessin.svgz", "", gz.get(..gz.len() - 20).unwrap());
+        assert_eq!(pire(&s), Some(Niveau::Eleve));
+    }
 
     /// B-3 de la relecture des correctifs c6 : `<script` écrit dans un bloc CDATA est du texte pour la lecture des
     /// balises, mais la recherche brute le lève toujours.
