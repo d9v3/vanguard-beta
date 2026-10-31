@@ -10,7 +10,7 @@ VEILLE=${VANGUARD_VEILLE:-$HOME/.cache/vanguard-dev/veille}
 # Le dépôt principal (worktree add/list/remove, branches veille/*) et le worktree détaché de la veille.
 DEPOT=${VANGUARD_VEILLE_DEPOT:-$HOME/Projects/vanguard}
 ARBRE=${VANGUARD_VEILLE_ARBRE:-$HOME/Projects/vanguard-veille}
-BASE=${VANGUARD_VEILLE_BASE:-prochaine}
+BASE=${VANGUARD_VEILLE_BASE:-master}
 # Les arbres jetables des corrections, hors de $VEILLE : l'IA n'a le droit de rien lire dans $VEILLE (copies brutes
 # venues d'Internet, rapports), mais doit lire son arbre.
 ARBRES_IA=${VANGUARD_VEILLE_ARBRES_IA:-$HOME/.cache/vanguard-dev/veille-arbres}

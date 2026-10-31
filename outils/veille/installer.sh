@@ -2,10 +2,10 @@
 # Installe (ou réinstalle) la veille continue (outils/veille/LISEZMOI.md) sur le PC de développement : une copie FIGÉE
 # de outils/veille/ à un commit donné, dans ~/.local/share/vanguard-veille/<sha>/ (« courante » pointe dessus), et les
 # unités systemd de l'utilisateur qui la lancent. Figée parce que nuit.sh remet lui-même le worktree de veille sur
-# prochaine (un script bash changé pendant qu'il tourne se lit de travers) et qu'un commit sur prochaine ne doit pas
+# master (un script bash changé pendant qu'il tourne se lit de travers) et qu'un commit sur master ne doit pas
 # changer en silence ce qui tourne la nuit avec l'IA : le rapport dit quand outils/veille/ a changé depuis
 # (« réinstaller »). Suit le modèle de outils/systemd/installer.sh.
-#   outils/veille/installer.sh [révision]   copie outils/veille/ de la révision (prochaine par défaut), active les
+#   outils/veille/installer.sh [révision]   copie outils/veille/ de la révision (master par défaut), active les
 #                                           minuteries nuit (03 h 30), hebdo (vendredi 05 h 30) et matin (08 h 30)
 #   outils/veille/installer.sh --retirer    retire les unités (la copie et les rapports restent)
 # N'active rien d'autre : le worktree ~/Projects/vanguard-veille est créé par la première nuit.
@@ -31,7 +31,7 @@ if [[ ${1:-} == --retirer ]]; then
   exit 0
 fi
 
-REVISION=${1:-prochaine}
+REVISION=${1:-master}
 SHA=$(git rev-parse --verify "$REVISION^{commit}")
 ARBRE_VEILLE=$(git rev-parse "$SHA:outils/veille")
 COPIE=$DESTINATION/$SHA

@@ -146,7 +146,7 @@ jobs:
   # Les canaris de format (src/canaris.rs), chaque nuit et à la demande : chaque vraie source (Échap, KEV,
   # endoflife.date, Homebrew, Edge, Chrome, Mozilla…), téléchargée par la même demande que le programme, relue par son
   # lecteur. Le code de master ne change pas la nuit, les sources si : un format changé se voit ici, même l'ordinateur
-  # de l'auteur éteint (sa veille de nuit fait de même sur « prochaine »). Un échec = un courriel de GitHub.
+  # de l'auteur éteint (sa veille de nuit fait de même sur « master »). Un échec = un courriel de GitHub.
   canaris:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest

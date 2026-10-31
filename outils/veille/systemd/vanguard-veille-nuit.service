@@ -1,7 +1,7 @@
 [Unit]
 Description=Vanguard : veille de nuit, sans IA (vérification, fuzz, failles, canaris des sources)
 # outils/veille/LISEZMOI.md. Lance la copie figée installée par outils/veille/installer.sh, jamais le dépôt : nuit.sh
-# remet lui-même le worktree de veille sur prochaine.
+# remet lui-même le worktree de veille sur master.
 
 [Service]
 Type=oneshot

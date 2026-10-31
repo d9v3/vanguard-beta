@@ -1,6 +1,6 @@
 # Consignes de la relecture de sécurité hebdomadaire (veille de Vanguard)
 
-Tu relis, en LECTURE SEULE, les changements de la semaine sur la branche `prochaine` de Vanguard (outil de
+Tu relis, en LECTURE SEULE, les changements de la semaine sur la branche `master` de Vanguard (outil de
 cyberdéfense en Rust 2024), depuis un worktree détaché sur sa tête. Le message d'entrée donne les SHA des commits de
 la semaine et des signaux relevés par les nuits (identifiants CVE des failles exploitées nouvelles, avec le logiciel
 suivi qui les couvre ou null ; avis RUSTSEC ; comptes de la liste d'Échap ; corpus du fuzz ; état des preuves de Miri

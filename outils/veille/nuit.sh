@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # La nuit de la veille continue, SANS IA (outils/veille/LISEZMOI.md) : le worktree de veille remis sur la tête de
-# prochaine, verifier.sh complet, proptest à la graine du jour, fuzz de chaque cible (le corpus grandit : c'est
+# master, verifier.sh complet, proptest à la graine du jour, fuzz de chaque cible (le corpus grandit : c'est
 # l'adaptation), le jeudi Miri et Kani (outils/preuves.sh), cargo audit sur les quatre Cargo.lock avec la base
 # RUSTSEC fraîche, canaris des vraies sources lues par le programme, liens.py, la VM par vm-tester.sh s'il existe.
 # Puis le rapport (JSON et Markdown), une seule notification si quelque chose ne va pas, et, sur alerte et dans le

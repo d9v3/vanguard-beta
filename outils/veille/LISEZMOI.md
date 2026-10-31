@@ -20,7 +20,7 @@ manquée (ordinateur éteint) n'est pas rattrapée en journée (`Persistent=fals
 
 ## La nuit, sans IA
 
-1. Le worktree `~/Projects/vanguard-veille`, **détaché**, remis sur la tête de `prochaine` (reset seulement s'il est
+1. Le worktree `~/Projects/vanguard-veille`, **détaché**, remis sur la tête de `master` (reset seulement s'il est
    listé par git et détaché : jamais le worktree d'une session).
 2. `outils/verifier.sh` complet (non modifié ; `verifier-dernier.txt` est sauvegardé puis remis).
 3. Proptest à la **graine du jour** (`PROPTEST_RNG_SEED=AAAAMMJJ`) : d'autres entrées chaque nuit ; un échec se rejoue
@@ -63,7 +63,7 @@ proptest a pour clé ses tests en échec, pas la graine du jour : il n'appelle l
 claude n'a rien pu faire (limite, erreur) rend son alerte, reprise la nuit suivante (le lancement reste compté).
 
 `alerte.sh` : worktree jetable `~/.cache/vanguard-dev/veille-arbres/<sujet>` sur une branche
-`veille/AAAA-MM-JJ-<sujet>` partie de la tête de prochaine ; `claude -p` (consignes `consignes-correction.md`) corrige
+`veille/AAAA-MM-JJ-<sujet>` partie de la tête de master ; `claude -p` (consignes `consignes-correction.md`) corrige
 avec un test et committe ; **garde-fous mécaniques** (refus d'un diff qui touche `.github/`, `.claude/`, `.cargo/`,
 `CLAUDE.md`, `deny.toml`, tout `outils/` (sauf `outils/liens.txt` pour une alerte « lien » : l'IA y forgerait le vert
 de sa proposition, ou changerait la chaîne de publication et de la clé ; une alerte « verifier » sur une étape portée
@@ -133,17 +133,17 @@ pour RUSTSEC, écriture dans l'arbre et dans la compilation et le cargo jetables
 Le rapport du matin (`AAAA-MM-JJ.md`, section « Ce qui t'attend ») et `ia/<jour>-<sujet>/resultat.md` disent la
 branche, les garde-fous, verifier.sh et le verdict de la relecture.
 
-- Relire : `git log -p prochaine..veille/AAAA-MM-JJ-<sujet>`
-- Accepter : la fusionner soi-même dans prochaine, comme une branche de lot (jamais fait par la veille).
+- Relire : `git log -p master..veille/AAAA-MM-JJ-<sujet>`
+- Accepter : la fusionner soi-même dans master, comme une branche de lot (jamais fait par la veille).
 - Refuser : `git branch -D veille/AAAA-MM-JJ-<sujet>` (débloque la file).
 - Le rappel de 08 h 30 : `matin.sh --vu` le coupe pour la nuit en cours.
 
 ## Installer
 
-`outils/veille/installer.sh [révision]` copie `outils/veille/` de la révision (prochaine par défaut) dans
-`~/.local/share/vanguard-veille/<sha>/`, **figée** (la nuit remet elle-même le worktree sur prochaine ; un commit ne
+`outils/veille/installer.sh [révision]` copie `outils/veille/` de la révision (master par défaut) dans
+`~/.local/share/vanguard-veille/<sha>/`, **figée** (la nuit remet elle-même le worktree sur master ; un commit ne
 change pas en silence ce qui tourne avec l'IA) et active les minuteries. Le rapport prévient quand `outils/veille/` de
-prochaine a changé depuis : réinstaller. Le worktree `~/Projects/vanguard-veille` est créé par la première nuit.
+master a changé depuis : réinstaller. Le worktree `~/Projects/vanguard-veille` est créé par la première nuit.
 
 ## Essais
 

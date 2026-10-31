@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # La relecture de sécurité hebdomadaire de la veille continue (outils/veille/LISEZMOI.md), le vendredi à 05 h 30,
 # après la nuit et le renouvellement du quota de la semaine : un claude -p en LECTURE SEULE relit, en adversaire, les
-# commits de la semaine sur prochaine (git log --since) et propose des adaptations à partir des signaux des nuits
+# commits de la semaine sur master (git log --since) et propose des adaptations à partir des signaux des nuits
 # (KEV hors des logiciels suivis, RUSTSEC, Échap, fuzz, canaris). Le résultat va dans AAAA-MM-JJ-hebdo.md ; une
 # proposition « évidente » peut lancer UNE correction par alerte.sh (même budget, même file).
 #   hebdo.sh

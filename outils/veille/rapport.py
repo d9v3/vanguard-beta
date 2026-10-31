@@ -729,8 +729,8 @@ def resultat(a):
         md.append(f"- Constat [{borne(c.get('gravite'), 10)}] {borne(c.get('fichier'), 80)}:{c.get('ligne', '?')} — "
                   f"{borne(c.get('resume'), 200)}")
     b = etat.get("branche", "veille/…")
-    md += ["", "## Pour l'auteur", "", f"- Relire : `git log -p {etat.get('base', 'prochaine')}..{b}`",
-           f"- Accepter : la fusionner soi-même dans {etat.get('base', 'prochaine')} (jamais fait par la veille)",
+    md += ["", "## Pour l'auteur", "", f"- Relire : `git log -p {etat.get('base', 'master')}..{b}`",
+           f"- Accepter : la fusionner soi-même dans {etat.get('base', 'master')} (jamais fait par la veille)",
            f"- Refuser : `git branch -D {b}` (débloque la file des corrections)"]
     (d / "resultat.md").write_text("\n".join(md) + "\n", encoding="utf-8")
     r = lire_json(a.rapport)
@@ -856,7 +856,7 @@ def main():
     for o in ("travail", "veille", "jour", "arbre", "fuzz", "sortie"):
         n.add_argument(f"--{o}", required=True)
     n.add_argument("--tete", default="")
-    n.add_argument("--base", default="prochaine")
+    n.add_argument("--base", default="master")
     n.add_argument("--copie", default="")
     n.add_argument("--copie-a-jour", default="")
     n.add_argument("--duree", type=int, default=0)
@@ -877,7 +877,7 @@ def main():
     he = sous.add_parser("hebdo-entree")
     he.add_argument("--veille", required=True)
     he.add_argument("--jour", required=True)
-    he.add_argument("--base", default="prochaine")
+    he.add_argument("--base", default="master")
     he.add_argument("--commits", required=True)
     he.add_argument("sortie")
     h = sous.add_parser("hebdo")

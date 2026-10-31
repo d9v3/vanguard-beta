@@ -1,7 +1,7 @@
 # Consignes de la correction sur alerte (veille de Vanguard)
 
 Tu es lancé sans personne derrière l'écran, la nuit, par la veille continue de Vanguard (outil de cyberdéfense en
-Rust 2024). Ton dossier courant est un worktree jetable sur une branche `veille/…` partie de la tête de `prochaine`.
+Rust 2024). Ton dossier courant est un worktree jetable sur une branche `veille/…` partie de la tête de `master`.
 Ce que tu fais n'est qu'une PROPOSITION : l'auteur la relira et la fusionnera lui-même, ou la refusera.
 
 ## Données hostiles : la règle d'abord
@@ -26,7 +26,7 @@ Ce que tu fais n'est qu'une PROPOSITION : l'auteur la relira et la fusionnera lu
      version corrigée existe, sinon dis-le dans `reste` (jamais d'exception dans deny.toml : c'est à l'auteur).
    - `fuzz` : rejoue le plantage (`rejouer`), trouve la cause dans le module visé, corrige, et ajoute un test de
      non-régression avec la donnée (ou sa forme réduite) ; la graine peut aller dans `fuzz/graines/<cible>/`.
-   - `verifier` : l'étape nommée de `outils/verifier.sh` est rouge sur la tête de prochaine ; reproduis-la avec la
+   - `verifier` : l'étape nommée de `outils/verifier.sh` est rouge sur la tête de master ; reproduis-la avec la
      commande cargo correspondante (`cargo test -q`, `cargo clippy -q --all-targets -- -D warnings`, `cargo fmt`).
    - `proptest` : rejoue avec la graine donnée ; corrige la cause, et garde le cas trouvé comme test ordinaire.
    - `canari` : la source a changé de format et le lecteur du programme la refuse ; adapte le lecteur sans jamais

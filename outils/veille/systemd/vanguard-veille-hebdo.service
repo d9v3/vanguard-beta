@@ -1,5 +1,5 @@
 [Unit]
-Description=Vanguard : relecture de sécurité hebdomadaire des changements de prochaine (claude -p, lecture seule)
+Description=Vanguard : relecture de sécurité hebdomadaire des changements de master (claude -p, lecture seule)
 
 [Service]
 Type=oneshot
