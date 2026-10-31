@@ -656,17 +656,27 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
         attendre_entree_pour_fermer();
         return LISTE_REFUSEE;
     };
+    // Chaque script est lu et vérifié avant d'être montré : ce que l'Entrée autorise est exactement ce qui sera lancé.
+    // Illisible ou changé depuis son écriture, la liste entière est refusée, sans rien demander.
+    let montre = match a_montrer(&liste) {
+        Ok(m) => m,
+        Err(chemin) => {
+            trp!(
+                "Le script de correction {} ne se lit plus ou a changé depuis que Vanguard l'a écrit : rien n'est fait, rien n'est demandé. Un autre programme y a touché : lancez une analyse antivirus, puis relancez la correction.",
+                "The fix script {} can no longer be read or has changed since Vanguard wrote it: nothing is done, nothing is asked. Another program touched it: run an antivirus scan, then run the fix again.",
+                crate::ui::affichable(&chemin)
+            );
+            let _ = tube.write_all(format!("{FIN}\n").as_bytes());
+            attendre_entree_pour_fermer();
+            return LISTE_REFUSEE;
+        }
+    };
     println!();
     trp!("Ce qui va être fait :", "What will be done:");
-    for e in &liste {
-        println!("  · {}", e.texte());
-        // Le script lui-même, tel qu'il sera vérifié puis lancé : ce que l'Entrée autorise, ligne par ligne.
-        if let Element::Script(s) = e
-            && let Ok(o) = crate::socle::lire_ordinaire(std::path::Path::new(&s.chemin), SCRIPT_MAX)
-        {
-            for l in String::from_utf8_lossy(&o).trim_start_matches('\u{feff}').lines() {
-                println!("    {GRIS}{}{RESET}", crate::ui::affichable(l));
-            }
+    for (texte, lignes) in &montre {
+        println!("  · {texte}");
+        for l in lignes {
+            println!("    {GRIS}{l}{RESET}");
         }
     }
     println!();
@@ -708,6 +718,36 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
     }
     attendre_entree_pour_fermer();
     code
+}
+
+/// Les octets d'un script de la liste, lus une seule fois (ni lien, ni tube, ni fichier démesuré), rendus seulement
+/// s'ils ont l'empreinte de la ligne ; `None` sinon.
+fn lire_script_verifie(chemin: &str, empreinte: &str) -> Option<Vec<u8>> {
+    let o = crate::socle::lire_ordinaire(std::path::Path::new(chemin), SCRIPT_MAX).ok()?;
+    (super::sha256_hex(&o) == empreinte).then_some(o)
+}
+
+/// Ce que la console montre avant l'accord : le texte de chaque geste et, pour un script, ses lignes vérifiées.
+/// `Err(chemin)` dès qu'un script est illisible ou n'a plus son empreinte : montrer autre chose que ce qui sera
+/// lancé (ou rien) ferait accepter à l'aveugle.
+fn a_montrer(liste: &[Element]) -> Result<Vec<(String, Vec<String>)>, String> {
+    liste
+        .iter()
+        .map(|e| {
+            let lignes = match e {
+                Element::Script(s) => {
+                    let o = lire_script_verifie(&s.chemin, &s.empreinte).ok_or_else(|| s.chemin.clone())?;
+                    String::from_utf8_lossy(&o)
+                        .trim_start_matches('\u{feff}')
+                        .lines()
+                        .map(crate::ui::affichable)
+                        .collect()
+                }
+                _ => Vec::new(),
+            };
+            Ok((e.texte(), lignes))
+        })
+        .collect()
 }
 
 fn attendre_entree_pour_fermer() {
@@ -772,8 +812,7 @@ fn lancer_script(chemin: &str, empreinte: &str) -> Resultat {
         raison,
     };
     // Ni lien, ni tube, ni fichier démesuré : ouvert sans suivre de lien, jugé sur ce qui est ouvert.
-    let lu = crate::socle::lire_ordinaire(std::path::Path::new(chemin), SCRIPT_MAX).ok();
-    if lu.as_deref().map(super::sha256_hex).as_deref() != Some(empreinte) {
+    if lire_script_verifie(chemin, empreinte).is_none() {
         return refus(format!(
             "code={} {}",
             super::SCRIPT_MODIFIE,
@@ -1206,6 +1245,38 @@ mod tests {
             lire_reponse(&ligne_resultat(&r)).code,
             Some(super::super::SCRIPT_MODIFIE)
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Avant l'accord, un script illisible ou changé fait refuser toute la liste (rien n'est montré, rien demandé) ;
+    /// un script intact est montré tel qu'il sera lancé.
+    #[test]
+    fn un_script_change_est_refuse_avant_l_accord() {
+        let d = std::env::temp_dir().join(format!("vanguard-montrer-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let chemin = d.join("correction-1.ps1");
+        let ecrit = "\u{feff}Write-Host 'ecrit'\r\nexit 0\r\n";
+        std::fs::write(&chemin, ecrit).unwrap();
+        let script = |empreinte: String| {
+            vec![
+                Element::Correction(corrections::analyser(corrections::POINT).unwrap()),
+                Element::Script(gestes::Script {
+                    empreinte,
+                    chemin: chemin.display().to_string(),
+                }),
+            ]
+        };
+        let bonne = super::super::sha256_hex(ecrit.as_bytes());
+        let m = a_montrer(&script(bonne.clone())).unwrap();
+        assert_eq!(m.len(), 2);
+        assert_eq!(m[0].1, Vec::<String>::new());
+        assert_eq!(m[1].1, ["Write-Host 'ecrit'", "exit 0"]);
+        // Changé après son écriture : refusé, et le chemin est dit.
+        std::fs::write(&chemin, "Write-Host 'change'").unwrap();
+        assert_eq!(a_montrer(&script(bonne.clone())), Err(chemin.display().to_string()));
+        // Disparu : refusé aussi (avant, la liste était montrée sans le script, puis l'Entrée demandée).
+        std::fs::remove_file(&chemin).unwrap();
+        assert!(a_montrer(&script(bonne)).is_err());
         let _ = std::fs::remove_dir_all(&d);
     }
 
