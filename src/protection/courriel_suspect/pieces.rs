@@ -159,59 +159,6 @@ fn utf16(t: &str) -> Vec<u8> {
     t.encode_utf16().flat_map(u16::to_le_bytes).collect()
 }
 
-fn mot16(o: &[u8], i: usize) -> Option<usize> {
-    o.get(i..)?
-        .first_chunk::<2>()
-        .map(|b| usize::from(u16::from_le_bytes(*b)))
-}
-
-fn mot32(o: &[u8], i: usize) -> Option<usize> {
-    o.get(i..)?
-        .first_chunk::<4>()
-        .and_then(|b| usize::try_from(u32::from_le_bytes(*b)).ok())
-}
-
-/// Les noms d'une archive zip (et s'ils sont chiffrés), lus dans son répertoire central seul : rien n'est décompressé.
-/// `plugins::archive` refuse les archives chiffrées, qui sont justement ce qu'on cherche ici.
-fn noms_zip(o: &[u8], max: usize) -> Result<(Vec<(String, bool)>, bool), ()> {
-    // La fin du répertoire central : dans les 65 557 derniers octets (22 + un commentaire de 65 535 au plus).
-    let debut_recherche = o.len().saturating_sub(65_557);
-    let fin = (debut_recherche..o.len().saturating_sub(21))
-        .rev()
-        .find(|&i| o.get(i..).is_some_and(|r| r.starts_with(b"PK\x05\x06")))
-        .ok_or(())?;
-    let total = mot16(o, fin + 10).ok_or(())?;
-    let mut i = mot32(o, fin + 16).ok_or(())?;
-    // 0xFFFFFFFF : archive ZIP64, au répertoire ailleurs ; pas lue.
-    if i == 0xffff_ffff {
-        return Err(());
-    }
-    let mut noms = Vec::new();
-    for _ in 0..total.min(max) {
-        if o.get(i..i + 4) != Some(b"PK\x01\x02") {
-            return if noms.is_empty() { Err(()) } else { Ok((noms, true)) };
-        }
-        let drapeaux = mot16(o, i + 8).ok_or(())?;
-        let (n, extra, commentaire) = (
-            mot16(o, i + 28).ok_or(())?,
-            mot16(o, i + 30).ok_or(())?,
-            mot16(o, i + 32).ok_or(())?,
-        );
-        let debut = o.get(i + 46..i + 46 + n.min(1_024)).ok_or(())?;
-        // La fin du nom, où sont l'extension et le dernier dossier : garder le début laissait un long chemin de
-        // dossiers cacher un programme (un signe élevé devenu moyen, sans rien dire). Un nom coupé par la fin du
-        // fichier garde son début, et l'archive se dit incomplète : même la dernière entrée, sans suivante pour le dire.
-        let Some(entier) = o.get(i + 46..i + 46 + n) else {
-            noms.push((String::from_utf8_lossy(debut).into_owned(), drapeaux & 1 != 0));
-            return Ok((noms, true));
-        };
-        let nom = entier.get(entier.len().saturating_sub(1_024)..).unwrap_or(entier);
-        noms.push((String::from_utf8_lossy(nom).into_owned(), drapeaux & 1 != 0));
-        i += 46 + n + extra + commentaire;
-    }
-    Ok((noms, total > max))
-}
-
 /// Ce que montrent le nom, le type annoncé et le contenu d'une pièce jointe ; et ce qui n'a pas pu être vérifié.
 pub(crate) fn juger(nom: &str, type_declare: &str, contenu: &[u8]) -> (Vec<Signe>, Vec<String>) {
     let mut signes: Vec<Signe> = Vec::new();
@@ -354,9 +301,14 @@ fn signe_du_nom(classe: Option<Classe>, montre: &str) -> Option<Signe> {
 
 /// Ce que montre le contenu selon sa nature : archive zip, document OLE, PDF ou RTF ; et ce qui n'a pas pu être lu.
 fn regarder_le_contenu(contenu: &[u8], montre: &str, signes: &mut Vec<Signe>, manques: &mut Vec<String>) {
-    if contenu.starts_with(b"PK\x03\x04") || contenu.starts_with(b"PK\x05\x06") {
+    // Une archive se lit depuis sa fin, comme le font les extracteurs : des octets placés devant elle (programme
+    // auto-extractible, bourrage) ne la cachent pas. Elle peut aussi suivre un PDF ou un document OLE : regardée en
+    // plus.
+    let queue = contenu.get(contenu.len().saturating_sub(65_557)..).unwrap_or(contenu);
+    if contenu.starts_with(b"PK\x03\x04") || contenu.starts_with(b"PK\x05\x06") || trouve(queue, b"PK\x05\x06") {
         regarder_le_zip(contenu, montre, signes, manques);
-    } else if contenu.starts_with(OLE) {
+    }
+    if contenu.starts_with(OLE) {
         if trouve(contenu, &utf16("__substg1.0_")) {
             signes.push((
                 Niveau::Info,
@@ -388,55 +340,27 @@ fn regarder_le_contenu(contenu: &[u8], montre: &str, signes: &mut Vec<Signe>, ma
     }
 }
 
-/// Les noms d'une archive zip : chiffrés, à macros, ou qui cachent un programme ; une archive illisible ou coupée est dite.
-fn regarder_le_zip(contenu: &[u8], montre: &str, signes: &mut Vec<Signe>, manques: &mut Vec<String>) {
-    if let Ok((noms, coupe)) = noms_zip(contenu, ZIP_ENTREES) {
-        if noms.iter().any(|(_, chiffre)| *chiffre) {
-            signes.push((
-                Niveau::Eleve,
-                trf!(
-                    "{montre} : archive à mot de passe ; les antivirus ne voient pas dedans, le mot de passe est souvent dans le message.",
-                    "{montre}: password-protected archive; antivirus cannot see inside, the password is often in the message."
-                ),
-            ));
-        }
-        if noms
-            .iter()
-            .any(|(n, _)| n.to_ascii_lowercase().ends_with("vbaproject.bin"))
-        {
-            signes.push((
-                Niveau::Eleve,
-                trf!(
-                    "{montre} : contient des macros (du code qui tourne à l'ouverture).",
-                    "{montre}: contains macros (code that runs when opened)."
-                ),
-            ));
-        }
-        let dangereux: Vec<String> = noms
-            .iter()
-            .map(|(n, _)| n.rsplit(['/', '\\']).next().unwrap_or(n).to_string())
-            .filter(|n| {
-                matches!(
-                    classe(&extension(n)),
-                    Some(Classe::Programme | Classe::Raccourci | Classe::ImageDisque | Classe::OneNote)
-                ) || !telechargement::nature(n, b"").is_empty()
-            })
-            .map(|n| crate::ui::affichable(&n))
-            .collect();
-        if !dangereux.is_empty() {
-            signes.push((
-                Niveau::Eleve,
-                trf!(
-                    "{montre} contient un programme ou un raccourci : {}.",
-                    "{montre} contains a program or a shortcut: {}.",
-                    crate::ui::resume(&dangereux, 3, ", ")
-                ),
-            ));
-        }
-        if coupe {
-            manques.push(trf!("le contenu complet de {montre}", "the full content of {montre}"));
-        }
+/// Le nom d'une entrée zip : UTF-8 si le drapeau le dit, sinon octet par octet ; sa fin seule, où sont l'extension et
+/// le dernier dossier (un long chemin de dossiers ne cache pas un programme).
+fn nom_d_entree(nom: &[u8], utf8: bool) -> String {
+    let nom = if utf8 {
+        String::from_utf8_lossy(nom).into_owned()
     } else {
+        crate::analyse::lecture::latin1_ou_utf8(nom)
+    };
+    let fin = nom.rsplit(['/', '\\']).next().unwrap_or(&nom);
+    crate::ui::couper(&crate::ui::affichable(fin), 120)
+}
+
+/// Les noms d'une archive zip, lus sans rien décompresser par `archives::zip::parcourir` (le lecteur fuzzé de
+/// l'analyse) : chiffrés, à macros, ou qui cachent un programme. Chaque nom compte, qu'il vienne du répertoire central,
+/// de l'en-tête local ou du champ Unicode : un extracteur peut suivre l'un ou l'autre. Une archive précédée de
+/// données, que deux extracteurs ne liraient pas pareil, coupée ou illisible, est dite. `plugins::archive` refuse les
+/// archives chiffrées, qui sont justement ce qu'on cherche ici.
+fn regarder_le_zip(contenu: &[u8], montre: &str, signes: &mut Vec<Signe>, manques: &mut Vec<String>) {
+    use crate::archives::zip::{Provenance, parcourir};
+    let p = parcourir(contenu, ZIP_ENTREES);
+    if p.entrees.is_empty() && (!p.fin_trouvee || p.central_illisible || p.multidisque) {
         signes.push((
             Niveau::Info,
             trf!(
@@ -445,6 +369,88 @@ fn regarder_le_zip(contenu: &[u8], montre: &str, signes: &mut Vec<Signe>, manque
             ),
         ));
         manques.push(trf!("le contenu de {montre}", "the content of {montre}"));
+        return;
+    }
+    if p.decalage > 0 || p.debut > 0 {
+        signes.push((
+            Niveau::Moyen,
+            trf!(
+                "{montre} : archive précédée d'autres données ; une façon de la cacher aux outils qui ne regardent que le début.",
+                "{montre}: archive preceded by other data; a way to hide it from tools that only look at the start."
+            ),
+        ));
+        manques.push(trf!(
+            "les données placées devant l'archive {montre}",
+            "the data placed before the archive {montre}"
+        ));
+    }
+    let incoherente = p.entrees.iter().any(|e| {
+        e.local_different
+            || e.provenance == Provenance::AuDelaDuNombre
+            || (e.provenance == Provenance::LocaleSeule && p.fin_trouvee)
+            || e.nom_local.as_ref().is_some_and(|l| *l != e.nom)
+            // Le champ Unicode traduit un nom écrit dans une page de code : il n'a pas à différer d'un nom ASCII.
+            || (e.nom.is_ascii() && e.nom_unicode.as_ref().is_some_and(|u| *u != e.nom))
+    });
+    if incoherente {
+        signes.push((
+            Niveau::Moyen,
+            trf!(
+                "{montre} : archive incohérente ; deux extracteurs n'y verraient pas les mêmes fichiers.",
+                "{montre}: inconsistent archive; two extractors would not see the same files in it."
+            ),
+        ));
+    }
+    if !p.fin_trouvee || p.central_illisible || p.limitees || p.multidisque {
+        manques.push(trf!("le contenu complet de {montre}", "the full content of {montre}"));
+    }
+    if p.entrees.iter().any(|e| e.drapeaux & 1 != 0) {
+        signes.push((
+            Niveau::Eleve,
+            trf!(
+                "{montre} : archive à mot de passe ; les antivirus ne voient pas dedans, le mot de passe est souvent dans le message.",
+                "{montre}: password-protected archive; antivirus cannot see inside, the password is often in the message."
+            ),
+        ));
+    }
+    let mut noms: Vec<String> = Vec::new();
+    for e in &p.entrees {
+        for n in [Some(&e.nom), e.nom_local.as_ref()].into_iter().flatten() {
+            noms.push(nom_d_entree(n, e.utf8));
+        }
+        if let Some(u) = &e.nom_unicode {
+            noms.push(nom_d_entree(u, true));
+        }
+    }
+    noms.sort();
+    noms.dedup();
+    if noms.iter().any(|n| n.to_ascii_lowercase().ends_with("vbaproject.bin")) {
+        signes.push((
+            Niveau::Eleve,
+            trf!(
+                "{montre} : contient des macros (du code qui tourne à l'ouverture).",
+                "{montre}: contains macros (code that runs when opened)."
+            ),
+        ));
+    }
+    let dangereux: Vec<&String> = noms
+        .iter()
+        .filter(|n| {
+            matches!(
+                classe(&extension(n)),
+                Some(Classe::Programme | Classe::Raccourci | Classe::ImageDisque | Classe::OneNote)
+            ) || !telechargement::nature(n, b"").is_empty()
+        })
+        .collect();
+    if !dangereux.is_empty() {
+        signes.push((
+            Niveau::Eleve,
+            trf!(
+                "{montre} contient un programme ou un raccourci : {}.",
+                "{montre} contains a program or a shortcut: {}.",
+                crate::ui::resume(&dangereux, 3, ", ")
+            ),
+        ));
     }
 }
 
@@ -684,9 +690,95 @@ mod tests {
         o.extend(b"PK\x05\x06");
         o.resize(fin + 22, 0);
         o[fin + 10..fin + 12].copy_from_slice(&1u16.to_le_bytes());
-        let (noms, coupe) = noms_zip(&o, ZIP_ENTREES).unwrap();
-        assert_eq!(noms.len(), 1);
-        assert!(coupe);
+        let (_, manques) = juger("documents.zip", "application/zip", &o);
+        assert_ne!(manques, Vec::<String>::new());
+    }
+
+    /// M3 (campagne 6) : une archive précédée d'octets quelconques (auto-extractible, bourrage) se lit depuis sa fin,
+    /// comme le font les extracteurs ; ce qu'elle contient est vu, et ce qui la précède est dit.
+    #[test]
+    fn archive_precedee_de_donnees() {
+        let z = zip(&[("lisez-moi.txt", b"x", false), ("scan.js", b"y", false)]);
+        for devant in [b"bourrage!".as_slice(), b"%PDF-1.7\n", &[0_u8; 4_000]] {
+            let mut o = devant.to_vec();
+            o.extend_from_slice(&z);
+            let (s, manques) = juger("documents.zip", "application/zip", &o);
+            assert!(
+                s.iter().any(|(n, t)| *n == Niveau::Eleve && t.contains("scan.js")),
+                "{s:?}"
+            );
+            assert!(
+                s.iter().any(|(n, t)| *n == Niveau::Moyen && t.contains("précédée")),
+                "{s:?}"
+            );
+            assert_ne!(manques, Vec::<String>::new());
+        }
+        // Une archive saine qui commence au début : rien de tout cela.
+        let (s, manques) = juger("photos.zip", "application/zip", &zip(&[("a.jpg", b"x", false)]));
+        assert_eq!(pire(&s), Some(Niveau::Moyen), "{s:?}");
+        assert!(
+            s.iter()
+                .all(|(_, t)| !t.contains("précédée") && !t.contains("incohérente"))
+        );
+        assert_eq!(manques, Vec::<String>::new());
+    }
+
+    /// M5 (campagne 6) : un répertoire central leurre (position déplacée, nombre d'entrées réduit, chiffrement tu)
+    /// n'est pas cru sur parole ; ce qu'un autre extracteur verrait est dit.
+    #[test]
+    fn repertoire_central_leurre() {
+        let z = zip(&[("lisez-moi.txt", b"x", false), ("scan.js", b"y", false)]);
+        let fin = z.len() - 22;
+        // Position du répertoire déplacée vers l'avant : les positions écrites ne désignent plus l'archive.
+        let mut o = z.clone();
+        let debut = u32::from_le_bytes(o[fin + 16..fin + 20].try_into().unwrap());
+        o[fin + 16..fin + 20].copy_from_slice(&(debut - 10).to_le_bytes());
+        let (s, manques) = juger("documents.zip", "application/zip", &o);
+        assert!(
+            s.iter().any(|(n, _)| *n == Niveau::Moyen) || !manques.is_empty(),
+            "position : {s:?}"
+        );
+        // Position au-delà : le répertoire ne se lit pas où il est dit.
+        let mut o = z.clone();
+        o[fin + 16..fin + 20].copy_from_slice(&(debut + 3).to_le_bytes());
+        let (s, manques) = juger("documents.zip", "application/zip", &o);
+        assert_ne!(manques, Vec::<String>::new(), "position au-delà : {s:?}");
+        // Nombre annoncé réduit à une entrée : la seconde, que lit un extracteur qui suit le répertoire, reste vue.
+        let mut o = z.clone();
+        o[fin + 8..fin + 12].copy_from_slice(&[1, 0, 1, 0]);
+        let (s, _) = juger("documents.zip", "application/zip", &o);
+        assert!(
+            s.iter().any(|(n, t)| *n == Niveau::Moyen && t.contains("incohérente")),
+            "nombre : {s:?}"
+        );
+        assert!(
+            s.iter().any(|(n, t)| *n == Niveau::Eleve && t.contains("scan.js")),
+            "nombre : {s:?}"
+        );
+        // Chiffrement dit par l'en-tête local seul.
+        let mut o = zip(&[("facture.pdf", b"x", false)]);
+        o[6] |= 1;
+        let (s, _) = juger("facture.zip", "application/zip", &o);
+        assert!(
+            s.iter().any(|(n, t)| *n == Niveau::Moyen && t.contains("incohérente")),
+            "chiffré : {s:?}"
+        );
+        assert!(
+            s.iter().any(|(n, t)| *n == Niveau::Eleve && t.contains("mot de passe")),
+            "chiffré : {s:?}"
+        );
+        // Nom local différent du nom central : les deux sont jugés.
+        let mut o = zip(&[("facture.pdf", b"x", false)]);
+        o[30..41].copy_from_slice(b"facture.exe");
+        let (s, _) = juger("facture.zip", "application/zip", &o);
+        assert!(
+            s.iter().any(|(n, t)| *n == Niveau::Eleve && t.contains("facture.exe")),
+            "nom local : {s:?}"
+        );
+        assert!(
+            s.iter().any(|(n, t)| *n == Niveau::Moyen && t.contains("incohérente")),
+            "nom local : {s:?}"
+        );
     }
 
     #[test]
