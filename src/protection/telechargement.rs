@@ -176,8 +176,36 @@ pub(crate) fn calculer(fichier: &Path, algo: Algo) -> Result<String, String> {
     }
 }
 
+/// Un caractère qui ne se voit pas dans un nom de fichier : ceux que `ui::affichable` neutralise (contrôles, bidi,
+/// espaces sans chasse, U+FEFF, U+00AD, étiquettes), le reste de la catégorie « format » (Cf) et les remplissages
+/// qui s'affichent vides (Hangul, sélecteurs de variante, U+034F).
+fn invisible_dans_un_nom(c: char) -> bool {
+    crate::ui::piege(c)
+        || matches!(
+            u32::from(c),
+            0x034F
+                | 0x0600..=0x0605
+                | 0x06DD
+                | 0x070F
+                | 0x0890..=0x0891
+                | 0x08E2
+                | 0x115F..=0x1160
+                | 0x17B4..=0x17B5
+                | 0x3164
+                | 0xFE00..=0xFE0F
+                | 0xFFA0
+                | 0xFFF9..=0xFFFB
+                | 0x110BD
+                | 0x110CD
+                | 0x13430..=0x1343F
+                | 0x1BCA0..=0x1BCA3
+                | 0x1D173..=0x1D17A
+                | 0xE0100..=0xE01EF
+        )
+}
+
 /// Ce que disent le nom et les premiers octets : programme déguisé en document, double extension, caractère qui
-/// retourne la fin du nom.
+/// retourne la fin du nom, caractère invisible.
 pub(crate) fn nature(nom: &str, debut: &[u8]) -> Vec<(Niveau, String)> {
     let mut signes = Vec::new();
     // U+202E retourne l'écriture : « facture[U+202E]fdp.exe » s'affiche « facture exe.pdf ».
@@ -191,9 +219,23 @@ pub(crate) fn nature(nom: &str, debut: &[u8]) -> Vec<(Niveau, String)> {
             .to_string(),
         ));
     }
+    // Un caractère invisible collé à une extension (« facture.pdf[U+200B].exe », « .p[U+00AD]df ») la rendait
+    // étrangère aux listes, et la double extension passait (campagne d'attaque n° 6, M2) : dit, puis retiré avant de
+    // couper le nom.
+    if nom.chars().any(|c| c != '\u{202e}' && invisible_dans_un_nom(c)) {
+        signes.push((
+            Niveau::Eleve,
+            tr!(
+                "Nom piégé : il contient un caractère invisible ou de commande, une ruse pour cacher sa vraie extension.",
+                "Trapped name: it contains an invisible or control character, a trick to hide its real extension."
+            )
+            .to_string(),
+        ));
+    }
+    let visible: String = nom.chars().filter(|&c| !invisible_dans_un_nom(c)).collect();
     // Espaces autour des morceaux retirées : « facture.pdf .exe » reste une double extension (Windows ignore aussi
     // les espaces et les points en fin de nom).
-    let morceaux: Vec<String> = nom
+    let morceaux: Vec<String> = visible
         .to_lowercase()
         .trim_end_matches(['.', ' '])
         .split('.')
@@ -1085,6 +1127,54 @@ mod tests {
         assert_eq!(niveaux("rapport.pdf", b"%PDF"), []);
         assert_eq!(niveaux("notes.v2.txt", b"Bonj"), []);
         assert_eq!(niveaux("script", b"#!/b"), [Niveau::Info]);
+    }
+
+    /// Campagne d'attaque n° 6, M2 : un caractère invisible collé à l'extension ne désamorce plus la double extension
+    /// ni le programme déguisé, et le nom piégé est dit ; la surveillance annonce un fichier déguisé.
+    #[test]
+    fn caractere_invisible_dans_le_nom() {
+        let niveaux = |nom: &str, debut: &[u8]| nature(nom, debut).iter().map(|(n, _)| *n).collect::<Vec<_>>();
+        for invisible in [
+            '\u{200b}', '\u{feff}', '\u{ad}', '\0', '\u{2060}', '\u{202a}', '\u{180e}', '\u{3164}',
+        ] {
+            let nom = format!("facture.pdf{invisible}.exe");
+            let n = niveaux(&nom, b"MZ\x90\x00");
+            assert_eq!(
+                n.iter().filter(|&&x| x == Niveau::Eleve).count(),
+                2,
+                "{:?} : {n:?}",
+                u32::from(invisible)
+            );
+            assert!(
+                nature(&nom, b"MZ\x90\x00")
+                    .iter()
+                    .any(|(_, t)| t.contains("Double extension « .pdf.exe »")),
+                "{:?}",
+                u32::from(invisible)
+            );
+            // Collé à l'extension finale : le programme reste un programme déguisé en document.
+            let nom = format!("photo.jp{invisible}g");
+            assert!(
+                niveaux(&nom, b"MZ\x90\x00")
+                    .iter()
+                    .filter(|&&x| x == Niveau::Eleve)
+                    .count()
+                    >= 2
+            );
+            let notes = a_signaler(
+                &[(format!("facture.pdf{invisible}.exe"), 200, b"MZ\x90\0".to_vec())],
+                150,
+            );
+            assert!(notes[0].0.contains("déguisé"), "{notes:?}");
+        }
+        // U+202E garde son signe, sans le second.
+        assert_eq!(
+            niveaux("facture\u{202e}fdp.exe", b"MZ\x90\x00"),
+            [Niveau::Critique, Niveau::Info]
+        );
+        // Accents et autres écritures ne sont pas invisibles.
+        assert_eq!(niveaux("relevé-été.pdf", b"%PDF"), []);
+        assert_eq!(niveaux("報告.pdf", b"%PDF"), []);
     }
 
     #[test]
