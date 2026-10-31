@@ -6,6 +6,9 @@
 //!
 //! Lecteur pur, sans `crate::` : le banc de fuzzing l'inclut par son chemin.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use super::Bornes;
 
 /// Ce qu'une archive a donné : les fichiers gardés (nom, contenu) et le nombre de ceux qui étaient voulus mais trop
@@ -67,7 +70,9 @@ pub(crate) fn parcourir<'a>(
                 None => return FinTar::Illisible,
             },
         };
-        let debut = pos + 512;
+        let Some(debut) = pos.checked_add(512) else {
+            return FinTar::Coupee;
+        };
         let Some(contenu) = debut.checked_add(taille).and_then(|fin| tar.get(debut..fin)) else {
             return FinTar::Coupee;
         };
@@ -128,7 +133,8 @@ pub(crate) fn fichiers(tar: &[u8], bornes: &Bornes, mut garder: impl FnMut(&str)
             return ControlFlow::Continue(());
         }
         if e.contenu.len() > bornes.fichier {
-            lus.trop_gros += 1;
+            // Un compteur, borné par le nombre d'en-têtes parcourus : saturer ne peut pas arriver.
+            lus.trop_gros = lus.trop_gros.saturating_add(1);
             return ControlFlow::Continue(());
         }
         match total.checked_add(e.contenu.len()) {
@@ -188,6 +194,11 @@ fn pax(contenu: &[u8]) -> Option<(Option<String>, Option<usize>)> {
     Some((nom, taille))
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

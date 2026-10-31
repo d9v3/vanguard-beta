@@ -17,6 +17,9 @@
 //! messages montrés à l'utilisateur restent lisibles (`tr!`), un nom d'outil affiché (« Mimikatz ») n'est pas une
 //! signature.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 /// La clé du XOR. Ce n'en est pas une au sens d'un secret : elle est publique, elle sert seulement à ce que les mots
 /// d'attaque ne soient pas des chaînes ASCII repérables telles quelles dans le binaire.
 const CLE: [u8; 8] = [0x4b, 0x1d, 0xa7, 0x6e, 0xf2, 0x39, 0xc5, 0x80];
@@ -32,12 +35,19 @@ pub const fn encoder<const N: usize>(clair: &[u8]) -> [u8; N] {
         // compilation, jamais un arrêt chez l'utilisateur.
         #[expect(
             clippy::indexing_slicing,
-            reason = "i < N par la boucle ; i % CLE.len() < CLE.len() ; clair.len() == N : code_masque! passe N = $mot.len()"
+            clippy::arithmetic_side_effects,
+            reason = "i < N (boucle) ; CLE.len() = 8, jamais nul ; clair.len() == N (code_masque! passe $mot.len())"
         )]
         {
             code[i] = clair[i] ^ CLE[i % CLE.len()];
         }
-        i += 1;
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "i < N, longueur d'un tableau : i + 1 ne déborde pas"
+        )]
+        {
+            i += 1;
+        }
     }
     code
 }

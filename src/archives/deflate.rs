@@ -5,6 +5,9 @@
 //!
 //! Lecteur pur (miniz_oxide seul, sans `crate::`) : le banc de fuzzing l'inclut par son chemin.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 /// Comment le flux s'est arrêté.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Fin {
@@ -110,6 +113,11 @@ pub(crate) fn entier_avant(flux: &[u8], taille: usize, echeance: std::time::Inst
     (lu.fin == Fin::Complet && lu.contenu.len() == taille).then_some(lu.contenu)
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;

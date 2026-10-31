@@ -5,6 +5,9 @@
 //! Pourquoi un fichier à part, pur et sans aucun `crate::` : le masquage (`garde`) lit la base des appareils et ne peut
 //! pas entrer dans le banc de fuzzing (fuzz/) ; la neutralisation, elle, y entre telle quelle.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 /// Les caractères que GitHub ou Bugzilla interprètent hors d'un bloc de code : la barre oblique inverse d'abord (sinon
 /// « \@ » écrit par quelqu'un redeviendrait « \\@ », une barre échappée suivie d'une mention), l'accent grave (code en
 /// ligne), « @ » (mention qui notifie), « < » et « > » (HTML, citation), « [ » « ] » « ! » (lien, image), « # » (titre,
@@ -14,7 +17,8 @@ const SPECIAUX: &[char] = &['\\', '`', '@', '<', '>', '[', ']', '!', '#', '|', '
 /// Un texte écrit par la personne (ses réponses), prêt à entrer tel quel dans le Markdown, hors d'un bloc de code :
 /// chaque caractère spécial est précédé d'une barre oblique inverse. Les sauts de ligne restent.
 pub(crate) fn neutraliser_markdown(texte: &str) -> String {
-    let mut sortie = String::with_capacity(texte.len() + texte.len() / 8);
+    // Une réserve, pas une borne : saturer ne changerait que la place demandée d'avance.
+    let mut sortie = String::with_capacity(texte.len().saturating_add(texte.len() / 8));
     for c in texte.chars() {
         if SPECIAUX.contains(&c) {
             sortie.push('\\');
@@ -26,26 +30,27 @@ pub(crate) fn neutraliser_markdown(texte: &str) -> String {
 
 /// La plus longue suite d'accents graves du texte.
 fn plus_longue_suite(texte: &str) -> usize {
-    let (mut plus, mut suite) = (0, 0);
-    for c in texte.chars() {
-        if c == '`' {
-            suite += 1;
-            plus = plus.max(suite);
-        } else {
-            suite = 0;
-        }
-    }
-    plus
+    // L'accent grave tient sur un octet : la longueur d'une suite est son nombre d'accents.
+    texte.split(|c| c != '`').map(str::len).max().unwrap_or(0)
 }
 
 /// Un texte venu de l'extérieur (nom de fichier, de programme, titre d'une alerte), dans un bloc de code délimité par
 /// une clôture plus longue que sa plus longue suite d'accents graves : rien de ce qu'il contient ne la ferme, et
 /// rien n'y est interprété (ni mention, ni image, ni lien).
 pub(crate) fn bloc_de_code(texte: &str) -> String {
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "la suite tient dans le texte : au plus isize::MAX octets, + 1 ne déborde pas"
+    )]
     let cloture = "`".repeat(plus_longue_suite(texte).max(2) + 1);
     format!("{cloture}\n{texte}\n{cloture}")
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

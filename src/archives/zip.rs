@@ -2,6 +2,9 @@
 //! chiffrement, comme tldr-pages en publie. Le répertoire central est cherché depuis la fin, puis chaque entrée lue à
 //! la position que donne son en-tête local.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use super::Bornes;
 
 /// Le temps de `lire` pour une archive entière. Une vraie archive de tldr-pages (3,4 Mio, 7 600 entrées) se lit en
@@ -19,7 +22,10 @@ const DELAI_CONTROLE: std::time::Duration = std::time::Duration::from_secs(30);
 /// taille annoncée, ou plus de `DELAI_LECTURE` en tout, et la liste est vide : l'archive est jugée illisible. Le CRC
 /// n'est pas recalculé.
 pub(crate) fn lire(octets: &[u8], bornes: &Bornes) -> Vec<(String, Vec<u8>)> {
-    lire_avant(octets, bornes, std::time::Instant::now() + DELAI_LECTURE)
+    let Some(echeance) = std::time::Instant::now().checked_add(DELAI_LECTURE) else {
+        return Vec::new();
+    };
+    lire_avant(octets, bornes, echeance)
 }
 
 /// `lire`, avec son échéance.
@@ -112,7 +118,9 @@ struct Entree<'a> {
 /// octet compressé n'est donc décompressé qu'une fois, et une archive où mille entrées désignent les mêmes 36 Mo ne
 /// coûte pas mille décompressions.
 pub(crate) fn controler(octets: &[u8], bornes: &Bornes) -> Result<Vec<String>, Defaut> {
-    let echeance = std::time::Instant::now() + DELAI_CONTROLE;
+    let echeance = std::time::Instant::now()
+        .checked_add(DELAI_CONTROLE)
+        .ok_or(Defaut::Delai)?;
     let entrees = forme(octets, bornes, true)?;
     // Seconde passe : le contenu, à sa taille et à son CRC.
     let mut noms = Vec::with_capacity(entrees.len());
@@ -140,11 +148,12 @@ fn forme<'a>(octets: &'a [u8], bornes: &Bornes, stricte: bool) -> Result<Vec<Ent
         .take(65_557)
         .find(|&i| u32_a(octets, i) == Some(0x0605_4b50))
         .ok_or(Defaut::PasUnZip)?;
-    let champ16 = |d: usize| u16_a(octets, fin + d).ok_or(Defaut::PasUnZip);
+    let queue = octets.get(fin..).ok_or(Defaut::PasUnZip)?;
+    let champ16 = |d: usize| u16_a(queue, d).ok_or(Defaut::PasUnZip);
     let (disque, disque_central, ici, nombre) = (champ16(4)?, champ16(6)?, champ16(8)?, champ16(10)?);
     let (taille_centrale, debut) = (
-        u32_a(octets, fin + 12).ok_or(Defaut::PasUnZip)?,
-        u32_a(octets, fin + 16).ok_or(Defaut::PasUnZip)?,
+        u32_a(queue, 12).ok_or(Defaut::PasUnZip)?,
+        u32_a(queue, 16).ok_or(Defaut::PasUnZip)?,
     );
     if disque != 0 || disque_central != 0 || ici != nombre || nombre == 0xFFFF {
         return Err(Defaut::NonPrise);
@@ -155,8 +164,10 @@ fn forme<'a>(octets: &'a [u8], bornes: &Bornes, stricte: bool) -> Result<Vec<Ent
     if usize::from(nombre) > bornes.entrees {
         return Err(Defaut::Demesuree);
     }
-    let (debut, taille_centrale) = (debut as usize, taille_centrale as usize);
     // Un répertoire qui ne finit pas là où commence sa fin : des octets devant l'archive, ou des entrées cachées.
+    let (Ok(debut), Ok(taille_centrale)) = (usize::try_from(debut), usize::try_from(taille_centrale)) else {
+        return Err(Defaut::Illisible(0));
+    };
     if debut.checked_add(taille_centrale) != Some(fin) {
         return Err(Defaut::Illisible(0));
     }
@@ -165,35 +176,41 @@ fn forme<'a>(octets: &'a [u8], bornes: &Bornes, stricte: bool) -> Result<Vec<Ent
     let mut total: usize = 0;
     let mut i = debut;
     for n in 0..usize::from(nombre) {
-        if u32_a(octets, i) != Some(0x0201_4b50) {
+        let e = octets.get(i..).unwrap_or_default();
+        if u32_a(e, 0) != Some(0x0201_4b50) {
             return Err(Defaut::Illisible(n));
         }
         let (Some(drapeaux), Some(crc), Some((methode, compresse, taille, longueur_nom, autres, local))) =
-            (u16_a(octets, i + 8), u32_a(octets, i + 16), entree_centrale(octets, i))
+            (u16_a(e, 8), u32_a(e, 16), entree_centrale(e))
         else {
             return Err(Defaut::Illisible(n));
         };
-        let nom = octets.get(i + 46..i + 46 + longueur_nom).ok_or(Defaut::Illisible(n))?;
-        i += 46 + longueur_nom + autres;
+        let nom = e
+            .get(46..)
+            .and_then(|r| r.get(..longueur_nom))
+            .ok_or(Defaut::Illisible(n))?;
+        i = somme(&[i, 46, longueur_nom, autres]).ok_or(Defaut::Illisible(n))?;
         // Bit 0 : chiffrée ; bit 6 : chiffrement « fort ». Ni l'un ni l'autre ne se relit sans mot de passe.
         if drapeaux & 0x41 != 0 || !matches!(methode, 0 | 8) {
             return Err(Defaut::Methode(n));
         }
         // Hors des bornes : refusée par `controler` ; `lire` la saute sans la décompresser, et elle ne compte pas
         // dans le total de ce qui est rendu.
-        let hors_bornes = taille > bornes.fichier || total.saturating_add(taille) > bornes.total;
+        let total_avec = total.checked_add(taille).filter(|&t| t <= bornes.total);
+        let hors_bornes = taille > bornes.fichier || total_avec.is_none();
         if hors_bornes && stricte {
             return Err(Defaut::Demesuree);
         }
-        if !hors_bornes {
-            total += taille;
+        if let (false, Some(t)) = (hors_bornes, total_avec) {
+            total = t;
         }
         if !hors_bornes && methode == 8 && compresse > super::deflate::compresse_plausible(taille) {
             return Err(Defaut::Demesuree);
         }
         // Le nom de l'en-tête local doit être celui du répertoire central, comme le veut zipfile.
-        let longueur_locale = u16_a(octets, local + 26).map(usize::from);
-        if longueur_locale != Some(longueur_nom) || octets.get(local + 30..local + 30 + longueur_nom) != Some(nom) {
+        let en_tete = octets.get(local..).unwrap_or_default();
+        let longueur_locale = u16_a(en_tete, 26).map(usize::from);
+        if longueur_locale != Some(longueur_nom) || en_tete.get(30..).and_then(|r| r.get(..longueur_nom)) != Some(nom) {
             return Err(Defaut::Illisible(n));
         }
         let donnees = donnees_locales(octets, local, compresse).ok_or(Defaut::Illisible(n))?;
@@ -214,8 +231,9 @@ fn forme<'a>(octets: &'a [u8], bornes: &Bornes, stricte: bool) -> Result<Vec<Ent
     // et la dernière avant le répertoire central.
     let mut ordre: Vec<(usize, &Entree)> = entrees.iter().enumerate().collect();
     ordre.sort_by_key(|(_, e)| e.local);
-    for (j, &(k, e)) in ordre.iter().enumerate() {
-        let suivante = ordre.get(j + 1).map_or(debut, |(_, s)| s.local);
+    let mut suite = ordre.iter().peekable();
+    while let Some(&(k, e)) = suite.next() {
+        let suivante = suite.peek().map_or(debut, |(_, s)| s.local);
         if e.donnees.end > suivante {
             return Err(Defaut::Illisible(k));
         }
@@ -231,23 +249,29 @@ fn u32_a(octets: &[u8], i: usize) -> Option<u32> {
     octets.get(i..)?.first_chunk::<4>().map(|b| u32::from_le_bytes(*b))
 }
 
-/// Une entrée du répertoire central : (méthode, taille compressée, taille, longueur du nom, longueur des champs qui
-/// suivent le nom, position de l'en-tête local).
-fn entree_centrale(octets: &[u8], i: usize) -> Option<(u16, usize, usize, usize, usize, usize)> {
+/// La somme de positions et de longueurs lues dans l'archive, `None` si elle déborde.
+fn somme(termes: &[usize]) -> Option<usize> {
+    termes.iter().try_fold(0usize, |s, &t| s.checked_add(t))
+}
+
+/// Une entrée du répertoire central, `e` commençant à sa signature : (méthode, taille compressée, taille, longueur
+/// du nom, longueur des champs qui suivent le nom, position de l'en-tête local).
+fn entree_centrale(e: &[u8]) -> Option<(u16, usize, usize, usize, usize, usize)> {
     Some((
-        u16_a(octets, i + 10)?,
-        u32_a(octets, i + 20)? as usize,
-        u32_a(octets, i + 24)? as usize,
-        usize::from(u16_a(octets, i + 28)?),
-        usize::from(u16_a(octets, i + 30)?) + usize::from(u16_a(octets, i + 32)?),
-        u32_a(octets, i + 42)? as usize,
+        u16_a(e, 10)?,
+        usize::try_from(u32_a(e, 20)?).ok()?,
+        usize::try_from(u32_a(e, 24)?).ok()?,
+        usize::from(u16_a(e, 28)?),
+        usize::from(u16_a(e, 30)?).checked_add(usize::from(u16_a(e, 32)?))?,
+        usize::try_from(u32_a(e, 42)?).ok()?,
     ))
 }
 
 /// Les données d'un fichier, après son en-tête local.
 fn donnees_locales(octets: &[u8], local: usize, compresse: usize) -> Option<std::ops::Range<usize>> {
-    (u32_a(octets, local)? == 0x0403_4b50).then_some(())?;
-    let depart = local + 30 + usize::from(u16_a(octets, local + 26)?) + usize::from(u16_a(octets, local + 28)?);
+    let l = octets.get(local..)?;
+    (u32_a(l, 0)? == 0x0403_4b50).then_some(())?;
+    let depart = somme(&[local, 30, usize::from(u16_a(l, 26)?), usize::from(u16_a(l, 28)?)])?;
     let fin = depart.checked_add(compresse)?;
     (fin <= octets.len()).then_some(depart..fin)
 }
@@ -332,14 +356,17 @@ fn u64_a(octets: &[u8], i: usize) -> Option<u64> {
 
 /// Le champ libre `id` d'une suite de champs (identifiant, longueur, données), s'il y est en entier.
 fn champ_libre(champs: &[u8], id: u16) -> Option<&[u8]> {
-    let mut i = 0usize;
-    while i + 4 <= champs.len() {
-        let (code, n) = (u16_a(champs, i)?, usize::from(u16_a(champs, i + 2)?));
-        let donnees = champs.get(i + 4..i + 4 + n)?;
+    let mut reste = champs;
+    while let Some(([c0, c1, n0, n1], suite)) = reste.split_first_chunk::<4>() {
+        let (code, n) = (
+            u16::from_le_bytes([*c0, *c1]),
+            usize::from(u16::from_le_bytes([*n0, *n1])),
+        );
+        let donnees = suite.get(..n)?;
         if code == id {
             return Some(donnees);
         }
-        i += 4 + n;
+        reste = suite.get(n..)?;
     }
     None
 }
@@ -363,11 +390,12 @@ pub(crate) fn parcourir(octets: &[u8], entrees_max: usize) -> Parcours {
 
 /// Le répertoire central que désigne la fin trouvée en `fin` (APPNOTE 4.3.16, et 4.3.14-4.3.15 pour zip64).
 fn central(octets: &[u8], fin: usize, entrees_max: usize, p: &mut Parcours) {
-    let champ16 = |d: usize| u16_a(octets, fin + d).unwrap_or(0);
+    let queue = octets.get(fin..).unwrap_or_default();
+    let champ16 = |d: usize| u16_a(queue, d).unwrap_or(0);
     let (disque, disque_central) = (champ16(4), champ16(6));
     let mut annoncees = u64::from(champ16(10));
-    let mut taille_centrale = u64::from(u32_a(octets, fin + 12).unwrap_or(0));
-    let mut debut = u64::from(u32_a(octets, fin + 16).unwrap_or(0));
+    let mut taille_centrale = u64::from(u32_a(queue, 12).unwrap_or(0));
+    let mut debut = u64::from(u32_a(queue, 16).unwrap_or(0));
     // La fin du répertoire central est là où celui-ci finit : sans zip64, juste devant elle.
     let mut fin_du_central = fin;
     // Zip64 : le localisateur (20 octets) juste devant la fin, qui désigne la fin zip64 (4.3.14, 4.3.15).
@@ -375,12 +403,16 @@ fn central(octets: &[u8], fin: usize, entrees_max: usize, p: &mut Parcours) {
         && u32_a(octets, localisateur) == Some(0x0706_4b50)
     {
         p.zip64 = true;
-        if let Some(position) = u64_a(octets, localisateur + 8).and_then(|v| usize::try_from(v).ok())
-            && u32_a(octets, position) == Some(0x0606_4b50)
+        if let Some(position) = octets
+            .get(localisateur..)
+            .and_then(|l| u64_a(l, 8))
+            .and_then(|v| usize::try_from(v).ok())
+            && let Some(z) = octets.get(position..)
+            && u32_a(z, 0) == Some(0x0606_4b50)
         {
-            annoncees = u64_a(octets, position + 32).unwrap_or(annoncees);
-            taille_centrale = u64_a(octets, position + 40).unwrap_or(taille_centrale);
-            debut = u64_a(octets, position + 48).unwrap_or(debut);
+            annoncees = u64_a(z, 32).unwrap_or(annoncees);
+            taille_centrale = u64_a(z, 40).unwrap_or(taille_centrale);
+            debut = u64_a(z, 48).unwrap_or(debut);
             fin_du_central = position;
         }
     }
@@ -388,7 +420,9 @@ fn central(octets: &[u8], fin: usize, entrees_max: usize, p: &mut Parcours) {
     p.multidisque = disque != 0 || disque_central != 0;
     // Des octets devant l'archive décalent toutes les positions écrites (un programme auto-extractible dont les
     // positions n'ont pas été corrigées) : le décalage est ce qui sépare le répertoire de sa position écrite.
-    let attendu = (fin_du_central as u64).checked_sub(taille_centrale);
+    let attendu = u64::try_from(fin_du_central)
+        .ok()
+        .and_then(|f| f.checked_sub(taille_centrale));
     let decalage = attendu.and_then(|a| a.checked_sub(debut)).unwrap_or(0);
     let decalage = usize::try_from(decalage).unwrap_or(0);
     p.decalage = decalage;
@@ -417,7 +451,8 @@ fn central(octets: &[u8], fin: usize, entrees_max: usize, p: &mut Parcours) {
             p.entrees.push(locale);
         }
         i = suivante;
-        n += 1;
+        // Un compteur d'entrées, borné par `entrees_max` : saturer ne peut pas arriver.
+        n = n.saturating_add(1);
     }
     if n < annoncees {
         p.central_illisible = true;
@@ -426,27 +461,28 @@ fn central(octets: &[u8], fin: usize, entrees_max: usize, p: &mut Parcours) {
 
 /// L'entrée centrale en `i` et la position de la suivante.
 fn entree_vue(octets: &[u8], i: usize, decalage: usize, annoncee: bool) -> Option<(Vue, usize)> {
-    let drapeaux = u16_a(octets, i + 8)?;
-    let methode = u16_a(octets, i + 10)?;
-    let crc = u32_a(octets, i + 16)?;
-    let mut compresse = u64::from(u32_a(octets, i + 20)?);
-    let mut taille = u64::from(u32_a(octets, i + 24)?);
-    let longueur_nom = usize::from(u16_a(octets, i + 28)?);
-    let longueur_champs = usize::from(u16_a(octets, i + 30)?);
-    let longueur_commentaire = usize::from(u16_a(octets, i + 32)?);
-    let mut local = u64::from(u32_a(octets, i + 42)?);
-    let nom = octets.get(i + 46..i + 46 + longueur_nom)?.to_vec();
-    let champs = octets.get(i + 46 + longueur_nom..i + 46 + longueur_nom + longueur_champs)?;
-    let suivante = i + 46 + longueur_nom + longueur_champs + longueur_commentaire;
-    // Champ zip64 (4.5.3) : seulement les valeurs qui valent 0xFFFFFFFF, dans cet ordre.
+    let e = octets.get(i..)?;
+    let drapeaux = u16_a(e, 8)?;
+    let methode = u16_a(e, 10)?;
+    let crc = u32_a(e, 16)?;
+    let mut compresse = u64::from(u32_a(e, 20)?);
+    let mut taille = u64::from(u32_a(e, 24)?);
+    let longueur_nom = usize::from(u16_a(e, 28)?);
+    let longueur_champs = usize::from(u16_a(e, 30)?);
+    let longueur_commentaire = usize::from(u16_a(e, 32)?);
+    let mut local = u64::from(u32_a(e, 42)?);
+    let (nom, apres_nom) = e.get(46..)?.split_at_checked(longueur_nom)?;
+    let nom = nom.to_vec();
+    let champs = apres_nom.get(..longueur_champs)?;
+    let suivante = somme(&[i, 46, longueur_nom, longueur_champs, longueur_commentaire])?;
+    // Champ zip64 (4.5.3) : seulement les valeurs qui valent 0xFFFFFFFF, dans cet ordre, chacune sur 8 octets.
     if let Some(z) = champ_libre(champs, 0x0001) {
-        let mut j = 0;
+        let mut huitaines = z.as_chunks::<8>().0.iter();
         for valeur in [&mut taille, &mut compresse, &mut local] {
             if *valeur == 0xFFFF_FFFF
-                && let Some(v) = u64_a(z, j)
+                && let Some(&v) = huitaines.next()
             {
-                *valeur = v;
-                j += 8;
+                *valeur = u64::from_le_bytes(v);
             }
         }
     }
@@ -465,9 +501,10 @@ fn entree_vue(octets: &[u8], i: usize, decalage: usize, annoncee: bool) -> Optio
     };
     // Ce que dit l'en-tête local (sauf avec le bit 3 : ses tailles sont alors écrites après les données).
     let local_different = nom_local.is_some() && {
-        let drapeaux_locaux = u16_a(octets, local + 6).unwrap_or(drapeaux);
-        let methode_locale = u16_a(octets, local + 8).unwrap_or(methode);
-        let compresse_local = u32_a(octets, local + 18).map_or(compresse, u64::from);
+        let l = octets.get(local..).unwrap_or_default();
+        let drapeaux_locaux = u16_a(l, 6).unwrap_or(drapeaux);
+        let methode_locale = u16_a(l, 8).unwrap_or(methode);
+        let compresse_local = u32_a(l, 18).map_or(compresse, u64::from);
         methode_locale != methode
             || (drapeaux_locaux ^ drapeaux) & 0x41 != 0
             || (drapeaux_locaux & 0x0008 == 0 && compresse_local != 0xFFFF_FFFF && compresse_local != compresse)
@@ -500,12 +537,11 @@ fn entree_vue(octets: &[u8], i: usize, decalage: usize, annoncee: bool) -> Optio
 /// Le nom de l'en-tête local en `local` et la place des `compresse` octets qui le suivent, s'ils sont dans le
 /// fichier.
 fn donnees_entree(octets: &[u8], local: usize, compresse: u64) -> Option<(Vec<u8>, std::ops::Range<usize>)> {
-    (u32_a(octets, local)? == 0x0403_4b50).then_some(())?;
-    let longueur_nom = usize::from(u16_a(octets, local + 26)?);
-    let depart = local
-        .checked_add(30 + longueur_nom)?
-        .checked_add(usize::from(u16_a(octets, local + 28)?))?;
-    let nom = octets.get(local + 30..local + 30 + longueur_nom)?.to_vec();
+    let l = octets.get(local..)?;
+    (u32_a(l, 0)? == 0x0403_4b50).then_some(())?;
+    let longueur_nom = usize::from(u16_a(l, 26)?);
+    let depart = somme(&[local, 30, longueur_nom, usize::from(u16_a(l, 28)?)])?;
+    let nom = l.get(30..)?.get(..longueur_nom)?.to_vec();
     let fin = depart.checked_add(usize::try_from(compresse).ok()?)?;
     (fin <= octets.len()).then_some((nom, depart..fin))
 }
@@ -542,8 +578,11 @@ fn locales_seules(octets: &[u8], entrees_max: usize, p: &mut Parcours) {
         .get(i..)
         .and_then(|reste| reste.windows(4).position(|f| f == b"PK\x03\x04"))
     {
-        let position = i + trouve;
-        i = position + 4;
+        // `windows(4)` a trouvé la signature dans `octets[i..]` : position + 4 <= octets.len(), rien ne déborde.
+        let Some((position, apres)) = i.checked_add(trouve).and_then(|p| Some((p, p.checked_add(4)?))) else {
+            break;
+        };
+        i = apres;
         if connue(position) {
             continue;
         }
@@ -566,15 +605,16 @@ fn locales_seules(octets: &[u8], entrees_max: usize, p: &mut Parcours) {
 /// l'est qu'après les données ; les données courent alors jusqu'à la fin du fichier, et seul un flux deflate dit où
 /// il finit.
 fn entree_locale(octets: &[u8], local: usize) -> Option<Vue> {
-    let drapeaux = u16_a(octets, local + 6)?;
-    let methode = u16_a(octets, local + 8)?;
-    let crc = u32_a(octets, local + 14)?;
-    let compresse = u64::from(u32_a(octets, local + 18)?);
-    let taille = u64::from(u32_a(octets, local + 22)?);
-    let longueur_nom = usize::from(u16_a(octets, local + 26)?);
-    let longueur_champs = usize::from(u16_a(octets, local + 28)?);
-    let nom = octets.get(local + 30..local + 30 + longueur_nom)?.to_vec();
-    let depart = local + 30 + longueur_nom + longueur_champs;
+    let l = octets.get(local..)?;
+    let drapeaux = u16_a(l, 6)?;
+    let methode = u16_a(l, 8)?;
+    let crc = u32_a(l, 14)?;
+    let compresse = u64::from(u32_a(l, 18)?);
+    let taille = u64::from(u32_a(l, 22)?);
+    let longueur_nom = usize::from(u16_a(l, 26)?);
+    let longueur_champs = usize::from(u16_a(l, 28)?);
+    let nom = l.get(30..)?.get(..longueur_nom)?.to_vec();
+    let depart = somme(&[local, 30, longueur_nom, longueur_champs])?;
     if depart > octets.len() {
         return None;
     }
@@ -652,10 +692,9 @@ pub(crate) fn extraire_avant(
         8 => {
             let lu = super::deflate::inflater_avant(donnees, limite, echeance);
             // Une entrée locale de taille inconnue court jusqu'à la fin du fichier : son « reste » est la suite.
-            let reste = if lu.fin == Fin::Complet && !vue.taille_inconnue && lu.lus < donnees.len() {
-                debut + lu.lus..debut + donnees.len()
-            } else {
-                0..0
+            let reste = match (debut.checked_add(lu.lus), debut.checked_add(donnees.len())) {
+                (Some(a), Some(b)) if lu.fin == Fin::Complet && !vue.taille_inconnue && lu.lus < donnees.len() => a..b,
+                _ => 0..0,
             };
             (lu.contenu, lu.fin, reste)
         }

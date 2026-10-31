@@ -3,12 +3,16 @@
 //!
 //! Sans `crate::` : le banc de fuzzing l'inclut par son chemin, avec les lecteurs.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 /// La table, calculée à la compilation.
 const TABLE: [u32; 256] = {
     let mut table = [0u32; 256];
-    let mut i = 0u32;
+    // L'indice et sa valeur à part : pas de conversion (`From` n'est pas utilisable dans un `const`).
+    let (mut i, mut valeur) = (0usize, 0u32);
     while i < 256 {
-        let mut c = i;
+        let mut c = valeur;
         let mut k = 0;
         while k < 8 {
             c = if c & 1 == 1 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
@@ -16,17 +20,20 @@ const TABLE: [u32; 256] = {
         }
         #[expect(clippy::indexing_slicing, reason = "i < 256 par la boucle, la table en a 256")]
         {
-            table[i as usize] = c;
+            table[i] = c;
         }
         i += 1;
+        valeur += 1;
     }
     table
 };
 
 pub(crate) fn crc32(octets: &[u8]) -> u32 {
     !octets.iter().fold(!0u32, |c, &o| {
-        #[expect(clippy::indexing_slicing, reason = "indice masqué à 0xff, la table en a 256")]
-        let t = TABLE[((c ^ u32::from(o)) & 0xff) as usize];
+        // L'octet de poids faible de c, mêlé à o : (c ^ o) & 0xff.
+        let [bas, ..] = c.to_le_bytes();
+        #[expect(clippy::indexing_slicing, reason = "un octet indexe une table de 256 entrées")]
+        let t = TABLE[usize::from(bas ^ o)];
         t ^ (c >> 8)
     })
 }

@@ -3,6 +3,9 @@
 //! posé dans LaunchAgents) : la taille, l'imbrication et le nombre de valeurs sont bornés, et une référence qui boucle
 //! ou sort du fichier le rend illisible (`None`) au lieu de faire tomber Vanguard.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 use std::io::Read;
 use std::path::Path;
 
@@ -144,7 +147,7 @@ pub fn lire_fichier(chemin: &Path) -> std::io::Result<Lu> {
     }
     let mut octets = Vec::new();
     fichier.take(TAILLE_MAX + 1).read_to_end(&mut octets)?;
-    if octets.len() as u64 > TAILLE_MAX {
+    if u64::try_from(octets.len()).ok().is_none_or(|n| n > TAILLE_MAX) {
         return Ok(Lu::TropGros);
     }
     // Une seule passe : un fichier piégé n'est pas relu une seconde fois pour savoir pourquoi il a été refusé.
@@ -198,8 +201,9 @@ mod binaire {
                 return None;
             }
             let taille = 1usize << (marque & 0xF);
-            let n = usize::try_from(entier(self.tranche(apres + 1, taille)?)?).ok()?;
-            Some((n, apres + 1 + taille))
+            let debut = apres.checked_add(1)?;
+            let n = usize::try_from(entier(self.tranche(debut, taille)?)?).ok()?;
+            Some((n, debut.checked_add(taille)?))
         }
 
         /// Compte `n` octets copiés ; `None` au-delà du budget.
@@ -218,24 +222,28 @@ mod binaire {
 
         /// La `i`-ième référence d'une suite rendue par `references`.
         fn reference(&self, suite: &[u8], i: usize) -> Option<usize> {
-            let r = suite.get(i * self.taille_reference..(i + 1) * self.taille_reference)?;
+            let r = suite
+                .get(i.checked_mul(self.taille_reference)?..)?
+                .get(..self.taille_reference)?;
             usize::try_from(entier(r)?).ok()
         }
 
         fn objet(&mut self, index: usize, profondeur: usize) -> Option<Valeur> {
-            self.lues += 1;
+            // Compteur arrêté à VALEURS_MAX juste en dessous : saturer n'arrive jamais.
+            self.lues = self.lues.saturating_add(1);
             if index >= self.nombre || profondeur > PROFONDEUR_MAX || self.lues > VALEURS_MAX {
                 return None;
             }
+            let plus_bas = profondeur.checked_add(1)?;
             // Bornes vérifiées à l'ouverture : la table tient entière dans le fichier.
-            let p = self.table + index * self.taille_position;
-            let debut = usize::try_from(entier(self.octets.get(p..p + self.taille_position)?)?).ok()?;
+            let p = index.checked_mul(self.taille_position)?.checked_add(self.table)?;
+            let debut = usize::try_from(entier(self.octets.get(p..)?.get(..self.taille_position)?)?).ok()?;
             if debut < 8 {
                 return None;
             }
             let marque = *self.tranche(debut, 1)?.first()?;
             let (genre, info) = (marque >> 4, marque & 0xF);
-            let corps = debut + 1;
+            let corps = debut.checked_add(1)?;
             Some(match (genre, info) {
                 (0x0, 0x8) => Valeur::Booleen(false),
                 (0x0, 0x9) => Valeur::Booleen(true),
@@ -281,7 +289,7 @@ mod binaire {
                     let mut valeurs = Vec::new();
                     for i in 0..n {
                         let r = self.reference(suite, i)?;
-                        valeurs.push(self.objet(r, profondeur + 1)?);
+                        valeurs.push(self.objet(r, plus_bas)?);
                     }
                     Valeur::Tableau(valeurs)
                 }
@@ -291,10 +299,10 @@ mod binaire {
                     let valeurs = self.references(d.checked_add(cles.len())?, n)?;
                     let mut paires = Vec::new();
                     for i in 0..n {
-                        let Valeur::Texte(cle) = self.objet(self.reference(cles, i)?, profondeur + 1)? else {
+                        let Valeur::Texte(cle) = self.objet(self.reference(cles, i)?, plus_bas)? else {
                             return None;
                         };
-                        paires.push((cle, self.objet(self.reference(valeurs, i)?, profondeur + 1)?));
+                        paires.push((cle, self.objet(self.reference(valeurs, i)?, plus_bas)?));
                     }
                     Valeur::Dico(paires)
                 }
@@ -360,21 +368,22 @@ mod xml {
     /// Décodage base64 des <data>, blancs ignorés.
     fn base64(texte: &str) -> Option<Vec<u8>> {
         let mut octets = Vec::new();
-        let (mut tampon, mut bits) = (0u32, 0);
+        // `bits` : les bits de `tampon` pas encore rendus, moins de 8 entre deux caractères.
+        let (mut tampon, mut bits) = (0u32, 0u32);
         for c in texte.bytes().filter(|c| !c.is_ascii_whitespace()) {
             let v = match c {
-                b'A'..=b'Z' => c - b'A',
-                b'a'..=b'z' => c - b'a' + 26,
-                b'0'..=b'9' => c - b'0' + 52,
+                b'A'..=b'Z' => c.checked_sub(b'A')?,
+                b'a'..=b'z' => c.checked_sub(b'a')?.checked_add(26)?,
+                b'0'..=b'9' => c.checked_sub(b'0')?.checked_add(52)?,
                 b'+' => 62,
                 b'/' => 63,
                 b'=' => break,
                 _ => return None,
             };
             tampon = (tampon << 6) | u32::from(v);
-            bits += 6;
-            if bits >= 8 {
-                bits -= 8;
+            bits = bits.checked_add(6)?;
+            if let Some(reste) = bits.checked_sub(8) {
+                bits = reste;
                 octets.push(u8::try_from((tampon >> bits) & 0xFF).ok()?);
             }
         }
@@ -392,8 +401,14 @@ mod xml {
             "data" => Valeur::Donnees(base64(texte)?),
             "date" => {
                 let d = chrono::NaiveDateTime::parse_from_str(texte.trim(), "%Y-%m-%dT%H:%M:%SZ").ok()?;
+                let secondes = d.and_utc().timestamp().checked_sub(ORIGINE_APPLE)?;
                 #[allow(clippy::cast_precision_loss)] // des secondes : exactes bien au-delà de l'an 100 000
-                Valeur::Date((d.and_utc().timestamp() - ORIGINE_APPLE) as f64)
+                #[expect(
+                    clippy::as_conversions,
+                    reason = "aucun From de i64 vers f64 ; la perte de précision est permise juste au-dessus"
+                )]
+                let secondes = secondes as f64;
+                Valeur::Date(secondes)
             }
             _ => return None,
         })
@@ -408,11 +423,12 @@ mod xml {
         let mut dans_plist = false;
         // L'élément simple en cours (<key>, <string>…) et son texte.
         let mut courant: Option<(String, String)> = None;
-        let mut lues = 0;
+        let mut lues = 0usize;
         loop {
             let evenement = lecteur.read_event().ok()?;
             if matches!(evenement, Event::Start(_) | Event::Empty(_)) {
-                lues += 1;
+                // Compteur arrêté à VALEURS_MAX juste en dessous : saturer n'arrive jamais.
+                lues = lues.saturating_add(1);
                 if lues > VALEURS_MAX || pile.len() >= PROFONDEUR_MAX {
                     *hors_bornes = true;
                     return None;
@@ -509,7 +525,12 @@ pub fn date_unix(secondes: f64) -> Option<i64> {
         return None;
     }
     #[allow(clippy::cast_possible_truncation)]
-    (secondes as i64).checked_add(ORIGINE_APPLE)
+    #[expect(
+        clippy::as_conversions,
+        reason = "aucun From depuis f64 : finie et d'au plus 1e15 en valeur absolue, elle tient dans un i64"
+    )]
+    let secondes = secondes as i64;
+    secondes.checked_add(ORIGINE_APPLE)
 }
 
 /// Une plist écrite lisiblement, à la façon de `plutil -p` : une clé par ligne (« "Label" => "com.exemple" »), les
@@ -519,7 +540,9 @@ pub fn date_unix(secondes: f64) -> Option<i64> {
 pub fn afficher(v: &Valeur) -> String {
     fn ecrire(v: &Valeur, retrait: usize, t: &mut String) {
         use std::fmt::Write;
-        let marge = "  ".repeat(retrait + 1);
+        // Un cran par niveau d'imbrication : la pile d'appels s'épuiserait bien avant que saturer ne serve.
+        let dedans = retrait.saturating_add(1);
+        let marge = "  ".repeat(dedans);
         match v {
             Valeur::Booleen(b) => t.push_str(if *b { "1" } else { "0" }),
             Valeur::Entier(n) => {
@@ -546,7 +569,7 @@ pub fn afficher(v: &Valeur) -> String {
                 t.push_str("[\n");
                 for (i, e) in liste.iter().enumerate() {
                     let _ = write!(t, "{marge}{i} => ");
-                    ecrire(e, retrait + 1, t);
+                    ecrire(e, dedans, t);
                     t.push('\n');
                 }
                 t.push_str(&"  ".repeat(retrait));
@@ -556,7 +579,7 @@ pub fn afficher(v: &Valeur) -> String {
                 t.push_str("{\n");
                 for (k, e) in paires {
                     let _ = write!(t, "{marge}{k:?} => ");
-                    ecrire(e, retrait + 1, t);
+                    ecrire(e, dedans, t);
                     t.push('\n');
                 }
                 t.push_str(&"  ".repeat(retrait));
@@ -570,6 +593,11 @@ pub fn afficher(v: &Valeur) -> String {
     t
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::*;

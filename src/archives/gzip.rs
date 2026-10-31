@@ -6,6 +6,9 @@
 //! Lecteur pur (miniz_oxide seul, sans `crate::`) : le banc de fuzzing l'inclut par son chemin. Les deux lectures
 //! sont donc compilées partout, sans servir partout.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 /// Les trois premiers octets d'un gzip (deflate, la seule méthode définie).
 pub(crate) fn est_gzip(octets: &[u8]) -> bool {
     octets.starts_with(&[0x1f, 0x8b, 8])
@@ -24,19 +27,23 @@ pub(crate) fn debut_du_flux(octets: &[u8], debut: usize) -> Option<usize> {
     let drapeaux = *membre.get(3)?;
     let mut pos = 10usize;
     if drapeaux & FEXTRA != 0 {
-        let n = u16::from_le_bytes([*membre.get(pos)?, *membre.get(pos + 1)?]);
-        pos += 2 + usize::from(n);
+        let n = u16::from_le_bytes(*membre.get(pos..)?.first_chunk::<2>()?);
+        pos = pos.checked_add(2)?.checked_add(usize::from(n))?;
     }
     for champ in [FNAME, FCOMMENT] {
         if drapeaux & champ != 0 {
-            pos += membre.get(pos..)?.iter().position(|&o| o == 0)? + 1;
+            let nul = membre.get(pos..)?.iter().position(|&o| o == 0)?;
+            pos = pos.checked_add(nul)?.checked_add(1)?;
         }
     }
     if drapeaux & FHCRC != 0 {
-        pos += 2;
+        pos = pos.checked_add(2)?;
     }
     // L'en-tête entier doit être là : sinon le flux commencerait hors du fichier.
-    (pos <= membre.len()).then_some(debut + pos)
+    if pos > membre.len() {
+        return None;
+    }
+    debut.checked_add(pos)
 }
 
 #[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))] // bases de pacman, mtree
@@ -44,7 +51,7 @@ pub(crate) fn debut_du_flux(octets: &[u8], debut: usize) -> Option<usize> {
 /// ou s'il dépasse la limite. La fin du membre (CRC, taille) n'est pas lue : un fichier de cet ordinateur, que le
 /// système de fichiers garde entier.
 pub(crate) fn degzip(octets: &[u8], limite: usize) -> Option<Vec<u8>> {
-    degzip_avant(octets, limite, std::time::Instant::now() + DELAI)
+    degzip_avant(octets, limite, std::time::Instant::now().checked_add(DELAI)?)
 }
 
 #[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))] // bases de pacman, mtree
@@ -65,7 +72,7 @@ const DELAI: std::time::Duration = std::time::Duration::from_secs(30);
 /// du gzip, coupé, abîmé, plus grand que la limite (une « bombe » de quelques Kio qui en donnerait des Go s'arrête à
 /// la limite), ou suivi d'autre chose qu'un membre.
 pub(crate) fn degzip_controle(octets: &[u8], limite: usize) -> Option<Vec<u8>> {
-    degzip_controle_avant(octets, limite, std::time::Instant::now() + DELAI)
+    degzip_controle_avant(octets, limite, std::time::Instant::now().checked_add(DELAI)?)
 }
 
 #[cfg_attr(not(any(windows, target_os = "macos", test)), allow(dead_code))] // logiciels pas à jour
@@ -75,17 +82,21 @@ fn degzip_controle_avant(octets: &[u8], limite: usize, echeance: std::time::Inst
     let mut debut = 0usize;
     loop {
         let flux = debut_du_flux(octets, debut)?;
-        let (membre, lus) = inflater(octets.get(flux..)?, limite - contenu.len(), echeance)?;
+        // `inflater` rend au plus ce qu'on lui laisse : `contenu` ne dépasse jamais `limite`.
+        let (membre, lus) = inflater(octets.get(flux..)?, limite.checked_sub(contenu.len())?, echeance)?;
         let fin = flux.checked_add(lus)?;
-        let crc = u32::from_le_bytes(octets.get(fin..fin + 4)?.try_into().ok()?);
-        let taille = u32::from_le_bytes(octets.get(fin + 4..fin + 8)?.try_into().ok()?);
-        // La taille est écrite modulo 2³² (RFC 1952, ISIZE).
-        #[allow(clippy::cast_possible_truncation)]
-        if crc != super::crc32::crc32(&membre) || taille != membre.len() as u32 {
+        let [c0, c1, c2, c3, t0, t1, t2, t3] = *octets.get(fin..)?.first_chunk::<8>()?;
+        let (crc, taille) = (
+            u32::from_le_bytes([c0, c1, c2, c3]),
+            u32::from_le_bytes([t0, t1, t2, t3]),
+        );
+        // La taille est écrite modulo 2³² (RFC 1952, ISIZE) : les quatre octets de poids faible de la longueur.
+        let [l0, l1, l2, l3, ..] = membre.len().to_le_bytes();
+        if crc != super::crc32::crc32(&membre) || taille != u32::from_le_bytes([l0, l1, l2, l3]) {
             return None;
         }
         contenu.extend_from_slice(&membre);
-        debut = fin + 8;
+        debut = fin.checked_add(8)?;
         if debut == octets.len() {
             return Some(contenu);
         }
@@ -100,6 +111,11 @@ fn inflater(flux: &[u8], limite: usize, echeance: std::time::Instant) -> Option<
     (lu.fin == super::deflate::Fin::Complet && lu.contenu.len() <= limite).then_some((lu.contenu, lu.lus))
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::super::crc32::crc32;

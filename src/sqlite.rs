@@ -5,6 +5,9 @@
 //! fabriquée (page qui renvoie à elle-même, débordement sans fin, arbre trop profond) est refusée, jamais suivie.
 //! Le journal WAL n'est pas lu : l'appelant dit que les changements récents peuvent manquer.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 /// Un fichier SQLite, lu en mémoire, juste assez pour compter les lignes d'une table : l'en-tête donne la taille des
 /// pages, la page 1 porte la table des tables (sqlite_master) où se lit la page racine de « logins », puis l'arbre de
 /// cette table se parcourt, feuille par feuille, en additionnant les nombres de cellules. Aucune cellule n'est décodée.
@@ -18,29 +21,24 @@ struct Sqlite<'a> {
 /// Un entier variable de SQLite (1 à 9 octets) : (valeur, longueur).
 fn varint(b: &[u8]) -> Option<(u64, usize)> {
     let mut v: u64 = 0;
-    for (i, o) in b.iter().take(9).enumerate() {
-        if i == 8 {
+    for (longueur, o) in (1usize..).zip(b.iter().take(9)) {
+        if longueur == 9 {
             return Some(((v << 8) | u64::from(*o), 9));
         }
         v = (v << 7) | u64::from(o & 0x7f);
         if o & 0x80 == 0 {
-            return Some((v, i + 1));
+            return Some((v, longueur));
         }
     }
     None
 }
 
 fn u16be(b: &[u8], i: usize) -> Option<usize> {
-    Some(usize::from(u16::from_be_bytes([*b.get(i)?, *b.get(i + 1)?])))
+    Some(usize::from(u16::from_be_bytes(*b.get(i..)?.first_chunk::<2>()?)))
 }
 
 fn u32be(b: &[u8], i: usize) -> Option<u32> {
-    Some(u32::from_be_bytes([
-        *b.get(i)?,
-        *b.get(i + 1)?,
-        *b.get(i + 2)?,
-        *b.get(i + 3)?,
-    ]))
+    Some(u32::from_be_bytes(*b.get(i..)?.first_chunk::<4>()?))
 }
 
 /// Taille d'une colonne d'après son type de série (texte, blob, entier, nul) ; `None` pour un type inconnu.
@@ -53,7 +51,7 @@ fn taille_colonne(type_serie: u64) -> Option<usize> {
         4 => 4,
         5 => 6,
         6 | 7 => 8,
-        n if n >= 12 => usize::try_from((n - 12) / 2).ok()?,
+        n if n >= 12 => usize::try_from(n.checked_sub(12)? / 2).ok()?,
         _ => return None,
     })
 }
@@ -101,17 +99,22 @@ impl<'a> Sqlite<'a> {
     /// Les cellules d'une page d'arbre : (type de page, positions des cellules, enfant de droite).
     fn cellules(&self, numero: u32) -> Option<(u8, Vec<usize>, Option<u32>)> {
         let p = self.page(numero)?;
-        let base = if numero == 1 { 100 } else { 0 };
-        let genre = *p.get(base)?;
-        let n = u16be(p, base + 3)?;
+        // L'en-tête de la page, après celui du fichier (100 octets) sur la page 1.
+        let h = p.get(if numero == 1 { 100 } else { 0 }..)?;
+        let genre = *h.first()?;
+        let n = u16be(h, 3)?;
         let (droite, entete) = if genre == 0x05 || genre == 0x02 {
-            (Some(u32be(p, base + 8)?), 12)
+            (Some(u32be(h, 8)?), 12)
         } else {
             (None, 8)
         };
-        let positions = (0..n)
-            .map(|i| u16be(p, base + entete + 2 * i))
-            .collect::<Option<Vec<usize>>>()?;
+        // Puis les positions des cellules, deux octets chacune.
+        let (pointeurs, _) = h.get(entete..).unwrap_or_default().as_chunks::<2>();
+        let positions = pointeurs
+            .get(..n)?
+            .iter()
+            .map(|b| usize::from(u16::from_be_bytes(*b)))
+            .collect::<Vec<usize>>();
         Some((genre, positions, droite))
     }
 
@@ -122,16 +125,17 @@ impl<'a> Sqlite<'a> {
         if profondeur > 20 || !vues.insert(racine) {
             return None;
         }
+        let plus_bas = profondeur.checked_add(1)?;
         let (genre, positions, droite) = self.cellules(racine)?;
         match genre {
             0x0d => Some(positions.len()),
             0x05 => {
                 let p = self.page(racine)?;
-                let mut total = 0;
+                let mut total = 0usize;
                 for pos in positions {
-                    total += self.compter(u32be(p, pos)?, profondeur + 1, vues)?;
+                    total = total.checked_add(self.compter(u32be(p, pos)?, plus_bas, vues)?)?;
                 }
-                Some(total + self.compter(droite?, profondeur + 1, vues)?)
+                total.checked_add(self.compter(droite?, plus_bas, vues)?)
             }
             _ => None,
         }
@@ -148,6 +152,7 @@ impl<'a> Sqlite<'a> {
         if profondeur > 20 || !vues.insert(page) {
             return None;
         }
+        let plus_bas = profondeur.checked_add(1)?;
         let (genre, positions, droite) = self.cellules(page)?;
         let p = self.page(page)?;
         match genre {
@@ -163,7 +168,7 @@ impl<'a> Sqlite<'a> {
                 .into_iter()
                 .filter_map(|pos| u32be(p, pos))
                 .chain(droite)
-                .find_map(|enfant| self.racine_de(nom, enfant, profondeur + 1, vues)),
+                .find_map(|enfant| self.racine_de(nom, enfant, plus_bas, vues)),
             _ => None,
         }
     }
@@ -171,9 +176,12 @@ impl<'a> Sqlite<'a> {
     /// Une cellule de sqlite_master : la page racine si c'est la table `nom`. Les quatre premières colonnes tiennent
     /// toujours dans la partie locale de la cellule (seul le texte SQL, après elles, peut déborder).
     fn ligne_de_master(p: &[u8], pos: usize, nom: &str) -> Option<u32> {
-        let (_, l1) = varint(p.get(pos..)?)?;
-        let (_, l2) = varint(p.get(pos + l1..)?)?;
-        let enregistrement = p.get(pos + l1 + l2..)?;
+        // Taille de la charge, puis rowid, puis l'enregistrement.
+        let cellule = p.get(pos..)?;
+        let (_, l1) = varint(cellule)?;
+        let apres_taille = cellule.get(l1..)?;
+        let (_, l2) = varint(apres_taille)?;
+        let enregistrement = apres_taille.get(l2..)?;
         let (taille_entete, l3) = varint(enregistrement)?;
         let taille_entete = usize::try_from(taille_entete).ok()?;
         let mut types = Vec::new();
@@ -181,16 +189,16 @@ impl<'a> Sqlite<'a> {
         while i < taille_entete {
             let (t, l) = varint(enregistrement.get(i..taille_entete)?)?;
             types.push(t);
-            i += l;
+            i = i.checked_add(l)?;
         }
         let [t_type, t_nom, t_table, t_racine, ..] = types[..] else {
             return None;
         };
         let mut i = taille_entete;
         let champ = |i: &mut usize, t: u64| -> Option<&[u8]> {
-            let n = taille_colonne(t)?;
-            let c = enregistrement.get(*i..i.checked_add(n)?)?;
-            *i += n;
+            let fin = i.checked_add(taille_colonne(t)?)?;
+            let c = enregistrement.get(*i..fin)?;
+            *i = fin;
             Some(c)
         };
         let genre = champ(&mut i, t_type)?;
@@ -271,10 +279,11 @@ mod colonnes {
                         _ => (false, t),
                     };
                     let mut n: i64 = 0;
-                    for c in chiffres.bytes().take_while(u8::is_ascii_digit) {
-                        n = n.saturating_mul(10).saturating_add(i64::from(c - b'0'));
+                    for chiffre in chiffres.chars().map_while(|c| c.to_digit(10)) {
+                        n = n.saturating_mul(10).saturating_add(i64::from(chiffre));
                     }
-                    Some(if negatif { -n } else { n })
+                    // `n` est positif ou nul : son opposé existe toujours.
+                    Some(if negatif { n.checked_neg()? } else { n })
                 }
                 _ => None,
             }
@@ -315,15 +324,15 @@ mod colonnes {
         while i < taille_entete {
             let (t, n) = varint(entete.get(i..)?)?;
             types.push(t);
-            i += n;
+            i = i.checked_add(n)?;
         }
         let mut pos = taille_entete;
         types
             .into_iter()
             .map(|t| {
-                let n = taille_colonne(t)?;
-                let champ = charge.get(pos..pos.checked_add(n)?)?;
-                pos += n;
+                let fin = pos.checked_add(taille_colonne(t)?)?;
+                let champ = charge.get(pos..fin)?;
+                pos = fin;
                 Some(match t {
                     0 => Valeur::Nul,
                     1..=6 => Valeur::Entier(signe(champ)),
@@ -341,7 +350,8 @@ mod colonnes {
     /// colonne, sauf les contraintes de table (PRIMARY KEY (…), FOREIGN KEY…), qui viennent après les colonnes. Une
     /// colonne « INTEGER PRIMARY KEY » n'est pas écrite dans la ligne : c'est le rowid.
     pub(super) fn colonnes_de(sql: &str) -> Option<Vec<(String, bool)>> {
-        let corps = sql.get(sql.find('(')? + 1..sql.rfind(')')?)?;
+        let (_, apres) = sql.split_once('(')?;
+        let corps = apres.get(..apres.rfind(')')?)?;
         let mut morceaux = Vec::new();
         let (mut profondeur, mut guillemet, mut debut) = (0usize, None, 0);
         for (i, c) in corps.char_indices() {
@@ -349,11 +359,12 @@ mod colonnes {
                 (Some(g), _) if c == g => guillemet = None,
                 (None, '"' | '\'' | '`') => guillemet = Some(c),
                 (None, '[') => guillemet = Some(']'),
-                (None, '(') => profondeur += 1,
+                // Bornée par la longueur du texte : saturer n'arrive jamais.
+                (None, '(') => profondeur = profondeur.saturating_add(1),
                 (None, ')') => profondeur = profondeur.saturating_sub(1),
                 (None, ',') if profondeur == 0 => {
                     morceaux.push(&corps[debut..i]);
-                    debut = i + 1;
+                    debut = i.checked_add(1)?;
                 }
                 // Dans des guillemets, ou un caractère ordinaire.
                 _ => {}
@@ -366,8 +377,7 @@ mod colonnes {
             let (nom, reste) = match m.chars().next()? {
                 o @ ('"' | '`' | '[') => {
                     let f = if o == '[' { ']' } else { o };
-                    let fin = m[1..].find(f)? + 1;
-                    (&m[1..fin], &m[fin + 1..])
+                    m.get(1..)?.split_once(f)?
                 }
                 _ => m.split_once(char::is_whitespace).unwrap_or((m, "")),
             };
@@ -384,43 +394,51 @@ mod colonnes {
     }
 
     impl Sqlite<'_> {
-        /// Octets utiles d'une page (sans la réserve).
-        fn utile(&self) -> usize {
-            self.page - self.reserve
+        /// Octets utiles d'une page (sans la réserve) ; `None` si la réserve prend toute la page.
+        fn utile(&self) -> Option<usize> {
+            self.page.checked_sub(self.reserve)
         }
 
         /// Une cellule d'une feuille de table (page `p`, position `pos`) : (rowid, enregistrement complet). Ce qui ne tient
         /// pas dans la page continue dans une chaîne de pages de débordement (4 octets : la suivante, puis la suite).
         pub(super) fn charge(&self, p: &[u8], pos: usize) -> Option<(i64, Vec<u8>)> {
-            let (taille, l1) = varint(p.get(pos..)?)?;
-            let (rowid, l2) = varint(p.get(pos + l1..)?)?;
+            let cellule = p.get(pos..)?;
+            let (taille, l1) = varint(cellule)?;
+            let apres_taille = cellule.get(l1..)?;
+            let (rowid, l2) = varint(apres_taille)?;
+            let corps = apres_taille.get(l2..)?;
             let taille = usize::try_from(taille).ok()?;
-            let utile = self.utile();
+            let utile = self.utile()?;
             let max_local = utile.checked_sub(35)?;
+            // Une page de débordement : 4 octets (la suivante), puis la suite de la charge.
+            let par_page = utile.checked_sub(4)?;
             // La part gardée dans la page, calculée comme SQLite la calcule (format de fichier, § 1.6 : U, X, M, K).
             let local = if taille <= max_local {
                 taille
             } else {
-                let min_local = ((utile - 12) * 32 / 255).checked_sub(23)?;
-                let essai = min_local + (taille - min_local) % (utile - 4);
+                let min_local = (utile.checked_sub(12)?.checked_mul(32)? / 255).checked_sub(23)?;
+                let essai = taille
+                    .checked_sub(min_local)?
+                    .checked_rem(par_page)?
+                    .checked_add(min_local)?;
                 if essai <= max_local { essai } else { min_local }
             };
-            let debut = pos + l1 + l2;
-            let mut charge = p.get(debut..debut.checked_add(local)?)?.to_vec();
+            let mut charge = corps.get(..local)?.to_vec();
             let mut suivante = if local < taille {
-                Some(u32be(p, debut + local)?)
+                Some(u32be(corps, local)?)
             } else {
                 None
             };
-            let mut pages = 0;
-            while charge.len() < taille {
-                pages += 1;
+            let mut pages = 0usize;
+            while let Some(manque) = taille.checked_sub(charge.len()).filter(|&m| m > 0) {
+                // Borné par PAGES_DEBORDEMENT juste en dessous : saturer n'arrive jamais.
+                pages = pages.saturating_add(1);
                 if pages > PAGES_DEBORDEMENT {
                     return None;
                 }
                 let page = self.page(suivante?)?;
-                let morceau = (utile - 4).min(taille - charge.len());
-                charge.extend_from_slice(page.get(4..4 + morceau)?);
+                let morceau = par_page.min(manque);
+                charge.extend_from_slice(page.get(4..)?.get(..morceau)?);
                 suivante = Some(u32be(page, 0)?);
             }
             Some((rowid.cast_signed(), charge))
@@ -441,6 +459,7 @@ mod colonnes {
             if profondeur > 20 || !vues.insert(racine) {
                 return None;
             }
+            let plus_bas = profondeur.checked_add(1)?;
             let (genre, positions, droite) = self.cellules(racine)?;
             let p = self.page(racine)?;
             match genre {
@@ -461,9 +480,9 @@ mod colonnes {
                 }
                 0x05 => {
                     for pos in positions {
-                        self.parcourir(u32be(p, pos)?, profondeur + 1, vues, budget, valeurs_max, lignes)?;
+                        self.parcourir(u32be(p, pos)?, plus_bas, vues, budget, valeurs_max, lignes)?;
                     }
-                    self.parcourir(droite?, profondeur + 1, vues, budget, valeurs_max, lignes)?;
+                    self.parcourir(droite?, plus_bas, vues, budget, valeurs_max, lignes)?;
                 }
                 _ => return None,
             }
@@ -477,7 +496,7 @@ mod colonnes {
     pub(crate) fn lignes(octets: &[u8], table: &str, colonnes: &[&str]) -> Option<Vec<Vec<Valeur>>> {
         let db = Sqlite::ouvrir(octets)?;
         // Le format exige au moins 480 octets utiles par page : en dessous, le calcul du débordement n'a plus de sens.
-        if db.reserve >= db.page || db.utile() < 480 {
+        if db.utile().is_none_or(|u| u < 480) {
             return None;
         }
         // sqlite_master (page 1) : type, name, tbl_name, rootpage, sql.
@@ -554,6 +573,11 @@ mod colonnes {
     }
 }
 
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    reason = "essais : y déborder fait échouer l'essai"
+)]
 #[cfg(test)]
 mod tests {
     use super::colonnes::{VALEURS_MAX, Valeur, colonnes_de, signe};

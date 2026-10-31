@@ -2,6 +2,9 @@
 //! gzip (`gzip`), tar (`tar`) et zip (`zip`). Ce qu'elles contiennent vient d'ailleurs (base d'un dépôt, fichier
 //! téléchargé) : chaque lecteur est borné en taille et en nombre d'entrées, et rend `None` au lieu de paniquer.
 
+// Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
+#![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
+
 pub(crate) mod crc32;
 pub(crate) mod deflate;
 pub(crate) mod gzip;
