@@ -148,13 +148,10 @@ struct Curseur {
 }
 
 impl Curseur {
-    /// Passe l'octet que `regarder` vient de rendre.
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "appelé juste après un `regarder` réussi : pos < fin, pos + 1 ne déborde pas"
-    )]
+    /// Passe l'octet que `regarder` vient de rendre, sans jamais aller au-delà de `fin` (la borne tient ici, quel que
+    /// soit l'appelant).
     fn passer(&mut self) {
-        self.pos += 1;
+        self.pos = self.pos.saturating_add(1).min(self.fin);
     }
 }
 

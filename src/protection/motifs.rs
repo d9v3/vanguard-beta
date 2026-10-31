@@ -200,10 +200,6 @@ fn rarete(o: u8) -> u32 {
 }
 
 /// La meilleure fenêtre d'au plus `ATOME_MAX` octets connus qui se suivent au premier niveau : (début, longueur).
-#[expect(
-    clippy::arithmetic_side_effects,
-    reason = "positions dans `elements` (somme des longueurs de ses tranches) ; note au plus 4 × 6 + 2 × 3"
-)]
 fn choisir_atome(elements: &[Element]) -> Option<(usize, usize)> {
     let connu = |e: &Element| matches!(e, Element::Octet { masque: 0xFF, .. });
     let octet = |e: &Element| match e {
@@ -212,7 +208,7 @@ fn choisir_atome(elements: &[Element]) -> Option<(usize, usize)> {
     };
     let mut meilleur: Option<(u32, usize, usize)> = None;
     // Les suites d'éléments tous connus ou tous inconnus, et la position de chacune.
-    let mut position = 0;
+    let mut position = 0usize;
     for suite in elements.chunk_by(|a, b| connu(a) == connu(b)) {
         if suite.first().is_some_and(connu) {
             for decalage in 0..suite.len() {
@@ -220,14 +216,19 @@ fn choisir_atome(elements: &[Element]) -> Option<(usize, usize)> {
                 let mut distincts = fenetre.clone();
                 distincts.sort_unstable();
                 distincts.dedup();
+                #[expect(
+                    clippy::arithmetic_side_effects,
+                    reason = "ATOME_MAX = 4 octets de rareté ≤ 6, 3 distincts de plus au plus : note ≤ 4 × 6 + 2 × 3"
+                )]
                 let note = fenetre.iter().map(|o| rarete(*o)).sum::<u32>()
                     + 2 * u32::try_from(distincts.len().saturating_sub(1)).unwrap_or(0);
                 if meilleur.is_none_or(|(m, _, _)| note > m) {
-                    meilleur = Some((note, position + decalage, fenetre.len()));
+                    meilleur = Some((note, position.checked_add(decalage)?, fenetre.len()));
                 }
             }
         }
-        position += suite.len();
+        // Une somme de longueurs de tranches de `elements` : ne dépasse pas elements.len().
+        position = position.checked_add(suite.len())?;
     }
     meilleur.map(|(_, d, n)| (d, n))
 }
