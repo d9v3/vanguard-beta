@@ -176,6 +176,19 @@ pub(crate) fn suivre(windows: &Path, sous: &[impl AsRef<Path>]) -> Lieu {
     Lieu::Ici(p)
 }
 
+/// `%SystemRoot%` ou `%windir%` en tête de `chemin` (casse ignorée, comme Windows) remplacé par `windows`, le dossier
+/// lu par le processus élevé lui-même ; le reste tel quel.
+pub(crate) fn developper_windows(chemin: &str, windows: &str) -> String {
+    for variable in ["%SystemRoot%", "%windir%"] {
+        if let Some(tete) = chemin.get(..variable.len())
+            && tete.eq_ignore_ascii_case(variable)
+        {
+            return format!("{windows}{}", chemin.get(variable.len()..).unwrap_or_default());
+        }
+    }
+    chemin.to_string()
+}
+
 /// Les dossiers de `chemin` sous `windows`, s'il y est vraiment : composants entiers, comparés sans tenir compte de
 /// la casse (comme Windows), sans « . » ni « .. » ni composant vide, ni « : » (flux de données) ni variable (« % »),
 /// et au moins un dossier sous celui de Windows. Du texte seulement : les liens se jugent ensuite (`suivre`).
@@ -301,6 +314,23 @@ pub(crate) fn mettre_de_cote(windows: &Path, cache: ACoter, date: &str) -> Resul
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn la_variable_du_dossier_de_windows_vient_du_processus() {
+        let w = r"C:\Windows";
+        assert_eq!(
+            developper_windows(r"%SystemRoot%\System32\spool\PRINTERS", w),
+            r"C:\Windows\System32\spool\PRINTERS"
+        );
+        assert_eq!(developper_windows(r"%WINDIR%\x", w), r"C:\Windows\x");
+        // Une autre variable reste, et le jugement du chemin la refuse.
+        let autre = developper_windows(r"%USERPROFILE%\x", w);
+        assert_eq!(autre, r"%USERPROFILE%\x");
+        assert!(sous_windows(w, &autre).is_none());
+        assert!(sous_windows(w, &developper_windows(r"%SystemRoot%\System32\spool\PRINTERS", w)).is_some());
+        // Pas de coupure au milieu d'un caractère de plusieurs octets.
+        assert_eq!(developper_windows("%Systé", w), "%Systé");
+    }
+
     use super::*;
 
     fn p(n: &str) -> PathBuf {

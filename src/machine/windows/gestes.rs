@@ -781,9 +781,9 @@ impl Acte {
             Acte::Vider(Vidable::TempWindows) => "$w = [Environment]::GetFolderPath('Windows'); if (-not $w) { throw 'Windows folder not found' }; Get-ChildItem -LiteralPath (Join-Path $w 'Temp') -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue".to_string(),
             Acte::Vider(Vidable::WuTelechargements) => "$w = [Environment]::GetFolderPath('Windows'); if (-not $w) { throw 'Windows folder not found' }; Get-ChildItem -LiteralPath (Join-Path $w 'SoftwareDistribution\\Download') -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue".to_string(),
             Acte::ViderFileImpression => "$w = [Environment]::GetFolderPath('Windows'); if (-not $w) { throw 'Windows folder not found' }; Get-ChildItem -LiteralPath (Join-Path $w 'System32\\spool\\PRINTERS') -File | Remove-Item -Force".to_string(),
-            // Les lignes de la réparation « Windows Update bloqué », telles qu'elles étaient.
-            Acte::MettreDeCote(ACoter::SoftwareDistribution) => "Rename-Item \"$env:SystemRoot\\SoftwareDistribution\" \"SoftwareDistribution.$(Get-Date -Format yyyyMMddHHmm)\"".to_string(),
-            Acte::MettreDeCote(ACoter::Catroot2) => "Rename-Item \"$env:SystemRoot\\System32\\catroot2\" \"catroot2.$(Get-Date -Format yyyyMMddHHmm)\"".to_string(),
+            // Les lignes de la réparation « Windows Update bloqué », le dossier de Windows pris comme ci-dessus.
+            Acte::MettreDeCote(ACoter::SoftwareDistribution) => "$w = [Environment]::GetFolderPath('Windows'); if (-not $w) { throw 'Windows folder not found' }; Rename-Item -LiteralPath (Join-Path $w 'SoftwareDistribution') \"SoftwareDistribution.$(Get-Date -Format yyyyMMddHHmm)\"".to_string(),
+            Acte::MettreDeCote(ACoter::Catroot2) => "$w = [Environment]::GetFolderPath('Windows'); if (-not $w) { throw 'Windows folder not found' }; Rename-Item -LiteralPath (Join-Path $w 'System32\\catroot2') \"catroot2.$(Get-Date -Format yyyyMMddHHmm)\"".to_string(),
         }
     }
 }
@@ -1396,6 +1396,8 @@ mod tests {
             "vanguard:vider temp-windows",
             "vanguard:vider wu-telechargements",
             "vanguard:vider-file-impression",
+            "vanguard:mettre-de-cote software-distribution",
+            "vanguard:mettre-de-cote catroot2",
         ] {
             let c = ps(l);
             assert!(

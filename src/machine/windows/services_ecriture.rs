@@ -574,6 +574,9 @@ fn file_d_impression(windows: &std::path::Path) -> Result<Vec<String>, Echec> {
         .ok()
         .and_then(|k| k.get_value("DefaultSpoolDirectory").ok())
         .filter(|c: &String| !c.trim().is_empty());
+    // Une valeur écrite « %SystemRoot%\… » (REG_EXPAND_SZ, que winreg rend telle quelle) : le dossier de Windows pris
+    // par ce processus, jamais l'environnement. Tout autre `%` reste, et `sous_windows` le refuse.
+    let lu = lu.map(|c| vidage::developper_windows(&c, &windows.to_string_lossy()));
     let chemin = lu.unwrap_or_else(|| format!(r"{}\System32\spool\PRINTERS", windows.display()));
     vidage::sous_windows(&windows.to_string_lossy(), &chemin).ok_or_else(|| {
         Echec::refuse(

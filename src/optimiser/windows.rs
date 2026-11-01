@@ -789,20 +789,27 @@ pub fn ecrire_avec(lots: &[Vec<(&Changement, Valeur)>], en_plus: &[Vec<String>])
         .any(|(c, _)| matches!(c, Changement::Registre { racine, .. } if *racine == Racine::HkcuStrategie))
         .then(crate::reparer::sid_de_la_personne)
         .flatten();
-    let admin: Vec<(usize, Vec<String>)> = lots
-        .iter()
-        .enumerate()
-        .filter_map(|(i, lot)| {
-            let commandes: Vec<String> = lot
-                .iter()
-                .filter(|(c, _)| c.admin())
-                .filter_map(|(c, v)| c.commandes_admin(v.as_deref(), sid.as_deref()))
-                .flatten()
-                .collect();
-            (!commandes.is_empty()).then_some((i, commandes))
-        })
-        .collect();
     let mut resultats = vec![true; lots.len()];
+    let mut admin: Vec<(usize, Vec<String>)> = Vec::new();
+    for (i, lot) in lots.iter().enumerate() {
+        // Un changement sans commande (valeur notée hors des formes permises, service hors de la table) : le lot
+        // n'est pas fait, et il le dit, au lieu d'être compté fait sans que rien ne parte.
+        let commandes: Option<Vec<String>> = lot
+            .iter()
+            .filter(|(c, _)| c.admin())
+            .map(|(c, v)| c.commandes_admin(v.as_deref(), sid.as_deref()))
+            .collect::<Option<Vec<Vec<String>>>>()
+            .map(|v| v.into_iter().flatten().collect());
+        match commandes {
+            None => {
+                if let Some(r) = resultats.get_mut(i) {
+                    *r = false;
+                }
+            }
+            Some(c) if !c.is_empty() => admin.push((i, c)),
+            Some(_) => {}
+        }
+    }
     let mut plus = vec![true; en_plus.len()];
     if !admin.is_empty() || !en_plus.is_empty() {
         let point = crate::reparer::point_restauration(tr!("réglages", "settings")).map(|(_, p)| p);
