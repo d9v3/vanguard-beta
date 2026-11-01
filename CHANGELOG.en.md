@@ -26,6 +26,11 @@ delivered just before it. Only the latest version has its download page; every v
   now makes that segment read-only itself at launch, as glibc's loader does; a failure is logged without stopping
   the startup.
 
+- **Service quotes added on their own, and said.** When a service's path contains a space without quotes (another
+  program could slip in its place), the accepted fix adds the quotes itself: “Vanguard adds the quotes to the path of
+  the service X”. It does so only if the quotes alone change, the program it names exists and its variables are the
+  system's; otherwise, it leaves the fix to be done by hand.
+
 ## October 26, 2026: version 0.88
 
 - **Detection regression.** A corpus of harmless fabricated cases (tests/corpus-detection) proves through 77 cases

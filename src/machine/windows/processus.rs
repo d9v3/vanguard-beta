@@ -101,20 +101,61 @@ pub(crate) fn liste() -> Vec<Processus> {
 /// Le chemin complet du programme d'un processus. Les droits « limités » suffisent pour la plupart, même d'un autre
 /// compte ; un processus protégé (System, antivirus) refuse : `None`.
 pub(crate) fn chemin(processus: u32) -> Option<String> {
-    const INFORMATION_LIMITEE: u32 = 0x1000;
-    let mut tampon = vec![0u16; 32_768];
-    let mut taille = u32::try_from(tampon.len()).ok()?;
-    // SAFETY: la poignée vient d'OpenProcess (nulle : refus, vérifié) et n'est refermée qu'une fois.
-    // QueryFullProcessImageNameW écrit au plus `taille` caractères dans `tampon`, puis le nombre écrit dans `taille`.
-    unsafe {
-        let poignee = OpenProcess(INFORMATION_LIMITEE, 0, processus);
+    Tenu::ouvrir(processus).ok()?.chemin()
+}
+
+/// Un processus tenu par une poignée de lecture limitée (PROCESS_QUERY_LIMITED_INFORMATION) : tant qu'elle vit,
+/// Windows ne redonne pas son numéro à un autre processus, et ce qui est lu par elle (programme, compte) est celui de
+/// ce processus-là, même s'il a fini entre-temps. Le processus élevé tient ainsi le Vanguard qui l'a lancé.
+pub(crate) struct Tenu(*mut c_void);
+
+impl Tenu {
+    /// Ouvre le processus `pid` ; l'erreur de Windows s'il refuse (processus fini, protégé).
+    // FFI : OpenProcess, la poignée gardée par la valeur rendue.
+    #[allow(unsafe_code)]
+    pub(crate) fn ouvrir(pid: u32) -> std::io::Result<Tenu> {
+        const INFORMATION_LIMITEE: u32 = 0x1000;
+        // SAFETY: OpenProcess ne lit rien de notre mémoire ; une poignée nulle (refus) n'est jamais gardée, une autre
+        // l'est par `Tenu`, qui la referme une seule fois (Drop).
+        let poignee = unsafe { OpenProcess(INFORMATION_LIMITEE, 0, pid) };
         if poignee.is_null() {
-            return None;
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(Tenu(poignee))
         }
-        let lu = QueryFullProcessImageNameW(poignee, 0, tampon.as_mut_ptr(), &raw mut taille) != 0;
-        CloseHandle(poignee);
+    }
+
+    /// Le chemin complet de son programme, lu par la poignée ; `None` si Windows refuse.
+    // FFI : QueryFullProcessImageNameW sur la poignée tenue.
+    #[allow(unsafe_code)]
+    pub(crate) fn chemin(&self) -> Option<String> {
+        let mut tampon = vec![0u16; 32_768];
+        let mut taille = u32::try_from(tampon.len()).ok()?;
+        // SAFETY: la poignée est ouverte tant que `self` vit. QueryFullProcessImageNameW écrit au plus `taille`
+        // caractères dans `tampon`, puis le nombre écrit dans `taille`.
+        let lu = unsafe { QueryFullProcessImageNameW(self.0, 0, tampon.as_mut_ptr(), &raw mut taille) } != 0;
         // Les `taille` caractères écrits, jamais au-delà du tampon.
         lu.then(|| String::from_utf16_lossy(tampon.get(..usize::try_from(taille).unwrap_or(0)).unwrap_or(&tampon)))
+    }
+
+    /// Le SID de son compte, lu dans son jeton par la poignée ; l'erreur, avec son code.
+    pub(crate) fn sid(&self) -> std::io::Result<String> {
+        const UTILISATEUR: u32 = 1;
+        let tampon = jeton_de(Some(self), UTILISATEUR)?;
+        sid_du_jeton(&tampon).ok_or_else(|| {
+            std::io::Error::other(crate::tr!("SID illisible dans le jeton", "SID unreadable in the token"))
+        })
+    }
+}
+
+impl Drop for Tenu {
+    // FFI : CloseHandle de la poignée tenue.
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        // SAFETY: la poignée vient d'OpenProcess (non nulle, vérifié par `ouvrir`) et n'est refermée qu'ici, une fois.
+        unsafe {
+            CloseHandle(self.0);
+        }
     }
 }
 
@@ -187,36 +228,24 @@ fn jeton(classe: u32) -> Option<Vec<u64>> {
     jeton_de(None, classe).ok()
 }
 
-/// Une information du jeton du processus `pid` (`None` : ce processus), dans un tampon aligné ; l'erreur de Windows
-/// s'il refuse (processus fini, ou d'un autre compte sans SeDebugPrivilege actif), lue dès l'appel refusé.
-// FFI : OpenProcess, OpenProcessToken et GetTokenInformation sur un autre processus.
+/// Une information du jeton du processus tenu (`None` : ce processus), dans un tampon aligné ; l'erreur de Windows
+/// s'il refuse (processus d'un autre compte sans SeDebugPrivilege actif), lue dès l'appel refusé.
+// FFI : OpenProcessToken et GetTokenInformation.
 #[allow(unsafe_code)]
-fn jeton_de(pid: Option<u32>, classe: u32) -> std::io::Result<Vec<u64>> {
+fn jeton_de(processus: Option<&Tenu>, classe: u32) -> std::io::Result<Vec<u64>> {
     const LECTURE: u32 = 0x0008;
-    const QUESTION_LIMITEE: u32 = 0x1000;
     let mut poignee = std::ptr::null_mut();
-    // SAFETY: GetCurrentProcess rend une pseudo-poignée, sans rien à fermer ; la poignée d'OpenProcess (nulle : refus,
-    // vérifié) est fermée une seule fois, dès le jeton ouvert ou refusé. Le jeton ouvert (vérifié) est fermé une
-    // seule fois. Le premier appel donne la taille ; le second écrit au plus `place` octets (la taille annoncée) dans
-    // `tampon`, qui en a au moins autant, aligné sur 8 octets pour les structures qu'il contient.
+    // SAFETY: GetCurrentProcess rend une pseudo-poignée, sans rien à fermer ; celle d'un `Tenu` reste ouverte tant
+    // qu'il vit (emprunté ici). Le jeton ouvert (vérifié) est fermé une seule fois. Le premier appel donne la taille ;
+    // le second écrit au plus `place` octets (la taille annoncée) dans `tampon`, qui en a au moins autant, aligné sur
+    // 8 octets pour les structures qu'il contient.
     unsafe {
-        let processus = match pid {
+        let processus = match processus {
             None => GetCurrentProcess(),
-            Some(p) => {
-                let h = OpenProcess(QUESTION_LIMITEE, 0, p);
-                if h.is_null() {
-                    return Err(std::io::Error::last_os_error());
-                }
-                h
-            }
+            Some(t) => t.0,
         };
-        let ouvert = OpenProcessToken(processus, LECTURE, &raw mut poignee) != 0;
-        let refus = std::io::Error::last_os_error();
-        if pid.is_some() {
-            CloseHandle(processus);
-        }
-        if !ouvert {
-            return Err(refus);
+        if OpenProcessToken(processus, LECTURE, &raw mut poignee) == 0 {
+            return Err(std::io::Error::last_os_error());
         }
         let mut taille = 0u32;
         GetTokenInformation(poignee, classe, std::ptr::null_mut(), 0, &raw mut taille);
@@ -255,15 +284,6 @@ pub(crate) fn type_d_elevation() -> Option<u32> {
 pub(crate) fn sid() -> Option<String> {
     const UTILISATEUR: u32 = 1;
     sid_du_jeton(&jeton(UTILISATEUR)?)
-}
-
-/// Le SID du compte du processus `pid`, lu dans son jeton : celui du Vanguard qui demande, pour le processus élevé
-/// (le PID est vérifié par le tube : `eleve::ouvrir_le_canal`). Jamais reçu en paramètre. L'erreur, avec son code.
-pub(crate) fn sid_de(pid: u32) -> std::io::Result<String> {
-    const UTILISATEUR: u32 = 1;
-    let tampon = jeton_de(Some(pid), UTILISATEUR)?;
-    sid_du_jeton(&tampon)
-        .ok_or_else(|| std::io::Error::other(crate::tr!("SID illisible dans le jeton", "SID unreadable in the token")))
 }
 
 /// Le SID d'un TOKEN_USER lu par `jeton_de`, en texte vérifié.
@@ -433,8 +453,11 @@ mod tests {
         assert!(!terminer(u32::MAX - 3));
         let _ = eleve();
         assert!(sid().is_none_or(|s| sid_valide(&s)));
-        // Le SID d'un processus lu par son numéro : celui de ce processus est le même que par son propre jeton.
-        assert_eq!(sid_de(moi).ok(), sid());
-        assert!(sid_de(u32::MAX - 3).is_err());
+        // Le SID d'un processus tenu par sa poignée : celui de ce processus est le même que par son propre jeton ; un
+        // numéro qui n'existe pas ne s'ouvre pas.
+        let tenu = Tenu::ouvrir(moi).unwrap();
+        assert_eq!(tenu.sid().ok(), sid());
+        assert!(tenu.chemin().is_some_and(|c| c.to_lowercase().ends_with(".exe")));
+        assert!(Tenu::ouvrir(u32::MAX - 3).is_err());
     }
 }

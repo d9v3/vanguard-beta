@@ -596,6 +596,7 @@ pub(crate) fn faire(acte: &Acte) -> Resultat {
     if let Some(fait) = super::pare_feu::faire_acte(acte) {
         return Resultat {
             reussi: fait.reussi,
+            rien: false,
             avant: None,
             raison: if fait.reussi {
                 fait.note.unwrap_or_default()
@@ -633,11 +634,13 @@ pub(crate) fn faire(acte: &Acte) -> Resultat {
     match r {
         Ok(note) => Resultat {
             reussi: true,
+            rien: false,
             avant: None,
             raison: note,
         },
         Err(e) => Resultat {
             reussi: false,
+            rien: false,
             avant: None,
             raison: e.to_string(),
         },

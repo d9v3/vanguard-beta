@@ -65,7 +65,15 @@ pub(crate) struct Correction {
     /// La commande PowerShell du chemin par script quand elle est fixe : celle que le constat écrivait avant que le
     /// geste passe par Windows, reprise telle quelle. `None` : calculée par `powershell`.
     ps: Option<&'static str>,
+    /// Le bilan refait par le processus élevé, pour une entrée qui ne remet pas seulement une valeur de durcissement :
+    /// la fonction même du constat, sur les lectures de cet instant (`rejuger`). Sans juge : une valeur de
+    /// durcissement, toujours bonne à poser.
+    juge: Option<Juge>,
 }
+
+/// Les constats du bilan refait ici (`compte` : le SID de la personne, pour ce qui se lit dans son registre) ; `None`
+/// si ce qu'il lit ne se lit pas.
+type Juge = fn(&Result<String, String>) -> Option<Vec<crate::machine::Constat>>;
 
 impl Correction {
     /// Ce que la correction fait, en une phrase, montré par le processus élevé avant de la faire.
@@ -76,7 +84,6 @@ impl Correction {
     /// L'équivalent PowerShell, pour le chemin par script. La clé n'est créée que si elle manque : « New-Item -Force »
     /// sur une clé existante l'écraserait avec ses autres valeurs.
     pub(crate) fn powershell(&self) -> String {
-        use crate::commande::ps_texte;
         if let Some(ps) = self.ps {
             return ps.to_string();
         }
@@ -90,21 +97,34 @@ impl Correction {
             }
             // Le compte de la personne, comme le constat l'écrivait (la fenêtre PowerShell de Wine n'a pas de jeton
             // de parent à lire : le SID est celui de ce processus).
-            Geste::DwordCompte { cle, valeur, donnee } => format!(
-                "Set-ItemProperty -LiteralPath '{}' -Name {valeur} -Value {donnee} -Type DWord",
-                crate::reparer::hkcu_de_la_personne(crate::reparer::sid_de_la_personne().as_deref(), cle)
-            ),
-            Geste::Userinit => format!(
-                "Set-ItemProperty -LiteralPath '{}' -Name Userinit -Value '{}' -Type String",
-                ps_texte(&format!(r"HKLM:\{}", super::portes::WINLOGON)),
-                ps_texte(&format!(r"{}\system32\userinit.exe,", super::portes::racine_windows()))
-            ),
+            Geste::DwordCompte { cle, valeur, donnee } => {
+                ps_dword_compte(crate::reparer::sid_de_la_personne().as_deref(), cle, valeur, donnee)
+            }
+            Geste::Userinit => ps_userinit(&super::portes::racine_windows()),
             Geste::Sz { .. } | Geste::NetbiosCoupe | Geste::Smb1Serveur => {
                 "throw 'Vanguard : geste sans équivalent PowerShell'".to_string()
             }
             Geste::PointDeRestauration => crate::reparer::point_restauration_powershell(),
         }
     }
+}
+
+/// La commande d'un DWORD du compte de la personne, pour le SID donné (sans SID : HKCU de la fenêtre).
+fn ps_dword_compte(sid: Option<&str>, cle: &str, valeur: &str, donnee: u32) -> String {
+    format!(
+        "Set-ItemProperty -LiteralPath '{}' -Name {valeur} -Value {donnee} -Type DWord",
+        crate::reparer::hkcu_de_la_personne(sid, cle)
+    )
+}
+
+/// La commande qui remet Userinit d'origine, pour la racine de Windows donnée.
+fn ps_userinit(racine: &str) -> String {
+    use crate::commande::ps_texte;
+    format!(
+        "Set-ItemProperty -LiteralPath '{}' -Name Userinit -Value '{}' -Type String",
+        ps_texte(&format!(r"HKLM:\{}", super::portes::WINLOGON)),
+        ps_texte(&format!(r"{racine}\system32\userinit.exe,"))
+    )
 }
 
 const WDIGEST: &str = r"SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest";
@@ -129,6 +149,7 @@ static TABLE: &[Correction] = &[
         geste: Geste::PointDeRestauration,
         fr: "Point de restauration, pour pouvoir revenir en arrière",
         en: "Restore point, so you can go back",
+        juge: None,
         ps: None,
     },
     Correction {
@@ -140,6 +161,7 @@ static TABLE: &[Correction] = &[
         },
         fr: "Couper WDigest : plus de mot de passe en clair dans la mémoire (HKLM\\…\\WDigest, UseLogonCredential = 0)",
         en: "Turn WDigest off: no more clear-text password in memory (HKLM\\...\\WDigest, UseLogonCredential = 0)",
+        juge: None,
         ps: None,
     },
     Correction {
@@ -151,6 +173,7 @@ static TABLE: &[Correction] = &[
         },
         fr: "Exiger l'authentification au niveau réseau (NLA) pour le Bureau à distance (HKLM\\…\\RDP-Tcp, UserAuthentication = 1)",
         en: "Require Network Level Authentication (NLA) for Remote Desktop (HKLM\\...\\RDP-Tcp, UserAuthentication = 1)",
+        juge: None,
         ps: None,
     },
     dword(
@@ -276,6 +299,7 @@ static TABLE: &[Correction] = &[
         },
         fr: "Désactiver le Bureau à distance (HKLM\\…\\Terminal Server, fDenyTSConnections = 1)",
         en: "Turn Remote Desktop off (HKLM\\...\\Terminal Server, fDenyTSConnections = 1)",
+        juge: Some(juge_bureau_distance),
         ps: Some(
             r"Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 1",
         ),
@@ -288,6 +312,7 @@ static TABLE: &[Correction] = &[
         },
         fr: "Remettre le contrôle de compte pour les connexions à distance des comptes locaux (HKLM\\…\\Policies\\System, LocalAccountTokenFilterPolicy retiré)",
         en: "Put account control back for remote connections of local accounts (HKLM\\...\\Policies\\System, LocalAccountTokenFilterPolicy removed)",
+        juge: Some(juge_jeton_distant),
         ps: None,
     },
     Correction {
@@ -299,6 +324,7 @@ static TABLE: &[Correction] = &[
         },
         fr: "Couper l'installation avec les droits du système pour l'ordinateur (HKLM\\…\\Installer, AlwaysInstallElevated = 0)",
         en: "Turn off installing with system rights for the computer (HKLM\\...\\Installer, AlwaysInstallElevated = 0)",
+        juge: Some(juge_installation_elevee),
         ps: Some(
             r"Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer' -Name AlwaysInstallElevated -Value 0 -Type DWord",
         ),
@@ -312,6 +338,7 @@ static TABLE: &[Correction] = &[
         },
         fr: "Couper l'installation avec les droits du système pour votre compte (HKCU\\…\\Installer, AlwaysInstallElevated = 0)",
         en: "Turn off installing with system rights for your account (HKCU\\...\\Installer, AlwaysInstallElevated = 0)",
+        juge: Some(juge_installation_elevee),
         ps: None,
     },
     Correction {
@@ -323,6 +350,7 @@ static TABLE: &[Correction] = &[
         },
         fr: "Régler l'heure par Internet (HKLM\\…\\W32Time\\Parameters, Type = NTP)",
         en: "Set the time from the Internet (HKLM\\...\\W32Time\\Parameters, Type = NTP)",
+        juge: Some(juge_heure),
         ps: Some(
             r"Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters' -Name Type -Value NTP",
         ),
@@ -336,6 +364,7 @@ static TABLE: &[Correction] = &[
         },
         fr: "Remettre le bureau de Windows seul (HKLM\\…\\Winlogon, Shell = explorer.exe, la valeur d'origine)",
         en: "Put Windows' desktop back alone (HKLM\\...\\Winlogon, Shell = explorer.exe, the original value)",
+        juge: Some(juge_winlogon),
         ps: Some(
             r"Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name Shell -Value 'explorer.exe' -Type String",
         ),
@@ -345,13 +374,15 @@ static TABLE: &[Correction] = &[
         geste: Geste::Userinit,
         fr: "Remettre Userinit d'origine (HKLM\\…\\Winlogon, Userinit = <dossier de Windows>\\system32\\userinit.exe, ; le dossier est lu par Windows)",
         en: "Put the original Userinit back (HKLM\\...\\Winlogon, Userinit = <Windows folder>\\system32\\userinit.exe, ; the folder is read from Windows)",
+        juge: None,
         ps: None,
     },
     Correction {
         id: "netbios-coupe",
         geste: Geste::NetbiosCoupe,
-        fr: "Couper NetBIOS sur TCP/IP sur chaque carte réseau (HKLM\\…\\NetBT\\Parameters\\Interfaces, NetbiosOptions = 2)",
-        en: "Turn off NetBIOS over TCP/IP on every network adapter (HKLM\\...\\NetBT\\Parameters\\Interfaces, NetbiosOptions = 2)",
+        fr: "Couper NetBIOS sur TCP/IP sur toutes les cartes réseau, VPN et virtuelles comprises (HKLM\\…\\NetBT\\Parameters\\Interfaces, NetbiosOptions = 2 ; effectif au prochain redémarrage)",
+        en: "Turn off NetBIOS over TCP/IP on all network adapters, VPN and virtual ones included (HKLM\\...\\NetBT\\Parameters\\Interfaces, NetbiosOptions = 2; effective at the next restart)",
+        juge: None,
         ps: Some(
             "Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' | Invoke-CimMethod -MethodName SetTcpipNetbios -Arguments @{ TcpipNetbiosOptions = [uint32]2 } | Out-Null",
         ),
@@ -361,6 +392,7 @@ static TABLE: &[Correction] = &[
         geste: Geste::Smb1Serveur,
         fr: "Désactiver SMBv1 dans le partage de fichiers de Windows (serveur SMB, par WMI)",
         en: "Turn SMBv1 off in Windows file sharing (SMB server, through WMI)",
+        juge: None,
         ps: Some("Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force"),
     },
 ];
@@ -379,6 +411,7 @@ const fn dword(
         geste: Geste::Dword { cle, valeur, donnee },
         fr,
         en,
+        juge: None,
         ps: None,
     }
 }
@@ -755,6 +788,8 @@ pub(crate) fn remettre_pilotes(avant: Option<u32>) -> crate::protection::blocage
 /// a une (« 1 », « absent »), pour l'annuler exactement.
 pub(crate) struct Resultat {
     pub reussi: bool,
+    /// Déjà bon, rien d'écrit : réussi, mais absent de « Ce que Vanguard a changé » (`Resultat::rien`).
+    pub rien: bool,
     pub avant: Option<String>,
     pub raison: String,
 }
@@ -764,6 +799,7 @@ impl Resultat {
     pub(crate) fn fait(avant: String) -> Resultat {
         Resultat {
             reussi: true,
+            rien: false,
             avant: Some(avant),
             raison: String::new(),
         }
@@ -773,6 +809,7 @@ impl Resultat {
     pub(crate) fn rien(raison: String) -> Resultat {
         Resultat {
             reussi: true,
+            rien: true,
             avant: None,
             raison,
         }
@@ -782,6 +819,7 @@ impl Resultat {
     pub(crate) fn echec(avant: Option<String>, raison: String) -> Resultat {
         Resultat {
             reussi: false,
+            rien: false,
             avant,
             raison,
         }
@@ -796,11 +834,147 @@ pub(crate) fn avant_notable(v: &str) -> String {
 /// Au-delà, une valeur d'avant est coupée : elle sert à la montrer, pas à la remettre (ces gestes sont des protections).
 const AVANT_MAX: usize = 512;
 
+/// Le bilan refait par le processus élevé pour une correction de la table, avant le premier geste de la liste : un
+/// geste de la liste ne change pas le jugement d'un autre (aie-machine, puis aie-compte).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Bilan {
+    /// Le bilan propose encore cette correction (ou elle n'a pas de juge : une valeur de durcissement).
+    Signale,
+    /// Le bilan ne la proposerait pas : rien n'est écrit, sauf à dire qu'il n'y a rien à faire.
+    NeSignalePas,
+    /// Ce que le bilan lit ne se lit pas : rien n'est écrit.
+    Illisible,
+}
+
+/// Le bilan refait ici pour `c` : la fonction même du constat (`Correction::juge`), sur les lectures de cet instant.
+/// Une ligne forgée qui désigne une entrée de la table n'écrit donc que ce que le bilan aurait proposé.
+pub(crate) fn rejuger(c: &Correction, compte: &Result<String, String>) -> Bilan {
+    let Some(juge) = c.juge else {
+        return Bilan::Signale;
+    };
+    match juge(compte) {
+        None => Bilan::Illisible,
+        Some(constats) => bilan_des_constats(c, &constats),
+    }
+}
+
+/// Le bilan propose-t-il exactement la ligne de `c` parmi ces constats ?
+pub(crate) fn bilan_des_constats(c: &Correction, constats: &[crate::machine::Constat]) -> Bilan {
+    let ligne = format!("{PREFIXE}{}", c.id);
+    let propose = constats
+        .iter()
+        .filter_map(|k| k.correctif.as_ref())
+        .any(|k| k.commandes.contains(&ligne));
+    if propose { Bilan::Signale } else { Bilan::NeSignalePas }
+}
+
+/// Le refus d'une valeur que le bilan, refait ici, ne signalerait pas : le même texte que `portes::rejuger`.
+fn refus_du_bilan(avant: Option<String>) -> Resultat {
+    Resultat::echec(
+        avant,
+        crate::tr!(
+            "refusé : le bilan refait ici ne juge pas cette valeur dangereuse ; rien d'écrit",
+            "refused: the check redone here does not find this value dangerous; nothing written"
+        )
+        .to_string(),
+    )
+}
+
+/// Le juge de `rdp-coupe` : le constat du Bureau à distance, refait ici (stratégie, session à distance comprises).
+// La signature commune des juges (`Juge`) : ce constat-ci se lit toujours.
+#[allow(clippy::unnecessary_wraps)]
+fn juge_bureau_distance(_: &Result<String, String>) -> Option<Vec<crate::machine::Constat>> {
+    Some(vec![super::bureau_distance()])
+}
+
+/// Le juge de `latfp-retire` : le constat de LocalAccountTokenFilterPolicy, refait ici.
+// La signature commune des juges (`Juge`) : ce constat-ci se lit toujours.
+#[allow(clippy::unnecessary_wraps)]
+fn juge_jeton_distant(_: &Result<String, String>) -> Option<Vec<crate::machine::Constat>> {
+    Some(super::durcissement::jeton_distant())
+}
+
+/// Le juge d'`aie-machine` et d'`aie-compte` : le constat d'AlwaysInstallElevated, refait ici avec le registre du
+/// compte de la personne (HKEY_USERS\<SID>) ; sans SID, illisible.
+fn juge_installation_elevee(compte: &Result<String, String>) -> Option<Vec<crate::machine::Constat>> {
+    compte
+        .as_ref()
+        .ok()
+        .map(|sid| super::durcissement::installation_elevee_de(sid))
+}
+
+/// Le juge de `heure-ntp` : le constat de l'heure (`machine::heure`), refait ici.
+fn juge_heure(_: &Result<String, String>) -> Option<Vec<crate::machine::Constat>> {
+    crate::machine::heure::constat().map(|c| vec![c])
+}
+
+/// Le juge de `winlogon-shell` : le constat de Winlogon pour l'ordinateur, refait ici.
+fn juge_winlogon(_: &Result<String, String>) -> Option<Vec<crate::machine::Constat>> {
+    super::portes::winlogon_de_l_ordinateur()
+}
+
+/// Ce qu'une écriture de texte fait de la valeur qu'elle trouve.
+#[derive(Debug, PartialEq, Eq)]
+enum Decision {
+    Ecrire,
+    /// Rien d'écrit, réussi : la raison dite telle quelle.
+    Rien(String),
+    /// Rien d'écrit, refusé.
+    Refus,
+}
+
+/// La décision pour une valeur texte de la table (`winlogon-shell`, `heure-ntp`), sur la valeur trouvée (`None` :
+/// absente) : déjà bonne, rien d'écrit ; le bilan refait ici ne la signale pas, refus ; un type de synchronisation de
+/// l'heure qui en règle déjà une (NT5DS, AllSync d'une machine de domaine) n'est jamais remplacé par NTP, seul le
+/// service de temps est alors à remettre.
+fn decider_sz(id: &str, donnee: &str, avant: Option<&str>, bilan: Bilan, racine: &str) -> Decision {
+    use crate::ui::trf;
+    let deja = avant.is_some_and(|v| match id {
+        "winlogon-shell" => super::portes::bureau_d_origine(v, racine),
+        _ => v.trim().eq_ignore_ascii_case(donnee),
+    });
+    if let Some(v) = avant.filter(|_| deja) {
+        return Decision::Rien(trf!(
+            "déjà « {} », rien d'écrit",
+            "already “{}”, nothing written",
+            avant_notable(v)
+        ));
+    }
+    if bilan != Bilan::Signale {
+        return Decision::Refus;
+    }
+    if id == "heure-ntp"
+        && let Some(v) = avant.filter(|v| !v.trim().is_empty() && crate::machine::heure::type_synchronise(v))
+    {
+        return Decision::Rien(trf!(
+            "Type = « {} » règle déjà l'heure (machine d'un domaine) : gardé, rien d'écrit",
+            "Type = “{}” already sets the time (domain computer): kept, nothing written",
+            avant_notable(v)
+        ));
+    }
+    Decision::Ecrire
+}
+
 /// Applique une correction de la table avec les droits du processus (élevé) : la valeur d'avant est lue, la nouvelle
 /// écrite puis relue, et seul ce qui se relit tel qu'écrit compte comme réussi. Une valeur déjà bonne n'est pas
-/// réécrite, et c'est dit. `parent` : le Vanguard qui a lancé ce processus (PID vérifié par le tube), dont le jeton
-/// donne le compte de la personne ; `None` quand Vanguard est lui-même administrateur (son propre jeton).
-pub(crate) fn appliquer(c: &Correction, parent: Option<u32>) -> Resultat {
+/// réécrite, et c'est dit. `compte` : le SID de la personne, lu dans le jeton du Vanguard qui a lancé ce processus
+/// (tenu par une poignée dès le tube vérifié), ou dans le sien quand Vanguard est lui-même administrateur ; l'erreur
+/// de lecture sinon.
+///
+/// `bilan` : celui de `rejuger`, refait avant le premier geste. Illisible, rien n'est écrit ; s'il ne signale rien,
+/// une valeur déjà bonne est dite telle quelle et toute autre est refusée.
+pub(crate) fn appliquer(c: &Correction, compte: &Result<String, String>, bilan: Bilan) -> Resultat {
+    if bilan == Bilan::Illisible {
+        return Resultat::echec(
+            None,
+            crate::tr!(
+                "refusé : le bilan refait ici ne se lit pas ; rien d'écrit",
+                "refused: the check redone here cannot be read; nothing written"
+            )
+            .to_string(),
+        );
+    }
+    let permis = bilan == Bilan::Signale;
     match c.geste {
         // Couper le Bureau à distance depuis une session qu'il affiche couperait la personne : refusé ici aussi, même
         // si la ligne a été forgée (le constat ne le propose pas dans ce cas).
@@ -812,10 +986,13 @@ pub(crate) fn appliquer(c: &Correction, parent: Option<u32>) -> Resultat {
             )
             .to_string(),
         ),
-        Geste::Dword { cle, valeur, donnee } => ecrire_dword(cle, valeur, donnee),
-        Geste::Sz { cle, valeur, donnee } => ecrire_sz(cle, valeur, donnee, |v| v.trim().eq_ignore_ascii_case(donnee)),
-        Geste::RetirerValeur { cle, valeur } => retirer_valeur(cle, valeur),
-        Geste::DwordCompte { cle, valeur, donnee } => ecrire_dword_compte(cle, valeur, donnee, parent),
+        Geste::Dword { cle, valeur, donnee } => ecrire_dword(cle, valeur, donnee, permis),
+        Geste::Sz { cle, valeur, donnee } => {
+            let racine = super::portes::racine_windows();
+            ecrire_sz(cle, valeur, donnee, |v| decider_sz(c.id, donnee, v, bilan, &racine))
+        }
+        Geste::RetirerValeur { cle, valeur } => retirer_valeur(cle, valeur, permis),
+        Geste::DwordCompte { cle, valeur, donnee } => ecrire_dword_compte(cle, valeur, donnee, compte, permis),
         Geste::Userinit => remettre_userinit(),
         Geste::NetbiosCoupe => couper_netbios(),
         Geste::Smb1Serveur => couper_smb1_serveur(),
@@ -823,6 +1000,7 @@ pub(crate) fn appliquer(c: &Correction, parent: Option<u32>) -> Resultat {
             let (reussi, raison) = super::eleve::point_de_restauration();
             Resultat {
                 reussi,
+                rien: false,
                 avant: None,
                 raison,
             }
@@ -854,14 +1032,14 @@ fn valeur_d_avant(racine: &winreg::RegKey, cle: &str, valeur: &str) -> Result<St
     }
 }
 
-fn ecrire_dword(cle: &str, valeur: &str, donnee: u32) -> Resultat {
+fn ecrire_dword(cle: &str, valeur: &str, donnee: u32, permis: bool) -> Resultat {
     let racine = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE);
-    ecrire_dword_sous(&racine, cle, valeur, donnee)
+    ecrire_dword_sous(&racine, cle, valeur, donnee, permis)
 }
 
 /// Un DWORD posé sous `racine` : la valeur d'avant lue (refus si elle ne se remettrait pas), rien d'écrit si elle est
-/// déjà la bonne, sinon écrit puis relu.
-fn ecrire_dword_sous(racine: &winreg::RegKey, cle: &str, valeur: &str, donnee: u32) -> Resultat {
+/// déjà la bonne, refus si le bilan refait ici ne la signale pas (`permis`), sinon écrit puis relu.
+fn ecrire_dword_sous(racine: &winreg::RegKey, cle: &str, valeur: &str, donnee: u32, permis: bool) -> Resultat {
     use crate::ui::trf;
     use winreg::enums::{KEY_READ, KEY_WRITE};
     let avant = match valeur_d_avant(racine, cle, valeur) {
@@ -870,6 +1048,9 @@ fn ecrire_dword_sous(racine: &winreg::RegKey, cle: &str, valeur: &str, donnee: u
     };
     if avant == donnee.to_string() {
         return Resultat::rien(trf!("déjà {donnee}, rien d'écrit", "already {donnee}, nothing written"));
+    }
+    if !permis {
+        return refus_du_bilan(None);
     }
     // RegCreateKeyEx ouvre une clé qui existe sans toucher à ses valeurs (au contraire de New-Item -Force).
     let ecrit = racine
@@ -908,9 +1089,9 @@ pub(super) fn decrire(brute: &winreg::RegValue) -> String {
     }
 }
 
-/// Une valeur texte sous HKLM mise à `donnee` (REG_SZ) dans une clé qui existe ; `deja` : la valeur actuelle est-elle
-/// déjà la bonne (rien d'écrit) ? La valeur d'avant doit être un texte ou absente : un autre type est refusé.
-fn ecrire_sz(cle: &str, valeur: &str, donnee: &str, deja: impl Fn(&str) -> bool) -> Resultat {
+/// Une valeur texte sous HKLM mise à `donnee` (REG_SZ) dans une clé qui existe ; `decider` : que faire de la valeur
+/// trouvée (`None` : absente) ? La valeur d'avant doit être un texte ou absente : un autre type est refusé.
+fn ecrire_sz(cle: &str, valeur: &str, donnee: &str, decider: impl Fn(Option<&str>) -> Decision) -> Resultat {
     use crate::ui::trf;
     use std::io::ErrorKind::NotFound;
     use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE};
@@ -952,12 +1133,10 @@ fn ecrire_sz(cle: &str, valeur: &str, donnee: &str, deja: impl Fn(&str) -> bool)
             }
         },
     };
-    if let Some(a) = avant.as_deref().filter(|a| deja(a)) {
-        return Resultat::rien(trf!(
-            "déjà « {} », rien d'écrit",
-            "already “{}”, nothing written",
-            avant_notable(a)
-        ));
+    match decider(avant.as_deref()) {
+        Decision::Ecrire => {}
+        Decision::Rien(raison) => return Resultat::rien(raison),
+        Decision::Refus => return refus_du_bilan(None),
     }
     let note = avant.as_deref().map_or_else(|| "absent".to_string(), avant_notable);
     let relu = k
@@ -977,8 +1156,9 @@ fn ecrire_sz(cle: &str, valeur: &str, donnee: &str, deja: impl Fn(&str) -> bool)
     }
 }
 
-/// Une valeur retirée sous HKLM : déjà absente, rien d'écrit ; sinon notée, retirée, et l'absence relue.
-fn retirer_valeur(cle: &str, valeur: &str) -> Resultat {
+/// Une valeur retirée sous HKLM : déjà absente, rien d'écrit ; refusée si le bilan refait ici ne la signale pas
+/// (`permis`) ; sinon notée, retirée, et l'absence relue.
+fn retirer_valeur(cle: &str, valeur: &str, permis: bool) -> Resultat {
     use crate::ui::{tr, trf};
     use std::io::ErrorKind::NotFound;
     use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE};
@@ -1014,6 +1194,9 @@ fn retirer_valeur(cle: &str, valeur: &str) -> Resultat {
         }
         Ok(brute) => decrire(&brute),
     };
+    if !permis {
+        return refus_du_bilan(None);
+    }
     match k.delete_value(valeur) {
         Ok(()) => {}
         Err(e) if e.kind() == NotFound => {}
@@ -1033,20 +1216,21 @@ fn retirer_valeur(cle: &str, valeur: &str) -> Resultat {
 }
 
 /// Un DWORD dans le registre du compte de la personne (HKEY_USERS\<SID>) : le SID est lu dans le jeton du Vanguard
-/// qui a lancé ce processus (`parent`, PID vérifié par le tube), ou dans le sien quand Vanguard est lui-même
+/// qui a lancé ce processus (tenu par une poignée dès le tube vérifié), ou dans le sien quand Vanguard est lui-même
 /// administrateur. Jamais un paramètre de la ligne : un administrateur venu par-dessus l'épaule n'écrit pas dans son
 /// propre compte à la place de celui de la personne.
-fn ecrire_dword_compte(cle: &str, valeur: &str, donnee: u32, parent: Option<u32>) -> Resultat {
-    use crate::ui::{tr, trf};
-    let sid = match parent {
-        Some(p) => super::processus::sid_de(p),
-        None => super::processus::sid()
-            .ok_or_else(|| std::io::Error::other(tr!("SID illisible dans le jeton", "SID unreadable in the token"))),
-    };
-    match sid {
+fn ecrire_dword_compte(
+    cle: &str,
+    valeur: &str,
+    donnee: u32,
+    compte: &Result<String, String>,
+    permis: bool,
+) -> Resultat {
+    use crate::ui::trf;
+    match compte {
         Ok(sid) => {
             let racine = winreg::RegKey::predef(winreg::enums::HKEY_USERS);
-            ecrire_dword_sous(&racine, &format!(r"{sid}\{cle}"), valeur, donnee)
+            ecrire_dword_sous(&racine, &format!(r"{sid}\{cle}"), valeur, donnee, permis)
         }
         Err(e) => Resultat::echec(
             None,
@@ -1085,8 +1269,14 @@ fn remettre_userinit() -> Resultat {
         );
     }
     let origine = format!("{programme},");
-    ecrire_sz(super::portes::WINLOGON, "Userinit", &origine, |v| {
-        super::portes::userinit_d_origine(v, &racine)
+    // Rejugé de fait : une valeur que le constat jugerait d'origine n'est pas réécrite, toute autre est signalée.
+    ecrire_sz(super::portes::WINLOGON, "Userinit", &origine, |v| match v {
+        Some(v) if super::portes::userinit_d_origine(v, &racine) => Decision::Rien(trf!(
+            "déjà « {} », rien d'écrit",
+            "already “{}”, nothing written",
+            avant_notable(v)
+        )),
+        _ => Decision::Ecrire,
     })
 }
 
@@ -1094,13 +1284,21 @@ fn remettre_userinit() -> Resultat {
 /// d'abord (Microsoft déconseille d'écrire pendant l'énumération), puis NetbiosOptions = 2 posé et relu dans chacune.
 /// L'avant est noté par carte ; toutes déjà à 2 : rien d'écrit.
 fn couper_netbios() -> Resultat {
-    use crate::ui::{tr, trf};
+    use crate::ui::trf;
     use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_ENUMERATE_SUB_KEYS, KEY_READ, KEY_WRITE};
     let racine = winreg::RegKey::predef(HKEY_LOCAL_MACHINE);
+    // Une sous-clé dont le nom ne se lit pas est comptée illisible, jamais oubliée : la carte resterait ouverte.
+    let mut illisibles = Vec::new();
     let cartes: Vec<String> = match racine.open_subkey_with_flags(NETBT_INTERFACES, KEY_ENUMERATE_SUB_KEYS) {
         Ok(k) => k
             .enum_keys()
-            .filter_map(Result::ok)
+            .filter_map(|n| match n {
+                Ok(n) => Some(n),
+                Err(e) => {
+                    illisibles.push(trf!("sous-clé illisible : {e}", "unreadable subkey: {e}"));
+                    None
+                }
+            })
             .filter(|n| n.starts_with("Tcpip_"))
             .collect(),
         Err(e) => {
@@ -1113,7 +1311,40 @@ fn couper_netbios() -> Resultat {
             );
         }
     };
-    if cartes.is_empty() {
+    let mut avants = Vec::new();
+    for carte in cartes {
+        let cle = format!(r"{NETBT_INTERFACES}\{carte}");
+        match valeur_d_avant(&racine, &cle, "NetbiosOptions") {
+            Ok(a) => avants.push((carte, a)),
+            Err(raison) => illisibles.push(trf!("{carte} : {raison}", "{carte}: {raison}")),
+        }
+    }
+    let mut echecs = Vec::new();
+    for (carte, a) in &avants {
+        if a == "2" {
+            continue;
+        }
+        let relu = racine
+            .open_subkey_with_flags(format!(r"{NETBT_INTERFACES}\{carte}"), KEY_READ | KEY_WRITE)
+            .and_then(|k| k.set_value("NetbiosOptions", &2u32).map(|()| k))
+            .and_then(|k| k.get_value::<u32, _>("NetbiosOptions"));
+        match relu {
+            Ok(2) => {}
+            Ok(n) => echecs.push(trf!("{carte} : relu {n}", "{carte}: read back {n}")),
+            Err(e) => echecs.push(trf!("{carte} : {e}", "{carte}: {e}")),
+        }
+    }
+    issue_netbios(&avants, &illisibles, &echecs)
+}
+
+/// L'issue d'une coupure de NetBIOS, à partir de ce qui a été lu et écrit : `avants`, chaque carte lue et sa valeur
+/// d'avant ; `illisibles` et `echecs`, une raison par carte non lue ou mal écrite. Réussie seulement si chaque carte
+/// a été lue et chaque écriture relue à 2 ; sinon, le compte dit ce qui a été fait (« 3 cartes, 1 écrite… »).
+/// Écrit, NetbiosOptions ne prend effet qu'au prochain redémarrage (ou à la reconnexion de la carte) : dit aussi.
+fn issue_netbios(avants: &[(String, String)], illisibles: &[String], echecs: &[String]) -> Resultat {
+    use crate::ui::{tr, trf};
+    let cartes = avants.len() + illisibles.len();
+    if cartes == 0 {
         return Resultat::echec(
             None,
             tr!(
@@ -1123,50 +1354,87 @@ fn couper_netbios() -> Resultat {
             .to_string(),
         );
     }
-    let mut avants = Vec::new();
-    for carte in &cartes {
-        let cle = format!(r"{NETBT_INTERFACES}\{carte}");
-        match valeur_d_avant(&racine, &cle, "NetbiosOptions") {
-            Ok(a) => avants.push((carte, cle, a)),
-            Err(raison) => return Resultat::echec(None, format!("{carte} : {raison}")),
-        }
-    }
-    let note = avant_notable(
-        &avants
-            .iter()
-            .map(|(carte, _, a)| format!("{carte}={a}"))
-            .collect::<Vec<_>>()
-            .join(";"),
-    );
-    if avants.iter().all(|(_, _, a)| a == "2") {
-        return Resultat::rien(
-            tr!(
-                "déjà coupé sur chaque carte, rien d'écrit",
-                "already off on every adapter, nothing written"
-            )
-            .to_string(),
+    let a_ecrire = avants.iter().filter(|(_, a)| a != "2").count();
+    let ecrites = a_ecrire.saturating_sub(echecs.len());
+    let mut compte = compte_netbios(cartes, ecrites, illisibles.len());
+    if ecrites > 0 {
+        compte = trf!(
+            "{compte}, effectif au prochain redémarrage",
+            "{compte}, effective at the next restart"
         );
     }
-    let mut echecs = Vec::new();
-    for (carte, cle, a) in &avants {
-        if a == "2" {
-            continue;
-        }
-        let relu = racine
-            .open_subkey_with_flags(cle, KEY_READ | KEY_WRITE)
-            .and_then(|k| k.set_value("NetbiosOptions", &2u32).map(|()| k))
-            .and_then(|k| k.get_value::<u32, _>("NetbiosOptions"));
-        match relu {
-            Ok(2) => {}
-            Ok(n) => echecs.push(format!("{carte} : relu {n}")),
-            Err(e) => echecs.push(format!("{carte} : {e}")),
-        }
+    let note = note_netbios(&compte, avants);
+    if illisibles.is_empty() && echecs.is_empty() {
+        return if a_ecrire == 0 {
+            Resultat::rien(
+                tr!(
+                    "NetbiosOptions déjà à 2 sur chaque carte, rien d'écrit",
+                    "NetbiosOptions already 2 on every adapter, nothing written"
+                )
+                .to_string(),
+            )
+        } else {
+            Resultat::fait(note)
+        };
     }
-    if echecs.is_empty() {
-        Resultat::fait(note)
-    } else {
-        Resultat::echec(Some(note), echecs.join(" ; "))
+    let raisons = illisibles
+        .iter()
+        .chain(echecs)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(tr!(" ; ", "; "));
+    Resultat::echec(
+        Some(note),
+        avant_notable(&trf!("{compte} : {raisons}", "{compte}: {raisons}")),
+    )
+}
+
+/// NetBIOS est-il coupé dans le registre (NetbiosOptions = 2) sur chaque carte ? Pour le bilan : le port 137 reste
+/// ouvert jusqu'au prochain redémarrage après la coupure. Une carte ou une valeur illisible n'est pas coupée.
+pub(super) fn netbios_coupe() -> bool {
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ};
+    let Ok(k) = winreg::RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(NETBT_INTERFACES, KEY_READ) else {
+        return false;
+    };
+    let valeurs: Vec<Option<u32>> = k
+        .enum_keys()
+        .filter(|n| n.as_ref().map_or(true, |n| n.starts_with("Tcpip_")))
+        .map(|n| {
+            n.ok()
+                .and_then(|n| k.open_subkey(n).ok()?.get_value("NetbiosOptions").ok())
+        })
+        .collect();
+    coupe_partout(&valeurs)
+}
+
+/// Coupé partout : au moins une carte, et chacune lue à 2.
+fn coupe_partout(valeurs: &[Option<u32>]) -> bool {
+    !valeurs.is_empty() && valeurs.iter().all(|v| *v == Some(2))
+}
+
+/// Le compte d'une coupure de NetBIOS : « 3 cartes, 2 écrites, 1 illisibles ».
+fn compte_netbios(cartes: usize, ecrites: usize, illisibles: usize) -> String {
+    crate::ui::trf!(
+        "{cartes} cartes, {ecrites} écrites, {illisibles} illisibles",
+        "{cartes} adapters, {ecrites} written, {illisibles} unreadable"
+    )
+}
+
+/// La valeur d'avant de chaque carte, après le compte (« 2 cartes, 1 écrites, 0 illisibles : Tcpip_{…}=0;… ») ;
+/// trop longue, elle le dit (« … coupé ») au lieu de perdre des cartes en silence.
+fn note_netbios(compte: &str, avants: &[(String, String)]) -> String {
+    use crate::ui::{affichable, couper, largeur_affichee, tr, trf};
+    let liste = avants
+        .iter()
+        .map(|(carte, a)| format!("{carte}={a}"))
+        .collect::<Vec<_>>()
+        .join(";");
+    let entiere = affichable(&trf!("{compte} : {liste}", "{compte}: {liste}"));
+    if largeur_affichee(&entiere) <= AVANT_MAX {
+        return entiere;
     }
+    let marque = tr!(" coupé", " cut");
+    couper(&entiere, AVANT_MAX - largeur_affichee(marque)) + marque
 }
 
 /// SMBv1 coupé dans le serveur de partage par WMI (MSFT_SmbServerConfiguration.SetConfiguration, ce que fait
@@ -1395,21 +1663,24 @@ mod tests {
         for (court, attendu) in fixes {
             assert_eq!(ps(court), attendu, "{court}");
         }
-        // Calculées comme le constat les calculait : le HKCU de la personne, la racine de Windows.
-        let sid = crate::reparer::sid_de_la_personne();
+        // Calculées comme le constat les calculait (le HKCU de la personne, la racine de Windows) : comparées à la
+        // commande attendue, écrite en entier.
         assert_eq!(
-            ps("aie-compte"),
-            format!(
-                "Set-ItemProperty -LiteralPath '{}' -Name AlwaysInstallElevated -Value 0 -Type DWord",
-                crate::reparer::hkcu_de_la_personne(sid.as_deref(), r"SOFTWARE\Policies\Microsoft\Windows\Installer")
-            )
+            ps_dword_compte(Some("S-1-5-21-1-2-3-1001"), INSTALLEUR, "AlwaysInstallElevated", 0),
+            r"Set-ItemProperty -LiteralPath 'Registry::HKEY_USERS\S-1-5-21-1-2-3-1001\SOFTWARE\Policies\Microsoft\Windows\Installer' -Name AlwaysInstallElevated -Value 0 -Type DWord"
         );
         assert_eq!(
-            ps("winlogon-userinit"),
-            format!(
-                r"Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name Userinit -Value '{}\system32\userinit.exe,' -Type String",
-                crate::commande::ps_texte(&super::super::portes::racine_windows())
-            )
+            ps_dword_compte(None, INSTALLEUR, "AlwaysInstallElevated", 0),
+            r"Set-ItemProperty -LiteralPath 'HKCU:\SOFTWARE\Policies\Microsoft\Windows\Installer' -Name AlwaysInstallElevated -Value 0 -Type DWord"
+        );
+        assert_eq!(
+            ps_userinit(r"C:\Windows"),
+            r"Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name Userinit -Value 'C:\Windows\system32\userinit.exe,' -Type String"
+        );
+        // Une apostrophe dans la racine est doublée : elle ne ferme pas la chaîne.
+        assert_eq!(
+            ps_userinit(r"D:\Win'dows"),
+            r"Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name Userinit -Value 'D:\Win''dows\system32\userinit.exe,' -Type String"
         );
         for court in [
             "rdp-coupe",
@@ -1440,6 +1711,159 @@ mod tests {
         ] {
             assert!(analyser(hostile).is_none() && !native(hostile), "{hostile}");
         }
+    }
+
+    /// Le juge d'une entrée est la fonction de son constat : sur les mêmes données, le bilan refait dit « signale »
+    /// exactement quand le constat propose la ligne de l'entrée. Sans SID, le juge du compte ne se lit pas.
+    #[test]
+    fn le_juge_est_la_fonction_du_constat() {
+        use super::super::{durcissement, portes};
+        let c = |court: &str| analyser(&id(court)).unwrap();
+        let en_liste = |k: Option<crate::machine::Constat>| k.into_iter().collect::<Vec<_>>();
+        for court in ["aie-machine", "aie-compte"] {
+            let juge = |m, k| bilan_des_constats(c(court), &en_liste(durcissement::juger_installation_elevee(m, k)));
+            assert_eq!(juge(Some(1), Some(1)), Bilan::Signale, "{court}");
+            for (m, k) in [(Some(1), Some(0)), (Some(0), Some(1)), (Some(1), None), (None, None)] {
+                assert_eq!(juge(m, k), Bilan::NeSignalePas, "{court} {m:?} {k:?}");
+            }
+            assert_eq!(
+                rejuger(c(court), &Err("jeton illisible".into())),
+                Bilan::Illisible,
+                "{court}"
+            );
+        }
+        let jeton = |v| bilan_des_constats(c("latfp-retire"), &en_liste(durcissement::juger_jeton_distant(v)));
+        assert_eq!(jeton(Some(1)), Bilan::Signale);
+        assert_eq!(jeton(Some(0)), Bilan::NeSignalePas);
+        assert_eq!(jeton(None), Bilan::NeSignalePas);
+        let userinit = r"C:\Windows\system32\userinit.exe,";
+        let shell = |s| {
+            bilan_des_constats(
+                c("winlogon-shell"),
+                &portes::juger_winlogon(Some(s), Some(userinit), None, r"C:\Windows", ""),
+            )
+        };
+        assert_eq!(shell(r"C:\Users\alice\AppData\Roaming\bureau.exe"), Bilan::Signale);
+        assert_eq!(shell("explorer.exe"), Bilan::NeSignalePas);
+        assert_eq!(shell(r"C:\Windows\explorer.exe"), Bilan::NeSignalePas);
+        // Une entrée sans juge (une valeur de durcissement) garde son écriture.
+        assert_eq!(rejuger(c("wdigest-coupe"), &Err(String::new())), Bilan::Signale);
+    }
+
+    /// L'issue d'une coupure de NetBIOS : réussie seulement si chaque carte a été lue et relue à 2 ; une carte
+    /// illisible ou mal écrite en fait un échec qui dit le compte ; la note garde chaque carte, ou dit qu'elle est
+    /// coupée ; déjà à 2 partout, rien.
+    #[test]
+    fn netbios_compte_chaque_carte() {
+        let avants = |v: &[(&str, &str)]| -> Vec<(String, String)> {
+            v.iter().map(|(c, a)| ((*c).to_string(), (*a).to_string())).collect()
+        };
+        let deux = avants(&[("Tcpip_{A}", "0"), ("Tcpip_{B}", "2")]);
+        // Tout lu et écrit : fait, avec le compte, la réserve du redémarrage et chaque valeur d'avant.
+        let r = issue_netbios(&deux, &[], &[]);
+        assert!(r.reussi && !r.rien);
+        assert_eq!(
+            r.avant.as_deref(),
+            Some("2 cartes, 1 écrites, 0 illisibles, effectif au prochain redémarrage : Tcpip_{A}=0;Tcpip_{B}=2")
+        );
+        // Déjà à 2 partout : rien d'écrit, et pas noté parmi ce que Vanguard a changé.
+        let r = issue_netbios(&avants(&[("Tcpip_{A}", "2")]), &[], &[]);
+        assert!(r.reussi && r.rien && r.avant.is_none());
+        // Une carte illisible : jamais « fait », même si le reste est écrit.
+        let illisible = vec!["Tcpip_{C} : valeur d'avant illisible".to_string()];
+        let r = issue_netbios(&deux, &illisible, &[]);
+        assert!(!r.reussi);
+        assert!(
+            r.raison.starts_with("3 cartes, 1 écrites, 1 illisibles"),
+            "{}",
+            r.raison
+        );
+        assert!(
+            r.raison.ends_with("Tcpip_{C} : valeur d'avant illisible"),
+            "{}",
+            r.raison
+        );
+        // Une écriture relue autrement : échec, rien de compté écrit.
+        let r = issue_netbios(&deux, &[], &["Tcpip_{A} : relu 0".to_string()]);
+        assert!(!r.reussi);
+        assert!(
+            r.raison
+                .starts_with("2 cartes, 0 écrites, 0 illisibles : Tcpip_{A} : relu 0"),
+            "{}",
+            r.raison
+        );
+        assert!(!r.raison.contains("redémarrage"), "{}", r.raison);
+        // Aucune carte du tout : échec, rien d'écrit.
+        let r = issue_netbios(&[], &[], &[]);
+        assert!(!r.reussi && r.avant.is_none());
+        // Seules des cartes illisibles : échec.
+        assert!(!issue_netbios(&[], &illisible, &[]).reussi);
+        // Trop de cartes pour la note : coupée, et dit.
+        let beaucoup: Vec<(String, String)> = (0..40)
+            .map(|i| (format!("Tcpip_{{{i:08}-0000-0000-0000-000000000000}}"), "0".to_string()))
+            .collect();
+        let note = note_netbios("40 cartes, 40 écrites, 0 illisibles", &beaucoup);
+        assert!(note.ends_with("… coupé"), "{note}");
+        assert!(crate::ui::largeur_affichee(&note) <= AVANT_MAX);
+        assert!(note.starts_with("40 cartes, 40 écrites, 0 illisibles : Tcpip_{00000000-"));
+        // Le bilan : coupé seulement si chaque carte est lue à 2.
+        assert!(coupe_partout(&[Some(2), Some(2)]));
+        assert!(!coupe_partout(&[Some(2), None]));
+        assert!(!coupe_partout(&[Some(2), Some(0)]));
+        assert!(!coupe_partout(&[]));
+    }
+
+    /// Ce qu'une écriture de texte fait de la valeur trouvée : déjà bonne, dit ; le bilan muet, refusé ; un type de
+    /// domaine (NT5DS, AllSync) jamais remplacé par NTP.
+    #[test]
+    fn decider_sz_refuse_ce_que_le_bilan_ne_signale_pas() {
+        let racine = r"C:\Windows";
+        let d = |id, donnee, avant, bilan| decider_sz(id, donnee, avant, bilan, racine);
+        let rien = |x: Decision| matches!(x, Decision::Rien(_));
+        // Une ligne forgée sur une machine d'un domaine : le bilan ne signale rien, refusée.
+        assert_eq!(
+            d("heure-ntp", "NTP", Some("NT5DS"), Bilan::NeSignalePas),
+            Decision::Refus
+        );
+        assert_eq!(
+            d("heure-ntp", "NTP", Some("AllSync"), Bilan::NeSignalePas),
+            Decision::Refus
+        );
+        assert_eq!(
+            d("heure-ntp", "NTP", Some("NoSync"), Bilan::NeSignalePas),
+            Decision::Refus
+        );
+        // Service coupé sur une machine d'un domaine : signalé, mais le type est gardé.
+        let Decision::Rien(t) = d("heure-ntp", "NTP", Some("NT5DS"), Bilan::Signale) else {
+            panic!("NT5DS remplacé");
+        };
+        assert!(t.contains("NT5DS"), "{t}");
+        assert!(rien(d("heure-ntp", "NTP", Some("AllSync"), Bilan::Signale)));
+        // Déjà NTP : dit, même si le bilan ne signale rien.
+        assert!(rien(d("heure-ntp", "NTP", Some(" ntp "), Bilan::NeSignalePas)));
+        assert_eq!(d("heure-ntp", "NTP", Some("NoSync"), Bilan::Signale), Decision::Ecrire);
+        assert_eq!(d("heure-ntp", "NTP", Some(""), Bilan::Signale), Decision::Ecrire);
+        assert_eq!(d("heure-ntp", "NTP", None, Bilan::Signale), Decision::Ecrire);
+        // Winlogon : le chemin complet d'origine est déjà bon ; un autre programme ne s'écrase que signalé.
+        assert!(rien(d(
+            "winlogon-shell",
+            "explorer.exe",
+            Some(r"C:\Windows\explorer.exe"),
+            Bilan::NeSignalePas
+        )));
+        assert_eq!(
+            d(
+                "winlogon-shell",
+                "explorer.exe",
+                Some("bureau.exe"),
+                Bilan::NeSignalePas
+            ),
+            Decision::Refus
+        );
+        assert_eq!(
+            d("winlogon-shell", "explorer.exe", Some("bureau.exe"), Bilan::Signale),
+            Decision::Ecrire
+        );
     }
 
     /// Les actes du registre (débogueur IFEO, SilentProcessExit, guillemets d'un service) : montrés par leur nom rendu

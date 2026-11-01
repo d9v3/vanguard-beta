@@ -52,6 +52,14 @@ unsafe extern "system" {
     fn GetNamedPipeClientProcessId(tube: *mut c_void, pid: *mut u32) -> i32;
     fn GetNamedPipeServerProcessId(tube: *mut c_void, pid: *mut u32) -> i32;
     fn WaitNamedPipeW(nom: *const u16, delai: u32) -> i32;
+    fn PeekNamedPipe(
+        tube: *mut c_void,
+        tampon: *mut c_void,
+        taille: u32,
+        lus: *mut u32,
+        disponibles: *mut u32,
+        restants: *mut u32,
+    ) -> i32;
     fn GetLastError() -> u32;
     fn GetProcessId(processus: *mut c_void) -> u32;
     fn WaitForSingleObject(objet: *mut c_void, delai: u32) -> u32;
@@ -197,10 +205,12 @@ fn empreinte(chemin: &std::path::Path) -> Option<String> {
     std::fs::read(chemin).ok().map(|o| super::sha256_hex(&o))
 }
 
-/// Réponse du fils pour une correction : « ok avant=1 », « echec raison… ».
+/// Réponse du fils pour une correction : « ok avant=1 », « ok rien=déjà 1… », « echec raison… ».
 fn ligne_resultat(r: &Resultat) -> String {
     match (&r.reussi, &r.avant) {
         (true, Some(avant)) => format!("ok avant={}", avant.replace(['\r', '\n'], " ")),
+        // Déjà bon, rien d'écrit : le parent ne le note pas parmi ce que Vanguard a changé.
+        (true, None) if r.rien => format!("ok rien={}", r.raison.replace(['\r', '\n'], " ")),
         // Fait, mais sans point de restauration : la personne l'a accepté ; c'est noté, ce n'est pas un échec.
         (true, None) if r.raison == sans_point_accepte() => SANS_POINT.to_string(),
         // Un ordre réussi avec sa précision (« déjà retirée »).
@@ -213,6 +223,7 @@ fn ligne_resultat(r: &Resultat) -> String {
 }
 
 /// Ce que le parent retient d'une réponse : réussie ?, et la valeur d'avant à noter dans « Ce que Vanguard a changé ».
+#[allow(clippy::struct_excessive_bools)] // des états lus dans le tube, chacun pour lui-même
 pub(crate) struct Reponse {
     pub reussi: bool,
     pub avant: Option<String>,
@@ -227,6 +238,8 @@ pub(crate) struct Reponse {
     pub arretee: bool,
     /// Laissé à la personne (chkdsk 3 : disque à vérifier par chkdsk /f) : pas fait, pas un échec non plus.
     pub au_redemarrage: bool,
+    /// Déjà bon, rien d'écrit (« ok rien=… ») : réussi, mais rien n'a changé.
+    pub rien: bool,
 }
 
 /// La réponse d'un point de restauration manquant que la personne a accepté.
@@ -251,10 +264,11 @@ fn arret_demande() -> &'static str {
 fn lire_reponse(ligne: &str) -> Reponse {
     let reussi = ligne == "ok" || ligne.starts_with("ok ");
     let avant = ligne.strip_prefix("ok avant=").map(str::to_string);
+    let rien = ligne.strip_prefix("ok rien=");
     let note = if ligne == SANS_POINT {
         Some(sans_point_accepte().to_string())
     } else {
-        ligne.strip_prefix("ok note=").map(str::to_string)
+        ligne.strip_prefix("ok note=").or(rien).map(str::to_string)
     };
     let code = ligne
         .strip_prefix("echec code=")
@@ -267,6 +281,7 @@ fn lire_reponse(ligne: &str) -> Reponse {
         etats: gestes::etats_du_script(ligne),
         arretee: ligne == ARRETEE,
         au_redemarrage: ligne == AU_REDEMARRAGE,
+        rien: rien.is_some(),
     }
 }
 
@@ -280,6 +295,7 @@ fn non_faite() -> Reponse {
         etats: None,
         arretee: false,
         au_redemarrage: false,
+        rien: false,
     }
 }
 
@@ -402,14 +418,34 @@ fn appliquer_en_place(lignes: &[String]) -> Vec<Reponse> {
         return lignes.iter().map(|_| non_faite()).collect();
     };
     let juge = ordres::Juge::lire(None);
+    // Vanguard administrateur lui-même : son propre compte.
+    let compte = super::processus::sid()
+        .ok_or_else(|| tr!("SID illisible dans le jeton", "SID unreadable in the token").to_string());
     let mut reponses = Vec::with_capacity(liste.len());
     let mut arret = false;
-    for e in &liste {
-        let r = if arret { refusee() } else { faire(e, &juge, None) };
+    for (e, bilan) in liste.iter().zip(bilans(&liste, &compte)) {
+        let r = if arret {
+            refusee()
+        } else {
+            faire(e, &juge, &compte, bilan)
+        };
         arret |= !r.reussi && est_point(e);
         reponses.push(lire_reponse(&ligne_resultat(&r)));
     }
     reponses
+}
+
+/// Le bilan refait ici pour chaque correction de la table, tous avant le premier geste : un geste de la liste ne
+/// change pas le jugement d'un autre (aie-machine, puis aie-compte). Ce qui n'est pas une correction de la table a
+/// son propre rejugement (ordres, actes).
+fn bilans(liste: &[Element], compte: &Result<String, String>) -> Vec<corrections::Bilan> {
+    liste
+        .iter()
+        .map(|e| match e {
+            Element::Correction(c) => corrections::rejuger(c, compte),
+            _ => corrections::Bilan::Signale,
+        })
+        .collect()
 }
 
 fn est_point(e: &Element) -> bool {
@@ -650,7 +686,7 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
         );
         return CANAL_REFUSE;
     }
-    let Some(tube) = ouvrir_le_canal(canal, parent) else {
+    let Some((tube, parent_tenu)) = ouvrir_le_canal(canal, parent) else {
         trp!(
             "Le canal ne mène pas au Vanguard qui a demandé la correction : rien n'est fait.",
             "The channel does not lead to the Vanguard that asked for the fix: nothing is done."
@@ -659,6 +695,12 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
         return CANAL_REFUSE;
     };
     let mut tube = tube;
+    // Le compte de la personne, lu tout de suite par la poignée tenue, puis passé tel quel : jamais relu plus tard par
+    // un numéro de processus que Windows aurait pu redonner.
+    let compte = parent_tenu.sid().map_err(|e| e.to_string());
+    // Ce que le fils lit lui-même de l'ordinateur pour rejuger les ordres : les processus protégés dès maintenant, le
+    // parent tenu ; les sessions à distance, relues après l'accord.
+    let mut juge = ordres::Juge::lire(Some(parent));
     let Some(lignes) = lire_lignes(&tube) else {
         return CANAL_REFUSE;
     };
@@ -706,14 +748,23 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
     let mut arret = !accepte(&accord);
     if arret {
         trp!("Annulé : rien n'a été modifié.", "Cancelled: nothing was changed.");
+    } else if !tube_ouvert(&tube) {
+        // Le Vanguard qui a demandé s'est fermé pendant la lecture : rien de ce qui serait fait ne pourrait être noté
+        // dans « Ce que Vanguard a changé ».
+        trp!(
+            "Le Vanguard qui a demandé la correction s'est fermé : rien n'est fait.",
+            "The Vanguard that asked for the fix has closed: nothing is done."
+        );
+        attendre_entree_pour_fermer();
+        return CANAL_REFUSE;
     }
-    // Ce que le fils lit lui-même de l'ordinateur pour rejuger les ordres : sessions à distance, processus protégés.
-    let juge = ordres::Juge::lire(Some(parent));
-    for e in &liste {
+    juge.relire_sessions();
+    let bilans = bilans(&liste, &compte);
+    for (e, bilan) in liste.iter().zip(bilans) {
         let r = if arret {
             refusee()
         } else {
-            faire(e, &juge, Some(parent))
+            faire(e, &juge, &compte, bilan)
         };
         if !r.reussi {
             code = 1;
@@ -731,6 +782,7 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
     let _ = tube.write_all(format!("{FIN}\n").as_bytes());
     let _ = tube.flush();
     drop(tube);
+    drop(parent_tenu);
     println!();
     if code == 0 {
         trp!("{VERT}Terminé.{RESET}", "{VERT}Finished.{RESET}");
@@ -792,6 +844,7 @@ fn attendre_entree_pour_fermer() {
 fn refusee() -> Resultat {
     Resultat {
         reussi: false,
+        rien: false,
         avant: None,
         raison: arret_demande().to_string(),
     }
@@ -799,12 +852,13 @@ fn refusee() -> Resultat {
 
 /// Fait un geste de la liste, en l'annonçant, puis « OK » ou l'erreur : une fenêtre muette ne se distingue pas d'une
 /// fenêtre figée. Un ordre est d'abord rejugé ici.
-/// `parent` : le Vanguard qui a lancé ce processus (PID vérifié par le tube), dont le jeton donne le compte de la
-/// personne ; `None` quand Vanguard est lui-même administrateur.
-fn faire(e: &Element, juge: &ordres::Juge, parent: Option<u32>) -> Resultat {
+/// `compte` : le SID de la personne, lu dans le jeton du Vanguard qui a lancé ce processus (tenu par une poignée dès
+/// le tube vérifié), ou dans le sien quand Vanguard est lui-même administrateur ; l'erreur de lecture sinon.
+/// `bilan` : celui de `bilans`, pour une correction de la table.
+fn faire(e: &Element, juge: &ordres::Juge, compte: &Result<String, String>, bilan: corrections::Bilan) -> Resultat {
     println!("{GRIS}> {}  {}{RESET}", chrono::Local::now().format("%H:%M"), e.texte());
     let r = match e {
-        Element::Correction(c) => corrections::appliquer(c, parent),
+        Element::Correction(c) => corrections::appliquer(c, compte, bilan),
         Element::Ordre(o) => {
             let r = match ordres::juger(o, juge) {
                 Some(refus) => ordres::Resultat::echec(refus),
@@ -812,6 +866,7 @@ fn faire(e: &Element, juge: &ordres::Juge, parent: Option<u32>) -> Resultat {
             };
             Resultat {
                 reussi: r.reussi,
+                rien: false,
                 avant: None,
                 raison: if r.reussi { r.note.unwrap_or_default() } else { r.raison },
             }
@@ -901,6 +956,7 @@ fn echec_lisible(e: &Element, raison: &str) -> String {
 fn lancer_script(chemin: &str, empreinte: &str) -> Resultat {
     let refus = |raison: String| Resultat {
         reussi: false,
+        rien: false,
         avant: None,
         raison,
     };
@@ -964,6 +1020,7 @@ fn lancer_script(chemin: &str, empreinte: &str) -> Resultat {
     match statut.ok().and_then(|s| s.code()) {
         Some(0) => Resultat {
             reussi: true,
+            rien: false,
             avant: None,
             raison: String::new(),
         },
@@ -985,6 +1042,7 @@ fn heritable(w: &std::io::PipeWriter) -> bool {
 fn lancer_programme(a: &gestes::Appel) -> Resultat {
     let refus = |raison: String| Resultat {
         reussi: false,
+        rien: false,
         avant: None,
         raison,
     };
@@ -996,11 +1054,13 @@ fn lancer_programme(a: &gestes::Appel) -> Resultat {
         Ok(s) => match s.code() {
             Some(3010) if a.reussite(3010) => Resultat {
                 reussi: true,
+                rien: false,
                 avant: None,
                 raison: tr!("redémarrage nécessaire", "restart needed").to_string(),
             },
             Some(c) if a.reussite(c) => Resultat {
                 reussi: true,
+                rien: false,
                 avant: None,
                 raison: String::new(),
             },
@@ -1037,8 +1097,10 @@ fn commande_du_programme(a: &gestes::Appel) -> Option<std::process::Command> {
 }
 
 /// Se branche sur le tube du parent, puis vérifie que le serveur est bien le processus annoncé et que son programme
-/// est le même que celui-ci (même empreinte).
-fn ouvrir_le_canal(canal: &str, parent: u32) -> Option<std::fs::File> {
+/// est le même que celui-ci (même empreinte). Le parent est rendu tenu par une poignée, ouverte dès son numéro
+/// vérifié : tant qu'elle vit, ce numéro ne passe à aucun autre processus, et ce qui est lu par elle (son programme,
+/// son compte) est le sien.
+fn ouvrir_le_canal(canal: &str, parent: u32) -> Option<(std::fs::File, super::processus::Tenu)> {
     const OCCUPE: u32 = 231;
     if !canal_valide(canal) || parent == 0 {
         return None;
@@ -1065,9 +1127,31 @@ fn ouvrir_le_canal(canal: &str, parent: u32) -> Option<std::fs::File> {
     if unsafe { GetNamedPipeServerProcessId(tube.as_raw_handle(), &raw mut serveur) } == 0 || serveur != parent {
         return None;
     }
+    let tenu = super::processus::Tenu::ouvrir(parent).ok()?;
     let moi = std::env::current_exe().ok()?;
-    let chemin_parent = std::path::PathBuf::from(super::processus::chemin(parent)?);
-    (empreinte(&moi)? == empreinte(&chemin_parent)?).then_some(tube)
+    let chemin_parent = std::path::PathBuf::from(tenu.chemin()?);
+    if empreinte(&moi)? != empreinte(&chemin_parent)? {
+        return None;
+    }
+    // Le tube est encore ouvert de l'autre côté, la poignée déjà tenue : le parent n'a pas fini entre la lecture de
+    // son numéro et l'ouverture de la poignée (un autre processus qui l'aurait repris ne tient pas ce tube).
+    tube_ouvert(&tube).then_some((tube, tenu))
+}
+
+/// L'autre bout du tube est-il encore ouvert ? Rien n'est lu (PeekNamedPipe sans tampon) ; un parent fini le ferme.
+fn tube_ouvert(tube: &std::fs::File) -> bool {
+    let mut disponibles = 0u32;
+    // SAFETY: poignée valide (le File vit) ; aucun tampon donné (taille 0), seul un entier à nous est écrit.
+    unsafe {
+        PeekNamedPipe(
+            tube.as_raw_handle(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            &raw mut disponibles,
+            std::ptr::null_mut(),
+        ) != 0
+    }
 }
 
 /// Ce qui est noté quand la personne a accepté de continuer sans point de restauration.
@@ -1328,6 +1412,7 @@ mod tests {
             let (continuer, raison) = continuer_sans_point("protection coupée", |_| "n".into());
             let point = Resultat {
                 reussi: continuer,
+                rien: false,
                 avant: None,
                 raison,
             };
@@ -1335,6 +1420,7 @@ mod tests {
             assert!(lire_reponse(ARRETEE).arretee && !lire_reponse(ARRETEE).reussi);
             let echec = Resultat {
                 reussi: false,
+                rien: false,
                 avant: None,
                 raison: "code=2".into(),
             };
@@ -1342,6 +1428,7 @@ mod tests {
             // chkdsk 3 : « disque à vérifier », ni arrêt ni échec ordinaire.
             let a_finir = Resultat {
                 reussi: false,
+                rien: false,
                 avant: None,
                 raison: format!("{} code=3", au_redemarrage()),
             };
@@ -1497,6 +1584,7 @@ mod tests {
         assert!(!lire_reponse("okay").reussi);
         let sans_point = Resultat {
             reussi: true,
+            rien: false,
             avant: None,
             raison: sans_point_accepte().into(),
         };
@@ -1506,10 +1594,18 @@ mod tests {
         assert!(!lire_reponse("").reussi);
         let aller_retour = ligne_resultat(&Resultat {
             reussi: false,
+            rien: false,
             avant: Some("1".into()),
             raison: "a\r\nb".into(),
         });
         assert_eq!(aller_retour, "echec a  b");
+        // Déjà bon, rien d'écrit : réussi, dit rien (le parent ne le note pas parmi ce que Vanguard a changé).
+        let deja = ligne_resultat(&Resultat::rien("déjà 1,\nrien d'écrit".into()));
+        assert_eq!(deja, "ok rien=déjà 1, rien d'écrit");
+        let r = lire_reponse(&deja);
+        assert!(r.reussi && r.rien && r.avant.is_none() && r.note.as_deref() == Some("déjà 1, rien d'écrit"));
+        assert!(!lire_reponse("ok note=déjà retirée").rien);
+        assert!(!lire_reponse("ok avant=1").rien);
         let r = lire_reponse("echec code=1 etats=101");
         assert!(!r.reussi && r.code == Some(1) && r.etats == Some(vec![true, false, true]));
         assert!(lire_reponse("echec code=1").etats.is_none());

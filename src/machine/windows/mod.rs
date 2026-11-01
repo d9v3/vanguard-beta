@@ -662,7 +662,8 @@ fn inacheve(reponses: &[eleve::Reponse]) -> crate::machine::Inacheve {
 /// Les résultats de chaque correctif, et ses lignes annotées (valeur d'avant, précision), à partir des réponses du
 /// processus élevé, dans l'ordre des morceaux. Un correctif réussit seulement si chacun de ses morceaux a réussi
 /// (pour un script, son propre « ok » dans le tube), ou s'il est vide ; une réponse qui manque est un échec, comme
-/// un correctif qu'aucun morceau ne couvre.
+/// un correctif qu'aucun morceau ne couvre. Une ligne déjà bonne (« ok rien=… ») est retirée des lignes notées : rien
+/// n'a changé ; un correctif dont il ne reste que le point de restauration n'a plus de ligne à noter.
 fn recomposer(
     correctifs: &[Vec<String>],
     morceaux: &[crate::machine::gestes::Morceau],
@@ -673,6 +674,7 @@ fn recomposer(
     let mut resultats = vec![true; correctifs.len()];
     let mut couverts = vec![false; correctifs.len()];
     let mut notes = correctifs.to_vec();
+    let mut deja_bons: Vec<Vec<usize>> = vec![Vec::new(); correctifs.len()];
     let mut echec = |i: usize| {
         if let Some(r) = resultats.get_mut(i) {
             *r = false;
@@ -688,6 +690,12 @@ fn recomposer(
                     let r = reponses.next();
                     if !r.as_ref().is_some_and(|r| r.reussi) {
                         echec(i);
+                    }
+                    if r.as_ref().is_some_and(|r| r.reussi && r.rien) {
+                        if let Some(d) = deja_bons.get_mut(i) {
+                            d.push(j);
+                        }
+                        continue;
                     }
                     if let Some(note) = notes.get_mut(i).and_then(|n| n.get_mut(j)) {
                         match r.map(|r| (r.avant, r.note)) {
@@ -723,6 +731,19 @@ fn recomposer(
     for (i, (c, couvert)) in correctifs.iter().zip(couverts).enumerate() {
         if !c.is_empty() && !couvert {
             echec(i);
+        }
+    }
+    for (n, d) in notes.iter_mut().zip(deja_bons) {
+        if d.is_empty() {
+            continue;
+        }
+        let mut j = 0;
+        n.retain(|_| {
+            j += 1;
+            !d.contains(&(j - 1))
+        });
+        if n.iter().all(|l| l.starts_with(corrections::POINT)) {
+            n.clear();
         }
     }
     (resultats, notes)
@@ -994,7 +1015,7 @@ fn smb1() -> Constat {
     }
 }
 
-fn bureau_distance() -> Constat {
+pub(super) fn bureau_distance() -> Constat {
     let terminal = r"System\CurrentControlSet\Control\Terminal Server";
     // La stratégie de groupe l'emporte sur le réglage local, comme pour le pare-feu : imposée, elle décide, et une
     // correction du réglage local ne servirait à rien.
@@ -1092,6 +1113,8 @@ pub fn session_a_distance() -> bool {
     const SM_REMOTESESSION: i32 = 0x1000;
     // SAFETY: GetSystemMetrics n'a ni pointeur ni effet de bord.
     let distante = unsafe { GetSystemMetrics(SM_REMOTESESSION) } != 0;
+    // SESSIONNAME vient de l'environnement, que le compte peut poser (HKCU\Environment) : il ne fait qu'ajouter des
+    // cas « à distance ». Forgé, il donne au pire un refus de plus (rdp-coupe refusé, dit), jamais une coupure.
     distante || std::env::var("SESSIONNAME").is_ok_and(|s| s.to_ascii_uppercase().starts_with("RDP-"))
 }
 
@@ -1556,7 +1579,7 @@ fn ports_udp(pare_feu_actif: bool, ip_lan: Option<&str>) -> Vec<Constat> {
         )
         .map(|v| v.to_string())
         .unwrap_or_default();
-        let mut liste = format!("LLMNR|{llmnr}\n");
+        let mut liste = format!("LLMNR|{llmnr}\n{}\n", ligne_netbios());
         for e in ecoutes.iter().filter(|e| !e.tcp) {
             let _ = writeln!(liste, "{}|{}|{}", e.adresse, e.port, e.nom);
         }
@@ -1569,7 +1592,17 @@ fn ports_udp(pare_feu_actif: bool, ip_lan: Option<&str>) -> Vec<Constat> {
     ) else {
         return vec![illisible("Ports en écoute")];
     };
-    lire_ports_udp(&liste, pare_feu_actif, ip_lan)
+    lire_ports_udp(&format!("{}\n{liste}", ligne_netbios()), pare_feu_actif, ip_lan)
+}
+
+/// « NETBIOS|0 » quand NetbiosOptions vaut 2 sur chaque carte (coupé, effectif au prochain redémarrage seulement),
+/// « NETBIOS|1 » sinon : lu dans le registre, pour les deux voies.
+fn ligne_netbios() -> &'static str {
+    if corrections::netbios_coupe() {
+        "NETBIOS|0"
+    } else {
+        "NETBIOS|1"
+    }
 }
 
 fn lire_ports_udp(liste: &str, pare_feu_actif: bool, ip_lan: Option<&str>) -> Vec<Constat> {
@@ -1579,7 +1612,11 @@ fn lire_ports_udp(liste: &str, pare_feu_actif: bool, ip_lan: Option<&str>) -> Ve
     let mut vus = Vec::new();
     let mut constats = Vec::new();
     let llmnr_coupe = liste.lines().any(|l| l.trim() == "LLMNR|0");
-    for l in liste.lines().filter(|l| !l.starts_with("LLMNR|")) {
+    let netbios_coupe = liste.lines().any(|l| l.trim() == "NETBIOS|0");
+    for l in liste
+        .lines()
+        .filter(|l| !l.starts_with("LLMNR|") && !l.starts_with("NETBIOS|"))
+    {
         let mut c = l.trim().splitn(3, '|');
         let (Some(adresse), Some(Ok(port)), programme) =
             (c.next(), c.next().map(str::parse::<u16>), c.next().unwrap_or("").trim())
@@ -1636,6 +1673,15 @@ fn lire_ports_udp(liste: &str, pare_feu_actif: bool, ip_lan: Option<&str>) -> Ve
                 // les autres stratégies DNS qu'elle contient.
                 &[&corrections::id("llmnr-coupe")],
             ),
+            137 | 138 if netbios_coupe => alerte(
+                "Ports en écoute",
+                Niveau::Info,
+                trf!(
+                    "{port}/udp (NetBIOS) encore ouvert, mais NetBIOS est coupé : ce sera effectif au prochain redémarrage.",
+                    "{port}/udp (NetBIOS) still open, but NetBIOS is turned off: it takes effect at the next restart."
+                ),
+            )
+            .avec_objet(objet),
             137 | 138 if !vus.contains(&if port == 137 { 138 } else { 137 }) => constat.corriger(
                 tr!(
                     "Couper NetBIOS sur TCP/IP (vieux partage ; le partage moderne passe par le port 445)",
@@ -1723,6 +1769,7 @@ mod tests {
             etats,
             arretee: false,
             au_redemarrage: false,
+            rien: false,
         }
     }
 
@@ -1803,6 +1850,47 @@ mod tests {
         // Aucune réponse du tout : rien n'est compté fait, sauf le correctif vide.
         let (r, _) = recomposer(&correctifs, &morceaux, Vec::new());
         assert_eq!(r, [false, false, true]);
+    }
+
+    /// Une ligne déjà bonne (« ok rien=… ») réussit sans être notée : rien n'a changé. Un correctif dont il ne reste
+    /// que le point de restauration n'a plus rien à noter ; les autres lignes gardent leur valeur d'avant.
+    #[test]
+    fn une_ligne_deja_bonne_n_est_pas_notee() {
+        let correctifs = vec![
+            vec![corrections::POINT.to_string(), corrections::id("wdigest-coupe")],
+            vec![corrections::id("rdp-nla"), corrections::id("aie-machine")],
+        ];
+        let morceaux = gestes::decouper(&correctifs, corrections::native);
+        let rien = || eleve::Reponse {
+            rien: true,
+            ..reponse(true, Some("déjà 1, rien d'écrit"), None, None)
+        };
+        let fait = eleve::Reponse {
+            avant: Some("0".into()),
+            ..reponse(true, None, None, None)
+        };
+        let (r, notes) = recomposer(
+            &correctifs,
+            &morceaux,
+            vec![reponse(true, None, None, None), rien(), rien(), fait],
+        );
+        assert_eq!(r, [true, true]);
+        assert_eq!(notes[0], [] as [String; 0]);
+        assert_eq!(notes[1], [format!("{} (avant : 0)", corrections::id("aie-machine"))]);
+        // Une ligne déjà bonne à côté d'un échec : l'échec reste noté, avec sa ligne.
+        let (r, notes) = recomposer(
+            &correctifs,
+            &morceaux,
+            vec![
+                reponse(true, None, None, None),
+                rien(),
+                reponse(false, None, None, None),
+                rien(),
+            ],
+        );
+        assert_eq!(r, [true, false]);
+        assert_eq!(notes[0], [] as [String; 0]);
+        assert_eq!(notes[1], [corrections::id("rdp-nla")]);
     }
 
     /// Rien à envoyer au processus élevé : vrai seulement pour un correctif vide, jamais d'office (un correctif non
@@ -1935,6 +2023,16 @@ mod tests {
         assert_eq!(llmnr, "vanguard:llmnr-coupe");
         let c = lire_ports_udp("LLMNR|0\n0.0.0.0|5355|svchost", false, None);
         assert!(c.len() == 1 && c[0].correctif.is_none() && c[0].probleme == Some(Niveau::Info));
+        // NetBIOS coupé dans le registre, 137 encore ouvert jusqu'au redémarrage : une information, pas de correction.
+        let c = lire_ports_udp("NETBIOS|0\n0.0.0.0|137|System\n0.0.0.0|138|System", false, None);
+        assert_eq!(c.len(), 2);
+        assert!(
+            c.iter()
+                .all(|c| c.correctif.is_none() && c.probleme == Some(Niveau::Info))
+        );
+        assert!(c[0].message.starts_with("137/udp (NetBIOS)"), "{}", c[0].message);
+        let c = lire_ports_udp("NETBIOS|1\n0.0.0.0|137|System", false, None);
+        assert!(c.len() == 1 && c[0].correctif.is_some());
         // Un programme au nom piégé : rendu inoffensif dans le message.
         let c = lire_ports_udp("0.0.0.0|161|snmp\x1b]52;c;eA==\x07\u{202e}", true, None);
         assert!(c[0].message.contains("« snmp�]52;c;eA==�� »"), "{}", c[0].message);

@@ -158,6 +158,10 @@ fn noter_dans(chemin: &std::path::Path, correctifs: &[Vec<String>], resultats: &
     let date = maintenant();
     let mut tous = lire_de(chemin);
     for (i, (commandes, &reussi)) in correctifs.iter().zip(resultats).enumerate() {
+        // Rien à noter : un correctif vide, ou dont chaque ligne était déjà bonne (rien d'écrit, sous Windows).
+        if commandes.is_empty() {
+            continue;
+        }
         let annulable = annulables.get(i).cloned().flatten();
         let mut ev = Evenement::action(
             Source::Correction,

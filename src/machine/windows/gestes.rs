@@ -1161,14 +1161,13 @@ pub(crate) fn ligne_service_guillemets(nom: &str) -> Option<String> {
     NomFichier::nouveau(nom).map(|n| Acte::ServiceGuillemets(n).ligne())
 }
 
-/// La ligne PowerShell d'avant (Wine) pour un service : relit ImagePath et le remet entre guillemets par la même forme
-/// que le constat (« …\x.exe » puis ses arguments), ou s'arrête sans rien écrire.
+/// La ligne PowerShell (Wine) pour un service : relit ImagePath brut (ses %variables% non développées) et son type,
+/// le remet entre guillemets par la même forme que le constat (« …\x.exe » puis ses arguments), avec le même type,
+/// et s'arrête sans rien écrire si la valeur développée changerait autrement que par les guillemets. Écart connu avec
+/// le processus élevé : le dossier modifiable n'est pas rejugé, et les variables sont celles de la fenêtre.
 fn powershell_guillemets(nom: &NomFichier) -> String {
     format!(
-        "$k = 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\{}'; \
-         $c = [string](Get-ItemProperty -LiteralPath $k -Name ImagePath -ErrorAction Stop).ImagePath; \
-         if ($c.StartsWith('\"') -or $c -notmatch '^(.+?\\.exe)(\\s.*)?$') {{ throw 'ImagePath already quoted or not understood' }}; \
-         Set-ItemProperty -LiteralPath $k -Name ImagePath -Value ('\"' + $Matches[1] + '\"' + $Matches[2])",
+        r#"$k = 'HKLM:\SYSTEM\CurrentControlSet\Services\{}'; $r = Get-Item -LiteralPath $k -ErrorAction Stop; $t = $r.GetValueKind('ImagePath'); $c = [string]$r.GetValue('ImagePath', $null, 'DoNotExpandEnvironmentNames'); if (($t -ne 'String' -and $t -ne 'ExpandString') -or $c.StartsWith('"') -or $c -notmatch '^(.+?\.exe)(\s.*)?$') {{ throw 'ImagePath already quoted or not understood' }}; $n = '"' + $Matches[1] + '"' + $Matches[2]; if ([Environment]::ExpandEnvironmentVariables($c) -notmatch '^(.+?\.exe)(\s.*)?$' -or [Environment]::ExpandEnvironmentVariables($n) -cne ('"' + $Matches[1] + '"' + $Matches[2])) {{ throw 'ImagePath would change beyond the quotes' }}; Set-ItemProperty -LiteralPath $k -Name ImagePath -Value $n -Type $t"#,
         ps_texte(nom.texte())
     )
 }
@@ -2328,7 +2327,7 @@ mod tests {
         );
         assert_eq!(
             ps(ligne_service_guillemets("Mon ’Outil")),
-            r#"$k = 'HKLM:\SYSTEM\CurrentControlSet\Services\Mon ’’Outil'; $c = [string](Get-ItemProperty -LiteralPath $k -Name ImagePath -ErrorAction Stop).ImagePath; if ($c.StartsWith('"') -or $c -notmatch '^(.+?\.exe)(\s.*)?$') { throw 'ImagePath already quoted or not understood' }; Set-ItemProperty -LiteralPath $k -Name ImagePath -Value ('"' + $Matches[1] + '"' + $Matches[2])"#
+            r#"$k = 'HKLM:\SYSTEM\CurrentControlSet\Services\Mon ’’Outil'; $r = Get-Item -LiteralPath $k -ErrorAction Stop; $t = $r.GetValueKind('ImagePath'); $c = [string]$r.GetValue('ImagePath', $null, 'DoNotExpandEnvironmentNames'); if (($t -ne 'String' -and $t -ne 'ExpandString') -or $c.StartsWith('"') -or $c -notmatch '^(.+?\.exe)(\s.*)?$') { throw 'ImagePath already quoted or not understood' }; $n = '"' + $Matches[1] + '"' + $Matches[2]; if ([Environment]::ExpandEnvironmentVariables($c) -notmatch '^(.+?\.exe)(\s.*)?$' -or [Environment]::ExpandEnvironmentVariables($n) -cne ('"' + $Matches[1] + '"' + $Matches[2])) { throw 'ImagePath would change beyond the quotes' }; Set-ItemProperty -LiteralPath $k -Name ImagePath -Value $n -Type $t"#
         );
         // La copie de ps_texte est celle de commande.rs.
         for t in ["a'b", "‘’‚‛", "x\u{2019}\u{2019}", "rien", "é'’"] {

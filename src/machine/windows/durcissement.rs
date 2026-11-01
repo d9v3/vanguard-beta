@@ -225,6 +225,17 @@ pub(super) fn juger_jeton_distant(valeur: Option<u32>) -> Option<Constat> {
     })
 }
 
+/// Le constat de LocalAccountTokenFilterPolicy, lu ici : celui du bilan, refait aussi par le processus élevé avant de
+/// retirer la valeur (`corrections`, juge de `latfp-retire`).
+pub(super) fn jeton_distant() -> Vec<Constat> {
+    juger_jeton_distant(lire_dword(
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System",
+        "LocalAccountTokenFilterPolicy",
+    ))
+    .into_iter()
+    .collect()
+}
+
 /// Intégrité de la mémoire (HVCI) : bloque les pilotes modifiés ou vulnérables. Une information : quelques vieux
 /// pilotes (et anti-triches) la refusent, Windows le dit alors.
 pub(super) fn juger_integrite_memoire(active: Option<u32>) -> Constat {
@@ -574,6 +585,20 @@ pub(super) fn juger_installation_elevee(machine: Option<u32>, compte: Option<u32
             &[super::corrections::id("aie-machine"), super::corrections::id("aie-compte")],
         )
     })
+}
+
+/// Le constat d'AlwaysInstallElevated refait par le processus élevé (`corrections`, juge d'`aie-machine` et
+/// d'`aie-compte`) : la valeur du compte se lit sous HKEY_USERS\<SID de la personne>, son HKCU à lui étant celui du
+/// compte qui a ouvert la fenêtre administrateur.
+pub(super) fn installation_elevee_de(sid: &str) -> Vec<Constat> {
+    let installeur = r"SOFTWARE\Policies\Microsoft\Windows\Installer";
+    let du_compte = winreg::RegKey::predef(winreg::enums::HKEY_USERS)
+        .open_subkey(format!(r"{sid}\{installeur}"))
+        .ok()
+        .and_then(|k| k.get_value::<u32, _>("AlwaysInstallElevated").ok());
+    juger_installation_elevee(lire_dword(installeur, "AlwaysInstallElevated"), du_compte)
+        .into_iter()
+        .collect()
 }
 
 /// Protection contre les exploits pour tout le système (Get-ProcessMitigation -System) : « DEP|BottomUp|CFG|SEHOP »,
@@ -1067,10 +1092,7 @@ pub(super) fn acces_distant() -> Vec<Constat> {
         r"SYSTEM\CurrentControlSet\Services\RemoteRegistry",
         "Start",
     )));
-    c.extend(juger_jeton_distant(lire_dword(
-        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System",
-        "LocalAccountTokenFilterPolicy",
-    )));
+    c.extend(jeton_distant());
     c.extend(juger_wpad(lire_dword(WINHTTP, "DisableWpad"), compte_de_domaine()));
     sain_si_vide(
         c,

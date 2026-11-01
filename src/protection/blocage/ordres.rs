@@ -339,6 +339,13 @@ impl Juge {
         }
     }
 
+    /// Les sessions à distance relues au moment d'agir : le processus élevé de Windows lit le reste du juge dès le
+    /// canal vérifié, le Vanguard qui demande tenu par une poignée, puis attend l'accord de la personne.
+    #[cfg(windows)]
+    pub(crate) fn relire_sessions(&mut self) {
+        self.sessions = gardes::sessions_a_distance();
+    }
+
     /// Pour les essais : des sessions et des intouchables donnés.
     #[cfg(test)]
     pub(crate) fn essai(sessions: Option<gardes::Sessions>, intouchables: HashSet<u32>) -> Juge {

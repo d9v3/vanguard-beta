@@ -27,6 +27,12 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   du processus. Vanguard met désormais lui-même ce segment en lecture seule au lancement, comme le fait le chargeur
   de glibc ; un échec est noté au journal sans empêcher le démarrage.
 
+- **Guillemets des services posés tout seuls, et dit.** Quand le chemin d'un service contient une espace sans
+  guillemets (un autre programme pourrait se glisser à sa place), la correction acceptée y ajoute les guillemets
+  elle-même : « Vanguard ajoute les guillemets au chemin du service X ». Elle ne le fait que si seuls les guillemets
+  changent, que le programme cité existe et que ses variables sont celles du système ; sinon, elle laisse la
+  correction à faire à la main.
+
 ## 26 octobre 2026 : version 0.88
 
 - **Régression de détection.** Un corpus de cas fabriqués et inoffensifs (tests/corpus-detection) prouve, par 77 cas

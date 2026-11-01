@@ -75,18 +75,22 @@ fn lire_drapeaux(texte: &str) -> Option<u32> {
     }
 }
 
+/// La lecture d'IFEO et de SilentProcessExit dans la vue 64 bits, avec les drapeaux de `retirer_valeur_relue` : le
+/// bilan et le processus élevé voient la même clé, quelle que soit la largeur du programme.
+const LECTURE_64: u32 = winreg::enums::KEY_READ | winreg::enums::KEY_WOW64_64KEY;
+
 /// Les entrées d'Image File Execution Options qui posent un débogueur ou des drapeaux, et le nombre de programmes
 /// lus. `None` si aucune des deux clés ne s'ouvre.
 fn lire_ifeo() -> Option<(usize, Vec<Reglage>)> {
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     let mut lus: Option<(usize, Vec<Reglage>)> = None;
     for vue in Vue::TOUTES {
-        let Ok(cle) = hklm.open_subkey(vue.ifeo()) else {
+        let Ok(cle) = hklm.open_subkey_with_flags(vue.ifeo(), LECTURE_64) else {
             continue;
         };
         let (total, reglages) = lus.get_or_insert_with(|| (0, Vec::new()));
         for programme in cle.enum_keys().flatten() {
-            let Ok(sous) = cle.open_subkey(&programme) else {
+            let Ok(sous) = cle.open_subkey_with_flags(&programme, LECTURE_64) else {
                 continue;
             };
             *total += 1;
@@ -117,12 +121,12 @@ fn lire_moniteurs() -> Vec<Moniteur> {
     let mut moniteurs = Vec::new();
     for vue in Vue::TOUTES {
         // Absente sur un Windows où personne ne s'en est servi : rien à lire.
-        let Ok(cle) = hklm.open_subkey(vue.silencieuse()) else {
+        let Ok(cle) = hklm.open_subkey_with_flags(vue.silencieuse(), LECTURE_64) else {
             continue;
         };
         for programme in cle.enum_keys().flatten() {
             let processus = cle
-                .open_subkey(&programme)
+                .open_subkey_with_flags(&programme, LECTURE_64)
                 .and_then(|k| k.get_value::<String, _>("MonitorProcess"))
                 .unwrap_or_default();
             if !processus.trim().is_empty() {
@@ -289,7 +293,7 @@ fn rejuger(ligne: &str, valeur: Option<String>, constats: &[Constat]) -> Result<
 }
 
 /// Retire la valeur `nom_valeur` de `HKLM\<racine>\<programme>` si elle vaut encore `attendue` (relue juste avant),
-/// puis relit son absence. Ouverte dans la vue 64 bits, celle que le bilan lit (vanguard.exe est 64 bits).
+/// puis relit son absence. Ouverte dans la vue 64 bits, celle que le bilan lit (`LECTURE_64`).
 fn retirer_valeur_relue(racine: &str, programme: &NomFichier, nom_valeur: &str, attendue: &str) -> Resultat {
     use std::io::ErrorKind::NotFound;
     use winreg::enums::{KEY_QUERY_VALUE, KEY_SET_VALUE, KEY_WOW64_64KEY};
@@ -299,7 +303,10 @@ fn retirer_valeur_relue(racine: &str, programme: &NomFichier, nom_valeur: &str, 
         .open_subkey_with_flags(&chemin, KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY)
     {
         Ok(k) => k,
-        Err(e) => return Resultat::echec(None, format!("HKLM\\{} : {e}", crate::ui::affichable(&chemin))),
+        Err(e) => {
+            let chemin = crate::ui::affichable(&chemin);
+            return Resultat::echec(None, trf!("HKLM\\{chemin} : {e}", "HKLM\\{chemin}: {e}"));
+        }
     };
     match cle.get_value::<String, _>(nom_valeur) {
         Ok(v) if v == attendue => {}
@@ -347,12 +354,7 @@ pub(super) fn retirer_debogueur(vue: Vue, programme: &NomFichier) -> Resultat {
             .to_string(),
         );
     };
-    let ligne = Acte::IfeoDebugger(vue, programme.clone()).ligne();
-    let debogueur = reglages
-        .iter()
-        .find(|r| r.vue == vue && r.programme == programme.texte())
-        .and_then(|r| r.debogueur.clone());
-    match rejuger(&ligne, debogueur, &juger_ifeo(total, &reglages, &lire_moniteurs())) {
+    match debogueur_a_retirer(vue, programme, total, &reglages, &lire_moniteurs()) {
         Ok(Some(d)) => retirer_valeur_relue(vue.ifeo(), programme, "Debugger", &d),
         Ok(None) => Resultat::rien(rien_a_corriger()),
         Err(refus) => refus,
@@ -372,17 +374,43 @@ pub(super) fn retirer_moniteur(vue: Vue, programme: &NomFichier) -> Resultat {
             .to_string(),
         );
     };
-    let moniteurs = lire_moniteurs();
+    match moniteur_a_retirer(vue, programme, total, &reglages, &lire_moniteurs()) {
+        Ok(Some(p)) => retirer_valeur_relue(vue.silencieuse(), programme, "MonitorProcess", &p),
+        Ok(None) => Resultat::rien(rien_a_corriger()),
+        Err(refus) => refus,
+    }
+}
+
+/// Le débogueur de `programme` à retirer, jugé par `juger_ifeo` (la fonction du constat) sur ces lectures-là.
+fn debogueur_a_retirer(
+    vue: Vue,
+    programme: &NomFichier,
+    total: usize,
+    reglages: &[Reglage],
+    moniteurs: &[Moniteur],
+) -> Result<Option<String>, Resultat> {
+    let ligne = Acte::IfeoDebugger(vue, programme.clone()).ligne();
+    let debogueur = reglages
+        .iter()
+        .find(|r| r.vue == vue && r.programme == programme.texte())
+        .and_then(|r| r.debogueur.clone());
+    rejuger(&ligne, debogueur, &juger_ifeo(total, reglages, moniteurs))
+}
+
+/// Le programme lancé à la fermeture de `programme` à retirer, jugé par `juger_ifeo` sur ces lectures-là.
+fn moniteur_a_retirer(
+    vue: Vue,
+    programme: &NomFichier,
+    total: usize,
+    reglages: &[Reglage],
+    moniteurs: &[Moniteur],
+) -> Result<Option<String>, Resultat> {
     let ligne = Acte::IfeoSilencieux(vue, programme.clone()).ligne();
     let processus = moniteurs
         .iter()
         .find(|m| m.vue == vue && m.programme == programme.texte())
         .map(|m| m.processus.clone());
-    match rejuger(&ligne, processus, &juger_ifeo(total, &reglages, &moniteurs)) {
-        Ok(Some(p)) => retirer_valeur_relue(vue.silencieuse(), programme, "MonitorProcess", &p),
-        Ok(None) => Resultat::rien(rien_a_corriger()),
-        Err(refus) => refus,
-    }
+    rejuger(&ligne, processus, &juger_ifeo(total, reglages, moniteurs))
 }
 
 fn rien_a_corriger() -> String {
@@ -393,9 +421,14 @@ fn rien_a_corriger() -> String {
     .to_string()
 }
 
-/// Le dossier de Windows (« C:\Windows »).
+/// Le dossier de Windows (« C:\Windows »), lu par Windows (GetSystemWindowsDirectoryW), comme le processus élevé le
+/// lit pour remettre Userinit : jamais la variable SystemRoot, qu'un programme du compte peut poser dans
+/// HKCU\Environment. Illisible, celui d'un Windows ordinaire.
 pub(super) fn racine_windows() -> String {
-    std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string())
+    super::environnement::dossier_windows().map_or_else(
+        || r"C:\Windows".to_string(),
+        |d| d.to_string_lossy().trim_end_matches('\\').to_string(),
+    )
 }
 
 /// Deux fichiers au même contenu ? La taille d'abord : le contenu n'est lu que pour deux fichiers de même taille, ce
@@ -534,7 +567,7 @@ pub(super) fn userinit_d_origine(valeur: &str, racine: &str) -> bool {
 
 /// `shell`, `userinit` : les valeurs de Winlogon pour l'ordinateur ; `shell_du_compte` : celle du compte (absente
 /// d'ordinaire) ; `cle_du_compte` : sa clé, pour la fenêtre administrateur (le HKCU de la personne).
-fn juger_winlogon(
+pub(super) fn juger_winlogon(
     shell: Option<&str>,
     userinit: Option<&str>,
     shell_du_compte: Option<&str>,
@@ -617,6 +650,22 @@ fn juger_winlogon(
         ));
     }
     constats
+}
+
+/// Le constat de Winlogon pour l'ordinateur seul (Shell, Userinit), refait par le processus élevé avant de remettre
+/// Shell (`corrections`, juge de `winlogon-shell`) : la même fonction que le bilan (`juger_winlogon`), sans la valeur
+/// du compte. `None` si la clé ne se lit pas.
+pub(super) fn winlogon_de_l_ordinateur() -> Option<Vec<Constat>> {
+    let cle = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(WINLOGON).ok()?;
+    let shell = cle.get_value::<String, _>("Shell").ok();
+    let userinit = cle.get_value::<String, _>("Userinit").ok();
+    Some(juger_winlogon(
+        shell.as_deref(),
+        userinit.as_deref(),
+        None,
+        &racine_windows(),
+        "",
+    ))
 }
 
 fn winlogon() -> Vec<Constat> {
@@ -1362,6 +1411,41 @@ mod tests {
         // La vue compte : la même clé sous WOW6432Node est une autre ligne.
         let sethc_32 = gestes::ligne_ifeo_debugger(Vue::Wow32, "sethc.exe").unwrap();
         assert!(!propose(&bilan, &sethc_32));
+        // Les juges de retirer_debogueur et retirer_moniteur, sur ces mêmes lectures : ce que le constat propose, et
+        // seulement cela, est retiré ; le reste est refusé ou n'a plus rien à retirer.
+        let nom = |n: &str| gestes::NomFichier::nouveau(n).unwrap();
+        let deb = |vue, n: &str| debogueur_a_retirer(vue, &nom(n), 3, &reglages, &moniteurs);
+        let mon = |vue, n: &str| moniteur_a_retirer(vue, &nom(n), 3, &reglages, &moniteurs);
+        assert_eq!(
+            deb(Vue::Windows, "sethc.exe").ok(),
+            Some(Some(r"C:\Windows\System32\cmd.exe".to_string()))
+        );
+        assert!(deb(Vue::Windows, "taskmgr.exe").is_err_and(|r| !r.reussi));
+        assert_eq!(deb(Vue::Windows, "notepad.exe").ok(), Some(None));
+        assert_eq!(deb(Vue::Wow32, "sethc.exe").ok(), Some(None));
+        assert_eq!(
+            mon(Vue::Windows, "notepad.exe").ok(),
+            Some(Some(r"C:\Users\Public\a.exe".to_string()))
+        );
+        assert!(mon(Vue::Windows, "calc.exe").is_err_and(|r| !r.reussi));
+        assert_eq!(mon(Vue::Windows, "sethc.exe").ok(), Some(None));
+        // Chaque ligne proposée par le constat, et elle seule, passe le juge du processus élevé.
+        for r in &reglages {
+            let l = ligne(r);
+            assert_eq!(
+                propose(&bilan, &l),
+                matches!(deb(r.vue, &r.programme), Ok(Some(_))),
+                "{l}"
+            );
+        }
+        for m in &moniteurs {
+            let l = gestes::ligne_ifeo_silencieux(m.vue, &m.programme).unwrap();
+            assert_eq!(
+                propose(&bilan, &l),
+                matches!(mon(m.vue, &m.programme), Ok(Some(_))),
+                "{l}"
+            );
+        }
     }
 
     #[test]

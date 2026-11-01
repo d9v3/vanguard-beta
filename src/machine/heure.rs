@@ -164,9 +164,17 @@ fn lire() -> Option<Etat> {
         .and_then(|p| p.get_value("Type"))
         .unwrap_or_default();
     Some(Etat {
-        automatique: demarrage != 4 && !genre.eq_ignore_ascii_case("NoSync"),
+        automatique: demarrage != 4 && type_synchronise(&genre),
         synchronisee: None,
     })
+}
+
+/// Le type de synchronisation du service de temps de Windows (W32Time\Parameters, Type) en règle-t-il une ? Seul
+/// « NoSync » n'en règle aucune ; NTP, NT5DS ou AllSync (machine d'un domaine) la règlent. Partagé avec le processus
+/// élevé, qui ne remplace jamais un tel type par NTP (`corrections::decider_sz`).
+#[cfg(windows)]
+pub(crate) fn type_synchronise(genre: &str) -> bool {
+    !genre.eq_ignore_ascii_case("NoSync")
 }
 
 #[cfg(target_os = "macos")]
@@ -209,9 +217,28 @@ mod tests {
             automatique: false,
             synchronisee: None,
         });
+        let ntp = corrections::analyser(&corrections::id("heure-ntp")).unwrap();
+        // Le juge de `heure-ntp` dans le processus élevé est ce constat : sur les mêmes données, il signale.
+        assert_eq!(
+            corrections::bilan_des_constats(ntp, std::slice::from_ref(&c)),
+            corrections::Bilan::Signale
+        );
         let k = c.correctif.unwrap();
         assert_eq!(k.commandes[0], corrections::id("heure-ntp"));
         assert!(corrections::native(&k.commandes[0]));
+        // Heure déjà réglée (NTP, ou NT5DS d'une machine d'un domaine) : rien de signalé, une ligne forgée est refusée.
+        for genre in ["NTP", "NT5DS", "AllSync"] {
+            let e = Etat {
+                automatique: type_synchronise(genre),
+                synchronisee: None,
+            };
+            assert_eq!(
+                corrections::bilan_des_constats(ntp, &[juger(&e)]),
+                corrections::Bilan::NeSignalePas,
+                "{genre}"
+            );
+        }
+        assert!(!type_synchronise("NoSync") && !type_synchronise("nosync"));
     }
 
     /// Sur cet ordinateur, la lecture directe dit la même chose que timedatectl, quand il est là.
