@@ -2,7 +2,9 @@
 //! correction de la table (`corrections`) ni un ordre du blocage : le script PowerShell vérifié par empreinte
 //! (`vanguard:script`), les programmes fixes de Windows (`vanguard:programme`), lancés par leur chemin complet avec
 //! des arguments figés, sans shell, et les actes sur Windows lui-même (`vanguard:service`, `vanguard:vider`,
-//! `vanguard:vider-file-impression`, `vanguard:mettre-de-cote`), faits par le gestionnaire de services et std::fs.
+//! `vanguard:vider-file-impression`, `vanguard:mettre-de-cote`, `vanguard:pare-feu-actif`, `vanguard:pare-feu-public`,
+//! `vanguard:reseau-categorie`), faits par le gestionnaire de services, std::fs et les interfaces COM du pare-feu et
+//! des réseaux (`pare_feu`).
 //! Plus la découpe d'une liste de correctifs en morceaux (gestes natifs, scripts) et la lecture des états d'un
 //! script : du code pur, sans E/S, testé sous Linux et lu par le banc de fuzzing
 //! (fuzz/fuzz_targets/gestes.rs). C'est la seule entrée que le processus élevé lit d'un processus moins sûr : rien ici
@@ -751,15 +753,278 @@ impl ACoter {
     }
 }
 
+/// Le Pare-feu Windows remis en marche sur ses trois profils (domaine, privé, public), sans argument : il n'a pas
+/// d'inverse, un pare-feu ne se coupe jamais par une ligne.
+pub(crate) const PARE_FEU_ACTIF: &str = "vanguard:pare-feu-actif";
+/// Des réglages du profil Public du pare-feu : `vanguard:pare-feu-public <cle=valeur>[,<cle=valeur>…]`.
+pub(crate) const PARE_FEU_PUBLIC: &str = "vanguard:pare-feu-public ";
+/// La catégorie d'un réseau connu : `vanguard:reseau-categorie {GUID} <public|prive>`.
+pub(crate) const RESEAU_CATEGORIE: &str = "vanguard:reseau-categorie ";
+
+/// Un réglage du profil Public du pare-feu, tel que l'écrivait `Set-NetFirewallProfile -Profile Public
+/// -PolicyStore PersistentStore` : allumé (Enabled), entrées bloquées par défaut (DefaultInboundAction), règles
+/// d'entrée des programmes autorisés suivies (AllowInboundRules ; « non » : toutes les entrées bloquées, même
+/// celles-là).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReglagePublic {
+    Actif,
+    EntrantBloque,
+    ReglesEntrantes,
+}
+
+impl ReglagePublic {
+    /// Dans l'ordre de la ligne : une ligne dans un autre ordre n'est pas réécrite à l'identique, donc refusée.
+    pub(crate) const TOUS: [ReglagePublic; 3] = [
+        ReglagePublic::Actif,
+        ReglagePublic::EntrantBloque,
+        ReglagePublic::ReglesEntrantes,
+    ];
+
+    pub(crate) fn cle(self) -> &'static str {
+        match self {
+            ReglagePublic::Actif => "actif",
+            ReglagePublic::EntrantBloque => "entrant-bloque",
+            ReglagePublic::ReglesEntrantes => "regles-entrantes",
+        }
+    }
+
+    /// La valeur qui durcit le profil : la seule qu'écrit le mode Wi-Fi public en l'appliquant.
+    pub(crate) fn durcie(self) -> ValeurPublic {
+        match self {
+            ReglagePublic::Actif | ReglagePublic::EntrantBloque => ValeurPublic::Oui,
+            ReglagePublic::ReglesEntrantes => ValeurPublic::Non,
+        }
+    }
+
+    /// Les valeurs qu'une ligne peut porter. « actif=non » n'existe pas : un pare-feu trouvé coupé n'est jamais
+    /// recoupé (`Element::jamais_remis`), aucune ligne ne peut donc le couper. « absent » (la valeur retirée du
+    /// magasin, « NotConfigured ») ne sert qu'à remettre « regles-entrantes » tel qu'il était : c'est le seul réglage
+    /// que le mode change quand il est « non configuré ».
+    fn permise(self, v: ValeurPublic) -> bool {
+        match self {
+            ReglagePublic::Actif => v == ValeurPublic::Oui,
+            ReglagePublic::EntrantBloque => v != ValeurPublic::Absent,
+            ReglagePublic::ReglesEntrantes => true,
+        }
+    }
+}
+
+/// La valeur d'un réglage du profil Public.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ValeurPublic {
+    Oui,
+    Non,
+    /// Retirée du magasin local : « non configuré », ce que Windows lit comme sa valeur par défaut.
+    Absent,
+}
+
+impl ValeurPublic {
+    const TOUTES: [ValeurPublic; 3] = [ValeurPublic::Oui, ValeurPublic::Non, ValeurPublic::Absent];
+
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            ValeurPublic::Oui => "oui",
+            ValeurPublic::Non => "non",
+            ValeurPublic::Absent => "absent",
+        }
+    }
+}
+
+/// Une ligne `vanguard:pare-feu-public`, relue : chaque réglage une fois au plus, au moins un.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProfilPublic {
+    /// Par réglage, dans l'ordre de `ReglagePublic::TOUS`.
+    valeurs: [Option<ValeurPublic>; 3],
+}
+
+impl ProfilPublic {
+    /// Les réglages demandés, dans l'ordre de la ligne ; `None` si aucun, si l'un revient ou n'a pas une valeur
+    /// permise.
+    pub(crate) fn nouveau(reglages: &[(ReglagePublic, ValeurPublic)]) -> Option<ProfilPublic> {
+        let mut valeurs = [None; 3];
+        for &(r, v) in reglages {
+            let i = ReglagePublic::TOUS.iter().position(|t| *t == r)?;
+            let place = valeurs.get_mut(i)?;
+            if place.is_some() || !r.permise(v) {
+                return None;
+            }
+            *place = Some(v);
+        }
+        valeurs.iter().any(Option::is_some).then_some(ProfilPublic { valeurs })
+    }
+
+    pub(crate) fn reglages(self) -> impl Iterator<Item = (ReglagePublic, ValeurPublic)> {
+        ReglagePublic::TOUS
+            .into_iter()
+            .zip(self.valeurs)
+            .filter_map(|(r, v)| v.map(|v| (r, v)))
+    }
+
+    /// Chaque réglage à sa valeur durcie : la ligne protège, « Défaire » ne la propose pas.
+    pub(crate) fn durcit(self) -> bool {
+        self.reglages().all(|(r, v)| v == r.durcie())
+    }
+
+    /// Un réglage au moins hors de sa valeur durcie : une remise, que la console élevée dit moins protégée.
+    pub(crate) fn affaiblit(self) -> bool {
+        !self.durcit()
+    }
+
+    fn ligne(self) -> String {
+        let reglages: Vec<String> = self
+            .reglages()
+            .map(|(r, v)| format!("{}={}", r.cle(), v.mot()))
+            .collect();
+        format!("{PARE_FEU_PUBLIC}{}", reglages.join(","))
+    }
+
+    fn analyser(reste: &str) -> Option<ProfilPublic> {
+        let reglages: Option<Vec<(ReglagePublic, ValeurPublic)>> = reste
+            .split(',')
+            .map(|morceau| {
+                let (cle, mot) = morceau.split_once('=')?;
+                Some((
+                    *ReglagePublic::TOUS.iter().find(|r| r.cle() == cle)?,
+                    *ValeurPublic::TOUTES.iter().find(|v| v.mot() == mot)?,
+                ))
+            })
+            .collect();
+        ProfilPublic::nouveau(&reglages?)
+    }
+
+    /// L'équivalent PowerShell (Wine) : la commande qu'envoyait le mode Wi-Fi public avant ce geste.
+    fn powershell(self) -> String {
+        let mut c = String::from("Set-NetFirewallProfile -Profile Public -PolicyStore PersistentStore");
+        for (r, v) in self.reglages() {
+            let (nom, valeur) = match (r, v) {
+                (ReglagePublic::Actif, ValeurPublic::Oui) => ("Enabled", "True"),
+                (ReglagePublic::Actif, _) => ("Enabled", "False"),
+                (ReglagePublic::EntrantBloque, ValeurPublic::Oui) => ("DefaultInboundAction", "Block"),
+                (ReglagePublic::EntrantBloque, ValeurPublic::Non) => ("DefaultInboundAction", "Allow"),
+                (ReglagePublic::EntrantBloque, ValeurPublic::Absent) => ("DefaultInboundAction", "NotConfigured"),
+                (ReglagePublic::ReglesEntrantes, ValeurPublic::Oui) => ("AllowInboundRules", "True"),
+                (ReglagePublic::ReglesEntrantes, ValeurPublic::Non) => ("AllowInboundRules", "False"),
+                (ReglagePublic::ReglesEntrantes, ValeurPublic::Absent) => ("AllowInboundRules", "NotConfigured"),
+            };
+            let _ = write!(c, " -{nom} {valeur}");
+        }
+        c
+    }
+}
+
+/// La catégorie qu'une ligne donne à un réseau. « Domaine » n'en est pas une : un réseau d'entreprise est géré par
+/// elle, jamais touché.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Categorie {
+    Public,
+    Prive,
+}
+
+impl Categorie {
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            Categorie::Public => "public",
+            Categorie::Prive => "prive",
+        }
+    }
+
+    /// La valeur Category du registre (NetworkList\Profiles) et de NLM_NETWORK_CATEGORY.
+    pub(crate) fn valeur(self) -> u32 {
+        match self {
+            Categorie::Public => 0,
+            Categorie::Prive => 1,
+        }
+    }
+}
+
+/// Le GUID d'un profil réseau, `{8-4-4-4-12}` en hexadécimal ; écrit en majuscules, comme le registre et PowerShell
+/// le donnent : une ligne en minuscules n'est pas réécrite à l'identique, donc refusée.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GuidReseau(pub u128);
+
+impl GuidReseau {
+    /// Lu d'un texte (casse libre : celle de PowerShell n'est pas garantie) ; `None` s'il n'a pas la forme exacte.
+    pub(crate) fn lire(texte: &str) -> Option<GuidReseau> {
+        let corps = texte.strip_prefix('{')?.strip_suffix('}')?;
+        let groupes: Vec<&str> = corps.split('-').collect();
+        if groupes.iter().map(|g| g.len()).ne([8, 4, 4, 4, 12]) {
+            return None;
+        }
+        let mut n: u128 = 0;
+        for o in groupes.concat().bytes() {
+            n = n << 4 | u128::from(chiffre_hex(o)?);
+        }
+        Some(GuidReseau(n))
+    }
+
+    pub(crate) fn texte(self) -> String {
+        let n = self.0;
+        format!(
+            "{{{:08X}-{:04X}-{:04X}-{:04X}-{:012X}}}",
+            n >> 96,
+            (n >> 80) & 0xFFFF,
+            (n >> 64) & 0xFFFF,
+            (n >> 48) & 0xFFFF,
+            n & 0xFFFF_FFFF_FFFF
+        )
+    }
+}
+
+fn chiffre_hex(o: u8) -> Option<u8> {
+    char::from(o).to_digit(16).and_then(|d| u8::try_from(d).ok())
+}
+
+/// Une ligne `vanguard:reseau-categorie`, relue. Le GUID désigne, le processus élevé juge : il relit que le profil
+/// existe dans NetworkList\Profiles et qu'il n'est pas celui d'un domaine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReseauCategorie {
+    pub guid: GuidReseau,
+    pub categorie: Categorie,
+}
+
+impl ReseauCategorie {
+    fn ligne(&self) -> String {
+        format!("{RESEAU_CATEGORIE}{} {}", self.guid.texte(), self.categorie.mot())
+    }
+
+    /// Le chemin du profil sous HKLM.
+    pub(crate) fn cle(&self) -> String {
+        format!(
+            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\NetworkList\Profiles\{}",
+            self.guid.texte()
+        )
+    }
+
+    /// L'équivalent PowerShell (Wine) : celui qu'envoyait le mode Wi-Fi public, par le profil connecté s'il l'est,
+    /// sinon dans le registre, pour la prochaine connexion à ce réseau.
+    fn powershell(&self) -> String {
+        let g = self.guid.texte();
+        let (nom, valeur) = match self.categorie {
+            Categorie::Public => ("Public", 0),
+            Categorie::Prive => ("Private", 1),
+        };
+        format!(
+            "$p = Get-NetConnectionProfile -ErrorAction SilentlyContinue | Where-Object {{ $_.InstanceID -eq '{g}' }}; \
+             if ($p) {{ $p | Set-NetConnectionProfile -NetworkCategory {nom} }} \
+             else {{ Set-ItemProperty -LiteralPath 'HKLM:\\{}' -Name Category -Value {valeur} -Type DWord }}",
+            self.cle()
+        )
+    }
+}
+
 /// Un acte du processus élevé sur Windows lui-même : un service de la table, un dossier à vider, la file
-/// d'impression, un cache à mettre de côté. Le parent n'envoie que des identifiants ; les chemins sont calculés par
-/// le processus élevé, depuis le dossier de Windows qu'il lit lui-même.
+/// d'impression, un cache à mettre de côté, le pare-feu et la catégorie d'un réseau. Le parent n'envoie que des
+/// identifiants et des valeurs de listes fermées ; les chemins sont calculés par le processus élevé, depuis le
+/// dossier de Windows qu'il lit lui-même.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Acte {
     Service(GesteService),
     Vider(Vidable),
     ViderFileImpression,
     MettreDeCote(ACoter),
+    PareFeuActif,
+    PareFeuPublic(ProfilPublic),
+    ReseauCategorie(ReseauCategorie),
 }
 
 impl Acte {
@@ -769,6 +1034,32 @@ impl Acte {
             Acte::Vider(v) => format!("{VIDER}{}", v.id()),
             Acte::ViderFileImpression => VIDER_FILE.to_string(),
             Acte::MettreDeCote(c) => format!("{METTRE_DE_COTE}{}", c.id()),
+            Acte::PareFeuActif => PARE_FEU_ACTIF.to_string(),
+            Acte::PareFeuPublic(p) => p.ligne(),
+            Acte::ReseauCategorie(r) => r.ligne(),
+        }
+    }
+
+    /// L'acte protège-t-il le PC (une correction qui n'en a que de tels est une protection, que « Défaire » ne propose
+    /// pas) ?
+    pub(crate) fn durcit(&self) -> bool {
+        match self {
+            Acte::Service(s) => s.durcit,
+            Acte::PareFeuActif => true,
+            Acte::PareFeuPublic(p) => p.durcit(),
+            Acte::ReseauCategorie(r) => r.categorie == Categorie::Public,
+            Acte::Vider(_) | Acte::ViderFileImpression | Acte::MettreDeCote(_) => false,
+        }
+    }
+
+    /// L'acte rend-il le PC moins protégé (la remise de ce qu'une correction avait coupé) ? La console élevée le dit
+    /// en toutes lettres avant l'accord.
+    pub(crate) fn affaiblit(&self) -> bool {
+        match self {
+            Acte::Service(s) => s.affaiblit,
+            Acte::PareFeuPublic(p) => p.affaiblit(),
+            Acte::ReseauCategorie(r) => r.categorie == Categorie::Prive,
+            Acte::PareFeuActif | Acte::Vider(_) | Acte::ViderFileImpression | Acte::MettreDeCote(_) => false,
         }
     }
 
@@ -784,6 +1075,10 @@ impl Acte {
             // Les lignes de la réparation « Windows Update bloqué », le dossier de Windows pris comme ci-dessus.
             Acte::MettreDeCote(ACoter::SoftwareDistribution) => "$w = [Environment]::GetFolderPath('Windows'); if (-not $w) { throw 'Windows folder not found' }; Rename-Item -LiteralPath (Join-Path $w 'SoftwareDistribution') \"SoftwareDistribution.$(Get-Date -Format yyyyMMddHHmm)\"".to_string(),
             Acte::MettreDeCote(ACoter::Catroot2) => "$w = [Environment]::GetFolderPath('Windows'); if (-not $w) { throw 'Windows folder not found' }; Rename-Item -LiteralPath (Join-Path $w 'System32\\catroot2') \"catroot2.$(Get-Date -Format yyyyMMddHHmm)\"".to_string(),
+            // Les lignes d'avant du bilan et de la réparation « Pare-feu coupé », puis celles du mode Wi-Fi public.
+            Acte::PareFeuActif => "Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True".to_string(),
+            Acte::PareFeuPublic(p) => p.powershell(),
+            Acte::ReseauCategorie(r) => r.powershell(),
         }
     }
 }
@@ -795,6 +1090,9 @@ pub(crate) fn est_un_acte(ligne: &str) -> bool {
         || ligne.starts_with(VIDER)
         || ligne.starts_with(VIDER_FILE)
         || ligne.starts_with(METTRE_DE_COTE)
+        || ligne.starts_with(PARE_FEU_ACTIF)
+        || ligne.starts_with(PARE_FEU_PUBLIC)
+        || ligne.starts_with(RESEAU_CATEGORIE)
 }
 
 /// L'acte d'une ligne, si et seulement si elle est exactement de sa forme : ASCII, 256 octets au plus, sensible à la
@@ -817,6 +1115,16 @@ pub(crate) fn analyser_acte(ligne: &str) -> Option<Acte> {
         Acte::Vider(*Vidable::TOUS.iter().find(|v| v.id() == id)?)
     } else if ligne == VIDER_FILE {
         Acte::ViderFileImpression
+    } else if ligne == PARE_FEU_ACTIF {
+        Acte::PareFeuActif
+    } else if let Some(reste) = ligne.strip_prefix(PARE_FEU_PUBLIC) {
+        Acte::PareFeuPublic(ProfilPublic::analyser(reste)?)
+    } else if let Some(reste) = ligne.strip_prefix(RESEAU_CATEGORIE) {
+        let (guid, mot) = reste.split_once(' ')?;
+        Acte::ReseauCategorie(ReseauCategorie {
+            guid: GuidReseau::lire(guid)?,
+            categorie: *[Categorie::Public, Categorie::Prive].iter().find(|c| c.mot() == mot)?,
+        })
     } else {
         let id = ligne.strip_prefix(METTRE_DE_COTE)?;
         Acte::MettreDeCote(*ACoter::TOUS.iter().find(|c| c.id() == id)?)
@@ -847,6 +1155,22 @@ pub(crate) fn ligne_vider_file_impression() -> String {
 /// La ligne qui met un cache de Windows Update de côté.
 pub(crate) fn ligne_mettre_de_cote(cache: ACoter) -> String {
     Acte::MettreDeCote(cache).ligne()
+}
+
+/// La ligne qui remet le Pare-feu Windows en marche sur ses trois profils.
+pub(crate) fn ligne_pare_feu_actif() -> String {
+    PARE_FEU_ACTIF.to_string()
+}
+
+/// La ligne qui règle le profil Public du pare-feu ; `None` : aucun réglage, un réglage deux fois, ou une valeur
+/// hors liste (« actif=non »).
+pub(crate) fn ligne_pare_feu_public(reglages: &[(ReglagePublic, ValeurPublic)]) -> Option<String> {
+    ProfilPublic::nouveau(reglages).map(ProfilPublic::ligne)
+}
+
+/// La ligne qui donne une catégorie à un réseau, le GUID réécrit en majuscules ; `None` s'il n'a pas sa forme.
+pub(crate) fn ligne_reseau_categorie(guid: &str, categorie: Categorie) -> Option<String> {
+    GuidReseau::lire(guid).map(|guid| ReseauCategorie { guid, categorie }.ligne())
 }
 
 // ------------------------------------------------------------------ la liste
@@ -1295,6 +1619,198 @@ mod tests {
         })
         .expect("liste valide");
         assert!(matches!(&liste[1], Ligne::Acte(Acte::Service(s)) if s.nom == "SSDPSRV" && s.durcit));
+    }
+
+    const G: &str = "{0B8C2F4E-1A2B-4C3D-9E8F-001122334455}";
+
+    /// Le pare-feu et les réseaux : des clés et des valeurs de listes fermées, chaque clé une fois, dans l'ordre de la
+    /// table ; un GUID de la seule forme `{8-4-4-4-12}` en majuscules. Tout le reste est refusé, et pas confié à un
+    /// autre validateur.
+    #[test]
+    fn les_actes_du_pare_feu_hors_forme_sont_refuses() {
+        let bonnes = [
+            "vanguard:pare-feu-actif".to_string(),
+            "vanguard:pare-feu-public actif=oui,entrant-bloque=oui,regles-entrantes=non".to_string(),
+            "vanguard:pare-feu-public regles-entrantes=non".to_string(),
+            "vanguard:pare-feu-public regles-entrantes=absent".to_string(),
+            "vanguard:pare-feu-public entrant-bloque=non,regles-entrantes=oui".to_string(),
+            format!("vanguard:reseau-categorie {G} public"),
+            format!("vanguard:reseau-categorie {G} prive"),
+        ];
+        for bonne in &bonnes {
+            assert!(est_un_acte(bonne), "{bonne}");
+            assert_eq!(analyser_acte(bonne).map(|a| a.ligne()).as_ref(), Some(bonne));
+        }
+        let long = format!(
+            "vanguard:pare-feu-public regles-entrantes=non{}",
+            ",regles-entrantes=non".repeat(ACTE_MAX / 20)
+        );
+        assert!(long.len() > ACTE_MAX);
+        let mauvaises = [
+            // Couper le pare-feu ne s'écrit pas, ni « non configuré » pour allumé ou les entrées par défaut.
+            "vanguard:pare-feu-public actif=non".to_string(),
+            "vanguard:pare-feu-public actif=absent".to_string(),
+            "vanguard:pare-feu-public entrant-bloque=absent".to_string(),
+            // La même clé deux fois, un autre ordre, rien, une clé ou une valeur hors liste, la casse.
+            "vanguard:pare-feu-public regles-entrantes=non,regles-entrantes=oui".to_string(),
+            "vanguard:pare-feu-public regles-entrantes=non,actif=oui".to_string(),
+            "vanguard:pare-feu-public ".to_string(),
+            "vanguard:pare-feu-public sortant-bloque=oui".to_string(),
+            "vanguard:pare-feu-public actif=peut-etre".to_string(),
+            "vanguard:pare-feu-public regles-entrantes=Non".to_string(),
+            "vanguard:pare-feu-public Regles-entrantes=non".to_string(),
+            "vanguard:pare-feu-public regles-entrantes=False".to_string(),
+            // Une espace, une virgule ou un signe de trop.
+            "vanguard:pare-feu-public actif=oui, entrant-bloque=oui".to_string(),
+            "vanguard:pare-feu-public actif=oui,".to_string(),
+            "vanguard:pare-feu-public ,actif=oui".to_string(),
+            "vanguard:pare-feu-public actif==oui".to_string(),
+            "vanguard:pare-feu-public actif=oui ".to_string(),
+            "vanguard:pare-feu-public  actif=oui".to_string(),
+            "vanguard:pare-feu-actif ".to_string(),
+            "vanguard:pare-feu-actif public".to_string(),
+            "vanguard:pare-feu-actifs".to_string(),
+            long,
+            // La catégorie : le domaine n'en est pas une ; la casse, l'espace, le GUID mal formé.
+            format!("vanguard:reseau-categorie {G} domaine"),
+            format!("vanguard:reseau-categorie {G} Public"),
+            format!("vanguard:reseau-categorie {G} private"),
+            format!("vanguard:reseau-categorie {G}  public"),
+            format!("vanguard:reseau-categorie {G} public "),
+            format!("vanguard:reseau-categorie {G}"),
+            format!("vanguard:reseau-categorie {} public", G.to_lowercase()),
+            "vanguard:reseau-categorie 0B8C2F4E-1A2B-4C3D-9E8F-001122334455 public".to_string(),
+            "vanguard:reseau-categorie {0B8C2F4E1A2B-4C3D-9E8F-001122334455} public".to_string(),
+            "vanguard:reseau-categorie {0B8C2F4E-1A2B-4C3D-9E8F-00112233445} public".to_string(),
+            "vanguard:reseau-categorie {0B8C2F4E-1A2B-4C3D-9E8F-0011223344556} public".to_string(),
+            "vanguard:reseau-categorie {0B8C2F4G-1A2B-4C3D-9E8F-001122334455} public".to_string(),
+            "vanguard:reseau-categorie {+B8C2F4E-1A2B-4C3D-9E8F-001122334455} public".to_string(),
+            "vanguard:reseau-categorie {0B8C2F4E-1A2B-4C3D-9E8F-001122334455}' public".to_string(),
+            "vanguard:reseau-categorie {0B8C2F4E-1A2B-4C3D-9E8F-001122334455}}; public".to_string(),
+            "vanguard:reseau-categorie {0B8C2F4É-1A2B-4C3D-9E8F-001122334455} public".to_string(),
+            "vanguard:reseau-categorie {} public".to_string(),
+        ];
+        for mauvaise in &mauvaises {
+            assert!(analyser_acte(mauvaise).is_none(), "{mauvaise:?}");
+            assert!(est_un_acte(mauvaise), "{mauvaise:?}");
+            assert!(
+                valider(std::slice::from_ref(mauvaise), |_| Some(())).is_none(),
+                "{mauvaise:?}"
+            );
+        }
+        // Les constructeurs refusent ce que l'analyse refuse, et écrivent le GUID dans sa forme unique.
+        assert!(ligne_pare_feu_public(&[]).is_none());
+        assert!(ligne_pare_feu_public(&[(ReglagePublic::Actif, ValeurPublic::Non)]).is_none());
+        assert!(
+            ligne_pare_feu_public(&[
+                (ReglagePublic::ReglesEntrantes, ValeurPublic::Non),
+                (ReglagePublic::ReglesEntrantes, ValeurPublic::Oui),
+            ])
+            .is_none()
+        );
+        assert_eq!(
+            ligne_reseau_categorie(&G.to_lowercase(), Categorie::Public),
+            Some(format!("vanguard:reseau-categorie {G} public"))
+        );
+        assert!(ligne_reseau_categorie("{pas un guid}", Categorie::Public).is_none());
+        assert_eq!(GuidReseau::lire(G).map(GuidReseau::texte).as_deref(), Some(G));
+        assert_eq!(
+            GuidReseau::lire(G),
+            Some(GuidReseau(0x0B8C_2F4E_1A2B_4C3D_9E8F_0011_2233_4455))
+        );
+    }
+
+    /// Ce que le mode Wi-Fi public et le bilan posent durcit ; les remises affaiblissent, dites telles dans la console
+    /// élevée ; jamais les deux. Toutes les combinaisons du profil Public sont essayées.
+    #[test]
+    fn les_actes_du_pare_feu_durcissent_ou_affaiblissent() {
+        let a = |l: &str| analyser_acte(l).expect(l);
+        assert!(a("vanguard:pare-feu-actif").durcit());
+        assert!(a("vanguard:pare-feu-public actif=oui,entrant-bloque=oui,regles-entrantes=non").durcit());
+        assert!(a(&format!("vanguard:reseau-categorie {G} public")).durcit());
+        for remise in [
+            "vanguard:pare-feu-public entrant-bloque=non".to_string(),
+            "vanguard:pare-feu-public regles-entrantes=oui".to_string(),
+            "vanguard:pare-feu-public regles-entrantes=absent".to_string(),
+            "vanguard:pare-feu-public actif=oui,regles-entrantes=absent".to_string(),
+            format!("vanguard:reseau-categorie {G} prive"),
+        ] {
+            let acte = a(&remise);
+            assert!(acte.affaiblit() && !acte.durcit(), "{remise}");
+        }
+        let valeurs = [
+            None,
+            Some(ValeurPublic::Oui),
+            Some(ValeurPublic::Non),
+            Some(ValeurPublic::Absent),
+        ];
+        let mut vues = 0;
+        for actif in valeurs {
+            for entrant in valeurs {
+                for regles in valeurs {
+                    let reglages: Vec<(ReglagePublic, ValeurPublic)> = ReglagePublic::TOUS
+                        .into_iter()
+                        .zip([actif, entrant, regles])
+                        .filter_map(|(r, v)| Some((r, v?)))
+                        .collect();
+                    let Some(ligne) = ligne_pare_feu_public(&reglages) else {
+                        assert!(
+                            reglages.is_empty()
+                                || actif.is_some_and(|v| v != ValeurPublic::Oui)
+                                || entrant == Some(ValeurPublic::Absent),
+                            "{reglages:?}"
+                        );
+                        continue;
+                    };
+                    vues += 1;
+                    assert!(ligne.len() <= ACTE_MAX);
+                    let acte = a(&ligne);
+                    assert!(acte.durcit() != acte.affaiblit(), "{ligne}");
+                    let Acte::PareFeuPublic(p) = acte else {
+                        panic!("{ligne}")
+                    };
+                    assert!(p.reglages().eq(reglages.iter().copied()), "{ligne}");
+                }
+            }
+        }
+        // Allumé : absent ou oui (2) ; entrées par défaut : absent, oui, non (3) ; règles : 4 ; moins la ligne vide.
+        assert_eq!(vues, 2 * 3 * 4 - 1);
+        for l in ["vanguard:service SSDPSRV arreter", "vanguard:vider temp-windows"] {
+            assert!(!(a(l).durcit() && a(l).affaiblit()), "{l}");
+        }
+    }
+
+    /// Le chemin par script (Wine) : les commandes d'avant, à l'identique, pour le bilan, la réparation et le mode
+    /// Wi-Fi public.
+    #[test]
+    fn les_actes_du_pare_feu_ont_leur_equivalent_powershell() {
+        let ps = |l: &str| analyser_acte(l).expect(l).powershell();
+        assert_eq!(
+            ps("vanguard:pare-feu-actif"),
+            "Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True"
+        );
+        assert_eq!(
+            ps("vanguard:pare-feu-public actif=oui,entrant-bloque=oui,regles-entrantes=non"),
+            "Set-NetFirewallProfile -Profile Public -PolicyStore PersistentStore -Enabled True -DefaultInboundAction Block -AllowInboundRules False"
+        );
+        assert_eq!(
+            ps("vanguard:pare-feu-public entrant-bloque=non,regles-entrantes=absent"),
+            "Set-NetFirewallProfile -Profile Public -PolicyStore PersistentStore -DefaultInboundAction Allow -AllowInboundRules NotConfigured"
+        );
+        let public = ps(&format!("vanguard:reseau-categorie {G} public"));
+        assert!(
+            public.contains(&format!("InstanceID -eq '{G}'"))
+                && public.contains("-NetworkCategory Public")
+                && public.contains(&format!(
+                    r"'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\NetworkList\Profiles\{G}' -Name Category -Value 0 -Type DWord"
+                )),
+            "{public}"
+        );
+        let prive = ps(&format!("vanguard:reseau-categorie {G} prive"));
+        assert!(
+            prive.contains("-NetworkCategory Private") && prive.contains("-Value 1 -Type DWord"),
+            "{prive}"
+        );
     }
 
     /// La table : des noms sans espace ni caractère hors ASCII, chacun une fois, chaque action une fois par service,

@@ -592,6 +592,18 @@ fn file_d_impression(windows: &std::path::Path) -> Result<Vec<String>, Echec> {
 
 /// Fait un acte de la liste ; la précision (« déjà arrêté », « 12 retirés… ») part au parent avec le « ok ».
 pub(crate) fn faire(acte: &Acte) -> Resultat {
+    // Les actes du pare-feu et des réseaux passent par COM (`pare_feu`), qui rend son propre résultat, relu.
+    if let Some(fait) = super::pare_feu::faire_acte(acte) {
+        return Resultat {
+            reussi: fait.reussi,
+            avant: None,
+            raison: if fait.reussi {
+                fait.note.unwrap_or_default()
+            } else {
+                fait.raison
+            },
+        };
+    }
     let r = match acte {
         Acte::Service(s) => service(s),
         Acte::Vider(v) => dossier_windows().and_then(|w| vidage::vider_sous(&w, *v)),
@@ -600,6 +612,11 @@ pub(crate) fn faire(acte: &Acte) -> Resultat {
         }
         Acte::MettreDeCote(c) => dossier_windows()
             .and_then(|w| vidage::mettre_de_cote(&w, *c, &chrono::Local::now().format("%Y%m%d%H%M").to_string())),
+        // Déjà rendus plus haut ; jamais atteint, mais un refus plutôt qu'une panique dans le processus élevé.
+        Acte::PareFeuActif | Acte::PareFeuPublic(_) | Acte::ReseauCategorie(_) => Err(Echec::refuse(
+            CONTEXTE,
+            tr!("acte du pare-feu non reconnu", "firewall act not recognized"),
+        )),
     };
     match r {
         Ok(note) => Resultat {

@@ -37,6 +37,19 @@ impl PareFeu {
     }
 }
 
+/// Le nom de la règle sortante du Pare-feu Windows vers une adresse : celui des versions d'avant (Name de COM =
+/// DisplayName de NetSecurity), pour qu'une règle posée par elles se retire encore.
+pub(crate) fn nom_sortante(ip: IpAddr) -> String {
+    format!("Vanguard : bloquer vers {}", ip.to_canonical())
+}
+
+/// Le nom de la règle du Pare-feu Windows qui ferme un port, celui que le bilan reconnaît (`ecoute::port_bloque`) :
+/// le même pour l'ordre `FermerPort` (COM, `machine::windows::pare_feu`), son équivalent PowerShell (`ancien`) et la
+/// correction du bilan, qui n'est plus que cet ordre.
+pub(crate) fn nom_entrante(port: u16) -> String {
+    format!("Vanguard : bloquer {port}")
+}
+
 /// Une règle : les ordres qui la posent (`poser`, puis `apres`, la coupure des connexions déjà ouvertes, qui ne fait
 /// pas échouer la règle), ceux qui la retirent, et sa limite s'il y en a une. Des lignes d'ordres typés
 /// (`ordres`) : jamais une commande de shell.
@@ -114,11 +127,6 @@ pub(crate) mod ancien {
         pub retirer: Vec<String>,
     }
 
-    /// Le nom de la règle sortante de Windows vers une adresse.
-    fn nom_windows(ip: IpAddr) -> String {
-        format!("Vanguard : bloquer vers {ip}")
-    }
-
     /// Les lignes qui posaient la table de Vanguard dans nftables.
     const TABLE_NFT: [&str; 11] = [
         "add table inet vanguard",
@@ -177,7 +185,7 @@ pub(crate) mod ancien {
                 }
             }
             PareFeu::Windows => {
-                let nom = nom_windows(ip);
+                let nom = super::nom_sortante(ip);
                 Regle {
                     poser: vec![format!(
                         "if (-not (Get-NetFirewallRule -DisplayName '{nom}' -ErrorAction SilentlyContinue)) {{ New-NetFirewallRule -DisplayName '{nom}' -Direction Outbound -RemoteAddress {ip} -Action Block | Out-Null }}"
@@ -214,7 +222,7 @@ pub(crate) mod ancien {
                 retirer: vec![nft_sans("ports", &port.to_string())],
             }),
             PareFeu::Windows => {
-                let nom = format!("Vanguard : bloquer {port}");
+                let nom = super::nom_entrante(port);
                 Some(Regle {
                     poser: vec![format!(
                         "if (-not (Get-NetFirewallRule -DisplayName '{nom}' -ErrorAction SilentlyContinue)) {{ New-NetFirewallRule -DisplayName '{nom}' -Direction Inbound -Protocol TCP -LocalPort {port} -Action Block | Out-Null }}"

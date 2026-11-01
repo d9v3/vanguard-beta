@@ -261,8 +261,9 @@ pub(crate) fn analyser(ligne: &str) -> Option<&'static Correction> {
 /// Windows (WDigest, NLA, Lsa, UAC…) ; c'est une protection, que Vanguard ne défait jamais. Défaite d'après une note de
 /// reglages.json, que tout programme du compte peut réécrire, elle remettait en administrateur la valeur qu'une
 /// note forgée choisissait (UseLogonCredential = 1). La personne peut toujours la changer elle-même dans Windows. Un
-/// acte de service qui durcit (`gestes::SERVICES`, RemoteRegistry désactivé…) compte de même ; un acte qui ne durcit
-/// pas (arrêter puis relancer wuauserv), comme le reste (PowerShell, le point de restauration seul), n'est pas relevé.
+/// acte de service qui durcit (`gestes::SERVICES`, RemoteRegistry désactivé…) compte de même, comme le pare-feu remis
+/// en marche, le profil Public durci ou un réseau passé en Public ; un acte qui ne durcit pas (arrêter puis relancer
+/// wuauserv), comme le reste (PowerShell, le point de restauration seul, un dossier vidé), n'est pas relevé.
 pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
     use crate::machine::Defaire;
     use crate::machine::gestes::{self, Acte};
@@ -271,7 +272,10 @@ pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
         .iter()
         .map(|l| match (analyser(l), gestes::analyser_acte(l)) {
             (Some(c), _) => Some(matches!(c.geste, Geste::Dword { .. })),
-            (None, Some(Acte::Service(s))) => Some(s.durcit),
+            (
+                None,
+                Some(a @ (Acte::Service(_) | Acte::PareFeuActif | Acte::PareFeuPublic(_) | Acte::ReseauCategorie(_))),
+            ) => Some(a.durcit()),
             _ => None,
         })
         .collect();
@@ -284,12 +288,42 @@ pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
 /// La phrase d'un acte de la table, montrée avant l'UAC et dans la fenêtre administrateur. Un acte qui affaiblit
 /// (remettre en route ce que Vanguard avait coupé, à l'annulation d'un réglage) le dit en toutes lettres.
 pub(crate) fn texte_acte(acte: &crate::machine::gestes::Acte) -> String {
-    use crate::machine::gestes::{ACoter, Acte, Action, Vidable};
+    use crate::ui::trf;
+    let phrase = phrase_acte(acte);
+    if acte.affaiblit() {
+        trf!(
+            "{phrase} — rend le PC moins protégé (remet ce que Vanguard avait coupé)",
+            "{phrase} — makes the PC less protected (restores what Vanguard had turned off)"
+        )
+    } else {
+        phrase
+    }
+}
+
+/// Un réglage du profil Public, en clair : « entrées bloquées par défaut : oui ».
+fn texte_reglage_public(r: crate::machine::gestes::ReglagePublic, v: crate::machine::gestes::ValeurPublic) -> String {
+    use crate::machine::gestes::{ReglagePublic, ValeurPublic};
+    use crate::ui::tr;
+    let nom = match r {
+        ReglagePublic::Actif => tr!("allumé", "on"),
+        ReglagePublic::EntrantBloque => tr!("entrées bloquées par défaut", "inbound blocked by default"),
+        ReglagePublic::ReglesEntrantes => tr!("entrées des programmes autorisés", "inbound for allowed programs"),
+    };
+    let valeur = match v {
+        ValeurPublic::Oui => tr!("oui", "yes"),
+        ValeurPublic::Non => tr!("non", "no"),
+        ValeurPublic::Absent => tr!("non configuré (valeur de Windows)", "not configured (Windows default)"),
+    };
+    crate::ui::trf!("{nom} : {valeur}", "{nom}: {valeur}")
+}
+
+fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
+    use crate::machine::gestes::{ACoter, Acte, Action, Categorie, Vidable};
     use crate::ui::{tr, trf};
     match acte {
         Acte::Service(s) => {
             let n = s.nom;
-            let phrase = match s.action {
+            match s.action {
                 Action::Arreter => trf!(
                     "Arrêter le service {n} (et les services qui en dépendent)",
                     "Stop the {n} service (and the services that depend on it)"
@@ -312,14 +346,6 @@ pub(crate) fn texte_acte(acte: &crate::machine::gestes::Acte) -> String {
                     "Remettre le service {n} en manuel s'il est désactivé",
                     "Set the {n} service back to manual if it is disabled"
                 ),
-            };
-            if s.affaiblit {
-                trf!(
-                    "{phrase} — rend le PC moins protégé (remet ce que Vanguard avait coupé)",
-                    "{phrase} — makes the PC less protected (restores what Vanguard had turned off)"
-                )
-            } else {
-                phrase
             }
         }
         Acte::Vider(Vidable::TempWindows) => tr!(
@@ -347,6 +373,32 @@ pub(crate) fn texte_acte(acte: &crate::machine::gestes::Acte) -> String {
             r"Set aside the signature catalog (Windows\System32\catroot2, renamed with the date)"
         )
         .to_string(),
+        Acte::PareFeuActif => tr!(
+            "Remettre le Pare-feu Windows en marche sur les trois profils (domaine, privé, public)",
+            "Turn the Windows Firewall back on for the three profiles (domain, private, public)"
+        )
+        .to_string(),
+        Acte::PareFeuPublic(p) => {
+            let reglages: Vec<String> = p.reglages().map(|(r, v)| texte_reglage_public(r, v)).collect();
+            trf!(
+                "Profil Public du Pare-feu Windows : {}",
+                "Windows Firewall Public profile: {}",
+                reglages.join(tr!(" ; ", "; "))
+            )
+        }
+        Acte::ReseauCategorie(r) => {
+            let g = r.guid.texte();
+            match r.categorie {
+                Categorie::Public => trf!(
+                    "Passer le réseau {g} en catégorie Public",
+                    "Set the network {g} to the Public category"
+                ),
+                Categorie::Prive => trf!(
+                    "Remettre le réseau {g} en catégorie Privé",
+                    "Set the network {g} back to the Private category"
+                ),
+            }
+        }
     }
 }
 
@@ -561,6 +613,46 @@ fn ecrire_dword(cle: &str, valeur: &str, donnee: u32) -> Resultat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Les actes du pare-feu et des réseaux : une remise est dite moins protégée avant l'accord, ce qui durcit ne
+    /// l'est pas ; le pare-feu rallumé, le profil Public durci et un réseau passé en Public sont des protections, que
+    /// « Défaire » ne propose pas ; une remise seule ne l'est pas. Le chemin de Wine reprend les commandes d'avant.
+    #[test]
+    fn les_actes_du_pare_feu_se_montrent_et_se_defont() {
+        use crate::machine::Defaire;
+        use crate::machine::gestes;
+        let g = "{0B8C2F4E-1A2B-4C3D-9E8F-001122334455}";
+        let moins = |l: &str| {
+            let t = affichable(l);
+            assert!(!t.starts_with("vanguard:"), "{t}");
+            t.contains("moins protégé") || t.contains("less protected")
+        };
+        let durcies = [
+            gestes::ligne_pare_feu_actif(),
+            "vanguard:pare-feu-public actif=oui,entrant-bloque=oui,regles-entrantes=non".to_string(),
+            format!("vanguard:reseau-categorie {g} public"),
+        ];
+        for l in &durcies {
+            assert!(native(l) && !moins(l), "{l}");
+            assert_eq!(comment_defaire(std::slice::from_ref(l)), Defaire::Protection, "{l}");
+        }
+        let remises = [
+            "vanguard:pare-feu-public regles-entrantes=absent".to_string(),
+            "vanguard:pare-feu-public entrant-bloque=non".to_string(),
+            format!("vanguard:reseau-categorie {g} prive"),
+        ];
+        for l in &remises {
+            assert!(native(l) && moins(l), "{l}");
+            assert_eq!(comment_defaire(std::slice::from_ref(l)), Defaire::Inconnu, "{l}");
+        }
+        let ps = en_powershell(&[vec![gestes::ligne_pare_feu_actif()]]);
+        assert_eq!(
+            ps,
+            vec![vec![
+                "Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True".to_string()
+            ]]
+        );
+    }
 
     /// Lecture seule : rien n'est écrit dans le registre de la machine de test.
     #[test]

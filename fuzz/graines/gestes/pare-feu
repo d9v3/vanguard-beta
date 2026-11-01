@@ -1,0 +1,8 @@
+vanguard:pare-feu-actif
+vanguard:pare-feu-public actif=oui,entrant-bloque=oui,regles-entrantes=non
+vanguard:pare-feu-public regles-entrantes=absent
+vanguard:pare-feu-public actif=non
+vanguard:pare-feu-public regles-entrantes=non,regles-entrantes=oui
+vanguard:reseau-categorie {0B8C2F4E-1A2B-4C3D-9E8F-001122334455} public
+vanguard:reseau-categorie {0b8c2f4e-1a2b-4c3d-9e8f-001122334455} prive
+autre

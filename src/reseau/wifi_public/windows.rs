@@ -1,9 +1,10 @@
 //! Le mode Wi-Fi public sous Windows : le réseau passe en catégorie Public, le profil Public du pare-feu bloque toutes
 //! les entrées (même celles des programmes autorisés : partage de fichiers, découverte du réseau), NetBIOS est coupé
 //! sur la carte, et le DNS protecteur est posé (non chiffré ici : le réglage DoH par carte n'est pas vérifiable sans
-//! un vrai Windows 11, c'est dit). Tout passe par la fenêtre PowerShell administrateur du projet, en une seule
-//! demande ; la liste native d'`eleve.rs`, qui n'écrit que des valeurs fixes, n'est pas étendue. Commandes pures,
-//! essayées partout (et analysées par pwsh dans verifier.sh) ; lectures sous Windows seulement.
+//! un vrai Windows 11, c'est dit). Tout passe par Vanguard administrateur, en une seule demande : la catégorie et le
+//! profil Public sont des actes natifs (`vanguard:reseau-categorie`, `vanguard:pare-feu-public`, `gestes.rs`), faits
+//! par COM et relus dans le processus élevé ; NetBIOS reste une commande PowerShell. Lignes pures, essayées partout
+//! (la commande PowerShell analysée par pwsh dans verifier.sh) ; lectures sous Windows seulement.
 
 #![cfg_attr(not(windows), allow(dead_code))]
 
@@ -77,41 +78,39 @@ pub(crate) fn a_changer_profil(lu: &[String; 3]) -> Vec<(&'static str, &'static 
     l
 }
 
-/// La commande qui pose des paramètres du profil Public (valeurs des ensembles fermés seulement).
+/// La ligne qui pose des paramètres du profil Public, sous les noms et valeurs de NetSecurity que lit `LECTURE` et que
+/// note l'état : l'acte `pare-feu-public`. `None` : aucun paramètre, un nom ou une valeur hors liste, ou ce que
+/// l'acte refuse (couper le pare-feu ; « non configuré » ailleurs que pour les règles entrantes, jamais changé par
+/// le mode).
 pub(crate) fn regler_profil(parametres: &[(&str, &str)]) -> Option<String> {
-    if parametres.is_empty() {
-        return None;
-    }
-    let mut c = String::from("Set-NetFirewallProfile -Profile Public -PolicyStore PersistentStore");
-    for (p, v) in parametres {
-        if !PARAMETRES_PROFIL
-            .iter()
-            .any(|(nom, valeurs)| nom == p && valeurs.contains(v))
-        {
-            return None;
-        }
-        for morceau in [" -", p, " ", v] {
-            c.push_str(morceau);
-        }
-    }
-    Some(c)
+    use crate::machine::gestes::{ReglagePublic, ValeurPublic, ligne_pare_feu_public};
+    let reglages = parametres
+        .iter()
+        .map(|p| {
+            Some(match *p {
+                ("Enabled", "True") => (ReglagePublic::Actif, ValeurPublic::Oui),
+                ("DefaultInboundAction", "Block") => (ReglagePublic::EntrantBloque, ValeurPublic::Oui),
+                ("DefaultInboundAction", "Allow") => (ReglagePublic::EntrantBloque, ValeurPublic::Non),
+                // AllowInboundRules dit l'inverse : « False », les règles des programmes autorisés ignorées.
+                ("AllowInboundRules", "False") => (ReglagePublic::ReglesEntrantes, ValeurPublic::Non),
+                ("AllowInboundRules", "True") => (ReglagePublic::ReglesEntrantes, ValeurPublic::Oui),
+                ("AllowInboundRules", "NotConfigured") => (ReglagePublic::ReglesEntrantes, ValeurPublic::Absent),
+                _ => return None,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    ligne_pare_feu_public(&reglages)
 }
 
-/// Le réseau en catégorie Public, tout de suite (la carte doit y être connectée).
-pub(crate) fn rendre_public(index: u32) -> String {
-    format!("Set-NetConnectionProfile -InterfaceIndex {index} -NetworkCategory Public")
+/// Le réseau en catégorie Public, tout de suite (INetworkListManager), désigné par le GUID de son profil.
+pub(crate) fn rendre_public(guid: &str) -> Option<String> {
+    crate::machine::gestes::ligne_reseau_categorie(guid, crate::machine::gestes::Categorie::Public)
 }
 
-/// La catégorie Private remise : par le profil connecté s'il l'est encore, sinon dans le registre, pour la prochaine
-/// connexion à ce réseau.
+/// La catégorie Private remise : tout de suite si Windows connaît encore le réseau, sinon dans le registre, pour la
+/// prochaine connexion à ce réseau (le processus élevé choisit, après avoir relu que le profil existe).
 pub(crate) fn rendre_prive(guid: &str) -> Option<String> {
-    guid_valide(guid).then(|| {
-        format!(
-            "$p = Get-NetConnectionProfile -ErrorAction SilentlyContinue | Where-Object {{ $_.InstanceID -eq '{guid}' }}; \
-             if ($p) {{ $p | Set-NetConnectionProfile -NetworkCategory Private }} \
-             else {{ Set-ItemProperty -LiteralPath 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkList\\Profiles\\{guid}' -Name Category -Value 1 -Type DWord }}"
-        )
-    })
+    crate::machine::gestes::ligne_reseau_categorie(guid, crate::machine::gestes::Categorie::Prive)
 }
 
 /// NetBIOS de la carte (0 selon DHCP, 1 allumé, 2 coupé), par la méthode de WMI qui l'applique tout de suite et
@@ -199,6 +198,7 @@ pub(crate) mod lecture {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::machine::gestes;
 
     const G: &str = "{0B8C2F4E-1A2B-4C3D-9E8F-001122334455}";
 
@@ -231,15 +231,27 @@ mod tests {
         let tout = a_changer_profil(&lu("False", "Allow", "True"));
         assert_eq!(tout.len(), 3);
         let parametres: Vec<(&str, &str)> = tout.iter().map(|(p, v, _)| (*p, *v)).collect();
+        let ligne = regler_profil(&parametres).unwrap();
         assert_eq!(
-            regler_profil(&parametres).as_deref(),
-            Some(
-                "Set-NetFirewallProfile -Profile Public -PolicyStore PersistentStore -Enabled True -DefaultInboundAction Block -AllowInboundRules False"
-            )
+            ligne,
+            "vanguard:pare-feu-public actif=oui,entrant-bloque=oui,regles-entrantes=non"
+        );
+        // Ce que le mode pose durcit, et fait ce que faisait l'ancienne commande (le chemin de Wine).
+        let acte = gestes::analyser_acte(&ligne).unwrap();
+        assert!(acte.durcit() && !acte.affaiblit());
+        assert_eq!(
+            acte.powershell(),
+            "Set-NetFirewallProfile -Profile Public -PolicyStore PersistentStore -Enabled True -DefaultInboundAction Block -AllowInboundRules False"
         );
         assert!(regler_profil(&[("Enabled", "$false")]).is_none());
         assert!(regler_profil(&[("DefaultOutboundAction", "Allow")]).is_none());
         assert!(regler_profil(&[]).is_none());
+        // Couper le pare-feu ne s'écrit pas, ni « non configuré » là où le mode ne le change jamais.
+        assert!(regler_profil(&[("Enabled", "False")]).is_none());
+        assert!(regler_profil(&[("Enabled", "NotConfigured")]).is_none());
+        assert!(regler_profil(&[("DefaultInboundAction", "NotConfigured")]).is_none());
+        assert!(regler_profil(&[("AllowInboundRules", "False"), ("AllowInboundRules", "True")]).is_none());
+        assert!(regler_profil(&[("allowinboundrules", "false")]).is_none());
     }
 
     #[test]
@@ -256,20 +268,35 @@ mod tests {
             parametre: "AllowInboundRules".into(),
             avant: "NotConfigured".into(),
         };
+        let ligne = remettre(&regle).unwrap();
+        assert_eq!(ligne, "vanguard:pare-feu-public regles-entrantes=absent");
+        // Une remise rend le PC moins protégé : la console élevée le dit avant l'accord.
+        let acte = gestes::analyser_acte(&ligne).unwrap();
+        assert!(acte.affaiblit() && !acte.durcit());
         assert_eq!(
-            remettre(&regle).as_deref(),
-            Some(
-                "Set-NetFirewallProfile -Profile Public -PolicyStore PersistentStore -AllowInboundRules NotConfigured"
-            )
+            acte.powershell(),
+            "Set-NetFirewallProfile -Profile Public -PolicyStore PersistentStore -AllowInboundRules NotConfigured"
+        );
+        let entrees = Element::ProfilPublic {
+            parametre: "DefaultInboundAction".into(),
+            avant: "Allow".into(),
+        };
+        assert_eq!(
+            remettre(&entrees).as_deref(),
+            Some("vanguard:pare-feu-public entrant-bloque=non")
         );
         let c = remettre(&Element::Categorie {
             guid: G.into(),
             avant: "Private".into(),
         })
         .unwrap();
+        assert_eq!(c, format!("vanguard:reseau-categorie {G} prive"));
+        let acte = gestes::analyser_acte(&c).unwrap();
+        assert!(acte.affaiblit());
+        let ps = acte.powershell();
         assert!(
-            c.contains(&format!("InstanceID -eq '{G}'")) && c.contains("-Value 1 -Type DWord"),
-            "{c}"
+            ps.contains(&format!("InstanceID -eq '{G}'")) && ps.contains("-Value 1 -Type DWord"),
+            "{ps}"
         );
         let n = remettre(&Element::NetBios {
             carte: G.into(),
@@ -282,9 +309,11 @@ mod tests {
         );
         assert!(netbios("{pas un guid}", 2).is_none() && netbios(G, 3).is_none());
         assert!(rendre_prive("{0B8C2F4E-1A2B-4C3D-9E8F-001122334455}'; Remove-Item C:\\ #").is_none());
-        assert_eq!(
-            rendre_public(7),
-            "Set-NetConnectionProfile -InterfaceIndex 7 -NetworkCategory Public"
-        );
+        assert!(rendre_public("{0B8C2F4E-1A2B-4C3D-9E8F-001122334455}'; Remove-Item C:\\ #").is_none());
+        let p = rendre_public(G).unwrap();
+        assert_eq!(p, format!("vanguard:reseau-categorie {G} public"));
+        assert!(gestes::analyser_acte(&p).unwrap().durcit());
+        // Un GUID en minuscules est réécrit dans la forme unique que relit le processus élevé.
+        assert_eq!(rendre_public(&G.to_lowercase()), Some(p));
     }
 }

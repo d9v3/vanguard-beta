@@ -502,7 +502,7 @@ fn relever() -> Result<Plan, String> {
     };
     match categorie.as_str() {
         "Private" => plan.ajouter(
-            vec![Some(windows::rendre_public(index))],
+            vec![windows::rendre_public(&guid)],
             vec![Element::Categorie {
                 guid,
                 avant: "Private".to_string(),

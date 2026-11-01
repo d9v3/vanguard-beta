@@ -1,7 +1,7 @@
 //! La grammaire des lignes que le processus élevé de Windows lit du Vanguard non élevé (src/machine/windows/
 //! gestes.rs) : script vérifié par empreinte, programme fixe de la table, acte sur un service ou un dossier de la
-//! table, liste validée, découpe d'une liste de correctifs en morceaux natifs et PowerShell, états d'un script en
-//! échec. Chemins piégés (« .. », NUL, lecteur manquant), hexadécimal en majuscules, noms hors de la liste fermée,
+//! table, sur le pare-feu ou la catégorie d'un réseau (GUID), liste validée, découpe d'une liste de correctifs en
+//! morceaux natifs et PowerShell, états d'un script en échec. Chemins piégés (« .. », NUL, lecteur manquant), hexadécimal en majuscules, noms hors de la liste fermée,
 //! lignes et correctifs en nombre.
 #![no_main]
 // Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
@@ -31,9 +31,25 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
             assert_eq!(a.ligne(), *l);
             assert!(l.len() <= gestes::ACTE_MAX && l.is_ascii());
             assert!(gestes::est_un_acte(l));
-            if let gestes::Acte::Service(s) = a {
-                assert!(!(s.durcit && s.affaiblit));
-                assert!(gestes::SERVICES.iter().any(|t| t.nom == s.nom));
+            assert!(!(a.durcit() && a.affaiblit()));
+            match a {
+                gestes::Acte::Service(s) => {
+                    assert!(!(s.durcit && s.affaiblit));
+                    assert!(gestes::SERVICES.iter().any(|t| t.nom == s.nom));
+                }
+                // Aucune ligne ne coupe le pare-feu ; « absent » ne vise que les règles d'entrée.
+                gestes::Acte::PareFeuPublic(p) => {
+                    for (r, v) in p.reglages() {
+                        assert!(r != gestes::ReglagePublic::Actif || v == gestes::ValeurPublic::Oui);
+                        assert!(
+                            v != gestes::ValeurPublic::Absent || r == gestes::ReglagePublic::ReglesEntrantes
+                        );
+                    }
+                }
+                gestes::Acte::ReseauCategorie(r) => {
+                    assert_eq!(gestes::GuidReseau::lire(&r.guid.texte()), Some(r.guid));
+                }
+                _ => {}
             }
         }
         if let Some(s) = gestes::analyser_script(l) {

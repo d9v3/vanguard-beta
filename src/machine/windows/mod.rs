@@ -785,7 +785,7 @@ fn pare_feu() -> Constat {
                 "Réactiver le pare-feu Windows sur tous les profils",
                 "Turn the Windows firewall back on for every profile"
             ),
-            &["Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True"],
+            &[&crate::machine::gestes::ligne_pare_feu_actif()],
         )
         .protection(),
     }
@@ -1379,6 +1379,17 @@ pub(super) fn ports_tcp_et_noms() -> Option<Vec<(u16, String)>> {
     )
 }
 
+/// La ligne qui ferme un port en entrée : l'ordre `fermer-port` du blocage, fait par COM dans le processus élevé.
+fn port_ferme(port: u16) -> String {
+    use crate::protection::blocage::ordres::Ordre;
+    use crate::protection::blocage::pare_feu::PareFeu;
+    Ordre::FermerPort {
+        pare_feu: PareFeu::Windows,
+        port,
+    }
+    .ligne()
+}
+
 fn ports_ecoute(pare_feu_actif: bool, ip_lan: Option<&str>) -> Vec<Constat> {
     // Le plus lent du bilan Windows par PowerShell (4 à 6 s dans la VM, une vingtaine de PowerShell démarrant
     // ensemble) : les tables de Windows et la liste des processus d'abord, PowerShell seulement s'ils ne répondent pas. Les ports bloqués par une
@@ -1433,18 +1444,26 @@ fn ports_ecoute(pare_feu_actif: bool, ip_lan: Option<&str>) -> Vec<Constat> {
             ),
         )
         .avec_objet(objet);
-        // RDP : pas de blocage aveugle, il coupe l'accès aux machines pilotées à distance (VM…).
-        // Le constat « Bureau à distance » propose déjà NLA ou la désactivation propre.
-        constats.push(if niveau >= Niveau::Moyen && port != 3389 {
-            constat.corriger(
-                trf!("Bloquer le port {port} en entrée dans le pare-feu Windows", "Block inbound port {port} in the Windows firewall"),
-                // Sans effet si la règle existe déjà (pare-feu coupé pendant l'audit : les règles n'y étaient pas comptées).
-                &[&format!("if (-not (Get-NetFirewallRule -DisplayName 'Vanguard : bloquer {port}' -ErrorAction SilentlyContinue)) {{ New-NetFirewallRule -DisplayName 'Vanguard : bloquer {port}' -Direction Inbound -Protocol TCP -LocalPort {port} -Action Block | Out-Null }}")],
-            )
-            .bloquant(format!("{port}/tcp"))
-        } else {
-            constat
-        });
+        // SSH et RDP : pas de blocage aveugle, il coupe l'accès aux machines pilotées à distance (VM…) ; le processus
+        // élevé le refuserait de toute façon (`ordres::juger`). Le constat « Bureau à distance » propose déjà NLA ou
+        // la désactivation propre.
+        constats.push(
+            if niveau >= Niveau::Moyen && crate::protection::blocage::port_intouchable(port).is_none() {
+                constat
+                    .corriger(
+                        trf!(
+                            "Bloquer le port {port} en entrée dans le pare-feu Windows",
+                            "Block inbound port {port} in the Windows firewall"
+                        ),
+                        // L'ordre du blocage, fait par COM dans le processus élevé : la règle « Vanguard : bloquer {port} »
+                        // (`nom_entrante`, celle que relit `regles_vanguard`), sans doublon si elle existe déjà.
+                        &[&port_ferme(port)],
+                    )
+                    .bloquant(format!("{port}/tcp"))
+            } else {
+                constat
+            },
+        );
     }
     if constats.is_empty() {
         constats.push(ok(
@@ -1647,6 +1666,46 @@ mod tests {
     use super::*;
 
     use crate::machine::gestes;
+
+    /// La correction « Bloquer le port » est l'ordre du blocage : sa règle porte le nom que le bilan relit
+    /// (`ecoute::port_bloque`), le même que l'ancienne ligne PowerShell, que garde le chemin de Wine.
+    #[test]
+    fn fermer_un_port_garde_le_nom_de_la_regle() {
+        use crate::protection::blocage::ordres::{self, Ordre};
+        use crate::protection::blocage::pare_feu::nom_entrante;
+        let ligne = port_ferme(8080);
+        assert_eq!(ligne, "vanguard:fermer-port windows 8080");
+        let ordre = ordres::analyser(&ligne).unwrap();
+        assert!(matches!(ordre, Ordre::FermerPort { port: 8080, .. }));
+        assert!(corrections::native(&ligne));
+        assert_eq!(nom_entrante(8080), "Vanguard : bloquer 8080");
+        assert_eq!(
+            ordres::powershell(&ordre).unwrap(),
+            "if (-not (Get-NetFirewallRule -DisplayName 'Vanguard : bloquer 8080' -ErrorAction SilentlyContinue)) { New-NetFirewallRule -DisplayName 'Vanguard : bloquer 8080' -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Block | Out-Null }"
+        );
+        let regle = format!(
+            "v2.32|Action=Block|Active=TRUE|Dir=In|Protocol=6|LPort=8080|Name={}|",
+            nom_entrante(8080)
+        );
+        assert_eq!(ecoute::port_bloque(&regle), Some(8080));
+        // SSH et le Bureau à distance ne sont jamais proposés : le processus élevé les refuserait.
+        for port in [22, 3389] {
+            assert!(crate::protection::blocage::port_intouchable(port).is_some());
+        }
+        assert!(crate::protection::blocage::port_intouchable(8080).is_none());
+    }
+
+    /// Le pare-feu se rallume par l'acte natif, une protection (« Défaire » ne le propose pas).
+    #[test]
+    fn rallumer_le_pare_feu_est_un_acte() {
+        let ligne = gestes::ligne_pare_feu_actif();
+        assert_eq!(ligne, "vanguard:pare-feu-actif");
+        assert!(corrections::native(&ligne));
+        assert!(matches!(
+            gestes::analyser_acte(&ligne),
+            Some(gestes::Acte::PareFeuActif)
+        ));
+    }
 
     fn reponse(reussi: bool, note: Option<&str>, code: Option<i32>, etats: Option<Vec<bool>>) -> eleve::Reponse {
         eleve::Reponse {

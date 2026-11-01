@@ -1110,10 +1110,8 @@ fn pare_feu(etat: Option<&EtatWindows>) -> Reparation {
             "Turns the Windows firewall back on for the three profiles (domain, private, public)."
         ),
         tr!("quelques secondes", "a few seconds"),
-        &[
-            "Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True",
-            "Get-NetFirewallProfile | Format-Table Name, Enabled",
-        ],
+        // L'acte natif relit chaque profil après l'avoir allumé et dit lesquels l'ont été : plus de tableau à lire.
+        &[&crate::machine::gestes::ligne_pare_feu_actif()],
     );
     match etat {
         Some(e) if e.profils > 0 && e.parefeu_coupe.is_empty() => {
