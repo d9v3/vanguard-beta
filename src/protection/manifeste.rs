@@ -1499,12 +1499,14 @@ mod tests {
     }
 
     /// B7 (campagne 6) : des dossiers imbriqués sur des centaines de niveaux se parcourent sur une petite pile, sans
-    /// arrêter le processus ; le fichier du fond est vu.
+    /// arrêter le processus ; le fichier du fond est vu. macOS borne un chemin à 1024 octets (PATH_MAX), Linux à 4096 :
+    /// 400 niveaux y tiennent avec le dossier temporaire du Mac.
     #[test]
     fn dossiers_tres_imbriques() {
+        const NIVEAUX: usize = if cfg!(target_os = "macos") { 400 } else { 600 };
         let racine = dossier_jetable("profond");
         let mut fond = racine.clone();
-        for _ in 0..600 {
+        for _ in 0..NIVEAUX {
             fond.push("d");
         }
         std::fs::create_dir_all(&fond).unwrap();
@@ -1517,7 +1519,7 @@ mod tests {
             .join()
             .unwrap();
         assert!(liste.illisibles.is_empty(), "{:?}", liste.illisibles);
-        assert_eq!(liste.fichiers, [(format!("{}cache.bin", "d/".repeat(600)), 1)]);
+        assert_eq!(liste.fichiers, [(format!("{}cache.bin", "d/".repeat(NIVEAUX)), 1)]);
         let _ = std::fs::remove_dir_all(&racine);
     }
 
