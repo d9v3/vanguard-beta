@@ -602,16 +602,16 @@ vanguard yara --complet</pre>
     <div class="tete-section">
       <p class="surtitre">Nouveautés de la version {{VERSION_COURTE}}</p>
       <h2>Ce qui vient d'arriver</h2>
-      <p>Une version de confiance : ce qui sort de l'ordinateur tient dans une liste fermée, l'état de Vanguard est scellé, ce qu'il protège est écrit, et chaque règle est reliée à MITRE ATT&amp;CK.</p>
+      <p>Une version où les corrections de Windows se font sans PowerShell, et où un verdict ne ment plus : une menace notée, une pièce jointe piégée ou un échec sont dits comme tels.</p>
     </div>
     <ul class="nouveautes">
-      <li><b>Liste fermée de ce qui sort</b><span>Vanguard ne joint qu'une liste fermée de sites, chacun nommé dans le modèle de menace ; un test échoue si le code en ajoute un que la page ne nomme pas.</span></li>
-      <li><b>État scellé</b><span>Réglages des extensions, listes téléchargées, défenses mises en marche, tâches et fichiers d'état : changés hors de Vanguard, ils n'accordent plus rien et ne coupent plus rien, et c'est dit.</span></li>
-      <li><b>Modèle de menace</b><span>Une page dit ce que Vanguard protège, ce qu'il ne protège pas et ce qui sort de l'ordinateur.</span></li>
-      <li><b>Carte MITRE ATT&amp;CK</b><span>Les règles citent la technique qu'elles détectent ou la mesure qu'elles appliquent ; la carte, générée, montre aussi les cases vides.</span></li>
-      <li><b>Journaux de Windows, un seul juge</b><span>Le bilan reprend les règles de « Que s'est-il passé ? » ; deux règles de plus (tâches planifiées, processus suspects) et une place au menu.</span></li>
-      <li><b>Paquets de l'AUR avec accord</b><span>Sous Arch Linux, les noms des paquets hors des dépôts officiels ne partent plus qu'avec un réglage donné exprès.</span></li>
-      <li><b>Optimiser refusé en administrateur</b><span>Ses outils ne tournent pas quand Vanguard a été élevé depuis un compte ordinaire ; « Tout remettre comme avant » reste permis.</span></li>
+      <li><b>Services de Windows sans PowerShell</b><span>Arrêter, démarrer, désactiver ou remettre un service passe directement par Windows ; aucune action ne peut couper une protection.</span></li>
+      <li><b>Pare-feu et type de réseau sans PowerShell</b><span>Chaque changement est relu ; jamais de blocage des entrées pendant une connexion à distance.</span></li>
+      <li><b>Onze corrections du registre sans PowerShell</b><span>Bureau à distance, NetBIOS, SMBv1, débogueurs piégés… : la valeur est rejugée juste avant d'écrire, et celle d'avant notée pour Défaire.</span></li>
+      <li><b>Pièces jointes piégées</b><span>Scripts cachés dans les images SVG, archives zip relues sans croire leur sommaire, noms truqués par des caractères invisibles.</span></li>
+      <li><b>Defender sans « ✔ » à tort</b><span>Une menace notée compte toujours ; une exclusion qui couvre le fichier enlève le « ✔ ».</span></li>
+      <li><b>Point de restauration vérifié</b><span>Seul un point nouveau dans la liste de Windows compte ; sinon la raison est dite avant de continuer.</span></li>
+      <li><b>Fenêtre administrateur figée</b><span>Les outils de Windows sont pris dans le dossier du système, avec un environnement réduit : un programme posé dans le compte ne peut plus se glisser à leur place.</span></li>
     </ul>
   </section>
 

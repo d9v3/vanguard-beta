@@ -7,7 +7,143 @@ a day, gathering the day's work; October 21 had two, 0.82 in the morning and 0.8
 delivered just before it. Only the latest version has its download page; every version keeps its tag in the repository
 (`git checkout v0.62.0`, for example), to be rebuilt if needed.
 
-## Upcoming
+## November 1, 2026: version 0.89
+
+- **Windows services handled by Vanguard itself, without PowerShell.** Vanguard stops, starts, disables or restores a
+  service directly through the Windows service manager, without launching PowerShell. This covers Remote Registry,
+  SSDP discovery, Windows Update, time, telemetry, the print queue, the Temp folder and the Windows Update cache.
+  Vanguard's administrator window does it.
+  - Each service has only the actions meant for it: none can turn off a Windows protection.
+  - The services that depend on it are stopped first, then started again afterwards.
+  - An emptied folder never follows a link that would lead elsewhere.
+  - An optimizer setting that cannot send anything is reported as "not done", instead of being counted as done.
+
+- **Firewall and network type without PowerShell.** Turning the firewall back on, public Wi-Fi mode and the network
+  choice (public or private) go directly through Windows, and every change is read back.
+  - No line can turn the firewall off.
+  - "Block all incoming connections" is refused during a remote connection (Remote Desktop, SSH), or when Vanguard
+    cannot tell whether there is one.
+  - "Block the port" never targets SSH or Remote Desktop, nor the port of an open remote session.
+  - What makes the PC less protected, such as reopening incoming connections or setting a network back to Private, is
+    said as such before it is done.
+
+- **Registry fixes without PowerShell.** Eleven fixes go directly through Windows: turning off Remote Desktop, NetBIOS
+  and SMBv1, Internet time, Winlogon, booby-trapped debuggers (IFEO), "always install as administrator", and more.
+  - Just before writing, Vanguard reads the value back and judges it again.
+  - A value that is already right is not rewritten, and Vanguard says so.
+  - The previous value is noted, for Undo.
+  - NetBIOS is turned off on every network adapter, and Vanguard says a restart is needed.
+
+- **Service quotes added automatically, and said.** A service's path can
+  contain an unquoted space: another program could then slip in its place. The accepted fix adds the quotes itself and
+  says so: "Vanguard adds the quotes to the path of service X".
+  - It does so only if the quotes are the only change and the named program exists.
+  - The path's folders (%ProgramFiles%, %SystemRoot%, %SystemDrive%, %ProgramData%…) are asked of Windows, never taken
+    from a program's settings, which another program could have changed.
+  - An unknown variable leaves the fix to be done by hand, and nothing is written.
+  - The change goes through the service manager, as Windows intends, not by writing directly to the registry.
+
+- **Seals: no more false "redone" alert.** Vanguard seals its state files to see whether another program changes them.
+  Before, a lock left on its own made Vanguard wrongly say the seals had been redone, with a high alert. This happened
+  with a Vanguard stopped at the wrong moment, a full disk, or two Vanguards started together on first use.
+  - 0.89 puts down a witness right after the first real seal. That witness, together with the event log, shows that a
+    sealing version has already run on this computer.
+  - The lock left by 0.86 to 0.88 still counts as a witness if it is from before November 30, 2026. An update from
+    those versions therefore keeps its protection.
+
+- **SVG images attached to an email: hidden traps are seen.** An SVG image can contain a script or a link, like a web
+  page.
+  - A script hidden other than by a plain `<script>` tag (prefixed name, `onload` handler, `javascript:` address,
+    embedded HTML, animation, DTD entities) makes the image "active".
+  - A compressed image (.svgz) is decompressed, within size and time limits, then judged; its links and forms are
+    examined.
+  - A UTF-16 image is read like any other.
+  - An image too slow to read is stopped after 5 seconds and reported as "not fully checked".
+  - An ordinary SVG from Illustrator or Inkscape no longer says "contains a script": it only keeps a note.
+
+- **Attached zip archives: read without trusting what they claim.**
+  - An archive preceded by other bytes (self-extracting program, padding, behind a PDF) is still opened, and Vanguard
+    says so.
+  - The content is read back entry by entry, without trusting the archive's table of contents.
+  - A cut or unreadable archive is reported as "not checked".
+  - The name of each file in the archive is judged in full, invisible characters and reversal (U+202E) included: an
+    ".exe" at the end of a very long name is no longer lost.
+
+- **File names trapped with invisible characters.** "invoice.pdf[U+200B].exe", with an invisible character between ".pdf" and
+  ".exe", passed for a document. Invisible characters are now removed before the name is judged, and reported as a
+  "trapped name". This applies to downloaded files, attachments and names inside attached archives. Accents and
+  other scripts give no warning.
+
+- **Microsoft Defender scans: no more wrong "✔".** Defender can find a threat, remove it, and still answer "all good"
+  with its code.
+  - Vanguard now reads what Defender writes, and compares it with the threats Defender recorded during the scan. A
+    recorded threat always counts.
+  - An exclusion that covers the scanned file or folder removes the "✔": nothing is guaranteed, and Vanguard says so.
+  - Without administrator rights, exclusions are hidden: the result is "cannot be checked", never "✔".
+  - A file that Defender skipped because it is excluded is reported as "impossible to check", no longer as "known
+    malware".
+  - Defender is started from its real folder, and one line per minute shows that the scan is moving.
+  - The full scan says that, on Windows, Defender scans the whole computer.
+
+- **Windows restore point really created, and checked.** Before, Vanguard could say "OK" with no point kept.
+  - The point is asked of Windows the way Windows itself does it, then Vanguard reads the list back: only a new
+    point counts.
+  - If the point is skipped or refused, the reason is given, then the question "continue without a point?".
+  - Answering no stops everything and says "stopped at your request: nothing changed", not "a step failed".
+
+- **Vanguard's administrator window: no more program picked by chance.** What Vanguard runs as administrator can no
+  longer be replaced by a program planted in the account.
+  - DISM, sfc, chkdsk, netsh, w32tm, ipconfig, net accounts, powercfg and Defender are started from the Windows
+    folder, with fixed settings, never by name alone. winget is taken from Microsoft's App Installer.
+  - PowerShell and these programs start with an environment reduced to what Windows provides; the account's settings
+    (variables, moved folders) no longer follow them.
+  - The whole list is checked before the administrator prompt; a malformed list is refused without doing anything.
+  - Each failure is told in sentences, with what to do, and the technical detail in brackets.
+  - Removing Defender threats also goes through this window: there is now only one kind of administrator prompt,
+    the one that names Vanguard.
+
+- **Disk check (chkdsk): no more false promise.** When chkdsk cannot check the disk, Vanguard no longer says "failed"
+  or "to finish at restart": nothing is scheduled. It says "disk to check" and what to do (run `chkdsk X: /f` as
+  administrator), with the real letter of the Windows disk.
+
+- **Windows hosts file: never left empty.** Windows or the antivirus sometimes holds this file for a few seconds.
+  Vanguard tries again instead of failing, writes the file in one go, and puts the old content back if writing fails.
+
+- **Router UPnP: a failure is no longer "nothing open".** When the `upnpc` tool is installed but fails, or the router
+  does not answer, the result is "not checked". Before, it said the tool was missing, or that UPnP was on with
+  nothing open.
+
+- **Root certificates (Linux) and the VANGUARD key: an unreadable file is never counted as empty.**
+  - A certificate file that cannot be read, or whose name Vanguard cannot read, is no longer "no certificate added":
+    it is named, with the command that removes it.
+  - A folder of the VANGUARD key that cannot be opened no longer leaves the key "unchanged".
+
+- **VANGUARD key: a copy no longer passes for it.**
+  - Two keys with the same identifier are reported as "duplicate": unplug one. Neither is chosen by plug-in order.
+  - The same key seen through two paths no longer counts as its own copy.
+  - The boot partition (VTOYEFI) that became unreadable, renamed or missing is reported, instead of being skipped
+    without a word. A key rebuilt on purpose without Ventoy is accepted with `--accepter-vtoyefi`.
+
+- **Updates: the program's folders checked all the way up.** An update done as root checks every folder above
+  the program, not only the last one: an account can no longer slip its own folder in its place. A signing key
+  withdrawn by the backup key stays withdrawn, even if the seals are redone.
+
+- **Replaced locks: reported in the report.** A folder, a link or a file with its rights removed, put in place of a
+  Vanguard lock, stopped the event log, the list of network devices or the alerts from being written, without a
+  word. It is now a high finding in the report, which says what is no longer written.
+
+- **ClamAV: signatures found, nothing installed without asking.**
+  - The signature folder set in freshclam.conf is passed to the scan: it no longer fails for lack of signatures.
+  - The command that installs ClamAV and the one for its signatures are shown before the question that accepts them.
+  - Without a keyboard, or with a closed input, the answer is "no": nothing is installed or turned on by itself.
+  - Checking a file without ClamAV still gives its verdict.
+
+- **Damaged MalwareBazaar list: reported.** A copy of the full list that no longer opens is no longer taken for an
+  empty list: the warning says so, instead of saying "scanned" with only the recent fingerprints.
+
+- **Menus: a preview on the right.** When the window is wide enough (110 columns or more), a panel to the right of the
+  menu shows the description of the chosen line and what it opens. Search also shows the result's preview. Small
+  windows stay as before.
 
 - **Programs' protections checked before they leave.** `vanguard deploiement verifier-binaire` (former name:
   `verifier-pe`, kept) reads from their headers, without running them, the protections of the published programs: on
@@ -26,10 +162,10 @@ delivered just before it. Only the latest version has its download page; every v
   now makes that segment read-only itself at launch, as glibc's loader does; a failure is logged without stopping
   the startup.
 
-- **Service quotes added on their own, and said.** When a service's path contains a space without quotes (another
-  program could slip in its place), the accepted fix adds the quotes itself: “Vanguard adds the quotes to the path of
-  the service X”. It does so only if the quotes alone change, the program it names exists and its variables are the
-  system's; otherwise, it leaves the fix to be done by hand.
+- **Sturdiness.** Internal work, with no visible change: the code can no longer crash on unexpected data ("no-panic"
+  rules everywhere), risky code (`unsafe`) is refused everywhere except in named places with their reason, readers of
+  hostile data make no overflow or careless conversion, some are proven by Miri and Kani every week, dependencies are
+  reviewed with cargo vet, and the code is reviewed against ANSSI's Rust guide.
 
 ## October 26, 2026: version 0.88
 

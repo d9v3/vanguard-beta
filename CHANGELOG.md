@@ -7,7 +7,154 @@ une seule publication par jour, qui regroupe le travail de la journée ; le 21 o
 la 0.84 au soir, qui reprend la 0.83 livrée juste avant elle. Seule la dernière version a sa page de téléchargement ;
 chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par exemple), pour être recompilée au besoin.
 
-## À paraître
+## 1er novembre 2026 : version 0.89
+
+- **Services de Windows réglés par Vanguard lui-même, sans PowerShell.** Vanguard arrête, démarre, désactive ou remet
+  un service directement par le gestionnaire de services de Windows, sans lancer PowerShell. Cela vaut pour le
+  Registre à distance, la découverte SSDP, Windows Update, l'heure, la télémétrie, la file d'impression, le dossier
+  Temp et le cache de Windows Update. C'est la fenêtre administrateur de Vanguard qui le fait.
+  - Chaque service n'a que les actions prévues pour lui : aucune ne peut couper une protection de Windows.
+  - Les services qui en dépendent sont arrêtés d'abord, puis relancés ensuite.
+  - Un dossier vidé ne suit jamais un lien qui mènerait ailleurs.
+  - Un réglage de l'optimiseur qui ne peut rien envoyer est dit « non fait », au lieu d'être compté fait.
+
+- **Pare-feu et type de réseau sans PowerShell.** Rallumer le pare-feu, le mode Wi-Fi public et le choix du réseau
+  (public ou privé) passent directement par Windows, et chaque changement est relu.
+  - Aucune ligne ne peut couper le pare-feu.
+  - « Bloquer toutes les connexions entrantes » est refusé pendant une connexion à distance (Bureau à distance, SSH),
+    ou quand Vanguard ne peut pas savoir s'il y en a une.
+  - « Bloquer le port » ne vise jamais SSH ni le Bureau à distance, ni le port d'une session à distance ouverte.
+  - Ce qui rend le PC moins protégé, comme rouvrir les entrées ou repasser un réseau en Privé, est dit comme tel avant
+    d'être fait.
+
+- **Corrections du registre sans PowerShell.** Onze corrections passent directement par Windows : couper le Bureau à
+  distance, NetBIOS et SMBv1, l'heure par Internet, Winlogon, les débogueurs piégés (IFEO), « toujours installer en
+  administrateur », etc.
+  - Juste avant d'écrire, Vanguard relit la valeur et la juge de nouveau.
+  - Une valeur déjà bonne n'est pas réécrite, et c'est dit.
+  - La valeur d'avant est notée, pour Défaire.
+  - NetBIOS est coupé sur chaque carte réseau, et Vanguard dit qu'il faut redémarrer.
+
+- **Guillemets des services posés tout seuls, et dit.** Le chemin d'un service
+  peut contenir une espace sans guillemets : un autre programme pourrait alors se glisser à sa place. La correction
+  acceptée ajoute elle-même les guillemets et le dit : « Vanguard ajoute les guillemets au chemin du service X ».
+  - Elle ne le fait que si seuls les guillemets changent et que le programme cité existe.
+  - Les dossiers du chemin (%ProgramFiles%, %SystemRoot%, %SystemDrive%, %ProgramData%…) sont demandés à Windows,
+    jamais pris dans les réglages d'un programme, qu'un autre programme aurait pu changer.
+  - Une variable inconnue laisse la correction à faire à la main, sans rien écrire.
+  - Le changement passe par le gestionnaire de services, comme Windows le prévoit, et non en écrivant directement
+    dans le registre.
+
+- **Sceaux : plus de fausse alerte « refaits ».** Vanguard scelle ses fichiers d'état pour voir si un autre programme
+  les change. Avant, un verrou resté seul faisait dire à tort que les sceaux avaient été refaits, avec une alerte
+  élevée. Cela arrivait avec un Vanguard arrêté au mauvais moment, un disque plein, ou deux Vanguard lancés ensemble
+  au premier usage.
+  - La 0.89 pose un témoin juste après le premier vrai sceau. C'est lui, avec le journal des événements, qui montre
+    qu'une version qui scelle a déjà servi sur cet ordinateur.
+  - Le verrou laissé par une 0.86 à 0.88 compte encore comme témoin s'il date d'avant le 30 novembre 2026. Une mise à
+    jour depuis ces versions garde donc sa protection.
+
+- **Images SVG jointes à un courriel : les pièges cachés sont vus.** Une image SVG peut contenir un script ou un lien, comme une page web.
+  - Un script caché autrement que par une balise `<script>` en clair (nom préfixé, gestionnaire `onload`, adresse
+    `javascript:`, HTML intégré, animation, entités de la DTD) rend l'image « active ».
+  - Une image compressée (.svgz) est décompressée, avec des bornes de taille et de temps, puis jugée ; ses liens et
+    ses formulaires sont examinés.
+  - Une image en UTF-16 est lue comme une autre.
+  - Une image trop lente à lire est arrêtée au bout de 5 secondes et dite « pas vérifiée en entier ».
+  - Un SVG ordinaire d'Illustrator ou d'Inkscape ne se dit plus « contient du script » : il garde seulement une
+    information.
+
+- **Archives zip jointes : lues sans croire ce qu'elles annoncent.**
+  - Une archive précédée d'autres octets (programme auto-extractible, bourrage, derrière un PDF) est quand même
+    ouverte, et c'est dit.
+  - Le contenu est relu entrée par entrée, sans croire le sommaire de l'archive.
+  - Une archive coupée ou illisible est dite « pas vérifiée ».
+  - Le nom de chaque fichier de l'archive est jugé en entier, caractères invisibles et retournement (U+202E)
+    compris : un « .exe » au bout d'un très long nom n'est plus perdu.
+
+- **Noms de fichiers piégés par des caractères invisibles.** « facture.pdf[U+200B].exe », avec un
+  caractère invisible entre « .pdf » et « .exe », passait pour un document. Les caractères invisibles sont
+  maintenant retirés avant de juger le nom, et dits « nom piégé ». Cela vaut pour les fichiers téléchargés, les
+  pièces jointes et les noms dans les archives jointes. Les accents et les autres écritures ne donnent aucun signe.
+
+- **Analyse par Microsoft Defender : plus de « ✔ » à tort.** Defender peut trouver une menace, la retirer, et répondre quand même « tout va bien » par son
+  code.
+  - Vanguard lit maintenant ce que Defender écrit, et le compare à la liste des menaces que Defender a notées pendant
+    l'analyse. Une menace notée compte toujours.
+  - Une exclusion qui couvre le fichier ou le dossier analysé enlève le « ✔ » : rien n'est garanti, et c'est dit.
+  - Sans droits d'administrateur, les exclusions sont cachées : le résultat est dit « invérifiable », jamais « ✔ ».
+  - Un fichier que Defender a sauté parce qu'il est exclu est dit « impossible à vérifier », plus « logiciel
+    malveillant connu ».
+  - Defender est lancé depuis son vrai dossier, et une ligne par minute montre que l'analyse avance.
+  - L'analyse complète dit que, sous Windows, Defender analyse tout l'ordinateur.
+
+- **Point de restauration de Windows vraiment créé, et vérifié.**
+  Avant, Vanguard pouvait dire « OK » sans qu'aucun point ne soit gardé.
+  - Le point est demandé à Windows comme le fait Windows lui-même, puis Vanguard relit la liste : seul un point
+    nouveau compte.
+  - Si le point est sauté ou refusé, la raison est dite, puis la question « continuer sans point ? ».
+  - Répondre non arrête tout et dit « arrêté à votre demande : rien n'a changé », et non « une étape a échoué ».
+
+- **Fenêtre administrateur de Vanguard : plus de programme pris au hasard.** Ce que Vanguard lance en
+  administrateur ne peut plus être remplacé par un programme posé dans le compte.
+  - DISM, sfc, chkdsk, netsh, w32tm, ipconfig, net accounts, powercfg et Defender sont lancés depuis le dossier de
+    Windows, avec des réglages fixes, jamais par leur seul nom. winget est pris dans App Installer de Microsoft.
+  - PowerShell et ces programmes démarrent avec un environnement réduit à ce que Windows fournit ; les réglages du
+    compte (variables, dossiers déplacés) ne les suivent plus.
+  - Toute la liste est vérifiée avant la demande d'administrateur ; une liste mal formée est refusée sans rien
+    faire.
+  - Chaque échec est dit en phrases, avec quoi faire, le détail technique entre parenthèses.
+  - Retirer les menaces de Defender passe aussi par cette fenêtre : il n'y a plus qu'une seule forme de demande
+    d'administrateur, celle qui nomme Vanguard.
+
+- **Vérification du disque (chkdsk) : plus de fausse promesse.** Quand chkdsk ne peut pas
+  vérifier le disque, Vanguard ne dit plus « échec » ni « à finir au redémarrage » : rien n'est programmé. Il dit
+  « disque à vérifier » et quoi faire (lancer `chkdsk X: /f` en administrateur), avec la vraie lettre du disque de
+  Windows.
+
+- **Fichier hosts de Windows : jamais laissé vide.** Windows ou l'antivirus tient parfois ce fichier
+  quelques secondes. Vanguard réessaie au lieu d'échouer, écrit le fichier d'un coup, et remet l'ancien contenu si
+  l'écriture rate.
+
+- **UPnP de la box : un échec n'est plus « rien d'ouvert ».** Quand l'outil `upnpc` est installé
+  mais échoue, ou que la box ne répond pas, le résultat est dit « non vérifié ». Avant, il disait que l'outil était
+  absent, ou que l'UPnP était actif sans rien d'ouvert.
+
+- **Certificats racine (Linux) et clé VANGUARD : un fichier illisible n'est jamais compté vide.**
+  - Un fichier de certificats illisible, ou dont Vanguard ne sait pas lire le nom, n'est plus « aucun certificat
+    ajouté » : il est nommé, avec la commande qui le retire.
+  - Un dossier de la clé VANGUARD qui ne s'ouvre pas ne la laisse plus « inchangée ».
+
+- **Clé VANGUARD : une copie ne passe plus pour elle.**
+  - Deux clés au même identifiant sont dites « en double » : il faut en débrancher une. Aucune n'est choisie selon
+    l'ordre de branchement.
+  - Une même clé vue par deux chemins ne compte plus comme sa propre copie.
+  - La partition de démarrage (VTOYEFI) devenue illisible, renommée ou absente est dite, au lieu d'être sautée sans
+    un mot. Une clé refaite exprès sans Ventoy s'accepte par `--accepter-vtoyefi`.
+
+- **Mises à jour : les dossiers du programme vérifiés jusqu'en haut.** Une mise à jour
+  faite en root vérifie chaque dossier au-dessus du programme, pas seulement le dernier : un compte ne peut
+  plus glisser son propre dossier à la place. Une clé de signature retirée par la clé de secours le reste, même si
+  les sceaux sont refaits.
+
+- **Verrous remplacés : dits au bilan.** Un dossier, un lien ou un fichier aux droits
+  retirés, posé à la place d'un verrou de Vanguard, empêchait d'écrire le journal des événements, la liste des
+  appareils du réseau ou les alertes, sans un mot. C'est maintenant un constat élevé au bilan, qui dit ce qui ne
+  s'écrit plus.
+
+- **ClamAV : signatures trouvées, rien installé sans le demander.**
+  - Le dossier des signatures réglé dans freshclam.conf est passé à l'analyse : elle ne finit plus en échec faute
+    de signatures.
+  - La commande d'installation de ClamAV et celle des signatures sont montrées avant la question qui les accepte.
+  - Sans clavier, ou avec une entrée fermée, la réponse est « non » : rien n'est installé ni activé tout seul.
+  - Vérifier un fichier sans ClamAV donne quand même son verdict.
+
+- **Liste MalwareBazaar abîmée : dite.** Une copie de la liste complète qui ne s'ouvre plus n'est plus
+  prise pour une liste vide : l'avertissement le dit, au lieu de dire « analysé » avec les seules empreintes récentes.
+
+- **Menus : un aperçu à droite.** Quand la fenêtre est assez large (110 colonnes et plus), un
+  panneau à droite du menu montre la description de la ligne choisie et ce qu'elle ouvre. La recherche montre aussi
+  l'aperçu du résultat. Les petites fenêtres restent comme avant.
 
 - **Protections des programmes vérifiées avant de partir.** `vanguard deploiement verifier-binaire` (ancien nom :
   `verifier-pe`, gardé) lit dans leurs en-têtes, sans les lancer, les protections des programmes publiés : sous Linux
@@ -27,11 +174,11 @@ chaque version garde son étiquette dans le dépôt (`git checkout v0.62.0`, par
   du processus. Vanguard met désormais lui-même ce segment en lecture seule au lancement, comme le fait le chargeur
   de glibc ; un échec est noté au journal sans empêcher le démarrage.
 
-- **Guillemets des services posés tout seuls, et dit.** Quand le chemin d'un service contient une espace sans
-  guillemets (un autre programme pourrait se glisser à sa place), la correction acceptée y ajoute les guillemets
-  elle-même : « Vanguard ajoute les guillemets au chemin du service X ». Elle ne le fait que si seuls les guillemets
-  changent, que le programme cité existe et que ses variables sont celles du système ; sinon, elle laisse la
-  correction à faire à la main.
+- **Solidité.** Travail interne, sans changement visible : le code ne peut plus
+  planter sur une donnée inattendue (règles « anti-panique » partout), le code risqué (`unsafe`) est refusé partout
+  sauf aux endroits nommés avec leur raison, les lecteurs de données hostiles ne font ni débordement ni conversion
+  hasardeuse, certains sont prouvés par Miri et Kani chaque semaine, les dépendances sont relues avec cargo vet, et le
+  code est relu selon le guide Rust de l'ANSSI.
 
 ## 26 octobre 2026 : version 0.88
 
