@@ -26,6 +26,11 @@ pub(crate) struct Dossiers {
     pub program_files: Option<PathBuf>,
     pub program_files_x86: Option<PathBuf>,
     pub fichiers_communs: Option<PathBuf>,
+    /// ProgramW6432, CommonProgramFiles(x86) et CommonProgramW6432 : hors de l'environnement réduit, mais cités par
+    /// les chemins des services, que le gestionnaire des services développe avec eux.
+    pub program_files_x64: Option<PathBuf>,
+    pub fichiers_communs_x86: Option<PathBuf>,
+    pub fichiers_communs_x64: Option<PathBuf>,
     pub program_data: Option<PathBuf>,
     pub profil: Option<PathBuf>,
     pub appdata: Option<PathBuf>,
@@ -145,6 +150,9 @@ pub(crate) fn dossiers() -> &'static Dossiers {
             program_files: dossier_connu(&PROGRAM_FILES),
             program_files_x86: dossier_connu(&PROGRAM_FILES_X86),
             fichiers_communs: dossier_connu(&FICHIERS_COMMUNS),
+            program_files_x64: dossier_connu(&PROGRAM_FILES_X64),
+            fichiers_communs_x86: dossier_connu(&FICHIERS_COMMUNS_X86),
+            fichiers_communs_x64: dossier_connu(&FICHIERS_COMMUNS_X64),
             program_data: dossier_connu(&PROGRAM_DATA),
             profil: dossier_connu(&PROFIL),
             appdata: dossier_connu(&APPDATA),
@@ -161,6 +169,10 @@ pub(crate) fn dossiers() -> &'static Dossiers {
 static PROGRAM_FILES: GUID = GUID::from_u128(0x905e63b6_c1bf_494e_b29c_65b732d3d21a);
 static PROGRAM_FILES_X86: GUID = GUID::from_u128(0x7c5a40ef_a0fb_4bfc_874a_c0f2e0b9fa8e);
 static FICHIERS_COMMUNS: GUID = GUID::from_u128(0xf7f1ed05_9f6d_47a2_aaae_29d317c6f066);
+// Les trois suivants : « not supported for 32-bit applications » (X64) ; Vanguard est un programme 64 bits.
+static PROGRAM_FILES_X64: GUID = GUID::from_u128(0x6d809377_6af0_444b_8957_a3773f02200e);
+static FICHIERS_COMMUNS_X86: GUID = GUID::from_u128(0xde974d24_d9c6_4d3e_bf91_f4455120b917);
+static FICHIERS_COMMUNS_X64: GUID = GUID::from_u128(0x6365d5a7_0f0d_45e5_87f6_0da56b6a4f7d);
 static PROGRAM_DATA: GUID = GUID::from_u128(0x62ab5d82_fdc1_4dc3_a9dd_070d1d495d97);
 static PROFIL: GUID = GUID::from_u128(0x5e6c858f_0e22_4760_9afe_ea3317b67173);
 static APPDATA: GUID = GUID::from_u128(0x3eb685db_65f9_4cf6_a03a_e3ef65729f3d);
@@ -280,6 +292,9 @@ mod tests {
             program_files: Some(PathBuf::from(r"C:\Program Files")),
             program_files_x86: Some(PathBuf::from(r"C:\Program Files (x86)")),
             fichiers_communs: Some(PathBuf::from(r"C:\Program Files\Common Files")),
+            program_files_x64: Some(PathBuf::from(r"C:\Program Files")),
+            fichiers_communs_x86: Some(PathBuf::from(r"C:\Program Files (x86)\Common Files")),
+            fichiers_communs_x64: Some(PathBuf::from(r"C:\Program Files\Common Files")),
             program_data: Some(PathBuf::from(r"C:\ProgramData")),
             profil: Some(PathBuf::from(r"C:\Users\alice")),
             appdata: Some(PathBuf::from(r"C:\Users\alice\AppData\Roaming")),

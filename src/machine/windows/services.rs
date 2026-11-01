@@ -73,7 +73,13 @@ fn lire_natif() -> Option<String> {
         if let Some(j) = juger_service(type_service, &brut, variable_systeme, existe, dossier_modifiable) {
             // « SVCM » : signalé, mais à corriger à la main (variable inconnue, programme introuvable).
             let sorte = if j.a_la_main.is_some() { "SVCM" } else { "SVC" };
-            lignes.push(format!("{sorte}|{nom}|{}|{}|{}", j.exe, j.dossier.display(), j.suite));
+            // Sans dossier piège (chemin inconnu), le champ reste vide.
+            let dossier = j
+                .dossier
+                .as_deref()
+                .map(|d| d.display().to_string())
+                .unwrap_or_default();
+            lignes.push(format!("{sorte}|{nom}|{}|{dossier}|{}", j.exe, j.suite));
         }
     }
     lignes.push("SVC_FIN".into());
@@ -84,26 +90,70 @@ fn lire_natif() -> Option<String> {
 const SERVICE_WIN32: u32 = 0x30;
 
 /// Une variable de l'environnement du système, celui avec lequel le gestionnaire des services développe ImagePath :
-/// SystemRoot et windir demandés à Windows (GetSystemWindowsDirectoryW), les autres lues dans Session
-/// Manager\Environment, que seul un administrateur écrit. Jamais l'environnement de ce processus : le processus élevé
-/// hérite de celui du compte qui l'élève (HKCU\Environment, `set` avant de lancer Vanguard). Une valeur qui cite une
-/// autre variable que SystemRoot ou windir est inconnue.
+/// SystemRoot et windir demandés à Windows (GetSystemWindowsDirectoryW), Program Files et ProgramData par les dossiers
+/// connus (SHGetKnownFolderPath), les autres lues dans Session Manager\Environment, que seul un administrateur écrit.
+/// Jamais l'environnement de ce processus : le processus élevé hérite de celui du compte qui l'élève
+/// (HKCU\Environment, `set` avant de lancer Vanguard).
 fn variable_systeme(nom: &str) -> Option<String> {
-    let windows = || {
-        super::environnement::dossier_windows()
-            .and_then(|p| p.to_str().map(|t| t.trim_end_matches('\\').to_string()))
-            .filter(|t| !t.is_empty())
-    };
-    let racine = |n: &str| n.eq_ignore_ascii_case("SystemRoot") || n.eq_ignore_ascii_case("windir");
-    if racine(nom) {
-        return windows();
+    let d = super::environnement::dossiers();
+    variable_selon(
+        nom,
+        |n| dossier_calcule(d, n),
+        |n| {
+            winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
+                .open_subkey(ENVIRONNEMENT_SYSTEME)
+                .ok()?
+                .get_value(n)
+                .ok()
+        },
+    )
+}
+
+/// Les variables que Windows calcule lui-même, absentes de Session Manager\Environment : demandées à Windows, jamais
+/// lues ailleurs (une valeur du même nom posée dans Session Manager est ignorée).
+const CALCULEES: [&str; 9] = [
+    "SystemRoot",
+    "windir",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramW6432",
+    "CommonProgramFiles",
+    "CommonProgramFiles(x86)",
+    "CommonProgramW6432",
+    "ProgramData",
+];
+
+/// Le dossier que Windows donne pour une variable calculée (`CALCULEES`), sans barre finale ; `None` pour une autre
+/// variable ou un dossier que Windows n'a pas donné.
+fn dossier_calcule(d: &super::environnement::Dossiers, nom: &str) -> Option<String> {
+    let p = match nom.to_ascii_lowercase().as_str() {
+        "systemroot" | "windir" => Some(&d.windows),
+        "programfiles" => d.program_files.as_ref(),
+        "programfiles(x86)" => d.program_files_x86.as_ref(),
+        "programw6432" => d.program_files_x64.as_ref(),
+        "commonprogramfiles" => d.fichiers_communs.as_ref(),
+        "commonprogramfiles(x86)" => d.fichiers_communs_x86.as_ref(),
+        "commonprogramw6432" => d.fichiers_communs_x64.as_ref(),
+        "programdata" => d.program_data.as_ref(),
+        _ => None,
+    }?;
+    p.to_str()
+        .map(|t| t.trim_end_matches('\\').to_string())
+        .filter(|t| !t.is_empty())
+}
+
+/// La valeur d'une variable du système : une variable calculée vient de `dossier` seul ; une autre, de `session`
+/// (Session Manager\Environment), développée avec les seules variables calculées. Une valeur qui cite une autre
+/// variable est inconnue.
+fn variable_selon(
+    nom: &str,
+    dossier: impl Fn(&str) -> Option<String>,
+    session: impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    if CALCULEES.iter().any(|c| c.eq_ignore_ascii_case(nom)) {
+        return dossier(nom);
     }
-    let brute: String = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
-        .open_subkey(ENVIRONNEMENT_SYSTEME)
-        .ok()?
-        .get_value(nom)
-        .ok()?;
-    developper_tout(&brute, |n| if racine(n) { windows() } else { None })
+    developper_tout(&session(nom)?, &dossier)
 }
 
 /// L'environnement du système (HKLM).
@@ -119,20 +169,23 @@ fn dossier_modifiable(d: &std::path::Path) -> bool {
     d.is_dir() && super::securite::du_fichier(d).is_some_and(|o| modifiable_par_tous(&o))
 }
 
-/// Un service signalé : le programme et les arguments développés, le dossier piège, et la raison de le laisser à la
-/// main quand Vanguard ne doit pas l'écrire.
+/// Un service signalé : le programme et les arguments développés, le dossier piège (aucun quand le programme cite une
+/// variable inconnue : Vanguard ne sait pas où il mène), et la raison de le laisser à la main quand Vanguard ne doit
+/// pas l'écrire.
 #[derive(Debug)]
 struct Signale {
     exe: String,
     suite: String,
-    dossier: std::path::PathBuf,
+    dossier: Option<std::path::PathBuf>,
     a_la_main: Option<String>,
 }
 
 /// Le jugement d'un service, LE MÊME pour le bilan (`lire_natif`) et pour le processus élevé qui pose les guillemets
 /// (`entre_guillemets`) : un service Win32 dont le chemin (ImagePath brut, variables développées) n'a pas de
 /// guillemets et dont un dossier piège est modifiable. Une variable que l'environnement du système ne connaît pas, ou
-/// un programme qui n'existe pas, le laisse à la main : Vanguard ne sait pas ce que Windows lancerait.
+/// un programme qui n'existe pas, le laisse à la main : Vanguard ne sait pas ce que Windows lancerait. Un programme
+/// qui cite lui-même une variable inconnue est signalé sans dossier piège : son vrai chemin, donc ses dossiers, est
+/// inconnu, et le taire le ferait passer pour sain.
 fn juger_service(
     type_service: u32,
     brut: &str,
@@ -145,6 +198,17 @@ fn juger_service(
     }
     let chemin = developper(brut, &variable);
     let (exe, suite) = programme_sans_guillemets(&chemin)?;
+    if let Some(v) = variable_inconnue(exe, &variable) {
+        return Some(Signale {
+            exe: exe.to_string(),
+            suite: suite.to_string(),
+            dossier: None,
+            a_la_main: Some(trf!(
+                "variable %{v}% inconnue de l'environnement du système : Vanguard ne sait pas où ce chemin mène",
+                "variable %{v}% unknown to the system environment: Vanguard does not know where this path leads"
+            )),
+        });
+    }
     let dossier = dossier_piege(exe, modifiable)?;
     let a_la_main = if let Some(v) = variable_inconnue(brut, &variable) {
         Some(trf!(
@@ -163,7 +227,7 @@ fn juger_service(
     Some(Signale {
         exe: exe.to_string(),
         suite: suite.to_string(),
-        dossier,
+        dossier: Some(dossier),
         a_la_main,
     })
 }
@@ -395,6 +459,7 @@ pub(super) fn juger(sortie: &str) -> Option<Constat> {
         return None;
     }
     let mut noms = Vec::new();
+    let mut inconnus = Vec::new();
     let mut commandes = Vec::new();
     let mut automatiques = Vec::new();
     let mut a_la_main = Vec::new();
@@ -414,6 +479,12 @@ pub(super) fn juger(sortie: &str) -> Option<Constat> {
         if nom.is_empty() {
             continue;
         }
+        // Sans dossier : le programme cite une variable inconnue, son chemin réel est inconnu. Toujours à la main.
+        if dossier.is_empty() {
+            inconnus.push(affichable(nom));
+            a_la_main.push(affichable(nom));
+            continue;
+        }
         // Un nom de service peut avoir des espaces et des parenthèses (« Bonjour Service », « Intel(R) … ») : écarté,
         // le service exploitable passait pour sain. Il est toujours signalé ; un nom que la grammaire des lignes
         // refuse (séparateur, caractère de contrôle, « .. ») n'a pas de ligne : à corriger à la main.
@@ -426,18 +497,30 @@ pub(super) fn juger(sortie: &str) -> Option<Constat> {
             None => a_la_main.push(affichable(nom)),
         }
     }
-    if noms.is_empty() {
+    if noms.is_empty() && inconnus.is_empty() {
         return None;
     }
-    let constat = alerte(
-        "Persistance",
-        Niveau::Eleve,
-        trf!(
+    // Ce que Vanguard n'a pas pu situer est dit tel quel, à vérifier, jamais compté comme sain.
+    let inconnu = trf!(
+        "Service au chemin sans guillemets qui cite une variable inconnue de l'environnement du système : {}. Vanguard ne sait pas où ce chemin mène : à vérifier à la main.",
+        "Service with an unquoted path that cites a variable unknown to the system environment: {}. Vanguard does not know where this path leads: to check by hand.",
+        resume(&inconnus, 3, ", ")
+    );
+    let constat = if noms.is_empty() {
+        alerte("Persistance", Niveau::Moyen, inconnu)
+    } else {
+        let piege = trf!(
             "Service au chemin sans guillemets, dans un dossier modifiable par tous : {}. Un programme posé là démarrerait avec les droits du système.",
             "Service with an unquoted path, in a folder anyone can change: {}. A program dropped there would start with system rights.",
             resume(&noms, 3, ", ")
-        ),
-    );
+        );
+        let message = if inconnus.is_empty() {
+            piege
+        } else {
+            format!("{piege} {inconnu}")
+        };
+        alerte("Persistance", Niveau::Eleve, message)
+    };
     // Une correction automatique : dite telle quelle, service par service.
     let action = trf!(
         "Vanguard ajoute les guillemets au chemin du service {} ; signaler ensuite le défaut à l'éditeur du programme",
@@ -447,8 +530,8 @@ pub(super) fn juger(sortie: &str) -> Option<Constat> {
     if commandes.is_empty() {
         return Some(constat.manuel(
             trf!(
-                "Mettre à la main, dans regedit, le chemin (ImagePath) du service entre guillemets : {}",
-                "In regedit, put the service's path (ImagePath) in quotes by hand: {}",
+                "Vérifier à la main, dans regedit, le chemin (ImagePath) du service, puis le mettre entre guillemets : {}",
+                "In regedit, check the service's path (ImagePath) by hand, then put it in quotes: {}",
                 resume(&a_la_main, 3, ", ")
             ),
             &[],
@@ -721,7 +804,8 @@ mod tests {
         assert_eq!(variable_inconnue(r"%Autre%\%Encore%", v).as_deref(), Some("Autre"));
     }
 
-    /// Le vrai environnement du système (Wine ici, la VM ensuite) : SystemRoot vient de Windows, pas de ce processus.
+    /// Le vrai environnement du système (Wine ici, la VM ensuite) : SystemRoot vient de Windows, ProgramFiles des
+    /// dossiers connus, pas de ce processus.
     #[test]
     fn environnement_du_systeme() {
         let Some(racine) = variable_systeme("SystemRoot") else {
@@ -730,5 +814,198 @@ mod tests {
         assert_eq!(variable_systeme("windir").as_deref(), Some(racine.as_str()));
         assert!(!racine.ends_with('\\') && racine.len() > 2, "{racine}");
         assert_eq!(variable_systeme("VanguardInexistante"), None);
+        let d = super::super::environnement::dossiers();
+        assert_eq!(
+            variable_systeme("programfiles").map(std::path::PathBuf::from),
+            d.program_files.clone()
+        );
+        assert_eq!(
+            variable_systeme("ProgramData").map(std::path::PathBuf::from),
+            d.program_data.clone()
+        );
+    }
+
+    /// Des dossiers de Windows inventés, pour les variables calculées.
+    fn dossiers_exemple() -> super::super::environnement::Dossiers {
+        super::super::environnement::Dossiers {
+            windows: r"C:\Windows".into(),
+            program_files: Some(r"C:\Program Files\".into()),
+            program_files_x86: Some(r"C:\Program Files (x86)".into()),
+            program_files_x64: Some(r"C:\Program Files".into()),
+            fichiers_communs: Some(r"C:\Program Files\Common Files".into()),
+            fichiers_communs_x86: Some(r"C:\Program Files (x86)\Common Files".into()),
+            fichiers_communs_x64: Some(r"C:\Program Files\Common Files".into()),
+            program_data: Some(r"C:\ProgramData".into()),
+            ..Default::default()
+        }
+    }
+
+    /// ProgramFiles et les autres variables calculées viennent des dossiers connus (fonction injectée), jamais de
+    /// Session Manager, même si une valeur du même nom y est posée ; une autre variable de Session Manager est
+    /// développée avec eux seulement.
+    #[test]
+    fn program_files_par_les_dossiers_connus() {
+        let d = dossiers_exemple();
+        let session = |n: &str| match n {
+            "ProgramFiles" | "SystemRoot" => Some(r"C:\Piege".to_string()),
+            "Outils" => Some(r"%ProgramFiles(x86)%\Outils".to_string()),
+            "Mixte" => Some(r"%ProgramFiles%\%Autre%".to_string()),
+            _ => None,
+        };
+        let v = |n: &str| variable_selon(n, |m| dossier_calcule(&d, m), session);
+        assert_eq!(v("ProgramFiles").as_deref(), Some(r"C:\Program Files"));
+        assert_eq!(v("PROGRAMFILES").as_deref(), Some(r"C:\Program Files"));
+        assert_eq!(v("SystemRoot").as_deref(), Some(r"C:\Windows"));
+        assert_eq!(v("windir").as_deref(), Some(r"C:\Windows"));
+        assert_eq!(v("ProgramW6432").as_deref(), Some(r"C:\Program Files"));
+        assert_eq!(
+            v("CommonProgramFiles(x86)").as_deref(),
+            Some(r"C:\Program Files (x86)\Common Files")
+        );
+        assert_eq!(
+            v("CommonProgramW6432").as_deref(),
+            Some(r"C:\Program Files\Common Files")
+        );
+        assert_eq!(v("ProgramData").as_deref(), Some(r"C:\ProgramData"));
+        assert_eq!(v("Outils").as_deref(), Some(r"C:\Program Files (x86)\Outils"));
+        assert_eq!(v("Mixte"), None);
+        assert_eq!(v("Absente"), None);
+        // Un dossier que Windows ne donne pas : la variable est inconnue, Session Manager ne la remplace pas.
+        let sans = super::super::environnement::Dossiers {
+            program_files: None,
+            ..dossiers_exemple()
+        };
+        let v2 = |n: &str| variable_selon(n, |m| dossier_calcule(&sans, m), session);
+        assert_eq!(v2("ProgramFiles"), None);
+        // Le service %ProgramFiles% du banc : dossier piège sous Program Files, guillemets posés, variable gardée.
+        let brut = r"%ProgramFiles%\vg-essai\Mon Outil\svc.exe";
+        let ouvert = |p: &std::path::Path| p == std::path::Path::new(r"C:\Program Files\vg-essai");
+        let j = juger_service(0x10, brut, v, |_| true, ouvert).unwrap();
+        assert_eq!(j.exe, r"C:\Program Files\vg-essai\Mon Outil\svc.exe");
+        assert_eq!(
+            j.dossier.as_deref(),
+            Some(std::path::Path::new(r"C:\Program Files\vg-essai"))
+        );
+        assert!(j.a_la_main.is_none(), "{j:?}");
+        assert_eq!(
+            entre_guillemets(0x10, brut, v, |_| true, ouvert).as_deref(),
+            Some(r#""%ProgramFiles%\vg-essai\Mon Outil\svc.exe""#)
+        );
+        // Sans le dossier connu : à la main, rien d'écrit.
+        let j = juger_service(0x10, brut, v2, |_| true, ouvert).unwrap();
+        assert!(j.a_la_main.is_some() && j.dossier.is_none(), "{j:?}");
+        assert_eq!(entre_guillemets(0x10, brut, v2, |_| true, ouvert), None);
+    }
+
+    /// Un programme qui cite une variable inconnue, sans guillemets, avec un espace : signalé « à vérifier à la main »
+    /// sans dossier piège (son vrai chemin est inconnu), jamais écrit ; le bilan le dit honnêtement.
+    #[test]
+    fn variable_inconnue_signalee_sans_dossier_piege() {
+        let variable = |n: &str| n.eq_ignore_ascii_case("SystemRoot").then(|| r"C:\Windows".to_string());
+        let ferme = |_: &std::path::Path| false;
+        let brut = r"%NEXISTEPASVG%\Mon Outil\svc.exe -k";
+        let j = juger_service(0x10, brut, variable, |_| true, ferme).unwrap();
+        assert!(j.dossier.is_none(), "{j:?}");
+        assert!(
+            j.a_la_main
+                .as_deref()
+                .is_some_and(|r| r.contains("%NEXISTEPASVG%")
+                    && (r.contains("ne sait pas où") || r.contains("does not know where"))),
+            "{j:?}"
+        );
+        assert_eq!(entre_guillemets(0x10, brut, variable, |_| true, ferme), None);
+        // Sans espace, entre guillemets, ou un pilote : rien à piéger, pas signalé.
+        assert!(juger_service(0x10, r"%NEXISTEPASVG%\svc.exe -k", variable, |_| true, ferme).is_none());
+        assert!(juger_service(0x10, r#""%NEXISTEPASVG%\Mon Outil\svc.exe""#, variable, |_| true, ferme).is_none());
+        assert!(juger_service(0x1, brut, variable, |_| true, ferme).is_none());
+        // La ligne du bilan : SVCM au dossier vide ; signalé, sans commande, à la main.
+        let c = juger("SVCM|vg-essai-var|%NEXISTEPASVG%\\Mon Outil\\svc.exe||\nSVC_FIN\n").unwrap();
+        assert_eq!(c.probleme, Some(Niveau::Moyen));
+        assert!(
+            c.message.contains("vg-essai-var")
+                && (c.message.contains("ne sait pas où") || c.message.contains("does not know where")),
+            "{}",
+            c.message
+        );
+        let k = c.correctif.unwrap();
+        assert!(
+            k.commandes.is_empty() && !k.automatique && k.action.contains("vg-essai-var"),
+            "{}",
+            k.action
+        );
+        // Avec un service piégé : élevé, les deux dits, seul le piégé a sa ligne.
+        let c = juger("SVCM|vg-essai-var|%X%\\A B\\svc.exe||\nSVC|Autre|C:\\A B\\y.exe|C:\\A B|\nSVC_FIN\n").unwrap();
+        assert_eq!(c.probleme, Some(Niveau::Eleve));
+        assert!(
+            c.message.contains("Autre (C:\\A B)") && c.message.contains("vg-essai-var"),
+            "{}",
+            c.message
+        );
+        let k = c.correctif.unwrap();
+        assert_eq!(k.commandes, [gestes::ligne_service_guillemets("Autre").unwrap()]);
+        assert!(k.action.contains("vg-essai-var"), "{}", k.action);
+    }
+
+    /// Ce que le compte pose dans HKCU\Environment arrive dans l'environnement de ses processus, dont le processus
+    /// élevé : relancé avec SystemRoot, ProgramFiles et une variable inventée forgés, Vanguard ne s'en sert pas.
+    #[test]
+    fn environnement_du_compte_sans_effet() {
+        const PIEGE: &str = r"C:\vg-piege";
+        if std::env::var_os("VANGUARD_ESSAI_ENV_FORGE").is_some() {
+            // Wine remet SystemRoot et ProgramFiles à leur valeur ; la variable inventée, elle, arrive toujours.
+            if std::env::var("NEXISTEPASVG").as_deref() == Ok(PIEGE) {
+                println!("environnement forgé reçu");
+            }
+            for n in [
+                "SystemRoot",
+                "windir",
+                "ProgramFiles",
+                "CommonProgramFiles",
+                "ProgramData",
+            ] {
+                assert_ne!(variable_systeme(n).as_deref(), Some(PIEGE), "{n}");
+            }
+            assert_eq!(variable_systeme("NEXISTEPASVG"), None);
+            return;
+        }
+        let mut c = std::process::Command::new(std::env::current_exe().unwrap());
+        c.args([
+            "--exact",
+            "machine::windows::services::tests::environnement_du_compte_sans_effet",
+            "--nocapture",
+        ])
+        .env("VANGUARD_ESSAI_ENV_FORGE", "1");
+        for n in [
+            "SystemRoot",
+            "windir",
+            "ProgramFiles",
+            "CommonProgramFiles",
+            "ProgramData",
+            "NEXISTEPASVG",
+        ] {
+            c.env(n, PIEGE);
+        }
+        let sortie = c.output().unwrap();
+        let texte = String::from_utf8_lossy(&sortie.stdout);
+        // Le test relancé a bien tourné (un filtre qui ne trouverait rien réussirait aussi).
+        assert!(sortie.status.success() && texte.contains("1 passed"), "{texte}");
+        if !texte.contains("environnement forgé reçu") {
+            crate::essais::saute("environnement forgé perdu dans le processus relancé");
+        }
+    }
+
+    /// Aucune lecture de l'environnement de ce processus hors des tests : l'enfant élevé hérite de celui du compte.
+    #[test]
+    fn aucune_variable_lue_dans_le_processus() {
+        let source = include_str!("services.rs");
+        let code = source.split("#[cfg(test)]").next().unwrap();
+        for interdit in [
+            "env::var",
+            "env::vars",
+            "ExpandEnvironmentStrings",
+            "GetEnvironmentVariable",
+        ] {
+            assert!(!code.contains(interdit), "{interdit}");
+        }
     }
 }
