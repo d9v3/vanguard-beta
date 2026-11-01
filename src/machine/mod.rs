@@ -1194,9 +1194,14 @@ fn lancer_chacune(correctifs: &[Vec<String>]) -> (Vec<bool>, Vec<Vec<String>>) {
                         println!("    {GRIS}$ {}{RESET}", crate::ui::commande_affichable(c));
                         // bash par son chemin, sans fichier de démarrage, et dans un environnement propre : la ligne
                         // « sudo … » prend le sudo du système, jamais un faux posé dans un dossier du compte.
-                        crate::commande::bash_propre(c, std::env::vars_os())
-                            .status()
-                            .is_ok_and(|s| s.success())
+                        let Some(mut bash) = crate::commande::bash_propre(c, std::env::vars_os()) else {
+                            trp!(
+                                "    ✖ bash introuvable dans les dossiers du système (/usr/bin, /bin, /run/current-system/sw/bin) : rien n'a été fait",
+                                "    ✖ bash not found in the system folders (/usr/bin, /bin, /run/current-system/sw/bin): nothing was done"
+                            );
+                            return false;
+                        };
+                        bash.status().is_ok_and(|s| s.success())
                     })
                 })
             })
@@ -1470,6 +1475,32 @@ pub fn executer(json: bool) -> Audit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Une liste dont une ligne « vanguard: » est inconnue, ou qui mêle gestes de Vanguard et commandes, n'est pas
+    /// faite et le dit (échec) ; une liste de commandes seules reste à bash (pas de résultat ici). Aucun groupe n'est
+    /// valide : rien ne part à l'assistant élevé, aucune demande de droits.
+    #[cfg(unix)]
+    #[test]
+    fn lancer_les_ordres_refuse_l_inconnu_et_le_melange() {
+        let geste = gestes_unix::GesteUnix::Programme(&gestes_unix::FRESHCLAM).ligne();
+        let s = |l: &str| l.to_string();
+        let correctifs = [
+            vec![s("vanguard:geste programme inconnu")],
+            vec![s("vanguard:inconnu 1")],
+            vec![geste.clone(), s("vanguard:inconnu 1")],
+            vec![geste.clone(), s("echo x")],
+            vec![s("echo x"), geste.clone(), s("echo y")],
+            vec![s("echo x")],
+        ];
+        let mut resultats = vec![None; correctifs.len()];
+        let mut notes = vec![Vec::new(); correctifs.len()];
+        lancer_les_ordres(&correctifs, &mut resultats, &mut notes);
+        assert_eq!(
+            resultats,
+            [Some(false), Some(false), Some(false), Some(false), Some(false), None]
+        );
+        assert!(notes.iter().all(Vec::is_empty), "{notes:?}");
+    }
 
     /// chkdsk 3 : le conseil dit que rien n'est programmé et quoi lancer, sur le bon lecteur, dans les deux langues.
     #[test]

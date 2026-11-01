@@ -442,14 +442,19 @@ struct EtatPareFeu {
     autre: Option<&'static str>,
     gestion: Option<machine::linux::Paquets>,
     ssh: bool,
+    /// L'état d'un des services n'a pu se lire (ni bus système ni systemctl) : rien n'est proposé, pour ne pas
+    /// activer ufw par-dessus un firewalld qui tourne.
+    non_lu: bool,
 }
 
 #[cfg(target_os = "linux")]
 impl EtatPareFeu {
     fn lire(gestion: Option<machine::linux::Paquets>) -> Self {
-        use crate::machine::linux::{politique_ufw, service_actif, ufw_actif};
+        use crate::machine::linux::{politique_ufw, services_systemd_actifs, ufw_actif};
         use std::process::Command;
-        let firewalld = if service_actif("firewalld") {
+        let etats = services_systemd_actifs(&["firewalld", "nftables", "iptables"]);
+        let actif = |i: usize| etats.get(i).copied().flatten() == Some(true);
+        let firewalld = if actif(0) {
             let zone = zone_firewalld(std::path::Path::new("/")).or_else(|| {
                 crate::commande::lancer(Command::new("firewall-cmd").arg("--get-default-zone"), 10)
                     .map(|z| z.sortie.trim().to_string())
@@ -474,9 +479,13 @@ impl EtatPareFeu {
         EtatPareFeu {
             firewalld,
             ufw,
-            autre: ["nftables", "iptables"].into_iter().find(|s| service_actif(s)),
+            autre: [(1, "nftables"), (2, "iptables")]
+                .into_iter()
+                .find(|(i, _)| actif(*i))
+                .map(|(_, s)| s),
             gestion,
             ssh: session_ssh(),
+            non_lu: etats.contains(&None),
         }
     }
 }
@@ -499,6 +508,13 @@ fn pare_feu(e: &EtatPareFeu) -> Reparation {
             ));
         }
     };
+    if e.non_lu {
+        r.inutile = Some(String::from(tr!(
+            "état des services du pare-feu non lu (ni le bus système ni systemctl n'ont répondu) : rien à proposer sans le savoir",
+            "firewall service state not read (neither the system bus nor systemctl answered): nothing to offer without knowing it"
+        )));
+        return r;
+    }
     if let Firewalld::Actif(zone) = &e.firewalld {
         if zone.as_deref() == Some("trusted") {
             r.pourquoi = tr!("firewalld est actif mais en zone « trusted » : il laisse tout entrer. Passe la zone par défaut en « public ».", "firewalld is running but in the “trusted” zone: it lets everything in. Sets the default zone to “public”.").into();
@@ -629,14 +645,16 @@ pub fn liste() -> Vec<Reparation> {
     let systemd = std::path::Path::new("/run/systemd/system").is_dir();
     let mut l = Vec::new();
 
-    let mut reseau = if service_actif("NetworkManager") {
+    // Un état non lu ne propose rien : relancer un service qu'on ne sait pas actif n'aurait pas de sens.
+    let lu_actif = |nom| service_actif(nom) == Some(true);
+    let mut reseau = if lu_actif("NetworkManager") {
         vec!["sudo systemctl restart NetworkManager"]
-    } else if service_actif("systemd-networkd") {
+    } else if lu_actif("systemd-networkd") {
         vec!["sudo systemctl restart systemd-networkd"]
     } else {
         vec![]
     };
-    if service_actif("systemd-resolved") {
+    if lu_actif("systemd-resolved") {
         reseau.push("sudo resolvectl flush-caches");
     }
     if !reseau.is_empty() {
@@ -1439,6 +1457,12 @@ mod tests {
         });
         assert_eq!(r.commandes[0], "sudo systemctl enable --now firewalld");
         assert!(r.inutile.is_none() && r.bloquee.is_none() && !r.commandes.iter().any(|c| c.contains("ufw")));
+        // État des services non lu (ni bus ni systemctl) : rien n'est proposé, surtout pas ufw par-dessus firewalld.
+        let r = pare_feu(&EtatPareFeu {
+            non_lu: true,
+            ..base.clone()
+        });
+        assert!(r.commandes.is_empty() && r.inutile.is_some());
         // Par SSH, ni firewalld démarré ni zone changée : la session pourrait tomber.
         let ssh = EtatPareFeu {
             ssh: true,

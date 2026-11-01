@@ -32,7 +32,15 @@
 //! qui affaiblissent sans que la personne ait dit oui au fils. Ce que cela n'arrête pas : un programme du compte
 //! capable d'écrire dans le terminal de la personne ou d'agir à sa place dans sa session (taper pour elle, injecter
 //! dans ses processus) peut aussi répondre « oui » ; contre lui, seule une session séparée protège (Windows : le
-//! bureau sécurisé de l'UAC).
+//! bureau sécurisé de l'UAC). Concrètement, sans aucun droit particulier : `tmux send-keys` ou `screen -X stuff` si
+//! Vanguard tourne dedans, la télécommande de kitty, wtype ou ydotool sous Wayland, xdotool sous X11, et TIOCSTI sur
+//! un noyau d'avant 6.2 (ou compilé avec CONFIG_LEGACY_TIOCSTI). Vider le terminal (tcflush) ne bat que ce qui a été
+//! tapé d'avance : un programme qui lit l'écran (`tmux capture-pane`) tape après la question. L'accord n'est donc
+//! pas une barrière contre un programme du compte (limite A2 de D3) : il protège d'un geste fait par erreur.
+//!
+//! L'accord demande un terminal au fils : pkexec et run0 (en mode tube, avec nos tubes) ne lui en donnent pas, sudo
+//! oui (use_pty). Une liste qui contient un tel geste ne passe donc que par sudo, lancé depuis un terminal
+//! (`methodes`).
 
 // FFI de libc : prctl (PR_SET_DUMPABLE, le secret de l'assistant élevé hors des vidages).
 #![allow(unsafe_code)]
@@ -97,6 +105,14 @@ impl Demande {
             Demande::Geste(g) => g.permis_ici(),
         }
     }
+
+    /// Le fils demandera-t-il l'accord de la personne sur son terminal (`GesteUnix::demande_accord`) ?
+    fn demande_accord(&self) -> bool {
+        match self {
+            Demande::Ordre(_) => false,
+            Demande::Geste(g) => g.demande_accord(),
+        }
+    }
 }
 
 fn texte_du_geste(g: GesteUnix) -> &'static str {
@@ -135,8 +151,18 @@ fn terminal() -> bool {
     std::fs::File::open("/dev/tty").is_ok()
 }
 
-/// Les façons possibles ici, dans l'ordre où les essayer.
-fn methodes(graphique: bool, terminal: bool, existe: impl Fn(&str) -> bool) -> Vec<Methode> {
+/// Les façons possibles ici, dans l'ordre où les essayer. `accord` : un geste de la liste demande l'accord de la
+/// personne sur son terminal (/dev/tty, dans le fils). pkexec et run0 n'en donnent pas au programme élevé (run0 avec
+/// nos tubes passe en mode tube, sans terminal de contrôle pour le fils) : seul sudo, lancé depuis un terminal, le
+/// permet (avec use_pty, le fils a un terminal relayé) ; sinon aucune, et `sans_methode` dit pourquoi.
+fn methodes(graphique: bool, terminal: bool, accord: bool, existe: impl Fn(&str) -> bool) -> Vec<Methode> {
+    if accord {
+        return if terminal && existe("sudo") {
+            vec![Methode::Sudo]
+        } else {
+            Vec::new()
+        };
+    }
     let mut m = Vec::new();
     if cfg!(target_os = "linux") {
         if graphique && existe("pkexec") {
@@ -188,6 +214,10 @@ fn programme() -> Option<std::ffi::OsString> {
 /// La ligne de commande de l'élévation, sans la lancer.
 fn commande(m: Methode, chemin_outil: &std::path::Path, programme: &std::ffi::OsStr, terminal: bool) -> Command {
     let mut c = Command::new(chemin_outil);
+    // L'outil d'élévation lui-même, dans un environnement propre : run0 n'est pas setuid (un LD_PRELOAD de la session
+    // s'y chargerait, et c'est lui qui dit à systemd quoi lancer en root), et sudo lit SUDO_PROMPT (le texte de
+    // l'invite du mot de passe) ; la langue et le terminal suffisent à l'invite de sudo et à l'agent de run0.
+    crate::commande::environnement_propre(&mut c, std::env::vars_os());
     match m {
         // Sans son agent de secours dans le terminal : sans agent graphique, pkexec rend 127, et run0 ou sudo prend
         // la suite.
@@ -385,7 +415,9 @@ pub(crate) fn appliquer(groupes: &[Vec<Demande>]) -> Vec<Vec<Resultat>> {
         return tous_en_echec(groupes, "essai : aucune élévation");
     }
     let graphique = std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();
-    let possibles = methodes(graphique, terminal(), |n| outil(n).is_some());
+    let accord = groupes.iter().flatten().any(Demande::demande_accord);
+    let terminal = terminal();
+    let possibles = methodes(graphique, terminal, accord, |n| outil(n).is_some());
     // Pendant le dialogue, plus aucun processus du compte ne peut ouvrir nos tubes par /proc/<pid>/fd ni s'attacher
     // à nous (ptrace) pour glisser une autre liste au fils, ou lui répondre à sa place : un processus non
     // « dumpable » n'est plus accessible qu'à root.
@@ -415,12 +447,27 @@ pub(crate) fn appliquer(groupes: &[Vec<Demande>]) -> Vec<Vec<Resultat>> {
             Issue::Indisponible => {}
         }
     }
-    let raison = tr!(
-        "aucun moyen d'obtenir les droits d'administrateur ici (ni pkexec avec un agent polkit, ni run0, ni sudo) : rien n'a été fait",
-        "no way to get administrator rights here (neither pkexec with a polkit agent, nor run0, nor sudo): nothing was done"
-    );
+    let raison = sans_methode(accord, terminal);
     trp!("    ✖ {}", "    ✖ {}", raison);
     tous_en_echec(groupes, raison)
+}
+
+/// Pourquoi aucune façon d'obtenir les droits n'a marché, en nommant celles qui ne pouvaient pas servir.
+fn sans_methode(accord: bool, terminal: bool) -> &'static str {
+    match (accord, terminal) {
+        (true, true) => tr!(
+            "un geste demande votre accord dans le terminal, et seul sudo le permet (pkexec et run0 ne donnent pas de terminal au programme administrateur) ; sudo n'est pas installé : rien n'a été fait",
+            "a step needs your agreement in the terminal, and only sudo allows it (pkexec and run0 give no terminal to the administrator program); sudo is not installed: nothing was done"
+        ),
+        (true, false) => tr!(
+            "un geste demande votre accord dans un terminal, et Vanguard n'a pas été lancé depuis un terminal (pkexec et run0 n'en donnent pas au programme administrateur, seul sudo dans un terminal le permet) : rien n'a été fait. Lancez Vanguard depuis un terminal",
+            "a step needs your agreement in a terminal, and Vanguard was not started from a terminal (pkexec and run0 give none to the administrator program, only sudo in a terminal allows it): nothing was done. Start Vanguard from a terminal"
+        ),
+        (false, _) => tr!(
+            "aucun moyen d'obtenir les droits d'administrateur ici (ni pkexec avec un agent polkit, ni run0, ni sudo) : rien n'a été fait",
+            "no way to get administrator rights here (neither pkexec with a polkit agent, nor run0, nor sudo): nothing was done"
+        ),
+    }
 }
 
 /// Rend ce processus inaccessible au compte (PR_SET_DUMPABLE à 0) le temps du dialogue avec le fils, puis le remet.
@@ -575,6 +622,20 @@ fn lancer_programme(p: &Programme) -> Resultat {
     let mut c = Command::new(&chemin);
     c.args(p.arguments);
     crate::commande::environnement_propre(&mut c, std::env::vars_os().filter(|(n, _)| langue_ou_terminal(n)));
+    // Un outil long (freshclam : jusqu'à 15 min sur une ligne lente) le dit avant de partir : sans un mot, la personne
+    // croirait Vanguard figé et fermerait la fenêtre. Sur la sortie d'erreur : la sortie standard porte les réponses
+    // au parent.
+    if p.delai >= 60 {
+        eprintln!(
+            "{}",
+            trf!(
+                "    … {} : jusqu'à {} min",
+                "    … {}: up to {} min",
+                if crate::langue::anglais() { p.en } else { p.fr },
+                p.delai.div_ceil(60)
+            )
+        );
+    }
     let Some(r) = crate::commande::lancer(&mut c, p.delai) else {
         return Resultat::echec(trf!(
             "{} n'a pas démarré, ou n'a pas fini en {} minutes : compté comme non fait",
@@ -721,22 +782,157 @@ mod tests {
         assert!(sortie.status.success() && texte.contains("1 passed"), "{texte}");
     }
 
+    /// L'accord sur le terminal, pour de vrai : le fils de l'essai tourne dans sa propre session, sous un
+    /// pseudo-terminal qui est son terminal de contrôle (/dev/tty), et ce test-ci tape à la place de la personne.
+    /// « oui » après la question : accordé. « oui » tapé AVANT la question, puis « non » : refusé (tcflush a vidé
+    /// l'avance). Sans terminal de contrôle : refusé, en le disant.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn accord_au_terminal_sous_pty() {
+        for cas in ["oui", "avance", "sans"] {
+            let Some(texte) = accord_sous_pty(cas) else {
+                return crate::essais::saute("pas de pseudo-terminal ici (/dev/ptmx)");
+            };
+            assert!(texte.contains("1 passed"), "{cas} : {texte}");
+        }
+    }
+
+    /// Lance `accord_dedans` dans un processus à part, sous un pseudo-terminal neuf (sauf `sans`), et répond à la
+    /// question. La sortie du fils ; `None` si le pseudo-terminal manque.
+    #[cfg(target_os = "linux")]
+    fn accord_sous_pty(cas: &str) -> Option<String> {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::process::CommandExt;
+        use std::time::{Duration, Instant};
+        // SAFETY: posix_openpt sans pointeur ; le descripteur rendu est confié à un `File` juste après.
+        let fd = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY) };
+        if fd < 0 {
+            return None;
+        }
+        // SAFETY: `fd` vient d'être ouvert, et n'appartient qu'à ce `File`, qui le fermera.
+        let mut maitre = unsafe { std::fs::File::from_raw_fd(fd) };
+        let mut nom: [libc::c_char; 128] = [0; 128];
+        // SAFETY: grantpt et unlockpt sur le maître ouvert ; ptsname_r écrit au plus `nom.len()` octets dans `nom`.
+        let pret = unsafe {
+            libc::grantpt(fd) == 0 && libc::unlockpt(fd) == 0 && libc::ptsname_r(fd, nom.as_mut_ptr(), nom.len()) == 0
+        };
+        if !pret {
+            return None;
+        }
+        // SAFETY: ptsname_r a réussi : `nom` est une chaîne finie par un NUL, dans le tableau.
+        let esclave = unsafe { std::ffi::CStr::from_ptr(nom.as_ptr()) }.to_owned();
+        // L'esclave tenu ouvert ici aussi : ce qui est tapé avant que le fils ne l'ouvre y reste, comme au clavier.
+        let _tenu = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOCTTY)
+            .open(std::ffi::OsStr::from_bytes(esclave.to_bytes()))
+            .ok()?;
+        if cas == "avance" {
+            maitre.write_all(b"oui\n").ok()?;
+        }
+        let mut c = Command::new(std::env::current_exe().ok()?);
+        c.args([
+            "--ignored",
+            "--exact",
+            "machine::assistant::tests::accord_dedans",
+            "--test-threads=1",
+        ])
+        .env("VANGUARD_ESSAI_ACCORD", cas)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+        let avec_terminal = cas != "sans";
+        // SAFETY: entre fork et exec, seulement setsid, open et ioctl (sûrs à ce moment-là), sans allocation ; le
+        // chemin de l'esclave est une chaîne C déjà prête.
+        unsafe {
+            c.pre_exec(move || {
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if avec_terminal {
+                    let t = libc::open(esclave.as_ptr(), libc::O_RDWR);
+                    if t < 0 || libc::ioctl(t, libc::TIOCSCTTY, 0) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                Ok(())
+            });
+        }
+        let enfant = c.spawn().ok()?;
+        if avec_terminal {
+            // La question d'abord, comme la personne : répondre avant serait taper d'avance.
+            let mut vu = Vec::new();
+            let limite = Instant::now() + Duration::from_secs(60);
+            while !String::from_utf8_lossy(&vu).contains("Vanguard (admin") && Instant::now() < limite {
+                let mut p = libc::pollfd {
+                    fd: maitre.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: un seul pollfd, valide le temps de l'appel.
+                if unsafe { libc::poll(&raw mut p, 1, 200) } > 0 {
+                    let mut tampon = [0u8; 512];
+                    match maitre.read(&mut tampon) {
+                        Ok(n) if n > 0 => vu.extend_from_slice(&tampon[..n]),
+                        _ => break,
+                    }
+                }
+            }
+            maitre.write_all(if cas == "oui" { b"oui\n" } else { b"non\n" }).ok()?;
+        }
+        let sortie = enfant.wait_with_output().ok()?;
+        Some(format!(
+            "{}{}",
+            String::from_utf8_lossy(&sortie.stdout),
+            String::from_utf8_lossy(&sortie.stderr)
+        ))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "lancé dans un processus à part, sous un pseudo-terminal, par accord_au_terminal_sous_pty"]
+    fn accord_dedans() {
+        let Ok(cas) = std::env::var("VANGUARD_ESSAI_ACCORD") else {
+            return crate::essais::saute("VANGUARD_ESSAI_ACCORD non donné");
+        };
+        let r = accord_au_terminal(GesteUnix::Programme(&crate::machine::gestes_unix::FRESHCLAM));
+        match cas.as_str() {
+            "oui" => assert!(r.is_ok(), "{r:?}"),
+            "sans" => assert!(r.is_err_and(|Refus(t)| t.contains("terminal"))),
+            _ => assert!(r.is_err(), "« oui » tapé d'avance a répondu à la place de la personne"),
+        }
+    }
+
     #[test]
     fn l_ordre_des_methodes() {
         let tout = |_: &str| true;
         if cfg!(target_os = "linux") {
             assert_eq!(
-                methodes(true, true, tout),
+                methodes(true, true, false, tout),
                 [Methode::Pkexec, Methode::Run0, Methode::Sudo]
             );
             // Sans session graphique : pas de pkexec ; sans terminal : pas de run0.
-            assert_eq!(methodes(false, true, tout), [Methode::Run0, Methode::Sudo]);
-            assert_eq!(methodes(false, false, tout), [Methode::Sudo]);
-            assert_eq!(methodes(true, false, |n| n == "pkexec"), [Methode::Pkexec]);
+            assert_eq!(methodes(false, true, false, tout), [Methode::Run0, Methode::Sudo]);
+            assert_eq!(methodes(false, false, false, tout), [Methode::Sudo]);
+            assert_eq!(methodes(true, false, false, |n| n == "pkexec"), [Methode::Pkexec]);
         } else {
-            assert_eq!(methodes(true, true, tout), [Methode::Sudo]);
+            assert_eq!(methodes(true, true, false, tout), [Methode::Sudo]);
         }
-        assert_eq!(methodes(true, true, |_| false), []);
+        assert_eq!(methodes(true, true, false, |_| false), []);
+        // Un geste demande l'accord sur le terminal : ni pkexec ni run0 (pas de terminal pour le fils), sudo seulement
+        // depuis un terminal ; sinon rien, et le texte nomme ce qui manque.
+        assert_eq!(methodes(true, true, true, tout), [Methode::Sudo]);
+        assert_eq!(methodes(true, true, true, |n| n != "sudo"), []);
+        assert_eq!(methodes(true, false, true, tout), []);
+        for terminal in [true, false] {
+            let t = sans_methode(true, terminal);
+            assert!(t.contains("sudo") && t.contains("pkexec") && t.contains("run0"), "{t}");
+        }
+        assert!(sans_methode(true, false).contains("terminal"));
+        assert!(sans_methode(true, true).contains("installé") || sans_methode(true, true).contains("installed"));
     }
 
     /// La ligne de commande de l'élévation : l'image qui tourne, la sous-commande et rien d'autre (aucun shell).

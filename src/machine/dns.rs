@@ -179,10 +179,21 @@ fn serveurs() -> Option<Serveurs> {
         // nom hors du service (lancé à la main, conteneur, dnsmasq de libvirt) ne compte pas : il n'est pas le
         // DNS de la machine et ferait dire « chiffré » à tort. Le premier de la liste gagne, comme avant.
         let noms: Vec<&str> = RESOLVEURS.iter().map(|r| r.0).collect();
-        // En secours, l'état que systemd tient lui-même (par le bus, sinon systemctl), pour tous à la fois.
-        let actifs = crate::machine::linux::natif::services_actifs(&noms)
-            .unwrap_or_else(|| crate::machine::linux::services_systemd_actifs(&noms));
-        if let Some((_, nom, chiffrant)) = RESOLVEURS.iter().zip(actifs).find(|(_, actif)| *actif).map(|(r, _)| *r) {
+        // En secours, l'état que systemd tient lui-même, pour tous à la fois : par le bus système, sinon par
+        // `systemctl is-active` (celui du système, dans un environnement propre) ; un état que ni l'un ni l'autre
+        // n'a lu reste non lu.
+        let actifs: Vec<Option<bool>> = match crate::machine::linux::natif::services_actifs(&noms) {
+            Some(lus) => lus.into_iter().map(Some).collect(),
+            None => crate::machine::linux::services_systemd_actifs(&noms),
+        };
+        // Le premier actif de la liste gagne ; un non lu avant lui arrête la recherche (il pourrait être celui qui
+        // tourne, et un suivant ferait dire « chiffré » à tort).
+        let premier = RESOLVEURS
+            .iter()
+            .zip(actifs)
+            .find(|(_, actif)| *actif != Some(false))
+            .filter(|(_, actif)| *actif == Some(true));
+        if let Some((_, nom, chiffrant)) = premier.map(|(r, _)| *r) {
             resolveur_local = Some(nom);
             if chiffrant {
                 chiffre = Some(true);

@@ -409,9 +409,10 @@ fn version_de_paquet(version: &str) -> Option<(u32, u32)> {
     version_openssh(&format!("OpenSSH_{sans_epoque}"))
 }
 
-/// Le serveur SSH tourne-t-il ? `None` sans systemd : on ne sait pas quels services tournent.
+/// Le serveur SSH tourne-t-il ? `None` sans systemd, ou quand son état n'a pu se lire : on ne sait pas quels services
+/// tournent.
 pub(crate) fn sshd_en_marche() -> Option<bool> {
-    systemd().then(sshd_actif)
+    systemd().then(sshd_actif).flatten()
 }
 
 /// La configuration de sshd dans son ordre de lecture (`ordonner`), pour les règles communes.
@@ -441,7 +442,7 @@ pub(crate) fn version_ssh() -> Option<(u32, u32)> {
 
 fn algorithmes_ssh() -> Option<Constat> {
     // Configuration illisible ou serveur arrêté : la règle du serveur SSH le dit déjà.
-    if !systemd() || !sshd_actif() {
+    if !systemd() || sshd_actif() != Some(true) {
         return None;
     }
     let segments = ordonner(&std::fs::read_to_string(SSHD_PRINCIPAL).ok()?, inclure)?;

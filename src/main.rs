@@ -4431,7 +4431,7 @@ mod tests_menu {
     /// espaces octet pour octet, sauts de ligne gardés : positions et numéros de ligne ne bougent pas. Le `r#` d'un
     /// identifiant brut aussi (`mod r#x;` se lit `mod   x;`). Toute la garde de l'`unsafe` lit ce texte : sur le texte
     /// brut, un `]` ou un `mod x;` écrit dans un commentaire ou une chaîne la trompait.
-    fn blanchi(texte: &str, chaines: bool) -> String {
+    pub(crate) fn blanchi(texte: &str, chaines: bool) -> String {
         let o = texte.as_bytes();
         let mut blanc = o.to_vec();
         let effacer = |blanc: &mut Vec<u8>, de: usize, a: usize| {
