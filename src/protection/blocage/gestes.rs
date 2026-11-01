@@ -1417,6 +1417,7 @@ mod tests {
             sessions: Some(gardes::Sessions {
                 sessions: vec!["198.51.100.20".parse().unwrap()],
                 autres_comptes: vec!["203.0.113.9".parse().unwrap()],
+                ports_locaux: Vec::new(),
             }),
             pare_feu: Ok(PareFeu::Ufw),
             admin,

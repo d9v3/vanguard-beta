@@ -1399,6 +1399,8 @@ fn ports_ecoute(pare_feu_actif: bool, ip_lan: Option<&str>) -> Vec<Constat> {
     else {
         return vec![illisible("Ports en écoute")];
     };
+    // Les sessions à distance en cours, lues une fois : leur port n'est pas proposé à la fermeture (`port_a_garder`).
+    let sessions = crate::protection::blocage::sessions_a_distance();
     // Ports RPC dynamiques ouverts par Windows lui-même : normaux et filtrés par le pare-feu.
     let systeme = ["svchost", "lsass", "wininit", "services", "spoolsv", "System", "Idle"];
     let mut vus = Vec::new();
@@ -1433,37 +1435,43 @@ fn ports_ecoute(pare_feu_actif: bool, ip_lan: Option<&str>) -> Vec<Constat> {
             continue;
         }
         let niveau = super::niveau_expose(pare_feu_actif, i.niveau);
-        let constat = alerte(
-            "Ports en écoute",
-            niveau,
-            trf!(
-                "{port}/tcp ({}) ouvert par « {programme} ». {}",
-                "{port}/tcp ({}) opened by “{programme}”. {}",
-                i.service,
-                i.conseil
-            ),
-        )
-        .avec_objet(objet);
         // SSH et RDP : pas de blocage aveugle, il coupe l'accès aux machines pilotées à distance (VM…) ; le processus
         // élevé le refuserait de toute façon (`ordres::juger`). Le constat « Bureau à distance » propose déjà NLA ou
-        // la désactivation propre.
-        constats.push(
-            if niveau >= Niveau::Moyen && crate::protection::blocage::port_intouchable(port).is_none() {
-                constat
-                    .corriger(
-                        trf!(
-                            "Bloquer le port {port} en entrée dans le pare-feu Windows",
-                            "Block inbound port {port} in the Windows firewall"
-                        ),
-                        // L'ordre du blocage, fait par COM dans le processus élevé : la règle « Vanguard : bloquer {port} »
-                        // (`nom_entrante`, celle que relit `regles_vanguard`), sans doublon si elle existe déjà.
-                        &[&port_ferme(port)],
-                    )
-                    .bloquant(format!("{port}/tcp"))
-            } else {
-                constat
-            },
+        // la désactivation propre. Le port d'une session en cours (prise en main sur 5900…), ou tout port quand les
+        // connexions ne se lisent pas : pas proposé non plus, et le constat dit pourquoi.
+        let proposable = niveau >= Niveau::Moyen && crate::protection::blocage::port_intouchable(port).is_none();
+        let garde = proposable
+            .then(|| crate::protection::blocage::port_a_garder(port, sessions.as_ref()))
+            .flatten();
+        let texte = trf!(
+            "{port}/tcp ({}) ouvert par « {programme} ». {}",
+            "{port}/tcp ({}) opened by “{programme}”. {}",
+            i.service,
+            i.conseil
         );
+        let texte = match garde {
+            Some(raison) => trf!(
+                "{texte} Blocage du port pas proposé : {raison}.",
+                "{texte} Blocking the port not offered: {raison}."
+            ),
+            None => texte,
+        };
+        let constat = alerte("Ports en écoute", niveau, texte).avec_objet(objet);
+        constats.push(if proposable && garde.is_none() {
+            constat
+                .corriger(
+                    trf!(
+                        "Bloquer le port {port} en entrée dans le pare-feu Windows",
+                        "Block inbound port {port} in the Windows firewall"
+                    ),
+                    // L'ordre du blocage, fait par COM dans le processus élevé : la règle « Vanguard : bloquer {port} »
+                    // (`nom_entrante`, celle que relit `regles_vanguard`), sans doublon si elle existe déjà.
+                    &[&port_ferme(port)],
+                )
+                .bloquant(format!("{port}/tcp"))
+        } else {
+            constat
+        });
     }
     if constats.is_empty() {
         constats.push(ok(

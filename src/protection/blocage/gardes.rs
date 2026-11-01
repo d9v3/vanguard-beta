@@ -222,13 +222,18 @@ pub(crate) struct Etablie {
     pub autre_compte: bool,
 }
 
-/// Les adresses que le blocage ne coupe pas, lues une fois par passage.
+/// Les adresses et les ports que le blocage ne coupe pas, lus une fois par passage.
+// `sessions.sessions` : le nom lu partout depuis le début ; le lint ne s'en plaint qu'à partir de trois champs.
+#[allow(clippy::struct_field_names)]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Sessions {
     /// Celles des sessions à distance en cours : jamais coupées.
     pub sessions: Vec<IpAddr>,
     /// Celles où une connexion d'un autre compte est établie : jamais coupées tout seul, seulement d'un clic.
     pub autres_comptes: Vec<IpAddr>,
+    /// Les ports locaux des sessions en cours (VNC sur 5900, RustDesk…) : jamais fermés en entrée pendant qu'elles
+    /// durent, une règle Block coupant aussi ce qui est établi.
+    pub ports_locaux: Vec<u16>,
 }
 
 /// Pourquoi cette adresse ne doit pas être bloquée en sortie, ou `None`. `sessions` : ce que les connexions en cours
@@ -275,6 +280,23 @@ pub(crate) fn port_intouchable(port: u16) -> Option<&'static str> {
     ))
 }
 
+/// Pourquoi ce port ne doit pas être fermé en entrée, ou `None` : celui de SSH ou du Bureau à distance, toujours ;
+/// celui d'une session à distance en cours (prise en main sur 5900, RustDesk…), tant qu'elle dure ; tout port si les
+/// connexions en cours ne se lisent pas (`sessions` à `None`), rien n'étant fermé sans les connaître.
+pub(crate) fn port_a_garder(port: u16, sessions: Option<&Sessions>) -> Option<&'static str> {
+    port_intouchable(port).or_else(|| match sessions {
+        None => Some(tr!(
+            "connexions en cours illisibles : aucun port n'est fermé sans savoir s'il porte une session à distance",
+            "current connections unreadable: no port is closed without knowing whether it carries a remote session"
+        )),
+        Some(s) if s.ports_locaux.contains(&port) => Some(tr!(
+            "une session à distance passe en ce moment par ce port : pas fermé, pour ne pas la couper",
+            "a remote session is going through this port right now: not closed, so as not to cut it"
+        )),
+        Some(_) => None,
+    })
+}
+
 /// Les programmes d'accès à distance, de prise en main et de VPN : une connexion établie de l'un d'eux est une
 /// session, quel que soit son port (SSH sur 2222, VNC, RustDesk, WireGuard…). Plus les VNC (« vnc* », « *vnc »).
 const PROGRAMMES_DE_SESSION: &[&str] = &[
@@ -319,6 +341,7 @@ pub(crate) fn juger_etablies(etablies: &[Etablie], client: Option<IpAddr>) -> Se
         let ip = e.distante.to_canonical();
         if est_session(e) {
             s.sessions.push(ip);
+            s.ports_locaux.push(e.port_local);
         }
         if e.autre_compte {
             s.autres_comptes.push(ip);
@@ -329,6 +352,8 @@ pub(crate) fn juger_etablies(etablies: &[Etablie], client: Option<IpAddr>) -> Se
         liste.sort_unstable();
         liste.dedup();
     }
+    s.ports_locaux.sort_unstable();
+    s.ports_locaux.dedup();
     s
 }
 
@@ -686,6 +711,7 @@ mod tests {
         let sessions = Sessions {
             sessions: vec![ip("198.51.100.20")],
             autres_comptes: vec![ip("203.0.113.9")],
+            ports_locaux: Vec::new(),
         };
         let s = Some(&sessions);
         for auto in [false, true] {

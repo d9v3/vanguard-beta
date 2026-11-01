@@ -285,36 +285,66 @@ pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
     }
 }
 
-/// La phrase d'un acte de la table, montrée avant l'UAC et dans la fenêtre administrateur. Un acte qui affaiblit
-/// (remettre en route ce que Vanguard avait coupé, à l'annulation d'un réglage) le dit en toutes lettres.
+/// La phrase d'un acte de la table, montrée avant l'UAC et dans la fenêtre administrateur. Un acte qui affaiblit le
+/// dit en toutes lettres ; la phrase décrit ce qui sera fait, rien de plus : le processus élevé ne lit ni l'état du
+/// mode Wi-Fi public ni les changements notés, il ne peut pas savoir d'où vient une ligne (forgée, elle n'est pas
+/// « ce que Vanguard avait coupé »).
 pub(crate) fn texte_acte(acte: &crate::machine::gestes::Acte) -> String {
     use crate::ui::trf;
     let phrase = phrase_acte(acte);
     if acte.affaiblit() {
         trf!(
-            "{phrase} — rend le PC moins protégé (remet ce que Vanguard avait coupé)",
-            "{phrase} — makes the PC less protected (restores what Vanguard had turned off)"
+            "{phrase} — rend le PC moins protégé",
+            "{phrase} — makes the PC less protected"
         )
     } else {
         phrase
     }
 }
 
-/// Un réglage du profil Public, en clair : « entrées bloquées par défaut : oui ».
+/// Un réglage du profil Public, en clair : ce que le processus élevé va en faire.
 fn texte_reglage_public(r: crate::machine::gestes::ReglagePublic, v: crate::machine::gestes::ValeurPublic) -> String {
     use crate::machine::gestes::{ReglagePublic, ValeurPublic};
     use crate::ui::tr;
-    let nom = match r {
-        ReglagePublic::Actif => tr!("allumé", "on"),
-        ReglagePublic::EntrantBloque => tr!("entrées bloquées par défaut", "inbound blocked by default"),
-        ReglagePublic::ReglesEntrantes => tr!("entrées des programmes autorisés", "inbound for allowed programs"),
-    };
-    let valeur = match v {
-        ValeurPublic::Oui => tr!("oui", "yes"),
-        ValeurPublic::Non => tr!("non", "no"),
-        ValeurPublic::Absent => tr!("non configuré (valeur de Windows)", "not configured (Windows default)"),
-    };
-    crate::ui::trf!("{nom} : {valeur}", "{nom}: {valeur}")
+    match (r, v) {
+        (ReglagePublic::Actif, _) => tr!("le mettre en marche", "turn it on"),
+        (ReglagePublic::EntrantBloque, ValeurPublic::Oui) => {
+            tr!("bloquer les entrées par défaut", "block inbound by default")
+        }
+        (ReglagePublic::EntrantBloque, _) => tr!(
+            "autoriser les entrées par défaut (Windows les bloque par défaut)",
+            "allow inbound by default (Windows blocks it by default)"
+        ),
+        (ReglagePublic::ReglesEntrantes, ValeurPublic::Non) => tr!(
+            "bloquer toutes les entrées, même celles des programmes autorisés",
+            "block all inbound, even for allowed programs"
+        ),
+        (ReglagePublic::ReglesEntrantes, ValeurPublic::Oui) => {
+            tr!("laisser entrer les programmes autorisés", "let allowed programs in")
+        }
+        (ReglagePublic::ReglesEntrantes, ValeurPublic::Absent) => tr!(
+            "remettre les règles entrantes à non configuré (défaut de Windows : les programmes autorisés entrent)",
+            "put inbound rules back to not configured (Windows default: allowed programs get in)"
+        ),
+    }
+    .to_string()
+}
+
+/// Le réseau d'un acte, nommé : son nom tel que le registre le garde, avec le GUID que l'acte désigne (le nom ne
+/// fait que le montrer, deux réseaux peuvent s'appeler pareil).
+fn reseau_nomme(r: &crate::machine::gestes::ReseauCategorie) -> String {
+    use super::pare_feu::NomReseau;
+    use crate::ui::trf;
+    let g = r.guid.texte();
+    match super::pare_feu::nom_du_reseau(r) {
+        NomReseau::Lu(n) => {
+            // Un nom choisi par qui a créé le réseau : rendu inoffensif et court.
+            let n: String = n.chars().take(64).collect();
+            trf!("« {} » {g}", "“{}” {g}", crate::ui::affichable(&n))
+        }
+        NomReseau::Absent => trf!("{g} (inconnu de ce PC)", "{g} (unknown to this PC)"),
+        NomReseau::Illisible => trf!("{g} (nom illisible)", "{g} (name unreadable)"),
+    }
 }
 
 fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
@@ -387,15 +417,15 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
             )
         }
         Acte::ReseauCategorie(r) => {
-            let g = r.guid.texte();
+            let g = reseau_nomme(r);
             match r.categorie {
                 Categorie::Public => trf!(
                     "Passer le réseau {g} en catégorie Public",
                     "Set the network {g} to the Public category"
                 ),
                 Categorie::Prive => trf!(
-                    "Remettre le réseau {g} en catégorie Privé",
-                    "Set the network {g} back to the Private category"
+                    "Passer le réseau {g} en catégorie Privé (le pare-feu y applique son profil Privé)",
+                    "Set the network {g} to the Private category (the firewall applies its Private profile there)"
                 ),
             }
         }
@@ -625,6 +655,8 @@ mod tests {
         let moins = |l: &str| {
             let t = affichable(l);
             assert!(!t.starts_with("vanguard:"), "{t}");
+            // Ce que l'élevé ne peut pas savoir d'une ligne n'est jamais affirmé.
+            assert!(!t.contains("avait coupé") && !t.contains("had turned off"), "{t}");
             t.contains("moins protégé") || t.contains("less protected")
         };
         let durcies = [
@@ -645,6 +677,14 @@ mod tests {
             assert!(native(l) && moins(l), "{l}");
             assert_eq!(comment_defaire(std::slice::from_ref(l)), Defaire::Inconnu, "{l}");
         }
+        // Le réseau est désigné par son GUID, et dit inconnu quand aucun profil ne le porte (ni sous Wine ni dans la VM).
+        let t = affichable(&format!("vanguard:reseau-categorie {g} prive"));
+        assert!(
+            t.contains(g) && (t.contains("inconnu de ce PC") || t.contains("unknown to this PC")),
+            "{t}"
+        );
+        let t = affichable("vanguard:pare-feu-public regles-entrantes=absent");
+        assert!(t.contains("non configuré") || t.contains("not configured"), "{t}");
         let ps = en_powershell(&[vec![gestes::ligne_pare_feu_actif()]]);
         assert_eq!(
             ps,

@@ -181,9 +181,26 @@ pub(crate) mod lecture {
 
     /// L'élément est-il à sa valeur d'avant ? `None` : illisible. `pare_feu` : la lecture du profil Public, faite une
     /// fois pour tous.
-    pub(crate) fn a_l_avant(e: &Element, pare_feu: Option<&[String; 3]>) -> Option<bool> {
+    /// La catégorie en usage, par INetworkListManager ; `None` si Windows ne connaît pas ce réseau en ce moment.
+    fn categorie_en_usage(guid: &str) -> Option<&'static str> {
+        let g = crate::machine::gestes::GuidReseau::lire(guid)?;
+        Some(match crate::machine::windows::pare_feu::categorie_en_direct(g)? {
+            0 => "Public",
+            1 => "Private",
+            _ => "DomainAuthenticated",
+        })
+    }
+
+    /// `en_direct` : la catégorie se relit en usage seulement (juste après l'allumage, le réseau est connecté : le
+    /// registre seul dirait pris ce que Windows n'applique pas). Sinon, en usage si Windows connaît le réseau, et
+    /// dans le registre pour un réseau qui n'est plus là (remis pour sa prochaine connexion).
+    pub(crate) fn a_l_avant(e: &Element, pare_feu: Option<&[String; 3]>, en_direct: bool) -> Option<bool> {
         match e {
-            Element::Categorie { guid, avant } => categorie(guid).map(|c| c == avant),
+            Element::Categorie { guid, avant } => match categorie_en_usage(guid) {
+                Some(c) => Some(c == avant),
+                None if en_direct => None,
+                None => categorie(guid).map(|c| c == avant),
+            },
             Element::ProfilPublic { parametre, avant } => {
                 let i = super::PARAMETRES_PROFIL.iter().position(|(p, _)| p == parametre)?;
                 pare_feu.and_then(|f| f.get(i)).map(|v| *v == *avant)

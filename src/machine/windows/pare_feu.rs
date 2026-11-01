@@ -7,8 +7,9 @@
 //!
 //! Aussi les actes du pare-feu et des réseaux (`gestes::Acte`) : le pare-feu remis en marche sur ses trois profils,
 //! le profil Public réglé (INetFwPolicy2 écrit le magasin local, celui que `-PolicyStore PersistentStore` lit et
-//! écrit), et la catégorie d'un réseau (INetworkListManager, comme Set-NetConnectionProfile ; le registre en repli,
-//! comme avant). Chaque valeur est relue après avoir été écrite.
+//! écrit), et la catégorie d'un réseau (INetworkListManager, comme Set-NetConnectionProfile ; le registre seulement
+//! pour un réseau que Windows ne connaît pas en ce moment, dit non vérifié). Chaque valeur est relue après avoir été
+//! écrite.
 
 // FFI de COM (crate windows) : INetFwPolicy2, les règles et les profils du Pare-feu Windows ; INetworkListManager,
 // la catégorie des réseaux.
@@ -24,12 +25,13 @@ use windows::Win32::NetworkManagement::WindowsFirewall::{
     NetFwPolicy2, NetFwRule,
 };
 use windows::Win32::Networking::NetworkListManager::{
-    INetworkListManager, NLM_NETWORK_CATEGORY, NLM_NETWORK_CATEGORY_DOMAIN_AUTHENTICATED, NetworkListManager,
+    INetworkListManager, NLM_ENUM_NETWORK_CONNECTED, NLM_NETWORK_CATEGORY, NLM_NETWORK_CATEGORY_DOMAIN_AUTHENTICATED,
+    NetworkListManager,
 };
 use windows::Win32::System::Com::{CLSCTX_ALL, CLSCTX_INPROC_SERVER, CoCreateInstance};
 use windows::core::BSTR;
 
-use crate::machine::gestes::{Acte, ProfilPublic, ReglagePublic, ReseauCategorie, ValeurPublic};
+use crate::machine::gestes::{Acte, GuidReseau, ProfilPublic, ReglagePublic, ReseauCategorie, ValeurPublic};
 
 use crate::protection::blocage::ordres::Resultat;
 use crate::{tr, trf};
@@ -172,9 +174,10 @@ fn dans_com(geste: impl FnOnce(&INetFwPolicy2, &INetFwRules) -> Resultat + Send 
                     Ok((p, r))
                 }) {
                     Ok((p, r)) => geste(&p, &r),
+                    // Le plus souvent, le service Pare-feu Windows arrêté : la classe ne se crée pas sans lui.
                     Err(e) => Resultat::echec(trf!(
-                        "Pare-feu Windows injoignable : {}",
-                        "Windows Firewall unreachable: {}",
+                        "Pare-feu Windows injoignable (le service Pare-feu Windows, mpssvc, est peut-être arrêté) : {}",
+                        "Windows Firewall unreachable (the Windows Firewall service, mpssvc, may be stopped): {}",
                         e.message()
                     )),
                 },
@@ -311,9 +314,11 @@ fn pare_feu_actif() -> Resultat {
                 ));
             }
             if !allume(p, profil) {
+                // L'écriture va au magasin local, la relecture rend l'effet : une stratégie de groupe qui coupe ce
+                // profil passe avant.
                 return Resultat::echec(trf!(
-                    "profil {nom} : relu coupé après l'avoir allumé",
-                    "{nom} profile: read back off after turning it on"
+                    "profil {nom} : relu coupé après l'avoir allumé (une stratégie de groupe impose peut-être ce réglage)",
+                    "{nom} profile: read back off after turning it on (a group policy may be enforcing this setting)"
                 ));
             }
             rallumes.push(nom);
@@ -376,9 +381,10 @@ fn regler_public(p: &INetFwPolicy2, r: ReglagePublic, v: ValeurPublic) -> Result
             e.message()
         )),
         Ok(()) if relu => Resultat::ok(),
+        // Écrit dans le magasin local, relu dans l'effet : une stratégie de groupe contraire passe avant.
         Ok(()) => Resultat::echec(trf!(
-            "{nom} : relu autrement qu'écrit",
-            "{nom}: read back differently than written"
+            "{nom} : relu autrement qu'écrit (une stratégie de groupe impose peut-être ce réglage)",
+            "{nom}: read back differently than written (a group policy may be enforcing this setting)"
         )),
     }
 }
@@ -386,18 +392,10 @@ fn regler_public(p: &INetFwPolicy2, r: ReglagePublic, v: ValeurPublic) -> Result
 /// Le profil Public réglé, chaque réglage relu ; « absent » remet ensuite le magasin tel qu'il était : sans la
 /// valeur, que PersistentStore relit « NotConfigured ».
 fn profil_public(p: ProfilPublic) -> Resultat {
-    // Bloquer toutes les entrées couperait le Bureau à distance ou SSH : le mode Wi-Fi public l'a déjà écarté, ce
-    // processus le rejuge au moment de le faire (une session ouverte depuis, ou des connexions illisibles), sans rien
-    // toucher.
-    if p.reglages()
-        .any(|(r, v)| r == ReglagePublic::ReglesEntrantes && v == ValeurPublic::Non)
-        && crate::protection::blocage::session_a_distance() != Some(false)
-    {
-        return Resultat::echec(tr!(
-            "une session à distance est en cours (ou illisible) : les entrées ne sont pas toutes bloquées, rien n'est changé",
-            "a remote session is in progress (or unreadable): inbound is not fully blocked, nothing is changed"
-        ));
-    }
+    let (p, laissee) = match sans_blocage_total(p, crate::protection::blocage::session_a_distance()) {
+        Ok(fait) => fait,
+        Err(refus) => return refus,
+    };
     let r = dans_com(move |pol, _| {
         for (reglage, valeur) in p.reglages() {
             let fait = regler_public(pol, reglage, valeur);
@@ -407,14 +405,50 @@ fn profil_public(p: ProfilPublic) -> Resultat {
         }
         Resultat::ok()
     });
-    if !r.reussi
-        || !p
-            .reglages()
-            .any(|(r, v)| r == ReglagePublic::ReglesEntrantes && v == ValeurPublic::Absent)
+    if !r.reussi {
+        return r;
+    }
+    // regles-entrantes ne revient qu'une fois : laissée, elle n'était pas « absent », le magasin n'est pas à revoir.
+    if let Some(note) = laissee {
+        return Resultat::ok_note(note);
+    }
+    if !p
+        .reglages()
+        .any(|(r, v)| r == ReglagePublic::ReglesEntrantes && v == ValeurPublic::Absent)
     {
         return r;
     }
     retirer_du_magasin()
+}
+
+/// Bloquer toutes les entrées couperait le Bureau à distance ou SSH : le mode Wi-Fi public l'a déjà écarté, ce
+/// processus le rejuge au moment de le faire (une session ouverte depuis, ou des connexions illisibles : `session`
+/// n'est pas `Some(false)`). Seule regles-entrantes=non tombe alors : le reste de la ligne (le pare-feu allumé, les
+/// entrées bloquées par défaut) ne coupe aucune session établie et reste fait ; la note dit ce qui est laissé et
+/// pourquoi, le mode Wi-Fi relit ensuite chaque réglage. Rien d'autre dans la ligne : refusée, rien n'est touché.
+fn sans_blocage_total(p: ProfilPublic, session: Option<bool>) -> Result<(ProfilPublic, Option<String>), Resultat> {
+    let tout_bloquer =
+        |(r, v): &(ReglagePublic, ValeurPublic)| *r == ReglagePublic::ReglesEntrantes && *v == ValeurPublic::Non;
+    if session == Some(false) || !p.reglages().any(|x| tout_bloquer(&x)) {
+        return Ok((p, None));
+    }
+    let reste: Vec<(ReglagePublic, ValeurPublic)> = p.reglages().filter(|x| !tout_bloquer(x)).collect();
+    match ProfilPublic::nouveau(&reste) {
+        Some(q) => Ok((
+            q,
+            Some(
+                tr!(
+                    "regles-entrantes=non laissé (les programmes autorisés gardent leurs entrées) : une session à distance est en cours, ou les connexions ne se lisent pas, et tout bloquer la couperait ; le reste de la ligne est fait",
+                    "regles-entrantes=non left out (allowed programs keep their inbound): a remote session is in progress, or connections cannot be read, and blocking everything would cut it; the rest of the line is done"
+                )
+                .to_string(),
+            ),
+        )),
+        None => Err(Resultat::echec(tr!(
+            "une session à distance est en cours (ou illisible) : les entrées ne sont pas toutes bloquées, rien n'est changé",
+            "a remote session is in progress (or unreadable): inbound is not fully blocked, nothing is changed"
+        ))),
+    }
 }
 
 /// Retire DoNotAllowExceptions du magasin local, seulement s'il vaut 0, ce que COM vient d'y écrire (la valeur de
@@ -454,32 +488,148 @@ fn retirer_du_magasin() -> Resultat {
     }
 }
 
-/// Ce que dit INetworkListManager d'un réseau.
+/// Ce que dit INetworkListManager (NLM) d'un réseau. Seuls des codes sortent de son fil (voir `wmi::dans_un_fil`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Nlm {
+    /// GetNetwork ne connaît pas ce GUID, et aucun réseau connecté ne le porte : le seul cas du registre.
+    Inconnu,
+    /// GetNetwork ne le rend pas, mais un réseau connecté porte ce GUID : rien n'est écrit sur une réponse
+    /// contradictoire.
+    InconnuConnecte,
     Domaine,
+    Deja,
     Fait,
     Relu(i32),
+    /// Un appel refusé : lequel, et son code (HRESULT).
+    Refuse(&'static str, i32),
+}
+
+/// Ce que `categorie` fait de la réponse de NLM (`None` : pas de réponse, délai ou COM indisponible).
+#[derive(Debug, PartialEq, Eq)]
+enum Suite {
+    Rendre(Resultat),
+    /// Écrire dans le registre, pour la prochaine connexion à ce réseau.
+    Registre,
+}
+
+/// Le registre ne sert que pour un réseau que Windows ne connaît pas en ce moment : écrit pour un réseau connecté
+/// dont NLM a refusé le changement, il dirait Public pendant que le pare-feu applique toujours le profil Privé, et le
+/// mode Wi-Fi public, qui le relirait, se croirait en place. Un refus, une réponse contradictoire ou pas de réponse :
+/// rien n'est écrit, et c'est dit.
+fn suite(nlm: Option<Nlm>) -> Suite {
+    Suite::Rendre(match nlm {
+        Some(Nlm::Inconnu) => return Suite::Registre,
+        Some(Nlm::Domaine) => domaine(),
+        Some(Nlm::Deja) => Resultat::ok_note(tr!("déjà dans cette catégorie", "already in this category")),
+        Some(Nlm::Fait) => Resultat::ok(),
+        Some(Nlm::Relu(c)) => Resultat::echec(trf!(
+            "catégorie relue {c} après l'avoir changée : celle en usage n'est pas celle voulue",
+            "category read back as {c} after changing it: the one in use is not the one wanted"
+        )),
+        Some(Nlm::InconnuConnecte) => Resultat::echec(tr!(
+            "la liste des réseaux de Windows dit ce réseau connecté sans le rendre : rien n'est changé",
+            "the Windows network list says this network is connected without returning it: nothing is changed"
+        )),
+        Some(Nlm::Refuse(geste, code)) => Resultat::echec(trf!(
+            "la liste des réseaux de Windows a refusé ({geste}, code 0x{code:08X}) : rien n'est changé, le registre non plus",
+            "the Windows network list refused ({geste}, code 0x{code:08X}): nothing is changed, the registry either"
+        )),
+        None => Resultat::echec(tr!(
+            "la liste des réseaux de Windows (service netprofm) n'a pas répondu dans la minute : rien n'est changé",
+            "the Windows network list (netprofm service) did not answer within a minute: nothing is changed"
+        )),
+    })
+}
+
+/// Le refus d'un appel de NLM, réduit à son code dans le fil de COM.
+fn refus(geste: &'static str) -> impl Fn(windows::core::Error) -> Nlm {
+    move |e| Nlm::Refuse(geste, e.code().0)
+}
+
+/// Le geste de NLM, dans son fil COM : la catégorie changée tout de suite, connecté ou non, puis relue.
+fn par_nlm(guid: windows::core::GUID, voulue: NLM_NETWORK_CATEGORY) -> Result<Nlm, Nlm> {
+    // SAFETY: COM est initialisé dans ce fil (`com_delai`) ; NetworkListManager est la classe de la liste des
+    // réseaux. Chaque objet rendu est valide tant qu'il est tenu ; les catégories et le GUID sont des copies.
+    unsafe {
+        let liste: INetworkListManager =
+            CoCreateInstance(&NetworkListManager, None, CLSCTX_ALL).map_err(refus("CoCreateInstance"))?;
+        let Ok(reseau) = liste.GetNetwork(guid) else {
+            return Ok(if connecte(&liste, guid)? {
+                Nlm::InconnuConnecte
+            } else {
+                Nlm::Inconnu
+            });
+        };
+        let avant = reseau.GetCategory().map_err(refus("GetCategory"))?;
+        if avant == NLM_NETWORK_CATEGORY_DOMAIN_AUTHENTICATED {
+            return Ok(Nlm::Domaine);
+        }
+        if avant == voulue {
+            return Ok(Nlm::Deja);
+        }
+        reseau.SetCategory(voulue).map_err(refus("SetCategory"))?;
+        let relue = reseau.GetCategory().map_err(refus("GetCategory"))?;
+        Ok(if relue == voulue { Nlm::Fait } else { Nlm::Relu(relue.0) })
+    }
+}
+
+/// Un réseau connecté porte-t-il ce GUID ? Les réseaux connectés énumérés un à un.
+fn connecte(liste: &INetworkListManager, guid: windows::core::GUID) -> Result<bool, Nlm> {
+    // SAFETY: objet COM valide, dans son fil ; `un` et `lus` vivent pendant chaque appel de Next, qui y rend au plus
+    // un réseau (la taille du tableau) ; chaque réseau rendu est tenu puis libéré ici.
+    unsafe {
+        let reseaux = liste
+            .GetNetworks(NLM_ENUM_NETWORK_CONNECTED)
+            .map_err(refus("GetNetworks"))?;
+        for _ in 0..256 {
+            let mut un = [None];
+            let mut lus = 0u32;
+            reseaux
+                .Next(&mut un, Some(&raw mut lus))
+                .map_err(refus("IEnumNetworks::Next"))?;
+            let [Some(r)] = un else {
+                return Ok(false);
+            };
+            if lus == 0 {
+                return Ok(false);
+            }
+            if r.GetNetworkId().map_err(refus("GetNetworkId"))? == guid {
+                return Ok(true);
+            }
+        }
+        // Plus de 256 réseaux connectés : la liste ne se lit pas jusqu'au bout, compté comme connecté (rien n'est
+        // écrit dans le registre).
+        Ok(true)
+    }
 }
 
 /// La catégorie d'un réseau. Le GUID désigne, ce processus juge : le profil doit exister dans NetworkList\Profiles
 /// et ne pas être celui d'un domaine (le réseau d'une entreprise est géré par elle). Par INetworkListManager, qui
-/// l'applique tout de suite, connecté ou non ; sinon dans le registre, pour la prochaine connexion, comme le faisait
-/// le repli d'avant.
+/// l'applique tout de suite, connecté ou non ; dans le registre seulement si Windows ne connaît pas ce réseau en ce
+/// moment (`suite`), pour la prochaine connexion, et c'est dit non vérifié.
 fn categorie(r: ReseauCategorie) -> Resultat {
     use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE};
     let voulue = r.categorie.valeur();
-    let Ok(cle) =
-        winreg::RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(r.cle(), KEY_QUERY_VALUE | KEY_SET_VALUE)
-    else {
-        return Resultat::echec(tr!(
-            "ce réseau n'existe pas sur ce PC (aucun profil réseau de ce GUID) : rien n'est changé",
-            "this network does not exist on this PC (no network profile with this GUID): nothing is changed"
-        ));
+    let cle = match winreg::RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey_with_flags(r.cle(), KEY_QUERY_VALUE | KEY_SET_VALUE)
+    {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Resultat::echec(tr!(
+                "ce réseau n'existe pas sur ce PC (aucun profil réseau de ce GUID) : rien n'est changé",
+                "this network does not exist on this PC (no network profile with this GUID): nothing is changed"
+            ));
+        }
+        // Accès refusé (droits de la clé changés) ou autre : le profil existe peut-être, il ne se lit pas.
+        Err(e) => {
+            return Resultat::echec(trf!(
+                "le profil de ce réseau ne se lit pas dans le registre ({e}) : rien n'est changé",
+                "this network's profile cannot be read in the registry ({e}): nothing is changed"
+            ));
+        }
     };
-    match cle.get_value::<u32, _>("Category") {
-        Ok(2) => return domaine(),
-        Ok(c) if c == voulue => return Resultat::ok_note(tr!("déjà dans cette catégorie", "already in this category")),
-        _ => {}
+    if cle.get_value::<u32, _>("Category").is_ok_and(|c| c == 2) {
+        return domaine();
     }
     let guid = windows::core::GUID::from_u128(r.guid.0);
     let nlm = super::wmi::com_delai(
@@ -487,39 +637,69 @@ fn categorie(r: ReseauCategorie) -> Resultat {
         "INetworkListManager",
         std::time::Duration::from_secs(60),
         move || {
-            // SAFETY: COM est initialisé dans ce fil (`com_delai`) ; NetworkListManager est la classe de la liste
-            // des réseaux. Chaque objet rendu est valide tant qu'il est tenu ; les catégories sont des copies.
-            unsafe {
-                let liste: INetworkListManager = CoCreateInstance(&NetworkListManager, None, CLSCTX_ALL)?;
-                let reseau = liste.GetNetwork(guid)?;
-                if reseau.GetCategory()? == NLM_NETWORK_CATEGORY_DOMAIN_AUTHENTICATED {
-                    return Ok(Nlm::Domaine);
-                }
-                let voulue = NLM_NETWORK_CATEGORY(i32::try_from(voulue).unwrap_or(-1));
-                reseau.SetCategory(voulue)?;
-                let relue = reseau.GetCategory()?;
-                Ok(if relue == voulue { Nlm::Fait } else { Nlm::Relu(relue.0) })
-            }
+            let voulue = NLM_NETWORK_CATEGORY(i32::try_from(voulue).unwrap_or(-1));
+            Ok(par_nlm(guid, voulue).unwrap_or_else(|refus| refus))
         },
     );
-    match nlm {
-        Some(Nlm::Domaine) => domaine(),
-        Some(Nlm::Fait) => Resultat::ok(),
-        Some(Nlm::Relu(c)) => Resultat::echec(trf!(
-            "catégorie relue {c} après l'avoir changée",
-            "category read back as {c} after changing it"
-        )),
-        // INetworkListManager ne connaît pas ce réseau ou ne répond pas : le registre, relu.
-        None => match cle.set_value("Category", &voulue) {
-            Ok(()) if cle.get_value::<u32, _>("Category").is_ok_and(|c| c == voulue) => Resultat::ok_note(tr!(
-                "écrit dans le registre : pris en compte à la prochaine connexion à ce réseau",
-                "written to the registry: applied at the next connection to this network"
-            )),
-            Ok(()) => Resultat::echec(tr!(
-                "catégorie relue autrement qu'écrite",
-                "category read back differently than written"
-            )),
-            Err(e) => Resultat::echec(e.to_string()),
+    match suite(nlm) {
+        Suite::Rendre(fait) => fait,
+        Suite::Registre => {
+            let note = tr!(
+                "Windows ne connaît pas ce réseau en ce moment (pas connecté) : écrit dans le registre, pris en compte à la prochaine connexion ; non vérifié en direct",
+                "Windows does not know this network right now (not connected): written to the registry, applied at the next connection; not verified live"
+            );
+            if cle.get_value::<u32, _>("Category").is_ok_and(|c| c == voulue) {
+                return Resultat::ok_note(note);
+            }
+            match cle.set_value("Category", &voulue) {
+                Ok(()) if cle.get_value::<u32, _>("Category").is_ok_and(|c| c == voulue) => Resultat::ok_note(note),
+                Ok(()) => Resultat::echec(tr!(
+                    "catégorie relue autrement qu'écrite",
+                    "category read back differently than written"
+                )),
+                Err(e) => Resultat::echec(e.to_string()),
+            }
+        }
+    }
+}
+
+/// La catégorie en usage d'un réseau (0 Public, 1 Privé, 2 domaine), lue par INetworkListManager sans droits
+/// d'administrateur ; `None` si Windows ne connaît pas ce réseau en ce moment ou ne répond pas. Le mode Wi-Fi
+/// public y relit ce qu'il vient de faire : le registre, lui, peut dire Public pour un réseau resté Privé.
+pub(crate) fn categorie_en_direct(guid: GuidReseau) -> Option<i32> {
+    let guid = windows::core::GUID::from_u128(guid.0);
+    super::wmi::com_delai(
+        "Réseaux",
+        "INetworkListManager::GetCategory",
+        std::time::Duration::from_secs(20),
+        move || {
+            // SAFETY: COM est initialisé dans ce fil (`com_delai`) ; chaque objet rendu est valide tant qu'il est
+            // tenu ; la catégorie est une copie.
+            unsafe {
+                let liste: INetworkListManager = CoCreateInstance(&NetworkListManager, None, CLSCTX_ALL)?;
+                Ok(liste.GetNetwork(guid)?.GetCategory()?.0)
+            }
+        },
+    )
+}
+
+/// Le nom d'un réseau tel que le registre le garde (ProfileName), pour le montrer avec son GUID avant d'agir.
+pub(crate) enum NomReseau {
+    Lu(String),
+    /// Aucun profil de ce GUID.
+    Absent,
+    /// La clé ou le nom ne se lisent pas (accès refusé, nom vide ou d'un autre type).
+    Illisible,
+}
+
+pub(crate) fn nom_du_reseau(r: &ReseauCategorie) -> NomReseau {
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE};
+    match winreg::RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(r.cle(), KEY_QUERY_VALUE) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => NomReseau::Absent,
+        Err(_) => NomReseau::Illisible,
+        Ok(cle) => match cle.get_value::<String, _>("ProfileName") {
+            Ok(n) if !n.trim().is_empty() => NomReseau::Lu(n),
+            _ => NomReseau::Illisible,
         },
     }
 }
@@ -572,6 +752,18 @@ mod tests {
             "{}",
             fait.raison
         );
+        assert!(matches!(nom_du_reseau(&r), NomReseau::Absent));
+        // Le GUID nul, que la grammaire laisse passer : aucun profil ne le porte, refusé de même.
+        let nul = ReseauCategorie {
+            guid: GuidReseau(0),
+            categorie: Categorie::Public,
+        };
+        let fait = categorie(nul);
+        assert!(
+            !fait.reussi && (fait.raison.contains("n'existe pas") || fait.raison.contains("does not exist")),
+            "{}",
+            fait.raison
+        );
         let ligne =
             gestes::ligne_reseau_categorie("{0B8C2F4E-1A2B-4C3D-9E8F-001122334455}", Categorie::Public).unwrap();
         let fait = faire_acte(&gestes::analyser_acte(&ligne).unwrap()).unwrap();
@@ -580,6 +772,65 @@ mod tests {
             "{}",
             fait.raison
         );
+    }
+
+    /// Le registre seulement pour un réseau que Windows ne connaît pas : un refus de NLM (SetCategory, GetCategory…),
+    /// une réponse contradictoire ou pas de réponse rendent un échec dit, jamais le repli ni un « ok ».
+    #[test]
+    fn le_registre_seulement_pour_un_reseau_inconnu() {
+        assert_eq!(suite(Some(Nlm::Inconnu)), Suite::Registre);
+        assert_eq!(suite(Some(Nlm::Fait)), Suite::Rendre(Resultat::ok()));
+        let Suite::Rendre(deja) = suite(Some(Nlm::Deja)) else {
+            panic!("déjà : pas de registre");
+        };
+        assert!(deja.reussi && deja.note.is_some());
+        // 0x80070005 : accès refusé.
+        let refuse = i32::from_ne_bytes(0x8007_0005_u32.to_ne_bytes());
+        for nlm in [
+            Some(Nlm::Refuse("SetCategory", refuse)),
+            Some(Nlm::Refuse("GetCategory", refuse)),
+            Some(Nlm::Refuse("CoCreateInstance", refuse)),
+            Some(Nlm::InconnuConnecte),
+            Some(Nlm::Relu(1)),
+            Some(Nlm::Domaine),
+            None,
+        ] {
+            let Suite::Rendre(r) = suite(nlm) else {
+                panic!("{nlm:?} : pas de registre");
+            };
+            assert!(!r.reussi && !r.raison.is_empty(), "{nlm:?}");
+        }
+        let Suite::Rendre(r) = suite(Some(Nlm::Refuse("SetCategory", refuse))) else {
+            unreachable!()
+        };
+        assert!(
+            r.raison.contains("SetCategory") && r.raison.contains("0x80070005"),
+            "{}",
+            r.raison
+        );
+    }
+
+    /// Une session à distance (ou des connexions illisibles) ne fait tomber que regles-entrantes=non : le reste de la
+    /// ligne se fait, la note le dit ; seule dans la ligne, elle la fait refuser.
+    #[test]
+    fn une_session_ne_fait_tomber_que_le_blocage_total() {
+        use crate::machine::gestes::analyser_acte;
+        let profil = |l: &str| match analyser_acte(l) {
+            Some(Acte::PareFeuPublic(p)) => p,
+            autre => panic!("{l} : {autre:?}"),
+        };
+        let tout = profil("vanguard:pare-feu-public actif=oui,entrant-bloque=oui,regles-entrantes=non");
+        assert_eq!(sans_blocage_total(tout, Some(false)), Ok((tout, None)));
+        for session in [Some(true), None] {
+            let (reste, note) = sans_blocage_total(tout, session).unwrap();
+            assert_eq!(reste, profil("vanguard:pare-feu-public actif=oui,entrant-bloque=oui"));
+            assert!(note.is_some_and(|n| n.contains("regles-entrantes=non")));
+            let seule = profil("vanguard:pare-feu-public regles-entrantes=non");
+            assert!(sans_blocage_total(seule, session).is_err());
+            // Une remise n'est pas un blocage total : rien ne tombe.
+            let remise = profil("vanguard:pare-feu-public regles-entrantes=absent");
+            assert_eq!(sans_blocage_total(remise, session), Ok((remise, None)));
+        }
     }
 
     /// Les profils du pare-feu se lisent par COM (lecture seule : rien n'est écrit) ; Wine n'a pas de pare-feu.

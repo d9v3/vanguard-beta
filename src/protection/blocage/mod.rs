@@ -24,9 +24,10 @@ use std::io::IsTerminal;
 
 use gestes::Contexte;
 pub(crate) use gestes::chemin_du_processus;
-// Le bilan de Windows ne propose pas de fermer ce que le processus élevé refuserait (SSH, Bureau à distance).
+// Le bilan de Windows ne propose pas de fermer ce que le processus élevé refuserait (SSH, Bureau à distance, le port
+// d'une session en cours).
 #[cfg(windows)]
-pub(crate) use gardes::port_intouchable;
+pub(crate) use gardes::{port_a_garder, port_intouchable, sessions_a_distance};
 use menaces::Menace;
 use parametres::{Categorie, Decision, Mode, Parametres, decider};
 

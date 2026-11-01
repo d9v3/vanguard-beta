@@ -653,6 +653,10 @@ struct Relecture {
     meme_demarrage: bool,
     #[cfg(windows)]
     pare_feu: Option<[String; 3]>,
+    /// La catégorie du réseau relue en usage seulement (INetworkListManager), jamais dans le registre : juste après
+    /// l'allumage, le réseau est connecté, et une catégorie que Windows n'applique pas n'est pas prise.
+    #[cfg(windows)]
+    en_direct: bool,
 }
 
 impl Relecture {
@@ -661,6 +665,17 @@ impl Relecture {
             meme_demarrage: e.demarrage == demarrage(),
             #[cfg(windows)]
             pare_feu: windows::lecture::lire().pare_feu,
+            #[cfg(windows)]
+            en_direct: false,
+        }
+    }
+
+    /// Après l'allumage : ce qui ne se relit pas en usage n'est pas dit pris (voir `en_direct`).
+    fn apres_allumage(e: &Etat) -> Self {
+        Relecture {
+            #[cfg(windows)]
+            en_direct: true,
+            ..Self::maintenant(e)
         }
     }
 
@@ -670,7 +685,7 @@ impl Relecture {
         #[cfg(target_os = "linux")]
         return linux::lecture::a_l_avant(e, self.meme_demarrage);
         #[cfg(windows)]
-        return windows::lecture::a_l_avant(e, self.pare_feu.as_ref());
+        return windows::lecture::a_l_avant(e, self.pare_feu.as_ref(), self.en_direct);
         #[cfg(target_os = "macos")]
         return macos::lecture::a_l_avant(e);
     }
@@ -1040,7 +1055,7 @@ fn allumer() {
     let lots: Vec<&Lot> = d_abord.into_iter().chain(ensuite).collect();
     // Relu : un élément confirmé à sa valeur d'avant n'a pas changé et sort de l'état ; un élément qui ne se relit
     // pas se juge sur sa commande, sauf sous Windows, où il reste sans être dit pris (voir `juger`).
-    let r = Relecture::maintenant(&e);
+    let r = Relecture::apres_allumage(&e);
     let mut changes = Vec::new();
     let mut non_relus = Vec::new();
     println!();

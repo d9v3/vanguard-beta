@@ -1636,6 +1636,9 @@ mod tests {
             "vanguard:pare-feu-public entrant-bloque=non,regles-entrantes=oui".to_string(),
             format!("vanguard:reseau-categorie {G} public"),
             format!("vanguard:reseau-categorie {G} prive"),
+            // Le GUID nul a la forme : la grammaire le laisse passer, le processus élevé le refuse ensuite faute de
+            // profil réseau de ce GUID (`pare_feu::categorie`).
+            "vanguard:reseau-categorie {00000000-0000-0000-0000-000000000000} public".to_string(),
         ];
         for bonne in &bonnes {
             assert!(est_un_acte(bonne), "{bonne}");
@@ -1654,13 +1657,16 @@ mod tests {
             // La même clé deux fois, un autre ordre, rien, une clé ou une valeur hors liste, la casse.
             "vanguard:pare-feu-public regles-entrantes=non,regles-entrantes=oui".to_string(),
             "vanguard:pare-feu-public regles-entrantes=non,actif=oui".to_string(),
+            // Sans aucun réglage : rien, ou une virgule seule.
             "vanguard:pare-feu-public ".to_string(),
+            "vanguard:pare-feu-public ,".to_string(),
             "vanguard:pare-feu-public sortant-bloque=oui".to_string(),
             "vanguard:pare-feu-public actif=peut-etre".to_string(),
             "vanguard:pare-feu-public regles-entrantes=Non".to_string(),
             "vanguard:pare-feu-public Regles-entrantes=non".to_string(),
             "vanguard:pare-feu-public regles-entrantes=False".to_string(),
-            // Une espace, une virgule ou un signe de trop.
+            // Une espace, une virgule ou un signe de trop ; une espace après la virgule aussi (aucune tolérance : la
+            // ligne se réécrit à l'identique ou elle est refusée).
             "vanguard:pare-feu-public actif=oui, entrant-bloque=oui".to_string(),
             "vanguard:pare-feu-public actif=oui,".to_string(),
             "vanguard:pare-feu-public ,actif=oui".to_string(),
@@ -1690,6 +1696,10 @@ mod tests {
             "vanguard:reseau-categorie {0B8C2F4É-1A2B-4C3D-9E8F-001122334455} public".to_string(),
             "vanguard:reseau-categorie {} public".to_string(),
         ];
+        // Sans l'espace, ce n'est pas même le préfixe d'un acte : refusé aussi.
+        assert!(analyser_acte("vanguard:pare-feu-public").is_none());
+        let nul = analyser_acte("vanguard:reseau-categorie {00000000-0000-0000-0000-000000000000} public");
+        assert!(matches!(nul, Some(Acte::ReseauCategorie(r)) if r.guid == GuidReseau(0)));
         for mauvaise in &mauvaises {
             assert!(analyser_acte(mauvaise).is_none(), "{mauvaise:?}");
             assert!(est_un_acte(mauvaise), "{mauvaise:?}");
@@ -1728,6 +1738,9 @@ mod tests {
         assert!(a("vanguard:pare-feu-actif").durcit());
         assert!(a("vanguard:pare-feu-public actif=oui,entrant-bloque=oui,regles-entrantes=non").durcit());
         assert!(a(&format!("vanguard:reseau-categorie {G} public")).durcit());
+        // Un seul réglage présent, à sa valeur durcie : la ligne durcit (les absents ne comptent pas).
+        let seul = a("vanguard:pare-feu-public entrant-bloque=oui");
+        assert!(seul.durcit() && !seul.affaiblit());
         for remise in [
             "vanguard:pare-feu-public entrant-bloque=non".to_string(),
             "vanguard:pare-feu-public regles-entrantes=oui".to_string(),

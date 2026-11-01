@@ -401,7 +401,9 @@ pub(crate) fn juger(o: &Ordre, j: &Juge) -> Option<String> {
         Ordre::BloquerSortie { ip, .. } | Ordre::CouperConnexions { ip } => {
             gardes::adresse_intouchable(*ip, j.sessions.as_ref(), false).map(str::to_string)
         }
-        Ordre::FermerPort { port, .. } => gardes::port_intouchable(*port).map(str::to_string),
+        // Une règle entrante Block coupe aussi ce qui est établi : le port d'une session en cours (prise en main sur
+        // 5900, RustDesk…) n'est pas fermé, et rien ne l'est sans connexions lisibles.
+        Ordre::FermerPort { port, .. } => gardes::port_a_garder(*port, j.sessions.as_ref()).map(str::to_string),
         Ordre::ArreterProcessus { pid, chemin } => {
             let Some(actuel) = super::gestes::chemin_du_processus(*pid) else {
                 return Some(trf!(
@@ -957,6 +959,7 @@ mod tests {
         let sessions = gardes::Sessions {
             sessions: vec!["198.51.100.20".parse().unwrap()],
             autres_comptes: Vec::new(),
+            ports_locaux: Vec::new(),
         };
         let juge = Juge::essai(Some(sessions), HashSet::new());
         let pf = match Os::actuel() {
@@ -1022,6 +1025,36 @@ mod tests {
             };
             assert!(juger(&autre, &juge).is_some());
         }
+    }
+
+    /// Défaut de la relecture : seuls 22 et 3389 étaient gardés. Une prise en main par VNC en cours sur 5900 : le port
+    /// n'est pas fermé (la règle couperait la session) ; un port voisin, si ; sans connexions lisibles, aucun.
+    #[test]
+    fn un_port_qui_porte_une_session_n_est_pas_ferme() {
+        if Os::actuel() == Os::MacOs {
+            return crate::essais::saute("macOS : le blocage n'y ferme pas de port");
+        }
+        let pf = if Os::actuel() == Os::Windows {
+            PareFeu::Windows
+        } else {
+            PareFeu::Nftables
+        };
+        let vnc = gardes::Etablie {
+            distante: "203.0.113.7".parse().unwrap(),
+            port_local: 5900,
+            port_distant: 51234,
+            programme: Some("x11vnc".into()),
+            autre_compte: false,
+        };
+        let juge = Juge::essai(Some(gardes::juger_etablies(&[vnc], None)), HashSet::new());
+        let fermer = |port| Ordre::FermerPort { pare_feu: pf, port };
+        let refus = juger(&fermer(5900), &juge).unwrap_or_default();
+        assert!(refus.contains("session"), "{refus}");
+        assert_eq!(juger(&fermer(5901), &juge), None);
+        assert!(
+            juger(&fermer(5901), &Juge::essai(None, HashSet::new())).is_some(),
+            "connexions illisibles"
+        );
     }
 
     /// Dans un groupe, un ordre refusé arrête la suite ; le groupe suivant se fait quand même.
