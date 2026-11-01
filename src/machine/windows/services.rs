@@ -90,15 +90,19 @@ fn lire_natif() -> Option<String> {
 const SERVICE_WIN32: u32 = 0x30;
 
 /// Une variable de l'environnement du système, celui avec lequel le gestionnaire des services développe ImagePath :
-/// SystemRoot et windir demandés à Windows (GetSystemWindowsDirectoryW), Program Files et ProgramData par les dossiers
-/// connus (SHGetKnownFolderPath), les autres lues dans Session Manager\Environment, que seul un administrateur écrit.
-/// Jamais l'environnement de ce processus : le processus élevé hérite de celui du compte qui l'élève
-/// (HKCU\Environment, `set` avant de lancer Vanguard).
+/// SystemRoot, windir et SystemDrive demandés à Windows (GetSystemWindowsDirectoryW, sans repli), Program Files,
+/// ProgramData, ALLUSERSPROFILE et PUBLIC par les dossiers connus (SHGetKnownFolderPath), les autres lues dans
+/// Session Manager\Environment, que seul un administrateur écrit. Jamais l'environnement de ce processus : le
+/// processus élevé hérite de celui du compte qui l'élève (HKCU\Environment, `set` avant de lancer Vanguard).
 fn variable_systeme(nom: &str) -> Option<String> {
+    // Le dossier de Windows tel que Windows le donne, ou rien : le repli de `dossiers()` (parent de System32) est une
+    // supposition, et une valeur supposée ne doit pas mener à une écriture.
+    static WINDOWS: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    let windows = WINDOWS.get_or_init(super::environnement::dossier_windows).as_deref();
     let d = super::environnement::dossiers();
     variable_selon(
         nom,
-        |n| dossier_calcule(d, n),
+        |n| dossier_calcule(d, windows, n),
         |n| {
             winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
                 .open_subkey(ENVIRONNEMENT_SYSTEME)
@@ -110,10 +114,12 @@ fn variable_systeme(nom: &str) -> Option<String> {
 }
 
 /// Les variables que Windows calcule lui-même, absentes de Session Manager\Environment : demandées à Windows, jamais
-/// lues ailleurs (une valeur du même nom posée dans Session Manager est ignorée).
-const CALCULEES: [&str; 9] = [
+/// lues ailleurs (une valeur du même nom posée dans Session Manager est ignorée). ProgramFiles(Arm), de Windows
+/// ARM64, n'en est pas : aucun dossier connu documenté ne la donne ; elle reste inconnue, donc à la main.
+const CALCULEES: [&str; 12] = [
     "SystemRoot",
     "windir",
+    "SystemDrive",
     "ProgramFiles",
     "ProgramFiles(x86)",
     "ProgramW6432",
@@ -121,20 +127,31 @@ const CALCULEES: [&str; 9] = [
     "CommonProgramFiles(x86)",
     "CommonProgramW6432",
     "ProgramData",
+    "ALLUSERSPROFILE",
+    "PUBLIC",
 ];
 
 /// Le dossier que Windows donne pour une variable calculée (`CALCULEES`), sans barre finale ; `None` pour une autre
-/// variable ou un dossier que Windows n'a pas donné.
-fn dossier_calcule(d: &super::environnement::Dossiers, nom: &str) -> Option<String> {
-    let p = match nom.to_ascii_lowercase().as_str() {
-        "systemroot" | "windir" => Some(&d.windows),
-        "programfiles" => d.program_files.as_ref(),
-        "programfiles(x86)" => d.program_files_x86.as_ref(),
-        "programw6432" => d.program_files_x64.as_ref(),
-        "commonprogramfiles" => d.fichiers_communs.as_ref(),
-        "commonprogramfiles(x86)" => d.fichiers_communs_x86.as_ref(),
-        "commonprogramw6432" => d.fichiers_communs_x64.as_ref(),
-        "programdata" => d.program_data.as_ref(),
+/// variable ou un dossier que Windows n'a pas donné. `windows` : le dossier de Windows (GetSystemWindowsDirectoryW),
+/// `None` s'il ne l'a pas donné ; SystemDrive en est la lettre (« C: »).
+fn dossier_calcule(d: &super::environnement::Dossiers, windows: Option<&std::path::Path>, nom: &str) -> Option<String> {
+    let nom = nom.to_ascii_lowercase();
+    if nom == "systemdrive" {
+        let w = windows?.to_str()?;
+        let mut c = w.chars();
+        return (c.next().is_some_and(|l| l.is_ascii_alphabetic()) && c.next() == Some(':'))
+            .then(|| w[..2].to_string());
+    }
+    let p = match nom.as_str() {
+        "systemroot" | "windir" => windows,
+        "programfiles" => d.program_files.as_deref(),
+        "programfiles(x86)" => d.program_files_x86.as_deref(),
+        "programw6432" => d.program_files_x64.as_deref(),
+        "commonprogramfiles" => d.fichiers_communs.as_deref(),
+        "commonprogramfiles(x86)" => d.fichiers_communs_x86.as_deref(),
+        "commonprogramw6432" => d.fichiers_communs_x64.as_deref(),
+        "programdata" | "allusersprofile" => d.program_data.as_deref(),
+        "public" => d.public.as_deref(),
         _ => None,
     }?;
     p.to_str()
@@ -197,6 +214,9 @@ fn juger_service(
         return None;
     }
     let chemin = developper(brut, &variable);
+    // Un programme sans espace, même avec une variable inconnue (« %X%\svc.exe »), n'est pas signalé : Windows ne le
+    // couperait que si la valeur de %X% avait une espace ; les variables de Windows qui en ont une sont calculées
+    // ici, sauf ProgramFiles(Arm), dont le dossier piège (C:\) n'est pas modifiable par défaut.
     let (exe, suite) = programme_sans_guillemets(&chemin)?;
     if let Some(v) = variable_inconnue(exe, &variable) {
         return Some(Signale {
@@ -243,7 +263,14 @@ fn entre_guillemets(
     modifiable: impl Fn(&std::path::Path) -> bool,
 ) -> Option<String> {
     let j = juger_service(type_service, brut, &variable, existe, modifiable)?;
-    if j.a_la_main.is_some() {
+    guillemets_du_jugement(&j, brut, variable)
+}
+
+/// La suite d'`entre_guillemets`, une fois le service jugé : rien pour un service à la main ou sans dossier piège.
+fn guillemets_du_jugement(j: &Signale, brut: &str, variable: impl Fn(&str) -> Option<String>) -> Option<String> {
+    // Deux gardes, pas une : un service sans dossier piège a toujours une raison d'être à la main, mais une branche
+    // future qui oublierait l'une n'écrirait pas pour autant.
+    if j.a_la_main.is_some() || j.dossier.is_none() {
         return None;
     }
     let (brut_exe, brut_suite) = programme_et_suite(brut)?;
@@ -252,25 +279,25 @@ fn entre_guillemets(
 }
 
 /// Met entre guillemets le chemin du service `nom` (processus élevé) : ImagePath relu, rejugé par `juger_service`,
-/// écrit avec le même type (REG_SZ ou REG_EXPAND_SZ) puis relu. Déjà entre guillemets : rien d'écrit. La valeur
-/// d'avant est notée.
+/// confié au gestionnaire des services (ChangeServiceConfigW, pas d'écriture directe dans sa base), puis relu.
+/// Déjà entre guillemets : rien d'écrit. La valeur d'avant est notée.
 pub(super) fn poser_guillemets(nom: &NomFichier) -> Resultat {
     use std::io::ErrorKind::NotFound;
-    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE};
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE};
+    let absent = || {
+        Resultat::rien(
+            tr!(
+                "service absent : rien à corriger ici, rien d'écrit",
+                "no such service: nothing to fix here, nothing written"
+            )
+            .to_string(),
+        )
+    };
     let chemin = format!(r"{}\{}", crate::machine::windows::CLE_SERVICES, nom.texte());
-    let cle = match winreg::RegKey::predef(HKEY_LOCAL_MACHINE)
-        .open_subkey_with_flags(&chemin, KEY_QUERY_VALUE | KEY_SET_VALUE)
-    {
+    // Lecture seule : l'écriture passe par le gestionnaire des services.
+    let cle = match winreg::RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(&chemin, KEY_QUERY_VALUE) {
         Ok(c) => c,
-        Err(e) if e.kind() == NotFound => {
-            return Resultat::rien(
-                tr!(
-                    "service absent : rien à corriger ici, rien d'écrit",
-                    "no such service: nothing to fix here, nothing written"
-                )
-                .to_string(),
-            );
-        }
+        Err(e) if e.kind() == NotFound => return absent(),
         Err(e) => {
             return Resultat::echec(
                 None,
@@ -311,6 +338,16 @@ pub(super) fn poser_guillemets(nom: &NomFichier) -> Resultat {
             .to_string(),
         );
     }
+    if sens_change_par_le_gestionnaire(&brute.vtype, &brut) {
+        return Resultat::echec(
+            Some(avant),
+            tr!(
+                "refusé, à corriger à la main dans regedit : ce chemin (REG_SZ) contient « % » ; le gestionnaire des services l'écrirait en REG_EXPAND_SZ et son sens changerait ; rien d'écrit",
+                "refused, to fix by hand in regedit: this path (REG_SZ) contains “%”; the service manager would write it as REG_EXPAND_SZ and its meaning would change; nothing written"
+            )
+            .to_string(),
+        );
+    }
     let type_service = cle.get_value::<u32, _>("Type").unwrap_or(0);
     if let Some(raison) =
         juger_service(type_service, &brut, variable_systeme, existe, dossier_modifiable).and_then(|j| j.a_la_main)
@@ -333,32 +370,40 @@ pub(super) fn poser_guillemets(nom: &NomFichier) -> Resultat {
             .to_string(),
         );
     };
-    let octets: Vec<u8> = nouveau.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect();
-    let valeur = winreg::RegValue {
-        bytes: octets.into(),
-        vtype: brute.vtype.clone(),
-    };
-    if let Err(e) = cle.set_raw_value("ImagePath", &valeur) {
-        return Resultat::echec(Some(avant), e.to_string());
+    match super::services_ecriture::changer_le_chemin(nom.texte(), &nouveau) {
+        Ok(true) => {}
+        Ok(false) => return absent(),
+        Err(e) => return Resultat::echec(Some(avant), e.to_string()),
     }
     match cle.get_raw_value("ImagePath") {
-        Ok(relue)
-            if relue.vtype == brute.vtype
-                && super::corrections::texte_reg(&relue).as_deref() == Some(nouveau.as_str()) =>
-        {
-            Resultat::fait(avant)
-        }
+        Ok(relue) if relue_conforme(&brute.vtype, &relue, &nouveau) => Resultat::fait(avant),
         Ok(relue) => Resultat::echec(
             Some(avant),
             trf!(
-                "relu {} au lieu de {}",
-                "read back {} instead of {}",
+                "relu {} ({:?}) au lieu de {}",
+                "read back {} ({:?}) instead of {}",
                 super::corrections::decrire(&relue),
+                relue.vtype,
                 avant_notable(&nouveau)
             ),
         ),
         Err(e) => Resultat::echec(Some(avant), e.to_string()),
     }
+}
+
+/// Un ImagePath REG_SZ qui contient « % » : le gestionnaire des services ne le développe pas, mais l'écrirait en
+/// REG_EXPAND_SZ (comme tout chemin qu'il reçoit) ; « %X% » deviendrait une variable. Sans « % », même sens.
+fn sens_change_par_le_gestionnaire(vtype: &winreg::enums::RegType, brut: &str) -> bool {
+    *vtype == winreg::enums::RegType::REG_SZ && brut.contains('%')
+}
+
+/// La valeur relue est-elle celle voulue ? Le texte exact, et le type d'avant ; un REG_SZ d'avant peut revenir en
+/// REG_EXPAND_SZ (écrit ainsi par le gestionnaire des services) : sans « % », même sens.
+fn relue_conforme(avant: &winreg::enums::RegType, relue: &winreg::RegValue, nouveau: &str) -> bool {
+    use winreg::enums::RegType::{REG_EXPAND_SZ, REG_SZ};
+    let type_admis =
+        relue.vtype == *avant || (*avant == REG_SZ && relue.vtype == REG_EXPAND_SZ && !nouveau.contains('%'));
+    type_admis && super::corrections::texte_reg(relue).as_deref() == Some(nouveau)
 }
 
 /// La première variable (« %Nom% ») de `texte` que `variable` ne connaît pas.
@@ -479,7 +524,8 @@ pub(super) fn juger(sortie: &str) -> Option<Constat> {
         if nom.is_empty() {
             continue;
         }
-        // Sans dossier : le programme cite une variable inconnue, son chemin réel est inconnu. Toujours à la main.
+        // Sans dossier : le programme cite une variable inconnue, son chemin réel est inconnu. Toujours à la main, que
+        // la ligne soit « SVCM » ou non.
         if dossier.is_empty() {
             inconnus.push(affichable(nom));
             a_la_main.push(affichable(nom));
@@ -804,8 +850,10 @@ mod tests {
         assert_eq!(variable_inconnue(r"%Autre%\%Encore%", v).as_deref(), Some("Autre"));
     }
 
-    /// Le vrai environnement du système (Wine ici, la VM ensuite) : SystemRoot vient de Windows, ProgramFiles des
-    /// dossiers connus, pas de ce processus.
+    /// Le vrai environnement du système (Wine ici, la VM ensuite) : chaque variable calculée a la valeur des mêmes
+    /// sources que `dossiers()`. Que Session Manager ne les remplace pas, c'est `program_files_par_les_dossiers_connus`
+    /// qui le prouve (ici, les deux coïncident) ; que ce processus n'y est pour rien, `environnement_du_compte_sans_effet`
+    /// et la garde `aucune_variable_lue_dans_le_processus`.
     #[test]
     fn environnement_du_systeme() {
         let Some(racine) = variable_systeme("SystemRoot") else {
@@ -823,6 +871,15 @@ mod tests {
             variable_systeme("ProgramData").map(std::path::PathBuf::from),
             d.program_data.clone()
         );
+        assert_eq!(
+            variable_systeme("ALLUSERSPROFILE").map(std::path::PathBuf::from),
+            d.program_data.clone()
+        );
+        assert_eq!(
+            variable_systeme("PUBLIC").map(std::path::PathBuf::from),
+            d.public.clone()
+        );
+        assert_eq!(variable_systeme("SystemDrive").as_deref(), racine.get(..2));
     }
 
     /// Des dossiers de Windows inventés, pour les variables calculées.
@@ -836,6 +893,7 @@ mod tests {
             fichiers_communs_x86: Some(r"C:\Program Files (x86)\Common Files".into()),
             fichiers_communs_x64: Some(r"C:\Program Files\Common Files".into()),
             program_data: Some(r"C:\ProgramData".into()),
+            public: Some(r"C:\Users\Public".into()),
             ..Default::default()
         }
     }
@@ -846,13 +904,16 @@ mod tests {
     #[test]
     fn program_files_par_les_dossiers_connus() {
         let d = dossiers_exemple();
+        let w = Some(std::path::Path::new(r"C:\Windows"));
         let session = |n: &str| match n {
-            "ProgramFiles" | "SystemRoot" => Some(r"C:\Piege".to_string()),
+            "ProgramFiles" | "SystemRoot" | "SystemDrive" | "PUBLIC" => Some(r"C:\Piege".to_string()),
             "Outils" => Some(r"%ProgramFiles(x86)%\Outils".to_string()),
             "Mixte" => Some(r"%ProgramFiles%\%Autre%".to_string()),
+            "VendorHome" => Some(r"%SystemDrive%\Vendor".to_string()),
+            "ProgramFiles(Arm)" => Some(r"C:\Program Files (Arm)".to_string()),
             _ => None,
         };
-        let v = |n: &str| variable_selon(n, |m| dossier_calcule(&d, m), session);
+        let v = |n: &str| variable_selon(n, |m| dossier_calcule(&d, w, m), session);
         assert_eq!(v("ProgramFiles").as_deref(), Some(r"C:\Program Files"));
         assert_eq!(v("PROGRAMFILES").as_deref(), Some(r"C:\Program Files"));
         assert_eq!(v("SystemRoot").as_deref(), Some(r"C:\Windows"));
@@ -870,12 +931,31 @@ mod tests {
         assert_eq!(v("Outils").as_deref(), Some(r"C:\Program Files (x86)\Outils"));
         assert_eq!(v("Mixte"), None);
         assert_eq!(v("Absente"), None);
+        // SystemDrive : la lettre du dossier de Windows, jamais celle de Session Manager ; une valeur qui la cite se
+        // développe.
+        assert_eq!(v("SystemDrive").as_deref(), Some("C:"));
+        assert_eq!(v("systemdrive").as_deref(), Some("C:"));
+        assert_eq!(v("VendorHome").as_deref(), Some(r"C:\Vendor"));
+        assert_eq!(v("ALLUSERSPROFILE").as_deref(), Some(r"C:\ProgramData"));
+        assert_eq!(v("PUBLIC").as_deref(), Some(r"C:\Users\Public"));
+        // ProgramFiles(Arm) n'est pas calculée (aucun dossier connu documenté) : Session Manager la donne telle quelle.
+        assert_eq!(v("ProgramFiles(Arm)").as_deref(), Some(r"C:\Program Files (Arm)"));
+        // Le dossier de Windows non donné : SystemRoot, windir et SystemDrive inconnues, sans repli ni Session Manager,
+        // même si `Dossiers::windows` (le repli de `dossiers()`) a une valeur.
+        let v0 = |n: &str| variable_selon(n, |m| dossier_calcule(&d, None, m), session);
+        for n in ["SystemRoot", "windir", "SystemDrive", "VendorHome"] {
+            assert_eq!(v0(n), None, "{n}");
+        }
+        assert_eq!(v0("ProgramFiles").as_deref(), Some(r"C:\Program Files"));
+        // Un dossier de Windows sans lettre (chemin réseau) : pas de SystemDrive.
+        let unc = Some(std::path::Path::new(r"\\serveur\Windows"));
+        assert_eq!(dossier_calcule(&d, unc, "SystemDrive"), None);
         // Un dossier que Windows ne donne pas : la variable est inconnue, Session Manager ne la remplace pas.
         let sans = super::super::environnement::Dossiers {
             program_files: None,
             ..dossiers_exemple()
         };
-        let v2 = |n: &str| variable_selon(n, |m| dossier_calcule(&sans, m), session);
+        let v2 = |n: &str| variable_selon(n, |m| dossier_calcule(&sans, w, m), session);
         assert_eq!(v2("ProgramFiles"), None);
         // Le service %ProgramFiles% du banc : dossier piège sous Program Files, guillemets posés, variable gardée.
         let brut = r"%ProgramFiles%\vg-essai\Mon Outil\svc.exe";
@@ -895,6 +975,74 @@ mod tests {
         let j = juger_service(0x10, brut, v2, |_| true, ouvert).unwrap();
         assert!(j.a_la_main.is_some() && j.dossier.is_none(), "{j:?}");
         assert_eq!(entre_guillemets(0x10, brut, v2, |_| true, ouvert), None);
+        // Le cas type : un service sous %SystemDrive%, dans un dossier que tous peuvent modifier. Signalé avec son
+        // dossier piège et son correctif, la variable gardée.
+        let brut = r"%SystemDrive%\Vendor Tools\Agent Service\svc.exe -k";
+        let ouvert = |p: &std::path::Path| p == std::path::Path::new(r"C:\Vendor Tools");
+        let j = juger_service(0x10, brut, v, |_| true, ouvert).unwrap();
+        assert_eq!(j.exe, r"C:\Vendor Tools\Agent Service\svc.exe");
+        assert_eq!(j.dossier.as_deref(), Some(std::path::Path::new(r"C:\Vendor Tools")));
+        assert!(j.a_la_main.is_none(), "{j:?}");
+        assert_eq!(
+            entre_guillemets(0x10, brut, v, |_| true, ouvert).as_deref(),
+            Some(r#""%SystemDrive%\Vendor Tools\Agent Service\svc.exe" -k"#)
+        );
+        // Sans le dossier de Windows : à la main, rien d'écrit.
+        let j = juger_service(0x10, brut, v0, |_| true, ouvert).unwrap();
+        assert!(j.a_la_main.is_some() && j.dossier.is_none(), "{j:?}");
+        assert_eq!(entre_guillemets(0x10, brut, v0, |_| true, ouvert), None);
+    }
+
+    /// Le type de l'ImagePath face au gestionnaire des services : un REG_SZ avec « % » est refusé avant d'écrire ;
+    /// à la relecture, le REG_EXPAND_SZ n'est admis à la place d'un REG_SZ que sans « % ».
+    #[test]
+    fn type_du_chemin_garde_son_sens() {
+        use winreg::enums::RegType::{REG_BINARY, REG_EXPAND_SZ, REG_SZ};
+        assert!(sens_change_par_le_gestionnaire(&REG_SZ, r"C:\%X%\svc.exe"));
+        assert!(!sens_change_par_le_gestionnaire(&REG_SZ, r"C:\A B\svc.exe"));
+        assert!(!sens_change_par_le_gestionnaire(
+            &REG_EXPAND_SZ,
+            r"%SystemRoot%\A B\svc.exe"
+        ));
+        let valeur = |t: &str, vtype| winreg::RegValue {
+            bytes: t
+                .encode_utf16()
+                .chain([0])
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<u8>>()
+                .into(),
+            vtype,
+        };
+        let n = r#""C:\A B\svc.exe""#;
+        assert!(relue_conforme(&REG_SZ, &valeur(n, REG_SZ), n));
+        assert!(relue_conforme(&REG_SZ, &valeur(n, REG_EXPAND_SZ), n));
+        assert!(relue_conforme(&REG_EXPAND_SZ, &valeur(n, REG_EXPAND_SZ), n));
+        assert!(!relue_conforme(&REG_EXPAND_SZ, &valeur(n, REG_SZ), n));
+        assert!(!relue_conforme(&REG_SZ, &valeur(r#""C:\A B\autre.exe""#, REG_SZ), n));
+        assert!(!relue_conforme(&REG_SZ, &valeur(n, REG_BINARY), n));
+        let p = r#""%X%\A B\svc.exe""#;
+        assert!(!relue_conforme(&REG_SZ, &valeur(p, REG_EXPAND_SZ), p));
+    }
+
+    /// La seconde garde d'`entre_guillemets` : un jugement sans dossier piège n'écrit rien, même sans raison d'être à
+    /// la main ; le bilan ne donne pas de commande à une ligne sans dossier, même « SVC ».
+    #[test]
+    fn sans_dossier_piege_rien_d_ecrit() {
+        let v = |n: &str| (n == "X").then(|| r"C:\A B".to_string());
+        let j = |dossier: Option<&str>| Signale {
+            exe: r"C:\A B\svc.exe".into(),
+            suite: String::new(),
+            dossier: dossier.map(std::path::PathBuf::from),
+            a_la_main: None,
+        };
+        assert_eq!(
+            guillemets_du_jugement(&j(Some(r"C:\")), r"C:\A B\svc.exe", v).as_deref(),
+            Some(r#""C:\A B\svc.exe""#)
+        );
+        assert_eq!(guillemets_du_jugement(&j(None), r"C:\A B\svc.exe", v), None);
+        let c = juger("SVC|Outil|C:\\A B\\svc.exe||\nSVC_FIN\n").unwrap();
+        let k = c.correctif.unwrap();
+        assert!(k.commandes.is_empty() && !k.automatique, "{}", k.action);
     }
 
     /// Un programme qui cite une variable inconnue, sans guillemets, avec un espace : signalé « à vérifier à la main »
@@ -914,7 +1062,8 @@ mod tests {
             "{j:?}"
         );
         assert_eq!(entre_guillemets(0x10, brut, variable, |_| true, ferme), None);
-        // Sans espace, entre guillemets, ou un pilote : rien à piéger, pas signalé.
+        // Entre guillemets ou un pilote : rien à piéger, pas signalé. Sans espace : rien de visible, pas signalé non
+        // plus (pourquoi : voir `juger_service`).
         assert!(juger_service(0x10, r"%NEXISTEPASVG%\svc.exe -k", variable, |_| true, ferme).is_none());
         assert!(juger_service(0x10, r#""%NEXISTEPASVG%\Mon Outil\svc.exe""#, variable, |_| true, ferme).is_none());
         assert!(juger_service(0x1, brut, variable, |_| true, ferme).is_none());
@@ -947,65 +1096,87 @@ mod tests {
     }
 
     /// Ce que le compte pose dans HKCU\Environment arrive dans l'environnement de ses processus, dont le processus
-    /// élevé : relancé avec SystemRoot, ProgramFiles et une variable inventée forgés, Vanguard ne s'en sert pas.
+    /// élevé : relancé avec les variables calculées et une variable inventée forgées, Vanguard ne s'en sert pas.
+    /// Sous Wine, SystemRoot et ProgramFiles sont remis d'aplomb par Wine : seule la variable inventée y prouve
+    /// quelque chose (la preuve de fond reste `aucune_variable_lue_dans_le_processus`).
     #[test]
     fn environnement_du_compte_sans_effet() {
         const PIEGE: &str = r"C:\vg-piege";
+        // Sans danger pour le démarrage de l'enfant.
+        const SURES: [&str; 6] = [
+            "ProgramFiles",
+            "CommonProgramFiles",
+            "ProgramData",
+            "ALLUSERSPROFILE",
+            "PUBLIC",
+            "NEXISTEPASVG",
+        ];
+        // Un SystemRoot forgé peut empêcher un programme de démarrer sur un vrai Windows (DLL qui ne s'initialise
+        // pas, 0xc0000142) : essayé d'abord, puis sans lui si l'enfant n'a pas démarré.
+        const SYSTEME: [&str; 2] = ["SystemRoot", "windir"];
         if std::env::var_os("VANGUARD_ESSAI_ENV_FORGE").is_some() {
-            // Wine remet SystemRoot et ProgramFiles à leur valeur ; la variable inventée, elle, arrive toujours.
             if std::env::var("NEXISTEPASVG").as_deref() == Ok(PIEGE) {
                 println!("environnement forgé reçu");
             }
-            for n in [
-                "SystemRoot",
-                "windir",
-                "ProgramFiles",
-                "CommonProgramFiles",
-                "ProgramData",
-            ] {
+            for n in SURES.iter().chain(&SYSTEME).filter(|n| **n != "NEXISTEPASVG") {
                 assert_ne!(variable_systeme(n).as_deref(), Some(PIEGE), "{n}");
             }
             assert_eq!(variable_systeme("NEXISTEPASVG"), None);
             return;
         }
-        let mut c = std::process::Command::new(std::env::current_exe().unwrap());
-        c.args([
-            "--exact",
-            "machine::windows::services::tests::environnement_du_compte_sans_effet",
-            "--nocapture",
-        ])
-        .env("VANGUARD_ESSAI_ENV_FORGE", "1");
-        for n in [
-            "SystemRoot",
-            "windir",
-            "ProgramFiles",
-            "CommonProgramFiles",
-            "ProgramData",
-            "NEXISTEPASVG",
-        ] {
-            c.env(n, PIEGE);
+        let relancer = |forgees: &[&str]| {
+            let mut c = std::process::Command::new(std::env::current_exe().unwrap());
+            c.args([
+                "--exact",
+                "machine::windows::services::tests::environnement_du_compte_sans_effet",
+                "--nocapture",
+            ])
+            .env("VANGUARD_ESSAI_ENV_FORGE", "1");
+            for n in forgees {
+                c.env(n, PIEGE);
+            }
+            let sortie = c.output().unwrap();
+            (
+                sortie.status.success(),
+                String::from_utf8_lossy(&sortie.stdout).into_owned(),
+            )
+        };
+        let toutes: Vec<&str> = SURES.iter().chain(&SYSTEME).copied().collect();
+        let (mut reussi, mut texte) = relancer(&toutes);
+        // L'enfant n'a pas atteint le premier test : il n'a pas démarré avec ce SystemRoot. Le reste est vérifié.
+        let sans_systeme = !texte.contains("running 1 test");
+        if sans_systeme {
+            (reussi, texte) = relancer(&SURES);
         }
-        let sortie = c.output().unwrap();
-        let texte = String::from_utf8_lossy(&sortie.stdout);
         // Le test relancé a bien tourné (un filtre qui ne trouverait rien réussirait aussi).
-        assert!(sortie.status.success() && texte.contains("1 passed"), "{texte}");
+        assert!(reussi && texte.contains("1 passed"), "{texte}");
         if !texte.contains("environnement forgé reçu") {
-            crate::essais::saute("environnement forgé perdu dans le processus relancé");
+            return crate::essais::saute("environnement forgé perdu dans le processus relancé");
+        }
+        if sans_systeme {
+            crate::essais::saute("l'enfant ne démarre pas avec un SystemRoot forgé : vérifié sans lui");
         }
     }
 
     /// Aucune lecture de l'environnement de ce processus hors des tests : l'enfant élevé hérite de celui du compte.
+    /// Les dossiers viennent d'`environnement.rs` (`dossiers`, `dossier_windows`), lu aussi.
     #[test]
     fn aucune_variable_lue_dans_le_processus() {
-        let source = include_str!("services.rs");
-        let code = source.split("#[cfg(test)]").next().unwrap();
-        for interdit in [
-            "env::var",
-            "env::vars",
-            "ExpandEnvironmentStrings",
-            "GetEnvironmentVariable",
+        for (nom, source) in [
+            ("services.rs", include_str!("services.rs")),
+            ("environnement.rs", include_str!("environnement.rs")),
         ] {
-            assert!(!code.contains(interdit), "{interdit}");
+            // Le module des tests seulement : environnement.rs a d'autres éléments sous `cfg(test)` avant lui.
+            let code = source.split("\n#[cfg(test)]\nmod tests {").next().unwrap();
+            assert!(code.len() < source.len(), "{nom} : module des tests introuvable");
+            for interdit in [
+                "env::var",
+                "env::vars",
+                "ExpandEnvironmentStrings",
+                "GetEnvironmentVariable",
+            ] {
+                assert!(!code.contains(interdit), "{nom} : {interdit}");
+            }
         }
     }
 }

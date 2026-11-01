@@ -32,6 +32,8 @@ pub(crate) struct Dossiers {
     pub fichiers_communs_x86: Option<PathBuf>,
     pub fichiers_communs_x64: Option<PathBuf>,
     pub program_data: Option<PathBuf>,
+    /// PUBLIC : hors de l'environnement réduit, mais citée par les chemins des services, comme ProgramW6432.
+    pub public: Option<PathBuf>,
     pub profil: Option<PathBuf>,
     pub appdata: Option<PathBuf>,
     pub appdata_local: Option<PathBuf>,
@@ -154,6 +156,7 @@ pub(crate) fn dossiers() -> &'static Dossiers {
             fichiers_communs_x86: dossier_connu(&FICHIERS_COMMUNS_X86),
             fichiers_communs_x64: dossier_connu(&FICHIERS_COMMUNS_X64),
             program_data: dossier_connu(&PROGRAM_DATA),
+            public: dossier_connu(&PUBLIC),
             profil: dossier_connu(&PROFIL),
             appdata: dossier_connu(&APPDATA),
             appdata_local: dossier_connu(&APPDATA_LOCAL),
@@ -174,6 +177,7 @@ static PROGRAM_FILES_X64: GUID = GUID::from_u128(0x6d809377_6af0_444b_8957_a3773
 static FICHIERS_COMMUNS_X86: GUID = GUID::from_u128(0xde974d24_d9c6_4d3e_bf91_f4455120b917);
 static FICHIERS_COMMUNS_X64: GUID = GUID::from_u128(0x6365d5a7_0f0d_45e5_87f6_0da56b6a4f7d);
 static PROGRAM_DATA: GUID = GUID::from_u128(0x62ab5d82_fdc1_4dc3_a9dd_070d1d495d97);
+static PUBLIC: GUID = GUID::from_u128(0xdfdf76a2_c82a_4d63_906a_5644ac457385);
 static PROFIL: GUID = GUID::from_u128(0x5e6c858f_0e22_4760_9afe_ea3317b67173);
 static APPDATA: GUID = GUID::from_u128(0x3eb685db_65f9_4cf6_a03a_e3ef65729f3d);
 static APPDATA_LOCAL: GUID = GUID::from_u128(0xf1b32785_6fba_4fcf_9d55_7b8e7f157091);
@@ -296,6 +300,7 @@ mod tests {
             fichiers_communs_x86: Some(PathBuf::from(r"C:\Program Files (x86)\Common Files")),
             fichiers_communs_x64: Some(PathBuf::from(r"C:\Program Files\Common Files")),
             program_data: Some(PathBuf::from(r"C:\ProgramData")),
+            public: Some(PathBuf::from(r"C:\Users\Public")),
             profil: Some(PathBuf::from(r"C:\Users\alice")),
             appdata: Some(PathBuf::from(r"C:\Users\alice\AppData\Roaming")),
             appdata_local: Some(PathBuf::from(r"C:\Users\alice\AppData\Local")),
@@ -382,6 +387,7 @@ mod tests {
             &d.program_files_x86,
             &d.fichiers_communs,
             &d.program_data,
+            &d.public,
             &d.profil,
             &d.appdata,
             &d.appdata_local,

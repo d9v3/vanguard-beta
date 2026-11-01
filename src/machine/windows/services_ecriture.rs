@@ -1,6 +1,7 @@
 //! Les actes du processus élevé (`eleve`, lignes `vanguard:service`, `vanguard:vider`…), faits sans PowerShell :
 //! un service de la table arrêté (ses dépendants actifs d'abord, comme `Stop-Service -Force`), démarré, redémarré ou
-//! changé de type de démarrage, auprès du gestionnaire de services (advapi32) ; un dossier de Windows vidé ou un cache
+//! changé de type de démarrage, ou son chemin mis entre guillemets (`services::poser_guillemets`), auprès du
+//! gestionnaire de services (advapi32) ; un dossier de Windows vidé ou un cache
 //! mis de côté (`vidage`), depuis le dossier de Windows lu à GetSystemDirectoryW, jamais dans l'environnement.
 //!
 //! Chaque attente est bornée (30 secondes, quel que soit le délai que le service annonce) : un service qui ne
@@ -426,6 +427,51 @@ fn regler(g: &Poignee, nom: &str, demarrage: u32) -> Result<Reglage, Echec> {
         )));
     }
     Ok(Reglage::Change)
+}
+
+/// Le chemin (ImagePath) du service `nom` remplacé par `chemin`, par le gestionnaire des services
+/// (ChangeServiceConfigW), et rien d'autre : Microsoft demande de passer par ses fonctions plutôt que d'écrire dans
+/// sa base (HKLM\…\Services) directement. Le service est ouvert avec le seul droit SERVICE_CHANGE_CONFIG.
+/// `Ok(false)` : le service n'existe pas (ou plus).
+pub(super) fn changer_le_chemin(nom: &str, chemin: &str) -> Result<bool, Echec> {
+    if chemin.is_empty() || chemin.contains('\0') {
+        return Err(Echec::refuse(
+            CONTEXTE,
+            tr!("chemin de service vide ou coupé", "empty or cut service path"),
+        ));
+    }
+    let g = gestionnaire()?;
+    let Some(s) = ouvrir(&g, nom, CHANGER_LA_CONFIG)? else {
+        return Ok(false);
+    };
+    let large: Vec<u16> = chemin.encode_utf16().chain([0]).collect();
+    // SAFETY: la poignée a le droit SERVICE_CHANGE_CONFIG ; `large` est terminé par un zéro, sans zéro avant (vérifié
+    // plus haut), et vit pendant l'appel ; SERVICE_NO_CHANGE pour la sorte, le démarrage et les erreurs, et des
+    // pointeurs nuls pour le reste : ni groupe, ni étiquette, ni dépendances, ni compte, ni mot de passe, ni nom
+    // affiché ne changent.
+    let fait = unsafe {
+        ChangeServiceConfigW(
+            s.0,
+            SANS_CHANGEMENT,
+            SANS_CHANGEMENT,
+            SANS_CHANGEMENT,
+            large.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    if fait == 0 {
+        return Err(echoue(trf!(
+            "le chemin du service {nom} n'a pas changé (code {})",
+            "the path of the {nom} service did not change (code {})",
+            derniere_erreur()
+        )));
+    }
+    Ok(true)
 }
 
 fn absent(nom: &str) -> Echec {
