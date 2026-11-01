@@ -44,6 +44,7 @@ use windows::Win32::System::Com::{
 
 use super::corrections::{self, Correction, Resultat};
 use crate::machine::gestes;
+use crate::modele::Echec;
 use crate::protection::blocage::ordres::{self, Ordre};
 use crate::ui::{ACCENT, GRIS, RESET, VERT, tr, trf, trp};
 
@@ -1100,7 +1101,7 @@ pub(crate) fn sans_point_accepte() -> &'static str {
 pub(crate) fn point_de_restauration() -> (bool, String) {
     match poser_le_point() {
         Ok(()) => (true, String::new()),
-        Err(raison) => continuer_sans_point(&raison, crate::ui::demander),
+        Err(raison) => continuer_sans_point(&raison.to_string(), crate::ui::demander),
     }
 }
 
@@ -1239,7 +1240,7 @@ fn initialiser_com() {
 }
 
 /// Pose le point (début puis fin du changement) ; `Err` : pourquoi il ne l'est pas, prêt à montrer.
-fn poser_le_point() -> Result<(), String> {
+fn poser_le_point() -> Result<(), Echec> {
     const DEBUT: u32 = 100;
     const FIN_CHANGEMENT: u32 = 101;
     const REGLAGES: u32 = 12;
@@ -1263,37 +1264,73 @@ fn poser_le_point() -> Result<(), String> {
     let pose = unsafe {
         let module = LoadLibraryExW(bibliotheque.as_ptr(), std::ptr::null_mut(), CHARGER_DE_SYSTEM32);
         if module.is_null() {
-            return Err(trf!(
-                "srclient.dll absente de ce Windows",
-                "srclient.dll missing from this Windows"
+            return Err(Echec::echoue(
+                CONTEXTE_POINT,
+                trf!(
+                    "srclient.dll absente de ce Windows",
+                    "srclient.dll missing from this Windows"
+                ),
             ));
         }
         let adresse = GetProcAddress(module, c"SRSetRestorePointW".as_ptr().cast());
         if adresse.is_null() {
-            return Err(trf!(
-                "SRSetRestorePointW absente de srclient.dll",
-                "SRSetRestorePointW missing from srclient.dll"
+            return Err(Echec::echoue(
+                CONTEXTE_POINT,
+                trf!(
+                    "SRSetRestorePointW absente de srclient.dll",
+                    "SRSetRestorePointW missing from srclient.dll"
+                ),
             ));
         }
         let poser: Poser = std::mem::transmute::<*mut c_void, Poser>(adresse);
-        let ok = poser(&raw mut info, &raw mut etat) != 0;
-        if ok {
+        if poser(&raw mut info, &raw mut etat) == 0 {
+            Etape::Debut
+        } else {
+            // Le point n'est gardé que si Windows accepte aussi la fin : son refus est un échec, pas un « OK ».
             info.evenement = FIN_CHANGEMENT;
             let sequence = etat.sequence; // copie : jamais de référence vers un champ packed
             info.sequence = sequence;
-            poser(&raw mut info, &raw mut etat);
+            if poser(&raw mut info, &raw mut etat) == 0 {
+                Etape::Fin
+            } else {
+                Etape::Faite
+            }
         }
-        ok
     };
-    if pose {
-        return Ok(());
-    }
-    Err(trf!(
-        "erreur {} : protection du système désactivée sur C: ?",
-        "error {}: system protection turned off on C:?",
-        { etat.statut }
-    ))
+    raison_du_point(pose, etat.statut)
 }
+
+/// Où l'appel du point s'est arrêté.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Etape {
+    /// Début refusé : rien n'est commencé.
+    Debut,
+    /// Début accepté, fin refusée : Windows ne garde pas le point.
+    Fin,
+    /// Début et fin acceptés.
+    Faite,
+}
+
+/// `Ok` seulement si les deux appels ont réussi ; sinon la raison, avec le statut rendu par Windows.
+fn raison_du_point(etape: Etape, statut: u32) -> Result<(), Echec> {
+    let phrase = match etape {
+        Etape::Faite => return Ok(()),
+        Etape::Debut => trf!(
+            "erreur {} : protection du système désactivée sur C: ?",
+            "error {}: system protection turned off on C:?",
+            statut
+        ),
+        Etape::Fin => trf!(
+            "erreur {} : Windows n'a pas terminé le point",
+            "error {}: Windows did not finish the point",
+            statut
+        ),
+    };
+    Err(Echec::echoue(CONTEXTE_POINT, phrase))
+}
+
+/// Le contexte des échecs du point de restauration.
+const CONTEXTE_POINT: &str = "restauration/point";
 
 #[cfg(test)]
 mod tests {
@@ -1668,6 +1705,20 @@ mod tests {
         };
         assert_eq!(en_sddl(construit.pointeur().0), reference);
         assert!(reference.starts_with("O:BAG:BAD:"), "{reference}");
+    }
+
+    #[test]
+    fn le_point_n_est_ok_que_si_la_fin_reussit() {
+        assert_eq!(raison_du_point(Etape::Faite, 0), Ok(()));
+        let fin = raison_du_point(Etape::Fin, 1460)
+            .expect_err("fin refusée = échec")
+            .to_string();
+        assert!(fin.contains("1460"), "{fin}");
+        let debut = raison_du_point(Etape::Debut, 1058)
+            .expect_err("début refusé = échec")
+            .to_string();
+        assert!(debut.contains("1058"), "{debut}");
+        assert_ne!(fin, debut, "les deux raisons se distinguent");
     }
 
     #[test]

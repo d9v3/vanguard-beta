@@ -259,8 +259,8 @@ mod tests {
     /// commun (`Echec`) les fait baisser ; une nouvelle ne doit pas s'y ajouter. Baisser ce nombre, jamais le monter.
     /// 202 → 186 avec l'étape E5 : les fonctions du lot « preuve et réponse » (déclarer normale, quarantaine, gestes
     /// du blocage) d'abord, puis les réglages du blocage, son pare-feu et les versions vues. 185 : la lecture des
-    /// Paramètres.
-    const ERREURS_EN_TEXTE_AU_PLUS: usize = 185;
+    /// Paramètres. 184 : le point de restauration de Windows.
+    const ERREURS_EN_TEXTE_AU_PLUS: usize = 184;
 
     /// T13 : le cliquet des erreurs en texte, compté hors des modules de tests.
     #[test]
