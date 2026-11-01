@@ -220,7 +220,7 @@ pub(super) fn juger_jeton_distant(valeur: Option<u32>) -> Option<Constat> {
                 "Remettre le contrôle de compte pour les connexions à distance (un outil d'administration à distance peut en avoir besoin : il le dira)",
                 "Put account control back for remote connections (a remote administration tool may need it off: it will say so)"
             ),
-            &[r"Remove-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name LocalAccountTokenFilterPolicy"],
+            &[&super::corrections::id("latfp-retire")],
         )
     })
 }
@@ -554,12 +554,9 @@ pub(super) fn juger_client_smb1(demarrage: Option<u32>) -> Option<Constat> {
 }
 
 /// AlwaysInstallElevated à 1 pour l'ordinateur ET pour le compte : n'importe quel compte installe un paquet MSI avec
-/// les droits du système, un moyen connu de devenir administrateur. Un seul des deux ne suffit pas à Windows.
-pub(super) fn juger_installation_elevee(
-    machine: Option<u32>,
-    compte: Option<u32>,
-    cle_du_compte: &str,
-) -> Option<Constat> {
+/// les droits du système, un moyen connu de devenir administrateur. Un seul des deux ne suffit pas à Windows. La
+/// remise du compte ne porte aucun SID : le processus élevé le prend dans le jeton de Vanguard qui l'a lancé.
+pub(super) fn juger_installation_elevee(machine: Option<u32>, compte: Option<u32>) -> Option<Constat> {
     (machine == Some(1) && compte == Some(1)).then(|| {
         alerte(
             DURCI,
@@ -574,10 +571,7 @@ pub(super) fn juger_installation_elevee(
                 "Couper l'installation avec les droits du système (le réglage de Windows)",
                 "Turn off installing with system rights (Windows' setting)"
             ),
-            &[
-                r"Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer' -Name AlwaysInstallElevated -Value 0 -Type DWord".to_string(),
-                format!("Set-ItemProperty -LiteralPath '{cle_du_compte}' -Name AlwaysInstallElevated -Value 0 -Type DWord"),
-            ],
+            &[super::corrections::id("aie-machine"), super::corrections::id("aie-compte")],
         )
     })
 }
@@ -1123,7 +1117,6 @@ pub(super) fn programmes_et_documents() -> Vec<Constat> {
     c.extend(juger_installation_elevee(
         lire_dword(installeur, "AlwaysInstallElevated"),
         installeur_du_compte,
-        &crate::reparer::hkcu_de_la_personne(sid.as_deref(), installeur),
     ));
     c.extend(juger_strategie_ps(
         effective,
@@ -1367,22 +1360,20 @@ mod tests {
         let client = juger_client_smb1(Some(2)).unwrap();
         assert!(client.probleme == Some(Niveau::Moyen) && client.categorie == "SMBv1");
         // Installation avec les droits du système : seulement si l'ordinateur ET le compte le permettent.
-        assert!(juger_installation_elevee(Some(1), None, "HKCU:\\x").is_none());
+        assert!(juger_installation_elevee(Some(1), None).is_none());
         assert!(
-            juger_installation_elevee(Some(1), Some(0), "HKCU:\\x").is_none()
-                && juger_installation_elevee(None, Some(1), "HKCU:\\x").is_none()
+            juger_installation_elevee(Some(1), Some(0)).is_none() && juger_installation_elevee(None, Some(1)).is_none()
         );
-        let msi = juger_installation_elevee(
-            Some(1),
-            Some(1),
-            r"Registry::HKEY_USERS\S-1-5-21-1-2-3-1001\SOFTWARE\Policies\Microsoft\Windows\Installer",
-        )
-        .unwrap();
+        let msi = juger_installation_elevee(Some(1), Some(1)).unwrap();
         let remise = msi.correctif.unwrap();
-        assert!(msi.probleme == Some(Niveau::Eleve) && remise.commandes.len() == 2);
-        assert!(
-            remise.commandes[1]
-                .starts_with(r"Set-ItemProperty -LiteralPath 'Registry::HKEY_USERS\S-1-5-21-1-2-3-1001\SOFTWARE")
+        assert!(msi.probleme == Some(Niveau::Eleve) && remise.automatique);
+        // Des identifiants seuls : le SID du compte est pris par le processus élevé, jamais dans la ligne.
+        assert_eq!(
+            remise.commandes,
+            [
+                super::super::corrections::id("aie-machine"),
+                super::super::corrections::id("aie-compte")
+            ]
         );
         // Protection contre les exploits : seul OFF compte, NOTSET étant le réglage de Windows.
         assert!(juger_protection_exploits(None).is_none());

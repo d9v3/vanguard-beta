@@ -28,9 +28,13 @@ fn juger(e: &Etat) -> Constat {
         );
         return if cfg!(windows) {
             c.corriger(
-                tr!("Régler l'heure automatiquement (service de temps de Windows)", "Set the time automatically (Windows time service)"),
+                tr!(
+                    "Régler l'heure automatiquement (service de temps de Windows)",
+                    "Set the time automatically (Windows time service)"
+                ),
                 &[
-                    r"Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters' -Name Type -Value NTP".to_string(),
+                    // Identifiant de la table des corrections (`heure-ntp`), écrit tel quel : ce module est commun.
+                    "vanguard:heure-ntp".to_string(),
                     gestes::ligne_service("w32time", gestes::Action::Auto),
                     gestes::ligne_service("w32time", gestes::Action::Demarrer),
                     gestes::ligne_programme("w32tm-resync", None),
@@ -194,6 +198,20 @@ mod tests {
         // Aucun service de temps installé, ou aucune liste : rien à dire.
         assert_eq!(juger_unites(listes, |_| false, |_| true, None), None);
         assert_eq!(juger_unites("", |_| true, |_| true, None), None);
+    }
+
+    /// Sous Windows, le réglage NTP passe par la table des corrections : la ligne écrite ici est son identifiant.
+    #[cfg(windows)]
+    #[test]
+    fn heure_ntp_de_la_table() {
+        use crate::machine::windows::corrections;
+        let c = juger(&Etat {
+            automatique: false,
+            synchronisee: None,
+        });
+        let k = c.correctif.unwrap();
+        assert_eq!(k.commandes[0], corrections::id("heure-ntp"));
+        assert!(corrections::native(&k.commandes[0]));
     }
 
     /// Sur cet ordinateur, la lecture directe dit la même chose que timedatectl, quand il est là.

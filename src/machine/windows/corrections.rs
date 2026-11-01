@@ -30,6 +30,28 @@ pub(crate) enum Geste {
         valeur: &'static str,
         donnee: u32,
     },
+    /// Une valeur texte (REG_SZ) sous HKEY_LOCAL_MACHINE, mise à la donnée voulue ; la clé doit exister.
+    Sz {
+        cle: &'static str,
+        valeur: &'static str,
+        donnee: &'static str,
+    },
+    /// Une valeur retirée sous HKEY_LOCAL_MACHINE : absente, c'est le réglage de Windows.
+    RetirerValeur { cle: &'static str, valeur: &'static str },
+    /// Une valeur DWORD dans le registre du compte de la personne (HKEY_USERS\<SID>) : le SID est pris par le
+    /// processus élevé dans le jeton du Vanguard qui l'a lancé (PID vérifié par le tube), jamais un paramètre.
+    DwordCompte {
+        cle: &'static str,
+        valeur: &'static str,
+        donnee: u32,
+    },
+    /// Userinit de Winlogon remis à `<dossier de Windows>\system32\userinit.exe,` : le dossier est lu par le
+    /// processus élevé (GetSystemWindowsDirectoryW), la ligne ne porte aucun argument.
+    Userinit,
+    /// NetBIOS sur TCP/IP coupé sur chaque carte : NetbiosOptions = 2 sous NetBT\Parameters\Interfaces\Tcpip_*.
+    NetbiosCoupe,
+    /// SMBv1 coupé dans le serveur de partage, par WMI (MSFT_SmbServerConfiguration.SetConfiguration).
+    Smb1Serveur,
     /// Le point de restauration, avant de toucher au système.
     PointDeRestauration,
 }
@@ -40,6 +62,9 @@ pub(crate) struct Correction {
     pub geste: Geste,
     fr: &'static str,
     en: &'static str,
+    /// La commande PowerShell du chemin par script quand elle est fixe : celle que le constat écrivait avant que le
+    /// geste passe par Windows, reprise telle quelle. `None` : calculée par `powershell`.
+    ps: Option<&'static str>,
 }
 
 impl Correction {
@@ -51,11 +76,32 @@ impl Correction {
     /// L'équivalent PowerShell, pour le chemin par script. La clé n'est créée que si elle manque : « New-Item -Force »
     /// sur une clé existante l'écraserait avec ses autres valeurs.
     pub(crate) fn powershell(&self) -> String {
+        use crate::commande::ps_texte;
+        if let Some(ps) = self.ps {
+            return ps.to_string();
+        }
         match self.geste {
             Geste::Dword { cle, valeur, donnee } => format!(
                 "if (-not (Test-Path -LiteralPath 'HKLM:\\{cle}')) {{ New-Item -Path 'HKLM:\\{cle}' -Force | Out-Null }}; \
                  Set-ItemProperty -LiteralPath 'HKLM:\\{cle}' -Name {valeur} -Value {donnee} -Type DWord"
             ),
+            Geste::RetirerValeur { cle, valeur } => {
+                format!("Remove-ItemProperty -LiteralPath 'HKLM:\\{cle}' -Name {valeur}")
+            }
+            // Le compte de la personne, comme le constat l'écrivait (la fenêtre PowerShell de Wine n'a pas de jeton
+            // de parent à lire : le SID est celui de ce processus).
+            Geste::DwordCompte { cle, valeur, donnee } => format!(
+                "Set-ItemProperty -LiteralPath '{}' -Name {valeur} -Value {donnee} -Type DWord",
+                crate::reparer::hkcu_de_la_personne(crate::reparer::sid_de_la_personne().as_deref(), cle)
+            ),
+            Geste::Userinit => format!(
+                "Set-ItemProperty -LiteralPath '{}' -Name Userinit -Value '{}' -Type String",
+                ps_texte(&format!(r"HKLM:\{}", super::portes::WINLOGON)),
+                ps_texte(&format!(r"{}\system32\userinit.exe,", super::portes::racine_windows()))
+            ),
+            Geste::Sz { .. } | Geste::NetbiosCoupe | Geste::Smb1Serveur => {
+                "throw 'Vanguard : geste sans équivalent PowerShell'".to_string()
+            }
             Geste::PointDeRestauration => crate::reparer::point_restauration_powershell(),
         }
     }
@@ -67,17 +113,23 @@ const LSA: &str = r"SYSTEM\CurrentControlSet\Control\Lsa";
 const UAC: &str = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System";
 const APPINIT: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows";
 const APPINIT_32: &str = r"SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion\Windows";
+const TERMINAL_SERVER: &str = r"SYSTEM\CurrentControlSet\Control\Terminal Server";
+const INSTALLEUR: &str = r"SOFTWARE\Policies\Microsoft\Windows\Installer";
+const NETBT_INTERFACES: &str = r"SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces";
 /// La clé que le basculeur « Liste de blocage des pilotes vulnérables » de Sécurité Windows écrit (Isolation du noyau).
 pub(crate) const PILOTES_VULNERABLES: &str = r"SYSTEM\CurrentControlSet\Control\CI\Config";
 
-/// La liste fermée. Chaque entrée renforce la sécurité ; aucune ne coupe un pare-feu, Defender, BitLocker ou l'UAC,
-/// ni une connexion à distance en cours (`rdp-nla` exige une authentification, il ne ferme pas le Bureau à distance).
+/// La liste fermée. Chaque entrée renforce la sécurité, ou remet une valeur d'origine de Windows (`heure-ntp`,
+/// `winlogon-shell`, `winlogon-userinit`) ; aucune ne coupe un pare-feu, Defender, BitLocker ou l'UAC, ni une connexion
+/// à distance en cours (`rdp-nla` exige une authentification ; `rdp-coupe` est refusé par le processus élevé pendant
+/// une session du Bureau à distance).
 static TABLE: &[Correction] = &[
     Correction {
         id: "point-de-restauration",
         geste: Geste::PointDeRestauration,
         fr: "Point de restauration, pour pouvoir revenir en arrière",
         en: "Restore point, so you can go back",
+        ps: None,
     },
     Correction {
         id: "wdigest-coupe",
@@ -88,6 +140,7 @@ static TABLE: &[Correction] = &[
         },
         fr: "Couper WDigest : plus de mot de passe en clair dans la mémoire (HKLM\\…\\WDigest, UseLogonCredential = 0)",
         en: "Turn WDigest off: no more clear-text password in memory (HKLM\\...\\WDigest, UseLogonCredential = 0)",
+        ps: None,
     },
     Correction {
         id: "rdp-nla",
@@ -98,6 +151,7 @@ static TABLE: &[Correction] = &[
         },
         fr: "Exiger l'authentification au niveau réseau (NLA) pour le Bureau à distance (HKLM\\…\\RDP-Tcp, UserAuthentication = 1)",
         en: "Require Network Level Authentication (NLA) for Remote Desktop (HKLM\\...\\RDP-Tcp, UserAuthentication = 1)",
+        ps: None,
     },
     dword(
         "comptes-sans-mdp-limites",
@@ -211,6 +265,104 @@ static TABLE: &[Correction] = &[
         "Couper LLMNR, la résolution de noms par diffusion (HKLM\\…\\DNSClient, EnableMulticast = 0)",
         "Turn LLMNR (broadcast name resolution) off (HKLM\\...\\DNSClient, EnableMulticast = 0)",
     ),
+    // Le processus élevé refuse de le couper pendant une session ouverte par le Bureau à distance : la personne
+    // perdrait la connexion (le constat ne le propose pas non plus dans ce cas).
+    Correction {
+        id: "rdp-coupe",
+        geste: Geste::Dword {
+            cle: TERMINAL_SERVER,
+            valeur: "fDenyTSConnections",
+            donnee: 1,
+        },
+        fr: "Désactiver le Bureau à distance (HKLM\\…\\Terminal Server, fDenyTSConnections = 1)",
+        en: "Turn Remote Desktop off (HKLM\\...\\Terminal Server, fDenyTSConnections = 1)",
+        ps: Some(
+            r"Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 1",
+        ),
+    },
+    Correction {
+        id: "latfp-retire",
+        geste: Geste::RetirerValeur {
+            cle: UAC,
+            valeur: "LocalAccountTokenFilterPolicy",
+        },
+        fr: "Remettre le contrôle de compte pour les connexions à distance des comptes locaux (HKLM\\…\\Policies\\System, LocalAccountTokenFilterPolicy retiré)",
+        en: "Put account control back for remote connections of local accounts (HKLM\\...\\Policies\\System, LocalAccountTokenFilterPolicy removed)",
+        ps: None,
+    },
+    Correction {
+        id: "aie-machine",
+        geste: Geste::Dword {
+            cle: INSTALLEUR,
+            valeur: "AlwaysInstallElevated",
+            donnee: 0,
+        },
+        fr: "Couper l'installation avec les droits du système pour l'ordinateur (HKLM\\…\\Installer, AlwaysInstallElevated = 0)",
+        en: "Turn off installing with system rights for the computer (HKLM\\...\\Installer, AlwaysInstallElevated = 0)",
+        ps: Some(
+            r"Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer' -Name AlwaysInstallElevated -Value 0 -Type DWord",
+        ),
+    },
+    Correction {
+        id: "aie-compte",
+        geste: Geste::DwordCompte {
+            cle: INSTALLEUR,
+            valeur: "AlwaysInstallElevated",
+            donnee: 0,
+        },
+        fr: "Couper l'installation avec les droits du système pour votre compte (HKCU\\…\\Installer, AlwaysInstallElevated = 0)",
+        en: "Turn off installing with system rights for your account (HKCU\\...\\Installer, AlwaysInstallElevated = 0)",
+        ps: None,
+    },
+    Correction {
+        id: "heure-ntp",
+        geste: Geste::Sz {
+            cle: r"SYSTEM\CurrentControlSet\Services\W32Time\Parameters",
+            valeur: "Type",
+            donnee: "NTP",
+        },
+        fr: "Régler l'heure par Internet (HKLM\\…\\W32Time\\Parameters, Type = NTP)",
+        en: "Set the time from the Internet (HKLM\\...\\W32Time\\Parameters, Type = NTP)",
+        ps: Some(
+            r"Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters' -Name Type -Value NTP",
+        ),
+    },
+    Correction {
+        id: "winlogon-shell",
+        geste: Geste::Sz {
+            cle: super::portes::WINLOGON,
+            valeur: "Shell",
+            donnee: "explorer.exe",
+        },
+        fr: "Remettre le bureau de Windows seul (HKLM\\…\\Winlogon, Shell = explorer.exe, la valeur d'origine)",
+        en: "Put Windows' desktop back alone (HKLM\\...\\Winlogon, Shell = explorer.exe, the original value)",
+        ps: Some(
+            r"Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name Shell -Value 'explorer.exe' -Type String",
+        ),
+    },
+    Correction {
+        id: "winlogon-userinit",
+        geste: Geste::Userinit,
+        fr: "Remettre Userinit d'origine (HKLM\\…\\Winlogon, Userinit = <dossier de Windows>\\system32\\userinit.exe, ; le dossier est lu par Windows)",
+        en: "Put the original Userinit back (HKLM\\...\\Winlogon, Userinit = <Windows folder>\\system32\\userinit.exe, ; the folder is read from Windows)",
+        ps: None,
+    },
+    Correction {
+        id: "netbios-coupe",
+        geste: Geste::NetbiosCoupe,
+        fr: "Couper NetBIOS sur TCP/IP sur chaque carte réseau (HKLM\\…\\NetBT\\Parameters\\Interfaces, NetbiosOptions = 2)",
+        en: "Turn off NetBIOS over TCP/IP on every network adapter (HKLM\\...\\NetBT\\Parameters\\Interfaces, NetbiosOptions = 2)",
+        ps: Some(
+            "Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' | Invoke-CimMethod -MethodName SetTcpipNetbios -Arguments @{ TcpipNetbiosOptions = [uint32]2 } | Out-Null",
+        ),
+    },
+    Correction {
+        id: "smb1-serveur-coupe",
+        geste: Geste::Smb1Serveur,
+        fr: "Désactiver SMBv1 dans le partage de fichiers de Windows (serveur SMB, par WMI)",
+        en: "Turn SMBv1 off in Windows file sharing (SMB server, through WMI)",
+        ps: Some("Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force"),
+    },
 ];
 
 /// Une entrée de la table qui met une valeur DWORD sous HKLM.
@@ -227,6 +379,7 @@ const fn dword(
         geste: Geste::Dword { cle, valeur, donnee },
         fr,
         en,
+        ps: None,
     }
 }
 
@@ -257,12 +410,14 @@ pub(crate) fn analyser(ligne: &str) -> Option<&'static Correction> {
     TABLE.iter().find(|c| c.id == court)
 }
 
-/// Comment se défait une correction faite de ces commandes : une correction native (un DWORD sous HKLM) durcit
-/// Windows (WDigest, NLA, Lsa, UAC…) ; c'est une protection, que Vanguard ne défait jamais. Défaite d'après une note de
+/// Comment se défait une correction faite de ces commandes : une correction native (un DWORD sous HKLM, une valeur
+/// d'origine remise, une valeur dangereuse retirée) durcit Windows (WDigest, NLA, Lsa, UAC, Winlogon…) ; c'est une
+/// protection, que Vanguard ne défait jamais. Défaite d'après une note de
 /// reglages.json, que tout programme du compte peut réécrire, elle remettait en administrateur la valeur qu'une
 /// note forgée choisissait (UseLogonCredential = 1). La personne peut toujours la changer elle-même dans Windows. Un
 /// acte de service qui durcit (`gestes::SERVICES`, RemoteRegistry désactivé…) compte de même, comme le pare-feu remis
-/// en marche, le profil Public durci ou un réseau passé en Public ; un acte qui ne durcit pas (arrêter puis relancer
+/// en marche, le profil Public durci, un réseau passé en Public, un débogueur IFEO retiré ou un chemin de service mis
+/// entre guillemets ; un acte qui ne durcit pas (arrêter puis relancer
 /// wuauserv), comme le reste (PowerShell, le point de restauration seul, un dossier vidé), n'est pas relevé.
 pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
     use crate::machine::Defaire;
@@ -271,10 +426,18 @@ pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
     let durcies: Option<Vec<bool>> = commandes
         .iter()
         .map(|l| match (analyser(l), gestes::analyser_acte(l)) {
-            (Some(c), _) => Some(matches!(c.geste, Geste::Dword { .. })),
+            (Some(c), _) => Some(!matches!(c.geste, Geste::PointDeRestauration)),
             (
                 None,
-                Some(a @ (Acte::Service(_) | Acte::PareFeuActif | Acte::PareFeuPublic(_) | Acte::ReseauCategorie(_))),
+                Some(
+                    a @ (Acte::Service(_)
+                    | Acte::PareFeuActif
+                    | Acte::PareFeuPublic(_)
+                    | Acte::ReseauCategorie(_)
+                    | Acte::IfeoDebugger(..)
+                    | Acte::IfeoSilencieux(..)
+                    | Acte::ServiceGuillemets(_)),
+                ),
             ) => Some(a.durcit()),
             _ => None,
         })
@@ -348,7 +511,7 @@ fn reseau_nomme(r: &crate::machine::gestes::ReseauCategorie) -> String {
 }
 
 fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
-    use crate::machine::gestes::{ACoter, Acte, Action, Categorie, Vidable};
+    use crate::machine::gestes::{ACoter, Acte, Action, Categorie, Vidable, Vue};
     use crate::ui::{tr, trf};
     match acte {
         Acte::Service(s) => {
@@ -414,6 +577,39 @@ fn phrase_acte(acte: &crate::machine::gestes::Acte) -> String {
                 "Profil Public du Pare-feu Windows : {}",
                 "Windows Firewall Public profile: {}",
                 reglages.join(tr!(" ; ", "; "))
+            )
+        }
+        Acte::IfeoDebugger(vue, n) => {
+            let n = crate::ui::affichable(n.texte());
+            match vue {
+                Vue::Windows => trf!(
+                    "Retirer le débogueur imposé à « {n} » (Image File Execution Options, valeur Debugger)",
+                    "Remove the debugger forced on “{n}” (Image File Execution Options, Debugger value)"
+                ),
+                Vue::Wow32 => trf!(
+                    "Retirer le débogueur imposé à « {n} » (Image File Execution Options des programmes 32 bits, valeur Debugger)",
+                    "Remove the debugger forced on “{n}” (Image File Execution Options of 32-bit programs, Debugger value)"
+                ),
+            }
+        }
+        Acte::IfeoSilencieux(vue, n) => {
+            let n = crate::ui::affichable(n.texte());
+            match vue {
+                Vue::Windows => trf!(
+                    "Ne plus rien lancer à la fermeture de « {n} » (SilentProcessExit, valeur MonitorProcess)",
+                    "Stop launching anything when “{n}” closes (SilentProcessExit, MonitorProcess value)"
+                ),
+                Vue::Wow32 => trf!(
+                    "Ne plus rien lancer à la fermeture de « {n} » (SilentProcessExit des programmes 32 bits, valeur MonitorProcess)",
+                    "Stop launching anything when “{n}” closes (SilentProcessExit of 32-bit programs, MonitorProcess value)"
+                ),
+            }
+        }
+        Acte::ServiceGuillemets(n) => {
+            let n = crate::ui::affichable(n.texte());
+            trf!(
+                "Mettre entre guillemets le chemin du service « {n} » (ImagePath, relu et recalculé ici avant d'écrire)",
+                "Put the path of the “{n}” service in quotes (ImagePath, read and recomputed here before writing)"
             )
         }
         Acte::ReseauCategorie(r) => {
@@ -563,11 +759,66 @@ pub(crate) struct Resultat {
     pub raison: String,
 }
 
+impl Resultat {
+    /// Fait : la valeur d'avant est notée.
+    pub(crate) fn fait(avant: String) -> Resultat {
+        Resultat {
+            reussi: true,
+            avant: Some(avant),
+            raison: String::new(),
+        }
+    }
+
+    /// Rien à faire (déjà bon, rien d'écrit) : réussi, et dit tel quel.
+    pub(crate) fn rien(raison: String) -> Resultat {
+        Resultat {
+            reussi: true,
+            avant: None,
+            raison,
+        }
+    }
+
+    /// Échec, avec sa raison ; la valeur d'avant quand elle a été lue.
+    pub(crate) fn echec(avant: Option<String>, raison: String) -> Resultat {
+        Resultat {
+            reussi: false,
+            avant,
+            raison,
+        }
+    }
+}
+
+/// Une valeur d'avant prête à noter : sans caractère de contrôle, et courte (le parent borne chaque ligne du tube).
+pub(crate) fn avant_notable(v: &str) -> String {
+    crate::ui::couper(&crate::ui::affichable(v), AVANT_MAX)
+}
+
+/// Au-delà, une valeur d'avant est coupée : elle sert à la montrer, pas à la remettre (ces gestes sont des protections).
+const AVANT_MAX: usize = 512;
+
 /// Applique une correction de la table avec les droits du processus (élevé) : la valeur d'avant est lue, la nouvelle
-/// écrite puis relue, et seul ce qui se relit tel qu'écrit compte comme réussi.
-pub(crate) fn appliquer(c: &Correction) -> Resultat {
+/// écrite puis relue, et seul ce qui se relit tel qu'écrit compte comme réussi. Une valeur déjà bonne n'est pas
+/// réécrite, et c'est dit. `parent` : le Vanguard qui a lancé ce processus (PID vérifié par le tube), dont le jeton
+/// donne le compte de la personne ; `None` quand Vanguard est lui-même administrateur (son propre jeton).
+pub(crate) fn appliquer(c: &Correction, parent: Option<u32>) -> Resultat {
     match c.geste {
+        // Couper le Bureau à distance depuis une session qu'il affiche couperait la personne : refusé ici aussi, même
+        // si la ligne a été forgée (le constat ne le propose pas dans ce cas).
+        Geste::Dword { .. } if c.id == "rdp-coupe" && super::session_a_distance() => Resultat::echec(
+            None,
+            crate::tr!(
+                "refusé : cette session passe par le Bureau à distance, le couper vous déconnecterait ; rien d'écrit",
+                "refused: this session goes through Remote Desktop, turning it off would disconnect you; nothing written"
+            )
+            .to_string(),
+        ),
         Geste::Dword { cle, valeur, donnee } => ecrire_dword(cle, valeur, donnee),
+        Geste::Sz { cle, valeur, donnee } => ecrire_sz(cle, valeur, donnee, |v| v.trim().eq_ignore_ascii_case(donnee)),
+        Geste::RetirerValeur { cle, valeur } => retirer_valeur(cle, valeur),
+        Geste::DwordCompte { cle, valeur, donnee } => ecrire_dword_compte(cle, valeur, donnee, parent),
+        Geste::Userinit => remettre_userinit(),
+        Geste::NetbiosCoupe => couper_netbios(),
+        Geste::Smb1Serveur => couper_smb1_serveur(),
         Geste::PointDeRestauration => {
             let (reussi, raison) = super::eleve::point_de_restauration();
             Resultat {
@@ -604,39 +855,381 @@ fn valeur_d_avant(racine: &winreg::RegKey, cle: &str, valeur: &str) -> Result<St
 }
 
 fn ecrire_dword(cle: &str, valeur: &str, donnee: u32) -> Resultat {
-    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE};
-    let racine = winreg::RegKey::predef(HKEY_LOCAL_MACHINE);
-    let avant = match valeur_d_avant(&racine, cle, valeur) {
+    let racine = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE);
+    ecrire_dword_sous(&racine, cle, valeur, donnee)
+}
+
+/// Un DWORD posé sous `racine` : la valeur d'avant lue (refus si elle ne se remettrait pas), rien d'écrit si elle est
+/// déjà la bonne, sinon écrit puis relu.
+fn ecrire_dword_sous(racine: &winreg::RegKey, cle: &str, valeur: &str, donnee: u32) -> Resultat {
+    use crate::ui::trf;
+    use winreg::enums::{KEY_READ, KEY_WRITE};
+    let avant = match valeur_d_avant(racine, cle, valeur) {
         Ok(avant) => avant,
-        Err(raison) => {
-            return Resultat {
-                reussi: false,
-                avant: None,
-                raison,
-            };
-        }
+        Err(raison) => return Resultat::echec(None, raison),
     };
+    if avant == donnee.to_string() {
+        return Resultat::rien(trf!("déjà {donnee}, rien d'écrit", "already {donnee}, nothing written"));
+    }
     // RegCreateKeyEx ouvre une clé qui existe sans toucher à ses valeurs (au contraire de New-Item -Force).
     let ecrit = racine
         .create_subkey_with_flags(cle, KEY_READ | KEY_WRITE)
         .and_then(|(k, _)| k.set_value(valeur, &donnee).map(|()| k))
         .and_then(|k| k.get_value::<u32, _>(valeur));
     match ecrit {
-        Ok(relu) if relu == donnee => Resultat {
-            reussi: true,
-            avant: Some(avant),
-            raison: String::new(),
+        Ok(relu) if relu == donnee => Resultat::fait(avant),
+        Ok(relu) => Resultat::echec(Some(avant), format!("relu {relu} au lieu de {donnee}")),
+        Err(e) => Resultat::echec(Some(avant), e.to_string()),
+    }
+}
+
+/// Le texte d'une valeur REG_SZ ou REG_EXPAND_SZ, jusqu'au premier zéro (ce que Windows en lit) ; `None` pour un
+/// autre type ou un UTF-16 invalide.
+pub(super) fn texte_reg(brute: &winreg::RegValue) -> Option<String> {
+    use winreg::enums::RegType::{REG_EXPAND_SZ, REG_SZ};
+    if !matches!(brute.vtype, REG_SZ | REG_EXPAND_SZ) || !brute.bytes.len().is_multiple_of(2) {
+        return None;
+    }
+    let (paires, _) = brute.bytes.as_chunks::<2>();
+    let unites: Vec<u16> = paires.iter().map(|o| u16::from_le_bytes(*o)).collect();
+    let texte = String::from_utf16(&unites).ok()?;
+    Some(texte.split('\0').next().unwrap_or_default().to_string())
+}
+
+/// Une valeur quelconque, décrite pour la noter : son texte, son DWORD, ou son type.
+pub(super) fn decrire(brute: &winreg::RegValue) -> String {
+    use winreg::enums::RegType::REG_DWORD;
+    if let Some(t) = texte_reg(brute) {
+        return avant_notable(&t);
+    }
+    match <[u8; 4]>::try_from(&*brute.bytes) {
+        Ok(octets) if brute.vtype == REG_DWORD => u32::from_le_bytes(octets).to_string(),
+        _ => format!("{:?}", brute.vtype),
+    }
+}
+
+/// Une valeur texte sous HKLM mise à `donnee` (REG_SZ) dans une clé qui existe ; `deja` : la valeur actuelle est-elle
+/// déjà la bonne (rien d'écrit) ? La valeur d'avant doit être un texte ou absente : un autre type est refusé.
+fn ecrire_sz(cle: &str, valeur: &str, donnee: &str, deja: impl Fn(&str) -> bool) -> Resultat {
+    use crate::ui::trf;
+    use std::io::ErrorKind::NotFound;
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE};
+    let k =
+        match winreg::RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(cle, KEY_QUERY_VALUE | KEY_SET_VALUE) {
+            Ok(k) => k,
+            Err(e) => {
+                return Resultat::echec(
+                    None,
+                    trf!(
+                        "clé HKLM\\{cle} inaccessible, rien d'écrit : {e}",
+                        "key HKLM\\{cle} not reachable, nothing written: {e}"
+                    ),
+                );
+            }
+        };
+    let avant = match k.get_raw_value(valeur) {
+        Err(e) if e.kind() == NotFound => None,
+        Err(e) => {
+            return Resultat::echec(
+                None,
+                trf!(
+                    "valeur d'avant illisible, rien d'écrit : {e}",
+                    "previous value unreadable, nothing written: {e}"
+                ),
+            );
+        }
+        Ok(brute) => match texte_reg(&brute) {
+            Some(t) => Some(t),
+            None => {
+                return Resultat::echec(
+                    None,
+                    trf!(
+                        "valeur d'avant de type inattendu ({:?}), rien d'écrit",
+                        "previous value of unexpected type ({:?}), nothing written",
+                        brute.vtype
+                    ),
+                );
+            }
         },
-        Ok(relu) => Resultat {
-            reussi: false,
-            avant: Some(avant),
-            raison: format!("relu {relu} au lieu de {donnee}"),
-        },
-        Err(e) => Resultat {
-            reussi: false,
-            avant: Some(avant),
-            raison: e.to_string(),
-        },
+    };
+    if let Some(a) = avant.as_deref().filter(|a| deja(a)) {
+        return Resultat::rien(trf!(
+            "déjà « {} », rien d'écrit",
+            "already “{}”, nothing written",
+            avant_notable(a)
+        ));
+    }
+    let note = avant.as_deref().map_or_else(|| "absent".to_string(), avant_notable);
+    let relu = k
+        .set_value(valeur, &donnee.to_string())
+        .and_then(|()| k.get_raw_value(valeur));
+    match relu {
+        Ok(r) if texte_reg(&r).as_deref() == Some(donnee) => Resultat::fait(note),
+        Ok(r) => Resultat::echec(
+            Some(note),
+            trf!(
+                "relu « {} » au lieu de « {donnee} »",
+                "read back “{}” instead of “{donnee}”",
+                decrire(&r)
+            ),
+        ),
+        Err(e) => Resultat::echec(Some(note), e.to_string()),
+    }
+}
+
+/// Une valeur retirée sous HKLM : déjà absente, rien d'écrit ; sinon notée, retirée, et l'absence relue.
+fn retirer_valeur(cle: &str, valeur: &str) -> Resultat {
+    use crate::ui::{tr, trf};
+    use std::io::ErrorKind::NotFound;
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE};
+    let k = match winreg::RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey_with_flags(cle, KEY_QUERY_VALUE | KEY_SET_VALUE)
+    {
+        Ok(k) => k,
+        Err(e) if e.kind() == NotFound => {
+            return Resultat::rien(tr!("déjà absente, rien d'écrit", "already absent, nothing written").to_string());
+        }
+        Err(e) => {
+            return Resultat::echec(
+                None,
+                trf!(
+                    "clé HKLM\\{cle} inaccessible, rien d'écrit : {e}",
+                    "key HKLM\\{cle} not reachable, nothing written: {e}"
+                ),
+            );
+        }
+    };
+    let avant = match k.get_raw_value(valeur) {
+        Err(e) if e.kind() == NotFound => {
+            return Resultat::rien(tr!("déjà absente, rien d'écrit", "already absent, nothing written").to_string());
+        }
+        Err(e) => {
+            return Resultat::echec(
+                None,
+                trf!(
+                    "valeur d'avant illisible, rien d'écrit : {e}",
+                    "previous value unreadable, nothing written: {e}"
+                ),
+            );
+        }
+        Ok(brute) => decrire(&brute),
+    };
+    match k.delete_value(valeur) {
+        Ok(()) => {}
+        Err(e) if e.kind() == NotFound => {}
+        Err(e) => return Resultat::echec(Some(avant), e.to_string()),
+    }
+    match k.get_raw_value(valeur) {
+        Err(e) if e.kind() == NotFound => Resultat::fait(avant),
+        _ => Resultat::echec(
+            Some(avant),
+            tr!(
+                "la valeur est toujours là après son retrait",
+                "the value is still there after its removal"
+            )
+            .to_string(),
+        ),
+    }
+}
+
+/// Un DWORD dans le registre du compte de la personne (HKEY_USERS\<SID>) : le SID est lu dans le jeton du Vanguard
+/// qui a lancé ce processus (`parent`, PID vérifié par le tube), ou dans le sien quand Vanguard est lui-même
+/// administrateur. Jamais un paramètre de la ligne : un administrateur venu par-dessus l'épaule n'écrit pas dans son
+/// propre compte à la place de celui de la personne.
+fn ecrire_dword_compte(cle: &str, valeur: &str, donnee: u32, parent: Option<u32>) -> Resultat {
+    use crate::ui::{tr, trf};
+    let sid = match parent {
+        Some(p) => super::processus::sid_de(p),
+        None => super::processus::sid()
+            .ok_or_else(|| std::io::Error::other(tr!("SID illisible dans le jeton", "SID unreadable in the token"))),
+    };
+    match sid {
+        Ok(sid) => {
+            let racine = winreg::RegKey::predef(winreg::enums::HKEY_USERS);
+            ecrire_dword_sous(&racine, &format!(r"{sid}\{cle}"), valeur, donnee)
+        }
+        Err(e) => Resultat::echec(
+            None,
+            trf!(
+                "compte de la personne illisible (jeton du Vanguard qui a demandé), rien d'écrit : {e}",
+                "the person's account is unreadable (token of the Vanguard that asked), nothing written: {e}"
+            ),
+        ),
+    }
+}
+
+/// Userinit de Winlogon remis d'origine : le dossier de Windows lu par ce processus (GetSystemWindowsDirectoryW), le
+/// programme vérifié présent ; une valeur que le constat jugerait d'origine (`portes::userinit_d_origine`) n'est pas
+/// réécrite. Une erreur ici empêcherait d'ouvrir une session : rien n'est écrit sans userinit.exe sur le disque.
+fn remettre_userinit() -> Resultat {
+    use crate::ui::{tr, trf};
+    let Some(dossier) = super::environnement::dossier_windows() else {
+        return Resultat::echec(
+            None,
+            tr!(
+                "dossier de Windows illisible, rien d'écrit",
+                "Windows folder unreadable, nothing written"
+            )
+            .to_string(),
+        );
+    };
+    let racine = dossier.to_string_lossy().trim_end_matches('\\').to_string();
+    let programme = format!(r"{racine}\system32\userinit.exe");
+    if !std::path::Path::new(&programme).is_file() {
+        return Resultat::echec(
+            None,
+            trf!(
+                "{programme} introuvable, rien d'écrit",
+                "{programme} not found, nothing written"
+            ),
+        );
+    }
+    let origine = format!("{programme},");
+    ecrire_sz(super::portes::WINLOGON, "Userinit", &origine, |v| {
+        super::portes::userinit_d_origine(v, &racine)
+    })
+}
+
+/// NetBIOS sur TCP/IP coupé sur chaque carte : la liste des cartes (NetBT\Parameters\Interfaces\Tcpip_*) est lue
+/// d'abord (Microsoft déconseille d'écrire pendant l'énumération), puis NetbiosOptions = 2 posé et relu dans chacune.
+/// L'avant est noté par carte ; toutes déjà à 2 : rien d'écrit.
+fn couper_netbios() -> Resultat {
+    use crate::ui::{tr, trf};
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_ENUMERATE_SUB_KEYS, KEY_READ, KEY_WRITE};
+    let racine = winreg::RegKey::predef(HKEY_LOCAL_MACHINE);
+    let cartes: Vec<String> = match racine.open_subkey_with_flags(NETBT_INTERFACES, KEY_ENUMERATE_SUB_KEYS) {
+        Ok(k) => k
+            .enum_keys()
+            .filter_map(Result::ok)
+            .filter(|n| n.starts_with("Tcpip_"))
+            .collect(),
+        Err(e) => {
+            return Resultat::echec(
+                None,
+                trf!(
+                    "cartes réseau illisibles (NetBT), rien d'écrit : {e}",
+                    "network adapters unreadable (NetBT), nothing written: {e}"
+                ),
+            );
+        }
+    };
+    if cartes.is_empty() {
+        return Resultat::echec(
+            None,
+            tr!(
+                "aucune carte réseau sous NetBT, rien d'écrit",
+                "no network adapter under NetBT, nothing written"
+            )
+            .to_string(),
+        );
+    }
+    let mut avants = Vec::new();
+    for carte in &cartes {
+        let cle = format!(r"{NETBT_INTERFACES}\{carte}");
+        match valeur_d_avant(&racine, &cle, "NetbiosOptions") {
+            Ok(a) => avants.push((carte, cle, a)),
+            Err(raison) => return Resultat::echec(None, format!("{carte} : {raison}")),
+        }
+    }
+    let note = avant_notable(
+        &avants
+            .iter()
+            .map(|(carte, _, a)| format!("{carte}={a}"))
+            .collect::<Vec<_>>()
+            .join(";"),
+    );
+    if avants.iter().all(|(_, _, a)| a == "2") {
+        return Resultat::rien(
+            tr!(
+                "déjà coupé sur chaque carte, rien d'écrit",
+                "already off on every adapter, nothing written"
+            )
+            .to_string(),
+        );
+    }
+    let mut echecs = Vec::new();
+    for (carte, cle, a) in &avants {
+        if a == "2" {
+            continue;
+        }
+        let relu = racine
+            .open_subkey_with_flags(cle, KEY_READ | KEY_WRITE)
+            .and_then(|k| k.set_value("NetbiosOptions", &2u32).map(|()| k))
+            .and_then(|k| k.get_value::<u32, _>("NetbiosOptions"));
+        match relu {
+            Ok(2) => {}
+            Ok(n) => echecs.push(format!("{carte} : relu {n}")),
+            Err(e) => echecs.push(format!("{carte} : {e}")),
+        }
+    }
+    if echecs.is_empty() {
+        Resultat::fait(note)
+    } else {
+        Resultat::echec(Some(note), echecs.join(" ; "))
+    }
+}
+
+/// SMBv1 coupé dans le serveur de partage par WMI (MSFT_SmbServerConfiguration.SetConfiguration, ce que fait
+/// Set-SmbServerConfiguration), puis relu par la même fonction que le constat (`smb1_actif`). Déjà coupé : rien d'écrit.
+fn couper_smb1_serveur() -> Resultat {
+    use super::wmi::{CLASSE_ABSENTE, Parametre, Retour};
+    use crate::ui::{tr, trf};
+    const ESPACE: &str = r"root\Microsoft\Windows\Smb";
+    const DELAI: std::time::Duration = std::time::Duration::from_secs(60);
+    let lu = || {
+        winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
+            .open_subkey(r"SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters")
+            .ok()
+            .and_then(|k| k.get_value::<u32, _>("SMB1").ok())
+            .map_or_else(|| "absent".to_string(), |v| v.to_string())
+    };
+    match super::smb1_actif() {
+        None => {
+            return Resultat::echec(
+                None,
+                tr!(
+                    "état de SMBv1 illisible, rien d'écrit",
+                    "SMBv1 state unreadable, nothing written"
+                )
+                .to_string(),
+            );
+        }
+        Some(false) => {
+            return Resultat::rien(tr!("déjà coupé, rien d'écrit", "already off, nothing written").to_string());
+        }
+        Some(true) => {}
+    }
+    let avant = format!("SMB1={}", lu());
+    let retour = super::wmi::methode(
+        ESPACE,
+        "MSFT_SmbServerConfiguration",
+        "SetConfiguration",
+        vec![("EnableSMB1Protocol", Parametre::Booleen(false))],
+        DELAI,
+    );
+    let refus = match retour {
+        Retour::Valeur(0) => None,
+        Retour::Valeur(n) => Some(trf!("WMI a répondu {n}", "WMI answered {n}")),
+        Retour::Refuse(code) if CLASSE_ABSENTE.contains(&code) => Some(trf!(
+            "le réglage SMB de Windows est absent (WMI 0x{code:08X})",
+            "Windows' SMB setting is missing (WMI 0x{code:08X})"
+        )),
+        Retour::Refuse(code) => Some(trf!("WMI a refusé (0x{code:08X})", "WMI refused (0x{code:08X})")),
+        Retour::SansReponse => Some(tr!("WMI n'a pas répondu à temps", "WMI did not answer in time").to_string()),
+    };
+    if let Some(r) = refus {
+        return Resultat::echec(Some(avant), r);
+    }
+    match super::smb1_actif() {
+        Some(false) => Resultat::fait(avant),
+        _ => Resultat::echec(
+            Some(avant),
+            trf!(
+                "WMI a répondu 0, mais SMBv1 se relit encore actif (SMB1={})",
+                "WMI answered 0, but SMBv1 still reads as on (SMB1={})",
+                lu()
+            ),
+        ),
     }
 }
 
@@ -735,8 +1328,23 @@ mod tests {
                     ("ConsentPromptBehaviorAdmin", 5),
                     ("EnableMulticast", 0),
                     ("VulnerableDriverBlocklistEnable", 1),
+                    ("fDenyTSConnections", 1),
+                    ("AlwaysInstallElevated", 0),
                 ];
                 assert!(DURCIES.contains(&(valeur, donnee)), "{valeur} = {donnee}");
+            }
+            // Les autres gestes : des valeurs d'origine de Windows remises, une valeur dangereuse retirée, le compte
+            // de la personne durci comme l'ordinateur ; rien d'autre.
+            match c.geste {
+                Geste::Sz { valeur, donnee, .. } => {
+                    assert!(
+                        [("Type", "NTP"), ("Shell", "explorer.exe")].contains(&(valeur, donnee)),
+                        "{valeur}"
+                    );
+                }
+                Geste::RetirerValeur { valeur, .. } => assert_eq!(valeur, "LocalAccountTokenFilterPolicy"),
+                Geste::DwordCompte { valeur, donnee, .. } => assert_eq!((valeur, donnee), ("AlwaysInstallElevated", 0)),
+                _ => {}
             }
         }
         assert_eq!(analyser(POINT).map(|c| c.id), Some("point-de-restauration"));
@@ -746,6 +1354,122 @@ mod tests {
             "if (-not (Test-Path -LiteralPath 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows NT\\DNSClient'))"
         ));
         assert!(llmnr.ends_with("-Name EnableMulticast -Value 0 -Type DWord"));
+    }
+
+    /// Chaque geste de registre passé de PowerShell à Windows (lot 3.1) garde, pour le chemin par script, la commande
+    /// que le constat écrivait avant, mot pour mot ; c'est une protection, que « Défaire » ne propose pas.
+    #[test]
+    fn les_gestes_du_registre_gardent_leur_powershell() {
+        use crate::machine::Defaire;
+        let ps = |court: &str| analyser(&id(court)).unwrap().powershell();
+        let fixes = [
+            (
+                "rdp-coupe",
+                r"Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 1",
+            ),
+            (
+                "latfp-retire",
+                r"Remove-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name LocalAccountTokenFilterPolicy",
+            ),
+            (
+                "aie-machine",
+                r"Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer' -Name AlwaysInstallElevated -Value 0 -Type DWord",
+            ),
+            (
+                "heure-ntp",
+                r"Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters' -Name Type -Value NTP",
+            ),
+            (
+                "winlogon-shell",
+                r"Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name Shell -Value 'explorer.exe' -Type String",
+            ),
+            (
+                "netbios-coupe",
+                "Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' | Invoke-CimMethod -MethodName SetTcpipNetbios -Arguments @{ TcpipNetbiosOptions = [uint32]2 } | Out-Null",
+            ),
+            (
+                "smb1-serveur-coupe",
+                "Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force",
+            ),
+        ];
+        for (court, attendu) in fixes {
+            assert_eq!(ps(court), attendu, "{court}");
+        }
+        // Calculées comme le constat les calculait : le HKCU de la personne, la racine de Windows.
+        let sid = crate::reparer::sid_de_la_personne();
+        assert_eq!(
+            ps("aie-compte"),
+            format!(
+                "Set-ItemProperty -LiteralPath '{}' -Name AlwaysInstallElevated -Value 0 -Type DWord",
+                crate::reparer::hkcu_de_la_personne(sid.as_deref(), r"SOFTWARE\Policies\Microsoft\Windows\Installer")
+            )
+        );
+        assert_eq!(
+            ps("winlogon-userinit"),
+            format!(
+                r"Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -Name Userinit -Value '{}\system32\userinit.exe,' -Type String",
+                crate::commande::ps_texte(&super::super::portes::racine_windows())
+            )
+        );
+        for court in [
+            "rdp-coupe",
+            "latfp-retire",
+            "aie-machine",
+            "aie-compte",
+            "heure-ntp",
+            "winlogon-shell",
+            "winlogon-userinit",
+            "netbios-coupe",
+            "smb1-serveur-coupe",
+        ] {
+            let l = id(court);
+            assert!(native(&l), "{court}");
+            assert_eq!(
+                comment_defaire(std::slice::from_ref(&l)),
+                Defaire::Protection,
+                "{court}"
+            );
+            assert!(!affichable(&l).starts_with("vanguard:"), "{court}");
+        }
+        // Aucun paramètre : ni la racine de Userinit, ni le SID du compte, ni une carte réseau.
+        for hostile in [
+            "vanguard:winlogon-userinit x",
+            r"vanguard:winlogon-userinit C:\Evil",
+            "vanguard:aie-compte S-1-5-21-1-2-3-500",
+            "vanguard:netbios-coupe Tcpip_{0}",
+        ] {
+            assert!(analyser(hostile).is_none() && !native(hostile), "{hostile}");
+        }
+    }
+
+    /// Les actes du registre (débogueur IFEO, SilentProcessExit, guillemets d'un service) : montrés par leur nom rendu
+    /// inoffensif, jamais par leur ligne ; des protections.
+    #[test]
+    fn les_actes_du_registre_se_montrent_et_se_defont() {
+        use crate::machine::Defaire;
+        use crate::machine::gestes::{self, Vue};
+        let lignes = [
+            gestes::ligne_ifeo_debugger(Vue::Windows, "sethc.exe").unwrap(),
+            gestes::ligne_ifeo_debugger(Vue::Wow32, "sethc.exe").unwrap(),
+            gestes::ligne_ifeo_silencieux(Vue::Windows, "notepad.exe").unwrap(),
+            gestes::ligne_service_guillemets("Mon Service").unwrap(),
+        ];
+        for l in &lignes {
+            let t = affichable(l);
+            assert!(
+                native(l) && !t.starts_with("vanguard:") && !t.contains("moins protégé"),
+                "{t}"
+            );
+            assert_eq!(comment_defaire(std::slice::from_ref(l)), Defaire::Protection, "{l}");
+        }
+        assert!(affichable(&lignes[0]).contains("sethc.exe"));
+        assert!(affichable(&lignes[1]).contains("32"));
+        assert!(affichable(&lignes[3]).contains("Mon Service"));
+        let ps = en_powershell(&[lignes.to_vec()]);
+        assert_eq!(
+            ps[0][0],
+            r"Remove-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\sethc.exe' -Name Debugger"
+        );
     }
 
     /// Tout ce qui n'est pas exactement un identifiant de la table est refusé : du PowerShell, un identifiant

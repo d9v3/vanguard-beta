@@ -9,9 +9,11 @@ use std::path::{Path, PathBuf};
 use winreg::RegKey;
 use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
 
+use super::corrections::Resultat;
 use super::persistance::lancement_suspect;
 use super::*;
 use crate::commande::{decouper_commande, ps_texte};
+use crate::machine::gestes::{self, Acte, NomFichier, Vue};
 use crate::machine::regles::{Os, regle};
 use crate::ui::{affichable, couper};
 
@@ -28,16 +30,6 @@ const ACCESSIBILITE: [&str; 7] = [
     "magnify.exe",
     "displayswitch.exe",
     "atbroker.exe",
-];
-
-const IFEO: [&str; 2] = [
-    r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options",
-    r"SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion\Image File Execution Options",
-];
-
-const SORTIE_SILENCIEUSE: [&str; 2] = [
-    r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\SilentProcessExit",
-    r"SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion\SilentProcessExit",
 ];
 
 /// Les interpréteurs de commandes et de scripts (nom sans « .exe ») : un débogueur ou un service qui lance l'un d'eux
@@ -59,8 +51,8 @@ const SURVEILLER_LA_SORTIE: u32 = 0x200;
 
 /// Ce qu'une entrée d'Image File Execution Options règle pour un programme.
 struct Reglage {
-    /// La clé telle que PowerShell l'écrit (« HKLM:\SOFTWARE\…\sethc.exe »), pour la correction.
-    cle: String,
+    /// La racine où il a été lu (`gestes::Vue::ifeo`) ; la sous-clé est `programme`.
+    vue: Vue,
     programme: String,
     debogueur: Option<String>,
     drapeaux: Option<u32>,
@@ -68,7 +60,8 @@ struct Reglage {
 
 /// Un programme lancé quand un autre se ferme (SilentProcessExit).
 struct Moniteur {
-    cle: String,
+    /// La racine où il a été lu (`gestes::Vue::silencieuse`) ; la sous-clé est `programme`.
+    vue: Vue,
     programme: String,
     processus: String,
 }
@@ -87,8 +80,8 @@ fn lire_drapeaux(texte: &str) -> Option<u32> {
 fn lire_ifeo() -> Option<(usize, Vec<Reglage>)> {
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     let mut lus: Option<(usize, Vec<Reglage>)> = None;
-    for racine in IFEO {
-        let Ok(cle) = hklm.open_subkey(racine) else {
+    for vue in Vue::TOUTES {
+        let Ok(cle) = hklm.open_subkey(vue.ifeo()) else {
             continue;
         };
         let (total, reglages) = lus.get_or_insert_with(|| (0, Vec::new()));
@@ -108,7 +101,7 @@ fn lire_ifeo() -> Option<(usize, Vec<Reglage>)> {
             });
             if debogueur.is_some() || drapeaux.is_some() {
                 reglages.push(Reglage {
-                    cle: format!(r"HKLM:\{racine}\{programme}"),
+                    vue,
                     programme,
                     debogueur,
                     drapeaux,
@@ -122,9 +115,9 @@ fn lire_ifeo() -> Option<(usize, Vec<Reglage>)> {
 fn lire_moniteurs() -> Vec<Moniteur> {
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     let mut moniteurs = Vec::new();
-    for racine in SORTIE_SILENCIEUSE {
+    for vue in Vue::TOUTES {
         // Absente sur un Windows où personne ne s'en est servi : rien à lire.
-        let Ok(cle) = hklm.open_subkey(racine) else {
+        let Ok(cle) = hklm.open_subkey(vue.silencieuse()) else {
             continue;
         };
         for programme in cle.enum_keys().flatten() {
@@ -134,7 +127,7 @@ fn lire_moniteurs() -> Vec<Moniteur> {
                 .unwrap_or_default();
             if !processus.trim().is_empty() {
                 moniteurs.push(Moniteur {
-                    cle: format!(r"HKLM:\{racine}\{programme}"),
+                    vue,
                     programme,
                     processus,
                 });
@@ -164,9 +157,12 @@ fn est_accessibilite(programme: &str) -> bool {
     ACCESSIBILITE.iter().any(|a| a.eq_ignore_ascii_case(programme.trim()))
 }
 
+/// Le jugement d'Image File Execution Options et de SilentProcessExit, celui du bilan ET celui du processus élevé
+/// avant d'écrire (`retirer_debogueur`, `retirer_moniteur`) : une seule fonction, sur les mêmes lectures.
 fn juger_ifeo(total: usize, reglages: &[Reglage], moniteurs: &[Moniteur]) -> Vec<Constat> {
-    // Le nom du programme et la commande viennent de qui a posé la clé : montrés inoffensifs, la correction vise la
-    // vraie clé.
+    // Le nom du programme et la commande viennent de qui a posé la clé : montrés inoffensifs, la correction désigne la
+    // vraie clé par son nom en hexadécimal (`gestes::NomFichier`). Un nom que la grammaire refuse (séparateur, « .. »,
+    // caractère de contrôle, trop long) est signalé, à retirer à la main : jamais de ligne qui viserait une autre clé.
     let mut constats = Vec::new();
     for r in reglages {
         let Some(debogueur) = &r.debogueur else {
@@ -186,16 +182,24 @@ fn juger_ifeo(total: usize, reglages: &[Reglage], moniteurs: &[Moniteur]) -> Vec
         } else {
             continue;
         };
-        constats.push(alerte(CAT, Niveau::Eleve, message).corriger(
-            trf!(
-                "Retirer le débogueur de « {programme} » (Image File Execution Options)",
-                "Remove the debugger from “{programme}” (Image File Execution Options)"
+        let constat = alerte(CAT, Niveau::Eleve, message);
+        constats.push(match gestes::ligne_ifeo_debugger(r.vue, &r.programme) {
+            Some(ligne) => constat.corriger(
+                trf!(
+                    "Retirer le débogueur de « {programme} » (Image File Execution Options)",
+                    "Remove the debugger from “{programme}” (Image File Execution Options)"
+                ),
+                &[ligne],
             ),
-            &[format!(
-                "Remove-ItemProperty -LiteralPath '{}' -Name Debugger",
-                ps_texte(&r.cle)
-            )],
-        ));
+            None => constat.manuel(
+                trf!(
+                    "Nom de clé piégé : retirer à la main dans regedit la valeur Debugger de HKLM\\{}\\{programme}",
+                    "Booby-trapped key name: remove the Debugger value of HKLM\\{}\\{programme} by hand in regedit",
+                    r.vue.ifeo()
+                ),
+                &[],
+            ),
+        });
     }
     for m in moniteurs {
         // Sans le drapeau sur le programme surveillé, Windows ne lance rien : un reste inoffensif.
@@ -211,26 +215,31 @@ fn juger_ifeo(total: usize, reglages: &[Reglage], moniteurs: &[Moniteur]) -> Vec
             Niveau::Moyen
         };
         let (programme, processus) = (affichable(&m.programme), couper(&affichable(&m.processus), 160));
-        constats.push(
-            alerte(
-                CAT,
-                niveau,
-                trf!(
-                    "{processus} se lance chaque fois que « {programme} » se ferme (SilentProcessExit) : un moyen discret de se faire relancer, rarement utilisé hors des tests de logiciels.",
-                    "{processus} starts each time “{programme}” closes (SilentProcessExit): a discreet way to get started again, rarely used outside software testing."
-                ),
-            )
-            .corriger(
+        let constat = alerte(
+            CAT,
+            niveau,
+            trf!(
+                "{processus} se lance chaque fois que « {programme} » se ferme (SilentProcessExit) : un moyen discret de se faire relancer, rarement utilisé hors des tests de logiciels.",
+                "{processus} starts each time “{programme}” closes (SilentProcessExit): a discreet way to get started again, rarely used outside software testing."
+            ),
+        );
+        constats.push(match gestes::ligne_ifeo_silencieux(m.vue, &m.programme) {
+            Some(ligne) => constat.corriger(
                 trf!(
                     "Ne plus rien lancer à la fermeture de « {programme} »",
                     "Stop starting anything when “{programme}” closes"
                 ),
-                &[format!(
-                    "Remove-ItemProperty -LiteralPath '{}' -Name MonitorProcess",
-                    ps_texte(&m.cle)
-                )],
+                &[ligne],
             ),
-        );
+            None => constat.manuel(
+                trf!(
+                    "Nom de clé piégé : retirer à la main dans regedit la valeur MonitorProcess de HKLM\\{}\\{programme}",
+                    "Booby-trapped key name: remove the MonitorProcess value of HKLM\\{}\\{programme} by hand in regedit",
+                    m.vue.silencieuse()
+                ),
+                &[],
+            ),
+        });
     }
     if constats.is_empty() {
         constats.push(ok(
@@ -251,8 +260,141 @@ fn ifeo() -> Vec<Constat> {
     juger_ifeo(total, &reglages, &lire_moniteurs())
 }
 
+/// Un des constats propose-t-il exactement cette ligne ?
+fn propose(constats: &[Constat], ligne: &str) -> bool {
+    constats
+        .iter()
+        .filter_map(|c| c.correctif.as_ref())
+        .any(|k| k.commandes.iter().any(|l| l == ligne))
+}
+
+/// Ce que le processus élevé doit retirer, relu et rejugé : `Ok(Some(valeur))` si le bilan, refait ici sur les
+/// lectures de cet instant, propose encore la ligne ; `Ok(None)` s'il n'y a plus rien (rien à corriger) ; `Err` sinon.
+fn rejuger(ligne: &str, valeur: Option<String>, constats: &[Constat]) -> Result<Option<String>, Resultat> {
+    let Some(valeur) = valeur else {
+        return Ok(None);
+    };
+    if propose(constats, ligne) {
+        Ok(Some(valeur))
+    } else {
+        Err(Resultat::echec(
+            None,
+            tr!(
+                "refusé : le bilan refait ici ne juge pas cette valeur dangereuse ; rien d'écrit",
+                "refused: the check redone here does not find this value dangerous; nothing written"
+            )
+            .to_string(),
+        ))
+    }
+}
+
+/// Retire la valeur `nom_valeur` de `HKLM\<racine>\<programme>` si elle vaut encore `attendue` (relue juste avant),
+/// puis relit son absence. Ouverte dans la vue 64 bits, celle que le bilan lit (vanguard.exe est 64 bits).
+fn retirer_valeur_relue(racine: &str, programme: &NomFichier, nom_valeur: &str, attendue: &str) -> Resultat {
+    use std::io::ErrorKind::NotFound;
+    use winreg::enums::{KEY_QUERY_VALUE, KEY_SET_VALUE, KEY_WOW64_64KEY};
+    let avant = super::corrections::avant_notable(attendue);
+    let chemin = format!(r"{racine}\{}", programme.texte());
+    let cle = match RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey_with_flags(&chemin, KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_WOW64_64KEY)
+    {
+        Ok(k) => k,
+        Err(e) => return Resultat::echec(None, format!("HKLM\\{} : {e}", crate::ui::affichable(&chemin))),
+    };
+    match cle.get_value::<String, _>(nom_valeur) {
+        Ok(v) if v == attendue => {}
+        Ok(_) => {
+            return Resultat::echec(
+                None,
+                tr!(
+                    "la valeur a changé entre la lecture et l'écriture ; rien d'écrit",
+                    "the value changed between reading and writing; nothing written"
+                )
+                .to_string(),
+            );
+        }
+        Err(e) => return Resultat::echec(None, e.to_string()),
+    }
+    match cle.delete_value(nom_valeur) {
+        Ok(()) => {}
+        Err(e) if e.kind() == NotFound => {}
+        Err(e) => return Resultat::echec(Some(avant), e.to_string()),
+    }
+    match cle.get_raw_value(nom_valeur) {
+        Err(e) if e.kind() == NotFound => Resultat::fait(avant),
+        _ => Resultat::echec(
+            Some(avant),
+            tr!(
+                "la valeur est toujours là après son retrait",
+                "the value is still there after its removal"
+            )
+            .to_string(),
+        ),
+    }
+}
+
+/// Dans le processus élevé : retire le débogueur de `programme` (Image File Execution Options de `vue`) si et
+/// seulement si le bilan, refait ici par `juger_ifeo` sur les lectures de cet instant, propose cette même ligne. Plus
+/// de débogueur : rien à corriger, rien d'écrit.
+pub(super) fn retirer_debogueur(vue: Vue, programme: &NomFichier) -> Resultat {
+    let Some((total, reglages)) = lire_ifeo() else {
+        return Resultat::echec(
+            None,
+            tr!(
+                "Image File Execution Options illisible, rien d'écrit",
+                "Image File Execution Options unreadable, nothing written"
+            )
+            .to_string(),
+        );
+    };
+    let ligne = Acte::IfeoDebugger(vue, programme.clone()).ligne();
+    let debogueur = reglages
+        .iter()
+        .find(|r| r.vue == vue && r.programme == programme.texte())
+        .and_then(|r| r.debogueur.clone());
+    match rejuger(&ligne, debogueur, &juger_ifeo(total, &reglages, &lire_moniteurs())) {
+        Ok(Some(d)) => retirer_valeur_relue(vue.ifeo(), programme, "Debugger", &d),
+        Ok(None) => Resultat::rien(rien_a_corriger()),
+        Err(refus) => refus,
+    }
+}
+
+/// Dans le processus élevé : ne lance plus rien à la fermeture de `programme` (SilentProcessExit de `vue`), si et
+/// seulement si `juger_ifeo`, refait ici, propose cette même ligne (le drapeau du programme surveillé compris).
+pub(super) fn retirer_moniteur(vue: Vue, programme: &NomFichier) -> Resultat {
+    let Some((total, reglages)) = lire_ifeo() else {
+        return Resultat::echec(
+            None,
+            tr!(
+                "Image File Execution Options illisible, rien d'écrit",
+                "Image File Execution Options unreadable, nothing written"
+            )
+            .to_string(),
+        );
+    };
+    let moniteurs = lire_moniteurs();
+    let ligne = Acte::IfeoSilencieux(vue, programme.clone()).ligne();
+    let processus = moniteurs
+        .iter()
+        .find(|m| m.vue == vue && m.programme == programme.texte())
+        .map(|m| m.processus.clone());
+    match rejuger(&ligne, processus, &juger_ifeo(total, &reglages, &moniteurs)) {
+        Ok(Some(p)) => retirer_valeur_relue(vue.silencieuse(), programme, "MonitorProcess", &p),
+        Ok(None) => Resultat::rien(rien_a_corriger()),
+        Err(refus) => refus,
+    }
+}
+
+fn rien_a_corriger() -> String {
+    tr!(
+        "rien à corriger ici, rien d'écrit",
+        "nothing to fix here, nothing written"
+    )
+    .to_string()
+}
+
 /// Le dossier de Windows (« C:\Windows »).
-fn racine_windows() -> String {
+pub(super) fn racine_windows() -> String {
     std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string())
 }
 
@@ -366,17 +508,17 @@ fn programmes_remplaces() -> Vec<Constat> {
     juger_remplaces(verifies, &remplaces, &illisibles)
 }
 
-const WINLOGON: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon";
+pub(super) const WINLOGON: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon";
 
 /// Le bureau d'origine : « explorer.exe », parfois écrit avec son dossier.
-fn bureau_d_origine(valeur: &str, racine: &str) -> bool {
+pub(super) fn bureau_d_origine(valeur: &str, racine: &str) -> bool {
     let v = valeur.trim().trim_matches('"').to_lowercase();
     v == "explorer.exe" || v == format!(r"{}\explorer.exe", racine.to_lowercase())
 }
 
 /// Userinit d'origine : « C:\Windows\system32\userinit.exe, », virgule finale comprise ; une entrée de plus après la
 /// virgule est un programme ajouté à chaque ouverture de session.
-fn userinit_d_origine(valeur: &str, racine: &str) -> bool {
+pub(super) fn userinit_d_origine(valeur: &str, racine: &str) -> bool {
     let attendus = [
         format!(r"{}\system32\userinit.exe", racine.to_lowercase()),
         r"%systemroot%\system32\userinit.exe".to_string(),
@@ -399,7 +541,6 @@ fn juger_winlogon(
     racine: &str,
     cle_du_compte: &str,
 ) -> Vec<Constat> {
-    let cle = format!(r"HKLM:\{WINLOGON}");
     let mut constats = Vec::new();
     if let Some(v) = shell.filter(|v| !v.trim().is_empty() && !bureau_d_origine(v, racine)) {
         let valeur = couper(&affichable(v), 160);
@@ -417,10 +558,7 @@ fn juger_winlogon(
                     "Remettre le bureau de Windows seul (Shell = explorer.exe, la valeur d'origine)",
                     "Put Windows' desktop back alone (Shell = explorer.exe, the original value)"
                 ),
-                &[format!(
-                    "Set-ItemProperty -LiteralPath '{}' -Name Shell -Value 'explorer.exe' -Type String",
-                    ps_texte(&cle)
-                )],
+                &[super::corrections::id("winlogon-shell")],
             ),
         );
     }
@@ -441,11 +579,8 @@ fn juger_winlogon(
                     "Remettre Userinit d'origine ({origine})",
                     "Put the original Userinit back ({origine})"
                 ),
-                &[format!(
-                    "Set-ItemProperty -LiteralPath '{}' -Name Userinit -Value '{}' -Type String",
-                    ps_texte(&cle),
-                    ps_texte(&origine)
-                )],
+                // La racine n'est pas dans la ligne : le processus élevé la lit lui-même.
+                &[super::corrections::id("winlogon-userinit")],
             ),
         );
     }
@@ -925,7 +1060,7 @@ pub(super) fn corpus_ifeo(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
         .de("ifeo")
         .iter()
         .map(|c| Reglage {
-            cle: format!(r"HKLM:\{}\{}", IFEO[0], c[0]),
+            vue: Vue::Windows,
             programme: c[0].to_string(),
             debogueur: rien(c[1]),
             drapeaux: rien(c[2]).and_then(|d| lire_drapeaux(&d)),
@@ -935,7 +1070,7 @@ pub(super) fn corpus_ifeo(e: &crate::modele::corpus::Entree) -> Vec<Constat> {
         .de("moniteur")
         .iter()
         .map(|c| Moniteur {
-            cle: format!(r"HKLM:\corpus\{}", c[0]),
+            vue: Vue::Windows,
             programme: c[0].to_string(),
             processus: c[1].to_string(),
         })
@@ -988,7 +1123,7 @@ mod tests {
 
     fn reglage(programme: &str, debogueur: Option<&str>, drapeaux: Option<u32>) -> Reglage {
         Reglage {
-            cle: format!(r"HKLM:\{}\{programme}", IFEO[0]),
+            vue: Vue::Windows,
             programme: programme.to_string(),
             debogueur: debogueur.map(str::to_string),
             drapeaux,
@@ -1046,17 +1181,21 @@ mod tests {
         let c = juger_ifeo(120, &portes, &[]);
         assert_eq!(c.len(), 5);
         assert!(c.iter().all(|c| c.probleme == Some(Niveau::Eleve)));
+        // La correction désigne la clé par son nom en hexadécimal ; le chemin par script reprend la commande d'avant.
+        let ligne = &c[0].correctif.as_ref().unwrap().commandes[0];
+        assert_eq!(ligne, "vanguard:ifeo-debugger 730065007400680063002e00650078006500");
         assert_eq!(
-            c[0].correctif.as_ref().unwrap().commandes[0],
+            super::super::corrections::en_powershell(&[vec![ligne.clone()]])[0][0],
             r"Remove-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\sethc.exe' -Name Debugger"
         );
+        assert!(c.iter().all(|c| c.correctif.as_ref().is_some_and(|k| k.automatique)));
         assert!(c[1].message.contains("Utilman.exe"));
     }
 
     #[test]
     fn programme_lance_a_la_fermeture() {
         let moniteur = |programme: &str, processus: &str| Moniteur {
-            cle: format!(r"HKLM:\{}\{programme}", SORTIE_SILENCIEUSE[0]),
+            vue: Vue::Windows,
             programme: programme.to_string(),
             processus: processus.to_string(),
         };
@@ -1066,7 +1205,15 @@ mod tests {
         let drapeau = [reglage("notepad.exe", None, Some(SURVEILLER_LA_SORTIE))];
         let c = juger_ifeo(10, &drapeau, &[moniteur("notepad.exe", r"C:\Users\Public\a.exe")]);
         assert_eq!(c[0].probleme, Some(Niveau::Eleve));
-        assert!(c[0].correctif.as_ref().unwrap().commandes[0].ends_with("-Name MonitorProcess"));
+        let ligne = &c[0].correctif.as_ref().unwrap().commandes[0];
+        assert_eq!(
+            ligne,
+            &gestes::ligne_ifeo_silencieux(Vue::Windows, "notepad.exe").unwrap()
+        );
+        assert!(
+            super::super::corrections::en_powershell(&[vec![ligne.clone()]])[0][0]
+                .ends_with(r"CurrentVersion\SilentProcessExit\notepad.exe' -Name MonitorProcess")
+        );
         let c = juger_ifeo(10, &drapeau, &[moniteur("notepad.exe", r"C:\Outils\journal.exe")]);
         assert_eq!(c[0].probleme, Some(Niveau::Moyen));
         assert_eq!(lire_drapeaux("0x200"), Some(0x200));
@@ -1074,8 +1221,9 @@ mod tests {
         assert_eq!(lire_drapeaux("rien"), None);
     }
 
-    /// Le nom de la clé et la commande viennent de qui les a posés : montrés inoffensifs, la correction vise la vraie
-    /// clé, entre apostrophes doublées.
+    /// Le nom de la clé et la commande viennent de qui les a posés : montrés inoffensifs. Un nom que la grammaire des
+    /// lignes refuse (ici des caractères de contrôle) n'a pas de ligne : à retirer à la main, jamais une ligne qui
+    /// viserait une autre clé ; une apostrophe seule passe, en hexadécimal, et doublée dans la commande d'avant.
     #[test]
     fn noms_pieges_inoffensifs() {
         let piege = "x'\x1b]52;c;eA==\x07\x1b[2K\r\u{202e}.exe";
@@ -1084,7 +1232,21 @@ mod tests {
         let k = c[0].correctif.as_ref().unwrap();
         assert!(!crate::ui::contient_un_piege(&c[0].message));
         assert!(!crate::ui::contient_un_piege(&k.action));
-        assert!(k.commandes[0].contains("x''\x1b]52"), "{}", k.commandes[0]);
+        assert!(
+            k.commandes.is_empty() && !k.automatique && k.action.contains("regedit"),
+            "{}",
+            k.action
+        );
+        for nom in [r"..\sethc.exe", r"a\b", "a\0b", &"a".repeat(261)] {
+            let c = juger_ifeo(1, &[reglage(nom, Some("cmd.exe"), None)], &[]);
+            assert!(c[0].correctif.as_ref().unwrap().commandes.is_empty(), "{nom:?}");
+        }
+        let c = juger_ifeo(1, &[reglage("x'y.exe", Some("cmd.exe"), None)], &[]);
+        let ligne = &c[0].correctif.as_ref().unwrap().commandes[0];
+        assert!(
+            super::super::corrections::en_powershell(&[vec![ligne.clone()]])[0][0]
+                .contains(r"\x''y.exe' -Name Debugger")
+        );
         let c = juger_winlogon(Some(piege), None, Some(piege), r"C:\Windows", r"HKCU:\x");
         assert_eq!(c.len(), 2);
         assert!(c.iter().all(|c| !crate::ui::contient_un_piege(&c.message)));
@@ -1145,11 +1307,61 @@ mod tests {
             .iter()
             .map(|c| c.correctif.as_ref().unwrap().commandes[0].as_str())
             .collect();
-        assert!(commandes[0].ends_with("-Name Shell -Value 'explorer.exe' -Type String"));
-        assert!(commandes[1].contains(r"-Name Userinit -Value 'C:\WINDOWS\system32\userinit.exe,' -Type String"));
+        // Des identifiants de la table, sans paramètre : la racine de Userinit est lue par le processus élevé.
+        assert_eq!(commandes[0], "vanguard:winlogon-shell");
+        assert_eq!(commandes[1], "vanguard:winlogon-userinit");
         assert!(
             commandes[2].starts_with(r"Remove-ItemProperty -LiteralPath 'Registry::HKEY_USERS\S-1-5-21-1-2-3-1001")
         );
+    }
+
+    /// Le processus élevé rejuge par LA fonction du bilan (`juger_ifeo`), sur les mêmes lectures : il retire ce que le
+    /// bilan propose, refuse ce qu'il ne juge pas dangereux (une ligne forgée sur un débogueur ordinaire), et ne fait
+    /// rien quand la valeur n'est plus là.
+    #[test]
+    fn le_processus_eleve_rejuge_comme_le_bilan() {
+        let reglages = [
+            reglage("sethc.exe", Some(r"C:\Windows\System32\cmd.exe"), None),
+            reglage("taskmgr.exe", Some(r#""C:\Outils\PROCEXP64.EXE""#), None),
+            reglage("notepad.exe", None, Some(SURVEILLER_LA_SORTIE)),
+        ];
+        let moniteurs = [
+            Moniteur {
+                vue: Vue::Windows,
+                programme: "notepad.exe".to_string(),
+                processus: r"C:\Users\Public\a.exe".to_string(),
+            },
+            Moniteur {
+                vue: Vue::Windows,
+                programme: "calc.exe".to_string(),
+                processus: r"C:\Users\Public\b.exe".to_string(),
+            },
+        ];
+        let bilan = juger_ifeo(3, &reglages, &moniteurs);
+        let ligne = |r: &Reglage| gestes::ligne_ifeo_debugger(r.vue, &r.programme).unwrap();
+        // Ce que le bilan propose, le processus élevé le retire.
+        let sethc = ligne(&reglages[0]);
+        assert!(propose(&bilan, &sethc));
+        assert_eq!(
+            rejuger(&sethc, reglages[0].debogueur.clone(), &bilan).ok(),
+            Some(Some(r"C:\Windows\System32\cmd.exe".to_string()))
+        );
+        // Une ligne forgée sur un débogueur ordinaire : refusée, rien d'écrit.
+        let taskmgr = ligne(&reglages[1]);
+        assert!(!propose(&bilan, &taskmgr));
+        let refus = rejuger(&taskmgr, reglages[1].debogueur.clone(), &bilan).unwrap_err();
+        assert!(!refus.reussi && refus.avant.is_none(), "{}", refus.raison);
+        // Plus de débogueur : rien à corriger.
+        let notepad = gestes::ligne_ifeo_debugger(Vue::Windows, "notepad.exe").unwrap();
+        assert_eq!(rejuger(&notepad, None, &bilan).ok(), Some(None));
+        // SilentProcessExit : actif (drapeau posé) proposé ; sans drapeau (calc.exe), refusé.
+        let actif = gestes::ligne_ifeo_silencieux(Vue::Windows, "notepad.exe").unwrap();
+        assert!(propose(&bilan, &actif));
+        let inactif = gestes::ligne_ifeo_silencieux(Vue::Windows, "calc.exe").unwrap();
+        assert!(rejuger(&inactif, Some(r"C:\Users\Public\b.exe".to_string()), &bilan).is_err());
+        // La vue compte : la même clé sous WOW6432Node est une autre ligne.
+        let sethc_32 = gestes::ligne_ifeo_debugger(Vue::Wow32, "sethc.exe").unwrap();
+        assert!(!propose(&bilan, &sethc_32));
     }
 
     #[test]

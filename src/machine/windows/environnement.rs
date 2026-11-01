@@ -227,7 +227,7 @@ unsafe extern "system" {
     fn SHGetKnownFolderPath(id: *const GUID, drapeaux: u32, jeton: *mut std::ffi::c_void, chemin: *mut PWSTR) -> i32;
 }
 
-fn dossier_windows() -> Option<PathBuf> {
+pub(crate) fn dossier_windows() -> Option<PathBuf> {
     let mut tampon = [0u16; 1024];
     // SAFETY: la taille passée est celle du tampon ; Windows y écrit au plus autant de caractères et rend leur nombre,
     // ou la taille qu'il faudrait (plus grande que le tampon), ou 0.

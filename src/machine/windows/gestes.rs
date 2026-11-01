@@ -3,8 +3,9 @@
 //! (`vanguard:script`), les programmes fixes de Windows (`vanguard:programme`), lancés par leur chemin complet avec
 //! des arguments figés, sans shell, et les actes sur Windows lui-même (`vanguard:service`, `vanguard:vider`,
 //! `vanguard:vider-file-impression`, `vanguard:mettre-de-cote`, `vanguard:pare-feu-actif`, `vanguard:pare-feu-public`,
-//! `vanguard:reseau-categorie`), faits par le gestionnaire de services, std::fs et les interfaces COM du pare-feu et
-//! des réseaux (`pare_feu`).
+//! `vanguard:reseau-categorie`, `vanguard:ifeo-debugger[-32]`, `vanguard:ifeo-silencieux[-32]`,
+//! `vanguard:service-guillemets`), faits par le gestionnaire de services, std::fs, les interfaces COM du pare-feu et
+//! des réseaux (`pare_feu`) et le registre (`portes`, `services`).
 //! Plus la découpe d'une liste de correctifs en morceaux (gestes natifs, scripts) et la lecture des états d'un
 //! script : du code pur, sans E/S, testé sous Linux et lu par le banc de fuzzing
 //! (fuzz/fuzz_targets/gestes.rs). C'est la seule entrée que le processus élevé lit d'un processus moins sûr : rien ici
@@ -1012,11 +1013,172 @@ impl ReseauCategorie {
     }
 }
 
+// ------------------------------------------------------------ le registre
+
+/// Les deux racines d'Image File Execution Options lues par le bilan : la vue 64 bits et celle des programmes 32 bits
+/// (partagée avec la première depuis Windows 7, lue quand même : un ancien Windows ou une copie à la main).
+pub(crate) const IFEO: [&str; 2] = [
+    r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options",
+    r"SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion\Image File Execution Options",
+];
+
+/// Les deux racines de SilentProcessExit (un programme lancé à la fermeture d'un autre), 64 et 32 bits.
+pub(crate) const SORTIE_SILENCIEUSE: [&str; 2] = [
+    r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\SilentProcessExit",
+    r"SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion\SilentProcessExit",
+];
+
+/// Le verbe du débogueur à retirer d'un programme (IFEO, vue 64 bits) : `vanguard:ifeo-debugger <nom en hex>`.
+pub(crate) const IFEO_DEBUGGER: &str = "vanguard:ifeo-debugger ";
+/// Le même, sous la racine des programmes 32 bits (WOW6432Node).
+pub(crate) const IFEO_DEBUGGER_32: &str = "vanguard:ifeo-debugger-32 ";
+/// Le verbe du programme à ne plus lancer à la fermeture d'un autre (SilentProcessExit, MonitorProcess).
+pub(crate) const IFEO_SILENCIEUX: &str = "vanguard:ifeo-silencieux ";
+/// Le même, sous la racine des programmes 32 bits.
+pub(crate) const IFEO_SILENCIEUX_32: &str = "vanguard:ifeo-silencieux-32 ";
+/// Le verbe d'un service dont le chemin (ImagePath) est à mettre entre guillemets : `vanguard:service-guillemets
+/// <nom en hex>`. Le nouveau chemin n'est jamais envoyé : le processus élevé le calcule depuis celui qu'il relit.
+pub(crate) const SERVICE_GUILLEMETS: &str = "vanguard:service-guillemets ";
+
+/// La plus longue ligne qui porte un nom : 260 unités UTF-16 de quatre chiffres hexadécimaux après le plus long verbe
+/// (`IFEO_SILENCIEUX_32` ; test borne_des_noms).
+pub(crate) const ACTE_NOM_MAX: usize = 1068;
+/// Le plus long nom admis, en unités UTF-16 : MAX_PATH. Un nom de clé du registre en admet 255, un service 256.
+pub(crate) const NOM_MAX: usize = 260;
+
+/// La racine visée par une ligne d'Image File Execution Options ou de SilentProcessExit : celle où le bilan a lu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Vue {
+    /// HKLM\SOFTWARE\Microsoft\… (vue 64 bits).
+    Windows,
+    /// HKLM\SOFTWARE\WOW6432Node\Microsoft\… (programmes 32 bits).
+    Wow32,
+}
+
+impl Vue {
+    pub(crate) const TOUTES: [Vue; 2] = [Vue::Windows, Vue::Wow32];
+
+    /// La racine d'Image File Execution Options de cette vue, sous HKLM.
+    pub(crate) fn ifeo(self) -> &'static str {
+        match self {
+            Vue::Windows => IFEO[0],
+            Vue::Wow32 => IFEO[1],
+        }
+    }
+
+    /// La racine de SilentProcessExit de cette vue, sous HKLM.
+    pub(crate) fn silencieuse(self) -> &'static str {
+        match self {
+            Vue::Windows => SORTIE_SILENCIEUSE[0],
+            Vue::Wow32 => SORTIE_SILENCIEUSE[1],
+        }
+    }
+}
+
+/// Un nom de programme (sous-clé d'Image File Execution Options ou de SilentProcessExit) ou de service, relu : non
+/// vide, 260 unités UTF-16 au plus, sans caractère de contrôle (NUL compris), sans séparateur ni caractère interdit
+/// dans un nom de fichier (`\ / : * ? " < > |`), ni « . » seul ni « .. ». Il désigne une sous-clé d'une racine fixe :
+/// jamais une autre clé.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NomFichier(String);
+
+impl NomFichier {
+    /// Le nom, s'il a sa forme.
+    pub(crate) fn nouveau(nom: &str) -> Option<NomFichier> {
+        let longueur = nom.encode_utf16().count();
+        let interdit = |c: char| c.is_control() || matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|');
+        let bon =
+            longueur > 0 && longueur <= NOM_MAX && !nom.chars().any(interdit) && nom != "." && !nom.contains("..");
+        bon.then(|| NomFichier(nom.to_string()))
+    }
+
+    /// Le nom tel quel (venu du registre : à rendre affichable avant de le montrer).
+    pub(crate) fn texte(&self) -> &str {
+        &self.0
+    }
+
+    /// Le nom en hexadécimal minuscule, quatre chiffres par unité UTF-16 petit-boutiste (« s » : « 7300 ») : la ligne
+    /// reste ASCII, sans espace, quel que soit le nom.
+    pub(crate) fn hex(&self) -> String {
+        self.0
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .fold(String::new(), |mut s, o| {
+                let _ = write!(s, "{o:02x}");
+                s
+            })
+    }
+
+    /// Le nom d'un hexadécimal de `hex`, si et seulement s'il en a la forme exacte : minuscules, par groupes de quatre,
+    /// UTF-16 valide (pas de demi-paire), et un nom admis par `nouveau`.
+    pub(crate) fn lire(hex: &str) -> Option<NomFichier> {
+        if hex.is_empty() || !hex.len().is_multiple_of(4) || hex.len() > NOM_MAX.checked_mul(4)? {
+            return None;
+        }
+        let unites: Option<Vec<u16>> = hex
+            .as_bytes()
+            .chunks(4)
+            .map(|q| {
+                let mut o = [0u8; 2];
+                for (i, paire) in q.chunks(2).enumerate() {
+                    let fort = chiffre_minuscule(*paire.first()?)?;
+                    let faible = chiffre_minuscule(*paire.get(1)?)?;
+                    *o.get_mut(i)? = fort.checked_mul(16)?.checked_add(faible)?;
+                }
+                Some(u16::from_le_bytes(o))
+            })
+            .collect();
+        let nom = String::from_utf16(&unites?).ok()?;
+        NomFichier::nouveau(&nom).filter(|n| n.hex() == hex)
+    }
+}
+
+/// Le texte à placer entre apostrophes dans PowerShell : chaque apostrophe, droite ou typographique, doublée. La copie
+/// de `commande::ps_texte` (ce module ne dépend de rien ; test ps_texte_identique côté crate).
+pub(crate) fn ps_texte(t: &str) -> String {
+    let mut s = String::with_capacity(t.len());
+    for c in t.chars() {
+        s.push(c);
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}') {
+            s.push(c);
+        }
+    }
+    s
+}
+
+/// La ligne qui retire le débogueur d'un programme ; `None` si le nom n'a pas sa forme (signalé, à retirer à la main).
+pub(crate) fn ligne_ifeo_debugger(vue: Vue, nom: &str) -> Option<String> {
+    NomFichier::nouveau(nom).map(|n| Acte::IfeoDebugger(vue, n).ligne())
+}
+
+/// La ligne qui ne lance plus rien à la fermeture d'un programme ; `None` si le nom n'a pas sa forme.
+pub(crate) fn ligne_ifeo_silencieux(vue: Vue, nom: &str) -> Option<String> {
+    NomFichier::nouveau(nom).map(|n| Acte::IfeoSilencieux(vue, n).ligne())
+}
+
+/// La ligne qui met entre guillemets le chemin d'un service ; `None` si le nom n'a pas sa forme.
+pub(crate) fn ligne_service_guillemets(nom: &str) -> Option<String> {
+    NomFichier::nouveau(nom).map(|n| Acte::ServiceGuillemets(n).ligne())
+}
+
+/// La ligne PowerShell d'avant (Wine) pour un service : relit ImagePath et le remet entre guillemets par la même forme
+/// que le constat (« …\x.exe » puis ses arguments), ou s'arrête sans rien écrire.
+fn powershell_guillemets(nom: &NomFichier) -> String {
+    format!(
+        "$k = 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\{}'; \
+         $c = [string](Get-ItemProperty -LiteralPath $k -Name ImagePath -ErrorAction Stop).ImagePath; \
+         if ($c.StartsWith('\"') -or $c -notmatch '^(.+?\\.exe)(\\s.*)?$') {{ throw 'ImagePath already quoted or not understood' }}; \
+         Set-ItemProperty -LiteralPath $k -Name ImagePath -Value ('\"' + $Matches[1] + '\"' + $Matches[2])",
+        ps_texte(nom.texte())
+    )
+}
+
 /// Un acte du processus élevé sur Windows lui-même : un service de la table, un dossier à vider, la file
 /// d'impression, un cache à mettre de côté, le pare-feu et la catégorie d'un réseau. Le parent n'envoie que des
 /// identifiants et des valeurs de listes fermées ; les chemins sont calculés par le processus élevé, depuis le
-/// dossier de Windows qu'il lit lui-même.
-#[derive(Debug, Clone, Copy)]
+/// dossier de Windows qu'il lit lui-même. Les actes du registre portent un nom (programme, service) qui désigne une
+/// sous-clé d'une racine fixe ; le processus élevé relit la clé et la rejuge par la fonction du bilan avant d'écrire.
+#[derive(Debug, Clone)]
 pub(crate) enum Acte {
     Service(GesteService),
     Vider(Vidable),
@@ -1025,6 +1187,12 @@ pub(crate) enum Acte {
     PareFeuActif,
     PareFeuPublic(ProfilPublic),
     ReseauCategorie(ReseauCategorie),
+    /// Retirer la valeur Debugger d'Image File Execution Options\\`nom`.
+    IfeoDebugger(Vue, NomFichier),
+    /// Retirer la valeur MonitorProcess de SilentProcessExit\\`nom`.
+    IfeoSilencieux(Vue, NomFichier),
+    /// Mettre entre guillemets le chemin (ImagePath) du service `nom`.
+    ServiceGuillemets(NomFichier),
 }
 
 impl Acte {
@@ -1037,6 +1205,11 @@ impl Acte {
             Acte::PareFeuActif => PARE_FEU_ACTIF.to_string(),
             Acte::PareFeuPublic(p) => p.ligne(),
             Acte::ReseauCategorie(r) => r.ligne(),
+            Acte::IfeoDebugger(Vue::Windows, n) => format!("{IFEO_DEBUGGER}{}", n.hex()),
+            Acte::IfeoDebugger(Vue::Wow32, n) => format!("{IFEO_DEBUGGER_32}{}", n.hex()),
+            Acte::IfeoSilencieux(Vue::Windows, n) => format!("{IFEO_SILENCIEUX}{}", n.hex()),
+            Acte::IfeoSilencieux(Vue::Wow32, n) => format!("{IFEO_SILENCIEUX_32}{}", n.hex()),
+            Acte::ServiceGuillemets(n) => format!("{SERVICE_GUILLEMETS}{}", n.hex()),
         }
     }
 
@@ -1045,7 +1218,7 @@ impl Acte {
     pub(crate) fn durcit(&self) -> bool {
         match self {
             Acte::Service(s) => s.durcit,
-            Acte::PareFeuActif => true,
+            Acte::PareFeuActif | Acte::IfeoDebugger(..) | Acte::IfeoSilencieux(..) | Acte::ServiceGuillemets(_) => true,
             Acte::PareFeuPublic(p) => p.durcit(),
             Acte::ReseauCategorie(r) => r.categorie == Categorie::Public,
             Acte::Vider(_) | Acte::ViderFileImpression | Acte::MettreDeCote(_) => false,
@@ -1059,7 +1232,13 @@ impl Acte {
             Acte::Service(s) => s.affaiblit,
             Acte::PareFeuPublic(p) => p.affaiblit(),
             Acte::ReseauCategorie(r) => r.categorie == Categorie::Prive,
-            Acte::PareFeuActif | Acte::Vider(_) | Acte::ViderFileImpression | Acte::MettreDeCote(_) => false,
+            Acte::PareFeuActif
+            | Acte::Vider(_)
+            | Acte::ViderFileImpression
+            | Acte::MettreDeCote(_)
+            | Acte::IfeoDebugger(..)
+            | Acte::IfeoSilencieux(..)
+            | Acte::ServiceGuillemets(_) => false,
         }
     }
 
@@ -1079,6 +1258,16 @@ impl Acte {
             Acte::PareFeuActif => "Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True".to_string(),
             Acte::PareFeuPublic(p) => p.powershell(),
             Acte::ReseauCategorie(r) => r.powershell(),
+            // Les lignes d'avant du bilan des portes dérobées, la clé entre apostrophes doublées.
+            Acte::IfeoDebugger(v, n) => format!(
+                "Remove-ItemProperty -LiteralPath '{}' -Name Debugger",
+                ps_texte(&format!(r"HKLM:\{}\{}", v.ifeo(), n.texte()))
+            ),
+            Acte::IfeoSilencieux(v, n) => format!(
+                "Remove-ItemProperty -LiteralPath '{}' -Name MonitorProcess",
+                ps_texte(&format!(r"HKLM:\{}\{}", v.silencieuse(), n.texte()))
+            ),
+            Acte::ServiceGuillemets(n) => powershell_guillemets(n),
         }
     }
 }
@@ -1093,12 +1282,24 @@ pub(crate) fn est_un_acte(ligne: &str) -> bool {
         || ligne.starts_with(PARE_FEU_ACTIF)
         || ligne.starts_with(PARE_FEU_PUBLIC)
         || ligne.starts_with(RESEAU_CATEGORIE)
+        || ligne.starts_with(IFEO_DEBUGGER)
+        || ligne.starts_with(IFEO_DEBUGGER_32)
+        || ligne.starts_with(IFEO_SILENCIEUX)
+        || ligne.starts_with(IFEO_SILENCIEUX_32)
+        || ligne.starts_with(SERVICE_GUILLEMETS)
 }
 
-/// L'acte d'une ligne, si et seulement si elle est exactement de sa forme : ASCII, 256 octets au plus, sensible à la
-/// casse, un nom et une action de la table (une seule espace entre chaque), réécrite à l'identique.
+/// L'acte d'une ligne, si et seulement si elle est exactement de sa forme : ASCII, 256 octets au plus (1068 pour
+/// une ligne qui porte un nom en hexadécimal), sensible à la casse, un nom et une action de la table (une seule espace
+/// entre chaque), réécrite à l'identique.
 pub(crate) fn analyser_acte(ligne: &str) -> Option<Acte> {
-    if ligne.len() > ACTE_MAX || !ligne.is_ascii() {
+    if ligne.len() > ACTE_NOM_MAX || !ligne.is_ascii() {
+        return None;
+    }
+    if let Some((hex, faire)) = verbe_nomme(ligne) {
+        return NomFichier::lire(hex).map(faire).filter(|a| a.ligne() == ligne);
+    }
+    if ligne.len() > ACTE_MAX {
         return None;
     }
     let acte = if let Some(reste) = ligne.strip_prefix(SERVICE) {
@@ -1130,6 +1331,27 @@ pub(crate) fn analyser_acte(ligne: &str) -> Option<Acte> {
         Acte::MettreDeCote(*ACoter::TOUS.iter().find(|c| c.id() == id)?)
     };
     (acte.ligne() == ligne).then_some(acte)
+}
+
+/// L'acte du registre fait d'un nom relu.
+type FaireActe = fn(NomFichier) -> Acte;
+
+/// Les verbes des actes du registre qui portent un nom. Aucun verbe n'est le début d'un autre : « ifeo-debugger-32 »
+/// n'a pas d'espace après « ifeo-debugger ».
+const ACTES_NOMMES: [(&str, FaireActe); 5] = [
+    (IFEO_DEBUGGER_32, |n| Acte::IfeoDebugger(Vue::Wow32, n)),
+    (IFEO_DEBUGGER, |n| Acte::IfeoDebugger(Vue::Windows, n)),
+    (IFEO_SILENCIEUX_32, |n| Acte::IfeoSilencieux(Vue::Wow32, n)),
+    (IFEO_SILENCIEUX, |n| Acte::IfeoSilencieux(Vue::Windows, n)),
+    (SERVICE_GUILLEMETS, Acte::ServiceGuillemets),
+];
+
+/// L'hexadécimal du nom et l'acte, si la ligne a le verbe d'un acte du registre qui porte un nom (sa forme est
+/// jugée ensuite : un verbe connu suivi d'un nom mal formé est refusé, jamais lu comme un autre acte).
+fn verbe_nomme(ligne: &str) -> Option<(&str, FaireActe)> {
+    ACTES_NOMMES
+        .iter()
+        .find_map(|(verbe, faire)| ligne.strip_prefix(verbe).map(|hex| (hex, *faire)))
 }
 
 /// La ligne d'un acte sur un service de la table, pour un correctif.
@@ -1942,6 +2164,176 @@ mod tests {
             ps("vanguard:vider-file-impression").ends_with(r"'System32\spool\PRINTERS') -File | Remove-Item -Force")
         );
         assert!(ps("vanguard:mettre-de-cote catroot2").contains(r#""catroot2.$(Get-Date -Format yyyyMMddHHmm)""#));
+    }
+
+    /// Le plus long verbe qui porte un nom, suivi du plus long nom : la borne des actes nommés, ni plus ni moins.
+    #[test]
+    fn borne_des_noms() {
+        for verbe in [
+            IFEO_DEBUGGER,
+            IFEO_DEBUGGER_32,
+            IFEO_SILENCIEUX,
+            IFEO_SILENCIEUX_32,
+            SERVICE_GUILLEMETS,
+        ] {
+            assert!(verbe.len() <= IFEO_SILENCIEUX_32.len(), "{verbe}");
+        }
+        assert_eq!(ACTE_NOM_MAX, IFEO_SILENCIEUX_32.len() + 4 * NOM_MAX);
+        let nom = "a".repeat(NOM_MAX);
+        let l = ligne_ifeo_silencieux(Vue::Wow32, &nom).expect("260 unités admises");
+        assert_eq!(l.len(), ACTE_NOM_MAX);
+        assert!(matches!(analyser_acte(&l), Some(Acte::IfeoSilencieux(Vue::Wow32, n)) if n.texte() == nom));
+        // 261 unités : refusé à la construction et à la lecture (même par un verbe court).
+        let trop = "a".repeat(NOM_MAX + 1);
+        assert_eq!(ligne_ifeo_debugger(Vue::Windows, &trop), None);
+        let hex: String = "6100".repeat(NOM_MAX + 1);
+        assert!(analyser_acte(&format!("{IFEO_DEBUGGER}{hex}")).is_none());
+        assert!(analyser_acte(&format!("{SERVICE_GUILLEMETS}{hex}")).is_none());
+        // Un caractère hors du plan de base compte pour deux unités UTF-16.
+        let emoji = "\u{1F600}".repeat(NOM_MAX / 2);
+        assert!(ligne_service_guillemets(&emoji).is_some());
+        assert!(ligne_service_guillemets(&format!("{emoji}a")).is_none());
+    }
+
+    /// Les noms du registre : en hexadécimal UTF-16 petit-boutiste minuscule, relus à l'identique ; tout nom qui
+    /// changerait de clé (séparateur, « .. », NUL, contrôle) ou que Windows refuse dans un nom de fichier est refusé à
+    /// la construction (le bilan le signale, à retirer à la main) comme à la lecture, avant toute demande d'UAC.
+    #[test]
+    fn les_noms_du_registre_ont_une_forme_fermee() {
+        assert_eq!(NomFichier::nouveau("s").map(|n| n.hex()).as_deref(), Some("7300"));
+        assert_eq!(
+            ligne_ifeo_debugger(Vue::Windows, "sethc.exe").as_deref(),
+            Some("vanguard:ifeo-debugger 730065007400680063002e00650078006500")
+        );
+        for (nom, vue) in [
+            ("sethc.exe", Vue::Windows),
+            ("Bonjour Service", Vue::Wow32),
+            ("Intel(R) Outil ’x’ é", Vue::Windows),
+            ("notepad.exe", Vue::Wow32),
+        ] {
+            for l in [
+                ligne_ifeo_debugger(vue, nom),
+                ligne_ifeo_silencieux(vue, nom),
+                ligne_service_guillemets(nom),
+            ] {
+                let l = l.expect(nom);
+                assert!(l.is_ascii() && !l.contains(['\n', '\r']), "{l}");
+                assert!(est_un_acte(&l), "{l}");
+                let a = analyser_acte(&l).expect(&l);
+                assert_eq!(a.ligne(), l);
+                assert!(a.durcit() && !a.affaiblit());
+                assert!(valider(std::slice::from_ref(&l), |_| None::<()>).is_some(), "{l}");
+            }
+        }
+        for piege in [
+            "",
+            ".",
+            "..",
+            r"..\sethc.exe",
+            r"a\b",
+            "a/b",
+            "a..b",
+            "a\0b",
+            "a\nb",
+            "a\rb",
+            "a\tb",
+            "a\u{7f}b",
+            "a\u{85}b",
+            "c:x",
+            "a*",
+            "a?",
+            "a\"b",
+            "a<b",
+            "a>b",
+            "a|b",
+        ] {
+            assert!(NomFichier::nouveau(piege).is_none(), "{piege:?}");
+            assert_eq!(ligne_ifeo_debugger(Vue::Windows, piege), None, "{piege:?}");
+            assert_eq!(ligne_ifeo_silencieux(Vue::Wow32, piege), None, "{piege:?}");
+            assert_eq!(ligne_service_guillemets(piege), None, "{piege:?}");
+            // Forgée par un parent hostile, la ligne est refusée à la lecture aussi.
+            let hex = piege
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .fold(String::new(), |mut s, o| {
+                    let _ = write!(s, "{o:02x}");
+                    s
+                });
+            for verbe in [
+                IFEO_DEBUGGER,
+                IFEO_DEBUGGER_32,
+                IFEO_SILENCIEUX,
+                IFEO_SILENCIEUX_32,
+                SERVICE_GUILLEMETS,
+            ] {
+                let l = format!("{verbe}{hex}");
+                assert!(analyser_acte(&l).is_none(), "{l}");
+                assert!(est_un_acte(&l), "{l}");
+                assert!(valider(std::slice::from_ref(&l), |_| Some(())).is_none(), "{l}");
+            }
+        }
+        // L'hexadécimal hostile : majuscules, longueur impaire ou hors groupes de quatre, demi-paire, espace, vide.
+        for hex in [
+            "730065007400680063002E00650078006500",
+            "730",
+            "73006",
+            "730065",
+            "00d8",
+            "00dc4100",
+            "7300 6500",
+            " 7300",
+            "7300 ",
+            "",
+            "zz00",
+            "+300",
+            "-300",
+        ] {
+            assert!(NomFichier::lire(hex).is_none(), "{hex:?}");
+            assert!(analyser_acte(&format!("{IFEO_DEBUGGER}{hex}")).is_none(), "{hex:?}");
+        }
+        // Verbe mal écrit : jamais un autre acte, jamais confié à un autre validateur.
+        for l in [
+            "vanguard:ifeo-debugger-64 7300",
+            "vanguard:ifeo-debugger-327300",
+            "vanguard:ifeo-debugger  7300",
+            "vanguard:service-guillemets",
+            "vanguard:service-guillemets ",
+        ] {
+            assert!(analyser_acte(l).is_none(), "{l}");
+        }
+        // Un acte ordinaire reste borné à 256 octets.
+        let long = format!("vanguard:service SSDPSRV arreter{}", " ".repeat(ACTE_NOM_MAX - 40));
+        assert!(analyser_acte(&long).is_none());
+    }
+
+    /// La traduction PowerShell (Wine) : celle que le bilan écrivait avant, la clé entre apostrophes doublées.
+    #[test]
+    fn les_actes_du_registre_ont_leur_equivalent_powershell() {
+        let ps = |l: Option<String>| analyser_acte(&l.unwrap()).unwrap().powershell();
+        assert_eq!(
+            ps(ligne_ifeo_debugger(Vue::Windows, "sethc.exe")),
+            r"Remove-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\sethc.exe' -Name Debugger"
+        );
+        assert_eq!(
+            ps(ligne_ifeo_debugger(Vue::Wow32, "it's.exe")),
+            r"Remove-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\it''s.exe' -Name Debugger"
+        );
+        assert_eq!(
+            ps(ligne_ifeo_silencieux(Vue::Windows, "notepad.exe")),
+            r"Remove-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SilentProcessExit\notepad.exe' -Name MonitorProcess"
+        );
+        assert_eq!(
+            ps(ligne_ifeo_silencieux(Vue::Wow32, "a’b.exe")),
+            r"Remove-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows NT\CurrentVersion\SilentProcessExit\a’’b.exe' -Name MonitorProcess"
+        );
+        assert_eq!(
+            ps(ligne_service_guillemets("Mon ’Outil")),
+            r#"$k = 'HKLM:\SYSTEM\CurrentControlSet\Services\Mon ’’Outil'; $c = [string](Get-ItemProperty -LiteralPath $k -Name ImagePath -ErrorAction Stop).ImagePath; if ($c.StartsWith('"') -or $c -notmatch '^(.+?\.exe)(\s.*)?$') { throw 'ImagePath already quoted or not understood' }; Set-ItemProperty -LiteralPath $k -Name ImagePath -Value ('"' + $Matches[1] + '"' + $Matches[2])"#
+        );
+        // La copie de ps_texte est celle de commande.rs.
+        for t in ["a'b", "‘’‚‛", "x\u{2019}\u{2019}", "rien", "é'’"] {
+            assert_eq!(ps_texte(t), crate::commande::ps_texte(t), "{t}");
+        }
     }
 
     #[test]

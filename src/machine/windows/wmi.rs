@@ -340,6 +340,7 @@ fn dans_ce_fil(espace: &str, classe: &str, wql: &str, champs: &[String]) -> wind
 pub(crate) enum Parametre {
     Texte(String),
     Entier(i32),
+    Booleen(bool),
 }
 
 /// Ce qu'a rendu l'appel d'une méthode WMI.
@@ -413,6 +414,7 @@ fn appeler_dans_ce_fil(
         let v = match valeur {
             Parametre::Texte(t) => VARIANT::from(BSTR::from(t.as_str())),
             Parametre::Entier(n) => VARIANT::from(*n),
+            Parametre::Booleen(b) => VARIANT::from(*b),
         };
         // SAFETY: entree est vivante ; le nom est terminé par un zéro ; `v` vit pendant l'appel (Put en garde une
         // copie) ; type 0 : celui de la signature.

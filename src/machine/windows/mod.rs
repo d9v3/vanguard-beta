@@ -987,7 +987,7 @@ fn smb1() -> Constat {
         )
         .corriger(
             tr!("Désactiver SMBv1", "Turn SMBv1 off"),
-            &["Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force"],
+            &[corrections::id("smb1-serveur-coupe")],
         )
     } else {
         ok("SMBv1", tr!("SMBv1 désactivé.", "SMBv1 off."))
@@ -995,7 +995,6 @@ fn smb1() -> Constat {
 }
 
 fn bureau_distance() -> Constat {
-    let cle = r"HKLM:\System\CurrentControlSet\Control\Terminal Server";
     let terminal = r"System\CurrentControlSet\Control\Terminal Server";
     // La stratégie de groupe l'emporte sur le réglage local, comme pour le pare-feu : imposée, elle décide, et une
     // correction du réglage local ne servirait à rien.
@@ -1022,7 +1021,6 @@ fn bureau_distance() -> Constat {
         &format!(r"{terminal}\WinStations\RDP-Tcp"),
         "UserAuthentication",
     ) == Some(1);
-    let couper = format!("Set-ItemProperty '{cle}' -Name fDenyTSConnections -Value 1");
     // Session ouverte PAR le Bureau à distance (SESSIONNAME = RDP-Tcp#…) : le couper couperait l'utilisateur
     // lui-même. Jamais en correction automatique dans ce cas.
     if session_a_distance() {
@@ -1060,7 +1058,7 @@ fn bureau_distance() -> Constat {
                 "Désactiver le Bureau à distance si vous ne l'utilisez pas",
                 "Turn Remote Desktop off if you do not use it"
             ),
-            &[&couper],
+            &[corrections::id("rdp-coupe")],
         )
     } else {
         alerte(
@@ -1643,19 +1641,20 @@ fn lire_ports_udp(liste: &str, pare_feu_actif: bool, ip_lan: Option<&str>) -> Ve
                     "Couper NetBIOS sur TCP/IP (vieux partage ; le partage moderne passe par le port 445)",
                     "Turn off NetBIOS over TCP/IP (old sharing; modern sharing uses port 445)"
                 ),
-                &["Get-CimInstance Win32_NetworkAdapterConfiguration -Filter 'IPEnabled=True' | Invoke-CimMethod -MethodName SetTcpipNetbios -Arguments @{ TcpipNetbiosOptions = [uint32]2 } | Out-Null"],
+                &[corrections::id("netbios-coupe")],
             ),
-            1900 => constat.corriger(
-                tr!(
-                    "Couper la découverte UPnP (SSDP) ; à garder si vous diffusez vers une TV ou une console",
-                    "Turn off UPnP discovery (SSDP); keep it if you cast to a TV or console"
-                ),
-                &[
-                    gestes::ligne_service("SSDPSRV", gestes::Action::Arreter),
-                    gestes::ligne_service("SSDPSRV", gestes::Action::Desactive),
-                ],
-            )
-            .annulable(vec![crate::optimiser::Geste::service("SSDPSRV")]),
+            1900 => constat
+                .corriger(
+                    tr!(
+                        "Couper la découverte UPnP (SSDP) ; à garder si vous diffusez vers une TV ou une console",
+                        "Turn off UPnP discovery (SSDP); keep it if you cast to a TV or console"
+                    ),
+                    &[
+                        gestes::ligne_service("SSDPSRV", gestes::Action::Arreter),
+                        gestes::ligne_service("SSDPSRV", gestes::Action::Desactive),
+                    ],
+                )
+                .annulable(vec![crate::optimiser::Geste::service("SSDPSRV")]),
             _ => constat,
         });
     }

@@ -1,8 +1,9 @@
 //! La grammaire des lignes que le processus élevé de Windows lit du Vanguard non élevé (src/machine/windows/
 //! gestes.rs) : script vérifié par empreinte, programme fixe de la table, acte sur un service ou un dossier de la
-//! table, sur le pare-feu ou la catégorie d'un réseau (GUID), liste validée, découpe d'une liste de correctifs en
-//! morceaux natifs et PowerShell, états d'un script en échec. Chemins piégés (« .. », NUL, lecteur manquant), hexadécimal en majuscules, noms hors de la liste fermée,
-//! lignes et correctifs en nombre.
+//! table, sur le pare-feu ou la catégorie d'un réseau (GUID), sur une clé du registre désignée par un nom en
+//! hexadécimal UTF-16 (IFEO, SilentProcessExit, service), liste validée, découpe d'une liste de correctifs en
+//! morceaux natifs et PowerShell, états d'un script en échec. Chemins piégés (« .. », NUL, lecteur manquant),
+//! hexadécimal en majuscules ou en demi-paire, noms hors de la liste fermée, lignes et correctifs en nombre.
 #![no_main]
 // Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
 #![forbid(unsafe_code)]
@@ -26,10 +27,16 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
             assert_eq!(args.len(), a.programme.arguments.len());
             assert!(args.iter().all(|x| !x.contains(['\n', '\r', '"'])));
         }
-        // Un acte : de la table, écrit à l'identique, court, ASCII ; jamais accepté sans en avoir le verbe.
+        // Un acte : de la table, écrit à l'identique, court, ASCII ; jamais accepté sans en avoir le verbe. Seuls les
+        // actes nommés du registre dépassent 256 octets.
         if let Some(a) = gestes::analyser_acte(l) {
             assert_eq!(a.ligne(), *l);
-            assert!(l.len() <= gestes::ACTE_MAX && l.is_ascii());
+            let nomme = matches!(
+                a,
+                gestes::Acte::IfeoDebugger(..) | gestes::Acte::IfeoSilencieux(..) | gestes::Acte::ServiceGuillemets(_)
+            );
+            let borne = if nomme { gestes::ACTE_NOM_MAX } else { gestes::ACTE_MAX };
+            assert!(l.len() <= borne && l.is_ascii());
             assert!(gestes::est_un_acte(l));
             assert!(!(a.durcit() && a.affaiblit()));
             match a {
@@ -48,6 +55,15 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                 }
                 gestes::Acte::ReseauCategorie(r) => {
                     assert_eq!(gestes::GuidReseau::lire(&r.guid.texte()), Some(r.guid));
+                }
+                // Un nom ne sort jamais de sa racine : ni séparateur, ni « .. », ni contrôle, 260 unités au plus.
+                gestes::Acte::IfeoDebugger(_, n) | gestes::Acte::IfeoSilencieux(_, n) | gestes::Acte::ServiceGuillemets(n) => {
+                    let t = n.texte();
+                    assert!(!t.is_empty() && t.encode_utf16().count() <= gestes::NOM_MAX);
+                    assert!(!t.contains(['\\', '/', ':', '*', '?', '"', '<', '>', '|']) && !t.contains(".."));
+                    assert!(!t.chars().any(char::is_control) && t != ".");
+                    assert_eq!(gestes::NomFichier::lire(&n.hex()).as_ref(), Some(&n));
+                    assert_eq!(gestes::NomFichier::nouveau(t).as_ref(), Some(&n));
                 }
                 _ => {}
             }

@@ -281,7 +281,13 @@ pub(crate) fn faire_acte(acte: &Acte) -> Option<Resultat> {
         Acte::PareFeuActif => Some(pare_feu_actif()),
         Acte::PareFeuPublic(p) => Some(profil_public(*p)),
         Acte::ReseauCategorie(r) => Some(categorie(*r)),
-        Acte::Service(_) | Acte::Vider(_) | Acte::ViderFileImpression | Acte::MettreDeCote(_) => None,
+        Acte::Service(_)
+        | Acte::Vider(_)
+        | Acte::ViderFileImpression
+        | Acte::MettreDeCote(_)
+        | Acte::IfeoDebugger(..)
+        | Acte::IfeoSilencieux(..)
+        | Acte::ServiceGuillemets(_) => None,
     }
 }
 

@@ -4,8 +4,9 @@
 //! sans cela, le défaut n'est pas exploitable (C:\ et Program Files ne le sont pas).
 
 use super::super::{Constat, alerte};
+use super::corrections::{Resultat, avant_notable};
 use super::ps;
-use crate::commande::ps_chaine;
+use crate::machine::gestes::{self, NomFichier};
 use crate::risk::Niveau;
 use crate::ui::{affichable, resume, tr, trf};
 
@@ -55,32 +56,171 @@ const TOUS: [&str; 4] = ["S-1-5-32-545", "S-1-5-11", "S-1-1-0", "S-1-5-4"];
 /// pas.
 fn lire_natif() -> Option<String> {
     use winreg::enums::HKEY_LOCAL_MACHINE;
-    // Service dans son propre processus (0x10) ou partagé (0x20) : les pilotes (1, 2) n'en sont pas.
-    const SERVICE_WIN32: u32 = 0x30;
     let services = winreg::RegKey::predef(HKEY_LOCAL_MACHINE)
         .open_subkey(crate::machine::windows::CLE_SERVICES)
         .ok()?;
     let mut lignes = Vec::new();
     for nom in services.enum_keys().flatten() {
         let Ok(cle) = services.open_subkey(&nom) else { continue };
-        if cle.get_value::<u32, _>("Type").unwrap_or(0) & SERVICE_WIN32 == 0 {
-            continue;
-        }
-        let Ok(chemin) = cle.get_value::<String, _>("ImagePath") else {
-            continue;
-        };
-        let chemin = developper(&chemin, |v| std::env::var(v).ok());
-        let Some((exe, suite)) = programme_sans_guillemets(&chemin) else {
+        let Some(brut) = cle
+            .get_raw_value("ImagePath")
+            .ok()
+            .and_then(|b| super::corrections::texte_reg(&b))
+        else {
             continue;
         };
-        if let Some(d) = dossier_piege(exe, |d| {
-            d.is_dir() && super::securite::du_fichier(d).is_some_and(|o| modifiable_par_tous(&o))
-        }) {
+        let type_service = cle.get_value::<u32, _>("Type").unwrap_or(0);
+        if let Some((exe, suite, d)) = juger_service(type_service, &brut, variable, dossier_modifiable) {
             lignes.push(format!("SVC|{nom}|{exe}|{}|{suite}", d.display()));
         }
     }
     lignes.push("SVC_FIN".into());
     Some(lignes.join("\n"))
+}
+
+/// Service dans son propre processus (0x10) ou partagé (0x20) : les pilotes (1, 2) n'en sont pas.
+const SERVICE_WIN32: u32 = 0x30;
+
+/// Une variable d'environnement de ce processus, pour développer un ImagePath comme Win32_Service.
+fn variable(nom: &str) -> Option<String> {
+    std::env::var(nom).ok()
+}
+
+/// Un dossier qui existe et qu'un compte de tous peut modifier, d'après les droits lus par Windows.
+fn dossier_modifiable(d: &std::path::Path) -> bool {
+    d.is_dir() && super::securite::du_fichier(d).is_some_and(|o| modifiable_par_tous(&o))
+}
+
+/// Le jugement d'un service, LE MÊME pour le bilan (`lire_natif`) et pour le processus élevé qui pose les guillemets
+/// (`entre_guillemets`) : un service Win32 dont le chemin (ImagePath brut, variables développées) n'a pas de
+/// guillemets et dont un dossier piège est modifiable. Rend le programme et les arguments développés, et le dossier.
+fn juger_service(
+    type_service: u32,
+    brut: &str,
+    variable: impl Fn(&str) -> Option<String>,
+    modifiable: impl Fn(&std::path::Path) -> bool,
+) -> Option<(String, String, std::path::PathBuf)> {
+    if type_service & SERVICE_WIN32 == 0 {
+        return None;
+    }
+    let chemin = developper(brut, variable);
+    let (exe, suite) = programme_sans_guillemets(&chemin)?;
+    let dossier = dossier_piege(exe, modifiable)?;
+    Some((exe.to_string(), suite.to_string(), dossier))
+}
+
+/// Le nouvel ImagePath brut, entre guillemets, si et seulement si `juger_service` signale ce service et que la
+/// nouvelle valeur, développée, ne diffère de l'ancienne que par les guillemets autour du programme : les variables
+/// (« %ProgramFiles% ») restent telles quelles, le type de la valeur aussi.
+fn entre_guillemets(
+    type_service: u32,
+    brut: &str,
+    variable: impl Fn(&str) -> Option<String>,
+    modifiable: impl Fn(&std::path::Path) -> bool,
+) -> Option<String> {
+    let (exe, suite, _) = juger_service(type_service, brut, &variable, modifiable)?;
+    let (brut_exe, brut_suite) = programme_et_suite(brut)?;
+    let nouveau = format!("\"{brut_exe}\"{brut_suite}");
+    (developper(&nouveau, &variable) == format!("\"{exe}\"{suite}")).then_some(nouveau)
+}
+
+/// Met entre guillemets le chemin du service `nom` (processus élevé) : ImagePath relu, rejugé par `juger_service`,
+/// écrit avec le même type (REG_SZ ou REG_EXPAND_SZ) puis relu. Déjà entre guillemets : rien d'écrit. La valeur
+/// d'avant est notée.
+pub(super) fn poser_guillemets(nom: &NomFichier) -> Resultat {
+    use std::io::ErrorKind::NotFound;
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE};
+    let chemin = format!(r"{}\{}", crate::machine::windows::CLE_SERVICES, nom.texte());
+    let cle = match winreg::RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey_with_flags(&chemin, KEY_QUERY_VALUE | KEY_SET_VALUE)
+    {
+        Ok(c) => c,
+        Err(e) if e.kind() == NotFound => {
+            return Resultat::rien(
+                tr!(
+                    "service absent : rien à corriger ici, rien d'écrit",
+                    "no such service: nothing to fix here, nothing written"
+                )
+                .to_string(),
+            );
+        }
+        Err(e) => {
+            return Resultat::echec(
+                None,
+                trf!("clé du service illisible : {e}", "service key unreadable: {e}"),
+            );
+        }
+    };
+    let brute = match cle.get_raw_value("ImagePath") {
+        Ok(b) => b,
+        Err(e) if e.kind() == NotFound => {
+            return Resultat::rien(
+                tr!(
+                    "pas de chemin (ImagePath) : rien à corriger ici, rien d'écrit",
+                    "no path (ImagePath): nothing to fix here, nothing written"
+                )
+                .to_string(),
+            );
+        }
+        Err(e) => return Resultat::echec(None, trf!("ImagePath illisible : {e}", "ImagePath unreadable: {e}")),
+    };
+    let Some(brut) = super::corrections::texte_reg(&brute) else {
+        return Resultat::echec(
+            None,
+            trf!(
+                "refusé : ImagePath de type {:?}, pas un texte ; rien d'écrit",
+                "refused: ImagePath of type {:?}, not text; nothing written",
+                brute.vtype
+            ),
+        );
+    };
+    let avant = avant_notable(&brut);
+    if brut.starts_with('"') {
+        return Resultat::rien(
+            tr!(
+                "déjà entre guillemets, rien d'écrit",
+                "already in quotes, nothing written"
+            )
+            .to_string(),
+        );
+    }
+    let type_service = cle.get_value::<u32, _>("Type").unwrap_or(0);
+    let Some(nouveau) = entre_guillemets(type_service, &brut, variable, dossier_modifiable) else {
+        return Resultat::echec(
+            Some(avant),
+            tr!(
+                "refusé : le bilan refait ici ne signale pas ce service (ou le chemin changerait autrement que par les guillemets) ; rien d'écrit",
+                "refused: the check redone here does not flag this service (or the path would change beyond the quotes); nothing written"
+            )
+            .to_string(),
+        );
+    };
+    let octets: Vec<u8> = nouveau.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect();
+    let valeur = winreg::RegValue {
+        bytes: octets.into(),
+        vtype: brute.vtype.clone(),
+    };
+    if let Err(e) = cle.set_raw_value("ImagePath", &valeur) {
+        return Resultat::echec(Some(avant), e.to_string());
+    }
+    match cle.get_raw_value("ImagePath") {
+        Ok(relue)
+            if relue.vtype == brute.vtype
+                && super::corrections::texte_reg(&relue).as_deref() == Some(nouveau.as_str()) =>
+        {
+            Resultat::fait(avant)
+        }
+        Ok(relue) => Resultat::echec(
+            Some(avant),
+            trf!(
+                "relu {} au lieu de {}",
+                "read back {} instead of {}",
+                super::corrections::decrire(&relue),
+                avant_notable(&nouveau)
+            ),
+        ),
+        Err(e) => Resultat::echec(Some(avant), e.to_string()),
+    }
 }
 
 /// « %SystemRoot%\x » développé ; une variable inconnue reste telle quelle.
@@ -105,16 +245,23 @@ fn developper(texte: &str, variable: impl Fn(&str) -> Option<String>) -> String 
 /// `'^(.+?\.exe)(\s.*)?$'` ; `None` si la ligne commence par un guillemet, n'a pas de « .exe » suivi d'un blanc ou
 /// de la fin, ou si le programme n'a pas d'espace (rien à piéger).
 fn programme_sans_guillemets(ligne: &str) -> Option<(&str, &str)> {
+    programme_et_suite(ligne).filter(|(exe, _)| exe.contains(' '))
+}
+
+/// Le programme et la suite d'une ligne sans guillemets, comme `'^(.+?\.exe)(\s.*)?$'`, espace ou non dans le
+/// programme (un ImagePath brut « %ProgramFiles%\Outil\svc.exe » n'en a pas avant d'être développé).
+fn programme_et_suite(ligne: &str) -> Option<(&str, &str)> {
     if ligne.is_empty() || ligne.starts_with('"') {
         return None;
     }
     let bas = ligne.to_ascii_lowercase();
-    let fin = bas
-        .match_indices(".exe")
-        .map(|(i, _)| i + 4)
-        .find(|&f| f > 4 && ligne[f..].chars().next().is_none_or(char::is_whitespace))?;
-    let (exe, suite) = ligne.split_at(fin);
-    exe.contains(' ').then_some((exe, suite))
+    let fin = bas.match_indices(".exe").map(|(i, _)| i + 4).find(|&f| {
+        f > 4
+            && ligne
+                .get(f..)
+                .is_some_and(|r| r.chars().next().is_none_or(char::is_whitespace))
+    })?;
+    Some(ligne.split_at(fin))
 }
 
 /// Le premier dossier où un programme piégé démarrerait à la place du service (« C:\ » pour « C:\Program.exe », puis
@@ -146,22 +293,23 @@ fn modifiable_par_tous(descripteur: &[u8]) -> bool {
     })
 }
 
-/// Les services exploitables lus dans la sortie du script, avec la commande qui met leur chemin entre guillemets.
-/// `None` sans service à signaler, ou si la liste n'a pas été lue jusqu'au bout.
+/// Les services exploitables lus dans la sortie du script, avec la ligne qui met leur chemin entre guillemets (le nom
+/// seul : le processus élevé relit ImagePath et rejuge). `None` sans service à signaler, ou si la liste n'a pas été
+/// lue jusqu'au bout.
 pub(super) fn juger(sortie: &str) -> Option<Constat> {
     if !sortie.lines().any(|l| l.trim() == "SVC_FIN") {
         return None;
     }
     let mut noms = Vec::new();
     let mut commandes = Vec::new();
+    let mut a_la_main = Vec::new();
     for ligne in sortie
         .lines()
         .filter_map(|l| l.trim_end_matches('\r').strip_prefix("SVC|"))
     {
+        // Arguments en dernier : « -f a|b » reste entier (le dossier, avant, reste juste).
         let mut champs = ligne.splitn(4, '|');
-        // Arguments en dernier : « -f a|b » reste entier, et la commande de correction ne
-        // perd rien de la ligne du service.
-        let (Some(nom), Some(programme), Some(dossier), Some(arguments)) =
+        let (Some(nom), Some(_programme), Some(dossier), Some(_arguments)) =
             (champs.next(), champs.next(), champs.next(), champs.next())
         else {
             continue;
@@ -170,43 +318,51 @@ pub(super) fn juger(sortie: &str) -> Option<Constat> {
             continue;
         }
         // Un nom de service peut avoir des espaces et des parenthèses (« Bonjour Service », « Intel(R) … ») : écarté,
-        // le service exploitable passait pour sain. Il est toujours signalé ; seule la commande est retenue quand le
-        // nom changerait le chemin du registre (séparateur ou caractère de contrôle). Entre apostrophes doublées,
-        // le reste ne peut rien injecter.
+        // le service exploitable passait pour sain. Il est toujours signalé ; un nom que la grammaire des lignes
+        // refuse (séparateur, caractère de contrôle, « .. ») n'a pas de ligne : à corriger à la main.
         noms.push(format!("{} ({})", affichable(nom), affichable(dossier)));
-        if nom.chars().any(|c| c == '\\' || c == '/' || c.is_control()) {
-            continue;
+        match gestes::ligne_service_guillemets(nom) {
+            Some(l) => commandes.push(l),
+            None => a_la_main.push(affichable(nom)),
         }
-        let chemin = format!(r"HKLM:\SYSTEM\CurrentControlSet\Services\{nom}");
-        let valeur = format!("\"{programme}\"{arguments}");
-        commandes.push(format!(
-            "Set-ItemProperty -LiteralPath {} -Name ImagePath -Value {}",
-            ps_chaine(&chemin),
-            ps_chaine(&valeur)
-        ));
     }
     if noms.is_empty() {
         return None;
     }
-    let commandes: Vec<&str> = commandes.iter().map(String::as_str).collect();
-    Some(
-        alerte(
-            "Persistance",
-            Niveau::Eleve,
-            trf!(
-                "Service au chemin sans guillemets, dans un dossier modifiable par tous : {}. Un programme posé là démarrerait avec les droits du système.",
-                "Service with an unquoted path, in a folder anyone can change: {}. A program dropped there would start with system rights.",
-                resume(&noms, 3, ", ")
-            ),
-        )
-        .manuel(
-            tr!(
-                "Mettre le chemin du service entre guillemets (commande ci-dessous, en administrateur), puis signaler le défaut à l'éditeur du programme",
-                "Put the service's path in quotes (command below, as administrator), then report the flaw to the program's publisher"
-            ),
-            &commandes,
+    let constat = alerte(
+        "Persistance",
+        Niveau::Eleve,
+        trf!(
+            "Service au chemin sans guillemets, dans un dossier modifiable par tous : {}. Un programme posé là démarrerait avec les droits du système.",
+            "Service with an unquoted path, in a folder anyone can change: {}. A program dropped there would start with system rights.",
+            resume(&noms, 3, ", ")
         ),
-    )
+    );
+    let action = tr!(
+        "Mettre le chemin du service entre guillemets, puis signaler le défaut à l'éditeur du programme",
+        "Put the service's path in quotes, then report the flaw to the program's publisher"
+    );
+    if commandes.is_empty() {
+        return Some(constat.manuel(
+            trf!(
+                "Mettre à la main, dans regedit, le chemin (ImagePath) du service entre guillemets : {}",
+                "In regedit, put the service's path (ImagePath) in quotes by hand: {}",
+                resume(&a_la_main, 3, ", ")
+            ),
+            &[],
+        ));
+    }
+    if a_la_main.is_empty() {
+        return Some(constat.corriger(action, &commandes));
+    }
+    Some(constat.corriger(
+        trf!(
+            "{action} ; à la main dans regedit pour : {}",
+            "{action}; by hand in regedit for: {}",
+            resume(&a_la_main, 3, ", ")
+        ),
+        &commandes,
+    ))
 }
 
 #[cfg(test)]
@@ -298,16 +454,18 @@ mod tests {
         assert_eq!(c.probleme, Some(Niveau::Eleve));
         assert!(c.message.contains("OutilMaj (C:\\Mes Outils)") && c.message.contains("pi;ege"));
         let k = c.correctif.unwrap();
-        assert!(!k.automatique);
+        assert!(k.automatique);
+        // Le nom seul, en hexadécimal : le processus élevé relit ImagePath.
         assert_eq!(
             k.commandes,
             [
-                "Set-ItemProperty -LiteralPath 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\OutilMaj' -Name ImagePath -Value '\"C:\\Mes Outils\\Outil Maj\\maj.exe\" -service'",
-                "Set-ItemProperty -LiteralPath 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\pi;ege' -Name ImagePath -Value '\"C:\\A B\\x.exe\"'"
+                gestes::ligne_service_guillemets("OutilMaj").unwrap(),
+                gestes::ligne_service_guillemets("pi;ege").unwrap()
             ]
         );
-        // Espaces, parenthèses et apostrophe dans le nom : signalé, la commande garde le nom entre apostrophes
-        // doublées. Un nom qui changerait le chemin du registre est signalé sans commande.
+        assert_eq!(k.commandes[1], "vanguard:service-guillemets 700069003b00650067006500");
+        // Espaces, parenthèses et apostrophe dans le nom : signalé, avec sa ligne (l'apostrophe doublée dans la
+        // commande d'avant). Un nom que la grammaire refuse est signalé, à corriger à la main.
         let c = juger(
             "SVC|Bonjour Service|C:\\Program Files\\Bonjour\\mDNSResponder.exe|C:\\Program Files|\nSVC|Intel(R) l'outil|C:\\A B\\x.exe|C:\\A B|\nSVC|a/b|C:\\A B\\y.exe|C:\\A B|\nSVC_FIN\n",
         )
@@ -316,23 +474,77 @@ mod tests {
         assert!(c.message.contains("Intel(R) l'outil") && c.message.contains("a/b"));
         let k = c.correctif.unwrap();
         assert_eq!(k.commandes.len(), 2);
-        assert!(k.commandes[0].starts_with(
-            "Set-ItemProperty -LiteralPath 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Bonjour Service' -Name ImagePath"
-        ));
-        assert!(k.commandes[1].contains("Services\\Intel(R) l''outil' -Name"));
+        assert!(k.automatique && k.action.contains("a/b"), "{}", k.action);
+        let ps = super::super::corrections::en_powershell(std::slice::from_ref(&k.commandes));
+        assert!(ps[0][0].starts_with("$k = 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Bonjour Service'; "));
+        assert!(ps[0][1].contains("Services\\Intel(R) l''outil'; "));
+        // Seuls des noms refusés : à la main, sans ligne.
+        let c = juger("SVC|a\\b|C:\\A B\\y.exe|C:\\A B|\nSVC|..|C:\\A B\\z.exe|C:\\A B|\nSVC_FIN\n").unwrap();
+        let k = c.correctif.unwrap();
+        assert!(k.commandes.is_empty() && !k.automatique && k.action.contains("regedit"));
     }
 
-    /// Des arguments qui contiennent « | » : le dossier reste juste et la commande garde
-    /// toute la ligne du service.
+    /// Des arguments qui contiennent « | » : le dossier reste juste ; le processus élevé relit toute la ligne du
+    /// service, arguments compris.
     #[test]
     fn arguments_avec_barre() {
         let c = juger("SVC|Outil|C:\\Mon Outil\\svc.exe|C:\\Mon Outil| -f a|b\nSVC_FIN\n").unwrap();
         assert!(c.message.contains("Outil (C:\\Mon Outil)"), "{}", c.message);
         assert_eq!(
             c.correctif.unwrap().commandes,
-            [
-                "Set-ItemProperty -LiteralPath 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Outil' -Name ImagePath -Value '\"C:\\Mon Outil\\svc.exe\" -f a|b'"
-            ]
+            [gestes::ligne_service_guillemets("Outil").unwrap()]
         );
+        let v = |n: &str| (n == "X").then(|| "C:\\Mon Outil".to_string());
+        assert_eq!(
+            entre_guillemets(0x10, r"C:\Mon Outil\svc.exe -f a|b", v, |_| true).as_deref(),
+            Some(r#""C:\Mon Outil\svc.exe" -f a|b"#)
+        );
+    }
+
+    /// Le processus élevé rejuge par LA fonction du bilan (`juger_service`), sur les mêmes données : il ne pose des
+    /// guillemets que sur un service que le bilan signale, sans toucher aux variables, et la valeur développée ne
+    /// change que par les guillemets.
+    #[test]
+    fn le_processus_eleve_rejuge_comme_le_bilan() {
+        let variable = |n: &str| match n {
+            "ProgramFiles" => Some(r"C:\Program Files".to_string()),
+            "Bizarre" => Some(r"C:\A B\x.exe C:\Autre".to_string()),
+            _ => None,
+        };
+        let ouvert = |d: &std::path::Path| d == std::path::Path::new(r"C:\");
+        let cas: [(u32, &str, Option<&str>); 9] = [
+            (
+                0x10,
+                r"C:\Program Files\Mon Outil\svc.exe -k x",
+                Some(r#""C:\Program Files\Mon Outil\svc.exe" -k x"#),
+            ),
+            // Variable gardée telle quelle : sans espace avant d'être développée, piégée après.
+            (
+                0x20,
+                r"%ProgramFiles%\Outil\svc.exe",
+                Some(r#""%ProgramFiles%\Outil\svc.exe""#),
+            ),
+            // Un pilote, un chemin déjà entre guillemets, un programme sans espace, un dossier sûr : pas signalés.
+            (0x1, r"C:\Program Files\Pilote\p.exe", None),
+            (0x10, r#""C:\Program Files\a.exe""#, None),
+            (0x10, r"C:\Windows\svchost.exe -k netsvcs", None),
+            (0x10, r"C:\Sur\Mon Outil\svc.exe", None),
+            (0x10, r"C:\Program Files\pilote.sys", None),
+            // Une variable qui déplacerait le « .exe » : la valeur changerait autrement que par les guillemets.
+            (0x10, r"%Bizarre%\y.exe", None),
+            (0x10, "", None),
+        ];
+        for (type_service, brut, attendu) in cas {
+            let bilan = juger_service(type_service, brut, variable, ouvert);
+            let eleve = entre_guillemets(type_service, brut, variable, ouvert);
+            assert_eq!(eleve.as_deref(), attendu, "{brut}");
+            // Le processus élevé n'écrit jamais là où le bilan ne signale rien.
+            assert!(eleve.is_none() || bilan.is_some(), "{brut}");
+            if let (Some(nouveau), Some((exe, suite, _))) = (&eleve, &bilan) {
+                assert_eq!(developper(nouveau, variable), format!("\"{exe}\"{suite}"), "{brut}");
+            }
+        }
+        // Le cas %Bizarre% est bien signalé par le bilan : c'est la garde des guillemets seuls qui refuse.
+        assert!(juger_service(0x10, r"%Bizarre%\y.exe", variable, ouvert).is_some());
     }
 }

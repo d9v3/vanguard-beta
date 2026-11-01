@@ -200,7 +200,7 @@ fn empreinte(chemin: &std::path::Path) -> Option<String> {
 /// Réponse du fils pour une correction : « ok avant=1 », « echec raison… ».
 fn ligne_resultat(r: &Resultat) -> String {
     match (&r.reussi, &r.avant) {
-        (true, Some(avant)) => format!("ok avant={avant}"),
+        (true, Some(avant)) => format!("ok avant={}", avant.replace(['\r', '\n'], " ")),
         // Fait, mais sans point de restauration : la personne l'a accepté ; c'est noté, ce n'est pas un échec.
         (true, None) if r.raison == sans_point_accepte() => SANS_POINT.to_string(),
         // Un ordre réussi avec sa précision (« déjà retirée »).
@@ -405,7 +405,7 @@ fn appliquer_en_place(lignes: &[String]) -> Vec<Reponse> {
     let mut reponses = Vec::with_capacity(liste.len());
     let mut arret = false;
     for e in &liste {
-        let r = if arret { refusee() } else { faire(e, &juge) };
+        let r = if arret { refusee() } else { faire(e, &juge, None) };
         arret |= !r.reussi && est_point(e);
         reponses.push(lire_reponse(&ligne_resultat(&r)));
     }
@@ -710,7 +710,11 @@ pub(crate) fn executer(canal: &str, parent: u32) -> i32 {
     // Ce que le fils lit lui-même de l'ordinateur pour rejuger les ordres : sessions à distance, processus protégés.
     let juge = ordres::Juge::lire(Some(parent));
     for e in &liste {
-        let r = if arret { refusee() } else { faire(e, &juge) };
+        let r = if arret {
+            refusee()
+        } else {
+            faire(e, &juge, Some(parent))
+        };
         if !r.reussi {
             code = 1;
             echec |= r.raison != arret_demande() && !r.raison.starts_with(au_redemarrage());
@@ -795,10 +799,12 @@ fn refusee() -> Resultat {
 
 /// Fait un geste de la liste, en l'annonçant, puis « OK » ou l'erreur : une fenêtre muette ne se distingue pas d'une
 /// fenêtre figée. Un ordre est d'abord rejugé ici.
-fn faire(e: &Element, juge: &ordres::Juge) -> Resultat {
+/// `parent` : le Vanguard qui a lancé ce processus (PID vérifié par le tube), dont le jeton donne le compte de la
+/// personne ; `None` quand Vanguard est lui-même administrateur.
+fn faire(e: &Element, juge: &ordres::Juge, parent: Option<u32>) -> Resultat {
     println!("{GRIS}> {}  {}{RESET}", chrono::Local::now().format("%H:%M"), e.texte());
     let r = match e {
-        Element::Correction(c) => corrections::appliquer(c),
+        Element::Correction(c) => corrections::appliquer(c, parent),
         Element::Ordre(o) => {
             let r = match ordres::juger(o, juge) {
                 Some(refus) => ordres::Resultat::echec(refus),

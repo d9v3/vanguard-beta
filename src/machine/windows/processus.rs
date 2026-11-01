@@ -184,21 +184,47 @@ pub(crate) fn peut_terminer(processus: u32) -> bool {
 
 /// Une information du jeton de ce processus (GetTokenInformation), dans un tampon aligné ; `None` si Windows refuse.
 fn jeton(classe: u32) -> Option<Vec<u64>> {
+    jeton_de(None, classe).ok()
+}
+
+/// Une information du jeton du processus `pid` (`None` : ce processus), dans un tampon aligné ; l'erreur de Windows
+/// s'il refuse (processus fini, ou d'un autre compte sans SeDebugPrivilege actif), lue dès l'appel refusé.
+// FFI : OpenProcess, OpenProcessToken et GetTokenInformation sur un autre processus.
+#[allow(unsafe_code)]
+fn jeton_de(pid: Option<u32>, classe: u32) -> std::io::Result<Vec<u64>> {
     const LECTURE: u32 = 0x0008;
+    const QUESTION_LIMITEE: u32 = 0x1000;
     let mut poignee = std::ptr::null_mut();
-    // SAFETY: GetCurrentProcess rend une pseudo-poignée, sans rien à fermer. Le jeton ouvert (vérifié) est fermé une
+    // SAFETY: GetCurrentProcess rend une pseudo-poignée, sans rien à fermer ; la poignée d'OpenProcess (nulle : refus,
+    // vérifié) est fermée une seule fois, dès le jeton ouvert ou refusé. Le jeton ouvert (vérifié) est fermé une
     // seule fois. Le premier appel donne la taille ; le second écrit au plus `place` octets (la taille annoncée) dans
     // `tampon`, qui en a au moins autant, aligné sur 8 octets pour les structures qu'il contient.
     unsafe {
-        if OpenProcessToken(GetCurrentProcess(), LECTURE, &raw mut poignee) == 0 {
-            return None;
+        let processus = match pid {
+            None => GetCurrentProcess(),
+            Some(p) => {
+                let h = OpenProcess(QUESTION_LIMITEE, 0, p);
+                if h.is_null() {
+                    return Err(std::io::Error::last_os_error());
+                }
+                h
+            }
+        };
+        let ouvert = OpenProcessToken(processus, LECTURE, &raw mut poignee) != 0;
+        let refus = std::io::Error::last_os_error();
+        if pid.is_some() {
+            CloseHandle(processus);
+        }
+        if !ouvert {
+            return Err(refus);
         }
         let mut taille = 0u32;
         GetTokenInformation(poignee, classe, std::ptr::null_mut(), 0, &raw mut taille);
         let (mut tampon, place) = tampon_du_jeton(taille);
         let lu = GetTokenInformation(poignee, classe, tampon.as_mut_ptr().cast(), place, &raw mut taille) != 0;
+        let refus = std::io::Error::last_os_error();
         CloseHandle(poignee);
-        lu.then_some(tampon)
+        if lu { Ok(tampon) } else { Err(refus) }
     }
 }
 
@@ -228,7 +254,24 @@ pub(crate) fn type_d_elevation() -> Option<u32> {
 /// tirets après « S-1- » : il entre tel quel dans une commande PowerShell.
 pub(crate) fn sid() -> Option<String> {
     const UTILISATEUR: u32 = 1;
-    let tampon = jeton(UTILISATEUR)?;
+    sid_du_jeton(&jeton(UTILISATEUR)?)
+}
+
+/// Le SID du compte du processus `pid`, lu dans son jeton : celui du Vanguard qui demande, pour le processus élevé
+/// (le PID est vérifié par le tube : `eleve::ouvrir_le_canal`). Jamais reçu en paramètre. L'erreur, avec son code.
+pub(crate) fn sid_de(pid: u32) -> std::io::Result<String> {
+    const UTILISATEUR: u32 = 1;
+    let tampon = jeton_de(Some(pid), UTILISATEUR)?;
+    sid_du_jeton(&tampon)
+        .ok_or_else(|| std::io::Error::other(crate::tr!("SID illisible dans le jeton", "SID unreadable in the token")))
+}
+
+/// Le SID d'un TOKEN_USER lu par `jeton_de`, en texte vérifié.
+// FFI : ConvertSidToStringSidW et LocalFree, sur le SID du tampon.
+#[allow(unsafe_code)]
+fn sid_du_jeton(tampon: &[u64]) -> Option<String> {
+    // Le pointeur du SID est le premier mot du tampon : un tampon vide n'en a pas.
+    tampon.first()?;
     let mut texte: *mut u16 = std::ptr::null_mut();
     // SAFETY: TOKEN_USER commence par un SID_AND_ATTRIBUTES, dont le premier champ est le pointeur vers le SID, dans le
     // même tampon (vivant pendant l'appel). ConvertSidToStringSidW alloue la chaîne (terminée par un zéro), lue puis
@@ -390,5 +433,8 @@ mod tests {
         assert!(!terminer(u32::MAX - 3));
         let _ = eleve();
         assert!(sid().is_none_or(|s| sid_valide(&s)));
+        // Le SID d'un processus lu par son numéro : celui de ce processus est le même que par son propre jeton.
+        assert_eq!(sid_de(moi).ok(), sid());
+        assert!(sid_de(u32::MAX - 3).is_err());
     }
 }

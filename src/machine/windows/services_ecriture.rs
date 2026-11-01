@@ -604,6 +604,13 @@ pub(crate) fn faire(acte: &Acte) -> Resultat {
             },
         };
     }
+    // Les actes du registre relisent la clé, la rejugent par la fonction du bilan et notent la valeur d'avant.
+    match acte {
+        Acte::IfeoDebugger(v, n) => return super::portes::retirer_debogueur(*v, n),
+        Acte::IfeoSilencieux(v, n) => return super::portes::retirer_moniteur(*v, n),
+        Acte::ServiceGuillemets(n) => return super::services::poser_guillemets(n),
+        _ => {}
+    }
     let r = match acte {
         Acte::Service(s) => service(s),
         Acte::Vider(v) => dossier_windows().and_then(|w| vidage::vider_sous(&w, *v)),
@@ -613,7 +620,12 @@ pub(crate) fn faire(acte: &Acte) -> Resultat {
         Acte::MettreDeCote(c) => dossier_windows()
             .and_then(|w| vidage::mettre_de_cote(&w, *c, &chrono::Local::now().format("%Y%m%d%H%M").to_string())),
         // Déjà rendus plus haut ; jamais atteint, mais un refus plutôt qu'une panique dans le processus élevé.
-        Acte::PareFeuActif | Acte::PareFeuPublic(_) | Acte::ReseauCategorie(_) => Err(Echec::refuse(
+        Acte::PareFeuActif
+        | Acte::PareFeuPublic(_)
+        | Acte::ReseauCategorie(_)
+        | Acte::IfeoDebugger(..)
+        | Acte::IfeoSilencieux(..)
+        | Acte::ServiceGuillemets(_) => Err(Echec::refuse(
             CONTEXTE,
             tr!("acte du pare-feu non reconnu", "firewall act not recognized"),
         )),
