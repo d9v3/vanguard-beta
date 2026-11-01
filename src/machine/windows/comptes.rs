@@ -713,7 +713,7 @@ fn juger_politique(longueur: u32, seuil: u32) -> Option<Constat> {
                     "Bloquer un compte 10 minutes après 10 essais ratés (réglage de Windows 11)",
                     "Lock an account for 10 minutes after 10 failed attempts (Windows 11's setting)"
                 ),
-                &["net accounts /lockoutthreshold:10 /lockoutduration:10 /lockoutwindow:10"],
+                &[&crate::machine::gestes::ligne_programme("net-accounts-verrouillage", None)],
             ),
         );
     }
@@ -731,7 +731,10 @@ fn juger_politique(longueur: u32, seuil: u32) -> Option<Constat> {
                 "Exiger 8 caractères au prochain changement de mot de passe",
                 "Require 8 characters at the next password change"
             ),
-            &["net accounts /minpwlen:8"],
+            &[&crate::machine::gestes::ligne_programme(
+                "net-accounts-longueur-8",
+                None,
+            )],
         )
     })
 }
@@ -878,10 +881,21 @@ mod tests {
         assert!(juger_politique(8, 10).is_none() && juger_politique(14, 5).is_none());
         let sans_blocage = juger_politique(0, 0).unwrap();
         assert_eq!(sans_blocage.probleme, Some(Niveau::Moyen));
-        assert!(sans_blocage.correctif.unwrap().commandes[0].contains("/lockoutthreshold:10"));
+        // net.exe par son chemin dans System32 (programme fixe), jamais par son seul nom dans le PATH du compte.
+        let programme = |commandes: &[String]| {
+            let [ligne] = commandes else { panic!("{commandes:?}") };
+            crate::machine::gestes::analyser_programme(ligne).map(|a| a.commande())
+        };
+        assert_eq!(
+            programme(&sans_blocage.correctif.unwrap().commandes).as_deref(),
+            Some("net.exe accounts /lockoutthreshold:10 /lockoutduration:10 /lockoutwindow:10")
+        );
         let courts = juger_politique(0, 10).unwrap();
         assert_eq!(courts.probleme, Some(Niveau::Info));
-        assert_eq!(courts.correctif.unwrap().commandes, ["net accounts /minpwlen:8"]);
+        assert_eq!(
+            programme(&courts.correctif.unwrap().commandes).as_deref(),
+            Some("net.exe accounts /minpwlen:8")
+        );
     }
 
     /// Les deux structures ont la taille de celles de lmaccess.h : un champ de trop ou de moins décalerait le seuil.

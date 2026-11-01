@@ -537,8 +537,9 @@ fn reglages(e: &Etat, sid: Option<&str>) -> Vec<Element> {
         ),
         (!e.alimentation.is_empty()).then(|| e.alimentation.contains(PERF)),
         vec![
-            "powercfg /setactive SCHEME_MIN".into(),
-            "powercfg /getactivescheme".into(),
+            // Par leur chemin dans System32, jamais par leur seul nom (`gestes::PROGRAMMES`).
+            machine::gestes::ligne_programme("powercfg-performances", None),
+            machine::gestes::ligne_programme("powercfg-mode-actif", None),
         ],
     )
     .annulable("alimentation", gestes("alimentation"));
