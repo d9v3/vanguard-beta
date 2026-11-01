@@ -260,23 +260,103 @@ pub(crate) fn analyser(ligne: &str) -> Option<&'static Correction> {
 /// Comment se défait une correction faite de ces commandes : une correction native (un DWORD sous HKLM) durcit
 /// Windows (WDigest, NLA, Lsa, UAC…) ; c'est une protection, que Vanguard ne défait jamais. Défaite d'après une note de
 /// reglages.json, que tout programme du compte peut réécrire, elle remettait en administrateur la valeur qu'une
-/// note forgée choisissait (UseLogonCredential = 1). La personne peut toujours la changer elle-même dans Windows. Le
-/// reste (PowerShell, le point de restauration seul) n'est pas relevé.
+/// note forgée choisissait (UseLogonCredential = 1). La personne peut toujours la changer elle-même dans Windows. Un
+/// acte de service qui durcit (`gestes::SERVICES`, RemoteRegistry désactivé…) compte de même ; un acte qui ne durcit
+/// pas (arrêter puis relancer wuauserv), comme le reste (PowerShell, le point de restauration seul), n'est pas relevé.
 pub(crate) fn comment_defaire(commandes: &[String]) -> crate::machine::Defaire {
     use crate::machine::Defaire;
-    let natives: Option<Vec<&Correction>> = commandes.iter().map(|l| analyser(l)).collect();
-    match natives {
-        Some(n) if n.iter().any(|c| matches!(c.geste, Geste::Dword { .. })) => Defaire::Protection,
+    use crate::machine::gestes::{self, Acte};
+    // Chaque ligne : `Some(durcit)`, ou `None` si elle n'est ni une correction de la table ni un acte de service.
+    let durcies: Option<Vec<bool>> = commandes
+        .iter()
+        .map(|l| match (analyser(l), gestes::analyser_acte(l)) {
+            (Some(c), _) => Some(matches!(c.geste, Geste::Dword { .. })),
+            (None, Some(Acte::Service(s))) => Some(s.durcit),
+            _ => None,
+        })
+        .collect();
+    match durcies {
+        Some(d) if d.contains(&true) => Defaire::Protection,
         _ => Defaire::Inconnu,
     }
 }
 
+/// La phrase d'un acte de la table, montrée avant l'UAC et dans la fenêtre administrateur. Un acte qui affaiblit
+/// (remettre en route ce que Vanguard avait coupé, à l'annulation d'un réglage) le dit en toutes lettres.
+pub(crate) fn texte_acte(acte: &crate::machine::gestes::Acte) -> String {
+    use crate::machine::gestes::{ACoter, Acte, Action, Vidable};
+    use crate::ui::{tr, trf};
+    match acte {
+        Acte::Service(s) => {
+            let n = s.nom;
+            let phrase = match s.action {
+                Action::Arreter => trf!(
+                    "Arrêter le service {n} (et les services qui en dépendent)",
+                    "Stop the {n} service (and the services that depend on it)"
+                ),
+                Action::Demarrer => trf!("Démarrer le service {n}", "Start the {n} service"),
+                Action::Redemarrer => trf!(
+                    "Redémarrer le service {n} (et les services qui en dépendent)",
+                    "Restart the {n} service (and the services that depend on it)"
+                ),
+                Action::Desactive => trf!("Désactiver le service {n}", "Disable the {n} service"),
+                Action::Manuel => trf!(
+                    "Mettre le service {n} en démarrage manuel",
+                    "Set the {n} service to manual start"
+                ),
+                Action::Auto => trf!(
+                    "Mettre le service {n} en démarrage automatique",
+                    "Set the {n} service to automatic start"
+                ),
+                Action::Reactiver => trf!(
+                    "Remettre le service {n} en manuel s'il est désactivé",
+                    "Set the {n} service back to manual if it is disabled"
+                ),
+            };
+            if s.affaiblit {
+                trf!(
+                    "{phrase} — rend le PC moins protégé (remet ce que Vanguard avait coupé)",
+                    "{phrase} — makes the PC less protected (restores what Vanguard had turned off)"
+                )
+            } else {
+                phrase
+            }
+        }
+        Acte::Vider(Vidable::TempWindows) => tr!(
+            r"Vider le dossier temporaire de Windows (Windows\Temp ; ce qui est en usage reste)",
+            r"Empty the Windows temporary folder (Windows\Temp; what is in use stays)"
+        )
+        .to_string(),
+        Acte::Vider(Vidable::WuTelechargements) => tr!(
+            r"Vider les téléchargements de Windows Update (Windows\SoftwareDistribution\Download)",
+            r"Empty the Windows Update downloads (Windows\SoftwareDistribution\Download)"
+        )
+        .to_string(),
+        Acte::ViderFileImpression => tr!(
+            "Vider la file d'impression (les fichiers du dossier du spouleur)",
+            "Empty the print queue (the files in the spooler folder)"
+        )
+        .to_string(),
+        Acte::MettreDeCote(ACoter::SoftwareDistribution) => tr!(
+            r"Mettre de côté le cache de Windows Update (Windows\SoftwareDistribution, renommé avec la date)",
+            r"Set aside the Windows Update cache (Windows\SoftwareDistribution, renamed with the date)"
+        )
+        .to_string(),
+        Acte::MettreDeCote(ACoter::Catroot2) => tr!(
+            r"Mettre de côté le catalogue des signatures (Windows\System32\catroot2, renommé avec la date)",
+            r"Set aside the signature catalog (Windows\System32\catroot2, renamed with the date)"
+        )
+        .to_string(),
+    }
+}
+
 /// La ligne est-elle faite par le processus élevé lui-même, sans PowerShell : une correction de la table, un ordre du
-/// blocage permis sous Windows, ou un programme fixe (`gestes::PROGRAMMES`) ?
+/// blocage permis sous Windows, un programme fixe (`gestes::PROGRAMMES`) ou un acte (`gestes::SERVICES`…) ?
 pub(crate) fn native(ligne: &str) -> bool {
     analyser(ligne).is_some()
         || crate::protection::blocage::ordres::analyser(ligne).is_some_and(|o| o.permis_ici())
         || crate::machine::gestes::analyser_programme(ligne).is_some()
+        || crate::machine::gestes::analyser_acte(ligne).is_some()
 }
 
 /// La phrase d'un programme fixe, avec la commande lancée : « Réparer les fichiers de Windows (SFC) : sfc.exe /scannow ».
@@ -304,8 +384,8 @@ pub(crate) fn valider(lignes: &[String]) -> Option<Vec<&'static Correction>> {
         .collect()
 }
 
-/// Pour le chemin par script : chaque correction native, chaque ordre du blocage et chaque programme fixe, remplacé par
-/// son équivalent PowerShell, le reste inchangé.
+/// Pour le chemin par script : chaque correction native, chaque ordre du blocage, chaque programme fixe et chaque acte,
+/// remplacé par son équivalent PowerShell, le reste inchangé.
 pub(crate) fn en_powershell(correctifs: &[Vec<String>]) -> Vec<Vec<String>> {
     use crate::protection::blocage::ordres;
     correctifs
@@ -319,7 +399,12 @@ pub(crate) fn en_powershell(correctifs: &[Vec<String>]) -> Vec<Vec<String>> {
                     (None, Some(o)) => ordres::powershell(&o)
                         .unwrap_or_else(|| "throw 'Vanguard : geste sans équivalent PowerShell'".to_string()),
                     (None, None) => {
-                        crate::machine::gestes::analyser_programme(l).map_or_else(|| l.clone(), |a| a.powershell())
+                        use crate::machine::gestes;
+                        match (gestes::analyser_programme(l), gestes::analyser_acte(l)) {
+                            (Some(a), _) => a.powershell(),
+                            (None, Some(a)) => a.powershell(),
+                            (None, None) => l.clone(),
+                        }
                     }
                 })
                 .collect()
@@ -331,6 +416,9 @@ pub(crate) fn en_powershell(correctifs: &[Vec<String>]) -> Vec<Vec<String>> {
 pub(crate) fn affichable(commande: &str) -> String {
     if let Some(a) = crate::machine::gestes::analyser_programme(commande) {
         return texte_programme(&a);
+    }
+    if let Some(a) = crate::machine::gestes::analyser_acte(commande) {
+        return texte_acte(&a);
     }
     analyser(commande).map_or_else(
         || crate::protection::blocage::ordres::affichable(commande),

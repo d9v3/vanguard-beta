@@ -99,6 +99,12 @@ pub(crate) fn statut(nom: &str) -> Option<&'static str> {
     })
 }
 
+/// Le type de démarrage d'un service (le nombre du registre : 2 automatique, 3 manuel, 4 désactivé), tel que le
+/// gestionnaire de services le dit ; `None` s'il ne répond pas, refuse, ou si le service n'existe pas.
+pub(crate) fn demarrage(nom: &str) -> Option<u32> {
+    config(nom).map(|c| c.demarrage)
+}
+
 /// Ce que le gestionnaire de services dit de la configuration d'un service : sa sorte, son démarrage (le nombre du
 /// registre), son programme et son compte.
 struct Config {

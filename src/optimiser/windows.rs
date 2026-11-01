@@ -604,6 +604,30 @@ impl Changement {
         }
     }
 
+    /// Les lignes pour la fenêtre administrateur : un service passe par le gestionnaire de services (`gestes`,
+    /// sa table fermée : un nom qui n'y est pas ne donne rien), le reste par `commande_admin`.
+    fn commandes_admin(&self, v: Option<&str>, sid: Option<&str>) -> Option<Vec<String>> {
+        use crate::machine::gestes::{self, Action};
+        let Changement::Service { nom, .. } = self else {
+            return self.commande_admin(v, sid).map(|c| vec![c]);
+        };
+        let n: u32 = v?.strip_prefix("start:")?.parse().ok()?;
+        // Désactivé : arrêté d'abord ; remis en automatique : relancé, comme avant le changement.
+        let actions: &[Action] = match n {
+            4 => &[Action::Arreter, Action::Desactive],
+            3 => &[Action::Manuel],
+            2 => &[Action::Auto, Action::Demarrer],
+            _ => return None,
+        };
+        actions
+            .iter()
+            .map(|a| {
+                let l = format!("{}{nom} {}", gestes::SERVICE, a.mot());
+                gestes::analyser_acte(&l).map(|_| l)
+            })
+            .collect()
+    }
+
     /// La commande PowerShell pour la fenêtre administrateur ; `sid`, celui de la personne (voir `HkcuStrategie`).
     fn commande_admin(&self, v: Option<&str>, sid: Option<&str>) -> Option<String> {
         match self {
@@ -632,22 +656,12 @@ impl Changement {
                     ),
                 })
             }
-            Changement::Service { nom, .. } => {
-                let nom = crate::commande::ps_texte(nom);
-                let n: u32 = v?.strip_prefix("start:")?.parse().ok()?;
-                // Désactivé : arrêté tout de suite ; remis en automatique : relancé, comme avant le changement.
-                let suite = match n {
-                    4 => format!("; Stop-Service -Name '{nom}' -Force -ErrorAction SilentlyContinue"),
-                    2 => format!("; Start-Service -Name '{nom}' -ErrorAction SilentlyContinue"),
-                    _ => String::new(),
-                };
-                Some(format!(
-                    "Set-Service -Name '{nom}' -StartupType {}{suite}",
-                    demarrage(n)?
-                ))
-            }
-            // Écrits dans le compte de la personne par Vanguard lui-même (`ecrire_ici`).
-            Changement::Cle { .. } | Changement::Demarrage { machine: false, .. } | Changement::Alimentation => None,
+            // Écrits dans le compte de la personne par Vanguard lui-même (`ecrire_ici`) ; un service, en plusieurs
+            // lignes, par le gestionnaire de services (`commandes_admin`).
+            Changement::Cle { .. }
+            | Changement::Demarrage { machine: false, .. }
+            | Changement::Alimentation
+            | Changement::Service { .. } => None,
             Changement::Dns { carte, .. } => {
                 let (id, reste) = v?.split_once('\n')?;
                 if id != carte || !guid_valide(carte) {
@@ -782,7 +796,8 @@ pub fn ecrire_avec(lots: &[Vec<(&Changement, Valeur)>], en_plus: &[Vec<String>])
             let commandes: Vec<String> = lot
                 .iter()
                 .filter(|(c, _)| c.admin())
-                .filter_map(|(c, v)| c.commande_admin(v.as_deref(), sid.as_deref()))
+                .filter_map(|(c, v)| c.commandes_admin(v.as_deref(), sid.as_deref()))
+                .flatten()
                 .collect();
             (!commandes.is_empty()).then_some((i, commandes))
         })
@@ -1593,30 +1608,42 @@ mod tests {
             cible: 4,
             defaut: 2,
         };
+        // Par le gestionnaire de services : arrêté puis désactivé ; remis en automatique puis relancé.
+        assert_eq!(s.commande_admin(Some("start:4"), None), None);
         assert_eq!(
-            s.commande_admin(Some("start:4"), None).as_deref(),
-            Some(
-                "Set-Service -Name 'DiagTrack' -StartupType Disabled; Stop-Service -Name 'DiagTrack' -Force -ErrorAction SilentlyContinue"
-            )
+            s.commandes_admin(Some("start:4"), None).unwrap(),
+            [
+                "vanguard:service DiagTrack arreter",
+                "vanguard:service DiagTrack desactive"
+            ]
         );
         assert_eq!(
-            s.commande_admin(Some("start:2"), None).as_deref(),
-            Some(
-                "Set-Service -Name 'DiagTrack' -StartupType Automatic; Start-Service -Name 'DiagTrack' -ErrorAction SilentlyContinue"
-            )
+            s.commandes_admin(Some("start:2"), None).unwrap(),
+            ["vanguard:service DiagTrack auto", "vanguard:service DiagTrack demarrer"]
+        );
+        assert_eq!(
+            s.commandes_admin(Some("start:3"), None).unwrap(),
+            ["vanguard:service DiagTrack manuel"]
+        );
+        assert_eq!(s.commandes_admin(Some("start:1"), None), None);
+        let registre = reg(Racine::Hklm, r"Software\X", "Nom", Val::Dword(0), None);
+        assert_eq!(
+            registre.commandes_admin(Some("dword:1"), None),
+            registre.commande_admin(Some("dword:1"), None).map(|c| vec![c])
         );
         // Une apostrophe, droite ou typographique, dans un nom ne ferme pas la chaîne PowerShell.
         let valeur = reg(Racine::Hkcu, r"Software\X", "Nom'Q", Val::Dword(0), None);
         let retrait = valeur.commande_admin(None, None).unwrap();
         assert!(retrait.contains("-Name 'Nom''Q' "), "{retrait}");
-        let service = Changement::Service {
-            nom: "Nom’Q",
-            cible: 4,
-            defaut: 2,
-        };
-        let arret = service.commande_admin(Some("start:4"), None).unwrap();
-        assert!(arret.starts_with("Set-Service -Name 'Nom’’Q' "), "{arret}");
-        assert!(arret.contains("Stop-Service -Name 'Nom’’Q' "), "{arret}");
+        // Un service hors de la table des actes (nom piégé compris) ne donne aucune ligne, jamais un nom libre.
+        for nom in ["Nom’Q", "WinDefend", "SSDPSRV x"] {
+            let service = Changement::Service {
+                nom,
+                cible: 4,
+                defaut: 2,
+            };
+            assert_eq!(service.commandes_admin(Some("start:4"), None), None, "{nom}");
+        }
     }
 
     /// Les valeurs notées remises par la fenêtre administrateur : seulement des formes fermées ou strictes. Une note

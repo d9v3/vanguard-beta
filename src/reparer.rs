@@ -1136,12 +1136,15 @@ fn pare_feu(etat: Option<&EtatWindows>) -> Reparation {
 
 #[cfg(windows)]
 pub fn liste() -> Vec<Reparation> {
+    use crate::machine::gestes::{self, ACoter, Action};
     let etat = etat_windows();
     let etat = etat.as_ref();
     let a_distance = machine::windows::session_a_distance();
     // Les programmes de Windows (netsh, DISM, sfc…) : lancés par Vanguard administrateur depuis System32, par leur
-    // chemin complet et avec les arguments de sa table, jamais par leur seul nom (`gestes::PROGRAMMES`).
-    let p = |id| crate::machine::gestes::ligne_programme(id, None);
+    // chemin complet et avec les arguments de sa table, jamais par leur seul nom (`gestes::PROGRAMMES`) ; les services,
+    // par le gestionnaire de services (`gestes::SERVICES`).
+    let p = |id| gestes::ligne_programme(id, None);
+    let s = gestes::ligne_service;
     let mut reseau = rep(
         tr!("Internet ne marche plus", "Internet no longer works"),
         tr!("Remet à zéro Winsock et la pile TCP/IP, vide le cache DNS, redemande une adresse. Un redémarrage termine la réparation. Une adresse IP fixe réglée à la main sera à remettre.", "Resets Winsock and the TCP/IP stack, clears the DNS cache, asks for a new address. A restart finishes the repair. A static IP address set by hand will have to be entered again."),
@@ -1192,11 +1195,17 @@ pub fn liste() -> Vec<Reparation> {
             tr!("Windows Update bloqué", "Windows Update stuck"),
             tr!("Arrête les services de mise à jour, met de côté leurs caches (SoftwareDistribution, catroot2) et les relance.", "Stops the update services, sets their caches aside (SoftwareDistribution, catroot2) and restarts them."),
             tr!("une minute", "one minute"),
+            // Chaque service arrêté, puis chaque cache mis de côté, par le processus élevé lui-même (`gestes`) :
+            // le dossier de Windows y est lu à GetSystemDirectoryW, jamais dans l'environnement du compte.
             &[
-                "Stop-Service -Force wuauserv, bits, cryptsvc",
-                "Rename-Item \"$env:SystemRoot\\SoftwareDistribution\" \"SoftwareDistribution.$(Get-Date -Format yyyyMMddHHmm)\"",
-                "Rename-Item \"$env:SystemRoot\\System32\\catroot2\" \"catroot2.$(Get-Date -Format yyyyMMddHHmm)\"",
-                "Start-Service wuauserv, bits, cryptsvc",
+                &s("wuauserv", Action::Arreter),
+                &s("bits", Action::Arreter),
+                &s("cryptsvc", Action::Arreter),
+                &gestes::ligne_mettre_de_cote(ACoter::SoftwareDistribution),
+                &gestes::ligne_mettre_de_cote(ACoter::Catroot2),
+                &s("wuauserv", Action::Demarrer),
+                &s("bits", Action::Demarrer),
+                &s("cryptsvc", Action::Demarrer),
             ],
         ).avec_restauration(),
         disque_plein(),
@@ -1206,8 +1215,8 @@ pub fn liste() -> Vec<Reparation> {
             tr!("quelques secondes", "a few seconds"),
             // Service désactivé (par un outil d'« optimisation ») : remis comme à l'origine, sinon il ne démarre pas.
             &[
-                "if ((Get-Service w32time).StartType -eq 'Disabled') { Set-Service w32time -StartupType Manual }",
-                "Start-Service w32time",
+                &s("w32time", Action::Reactiver),
+                &s("w32time", Action::Demarrer),
                 &p("w32tm-resync"),
             ],
         ),
@@ -1709,6 +1718,19 @@ mod tests {
                     assert!(gestes::analyser_programme(c).is_some(), "« {} » : {c}", r.titre);
                     continue;
                 }
+                // Un acte (service, cache) : une ligne de la table, jamais une commande devinée.
+                if gestes::est_un_acte(c) {
+                    assert!(gestes::analyser_acte(c).is_some(), "« {} » : {c}", r.titre);
+                    continue;
+                }
+                // Plus aucun service ne se touche par PowerShell en administrateur.
+                assert!(
+                    !["Stop-Service", "Start-Service", "Set-Service", "Restart-Service"]
+                        .iter()
+                        .any(|m| c.contains(m)),
+                    "« {} » : {c}",
+                    r.titre
+                );
                 // Chaque instruction de la ligne (séparées par « ; ») : son premier mot.
                 for instruction in c.split(';') {
                     let mot = instruction.split_whitespace().next().unwrap_or("").to_ascii_lowercase();

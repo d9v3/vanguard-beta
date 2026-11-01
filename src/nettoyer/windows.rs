@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use super::{Age, Element, taille_dossier};
 use crate::commande::ps_chaine;
+use crate::machine::gestes::{self, Action, Vidable};
 use crate::ui::*;
 
 /// Un dossier lu dans l'environnement, s'il est absolu. Vide ou relatif, une commande de suppression viserait le
@@ -74,7 +75,9 @@ fn elements_selon(env: &dyn Fn(&str) -> Option<PathBuf>) -> Vec<Element> {
             .into(),
             prudence: None,
             taille: taille_dossier(&temp_windows, Age::Tout, &[]),
-            commandes: vec![vider(&[&temp_windows])],
+            // Vidé par le processus élevé, depuis le dossier de Windows qu'il lit lui-même : SystemRoot ne sert ici
+            // qu'à mesurer.
+            commandes: vec![gestes::ligne_vider(Vidable::TempWindows)],
             recommande: true,
             admin: true,
         }),
@@ -90,10 +93,11 @@ fn elements_selon(env: &dyn Fn(&str) -> Option<PathBuf>) -> Vec<Element> {
                 "An update being downloaded will start over."
             )),
             taille: taille_dossier(&telechargements, Age::Tout, &[]),
-            commandes: vec![format!(
-                "Stop-Service wuauserv -Force; {}; Start-Service wuauserv",
-                vider(&[&telechargements])
-            )],
+            commandes: vec![
+                gestes::ligne_service("wuauserv", Action::Arreter),
+                gestes::ligne_vider(Vidable::WuTelechargements),
+                gestes::ligne_service("wuauserv", Action::Demarrer),
+            ],
             recommande: true,
             admin: true,
         }),
@@ -243,7 +247,8 @@ mod tests {
             assert!(!c.contains("''"), "{c}");
             assert!(!c.contains(r"'\"), "{c}");
         }
-        assert!(tout.iter().any(|c| c.contains(r"-LiteralPath 'C:\Windows\Temp'")));
+        // Le dossier temporaire de Windows est vidé par un acte, sans chemin : le processus élevé lit le sien.
+        assert!(tout.contains(&"vanguard:vider temp-windows".to_string()));
         assert!(
             tout.iter()
                 .any(|c| c.contains(r"-LiteralPath 'C:\Windows\Minidump' -Force"))
@@ -270,9 +275,23 @@ mod tests {
         assert!(tout.iter().any(|c| {
             c.contains(r"-LiteralPath 'D:\Windows\Minidump', 'C:\ProgramData\Microsoft\Windows\WER\ReportArchive'")
         }));
-        assert!(tout.iter().any(|c| c.starts_with(
-            "Stop-Service wuauserv -Force; Get-ChildItem -LiteralPath 'D:\\Windows\\SoftwareDistribution\\Download'"
-        )));
+        let cache = elements_selon(&env)
+            .into_iter()
+            .find(|e| e.titre == tr!("Cache de Windows Update", "Windows Update cache"))
+            .expect("cache de Windows Update");
+        assert_eq!(
+            cache.commandes,
+            [
+                "vanguard:service wuauserv arreter",
+                "vanguard:vider wu-telechargements",
+                "vanguard:service wuauserv demarrer"
+            ]
+        );
+        // Chaque ligne d'administrateur du nettoyage : un acte de la table, ou une commande sans service.
+        for c in &tout {
+            assert!(!gestes::est_un_acte(c) || gestes::analyser_acte(c).is_some(), "{c}");
+            assert!(!c.contains("-Service"), "{c}");
+        }
     }
 
     /// Une apostrophe dans le chemin ne ferme pas la chaîne : la suite du chemin n'est pas une commande.

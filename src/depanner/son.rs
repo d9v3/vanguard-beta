@@ -315,6 +315,7 @@ mod systeme {
 #[cfg(windows)]
 mod systeme {
     use super::{Etat, fait};
+    use crate::machine::gestes;
     use crate::ui::*;
 
     /// Les mêmes lignes que le script de secours (« service|état », « carte|nom|OK ou Error »), lues auprès du
@@ -413,8 +414,8 @@ mod systeme {
         };
         if demander(question).oui()
             && crate::machine::appliquer(&[
-                "Restart-Service -Force AudioEndpointBuilder".to_string(),
-                "Start-Service Audiosrv".to_string(),
+                gestes::ligne_service("AudioEndpointBuilder", gestes::Action::Redemarrer),
+                gestes::ligne_service("Audiosrv", gestes::Action::Demarrer),
             ])
         {
             fait(tr!("Services relancés.", "Services restarted."));

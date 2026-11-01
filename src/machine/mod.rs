@@ -49,6 +49,9 @@ pub mod windows;
 #[cfg_attr(not(windows), allow(dead_code))]
 #[path = "windows/gestes.rs"]
 pub(crate) mod gestes;
+// Vider un dossier de Windows et mettre un cache de côté (actes du processus élevé) : sans appel système propre à
+// Windows hors des attributs, compilé partout pour essayer sous Linux qu'un lien ne fait jamais effacer ailleurs.
+pub(crate) mod vidage;
 #[cfg(windows)]
 use windows as os;
 #[cfg(unix)]

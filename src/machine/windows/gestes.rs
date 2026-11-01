@@ -1,14 +1,17 @@
 //! La grammaire des lignes que le processus élevé (`eleve`) lit du Vanguard non élevé, pour ce qui n'est ni une
 //! correction de la table (`corrections`) ni un ordre du blocage : le script PowerShell vérifié par empreinte
-//! (`vanguard:script`) et les programmes fixes de Windows (`vanguard:programme`), lancés par leur chemin complet avec
-//! des arguments figés, sans shell. Plus la découpe d'une liste de correctifs en morceaux (gestes natifs, scripts) et
-//! la lecture des états d'un script : du code pur, sans E/S, testé sous Linux et lu par le banc de fuzzing
+//! (`vanguard:script`), les programmes fixes de Windows (`vanguard:programme`), lancés par leur chemin complet avec
+//! des arguments figés, sans shell, et les actes sur Windows lui-même (`vanguard:service`, `vanguard:vider`,
+//! `vanguard:vider-file-impression`, `vanguard:mettre-de-cote`), faits par le gestionnaire de services et std::fs.
+//! Plus la découpe d'une liste de correctifs en morceaux (gestes natifs, scripts) et la lecture des états d'un
+//! script : du code pur, sans E/S, testé sous Linux et lu par le banc de fuzzing
 //! (fuzz/fuzz_targets/gestes.rs). C'est la seule entrée que le processus élevé lit d'un processus moins sûr : rien ici
 //! ne dépend du reste de Vanguard.
 //!
 //! Le parent n'envoie jamais un chemin de programme ni un argument libre : seulement un identifiant de la table, et,
 //! pour retirer une fonctionnalité de Windows, un nom pris dans une liste fermée. Le dossier, le programme et ses
-//! arguments sont ceux de la table, lus par le processus élevé.
+//! arguments sont ceux de la table, lus par le processus élevé. De même pour un acte : un service et une action de
+//! la table (`SERVICES`), un identifiant de dossier, jamais un chemin.
 
 // Ni débordement ni `as` : module lu par le banc de fuzzing, sur des données hostiles (Cargo.toml, [lints.clippy]).
 #![warn(clippy::arithmetic_side_effects, clippy::as_conversions)]
@@ -491,13 +494,369 @@ pub(crate) fn analyser_programme(ligne: &str) -> Option<Appel> {
     (appel.ligne() == ligne).then_some(appel)
 }
 
+// ------------------------------------------------------------------ les actes
+
+/// Le verbe d'un service de la liste fermée : `vanguard:service <nom> <action>`.
+pub(crate) const SERVICE: &str = "vanguard:service ";
+/// Le verbe d'un dossier de Windows à vider : `vanguard:vider <id>`.
+pub(crate) const VIDER: &str = "vanguard:vider ";
+/// La file d'impression à vider, sans argument : le dossier est lu par le processus élevé dans le registre.
+pub(crate) const VIDER_FILE: &str = "vanguard:vider-file-impression";
+/// Le verbe d'un cache de Windows Update à mettre de côté (renommé, daté) : `vanguard:mettre-de-cote <id>`.
+pub(crate) const METTRE_DE_COTE: &str = "vanguard:mettre-de-cote ";
+/// Une ligne d'acte est courte : un verbe, un nom de la table, une action.
+pub(crate) const ACTE_MAX: usize = 256;
+
+/// Ce qu'un acte fait à un service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Action {
+    /// Arrêté, avec les services actifs qui en dépendent d'abord (comme `Stop-Service -Force`).
+    Arreter,
+    Demarrer,
+    /// Arrêté (dépendants compris), redémarré, puis les dépendants arrêtés relancés.
+    Redemarrer,
+    /// Type de démarrage : désactivé.
+    Desactive,
+    /// Type de démarrage : manuel.
+    Manuel,
+    /// Type de démarrage : automatique. Le démarrage différé (DelayedAutostart) n'est pas touché.
+    Auto,
+    /// Désactivé → manuel ; sinon rien. Écart au plan, qui n'avait que « manuel » : la réparation de l'heure ne remet
+    /// en manuel QUE un service désactivé (par un outil d'« optimisation ») : un « manuel » sans condition ferait
+    /// passer en manuel un w32time réglé en automatique par la personne ou par son entreprise.
+    Reactiver,
+}
+
+impl Action {
+    /// Le mot de la ligne.
+    pub(crate) fn mot(self) -> &'static str {
+        match self {
+            Action::Arreter => "arreter",
+            Action::Demarrer => "demarrer",
+            Action::Redemarrer => "redemarrer",
+            Action::Desactive => "desactive",
+            Action::Manuel => "manuel",
+            Action::Auto => "auto",
+            Action::Reactiver => "reactiver",
+        }
+    }
+
+    #[cfg(test)]
+    const TOUTES: [Action; 7] = [
+        Action::Arreter,
+        Action::Demarrer,
+        Action::Redemarrer,
+        Action::Desactive,
+        Action::Manuel,
+        Action::Auto,
+        Action::Reactiver,
+    ];
+}
+
+/// Une action permise sur un service de la table, et ce qu'elle change à la protection du PC : `durcit` (une
+/// correction faite de ces seuls gestes est une protection, que « Défaire » ne propose pas), `affaiblit` (la remise
+/// de ce qu'une correction avait coupé : la console élevée dit qu'elle rend le PC moins protégé).
+#[derive(Debug)]
+pub(crate) struct Permis {
+    pub action: Action,
+    pub durcit: bool,
+    pub affaiblit: bool,
+}
+
+/// Un service de la liste fermée, avec ses seules actions permises.
+#[derive(Debug)]
+pub(crate) struct ServicePermis {
+    pub nom: &'static str,
+    pub permis: &'static [Permis],
+}
+
+const fn permis(action: Action, durcit: bool, affaiblit: bool) -> Permis {
+    Permis {
+        action,
+        durcit,
+        affaiblit,
+    }
+}
+
+/// Les services qu'une liste peut toucher, nom exact (casse comprise), et ce qu'elle peut leur faire. Rien d'autre :
+/// pas de nom libre, pas de service de sécurité (Defender, pare-feu), wuauserv jamais désactivé.
+pub(crate) static SERVICES: &[ServicePermis] = &[
+    // La découverte UPnP, coupée par le bilan ; manuel, auto et démarrer : sa remise (« Défaire », optimiser).
+    ServicePermis {
+        nom: "SSDPSRV",
+        permis: &[
+            permis(Action::Arreter, true, false),
+            permis(Action::Desactive, true, false),
+            permis(Action::Manuel, false, true),
+            permis(Action::Auto, false, true),
+            permis(Action::Demarrer, false, true),
+        ],
+    },
+    // La collecte de diagnostic (réglage « Télémétrie au minimum » de l'optimiseur), coupée puis remise à
+    // l'annulation : de la vie privée, pas une protection ; ni l'un ni l'autre ne durcit ou n'affaiblit le PC.
+    ServicePermis {
+        nom: "DiagTrack",
+        permis: &[
+            permis(Action::Arreter, false, false),
+            permis(Action::Desactive, false, false),
+            permis(Action::Manuel, false, false),
+            permis(Action::Auto, false, false),
+            permis(Action::Demarrer, false, false),
+        ],
+    },
+    ServicePermis {
+        nom: "RemoteRegistry",
+        permis: &[
+            permis(Action::Arreter, true, false),
+            permis(Action::Desactive, true, false),
+        ],
+    },
+    // Windows Update remis (désactivé par un outil d'« optimisation »), arrêté et relancé pour vider son cache.
+    ServicePermis {
+        nom: "wuauserv",
+        permis: &[
+            permis(Action::Manuel, true, false),
+            permis(Action::Arreter, false, false),
+            permis(Action::Demarrer, false, false),
+        ],
+    },
+    ServicePermis {
+        nom: "UsoSvc",
+        permis: &[permis(Action::Auto, true, false)],
+    },
+    ServicePermis {
+        nom: "bits",
+        permis: &[
+            permis(Action::Arreter, false, false),
+            permis(Action::Demarrer, false, false),
+        ],
+    },
+    ServicePermis {
+        nom: "cryptsvc",
+        permis: &[
+            permis(Action::Arreter, false, false),
+            permis(Action::Demarrer, false, false),
+        ],
+    },
+    // L'heure exacte : sans elle, le HTTPS et Windows Update cassent.
+    ServicePermis {
+        nom: "w32time",
+        permis: &[
+            permis(Action::Auto, true, false),
+            permis(Action::Reactiver, true, false),
+            permis(Action::Demarrer, true, false),
+        ],
+    },
+    ServicePermis {
+        nom: "AudioEndpointBuilder",
+        permis: &[permis(Action::Redemarrer, false, false)],
+    },
+    ServicePermis {
+        nom: "Audiosrv",
+        permis: &[permis(Action::Demarrer, false, false)],
+    },
+    ServicePermis {
+        nom: "Spooler",
+        permis: &[
+            permis(Action::Arreter, false, false),
+            permis(Action::Demarrer, false, false),
+        ],
+    },
+];
+
+/// Une ligne `vanguard:service`, relue : un service de la table et une de ses actions permises.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GesteService {
+    pub nom: &'static str,
+    pub action: Action,
+    pub durcit: bool,
+    pub affaiblit: bool,
+}
+
+impl GesteService {
+    pub(crate) fn ligne(&self) -> String {
+        format!("{SERVICE}{} {}", self.nom, self.action.mot())
+    }
+
+    /// L'équivalent PowerShell (Wine) : les commandes qu'envoyaient les correctifs avant ce geste.
+    pub(crate) fn powershell(&self) -> String {
+        let n = self.nom;
+        match self.action {
+            Action::Arreter => format!("Stop-Service {n} -Force"),
+            Action::Demarrer => format!("Start-Service {n}"),
+            Action::Redemarrer => format!("Restart-Service -Force {n}"),
+            Action::Desactive => format!("Set-Service {n} -StartupType Disabled"),
+            Action::Manuel => format!("Set-Service {n} -StartupType Manual"),
+            Action::Auto => format!("Set-Service {n} -StartupType Automatic"),
+            Action::Reactiver => {
+                format!("if ((Get-Service {n}).StartType -eq 'Disabled') {{ Set-Service {n} -StartupType Manual }}")
+            }
+        }
+    }
+}
+
+/// Un dossier de Windows à vider (son contenu, pas lui) : un identifiant, le chemin sous le dossier de Windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Vidable {
+    /// `<Windows>\Temp`.
+    TempWindows,
+    /// `<Windows>\SoftwareDistribution\Download`.
+    WuTelechargements,
+}
+
+impl Vidable {
+    const TOUS: [Vidable; 2] = [Vidable::TempWindows, Vidable::WuTelechargements];
+
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            Vidable::TempWindows => "temp-windows",
+            Vidable::WuTelechargements => "wu-telechargements",
+        }
+    }
+
+    /// Les dossiers sous celui de Windows, un par un.
+    pub(crate) fn sous_windows(self) -> &'static [&'static str] {
+        match self {
+            Vidable::TempWindows => &["Temp"],
+            Vidable::WuTelechargements => &["SoftwareDistribution", "Download"],
+        }
+    }
+}
+
+/// Un cache de Windows Update à mettre de côté : renommé `<nom>.<AAAAMMJJHHmm>`, Windows en refait un neuf.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ACoter {
+    /// `<Windows>\SoftwareDistribution`.
+    SoftwareDistribution,
+    /// `<Windows>\System32\catroot2`.
+    Catroot2,
+}
+
+impl ACoter {
+    const TOUS: [ACoter; 2] = [ACoter::SoftwareDistribution, ACoter::Catroot2];
+
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            ACoter::SoftwareDistribution => "software-distribution",
+            ACoter::Catroot2 => "catroot2",
+        }
+    }
+
+    /// Les dossiers sous celui de Windows, un par un ; le dernier est celui qui est renommé.
+    pub(crate) fn sous_windows(self) -> &'static [&'static str] {
+        match self {
+            ACoter::SoftwareDistribution => &["SoftwareDistribution"],
+            ACoter::Catroot2 => &["System32", "catroot2"],
+        }
+    }
+}
+
+/// Un acte du processus élevé sur Windows lui-même : un service de la table, un dossier à vider, la file
+/// d'impression, un cache à mettre de côté. Le parent n'envoie que des identifiants ; les chemins sont calculés par
+/// le processus élevé, depuis le dossier de Windows qu'il lit lui-même.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Acte {
+    Service(GesteService),
+    Vider(Vidable),
+    ViderFileImpression,
+    MettreDeCote(ACoter),
+}
+
+impl Acte {
+    pub(crate) fn ligne(&self) -> String {
+        match self {
+            Acte::Service(s) => s.ligne(),
+            Acte::Vider(v) => format!("{VIDER}{}", v.id()),
+            Acte::ViderFileImpression => VIDER_FILE.to_string(),
+            Acte::MettreDeCote(c) => format!("{METTRE_DE_COTE}{}", c.id()),
+        }
+    }
+
+    /// L'équivalent PowerShell, pour le chemin par script (Wine). Le dossier de Windows vient de .NET, jamais d'une
+    /// variable d'environnement nue, et un dossier vide arrête la ligne : « Join-Path '' 'Temp' » viserait le dossier
+    /// courant. Un fichier encore ouvert reste, comme avant.
+    pub(crate) fn powershell(&self) -> String {
+        match self {
+            Acte::Service(s) => s.powershell(),
+            Acte::Vider(Vidable::TempWindows) => "$w = [Environment]::GetFolderPath('Windows'); if (-not $w) { throw 'Windows folder not found' }; Get-ChildItem -LiteralPath (Join-Path $w 'Temp') -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue".to_string(),
+            Acte::Vider(Vidable::WuTelechargements) => "$w = [Environment]::GetFolderPath('Windows'); if (-not $w) { throw 'Windows folder not found' }; Get-ChildItem -LiteralPath (Join-Path $w 'SoftwareDistribution\\Download') -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue".to_string(),
+            Acte::ViderFileImpression => "$w = [Environment]::GetFolderPath('Windows'); if (-not $w) { throw 'Windows folder not found' }; Get-ChildItem -LiteralPath (Join-Path $w 'System32\\spool\\PRINTERS') -File | Remove-Item -Force".to_string(),
+            // Les lignes de la réparation « Windows Update bloqué », telles qu'elles étaient.
+            Acte::MettreDeCote(ACoter::SoftwareDistribution) => "Rename-Item \"$env:SystemRoot\\SoftwareDistribution\" \"SoftwareDistribution.$(Get-Date -Format yyyyMMddHHmm)\"".to_string(),
+            Acte::MettreDeCote(ACoter::Catroot2) => "Rename-Item \"$env:SystemRoot\\System32\\catroot2\" \"catroot2.$(Get-Date -Format yyyyMMddHHmm)\"".to_string(),
+        }
+    }
+}
+
+/// La ligne commence-t-elle par le verbe d'un acte ? Une telle ligne est un acte ou rien : jamais confiée à un autre
+/// validateur (`valider`).
+pub(crate) fn est_un_acte(ligne: &str) -> bool {
+    ligne.starts_with(SERVICE)
+        || ligne.starts_with(VIDER)
+        || ligne.starts_with(VIDER_FILE)
+        || ligne.starts_with(METTRE_DE_COTE)
+}
+
+/// L'acte d'une ligne, si et seulement si elle est exactement de sa forme : ASCII, 256 octets au plus, sensible à la
+/// casse, un nom et une action de la table (une seule espace entre chaque), réécrite à l'identique.
+pub(crate) fn analyser_acte(ligne: &str) -> Option<Acte> {
+    if ligne.len() > ACTE_MAX || !ligne.is_ascii() {
+        return None;
+    }
+    let acte = if let Some(reste) = ligne.strip_prefix(SERVICE) {
+        let (nom, mot) = reste.split_once(' ')?;
+        let service = SERVICES.iter().find(|s| s.nom == nom)?;
+        let p = service.permis.iter().find(|p| p.action.mot() == mot)?;
+        Acte::Service(GesteService {
+            nom: service.nom,
+            action: p.action,
+            durcit: p.durcit,
+            affaiblit: p.affaiblit,
+        })
+    } else if let Some(id) = ligne.strip_prefix(VIDER) {
+        Acte::Vider(*Vidable::TOUS.iter().find(|v| v.id() == id)?)
+    } else if ligne == VIDER_FILE {
+        Acte::ViderFileImpression
+    } else {
+        let id = ligne.strip_prefix(METTRE_DE_COTE)?;
+        Acte::MettreDeCote(*ACoter::TOUS.iter().find(|c| c.id() == id)?)
+    };
+    (acte.ligne() == ligne).then_some(acte)
+}
+
+/// La ligne d'un acte sur un service de la table, pour un correctif.
+pub(crate) fn ligne_service(nom: &str, action: Action) -> String {
+    let ligne = format!("{SERVICE}{nom} {}", action.mot());
+    debug_assert!(
+        analyser_acte(&ligne).is_some(),
+        "service ou action hors de la table : {ligne}"
+    );
+    ligne
+}
+
+/// La ligne qui vide un dossier de Windows.
+pub(crate) fn ligne_vider(dossier: Vidable) -> String {
+    Acte::Vider(dossier).ligne()
+}
+
+/// La ligne qui vide la file d'impression.
+pub(crate) fn ligne_vider_file_impression() -> String {
+    VIDER_FILE.to_string()
+}
+
+/// La ligne qui met un cache de Windows Update de côté.
+pub(crate) fn ligne_mettre_de_cote(cache: ACoter) -> String {
+    Acte::MettreDeCote(cache).ligne()
+}
+
 // ------------------------------------------------------------------ la liste
 
-/// Une ligne de la liste, relue : celle d'un autre module (correction, ordre), un script ou un programme.
+/// Une ligne de la liste, relue : celle d'un autre module (correction, ordre), un script, un programme ou un acte.
 pub(crate) enum Ligne<E> {
     Autre(E),
     Script(Script),
     Programme(Appel),
+    Acte(Acte),
 }
 
 /// La liste telle que le processus élevé la recevra, validée ligne à ligne, dans l'ordre ; `None` dès qu'une ligne
@@ -521,6 +880,9 @@ pub(crate) fn valider<E>(lignes: &[String], mut autre: impl FnMut(&str) -> Optio
             }
             if l.starts_with(PROGRAMME) {
                 return analyser_programme(l).map(Ligne::Programme);
+            }
+            if est_un_acte(l) {
+                return analyser_acte(l).map(Ligne::Acte);
             }
             autre(l).map(Ligne::Autre)
         })
@@ -873,6 +1235,184 @@ mod tests {
     }
 
     /// Les bornes recopiées ici (module sans dépendance, pour le banc de fuzzing) restent celles des ordres.
+    /// Les actes : seulement un nom et une action de la table, écrits à l'identique. Un service de sécurité, une
+    /// action qui n'est pas permise à ce service, une espace de trop, une casse changée, un identifiant inconnu : refusés,
+    /// et jamais confiés à un autre validateur.
+    #[test]
+    fn les_actes_hors_table_sont_refuses() {
+        for bonne in [
+            "vanguard:service SSDPSRV arreter",
+            "vanguard:service RemoteRegistry desactive",
+            "vanguard:service wuauserv manuel",
+            "vanguard:service w32time reactiver",
+            "vanguard:service AudioEndpointBuilder redemarrer",
+            "vanguard:vider temp-windows",
+            "vanguard:vider wu-telechargements",
+            "vanguard:vider-file-impression",
+            "vanguard:mettre-de-cote software-distribution",
+            "vanguard:mettre-de-cote catroot2",
+        ] {
+            assert!(est_un_acte(bonne), "{bonne}");
+            assert_eq!(analyser_acte(bonne).map(|a| a.ligne()).as_deref(), Some(bonne));
+        }
+        let long = format!("vanguard:service SSDPSRV arreter{}", " ".repeat(ACTE_MAX));
+        for mauvaise in [
+            "vanguard:service WinDefend arreter",
+            "vanguard:service MpsSvc desactive",
+            "vanguard:service ssdpsrv arreter",
+            "vanguard:service SSDPSRV supprimer",
+            "vanguard:service SSDPSRV Arreter",
+            "vanguard:service wuauserv desactive",
+            "vanguard:service RemoteRegistry demarrer",
+            "vanguard:service UsoSvc desactive",
+            "vanguard:service SSDPSRV  arreter",
+            "vanguard:service  SSDPSRV arreter",
+            "vanguard:service SSDPSRV arreter ",
+            "vanguard:service SSDPSRV",
+            "vanguard:service ",
+            "vanguard:service SSDPSRV arrêter",
+            "vanguard:service SSDPSRV\tarreter",
+            "vanguard:vider ",
+            "vanguard:vider temp",
+            "vanguard:vider temp-windows ",
+            r"vanguard:vider C:\Windows\Temp",
+            "vanguard:vider ../temp-windows",
+            "vanguard:vider-file-impression ",
+            "vanguard:vider-file-impressions",
+            "vanguard:mettre-de-cote System32",
+            "vanguard:mettre-de-cote catroot2 ",
+            "vanguard:mettre-de-cote Catroot2",
+            long.as_str(),
+        ] {
+            assert!(analyser_acte(mauvaise).is_none(), "{mauvaise:?}");
+            // Refusée, elle n'est pas pour autant un « autre » : la liste entière tombe.
+            assert!(est_un_acte(mauvaise), "{mauvaise:?}");
+            assert!(valider(&[mauvaise.to_string()], |_| Some(())).is_none(), "{mauvaise:?}");
+        }
+        // Le seul acte permis est accepté dans une liste, en plus d'une ligne d'un autre module.
+        let liste = valider(&lignes(&[POINT, "vanguard:service SSDPSRV arreter"]), |l| {
+            (l == POINT).then_some(())
+        })
+        .expect("liste valide");
+        assert!(matches!(&liste[1], Ligne::Acte(Acte::Service(s)) if s.nom == "SSDPSRV" && s.durcit));
+    }
+
+    /// La table : des noms sans espace ni caractère hors ASCII, chacun une fois, chaque action une fois par service,
+    /// jamais à la fois « durcit » et « affaiblit », aucun service de sécurité, wuauserv jamais désactivé ; chaque
+    /// constructeur rend une ligne relue à l'identique.
+    #[test]
+    fn la_table_des_services_est_bien_formee() {
+        let mut noms = std::collections::HashSet::new();
+        for s in SERVICES {
+            assert!(noms.insert(s.nom.to_ascii_lowercase()), "{} deux fois", s.nom);
+            assert!(
+                !s.nom.is_empty() && s.nom.bytes().all(|o| o.is_ascii_alphanumeric()),
+                "{}",
+                s.nom
+            );
+            assert!(
+                ![
+                    "windefend",
+                    "mpssvc",
+                    "wscsvc",
+                    "sense",
+                    "bfe",
+                    "eventlog",
+                    "termservice",
+                    "sshd"
+                ]
+                .contains(&s.nom.to_ascii_lowercase().as_str()),
+                "{}",
+                s.nom
+            );
+            let mut actions = std::collections::HashSet::new();
+            for p in s.permis {
+                assert!(actions.insert(p.action.mot()), "{} {:?} deux fois", s.nom, p.action);
+                assert!(!(p.durcit && p.affaiblit), "{} {:?}", s.nom, p.action);
+                let l = ligne_service(s.nom, p.action);
+                assert!(l.len() <= ACTE_MAX);
+                let Some(Acte::Service(g)) = analyser_acte(&l) else {
+                    panic!("{l}");
+                };
+                assert!(g.nom == s.nom && g.action == p.action && g.durcit == p.durcit && g.affaiblit == p.affaiblit);
+            }
+            for a in Action::TOUTES {
+                let l = format!("{SERVICE}{} {}", s.nom, a.mot());
+                assert_eq!(analyser_acte(&l).is_some(), actions.contains(a.mot()), "{l}");
+            }
+        }
+        let wu = SERVICES.iter().find(|s| s.nom == "wuauserv").unwrap();
+        assert!(!wu.permis.iter().any(|p| p.action == Action::Desactive));
+        for v in Vidable::TOUS {
+            assert!(matches!(analyser_acte(&ligne_vider(v)), Some(Acte::Vider(w)) if w == v));
+            assert!(
+                v.sous_windows()
+                    .iter()
+                    .all(|c| !c.is_empty() && !c.contains(['\\', '/', '.', ':']))
+            );
+        }
+        for c in ACoter::TOUS {
+            assert!(matches!(analyser_acte(&ligne_mettre_de_cote(c)), Some(Acte::MettreDeCote(d)) if d == c));
+            assert!(
+                c.sous_windows()
+                    .iter()
+                    .all(|p| !p.is_empty() && !p.contains(['\\', '/', '.', ':']))
+            );
+        }
+        assert!(matches!(
+            analyser_acte(&ligne_vider_file_impression()),
+            Some(Acte::ViderFileImpression)
+        ));
+    }
+
+    /// Le chemin par script (Wine) : les commandes d'avant pour les services ; pour les dossiers, celui de Windows
+    /// lu par .NET, une ligne arrêtée s'il est vide, jamais `$env:` ni un chemin écrit par le parent.
+    #[test]
+    fn chaque_acte_a_son_equivalent_powershell() {
+        let ps = |l: &str| analyser_acte(l).expect(l).powershell();
+        assert_eq!(ps("vanguard:service SSDPSRV arreter"), "Stop-Service SSDPSRV -Force");
+        assert_eq!(ps("vanguard:service Spooler demarrer"), "Start-Service Spooler");
+        assert_eq!(
+            ps("vanguard:service AudioEndpointBuilder redemarrer"),
+            "Restart-Service -Force AudioEndpointBuilder"
+        );
+        assert_eq!(
+            ps("vanguard:service SSDPSRV desactive"),
+            "Set-Service SSDPSRV -StartupType Disabled"
+        );
+        assert_eq!(
+            ps("vanguard:service wuauserv manuel"),
+            "Set-Service wuauserv -StartupType Manual"
+        );
+        assert_eq!(
+            ps("vanguard:service UsoSvc auto"),
+            "Set-Service UsoSvc -StartupType Automatic"
+        );
+        assert_eq!(
+            ps("vanguard:service w32time reactiver"),
+            "if ((Get-Service w32time).StartType -eq 'Disabled') { Set-Service w32time -StartupType Manual }"
+        );
+        for l in [
+            "vanguard:vider temp-windows",
+            "vanguard:vider wu-telechargements",
+            "vanguard:vider-file-impression",
+        ] {
+            let c = ps(l);
+            assert!(
+                c.starts_with("$w = [Environment]::GetFolderPath('Windows'); if (-not $w) { throw "),
+                "{c}"
+            );
+            assert!(
+                !c.contains("$env:") && c.contains("-LiteralPath (Join-Path $w '"),
+                "{c}"
+            );
+        }
+        assert!(
+            ps("vanguard:vider-file-impression").ends_with(r"'System32\spool\PRINTERS') -File | Remove-Item -Force")
+        );
+        assert!(ps("vanguard:mettre-de-cote catroot2").contains(r#""catroot2.$(Get-Date -Format yyyyMMddHHmm)""#));
+    }
+
     #[test]
     fn les_bornes_sont_celles_des_ordres() {
         use crate::protection::blocage::ordres;

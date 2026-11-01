@@ -413,6 +413,11 @@ mod tests {
     fn aucune_ecriture_directe_dans_les_regles() {
         const EXCEPTIONS: &[(&str, usize, &str)] = &[
             (
+                "machine/vidage.rs",
+                2,
+                "actes du processus élevé de Windows (vider un dossier de Windows, mettre un cache de côté) : des fichiers retirés ou renommés, pas un fichier de Vanguard à écrire",
+            ),
+            (
                 "machine/macos/corpus.rs",
                 1,
                 "module de tests (cfg(test)) : pose le fichier d'agent fabriqué d'un cas du corpus dans un dossier jetable",

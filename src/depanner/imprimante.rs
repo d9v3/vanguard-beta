@@ -310,18 +310,8 @@ mod systeme {
 #[cfg(windows)]
 mod systeme {
     use super::{Etat, Imprimante, fait, liste_lisible, montrer};
+    use crate::machine::gestes;
     use crate::ui::*;
-
-    /// Vérifie et propose ; rend les imprimantes installées, si Windows a pu les dire.
-    /// La file du spouleur, écrite en toutes lettres : « $env:SystemRoot » vide en ferait la racine du disque.
-    /// SystemRoot absent ou relatif : le dossier de Windows par défaut.
-    pub(super) fn vider_la_file(racine: Option<std::path::PathBuf>) -> String {
-        let windows = racine
-            .filter(|p| p.is_absolute())
-            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
-        let file = crate::commande::ps_chaine(&windows.join(r"System32\spool\PRINTERS").to_string_lossy());
-        format!("Get-ChildItem -LiteralPath {file} -File | Remove-Item -Force")
-    }
 
     /// L'état lu par le gestionnaire de services et le spouleur, sans PowerShell ; `None` si le gestionnaire de
     /// services ne répond pas.
@@ -373,6 +363,7 @@ mod systeme {
         Some((spouleur, imprimantes))
     }
 
+    /// Vérifie et propose ; rend les imprimantes installées, si Windows a pu les dire.
     pub fn verifier() -> Option<Vec<Imprimante>> {
         let Some((spouleur, imprimantes)) = lire_natif().or_else(lire_par_powershell) else {
             Etat::Info.dire(tr!(
@@ -400,10 +391,12 @@ mod systeme {
                 "\n  Restart the spooler and clear its queue (waiting print jobs are cancelled)? [y/N]: "
             ))
             .oui()
+            // La file est lue par le processus élevé (DefaultSpoolDirectory, sous le dossier de Windows), jamais
+            // écrite ici d'après SystemRoot, que le compte choisit.
             && crate::machine::appliquer(&[
-                "Stop-Service Spooler -Force".to_string(),
-                vider_la_file(std::env::var_os("SystemRoot").map(std::path::PathBuf::from)),
-                "Start-Service Spooler".to_string(),
+                gestes::ligne_service("Spooler", gestes::Action::Arreter),
+                gestes::ligne_vider_file_impression(),
+                gestes::ligne_service("Spooler", gestes::Action::Demarrer),
             ])
         {
             fait(tr!(
@@ -439,19 +432,6 @@ mod systeme {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// La file du spouleur vidée par son chemin écrit, même sans SystemRoot (jamais la racine du disque).
-    #[cfg(windows)]
-    #[test]
-    fn file_du_spouleur_ecrite_en_toutes_lettres() {
-        assert_eq!(
-            systeme::vider_la_file(Some(r"D:\Windows".into())),
-            r"Get-ChildItem -LiteralPath 'D:\Windows\System32\spool\PRINTERS' -File | Remove-Item -Force"
-        );
-        for absent in [None, Some(std::path::PathBuf::new()), Some(r"\Windows".into())] {
-            assert!(systeme::vider_la_file(absent).contains(r"-LiteralPath 'C:\Windows\System32\spool\PRINTERS'"));
-        }
-    }
 
     /// Spouleur arrêté : la liste vide ne veut pas dire « aucune imprimante », elle ne se lit pas.
     #[test]

@@ -129,6 +129,8 @@ pub(crate) enum Element {
     Script(gestes::Script),
     /// Un programme fixe de Windows (DISM, sfc…), lancé par son chemin complet avec les arguments de la table.
     Programme(gestes::Appel),
+    /// Un acte sur un service ou un dossier de Windows (`services_ecriture`), fait sans PowerShell.
+    Acte(gestes::Acte),
 }
 
 impl Element {
@@ -143,15 +145,16 @@ impl Element {
                 s.empreinte.get(..12).unwrap_or_default()
             ),
             Element::Programme(a) => corrections::texte_programme(a),
+            Element::Acte(a) => corrections::texte_acte(a),
         }
     }
 }
 
 /// La liste telle que le processus élevé la recevra, validée ligne à ligne, dans l'ordre (`gestes::valider`) ; `None`
 /// dès qu'une ligne n'est ni une correction de la table, ni un ordre du blocage permis sous Windows, ni un script à
-/// empreinte, ni un programme fixe, qu'il y en a trop, ou qu'une correction ou un script revient (une liste de
-/// Vanguard ne fait jamais deux fois le même). Le parent l'appelle avant la demande d'administrateur, le fils à la
-/// réception : la même relecture des deux côtés.
+/// empreinte, ni un programme fixe, ni un acte de la table, qu'il y en a trop, ou qu'une correction ou un script
+/// revient (une liste de Vanguard ne fait jamais deux fois le même). Le parent l'appelle avant la demande
+/// d'administrateur, le fils à la réception : la même relecture des deux côtés.
 pub(crate) fn valider(lignes: &[String]) -> Option<Vec<Element>> {
     let mut vues = std::collections::HashSet::new();
     let liste = gestes::valider(lignes, |l| {
@@ -169,6 +172,7 @@ pub(crate) fn valider(lignes: &[String]) -> Option<Vec<Element>> {
                 gestes::Ligne::Autre(e) => e,
                 gestes::Ligne::Script(s) => Element::Script(s),
                 gestes::Ligne::Programme(a) => Element::Programme(a),
+                gestes::Ligne::Acte(a) => Element::Acte(a),
             })
             .collect(),
     )
@@ -808,6 +812,7 @@ fn faire(e: &Element, juge: &ordres::Juge) -> Resultat {
         }
         Element::Script(s) => lancer_script(&s.chemin, &s.empreinte),
         Element::Programme(a) => lancer_programme(a),
+        Element::Acte(a) => super::services_ecriture::faire(a),
     };
     if r.reussi {
         match &r.avant {

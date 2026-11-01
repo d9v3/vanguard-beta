@@ -485,8 +485,8 @@ pub(super) fn juger_registre_distant(demarrage: Option<u32>) -> Option<Constat> 
                 "Stop Remote Registry and turn it off, as Windows ships it"
             ),
             &[
-                "Stop-Service RemoteRegistry -Force",
-                "Set-Service RemoteRegistry -StartupType Disabled",
+                gestes::ligne_service("RemoteRegistry", gestes::Action::Arreter),
+                gestes::ligne_service("RemoteRegistry", gestes::Action::Desactive),
             ],
         )
     })
@@ -627,10 +627,10 @@ pub(super) fn juger_windows_update(
 ) -> Option<Constat> {
     let mut commandes = Vec::new();
     if service == Some(4) {
-        commandes.push("Set-Service wuauserv -StartupType Manual");
+        commandes.push(gestes::ligne_service("wuauserv", gestes::Action::Manuel));
     }
     if orchestrateur == Some(4) {
-        commandes.push("Set-Service UsoSvc -StartupType Automatic");
+        commandes.push(gestes::ligne_service("UsoSvc", gestes::Action::Auto));
     }
     if !commandes.is_empty() {
         return Some(
@@ -1399,10 +1399,13 @@ mod tests {
         assert_eq!(service.probleme, Some(Niveau::Eleve));
         assert_eq!(
             service.correctif.unwrap().commandes,
-            ["Set-Service wuauserv -StartupType Manual"]
+            ["vanguard:service wuauserv manuel"]
         );
         let les_deux = juger_windows_update(Some(4), Some(4), None).unwrap().correctif.unwrap();
-        assert_eq!(les_deux.commandes.len(), 2);
+        assert_eq!(
+            les_deux.commandes,
+            ["vanguard:service wuauserv manuel", "vanguard:service UsoSvc auto"]
+        );
         let strategie = juger_windows_update(Some(3), Some(2), Some(1)).unwrap();
         assert!(strategie.probleme == Some(Niveau::Moyen) && !strategie.correctif.unwrap().automatique);
         // Secure Boot : clé absente (ancien BIOS), rien ; 0 coupé, une information à régler soi-même.

@@ -3,7 +3,7 @@
 //! Vanguard regarde si le système règle l'heure tout seul (NTP) ; il ne mesure pas l'écart lui-même, ce qui
 //! demanderait d'interroger un serveur. Sous macOS, le réglage ne se lit pas sans droits administrateur : rien n'est dit.
 
-use super::{Constat, alerte, ok};
+use super::{Constat, alerte, gestes, ok};
 use crate::risk::Niveau;
 use crate::tr;
 
@@ -30,10 +30,10 @@ fn juger(e: &Etat) -> Constat {
             c.corriger(
                 tr!("Régler l'heure automatiquement (service de temps de Windows)", "Set the time automatically (Windows time service)"),
                 &[
-                    r"Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters' -Name Type -Value NTP",
-                    "Set-Service w32time -StartupType Automatic",
-                    "Start-Service w32time",
-                    &crate::machine::gestes::ligne_programme("w32tm-resync", None),
+                    r"Set-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Services\W32Time\Parameters' -Name Type -Value NTP".to_string(),
+                    gestes::ligne_service("w32time", gestes::Action::Auto),
+                    gestes::ligne_service("w32time", gestes::Action::Demarrer),
+                    gestes::ligne_programme("w32tm-resync", None),
                 ],
             )
         } else {

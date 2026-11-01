@@ -5,6 +5,7 @@ use std::process::Command;
 
 use super::{Audit, Constat, alerte, impossible, ok};
 use crate::commande::section;
+use crate::machine::gestes;
 use crate::risk::{Niveau, info_port};
 use crate::trw;
 use crate::ui::{resume, tr, trf, trp};
@@ -48,6 +49,7 @@ mod regles;
 pub(crate) mod routes;
 pub(crate) mod securite;
 mod services;
+mod services_ecriture;
 mod ssh;
 mod verrouillage;
 pub(crate) mod wmi;
@@ -1621,7 +1623,10 @@ fn lire_ports_udp(liste: &str, pare_feu_actif: bool, ip_lan: Option<&str>) -> Ve
                     "Couper la découverte UPnP (SSDP) ; à garder si vous diffusez vers une TV ou une console",
                     "Turn off UPnP discovery (SSDP); keep it if you cast to a TV or console"
                 ),
-                &["Stop-Service SSDPSRV -Force", "Set-Service SSDPSRV -StartupType Disabled"],
+                &[
+                    gestes::ligne_service("SSDPSRV", gestes::Action::Arreter),
+                    gestes::ligne_service("SSDPSRV", gestes::Action::Desactive),
+                ],
             )
             .annulable(vec![crate::optimiser::Geste::service("SSDPSRV")]),
             _ => constat,

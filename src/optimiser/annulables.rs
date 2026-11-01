@@ -1583,6 +1583,38 @@ mod tests {
             comment_defaire(&[id("wdigest-coupe"), "Set-Service x".into()]),
             Defaire::Inconnu
         );
+        // Un acte de service qui durcit (Registre à distance coupé, Windows Update remis) compte comme une
+        // correction native ; un acte qui ne durcit pas (arrêter puis relancer le spouleur), non.
+        let service = |l: &[&str]| l.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            comment_defaire(&service(&[
+                "vanguard:service RemoteRegistry arreter",
+                "vanguard:service RemoteRegistry desactive"
+            ])),
+            Defaire::Protection
+        );
+        assert_eq!(
+            comment_defaire(&service(&[
+                "vanguard:service wuauserv manuel",
+                "vanguard:service UsoSvc auto"
+            ])),
+            Defaire::Protection
+        );
+        assert_eq!(
+            comment_defaire(&service(&[
+                "vanguard:service Spooler arreter",
+                "vanguard:service Spooler demarrer"
+            ])),
+            Defaire::Inconnu
+        );
+        assert_eq!(
+            comment_defaire(&service(&["vanguard:service w32time auto", "Set-ItemProperty x"])),
+            Defaire::Inconnu
+        );
+        assert_eq!(
+            comment_defaire(&service(&["vanguard:service WinDefend desactive"])),
+            Defaire::Inconnu
+        );
         for g in ["natif|wdigest-coupe", "defender|np", "defender|pua"] {
             assert!(systeme::Changement::depuis_geste(g).is_none(), "{g}");
         }

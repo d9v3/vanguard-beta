@@ -1,7 +1,8 @@
 //! La grammaire des lignes que le processus élevé de Windows lit du Vanguard non élevé (src/machine/windows/
-//! gestes.rs) : script vérifié par empreinte, programme fixe de la table, liste validée, découpe d'une liste de
-//! correctifs en morceaux natifs et PowerShell, états d'un script en échec. Chemins piégés (« .. », NUL, lecteur
-//! manquant), hexadécimal en majuscules, noms hors de la liste fermée, lignes et correctifs en nombre.
+//! gestes.rs) : script vérifié par empreinte, programme fixe de la table, acte sur un service ou un dossier de la
+//! table, liste validée, découpe d'une liste de correctifs en morceaux natifs et PowerShell, états d'un script en
+//! échec. Chemins piégés (« .. », NUL, lecteur manquant), hexadécimal en majuscules, noms hors de la liste fermée,
+//! lignes et correctifs en nombre.
 #![no_main]
 // Aucun unsafe ici ni dans ce que la cible inclut (src/, cales) : refusé sans recours, un allow ne compile pas.
 #![forbid(unsafe_code)]
@@ -24,6 +25,16 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
             let args = a.arguments("C:");
             assert_eq!(args.len(), a.programme.arguments.len());
             assert!(args.iter().all(|x| !x.contains(['\n', '\r', '"'])));
+        }
+        // Un acte : de la table, écrit à l'identique, court, ASCII ; jamais accepté sans en avoir le verbe.
+        if let Some(a) = gestes::analyser_acte(l) {
+            assert_eq!(a.ligne(), *l);
+            assert!(l.len() <= gestes::ACTE_MAX && l.is_ascii());
+            assert!(gestes::est_un_acte(l));
+            if let gestes::Acte::Service(s) = a {
+                assert!(!(s.durcit && s.affaiblit));
+                assert!(gestes::SERVICES.iter().any(|t| t.nom == s.nom));
+            }
         }
         if let Some(s) = gestes::analyser_script(l) {
             assert_eq!(gestes::ligne_script(&s.empreinte, &s.chemin), *l);
@@ -68,6 +79,8 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                         gestes::analyser_script(l).is_some()
                     } else if l.starts_with(gestes::PROGRAMME) {
                         gestes::analyser_programme(l).is_some()
+                    } else if gestes::est_un_acte(l) {
+                        gestes::analyser_acte(l).is_some()
                     } else {
                         autre(l).is_some()
                     }
