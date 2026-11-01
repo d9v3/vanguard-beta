@@ -161,9 +161,12 @@ fn commandes(prepare: &str, nouvelle: &str, avant: &str) -> Vec<String> {
 
 #[cfg(windows)]
 fn commandes(prepare: &str, nouvelle: &str, avant: &str) -> Vec<String> {
+    // Windows tient hosts quelques secondes dès que son dossier change (service DNS, antivirus) : lecture et écriture
+    // refaites (`REESSAI_PS`).
     vec![format!(
-        "$e = {{ param($o) -join ([Security.Cryptography.SHA256]::Create().ComputeHash($o) | ForEach-Object {{ $_.ToString('x2') }}) }}; $p = [IO.File]::ReadAllBytes({}); $f = \"$env:SystemRoot\\System32\\drivers\\etc\\hosts\"; if ((& $e $p) -ne '{nouvelle}' -or (& $e ([IO.File]::ReadAllBytes($f))) -ne '{avant}') {{ throw 'hosts ou fichier préparé changé depuis la lecture : rien écrit' }}; $o = [IO.File]::ReadAllBytes($f); try {{ [IO.File]::WriteAllBytes($f, $p) }} catch {{ [IO.File]::WriteAllBytes($f, $o); throw }}; try {{ Clear-DnsClientCache }} catch {{ }}",
-        crate::commande::ps_chaine(prepare)
+        "$e = {{ param($o) -join ([Security.Cryptography.SHA256]::Create().ComputeHash($o) | ForEach-Object {{ $_.ToString('x2') }}) }}; $p = [IO.File]::ReadAllBytes({}); $f = \"$env:SystemRoot\\System32\\drivers\\etc\\hosts\"; $r = {reessai}; $o = & $r {{ , [IO.File]::ReadAllBytes($f) }}; if ((& $e $p) -ne '{nouvelle}' -or (& $e $o) -ne '{avant}') {{ throw 'hosts ou fichier préparé changé depuis la lecture : rien écrit' }}; try {{ & $r {{ [IO.File]::WriteAllBytes($f, $p) }} }} catch {{ & $r {{ [IO.File]::WriteAllBytes($f, $o) }}; throw }}; try {{ Clear-DnsClientCache }} catch {{ }}",
+        crate::commande::ps_chaine(prepare),
+        reessai = crate::commande::REESSAI_PS
     )]
 }
 

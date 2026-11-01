@@ -95,6 +95,20 @@ fn motif_adresses(lignes: &[(String, String)]) -> String {
     ips.join("|")
 }
 
+/// Windows : commente dans hosts les lignes des adresses de `motif`. Lu d'abord, puis réécrit d'un coup en « Default »
+/// (ANSI), comme Set-Content le faisait (« ASCII » changerait en « ? » les lettres accentuées des commentaires). Pas
+/// Set-Content : il vide le fichier avant de l'ouvrir pour écrire, et un autre programme qui tient hosts à ce
+/// moment (Windows le rouvre dès que son dossier change, ici juste après la copie de sauvegarde) laissait hosts vide.
+/// Lecture et écriture sont refaites tant que hosts est tenu ; si l'écriture échoue quand même, les octets d'avant
+/// sont remis.
+#[cfg(any(windows, test))]
+fn commenter_hosts(motif: &str) -> String {
+    format!(
+        r#"$h = "$env:SystemRoot\System32\drivers\etc\hosts"; $r = {reessai}; $o = & $r {{ , [IO.File]::ReadAllBytes($h) }}; $l = [string[]]@(& $r {{ [IO.File]::ReadAllLines($h, [Text.Encoding]::Default) }} | ForEach-Object {{ if ($_ -match '^\s*({motif})\s') {{ '# Vanguard : ' + $_ }} else {{ $_ }} }}); try {{ & $r {{ [IO.File]::WriteAllLines($h, $l, [Text.Encoding]::Default) }} }} catch {{ & $r {{ [IO.File]::WriteAllBytes($h, $o) }}; throw }}"#,
+        reessai = crate::commande::REESSAI_PS
+    )
+}
+
 /// Résumé lisible : « 1.2.3.4 → banque.fr, 5.6.7.8 → update.microsoft.com (et 3 autre(s)) ».
 fn resume_redirections(lignes: &[(String, String)]) -> String {
     let textes: Vec<String> = lignes.iter().map(|(ip, noms)| format!("{ip} → {noms}")).collect();
@@ -1027,12 +1041,7 @@ fn navigation(etat: Option<&EtatWindows>) -> Reparation {
             r#"$h = "$env:SystemRoot\System32\drivers\etc\hosts"; Copy-Item $h "$h.vanguard-$(Get-Date -Format yyyyMMdd-HHmmss)""#
                 .to_string(),
         );
-        // Réécrit en « Default » (ANSI), comme il a été lu : « ASCII » changerait en « ? » les lettres accentuées
-        // des commentaires.
-        commandes.push(format!(
-            r#"$h = "$env:SystemRoot\System32\drivers\etc\hosts"; (Get-Content $h) | ForEach-Object {{ if ($_ -match '^\s*({})\s') {{ '# Vanguard : ' + $_ }} else {{ $_ }} }} | Set-Content $h -Encoding Default"#,
-            motif_adresses(&detournees)
-        ));
+        commandes.push(commenter_hosts(&motif_adresses(&detournees)));
     }
     // Le proxy est un réglage de la personne : écrit dans sa ruche, même si la fenêtre administrateur est celle d'un
     // autre compte.
@@ -1566,6 +1575,91 @@ mod tests {
         );
         assert!(!crate::ui::contient_un_piege(&resume_redirections(&r)));
         assert_eq!(motif_adresses(&r), r"185\.12\.0\.9");
+    }
+
+    /// La commande qui commente hosts, dans un vrai PowerShell, sur une copie jetable : seule la ligne de l'adresse
+    /// détournée change. Tenue par un autre programme le temps de deux réessais (verrou exclusif ; pwsh l'y voit comme
+    /// Windows le fait d'un partage refusé), elle attend au lieu de laisser hosts vide ; impossible à écrire, elle
+    /// échoue sans rien changer. Windows : powershell ; ailleurs, pwsh s'il est là.
+    #[test]
+    fn commenter_hosts_attend_le_fichier_et_ne_le_vide_jamais() {
+        let programme = if cfg!(windows) { "powershell" } else { "pwsh" };
+        let dossier = crate::essais::Jetable::nouveau("vg-hosts-commente");
+        let h = dossier.join("hosts");
+        let avant = "127.0.0.1 localhost\r\n203.0.113.7 banque.exemple www.banque.exemple\r\n\
+                     # garde : 203.0.113.7\r\n  203.0.113.70 autre.exemple\r\n";
+        std::fs::write(&h, avant).unwrap();
+        let motif = motif_adresses(&[("203.0.113.7".to_string(), "banque.exemple".to_string())]);
+        let script = commenter_hosts(&motif).replacen(
+            r#""$env:SystemRoot\System32\drivers\etc\hosts""#,
+            &crate::commande::ps_chaine(&h.to_string_lossy()),
+            1,
+        );
+        assert!(!script.contains("SystemRoot"), "{script}");
+        // Comme la fenêtre administrateur (`script_admin`) : toute erreur arrête. Le marqueur de fin distingue un vrai
+        // PowerShell du factice de Wine, qui rend 0 sans rien faire.
+        let script = format!("$ErrorActionPreference = 'Stop'; {script}; Write-Output 'VG-FINI'");
+        let lancer = || {
+            crate::commande::lancer(
+                std::process::Command::new(programme).args(["-NoProfile", "-NonInteractive", "-Command", &script]),
+                60,
+            )
+        };
+
+        // Un autre programme tient hosts 1,5 s : la commande part pendant ce temps.
+        let tenu = std::fs::File::open(&h).unwrap();
+        let liberer = if cfg!(unix) && tenu.try_lock().is_ok() {
+            Some(std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(1500));
+                drop(tenu);
+            }))
+        } else {
+            drop(tenu);
+            None
+        };
+        let Some(r) = lancer() else {
+            return crate::essais::saute(&format!("{programme} absent"));
+        };
+        if let Some(fil) = liberer {
+            fil.join().unwrap();
+        }
+        if !r.sortie.contains("VG-FINI") && r.erreurs.trim().is_empty() {
+            return crate::essais::saute("PowerShell factice (Wine) : rien à comparer");
+        }
+        assert_eq!((r.code, r.sortie.trim()), (Some(0), "VG-FINI"), "{}", r.erreurs);
+        let apres = std::fs::read_to_string(&h).unwrap();
+        let lignes: Vec<&str> = apres.lines().collect();
+        assert_eq!(
+            lignes,
+            [
+                "127.0.0.1 localhost",
+                "# Vanguard : 203.0.113.7 banque.exemple www.banque.exemple",
+                "# garde : 203.0.113.7",
+                "  203.0.113.70 autre.exemple",
+            ],
+            "{apres:?}"
+        );
+
+        // Impossible à écrire (lecture seule) : erreur rendue, octets d'avant intacts.
+        std::fs::write(&h, avant).unwrap();
+        let mut droits = std::fs::metadata(&h).unwrap().permissions();
+        droits.set_readonly(true);
+        std::fs::set_permissions(&h, droits.clone()).unwrap();
+        let ecrivable = std::fs::OpenOptions::new().append(true).open(&h).is_ok();
+        let r = lancer().unwrap();
+        #[allow(clippy::permissions_set_readonly_false)]
+        droits.set_readonly(false);
+        std::fs::set_permissions(&h, droits).unwrap();
+        if ecrivable {
+            return crate::essais::saute("administrateur : la lecture seule ne l'arrête pas");
+        }
+        assert!(
+            r.code != Some(0) && !r.sortie.contains("VG-FINI"),
+            "{}{}",
+            r.sortie,
+            r.erreurs
+        );
+        assert_eq!(std::fs::read_to_string(&h).unwrap(), avant);
     }
 
     /// Une variable de proxy vient d'un fichier de démarrage que tout programme de la session peut écrire.

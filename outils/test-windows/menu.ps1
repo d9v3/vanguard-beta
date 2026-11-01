@@ -54,7 +54,14 @@ function Test-En-Cours {
     $temoin = Get-Item -LiteralPath $enCours -Force -ErrorAction SilentlyContinue
     if (-not $temoin) { return $false }
     if (Essai-De-La-File) { return $true }
-    if (((Get-Date) - $temoin.LastWriteTime).TotalHours -lt 3 -and (Tests-Lances).Count) { return $true }
+    if (((Get-Date) - $temoin.LastWriteTime).TotalHours -lt 3) {
+        if ((Tests-Lances).Count) { return $true }
+        # Un témoin frais qui n'est pas celui d'une passe de ce menu (une date seule) : VM réservée depuis Linux, banc
+        # d'essais à part (essais-socle), surveillant de la file. Le retirer ici, à chaque tour de -Surveiller, rendait
+        # la VM au test automatique en pleine réservation ; il périme seul au bout de 3 h.
+        $contenu = try { [IO.File]::ReadAllText($temoin.FullName).Trim() } catch { '' }
+        if ($contenu -notmatch '^\d{4}-\d\d-\d\dT[\d:.]+(Z|[+-]\d\d:\d\d)?$') { return $true }
+    }
     Remove-Item -LiteralPath $enCours -Force -ErrorAction SilentlyContinue
     return $false
 }
