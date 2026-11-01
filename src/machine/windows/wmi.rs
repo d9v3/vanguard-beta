@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use windows::Win32::Foundation::VARIANT_BOOL;
+use windows::Win32::Foundation::{E_POINTER, VARIANT_BOOL};
 use windows::Win32::System::Com::{
     CLSCTX_INPROC_SERVER, COINIT, COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
     CoSetProxyBlanket, CoUninitialize, EOAC_NONE, RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, SAFEARRAY,
@@ -24,7 +24,7 @@ use windows::Win32::System::Wmi::{
     IWbemLocator, WBEM_FLAG_FORWARD_ONLY, WBEM_FLAG_RETURN_IMMEDIATELY, WBEM_GENERIC_FLAG_TYPE, WBEM_INFINITE,
     WbemLocator,
 };
-use windows::core::{BSTR, HSTRING, IUnknown, Interface};
+use windows::core::{BSTR, Error, HSTRING, IUnknown, Interface};
 
 /// Constantes de rpcdce.h (authentification Windows, sans autorisation), ici pour ne pas tirer tout Win32_System_Rpc.
 const RPC_C_AUTHN_WINNT: u32 = 10;
@@ -333,6 +333,95 @@ fn dans_ce_fil(espace: &str, classe: &str, wql: &str, champs: &[String]) -> wind
         }?;
     }
     Ok(lignes)
+}
+
+/// Un paramètre d'entrée d'une méthode WMI.
+pub(crate) enum Parametre {
+    Texte(String),
+    Entier(i32),
+}
+
+/// Appelle la méthode statique `methode` de `classe` (dans `espace`), avec ces paramètres d'entrée, et rend son
+/// ReturnValue. `None` : WMI absent, classe ou méthode inconnues (Wine), paramètre refusé, pas de ReturnValue, ou
+/// délai dépassé (noté au journal) ; l'appelant le dit, jamais compté comme réussi.
+pub(crate) fn methode(
+    espace: &str,
+    classe: &str,
+    methode: &str,
+    parametres: Vec<(&'static str, Parametre)>,
+    delai: Duration,
+) -> Option<i64> {
+    let (espace, classe, nom) = (espace.to_string(), classe.to_string(), methode.to_string());
+    let quoi = format!("{classe}.{nom}");
+    com_delai("WMI", &quoi, delai, move || {
+        appeler_dans_ce_fil(&espace, &classe, &nom, &parametres)
+    })
+    .flatten()
+}
+
+fn appeler_dans_ce_fil(
+    espace: &str,
+    classe: &str,
+    nom: &str,
+    parametres: &[(&str, Parametre)],
+) -> windows::core::Result<Option<i64>> {
+    // SAFETY: COM est initialisé dans ce fil (par `com_delai`) ; WbemLocator est la classe du localisateur WMI.
+    let localisateur: IWbemLocator = unsafe { CoCreateInstance(&WbemLocator, None, CLSCTX_INPROC_SERVER) }?;
+    let vide = BSTR::new();
+    // SAFETY: chaînes BSTR valides pendant l'appel ; utilisateur et mot de passe vides = le compte qui lance.
+    let services = unsafe { localisateur.ConnectServer(&BSTR::from(espace), &vide, &vide, &vide, 0, &vide, None) }?;
+    droits_d_appel(&services);
+    let chemin = BSTR::from(classe);
+    let mut definition = None;
+    // SAFETY: services est vivant ; le chemin est un BSTR valide pendant l'appel ; `definition` reçoit la classe.
+    unsafe {
+        services.GetObject(
+            &chemin,
+            WBEM_GENERIC_FLAG_TYPE(0),
+            None,
+            Some(&raw mut definition),
+            None,
+        )
+    }?;
+    let definition = definition.ok_or_else(|| Error::from(E_POINTER))?;
+    let (mut signature, mut sortie) = (None, None);
+    // SAFETY: definition est vivante ; le nom est une chaîne terminée par un zéro ; les deux emplacements reçoivent
+    // les signatures d'entrée et de sortie.
+    unsafe { definition.GetMethod(&HSTRING::from(nom), 0, &raw mut signature, &raw mut sortie) }?;
+    let signature = signature.ok_or_else(|| Error::from(E_POINTER))?;
+    // SAFETY: signature d'entrée vivante, rendue par GetMethod ; SpawnInstance en fait un objet à remplir.
+    let entree = unsafe { signature.SpawnInstance(0) }?;
+    for (champ, valeur) in parametres {
+        let v = match valeur {
+            Parametre::Texte(t) => VARIANT::from(BSTR::from(t.as_str())),
+            Parametre::Entier(n) => VARIANT::from(*n),
+        };
+        // SAFETY: entree est vivante ; le nom est terminé par un zéro ; `v` vit pendant l'appel (Put en garde une
+        // copie) ; type 0 : celui de la signature.
+        unsafe { entree.Put(&HSTRING::from(*champ), 0, &raw const v, 0) }?;
+    }
+    let mut resultat = None;
+    // SAFETY: services, entree et les BSTR vivent pendant l'appel ; `resultat` reçoit les paramètres de sortie.
+    unsafe {
+        services.ExecMethod(
+            &chemin,
+            &BSTR::from(nom),
+            WBEM_GENERIC_FLAG_TYPE(0),
+            None,
+            &entree,
+            Some(&raw mut resultat),
+            None,
+        )
+    }?;
+    let Some(resultat) = resultat else {
+        return Ok(None);
+    };
+    let mut v = VARIANT::default();
+    // SAFETY: resultat est vivant, le nom terminé par un zéro, `v` un VARIANT vide qui reçoit la copie (libérée par
+    // son Drop).
+    unsafe { resultat.Get(&HSTRING::from("ReturnValue"), 0, &raw mut v, None, None) }?;
+    // SAFETY: `v` vient d'être rempli par Get.
+    Ok(unsafe { lire(&v) }.entier())
 }
 
 /// Le membre de l'union que désigne `vt`, et lui seul.

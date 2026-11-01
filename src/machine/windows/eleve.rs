@@ -20,7 +20,7 @@
 //! clé USB), et son contenu est déjà verrouillé par l'image chargée. Le processus élevé n'écrit aucun fichier dans
 //! un dossier du compte : ses réponses passent par le tube.
 
-// FFI de Windows (kernel32, advapi32, shell32, COM) : tube nommé, élévation, GetProcAddress (transmute).
+// FFI de Windows (kernel32, advapi32, shell32) : tube nommé, élévation.
 #![allow(unsafe_code)]
 
 use std::ffi::c_void;
@@ -28,19 +28,6 @@ use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-use std::sync::Once;
-
-use windows::Win32::Security::{
-    ACL, ACL_REVISION, AddAccessAllowedAce, CreateWellKnownSid, InitializeAcl, InitializeSecurityDescriptor,
-    PSECURITY_DESCRIPTOR, PSID, SECURITY_DESCRIPTOR, SetSecurityDescriptorDacl, SetSecurityDescriptorGroup,
-    SetSecurityDescriptorOwner, WELL_KNOWN_SID_TYPE, WinBuiltinAdministratorsSid, WinLocalServiceSid,
-    WinLocalSystemSid, WinNetworkServiceSid, WinSelfSid,
-};
-use windows::Win32::System::Com::{
-    COINIT_MULTITHREADED, COM_RIGHTS_EXECUTE, COM_RIGHTS_EXECUTE_LOCAL, CoInitializeEx, CoInitializeSecurity,
-    EOAC_DISABLE_AAA, EOAC_NO_CUSTOM_MARSHAL, EOLE_AUTHENTICATION_CAPABILITIES, RPC_C_AUTHN_LEVEL_PKT_PRIVACY,
-    RPC_C_IMP_LEVEL_IDENTIFY,
-};
 
 use super::corrections::{self, Correction, Resultat};
 use crate::machine::gestes;
@@ -68,9 +55,7 @@ unsafe extern "system" {
     fn GetLastError() -> u32;
     fn GetProcessId(processus: *mut c_void) -> u32;
     fn WaitForSingleObject(objet: *mut c_void, delai: u32) -> u32;
-    fn LoadLibraryExW(nom: *const u16, fichier: *mut c_void, drapeaux: u32) -> *mut c_void;
     fn SetDefaultDllDirectories(drapeaux: u32) -> i32;
-    fn GetProcAddress(module: *mut c_void, nom: *const u8) -> *mut c_void;
     fn SetHandleInformation(objet: *mut c_void, masque: u32, drapeaux: u32) -> i32;
 }
 
@@ -115,21 +100,6 @@ struct InfoLancement {
     raccourci: u32,
     icone: *mut c_void,
     processus: *mut c_void,
-}
-
-/// RESTOREPOINTINFOW et STATEMGRSTATUS (srrestoreptapi.h).
-#[repr(C)]
-struct PointInfo {
-    evenement: u32,
-    genre: u32,
-    sequence: i64,
-    description: [u16; 256],
-}
-/// STATEMGRSTATUS, déclarée en #pragma pack(1) dans srrestoreptapi.h : 12 octets, la séquence à l'octet 4.
-#[repr(C, packed)]
-struct PointEtat {
-    statut: u32,
-    sequence: i64,
 }
 
 const POIGNEE_INVALIDE: *mut c_void = -1isize as *mut c_void;
@@ -1094,10 +1064,11 @@ pub(crate) fn sans_point_accepte() -> &'static str {
     tr!("sans point de restauration, accepté", "no restore point, accepted")
 }
 
-/// Point de restauration par srclient.dll (chargée à la demande : absente, rien ne manque au programme). Impossible,
-/// quelle qu'en soit la raison (protection du système coupée sur C:, ou srclient.dll ou sa fonction absente : Windows
-/// Server, Windows allégés) : on le dit et on demande s'il faut continuer sans. Windows ne crée qu'un point par 24 h :
-/// le plus récent sert alors, l'appel réussit sans en créer.
+/// Point de restauration par WMI (SystemRestore.CreateRestorePoint, celui de Checkpoint-Computer) : c'est le service
+/// WMI qui le crée. SRSetRestorePointW appelé d'ici commençait bien le cliché, que VSS abandonnait (événement 8193,
+/// QueryFullProcessImageNameW, poignée invalide) : aucun point gardé, et un plus ancien parfois effacé. Windows ne
+/// crée qu'un point par 24 h et répond quand même « succès » : seul un numéro neuf dans la liste des points, relue
+/// après, prouve le point. Sans lui, quelle qu'en soit la raison, on la dit et on demande s'il faut continuer sans.
 pub(crate) fn point_de_restauration() -> (bool, String) {
     match poser_le_point() {
         Ok(()) => (true, String::new()),
@@ -1125,208 +1096,124 @@ fn continuer_sans_point(raison: &str, demander: impl FnOnce(&str) -> String) -> 
     }
 }
 
-/// Les comptes à qui COM permet de rappeler ce processus : les Administrateurs (aussi propriétaire et groupe du
-/// descripteur), Service local, Service réseau, le compte lui-même (« principal self ») et Système.
-const COMPTES_COM: [WELL_KNOWN_SID_TYPE; 5] = [
-    WinBuiltinAdministratorsSid,
-    WinLocalServiceSid,
-    WinNetworkServiceSid,
-    WinSelfSid,
-    WinLocalSystemSid,
-];
+/// Espace de noms et classe WMI des points de restauration.
+const ESPACE_POINTS: &str = r"root\default";
+const CLASSE_POINTS: &str = "SystemRestore";
+/// Le point demande un cliché du disque : une douzaine de secondes sur la VM, bien plus sur un disque lent.
+const DELAI_POINT: std::time::Duration = std::time::Duration::from_secs(300);
+/// Windows ne crée pas de point s'il en a un de moins d'un jour (SystemRestorePointCreationFrequency absente).
+const UN_JOUR: u64 = 24 * 3600;
 
-/// Le descripteur de sécurité COM que l'exemple de Microsoft donne à tout processus qui appelle SRSetRestorePoint,
-/// sous forme absolue : CoInitializeSecurity refuse la forme relative que rend
-/// ConvertStringSecurityDescriptorToSecurityDescriptor. Il équivaut au SDDL
-/// « O:BAG:BAD:(A;;0x3;;;BA)(A;;0x3;;;LS)(A;;0x3;;;NS)(A;;0x3;;;PS)(A;;0x3;;;SY) » : les droits COM d'exécution, à
-/// distance et en local (COM_RIGHTS_EXECUTE | COM_RIGHTS_EXECUTE_LOCAL), à ces seuls comptes. Ses SID et sa liste
-/// d'accès vivent avec lui, dans une boîte qui ne bouge plus : le descripteur absolu pointe dessus.
-struct DescripteurCom {
-    /// SECURITY_MAX_SID_SIZE (68 octets) chacun, alignés sur 8.
-    sids: [[u64; 9]; COMPTES_COM.len()],
-    /// L'en-tête (8 octets) et cinq entrées de 8 octets plus leur SID : 228 octets au plus.
-    acl: [u64; 32],
-    descripteur: SECURITY_DESCRIPTOR,
-}
-
-impl DescripteurCom {
-    fn nouveau() -> windows::core::Result<Box<DescripteurCom>> {
-        /// SECURITY_DESCRIPTOR_REVISION.
-        const REVISION: u32 = 1;
-        let mut d = Box::new(DescripteurCom {
-            sids: [[0; 9]; COMPTES_COM.len()],
-            acl: [0; 32],
-            descripteur: SECURITY_DESCRIPTOR::default(),
-        });
-        let taille_sid = u32::try_from(size_of::<[u64; 9]>()).unwrap_or(0);
-        let taille_acl = u32::try_from(size_of::<[u64; 32]>()).unwrap_or(0);
-        let acl: *mut ACL = (&raw mut d.acl).cast();
-        let descripteur = PSECURITY_DESCRIPTOR((&raw mut d.descripteur).cast());
-        // SAFETY: chaque SID est écrit dans son propre tampon, de la taille annoncée ; la liste d'accès dans le sien,
-        // de la taille annoncée et aligné sur 8 octets (InitializeAcl demande 4). Tous les pointeurs viennent de
-        // `&raw mut` (ou de `ptr::from_mut`, pour les SID) sur des champs de la boîte, qui ne bouge plus : le
-        // descripteur absolu, qui ne garde que des pointeurs vers les SID et la liste, reste valide tant qu'elle vit.
-
-        unsafe {
-            // Un tampon par compte : `sids` en a autant que COMPTES_COM, par son type.
-            for (compte, sid) in COMPTES_COM.into_iter().zip(&mut d.sids) {
-                let mut taille = taille_sid;
-                CreateWellKnownSid(
-                    compte,
-                    None,
-                    Some(PSID(std::ptr::from_mut(sid).cast())),
-                    &raw mut taille,
-                )?;
-            }
-            InitializeAcl(acl, taille_acl, ACL_REVISION)?;
-            for sid in &mut d.sids {
-                AddAccessAllowedAce(
-                    acl,
-                    ACL_REVISION,
-                    COM_RIGHTS_EXECUTE | COM_RIGHTS_EXECUTE_LOCAL,
-                    PSID(std::ptr::from_mut(sid).cast()),
-                )?;
-            }
-            let administrateurs = PSID((&raw mut d.sids[0]).cast());
-            InitializeSecurityDescriptor(descripteur, REVISION)?;
-            SetSecurityDescriptorOwner(descripteur, Some(administrateurs), false)?;
-            SetSecurityDescriptorGroup(descripteur, Some(administrateurs), false)?;
-            SetSecurityDescriptorDacl(descripteur, true, Some(acl), false)?;
-        }
-        Ok(d)
-    }
-
-    fn pointeur(&mut self) -> PSECURITY_DESCRIPTOR {
-        PSECURITY_DESCRIPTOR((&raw mut self.descripteur).cast())
-    }
-}
-
-/// COM et sa sécurité, une seule fois pour tout le processus élevé, avant le premier point de restauration. La
-/// documentation de Microsoft (« Using System Restore », citée de mémoire) le demande à tout processus qui appelle
-/// SRSetRestorePoint, pour que Service réseau, Service local et Système puissent le rappeler : CoInitializeEx en
-/// appartement multithread, puis CoInitializeSecurity avec un descripteur explicite (`DescripteurCom`), -1 (COM
-/// choisit les services d'authentification), RPC_C_AUTHN_LEVEL_PKT_PRIVACY, RPC_C_IMP_LEVEL_IDENTIFY et
-/// EOAC_DISABLE_AAA | EOAC_NO_CUSTOM_MARSHAL. Comme dans l'exemple, un échec est sans suite : le point est tenté quand
-/// même (COM déjà dans un autre appartement, ou sécurité déjà fixée : RPC_E_TOO_LATE).
-fn initialiser_com() {
-    static UNE_FOIS: Once = Once::new();
-    UNE_FOIS.call_once(|| {
-        // SAFETY: sans réserve, en appartement multithread ; jamais refermé : il vaut pour tout le processus élevé.
-        if unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_err() {
-            return;
-        }
-        let Ok(descripteur) = DescripteurCom::nouveau() else {
-            return;
-        };
-        // Gardé pour toute la vie du processus : l'exemple de Microsoft libère le sien aussitôt (COM en garde une
-        // copie), mais quelques centaines d'octets valent la certitude.
-        let descripteur = Box::leak(descripteur);
-        // SAFETY: descripteur absolu valide (ci-dessus), qui ne sera jamais libéré ; aucune liste d'authentification,
-        // pointeurs réservés nuls.
-        let _ = unsafe {
-            CoInitializeSecurity(
-                Some(descripteur.pointeur()),
-                -1,
-                None,
-                None,
-                RPC_C_AUTHN_LEVEL_PKT_PRIVACY,
-                RPC_C_IMP_LEVEL_IDENTIFY,
-                None,
-                EOLE_AUTHENTICATION_CAPABILITIES(EOAC_DISABLE_AAA.0 | EOAC_NO_CUSTOM_MARSHAL.0),
-                None,
-            )
-        };
-    });
-}
-
-/// Pose le point (début puis fin du changement) ; `Err` : pourquoi il ne l'est pas, prêt à montrer.
-fn poser_le_point() -> Result<(), Echec> {
-    const DEBUT: u32 = 100;
-    const FIN_CHANGEMENT: u32 = 101;
-    const REGLAGES: u32 = 12;
-    type Poser = unsafe extern "system" fn(*mut PointInfo, *mut PointEtat) -> i32;
-    let description = trf!("Vanguard : avant une correction", "Vanguard: before a fix");
-    let mut info = PointInfo {
-        evenement: DEBUT,
-        genre: REGLAGES,
-        sequence: 0,
-        description: [0; 256],
-    };
-    for (place, c) in info.description.iter_mut().zip(description.encode_utf16().take(255)) {
-        *place = c;
-    }
-    let mut etat = PointEtat { statut: 0, sequence: 0 };
-    initialiser_com();
-    let bibliotheque = large("srclient.dll");
-    // SAFETY: la bibliothèque et la fonction sont vérifiées non nulles avant l'appel ; la signature est celle de
-    // SRSetRestorePointW ; les deux structures ont la disposition attendue et vivent pendant l'appel. Un deuxième appel
-    // ferme le changement (séquence rendue par le premier).
-    let pose = unsafe {
-        let module = LoadLibraryExW(bibliotheque.as_ptr(), std::ptr::null_mut(), CHARGER_DE_SYSTEM32);
-        if module.is_null() {
-            return Err(Echec::echoue(
-                CONTEXTE_POINT,
-                trf!(
-                    "srclient.dll absente de ce Windows",
-                    "srclient.dll missing from this Windows"
-                ),
-            ));
-        }
-        let adresse = GetProcAddress(module, c"SRSetRestorePointW".as_ptr().cast());
-        if adresse.is_null() {
-            return Err(Echec::echoue(
-                CONTEXTE_POINT,
-                trf!(
-                    "SRSetRestorePointW absente de srclient.dll",
-                    "SRSetRestorePointW missing from srclient.dll"
-                ),
-            ));
-        }
-        let poser: Poser = std::mem::transmute::<*mut c_void, Poser>(adresse);
-        if poser(&raw mut info, &raw mut etat) == 0 {
-            Etape::Debut
-        } else {
-            // Le point n'est gardé que si Windows accepte aussi la fin : son refus est un échec, pas un « OK ».
-            info.evenement = FIN_CHANGEMENT;
-            let sequence = etat.sequence; // copie : jamais de référence vers un champ packed
-            info.sequence = sequence;
-            if poser(&raw mut info, &raw mut etat) == 0 {
-                Etape::Fin
-            } else {
-                Etape::Faite
-            }
-        }
-    };
-    raison_du_point(pose, etat.statut)
-}
-
-/// Où l'appel du point s'est arrêté.
+/// Un point de la liste de Windows : son numéro et son âge en secondes (`None` : date illisible).
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Etape {
-    /// Début refusé : rien n'est commencé.
-    Debut,
-    /// Début accepté, fin refusée : Windows ne garde pas le point.
-    Fin,
-    /// Début et fin acceptés.
-    Faite,
+struct Point {
+    sequence: i64,
+    age: Option<u64>,
 }
 
-/// `Ok` seulement si les deux appels ont réussi ; sinon la raison, avec le statut rendu par Windows.
-fn raison_du_point(etape: Etape, statut: u32) -> Result<(), Echec> {
-    let phrase = match etape {
-        Etape::Faite => return Ok(()),
-        Etape::Debut => trf!(
+/// La liste des points ; `None` : illisible (WMI absent, refus, délai).
+fn points() -> Option<Vec<Point>> {
+    let maintenant = chrono::Utc::now();
+    let lignes = super::wmi::requete(ESPACE_POINTS, CLASSE_POINTS, "", &["SequenceNumber", "CreationTime"])?;
+    Some(
+        lignes
+            .iter()
+            .filter_map(|l| {
+                Some(Point {
+                    sequence: l.get("SequenceNumber")?.entier()?,
+                    age: l
+                        .get("CreationTime")
+                        .and_then(super::wmi::Valeur::texte)
+                        .and_then(|date| super::wmi::secondes_depuis(date, maintenant)),
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Demande le point, puis le cherche dans la liste ; `Err` : pourquoi il n'y est pas, prêt à montrer.
+fn poser_le_point() -> Result<(), Echec> {
+    /// BEGIN_SYSTEM_CHANGE et MODIFY_SETTINGS : ceux de Checkpoint-Computer, qui ne ferme pas le changement.
+    const DEBUT: i32 = 100;
+    const REGLAGES: i32 = 12;
+    use super::wmi::Parametre;
+    let avant = points();
+    let description = trf!("Vanguard : avant une correction", "Vanguard: before a fix");
+    let retour = super::wmi::methode(
+        ESPACE_POINTS,
+        CLASSE_POINTS,
+        "CreateRestorePoint",
+        vec![
+            ("Description", Parametre::Texte(description)),
+            ("RestorePointType", Parametre::Entier(REGLAGES)),
+            ("EventType", Parametre::Entier(DEBUT)),
+        ],
+        DELAI_POINT,
+    );
+    let mut apres = None;
+    if retour == Some(0) && avant.is_some() {
+        // La liste peut ne montrer le point qu'un peu après la réponse : relue quelques fois, 20 s au plus.
+        for essai in 0..10 {
+            if essai > 0 {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+            apres = points();
+            if let (Some(a), Some(p)) = (&avant, &apres)
+                && est_neuf(a, p)
+            {
+                break;
+            }
+        }
+    }
+    juger_le_point(avant.as_deref(), retour, apres.as_deref())
+}
+
+/// Un point plus récent que tous ceux d'avant est dans la liste.
+fn est_neuf(avant: &[Point], apres: &[Point]) -> bool {
+    let plus_haut = avant.iter().map(|p| p.sequence).max();
+    apres.iter().any(|p| plus_haut.is_none_or(|h| p.sequence > h))
+}
+
+/// `Ok` seulement si un point neuf est dans la liste ; sinon la raison. `retour` : ReturnValue de CreateRestorePoint
+/// (`None` : pas de réponse) ; `avant`, `apres` : la liste des points (`None` : illisible).
+fn juger_le_point(avant: Option<&[Point]>, retour: Option<i64>, apres: Option<&[Point]>) -> Result<(), Echec> {
+    let phrase = match (retour, avant, apres) {
+        (None, ..) => trf!(
+            "Windows n'a pas répondu à la demande (WMI SystemRestore)",
+            "Windows did not answer the request (WMI SystemRestore)"
+        ),
+        (Some(n), ..) if n != 0 => trf!(
             "erreur {} : protection du système désactivée sur C: ?",
             "error {}: system protection turned off on C:?",
-            statut
+            n
         ),
-        Etape::Fin => trf!(
-            "erreur {} : Windows n'a pas terminé le point",
-            "error {}: Windows did not finish the point",
-            statut
+        (_, Some(avant), Some(apres)) if est_neuf(avant, apres) => return Ok(()),
+        (_, Some(_), Some(apres)) => match apres.iter().filter_map(|p| p.age).filter(|&a| a < UN_JOUR).min() {
+            Some(age) => trf!(
+                "Windows l'a sauté : il n'en fait qu'un par 24 h, et le dernier a {}",
+                "Windows skipped it: it makes only one per 24 h, and the last one is {} old",
+                duree(age)
+            ),
+            None => trf!(
+                "Windows a répondu sans garder le point",
+                "Windows answered without keeping the point"
+            ),
+        },
+        _ => trf!(
+            "liste des points illisible : point pas vérifié",
+            "restore point list unreadable: point not checked"
         ),
     };
     Err(Echec::echoue(CONTEXTE_POINT, phrase))
+}
+
+/// Un âge lisible : « 40 min », « 3 h ».
+fn duree(secondes: u64) -> String {
+    if secondes < 3600 {
+        format!("{} min", secondes / 60)
+    } else {
+        format!("{} h", secondes / 3600)
+    }
 }
 
 /// Le contexte des échecs du point de restauration.
@@ -1622,13 +1509,12 @@ mod tests {
         assert!(lire_lignes(sans_fin.as_bytes()).is_none());
     }
 
-    /// srclient.dll ou sa fonction absente (Windows Server, Windows allégés) passe par la même question que l'échec de
-    /// poser : la raison est dite, puis « o » continue sans point (noté), tout le reste arrête.
+    /// WMI sans réponse (Windows Server, Windows allégés), point sauté ou refusé : la même question pour tous : la raison est dite, puis « o » continue sans point (noté), tout le reste arrête.
     #[test]
     fn sans_point_la_question_est_posee() {
         for raison in [
-            "srclient.dll absente de ce Windows",
-            "SRSetRestorePointW absente de srclient.dll",
+            "Windows n'a pas répondu à la demande (WMI SystemRestore)",
+            "Windows l'a sauté : il n'en fait qu'un par 24 h, et le dernier a 3 h",
             "erreur 1058 : protection du système désactivée sur C: ?",
         ] {
             let mut posee = None;
@@ -1645,88 +1531,47 @@ mod tests {
         }
     }
 
-    /// Le descripteur COM construit à la main est exactement celui du SDDL de l'exemple de Microsoft : les deux,
-    /// rendus en SDDL par Windows (ou Wine) lui-même, sont identiques.
+    /// Seul un numéro neuf dans la liste compte : la règle des 24 h répond « succès » sans point (VM, 1er nov.), et
+    /// une liste illisible n'est jamais un point vérifié.
     #[test]
-    fn le_descripteur_com_est_celui_de_microsoft() {
-        #[link(name = "advapi32")]
-        unsafe extern "system" {
-            fn ConvertSecurityDescriptorToStringSecurityDescriptorW(
-                descripteur: *mut c_void,
-                revision: u32,
-                parties: u32,
-                texte: *mut *mut u16,
-                taille: *mut u32,
-            ) -> i32;
-        }
-        /// Propriétaire, groupe et DACL.
-        const PARTIES: u32 = 1 | 2 | 4;
-        let en_sddl = |descripteur: *mut c_void| {
-            let mut texte = std::ptr::null_mut();
-            // SAFETY: descripteur valide pendant l'appel ; Windows alloue le texte (terminé par un zéro), lu jusqu'au
-            // zéro puis rendu par LocalFree, une seule fois.
-            unsafe {
-                assert_ne!(
-                    ConvertSecurityDescriptorToStringSecurityDescriptorW(
-                        descripteur,
-                        1,
-                        PARTIES,
-                        &raw mut texte,
-                        std::ptr::null_mut()
-                    ),
-                    0
-                );
-                let mut longueur = 0;
-                while *texte.add(longueur) != 0 {
-                    longueur += 1;
-                }
-                let sddl = String::from_utf16_lossy(std::slice::from_raw_parts(texte, longueur));
-                super::super::processus::LocalFree(texte.cast());
-                sddl
-            }
+    fn le_point_n_est_ok_que_s_il_est_dans_la_liste() {
+        let p = |sequence, age| Point {
+            sequence,
+            age: Some(age),
         };
-        let mut construit = DescripteurCom::nouveau().expect("descripteur COM");
-        let attendu = large("O:BAG:BAD:(A;;0x3;;;BA)(A;;0x3;;;LS)(A;;0x3;;;NS)(A;;0x3;;;PS)(A;;0x3;;;SY)");
-        let mut relatif = std::ptr::null_mut();
-        // SAFETY: chaîne terminée par un zéro ; le descripteur rendu est libéré par LocalFree, une seule fois.
-        let reference = unsafe {
-            assert_ne!(
-                ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                    attendu.as_ptr(),
-                    1,
-                    &raw mut relatif,
-                    std::ptr::null_mut()
-                ),
-                0
-            );
-            let sddl = en_sddl(relatif);
-            super::super::processus::LocalFree(relatif);
-            sddl
+        let avant = [p(25, 90_000), p(26, 3 * 3600)];
+        assert_eq!(
+            juger_le_point(Some(&avant), Some(0), Some(&[avant[0], avant[1], p(27, 5)])),
+            Ok(())
+        );
+        assert_eq!(juger_le_point(Some(&[]), Some(0), Some(&[p(1, 5)])), Ok(()));
+        let raison = |retour, apres: Option<&[Point]>| {
+            juger_le_point(Some(&avant), retour, apres)
+                .expect_err("pas de point neuf = échec")
+                .to_string()
         };
-        assert_eq!(en_sddl(construit.pointeur().0), reference);
-        assert!(reference.starts_with("O:BAG:BAD:"), "{reference}");
-    }
-
-    #[test]
-    fn le_point_n_est_ok_que_si_la_fin_reussit() {
-        assert_eq!(raison_du_point(Etape::Faite, 0), Ok(()));
-        let fin = raison_du_point(Etape::Fin, 1460)
-            .expect_err("fin refusée = échec")
-            .to_string();
-        assert!(fin.contains("1460"), "{fin}");
-        let debut = raison_du_point(Etape::Debut, 1058)
-            .expect_err("début refusé = échec")
-            .to_string();
-        assert!(debut.contains("1058"), "{debut}");
-        assert_ne!(fin, debut, "les deux raisons se distinguent");
+        let sautee = raison(Some(0), Some(&avant));
+        assert!(sautee.contains("24 h") && sautee.contains("3 h"), "{sautee}");
+        let perdu = raison(Some(0), Some(&[p(25, 90_000)]));
+        assert!(!perdu.contains("24 h"), "{perdu}");
+        assert!(raison(Some(1058), Some(&avant)).contains("1058"));
+        assert!(raison(None, None).contains("WMI"));
+        let illisible = raison(Some(0), None);
+        assert!(juger_le_point(None, Some(0), Some(&[p(27, 5)])).is_err());
+        assert!(
+            [sautee.as_str(), perdu.as_str(), illisible.as_str()]
+                .iter()
+                .all(|r| !r.is_empty())
+        );
+        assert_ne!(sautee, perdu);
+        assert_ne!(perdu, illisible);
+        assert_eq!(duree(2400), "40 min");
+        assert_eq!(duree(3 * 3600 + 59), "3 h");
     }
 
     #[test]
     fn les_structures_ont_la_taille_de_windows() {
         assert_eq!(std::mem::size_of::<InfoLancement>(), 112);
         assert_eq!(std::mem::size_of::<Securite>(), 24);
-        assert_eq!(std::mem::size_of::<PointInfo>(), 528);
-        assert_eq!(std::mem::size_of::<PointEtat>(), 12);
-        assert_eq!(std::mem::offset_of!(PointEtat, sequence), 4);
     }
 }

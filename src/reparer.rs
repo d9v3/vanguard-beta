@@ -151,11 +151,12 @@ pub(crate) const SANS_POINT_ARRETE: i32 = 5;
 
 /// Windows : la commande va dans la même fenêtre administrateur que la réparation (une seule demande).
 /// Protection du système coupée sur C: : on le dit et on demande s'il faut continuer sans.
-/// Windows ne crée qu'un point par 24 h : il l'écrit alors en avertissement, le plus récent sert.
+/// Windows ne crée qu'un point par 24 h : la correction native le dit et pose la question (eleve.rs) ; sous Wine,
+/// Checkpoint-Computer l'écrit en avertissement et le plus récent sert.
 #[cfg(windows)]
 #[allow(clippy::unnecessary_wraps)] // même signature que sur Linux, où l'outil peut manquer
 pub(crate) fn point_restauration(titre: &str) -> Option<(&'static str, String)> {
-    // Le titre ne voyage plus : la correction native le fait par SRSetRestorePoint (eleve.rs), et le script
+    // Le titre ne voyage plus : la correction native le pose par WMI (eleve.rs), et le script
     // PowerShell, quand il reste nécessaire, reçoit la forme ci-dessous par `corrections::en_powershell`.
     let _ = titre;
     Some(("Windows", crate::machine::windows::corrections::POINT.to_string()))
