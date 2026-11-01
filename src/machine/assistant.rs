@@ -1,6 +1,7 @@
 //! L'assistant élevé de Linux et macOS : Vanguard se relance lui-même avec les droits d'administrateur, sous la
-//! sous-commande cachée `appliquer-eleve`, pour faire des ordres du blocage (`protection::blocage::ordres`) sans
-//! aucun shell : jamais « sudo sh -c », jamais une commande écrite en texte.
+//! sous-commande cachée `appliquer-eleve`, pour faire des ordres du blocage (`protection::blocage::ordres`) et des
+//! gestes de Linux (`machine::gestes_unix`) sans aucun shell : jamais « sudo sh -c », jamais une commande écrite en
+//! texte.
 //!
 //! L'élévation, dans cet ordre : pkexec (Linux, s'il y a une session graphique : la fenêtre de l'agent polkit ; sans
 //! agent, pkexec rend 127 et le suivant est essayé), run0 (Linux, systemd 256 et plus : son propre agent dans le
@@ -18,9 +19,20 @@
 //! les passent tels quels). Le fils dit d'abord qu'il est prêt (il tourne en root), lit la liste jusqu'à « fin »,
 //! la relit contre la liste fermée (une ligne étrangère, et rien n'est fait), la montre sur sa sortie d'erreur (le
 //! terminal), rejuge chaque ordre avec ses propres yeux (`ordres::juger`), le fait, puis répond une ligne par ordre.
-//! Il n'écrit aucun fichier et ne lit rien du dossier de Vanguard. Le parent l'a déjà montrée avant l'accord : le fils
-//! ne redemande pas (le mot de passe vaut accord), au contraire de Windows, dont la demande d'administrateur ne montre
-//! que le nom du programme et où la fenêtre élevée est à part.
+//! Un geste de Linux est fait par le chemin absolu de son outil, dans un environnement vidé
+//! (`commande::environnement_propre`) : rien de ce que le compte a posé (PATH, BASH_ENV, LD_PRELOAD) ne le suit.
+//! Il n'écrit aucun fichier et ne lit rien du dossier de Vanguard.
+//!
+//! L'accord. Le parent a montré la liste avant de demander les droits : pour un geste ordinaire, le mot de passe vaut
+//! accord. Un geste qui baisse une protection ou supprime quelque chose (`GesteUnix::demande_accord`) est redemandé
+//! par le fils lui-même, en root, sur le terminal de la personne (/dev/tty, vidé de ce qui y était tapé d'avance) :
+//! seul « oui » le fait ; sans terminal (pkexec lancé hors d'un terminal), il est refusé, jamais fait en silence.
+//! Ce que cela arrête, honnêtement : un programme du compte qui écrit des fichiers (un faux `sudo` dans
+//! ~/.local/bin, un BASH_ENV, une liste glissée) ne fait faire en root que des gestes de la liste fermée, et pas ceux
+//! qui affaiblissent sans que la personne ait dit oui au fils. Ce que cela n'arrête pas : un programme du compte
+//! capable d'écrire dans le terminal de la personne ou d'agir à sa place dans sa session (taper pour elle, injecter
+//! dans ses processus) peut aussi répondre « oui » ; contre lui, seule une session séparée protège (Windows : le
+//! bureau sécurisé de l'UAC).
 
 // FFI de libc : prctl (PR_SET_DUMPABLE, le secret de l'assistant élevé hors des vidages).
 #![allow(unsafe_code)]
@@ -28,9 +40,10 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
 
+use crate::machine::gestes_unix::{self, GesteUnix, Programme};
 use crate::protection::blocage::ordres::{self, LIGNE_MAX, LIGNES_MAX, Ordre, Resultat};
 use crate::ui::{GRIS, RESET};
-use crate::{tr, trp};
+use crate::{tr, trf, trp};
 
 /// La première ligne du fils : il tourne en root et attend la liste.
 const PRET: &str = "vanguard-eleve pret";
@@ -42,6 +55,54 @@ const SUITE: &str = "suite";
 const LISTE_REFUSEE: i32 = 8;
 /// Sortie du fils : il ne tourne pas en root.
 const SANS_DROITS: i32 = 9;
+
+/// Ce que le parent demande au fils : un ordre du blocage, ou un geste de Linux. Les deux grammaires se partagent le
+/// canal et ses bornes (`ordres::LIGNE_MAX`, `ordres::LIGNES_MAX`) sans se recouvrir : « vanguard:geste » n'est le
+/// verbe d'aucun ordre.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Demande {
+    Ordre(Ordre),
+    Geste(GesteUnix),
+}
+
+impl Demande {
+    /// La demande que porte une ligne, relue exactement ; une ligne qui commence comme un geste n'est jamais lue
+    /// comme un ordre.
+    pub(crate) fn analyser(ligne: &str) -> Option<Demande> {
+        if gestes_unix::a_le_prefixe(ligne) {
+            gestes_unix::analyser(ligne).map(Demande::Geste)
+        } else {
+            ordres::analyser(ligne).map(Demande::Ordre)
+        }
+    }
+
+    pub(crate) fn ligne(&self) -> String {
+        match self {
+            Demande::Ordre(o) => o.ligne(),
+            Demande::Geste(g) => g.ligne(),
+        }
+    }
+
+    /// Ce que fait la demande, dans la langue de la personne.
+    pub(crate) fn texte(&self) -> String {
+        match self {
+            Demande::Ordre(o) => o.texte(),
+            Demande::Geste(g) => texte_du_geste(*g).to_string(),
+        }
+    }
+
+    fn permis_ici(&self) -> bool {
+        match self {
+            Demande::Ordre(o) => o.permis_ici(),
+            Demande::Geste(g) => g.permis_ici(),
+        }
+    }
+}
+
+fn texte_du_geste(g: GesteUnix) -> &'static str {
+    let (fr, en) = g.phrase();
+    if crate::langue::anglais() { en } else { fr }
+}
 
 /// Une façon d'obtenir les droits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,20 +124,9 @@ impl Methode {
     }
 }
 
-/// Un programme du système par son chemin, jamais par le PATH du compte (qui choisirait un faux « sudo » posé dans un
-/// dossier à lui). NixOS met ses programmes setuid dans /run/wrappers/bin.
+/// Un programme du système par son chemin (`commande::outil_systeme`).
 fn outil(nom: &str) -> Option<std::path::PathBuf> {
-    [
-        "/run/wrappers/bin",
-        "/usr/bin",
-        "/bin",
-        "/usr/sbin",
-        "/sbin",
-        "/run/current-system/sw/bin",
-    ]
-    .iter()
-    .map(|d| std::path::Path::new(d).join(nom))
-    .find(|c| c.is_file())
+    crate::commande::outil_systeme(nom)
 }
 
 /// Un terminal où demander le mot de passe : le terminal de contrôle de ce processus.
@@ -172,8 +222,8 @@ enum Issue {
     Indisponible,
 }
 
-/// Le texte envoyé au fils : les ordres, groupe après groupe, séparés par « suite », puis « fin ».
-fn envoi(groupes: &[Vec<Ordre>]) -> String {
+/// Le texte envoyé au fils : les demandes, groupe après groupe, séparées par « suite », puis « fin ».
+fn envoi(groupes: &[Vec<Demande>]) -> String {
     let mut t = String::new();
     for (i, g) in groupes.iter().enumerate() {
         if i > 0 {
@@ -209,9 +259,9 @@ fn lire_lignes(source: impl Read) -> Option<Vec<String>> {
     }
 }
 
-/// La liste reçue, relue : des groupes d'ordres de la liste fermée, permis sur ce système ; `None` dès qu'une ligne
-/// n'en est pas un, qu'un groupe est vide, ou qu'il y en a trop.
-fn analyser_liste(lignes: &[String]) -> Option<Vec<Vec<Ordre>>> {
+/// La liste reçue, relue : des groupes d'ordres et de gestes des listes fermées, permis sur ce système ; `None` dès
+/// qu'une ligne n'en est pas un, qu'un groupe est vide, ou qu'il y en a trop.
+fn analyser_liste(lignes: &[String]) -> Option<Vec<Vec<Demande>>> {
     let mut groupes = vec![Vec::new()];
     let mut total = 0;
     for l in lignes {
@@ -219,7 +269,7 @@ fn analyser_liste(lignes: &[String]) -> Option<Vec<Vec<Ordre>>> {
             groupes.push(Vec::new());
             continue;
         }
-        let o = ordres::analyser(l).filter(Ordre::permis_ici)?;
+        let o = Demande::analyser(l).filter(Demande::permis_ici)?;
         total += 1;
         groupes.last_mut()?.push(o);
     }
@@ -227,7 +277,7 @@ fn analyser_liste(lignes: &[String]) -> Option<Vec<Vec<Ordre>>> {
 }
 
 /// Tout « non fait », avec la même raison.
-fn tous_en_echec(groupes: &[Vec<Ordre>], raison: &str) -> Vec<Vec<Resultat>> {
+fn tous_en_echec<D>(groupes: &[Vec<D>], raison: &str) -> Vec<Vec<Resultat>> {
     groupes
         .iter()
         .map(|g| g.iter().map(|_| Resultat::echec(raison)).collect())
@@ -235,7 +285,7 @@ fn tous_en_echec(groupes: &[Vec<Ordre>], raison: &str) -> Vec<Vec<Resultat>> {
 }
 
 /// Les réponses du fils, rangées dans les groupes ; `None` si leur nombre n'est pas celui des ordres.
-fn ranger(groupes: &[Vec<Ordre>], reponses: &[String]) -> Option<Vec<Vec<Resultat>>> {
+fn ranger<D>(groupes: &[Vec<D>], reponses: &[String]) -> Option<Vec<Vec<Resultat>>> {
     let total: usize = groupes.iter().map(Vec::len).sum();
     if reponses.len() != total {
         return None;
@@ -253,7 +303,7 @@ fn ranger(groupes: &[Vec<Ordre>], reponses: &[String]) -> Option<Vec<Vec<Resulta
     )
 }
 
-fn essayer(m: Methode, groupes: &[Vec<Ordre>]) -> Issue {
+fn essayer(m: Methode, groupes: &[Vec<Demande>]) -> Issue {
     let (Some(chemin), Some(programme)) = (outil(m.nom()), programme()) else {
         return Issue::Indisponible;
     };
@@ -316,14 +366,15 @@ fn essayer(m: Methode, groupes: &[Vec<Ordre>]) -> Issue {
     }
 }
 
-/// Fait ces groupes d'ordres avec les droits d'administrateur : ici même si Vanguard tourne déjà en root, sinon par
-/// l'assistant élevé, une seule demande pour tous. Une réponse par ordre, dans l'ordre reçu ; une demande refusée
-/// rend tout « non fait », sans redemander.
-pub(crate) fn appliquer(groupes: &[Vec<Ordre>]) -> Vec<Vec<Resultat>> {
+/// Fait ces groupes de demandes avec les droits d'administrateur : ici même si Vanguard tourne déjà en root, sinon
+/// par l'assistant élevé, une seule demande pour tous. Une réponse par demande, dans l'ordre reçu ; une demande de
+/// droits refusée rend tout « non fait », sans redemander.
+pub(crate) fn appliquer(groupes: &[Vec<Demande>]) -> Vec<Vec<Resultat>> {
     if crate::socle::euid() == 0 {
         let juge = ordres::Juge::lire(None);
-        // Les gestes viennent d'être montrés (`machine::lancer_les_ordres`) : seulement leur issue.
-        return ordres::executer_groupes(groupes, &juge, &mut |t| {
+        // Les gestes viennent d'être montrés (`machine::lancer_les_ordres`) : seulement leur issue. L'accord d'un geste
+        // qui affaiblit se demande ici aussi sur le terminal : être root ne dit pas que la personne est d'accord.
+        return executer_demandes(groupes, &juge, &mut accord_au_terminal, &mut |t| {
             if !t.starts_with("> ") {
                 println!("    {GRIS}{t}{RESET}");
             }
@@ -448,7 +499,7 @@ pub(crate) fn executer(langue: Option<&str>, parent: Option<u32>) -> i32 {
         eprintln!("  · {}", o.texte());
     }
     let juge = ordres::Juge::lire(parent);
-    let resultats = ordres::executer_groupes(&groupes, &juge, &mut |t| eprintln!("{t}"));
+    let resultats = executer_demandes(&groupes, &juge, &mut accord_au_terminal, &mut |t| eprintln!("{t}"));
     let mut code = 0;
     for r in resultats.iter().flatten() {
         if !r.reussi {
@@ -461,6 +512,147 @@ pub(crate) fn executer(langue: Option<&str>, parent: Option<u32>) -> i32 {
     let _ = writeln!(sortie, "{FIN}");
     let _ = sortie.flush();
     code
+}
+
+/// Pourquoi un geste qui demande l'accord n'est pas fait (pas de terminal, pas de « oui ») : dit tel quel.
+#[derive(Debug)]
+struct Refus(String);
+
+/// Fait les demandes, groupe par groupe (`ordres::executer_en_groupes`) : un ordre est rejugé puis fait ; un geste
+/// est fait après l'accord de la personne s'il en demande un. `accord` rend la raison d'un refus.
+fn executer_demandes(
+    groupes: &[Vec<Demande>],
+    juge: &ordres::Juge,
+    accord: &mut dyn FnMut(GesteUnix) -> Result<(), Refus>,
+    annoncer: &mut dyn FnMut(&str),
+) -> Vec<Vec<Resultat>> {
+    ordres::executer_en_groupes(
+        groupes,
+        Demande::texte,
+        |d| match d {
+            Demande::Ordre(o) => ordres::juger_et_faire(o, juge),
+            Demande::Geste(g) => faire_geste(*g, accord),
+        },
+        annoncer,
+    )
+}
+
+/// Un geste de Linux, rejugé ici : permis sur ce système, accordé s'il le faut, puis fait.
+fn faire_geste(g: GesteUnix, accord: &mut dyn FnMut(GesteUnix) -> Result<(), Refus>) -> Resultat {
+    if !g.permis_ici() {
+        return Resultat::echec(tr!(
+            "ce geste n'est pas prévu sur ce système : rien n'est fait",
+            "this step is not meant for this system: nothing is done"
+        ));
+    }
+    if g.demande_accord()
+        && let Err(Refus(raison)) = accord(g)
+    {
+        return Resultat::echec(raison);
+    }
+    match g {
+        GesteUnix::Programme(p) => lancer_programme(p),
+    }
+}
+
+/// Les variables que l'outil reçoit de l'assistant : sa langue et son terminal, rien d'autre (ni HOME, ni le bus de
+/// la session : il tourne en root, pour le système).
+fn langue_ou_terminal(nom: &std::ffi::OsStr) -> bool {
+    nom.to_str()
+        .is_some_and(|n| n == "LANG" || n == "TERM" || n.strip_prefix("LC_").is_some_and(|r| !r.is_empty()))
+}
+
+/// Lance un programme de la table par le chemin absolu de son outil, avec ses arguments figés, dans un environnement
+/// vidé ; seul un code de `reussites` dit « fait », et un échec dit pourquoi.
+fn lancer_programme(p: &Programme) -> Resultat {
+    let Some(chemin) = crate::commande::outil_systeme(p.outil) else {
+        return Resultat::echec(trf!(
+            "{} n'est pas installé dans les dossiers du système : rien n'est fait",
+            "{} is not installed in the system folders: nothing is done",
+            p.outil
+        ));
+    };
+    let mut c = Command::new(&chemin);
+    c.args(p.arguments);
+    crate::commande::environnement_propre(&mut c, std::env::vars_os().filter(|(n, _)| langue_ou_terminal(n)));
+    let Some(r) = crate::commande::lancer(&mut c, p.delai) else {
+        return Resultat::echec(trf!(
+            "{} n'a pas démarré, ou n'a pas fini en {} minutes : compté comme non fait",
+            "{} did not start, or did not finish within {} minutes: counted as not done",
+            p.outil,
+            p.delai.div_ceil(60)
+        ));
+    };
+    match r.code {
+        Some(code) if p.reussites.contains(&code) => Resultat::ok(),
+        code => {
+            let pourquoi = derniere_ligne(&r.erreurs).or_else(|| derniere_ligne(&r.sortie));
+            let code = code.map_or_else(
+                || tr!("arrêté par un signal", "stopped by a signal").to_string(),
+                |c| trf!("code {c}", "code {c}"),
+            );
+            Resultat::echec(match pourquoi {
+                Some(l) => trf!("{} a échoué ({code}) : {l}", "{} failed ({code}): {l}", p.outil),
+                None => trf!("{} a échoué ({code})", "{} failed ({code})", p.outil),
+            })
+        }
+    }
+}
+
+/// La dernière ligne non vide d'une sortie, filtrée (`ui::affichable`) et coupée à 200 caractères : la raison d'un
+/// échec, telle que l'outil l'a dite.
+fn derniere_ligne(texte: &str) -> Option<String> {
+    let l = texte.lines().rev().map(str::trim).find(|l| !l.is_empty())?;
+    Some(crate::ui::affichable(&l.chars().take(200).collect::<String>()))
+}
+
+/// La réponse de la personne à une question d'accord : seuls « o », « oui », « y » et « yes » (majuscules permises)
+/// disent oui ; le reste, une ligne vide comprise, dit non. Une seule ligne, bornée, est lue.
+fn accord(question: &str, lecteur: &mut impl BufRead, ecrivain: &mut impl Write) -> bool {
+    if write!(ecrivain, "{question} ").and_then(|()| ecrivain.flush()).is_err() {
+        return false;
+    }
+    let mut reponse = String::new();
+    if (&mut *lecteur).take(64).read_line(&mut reponse).is_err() {
+        return false;
+    }
+    matches!(reponse.trim().to_lowercase().as_str(), "o" | "oui" | "y" | "yes")
+}
+
+/// L'accord d'un geste qui affaiblit ou supprime, demandé sur le terminal de la personne (/dev/tty), jamais sur le
+/// canal du parent. Sans terminal, refusé.
+fn accord_au_terminal(g: GesteUnix) -> Result<(), Refus> {
+    use std::os::fd::AsRawFd;
+    let Ok(tty) = std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty") else {
+        return Err(Refus(
+            tr!(
+            "ce geste demande votre accord, et aucun terminal n'est là pour le donner : rien n'est fait. Lancez Vanguard depuis un terminal pour le faire",
+            "this step needs your agreement, and no terminal is there to give it: nothing is done. Start Vanguard from a terminal to do it"
+        )
+            .to_string(),
+        ));
+    };
+    // Ce qui a été tapé d'avance, ou glissé avant la question, ne répond pas à sa place.
+    // SAFETY: tcflush sur un descripteur ouvert que `tty` tient pendant l'appel ; aucun pointeur.
+    unsafe { libc::tcflush(tty.as_raw_fd(), libc::TCIFLUSH) };
+    let question = trf!(
+        "Vanguard (administrateur) : {} — ceci baisse une protection ou supprime quelque chose. D'accord ? Tapez « oui » puis Entrée (autre chose refuse) :",
+        "Vanguard (administrator): {} — this lowers a protection or deletes something. Agree? Type \"yes\" then Enter (anything else refuses):",
+        texte_du_geste(g)
+    );
+    let mut ecrivain = &tty;
+    let mut lecteur = BufReader::new(&tty);
+    if accord(&question, &mut lecteur, &mut ecrivain) {
+        Ok(())
+    } else {
+        Err(Refus(
+            tr!(
+                "pas fait : vous n'avez pas donné votre accord",
+                "not done: you did not give your agreement"
+            )
+            .to_string(),
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -586,18 +778,18 @@ mod tests {
     fn le_canal_se_relit_et_refuse_l_etranger() {
         let groupes = vec![
             vec![
-                Ordre::BloquerSortie {
+                Demande::Ordre(Ordre::BloquerSortie {
                     pare_feu: pf(),
                     ip: "203.0.113.7".parse().unwrap(),
-                },
-                Ordre::CouperConnexions {
+                }),
+                Demande::Ordre(Ordre::CouperConnexions {
                     ip: "203.0.113.7".parse().unwrap(),
-                },
+                }),
             ],
-            vec![Ordre::ArreterProcessus {
+            vec![Demande::Ordre(Ordre::ArreterProcessus {
                 pid: 4242,
                 chemin: "/home/alice/.cache/x".into(),
-            }],
+            })],
         ];
         let t = envoi(&groupes);
         let lignes = lire_lignes(t.as_bytes()).unwrap();
@@ -633,9 +825,155 @@ mod tests {
         if crate::socle::euid() == 0 {
             return crate::essais::saute("essais lancés en root : l'ordre se ferait ici");
         }
-        let r = appliquer(&[vec![Ordre::CouperConnexions {
+        let r = appliquer(&[vec![Demande::Ordre(Ordre::CouperConnexions {
             ip: "203.0.113.7".parse().unwrap(),
-        }]]);
+        })]]);
         assert!(!r[0][0].reussi);
+    }
+
+    /// Un geste de Linux passe sur le même canal qu'un ordre et se relit tel quel ; une ligne qui commence comme un
+    /// geste sans en être un fait refuser toute la liste (jamais lue comme un ordre, jamais confiée à un shell).
+    #[test]
+    fn les_gestes_passent_par_le_meme_canal() {
+        let geste = Demande::Geste(GesteUnix::Programme(&gestes_unix::FRESHCLAM));
+        let groupes = vec![vec![geste.clone()]];
+        let lignes = lire_lignes(envoi(&groupes).as_bytes()).unwrap();
+        assert_eq!(lignes, ["vanguard:geste programme freshclam"]);
+        if cfg!(target_os = "linux") {
+            assert_eq!(analyser_liste(&lignes), Some(groupes));
+        } else {
+            // Sous macOS, aucun geste de Linux n'est permis (plan du lot Unix, D8).
+            assert_eq!(analyser_liste(&lignes), None);
+        }
+        assert_eq!(Demande::analyser(&geste.ligne()), Some(geste));
+        for hostile in [
+            "vanguard:geste programme freshclam --config-file=/home/alice/x\nfin\n",
+            "vanguard:geste programme inconnu\nfin\n",
+            "vanguard:geste sh -c id\nfin\n",
+        ] {
+            let l = lire_lignes(hostile.as_bytes()).unwrap();
+            assert_eq!(analyser_liste(&l), None, "{hostile:?}");
+        }
+    }
+
+    /// Seul un oui franc vaut accord ; une ligne vide, autre chose, ou un terminal qui se ferme disent non. La
+    /// question est écrite là où la réponse est lue.
+    #[test]
+    fn l_accord_ne_se_donne_que_par_oui() {
+        for (reponse, attendu) in [
+            ("oui\n", true),
+            ("o\n", true),
+            ("YES\n", true),
+            ("y\r\n", true),
+            ("  Oui  \n", true),
+            ("\n", false),
+            ("", false),
+            ("non\n", false),
+            ("ouii\n", false),
+            ("oui oui\n", false),
+            ("ok\n", false),
+        ] {
+            let mut ecrit = Vec::new();
+            let mut lu = std::io::Cursor::new(reponse.as_bytes());
+            assert_eq!(accord("D'accord ?", &mut lu, &mut ecrit), attendu, "{reponse:?}");
+            assert!(String::from_utf8(ecrit).unwrap().starts_with("D'accord ?"));
+        }
+        // Une réponse sans fin n'est lue qu'en partie, et refusée.
+        let longue = format!("{}oui\n", "x".repeat(10_000));
+        let mut lu = std::io::Cursor::new(longue.as_bytes());
+        assert!(!accord("?", &mut lu, &mut Vec::new()));
+    }
+
+    /// Un geste qui affaiblit n'est jamais fait sans accord : le refus est rendu tel quel, et rien n'est lancé.
+    #[test]
+    fn un_geste_qui_affaiblit_attend_l_accord() {
+        static AFFAIBLIT: Programme = Programme {
+            id: "essai-affaiblit",
+            outil: "vanguard-outil-absent-essai",
+            arguments: &[],
+            reussites: &[0],
+            delai: 5,
+            affaiblit: true,
+            supprime: false,
+            fr: "essai",
+            en: "test",
+        };
+        let g = GesteUnix::Programme(&AFFAIBLIT);
+        if !g.permis_ici() {
+            return crate::essais::saute("aucun geste de Linux n'est permis sur ce système");
+        }
+        let mut demandes = 0;
+        let r = faire_geste(g, &mut |_| {
+            demandes += 1;
+            Err(Refus("refusé à l'essai".into()))
+        });
+        assert_eq!(demandes, 1);
+        assert!(!r.reussi && r.raison == "refusé à l'essai", "{r:?}");
+        // Accordé : il ne reste qu'à trouver l'outil, absent ici, et c'est dit (jamais un faux « ok »).
+        let r = faire_geste(g, &mut |_| Ok(()));
+        assert!(!r.reussi && r.raison.contains("vanguard-outil-absent-essai"), "{r:?}");
+        // Un geste ordinaire ne demande rien.
+        let mut demande = false;
+        let _ = faire_geste(GesteUnix::Programme(&ESSAI_VRAI), &mut |_| {
+            demande = true;
+            Err(Refus(String::new()))
+        });
+        assert!(!demande);
+    }
+
+    static FAUX: Programme = Programme {
+        id: "essai-faux",
+        outil: "false",
+        arguments: &[],
+        reussites: &[0],
+        delai: 10,
+        affaiblit: false,
+        supprime: false,
+        fr: "essai",
+        en: "test",
+    };
+
+    static ESSAI_VRAI: Programme = Programme {
+        id: "essai-vrai",
+        outil: "true",
+        arguments: &[],
+        reussites: &[0],
+        delai: 10,
+        affaiblit: false,
+        supprime: false,
+        fr: "essai",
+        en: "test",
+    };
+
+    /// L'issue d'un programme : son code dit « fait » ou « échec », avec sa raison ; jamais un « ok » pour un code
+    /// hors de la table.
+    #[test]
+    fn un_code_hors_de_la_table_est_un_echec() {
+        if crate::commande::outil_systeme("true").is_none() || crate::commande::outil_systeme("false").is_none() {
+            return crate::essais::saute("ni true ni false dans les dossiers du système");
+        }
+        assert!(lancer_programme(&ESSAI_VRAI).reussi);
+        let r = lancer_programme(&FAUX);
+        assert!(
+            !r.reussi && r.raison.contains("false") && r.raison.contains('1'),
+            "{r:?}"
+        );
+    }
+
+    /// L'outil ne reçoit que sa langue et son terminal de l'assistant.
+    #[test]
+    fn l_outil_ne_recoit_que_langue_et_terminal() {
+        for (n, garde) in [
+            ("LANG", true),
+            ("LC_ALL", true),
+            ("TERM", true),
+            ("LC_", false),
+            ("PATH", false),
+            ("HOME", false),
+            ("BASH_ENV", false),
+            ("LD_PRELOAD", false),
+        ] {
+            assert_eq!(langue_ou_terminal(std::ffi::OsStr::new(n)), garde, "{n}");
+        }
     }
 }

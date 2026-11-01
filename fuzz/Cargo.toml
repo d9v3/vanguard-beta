@@ -233,3 +233,17 @@ path = "fuzz_targets/gestes.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "gestes_unix"
+path = "fuzz_targets/gestes_unix.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ordres"
+path = "fuzz_targets/ordres.rs"
+test = false
+doc = false
+bench = false

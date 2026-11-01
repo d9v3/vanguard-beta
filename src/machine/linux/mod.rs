@@ -290,7 +290,9 @@ impl Paquets {
                 } else {
                     ("rpm", "-V")
                 };
-                let verif = crate::commande::lancer(Command::new(outil).args([option, paquet]).env("LC_ALL", "C"), 60)
+                // Par son chemin et dans un environnement vidé : un faux rpm du compte dirait « rien n'a changé ».
+                let verif = crate::commande::outil_propre(outil)
+                    .and_then(|mut c| crate::commande::lancer(c.args([option, paquet]).env("LC_ALL", "C"), 60))
                     .filter(|r| matches!(r.code, Some(0 | 1)))
                     .map(|r| r.sortie);
                 fichiers
@@ -383,15 +385,17 @@ pub(crate) fn service_actif(nom: &str) -> bool {
 /// Chaque unité tourne-t-elle, comme le code de retour de `systemctl is-active` le dirait (« active »,
 /// « reloading » ou « refreshing ») ? L'état d'activité de systemd, lu sur un seul bus pour toutes : une unité « oneshot » qui reste
 /// active sans processus (ufw, nftables) et une prise d'écoute (ssh.socket) y sont actives, ce que les groupes de
-/// contrôle ne diraient pas. Sans bus (conteneur), ou sur une erreur pour un nom, `systemctl is-active` pour ce nom.
+/// contrôle ne diraient pas. Sans bus, ou sur une erreur pour un nom : faux, comme `systemctl is-active` qui ne joint
+/// pas systemd (il passe par ce même bus quand il n'est pas root) ; il ne sert plus en secours, ce qui retire un
+/// programme pris dans le PATH du compte.
 pub(crate) fn services_systemd_actifs(noms: &[&str]) -> Vec<bool> {
     // Les trois états où `systemctl is-active` répond 0 (systemctl-is-active.c).
     let actif = |etat: &str| matches!(etat, "active" | "reloading" | "refreshing");
     let mut bus = dbus::Bus::systeme().ok();
     noms.iter()
-        .map(|nom| match bus.as_mut().map(|b| dbus::etat_d_activite(b, nom)) {
-            Some(Ok(etat)) => etat.as_deref().is_some_and(actif),
-            _ => sortie("systemctl", &["is-active", nom]).is_some_and(|s| actif(s.trim())),
+        .map(|nom| {
+            bus.as_mut()
+                .is_some_and(|b| dbus::etat_d_activite(b, nom).is_ok_and(|e| e.as_deref().is_some_and(actif)))
         })
         .collect()
 }
@@ -1757,52 +1761,24 @@ fn verrouillage_ecran() -> Option<Constat> {
 type Minuteries = (Vec<(String, u64, String, bool)>, Vec<bool>);
 
 /// Minuteries systemd (système et utilisateur) : (nom, dernier passage en µs depuis 1970, service lancé, utilisateur ?),
-/// lues par D-Bus (ListUnits, puis LastTriggerUSec et Unit de chaque minuterie), `systemctl list-timers` en secours.
-/// Rend aussi les gestionnaires qui n'ont pu être lus ni par l'un ni par l'autre (« système », « utilisateur ») :
-/// « aucune sauvegarde » n'y serait pas prouvé.
+/// lues par D-Bus (ListUnits, puis LastTriggerUSec et Unit de chaque minuterie), sans `systemctl list-timers` en
+/// secours : il passe par les mêmes bus, et le PATH du compte en choisirait un faux. Rend aussi les gestionnaires qui
+/// n'ont pu être lus (« système », « utilisateur ») : « aucune sauvegarde » n'y serait pas prouvé.
 fn minuteries() -> Minuteries {
     let mut toutes = Vec::new();
     let mut non_lus = Vec::new();
     for utilisateur in [false, true] {
-        if let Ok(liste) = unites::bus(utilisateur).and_then(|mut b| unites::minuteries(&mut b)) {
-            toutes.extend(liste.into_iter().map(|m| (m.nom, m.dernier, m.service, utilisateur)));
-            continue;
-        }
-        let mut args = vec!["list-timers", "--all", "--output=json"];
-        if utilisateur {
-            args.insert(0, "--user");
-        }
-        let Some(liste) = sortie("systemctl", &args).and_then(|json| match serde_json::from_str(&json) {
-            Ok(serde_json::Value::Array(l)) => Some(l),
-            _ => None,
-        }) else {
-            non_lus.push(utilisateur);
-            continue;
-        };
-        for t in liste {
-            let champ = |c: &str| {
-                t.get(c)
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_string()
-            };
-            let dernier = t.get("last").and_then(serde_json::Value::as_u64).unwrap_or(0);
-            toutes.push((champ("unit"), dernier, champ("activates"), utilisateur));
+        match unites::bus(utilisateur).and_then(|mut b| unites::minuteries(&mut b)) {
+            Ok(liste) => toutes.extend(liste.into_iter().map(|m| (m.nom, m.dernier, m.service, utilisateur))),
+            Err(_) => non_lus.push(utilisateur),
         }
     }
     (toutes, non_lus)
 }
 
-/// Le résultat du dernier passage d'un service (« success »…), par D-Bus, `systemctl show -p Result` en secours.
+/// Le résultat du dernier passage d'un service (« success »…), par D-Bus seul ; `None` sans bus (non lu).
 fn resultat_du_service(service: &str, utilisateur: bool) -> Option<String> {
-    if let Ok(mut b) = unites::bus(utilisateur) {
-        return unites::resultat(&mut b, service);
-    }
-    let mut args = vec!["show", service, "-p", "Result", "--value"];
-    if utilisateur {
-        args.insert(0, "--user");
-    }
-    sortie("systemctl", &args).map(|r| r.trim().to_string())
+    unites::resultat(&mut unites::bus(utilisateur).ok()?, service)
 }
 
 /// Une minuterie de sauvegarde ? `Some(true)` = vraie sauvegarde, `Some(false)` = instantanés sur le même disque.

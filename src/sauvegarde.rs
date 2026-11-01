@@ -326,26 +326,26 @@ fn cles_deja_dup(destination: &Path) -> Vec<(&'static str, &'static str, String)
     ]
 }
 
-/// `gsettings set` : par l'écrivain de dconf (bus de la session), la valeur vérifiée contre le schéma puis relue ;
-/// gsettings seulement quand ce chemin ne s'applique pas (schéma inconnu ici, valeur d'un autre type, pas de bus).
+/// `gsettings set` : par l'écrivain de dconf (bus de la session), la valeur vérifiée contre le schéma puis relue.
+/// Quand ce chemin ne s'applique pas (schéma inconnu ici, valeur d'un autre type, pas de bus) : un échec, dit, et non
+/// plus gsettings pris dans le PATH du compte (un faux répondrait « fait »).
 #[cfg(target_os = "linux")]
 fn regler_gsettings(schema: &str, cle: &str, valeur: &str) -> bool {
     // Sous les essais, aucun réglage réel ne s'écrit, ni par dconf ni par gsettings.
     if cfg!(test) {
         return false;
     }
-    match crate::machine::linux::dconf::gsettings_set(schema, cle, valeur) {
-        Some(ecrit) => ecrit,
-        None => crate::machine::sortie("gsettings", &["set", schema, cle, valeur]).is_some(),
-    }
+    crate::machine::linux::dconf::gsettings_set(schema, cle, valeur).unwrap_or(false)
 }
 
 #[cfg(target_os = "linux")]
 fn deja_dup_present() -> bool {
     dans_le_path("deja-dup").is_some()
         && schema_gsettings("org.gnome.DejaDup", Some("periodic")).unwrap_or_else(|| {
-            crate::machine::sortie("gsettings", &["list-keys", "org.gnome.DejaDup"])
-                .is_some_and(|t| t.contains("periodic"))
+            // Par son chemin et dans un environnement vidé ; ne fait que lire.
+            crate::commande::outil_propre("gsettings")
+                .and_then(|mut c| crate::commande::lancer(c.args(["list-keys", "org.gnome.DejaDup"]), 30))
+                .is_some_and(|r| r.code == Some(0) && r.sortie.contains("periodic"))
         })
 }
 
@@ -809,10 +809,15 @@ fn mettre_en_place() -> Option<MiseEnPlace> {
         }
         let mut avant = Vec::new();
         for (schema, cle, valeur) in &cles {
-            // Lue dans dconf et les schémas compilés, au format que `gsettings set` reprendra ; lui en secours.
-            let ancienne = crate::machine::linux::dconf::gsettings_get(schema, cle)
-                .or_else(|| crate::machine::sortie("gsettings", &["get", schema, cle]))
-                .unwrap_or_default();
+            // Lue dans dconf et les schémas compilés, au format que `gsettings set` reprendra. Illisible : rien n'est
+            // changé, le réglage ne pourrait pas reprendre sa valeur d'avant.
+            let Some(ancienne) = crate::machine::linux::dconf::gsettings_get(schema, cle) else {
+                mauvais(&trf!(
+                    "Valeur d'avant de {schema} {cle} illisible : rien d'autre n'est changé.",
+                    "Earlier value of {schema} {cle} unreadable: nothing else is changed."
+                ));
+                return None;
+            };
             avant.push((format!("{schema} {cle}"), ancienne.trim().to_string()));
             if !regler_gsettings(schema, cle, valeur) {
                 mauvais(&trf!(

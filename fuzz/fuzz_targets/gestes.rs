@@ -11,6 +11,9 @@
 #[allow(dead_code)]
 #[path = "../../src/machine/windows/gestes.rs"]
 mod gestes;
+// La découpe commune, que gestes.rs reprend par `super::decoupe`.
+#[path = "../../src/machine/decoupe.rs"]
+mod decoupe;
 
 libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
     let Ok(texte) = std::str::from_utf8(octets) else {

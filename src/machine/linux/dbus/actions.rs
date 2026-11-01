@@ -380,7 +380,9 @@ pub(crate) fn utilisateur(geste: Geste, unite: &str) -> bool {
         if geste != Geste::Recharger {
             args.push(unite);
         }
-        crate::commande::lancer(std::process::Command::new("systemctl").args(&args), 60)
+        // Par son chemin et dans un environnement vidé (XDG_RUNTIME_DIR, qui mène à la prise privée, est gardé).
+        crate::commande::outil_propre("systemctl")
+            .and_then(|mut c| crate::commande::lancer(c.args(&args), 60))
             .is_some_and(|r| r.code == Some(0))
     }
 }

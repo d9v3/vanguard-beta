@@ -374,7 +374,10 @@ fn antivirus(systemd: bool) -> Reparation {
             "if systemctl cat clamav-freshclam.service >/dev/null 2>&1; then sudo systemctl enable --now clamav-freshclam.service; fi".into(),
         ];
     } else {
-        r.commandes = vec!["sudo freshclam".into()];
+        // Sans systemd, rien à arrêter : le geste figé, fait par l'assistant élevé, sans shell ni « sudo » écrit en
+        // texte.
+        r.commandes =
+            vec![crate::machine::gestes_unix::GesteUnix::Programme(&crate::machine::gestes_unix::FRESHCLAM).ligne()];
     }
     r
 }

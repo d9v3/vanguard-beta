@@ -292,13 +292,14 @@ pub(crate) fn ufw_refuse_en_premier(port: u16) -> Option<bool> {
 
 /// `ufw status`, en root ou par sudo sans redemander le mot de passe.
 #[cfg(unix)]
-#[allow(clippy::unnecessary_wraps)] // même signature que sous Windows, où il n'y a rien à lancer
 fn ufw_status() -> Option<std::process::Command> {
+    // L'un et l'autre par leur chemin : un faux sudo ou ufw du compte répondrait « actif ».
+    let ufw = crate::commande::outil_systeme("ufw")?;
     let mut c = if super::gestes::administrateur() {
-        std::process::Command::new("ufw")
+        std::process::Command::new(ufw)
     } else {
-        let mut c = std::process::Command::new("sudo");
-        c.args(["-n", "ufw"]);
+        let mut c = std::process::Command::new(crate::commande::outil_systeme("sudo")?);
+        c.arg("-n").arg(ufw);
         c
     };
     c.arg("status").env("LC_ALL", "C");

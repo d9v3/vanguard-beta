@@ -1,0 +1,9 @@
+vanguard:bloquer-sortie ufw 203.0.113.7
+vanguard:debloquer-sortie nftables 2001:db8::7
+vanguard:fermer-port ufw 11434
+vanguard:rouvrir-port nftables 7860
+vanguard:couper-connexions 203.0.113.7
+vanguard:remettre-pilotes absent
+vanguard:remettre-pilotes 1
+vanguard:debloquer-sortie pf 203.0.113.7
+vanguard:bloquer-sortie windows 198.51.100.4

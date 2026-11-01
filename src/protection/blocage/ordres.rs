@@ -12,122 +12,20 @@
 //! (`corrections.rs`) : les paramètres sont permis, parce qu'ils sont typés et rejugés.
 
 use std::collections::HashSet;
-use std::net::IpAddr;
 
 use super::gardes;
 use super::pare_feu::PareFeu;
 use crate::machine::regles::Os;
 use crate::{tr, trf};
 
-/// Devant chaque verbe (le même que celui des corrections natives de Windows : les verbes ne se recouvrent pas).
-pub(crate) const PREFIXE: &str = "vanguard:";
-/// Une ligne plus longue ne vient pas de Vanguard : le plus long ordre porte un chemin de 4 096 octets en hexadécimal.
-pub(crate) const LIGNE_MAX: usize = 8448;
-/// Au-delà, une liste n'est pas celle d'une session de Vanguard.
-pub(crate) const LIGNES_MAX: usize = 512;
-/// Le plus long chemin de programme qu'un ordre d'arrêt porte.
-const CHEMIN_MAX: usize = 4096;
-
-/// Un geste de la liste fermée.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Ordre {
-    /// La règle sortante vers une adresse.
-    BloquerSortie {
-        pare_feu: PareFeu,
-        ip: IpAddr,
-    },
-    DebloquerSortie {
-        pare_feu: PareFeu,
-        ip: IpAddr,
-    },
-    /// La règle qui ferme un port TCP en entrée (sauf depuis cet ordinateur).
-    FermerPort {
-        pare_feu: PareFeu,
-        port: u16,
-    },
-    RouvrirPort {
-        pare_feu: PareFeu,
-        port: u16,
-    },
-    /// Couper les connexions déjà ouvertes vers une adresse (Linux : sock_diag ; macOS : pfctl -k).
-    CouperConnexions {
-        ip: IpAddr,
-    },
-    /// Arrêter ce processus, seulement s'il fait toujours tourner ce programme.
-    ArreterProcessus {
-        pid: u32,
-        chemin: String,
-    },
-    /// Windows : la liste de blocage des pilotes vulnérables remise à sa valeur d'avant (`None` : valeur absente).
-    RemettrePilotes {
-        avant: Option<u32>,
-    },
-}
-
-fn nom_pare_feu(p: PareFeu) -> &'static str {
-    match p {
-        PareFeu::Ufw => "ufw",
-        PareFeu::Nftables => "nftables",
-        PareFeu::Windows => "windows",
-        PareFeu::Pf => "pf",
-    }
-}
-
-fn pare_feu_de(t: &str) -> Option<PareFeu> {
-    [PareFeu::Ufw, PareFeu::Nftables, PareFeu::Windows, PareFeu::Pf]
-        .into_iter()
-        .find(|p| nom_pare_feu(*p) == t)
-}
-
-fn hex(octets: &[u8]) -> String {
-    use std::fmt::Write as _;
-    octets.iter().fold(String::with_capacity(octets.len() * 2), |mut s, o| {
-        let _ = write!(s, "{o:02x}");
-        s
-    })
-}
-
-fn de_hex(t: &str) -> Option<Vec<u8>> {
-    if !t.len().is_multiple_of(2) || !t.bytes().all(|o| matches!(o, b'0'..=b'9' | b'a'..=b'f')) {
-        return None;
-    }
-    (0..t.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&t[i..i + 2], 16).ok())
-        .collect()
-}
+#[cfg(test)]
+use super::ordres_ligne::CHEMIN_MAX;
+pub(crate) use super::ordres_ligne::{LIGNE_MAX, LIGNES_MAX, Ordre, analyser};
+// Le préfixe ne sert qu'à l'assistant élevé de Linux et macOS (`machine::lancer_les_ordres`, `gestes_unix`).
+#[cfg(unix)]
+pub(crate) use super::ordres_ligne::PREFIXE;
 
 impl Ordre {
-    /// La ligne qui porte cet ordre, sous sa seule forme admise.
-    pub(crate) fn ligne(&self) -> String {
-        match self {
-            Ordre::BloquerSortie { pare_feu, ip } => {
-                format!(
-                    "{PREFIXE}bloquer-sortie {} {}",
-                    nom_pare_feu(*pare_feu),
-                    ip.to_canonical()
-                )
-            }
-            Ordre::DebloquerSortie { pare_feu, ip } => {
-                format!(
-                    "{PREFIXE}debloquer-sortie {} {}",
-                    nom_pare_feu(*pare_feu),
-                    ip.to_canonical()
-                )
-            }
-            Ordre::FermerPort { pare_feu, port } => format!("{PREFIXE}fermer-port {} {port}", nom_pare_feu(*pare_feu)),
-            Ordre::RouvrirPort { pare_feu, port } => {
-                format!("{PREFIXE}rouvrir-port {} {port}", nom_pare_feu(*pare_feu))
-            }
-            Ordre::CouperConnexions { ip } => format!("{PREFIXE}couper-connexions {}", ip.to_canonical()),
-            Ordre::ArreterProcessus { pid, chemin } => {
-                format!("{PREFIXE}arreter-processus {pid} {}", hex(chemin.as_bytes()))
-            }
-            Ordre::RemettrePilotes { avant: Some(v) } => format!("{PREFIXE}remettre-pilotes {v}"),
-            Ordre::RemettrePilotes { avant: None } => format!("{PREFIXE}remettre-pilotes absent"),
-        }
-    }
-
     /// Ce que fait l'ordre, en une phrase, montrée avant l'accord et par celui qui agit.
     pub(crate) fn texte(&self) -> String {
         match self {
@@ -192,65 +90,8 @@ impl Ordre {
     }
 }
 
-/// L'ordre que porte une ligne, si et seulement si la ligne est exactement sa forme admise : le préfixe, un verbe de
-/// la liste, des paramètres séparés par une espace, chacun reparsé puis réécrit à l'identique (une adresse IPv4
-/// écrite en IPv6, un zéro de tête, une majuscule, une espace de trop : refusés).
-pub(crate) fn analyser(ligne: &str) -> Option<Ordre> {
-    if ligne.len() > LIGNE_MAX {
-        return None;
-    }
-    let reste = ligne.strip_prefix(PREFIXE)?;
-    let mots: Vec<&str> = reste.split(' ').collect();
-    let ip = |t: &str| t.parse::<IpAddr>().ok();
-    let port = |t: &str| t.parse::<u16>().ok().filter(|p| *p != 0);
-    let ordre = match mots.as_slice() {
-        ["bloquer-sortie", p, a] => Ordre::BloquerSortie {
-            pare_feu: pare_feu_de(p)?,
-            ip: ip(a)?,
-        },
-        ["debloquer-sortie", p, a] => Ordre::DebloquerSortie {
-            pare_feu: pare_feu_de(p)?,
-            ip: ip(a)?,
-        },
-        ["fermer-port", p, n] => Ordre::FermerPort {
-            pare_feu: pare_feu_de(p)?,
-            port: port(n)?,
-        },
-        ["rouvrir-port", p, n] => Ordre::RouvrirPort {
-            pare_feu: pare_feu_de(p)?,
-            port: port(n)?,
-        },
-        ["couper-connexions", a] => Ordre::CouperConnexions { ip: ip(a)? },
-        ["arreter-processus", n, c] => {
-            let chemin = String::from_utf8(de_hex(c)?).ok()?;
-            let absolu = chemin_absolu(&chemin);
-            if chemin.is_empty() || chemin.len() > CHEMIN_MAX || !absolu || chemin.contains(['\0', '\n', '\r']) {
-                return None;
-            }
-            Ordre::ArreterProcessus {
-                pid: n.parse::<u32>().ok().filter(|p| *p != 0)?,
-                chemin,
-            }
-        }
-        ["remettre-pilotes", "absent"] => Ordre::RemettrePilotes { avant: None },
-        // Les deux seules valeurs que cette clé a jamais eues avant un blocage de Vanguard.
-        ["remettre-pilotes", v @ ("0" | "1")] => Ordre::RemettrePilotes { avant: v.parse().ok() },
-        _ => return None,
-    };
-    (ordre.ligne() == ligne).then_some(ordre)
-}
-
-/// Un chemin complet, d'Unix (« / ») ou de Windows (« C:\ », « \\?\ ») : écrit à part de `Path`, pour que la
-/// ligne d'un système se relise pareil sur l'autre (les essais, et la note relue).
-fn chemin_absolu(c: &str) -> bool {
-    let o = c.as_bytes();
-    c.starts_with('/')
-        || c.starts_with(r"\\?\")
-        || matches!(o, [lettre, b':', b'\\', ..] if lettre.is_ascii_alphabetic())
-}
-
 /// La ligne est-elle un ordre de cette liste (et non une commande ou une correction native) ?
-#[cfg(any(unix, test))]
+#[cfg(test)]
 pub(crate) fn est_ordre(ligne: &str) -> bool {
     analyser(ligne).is_some()
 }
@@ -499,11 +340,30 @@ fn pas_de_vanguard() -> String {
 }
 
 /// Fait les ordres, groupe par groupe : dans un groupe, un ordre refusé ou en échec arrête la suite (« non fait ») ;
-/// un groupe n'empêche pas le suivant. `annoncer` montre chaque geste au moment de le faire, puis son issue.
-#[cfg(any(unix, test))]
+/// un groupe n'empêche pas le suivant. `annoncer` montre chaque geste au moment de le faire, puis son issue. Hors des
+/// essais, l'assistant élevé passe par `executer_en_groupes`, qui fait aussi les gestes de Linux.
+#[cfg(test)]
 pub(crate) fn executer_groupes(
     groupes: &[Vec<Ordre>],
     juge: &Juge,
+    annoncer: &mut dyn FnMut(&str),
+) -> Vec<Vec<Resultat>> {
+    executer_en_groupes(groupes, Ordre::texte, |o| juger_et_faire(o, juge), annoncer)
+}
+
+/// Un ordre rejugé, puis fait s'il passe.
+#[cfg(any(unix, test))]
+pub(crate) fn juger_et_faire(o: &Ordre, juge: &Juge) -> Resultat {
+    juger(o, juge).map_or_else(|| faire(o), Resultat::echec)
+}
+
+/// La marche de `executer_groupes` pour toute sorte de demande (les ordres du blocage, les gestes de Linux de
+/// `machine::gestes_unix`) : `agir` rejuge et fait une demande ; après un échec, le reste du groupe est « non fait ».
+#[cfg(any(unix, test))]
+pub(crate) fn executer_en_groupes<D>(
+    groupes: &[Vec<D>],
+    texte: impl Fn(&D) -> String,
+    mut agir: impl FnMut(&D) -> Resultat,
     annoncer: &mut dyn FnMut(&str),
 ) -> Vec<Vec<Resultat>> {
     groupes
@@ -512,17 +372,15 @@ pub(crate) fn executer_groupes(
             let mut arret = false;
             groupe
                 .iter()
-                .map(|o| {
-                    annoncer(&format!("> {}", o.texte()));
+                .map(|d| {
+                    annoncer(&format!("> {}", texte(d)));
                     let r = if arret {
                         Resultat::echec(tr!(
                             "non fait : l'étape d'avant a échoué",
                             "not done: the previous step failed"
                         ))
-                    } else if let Some(refus) = juger(o, juge) {
-                        Resultat::echec(refus)
                     } else {
-                        faire(o)
+                        agir(d)
                     };
                     arret |= !r.reussi;
                     annoncer(&match (&r.reussi, &r.note) {

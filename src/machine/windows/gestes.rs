@@ -1436,39 +1436,9 @@ pub(crate) fn valider<E>(lignes: &[String], mut autre: impl FnMut(&str) -> Optio
 
 // ---------------------------------------------------------------- la découpe
 
-/// Un morceau d'une liste de correctifs : une suite de lignes natives (chacune désignée par son correctif et sa
-/// place), ou un script fait des lignes PowerShell qui se suivent, correctif par correctif.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Morceau {
-    Natif(Vec<(usize, usize)>),
-    Script(Vec<(usize, Vec<usize>)>),
-}
-
-/// Découpe des correctifs en morceaux, dans l'ordre : chaque correctif est coupé là où il passe du natif au
-/// PowerShell (le point de restauration en tête d'une réparation devient ainsi un geste natif à lui seul, avant le
-/// script). Le résultat d'un correctif est le ET de ses morceaux ; un correctif vide n'en a aucun (rien à faire).
-pub(crate) fn decouper(correctifs: &[Vec<String>], natif: impl Fn(&str) -> bool) -> Vec<Morceau> {
-    let mut morceaux: Vec<Morceau> = Vec::new();
-    for (i, c) in correctifs.iter().enumerate() {
-        for (j, l) in c.iter().enumerate() {
-            if natif(l) {
-                match morceaux.last_mut() {
-                    Some(Morceau::Natif(v)) => v.push((i, j)),
-                    _ => morceaux.push(Morceau::Natif(vec![(i, j)])),
-                }
-                continue;
-            }
-            match morceaux.last_mut() {
-                Some(Morceau::Script(v)) => match v.last_mut() {
-                    Some((k, suite)) if *k == i => suite.push(j),
-                    _ => v.push((i, vec![j])),
-                },
-                _ => morceaux.push(Morceau::Script(vec![(i, vec![j])])),
-            }
-        }
-    }
-    morceaux
-}
+// Commune avec Linux et macOS (`machine::decoupe`) : où une liste de correctifs passe du natif au reste.
+#[cfg_attr(not(windows), allow(unused_imports))]
+pub(crate) use super::decoupe::{Morceau, decouper};
 
 // ---------------------------------------------------------------- les états
 

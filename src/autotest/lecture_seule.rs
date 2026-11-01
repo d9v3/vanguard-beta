@@ -448,6 +448,11 @@ mod tests {
                 "processus élevé d'une correction, hors bilan",
             ),
             (
+                "machine/assistant.rs",
+                1,
+                "terminal de la personne (/dev/tty) ouvert pour demander l'accord d'un geste : rien n'est écrit sur le disque",
+            ),
+            (
                 "machine/linux/veilleur.rs",
                 10,
                 "veilleur : son état et le « chiffrement voulu » de l'anti-rançongiciel, hors bilan",

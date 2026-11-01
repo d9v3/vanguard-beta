@@ -377,9 +377,16 @@ pub(crate) fn version_sshd() -> Option<(u32, u32)> {
     version_du_paquet()
         .or_else(|| version_dans_le_programme(&std::fs::read(sshd?).ok()?))
         .or_else(|| {
-            sshd.into_iter()
-                .chain(["ssh"])
-                .filter_map(|p| crate::commande::lancer(Command::new(p).arg("-V"), 5))
+            // ssh par son chemin, et les deux dans un environnement vidé (ni LD_PRELOAD, ni faux ssh du compte).
+            let ssh = crate::commande::outil_systeme("ssh");
+            sshd.map(std::path::PathBuf::from)
+                .into_iter()
+                .chain(ssh)
+                .filter_map(|p| {
+                    let mut c = Command::new(p);
+                    crate::commande::environnement_propre(&mut c, std::env::vars_os());
+                    crate::commande::lancer(c.arg("-V"), 5)
+                })
                 .find_map(|r| version_openssh(&r.erreurs).or_else(|| version_openssh(&r.sortie)))
         })
 }

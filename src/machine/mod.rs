@@ -49,6 +49,8 @@ pub mod windows;
 #[cfg_attr(not(windows), allow(dead_code))]
 #[path = "windows/gestes.rs"]
 pub(crate) mod gestes;
+// Où une liste de correctifs passe des lignes natives de Vanguard au reste : commune à Windows et à Linux et macOS.
+pub(crate) mod decoupe;
 // Vider un dossier de Windows et mettre un cache de côté (actes du processus élevé) : sans appel système propre à
 // Windows hors des attributs, compilé partout pour essayer sous Linux qu'un lien ne fait jamais effacer ailleurs.
 pub(crate) mod vidage;
@@ -56,6 +58,10 @@ pub(crate) mod vidage;
 use windows as os;
 #[cfg(unix)]
 pub(crate) mod assistant;
+// La grammaire des gestes de Linux que l'assistant élevé fait en root (« vanguard:geste … ») : du code pur, lu aussi par
+// le banc de fuzzing.
+#[cfg(unix)]
+pub(crate) mod gestes_unix;
 #[cfg(target_os = "macos")]
 pub mod macos;
 #[cfg(unix)]
@@ -1041,31 +1047,46 @@ fn note_d_ordre(ligne: &str, r: &crate::protection::blocage::ordres::Resultat) -
     }
 }
 
-/// Les ordres typés du blocage (`protection::blocage::ordres`), sous Linux et macOS : tous les groupes faits d'ordres
-/// passent ensemble par l'assistant élevé (une seule demande de droits), ou par Vanguard lui-même s'il est root ; un
-/// groupe qui mêle ordres et commandes n'est pas fait (une liste de Vanguard ne les mêle jamais).
+/// Les ordres typés du blocage (`protection::blocage::ordres`) et les gestes de Linux (`gestes_unix`), sous Linux et
+/// macOS : tous les groupes faits de lignes « vanguard: » passent ensemble par l'assistant élevé (une seule demande
+/// de droits), ou par Vanguard lui-même s'il est root. Un groupe qui mêle lignes de Vanguard et commandes n'est pas
+/// fait (une liste de Vanguard ne les mêle jamais), ni un groupe dont une ligne « vanguard: » ne se relit pas : elle
+/// n'est jamais confiée à bash.
 #[cfg(unix)]
 fn lancer_les_ordres(correctifs: &[Vec<String>], resultats: &mut [Option<bool>], notes: &mut [Vec<String>]) {
     use crate::protection::blocage::ordres;
-    // Chaque groupe d'ordres garde ses commandes, et la case de son résultat et de ses notes (les trois listes vont
-    // ensemble, de même longueur : `lancer_chacune`).
+    use assistant::Demande;
+    // Chaque groupe garde ses commandes, et la case de son résultat et de ses notes (les trois listes vont ensemble,
+    // de même longueur : `lancer_chacune`).
     let mut cibles = Vec::new();
     let mut groupes = Vec::new();
     for ((c, resultat), note) in correctifs.iter().zip(resultats.iter_mut()).zip(notes.iter_mut()) {
-        let n = c.iter().filter(|l| ordres::est_ordre(l)).count();
-        if n == 0 {
-            continue;
+        // La découpe commune avec Windows (`decoupe`) : un seul morceau natif passe par l'assistant, un seul morceau
+        // de commandes par bash ; un correctif coupé en plusieurs morceaux mêle les deux, et n'est pas fait (sous
+        // Windows, chaque morceau a son chemin ; ici, une liste de Vanguard ne les mêle jamais).
+        let de_vanguard = |l: &str| l.starts_with(ordres::PREFIXE);
+        match decoupe::decouper(std::slice::from_ref(c), de_vanguard).as_slice() {
+            [] | [decoupe::Morceau::Script(_)] => continue,
+            [decoupe::Morceau::Natif(_)] => {}
+            _ => {
+                trp!(
+                    "    ✖ Une liste mêle des gestes de Vanguard et des commandes : elle n'est pas faite.",
+                    "    ✖ A list mixes Vanguard steps and commands: it is not done."
+                );
+                *resultat = Some(false);
+                continue;
+            }
         }
-        if n != c.len() {
+        let Some(groupe) = c.iter().map(|l| Demande::analyser(l)).collect::<Option<Vec<_>>>() else {
             trp!(
-                "    ✖ Une liste mêle des gestes de Vanguard et des commandes : elle n'est pas faite.",
-                "    ✖ A list mixes Vanguard steps and commands: it is not done."
+                "    ✖ Une étape de Vanguard n'est pas reconnue par cette version : la liste n'est pas faite.",
+                "    ✖ A Vanguard step is not known to this version: the list is not done."
             );
             *resultat = Some(false);
             continue;
-        }
+        };
         cibles.push((c, resultat, note));
-        groupes.push(c.iter().filter_map(|l| ordres::analyser(l)).collect::<Vec<_>>());
+        groupes.push(groupe);
     }
     if groupes.is_empty() {
         return;
@@ -1171,16 +1192,11 @@ fn lancer_chacune(correctifs: &[Vec<String>]) -> (Vec<bool>, Vec<Vec<String>>) {
                 fait.unwrap_or_else(|| {
                     commandes.iter().all(|c| {
                         println!("    {GRIS}$ {}{RESET}", crate::ui::commande_affichable(c));
-                        // bash par son chemin, jamais par le PATH du compte.
-                        Command::new(if std::path::Path::new("/usr/bin/bash").exists() {
-                            "/usr/bin/bash"
-                        } else {
-                            "/bin/bash"
-                        })
-                        .arg("-c")
-                        .arg(c)
-                        .status()
-                        .is_ok_and(|s| s.success())
+                        // bash par son chemin, sans fichier de démarrage, et dans un environnement propre : la ligne
+                        // « sudo … » prend le sudo du système, jamais un faux posé dans un dossier du compte.
+                        crate::commande::bash_propre(c, std::env::vars_os())
+                            .status()
+                            .is_ok_and(|s| s.success())
                     })
                 })
             })

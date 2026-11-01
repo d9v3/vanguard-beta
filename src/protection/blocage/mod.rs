@@ -16,6 +16,8 @@ mod gardes;
 pub(crate) mod gestes;
 mod menaces;
 pub(crate) mod ordres;
+// La forme des lignes des ordres : du code pur, lu aussi par le banc de fuzzing.
+mod ordres_ligne;
 pub(crate) mod parametres;
 pub(crate) mod pare_feu;
 
