@@ -1,7 +1,8 @@
 //! La grammaire des gestes de Linux que l'assistant élevé lit du Vanguard non élevé (src/machine/gestes_unix.rs), et
 //! la découpe commune (src/machine/decoupe.rs) telle que Linux et macOS s'en servent : une ligne « vanguard:… » est
 //! native, toute autre passe à bash. Familles et identifiants hors de la table, espaces doublées, champs en plus,
-//! octets nuls, majuscules, lignes démesurées.
+//! octets nuls, majuscules, lignes démesurées ; noms d'unité hostiles (remontée, gabarit, sans suffixe, pare-feu
+//! désigné).
 #![no_main]
 // Aucun unsafe ici ni dans ce que la cible inclut (src/) : refusé sans recours, un allow ne compile pas.
 #![forbid(unsafe_code)]
@@ -35,7 +36,22 @@ libfuzzer_sys::fuzz_target!(|octets: &[u8]| {
                 assert_eq!(l.split(' ').count(), 3);
                 assert!(!p.outil.contains('/'));
             }
+            // Une unité de la table, et elle seule ; jamais un geste refusé (un pare-feu coupé).
+            gestes_unix::GesteUnix::Unite(_, u) => {
+                assert!(gestes_unix::UNITES_CONNUES.iter().any(|t| std::ptr::eq(*t, u)));
+                assert_eq!(l.split(' ').count(), 4);
+            }
+            // Un nom désigné suit la règle stricte, et n'est jamais celui d'une unité de la table.
+            gestes_unix::GesteUnix::Designee(_, n) => {
+                assert!(gestes_unix::nom_admis(n.as_str()));
+                assert!(!gestes_unix::UNITES_CONNUES.iter().any(|t| t.nom == n.as_str()));
+                assert!(!n.as_str().contains(".."));
+                assert_eq!(l.split(' ').count(), 4);
+            }
+            gestes_unix::GesteUnix::ReinitialiserEchecs => assert_eq!(l.split(' ').count(), 3),
+            gestes_unix::GesteUnix::SignaturesClamav => assert_eq!(l.split(' ').count(), 2),
         }
+        assert!(g.refus().is_none());
     }
     // La découpe à la façon de Linux et macOS : des correctifs séparés par une ligne vide. Un correctif n'est fait
     // par l'assistant que s'il ne donne qu'un morceau natif, par bash que s'il ne donne qu'un morceau de commandes ;

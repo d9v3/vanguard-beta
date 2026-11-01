@@ -367,18 +367,17 @@ fn antivirus(systemd: bool) -> Reparation {
         "Télécharge les dernières signatures de virus de ClamAV et active leur mise à jour automatique. Dernière mise à jour : {derniere}.",
         "Downloads the latest ClamAV virus signatures and turns on their automatic update. Last update: {derniere}."
     );
-    if systemd {
-        // Le service, s'il tourne, verrouille la base : on l'arrête le temps du téléchargement.
-        r.commandes = vec![
-            "sudo systemctl stop clamav-freshclam.service 2>/dev/null; sudo freshclam".into(),
-            "if systemctl cat clamav-freshclam.service >/dev/null 2>&1; then sudo systemctl enable --now clamav-freshclam.service; fi".into(),
-        ];
-    } else {
-        // Sans systemd, rien à arrêter : le geste figé, fait par l'assistant élevé, sans shell ni « sudo » écrit en
-        // texte.
-        r.commandes =
-            vec![crate::machine::gestes_unix::GesteUnix::Programme(&crate::machine::gestes_unix::FRESHCLAM).ligne()];
-    }
+    // Des gestes figés, faits par l'assistant élevé, sans shell ni « sudo » écrit en texte. Avec systemd, le geste
+    // composé (lot U3) : le service, s'il tourne, verrouille la base ; il est arrêté le temps du téléchargement, puis
+    // activé et relancé. Sans systemd, rien à arrêter.
+    r.commandes = vec![
+        if systemd {
+            crate::machine::gestes_unix::GesteUnix::SignaturesClamav
+        } else {
+            crate::machine::gestes_unix::GesteUnix::Programme(&crate::machine::gestes_unix::FRESHCLAM)
+        }
+        .ligne(),
+    ];
     r
 }
 
@@ -543,6 +542,7 @@ fn pare_feu(e: &EtatPareFeu) -> Reparation {
         // Installé mais arrêté (Fedora, openSUSE) : on le remet en route plutôt que d'en installer un second.
         if matches!(e.firewalld, Firewalld::Arrete) {
             r.pourquoi = tr!("firewalld est installé mais arrêté : le démarre avec sa zone par défaut et l'active au démarrage de l'ordinateur.", "firewalld is installed but stopped: starts it with its default zone and turns it on at boot.").into();
+            // Lot U3 : reste une commande, avec firewall-cmd dans la même réparation ; geste avec lui (U6).
             r.commandes = vec![
                 "sudo systemctl enable --now firewalld".into(),
                 "sudo firewall-cmd --get-default-zone".into(),
@@ -560,6 +560,7 @@ fn pare_feu(e: &EtatPareFeu) -> Reparation {
         r.commandes.push(g.installer("ufw"));
     }
     r.pourquoi = tr!("Active ufw et refuse par défaut les connexions entrantes (les sorties restent permises). Un service qui doit rester joignable depuis le réseau (partage, KDE Connect…) sera à autoriser : sudo ufw allow <port>.", "Turns ufw on and refuses incoming connections by default (outgoing stays allowed). A service that must stay reachable from the network (sharing, KDE Connect…) will need to be allowed: sudo ufw allow <port>.").into();
+    // Lot U3 : le « systemctl » reste une commande, mêlé aux commandes d'ufw ; geste avec elles (U6).
     r.commandes.extend(
         [
             "sudo ufw default deny incoming",
@@ -638,6 +639,7 @@ fn paquets_casses(
 
 #[cfg(target_os = "linux")]
 pub fn liste() -> Vec<Reparation> {
+    use crate::machine::gestes_unix::{ActionUnite, GesteUnix, NETWORKD, NETWORKMANAGER};
     use crate::machine::linux::{Paquets, atomique, service_actif};
     let gestion = Paquets::detecter();
     let atomique = atomique();
@@ -647,15 +649,19 @@ pub fn liste() -> Vec<Reparation> {
 
     // Un état non lu ne propose rien : relancer un service qu'on ne sait pas actif n'aurait pas de sens.
     let lu_actif = |nom| service_actif(nom) == Some(true);
+    // Le redémarrage, par l'assistant élevé et le bus système (lot U3) : refusé par lui si une session à distance est
+    // ouverte. Le cache DNS reste une commande, jusqu'au lot U6 (resolved par le bus) ; `lancer` fait les deux
+    // morceaux l'un après l'autre.
+    let relancer = |u| GesteUnix::Unite(ActionUnite::Redemarrer, u).ligne();
     let mut reseau = if lu_actif("NetworkManager") {
-        vec!["sudo systemctl restart NetworkManager"]
+        vec![relancer(&NETWORKMANAGER)]
     } else if lu_actif("systemd-networkd") {
-        vec!["sudo systemctl restart systemd-networkd"]
+        vec![relancer(&NETWORKD)]
     } else {
         vec![]
     };
     if lu_actif("systemd-resolved") {
-        reseau.push("sudo resolvectl flush-caches");
+        reseau.push("sudo resolvectl flush-caches".to_string());
     }
     if !reseau.is_empty() {
         let mut r = rep(
@@ -665,7 +671,7 @@ pub fn liste() -> Vec<Reparation> {
                 "Restarts network management and clears the DNS cache (sites not found, Wi-Fi stuck)."
             ),
             tr!("quelques secondes", "a few seconds"),
-            &reseau,
+            &reseau.iter().map(String::as_str).collect::<Vec<_>>(),
         );
         sauf_en_ssh(&mut r);
         l.push(r);
@@ -714,7 +720,8 @@ pub fn liste() -> Vec<Reparation> {
         &[
             "systemctl --failed --no-pager",
             "for s in $(systemctl --failed --no-legend --plain | awk '{print $1}'); do echo \"== $s\"; journalctl -u $s -n 5 --no-pager; done",
-            "sudo systemctl reset-failed",
+            // Par l'assistant élevé et le bus système (lot U3) ; les deux lectures d'avant restent des commandes.
+            GesteUnix::ReinitialiserEchecs.ligne().as_str(),
         ],
     ));
 
@@ -1306,6 +1313,18 @@ pub fn par_titre(titre: &str) -> Option<Reparation> {
     liste().into_iter().find(|r| r.titre == titre)
 }
 
+/// Les commandes d'une réparation, coupées là où elles passent des gestes de Vanguard (« vanguard: ») aux commandes,
+/// ou l'inverse, dans l'ordre : « Internet ne marche plus » redémarre le réseau par un geste, puis vide le cache DNS
+/// par une commande.
+#[cfg(not(windows))]
+fn par_morceaux(commandes: &[String]) -> Vec<Vec<String>> {
+    let de_vanguard = |c: &String| c.starts_with(crate::protection::blocage::ordres::PREFIXE);
+    commandes
+        .chunk_by(|a, b| de_vanguard(a) == de_vanguard(b))
+        .map(<[String]>::to_vec)
+        .collect()
+}
+
 /// Montre une réparation (pourquoi, durée, commandes), demande l'accord, puis la lance.
 pub fn lancer(r: &Reparation) {
     if let Some(outil) = r.ouvrir {
@@ -1367,7 +1386,14 @@ pub fn lancer(r: &Reparation) {
             return;
         }
     }
-    if machine::appliquer(&commandes) {
+    // Sous Windows, une seule fenêtre administrateur prend gestes natifs et PowerShell mêlés. Ailleurs, une liste ne
+    // mêle jamais gestes de Vanguard et commandes (`machine::lancer_les_ordres`) : chaque morceau passe à son tour,
+    // et le premier en échec arrête la suite.
+    #[cfg(windows)]
+    let reussi = machine::appliquer(&commandes);
+    #[cfg(not(windows))]
+    let reussi = par_morceaux(&commandes).iter().all(|m| machine::appliquer(m));
+    if reussi {
         trp!(
             "  {VERT}✔ Réparation terminée.{RESET}",
             "  {VERT}✔ Repair finished.{RESET}"

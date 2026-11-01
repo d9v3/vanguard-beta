@@ -194,7 +194,7 @@ pub fn commande_affichable(commande: &str) -> String {
     #[cfg(unix)]
     if let Some(g) = crate::machine::gestes_unix::analyser(commande) {
         let (fr, en) = g.phrase();
-        return if crate::langue::anglais() { en } else { fr }.to_string();
+        return if crate::langue::anglais() { en } else { fr };
     }
     #[cfg(windows)]
     if let Some(a) = crate::machine::gestes::analyser_acte(commande) {

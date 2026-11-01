@@ -319,6 +319,8 @@ const PROGRAMMES_DE_SESSION: &[&str] = &[
     "mstsc",
     "teamviewer",
     "teamviewer_service",
+    // Le service de TeamViewer sous Linux.
+    "teamviewerd",
 ];
 
 fn programme_de_session(nom: &str) -> bool {
@@ -332,6 +334,62 @@ pub(crate) fn est_session(e: &Etablie) -> bool {
     PORTS_DE_SESSION.contains(&e.port_local)
         || PORTS_DE_SESSION.contains(&e.port_distant)
         || e.programme.as_deref().is_some_and(programme_de_session)
+}
+
+/// Les tunnels (VPN) et les clients d'une session sortante : leurs connexions partent de cet ordinateur, et le réseau
+/// redémarré ne coupe personne qui y serait entré. Ils restent des sessions pour le blocage (`est_session`).
+#[cfg(any(target_os = "linux", test))]
+const SORTANTS: &[&str] = &[
+    "tailscaled",
+    "tailscale",
+    "wireguard",
+    "wg",
+    "wg-quick",
+    "openvpn",
+    "openvpn-gui",
+    "openvpnserv",
+    "mstsc",
+];
+
+/// Une connexion établie est-elle une session à distance ENTRANTE, qu'un réseau redémarré couperait : SSH ou Bureau
+/// à distance sur un port local en écoute (22, 3389 : quelqu'un s'y est connecté), ou un programme de prise en main
+/// (sshd sur un autre port, VNC, RustDesk, AnyDesk, TeamViewer…). Ni un VPN ni un client SSH qui part d'ici.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn session_entrante(e: &Etablie, en_ecoute: &[u16]) -> bool {
+    (PORTS_DE_SESSION.contains(&e.port_local) && en_ecoute.contains(&e.port_local))
+        || e.programme
+            .as_deref()
+            .is_some_and(|p| programme_de_session(p) && !SORTANTS.contains(&nom_simple(p).as_str()))
+}
+
+/// Les ports locaux en écoute d'un fichier de /proc/net (tcp, tcp6) : état 0A.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn en_ecoute_proc(texte: &str) -> Vec<u16> {
+    texte
+        .lines()
+        .skip(1)
+        .filter_map(|l| {
+            let champs: Vec<&str> = l.split_whitespace().collect();
+            if champs.get(3)? != &"0A" {
+                return None;
+            }
+            let (_, port) = champs.get(1)?.split_once(':')?;
+            u16::from_str_radix(port, 16).ok()
+        })
+        .collect()
+}
+
+/// Une session à distance entrante est-elle ouverte sur cet ordinateur (`session_entrante`, ou Vanguard lancé
+/// depuis SSH) ? `None` : les connexions ne se lisent pas, et l'assistant élevé ne redémarre alors pas le réseau.
+#[cfg(target_os = "linux")]
+pub(crate) fn session_entrante_ouverte() -> Option<bool> {
+    let etablies = lire_etablies()?;
+    let mut en_ecoute = Vec::new();
+    for f in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        en_ecoute.extend(en_ecoute_proc(&std::fs::read_to_string(f).ok()?));
+    }
+    let depuis_ssh = std::env::var("SSH_CONNECTION").is_ok_and(|v| client_ssh(&v).is_some());
+    Some(depuis_ssh || etablies.iter().any(|e| session_entrante(e, &en_ecoute)))
 }
 
 /// Les adresses à ne pas couper, d'après les connexions établies et le client SSH de Vanguard.
@@ -703,6 +761,53 @@ mod tests {
             programme: programme.map(str::to_string),
             autre_compte: autre,
         }
+    }
+
+    /// Le réseau redémarré par l'assistant élevé : seules les sessions ENTRANTES le retiennent (SSH ou Bureau à
+    /// distance sur un port local en écoute, un programme de prise en main) ; ni un VPN, ni un SSH qui part d'ici.
+    #[test]
+    fn sessions_entrantes_seulement() {
+        let ecoute = [22, 631];
+        // Quelqu'un est entré par SSH ; puis un SSH qui part d'ici vers un serveur (port distant 22).
+        assert!(session_entrante(
+            &etablie("198.51.100.20", 22, 51234, None, true),
+            &ecoute
+        ));
+        assert!(!session_entrante(
+            &etablie("198.51.100.20", 51234, 22, Some("ssh"), false),
+            &ecoute
+        ));
+        // Le port 3389 sans rien à l'écoute dessus : pas une session entrante.
+        assert!(!session_entrante(
+            &etablie("198.51.100.20", 3389, 51234, None, true),
+            &ecoute
+        ));
+        // Les tunnels : jamais une session entrante, quel que soit leur nom de programme.
+        for vpn in ["tailscaled", "openvpn", "wireguard", "wg-quick", "/usr/sbin/openvpn"] {
+            assert!(
+                !session_entrante(&etablie("198.51.100.20", 41641, 41641, Some(vpn), true), &ecoute),
+                "{vpn}"
+            );
+            // Ils restent des sessions pour le blocage, qui ne coupe pas l'adresse.
+            assert!(
+                est_session(&etablie("198.51.100.20", 41641, 41641, Some(vpn), true)),
+                "{vpn}"
+            );
+        }
+        // La prise en main, et sshd sur un autre port : des sessions entrantes.
+        for p in ["rustdesk", "anydesk", "teamviewerd", "x11vnc", "sshd-session"] {
+            assert!(
+                session_entrante(&etablie("198.51.100.20", 2222, 51234, Some(p), true), &ecoute),
+                "{p}"
+            );
+        }
+        // Les ports en écoute de /proc/net/tcp : état 0A seulement.
+        let tcp = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 1 1 0 100 0 0 10 0
+   1: 0100007F:0277 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 2 1 0 100 0 0 10 0
+   2: 0501A8C0:0016 1401A8C0:C822 01 00000000:00000000 00:00000000 00000000     0        0 3 1 0 100 0 0 10 0
+";
+        assert_eq!(en_ecoute_proc(tcp), [22, 631]);
     }
 
     /// Garde-fou : jamais couper une connexion à distance en cours, ni bloquer le réseau local ou un DNS public.

@@ -108,6 +108,7 @@ static POSES: [FichierPose; 4] = [
     FichierPose {
         chemin: OLLAMA_VANGUARD,
         forme: Forme::Exact(OLLAMA_CONTENU),
+        // Lot U3 : reste une commande, après le fichier posé ; geste avec lui (U4).
         apres: "sudo systemctl daemon-reload && sudo systemctl try-restart ollama",
     },
     FichierPose {
@@ -717,7 +718,8 @@ impl Changement {
             );
         };
         match self {
-            Changement::Unite { .. } => ETATS_UNITE.contains(&v),
+            // Une protection (auditd) n'est jamais remise « masquée » par une note : rien ne pourrait plus la lancer.
+            Changement::Unite { nom, .. } => ETATS_UNITE.contains(&v) && !(v == "masked" && protection(nom)),
             Changement::Fichier { .. } => matches!(v, "present" | "autre"),
             Changement::Gnome { cible, defaut, .. } => v == *cible || v == *defaut || super::gvariant_simple(v),
             Changement::Option { cible, defaut, .. } => v == *cible || v == *defaut || super::jeton_simple(v),
@@ -849,6 +851,12 @@ impl Changement {
     pub(super) fn commande(&self, v: Option<&str>) -> Option<String> {
         Some(match self {
             Changement::Unite { nom, .. } => match v? {
+                // Une unité de la table de l'assistant (fstrim, cups-browsed, auditd), activée ou désactivée : son
+                // geste, par le bus système, rejugé par l'assistant élevé (lot U3) ; jamais une commande sudo. Les
+                // autres (apport, avec son fichier, et « masked ») restent des commandes jusqu'à U4.
+                e @ ("enabled" | "disabled") if let Some(g) = crate::machine::gestes_unix::geste_d_unite(nom, e) => {
+                    g.ligne()
+                }
                 e @ ("enabled" | "disabled" | "masked") => format!("sudo systemctl {} --now {nom}", etat_unite(e)),
                 // « static », « indirect » : pas un état qu'on choisit, rien à remettre.
                 _ => return None,
@@ -1002,6 +1010,12 @@ fn dns_admis(connexion: &str, v: &str) -> bool {
         && [ignore4, ignore6].iter().all(|o| matches!(*o, "yes" | "no" | ""))
 }
 
+/// Une unité de la table de l'assistant gardée comme protection (auditd, AppArmor, ClamAV).
+fn protection(nom: &str) -> bool {
+    use crate::machine::gestes_unix::{Garde, unite_connue};
+    unite_connue(nom).is_some_and(|u| u.garde == Garde::Protection)
+}
+
 fn etat_unite(v: &str) -> &str {
     match v {
         "enabled" => "enable",
@@ -1037,7 +1051,13 @@ pub fn ecrire_avec(lots: &[Vec<(&Changement, Valeur)>], en_plus: &[Vec<String>])
         .map(|lot| lot.iter().filter_map(|(c, v)| c.commande(v.as_deref())).collect())
         .collect();
     commandes.extend(en_plus.iter().cloned());
-    let mut resultats = crate::machine::appliquer_chacune(&commandes);
+    // Une note qui remet une unité (un geste de l'assistant) et autre chose (des commandes) : chaque moitié par son
+    // chemin, jamais mêlées dans une liste, que l'assistant refuserait.
+    // Une moitié faite seulement compte comme un échec : la note n'est pas défaite, elle reste à refaire.
+    let mut resultats: Vec<bool> = crate::machine::appliquer_gestes_puis_commandes(&commandes)
+        .into_iter()
+        .map(|i| i == crate::machine::IssueMelee::Fait)
+        .collect();
     let plus = resultats.split_off(lots.len().min(resultats.len()));
     // Ce qui est propre au compte et s'écrit sans commande (fichiers d'autostart), montré comme une commande.
     for (lot, ok) in lots.iter().zip(resultats.iter_mut()) {
@@ -1346,6 +1366,7 @@ pub fn catalogue() -> Vec<Reglage> {
             changements: vec![Changement::Fichier {
                 chemin: "/etc/systemd/journald.conf.d/50-vanguard-taille.conf",
                 contenu: "[Journal]\nSystemMaxUse=500M\n",
+                // Lot U3 : reste une commande, après le fichier posé ; geste avec lui (U4).
                 apres: "sudo systemctl restart systemd-journald",
             }],
         });
@@ -1488,7 +1509,26 @@ mod tests {
         };
         assert_eq!(
             u.commande(Some("enabled")).as_deref(),
-            Some("sudo systemctl enable --now fstrim.timer")
+            Some("vanguard:geste unite activer fstrim.timer")
+        );
+        assert_eq!(
+            u.commande(Some("disabled")).as_deref(),
+            Some("vanguard:geste unite desactiver fstrim.timer")
+        );
+        // « masked », et une unité hors de la table de l'assistant (apport, réglée avec son fichier) : des commandes
+        // jusqu'à U4.
+        assert_eq!(
+            u.commande(Some("masked")).as_deref(),
+            Some("sudo systemctl mask --now fstrim.timer")
+        );
+        let apport = Changement::Unite {
+            nom: "apport.service",
+            cible: "disabled",
+            defaut: "enabled",
+        };
+        assert_eq!(
+            apport.commande(Some("disabled")).as_deref(),
+            Some("sudo systemctl disable --now apport.service")
         );
         assert_eq!(u.commande(Some("static")), None);
     }
@@ -1548,6 +1588,9 @@ mod tests {
             defaut: "disabled",
         };
         assert!(unite.valeur_admise(Some("static")) && unite.valeur_admise(Some("masked")));
+        // Une protection n'est jamais remise masquée par une note (lot U3, P7).
+        let auditd = Changement::depuis_geste("unite|auditd").unwrap();
+        assert!(auditd.valeur_admise(Some("disabled")) && !auditd.valeur_admise(Some("masked")));
         assert!(!unite.valeur_admise(Some("enabled --now evil.service")));
         let gnome = Changement::Gnome {
             schema: "org.gnome.desktop.privacy",

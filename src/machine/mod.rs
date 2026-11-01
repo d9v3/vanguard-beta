@@ -1019,6 +1019,80 @@ pub fn appliquer_chacune(correctifs: &[Vec<String>]) -> Vec<bool> {
     appliquer_annulables(correctifs, &[])
 }
 
+/// L'issue d'une liste de `appliquer_gestes_puis_commandes`.
+#[cfg(not(windows))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IssueMelee {
+    /// Gestes et commandes faits.
+    Fait,
+    /// Les gestes sont faits (un service arrêté, retiré du démarrage), les commandes ont échoué : à dire, la
+    /// personne doit savoir ce qui a déjà changé.
+    GestesSeulement,
+    /// Rien n'est fait : les gestes ont échoué (les commandes ne sont alors pas lancées), ou la liste n'avait que des
+    /// commandes, en échec.
+    Echec,
+}
+
+/// Comme `appliquer_chacune`, pour des listes qui mêlent gestes de Vanguard (lignes « vanguard: ») et commandes, que
+/// l'assistant refuse mêlées : pour chaque liste, ses gestes d'abord, tous ensemble par l'assistant élevé, puis ses
+/// commandes, seulement si ses gestes ont réussi. Deux demandes de droits au plus. Une liste sans mélange se fait
+/// comme avec `appliquer_chacune`.
+#[cfg(not(windows))]
+pub(crate) fn appliquer_gestes_puis_commandes(correctifs: &[Vec<String>]) -> Vec<IssueMelee> {
+    gestes_puis_commandes(correctifs, appliquer_chacune)
+}
+
+/// `appliquer_gestes_puis_commandes`, avec `appliquer` à la place de `appliquer_chacune` (les essais en passent un
+/// faux).
+#[cfg(not(windows))]
+fn gestes_puis_commandes(
+    correctifs: &[Vec<String>],
+    mut appliquer: impl FnMut(&[Vec<String>]) -> Vec<bool>,
+) -> Vec<IssueMelee> {
+    let (gestes, commandes) = separer_les_gestes(correctifs);
+    // Chaque moitié n'est lancée que pour les listes encore en réussite, et qui en ont une.
+    let mut lancer = |reussi: &mut [bool], listes: Vec<Vec<String>>| {
+        let (cases, lot): (Vec<&mut bool>, Vec<Vec<String>>) = reussi
+            .iter_mut()
+            .zip(listes)
+            .filter(|(r, l)| **r && !l.is_empty())
+            .unzip();
+        if !lot.is_empty() {
+            for (r, fait) in cases.into_iter().zip(appliquer(&lot)) {
+                *r = fait;
+            }
+        }
+    };
+    let avec_gestes: Vec<bool> = gestes.iter().map(|g| !g.is_empty()).collect();
+    let mut gestes_faits = vec![true; correctifs.len()];
+    lancer(&mut gestes_faits, gestes);
+    let mut tout_fait = gestes_faits.clone();
+    lancer(&mut tout_fait, commandes);
+    gestes_faits
+        .iter()
+        .zip(tout_fait)
+        .zip(avec_gestes)
+        .map(|((&gestes_ok, tout), avec)| match (gestes_ok, tout) {
+            (true, true) => IssueMelee::Fait,
+            (true, false) if avec => IssueMelee::GestesSeulement,
+            _ => IssueMelee::Echec,
+        })
+        .collect()
+}
+
+/// Pour chaque liste : ses lignes « vanguard: » d'un côté, ses commandes de l'autre, chacune dans son ordre.
+#[cfg(not(windows))]
+fn separer_les_gestes(correctifs: &[Vec<String>]) -> (Vec<Vec<String>>, Vec<Vec<String>>) {
+    correctifs
+        .iter()
+        .map(|c| {
+            c.iter()
+                .cloned()
+                .partition(|l| l.starts_with(crate::protection::blocage::ordres::PREFIXE))
+        })
+        .unzip()
+}
+
 /// Comme `appliquer_chacune`, pour des corrections du bilan : `annulables`, pour chacune, l'id de la note qui la
 /// défait (`optimiser::annulables`), gardé avec elle dans « Ce que Vanguard a changé ».
 pub(crate) fn appliquer_annulables(correctifs: &[Vec<String>], annulables: &[Option<String>]) -> Vec<bool> {
@@ -1475,6 +1549,76 @@ pub fn executer(json: bool) -> Audit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Les gestes faits mais les commandes en échec : « gestes seulement », pour que la personne sache ce qui a déjà
+    /// changé ; les gestes en échec : les commandes ne partent pas.
+    #[cfg(not(windows))]
+    #[test]
+    fn gestes_faits_commandes_en_echec() {
+        let l = |v: &[&str]| v.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let geste = "vanguard:geste unite-designee arreter anydesk.service";
+        let correctifs = [
+            l(&[geste, "echo commande-en-echec"]),
+            l(&[geste, "echo commande-faite"]),
+            l(&["echo commande-en-echec"]),
+            l(&["vanguard:geste unite-designee arreter rustdesk.service", "echo jamais"]),
+            l(&[geste]),
+        ];
+        let mut lots: Vec<Vec<Vec<String>>> = Vec::new();
+        let issues = gestes_puis_commandes(&correctifs, |lot| {
+            lots.push(lot.to_vec());
+            lot.iter()
+                .map(|c| !c.iter().any(|x| x.contains("en-echec") || x.contains("rustdesk")))
+                .collect()
+        });
+        assert_eq!(
+            issues,
+            [
+                IssueMelee::GestesSeulement,
+                IssueMelee::Fait,
+                IssueMelee::Echec,
+                IssueMelee::Echec,
+                IssueMelee::Fait
+            ]
+        );
+        // Deux lots : les gestes, puis les commandes des listes dont les gestes ont réussi.
+        assert_eq!(lots.len(), 2);
+        assert!(!lots[1].iter().flatten().any(|c| c == "echo jamais"), "{lots:?}");
+    }
+
+    /// Les gestes d'un programme d'un côté, ses commandes de l'autre, chacun dans son ordre : jamais une liste mêlée,
+    /// que l'assistant refuserait.
+    #[cfg(not(windows))]
+    #[test]
+    fn gestes_separes_des_commandes() {
+        let l = |v: &[&str]| v.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let (gestes, commandes) = separer_les_gestes(&[
+            l(&[
+                "vanguard:geste unite-designee arreter anydesk.service",
+                "sudo pkill -x anydesk",
+                "vanguard:geste unite-designee desactiver-sans-arreter anydesk.service",
+                "sudo apt-get remove -y anydesk",
+            ]),
+            l(&["rm -f ~/.config/autostart/x.desktop"]),
+        ]);
+        assert_eq!(
+            gestes,
+            [
+                l(&[
+                    "vanguard:geste unite-designee arreter anydesk.service",
+                    "vanguard:geste unite-designee desactiver-sans-arreter anydesk.service"
+                ]),
+                vec![]
+            ]
+        );
+        assert_eq!(
+            commandes,
+            [
+                l(&["sudo pkill -x anydesk", "sudo apt-get remove -y anydesk"]),
+                l(&["rm -f ~/.config/autostart/x.desktop"])
+            ]
+        );
+    }
 
     /// Une liste dont une ligne « vanguard: » est inconnue, ou qui mêle gestes de Vanguard et commandes, n'est pas
     /// faite et le dit (échec) ; une liste de commandes seules reste à bash (pas de résultat ici). Aucun groupe n'est

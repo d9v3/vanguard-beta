@@ -48,7 +48,8 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
 
-use crate::machine::gestes_unix::{self, GesteUnix, Programme};
+use crate::machine::gestes_unix::{self, ActionUnite, GesteUnix, Programme};
+use crate::modele::Echec;
 use crate::protection::blocage::ordres::{self, LIGNE_MAX, LIGNES_MAX, Ordre, Resultat};
 use crate::ui::{GRIS, RESET};
 use crate::{tr, trf, trp};
@@ -95,7 +96,7 @@ impl Demande {
     pub(crate) fn texte(&self) -> String {
         match self {
             Demande::Ordre(o) => o.texte(),
-            Demande::Geste(g) => texte_du_geste(*g).to_string(),
+            Demande::Geste(g) => texte_du_geste(*g),
         }
     }
 
@@ -115,7 +116,7 @@ impl Demande {
     }
 }
 
-fn texte_du_geste(g: GesteUnix) -> &'static str {
+fn texte_du_geste(g: GesteUnix) -> String {
     let (fr, en) = g.phrase();
     if crate::langue::anglais() { en } else { fr }
 }
@@ -404,9 +405,9 @@ pub(crate) fn appliquer(groupes: &[Vec<Demande>]) -> Vec<Vec<Resultat>> {
         let juge = ordres::Juge::lire(None);
         // Les gestes viennent d'être montrés (`machine::lancer_les_ordres`) : seulement leur issue. L'accord d'un geste
         // qui affaiblit se demande ici aussi sur le terminal : être root ne dit pas que la personne est d'accord.
-        return executer_demandes(groupes, &juge, &mut accord_au_terminal, &mut |t| {
+        return executer_demandes(groupes, &juge, &mut Systeme, &mut |t| {
             if !t.starts_with("> ") {
-                println!("    {GRIS}{t}{RESET}");
+                let _ = writeln!(std::io::stdout(), "    {GRIS}{t}{RESET}");
             }
         });
     }
@@ -508,7 +509,8 @@ pub(crate) fn executer(langue: Option<&str>, parent: Option<u32>) -> i32 {
         crate::langue::forcer(l == "en");
     }
     if crate::socle::euid() != 0 {
-        eprintln!(
+        let _ = writeln!(
+            std::io::stderr(),
             "{}",
             tr!(
                 "Ce processus n'a pas les droits d'administrateur : rien n'est fait.",
@@ -525,7 +527,8 @@ pub(crate) fn executer(langue: Option<&str>, parent: Option<u32>) -> i32 {
         return LISTE_REFUSEE;
     };
     let Some(groupes) = analyser_liste(&lignes) else {
-        eprintln!(
+        let _ = writeln!(
+            std::io::stderr(),
             "{}",
             tr!(
                 "La liste reçue n'est pas une liste de gestes de Vanguard : rien n'est fait. Un autre programme y a touché : lancez une analyse antivirus.",
@@ -535,7 +538,8 @@ pub(crate) fn executer(langue: Option<&str>, parent: Option<u32>) -> i32 {
         let _ = writeln!(sortie, "{FIN}");
         return LISTE_REFUSEE;
     };
-    eprintln!(
+    let _ = writeln!(
+        std::io::stderr(),
         "{}",
         tr!(
             "Vanguard (administrateur) va faire :",
@@ -543,10 +547,14 @@ pub(crate) fn executer(langue: Option<&str>, parent: Option<u32>) -> i32 {
         )
     );
     for o in groupes.iter().flatten() {
-        eprintln!("  · {}", o.texte());
+        let _ = writeln!(std::io::stderr(), "  · {}", o.texte());
     }
     let juge = ordres::Juge::lire(parent);
-    let resultats = executer_demandes(&groupes, &juge, &mut accord_au_terminal, &mut |t| eprintln!("{t}"));
+    // Jamais `eprintln!` dans le fils : une sortie d'erreur fermée (fenêtre du terminal fermée) le ferait paniquer,
+    // peut-être après l'arrêt d'un service.
+    let resultats = executer_demandes(&groupes, &juge, &mut Systeme, &mut |t| {
+        let _ = writeln!(std::io::stderr(), "{t}");
+    });
     let mut code = 0;
     for r in resultats.iter().flatten() {
         if !r.reussi {
@@ -566,11 +574,11 @@ pub(crate) fn executer(langue: Option<&str>, parent: Option<u32>) -> i32 {
 struct Refus(String);
 
 /// Fait les demandes, groupe par groupe (`ordres::executer_en_groupes`) : un ordre est rejugé puis fait ; un geste
-/// est fait après l'accord de la personne s'il en demande un. `accord` rend la raison d'un refus.
+/// est rejugé dans `monde` (`faire_geste`), puis fait.
 fn executer_demandes(
     groupes: &[Vec<Demande>],
     juge: &ordres::Juge,
-    accord: &mut dyn FnMut(GesteUnix) -> Result<(), Refus>,
+    monde: &mut dyn Monde,
     annoncer: &mut dyn FnMut(&str),
 ) -> Vec<Vec<Resultat>> {
     ordres::executer_en_groupes(
@@ -578,27 +586,380 @@ fn executer_demandes(
         Demande::texte,
         |d| match d {
             Demande::Ordre(o) => ordres::juger_et_faire(o, juge),
-            Demande::Geste(g) => faire_geste(*g, accord),
+            Demande::Geste(g) => faire_geste(*g, monde),
         },
         annoncer,
     )
 }
 
-/// Un geste de Linux, rejugé ici : permis sur ce système, accordé s'il le faut, puis fait.
-fn faire_geste(g: GesteUnix, accord: &mut dyn FnMut(GesteUnix) -> Result<(), Refus>) -> Resultat {
+/// Ce que le fils lit et fait de l'ordinateur pour un geste : le vrai (`Systeme`), ou un faux monde sous les essais,
+/// pour éprouver l'ordre des vérifications sans rien toucher.
+trait Monde {
+    /// L'accord de la personne pour un geste qui baisse une protection (`accord_au_terminal`).
+    fn accord(&mut self, g: GesteUnix) -> Result<(), Refus>;
+    /// systemd gère-t-il ce système ?
+    fn systemd(&self) -> bool;
+    /// Une session à distance entrante est-elle ouverte (SSH ou Bureau à distance reçus, logiciel de prise de contrôle
+    /// connecté) ? `None` : les connexions en cours ne se lisent pas.
+    fn session_entrante(&self) -> Option<bool>;
+    /// Le fichier de l'unité est-il celui de root, dans un dossier du système, fermé aux autres comptes, lien compris
+    /// (`fichier_d_unite_sur`) ?
+    fn fichier_sur(&self, unite: &str) -> Result<(), Echec>;
+    /// L'état du fichier de l'unité (« enabled », « disabled »…) ; `None` : aucun fichier de ce nom.
+    fn etat_du_fichier(&mut self, unite: &str) -> Result<Option<String>, Echec>;
+    fn unite(&mut self, action: ActionUnite, unite: &str) -> Result<(), Echec>;
+    fn reinitialiser_echecs(&mut self) -> Result<(), Echec>;
+    fn programme(&mut self, p: &'static Programme) -> Resultat;
+}
+
+/// Le vrai ordinateur : le bus système (joint de nouveau pour chaque geste : un job long ne garde pas une prise
+/// ouverte d'un geste à l'autre), les connexions en cours, le terminal de la personne.
+struct Systeme;
+
+impl Monde for Systeme {
+    fn accord(&mut self, g: GesteUnix) -> Result<(), Refus> {
+        accord_au_terminal(g)
+    }
+
+    fn systemd(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        return crate::machine::linux::dbus::systeme::systemd_present();
+        #[cfg(not(target_os = "linux"))]
+        false
+    }
+
+    fn session_entrante(&self) -> Option<bool> {
+        #[cfg(target_os = "linux")]
+        return crate::protection::blocage::session_entrante_ouverte();
+        // Ailleurs, aucun geste ne coupe le réseau (`permis_ici`) : jamais lu.
+        #[cfg(not(target_os = "linux"))]
+        None
+    }
+
+    fn fichier_sur(&self, unite: &str) -> Result<(), Echec> {
+        let dossiers = DOSSIERS_D_UNITES.map(std::path::Path::new);
+        fichier_d_unite_sur(&dossiers, std::path::Path::new("/"), unite, 0)
+    }
+
+    fn etat_du_fichier(&mut self, unite: &str) -> Result<Option<String>, Echec> {
+        #[cfg(target_os = "linux")]
+        {
+            use crate::machine::linux::dbus::systeme;
+            systeme::bus_pour_agir().and_then(|mut bus| systeme::etat_du_fichier(&mut bus, unite))
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(refus(format!("{unite} : {}", sans_systemd())))
+    }
+
+    fn unite(&mut self, action: ActionUnite, unite: &str) -> Result<(), Echec> {
+        #[cfg(target_os = "linux")]
+        {
+            use crate::machine::linux::dbus::systeme;
+            systeme::bus_pour_agir().and_then(|mut bus| systeme::agir_sur_unite(&mut bus, action, unite))
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(refus(format!("{unite} {} : {}", action.mot(), sans_systemd())))
+    }
+
+    fn reinitialiser_echecs(&mut self) -> Result<(), Echec> {
+        #[cfg(target_os = "linux")]
+        {
+            use crate::machine::linux::dbus::systeme;
+            systeme::bus_pour_agir().and_then(|mut bus| systeme::reinitialiser_echecs(&mut bus))
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(Echec::refuse(CONTEXTE, sans_systemd()))
+    }
+
+    fn programme(&mut self, p: &'static Programme) -> Resultat {
+        lancer_programme(p)
+    }
+}
+
+/// Le contexte des échecs d'un geste d'unité, pour le journal des erreurs.
+const CONTEXTE: &str = "assistant/unite";
+
+/// Un refus de l'assistant, sa phrase déjà dans la langue de l'interface.
+fn refus(phrase: String) -> Echec {
+    Echec::refuse(CONTEXTE, phrase)
+}
+
+/// Pourquoi un geste de systemd n'est pas fait ici.
+fn sans_systemd() -> &'static str {
+    tr!(
+        "cet ordinateur n'utilise pas le gestionnaire de services habituel (systemd) : Vanguard ne sait pas y changer les services, rien n'est fait",
+        "this computer does not use the usual service manager (systemd): Vanguard cannot change its services, nothing is done"
+    )
+}
+
+/// Où le fils cherche le fichier d'une unité désignée par son nom, dans l'ordre de systemd : celui de
+/// l'administrateur, puis ceux des logiciels installés à la main, puis ceux des paquets (/lib : distributions où il
+/// n'est pas un lien vers /usr/lib).
+const DOSSIERS_D_UNITES: [&str; 4] = [
+    "/etc/systemd/system",
+    "/usr/local/lib/systemd/system",
+    "/usr/lib/systemd/system",
+    "/lib/systemd/system",
+];
+
+/// Le fichier de l'unité `nom` dans le premier de `dossiers` qui l'a : un fichier ordinaire de `proprietaire` (root),
+/// que ni son groupe ni les autres ne peuvent modifier. Un lien (`systemctl link`) n'est suivi que vers un tel fichier
+/// dont chaque dossier, jusqu'à `racine` (« / ») comprise, est aussi à `proprietaire` et fermé aux autres : sinon un
+/// autre compte pourrait changer ce que l'unité lance. Un fichier refusé ne fait pas chercher dans le dossier suivant.
+fn fichier_d_unite_sur(
+    dossiers: &[&std::path::Path],
+    racine: &std::path::Path,
+    nom: &str,
+    proprietaire: u32,
+) -> Result<(), Echec> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let vu = crate::ui::affichable(nom);
+    if !gestes_unix::nom_admis(nom) {
+        return Err(refus(trf!(
+            "nom de service refusé ({vu}) : rien n'est fait",
+            "service name refused ({vu}): nothing is done"
+        )));
+    }
+    let douteux = || {
+        refus(trf!(
+            "le fichier du service {vu} n'est pas un fichier de l'administrateur fermé aux autres comptes (lui, ou un dossier qui le contient, est modifiable par un autre compte) : rien n'est fait",
+            "the file of the service {vu} is not an administrator file closed to other accounts (it, or a folder holding it, is writable by another account): nothing is done"
+        ))
+    };
+    let a_lui = |m: &std::fs::Metadata| m.uid() == proprietaire && m.mode() & 0o022 == 0;
+    for dossier in dossiers {
+        let chemin = dossier.join(nom);
+        let vu_du_lien = match std::fs::symlink_metadata(&chemin) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return Err(douteux()),
+        };
+        let fichier = if vu_du_lien.file_type().is_symlink() {
+            let racine = std::fs::canonicalize(racine).map_err(|_| douteux())?;
+            let cible = std::fs::canonicalize(&chemin).map_err(|_| douteux())?;
+            // La cible a tous ses liens résolus : chacun de ses dossiers est vu tel qu'il est. Un dossier à root et
+            // fermé aux autres ne peut pas être remplacé entre ce regard et l'ouverture.
+            let dossiers_surs = cible.starts_with(&racine)
+                && cible
+                    .ancestors()
+                    .skip(1)
+                    .filter(|d| d.starts_with(&racine))
+                    .all(|d| std::fs::metadata(d).is_ok_and(|m| m.is_dir() && a_lui(&m)));
+            if vu_du_lien.uid() != proprietaire || !dossiers_surs {
+                return Err(douteux());
+            }
+            cible
+        } else {
+            chemin
+        };
+        // Sans suivre de lien (O_NOFOLLOW : un fichier remplacé par un lien depuis le regard est refusé), sans
+        // attendre si c'est un tube (O_NONBLOCK).
+        let ouvert = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&fichier)
+            .map_err(|_| douteux())?;
+        let m = ouvert.metadata().map_err(|_| douteux())?;
+        return if m.is_file() && a_lui(&m) {
+            Ok(())
+        } else {
+            Err(douteux())
+        };
+    }
+    Err(refus(trf!(
+        "aucun fichier du service {vu} dans les dossiers du système : rien n'est fait",
+        "no file for the service {vu} in the system folders: nothing is done"
+    )))
+}
+
+/// Une unité désignée par le parent, revue par le fils avant d'y toucher (P5 du lot U3) : un logiciel de prise de
+/// contrôle à distance reconnu, au fichier sûr, activé au démarrage. Le parent l'a trouvée ainsi ; le fils ne le
+/// croit pas sur parole.
+fn designee_revue(nom: &str, monde: &mut dyn Monde) -> Result<(), Echec> {
+    let vu = crate::ui::affichable(nom);
+    if !crate::protection::distance::controle_a_distance(nom) {
+        return Err(refus(trf!(
+            "{vu} n'est pas un logiciel de prise de contrôle à distance connu de Vanguard : rien n'est fait",
+            "{vu} is not a remote control tool known to Vanguard: nothing is done"
+        )));
+    }
+    monde.fichier_sur(nom)?;
+    match monde.etat_du_fichier(nom)? {
+        Some(etat) if etat == "enabled" => Ok(()),
+        _ => Err(refus(trf!(
+            "{vu} n'est pas lancé au démarrage : rien n'est fait",
+            "{vu} is not started at boot: nothing is done"
+        ))),
+    }
+}
+
+/// Un geste de Linux, rejugé ici avant d'être fait, dans cet ordre : permis sur ce système, jamais refusé
+/// (`GesteUnix::refus`), systemd présent s'il en faut, aucune session à distance qu'il couperait, l'unité désignée
+/// revue, puis l'accord de la personne s'il en demande un.
+fn faire_geste(g: GesteUnix, monde: &mut dyn Monde) -> Resultat {
     if !g.permis_ici() {
         return Resultat::echec(tr!(
             "ce geste n'est pas prévu sur ce système : rien n'est fait",
             "this step is not meant for this system: nothing is done"
         ));
     }
-    if g.demande_accord()
-        && let Err(Refus(raison)) = accord(g)
+    if let Some((fr, en)) = g.refus() {
+        return Resultat::echec(if crate::langue::anglais() { en } else { fr });
+    }
+    if g.par_systemd() && !monde.systemd() {
+        return Resultat::echec(sans_systemd());
+    }
+    if g.coupe_session() {
+        match monde.session_entrante() {
+            Some(false) => {}
+            Some(true) => {
+                return Resultat::echec(tr!(
+                    "une session à distance entrante est ouverte sur cet ordinateur, et ce geste pourrait la couper : rien n'est fait. Refaites-le une fois la session fermée",
+                    "an incoming remote session is open on this computer, and this step could cut it: nothing is done. Do it again once the session is closed"
+                ));
+            }
+            None => {
+                return Resultat::echec(tr!(
+                    "les connexions en cours ne se lisent pas : sans savoir si une session à distance passe par là, rien n'est fait",
+                    "the current connections cannot be read: without knowing whether a remote session goes through it, nothing is done"
+                ));
+            }
+        }
+    }
+    if let GesteUnix::Designee(_, nom) = g
+        && let Err(raison) = designee_revue(nom.as_str(), monde)
     {
         return Resultat::echec(raison);
     }
+    if g.demande_accord()
+        && let Err(Refus(raison)) = monde.accord(g)
+    {
+        return Resultat::echec(raison);
+    }
+    let fait = |r: Result<(), Echec>| r.map_or_else(Resultat::echec, |()| Resultat::ok());
     match g {
-        GesteUnix::Programme(p) => lancer_programme(p),
+        GesteUnix::Programme(p) => monde.programme(p),
+        GesteUnix::Unite(a, u) => fait(monde.unite(a, u.nom)),
+        GesteUnix::Designee(a, nom) => fait(monde.unite(a, nom.as_str())),
+        GesteUnix::ReinitialiserEchecs => fait(monde.reinitialiser_echecs()),
+        GesteUnix::SignaturesClamav => signatures_clamav(monde),
+    }
+}
+
+/// `signatures-clamav` : le service de mise à jour, s'il est installé, verrouille la base pendant qu'il tourne ; il
+/// est arrêté le temps de freshclam, puis remis en route, même si freshclam a échoué : jamais laissé arrêté. Ni un
+/// signal de fin (terminal fermé, Ctrl+C), ni une panique, ni un arrêt refusé ne sautent la remise en route. Masqué
+/// par l'administrateur, il n'est pas touché, et c'est noté.
+fn signatures_clamav(monde: &mut dyn Monde) -> Resultat {
+    let service = gestes_unix::CLAMAV_FRESHCLAM.nom;
+    let etat = match monde.etat_du_fichier(service) {
+        Ok(e) => e,
+        Err(raison) => return Resultat::echec(raison),
+    };
+    let masque = etat.as_deref() == Some("masked");
+    if etat.is_none() || masque {
+        let r = monde.programme(&gestes_unix::FRESHCLAM);
+        return if r.reussi && masque {
+            Resultat::ok_note(tr!(
+                "mise à jour automatique masquée par l'administrateur : laissée telle quelle",
+                "automatic update masked by the administrator: left as is"
+            ))
+        } else {
+            r
+        };
+    }
+    // Posés avant l'arrêt, retirés après la remise en route (ordre inverse des `let`) : entre les deux, la fenêtre
+    // fermée ne tue plus l'assistant au milieu.
+    let _signaux = SignauxIgnores::poser();
+    let mut relance = Relance {
+        monde,
+        service,
+        faite: false,
+    };
+    // Un arrêt en échec n'arrête pas la suite : le service a pu s'arrêter quand même, ou ne tenir aucun verrou ;
+    // freshclam le dira s'il bute dessus, et le service est remis en route dans tous les cas.
+    let arret = relance.monde.unite(ActionUnite::Arreter, service);
+    let r = relance.monde.programme(&gestes_unix::FRESHCLAM);
+    let reprise = remettre_en_route(relance.monde, service);
+    relance.faite = true;
+    match (r.reussi, reprise, arret) {
+        (true, Ok(()), _) => Resultat::ok(),
+        (false, Ok(()), Ok(())) => r,
+        (false, Ok(()), Err(a)) => Resultat::echec(trf!(
+            "{} (le service de mise à jour automatique ne s'était pas arrêté : {a})",
+            "{} (the automatic update service had not stopped: {a})",
+            r.raison
+        )),
+        (true, Err(raison), _) => Resultat::echec(trf!(
+            "signatures à jour, mais leur mise à jour automatique n'a pas repris : {raison}",
+            "signatures up to date, but their automatic update did not resume: {raison}"
+        )),
+        (false, Err(raison), _) => Resultat::echec(trf!(
+            "{} ; et la mise à jour automatique n'a pas repris : {raison}",
+            "{}; and the automatic update did not resume: {raison}",
+            r.raison
+        )),
+    }
+}
+
+/// Remet en route le service de mise à jour : activé et démarré ; si l'activation échoue, au moins démarré. L'erreur
+/// rendue est celle de l'activation.
+fn remettre_en_route(monde: &mut dyn Monde, service: &str) -> Result<(), Echec> {
+    monde
+        .unite(ActionUnite::Activer, service)
+        .or_else(|e| monde.unite(ActionUnite::Demarrer, service).map_err(|_| e))
+}
+
+/// Remet le service en route s'il est quitté avant la fin (`faite` encore faux) : une panique, ou un retour ajouté
+/// plus tard au milieu, ne le laissent pas arrêté.
+struct Relance<'a> {
+    monde: &'a mut dyn Monde,
+    service: &'static str,
+    faite: bool,
+}
+
+impl Drop for Relance<'_> {
+    fn drop(&mut self) {
+        if !self.faite {
+            let _ = remettre_en_route(self.monde, self.service);
+        }
+    }
+}
+
+/// Les signaux qui finiraient l'assistant : la fenêtre du terminal fermée (SIGHUP), Ctrl+C (SIGINT), un arrêt
+/// demandé (SIGTERM). freshclam hérite de leur ignorance ; `commande::lancer` le tue à son délai par SIGKILL, qui ne
+/// s'ignore pas.
+const SIGNAUX_DE_FIN: [libc::c_int; 3] = [libc::SIGHUP, libc::SIGINT, libc::SIGTERM];
+
+/// Ignore `SIGNAUX_DE_FIN` tant qu'elle vit, puis remet chacun comme il était.
+struct SignauxIgnores(Vec<(libc::c_int, libc::sigaction)>);
+
+impl SignauxIgnores {
+    fn poser() -> SignauxIgnores {
+        let mut avant = Vec::new();
+        for signal in SIGNAUX_DE_FIN {
+            // SAFETY: sigaction est une structure C sans invariant : tout à zéro est valide (masque vide, aucun
+            // drapeau).
+            let mut ignore: libc::sigaction = unsafe { std::mem::zeroed() };
+            ignore.sa_sigaction = libc::SIG_IGN;
+            // SAFETY: voir ci-dessus.
+            let mut ancien: libc::sigaction = unsafe { std::mem::zeroed() };
+            // SAFETY: deux pointeurs vers des structures vivantes de la pile, le temps de l'appel ; SIG_IGN ne fait
+            // tourner aucun code de Vanguard dans un gestionnaire.
+            if unsafe { libc::sigaction(signal, &raw const ignore, &raw mut ancien) } == 0 {
+                avant.push((signal, ancien));
+            }
+        }
+        SignauxIgnores(avant)
+    }
+}
+
+impl Drop for SignauxIgnores {
+    fn drop(&mut self) {
+        for (signal, ancien) in &self.0 {
+            // SAFETY: `ancien` vit le temps de l'appel ; c'est la disposition rendue par le noyau à la pose.
+            unsafe { libc::sigaction(*signal, ancien, std::ptr::null_mut()) };
+        }
     }
 }
 
@@ -626,7 +987,10 @@ fn lancer_programme(p: &Programme) -> Resultat {
     // croirait Vanguard figé et fermerait la fenêtre. Sur la sortie d'erreur : la sortie standard porte les réponses
     // au parent.
     if p.delai >= 60 {
-        eprintln!(
+        // Jamais `eprintln!` : une sortie d'erreur fermée (fenêtre du terminal fermée) le ferait paniquer, après
+        // l'arrêt d'un service.
+        let _ = writeln!(
+            std::io::stderr(),
             "{}",
             trf!(
                 "    … {} : jusqu'à {} min",
@@ -680,7 +1044,21 @@ fn accord(question: &str, lecteur: &mut impl BufRead, ecrivain: &mut impl Write)
     matches!(reponse.trim().to_lowercase().as_str(), "o" | "oui" | "y" | "yes")
 }
 
-/// L'accord d'un geste qui affaiblit ou supprime, demandé sur le terminal de la personne (/dev/tty), jamais sur le
+/// Pourquoi ce geste demande l'accord, dans la langue de l'interface (`GesteUnix::pourquoi_l_accord`).
+fn pourquoi_dit(g: GesteUnix) -> &'static str {
+    match g.pourquoi_l_accord() {
+        Some((fr, en)) => {
+            if crate::langue::anglais() {
+                en
+            } else {
+                fr
+            }
+        }
+        None => tr!("ceci change le système", "this changes the system"),
+    }
+}
+
+/// L'accord d'un geste qui affaiblit, supprime, coupe le réseau ou l'ouvre, demandé sur le terminal de la personne (/dev/tty), jamais sur le
 /// canal du parent. Sans terminal, refusé.
 fn accord_au_terminal(g: GesteUnix) -> Result<(), Refus> {
     use std::os::fd::AsRawFd;
@@ -697,9 +1075,10 @@ fn accord_au_terminal(g: GesteUnix) -> Result<(), Refus> {
     // SAFETY: tcflush sur un descripteur ouvert que `tty` tient pendant l'appel ; aucun pointeur.
     unsafe { libc::tcflush(tty.as_raw_fd(), libc::TCIFLUSH) };
     let question = trf!(
-        "Vanguard (administrateur) : {} — ceci baisse une protection ou supprime quelque chose. D'accord ? Tapez « oui » puis Entrée (autre chose refuse) :",
-        "Vanguard (administrator): {} — this lowers a protection or deletes something. Agree? Type \"yes\" then Enter (anything else refuses):",
-        texte_du_geste(g)
+        "Vanguard (administrateur) : {} — {}. D'accord ? Tapez « oui » puis Entrée (autre chose refuse) :",
+        "Vanguard (administrator): {} — {}. Agree? Type \"yes\" then Enter (anything else refuses):",
+        texte_du_geste(g),
+        pourquoi_dit(g)
     );
     let mut ecrivain = &tty;
     let mut lecteur = BufReader::new(&tty);
@@ -1080,6 +1459,79 @@ mod tests {
         assert!(!accord("?", &mut lu, &mut Vec::new()));
     }
 
+    /// Un ordinateur inventé pour `faire_geste` : chaque appel est noté dans `journal`, dans l'ordre ; rien ne touche
+    /// au vrai système.
+    struct FauxMonde {
+        journal: Vec<String>,
+        refus: Option<&'static str>,
+        systemd: bool,
+        session: Option<bool>,
+        fichier: Result<(), Echec>,
+        etat: Result<Option<String>, Echec>,
+        /// Les actions (`ActionUnite::mot`) qui échouent.
+        echecs: Vec<&'static str>,
+        programme_reussi: bool,
+        /// Le programme panique au lieu de rendre son issue.
+        programme_panique: bool,
+    }
+
+    impl FauxMonde {
+        fn nouveau() -> Self {
+            FauxMonde {
+                journal: Vec::new(),
+                refus: None,
+                systemd: true,
+                session: Some(false),
+                fichier: Ok(()),
+                etat: Ok(Some("enabled".into())),
+                echecs: Vec::new(),
+                programme_reussi: true,
+                programme_panique: false,
+            }
+        }
+    }
+
+    impl Monde for FauxMonde {
+        fn accord(&mut self, _: GesteUnix) -> Result<(), Refus> {
+            self.journal.push("accord".into());
+            self.refus.map_or(Ok(()), |r| Err(Refus(r.into())))
+        }
+        fn systemd(&self) -> bool {
+            self.systemd
+        }
+        fn session_entrante(&self) -> Option<bool> {
+            self.session
+        }
+        fn fichier_sur(&self, _: &str) -> Result<(), Echec> {
+            self.fichier.clone()
+        }
+        fn etat_du_fichier(&mut self, unite: &str) -> Result<Option<String>, Echec> {
+            self.journal.push(format!("etat {unite}"));
+            self.etat.clone()
+        }
+        fn unite(&mut self, action: ActionUnite, unite: &str) -> Result<(), Echec> {
+            self.journal.push(format!("{} {unite}", action.mot()));
+            if self.echecs.contains(&action.mot()) {
+                Err(Echec::echoue("essai", format!("{} en échec", action.mot())))
+            } else {
+                Ok(())
+            }
+        }
+        fn reinitialiser_echecs(&mut self) -> Result<(), Echec> {
+            self.journal.push("reinitialiser".into());
+            Ok(())
+        }
+        fn programme(&mut self, p: &'static Programme) -> Resultat {
+            self.journal.push(format!("programme {}", p.id));
+            assert!(!self.programme_panique, "panique à l'essai");
+            if self.programme_reussi {
+                Resultat::ok()
+            } else {
+                Resultat::echec("programme en échec")
+            }
+        }
+    }
+
     /// Un geste qui affaiblit n'est jamais fait sans accord : le refus est rendu tel quel, et rien n'est lancé.
     #[test]
     fn un_geste_qui_affaiblit_attend_l_accord() {
@@ -1098,23 +1550,375 @@ mod tests {
         if !g.permis_ici() {
             return crate::essais::saute("aucun geste de Linux n'est permis sur ce système");
         }
-        let mut demandes = 0;
-        let r = faire_geste(g, &mut |_| {
-            demandes += 1;
-            Err(Refus("refusé à l'essai".into()))
-        });
-        assert_eq!(demandes, 1);
+        let mut m = FauxMonde::nouveau();
+        m.refus = Some("refusé à l'essai");
+        let r = faire_geste(g, &mut m);
+        assert_eq!(m.journal, ["accord"]);
         assert!(!r.reussi && r.raison == "refusé à l'essai", "{r:?}");
-        // Accordé : il ne reste qu'à trouver l'outil, absent ici, et c'est dit (jamais un faux « ok »).
-        let r = faire_geste(g, &mut |_| Ok(()));
+        let mut m = FauxMonde::nouveau();
+        assert!(faire_geste(g, &mut m).reussi);
+        assert_eq!(m.journal, ["accord", "programme essai-affaiblit"]);
+        // Accordé pour de vrai : il ne reste qu'à trouver l'outil, absent ici, et c'est dit (jamais un faux « ok »).
+        let r = lancer_programme(&AFFAIBLIT);
         assert!(!r.reussi && r.raison.contains("vanguard-outil-absent-essai"), "{r:?}");
         // Un geste ordinaire ne demande rien.
-        let mut demande = false;
-        let _ = faire_geste(GesteUnix::Programme(&ESSAI_VRAI), &mut |_| {
-            demande = true;
-            Err(Refus(String::new()))
+        let mut m = FauxMonde::nouveau();
+        m.refus = Some("");
+        assert!(faire_geste(GesteUnix::Programme(&ESSAI_VRAI), &mut m).reussi);
+        assert_eq!(m.journal, ["programme essai-vrai"]);
+    }
+
+    /// Les gardes de `faire_geste`, dans leur ordre : un pare-feu jamais coupé, systemd absent dit, une session à
+    /// distance jamais coupée (ni quand elle ne se lit pas), l'unité désignée revue, l'accord pour une protection.
+    /// Chaque refus arrive avant tout geste sur le système.
+    #[test]
+    fn les_gardes_d_un_geste_d_unite() {
+        if !GesteUnix::ReinitialiserEchecs.permis_ici() {
+            return crate::essais::saute("aucun geste de Linux n'est permis sur ce système");
+        }
+        let essai = |g: GesteUnix, regler: &dyn Fn(&mut FauxMonde)| {
+            let mut m = FauxMonde::nouveau();
+            regler(&mut m);
+            let r = faire_geste(g, &mut m);
+            (r.reussi, m.journal)
+        };
+        let rien = |_: &mut FauxMonde| {};
+        let vide: Vec<String> = Vec::new();
+        // Un pare-feu : jamais arrêté, redémarré ni rechargé (un rechargement peut le laisser vide), même accordé,
+        // même avec tout le reste en ordre.
+        for a in [
+            ActionUnite::Arreter,
+            ActionUnite::Desactiver,
+            ActionUnite::DesactiverSansArreter,
+            ActionUnite::Redemarrer,
+            ActionUnite::Recharger,
+        ] {
+            for u in [&gestes_unix::UFW, &gestes_unix::FIREWALLD] {
+                assert_eq!(essai(GesteUnix::Unite(a, u), &rien), (false, vide.clone()), "{a:?}");
+            }
+        }
+        assert_eq!(
+            essai(GesteUnix::Unite(ActionUnite::Activer, &gestes_unix::UFW), &rien),
+            (true, vec!["activer ufw.service".to_string()])
+        );
+        // Sans systemd : refusé, dit, rien d'appelé.
+        let sans = |m: &mut FauxMonde| m.systemd = false;
+        assert_eq!(
+            essai(GesteUnix::Unite(ActionUnite::Activer, &gestes_unix::CUPS), &sans),
+            (false, vide.clone())
+        );
+        assert_eq!(essai(GesteUnix::ReinitialiserEchecs, &sans), (false, vide.clone()));
+        // Le réseau redémarré : jamais pendant une session à distance, ni sans savoir s'il y en a une.
+        let reseau = GesteUnix::Unite(ActionUnite::Redemarrer, &gestes_unix::NETWORKMANAGER);
+        assert_eq!(essai(reseau, &|m| m.session = Some(true)), (false, vide.clone()));
+        assert_eq!(essai(reseau, &|m| m.session = None), (false, vide.clone()));
+        assert_eq!(
+            essai(reseau, &rien),
+            (true, vec!["redemarrer NetworkManager.service".to_string()])
+        );
+        // Le réseau seulement rechargé ne coupe rien : la session ne compte pas.
+        assert!(
+            essai(
+                GesteUnix::Unite(ActionUnite::Recharger, &gestes_unix::NETWORKMANAGER),
+                &|m| m.session = Some(true)
+            )
+            .0
+        );
+        // Une protection : l'accord d'abord ; refusé, rien n'est fait.
+        let audit = GesteUnix::Unite(ActionUnite::Desactiver, &gestes_unix::AUDITD);
+        assert_eq!(
+            essai(audit, &|m| m.refus = Some("non")),
+            (false, vec!["accord".to_string()])
+        );
+        assert_eq!(
+            essai(audit, &rien),
+            (
+                true,
+                vec!["accord".to_string(), "desactiver auditd.service".to_string()]
+            )
+        );
+        // Activer une protection ne demande rien.
+        assert_eq!(
+            essai(GesteUnix::Unite(ActionUnite::Activer, &gestes_unix::AUDITD), &|m| m
+                .refus =
+                Some("non")),
+            (true, vec!["activer auditd.service".to_string()])
+        );
+        assert_eq!(
+            essai(GesteUnix::ReinitialiserEchecs, &rien),
+            (true, vec!["reinitialiser".to_string()])
+        );
+        // Couper le réseau : l'accord, après la session ; ouvrir l'ordinateur au réseau local : l'accord aussi.
+        let coupe = GesteUnix::Unite(ActionUnite::Desactiver, &gestes_unix::NETWORKMANAGER);
+        assert_eq!(essai(coupe, &|m| m.session = Some(true)), (false, vide.clone()));
+        assert_eq!(
+            essai(coupe, &|m| m.refus = Some("non")),
+            (false, vec!["accord".to_string()])
+        );
+        assert_eq!(
+            essai(
+                GesteUnix::Unite(ActionUnite::Activer, &gestes_unix::CUPS_BROWSED),
+                &rien
+            ),
+            (
+                true,
+                vec!["accord".to_string(), "activer cups-browsed.service".to_string()]
+            )
+        );
+    }
+
+    /// Dans le fils, rien n'écrit par `eprintln!` ni `println!` : la fenêtre du terminal fermée en plein geste les
+    /// ferait paniquer, peut-être après l'arrêt d'un service ; `let _ = writeln!` ne panique jamais.
+    #[test]
+    fn aucune_sortie_qui_panique() {
+        let source = include_str!("assistant.rs");
+        let code = &source[..source.find("#[cfg(test)]\nmod tests").unwrap()];
+        for interdit in ["eprintln!(", "println!(", "eprint!(", "print!("] {
+            assert!(!code.contains(interdit), "{interdit}");
+        }
+    }
+
+    /// Une unité désignée par le parent n'est touchée que revue par le fils : un logiciel de prise de contrôle
+    /// reconnu, au fichier sûr, activé au démarrage ; une session à distance ouverte ne l'empêche pas.
+    #[test]
+    fn une_unite_designee_est_revue() {
+        let arreter = gestes_unix::designee(ActionUnite::Arreter, "anydesk.service").unwrap();
+        let retirer = gestes_unix::designee(ActionUnite::DesactiverSansArreter, "anydesk.service").unwrap();
+        if !arreter.permis_ici() {
+            return crate::essais::saute("aucun geste de Linux n'est permis sur ce système");
+        }
+        let essai = |g: GesteUnix, regler: &dyn Fn(&mut FauxMonde)| {
+            let mut m = FauxMonde::nouveau();
+            regler(&mut m);
+            let r = faire_geste(g, &mut m);
+            (r.reussi, m.journal)
+        };
+        let s = ToString::to_string;
+        assert_eq!(
+            essai(arreter, &|_| {}),
+            (true, vec![s("etat anydesk.service"), s("arreter anydesk.service")])
+        );
+        assert_eq!(
+            essai(retirer, &|m| m.session = Some(true)),
+            (
+                true,
+                vec![s("etat anydesk.service"), s("desactiver-sans-arreter anydesk.service")]
+            )
+        );
+        // Une session ouverte, ou illisible, n'empêche pas d'arrêter le logiciel de prise de contrôle : ses propres
+        // connexions sont justement celles du faux technicien.
+        for session in [Some(true), None] {
+            assert_eq!(
+                essai(arreter, &|m| m.session = session),
+                (true, vec![s("etat anydesk.service"), s("arreter anydesk.service")]),
+                "{session:?}"
+            );
+        }
+        assert_eq!(
+            essai(arreter, &|m| m.fichier = Err(Echec::refuse("essai", "lien"))),
+            (false, vec![])
+        );
+        for etat in [None, Some(s("disabled")), Some(s("masked")), Some(s("static"))] {
+            let (reussi, journal) = essai(arreter, &|m| m.etat = Ok(etat.clone()));
+            assert!(!reussi && journal == [s("etat anydesk.service")], "{etat:?}");
+        }
+        assert_eq!(
+            essai(arreter, &|m| m.etat = Err(Echec::echoue("essai", "bus"))),
+            (false, vec![s("etat anydesk.service")])
+        );
+        // Un service qui n'est pas un logiciel de prise de contrôle : refusé avant de regarder son fichier.
+        let autre = gestes_unix::designee(ActionUnite::Arreter, "bluetooth.service").unwrap();
+        assert_eq!(essai(autre, &|_| {}), (false, vec![]));
+    }
+
+    /// Pose et retrait des signaux ignorés : un essai à la fois.
+    static SIGNAUX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// La disposition d'un signal, lue sans la changer.
+    fn disposition(signal: libc::c_int) -> libc::sighandler_t {
+        // SAFETY: voir `SignauxIgnores::poser`.
+        let mut vue: libc::sigaction = unsafe { std::mem::zeroed() };
+        // SAFETY: lecture seule (aucune nouvelle disposition) dans une structure vivante de la pile.
+        assert_eq!(unsafe { libc::sigaction(signal, std::ptr::null(), &raw mut vue) }, 0);
+        vue.sa_sigaction
+    }
+
+    /// Le temps de `signatures-clamav`, fermer le terminal, Ctrl+C ou un arrêt demandé ne tuent pas l'assistant ;
+    /// ensuite, chaque signal redevient ce qu'il était.
+    #[test]
+    fn les_signaux_de_fin_ignores_le_temps_du_geste() {
+        let _seul = SIGNAUX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let avant = SIGNAUX_DE_FIN.map(disposition);
+        {
+            let _garde = SignauxIgnores::poser();
+            for s in SIGNAUX_DE_FIN {
+                assert_eq!(disposition(s), libc::SIG_IGN, "{s}");
+            }
+        }
+        assert_eq!(SIGNAUX_DE_FIN.map(disposition), avant);
+    }
+
+    /// `signatures-clamav` : le service jamais laissé arrêté (arrêt refusé, activation refusée, panique), masqué
+    /// jamais touché, absent sans rien d'autre que freshclam ; la réussite seulement si freshclam et la remise en
+    /// route ont réussi.
+    #[test]
+    fn signatures_clamav_jamais_laisse_arrete() {
+        if !GesteUnix::SignaturesClamav.permis_ici() {
+            return crate::essais::saute("aucun geste de Linux n'est permis sur ce système");
+        }
+        // Les signaux du processus sont communs à tous les essais : un seul à la fois les pose.
+        let _signaux = SIGNAUX.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let essai = |regler: &dyn Fn(&mut FauxMonde)| {
+            let mut m = FauxMonde::nouveau();
+            regler(&mut m);
+            let r = faire_geste(GesteUnix::SignaturesClamav, &mut m);
+            (r, m.journal)
+        };
+        let s = ToString::to_string;
+        let etat = s("etat clamav-freshclam.service");
+        let arret = s("arreter clamav-freshclam.service");
+        let marche = s("activer clamav-freshclam.service");
+        let fresh = s("programme freshclam");
+        let (r, j) = essai(&|_| {});
+        assert!(r.reussi && r.note.is_none(), "{r:?}");
+        assert_eq!(j, [etat.clone(), arret.clone(), fresh.clone(), marche.clone()]);
+        let (r, j) = essai(&|m| m.etat = Ok(None));
+        assert!(r.reussi && r.note.is_none(), "{r:?}");
+        assert_eq!(j, [etat.clone(), fresh.clone()]);
+        let (r, j) = essai(&|m| m.etat = Ok(Some(s("masked"))));
+        assert!(r.reussi && r.note.is_some(), "{r:?}");
+        assert_eq!(j, [etat.clone(), fresh.clone()]);
+        // L'arrêt refusé : freshclam est lancé quand même, puis le service remis en route.
+        let (r, j) = essai(&|m| m.echecs = vec!["arreter"]);
+        assert!(r.reussi, "{r:?}");
+        assert_eq!(j, [etat.clone(), arret.clone(), fresh.clone(), marche.clone()]);
+        let (r, j) = essai(&|m| {
+            m.echecs = vec!["arreter"];
+            m.programme_reussi = false;
         });
-        assert!(!demande);
+        assert!(!r.reussi && r.raison.contains("arreter en échec"), "{r:?}");
+        assert_eq!(j, [etat.clone(), arret.clone(), fresh.clone(), marche.clone()]);
+        let (r, j) = essai(&|m| m.programme_reussi = false);
+        assert!(!r.reussi && r.raison == "programme en échec", "{r:?}");
+        assert_eq!(j, [etat.clone(), arret.clone(), fresh.clone(), marche.clone()]);
+        // L'activation refusée : au moins démarré, et c'est une réussite.
+        let demarre = s("demarrer clamav-freshclam.service");
+        let (r, j) = essai(&|m| m.echecs = vec!["activer"]);
+        assert!(r.reussi, "{r:?}");
+        assert_eq!(
+            j,
+            [
+                etat.clone(),
+                arret.clone(),
+                fresh.clone(),
+                marche.clone(),
+                demarre.clone()
+            ]
+        );
+        // Ni activé ni démarré : dit, avec la raison de l'activation.
+        let (r, j) = essai(&|m| m.echecs = vec!["activer", "demarrer"]);
+        assert!(!r.reussi && r.raison.contains("activer en échec"), "{r:?}");
+        assert_eq!(j, [etat.clone(), arret.clone(), fresh.clone(), marche.clone(), demarre]);
+        // Une panique pendant freshclam : le service est quand même remis en route en sortant.
+        let mut m = FauxMonde::nouveau();
+        m.programme_panique = true;
+        let paniquee = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            faire_geste(GesteUnix::SignaturesClamav, &mut m)
+        }));
+        assert!(paniquee.is_err());
+        assert_eq!(m.journal, [etat.clone(), arret, fresh, marche]);
+        let (r, j) = essai(&|m| m.etat = Err(Echec::echoue("essai", "bus fermé")));
+        assert!(!r.reussi && r.raison == "bus fermé", "{r:?}");
+        assert_eq!(j, [etat]);
+        // Sans systemd : rien, dit (le parent propose alors freshclam seul).
+        let (r, j) = essai(&|m| m.systemd = false);
+        assert!(!r.reussi && j.is_empty(), "{r:?}");
+    }
+
+    /// Le fichier d'une unité désignée : un fichier ordinaire du compte attendu, que personne d'autre ne peut
+    /// modifier ; un autre propriétaire, un fichier modifiable par le groupe : refusés, sans voir plus loin. Un lien
+    /// (`systemctl link`) n'est suivi que vers un tel fichier, dans des dossiers fermés aux autres.
+    #[test]
+    fn le_fichier_d_une_unite_designee() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = crate::essais::Jetable::nouveau("assistant-unite");
+        let racine = d.join("racine");
+        let premier = racine.join("etc");
+        let second = racine.join("usr");
+        let ailleurs = racine.join("opt").join("logiciel");
+        for dossier in [&premier, &second, &ailleurs] {
+            std::fs::create_dir_all(dossier).unwrap();
+        }
+        let moi = crate::socle::euid();
+        let dossiers = [premier.as_path(), second.as_path()];
+        let sur = |nom: &str, qui: u32| fichier_d_unite_sur(&dossiers, &racine, nom, qui);
+        let poser = |dossier: &std::path::Path, nom: &str, mode: u32| {
+            let f = dossier.join(nom);
+            std::fs::write(&f, "[Service]\n").unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        let mode = |chemin: &std::path::Path, m: u32| {
+            std::fs::set_permissions(chemin, std::fs::Permissions::from_mode(m)).unwrap();
+        };
+        for dossier in [&racine, &premier, &second, &ailleurs, &racine.join("opt")] {
+            mode(dossier, 0o755);
+        }
+        // Absent partout : refusé, dit.
+        assert!(sur("anydesk.service", moi).is_err());
+        // Dans le second dossier seulement : accepté.
+        poser(&second, "anydesk.service", 0o644);
+        assert_eq!(sur("anydesk.service", moi), Ok(()));
+        // Un autre propriétaire : refusé.
+        assert!(sur("anydesk.service", moi.wrapping_add(1)).is_err());
+        // Modifiable par le groupe ou par tous : refusé.
+        for m in [0o664, 0o646] {
+            poser(&second, "rustdesk.service", m);
+            assert!(sur("rustdesk.service", moi).is_err(), "{m:o}");
+        }
+        // Un lien (`systemctl link`) dans le premier dossier, vers un fichier correct : suivi, accepté.
+        poser(&ailleurs, "teamviewerd.service", 0o644);
+        let lien = premier.join("teamviewerd.service");
+        std::os::unix::fs::symlink(ailleurs.join("teamviewerd.service"), &lien).unwrap();
+        assert_eq!(sur("teamviewerd.service", moi), Ok(()));
+        // Même lien, vers un fichier d'un autre propriétaire : refusé.
+        assert!(sur("teamviewerd.service", moi.wrapping_add(1)).is_err());
+        // Sa cible modifiable par les autres : refusé, sans aller voir le second dossier.
+        poser(&second, "teamviewerd.service", 0o644);
+        mode(&ailleurs.join("teamviewerd.service"), 0o646);
+        assert!(sur("teamviewerd.service", moi).is_err());
+        mode(&ailleurs.join("teamviewerd.service"), 0o644);
+        assert_eq!(sur("teamviewerd.service", moi), Ok(()));
+        // Un dossier parent de la cible modifiable par les autres : refusé (le fichier pourrait y être remplacé).
+        for (dossier, m) in [(&ailleurs, 0o757), (&racine.join("opt"), 0o777), (&racine, 0o775)] {
+            mode(dossier, m);
+            assert!(sur("teamviewerd.service", moi).is_err(), "{} {m:o}", dossier.display());
+            mode(dossier, 0o755);
+        }
+        // Un lien qui sort de la racine : refusé.
+        let dehors = d.join("dehors.service");
+        std::fs::write(&dehors, "[Service]\n").unwrap();
+        mode(&dehors, 0o644);
+        std::os::unix::fs::symlink(&dehors, premier.join("rustdesk.service")).unwrap();
+        assert!(sur("rustdesk.service", moi).is_err());
+        // Un lien brisé : refusé.
+        std::os::unix::fs::symlink(ailleurs.join("absent.service"), premier.join("anydesk.service")).unwrap();
+        assert!(sur("anydesk.service", moi).is_err());
+        // Un dossier à la place du fichier : refusé.
+        std::fs::create_dir(premier.join("x11vnc.service")).unwrap();
+        poser(&second, "x11vnc.service", 0o644);
+        assert!(sur("x11vnc.service", moi).is_err());
+        // Un nom hors de la règle : refusé avant d'ouvrir quoi que ce soit.
+        assert!(sur("../etc/anydesk.service", moi).is_err());
+        // Les dossiers de systemd, tous : ceux des logiciels installés à la main et /lib compris.
+        assert_eq!(
+            DOSSIERS_D_UNITES,
+            [
+                "/etc/systemd/system",
+                "/usr/local/lib/systemd/system",
+                "/usr/lib/systemd/system",
+                "/lib/systemd/system"
+            ]
+        );
     }
 
     static FAUX: Programme = Programme {

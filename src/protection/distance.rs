@@ -15,6 +15,8 @@ use chrono::NaiveDate;
 
 #[cfg(unix)]
 use crate::commande::sh_chaine;
+#[cfg(target_os = "linux")]
+use crate::machine::gestes_unix::ActionUnite;
 use crate::machine::{Constat, alerte, impossible, ok};
 use crate::risk::Niveau;
 use crate::ui::*;
@@ -154,6 +156,67 @@ fn sans_repetition(commandes: impl IntoIterator<Item = String>) -> Vec<String> {
     liste
 }
 
+/// Retire chaque programme (une liste de commandes chacun) et dit, pour chacun, s'il est retiré. Ailleurs que sous
+/// Windows, les gestes d'un programme (arrêt et retrait d'un service système, lot U3) passent avant ses commandes,
+/// qui ne suivent que s'ils ont réussi : ne pas désinstaller un programme dont le service tourne encore. `Err(Some)` :
+/// les gestes sont faits, pas la suite ; ce qui a déjà changé, à dire.
+fn retirer_les_programmes(correctifs: &[Vec<String>]) -> Vec<Result<(), Option<&'static str>>> {
+    #[cfg(windows)]
+    return crate::machine::appliquer_chacune(correctifs)
+        .into_iter()
+        .map(|r| if r { Ok(()) } else { Err(None) })
+        .collect();
+    #[cfg(not(windows))]
+    crate::machine::appliquer_gestes_puis_commandes(correctifs)
+        .into_iter()
+        .zip(correctifs)
+        .map(|(issue, commandes)| issue_du_retrait(issue, commandes))
+        .collect()
+}
+
+/// Ce que dit le retrait d'un programme, selon l'issue de ses gestes et de ses commandes.
+#[cfg(not(windows))]
+fn issue_du_retrait(issue: crate::machine::IssueMelee, commandes: &[String]) -> Result<(), Option<&'static str>> {
+    match issue {
+        crate::machine::IssueMelee::Fait => Ok(()),
+        crate::machine::IssueMelee::Echec => Err(None),
+        crate::machine::IssueMelee::GestesSeulement => Err(Some(deja_fait(commandes))),
+    }
+}
+
+/// Ce que les gestes faits ont déjà changé : le service arrêté, retiré du démarrage, ou les deux.
+#[cfg(not(windows))]
+fn deja_fait(commandes: &[String]) -> &'static str {
+    use crate::machine::gestes_unix::{ActionUnite, GesteUnix, analyser};
+    let mut noms: Vec<String> = Vec::new();
+    let (mut arrete, mut retire) = (false, false);
+    for g in commandes.iter().filter_map(|c| analyser(c)) {
+        if let GesteUnix::Designee(a, nom) = g {
+            arrete |= matches!(a, ActionUnite::Arreter | ActionUnite::Desactiver);
+            retire |= matches!(a, ActionUnite::DesactiverSansArreter | ActionUnite::Desactiver);
+            if !noms.iter().any(|n| n == nom.as_str()) {
+                noms.push(nom.as_str().to_string());
+            }
+        }
+    }
+    let plusieurs = noms.len() > 1;
+    match (arrete, retire, plusieurs) {
+        (true, true, false) => tr!(
+            "son service est arrêté et ne démarrera plus",
+            "its service is stopped and will not start again"
+        ),
+        (true, true, true) => tr!(
+            "ses services sont arrêtés et ne démarreront plus",
+            "its services are stopped and will not start again"
+        ),
+        (true, false, false) => tr!("son service est arrêté", "its service is stopped"),
+        (true, false, true) => tr!("ses services sont arrêtés", "its services are stopped"),
+        (false, true, false) => tr!("son service ne démarrera plus", "its service will not start again"),
+        (false, true, true) => tr!("ses services ne démarreront plus", "its services will not start again"),
+        (false, false, _) => tr!("ses services sont déjà changés", "its services are already changed"),
+    }
+}
+
 /// La même trouvaille relevée deux fois (deux processus d'un même programme, un service et son processus) ne compte
 /// qu'une fois.
 fn sans_doublons(mut t: Vec<Trouvaille>) -> Vec<Trouvaille> {
@@ -284,7 +347,7 @@ fn juger(trouvailles: &[Trouvaille], aujourd_hui: NaiveDate) -> Vec<Constat> {
         };
         // L'objet : le logiciel par son nom français, le même quelle que soit la langue de l'interface.
         let constat = alerte(CAT, niveau, message).avec_objet(crate::modele::Objet::de("logiciel", logiciel.nom[0]));
-        let retrait = sans_repetition(siens.iter().flat_map(|t| t.retrait.iter().cloned()));
+        let retrait = correction_du_bilan(sans_repetition(siens.iter().flat_map(|t| t.retrait.iter().cloned())));
         constats.push(if en_cours {
             constat.manuel(
                 tr!(
@@ -650,6 +713,55 @@ fn processus(t: &mut Vec<Trouvaille>) -> bool {
     true
 }
 
+/// Arrêter une unité, ou ne plus la lancer au démarrage. Du système : le geste de l'assistant élevé, par le bus
+/// système (lot U3), que le fils ne fait qu'après avoir revu l'unité lui-même ; un nom hors de sa règle reste une
+/// commande. De la session (`systemctl --user`) : une commande du compte, sans droits.
+#[cfg(target_os = "linux")]
+fn action_sur_unite(prefixe: &str, utilisateur: bool, action: ActionUnite, unite: &str) -> String {
+    if !utilisateur && let Some(g) = crate::machine::gestes_unix::designee(action, unite) {
+        return g.ligne();
+    }
+    commande_d_unite(prefixe, action, unite)
+}
+
+/// La commande systemctl d'une unité : `stop`, ou `disable` (sans arrêter).
+#[cfg(target_os = "linux")]
+fn commande_d_unite(prefixe: &str, action: ActionUnite, unite: &str) -> String {
+    let mot = if action == ActionUnite::Arreter {
+        "stop"
+    } else {
+        "disable"
+    };
+    format!("{prefixe} {mot} {}", sh_chaine(unite))
+}
+
+/// Le préfixe des commandes sur les unités du système, partagé pour que le retour aux commandes du bilan n'en
+/// ajoute pas une.
+#[cfg(target_os = "linux")]
+const SYSTEMCTL_SYSTEME: &str = "sudo systemctl";
+
+/// La correction proposée au bilan est une seule liste, que l'assistant élevé refuserait si elle mêlait des gestes
+/// (le service retiré du démarrage) et des commandes (fichier d'ouverture de session, paquet). Mêlée, ses gestes
+/// redeviennent des commandes, comme avant le lot U3 ; le retrait choisi dans l'outil (`retirer`) fait, lui, les
+/// gestes puis les commandes. Faite de gestes seuls, elle les garde.
+fn correction_du_bilan(lignes: Vec<String>) -> Vec<String> {
+    #[cfg(target_os = "linux")]
+    {
+        use crate::machine::gestes_unix::{GesteUnix, analyser};
+        let geste = |l: &String| l.starts_with(crate::protection::blocage::ordres::PREFIXE);
+        if lignes.iter().any(geste) && !lignes.iter().all(geste) {
+            return lignes
+                .into_iter()
+                .map(|l| match analyser(&l) {
+                    Some(GesteUnix::Designee(a, n)) => commande_d_unite(SYSTEMCTL_SYSTEME, a, n.as_str()),
+                    _ => l,
+                })
+                .collect();
+        }
+    }
+    lignes
+}
+
 /// Lancements automatiques : fichiers .desktop d'autostart (nom ou ligne Exec), services systemd activés (système et
 /// session).
 /// `false` : un dossier d'autostart existe sans se lire, ou les services activés (système ou session) ne se lisent
@@ -689,7 +801,7 @@ fn demarrage_linux(t: &mut Vec<Trouvaille>, maison: &std::path::Path) -> bool {
     for (args, prefixe, utilisateur) in [
         (
             &["list-unit-files", "--state=enabled", "--no-legend", "--plain"][..],
-            "sudo systemctl",
+            SYSTEMCTL_SYSTEME,
             false,
         ),
         (
@@ -720,8 +832,13 @@ fn demarrage_linux(t: &mut Vec<Trouvaille>, maison: &std::path::Path) -> bool {
                 trace: Trace::Demarrage,
                 ou: trf!("service {unite}", "service {unite}"),
                 depuis: None,
-                retrait: vec![format!("{prefixe} disable {}", sh_chaine(unite))],
-                arret: vec![format!("{prefixe} stop {}", sh_chaine(unite))],
+                retrait: vec![action_sur_unite(
+                    prefixe,
+                    utilisateur,
+                    ActionUnite::DesactiverSansArreter,
+                    unite,
+                )],
+                arret: vec![action_sur_unite(prefixe, utilisateur, ActionUnite::Arreter, unite)],
             });
         }
     }
@@ -1552,15 +1669,18 @@ pub fn menu() {
         return;
     }
     println!();
-    let reussites = crate::machine::appliquer_chacune(&correctifs);
-    for (nom, reussi) in noms.iter().zip(reussites) {
-        if reussi {
-            trp!("  {VERT}✔{RESET} {nom} retiré.", "  {VERT}✔{RESET} {nom} removed.");
-        } else {
-            trp!(
+    let reussites = retirer_les_programmes(&correctifs);
+    for (nom, issue) in noms.iter().zip(reussites) {
+        match issue {
+            Ok(()) => trp!("  {VERT}✔{RESET} {nom} retiré.", "  {VERT}✔{RESET} {nom} removed."),
+            Err(None) => trp!(
                 "  ✖ {nom} : le retrait a échoué (voir au-dessus).",
                 "  ✖ {nom}: removal failed (see above)."
-            );
+            ),
+            Err(Some(deja)) => trp!(
+                "  ✖ {nom} : {deja}, mais la suite du retrait a échoué (voir au-dessus) : le programme n'est pas entièrement retiré.",
+                "  ✖ {nom}: {deja}, but the rest of the removal failed (see above): the program is not fully removed."
+            ),
         }
     }
     dire(tr!(
@@ -1605,6 +1725,96 @@ mod tests {
         assert_eq!(aucun, Vec::<PathBuf>::new());
         let absolu = std::env::temp_dir();
         assert_eq!(dossiers_nommes([None, Some(absolu.clone())]), [absolu]);
+    }
+
+    /// Lot U3 : une unité du système devient le geste désigné de l'assistant (jamais une commande sudo) ; un nom hors
+    /// de sa règle, ou une unité de la session, reste une commande, citée.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unites_du_systeme_par_le_geste() {
+        let s = "sudo systemctl";
+        assert_eq!(
+            action_sur_unite(s, false, ActionUnite::Arreter, "anydesk.service"),
+            "vanguard:geste unite-designee arreter anydesk.service"
+        );
+        assert_eq!(
+            action_sur_unite(s, false, ActionUnite::DesactiverSansArreter, "teamviewerd.service"),
+            "vanguard:geste unite-designee desactiver-sans-arreter teamviewerd.service"
+        );
+        // Une protection n'est jamais désignée : la commande reste, et l'assistant ne la ferait pas pour autant.
+        assert_eq!(
+            action_sur_unite(s, false, ActionUnite::Arreter, "ufw.service"),
+            format!("sudo systemctl stop {}", sh_chaine("ufw.service"))
+        );
+        assert_eq!(
+            action_sur_unite(s, false, ActionUnite::Arreter, "a b;rm.service"),
+            format!("sudo systemctl stop {}", sh_chaine("a b;rm.service"))
+        );
+        assert_eq!(
+            action_sur_unite(
+                "systemctl --user",
+                true,
+                ActionUnite::DesactiverSansArreter,
+                "rustdesk.service"
+            ),
+            format!("systemctl --user disable {}", sh_chaine("rustdesk.service"))
+        );
+    }
+
+    /// Les gestes faits, la suite en échec : dit ce qui a déjà changé (« son service est arrêté et ne démarrera
+    /// plus »), jamais un simple « le retrait a échoué » qui laisserait croire que rien n'a bougé.
+    #[cfg(not(windows))]
+    #[test]
+    fn retrait_a_moitie_dit_ce_qui_est_fait() {
+        use crate::machine::IssueMelee;
+        use crate::machine::gestes_unix::{ActionUnite, designee};
+        let ligne = |a, n: &str| designee(a, n).unwrap().ligne();
+        let un = [
+            ligne(ActionUnite::Arreter, "anydesk.service"),
+            ligne(ActionUnite::DesactiverSansArreter, "anydesk.service"),
+            "sudo apt-get remove -y anydesk".to_string(),
+        ];
+        assert_eq!(issue_du_retrait(IssueMelee::Fait, &un), Ok(()));
+        assert_eq!(issue_du_retrait(IssueMelee::Echec, &un), Err(None));
+        let deja = issue_du_retrait(IssueMelee::GestesSeulement, &un).unwrap_err().unwrap();
+        assert!(
+            deja == "son service est arrêté et ne démarrera plus"
+                || deja == "its service is stopped and will not start again",
+            "{deja}"
+        );
+        let arret_seul = [ligne(ActionUnite::Arreter, "anydesk.service")];
+        assert!(deja_fait(&arret_seul).contains("arrêté") || deja_fait(&arret_seul).contains("stopped"));
+        assert!(!deja_fait(&arret_seul).contains("plus") && !deja_fait(&arret_seul).contains("again"));
+        let deux = [
+            ligne(ActionUnite::DesactiverSansArreter, "anydesk.service"),
+            ligne(ActionUnite::DesactiverSansArreter, "rustdesk.service"),
+        ];
+        assert!(deja_fait(&deux).starts_with("ses ") || deja_fait(&deux).starts_with("its services"));
+    }
+
+    /// La correction du bilan ne mêle jamais gestes et commandes : mêlée, ses gestes redeviennent des commandes ;
+    /// faite de gestes seuls, elle les garde.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn correction_du_bilan_jamais_melee() {
+        let arret = action_sur_unite(SYSTEMCTL_SYSTEME, false, ActionUnite::Arreter, "anydesk.service");
+        let retrait = action_sur_unite(
+            SYSTEMCTL_SYSTEME,
+            false,
+            ActionUnite::DesactiverSansArreter,
+            "anydesk.service",
+        );
+        let gestes = vec![arret, retrait.clone()];
+        assert_eq!(correction_du_bilan(gestes.clone()), gestes);
+        let rm = "rm -f /home/alice/.config/autostart/anydesk.desktop".to_string();
+        assert_eq!(
+            correction_du_bilan(vec![retrait, rm.clone()]),
+            [
+                format!("sudo systemctl disable {}", sh_chaine("anydesk.service")),
+                rm.clone()
+            ]
+        );
+        assert_eq!(correction_du_bilan(vec![rm.clone()]), [rm]);
     }
 
     fn indice(nom: &str) -> usize {

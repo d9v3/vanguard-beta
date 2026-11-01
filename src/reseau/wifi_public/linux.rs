@@ -58,7 +58,8 @@ pub(crate) fn retirer_nft() -> String {
     format!("sudo nft delete table inet {TABLE} 2>/dev/null; ! sudo nft list table inet {TABLE} >/dev/null 2>&1")
 }
 
-/// Masque une unité de la liste fermée jusqu'au redémarrage, et l'arrête.
+/// Masque une unité de la liste fermée jusqu'au redémarrage, et l'arrête. Lot U3 : reste une commande, dans la même
+/// liste que nmcli et nft ; le geste « unite » (masque runtime) viendra avec eux (U6).
 pub(crate) fn masquer(unite: &str) -> Option<String> {
     UNITES
         .contains(&unite)

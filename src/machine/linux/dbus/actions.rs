@@ -33,7 +33,7 @@ const DCONF_ECRIVAIN: &str = "ca.desrt.dconf.Writer";
 const CHEMIN_DCONF: &str = "/ca/desrt/dconf/Writer/user";
 
 /// Une action permise : (service, chemin, interface, méthode, signature des arguments).
-type Action = (&'static str, &'static str, &'static str, &'static str, &'static str);
+pub(super) type Action = (&'static str, &'static str, &'static str, &'static str, &'static str);
 
 /// Les seules actions que ce client envoie, toutes sur le bus de la session.
 pub(super) const ACTIONS: &[Action] = &[
@@ -202,9 +202,9 @@ fn session_pour_agir() -> Result<Bus, Echec> {
     session()
 }
 
-/// L'action de la liste, s'il y en a une pour (interface, méthode) ; sinon rien ne part.
-fn action(interface: &str, methode: &str) -> Result<&'static Action, Echec> {
-    ACTIONS
+/// L'action de `liste`, s'il y en a une pour (interface, méthode) ; sinon rien ne part.
+fn action(liste: &'static [Action], interface: &str, methode: &str) -> Result<&'static Action, Echec> {
+    liste
         .iter()
         .find(|a| a.2 == interface && a.3 == methode)
         .ok_or_else(|| {
@@ -216,7 +216,7 @@ fn action(interface: &str, methode: &str) -> Result<&'static Action, Echec> {
 }
 
 /// Un signal JobRemoved du gestionnaire : (chemin du job, résultat).
-type FinDeJob = (String, String);
+pub(super) type FinDeJob = (String, String);
 
 impl Bus {
     /// Envoie une action de la liste et attend sa réponse ; les signaux JobRemoved venus de `systemd` (nom unique
@@ -229,7 +229,21 @@ impl Bus {
         systemd: Option<&str>,
         fins: &mut Vec<FinDeJob>,
     ) -> Result<(Message, Vec<Valeur>), Echec> {
-        let &(service, chemin, interface, methode, signature) = action(interface, methode)?;
+        self.agir_dans(ACTIONS, interface, methode, arguments, systemd, fins)
+    }
+
+    /// `agir` sur une autre liste fermée (`systeme::ACTIONS_SYSTEME`, celle du bus système) : une action hors de
+    /// `liste` ne part pas.
+    pub(super) fn agir_dans(
+        &mut self,
+        liste: &'static [Action],
+        interface: &str,
+        methode: &str,
+        arguments: Vec<Valeur>,
+        systemd: Option<&str>,
+        fins: &mut Vec<FinDeJob>,
+    ) -> Result<(Message, Vec<Valeur>), Echec> {
+        let &(service, chemin, interface, methode, signature) = action(liste, interface, methode)?;
         let mut appel = Message::appel(service, chemin, interface, methode, signature, arguments);
         self.serie = self.serie.wrapping_add(1).max(1);
         appel.serie = self.serie;
@@ -287,9 +301,15 @@ impl Bus {
         .map_err(echec)
     }
 
-    /// Attend la fin du job `job` (JobRemoved), dans `fins` déjà reçus puis dans la prise.
-    fn attendre_job(&mut self, job: &str, systemd: &str, fins: &mut Vec<FinDeJob>) -> Result<String, Echec> {
-        let echeance = super::echeance(DELAI_JOB);
+    /// Attend la fin du job `job` (JobRemoved), dans `fins` déjà reçus puis dans la prise, au plus `delai`.
+    pub(super) fn attendre_job(
+        &mut self,
+        job: &str,
+        systemd: &str,
+        fins: &mut Vec<FinDeJob>,
+        delai: Duration,
+    ) -> Result<String, Echec> {
+        let echeance = super::echeance(delai);
         loop {
             if let Some(i) = fins.iter().position(|(j, _)| j == job) {
                 return Ok(fins.swap_remove(i).1);
@@ -422,7 +442,7 @@ fn systemd_sur(bus: &mut Bus, geste: Geste, unite: &str) -> Result<(), Echec> {
             .and_then(Valeur::texte)
             .map(String::from)
             .ok_or_else(|| echec(super::mal_forme("job")))?;
-        let resultat = bus.attendre_job(&chemin, &systemd, fins)?;
+        let resultat = bus.attendre_job(&chemin, &systemd, fins, DELAI_JOB)?;
         if job_reussi(&resultat) {
             Ok(())
         } else {
@@ -547,7 +567,7 @@ fn changer_dconf_sur(bus: &mut Bus, changement: &[u8]) -> Result<String, Echec> 
     reason = "essais : y déborder fait échouer l'essai"
 )]
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::{Read, Write};
 
@@ -561,9 +581,9 @@ mod tests {
                 "{methode} est déjà une lecture"
             );
         }
-        assert!(action("org.freedesktop.systemd1.Manager", "PowerOff").is_err());
-        assert!(action("org.freedesktop.systemd1.Manager", "StartTransientUnit").is_err());
-        assert!(action("org.freedesktop.UDisks2.Filesystem", "Mount").is_err());
+        assert!(action(ACTIONS, "org.freedesktop.systemd1.Manager", "PowerOff").is_err());
+        assert!(action(ACTIONS, "org.freedesktop.systemd1.Manager", "StartTransientUnit").is_err());
+        assert!(action(ACTIONS, "org.freedesktop.UDisks2.Filesystem", "Mount").is_err());
     }
 
     #[test]
@@ -655,7 +675,7 @@ mod tests {
 
     // ── Un faux bus de session : il lit l'authentification, Hello, puis répond selon un scénario ──
 
-    fn lire_ligne(s: &mut UnixStream) {
+    pub(crate) fn lire_ligne(s: &mut UnixStream) {
         let mut l = Vec::new();
         let mut o = [0];
         while !l.ends_with(b"\r\n") {
@@ -664,16 +684,21 @@ mod tests {
         }
     }
 
-    fn lire(s: &mut UnixStream) -> Message {
+    /// Les octets d'un message entier, tels que le client les a écrits.
+    pub(crate) fn lire_brut(s: &mut UnixStream) -> Vec<u8> {
         let mut debut = [0; 16];
         s.read_exact(&mut debut).unwrap();
         let mut octets = debut.to_vec();
         octets.resize(super::super::longueur_totale(&debut).unwrap(), 0);
         s.read_exact(&mut octets[16..]).unwrap();
-        Message::decoder_si(&octets, |_| true).unwrap()
+        octets
     }
 
-    fn retour(a: &Message, signature: &str, corps: Vec<Valeur>, expediteur: &str) -> Vec<u8> {
+    pub(crate) fn lire(s: &mut UnixStream) -> Message {
+        Message::decoder_si(&lire_brut(s), |_| true).unwrap()
+    }
+
+    pub(crate) fn retour(a: &Message, signature: &str, corps: Vec<Valeur>, expediteur: &str) -> Vec<u8> {
         Message {
             genre: RETOUR,
             serie: 900 + a.serie,
@@ -687,7 +712,7 @@ mod tests {
         .unwrap()
     }
 
-    fn signal_fin(job: &str, resultat: &str, expediteur: &str) -> Vec<u8> {
+    pub(crate) fn signal_fin(job: &str, resultat: &str, expediteur: &str) -> Vec<u8> {
         Message {
             genre: SIGNAL,
             serie: 77,
@@ -709,7 +734,7 @@ mod tests {
     }
 
     /// Le bus côté client, et le fil du faux bus qui rend les membres appelés, dans l'ordre.
-    fn faux_bus(
+    pub(crate) fn faux_bus(
         scenario: impl FnOnce(&mut UnixStream, &mut Vec<String>) + Send + 'static,
     ) -> (Bus, std::thread::JoinHandle<Vec<String>>) {
         let (client, mut serveur) = UnixStream::pair().unwrap();

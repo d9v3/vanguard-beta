@@ -1197,11 +1197,15 @@ mod tests {
             ),
             note("jeux:ntsync", "", &["module|ntsync"], &[None]),
         ]);
+        // Lot U3 : une unité de la table se remet par le geste de l'assistant, qui demande l'accord pour auditd.
         assert_eq!(
             commandes(&h, "bilan:unite"),
-            ["sudo systemctl enable --now cups-browsed"]
+            ["vanguard:geste unite activer cups-browsed.service"]
         );
-        assert_eq!(commandes(&h, "bilan:auditd"), ["sudo systemctl disable --now auditd"]);
+        assert_eq!(
+            commandes(&h, "bilan:auditd"),
+            ["vanguard:geste unite desactiver auditd.service"]
+        );
         assert_eq!(commandes(&h, "bilan:ntp"), ["sudo timedatectl set-ntp false"]);
         assert_eq!(
             commandes(&h, "bilan:sshd"),

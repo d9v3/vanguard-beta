@@ -25,6 +25,10 @@ use crate::{tr, trf};
 /// une seconde liste fermée, sur le bus de la session seulement. Hors du banc de fuzzing, qui ne lit que les messages.
 #[cfg(not(fuzzing))]
 pub(crate) mod actions;
+/// Les actions du fils root sur les unités du système (lot U3), sur le bus SYSTÈME : une troisième liste fermée, au
+/// modèle d'`actions`. Hors du banc de fuzzing, comme elle.
+#[cfg(not(fuzzing))]
+pub(crate) mod systeme;
 
 /// La prise du bus système (chemin fixe de la spécification ; /var/run en est un lien).
 const BUS_SYSTEME: &str = "/run/dbus/system_bus_socket";
@@ -66,6 +70,8 @@ const LECTURES: &[(&str, &str)] = &[
     // Lot 4 (Linux) : lectures qui remplacent systemctl, loginctl, fwupdmgr et nmcli. GetSettings ne rend jamais
     // les secrets (GetSecrets, à part, n'est pas permis) ; GetUpgrades lit les métadonnées déjà téléchargées.
     (GESTIONNAIRE, "ListUnitFiles"),
+    // Lot U3 : l'état du fichier d'une unité (`systemctl is-enabled`), que le fils root relit avant d'agir.
+    (GESTIONNAIRE, "GetUnitFileState"),
     ("org.freedesktop.login1.Manager", "ListSessions"),
     ("org.freedesktop.fwupd", "GetHostSecurityAttrs"),
     ("org.freedesktop.fwupd", "GetDevices"),

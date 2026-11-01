@@ -213,6 +213,7 @@ fn fermeture_samba(nom: &str, fichier: &str) -> Vec<String> {
     vec![
         format!("test -e {f}.avant-vanguard || sudo cp -p {f} {f}.avant-vanguard"),
         format!("sudo sed -i {} {f}", sh_chaine(&expression)),
+        // Lot U3 : le rechargement reste une commande, après le fichier changé par sed ; geste avec lui (U4).
         "sudo smbcontrol all reload-config 2>/dev/null || sudo systemctl reload smb smbd 2>/dev/null || true"
             .to_string(),
     ]

@@ -8,6 +8,7 @@ use std::process::Command;
 use super::sshd::{mots_de_passe_sshd, mots_de_passe_vides_sshd, valeur_sshd};
 use super::unix::configuration_sshd;
 use super::{Audit, Constat, alerte, cles_ssh, impossible, ok, sortie};
+use crate::machine::gestes_unix::{self, ActionUnite, GesteUnix};
 use crate::optimiser::Geste;
 use crate::risk::{Niveau, info_port};
 use crate::{tr, trf, trw};
@@ -607,6 +608,8 @@ fn pare_feu() -> Constat {
                 "Activer ufw : bloquer les connexions entrantes, autoriser les sortantes",
                 "Turn ufw on: block incoming connections, allow outgoing ones"
             ),
+            // Lot U3 : le « systemctl » reste une commande, mêlé ici aux commandes d'ufw ; il passera au geste « unite »
+            // avec elles (U6).
             &[
                 &format!("command -v ufw >/dev/null || {installer_ufw}"),
                 "sudo ufw default deny incoming",
@@ -674,7 +677,10 @@ fn cups_browsed_expose() -> Constat {
             "Arrêter et désactiver cups-browsed (les imprimantes récentes restent trouvées par CUPS)",
             "Stop and disable cups-browsed (recent printers are still found by CUPS)"
         ),
-        &["sudo systemctl disable --now cups-browsed"],
+        // Le geste fait par l'assistant élevé, par le bus système (lot U3) : ni shell ni « sudo » écrit en texte.
+        &[GesteUnix::Unite(ActionUnite::Desactiver, &gestes_unix::CUPS_BROWSED)
+            .ligne()
+            .as_str()],
     )
     .annulable(vec![Geste::unite("cups-browsed")])
 }
@@ -733,6 +739,8 @@ fn ports_ecoute(pare_feu_actif: bool, ufw: bool) -> Vec<Constat> {
                 p if proto == "udp" && port == 631 && p.starts_with("cups-browsed") => cups_browsed_expose().avec_objet(objet),
                 "ollama" => constat.corriger(
                     tr!("Faire écouter Ollama uniquement en local (127.0.0.1)", "Make Ollama listen locally only (127.0.0.1)"),
+                    // Lot U3 : daemon-reload et restart restent des commandes, après le fichier écrit par tee dans la même
+                    // correction ; ils passeront au geste « unite » avec lui (U4).
                     &[
                         "sudo mkdir -p /etc/systemd/system/ollama.service.d",
                         "printf '[Service]\\nEnvironment=OLLAMA_HOST=127.0.0.1\\n' | sudo tee /etc/systemd/system/ollama.service.d/vanguard.conf >/dev/null",
@@ -797,7 +805,8 @@ fn enable_streaming(vdf: &str) -> Option<bool> {
 }
 
 /// Vérifie puis recharge sshd. « try-reload-or-restart » : sur Ubuntu, ssh.socket ne démarre sshd qu'à la première
-/// connexion, et « reload » d'un service arrêté échouait alors que la configuration était écrite.
+/// connexion, et « reload » d'un service arrêté échouait alors que la configuration était écrite. Lot U3 : reste une
+/// commande, parce qu'elle suit toujours l'écriture du fichier de sshd et `sshd -t` ; geste avec eux (U4, U7).
 pub(crate) const RECHARGER_SSHD: &str = "sudo sshd -t && sudo systemctl try-reload-or-restart sshd";
 
 /// Le serveur SSH tourne-t-il ? « sshd » sur Arch et Fedora, « ssh » sur Debian, Ubuntu et Mint. Ubuntu (22.10+) le
@@ -2475,7 +2484,7 @@ mod tests {
         assert_eq!(c.probleme, Some(Niveau::Eleve));
         assert_eq!(
             c.correctif.unwrap().commandes,
-            ["sudo systemctl disable --now cups-browsed"]
+            ["vanguard:geste unite desactiver cups-browsed.service"]
         );
         // Nommé par son groupe de contrôle quand le programme est invisible sans droits.
         assert_eq!(

@@ -463,7 +463,8 @@ pub(super) fn juger_journal_audit(installe: bool, actif: bool) -> Option<Constat
         )
         .corriger(
             tr!("Le lancer, et le garder au démarrage", "Start it, and keep it at boot"),
-            &["sudo systemctl enable --now auditd"],
+            // Par l'assistant élevé et le bus système (lot U3), sans shell.
+            &[GesteUnix::Unite(ActionUnite::Activer, &gestes_unix::AUDITD).ligne().as_str()],
         )
         .annulable(vec![crate::optimiser::Geste::unite("auditd")])
     })
