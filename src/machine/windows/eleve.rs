@@ -1136,7 +1136,7 @@ fn poser_le_point() -> Result<(), Echec> {
     /// BEGIN_SYSTEM_CHANGE et MODIFY_SETTINGS : ceux de Checkpoint-Computer, qui ne ferme pas le changement.
     const DEBUT: i32 = 100;
     const REGLAGES: i32 = 12;
-    use super::wmi::Parametre;
+    use super::wmi::{Parametre, Retour};
     let avant = points();
     let description = trf!("Vanguard : avant une correction", "Vanguard: before a fix");
     let retour = super::wmi::methode(
@@ -1151,7 +1151,7 @@ fn poser_le_point() -> Result<(), Echec> {
         DELAI_POINT,
     );
     let mut apres = None;
-    if retour == Some(0) && avant.is_some() {
+    if retour == Retour::Valeur(0) && avant.is_some() {
         // La liste peut ne montrer le point qu'un peu après la réponse : relue quelques fois, 20 s au plus.
         for essai in 0..10 {
             if essai > 0 {
@@ -1174,15 +1174,27 @@ fn est_neuf(avant: &[Point], apres: &[Point]) -> bool {
     apres.iter().any(|p| plus_haut.is_none_or(|h| p.sequence > h))
 }
 
-/// `Ok` seulement si un point neuf est dans la liste ; sinon la raison. `retour` : ReturnValue de CreateRestorePoint
-/// (`None` : pas de réponse) ; `avant`, `apres` : la liste des points (`None` : illisible).
-fn juger_le_point(avant: Option<&[Point]>, retour: Option<i64>, apres: Option<&[Point]>) -> Result<(), Echec> {
+/// `Ok` seulement si un point neuf est dans la liste ; sinon la raison. `retour` : ce qu'a rendu CreateRestorePoint ;
+/// `avant`, `apres` : la liste des points (`None` : illisible).
+fn juger_le_point(avant: Option<&[Point]>, retour: super::wmi::Retour, apres: Option<&[Point]>) -> Result<(), Echec> {
+    use super::wmi::{CLASSE_ABSENTE, Retour};
     let phrase = match (retour, avant, apres) {
-        (None, ..) => trf!(
-            "Windows n'a pas répondu à la demande (WMI SystemRestore)",
-            "Windows did not answer the request (WMI SystemRestore)"
+        (Retour::SansReponse, ..) => trf!(
+            "Windows n'a pas répondu à temps (WMI SystemRestore, {} min)",
+            "Windows did not answer in time (WMI SystemRestore, {} min)",
+            DELAI_POINT.as_secs() / 60
         ),
-        (Some(n), ..) if n != 0 => trf!(
+        (Retour::Refuse(code), ..) if CLASSE_ABSENTE.contains(&code) => trf!(
+            "ce Windows n'a pas les points de restauration (WMI SystemRestore absent)",
+            "this Windows has no restore points (WMI SystemRestore missing)"
+        ),
+        // Passe 11 de la VM : VSS coupé, la demande est refusée par une erreur, pas laissée sans réponse.
+        (Retour::Refuse(code), ..) => trf!(
+            "Windows a refusé la demande (code 0x{:08X}) : protection du système ou service VSS coupés ?",
+            "Windows refused the request (code 0x{:08X}): system protection or VSS service turned off?",
+            code
+        ),
+        (Retour::Valeur(n), ..) if n != 0 => trf!(
             "erreur {} : protection du système désactivée sur C: ?",
             "error {}: system protection turned off on C:?",
             n
@@ -1513,7 +1525,7 @@ mod tests {
     #[test]
     fn sans_point_la_question_est_posee() {
         for raison in [
-            "Windows n'a pas répondu à la demande (WMI SystemRestore)",
+            "Windows n'a pas répondu à temps (WMI SystemRestore, 5 min)",
             "Windows l'a sauté : il n'en fait qu'un par 24 h, et le dernier a 3 h",
             "erreur 1058 : protection du système désactivée sur C: ?",
         ] {
@@ -1535,29 +1547,35 @@ mod tests {
     /// une liste illisible n'est jamais un point vérifié.
     #[test]
     fn le_point_n_est_ok_que_s_il_est_dans_la_liste() {
+        use crate::machine::windows::wmi::Retour::{Refuse, SansReponse, Valeur};
         let p = |sequence, age| Point {
             sequence,
             age: Some(age),
         };
         let avant = [p(25, 90_000), p(26, 3 * 3600)];
         assert_eq!(
-            juger_le_point(Some(&avant), Some(0), Some(&[avant[0], avant[1], p(27, 5)])),
+            juger_le_point(Some(&avant), Valeur(0), Some(&[avant[0], avant[1], p(27, 5)])),
             Ok(())
         );
-        assert_eq!(juger_le_point(Some(&[]), Some(0), Some(&[p(1, 5)])), Ok(()));
+        assert_eq!(juger_le_point(Some(&[]), Valeur(0), Some(&[p(1, 5)])), Ok(()));
         let raison = |retour, apres: Option<&[Point]>| {
             juger_le_point(Some(&avant), retour, apres)
                 .expect_err("pas de point neuf = échec")
                 .to_string()
         };
-        let sautee = raison(Some(0), Some(&avant));
+        let sautee = raison(Valeur(0), Some(&avant));
         assert!(sautee.contains("24 h") && sautee.contains("3 h"), "{sautee}");
-        let perdu = raison(Some(0), Some(&[p(25, 90_000)]));
+        let perdu = raison(Valeur(0), Some(&[p(25, 90_000)]));
         assert!(!perdu.contains("24 h"), "{perdu}");
-        assert!(raison(Some(1058), Some(&avant)).contains("1058"));
-        assert!(raison(None, None).contains("WMI"));
-        let illisible = raison(Some(0), None);
-        assert!(juger_le_point(None, Some(0), Some(&[p(27, 5)])).is_err());
+        assert!(raison(Valeur(1058), Some(&avant)).contains("1058"));
+        let delai = raison(SansReponse, None);
+        let refus = raison(Refuse(0x8004_2302_u32.cast_signed()), None);
+        let absent = raison(Refuse(crate::machine::windows::wmi::CLASSE_ABSENTE[1]), None);
+        assert!(refus.contains("0x80042302"), "{refus}");
+        assert!(!delai.contains("0x") && !absent.contains("0x"), "{delai} / {absent}");
+        assert!(delai != refus && refus != absent && delai != absent);
+        let illisible = raison(Valeur(0), None);
+        assert!(juger_le_point(None, Valeur(0), Some(&[p(27, 5)])).is_err());
         assert!(
             [sautee.as_str(), perdu.as_str(), illisible.as_str()]
                 .iter()

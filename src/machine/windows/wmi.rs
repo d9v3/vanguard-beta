@@ -30,6 +30,9 @@ use windows::core::{BSTR, Error, HSTRING, IUnknown, Interface};
 const RPC_C_AUTHN_WINNT: u32 = 10;
 const RPC_C_AUTHZ_NONE: u32 = 0;
 
+/// WBEM_E_NOT_FOUND et WBEM_E_INVALID_CLASS : la classe n'existe pas dans cet espace de noms.
+pub(crate) const CLASSE_ABSENTE: [i32; 2] = [0x8004_1002_u32.cast_signed(), 0x8004_1010_u32.cast_signed()];
+
 /// Le délai de `ps()` est de 60 s ; ici la moitié, puisque PowerShell prend le relais si COM ne répond pas.
 const DELAI: Duration = Duration::from_secs(30);
 
@@ -116,8 +119,6 @@ pub(crate) enum Reponse {
 
 /// Comme `requete`, avec « classe absente » à part ; `None` : tout autre échec (refus, espace inconnu, délai).
 pub(crate) fn interroger(espace: &str, classe: &str, condition: &str, champs: &[&str]) -> Option<Reponse> {
-    /// WBEM_E_NOT_FOUND et WBEM_E_INVALID_CLASS.
-    const ABSENTE: [i32; 2] = [0x8004_1002_u32.cast_signed(), 0x8004_1010_u32.cast_signed()];
     // Tous les champs (`*`), lus ensuite un par un : un champ que cette version de Windows n'a pas devient
     // `Valeur::Nul`, au lieu de faire échouer toute la requête.
     let wql = if condition.is_empty() {
@@ -131,7 +132,7 @@ pub(crate) fn interroger(espace: &str, classe: &str, condition: &str, champs: &[
     com("WMI", &debut, move || {
         match dans_ce_fil(&espace, &classe, &wql, &champs) {
             Ok(lignes) => Ok(Reponse::Lignes(lignes)),
-            Err(e) if ABSENTE.contains(&e.code().0) => Ok(Reponse::ClasseAbsente),
+            Err(e) if CLASSE_ABSENTE.contains(&e.code().0) => Ok(Reponse::ClasseAbsente),
             Err(e) => Err(e),
         }
     })
@@ -341,22 +342,39 @@ pub(crate) enum Parametre {
     Entier(i32),
 }
 
-/// Appelle la méthode statique `methode` de `classe` (dans `espace`), avec ces paramètres d'entrée, et rend son
-/// ReturnValue. `None` : WMI absent, classe ou méthode inconnues (Wine), paramètre refusé, pas de ReturnValue, ou
-/// délai dépassé (noté au journal) ; l'appelant le dit, jamais compté comme réussi.
+/// Ce qu'a rendu l'appel d'une méthode WMI.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Retour {
+    /// Son ReturnValue.
+    Valeur(i64),
+    /// Refusé, avec le code de l'erreur : WMI absent, classe ou méthode inconnues (`CLASSE_ABSENTE`), paramètre
+    /// refusé, pas de ReturnValue (E_POINTER).
+    Refuse(i32),
+    /// Pas de réponse dans le délai (noté au journal).
+    SansReponse,
+}
+
+/// Appelle la méthode statique `methode` de `classe` (dans `espace`), avec ces paramètres d'entrée. Seul
+/// `Retour::Valeur` est une réponse ; l'appelant dit les deux autres, jamais comptés comme réussis.
 pub(crate) fn methode(
     espace: &str,
     classe: &str,
     methode: &str,
     parametres: Vec<(&'static str, Parametre)>,
     delai: Duration,
-) -> Option<i64> {
+) -> Retour {
     let (espace, classe, nom) = (espace.to_string(), classe.to_string(), methode.to_string());
     let quoi = format!("{classe}.{nom}");
-    com_delai("WMI", &quoi, delai, move || {
+    match dans_un_fil(delai, COINIT_MULTITHREADED, move || {
         appeler_dans_ce_fil(&espace, &classe, &nom, &parametres)
-    })
-    .flatten()
+    }) {
+        Some(Ok(valeur)) => Retour::Valeur(valeur),
+        Some(Err(code)) => Retour::Refuse(code.0),
+        None => {
+            crate::journal::erreur("WMI", &format!("délai de {} s dépassé\n{quoi}", delai.as_secs()));
+            Retour::SansReponse
+        }
+    }
 }
 
 fn appeler_dans_ce_fil(
@@ -364,8 +382,8 @@ fn appeler_dans_ce_fil(
     classe: &str,
     nom: &str,
     parametres: &[(&str, Parametre)],
-) -> windows::core::Result<Option<i64>> {
-    // SAFETY: COM est initialisé dans ce fil (par `com_delai`) ; WbemLocator est la classe du localisateur WMI.
+) -> windows::core::Result<i64> {
+    // SAFETY: COM est initialisé dans ce fil (par `dans_un_fil`) ; WbemLocator est la classe du localisateur WMI.
     let localisateur: IWbemLocator = unsafe { CoCreateInstance(&WbemLocator, None, CLSCTX_INPROC_SERVER) }?;
     let vide = BSTR::new();
     // SAFETY: chaînes BSTR valides pendant l'appel ; utilisateur et mot de passe vides = le compte qui lance.
@@ -413,15 +431,13 @@ fn appeler_dans_ce_fil(
             None,
         )
     }?;
-    let Some(resultat) = resultat else {
-        return Ok(None);
-    };
+    let resultat = resultat.ok_or_else(|| Error::from(E_POINTER))?;
     let mut v = VARIANT::default();
     // SAFETY: resultat est vivant, le nom terminé par un zéro, `v` un VARIANT vide qui reçoit la copie (libérée par
     // son Drop).
     unsafe { resultat.Get(&HSTRING::from("ReturnValue"), 0, &raw mut v, None, None) }?;
     // SAFETY: `v` vient d'être rempli par Get.
-    Ok(unsafe { lire(&v) }.entier())
+    unsafe { lire(&v) }.entier().ok_or_else(|| Error::from(E_POINTER))
 }
 
 /// Le membre de l'union que désigne `vt`, et lui seul.
