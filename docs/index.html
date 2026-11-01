@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vanguard 0.88</title>
+<title>Vanguard 0.89</title>
 <meta name="description" content="Vanguard est un projet personnel et libre : un outil de sécurité et de dépannage lancé depuis une clé USB. Il fait le bilan de l'ordinateur et du réseau, explique chaque problème en mots simples et le répare seulement avec votre accord. Pour Windows, Linux et macOS.">
 <meta name="theme-color" content="#0b1220">
 <meta name="claude:viewport-fit-sides" content="cover">
@@ -204,7 +204,7 @@ main { gap: 3.5rem; padding-block: 3rem; }
 <a class="marque" href="#haut" id="haut">
 <span class="plaque" aria-hidden="true"><svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"><path fill="#ffffff" d="M8 12h22l20 52 20-52h22L60 90H40z"/><path fill="#0d0f12" d="M30 12h6l14 37 14-37h6L50 66z"/></svg></span>
 <b>VANGUARD</b>
-<span class="version">0.88.0</span>
+<span class="version">0.89.0</span>
 </a>
 <nav class="nav" aria-label="Sections">
 <a href="#comment">Comment ça marche</a>
@@ -243,7 +243,7 @@ main { gap: 3.5rem; padding-block: 3rem; }
 </div>
 <div class="fenetre" role="navigation" aria-label="Menu principal de Vanguard">
 <div class="titre-fenetre"><i></i><i></i><i></i><span>vanguard</span></div>
-<pre><span class="boite">  <b>VANGUARD 0.88          </b>Cyberdéfense portable des postes et des réseaux</span>
+<pre><span class="boite">  <b>VANGUARD 0.89          </b>Cyberdéfense portable des postes et des réseaux</span>
 
   <span class="filet">BILAN DE SÉCURITÉ</span>
  <span class="c">►</span>  1  <a href="#bilan">Bilan de sécurité complet</a>            <span class="c">← commencer ici</span>
@@ -453,7 +453,7 @@ main { gap: 3.5rem; padding-block: 3rem; }
 <p>Pour qui veut connaître le fonctionnement interne : les règles du bilan, les interfaces du système lues directement en Rust, les sources de menaces, la chaîne de confiance des mises à jour, et chaque commande.</p>
 </div>
 <dl class="specs">
-<div><dt>Langage</dt><dd>Rust, édition 2024 · ≈ 262 700 lignes ; aucun programme externe pour lire le système ; calculs vérifiés contre les dépassements dans la version publiée</dd></div>
+<div><dt>Langage</dt><dd>Rust, édition 2024 · ≈ 281 000 lignes ; aucun programme externe pour lire le système ; calculs vérifiés contre les dépassements dans la version publiée</dd></div>
 <div><dt>Programme</dt><dd>Un seul exécutable, rien à installer : Linux x86_64 (statique, musl), Windows x86_64, macOS Apple Silicon et Intel</dd></div>
 <div><dt>Règles du bilan</dt><dd>171 règles à identifiant stable (<code>LNX-SSH-006</code>) : 94 sous Linux, 82 sous Windows, 71 sous macOS, communes comprises ; 34 fiches d'audit du réseau</dd></div>
 <div><dt>Interface</dt><dd>Menu au clavier, ou 83 commandes en ligne ; sorties <code>--json</code>, rapport HTML ou Markdown</dd></div>
@@ -643,18 +643,18 @@ vanguard yara --complet</pre>
 </section>
 <section id="nouveautes">
 <div class="tete-section">
-<p class="surtitre">Nouveautés de la version 0.88</p>
+<p class="surtitre">Nouveautés de la version 0.89</p>
 <h2>Ce qui vient d'arriver</h2>
-<p>Une version de confiance : ce qui sort de l'ordinateur tient dans une liste fermée, l'état de Vanguard est scellé, ce qu'il protège est écrit, et chaque règle est reliée à MITRE ATT&amp;CK.</p>
+<p>Une version où les corrections de Windows se font sans PowerShell, et où un verdict ne ment plus : une menace notée, une pièce jointe piégée ou un échec sont dits comme tels.</p>
 </div>
 <ul class="nouveautes">
-<li><b>Liste fermée de ce qui sort</b><span>Vanguard ne joint qu'une liste fermée de sites, chacun nommé dans le modèle de menace ; un test échoue si le code en ajoute un que la page ne nomme pas.</span></li>
-<li><b>État scellé</b><span>Réglages des extensions, listes téléchargées, défenses mises en marche, tâches et fichiers d'état : changés hors de Vanguard, ils n'accordent plus rien et ne coupent plus rien, et c'est dit.</span></li>
-<li><b>Modèle de menace</b><span>Une page dit ce que Vanguard protège, ce qu'il ne protège pas et ce qui sort de l'ordinateur.</span></li>
-<li><b>Carte MITRE ATT&amp;CK</b><span>Les règles citent la technique qu'elles détectent ou la mesure qu'elles appliquent ; la carte, générée, montre aussi les cases vides.</span></li>
-<li><b>Journaux de Windows, un seul juge</b><span>Le bilan reprend les règles de « Que s'est-il passé ? » ; deux règles de plus (tâches planifiées, processus suspects) et une place au menu.</span></li>
-<li><b>Paquets de l'AUR avec accord</b><span>Sous Arch Linux, les noms des paquets hors des dépôts officiels ne partent plus qu'avec un réglage donné exprès.</span></li>
-<li><b>Optimiser refusé en administrateur</b><span>Ses outils ne tournent pas quand Vanguard a été élevé depuis un compte ordinaire ; « Tout remettre comme avant » reste permis.</span></li>
+<li><b>Services de Windows sans PowerShell</b><span>Arrêter, démarrer, désactiver ou remettre un service passe directement par Windows ; aucune action ne peut couper une protection.</span></li>
+<li><b>Pare-feu et type de réseau sans PowerShell</b><span>Chaque changement est relu ; jamais de blocage des entrées pendant une connexion à distance.</span></li>
+<li><b>Onze corrections du registre sans PowerShell</b><span>Bureau à distance, NetBIOS, SMBv1, débogueurs piégés… : la valeur est rejugée juste avant d'écrire, et celle d'avant notée pour Défaire.</span></li>
+<li><b>Pièces jointes piégées</b><span>Scripts cachés dans les images SVG, archives zip relues sans croire leur sommaire, noms truqués par des caractères invisibles.</span></li>
+<li><b>Defender sans « ✔ » à tort</b><span>Une menace notée compte toujours ; une exclusion qui couvre le fichier enlève le « ✔ ».</span></li>
+<li><b>Point de restauration vérifié</b><span>Seul un point nouveau dans la liste de Windows compte ; sinon la raison est dite avant de continuer.</span></li>
+<li><b>Fenêtre administrateur figée</b><span>Les outils de Windows sont pris dans le dossier du système, avec un environnement réduit : un programme posé dans le compte ne peut plus se glisser à leur place.</span></li>
 </ul>
 </section>
 <section id="feuille-de-route">
@@ -700,9 +700,9 @@ vanguard yara --complet</pre>
 <h2>Écrit en Rust, testé à chaque version</h2>
 </div>
 <div class="chiffres">
-<div class="chiffre"><b>≈ 262 700</b><span>lignes de code Rust</span></div>
-<div class="chiffre"><b>2 502</b><span>tests sous Linux</span></div>
-<div class="chiffre"><b>2 136</b><span>tests sous Windows (Wine)</span></div>
+<div class="chiffre"><b>≈ 281 000</b><span>lignes de code Rust</span></div>
+<div class="chiffre"><b>2 654</b><span>tests sous Linux</span></div>
+<div class="chiffre"><b>2 320</b><span>tests sous Windows (Wine)</span></div>
 <div class="chiffre"><b>221</b><span>vérifications sur un vrai Windows</span></div>
 </div>
 <p class="note">Chaque version passe par des relectures de sécurité indépendantes, par un vrai Windows qui se teste tout seul et par un Mac de GitHub. Cette page est refaite par le script de publication à chaque version.</p>
@@ -775,7 +775,7 @@ vanguard yara --complet</pre>
 </section>
 </main>
 <footer>
-<div class="cadre"><span>Vanguard 0.88.0 · 26 octobre 2026</span><span><a href="https://github.com/d9v3/vanguard-beta">Logiciel libre · GPL-3.0-or-later</a></span></div>
+<div class="cadre"><span>Vanguard 0.89.0 · 1 novembre 2026</span><span><a href="https://github.com/d9v3/vanguard-beta">Logiciel libre · GPL-3.0-or-later</a></span></div>
 </footer>
 </body>
 </html>
