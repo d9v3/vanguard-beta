@@ -44,6 +44,7 @@ pub fn tube_nomme(chemin: &std::path::Path) -> std::io::Result<()> {
 /// numéro de processus, ne s'y croisent pas. Sous Wine, le chemin, connu à la compilation sous Linux, passe par le
 /// lecteur Z: qui montre la racine de Linux. Au premier appel, les restes de plus d'un jour (essai interrompu ou qui
 /// a paniqué avant de nettoyer) en sont retirés : une série qui tourne en même temps, elle, n'y perd rien.
+/// Chaque lancement y a son sous-dossier (`lancement`).
 pub fn temporaire() -> std::path::PathBuf {
     static PURGE: std::sync::Once = std::sync::Once::new();
     let depot = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -54,11 +55,26 @@ pub fn temporaire() -> std::path::PathBuf {
         Some(reste) => std::path::PathBuf::from(format!("Z:\\{}", reste.replace('/', "\\"))),
         None => cible,
     };
-    let dossier = cible.join("essais-tmp").join(std::env::consts::OS);
+    let systeme = cible.join("essais-tmp").join(std::env::consts::OS);
+    let dossier = systeme.join(lancement());
     // Un dossier qui ne peut pas être créé fait échouer l'essai à sa première écriture, avec le chemin dans l'erreur.
     let _ = std::fs::create_dir_all(&dossier);
-    PURGE.call_once(|| purger_vieux(&dossier, std::time::Duration::from_hours(24)));
+    PURGE.call_once(|| purger_vieux(&systeme, std::time::Duration::from_hours(24)));
     dossier
+}
+
+/// Ce lancement-ci, une fois pour tout le processus : son numéro et l'heure de son premier appel. Le numéro seul ne
+/// suffit pas : sous Wine, chaque série reçoit le même (un préfixe neuf numérote toujours pareil), et le retrait à la
+/// sortie (`atexit`) n'y a pas lieu ; la série suivante reprenait alors les fichiers de la précédente (un journal
+/// d'événements déjà écrit, des alertes en double ; verifier.sh n°7 du lot T10).
+fn lancement() -> &'static str {
+    static LANCEMENT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    LANCEMENT.get_or_init(|| {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        format!("lancement-{:x}-{nanos:x}", std::process::id())
+    })
 }
 
 /// Un nom de dossier ou de fichier jetable qu'aucun autre essai ne prend : `vanguard-<nom>-<processus>-<n>`. Deux
@@ -206,6 +222,13 @@ mod tests {
     fn les_fichiers_jetables_restent_dans_le_dossier_de_compilation() {
         let d = super::temporaire();
         let fin = std::path::Path::new("essais-tmp").join(std::env::consts::OS);
+        // Un sous-dossier par lancement (T10, verifier.sh n°7) : jamais celui d'une série précédente.
+        assert!(
+            d.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("lancement-"))
+        );
+        assert_eq!(super::temporaire(), d, "le même pour tout le processus");
+        let d = d.parent().unwrap().to_path_buf();
         assert!(d.is_absolute() && d.ends_with(&fin), "{}", d.display());
         // Sous Wine, le dépôt est vu par Z: : la fin du chemin suffit.
         #[cfg(not(windows))]
@@ -215,7 +238,7 @@ mod tests {
             assert_eq!(d, cible.join(&fin));
         }
         assert!(!d.starts_with(std::env::temp_dir()), "{}", d.display());
-        let f = d.join(super::nom_unique("ecrit"));
+        let f = super::temporaire().join(super::nom_unique("ecrit"));
         std::fs::write(&f, b"x").unwrap();
         assert_eq!(std::fs::read(&f).unwrap(), b"x");
         let _ = std::fs::remove_file(&f);
