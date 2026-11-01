@@ -213,7 +213,9 @@ fn branche_a_chaud(racine: &std::path::Path, appareil: &std::path::Path) -> bool
     let Ok(chemin) = std::fs::canonicalize(appareil) else {
         return false;
     };
-    let devices = sous(racine, "/sys/devices");
+    // Résolu lui aussi : `chemin` l'est, et une racine qui passe par un lien (un dossier de compilation lié vers un
+    // autre disque) ne serait jamais son préfixe.
+    let devices = std::fs::canonicalize(sous(racine, "/sys/devices")).unwrap_or_else(|_| sous(racine, "/sys/devices"));
     for d in chemin
         .ancestors()
         .take_while(|d| d.starts_with(&devices) && *d != devices)

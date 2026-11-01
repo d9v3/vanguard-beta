@@ -3012,15 +3012,28 @@ fn deploiement_cle_refuse_une_copie_pas_un_second_chemin() {
         std::fs::copy(cle.join(f), copie.join(f)).unwrap();
     }
     // Les volumes sont des liens vers les dossiers de l'essai : un montage lié de /tmp peut être refusé (quota). Le
-    // programme est ouvert avant de cacher /run, où peuvent être ses dossiers de compilation (un disque monté là).
-    let script = r#"exec 3<"$1" && shift && mount -t tmpfs essai /run && mkdir -p /run/media/alice || exit 97
+    // programme est ouvert avant de cacher /run, où peuvent être ses dossiers de compilation (un disque monté là) ;
+    // les dossiers de l'essai aussi, alors : celui de la maison, résolu, est gardé ouvert et remonté à sa place (sans
+    // --no-canonicalize, mount lirait le lien de /proc en chemin, celui du dossier vide recréé).
+    let script = r#"exec 3<"$1" && garde=$2 && shift 2 || exit 97
+if [ -n "$garde" ]; then exec 4<"$garde" || exit 97; fi
+mount -t tmpfs essai /run && mkdir -p /run/media/alice || exit 97
+if [ -n "$garde" ]; then mkdir -p "$garde" && mount --no-canonicalize --bind /proc/self/fd/4 "$garde" && exec 4<&- || exit 97; fi
 for v in "$@"; do
   case $v in --) shift; break ;; *) ln -s "${v#*=}" "/run/media/alice/${v%%=*}" || exit 97; shift ;; esac
 done
 export USER=alice
 exec /proc/self/fd/3 "$@""#;
+    let reelle = std::fs::canonicalize(&maison).unwrap();
+    let garde = if reelle.starts_with("/run") {
+        reelle.to_string_lossy().into_owned()
+    } else {
+        String::new()
+    };
     let dans_l_espace = |volumes: &[(&str, &Path)]| {
-        let mut args: Vec<String> = ["-rm", "sh", "-c", script, "sh", programme].map(String::from).to_vec();
+        let mut args: Vec<String> = ["-rm", "sh", "-c", script, "sh", programme, &garde]
+            .map(String::from)
+            .to_vec();
         args.extend(volumes.iter().map(|(n, d)| format!("{n}={}", d.display())));
         args.extend(["--", "deploiement", "cle"].map(String::from));
         let args: Vec<&str> = args.iter().map(String::as_str).collect();

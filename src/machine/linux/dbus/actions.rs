@@ -618,7 +618,10 @@ mod tests {
         use std::os::unix::net::{SocketAddr, UnixListener};
         let moi = crate::socle::euid();
         let autre = moi.wrapping_add(1);
-        let dossier = crate::essais::temporaire().join(format!("vanguard-dbus-session-{}", std::process::id()));
+        // Dans le dossier temporaire du système, comme `http_unix::essais::faux_demon` : sous `essais::temporaire()`,
+        // le chemin de la prise dépassait les 108 octets de SUN_LEN (verifier.sh n°9 du lot T10). Un dossier et une
+        // prise, retirés à la fin : rien qui pèse sur le quota.
+        let dossier = std::env::temp_dir().join(format!("vanguard-bus-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dossier);
         std::fs::create_dir_all(&dossier).unwrap();
         let _ecoute = UnixListener::bind(dossier.join("bus")).unwrap();

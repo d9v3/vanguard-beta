@@ -5183,8 +5183,9 @@ mod tests_menu {
             ("src/traces/windows.rs", 2),
             // Le programme (dossier risqué) et un essai qui juge le dossier temporaire du compte.
             ("src/protection/sortantes.rs", 2),
-            // Une prise Unix d'essai : son chemin tient en 108 octets, que le dépôt peut dépasser.
+            // Des prises Unix d'essai : leur chemin tient en 108 octets, que le dépôt peut dépasser.
             ("src/machine/linux/http_unix.rs", 1),
+            ("src/machine/linux/dbus/actions.rs", 1),
             // Des essais qui jugent ce dossier-là, sans y écrire.
             ("src/verifier_cle.rs", 1),
             ("src/protection/distance.rs", 1),
