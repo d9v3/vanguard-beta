@@ -364,8 +364,9 @@ version = "1.0.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.evtx]]
-version = "0.13.0"
+version = "0.15.1"
 criteria = "safe-to-run"
+notes = "Oracle des tests du lecteur .evtx maison, dev-dependency seulement, sans fonctions par défaut ; 0.15.1 corrige RUSTSEC-2026-0431 (allocation sans borne dans le lecteur .wevtcache), première version publiée qui le corrige."
 
 [[exemptions.fastrand]]
 version = "2.5.0"
@@ -1232,8 +1233,9 @@ version = "2.5.8"
 criteria = "safe-to-deploy"
 
 [[exemptions.utf16-simd]]
-version = "0.1.1"
+version = "0.2.0"
 criteria = "safe-to-run"
+notes = "Amenée par evtx 0.15.1 (oracle des tests, dev-dependency seulement), même éditeur ; remplace la 0.1.1 exemptée."
 
 [[exemptions.uuid]]
 version = "1.29.0"

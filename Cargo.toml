@@ -165,9 +165,12 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)", "cfg(kani)"] }
 proptest = "1.12.0"
 # Oracle du lecteur .evtx maison (src/journaux_windows/evtx/) : la lecture croisée de ses tests compare nos
 # événements aux siens. Jamais dans le programme (une dépendance de plus qui lirait des données hostiles), sans ses
-# fonctions par défaut (le programme evtx_dump, rayon). 0.13.0 (22 oct. 2026) et pas 0.12.3 : celle-ci amène
-# `encoding`, abandonnée (RUSTSEC-2021-0153), que deny.toml refuse ; 0.13.0 l'a remplacée par encoding_rs.
-evtx = { version = "=0.13.0", default-features = false }
+# fonctions par défaut (le programme evtx_dump, rayon). 0.15.1 : jusqu'à la 0.14.0, le lecteur .wevtcache alloue la
+# taille lue dans le fichier avant de la lire (RUSTSEC-2026-0431, un fichier de 25 octets demande 4 Gio) ; la 0.15.0
+# n'a jamais été publiée. Ce lecteur est derrière `wevt_templates`, que nous n'activons pas, mais cargo deny et
+# cargo audit jugent la version. Jamais en dessous de 0.13.0 : la 0.12.3 amenait `encoding`, abandonnée
+# (RUSTSEC-2021-0153), que deny.toml refuse ; toujours absente de Cargo.lock avec la 0.15.1 (encoding_rs seulement).
+evtx = { version = "=0.15.1", default-features = false }
 # Oracle du moteur YARA maison (src/protection/moteur_yara.rs) : ses tests compilent les mêmes règles avec YARA-X et
 # comparent les correspondances, fichier par fichier, et les champs des modules pe et elf. Jamais dans le programme
 # (`cargo tree -e normal` ne le montre pas) : il y amenait wasmtime et cranelift, 150 crates de plus, et du C à
