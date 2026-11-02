@@ -12,6 +12,8 @@
 //! présent), relit, et dit si un chemin d'objet a changé. Les références d'une liaison sont celles des objets
 //! recréés, relues dans WMI, jamais un texte de la note.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use winreg::RegKey;
@@ -65,6 +67,24 @@ fn objet(l: &Ligne, proprietes: &[(&str, GenreWmi)]) -> Option<ObjetNote> {
 /// laisserait une liaison de côté et ferait croire un filtre libre alors qu'il sert encore.
 fn meme_cle(a: &str, b: &str) -> bool {
     a.to_lowercase() == b.to_lowercase()
+}
+
+/// Un nom tel que le bilan le lit (`portes::sur_une_ligne`) : sauts de ligne changés en une espace, bordures retirées.
+fn lu_par_le_bilan(nom: &str) -> String {
+    let mut sortie = String::with_capacity(nom.len());
+    let mut saut = false;
+    for c in nom.chars() {
+        if matches!(c, '\r' | '\n') {
+            if !saut {
+                sortie.push(' ');
+            }
+            saut = true;
+        } else {
+            saut = false;
+            sortie.push(c);
+        }
+    }
+    sortie.trim().to_string()
 }
 
 fn nom_de(l: &Ligne) -> Option<&str> {
@@ -162,10 +182,22 @@ fn lire_abonnement(a: &Abonnements, w: &AbonnementWmi) -> Result<Option<NoteWmi>
     let proprietes = w.classe.proprietes();
     let consumers = instances(a, classe, &champs(proprietes))?;
     let mut trouves = consumers.iter().filter(|l| nom_de(l) == Some(w.nom.texte()));
+    let forme = |r: &str| Illisible::Forme(r.to_string());
     let Some(lu) = trouves.next() else {
+        // Le bilan lit chaque nom sur une ligne (espaces de bordure retirés, sauts de ligne changés en espace) : un
+        // consumer dont seul le nom ainsi lu correspond existe bel et bien, il n'est pas « déjà retiré ».
+        if consumers
+            .iter()
+            .filter_map(nom_de)
+            .any(|n| lu_par_le_bilan(n) == w.nom.texte())
+        {
+            return Err(forme(tr!(
+                "le vrai nom de ce consumer a des espaces en bordure ou des sauts de ligne : rien d'écrit (à retirer à la main)",
+                "this consumer's real name has leading or trailing spaces or line breaks: nothing written (remove by hand)"
+            )));
+        }
         return Ok(None);
     };
-    let forme = |r: &str| Illisible::Forme(r.to_string());
     if trouves.next().is_some() {
         return Err(forme(tr!(
             "deux consumers portent ce nom : rien d'écrit",
@@ -274,18 +306,33 @@ fn lire_note(nom: &str) -> Option<NoteWmi> {
     NoteWmi::lire(&v.bytes)
 }
 
-/// Dans un fil COM à lui ; si WMI ne répond pas à temps, rien n'est sûr : dit tel quel.
-fn dans_wmi(geste: impl FnOnce() -> Resultat + Send + 'static) -> Resultat {
-    super::wmi::com_delai("WMI", "abonnement WMI", DELAI, move || Ok(geste())).unwrap_or_else(|| {
+/// Dans un fil COM à lui ; si WMI ne répond pas à temps, rien n'est sûr : dit tel quel. Le fil n'est pas arrêté,
+/// seulement abandonné : `abandon` levé, il n'écrit plus rien de neuf (vérifié avant la note, la première suppression
+/// et la première création), mais un geste déjà commencé peut s'achever après le message.
+fn dans_wmi(geste: impl FnOnce(&AtomicBool) -> Resultat + Send + 'static) -> Resultat {
+    let abandon = Arc::new(AtomicBool::new(false));
+    let vu_du_fil = Arc::clone(&abandon);
+    super::wmi::com_delai("WMI", "abonnement WMI", DELAI, move || Ok(geste(&vu_du_fil))).unwrap_or_else(|| {
+        abandon.store(true, Ordering::SeqCst);
         Resultat::echec(
             None,
             tr!(
-                "WMI ne répond pas : l'état de l'abonnement est à relire (relancez le bilan)",
-                "WMI does not answer: the subscription's state must be read again (run the check again)"
+                "WMI ne répond pas : l'état de l'abonnement est à relire (relancez le bilan) ; un retrait ou une remise déjà commencé peut s'achever après ce message",
+                "WMI does not answer: the subscription's state must be read again (run the check again); a removal or restore already started may finish after this message"
             )
             .to_string(),
         )
     })
+}
+
+fn abandonne() -> Resultat {
+    refus(
+        tr!(
+            "délai dépassé avant d'écrire : rien d'écrit",
+            "time limit passed before writing: nothing written"
+        )
+        .to_string(),
+    )
 }
 
 /// Ce qui reste de l'abonnement noté : le consumer, une liaison vers lui, un filtre que Vanguard devait retirer.
@@ -327,10 +374,10 @@ fn decrire(n: &NoteWmi) -> String {
 /// le signale et propose cette même ligne.
 pub(super) fn retirer(w: &AbonnementWmi) -> Resultat {
     let w = w.clone();
-    dans_wmi(move || retirer_ici(&w))
+    dans_wmi(move |abandon| retirer_ici(&w, abandon))
 }
 
-fn retirer_ici(w: &AbonnementWmi) -> Resultat {
+fn retirer_ici(w: &AbonnementWmi, abandon: &AtomicBool) -> Resultat {
     let ligne = Acte::WmiAbonnementRetirer(w.clone()).ligne();
     let protege = tr!(
         "abonnement de Windows ou de Defender : Vanguard n'y touche jamais ; rien d'écrit",
@@ -368,7 +415,16 @@ fn retirer_ici(w: &AbonnementWmi) -> Resultat {
             .to_string(),
         );
     }
-    let Some(octets) = note.octets().filter(|_| note.valide(w)) else {
+    if !note.valide(w) {
+        return refus(
+            tr!(
+                "un filtre de cet abonnement a un nom piégé (vide, trop long, avec un caractère de contrôle, ou en double) : rien d'écrit (à retirer à la main)",
+                "a filter of this subscription has a trapped name (empty, too long, with a control character, or duplicated): nothing written (remove by hand)"
+            )
+            .to_string(),
+        );
+    }
+    let Some(octets) = note.octets() else {
         return refus(
             tr!(
                 "abonnement trop long pour être noté : rien d'écrit (à retirer à la main)",
@@ -379,6 +435,9 @@ fn retirer_ici(w: &AbonnementWmi) -> Resultat {
     };
     // Notée d'abord : sans note, pas de changement (la remise serait perdue).
     let nom_note = nom_note(w);
+    if abandon.load(Ordering::SeqCst) {
+        return abandonne();
+    }
     if let Err(e) = ecrire_note(&nom_note, octets) {
         return refus(trf!(
             "les propriétés de l'abonnement ne se notent pas ({e}) : rien d'écrit",
@@ -410,6 +469,10 @@ fn retirer_ici(w: &AbonnementWmi) -> Resultat {
             .filter(|l| l.filtre_retire)
             .map(|l| (FILTRE, l.filtre.chemin.as_str())),
     );
+    if abandon.load(Ordering::SeqCst) {
+        effacer_note(&nom_note);
+        return abandonne();
+    }
     let mut refuse = None;
     for (classe, chemin) in ordre {
         match a.supprimer(classe, chemin) {
@@ -475,8 +538,9 @@ fn memes_valeurs(notees: &ObjetNote, relues: &ObjetNote) -> bool {
         .all(|(n, r)| *n == ValeurNotee::Absente || n == r)
 }
 
-/// Retire ce que la remise a créé (le consumer, ses liaisons, les filtres créés), après un échec : jamais un objet
-/// qui était là avant elle.
+/// Retire ce que la remise a créé, après un échec : le consumer recréé, toute liaison qui le vise (une liaison
+/// pendante d'avant comprise, qui ne pouvait viser que ce nom absent), et les filtres créés par elle seule ; jamais un
+/// filtre qui était là avant.
 fn defaire_creation(a: &Abonnements, w: &AbonnementWmi, filtres_crees: &[String]) {
     let classe = w.classe.classe();
     if let Ok(liees) = liaisons(a) {
@@ -508,10 +572,10 @@ fn defaire_creation(a: &Abonnements, w: &AbonnementWmi, filtres_crees: &[String]
 /// consumer de ce nom n'existe et que chaque filtre est dans l'état noté ; la note est effacée après relecture.
 pub(super) fn remettre(w: &AbonnementWmi) -> Resultat {
     let w = w.clone();
-    dans_wmi(move || remettre_ici(&w))
+    dans_wmi(move |abandon| remettre_ici(&w, abandon))
 }
 
-fn remettre_ici(w: &AbonnementWmi) -> Resultat {
+fn remettre_ici(w: &AbonnementWmi, abandon: &AtomicBool) -> Resultat {
     let nom_note = nom_note(w);
     let Some(note) = lire_note(&nom_note).filter(|n| n.valide(w)) else {
         return refus(
@@ -587,43 +651,53 @@ fn remettre_ici(w: &AbonnementWmi) -> Resultat {
         }
     }
     let mut filtres_crees = Vec::new();
-    let echec = |a: &Abonnements, filtres_crees: &[String], code: i32| {
+    let echec = |a: &Abonnements, filtres_crees: &[String], code: Option<i32>| {
         defaire_creation(a, w, filtres_crees);
-        refus(trf!(
-            "WMI refuse la création ({code:#010x}) : ce que Vanguard venait de créer est retiré ; la note est gardée",
-            "WMI refuses the creation ({code:#010x}): what Vanguard had just created is removed; the note is kept"
-        ))
+        refus(match code {
+            Some(code) => trf!(
+                "WMI refuse la création ({code:#010x}) : ce que Vanguard venait de créer est retiré ; la note est gardée",
+                "WMI refuses the creation ({code:#010x}): what Vanguard had just created is removed; the note is kept"
+            ),
+            None => tr!(
+                "un objet créé ne se retrouve pas à la relecture : ce que Vanguard venait de créer est retiré ; la note est gardée",
+                "a created object cannot be found when read back: what Vanguard had just created is removed; the note is kept"
+            )
+            .to_string(),
+        })
     };
+    if abandon.load(Ordering::SeqCst) {
+        return abandonne();
+    }
     for (nom, p) in &a_creer {
         if let Err(e) = a.creer(FILTRE, p) {
-            return echec(&a, &filtres_crees, e.code().0);
+            return echec(&a, &filtres_crees, Some(e.code().0));
         }
         filtres_crees.push(nom.clone());
     }
     if let Err(e) = a.creer(w.classe.classe(), &params_consumer) {
-        return echec(&a, &filtres_crees, e.code().0);
+        return echec(&a, &filtres_crees, Some(e.code().0));
     }
     // Les références d'une liaison : les chemins relus du filtre et du consumer, tels que WMI les écrit.
     let chemin_de = |classe: &str, nom: &str| -> Option<String> {
         instances(&a, classe, &["Name"])
             .ok()?
             .iter()
-            .find(|l| nom_de(l) == Some(nom))
+            .find(|l| nom_de(l).is_some_and(|n| meme_cle(n, nom)))
             .and_then(|l| l.get("__RELPATH")?.texte().map(str::to_string))
     };
     let Some(chemin_consumer) = chemin_de(w.classe.classe(), w.nom.texte()) else {
-        return echec(&a, &filtres_crees, ABSENT);
+        return echec(&a, &filtres_crees, None);
     };
     for l in &note.liaisons {
         let nom = l.filtre.nom().unwrap_or_default();
         let (Some(chemin_filtre), Some(mut p)) = (chemin_de(FILTRE, nom), parametres(&l.liaison, &PROPRIETES_LIAISON))
         else {
-            return echec(&a, &filtres_crees, ABSENT);
+            return echec(&a, &filtres_crees, None);
         };
         p.push(("Filter", Parametre::Texte(chemin_filtre)));
         p.push(("Consumer", Parametre::Texte(chemin_consumer.clone())));
         if let Err(e) = a.creer(LIAISON, &p) {
-            return echec(&a, &filtres_crees, e.code().0);
+            return echec(&a, &filtres_crees, Some(e.code().0));
         }
     }
     let avant = tr!("abonnement WMI absent", "WMI subscription absent").to_string();
@@ -717,6 +791,13 @@ mod tests {
         ] {
             assert_eq!(reference_locale(chemin), None, "{chemin}");
         }
+    }
+
+    #[test]
+    fn noms_lus_par_le_bilan() {
+        assert_eq!(lu_par_le_bilan(" Updater "), "Updater");
+        assert_eq!(lu_par_le_bilan("Upda\r\ndater"), "Upda dater");
+        assert_eq!(lu_par_le_bilan("Updater"), "Updater");
     }
 
     #[test]
